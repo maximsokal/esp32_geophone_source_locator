@@ -14,6 +14,8 @@
 #include "nrf_baro_altitude.h"
 #include "nrf_height_reference.h"
 #include "nrf_imu_calibration.h"
+#include "nrf_log_events.h"
+#include "nrf_log_runtime_zephyr.h"
 #include "nrf_verticality_state.h"
 #include "nrf_node_state.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
@@ -80,6 +82,32 @@ static bool s_started;
 static bool s_activation_queued;
 static uint32_t s_imu_calibration_request_id;
 static uint32_t s_imu_calibration_completed_request_id;
+
+static void log_sensor_fault_edges(
+    uint32_t previous_fault_mask,
+    uint32_t fault_mask,
+    uint32_t sequence)
+{
+    const uint32_t imu_bit = NRF_SENSOR_VALID_IMU;
+    const uint32_t env_bit = NRF_SENSOR_VALID_ENV;
+
+    if (((previous_fault_mask ^ fault_mask) & imu_bit) != 0U) {
+        nrf_log_runtime_zephyr_append_event(
+            (fault_mask & imu_bit) != 0U
+                ? NRF_LOG_EVENT_IMU_FAULT_SET
+                : NRF_LOG_EVENT_IMU_FAULT_CLEARED,
+            imu_bit,
+            sequence);
+    }
+    if (((previous_fault_mask ^ fault_mask) & env_bit) != 0U) {
+        nrf_log_runtime_zephyr_append_event(
+            (fault_mask & env_bit) != 0U
+                ? NRF_LOG_EVENT_ENV_FAULT_SET
+                : NRF_LOG_EVENT_ENV_FAULT_CLEARED,
+            env_bit,
+            sequence);
+    }
+}
 
 static void publish_refresh(
     uint32_t request_id,
@@ -433,6 +461,8 @@ static void orientation_feed_sample(
     k_spin_unlock(&s_orientation_lock, key);
 
     if (s_imu_calibration.capturing) {
+        const uint8_t previous_calibration_state = (uint8_t)s_imu_calibration.state;
+        const uint32_t calibration_request_id = s_imu_calibration_request_id;
         const uint32_t corrected_peak = sample_valid ? gyro_peak_mdps(&corrected) : 0U;
         calibration_completed = nrf_imu_calibration_update(
             &s_imu_calibration,
@@ -441,6 +471,15 @@ static void orientation_feed_sample(
             orientation.state == NRF_ORIENTATION_STATE_MOVING ||
                 corrected_peak >= s_verticality_config.gyro_motion_threshold_mdps,
             sample_uptime_ms);
+        if (calibration_completed &&
+            previous_calibration_state != (uint8_t)s_imu_calibration.state &&
+            (s_imu_calibration.state == NRF_UPSTREAM_IMU_CALIBRATION_REJECTED_MOVING ||
+             s_imu_calibration.state == NRF_UPSTREAM_IMU_CALIBRATION_REJECTED_GRAVITY)) {
+            nrf_log_runtime_zephyr_append_event(
+                NRF_LOG_EVENT_IMU_CAL_REJECTED,
+                calibration_request_id,
+                (uint32_t)s_imu_calibration.state);
+        }
         if (calibration_completed &&
             s_imu_calibration.state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED) {
             set_orientation_reference_axis(s_imu_calibration.reference_axis);
@@ -603,7 +642,10 @@ static void apply_height_reference_request(
         gyro_motion_mdps < s_verticality_config.gyro_motion_threshold_mdps;
 
     if (request != NULL) {
-        (void)nrf_height_reference_apply(
+        const nrf_upstream_reference_state_t previous_state = s_height_reference.state;
+        bool applied;
+
+        applied = nrf_height_reference_apply(
             &s_height_reference,
             request->action,
             request->generation,
@@ -611,6 +653,14 @@ static void apply_height_reference_request(
             env_valid,
             stationary,
             rounded_i32(s_filtered_altitude_mm));
+        if (applied &&
+            previous_state != s_height_reference.state &&
+            s_height_reference.state == NRF_UPSTREAM_REFERENCE_REJECTED_MOVING) {
+            nrf_log_runtime_zephyr_append_event(
+                NRF_LOG_EVENT_HEIGHT_REF_REJECTED,
+                request->request_id,
+                (uint32_t)s_height_reference.state);
+        }
     }
 }
 
@@ -657,6 +707,7 @@ static void publish_refresh(
     nrf_sensor_snapshot_result_t refresh_result = NRF_SENSOR_SNAPSHOT_ERR_NO_DATA;
     bool did_refresh = false;
     uint64_t completion_uptime_ms = 0U;
+    uint32_t previous_fault_mask;
 
     prepare_result = nrf_remote_sensor_runtime_zephyr_prepare(
         &s_worker_node_state,
@@ -677,6 +728,7 @@ static void publish_refresh(
         copy_imu_calibration_to_snapshot(&wire);
     } else if (s_runtime.core.imu_ready || s_runtime.core.env_ready) {
         did_refresh = true;
+        previous_fault_mask = s_runtime.core.snapshot.fault_mask;
         refresh_result = nrf_remote_sensor_runtime_zephyr_refresh(
             &s_worker_node_state,
             &s_runtime);
@@ -688,6 +740,10 @@ static void publish_refresh(
          * the previous one.
          */
         orientation_consume_aggregate_refresh(did_refresh);
+        log_sensor_fault_edges(
+            previous_fault_mask,
+            s_runtime.core.snapshot.fault_mask,
+            s_runtime.core.snapshot.sequence);
         apply_height_reference_request(height_reference_request, true);
         copy_runtime_payload(
             request_id,

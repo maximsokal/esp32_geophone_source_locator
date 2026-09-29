@@ -368,6 +368,57 @@ export interface DeviceSystemStatus {
   required_pods: number;
 }
 
+export type NrfLogNodeId = 'main' | `remote${0 | 1 | 2 | 3 | 4 | 5 | 6 | 7}`;
+
+export interface NrfLogCounters {
+  overwritten_total: number;
+  lost_internal_total: number;
+  wire_gap_total: number;
+  local_drop_total: number;
+}
+
+export interface NrfLogRecord {
+  token: string;
+  boot_id: number;
+  seq: number;
+  uptime_ms: number;
+  esp_rx_uptime_ms: number;
+  event_id: number;
+  severity: number;
+  subsystem: number;
+  arg0: number;
+  arg1: number;
+}
+
+export interface NrfLogPage {
+  ok: true;
+  node: NrfLogNodeId;
+  channel: number | null;
+  records: NrfLogRecord[];
+  next_token: string | null;
+  reset: boolean;
+  counters: NrfLogCounters;
+  logs_unsupported: boolean;
+  boot_id: number | null;
+}
+
+export interface NrfLogNodeSummary {
+  node: NrfLogNodeId;
+  channel: number | null;
+  present: boolean;
+  logs_unsupported: boolean;
+  boot_id: number | null;
+  stored: number;
+  warn_count: number;
+  error_count: number;
+  fatal_count: number;
+  wire_gap_total: number;
+  local_drop_total: number;
+  overwritten_total: number;
+}
+
+export type NrfLogBadRequestReason = 'bad_node' | 'bad_limit' | 'bad_token';
+
 export interface SeismicCadenceEvidence {
   available: boolean;
   timer_ticks: number;
@@ -472,6 +523,8 @@ export interface DeviceStatus {
   recording_sessions?: RecordingSessionCollection;
   workflow?: DeviceWorkflowStatus;
   ranging?: DeviceRangingStatus;
+  /** Absent on firmware that predates MAX-308 log summaries. */
+  nrf_logs?: NrfLogNodeSummary[];
 }
 
 export type DevicePowerState =

@@ -6,6 +6,9 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
+#include "nrf_log_events.h"
+#include "nrf_log_runtime_zephyr.h"
+
 static const struct device *const s_wdt = DEVICE_DT_GET(DT_ALIAS(watchdog0));
 
 static struct k_spinlock s_lock;
@@ -14,7 +17,9 @@ static struct k_work s_workqueue_probe;
 static int s_channel = -1;
 static bool s_armed;
 static bool s_stale_reported;
+static nrf_watchdog_participant_t s_stale_reported_participant;
 static uint32_t s_boot_reset_cause;
+static bool s_reset_cause_captured;
 
 static uint64_t uptime_ms(void)
 {
@@ -31,16 +36,15 @@ static void capture_reset_cause(void)
 {
     uint32_t cause = 0U;
 
+    if (s_reset_cause_captured) {
+        return;
+    }
     if (hwinfo_get_reset_cause(&cause) != 0) {
         return;
     }
     s_boot_reset_cause = cause;
+    s_reset_cause_captured = true;
     (void)hwinfo_clear_reset_cause();
-    if ((cause & RESET_WATCHDOG) != 0U) {
-        printk("nrf_watchdog: previous run was reset by the WATCHDOG (cause 0x%08x)\n", cause);
-    } else {
-        printk("nrf_watchdog: reset cause 0x%08x\n", cause);
-    }
 }
 
 int nrf_watchdog_zephyr_start(void)
@@ -57,6 +61,13 @@ int nrf_watchdog_zephyr_start(void)
     int result;
 
     capture_reset_cause();
+    if (s_reset_cause_captured) {
+        if ((s_boot_reset_cause & RESET_WATCHDOG) != 0U) {
+            printk("nrf_watchdog: previous run was reset by the WATCHDOG (cause 0x%08x)\n", s_boot_reset_cause);
+        } else {
+            printk("nrf_watchdog: reset cause 0x%08x\n", s_boot_reset_cause);
+        }
+    }
 
     key = k_spin_lock(&s_lock);
     nrf_watchdog_health_init(&s_health, uptime_ms(), NRF_WATCHDOG_MAX_SILENCE_MS);
@@ -104,16 +115,22 @@ void nrf_watchdog_zephyr_service(void)
     k_spin_unlock(&s_lock, key);
 
     if (!feed) {
-        if (!s_stale_reported) {
+        if (!s_stale_reported || stale != s_stale_reported_participant) {
             printk("nrf_watchdog: %s silent > %u ms, feed stopped; reset in <= %u ms\n",
                    nrf_watchdog_participant_name(stale),
                    (unsigned)NRF_WATCHDOG_MAX_SILENCE_MS,
                    (unsigned)NRF_WATCHDOG_TIMEOUT_MS);
             s_stale_reported = true;
+            s_stale_reported_participant = stale;
+            nrf_log_runtime_zephyr_append_event(
+                NRF_LOG_EVENT_WATCHDOG_PARTICIPANT_STALE,
+                (uint32_t)stale,
+                NRF_WATCHDOG_MAX_SILENCE_MS);
         }
         return;
     }
     s_stale_reported = false;
+    s_stale_reported_participant = NRF_WATCHDOG_PARTICIPANT_NONE;
     if (s_armed) {
         (void)wdt_feed(s_wdt, s_channel);
     }
@@ -121,5 +138,6 @@ void nrf_watchdog_zephyr_service(void)
 
 uint32_t nrf_watchdog_zephyr_boot_reset_cause(void)
 {
+    capture_reset_cause();
     return s_boot_reset_cause;
 }

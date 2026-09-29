@@ -1,0 +1,12 @@
+source "Kconfig.zephyr"
+
+menu "Application options"
+
+config APP_LOG_TEST_EVENTS
+	bool "Generate nRF log test-event bursts"
+	default n
+	help
+	  Emit bounded LOG_TEST_EVENT bursts from the main loop for HIL ring-flood
+	  and transport checks. Leave disabled in production images.
+
+endmenu

@@ -1,7 +1,11 @@
+import { lazy, Suspense } from 'react';
 import type { DeviceStatus, ObjectProfile } from '../../domain/device';
 import LevelingCard from './LevelingCard';
+import '../nrflog/NrfLogPanel.css';
 import { useLocale, useT } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
+
+const NrfLogPanel = lazy(() => import('../nrflog/NrfLogPanel'));
 
 interface Props {
   status: DeviceStatus | null;
@@ -96,6 +100,8 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
       </article>
 
       <LevelingCard gate={status?.recording_gate} main={status?.main} pods={pods} onCalibrateHeights={onCalibrateHeights} />
+
+      <Suspense fallback={null}><NrfLogPanel status={status} /></Suspense>
 
       <div className="pod-grid">
         {[0, 1, 2, 3].map((index) => {

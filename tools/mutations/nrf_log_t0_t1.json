@@ -1,0 +1,156 @@
+[
+  {
+    "id": "t0_crc_validation",
+    "description": "Accept a frame after its CRC check reports a mismatch.",
+    "file": "nRF54L15/src/nrf_log_protocol.c",
+    "find": "return NRF_LOG_ERROR_BAD_CRC;",
+    "replace": "return NRF_LOG_ERROR_OK;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308.json",
+        "only": "nrf_log_protocol"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_protocol_test.c::test_corruption_rejection"
+  },
+  {
+    "id": "t0_ring_capacity_minus_one",
+    "description": "Treat capacity minus one as a full ring.",
+    "file": "nRF54L15/src/nrf_log_ring.c",
+    "find": "if (ring->count == NRF_LOG_RING_CAPACITY) {",
+    "replace": "if (ring->count == NRF_LOG_RING_CAPACITY - 1U) {",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308.json",
+        "only": "nrf_log_ring"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_ring_test.c::test_capacity_overflow_and_wrap"
+  },
+  {
+    "id": "t0_ring_drop_newest",
+    "description": "Drop appends after the ring fills instead of overwriting the oldest record.",
+    "file": "nRF54L15/src/nrf_log_ring.c",
+    "find": "result = write_record_locked(ring, &record);",
+    "replace": "if (ring->count == NRF_LOG_RING_CAPACITY) {\r\n        result = NRF_LOG_ERROR_OK;\r\n    } else {\r\n        result = write_record_locked(ring, &record);\r\n    }",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308.json",
+        "only": "nrf_log_ring"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_ring_test.c::test_capacity_overflow_and_wrap"
+  },
+  {
+    "id": "t0_ring_overwrite_counter",
+    "description": "Stop counting overwritten records.",
+    "file": "nRF54L15/src/nrf_log_ring.c",
+    "find": "saturating_increment(&ring->overwritten_total);",
+    "replace": ";",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308.json",
+        "only": "nrf_log_ring"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_ring_test.c::test_capacity_overflow_and_wrap"
+  },
+  {
+    "id": "t0_block_sequence_validation",
+    "description": "Skip strict per-record sequence validation inside a block.",
+    "file": "nRF54L15/src/nrf_log_protocol.c",
+    "find": "if (block->records[i].seq != block->first_seq + i) {",
+    "replace": "if (0) {",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308.json",
+        "only": "nrf_log_protocol"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_protocol_test.c::test_semantic_error_codes"
+  },
+  {
+    "id": "t0_unknown_wire_version",
+    "description": "Accept an unknown status-body log wire version.",
+    "file": "nRF54L15/src/nrf_log_protocol.c",
+    "find": "if (result == NRF_LOG_ERROR_OK && frame[10] != NRF_LOG_PROTOCOL_VERSION) {\r\n        result = NRF_LOG_ERROR_BAD_VERSION;\r\n    }\r\n    if (result == NRF_LOG_ERROR_OK) {\r\n        decoded.request_id = read_le32(&frame[6]);\r\n        decoded.flags = frame[11];\r\n        decoded.capacity = read_le16(&frame[12]);",
+    "replace": "if (0) {\r\n        result = NRF_LOG_ERROR_BAD_VERSION;\r\n    }\r\n    if (result == NRF_LOG_ERROR_OK) {\r\n        decoded.request_id = read_le32(&frame[6]);\r\n        decoded.flags = frame[11];\r\n        decoded.capacity = read_le16(&frame[12]);",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308.json",
+        "only": "nrf_log_protocol"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_protocol_test.c::test_semantic_error_codes"
+  },
+  {
+    "id": "t0_reserved_block_flags",
+    "description": "Ignore reserved bits in the block flags byte.",
+    "file": "nRF54L15/src/nrf_log_protocol.c",
+    "find": "if ((block->flags & (uint8_t)~NRF_LOG_BLOCK_FLAG_MASK) != 0U) {",
+    "replace": "if (0) {",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308.json",
+        "only": "nrf_log_protocol"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_protocol_test.c::test_semantic_error_codes"
+  },
+  {
+    "id": "t0_block_uptime_regression",
+    "description": "Skip uptime regression validation within a decoded block.",
+    "file": "nRF54L15/src/nrf_log_protocol.c",
+    "find": "if (current < previous && !(previous > 0xF0000000U && current < 0x10000000U)) {",
+    "replace": "if (0) {",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308.json",
+        "only": "nrf_log_protocol"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_protocol_test.c::test_semantic_error_codes"
+  },
+  {
+    "id": "t0_rollover_threshold",
+    "description": "Roll over only after the configured sequence threshold has passed.",
+    "file": "nRF54L15/src/nrf_log_ring.c",
+    "find": "ring->next_seq == NRF_LOG_RING_ROLLOVER_SEQ",
+    "replace": "ring->next_seq > NRF_LOG_RING_ROLLOVER_SEQ",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308.json",
+        "only": "nrf_log_ring"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_ring_test.c::test_generation_rollover_and_event"
+  },
+  {
+    "id": "t0_cache_request_id",
+    "description": "Reuse cached responses for a different request_id.",
+    "file": "nRF54L15/src/nrf_log_ring.c",
+    "find": "ring->cache_request_id == key->request_id &&",
+    "replace": "1 &&",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308.json",
+        "only": "nrf_log_ring"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_ring_test.c::test_idempotent_response_cache"
+  },
+  {
+    "id": "t1_clear_log_response_on_write",
+    "description": "Leave the selected nRF log response active after a different TWIS write.",
+    "file": "nRF54L15/src/nrf_bootstrap_runtime_zephyr.c",
+    "find": "s_log_response_selected=false;",
+    "replace": ";",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-nrf.json",
+        "only": "nrf_bootstrap_runtime_zephyr"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_bootstrap_runtime_zephyr_test.c::main (log response superseded by sensor write)"
+  }
+]

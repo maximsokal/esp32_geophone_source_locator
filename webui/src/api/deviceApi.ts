@@ -7,6 +7,8 @@ import {
   type PhoneLocationInput,
   type SavedSeismicSnapshot,
   type SeismicSnapshot,
+  type NrfLogBadRequestReason,
+  type NrfLogPage,
 } from '../domain/device';
 
 export const DEVICE_API_FAST_TIMEOUT_MS = 5000;
@@ -60,7 +62,7 @@ export type SaveCalcSettingsResult =
   | { ok: false; error: string; httpStatus: number };
 
 class ApiHttpError extends Error {
-  constructor(readonly httpStatus: number, message: string) {
+  constructor(readonly httpStatus: number, message: string, readonly responseBody?: unknown) {
     super(message);
     this.name = 'ApiHttpError';
   }
@@ -203,7 +205,7 @@ async function performJsonRequest<T>(
 
     if (!response.ok && !(allowConflictResponse && response.status === 409)) {
       if (recordingBlocked(body, response.status)) throw new ScanStorageBlockedRecordingError();
-      throw new ApiHttpError(response.status, `ESP API ${response.status} ${method} ${url}: ${responseError(body, response)}`);
+      throw new ApiHttpError(response.status, `ESP API ${response.status} ${method} ${url}: ${responseError(body, response)}`, body);
     }
 
     return body as T;
@@ -433,6 +435,64 @@ export function fetchDeviceStatus(
   statusRequests.set(url, request);
   if (extended) extendedStatusRequest = request;
   return request;
+}
+
+export type FetchNrfLogsResult =
+  | { ok: true; value: NrfLogPage }
+  | { ok: false; kind: 'bad_request'; reason: NrfLogBadRequestReason }
+  | { ok: false; kind: 'network_error'; error: string };
+
+function isU32(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 0xffff_ffff;
+}
+
+function isNrfLogBadRequestReason(value: unknown): value is NrfLogBadRequestReason {
+  return value === 'bad_node' || value === 'bad_limit' || value === 'bad_token';
+}
+
+function isNrfLogPage(value: unknown, expectedNode: string): value is NrfLogPage {
+  const expectedChannel = expectedNode === 'main' ? null : Number(expectedNode.slice('remote'.length));
+  if (!isRecord(value) || value.ok !== true || value.node !== expectedNode || value.channel !== expectedChannel ||
+      !(value.node === 'main' || /^remote[0-7]$/.test(String(value.node))) ||
+      !(value.channel === null || (isU32(value.channel) && value.channel <= 7)) ||
+      !Array.isArray(value.records) ||
+      !(value.next_token === null || typeof value.next_token === 'string') ||
+      typeof value.reset !== 'boolean' || typeof value.logs_unsupported !== 'boolean' ||
+      !(value.boot_id === null || isU32(value.boot_id)) || !isRecord(value.counters)) return false;
+
+  const counters = value.counters;
+  if (!isU32(counters.overwritten_total) || !isU32(counters.lost_internal_total) ||
+      !isU32(counters.wire_gap_total) || !isU32(counters.local_drop_total)) return false;
+
+  return value.records.every((record: unknown) => isRecord(record) &&
+    typeof record.token === 'string' && isU32(record.boot_id) && isU32(record.seq) &&
+    isU32(record.uptime_ms) && isU32(record.esp_rx_uptime_ms) &&
+    Number.isInteger(record.event_id) && (record.event_id as number) >= 0 && (record.event_id as number) <= 0xffff &&
+    Number.isInteger(record.severity) && (record.severity as number) >= 0 && (record.severity as number) <= 4 &&
+    Number.isInteger(record.subsystem) && (record.subsystem as number) >= 0 && (record.subsystem as number) <= 0xff &&
+    isU32(record.arg0) && isU32(record.arg1));
+}
+
+/** The after cursor is opaque; it is only encoded as a query value and returned unchanged by the server. */
+export async function fetchNrfLogs(node: string, afterToken?: string, limit = 50): Promise<FetchNrfLogsResult> {
+  const query = new URLSearchParams({ node, limit: String(limit) });
+  if (afterToken !== undefined) query.set('after', afterToken);
+
+  try {
+    const value = await jsonRequest<unknown>(`/api/nrf/logs?${query.toString()}`);
+    if (isRecord(value) && value.ok === false && isNrfLogBadRequestReason(value.reason)) {
+      return { ok: false, kind: 'bad_request', reason: value.reason };
+    }
+    return isNrfLogPage(value, node)
+      ? { ok: true, value }
+      : { ok: false, kind: 'network_error', error: 'invalid_response' };
+  } catch (reason) {
+    if (reason instanceof ApiHttpError && reason.httpStatus === 400 &&
+        isRecord(reason.responseBody) && isNrfLogBadRequestReason(reason.responseBody.reason)) {
+      return { ok: false, kind: 'bad_request', reason: reason.responseBody.reason };
+    }
+    return { ok: false, kind: 'network_error', error: errorText(reason) };
+  }
 }
 
 export function sendControl(

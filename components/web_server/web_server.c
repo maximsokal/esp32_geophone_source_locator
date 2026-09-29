@@ -41,6 +41,8 @@
 
 static const char *TAG = "WEB_SERVER";
 
+esp_err_t web_nrf_logs_api_register(httpd_handle_t server);
+
 typedef struct {
     web_lifecycle_state_t state;
     uint32_t generation;
@@ -749,6 +751,7 @@ static esp_err_t web_server_https_start_internal(void)
 
     web_server_route_tracking_begin(config.httpd.max_uri_handlers);
     err = web_server_routes_register(s_https_server);
+    if (err == ESP_OK) err = web_nrf_logs_api_register(s_https_server);
     if (err == ESP_OK) {
         size_t route_count = 0U;
         const web_route_identity_t *routes = web_https_route_catalog(&route_count);

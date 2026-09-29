@@ -2,8 +2,10 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <stdio.h>
 
 #include "esp_timer.h"
+#include "nrf_topology_service.h"
 #include "runtime_observability.h"
 #include "seismic_acquisition.h"
 #include "seismic_buffer.h"
@@ -43,6 +45,57 @@ static size_t web_status_ready_pods(
         *has_error = error;
     }
     return ready;
+}
+
+static bool web_status_json_add_nrf_logs(cJSON *root)
+{
+    nrf_topology_snapshot_t topology;
+    const bool topology_valid = nrf_topology_service_get_snapshot(&topology) == ESP_OK;
+    cJSON *nodes = cJSON_AddArrayToObject(root, "nrf_logs");
+    if (nodes == NULL) return false;
+
+    for (uint8_t index = 0U; index < NRF_LOG_COLLECTOR_NODE_COUNT; ++index) {
+        nrf_log_node_summary_t summary = {0};
+        const bool have_summary = nrf_topology_service_get_nrf_log_summary(index, &summary) == ESP_OK;
+        const bool present = topology_valid
+            ? (index == 0U
+                ? topology.main.state == NRF_TOPOLOGY_NODE_ASSIGNED
+                : topology.remotes[index - 1U].state == NRF_TOPOLOGY_NODE_ASSIGNED)
+            : (have_summary && summary.present);
+        const char *node_name = index == 0U ? "main" : NULL;
+        char remote_name[8];
+        if (index != 0U) {
+            (void)snprintf(remote_name, sizeof(remote_name), "remote%u", (unsigned)(index - 1U));
+            node_name = remote_name;
+        }
+
+        cJSON *node = cJSON_CreateObject();
+        if (node == NULL) return false;
+        if (cJSON_AddItemToArray(nodes, node) == 0) {
+            cJSON_Delete(node);
+            return false;
+        }
+        if (
+            cJSON_AddStringToObject(node, "node", node_name) == NULL ||
+            (index == 0U
+                ? cJSON_AddNullToObject(node, "channel") == NULL
+                : cJSON_AddNumberToObject(node, "channel", index - 1U) == NULL) ||
+            cJSON_AddBoolToObject(node, "present", present) == NULL ||
+            cJSON_AddBoolToObject(node, "logs_unsupported", summary.logs_unsupported) == NULL ||
+            (summary.boot_id_valid
+                ? cJSON_AddNumberToObject(node, "boot_id", summary.boot_id) == NULL
+                : cJSON_AddNullToObject(node, "boot_id") == NULL) ||
+            cJSON_AddNumberToObject(node, "stored", summary.stored) == NULL ||
+            cJSON_AddNumberToObject(node, "warn_count", summary.warn_count) == NULL ||
+            cJSON_AddNumberToObject(node, "error_count", summary.error_count) == NULL ||
+            cJSON_AddNumberToObject(node, "fatal_count", summary.fatal_count) == NULL ||
+            cJSON_AddNumberToObject(node, "wire_gap_total", summary.wire_gap_total) == NULL ||
+            cJSON_AddNumberToObject(node, "local_drop_total", summary.local_drop_total) == NULL ||
+            cJSON_AddNumberToObject(node, "overwritten_total", summary.overwritten_total) == NULL) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static bool web_status_json_add_system(
@@ -700,6 +753,7 @@ esp_err_t web_status_json_build_extended(
         web_status_json_add_main(root, &status.main) &&
         web_status_json_add_mux(root, &status.mux) &&
         web_status_json_add_pods(root, &status) &&
+        web_status_json_add_nrf_logs(root) &&
         web_status_json_add_acquisition(
             root,
             &status.acquisition,

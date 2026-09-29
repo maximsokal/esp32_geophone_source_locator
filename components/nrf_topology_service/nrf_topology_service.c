@@ -28,12 +28,26 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 
+#if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+#include "esp_heap_caps.h"
+#endif
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #define NRF_TOPOLOGY_RECONCILE_PERIOD_MS 5000U
 #define NRF_CS_PUMP_INTERVAL_MS 10U
 #define NRF_TOPOLOGY_STACK_MARGIN_BYTES 1024U
+
+#ifndef CONFIG_NRF_LOG_POLL_NODE_BUDGET_MS
+#define CONFIG_NRF_LOG_POLL_NODE_BUDGET_MS 50U
+#endif
+#ifndef CONFIG_NRF_LOG_POLL_ITERATION_BUDGET_MS
+#define CONFIG_NRF_LOG_POLL_ITERATION_BUDGET_MS 100U
+#endif
+#ifndef CONFIG_NRF_LOG_POLL_PERIOD_MS
+#define CONFIG_NRF_LOG_POLL_PERIOD_MS 1000U
+#endif
 
 static const char *TAG = "NRF_TOPOLOGY";
 
@@ -53,6 +67,14 @@ typedef struct {
     nrf_topology_platform_t *platform;
     nrf_topology_snapshot_t *snapshot;
 } nrf_cs_platform_context_t;
+
+#if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+typedef struct {
+    nrf_topology_platform_t *platform;
+    TickType_t last_reconcile_tick;
+    TickType_t reconcile_period_ticks;
+} nrf_log_platform_context_t;
+#endif
 
 typedef struct {
     nrf_topology_platform_t platform;
@@ -106,6 +128,9 @@ static bool s_frozen_ranging_result_valid = false;
 static EXT_RAM_BSS_ATTR nrf_topology_ranging_result_t s_frozen_ranging_result;
 static nrf_topology_worker_state_t s_worker_state;
 static nrf_topology_service_stack_stats_t s_stack_stats;
+#if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+static nrf_log_collector_t *s_nrf_log_collector;
+#endif
 
 static void service_record_stack_hwm(
     nrf_topology_stack_stats_phase_t phase,
@@ -505,6 +530,191 @@ static esp_err_t platform_read_remote_snapshot(
         ? ESP_OK
         : ESP_ERR_INVALID_RESPONSE;
 }
+
+static esp_err_t platform_mux_close(void *context);
+static esp_err_t platform_mux_select(void *context, uint8_t channel);
+static uint64_t platform_now_ms(void *context);
+static bool tick_period_due(TickType_t now, TickType_t last, TickType_t period);
+
+#if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+static esp_err_t platform_log_begin_node(void *context, uint8_t node_index)
+{
+    nrf_log_platform_context_t *log_context = context;
+    if (log_context == NULL || log_context->platform == NULL || node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (node_index == 0U) return ESP_OK;
+    const esp_err_t err = platform_mux_select(log_context->platform, (uint8_t)(node_index - 1U));
+    if (err != ESP_OK) service_request_topology_refresh_from_worker();
+    return err;
+}
+
+static esp_err_t platform_log_end_node(void *context, uint8_t node_index)
+{
+    nrf_log_platform_context_t *log_context = context;
+    if (log_context == NULL || log_context->platform == NULL || node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (node_index == 0U) return ESP_OK;
+    const esp_err_t err = platform_mux_close(log_context->platform);
+    if (err != ESP_OK) service_request_topology_refresh_from_worker();
+    return err;
+}
+
+static esp_err_t platform_log_write_frame(
+    void *context,
+    uint8_t node_index,
+    const uint8_t *frame,
+    size_t frame_length)
+{
+    nrf_log_platform_context_t *log_context = context;
+    const uint8_t address = node_index == 0U
+        ? NRF_UPSTREAM_ADDRESS_MAIN
+        : NRF_UPSTREAM_ADDRESS_REMOTE;
+    i2c_bus_device_handle_t device;
+    esp_err_t err;
+    if (log_context == NULL || log_context->platform == NULL || frame == NULL ||
+        node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) return ESP_ERR_INVALID_ARG;
+    device = platform_device_for_address(log_context->platform, address);
+    if (device == NULL) return ESP_ERR_INVALID_STATE;
+    err = i2c_bus_write_bytes(device, NULL_I2C_MEM_ADDR, frame_length, (void *)frame);
+    if (err == ESP_OK) return ESP_OK;
+    err = platform_normalize_transfer_error(log_context->platform, address, err);
+    if (err == ESP_ERR_NOT_FOUND) service_request_topology_refresh_from_worker();
+    return err;
+}
+
+static esp_err_t platform_log_read_frame(
+    void *context,
+    uint8_t node_index,
+    uint8_t *frame,
+    size_t frame_capacity,
+    size_t *received_length)
+{
+    nrf_log_platform_context_t *log_context = context;
+    const uint8_t address = node_index == 0U
+        ? NRF_UPSTREAM_ADDRESS_MAIN
+        : NRF_UPSTREAM_ADDRESS_REMOTE;
+    i2c_bus_device_handle_t device;
+    esp_err_t err;
+    if (log_context == NULL || log_context->platform == NULL || frame == NULL ||
+        received_length == NULL || node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    device = platform_device_for_address(log_context->platform, address);
+    if (device == NULL) return ESP_ERR_INVALID_STATE;
+    err = i2c_bus_read_bytes(device, NULL_I2C_MEM_ADDR, frame_capacity, frame);
+    if (err != ESP_OK) {
+        err = platform_normalize_transfer_error(log_context->platform, address, err);
+        if (err == ESP_ERR_NOT_FOUND) service_request_topology_refresh_from_worker();
+        return err;
+    }
+    *received_length = frame_capacity;
+    return ESP_OK;
+}
+
+static uint64_t platform_log_now_ms(void *context)
+{
+    (void)context;
+    return platform_now_ms(NULL);
+}
+
+static bool platform_log_yield_requested(void *context)
+{
+    const nrf_log_platform_context_t *log_context = context;
+    if (log_context == NULL) return true;
+    return service_stop_requested() || service_has_immediate_work() ||
+           tick_period_due(
+               xTaskGetTickCount(),
+               log_context->last_reconcile_tick,
+               log_context->reconcile_period_ticks);
+}
+
+static void service_log_fill_target(
+    nrf_log_poll_target_t *target,
+    const nrf_topology_node_snapshot_t *node,
+    bool route_available)
+{
+    memset(target, 0, sizeof(*target));
+    target->present = node->state == NRF_TOPOLOGY_NODE_ASSIGNED;
+    target->route_available = target->present && route_available;
+    target->node_id = node->node_id;
+    target->mux_channel = node->mux_channel;
+    target->current_address = node->current_address;
+    target->hardware_id_length = node->hardware_id_length;
+    if (target->hardware_id_length > NRF_UPSTREAM_PROTOCOL_HW_ID_MAX) {
+        target->hardware_id_length = NRF_UPSTREAM_PROTOCOL_HW_ID_MAX;
+    }
+    memcpy(target->hardware_id, node->hardware_id, target->hardware_id_length);
+    target->assignment_generation = node->assignment_request_id;
+}
+
+static void service_log_build_targets(
+    nrf_topology_worker_state_t *worker,
+    nrf_log_poll_target_t targets[NRF_LOG_COLLECTOR_NODE_COUNT])
+{
+    service_log_fill_target(&targets[0], &worker->snapshot.main, true);
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        service_log_fill_target(
+            &targets[channel + 1U],
+            &worker->snapshot.remotes[channel],
+            worker->snapshot.tca_available && !worker->snapshot.tca_fault);
+    }
+    if (worker->authority.command_active) {
+        const uint8_t initiator = worker->authority.request.step.initiator;
+        const uint8_t reflector = worker->authority.request.step.reflector;
+        for (uint8_t i = 0U; i < NRF_LOG_COLLECTOR_NODE_COUNT; ++i) {
+            /* Skip both nodes while command_active spans CS EXECUTE through its RESULT read. */
+            targets[i].cs_busy = targets[i].present &&
+                (targets[i].node_id == initiator || targets[i].node_id == reflector);
+        }
+    }
+}
+
+static void service_log_sync_targets(nrf_topology_worker_state_t *worker)
+{
+    nrf_log_poll_target_t targets[NRF_LOG_COLLECTOR_NODE_COUNT];
+    if (s_nrf_log_collector == NULL) return;
+    service_log_build_targets(worker, targets);
+    (void)nrf_log_collector_sync_targets(s_nrf_log_collector, targets);
+}
+
+static void service_log_collect_iteration(
+    nrf_topology_worker_state_t *worker,
+    TickType_t last_reconcile_tick,
+    TickType_t reconcile_period_ticks)
+{
+    nrf_log_poll_target_t targets[NRF_LOG_COLLECTOR_NODE_COUNT];
+    nrf_log_collector_iteration_t iteration;
+    nrf_log_platform_context_t context = {
+        .platform = &worker->platform,
+        .last_reconcile_tick = last_reconcile_tick,
+        .reconcile_period_ticks = reconcile_period_ticks,
+    };
+    const nrf_log_collector_io_t io = {
+        .context = &context,
+        .begin_node = platform_log_begin_node,
+        .end_node = platform_log_end_node,
+        .write_frame = platform_log_write_frame,
+        .read_frame = platform_log_read_frame,
+        .now_ms = platform_log_now_ms,
+        .yield_requested = platform_log_yield_requested,
+    };
+    if (s_nrf_log_collector == NULL) return;
+    service_log_build_targets(worker, targets);
+    if (nrf_log_collector_sync_targets(s_nrf_log_collector, targets) != ESP_OK) return;
+    (void)nrf_log_collector_poll_iteration(
+        s_nrf_log_collector,
+        targets,
+        &io,
+        CONFIG_NRF_LOG_POLL_NODE_BUDGET_MS,
+        CONFIG_NRF_LOG_POLL_ITERATION_BUDGET_MS,
+        &iteration);
+    service_record_current_stack_hwm(
+        NRF_TOPOLOGY_STACK_PHASE_LOG_COLLECTOR,
+        "log-collector");
+}
+#endif
 
 static esp_err_t platform_mux_close(void *context)
 {
@@ -1400,6 +1610,9 @@ static void service_worker(void *context)
     };
     const TickType_t reconcile_period_ticks = pdMS_TO_TICKS(NRF_TOPOLOGY_RECONCILE_PERIOD_MS);
     TickType_t last_reconcile_tick = xTaskGetTickCount();
+#if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+    TickType_t last_log_poll_tick = (TickType_t)(last_reconcile_tick - pdMS_TO_TICKS(CONFIG_NRF_LOG_POLL_PERIOD_MS));
+#endif
     bool first_reconcile = true;
     bool controllers_ready = false;
     bool cs_initialized = false;
@@ -1458,6 +1671,9 @@ static void service_worker(void *context)
             if (cs_initialized && nrf_cs_authority_is_active(&worker->authority)) {
                 cs_sync_disconnects(&worker->authority, &worker->snapshot);
             }
+#if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+            if (reconciled) service_log_sync_targets(worker);
+#endif
         }
 
         if (service_stop_requested()) {
@@ -1594,6 +1810,19 @@ static void service_worker(void *context)
                 "cs-pump-publish");
         }
 
+#if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+        if (!service_stop_requested() && !service_has_immediate_work() &&
+            !tick_period_due(xTaskGetTickCount(), last_reconcile_tick, reconcile_period_ticks) &&
+            tick_period_due(
+                xTaskGetTickCount(),
+                last_log_poll_tick,
+                pdMS_TO_TICKS(CONFIG_NRF_LOG_POLL_PERIOD_MS))) {
+            /* Quiet nodes take about 5 x 7 ms per second; a busy node about 35 ms. */
+            service_log_collect_iteration(worker, last_reconcile_tick, reconcile_period_ticks);
+            last_log_poll_tick = xTaskGetTickCount();
+        }
+#endif
+
         TickType_t wait_ticks = 0U;
         if (!service_has_immediate_work()) {
             if (cs_initialized && nrf_cs_authority_is_active(&worker->authority)) {
@@ -1603,6 +1832,13 @@ static void service_worker(void *context)
                     xTaskGetTickCount(),
                     last_reconcile_tick,
                     reconcile_period_ticks);
+#if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+                const TickType_t log_wait_ticks = tick_wait_until_period(
+                    xTaskGetTickCount(),
+                    last_log_poll_tick,
+                    pdMS_TO_TICKS(CONFIG_NRF_LOG_POLL_PERIOD_MS));
+                if (log_wait_ticks < wait_ticks) wait_ticks = log_wait_ticks;
+#endif
             }
         }
         (void)ulTaskNotifyTake(pdTRUE, wait_ticks);
@@ -1665,6 +1901,28 @@ esp_err_t nrf_topology_service_start(void)
     memset(&s_stack_stats, 0, sizeof(s_stack_stats));
     memset(&s_worker_state, 0, sizeof(s_worker_state));
     portEXIT_CRITICAL(&s_state_lock);
+
+#if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+    if (s_nrf_log_collector == NULL) {
+        nrf_log_collector_t *collector = nrf_log_collector_create();
+        if (collector == NULL) {
+            portENTER_CRITICAL(&s_state_lock);
+            s_starting = false;
+            portEXIT_CRITICAL(&s_state_lock);
+            return ESP_ERR_NO_MEM;
+        }
+        portENTER_CRITICAL(&s_state_lock);
+        s_nrf_log_collector = collector;
+        portEXIT_CRITICAL(&s_state_lock);
+    }
+    const esp_err_t log_reset_err = nrf_log_collector_reset(s_nrf_log_collector);
+    if (log_reset_err != ESP_OK) {
+        portENTER_CRITICAL(&s_state_lock);
+        s_starting = false;
+        portEXIT_CRITICAL(&s_state_lock);
+        return log_reset_err;
+    }
+#endif
 
     TaskHandle_t task = NULL;
     const BaseType_t result = xTaskCreatePinnedToCore(
@@ -2329,4 +2587,57 @@ esp_err_t nrf_topology_service_get_stack_stats(nrf_topology_service_stack_stats_
     *stats = s_stack_stats;
     portEXIT_CRITICAL(&s_state_lock);
     return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_get_nrf_log_summary(
+    uint8_t node_index,
+    nrf_log_node_summary_t *summary)
+{
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+    (void)node_index;
+    (void)summary;
+    return ESP_ERR_INVALID_STATE;
+#else
+    nrf_log_collector_t *collector;
+    portENTER_CRITICAL(&s_state_lock);
+    collector = s_nrf_log_collector;
+    portEXIT_CRITICAL(&s_state_lock);
+    return collector == NULL
+        ? ESP_ERR_INVALID_STATE
+        : nrf_log_collector_get_summary(collector, node_index, summary);
+#endif
+}
+
+esp_err_t nrf_topology_service_get_nrf_log_page(
+    uint8_t node_index,
+    bool has_after,
+    uint32_t after_boot_id,
+    uint32_t after_seq,
+    uint16_t limit,
+    nrf_log_node_page_t *page)
+{
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+    (void)node_index;
+    (void)has_after;
+    (void)after_boot_id;
+    (void)after_seq;
+    (void)limit;
+    (void)page;
+    return ESP_ERR_INVALID_STATE;
+#else
+    nrf_log_collector_t *collector;
+    portENTER_CRITICAL(&s_state_lock);
+    collector = s_nrf_log_collector;
+    portEXIT_CRITICAL(&s_state_lock);
+    return collector == NULL
+        ? ESP_ERR_INVALID_STATE
+        : nrf_log_collector_get_page(
+              collector,
+              node_index,
+              has_after,
+              after_boot_id,
+              after_seq,
+              limit,
+              page);
+#endif
 }

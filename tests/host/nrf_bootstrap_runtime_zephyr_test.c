@@ -6,12 +6,20 @@
 #include <string.h>
 
 #include <zephyr/drivers/i2c.h>
+#include <zephyr/drivers/hwinfo.h>
 #include <zephyr/kernel.h>
+#include <zephyr/random/random.h>
 
 #include "nrf_bootstrap_runtime_zephyr.h"
+#include "nrf_cs_control_protocol.h"
+#include "nrf_log_events.h"
+#include "nrf_log_runtime_zephyr.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
 #include "nrf_upstream_protocol.h"
 #include "nrf_upstream_target_zephyr.h"
+#include "nrf_watchdog_zephyr.h"
+
+void nrf_cs_pair_runtime_zephyr_stub_configure(int execute_result, nrf_cs_outcome_t outcome);
 
 static const struct i2c_target_callbacks *s_callbacks;
 static struct k_work *s_submitted_work;
@@ -31,6 +39,40 @@ static nrf_upstream_sensor_snapshot_t s_sensor_snapshot;
 static nrf_upstream_sensor_refresh_t s_last_sensor_refresh;
 static nrf_upstream_height_reference_t s_last_height_reference;
 static nrf_upstream_imu_calibrate_t s_last_imu_calibration;
+static uint32_t s_cycle;
+static int64_t s_uptime = 100U;
+
+int64_t k_uptime_get(void)
+{
+    return s_uptime++;
+}
+
+uint32_t k_cycle_get_32(void)
+{
+    return ++s_cycle;
+}
+
+int sys_csrand_get(void *destination, size_t length)
+{
+    const uint32_t boot_id = 0xC0FFEE42U;
+    assert(length == sizeof(boot_id));
+    memcpy(destination, &boot_id, sizeof(boot_id));
+    return 0;
+}
+
+ssize_t hwinfo_get_device_id(uint8_t *buffer, size_t length)
+{
+    static const uint8_t id[] = {0x10U, 0x20U, 0x30U, 0x40U};
+    size_t copied = length < sizeof(id) ? length : sizeof(id);
+
+    memcpy(buffer, id, copied);
+    return (ssize_t)copied;
+}
+
+uint32_t nrf_watchdog_zephyr_boot_reset_cause(void)
+{
+    return 0x20U;
+}
 
 int k_work_submit(struct k_work *work)
 {
@@ -177,23 +219,100 @@ static nrf_upstream_assign_t make_assign(uint32_t request_id)
     return assign;
 }
 
-static nrf_upstream_status_t read_status(uint32_t *read_length)
+static uint8_t *read_frame(uint32_t *read_length)
 {
     uint8_t *frame = NULL;
     uint32_t length = 0U;
-    nrf_upstream_status_t status;
     assert(s_callbacks != NULL);
     assert(s_callbacks->buf_read_requested(NULL, &frame, &length) == 0);
+    if (read_length != NULL) {
+        *read_length = length;
+    }
+    return frame;
+}
+
+static nrf_upstream_status_t read_status(uint32_t *read_length)
+{
+    uint32_t length;
+    uint8_t *frame = read_frame(&length);
+    nrf_upstream_status_t status;
+
+    if (read_length != NULL) {
+        *read_length = length;
+    }
     assert(length == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH ||
            length == NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH);
     assert(nrf_upstream_protocol_decode_status(
                frame,
                NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH,
                &status) == NRF_UPSTREAM_RESULT_OK);
-    if (read_length != NULL) {
-        *read_length = length;
-    }
     return status;
+}
+
+static void send_log_status(uint32_t request_id)
+{
+    nrf_log_status_request_t request = {.request_id = request_id};
+    uint8_t frame[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+    assert(nrf_log_protocol_encode_status_request(&request, frame) == NRF_LOG_ERROR_OK);
+    s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+}
+
+static void send_log_read(const nrf_log_read_request_t *request)
+{
+    uint8_t frame[NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH];
+    assert(nrf_log_protocol_encode_read_request(request, frame) == NRF_LOG_ERROR_OK);
+    s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+}
+
+static nrf_log_status_t read_log_status(void)
+{
+    nrf_log_status_t status;
+    uint8_t frame[NRF_LOG_PROTOCOL_STATUS_LENGTH];
+    size_t length = 0U;
+    assert(nrf_log_runtime_zephyr_build_status(
+               0U,
+               frame,
+               sizeof(frame),
+               &length) == NRF_LOG_ERROR_OK);
+    assert(nrf_log_protocol_decode_status(frame, length, &status) == NRF_LOG_ERROR_OK);
+    return status;
+}
+
+static nrf_log_record_t find_log_event(uint16_t event_id)
+{
+    const nrf_log_status_t status = read_log_status();
+    uint32_t cursor = status.oldest_seq;
+    uint32_t request_id = 0xE0000000U;
+    nrf_log_record_t found = {0};
+    bool found_valid = false;
+
+    while (cursor < status.next_seq) {
+        nrf_log_read_request_t request = {
+            .request_id = request_id++,
+            .expected_boot_id = status.boot_id,
+            .cursor_seq = cursor,
+            .max_records = NRF_LOG_PROTOCOL_MAX_RECORDS,
+        };
+        nrf_log_block_t block;
+        uint8_t frame[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
+        size_t length = 0U;
+        assert(nrf_log_runtime_zephyr_build_block(
+                   &request,
+                   frame,
+                   sizeof(frame),
+                   &length) == NRF_LOG_ERROR_OK);
+        assert(nrf_log_protocol_decode_block(frame, length, NULL, &block) == NRF_LOG_ERROR_OK);
+        for (uint8_t index = 0U; index < block.record_count; ++index) {
+            if (block.records[index].event_id == event_id) {
+                found = block.records[index];
+                found_valid = true;
+            }
+        }
+        assert(block.next_cursor > cursor);
+        cursor = block.next_cursor;
+    }
+    assert(found_valid && "event was not recorded");
+    return found;
 }
 
 static void send_assign(const nrf_upstream_assign_t *assign)
@@ -249,6 +368,55 @@ static void run_submitted_work(void)
     work->handler(work);
 }
 
+static void check_cs_failure_event(
+    uint32_t request_id,
+    uint32_t attempt_id,
+    nrf_cs_outcome_t outcome,
+    int execute_result)
+{
+    nrf_cs_control_request_t request = {0};
+    nrf_cs_control_result_t result;
+    uint8_t frame[NRF_CS_CONTROL_EXECUTE_LENGTH];
+    uint32_t length;
+    uint8_t *response;
+
+    request.request_id = request_id;
+    request.step.cycle_id = 1U;
+    request.step.membership_generation = 1U;
+    request.step.attempt_id = attempt_id;
+    request.step.pair_index = 0U;
+    request.step.attempt_number = 1U;
+    request.step.initiator = 2U;
+    request.step.reflector = 3U;
+    request.step.timeout_ms = 500U;
+    nrf_cs_pair_runtime_zephyr_stub_configure(execute_result, outcome);
+    assert(nrf_cs_control_encode_execute(&request, frame) == 0);
+    s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+    run_submitted_work();
+
+    assert(nrf_cs_control_encode_status_request(&request, frame) == 0);
+    s_callbacks->buf_write_received(NULL, frame, NRF_CS_CONTROL_STATUS_REQUEST_LENGTH);
+    response = read_frame(&length);
+    assert(length == NRF_CS_CONTROL_RESULT_LENGTH);
+    assert(nrf_cs_control_decode_result(response, length, &result) == 0);
+    assert(result.request_id == request_id);
+    assert(result.state == NRF_CS_CONTROL_STATE_FAILED);
+    assert(result.measurement.outcome == (execute_result == 0
+        ? outcome
+        : NRF_CS_OUTCOME_TRANSPORT_ERROR));
+
+    if (execute_result != 0) {
+        assert(find_log_event(NRF_LOG_EVENT_CS_EXECUTE_FAILED).arg0 == attempt_id);
+        assert(find_log_event(NRF_LOG_EVENT_CS_EXECUTE_FAILED).arg1 == (uint32_t)execute_result);
+    } else if (outcome == NRF_CS_OUTCOME_TIMEOUT) {
+        const nrf_log_record_t event = find_log_event(NRF_LOG_EVENT_CS_TIMEOUT);
+        assert(event.arg0 == attempt_id && event.arg1 == request.step.timeout_ms);
+    } else {
+        const nrf_log_record_t event = find_log_event(NRF_LOG_EVENT_CS_EXECUTE_FAILED);
+        assert(event.arg0 == attempt_id && event.arg1 == (uint32_t)outcome);
+    }
+}
+
 int main(void)
 {
     nrf_node_state_t node_state;
@@ -260,6 +428,7 @@ int main(void)
     memset(&s_sensor_snapshot, 0, sizeof(s_sensor_snapshot));
     s_sensor_snapshot.result = NRF_UPSTREAM_SENSOR_RESULT_NOT_READY;
 
+    assert(nrf_log_runtime_zephyr_init() == 0);
     nrf_node_state_init(&node_state);
     assert(nrf_node_state_mark_ready(&node_state) == NRF_NODE_STATE_OK);
     s_readdress_result = 0;
@@ -299,6 +468,12 @@ int main(void)
     assert(status.request_id == 10U && status.result == NRF_UPSTREAM_RESULT_OK);
     assert(status.role == NRF_UPSTREAM_ROLE_REMOTE && status.node_id == 2U && status.mux_channel == 1U);
     assert(status.target_address == NRF_UPSTREAM_ADDRESS_REMOTE);
+    {
+        const nrf_log_record_t assigned = find_log_event(NRF_LOG_EVENT_ROLE_ASSIGNED);
+        const nrf_log_status_t logs = read_log_status();
+        assert(logs.next_seq == 2U);
+        assert(assigned.arg0 == 2U && assigned.arg1 == NRF_UPSTREAM_ROLE_REMOTE);
+    }
 
     {
         unsigned before_submit = s_submit_calls;
@@ -377,6 +552,7 @@ int main(void)
     assert(s_sensor_assignment_calls == 3U);
     status = read_status(NULL);
     assert(status.request_id == 12U && status.result == NRF_UPSTREAM_RESULT_OK);
+    assert(read_log_status().next_seq == 2U);
 
     {
         const unsigned before_sensor_assignment_calls = s_sensor_assignment_calls;
@@ -420,6 +596,165 @@ int main(void)
             nrf_upstream_status_t after = read_status(NULL);
             assert(memcmp(&status, &after, sizeof(status)) == 0);
         }
+    }
+
+    assert(find_log_event(NRF_LOG_EVENT_TWIS_BUSY).arg0 == NRF_UPSTREAM_MESSAGE_ASSIGN);
+    {
+        uint8_t frame[NRF_UPSTREAM_PROTOCOL_ASSIGN_LENGTH];
+        uint16_t crc;
+        assign = make_assign(70U);
+        assert(nrf_upstream_protocol_encode_assign(&assign, frame) == NRF_UPSTREAM_RESULT_OK);
+        frame[3] = 0x55U;
+        crc = nrf_upstream_protocol_crc16_ccitt_false(frame, sizeof(frame) - 2U);
+        frame[sizeof(frame) - 2U] = (uint8_t)crc;
+        frame[sizeof(frame) - 1U] = (uint8_t)(crc >> 8U);
+        s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+        status = read_status(NULL);
+        assert(status.request_id == 70U && status.result == NRF_UPSTREAM_RESULT_UNSUPPORTED_TYPE);
+        assert(status.role == NRF_UPSTREAM_ROLE_REMOTE && status.node_id == 2U);
+        assert(find_log_event(NRF_LOG_EVENT_TWIS_UNKNOWN_TYPE).arg0 == 0x55U);
+    }
+
+    {
+        const nrf_log_status_t before = read_log_status();
+        nrf_log_read_request_t request = {
+            .request_id = 0x1234U,
+            .expected_boot_id = before.boot_id,
+            .cursor_seq = before.next_seq,
+            .max_records = NRF_LOG_PROTOCOL_MAX_RECORDS,
+        };
+        uint8_t first_response[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
+        uint8_t repeated_response[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
+        uint8_t changed_response[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
+        size_t first_length;
+        uint32_t repeated_length;
+        uint32_t changed_length;
+        nrf_log_block_t block;
+        uint8_t *response_frame;
+
+        send_log_read(&request);
+        response_frame = read_frame(&repeated_length);
+        memcpy(first_response, response_frame, repeated_length);
+        first_length = repeated_length;
+        assert(nrf_log_protocol_decode_block(
+                   first_response,
+                   first_length,
+                   NULL,
+                   &block) == NRF_LOG_ERROR_OK);
+        assert(block.record_count == 0U);
+
+        nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_LOG_TEST_EVENT, 3U, 4U);
+        send_log_read(&request);
+        response_frame = read_frame(&repeated_length);
+        memcpy(repeated_response, response_frame, repeated_length);
+        assert(repeated_length == first_length);
+        assert(memcmp(first_response, repeated_response, first_length) == 0);
+
+        ++request.request_id;
+        send_log_read(&request);
+        response_frame = read_frame(&changed_length);
+        memcpy(changed_response, response_frame, changed_length);
+        assert(changed_length != 0U && changed_length != repeated_length);
+        assert(nrf_log_protocol_decode_block(
+                   changed_response,
+                   changed_length,
+                   NULL,
+                   &block) == NRF_LOG_ERROR_OK);
+        assert(block.request_id == request.request_id);
+        assert(block.record_count == 1U);
+        assert(block.records[0].event_id == NRF_LOG_EVENT_LOG_TEST_EVENT);
+    }
+
+    {
+        nrf_cs_control_request_t request = {0};
+        uint8_t frame[NRF_CS_CONTROL_EXECUTE_LENGTH];
+        nrf_cs_control_result_t cs_result;
+        nrf_log_status_request_t log_status_request = {.request_id = 0x5678U};
+        uint8_t log_request_frame[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+        uint8_t first_read[NRF_LOG_PROTOCOL_STATUS_LENGTH];
+        uint8_t second_read[NRF_LOG_PROTOCOL_STATUS_LENGTH];
+        uint32_t first_length;
+        uint32_t second_length;
+        uint8_t *response_frame;
+
+        request.request_id = 0x501U;
+        request.step.cycle_id = 1U;
+        request.step.membership_generation = 1U;
+        request.step.attempt_id = 0x502U;
+        request.step.pair_index = 0U;
+        request.step.attempt_number = 1U;
+        request.step.initiator = 2U;
+        request.step.reflector = 3U;
+        request.step.timeout_ms = 500U;
+        assert(nrf_cs_control_encode_execute(&request, frame) == 0);
+        s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+        run_submitted_work();
+
+        assert(nrf_cs_control_encode_status_request(&request, frame) == 0);
+        s_callbacks->buf_write_received(NULL, frame, NRF_CS_CONTROL_STATUS_REQUEST_LENGTH);
+        assert(nrf_log_protocol_encode_status_request(
+                   &log_status_request,
+                   log_request_frame) == NRF_LOG_ERROR_OK);
+        s_callbacks->buf_write_received(NULL, log_request_frame, sizeof(log_request_frame));
+        response_frame = read_frame(&first_length);
+        memcpy(first_read, response_frame, first_length);
+        response_frame = read_frame(&second_length);
+        memcpy(second_read, response_frame, second_length);
+        assert(first_length == NRF_LOG_PROTOCOL_STATUS_LENGTH);
+        assert(second_length == first_length);
+        assert(memcmp(first_read, second_read, first_length) == 0);
+        assert(nrf_log_protocol_decode_status(
+                   first_read,
+                   first_length,
+                   &(nrf_log_status_t){0}) == NRF_LOG_ERROR_OK);
+
+        send_sensor_refresh(0x5679U);
+        {
+            uint8_t *cs_frame = read_frame(&first_length);
+            assert(first_length == NRF_CS_CONTROL_RESULT_LENGTH);
+            assert(nrf_cs_control_decode_result(cs_frame, first_length, &cs_result) == 0);
+            assert(cs_result.request_id == request.request_id);
+            assert(cs_result.state == NRF_CS_CONTROL_STATE_COMPLETE);
+        }
+        status = read_status(&read_length);
+        assert(read_length == NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH);
+        assert(status.role == NRF_UPSTREAM_ROLE_REMOTE);
+    }
+
+    check_cs_failure_event(
+        0x601U,
+        0x602U,
+        NRF_CS_OUTCOME_TIMEOUT,
+        0);
+    check_cs_failure_event(
+        0x603U,
+        0x604U,
+        NRF_CS_OUTCOME_TRANSPORT_ERROR,
+        0);
+    check_cs_failure_event(
+        0x605U,
+        0x606U,
+        NRF_CS_OUTCOME_SUCCESS,
+        -ENOTSUP);
+
+    {
+        nrf_upstream_status_t before = read_status(NULL);
+        nrf_log_status_request_t request = {.request_id = 0xDEADU};
+        uint8_t frame[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+        nrf_upstream_status_t error_status;
+        assert(nrf_log_protocol_encode_status_request(&request, frame) == NRF_LOG_ERROR_OK);
+        frame[sizeof(frame) - 1U] ^= 1U;
+        s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+        error_status = read_status(&read_length);
+        assert(read_length == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH);
+        assert(error_status.request_id == request.request_id);
+        assert(error_status.result == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+        assert(find_log_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME).arg0 == NRF_LOG_MESSAGE_STATUS_REQUEST);
+
+        send_sensor_refresh(0xBEEFU);
+        status = read_status(NULL);
+        assert(memcmp(&before, &status, sizeof(status)) == 0);
+        assert(nrf_log_runtime_zephyr_max_block_build_cycles() != 0U);
     }
 
     assert(s_reboot_calls == 1U);

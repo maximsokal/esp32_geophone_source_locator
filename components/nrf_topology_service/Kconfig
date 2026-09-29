@@ -1,0 +1,23 @@
+menu "nRF log collector"
+
+config NRF_LOG_POLL_NODE_BUDGET_MS
+    int "Maximum log poll time per node (ms)"
+    range 1 1000
+    default 50
+
+config NRF_LOG_POLL_ITERATION_BUDGET_MS
+    int "Maximum log poll time per worker iteration (ms)"
+    range 1 2000
+    default 100
+
+config NRF_LOG_POLL_PERIOD_MS
+    int "Interval between log polling rounds (ms)"
+    range 100 60000
+    default 1000
+
+config NRF_LOG_POLL_BACKOFF_MAX_ROUNDS
+    int "Maximum backoff after a log transport or protocol fault (rounds)"
+    range 1 255
+    default 32
+
+endmenu

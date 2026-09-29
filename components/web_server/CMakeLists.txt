@@ -316,6 +316,7 @@ idf_component_register(
         "web_webui_flash.c"
         "web_page.c"
         "web_api_status.c"
+        "web_nrf_logs_api.c"
         "web_api_control.c"
         "web_scan_store.c"
         "web_client_log.c"

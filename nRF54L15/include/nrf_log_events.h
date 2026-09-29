@@ -9,4 +9,24 @@ typedef enum {
 #undef X
 } nrf_log_event_id_t;
 
+/*
+ * Event argument table (kept beside the .def list; arguments are uint32_t):
+ * Event                     arg0                                   arg1
+ * BOOT                      reset-cause bits (0 if unknown)         boot-id fallback flag (0/1)
+ * LOG_GENERATION_ROLLOVER   previous boot id                        new boot id
+ * TWIS_INVALID_FRAME        raw message type (0 if absent)          type-specific decoder error code
+ * TWIS_UNKNOWN_TYPE         raw message type                        frame length in bytes
+ * TWIS_BUSY                 raw message type                        capacity of the full work queue
+ * ROLE_ASSIGNED             assigned node id                        assigned role enum
+ * ROLE_LOST                 previous node id                        previous role enum
+ * IMU_FAULT_SET/CLEARED     IMU fault-mask bit                      snapshot sequence
+ * ENV_FAULT_SET/CLEARED     ENV fault-mask bit                      snapshot sequence
+ * HEIGHT_REF_REJECTED       request id                               rejected reference-state enum
+ * IMU_CAL_REJECTED          request id                               rejected calibration-state enum
+ * CS_EXECUTE_FAILED         attempt id                               transport/outcome error code
+ * CS_TIMEOUT                attempt id                               timeout in milliseconds
+ * WATCHDOG_PARTICIPANT_STALE participant enum                        allowed silence in milliseconds
+ * LOG_TEST_EVENT            monotonically increasing test index      uptime in milliseconds
+ */
+
 #endif

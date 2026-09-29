@@ -6,6 +6,7 @@
 
 #include "esp_err.h"
 #include "nrf_cs_scheduler.h"
+#include "nrf_log_collector.h"
 #include "nrf_sensor_cache.h"
 #include "nrf_topology_leveling_policy.h"
 #include "nrf_topology.h"
@@ -92,6 +93,7 @@ typedef enum {
     NRF_TOPOLOGY_STACK_PHASE_SENSOR_REFRESH,
     NRF_TOPOLOGY_STACK_PHASE_CS_CYCLE_START,
     NRF_TOPOLOGY_STACK_PHASE_CS_PUMP_PUBLISH,
+    NRF_TOPOLOGY_STACK_PHASE_LOG_COLLECTOR,
     NRF_TOPOLOGY_STACK_PHASE_ERROR_RECOVERY,
     NRF_TOPOLOGY_STACK_PHASE_COUNT
 } nrf_topology_stack_stats_phase_t;
@@ -143,6 +145,16 @@ esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
     nrf_topology_ranging_result_t *result);
 esp_err_t nrf_topology_service_invalidate_ranging(void);
 esp_err_t nrf_topology_service_get_stack_stats(nrf_topology_service_stack_stats_t *stats);
+esp_err_t nrf_topology_service_get_nrf_log_summary(
+    uint8_t node_index,
+    nrf_log_node_summary_t *summary);
+esp_err_t nrf_topology_service_get_nrf_log_page(
+    uint8_t node_index,
+    bool has_after,
+    uint32_t after_boot_id,
+    uint32_t after_seq,
+    uint16_t limit,
+    nrf_log_node_page_t *page);
 
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
 void nrf_topology_service_test_set_height_reference_generation(uint16_t generation);

@@ -1,0 +1,128 @@
+[
+  {
+    "id": "t2_read_when_empty",
+    "description": "Remove the available-record gate before issuing LOG_READ.",
+    "file": "components/nrf_topology_service/nrf_log_collector.c",
+    "find": "status.available != 0U &&",
+    "replace": "1 &&",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "nrf_log_collector_t2"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_collector_test.c::test_framing_budget_and_order (empty-ring no-read case; likely survivor)"
+  },
+  {
+    "id": "t2_read_limit_per_node",
+    "description": "Permit a third block read for one node in a polling cycle.",
+    "file": "components/nrf_topology_service/nrf_log_collector.c",
+    "find": "err == ESP_OK && block_index < 2U && !*yielded;",
+    "replace": "err == ESP_OK && block_index < 3U && !*yielded;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "nrf_log_collector_t2"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_collector_test.c::test_framing_budget_and_order"
+  },
+  {
+    "id": "t2_budget_requires_both",
+    "description": "Expire polling budgets only after both per-node and total budgets pass.",
+    "file": "components/nrf_topology_service/nrf_log_collector.c",
+    "find": "return elapsed_ms(io, node_started_ms) >= per_node_budget_ms ||\n           elapsed_ms(io, iteration_started_ms) >= total_budget_ms;",
+    "replace": "return elapsed_ms(io, node_started_ms) >= per_node_budget_ms &&\n           elapsed_ms(io, iteration_started_ms) >= total_budget_ms;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "nrf_log_collector_t2"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_collector_test.c::test_framing_budget_and_order"
+  },
+  {
+    "id": "t2_disable_backoff",
+    "description": "Poll a node even while its retry backoff remains active.",
+    "file": "components/nrf_topology_service/nrf_log_collector.c",
+    "find": "if (backoff_remaining != 0U) continue;",
+    "replace": "if (0) continue;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "nrf_log_collector_t2"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_collector_test.c::test_backoff_storms_and_random_run"
+  },
+  {
+    "id": "t2_ignore_cs_busy",
+    "description": "Poll nodes inside a Channel Sounding arbitration window.",
+    "file": "components/nrf_topology_service/nrf_log_collector.c",
+    "find": "if (targets[node_index].cs_busy) {",
+    "replace": "if (0) {",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "nrf_log_collector_t2"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_collector_test.c::test_backoff_storms_and_random_run (seeded cs_busy cases; likely survivor)"
+  },
+  {
+    "id": "t2_default_page_limit",
+    "description": "Change the default API page limit from 50 records.",
+    "file": "components/web_server/web_nrf_logs_api.c",
+    "find": "#define WEB_NRF_LOGS_DEFAULT_LIMIT 50U",
+    "replace": "#define WEB_NRF_LOGS_DEFAULT_LIMIT 51U",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "web_nrf_logs_api_t2"
+      }
+    ],
+    "expected_killer": "tests/host/web_nrf_logs_api_test.c::test_query_validation"
+  },
+  {
+    "id": "t2_after_token_inclusive",
+    "description": "Include the after-token record again on the next collector page.",
+    "file": "components/nrf_topology_service/nrf_log_collector.c",
+    "find": "start = (uint16_t)(i + 1U);",
+    "replace": "start = i;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "nrf_log_collector_t2"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_collector_test.c::test_capability_boot_and_paging"
+  },
+  {
+    "id": "t2_stale_token_reset",
+    "description": "Do not mark a stale after-token page as reset.",
+    "file": "components/nrf_topology_service/nrf_log_collector.c",
+    "find": "page->reset = true;",
+    "replace": "page->reset = false;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "nrf_log_collector_t2"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_log_collector_test.c::test_capability_boot_and_paging"
+  },
+  {
+    "id": "t2_bad_node_range",
+    "description": "Accept remote8 even though the supported node range ends at remote7.",
+    "file": "components/web_server/web_nrf_logs_api.c",
+    "find": "value[6] <= '7'",
+    "replace": "value[6] <= '8'",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-308-esp.json",
+        "only": "web_nrf_logs_api_t2"
+      }
+    ],
+    "expected_killer": "tests/host/web_nrf_logs_api_test.c::test_query_validation"
+  }
+]

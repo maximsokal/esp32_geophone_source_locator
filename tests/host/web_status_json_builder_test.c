@@ -10,6 +10,7 @@
 #include "device_status.h"
 #include "runtime_observability.h"
 #include "seismic_acquisition.h"
+#include "nrf_topology_service.h"
 #include "web_server_internal.h"
 
 static device_status_snapshot_t g_status;
@@ -38,6 +39,9 @@ static uint32_t g_https_max_clients;
 static uint32_t g_https_handshake_failures;
 static uint32_t g_https_fatal_alerts;
 static int32_t g_https_last_error_esp_err;
+static nrf_topology_snapshot_t g_topology;
+static nrf_log_node_summary_t g_nrf_logs[NRF_LOG_COLLECTOR_NODE_COUNT];
+static int32_t g_topology_result;
 
 static void reset_fakes(void)
 {
@@ -67,6 +71,46 @@ static void reset_fakes(void)
     g_https_handshake_failures = 0U;
     g_https_fatal_alerts = 0U;
     g_https_last_error_esp_err = 0;
+    memset(&g_topology, 0, sizeof(g_topology));
+    memset(g_nrf_logs, 0, sizeof(g_nrf_logs));
+    g_topology_result = ESP_OK;
+    g_topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    g_topology.remotes[0].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    g_nrf_logs[0] = (nrf_log_node_summary_t) {
+        .present = true,
+        .logs_unsupported = true,
+        .boot_id_valid = true,
+        .boot_id = 42U,
+        .stored = 2U,
+        .warn_count = 1U,
+        .error_count = 1U,
+        .fatal_count = 0U,
+        .overwritten_total = 5U,
+        .wire_gap_total = 3U,
+        .local_drop_total = 4U,
+    };
+    g_nrf_logs[1] = (nrf_log_node_summary_t) {
+        .present = true,
+        .boot_id_valid = false,
+        .stored = 0U,
+    };
+}
+
+int32_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
+    if (g_topology_result != ESP_OK) return g_topology_result;
+    *snapshot = g_topology;
+    return ESP_OK;
+}
+
+int32_t nrf_topology_service_get_nrf_log_summary(
+    uint8_t node_index,
+    nrf_log_node_summary_t *summary)
+{
+    if (node_index >= NRF_LOG_COLLECTOR_NODE_COUNT || summary == NULL) return ESP_ERR_INVALID_ARG;
+    *summary = g_nrf_logs[node_index];
+    return ESP_OK;
 }
 
 esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot)
@@ -489,6 +533,30 @@ static void test_full_builder_and_pods(void)
     g_mdns_retry_count = 2U;
     g_mdns_next_retry_delay_ms = 5000U;
     cJSON *root = build_json(false, NULL);
+
+    cJSON *nrf_logs = object_item(root, "nrf_logs");
+    assert(cJSON_GetArraySize(nrf_logs) == NRF_LOG_COLLECTOR_NODE_COUNT);
+    cJSON *main_logs = cJSON_GetArrayItem(nrf_logs, 0);
+    assert(main_logs != NULL && cJSON_GetArraySize(main_logs) == 12);
+    assert(strcmp(string_item(main_logs, "node"), "main") == 0);
+    assert(cJSON_IsNull(object_item(main_logs, "channel")));
+    assert(bool_item(main_logs, "present"));
+    assert(bool_item(main_logs, "logs_unsupported"));
+    assert_number_near(number_item(main_logs, "boot_id"), 42.0);
+    assert_number_near(number_item(main_logs, "stored"), 2.0);
+    assert_number_near(number_item(main_logs, "warn_count"), 1.0);
+    assert_number_near(number_item(main_logs, "error_count"), 1.0);
+    assert_number_near(number_item(main_logs, "fatal_count"), 0.0);
+    assert_number_near(number_item(main_logs, "wire_gap_total"), 3.0);
+    assert_number_near(number_item(main_logs, "local_drop_total"), 4.0);
+    assert_number_near(number_item(main_logs, "overwritten_total"), 5.0);
+    cJSON *remote0_logs = cJSON_GetArrayItem(nrf_logs, 1);
+    assert(remote0_logs != NULL && cJSON_GetArraySize(remote0_logs) == 12);
+    assert(strcmp(string_item(remote0_logs, "node"), "remote0") == 0);
+    assert_number_near(number_item(remote0_logs, "channel"), 0.0);
+    assert(bool_item(remote0_logs, "present"));
+    assert(cJSON_IsNull(object_item(remote0_logs, "boot_id")));
+    assert_number_near(number_item(remote0_logs, "stored"), 0.0);
 
     assert(!bool_item(root, "storage_busy"));
     cJSON *system = object_item(root, "system");
