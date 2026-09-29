@@ -5,6 +5,7 @@ import type { DeviceStatus, NrfLogCounters, NrfLogNodeId, NrfLogNodeSummary, Nrf
 import { useLocale, useT, type I18nKey } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
 import { NRF_LOG_EVENTS } from './nrfLogEvents.gen';
+import { formatEventArgs, formatEventArgsText, NRF_LOG_ARG_I18N_KEYS } from './nrfLogArgs';
 
 const severityKeys = [
   'nrf_log.severity.debug',
@@ -35,21 +36,12 @@ export const NRF_LOG_PANEL_I18N_KEYS = [
   'nrf_log.panel.export_csv', 'nrf_log.panel.counter_not_reported', 'nrf_log.panel.loading',
   'nrf_log.panel.node_select_aria', 'nrf_log.panel.severity_filter_aria', 'nrf_log.panel.table_aria',
   'nrf_log.panel.unknown_event', 'nrf_log.notices.reset', 'nrf_log.notices.node_rebooted',
+  ...NRF_LOG_ARG_I18N_KEYS,
   ...severityKeys,
   ...Object.values(subsystemKeys),
   'nrf_log.counters.overwritten_on_node', 'nrf_log.counters.lost_inside_node_logger',
   'nrf_log.counters.wire_gaps', 'nrf_log.counters.dropped_on_esp',
 ] as const satisfies readonly I18nKey[];
-
-const argumentFormatters = [
-  { key: 'nrf_log.panel.arg0', read: (record: NrfLogRecord) => record.arg0 },
-  { key: 'nrf_log.panel.arg1', read: (record: NrfLogRecord) => record.arg1 },
-] as const;
-
-function formatArguments(record: NrfLogRecord, t: (key: I18nKey) => string): string {
-  // The frozen event table has no event-specific argument schema; keep the raw slots visible.
-  return argumentFormatters.map(({ key, read }) => `${t(key)}: ${read(record)}`).join(', ');
-}
 
 function nodeChannel(node: NrfLogNodeId): number | null {
   if (node === 'main') return null;
@@ -79,12 +71,15 @@ export function nrfLogsJson(records: readonly NrfLogRecord[]): string {
   return JSON.stringify(records, null, 2);
 }
 
-export function nrfLogsCsv(records: readonly NrfLogRecord[]): string {
+export function nrfLogsCsv(records: readonly NrfLogRecord[], t: (key: I18nKey) => string): string {
   const fields = ['token', 'boot_id', 'seq', 'uptime_ms', 'esp_rx_uptime_ms', 'event_id', 'severity', 'subsystem', 'arg0', 'arg1'] as const;
   const quote = (value: string | number): string => `"${String(value).replaceAll('"', '""')}"`;
   return [
-    fields.map(quote).join(','),
-    ...records.map((record) => fields.map((field) => quote(record[field])).join(',')),
+    [...fields, 'arguments_decoded'].map(quote).join(','),
+    ...records.map((record) => [
+      ...fields.map((field) => record[field]),
+      formatEventArgsText(formatEventArgs(record.event_id, record.arg0, record.arg1), t),
+    ].map(quote).join(',')),
   ].join('\r\n');
 }
 
@@ -224,7 +219,7 @@ export default function NrfLogPanel({ status }: { status: DeviceStatus | null })
     if (activeNode === null) return;
     const csv = format === 'csv';
     download(
-      csv ? nrfLogsCsv(records) : nrfLogsJson(records),
+      csv ? nrfLogsCsv(records, t) : nrfLogsJson(records),
       csv ? 'text/csv;charset=utf-8' : 'application/json',
       `nrf-logs-${activeNode}.${format}`,
     );
@@ -280,13 +275,14 @@ export default function NrfLogPanel({ status }: { status: DeviceStatus | null })
                 const rows = [];
                 if (separators.has(index)) rows.push(<tr className="nrf-log-reboot" key={`reboot-${index}`}><td colSpan={6}>{t('nrf_log.notices.node_rebooted')}</td></tr>);
                 if (record !== undefined && record.severity >= minimumSeverity) {
+                  const args = formatEventArgs(record.event_id, record.arg0, record.arg1);
                   rows.push(<tr key={record.token}>
                     <td>{formatNumber(locale, record.esp_rx_uptime_ms)} ms</td>
                     <td>{formatNumber(locale, record.uptime_ms)} ms</td>
                     <td><span className={`nrf-log-severity severity-${record.severity}`}>{t(severityKeys[record.severity] ?? severityKeys[0])}</span></td>
                     <td>{subsystemText(record.subsystem, t)}</td>
                     <td>{eventText(record, t)}</td>
-                    <td>{formatArguments(record, t)}</td>
+                    <td title={t('nrf_log.arg.raw_values', { arg0: args[0].raw, arg1: args[1].raw })}>{formatEventArgsText(args, t)}</td>
                   </tr>);
                 }
                 return rows;

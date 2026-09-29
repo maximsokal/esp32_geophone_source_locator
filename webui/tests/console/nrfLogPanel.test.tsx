@@ -122,7 +122,15 @@ describe('nRF log panel', () => {
     const view = await mount();
     expect(text(view.root)).toContain('Unknown event #65000');
     expect(text(view.root)).toContain('#255');
-    expect(text(view.root)).toContain('arg0: 1234, arg1: 5678');
+    expect(text(view.root)).toContain('arg0: Unknown value (1234), arg1: Unknown value (5678)');
+  });
+
+  it('renders decoded event arguments and exposes unsigned raw args in the tooltip', async () => {
+    api.fetchNrfLogs.mockResolvedValue(okPage([sample({ event_id: 3, arg0: 0x80, arg1: 6 })]));
+    const view = await mount();
+    expect(text(view.root)).toContain('Message type: 0x00000080, Decoder error: Bad CRC (6)');
+    const argsCell = view.root.findAllByType('td').find((cell) => typeof cell.props.title === 'string');
+    expect(argsCell?.props.title).toBe('Raw arg0: 128; arg1: 6');
   });
 
   it('renders the four loss counters independently', async () => {
@@ -181,11 +189,12 @@ describe('nRF log panel', () => {
     act(() => buttons.find((button) => text(button) === 'Export CSV')?.props.onClick());
     expect(anchors[1].download).toBe('nrf-logs-remote2.csv');
     const csv = await blobs[1].text();
-    expect(csv.split('\r\n')[0]).toBe('"token","boot_id","seq","uptime_ms","esp_rx_uptime_ms","event_id","severity","subsystem","arg0","arg1"');
+    expect(csv.split('\r\n')[0]).toBe('"token","boot_id","seq","uptime_ms","esp_rx_uptime_ms","event_id","severity","subsystem","arg0","arg1","arguments_decoded"');
+    expect(csv).toContain('"Reset cause bits (0 = unknown): 0x00000000, Boot ID fallback: Not used (0)"');
     expect(csv).toContain('"token,""one"""');
     expect(anchors.every((anchor) => anchor.click.mock.calls.length === 1 && anchor.remove.mock.calls.length === 1)).toBe(true);
     expect(nrfLogsJson([record])).toBe(JSON.stringify([record], null, 2));
-    expect(nrfLogsCsv([record])).toBe(csv);
+    expect(nrfLogsCsv([record], (key) => en[key])).toBe(csv);
   });
 
   it('pauses polling while the document is hidden and resumes when visible', async () => {
