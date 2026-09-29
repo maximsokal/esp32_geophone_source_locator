@@ -23,7 +23,7 @@ import {
 } from './features/objects/measurementTransition';
 import SensorsFeature from './features/sensors/SensorsFeature';
 import PowerBanner from './components/PowerBanner';
-import { useLocale, useT } from './i18n';
+import { formatErrorText, TranslatedError, useLocale, useT } from './i18n';
 import WorkflowPanel from './features/workflow/WorkflowPanel';
 import { workflowStatusPollDelay } from './features/workflow/workflowPolling';
 
@@ -44,10 +44,6 @@ const LOCAL_OBJECT_MUTATION_ACTIONS = new Set([
 
 const MEASUREMENT_TRANSITION_ACTIONS = new Set(['measurement_start', 'measurement_stop']);
 
-function errorMessage(reason: unknown): string {
-  return reason instanceof Error ? reason.message : String(reason);
-}
-
 function transportFailure(message: string): boolean {
   return message.includes('network error') || message.includes('timeout');
 }
@@ -63,8 +59,8 @@ export default function DeviceConsoleApp() {
   /* MAX-167: which recording/session a 3D scan attaches to -- a scan has no
    * valid object-level home any more, so the scanner screen needs both IDs. */
   const [scannerSessionId, setScannerSessionId] = useState<string | null>(null);
-  const [linkError, setLinkError] = useState<string | null>(null);
-  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<unknown | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<unknown | null>(null);
   const [busy, setBusy] = useState(false);
   const objectRefreshEpoch = useRef(0);
   const sessionRefreshEpoch = useRef(0);
@@ -79,7 +75,7 @@ export default function DeviceConsoleApp() {
       return true;
     }
     catch (reason) {
-      setLinkError(errorMessage(reason));
+      setLinkError(reason);
       return false;
     }
   }, []);
@@ -105,13 +101,15 @@ export default function DeviceConsoleApp() {
       ));
       setLinkError(null);
       setWorkspaceError(nextStore?.available === false
-        ? `Object database unavailable: ${nextStore.error ?? 'storage error'}`
+        ? TranslatedError.fromKey('console.error.object_store_unavailable', {
+          detail: nextStore.error ?? TranslatedError.fromKey('objects.storage_error'),
+        })
         : null);
       return nextStore?.available === false ? null : nextStore;
     }
     catch (reason) {
       if (epoch !== objectRefreshEpoch.current) return null;
-      setWorkspaceError(errorMessage(reason));
+      setWorkspaceError(reason);
       return null;
     }
   }, []);
@@ -134,7 +132,7 @@ export default function DeviceConsoleApp() {
     }
     catch (reason) {
       if (epoch !== sessionRefreshEpoch.current) return false;
-      setWorkspaceError(errorMessage(reason));
+      setWorkspaceError(reason);
       return false;
     }
   }, []);
@@ -271,7 +269,10 @@ export default function DeviceConsoleApp() {
         }
         const transitionError = measurementTransitionErrorMessage(transitionStatus);
         if (transitionError !== null) {
-          throw new Error(`ESP ${action} failed: ${transitionError}`);
+          throw TranslatedError.fromKey('console.error.transition_failed', {
+            action,
+            transitionError: new Error(transitionError),
+          });
         }
       }
       else if (!LOCAL_OBJECT_MUTATION_ACTIONS.has(action)) {
@@ -282,14 +283,14 @@ export default function DeviceConsoleApp() {
       });
     }
     catch (reason) {
-      const message = errorMessage(reason);
+      const rawMessage = reason instanceof Error ? reason.message : String(reason);
 
       /*
        * Never replay a write whose reply was lost: it might already be durable
        * on SD. A delayed authoritative GET is safe and, unlike the old code,
        * does not block the button handler or race the fast status poll.
        */
-      if (transportFailure(message) && LOCAL_OBJECT_MUTATION_ACTIONS.has(action)) {
+      if (transportFailure(rawMessage) && LOCAL_OBJECT_MUTATION_ACTIONS.has(action)) {
         scheduleObjectReconcile(selectionMode);
       }
       else if (action === 'measurement_start') {
@@ -298,8 +299,8 @@ export default function DeviceConsoleApp() {
         scheduleObjectReconcile('active');
       }
 
-      setWorkspaceError(message);
-      if (transportFailure(message)) setLinkError(message);
+      setWorkspaceError(reason);
+      if (transportFailure(rawMessage)) setLinkError(reason);
       return false;
     }
     finally {
@@ -334,7 +335,8 @@ export default function DeviceConsoleApp() {
 
   const apiOnline = status !== null && linkError === null;
   const apiLabel = status === null && linkError === null ? t('console.api_connecting') : apiOnline ? t('console.api_link') : t('console.api_error');
-  const pageError = workspaceError ?? linkError;
+  const pageErrorReason = workspaceError ?? linkError;
+  const pageError = pageErrorReason === null ? null : formatErrorText(locale, pageErrorReason);
 
   return (
     <main className="device-console-shell">
@@ -399,7 +401,7 @@ export default function DeviceConsoleApp() {
           onBindGps={async (id): Promise<PhoneLocationInput> => {
             const position = await capturePhoneLocation();
             const saved = await runControl('set_object_location', { object_id: id, ...position });
-            if (!saved) throw new Error('ESP did not save the phone GPS position. See the API error above.');
+            if (!saved) throw TranslatedError.fromKey('console.error.phone_gps_not_saved');
             return position;
           }}
           onCable={async (id, podId, length) => {

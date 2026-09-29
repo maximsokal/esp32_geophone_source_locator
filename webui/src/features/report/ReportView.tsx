@@ -16,8 +16,9 @@ const PANEL_W = 320;
 const PANEL_H = 220;
 
 function QrImage({ text, label }: { text: string; label: string }) {
+  const t = useT();
   const code = encodeQr(text);
-  if (code === null) return <p className="report-note">{label}: too long for a QR code.</p>;
+  if (code === null) return <p className="report-note">{t('report.qr_too_long', { label })}</p>;
   const size = code.size + 8;
   return (
     <figure className="report-qr">

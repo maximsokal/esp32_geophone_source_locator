@@ -2,9 +2,12 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG = ROOT / "i18n" / "tft.json"
+COMMON_CATALOG = ROOT / "i18n" / "common.json"
 FONT = ROOT / "components" / "ui" / "fonts" / "ui_font_montserrat_14.c"
 FIRMWARE_CATALOG = ROOT / "components" / "ui_i18n" / "include" / "ui_i18n_catalog.gen.h"
 PRINTF = re.compile(
@@ -63,6 +66,28 @@ def font_codepoints(source):
     return result
 
 
+def catalog_codepoints(*catalogs):
+    return {
+        ord(character)
+        for catalog in catalogs
+        for entry in catalog["entries"].values()
+        for text in (entry["en"], entry["uk"])
+        for character in text
+    }
+
+
+def assert_catalog_glyph_coverage(catalogs, glyphs):
+    used = catalog_codepoints(*catalogs)
+    assert used <= glyphs, f"catalog glyphs missing from cmap: {sorted(used - glyphs)}"
+
+
+def tft_catalogs():
+    return [
+        json.loads(CATALOG.read_text(encoding="utf-8")),
+        json.loads(COMMON_CATALOG.read_text(encoding="utf-8")),
+    ]
+
+
 def test_tft_catalog_is_complete_and_lengths_cover_both_locales():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     assert catalog["namespace"] == "tft"
@@ -81,13 +106,7 @@ def test_printf_conversion_sequences_match():
 
 
 def test_font_cmaps_cover_catalog_and_required_ukrainian_glyphs():
-    entries = json.loads(CATALOG.read_text(encoding="utf-8"))["entries"]
-    used = {
-        ord(character)
-        for entry in entries.values()
-        for text in (entry["en"], entry["uk"])
-        for character in text
-    }
+    used = catalog_codepoints(*tft_catalogs())
     glyphs = font_codepoints(FONT.read_text(encoding="utf-8"))
     required = set(range(0x0410, 0x0450))
     required.update(
@@ -100,6 +119,17 @@ def test_font_cmaps_cover_catalog_and_required_ukrainian_glyphs():
     )
     assert used <= glyphs, f"catalog glyphs missing from cmap: {sorted(used - glyphs)}"
     assert required <= glyphs, f"required glyphs missing from cmap: {sorted(required - glyphs)}"
+
+
+def test_common_catalog_glyph_guard_detects_a_missing_tft_glyph(tmp_path, monkeypatch):
+    unsupported = chr(0x10FFFF)
+    common = {"entries": {"probe": {"en": "probe", "uk": unsupported}}}
+    common_path = tmp_path / "common.json"
+    common_path.write_text(json.dumps(common), encoding="utf-8")
+    monkeypatch.setitem(globals(), "COMMON_CATALOG", common_path)
+    glyphs = font_codepoints(FONT.read_text(encoding="utf-8"))
+    with pytest.raises(AssertionError, match=str(ord(unsupported))):
+        assert_catalog_glyph_coverage(tft_catalogs(), glyphs)
 
 
 def test_representative_longest_labels_match_max_len():

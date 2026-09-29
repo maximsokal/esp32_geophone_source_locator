@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { clientDiagnostics } from '../data/clientDiagnostics';
-import { translate, useLocale, useT } from '../i18n';
+import { formatErrorText, translate, useLocale, useT } from '../i18n';
 import { formatDistance, formatNumber, formatPercent } from '../i18n/format';
 import { fetchLocalizationRuns, loadSessionRegistration, saveSessionRegistration } from '../api/deviceApi';
 import type { LocalizationSessionGeometry } from '../api/deviceApi';
@@ -180,7 +180,7 @@ export function XrRuntimePanel({
     const json=encodeRegistrationArtifact(artifact);setTagRegistrationLabel(result);onRegistrationChangeRef.current?.(artifact);
     try{
       const saved=await saveSessionRegistration(bound.objectId,bound.sessionId,json);
-      if(saved?.ok!==true)throw new Error(saved?.error??'Registration artifact was not accepted.');
+      if(saved?.ok!==true){setTagModeError(`Registration result is in memory but could not be saved: ${saved?.error??'Registration artifact was not accepted.'}`);return;}
       setTagModeError(null);
     }catch(reason){setTagModeError(`Registration result is in memory but could not be saved: ${reason instanceof Error?reason.message:String(reason)}`);}
   };
@@ -290,7 +290,7 @@ export function XrRuntimePanel({
       {aiPriorEnabled&&optionalMonocularPrior.status==='unavailable'&&<div className="xr-runtime-warning" role="status">{t('xr.ai_unavailable_warning')}</div>}
       {aiPriorEnabled&&optionalMonocularPrior.status==='error'&&<div className="xr-runtime-warning" role="status">{t('xr.ai_failed_warning',{error:optionalMonocularPrior.error??t('calc.job_unknown_error')})}</div>}
       {runtimeState.phase==='interrupted'&&<div className="xr-runtime-warning" role="status">{t('xr.session_interrupted')}</div>}
-      {runtimeState.depthError!==null&&<div className="xr-runtime-warning" role="status">{runtimeState.depthError}</div>}{runtimeState.error!==null&&<div className="xr-runtime-error" role="alert">{runtimeState.error}</div>}
+      {runtimeState.depthError!==null&&<div className="xr-runtime-warning" role="status">{formatErrorText(locale,runtimeState.depthError)}</div>}{runtimeState.error!==null&&<div className="xr-runtime-error" role="alert">{formatErrorText(locale,runtimeState.error)}</div>}
       <details className="xr-technical-details"><summary>{t('scan.details.technical')}</summary><dl className="xr-runtime-values">
         <div><dt>{t('xr.detail.depth_type')}</dt><dd>{runtimeState.depthType??'--'}</dd></div><div><dt>{t('xr.detail.depth_usage')}</dt><dd>{runtimeState.depthUsage??'--'}</dd></div><div><dt>{t('xr.detail.depth_format')}</dt><dd>{runtimeState.depthDataFormat??'--'}</dd></div><div><dt>{t('xr.detail.depth_size')}</dt><dd>{runtimeState.depthWidth&&runtimeState.depthHeight?`${formatNumber(locale,runtimeState.depthWidth)} × ${formatNumber(locale,runtimeState.depthHeight)}`:'--'}</dd></div>
         <div><dt>{t('xr.detail.raw_rgb')}</dt><dd>{capabilities?.rawXrRgbApi?t('scan.compute.available'):'--'}</dd></div><div><dt>{t('xr.detail.rgb_guidance')}</dt><dd>{runtimeState.rgbGuidanceAvailable?`${formatNumber(locale,runtimeState.rgbGuidanceWidth??0)} × ${formatNumber(locale,runtimeState.rgbGuidanceHeight??0)}`:'--'}</dd></div><div><dt>{t('xr.detail.video_inputs')}</dt><dd>{capabilities?.videoInputsEnumerated?formatNumber(locale,capabilities.videoInputCount??0):capabilities?.videoInputEnumeration?t('xr.value.not_exposed'):'--'}</dd></div><div><dt>{t('xr.detail.hardware_depth_sensor')}</dt><dd>{capabilities?.hardwareDepthSensor?.toUpperCase()??t('xr.value.unknown')} · {t('xr.hardware_depth_not_inferred')}</dd></div><div><dt>{t('xr.detail.visual_evidence_frames')}</dt><dd>{formatNumber(locale,runtimeState.visualEvidenceFrames)}</dd></div><div><dt>{t('xr.detail.ai_depth_prior')}</dt><dd>{aiPriorUi.shortStatus}</dd></div><div><dt>{t('xr.detail.ai_calibration')}</dt><dd>{aiPriorUi.calibrationLabel}</dd></div>

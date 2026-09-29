@@ -3,7 +3,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 
-import { loadUkrainianCatalog, LocaleProvider, persistLocale, readSavedLocale, translate, useLocale, type I18nKey, type I18nLocale } from '../../src/i18n';
+import { formatErrorText, loadUkrainianCatalog, LocaleProvider, persistLocale, readSavedLocale, TranslatedError, translate, useLocale, type I18nKey, type I18nLocale } from '../../src/i18n';
 import { en } from '../../src/i18n/catalog.en.gen';
 import { uk } from '../../src/i18n/catalog.uk.gen';
 import { formatDate, formatDistance, formatNumber, formatPercent } from '../../src/i18n/format';
@@ -19,8 +19,45 @@ afterEach(() => vi.unstubAllGlobals());
 beforeAll(async () => { await loadUkrainianCatalog(); });
 
 describe('i18n catalog translation', () => {
-  it('falls back to English when the Ukrainian catalog entry is empty', () => {
+  it('keeps the product brand explicitly identical in both locales', () => {
     expect(translate('uk', 'app.title')).toBe('GeoLocator 3D');
+    expect(en['app.title']).toBe(uk['app.title']);
+  });
+
+  it.each(['en', 'uk'] as const)('formats unknown error detail with the localized prefix in %s', (locale) => {
+    const detail = 'ESP_ERR_TRANSPORT_RESET';
+    expect(formatErrorText(locale, detail)).toBe(translate(locale, 'web.error_prefix', { detail }));
+  });
+
+  it.each(['en', 'uk'] as const)('maps raw text that matches an English catalog value in %s', (locale) => {
+    expect(formatErrorText(locale, en['scan.storage.paused'])).toBe(translate(locale, 'scan.storage.paused'));
+  });
+
+  it('passes explicitly translated errors through unchanged', () => {
+    const translated = new TranslatedError('Помилка: already translated');
+    expect(formatErrorText('en', translated)).toBe(translated.message);
+    const keyed = TranslatedError.fromKey('console.error.object_store_unavailable', {
+      detail: TranslatedError.fromKey('objects.storage_error'),
+    });
+    for (const locale of ['en', 'uk'] as const) {
+      expect(formatErrorText(locale, keyed)).toBe(translate(locale, 'console.error.object_store_unavailable', {
+        detail: translate(locale, 'objects.storage_error'),
+      }));
+    }
+  });
+
+  it.each(['en', 'uk'] as const)('does not prefix a formatted error again when marked in %s', (locale) => {
+    const formatted = formatErrorText(locale, 'ESP_ERR_TRANSPORT_RESET');
+    expect(formatErrorText(locale, new TranslatedError(formatted))).toBe(formatted);
+  });
+
+  it('renders the migrated saved-scan warning in both locales', () => {
+    expect(translate('en', 'scan.error.continue_unavailable')).toBe(
+      'No durable saved 3D scan is available to continue. Open or finish a scan first.',
+    );
+    expect(translate('uk', 'scan.error.continue_unavailable')).toBe(
+      'Немає збереженого 3D-скану для продовження. Спершу відкрийте або завершіть сканування.',
+    );
   });
 
   it('substitutes provided parameters and leaves missing ones visible', () => {

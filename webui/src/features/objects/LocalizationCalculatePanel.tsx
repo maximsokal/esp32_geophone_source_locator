@@ -18,7 +18,7 @@ import type {
   LocalizationSessionCsPairs,
   LocalizationSessionGeometry,
 } from '../../api/deviceApi';
-import { useLocale, useT, translate, type I18nLocale, type I18nKey } from '../../i18n';
+import { formatErrorText, TranslatedError, useLocale, useT, translate, type I18nLocale, type I18nKey } from '../../i18n';
 import { formatDistance, formatNumber } from '../../i18n/format';
 
 interface Props {
@@ -308,14 +308,14 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   const t = useT();
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const formTouched = useRef(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown | null>(null);
   const [running, setRunning] = useState(false);
   const [job, setJob] = useState<LocalizationJobStatus | null>(null);
   const [runs, setRuns] = useState<LocalizationRun[] | null>(null);
   const [geometry, setGeometry] = useState<LocalizationSessionGeometry | null>(null);
   const [csPairs, setCsPairs] = useState<LocalizationSessionCsPairs | null>(null);
   const [picks, setPicks] = useState<LocalizationPickRecord[] | null>(null);
-  const [geometryError, setGeometryError] = useState<string | null>(null);
+  const [geometryError, setGeometryError] = useState<unknown | null>(null);
   /* MAX-148: drives the unconstrained/scan-constrained toggle; null = still checking. */
   const [hasScan, setHasScan] = useState<boolean | null>(null);
   const prefillFromSettings = useCallback((settings: CalcSettingsProfile | null) => {
@@ -345,7 +345,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
-        setGeometryError(reason instanceof Error ? reason.message : String(reason));
+        setGeometryError(reason);
       });
     fetchScanInfo(objectId, sessionId)
       .then((info) => { if (!cancelled) setHasScan(info.present); })
@@ -424,24 +424,32 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
     })
       .then((result) => {
         /* The device only queued the job (409: one is already running). */
-        if (!result.ok) throw new Error(result.error ?? 'calculate_source failed');
+        if (!result.ok) {
+          throw result.error === undefined
+            ? TranslatedError.fromKey('calc.error.request_failed')
+            : new Error(result.error);
+        }
         return waitForLocalizationJob(fetchLocalizationJob, {
           objectId,
           sessionId,
           budgetMs: (timeBudgetS ?? DEFAULT_TIME_BUDGET_S) * 1000,
-          locale,
           onProgress: setJob,
         });
       })
       .then((finished) => {
-        if (finished.state === 'failed') throw new Error(jobProgressText(finished, locale));
+        if (finished.state === 'failed') {
+          throw TranslatedError.fromKey('calc.job_failed', {
+            elapsed: (locale) => `${formatNumber(locale, finished.elapsed_ms / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} s`,
+            error: finished.error ?? TranslatedError.fromKey('calc.job_unknown_error'),
+          });
+        }
         return fetchLocalizationRuns(objectId, sessionId);
       })
       .then((listing) => {
         setRuns(listing.runs);
         setPicks(listing.picks);
       })
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))
+      .catch((reason: unknown) => setError(reason))
       .finally(() => setRunning(false));
   };
 
@@ -455,7 +463,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       <MaterialSettingsForm objectId={objectId} onSettingsLoaded={prefillFromSettings} />
 
       <h3>{t('calc.geometry')}</h3>
-      {geometryError !== null && <div className="console-alert" role="alert">{geometryError}</div>}
+      {geometryError !== null && <div className="console-alert" role="alert">{formatErrorText(locale, geometryError)}</div>}
       {geometry === null && geometryError === null && <p>{t('calc.loading_geometry')}</p>}
       {geometry !== null && !geometry.available && (
         <p>{t('calc.no_geometry')}</p>
@@ -650,7 +658,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
         {sWave.state === 'invalid' && <div className="console-alert" role="alert">{sWave.issue}</div>}
       </details>
 
-      {error !== null && <div className="console-alert" role="alert">{error}</div>}
+      {error !== null && <div className="console-alert" role="alert">{formatErrorText(locale, error)}</div>}
 
       <div className="console-actions">
         <button disabled={busy || running || !formValid} onClick={runCalculate}>
