@@ -15,7 +15,8 @@
         "tests/host/stubs/nrf_log_collector",
         "nRF54L15/include",
         "components/nrf_topology_service/include"
-      ]
+      ],
+      "defines": ["NRF_LOG_RING_TEST_HOOKS"]
     },
     {
       "name": "web_nrf_logs_api_t2",

@@ -671,6 +671,31 @@ static void test_framing_budget_and_order(void)
     fake_stop();
 
     fake_start(1U);
+    fake_append(&s_fake, 0U, 1U);
+    CHECK(run_round_at_current_time(&s_fake).nodes_succeeded == 1U);
+    const nrf_log_node_page_t collected = node_page(&s_fake, 0U, false, 0U, 0U, 10U);
+    CHECK(collected.count == 1U && collected.records[0].seq == 0U);
+    const uint32_t same_boot_id = s_fake.rings[0].boot_id;
+    CHECK(fake_init_ring(&s_fake, 0U, same_boot_id) == ESP_OK);
+    CHECK(nrf_log_ring_test_set_next_seq(&s_fake.rings[0], 2U) == NRF_LOG_ERROR_OK);
+    nrf_log_status_t empty_status = {0};
+    CHECK(nrf_log_ring_status_snapshot(&s_fake.rings[0], &empty_status) == NRF_LOG_ERROR_OK);
+    CHECK(empty_status.available == 0U);
+    CHECK(empty_status.oldest_seq == 2U && empty_status.next_seq == 2U);
+    const uint32_t block_writes_before_empty_poll = s_fake.block_writes[0];
+    const size_t events_before_empty_poll = s_fake.event_count;
+    CHECK(run_round(&s_fake).nodes_succeeded == 1U);
+    bool empty_poll_sent_log_read = false;
+    for (size_t i = events_before_empty_poll; i < s_fake.event_count; ++i) {
+        if (trace_event_is(&s_fake, i, EVENT_WRITE, 0U, NRF_LOG_MESSAGE_READ_REQUEST)) {
+            empty_poll_sent_log_read = true;
+        }
+    }
+    CHECK(!empty_poll_sent_log_read);
+    CHECK(s_fake.block_writes[0] == block_writes_before_empty_poll);
+    fake_stop();
+
+    fake_start(1U);
     fake_append(&s_fake, 0U, 5U);
     s_fake.tx_cost_ms = 30U;
     const nrf_log_collector_iteration_t soft_budget = run_round_at_current_time(&s_fake);
@@ -1107,6 +1132,15 @@ static void test_five_node_tca_matrix(void)
 
 static void test_backoff_storms_and_random_run(void)
 {
+    fake_start(1U);
+    fake_append(&s_fake, 0U, 1U);
+    s_fake.targets[0].cs_busy = true;
+    const nrf_log_collector_iteration_t cs_busy = run_round(&s_fake);
+    CHECK(cs_busy.nodes_attempted == 0U);
+    CHECK(cs_busy.nodes_skipped_cs == 1U);
+    CHECK(s_fake.event_count == 0U);
+    fake_stop();
+
     fake_start(2U);
     s_fake.fault = FAULT_TIMEOUT_BEFORE_WRITE;
     s_fake.fault_node = 0U;
