@@ -318,7 +318,9 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   const [geometryError, setGeometryError] = useState<unknown | null>(null);
   /* MAX-148: drives the unconstrained/scan-constrained toggle; null = still checking. */
   const [hasScan, setHasScan] = useState<boolean | null>(null);
+  const [calcSettings, setCalcSettings] = useState<CalcSettingsProfile | null>(null);
   const prefillFromSettings = useCallback((settings: CalcSettingsProfile | null) => {
+    setCalcSettings(settings);
     if (settings !== null && !formTouched.current) setForm(formFromSettings(settings));
   }, []);
   const provenance = geometry?.provenance;
@@ -330,6 +332,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
     let cancelled = false;
     formTouched.current = false;
     setForm(EMPTY_FORM);
+    setCalcSettings(null);
     setGeometry(null);
     setCsPairs(null);
     setPicks(null);
@@ -401,9 +404,16 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
     setRuns(null);
     setJob(null);
 
+    // Matching the saved speed/sigma pair restores its preset id after edits; custom stays custom.
+    const material = calcSettings !== null && calcSettings.material !== 'custom' &&
+      parsed.propagationSpeedMps === calcSettings.propagation_speed_mps &&
+      parsed.propagationSpeedUncertaintyMps === calcSettings.propagation_speed_uncertainty_mps
+      ? calcSettings.material
+      : 'custom';
     void sendControl('calculate_source', {
       object_id: objectId,
       session_id: sessionId,
+      material,
       propagation_speed_mps: parsed.propagationSpeedMps,
       propagation_speed_uncertainty_mps: parsed.propagationSpeedUncertaintyMps,
       propagation_model_name: form.propagationModelName.trim(),

@@ -21,6 +21,7 @@ const api = vi.hoisted(() => ({
   fetchLocalizationRuns: vi.fn(),
   fetchScanInfo: vi.fn(),
   fetchDeviceStatus: vi.fn(),
+  sendControl: vi.fn(),
 }));
 
 vi.mock('../../src/api/deviceApi', async (importOriginal) => ({
@@ -104,6 +105,7 @@ beforeEach(() => {
   api.fetchLocalizationRuns.mockReset().mockResolvedValue(runListing());
   api.fetchScanInfo.mockReset().mockResolvedValue({ present: false, bytes: 0 });
   api.fetchDeviceStatus.mockReset().mockResolvedValue({ recording_sessions: { sessions: [] } });
+  api.sendControl.mockReset().mockResolvedValue({ ok: false, action: 'calculate_source', error: 'test error' });
 });
 
 afterEach(() => {
@@ -250,6 +252,53 @@ it('prefills the manual calculate form from the saved object settings', async ()
   expect(renderer.root.findByProps({ 'data-testid': 'manual-propagation-speed' }).props.value).toBe('4550');
   expect(renderer.root.findByProps({ 'data-testid': 'manual-sta-window' }).props.value).toBe('25');
   expect(renderer.root.findByProps({ 'data-testid': 'manual-lta-window' }).props.value).toBe('250');
+  renderer.unmount();
+});
+
+async function calculatePanel(settings: CalcSettingsProfile): Promise<ReactTestRenderer> {
+  api.getCalcSettings.mockResolvedValueOnce(settingsResponse(settings));
+  return mount(createElement(LocalizationCalculatePanel, {
+    objectId: 'OBJ_0001',
+    sessionId: 'S000001',
+    busy: false,
+    onClose: () => undefined,
+  }));
+}
+
+async function submitCalculate(renderer: ReactTestRenderer): Promise<Record<string, unknown>> {
+  await act(async () => {
+    button(renderer, 'calc.calculate').props.onClick();
+    await Promise.resolve();
+  });
+  expect(api.sendControl).toHaveBeenCalledWith('calculate_source', expect.any(Object));
+  return api.sendControl.mock.calls[0][1] as Record<string, unknown>;
+}
+
+it('sends the saved preset id when the manual values are unchanged', async () => {
+  const renderer = await calculatePanel(profile());
+  expect(await submitCalculate(renderer)).toMatchObject({ material: 'concrete' });
+  renderer.unmount();
+});
+
+it('sends custom after a speed edit and restores the preset id when edited back', async () => {
+  const renderer = await calculatePanel(profile());
+  const speed = renderer.root.findByProps({ 'data-testid': 'manual-propagation-speed' });
+  await act(async () => speed.props.onChange({ target: { value: '4100' } }));
+  expect(await submitCalculate(renderer)).toMatchObject({ material: 'custom' });
+
+  api.sendControl.mockClear();
+  await act(async () => speed.props.onChange({ target: { value: '4000' } }));
+  expect(await submitCalculate(renderer)).toMatchObject({ material: 'concrete' });
+  renderer.unmount();
+});
+
+it('keeps a custom-material object custom in the calculate request', async () => {
+  const renderer = await calculatePanel(profile({
+    material: 'custom',
+    propagation_speed_mps: 4550,
+    propagation_speed_uncertainty_mps: 350,
+  }));
+  expect(await submitCalculate(renderer)).toMatchObject({ material: 'custom' });
   renderer.unmount();
 });
 
