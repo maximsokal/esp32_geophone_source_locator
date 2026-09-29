@@ -50,8 +50,8 @@ class Mutation:
     description: str
     file: str
     target: Path
-    find: bytes
-    replace: bytes
+    find: str
+    replace: str
     tests: tuple[TestSpec, ...]
     expected_killer: str
 
@@ -112,8 +112,21 @@ def source_encoding(data: bytes, path: Path) -> str:
     return "utf-8"
 
 
-def encode_text(value: str, encoding: str) -> bytes:
-    return value.encode(encoding)
+def source_eol(data: bytes, encoding: str, path: Path) -> str:
+    crlf = "\r\n".encode(encoding)
+    lf = "\n".encode(encoding)
+    cr = "\r".encode(encoding)
+    has_crlf = crlf in data
+    without_crlf = data.replace(crlf, b"")
+    if cr in without_crlf or (has_crlf and lf in without_crlf):
+        raise ConfigurationError(f"mixed line endings in target file: {path}")
+    return "\r\n" if has_crlf else "\n"
+
+
+def mutation_bytes(value: str, encoding: str, eol: str) -> bytes:
+    # Mutation JSON patterns are LF-authored; normalize legacy CR variants before matching the target EOL.
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized.replace("\n", eol).encode(encoding)
 
 
 def load_mutations(files: Sequence[Path], root: Path) -> tuple[list[Mutation], list[str]]:
@@ -182,8 +195,9 @@ def load_mutations(files: Sequence[Path], root: Path) -> tuple[list[Mutation], l
             try:
                 original = target.read_bytes()
                 encoding = source_encoding(original, target)
-                find = encode_text(item["find"], encoding)
-                replacement = encode_text(item["replace"], encoding)
+                eol = source_eol(original, encoding, target)
+                find = mutation_bytes(item["find"], encoding, eol)
+                replacement = mutation_bytes(item["replace"], encoding, eol)
             except (OSError, UnicodeError, ConfigurationError) as exc:
                 errors.append(f"{label}: cannot encode/read target: {exc}")
                 continue
@@ -260,8 +274,8 @@ def load_mutations(files: Sequence[Path], root: Path) -> tuple[list[Mutation], l
                     description=item["description"],
                     file=target_rel,
                     target=target,
-                    find=find,
-                    replace=replacement,
+                    find=item["find"],
+                    replace=item["replace"],
                     tests=tuple(test_specs),
                     expected_killer=item["expected_killer"],
                 ))
@@ -525,11 +539,15 @@ def execute_one(
     recovery: Recovery | None = None
     try:
         original = mutation.target.read_bytes()
-        if original.count(mutation.find) != 1:
+        encoding = source_encoding(original, mutation.target)
+        eol = source_eol(original, encoding, mutation.target)
+        find = mutation_bytes(mutation.find, encoding, eol)
+        replacement = mutation_bytes(mutation.replace, encoding, eol)
+        if original.count(find) != 1:
             raise InfrastructureError(
                 f"{mutation.file} changed since validation; find no longer occurs exactly once"
             )
-        mutated = original.replace(mutation.find, mutation.replace, 1)
+        mutated = original.replace(find, replacement, 1)
         recovery = write_recovery(root, mutation, original, clean_at_start)
         mutation.target.write_bytes(mutated)
 

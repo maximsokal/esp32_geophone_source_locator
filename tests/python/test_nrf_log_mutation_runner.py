@@ -75,6 +75,13 @@ def execute(
     )
 
 
+def set_find_replace(definition: Path, find: str, replace: str) -> None:
+    mutations = json.loads(definition.read_text(encoding="utf-8"))
+    mutations[0]["find"] = find
+    mutations[0]["replace"] = replace
+    definition.write_text(json.dumps(mutations), encoding="utf-8")
+
+
 def tree_hash(root: Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*")):
@@ -202,3 +209,75 @@ def test_restore_is_byte_exact_for_crlf_source(tmp_path: Path) -> None:
     assert exit_code == 0, (results, errors)
     assert results[0].status == "KILLED"
     assert target.read_bytes() == contents
+
+
+@pytest.mark.parametrize(
+    "eol",
+    [pytest.param("\n", id="lf"), pytest.param("\r\n", id="crlf")],
+)
+def test_lf_authored_multiline_mutation_applies_and_restores_byte_exactly(
+    tmp_path: Path,
+    eol: str,
+) -> None:
+    contents = f"before{eol}one{eol}two{eol}after{eol}".encode()
+    root, target, definition, fail_runner = project(tmp_path, contents)
+    set_find_replace(definition, "one\ntwo", "MUTATED\ntext")
+
+    results, exit_code, errors = execute(root, definition, fail_runner)
+
+    assert not errors
+    assert exit_code == 0, (results, errors)
+    assert results[0].status == "KILLED"
+    assert target.read_bytes() == contents
+
+
+def test_carriage_returns_in_json_mutation_are_normalized(tmp_path: Path) -> None:
+    contents = b"before\none\ntwo\nafter\n"
+    root, target, definition, fail_runner = project(tmp_path, contents)
+    set_find_replace(definition, "one\r\ntwo", "MUTATED\r\ntext")
+
+    results, exit_code, errors = execute(root, definition, fail_runner)
+
+    assert not errors
+    assert exit_code == 0, (results, errors)
+    assert results[0].status == "KILLED"
+    assert target.read_bytes() == contents
+
+
+def test_mixed_eol_target_is_rejected_without_writes(tmp_path: Path) -> None:
+    contents = b"before\r\none\ntwo\r\nafter\r\n"
+    root, target, definition, _ = project(tmp_path, contents)
+    set_find_replace(definition, "one\ntwo", "MUTATED\ntext")
+    before = tree_hash(root)
+
+    results, exit_code, errors = runner.run_mutations(
+        [definition],
+        repo_root=root,
+        allow_dirty=True,
+    )
+
+    assert results == []
+    assert exit_code == 2
+    assert any("mixed line endings" in error and "target.txt" in error for error in errors)
+    assert tree_hash(root) == before
+    assert target.read_bytes() == contents
+
+
+def test_target_eol_is_rechecked_before_apply(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root, target, definition, fail_runner = project(tmp_path, b"before\none\ntwo\nafter\n")
+    set_find_replace(definition, "one\ntwo", "MUTATED\ntext")
+    mixed = b"before\r\none\ntwo\r\nafter\r\n"
+
+    def make_target_mixed(root_arg: Path, file: str) -> bool:
+        target.write_bytes(mixed)
+        return False
+
+    monkeypatch.setattr(runner, "dirty_at_start", make_target_mixed)
+    results, exit_code, errors = execute(root, definition, fail_runner)
+
+    assert not errors
+    assert exit_code == 3
+    assert results[0].status == "ERROR"
+    assert "mixed line endings" in results[0].detail
+    assert "target.txt" in results[0].detail
+    assert target.read_bytes() == mixed
