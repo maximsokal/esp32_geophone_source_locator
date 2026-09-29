@@ -10327,7 +10327,53 @@
 		)
 	)
 	(sheet
-		(at 183.515 152.4)
+		(at 130.175 170.18)
+		(size 22.225 5.08)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0)
+		)
+		(uuid "7976f358-e235-4f57-8af7-c56dc08eb658")
+		(property "Sheetname" "MAIN_PERIPHERALS_POWER"
+			(at 130.175 169.4684 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "MAIN_PERIPHERALS_POWER.kicad_sch"
+			(at 130.175 175.8446 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "ESP32-S3 MAIN"
+				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766"
+					(page "6")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 130.175 158.75)
 		(size 22.225 5.08)
 		(exclude_from_sim no)
 		(in_bom yes)
@@ -10343,7 +10389,7 @@
 		)
 		(uuid "aedc304f-e985-4a72-a3da-c38a918c96c6")
 		(property "Sheetname" "AD7606_ADC"
-			(at 183.515 151.6884 0)
+			(at 130.175 158.0384 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -10354,7 +10400,7 @@
 			)
 		)
 		(property "Sheetfile" "AD7606_ADC.kicad_sch"
-			(at 183.515 158.0646 0)
+			(at 130.175 164.4146 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
