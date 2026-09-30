@@ -33,7 +33,10 @@ export type OverlayEmphasis = 'selected' | 'dim';
 export type ResultVariant = 'unconstrained' | 'scan_constrained';
 
 export interface OverlaySector {
+  objectId: string;
+  sessionId: string;
   method: string;
+  methodVersion: number;
   kind: LocalizationRun['kind'];
   position: LocalizationRunPosition;
   /** Visual radius, metres (see radiusSource). */
@@ -56,6 +59,30 @@ export interface OverlaySector {
   variant: ResultVariant;
   /** MAX-301: the method found the arrivals inconsistent with the velocity range. */
   velocityInconsistent: boolean;
+  velocityStatus: LocalizationRun['velocity_status'];
+  estimatedPVelocityMps: LocalizationRun['estimated_p_velocity_mps'];
+  velocityRange: LocalizationRun['velocity_range'];
+}
+
+export function localizationMachineAttributes(sector: OverlaySector) {
+  return {
+    'data-object-id': sector.objectId,
+    'data-session-id': sector.sessionId,
+    'data-method-id': sector.method,
+    'data-method-version': String(sector.methodVersion),
+    'data-computed-at-ms': String(sector.computedAtMs),
+    'data-position-x-m': String(sector.position.x_m),
+    'data-position-y-m': String(sector.position.y_m),
+    'data-position-z-m': String(sector.position.z_m),
+    'data-radius-m': String(sector.radiusM),
+    'data-uncertainty-x-m': String(sector.credibleBox?.std.x_m ?? ''),
+    'data-uncertainty-y-m': String(sector.credibleBox?.std.y_m ?? ''),
+    'data-uncertainty-z-m': String(sector.credibleBox?.std.z_m ?? ''),
+    'data-estimated-p-velocity-mps': String(sector.estimatedPVelocityMps ?? ''),
+    'data-velocity-min-mps': String(sector.velocityRange?.v_min_mps ?? ''),
+    'data-velocity-max-mps': String(sector.velocityRange?.v_max_mps ?? ''),
+    'data-velocity-status': sector.velocityStatus ?? 'unknown',
+  };
 }
 
 export interface OverlayCredibleBox {
@@ -295,7 +322,10 @@ export function buildLocalizationOverlay(
     }
     const { radiusM, source } = sectorRadius(run);
     sectors.push({
+      objectId: run.object_id,
+      sessionId: run.session_id,
       method: run.method_name,
+      methodVersion: run.method_version,
       kind: run.kind,
       position: { ...run.source_position },
       radiusM,
@@ -310,6 +340,9 @@ export function buildLocalizationOverlay(
       emphasis: 'dim',
       variant: resultVariant(run.method_name),
       velocityInconsistent: run.velocity_status === 'inconsistent',
+      velocityStatus: run.velocity_status,
+      estimatedPVelocityMps: run.estimated_p_velocity_mps,
+      velocityRange: run.velocity_range,
     });
   });
 

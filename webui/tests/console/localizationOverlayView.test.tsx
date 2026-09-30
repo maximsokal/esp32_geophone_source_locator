@@ -47,8 +47,8 @@ describe('LocalizationOverlay view', () => {
     /* The failed method is never an option and never a sector. */
     expect(html).not.toContain('<option value="traveltime_inversion"');
     expect(html).toContain(translate('en', 'overlay.unavailable_reason', { reason: 'fewer than 4 accepted picks' }));
-    expect(html.match(/<tr class="selected">/g)?.length).toBe(1);
-    expect(html.match(/<tr class="dim">/g)?.length).toBe(1);
+    expect(html.match(/<tr\b[^>]*\bclass="selected"[^>]*>/g)?.length).toBe(1);
+    expect(html.match(/<tr\b[^>]*\bclass="dim"[^>]*>/g)?.length).toBe(1);
     expect(html).toContain(formatDistance('en', 0.15)); /* 500 us x 300 m/s */
     expect(html).toContain(`(${translate('en', 'overlay.nominal')})`);
     expect(html).toContain(translate('en', 'overlay.note'));
@@ -79,8 +79,8 @@ describe('LocalizationOverlay view', () => {
       geometry: null,
       renderScene: false,
     })));
-    const selectedRow = html.match(/<tr class="selected">[\s\S]*?<\/tr>/)?.[0];
-    const unavailableRow = html.match(/<tr class="unavailable">[\s\S]*?<\/tr>/)?.[0];
+    const selectedRow = html.match(/<tr\b[^>]*\bclass="selected"[^>]*>[\s\S]*?<\/tr>/)?.[0];
+    const unavailableRow = html.match(/<tr\b[^>]*\bclass="unavailable"[^>]*>[\s\S]*?<\/tr>/)?.[0];
     expect(selectedRow).toBeDefined();
     expect(selectedRow).toContain('<td>\u2014</td><td>2D</td>');
     expect(unavailableRow).toContain('NO_SOURCE_POSITION');

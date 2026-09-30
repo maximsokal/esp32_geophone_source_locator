@@ -49,7 +49,7 @@ describe('RecordingEvidenceView', () => {
     expect(html).toContain(`<dt>${translate('en', 'evidence.remote_nodes')}</dt><dd>${translate('en', 'evidence.policy.unknown')}</dd>`);
     expect(html).toContain(`<dt>${translate('en', 'evidence.localization_policy')}</dt><dd>${translate('en', 'evidence.policy.unknown')}</dd>`);
     expect(html).toContain(`<dt>${translate('en', 'evidence.scan')}</dt><dd>${translate('en', 'evidence.scan.unknown')}</dd>`);
-    expect(html).toContain(`<dt>${translate('en', 'evidence.localization')}</dt><dd>${translate('en', 'evidence.localization.unknown')}</dd>`);
+    expect(html).toContain(`<dt>${translate('en', 'evidence.localization')}</dt><dd data-localization-state="unverified" data-severity="unavailable">${translate('en', 'evidence.localization.unknown')}</dd>`);
   });
 
   it.each(['en', 'uk'] as const)('renders missing z as unknown and a valid zero as zero in %s', (locale: I18nLocale) => {

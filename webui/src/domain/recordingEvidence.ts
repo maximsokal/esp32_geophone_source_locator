@@ -15,7 +15,17 @@ const REMOTE_PODS = 4;
 
 export type ScanState = 'unknown' | 'absent' | 'available';
 export type LocalizationState = 'unknown' | 'not_calculated' | 'calculated' | 'failed';
+export type LocalizationSemanticState = 'solved' | 'rejected' | 'unverified';
 export type PolicyState = 'unknown' | 'insufficient' | 'planar_2d' | 'capable_3d';
+
+export function localizationSemanticStatus(state: LocalizationState): {
+  state: LocalizationSemanticState;
+  severity: 'normal' | 'warning' | 'unavailable';
+} {
+  if (state === 'calculated') return { state: 'solved', severity: 'normal' };
+  if (state === 'failed') return { state: 'rejected', severity: 'warning' };
+  return { state: 'unverified', severity: 'unavailable' };
+}
 
 export interface EvidencePosition {
   pod: number;

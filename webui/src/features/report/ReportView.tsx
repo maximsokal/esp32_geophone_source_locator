@@ -1,6 +1,8 @@
 import type { RecordingReport } from '../../domain/reportModel';
+import { localizationMachineAttributes } from '../../domain/localizationOverlay';
 import { makeProjection } from '../../domain/reportModel';
 import type { ProjectionAxis } from '../../domain/reportModel';
+import { localizationSemanticStatus } from '../../domain/recordingEvidence';
 import { encodeQr, qrSvgPath } from '../../domain/qrCode';
 import { qrByteCapacity } from '../../domain/qrCode';
 import { describeFrames } from '../../domain/spatialFrames';
@@ -21,7 +23,7 @@ function QrImage({ text, label }: { text: string; label: string }) {
   if (code === null) return <p className="report-note">{t('report.qr_too_long', { label })}</p>;
   const size = code.size + 8;
   return (
-    <figure className="report-qr">
+    <figure className="report-qr" data-payload={text}>
       <svg viewBox={`0 0 ${size} ${size}`} width="120" height="120" role="img" aria-label={label} shapeRendering="crispEdges">
         <rect width={size} height={size} fill="#fff" />
         <path d={qrSvgPath(code, 4)} fill="#000" />
@@ -113,9 +115,15 @@ export default function ReportView({ report }: { report: RecordingReport }) {
   const { locale } = useLocale();
   const { object, session, evidence, overlay, links } = report;
   const location = object.location;
+  const localizationStatus = localizationSemanticStatus(evidence.localization);
+  const sessionStatus = session.status ?? (session.complete ? 'complete' : 'incomplete');
+  const recordingStatus = sessionStatus === 'complete' ? 'normal'
+    : sessionStatus === 'incomplete' ? 'warning'
+      : sessionStatus === 'error' ? 'error'
+        : sessionStatus === 'recovered_error' ? 'warning' : 'unavailable';
   return (
-    <article className="report">
-      <header>
+    <article className="report" data-object-id={object.id} data-session-id={session.session_id} data-generated-at-ms={String(report.generatedAtMs)} data-worst-position-uncertainty-m={String(evidence.worstUncertaintyM ?? '')} data-localization-state={localizationStatus.state} data-severity={localizationStatus.severity}>
+      <header data-state={recordingStatus} data-severity={recordingStatus}>
         <h1>{tr('report.title', { object: object.name, session: session.session_id })}</h1>
         <p>{tr('report.metadata', { id: object.id, date: formatDate(locale, report.generatedAtMs) })}</p>
       </header>
@@ -227,7 +235,7 @@ export default function ReportView({ report }: { report: RecordingReport }) {
             <thead><tr><th>{tr('report.method')}</th><th>{tr('report.source_xyz')}</th><th>{tr('report.radius')}</th><th>{tr('report.confidence')}</th><th>{tr('report.residual')}</th><th>{tr('report.dof')}</th></tr></thead>
             <tbody>
               {overlay.sectors.map((s) => (
-                <tr key={s.method}>
+                <tr key={s.method} {...localizationMachineAttributes(s)} data-state={s.velocityStatus === 'inconsistent' ? 'velocity_inconsistent' : s.velocityStatus === 'at_bound' ? 'velocity_at_bound' : 'solved'} data-severity={s.velocityStatus === 'inconsistent' || s.velocityStatus === 'at_bound' ? 'warning' : 'normal'}>
                   <td>{s.method}{s.kind === 'joint_fusion' ? ` (${tr('report.joint')})` : ''}{s.emphasis === 'selected' ? ' *' : ''}{s.velocityInconsistent ? ` (${tr('report.velocity_inconsistent')})` : ''}</td>
                   <td>{fmt(s.position.x_m, locale)} / {fmt(s.position.y_m, locale)} / {fmt(s.position.z_m, locale)}</td>
                   <td>{formatDistance(locale, s.radiusM)}{s.radiusSource === 'nominal' ? ` (${tr('report.nominal')})` : s.radiusSource === 'posterior' ? ` (${tr('report.two_sd')})` : ''}</td>
@@ -237,7 +245,7 @@ export default function ReportView({ report }: { report: RecordingReport }) {
                 </tr>
               ))}
               {overlay.unavailable.map((u) => (
-                <tr key={`u-${u.method}`}><td>{u.method}</td><td colSpan={5}>{tr('report.unavailable_reason', { reason: u.reason })}</td></tr>
+                <tr key={`u-${u.method}`} data-state="rejected" data-severity="warning"><td>{u.method}</td><td colSpan={5}>{tr('report.unavailable_reason', { reason: u.reason })}</td></tr>
               ))}
             </tbody>
           </table>

@@ -16,7 +16,15 @@ NAMESPACES = ("common", "web", "report", "tft")
 KEY_PATTERN = re.compile(r"^[a-z0-9]+(?:[._][a-z0-9]+)*$")
 PLACEHOLDER_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 ENTRY_FIELDS = {"en", "uk", "note", "max_len"}
-CONCEPT_FIELDS = {"id", "tft", "web", "report", "same_uk", "note"}
+CONCEPT_FIELDS = {"id", "tft", "web", "report", "rule", "equivalent_terms", "note"}
+CONCEPT_RULES = {"same_uk", "equivalent"}
+REQUIRED_CONCEPTS = {
+    "recording", "stopping",
+    "orientation.accepted", "orientation.moving", "orientation.tilted", "orientation.fault",
+    "constrained", "unconstrained", "localization.unverified", "uncertainty",
+    "power.battery", "power.charging", "power.full", "power.low", "power.critical", "power.unknown",
+    "localization.solved", "localization.unsolved", "velocity.inconsistent", "velocity.at_bound",
+}
 
 
 class CatalogError(ValueError):
@@ -135,11 +143,45 @@ def load_catalogs(root: Path) -> tuple[dict[str, dict[str, Any]], int]:
     return entries, untranslated
 
 
-def validate_concepts(root: Path, entries: dict[str, dict[str, Any]]) -> None:
+def _production_source_text(root: Path, surface: str) -> str:
+    if not root.is_dir():
+        return ""
+    extensions = {".c", ".h"} if surface == "tft" else {".ts", ".tsx"}
+    paths = sorted(root.rglob("*"))
+    texts = []
+    for source in paths:
+        if not source.is_file() or source.suffix not in extensions:
+            continue
+        if surface == "tft":
+            if ".gen." in source.name or any(
+                part.casefold() == "tests" for part in source.relative_to(root).parts[:-1]
+            ):
+                continue
+        elif source.name.endswith(".gen.ts"):
+            continue
+        texts.append(source.read_text(encoding="utf-8"))
+    return "\n".join(texts)
+
+
+def validate_concepts(
+    root: Path,
+    entries: dict[str, dict[str, Any]],
+    *,
+    source_roots: dict[str, Path] | None = None,
+) -> None:
     path = root / "i18n" / "concepts.json"
     concepts = _read_json(path, "concept map")
     if not isinstance(concepts, list):
         raise CatalogError(f"{path}: concept map must be a list")
+
+    roots = {
+        "tft": root / "components",
+        "web": root / "webui" / "src",
+        "report": root / "webui" / "src",
+    }
+    if source_roots is not None:
+        roots.update(source_roots)
+    source_text = {surface: _production_source_text(roots[surface], surface) for surface in roots}
 
     seen: set[str] = set()
     for concept in concepts:
@@ -159,12 +201,18 @@ def validate_concepts(root: Path, entries: dict[str, dict[str, Any]]) -> None:
         if concept_id in seen:
             raise CatalogError(f"{path}: duplicate concept id {concept_id!r}")
         seen.add(concept_id)
-        if type(concept["same_uk"]) is not bool:
-            raise CatalogError(f"{path}: concept {concept_id!r} same_uk must be a boolean")
+        rule = concept["rule"]
+        if not isinstance(rule, str) or rule not in CONCEPT_RULES:
+            raise CatalogError(f"{path}: concept {concept_id!r} rule must be 'same_uk' or 'equivalent'")
         if not isinstance(concept["note"], str):
             raise CatalogError(f"{path}: concept {concept_id!r} note must be a string")
+        equivalent_terms = concept["equivalent_terms"]
+        if rule == "same_uk" and equivalent_terms is not None:
+            raise CatalogError(f"{path}: concept {concept_id!r} same_uk rule must not declare equivalent_terms")
+        if rule == "equivalent" and not isinstance(equivalent_terms, list):
+            raise CatalogError(f"{path}: concept {concept_id!r} equivalent rule needs equivalent_terms")
 
-        ukrainian_values: list[tuple[str, str]] = []
+        localized_values: list[tuple[str, str, str]] = []
         for surface in ("tft", "web", "report"):
             key = concept[surface]
             if key is None:
@@ -178,15 +226,60 @@ def validate_concepts(root: Path, entries: dict[str, dict[str, Any]]) -> None:
                 raise CatalogError(
                     f"{path}: concept {concept_id!r} key {key!r} belongs to {entry['namespace']}, not {surface}"
                 )
-            ukrainian_values.append((surface, entry["uk"]))
+            localized_values.append((surface, entry["en"], entry["uk"]))
 
         if not any(concept[surface] is not None for surface in ("tft", "web", "report")):
             raise CatalogError(f"{path}: concept {concept_id!r} must reference at least one catalog key")
-        if not concept["same_uk"] and concept["tft"] is not None and not concept["note"].strip():
-            raise CatalogError(f"{path}: concept {concept_id!r} needs a note when TFT wording differs")
-        if concept["same_uk"] and len({value.casefold() for _, value in ukrainian_values}) > 1:
-            details = ", ".join(f"{surface}={value!r}" for surface, value in ukrainian_values)
-            raise CatalogError(f"{path}: concept {concept_id!r} same_uk values differ: {details}")
+        if rule == "same_uk":
+            for locale in ("en", "uk"):
+                values = {english.casefold() if locale == "en" else ukrainian.casefold()
+                          for _, english, ukrainian in localized_values}
+                if len(values) > 1:
+                    details = ", ".join(
+                        f"{surface}={english if locale == 'en' else ukrainian!r}"
+                        for surface, english, ukrainian in localized_values
+                    )
+                    raise CatalogError(f"{path}: concept {concept_id!r} same_uk {locale} values differ: {details}")
+        else:
+            allowed: set[tuple[str, str]] = set()
+            for term in equivalent_terms:
+                if not isinstance(term, dict) or set(term) != {"en", "uk"}:
+                    raise CatalogError(f"{path}: concept {concept_id!r} equivalent_terms need en and uk pairs")
+                if any(not isinstance(term[locale], str) or not term[locale].strip() for locale in ("en", "uk")):
+                    raise CatalogError(f"{path}: concept {concept_id!r} equivalent_terms must be non-empty strings")
+                allowed.add((term["en"].casefold(), term["uk"].casefold()))
+            if not allowed:
+                raise CatalogError(f"{path}: concept {concept_id!r} equivalent_terms must not be empty")
+            for surface, english, ukrainian in localized_values:
+                if (english.casefold(), ukrainian.casefold()) not in allowed:
+                    raise CatalogError(
+                        f"{path}: concept {concept_id!r} {surface} terms are outside declared equivalent_terms"
+                    )
+
+    by_id = {concept["id"]: concept for concept in concepts}
+    for concept_id in sorted(REQUIRED_CONCEPTS):
+        concept = by_id.get(concept_id)
+        if concept is None:
+            raise CatalogError(f"{path}: required concept {concept_id!r} is missing")
+        if not any(concept[surface] is not None for surface in ("tft", "web", "report")):
+            raise CatalogError(f"{path}: required concept {concept_id!r} must map at least one surface")
+
+    for concept in concepts:
+        concept_id = concept["id"]
+        for surface in ("tft", "web", "report"):
+            key = concept[surface]
+            if key is None:
+                continue
+            if surface == "tft":
+                token = "UI_I18N_KEY_" + key.replace(".", "_").upper()
+                referenced = re.search(rf"\b{re.escape(token)}\b", source_text[surface]) is not None
+            else:
+                token = re.compile(r"(['\"])" + re.escape(key) + r"\1")
+                referenced = token.search(source_text[surface]) is not None
+            if not referenced:
+                raise CatalogError(
+                    f"{path}: concept {concept_id!r} {surface} key {key!r} is not referenced by production source"
+                )
 
 
 def _ts_string(value: str) -> str:
@@ -312,9 +405,13 @@ def _render_firmware(entries: dict[str, dict[str, Any]]) -> tuple[str, str]:
     return "\n".join(header), "\n".join(source)
 
 
-def generate_outputs(root: Path) -> tuple[dict[Path, str], int]:
+def generate_outputs(
+    root: Path,
+    *,
+    source_roots: dict[str, Path] | None = None,
+) -> tuple[dict[Path, str], int]:
     entries, untranslated = load_catalogs(root)
-    validate_concepts(root, entries)
+    validate_concepts(root, entries, source_roots=source_roots)
     firmware_header, firmware_source = _render_firmware(entries)
     return (
         {
@@ -328,14 +425,19 @@ def generate_outputs(root: Path) -> tuple[dict[Path, str], int]:
     )
 
 
-def main(argv: list[str] | None = None, *, root: Path | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    root: Path | None = None,
+    source_roots: dict[str, Path] | None = None,
+) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if generated files are stale; do not write")
     args = parser.parse_args(argv)
     repo_root = ROOT if root is None else root
 
     try:
-        outputs, untranslated = generate_outputs(repo_root)
+        outputs, untranslated = generate_outputs(repo_root, source_roots=source_roots)
     except CatalogError as exc:
         print(exc, file=sys.stderr)
         return 1
