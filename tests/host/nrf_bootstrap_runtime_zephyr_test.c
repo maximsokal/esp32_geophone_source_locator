@@ -42,6 +42,16 @@ static nrf_upstream_imu_calibrate_t s_last_imu_calibration;
 static uint32_t s_cycle;
 static int64_t s_uptime = 100U;
 
+#if defined(NRF_BOOTSTRAP_SPINLOCK_INTERLEAVE_TEST)
+static uint8_t s_interleave_request_frame[NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH];
+static size_t s_interleave_request_length;
+static uint8_t s_interleave_response_frame[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
+static uint32_t s_interleave_response_length;
+static bool s_interleave_armed;
+static bool s_interleave_fired;
+static bool s_interleave_on_unlock;
+#endif
+
 int64_t k_uptime_get(void)
 {
     return s_uptime++;
@@ -263,6 +273,209 @@ static void send_log_read(const nrf_log_read_request_t *request)
     assert(nrf_log_protocol_encode_read_request(request, frame) == NRF_LOG_ERROR_OK);
     s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
 }
+
+static nrf_log_status_t read_log_status(void);
+
+#if defined(NRF_BOOTSTRAP_SPINLOCK_INTERLEAVE_TEST)
+static void capture_interleaved_twis_response(void)
+{
+    uint8_t *frame = NULL;
+    uint32_t length = 0U;
+
+    s_interleave_armed = false;
+    s_interleave_fired = true;
+    assert(s_callbacks != NULL);
+    s_callbacks->buf_write_received(
+        NULL,
+        s_interleave_request_frame,
+        (uint32_t)s_interleave_request_length);
+    assert(s_callbacks->buf_read_requested(NULL, &frame, &length) == 0);
+    assert(length <= sizeof(s_interleave_response_frame));
+    memcpy(s_interleave_response_frame, frame, length);
+    s_interleave_response_length = length;
+}
+
+void nrf_bootstrap_runtime_test_spinlock_hook(struct k_spinlock *lock)
+{
+    (void)lock;
+    if (s_interleave_armed && !s_interleave_on_unlock) {
+        capture_interleaved_twis_response();
+    }
+}
+
+void nrf_bootstrap_runtime_test_spinunlock_hook(struct k_spinlock *lock)
+{
+    (void)lock;
+    if (s_interleave_armed && s_interleave_on_unlock) {
+        capture_interleaved_twis_response();
+    }
+}
+
+static void test_twis_log_response_interleaves_application_append(void)
+{
+    static const uint32_t old_values[] = {0x30800001U, 0x30800002U, 0x30800003U};
+    static const uint32_t start_sequences[] = {700U, 900U};
+    static const uint32_t request_ids[] = {0x308100U, 0x308200U};
+    size_t kind;
+
+    for (kind = 0U; kind < 2U; ++kind) {
+        unsigned int point;
+        for (point = 0U; point < 2U; ++point) {
+            const bool on_unlock = point != 0U;
+            nrf_log_status_t before;
+            nrf_log_status_t after;
+            uint8_t *retry_frame;
+            uint32_t retry_length = 0U;
+            uint32_t app_value = 0x3080A000U + (uint32_t)kind;
+            uint32_t later_value = 0x3080B000U + (uint32_t)kind;
+            uint8_t frame[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
+            size_t frame_length = 0U;
+            nrf_log_read_request_t latest_request;
+            nrf_log_block_t latest_block;
+            const size_t old_value_count = sizeof(old_values) / sizeof(old_values[0]);
+
+            assert(nrf_log_runtime_zephyr_test_set_next_seq(start_sequences[kind]) ==
+                   NRF_LOG_ERROR_OK);
+            for (size_t index = 0U; index < old_value_count; ++index) {
+                nrf_log_runtime_zephyr_append_event(
+                    NRF_LOG_EVENT_LOG_TEST_EVENT,
+                    old_values[index],
+                    ~old_values[index]);
+            }
+            before = read_log_status();
+            assert(before.available == old_value_count);
+            assert(before.next_seq - before.oldest_seq == before.available);
+
+            if (kind == 0U) {
+                const nrf_log_status_request_t request = {.request_id = request_ids[kind]};
+                assert(nrf_log_protocol_encode_status_request(
+                           &request,
+                           s_interleave_request_frame) == NRF_LOG_ERROR_OK);
+                s_interleave_request_length = NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH;
+            } else {
+                const nrf_log_read_request_t request = {
+                    .request_id = request_ids[kind],
+                    .expected_boot_id = before.boot_id,
+                    .cursor_seq = before.oldest_seq,
+                    .max_records = NRF_LOG_PROTOCOL_MAX_RECORDS,
+                };
+                assert(nrf_log_protocol_encode_read_request(
+                           &request,
+                           s_interleave_request_frame) == NRF_LOG_ERROR_OK);
+                s_interleave_request_length = NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH;
+            }
+
+            s_interleave_response_length = 0U;
+            s_interleave_fired = false;
+            s_interleave_on_unlock = on_unlock;
+            s_interleave_armed = true;
+            nrf_log_runtime_zephyr_append_event(
+                NRF_LOG_EVENT_LOG_TEST_EVENT,
+                app_value,
+                ~app_value);
+            assert(!s_interleave_armed && s_interleave_fired);
+            assert(s_interleave_response_length != 0U);
+            nrf_log_runtime_zephyr_append_event(
+                NRF_LOG_EVENT_LOG_TEST_EVENT,
+                later_value,
+                ~later_value);
+
+            /* The hooks model the read winning acquire, or running after append release. */
+            s_callbacks->buf_write_received(
+                NULL,
+                s_interleave_request_frame,
+                (uint32_t)s_interleave_request_length);
+            retry_frame = read_frame(&retry_length);
+            assert(retry_length == s_interleave_response_length);
+            assert(memcmp(
+                       retry_frame,
+                       s_interleave_response_frame,
+                       retry_length) == 0);
+
+            if (kind == 0U) {
+                nrf_log_status_t response;
+                const uint32_t visible_appends = on_unlock ? 1U : 0U;
+                assert(s_interleave_response_length == NRF_LOG_PROTOCOL_STATUS_LENGTH);
+                assert(nrf_log_protocol_decode_status(
+                           s_interleave_response_frame,
+                           s_interleave_response_length,
+                           &response) == NRF_LOG_ERROR_OK);
+                assert(response.request_id == request_ids[kind]);
+                assert(response.boot_id == before.boot_id);
+                assert(response.oldest_seq == before.oldest_seq);
+                assert(response.next_seq == before.next_seq + visible_appends);
+                assert(response.available == before.available + visible_appends);
+                assert(response.overwritten_total == before.overwritten_total);
+                assert(response.lost_internal_total == before.lost_internal_total);
+                assert(response.next_seq - response.oldest_seq == response.available);
+            } else {
+                nrf_log_block_validation_t validation = {0};
+                nrf_log_block_t response;
+                const uint32_t visible_appends = on_unlock ? 1U : 0U;
+                validation.has_expected_boot_id = true;
+                validation.expected_boot_id = before.boot_id;
+                validation.has_cursor = true;
+                validation.cursor_seq = before.oldest_seq;
+                validation.has_max_records = true;
+                validation.max_records = NRF_LOG_PROTOCOL_MAX_RECORDS;
+                validation.has_status_next_seq = true;
+                validation.status_next_seq = before.next_seq + visible_appends;
+                assert(nrf_log_protocol_decode_block(
+                           s_interleave_response_frame,
+                           s_interleave_response_length,
+                           &validation,
+                           &response) == NRF_LOG_ERROR_OK);
+                assert(response.record_count == old_value_count + visible_appends);
+                assert(response.first_seq == before.oldest_seq);
+                assert(response.next_cursor == before.next_seq + visible_appends);
+                assert(response.oldest_seq == before.oldest_seq);
+                assert(response.overwritten_total == before.overwritten_total);
+                for (size_t index = 0U; index < old_value_count; ++index) {
+                    assert(response.records[index].seq == before.oldest_seq + index);
+                    assert(response.records[index].event_id == NRF_LOG_EVENT_LOG_TEST_EVENT);
+                    assert(response.records[index].arg0 == old_values[index]);
+                    assert(response.records[index].arg1 == ~response.records[index].arg0);
+                }
+                if (on_unlock) {
+                    const size_t app_index = old_value_count;
+                    assert(response.records[app_index].seq == before.next_seq);
+                    assert(response.records[app_index].arg0 == app_value);
+                    assert(response.records[app_index].arg1 == ~app_value);
+                }
+            }
+
+            after = read_log_status();
+            assert(after.boot_id == before.boot_id);
+            assert(after.next_seq == before.next_seq + 2U);
+            assert(after.available == before.available + 2U);
+            assert(after.oldest_seq == before.oldest_seq);
+            assert(after.overwritten_total == before.overwritten_total);
+            assert(after.lost_internal_total == before.lost_internal_total);
+            assert(after.next_seq - after.oldest_seq == after.available);
+
+            latest_request.request_id = request_ids[kind] + 1U;
+            latest_request.expected_boot_id = before.boot_id;
+            latest_request.cursor_seq = before.next_seq + 1U;
+            latest_request.max_records = 1U;
+            assert(nrf_log_runtime_zephyr_build_block(
+                       &latest_request,
+                       frame,
+                       sizeof(frame),
+                       &frame_length) == NRF_LOG_ERROR_OK);
+            assert(nrf_log_protocol_decode_block(
+                       frame,
+                       frame_length,
+                       NULL,
+                       &latest_block) == NRF_LOG_ERROR_OK);
+            assert(latest_block.record_count == 1U);
+            assert(latest_block.records[0].seq == before.next_seq + 1U);
+            assert(latest_block.records[0].arg0 == later_value);
+            assert(latest_block.records[0].arg1 == ~later_value);
+
+        }
+    }
+}
+#endif
 
 static nrf_log_status_t read_log_status(void)
 {
@@ -757,6 +970,9 @@ int main(void)
         assert(nrf_log_runtime_zephyr_max_block_build_cycles() != 0U);
     }
 
+#if defined(NRF_BOOTSTRAP_SPINLOCK_INTERLEAVE_TEST)
+    test_twis_log_response_interleaves_application_append();
+#endif
     assert(s_reboot_calls == 1U);
     return 0;
 }
