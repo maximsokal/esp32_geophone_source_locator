@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "ui_i18n_catalog_contract",
+      "sources": [
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_i18n_locale_store.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
+        "components/ui_i18n/tests/ui_i18n_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/ui_i18n/include"
+      ]
+    }
+  ]
+}

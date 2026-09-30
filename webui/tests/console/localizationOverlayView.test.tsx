@@ -1,11 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import LocalizationOverlay from '../../src/features/objects/LocalizationOverlay';
 import type { LocalizationRun } from '../../src/api/deviceApi';
-import { LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
-import { formatDistance } from '../../src/i18n/format';
+import { loadUkrainianCatalog, LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
+import { formatDistance, formatNumber } from '../../src/i18n/format';
 
 /** The rendered <input .../> tag for one radio value, regardless of React's SSR attribute order. */
 function radioTag(html: string, value: string): string {
@@ -15,6 +15,8 @@ function radioTag(html: string, value: string): string {
 }
 
 /* MAX-161: the comparison table + selector (scene disabled: no WebGL in tests). */
+
+beforeAll(async () => { await loadUkrainianCatalog(); });
 
 function run(method: string, overrides: Partial<LocalizationRun> = {}): LocalizationRun {
   return {
@@ -64,6 +66,26 @@ describe('LocalizationOverlay view', () => {
     expect(html).toContain(`<h3>${translate(locale, 'overlay.title')}</h3>`);
     expect(html).toContain(translate(locale, 'overlay.no_scan'));
     expect(/(?:^|\s)[a-z_]+\.[a-z_.]+(?=\s|$)/.test(html.replace(/<[^>]*>/g, ' '))).toBe(false);
+  });
+
+  it.each(['en', 'uk'] as const)('keeps missing coordinates unavailable and uncertainty unknown in %s', (locale: I18nLocale) => {
+    const html = renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale }, createElement(LocalizationOverlay, {
+      runs: [
+        run('gauss_newton_tdoa', { uncertainty: undefined }),
+        run('traveltime_inversion', {
+          solved: false, source_position: undefined, rms_residual_us: undefined, rejection_reason: 'NO_SOURCE_POSITION',
+        }),
+      ],
+      geometry: null,
+      renderScene: false,
+    })));
+    const selectedRow = html.match(/<tr class="selected">[\s\S]*?<\/tr>/)?.[0];
+    const unavailableRow = html.match(/<tr class="unavailable">[\s\S]*?<\/tr>/)?.[0];
+    expect(selectedRow).toBeDefined();
+    expect(selectedRow).toContain('<td>\u2014</td><td>2D</td>');
+    expect(unavailableRow).toContain('NO_SOURCE_POSITION');
+    const localizedZero = formatNumber(locale, 0, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    expect(unavailableRow).not.toContain(`${localizedZero}, ${localizedZero}, ${localizedZero}`);
   });
 });
 

@@ -140,6 +140,33 @@ def test_rejects_duplicate_keys_across_namespaces(tmp_path):
         generator.generate_outputs(tmp_path)
 
 
+def test_rejects_duplicate_json_members_before_dictionary_parsing(tmp_path):
+    write_fixture(tmp_path)
+    (tmp_path / "i18n" / "common.json").write_text(
+        '{"schema":1,"namespace":"common","entries":{'
+        '"app.title":{"en":"First","uk":"First"},'
+        '"app.title":{"en":"Second","uk":"Second"}}}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(generator.CatalogError, match="duplicate JSON object key 'app.title'"):
+        generator.generate_outputs(tmp_path)
+
+
+def test_rejects_case_only_catalog_key_collisions(tmp_path):
+    data = write_fixture(tmp_path)
+    data["web"]["entries"]["APP.TITLE"] = {"en": "Title", "uk": "Назва"}
+    save_fixture(tmp_path, data)
+
+    with pytest.raises(generator.CatalogError, match="case-insensitive key collision"):
+        generator.generate_outputs(tmp_path)
+
+
+def test_repository_catalog_keys_are_unique_case_insensitively():
+    entries, _ = generator.load_catalogs(REPO_ROOT)
+    assert len(entries) == len({key.casefold() for key in entries})
+
+
 def test_rejects_nonempty_uk_with_missing_or_extra_placeholders(tmp_path):
     data = write_fixture(tmp_path)
     data["common"]["entries"]["app.title"].update(en="Hello {name}", uk="Greeting")
