@@ -1,4 +1,5 @@
 #include "ui_internal.h"
+#include "ui_utf8_format.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -47,7 +48,7 @@ void ui_render_system_locked(void)
 
     char text[96];
 
-    snprintf(
+    ui_utf8_format(
         text,
         sizeof(text),
         ui_tr(UI_I18N_KEY_SYSTEM_FIRMWARE),
@@ -57,7 +58,7 @@ void ui_render_system_locked(void)
         card, 10, 8, 284, text, UI_COLOR_ACCENT
     );
 
-    snprintf(
+    ui_utf8_format(
         text,
         sizeof(text),
         ui_tr(UI_I18N_KEY_SYSTEM_IDF_VERSION),
@@ -67,7 +68,7 @@ void ui_render_system_locked(void)
         card, 10, 27, 284, text, UI_COLOR_TEXT
     );
 
-    snprintf(
+    ui_utf8_format(
         text,
         sizeof(text),
         ui_tr(UI_I18N_KEY_SYSTEM_LVGL_VERSION),
@@ -143,7 +144,7 @@ void ui_system_refresh_locked(void)
 
     char text[96];
 
-    snprintf(
+    ui_utf8_format(
         text,
         sizeof(text),
         ui_tr(UI_I18N_KEY_SYSTEM_HEAP),
@@ -156,7 +157,7 @@ void ui_system_refresh_locked(void)
         text
     );
 
-    snprintf(
+    ui_utf8_format(
         text,
         sizeof(text),
         ui_tr(UI_I18N_KEY_SYSTEM_PSRAM),
@@ -169,7 +170,7 @@ void ui_system_refresh_locked(void)
         text
     );
 
-    snprintf(
+    ui_utf8_format(
         text,
         sizeof(text),
         ui_tr(UI_I18N_KEY_SYSTEM_UPTIME),

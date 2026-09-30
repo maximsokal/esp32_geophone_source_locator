@@ -1,5 +1,7 @@
 #include "ui_internal.h"
 
+#include "ui_utf8_format.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -50,7 +52,7 @@ static void ui_objects_render_menu(lv_obj_t *screen)
 
     if (object_service_get_active(&active) == ESP_OK) {
         char text[UI_OBJECTS_TEXT_SIZE];
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_OBJECTS_ACTIVE),
@@ -149,7 +151,7 @@ static void ui_objects_render_list(lv_obj_t *screen)
         }
 
         char text[UI_OBJECTS_TEXT_SIZE];
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_OBJECTS_LIST_ENTRY),
@@ -199,7 +201,7 @@ static void ui_objects_render_delete_confirm(lv_obj_t *screen)
         context->object_index < context->object_count
     ) {
         char text[UI_OBJECTS_TEXT_SIZE];
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_OBJECTS_NAME_PAIR),
@@ -415,7 +417,7 @@ void ui_object_service_event(
                 &event->object
             );
 
-            snprintf(
+            ui_utf8_format(
                 notice,
                 sizeof(notice),
                 ui_tr(UI_I18N_KEY_OBJECTS_CREATED),
@@ -461,7 +463,7 @@ void ui_object_service_event(
                 event->object_id
             );
 
-            snprintf(
+            ui_utf8_format(
                 notice,
                 sizeof(notice),
                 ui_tr(UI_I18N_KEY_OBJECTS_ACTIVE_DONE),
@@ -477,7 +479,7 @@ void ui_object_service_event(
                 event->object_id
             );
 
-            snprintf(
+            ui_utf8_format(
                 notice,
                 sizeof(notice),
                 ui_tr(UI_I18N_KEY_OBJECTS_DELETED),

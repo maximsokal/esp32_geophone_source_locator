@@ -6,6 +6,7 @@
       "sources": [
         "components/result_view/result_view.c",
         "components/ui/ui_workflow_model.c",
+        "components/ui_i18n/ui_utf8_format.c",
         "components/ui/tests/ui_workflow_model_test.c"
       ],
       "include_dirs": [

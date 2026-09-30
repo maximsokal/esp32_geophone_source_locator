@@ -21,6 +21,7 @@
 #include "ui_measurements_internal.h"
 #include "ui_measurement_trace.h"
 #include "ui_preview3d.h"
+#include "ui_utf8_format.h"
 #include "ui_workflow_model.h"
 #include "workflow_service.h"
 
@@ -181,7 +182,7 @@ static void ui_workflow_format_line(
         args[i] = line->arg_keys[i] == UI_I18N_KEY_COUNT
             ? line->args[i] : ui_tr(line->arg_keys[i]);
     }
-    (void)snprintf(text, text_size, ui_tr(line->key),
+    (void)ui_utf8_format(text, text_size, ui_tr(line->key),
         args[0], args[1], args[2], args[3], args[4], args[5]);
 }
 
@@ -605,7 +606,7 @@ static void ui_workflow_update_chart_labels(ui_workflow_screen_state_t *state)
         if (!channel_set[i]) {
             char channel[8], text[48];
             (void)snprintf(channel, sizeof(channel), "%u", (unsigned)(i + 1U));
-            (void)snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_RESULT_DISTANCE_UNKNOWN), channel);
+            (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_RESULT_DISTANCE_UNKNOWN), channel);
             ui_workflow_set_label(context->measurement_channel_labels[i], text);
         }
     }
@@ -634,11 +635,11 @@ static void ui_workflow_update_actions(ui_workflow_screen_state_t *state)
         if (command == (workflow_command_t)WORKFLOW_COMMAND_COUNT) {
             ui_workflow_format_line(&state->model.material_action_line, text, sizeof(text));
         } else {
-            (void)snprintf(text, sizeof(text), "%s", ui_tr(state->model.action_keys[index]));
+            (void)ui_utf8_format(text, sizeof(text), "%s", ui_tr(state->model.action_keys[index]));
         }
         if (state->model.pending && state->model.pending_command == command) {
             const size_t length = strlen(text);
-            (void)snprintf(text + length, sizeof(text) - length, "%s", ui_tr(UI_I18N_KEY_TFT_WORKFLOW_VALUE_PENDING));
+            (void)ui_utf8_format(text + length, sizeof(text) - length, "%s", ui_tr(UI_I18N_KEY_TFT_WORKFLOW_VALUE_PENDING));
         }
         ui_workflow_set_label(label, text);
         lv_obj_set_pos(row, 10, start_y + (int)(slot * UI_WORKFLOW_ACTION_ROW_STEP));
@@ -807,7 +808,7 @@ void ui_workflow_screen_open_locked(void)
         s_workflow->rendered_step = WORKFLOW_STEP_COUNT;
         ui_context_t *context = ui_context();
         if (context->workflow_object_index < context->object_count) {
-            (void)snprintf(s_workflow->model_state.active_object_name,
+            (void)ui_utf8_format(s_workflow->model_state.active_object_name,
                 sizeof(s_workflow->model_state.active_object_name), "%s",
                 context->objects[context->workflow_object_index].name);
         }

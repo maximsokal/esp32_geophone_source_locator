@@ -1,4 +1,5 @@
 #include "ui_measurements_nodes.h"
+#include "ui_utf8_format.h"
 
 #include <stdio.h>
 
@@ -43,7 +44,7 @@ int ui_measurements_node_format(
     level_text = ui_measurements_node_text_or_unknown(level_text);
     if (!computed) {
         const char *unknown = ui_measurements_node_text_or_unknown(text->unknown);
-        return snprintf(
+        return ui_utf8_format(
             buffer,
             buffer_size,
             "%s X%s Y%s %s %s",
@@ -54,7 +55,7 @@ int ui_measurements_node_format(
             ui_measurements_node_text_or_unknown(text->unsolved));
     }
 
-    return snprintf(
+    return ui_utf8_format(
         buffer,
         buffer_size,
         "%s X%.1fm Y%.1fm %s %s",

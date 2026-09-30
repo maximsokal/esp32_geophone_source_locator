@@ -7,6 +7,7 @@
         "components/result_view/result_view.c",
         "components/localization_job/localization_material_presets.c",
         "components/ui/ui_workflow_model.c",
+        "components/ui_i18n/ui_utf8_format.c",
         "components/ui/tests/ui_workflow_material_picker_test.c"
       ],
       "include_dirs": [

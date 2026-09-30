@@ -6,6 +6,7 @@
 
 #include "storage_manager.h"
 #include "ui_fonts.h"
+#include "ui_utf8_format.h"
 
 
 #define UI_STORAGE_COLOR_TEXT     0xF3F7FB
@@ -27,6 +28,7 @@ static lv_obj_t *ui_storage_label(
         lv_label_create(
             parent
         );
+    if (label == NULL) return NULL;
 
     lv_obj_set_pos(
         label,
@@ -117,7 +119,7 @@ void ui_render_storage_locked(void)
             (double)context->storage_info.free_bytes /
             (1024.0 * 1024.0 * 1024.0);
 
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_STORAGE_SUMMARY),
@@ -135,7 +137,7 @@ void ui_render_storage_locked(void)
             UI_STORAGE_COLOR_ACCENT
         );
 
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_STORAGE_SPACE),

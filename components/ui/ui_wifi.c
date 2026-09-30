@@ -1,4 +1,5 @@
 #include "ui_internal.h"
+#include "ui_utf8_format.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -133,7 +134,7 @@ static void ui_wifi_render_setup_card(
             UI_COLOR_WARNING
         );
 
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_WIFI_AP_SSID),
@@ -318,7 +319,7 @@ static void ui_wifi_render_sta_card(
 
         char result[96];
 
-        snprintf(
+        ui_utf8_format(
             result,
             sizeof(result),
             ui_tr(UI_I18N_KEY_WIFI_VERIFY_CODES),
@@ -402,7 +403,7 @@ static void ui_wifi_render_sta_card(
 
     char text[96];
 
-    snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_WIFI_MODE), "STATION");
+    ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_WIFI_MODE), "STATION");
     (void)ui_create_label_locked(
         card,
         10,
@@ -412,7 +413,7 @@ static void ui_wifi_render_sta_card(
         UI_COLOR_ACCENT
     );
 
-    snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_WIFI_SSID), ssid);
+    ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_WIFI_SSID), ssid);
     (void)ui_create_label_locked(
         card,
         10,
@@ -422,7 +423,7 @@ static void ui_wifi_render_sta_card(
         UI_COLOR_TEXT
     );
 
-    snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_WIFI_IP), ip);
+    ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_WIFI_IP), ip);
     (void)ui_create_label_locked(
         card,
         10,
@@ -473,14 +474,14 @@ void ui_render_wifi_locked(void)
         char ip[24] = {0};
 
         if (!has_saved_network) {
-            snprintf(ssid, sizeof(ssid), "%s", ui_tr(UI_I18N_KEY_SHARED_EMPTY));
+            ui_utf8_format(ssid, sizeof(ssid), "%s", ui_tr(UI_I18N_KEY_SHARED_EMPTY));
         }
 
         if (
             wifi_manager_sta_ip_string(ip, sizeof(ip)) != ESP_OK ||
             ip[0] == '\0'
         ) {
-            snprintf(ip, sizeof(ip), "%s", ui_tr(UI_I18N_KEY_SHARED_EMPTY));
+            ui_utf8_format(ip, sizeof(ip), "%s", ui_tr(UI_I18N_KEY_SHARED_EMPTY));
         }
 
         ui_wifi_render_sta_card(
