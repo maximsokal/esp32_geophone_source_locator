@@ -39,6 +39,7 @@ typedef enum {
     FAULT_BIT_BURST,
     FAULT_BAD_STATUS_SEMANTICS,
     FAULT_BAD_BLOCK_SEMANTICS,
+    FAULT_OTHER_BOOT_ID,
     FAULT_STALE_REQUEST_ID,
     FAULT_MALFORMED_SUCCESS,
     FAULT_UNKNOWN_MESSAGE,
@@ -105,14 +106,22 @@ typedef struct {
 
 static fake_bus_t s_fake;
 static uint32_t s_assertions;
+static uint32_t active_seed;
 
 #define CHECK(condition) do { \
     ++s_assertions; \
     if (!(condition)) { \
-        fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, #condition); \
+        fprintf(stderr, "seed=0x%08lX failed at %s:%d: %s\n", \
+            (unsigned long)active_seed, __FILE__, __LINE__, #condition); \
         assert(condition); \
     } \
 } while (0)
+
+typedef struct {
+    nrf_log_node_summary_t summary;
+    nrf_log_node_page_t page;
+    uint32_t cursor_seq;
+} collector_state_snapshot_t;
 
 static nrf_log_lock_key_t fake_ring_lock(void *context)
 {
@@ -513,6 +522,9 @@ static esp_err_t fake_read_frame(
             ((uint32_t)frame[25] << 24U);
         fake_write_u32(&frame[22], next_cursor + 1U);
         fake_repair_crc(frame, fake->pending_length);
+    } else if (fault && fake->fault == FAULT_OTHER_BOOT_ID) {
+        fake_write_u32(&frame[14], fake->rings[node].boot_id + 1U);
+        fake_repair_crc(frame, fake->pending_length);
     } else if (fault && fake->fault == FAULT_STALE_REQUEST_ID) {
         const uint32_t request_id = (uint32_t)frame[6] |
             ((uint32_t)frame[7] << 8U) |
@@ -616,6 +628,28 @@ static nrf_log_node_page_t node_page(fake_bus_t *fake, uint8_t node, bool after,
     nrf_log_node_page_t page;
     CHECK(nrf_log_collector_get_page(fake->collector, node, after, boot, seq, limit, &page) == ESP_OK);
     return page;
+}
+
+static collector_state_snapshot_t snapshot_node(fake_bus_t *fake, uint8_t node)
+{
+    collector_state_snapshot_t snapshot;
+    /* Zero padding too: the snapshots are compared with memcmp. */
+    memset(&snapshot, 0, sizeof(snapshot));
+    CHECK(nrf_log_collector_get_summary(fake->collector, node, &snapshot.summary) == ESP_OK);
+    snapshot.page = node_page(fake, node, false, 0U, 0U, NRF_LOG_COLLECTOR_RECORD_CAPACITY);
+    snapshot.cursor_seq = snapshot.page.count == 0U
+        ? 0U
+        : snapshot.page.records[snapshot.page.count - 1U].seq + 1U;
+    return snapshot;
+}
+
+static void check_snapshot_equal(
+    const collector_state_snapshot_t *before,
+    const collector_state_snapshot_t *after)
+{
+    CHECK(before->cursor_seq == after->cursor_seq);
+    CHECK(memcmp(&before->summary, &after->summary, sizeof(before->summary)) == 0);
+    CHECK(memcmp(&before->page, &after->page, sizeof(before->page)) == 0);
 }
 
 static void assert_record_count(fake_bus_t *fake, uint8_t node, uint16_t expected)
@@ -833,6 +867,46 @@ static void test_framing_faults_and_retries(void)
     CHECK(between_reads.records[6].seq == 0U);
     CHECK(between_reads.records[6].boot_id == s_fake.rings[0].boot_id);
     fake_stop();
+}
+
+static void test_rejected_frames_preserve_collector_state(void)
+{
+    static const struct {
+        fake_fault_t fault;
+    } rejection_cases[] = {
+        { FAULT_BIT_FLIP },
+        { FAULT_BAD_BLOCK_SEMANTICS },
+        { FAULT_SHORT_RX },
+        { FAULT_UNKNOWN_MESSAGE },
+        { FAULT_OTHER_BOOT_ID },
+    };
+
+    for (size_t case_index = 0U; case_index < sizeof(rejection_cases) / sizeof(rejection_cases[0]); ++case_index) {
+        fake_start(1U);
+        fake_append(&s_fake, 0U, 2U);
+        CHECK(run_round_at_current_time(&s_fake).nodes_succeeded == 1U);
+        const collector_state_snapshot_t before = snapshot_node(&s_fake, 0U);
+        CHECK(before.page.count == 2U);
+        fake_append(&s_fake, 0U, 1U);
+        s_fake.fault = rejection_cases[case_index].fault;
+        s_fake.fault_node = 0U;
+        s_fake.fault_response_type = NRF_LOG_MESSAGE_BLOCK;
+        s_fake.fault_always = true;
+        CHECK(run_round(&s_fake).nodes_failed == 1U);
+        const collector_state_snapshot_t after = snapshot_node(&s_fake, 0U);
+        check_snapshot_equal(&before, &after);
+        CHECK(s_fake.last_block_cursor[0] == before.cursor_seq);
+
+        s_fake.fault = FAULT_NONE;
+        s_fake.last_block_cursor[0] = UINT32_MAX;
+        CHECK(run_round(&s_fake).nodes_attempted == 0U);
+        CHECK(run_round(&s_fake).nodes_succeeded == 1U);
+        CHECK(s_fake.last_block_cursor[0] == before.cursor_seq);
+        const collector_state_snapshot_t accepted = snapshot_node(&s_fake, 0U);
+        CHECK(accepted.page.count == before.page.count + 1U);
+        CHECK(accepted.page.records[accepted.page.count - 1U].seq == before.cursor_seq);
+        fake_stop();
+    }
 }
 
 static void test_capability_boot_and_paging(void)
@@ -1223,9 +1297,10 @@ static void test_backoff_storms_and_random_run(void)
     CHECK(s_fake.yield_pending);
     fake_stop();
 
-    fake_start(5U);
     const uint32_t seed = UINT32_C(0x308E5A71);
     uint32_t random = seed;
+    active_seed = seed;
+    fake_start(5U);
     printf("MAX-308 seeded collector run seed=0x%08X\n", seed);
     for (uint16_t round = 0U; round < 250U; ++round) {
         for (uint8_t node = 0U; node < 5U; ++node) {
@@ -1251,6 +1326,7 @@ static void test_backoff_storms_and_random_run(void)
         }
     }
     fake_stop();
+    active_seed = 0U;
 }
 
 static void test_store_interleavings(void)
@@ -1295,6 +1371,7 @@ int main(void)
     } sections[] = {
         { "section 4 framing/budget/order", test_framing_budget_and_order },
         { "sections 5-7 corruption/fault/reboot", test_framing_faults_and_retries },
+        { "section 12.3 rejected frames preserve state", test_rejected_frames_preserve_collector_state },
         { "capability/generation/paging/store", test_capability_boot_and_paging },
         { "round cadence/pending-work yield", test_round_cadence_and_yield },
         { "section 8 five-node TCA matrix", test_five_node_tca_matrix },
