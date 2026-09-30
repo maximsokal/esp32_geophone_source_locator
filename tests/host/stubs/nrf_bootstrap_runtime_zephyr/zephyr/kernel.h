@@ -73,8 +73,16 @@ struct k_spinlock {
     unsigned int unused;
 };
 
+#if defined(NRF_BOOTSTRAP_SPINLOCK_INTERLEAVE_TEST)
+void nrf_bootstrap_runtime_test_spinlock_hook(struct k_spinlock *lock);
+void nrf_bootstrap_runtime_test_spinunlock_hook(struct k_spinlock *lock);
+#endif
+
 static inline k_spinlock_key_t k_spin_lock(struct k_spinlock *lock)
 {
+#if defined(NRF_BOOTSTRAP_SPINLOCK_INTERLEAVE_TEST)
+    nrf_bootstrap_runtime_test_spinlock_hook(lock);
+#endif
     (void)lock;
     return 0U;
 }
@@ -83,6 +91,9 @@ static inline void k_spin_unlock(struct k_spinlock *lock, k_spinlock_key_t key)
 {
     (void)lock;
     (void)key;
+#if defined(NRF_BOOTSTRAP_SPINLOCK_INTERLEAVE_TEST)
+    nrf_bootstrap_runtime_test_spinunlock_hook(lock);
+#endif
 }
 
 #endif

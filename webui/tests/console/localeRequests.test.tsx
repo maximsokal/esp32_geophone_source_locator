@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createElement } from 'react';
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { createElement, useState } from 'react';
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 const api = vi.hoisted(() => ({ fetchDeviceStatus: vi.fn(), sendControl: vi.fn() }));
 vi.mock('../../src/api/deviceApi', async (importOriginal) => {
@@ -12,6 +12,9 @@ import DeviceConsoleApp from '../../src/DeviceConsoleApp';
 import { loadUkrainianCatalog, LocaleProvider, translate, useLocale } from '../../src/i18n';
 import type { I18nLocale } from '../../src/i18n';
 import type { DeviceStatus } from '../../src/domain/device';
+import { jobProgressText, waitForLocalizationJob, type LocalizationJobStatus } from '../../src/domain/localizationJob';
+import LocalizationJobReport from '../../src/features/objects/LocalizationJobReport';
+import { formatNumber } from '../../src/i18n/format';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -26,7 +29,7 @@ afterEach(() => {
 });
 
 describe('presentation-only locale changes', () => {
-  it('does not duplicate a pending status poll or control command', async () => {
+  it('keeps the view coherent as locale changes during a status poll and job completion', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     let nextTimerId = 0;
     const timers = new Map<number, () => void>();
@@ -45,6 +48,23 @@ describe('presentation-only locale changes', () => {
     api.fetchDeviceStatus.mockImplementation((includeObjects = false) => includeObjects ? extended.promise : polling.promise);
     api.sendControl.mockReturnValue(command.promise);
 
+    const runningJob: LocalizationJobStatus = {
+      state: 'running', job_id: 3, object_id: 'OBJ_0001', session_id: 'S000001', computed_at_ms: 10,
+      current_method: 'tdcas', elapsed_ms: 1200, budget_ms: 60000,
+      summary: {
+        participating_channel_count: 4, methods_attempted: 1, methods_solved: 1, methods_persisted: 1,
+        methods_skipped_for_time: 0, timings: [{ method: 'tdcas', ms: 1234, skipped_for_time: false }],
+      },
+      stack: { size_bytes: 8192, free_min_bytes: 4096, margin_bytes: 1024, margin_ok: true },
+    };
+    const completedJob = { ...runningJob, state: 'succeeded' as const, current_method: '' };
+    let setLocalizationJobStatus!: (status: LocalizationJobStatus) => void;
+    function LocalizationJobProbe() {
+      const [status, setStatus] = useState(runningJob);
+      setLocalizationJobStatus = setStatus;
+      return createElement(LocalizationJobReport, { status });
+    }
+
     let setLocale!: (locale: I18nLocale) => void;
     function LocaleProbe() {
       setLocale = useLocale().setLocale;
@@ -55,6 +75,7 @@ describe('presentation-only locale changes', () => {
       renderer = create(createElement(LocaleProvider, null,
         createElement(DeviceConsoleApp),
         createElement(LocaleProbe),
+        createElement(LocalizationJobProbe),
       ));
     });
     expect(api.fetchDeviceStatus).toHaveBeenCalledTimes(1);
@@ -76,13 +97,40 @@ describe('presentation-only locale changes', () => {
     expect(api.fetchDeviceStatus).toHaveBeenCalledTimes(3);
     expect(api.fetchDeviceStatus).toHaveBeenLastCalledWith(false);
 
+    const localizationJobPoll = deferred<LocalizationJobStatus>();
+    const fetchLocalizationJobStatus = vi.fn(() => localizationJobPoll.promise);
+    const localizationJobWait = waitForLocalizationJob(fetchLocalizationJobStatus, {
+      objectId: 'OBJ_0001', sessionId: 'S000001', budgetMs: 60000,
+      onProgress: setLocalizationJobStatus, sleep: async () => undefined, now: () => 0,
+    });
+    expect(fetchLocalizationJobStatus).toHaveBeenCalledTimes(1);
     await act(async () => {
       setLocale('uk');
+      localizationJobPoll.resolve(completedJob);
+      await localizationJobWait;
       await loadUkrainianCatalog();
     });
     expect(api.fetchDeviceStatus).toHaveBeenCalledTimes(3);
     expect(api.sendControl).toHaveBeenCalledTimes(1);
     expect(renderer.root.findByProps({ 'aria-label': translate('uk', 'web.locale_label') }).props.value).toBe('uk');
+    const report = renderer.root.findByProps({ className: 'localization-job' });
+    expect(report.props['aria-label']).toBe(translate('uk', 'calc.job_aria'));
+    expect(report.findAllByType('p')[0].props['data-job-state']).toBe('succeeded');
+    expect(report.findAllByType('p')[0].children.join('')).toBe(jobProgressText(completedJob, 'uk'));
+    /* A ReactTestInstance has no toJSON(): collect every rendered string in the subtree. */
+    const textOf = (node: ReactTestInstance | string): string =>
+      typeof node === 'string' ? node : node.children.map(textOf).join(' ');
+    const reportJson = textOf(report);
+    expect(reportJson).toContain(translate('uk', 'calc.job_measured', { count: formatNumber('uk', 1) }));
+    expect(reportJson).toContain(formatNumber('uk', 1234));
+    for (const key of ['calc.job_method', 'calc.job_time', 'calc.job_share'] as const) {
+      expect(reportJson).toContain(translate('uk', key));
+      expect(reportJson).not.toContain(translate('en', key));
+    }
+    expect(reportJson).not.toContain(translate('en', 'calc.job_measured', { count: formatNumber('en', 1) }));
+    expect(fetchLocalizationJobStatus).toHaveBeenCalledTimes(1);
+    expect(api.fetchDeviceStatus).toHaveBeenCalledTimes(3);
+    expect(api.sendControl).toHaveBeenCalledTimes(1);
 
     act(() => renderer.unmount());
   });

@@ -23,16 +23,36 @@ class CatalogError(ValueError):
     """A source catalog is invalid."""
 
 
+class _DuplicateJsonKey(ValueError):
+    def __init__(self, key: str):
+        self.key = key
+
+
+def _read_json(path: Path, description: str = "catalog") -> Any:
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise _DuplicateJsonKey(key)
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+    except _DuplicateJsonKey as exc:
+        raise CatalogError(f"{path}: duplicate JSON object key {exc.key!r}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CatalogError(f"{path}: cannot read {description}: {exc}") from exc
+
+
 def load_catalogs(root: Path) -> tuple[dict[str, dict[str, Any]], int]:
     entries: dict[str, dict[str, Any]] = {}
+    folded_keys: dict[str, str] = {}
     untranslated = 0
 
     for namespace in NAMESPACES:
         path = root / "i18n" / f"{namespace}.json"
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise CatalogError(f"{path}: cannot read catalog: {exc}") from exc
+        raw = _read_json(path)
         if not isinstance(raw, dict):
             raise CatalogError(f"{path}: catalog must be an object")
         unknown_catalog_fields = set(raw) - {"schema", "namespace", "entries"}
@@ -49,10 +69,19 @@ def load_catalogs(root: Path) -> tuple[dict[str, dict[str, Any]], int]:
 
         for key, value in source_entries.items():
             location = f"{path}: entry {key!r}"
-            if not isinstance(key, str) or not KEY_PATTERN.fullmatch(key):
+            if not isinstance(key, str):
                 raise CatalogError(f"{location}: key must use lowercase letters, digits, dots, and underscores")
-            if key in entries:
-                raise CatalogError(f"{location}: duplicate key across catalogs")
+            folded_key = key.casefold()
+            previous_key = folded_keys.get(folded_key)
+            if previous_key is not None:
+                if previous_key == key:
+                    raise CatalogError(f"{location}: duplicate key across catalogs")
+                raise CatalogError(
+                    f"{location}: case-insensitive key collision with {previous_key!r}"
+                )
+            if not KEY_PATTERN.fullmatch(key):
+                raise CatalogError(f"{location}: key must use lowercase letters, digits, dots, and underscores")
+            folded_keys[folded_key] = key
             if not isinstance(value, dict):
                 raise CatalogError(f"{location}: entry must be an object")
 
@@ -108,10 +137,7 @@ def load_catalogs(root: Path) -> tuple[dict[str, dict[str, Any]], int]:
 
 def validate_concepts(root: Path, entries: dict[str, dict[str, Any]]) -> None:
     path = root / "i18n" / "concepts.json"
-    try:
-        concepts = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise CatalogError(f"{path}: cannot read concept map: {exc}") from exc
+    concepts = _read_json(path, "concept map")
     if not isinstance(concepts, list):
         raise CatalogError(f"{path}: concept map must be a list")
 

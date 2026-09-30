@@ -3,7 +3,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 
-import { formatErrorText, loadUkrainianCatalog, LocaleProvider, persistLocale, readSavedLocale, TranslatedError, translate, useLocale, type I18nKey, type I18nLocale } from '../../src/i18n';
+import { formatErrorText, loadUkrainianCatalog, LocaleProvider, persistLocale, readSavedLocale, TranslatedError, translate, useLocale, useT, type I18nKey, type I18nLocale } from '../../src/i18n';
 import { en } from '../../src/i18n/catalog.en.gen';
 import { uk } from '../../src/i18n/catalog.uk.gen';
 import { formatDate, formatDistance, formatNumber, formatPercent } from '../../src/i18n/format';
@@ -67,6 +67,19 @@ describe('i18n catalog translation', () => {
 
   it('returns an unknown runtime key unchanged', () => {
     expect(translate('en', 'missing.key' as I18nKey)).toBe('missing.key');
+  });
+
+  it('uses deterministic English fallback for fixed-seed unknown locale ids and keys', () => {
+    let random = 0x189C0FFE;
+    const nextRandom = (): number => {
+      random = (Math.imul(random, 1664525) + 1013904223) >>> 0;
+      return random;
+    };
+    for (let sample = 0; sample < 512; sample += 1) {
+      const key = `__missing.${nextRandom().toString(16)}.${sample}` as I18nKey;
+      const locale = `unknown-${nextRandom().toString(16)}` as I18nLocale;
+      expect(translate(locale, key)).toBe(key);
+    }
   });
 
   it('keeps WebUI and report catalogs bilingual and current in the generated catalog', () => {
@@ -148,11 +161,13 @@ describe('i18n catalog translation', () => {
   });
 
   it('defaults to English for missing, malformed, unknown, stale, and denied storage', () => {
-    const values: Record<string, string | null> = { 'geolocator.locale': null };
+    const values: Record<string, string | null> = { 'geolocator.locale': null, 'geolocator.theme': 'dark' };
     vi.stubGlobal('window', { localStorage: {
       getItem: (key: string) => values[key] ?? null,
       setItem: (key: string, value: string) => { values[key] = value; },
     } });
+    expect(readSavedLocale()).toBe('en');
+    values['geolocator.locale'] = '';
     expect(readSavedLocale()).toBe('en');
     values['geolocator.locale'] = '{';
     expect(readSavedLocale()).toBe('en');
@@ -164,18 +179,31 @@ describe('i18n catalog translation', () => {
     expect(readSavedLocale()).toBe('en');
     values['geolocator.locale'] = JSON.stringify({ schema: 1, locale: 'uk' });
     expect(readSavedLocale()).toBe('uk');
+    expect(values['geolocator.theme']).toBe('dark');
     vi.stubGlobal('window', { get localStorage(): never { throw new Error('storage denied'); } });
     expect(readSavedLocale()).toBe('en');
     expect(() => persistLocale('uk')).not.toThrow();
   });
 
   it('persists the locale under a versioned schema and uses English when storage is denied', () => {
-    const setItem = vi.fn();
+    const values: Record<string, string> = { 'geolocator.theme': 'dark' };
+    const setItem = vi.fn((key: string, value: string) => { values[key] = value; });
     vi.stubGlobal('window', { localStorage: { setItem } });
     persistLocale('uk');
     expect(setItem).toHaveBeenCalledWith('geolocator.locale', JSON.stringify({ schema: 1, locale: 'uk' }));
+    expect(values['geolocator.theme']).toBe('dark');
     vi.stubGlobal('window', { get localStorage(): never { throw new Error('storage denied'); } });
     expect(() => persistLocale('en')).not.toThrow();
+  });
+
+  it('renders in English when the browser denies access to localStorage', () => {
+    vi.stubGlobal('window', { get localStorage(): never { throw new Error('storage denied'); } });
+    function LocaleProbe() {
+      const { locale } = useLocale();
+      return createElement('span', null, `${locale}:${useT()('nav.objects')}`);
+    }
+    const html = renderToStaticMarkup(createElement(LocaleProvider, null, createElement(LocaleProbe)));
+    expect(html).toContain('<span>en:Objects</span>');
   });
 
   it('uses the explicitly supplied initial locale in the provider', () => {

@@ -1,15 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import SensorsFeature from '../../src/features/sensors/SensorsFeature';
-import type { DeviceStatus } from '../../src/domain/device';
+import type { DevicePod, DeviceStatus } from '../../src/domain/device';
+import { loadUkrainianCatalog, LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
+import { formatNumber } from '../../src/i18n/format';
 
 /* MAX-245: over-current state from /api/status reaches the operator. */
 
 function statusWith(overrides: {
   serial?: Record<string, unknown>;
   channels?: Array<Record<string, unknown>>;
+  pods?: DevicePod[];
 }): DeviceStatus {
   return {
     system: {},
@@ -22,16 +25,18 @@ function statusWith(overrides: {
     },
     environment: { valid: false, temperature_c: 0, humidity_percent: 0, pressure_pa: 0 },
     mux: { valid: false, active_channel: 0, active_pod: 0 },
-    pods: [],
+    pods: overrides.pods ?? [],
     acquisition: { serial: overrides.serial },
   } as unknown as DeviceStatus;
 }
 
-function render(status: DeviceStatus): string {
-  return renderToStaticMarkup(createElement(SensorsFeature, {
+function render(status: DeviceStatus, locale: I18nLocale = 'en'): string {
+  return renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale }, createElement(SensorsFeature, {
     status, object: null, error: null, onCalibrateHeights: async () => true,
-  }));
+  })));
 }
+
+beforeAll(async () => { await loadUkrainianCatalog(); });
 
 const channel = (name: string, id: number, overcurrent: string, latched: boolean, current: number) => ({
   id, name, valid: true, voltage_v: 5, current_a: current, power_w: 5 * current, overcurrent, overcurrent_latched: latched,
@@ -73,5 +78,25 @@ describe('Sensors power alerts', () => {
   it('renders without channel data from older firmware', () => {
     const html = render(statusWith({ channels: undefined }));
     expect(html).not.toContain('INA3221');
+  });
+
+  it.each(['en', 'uk'] as const)('shows unknown markers for invalid zero-valued sensor metrics in %s', (locale) => {
+    const pod: DevicePod = {
+      id: 1,
+      state: 'CONNECTED',
+      capabilities: { barometer: true, environment: true, imu: true, geophone: true, local_position: true, global_position: false },
+      barometer: { valid: false, pressure_pa: 0, relative_altitude_cm: 0, reference_pressure_pa: 0 },
+      environment: { valid: false, temperature_valid: false, temperature_c: 0, humidity_valid: false, humidity_percent: 0 },
+      imu: { valid: false, roll_deg: 0, pitch_deg: 0, yaw_relative_deg: 0 },
+      geophone: { valid: false, instant_uv: 0, rms_uv: 0, peak_uv: 0, noise_rms_uv: 0, snr_db: 0 },
+      position: { local_valid: false, local_x_m: 0, local_y_m: 0, global_valid: false, latitude: 0, longitude: 0, altitude_valid: false, altitude_m: 0 },
+    };
+    const html = render(statusWith({ pods: [pod] }), locale);
+    const unavailable = translate(locale, 'common.not_available');
+
+    for (const key of ['sensors.pressure', 'sensors.temperature', 'sensors.humidity'] as const) {
+      expect(html).toContain(`<dt>${translate(locale, key)}</dt><dd>${unavailable}</dd>`);
+    }
+    expect(html).not.toContain(`<dd>${formatNumber(locale, 0, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %</dd>`);
   });
 });
