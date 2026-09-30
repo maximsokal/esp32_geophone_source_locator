@@ -235,6 +235,12 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Steel structures", /* tft.workflow.material.name.steel */
     "Unknown material", /* tft.workflow.material.name.unknown */
     "%s", /* tft.workflow.material.option */
+    "auto", /* tft.workflow.material.range_auto */
+    "Range: %s-%s m/s", /* tft.workflow.material.range_current */
+    "UP set OK save LEFT back", /* tft.workflow.material.range_hint_auto */
+    "Max velocity (m/s)", /* tft.workflow.material.range_max */
+    "Min velocity (m/s)", /* tft.workflow.material.range_min */
+    "%s m/s", /* tft.workflow.material.range_value */
     "Material: %s", /* tft.workflow.material.row */
     "Save failed", /* tft.workflow.material.save_failed */
     "Saved", /* tft.workflow.material.saved */
@@ -593,6 +599,12 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Сталеві конструкції", /* tft.workflow.material.name.steel */
     "Невідомий матеріал", /* tft.workflow.material.name.unknown */
     "%s", /* tft.workflow.material.option */
+    "авто", /* tft.workflow.material.range_auto */
+    "Межі: %s-%s м/с", /* tft.workflow.material.range_current */
+    "UP задати OK зберегти LEFT назад", /* tft.workflow.material.range_hint_auto */
+    "Макс. швидкість (м/с)", /* tft.workflow.material.range_max */
+    "Мін. швидкість (м/с)", /* tft.workflow.material.range_min */
+    "%s м/с", /* tft.workflow.material.range_value */
     "Матеріал: %s", /* tft.workflow.material.row */
     "Помилка збереження", /* tft.workflow.material.save_failed */
     "Збережено", /* tft.workflow.material.saved */

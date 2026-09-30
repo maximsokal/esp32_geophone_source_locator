@@ -103,6 +103,21 @@ static void open_picker(
     assert(model->material_picker_visible);
 }
 
+static void enter_custom_range_min(
+    workflow_snapshot_t *snapshot,
+    ui_workflow_model_state_t *state,
+    ui_workflow_model_t *model)
+{
+    prepare_state(state, "custom");
+    open_picker(snapshot, state, model);
+    press(snapshot, state, model, UI_WORKFLOW_KEY_OK);
+    assert(state->material_view == UI_WORKFLOW_MATERIAL_CUSTOM_SPEED);
+    press(snapshot, state, model, UI_WORKFLOW_KEY_OK);
+    assert(state->material_view == UI_WORKFLOW_MATERIAL_CUSTOM_SIGMA);
+    press(snapshot, state, model, UI_WORKFLOW_KEY_OK);
+    assert(state->material_view == UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MIN);
+}
+
 static void test_row_is_first_and_localized_when_unset_or_set(void)
 {
     workflow_snapshot_t snapshot = stopped_snapshot();
@@ -248,11 +263,99 @@ static void test_pending_save_success_and_failure_notices(void)
     assert(state.material_view == UI_WORKFLOW_MATERIAL_SELECT);
 }
 
+static void test_custom_range_auto_and_save_event_values(void)
+{
+    workflow_snapshot_t snapshot = stopped_snapshot();
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_model_t model;
+    enter_custom_range_min(&snapshot, &state, &model);
+    assert(!state.material_custom_range_set);
+    assert(state.material_custom_range_min_mps == 300U);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_RANGE_MIN);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_RANGE_AUTO);
+    const ui_workflow_event_t auto_save = ui_workflow_model_handle_key(
+        &snapshot, &state, UI_WORKFLOW_KEY_OK, 100U);
+    assert(auto_save.type == UI_WORKFLOW_EVENT_SAVE_MATERIAL);
+    assert(!auto_save.has_range);
+    assert(auto_save.custom_v_mps == 1000U && auto_save.custom_sigma_mps == 200U);
+
+    state = (ui_workflow_model_state_t){0};
+    enter_custom_range_min(&snapshot, &state, &model);
+    press(&snapshot, &state, &model, UI_WORKFLOW_KEY_UP);
+    assert(state.material_custom_range_set);
+    assert(state.material_custom_range_min_mps == 300U);
+    assert(state.material_custom_range_max_mps == 3000U);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_RANGE_VALUE);
+    assert(strcmp(model.lines[1].args[0], "300") == 0);
+    press(&snapshot, &state, &model, UI_WORKFLOW_KEY_OK);
+    assert(state.material_view == UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MAX);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_RANGE_MAX);
+    assert(strcmp(model.lines[1].args[0], "3000") == 0);
+    const ui_workflow_event_t range_save = ui_workflow_model_handle_key(
+        &snapshot, &state, UI_WORKFLOW_KEY_OK, 100U);
+    assert(range_save.type == UI_WORKFLOW_EVENT_SAVE_MATERIAL);
+    assert(range_save.has_range);
+    assert(range_save.range_min_mps == 300U && range_save.range_max_mps == 3000U);
+}
+
+static void test_custom_range_navigation_and_clamping(void)
+{
+    workflow_snapshot_t snapshot = stopped_snapshot();
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_model_t model;
+    enter_custom_range_min(&snapshot, &state, &model);
+    press(&snapshot, &state, &model, UI_WORKFLOW_KEY_UP);
+    press(&snapshot, &state, &model, UI_WORKFLOW_KEY_OK);
+    assert(state.material_custom_range_max_mps == 3000U);
+    press(&snapshot, &state, &model, UI_WORKFLOW_KEY_DOWN);
+    assert(state.material_custom_range_max_mps == 2950U);
+    press(&snapshot, &state, &model, UI_WORKFLOW_KEY_UP);
+    assert(state.material_custom_range_max_mps == 3000U);
+    press(&snapshot, &state, &model, UI_WORKFLOW_KEY_UP);
+    assert(state.material_custom_range_max_mps == 3000U);
+    for (size_t i = 0U; i < 60U; ++i) press(&snapshot, &state, &model, UI_WORKFLOW_KEY_DOWN);
+    assert(state.material_custom_range_max_mps == 300U);
+    press(&snapshot, &state, &model, UI_WORKFLOW_KEY_DOWN);
+    assert(state.material_custom_range_max_mps == 300U);
+    press(&snapshot, &state, &model, UI_WORKFLOW_KEY_LEFT);
+    assert(state.material_view == UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MIN);
+    state.material_custom_range_min_mps = 50U;
+    state.material_custom_range_max_mps = 8000U;
+    press(&snapshot, &state, &model, UI_WORKFLOW_KEY_DOWN);
+    assert(state.material_custom_range_min_mps == 50U);
+    assert(state.material_custom_range_max_mps == 500U);
+    state.material_custom_range_min_mps = 7950U;
+    state.material_custom_range_max_mps = 8000U;
+    press(&snapshot, &state, &model, UI_WORKFLOW_KEY_UP);
+    assert(state.material_custom_range_min_mps == 8000U);
+    assert(state.material_custom_range_max_mps == 8000U);
+    press(&snapshot, &state, &model, UI_WORKFLOW_KEY_LEFT);
+    assert(state.material_view == UI_WORKFLOW_MATERIAL_CUSTOM_SIGMA);
+}
+
+static void test_current_material_range_is_rendered(void)
+{
+    workflow_snapshot_t snapshot = stopped_snapshot();
+    snapshot.calc_velocity_range_set = true;
+    snapshot.calc_velocity_range_min_mps = 250.0f;
+    snapshot.calc_velocity_range_max_mps = 1800.0f;
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_model_t model;
+    prepare_state(&state, "custom");
+    build(&snapshot, &state, &model);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_RANGE_CURRENT);
+    assert(strcmp(model.lines[1].args[0], "250") == 0);
+    assert(strcmp(model.lines[1].args[1], "1800") == 0);
+}
+
 int main(void)
 {
     test_row_is_first_and_localized_when_unset_or_set();
     test_picker_wraps_and_uses_preset_table();
     test_custom_steps_bounds_and_back_navigation();
     test_pending_save_success_and_failure_notices();
+    test_custom_range_auto_and_save_event_values();
+    test_custom_range_navigation_and_clamping();
+    test_current_material_range_is_rendered();
     return 0;
 }

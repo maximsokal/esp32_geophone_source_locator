@@ -44,7 +44,7 @@
  * parse, or job submit. Target-size locals above 256 B are in the 4,388 B
  * PSRAM scratch: job status 1,272 B, device status 792 B, ranging progress
  * 632 B, calibration-node copy 720 B, and CS cycle 428 B. workflow_snapshot_t
- * is a caller-owned output (2,440 B), never a poll-task local.
+ * is a caller-owned output, never a poll-task local.
  */
 static const char *TAG = "WORKFLOW";
 
@@ -105,6 +105,9 @@ typedef struct {
     char material_id[WORKFLOW_CALC_MATERIAL_ID_SIZE];
     uint32_t custom_v_mps;
     uint32_t custom_sigma_mps;
+    bool has_range;
+    uint32_t range_min_mps;
+    uint32_t range_max_mps;
 } workflow_async_command_t;
 
 typedef struct {
@@ -144,6 +147,9 @@ static bool s_calc_settings_cache_valid;
 static uint64_t s_calc_settings_cache_updated_ms;
 static char s_calc_settings_cache_object_id[OBJECT_STORE_ID_SIZE];
 static char s_calc_material[WORKFLOW_CALC_MATERIAL_ID_SIZE];
+static bool s_calc_velocity_range_set;
+static float s_calc_velocity_range_min_mps;
+static float s_calc_velocity_range_max_mps;
 static uint32_t s_calculation_job_id;
 static uint32_t s_orphaned_job_id;
 static workflow_core_t s_core;
@@ -227,9 +233,11 @@ static esp_err_t workflow_service_parse_calc_settings_locked(
     const char *json,
     uint32_t *budget_ms_out,
     localization_calculate_config_t *config_out,
-    char material_out[WORKFLOW_CALC_MATERIAL_ID_SIZE]
+    char material_out[WORKFLOW_CALC_MATERIAL_ID_SIZE],
+    bool *velocity_range_present_out
 )
 {
+    if (velocity_range_present_out != NULL) *velocity_range_present_out = false;
     if (json == NULL || budget_ms_out == NULL) return ESP_ERR_INVALID_ARG;
     if (!workflow_service_calc_settings_depth_ok(json)) return ESP_ERR_INVALID_RESPONSE;
     cJSON *root = cJSON_Parse(json);
@@ -241,6 +249,10 @@ static esp_err_t workflow_service_parse_calc_settings_locked(
     if (err == ESP_OK && material_out != NULL) {
         workflow_service_copy_string(material_out, WORKFLOW_CALC_MATERIAL_ID_SIZE,
             config->material[0] != '\0' ? config->material : "custom");
+    }
+    if (err == ESP_OK && velocity_range_present_out != NULL) {
+        *velocity_range_present_out =
+            cJSON_GetObjectItemCaseSensitive(root, "velocity_range") != NULL;
     }
     cJSON_Delete(root);
     return err;
@@ -297,12 +309,25 @@ static void workflow_service_refresh_calc_settings_locked(uint64_t now_ms)
         now_ms - s_calc_settings_cache_updated_ms >= WORKFLOW_SERVICE_STATUS_REFRESH_MS) {
         s_calc_settings_ready = false;
         s_calc_material[0] = '\0';
+        s_calc_velocity_range_set = false;
+        s_calc_velocity_range_min_mps = 0.0f;
+        s_calc_velocity_range_max_mps = 0.0f;
         if (s_active_object_id[0] != '\0') {
             char *json = NULL;
             if (object_store_get_calc_settings_json(s_active_object_id, &json) == ESP_OK && json != NULL) {
                 uint32_t budget_ms = 0U;
+                bool range_present = false;
                 s_calc_settings_ready = workflow_service_parse_calc_settings_locked(
-                    json, &budget_ms, NULL, s_calc_material) == ESP_OK;
+                    json, &budget_ms, &s_poll_scratch.calculation_config, s_calc_material,
+                    &range_present) == ESP_OK;
+                if (s_calc_settings_ready && range_present &&
+                    s_poll_scratch.calculation_config.velocity_range.bounds.set) {
+                    s_calc_velocity_range_set = true;
+                    s_calc_velocity_range_min_mps =
+                        s_poll_scratch.calculation_config.velocity_range.bounds.v_min_mps;
+                    s_calc_velocity_range_max_mps =
+                        s_poll_scratch.calculation_config.velocity_range.bounds.v_max_mps;
+                }
                 free(json);
             }
         }
@@ -1107,6 +1132,9 @@ static void workflow_service_reconcile_locked(void)
         s_calc_settings_ready = false;
         s_scan_cache_valid = false;
         s_calc_settings_cache_valid = false;
+        s_calc_velocity_range_set = false;
+        s_calc_velocity_range_min_mps = 0.0f;
+        s_calc_velocity_range_max_mps = 0.0f;
         workflow_core_reset_object(&s_core, active_object_present, true);
     }
 
@@ -1192,7 +1220,7 @@ static void workflow_service_calculation_start_locked(void)
         : object_store_get_calc_settings_json(s_active_object_id, &json);
     if (err == ESP_OK && json != NULL) {
         err = workflow_service_parse_calc_settings_locked(
-            json, &budget_ms, &s_poll_scratch.calculation_config, NULL);
+            json, &budget_ms, &s_poll_scratch.calculation_config, NULL, NULL);
     }
     free(json);
     if (err != ESP_OK) {
@@ -1316,6 +1344,9 @@ esp_err_t workflow_service_init(void)
     s_calc_settings_cache_updated_ms = 0U;
     s_calc_settings_cache_object_id[0] = '\0';
     s_calc_material[0] = '\0';
+    s_calc_velocity_range_set = false;
+    s_calc_velocity_range_min_mps = 0.0f;
+    s_calc_velocity_range_max_mps = 0.0f;
     s_calculation_job_id = 0U;
     s_orphaned_job_id = 0U;
     atomic_store_explicit(&s_poll_hwm_after_first_calculation, false, memory_order_relaxed);
@@ -1374,6 +1405,9 @@ void workflow_service_shutdown(void)
     s_scan_cache_valid = false;
     s_calc_settings_cache_valid = false;
     s_calc_material[0] = '\0';
+    s_calc_velocity_range_set = false;
+    s_calc_velocity_range_min_mps = 0.0f;
+    s_calc_velocity_range_max_mps = 0.0f;
     atomic_store_explicit(&s_poll_hwm_after_first_calculation, false, memory_order_relaxed);
     s_poll_first_calculation_seen = false;
     s_placement_ready_predicate = NULL;
@@ -1393,6 +1427,9 @@ static void workflow_service_snapshot_locked(workflow_snapshot_t *snapshot)
     snapshot->has_scan = s_has_scan;
     snapshot->calc_settings_ready = s_calc_settings_ready;
     workflow_service_copy_string(snapshot->calc_material, sizeof(snapshot->calc_material), s_calc_material);
+    snapshot->calc_velocity_range_set = s_calc_velocity_range_set;
+    snapshot->calc_velocity_range_min_mps = s_calc_velocity_range_min_mps;
+    snapshot->calc_velocity_range_max_mps = s_calc_velocity_range_max_mps;
     snapshot->last_async = s_last_async;
     snapshot->last_material_save = s_last_material_save;
     snapshot->calibration = s_calibration.status;
@@ -1526,9 +1563,37 @@ static void workflow_service_process_async_locked(void)
                         s_poll_scratch.calculation_config.propagation_speed_uncertainty_mps = custom
                             ? (double)item.custom_sigma_mps
                             : (double)preset->propagation_speed_uncertainty_mps;
+                        if (item.has_range) {
+                            s_poll_scratch.calculation_config.velocity_range.bounds =
+                                (localization_velocity_bounds_t) {
+                                    .v_min_mps = (float)item.range_min_mps,
+                                    .v_max_mps = (float)item.range_max_mps,
+                                    .vp_vs_min = 0.0f,
+                                    .vp_vs_max = 0.0f,
+                                    .set = true,
+                                };
+                            s_poll_scratch.calculation_config.velocity_range.source =
+                                LOCALIZATION_VELOCITY_RANGE_SOURCE_USER;
+                        }
                         char *json = NULL;
                         result = localization_config_to_json(
                             &s_poll_scratch.calculation_config, item.material_id, budget_ms, &json);
+                        if (result == ESP_OK && custom && !item.has_range) {
+                            cJSON *settings = cJSON_Parse(json);
+                            if (settings == NULL) {
+                                result = ESP_ERR_INVALID_RESPONSE;
+                            } else {
+                                cJSON_DeleteItemFromObjectCaseSensitive(settings, "velocity_range");
+                                char *without_range = cJSON_PrintUnformatted(settings);
+                                cJSON_Delete(settings);
+                                if (without_range == NULL) {
+                                    result = ESP_ERR_NO_MEM;
+                                } else {
+                                    cJSON_free(json);
+                                    json = without_range;
+                                }
+                            }
+                        }
                         if (result == ESP_OK) {
                             result = object_store_set_calc_settings_json(s_active_object_id, json);
                         }
@@ -1610,10 +1675,13 @@ esp_err_t workflow_service_command_async(
     return ESP_OK;
 }
 
-esp_err_t workflow_service_save_calc_material_async(
+esp_err_t workflow_service_save_calc_material_range_async(
     const char *material_id,
     uint32_t custom_v_mps,
-    uint32_t custom_sigma_mps
+    uint32_t custom_sigma_mps,
+    bool has_range,
+    uint32_t range_min_mps,
+    uint32_t range_max_mps
 )
 {
     if (material_id == NULL || strnlen(material_id, WORKFLOW_CALC_MATERIAL_ID_SIZE) >=
@@ -1623,7 +1691,10 @@ esp_err_t workflow_service_save_calc_material_async(
         ? NULL : localization_material_preset_lookup(material_id);
     if ((!custom && preset == NULL) ||
         (custom && (!(custom_v_mps > 50U && custom_v_mps < 8000U) ||
-            custom_sigma_mps == 0U || custom_sigma_mps >= custom_v_mps))) {
+            custom_sigma_mps == 0U || custom_sigma_mps >= custom_v_mps)) ||
+        (!custom && has_range) ||
+        (has_range && (range_min_mps < 50U || range_min_mps > range_max_mps ||
+            range_max_mps > 8000U || range_max_mps > 10U * range_min_mps))) {
         return ESP_ERR_INVALID_ARG;
     }
     if (!s_initialized || s_async_queue == NULL || s_async_enqueue_mutex == NULL) {
@@ -1637,6 +1708,9 @@ esp_err_t workflow_service_save_calc_material_async(
         .kind = WORKFLOW_ASYNC_MATERIAL_SAVE,
         .custom_v_mps = custom_v_mps,
         .custom_sigma_mps = custom_sigma_mps,
+        .has_range = has_range,
+        .range_min_mps = range_min_mps,
+        .range_max_mps = range_max_mps,
     };
     (void)snprintf(item.material_id, sizeof(item.material_id), "%s", material_id);
     if (xQueueSend(s_async_queue, &item, 0U) != pdTRUE) {
@@ -1646,6 +1720,16 @@ esp_err_t workflow_service_save_calc_material_async(
     s_async_next_seq = seq;
     xSemaphoreGive(s_async_enqueue_mutex);
     return ESP_OK;
+}
+
+esp_err_t workflow_service_save_calc_material_async(
+    const char *material_id,
+    uint32_t custom_v_mps,
+    uint32_t custom_sigma_mps
+)
+{
+    return workflow_service_save_calc_material_range_async(
+        material_id, custom_v_mps, custom_sigma_mps, false, 0U, 0U);
 }
 
 esp_err_t workflow_service_set_placement_ready_predicate(
@@ -1678,6 +1762,9 @@ esp_err_t workflow_service_notify_calc_settings_saved(const char *object_id)
     if (strcmp(object_id, s_active_object_id) == 0) {
         s_calc_settings_cache_valid = false;
         s_calc_settings_ready = false;
+        s_calc_velocity_range_set = false;
+        s_calc_velocity_range_min_mps = 0.0f;
+        s_calc_velocity_range_max_mps = 0.0f;
         workflow_core_set_calc_settings_ready(&s_core, false);
     }
     workflow_service_unlock();
