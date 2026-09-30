@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { fetchLocalizationRuns, fetchScanInfo, loadSessionRegistration } from '../../api/deviceApi';
 import type { LocalizationRunListing, ScanArtifactInfo } from '../../api/deviceApi';
-import { buildRecordingEvidence } from '../../domain/recordingEvidence';
+import { buildRecordingEvidence, localizationSemanticStatus } from '../../domain/recordingEvidence';
 import type { RecordingEvidence } from '../../domain/recordingEvidence';
 import { decodeRegistrationArtifact, type RegistrationArtifact } from '../../xr/fiducial/registrationArtifact';
 import { useLocale, useT, type I18nKey } from '../../i18n';
@@ -45,6 +45,7 @@ function anchorLabel(evidence: RecordingEvidence, t: (key: I18nKey, params?: Rea
 export function RecordingEvidenceView({ evidence }: { evidence: RecordingEvidence }) {
   const t = useT();
   const { locale } = useLocale();
+  const localizationStatus = localizationSemanticStatus(evidence.localization);
   return (
     <dl className="console-dl evidence-dl">
       <div><dt>{t('evidence.remote_nodes')}</dt><dd>{evidence.remoteCount === null ? t('evidence.policy.unknown') : t('report.remote_count', { count: formatNumber(locale, evidence.remoteCount) })}{evidence.remotes.length > 0 ? ` (${evidence.remotes.map((pod) => t('report.remote_node', { number: formatNumber(locale, pod) })).join(', ')})` : ''}</dd></div>
@@ -57,7 +58,7 @@ export function RecordingEvidenceView({ evidence }: { evidence: RecordingEvidenc
         `${p.pod === 0 ? 'MAIN' : t('report.remote_node', { number: formatNumber(locale, p.pod) })} ${formatNumber(locale, p.position.x_m, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}/${formatNumber(locale, p.position.y_m, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}/${p.position.z_m === null ? t('evidence.policy.unknown') : formatNumber(locale, p.position.z_m, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`).join(' · ')}</dd></div>
       <div><dt>{t('evidence.scan')}</dt><dd>{scanLabel(evidence, locale, t)}</dd></div>
       <div><dt>{t('evidence.apriltag_anchor')}</dt><dd>{anchorLabel(evidence, t)}</dd></div>
-      <div><dt>{t('evidence.localization')}</dt><dd>{t(LOCALIZATION_LABEL[evidence.localization])}{evidence.solvedMethods.length > 0 ? `: ${evidence.solvedMethods.join(', ')}` : ''}{evidence.failedMethods.length > 0 ? ` · ${t('evidence.failed_methods', { methods: evidence.failedMethods.join(', ') })}` : ''}</dd></div>
+      <div><dt>{t('evidence.localization')}</dt><dd data-localization-state={localizationStatus.state} data-severity={localizationStatus.severity}>{t(LOCALIZATION_LABEL[evidence.localization])}{evidence.solvedMethods.length > 0 ? `: ${evidence.solvedMethods.join(', ')}` : ''}{evidence.failedMethods.length > 0 ? ` · ${t('evidence.failed_methods', { methods: evidence.failedMethods.join(', ') })}` : ''}</dd></div>
     </dl>
   );
 }

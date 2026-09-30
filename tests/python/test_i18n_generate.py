@@ -14,6 +14,12 @@ SPEC = importlib.util.spec_from_file_location("i18n_generate", REPO_ROOT / "tool
 generator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(generator)
 NAMESPACES = ("common", "web", "report", "tft")
+REPOSITORY_REQUIRED_CONCEPTS = frozenset(generator.REQUIRED_CONCEPTS)
+
+
+@pytest.fixture(autouse=True)
+def clear_repository_required_concepts_for_small_fixtures(monkeypatch):
+    monkeypatch.setattr(generator, "REQUIRED_CONCEPTS", set())
 
 
 def write_fixture(root: Path) -> dict[str, dict]:
@@ -47,6 +53,15 @@ def save_concepts(root: Path, concepts: list[dict]) -> None:
         json.dumps(concepts, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def write_surface_reference(root: Path, surface: str, key: str) -> None:
+    source_root = root / "components" if surface == "tft" else root / "webui" / "src"
+    source_root.mkdir(parents=True, exist_ok=True)
+    source = source_root / ("fixture.c" if surface == "tft" else "fixture.tsx")
+    reference = "UI_I18N_KEY_" + key.replace(".", "_").upper() if surface == "tft" else f"'{key}'"
+    with source.open("a", encoding="utf-8") as stream:
+        stream.write(f"{reference}\n")
 
 
 @pytest.mark.parametrize(
@@ -180,7 +195,8 @@ def test_concept_map_rejects_a_missing_catalog_key(tmp_path):
     write_fixture(tmp_path)
     save_concepts(tmp_path, [{
         "id": "status.recording", "tft": None, "web": "missing.key", "report": None,
-        "same_uk": False, "note": "Web key is not in its catalog.",
+        "rule": "equivalent", "equivalent_terms": [{"en": "Recording", "uk": "Запис"}],
+        "note": "Web key is not in its catalog.",
     }])
 
     with pytest.raises(generator.CatalogError, match="references missing web key"):
@@ -196,10 +212,11 @@ def test_concept_map_rejects_a_same_uk_mismatch(tmp_path):
     save_fixture(tmp_path, data)
     save_concepts(tmp_path, [{
         "id": "status.recording", "tft": "tft.status.recording", "web": "web.status.recording",
-        "report": "report.status.recording", "same_uk": True, "note": "Expected parity.",
+        "report": "report.status.recording", "rule": "same_uk", "equivalent_terms": None,
+        "note": "Expected parity.",
     }])
 
-    with pytest.raises(generator.CatalogError, match="same_uk values differ"):
+    with pytest.raises(generator.CatalogError, match="same_uk uk values differ"):
         generator.generate_outputs(tmp_path)
 
 
@@ -211,22 +228,105 @@ def test_concept_map_accepts_matching_uk_values_after_casefold(tmp_path):
     save_fixture(tmp_path, data)
     save_concepts(tmp_path, [{
         "id": "status.recording", "tft": "tft.status.recording", "web": "web.status.recording",
-        "report": "report.status.recording", "same_uk": True, "note": "Matching across surfaces.",
+        "report": "report.status.recording", "rule": "same_uk", "equivalent_terms": None,
+        "note": "Matching across surfaces.",
     }])
+    for namespace in ("tft", "web", "report"):
+        write_surface_reference(tmp_path, namespace, f"{namespace}.status.recording")
 
     generator.generate_outputs(tmp_path)
 
 
-def test_repository_concept_map_covers_requested_state_families():
+def test_concept_equivalence_rejects_unapproved_certainty_or_action_change(tmp_path):
+    data = write_fixture(tmp_path)
+    for namespace in ("tft", "web", "report"):
+        data[namespace]["entries"][f"{namespace}.status.recording"] = {
+            "en": "recording", "uk": "запис",
+        }
+    data["report"]["entries"]["report.status.recording"]["en"] = "verified and recorded"
+    save_fixture(tmp_path, data)
+    save_concepts(tmp_path, [{
+        "id": "status.recording", "tft": "tft.status.recording", "web": "web.status.recording",
+        "report": "report.status.recording", "rule": "equivalent",
+        "equivalent_terms": [{"en": "recording", "uk": "запис"}],
+        "note": "The surfaces use the same recording state without claiming verification.",
+    }])
+
+    with pytest.raises(generator.CatalogError, match="outside declared equivalent_terms"):
+        generator.generate_outputs(tmp_path)
+
+
+def test_required_concept_accepts_a_single_surface_mapping(tmp_path, monkeypatch):
+    monkeypatch.setattr(generator, "REQUIRED_CONCEPTS", {"recording"})
+    data = write_fixture(tmp_path)
+    for namespace in ("tft", "web", "report"):
+        data[namespace]["entries"][f"{namespace}.recording"] = {"en": "Recording", "uk": "Запис"}
+    save_fixture(tmp_path, data)
+    save_concepts(tmp_path, [{
+        "id": "recording", "tft": "tft.recording", "web": None, "report": None,
+        "rule": "same_uk", "equivalent_terms": None, "note": "Recording state.",
+    }])
+    write_surface_reference(tmp_path, "tft", "tft.recording")
+
+    generator.generate_outputs(tmp_path)
+
+
+def test_concept_surface_key_must_be_rendered_by_production_source(tmp_path):
+    data = write_fixture(tmp_path)
+    data["web"]["entries"]["web.status.recording"] = {"en": "Recording", "uk": "Запис"}
+    save_fixture(tmp_path, data)
+    save_concepts(tmp_path, [{
+        "id": "status.recording", "tft": None, "web": "web.status.recording", "report": None,
+        "rule": "equivalent", "equivalent_terms": [{"en": "Recording", "uk": "Запис"}],
+        "note": "The web source uses this label.",
+    }])
+
+    source_roots = {
+        "tft": tmp_path / "tft-source",
+        "web": tmp_path / "web-source",
+        "report": tmp_path / "report-source",
+    }
+    with pytest.raises(generator.CatalogError, match="status.recording.*web key 'web.status.recording'.*production source"):
+        generator.generate_outputs(tmp_path, source_roots=source_roots)
+
+    source_roots["web"].mkdir(parents=True)
+    (source_roots["web"] / "fixture.tsx").write_text(
+        "translate(locale, 'web.status.recording')\n", encoding="utf-8",
+    )
+    generator.generate_outputs(tmp_path, source_roots=source_roots)
+
+
+def test_repository_concept_map_covers_requested_state_families(monkeypatch):
+    monkeypatch.setattr(generator, "REQUIRED_CONCEPTS", set(REPOSITORY_REQUIRED_CONCEPTS))
     concepts = json.loads((REPO_ROOT / "i18n" / "concepts.json").read_text(encoding="utf-8"))
     concept_ids = {concept["id"] for concept in concepts}
     assert {
-        "recording", "stopping", "stopped", "review", "error",
+        "recording", "stopping", "stopped", "error",
         "orientation.accepted", "orientation.moving", "orientation.tilted", "orientation.fault",
         "power.battery", "power.charging", "power.full", "power.low", "power.critical", "power.unknown",
         "localization.solved", "localization.unsolved", "localization.unverified",
-        "constrained", "unconstrained", "unknown", "unavailable",
+        "constrained", "unconstrained", "uncertainty",
+        "velocity.inconsistent", "velocity.at_bound", "unknown", "unavailable",
     } <= concept_ids
+    for concept_id in REPOSITORY_REQUIRED_CONCEPTS:
+        concept = next(entry for entry in concepts if entry["id"] == concept_id)
+        assert any(concept[surface] is not None for surface in ("tft", "web", "report")), concept_id
+
+
+def test_repository_concept_map_keys_are_referenced_by_production_sources(tmp_path, monkeypatch):
+    monkeypatch.setattr(generator, "REQUIRED_CONCEPTS", set(REPOSITORY_REQUIRED_CONCEPTS))
+    for source in (REPO_ROOT / "i18n").glob("*.json"):
+        target = tmp_path / "i18n" / source.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+    generator.generate_outputs(
+        tmp_path,
+        source_roots={
+            "tft": REPO_ROOT / "components",
+            "web": REPO_ROOT / "webui" / "src",
+            "report": REPO_ROOT / "webui" / "src",
+        },
+    )
 
 
 def test_firmware_catalog_contains_common_and_tft_namespaces_only():
@@ -285,11 +385,16 @@ def test_check_normalizes_crlf_but_detects_content_changes(tmp_path):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(current_lf.replace(b"\n", b"\r\n"))
 
-    assert generator.main(["--check"], root=tmp_path) == 0
+    source_roots = {
+        "tft": REPO_ROOT / "components",
+        "web": REPO_ROOT / "webui" / "src",
+        "report": REPO_ROOT / "webui" / "src",
+    }
+    assert generator.main(["--check"], root=tmp_path, source_roots=source_roots) == 0
 
     stale = tmp_path / next(iter(outputs))
     stale.write_bytes(stale.read_bytes() + b"// content changed\r\n")
-    assert generator.main(["--check"], root=tmp_path) == 1
+    assert generator.main(["--check"], root=tmp_path, source_roots=source_roots) == 1
 
 
 def test_repository_catalogs_are_current():

@@ -1,4 +1,5 @@
 #include "ui_internal.h"
+#include "ui_utf8_format.h"
 #include "ui_measurements_internal.h"
 
 #if defined(__has_include)
@@ -317,7 +318,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
     }
 
     char label[24];
-    snprintf(
+    ui_utf8_format(
         label,
         sizeof(label),
         ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_EMPTY),
@@ -553,7 +554,7 @@ void ui_measurements_refresh_charts_locked(
         char text[64];
 
         if (transport_fault) {
-            snprintf(
+            ui_utf8_format(
                 text,
                 sizeof(text),
                 ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_INVALID),
@@ -562,7 +563,7 @@ void ui_measurements_refresh_charts_locked(
             );
         }
         else if (digital_interference) {
-            snprintf(
+            ui_utf8_format(
                 text,
                 sizeof(text),
                 ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_DIGITAL),
@@ -570,7 +571,7 @@ void ui_measurements_refresh_charts_locked(
             );
         }
         else if (serial_suspicious) {
-            snprintf(
+            ui_utf8_format(
                 text,
                 sizeof(text),
                 ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_SERIAL),
@@ -582,7 +583,7 @@ void ui_measurements_refresh_charts_locked(
             const double latest_mv = (double)s_preview_latest[channel] / 1000.0;
             const bool flat = s_preview_min[channel] == s_preview_max[channel];
 
-            snprintf(
+            ui_utf8_format(
                 text,
                 sizeof(text),
                 ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_VALUE),
@@ -592,7 +593,7 @@ void ui_measurements_refresh_charts_locked(
             );
         }
         else {
-            snprintf(
+            ui_utf8_format(
                 text,
                 sizeof(text),
                 ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_EMPTY),
@@ -658,7 +659,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
     if (card == NULL) return NULL;
 
     char label[24];
-    snprintf(label, sizeof(label), ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_EMPTY), (unsigned)(channel + 1U));
+    ui_utf8_format(label, sizeof(label), ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_EMPTY), (unsigned)(channel + 1U));
     context->measurement_channel_labels[channel] = ui_create_label_locked(
         card,
         5,
@@ -991,7 +992,7 @@ void ui_measurements_refresh_locked(void)
             : 0UL;
 
     if (measurement.state == MEASUREMENT_SERVICE_RECORDING) {
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_MEASUREMENT_RECORDING),
@@ -1003,7 +1004,7 @@ void ui_measurements_refresh_locked(void)
         );
     }
     else if (measurement.state == MEASUREMENT_SERVICE_REVIEW) {
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_MEASUREMENT_STOPPED),
@@ -1014,7 +1015,7 @@ void ui_measurements_refresh_locked(void)
         );
     }
     else {
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_MEASUREMENT_IDLE_SUMMARY),
@@ -1055,7 +1056,7 @@ void ui_measurements_refresh_locked(void)
             : measurement.object_id[0] != '\0';
 
     if (displayed_object_present) {
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_MEASUREMENT_OBJECT_FORMAT),
@@ -1066,10 +1067,10 @@ void ui_measurements_refresh_locked(void)
         );
     }
     else if (measurement.state == MEASUREMENT_SERVICE_STARTING) {
-        snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_MEASUREMENT_OBJECT_RESOLVING));
+        ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_MEASUREMENT_OBJECT_RESOLVING));
     }
     else {
-        snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_MEASUREMENT_OBJECT_NONE));
+        ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_MEASUREMENT_OBJECT_NONE));
     }
 
     (void)ui_measurements_label_set_if_changed(context->measurement_transport, text);
@@ -1086,7 +1087,7 @@ void ui_measurements_refresh_locked(void)
 
     switch (measurement.state) {
         case MEASUREMENT_SERVICE_LIVE:
-            snprintf(
+            ui_utf8_format(
                 text,
                 sizeof(text),
                 "%s",
@@ -1101,7 +1102,7 @@ void ui_measurements_refresh_locked(void)
             break;
 
         case MEASUREMENT_SERVICE_RECORDING:
-            snprintf(
+            ui_utf8_format(
                 text,
                 sizeof(text),
                 ui_tr(UI_I18N_KEY_MEASUREMENT_RECORDING_STATUS),
@@ -1117,7 +1118,7 @@ void ui_measurements_refresh_locked(void)
                 UI_I18N_KEY_MEASUREMENT_ACTION_DELETE,
                 UI_I18N_KEY_MEASUREMENT_ACTION_PREVIEW,
             };
-            snprintf(
+            ui_utf8_format(
                 text,
                 sizeof(text),
                 ui_tr(UI_I18N_KEY_MEASUREMENT_REVIEW_COUNTS),
@@ -1135,7 +1136,7 @@ void ui_measurements_refresh_locked(void)
         }
 
         case MEASUREMENT_SERVICE_ERROR:
-            snprintf(
+            ui_utf8_format(
                 text,
                 sizeof(text),
                 ui_tr(UI_I18N_KEY_MEASUREMENT_ERROR_RETRY),
@@ -1148,7 +1149,7 @@ void ui_measurements_refresh_locked(void)
         case MEASUREMENT_SERVICE_STOPPING:
         case MEASUREMENT_SERVICE_DELETING:
         default:
-            snprintf(
+            ui_utf8_format(
                 text,
                 sizeof(text),
                 "%s",
@@ -1164,7 +1165,7 @@ void ui_measurements_refresh_locked(void)
         acquisition_err == ESP_OK &&
         ui_measurements_transport_fault(&acquisition)
     ) {
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_MEASUREMENT_TRANSPORT_FAULT),
@@ -1178,7 +1179,7 @@ void ui_measurements_refresh_locked(void)
         acquisition_err == ESP_OK &&
         ui_measurements_digital_interference(&acquisition)
     ) {
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_MEASUREMENT_DIGITAL_FAULT),
@@ -1192,7 +1193,7 @@ void ui_measurements_refresh_locked(void)
         acquisition_err == ESP_OK &&
         acquisition.serial_suspicious
     ) {
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_MEASUREMENT_SERIAL_FAULT),
@@ -1205,8 +1206,8 @@ void ui_measurements_refresh_locked(void)
 
 #if !UI_MEASUREMENTS_GRAPHS_ENABLED
     char graph_mode_text[128];
-    snprintf(graph_mode_text, sizeof(graph_mode_text), ui_tr(UI_I18N_KEY_MEASUREMENT_GRAPHS_STATUS), text);
-    snprintf(text, sizeof(text), "%s", graph_mode_text);
+    ui_utf8_format(graph_mode_text, sizeof(graph_mode_text), ui_tr(UI_I18N_KEY_MEASUREMENT_GRAPHS_STATUS), text);
+    ui_utf8_format(text, sizeof(text), "%s", graph_mode_text);
 #endif
 
     (void)ui_measurements_label_set_if_changed(context->measurement_health, text);

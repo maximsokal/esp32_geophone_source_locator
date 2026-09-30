@@ -1,4 +1,5 @@
 #include "ui_workflow_model.h"
+#include "ui_utf8_format.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -29,7 +30,7 @@ static void copy_arg(char *destination, size_t capacity, const char *source)
 {
     if (capacity == 0U) return;
     if (source == NULL) source = "";
-    (void)snprintf(destination, capacity, "%s", source);
+    (void)ui_utf8_format(destination, capacity, "%s", source);
 }
 
 static ui_workflow_model_line_t *add_line(ui_workflow_model_t *model, ui_i18n_key_t key)
@@ -261,6 +262,7 @@ static void add_reason(ui_workflow_model_t *model, const char *reason)
             ? displayed_prefix_length : sizeof(line->args[0]) - 1U;
         memcpy(line->args[0], prefix, safe_length);
         line->args[0][safe_length] = '\0';
+        (void)ui_utf8_truncate(line->args[0], sizeof(line->args[0]));
         set_key_arg(line, 1U, reason_key);
     } else if (reason_key != UI_I18N_KEY_COUNT) {
         ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_REASON_SINGLE);

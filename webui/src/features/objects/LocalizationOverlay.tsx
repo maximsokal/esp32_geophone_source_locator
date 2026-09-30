@@ -5,6 +5,7 @@ import {
   buildLocalizationOverlay,
   dimensionalityLabel,
   filterOverlayByVariant,
+  localizationMachineAttributes,
   overlappingSectors,
   selectOverlayMethod,
   toggleAvailability,
@@ -145,7 +146,7 @@ export default function LocalizationOverlay({ runs, geometry, hasScan = null, re
         </thead>
         <tbody>
           {model.sectors.map((sector) => (
-            <tr key={sector.method} className={sector.emphasis === 'selected' ? 'selected' : 'dim'}>
+            <tr key={sector.method} {...localizationMachineAttributes(sector)} className={sector.emphasis === 'selected' ? 'selected' : 'dim'} data-state={sector.velocityStatus === 'inconsistent' ? 'velocity_inconsistent' : sector.velocityStatus === 'at_bound' ? 'velocity_at_bound' : 'solved'} data-severity={sector.velocityStatus === 'inconsistent' || sector.velocityStatus === 'at_bound' ? 'warning' : 'normal'}>
               <td><span className="method-swatch" style={{ background: sector.color }} />{sector.method}{velocityNote(runs, sector.method, locale)}</td>
               <td>{formatPosition(sector.position.x_m, sector.position.y_m, sector.position.z_m, locale)}</td>
               <td>{formatDistance(locale, sector.radiusM)}{sector.radiusSource === 'nominal' ? ` (${t('overlay.nominal')})` : sector.radiusSource === 'posterior' ? ` (${t('overlay.two_sd')})` : ''}</td>
@@ -156,7 +157,7 @@ export default function LocalizationOverlay({ runs, geometry, hasScan = null, re
             </tr>
           ))}
           {model.unavailable.map((entry) => (
-            <tr key={`unavailable-${entry.method}`} className="unavailable">
+            <tr key={`unavailable-${entry.method}`} className="unavailable" data-state="rejected" data-severity="warning">
               <td>{entry.method}</td>
               <td colSpan={6}>{t('overlay.unavailable_reason', { reason: entry.reason })}</td>
             </tr>

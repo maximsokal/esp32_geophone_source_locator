@@ -1,4 +1,5 @@
 #include "ui_internal.h"
+#include "ui_utf8_format.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -336,6 +337,7 @@ static void set_reason(preview_result_t *result, const char *reason)
     if (reason == NULL) reason = "preview unavailable";
     (void)strncpy(result->fallback_reason, reason, sizeof(result->fallback_reason) - 1U);
     result->fallback_reason[sizeof(result->fallback_reason) - 1U] = '\0';
+    (void)ui_utf8_truncate(result->fallback_reason, sizeof(result->fallback_reason));
 }
 
 static void load_session(const preview_request_t *request, preview_result_t *result)
@@ -471,12 +473,12 @@ static void show_ready_locked(void)
     char text[128];
     const char *reason = preview_reason_text(s_state.fallback_reason);
     if (s_state.has_preview) {
-        snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_SCAN_VOXELS),
+        ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_SCAN_VOXELS),
                  (unsigned)s_state.preview.voxel_count,
                  (unsigned)s_state.preview.coarsening_steps,
                  reason[0] != '\0' ? "  " : "", reason);
     } else {
-        snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_SCAN_OCCUPANCY),
+        ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_SCAN_OCCUPANCY),
                  (unsigned)s_state.occupancy.occupied_count, reason);
     }
     lv_label_set_text(s_info_label, text);

@@ -28,10 +28,18 @@ export default function DeviceDashboard({
   const connected = connectedPodCount(status);
   const systemState = status?.system.state ?? t('device.connecting');
   const acquisition = status?.acquisition;
+  const batteryPercent = status?.power?.battery_percent_valid &&
+    typeof status.power.battery_percent_estimate === 'number' &&
+    Number.isFinite(status.power.battery_percent_estimate)
+    ? `${formatNumber(locale, status.power.battery_percent_estimate, { maximumFractionDigits: 0 })}%`
+    : t('power.state_unknown');
   const hardwareProblem = status !== null && status.system.state !== 'READY';
+  const semanticStatus = status === null ? 'unavailable'
+    : status.system.state === 'READY' ? 'normal'
+      : status.system.state === 'FAULT' ? 'error' : 'warning';
 
   return (
-    <section className="console-page dashboard-grid">
+    <section className="console-page dashboard-grid" data-state={semanticStatus} data-severity={semanticStatus}>
       {error !== null && <div className="console-alert" role="alert">{t('api.error_prefix', { error })}</div>}
       {hardwareProblem && (
         <div className="console-alert" role="status">
@@ -71,6 +79,9 @@ export default function DeviceDashboard({
         <small>{acquisition?.last_error_name && acquisition.last_error_name !== 'ESP_OK'
           ? acquisition.last_error_name
           : acquisition?.sample_rate_hz ? `${formatNumber(locale, acquisition.sample_rate_hz)} Hz · ${acquisition.source}` : t('dashboard.no_verified_source')}</small>
+      </article>
+      <article className="console-card metric-card">
+        <span>{t('dashboard.battery_percent')}</span><strong>{batteryPercent}</strong>
       </article>
       <article className="console-card metric-card">
         <span>{t('dashboard.objects_metric')}</span><strong>{objects?.available ? formatNumber(locale, objects.objects.length) : '—'}</strong>

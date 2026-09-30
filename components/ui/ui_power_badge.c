@@ -1,5 +1,6 @@
 #include "ui_power_badge.h"
 #include "ui_i18n.h"
+#include "ui_utf8_format.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -40,7 +41,7 @@ static void set(ui_power_badge_t *badge, ui_power_icon_t icon, ui_power_severity
 {
     badge->icon = icon;
     badge->severity = severity;
-    snprintf(badge->text, sizeof(badge->text), "%s", text);
+    ui_utf8_format(badge->text, sizeof(badge->text), "%s", text);
 }
 
 
@@ -60,7 +61,7 @@ void ui_power_badge_from_status(
     const bool percent_valid = power->battery_percent_valid &&
         isfinite(power->battery_percent_estimate);
     const int percent = percent_valid ? clamp_percent(power->battery_percent_estimate) : 0;
-    snprintf(percent_text, sizeof(percent_text), ui_tr(UI_I18N_KEY_POWER_PERCENT), percent);
+    ui_utf8_format(percent_text, sizeof(percent_text), ui_tr(UI_I18N_KEY_POWER_PERCENT), percent);
 
     /* The low-battery reaction outranks every other state. */
     if (power->low_battery == DEVICE_LOW_BATTERY_SHUTDOWN) {
@@ -69,7 +70,7 @@ void ui_power_badge_from_status(
     }
     if (power->low_battery == DEVICE_LOW_BATTERY_GRACE) {
         char text[UI_POWER_BADGE_TEXT_MAX];
-        snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_POWER_GRACE), (unsigned)(power->shutdown_in_s % 1000U));
+        ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_POWER_GRACE), (unsigned)(power->shutdown_in_s % 1000U));
         set(badge, UI_POWER_ICON_BATTERY_EMPTY, UI_POWER_SEVERITY_ALERT, text);
         return;
     }

@@ -46,6 +46,7 @@
         "components/ui/ui_screen_registry.c",
         "components/ui/ui_navigation.c",
         "components/ui/ui_system.c",
+        "components/ui_i18n/ui_utf8_format.c",
         "components/ui_i18n/ui_i18n.c",
         "components/ui_i18n/ui_i18n_catalog.gen.c",
         "tests/host/ui_home_navigation_test.c"

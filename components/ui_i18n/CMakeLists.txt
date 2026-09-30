@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "ui_i18n.c"
+        "ui_utf8_format.c"
         "ui_i18n_locale_store.c"
         "ui_i18n_nvs.c"
         "ui_i18n_catalog.gen.c"

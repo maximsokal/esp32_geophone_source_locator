@@ -1,6 +1,7 @@
 #include "ui_internal.h"
 #include "ui_power_badge.h"
 #include "ui_fonts.h"
+#include "ui_utf8_format.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -324,7 +325,7 @@ void ui_set_notice_locked(const char *text)
         return;
     }
 
-    snprintf(context->notice, sizeof(context->notice), "%s", text);
+    ui_utf8_format(context->notice, sizeof(context->notice), "%s", text);
 }
 
 
@@ -372,7 +373,7 @@ static void ui_refresh_power_badge_locked(ui_context_t *context)
     }
     char text[UI_POWER_BADGE_TEXT_MAX + 8];
     const char *symbol = ui_power_icon_symbol(badge.icon);
-    snprintf(text, sizeof(text), ui_tr(UI_I18N_KEY_HEADER_POWER_FORMAT),
+    ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_HEADER_POWER_FORMAT),
              symbol, symbol[0] != '\0' ? " " : "", badge.text);
     ui_set_label_text_if_changed(context->header_power, text);
     ui_set_label_color_if_changed(context->header_power, ui_power_severity_color(badge.severity));
@@ -394,7 +395,7 @@ void ui_refresh_header_locked(void)
 
     if (seismic_acquisition_get_snapshot(&acquisition) == ESP_OK) {
         char text[32];
-        snprintf(
+        ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_HEADER_SOURCE_FORMAT),

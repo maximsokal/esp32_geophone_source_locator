@@ -20,13 +20,25 @@ typedef enum {
     EVENT_CLOSE_VERIFY,
     EVENT_RECOVERY,
     EVENT_CHANNEL_CHANGE,
+    EVENT_NODE_RESET,
+    EVENT_RECONCILE,
+    EVENT_SHUTDOWN,
+    EVENT_PRIORITY_STORM,
 } fake_event_kind_t;
 
 typedef struct {
     fake_event_kind_t kind;
     uint8_t node;
     uint8_t message_type;
+    uint8_t physical_node;
+    uint8_t mux_channel;
 } fake_event_t;
+
+typedef enum {
+    RESET_INJECTION_NONE = 0,
+    RESET_AFTER_STATUS_READ,
+    RESET_AFTER_FIRST_BLOCK_READ,
+} reset_injection_point_t;
 
 typedef enum {
     FAULT_NONE = 0,
@@ -58,6 +70,9 @@ typedef struct {
     size_t pending_length;
     uint8_t pending_type;
     uint8_t active_node;
+    uint8_t active_physical_node;
+    uint8_t active_mux_channel;
+    uint8_t route_physical_node[NRF_LOG_COLLECTOR_NODE_COUNT];
     uint8_t fault_node;
     uint8_t fault_response_type;
     uint8_t other_channel;
@@ -65,6 +80,9 @@ typedef struct {
     bool fault_always;
     bool fault_used;
     bool yield_pending;
+    bool shutdown_requested;
+    bool shutdown_after_first_block_read;
+    bool shutdown_injected;
     bool yield_after_status_read;
     uint8_t yield_after_status_node;
     bool deadlines_enabled;
@@ -77,6 +95,25 @@ typedef struct {
     uint32_t cs_deadline_max_lateness_ms;
     uint32_t sensor_deadline_max_lateness_ms;
     uint32_t reconcile_deadline_max_lateness_ms;
+    bool sensor_refresh_active;
+    bool cs_command_active;
+    bool priority_storm_after_status_read;
+    bool priority_storm_injected;
+    uint8_t priority_storm_node;
+    reset_injection_point_t reset_injection_point;
+    uint8_t reset_injection_node;
+    uint32_t reset_block_read_target;
+    bool node_reset_injected;
+    uint32_t reset_old_boot_id;
+    uint32_t reset_new_boot_id;
+    bool reconcile_on_first_block_write;
+    bool reconcile_injected;
+    uint8_t reconcile_node;
+    uint8_t reconcile_new_physical_node;
+    uint8_t reconcile_new_mux_channel;
+    uint32_t mux_selects;
+    uint32_t mux_closes;
+    bool mux_open;
     bool inject_page_read_during_write;
     bool readback_mismatch;
     bool select_failure;
@@ -107,6 +144,7 @@ typedef struct {
 static fake_bus_t s_fake;
 static uint32_t s_assertions;
 static uint32_t active_seed;
+static uint32_t s_production_defects;
 
 #define CHECK(condition) do { \
     ++s_assertions; \
@@ -114,6 +152,15 @@ static uint32_t active_seed;
         fprintf(stderr, "seed=0x%08lX failed at %s:%d: %s\n", \
             (unsigned long)active_seed, __FILE__, __LINE__, #condition); \
         assert(condition); \
+    } \
+} while (0)
+
+#define CHECK_PRODUCTION_INVARIANT(condition, message) do { \
+    ++s_assertions; \
+    if (!(condition)) { \
+        ++s_production_defects; \
+        fprintf(stderr, "PRODUCTION DEFECT: %s (seed=0x%08lX, %s:%d: %s)\n", \
+            message, (unsigned long)active_seed, __FILE__, __LINE__, #condition); \
     } \
 } while (0)
 
@@ -148,6 +195,8 @@ static void fake_event(fake_bus_t *fake, fake_event_kind_t kind, uint8_t node, u
         .kind = kind,
         .node = node,
         .message_type = type,
+        .physical_node = fake->active_physical_node,
+        .mux_channel = fake->active_mux_channel,
     };
 }
 
@@ -183,6 +232,73 @@ static void fake_write_u32(uint8_t *destination, uint32_t value)
     destination[1] = (uint8_t)(value >> 8U);
     destination[2] = (uint8_t)(value >> 16U);
     destination[3] = (uint8_t)(value >> 24U);
+}
+
+static esp_err_t fake_init_ring(fake_bus_t *fake, uint8_t node, uint32_t boot_id);
+static void fake_append(fake_bus_t *fake, uint8_t node, uint32_t count);
+
+static void fake_reset_active_ring(fake_bus_t *fake, uint8_t node, uint8_t response_type)
+{
+    uint8_t physical_node = fake->active_physical_node;
+    bool inject = false;
+    if (physical_node >= NRF_LOG_COLLECTOR_NODE_COUNT) physical_node = node;
+    if (fake->node_reset_injected || node != fake->reset_injection_node) return;
+    if (fake->reset_injection_point == RESET_AFTER_STATUS_READ &&
+        response_type == NRF_LOG_MESSAGE_STATUS) {
+        inject = true;
+    } else if (fake->reset_injection_point == RESET_AFTER_FIRST_BLOCK_READ &&
+               response_type == NRF_LOG_MESSAGE_BLOCK &&
+               fake->block_reads[node] == fake->reset_block_read_target) {
+        inject = true;
+    }
+    if (!inject) return;
+
+    CHECK(fake->active_node == node && fake->mux_open);
+    fake->reset_old_boot_id = fake->rings[physical_node].boot_id;
+    fake->reset_new_boot_id = fake->reset_old_boot_id + 1U;
+    if (fake->reset_new_boot_id == 0U) fake->reset_new_boot_id = 1U;
+    fake_event(fake, EVENT_NODE_RESET, node, response_type);
+    CHECK(fake_init_ring(fake, physical_node, fake->reset_new_boot_id) == ESP_OK);
+    fake_append(fake, physical_node, 1U);
+    fake->node_reset_injected = true;
+}
+
+static void fake_inject_priority_storm(fake_bus_t *fake, uint8_t node)
+{
+    if (!fake->priority_storm_after_status_read || fake->priority_storm_injected ||
+        node != fake->priority_storm_node) return;
+    CHECK(fake->active_node == node && fake->mux_open);
+    fake->priority_storm_injected = true;
+    fake->sensor_refresh_active = true;
+    fake->cs_command_active = true;
+    /* Mirrors service_log_build_targets() deriving cs_busy from command_active. */
+    fake->targets[1U].cs_busy = true;
+    fake->targets[2U].cs_busy = true;
+    fake->deadlines_enabled = true;
+    fake->cs_deadline_ms = fake->now_ms;
+    fake->sensor_deadline_ms = fake->now_ms;
+    fake->reconcile_deadline_ms = fake->now_ms;
+    for (uint8_t storm_node = 1U; storm_node <= 4U; ++storm_node) {
+        fake_append(fake, storm_node, storm_node == node ? 16U : 2U);
+    }
+    fake_event(fake, EVENT_PRIORITY_STORM, node, NRF_LOG_MESSAGE_STATUS);
+}
+
+static void fake_reconcile_during_block_write(fake_bus_t *fake, uint8_t node)
+{
+    nrf_log_poll_target_t *target;
+    if (!fake->reconcile_on_first_block_write || fake->reconcile_injected ||
+        node != fake->reconcile_node) return;
+    CHECK(fake->active_node == node && fake->mux_open);
+    target = &fake->targets[node];
+    target->node_id = (uint8_t)(UINT8_C(0x40) + node);
+    target->hardware_id[0] = (uint8_t)(UINT8_C(0xD0) + node);
+    ++target->assignment_generation;
+    target->mux_channel = fake->reconcile_new_mux_channel;
+    fake->route_physical_node[node] = fake->reconcile_new_physical_node;
+    CHECK(nrf_log_collector_sync_targets(fake->collector, fake->targets) == ESP_OK);
+    fake->reconcile_injected = true;
+    fake_event(fake, EVENT_RECONCILE, node, NRF_LOG_MESSAGE_READ_REQUEST);
 }
 
 static esp_err_t fake_init_ring(fake_bus_t *fake, uint8_t node, uint32_t boot_id)
@@ -250,8 +366,12 @@ static void fake_start(uint8_t present_count)
     s_fake.collector = nrf_log_collector_create();
     CHECK(s_fake.collector != NULL);
     for (uint8_t node = 0U; node < NRF_LOG_COLLECTOR_NODE_COUNT; ++node) {
+        s_fake.route_physical_node[node] = node;
         CHECK(fake_init_ring(&s_fake, node, UINT32_C(0x1000) + node) == ESP_OK);
     }
+    s_fake.active_node = UINT8_MAX;
+    s_fake.active_physical_node = UINT8_MAX;
+    s_fake.active_mux_channel = UINT8_MAX;
     fake_set_targets(&s_fake, present_count);
 }
 
@@ -265,25 +385,39 @@ static esp_err_t fake_begin_node(void *context, uint8_t node)
 {
     fake_bus_t *fake = context;
     fake->active_node = node;
+    fake->active_physical_node = fake->route_physical_node[node];
+    fake->active_mux_channel = fake->targets[node].mux_channel;
     if (node != 0U) {
-        CHECK(fake->targets[node].mux_channel == (uint8_t)(node - 1U));
+        /* Only the 10.4 reconcile scenario may move a node to another channel;
+         * everywhere else the one-hot mapping stays node N -> channel N-1. */
+        CHECK(fake->reconcile_injected
+            ? fake->targets[node].mux_channel < NRF_TOPOLOGY_REMOTE_COUNT
+            : fake->targets[node].mux_channel == (uint8_t)(node - 1U));
         fake_event(fake, EVENT_CLOSE, node, 0U);
         fake_event(fake, EVENT_CLOSE_VERIFY, node, 0U);
-        fake->active_node = UINT8_MAX;
         fake_event(fake, EVENT_SELECT, node, 0U);
         fake->now_ms += 1U;
         if (fake->select_failure && fake->select_failure_node == node) {
             fake_event(fake, EVENT_CLOSE, node, 0U);
             fake_event(fake, EVENT_CLOSE_VERIFY, node, 0U);
+            fake->active_node = UINT8_MAX;
+            fake->active_physical_node = UINT8_MAX;
+            fake->active_mux_channel = UINT8_MAX;
             return ESP_ERR_INVALID_RESPONSE;
         }
+        fake->mux_open = true;
+        ++fake->mux_selects;
         fake_event(fake, EVENT_SELECT_VERIFY, node, 0U);
         if (fake->readback_mismatch && fake->select_failure_node == node) {
             fake_event(fake, EVENT_CLOSE, node, 0U);
             fake_event(fake, EVENT_CLOSE_VERIFY, node, 0U);
+            fake->mux_open = false;
+            ++fake->mux_closes;
+            fake->active_node = UINT8_MAX;
+            fake->active_physical_node = UINT8_MAX;
+            fake->active_mux_channel = UINT8_MAX;
             return ESP_ERR_INVALID_RESPONSE;
         }
-        fake->active_node = node;
     }
     return ESP_OK;
 }
@@ -295,13 +429,22 @@ static esp_err_t fake_end_node(void *context, uint8_t node)
     fake_event(fake, EVENT_CLOSE, node, 0U);
     fake_event(fake, EVENT_CLOSE_VERIFY, node, 0U);
     fake->now_ms += 1U;
-    fake->active_node = UINT8_MAX;
     if (fake->close_failure && fake->close_failure_node == node) {
         fake_event(fake, EVENT_CLOSE, node, 0U);
         fake_event(fake, EVENT_CLOSE_VERIFY, node, 0U);
         fake->now_ms += 1U;
+        fake->mux_open = false;
+        ++fake->mux_closes;
+        fake->active_node = UINT8_MAX;
+        fake->active_physical_node = UINT8_MAX;
+        fake->active_mux_channel = UINT8_MAX;
         return ESP_ERR_INVALID_RESPONSE;
     }
+    if (fake->mux_open) ++fake->mux_closes;
+    fake->mux_open = false;
+    fake->active_node = UINT8_MAX;
+    fake->active_physical_node = UINT8_MAX;
+    fake->active_mux_channel = UINT8_MAX;
     return ESP_OK;
 }
 
@@ -333,16 +476,21 @@ static esp_err_t fake_write_frame(
 {
     fake_bus_t *fake = context;
     const uint8_t request_type = frame_length > 3U ? frame[3] : 0U;
+    uint8_t physical_node = fake->active_physical_node;
     const uint8_t response_type = request_type == NRF_LOG_MESSAGE_STATUS_REQUEST
         ? NRF_LOG_MESSAGE_STATUS
         : NRF_LOG_MESSAGE_BLOCK;
     bool fault = false;
     esp_err_t result;
     if (node != 0U && fake->active_node != node) return ESP_ERR_INVALID_STATE;
+    if (physical_node >= NRF_LOG_COLLECTOR_NODE_COUNT) physical_node = node;
     fake_event(fake, EVENT_WRITE, node, request_type);
     fake->now_ms += fake->tx_cost_ms;
     if (request_type == NRF_LOG_MESSAGE_STATUS_REQUEST) ++fake->status_writes[node];
-    else if (request_type == NRF_LOG_MESSAGE_READ_REQUEST) ++fake->block_writes[node];
+    else if (request_type == NRF_LOG_MESSAGE_READ_REQUEST) {
+        ++fake->block_writes[node];
+        if (fake->block_writes[node] == 1U) fake_reconcile_during_block_write(fake, node);
+    }
     if (fake->inject_page_read_during_write) {
         nrf_log_node_page_t page;
         fake->inject_page_read_during_write = false;
@@ -377,7 +525,7 @@ static esp_err_t fake_write_frame(
             result = fake_build_legacy_status(fake, node, request.request_id);
         } else {
             result = nrf_log_ring_build_status_frame(
-                         &fake->rings[node],
+                         &fake->rings[physical_node],
                          request.request_id,
                          fake->pending,
                          sizeof(fake->pending),
@@ -396,7 +544,7 @@ static esp_err_t fake_write_frame(
         fake->last_block_boot[node] = request.expected_boot_id;
         fake->last_block_max_records[node] = request.max_records;
         result = nrf_log_ring_build_block_frame(
-                     &fake->rings[node],
+                     &fake->rings[physical_node],
                      request.request_id,
                      request.expected_boot_id,
                      request.cursor_seq,
@@ -439,14 +587,15 @@ static esp_err_t fake_make_other_channel_reply(fake_bus_t *fake, uint8_t node, u
             ? fake->last_status_id[other]
             : (uint32_t)other * 4U + 1U;
         return nrf_log_ring_build_status_frame(
-                   &fake->rings[other], request_id, fake->pending, sizeof(fake->pending), &fake->pending_length) ==
+                   &fake->rings[fake->route_physical_node[other]], request_id,
+                   fake->pending, sizeof(fake->pending), &fake->pending_length) ==
                 NRF_LOG_ERROR_OK
             ? ESP_OK
             : ESP_ERR_INVALID_RESPONSE;
     }
     const uint32_t request_id = fake->last_block_id[other];
     return nrf_log_ring_build_block_frame(
-               &fake->rings[other],
+               &fake->rings[fake->route_physical_node[other]],
                request_id,
                fake->last_block_boot[other],
                fake->last_block_cursor[other],
@@ -467,8 +616,10 @@ static esp_err_t fake_read_frame(
 {
     fake_bus_t *fake = context;
     const uint8_t response_type = fake->pending_type;
+    uint8_t physical_node = fake->active_physical_node;
     bool fault;
     size_t copy_length;
+    if (physical_node >= NRF_LOG_COLLECTOR_NODE_COUNT) physical_node = node;
     fake_event(fake, EVENT_READ, node, response_type);
     fake->now_ms += fake->tx_cost_ms;
     if (response_type == NRF_LOG_MESSAGE_STATUS) ++fake->status_reads[node];
@@ -489,10 +640,10 @@ static esp_err_t fake_read_frame(
     if (fault && (fake->fault == FAULT_RESET_DURING_RX ||
                   fake->fault == FAULT_RESET_ON_SECOND_BLOCK) &&
         response_type == NRF_LOG_MESSAGE_BLOCK) {
-        uint32_t new_boot = fake->rings[node].boot_id + 1U;
+        uint32_t new_boot = fake->rings[physical_node].boot_id + 1U;
         if (new_boot == 0U) new_boot = 1U;
-        CHECK(fake_init_ring(fake, node, new_boot) == ESP_OK);
-        fake_append(fake, node, 1U);
+        CHECK(fake_init_ring(fake, physical_node, new_boot) == ESP_OK);
+        fake_append(fake, physical_node, 1U);
         fake_recover(fake, node);
         return ESP_ERR_TIMEOUT;
     }
@@ -523,7 +674,7 @@ static esp_err_t fake_read_frame(
         fake_write_u32(&frame[22], next_cursor + 1U);
         fake_repair_crc(frame, fake->pending_length);
     } else if (fault && fake->fault == FAULT_OTHER_BOOT_ID) {
-        fake_write_u32(&frame[14], fake->rings[node].boot_id + 1U);
+        fake_write_u32(&frame[14], fake->rings[physical_node].boot_id + 1U);
         fake_repair_crc(frame, fake->pending_length);
     } else if (fault && fake->fault == FAULT_STALE_REQUEST_ID) {
         const uint32_t request_id = (uint32_t)frame[6] |
@@ -545,6 +696,15 @@ static esp_err_t fake_read_frame(
         fake->yield_pending = true;
     }
     *received_length = copy_length;
+    if (response_type == NRF_LOG_MESSAGE_STATUS) fake_inject_priority_storm(fake, node);
+    if (fake->shutdown_after_first_block_read && !fake->shutdown_injected &&
+        response_type == NRF_LOG_MESSAGE_BLOCK && fake->block_reads[node] == 1U) {
+        /* Raise the stop predicate inside the completed read callback, before it returns. */
+        CHECK(fake->active_node == node && fake->mux_open);
+        fake->shutdown_injected = true;
+        fake->shutdown_requested = true;
+        fake_event(fake, EVENT_SHUTDOWN, node, response_type);
+    }
     return ESP_OK;
 }
 
@@ -553,18 +713,30 @@ static uint64_t fake_now(void *context)
     return ((fake_bus_t *)context)->now_ms;
 }
 
+static void fake_service_due_deadlines(fake_bus_t *fake);
+
 static bool fake_yield_requested(void *context)
 {
-    const fake_bus_t *fake = context;
-    return fake->yield_pending || (fake->deadlines_enabled &&
+    fake_bus_t *fake = context;
+    if (fake->event_count != 0U) {
+        const fake_event_t *last_event = &fake->events[fake->event_count - 1U];
+        if (last_event->kind == EVENT_READ && last_event->node == fake->active_node) {
+            fake_reset_active_ring(fake, last_event->node, last_event->message_type);
+        }
+    }
+    const bool deadline_due = fake->deadlines_enabled &&
         (fake->now_ms >= fake->cs_deadline_ms ||
          fake->now_ms >= fake->sensor_deadline_ms ||
-         fake->now_ms >= fake->reconcile_deadline_ms));
+         fake->now_ms >= fake->reconcile_deadline_ms);
+    if (deadline_due) fake_service_due_deadlines(fake);
+    /* Production maps stop/immediate work/reconcile pressure through this callback. */
+    return fake->yield_pending || fake->shutdown_requested || fake->sensor_refresh_active || deadline_due;
 }
 
 static void fake_service_due_deadlines(fake_bus_t *fake)
 {
     const uint64_t now = fake->now_ms;
+    if (!fake->deadlines_enabled) return;
     if (now >= fake->cs_deadline_ms) {
         const uint32_t late = (uint32_t)(now - fake->cs_deadline_ms);
         if (late > fake->cs_deadline_max_lateness_ms) fake->cs_deadline_max_lateness_ms = late;
@@ -1363,6 +1535,321 @@ static void test_store_interleavings(void)
     fake_stop();
 }
 
+static void test_full_ring_reboot_interleavings(void)
+{
+    static const struct {
+        reset_injection_point_t point;
+        uint16_t old_records_kept;
+        uint8_t expected_block_reads;
+    } cases[] = {
+        { RESET_AFTER_STATUS_READ, 10U, 1U },
+        { RESET_AFTER_FIRST_BLOCK_READ, 15U, 2U },
+    };
+
+    for (size_t case_index = 0U; case_index < sizeof(cases) / sizeof(cases[0]); ++case_index) {
+        fake_start(2U);
+        s_fake.targets[0].present = false;
+        CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+        fake_append(&s_fake, 1U, NRF_LOG_RING_CAPACITY);
+        CHECK(s_fake.rings[1].count == NRF_LOG_RING_CAPACITY);
+        CHECK(run_round_at_current_time(&s_fake).nodes_succeeded == 1U);
+        const uint32_t old_boot_id = s_fake.rings[1].boot_id;
+        nrf_log_node_page_t page = node_page(&s_fake, 1U, false, 0U, 0U, 128U);
+        CHECK(page.count == 10U);
+        CHECK(node_summary(&s_fake, 1U).boot_id == old_boot_id);
+        for (uint16_t i = 0U; i < page.count; ++i) {
+            CHECK(page.records[i].boot_id == old_boot_id);
+            CHECK(page.records[i].seq == i);
+        }
+
+        s_fake.event_count = 0U;
+        const uint32_t prior_block_reads = s_fake.block_reads[1];
+        s_fake.reset_injection_point = cases[case_index].point;
+        s_fake.reset_injection_node = 1U;
+        s_fake.reset_block_read_target = prior_block_reads + 1U;
+        const nrf_log_collector_iteration_t reset_iteration = run_round(&s_fake);
+        CHECK(reset_iteration.nodes_attempted == 1U);
+        CHECK(reset_iteration.nodes_succeeded == 1U);
+        CHECK(s_fake.node_reset_injected);
+        CHECK(s_fake.reset_old_boot_id == old_boot_id);
+        CHECK(s_fake.reset_new_boot_id == old_boot_id + 1U);
+        CHECK(s_fake.rings[1].count == 1U);
+        CHECK(s_fake.rings[1].boot_id == s_fake.reset_new_boot_id);
+        CHECK(s_fake.block_reads[1] - prior_block_reads == cases[case_index].expected_block_reads);
+        CHECK(!s_fake.mux_open);
+        CHECK(s_fake.mux_selects == s_fake.mux_closes);
+
+        page = node_page(&s_fake, 1U, false, 0U, 0U, 128U);
+        CHECK(page.count == (uint16_t)(cases[case_index].old_records_kept + 1U));
+        for (uint16_t i = 0U; i < cases[case_index].old_records_kept; ++i) {
+            CHECK(page.records[i].boot_id == old_boot_id);
+            CHECK(page.records[i].seq == i);
+        }
+        const nrf_log_stored_record_t *marker = &page.records[cases[case_index].old_records_kept];
+        CHECK(marker->event_id == NRF_LOG_COLLECTOR_REBOOT_EVENT_ID);
+        CHECK(marker->boot_id == s_fake.reset_new_boot_id);
+        CHECK(marker->seq == UINT32_MAX);
+        CHECK(marker->arg0 == old_boot_id);
+        CHECK(marker->arg1 == s_fake.reset_new_boot_id);
+        nrf_log_node_summary_t summary = node_summary(&s_fake, 1U);
+        CHECK(summary.boot_id_valid && summary.boot_id == s_fake.reset_new_boot_id);
+        CHECK(summary.overwritten_total == 0U);
+        CHECK(summary.wire_gap_total == 0U);
+        CHECK(summary.local_drop_total == 0U);
+
+        size_t reset_event = s_fake.event_count;
+        for (size_t i = 0U; i < s_fake.event_count; ++i) {
+            if (trace_event_is(&s_fake, i, EVENT_NODE_RESET, 1U,
+                    cases[case_index].point == RESET_AFTER_STATUS_READ
+                        ? NRF_LOG_MESSAGE_STATUS
+                        : NRF_LOG_MESSAGE_BLOCK)) {
+                reset_event = i;
+                break;
+            }
+        }
+        CHECK(reset_event > 0U && reset_event < s_fake.event_count);
+        CHECK(s_fake.events[reset_event - 1U].kind == EVENT_READ);
+        CHECK(s_fake.events[reset_event - 1U].message_type ==
+            (cases[case_index].point == RESET_AFTER_STATUS_READ
+                ? NRF_LOG_MESSAGE_STATUS
+                : NRF_LOG_MESSAGE_BLOCK));
+        CHECK(trace_event_is(&s_fake, reset_event + 1U, EVENT_WRITE, 1U,
+            NRF_LOG_MESSAGE_READ_REQUEST));
+
+        CHECK(run_round(&s_fake).nodes_succeeded == 1U);
+        page = node_page(&s_fake, 1U, false, 0U, 0U, 128U);
+        CHECK(page.count == (uint16_t)(cases[case_index].old_records_kept + 2U));
+        CHECK(s_fake.last_block_cursor[1] == 0U);
+        CHECK(page.records[page.count - 1U].boot_id == s_fake.reset_new_boot_id);
+        CHECK(page.records[page.count - 1U].seq == 0U);
+        summary = node_summary(&s_fake, 1U);
+        CHECK(summary.boot_id == s_fake.reset_new_boot_id);
+        CHECK(summary.wire_gap_total == 0U);
+        CHECK(!s_fake.mux_open);
+        CHECK(s_fake.mux_selects == s_fake.mux_closes);
+        fake_stop();
+    }
+}
+
+static void test_reconcile_during_bus_transaction(void)
+{
+    fake_start(3U);
+    s_fake.targets[0].present = false;
+    s_fake.targets[2].present = false;
+    CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+    fake_append(&s_fake, 1U, 10U);
+    fake_append(&s_fake, 2U, 2U);
+    const uint32_t old_boot_id = s_fake.rings[1].boot_id;
+    const uint32_t new_boot_id = s_fake.rings[2].boot_id;
+    const uint8_t old_mux_channel = s_fake.targets[1].mux_channel;
+    s_fake.reconcile_on_first_block_write = true;
+    s_fake.reconcile_node = 1U;
+    s_fake.reconcile_new_physical_node = 2U;
+    s_fake.reconcile_new_mux_channel = (uint8_t)(NRF_TOPOLOGY_REMOTE_COUNT - 1U);
+
+    CHECK(run_round_at_current_time(&s_fake).nodes_succeeded == 1U);
+    CHECK(s_fake.reconcile_injected);
+    CHECK(s_fake.targets[1].node_id == (uint8_t)(UINT8_C(0x40) + 1U));
+    CHECK(s_fake.targets[1].assignment_generation == 2U);
+    CHECK(s_fake.route_physical_node[1] == 2U);
+    CHECK(s_fake.rings[1].boot_id == old_boot_id);
+    nrf_log_node_page_t page = node_page(&s_fake, 1U, false, 0U, 0U, 128U);
+
+    size_t reconcile_event = s_fake.event_count;
+    for (size_t i = 0U; i < s_fake.event_count; ++i) {
+        if (trace_event_is(&s_fake, i, EVENT_RECONCILE, 1U, NRF_LOG_MESSAGE_READ_REQUEST)) {
+            reconcile_event = i;
+            break;
+        }
+    }
+    CHECK(reconcile_event > 0U && reconcile_event + 1U < s_fake.event_count);
+    CHECK(trace_event_is(&s_fake, reconcile_event - 1U, EVENT_WRITE, 1U,
+        NRF_LOG_MESSAGE_READ_REQUEST));
+    CHECK(s_fake.events[reconcile_event].physical_node == 1U);
+    CHECK(s_fake.events[reconcile_event].mux_channel == old_mux_channel);
+    CHECK(trace_event_is(&s_fake, reconcile_event + 1U, EVENT_READ, 1U, NRF_LOG_MESSAGE_BLOCK));
+    CHECK(s_fake.events[reconcile_event + 1U].physical_node == 1U);
+    CHECK(!s_fake.mux_open);
+    CHECK(s_fake.mux_selects == s_fake.mux_closes);
+
+    bool stored_old_assignment = false;
+    for (uint16_t i = 0U; i < page.count; ++i) {
+        if (page.records[i].event_id != NRF_LOG_COLLECTOR_REBOOT_EVENT_ID &&
+            page.records[i].arg0 == 1U) {
+            stored_old_assignment = true;
+        }
+    }
+    /* The in-flight stage was captured under A, while sync_targets replaced slot 1 with B. */
+    CHECK_PRODUCTION_INVARIANT(!stored_old_assignment,
+        "MAX-308 10.4: staged node A records were committed into node B's store after in-transaction reconcile");
+
+    const size_t new_mapping_start = s_fake.event_count;
+    CHECK(run_round(&s_fake).nodes_succeeded == 1U);
+    CHECK(s_fake.last_block_cursor[1] == 0U);
+    size_t new_mapping_select = s_fake.event_count;
+    for (size_t i = new_mapping_start; i < s_fake.event_count; ++i) {
+        if (s_fake.events[i].kind == EVENT_SELECT && s_fake.events[i].node == 1U) {
+            new_mapping_select = i;
+            break;
+        }
+    }
+    CHECK(new_mapping_select < s_fake.event_count);
+    CHECK(s_fake.events[new_mapping_select].physical_node == 2U);
+    CHECK(s_fake.events[new_mapping_select].mux_channel == s_fake.reconcile_new_mux_channel);
+    page = node_page(&s_fake, 1U, false, 0U, 0U, 128U);
+    CHECK(node_summary(&s_fake, 1U).boot_id == new_boot_id);
+    CHECK(page.count >= 2U);
+    CHECK(page.records[page.count - 2U].boot_id == new_boot_id);
+    CHECK(page.records[page.count - 2U].seq == 0U);
+    CHECK(page.records[page.count - 2U].arg0 == 2U);
+    CHECK(page.records[page.count - 1U].boot_id == new_boot_id);
+    CHECK(page.records[page.count - 1U].seq == 1U);
+    CHECK(page.records[page.count - 1U].arg0 == 2U);
+    CHECK(!s_fake.mux_open);
+    CHECK(s_fake.mux_selects == s_fake.mux_closes);
+    fake_stop();
+}
+
+static void test_shutdown_during_bus_transaction(void)
+{
+    fake_start(2U);
+    s_fake.targets[0].present = false;
+    CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+    fake_append(&s_fake, 1U, 11U);
+    const uint32_t boot_id = s_fake.rings[1].boot_id;
+    s_fake.shutdown_after_first_block_read = true;
+
+    const nrf_log_collector_iteration_t stopped = run_round_at_current_time(&s_fake);
+    CHECK(stopped.nodes_attempted == 1U);
+    CHECK(stopped.nodes_succeeded == 1U);
+    CHECK(s_fake.shutdown_injected && s_fake.shutdown_requested);
+    CHECK(s_fake.block_writes[1] == 1U);
+    CHECK(s_fake.block_reads[1] == 1U);
+    CHECK(s_fake.last_block_cursor[1] == 0U);
+    CHECK(!s_fake.mux_open);
+    CHECK(s_fake.mux_selects == 1U && s_fake.mux_closes == 1U);
+
+    size_t shutdown_event = s_fake.event_count;
+    for (size_t i = 0U; i < s_fake.event_count; ++i) {
+        if (trace_event_is(&s_fake, i, EVENT_SHUTDOWN, 1U, NRF_LOG_MESSAGE_BLOCK)) {
+            shutdown_event = i;
+            break;
+        }
+    }
+    CHECK(shutdown_event > 0U && shutdown_event + 3U == s_fake.event_count);
+    CHECK(s_fake.events[shutdown_event - 1U].kind == EVENT_READ);
+    CHECK(s_fake.events[shutdown_event + 1U].kind == EVENT_CLOSE);
+    CHECK(s_fake.events[shutdown_event + 2U].kind == EVENT_CLOSE_VERIFY);
+    for (size_t i = shutdown_event + 1U; i < s_fake.event_count; ++i) {
+        CHECK(s_fake.events[i].kind != EVENT_WRITE && s_fake.events[i].kind != EVENT_READ);
+    }
+
+    nrf_log_node_summary_t summary = node_summary(&s_fake, 1U);
+    CHECK(summary.boot_id_valid && summary.boot_id == boot_id);
+    CHECK(summary.stored == NRF_LOG_PROTOCOL_MAX_RECORDS);
+    CHECK(summary.overwritten_total == 0U);
+    CHECK(summary.wire_gap_total == 0U);
+    CHECK(summary.local_drop_total == 0U);
+    nrf_log_node_page_t page = node_page(&s_fake, 1U, false, 0U, 0U, 128U);
+    CHECK(page.count == NRF_LOG_PROTOCOL_MAX_RECORDS);
+    for (uint16_t i = 0U; i < page.count; ++i) {
+        CHECK(page.records[i].boot_id == boot_id);
+        CHECK(page.records[i].seq == i);
+    }
+
+    s_fake.shutdown_requested = false;
+    s_fake.shutdown_after_first_block_read = false;
+    CHECK(run_round(&s_fake).nodes_succeeded == 1U);
+    /* poll_node reads up to two blocks per round, so the resumed round
+     * drains the remaining six records: blocks at cursor 5 and 10. */
+    CHECK(s_fake.last_block_cursor[1] == 2U * NRF_LOG_PROTOCOL_MAX_RECORDS);
+    CHECK(node_summary(&s_fake, 1U).stored == 11U);
+    CHECK(!s_fake.mux_open);
+    CHECK(s_fake.mux_selects == s_fake.mux_closes);
+    fake_stop();
+}
+
+static void test_priority_storm_during_refresh_and_cs(void)
+{
+    fake_start(5U);
+    s_fake.targets[0].present = false;
+    CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+    fake_append(&s_fake, 1U, NRF_LOG_RING_CAPACITY);
+    s_fake.priority_storm_after_status_read = true;
+    s_fake.priority_storm_node = 1U;
+
+    const nrf_log_collector_iteration_t yielded = run_round_at_current_time(&s_fake);
+    CHECK(yielded.nodes_attempted == 1U);
+    CHECK(yielded.nodes_succeeded == 1U);
+    CHECK(s_fake.priority_storm_injected);
+    CHECK(s_fake.sensor_refresh_active && s_fake.cs_command_active);
+    CHECK(s_fake.targets[1].cs_busy && s_fake.targets[2].cs_busy);
+    CHECK(s_fake.block_writes[1] == 0U);
+    CHECK(s_fake.status_reads[1] == 1U);
+    CHECK(s_fake.cs_deadlines_served == 1U);
+    CHECK(s_fake.sensor_deadlines_served == 1U);
+    CHECK(s_fake.reconcile_deadlines_served == 1U);
+    CHECK(s_fake.cs_deadline_max_lateness_ms == 0U);
+    CHECK(s_fake.sensor_deadline_max_lateness_ms == 0U);
+    CHECK(s_fake.reconcile_deadline_max_lateness_ms == 0U);
+    CHECK(!s_fake.deadlines_enabled);
+    CHECK(!s_fake.mux_open);
+    CHECK(s_fake.mux_selects == 1U && s_fake.mux_closes == 1U);
+
+    nrf_log_status_t ring_status = {0};
+    CHECK(nrf_log_ring_status_snapshot(&s_fake.rings[1], &ring_status) == NRF_LOG_ERROR_OK);
+    CHECK(ring_status.overwritten_total == 16U);
+    CHECK(ring_status.oldest_seq == 16U);
+    nrf_log_node_summary_t summary = node_summary(&s_fake, 1U);
+    CHECK(summary.boot_id_valid && summary.boot_id == s_fake.rings[1].boot_id);
+    CHECK(summary.stored == 0U);
+    CHECK(summary.overwritten_total == 0U);
+
+    size_t storm_event = s_fake.event_count;
+    for (size_t i = 0U; i < s_fake.event_count; ++i) {
+        if (trace_event_is(&s_fake, i, EVENT_PRIORITY_STORM, 1U, NRF_LOG_MESSAGE_STATUS)) {
+            storm_event = i;
+            break;
+        }
+    }
+    CHECK(storm_event > 0U && storm_event + 3U == s_fake.event_count);
+    CHECK(s_fake.events[storm_event - 1U].kind == EVENT_READ);
+    CHECK(s_fake.events[storm_event + 1U].kind == EVENT_CLOSE);
+    CHECK(s_fake.events[storm_event + 2U].kind == EVENT_CLOSE_VERIFY);
+    for (size_t i = storm_event + 1U; i < s_fake.event_count; ++i) {
+        CHECK(s_fake.events[i].kind != EVENT_WRITE && s_fake.events[i].kind != EVENT_READ);
+    }
+
+    s_fake.sensor_refresh_active = false;
+    s_fake.cs_command_active = false;
+    s_fake.targets[1].cs_busy = false;
+    s_fake.targets[2].cs_busy = false;
+    const nrf_log_collector_iteration_t resumed = run_round(&s_fake);
+    CHECK(resumed.nodes_attempted == 4U);
+    uint32_t min_status_writes = UINT32_MAX;
+    uint32_t max_status_writes = 0U;
+    for (uint8_t node = 1U; node <= 4U; ++node) {
+        CHECK(s_fake.status_writes[node] != 0U);
+        CHECK(node_summary(&s_fake, node).stored == (node == 1U ? 10U : 2U));
+        if (s_fake.status_writes[node] < min_status_writes) min_status_writes = s_fake.status_writes[node];
+        if (s_fake.status_writes[node] > max_status_writes) max_status_writes = s_fake.status_writes[node];
+    }
+    CHECK(max_status_writes - min_status_writes <= 1U);
+    summary = node_summary(&s_fake, 1U);
+    CHECK(summary.overwritten_total == 16U);
+    CHECK(summary.wire_gap_total == 1U);
+    CHECK(summary.lost_internal_total == 0U);
+    CHECK(summary.local_drop_total == 0U);
+    nrf_log_node_page_t page = node_page(&s_fake, 1U, false, 0U, 0U, 128U);
+    CHECK(page.count == 10U);
+    CHECK(s_fake.last_block_cursor[1] == 21U);
+    CHECK(page.records[0].seq == 16U);
+    CHECK(page.records[9].seq == 25U);
+    CHECK(!s_fake.mux_open);
+    CHECK(s_fake.mux_selects == s_fake.mux_closes);
+    fake_stop();
+}
+
 int main(void)
 {
     const struct {
@@ -1376,13 +1863,22 @@ int main(void)
         { "round cadence/pending-work yield", test_round_cadence_and_yield },
         { "section 8 five-node TCA matrix", test_five_node_tca_matrix },
         { "section 9 fairness/storm/deadlines/seeded", test_backoff_storms_and_random_run },
+        { "section 10.3 full-ring reset interleavings", test_full_ring_reboot_interleavings },
+        { "section 10.4 reconcile inside bus transaction", test_reconcile_during_bus_transaction },
+        { "section 10.5 stop inside bus transaction", test_shutdown_during_bus_transaction },
+        { "section 10.7 refresh/CS priority storm", test_priority_storm_during_refresh_and_cs },
         { "section 10 concurrency/shutdown/recovery", test_store_interleavings },
     };
     for (size_t i = 0U; i < sizeof(sections) / sizeof(sections[0]); ++i) {
         const uint32_t before = s_assertions;
+        const uint32_t defects_before = s_production_defects;
         sections[i].run();
-        printf("%s: PASS checks=%u\n", sections[i].name, s_assertions - before);
+        printf("%s: %s checks=%u production_defects=%u\n",
+            sections[i].name,
+            s_production_defects == defects_before ? "PASS" : "FAIL",
+            s_assertions - before,
+            s_production_defects - defects_before);
     }
     printf("nRF log collector host assertions: %u\n", s_assertions);
-    return 0;
+    return s_production_defects == 0U ? 0 : 1;
 }
