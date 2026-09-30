@@ -135,6 +135,17 @@ static bool identity_equal(const nrf_log_node_state_t *state, const nrf_log_poll
            memcmp(state->hardware_id, target->hardware_id, target->hardware_id_length) == 0;
 }
 
+static bool same_assignment(const nrf_log_node_state_t *a, const nrf_log_node_state_t *b)
+{
+    return a->identity_valid == b->identity_valid &&
+           a->assignment_generation == b->assignment_generation &&
+           a->hardware_id_length == b->hardware_id_length &&
+           a->node_id == b->node_id &&
+           a->mux_channel == b->mux_channel &&
+           a->current_address == b->current_address &&
+           memcmp(a->hardware_id, b->hardware_id, a->hardware_id_length) == 0;
+}
+
 static void state_set_identity(nrf_log_node_state_t *state, const nrf_log_poll_target_t *target)
 {
     state->identity_valid = true;
@@ -511,6 +522,12 @@ static esp_err_t poll_node(
     if (stage.count != 0U || status_valid) {
         if (!collector_lock(collector)) return ESP_ERR_TIMEOUT;
         nrf_log_node_state_t *state = &collector->nodes[node_index];
+        if (!same_assignment(&old_state, state)) {
+            /* sync_targets reassigned the slot during the bus I/O; the stage
+             * belongs to the previous node, so it must not land in this store. */
+            collector_unlock(collector);
+            return ESP_OK;
+        }
         state->boot_id = stage.boot_id;
         state->boot_id_valid = true;
         state->cursor_seq = stage.cursor_seq;
