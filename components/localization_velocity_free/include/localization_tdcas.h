@@ -112,8 +112,9 @@ typedef struct
     localization_point3d_t position_scale_m;
     double spread_m;
 
-    /* Velocity and origin time re-fitted against ALL sensors at the final
-     * position (t_i = t0 + |x - s_i| / v), and the RMS of that fit. */
+    /* Velocity and origin time re-fitted at the final position against all
+     * ray-ADMITTED sensors (t_i = t0 + |x - s_i| / v), and the RMS of that
+     * fit. Sensors in sensor_mask_obstructed are left out (MAX-311). */
     double velocity_mps;
     double velocity_scale_mps;
     int64_t emission_time_us;

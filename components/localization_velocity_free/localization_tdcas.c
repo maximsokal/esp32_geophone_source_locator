@@ -434,15 +434,25 @@ esp_err_t localization_tdcas_solve(
     result->spread_m = sqrt((scale[0] * scale[0] + scale[1] * scale[1] + scale[2] * scale[2]) * TDCAS_PI * TDCAS_PI / 3.0);
     result->velocity_scale_mps = scale[3];
 
-    /* Velocity and origin time against every sensor at the final point. */
+    /* MAX-311: velocity, origin time and RMS are refitted at the final point
+     * over the ray-ADMITTED sensors only. An excluded sensor was excluded
+     * because its straight-ray travel time t0 + |x - s| / v cannot hold, so
+     * keeping it would bias v and t0 and inflate the RMS -- which drives the
+     * bounded-mode INCONSISTENT status (MAX-301). Fusion needs at least k
+     * admitted sensors, so the admitted set is never smaller than k here. */
+    double admitted_times[LOCALIZATION_TDCAS_MAX_SENSORS];
     double distances[LOCALIZATION_TDCAS_MAX_SENSORS];
+    size_t admitted_count = 0U;
     for (size_t i = 0U; i < observation_count; ++i) {
-        distances[i] = vf_distance(result->position, positions[i]);
+        if ((excluded & (1U << i)) != 0U) continue;
+        admitted_times[admitted_count] = times[i];
+        distances[admitted_count] = vf_distance(result->position, positions[i]);
+        ++admitted_count;
     }
     vf_time_fit_t fit = { 0 };
     bool refit_at_bound = false;
-    if (!vf_fit_travel_times_bounded(
-        times, distances, NULL, observation_count, 1.0, location[3],
+    if (admitted_count < 2U || !vf_fit_travel_times_bounded(
+        admitted_times, distances, NULL, admitted_count, 1.0, location[3],
         velocity_bounds, &fit, &refit_at_bound
     )) {
         result->status = LOCALIZATION_TDCAS_NO_VALID_COMBINATION;
