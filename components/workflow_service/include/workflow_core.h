@@ -156,6 +156,9 @@ typedef struct {
     bool has_scan;
     bool calc_settings_ready;
     char calc_material[24];
+    bool calc_velocity_range_set;
+    float calc_velocity_range_min_mps;
+    float calc_velocity_range_max_mps;
     workflow_last_async_t last_async;
     workflow_last_material_save_t last_material_save;
     workflow_command_t recommended_action;

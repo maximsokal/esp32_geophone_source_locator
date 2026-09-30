@@ -118,6 +118,9 @@ static void ui_workflow_prepare_material_model(ui_workflow_screen_state_t *state
         model->material_view = UI_WORKFLOW_MATERIAL_CLOSED;
         model->material_selection_initialized = false;
         model->material_custom_values_valid = false;
+        model->material_custom_range_set = false;
+        model->material_custom_range_min_mps = 0U;
+        model->material_custom_range_max_mps = 0U;
         model->material_save_pending = false;
     }
     model->material_preset_count = localization_material_preset_count();
@@ -762,10 +765,13 @@ static void ui_workflow_save_material(
     }
     sequence++;
     if (sequence == 0U) sequence = 1U;
-    const esp_err_t err = workflow_service_save_calc_material_async(
+    const esp_err_t err = workflow_service_save_calc_material_range_async(
         custom ? "custom" : preset->id,
         custom ? event->custom_v_mps : 0U,
-        custom ? event->custom_sigma_mps : 0U);
+        custom ? event->custom_sigma_mps : 0U,
+        custom && event->has_range,
+        custom ? event->range_min_mps : 0U,
+        custom ? event->range_max_mps : 0U);
     ui_workflow_model_material_save_sent(&state->model_state, err, sequence, now_ms);
 }
 

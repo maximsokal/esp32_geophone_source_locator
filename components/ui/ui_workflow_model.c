@@ -5,6 +5,8 @@
 #include <string.h>
 
 #define UI_WORKFLOW_ACTION_MATERIAL ((workflow_command_t)WORKFLOW_COMMAND_COUNT)
+#define UI_WORKFLOW_MATERIAL_RANGE_MIN_MPS 50U
+#define UI_WORKFLOW_MATERIAL_RANGE_MAX_MPS 8000U
 
 static const workflow_command_t s_action_order[] = {
     WORKFLOW_COMMAND_START_MEASUREMENT,
@@ -342,6 +344,53 @@ static void add_material_speed_line(
     set_arg(line, 1U, sigma);
 }
 
+static uint32_t material_range_default_min(uint32_t speed_mps)
+{
+    const double units = (double)speed_mps / sqrt(10.0) / 50.0;
+    const uint32_t rounded = (uint32_t)(floor(units + 0.5) * 50.0);
+    return rounded < UI_WORKFLOW_MATERIAL_RANGE_MIN_MPS
+        ? UI_WORKFLOW_MATERIAL_RANGE_MIN_MPS : rounded;
+}
+
+static uint32_t material_range_max_allowed(uint32_t min_mps)
+{
+    const uint32_t maximum = min_mps > 800U
+        ? UI_WORKFLOW_MATERIAL_RANGE_MAX_MPS : min_mps * 10U;
+    return (maximum / 50U) * 50U;
+}
+
+static void clamp_material_range(ui_workflow_model_state_t *state)
+{
+    if (state->material_custom_range_min_mps < UI_WORKFLOW_MATERIAL_RANGE_MIN_MPS) {
+        state->material_custom_range_min_mps = UI_WORKFLOW_MATERIAL_RANGE_MIN_MPS;
+    } else if (state->material_custom_range_min_mps > UI_WORKFLOW_MATERIAL_RANGE_MAX_MPS) {
+        state->material_custom_range_min_mps = UI_WORKFLOW_MATERIAL_RANGE_MAX_MPS;
+    }
+    const uint32_t max_allowed = material_range_max_allowed(state->material_custom_range_min_mps);
+    if (state->material_custom_range_max_mps < state->material_custom_range_min_mps) {
+        state->material_custom_range_max_mps = state->material_custom_range_min_mps;
+    } else if (state->material_custom_range_max_mps > max_allowed) {
+        state->material_custom_range_max_mps = max_allowed;
+    }
+}
+
+static void save_custom_material(
+    ui_workflow_model_state_t *state,
+    ui_workflow_event_t *event)
+{
+    state->material_selection_index = state->material_preset_count;
+    state->material_view = UI_WORKFLOW_MATERIAL_SAVING;
+    event->type = UI_WORKFLOW_EVENT_SAVE_MATERIAL;
+    event->material_index = state->material_preset_count;
+    event->custom_v_mps = state->material_custom_v_mps;
+    event->custom_sigma_mps = state->material_custom_sigma_mps;
+    event->has_range = state->material_custom_range_set;
+    if (event->has_range) {
+        event->range_min_mps = state->material_custom_range_min_mps;
+        event->range_max_mps = state->material_custom_range_max_mps;
+    }
+}
+
 static void build_material_picker(
     const ui_workflow_model_state_t *state,
     ui_workflow_model_t *model)
@@ -371,6 +420,29 @@ static void build_material_picker(
             (void)snprintf(sigma, sizeof(sigma), "%lu", (unsigned long)state->material_custom_sigma_mps);
             ui_workflow_model_line_t *value = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_CUSTOM_SIGMA_VALUE);
             set_arg(value, 0U, sigma);
+            model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_HINT_SAVE;
+            break;
+        }
+        case UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MIN: {
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_RANGE_MIN);
+            if (state->material_custom_range_set) {
+                char min[12];
+                (void)snprintf(min, sizeof(min), "%lu", (unsigned long)state->material_custom_range_min_mps);
+                ui_workflow_model_line_t *value = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_RANGE_VALUE);
+                set_arg(value, 0U, min);
+                model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_HINT_ADJUST;
+            } else {
+                (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_RANGE_AUTO);
+                model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_RANGE_HINT_AUTO;
+            }
+            break;
+        }
+        case UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MAX: {
+            char max[12];
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_RANGE_MAX);
+            (void)snprintf(max, sizeof(max), "%lu", (unsigned long)state->material_custom_range_max_mps);
+            ui_workflow_model_line_t *value = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_RANGE_VALUE);
+            set_arg(value, 0U, max);
             model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_HINT_SAVE;
             break;
         }
@@ -575,6 +647,14 @@ void ui_workflow_model_build(
         case WORKFLOW_STEP_STOPPED:
             (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_STOPPED_INSTRUCTION);
             if (!snapshot->calc_settings_ready) (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_STOPPED_SETTINGS_MISSING);
+            if (snapshot->calc_velocity_range_set) {
+                char min[16], max[16];
+                (void)snprintf(min, sizeof(min), "%.0f", (double)snapshot->calc_velocity_range_min_mps);
+                (void)snprintf(max, sizeof(max), "%.0f", (double)snapshot->calc_velocity_range_max_mps);
+                ui_workflow_model_line_t *range = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_RANGE_CURRENT);
+                set_arg(range, 0U, min);
+                set_arg(range, 1U, max);
+            }
             break;
         case WORKFLOW_STEP_CALCULATING: {
             if (snapshot->progress < 0) {
@@ -691,15 +771,60 @@ ui_workflow_event_t ui_workflow_model_handle_key(
                     state->material_custom_sigma_mps = state->material_custom_sigma_mps < 20U
                         ? 10U : state->material_custom_sigma_mps - 10U;
                 } else if (key == UI_WORKFLOW_KEY_OK) {
-                    state->material_selection_index = state->material_preset_count;
-                    state->material_view = UI_WORKFLOW_MATERIAL_SAVING;
-                    event.type = UI_WORKFLOW_EVENT_SAVE_MATERIAL;
-                    event.material_index = state->material_preset_count;
-                    event.custom_v_mps = state->material_custom_v_mps;
-                    event.custom_sigma_mps = state->material_custom_sigma_mps;
+                    state->material_custom_range_set = false;
+                    state->material_custom_range_min_mps = material_range_default_min(state->material_custom_v_mps);
+                    state->material_custom_range_max_mps = material_range_max_allowed(
+                        state->material_custom_range_min_mps);
+                    state->material_view = UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MIN;
                 } else if (key == UI_WORKFLOW_KEY_LEFT) {
                     state->material_view = UI_WORKFLOW_MATERIAL_CUSTOM_SPEED;
                 }
+                break;
+            }
+            case UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MIN:
+                clamp_material_range(state);
+                if (key == UI_WORKFLOW_KEY_UP) {
+                    if (!state->material_custom_range_set) {
+                        state->material_custom_range_set = true;
+                        state->material_custom_range_max_mps = material_range_max_allowed(
+                            state->material_custom_range_min_mps);
+                    } else if (state->material_custom_range_min_mps < UI_WORKFLOW_MATERIAL_RANGE_MAX_MPS) {
+                        state->material_custom_range_min_mps += 50U;
+                    }
+                    clamp_material_range(state);
+                } else if (key == UI_WORKFLOW_KEY_DOWN && state->material_custom_range_set) {
+                    if (state->material_custom_range_min_mps > UI_WORKFLOW_MATERIAL_RANGE_MIN_MPS) {
+                        state->material_custom_range_min_mps -= 50U;
+                    }
+                    clamp_material_range(state);
+                } else if (key == UI_WORKFLOW_KEY_OK) {
+                    if (state->material_custom_range_set) {
+                        state->material_view = UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MAX;
+                    } else {
+                        save_custom_material(state, &event);
+                    }
+                } else if (key == UI_WORKFLOW_KEY_LEFT) {
+                    state->material_view = UI_WORKFLOW_MATERIAL_CUSTOM_SIGMA;
+                }
+                break;
+            case UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MAX: {
+                clamp_material_range(state);
+                const uint32_t max_allowed = material_range_max_allowed(
+                    state->material_custom_range_min_mps);
+                if (key == UI_WORKFLOW_KEY_UP) {
+                    state->material_custom_range_max_mps = state->material_custom_range_max_mps > max_allowed - 50U
+                        ? max_allowed : state->material_custom_range_max_mps + 50U;
+                } else if (key == UI_WORKFLOW_KEY_DOWN) {
+                    state->material_custom_range_max_mps = state->material_custom_range_max_mps <
+                        state->material_custom_range_min_mps + 50U
+                            ? state->material_custom_range_min_mps
+                            : state->material_custom_range_max_mps - 50U;
+                } else if (key == UI_WORKFLOW_KEY_OK) {
+                    save_custom_material(state, &event);
+                } else if (key == UI_WORKFLOW_KEY_LEFT) {
+                    state->material_view = UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MIN;
+                }
+                clamp_material_range(state);
                 break;
             }
             case UI_WORKFLOW_MATERIAL_SAVING:

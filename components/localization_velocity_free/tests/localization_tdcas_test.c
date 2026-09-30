@@ -300,6 +300,49 @@ static void test_scan_void_ray_filter_removes_detoured_sensor(void)
 }
 
 
+/* MAX-311 (fails on the old code): a ray-excluded sensor no longer biases the
+ * final velocity/origin-time refit or inflates its RMS. */
+static void test_ray_excluded_pick_is_left_out_of_final_refit(void)
+{
+    const localization_point3d_t source = { 1.7, 1.1, -1.2 };
+    localization_observation_t observations[7];
+    make_observations(SENSORS_3D, 7U, source, 2.0, 237.0, observations);
+
+    localization_tdcas_result_t clean;
+    assert(localization_tdcas_solve(observations, 7U, NULL, &clean) == ESP_OK);
+    assert(clean.status == LOCALIZATION_TDCAS_SOLVED);
+    assert(fabs(clean.velocity_mps - 237.0) < 1.0);
+    assert(llabs(clean.emission_time_us - 2000000) < 100);
+    assert(clean.rms_residual_us < 10.0);
+
+    /* The obstructed sensor's pick arrives 1.5 ms late (a detour); the ray
+     * filter excludes it, so the refit must match the clean event. The old
+     * code kept it and reported ~258 m/s, t0 +1.2 ms and ~426 us RMS. */
+    observations[6].arrival_time_us += 1500;
+    ray_context_t ray = { .obstructed_sensor = SENSORS_3D[6] };
+    localization_tdcas_config_t config = { 0 };
+    config.ray_filter.clear = ray_clear_unless_obstructed_sensor;
+    config.ray_filter.context = &ray;
+    localization_tdcas_result_t delayed;
+    assert(localization_tdcas_solve(observations, 7U, &config, &delayed) == ESP_OK);
+    assert(delayed.status == LOCALIZATION_TDCAS_SOLVED);
+    assert(delayed.sensor_mask_obstructed == (1U << 6));
+    assert(distance(delayed.position, source) < 0.01);
+    assert(fabs(delayed.velocity_mps - 237.0) < 1.0);
+    assert(llabs(delayed.emission_time_us - 2000000) < 100);
+    assert(delayed.rms_residual_us < 10.0);
+
+    /* Bounded mode: the excluded pick must not turn a good run INCONSISTENT. */
+    const localization_velocity_bounds_t bounds = { .v_min_mps = 150.0f, .v_max_mps = 800.0f, .set = true };
+    config.velocity_bounds = &bounds;
+    config.timing_uncertainty_us = 20.0;
+    localization_tdcas_result_t bounded;
+    assert(localization_tdcas_solve(observations, 7U, &config, &bounded) == ESP_OK);
+    assert(bounded.status == LOCALIZATION_TDCAS_SOLVED);
+    assert(bounded.velocity_status == LOCALIZATION_VELOCITY_STATUS_OK);
+}
+
+
 static bool above_one_meter_depth(const localization_point3d_t *candidate, void *context)
 {
     (void)context;
@@ -426,6 +469,7 @@ int main(void)
     test_current_four_geophone_hardware_is_insufficient();
     test_velocity_free_beats_a_misspecified_velocity();
     test_scan_void_ray_filter_removes_detoured_sensor();
+    test_ray_excluded_pick_is_left_out_of_final_refit();
     test_candidate_filter_can_reject_every_combination();
     test_velocity_bounds_planar_and_3d();
     test_degenerate_and_invalid_input();

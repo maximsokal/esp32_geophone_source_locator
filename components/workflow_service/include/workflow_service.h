@@ -33,6 +33,14 @@ esp_err_t workflow_service_save_calc_material_async(
     uint32_t custom_v_mps,
     uint32_t custom_sigma_mps
 );
+esp_err_t workflow_service_save_calc_material_range_async(
+    const char *material_id,
+    uint32_t custom_v_mps,
+    uint32_t custom_sigma_mps,
+    bool has_range,
+    uint32_t range_min_mps,
+    uint32_t range_max_mps
+);
 esp_err_t workflow_service_capture_height_references(
     uint8_t *requested_channel_mask,
     uint16_t *requested_generation

@@ -11,6 +11,15 @@
       "include_dirs": ["nRF54L15/include"]
     },
     {
+      "name": "nrf_log_corpus_replay",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_log_protocol.c",
+        "tests/host/nrf_log_corpus_replay_test.c"
+      ],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
       "name": "nrf_log_ring",
       "sources": [
         "nRF54L15/src/nrf_upstream_protocol.c",

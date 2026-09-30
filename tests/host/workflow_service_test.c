@@ -902,6 +902,42 @@ static void test_material_save_queue_full_is_rejected_without_sd_write(void)
     workflow_service_shutdown();
 }
 
+/* MAX-312 (new behaviour; the range API did not exist before): a TFT custom
+ * range is persisted as a user velocity_range and reported back in the
+ * snapshot; "auto" persists no explicit range, so the device derives it. */
+static void test_tft_custom_range_is_persisted_and_auto_omits_it(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    workflow_test_settings_json = NULL;
+    assert(workflow_service_save_calc_material_range_async("custom", 1000U, 200U, true, 300U, 3000U) == ESP_OK);
+    assert(workflow_service_poll() == ESP_OK);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(workflow_test_settings_save_calls == 1U);
+    assert(snapshot.last_material_save.result == ESP_OK);
+    assert(strstr(workflow_test_saved_settings, "\"material\":\"custom\"") != NULL);
+    assert(strstr(workflow_test_saved_settings, "\"velocity_range\"") != NULL);
+    assert(strstr(workflow_test_saved_settings, "\"source\":\"user\"") != NULL);
+    assert(strstr(workflow_test_saved_settings, "\"v_min_mps\":300") != NULL);
+    assert(strstr(workflow_test_saved_settings, "\"v_max_mps\":3000") != NULL);
+    assert(snapshot.calc_settings_ready);
+    assert(snapshot.calc_velocity_range_set);
+    assert(snapshot.calc_velocity_range_min_mps == 300.0f);
+    assert(snapshot.calc_velocity_range_max_mps == 3000.0f);
+    workflow_service_shutdown();
+
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    workflow_test_settings_json = NULL;
+    assert(workflow_service_save_calc_material_range_async("custom", 1000U, 200U, false, 0U, 0U) == ESP_OK);
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.last_material_save.result == ESP_OK);
+    assert(strstr(workflow_test_saved_settings, "\"material\":\"custom\"") != NULL);
+    assert(strstr(workflow_test_saved_settings, "velocity_range") == NULL);
+    assert(snapshot.calc_settings_ready);
+    assert(!snapshot.calc_velocity_range_set);
+    workflow_service_shutdown();
+}
+
 static void test_material_is_carried_into_run_provenance(void)
 {
     enter_stopped();
@@ -915,6 +951,7 @@ static void test_material_is_carried_into_run_provenance(void)
 
 int main(void)
 {
+    test_tft_custom_range_is_persisted_and_auto_omits_it();
     test_reconciliation_review_error_and_async_recording_commands();
     test_reboot_resumes_only_at_object_or_idle();
     test_object_poll_preserves_workflow_on_read_error_and_resets_on_change();

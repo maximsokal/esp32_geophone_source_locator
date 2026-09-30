@@ -31,6 +31,8 @@ typedef enum {
     UI_WORKFLOW_MATERIAL_SELECT,
     UI_WORKFLOW_MATERIAL_CUSTOM_SPEED,
     UI_WORKFLOW_MATERIAL_CUSTOM_SIGMA,
+    UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MIN,
+    UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MAX,
     UI_WORKFLOW_MATERIAL_SAVING,
 } ui_workflow_material_view_t;
 
@@ -58,6 +60,9 @@ typedef struct {
     uint32_t material_candidate_sigma_mps;
     uint32_t material_custom_v_mps;
     uint32_t material_custom_sigma_mps;
+    bool material_custom_range_set;
+    uint32_t material_custom_range_min_mps;
+    uint32_t material_custom_range_max_mps;
     bool material_custom_values_valid;
     bool material_save_pending;
     uint32_t material_save_seq;
@@ -119,6 +124,9 @@ typedef struct {
     size_t material_index;
     uint32_t custom_v_mps;
     uint32_t custom_sigma_mps;
+    bool has_range;
+    uint32_t range_min_mps;
+    uint32_t range_max_mps;
 } ui_workflow_event_t;
 
 void ui_workflow_model_build(

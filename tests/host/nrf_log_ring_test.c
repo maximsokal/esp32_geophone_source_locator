@@ -382,7 +382,13 @@ static void test_seeded_ring_properties(void)
                 CHECK(nrf_log_protocol_decode_block(frame, frame_length, &validation, &block) == NRF_LOG_ERROR_OK);
                 CHECK(block.record_count <= max_records);
                 CHECK(block.oldest_seq == status.oldest_seq);
-                CHECK(block.next_cursor == block.first_seq + block.record_count);
+                CHECK(block.next_cursor == block.first_seq + (uint32_t)block.record_count);
+                for (uint8_t record_index = 0U; record_index < block.record_count; ++record_index) {
+                    CHECK(block.records[record_index].seq == block.first_seq + record_index);
+                    if (record_index != 0U) {
+                        CHECK(block.records[record_index].seq > block.records[record_index - 1U].seq);
+                    }
+                }
                 if (cursor < status.oldest_seq) {
                     CHECK((block.flags & NRF_LOG_BLOCK_FLAG_GAP) != 0U);
                 }

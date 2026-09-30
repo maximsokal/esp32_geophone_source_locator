@@ -56,6 +56,31 @@ static void refresh_crc(uint8_t *frame, size_t length)
     frame[length - 1U] = (uint8_t)(crc >> 8U);
 }
 
+static void check_burst_corruption_rejected(const uint8_t *golden, size_t frame_length)
+{
+    static const uint8_t bursts[] = {2U, 4U, 8U, 16U, 32U};
+    uint8_t frame[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
+    nrf_log_status_t status;
+    nrf_log_block_t block;
+
+    for (size_t burst_index = 0U; burst_index < sizeof(bursts); ++burst_index) {
+        const size_t burst_length = bursts[burst_index];
+        const size_t total_bits = frame_length * 8U;
+        for (size_t start = 0U; start <= total_bits - burst_length; ++start) {
+            memcpy(frame, golden, frame_length);
+            for (size_t bit = 0U; bit < burst_length; ++bit) {
+                const size_t target = start + bit;
+                frame[target / 8U] ^= (uint8_t)(1U << (target % 8U));
+            }
+            if (golden[3] == NRF_LOG_MESSAGE_STATUS) {
+                CHECK(nrf_log_protocol_decode_status(frame, frame_length, &status) != NRF_LOG_ERROR_OK);
+            } else {
+                CHECK(nrf_log_protocol_decode_block(frame, frame_length, NULL, &block) != NRF_LOG_ERROR_OK);
+            }
+        }
+    }
+}
+
 static void set_le16(uint8_t *bytes, uint16_t value)
 {
     bytes[0] = (uint8_t)value;
@@ -302,6 +327,15 @@ static void test_semantic_error_codes(void)
     nrf_log_block_validation_t validation = {true, 0xA1B2C3D4U, true, 5U, true, 5U, true, 10U};
 
     memcpy(frame, GOLDEN_STATUS, sizeof(GOLDEN_STATUS));
+    frame[0] ^= 0x01U;
+    refresh_crc(frame, sizeof(GOLDEN_STATUS));
+    CHECK(nrf_log_protocol_decode_status(frame, sizeof(GOLDEN_STATUS), &status_out) == NRF_LOG_ERROR_BAD_MAGIC);
+    memcpy(frame, GOLDEN_STATUS, sizeof(GOLDEN_STATUS));
+    frame[1] ^= 0x01U;
+    refresh_crc(frame, sizeof(GOLDEN_STATUS));
+    CHECK(nrf_log_protocol_decode_status(frame, sizeof(GOLDEN_STATUS), &status_out) == NRF_LOG_ERROR_BAD_MAGIC);
+
+    memcpy(frame, GOLDEN_STATUS, sizeof(GOLDEN_STATUS));
     frame[10] = 2U;
     refresh_crc(frame, sizeof(GOLDEN_STATUS));
     CHECK(nrf_log_protocol_decode_status(frame, sizeof(GOLDEN_STATUS), &status_out) == NRF_LOG_ERROR_BAD_VERSION);
@@ -327,6 +361,15 @@ static void test_semantic_error_codes(void)
     set_le32(&frame[16], 0U);
     refresh_crc(frame, sizeof(GOLDEN_STATUS));
     CHECK(nrf_log_protocol_decode_status(frame, sizeof(GOLDEN_STATUS), &status_out) == NRF_LOG_ERROR_BAD_BOOT_ID);
+
+    memcpy(frame, GOLDEN_BLOCK, sizeof(GOLDEN_BLOCK));
+    frame[0] ^= 0x01U;
+    refresh_crc(frame, sizeof(GOLDEN_BLOCK));
+    CHECK(nrf_log_protocol_decode_block(frame, sizeof(GOLDEN_BLOCK), NULL, &block_out) == NRF_LOG_ERROR_BAD_MAGIC);
+    memcpy(frame, GOLDEN_BLOCK, sizeof(GOLDEN_BLOCK));
+    frame[1] ^= 0x01U;
+    refresh_crc(frame, sizeof(GOLDEN_BLOCK));
+    CHECK(nrf_log_protocol_decode_block(frame, sizeof(GOLDEN_BLOCK), NULL, &block_out) == NRF_LOG_ERROR_BAD_MAGIC);
 
     memcpy(frame, GOLDEN_BLOCK, sizeof(GOLDEN_BLOCK));
     frame[10] = 2U;
@@ -369,11 +412,23 @@ static void test_semantic_error_codes(void)
     refresh_crc(frame, sizeof(GOLDEN_BLOCK));
     CHECK(nrf_log_protocol_decode_block(frame, sizeof(GOLDEN_BLOCK), NULL, &block_out) == NRF_LOG_ERROR_BAD_LENGTH);
     memcpy(frame, GOLDEN_BLOCK, sizeof(GOLDEN_BLOCK));
+    set_le16(&frame[4], (uint16_t)(sizeof(GOLDEN_BLOCK) - NRF_LOG_PROTOCOL_RECORD_LENGTH));
+    refresh_crc(frame, sizeof(GOLDEN_BLOCK) - NRF_LOG_PROTOCOL_RECORD_LENGTH);
+    CHECK(nrf_log_protocol_decode_block(
+        frame,
+        sizeof(GOLDEN_BLOCK) - NRF_LOG_PROTOCOL_RECORD_LENGTH,
+        NULL,
+        &block_out) == NRF_LOG_ERROR_BAD_LENGTH);
+    memcpy(frame, GOLDEN_BLOCK, sizeof(GOLDEN_BLOCK));
     set_le32(&frame[14], 0U);
     refresh_crc(frame, sizeof(GOLDEN_BLOCK));
     CHECK(nrf_log_protocol_decode_block(frame, sizeof(GOLDEN_BLOCK), NULL, &block_out) == NRF_LOG_ERROR_BAD_BOOT_ID);
     memcpy(frame, GOLDEN_BLOCK, sizeof(GOLDEN_BLOCK));
     set_le32(&frame[54], 99U);
+    refresh_crc(frame, sizeof(GOLDEN_BLOCK));
+    CHECK(nrf_log_protocol_decode_block(frame, sizeof(GOLDEN_BLOCK), NULL, &block_out) == NRF_LOG_ERROR_SEQ_MISMATCH);
+    memcpy(frame, GOLDEN_BLOCK, sizeof(GOLDEN_BLOCK));
+    set_le32(&frame[54], 4U);
     refresh_crc(frame, sizeof(GOLDEN_BLOCK));
     CHECK(nrf_log_protocol_decode_block(frame, sizeof(GOLDEN_BLOCK), NULL, &block_out) == NRF_LOG_ERROR_SEQ_MISMATCH);
     memcpy(frame, GOLDEN_BLOCK, sizeof(GOLDEN_BLOCK));
@@ -449,8 +504,6 @@ static void test_corruption_rejection(void)
     size_t length;
     size_t byte_index;
     unsigned int bit;
-    const uint8_t bursts[] = {2U, 4U, 8U, 16U, 32U};
-    size_t burst_index;
     nrf_log_status_t status;
     nrf_log_block_t block;
 
@@ -468,22 +521,8 @@ static void test_corruption_rejection(void)
             CHECK(nrf_log_protocol_decode_block(frame, sizeof(GOLDEN_BLOCK), NULL, &block) != NRF_LOG_ERROR_OK);
         }
     }
-    for (burst_index = 0U; burst_index < sizeof(bursts); ++burst_index) {
-        size_t starts[3];
-        size_t sample;
-        starts[0] = 0U;
-        starts[1] = sizeof(GOLDEN_STATUS) * 4U;
-        starts[2] = sizeof(GOLDEN_STATUS) * 8U - bursts[burst_index];
-        for (sample = 0U; sample < 3U; ++sample) {
-            size_t n;
-            memcpy(frame, GOLDEN_STATUS, sizeof(GOLDEN_STATUS));
-            for (n = 0U; n < bursts[burst_index]; ++n) {
-                size_t target = starts[sample] + n;
-                frame[target / 8U] ^= (uint8_t)(1U << (target % 8U));
-            }
-            CHECK(nrf_log_protocol_decode_status(frame, sizeof(GOLDEN_STATUS), &status) != NRF_LOG_ERROR_OK);
-        }
-    }
+    check_burst_corruption_rejected(GOLDEN_STATUS, sizeof(GOLDEN_STATUS));
+    check_burst_corruption_rejected(GOLDEN_BLOCK, sizeof(GOLDEN_BLOCK));
     for (length = sizeof(GOLDEN_STATUS); length <= sizeof(GOLDEN_BLOCK); length += sizeof(GOLDEN_BLOCK) - sizeof(GOLDEN_STATUS)) {
         size_t pattern;
         for (pattern = 0U; pattern < 4U; ++pattern) {
