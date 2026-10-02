@@ -5,10 +5,12 @@ param(
     [string]$Action,
 
     [string]$ProjectPath = ".",
-    [string]$BuildDir = "build",
+    [string]$BuildDir,
     [string]$Sdkconfig,
     [string]$Port,
     [string]$Target,
+    [ValidateSet("default", "debug", "performance")]
+    [string]$Profile = "default",
 
     [ValidateRange(1, 32)]
     [int]$Jobs = 2
@@ -25,9 +27,19 @@ function Resolve-ProjectPath([string]$InputPath) {
     return (Resolve-Path -LiteralPath $candidate).Path
 }
 
-function Invoke-Checked([string]$FilePath, [object[]]$Arguments) {
+function Invoke-Checked([string]$FilePath, [object[]]$Arguments, [string]$LogPath = $null) {
     Write-Host ("> {0} {1}" -f $FilePath, ($Arguments -join " "))
-    & $FilePath @Arguments
+    if ([string]::IsNullOrWhiteSpace($LogPath)) {
+        & $FilePath @Arguments
+    } else {
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & $FilePath @Arguments 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $LogPath
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Command failed with exit code $($LASTEXITCODE): $FilePath"
     }
@@ -97,13 +109,24 @@ foreach ($required in @($pythonPath, $idfPyPath, $ninjaPath, $checkPortsPath)) {
 }
 
 $project = Resolve-ProjectPath $ProjectPath
+$profileResolution = $null
+$profileHelperPath = Join-Path $PSScriptRoot "idf_profile.py"
+$profileInheritedDefaults = $env:SDKCONFIG_DEFAULTS
+$profileCmakeInclude = $null
+if ([string]::IsNullOrWhiteSpace($BuildDir)) {
+    $BuildDir = if ($Profile -eq "default") { "build" } else { "build-profile-$Profile" }
+}
 $build = if ([IO.Path]::IsPathRooted($BuildDir)) {
     (Resolve-Path -LiteralPath $BuildDir -ErrorAction SilentlyContinue).Path
 } else {
     Join-Path $project $BuildDir
 }
 if ([string]::IsNullOrWhiteSpace($build)) {
-    $build = Join-Path $project $BuildDir
+    $build = if ([IO.Path]::IsPathRooted($BuildDir)) {
+        [IO.Path]::GetFullPath($BuildDir)
+    } else {
+        Join-Path $project $BuildDir
+    }
 }
 $sdkconfigPath = $null
 if (-not [string]::IsNullOrWhiteSpace($Sdkconfig)) {
@@ -112,6 +135,43 @@ if (-not [string]::IsNullOrWhiteSpace($Sdkconfig)) {
     } else {
         [IO.Path]::GetFullPath((Join-Path $project $Sdkconfig))
     }
+}
+if ($Profile -ne "default") {
+    if ($Action -ne "build") {
+        throw "-Profile is supported only with -Action build."
+    }
+    if (-not (Test-Path -LiteralPath $profileHelperPath -PathType Leaf)) {
+        throw "Required ESP-IDF profile resolver is missing: $profileHelperPath"
+    }
+
+    $resolveArgs = @(
+        $profileHelperPath,
+        "resolve",
+        "--profile",
+        $Profile.ToLowerInvariant(),
+        "--project",
+        $project
+    )
+    if (-not [string]::IsNullOrWhiteSpace($profileInheritedDefaults)) {
+        $resolveArgs += @("--inherited-defaults", $profileInheritedDefaults)
+    }
+    $resolutionJson = & $pythonPath @resolveArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "ESP-IDF profile resolution failed with exit code $LASTEXITCODE."
+    }
+    $profileResolution = ($resolutionJson -join [Environment]::NewLine) | ConvertFrom-Json
+
+    $expectedBuild = [IO.Path]::GetFullPath([string]$profileResolution.build_dir)
+    if ($PSBoundParameters.ContainsKey("BuildDir") -and
+        [IO.Path]::GetFullPath($build) -ne $expectedBuild) {
+        throw "-Profile $Profile uses its isolated build directory: $expectedBuild"
+    }
+    if ($PSBoundParameters.ContainsKey("Sdkconfig") -and
+        [IO.Path]::GetFullPath($sdkconfigPath) -ne [IO.Path]::GetFullPath([string]$profileResolution.sdkconfig)) {
+        throw "-Profile $Profile uses its isolated sdkconfig: $($profileResolution.sdkconfig)"
+    }
+    $build = $expectedBuild
+    $sdkconfigPath = [string]$profileResolution.sdkconfig
 }
 
 $env:IDF_PATH = $idfPath
@@ -142,27 +202,92 @@ try {
 
     switch ($Action) {
         "build" {
-            if (-not (Test-Path -LiteralPath $build -PathType Container)) {
-                New-Item -ItemType Directory -Path $build -Force | Out-Null
-            }
-            if (-not [string]::IsNullOrWhiteSpace($Target)) {
-                Invoke-Checked $pythonPath @($idfPyPath, "-B", $build, "set-target", $Target)
-            }
-            $effectiveSdkconfig = if ($sdkconfigPath) {
-                $sdkconfigPath
-            } else {
-                Join-Path $project "sdkconfig"
-            }
-            Sync-RequiredSdkconfig $effectiveSdkconfig
-            Sync-LvglSdkconfigMigration $effectiveSdkconfig
+            $previousSdkconfig = $env:SDKCONFIG
+            try {
+                if ($profileResolution) {
+                    $prepareArgs = @(
+                        $profileHelperPath,
+                        "prepare-cmake",
+                        "--profile",
+                        $Profile.ToLowerInvariant(),
+                        "--project",
+                        $project
+                    )
+                    if (-not [string]::IsNullOrWhiteSpace($profileInheritedDefaults)) {
+                        $prepareArgs += @("--inherited-defaults", $profileInheritedDefaults)
+                    }
+                    $profileCmakeInclude = & $pythonPath @prepareArgs
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "ESP-IDF profile CMake preparation failed with exit code $LASTEXITCODE."
+                    }
+                    $profileCmakeInclude = [string]$profileCmakeInclude
+                    $env:SDKCONFIG = $sdkconfigPath
+                }
 
-            $reconfigureArgs = @($idfPyPath, "-B", $build)
-            if ($sdkconfigPath) {
-                $reconfigureArgs += @("-D", "SDKCONFIG=$sdkconfigPath")
+                if (-not (Test-Path -LiteralPath $build -PathType Container)) {
+                    New-Item -ItemType Directory -Path $build -Force | Out-Null
+                }
+                if (-not [string]::IsNullOrWhiteSpace($Target)) {
+                    $targetArgs = @($idfPyPath, "-B", $build)
+                    if ($profileResolution) {
+                        $targetArgs += @("-D", "SDKCONFIG=$sdkconfigPath")
+                        $targetArgs += @("-D", "CMAKE_PROJECT_INCLUDE_BEFORE=$profileCmakeInclude")
+                    }
+                    $targetArgs += @("set-target", $Target)
+                    Invoke-Checked $pythonPath $targetArgs
+                }
+                $effectiveSdkconfig = if ($sdkconfigPath) {
+                    $sdkconfigPath
+                } else {
+                    Join-Path $project "sdkconfig"
+                }
+                Sync-RequiredSdkconfig $effectiveSdkconfig
+                Sync-LvglSdkconfigMigration $effectiveSdkconfig
+
+                $reconfigureArgs = @($idfPyPath, "-B", $build)
+                if ($sdkconfigPath) {
+                    $reconfigureArgs += @("-D", "SDKCONFIG=$sdkconfigPath")
+                }
+                if ($profileResolution) {
+                    $reconfigureArgs += @(
+                        "-D",
+                        "CMAKE_PROJECT_INCLUDE_BEFORE=$profileCmakeInclude"
+                    )
+                }
+                $reconfigureArgs += "reconfigure"
+                Invoke-Checked $pythonPath $reconfigureArgs
+                Invoke-Checked $ninjaPath @("-C", $build, "-j", $Jobs)
+
+                if ($profileResolution) {
+                    Invoke-Checked $pythonPath @($idfPyPath, "-B", $build, "size") `
+                        ([string]$profileResolution.size_report)
+                    Invoke-Checked $pythonPath @($idfPyPath, "-B", $build, "size-components") `
+                        ([string]$profileResolution.size_components_report)
+
+                    $evidenceArgs = @(
+                        $profileHelperPath,
+                        "record-evidence",
+                        "--profile",
+                        $Profile.ToLowerInvariant(),
+                        "--project",
+                        $project
+                    )
+                    if (-not [string]::IsNullOrWhiteSpace($profileInheritedDefaults)) {
+                        $evidenceArgs += @("--inherited-defaults", $profileInheritedDefaults)
+                    }
+                    $evidencePath = & $pythonPath @evidenceArgs
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "ESP-IDF build evidence generation failed with exit code $LASTEXITCODE."
+                    }
+                    Write-Host ("PROFILE_BUILD_EVIDENCE: {0}" -f $evidencePath)
+                }
+            } finally {
+                if ($null -eq $previousSdkconfig) {
+                    Remove-Item Env:SDKCONFIG -ErrorAction SilentlyContinue
+                } else {
+                    $env:SDKCONFIG = $previousSdkconfig
+                }
             }
-            $reconfigureArgs += "reconfigure"
-            Invoke-Checked $pythonPath $reconfigureArgs
-            Invoke-Checked $ninjaPath @("-C", $build, "-j", $Jobs)
         }
         "flash" {
             if ([string]::IsNullOrWhiteSpace($Port)) {

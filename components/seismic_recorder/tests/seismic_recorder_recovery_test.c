@@ -431,6 +431,64 @@ static void assert_recovered(size_t expected_frames)
     assert(fake_storage_begin_calls == fake_storage_end_calls);
 }
 
+static void test_bounded_source_name_copy(void)
+{
+    char long_source[501];
+    memset(long_source, 'N', sizeof(long_source) - 1U);
+    long_source[sizeof(long_source) - 1U] = '\0';
+
+    char long_object_id[501];
+    memset(long_object_id, 'O', sizeof(long_object_id) - 1U);
+    long_object_id[sizeof(long_object_id) - 1U] = '\0';
+    char long_session_id[501];
+    memset(long_session_id, 'S', sizeof(long_session_id) - 1U);
+    long_session_id[sizeof(long_session_id) - 1U] = '\0';
+
+    seismic_recorder_snapshot_t snapshot = {0};
+    seismic_recorder_recovery_copy_string(
+        snapshot.object_id,
+        sizeof(snapshot.object_id),
+        long_object_id
+    );
+    seismic_recorder_recovery_copy_string(
+        snapshot.session_id,
+        sizeof(snapshot.session_id),
+        long_session_id
+    );
+    assert(memcmp(
+        snapshot.object_id,
+        long_object_id,
+        sizeof(snapshot.object_id) - 1U
+    ) == 0);
+    assert(snapshot.object_id[sizeof(snapshot.object_id) - 1U] == '\0');
+    assert(memcmp(
+        snapshot.session_id,
+        long_session_id,
+        sizeof(snapshot.session_id) - 1U
+    ) == 0);
+    assert(snapshot.session_id[sizeof(snapshot.session_id) - 1U] == '\0');
+
+    char destination[16];
+    seismic_recorder_recovery_copy_string(
+        destination,
+        sizeof(destination),
+        long_source
+    );
+    assert(memcmp(destination, long_source, sizeof(destination) - 1U) == 0);
+    assert(destination[sizeof(destination) - 1U] == '\0');
+
+    seismic_recorder_recovery_copy_string(
+        destination,
+        sizeof(destination),
+        "AD7606"
+    );
+    assert(strcmp(destination, "AD7606") == 0);
+
+    seismic_recorder_recovery_copy_string(destination, sizeof(destination), "");
+    assert(destination[0] == '\0');
+}
+
+
 static void test_partial_tail_salvage_and_idempotence(void)
 {
     make_layout();
@@ -666,6 +724,7 @@ static void test_candidate_allocation_failure_leaves_files_untouched(void)
 
 int main(void)
 {
+    test_bounded_source_name_copy();
     test_partial_tail_salvage_and_idempotence();
     test_v2_metadata_is_recovered_and_v3_is_rejected();
     test_backup_and_temp_candidates();
