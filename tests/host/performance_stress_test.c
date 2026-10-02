@@ -102,6 +102,7 @@ typedef struct
 typedef struct
 {
     const char *name;
+    const char *workload_id;
     uint32_t seed;
     uint32_t sample_rate_hz;
     uint32_t duration_ms;
@@ -115,6 +116,8 @@ typedef struct
     uint32_t dsp_us;
     uint32_t background_us;
     bool expected_saturated;
+    bool enable_wifi;
+    bool enable_i2c;
 
 } stress_scenario_t;
 
@@ -123,6 +126,7 @@ typedef struct
 {
     uint64_t produced_frames;
     uint64_t recorder_frames;
+    uint64_t persisted_frames;
     uint64_t ring_dropped_frames;
     uint64_t cache_overflow_frames;
     uint64_t cache_overflow_events;
@@ -135,6 +139,7 @@ typedef struct
     uint64_t storage_completions;
     uint64_t max_backlog_frames;
     size_t max_cache_frames;
+    size_t max_ring_frames;
     uint64_t spi3_busy_us;
     uint64_t spi2_busy_us;
     uint64_t virtual_ad7606_conversions;
@@ -149,6 +154,10 @@ typedef struct
     uint64_t virtual_tft_frames;
     uint64_t sd_latencies_us[STRESS_MAX_LATENCY_SAMPLES];
     size_t sd_latency_count;
+    bool frame_duplication_detected;
+    bool frame_reordering_detected;
+    bool channel_swap_detected;
+    uint64_t last_ingested_frame;
 
 } stress_metrics_t;
 
@@ -273,6 +282,8 @@ static void virtual_spi2_advance(
                 context->metrics.cache_errors++;
             } else {
                 context->metrics.storage_completions++;
+                context->metrics.persisted_frames +=
+                    (uint64_t)completed.frame_count;
             }
             context->storage_inflight = false;
         }
@@ -363,7 +374,7 @@ static void virtual_wifi_service(
     uint64_t now_us
 )
 {
-    if (now_us < context->next_wifi_event_us) {
+    if (!context->scenario->enable_wifi || now_us < context->next_wifi_event_us) {
         return;
     }
 
@@ -377,7 +388,7 @@ static void virtual_i2c_service(
     uint64_t now_us
 )
 {
-    if (now_us < context->next_i2c_transaction_us) {
+    if (!context->scenario->enable_i2c || now_us < context->next_i2c_transaction_us) {
         return;
     }
 
@@ -408,7 +419,8 @@ static void virtual_board_copy_metrics(
 
 
 static bool virtual_board_protocols_healthy(
-    const stress_metrics_t *metrics
+    const stress_metrics_t *metrics,
+    const stress_scenario_t *scenario
 )
 {
     return metrics->virtual_ad7606_conversions > 0U &&
@@ -417,12 +429,16 @@ static bool virtual_board_protocols_healthy(
            metrics->virtual_ad7606_varied_payloads ==
                metrics->virtual_ad7606_conversions &&
            metrics->virtual_ad7606_timeouts == 0U &&
-           metrics->virtual_wifi_events > 0U &&
            metrics->virtual_wifi_dropped_events == 0U &&
-           metrics->virtual_i2c_transactions > 0U &&
            metrics->virtual_i2c_nacks == 0U &&
+           (!scenario->enable_wifi || metrics->virtual_wifi_events > 0U) &&
+           (scenario->enable_wifi || metrics->virtual_wifi_events == 0U) &&
+           (!scenario->enable_i2c || metrics->virtual_i2c_transactions > 0U) &&
+           (scenario->enable_i2c || metrics->virtual_i2c_transactions == 0U) &&
            metrics->virtual_sd_transactions > 0U &&
-           metrics->virtual_tft_frames > 0U;
+           (scenario->tft_interval_us == 0U
+                ? metrics->virtual_tft_frames == 0U
+                : metrics->virtual_tft_frames > 0U);
 }
 
 
@@ -461,8 +477,12 @@ static void recorder_ingest(stress_context_t *context)
         return;
     }
 
-    context->metrics.ring_dropped_frames += dropped_frames;
+    if (info.buffered_frames > context->metrics.max_ring_frames) {
+        context->metrics.max_ring_frames = info.buffered_frames;
+    }
     if (frame_count == 0U) {
+        context->metrics.ring_dropped_frames += dropped_frames;
+        context->recorder_cursor = candidate_cursor;
         return;
     }
 
@@ -482,6 +502,26 @@ static void recorder_ingest(stress_context_t *context)
             context->metrics.cache_errors++;
         }
         return;
+    }
+
+    context->metrics.ring_dropped_frames += dropped_frames;
+    for (size_t index = 0U; index < frame_count; ++index) {
+        const float sequence = batch[index].channel_uv[0];
+        const uint64_t frame_number = (uint64_t)sequence;
+        if (
+            sequence <= 0.0f ||
+            batch[index].channel_uv[1] != -sequence ||
+            batch[index].channel_uv[2] != sequence + 0.25f ||
+            batch[index].channel_uv[3] != sequence - 0.25f
+        ) {
+            context->metrics.channel_swap_detected = true;
+        }
+        if (frame_number == context->metrics.last_ingested_frame) {
+            context->metrics.frame_duplication_detected = true;
+        } else if (frame_number < context->metrics.last_ingested_frame) {
+            context->metrics.frame_reordering_detected = true;
+        }
+        context->metrics.last_ingested_frame = frame_number;
     }
 
     context->recorder_cursor = candidate_cursor;
@@ -774,10 +814,116 @@ static void print_scenario_result(
         metrics->virtual_i2c_transactions,
         metrics->virtual_sd_transactions,
         metrics->virtual_tft_frames,
-        virtual_board_protocols_healthy(metrics) ? "PASS" : "FAIL",
+        virtual_board_protocols_healthy(metrics, scenario) ? "PASS" : "FAIL",
         saturated ? "SATURATED" : "PASS",
         scenario->expected_saturated ? "SATURATED" : "PASS",
         verdict_pass ? "PASS" : "FAIL"
+    );
+}
+
+
+static void print_perf_record(
+    const stress_scenario_t *scenario,
+    const stress_metrics_t *metrics,
+    size_t bus_queue_high_water,
+    bool saturated
+)
+{
+    assert(metrics->persisted_frames + metrics->ring_dropped_frames <=
+           metrics->produced_frames);
+    const uint64_t resident_frames = metrics->produced_frames -
+        metrics->persisted_frames - metrics->ring_dropped_frames;
+    const uint64_t duration_ms = (uint64_t)scenario->duration_ms +
+        (uint64_t)scenario->drain_ms;
+    const double writes_per_second = duration_ms == 0U
+        ? 0.0
+        : (double)metrics->storage_completions * 1000.0 /
+            (double)duration_ms;
+    const double bytes_per_write = metrics->storage_completions == 0U
+        ? 0.0
+        : (double)(metrics->persisted_frames * sizeof(seismic_frame_t)) /
+            (double)metrics->storage_completions;
+
+    printf(
+        "PERF_RECORD_JSON: {\"schema_version\":1,"
+        "\"firmware_sha256\":\"not_applicable\","
+        "\"build_profile\":\"not_applicable\","
+        "\"optimization_mode\":\"not_applicable\","
+        "\"test_surface\":\"HOST_VIRTUAL\","
+        "\"sample_rate_hz\":%" PRIu32 ",\"channel_count\":%d,"
+        "\"sample_format\":\"float32_uv\","
+        "\"channel_sentinel_order\":[\"frame\",\"negative_frame\","
+        "\"frame_plus_quarter\",\"frame_minus_quarter\"],"
+        "\"sd_card_identity\":\"not_applicable\","
+        "\"sd_card_frequency_hz\":\"not_applicable\","
+        "\"workload_id\":\"%s\",\"seed\":%" PRIu32 ","
+        "\"duration_ms\":%" PRIu64 ",\"classification\":\"%s\","
+        "\"produced_frames\":%" PRIu64 ",\"ingested_frames\":%" PRIu64 ","
+        "\"persisted_frames\":%" PRIu64 ","
+        "\"explicitly_dropped_frames\":%" PRIu64 ","
+        "\"explicitly_rejected_frames\":0,\"resident_frames\":%" PRIu64 ","
+        "\"acquisition_service_jitter_us\":\"not_applicable\","
+        "\"recorder_write_latency_us\":{\"p50\":%" PRIu64 ","
+        "\"p95\":%" PRIu64 ",\"p99\":%" PRIu64 ",\"max\":%" PRIu64 "},"
+        "\"bytes_per_write\":%.3f,\"writes_per_second\":%.3f,"
+        "\"ring_high_water_frames\":%zu,\"cache_high_water_frames\":%zu,"
+        "\"queue_high_water\":%zu,"
+        "\"cpu_runtime_us\":\"not_applicable\","
+        "\"task_runtime_us\":\"not_applicable\","
+        "\"core_runtime_us\":\"not_applicable\","
+        "\"internal_heap_free_bytes\":\"not_applicable\","
+        "\"internal_heap_largest_block_bytes\":\"not_applicable\","
+        "\"psram_free_bytes\":\"not_applicable\","
+        "\"psram_largest_block_bytes\":\"not_applicable\","
+        "\"stack_hwm_words\":\"not_applicable\","
+        "\"web_stop_latency_ms\":\"not_applicable\","
+        "\"web_status_latency_ms\":\"not_applicable\","
+        "\"live_latency_ms\":\"not_applicable\","
+        "\"reset_markers\":{\"unexpected_reset\":\"not_applicable\","
+        "\"watchdog\":\"not_applicable\",\"brownout\":\"not_applicable\"},"
+        "\"project_hot_path_allocation_violations\":\"not_applicable\","
+        "\"active_allocation_count\":\"not_applicable\","
+        "\"diagnostic_reports_suppressed\":\"not_applicable\","
+        "\"diagnostic_reports_coalesced\":\"not_applicable\","
+        "\"v2_quantizer_calls\":\"not_applicable\","
+        "\"raw_path_selection\":\"not_applicable\","
+        "\"seismic_buffer_atomic_operations\":\"not_applicable\","
+        "\"seismic_buffer_critical_section_entries\":\"not_applicable\","
+        "\"seismic_buffer_retries\":\"not_applicable\","
+        "\"ad7606_status_critical_section_entries\":\"not_applicable\","
+        "\"ad7606_status_critical_section_total_us\":\"not_applicable\","
+        "\"ad7606_status_critical_section_max_us\":\"not_applicable\","
+        "\"frame_duplication_detected\":%s,"
+        "\"frame_reordering_detected\":%s,\"channel_swap_detected\":%s,"
+        "\"corrupted_finalized_file\":\"not_applicable\","
+        "\"corrupted_finalized_session\":\"not_applicable\","
+        "\"dirty_cache_overwrite_detected\":false,"
+        "\"diagnostic_integer_overflow_detected\":\"not_applicable\","
+        "\"deadlock_detected\":false,\"workload_supported\":true,"
+        "\"unsupported_workload_disposition\":\"not_applicable\"}\n",
+        scenario->sample_rate_hz,
+        SEISMIC_CHANNEL_COUNT,
+        scenario->workload_id,
+        scenario->seed,
+        duration_ms,
+        saturated ? "SATURATED" : "PASS",
+        metrics->produced_frames,
+        metrics->recorder_frames,
+        metrics->persisted_frames,
+        metrics->ring_dropped_frames,
+        resident_frames,
+        percentile_u64(metrics->sd_latencies_us, metrics->sd_latency_count, 50U),
+        percentile_u64(metrics->sd_latencies_us, metrics->sd_latency_count, 95U),
+        percentile_u64(metrics->sd_latencies_us, metrics->sd_latency_count, 99U),
+        percentile_u64(metrics->sd_latencies_us, metrics->sd_latency_count, 100U),
+        bytes_per_write,
+        writes_per_second,
+        metrics->max_ring_frames,
+        metrics->max_cache_frames,
+        bus_queue_high_water,
+        metrics->frame_duplication_detected ? "true" : "false",
+        metrics->frame_reordering_detected ? "true" : "false",
+        metrics->channel_swap_detected ? "true" : "false"
     );
 }
 
@@ -787,6 +933,7 @@ static void test_virtual_board_stress_scenarios(void)
     static const stress_scenario_t scenarios[] = {
         {
             .name = "baseline_500hz",
+            .workload_id = "healthy",
             .seed = 0x84AE1732U,
             .sample_rate_hz = 500U,
             .duration_ms = 3000U,
@@ -798,9 +945,12 @@ static void test_virtual_board_stress_scenarios(void)
             .dsp_us = 200U,
             .background_us = 600U,
             .expected_saturated = false,
+            .enable_wifi = true,
+            .enable_i2c = true,
         },
         {
             .name = "sd_stall_200ms",
+            .workload_id = "sd_stall_200ms",
             .seed = 0x84AE1732U,
             .sample_rate_hz = 500U,
             .duration_ms = 3000U,
@@ -814,9 +964,12 @@ static void test_virtual_board_stress_scenarios(void)
             .dsp_us = 250U,
             .background_us = 700U,
             .expected_saturated = false,
+            .enable_wifi = true,
+            .enable_i2c = true,
         },
         {
             .name = "burst_shared_spi2",
+            .workload_id = "shared_spi_burst",
             .seed = 0x84AE1732U,
             .sample_rate_hz = 500U,
             .duration_ms = 2500U,
@@ -828,9 +981,12 @@ static void test_virtual_board_stress_scenarios(void)
             .dsp_us = 1200U,
             .background_us = 900U,
             .expected_saturated = true,
+            .enable_wifi = true,
+            .enable_i2c = true,
         },
         {
             .name = "steady_5000hz",
+            .workload_id = "steady_5000hz",
             .seed = 0x84AE1732U,
             .sample_rate_hz = 5000U,
             .duration_ms = 250U,
@@ -842,9 +998,12 @@ static void test_virtual_board_stress_scenarios(void)
             .dsp_us = 100U,
             .background_us = 50U,
             .expected_saturated = false,
+            .enable_wifi = true,
+            .enable_i2c = true,
         },
         {
             .name = "saturation_5000hz_sd_slow",
+            .workload_id = "intentional_saturation",
             .seed = 0x84AE1732U,
             .sample_rate_hz = 5000U,
             .duration_ms = 250U,
@@ -856,6 +1015,151 @@ static void test_virtual_board_stress_scenarios(void)
             .dsp_us = 100U,
             .background_us = 300U,
             .expected_saturated = true,
+            .enable_wifi = true,
+            .enable_i2c = true,
+        },
+        {
+            .name = "sd_jitter_500hz",
+            .workload_id = "sd_jitter",
+            .seed = 0x84AE1732U,
+            .sample_rate_hz = 500U,
+            .duration_ms = 2000U,
+            .drain_ms = 500U,
+            .cache_capacity_frames = 4096U,
+            .sd_base_us = 500U,
+            .sd_jitter_us = 8000U,
+            .tft_interval_us = 100000U,
+            .dsp_us = 300U,
+            .background_us = 400U,
+            .expected_saturated = false,
+            .enable_wifi = true,
+            .enable_i2c = true,
+        },
+        /* A 256-frame recorder batch at 500 Hz spans 512 ms. */
+        {
+            .name = "stall_below_batch_interval",
+            .workload_id = "stall_below_batch_interval",
+            .seed = 0x84AE1732U,
+            .sample_rate_hz = 500U,
+            .duration_ms = 2200U,
+            .drain_ms = 1000U,
+            .cache_capacity_frames = 4096U,
+            .sd_base_us = 500U,
+            .sd_jitter_us = 500U,
+            .stall_start_ms = 700U,
+            .stall_duration_ms = 250U,
+            .tft_interval_us = 100000U,
+            .dsp_us = 250U,
+            .background_us = 300U,
+            .expected_saturated = false,
+            .enable_wifi = true,
+            .enable_i2c = true,
+        },
+        {
+            .name = "stall_around_batch_interval",
+            .workload_id = "stall_around_batch_interval",
+            .seed = 0x84AE1732U,
+            .sample_rate_hz = 500U,
+            .duration_ms = 2200U,
+            .drain_ms = 1000U,
+            .cache_capacity_frames = 4096U,
+            .sd_base_us = 500U,
+            .sd_jitter_us = 500U,
+            .stall_start_ms = 700U,
+            .stall_duration_ms = 512U,
+            .tft_interval_us = 100000U,
+            .dsp_us = 250U,
+            .background_us = 300U,
+            .expected_saturated = false,
+            .enable_wifi = true,
+            .enable_i2c = true,
+        },
+        {
+            .name = "stall_above_batch_interval",
+            .workload_id = "stall_above_batch_interval",
+            .seed = 0x84AE1732U,
+            .sample_rate_hz = 500U,
+            .duration_ms = 2600U,
+            .drain_ms = 1200U,
+            .cache_capacity_frames = 4096U,
+            .sd_base_us = 500U,
+            .sd_jitter_us = 500U,
+            .stall_start_ms = 700U,
+            .stall_duration_ms = 750U,
+            .tft_interval_us = 100000U,
+            .dsp_us = 250U,
+            .background_us = 300U,
+            .expected_saturated = false,
+            .enable_wifi = true,
+            .enable_i2c = true,
+        },
+        {
+            .name = "tft_contention",
+            .workload_id = "tft_contention",
+            .seed = 0x84AE1732U,
+            .sample_rate_hz = 500U,
+            .duration_ms = 2000U,
+            .drain_ms = 500U,
+            .cache_capacity_frames = 4096U,
+            .sd_base_us = 1000U,
+            .sd_jitter_us = 1000U,
+            .tft_interval_us = 8000U,
+            .dsp_us = 400U,
+            .background_us = 500U,
+            .expected_saturated = false,
+            .enable_wifi = true,
+            .enable_i2c = true,
+        },
+        {
+            .name = "wifi_activity",
+            .workload_id = "wifi_activity",
+            .seed = 0x84AE1732U,
+            .sample_rate_hz = 500U,
+            .duration_ms = 1000U,
+            .drain_ms = 300U,
+            .cache_capacity_frames = 2048U,
+            .sd_base_us = 500U,
+            .sd_jitter_us = 500U,
+            .tft_interval_us = 0U,
+            .dsp_us = 500U,
+            .background_us = 900U,
+            .expected_saturated = false,
+            .enable_wifi = true,
+            .enable_i2c = false,
+        },
+        {
+            .name = "i2c_activity",
+            .workload_id = "i2c_activity",
+            .seed = 0x84AE1732U,
+            .sample_rate_hz = 500U,
+            .duration_ms = 1000U,
+            .drain_ms = 300U,
+            .cache_capacity_frames = 2048U,
+            .sd_base_us = 500U,
+            .sd_jitter_us = 500U,
+            .tft_interval_us = 0U,
+            .dsp_us = 500U,
+            .background_us = 700U,
+            .expected_saturated = false,
+            .enable_wifi = false,
+            .enable_i2c = true,
+        },
+        {
+            .name = "worst_case_admitted",
+            .workload_id = "worst_case_admitted",
+            .seed = 0x84AE1732U,
+            .sample_rate_hz = 500U,
+            .duration_ms = 3000U,
+            .drain_ms = 800U,
+            .cache_capacity_frames = 4096U,
+            .sd_base_us = 2000U,
+            .sd_jitter_us = 4000U,
+            .tft_interval_us = 16000U,
+            .dsp_us = 1000U,
+            .background_us = 800U,
+            .expected_saturated = false,
+            .enable_wifi = true,
+            .enable_i2c = true,
         },
     };
 
@@ -872,7 +1176,7 @@ static void test_virtual_board_stress_scenarios(void)
         );
         const bool saturated = has_fault(&metrics, queue_overflows);
         const bool verdict_pass =
-            virtual_board_protocols_healthy(&metrics) &&
+            virtual_board_protocols_healthy(&metrics, &scenarios[index]) &&
             saturated == scenarios[index].expected_saturated;
         print_scenario_result(
             &scenarios[index],
@@ -882,7 +1186,19 @@ static void test_virtual_board_stress_scenarios(void)
             sd_p99_us,
             verdict_pass
         );
+        print_perf_record(
+            &scenarios[index],
+            &metrics,
+            queue_high_water,
+            saturated
+        );
         if (!verdict_pass) {
+            fprintf(
+                stderr,
+                "STRESS_SCENARIO_FAILED: name=%s seed=0x%08" PRIx32 "\n",
+                scenarios[index].name,
+                scenarios[index].seed
+            );
             failed++;
         }
     }
