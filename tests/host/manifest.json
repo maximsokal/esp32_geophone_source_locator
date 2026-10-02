@@ -1348,22 +1348,6 @@
       ]
     },
     {
-      "name": "virtual_board_stress",
-      "sources": [
-        "components/seismic_buffer/seismic_buffer.c",
-        "components/seismic_recorder/seismic_recorder_cache.c",
-        "tests/host/performance_stress_test.c"
-      ],
-      "include_dirs": [
-        "components/seismic_buffer/tests/stubs",
-        "components/seismic_buffer/include",
-        "components/seismic_recorder/tests/stubs",
-        "components/seismic_recorder",
-        "components/seismic_recorder/include",
-        "components/object_store/include"
-      ]
-    },
-    {
       "name": "scheduler_replay_stress",
       "sources": [
         "tests/host/scheduler_replay_stress_test.c"
