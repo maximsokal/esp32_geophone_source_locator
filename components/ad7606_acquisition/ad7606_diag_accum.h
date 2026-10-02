@@ -30,6 +30,20 @@ typedef struct
 
 } ad7606_diag_metrics_t;
 
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+typedef struct
+{
+    uint64_t status_critical_entries;
+    uint64_t sample_status_critical_entries;
+} ad7606_acquisition_test_counters_t;
+
+void ad7606_acquisition_test_counters_reset(void);
+void ad7606_acquisition_test_counters_get(
+    ad7606_acquisition_test_counters_t *out
+);
+void ad7606_acquisition_test_status_delay_set(uint32_t delay_us);
+#endif
+
 static inline void ad7606_diag_channel_record(
     ad7606_diag_channel_t *diag,
     int16_t raw

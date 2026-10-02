@@ -140,6 +140,27 @@ static void seismic_state_decrement(volatile uint32_t *state)
 
 #if defined(SEISMIC_BUFFER_TEST_HOOKS)
 void seismic_buffer_test_after_frame_tag(size_t slot_index);
+void seismic_buffer_test_after_odd_sequence(size_t slot_index);
+void seismic_buffer_test_after_slot_publish(size_t slot_index);
+#if defined(SEISMIC_BUFFER_TEST_BROKEN_PUBLISH)
+void seismic_buffer_test_broken_publish_probe(size_t slot_index);
+#endif
+static seismic_buffer_test_counters_t s_test_counters;
+#define SEISMIC_TEST_COUNT(field) (++s_test_counters.field)
+
+void seismic_buffer_test_counters_reset(void)
+{
+    memset(&s_test_counters, 0, sizeof(s_test_counters));
+}
+
+void seismic_buffer_test_counters_get(seismic_buffer_test_counters_t *out)
+{
+    if (out != NULL) {
+        *out = s_test_counters;
+    }
+}
+#else
+#define SEISMIC_TEST_COUNT(field) ((void)0)
 #endif
 
 
@@ -178,6 +199,7 @@ static bool s_initialized = false;
 
 static bool seismic_buffer_enter_operation(void)
 {
+    SEISMIC_TEST_COUNT(operation_enter_attempts);
     uint32_t state = seismic_state_load(&s_operation_state);
     for (;;) {
         if ((state & SEISMIC_CONFIGURING) != 0U ||
@@ -193,6 +215,7 @@ static bool seismic_buffer_enter_operation(void)
             )) {
             return true;
         }
+        SEISMIC_TEST_COUNT(operation_cas_retries);
         state = expected;
     }
 }
@@ -211,6 +234,7 @@ static bool seismic_buffer_begin_configuration(void)
 
 static void seismic_buffer_leave_operation(void)
 {
+    SEISMIC_TEST_COUNT(operation_exit_decrements);
     seismic_state_decrement(&s_operation_state);
 }
 
@@ -300,6 +324,7 @@ static void seismic_buffer_reset_metadata(
     uint32_t sample_rate_hz
 )
 {
+    SEISMIC_TEST_COUNT(metadata_critical_entries);
     portENTER_CRITICAL(&s_metadata_lock);
     s_source = source;
     s_sample_rate_hz = sample_rate_hz;
@@ -314,6 +339,7 @@ static void seismic_buffer_snapshot_metadata(
     seismic_metadata_t *metadata
 )
 {
+    SEISMIC_TEST_COUNT(metadata_critical_entries);
     portENTER_CRITICAL(
         &s_metadata_lock
     );
@@ -363,6 +389,7 @@ static void seismic_buffer_write_slot(
     const float channel_uv[SEISMIC_CHANNEL_COUNT]
 )
 {
+    SEISMIC_TEST_COUNT(publish_sequence_loads);
     uint32_t sequence =
         seismic_sequence_load(
             &s_sequences[slot_index]
@@ -376,10 +403,30 @@ static void seismic_buffer_write_slot(
      * Odd sequence means the producer is mutating this slot.
      * Readers never wait for the producer; they simply retry.
      */
+    SEISMIC_TEST_COUNT(publish_sequence_stores);
     seismic_sequence_store(
         &s_sequences[slot_index],
         sequence + 1U
     );
+
+#if defined(SEISMIC_BUFFER_TEST_HOOKS)
+    seismic_buffer_test_after_odd_sequence(slot_index);
+#endif
+
+#if defined(SEISMIC_BUFFER_TEST_BROKEN_PUBLISH)
+    /* Test fixture only: publish an even sequence before slot contents. */
+    SEISMIC_TEST_COUNT(publish_sequence_stores);
+    seismic_sequence_store(&s_sequences[slot_index], sequence + 2U);
+    s_frames[slot_index].timestamp_us = timestamp_us;
+    s_frames[slot_index].channel_uv[0] = channel_uv[0];
+    seismic_buffer_test_broken_publish_probe(slot_index);
+    s_frame_numbers[slot_index] = frame_number;
+    s_source_sample_indices[slot_index] = source_sample_index;
+    for (size_t channel = 1U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+        s_frames[slot_index].channel_uv[channel] = channel_uv[channel];
+    }
+    return;
+#else
 
     s_frame_numbers[slot_index] =
         frame_number;
@@ -400,10 +447,15 @@ static void seismic_buffer_write_slot(
     /*
      * Publishing an even sequence releases the completed frame.
      */
+    SEISMIC_TEST_COUNT(publish_sequence_stores);
     seismic_sequence_store(
         &s_sequences[slot_index],
         sequence + 2U
     );
+#if defined(SEISMIC_BUFFER_TEST_HOOKS)
+    seismic_buffer_test_after_slot_publish(slot_index);
+#endif
+#endif
 }
 
 
@@ -419,12 +471,15 @@ static bool seismic_buffer_read_slot(
         attempt < SEISMIC_SLOT_READ_RETRIES;
         ++attempt
     ) {
+        SEISMIC_TEST_COUNT(read_sequence_loads);
         const uint32_t before =
             seismic_sequence_load(
                 &s_sequences[slot_index]
             );
 
         if ((before & 1U) != 0U) {
+            SEISMIC_TEST_COUNT(read_retries_odd);
+            SEISMIC_TEST_COUNT(producer_reader_conflicts);
             continue;
         }
 
@@ -440,6 +495,7 @@ static bool seismic_buffer_read_slot(
         const seismic_frame_t candidate =
             s_frames[slot_index];
 
+        SEISMIC_TEST_COUNT(read_sequence_loads);
         const uint32_t after =
             seismic_sequence_load(
                 &s_sequences[slot_index]
@@ -457,6 +513,15 @@ static bool seismic_buffer_read_slot(
             }
 
             return true;
+        }
+
+        if (before != after || (after & 1U) != 0U) {
+            SEISMIC_TEST_COUNT(read_retries_changed);
+            SEISMIC_TEST_COUNT(producer_reader_conflicts);
+        }
+        else if (frame_number != expected_frame_number) {
+            SEISMIC_TEST_COUNT(read_tag_conflicts);
+            SEISMIC_TEST_COUNT(producer_reader_conflicts);
         }
     }
 
@@ -514,6 +579,7 @@ esp_err_t seismic_buffer_init(void)
 
 size_t seismic_buffer_capacity(void)
 {
+    SEISMIC_TEST_COUNT(capacity_loads);
     return (size_t)seismic_state_load(&s_capacity);
 }
 
@@ -622,6 +688,7 @@ static esp_err_t seismic_buffer_push_impl(
      * This critical section only snapshots producer metadata.
      * Web/UI readers never hold it while copying waveform data.
      */
+    SEISMIC_TEST_COUNT(metadata_critical_entries);
     portENTER_CRITICAL(
         &s_metadata_lock
     );
@@ -662,6 +729,7 @@ static esp_err_t seismic_buffer_push_impl(
     /*
      * Publish ring metadata only after the slot is complete.
      */
+    SEISMIC_TEST_COUNT(metadata_critical_entries);
     portENTER_CRITICAL(
         &s_metadata_lock
     );
@@ -820,6 +888,9 @@ esp_err_t seismic_buffer_copy_latest(
             result = ESP_OK;
             break;
         }
+        if (snapshot_attempt + 1U < SEISMIC_SNAPSHOT_RETRIES) {
+            SEISMIC_TEST_COUNT(snapshot_retries);
+        }
     }
 
     /*
@@ -944,6 +1015,9 @@ esp_err_t seismic_buffer_copy_since_with_source_indices(
         }
 
         if (!consistent) {
+            if (snapshot_attempt + 1U < SEISMIC_SNAPSHOT_RETRIES) {
+                SEISMIC_TEST_COUNT(snapshot_retries);
+            }
             continue;
         }
 
