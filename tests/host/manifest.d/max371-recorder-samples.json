@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "max371_recorder_samples",
+      "sources": [
+        "components/object_format/object_format.c",
+        "components/ad7606_driver/ad7606_driver.c",
+        "components/ad7606_driver/ad7606_serial.c",
+        "components/seismic_recorder/seismic_recorder_waveform.c",
+        "components/seismic_recorder/seismic_recorder_lod.c",
+        "components/seismic_recorder/seismic_recorder_lod_reader.c",
+        "components/seismic_recorder/tests/stubs/seismic_recorder_lod_store_stub.c",
+        "components/seismic_recorder/tests/seismic_recorder_fs_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/seismic_buffer/include",
+        "components/seismic_acquisition/include",
+        "components/ad7606_driver/tests/stubs",
+        "components/ad7606_driver/include",
+        "components/ad7606_driver"
+      ],
+      "defines": ["MAX371_RECORDER_RAW_ORACLE_HOST_TEST", "ESP_ERR_TIMEOUT=0x107"],
+      "libraries": ["m"]
+    }
+  ]
+}

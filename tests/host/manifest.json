@@ -393,22 +393,6 @@
       "libraries": ["m"]
     },
     {
-      "name": "ui_power_badge",
-      "sources": [
-        "components/ui/ui_power_badge.c",
-        "components/ui_i18n/ui_i18n.c",
-        "components/ui_i18n/ui_i18n_catalog.gen.c",
-        "components/ui/tests/ui_power_badge_test.c"
-      ],
-      "include_dirs": [
-        "tests/host/stubs/device_status",
-        "components/device_status/include",
-        "components/ui_i18n/include",
-        "components/ui"
-      ],
-      "libraries": ["m"]
-    },
-    {
       "name": "ina3221_soc",
       "sources": [
         "components/ina3221_monitor/ina3221_soc.c",
@@ -1035,22 +1019,6 @@
       ]
     },
     {
-      "name": "localization_job_state",
-      "sources": [
-        "components/localization_job/localization_job_state.c",
-        "tests/host/stubs/object_store_profile/cJSON.c",
-        "components/localization_job/tests/localization_job_state_test.c"
-      ],
-      "include_dirs": [
-        "tests/host/stubs/object_store_profile",
-        "components/localization/tests/stubs",
-        "components/localization/include",
-        "components/localization_calculate/include",
-        "components/localization_job/include",
-        "components/geophone_events/include"
-      ]
-    },
-    {
       "name": "localization_calculate_scan_methods",
       "sources": [
         "components/localization_calculate/localization_calculate_policy.c",
@@ -1150,34 +1118,6 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include"
-      ],
-      "libraries": [
-        "m"
-      ]
-    },
-    {
-      "name": "web_localization_runs_http",
-      "sources": [
-        "tests/host/stubs/object_store_profile/cJSON.c",
-        "components/localization_job/localization_config.c",
-        "components/localization_results/localization_run_record_json.c",
-        "components/localization_results/localization_pick_record.c",
-        "components/web_server/web_json_writer.c",
-        "tests/host/web_localization_runs_http_test.c"
-      ],
-      "include_dirs": [
-        "components/seismic_recorder/include",
-        "components/localization_calculate/include",
-        "tests/host/stubs/web_api_control",
-        "tests/host/stubs/object_store_profile",
-        "components/localization_job/include",
-        "components/geophone_events/include",
-        "components/localization/include",
-        "components/localization_results/include",
-        "components/localization_run_store/include",
-        "components/geophone_events/include",
-        "components/seismic_buffer/include",
-        "components/web_server"
       ],
       "libraries": [
         "m"
@@ -1747,25 +1687,6 @@
       ]
     },
     {
-      "name": "web_api_control_http",
-      "sources": [
-        "components/storage_manager/storage_bulk_admission.c",
-        "components/localization_job/localization_config.c",
-        "tests/host/stubs/object_store_profile/cJSON.c",
-        "tests/host/web_api_control_http_test.c"
-      ],
-      "include_dirs": [
-        "tests/host/stubs/web_api_control",
-        "components/measurement_service/tests/stubs",
-        "components/storage_manager",
-        "components/storage_manager/include",
-        "components/localization_job/include",
-        "components/web_server"
-      ],
-      "defines": ["_POSIX_C_SOURCE=200809L"],
-      "libraries": ["m"]
-    },
-    {
       "name": "web_api_status_http",
       "sources": [
         "components/web_server/web_api_status.c",
@@ -1924,23 +1845,6 @@
         "components/ui",
         "components/ui/tests/stubs",
         "components/seismic_buffer/include"
-      ]
-    },
-    {
-      "name": "ui_measurement_nodes",
-      "sources": [
-        "components/ui/ui_measurements_nodes.c",
-        "components/device_status/device_status.c",
-        "components/ui_i18n/ui_i18n.c",
-        "components/ui_i18n/ui_i18n_catalog.gen.c",
-        "tests/host/ui_measurement_nodes_test.c"
-      ],
-      "include_dirs": [
-        "components/ui",
-        "components/ui/tests/stubs",
-        "components/ui_i18n/include",
-        "components/device_status/include",
-        "tests/host/stubs/device_status"
       ]
     },
     {

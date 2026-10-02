@@ -55,6 +55,42 @@
         "tests/host/stubs/object_store_profile"
       ],
       "libraries": ["m"]
+    },
+    {
+      "name": "ui_power_badge",
+      "sources": [
+        "components/ui/ui_power_badge.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_utf8_format.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
+        "components/ui/tests/ui_power_badge_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/device_status",
+        "components/device_status/include",
+        "components/ui_i18n/include",
+        "components/ui"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "ui_measurement_nodes",
+      "sources": [
+        "components/ui/ui_measurements_nodes.c",
+        "components/device_status/device_status.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_utf8_format.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
+        "tests/host/ui_measurement_nodes_test.c"
+      ],
+      "include_dirs": [
+        "components/ui",
+        "components/ui/tests/stubs",
+        "components/ui_i18n/include",
+        "components/device_status/include",
+        "tests/host/stubs/device_status"
+      ],
+      "libraries": ["m"]
     }
   ]
 }
