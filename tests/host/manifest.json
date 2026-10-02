@@ -295,7 +295,8 @@
         "components/app_config/include",
         "components/ina3221_monitor/include"
       ],
-      "libraries": ["m"]
+      "libraries": ["m"],
+      "defines": ["AD7606_ACQUISITION_HOST_TEST=1"]
     },
     {
       "name": "nrf_topology_service_integration",

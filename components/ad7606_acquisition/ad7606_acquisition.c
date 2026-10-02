@@ -11,6 +11,7 @@
 
 #include "ad7606_driver.h"
 #include "ad7606_acquisition_timing.h"
+#include "ad7606_diag_accum.h"
 #include "ad7606_power_policy.h"
 #include "board_config.h"
 #include "ina3221_monitor.h"
@@ -36,6 +37,23 @@
 #if SEISMIC_CHANNEL_COUNT != AD7606_SIGNAL_CHANNEL_COUNT
 #error "AD7606 signal quality scope must match the application seismic channel count"
 #endif
+
+#define AD7606_DIAG_MAX_RAW_SQUARE (UINT64_C(1) << 30)
+_Static_assert(
+    CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 500U ||
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 5000U ||
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 10000U ||
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 20000U ||
+        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 40000U,
+    "AD7606 diagnostic cadence must use a Kconfig-supported sample rate"
+);
+/* At 40 kHz, even 40000 samples of INT16_MIN^2 use only 42,949,672,960,000
+ * of UINT64_MAX, leaving more than 429,000x headroom before overflow. */
+_Static_assert(
+    (uint64_t)AD7606_DIAG_MAX_WINDOW_SAMPLES * AD7606_DIAG_MAX_RAW_SQUARE <=
+        UINT64_MAX,
+    "AD7606 diagnostic sum of squares must fit in uint64_t"
+);
 
 
 static const char *TAG =
@@ -103,18 +121,6 @@ typedef struct
 } ad7606_start_context_t;
 
 
-typedef struct
-{
-    uint32_t count;
-    int16_t min_raw;
-    int16_t max_raw;
-    int64_t sum_raw;
-    double sum_sq_raw;
-    uint32_t saturation_count;
-
-} ad7606_diag_channel_t;
-
-
 static ad7606_diag_channel_t s_diag[
     /* All four words belong to the connected geophone inputs V1-V4. */
     AD7606_CHANNEL_COUNT
@@ -140,29 +146,8 @@ static void ad7606_diag_record(
     const ad7606_sample_t *sample
 )
 {
-    for (
-        size_t channel = 0;
-        channel < AD7606_CHANNEL_COUNT;
-        ++channel
-    ) {
-        ad7606_diag_channel_t *diag = &s_diag[channel];
-        const int16_t raw = sample->raw[channel];
-
-        if (raw < diag->min_raw) {
-            diag->min_raw = raw;
-        }
-
-        if (raw > diag->max_raw) {
-            diag->max_raw = raw;
-        }
-
-        diag->count++;
-        diag->sum_raw += raw;
-        diag->sum_sq_raw += (double)raw * (double)raw;
-
-        if (raw == INT16_MIN || raw == INT16_MAX) {
-            diag->saturation_count++;
-        }
+    for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+        ad7606_diag_channel_record(&s_diag[channel], sample->raw[channel]);
     }
 }
 
@@ -180,6 +165,35 @@ static const char *ad7606_diag_state(
     }
 
     return "VAR";
+}
+
+
+static ad7606_diag_metrics_t ad7606_diag_measure(
+    const ad7606_diag_channel_t *diag
+)
+{
+    const double count = (double)diag->count;
+    const double mean_raw = (double)diag->sum_raw / count;
+    double variance_raw =
+        ((double)diag->sum_sq_raw / count) -
+        (mean_raw * mean_raw);
+
+    /* Protect sqrt() from a tiny negative caused by rounding. */
+    if (variance_raw < 0.0) {
+        variance_raw = 0.0;
+    }
+
+    const double max_from_mean = fabs((double)diag->max_raw - mean_raw);
+    const double min_from_mean = fabs((double)diag->min_raw - mean_raw);
+
+    return (ad7606_diag_metrics_t) {
+        .mean_raw = mean_raw,
+        .rms_raw = sqrt(variance_raw),
+        .p2p_raw = (double)diag->max_raw - (double)diag->min_raw,
+        .peak_raw = max_from_mean > min_from_mean
+            ? max_from_mean
+            : min_from_mean,
+    };
 }
 
 
@@ -206,41 +220,17 @@ static void ad7606_diag_log_and_reset(void)
             continue;
         }
 
-        const double count = (double)diag->count;
-        const double mean_raw = (double)diag->sum_raw / count;
-
-        double variance_raw =
-            (diag->sum_sq_raw / count) -
-            (mean_raw * mean_raw);
-
-        /* Protect sqrt() from a tiny negative caused by rounding. */
-        if (variance_raw < 0.0) {
-            variance_raw = 0.0;
-        }
-
-        const double rms_raw = sqrt(variance_raw);
-        const double p2p_raw =
-            (double)diag->max_raw -
-            (double)diag->min_raw;
-
-        const double max_from_mean =
-            fabs((double)diag->max_raw - mean_raw);
-        const double min_from_mean =
-            fabs((double)diag->min_raw - mean_raw);
-        const double peak_raw =
-            max_from_mean > min_from_mean
-                ? max_from_mean
-                : min_from_mean;
+        const ad7606_diag_metrics_t metrics = ad7606_diag_measure(diag);
 
         ESP_LOGI(
             DIAG_TAG,
             "CH%u n=%u mean=%+.3fmV rms=%.3fmV p2p=%.3fmV peak=%.3fmV min=%+.3fmV max=%+.3fmV sat=%u %s",
             (unsigned)(channel + 1U),
             (unsigned)diag->count,
-            mean_raw * lsb_mv,
-            rms_raw * lsb_mv,
-            p2p_raw * lsb_mv,
-            peak_raw * lsb_mv,
+            metrics.mean_raw * lsb_mv,
+            metrics.rms_raw * lsb_mv,
+            metrics.p2p_raw * lsb_mv,
+            metrics.peak_raw * lsb_mv,
             (double)diag->min_raw * lsb_mv,
             (double)diag->max_raw * lsb_mv,
             (unsigned)diag->saturation_count,
@@ -250,6 +240,54 @@ static void ad7606_diag_log_and_reset(void)
 
     ad7606_diag_reset();
 }
+
+
+static void ad7606_diag_finish_sample(uint64_t sample_index)
+{
+    if ((sample_index + 1U) % CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 0U) {
+        ad7606_diag_log_and_reset();
+    }
+}
+
+
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+void ad7606_acquisition_test_diag_reset(void)
+{
+    ad7606_diag_reset();
+}
+
+void ad7606_acquisition_test_diag_record(const ad7606_sample_t *sample)
+{
+    ad7606_diag_record(sample);
+}
+
+void ad7606_acquisition_test_diag_snapshot(ad7606_diag_channel_t *out)
+{
+    memcpy(out, s_diag, sizeof(s_diag));
+}
+
+const char *ad7606_acquisition_test_diag_state(size_t channel)
+{
+    return ad7606_diag_state(&s_diag[channel]);
+}
+
+bool ad7606_acquisition_test_diag_metrics(
+    size_t channel,
+    ad7606_diag_metrics_t *out
+)
+{
+    if (s_diag[channel].count == 0U) {
+        return false;
+    }
+    *out = ad7606_diag_measure(&s_diag[channel]);
+    return true;
+}
+
+void ad7606_acquisition_test_diag_finish_sample(uint64_t sample_index)
+{
+    ad7606_diag_finish_sample(sample_index);
+}
+#endif
 
 
 static void ad7606_status_reset(void)
@@ -681,9 +719,7 @@ static esp_err_t ad7606_publish_sample(
 
     ++*successful_samples;
     runtime_observability_beat(RUNTIME_TASK_ACQUISITION, *successful_samples);
-    if ((sample_index + 1U) % CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 0U) {
-        ad7606_diag_log_and_reset();
-    }
+    ad7606_diag_finish_sample(sample_index);
     return ESP_OK;
 }
 

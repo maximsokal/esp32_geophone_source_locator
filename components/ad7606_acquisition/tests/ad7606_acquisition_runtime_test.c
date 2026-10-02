@@ -9,6 +9,8 @@
 #include "ad7606_acquisition.h"
 #include "ad7606_driver.h"
 #include "ad7606_power_policy.h"
+#include "sdkconfig.h"
+#include "../ad7606_diag_accum.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "driver/pulse_cnt.h"
@@ -21,6 +23,19 @@
 #include "ina3221_monitor.h"
 #include "runtime_observability.h"
 #include "seismic_buffer.h"
+
+_Static_assert(
+    sizeof(((ad7606_diag_channel_t *)0)->sum_sq_raw) == 8U,
+    "AD7606 diagnostic sum of squares must be 64 bits"
+);
+_Static_assert(
+    _Generic(
+        ((ad7606_diag_channel_t *)0)->sum_sq_raw,
+        uint64_t: 1,
+        default: 0
+    ),
+    "AD7606 diagnostic sum of squares must be uint64_t"
+);
 
 /*
  * MAX-246 item 2: AD7606 hardware-timed lifecycle, indexed samples
@@ -1118,8 +1133,274 @@ static void test_overcurrent_stops_and_latches(void)
     assert(s_script_pos < s_script_len);
 }
 
+typedef struct
+{
+    uint32_t count;
+    int16_t min_raw;
+    int16_t max_raw;
+    int64_t sum_raw;
+    uint64_t sum_sq_raw;
+    uint32_t saturation_count;
+
+} diag_reference_t;
+
+static diag_reference_t s_diag_reference[AD7606_CHANNEL_COUNT];
+
+static void diag_reference_reset(void)
+{
+    for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+        s_diag_reference[channel] = (diag_reference_t) {
+            .min_raw = INT16_MAX,
+            .max_raw = INT16_MIN,
+        };
+    }
+}
+
+static void diag_reset_both(void)
+{
+    ad7606_acquisition_test_diag_reset();
+    diag_reference_reset();
+}
+
+static void diag_reference_record(diag_reference_t *diag, int16_t raw)
+{
+    const int64_t widened = (int64_t)raw;
+    if (raw < diag->min_raw) diag->min_raw = raw;
+    if (raw > diag->max_raw) diag->max_raw = raw;
+    diag->count += 1U;
+    diag->sum_raw += widened;
+    diag->sum_sq_raw += (uint64_t)(widened * widened);
+    if (raw == INT16_MIN || raw == INT16_MAX) diag->saturation_count += 1U;
+}
+
+static void diag_push_values(
+    int16_t ch0,
+    int16_t ch1,
+    int16_t ch2,
+    int16_t ch3
+)
+{
+    const int16_t raw[AD7606_CHANNEL_COUNT] = { ch0, ch1, ch2, ch3 };
+    ad7606_sample_t sample = { 0 };
+    memcpy(sample.raw, raw, sizeof(raw));
+    ad7606_acquisition_test_diag_record(&sample);
+    for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+        diag_reference_record(&s_diag_reference[channel], raw[channel]);
+    }
+}
+
+static const char *diag_reference_state(const diag_reference_t *diag)
+{
+    if (diag->saturation_count != 0U) return "CLIP";
+    if (diag->count != 0U && diag->min_raw == diag->max_raw) return "FLAT";
+    return "VAR";
+}
+
+static void diag_reference_metrics(const diag_reference_t *diag, double out[4])
+{
+    const double count = (double)diag->count;
+    const double mean = (double)diag->sum_raw / count;
+    double variance = (double)diag->sum_sq_raw / count - mean * mean;
+    if (variance < 0.0) variance = 0.0;
+    const double max_delta = fabs((double)diag->max_raw - mean);
+    const double min_delta = fabs((double)diag->min_raw - mean);
+    out[0] = mean;
+    out[1] = sqrt(variance);
+    out[2] = (double)diag->max_raw - (double)diag->min_raw;
+    out[3] = max_delta > min_delta ? max_delta : min_delta;
+}
+
+static void diag_compare_with_reference(void)
+{
+    ad7606_diag_channel_t actual[AD7606_CHANNEL_COUNT];
+    ad7606_acquisition_test_diag_snapshot(actual);
+    for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+        const diag_reference_t *expected = &s_diag_reference[channel];
+        const ad7606_diag_channel_t *observed = &actual[channel];
+        assert(observed->count == expected->count);
+        assert(observed->min_raw == expected->min_raw);
+        assert(observed->max_raw == expected->max_raw);
+        assert(observed->sum_raw == expected->sum_raw);
+        assert(observed->sum_sq_raw == expected->sum_sq_raw);
+        assert(observed->saturation_count == expected->saturation_count);
+        assert(strcmp(
+            ad7606_acquisition_test_diag_state(channel),
+            diag_reference_state(expected)
+        ) == 0);
+
+        if (expected->count != 0U) {
+            ad7606_diag_metrics_t metrics;
+            double reference[4];
+            diag_reference_metrics(expected, reference);
+            assert(ad7606_acquisition_test_diag_metrics(channel, &metrics));
+            const double actual_metrics[4] = {
+                metrics.mean_raw,
+                metrics.rms_raw,
+                metrics.p2p_raw,
+                metrics.peak_raw,
+            };
+            for (size_t metric = 0U; metric < 4U; ++metric) {
+                const double tolerance =
+                    1e-10 * fmax(1.0, fabs(reference[metric]));
+                assert(fabs(actual_metrics[metric] - reference[metric]) <= tolerance);
+            }
+        }
+        else {
+            ad7606_diag_metrics_t unused;
+            assert(!ad7606_acquisition_test_diag_metrics(channel, &unused));
+        }
+    }
+}
+
+static void test_diag_basic_values_and_channel_independence(void)
+{
+    diag_reset_both();
+    for (size_t sample = 0U; sample < 8U; ++sample) {
+        diag_push_values(0, 0, 0, 0);
+    }
+    diag_compare_with_reference();
+
+    diag_reset_both();
+    diag_push_values(1, -1, 1, -1);
+    diag_push_values(-1, 1, -1, 1);
+    diag_compare_with_reference();
+
+    diag_reset_both();
+    diag_push_values(INT16_MIN, INT16_MAX, -123, 456);
+    diag_push_values(INT16_MAX, INT16_MIN, 789, -321);
+    diag_compare_with_reference();
+
+    diag_reset_both();
+    for (int32_t value = -100; value <= 100; ++value) {
+        diag_push_values(
+            (int16_t)value,
+            (int16_t)-value,
+            (int16_t)(value * 3),
+            (int16_t)(value * 7)
+        );
+    }
+    diag_compare_with_reference();
+
+    diag_reset_both();
+    for (int32_t value = -32; value < 32; ++value) {
+        diag_push_values(
+            (int16_t)value,
+            (int16_t)(value * 2),
+            (int16_t)(value * 3),
+            (int16_t)(value * 4)
+        );
+    }
+    diag_push_values(1, 2, INT16_MIN, 4);
+    diag_compare_with_reference();
+    assert(strcmp(ad7606_acquisition_test_diag_state(2U), "CLIP") == 0);
+    assert(strcmp(ad7606_acquisition_test_diag_state(0U), "VAR") == 0);
+}
+
+static void test_diag_supported_rate_windows_and_overflow_bound(void)
+{
+    const uint32_t rates[] = { 500U, 5000U, 10000U, 20000U, 40000U };
+    const uint64_t worst_window_sum =
+        (uint64_t)AD7606_DIAG_MAX_WINDOW_SAMPLES * (UINT64_C(1) << 30U);
+    assert(worst_window_sum == UINT64_C(42949672960000));
+    assert(UINT64_MAX / worst_window_sum > 429000U);
+
+    for (size_t rate_index = 0U; rate_index < sizeof(rates) / sizeof(rates[0]); ++rate_index) {
+        const uint32_t rate = rates[rate_index];
+        diag_reset_both();
+        diag_push_values(INT16_MIN, INT16_MAX, 7, -1);
+        diag_compare_with_reference();
+
+        diag_reset_both();
+        for (uint32_t sample = 0U; sample < rate; ++sample) {
+            const bool odd = (sample & 1U) != 0U;
+            diag_push_values(
+                odd ? INT16_MAX : INT16_MIN,
+                odd ? INT16_MIN : INT16_MAX,
+                odd ? INT16_MAX : INT16_MIN,
+                odd ? INT16_MIN : INT16_MAX
+            );
+        }
+        diag_compare_with_reference();
+        ad7606_diag_channel_t actual[AD7606_CHANNEL_COUNT];
+        ad7606_acquisition_test_diag_snapshot(actual);
+        for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+            assert(actual[channel].count == rate);
+            assert(actual[channel].sum_sq_raw ==
+                ((uint64_t)rate / 2U) *
+                    ((UINT64_C(1) << 30U) + UINT64_C(32767) * UINT64_C(32767)));
+        }
+    }
+
+    diag_reset_both();
+    for (uint32_t sample = 0U; sample < AD7606_DIAG_MAX_WINDOW_SAMPLES; ++sample) {
+        diag_push_values(INT16_MIN, INT16_MIN, INT16_MIN, INT16_MIN);
+    }
+    diag_compare_with_reference();
+    ad7606_diag_channel_t actual[AD7606_CHANNEL_COUNT];
+    ad7606_acquisition_test_diag_snapshot(actual);
+    for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+        assert(actual[channel].sum_sq_raw == worst_window_sum);
+    }
+
+    diag_reset_both();
+    for (uint32_t sample = 0U; sample < AD7606_DIAG_MAX_WINDOW_SAMPLES; ++sample) {
+        diag_push_values(INT16_MAX, INT16_MAX, INT16_MAX, INT16_MAX);
+    }
+    diag_compare_with_reference();
+}
+
+static void test_diag_report_reset_boundary(void)
+{
+    const uint64_t rate = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ;
+    diag_reset_both();
+    for (uint64_t sample = 0U; sample < rate - 1U; ++sample) {
+        const int16_t value = (int16_t)(sample % 100U);
+        diag_push_values(value, (int16_t)-value, value, (int16_t)-value);
+        ad7606_acquisition_test_diag_finish_sample(sample);
+    }
+    diag_compare_with_reference();
+
+    diag_push_values(17, -18, 19, -20);
+    diag_compare_with_reference(); /* N records exist immediately before finish. */
+    ad7606_acquisition_test_diag_finish_sample(rate - 1U);
+    diag_reset_both();
+    diag_compare_with_reference(); /* The production report/reset hook cleared N. */
+
+    diag_push_values(21, -22, 23, -24);
+    ad7606_acquisition_test_diag_finish_sample(rate);
+    diag_compare_with_reference(); /* N+1 is the first sample of the next window. */
+}
+
+static void test_diag_fixed_seed_random_stream(void)
+{
+    uint32_t random_state = UINT32_C(0x6d2b79f5);
+    diag_reset_both();
+    for (size_t sample = 0U; sample < 2048U; ++sample) {
+        int16_t raw[AD7606_CHANNEL_COUNT];
+        for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+            random_state = random_state * UINT32_C(1664525) + UINT32_C(1013904223);
+            raw[channel] = (int16_t)((int32_t)((random_state >> 16U) & UINT32_C(0xffff)) - 32768);
+        }
+        diag_push_values(raw[0], raw[1], raw[2], raw[3]);
+        if ((sample % 127U) == 0U) diag_compare_with_reference();
+    }
+    diag_compare_with_reference();
+}
+
+/* Host timing cannot measure Xtensa instruction cost; ESP32 HIL cycle measurement is authoritative and was not run. */
+static void test_diag_integer_accumulator_contract(void)
+{
+    test_diag_basic_values_and_channel_independence();
+    test_diag_supported_rate_windows_and_overflow_bound();
+    test_diag_report_reset_boundary();
+    test_diag_fixed_seed_random_stream();
+    diag_reset_both();
+    diag_compare_with_reference();
+}
+
 int main(void)
 {
+    test_diag_integer_accumulator_contract();
     test_run_samples_then_stop_releases_everything();
     test_safe_os_mismatch_runs_and_is_reported();
     test_unknown_os_measurement_refuses_start();

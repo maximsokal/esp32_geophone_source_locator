@@ -30,6 +30,22 @@
 static const char *TAG = "SEISMIC_RECOVERY";
 
 
+static void seismic_recorder_recovery_copy_string(
+    char *destination,
+    size_t destination_size,
+    const char *source
+)
+{
+    if (destination_size == 0U) {
+        return;
+    }
+
+    const size_t copy_length = strnlen(source, destination_size - 1U);
+    memcpy(destination, source, copy_length);
+    destination[copy_length] = '\0';
+}
+
+
 typedef struct
 {
     char source_name[SEISMIC_RECORDER_SOURCE_NAME_SIZE];
@@ -255,10 +271,9 @@ static esp_err_t seismic_recorder_recovery_parse_candidate(
     }
 
     if (valid) {
-        snprintf(
+        seismic_recorder_recovery_copy_string(
             candidate->source_name,
             sizeof(candidate->source_name),
-            "%s",
             source->valuestring
         );
         candidate->sample_rate_hz = sample_rate_hz;
@@ -580,12 +595,19 @@ static esp_err_t seismic_recorder_recovery_one(
     snapshot.samples_written = frame_count;
     snapshot.last_error = ESP_FAIL;
     snapshot.stop_stage_error = ESP_OK;
-    snprintf(snapshot.object_id, sizeof(snapshot.object_id), "%s", object_id);
-    snprintf(snapshot.session_id, sizeof(snapshot.session_id), "%s", session_id);
-    snprintf(
+    seismic_recorder_recovery_copy_string(
+        snapshot.object_id,
+        sizeof(snapshot.object_id),
+        object_id
+    );
+    seismic_recorder_recovery_copy_string(
+        snapshot.session_id,
+        sizeof(snapshot.session_id),
+        session_id
+    );
+    seismic_recorder_recovery_copy_string(
         snapshot.source_name,
         sizeof(snapshot.source_name),
-        "%s",
         candidate.source_name
     );
 

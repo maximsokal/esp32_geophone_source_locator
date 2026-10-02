@@ -36,6 +36,17 @@
 
 static const char *TAG = "UI_SCAN_PREVIEW";
 
+static void copy_string(char *destination, size_t destination_size, const char *source)
+{
+    if (destination_size == 0U) {
+        return;
+    }
+
+    const size_t copy_length = strnlen(source, destination_size - 1U);
+    memcpy(destination, source, copy_length);
+    destination[copy_length] = '\0';
+}
+
 typedef struct
 {
     uint32_t generation;
@@ -676,7 +687,7 @@ void ui_scan_preview_screen_open_locked(void)
         s_workflow_recording = workflow_service_try_get_snapshot(&snapshot) == ESP_OK &&
             snapshot.step == WORKFLOW_STEP_RECORDING;
     }
-    (void)strncpy(s_session_id, s_target_session_id, sizeof(s_session_id) - 1U);
+    copy_string(s_session_id, sizeof(s_session_id), s_target_session_id);
     ui_preview3d_view_preset(&s_view, UI_PREVIEW3D_PRESET_ISO);
 
     lv_obj_t *screen = ui_create_screen_base_locked(ui_tr(UI_I18N_KEY_SCAN_TITLE), ui_tr(UI_I18N_KEY_SCAN_FOOTER));
@@ -711,8 +722,8 @@ void ui_scan_preview_screen_open_locked(void)
     }
 
     preview_request_t request = {.generation = generation};
-    (void)strncpy(request.object_id, s_target_object_id, sizeof(request.object_id) - 1U);
-    (void)strncpy(request.session_id, s_target_session_id, sizeof(request.session_id) - 1U);
+    copy_string(request.object_id, sizeof(request.object_id), s_target_object_id);
+    copy_string(request.session_id, sizeof(request.session_id), s_target_session_id);
     if (s_canvas_pixels == NULL) {
         (void)scan_preview_state_complete(&s_state, generation, SCAN_PREVIEW_SCREEN_NO_PREVIEW, NULL, NULL, "canvas memory unavailable");
         show_status_locked(s_state.status, s_state.fallback_reason);
