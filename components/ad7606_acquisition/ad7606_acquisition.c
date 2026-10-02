@@ -88,6 +88,24 @@ static uint8_t *s_serial_quality_window_flags;
 static uint64_t s_serial_diag_last_log_sample = 0U;
 static bool s_serial_diag_log_pending = false;
 
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+static ad7606_acquisition_test_log_sink_t s_test_log_sink;
+static uint32_t s_test_heap_caps_allocations;
+
+static void ad7606_test_log_event(
+    ad7606_acquisition_test_log_event_t event,
+    uint64_t sample_index,
+    size_t channel,
+    uint32_t count,
+    const char *state
+)
+{
+    if (s_test_log_sink != NULL) {
+        (void)s_test_log_sink(event, sample_index, channel, count, state);
+    }
+}
+#endif
+
 #define AD7606_LEDC_XTAL_CLOCK_HZ 40000000U
 /* Datasheet t3 CONVST high minimum is 25 ns; target 2.1 us for margin. */
 #define AD7606_CONVST_TARGET_HIGH_NS 2100U
@@ -197,8 +215,11 @@ static ad7606_diag_metrics_t ad7606_diag_measure(
 }
 
 
-static void ad7606_diag_log_and_reset(void)
+static void ad7606_diag_log_and_reset(uint64_t sample_index)
 {
+#if !defined(AD7606_ACQUISITION_HOST_TEST)
+    (void)sample_index;
+#endif
     /* One raw ADC code in millivolts for the configured bipolar range. */
     const double lsb_mv =
         (double)ad7606_raw_to_uv(1) /
@@ -212,6 +233,15 @@ static void ad7606_diag_log_and_reset(void)
         const ad7606_diag_channel_t *diag = &s_diag[channel];
 
         if (diag->count == 0U) {
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+            ad7606_test_log_event(
+                AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL,
+                sample_index,
+                channel,
+                0U,
+                "EMPTY"
+            );
+#endif
             ESP_LOGW(
                 DIAG_TAG,
                 "CH%u no samples",
@@ -221,6 +251,16 @@ static void ad7606_diag_log_and_reset(void)
         }
 
         const ad7606_diag_metrics_t metrics = ad7606_diag_measure(diag);
+        const char *state = ad7606_diag_state(diag);
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+        ad7606_test_log_event(
+            AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL,
+            sample_index,
+            channel,
+            diag->count,
+            state
+        );
+#endif
 
         ESP_LOGI(
             DIAG_TAG,
@@ -234,7 +274,7 @@ static void ad7606_diag_log_and_reset(void)
             (double)diag->min_raw * lsb_mv,
             (double)diag->max_raw * lsb_mv,
             (unsigned)diag->saturation_count,
-            ad7606_diag_state(diag)
+            state
         );
     }
 
@@ -245,7 +285,7 @@ static void ad7606_diag_log_and_reset(void)
 static void ad7606_diag_finish_sample(uint64_t sample_index)
 {
     if ((sample_index + 1U) % CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 0U) {
-        ad7606_diag_log_and_reset();
+        ad7606_diag_log_and_reset(sample_index);
     }
 }
 
@@ -286,6 +326,28 @@ bool ad7606_acquisition_test_diag_metrics(
 void ad7606_acquisition_test_diag_finish_sample(uint64_t sample_index)
 {
     ad7606_diag_finish_sample(sample_index);
+}
+
+void ad7606_acquisition_test_log_sink_set(
+    ad7606_acquisition_test_log_sink_t sink
+)
+{
+    s_test_log_sink = sink;
+}
+
+bool ad7606_acquisition_test_serial_diag_pending(void)
+{
+    return s_serial_diag_log_pending;
+}
+
+uint64_t ad7606_acquisition_test_serial_diag_last_log_sample(void)
+{
+    return s_serial_diag_last_log_sample;
+}
+
+uint32_t ad7606_acquisition_test_heap_caps_allocations(void)
+{
+    return s_test_heap_caps_allocations;
 }
 #endif
 
@@ -748,6 +810,17 @@ static void ad7606_serial_diag_log_frame(
         event->stream_state_changed ||
         periodic_due
     ) {
+        if (s_serial_diag_log_pending) {
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+            ad7606_test_log_event(
+                AD7606_ACQUISITION_TEST_LOG_SERIAL_COALESCED,
+                samples - 1U,
+                SIZE_MAX,
+                0U,
+                NULL
+            );
+#endif
+        }
         s_serial_diag_log_pending = true;
     }
 
@@ -760,6 +833,15 @@ static void ad7606_serial_diag_log_frame(
         samples - s_serial_diag_last_log_sample <
             CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
     ) {
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+        ad7606_test_log_event(
+            AD7606_ACQUISITION_TEST_LOG_SERIAL_SUPPRESSED,
+            samples - 1U,
+            SIZE_MAX,
+            0U,
+            NULL
+        );
+#endif
         return;
     }
 
@@ -769,6 +851,15 @@ static void ad7606_serial_diag_log_frame(
         words
     );
 
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ad7606_test_log_event(
+        AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG,
+        samples - 1U,
+        SIZE_MAX,
+        0U,
+        serial_diag->serial_suspicious ? "SUSPICIOUS" : "NORMAL"
+    );
+#endif
     ESP_LOGI(
         DIAG_TAG,
         "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d] class=%s transport_quality=%s signal_quality=%s stream_state=%s stream_stuck=%s busy=%d samples=%" PRIu64 " streak=%u repeated_streak=%u all_zero=%u all_ff=%u identical=%u varied=%u digital_interference=%u signal_rail_hits=%u signal_clips=%u window=%u transport_bad=%u all_zero=%u all_ff=%u identical=%u repeated=%u digital=%u signal_rail=%u signal_clip=%u serial_suspicious=%s",
@@ -1260,6 +1351,9 @@ static esp_err_t ad7606_worker_initialize(void)
     const uint32_t quality_window_frames = ad7606_serial_quality_window_frames(
         CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
     );
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_heap_caps_allocations;
+#endif
     s_serial_quality_window_flags = heap_caps_malloc(
         quality_window_frames,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT

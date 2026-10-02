@@ -19,6 +19,26 @@ static bool s_fail_next_allocation;
 static size_t s_last_allocation_size;
 static size_t s_allocation_count;
 static size_t s_free_count;
+
+typedef struct
+{
+    size_t allocations;
+    size_t frees;
+} allocation_counts_t;
+
+static allocation_counts_t allocation_counts(void)
+{
+    return (allocation_counts_t) {
+        .allocations = s_allocation_count,
+        .frees = s_free_count,
+    };
+}
+
+static void assert_no_allocation_or_free_since(allocation_counts_t before)
+{
+    assert(s_allocation_count == before.allocations);
+    assert(s_free_count == before.frees);
+}
 #endif
 #if defined(SEISMIC_BUFFER_TEST_HOOKS)
 static bool s_reconfigure_on_enter;
@@ -236,6 +256,9 @@ static void test_latest_and_cursor_batches(void)
 static void test_runtime_wrap_and_skipped_frames(void)
 {
     assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 5000U) == ESP_OK);
+#if defined(SEISMIC_BUFFER_TEST_ALLOCATOR)
+    const allocation_counts_t before = allocation_counts();
+#endif
     const uint64_t capacity = seismic_buffer_capacity();
     const uint64_t total = capacity + 5U;
     for (uint64_t number = 1U; number <= total; ++number) {
@@ -277,6 +300,9 @@ static void test_runtime_wrap_and_skipped_frames(void)
         &cursor, frames, 10U, &count, &dropped, &info
     ) == ESP_ERR_INVALID_STATE);
 
+#if defined(SEISMIC_BUFFER_TEST_ALLOCATOR)
+    assert_no_allocation_or_free_since(before);
+#endif
     assert(seismic_buffer_configure(SEISMIC_SOURCE_TEST, 250U) == ESP_OK);
     assert(seismic_buffer_copy_since(
         &cursor, frames, 10U, &count, &dropped, &info
@@ -284,9 +310,57 @@ static void test_runtime_wrap_and_skipped_frames(void)
 }
 
 
+static void test_wrap_boundary_counts(void)
+{
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 500U) == ESP_OK);
+    const uint64_t capacity = seismic_buffer_capacity();
+#if defined(SEISMIC_BUFFER_TEST_ALLOCATOR)
+    const allocation_counts_t before = allocation_counts();
+#endif
+
+    for (uint64_t number = 1U; number < capacity; ++number) {
+        push_number(number);
+    }
+
+    seismic_frame_t frame;
+    size_t count = 0U;
+    seismic_buffer_info_t info = {0};
+    assert(seismic_buffer_copy_latest(&frame, 1U, &count, &info) == ESP_OK);
+    assert(count == 1U && info.total_frames == capacity - 1U);
+    assert_frame(&frame, capacity - 1U);
+
+    push_number(capacity);
+    uint64_t cursor = capacity - 2U;
+    uint64_t dropped = 0U;
+    seismic_frame_t pair[2];
+    assert(seismic_buffer_copy_since(
+        &cursor, pair, 2U, &count, &dropped, &info
+    ) == ESP_OK);
+    assert(count == 2U && dropped == 0U && info.total_frames == capacity);
+    assert_frame(&pair[0], capacity - 1U);
+    assert_frame(&pair[1], capacity);
+
+    push_number(capacity + 1U);
+    cursor = capacity - 1U;
+    assert(seismic_buffer_copy_since(
+        &cursor, pair, 2U, &count, &dropped, &info
+    ) == ESP_OK);
+    assert(count == 2U && dropped == 0U && info.total_frames == capacity + 1U);
+    assert_frame(&pair[0], capacity);
+    assert_frame(&pair[1], capacity + 1U);
+
+#if defined(SEISMIC_BUFFER_TEST_ALLOCATOR)
+    assert_no_allocation_or_free_since(before);
+#endif
+}
+
+
 static void test_indexed_source_gaps_are_preserved(void)
 {
     assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 500U) == ESP_OK);
+#if defined(SEISMIC_BUFFER_TEST_ALLOCATOR)
+    const allocation_counts_t before = allocation_counts();
+#endif
     const uint64_t indexes[] = {0U, 1U, 5U, 6U};
     float channels[SEISMIC_CHANNEL_COUNT] = {0};
     for (size_t index = 0U; index < sizeof(indexes) / sizeof(indexes[0]); ++index) {
@@ -311,6 +385,9 @@ static void test_indexed_source_gaps_are_preserved(void)
         assert(source_sample_indices[index] == indexes[index]);
         assert(frames[index].timestamp_us == (int64_t)indexes[index] * 2000LL);
     }
+#if defined(SEISMIC_BUFFER_TEST_ALLOCATOR)
+    assert_no_allocation_or_free_since(before);
+#endif
 }
 
 
@@ -318,6 +395,9 @@ static void test_indexed_source_gaps_are_preserved(void)
 static void test_reconfigure_rejected_during_producer_and_consumer(void)
 {
     assert(seismic_buffer_configure(SEISMIC_SOURCE_TEST, 500U) == ESP_OK);
+#if defined(SEISMIC_BUFFER_TEST_ALLOCATOR)
+    const allocation_counts_t before = allocation_counts();
+#endif
 
     s_reconfigure_rate = 5000U;
     s_reconfigure_attempted = false;
@@ -336,6 +416,10 @@ static void test_reconfigure_rejected_during_producer_and_consumer(void)
     assert(s_reconfigure_attempted);
     assert(s_reconfigure_result == ESP_ERR_INVALID_STATE);
     assert(seismic_buffer_capacity() == 2048U);
+
+#if defined(SEISMIC_BUFFER_TEST_ALLOCATOR)
+    assert_no_allocation_or_free_since(before);
+#endif
 
     assert(seismic_buffer_configure(SEISMIC_SOURCE_TEST, 5000U) == ESP_OK);
     assert(seismic_buffer_capacity() == 10000U);
@@ -401,6 +485,9 @@ static void assert_frame_coherent(const seismic_frame_t *frame)
 static void test_concurrent_sequence_validation(void)
 {
     assert(seismic_buffer_configure(SEISMIC_SOURCE_TEST, 500U) == ESP_OK);
+#if defined(SEISMIC_BUFFER_TEST_ALLOCATOR)
+    const allocation_counts_t before = allocation_counts();
+#endif
     push_number(1U);
 
     seismic_frame_t frames[1];
@@ -412,6 +499,9 @@ static void test_concurrent_sequence_validation(void)
     assert(info.total_frames == 2049U);
     assert_frame(&frames[0], 2049U);
     assert_frame_coherent(&frames[0]);
+#if defined(SEISMIC_BUFFER_TEST_ALLOCATOR)
+    assert_no_allocation_or_free_since(before);
+#endif
 }
 #endif
 
@@ -426,6 +516,7 @@ int main(void)
     test_capacity_by_rate_and_budget();
     test_latest_and_cursor_batches();
     test_runtime_wrap_and_skipped_frames();
+    test_wrap_boundary_counts();
     test_indexed_source_gaps_are_preserved();
 #if defined(SEISMIC_BUFFER_TEST_HOOKS)
     test_reconfigure_rejected_during_producer_and_consumer();

@@ -3,6 +3,7 @@
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -50,6 +51,9 @@ _Static_assert(
  */
 
 #define PERIOD_US 2000LL /* 500 Hz */
+#define TEST_EVENT_CAPACITY \
+    (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ + 64U)
+#define TEST_LOG_RECORD_CAPACITY 32U
 
 typedef enum { EV_TICK, EV_STOP } event_type_t;
 typedef struct {
@@ -58,7 +62,7 @@ typedef struct {
     int64_t timestamp_adjustment_us;
 } event_t;
 
-static event_t s_script[64];
+static event_t s_script[TEST_EVENT_CAPACITY];
 static size_t s_script_len;
 static size_t s_script_pos;
 
@@ -84,6 +88,24 @@ static unsigned s_pushes;
 static int64_t s_push_timestamps[64];
 static uint64_t s_push_sample_indices[64];
 static int64_t s_last_push_ts;
+static uint64_t s_last_push_sample_index;
+static int64_t s_last_push_wall_time_us;
+static uint32_t s_fake_serial_valid_after_conversion;
+static uint32_t s_fake_serial_clocklike_from_conversion;
+static uint32_t s_fake_serial_fixed_from_conversion;
+static uint32_t s_pending_notifications;
+static bool s_synthetic_log_delay;
+static int64_t s_worker_iteration_start_us;
+static bool s_worker_iteration_active;
+static bool s_worker_iteration_published;
+static uint64_t s_worker_iteration_sample_index;
+static uint64_t s_worker_iteration_duration_us[TEST_EVENT_CAPACITY];
+static bool s_worker_iteration_duration_recorded[TEST_EVENT_CAPACITY];
+static int64_t s_push_wall_by_sample[TEST_EVENT_CAPACITY];
+static int64_t s_push_timestamp_by_sample[TEST_EVENT_CAPACITY];
+static bool s_push_recorded_by_sample[TEST_EVENT_CAPACITY];
+static uint32_t s_last_synthetic_notification_batch;
+static uint32_t s_max_synthetic_notification_batch;
 static float s_last_push[SEISMIC_CHANNEL_COUNT];
 static seismic_source_t s_buffer_source;
 static uint32_t s_buffer_rate;
@@ -131,6 +153,32 @@ static unsigned s_oc_clear_calls;
 static bool s_oc_cleared_before_gate_read;
 static unsigned s_rail_reads;
 
+typedef struct {
+    ad7606_acquisition_test_log_event_t event;
+    uint64_t sample_index;
+    size_t channel;
+    uint32_t count;
+    const char *state;
+    int64_t wall_time_us;
+    int64_t pushed_wall_time_us;
+    uint64_t pushed_sample_index;
+    int64_t pushed_timestamp_us;
+} test_log_record_t;
+
+static test_log_record_t s_log_records[TEST_LOG_RECORD_CAPACITY];
+static size_t s_log_record_count;
+static uint64_t s_log_suppressed_count;
+static uint64_t s_log_coalesced_count;
+static uint64_t s_log_coalesced_first_sample;
+static uint64_t s_log_coalesced_last_sample;
+static uint64_t s_log_coalesced_samples[8];
+static uint64_t s_log_sink_unavailable_count;
+static uint32_t s_fake_diag_log_cost_us;
+static uint32_t s_fake_serial_log_cost_us;
+static bool s_fake_log_sink_available;
+static bool s_log_allocation_baseline_set;
+static uint32_t s_log_allocation_baseline;
+
 static void reset_world(void)
 {
     s_script_len = 0U;
@@ -148,6 +196,8 @@ static void reset_world(void)
     s_reads_after_deinit = 0U;
     s_driver_live = false;
     s_pushes = 0U;
+    s_last_push_sample_index = 0U;
+    s_last_push_wall_time_us = 0;
     s_buffer_source = SEISMIC_SOURCE_TEST;
     s_buffer_rate = 12345U;
     s_ad7606_rate = 0U;
@@ -155,6 +205,17 @@ static void reset_world(void)
     s_beats = 0U;
     s_notify_gives = 0U;
     s_notify_from_isr = 0U;
+    s_fake_serial_valid_after_conversion = 0U;
+    s_fake_serial_clocklike_from_conversion = 0U;
+    s_fake_serial_fixed_from_conversion = 0U;
+    s_pending_notifications = 0U;
+    s_synthetic_log_delay = false;
+    s_worker_iteration_start_us = 0;
+    s_worker_iteration_active = false;
+    s_worker_iteration_published = false;
+    s_worker_iteration_sample_index = 0U;
+    s_last_synthetic_notification_batch = 0U;
+    s_max_synthetic_notification_batch = 0U;
     s_fake_pcnt_count = 0U;
     s_fake_busy_level = 0;
     s_fake_busy_intr_type = GPIO_INTR_DISABLE;
@@ -173,6 +234,25 @@ static void reset_world(void)
     s_fake_watch_points = 0U;
     memset(s_push_timestamps, 0, sizeof(s_push_timestamps));
     memset(s_push_sample_indices, 0, sizeof(s_push_sample_indices));
+    memset(s_worker_iteration_duration_us, 0, sizeof(s_worker_iteration_duration_us));
+    memset(s_worker_iteration_duration_recorded, 0, sizeof(s_worker_iteration_duration_recorded));
+    memset(s_push_wall_by_sample, 0, sizeof(s_push_wall_by_sample));
+    memset(s_push_timestamp_by_sample, 0, sizeof(s_push_timestamp_by_sample));
+    memset(s_push_recorded_by_sample, 0, sizeof(s_push_recorded_by_sample));
+    memset(s_log_records, 0, sizeof(s_log_records));
+    s_log_record_count = 0U;
+    s_log_suppressed_count = 0U;
+    s_log_coalesced_count = 0U;
+    s_log_coalesced_first_sample = 0U;
+    s_log_coalesced_last_sample = 0U;
+    memset(s_log_coalesced_samples, 0, sizeof(s_log_coalesced_samples));
+    s_log_sink_unavailable_count = 0U;
+    s_fake_diag_log_cost_us = 0U;
+    s_fake_serial_log_cost_us = 0U;
+    s_fake_log_sink_available = true;
+    s_log_allocation_baseline_set = false;
+    s_log_allocation_baseline = 0U;
+    ad7606_acquisition_test_log_sink_set(NULL);
     s_driver_init_result = ESP_OK;
     s_fake_measured_tconv_ns = 4000U;
     s_gpio_install_result = ESP_OK;
@@ -212,6 +292,112 @@ static void script_with_lateness(uint32_t count, int64_t lateness_us)
         .timestamp_adjustment_us = lateness_us,
     };
     ++s_script_len;
+}
+
+static void fake_busy_conversion(void)
+{
+    s_fake_busy_level = 1;
+    if (s_fake_gpio_intr_enabled &&
+        s_fake_busy_intr_type == GPIO_INTR_POSEDGE && s_fake_busy_isr != NULL) {
+        s_fake_busy_isr(s_fake_busy_isr_args);
+    }
+    s_fake_busy_level = 0;
+    ++s_fake_pcnt_count;
+    if (s_fake_gpio_intr_enabled &&
+        s_fake_busy_intr_type == GPIO_INTR_NEGEDGE && s_fake_busy_isr != NULL) {
+        s_fake_busy_isr(s_fake_busy_isr_args);
+    }
+}
+
+static void finish_fake_worker_iteration(void)
+{
+    if (
+        s_worker_iteration_active &&
+        s_worker_iteration_published &&
+        s_worker_iteration_sample_index < TEST_EVENT_CAPACITY
+    ) {
+        const size_t index = (size_t)s_worker_iteration_sample_index;
+        s_worker_iteration_duration_us[index] =
+            (uint64_t)(s_now_us - s_worker_iteration_start_us);
+        s_worker_iteration_duration_recorded[index] = true;
+    }
+    s_worker_iteration_active = false;
+    s_worker_iteration_published = false;
+}
+
+static void begin_fake_worker_iteration(void)
+{
+    s_worker_iteration_start_us = s_now_us;
+    s_worker_iteration_active = true;
+    s_worker_iteration_published = false;
+}
+
+static bool fake_log_sink(
+    ad7606_acquisition_test_log_event_t event,
+    uint64_t sample_index,
+    size_t channel,
+    uint32_t count,
+    const char *state
+)
+{
+    if (event == AD7606_ACQUISITION_TEST_LOG_SERIAL_SUPPRESSED) {
+        ++s_log_suppressed_count;
+    }
+    else if (event == AD7606_ACQUISITION_TEST_LOG_SERIAL_COALESCED) {
+        assert(s_log_coalesced_count <
+            sizeof(s_log_coalesced_samples) / sizeof(s_log_coalesced_samples[0]));
+        if (s_log_coalesced_count == 0U) {
+            s_log_coalesced_first_sample = sample_index;
+        }
+        s_log_coalesced_last_sample = sample_index;
+        s_log_coalesced_samples[s_log_coalesced_count] = sample_index;
+        ++s_log_coalesced_count;
+    }
+    else {
+        assert(s_log_record_count < TEST_LOG_RECORD_CAPACITY);
+        s_log_records[s_log_record_count++] = (test_log_record_t) {
+            .event = event,
+            .sample_index = sample_index,
+            .channel = channel,
+            .count = count,
+            .state = state,
+            .wall_time_us = s_now_us,
+            .pushed_wall_time_us = s_last_push_wall_time_us,
+            .pushed_sample_index = s_last_push_sample_index,
+            .pushed_timestamp_us = s_last_push_ts,
+        };
+
+        const uint32_t allocations =
+            ad7606_acquisition_test_heap_caps_allocations();
+        if (!s_log_allocation_baseline_set) {
+            s_log_allocation_baseline = allocations;
+            s_log_allocation_baseline_set = true;
+        }
+        else {
+            assert(allocations == s_log_allocation_baseline);
+        }
+
+        if (!s_fake_log_sink_available) {
+            ++s_log_sink_unavailable_count;
+            return false;
+        }
+
+        const uint32_t cost_us =
+            event == AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL
+                ? s_fake_diag_log_cost_us
+                : s_fake_serial_log_cost_us;
+        if (cost_us != 0U) {
+            s_synthetic_log_delay = true;
+            for (uint32_t conversion = 0U;
+                 conversion < cost_us / (uint32_t)PERIOD_US;
+                 ++conversion) {
+                fake_busy_conversion();
+            }
+            s_synthetic_log_delay = false;
+            s_now_us += cost_us;
+        }
+    }
+    return s_fake_log_sink_available;
 }
 
 /* ---- FreeRTOS ---- */
@@ -311,6 +497,9 @@ void vTaskNotifyGiveFromISR(TaskHandle_t task, BaseType_t *higher_priority_task_
 {
     assert(task == &s_task_token);
     ++s_notify_from_isr;
+    if (s_synthetic_log_delay) {
+        ++s_pending_notifications;
+    }
     if (higher_priority_task_woken != NULL) {
         *higher_priority_task_woken = pdFALSE;
     }
@@ -332,23 +521,25 @@ uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
     assert(clear_on_exit == pdTRUE);
     assert(ticks_to_wait == portMAX_DELAY);
     assert(s_in_worker);
+    finish_fake_worker_iteration();
+    if (s_pending_notifications != 0U) {
+        const uint32_t notifications = s_pending_notifications;
+        s_pending_notifications = 0U;
+        s_last_synthetic_notification_batch = notifications;
+        if (notifications > s_max_synthetic_notification_batch) {
+            s_max_synthetic_notification_batch = notifications;
+        }
+        begin_fake_worker_iteration();
+        return notifications;
+    }
     assert(s_script_pos < s_script_len); /* every test ends with STOP or self-stop */
     const event_t event = s_script[s_script_pos++];
     if (event.type == EV_TICK) {
         for (uint32_t conversion = 0U; conversion < event.count; ++conversion) {
-            s_fake_busy_level = 1;
-            if (s_fake_gpio_intr_enabled &&
-                s_fake_busy_intr_type == GPIO_INTR_POSEDGE && s_fake_busy_isr != NULL) {
-                s_fake_busy_isr(s_fake_busy_isr_args);
-            }
-            s_fake_busy_level = 0;
-            ++s_fake_pcnt_count;
-            if (s_fake_gpio_intr_enabled &&
-                s_fake_busy_intr_type == GPIO_INTR_NEGEDGE && s_fake_busy_isr != NULL) {
-                s_fake_busy_isr(s_fake_busy_isr_args);
-            }
+            fake_busy_conversion();
         }
         s_now_us += PERIOD_US * (int64_t)event.count + event.timestamp_adjustment_us;
+        begin_fake_worker_iteration();
         return event.count;
     }
     if (setjmp(s_stop_return) == 0) {
@@ -647,8 +838,32 @@ esp_err_t ad7606_driver_read(ad7606_sample_t *sample)
 esp_err_t ad7606_driver_get_last_serial_observation(ad7606_serial_observation_t *observation)
 {
     memset(observation, 0, sizeof(*observation));
+    if (
+        s_fake_serial_valid_after_conversion != 0U &&
+        s_fake_pcnt_count < s_fake_serial_valid_after_conversion
+    ) {
+        return ESP_FAIL;
+    }
     observation->conversion_complete = true;
     observation->spi_transaction_ok = true;
+    if (
+        s_fake_serial_clocklike_from_conversion != 0U &&
+        s_fake_pcnt_count >= s_fake_serial_clocklike_from_conversion
+    ) {
+        memset(observation->rx, 0xAA, sizeof(observation->rx));
+        return ESP_OK;
+    }
+    if (
+        s_fake_serial_fixed_from_conversion != 0U &&
+        s_fake_pcnt_count >= s_fake_serial_fixed_from_conversion
+    ) {
+        static const uint8_t varied_frame[AD7606_SERIAL_RX_BYTES] = {
+            0x12U, 0x34U, 0x23U, 0x45U,
+            0x34U, 0x56U, 0x45U, 0x67U,
+        };
+        memcpy(observation->rx, varied_frame, sizeof(varied_frame));
+        return ESP_OK;
+    }
     for (unsigned c = 0U; c < AD7606_CHANNEL_COUNT; ++c) {
         const uint16_t word = (uint16_t)raw_for(
             s_fake_pcnt_count > 0U ? (unsigned)s_fake_pcnt_count : 0U,
@@ -741,6 +956,18 @@ esp_err_t seismic_buffer_push_indexed(
     }
     ++s_pushes;
     s_last_push_ts = timestamp_us;
+    s_last_push_sample_index = source_sample_index;
+    s_last_push_wall_time_us = s_now_us;
+    if (source_sample_index < TEST_EVENT_CAPACITY) {
+        const size_t index = (size_t)source_sample_index;
+        s_push_wall_by_sample[index] = s_now_us;
+        s_push_timestamp_by_sample[index] = timestamp_us;
+        s_push_recorded_by_sample[index] = true;
+    }
+    if (s_worker_iteration_active) {
+        s_worker_iteration_sample_index = source_sample_index;
+        s_worker_iteration_published = true;
+    }
     memcpy(s_last_push, channel_uv, sizeof(s_last_push));
     ad7606_acquisition_status_t status;
     assert(ad7606_acquisition_get_status(&status) == ESP_OK);
@@ -1371,6 +1598,386 @@ static void test_diag_report_reset_boundary(void)
     diag_compare_with_reference(); /* N+1 is the first sample of the next window. */
 }
 
+static void reset_log_capture(void)
+{
+    memset(s_log_records, 0, sizeof(s_log_records));
+    s_log_record_count = 0U;
+    s_log_suppressed_count = 0U;
+    s_log_coalesced_count = 0U;
+    s_log_coalesced_first_sample = 0U;
+    s_log_coalesced_last_sample = 0U;
+    memset(s_log_coalesced_samples, 0, sizeof(s_log_coalesced_samples));
+    s_log_sink_unavailable_count = 0U;
+    s_fake_diag_log_cost_us = 0U;
+    s_fake_serial_log_cost_us = 0U;
+    s_fake_log_sink_available = true;
+    s_log_allocation_baseline_set = false;
+    s_log_allocation_baseline = 0U;
+    ad7606_acquisition_test_log_sink_set(fake_log_sink);
+}
+
+static void assert_diag_window_report(
+    uint64_t sample_index,
+    uint32_t count,
+    const char *expected_states[AD7606_CHANNEL_COUNT]
+)
+{
+    size_t channel_logs = 0U;
+    for (size_t i = 0U; i < s_log_record_count; ++i) {
+        const test_log_record_t *record = &s_log_records[i];
+        if (record->event != AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL) {
+            continue;
+        }
+        assert(record->sample_index == sample_index);
+        assert(record->channel < AD7606_CHANNEL_COUNT);
+        assert(record->count == count);
+        assert(strcmp(record->state, expected_states[record->channel]) == 0);
+        ++channel_logs;
+    }
+    assert(channel_logs == AD7606_CHANNEL_COUNT);
+}
+
+static void test_diag_window_report_semantics(void)
+{
+    const uint32_t rate = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ;
+    const char *varied_states[AD7606_CHANNEL_COUNT] = {
+        "VAR", "VAR", "VAR", "VAR",
+    };
+    const char *flat_states[AD7606_CHANNEL_COUNT] = {
+        "FLAT", "FLAT", "FLAT", "FLAT",
+    };
+    const char *clipped_states[AD7606_CHANNEL_COUNT] = {
+        "CLIP", "VAR", "VAR", "VAR",
+    };
+
+    reset_log_capture();
+    diag_reset_both();
+    for (uint32_t sample = 0U; sample < rate; ++sample) {
+        const int16_t value = (int16_t)((int32_t)(sample % 101U) - 50);
+        diag_push_values(value, (int16_t)-value, (int16_t)(value + 1),
+            (int16_t)-(value + 1));
+    }
+    diag_compare_with_reference();
+    ad7606_acquisition_test_diag_finish_sample(rate - 1U);
+    assert_diag_window_report(rate - 1U, rate, varied_states);
+
+    ad7606_diag_channel_t actual[AD7606_CHANNEL_COUNT];
+    ad7606_acquisition_test_diag_snapshot(actual);
+    for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+        assert(actual[channel].count == 0U);
+    }
+
+    /* The first sample after report/reset belongs to the next window. */
+    diag_reference_reset();
+    diag_push_values(21, -22, 23, -24);
+    diag_compare_with_reference();
+    assert(s_log_record_count == AD7606_CHANNEL_COUNT);
+
+    reset_log_capture();
+    diag_reset_both();
+    for (uint32_t sample = 0U; sample < rate; ++sample) {
+        diag_push_values(7, -7, 0, 1);
+    }
+    diag_compare_with_reference();
+    ad7606_acquisition_test_diag_finish_sample(rate - 1U);
+    assert_diag_window_report(rate - 1U, rate, flat_states);
+
+    reset_log_capture();
+    diag_reset_both();
+    for (uint32_t sample = 0U; sample < rate; ++sample) {
+        const int16_t value = (int16_t)((int32_t)(sample % 101U) - 50);
+        diag_push_values(INT16_MIN, value, (int16_t)-value,
+            (int16_t)(value * 2));
+    }
+    diag_compare_with_reference();
+    ad7606_acquisition_test_diag_finish_sample(rate - 1U);
+    assert_diag_window_report(rate - 1U, rate, clipped_states);
+
+    ad7606_acquisition_test_log_sink_set(NULL);
+}
+
+static void append_sample_ticks(uint32_t samples)
+{
+    for (uint32_t sample = 0U; sample < samples; ++sample) {
+        script(EV_TICK, 1U);
+    }
+}
+
+static size_t log_record_count(ad7606_acquisition_test_log_event_t event)
+{
+    size_t count = 0U;
+    for (size_t i = 0U; i < s_log_record_count; ++i) {
+        if (s_log_records[i].event == event) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+static const test_log_record_t *find_log_record(
+    ad7606_acquisition_test_log_event_t event,
+    uint64_t sample_index
+)
+{
+    for (size_t i = 0U; i < s_log_record_count; ++i) {
+        if (
+            s_log_records[i].event == event &&
+            s_log_records[i].sample_index == sample_index
+        ) {
+            return &s_log_records[i];
+        }
+    }
+    assert(false);
+    return NULL;
+}
+
+static uint64_t worker_iteration_us(uint64_t sample_index)
+{
+    assert(sample_index < TEST_EVENT_CAPACITY);
+    assert(s_worker_iteration_duration_recorded[sample_index]);
+    return s_worker_iteration_duration_us[sample_index];
+}
+
+static void test_diag_logging_virtual_time_characterization(void)
+{
+    const uint32_t rate = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ;
+    const uint32_t injected_cost_us = 2390U;
+    reset_world();
+    reset_log_capture();
+    s_fake_diag_log_cost_us = injected_cost_us;
+    s_fake_serial_fixed_from_conversion = 1U;
+    append_sample_ticks(rate);
+    script(EV_STOP, 0U);
+
+    const uint32_t allocations_before =
+        ad7606_acquisition_test_heap_caps_allocations();
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(ad7606_acquisition_test_heap_caps_allocations() ==
+        allocations_before + 1U); /* only the serial quality-window buffer */
+
+    const uint64_t ordinary_iteration_us = worker_iteration_us(10U);
+    const uint64_t before_boundary_iteration_us = worker_iteration_us(rate - 2U);
+    const uint64_t boundary_iteration_us = worker_iteration_us(rate - 1U);
+    assert(ordinary_iteration_us == 0U);
+    assert(before_boundary_iteration_us == 0U);
+    /* CHARACTERIZATION: current Core-1 logging consumes the exact injected cost.
+     * A MAX-366 deferral changes this baseline to zero boundary cost and no collapse. */
+    assert(boundary_iteration_us == 4U * injected_cost_us);
+    assert(boundary_iteration_us - ordinary_iteration_us == 9560U);
+    assert(s_push_recorded_by_sample[10U]);
+    assert(s_push_recorded_by_sample[11U]);
+    assert(s_push_wall_by_sample[11U] - s_push_wall_by_sample[10U] == PERIOD_US);
+    assert(s_push_recorded_by_sample[rate - 2U]);
+    assert(s_push_recorded_by_sample[rate - 1U]);
+    assert(s_push_wall_by_sample[rate - 1U] -
+        s_push_wall_by_sample[rate - 2U] == PERIOD_US);
+    assert(s_last_synthetic_notification_batch == 4U);
+    assert(s_pushes == rate + 1U);
+    assert(s_last_push_sample_index == rate + 3U);
+    assert(s_script_pos == rate + 1U);
+
+    const char *varied_states[AD7606_CHANNEL_COUNT] = {
+        "VAR", "VAR", "VAR", "VAR",
+    };
+    assert_diag_window_report(rate - 1U, rate, varied_states);
+    assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL) ==
+        AD7606_CHANNEL_COUNT); /* one report in this one-second window */
+    const test_log_record_t *boundary_log = find_log_record(
+        AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL,
+        rate - 1U
+    );
+    assert(boundary_log->channel == 0U);
+    assert(boundary_log->pushed_sample_index == rate - 1U);
+    assert(boundary_log->pushed_timestamp_us ==
+        s_push_timestamp_by_sample[0U] + (int64_t)(rate - 1U) * PERIOD_US);
+    assert(boundary_log->wall_time_us == boundary_log->pushed_wall_time_us);
+    assert(s_push_timestamp_by_sample[rate + 3U] ==
+        s_push_timestamp_by_sample[0U] + (int64_t)(rate + 3U) * PERIOD_US);
+
+    ad7606_diag_channel_t actual[AD7606_CHANNEL_COUNT];
+    ad7606_acquisition_test_diag_snapshot(actual);
+    for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+        assert(actual[channel].count == 1U);
+        assert(actual[channel].min_raw == raw_for((unsigned)(rate + 4U),
+            (unsigned)channel));
+        assert(actual[channel].max_raw == actual[channel].min_raw);
+    }
+
+    ad7606_acquisition_status_t status;
+    assert(ad7606_acquisition_get_status(&status) == ESP_OK);
+    assert(status.collapsed_periods == 3U);
+    assert(!status.running);
+    printf(
+        "MAX-366 virtual us: ordinary_iteration=%llu pre_boundary_iteration=%llu "
+        "diag_boundary_iteration=%llu boundary_minus_steady=%llu "
+        "notifications_coalesced=4 collapsed_conversions=3\n",
+        (unsigned long long)ordinary_iteration_us,
+        (unsigned long long)before_boundary_iteration_us,
+        (unsigned long long)boundary_iteration_us,
+        (unsigned long long)(boundary_iteration_us - ordinary_iteration_us)
+    );
+}
+
+static void test_serial_diag_rate_limit_boundary(void)
+{
+    const uint32_t rate = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ;
+    const uint32_t injected_cost_us = 2390U;
+    reset_world();
+    reset_log_capture();
+    s_fake_serial_clocklike_from_conversion = 2U;
+    s_fake_serial_log_cost_us = injected_cost_us;
+    append_sample_ticks(rate);
+    script(EV_STOP, 0U);
+
+    const uint32_t allocations_before =
+        ad7606_acquisition_test_heap_caps_allocations();
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(ad7606_acquisition_test_heap_caps_allocations() ==
+        allocations_before + 1U);
+
+    assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG) == 2U);
+    const test_log_record_t *first_serial = find_log_record(
+        AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG,
+        0U
+    );
+    const test_log_record_t *boundary_serial = find_log_record(
+        AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG,
+        rate
+    );
+    assert(strcmp(first_serial->state, "NORMAL") == 0);
+    assert(strcmp(boundary_serial->state, "SUSPICIOUS") == 0);
+    assert(boundary_serial->pushed_sample_index == rate - 1U);
+    assert(s_log_suppressed_count == rate - 1U);
+    assert(s_log_coalesced_count == 3U);
+    assert(s_log_coalesced_first_sample == 9U);
+    assert(s_log_coalesced_samples[1] == rate - 1U);
+    assert(s_log_coalesced_last_sample == rate);
+    assert(!ad7606_acquisition_test_serial_diag_pending());
+    assert(ad7606_acquisition_test_serial_diag_last_log_sample() == rate + 1U);
+    assert(worker_iteration_us(0U) == injected_cost_us);
+    assert(worker_iteration_us(rate - 1U) == 0U);
+    assert(worker_iteration_us(rate) == injected_cost_us);
+    assert(s_last_synthetic_notification_batch == 1U);
+
+    const char *varied_states[AD7606_CHANNEL_COUNT] = {
+        "VAR", "VAR", "VAR", "VAR",
+    };
+    assert_diag_window_report(rate - 1U, rate, varied_states);
+    ad7606_acquisition_status_t status;
+    assert(ad7606_acquisition_get_status(&status) == ESP_OK);
+    assert(status.serial_suspicious);
+    assert(status.collapsed_periods == 0U);
+    assert(!status.running);
+    printf(
+        "MAX-366 virtual us: serial_diag_boundary_iteration=%llu "
+        "suppressed=%llu coalesced=%llu reports=2\n",
+        (unsigned long long)worker_iteration_us(rate),
+        (unsigned long long)s_log_suppressed_count,
+        (unsigned long long)s_log_coalesced_count
+    );
+}
+
+static void test_stop_leaves_pending_serial_report_unflushed(void)
+{
+    reset_world();
+    reset_log_capture();
+    s_fake_serial_clocklike_from_conversion = 2U;
+    append_sample_ticks(12U);
+    script(EV_STOP, 0U);
+
+    const uint32_t allocations_before =
+        ad7606_acquisition_test_heap_caps_allocations();
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(ad7606_acquisition_test_heap_caps_allocations() ==
+        allocations_before + 1U);
+
+    /* Current behavior: STOP drops no additional log and retains pending until next START. */
+    assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG) == 1U);
+    assert(ad7606_acquisition_test_serial_diag_pending());
+    assert(ad7606_acquisition_test_serial_diag_last_log_sample() == 1U);
+    assert(s_log_suppressed_count == 11U);
+    assert(s_log_coalesced_count == 1U);
+    assert(s_log_coalesced_samples[0] == 9U);
+    assert(!s_driver_live);
+    assert(s_driver_deinits == 1U);
+}
+
+static void test_combined_diagnostic_boundary_and_slow_sink_completion(void)
+{
+    const uint32_t rate = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ;
+    const uint32_t injected_cost_us = 2390U;
+    const char *flat_states[AD7606_CHANNEL_COUNT] = {
+        "FLAT", "FLAT", "FLAT", "FLAT",
+    };
+    reset_world();
+    reset_log_capture();
+    /* Hide serial observations until the last sample so both reports coincide. */
+    s_fake_serial_valid_after_conversion = rate;
+    s_fake_diag_log_cost_us = injected_cost_us;
+    s_fake_serial_log_cost_us = injected_cost_us;
+    append_sample_ticks(rate);
+    script(EV_STOP, 0U);
+
+    const uint32_t allocations_before =
+        ad7606_acquisition_test_heap_caps_allocations();
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(ad7606_acquisition_test_heap_caps_allocations() ==
+        allocations_before + 1U);
+
+    assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG) == 1U);
+    assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL) ==
+        AD7606_CHANNEL_COUNT);
+    const test_log_record_t *serial = find_log_record(
+        AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG,
+        rate - 1U
+    );
+    assert(serial->pushed_sample_index == 0U);
+    assert_diag_window_report(rate - 1U, 1U, flat_states);
+    const test_log_record_t *diag = find_log_record(
+        AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL,
+        rate - 1U
+    );
+    assert(diag->pushed_sample_index == rate - 1U);
+    assert(diag->pushed_timestamp_us == s_push_timestamp_by_sample[rate - 1U]);
+    assert(worker_iteration_us(rate - 1U) == 5U * injected_cost_us);
+    assert(s_last_synthetic_notification_batch == 5U);
+    assert(s_last_push_sample_index == rate + 4U);
+    assert(s_log_record_count == AD7606_CHANNEL_COUNT + 1U);
+
+    ad7606_acquisition_status_t status;
+    assert(ad7606_acquisition_get_status(&status) == ESP_OK);
+    /* Includes 499 intentional invalid observations plus 4 log-time collapses. */
+    assert(status.collapsed_periods == rate - 1U + 4U);
+    assert(!status.running);
+    assert(!s_driver_live);
+    printf(
+        "MAX-366 virtual us: combined_boundary_iteration=%llu "
+        "boundary_minus_steady=%llu notifications_coalesced=5 "
+        "collapsed_conversions=4\n",
+        (unsigned long long)worker_iteration_us(rate - 1U),
+        (unsigned long long)worker_iteration_us(rate - 1U)
+    );
+}
+
+static void test_unavailable_log_sink_does_not_block_stop(void)
+{
+    reset_world();
+    reset_log_capture();
+    s_fake_log_sink_available = false;
+    append_sample_ticks(2U);
+    script(EV_STOP, 0U);
+
+    const uint32_t allocations_before =
+        ad7606_acquisition_test_heap_caps_allocations();
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(ad7606_acquisition_test_heap_caps_allocations() ==
+        allocations_before + 1U);
+    assert(s_log_sink_unavailable_count == 1U);
+    assert(s_pushes == 2U);
+    assert(!s_driver_live);
+    assert(s_driver_deinits == 1U);
+}
+
 static void test_diag_fixed_seed_random_stream(void)
 {
     uint32_t random_state = UINT32_C(0x6d2b79f5);
@@ -1393,6 +2000,7 @@ static void test_diag_integer_accumulator_contract(void)
     test_diag_basic_values_and_channel_independence();
     test_diag_supported_rate_windows_and_overflow_bound();
     test_diag_report_reset_boundary();
+    test_diag_window_report_semantics();
     test_diag_fixed_seed_random_stream();
     diag_reset_both();
     diag_compare_with_reference();
@@ -1401,6 +2009,11 @@ static void test_diag_integer_accumulator_contract(void)
 int main(void)
 {
     test_diag_integer_accumulator_contract();
+    test_diag_logging_virtual_time_characterization();
+    test_serial_diag_rate_limit_boundary();
+    test_stop_leaves_pending_serial_report_unflushed();
+    test_combined_diagnostic_boundary_and_slow_sink_completion();
+    test_unavailable_log_sink_does_not_block_stop();
     test_run_samples_then_stop_releases_everything();
     test_safe_os_mismatch_runs_and_is_reported();
     test_unknown_os_measurement_refuses_start();

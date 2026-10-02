@@ -54,6 +54,23 @@ static inline void ad7606_diag_channel_record(
 }
 
 #if defined(AD7606_ACQUISITION_HOST_TEST)
+typedef enum
+{
+    AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL,
+    AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG,
+    AD7606_ACQUISITION_TEST_LOG_SERIAL_COALESCED,
+    AD7606_ACQUISITION_TEST_LOG_SERIAL_SUPPRESSED,
+
+} ad7606_acquisition_test_log_event_t;
+
+typedef bool (*ad7606_acquisition_test_log_sink_t)(
+    ad7606_acquisition_test_log_event_t event,
+    uint64_t sample_index,
+    size_t channel,
+    uint32_t count,
+    const char *state
+);
+
 void ad7606_acquisition_test_diag_reset(void);
 void ad7606_acquisition_test_diag_record(const ad7606_sample_t *sample);
 void ad7606_acquisition_test_diag_snapshot(ad7606_diag_channel_t *out);
@@ -63,6 +80,12 @@ bool ad7606_acquisition_test_diag_metrics(
     ad7606_diag_metrics_t *out
 );
 void ad7606_acquisition_test_diag_finish_sample(uint64_t sample_index);
+void ad7606_acquisition_test_log_sink_set(
+    ad7606_acquisition_test_log_sink_t sink
+);
+bool ad7606_acquisition_test_serial_diag_pending(void);
+uint64_t ad7606_acquisition_test_serial_diag_last_log_sample(void);
+uint32_t ad7606_acquisition_test_heap_caps_allocations(void);
 #endif
 
 #endif
