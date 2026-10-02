@@ -55,6 +55,8 @@ _Static_assert(
     (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ + 64U)
 #define TEST_LOG_RECORD_CAPACITY 32U
 
+static uint64_t worker_iteration_us(uint64_t sample_index);
+
 typedef enum { EV_TICK, EV_STOP } event_type_t;
 typedef struct {
     event_type_t type;
@@ -185,6 +187,8 @@ static uint32_t s_log_allocation_baseline;
 
 static void reset_world(void)
 {
+    ad7606_acquisition_test_counters_reset();
+    ad7606_acquisition_test_status_delay_set(0U);
     s_script_len = 0U;
     s_script_pos = 0U;
     s_now_us = 50000000LL;
@@ -1116,6 +1120,28 @@ static void test_run_samples_then_stop_releases_everything(void)
 
     const ad7606_acquisition_status_t status = status_now();
     assert(status.samples == 3U);
+    assert(status.latest_valid);
+    assert(status.last_sample_timestamp_us == s_last_push_ts);
+    assert(status.last_sample_timestamp_us == sample_t0 + 2 * PERIOD_US);
+    for (unsigned c = 0U; c < SEISMIC_CHANNEL_COUNT; ++c) {
+        assert(fabsf(status.latest_uv[c] - ad7606_raw_to_uv(raw_for(3U, c))) < 1e-3f);
+    }
+    uint64_t histogram_total = 0U;
+    for (size_t bucket = 0U; bucket < AD7606_ACQUISITION_JITTER_BUCKET_COUNT; ++bucket) {
+        histogram_total += status.jitter.histogram_us[bucket];
+    }
+    assert(histogram_total == status.jitter.count);
+    ad7606_acquisition_test_counters_t sync_counters;
+    ad7606_acquisition_test_counters_get(&sync_counters);
+    assert(sync_counters.sample_status_critical_entries == status.samples);
+    assert(sync_counters.status_critical_entries >= sync_counters.sample_status_critical_entries);
+    printf(
+        "MAX-372 AD7606 status critical entries=%llu sample_entries=%llu "
+        "samples=%llu\n",
+        (unsigned long long)sync_counters.status_critical_entries,
+        (unsigned long long)sync_counters.sample_status_critical_entries,
+        (unsigned long long)status.samples
+    );
     assert(status.read_errors == 0U);
     /* The STOP notification wakes the worker but is not a timer period:
      * it is neither counted nor converted (s_running is cleared before
@@ -1422,6 +1448,33 @@ static void test_overcurrent_stops_and_latches(void)
     /* Checks at ~0.2, 1.2 (clean) and 2.2 s (latched) -> stopped there. */
     assert(s_now_us - t0 >= 2000000LL && s_now_us - t0 <= 2400000LL);
     assert(s_script_pos < s_script_len);
+}
+
+static uint64_t run_one_sample_with_status_delay(uint32_t delay_us)
+{
+    reset_world();
+    ad7606_acquisition_test_status_delay_set(delay_us);
+    script(EV_TICK, 1U);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(status_now().samples == 1U);
+    ad7606_acquisition_test_counters_t counters;
+    ad7606_acquisition_test_counters_get(&counters);
+    assert(counters.sample_status_critical_entries == 1U);
+    return worker_iteration_us(0U);
+}
+
+
+static void test_status_delay_negative_control_and_snapshot(void)
+{
+    const uint64_t baseline_us = run_one_sample_with_status_delay(0U);
+    const uint64_t delayed_us = run_one_sample_with_status_delay(137U);
+    assert(delayed_us == baseline_us + 137U);
+    printf(
+        "MAX-372 AD7606 status sample critical entries=1/frame "
+        "fake_delay_delta_us=%llu\n",
+        (unsigned long long)(delayed_us - baseline_us)
+    );
 }
 
 typedef struct
@@ -2095,5 +2148,6 @@ int main(void)
     test_restart_resets_cadence_counters();
     test_restart_clears_a_latched_fault();
     test_overcurrent_stops_and_latches();
+    test_status_delay_negative_control_and_snapshot();
     return 0;
 }

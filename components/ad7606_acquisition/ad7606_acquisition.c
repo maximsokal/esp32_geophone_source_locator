@@ -91,6 +91,8 @@ static bool s_serial_diag_log_pending = false;
 #if defined(AD7606_ACQUISITION_HOST_TEST)
 static ad7606_acquisition_test_log_sink_t s_test_log_sink;
 static uint32_t s_test_heap_caps_allocations;
+static ad7606_acquisition_test_counters_t s_test_counters;
+static uint32_t s_test_status_delay_us;
 
 static void ad7606_test_log_event(
     ad7606_acquisition_test_log_event_t event,
@@ -349,11 +351,33 @@ uint32_t ad7606_acquisition_test_heap_caps_allocations(void)
 {
     return s_test_heap_caps_allocations;
 }
+
+void ad7606_acquisition_test_counters_reset(void)
+{
+    memset(&s_test_counters, 0, sizeof(s_test_counters));
+}
+
+void ad7606_acquisition_test_counters_get(
+    ad7606_acquisition_test_counters_t *out
+)
+{
+    if (out != NULL) {
+        *out = s_test_counters;
+    }
+}
+
+void ad7606_acquisition_test_status_delay_set(uint32_t delay_us)
+{
+    s_test_status_delay_us = delay_us;
+}
 #endif
 
 
 static void ad7606_status_reset(void)
 {
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
     portENTER_CRITICAL(
         &s_status_lock
     );
@@ -397,6 +421,9 @@ static void ad7606_status_set_power(
     float rail_v
 )
 {
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
     portENTER_CRITICAL(&s_status_lock);
     s_status.power_gate = (int)gate;
     if (fault_latched) {
@@ -412,6 +439,9 @@ static void ad7606_status_set_overcurrent(
     float current_a
 )
 {
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
     portENTER_CRITICAL(&s_status_lock);
     s_status.power_gate = (int)AD7606_POWER_GATE_OVERCURRENT;
     s_status.power_fault_latched = true;
@@ -437,6 +467,9 @@ static void ad7606_status_set_running(
     bool running
 )
 {
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
     portENTER_CRITICAL(
         &s_status_lock
     );
@@ -452,6 +485,9 @@ static void ad7606_status_set_running(
 
 static void ad7606_status_record_conversion_count(uint64_t conversion_count)
 {
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
     portENTER_CRITICAL(
         &s_status_lock
     );
@@ -462,6 +498,9 @@ static void ad7606_status_record_conversion_count(uint64_t conversion_count)
 
 static void ad7606_status_record_attempt(void)
 {
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
     portENTER_CRITICAL(&s_status_lock);
     s_status.conversion_attempts = ad7606_acquisition_saturating_add_u64(
         s_status.conversion_attempts,
@@ -476,6 +515,9 @@ static void ad7606_status_record_gaps(uint64_t missed_conversions)
     if (missed_conversions == 0U) {
         return;
     }
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
     portENTER_CRITICAL(&s_status_lock);
     s_status.collapsed_periods = ad7606_acquisition_saturating_add_u64(
         s_status.collapsed_periods,
@@ -504,6 +546,9 @@ static uint32_t ad7606_status_record_failure(void)
 {
     uint32_t consecutive_failures;
 
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
     portENTER_CRITICAL(
         &s_status_lock
     );
@@ -537,9 +582,19 @@ static void ad7606_status_record_sample(
         : (uint64_t)sample->timestamp_us - (uint64_t)scheduled_us;
     const unsigned jitter_bucket = ad7606_jitter_bucket(lateness_us);
 
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+    ++s_test_counters.sample_status_critical_entries;
+#endif
     portENTER_CRITICAL(
         &s_status_lock
     );
+
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    if (s_test_status_delay_us != 0U) {
+        esp_rom_delay_us(s_test_status_delay_us);
+    }
+#endif
 
     if (jitter_available) {
         ad7606_acquisition_jitter_t *jitter = &s_status.jitter;
@@ -983,6 +1038,9 @@ static esp_err_t ad7606_resolve_measured_timing(
 )
 {
     const bool os_mismatch = measured_os != CONFIG_AD7606_OVERSAMPLING_RATIO;
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
     portENTER_CRITICAL(&s_status_lock);
     s_status.os_ratio_configured = CONFIG_AD7606_OVERSAMPLING_RATIO;
     s_status.os_ratio_measured = measured_os;
@@ -1419,6 +1477,9 @@ static esp_err_t ad7606_worker_initialize(void)
     s_jitter_period_us = ad7606_acquisition_period_us(
         CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
     );
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
     portENTER_CRITICAL(&s_status_lock);
     s_status.jitter.period_us = s_jitter_period_us;
     portEXIT_CRITICAL(&s_status_lock);
@@ -1732,6 +1793,9 @@ esp_err_t ad7606_acquisition_get_status(
         return ESP_ERR_INVALID_ARG;
     }
 
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
     portENTER_CRITICAL(
         &s_status_lock
     );

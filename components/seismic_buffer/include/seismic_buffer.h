@@ -121,3 +121,26 @@ esp_err_t seismic_buffer_copy_since_with_source_indices(
 const char *seismic_buffer_source_name(
     seismic_source_t source
 );
+
+
+#if defined(SEISMIC_BUFFER_TEST_HOOKS)
+typedef struct
+{
+    uint64_t operation_enter_attempts;
+    uint64_t operation_cas_retries;
+    uint64_t operation_exit_decrements;
+    uint64_t capacity_loads;
+    uint64_t publish_sequence_loads;
+    uint64_t publish_sequence_stores;
+    uint64_t read_sequence_loads;
+    uint64_t read_retries_odd;
+    uint64_t read_retries_changed;
+    uint64_t read_tag_conflicts;
+    uint64_t metadata_critical_entries;
+    uint64_t snapshot_retries;
+    uint64_t producer_reader_conflicts;
+} seismic_buffer_test_counters_t;
+
+void seismic_buffer_test_counters_reset(void);
+void seismic_buffer_test_counters_get(seismic_buffer_test_counters_t *out);
+#endif
