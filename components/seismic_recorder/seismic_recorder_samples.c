@@ -157,6 +157,11 @@ static int16_t seismic_recorder_samples_get_le16(const uint8_t *source)
 }
 
 
+#if defined(SEISMIC_RECORDER_SAMPLES_HOST_TEST)
+static size_t s_test_quantizer_call_count;
+#endif
+
+
 static bool seismic_recorder_samples_quantize(
     float value_uv,
     float scale_uv_per_lsb,
@@ -164,6 +169,9 @@ static bool seismic_recorder_samples_quantize(
     int16_t *raw
 )
 {
+#if defined(SEISMIC_RECORDER_SAMPLES_HOST_TEST)
+    ++s_test_quantizer_call_count;
+#endif
     if (
         raw == NULL ||
         !isfinite(value_uv) ||
