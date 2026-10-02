@@ -1,0 +1,42 @@
+normal.title	IDLE
+normal.hint	UP/DOWN actions  OK run  LEFT back
+normal.body.0	Select an object
+warning.title	SENSOR PLACEMENT
+warning.hint	UP/DOWN actions  OK run  LEFT back
+warning.body.0	G1 V:X dH:—mm ASL:—m St:X
+warning.body.1	Waiting for stability
+error.title	RESULT
+error.hint	UP/DOWN actions  OK run  LEFT back
+error.body.0	Internal error
+error.body.1	Details: calc_settings_invalid
+result_unavailable.title	RESULT
+result_unavailable.hint	UP/DOWN actions  OK run  LEFT back
+result_unavailable.body.0	Source calculated successfully
+result_unavailable.body.1	Waveform segment unavailable
+result_unavailable.body.2	G1: —
+result_unavailable.body.3	G2: —
+result_unavailable.body.4	G3: —
+result_unavailable.body.5	G4: —
+result_zero.title	RESULT
+result_zero.hint	UP/DOWN actions  OK run  LEFT back
+result_zero.body.0	Source calculated successfully
+result_zero.body.1	G1: 0.0 m
+result_zero.body.2	G2: 0.0 m
+result_zero.body.3	G3: 0.0 m
+result_zero.body.4	G4: 0.0 m
+localization_rejected.title	RESULT
+localization_rejected.hint	UP/DOWN actions  OK run  LEFT back
+localization_rejected.body.0	Record again
+localization_rejected.body.1	Details: localization_rejected
+recording.title	RECORDING
+recording.hint	UP/DOWN actions  OK run  LEFT back
+recording.body.0	Elapsed 01:05
+recording.action.0	Stop recording
+ranging_unknown.title	BLUETOOTH RANGING
+ranging_unknown.hint	UP/DOWN actions  OK run  LEFT back
+ranging_unknown.body.0	Pairs —/— residual — mm
+localization_solved.text	G1 X0.0m Y0.0m LEVEL SOL
+localization_unverified.text	G1 XUNKNOWN YUNKNOWN N/D UNS
+battery_unknown.text	BAT
+battery_zero.text	0%
+battery_low.text	LOW

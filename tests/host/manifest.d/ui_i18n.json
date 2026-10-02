@@ -26,6 +26,35 @@
         "components/ui_i18n/include",
         "components/ui"
       ]
+    },
+    {
+      "name": "ui_tft_semantic_render",
+      "sources": [
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_utf8_format.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
+        "components/ui/ui_power_badge.c",
+        "components/ui/ui_measurements_nodes.c",
+        "components/ui/ui_workflow_model.c",
+        "components/result_view/result_view.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/ui_i18n/tests/ui_tft_semantic_render_test.c"
+      ],
+      "include_dirs": [
+        "components/device_status/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "tests/host/stubs/workflow_service",
+        "components/workflow_service/include",
+        "components/geophone_events/include",
+        "components/ui_i18n/include",
+        "components/result_view/include",
+        "components/ui",
+        "tests/host/stubs/object_store_profile"
+      ],
+      "libraries": ["m"]
     }
   ]
 }

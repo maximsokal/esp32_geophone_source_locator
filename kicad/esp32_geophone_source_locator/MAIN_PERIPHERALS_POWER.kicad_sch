@@ -4008,15 +4008,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "100ee693-fc87-47a1-924e-dfc01b921208")
+			(uuid "05cc523b-7ce1-4d35-ba79-293d63e9b9c9")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR085")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR085")
@@ -4093,18 +4087,12 @@
 			)
 		)
 		(pin "2"
-			(uuid "e21d1a5d-8d00-4947-9c7e-672aa0c66fc6")
+			(uuid "83b0a604-ba68-48b6-be88-b9f24d2982e2")
 		)
 		(pin "1"
-			(uuid "ffd0aead-2973-49a8-9006-34543499dd76")
+			(uuid "928d7844-1275-4ea9-a8e1-e51efbc7d962")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "R1")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "R1")
@@ -4179,18 +4167,12 @@
 			)
 		)
 		(pin "2"
-			(uuid "6e80fcc2-5b6c-44d7-ab46-1ab348810408")
+			(uuid "b58d109c-a6d3-4424-b1e6-9b1ee8082e60")
 		)
 		(pin "1"
-			(uuid "aa1b5a86-4c46-49a8-b38f-5241e6d062d4")
+			(uuid "b405b4ba-5fc6-40c3-baeb-e127ad075714")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "SW11")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "SW11")
@@ -4265,18 +4247,12 @@
 			)
 		)
 		(pin "2"
-			(uuid "ca168a8f-d712-41ed-9dbf-725e4bc2c121")
+			(uuid "80e56f0d-52c7-4bc7-8926-b33720893e65")
 		)
 		(pin "1"
-			(uuid "81b3c9ee-1453-4250-944f-ea3fe58f3c7c")
+			(uuid "6b8b459e-7236-4972-b8ec-63876dfb333a")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "SW12")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "SW12")
@@ -4352,15 +4328,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "62486b1e-8abf-4bbd-9538-16771b4d7360")
+			(uuid "9b066976-76dc-403f-b6a8-c5f390d17b77")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR074")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR074")
@@ -4436,15 +4406,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "daf65592-cb02-4eab-b76c-194ba5eb6673")
+			(uuid "52776ee1-c0a4-4f06-947f-077105e97630")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR082")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR082")
@@ -4520,36 +4484,30 @@
 			)
 		)
 		(pin ""
-			(uuid "9be161f3-ccc5-47a1-b0ac-1e4e5d5bcbbe")
+			(uuid "6a37c2d4-70bb-4530-84b4-836c3fec8afb")
 		)
 		(pin ""
-			(uuid "dfd45f65-e0a5-4dd6-9eb8-799546bb5d5f")
+			(uuid "1c961960-7de5-40e6-81f7-bb1b0c595eca")
 		)
 		(pin ""
-			(uuid "67f1d257-becd-45cc-8caa-e1a3146373f8")
+			(uuid "9336da32-460b-467a-8c71-635b1febd069")
 		)
 		(pin ""
-			(uuid "5dc49991-bdd3-41f1-8cfb-edc8d0d9645b")
+			(uuid "979c1d2d-bc06-42ba-9c7d-621138da5b34")
 		)
 		(pin ""
-			(uuid "01c4378c-2f81-4b1e-8389-10eb4292d866")
+			(uuid "3996f386-328f-482b-89a9-5a2bf88e2ff9")
 		)
 		(pin ""
-			(uuid "17e53693-0f01-4444-a510-88042df0a096")
+			(uuid "492d7029-cfa9-46d0-8046-c8be82fd5cf9")
 		)
 		(pin ""
-			(uuid "8bf70102-5f5d-44be-9c3b-746430da3b93")
+			(uuid "8fd1e63e-a7b9-41a9-b8f8-d6419c7e6e1f")
 		)
 		(pin ""
-			(uuid "81cebe57-197f-4d45-bba7-2aba98546976")
+			(uuid "07abbddb-3c26-49c5-97db-79f4d091dd94")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "POLOLU2808LV1")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "POLOLU2808LV1")
@@ -4626,15 +4584,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "6dad9611-fc38-4f77-94cf-743c6fa8b744")
+			(uuid "f3c92ede-2f88-4da5-ac54-dbf178958d7f")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR087")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR087")
@@ -4711,18 +4663,12 @@
 			)
 		)
 		(pin "2"
-			(uuid "a6201cc1-a1e9-4269-844a-af2414c83bb2")
+			(uuid "0d9d5267-8d87-4142-acb4-e2d7aefff788")
 		)
 		(pin "1"
-			(uuid "18b35772-740b-48b5-aad6-ca035f9a1b0e")
+			(uuid "871b13ad-bba3-4f96-8b7c-32cab5e8cff1")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "R3")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "R3")
@@ -4799,18 +4745,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "959707fc-50d3-49ab-af83-0595f177ab4d")
+			(uuid "9c46d9aa-445e-4cf1-a8d7-0a6af553e748")
 		)
 		(pin "2"
-			(uuid "1b54d707-9788-4c84-8a14-77973ae564dd")
+			(uuid "e5d5dbb9-253f-4239-a596-e5dddb79db92")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "R16")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "R16")
@@ -4886,15 +4826,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "6109d959-6901-453d-9536-10d60864abdf")
+			(uuid "af041249-4b03-4f2c-9877-0103a4f3c311")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR086")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR086")
@@ -4970,15 +4904,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "9f9e5ad2-49a3-40b0-9b7d-28bbc93c8baf")
+			(uuid "e4c60b94-fbd2-48bd-b49f-5f600570bcb8")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR084")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR084")
@@ -5054,15 +4982,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "bf07101b-e7e7-44a2-aace-73324c2d77a4")
+			(uuid "7451ce49-8008-48a4-8ac3-d43cb5a8e0f5")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR078")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR078")
@@ -5138,15 +5060,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "ae3cadeb-0ef2-455e-bf8a-c267a0395589")
+			(uuid "e2a0f77d-0716-4637-936d-e1ae8b817437")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR075")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR075")
@@ -5223,18 +5139,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "0bcc49ff-a54f-4c1e-a67f-223847069dc8")
+			(uuid "502c30d7-81ea-410d-b282-779a4684dd61")
 		)
 		(pin "2"
-			(uuid "e91727c3-016b-4a77-91ec-ab8dd44728e7")
+			(uuid "421eade6-92ac-4560-a88a-cd698aa500f8")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "R28")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "R28")
@@ -5310,15 +5220,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "ce226370-1bac-4926-a959-4b1778b0e87c")
+			(uuid "0f59ebb6-2461-4671-a1d3-f55787e978af")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR081")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR081")
@@ -5428,18 +5332,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "b61bb878-7b55-42a5-90ee-22c23f5a1985")
+			(uuid "1870dd77-dfbc-4815-8cfd-2cdd8cb94dd5")
 		)
 		(pin "2"
-			(uuid "df29160c-efa4-408c-892e-efb23c21458c")
+			(uuid "f5887694-2aed-4eb2-81ed-63c254a9873c")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "BT1")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "BT1")
@@ -5514,18 +5412,12 @@
 			)
 		)
 		(pin "2"
-			(uuid "9c1fa3c6-a74a-4e30-934b-ba3c432fd4cc")
+			(uuid "75831f39-97cd-4e43-a57a-42923ec1b451")
 		)
 		(pin "1"
-			(uuid "4a6071d3-d4c4-402e-b20a-b0de857ccb5d")
+			(uuid "4329a989-1ccb-4043-ae59-3602eff2abd1")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "SW8")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "SW8")
@@ -5600,18 +5492,12 @@
 			)
 		)
 		(pin "2"
-			(uuid "77425aaf-85c1-4375-8743-668d643bc5c8")
+			(uuid "0668c654-3b1d-4d7c-a74f-793359bf3cc3")
 		)
 		(pin "1"
-			(uuid "4f0428e2-6d48-4c73-b21a-defbf969cf03")
+			(uuid "45c87c77-7be5-4dbf-8cf0-a0eca67f96b7")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "SW13")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "SW13")
@@ -5688,18 +5574,12 @@
 			)
 		)
 		(pin "2"
-			(uuid "f2e714b8-b481-487b-b149-562d6936f912")
+			(uuid "d19486dc-f77e-4af5-966e-b783103f7853")
 		)
 		(pin "1"
-			(uuid "5cc809f5-b26b-4f56-a0a2-be596bcdd0fb")
+			(uuid "48f0fc33-8caf-4a25-b0fa-579b9240383e")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "R2")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "R2")
@@ -5774,18 +5654,12 @@
 			)
 		)
 		(pin "2"
-			(uuid "db6a8f01-61aa-4c94-b709-ca7f9fc9c936")
+			(uuid "9c0a067a-1106-41c2-8fa3-3ba06dab5fb4")
 		)
 		(pin "1"
-			(uuid "2e2302c9-6d35-4297-85a0-be13471a5c82")
+			(uuid "66656ce0-9d1f-479f-976a-b48989e6ca93")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "SW9")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "SW9")
@@ -5860,30 +5734,24 @@
 			)
 		)
 		(pin ""
-			(uuid "84ce1c99-48c4-4e68-9d21-d9b6f11cede3")
+			(uuid "22f1a681-5c6e-4252-90f6-0f1aa8eee3c2")
 		)
 		(pin ""
-			(uuid "9a504459-6bd7-4cf7-966f-3cbeb6a709f4")
+			(uuid "cf281424-b7d8-4f5b-92dd-a12690dafc58")
 		)
 		(pin ""
-			(uuid "03583031-460b-422f-b295-cd8da198d73f")
+			(uuid "a260a926-9a28-4007-ad87-256178740459")
 		)
 		(pin ""
-			(uuid "b060f8cb-de85-4ae2-b8b8-3502311b6446")
+			(uuid "2e090933-103d-4e16-a593-4ec5669391f5")
 		)
 		(pin ""
-			(uuid "6b7daae1-ece2-44e3-b123-382769c60a99")
+			(uuid "856d289d-75fb-408a-be3f-bd205ab58236")
 		)
 		(pin ""
-			(uuid "0217510e-30aa-43f3-8c2f-47f358a89cb5")
+			(uuid "4a6fc281-d01e-4098-9221-fd82da5fc612")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "U_SD1—SD_SPI_MODULE_PROD1")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "U_SD1—SD_SPI_MODULE_PROD1")
@@ -5959,24 +5827,18 @@
 			)
 		)
 		(pin ""
-			(uuid "ec6267e2-75d9-4915-8519-0c43af4765ce")
+			(uuid "3ec082b7-5360-4366-9edf-002c705f8d96")
 		)
 		(pin ""
-			(uuid "65c69aaa-cc28-4941-9977-f249c1ba54da")
+			(uuid "3b1eb1dc-7d68-44d8-a933-da47ad7d2037")
 		)
 		(pin ""
-			(uuid "7ec270a6-cc10-4420-ad61-316422d89310")
+			(uuid "2b28d221-0f1e-49f1-9709-095ef6232afc")
 		)
 		(pin ""
-			(uuid "eec07386-d597-4a1a-8526-bafbccb0fef8")
+			(uuid "4544c220-7ce1-47aa-b51e-f446a6879a56")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "U_FILTER2")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "U_FILTER2")
@@ -6052,15 +5914,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "49addfdd-db5f-4307-bc94-4d5ce10b2648")
+			(uuid "95e10d11-9d2b-4681-afbf-0eb836998daf")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR079")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR079")
@@ -6135,18 +5991,12 @@
 			)
 		)
 		(pin "2"
-			(uuid "e6d665d4-d200-491c-ab60-8baef2a63803")
+			(uuid "05bb3f94-d287-402f-aa2c-909ac5c9509c")
 		)
 		(pin "1"
-			(uuid "15e1c9a6-c51c-4480-8685-93cce88ed8f2")
+			(uuid "fc7238de-8ecf-48aa-b45b-403ff693fdcc")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "SW10")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "SW10")
@@ -6222,18 +6072,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "1b886ba7-5f87-48fd-b3f8-e1f24ef6ef16")
+			(uuid "d37f72cd-99be-46dc-a8ec-4d313c758e41")
 		)
 		(pin "2"
-			(uuid "85a8bc1c-c8b8-4eca-91ef-5cc91a1b98a1")
+			(uuid "b403193a-24b7-4044-97b1-682e7a48e188")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "R18")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "R18")
@@ -6309,15 +6153,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "3395919a-75f7-4bbc-a2ad-b34d5741717b")
+			(uuid "b8536f2c-708f-49e9-ba4f-dd8a891fba4e")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR077")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR077")
@@ -6393,15 +6231,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "ccf60ca0-1cd3-47a0-940e-3e8916ccb406")
+			(uuid "70db1a83-b604-4d57-8a68-50b97b3bdfe6")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR088")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR088")
@@ -6477,24 +6309,18 @@
 			)
 		)
 		(pin ""
-			(uuid "cf656962-95f7-4317-a184-732a444cd8b9")
+			(uuid "477148b7-43c5-401f-9871-6ab67c2d787e")
 		)
 		(pin ""
-			(uuid "1b63790b-668d-49dc-b8ae-a25ff24ea727")
+			(uuid "e89f4498-f0fd-481f-bfbb-4a5b6d542517")
 		)
 		(pin ""
-			(uuid "222e4538-1435-4056-b7ec-d9e5e8186ea0")
+			(uuid "2da3b3cf-34c5-4773-906b-d0947eb9949c")
 		)
 		(pin ""
-			(uuid "66f8acc8-da38-4cca-8826-27e6b5b1e892")
+			(uuid "a8e64596-31cf-4f20-9df5-889aaa9e0b02")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "U_ENV_MAIN1")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "U_ENV_MAIN1")
@@ -6571,54 +6397,48 @@
 			)
 		)
 		(pin "1"
-			(uuid "e3ff42b8-4764-48f4-9437-6deb38760ea4")
+			(uuid "55e90d6a-ccb0-44d9-9f3a-9b645e4e2769")
 		)
 		(pin "6"
-			(uuid "3903df57-fa98-45fa-a844-d46c1f90322b")
+			(uuid "f7fb4009-cf17-4154-b9ea-016a17a152f2")
 		)
 		(pin "11"
-			(uuid "97e19705-7b62-4779-9308-0a2281fdb31b")
+			(uuid "2314fcdb-5318-4ab6-bf7a-53530d7530cb")
 		)
 		(pin "5"
-			(uuid "7f02ee3d-c21f-4884-b53d-3516f73db940")
+			(uuid "da5c2d83-68ee-45a7-bf17-dabc6cda29bf")
 		)
 		(pin "7"
-			(uuid "067b9450-2591-4f86-a0c6-5a6e5e4ebff3")
+			(uuid "efe86fb1-e200-42b7-98f7-fa418e67355e")
 		)
 		(pin "13"
-			(uuid "1362068c-7f38-464e-9619-716574d026b2")
+			(uuid "f3c94cd8-2739-4a13-b404-18ec3e2a7cfc")
 		)
 		(pin "2"
-			(uuid "5fd9e62e-b3cf-4c18-a2c8-f904789cffca")
+			(uuid "d28f6487-bc26-4f08-9197-4e13d5d32524")
 		)
 		(pin "3"
-			(uuid "2e5ed18b-7313-4965-9ef9-ada37db8e28e")
+			(uuid "5353cd10-7709-48f3-ba6d-912bf9f39a07")
 		)
 		(pin "9"
-			(uuid "aefc7d49-b10c-482b-a296-25af233be3bb")
+			(uuid "8aa2a76f-75e4-42de-92f7-9bb61c5e4d51")
 		)
 		(pin "8"
-			(uuid "44fceb5f-1184-4158-b0ab-6f021b50f868")
+			(uuid "bffc2036-3ffa-4392-a217-91bd34520c83")
 		)
 		(pin "12"
-			(uuid "9bdbd4cc-4ea4-4f14-84bd-a80846d0349d")
+			(uuid "25947bd8-2440-469e-be82-2d76aa3df09b")
 		)
 		(pin "14"
-			(uuid "08edd964-c13b-41c6-ac4d-7e7f0f16b788")
+			(uuid "01c614bc-e667-4029-a841-c2b88e23befc")
 		)
 		(pin "4"
-			(uuid "51e15250-3b49-45df-ad51-52c0dba94789")
+			(uuid "ec7d81c1-9924-4e06-b758-d152a3edc457")
 		)
 		(pin "10"
-			(uuid "5c52452b-22e3-4c1a-8d4f-468a57d4be73")
+			(uuid "5e5f933c-beed-4098-9fbf-673eab66db50")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "U24")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "U24")
@@ -6695,63 +6515,57 @@
 			)
 		)
 		(pin "4"
-			(uuid "a3d2a887-dab7-4b9e-b210-246ea2019ca1")
+			(uuid "6de45a4e-cd45-4b2a-8e20-24cea31e0e5c")
 		)
 		(pin "1"
-			(uuid "80885f3b-ee93-44b8-b6de-6ec0d1bb53a4")
+			(uuid "10e18928-0362-48f1-b3d6-cebe17b741e6")
 		)
 		(pin "2"
-			(uuid "24f2f455-42ce-4874-90bf-0b56fdd90af2")
+			(uuid "7ef7e96c-2a68-4492-be27-d5c69d401718")
 		)
 		(pin "3"
-			(uuid "0efd4a37-7067-4b53-833a-edceb4963e45")
+			(uuid "4443cdf1-56ea-4e3a-bab3-ac40fa400a96")
 		)
 		(pin "5"
-			(uuid "f2f6ca6b-fa0e-4f86-a914-24e8586c7e1b")
+			(uuid "fd7860de-c89f-4015-ad13-90fff29ee48e")
 		)
 		(pin "6"
-			(uuid "7161d2ce-7f4e-4716-91b5-3d3d0017cfe0")
+			(uuid "47fbccb4-0172-4243-b812-902a305cded5")
 		)
 		(pin "7"
-			(uuid "3449b2f4-0ff8-4868-bdad-de33052f9f36")
+			(uuid "932d4e44-7599-48a8-911b-458de8cec4a6")
 		)
 		(pin "9"
-			(uuid "8d20021e-cfc9-488b-adce-24a113a0f21d")
+			(uuid "8b660100-e4b9-4553-af4b-e6f8ac1308b1")
 		)
 		(pin "11"
-			(uuid "55c6d95b-a372-463c-9ce2-5fea3bedd28b")
+			(uuid "d4e6e90a-3c0b-4c33-8d78-06eb210c333e")
 		)
 		(pin "13"
-			(uuid "6412e88b-1c0a-46cc-8560-e7828bc5debd")
+			(uuid "2ead5167-5150-4548-b610-eb7e3530ee45")
 		)
 		(pin "10"
-			(uuid "fae2e201-b603-4b2a-9043-1ff3a5fc344f")
+			(uuid "72794c7e-14ce-4d09-b81a-744765c37826")
 		)
 		(pin "12"
-			(uuid "fb487e85-d9dc-4915-9343-52b1b720ca5e")
+			(uuid "5f91674a-0977-4534-98ad-bb6f8c5ced29")
 		)
 		(pin "14"
-			(uuid "91f95441-6c33-4d18-ab1e-37632526309a")
+			(uuid "3be3b92d-794f-411b-92a0-3c829ff09215")
 		)
 		(pin "15"
-			(uuid "c4d76a34-3191-4902-baa7-f0f8ebb11e6a")
+			(uuid "aaa9acdf-c4c5-4aa0-9a48-421f5234f176")
 		)
 		(pin "16"
-			(uuid "2bc87dfe-0576-41d3-b42e-a3c3ee7c0503")
+			(uuid "03fa5117-1d08-42bb-ac92-bfe7f2491352")
 		)
 		(pin "17"
-			(uuid "e47d3913-28ea-472e-b11f-2ce5cacdff2c")
+			(uuid "b26ac698-c3b1-4087-8d7b-4125a3958833")
 		)
 		(pin "8"
-			(uuid "09adcbdc-4e59-49ba-9d30-23a8a23a2930")
+			(uuid "eea293e7-750a-4614-9c4b-d3161ce993f0")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "U21")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "U21")
@@ -6827,15 +6641,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "dfc42e84-e594-4133-b605-105da35c912f")
+			(uuid "116cb74c-5b68-4cf8-825e-3bc5c7a4097a")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR083")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR083")
@@ -6911,18 +6719,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "9c8f0f04-6368-4ff0-8065-cf670341840e")
+			(uuid "0a320b95-e5fb-4a14-99e3-bc8feceefac4")
 		)
 		(pin "2"
-			(uuid "fa870a86-3a4a-45c2-aa0f-342a99d36af4")
+			(uuid "e998af81-ec76-4675-a616-ea43b92fa622")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "R19")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "R19")
@@ -6998,18 +6800,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "03286603-6e3d-40e7-9423-78d89dfc9908")
+			(uuid "f73acc94-11ca-4f0c-9202-06425ff955c3")
 		)
 		(pin "2"
-			(uuid "15ab95f5-7b2b-4475-a268-4b128abfcdfe")
+			(uuid "60f477ab-e39f-460f-998c-4c007bbc3021")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "R17")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "R17")
@@ -7085,15 +6881,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "40a95659-82f1-4444-a435-73867e739725")
+			(uuid "fb010272-c404-460f-8ac7-110064ce9fc7")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR076")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR076")
@@ -7169,15 +6959,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "c9306166-561a-41e1-bb6a-fb39aa34dd62")
+			(uuid "719d0f75-9276-48c8-bbe3-1be66d4eec32")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR073")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR073")
@@ -7253,15 +7037,9 @@
 			)
 		)
 		(pin "1"
-			(uuid "d341ac7a-728c-46ae-9f80-38124cb6d8b2")
+			(uuid "394d8e60-34da-4385-ab98-44aa5b1f7e3f")
 		)
 		(instances
-			(project "MAIN_PERIPHERALS_POWER"
-				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
-					(reference "#PWR080")
-					(unit 1)
-				)
-			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "#PWR080")

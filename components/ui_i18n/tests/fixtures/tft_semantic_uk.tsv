@@ -1,0 +1,42 @@
+normal.title	Очікування
+normal.hint	UP/DOWN дії  OK вибір  LEFT назад
+normal.body.0	Виберіть об’єкт
+warning.title	Розміщення датчиків
+warning.hint	UP/DOWN дії  OK вибір  LEFT назад
+warning.body.0	G1 В:Ні dH:—мм над.р.м:—м Ст:Ні
+warning.body.1	Очікування стабільності
+error.title	Результат
+error.hint	UP/DOWN дії  OK вибір  LEFT назад
+error.body.0	Внутрішня помилка
+error.body.1	Деталі: calc_settings_invalid
+result_unavailable.title	Результат
+result_unavailable.hint	UP/DOWN дії  OK вибір  LEFT назад
+result_unavailable.body.0	Джерело успішно визначено
+result_unavailable.body.1	Фрагмент хвильової форми недоступний
+result_unavailable.body.2	G1: —
+result_unavailable.body.3	G2: —
+result_unavailable.body.4	G3: —
+result_unavailable.body.5	G4: —
+result_zero.title	Результат
+result_zero.hint	UP/DOWN дії  OK вибір  LEFT назад
+result_zero.body.0	Джерело успішно визначено
+result_zero.body.1	G1: 0.0 м
+result_zero.body.2	G2: 0.0 м
+result_zero.body.3	G3: 0.0 м
+result_zero.body.4	G4: 0.0 м
+localization_rejected.title	Результат
+localization_rejected.hint	UP/DOWN дії  OK вибір  LEFT назад
+localization_rejected.body.0	Запишіть ще раз
+localization_rejected.body.1	Деталі: localization_rejected
+recording.title	Запис
+recording.hint	UP/DOWN дії  OK вибір  LEFT назад
+recording.body.0	Тривалість 01:05
+recording.action.0	Зупинити запис
+ranging_unknown.title	Вимірювання дальності
+ranging_unknown.hint	UP/DOWN дії  OK вибір  LEFT назад
+ranging_unknown.body.0	Пари —/— нев’язка — мм
+localization_solved.text	G1 X0.0m Y0.0m РІВНО РОЗВ
+localization_unverified.text	G1 XНЕВІДОМО YНЕВІДОМО Н/Д НЕРОЗВ
+battery_unknown.text	АКБ
+battery_zero.text	0%
+battery_low.text	НИЗЬК.
