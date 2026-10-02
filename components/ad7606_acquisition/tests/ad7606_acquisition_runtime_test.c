@@ -114,6 +114,9 @@ static bool s_running_seen_during_push;
 static unsigned s_beats;
 static unsigned s_notify_gives;
 static unsigned s_notify_from_isr;
+static unsigned s_busy_isr_calls;
+static unsigned s_stop_isr_suppressions;
+static unsigned s_task_blocking_calls;
 static uint32_t s_fake_pcnt_count;
 static int s_fake_busy_level;
 static gpio_int_type_t s_fake_busy_intr_type;
@@ -137,6 +140,7 @@ static esp_err_t s_driver_init_result;
 static uint32_t s_fake_measured_tconv_ns;
 static esp_err_t s_gpio_install_result;
 static bool s_fake_isr_service_ready;
+static bool s_inject_busy_isr_on_stop;
 static esp_err_t s_ledc_timer_result;
 static esp_err_t s_read_result;
 static bool s_rail_available;
@@ -205,6 +209,9 @@ static void reset_world(void)
     s_beats = 0U;
     s_notify_gives = 0U;
     s_notify_from_isr = 0U;
+    s_busy_isr_calls = 0U;
+    s_stop_isr_suppressions = 0U;
+    s_task_blocking_calls = 0U;
     s_fake_serial_valid_after_conversion = 0U;
     s_fake_serial_clocklike_from_conversion = 0U;
     s_fake_serial_fixed_from_conversion = 0U;
@@ -223,6 +230,7 @@ static void reset_world(void)
     s_fake_busy_isr = NULL;
     s_fake_busy_isr_args = NULL;
     s_fake_gpio_intr_enabled = false;
+    s_inject_busy_isr_on_stop = false;
     s_fake_pcnt_enabled = false;
     s_fake_pcnt_started = false;
     s_fake_ledc_timer_configured = false;
@@ -294,18 +302,58 @@ static void script_with_lateness(uint32_t count, int64_t lateness_us)
     ++s_script_len;
 }
 
+static void call_fake_busy_isr(void)
+{
+    assert(s_fake_busy_isr != NULL);
+    const unsigned timer_calls = s_esp_timer_get_time_calls;
+    const unsigned task_creates = s_task_creates;
+    const unsigned driver_inits = s_driver_inits;
+    const unsigned driver_deinits = s_driver_deinits;
+    const unsigned reads = s_reads;
+    const unsigned rail_reads = s_rail_reads;
+    const unsigned task_notifications = s_notify_gives;
+    const unsigned blocking_calls = s_task_blocking_calls;
+    const unsigned beats = s_beats;
+    const unsigned pushes = s_pushes;
+    const size_t log_records = s_log_record_count;
+    const uint32_t allocations = ad7606_acquisition_test_heap_caps_allocations();
+    const int critical_depth = s_critical_depth;
+    const seismic_source_t buffer_source = s_buffer_source;
+    const uint32_t buffer_rate = s_buffer_rate;
+
+    ++s_busy_isr_calls;
+    s_fake_busy_isr(s_fake_busy_isr_args);
+
+    /* The ISR may notify the worker; task-only work stays in the worker. */
+    assert(s_esp_timer_get_time_calls == timer_calls);
+    assert(s_task_creates == task_creates);
+    assert(s_driver_inits == driver_inits);
+    assert(s_driver_deinits == driver_deinits);
+    assert(s_reads == reads);
+    assert(s_rail_reads == rail_reads);
+    assert(s_notify_gives == task_notifications);
+    assert(s_task_blocking_calls == blocking_calls);
+    assert(s_beats == beats);
+    assert(s_pushes == pushes);
+    assert(s_log_record_count == log_records);
+    assert(ad7606_acquisition_test_heap_caps_allocations() == allocations);
+    assert(s_critical_depth == critical_depth);
+    assert(s_buffer_source == buffer_source);
+    assert(s_buffer_rate == buffer_rate);
+}
+
 static void fake_busy_conversion(void)
 {
     s_fake_busy_level = 1;
     if (s_fake_gpio_intr_enabled &&
         s_fake_busy_intr_type == GPIO_INTR_POSEDGE && s_fake_busy_isr != NULL) {
-        s_fake_busy_isr(s_fake_busy_isr_args);
+        call_fake_busy_isr();
     }
     s_fake_busy_level = 0;
     ++s_fake_pcnt_count;
     if (s_fake_gpio_intr_enabled &&
         s_fake_busy_intr_type == GPIO_INTR_NEGEDGE && s_fake_busy_isr != NULL) {
-        s_fake_busy_isr(s_fake_busy_isr_args);
+        call_fake_busy_isr();
     }
 }
 
@@ -437,6 +485,7 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore)
 
 BaseType_t xSemaphoreTake(SemaphoreHandle_t semaphore, TickType_t ticks)
 {
+    ++s_task_blocking_calls;
     assert(semaphore == &s_sem && s_sem_live);
     assert(ticks == portMAX_DELAY);
     /* The worker already ran inline: start() must only ever wait for a
@@ -507,6 +556,7 @@ void vTaskNotifyGiveFromISR(TaskHandle_t task, BaseType_t *higher_priority_task_
 
 void vTaskDelay(TickType_t ticks)
 {
+    ++s_task_blocking_calls;
     assert(s_critical_depth == 0);
     (void)ticks;
     if (s_stop_waiting) {
@@ -518,6 +568,7 @@ void vTaskDelay(TickType_t ticks)
 
 uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
 {
+    ++s_task_blocking_calls;
     assert(clear_on_exit == pdTRUE);
     assert(ticks_to_wait == portMAX_DELAY);
     assert(s_in_worker);
@@ -620,6 +671,14 @@ esp_err_t gpio_intr_enable(gpio_num_t gpio_num)
 esp_err_t gpio_intr_disable(gpio_num_t gpio_num)
 {
     assert(gpio_num == 47);
+    if (s_inject_busy_isr_on_stop) {
+        s_inject_busy_isr_on_stop = false;
+        assert(s_in_worker); /* task handle is still live during hardware cleanup */
+        const unsigned notifications_before = s_notify_from_isr;
+        call_fake_busy_isr();
+        assert(s_notify_from_isr == notifications_before);
+        ++s_stop_isr_suppressions;
+    }
     s_fake_gpio_intr_enabled = false;
     return ESP_OK;
 }
@@ -1010,6 +1069,7 @@ static void assert_fully_released(void)
 static void test_run_samples_then_stop_releases_everything(void)
 {
     reset_world();
+    s_inject_busy_isr_on_stop = true;
     const int64_t sample_t0 = s_now_us;
     script(EV_TICK, 1U);
     script(EV_TICK, 1U);
@@ -1030,6 +1090,8 @@ static void test_run_samples_then_stop_releases_everything(void)
     assert(s_fake_gpio_install_flags == ESP_INTR_FLAG_IRAM);
     assert(s_fake_watch_points == 2U);
     assert(s_notify_from_isr == 3U);
+    assert(s_busy_isr_calls == 4U); /* three edges plus a STOP-time probe */
+    assert(s_stop_isr_suppressions == 1U);
     assert(s_esp_timer_get_time_calls == 2U); /* start gate + LEDC t0, never per sample */
     assert(s_ad7606_rate == 500U);
     assert(s_buffer_rate == 0U); /* detached again on stop */
@@ -1104,6 +1166,8 @@ static void test_collapsed_periods_are_one_conversion(void)
     script_with_lateness(4U, 17); /* four conversion edges coalesce before task service */
     script(EV_STOP, 0U);
     assert(ad7606_acquisition_start() == ESP_OK);
+    assert(s_notify_from_isr == 4U);
+    assert(s_busy_isr_calls == 4U);
     assert(s_reads == 1U);
     const ad7606_acquisition_status_t status = status_now();
     assert(status.timer_ticks == 4U);
