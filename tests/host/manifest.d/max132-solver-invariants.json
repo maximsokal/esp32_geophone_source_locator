@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "max132_solver_invariants",
+      "sources": [
+        "components/localization/localization.c",
+        "components/localization/tests/max132_invariants_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    }
+  ]
+}
