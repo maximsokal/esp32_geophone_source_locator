@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "max132_noise_corpus",
+      "sources": [
+        "components/seismic_dsp/seismic_dsp.c",
+        "components/geophone_events/geophone_event_sta_lta.c",
+        "components/geophone_events/geophone_event_arrival_refine.c",
+        "components/geophone_events/geophone_event_cross_correlation.c",
+        "components/geophone_events/geophone_event_quality.c",
+        "components/geophone_events/geophone_event_pick.c",
+        "components/geophone_events/geophone_event_secondary_pick.c",
+        "components/geophone_events/tests/max132_noise_corpus_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_dsp/tests/stubs",
+        "components/seismic_dsp/include",
+        "components/geophone_events/include"
+      ],
+      "libraries": ["m"]
+    }
+  ]
+}
