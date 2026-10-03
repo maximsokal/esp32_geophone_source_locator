@@ -4303,6 +4303,12 @@
 			(uuid "060c033d-c231-4005-9526-1c4883eeb3df")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "U4")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "U4")
@@ -4382,6 +4388,12 @@
 			(uuid "08075d39-8cf5-4326-aac9-62be48350911")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "C17")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "C17")
@@ -4461,6 +4473,12 @@
 			(uuid "23cdf832-862c-4ee0-aaee-7b53beb55452")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "C14")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "C14")
@@ -4543,6 +4561,12 @@
 			(uuid "b3cfb58f-45bb-4117-81c4-6cda0ebe0ef1")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "C9")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "C9")
@@ -4623,6 +4647,12 @@
 			(uuid "06396970-f1ba-4a6a-aee6-f89bbb674b1f")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "C10")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "C10")
@@ -4705,6 +4735,12 @@
 			(uuid "8b5b7fe4-20b0-4410-b586-a9a70011a92d")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "C16")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "C16")
@@ -4974,6 +5010,12 @@
 			(uuid "88c285e0-5252-47be-b03f-7021a82a3d0d")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "U5")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "U5")
@@ -5054,6 +5096,12 @@
 			(uuid "df837211-5aea-4b10-935b-6d277b1d6bec")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "C11")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "C11")
@@ -5132,6 +5180,12 @@
 			(uuid "6d97b239-ecb0-4fe4-a547-f68f1944fb68")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "#PWR06")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "#PWR06")
@@ -5212,6 +5266,12 @@
 			(uuid "9ca869ff-3305-43d5-b31a-0bff0c2e2de3")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "C13")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "C13")
@@ -5290,6 +5350,12 @@
 			(uuid "ffe65251-0655-402c-929a-8765ed0332bb")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "#PWR07")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "#PWR07")
@@ -5370,6 +5436,12 @@
 			(uuid "8f1d9775-197b-4a0b-97ae-3950c116e884")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "R6")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "R6")
@@ -5452,6 +5524,12 @@
 			(uuid "2405b22d-11e6-4c15-a239-490be4163b5a")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "C8")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "C8")
@@ -5531,6 +5609,12 @@
 			(uuid "b0348aa6-0147-43d1-b012-24f8fbed93ce")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "C18")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "C18")
@@ -5610,6 +5694,12 @@
 			(uuid "c6dc1b4c-96cd-4a71-bf9b-40728eb1e3ea")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "C15")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "C15")
@@ -5690,6 +5780,12 @@
 			(uuid "f66feca6-377b-47b5-8530-602c45ba5482")
 		)
 		(instances
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(reference "C12")
+					(unit 1)
+				)
+			)
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6"
 					(reference "C12")
@@ -5742,6 +5838,17 @@
 					(page "3")
 				)
 			)
+			(project "AD7606_ADC"
+				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d"
+					(page "2")
+				)
+			)
 		)
 	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
 )
