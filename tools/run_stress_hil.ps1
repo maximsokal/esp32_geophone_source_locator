@@ -8,6 +8,9 @@ param(
     [switch]$SkipFlash,
     [switch]$WaitForPowerHandoff,
     [string]$LogPath,
+    [string]$BuildEvidencePath,
+    [string]$SdCardIdentity,
+    [int]$SdCardFrequencyHz = 0,
     [switch]$RequirePhysical,
     [switch]$ConfirmAd7606,
     [switch]$ConfirmSpi2Sd,
@@ -257,6 +260,7 @@ $monitor = $null
 $monitorRootProcessId = $null
 $logFile = $null
 $stderrFile = $null
+$perfRecordPath = $null
 $isReplay = -not [string]::IsNullOrWhiteSpace($LogPath)
 
 try {
@@ -396,6 +400,44 @@ try {
     }
 }
 
+if (-not [string]::IsNullOrWhiteSpace($BuildEvidencePath)) {
+    try {
+        if ([string]::IsNullOrWhiteSpace($logFile) -or -not (Test-Path -LiteralPath $logFile -PathType Leaf)) {
+            throw "A completed stress UART log is required for performance-record export."
+        }
+        $parserPath = Join-Path $repo "tools\stress_uart_to_perf_record.py"
+        $resolvedEvidence = Resolve-RepoPath $BuildEvidencePath
+        $perfRecordPath = [IO.Path]::ChangeExtension($logFile, ".perf.jsonl")
+        $parserArguments = @(
+            $parserPath,
+            "--log", $logFile,
+            "--build-evidence", $resolvedEvidence,
+            "--output", $perfRecordPath
+        )
+        if (-not [string]::IsNullOrWhiteSpace($stderrFile) -and (Test-Path -LiteralPath $stderrFile -PathType Leaf)) {
+            $parserArguments += @("--log", $stderrFile)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($SdCardIdentity)) {
+            $parserArguments += @("--sd-card-identity", $SdCardIdentity)
+        }
+        if ($SdCardFrequencyHz -gt 0) {
+            $parserArguments += @("--sd-card-frequency-hz", "$SdCardFrequencyHz")
+        }
+        $parserOutput = @(& python @parserArguments 2>&1)
+        $parserExitCode = $LASTEXITCODE
+        if ($parserExitCode -eq 0) {
+            Add-Check $checks "Performance record export" "PASS" ("Wrote {0}." -f $perfRecordPath)
+        } else {
+            $detail = ($parserOutput | ForEach-Object { "$_" }) -join " "
+            Add-Check $checks "Performance record export" "FAIL" ("Parser exit {0}: {1}" -f $parserExitCode, $detail)
+            $perfRecordPath = $null
+        }
+    } catch {
+        Add-Check $checks "Performance record export" "FAIL" $_.Exception.Message
+        $perfRecordPath = $null
+    }
+}
+
 $failed = @($checks | Where-Object { $_.Status -eq "FAIL" })
 $blocked = @($checks | Where-Object { $_.Status -eq "BLOCKED" })
 $result = if ($failed.Count -gt 0) { "FAIL" } elseif ($blocked.Count -gt 0) { "BLOCKED" } else { "PASS" }
@@ -407,6 +449,7 @@ foreach ($check in $checks) {
     Write-Host ("{0,-38} {1,-9} {2}" -f $check.Name, $check.Status, $check.Detail)
 }
 if ($isReplay) { Write-Host ("LOG_REPLAY: {0}" -f $logFile) }
+if ($perfRecordPath) { Write-Host ("STRESS_PERF_RECORD: {0}" -f $perfRecordPath) }
 if ($RequirePhysical) {
     Write-Host "PHYSICAL_CONDITION: production-driver probes plus operator attestations required for AD7606/SPI3, SPI2/SD, TFT, Wi-Fi and I2C."
 } else {

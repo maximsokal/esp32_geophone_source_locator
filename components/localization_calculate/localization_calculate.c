@@ -241,6 +241,20 @@ static bool record_has_rejection_class(const localization_run_record_t *record)
 }
 
 
+static esp_err_t localization_calculate_write_picks_retry(
+    const char *object_id,
+    const char *session_id,
+    const localization_pick_record_t *record
+)
+{
+    esp_err_t err = localization_run_store_write_picks(object_id, session_id, record);
+    if (err != ESP_OK) {
+        err = localization_run_store_write_picks(object_id, session_id, record);
+    }
+    return err;
+}
+
+
 static int64_t monotonic_us(void)
 {
     return esp_timer_get_time();
@@ -650,10 +664,9 @@ esp_err_t localization_calculate_run(
      * actually used, versioned by the same computed_at_ms as the method
      * records below -- so a WebUI can explain *why* a channel was rejected
      * (no trigger / no refinement / low SNR) rather than only seeing the
-     * aggregate channel_mask_rejected each run record carries. Best-effort:
-     * pick evidence is diagnostic context for the runs below, not itself
-     * part of the recording-gate's admission promise, so a persistence
-     * failure here must never abort the whole calculate_source invocation.
+     * aggregate channel_mask_rejected each run record carries. Retry one
+     * failed write and report any persistent error after method records and
+     * joint fusion have been saved.
      */
     localization_pick_record_t *pick_record = &workspace->pick_record;
     snprintf(pick_record->object_id, sizeof(pick_record->object_id), "%s", object_id);
@@ -663,7 +676,9 @@ esp_err_t localization_calculate_run(
         pick_record->channels[ch].participating = geometry.pods[ch].computed;
         pick_record->channels[ch].pick = event_channels[ch].pick;
     }
-    (void)localization_run_store_write_picks(object_id, session_id, pick_record);
+    const esp_err_t pick_write_err = localization_calculate_write_picks_retry(
+        object_id, session_id, pick_record
+    );
 
     localization_point3d_t participant_positions[OBJECT_STORE_POD_COUNT];
     size_t participant_position_count = 0U;
@@ -1897,6 +1912,10 @@ esp_err_t localization_calculate_run(
         summary_out->methods_persisted++;
     } else if (first_write_err == ESP_OK) {
         first_write_err = joint_write_err;
+    }
+
+    if (first_write_err == ESP_OK && pick_write_err != ESP_OK) {
+        first_write_err = pick_write_err;
     }
 
     heap_caps_free(workspace);

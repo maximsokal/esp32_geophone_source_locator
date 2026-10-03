@@ -138,25 +138,52 @@ def test_max_frames_bound_is_documented_not_guessed():
     assert "max_window_frames < minimum_useful_frames" in source
 
 
-def test_pick_evidence_persistence_is_best_effort_not_gating():
+def test_pick_evidence_persistence_retries_once_then_reports_after_records_saved():
     source = orchestrator_source()
 
-    # MAX-148 slice 3: a pick-record write failure must never be checked /
-    # propagated -- it is diagnostic context, not part of the run's own
-    # solved/unsolved outcome or the recording-gate's admission promise.
-    write_index = source.index("localization_run_store_write_picks(object_id, session_id, pick_record)")
-    call_line_start = source.rindex("\n", 0, write_index) + 1
-    call_line_end = source.index("\n", write_index)
-    call_line = source[call_line_start:call_line_end]
-    assert call_line.strip().startswith("(void)")
+    helper_start = source.index("static esp_err_t localization_calculate_write_picks_retry(")
+    helper_end = source.index("\n}\n", helper_start) + 2
+    helper = source[helper_start:helper_end]
+    write_call = "localization_run_store_write_picks(object_id, session_id, record)"
+    assert helper.count(write_call) == 2
+    first_write = helper.index(f"esp_err_t err = {write_call};")
+    retry_guard = helper.index("if (err != ESP_OK) {")
+    retry_write = helper.rindex(f"err = {write_call};")
+    return_err = helper.index("return err;")
+    assert first_write < retry_guard < retry_write < return_err
+    assert "(void)localization_run_store_write_picks" not in source
+
+    run_start = source.index("esp_err_t localization_calculate_run(")
+    pick_assignment = (
+        "const esp_err_t pick_write_err = localization_calculate_write_picks_retry(\n"
+        "        object_id, session_id, pick_record\n"
+        "    );"
+    )
+    pick_call_index = source.index(pick_assignment, run_start)
 
     # The pick record must be built (and therefore written) before any
     # method-record persistence begins, so a WebUI reading "why was channel
     # N rejected" always has evidence for every run sharing that
     # computed_at_ms -- never a race where picks lag behind the runs that
     # depended on them.
-    first_run_write = source.index("localization_run_store_write(object_id, session_id, &records[i]);")
-    assert write_index < first_run_write
+    first_run_write = source.index(
+        "localization_run_store_write(object_id, session_id, &records[i]);",
+        run_start,
+    )
+    assert pick_call_index < first_run_write
+
+    joint_write_index = source.index(
+        "const esp_err_t joint_write_err = localization_run_store_write(object_id, session_id, joint_record);",
+        run_start,
+    )
+    error_merge = (
+        "if (first_write_err == ESP_OK && pick_write_err != ESP_OK) {\n"
+        "        first_write_err = pick_write_err;\n"
+        "    }"
+    )
+    error_merge_index = source.index(error_merge, run_start)
+    returned_error_index = source.index("return first_write_err;", error_merge_index)
+    assert joint_write_index < error_merge_index < returned_error_index
 
 
 def test_scan_constraint_is_session_scoped_fail_closed_and_never_fused():
@@ -242,7 +269,20 @@ def test_run_state_lives_on_the_heap_not_the_https_stack():
     source = orchestrator_source()
     assert "localization_calculate_workspace_t *workspace = heap_caps_calloc(" in source
     assert "localization_run_record_t *records = workspace->records;" in source
-    assert source.index("heap_caps_calloc(") < source.index("localization_run_store_write_picks(")
+    run_start = source.index("esp_err_t localization_calculate_run(")
+    workspace_alloc_index = source.index(
+        "localization_calculate_workspace_t *workspace = heap_caps_calloc(",
+        run_start,
+    )
+    pick_write_index = source.index(
+        "const esp_err_t pick_write_err = localization_calculate_write_picks_retry(",
+        run_start,
+    )
+    first_method_write_index = source.index(
+        "localization_run_store_write(object_id, session_id, &records[i]);",
+        run_start,
+    )
+    assert workspace_alloc_index < min(pick_write_index, first_method_write_index)
     assert source.rstrip().endswith("heap_caps_free(workspace);\n    return first_write_err;\n}")
 
 

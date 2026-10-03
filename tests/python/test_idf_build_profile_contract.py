@@ -16,6 +16,7 @@ from tools.idf_profile import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_RESOLVER = REPO_ROOT / "tools" / "idf_profile.py"
+STRESS_APP_ROOT = REPO_ROOT / "tests" / "target" / "stress_app"
 
 
 @pytest.mark.parametrize(
@@ -56,6 +57,65 @@ def test_clean_profile_resolution_metadata_is_deterministic():
     assert first["size_components_report"] == str(
         REPO_ROOT / "build-profile-performance" / "idf-size-components.txt"
     )
+
+
+@pytest.mark.parametrize(
+    ("profile", "selected", "unselected", "wrong_profile"),
+    [
+        (
+            "debug",
+            "CONFIG_COMPILER_OPTIMIZATION_DEBUG",
+            "CONFIG_COMPILER_OPTIMIZATION_PERF",
+            "performance",
+        ),
+        (
+            "performance",
+            "CONFIG_COMPILER_OPTIMIZATION_PERF",
+            "CONFIG_COMPILER_OPTIMIZATION_DEBUG",
+            "debug",
+        ),
+    ],
+)
+def test_subproject_profile_uses_root_fragment_and_keeps_paths_isolated(
+    profile, selected, unselected, wrong_profile, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    resolved = resolve_profile(profile, STRESS_APP_ROOT)
+    repeated = resolve_profile(profile, STRESS_APP_ROOT)
+    profile_fragment = REPO_ROOT / f"sdkconfig.profile-{profile}.defaults"
+    build_dir = STRESS_APP_ROOT / f"build-profile-{profile}"
+
+    assert resolved == repeated
+    assert resolved["sdkconfig_defaults"] == [
+        str(STRESS_APP_ROOT / "sdkconfig.defaults"),
+        str(profile_fragment),
+    ]
+    assert resolved["cmake_profile_defaults"] == [str(profile_fragment)]
+    assert resolved["settings"][selected] is True
+    assert resolved["settings"][unselected] is False
+    assert resolved["build_dir"] == str(build_dir)
+    assert resolved["sdkconfig"] == str(build_dir / "sdkconfig")
+    assert resolved["evidence_json"] == str(
+        build_dir / f"build-evidence.{profile}.json"
+    )
+    assert resolved["size_report"] == str(build_dir / "idf-size.txt")
+    assert resolved["size_components_report"] == str(
+        build_dir / "idf-size-components.txt"
+    )
+
+    wrong_fragment = REPO_ROOT / f"sdkconfig.profile-{wrong_profile}.defaults"
+    with pytest.raises(
+        ValueError, match=f"resolved defaults do not resolve to {profile}"
+    ):
+        resolve_profile(profile, STRESS_APP_ROOT, profile_defaults=wrong_fragment)
+
+
+def test_subproject_profiles_use_separate_build_and_sdkconfig_paths():
+    debug = resolve_profile("debug", STRESS_APP_ROOT)
+    performance = resolve_profile("performance", STRESS_APP_ROOT)
+
+    assert debug["build_dir"] != performance["build_dir"]
+    assert debug["sdkconfig"] != performance["sdkconfig"]
 
 
 def test_wrapper_resolution_cli_uses_the_same_defaults_and_isolated_sdkconfig():

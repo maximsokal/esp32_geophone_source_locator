@@ -44,7 +44,7 @@ size_t max132_fault_allocator_live_bytes(void);
 bool max132_fault_allocator_hit(void);
 size_t max132_fault_allocator_method_attempts(const char *method_name);
 
-static bool s_fail_pick_write;
+static size_t s_pick_write_failures_remaining;
 static size_t s_pick_write_failures;
 
 #ifdef _WIN32
@@ -115,8 +115,9 @@ esp_err_t storage_manager_atomic_write_text(const char *path, const char *text)
     if (path == NULL || text == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (s_fail_pick_write && strstr(path, "localization_picks_") != NULL) {
-        s_fail_pick_write = false;
+    if (s_pick_write_failures_remaining > 0U &&
+        strstr(path, "localization_picks_") != NULL) {
+        --s_pick_write_failures_remaining;
         ++s_pick_write_failures;
         return ESP_FAIL;
     }
@@ -179,341 +180,47 @@ static const localization_run_record_t *find_saved(
     return NULL;
 }
 
-static bool same_result_state(
-    const localization_run_record_t *left,
-    const localization_run_record_t *right
+static bool saved_records_are_complete_and_explained(
+    const localization_run_record_t *expected,
+    size_t expected_count,
+    const localization_run_record_t *saved,
+    size_t saved_count
 )
 {
-    return left->solved == right->solved && left->failure_class == right->failure_class &&
-        strcmp(left->rejection_reason, right->rejection_reason) == 0 &&
-        left->analysis_window_truncated == right->analysis_window_truncated &&
-        strcmp(left->analysis_window_reason, right->analysis_window_reason) == 0;
-}
+    if (expected_count == 0U || saved_count != expected_count) {
+        return false;
+    }
 
-static bool records_match_except_missing_method(
-    const localization_run_record_t *baseline,
-    size_t baseline_count,
-    const localization_run_record_t *candidate,
-    size_t candidate_count,
-    const char *missing_method
-)
-{
-    if (candidate_count + 1U != baseline_count) return false;
-    size_t missing_count = 0U;
-    for (size_t i = 0U; i < baseline_count; ++i) {
-        const localization_run_record_t *after = find_saved(
-            candidate, candidate_count, baseline[i].method_name
-        );
-        if (after == NULL) {
-            if (strcmp(baseline[i].method_name, missing_method) != 0) return false;
-            ++missing_count;
-        } else if (strcmp(baseline[i].method_name, missing_method) == 0 ||
-            !same_result_state(&baseline[i], after)) {
+    for (size_t i = 0U; i < expected_count; ++i) {
+        if (expected[i].method_name[0] == '\0') {
+            return false;
+        }
+        const localization_run_record_t *record =
+            find_saved(saved, saved_count, expected[i].method_name);
+        if (record == NULL || record->schema_version != LOCALIZATION_RUN_SCHEMA_VERSION ||
+            record->kind != expected[i].kind) {
+            return false;
+        }
+        if (!record->solved &&
+            (record->rejection_reason[0] == '\0' ||
+             record->failure_class == LOCALIZATION_FAILURE_CLASS_NONE)) {
             return false;
         }
     }
-    for (size_t i = 0U; i < candidate_count; ++i) {
-        for (size_t j = i + 1U; j < candidate_count; ++j) {
-            if (strcmp(candidate[i].method_name, candidate[j].method_name) == 0) return false;
-        }
-    }
-    return missing_count == 1U;
-}
 
-static bool records_match_except_blank_method(
-    const localization_run_record_t *baseline,
-    size_t baseline_count,
-    const localization_run_record_t *candidate,
-    size_t candidate_count,
-    const char *missing_method
-)
-{
-    if (candidate_count != baseline_count) return false;
-    size_t blank_count = 0U;
-    const localization_run_record_t *expected_blank = find_saved(
-        baseline, baseline_count, missing_method
-    );
-    const localization_run_record_t *blank_record = NULL;
-    if (expected_blank == NULL) return false;
-    for (size_t i = 0U; i < baseline_count; ++i) {
-        const localization_run_record_t *after = find_saved(
-            candidate, candidate_count, baseline[i].method_name
-        );
-        if (strcmp(baseline[i].method_name, missing_method) == 0) {
-            if (after != NULL) return false;
-        } else if (after == NULL || !same_result_state(&baseline[i], after)) {
+    for (size_t i = 0U; i < saved_count; ++i) {
+        if (saved[i].method_name[0] == '\0') {
             return false;
         }
-    }
-    for (size_t i = 0U; i < candidate_count; ++i) {
-        if (candidate[i].method_name[0] == '\0') {
-            ++blank_count;
-            blank_record = &candidate[i];
-            continue;
-        }
-        for (size_t j = i + 1U; j < candidate_count; ++j) {
-            if (strcmp(candidate[i].method_name, candidate[j].method_name) == 0) return false;
-        }
-    }
-    return blank_count == 1U && same_result_state(expected_blank, blank_record);
-}
-
-static bool persisted_method_has_empty_required_field(
-    const localization_run_record_t *baseline,
-    size_t baseline_count,
-    const char *session_id,
-    uint64_t computed_at_ms,
-    const char *method_name,
-    const char *field_name
-)
-{
-    const localization_run_record_t *saved = find_saved(baseline, baseline_count, method_name);
-    if (saved == NULL) return false;
-    localization_run_record_t path_record = *saved;
-    path_record.computed_at_ms = computed_at_ms;
-    char path[LOCALIZATION_RUN_STORE_PATH_MAX];
-    char json[LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE];
-    if (localization_run_store_build_path("OBJ_0001", session_id, &path_record,
-        path, sizeof(path)) != ESP_OK || storage_manager_read_text(path, json, sizeof(json)) != ESP_OK) {
-        return false;
-    }
-    char empty_field[64];
-    char method_field[96];
-    const int field_length = snprintf(empty_field, sizeof(empty_field), "\"%s\":\"\"",
-        field_name);
-    const int method_length = snprintf(method_field, sizeof(method_field),
-        "\"method_name\":\"%s\"", method_name);
-    if (field_length < 0 || (size_t)field_length >= sizeof(empty_field) || method_length < 0 ||
-        (size_t)method_length >= sizeof(method_field)) return false;
-    localization_run_record_t parsed;
-    return strstr(json, method_field) != NULL &&
-        strstr(json, empty_field) != NULL &&
-        localization_run_record_from_json(json, &parsed) == ESP_ERR_INVALID_RESPONSE;
-}
-
-static bool persisted_method_has_empty_method_name(
-    const localization_run_record_t *baseline,
-    size_t baseline_count,
-    const char *session_id,
-    uint64_t computed_at_ms,
-    const char *method_name
-)
-{
-    const localization_run_record_t *saved = find_saved(baseline, baseline_count, method_name);
-    if (saved == NULL) return false;
-    localization_run_record_t path_record = *saved;
-    path_record.computed_at_ms = computed_at_ms;
-    char path[LOCALIZATION_RUN_STORE_PATH_MAX];
-    char json[LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE];
-    if (localization_run_store_build_path("OBJ_0001", session_id, &path_record,
-        path, sizeof(path)) != ESP_OK || storage_manager_read_text(path, json, sizeof(json)) != ESP_OK) {
-        return false;
-    }
-    localization_run_record_t parsed;
-    return strstr(json, "\"method_name\":\"\"") != NULL &&
-        localization_run_record_from_json(json, &parsed) == ESP_OK &&
-        parsed.method_name[0] == '\0';
-}
-
-typedef struct
-{
-    size_t allocation;
-    const char *method_name;
-    const char *empty_field;
-} max132_known_i1_corruption_t;
-
-static const max132_known_i1_corruption_t s_known_i1_corruptions[] = {
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=166 stores solved TDOA under an empty method name. */
-    { 166U, "tdoa_gauss_newton", "method_name" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=175 writes TDOA with empty dimensionality. */
-    { 175U, "tdoa_gauss_newton", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=193 writes TDOA with empty failure_class. */
-    { 193U, "tdoa_gauss_newton", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=229 writes travel-time data with empty kind. */
-    { 229U, "traveltime_inversion", "kind" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=232 stores travel-time output under an empty method name. */
-    { 232U, "traveltime_inversion", "method_name" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=241 writes travel-time data with empty dimensionality. */
-    { 241U, "traveltime_inversion", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=259 writes travel-time data with empty failure_class. */
-    { 259U, "traveltime_inversion", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=295 writes semblance with empty kind. */
-    { 295U, "semblance", "kind" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=298 stores semblance under an empty method name. */
-    { 298U, "semblance", "method_name" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=307 writes semblance with empty dimensionality. */
-    { 307U, "semblance", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=325 writes semblance with empty failure_class. */
-    { 325U, "semblance", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=361 writes energy baseline with empty kind. */
-    { 361U, "energy_baseline", "kind" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=364 stores energy baseline under an empty method name. */
-    { 364U, "energy_baseline", "method_name" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=373 writes energy baseline with empty dimensionality. */
-    { 373U, "energy_baseline", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=391 writes energy baseline with empty failure_class. */
-    { 391U, "energy_baseline", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=427 writes TDCAS with empty kind. */
-    { 427U, "tdcas", "kind" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=430 stores TDCAS under an empty method name. */
-    { 430U, "tdcas", "method_name" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=439 writes TDCAS with empty dimensionality. */
-    { 439U, "tdcas", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=457 writes TDCAS with empty failure_class. */
-    { 457U, "tdcas", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=462 writes TDCAS with empty rejection_reason. */
-    { 462U, "tdcas", "rejection_reason" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=480 writes PSAFUVS with empty kind. */
-    { 480U, "psafuvs", "kind" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=483 stores PSAFUVS under an empty method name. */
-    { 483U, "psafuvs", "method_name" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=492 writes PSAFUVS with empty dimensionality. */
-    { 492U, "psafuvs", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=510 writes PSAFUVS with empty failure_class. */
-    { 510U, "psafuvs", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=515 writes PSAFUVS with empty velocity_status. */
-    { 515U, "psafuvs", "velocity_status" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=518 writes PSAFUVS with empty rejection_reason. */
-    { 518U, "psafuvs", "rejection_reason" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=536 writes SUEA with empty kind. */
-    { 536U, "suea", "kind" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=539 stores SUEA output under an empty method name. */
-    { 539U, "suea", "method_name" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=548 writes SUEA with empty dimensionality. */
-    { 548U, "suea", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=566 writes SUEA with empty failure_class. */
-    { 566U, "suea", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=604 writes cross-correlation TDOA with empty kind. */
-    { 604U, "xcorr_tdoa", "kind" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=607 stores cross-correlation TDOA under an empty method name. */
-    { 607U, "xcorr_tdoa", "method_name" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=616 writes cross-correlation TDOA with empty dimensionality. */
-    { 616U, "xcorr_tdoa", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=634 writes cross-correlation TDOA with empty failure_class. */
-    { 634U, "xcorr_tdoa", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=670 writes robust TDOA with empty kind. */
-    { 670U, "robust_tdoa", "kind" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=673 stores robust TDOA under an empty method name. */
-    { 673U, "robust_tdoa", "method_name" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=682 writes robust TDOA with empty dimensionality. */
-    { 682U, "robust_tdoa", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=700 writes robust TDOA with empty failure_class. */
-    { 700U, "robust_tdoa", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=736 writes PSP with empty kind. */
-    { 736U, "psp_joint", "kind" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=739 stores PSP output under an empty method name. */
-    { 739U, "psp_joint", "method_name" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=748 writes PSP with empty dimensionality. */
-    { 748U, "psp_joint", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=766 writes PSP with empty failure_class. */
-    { 766U, "psp_joint", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=771 writes PSP with empty rejection_reason. */
-    { 771U, "psp_joint", "rejection_reason" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=789 writes Bayesian data with empty kind. */
-    { 789U, "bayesian", "kind" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=792 stores Bayesian output under an empty method name. */
-    { 792U, "bayesian", "method_name" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=801 writes Bayesian data with empty dimensionality. */
-    { 801U, "bayesian", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=819 writes Bayesian data with empty failure_class. */
-    { 819U, "bayesian", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=892 writes eikonal data with empty kind. */
-    { 892U, "eikonal_fmm", "kind" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=895 stores eikonal output under an empty method name. */
-    { 895U, "eikonal_fmm", "method_name" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=904 writes eikonal data with empty dimensionality. */
-    { 904U, "eikonal_fmm", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=922 writes eikonal data with empty failure_class. */
-    { 922U, "eikonal_fmm", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=960 writes joint fusion with empty kind. */
-    { 960U, "joint_fusion", "kind" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=972 writes joint fusion with empty dimensionality. */
-    { 972U, "joint_fusion", "dimensionality" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=990 writes joint fusion with empty failure_class. */
-    { 990U, "joint_fusion", "failure_class" },
-    /* KNOWN_DEFECT, build/max132_survey.md:106. N=963 stores joint fusion under an empty method name. */
-    { 963U, "joint_fusion", "method_name" },
-};
-
-static bool matches_known_i1_allocation_corruption(
-    size_t fail_at,
-    const localization_run_record_t *baseline,
-    size_t baseline_count,
-    const localization_run_record_t *candidate,
-    size_t candidate_count,
-    const char *session_id,
-    uint64_t computed_at_ms
-)
-{
-    if (fail_at == 163U) {
-        /* KNOWN_DEFECT, build/max132_survey.md:106. Repro: N=163 returns ESP_OK with 12
-         * unchanged records and no TDOA record or persisted skip reason. */
-        return records_match_except_missing_method(baseline, baseline_count,
-            candidate, candidate_count, "tdoa_gauss_newton");
-    }
-    for (size_t i = 0U; i < sizeof(s_known_i1_corruptions) / sizeof(s_known_i1_corruptions[0]); ++i) {
-        const max132_known_i1_corruption_t *known = &s_known_i1_corruptions[i];
-        if (fail_at == known->allocation) {
-            if (strcmp(known->empty_field, "method_name") == 0) {
-                return records_match_except_blank_method(baseline, baseline_count,
-                        candidate, candidate_count, known->method_name) &&
-                    persisted_method_has_empty_method_name(baseline, baseline_count,
-                        session_id, computed_at_ms, known->method_name);
+        for (size_t j = i + 1U; j < saved_count; ++j) {
+            if (strcmp(saved[i].method_name, saved[j].method_name) == 0) {
+                return false;
             }
-            return records_match_except_missing_method(baseline, baseline_count,
-                    candidate, candidate_count, known->method_name) &&
-                persisted_method_has_empty_required_field(baseline, baseline_count,
-                    session_id, computed_at_ms, known->method_name, known->empty_field);
         }
     }
-    return false;
+    return true;
 }
 
-static size_t expected_known_i1_corruption_count(size_t first, size_t last)
-{
-    size_t count = first <= 163U && 163U <= last ? 1U : 0U;
-    for (size_t i = 0U; i < sizeof(s_known_i1_corruptions) / sizeof(s_known_i1_corruptions[0]); ++i) {
-        if (first <= s_known_i1_corruptions[i].allocation &&
-            s_known_i1_corruptions[i].allocation <= last) {
-            ++count;
-        }
-    }
-    return count;
-}
-
-static bool changed_records_have_failure_reason(
-    const localization_run_record_t *baseline,
-    size_t baseline_count,
-    const localization_run_record_t *candidate,
-    size_t candidate_count
-)
-{
-    bool found_changed_failure = false;
-    for (size_t i = 0U; i < baseline_count; ++i) {
-        const localization_run_record_t *after = find_saved(
-            candidate, candidate_count, baseline[i].method_name
-        );
-        if (after == NULL) {
-            fprintf(stderr, "I1 changed record missing: %s (candidate_count=%zu)\n",
-                baseline[i].method_name, candidate_count);
-            return false;
-        }
-        const bool changed = !same_result_state(&baseline[i], after);
-        const bool has_reason = (!after->solved && after->rejection_reason[0] != '\0') ||
-            (after->analysis_window_truncated && after->analysis_window_reason[0] != '\0');
-        if (changed && !has_reason) {
-            fprintf(stderr, "I1 changed record without reason: %s solved=%d/%d class=%d/%d reject=%d analysis=%d/%d\n",
-                baseline[i].method_name, (int)baseline[i].solved, (int)after->solved,
-                (int)baseline[i].failure_class, (int)after->failure_class,
-                strcmp(baseline[i].rejection_reason, after->rejection_reason),
-                (int)baseline[i].analysis_window_truncated, (int)after->analysis_window_truncated);
-        }
-        if (changed && has_reason) {
-            found_changed_failure = true;
-        }
-    }
-    return found_changed_failure;
-}
 
 static bool is_defined_allocation_fault_error(esp_err_t err)
 {
@@ -521,28 +228,6 @@ static bool is_defined_allocation_fault_error(esp_err_t err)
         err == ESP_ERR_INVALID_STATE || err == ESP_ERR_INVALID_SIZE || err == ESP_ERR_TIMEOUT ||
         err == ESP_ERR_NOT_FOUND || err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_INVALID_CRC ||
         err == ESP_ERR_INVALID_VERSION;
-}
-
-static bool records_changed(
-    const localization_run_record_t *baseline,
-    size_t baseline_count,
-    const localization_run_record_t *candidate,
-    size_t candidate_count
-)
-{
-    for (size_t i = 0U; i < baseline_count; ++i) {
-        const localization_run_record_t *after = find_saved(
-            candidate, candidate_count, baseline[i].method_name
-        );
-        if (after == NULL || baseline[i].solved != after->solved ||
-            baseline[i].failure_class != after->failure_class ||
-            strcmp(baseline[i].rejection_reason, after->rejection_reason) != 0 ||
-            baseline[i].analysis_window_truncated != after->analysis_window_truncated ||
-            strcmp(baseline[i].analysis_window_reason, after->analysis_window_reason) != 0) {
-            return true;
-        }
-    }
-    return false;
 }
 
 static void run_clean_and_check(
@@ -610,10 +295,6 @@ static void test_every_calculation_allocation_failure_recovers(
     assert(read_session(baseline_session, baseline, &baseline_count) == ESP_OK);
     assert(baseline_count == summary.methods_total);
 
-    size_t silent_pick_fault_count = 0U;
-    size_t silent_pick_fault_at = 0U;
-    size_t unchanged_success_count = 0U;
-    size_t known_i1_corruption_count = 0U;
     const size_t sweep_last = sweep_last_requested == 0U || sweep_last_requested > allocation_points
         ? allocation_points
         : sweep_last_requested;
@@ -641,50 +322,48 @@ static void test_every_calculation_allocation_failure_recovers(
         assert(max132_fault_allocator_live_blocks() == live_before_failure);
         assert(max132_fault_allocator_live_bytes() == bytes_before_failure);
         assert(localization_test_psram_model_allocated_bytes() == 0U);
-        if (failed_err == ESP_OK) {
-            assert(read_session(failed_session, failed_records, &failed_count) == ESP_OK);
-            if (!records_changed(baseline, baseline_count, failed_records, failed_count)) {
-                localization_pick_record_t failed_picks[LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION];
-                size_t failed_pick_count = 99U;
-                assert(localization_run_store_list_picks("OBJ_0001", failed_session, failed_picks,
-                    LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &failed_pick_count) == ESP_OK);
-                if (failed_pick_count == 0U) {
-                    /* KNOWN_DEFECT, build/max132_survey.md:123. The exact allocator fault
-                     * that reaches pick JSON creation is ignored, leaving
-                     * method records unchanged and the pick file absent. */
-                    if (silent_pick_fault_count == 0U) silent_pick_fault_at = fail_at;
-                    ++silent_pick_fault_count;
-                } else {
-                    /* The failed allocation was optional: the complete
-                     * previously computed result was still persisted. */
-                    assert(failed_pick_count == 1U);
-                    assert(failed_count == baseline_count);
-                    for (size_t i = 0U; i < failed_count; ++i) {
-                        assert(failed_records[i].computed_at_ms == 2000000U + fail_at);
-                    }
-                    ++unchanged_success_count;
-                }
-            } else if (matches_known_i1_allocation_corruption(
-                fail_at, baseline, baseline_count, failed_records, failed_count,
-                failed_session, 2000000U + fail_at
-            )) {
-                ++known_i1_corruption_count;
-            } else {
-                const bool has_failure_reason = changed_records_have_failure_reason(
-                    baseline, baseline_count, failed_records, failed_count
-                );
-                if (!has_failure_reason) {
-                    fprintf(stderr, "I1 unexpected allocation state: N=%zu err=%d listed=%zu\n",
-                        fail_at, (int)failed_err, failed_count);
-                    for (size_t i = 0U; i < failed_count; ++i) {
-                        fprintf(stderr, "I1 listed[%zu]=%s solved=%d failure=%d reason=%s\n",
-                            i, failed_records[i].method_name, (int)failed_records[i].solved,
-                            (int)failed_records[i].failure_class,
-                            failed_records[i].rejection_reason);
-                    }
-                }
-                assert(has_failure_reason);
+        assert(failed_summary.methods_persisted <= failed_summary.methods_total);
+
+        const esp_err_t list_err = read_session(failed_session, failed_records, &failed_count);
+        if (list_err == ESP_ERR_NOT_FOUND && failed_summary.methods_persisted == 0U) {
+            failed_count = 0U;
+        } else {
+            assert(list_err == ESP_OK);
+            if (failed_count != failed_summary.methods_persisted) {
+                fprintf(stderr,
+                    "I1 N=%zu returned %d with unreadable persistence: listed=%zu summary=%zu\n",
+                    fail_at, (int)failed_err, failed_count, failed_summary.methods_persisted);
             }
+            assert(failed_count == failed_summary.methods_persisted);
+        }
+        for (size_t i = 0U; i < failed_count; ++i) {
+            assert(failed_records[i].method_name[0] != '\0');
+            if (!failed_records[i].solved) {
+                assert(failed_records[i].rejection_reason[0] != '\0');
+                assert(failed_records[i].failure_class != LOCALIZATION_FAILURE_CLASS_NONE);
+            }
+        }
+
+        if (failed_err == ESP_OK) {
+            if (!saved_records_are_complete_and_explained(
+                    baseline, baseline_count, failed_records, failed_count)) {
+                fprintf(stderr,
+                    "I1 N=%zu returned ESP_OK with incomplete or unexplained records: "
+                    "listed=%zu persisted=%zu total=%zu\n",
+                    fail_at, failed_count, failed_summary.methods_persisted,
+                    failed_summary.methods_total);
+            }
+            assert(saved_records_are_complete_and_explained(
+                baseline, baseline_count, failed_records, failed_count));
+            assert(failed_summary.methods_persisted == failed_summary.methods_total);
+            for (size_t i = 0U; i < failed_count; ++i) {
+                assert(failed_records[i].computed_at_ms == 2000000U + fail_at);
+            }
+            localization_pick_record_t failed_picks[LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION];
+            size_t failed_pick_count = 0U;
+            assert(localization_run_store_list_picks("OBJ_0001", failed_session, failed_picks,
+                LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &failed_pick_count) == ESP_OK);
+            assert(failed_pick_count == 1U);
         } else {
             assert(is_defined_allocation_fault_error(failed_err));
         }
@@ -701,19 +380,12 @@ static void test_every_calculation_allocation_failure_recovers(
             LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &pick_count) == ESP_OK);
         assert(pick_count == 1U);
     }
-    if (sweep_first == 1U) assert(silent_pick_fault_count > 0U);
-    assert(known_i1_corruption_count == expected_known_i1_corruption_count(sweep_first, sweep_last));
 
     free_fixture_frames();
-    printf("  allocation sweep: N=%zu..%zu of %zu points, each fault recovered with readable records\n",
+    printf("  allocation sweep: N=%zu..%zu of %zu points; success requires every explained record, "
+        "otherwise the run must return an error\n",
         sweep_first, sweep_last, allocation_points);
-    if (silent_pick_fault_count > 0U) {
-        printf("  KNOWN_DEFECT build/max132_survey.md:123: silent pick allocation failure at N=%zu (%zu hits in this range)\n",
-            silent_pick_fault_at, silent_pick_fault_count);
-    }
-    printf("  allocation faults with complete unchanged results: %zu\n", unchanged_success_count);
 }
-
 static void isolate_test_store(void)
 {
     char run_directory[64];
@@ -1231,11 +903,11 @@ static void test_robust_iteration_cap_status_is_not_persisted(void)
     puts("  KNOWN_DEFECT build/max132_survey.md:108: robust cap is omitted from its saved run record");
 }
 
-static void test_pick_write_failure_is_still_silent(void)
+static void test_pick_write_failure_retries_and_reports(void)
 {
     static localization_run_record_t records[LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION];
     setup_fixture();
-    s_fail_pick_write = true;
+    s_pick_write_failures_remaining = 1U;
     s_pick_write_failures = 0U;
     localization_calculate_config_t config = default_test_config();
     localization_calculate_summary_t summary;
@@ -1243,7 +915,7 @@ static void test_pick_write_failure_is_still_silent(void)
         "OBJ_0001", "S080001", &config, 8000000U, &summary
     );
     assert(err == ESP_OK);
-    assert(s_pick_write_failures == 1U && !s_fail_pick_write);
+    assert(s_pick_write_failures == 1U && s_pick_write_failures_remaining == 0U);
     size_t count = 0U;
     assert(read_session("S080001", records, &count) == ESP_OK);
     assert(count == summary.methods_total);
@@ -1251,9 +923,26 @@ static void test_pick_write_failure_is_still_silent(void)
     size_t pick_count = 99U;
     assert(localization_run_store_list_picks("OBJ_0001", "S080001", picks,
         LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &pick_count) == ESP_OK);
+    assert(pick_count == 1U);
+
+    setup_fixture();
+    s_pick_write_failures_remaining = 2U;
+    s_pick_write_failures = 0U;
+    localization_calculate_summary_t failed_summary;
+    const esp_err_t failed_err = localization_calculate_run(
+        "OBJ_0001", "S080002", &config, 8000001U, &failed_summary
+    );
+    assert(failed_err != ESP_OK);
+    assert(s_pick_write_failures == 2U && s_pick_write_failures_remaining == 0U);
+    count = 0U;
+    assert(read_session("S080002", records, &count) == ESP_OK);
+    assert(count == failed_summary.methods_total);
+    pick_count = 99U;
+    assert(localization_run_store_list_picks("OBJ_0001", "S080002", picks,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &pick_count) == ESP_OK);
     assert(pick_count == 0U);
     free_fixture_frames();
-    puts("  KNOWN_DEFECT build/max132_survey.md:123: injected pick-write failure is ignored; run records still persist");
+    puts("  pick writes retry once; persistent failure is returned after run records persist");
 }
 
 int main(void)
@@ -1265,7 +954,7 @@ int main(void)
     );
     test_method_local_allocation_failures_preserve_other_records();
     test_corrupt_saved_records_are_skipped();
-    test_pick_write_failure_is_still_silent();
+    test_pick_write_failure_retries_and_reports();
     test_tdoa_iteration_cap_is_persisted_as_unconverged();
     test_robust_iteration_cap_status_is_not_persisted();
     test_psp_iteration_cap_is_not_persisted();
