@@ -100,6 +100,11 @@ def resolve_profile(
     ]
     if profile_defaults is None:
         profile_defaults = root / f"sdkconfig.profile-{profile}.defaults"
+        if not Path(profile_defaults).exists():
+            repository_root = Path(__file__).resolve().parent.parent
+            profile_defaults = (
+                repository_root / f"sdkconfig.profile-{profile}.defaults"
+            )
     profile_path = Path(profile_defaults)
     if not profile_path.is_absolute():
         profile_path = root / profile_path

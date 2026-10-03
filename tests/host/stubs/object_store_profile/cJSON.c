@@ -310,7 +310,13 @@ cJSON *cJSON_AddObjectToObject(cJSON *object, const char *name)
 cJSON *cJSON_AddStringToObject(cJSON *object, const char *name, const char *value)
 {
     cJSON *item = new_item(cJSON_String);
-    if (item != NULL) item->valuestring = duplicate_text(value != NULL ? value : "");
+    if (item != NULL) {
+        item->valuestring = duplicate_text(value != NULL ? value : "");
+        if (item->valuestring == NULL) {
+            cJSON_Delete(item);
+            return NULL;
+        }
+    }
     return create_named(object, name, item);
 }
 
