@@ -276,7 +276,7 @@ def test_virtual_stress_target_emits_valid_records_under_host_build_lock():
         for line in stress_output.splitlines()
         if line.startswith(PERF_PREFIX)
     ]
-    assert len(records) == 13
+    assert len(records) == 43
     for record in records:
         validate_record(record)
         assert record["produced_frames"] == (
@@ -289,7 +289,24 @@ def test_virtual_stress_target_emits_valid_records_under_host_build_lock():
     expected = {
         "healthy", "sd_jitter", "stall_below_batch_interval", "stall_around_batch_interval",
         "stall_above_batch_interval", "tft_contention", "wifi_activity", "i2c_activity",
-        "worst_case_admitted", "intentional_saturation",
+        "worst_case_admitted", "intentional_saturation", "storage_saturation_500hz",
+        "healthy_10000hz", "healthy_20000hz", "healthy_40000hz",
+        "sd_jitter_5000hz", "sd_jitter_10000hz", "sd_jitter_20000hz",
+        "sd_jitter_40000hz", "sd_stall_200ms_5000hz",
+        "sd_stall_200ms_10000hz", "sd_stall_200ms_20000hz",
+        "sd_stall_200ms_40000hz", "stall_below_batch_interval_5000hz",
+        "stall_below_batch_interval_10000hz",
+        "stall_below_batch_interval_20000hz",
+        "stall_below_batch_interval_40000hz", "stall_above_batch_interval_5000hz",
+        "stall_above_batch_interval_10000hz",
+        "stall_above_batch_interval_20000hz",
+        "stall_above_batch_interval_40000hz", "storage_saturation_10000hz",
+        "storage_saturation_20000hz", "storage_saturation_40000hz",
+        "tft_wifi_i2c_10000hz", "tft_wifi_i2c_20000hz", "tft_wifi_i2c_40000hz",
+        "spi3_minimum_clock_10000hz_saturated_deadline_missed",
+        "spi3_minimum_clock_20000hz_saturated_deadline_missed",
+        "spi3_minimum_clock_40000hz_saturated_deadline_missed",
+        "spi3_maximum_clock_40000hz_margin_control",
     }
     assert expected <= set(by_workload)
     assert by_workload["healthy"]["explicitly_dropped_frames"] == 0

@@ -16,7 +16,11 @@
  * Software-only virtual-board stress model. This file must never acquire a
  * serial port, flash an image, or call a physical peripheral driver.
  */
-#define STRESS_SPI3_CLOCK_HZ             1000000U
+/* Production default follows CONFIG_AD7606_SPI_CLOCK_HZ in
+ * main/Kconfig.projbuild:90-94. Per-scenario overrides exercise its limits. */
+#define STRESS_CONFIG_AD7606_SPI_CLOCK_HZ 10000000U
+#define STRESS_AD7606_SPI_CLOCK_MIN_HZ     1000000U
+#define STRESS_AD7606_SPI_CLOCK_MAX_HZ    15000000U
 #define STRESS_SPI2_CLOCK_HZ            20000000U
 #define STRESS_AD7606_FRAME_BYTES             16U
 #define STRESS_TFT_BUFFER_BYTES              5120U
@@ -24,13 +28,41 @@
 #define STRESS_RECORDER_SERVICE_US        10000ULL
 #define STRESS_TFT_OVERHEAD_US                80U
 #define STRESS_SD_OVERHEAD_US                180U
+/* Fixed model assumption; this overhead has not been measured on target. */
 #define STRESS_SPI3_OVERHEAD_US               12U
 #define STRESS_SPI2_QUEUE_CAPACITY             8U
 #define STRESS_MAX_BUS_TRANSACTIONS           16U
 #define STRESS_MAX_LATENCY_SAMPLES           4096U
 #define STRESS_MAX_RECORDER_BATCH             512U
+#define STRESS_RECORDER_WRITE_PERIOD_MS       500U
 #define VIRTUAL_WIFI_EVENT_INTERVAL_US     50000ULL
 #define VIRTUAL_I2C_TRANSACTION_INTERVAL_US 25000ULL
+
+/* Match seismic_recorder_target_batch_frames(): a 500 ms target, clamped to
+ * 512 frames.  The accepted rates are all above the minimum batch size. */
+#define STRESS_TARGET_BATCH_FRAMES(rate) \
+    (((uint64_t)(rate) * STRESS_RECORDER_WRITE_PERIOD_MS / 1000ULL) > \
+            STRESS_MAX_RECORDER_BATCH \
+        ? STRESS_MAX_RECORDER_BATCH \
+        : ((uint64_t)(rate) * STRESS_RECORDER_WRITE_PERIOD_MS / 1000ULL))
+#define STRESS_TARGET_BATCH_INTERVAL_US(rate) \
+    (STRESS_TARGET_BATCH_FRAMES(rate) * 1000000ULL / (uint64_t)(rate))
+#define STRESS_STALL_MS_JUST_BELOW_BATCH(rate) \
+    ((STRESS_TARGET_BATCH_INTERVAL_US(rate) - 1ULL) / 1000ULL)
+#define STRESS_STALL_MS_JUST_ABOVE_BATCH(rate) \
+    (STRESS_TARGET_BATCH_INTERVAL_US(rate) / 1000ULL + 1ULL)
+
+
+typedef enum
+{
+    STRESS_EXPECT_HEALTHY = 0,
+    STRESS_EXPECT_BELOW_BATCH,
+    STRESS_EXPECT_ABOVE_BATCH_RECOVERED,
+    STRESS_EXPECT_SATURATED,
+    STRESS_EXPECT_STORAGE_SATURATED,
+    STRESS_EXPECT_SPI3_UNSUSTAINABLE
+
+} stress_expectation_t;
 
 
 typedef enum
@@ -112,12 +144,15 @@ typedef struct
     uint32_t sd_jitter_us;
     uint32_t stall_start_ms;
     uint32_t stall_duration_ms;
+    uint32_t stall_interval_ms;
+    uint32_t spi3_clock_hz;
     uint32_t tft_interval_us;
     uint32_t dsp_us;
     uint32_t background_us;
     bool expected_saturated;
     bool enable_wifi;
     bool enable_i2c;
+    stress_expectation_t expectation;
 
 } stress_scenario_t;
 
@@ -173,7 +208,7 @@ struct stress_context
     uint64_t next_tft_us;
     uint64_t next_background_us;
     uint64_t recorder_cursor;
-    uint64_t spi3_busy_until_us;
+    uint64_t spi3_busy_until_ns;
     uint64_t next_wifi_event_us;
     uint64_t next_i2c_transaction_us;
     bool storage_inflight;
@@ -189,6 +224,36 @@ static uint64_t wire_time_us(size_t bytes, uint32_t clock_hz)
     const uint64_t bits = (uint64_t)bytes * 8ULL;
     return (bits * 1000000ULL + (uint64_t)clock_hz - 1ULL) /
            (uint64_t)clock_hz;
+}
+
+
+static uint64_t wire_time_ns(size_t bytes, uint32_t clock_hz)
+{
+    const uint64_t bits = (uint64_t)bytes * 8ULL;
+    return (bits * 1000000000ULL + (uint64_t)clock_hz - 1ULL) /
+           (uint64_t)clock_hz;
+}
+
+
+static uint32_t scenario_spi3_clock_hz(const stress_scenario_t *scenario)
+{
+    return scenario->spi3_clock_hz == 0U
+        ? STRESS_CONFIG_AD7606_SPI_CLOCK_HZ
+        : scenario->spi3_clock_hz;
+}
+
+
+static double scenario_spi3_deadline_margin_us(
+    const stress_scenario_t *scenario
+)
+{
+    const double frame_period_us =
+        1000000.0 / (double)scenario->sample_rate_hz;
+    const double wire_duration_us =
+        (double)STRESS_AD7606_FRAME_BYTES * 8.0 * 1000000.0 /
+        (double)scenario_spi3_clock_hz(scenario);
+    return frame_period_us - wire_duration_us -
+           (double)STRESS_SPI3_OVERHEAD_US;
 }
 
 
@@ -353,15 +418,15 @@ static bool virtual_spi2_submit(
 
 static void virtual_ad7606_service(
     stress_context_t *context,
-    uint64_t now_us,
-    uint64_t period_us,
-    uint64_t transfer_completion_us
+    uint64_t now_ns,
+    uint64_t period_ns,
+    uint64_t transfer_completion_ns
 )
 {
     virtual_ad7606_t *ad7606 = &context->board.ad7606;
     ad7606->conversions++;
     ad7606->busy_pulses++;
-    if (transfer_completion_us > now_us + period_us) {
+    if (transfer_completion_ns > now_ns + period_ns) {
         ad7606->timeouts++;
     } else {
         ad7606->varied_payloads++;
@@ -418,17 +483,29 @@ static void virtual_board_copy_metrics(
 }
 
 
-static bool virtual_board_protocols_healthy(
+static bool virtual_board_protocols_match_expected(
     const stress_metrics_t *metrics,
     const stress_scenario_t *scenario
 )
 {
-    return metrics->virtual_ad7606_conversions > 0U &&
-           metrics->virtual_ad7606_busy_pulses ==
-               metrics->virtual_ad7606_conversions &&
-           metrics->virtual_ad7606_varied_payloads ==
-               metrics->virtual_ad7606_conversions &&
-           metrics->virtual_ad7606_timeouts == 0U &&
+    const bool ad7606_matches_expectation =
+        scenario->expectation == STRESS_EXPECT_SPI3_UNSUSTAINABLE
+            ? metrics->spi3_deadline_misses == metrics->produced_frames &&
+                  metrics->virtual_ad7606_conversions == metrics->produced_frames &&
+                  metrics->virtual_ad7606_busy_pulses ==
+                      metrics->virtual_ad7606_conversions &&
+                  metrics->virtual_ad7606_varied_payloads == 0U &&
+                  metrics->virtual_ad7606_timeouts ==
+                      metrics->virtual_ad7606_conversions
+        : metrics->spi3_deadline_misses == 0U &&
+              metrics->virtual_ad7606_conversions > 0U &&
+              metrics->virtual_ad7606_busy_pulses ==
+                  metrics->virtual_ad7606_conversions &&
+              metrics->virtual_ad7606_varied_payloads ==
+                  metrics->virtual_ad7606_conversions &&
+              metrics->virtual_ad7606_timeouts == 0U;
+
+    return ad7606_matches_expectation &&
            metrics->virtual_wifi_dropped_events == 0U &&
            metrics->virtual_i2c_nacks == 0U &&
            (!scenario->enable_wifi || metrics->virtual_wifi_events > 0U) &&
@@ -448,11 +525,17 @@ static bool sd_is_stalled(
 )
 {
     const uint64_t start_us = (uint64_t)scenario->stall_start_ms * 1000ULL;
-    const uint64_t end_us = start_us +
+    const uint64_t duration_us =
         (uint64_t)scenario->stall_duration_ms * 1000ULL;
-    return scenario->stall_duration_ms > 0U &&
-           now_us >= start_us &&
-           now_us < end_us;
+    if (scenario->stall_duration_ms == 0U || now_us < start_us) {
+        return false;
+    }
+    if (scenario->stall_interval_ms == 0U) {
+        return now_us < start_us + duration_us;
+    }
+    return (now_us - start_us) %
+               ((uint64_t)scenario->stall_interval_ms * 1000ULL) <
+           duration_us;
 }
 
 
@@ -622,22 +705,28 @@ static void publish_frame(
 {
     const uint64_t period_us = 1000000ULL /
         (uint64_t)context->scenario->sample_rate_hz;
-    const uint64_t spi3_start = context->spi3_busy_until_us > now_us
-        ? context->spi3_busy_until_us
-        : now_us;
-    const uint64_t spi3_completion = spi3_start +
-        wire_time_us(STRESS_AD7606_FRAME_BYTES, STRESS_SPI3_CLOCK_HZ) +
-        STRESS_SPI3_OVERHEAD_US;
-    if (spi3_completion > now_us + period_us) {
+    const uint64_t now_ns = now_us * 1000ULL;
+    const uint64_t period_ns = period_us * 1000ULL;
+    const uint64_t spi3_start_ns = context->spi3_busy_until_ns > now_ns
+        ? context->spi3_busy_until_ns
+        : now_ns;
+    const uint64_t spi3_completion_ns = spi3_start_ns +
+        wire_time_ns(
+            STRESS_AD7606_FRAME_BYTES,
+            scenario_spi3_clock_hz(context->scenario)
+        ) +
+        (uint64_t)STRESS_SPI3_OVERHEAD_US * 1000ULL;
+    if (spi3_completion_ns > now_ns + period_ns) {
         context->metrics.spi3_deadline_misses++;
     }
-    context->spi3_busy_until_us = spi3_completion;
-    context->metrics.spi3_busy_us += spi3_completion - spi3_start;
+    context->spi3_busy_until_ns = spi3_completion_ns;
+    context->metrics.spi3_busy_us +=
+        (spi3_completion_ns - spi3_start_ns) / 1000ULL;
     virtual_ad7606_service(
         context,
-        now_us,
-        period_us,
-        spi3_completion
+        now_ns,
+        period_ns,
+        spi3_completion_ns
     );
 
     uint64_t cpu_work_us = context->scenario->dsp_us;
@@ -756,6 +845,59 @@ static bool has_fault(
 }
 
 
+static bool scenario_matches_expectation(
+    const stress_scenario_t *scenario,
+    const stress_metrics_t *metrics,
+    uint64_t spi2_queue_overflows,
+    bool saturated
+)
+{
+    const bool no_drops_or_overflow =
+        metrics->ring_dropped_frames == 0U &&
+        metrics->cache_overflow_frames == 0U &&
+        metrics->producer_errors == 0U &&
+        metrics->cache_errors == 0U;
+    const bool no_cpu_deadline_misses = metrics->cpu_deadline_misses == 0U;
+    const bool no_spi3_deadline_misses =
+        metrics->spi3_deadline_misses == 0U;
+    const bool fully_persisted =
+        metrics->persisted_frames == metrics->produced_frames;
+
+    switch (scenario->expectation) {
+        case STRESS_EXPECT_HEALTHY:
+            return !saturated && no_drops_or_overflow &&
+                   no_cpu_deadline_misses && no_spi3_deadline_misses &&
+                   fully_persisted;
+        case STRESS_EXPECT_BELOW_BATCH:
+            return !saturated && no_spi3_deadline_misses &&
+                   metrics->cache_overflow_frames == 0U &&
+                   no_drops_or_overflow && no_cpu_deadline_misses &&
+                   fully_persisted;
+        case STRESS_EXPECT_ABOVE_BATCH_RECOVERED:
+            return !saturated && no_drops_or_overflow &&
+                   no_cpu_deadline_misses && no_spi3_deadline_misses &&
+                   fully_persisted;
+        case STRESS_EXPECT_SATURATED:
+            return saturated;
+        case STRESS_EXPECT_STORAGE_SATURATED:
+            return saturated && spi2_queue_overflows == 0U &&
+                   no_cpu_deadline_misses &&
+                   no_spi3_deadline_misses &&
+                   (metrics->cache_overflow_frames > 0U ||
+                    metrics->ring_dropped_frames > 0U);
+        case STRESS_EXPECT_SPI3_UNSUSTAINABLE:
+            return saturated && spi2_queue_overflows == 0U &&
+                   metrics->produced_frames > 0U &&
+                   metrics->spi3_deadline_misses == metrics->produced_frames &&
+                   metrics->virtual_ad7606_timeouts == metrics->produced_frames &&
+                   no_drops_or_overflow && no_cpu_deadline_misses &&
+                   fully_persisted;
+        default:
+            return false;
+    }
+}
+
+
 static void print_scenario_result(
     const stress_scenario_t *scenario,
     const stress_metrics_t *metrics,
@@ -769,6 +911,8 @@ static void print_scenario_result(
     printf(
         "{\"type\":\"stress_scenario\",\"name\":\"%s\","
         "\"seed\":%" PRIu32 ",\"sample_rate_hz\":%" PRIu32 ","
+        "\"spi3_clock_hz\":%" PRIu32 ","
+        "\"spi3_deadline_margin_us\":%.3f,"
         "\"produced_frames\":%" PRIu64 ",\"recorder_frames\":%" PRIu64 ","
         "\"ring_dropped_frames\":%" PRIu64 ","
         "\"cache_overflow_frames\":%" PRIu64 ","
@@ -793,6 +937,8 @@ static void print_scenario_result(
         scenario->name,
         scenario->seed,
         scenario->sample_rate_hz,
+        scenario_spi3_clock_hz(scenario),
+        scenario_spi3_deadline_margin_us(scenario),
         metrics->produced_frames,
         metrics->recorder_frames,
         metrics->ring_dropped_frames,
@@ -814,7 +960,9 @@ static void print_scenario_result(
         metrics->virtual_i2c_transactions,
         metrics->virtual_sd_transactions,
         metrics->virtual_tft_frames,
-        virtual_board_protocols_healthy(metrics, scenario) ? "PASS" : "FAIL",
+        virtual_board_protocols_match_expected(metrics, scenario)
+            ? "PASS"
+            : "FAIL",
         saturated ? "SATURATED" : "PASS",
         scenario->expected_saturated ? "SATURATED" : "PASS",
         verdict_pass ? "PASS" : "FAIL"
@@ -928,6 +1076,152 @@ static void print_perf_record(
 }
 
 
+#define STRESS_HEALTHY_RATE(name_, rate_) \
+    { \
+        .name = (name_), \
+        .workload_id = (name_), \
+        .seed = 0x84AE1732U, \
+        .sample_rate_hz = (rate_), \
+        .duration_ms = 300U, \
+        .drain_ms = 1000U, \
+        .cache_capacity_frames = 16384U, \
+        .sd_base_us = 500U, \
+        .sd_jitter_us = 500U, \
+        .tft_interval_us = 100000U, \
+        .dsp_us = 2U, \
+        .background_us = 1U, \
+        .expected_saturated = false, \
+        .enable_wifi = true, \
+        .enable_i2c = true, \
+        .expectation = STRESS_EXPECT_HEALTHY, \
+    }
+
+#define STRESS_JITTER_RATE(name_, rate_) \
+    { \
+        .name = (name_), \
+        .workload_id = (name_), \
+        .seed = 0x84AE1732U, \
+        .sample_rate_hz = (rate_), \
+        .duration_ms = 300U, \
+        .drain_ms = 1000U, \
+        .cache_capacity_frames = 16384U, \
+        .sd_base_us = 500U, \
+        .sd_jitter_us = 8000U, \
+        .tft_interval_us = 100000U, \
+        .dsp_us = 2U, \
+        .background_us = 1U, \
+        .expected_saturated = false, \
+        .enable_wifi = true, \
+        .enable_i2c = true, \
+        .expectation = STRESS_EXPECT_HEALTHY, \
+    }
+
+#define STRESS_PERIODIC_STALL_RATE(name_, rate_) \
+    { \
+        .name = (name_), \
+        .workload_id = (name_), \
+        .seed = 0x84AE1732U, \
+        .sample_rate_hz = (rate_), \
+        .duration_ms = 1000U, \
+        .drain_ms = 3000U, \
+        .cache_capacity_frames = 65536U, \
+        .sd_base_us = 500U, \
+        .sd_jitter_us = 500U, \
+        .stall_start_ms = 100U, \
+        .stall_duration_ms = 200U, \
+        .stall_interval_ms = 500U, \
+        .tft_interval_us = 100000U, \
+        .dsp_us = 2U, \
+        .background_us = 1U, \
+        .expected_saturated = false, \
+        .enable_wifi = true, \
+        .enable_i2c = true, \
+        .expectation = STRESS_EXPECT_HEALTHY, \
+    }
+
+#define STRESS_BATCH_EDGE_RATE(name_, rate_, stall_ms_, expected_) \
+    { \
+        .name = (name_), \
+        .workload_id = (name_), \
+        .seed = 0x84AE1732U, \
+        .sample_rate_hz = (rate_), \
+        .duration_ms = 300U, \
+        .drain_ms = 1000U, \
+        .cache_capacity_frames = 16384U, \
+        .sd_base_us = 500U, \
+        .sd_jitter_us = 500U, \
+        .stall_start_ms = 50U, \
+        .stall_duration_ms = (stall_ms_), \
+        .tft_interval_us = 100000U, \
+        .dsp_us = 2U, \
+        .background_us = 1U, \
+        .expected_saturated = false, \
+        .enable_wifi = true, \
+        .enable_i2c = true, \
+        .expectation = (expected_), \
+    }
+
+#define STRESS_STORAGE_SATURATION_RATE(name_, rate_) \
+    { \
+        .name = (name_), \
+        .workload_id = (name_), \
+        .seed = 0x84AE1732U, \
+        .sample_rate_hz = (rate_), \
+        .duration_ms = 300U, \
+        .drain_ms = 100U, \
+        .cache_capacity_frames = 512U, \
+        .sd_base_us = 90000U, \
+        .sd_jitter_us = 5000U, \
+        .dsp_us = 2U, \
+        .background_us = 1U, \
+        .expected_saturated = true, \
+        .enable_wifi = false, \
+        .enable_i2c = false, \
+        .expectation = STRESS_EXPECT_STORAGE_SATURATED, \
+    }
+
+#define STRESS_CONCURRENT_LOAD_RATE(name_, rate_) \
+    { \
+        .name = (name_), \
+        .workload_id = (name_), \
+        .seed = 0x84AE1732U, \
+        .sample_rate_hz = (rate_), \
+        .duration_ms = 300U, \
+        .drain_ms = 1000U, \
+        .cache_capacity_frames = 16384U, \
+        .sd_base_us = 1000U, \
+        .sd_jitter_us = 1000U, \
+        .tft_interval_us = 8000U, \
+        .dsp_us = 2U, \
+        .background_us = 1U, \
+        .expected_saturated = false, \
+        .enable_wifi = true, \
+        .enable_i2c = true, \
+        .expectation = STRESS_EXPECT_HEALTHY, \
+    }
+
+#define STRESS_SPI3_CLOCK_CONTROL(name_, rate_, clock_, saturated_, expected_) \
+    { \
+        .name = (name_), \
+        .workload_id = (name_), \
+        .seed = 0x84AE1732U, \
+        .sample_rate_hz = (rate_), \
+        .duration_ms = 300U, \
+        .drain_ms = 1000U, \
+        .cache_capacity_frames = 16384U, \
+        .sd_base_us = 500U, \
+        .sd_jitter_us = 500U, \
+        .spi3_clock_hz = (clock_), \
+        .tft_interval_us = 100000U, \
+        .dsp_us = 2U, \
+        .background_us = 1U, \
+        .expected_saturated = (saturated_), \
+        .enable_wifi = true, \
+        .enable_i2c = true, \
+        .expectation = (expected_), \
+    }
+
+
 static void test_virtual_board_stress_scenarios(void)
 {
     static const stress_scenario_t scenarios[] = {
@@ -960,6 +1254,7 @@ static void test_virtual_board_stress_scenarios(void)
             .sd_jitter_us = 500U,
             .stall_start_ms = 1000U,
             .stall_duration_ms = 200U,
+            .stall_interval_ms = 1000U,
             .tft_interval_us = 50000U,
             .dsp_us = 250U,
             .background_us = 700U,
@@ -983,6 +1278,7 @@ static void test_virtual_board_stress_scenarios(void)
             .expected_saturated = true,
             .enable_wifi = true,
             .enable_i2c = true,
+            .expectation = STRESS_EXPECT_SATURATED,
         },
         {
             .name = "steady_5000hz",
@@ -1011,12 +1307,13 @@ static void test_virtual_board_stress_scenarios(void)
             .cache_capacity_frames = 512U,
             .sd_base_us = 90000U,
             .sd_jitter_us = 5000U,
-            .tft_interval_us = 4000U,
-            .dsp_us = 100U,
-            .background_us = 300U,
+            .tft_interval_us = 0U,
+            .dsp_us = 20U,
+            .background_us = 20U,
             .expected_saturated = true,
-            .enable_wifi = true,
-            .enable_i2c = true,
+            .enable_wifi = false,
+            .enable_i2c = false,
+            .expectation = STRESS_EXPECT_STORAGE_SATURATED,
         },
         {
             .name = "sd_jitter_500hz",
@@ -1035,7 +1332,8 @@ static void test_virtual_board_stress_scenarios(void)
             .enable_wifi = true,
             .enable_i2c = true,
         },
-        /* A 256-frame recorder batch at 500 Hz spans 512 ms. */
+        /* Edge durations are the nearest integer milliseconds around the
+         * product batch interval: 500 ms at 500 Hz, then 512/rate above. */
         {
             .name = "stall_below_batch_interval",
             .workload_id = "stall_below_batch_interval",
@@ -1047,13 +1345,14 @@ static void test_virtual_board_stress_scenarios(void)
             .sd_base_us = 500U,
             .sd_jitter_us = 500U,
             .stall_start_ms = 700U,
-            .stall_duration_ms = 250U,
+            .stall_duration_ms = STRESS_STALL_MS_JUST_BELOW_BATCH(500U),
             .tft_interval_us = 100000U,
             .dsp_us = 250U,
             .background_us = 300U,
             .expected_saturated = false,
             .enable_wifi = true,
             .enable_i2c = true,
+            .expectation = STRESS_EXPECT_BELOW_BATCH,
         },
         {
             .name = "stall_around_batch_interval",
@@ -1085,13 +1384,14 @@ static void test_virtual_board_stress_scenarios(void)
             .sd_base_us = 500U,
             .sd_jitter_us = 500U,
             .stall_start_ms = 700U,
-            .stall_duration_ms = 750U,
+            .stall_duration_ms = STRESS_STALL_MS_JUST_ABOVE_BATCH(500U),
             .tft_interval_us = 100000U,
             .dsp_us = 250U,
             .background_us = 300U,
             .expected_saturated = false,
             .enable_wifi = true,
             .enable_i2c = true,
+            .expectation = STRESS_EXPECT_ABOVE_BATCH_RECOVERED,
         },
         {
             .name = "tft_contention",
@@ -1161,6 +1461,115 @@ static void test_virtual_board_stress_scenarios(void)
             .enable_wifi = true,
             .enable_i2c = true,
         },
+        {
+            .name = "storage_saturation_500hz",
+            .workload_id = "storage_saturation_500hz",
+            .seed = 0x84AE1732U,
+            .sample_rate_hz = 500U,
+            .duration_ms = 35000U,
+            .drain_ms = 100U,
+            .cache_capacity_frames = 4096U,
+            .sd_base_us = 700000U,
+            .expected_saturated = true,
+            .enable_wifi = false,
+            .enable_i2c = false,
+            .expectation = STRESS_EXPECT_STORAGE_SATURATED,
+        },
+        STRESS_HEALTHY_RATE("healthy_10000hz", 10000U),
+        STRESS_HEALTHY_RATE("healthy_20000hz", 20000U),
+        STRESS_HEALTHY_RATE("healthy_40000hz", 40000U),
+        STRESS_JITTER_RATE("sd_jitter_5000hz", 5000U),
+        STRESS_JITTER_RATE("sd_jitter_10000hz", 10000U),
+        STRESS_JITTER_RATE("sd_jitter_20000hz", 20000U),
+        STRESS_JITTER_RATE("sd_jitter_40000hz", 40000U),
+        STRESS_PERIODIC_STALL_RATE("sd_stall_200ms_5000hz", 5000U),
+        STRESS_PERIODIC_STALL_RATE("sd_stall_200ms_10000hz", 10000U),
+        STRESS_PERIODIC_STALL_RATE("sd_stall_200ms_20000hz", 20000U),
+        STRESS_PERIODIC_STALL_RATE("sd_stall_200ms_40000hz", 40000U),
+        STRESS_BATCH_EDGE_RATE(
+            "stall_below_batch_interval_5000hz",
+            5000U,
+            STRESS_STALL_MS_JUST_BELOW_BATCH(5000U),
+            STRESS_EXPECT_BELOW_BATCH
+        ),
+        STRESS_BATCH_EDGE_RATE(
+            "stall_below_batch_interval_10000hz",
+            10000U,
+            STRESS_STALL_MS_JUST_BELOW_BATCH(10000U),
+            STRESS_EXPECT_BELOW_BATCH
+        ),
+        STRESS_BATCH_EDGE_RATE(
+            "stall_below_batch_interval_20000hz",
+            20000U,
+            STRESS_STALL_MS_JUST_BELOW_BATCH(20000U),
+            STRESS_EXPECT_BELOW_BATCH
+        ),
+        STRESS_BATCH_EDGE_RATE(
+            "stall_below_batch_interval_40000hz",
+            40000U,
+            STRESS_STALL_MS_JUST_BELOW_BATCH(40000U),
+            STRESS_EXPECT_BELOW_BATCH
+        ),
+        STRESS_BATCH_EDGE_RATE(
+            "stall_above_batch_interval_5000hz",
+            5000U,
+            STRESS_STALL_MS_JUST_ABOVE_BATCH(5000U),
+            STRESS_EXPECT_ABOVE_BATCH_RECOVERED
+        ),
+        STRESS_BATCH_EDGE_RATE(
+            "stall_above_batch_interval_10000hz",
+            10000U,
+            STRESS_STALL_MS_JUST_ABOVE_BATCH(10000U),
+            STRESS_EXPECT_ABOVE_BATCH_RECOVERED
+        ),
+        STRESS_BATCH_EDGE_RATE(
+            "stall_above_batch_interval_20000hz",
+            20000U,
+            STRESS_STALL_MS_JUST_ABOVE_BATCH(20000U),
+            STRESS_EXPECT_ABOVE_BATCH_RECOVERED
+        ),
+        STRESS_BATCH_EDGE_RATE(
+            "stall_above_batch_interval_40000hz",
+            40000U,
+            STRESS_STALL_MS_JUST_ABOVE_BATCH(40000U),
+            STRESS_EXPECT_ABOVE_BATCH_RECOVERED
+        ),
+        STRESS_STORAGE_SATURATION_RATE("storage_saturation_10000hz", 10000U),
+        STRESS_STORAGE_SATURATION_RATE("storage_saturation_20000hz", 20000U),
+        STRESS_STORAGE_SATURATION_RATE("storage_saturation_40000hz", 40000U),
+        STRESS_CONCURRENT_LOAD_RATE("tft_wifi_i2c_10000hz", 10000U),
+        STRESS_CONCURRENT_LOAD_RATE("tft_wifi_i2c_20000hz", 20000U),
+        STRESS_CONCURRENT_LOAD_RATE("tft_wifi_i2c_40000hz", 40000U),
+        /* The Kconfig minimum cannot sustain these rates; admission/config
+         * validation must reject each minimum-clock scenario. */
+        STRESS_SPI3_CLOCK_CONTROL(
+            "spi3_minimum_clock_10000hz_saturated_deadline_missed",
+            10000U,
+            STRESS_AD7606_SPI_CLOCK_MIN_HZ,
+            true,
+            STRESS_EXPECT_SPI3_UNSUSTAINABLE
+        ),
+        STRESS_SPI3_CLOCK_CONTROL(
+            "spi3_minimum_clock_20000hz_saturated_deadline_missed",
+            20000U,
+            STRESS_AD7606_SPI_CLOCK_MIN_HZ,
+            true,
+            STRESS_EXPECT_SPI3_UNSUSTAINABLE
+        ),
+        STRESS_SPI3_CLOCK_CONTROL(
+            "spi3_minimum_clock_40000hz_saturated_deadline_missed",
+            40000U,
+            STRESS_AD7606_SPI_CLOCK_MIN_HZ,
+            true,
+            STRESS_EXPECT_SPI3_UNSUSTAINABLE
+        ),
+        STRESS_SPI3_CLOCK_CONTROL(
+            "spi3_maximum_clock_40000hz_margin_control",
+            40000U,
+            STRESS_AD7606_SPI_CLOCK_MAX_HZ,
+            false,
+            STRESS_EXPECT_HEALTHY
+        ),
     };
 
     size_t failed = 0U;
@@ -1176,8 +1585,14 @@ static void test_virtual_board_stress_scenarios(void)
         );
         const bool saturated = has_fault(&metrics, queue_overflows);
         const bool verdict_pass =
-            virtual_board_protocols_healthy(&metrics, &scenarios[index]) &&
-            saturated == scenarios[index].expected_saturated;
+            virtual_board_protocols_match_expected(&metrics, &scenarios[index]) &&
+            saturated == scenarios[index].expected_saturated &&
+            scenario_matches_expectation(
+                &scenarios[index],
+                &metrics,
+                queue_overflows,
+                saturated
+            );
         print_scenario_result(
             &scenarios[index],
             &metrics,
@@ -1195,9 +1610,17 @@ static void test_virtual_board_stress_scenarios(void)
         if (!verdict_pass) {
             fprintf(
                 stderr,
-                "STRESS_SCENARIO_FAILED: name=%s seed=0x%08" PRIx32 "\n",
+                "STRESS_SCENARIO_FAILED: name=%s seed=0x%08" PRIx32
+                " ring_dropped=%" PRIu64 " cache_overflow=%" PRIu64
+                " spi3_deadline=%" PRIu64 " cpu_deadline=%" PRIu64
+                " saturated=%s\n",
                 scenarios[index].name,
-                scenarios[index].seed
+                scenarios[index].seed,
+                metrics.ring_dropped_frames,
+                metrics.cache_overflow_frames,
+                metrics.spi3_deadline_misses,
+                metrics.cpu_deadline_misses,
+                saturated ? "true" : "false"
             );
             failed++;
         }
