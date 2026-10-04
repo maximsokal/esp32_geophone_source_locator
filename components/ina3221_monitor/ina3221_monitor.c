@@ -33,6 +33,7 @@
 #define INA3221_MONITOR_FAST_PERIOD_MS  20u
 #define INA3221_MONITOR_LOG_INTERVAL    5u
 #define INA3221_RETRY_LOG_INTERVAL      30u
+#define INA3221_RETRY_BACKOFF_MS        5000u
 
 
 static const char *TAG =
@@ -617,6 +618,7 @@ static void ina3221_monitor_worker(
 
     uint32_t sample_count = 0;
     uint32_t retry_count = 0;
+    uint64_t next_retry_ms = 0U;
 
     bool hardware_available =
         false;
@@ -626,12 +628,23 @@ static void ina3221_monitor_worker(
 
     if (!stop_before_start) {
         while (true) {
+            const uint64_t now_ms =
+                (uint64_t)(esp_timer_get_time() / INT64_C(1000));
             (void)main_barometer_poll(
                 &main_barometer,
-                (uint64_t)(esp_timer_get_time() / INT64_C(1000)));
+                now_ms);
             ina3221_monitor_publish_main_barometer(&main_barometer);
 
             if (!driver.ready) {
+                if (now_ms < next_retry_ms) {
+                    ina3221_monitor_publish_invalid();
+                    hardware_available = false;
+                    if (ina3221_monitor_wait_for_period_or_stop()) {
+                        break;
+                    }
+                    continue;
+                }
+
                 const esp_err_t open_err =
                     ina3221_driver_open(
                         &driver
@@ -641,6 +654,7 @@ static void ina3221_monitor_worker(
                     ina3221_monitor_publish_invalid();
 
                     retry_count++;
+                    next_retry_ms = now_ms + INA3221_RETRY_BACKOFF_MS;
 
                     if (
                         retry_count == 1 ||
@@ -667,6 +681,7 @@ static void ina3221_monitor_worker(
 
                 retry_count =
                     0;
+                next_retry_ms = 0U;
 
                 memset(
                     &classifier,
@@ -721,6 +736,7 @@ static void ina3221_monitor_worker(
                 ina3221_driver_close(
                     &driver
                 );
+                next_retry_ms = now_ms + INA3221_RETRY_BACKOFF_MS;
 
                 memset(
                     &classifier,

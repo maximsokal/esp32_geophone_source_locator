@@ -102,6 +102,9 @@ static bool s_fail_i2c_bus_create;
 static bool s_fail_mutex_create;
 static bool s_fail_task_create;
 static bool s_fail_next_status_read;
+static unsigned s_nack_read_calls;
+static unsigned s_nack_byte_read_calls;
+static unsigned s_probe_calls;
 static bool s_scl_stuck;
 static bool s_stop_on_status_read;
 static bool s_reconcile_stop_waiting;
@@ -321,6 +324,7 @@ esp_err_t i2c_bus_read_byte(i2c_bus_device_handle_t device, uint8_t mem_address,
         return ESP_OK;
     }
     if (d->address >= 0x70U && d->address <= 0x77U) {
+        ++s_nack_byte_read_calls;
         return ESP_ERR_INVALID_STATE; /* IDF 5.5 NACK */
     }
     assert(false); /* no other single-byte reads on this bus */
@@ -346,6 +350,7 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
     assert(mem_address == NULL_I2C_MEM_ADDR);
     sim_node_t *node = node_at(d->address);
     if (node == NULL) {
+        ++s_nack_read_calls;
         return ESP_ERR_INVALID_STATE; /* IDF 5.5 NACK */
     }
     if (data_len == NRF_CS_CONTROL_RESULT_LENGTH) {
@@ -532,6 +537,7 @@ esp_err_t sensor_bus_lines_controller_reset(i2c_bus_handle_t bus)
 esp_err_t sensor_bus_lines_probe(i2c_bus_handle_t bus, uint8_t address)
 {
     assert(bus == &s_bus_token);
+    ++s_probe_calls;
     return address_acks(address) ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
@@ -1471,6 +1477,9 @@ static void reset_world(void)
     s_fail_mutex_create = false;
     s_fail_task_create = false;
     s_fail_next_status_read = false;
+    s_nack_read_calls = 0U;
+    s_nack_byte_read_calls = 0U;
+    s_probe_calls = 0U;
     s_scl_stuck = false;
     s_stop_on_status_read = false;
     s_reconcile_stop_waiting = false;
@@ -1558,6 +1567,9 @@ static void test_full_topology_is_assigned_one_hot(void)
     assert(s_nodes[2].address == NRF_UPSTREAM_ADDRESS_REMOTE);
     assert(s_seen.remotes[2].node_id != s_seen.remotes[5].node_id);
     assert(s_seen.remotes[2].node_id != s_seen.main.node_id);
+    assert(s_probe_calls > 0U);
+    assert(s_nack_read_calls == 0U); /* absent channels are probe-only */
+    assert(s_nack_byte_read_calls == 0U); /* absent mux candidates are probe-only */
 
     /* The initial sensor refresh reached both remotes through the mux. */
     assert(s_nodes[1].sensor_refreshes >= 1U && s_nodes[2].sensor_refreshes >= 1U);

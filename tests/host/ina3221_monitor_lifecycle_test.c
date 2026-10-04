@@ -63,6 +63,7 @@ static bool s_stop_on_wait;
 static esp_err_t s_open_result;
 static esp_err_t s_read_result;
 static unsigned s_open_calls;
+static uint64_t s_open_times_ms[16];
 static unsigned s_read_calls;
 static unsigned s_close_calls;
 
@@ -285,6 +286,8 @@ void vTaskDelete(TaskHandle_t task)
 esp_err_t ina3221_driver_open(ina3221_driver_t *driver)
 {
     assert(driver != NULL);
+    assert(s_open_calls < sizeof(s_open_times_ms) / sizeof(s_open_times_ms[0]));
+    s_open_times_ms[s_open_calls] = (uint64_t)(s_fake_time_us / 1000);
     ++s_open_calls;
     if (s_open_result == ESP_OK) {
         driver->ready = true;
@@ -450,6 +453,7 @@ static void reset_fakes(void)
     s_open_result = ESP_OK;
     s_read_result = ESP_OK;
     s_open_calls = 0U;
+    memset(s_open_times_ms, 0, sizeof(s_open_times_ms));
     s_read_calls = 0U;
     s_close_calls = 0U;
 
@@ -653,6 +657,21 @@ static void test_open_failure_publishes_invalid_and_stops_on_notification(void)
     assert(s_delete_calls == 1U);
     assert(s_task == NULL);
     assert_lock_balanced();
+}
+
+static void test_absent_ina_retries_at_least_five_seconds_apart(void)
+{
+    reset_fakes();
+    s_open_result = ESP_ERR_INVALID_STATE; /* IDF 5.5 wrapper NACK */
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 7U;
+
+    s_worker_entry(s_worker_argument);
+
+    assert(s_open_calls == 2U);
+    assert(s_open_times_ms[1] - s_open_times_ms[0] >= 5000U);
+    assert(s_read_calls == 0U);
+    assert(s_close_calls == 1U);
 }
 
 static void test_read_failure_invalidates_and_closes_driver(void)
@@ -904,6 +923,7 @@ int main(void)
     test_stop_notifies_running_worker_once();
     test_worker_publishes_normal_sample_and_cleans_up();
     test_open_failure_publishes_invalid_and_stops_on_notification();
+    test_absent_ina_retries_at_least_five_seconds_apart();
     test_read_failure_invalidates_and_closes_driver();
     test_read_failure_clears_last_power_state();
     test_fast_sampling_request_without_running_task_stores_deadline_only();

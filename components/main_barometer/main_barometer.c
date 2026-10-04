@@ -25,6 +25,7 @@
 #define BMP280_PRESSURE_MIN_PA 30000U
 #define BMP280_PRESSURE_MAX_PA 110000U
 #define BMP280_POLL_PERIOD_MS 200U
+#define MAIN_BAROMETER_RETRY_BACKOFF_MS 5000U
 
 #define AHT20_ADDRESS 0x38U
 #define AHT20_STATUS_CALIBRATED 0x08U
@@ -67,9 +68,21 @@ static esp_err_t main_barometer_write_reg(
         address, i2c_bus_write_bytes(device, reg, 1U, &value));
 }
 
+static bool main_barometer_retryable_bus_error(esp_err_t err)
+{
+    return err == ESP_ERR_NOT_FOUND || err == ESP_ERR_TIMEOUT ||
+           err == ESP_ERR_INVALID_STATE;
+}
+
 static uint16_t main_barometer_le_u16(const uint8_t *data)
 {
     return (uint16_t)data[0] | ((uint16_t)data[1] << 8U);
+}
+
+static void main_barometer_aht20_transfer_failed(main_barometer_t *barometer)
+{
+    barometer->aht20_probe_required = true;
+    barometer->aht20_initialized = false;
 }
 
 static int16_t main_barometer_le_i16(const uint8_t *data)
@@ -168,6 +181,14 @@ static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
 
     esp_err_t last_error = ESP_ERR_NOT_FOUND;
     for (size_t i = 0U; i < 2U; ++i) {
+        const esp_err_t probe_err = sensor_bus_probe_address(addresses[i]);
+        if (probe_err != ESP_OK) {
+            if (probe_err != ESP_ERR_NOT_FOUND || last_error == ESP_ERR_NOT_FOUND) {
+                last_error = probe_err;
+            }
+            continue;
+        }
+
         i2c_bus_device_handle_t candidate = i2c_bus_device_create(
             barometer->handles.bus, addresses[i], SENSOR_BUS_I2C_SPEED_HZ);
         if (candidate == NULL) {
@@ -205,6 +226,7 @@ static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
                 barometer->reading.bmp280_address = addresses[i];
                 barometer->reading.bmp280_present = true;
                 barometer->bmp280_initialized = true;
+                barometer->bmp280_probe_required = false;
                 return ESP_OK;
             }
         } else if (err == ESP_OK) {
@@ -219,6 +241,7 @@ static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
 
     barometer->reading.bmp280_present = false;
     barometer->reading.bmp280_valid = false;
+    barometer->bmp280_probe_required = true;
     return last_error;
 }
 
@@ -249,11 +272,19 @@ static esp_err_t main_barometer_init_aht20(main_barometer_t *barometer)
         }
     }
 
+    if (barometer->aht20_probe_required) {
+        const esp_err_t probe_err = sensor_bus_probe_address(AHT20_ADDRESS);
+        if (probe_err != ESP_OK) {
+            return probe_err;
+        }
+    }
+
     uint8_t status = 0U;
     esp_err_t err = main_barometer_classify_error(
         AHT20_ADDRESS,
         i2c_bus_read_byte(barometer->aht20, NULL_I2C_MEM_ADDR, &status));
     if (err != ESP_OK) {
+        main_barometer_aht20_transfer_failed(barometer);
         return err;
     }
     barometer->reading.aht20_present = true;
@@ -266,6 +297,7 @@ static esp_err_t main_barometer_init_aht20(main_barometer_t *barometer)
                 barometer->aht20, NULL_I2C_MEM_ADDR,
                 sizeof(initialize), initialize));
         if (err != ESP_OK) {
+            main_barometer_aht20_transfer_failed(barometer);
             return err;
         }
         vTaskDelay(pdMS_TO_TICKS(AHT20_INIT_DELAY_MS));
@@ -273,6 +305,7 @@ static esp_err_t main_barometer_init_aht20(main_barometer_t *barometer)
             AHT20_ADDRESS,
             i2c_bus_read_byte(barometer->aht20, NULL_I2C_MEM_ADDR, &status));
         if (err != ESP_OK) {
+            main_barometer_aht20_transfer_failed(barometer);
             return err;
         }
         if ((status & AHT20_STATUS_CALIBRATED) == 0U) {
@@ -280,6 +313,7 @@ static esp_err_t main_barometer_init_aht20(main_barometer_t *barometer)
         }
     }
     barometer->aht20_initialized = true;
+    barometer->aht20_probe_required = false;
     return ESP_OK;
 }
 
@@ -293,12 +327,22 @@ static esp_err_t main_barometer_read_aht20(main_barometer_t *barometer)
         }
     }
 
+    if (barometer->aht20_probe_required) {
+        const esp_err_t probe_err = sensor_bus_probe_address(AHT20_ADDRESS);
+        if (probe_err != ESP_OK) {
+            barometer->reading.aht20_valid = false;
+            return probe_err;
+        }
+        barometer->aht20_probe_required = false;
+    }
+
     const uint8_t trigger[3] = {AHT20_CMD_MEASURE, 0x33U, 0x00U};
     esp_err_t err = main_barometer_classify_error(
         AHT20_ADDRESS,
         i2c_bus_write_bytes(
             barometer->aht20, NULL_I2C_MEM_ADDR, sizeof(trigger), trigger));
     if (err != ESP_OK) {
+        main_barometer_aht20_transfer_failed(barometer);
         barometer->reading.aht20_valid = false;
         return err;
     }
@@ -313,6 +357,7 @@ static esp_err_t main_barometer_read_aht20(main_barometer_t *barometer)
             i2c_bus_read_bytes(
                 barometer->aht20, NULL_I2C_MEM_ADDR, sizeof(data), data));
         if (err != ESP_OK) {
+            main_barometer_aht20_transfer_failed(barometer);
             barometer->reading.aht20_valid = false;
             return err;
         }
@@ -352,6 +397,8 @@ void main_barometer_init(main_barometer_t *barometer)
         return;
     }
     memset(barometer, 0, sizeof(*barometer));
+    barometer->bmp280_probe_required = true;
+    barometer->aht20_probe_required = true;
     (void)nrf_ema_filter_init(
         &barometer->altitude_filter, 1000U, -2000000.0, 10000000.0);
     (void)nrf_ema_filter_init(
@@ -512,15 +559,48 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
     esp_err_t result = ESP_OK;
     if (now_ms >= barometer->next_bmp280_poll_ms) {
         barometer->next_bmp280_poll_ms = now_ms + BMP280_POLL_PERIOD_MS;
+        esp_err_t bmp_err = ESP_OK;
+        bool bmp_retry_deferred = false;
         if (!barometer->bmp280_initialized) {
-            result = main_barometer_init_bmp280(barometer);
+            if (now_ms < barometer->bmp280_retry_after_ms) {
+                bmp_err = barometer->bmp280_retry_error;
+                bmp_retry_deferred = true;
+            } else {
+                bmp_err = main_barometer_init_bmp280(barometer);
+            }
         }
-        const esp_err_t bmp_err = barometer->bmp280_initialized
-            ? main_barometer_read_bmp280(barometer, now_ms)
-            : result;
+        if (bmp_err == ESP_OK && barometer->bmp280_initialized &&
+            barometer->bmp280_probe_required) {
+            if (now_ms < barometer->bmp280_retry_after_ms) {
+                bmp_err = barometer->bmp280_retry_error;
+                bmp_retry_deferred = true;
+            } else {
+                bmp_err = sensor_bus_probe_address(
+                    barometer->reading.bmp280_address);
+                if (bmp_err == ESP_OK) {
+                    barometer->bmp280_probe_required = false;
+                }
+            }
+        }
+        if (bmp_err == ESP_OK && barometer->bmp280_initialized) {
+            bmp_err = main_barometer_read_bmp280(barometer, now_ms);
+        }
         if (bmp_err == ESP_OK) {
+            barometer->bmp280_retry_after_ms = 0U;
+            barometer->bmp280_retry_error = ESP_OK;
             main_barometer_height_reference_update(barometer, now_ms);
         } else {
+            barometer->reading.bmp280_valid = false;
+            barometer->bmp280_probe_required = true;
+            if (!bmp_retry_deferred) {
+                barometer->bmp280_retry_error = bmp_err;
+                if (main_barometer_retryable_bus_error(bmp_err)) {
+                    barometer->bmp280_retry_after_ms =
+                        now_ms + MAIN_BAROMETER_RETRY_BACKOFF_MS;
+                } else {
+                    barometer->bmp280_retry_after_ms = now_ms;
+                }
+            }
             main_barometer_height_reference_sensor_invalid(barometer);
         }
         if (result == ESP_OK) {
@@ -533,7 +613,27 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
          now_ms - barometer->last_aht20_attempt_ms >= AHT20_POLL_PERIOD_MS)) {
         barometer->aht20_attempted = true;
         barometer->last_aht20_attempt_ms = now_ms;
-        const esp_err_t aht_err = main_barometer_read_aht20(barometer);
+        esp_err_t aht_err;
+        bool aht_retry_deferred = false;
+        if (barometer->aht20_probe_required &&
+            now_ms < barometer->aht20_retry_after_ms) {
+            aht_err = barometer->aht20_retry_error;
+            aht_retry_deferred = true;
+        } else {
+            aht_err = main_barometer_read_aht20(barometer);
+        }
+        if (aht_err == ESP_OK) {
+            barometer->aht20_retry_after_ms = 0U;
+            barometer->aht20_retry_error = ESP_OK;
+        } else if (barometer->aht20_probe_required && !aht_retry_deferred) {
+            barometer->aht20_retry_error = aht_err;
+            if (main_barometer_retryable_bus_error(aht_err)) {
+                barometer->aht20_retry_after_ms =
+                    now_ms + MAIN_BAROMETER_RETRY_BACKOFF_MS;
+            } else {
+                barometer->aht20_retry_after_ms = now_ms;
+            }
+        }
         if (result == ESP_OK) {
             result = aht_err;
         }
@@ -555,6 +655,12 @@ void main_barometer_close(main_barometer_t *barometer)
     memset(&barometer->handles, 0, sizeof(barometer->handles));
     barometer->bmp280_initialized = false;
     barometer->aht20_initialized = false;
+    barometer->bmp280_probe_required = true;
+    barometer->aht20_probe_required = true;
+    barometer->bmp280_retry_after_ms = 0U;
+    barometer->aht20_retry_after_ms = 0U;
+    barometer->bmp280_retry_error = ESP_OK;
+    barometer->aht20_retry_error = ESP_OK;
 }
 
 void main_barometer_get_reading(

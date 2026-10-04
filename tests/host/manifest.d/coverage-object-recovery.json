@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "object_recovery_legacy_scan",
+      "sources": [
+        "components/object_recovery/object_recovery_legacy_scan.c",
+        "components/object_recovery/tests/object_recovery_legacy_scan_test.c"
+      ],
+      "include_dirs": [
+        "components/object_recovery/tests/stubs/legacy_scan",
+        "components/object_recovery/tests/stubs",
+        "components/object_recovery"
+      ],
+      "defines": [
+        "calloc=object_recovery_test_calloc"
+      ]
+    },
+    {
+      "name": "object_recovery",
+      "sources": [
+        "components/object_recovery/object_recovery_fs.c",
+        "components/object_recovery/object_recovery_metadata.c",
+        "components/object_recovery/object_recovery_metadata_validate.c",
+        "components/object_recovery/object_recovery_scan.c",
+        "components/object_recovery/tests/stubs/cJSON.c",
+        "components/object_format/object_format.c",
+        "components/object_recovery/tests/object_recovery_fs_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/object_recovery/tests/stubs",
+        "components/object_recovery",
+        "components/object_format/include",
+        "components/storage_manager/include"
+      ]
+    },
+    {
+      "name": "seismic_recorder_recovery",
+      "sources": [
+        "components/object_format/object_format.c",
+        "components/object_recovery/tests/stubs/cJSON.c",
+        "components/seismic_recorder/tests/seismic_recorder_recovery_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/object_recovery/tests/stubs",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/seismic_buffer/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    }
+  ]
+}

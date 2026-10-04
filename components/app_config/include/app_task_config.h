@@ -64,7 +64,7 @@
  * scans the remaining directories one bounded storage window at a time.
  */
 #define APP_TASK_PRIORITY_OBJECT_RECOVERY 1
-#define APP_TASK_STACK_OBJECT_RECOVERY  7168
+#define APP_TASK_STACK_OBJECT_RECOVERY  9216
 
 /*
  * Measurement commands can stop/finalize the recorder and delete a reviewed

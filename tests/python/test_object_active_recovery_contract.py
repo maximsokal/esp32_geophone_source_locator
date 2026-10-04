@@ -135,11 +135,15 @@ def test_prepare_metadata_uses_two_path_buffers_not_three() -> None:
         None,
     )
 
-    assert block.count("OBJECT_RECOVERY_PATH_SIZE\n    ];") == 2
-    assert "char primary[" in block
-    assert "char sidecar[" in block
+    # The two path buffers live in one heap block (2 x PATH_SIZE) so the
+    # recovery task stack is not spent on path storage.
+    assert "malloc(\n        2U * OBJECT_RECOVERY_PATH_SIZE" in block
+    assert "char *primary = paths;" in block
+    assert "char *sidecar = paths + OBJECT_RECOVERY_PATH_SIZE;" in block
     assert "char backup[" not in block
     assert "char temporary[" not in block
+    assert "char primary[" not in block
+    assert "char sidecar[" not in block
 
     # The sidecar buffer must be rebuilt for both sidecar file names, never
     # both live at once.

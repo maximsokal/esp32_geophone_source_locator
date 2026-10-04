@@ -1,6 +1,7 @@
 #include "object_recovery_internal.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -95,7 +96,15 @@ esp_err_t object_recovery_migrate_legacy_scan(
         return ESP_OK;
     }
 
-    seismic_recorder_session_summary_t sessions[SEISMIC_RECORDER_MAX_SESSIONS];
+    seismic_recorder_session_summary_t *sessions = calloc(
+        SEISMIC_RECORDER_MAX_SESSIONS,
+        sizeof(*sessions)
+    );
+    if (sessions == NULL) {
+        storage_manager_operation_end();
+        return ESP_ERR_NO_MEM;
+    }
+
     size_t session_count = 0U;
     const esp_err_t list_err = seismic_recorder_list_sessions(
         object_id, sessions, SEISMIC_RECORDER_MAX_SESSIONS, &session_count);
@@ -106,6 +115,7 @@ esp_err_t object_recovery_migrate_legacy_scan(
             object_id,
             esp_err_to_name(list_err)
         );
+        free(sessions);
         storage_manager_operation_end();
         return ESP_OK;
     }
@@ -118,6 +128,7 @@ esp_err_t object_recovery_migrate_legacy_scan(
             object_id,
             legacy_path
         );
+        free(sessions);
         storage_manager_operation_end();
         return ESP_OK;
     }
@@ -134,6 +145,7 @@ esp_err_t object_recovery_migrate_legacy_scan(
     );
     if (written <= 0 || written >= (int)sizeof(destination_path)) {
         ESP_LOGW(TAG, "LEGACY_SCAN_MIGRATION object=%s state=PATH_TOO_LONG", object_id);
+        free(sessions);
         storage_manager_operation_end();
         return ESP_OK;
     }
@@ -145,6 +157,7 @@ esp_err_t object_recovery_migrate_legacy_scan(
             object_id,
             newest_session_id
         );
+        free(sessions);
         storage_manager_operation_end();
         return ESP_OK;
     }
@@ -156,6 +169,7 @@ esp_err_t object_recovery_migrate_legacy_scan(
             object_id,
             newest_session_id
         );
+        free(sessions);
         storage_manager_operation_end();
         return ESP_OK;
     }
@@ -166,6 +180,7 @@ esp_err_t object_recovery_migrate_legacy_scan(
         object_id,
         newest_session_id
     );
+    free(sessions);
     storage_manager_operation_end();
     return ESP_OK;
 }

@@ -1,5 +1,7 @@
 #include "object_recovery_fs.h"
 
+#include <stdlib.h>
+
 
 esp_err_t object_recovery_fs_prepare_metadata(
     const char *object_directory,
@@ -23,9 +25,13 @@ esp_err_t object_recovery_fs_prepare_metadata(
     *recovered =
         false;
 
-    char primary[
-        OBJECT_RECOVERY_PATH_SIZE
-    ];
+    char *paths = malloc(
+        2U * OBJECT_RECOVERY_PATH_SIZE
+    );
+    if (paths == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    char *primary = paths;
 
     /*
      * Only one sidecar path is ever live at a time. A valid primary never
@@ -34,19 +40,18 @@ esp_err_t object_recovery_fs_prepare_metadata(
      * that specific sidecar is next needed, instead of keeping three
      * OBJECT_RECOVERY_PATH_SIZE buffers live simultaneously.
      */
-    char sidecar[
-        OBJECT_RECOVERY_PATH_SIZE
-    ];
+    char *sidecar = paths + OBJECT_RECOVERY_PATH_SIZE;
 
     esp_err_t err =
         object_recovery_fs_build_path(
             primary,
-            sizeof(primary),
+            OBJECT_RECOVERY_PATH_SIZE,
             object_directory,
             "object.json"
         );
 
     if (err != ESP_OK) {
+        free(paths);
         return err;
     }
 
@@ -67,18 +72,20 @@ esp_err_t object_recovery_fs_prepare_metadata(
         *valid =
             true;
 
+        free(paths);
         return ESP_OK;
     }
 
     err =
         object_recovery_fs_build_path(
             sidecar,
-            sizeof(sidecar),
+            OBJECT_RECOVERY_PATH_SIZE,
             object_directory,
             "object.json.bak"
         );
 
     if (err != ESP_OK) {
+        free(paths);
         return err;
     }
 
@@ -95,18 +102,20 @@ esp_err_t object_recovery_fs_prepare_metadata(
             );
 
         if (err != ESP_OK) {
+            free(paths);
             return err;
         }
 
         err =
             object_recovery_fs_build_path(
                 sidecar,
-                sizeof(sidecar),
+                OBJECT_RECOVERY_PATH_SIZE,
                 object_directory,
                 "object.json.tmp"
             );
 
         if (err != ESP_OK) {
+            free(paths);
             return err;
         }
 
@@ -120,18 +129,20 @@ esp_err_t object_recovery_fs_prepare_metadata(
         *recovered =
             true;
 
+        free(paths);
         return ESP_OK;
     }
 
     err =
         object_recovery_fs_build_path(
             sidecar,
-            sizeof(sidecar),
+            OBJECT_RECOVERY_PATH_SIZE,
             object_directory,
             "object.json.tmp"
         );
 
     if (err != ESP_OK) {
+        free(paths);
         return err;
     }
 
@@ -148,18 +159,20 @@ esp_err_t object_recovery_fs_prepare_metadata(
             );
 
         if (err != ESP_OK) {
+            free(paths);
             return err;
         }
 
         err =
             object_recovery_fs_build_path(
                 sidecar,
-                sizeof(sidecar),
+                OBJECT_RECOVERY_PATH_SIZE,
                 object_directory,
                 "object.json.bak"
             );
 
         if (err != ESP_OK) {
+            free(paths);
             return err;
         }
 
@@ -174,5 +187,6 @@ esp_err_t object_recovery_fs_prepare_metadata(
             true;
     }
 
+    free(paths);
     return ESP_OK;
 }

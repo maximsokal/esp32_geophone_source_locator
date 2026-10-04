@@ -57,6 +57,10 @@ esp_err_t sensor_bus_get_tca9548a(
     uint8_t *address
 );
 
+/* Short (20 ms) address-only probe on the shared bus. A NACK is
+ * ESP_ERR_NOT_FOUND; a busy/stuck bus is reported as ESP_ERR_TIMEOUT. */
+esp_err_t sensor_bus_probe_address(uint8_t address);
+
 /*
  * MAX-248: map a failed transfer to "nobody answered at this address".
  *

@@ -343,6 +343,16 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
             continue;
         }
 
+        const esp_err_t address_probe_err =
+            sensor_bus_lines_probe(s_bus, candidate_address);
+        if (address_probe_err == ESP_ERR_NOT_FOUND) {
+            continue;
+        }
+        if (address_probe_err != ESP_OK) {
+            err = address_probe_err;
+            goto fail;
+        }
+
         i2c_bus_device_handle_t candidate = i2c_bus_device_create(
             s_bus, candidate_address, SENSOR_BUS_I2C_SPEED_HZ);
         if (candidate == NULL) {
@@ -409,6 +419,21 @@ fail:
             return cleanup_err;
         }
         return err;
+    }
+    sensor_bus_unlock();
+    return err;
+}
+
+esp_err_t sensor_bus_probe_address(uint8_t address)
+{
+    const esp_err_t lock_err = sensor_bus_lock();
+    if (lock_err != ESP_OK) {
+        return lock_err;
+    }
+
+    esp_err_t err = sensor_bus_init_locked();
+    if (err == ESP_OK) {
+        err = sensor_bus_lines_probe(s_bus, address);
     }
     sensor_bus_unlock();
     return err;

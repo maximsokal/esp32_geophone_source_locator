@@ -53,6 +53,8 @@ static size_t s_delete_count;
 static unsigned s_bus_create_calls;
 static unsigned s_bus_delete_calls;
 
+static bool scan_created_address(uint8_t address);
+
 static void fake_reset(void)
 {
     (void)sensor_bus_deinit();
@@ -70,6 +72,10 @@ static void fake_reset(void)
     s_bus_create_calls = 0U;
     s_bus_delete_calls = 0U;
     fake_lines_reset();
+    for (size_t i = 0; i < 128U; ++i) {
+        g_fake_lines.probe_result[i] = ESP_ERR_NOT_FOUND;
+    }
+    g_fake_lines.probe_configured = true;
 }
 
 /*
@@ -90,6 +96,7 @@ static void fake_add_tca(uint8_t address)
 {
     s_present[address] = true;
     s_tca_present[address] = true;
+    g_fake_lines.probe_result[address] = ESP_OK;
 }
 
 i2c_bus_handle_t i2c_bus_create(i2c_port_t port, const i2c_config_t *config)
@@ -188,8 +195,8 @@ static void test_absent_tca_is_nonfatal(void)
     assert(tca == NULL);
     assert(address == NULL_I2C_DEV_ADDR);
     assert(s_bus_create_calls == 1U);
-    assert(s_device_count == 7U); /* INA3221 + six non-BMP TCA candidates. */
-    assert(s_delete_count == 6U);
+    assert(s_device_count == 1U); /* NACKed TCA candidates are skipped before device creation. */
+    assert(s_delete_count == 0U); /* No candidate devices existed to clean up. */
 
     sensor_bus_handles_t handles;
     assert(sensor_bus_get_handles(&handles) == ESP_OK);
@@ -208,7 +215,9 @@ static void test_single_tca_is_cached_and_owned(void)
 
     i2c_bus_device_handle_t first = NULL;
     uint8_t first_address = 0U;
-    assert(sensor_bus_get_tca9548a(&first, &first_address) == ESP_OK);
+    /* 0x70 NACKs, but discovery skips it and reaches the ACKing 0x73. */
+    assert(sensor_bus_get_tca9548a(&first, &first_address) == ESP_OK &&
+           !scan_created_address(0x70U));
     assert(first != NULL);
     assert(first_address == 0x73U);
 
@@ -243,6 +252,7 @@ static void test_non_nack_transport_error_is_not_reported_as_absence(void)
 {
     fake_reset();
     s_probe_error[0x72U] = ESP_ERR_TIMEOUT;
+    g_fake_lines.probe_result[0x72U] = ESP_OK;
 
     i2c_bus_device_handle_t tca = NULL;
     assert(sensor_bus_get_tca9548a(&tca, NULL) == ESP_ERR_TIMEOUT);
@@ -271,8 +281,8 @@ static void test_idf55_single_tca_is_found_among_nacks(void)
     assert(sensor_bus_get_tca9548a(&tca, &address) == ESP_OK);
     assert(tca != NULL);
     assert(address == 0x75U);
-    /* The ACKing TCA itself needs no probe. */
-    assert(g_fake_lines.probe_calls == 5);
+    /* Five NACKs are skipped, then the ACK at 0x75 is probed before creation. */
+    assert(g_fake_lines.probe_calls == 6);
     assert(sensor_bus_deinit() == ESP_OK);
 }
 

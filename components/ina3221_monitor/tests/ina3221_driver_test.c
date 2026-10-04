@@ -17,8 +17,10 @@ static int s_bus_token;
 static int s_device_token;
 static uint16_t s_regs[0x100];
 static unsigned s_accesses;
+static unsigned s_probe_calls;
 static unsigned s_fail_access;          /* 1-based; 0 = never */
 static esp_err_t s_fail_err;
+static bool s_device_present;
 static bool s_config_ignores_writes;    /* chip keeps its old config */
 static esp_err_t s_get_handles_err;
 static unsigned s_writes;
@@ -31,8 +33,10 @@ static void reset_chip(void)
     memset(s_regs, 0, sizeof(s_regs));
     s_regs[0x00] = 0x7127U; /* INA3221 power-on default config */
     s_accesses = 0U;
+    s_probe_calls = 0U;
     s_fail_access = 0U;
     s_fail_err = ESP_ERR_TIMEOUT;
+    s_device_present = true;
     s_config_ignores_writes = false;
     s_get_handles_err = ESP_OK;
     s_writes = 0U;
@@ -61,6 +65,24 @@ esp_err_t sensor_bus_get_handles(sensor_bus_handles_t *handles)
     return ESP_OK;
 }
 
+esp_err_t sensor_bus_probe_address(uint8_t address)
+{
+    assert(address == 0x40U);
+    ++s_probe_calls;
+    return s_device_present ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t sensor_bus_classify_transfer_error(uint8_t address, esp_err_t err)
+{
+    assert(address == 0x40U);
+    if (err != ESP_ERR_INVALID_STATE) {
+        return err;
+    }
+    return sensor_bus_probe_address(address) == ESP_ERR_NOT_FOUND
+        ? ESP_ERR_NOT_FOUND
+        : err;
+}
+
 esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address, size_t data_len, uint8_t *data)
 {
     assert(device == &s_device_token);
@@ -68,6 +90,9 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
     const esp_err_t err = access_result();
     if (err != ESP_OK) {
         return err;
+    }
+    if (!s_device_present) {
+        return ESP_ERR_INVALID_STATE; /* IDF 5.5 wrapper NACK */
     }
     data[0] = (uint8_t)(s_regs[mem_address] >> 8);
     data[1] = (uint8_t)(s_regs[mem_address] & 0xFFU);
@@ -81,6 +106,9 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
     const esp_err_t err = access_result();
     if (err != ESP_OK) {
         return err;
+    }
+    if (!s_device_present) {
+        return ESP_ERR_INVALID_STATE; /* IDF 5.5 wrapper NACK */
     }
     ++s_writes;
     s_last_write_reg = mem_address;
@@ -156,6 +184,33 @@ static void test_open_fails_closed_on_every_bus_error(void)
     assert(!driver.ready);
     assert(s_accesses == 0U);
     assert(ina3221_driver_open(NULL) == ESP_ERR_INVALID_ARG);
+}
+
+static void test_nack_is_classified_then_retries_probe_only_until_ack(void)
+{
+    reset_chip();
+    ina3221_driver_t driver;
+    open_ok(&driver);
+
+    s_device_present = false;
+    const unsigned accesses_before_nack = s_accesses;
+    ina3221_channel_sample_t channels[INA3221_POLICY_CHANNEL_COUNT];
+    assert(ina3221_driver_read_channels(&driver, channels) == ESP_ERR_NOT_FOUND);
+    assert(s_accesses == accesses_before_nack + 1U);
+    assert(s_probe_calls == 2U); /* failed read classified by short probe */
+    ina3221_driver_close(&driver);
+
+    const unsigned accesses_after_classification = s_accesses;
+    assert(ina3221_driver_open(&driver) == ESP_ERR_NOT_FOUND);
+    assert(ina3221_driver_open(&driver) == ESP_ERR_NOT_FOUND);
+    assert(s_accesses == accesses_after_classification);
+    assert(s_probe_calls == 4U);
+
+    s_device_present = true;
+    assert(ina3221_driver_open(&driver) == ESP_OK);
+    assert(driver.ready);
+    assert(s_probe_calls == 5U);
+    assert(s_accesses == accesses_after_classification + 3U);
 }
 
 static void test_open_rejects_config_readback_mismatch(void)
@@ -315,6 +370,7 @@ int main(void)
 {
     test_open_writes_exact_config_and_verifies();
     test_open_fails_closed_on_every_bus_error();
+    test_nack_is_classified_then_retries_probe_only_until_ack();
     test_open_rejects_config_readback_mismatch();
     test_read_channels_addressing_scaling_and_signs();
     test_read_channels_propagates_any_bus_error();

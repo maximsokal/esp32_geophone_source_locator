@@ -1,5 +1,7 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -17,16 +19,50 @@
 static seismic_recorder_session_summary_t s_sessions[SEISMIC_RECORDER_MAX_SESSIONS];
 static size_t s_session_count;
 static esp_err_t s_list_sessions_result;
+static unsigned s_operation_begin_calls;
+static unsigned s_operation_end_calls;
+static unsigned s_calloc_calls;
+static size_t s_last_calloc_count;
+static size_t s_last_calloc_size;
+static bool s_last_calloc_succeeded;
+static bool s_fail_next_calloc;
+
+
+void *object_recovery_test_calloc(size_t count, size_t size)
+{
+    ++s_calloc_calls;
+    s_last_calloc_count = count;
+    s_last_calloc_size = size;
+    s_last_calloc_succeeded = false;
+
+    if (s_fail_next_calloc) {
+        s_fail_next_calloc = false;
+        return NULL;
+    }
+    if (count != 0U && size > (size_t)-1 / count) {
+        return NULL;
+    }
+
+    const size_t bytes = count * size;
+    void *allocation = malloc(bytes);
+    if (allocation != NULL) {
+        memset(allocation, 0, bytes);
+        s_last_calloc_succeeded = true;
+    }
+    return allocation;
+}
 
 
 esp_err_t storage_manager_operation_begin(void)
 {
+    ++s_operation_begin_calls;
     return ESP_OK;
 }
 
 
 void storage_manager_operation_end(void)
 {
+    ++s_operation_end_calls;
 }
 
 
@@ -183,7 +219,12 @@ static void test_migrates_to_the_newest_session(void)
     legacy_scan_path(legacy, sizeof(legacy), "OBJ_0003");
     write_file(legacy, "legacy-scan-bytes");
 
+    s_calloc_calls = 0U;
     assert(object_recovery_migrate_legacy_scan("OBJ_0003") == ESP_OK);
+    assert(s_calloc_calls == 1U);
+    assert(s_last_calloc_count == SEISMIC_RECORDER_MAX_SESSIONS);
+    assert(s_last_calloc_size == sizeof(*s_sessions));
+    assert(s_last_calloc_succeeded);
     assert(!file_exists(legacy));
 
     char destination[256];
@@ -201,6 +242,36 @@ static void test_migrates_to_the_newest_session(void)
     (void)read_count;
 
     cleanup("OBJ_0003", sessions, 3U);
+}
+
+
+static void test_allocation_failure_returns_no_mem_and_ends_operation(void)
+{
+    const char *sessions[] = { "S000001" };
+    prepare_object_dirs("OBJ_0006", sessions, 1U);
+    cleanup("OBJ_0006", sessions, 1U);
+    set_sessions(sessions, 1U);
+
+    char legacy[256];
+    legacy_scan_path(legacy, sizeof(legacy), "OBJ_0006");
+    write_file(legacy, "legacy-scan-bytes");
+
+    const unsigned begin_calls_before = s_operation_begin_calls;
+    const unsigned end_calls_before = s_operation_end_calls;
+    s_calloc_calls = 0U;
+    s_fail_next_calloc = true;
+
+    assert(object_recovery_migrate_legacy_scan("OBJ_0006") == ESP_ERR_NO_MEM);
+    assert(s_calloc_calls == 1U);
+    assert(s_last_calloc_count == SEISMIC_RECORDER_MAX_SESSIONS);
+    assert(s_last_calloc_size == sizeof(*s_sessions));
+    assert(!s_last_calloc_succeeded);
+    assert(!s_fail_next_calloc);
+    assert(s_operation_begin_calls == begin_calls_before + 1U);
+    assert(s_operation_end_calls == end_calls_before + 1U);
+    assert(file_exists(legacy));
+
+    cleanup("OBJ_0006", sessions, 1U);
 }
 
 
@@ -260,6 +331,7 @@ int main(void)
     test_no_legacy_file_is_a_silent_no_op();
     test_no_sessions_leaves_legacy_file_in_place();
     test_migrates_to_the_newest_session();
+    test_allocation_failure_returns_no_mem_and_ends_operation();
     test_never_overwrites_an_existing_session_scan();
     test_session_list_failure_leaves_legacy_file_in_place();
     return 0;

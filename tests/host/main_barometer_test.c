@@ -22,8 +22,12 @@ typedef struct {
     uint8_t registers[128][256];
     bool responding[128];
     fake_device_t devices[128];
+    uint8_t read_addresses[32];
+    size_t read_count;
     uint8_t probed_addresses[16];
-    size_t probe_count;
+    size_t address_probe_count;
+    bool probe_timeout_enabled;
+    uint8_t probe_timeout_address;
     uint8_t aht_frame[7];
     uint8_t aht_status;
     unsigned aht_busy_reads;
@@ -100,6 +104,17 @@ static void reset_fake(void)
     setup_aht20();
 }
 
+esp_err_t sensor_bus_probe_address(uint8_t address)
+{
+    if (s_fake.address_probe_count < sizeof(s_fake.probed_addresses)) {
+        s_fake.probed_addresses[s_fake.address_probe_count++] = address;
+    }
+    if (s_fake.probe_timeout_enabled && address == s_fake.probe_timeout_address) {
+        return ESP_ERR_TIMEOUT;
+    }
+    return s_fake.responding[address] ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t sensor_bus_get_handles(sensor_bus_handles_t *handles)
 {
     if (handles == NULL) {
@@ -145,8 +160,8 @@ static esp_err_t fake_read(
     uint8_t *data)
 {
     const uint8_t address = ((fake_device_t *)handle)->address;
-    if (s_fake.probe_count < sizeof(s_fake.probed_addresses)) {
-        s_fake.probed_addresses[s_fake.probe_count++] = address;
+    if (s_fake.read_count < sizeof(s_fake.read_addresses)) {
+        s_fake.read_addresses[s_fake.read_count++] = address;
     }
     if (!s_fake.responding[address]) {
         return ESP_ERR_INVALID_STATE;
@@ -260,9 +275,11 @@ static void test_bmp280_probes_preferred_then_fallback_address(void)
            barometer.reading.pressure_pa <= 100654U);
     assert(barometer.reading.filtered_altitude_mm ==
            nrf_baro_pressure_to_altitude_mm(barometer.reading.pressure_pa));
-    assert(s_fake.probe_count >= 2U);
+    assert(s_fake.address_probe_count >= 2U);
     assert(s_fake.probed_addresses[0] == 0x77U);
     assert(s_fake.probed_addresses[1] == 0x76U);
+    assert(s_fake.read_count > 0U);
+    assert(s_fake.read_addresses[0] == 0x76U);
     main_barometer_close(&barometer);
 }
 
@@ -326,6 +343,49 @@ static void test_aht20_busy_timeout_and_transfer_error_classification(void)
     main_barometer_init(&barometer);
     assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_TIMEOUT);
     assert(!barometer.reading.bmp280_valid);
+    main_barometer_close(&barometer);
+}
+
+static void test_absent_bmp280_retries_probe_only_for_five_seconds_then_reads_after_ack(void)
+{
+    reset_fake();
+    s_fake.responding[AHT_ADDRESS] = false;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+
+    assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_NOT_FOUND);
+    assert(s_fake.address_probe_count == 3U); /* BMP 0x77/0x76 and AHT20 */
+    assert(s_fake.read_count == 0U);
+
+    (void)main_barometer_poll(&barometer, 200U);
+    (void)main_barometer_poll(&barometer, 4800U);
+    assert(s_fake.address_probe_count == 3U);
+    assert(s_fake.read_count == 0U);
+
+    setup_bmp280(0x76U, BMP_ID);
+    (void)main_barometer_poll(&barometer, 5000U);
+    assert(barometer.reading.bmp280_valid);
+    assert(barometer.reading.bmp280_address == 0x76U);
+    assert(s_fake.address_probe_count > 3U);
+    assert(s_fake.read_count > 0U);
+    main_barometer_close(&barometer);
+}
+
+static void test_probe_timeout_skips_full_read_transaction(void)
+{
+    reset_fake();
+    s_fake.responding[AHT_ADDRESS] = false;
+    s_fake.probe_timeout_enabled = true;
+    s_fake.probe_timeout_address = 0x77U;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+
+    assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_TIMEOUT);
+    assert(s_fake.read_count == 0U);
+    const size_t probes_after_timeout = s_fake.address_probe_count;
+    (void)main_barometer_poll(&barometer, 200U);
+    assert(s_fake.address_probe_count == probes_after_timeout);
+    assert(s_fake.read_count == 0U);
     main_barometer_close(&barometer);
 }
 
@@ -399,6 +459,8 @@ int main(void)
     test_bmp280_rejects_wrong_chip_id();
     test_aht20_crc_and_conversion();
     test_aht20_busy_timeout_and_transfer_error_classification();
+    test_absent_bmp280_retries_probe_only_for_five_seconds_then_reads_after_ack();
+    test_probe_timeout_skips_full_read_transaction();
     test_main_height_reference_stable_unstable_and_relative();
     test_main_height_reference_sensor_invalid_and_generation_validation();
     return 0;
