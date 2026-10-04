@@ -31,6 +31,7 @@ static int s_raw_value;
 static int64_t s_now_us;
 static int64_t s_read_duration_us;
 static bool s_service_busy;
+static esp_err_t s_service_error;
 static int s_try_reads;
 static int s_direct_adc_reads;
 static int s_keypad_events_posted;
@@ -42,7 +43,10 @@ static unsigned s_keypad_log_count;
 static char s_last_keypad_log[512];
 static unsigned s_keypad_transition_log_count;
 static unsigned s_keypad_boot_diag_log_count;
+static unsigned s_keypad_idle_warning_log_count;
 static char s_last_transition_log[512];
+static char s_last_idle_warning_log[512];
+static int64_t s_transition_log_times[256];
 
 void keypad_test_log_capture(const char *tag, const char *format, va_list args)
 {
@@ -52,6 +56,10 @@ void keypad_test_log_capture(const char *tag, const char *format, va_list args)
         (void)vsnprintf(s_last_keypad_log, sizeof(s_last_keypad_log), format, args);
     } else if (strncmp(format, "KEYPAD_RAW_TRANSITION", 21U) == 0) {
         ++s_keypad_transition_log_count;
+        if (s_keypad_transition_log_count <=
+            sizeof(s_transition_log_times) / sizeof(s_transition_log_times[0])) {
+            s_transition_log_times[s_keypad_transition_log_count - 1U] = s_now_us;
+        }
         (void)vsnprintf(
             s_last_transition_log,
             sizeof(s_last_transition_log),
@@ -60,6 +68,14 @@ void keypad_test_log_capture(const char *tag, const char *format, va_list args)
         );
     } else if (strncmp(format, "KEYPAD_BOOT_INPUT", 17U) == 0) {
         ++s_keypad_boot_diag_log_count;
+    } else if (strncmp(format, "KEYPAD_IDLE_LEVEL_INVALID", 25U) == 0) {
+        ++s_keypad_idle_warning_log_count;
+        (void)vsnprintf(
+            s_last_idle_warning_log,
+            sizeof(s_last_idle_warning_log),
+            format,
+            args
+        );
     }
 }
 
@@ -112,6 +128,9 @@ esp_err_t adc_service_try_read_average_raw(
     s_try_reads++;
     if (s_service_busy) {
         return ESP_ERR_TIMEOUT;
+    }
+    if (s_service_error != ESP_OK) {
+        return s_service_error;
     }
 
     return adc_service_read_average_raw(
@@ -239,6 +258,7 @@ static void reset_test_state(void)
     s_last_sample_count = 0;
     s_read_duration_us = 0;
     s_service_busy = false;
+    s_service_error = ESP_OK;
     s_try_reads = 0;
     s_direct_adc_reads = 0;
     s_now_us = 10000;
@@ -252,6 +272,10 @@ static void reset_test_state(void)
     s_last_keypad_log[0] = '\0';
     s_keypad_transition_log_count = 0U;
     s_keypad_boot_diag_log_count = 0U;
+    s_keypad_idle_warning_log_count = 0U;
+    s_last_transition_log[0] = '\0';
+    s_last_idle_warning_log[0] = '\0';
+    memset(s_transition_log_times, 0, sizeof(s_transition_log_times));
 
     for (size_t i = 0U; i < 5U; ++i) {
         s_callbacks[i] = NULL;
@@ -400,6 +424,7 @@ static void test_boot_callback_routes_only_while_prompt_is_active(void)
         s_now_us += 1001;
         assert(s_drivers[4]->get_key_level((button_driver_t *)s_drivers[4]) == BUTTON_INACTIVE);
     }
+    /* The first sample logs immediately; the >2 s poll logs the second. */
     assert(s_keypad_boot_diag_log_count == 1U);
     s_now_us += 2000001;
     assert(s_drivers[4]->get_key_level((button_driver_t *)s_drivers[4]) == BUTTON_INACTIVE);
@@ -455,8 +480,8 @@ static void test_adc_polling_is_quiet_until_press_registration(void)
     s_raw_value = 2873;
     assert(s_drivers[4]->get_key_level((button_driver_t *)s_drivers[4]) == BUTTON_ACTIVE);
     assert(s_keypad_log_count == 0U);
-    assert(s_keypad_transition_log_count == 6U);
-    assert(strstr(s_last_transition_log, "decoded=OK") != NULL);
+    /* The three 4095 samples settled; this is the first OK sample. */
+    assert(s_keypad_transition_log_count == 1U);
     assert(s_keypad_boot_diag_log_count == 0U);
 
     /* Raw key detection is not registration: only the vendor PRESS_DOWN
@@ -471,16 +496,18 @@ static void test_adc_polling_is_quiet_until_press_registration(void)
         assert(s_drivers[4]->get_key_level((button_driver_t *)s_drivers[4]) == BUTTON_ACTIVE);
         assert(s_keypad_log_count == 1U);
     }
-    assert(s_keypad_transition_log_count == 6U);
+    assert(s_keypad_transition_log_count == 2U);
+    assert(strstr(s_last_transition_log, "decoded=OK") != NULL);
     s_raw_value = 4095;
     for (unsigned second = 0U; second < 10U; ++second) {
         s_now_us += 1000001;
         assert(s_drivers[4]->get_key_level((button_driver_t *)s_drivers[4]) == BUTTON_INACTIVE);
         assert(s_keypad_log_count == 1U);
     }
-    assert(s_keypad_transition_log_count == 7U);
-    assert(strstr(s_last_transition_log, "decoded=") != NULL);
-    assert(strstr(s_last_transition_log, "release_armed=") != NULL);
+    /* Three 4095 samples settle the return to the released level. */
+    assert(s_keypad_transition_log_count == 3U);
+    assert(strstr(s_last_transition_log, "decoded=NONE") != NULL);
+    assert(strstr(s_last_transition_log, "release_armed=1") != NULL);
     keypad_button_adapter_stop();
 
     /* A blocked candidate after restart still must not be called a press. */
@@ -493,12 +520,256 @@ static void test_adc_polling_is_quiet_until_press_registration(void)
     keypad_button_adapter_stop();
 }
 
+
+static uint8_t poll_raw(int raw)
+{
+    s_raw_value = raw;
+    s_now_us += 10000LL;
+    return s_drivers[0]->get_key_level((button_driver_t *)s_drivers[0]);
+}
+
+
+static void test_settled_level_boundaries_and_pending_run(void)
+{
+    reset_test_state();
+    assert(keypad_button_adapter_init() == ESP_OK);
+
+    (void)poll_raw(150); /* Initial level establishes the baseline silently. */
+    assert(s_keypad_transition_log_count == 0U);
+    for (unsigned i = 0U; i < 3U; ++i) {
+        (void)poll_raw(249); /* Delta 99 never starts a settle run. */
+    }
+    assert(s_keypad_transition_log_count == 0U);
+
+    (void)poll_raw(250); /* Delta 100, first settled sample. */
+    (void)poll_raw(250);
+    assert(s_keypad_transition_log_count == 0U);
+    (void)poll_raw(250);
+    assert(s_keypad_transition_log_count == 1U);
+    assert(strcmp(
+        s_last_transition_log,
+        "KEYPAD_RAW_TRANSITION raw=250 from=NONE to=NONE decoded=NONE release_armed=0"
+    ) == 0);
+
+    for (unsigned i = 0U; i < 12U; ++i) {
+        (void)poll_raw(i % 2U == 0U ? 0 : 150);
+    }
+    assert(s_keypad_transition_log_count == 1U);
+
+    (void)poll_raw(0);   /* Start a candidate run away from the logged 250. */
+    (void)poll_raw(200); /* Within 100 of 250: discard the pending run. */
+    (void)poll_raw(0);
+    (void)poll_raw(0);
+    assert(s_keypad_transition_log_count == 1U);
+    (void)poll_raw(0);
+    assert(s_keypad_transition_log_count == 2U);
+    assert(strstr(s_last_transition_log, "raw=0 from=NONE to=LEFT") != NULL);
+    keypad_button_adapter_stop();
+}
+
+
+static void test_settled_level_ignores_errors_and_resets_on_restart(void)
+{
+    reset_test_state();
+    assert(keypad_button_adapter_init() == ESP_OK);
+    (void)poll_raw(150);
+    (void)poll_raw(300);
+    assert(s_keypad_transition_log_count == 0U);
+
+    s_service_busy = true;
+    (void)poll_raw(300);
+    s_service_busy = false;
+    assert(s_keypad_transition_log_count == 0U);
+    (void)poll_raw(300);
+    assert(s_keypad_transition_log_count == 0U);
+
+    s_service_error = ESP_FAIL;
+    (void)poll_raw(300);
+    s_service_error = ESP_OK;
+    assert(s_keypad_transition_log_count == 0U);
+    (void)poll_raw(300);
+    assert(s_keypad_transition_log_count == 1U);
+
+    keypad_button_adapter_stop();
+    reset_test_state();
+    assert(keypad_button_adapter_init() == ESP_OK);
+    (void)poll_raw(0); /* First sample after stop/init is silent again. */
+    assert(s_keypad_transition_log_count == 0U);
+    keypad_button_adapter_stop();
+}
+
+
+static void test_settled_level_slow_ramp_and_gate_open(void)
+{
+    reset_test_state();
+    assert(keypad_button_adapter_init() == ESP_OK);
+    for (unsigned sample = 0U; sample <= 2500U; ++sample) {
+        s_raw_value = (int)(sample / 10U); /* +10 raw/s at 100 Hz. */
+        s_now_us += 10000LL;
+        (void)s_drivers[0]->get_key_level((button_driver_t *)s_drivers[0]);
+    }
+    assert(s_keypad_transition_log_count <= 3U);
+    assert(s_keypad_transition_log_count == 2U);
+    for (unsigned i = 1U; i < s_keypad_transition_log_count; ++i) {
+        assert(s_transition_log_times[i] - s_transition_log_times[i - 1U]
+            >= 9000000LL);
+    }
+    assert(s_keypad_boot_diag_log_count == 0U);
+
+    keypad_button_adapter_stop();
+    reset_test_state();
+    assert(keypad_button_adapter_init() == ESP_OK);
+    (void)poll_raw(4095);
+    (void)poll_raw(4095);
+    (void)poll_raw(4095);
+    (void)poll_raw(3340);
+    (void)poll_raw(3340);
+    assert(s_keypad_transition_log_count == 0U);
+    (void)poll_raw(3340);
+    assert(s_keypad_transition_log_count == 1U);
+    assert(strstr(s_last_transition_log, "to=OK decoded=OK") != NULL);
+    (void)poll_raw(4095);
+    (void)poll_raw(4095);
+    assert(s_keypad_transition_log_count == 1U);
+    (void)poll_raw(4095);
+    assert(s_keypad_transition_log_count == 2U);
+    assert(strstr(s_last_transition_log, "to=NONE decoded=NONE") != NULL);
+    assert(strstr(s_last_transition_log, "release_armed=1") != NULL);
+    keypad_button_adapter_stop();
+}
+
+
+static void test_idle_warning_delay_rate_limit_and_armed_lifecycle(void)
+{
+    reset_test_state();
+    assert(keypad_button_adapter_init() == ESP_OK);
+    s_now_us = 10000000LL;
+    int context_token = 0;
+    s_boot_callback_expected_context = &context_token;
+    assert(keypad_button_adapter_start_boot(
+        boot_prompt_callback,
+        &context_token
+    ) == ESP_OK);
+
+    for (unsigned sample = 0U; sample < 299U; ++sample) {
+        (void)poll_raw(150);
+    }
+    assert(s_keypad_idle_warning_log_count == 0U);
+    (void)poll_raw(150);
+    assert(s_keypad_idle_warning_log_count == 1U);
+    assert(strcmp(
+        s_last_idle_warning_log,
+        "KEYPAD_IDLE_LEVEL_INVALID raw=150 need>=3600: key line is not pulled high - check keypad module + (3V3), - (GND) and S (GPIO8) wiring; no key can be detected"
+    ) == 0);
+
+    for (unsigned sample = 0U; sample < 499U; ++sample) {
+        (void)poll_raw(150);
+    }
+    assert(s_keypad_idle_warning_log_count == 1U);
+    (void)poll_raw(150);
+    assert(s_keypad_idle_warning_log_count == 2U);
+
+    keypad_button_adapter_stop_boot();
+    assert(keypad_button_adapter_start_boot(
+        boot_prompt_callback,
+        &context_token
+    ) == ESP_OK);
+    for (unsigned sample = 0U; sample < 299U; ++sample) {
+        (void)poll_raw(150);
+    }
+    assert(s_keypad_idle_warning_log_count == 2U);
+    (void)poll_raw(150);
+    assert(s_keypad_idle_warning_log_count == 3U);
+
+    (void)poll_raw(4000);
+    (void)poll_raw(4000);
+    (void)poll_raw(4000);
+    assert(strstr(s_last_transition_log, "raw=4000") != NULL);
+    assert(strstr(s_last_transition_log, "release_armed=1") != NULL);
+    (void)poll_raw(3340);
+    (void)poll_raw(3340);
+    (void)poll_raw(3340);
+    assert(strstr(s_last_transition_log, "raw=3340") != NULL);
+    assert(strstr(s_last_transition_log, "release_armed=0") != NULL);
+    s_callbacks[4](&s_buttons[4], s_callback_user_data[4]);
+    assert(s_boot_callback_calls == 1U);
+    for (unsigned sample = 0U; sample < 600U; ++sample) {
+        (void)poll_raw(3340);
+    }
+    assert(s_keypad_idle_warning_log_count == 3U);
+
+    keypad_button_adapter_stop_boot();
+    assert(keypad_button_adapter_start_boot(
+        boot_prompt_callback,
+        &context_token
+    ) == ESP_OK);
+    for (unsigned sample = 0U; sample < 299U; ++sample) {
+        (void)poll_raw(3340);
+    }
+    assert(s_keypad_idle_warning_log_count == 3U);
+    (void)poll_raw(3340);
+    assert(s_keypad_idle_warning_log_count == 4U);
+
+    keypad_button_adapter_stop();
+    reset_test_state();
+    assert(keypad_button_adapter_init() == ESP_OK);
+    s_now_us = 70000000LL;
+    s_boot_callback_expected_context = &context_token;
+    assert(keypad_button_adapter_start_boot(
+        boot_prompt_callback,
+        &context_token
+    ) == ESP_OK);
+    for (unsigned sample = 0U; sample < 299U; ++sample) {
+        (void)poll_raw(150);
+    }
+    assert(s_keypad_idle_warning_log_count == 0U);
+    (void)poll_raw(150);
+    assert(s_keypad_idle_warning_log_count == 1U);
+    keypad_button_adapter_stop();
+
+    reset_test_state();
+    assert(keypad_button_adapter_init() == ESP_OK);
+    for (unsigned sample = 0U; sample < 500U; ++sample) {
+        (void)poll_raw(150);
+    }
+    assert(s_keypad_idle_warning_log_count == 0U);
+    keypad_button_adapter_stop();
+}
+
+
+static void test_idle_warning_latches_gate_armed_before_boot_start(void)
+{
+    reset_test_state();
+    assert(keypad_button_adapter_init() == ESP_OK);
+    (void)poll_raw(4000);
+    (void)poll_raw(4000);
+    (void)poll_raw(4000);
+
+    int context_token = 0;
+    s_boot_callback_expected_context = &context_token;
+    assert(keypad_button_adapter_start_boot(
+        boot_prompt_callback,
+        &context_token
+    ) == ESP_OK);
+    /* The first monitored key sample closes the previously armed gate. */
+    for (unsigned sample = 0U; sample < 400U; ++sample) {
+        (void)poll_raw(3340);
+    }
+    assert(s_keypad_idle_warning_log_count == 0U);
+    keypad_button_adapter_stop();
+}
+
 int main(void)
 {
     test_keypad_buttons_use_one_broker_sample();
     test_debounced_button_callback_posts_keypad_event();
     test_boot_callback_routes_only_while_prompt_is_active();
     test_adc_polling_is_quiet_until_press_registration();
+    test_settled_level_boundaries_and_pending_run();
+    test_settled_level_ignores_errors_and_resets_on_restart();
+    test_settled_level_slow_ramp_and_gate_open();
+    test_idle_warning_delay_rate_limit_and_armed_lifecycle();
+    test_idle_warning_latches_gate_armed_before_boot_start();
     puts("keypad ADC ownership tests passed");
     return 0;
 }

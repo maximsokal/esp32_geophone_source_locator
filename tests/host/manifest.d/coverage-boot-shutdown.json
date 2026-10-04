@@ -19,6 +19,9 @@
       "defines": ["KEYPAD_TEST_LOG_CAPTURE=1"],
       "sources": [
         "tests/host/button_vendor_runtime.c",
+        "components/adc_service/adc_service.c",
+        "components/adc_service/adc_service_channel.c",
+        "components/adc_service/adc_service_read.c",
         "components/keypad/keypad.c",
         "components/keypad/keypad_button_adapter.c",
         "components/keypad/keypad_decode.c",
