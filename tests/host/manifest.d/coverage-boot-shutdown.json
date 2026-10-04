@@ -4,11 +4,64 @@
     {
       "name": "app_storage_boot_failure",
       "sources": [
-        "tests/host/app_storage_boot_failure_test.c"
+        "tests/host/app_storage_boot_failure_test.c",
+        "main/app_storage_boot_policy.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/app_storage_boot",
+        "main",
+        "components/keypad/include",
+        "components/ui_i18n/include"
+      ]
+    },
+    {
+      "name": "app_storage_boot_keypad_pipeline",
+      "defines": ["KEYPAD_TEST_LOG_CAPTURE=1"],
+      "sources": [
+        "components/keypad/keypad.c",
+        "components/keypad/keypad_button_adapter.c",
+        "components/keypad/keypad_decode.c",
+        "main/app_storage_boot_ui.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
+        "main/app_storage_boot_policy.c",
+        "tests/host/app_storage_boot_keypad_pipeline_test.c"
+      ],
+      "include_dirs": [
+        "components/keypad/tests/stubs",
+        "tests/host/stubs/app_storage_boot_ui",
+        "components/adc_service/include",
+        "tests/host/stubs/app_storage_boot",
+        "main",
+        "components/keypad/include",
+        "components/ui_i18n/include"
+      ]
+    },
+    {
+      "name": "app_storage_boot_policy",
+      "sources": [
+        "tests/host/app_storage_boot_policy_test.c",
+        "main/app_storage_boot_policy.c"
       ],
       "include_dirs": [
         "tests/host/stubs/app_storage_boot",
         "main"
+      ]
+    },
+    {
+      "name": "app_storage_boot_ui",
+      "sources": [
+        "main/app_storage_boot_ui.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
+        "tests/host/app_storage_boot_ui_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/app_storage_boot_ui",
+        "tests/host/stubs/app_storage_boot",
+        "main",
+        "components/keypad/include",
+        "components/ui_i18n/include"
       ]
     }
   ]

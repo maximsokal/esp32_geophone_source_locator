@@ -5,6 +5,8 @@ idf_component_register(
         app_startup.c
         app_startup_status.c
         app_storage_boot.c
+        app_storage_boot_ui.c
+        app_storage_boot_policy.c
         app_shutdown.c
         app_poweroff.c
 

@@ -55,6 +55,15 @@
 #define APP_TASK_PRIORITY_STORAGE_SERVICE 3
 #define APP_TASK_STACK_STORAGE_SERVICE 8192
 
+/*
+ * Explicit SD reformat is low-priority service-core work. Filesystem calls
+ * yield after each successful sector-write batch; the external stack is safe
+ * while FatFs/SDSPI run with flash cache enabled and falls back to internal
+ * RAM if PSRAM allocation is unavailable.
+ */
+#define APP_TASK_PRIORITY_SD_FORMAT       2
+#define APP_TASK_STACK_SD_FORMAT       12288
+
 #define APP_TASK_PRIORITY_OBJECT_SERVICE  3
 #define APP_TASK_STACK_OBJECT_SERVICE  8192
 

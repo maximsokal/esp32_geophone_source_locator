@@ -168,6 +168,23 @@ void ui_render_boot_error_locked(
     const char *message
 );
 
+void ui_render_boot_recovery_locked(
+    const char *reason,
+    const char *technical_code,
+    const char *warning,
+    const char *primary_hint,
+    const char *retry_hint,
+    const char *cancel_hint
+);
+
+void ui_render_boot_format_progress_locked(unsigned percent);
+
+void ui_render_boot_recovery_result_locked(
+    bool success,
+    bool formatted,
+    const char *error_name
+);
+
 void ui_render_current_locked(void);
 void ui_refresh_dynamic_locked(void);
 void ui_refresh_header_locked(void);

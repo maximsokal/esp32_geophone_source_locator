@@ -2,6 +2,7 @@
 
 #include "app_startup_status.h"
 #include "app_storage_boot.h"
+#include "app_storage_boot_ui.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -291,7 +292,7 @@ static void app_startup_initialize_services(
         esp_log_timestamp();
 
     ESP_ERROR_CHECK(
-        display_init()
+        app_storage_boot_ui_ensure_display_initialized()
     );
 
     app_startup_log_elapsed(
@@ -303,7 +304,7 @@ static void app_startup_initialize_services(
         esp_log_timestamp();
 
     ESP_ERROR_CHECK(
-        ui_boot_init()
+        app_storage_boot_ui_ensure_initialized()
     );
 
     runtime_observability_log_snapshot("after-lvgl");
@@ -320,9 +321,10 @@ static void app_startup_initialize_services(
     stage_started_ms =
         esp_log_timestamp();
 
-    ESP_ERROR_CHECK(
-        storage_manager_init()
-    );
+    esp_err_t storage_err = storage_manager_init();
+    if (storage_err != ESP_OK) {
+        app_storage_boot_recover_storage_manager_failure(storage_err);
+    }
 
     app_startup_log_elapsed(
         "storage_manager_init",
@@ -543,6 +545,8 @@ void app_startup_run(void)
 
     app_startup_initialize_core();
 
+    app_storage_boot_ui_register();
+
     const uint32_t sd_started_ms =
         esp_log_timestamp();
 
@@ -554,10 +558,10 @@ void app_startup_run(void)
     );
 
     /*
-     * Prepare/seed the immutable React bundle immediately after the SD mount,
-     * before display_init() creates the esp_lcd device on shared SPI2. This
-     * guarantees that Web UI seed FAT/SDSPI traffic cannot overlap TFT DMA.
-     * Runtime HTTP delivery itself is flash-only.
+     * On the healthy-card path, prepare/seed the immutable React bundle
+     * before the shared boot display is initialized. A recovery prompt may
+     * initialize the display earlier so the user can see the failure and
+     * format progress. Runtime HTTP delivery itself is flash-only.
      */
     const uint32_t webui_started_ms =
         esp_log_timestamp();

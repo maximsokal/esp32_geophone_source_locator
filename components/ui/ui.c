@@ -122,6 +122,10 @@ static void ui_runtime_init_rollback(void)
 
 esp_err_t ui_boot_init(void)
 {
+    if (s_context.port_ready) {
+        return ESP_OK;
+    }
+
     memset(&s_context, 0, sizeof(s_context));
     atomic_init(
         &s_context.runtime_ready,
@@ -178,6 +182,69 @@ void ui_boot_show_error(const char *message)
     }
 
     ui_render_boot_error_locked(message);
+    lvgl_port_unlock();
+}
+
+
+void ui_boot_show_storage_recovery(
+    const char *reason,
+    const char *technical_code,
+    const char *warning,
+    const char *primary_hint,
+    const char *retry_hint,
+    const char *cancel_hint
+)
+{
+    if (!s_context.port_ready) {
+        return;
+    }
+
+    if (!lvgl_port_lock(500)) {
+        return;
+    }
+
+    ui_render_boot_recovery_locked(
+        reason,
+        technical_code,
+        warning,
+        primary_hint,
+        retry_hint,
+        cancel_hint
+    );
+    lvgl_port_unlock();
+}
+
+
+void ui_boot_show_format_progress(unsigned percent)
+{
+    if (!s_context.port_ready) {
+        return;
+    }
+
+    if (!lvgl_port_lock(500)) {
+        return;
+    }
+
+    ui_render_boot_format_progress_locked(percent);
+    lvgl_port_unlock();
+}
+
+
+void ui_boot_show_recovery_result(
+    bool success,
+    bool formatted,
+    const char *error_name
+)
+{
+    if (!s_context.port_ready) {
+        return;
+    }
+
+    if (!lvgl_port_lock(500)) {
+        return;
+    }
+
+    ui_render_boot_recovery_result_locked(success, formatted, error_name);
     lvgl_port_unlock();
 }
 

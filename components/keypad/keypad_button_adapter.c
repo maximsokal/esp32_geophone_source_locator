@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <stdint.h>
 
@@ -28,6 +29,8 @@ static const char *TAG = "KEYPAD";
 #define KEYPAD_SAMPLE_COUNT 16U
 #define KEYPAD_BUTTON_SAMPLE_COUNT KEYPAD_SAMPLE_COUNT
 #define KEYPAD_BUTTON_CACHE_WINDOW_US 1000LL
+#define KEYPAD_RELEASE_CONFIRM_SAMPLES 3U
+#define KEYPAD_BOOT_INPUT_DIAGNOSTIC_PERIOD_MS 2000U
 
 #if defined(ESP_PLATFORM) && \
     defined(CONFIG_APP_KEYPAD_TIMING_DIAGNOSTICS) && \
@@ -70,9 +73,70 @@ static int64_t s_adc_cache_time_us;
 static bool s_adc_cache_attempt_valid;
 static int64_t s_adc_cache_attempt_time_us;
 static keypad_key_t s_adc_cache_key;
-/* This is both the last reported raw state and the hysteresis state. */
+/* The release-gated key state also supplies the decoder's hysteresis state. */
 static keypad_key_t s_trace_key = KEYPAD_KEY_NONE;
+/* Last raw decoder output, including a first candidate blocked by the gate. */
+static keypad_key_t s_trace_decoded_key = KEYPAD_KEY_NONE;
 static bool s_release_armed;
+static unsigned s_release_idle_samples;
+static _Atomic(uint32_t) s_boot_input_last_log_ms;
+static _Atomic(bool) s_boot_input_log_seen;
+static _Atomic(keypad_event_callback_t) s_boot_event_callback = NULL;
+static _Atomic(void *) s_boot_event_context = NULL;
+
+
+static bool keypad_boot_monitor_active(void)
+{
+    return atomic_load_explicit(
+        &s_boot_event_callback,
+        memory_order_acquire
+    ) != NULL;
+}
+
+
+static bool keypad_boot_input_log_due(int64_t now_us)
+{
+    if (!keypad_boot_monitor_active()) {
+        return false;
+    }
+
+    if (!atomic_load_explicit(&s_boot_input_log_seen, memory_order_relaxed)) {
+        return true;
+    }
+
+    const uint32_t now_ms = (uint32_t)(now_us / 1000LL);
+    const uint32_t last_log_ms = atomic_load_explicit(
+        &s_boot_input_last_log_ms,
+        memory_order_relaxed
+    );
+    return (uint32_t)(now_ms - last_log_ms) >=
+        KEYPAD_BOOT_INPUT_DIAGNOSTIC_PERIOD_MS;
+}
+
+
+static void keypad_boot_input_log_unavailable(
+    int64_t now_us,
+    esp_err_t err
+)
+{
+    if (!keypad_boot_input_log_due(now_us)) {
+        return;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "KEYPAD_BOOT_INPUT raw=NA decoded=%s release_armed=%u adc_error=%s",
+        keypad_key_name(s_trace_decoded_key),
+        s_release_armed ? 1U : 0U,
+        esp_err_to_name(err)
+    );
+    atomic_store_explicit(
+        &s_boot_input_last_log_ms,
+        (uint32_t)(now_us / 1000LL),
+        memory_order_relaxed
+    );
+    atomic_store_explicit(&s_boot_input_log_seen, true, memory_order_relaxed);
+}
 
 
 #if defined(ESP_PLATFORM) && \
@@ -392,6 +456,7 @@ static uint8_t keypad_button_get_key_level(button_driver_t *driver)
     CONFIG_APP_KEYPAD_TIMING_DIAGNOSTICS
             s_adc_timing_busy++;
 #endif
+            keypad_boot_input_log_unavailable(now_us, err);
             return keypad_button_level_from_cache(button);
         }
         if (err != ESP_OK) {
@@ -401,6 +466,7 @@ static uint8_t keypad_button_get_key_level(button_driver_t *driver)
             s_adc_timing_errors++;
 #endif
             s_adc_cache_valid = false;
+            keypad_boot_input_log_unavailable(now_us, err);
             return keypad_button_level_from_cache(button);
         }
 
@@ -421,20 +487,32 @@ static uint8_t keypad_button_get_key_level(button_driver_t *driver)
         );
 #endif
 
-        if (raw >= KEYPAD_RELEASE_MIN_RAW) {
-            s_release_armed = true;
-        }
-
-        keypad_key_t decoded_key = keypad_decode_raw_with_previous(
+        const keypad_key_t raw_decoded_key = keypad_decode_raw_with_previous(
             raw,
             s_trace_key
         );
+        keypad_key_t decoded_key = raw_decoded_key;
+
+        if (
+            raw >= KEYPAD_RELEASE_MIN_RAW &&
+            raw <= 4095 &&
+            decoded_key == KEYPAD_KEY_NONE
+        ) {
+            if (s_release_idle_samples < KEYPAD_RELEASE_CONFIRM_SAMPLES) {
+                ++s_release_idle_samples;
+            }
+            if (s_release_idle_samples >= KEYPAD_RELEASE_CONFIRM_SAMPLES) {
+                s_release_armed = true;
+            }
+        } else {
+            s_release_idle_samples = 0U;
+        }
 
         /* Button objects start polling before the interactive boundary. Do
          * not let a floating input that happens to land in a calibrated key
-         * range create the first logical press; a full-scale release must be
-         * observed first. Once a press is admitted, the normal hysteresis and
-         * Button debounce rules own the rest of that press. */
+         * range create the first logical press; three consecutive high-idle
+         * samples above every key window must be observed first. Once a press
+         * is admitted, normal hysteresis and Button debounce own that press. */
         if (
             s_trace_key == KEYPAD_KEY_NONE &&
             decoded_key != KEYPAD_KEY_NONE &&
@@ -447,18 +525,65 @@ static uint8_t keypad_button_get_key_level(button_driver_t *driver)
             decoded_key != KEYPAD_KEY_NONE
         ) {
             s_release_armed = false;
+            s_release_idle_samples = 0U;
         }
-        if (decoded_key != s_trace_key) {
+        const int64_t diagnostic_time_us = esp_timer_get_time();
+        const bool boot_monitor_active = keypad_boot_monitor_active();
+        const bool decoded_key_changed =
+            raw_decoded_key != s_trace_decoded_key;
+        if (decoded_key_changed) {
+            /* One INFO line per decoded transition; the separate Button
+             * callback still marks a debounced, registered press. Log the
+             * decoder result before the release gate so rejected candidates
+             * remain visible with release_armed=0. */
             ESP_LOGI(
                 TAG,
-                "KEYPAD_RAW_TRANSITION raw=%d from=%s to=%s",
+                "KEYPAD_RAW_TRANSITION raw=%d from=%s to=%s decoded=%s release_armed=%u",
                 raw,
-                keypad_key_name(s_trace_key),
-                keypad_key_name(decoded_key)
+                keypad_key_name(s_trace_decoded_key),
+                keypad_key_name(raw_decoded_key),
+                keypad_key_name(raw_decoded_key),
+                s_release_armed ? 1U : 0U
             );
-            s_trace_key = decoded_key;
+            s_trace_decoded_key = raw_decoded_key;
+            if (boot_monitor_active) {
+                atomic_store_explicit(
+                    &s_boot_input_last_log_ms,
+                    (uint32_t)(diagnostic_time_us / 1000LL),
+                    memory_order_relaxed
+                );
+                atomic_store_explicit(
+                    &s_boot_input_log_seen,
+                    true,
+                    memory_order_relaxed
+                );
+            }
+        }
+        if (
+            !decoded_key_changed &&
+            boot_monitor_active &&
+            keypad_boot_input_log_due(diagnostic_time_us)
+        ) {
+            ESP_LOGI(
+                TAG,
+                "KEYPAD_BOOT_INPUT raw=%d decoded=%s release_armed=%u",
+                raw,
+                keypad_key_name(raw_decoded_key),
+                s_release_armed ? 1U : 0U
+            );
+            atomic_store_explicit(
+                &s_boot_input_last_log_ms,
+                (uint32_t)(diagnostic_time_us / 1000LL),
+                memory_order_relaxed
+            );
+            atomic_store_explicit(
+                &s_boot_input_log_seen,
+                true,
+                memory_order_relaxed
+            );
         }
 
+        s_trace_key = decoded_key;
         s_adc_cache_key = decoded_key;
         /* Timestamp the completed broker read, not the potentially stale
          * pre-read time. This keeps all five callbacks in this timer cycle on
@@ -482,6 +607,7 @@ static esp_err_t keypad_button_driver_delete(button_driver_t *driver)
 
 
 void keypad_button_adapter_stop(void);
+void keypad_button_adapter_stop_boot(void);
 
 
 static void keypad_button_callback(void *button_handle, void *user_data)
@@ -497,6 +623,15 @@ static void keypad_button_callback(void *button_handle, void *user_data)
         keypad_key_name(key),
         (int)key
     );
+
+    keypad_event_callback_t boot_callback =
+        atomic_load_explicit(&s_boot_event_callback, memory_order_acquire);
+    if (boot_callback != NULL) {
+        void *boot_context =
+            atomic_load_explicit(&s_boot_event_context, memory_order_relaxed);
+        boot_callback(key, boot_context);
+        return;
+    }
 
     /* No delay, storage, or application lock is allowed in this callback. */
     (void)app_events_post(
@@ -526,7 +661,11 @@ esp_err_t keypad_button_adapter_init(void)
     s_adc_cache_valid = false;
     s_adc_cache_attempt_valid = false;
     s_trace_key = KEYPAD_KEY_NONE;
+    s_trace_decoded_key = KEYPAD_KEY_NONE;
     s_release_armed = false;
+    s_release_idle_samples = 0U;
+    atomic_store_explicit(&s_boot_input_last_log_ms, 0U, memory_order_relaxed);
+    atomic_store_explicit(&s_boot_input_log_seen, false, memory_order_relaxed);
 
 #if defined(ESP_PLATFORM) && \
     defined(CONFIG_APP_KEYPAD_TIMING_DIAGNOSTICS) && \
@@ -634,6 +773,8 @@ esp_err_t keypad_button_adapter_read_key(keypad_key_t *key)
 
 void keypad_button_adapter_stop(void)
 {
+    keypad_button_adapter_stop_boot();
+
 #if defined(ESP_PLATFORM) && \
     defined(CONFIG_APP_KEYPAD_TIMING_DIAGNOSTICS) && \
     CONFIG_APP_KEYPAD_TIMING_DIAGNOSTICS
@@ -650,6 +791,50 @@ void keypad_button_adapter_stop(void)
     s_adc_cache_valid = false;
     s_adc_cache_attempt_valid = false;
     s_trace_key = KEYPAD_KEY_NONE;
+    s_trace_decoded_key = KEYPAD_KEY_NONE;
     s_release_armed = false;
+    s_release_idle_samples = 0U;
+    atomic_store_explicit(&s_boot_input_last_log_ms, 0U, memory_order_relaxed);
+    atomic_store_explicit(&s_boot_input_log_seen, false, memory_order_relaxed);
     s_initialized = false;
+}
+
+
+esp_err_t keypad_button_adapter_start_boot(
+    keypad_event_callback_t callback,
+    void *user_context
+)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (callback == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    atomic_store_explicit(
+        &s_boot_event_context,
+        user_context,
+        memory_order_relaxed
+    );
+    atomic_store_explicit(
+        &s_boot_event_callback,
+        callback,
+        memory_order_release
+    );
+    atomic_store_explicit(&s_boot_input_last_log_ms, 0U, memory_order_relaxed);
+    atomic_store_explicit(&s_boot_input_log_seen, false, memory_order_relaxed);
+    return ESP_OK;
+}
+
+
+void keypad_button_adapter_stop_boot(void)
+{
+    atomic_store_explicit(
+        &s_boot_event_callback,
+        NULL,
+        memory_order_release
+    );
+    atomic_store_explicit(&s_boot_input_last_log_ms, 0U, memory_order_relaxed);
+    atomic_store_explicit(&s_boot_input_log_seen, false, memory_order_relaxed);
 }

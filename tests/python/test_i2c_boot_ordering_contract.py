@@ -37,14 +37,25 @@ def test_shared_i2c_sensor_bus_starts_after_keypad_display_and_sd_stack():
         startup, "static void app_startup_initialize_services("
     )
 
-    display = services.index("display_init()")
-    boot_screen = services.index("ui_boot_init()")
+    display = services.index("app_storage_boot_ui_ensure_display_initialized()")
+    boot_screen = services.index("app_storage_boot_ui_ensure_initialized()")
     storage = services.index("storage_manager_init()")
     ina3221 = services.index("ina3221_monitor_start()")
     wifi_init = services.index("wifi_manager_init()")
     wifi_start = services.index("wifi_manager_start()")
 
     assert display < boot_screen < storage < wifi_init < wifi_start < ina3221
+
+    boot_ui = read("main/app_storage_boot_ui.c")
+    display_helper = _function_body(
+        boot_ui, "esp_err_t app_storage_boot_ui_ensure_display_initialized(void)"
+    )
+    ui_helper = _function_body(
+        boot_ui, "esp_err_t app_storage_boot_ui_ensure_initialized(void)"
+    )
+    assert "display_init()" in display_helper
+    assert "app_storage_boot_ui_ensure_display_initialized()" in ui_helper
+    assert "ui_boot_init()" in ui_helper
 
 
 def test_ina3221_monitor_remains_non_fatal_at_its_new_call_site():

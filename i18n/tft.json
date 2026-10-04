@@ -142,6 +142,96 @@
       "uk": "МЕРЕЖА + UI...",
       "max_len": 15
     },
+    "boot.recovery_title": {
+      "en": "SD RECOVERY",
+      "uk": "ЗБІЙ SD",
+      "max_len": 11
+    },
+    "boot.reason_host_init": {
+      "en": "SD INTERFACE FAILED",
+      "uk": "ЗБІЙ SD-ІНТЕРФЕЙСУ",
+      "max_len": 24
+    },
+    "boot.reason_card_unavailable": {
+      "en": "CARD NOT RESPONDING",
+      "uk": "КАРТА НЕ ВІДПОВІДАЄ",
+      "max_len": 22
+    },
+    "boot.reason_fs_mount": {
+      "en": "FILESYSTEM NOT READABLE",
+      "uk": "ФАЙЛОВУ СИСТЕМУ НЕ ПРОЧИТАНО",
+      "max_len": 30
+    },
+    "boot.reason_write_probe": {
+      "en": "CARD READ/WRITE TEST FAILED",
+      "uk": "ЗБІЙ ПЕРЕВІРКИ ЧИТАННЯ/ЗАПИСУ",
+      "max_len": 34
+    },
+    "boot.reason_layout_init": {
+      "en": "STORAGE LAYOUT INIT FAILED",
+      "uk": "ЗБІЙ ІНІЦІАЛІЗАЦІЇ СХОВИЩА",
+      "max_len": 30
+    },
+    "boot.recovery_warning": {
+      "en": "ERASES ALL CARD DATA!",
+      "uk": "СТИРАЄ ВСІ ДАНІ КАРТИ!",
+      "max_len": 23
+    },
+    "boot.recovery_insert_card": {
+      "en": "INSERT CARD",
+      "uk": "ВСТАВТЕ КАРТУ",
+      "max_len": 13
+    },
+    "boot.recovery_format_hint": {
+      "en": "OK: FORMAT",
+      "uk": "OK: ФОРМАТ",
+      "max_len": 11
+    },
+    "boot.recovery_retry_hint": {
+      "en": "RIGHT: RETRY",
+      "uk": "RIGHT: ПОВТОРИТИ",
+      "max_len": 16
+    },
+    "boot.format_retry_hint": {
+      "en": "OK: RETRY FORMAT",
+      "uk": "OK: ПОВТОРИТИ",
+      "max_len": 16
+    },
+    "boot.format_power_hint": {
+      "en": "POWER OFF: INSERT CARD",
+      "uk": "ВИМКНІТЬ: ЗМІНІТЬ КАРТУ",
+      "max_len": 23
+    },
+    "boot.recovery_cancel_hint": {
+      "en": "LEFT/UP/DOWN: CANCEL",
+      "uk": "LEFT/UP/DOWN: СКАСУВАТИ",
+      "max_len": 24
+    },
+    "boot.format_progress": {
+      "en": "FORMATTING CARD,",
+      "uk": "ФОРМАТУВАННЯ КАРТИ,",
+      "max_len": 20
+    },
+    "boot.format_do_not_power_off": {
+      "en": "DO NOT POWER OFF",
+      "uk": "НЕ ВИМИКАЙТЕ ЖИВЛЕННЯ",
+      "max_len": 22
+    },
+    "boot.format_complete": {
+      "en": "FORMAT COMPLETE",
+      "uk": "ФОРМАТ ЗАВЕРШЕНО",
+      "max_len": 16
+    },
+    "boot.format_failed": {
+      "en": "FORMAT FAILED",
+      "uk": "ФОРМАТ НЕ ВДАВСЯ",
+      "max_len": 17
+    },
+    "boot.recovery_card_ready": {
+      "en": "CARD READY - CONTINUING",
+      "uk": "КАРТА ГОТОВА - ЗАПУСК ДАЛІ",
+      "max_len": 27
+    },
     "header.adc_idle": {
       "en": "ADC --",
       "uk": "ADC --",

@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "sd_card_write_readback_probe",
+      "sources": [
+        "components/sd_card/tests/sd_card_probe_host_test.c"
+      ],
+      "include_dirs": [
+        "components/sd_card/tests/stubs",
+        "components/sd_card/include",
+        "components/sd_card"
+      ]
+    },
+    {
+      "name": "sd_card_mount_recovery",
+      "sources": [
+        "components/sd_card/sd_card_mount_recovery.c",
+        "components/sd_card/sd_card_state.c",
+        "components/sd_card/tests/sd_card_mount_recovery_host_test.c"
+      ],
+      "include_dirs": [
+        "components/sd_card/tests/recovery_stubs",
+        "components/sd_card/include",
+        "components/sd_card"
+      ]
+    },
+    {
+      "name": "sd_card_format_flow",
+      "sources": [
+        "components/sd_card/sd_card_format.c",
+        "components/sd_card/tests/sd_card_format_host_test.c"
+      ],
+      "include_dirs": [
+        "components/sd_card/tests/format_stubs",
+        "components/app_config/include",
+        "components/sd_card/include",
+        "components/sd_card"
+      ]
+    }
+  ]
+}
