@@ -1,5 +1,7 @@
 #include "keypad.h"
 
+#include <stddef.h>
+
 #include <stdbool.h>
 
 #include "app_events.h"

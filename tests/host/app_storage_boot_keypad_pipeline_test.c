@@ -35,21 +35,17 @@
 #define PIPELINE_QUEUE_ITEM_SIZE 24U
 #define PIPELINE_BUTTON_COUNT 5U
 #define PIPELINE_BUTTON_PERIOD_US 10000LL
-#define PIPELINE_BUTTON_DEBOUNCE_TICKS 6U
 
 typedef struct {
     int raw;
     esp_err_t err;
 } scripted_adc_sample_t;
 
-typedef struct {
-    const button_driver_t *driver;
-    button_cb_t press_down_callback;
-    void *user_data;
-    uint8_t stable_level;
-    unsigned debounce_count;
+struct pipeline_timer {
+    esp_timer_create_args_t args;
     bool created;
-} pipeline_button_t;
+    bool running;
+};
 
 typedef struct fake_queue {
     unsigned item_size;
@@ -67,9 +63,7 @@ static unsigned s_adc_read_calls;
 static unsigned s_direct_adc_calls;
 static int64_t s_now_us;
 
-static pipeline_button_t s_buttons[PIPELINE_BUTTON_COUNT];
-static size_t s_button_count;
-static unsigned s_button_delete_count;
+static struct pipeline_timer s_button_timer;
 static unsigned s_registered_press_count;
 static keypad_key_t s_registered_keys[32];
 static unsigned s_app_keypad_events;
@@ -92,6 +86,10 @@ static unsigned s_unmount_calls;
 static bool s_format_failure_script[8];
 static unsigned s_format_failure_count;
 static unsigned s_format_start_calls;
+static bool s_fail_next_format_start;
+static bool s_fail_next_format_status;
+static unsigned s_format_start_errors;
+static unsigned s_format_status_errors;
 static unsigned s_format_status_calls;
 static unsigned s_current_format_status_call;
 static unsigned s_storage_init_calls;
@@ -131,6 +129,7 @@ static unsigned s_keypad_transition_log_count;
 static unsigned s_keypad_boot_diag_log_count;
 static char s_last_keypad_transition[256];
 static char s_last_keypad_diag[256];
+static unsigned s_boot_passed_log_count;
 
 
 static void copy_text(char *destination, size_t capacity, const char *source)
@@ -152,8 +151,20 @@ void keypad_test_log_capture(const char *tag, const char *format, va_list args)
     char line[256];
     (void)vsnprintf(line, sizeof(line), format, args);
 
+    if (strcmp(line, "Isolated SD startup check passed") == 0) {
+        ++s_boot_passed_log_count;
+    }
+
     if (strncmp(line, "KEYPAD_BUTTON_PRESS", 19U) == 0) {
         ++s_keypad_press_log_count;
+        assert(s_registered_press_count <
+            sizeof(s_registered_keys) / sizeof(s_registered_keys[0]));
+        char name[16];
+        int key = 0;
+        assert(sscanf(line, "KEYPAD_BUTTON_PRESS key=%15s value=%d", name, &key) == 2);
+        assert(key >= KEYPAD_KEY_LEFT && key <= KEYPAD_KEY_OK);
+        assert(strcmp(name, keypad_key_name((keypad_key_t)key)) == 0);
+        s_registered_keys[s_registered_press_count++] = (keypad_key_t)key;
         s_current_failure_prompt = false;
     } else if (strncmp(line, "KEYPAD_RAW_TRANSITION", 21U) == 0) {
         ++s_keypad_transition_log_count;
@@ -214,6 +225,10 @@ static void format_script_set(const bool *failures, unsigned count)
     s_current_format_status_call = 0U;
     s_trigger_power_after_format_failure = false;
     s_power_notification_pending = false;
+    s_fail_next_format_start = false;
+    s_fail_next_format_status = false;
+    s_format_start_errors = 0U;
+    s_format_status_errors = 0U;
 }
 
 
@@ -328,94 +343,52 @@ int64_t esp_timer_get_time(void)
 }
 
 
-esp_err_t iot_button_create(
-    const button_config_t *config,
-    const button_driver_t *driver,
-    button_handle_t *ret_button
-)
+esp_err_t esp_timer_create(const esp_timer_create_args_t *args, esp_timer_handle_t *timer)
 {
-    assert(config != NULL);
-    assert(config->short_press_time == 60U);
-    assert(config->long_press_time == 1500U);
-    assert(driver != NULL && driver->get_key_level != NULL);
-    assert(ret_button != NULL);
-    assert(s_button_count < PIPELINE_BUTTON_COUNT);
-
-    pipeline_button_t *button = &s_buttons[s_button_count++];
-    *button = (pipeline_button_t){
-        .driver = driver,
-        .stable_level = BUTTON_INACTIVE,
-        .created = true,
-    };
-    *ret_button = (button_handle_t)(void *)button;
+    assert(args != NULL && args->callback != NULL);
+    assert(timer != NULL && !s_button_timer.created);
+    assert(strcmp(args->name, "button_timer") == 0);
+    s_button_timer = (struct pipeline_timer){.args = *args, .created = true};
+    *timer = &s_button_timer;
     return ESP_OK;
 }
 
-
-esp_err_t iot_button_register_cb(
-    button_handle_t btn_handle,
-    button_event_t event,
-    button_event_args_t *event_args,
-    button_cb_t callback,
-    void *user_data
-)
+esp_err_t esp_timer_start_periodic(esp_timer_handle_t timer, uint64_t period_us)
 {
-    assert(btn_handle != NULL);
-    assert(event == BUTTON_PRESS_DOWN);
-    assert(event_args == NULL);
-    assert(callback != NULL);
-    assert(user_data != NULL);
-
-    pipeline_button_t *button = (pipeline_button_t *)(void *)btn_handle;
-    button->press_down_callback = callback;
-    button->user_data = user_data;
+    assert(timer == &s_button_timer && timer->created);
+    assert(period_us == PIPELINE_BUTTON_PERIOD_US);
+    timer->running = true;
     return ESP_OK;
 }
 
-
-esp_err_t iot_button_delete(button_handle_t btn_handle)
+esp_err_t esp_timer_stop(esp_timer_handle_t timer)
 {
-    assert(btn_handle != NULL);
-    pipeline_button_t *button = (pipeline_button_t *)(void *)btn_handle;
-    button->created = false;
-    ++s_button_delete_count;
-    if (s_button_delete_count == PIPELINE_BUTTON_COUNT) {
-        memset(s_buttons, 0, sizeof(s_buttons));
-        s_button_count = 0U;
-        s_button_delete_count = 0U;
-    }
+    assert(timer == &s_button_timer && timer->created);
+    timer->running = false;
     return ESP_OK;
 }
 
+esp_err_t esp_timer_delete(esp_timer_handle_t timer)
+{
+    assert(timer == &s_button_timer && timer->created && !timer->running);
+    timer->created = false;
+    return ESP_OK;
+}
+
+esp_err_t gpio_intr_disable(gpio_num_t gpio)
+{
+    (void)gpio;
+    assert(false); /* keypad drivers do not enable GPIO power-save mode */
+    return ESP_ERR_INVALID_STATE;
+}
 
 static void pipeline_button_tick(void)
 {
     s_now_us += PIPELINE_BUTTON_PERIOD_US;
-    for (size_t i = 0U; i < s_button_count; ++i) {
-        pipeline_button_t *button = &s_buttons[i];
-        if (!button->created) {
-            continue;
-        }
-
-        const uint8_t level = button->driver->get_key_level(
-            (button_driver_t *)button->driver
-        );
-        if (level != button->stable_level) {
-            if (++button->debounce_count >= PIPELINE_BUTTON_DEBOUNCE_TICKS) {
-                button->stable_level = level;
-                button->debounce_count = 0U;
-                if (level == BUTTON_ACTIVE && button->press_down_callback != NULL) {
-                    assert(s_registered_press_count <
-                        sizeof(s_registered_keys) / sizeof(s_registered_keys[0]));
-                    s_registered_keys[s_registered_press_count++] =
-                        (keypad_key_t)(uintptr_t)button->user_data;
-                    button->press_down_callback(button, button->user_data);
-                }
-            }
-        } else {
-            button->debounce_count = 0U;
-        }
-    }
+    assert(s_button_timer.created && s_button_timer.running);
+    /* Run the callback captured from production iot_button.c. It owns both
+     * the real button list order and the debounce/press/release state machine. */
+    s_button_timer.args.callback(s_button_timer.args.arg);
 }
 
 
@@ -732,6 +705,11 @@ esp_err_t sd_card_format_fat32_task_start(sdmmc_card_t *card, bool confirmed)
 {
     assert(card == &s_fake_card);
     assert(confirmed);
+    if (s_fail_next_format_start) {
+        s_fail_next_format_start = false;
+        ++s_format_start_errors;
+        return ESP_ERR_NO_MEM;
+    }
     assert(s_format_start_calls < s_format_failure_count);
     ++s_format_start_calls;
     s_current_format_status_call = 0U;
@@ -743,6 +721,11 @@ esp_err_t sd_card_format_fat32_task_get_status(sd_card_format_status_t *out_stat
 {
     assert(out_status != NULL);
     assert(s_format_start_calls > 0U);
+    if (s_fail_next_format_status) {
+        s_fail_next_format_status = false;
+        ++s_format_status_errors;
+        return ESP_FAIL;
+    }
     ++s_format_status_calls;
     if (s_current_format_status_call++ == 0U) {
         *out_status = (sd_card_format_status_t){
@@ -798,9 +781,9 @@ static void test_first_press_after_3600_idle_completes_pipeline(void)
      * mutex timeout. */
     adc_script_append(2873, ESP_OK, 8U);
     adc_script_append(3600, ESP_OK, 3U);
-    adc_script_append(2873, ESP_OK, 2U);
+    adc_script_append(3340, ESP_OK, 2U);
     adc_script_append(0, ESP_ERR_TIMEOUT, 1U);
-    adc_script_append(2873, ESP_OK, 10U);
+    adc_script_append(3340, ESP_OK, 10U);
     adc_script_append(3600, ESP_OK, 80U);
 
     const unsigned presses_before = s_registered_press_count;
@@ -931,6 +914,124 @@ static void test_failed_format_power_notification_cancels_and_powers_off(void)
 }
 
 
+static void prepare_independent_pipeline_case(void)
+{
+    prepare_keypad();
+    app_storage_boot_ui_register();
+    adc_script_clear();
+    s_mount_result = ESP_OK;
+    s_probe_result = ESP_FAIL;
+    s_registered_press_count = 0U;
+    s_keypad_press_log_count = 0U;
+    s_format_result_count = 0U;
+    s_format_progress_count = 0U;
+    s_failure_prompt_count = 0U;
+    s_boot_passed_log_count = 0U;
+    s_app_keypad_events = 0U;
+    s_diagnostic_calls = 0U;
+}
+
+
+static void assert_successful_boot_after_one_ok(void)
+{
+    assert(s_registered_press_count == 1U);
+    assert(s_registered_keys[0] == KEYPAD_KEY_OK);
+    assert(s_keypad_press_log_count == 1U);
+    assert(s_format_start_calls == 1U);
+    assert(s_format_result_count == 1U && s_format_results[0]);
+    assert(s_format_result_formatted[0]);
+    assert(s_format_progress_count >= 3U);
+    assert(s_format_progress[0] == 0U);
+    bool saw_intermediate_progress = false;
+    for (unsigned i = 0U; i < s_format_progress_count; ++i) {
+        saw_intermediate_progress |= s_format_progress[i] > 0U &&
+            s_format_progress[i] < 100U;
+        if (i > 0U) {
+            assert(s_format_progress[i] >= s_format_progress[i - 1U]);
+        }
+    }
+    assert(saw_intermediate_progress);
+    assert(s_format_progress[s_format_progress_count - 1U] == 100U);
+    assert(s_diagnostic_calls == 1U);
+    assert(s_boot_passed_log_count == 1U);
+    assert(s_app_keypad_events == 0U);
+}
+
+
+static void test_ok_boundary_matrix_completes_startup(void)
+{
+    const int idle_values[] = {3600, 3799, 4095};
+    const int ok_values[] = {2571, 2873, 3324, 3340, 3484};
+    for (unsigned idle = 0U; idle < 3U; ++idle) {
+        for (unsigned ok = 0U; ok < 5U; ++ok) {
+            prepare_independent_pipeline_case();
+            format_script_set((const bool[]){false}, 1U);
+            adc_script_append(idle_values[idle], ESP_OK, 3U);
+            adc_script_append(ok_values[ok], ESP_OK, 12U);
+            adc_script_append(idle_values[idle], ESP_OK, 80U);
+            app_storage_boot_run_diagnostic();
+            assert_successful_boot_after_one_ok();
+        }
+    }
+}
+
+
+static void test_bounce_and_held_ok_do_not_auto_retry_failed_format(void)
+{
+    prepare_independent_pipeline_case();
+    format_script_set((const bool[]){true, false}, 2U);
+    /* A floating/low input and a high-idle spike do not arm a format. */
+    adc_script_append(0, ESP_OK, 10U);
+    adc_script_append(255, ESP_OK, 10U);
+    adc_script_append(3600, ESP_OK, 1U);
+    adc_script_append(3340, ESP_OK, 10U);
+    adc_script_append(3600, ESP_OK, 3U);
+    /* A 20 ms excursion is shorter than the real vendor debounce. */
+    adc_script_append(3340, ESP_OK, 2U);
+    adc_script_append(3600, ESP_OK, 12U);
+    /* One long hold must not be replayed when the failed-format prompt opens. */
+    adc_script_append(3340, ESP_OK, 300U);
+    adc_script_append(3600, ESP_OK, 30U);
+    adc_script_append(3340, ESP_OK, 12U);
+    adc_script_append(3600, ESP_OK, 80U);
+    app_storage_boot_run_diagnostic();
+    assert(s_registered_press_count == 2U);
+    assert(s_registered_keys[0] == KEYPAD_KEY_OK);
+    assert(s_registered_keys[1] == KEYPAD_KEY_OK);
+    assert(s_format_start_calls == 2U);
+    assert(s_format_result_count == 2U);
+    assert(!s_format_results[0] && s_format_results[1]);
+    assert(s_failure_prompt_count == 1U);
+    assert(s_boot_passed_log_count == 1U);
+}
+
+
+static void test_format_start_or_status_error_allows_ok_retry(void)
+{
+    for (unsigned failure = 0U; failure < 2U; ++failure) {
+        prepare_independent_pipeline_case();
+        format_script_set((const bool[]){false, false}, 2U);
+        s_fail_next_format_start = failure == 0U;
+        s_fail_next_format_status = failure == 1U;
+        adc_script_append(3600, ESP_OK, 3U);
+        adc_script_append(3340, ESP_OK, 12U);
+        adc_script_append(3600, ESP_OK, 80U);
+        adc_script_append(3340, ESP_OK, 12U);
+        adc_script_append(3600, ESP_OK, 80U);
+        app_storage_boot_run_diagnostic();
+        assert(s_registered_press_count == 2U);
+        assert(s_format_result_count == 2U);
+        assert(!s_format_results[0] && s_format_results[1]);
+        assert(s_format_start_errors == (failure == 0U ? 1U : 0U));
+        assert(s_format_status_errors == (failure == 1U ? 1U : 0U));
+        assert(s_failure_prompt_count == 1U);
+        assert(s_boot_passed_log_count == 1U);
+        assert(strcmp(s_last_primary_hint, ui_tr(UI_I18N_KEY_BOOT_FORMAT_RETRY_HINT)) == 0);
+        assert(strcmp(s_last_retry_hint, ui_tr(UI_I18N_KEY_BOOT_FORMAT_POWER_HINT)) == 0);
+    }
+}
+
+
 int main(void)
 {
     s_saved_locale = UI_LOCALE_UK;
@@ -939,6 +1040,9 @@ int main(void)
     test_first_press_after_3600_idle_completes_pipeline();
     test_failed_format_shows_retry_then_second_ok_succeeds();
     test_failed_format_power_notification_cancels_and_powers_off();
+    test_ok_boundary_matrix_completes_startup();
+    test_bounce_and_held_ok_do_not_auto_retry_failed_format();
+    test_format_start_or_status_error_allows_ok_retry();
 
     keypad_stop_event_monitor();
     puts("APP_STORAGE_BOOT_KEYPAD_PIPELINE_PASS");

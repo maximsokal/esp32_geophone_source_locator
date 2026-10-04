@@ -18,6 +18,7 @@
       "name": "app_storage_boot_keypad_pipeline",
       "defines": ["KEYPAD_TEST_LOG_CAPTURE=1"],
       "sources": [
+        "tests/host/button_vendor_runtime.c",
         "components/keypad/keypad.c",
         "components/keypad/keypad_button_adapter.c",
         "components/keypad/keypad_decode.c",
@@ -28,6 +29,9 @@
         "tests/host/app_storage_boot_keypad_pipeline_test.c"
       ],
       "include_dirs": [
+        "tests/host/stubs/button_runtime",
+        "managed_components/espressif__button/include",
+        "managed_components/espressif__button/interface",
         "components/keypad/tests/stubs",
         "tests/host/stubs/app_storage_boot_ui",
         "components/adc_service/include",

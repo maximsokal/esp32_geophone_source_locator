@@ -23,7 +23,7 @@ static void test_boundary_noise_is_not_a_key(void)
         929, 950, 951, 964, 1027, 1044,
         1449, 1605, 1607, 1657,
         2347, 2411, 2415, 2474,
-        3484, 3487, 3497,
+        3485, 3487, 3497,
     };
 
     for (size_t i = 0U; i < sizeof(samples) / sizeof(samples[0]); ++i) {
@@ -58,7 +58,13 @@ static void test_deadband_edges_are_explicit(void)
     assert(keypad_decode_raw(2570) == KEYPAD_KEY_NONE);
     assert(keypad_decode_raw(2571) == KEYPAD_KEY_OK);
     assert(keypad_decode_raw(3324) == KEYPAD_KEY_OK);
-    assert(keypad_decode_raw(3325) == KEYPAD_KEY_NONE);
+    assert(keypad_decode_raw(3325) == KEYPAD_KEY_OK);
+    assert(keypad_decode_raw(3340) == KEYPAD_KEY_OK);
+    assert(keypad_decode_raw(3484) == KEYPAD_KEY_OK);
+    assert(keypad_decode_raw(3485) == KEYPAD_KEY_NONE);
+    assert(keypad_decode_raw(3600) == KEYPAD_KEY_NONE);
+    assert(keypad_decode_raw_with_previous(3340, KEYPAD_KEY_OK) == KEYPAD_KEY_OK);
+    assert(keypad_decode_raw_with_previous(3485, KEYPAD_KEY_OK) == KEYPAD_KEY_NONE);
 }
 
 

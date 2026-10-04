@@ -5,6 +5,7 @@ idf_component_register(
         "../../../../components/ad7606_driver/ad7606_presence_policy.c"
         "../../../../components/localization/localization.c"
         "../../../../components/object_format/object_format.c"
+        "../../../../components/seismic_buffer/seismic_envelope.c"
         "../../../../components/ui/ui_measurement_trace.c"
         "test_app_nrf_topology.c"
 
