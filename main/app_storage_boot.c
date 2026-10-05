@@ -37,6 +37,16 @@ static app_storage_recovery_ui_t s_recovery_ui;
 #define APP_STORAGE_BOOT_SD_MOUNT_RETRY_MS   150
 
 /*
+ * EXPERIMENT: blind delay before the very first SD command, to test whether
+ * cold power-on SD failures are a card power-up timing problem (holding RST
+ * long before release made the card behave). A 250 ms delay was tried before
+ * and made brownouts worse; this is a deliberate, time-boxed re-test with a
+ * longer value. If it does not change cold-boot behaviour, set it to 0 and
+ * remove it. 0 disables the delay and its log line.
+ */
+#define APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS 1000U
+
+/*
  * A 250 ms delay before the first attempt was tried here on the theory
  * that the shared rail needed more time to settle before the first SD
  * probe. It made brownouts worse, not better -- disproving that theory --
@@ -306,6 +316,19 @@ void app_storage_boot_run_diagnostic(void)
         TAG,
         "Starting isolated SD startup check"
     );
+
+#if APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS > 0U
+    ESP_LOGI(
+        TAG,
+        "SD_STARTUP_DELAY ms=%u reason=power-up experiment",
+        (unsigned)APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS
+    );
+    vTaskDelay(
+        pdMS_TO_TICKS(
+            APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS
+        )
+    );
+#endif
 
     sd_card_mount_report_t mount_report = {
         .stage = SD_CARD_MOUNT_STAGE_NONE,

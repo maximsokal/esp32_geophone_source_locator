@@ -44,6 +44,9 @@ typedef enum {
 
 static test_event_t s_events[32];
 static size_t s_event_count;
+static unsigned s_call_order;
+static unsigned s_first_delay_order;
+static unsigned s_first_mount_order;
 static esp_err_t s_mount_result;
 static esp_err_t s_mount_script[8];
 static size_t s_mount_script_count;
@@ -89,6 +92,9 @@ static void reset_fakes(void)
 {
     memset(s_events, 0, sizeof(s_events));
     s_event_count = 0U;
+    s_call_order = 0U;
+    s_first_delay_order = 0U;
+    s_first_mount_order = 0U;
     s_mount_result = ESP_OK;
     memset(s_mount_script, 0, sizeof(s_mount_script));
     s_mount_script_count = 0U;
@@ -138,6 +144,10 @@ static void set_mount_script(const esp_err_t *results, size_t count)
 
 esp_err_t sd_card_mount_recovery(sd_card_mount_report_t *report)
 {
+    const unsigned call_order = ++s_call_order;
+    if (s_mount_attempts == 0U) {
+        s_first_mount_order = call_order;
+    }
     push_event(EVENT_SD_MOUNT);
     const esp_err_t result =
         s_mount_attempts < s_mount_script_count
@@ -168,6 +178,10 @@ sdmmc_card_t *sd_card_get_card_handle(void)
 
 void vTaskDelay(TickType_t ticks)
 {
+    const unsigned call_order = ++s_call_order;
+    if (s_delay_calls == 0U) {
+        s_first_delay_order = call_order;
+    }
     assert(s_delay_calls < sizeof(s_delay_ticks) / sizeof(s_delay_ticks[0]));
     s_delay_ticks[s_delay_calls++] = ticks;
 }
@@ -461,9 +475,14 @@ static void test_mount_failure_uses_same_safe_shutdown_helper(void)
     run_diagnostic_until_poweroff();
 
     assert(s_mount_attempts == 3U);
-    assert(s_delay_calls == 2U);
-    assert(s_delay_ticks[0] == 150U);
-    assert(s_delay_ticks[1] == 150U);
+    const size_t powerup_delay_count =
+        APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS > 0U ? 1U : 0U;
+    assert(s_delay_calls == 2U + powerup_delay_count);
+    if (powerup_delay_count > 0U) {
+        assert(s_delay_ticks[0] == pdMS_TO_TICKS(APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS));
+    }
+    assert(s_delay_ticks[powerup_delay_count] == 150U);
+    assert(s_delay_ticks[powerup_delay_count + 1U] == 150U);
     assert(s_events[0] == EVENT_SD_MOUNT);
     assert(s_events[1] == EVENT_SD_MOUNT);
     assert(s_events[2] == EVENT_SD_MOUNT);
@@ -487,7 +506,7 @@ static void test_write_failure_uses_same_safe_shutdown_helper(void)
     assert(s_events[s_event_count - 2U] == EVENT_POWER_SHUTDOWN);
     assert(s_events[s_event_count - 1U] == EVENT_IDLE);
     assert(s_mount_attempts == 1U);
-    assert(s_delay_calls == 0U);
+    assert(s_delay_calls == (APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS > 0U ? 1U : 0U));
 }
 
 static void test_mount_retry_succeeds_before_boot_failure(void)
@@ -511,9 +530,15 @@ static void test_mount_retry_succeeds_before_boot_failure(void)
     };
     assert_sequence(expected, sizeof(expected) / sizeof(expected[0]));
     assert(s_mount_attempts == 3U);
-    assert(s_delay_calls == 2U);
-    assert(s_delay_ticks[0] == 150U);
-    assert(s_delay_ticks[1] == 150U);
+    const size_t powerup_delay_count =
+        APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS > 0U ? 1U : 0U;
+    assert(s_delay_calls == 2U + powerup_delay_count);
+    if (powerup_delay_count > 0U) {
+        assert(s_delay_ticks[0] == pdMS_TO_TICKS(APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS));
+    }
+    assert(s_delay_ticks[powerup_delay_count] == 150U);
+    assert(s_delay_ticks[powerup_delay_count + 1U] == 150U);
+    assert((powerup_delay_count > 0U) == (s_first_delay_order < s_first_mount_order));
 }
 
 

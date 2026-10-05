@@ -329,6 +329,37 @@ static void adc_script_append(int raw, esp_err_t err, unsigned count)
 }
 
 
+static void adc_script_prepend(int raw, esp_err_t err, unsigned count)
+{
+    assert(count <= PIPELINE_SCRIPT_CAPACITY - s_adc_script_count);
+    const size_t remaining = s_adc_script_count - s_adc_script_index;
+    memmove(
+        &s_adc_script[s_adc_script_index + count],
+        &s_adc_script[s_adc_script_index],
+        remaining * sizeof(s_adc_script[0])
+    );
+    for (unsigned i = 0U; i < count; ++i) {
+        s_adc_script[s_adc_script_index + i] = (scripted_adc_sample_t){
+            .raw = raw,
+            .err = err,
+        };
+    }
+    s_adc_script_count += count;
+    if (s_cancel_at_adc_index > 0U && s_cancel_at_adc_index >= s_adc_script_index) {
+        s_cancel_at_adc_index += count;
+    }
+}
+
+
+static void prepend_powerup_samples(int raw)
+{
+    const unsigned poll_count = (unsigned)(
+        pdMS_TO_TICKS(APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS) / 10U
+    );
+    adc_script_prepend(raw, ESP_OK, poll_count);
+}
+
+
 static void format_script_set(const bool *failures, unsigned count)
 {
     assert(count <= sizeof(s_format_failure_script) /
@@ -939,6 +970,7 @@ static void test_first_press_after_3600_idle_completes_pipeline(void)
     adc_script_append(0, ESP_ERR_TIMEOUT, 1U);
     adc_script_append(3340, ESP_OK, 10U);
     adc_script_append(3600, ESP_OK, 80U);
+    prepend_powerup_samples(2873);
 
     const unsigned presses_before = s_registered_press_count;
     app_storage_boot_run_diagnostic();
@@ -1044,6 +1076,7 @@ static void test_failed_format_power_notification_cancels_and_powers_off(void)
     adc_script_append(4095, ESP_OK, 3U);
     adc_script_append(2873, ESP_OK, 12U);
     adc_script_append(4095, ESP_OK, 80U);
+    prepend_powerup_samples(4095);
     s_mount_result = ESP_OK;
     s_probe_result = ESP_FAIL;
 
@@ -1133,6 +1166,7 @@ static void test_ok_boundary_matrix_completes_startup(void)
             adc_script_append(idle_values[idle], ESP_OK, 3U);
             adc_script_append(ok_values[ok], ESP_OK, 12U);
             adc_script_append(idle_values[idle], ESP_OK, 80U);
+            prepend_powerup_samples(idle_values[idle]);
             app_storage_boot_run_diagnostic();
             assert_successful_boot_after_one_ok();
         }
@@ -1158,6 +1192,7 @@ static void test_bounce_and_held_ok_do_not_auto_retry_failed_format(void)
     adc_script_append(3600, ESP_OK, 30U);
     adc_script_append(3340, ESP_OK, 12U);
     adc_script_append(3600, ESP_OK, 80U);
+    prepend_powerup_samples(0);
     app_storage_boot_run_diagnostic();
     assert(s_registered_press_count == 2U);
     assert(s_registered_keys[0] == KEYPAD_KEY_OK);
@@ -1182,6 +1217,7 @@ static void test_format_start_or_status_error_allows_ok_retry(void)
         adc_script_append(3600, ESP_OK, 80U);
         adc_script_append(3340, ESP_OK, 12U);
         adc_script_append(3600, ESP_OK, 80U);
+        prepend_powerup_samples(3600);
         app_storage_boot_run_diagnostic();
         assert(s_registered_press_count == 2U);
         assert(s_format_result_count == 2U);
@@ -1500,6 +1536,7 @@ static void test_field_replay_then_wiring_recovery_uses_same_session(void)
     assert(saw_armed_periodic_after_idle);
 
     s_probe_result = ESP_OK;
+    prepend_powerup_samples(4000);
     app_storage_boot_run_diagnostic();
     assert(s_mount_calls > 0U && s_probe_calls > 0U);
     assert(s_diagnostic_calls == 1U);
