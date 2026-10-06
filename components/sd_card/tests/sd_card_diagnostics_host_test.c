@@ -41,6 +41,48 @@ static void reset_fakes(void)
 }
 
 
+/* The READ-stage diagnostics (SD_PROBE_DIAG) pull in directory, card and delay
+ * helpers; this test never reaches that path, so inert fakes satisfy the linker. */
+DIR *opendir(const char *path)
+{
+    (void)path;
+    return NULL;
+}
+
+struct dirent *readdir(DIR *directory)
+{
+    (void)directory;
+    return NULL;
+}
+
+int closedir(DIR *directory)
+{
+    (void)directory;
+    return 0;
+}
+
+void vTaskDelay(TickType_t ticks)
+{
+    (void)ticks;
+}
+
+esp_err_t sdmmc_get_status(sdmmc_card_t *card)
+{
+    (void)card;
+    return ESP_OK;
+}
+
+esp_err_t sd_card_get_info(sd_card_info_t *info)
+{
+    (void)info;
+    return ESP_ERR_INVALID_STATE;
+}
+
+sdmmc_card_t *sd_card_internal_card(void)
+{
+    return NULL;
+}
+
 const char *esp_err_to_name(esp_err_t error)
 {
     (void)error;

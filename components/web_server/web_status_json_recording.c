@@ -4,6 +4,12 @@
 #include "nrf_topology_service.h"
 #include "recording_gate.h"
 #include "seismic_recorder.h"
+#if defined(ESP_PLATFORM)
+#include "storage_manager.h"
+#else
+#include <stdbool.h>
+bool storage_manager_is_ready(void);
+#endif
 #include "workflow_service.h"
 
 
@@ -97,13 +103,19 @@ bool web_status_json_add_recording_gate(cJSON *root)
 
     nrf_topology_leveling_summary_t leveling;
     const esp_err_t err = nrf_topology_service_get_leveling_summary(&leveling);
+    const bool storage_available = storage_manager_is_ready();
 
     if (cJSON_AddBoolToObject(object, "available", err == ESP_OK) == NULL) {
         return false;
     }
 
     if (err != ESP_OK) {
-        return cJSON_AddStringToObject(object, "error", esp_err_to_name(err)) != NULL;
+        if (cJSON_AddStringToObject(object, "error", esp_err_to_name(err)) == NULL) {
+            return false;
+        }
+        return storage_available ||
+            (cJSON_AddBoolToObject(object, "allowed", false) != NULL &&
+             cJSON_AddStringToObject(object, "reason", "STORAGE_UNAVAILABLE") != NULL);
     }
 
     const recording_gate_result_t gate =
@@ -152,13 +164,16 @@ bool web_status_json_add_recording_gate(cJSON *root)
         cJSON_AddBoolToObject(
             object,
             "allowed",
-            gate.decision == RECORDING_GATE_ALLOWED_PLANAR_2D ||
-                gate.decision == RECORDING_GATE_ALLOWED_3D_CAPABLE
+            storage_available &&
+                (gate.decision == RECORDING_GATE_ALLOWED_PLANAR_2D ||
+                 gate.decision == RECORDING_GATE_ALLOWED_3D_CAPABLE)
         ) != NULL &&
         cJSON_AddStringToObject(
             object,
             "reason",
-            recording_gate_decision_reason(gate.decision)
+            storage_available
+                ? recording_gate_decision_reason(gate.decision)
+                : "STORAGE_UNAVAILABLE"
         ) != NULL &&
         cJSON_AddStringToObject(
             object,

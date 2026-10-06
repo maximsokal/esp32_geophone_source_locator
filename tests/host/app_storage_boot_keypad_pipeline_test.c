@@ -17,6 +17,7 @@
 #include "esp_timer.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "hw_inventory.h"
 #include "iot_button.h"
 #include "keypad.h"
 #include "../../components/keypad/keypad_decode.h"
@@ -24,6 +25,7 @@
 #include "sd_card.h"
 #include "sd_card_diagnostics.h"
 #include "sd_card_format.h"
+#include "sd_card_info.h"
 #include "storage_manager.h"
 #include "ui.h"
 #include "ui_i18n.h"
@@ -114,6 +116,8 @@ static bool s_power_notification_pending;
 static sdmmc_card_t s_fake_card;
 static esp_err_t s_mount_result = ESP_OK;
 static esp_err_t s_probe_result = ESP_FAIL;
+static int s_mount_fresult = APP_STORAGE_BOOT_FR_NO_FILESYSTEM;
+static uint64_t s_card_capacity_bytes = 32ULL * 1000U * 1000U * 1000U;
 static unsigned s_mount_calls;
 static unsigned s_probe_calls;
 static unsigned s_diagnostic_calls;
@@ -151,6 +155,7 @@ static char s_last_cancel_hint[96];
 static char s_last_error_name[48];
 static char s_last_boot_error[64];
 static unsigned s_recovery_prompt_count;
+static unsigned s_continue_without_storage_count;
 static unsigned s_failure_prompt_count;
 static unsigned s_format_result_count;
 static bool s_format_results[8];
@@ -351,11 +356,17 @@ static void adc_script_prepend(int raw, esp_err_t err, unsigned count)
 }
 
 
+/* Samples consumed by the boot-time delays before the recovery prompt: the SD
+ * power-up delay, plus two 150 ms retry gaps (three attempts) whenever the
+ * mount fails. Call after s_mount_result is set. */
 static void prepend_powerup_samples(int raw)
 {
-    const unsigned poll_count = (unsigned)(
+    unsigned poll_count = (unsigned)(
         pdMS_TO_TICKS(APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS) / 10U
     );
+    if (s_mount_result != ESP_OK) {
+        poll_count += 2U * (150U / 10U);
+    }
     adc_script_prepend(raw, ESP_OK, poll_count);
 }
 
@@ -400,6 +411,19 @@ static app_storage_boot_policy_input_t write_probe_failure(void)
         .probe_stage_name = "READ",
         .probe_errno = 2,
         .storage_manager_init_result = ESP_OK,
+    };
+}
+
+
+static app_storage_boot_policy_input_t format_eligible_mount_failure(void)
+{
+    return (app_storage_boot_policy_input_t){
+        .stage = APP_STORAGE_BOOT_STAGE_FS_MOUNT,
+        .err = ESP_FAIL,
+        .fresult = APP_STORAGE_BOOT_FR_NO_FILESYSTEM,
+        .probe_result = ESP_OK,
+        .storage_manager_init_result = ESP_OK,
+        .card_capacity_bytes = 32ULL * 1000U * 1000U * 1000U,
     };
 }
 
@@ -719,7 +743,14 @@ void ui_boot_show_storage_recovery(
     const char *cancel_hint
 )
 {
-    ++s_recovery_prompt_count;
+    if (
+        reason != NULL &&
+        strcmp(reason, ui_tr(UI_I18N_KEY_BOOT_CONTINUE_NO_STORAGE)) == 0
+    ) {
+        ++s_continue_without_storage_count;
+    } else {
+        ++s_recovery_prompt_count;
+    }
     copy_text(s_last_reason, sizeof(s_last_reason), reason);
     copy_text(s_last_technical_code, sizeof(s_last_technical_code), technical_code);
     copy_text(s_last_warning, sizeof(s_last_warning), warning);
@@ -833,7 +864,7 @@ esp_err_t sd_card_mount_recovery(sd_card_mount_report_t *report)
                 ? SD_CARD_MOUNT_STAGE_NONE
                 : SD_CARD_MOUNT_STAGE_FS_MOUNT,
             .err = s_mount_result,
-            .fresult = -1,
+            .fresult = s_mount_result == ESP_OK ? -1 : s_mount_fresult,
             .health = s_mount_result == ESP_OK
                 ? SD_CARD_HEALTH_READY
                 : SD_CARD_HEALTH_FILESYSTEM_UNAVAILABLE,
@@ -846,6 +877,15 @@ esp_err_t sd_card_mount_recovery(sd_card_mount_report_t *report)
 sdmmc_card_t *sd_card_get_card_handle(void)
 {
     return &s_fake_card;
+}
+
+
+esp_err_t sd_card_get_info(sd_card_info_t *info)
+{
+    assert(info != NULL);
+    memset(info, 0, sizeof(*info));
+    info->capacity_bytes = s_card_capacity_bytes;
+    return ESP_OK;
 }
 
 
@@ -957,8 +997,10 @@ static void test_first_press_after_3600_idle_completes_pipeline(void)
     prepare_keypad();
     adc_script_clear();
     format_script_set((const bool[]){false}, 1U);
-    s_mount_result = ESP_OK;
-    s_probe_result = ESP_FAIL;
+    s_mount_result = ESP_FAIL;
+    s_mount_fresult = APP_STORAGE_BOOT_FR_NO_FILESYSTEM;
+    s_card_capacity_bytes = 32ULL * 1000U * 1000U * 1000U;
+    s_probe_result = ESP_OK;
 
     /* A floating input initially looks exactly like OK. It is quarantined
      * until three consecutive high-idle samples arrive. The held OK then
@@ -976,14 +1018,14 @@ static void test_first_press_after_3600_idle_completes_pipeline(void)
     app_storage_boot_run_diagnostic();
 
     assert(s_mount_calls > 0U);
-    assert(s_probe_calls > 0U);
+    assert(s_probe_calls == 0U);
     assert(s_diagnostic_calls == 1U);
     assert(s_format_start_calls == 1U);
     assert(s_format_status_calls == 2U);
     assert(s_format_result_count == 1U);
     assert(s_format_results[0]);
     assert(s_format_result_formatted[0]);
-    assert(strstr(s_last_technical_code, "READ") != NULL);
+    assert(strstr(s_last_technical_code, "fr=13") != NULL);
     assert(s_registered_press_count == presses_before + 1U);
     assert(s_registered_keys[presses_before] == KEYPAD_KEY_OK);
     assert(s_keypad_press_log_count >= 1U);
@@ -1026,9 +1068,8 @@ static void test_failed_format_shows_retry_then_second_ok_succeeds(void)
     adc_script_append(4095, ESP_OK, 80U);
 
     const unsigned presses_before = s_registered_press_count;
-    const bool recovered = app_storage_boot_recover(write_probe_failure());
-
-    assert(recovered);
+    assert(app_storage_boot_recover(format_eligible_mount_failure()) ==
+        APP_STORAGE_BOOT_RECOVERY_SUCCEEDED);
     assert(s_format_start_calls == 2U);
     assert(s_format_status_calls == 4U);
     assert(s_format_result_count == 3U);
@@ -1076,9 +1117,11 @@ static void test_failed_format_power_notification_cancels_and_powers_off(void)
     adc_script_append(4095, ESP_OK, 3U);
     adc_script_append(2873, ESP_OK, 12U);
     adc_script_append(4095, ESP_OK, 80U);
+    s_mount_result = ESP_FAIL;
     prepend_powerup_samples(4095);
-    s_mount_result = ESP_OK;
-    s_probe_result = ESP_FAIL;
+    s_mount_fresult = APP_STORAGE_BOOT_FR_NO_FILESYSTEM;
+    s_card_capacity_bytes = 32ULL * 1000U * 1000U * 1000U;
+    s_probe_result = ESP_OK;
 
     s_poweroff_jump_ready = true;
     if (setjmp(s_poweroff_jump) == 0) {
@@ -1088,7 +1131,7 @@ static void test_failed_format_power_notification_cancels_and_powers_off(void)
     s_poweroff_jump_ready = false;
 
     assert(s_mount_calls > 0U);
-    assert(s_probe_calls > 0U);
+    assert(s_probe_calls == 0U);
     assert(s_format_start_calls == 1U);
     assert(s_format_result_count == 4U);
     assert(!s_format_results[s_format_result_count - 1U]);
@@ -1115,17 +1158,53 @@ static void prepare_independent_pipeline_case(void)
 {
     prepare_keypad();
     app_storage_boot_ui_register();
+    hw_inventory_init();
     adc_script_clear();
-    s_mount_result = ESP_OK;
-    s_probe_result = ESP_FAIL;
+    s_mount_result = ESP_FAIL;
+    s_mount_fresult = APP_STORAGE_BOOT_FR_NO_FILESYSTEM;
+    s_card_capacity_bytes = 32ULL * 1000U * 1000U * 1000U;
+    s_probe_result = ESP_OK;
     s_registered_press_count = 0U;
     s_keypad_press_log_count = 0U;
     s_format_result_count = 0U;
     s_format_progress_count = 0U;
+    s_recovery_prompt_count = 0U;
+    s_continue_without_storage_count = 0U;
     s_failure_prompt_count = 0U;
     s_boot_passed_log_count = 0U;
     s_app_keypad_events = 0U;
     s_diagnostic_calls = 0U;
+}
+
+
+static void test_no_card_auto_continues_without_storage(void)
+{
+    prepare_independent_pipeline_case();
+    format_script_set((const bool[]){false}, 1U);
+    s_mount_calls = 0U;
+    s_probe_calls = 0U;
+    s_mount_result = ESP_ERR_TIMEOUT;
+    s_probe_result = ESP_OK;
+    /* Align scripted ADC samples with power-up and retry delays before auto-continue. */
+    prepend_powerup_samples(4095);
+
+    const unsigned shutdowns_before = s_power_shutdown_calls;
+    app_storage_boot_run_diagnostic();
+
+    assert(s_mount_calls == 3U);
+    assert(s_probe_calls == 0U);
+    assert(s_format_start_calls == 0U);
+    assert(s_registered_press_count == 0U);
+    assert(s_power_shutdown_calls == shutdowns_before);
+    assert(s_recovery_prompt_count == 0U);
+    assert(s_continue_without_storage_count == 1U);
+    assert(strcmp(s_last_reason, ui_tr(UI_I18N_KEY_BOOT_CONTINUE_NO_STORAGE)) == 0);
+    assert(s_boot_passed_log_count == 0U);
+    assert(s_diagnostic_calls == 0U);
+    hw_module_info_t inventory;
+    assert(hw_inventory_get(HW_MODULE_SD_CARD, &inventory));
+    assert(inventory.state == HW_STATE_ABSENT);
+    assert(strcmp(inventory.reason, "no response") == 0);
 }
 
 
@@ -1251,7 +1330,8 @@ static void test_recorded_low_adc_observations_do_not_register_or_format(void)
     }
     /* Exit via the existing power notification after consuming observations. */
     s_cancel_at_adc_index = s_adc_script_count;
-    assert(!app_storage_boot_recover(write_probe_failure()));
+    assert(app_storage_boot_recover(write_probe_failure()) ==
+        APP_STORAGE_BOOT_RECOVERY_ABORTED);
     assert(s_adc_script_index == s_adc_script_count);
     assert(s_registered_press_count == 0U);
     assert(s_keypad_press_log_count == 0U);
@@ -1265,6 +1345,49 @@ static void test_recorded_low_adc_observations_do_not_register_or_format(void)
     assert(s_app_keypad_events == 0U);
     assert(s_adc_useful_calls == s_adc_discard_calls * 16U);
     assert(!s_adc_mutex_locked);
+}
+
+
+static void test_probe_failure_ok_key_stays_on_non_destructive_retry_screen(void)
+{
+    prepare_independent_pipeline_case();
+    format_script_set((const bool[]){false}, 1U);
+    s_recovery_prompt_count = 0U;
+    s_mount_calls = 0U;
+    s_probe_calls = 0U;
+    s_mount_result = ESP_OK;
+    s_probe_result = ESP_OK;
+    adc_script_append(4000, ESP_OK, 3U);
+    adc_script_append(3340, ESP_OK, 12U); /* OK is not a format decision here. */
+    adc_script_append(4000, ESP_OK, 20U);
+    adc_script_append(1800, ESP_OK, 12U); /* RIGHT retries the mounted card. */
+    adc_script_append(4000, ESP_OK, 80U);
+
+    assert(app_storage_boot_recover(write_probe_failure()) ==
+        APP_STORAGE_BOOT_RECOVERY_SUCCEEDED);
+
+    assert(s_recovery_prompt_count == 1U);
+    assert(strcmp(s_last_reason, ui_tr(UI_I18N_KEY_BOOT_REASON_FS_MOUNT)) == 0);
+    assert(strcmp(
+        s_last_technical_code,
+        "WRITE_PROBE/READ err=ESP_FAIL errno=2"
+    ) == 0);
+    assert(s_last_warning[0] == '\0');
+    assert(strcmp(
+        s_last_primary_hint,
+        ui_tr(UI_I18N_KEY_BOOT_RECOVERY_RETRY_HINT)
+    ) == 0);
+    assert(strcmp(s_last_retry_hint, ui_tr(UI_I18N_KEY_BOOT_ERROR_FOOTER)) == 0);
+    assert(strcmp(
+        s_last_cancel_hint,
+        ui_tr(UI_I18N_KEY_BOOT_RECOVERY_CANCEL_HINT)
+    ) == 0);
+    assert(s_registered_press_count == 2U);
+    assert(s_registered_keys[0] == KEYPAD_KEY_OK);
+    assert(s_registered_keys[1] == KEYPAD_KEY_RIGHT);
+    assert(s_mount_calls == 1U && s_probe_calls == 1U);
+    assert(s_format_start_calls == 0U);
+    assert(s_format_status_calls == 0U);
 }
 
 
@@ -1464,6 +1587,8 @@ static void test_field_replay_then_wiring_recovery_uses_same_session(void)
 {
     prepare_independent_pipeline_case();
     format_script_set((const bool[]){false}, 1U);
+    s_mount_result = ESP_OK;
+    s_probe_result = ESP_OK;
     s_storage_init_calls = 0U;
     s_recovery_prompt_count = 0U;
     s_now_us = 1611000LL;
@@ -1479,7 +1604,7 @@ static void test_field_replay_then_wiring_recovery_uses_same_session(void)
     for (unsigned sample = 0U; sample < 220U; ++sample) {
         adc_script_append(4000, ESP_OK, 1U);
     }
-    adc_script_append(3340, ESP_OK, 12U);
+    adc_script_append(1800, ESP_OK, 12U);
     adc_script_append(4000, ESP_OK, 80U);
 
     s_field_replay_snapshot_pending = true;
@@ -1489,16 +1614,15 @@ static void test_field_replay_then_wiring_recovery_uses_same_session(void)
 
     assert(!s_field_replay_snapshot_pending);
     assert(s_registered_press_count == 1U);
-    assert(s_registered_keys[0] == KEYPAD_KEY_OK);
+    assert(s_registered_keys[0] == KEYPAD_KEY_RIGHT);
     assert(s_keypad_press_log_count == 1U);
     assert(s_app_keypad_events == 0U);
     assert(s_storage_init_calls == 1U);
-    assert(s_format_start_calls == 1U);
-    assert(s_format_status_calls == 2U);
+    assert(s_format_start_calls == 0U);
+    assert(s_format_status_calls == 0U);
     assert(s_format_result_count == 1U && s_format_results[0]);
-    assert(s_format_result_formatted[0]);
-    assert(s_format_progress_count >= 2U);
-    assert(s_format_progress[s_format_progress_count - 1U] == 100U);
+    assert(!s_format_result_formatted[0]);
+    assert(s_format_progress_count == 0U);
     assert(s_recovery_prompt_count == 1U);
     assert(s_display_init_calls > 0U && s_boot_ui_init_calls > 0U);
     assert(s_adc_useful_calls == s_adc_discard_calls * 16U);
@@ -1541,7 +1665,7 @@ static void test_field_replay_then_wiring_recovery_uses_same_session(void)
     assert(s_mount_calls > 0U && s_probe_calls > 0U);
     assert(s_diagnostic_calls == 1U);
     assert(s_boot_passed_log_count == 1U);
-    assert(s_format_start_calls == 1U);
+    assert(s_format_start_calls == 0U);
 }
 
 
@@ -1558,7 +1682,8 @@ static void test_field_replay_prints_stats_for_visibility_fail_before(void)
         adc_script_append(raw, ESP_OK, 1U);
     }
     s_cancel_at_adc_index = s_adc_script_count;
-    assert(!app_storage_boot_recover(write_probe_failure()));
+    assert(app_storage_boot_recover(format_eligible_mount_failure()) ==
+        APP_STORAGE_BOOT_RECOVERY_ABORTED);
     assert(s_adc_script_index == FIELD_REPLAY_TICK_COUNT);
     printf(
         "KS_REPLAY_STATS transitions=%u boot_input=%u idle_invalid=%u max_raw=%d presses=%u\n",
@@ -1731,10 +1856,12 @@ int main(void)
     test_first_press_after_3600_idle_completes_pipeline();
     test_failed_format_shows_retry_then_second_ok_succeeds();
     test_failed_format_power_notification_cancels_and_powers_off();
+    test_no_card_auto_continues_without_storage();
     test_ok_boundary_matrix_completes_startup();
     test_bounce_and_held_ok_do_not_auto_retry_failed_format();
     test_format_start_or_status_error_allows_ok_retry();
     test_recorded_low_adc_observations_do_not_register_or_format();
+    test_probe_failure_ok_key_stays_on_non_destructive_retry_screen();
     test_field_replay_then_wiring_recovery_uses_same_session();
     test_keypad_settled_level_visibility_matrix();
 

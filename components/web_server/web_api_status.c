@@ -7,6 +7,12 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "object_store.h"
+#if defined(ESP_PLATFORM)
+#include "storage_manager.h"
+#else
+#include <stdbool.h>
+bool storage_manager_is_ready(void);
+#endif
 
 #define WEB_STATUS_SLOW_BUILD_US 100000LL
 
@@ -38,6 +44,29 @@ static esp_err_t web_api_status_send_storage_busy(
     return httpd_resp_send(
         request,
         "{\"storage_busy\":true}",
+        HTTPD_RESP_USE_STRLEN
+    );
+}
+
+static esp_err_t web_api_status_send_storage_unavailable(
+    httpd_req_t *request,
+    int64_t build_us
+)
+{
+    char timing[64];
+    (void)snprintf(
+        timing,
+        sizeof(timing),
+        "status-build;dur=%.1f;storage=unavailable",
+        (double)build_us / 1000.0
+    );
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(request, "Server-Timing", timing);
+    httpd_resp_set_status(request, "503 Service Unavailable");
+    return httpd_resp_send(
+        request,
+        "{\"storage_unavailable\":true}",
         HTTPD_RESP_USE_STRLEN
     );
 }
@@ -74,6 +103,13 @@ static esp_err_t web_api_status_handler(httpd_req_t *request)
     web_api_status_parse_query(request, &query);
 
     const int64_t started_us = esp_timer_get_time();
+    const bool storage_query =
+        query.include_objects || query.sessions_object_id[0] != '\0';
+    if (storage_query && !storage_manager_is_ready()) {
+        const int64_t build_us = esp_timer_get_time() - started_us;
+        return web_api_status_send_storage_unavailable(request, build_us);
+    }
+
     char *json = NULL;
     esp_err_t err = web_status_json_build_extended(
         &json,

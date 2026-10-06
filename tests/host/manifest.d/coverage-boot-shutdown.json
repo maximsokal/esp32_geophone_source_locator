@@ -3,20 +3,24 @@
   "tests": [
     {
       "name": "app_storage_boot_failure",
+      "defines": ["HW_INVENTORY_HOST_TEST=1"],
       "sources": [
         "tests/host/app_storage_boot_failure_test.c",
-        "main/app_storage_boot_policy.c"
+        "main/app_storage_boot_policy.c",
+        "components/hw_inventory/hw_inventory.c"
       ],
       "include_dirs": [
         "tests/host/stubs/app_storage_boot",
         "main",
         "components/keypad/include",
-        "components/ui_i18n/include"
+        "components/ui_i18n/include",
+        "components/sd_card/include",
+        "components/hw_inventory/include"
       ]
     },
     {
       "name": "app_storage_boot_keypad_pipeline",
-      "defines": ["KEYPAD_TEST_LOG_CAPTURE=1"],
+      "defines": ["KEYPAD_TEST_LOG_CAPTURE=1", "HW_INVENTORY_HOST_TEST=1"],
       "sources": [
         "tests/host/button_vendor_runtime.c",
         "components/adc_service/adc_service.c",
@@ -29,6 +33,7 @@
         "components/ui_i18n/ui_i18n.c",
         "components/ui_i18n/ui_i18n_catalog.gen.c",
         "main/app_storage_boot_policy.c",
+        "components/hw_inventory/hw_inventory.c",
         "tests/host/app_storage_boot_keypad_pipeline_test.c"
       ],
       "include_dirs": [
@@ -41,7 +46,9 @@
         "tests/host/stubs/app_storage_boot",
         "main",
         "components/keypad/include",
-        "components/ui_i18n/include"
+        "components/ui_i18n/include",
+        "components/sd_card/include",
+        "components/hw_inventory/include"
       ]
     },
     {

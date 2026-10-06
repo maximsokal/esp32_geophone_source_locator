@@ -71,7 +71,9 @@ def test_storage_manager_failure_enters_confirmed_recovery_and_retries_once():
     assert "app_storage_boot_recover_storage_manager_failure(storage_err);" in services
     assert "ESP_ERROR_CHECK(\n        storage_manager_init()" not in services
 
-    recovery = BOOT.split("static bool app_storage_boot_recover(", 1)[1].split(
+    recovery = BOOT.split(
+        "static app_storage_boot_recovery_result_t app_storage_boot_recover(", 1
+    )[1].split(
         "void app_storage_boot_run_diagnostic", 1
     )[0]
     assert "app_storage_boot_policy_classify(&input)" in recovery
@@ -105,11 +107,16 @@ def test_held_button_release_confirmation_contract_remains_in_adapter():
 
 
 def test_format_failure_keeps_retry_prompt_active_until_ok_or_poweroff():
-    recovery = BOOT.split("static bool app_storage_boot_recover(", 1)[1].split(
+    recovery = BOOT.split(
+        "static app_storage_boot_recovery_result_t app_storage_boot_recover(", 1
+    )[1].split(
         "void app_storage_boot_run_diagnostic", 1
     )[0]
     assert "s_recovery_ui.show_result(s_recovery_ui.context, false, err);" in recovery
-    assert "if (success) {\n                return true;\n            }\n            continue;" in recovery
+    assert (
+        "if (success) {\n                hw_inventory_report(HW_MODULE_SD_CARD, HW_STATE_PRESENT, \"ready\");\n"
+        "                return APP_STORAGE_BOOT_RECOVERY_SUCCEEDED;\n            }\n            continue;"
+    ) in recovery
     assert "continue;" in recovery
 
     assert "s_format_retry_pending = !success;" in RECOVERY_UI
@@ -158,6 +165,6 @@ def test_recovery_prompt_routes_shutdown_hook_to_decision_queue_and_cleans_up():
     assert "power_control_set_shutdown_notification_hook(NULL, NULL);" in RECOVERY_UI
     assert "keypad_stop_boot_event_monitor();" in RECOVERY_UI
     assert "if (item.shutdown_notification)" in RECOVERY_UI
-    assert "return APP_STORAGE_RECOVERY_DECISION_CANCEL;" in RECOVERY_UI
+    assert "return APP_STORAGE_RECOVERY_DECISION_SHUTDOWN;" in RECOVERY_UI
     assert "app_storage_boot_ui_map_key(action, item.key, true, &decision)" in RECOVERY_UI
     assert "Do not interrupt formatting" in RECOVERY_UI

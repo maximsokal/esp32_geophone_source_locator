@@ -4,6 +4,7 @@
 static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "GeoLocator 3D", /* app.title */
     "CHECK CARD, CS AND WIRING", /* boot.check_wiring */
+    "NO STORAGE - CONTINUING", /* boot.continue_no_storage */
     "PRESS POWER TO SHUT DOWN", /* boot.error_footer */
     "BOOT ERROR", /* boot.error_title */
     "ESP32-S3  |  INITIALIZING", /* boot.footer */
@@ -19,7 +20,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "SD INTERFACE FAILED", /* boot.reason_host_init */
     "STORAGE LAYOUT INIT FAILED", /* boot.reason_layout_init */
     "CARD READ/WRITE TEST FAILED", /* boot.reason_write_probe */
-    "LEFT/UP/DOWN: CANCEL", /* boot.recovery_cancel_hint */
+    "LEFT/UP/DOWN: NO SD", /* boot.recovery_cancel_hint */
     "CARD READY - CONTINUING", /* boot.recovery_card_ready */
     "OK: FORMAT", /* boot.recovery_format_hint */
     "INSERT CARD", /* boot.recovery_insert_card */
@@ -203,7 +204,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "HEAP     -- KB internal free", /* system.heap_empty */
     "ESP-IDF  %s", /* system.idf_version */
     "LANGUAGE: ENGLISH", /* system.language_english */
-    "UP/DN SELECT  OK APPLY  LEFT BACK", /* system.language_footer */
+    "UP/DN LANG  OK SET  RIGHT HARDWARE", /* system.language_footer */
     "LANGUAGE: UKRAINIAN", /* system.language_ukrainian */
     "LVGL     %d.%d.%d + esp_lvgl_port", /* system.lvgl_version */
     "PSRAM    %lu KB free", /* system.psram */
@@ -211,6 +212,22 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "SYSTEM", /* system.title */
     "UPTIME   %lld s", /* system.uptime */
     "UPTIME   -- s", /* system.uptime_empty */
+    "Required module issue", /* tft.hw.degraded_banner */
+    "AD7606", /* tft.hw.module.ad7606 */
+    "Barometer", /* tft.hw.module.barometer */
+    "Main XIAO", /* tft.hw.module.main_xiao */
+    "Power monitor", /* tft.hw.module.power_monitor */
+    "SD card", /* tft.hw.module.sd_card */
+    "Sensor mux", /* tft.hw.module.sensor_mux */
+    "OPT", /* tft.hw.optional */
+    "Remote sensors: {count}", /* tft.hw.remotes */
+    "REQ", /* tft.hw.required */
+    "Absent", /* tft.hw.state.absent */
+    "Degraded", /* tft.hw.state.degraded */
+    "Fault", /* tft.hw.state.fault */
+    "Present", /* tft.hw.state.present */
+    "Unknown", /* tft.hw.state.unknown */
+    "HARDWARE", /* tft.hw.title */
     "Back", /* tft.workflow.action.back */
     "Calculate positions", /* tft.workflow.action.calculate_positions */
     "Calculate source", /* tft.workflow.action.calculate_sources */
@@ -386,6 +403,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
 static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "GeoLocator 3D", /* app.title */
     "ПЕРЕВІРТЕ КАРТУ, CS І ДРОТИ", /* boot.check_wiring */
+    "БЕЗ SD - ПРОДОВЖУЄМО", /* boot.continue_no_storage */
     "НАТИСНІТЬ ЖИВЛЕННЯ ДЛЯ ВИМКНЕННЯ", /* boot.error_footer */
     "ПОМИЛКА ЗАПУСКУ", /* boot.error_title */
     "ESP32-S3  |  ЗАПУСК", /* boot.footer */
@@ -401,7 +419,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "ЗБІЙ SD-ІНТЕРФЕЙСУ", /* boot.reason_host_init */
     "ЗБІЙ ІНІЦІАЛІЗАЦІЇ СХОВИЩА", /* boot.reason_layout_init */
     "ЗБІЙ ПЕРЕВІРКИ ЧИТАННЯ/ЗАПИСУ", /* boot.reason_write_probe */
-    "LEFT/UP/DOWN: СКАСУВАТИ", /* boot.recovery_cancel_hint */
+    "LEFT/UP/DOWN: БЕЗ SD", /* boot.recovery_cancel_hint */
     "КАРТА ГОТОВА - ЗАПУСК ДАЛІ", /* boot.recovery_card_ready */
     "OK: ФОРМАТ", /* boot.recovery_format_hint */
     "ВСТАВТЕ КАРТУ", /* boot.recovery_insert_card */
@@ -585,7 +603,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "ВНУТР. КУЧА -- KB вільно", /* system.heap_empty */
     "ESP-IDF  %s", /* system.idf_version */
     "МОВА: АНГЛІЙСЬКА", /* system.language_english */
-    "UP/DN ВИБІР  OK ЗБЕРЕГТИ  LEFT НАЗАД", /* system.language_footer */
+    "UP/DN МОВА  OK ВИБІР  RIGHT ОБЛАДНАННЯ", /* system.language_footer */
     "МОВА: УКРАЇНСЬКА", /* system.language_ukrainian */
     "LVGL     %d.%d.%d + esp_lvgl_port", /* system.lvgl_version */
     "PSRAM    %lu KB вільно", /* system.psram */
@@ -593,6 +611,22 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "СИСТЕМА", /* system.title */
     "ЧАС      %lld с", /* system.uptime */
     "ЧАС      -- с", /* system.uptime_empty */
+    "Проблема з обов’язковим модулем", /* tft.hw.degraded_banner */
+    "AD7606", /* tft.hw.module.ad7606 */
+    "Барометр", /* tft.hw.module.barometer */
+    "Основний XIAO", /* tft.hw.module.main_xiao */
+    "Монітор живлення", /* tft.hw.module.power_monitor */
+    "SD-картка", /* tft.hw.module.sd_card */
+    "Мультиплексор", /* tft.hw.module.sensor_mux */
+    "НЕОБ.", /* tft.hw.optional */
+    "Віддалені датчики: {count}", /* tft.hw.remotes */
+    "ОБОВ.", /* tft.hw.required */
+    "Не підключено", /* tft.hw.state.absent */
+    "Обмежено", /* tft.hw.state.degraded */
+    "Несправність", /* tft.hw.state.fault */
+    "Підключено", /* tft.hw.state.present */
+    "Невідомо", /* tft.hw.state.unknown */
+    "ОБЛАДНАННЯ", /* tft.hw.title */
     "Назад", /* tft.workflow.action.back */
     "Розрахувати координати", /* tft.workflow.action.calculate_positions */
     "Визначити джерело", /* tft.workflow.action.calculate_sources */

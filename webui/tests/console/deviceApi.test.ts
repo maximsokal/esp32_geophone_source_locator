@@ -3,6 +3,7 @@ import {
   DEVICE_API_FAST_TIMEOUT_MS,
   fetchDeviceStatus,
   getCalcSettings,
+  isStorageAvailabilityError,
   saveCalcSettings,
   sendControl,
 } from '../../src/api/deviceApi';
@@ -115,6 +116,42 @@ describe('device API request pressure and failures', () => {
     await expect(fetchDeviceStatus(false)).rejects.toThrow(
       'ESP API 404 GET /api/status: ESP_ERR_NOT_FOUND',
     );
+  });
+
+  it('treats storage-unavailable 503 as terminal until the caller asks again', async () => {
+    let requests = 0;
+    const fetchMock = vi.fn(async () => {
+      requests += 1;
+      if (requests === 1) {
+        return jsonResponse({ storage_unavailable: true }, 503, 'Service Unavailable');
+      }
+      if (requests === 2) {
+        return jsonResponse({ storage_busy: true }, 503, 'Service Unavailable');
+      }
+      return jsonResponse({ system: { state: 'NOT_READY' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    let failure: unknown;
+    try {
+      await fetchDeviceStatus(true);
+    } catch (reason) {
+      failure = reason;
+    }
+    expect(isStorageAvailabilityError(failure)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    failure = undefined;
+    try {
+      await fetchDeviceStatus(true);
+    } catch (reason) {
+      failure = reason;
+    }
+    expect(isStorageAvailabilityError(failure)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await fetchDeviceStatus(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('aborts a hung fast status request at the bounded timeout', async () => {

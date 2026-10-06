@@ -13,7 +13,10 @@ import {
   measurementControlLocked,
   measurementOwnsRecorder,
 } from './measurementTransition';
-import { recordingGateBlocksStart as isRecordingGateBlockingStart } from './recordingGate';
+import {
+  recordingGateBlocksStart as isRecordingGateBlockingStart,
+  recordingStartUnavailable,
+} from './recordingGate';
 import { recordingGateReason, recordingGateWarning } from './recordingGateUi';
 import '../seismic/SavedSeismicViewer.css';
 import '../workflow/workflow.css';
@@ -117,6 +120,7 @@ export default function ObjectsFeature(props: Props) {
   const recordingToggleDisabled =
     busy ||
     anotherRecording ||
+    recordingStartUnavailable(recording?.available, status?.storage_available, selectedRecording) ||
     recordingGateBlocksStart ||
     (measurementLocked && measurement?.state !== 'RECORDING');
   const selectedSessions = selected !== null && sessions?.object_id === selected.id

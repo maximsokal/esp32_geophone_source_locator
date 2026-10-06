@@ -1,5 +1,6 @@
 #include "app_storage_boot.h"
 
+#include <stdint.h>
 #include <string.h>
 
 #include "app_poweroff.h"
@@ -11,8 +12,10 @@
 #include "sd_card.h"
 #include "sd_card_diagnostics.h"
 #include "sd_card_format.h"
+#include "sd_card_info.h"
 #include "storage_manager.h"
 #include "ui.h"
+#include "hw_inventory.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -25,6 +28,13 @@ static const char *TAG =
     "APP";
 
 static app_storage_recovery_ui_t s_recovery_ui;
+
+
+typedef enum {
+    APP_STORAGE_BOOT_RECOVERY_ABORTED = 0,
+    APP_STORAGE_BOOT_RECOVERY_SUCCEEDED,
+    APP_STORAGE_BOOT_RECOVERY_USER_CANCELLED,
+} app_storage_boot_recovery_result_t;
 
 
 /*
@@ -191,42 +201,98 @@ static app_storage_boot_stage_t app_storage_boot_policy_stage_from_mount(
 )
 {
     switch (stage) {
+        case SD_CARD_MOUNT_STAGE_NONE:
+            return APP_STORAGE_BOOT_STAGE_NONE;
         case SD_CARD_MOUNT_STAGE_HOST_INIT:
             return APP_STORAGE_BOOT_STAGE_HOST_INIT;
         case SD_CARD_MOUNT_STAGE_CARD_INIT:
             return APP_STORAGE_BOOT_STAGE_CARD_INIT;
         case SD_CARD_MOUNT_STAGE_FS_MOUNT:
-        case SD_CARD_MOUNT_STAGE_NONE:
-        default:
             return APP_STORAGE_BOOT_STAGE_FS_MOUNT;
+        default:
+            return APP_STORAGE_BOOT_STAGE_NONE;
     }
 }
 
 
-static bool app_storage_boot_recover(
+static uint64_t app_storage_boot_card_capacity_bytes(
+    const sd_card_mount_report_t *report
+)
+{
+    if (report == NULL || report->stage != SD_CARD_MOUNT_STAGE_FS_MOUNT ||
+        report->fresult != APP_STORAGE_BOOT_FR_NO_FILESYSTEM) {
+        return 0U;
+    }
+
+    sd_card_info_t info = {0};
+    /* The card capacity is filled before sd_card_get_info queries mounted FS totals. */
+    (void)sd_card_get_info(&info);
+    return info.capacity_bytes;
+}
+
+
+static bool app_storage_boot_is_no_response(esp_err_t err)
+{
+    return err == ESP_ERR_TIMEOUT || err == ESP_ERR_INVALID_RESPONSE;
+}
+
+
+static void app_storage_boot_report_mount_outcome(
+    const sd_card_mount_report_t *report
+)
+{
+    if (report == NULL) {
+        return;
+    }
+
+    if (report->stage == SD_CARD_MOUNT_STAGE_HOST_INIT ||
+        report->stage == SD_CARD_MOUNT_STAGE_CARD_INIT ||
+        app_storage_boot_is_no_response(report->err)) {
+        hw_inventory_report(HW_MODULE_SD_CARD, HW_STATE_ABSENT, "no response");
+    } else if (report->fresult == APP_STORAGE_BOOT_FR_NO_FILESYSTEM) {
+        hw_inventory_report(HW_MODULE_SD_CARD, HW_STATE_FAULT, "no filesystem");
+    } else {
+        hw_inventory_report(HW_MODULE_SD_CARD, HW_STATE_FAULT, "mount failed");
+    }
+}
+
+
+static void app_storage_boot_report_probe_outcome(esp_err_t err)
+{
+    if (err == ESP_OK) {
+        hw_inventory_report(HW_MODULE_SD_CARD, HW_STATE_PRESENT, "ready");
+    } else if (app_storage_boot_is_no_response(err)) {
+        hw_inventory_report(HW_MODULE_SD_CARD, HW_STATE_ABSENT, "no response");
+    } else {
+        hw_inventory_report(HW_MODULE_SD_CARD, HW_STATE_FAULT, "read probe failed");
+    }
+}
+
+
+static app_storage_boot_recovery_result_t app_storage_boot_recover(
     app_storage_boot_policy_input_t input
 )
 {
     if (s_recovery_ui.show_reason == NULL || s_recovery_ui.wait_decision == NULL) {
-        return false;
+        return APP_STORAGE_BOOT_RECOVERY_ABORTED;
     }
 
     for (;;) {
         const app_storage_boot_policy_result_t policy =
             app_storage_boot_policy_classify(&input);
         if (policy.action == APP_STORAGE_BOOT_ACTION_NONE) {
-            return false;
+            return APP_STORAGE_BOOT_RECOVERY_ABORTED;
         }
         s_recovery_ui.show_reason(s_recovery_ui.context, &policy);
         const app_storage_recovery_decision_t decision =
             s_recovery_ui.wait_decision(s_recovery_ui.context, policy.action);
 
         if (decision == APP_STORAGE_RECOVERY_DECISION_CANCEL) {
-            return false;
+            return APP_STORAGE_BOOT_RECOVERY_USER_CANCELLED;
         }
         if (decision == APP_STORAGE_RECOVERY_DECISION_FORMAT) {
             if (policy.action != APP_STORAGE_BOOT_ACTION_OFFER_FORMAT) {
-                return false;
+                return APP_STORAGE_BOOT_RECOVERY_ABORTED;
             }
 
             esp_err_t err = sd_card_format_fat32_task_start(
@@ -270,12 +336,13 @@ static bool app_storage_boot_recover(
                 );
             }
             if (success) {
-                return true;
+                hw_inventory_report(HW_MODULE_SD_CARD, HW_STATE_PRESENT, "ready");
+                return APP_STORAGE_BOOT_RECOVERY_SUCCEEDED;
             }
             continue;
         }
         if (decision != APP_STORAGE_RECOVERY_DECISION_RETRY) {
-            return false;
+            return APP_STORAGE_BOOT_RECOVERY_ABORTED;
         }
 
         sd_card_mount_report_t mount_report = {
@@ -286,20 +353,24 @@ static bool app_storage_boot_recover(
         };
         const esp_err_t mount_err = app_storage_boot_mount_sd_with_retry(&mount_report);
         if (mount_err != ESP_OK) {
+            app_storage_boot_report_mount_outcome(&mount_report);
             input.stage = app_storage_boot_policy_stage_from_mount(mount_report.stage);
             input.err = mount_report.err;
             input.fresult = mount_report.fresult;
             input.probe_result = ESP_OK;
+            input.card_capacity_bytes = app_storage_boot_card_capacity_bytes(&mount_report);
             continue;
         }
 
         const sd_card_probe_result_t probe = sd_card_write_readback_probe();
         if (probe.err == ESP_OK) {
+            app_storage_boot_report_probe_outcome(ESP_OK);
             if (s_recovery_ui.show_result != NULL) {
                 s_recovery_ui.show_result(s_recovery_ui.context, true, ESP_OK);
             }
-            return true;
+            return APP_STORAGE_BOOT_RECOVERY_SUCCEEDED;
         }
+        app_storage_boot_report_probe_outcome(probe.err);
         input.stage = APP_STORAGE_BOOT_STAGE_WRITE_PROBE;
         input.err = ESP_OK;
         input.fresult = -1;
@@ -307,6 +378,30 @@ static bool app_storage_boot_recover(
         input.probe_stage_name = sd_card_probe_stage_name(probe.stage);
         input.probe_errno = probe.sys_errno;
     }
+}
+
+
+static void app_storage_boot_continue_without_storage(void)
+{
+    if (s_recovery_ui.show_continue_without_storage != NULL) {
+        s_recovery_ui.show_continue_without_storage(s_recovery_ui.context);
+    }
+}
+
+
+static bool app_storage_boot_continue_if_no_card(
+    const app_storage_boot_policy_input_t *input
+)
+{
+    const app_storage_boot_policy_result_t policy =
+        app_storage_boot_policy_classify(input);
+    if (policy.action != APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY) {
+        return false;
+    }
+
+    ESP_LOGW(TAG, "BOOT_NO_STORAGE SD absent, continuing without storage");
+    app_storage_boot_continue_without_storage();
+    return true;
 }
 
 
@@ -340,14 +435,26 @@ void app_storage_boot_run_diagnostic(void)
     bool storage_ready = false;
 
     if (err != ESP_OK) {
+        app_storage_boot_report_mount_outcome(&mount_report);
         app_storage_boot_policy_input_t input = {
             .stage = app_storage_boot_policy_stage_from_mount(mount_report.stage),
             .err = mount_report.err,
             .fresult = mount_report.fresult,
             .probe_result = ESP_OK,
             .storage_manager_init_result = ESP_OK,
+            .card_capacity_bytes = app_storage_boot_card_capacity_bytes(&mount_report),
         };
-        if (!app_storage_boot_recover(input)) {
+        if (app_storage_boot_continue_if_no_card(&input)) {
+            return;
+        }
+        const app_storage_boot_recovery_result_t recovery =
+            app_storage_boot_recover(input);
+        if (recovery == APP_STORAGE_BOOT_RECOVERY_USER_CANCELLED) {
+            ESP_LOGW(TAG, "BOOT_NO_STORAGE continuing without SD (user cancel)");
+            app_storage_boot_continue_without_storage();
+            return;
+        }
+        if (recovery != APP_STORAGE_BOOT_RECOVERY_SUCCEEDED) {
             app_storage_boot_failure("MOUNT FAILED");
         }
         storage_ready = true;
@@ -356,6 +463,7 @@ void app_storage_boot_run_diagnostic(void)
     if (!storage_ready) {
         const sd_card_probe_result_t probe = sd_card_write_readback_probe();
         if (probe.err != ESP_OK) {
+            app_storage_boot_report_probe_outcome(probe.err);
             const app_storage_boot_policy_input_t input = {
                 .stage = APP_STORAGE_BOOT_STAGE_WRITE_PROBE,
                 .err = ESP_OK,
@@ -365,9 +473,21 @@ void app_storage_boot_run_diagnostic(void)
                 .probe_errno = probe.sys_errno,
                 .storage_manager_init_result = ESP_OK,
             };
-            if (!app_storage_boot_recover(input)) {
+            if (app_storage_boot_continue_if_no_card(&input)) {
+                return;
+            }
+            const app_storage_boot_recovery_result_t recovery =
+                app_storage_boot_recover(input);
+            if (recovery == APP_STORAGE_BOOT_RECOVERY_USER_CANCELLED) {
+                ESP_LOGW(TAG, "BOOT_NO_STORAGE continuing without SD (user cancel)");
+                app_storage_boot_continue_without_storage();
+                return;
+            }
+            if (recovery != APP_STORAGE_BOOT_RECOVERY_SUCCEEDED) {
                 app_storage_boot_failure("WRITE TEST FAILED");
             }
+        } else {
+            app_storage_boot_report_probe_outcome(ESP_OK);
         }
     }
 
@@ -381,6 +501,7 @@ void app_storage_boot_run_diagnostic(void)
         sd_card_diagnostics_run_write_read_test();
 
     if (err != ESP_OK) {
+        app_storage_boot_report_probe_outcome(err);
         const app_storage_boot_policy_input_t input = {
             .stage = APP_STORAGE_BOOT_STAGE_WRITE_PROBE,
             .err = ESP_OK,
@@ -388,7 +509,17 @@ void app_storage_boot_run_diagnostic(void)
             .probe_result = err,
             .storage_manager_init_result = ESP_OK,
         };
-        if (!app_storage_boot_recover(input)) {
+        if (app_storage_boot_continue_if_no_card(&input)) {
+            return;
+        }
+        const app_storage_boot_recovery_result_t recovery =
+            app_storage_boot_recover(input);
+        if (recovery == APP_STORAGE_BOOT_RECOVERY_USER_CANCELLED) {
+            ESP_LOGW(TAG, "BOOT_NO_STORAGE continuing without SD (user cancel)");
+            app_storage_boot_continue_without_storage();
+            return;
+        }
+        if (recovery != APP_STORAGE_BOOT_RECOVERY_SUCCEEDED) {
             app_storage_boot_failure("WRITE TEST FAILED");
         }
     }
@@ -416,7 +547,8 @@ void app_storage_boot_recover_storage_manager_failure(esp_err_t err)
         .storage_manager_init_result = err,
     };
 
-    if (!app_storage_boot_recover(input)) {
+    /* This caller handles a failed storage-manager init; cancel still powers off. */
+    if (app_storage_boot_recover(input) != APP_STORAGE_BOOT_RECOVERY_SUCCEEDED) {
         app_storage_boot_failure("MOUNT FAILED");
     }
 

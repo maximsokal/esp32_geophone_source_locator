@@ -30,6 +30,11 @@ void ui_render_system_locked(void)
 {
     ui_context_t *context = ui_context();
 
+    if (context->system_hardware_open) {
+        ui_render_hardware_locked();
+        return;
+    }
+
     lv_obj_t *screen = ui_create_screen_base_locked(
         ui_tr(UI_I18N_KEY_SYSTEM_TITLE),
         ui_tr(UI_I18N_KEY_SYSTEM_LANGUAGE_FOOTER)
@@ -187,7 +192,22 @@ void ui_system_handle_key_locked(keypad_key_t key)
 {
     ui_context_t *context = ui_context();
     if (key == KEYPAD_KEY_LEFT) {
+        if (context->system_hardware_open) {
+            context->system_hardware_open = false;
+            ui_render_system_locked();
+            return;
+        }
         ui_screen_open_locked(UI_SCREEN_HOME);
+        return;
+    }
+
+    if (context->system_hardware_open) {
+        return;
+    }
+
+    if (key == KEYPAD_KEY_RIGHT) {
+        context->system_hardware_open = true;
+        ui_render_system_locked();
         return;
     }
 
@@ -202,7 +222,7 @@ void ui_system_handle_key_locked(keypad_key_t key)
         return;
     }
 
-    if (key != KEYPAD_KEY_OK && key != KEYPAD_KEY_RIGHT) {
+    if (key != KEYPAD_KEY_OK) {
         return;
     }
 

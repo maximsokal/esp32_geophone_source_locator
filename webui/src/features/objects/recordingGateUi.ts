@@ -6,11 +6,14 @@ type Translator = (key: I18nKey, params?: Readonly<Record<string, string | numbe
 const REASON_KEY: Record<string, I18nKey> = {
   BLOCKED_INSUFFICIENT_REMOTES: 'recording_gate.reason.insufficient_remotes',
   BLOCKED_NOT_LEVEL: 'recording_gate.reason.not_level',
+  STORAGE_UNAVAILABLE: 'recording_gate.reason.storage_unavailable',
 };
 
 export function recordingGateReason(gate: RecordingGateStatus, t: Translator): string | null {
-  const key = gate.decision === undefined ? undefined : REASON_KEY[gate.decision];
-  return key === undefined ? gate.decision ?? gate.reason ?? null : t(key);
+  const reasonKey = gate.reason === undefined ? undefined : REASON_KEY[gate.reason];
+  if (reasonKey !== undefined) return t(reasonKey);
+  const decisionKey = gate.decision === undefined ? undefined : REASON_KEY[gate.decision];
+  return decisionKey === undefined ? gate.decision ?? gate.reason ?? null : t(decisionKey);
 }
 
 export function recordingGateWarning(gate: RecordingGateStatus, t: Translator): string | null {

@@ -9,6 +9,7 @@
 #include "ad7606_driver.h"
 #include "ad7606_power_policy.h"
 #include "app_task_config.h"
+#include "hw_inventory.h"
 
 
 static esp_err_t seismic_source_ad7606_start(void)
@@ -19,6 +20,18 @@ static esp_err_t seismic_source_ad7606_start(void)
     }
 
     err = ad7606_driver_presence_monitor_start();
+    const char *presence_reason = "presence probe failed";
+    if (err == ESP_OK) {
+        presence_reason = "busy responds";
+    } else if (err == ESP_ERR_NOT_FOUND) {
+        presence_reason = "no BUSY response";
+    }
+    hw_inventory_report(
+        HW_MODULE_AD7606,
+        hw_inventory_classify_probe_error(err),
+        presence_reason
+    );
+
     if (err != ESP_OK) {
         ad7606_acquisition_stop();
         return err;

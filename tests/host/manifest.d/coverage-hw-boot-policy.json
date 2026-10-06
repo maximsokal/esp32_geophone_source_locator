@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "app_startup_module_policy",
+      "defines": ["HW_INVENTORY_HOST_TEST=1"],
+      "sources": [
+        "tests/host/app_startup_module_policy_test.c",
+        "main/app_startup_module_policy.c",
+        "components/hw_inventory/hw_inventory.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ina3221_driver",
+        "tests/host/stubs/app_events",
+        "main",
+        "components/hw_inventory/include"
+      ]
+    }
+  ]
+}

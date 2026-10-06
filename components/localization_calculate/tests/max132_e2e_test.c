@@ -459,6 +459,14 @@ esp_err_t web_server_route_tracking_register(const char *uri, int method)
 
 #define static
 #include "../../web_server/web_localization_api.c"
+
+/* The production runs handler now refuses to list while storage is unavailable;
+ * this E2E uses a real store in a temp directory, so storage is always ready. */
+bool storage_manager_is_ready(void)
+{
+    return true;
+}
+#include "../../web_server/web_localization_storage.c"
 #undef static
 
 static uint32_t e2e_random_u32(void)

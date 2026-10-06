@@ -1,6 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './console.css';
-import { capturePhoneLocation, fetchDeviceStatus, sendControl, sendWorkflowCommand } from './api/deviceApi';
+import {
+  capturePhoneLocation,
+  fetchDeviceStatus,
+  isStorageAvailabilityError,
+  sendControl,
+  sendWorkflowCommand,
+} from './api/deviceApi';
 import type {
   DeviceStatus,
   ObjectStoreState,
@@ -23,6 +29,7 @@ import {
 } from './features/objects/measurementTransition';
 import SensorsFeature from './features/sensors/SensorsFeature';
 import PowerBanner from './components/PowerBanner';
+import StorageUnavailableBanner from './components/StorageUnavailableBanner';
 import { formatErrorText, TranslatedError, useLocale, useT } from './i18n';
 import WorkflowPanel from './features/workflow/WorkflowPanel';
 import { workflowStatusPollDelay } from './features/workflow/workflowPolling';
@@ -62,6 +69,7 @@ export default function DeviceConsoleApp() {
   const [linkError, setLinkError] = useState<unknown | null>(null);
   const [workspaceError, setWorkspaceError] = useState<unknown | null>(null);
   const [busy, setBusy] = useState(false);
+  const storageUnavailable = status?.storage_available === false;
   const objectRefreshEpoch = useRef(0);
   const sessionRefreshEpoch = useRef(0);
   const objectsRef = useRef<ObjectStoreState | null>(null);
@@ -85,6 +93,13 @@ export default function DeviceConsoleApp() {
     selectionMode: ObjectSelectionMode = 'preserve',
   ): Promise<ObjectStoreState | null> => {
     const epoch = ++objectRefreshEpoch.current;
+    if (storageUnavailable) {
+      objectsRef.current = null;
+      setObjects(null);
+      setSessions(null);
+      setWorkspaceError(null);
+      return null;
+    }
     try {
       const next = await fetchDeviceStatus(true);
       if (epoch !== objectRefreshEpoch.current) return null;
@@ -112,13 +127,17 @@ export default function DeviceConsoleApp() {
       setWorkspaceError(reason);
       return null;
     }
-  }, []);
+  }, [storageUnavailable]);
 
   const refreshSessions = useCallback(async (objectId: string | null): Promise<boolean> => {
     const epoch = ++sessionRefreshEpoch.current;
     if (objectId === null) {
       setSessions(null);
       return true;
+    }
+    if (storageUnavailable) {
+      setSessions(null);
+      return false;
     }
 
     try {
@@ -135,7 +154,7 @@ export default function DeviceConsoleApp() {
       setWorkspaceError(reason);
       return false;
     }
-  }, []);
+  }, [storageUnavailable]);
 
   const scheduleObjectReconcile = useCallback((selectionMode: ObjectSelectionMode): void => {
     if (reconcileTimer.current !== null) {
@@ -290,10 +309,11 @@ export default function DeviceConsoleApp() {
        * on SD. A delayed authoritative GET is safe and, unlike the old code,
        * does not block the button handler or race the fast status poll.
        */
-      if (transportFailure(rawMessage) && LOCAL_OBJECT_MUTATION_ACTIONS.has(action)) {
+      const storageAvailabilityFailure = isStorageAvailabilityError(reason);
+      if (!storageAvailabilityFailure && transportFailure(rawMessage) && LOCAL_OBJECT_MUTATION_ACTIONS.has(action)) {
         scheduleObjectReconcile(selectionMode);
       }
-      else if (action === 'measurement_start') {
+      else if (!storageAvailabilityFailure && action === 'measurement_start') {
         /* Reconcile the authoritative selection after a rejected or failed
          * async START; admission itself is reject-safe before activation. */
         scheduleObjectReconcile('active');
@@ -326,6 +346,7 @@ export default function DeviceConsoleApp() {
     return (
       <div className="scanner-feature-shell">
         <button className="console-floating-back" onClick={() => setScreen('objects')}>{t('console.back_object')}</button>
+        <StorageUnavailableBanner status={status} />
         <Suspense fallback={<main className="console-loading">{t('console.loading_xr')}</main>}>
           <XrScannerFeature objectId={scannerObjectId} sessionId={scannerSessionId} status={status} />
         </Suspense>
@@ -370,6 +391,7 @@ export default function DeviceConsoleApp() {
       </header>
 
       <PowerBanner status={status} />
+      <StorageUnavailableBanner status={status} />
 
       {screen === 'dashboard' && (
         <DeviceDashboard

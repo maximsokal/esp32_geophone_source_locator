@@ -368,6 +368,18 @@ export interface DeviceSystemStatus {
   required_pods: number;
 }
 
+export interface HardwareModuleStatus {
+  id: string;
+  state: string;
+  required: boolean;
+  reason: string;
+}
+
+export interface DeviceHardwareStatus {
+  modules: HardwareModuleStatus[];
+  required_missing: boolean;
+}
+
 export type NrfLogNodeId = 'main' | `remote${0 | 1 | 2 | 3 | 4 | 5 | 6 | 7}`;
 
 export interface NrfLogCounters {
@@ -488,8 +500,12 @@ export interface DevicePowerChannel {
 }
 
 export interface DeviceStatus {
+  /** Missing on older firmware; absence is treated as storage being available. */
+  storage_available?: boolean;
   storage_busy?: boolean;
   system: DeviceSystemStatus;
+  /** Absent on firmware that predates MAX-383 hardware inventory reporting. */
+  hardware?: DeviceHardwareStatus;
   power: ValidValue & {
     voltage_v: number;
     current_a: number;

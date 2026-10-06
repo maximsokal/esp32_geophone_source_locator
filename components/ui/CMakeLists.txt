@@ -11,6 +11,8 @@ idf_component_register(
         "ui_navigation.c"
         "ui_boot_error.c"
         "ui_home.c"
+        "ui_hardware.c"
+        "ui_hardware_model.c"
         "ui_measurements.c"
         "ui_measurements_nodes.c"
         "ui_measurement_trace.c"
@@ -38,6 +40,7 @@ idf_component_register(
         display
         keypad
         device_status
+        hw_inventory
         nrf_topology_service
         wifi_manager
         object_service

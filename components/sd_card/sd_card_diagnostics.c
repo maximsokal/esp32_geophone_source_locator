@@ -1,13 +1,20 @@
 #include "sd_card_diagnostics.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "sd_card.h"
 #include "sd_card_diagnostics_internal.h"
+#include "sd_card_info.h"
+#include "sd_card_internal.h"
+#include "sdmmc_cmd.h"
 
 
 static const char *TAG =
@@ -157,6 +164,105 @@ static void sd_card_probe_log_failure(const sd_card_probe_result_t *result)
 }
 
 
+static void sd_card_probe_log_read_open_diagnostics(void)
+{
+    struct stat file_stat = {0};
+    errno = 0;
+    const int stat_result = stat(BOOT_PROBE_PATH, &file_stat);
+    const int stat_errno = stat_result == 0 ? 0 : errno;
+    ESP_LOGW(
+        TAG,
+        "SD_PROBE_DIAG stat rc=%d errno=%d size=%lld",
+        stat_result,
+        stat_errno,
+        (long long)(stat_result == 0 ? file_stat.st_size : 0)
+    );
+
+    errno = 0;
+    DIR *directory = opendir("/sdcard");
+    const int dir_errno = directory == NULL ? errno : 0;
+    ESP_LOGW(
+        TAG,
+        "SD_PROBE_DIAG dir rc=%d errno=%d",
+        directory == NULL ? -1 : 0,
+        dir_errno
+    );
+    if (directory != NULL) {
+        size_t entries = 0U;
+        struct dirent *entry = NULL;
+        while (entries < 16U && (entry = readdir(directory)) != NULL) {
+            char entry_path[288];
+            struct stat entry_stat = {0};
+            const int path_length = snprintf(
+                entry_path,
+                sizeof(entry_path),
+                "/sdcard/%s",
+                entry->d_name
+            );
+            errno = 0;
+            int entry_stat_result = -1;
+            if (path_length >= 0 && (size_t)path_length < sizeof(entry_path)) {
+                entry_stat_result = stat(entry_path, &entry_stat);
+            } else {
+                errno = ENAMETOOLONG;
+            }
+            const int entry_stat_errno = entry_stat_result == 0 ? 0 : errno;
+            ESP_LOGW(
+                TAG,
+                "SD_PROBE_DIAG entry=%s stat=%d errno=%d size=%lld",
+                entry->d_name,
+                entry_stat_result,
+                entry_stat_errno,
+                (long long)(entry_stat_result == 0 ? entry_stat.st_size : 0)
+            );
+            ++entries;
+        }
+        ESP_LOGW(TAG, "SD_PROBE_DIAG dir_entries=%u limit=16", (unsigned)entries);
+        (void)closedir(directory);
+    }
+
+    sd_card_info_t info = {0};
+    const esp_err_t info_err = sd_card_get_info(&info);
+    ESP_LOGW(
+        TAG,
+        "SD_PROBE_DIAG space err=%d capacity=%llu total=%llu free=%llu",
+        info_err,
+        (unsigned long long)info.capacity_bytes,
+        (unsigned long long)info.total_bytes,
+        (unsigned long long)info.free_bytes
+    );
+
+    vTaskDelay(pdMS_TO_TICKS(100));
+    errno = 0;
+    FILE *retry_file = fopen(BOOT_PROBE_PATH, "rb");
+    const int retry_errno = retry_file == NULL ? errno : 0;
+    ESP_LOGW(
+        TAG,
+        "SD_PROBE_DIAG retry_open=%d errno=%d",
+        retry_file == NULL ? -1 : 0,
+        retry_errno
+    );
+    if (retry_file != NULL) {
+        (void)fclose(retry_file);
+    }
+
+    sdmmc_card_t *card = sd_card_internal_card();
+    if (card == NULL) {
+        ESP_LOGW(TAG, "SD_PROBE_DIAG card=absent status=skipped wp=not-exposed");
+    } else {
+        const esp_err_t status_err = sdmmc_get_status(card);
+        ESP_LOGW(
+            TAG,
+            "SD_PROBE_DIAG card=present mem=%u sdio=%u mmc=%u status=%d wp=not-exposed",
+            (unsigned)card->is_mem,
+            (unsigned)card->is_sdio,
+            (unsigned)card->is_mmc,
+            status_err
+        );
+    }
+}
+
+
 sd_card_probe_result_t sd_card_write_readback_probe(void)
 {
     sd_card_probe_result_t result = {
@@ -219,6 +325,7 @@ sd_card_probe_result_t sd_card_write_readback_probe(void)
         result.stage = SD_CARD_PROBE_STAGE_READ;
         result.err = ESP_FAIL;
         result.sys_errno = errno;
+        sd_card_probe_log_read_open_diagnostics();
         goto cleanup;
     }
 

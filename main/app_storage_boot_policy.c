@@ -12,6 +12,12 @@ static bool app_storage_boot_is_no_response(esp_err_t err)
 }
 
 
+static bool app_storage_boot_card_size_is_sane(uint64_t capacity_bytes)
+{
+    return capacity_bytes >= APP_STORAGE_BOOT_MIN_CARD_CAPACITY_BYTES;
+}
+
+
 app_storage_boot_policy_result_t app_storage_boot_policy_classify(
     const app_storage_boot_policy_input_t *input
 )
@@ -30,6 +36,14 @@ app_storage_boot_policy_result_t app_storage_boot_policy_classify(
     esp_err_t relevant_err = input->err;
 
     switch (input->stage) {
+        case APP_STORAGE_BOOT_STAGE_NONE:
+            result.reason = APP_STORAGE_BOOT_REASON_FS_MOUNT_FAILED;
+            result.action = app_storage_boot_is_no_response(input->err)
+                ? APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY
+                : APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY;
+            stage_name = "UNKNOWN";
+            break;
+
         case APP_STORAGE_BOOT_STAGE_HOST_INIT:
             result.reason = APP_STORAGE_BOOT_REASON_HOST_INIT_FAILED;
             result.action = APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY;
@@ -44,9 +58,17 @@ app_storage_boot_policy_result_t app_storage_boot_policy_classify(
 
         case APP_STORAGE_BOOT_STAGE_FS_MOUNT:
             result.reason = APP_STORAGE_BOOT_REASON_FS_MOUNT_FAILED;
-            result.action = app_storage_boot_is_no_response(input->err)
-                ? APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY
-                : APP_STORAGE_BOOT_ACTION_OFFER_FORMAT;
+            if (app_storage_boot_is_no_response(input->err)) {
+                result.action = APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY;
+            } else if (
+                input->err != ESP_OK &&
+                input->fresult == APP_STORAGE_BOOT_FR_NO_FILESYSTEM &&
+                app_storage_boot_card_size_is_sane(input->card_capacity_bytes)
+            ) {
+                result.action = APP_STORAGE_BOOT_ACTION_OFFER_FORMAT;
+            } else {
+                result.action = APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY;
+            }
             stage_name = "FS_MOUNT";
             break;
 
@@ -55,14 +77,14 @@ app_storage_boot_policy_result_t app_storage_boot_policy_classify(
             relevant_err = input->probe_result;
             result.action = app_storage_boot_is_no_response(relevant_err)
                 ? APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY
-                : APP_STORAGE_BOOT_ACTION_OFFER_FORMAT;
+                : APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY;
             stage_name = "WRITE_PROBE";
             break;
 
         case APP_STORAGE_BOOT_STAGE_LAYOUT_INIT:
             result.reason = APP_STORAGE_BOOT_REASON_LAYOUT_INIT_FAILED;
             relevant_err = input->storage_manager_init_result;
-            result.action = APP_STORAGE_BOOT_ACTION_OFFER_FORMAT;
+            result.action = APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY;
             stage_name = "LAYOUT_INIT";
             break;
 

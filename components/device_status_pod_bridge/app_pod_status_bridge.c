@@ -6,6 +6,7 @@
 
 #include "app_pod_status_barometer_policy.h"
 #include "app_pod_status_local_position_policy.h"
+#include "app_pod_status_state_policy.h"
 #include "app_task_config.h"
 #include "device_status.h"
 #include "nrf_topology_service.h"
@@ -152,6 +153,21 @@ static void publish_channel_local_position(
 }
 
 
+static void publish_pod_connection_states(void)
+{
+    nrf_topology_snapshot_t topology;
+    if (nrf_topology_service_get_snapshot(&topology) != ESP_OK) {
+        return;
+    }
+
+    for (size_t channel = 0U; channel < DEVICE_STATUS_POD_COUNT; ++channel) {
+        (void)device_status_set_pod_state(
+            channel,
+            app_pod_status_bridge_map_topology_state(topology.remotes[channel].state));
+    }
+}
+
+
 static void publish_cycle(void)
 {
     object_store_summary_t active;
@@ -162,6 +178,8 @@ static void publish_cycle(void)
         active.active &&
         active.id[0] != '\0' &&
         object_store_get_profile(active.id, &profile) == ESP_OK;
+
+    publish_pod_connection_states();
 
     for (
         uint8_t channel = 0U;

@@ -1,10 +1,17 @@
 #pragma once
 
+#include <stdint.h>
+
 #include "esp_err.h"
 
 
+#define APP_STORAGE_BOOT_FR_NO_FILESYSTEM 13
+#define APP_STORAGE_BOOT_MIN_CARD_CAPACITY_BYTES 512ULL
+
+
 typedef enum {
-    APP_STORAGE_BOOT_STAGE_HOST_INIT = 0,
+    APP_STORAGE_BOOT_STAGE_NONE = 0,
+    APP_STORAGE_BOOT_STAGE_HOST_INIT,
     APP_STORAGE_BOOT_STAGE_CARD_INIT,
     APP_STORAGE_BOOT_STAGE_FS_MOUNT,
     APP_STORAGE_BOOT_STAGE_WRITE_PROBE,
@@ -24,6 +31,7 @@ typedef enum {
     APP_STORAGE_BOOT_ACTION_NONE = 0,
     APP_STORAGE_BOOT_ACTION_OFFER_FORMAT,
     APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY,
+    APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY,
 } app_storage_boot_action_t;
 
 typedef struct {
@@ -34,6 +42,7 @@ typedef struct {
     const char *probe_stage_name;
     int probe_errno;
     esp_err_t storage_manager_init_result;
+    uint64_t card_capacity_bytes;
 } app_storage_boot_policy_input_t;
 
 typedef struct {

@@ -58,12 +58,17 @@
       "name": "workflow_status_section",
       "sources": [
         "components/web_server/web_status_json.c",
+        "components/web_server/web_status_json_hardware.c",
+        "components/web_server/tests/hw_inventory_status_fake.c",
         "components/web_server/web_status_json_pods.c",
         "components/web_server/web_status_policy.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/stubs/web_status_json/storage_manager_fake.c",
         "tests/host/web_status_json_builder_test.c"
       ],
       "include_dirs": [
+        "components/hw_inventory/include",
+        "components/web_server/tests",
         "tests/host/stubs/web_status_json",
         "tests/host/stubs/object_store_profile",
         "components/web_server",

@@ -3,6 +3,7 @@ idf_component_register(
         main.c
         app_build_config_guard.c
         app_startup.c
+        app_startup_module_policy.c
         app_startup_status.c
         app_storage_boot.c
         app_storage_boot_ui.c
@@ -15,6 +16,7 @@ idf_component_register(
 
     REQUIRES
         app_config
+        hw_inventory
         board_config
         runtime_observability
         app_events

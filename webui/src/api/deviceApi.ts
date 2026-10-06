@@ -156,6 +156,15 @@ function responseError(body: unknown, response: Response): string {
   return response.statusText || 'request failed';
 }
 
+export function isStorageAvailabilityError(reason: unknown): boolean {
+  if (!(reason instanceof ApiHttpError) || reason.httpStatus !== 503) return false;
+  const body = reason.responseBody;
+  return typeof body === 'object' && body !== null &&
+    (('storage_busy' in body && (body as { storage_busy?: unknown }).storage_busy === true) ||
+     ('storage_unavailable' in body &&
+      (body as { storage_unavailable?: unknown }).storage_unavailable === true));
+}
+
 async function performJsonRequest<T>(
   url: string,
   context: ApiRequestContext,

@@ -51,6 +51,7 @@ static void app_storage_boot_ui_show_result(
     bool success,
     esp_err_t err
 );
+static void app_storage_boot_ui_show_continue_without_storage(void *context);
 
 static void app_storage_boot_ui_key_callback(keypad_key_t key, void *context);
 static void app_storage_boot_ui_shutdown_callback(void *context);
@@ -74,6 +75,7 @@ static const app_storage_recovery_ui_t s_recovery_ui = {
     .wait_decision = app_storage_boot_ui_wait_decision,
     .show_progress = app_storage_boot_ui_show_progress,
     .show_result = app_storage_boot_ui_show_result,
+    .show_continue_without_storage = app_storage_boot_ui_show_continue_without_storage,
 };
 
 
@@ -179,6 +181,10 @@ bool app_storage_boot_ui_select_copy(
         copy.show_format_warning = true;
     } else if (action == APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY) {
         copy.primary_hint_key = UI_I18N_KEY_BOOT_RECOVERY_INSERT_CARD;
+    } else if (action == APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY) {
+        copy.reason_key = UI_I18N_KEY_BOOT_REASON_FS_MOUNT;
+        copy.primary_hint_key = UI_I18N_KEY_BOOT_RECOVERY_RETRY_HINT;
+        copy.retry_hint_key = UI_I18N_KEY_BOOT_ERROR_FOOTER;
     } else {
         return false;
     }
@@ -327,8 +333,12 @@ static void app_storage_boot_ui_show_reason(
             : ui_tr(copy.primary_hint_key),
         retrying_failed_format
             ? ui_tr(UI_I18N_KEY_BOOT_FORMAT_POWER_HINT)
-            : ui_tr(copy.retry_hint_key),
-        ui_tr(copy.cancel_hint_key)
+            : (copy.retry_hint_key == UI_I18N_KEY_COUNT
+                ? ""
+                : ui_tr(copy.retry_hint_key)),
+        copy.cancel_hint_key == UI_I18N_KEY_COUNT
+            ? ""
+            : ui_tr(copy.cancel_hint_key)
     );
     s_recovery_view_active = true;
 
@@ -378,7 +388,7 @@ static app_storage_recovery_decision_t app_storage_boot_ui_wait_decision(
         action != s_prompt_action
     ) {
         app_storage_boot_ui_finish_prompt();
-        return APP_STORAGE_RECOVERY_DECISION_CANCEL;
+        return APP_STORAGE_RECOVERY_DECISION_SHUTDOWN;
     }
 
     for (;;) {
@@ -387,12 +397,12 @@ static app_storage_recovery_decision_t app_storage_boot_ui_wait_decision(
         item.shutdown_notification = false;
         if (xQueueReceive(s_key_queue, &item, portMAX_DELAY) != pdTRUE) {
             app_storage_boot_ui_finish_prompt();
-            return APP_STORAGE_RECOVERY_DECISION_CANCEL;
+            return APP_STORAGE_RECOVERY_DECISION_SHUTDOWN;
         }
 
         if (item.shutdown_notification) {
             app_storage_boot_ui_finish_prompt();
-            return APP_STORAGE_RECOVERY_DECISION_CANCEL;
+            return APP_STORAGE_RECOVERY_DECISION_SHUTDOWN;
         }
 
         app_storage_recovery_decision_t decision;
@@ -466,4 +476,23 @@ static void app_storage_boot_ui_show_result(
     }
     s_recovery_view_active = true;
     s_format_active = false;
+}
+
+
+static void app_storage_boot_ui_show_continue_without_storage(void *context)
+{
+    (void)context;
+    if (app_storage_boot_ui_ensure_initialized() != ESP_OK) {
+        return;
+    }
+
+    ui_boot_show_storage_recovery(
+        ui_tr(UI_I18N_KEY_BOOT_CONTINUE_NO_STORAGE),
+        "",
+        NULL,
+        "",
+        "",
+        ""
+    );
+    s_recovery_view_active = true;
 }

@@ -200,10 +200,25 @@
       ]
     },
     {
+      "name": "app_pod_status_state_policy",
+      "sources": [
+        "components/device_status_pod_bridge/app_pod_status_state_policy.c",
+        "tests/host/app_pod_status_state_policy_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_start",
+        "components/device_status/include",
+        "components/device_status_pod_bridge/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
+      ]
+    },
+    {
       "name": "app_pod_status_bridge_runtime",
       "sources": [
         "components/device_status_pod_bridge/app_pod_status_barometer_policy.c",
         "components/device_status_pod_bridge/app_pod_status_local_position_policy.c",
+        "components/device_status_pod_bridge/app_pod_status_state_policy.c",
         "components/device_status_pod_bridge/app_pod_status_bridge.c",
         "tests/host/app_pod_status_bridge_runtime_test.c"
       ],

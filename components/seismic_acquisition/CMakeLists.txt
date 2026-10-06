@@ -20,6 +20,9 @@ idf_component_register(
     # Because each adapter is a separate object file, unselected adapters
     # and their backend archives remain unreferenced and can be omitted
     # from the final ELF by normal static-library resolution / GC.
+    REQUIRES
+        hw_inventory
+
     PRIV_REQUIRES
         ad7606_acquisition
         ad7606_driver

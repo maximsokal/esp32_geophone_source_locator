@@ -1165,6 +1165,23 @@
     "xr.error.webgl_unavailable": {"en": "Could not create WebGL for WebXR.","uk": "\u041d\u0435 \u0432\u0434\u0430\u043b\u043e\u0441\u044f \u0441\u0442\u0432\u043e\u0440\u0438\u0442\u0438 WebGL \u0434\u043b\u044f WebXR."},
     "api.scan_save_unaccepted": {"en": "The device did not accept the saved scan.","uk": "\u041f\u0440\u0438\u0441\u0442\u0440\u0456\u0439 \u043d\u0435 \u043f\u0440\u0438\u0439\u043d\u044f\u0432 \u0437\u0431\u0435\u0440\u0435\u0436\u0435\u043d\u0438\u0439 \u0441\u043a\u0430\u043d."},
     "power.state_unknown": {"en": "Unknown","uk": "Невідомо"},
-    "dashboard.battery_percent": {"en": "Battery charge","uk": "Заряд акумулятора"}
+    "dashboard.battery_percent": {"en": "Battery charge","uk": "Заряд акумулятора"},
+    "web.hw.title": {"en": "Hardware", "uk": "Обладнання"},
+    "web.storage.unavailable_banner": {"en": "SD card not available. Storage and recording are disabled.", "uk": "SD-\u043a\u0430\u0440\u0442\u0430 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430. \u0417\u0431\u0435\u0440\u0435\u0436\u0435\u043d\u043d\u044f \u0434\u0430\u043d\u0438\u0445 \u0456 \u0437\u0430\u043f\u0438\u0441 \u0432\u0438\u043c\u043a\u043d\u0435\u043d\u043e."},
+    "recording_gate.reason.storage_unavailable": {"en": "The SD card is not available, so recording cannot start.", "uk": "SD-\u043a\u0430\u0440\u0442\u0430 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430, \u0442\u043e\u043c\u0443 \u0437\u0430\u043f\u0438\u0441 \u043d\u0435\u043c\u043e\u0436\u043b\u0438\u0432\u043e \u0440\u043e\u0437\u043f\u043e\u0447\u0430\u0442\u0438."},
+    "web.hw.required": {"en": "Required", "uk": "Обов’язковий"},
+    "web.hw.optional": {"en": "Optional", "uk": "Необов’язковий"},
+    "web.hw.module.sd_card": {"en": "SD card", "uk": "SD-картка"},
+    "web.hw.module.ad7606": {"en": "AD7606", "uk": "AD7606"},
+    "web.hw.module.sensor_mux": {"en": "Sensor mux", "uk": "Мультиплексор"},
+    "web.hw.module.main_xiao": {"en": "Main XIAO", "uk": "Основний XIAO"},
+    "web.hw.module.barometer": {"en": "Barometer", "uk": "Барометр"},
+    "web.hw.module.power_monitor": {"en": "Power monitor", "uk": "Монітор живлення"},
+    "web.hw.state.unknown": {"en": "Unknown", "uk": "Невідомо"},
+    "web.hw.state.present": {"en": "Present", "uk": "Підключено"},
+    "web.hw.state.absent": {"en": "Absent", "uk": "Не підключено"},
+    "web.hw.state.fault": {"en": "Fault", "uk": "Несправність"},
+    "web.hw.state.degraded": {"en": "Degraded", "uk": "Обмежено"},
+    "web.hw.degraded_banner": {"en": "Required module issue", "uk": "Проблема з обов’язковим модулем"}
   }
 }

@@ -251,20 +251,47 @@ static void test_key_mapping_requires_release_and_respects_action(void)
         true,
         &decision
     ));
-
+    assert(!app_storage_boot_ui_map_key(
+        APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY,
+        KEYPAD_KEY_OK,
+        true,
+        &decision
+    ));
+    assert(app_storage_boot_ui_map_key(
+        APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY,
+        KEYPAD_KEY_RIGHT,
+        true,
+        &decision
+    ));
+    assert(decision == APP_STORAGE_RECOVERY_DECISION_RETRY);
     const keypad_key_t cancel_keys[] = {
         KEYPAD_KEY_LEFT,
         KEYPAD_KEY_UP,
         KEYPAD_KEY_DOWN,
     };
-    for (size_t i = 0U; i < sizeof(cancel_keys) / sizeof(cancel_keys[0]); ++i) {
-        assert(app_storage_boot_ui_map_key(
-            APP_STORAGE_BOOT_ACTION_OFFER_FORMAT,
-            cancel_keys[i],
-            true,
-            &decision
-        ));
-        assert(decision == APP_STORAGE_RECOVERY_DECISION_CANCEL);
+    const app_storage_boot_action_t cancel_actions[] = {
+        APP_STORAGE_BOOT_ACTION_OFFER_FORMAT,
+        APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY,
+        APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY,
+    };
+    for (
+        size_t action = 0U;
+        action < sizeof(cancel_actions) / sizeof(cancel_actions[0]);
+        ++action
+    ) {
+        for (
+            size_t key = 0U;
+            key < sizeof(cancel_keys) / sizeof(cancel_keys[0]);
+            ++key
+        ) {
+            assert(app_storage_boot_ui_map_key(
+                cancel_actions[action],
+                cancel_keys[key],
+                true,
+                &decision
+            ));
+            assert(decision == APP_STORAGE_RECOVERY_DECISION_CANCEL);
+        }
     }
 
     assert(app_storage_boot_ui_map_key(
@@ -298,6 +325,18 @@ static void test_action_copy_does_not_offer_format_for_no_card(void)
     assert(copy.cancel_hint_key == UI_I18N_KEY_BOOT_RECOVERY_CANCEL_HINT);
 
     assert(app_storage_boot_ui_select_copy(
+        APP_STORAGE_BOOT_REASON_WRITE_PROBE_FAILED,
+        APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY,
+        &copy
+    ));
+    assert(!copy.show_format_warning);
+    assert(copy.reason_key == UI_I18N_KEY_BOOT_REASON_FS_MOUNT);
+    assert(copy.warning_key == UI_I18N_KEY_COUNT);
+    assert(copy.primary_hint_key == UI_I18N_KEY_BOOT_RECOVERY_RETRY_HINT);
+    assert(copy.retry_hint_key == UI_I18N_KEY_BOOT_ERROR_FOOTER);
+    assert(copy.cancel_hint_key == UI_I18N_KEY_BOOT_RECOVERY_CANCEL_HINT);
+
+    assert(app_storage_boot_ui_select_copy(
         APP_STORAGE_BOOT_REASON_FS_MOUNT_FAILED,
         APP_STORAGE_BOOT_ACTION_OFFER_FORMAT,
         &copy
@@ -327,6 +366,7 @@ static void test_registered_prompt_uses_blocking_queue_and_progress_is_monotonic
     assert(s_installed_ui.wait_decision != NULL);
     assert(s_installed_ui.show_progress != NULL);
     assert(s_installed_ui.show_result != NULL);
+    assert(s_installed_ui.show_continue_without_storage != NULL);
 
     app_storage_boot_policy_result_t reason = {
         .reason = APP_STORAGE_BOOT_REASON_CARD_UNAVAILABLE,
@@ -353,7 +393,7 @@ static void test_registered_prompt_uses_blocking_queue_and_progress_is_monotonic
     assert(s_installed_ui.wait_decision(
         NULL,
         APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY
-    ) == APP_STORAGE_RECOVERY_DECISION_CANCEL);
+    ) == APP_STORAGE_RECOVERY_DECISION_SHUTDOWN);
     assert(s_blocking_receive_seen);
     assert(s_key_callback == NULL);
     assert(s_shutdown_hook == NULL);
@@ -405,6 +445,32 @@ static void test_registered_prompt_uses_blocking_queue_and_progress_is_monotonic
     assert(strcmp(s_last_error_name, "ESP_OK") == 0);
     assert(app_storage_boot_ui_has_recovery_view());
 
+    reason.reason = APP_STORAGE_BOOT_REASON_WRITE_PROBE_FAILED;
+    reason.action = APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY;
+    (void)snprintf(reason.reason_text_code, sizeof(reason.reason_text_code), "%s", "WRITE_PROBE/READ err=ESP_FAIL errno=2");
+    s_installed_ui.show_reason(NULL, &reason);
+    assert(strcmp(s_reason_text, ui_tr(UI_I18N_KEY_BOOT_REASON_FS_MOUNT)) == 0);
+    assert(s_warning_text[0] == '\0');
+    assert(strcmp(s_primary_hint, ui_tr(UI_I18N_KEY_BOOT_RECOVERY_RETRY_HINT)) == 0);
+    assert(strcmp(s_retry_hint, ui_tr(UI_I18N_KEY_BOOT_ERROR_FOOTER)) == 0);
+    assert(strcmp(s_cancel_hint, ui_tr(UI_I18N_KEY_BOOT_RECOVERY_CANCEL_HINT)) == 0);
+    assert(s_key_callback != NULL);
+    assert(s_shutdown_hook != NULL);
+    s_key_callback(KEYPAD_KEY_RIGHT, s_key_context);
+    assert(s_installed_ui.wait_decision(
+        NULL,
+        APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY
+    ) == APP_STORAGE_RECOVERY_DECISION_RETRY);
+    assert(s_key_callback == NULL);
+    assert(s_shutdown_hook == NULL);
+
+    const unsigned monitor_starts_before_confirmation = s_key_monitor_starts;
+    s_installed_ui.show_continue_without_storage(NULL);
+    assert(strcmp(s_reason_text, ui_tr(UI_I18N_KEY_BOOT_CONTINUE_NO_STORAGE)) == 0);
+    assert(s_key_monitor_starts == monitor_starts_before_confirmation);
+    assert(s_shutdown_hook == NULL);
+    assert(app_storage_boot_ui_has_recovery_view());
+
     reason.reason = APP_STORAGE_BOOT_REASON_CARD_UNAVAILABLE;
     reason.action = APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY;
     s_installed_ui.show_reason(NULL, &reason);
@@ -413,7 +479,7 @@ static void test_registered_prompt_uses_blocking_queue_and_progress_is_monotonic
     assert(s_installed_ui.wait_decision(
         NULL,
         APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY
-    ) == APP_STORAGE_RECOVERY_DECISION_CANCEL);
+    ) == APP_STORAGE_RECOVERY_DECISION_SHUTDOWN);
     assert(s_shutdown_hook == NULL);
     assert(s_key_callback == NULL);
 
@@ -422,7 +488,7 @@ static void test_registered_prompt_uses_blocking_queue_and_progress_is_monotonic
     assert(s_shutdown_hook == NULL);
     assert(s_key_callback == NULL);
     s_key_monitor_start_result = ESP_OK;
-    assert(s_shutdown_arm_calls == 4U);
+    assert(s_shutdown_arm_calls == 5U);
 }
 
 

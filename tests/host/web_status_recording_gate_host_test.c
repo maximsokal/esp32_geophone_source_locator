@@ -33,6 +33,11 @@ static workflow_snapshot_t g_workflow_snapshot;
 static esp_err_t g_workflow_snapshot_error = ESP_OK;
 static unsigned g_workflow_snapshot_calls;
 
+bool storage_manager_is_ready(void)
+{
+    return true;
+}
+
 bool web_status_json_add_workflow(cJSON *root);
 
 esp_err_t workflow_service_get_snapshot(workflow_snapshot_t *snapshot)

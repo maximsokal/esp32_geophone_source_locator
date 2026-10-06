@@ -14,6 +14,7 @@
 #include "localization_run_store.h"
 #include "object_store.h"
 #include "seismic_recorder.h"
+#include "web_localization_storage.h"
 
 void localization_calculate_recommendation(
     const localization_run_record_t *records,
@@ -273,6 +274,11 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
     char settings_object_id[OBJECT_STORE_ID_SIZE] = {0};
     if (web_localization_settings_requested(request, settings_object_id)) {
         return web_localization_settings_handler(request, settings_object_id);
+    }
+
+    esp_err_t storage_response = ESP_OK;
+    if (web_localization_runs_reject_if_storage_unavailable(request, &storage_response)) {
+        return storage_response;
     }
 
     char object_id[OBJECT_STORE_ID_SIZE] = {0};

@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -391,6 +392,11 @@ static unsigned s_job_status_calls;
 static const char *s_job_status_json =
     "{\"state\":\"running\",\"job_id\":3,\"current_method\":\"eikonal_scan_voids\",\"elapsed_ms\":4200}";
 
+bool storage_manager_is_ready(void)
+{
+    return true;
+}
+
 esp_err_t localization_job_status_json(char **json_out)
 {
     s_job_status_calls++;
@@ -406,6 +412,7 @@ esp_err_t localization_job_status_json(char **json_out)
 #define static
 #include "../../components/web_server/web_localization_api.c"
 #undef static
+#include "../../components/web_server/web_localization_storage.c"
 
 void localization_calculate_recommendation(
     const localization_run_record_t *records,

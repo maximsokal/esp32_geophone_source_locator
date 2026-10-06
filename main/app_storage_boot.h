@@ -10,6 +10,7 @@ typedef enum {
     APP_STORAGE_RECOVERY_DECISION_CANCEL = 0,
     APP_STORAGE_RECOVERY_DECISION_RETRY,
     APP_STORAGE_RECOVERY_DECISION_FORMAT,
+    APP_STORAGE_RECOVERY_DECISION_SHUTDOWN,
 } app_storage_recovery_decision_t;
 
 /* UI callbacks receive the classified cause and pollable format progress. */
@@ -22,6 +23,7 @@ typedef struct {
     );
     void (*show_progress)(void *context, unsigned percent);
     void (*show_result)(void *context, bool success, esp_err_t err);
+    void (*show_continue_without_storage)(void *context);
 } app_storage_recovery_ui_t;
 
 

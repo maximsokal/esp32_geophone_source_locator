@@ -9,7 +9,9 @@
 #include "runtime_observability.h"
 #include "seismic_acquisition.h"
 #include "seismic_buffer.h"
+#include "storage_manager.h"
 #include "web_status_policy.h"
+#include "web_status_json_hardware.h"
 
 bool web_status_json_add_workflow(cJSON *root);
 #if defined(ESP_PLATFORM)
@@ -712,6 +714,7 @@ esp_err_t web_status_json_build_extended(
     if (json_out == NULL) return ESP_ERR_INVALID_ARG;
     *json_out = NULL;
 
+    const bool storage_available = storage_manager_is_ready();
     const bool storage_cache_ready = web_status_json_objects_cache_ready();
     if (
         (include_objects ||
@@ -735,7 +738,12 @@ esp_err_t web_status_json_build_extended(
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) return ESP_ERR_NO_MEM;
 
-    if (cJSON_AddBoolToObject(root, "storage_busy", !storage_cache_ready) == NULL) {
+    if (cJSON_AddBoolToObject(root, "storage_available", storage_available) == NULL ||
+        cJSON_AddBoolToObject(
+            root,
+            "storage_busy",
+            storage_available && !storage_cache_ready
+        ) == NULL) {
         cJSON_Delete(root);
         return ESP_ERR_NO_MEM;
     }
@@ -748,6 +756,7 @@ esp_err_t web_status_json_build_extended(
             acquisition_healthy,
             acquisition_error
         ) &&
+        web_status_json_add_hardware(root) &&
         web_status_json_add_power(root, &status.power) &&
         web_status_json_add_environment(root, &status.environment) &&
         web_status_json_add_main(root, &status.main) &&

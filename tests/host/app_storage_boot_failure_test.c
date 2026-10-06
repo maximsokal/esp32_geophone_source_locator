@@ -1,6 +1,11 @@
+#define APP_STORAGE_BOOT_TEST_LOG_CAPTURE 1
+void app_storage_boot_test_log_capture(const char *tag, const char *format, ...);
+
 #include <assert.h>
+#include <errno.h>
 #include <setjmp.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -9,11 +14,16 @@
 #include "display.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
+/* The inventory FreeRTOS shim supplies the lock API; boot supplies its tick type here. */
+typedef unsigned long TickType_t;
+#define pdMS_TO_TICKS(milliseconds) ((TickType_t)(milliseconds))
 #include "freertos/task.h"
+#include "hw_inventory.h"
 #include "power_control.h"
 #include "sd_card.h"
 #include "sd_card_diagnostics.h"
 #include "sd_card_format.h"
+#include "sd_card_info.h"
 #include "storage_manager.h"
 #include "ui.h"
 
@@ -28,6 +38,7 @@ typedef enum {
     EVENT_FORMAT_STATUS,
     EVENT_RECOVERY_PROGRESS,
     EVENT_RECOVERY_RESULT,
+    EVENT_CONTINUE_WITHOUT_STORAGE,
     EVENT_STORAGE_INIT,
     EVENT_DISPLAY_INIT,
     EVENT_UI_INIT,
@@ -48,6 +59,10 @@ static unsigned s_call_order;
 static unsigned s_first_delay_order;
 static unsigned s_first_mount_order;
 static esp_err_t s_mount_result;
+static bool s_mount_stage_override_enabled;
+static sd_card_mount_stage_t s_mount_stage_override;
+static int s_mount_fresult;
+static uint64_t s_card_capacity_bytes;
 static esp_err_t s_mount_script[8];
 static size_t s_mount_script_count;
 static size_t s_mount_attempts;
@@ -55,6 +70,8 @@ static unsigned s_delay_calls;
 static TickType_t s_delay_ticks[8];
 static esp_err_t s_diagnostic_result;
 static esp_err_t s_probe_result;
+static sd_card_probe_stage_t s_probe_stage;
+static int s_probe_errno;
 static esp_err_t s_display_result;
 static esp_err_t s_ui_result;
 static bool s_display_ready;
@@ -81,6 +98,8 @@ static esp_err_t s_format_start_result;
 static sd_card_format_status_t s_format_status;
 static esp_err_t s_storage_init_result;
 static unsigned s_storage_init_calls;
+static unsigned s_continue_without_storage_calls;
+static char s_warning_log[160];
 
 static void push_event(test_event_t event)
 {
@@ -96,6 +115,10 @@ static void reset_fakes(void)
     s_first_delay_order = 0U;
     s_first_mount_order = 0U;
     s_mount_result = ESP_OK;
+    s_mount_stage_override_enabled = false;
+    s_mount_stage_override = SD_CARD_MOUNT_STAGE_NONE;
+    s_mount_fresult = 13;
+    s_card_capacity_bytes = 32ULL * 1024ULL * 1024ULL * 1024ULL;
     memset(s_mount_script, 0, sizeof(s_mount_script));
     s_mount_script_count = 0U;
     s_mount_attempts = 0U;
@@ -103,6 +126,8 @@ static void reset_fakes(void)
     memset(s_delay_ticks, 0, sizeof(s_delay_ticks));
     s_diagnostic_result = ESP_OK;
     s_probe_result = ESP_OK;
+    s_probe_stage = SD_CARD_PROBE_STAGE_COMPLETE;
+    s_probe_errno = 0;
     s_display_result = ESP_OK;
     s_display_ready = false;
     s_ui_result = ESP_OK;
@@ -132,7 +157,10 @@ static void reset_fakes(void)
     };
     s_storage_init_result = ESP_OK;
     s_storage_init_calls = 0U;
+    s_continue_without_storage_calls = 0U;
+    s_warning_log[0] = '\0';
     app_storage_boot_set_recovery_ui(NULL);
+    hw_inventory_init();
 }
 
 static void set_mount_script(const esp_err_t *results, size_t count)
@@ -157,11 +185,15 @@ esp_err_t sd_card_mount_recovery(sd_card_mount_report_t *report)
     if (report != NULL) {
         report->stage = result == ESP_OK
             ? SD_CARD_MOUNT_STAGE_NONE
-            : (result == ESP_ERR_TIMEOUT || result == ESP_ERR_INVALID_RESPONSE
-                ? SD_CARD_MOUNT_STAGE_CARD_INIT
-                : SD_CARD_MOUNT_STAGE_FS_MOUNT);
+            : (s_mount_stage_override_enabled
+                ? s_mount_stage_override
+                : (result == ESP_ERR_TIMEOUT || result == ESP_ERR_INVALID_RESPONSE
+                    ? SD_CARD_MOUNT_STAGE_CARD_INIT
+                    : SD_CARD_MOUNT_STAGE_FS_MOUNT));
         report->err = result;
-        report->fresult = result == ESP_FAIL ? 13 : -1;
+        report->fresult = report->stage == SD_CARD_MOUNT_STAGE_FS_MOUNT
+            ? s_mount_fresult
+            : -1;
         report->health = result == ESP_OK
             ? SD_CARD_HEALTH_READY
             : (report->stage == SD_CARD_MOUNT_STAGE_FS_MOUNT
@@ -174,6 +206,14 @@ esp_err_t sd_card_mount_recovery(sd_card_mount_report_t *report)
 sdmmc_card_t *sd_card_get_card_handle(void)
 {
     return &s_fake_card;
+}
+
+esp_err_t sd_card_get_info(sd_card_info_t *info)
+{
+    assert(info != NULL);
+    memset(info, 0, sizeof(*info));
+    info->capacity_bytes = s_card_capacity_bytes;
+    return ESP_OK;
 }
 
 void vTaskDelay(TickType_t ticks)
@@ -204,15 +244,21 @@ sd_card_probe_result_t sd_card_write_readback_probe(void)
     return (sd_card_probe_result_t){
         .stage = s_probe_result == ESP_OK
             ? SD_CARD_PROBE_STAGE_COMPLETE
-            : SD_CARD_PROBE_STAGE_WRITE,
+            : s_probe_stage,
         .err = s_probe_result,
-        .sys_errno = s_probe_result == ESP_OK ? 0 : 28,
+        .sys_errno = s_probe_result == ESP_OK ? 0 : s_probe_errno,
     };
 }
 
 const char *sd_card_probe_stage_name(sd_card_probe_stage_t stage)
 {
-    return stage == SD_CARD_PROBE_STAGE_COMPLETE ? "COMPLETE" : "WRITE";
+    if (stage == SD_CARD_PROBE_STAGE_COMPLETE) {
+        return "COMPLETE";
+    }
+    if (stage == SD_CARD_PROBE_STAGE_READ) {
+        return "READ";
+    }
+    return "WRITE";
 }
 
 esp_err_t sd_card_format_fat32_task_start(sdmmc_card_t *card, bool confirmed)
@@ -287,6 +333,14 @@ static void fake_show_result(void *context, bool success, esp_err_t err)
     s_recovery_view_active = true;
 }
 
+static void fake_show_continue_without_storage(void *context)
+{
+    (void)context;
+    push_event(EVENT_CONTINUE_WITHOUT_STORAGE);
+    ++s_continue_without_storage_calls;
+    s_recovery_view_active = true;
+}
+
 static void install_recovery_ui(void)
 {
     const app_storage_recovery_ui_t ui = {
@@ -295,6 +349,7 @@ static void install_recovery_ui(void)
         .wait_decision = fake_wait_decision,
         .show_progress = fake_show_progress,
         .show_result = fake_show_result,
+        .show_continue_without_storage = fake_show_continue_without_storage,
     };
     app_storage_boot_set_recovery_ui(&ui);
 }
@@ -378,6 +433,15 @@ void app_poweroff_idle_forever(void)
     }
 }
 
+void app_storage_boot_test_log_capture(const char *tag, const char *format, ...)
+{
+    (void)tag;
+    va_list args;
+    va_start(args, format);
+    (void)vsnprintf(s_warning_log, sizeof(s_warning_log), format, args);
+    va_end(args);
+}
+
 #include "../../main/app_storage_boot.c"
 
 static void assert_sequence(const test_event_t *expected, size_t count)
@@ -406,6 +470,44 @@ static void run_diagnostic_until_poweroff(void)
         assert(false);
     }
     s_jump_from_idle = false;
+}
+
+
+static hw_module_info_t get_sd_inventory(void)
+{
+    hw_module_info_t info;
+    assert(hw_inventory_get(HW_MODULE_SD_CARD, &info));
+    return info;
+}
+
+
+static unsigned count_events(test_event_t event)
+{
+    unsigned count = 0U;
+    for (size_t i = 0U; i < s_event_count; ++i) {
+        count += s_events[i] == event ? 1U : 0U;
+    }
+    return count;
+}
+
+
+static void assert_absent_run_continued_without_prompt(void)
+{
+    assert(s_reason_calls == 0U);
+    assert(s_decision_calls == 0U);
+    assert(s_continue_without_storage_calls == 1U);
+    assert(s_format_start_calls == 0U);
+    assert(strcmp(
+        s_warning_log,
+        "BOOT_NO_STORAGE SD absent, continuing without storage"
+    ) == 0);
+    const hw_module_info_t inventory = get_sd_inventory();
+    assert(inventory.state == HW_STATE_ABSENT);
+    assert(strcmp(inventory.reason, "no response") == 0);
+    assert(count_events(EVENT_SHOW_ERROR) == 0U);
+    assert(count_events(EVENT_POWER_SHUTDOWN) == 0U);
+    assert(count_events(EVENT_IDLE) == 0U);
+    assert(count_events(EVENT_CONTINUE_WITHOUT_STORAGE) == 1U);
 }
 
 static void test_arm_success_waits_before_cleanup(void)
@@ -490,6 +592,114 @@ static void test_mount_failure_uses_same_safe_shutdown_helper(void)
     assert(strcmp(s_error_message, "MOUNT FAILED") == 0);
     assert(s_events[s_event_count - 2U] == EVENT_POWER_SHUTDOWN);
     assert(s_events[s_event_count - 1U] == EVENT_IDLE);
+    const hw_module_info_t inventory = get_sd_inventory();
+    assert(inventory.state == HW_STATE_FAULT);
+    assert(strcmp(inventory.reason, "no filesystem") == 0);
+}
+
+
+static void test_absent_mount_failures_continue_without_prompt(void)
+{
+    const struct {
+        sd_card_mount_stage_t stage;
+        esp_err_t err;
+    } cases[] = {
+        {SD_CARD_MOUNT_STAGE_HOST_INIT, ESP_FAIL},
+        {SD_CARD_MOUNT_STAGE_CARD_INIT, ESP_FAIL},
+        {SD_CARD_MOUNT_STAGE_FS_MOUNT, ESP_ERR_TIMEOUT},
+        {SD_CARD_MOUNT_STAGE_FS_MOUNT, ESP_ERR_INVALID_RESPONSE},
+    };
+
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        reset_fakes();
+        s_mount_result = cases[i].err;
+        s_mount_stage_override_enabled = true;
+        s_mount_stage_override = cases[i].stage;
+        install_recovery_ui();
+
+        app_storage_boot_run_diagnostic();
+
+        assert(s_mount_attempts == 3U);
+        assert_absent_run_continued_without_prompt();
+    }
+}
+
+
+static void test_early_probe_no_response_continues_without_prompt(void)
+{
+    const esp_err_t errors[] = {ESP_ERR_TIMEOUT, ESP_ERR_INVALID_RESPONSE};
+    for (size_t i = 0U; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+        reset_fakes();
+        s_probe_result = errors[i];
+        s_probe_stage = SD_CARD_PROBE_STAGE_READ;
+        install_recovery_ui();
+
+        app_storage_boot_run_diagnostic();
+
+        assert(s_mount_attempts == 1U);
+        assert(count_events(EVENT_SD_PROBE) == 1U);
+        assert(count_events(EVENT_SD_DIAGNOSTIC) == 0U);
+        assert_absent_run_continued_without_prompt();
+    }
+}
+
+
+static void test_final_write_read_no_response_continues_without_prompt(void)
+{
+    const esp_err_t errors[] = {ESP_ERR_TIMEOUT, ESP_ERR_INVALID_RESPONSE};
+    for (size_t i = 0U; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+        reset_fakes();
+        s_diagnostic_result = errors[i];
+        install_recovery_ui();
+
+        app_storage_boot_run_diagnostic();
+
+        assert(count_events(EVENT_SD_PROBE) == 1U);
+        assert(count_events(EVENT_SD_DIAGNOSTIC) == 1U);
+        assert_absent_run_continued_without_prompt();
+    }
+}
+
+
+static void test_generic_filesystem_error_is_non_destructive_fault(void)
+{
+    reset_fakes();
+    s_mount_result = ESP_FAIL;
+    s_mount_fresult = 1; /* FatFs FR_DISK_ERR. */
+    s_decision = APP_STORAGE_RECOVERY_DECISION_SHUTDOWN;
+    install_recovery_ui();
+    run_diagnostic_until_poweroff();
+
+    assert(s_seen_action == APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY);
+    assert(s_format_start_calls == 0U);
+    const hw_module_info_t inventory = get_sd_inventory();
+    assert(inventory.state == HW_STATE_FAULT);
+    assert(strcmp(inventory.reason, "mount failed") == 0);
+}
+
+
+static void test_missing_filesystem_on_tiny_card_does_not_offer_format(void)
+{
+    reset_fakes();
+    s_mount_result = ESP_FAIL;
+    s_card_capacity_bytes = APP_STORAGE_BOOT_MIN_CARD_CAPACITY_BYTES - 1U;
+    s_decision = APP_STORAGE_RECOVERY_DECISION_SHUTDOWN;
+    install_recovery_ui();
+    run_diagnostic_until_poweroff();
+
+    assert(s_seen_action == APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY);
+    assert(s_format_start_calls == 0U);
+}
+
+
+static void test_successful_probe_reports_present(void)
+{
+    reset_fakes();
+    app_storage_boot_run_diagnostic();
+
+    const hw_module_info_t inventory = get_sd_inventory();
+    assert(inventory.state == HW_STATE_PRESENT);
+    assert(strcmp(inventory.reason, "ready") == 0);
 }
 
 static void test_write_failure_uses_same_safe_shutdown_helper(void)
@@ -542,13 +752,13 @@ static void test_mount_retry_succeeds_before_boot_failure(void)
 }
 
 
-static void test_failure_hook_receives_reason_and_cancel_powers_off(void)
+static void test_user_cancel_on_format_offer_continues_without_storage(void)
 {
     reset_fakes();
     s_mount_result = ESP_FAIL;
     s_decision = APP_STORAGE_RECOVERY_DECISION_CANCEL;
     install_recovery_ui();
-    run_diagnostic_until_poweroff();
+    app_storage_boot_run_diagnostic();
 
     assert(s_reason_calls == 1U);
     assert(s_decision_calls == 1U);
@@ -557,9 +767,87 @@ static void test_failure_hook_receives_reason_and_cancel_powers_off(void)
     assert(strcmp(s_seen_reason.reason_text_code, "FS_MOUNT err=ESP_FAIL fr=13") == 0);
     assert(s_events[3] == EVENT_RECOVERY_REASON);
     assert(s_events[4] == EVENT_RECOVERY_DECISION);
+    assert(s_events[5] == EVENT_CONTINUE_WITHOUT_STORAGE);
+    assert(s_continue_without_storage_calls == 1U);
+    assert(s_format_start_calls == 0U);
+    assert(strcmp(
+        s_warning_log,
+        "BOOT_NO_STORAGE continuing without SD (user cancel)"
+    ) == 0);
+    const hw_module_info_t inventory = get_sd_inventory();
+    assert(inventory.state == HW_STATE_FAULT);
+    assert(strcmp(inventory.reason, "no filesystem") == 0);
     for (size_t i = 0U; i < s_event_count; ++i) {
         assert(s_events[i] != EVENT_SHOW_ERROR);
+        assert(s_events[i] != EVENT_POWER_SHUTDOWN);
+        assert(s_events[i] != EVENT_IDLE);
     }
+}
+
+
+static void test_card_error_cancel_keeps_sd_faulted(void)
+{
+    reset_fakes();
+    s_mount_result = ESP_FAIL;
+    s_mount_fresult = 1; /* FatFs FR_DISK_ERR. */
+    s_decision = APP_STORAGE_RECOVERY_DECISION_CANCEL;
+    install_recovery_ui();
+
+    app_storage_boot_run_diagnostic();
+
+    assert(s_reason_calls == 1U);
+    assert(s_decision_calls == 1U);
+    assert(s_seen_action == APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY);
+    assert(s_format_start_calls == 0U);
+    assert(s_continue_without_storage_calls == 1U);
+    const hw_module_info_t inventory = get_sd_inventory();
+    assert(inventory.state == HW_STATE_FAULT);
+    assert(strcmp(inventory.reason, "mount failed") == 0);
+    for (size_t i = 0U; i < s_event_count; ++i) {
+        assert(s_events[i] != EVENT_POWER_SHUTDOWN);
+        assert(s_events[i] != EVENT_IDLE);
+    }
+}
+
+
+static void test_card_error_retry_still_retries_mount(void)
+{
+    reset_fakes();
+    s_mount_result = ESP_FAIL;
+    s_mount_fresult = 1; /* FatFs FR_DISK_ERR. */
+    const esp_err_t results[] = {ESP_FAIL, ESP_FAIL, ESP_FAIL, ESP_OK};
+    set_mount_script(results, sizeof(results) / sizeof(results[0]));
+    s_decision_script[0] = APP_STORAGE_RECOVERY_DECISION_RETRY;
+    s_decision_script_count = 1U;
+    install_recovery_ui();
+
+    app_storage_boot_run_diagnostic();
+
+    assert(s_seen_action == APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY);
+    assert(s_reason_calls == 1U);
+    assert(s_decision_calls == 1U);
+    assert(s_mount_attempts == 4U);
+    assert(s_format_start_calls == 0U);
+    assert(s_continue_without_storage_calls == 0U);
+    assert(count_events(EVENT_POWER_SHUTDOWN) == 0U);
+    assert(count_events(EVENT_IDLE) == 0U);
+    const hw_module_info_t inventory = get_sd_inventory();
+    assert(inventory.state == HW_STATE_PRESENT);
+    assert(strcmp(inventory.reason, "ready") == 0);
+}
+
+
+static void test_power_notification_during_recovery_still_powers_off(void)
+{
+    reset_fakes();
+    s_mount_result = ESP_FAIL;
+    s_mount_fresult = 1; /* FatFs FR_DISK_ERR. */
+    s_decision = APP_STORAGE_RECOVERY_DECISION_SHUTDOWN;
+    install_recovery_ui();
+    run_diagnostic_until_poweroff();
+
+    assert(s_seen_action == APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY);
+    assert(s_continue_without_storage_calls == 0U);
     assert(s_events[s_event_count - 2U] == EVENT_POWER_SHUTDOWN);
     assert(s_events[s_event_count - 1U] == EVENT_IDLE);
 }
@@ -569,11 +857,18 @@ static void test_probe_details_reach_recovery_ui(void)
 {
     reset_fakes();
     s_probe_result = ESP_FAIL;
+    s_probe_stage = SD_CARD_PROBE_STAGE_READ;
+    s_probe_errno = ENOENT;
+    s_decision = APP_STORAGE_RECOVERY_DECISION_SHUTDOWN;
     install_recovery_ui();
     run_diagnostic_until_poweroff();
     assert(s_seen_reason.reason == APP_STORAGE_BOOT_REASON_WRITE_PROBE_FAILED);
-    assert(strcmp(s_seen_reason.reason_text_code, "WRITE_PROBE/WRITE err=ESP_FAIL errno=28") == 0);
+    assert(strcmp(s_seen_reason.reason_text_code, "WRITE_PROBE/READ err=ESP_FAIL errno=2") == 0);
+    assert(s_seen_action == APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY);
     assert(s_format_start_calls == 0U);
+    const hw_module_info_t inventory = get_sd_inventory();
+    assert(inventory.state == HW_STATE_FAULT);
+    assert(strcmp(inventory.reason, "read probe failed") == 0);
 }
 
 static void test_confirmed_format_success_continues_without_poweroff(void)
@@ -605,7 +900,8 @@ static void test_confirmed_format_failure_falls_back_to_poweroff(void)
     reset_fakes();
     s_mount_result = ESP_FAIL;
     s_decision_script[0] = APP_STORAGE_RECOVERY_DECISION_FORMAT;
-    s_decision_script[1] = APP_STORAGE_RECOVERY_DECISION_CANCEL;
+    /* Keep fatal shutdown coverage on the power-notification path. */
+    s_decision_script[1] = APP_STORAGE_RECOVERY_DECISION_SHUTDOWN;
     s_decision_script_count = 2U;
     s_format_status = (sd_card_format_status_t){
         .state = SD_CARD_FORMAT_STATE_FAILED,
@@ -641,24 +937,29 @@ static void test_confirmed_format_failure_falls_back_to_poweroff(void)
 }
 
 
-static void test_layout_format_success_retries_storage_init_once(void)
+static void test_layout_error_never_offers_format(void)
 {
     reset_fakes();
-    s_decision = APP_STORAGE_RECOVERY_DECISION_FORMAT;
+    hw_inventory_report(HW_MODULE_SD_CARD, HW_STATE_PRESENT, "ready");
+    s_decision = APP_STORAGE_RECOVERY_DECISION_CANCEL;
     install_recovery_ui();
 
-    app_storage_boot_recover_storage_manager_failure(ESP_FAIL);
+    s_jump_from_idle = true;
+    if (setjmp(s_idle_jump) == 0) {
+        app_storage_boot_recover_storage_manager_failure(ESP_FAIL);
+        assert(false);
+    }
+    s_jump_from_idle = false;
 
     assert(s_reason_calls == 1U);
     assert(s_seen_reason.reason == APP_STORAGE_BOOT_REASON_LAYOUT_INIT_FAILED);
-    assert(s_seen_action == APP_STORAGE_BOOT_ACTION_OFFER_FORMAT);
-    assert(s_format_start_calls == 1U);
-    assert(s_storage_init_calls == 1U);
-    assert(s_events[s_event_count - 1U] == EVENT_STORAGE_INIT);
-    for (size_t i = 0U; i < s_event_count; ++i) {
-        assert(s_events[i] != EVENT_POWER_SHUTDOWN);
-        assert(s_events[i] != EVENT_IDLE);
-    }
+    assert(s_seen_action == APP_STORAGE_BOOT_ACTION_SHOW_CARD_ERROR_RETRY);
+    assert(s_format_start_calls == 0U);
+    assert(s_storage_init_calls == 0U);
+    assert(s_events[s_event_count - 2U] == EVENT_POWER_SHUTDOWN);
+    assert(s_events[s_event_count - 1U] == EVENT_IDLE);
+    const hw_module_info_t inventory = get_sd_inventory();
+    assert(inventory.state == HW_STATE_PRESENT);
 }
 
 int main(void)
@@ -667,13 +968,22 @@ int main(void)
     test_arm_failure_skips_unreachable_wait_but_keeps_cleanup();
     test_display_failure_still_arms_and_waits();
     test_mount_failure_uses_same_safe_shutdown_helper();
+    test_absent_mount_failures_continue_without_prompt();
+    test_early_probe_no_response_continues_without_prompt();
+    test_final_write_read_no_response_continues_without_prompt();
+    test_generic_filesystem_error_is_non_destructive_fault();
+    test_missing_filesystem_on_tiny_card_does_not_offer_format();
+    test_successful_probe_reports_present();
     test_write_failure_uses_same_safe_shutdown_helper();
     test_mount_retry_succeeds_before_boot_failure();
-    test_failure_hook_receives_reason_and_cancel_powers_off();
+    test_user_cancel_on_format_offer_continues_without_storage();
+    test_card_error_cancel_keeps_sd_faulted();
+    test_card_error_retry_still_retries_mount();
+    test_power_notification_during_recovery_still_powers_off();
     test_probe_details_reach_recovery_ui();
     test_confirmed_format_success_continues_without_poweroff();
     test_confirmed_format_failure_falls_back_to_poweroff();
-    test_layout_format_success_retries_storage_init_once();
+    test_layout_error_never_offers_format();
     puts("APP_STORAGE_BOOT_FAILURE_HOST_PASS");
     return 0;
 }
