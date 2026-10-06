@@ -25,6 +25,8 @@
 
 #define INA3221_SHUNT_RESISTANCE_OHM  0.1f
 
+static const char s_i2c_diag_source[] = "ina3221";
+
 
 static esp_err_t ina3221_driver_read_register(
     ina3221_driver_t *driver,
@@ -50,8 +52,11 @@ static esp_err_t ina3221_driver_read_register(
             data
         );
 
-    if (err != ESP_OK) {
-        return sensor_bus_classify_transfer_error(INA3221_I2C_ADDRESS, err);
+    const esp_err_t classified_err =
+        sensor_bus_classify_transfer_error_with_context(
+            INA3221_I2C_ADDRESS, err, s_i2c_diag_source, -1);
+    if (classified_err != ESP_OK) {
+        return classified_err;
     }
 
     *value =
@@ -85,9 +90,8 @@ static esp_err_t ina3221_driver_write_register(
             register_address,
             sizeof(data),
             data);
-    return err == ESP_OK
-        ? ESP_OK
-        : sensor_bus_classify_transfer_error(INA3221_I2C_ADDRESS, err);
+    return sensor_bus_classify_transfer_error_with_context(
+        INA3221_I2C_ADDRESS, err, s_i2c_diag_source, -1);
 }
 
 
@@ -118,7 +122,8 @@ esp_err_t ina3221_driver_open(
     driver->device =
         handles.ina3221;
 
-    err = sensor_bus_probe_address(INA3221_I2C_ADDRESS);
+    err = sensor_bus_probe_address_with_context(
+        INA3221_I2C_ADDRESS, s_i2c_diag_source, -1);
     if (err != ESP_OK) {
         ina3221_driver_close(driver);
         return err;

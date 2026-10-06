@@ -1177,11 +1177,13 @@
     "web.hw.module.main_xiao": {"en": "Main XIAO", "uk": "Основний XIAO"},
     "web.hw.module.barometer": {"en": "Barometer", "uk": "Барометр"},
     "web.hw.module.power_monitor": {"en": "Power monitor", "uk": "Монітор живлення"},
-    "web.hw.state.unknown": {"en": "Unknown", "uk": "Невідомо"},
+    "web.hw.state.unknown": {"en": "Not tested", "uk": "Не перевірено"},
     "web.hw.state.present": {"en": "Present", "uk": "Підключено"},
     "web.hw.state.absent": {"en": "Absent", "uk": "Не підключено"},
     "web.hw.state.fault": {"en": "Fault", "uk": "Несправність"},
     "web.hw.state.degraded": {"en": "Degraded", "uk": "Обмежено"},
-    "web.hw.degraded_banner": {"en": "Required module issue", "uk": "Проблема з обов’язковим модулем"}
+    "web.hw.degraded_banner": {"en": "Required module issue", "uk": "Проблема з обов’язковим модулем"},
+    "sensors.adc_not_started": { "en": "AD7606 not started yet", "uk": "AD7606 ще не запущено" },
+    "sensors.adc_failed": { "en": "AD7606 failed: {name}", "uk": "Помилка AD7606: {name}" }
   }
 }

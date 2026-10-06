@@ -204,7 +204,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "HEAP     -- KB internal free", /* system.heap_empty */
     "ESP-IDF  %s", /* system.idf_version */
     "LANGUAGE: ENGLISH", /* system.language_english */
-    "UP/DN LANG  OK SET  RIGHT HARDWARE", /* system.language_footer */
+    "UP/DN SELECT  OK SET", /* system.language_footer */
     "LANGUAGE: UKRAINIAN", /* system.language_ukrainian */
     "LVGL     %d.%d.%d + esp_lvgl_port", /* system.lvgl_version */
     "PSRAM    %lu KB free", /* system.psram */
@@ -603,7 +603,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "ВНУТР. КУЧА -- KB вільно", /* system.heap_empty */
     "ESP-IDF  %s", /* system.idf_version */
     "МОВА: АНГЛІЙСЬКА", /* system.language_english */
-    "UP/DN МОВА  OK ВИБІР  RIGHT ОБЛАДНАННЯ", /* system.language_footer */
+    "UP/DN ВИБІР  OK ЗАСТОС.", /* system.language_footer */
     "МОВА: УКРАЇНСЬКА", /* system.language_ukrainian */
     "LVGL     %d.%d.%d + esp_lvgl_port", /* system.lvgl_version */
     "PSRAM    %lu KB вільно", /* system.psram */

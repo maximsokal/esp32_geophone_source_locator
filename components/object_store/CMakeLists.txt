@@ -15,6 +15,7 @@ idf_component_register(
         "object_store_delete_fs.c"
         "object_store_json.c"
         "object_store_profile.c"
+        "object_store_cache.c"
         "object_store_profile_cache_policy.c"
         "object_store_responsive.c"
         "object_store_artifacts.c"
@@ -31,4 +32,7 @@ idf_component_register(
         freertos
         json
         log
+
+    PRIV_REQUIRES
+        heap
 )

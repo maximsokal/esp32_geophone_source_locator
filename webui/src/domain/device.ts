@@ -443,8 +443,8 @@ export interface DeviceAcquisitionStatus {
   requested_running: boolean;
   hardware_ready: boolean;
   source: string;
-  last_error: number;
-  last_error_name: string;
+  last_error?: number;
+  last_error_name?: string;
   sample_rate_hz: number;
   samples_recorded: number;
   recording_ms: number;

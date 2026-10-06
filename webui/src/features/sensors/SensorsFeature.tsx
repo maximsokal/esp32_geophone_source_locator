@@ -24,6 +24,27 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
   const pods = status?.pods ?? [];
   const acquisition = status?.acquisition;
   const serial = acquisition?.serial;
+  const ad7606State = status?.hardware?.modules?.find((module) => module.id === 'ad7606')?.state;
+  const lastErrorName = acquisition?.last_error_name;
+  const adcError = lastErrorName && lastErrorName !== 'ESP_OK'
+    ? lastErrorName
+    : acquisition?.last_error !== undefined && acquisition.last_error !== 0
+      ? String(acquisition.last_error)
+      : undefined;
+  const hasExtendedAdcStatus = status?.hardware !== undefined
+    || acquisition?.last_error !== undefined
+    || acquisition?.last_error_name !== undefined;
+  const adcStatus = ad7606State === 'absent'
+    ? t('sensors.not_detected')
+    : adcError !== undefined
+      ? t('sensors.adc_failed', { name: adcError })
+      : acquisition?.hardware_ready
+        ? t('sensors.detected')
+        : !hasExtendedAdcStatus
+          ? t('sensors.not_detected')
+          : acquisition?.running !== true
+            ? t('sensors.adc_not_started')
+            : t('dashboard.acquisition_unverified');
   const streamStuck = serial?.stream_stuck === true || serial?.stream_state === 'STUCK';
   const serialInterference = serial?.suspicious === true || serial?.stream_state === 'SUSPICIOUS';
   const powerFault = serial?.power_fault_latched === true;
@@ -82,7 +103,7 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
         <div className="card-heading">
           <div><span className="eyebrow">{t('sensors.base_adc')}</span><h2>{acquisition?.source ?? t('sensors.acquisition_source')}</h2></div>
           <span className={`state-pill ${acquisition?.hardware_ready ? 'ready' : 'offline'}`}>
-            {t(acquisition?.hardware_ready ? 'sensors.detected' : 'sensors.not_detected')}
+            {adcStatus}
           </span>
         </div>
         <dl className="console-dl">

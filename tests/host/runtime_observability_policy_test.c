@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -25,6 +26,13 @@ static bool s_fail_internal;
 static unsigned s_spiram_allocs;
 static unsigned s_internal_allocs;
 static unsigned s_fallback_logs;
+static TaskStatus_t s_mock_task_statuses[4];
+static UBaseType_t s_mock_task_count;
+static unsigned s_runtime_task_info_logs;
+static unsigned s_low_stack_warning_logs;
+static bool s_saw_low_stack_511;
+static bool s_saw_low_stack_0;
+static char s_last_runtime_task_info[512];
 static unsigned s_free_caps_internal_8bit;
 static unsigned s_free_caps_internal_dma;
 static unsigned s_free_caps_spiram;
@@ -53,6 +61,14 @@ static void reset_runtime_storage(void)
     s_spiram_allocs = 0U;
     s_internal_allocs = 0U;
     s_fallback_logs = 0U;
+    s_mock_task_count = 0U;
+    memset(s_mock_task_statuses, 0, sizeof(s_mock_task_statuses));
+    s_runtime_task_info_logs = 0U;
+    s_low_stack_warning_logs = 0U;
+    s_saw_low_stack_511 = false;
+    s_saw_low_stack_0 = false;
+    s_last_runtime_task_info[0] = '\0';
+    s_snapshot_mutex = NULL;
     s_free_caps_internal_8bit = 0U;
     s_free_caps_internal_dma = 0U;
     s_free_caps_spiram = 0U;
@@ -77,7 +93,6 @@ void fake_runtime_log(
     ...
 )
 {
-    (void)level;
     (void)tag;
     if (strstr(format, "RUNTIME_SNAPSHOT_STATUS_STORAGE fallback=internal") != NULL) {
         s_fallback_logs++;
@@ -85,7 +100,36 @@ void fake_runtime_log(
 
     va_list args;
     va_start(args, format);
+    char message[512];
+    (void)vsnprintf(message, sizeof(message), format, args);
     va_end(args);
+
+    if (strcmp(level, "I") == 0 && strstr(message, "RUNTIME_TASK rank=") != NULL) {
+        ++s_runtime_task_info_logs;
+        (void)snprintf(
+            s_last_runtime_task_info,
+            sizeof(s_last_runtime_task_info),
+            "%s",
+            message
+        );
+    } else if (
+        strcmp(level, "W") == 0 &&
+        strstr(message, "RUNTIME_TASK_LOW_STACK name=") != NULL
+    ) {
+        ++s_low_stack_warning_logs;
+        if (strcmp(
+                message,
+                "RUNTIME_TASK_LOW_STACK name=below stack_free=511"
+            ) == 0) {
+            s_saw_low_stack_511 = true;
+        }
+        if (strcmp(
+                message,
+                "RUNTIME_TASK_LOW_STACK name=zero stack_free=0"
+            ) == 0) {
+            s_saw_low_stack_0 = true;
+        }
+    }
 }
 
 
@@ -160,7 +204,7 @@ size_t heap_caps_get_minimum_free_size(uint32_t caps)
 
 UBaseType_t uxTaskGetNumberOfTasks(void)
 {
-    return 0U;
+    return s_mock_task_count;
 }
 
 
@@ -170,12 +214,17 @@ UBaseType_t uxTaskGetSystemState(
     configRUN_TIME_COUNTER_TYPE *total_runtime
 )
 {
-    (void)task_status_array;
-    (void)array_size;
     if (total_runtime != NULL) {
         *total_runtime = 0U;
     }
-    return 0U;
+
+    const UBaseType_t count = s_mock_task_count < array_size
+        ? s_mock_task_count
+        : array_size;
+    for (UBaseType_t i = 0U; i < count; ++i) {
+        task_status_array[i] = s_mock_task_statuses[i];
+    }
+    return count;
 }
 
 
@@ -395,6 +444,35 @@ static void test_memory_snapshot_queries_each_heap_semantic_once(void)
 }
 
 
+static void test_low_stack_warning_boundary_and_log_selection(void)
+{
+    assert(runtime_observability_stack_is_low(511U));
+    assert(!runtime_observability_stack_is_low(512U));
+    assert(!runtime_observability_stack_is_low(513U));
+    assert(runtime_observability_stack_is_low(0U));
+
+    reset_runtime_storage();
+    s_snapshot_mutex = (SemaphoreHandle_t)(uintptr_t)1U;
+    s_mock_task_count = 3U;
+    s_mock_task_statuses[0].pcTaskName = "below";
+    s_mock_task_statuses[0].usStackHighWaterMark = 511U;
+    s_mock_task_statuses[1].pcTaskName = "at";
+    s_mock_task_statuses[1].usStackHighWaterMark = 512U;
+    s_mock_task_statuses[2].pcTaskName = "zero";
+    s_mock_task_statuses[2].usStackHighWaterMark = 0U;
+
+    runtime_observability_log_snapshot("host");
+
+    assert(s_low_stack_warning_logs == 2U);
+    assert(s_saw_low_stack_511);
+    assert(s_saw_low_stack_0);
+    assert(s_runtime_task_info_logs == 1U);
+    assert(strstr(s_last_runtime_task_info, "RUNTIME_TASK rank=") != NULL);
+    assert(strstr(s_last_runtime_task_info, "name=at") != NULL);
+    assert(strstr(s_last_runtime_task_info, "stack_free=512") != NULL);
+}
+
+
 int main(void)
 {
     test_percent_tenths_edges();
@@ -404,6 +482,7 @@ int main(void)
     test_status_arrays_fall_back_to_internal_ram();
     test_status_arrays_fail_cleanly_when_both_heaps_fail();
     test_memory_snapshot_queries_each_heap_semantic_once();
+    test_low_stack_warning_boundary_and_log_selection();
     reset_runtime_storage();
     return 0;
 }

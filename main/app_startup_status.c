@@ -66,11 +66,20 @@ void app_startup_log_success(void)
             seismic_acquisition_source_name()
         );
     } else {
-        ESP_LOGW(
-            TAG,
-            "Seismic acquisition: %s UNAVAILABLE",
-            seismic_acquisition_source_name()
-        );
+        const esp_err_t acquisition_error =
+            seismic_acquisition_last_error();
+        if (acquisition_error == ESP_OK) {
+            ESP_LOGI(
+                TAG,
+                "Seismic acquisition: AD7606 NOT STARTED (starts when Measurements is opened)"
+            );
+        } else {
+            ESP_LOGW(
+                TAG,
+                "Seismic acquisition: AD7606 FAILED: %s",
+                esp_err_to_name(acquisition_error)
+            );
+        }
     }
 
     ESP_LOGI(TAG, "UI: OK");

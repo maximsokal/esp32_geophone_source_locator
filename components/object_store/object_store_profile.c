@@ -27,6 +27,7 @@ static const char *TAG = "OBJECT_STORE_INDEX";
  * profiles it is only a few KiB and avoids a multi-second FAT traversal.
  */
 static object_store_profile_t s_profile_index[OBJECT_STORE_MAX_OBJECTS];
+static uint64_t s_profile_index_generation[OBJECT_STORE_MAX_OBJECTS];
 static size_t s_profile_index_count = 0;
 static bool s_profile_index_valid = false;
 static int64_t s_profile_index_reconcile_us = 0;
@@ -35,12 +36,61 @@ static int64_t s_profile_index_reconcile_us = 0;
 static float s_settings_cache[OBJECT_STORE_POD_COUNT];
 static bool s_settings_cache_valid = false;
 
+static int object_store_profile_index_find_locked(const char *object_id);
+
+static bool object_store_profile_cache_entry_current_locked(size_t index)
+{
+    return index < s_profile_index_count &&
+        object_store_cache_generation_matches(
+            s_profile_index[index].summary.id,
+            s_profile_index_generation[index]
+        );
+}
+
+static bool object_store_profile_index_all_current_locked(void)
+{
+    for (size_t i = 0U; i < s_profile_index_count; ++i) {
+        if (!object_store_profile_cache_entry_current_locked(i)) return false;
+    }
+    return true;
+}
+
+static bool object_store_profile_cache_copy_locked(
+    const char *object_id,
+    object_store_profile_t *profile
+)
+{
+    const int found = object_store_profile_index_find_locked(object_id);
+    if (found < 0 ||
+        !object_store_profile_cache_entry_current_locked((size_t)found)) {
+        return false;
+    }
+
+    *profile = s_profile_index[(size_t)found];
+    profile->summary.active = strcmp(object_store_internal_active_id(), object_id) == 0;
+    return true;
+}
+
+static void object_store_profile_index_record_generation_locked(size_t index)
+{
+    if (index >= s_profile_index_count) return;
+    uint64_t generation = 0U;
+    if (object_store_cache_generation_get(
+            s_profile_index[index].summary.id,
+            &generation)) {
+        s_profile_index_generation[index] = generation;
+    } else {
+        s_profile_index_generation[index] = 0U;
+    }
+}
+
 static void object_store_profile_index_invalidate_membership_locked(void)
 {
     s_profile_index_count = 0;
     s_profile_index_valid = false;
     s_profile_index_reconcile_us = 0;
     memset(s_profile_index, 0, sizeof(s_profile_index));
+    memset(s_profile_index_generation, 0, sizeof(s_profile_index_generation));
 }
 
 static void object_store_default_cables(float lengths[OBJECT_STORE_POD_COUNT])
@@ -95,6 +145,9 @@ static void object_store_profile_index_sort_locked(void)
             object_store_profile_t temp = s_profile_index[i];
             s_profile_index[i] = s_profile_index[j];
             s_profile_index[j] = temp;
+            uint64_t generation = s_profile_index_generation[i];
+            s_profile_index_generation[i] = s_profile_index_generation[j];
+            s_profile_index_generation[j] = generation;
         }
     }
 }
@@ -113,6 +166,7 @@ void object_store_profile_cache_reset(void)
     object_store_profile_index_invalidate_membership_locked();
     s_settings_cache_valid = false;
     memset(s_settings_cache, 0, sizeof(s_settings_cache));
+    object_store_cache_reset();
 }
 
 static esp_err_t object_store_load_metadata_locked(const char *object_id, cJSON **root_out)
@@ -255,6 +309,75 @@ esp_err_t object_store_settings_load_locked(float lengths_m[OBJECT_STORE_POD_COU
     memcpy(s_settings_cache, loaded, sizeof(s_settings_cache));
     s_settings_cache_valid = true;
     memcpy(lengths_m, loaded, sizeof(loaded));
+    return ESP_OK;
+}
+
+static esp_err_t object_store_settings_load_uncached(float lengths_m[OBJECT_STORE_POD_COUNT])
+{
+    if (lengths_m == NULL) return ESP_ERR_INVALID_ARG;
+
+    object_store_default_cables(lengths_m);
+    if (!storage_manager_path_exists(OBJECT_STORE_SETTINGS_PATH)) {
+        return ESP_OK;
+    }
+
+    char *buffer = malloc(OBJECT_STORE_SETTINGS_BUFFER_SIZE);
+    if (buffer == NULL) return ESP_ERR_NO_MEM;
+
+    esp_err_t err = storage_manager_read_text(
+        OBJECT_STORE_SETTINGS_PATH,
+        buffer,
+        OBJECT_STORE_SETTINGS_BUFFER_SIZE
+    );
+    if (err != ESP_OK) {
+        free(buffer);
+        return err;
+    }
+
+    cJSON *root = cJSON_Parse(buffer);
+    free(buffer);
+    if (root == NULL) return ESP_ERR_INVALID_RESPONSE;
+
+    cJSON *array = cJSON_GetObjectItemCaseSensitive(root, "cable_lengths_m");
+    if (cJSON_IsArray(array)) {
+        for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+            cJSON *item = cJSON_GetArrayItem(array, (int)i);
+            if (cJSON_IsNumber(item) && object_store_cable_valid((float)item->valuedouble)) {
+                lengths_m[i] = (float)item->valuedouble;
+            }
+        }
+    }
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/* A profile cold read may block on the SD. Snapshot cached defaults under the
+ * object-store mutex, then load them without that cache lock if necessary. */
+static esp_err_t object_store_settings_snapshot_for_profile_read(
+    float lengths_m[OBJECT_STORE_POD_COUNT]
+)
+{
+    esp_err_t err = object_store_internal_begin_state_operation();
+    if (err != ESP_OK) return err;
+    if (s_settings_cache_valid) {
+        memcpy(lengths_m, s_settings_cache, sizeof(s_settings_cache));
+        object_store_internal_end_state_operation();
+        return ESP_OK;
+    }
+    object_store_internal_end_state_operation();
+
+    err = object_store_settings_load_uncached(lengths_m);
+    if (err != ESP_OK) return err;
+
+    if (object_store_internal_begin_state_operation() == ESP_OK) {
+        if (!s_settings_cache_valid) {
+            memcpy(s_settings_cache, lengths_m, sizeof(s_settings_cache));
+            s_settings_cache_valid = true;
+        } else {
+            memcpy(lengths_m, s_settings_cache, sizeof(s_settings_cache));
+        }
+        object_store_internal_end_state_operation();
+    }
     return ESP_OK;
 }
 
@@ -546,34 +669,6 @@ static esp_err_t object_store_json_read_profile_with_defaults_locked(
     return ESP_OK;
 }
 
-static void object_store_profile_index_upsert_from_root_locked(const char *object_id, cJSON *root)
-{
-    if (!s_profile_index_valid || root == NULL) return;
-
-    float defaults[OBJECT_STORE_POD_COUNT];
-    if (object_store_settings_load_locked(defaults) != ESP_OK) {
-        object_store_default_cables(defaults);
-    }
-
-    object_store_profile_t profile;
-    object_store_profile_from_root_locked(
-        object_id,
-        strcmp(object_store_internal_active_id(), object_id) == 0,
-        defaults,
-        root,
-        &profile
-    );
-
-    int found = object_store_profile_index_find_locked(object_id);
-    if (found >= 0) {
-        s_profile_index[(size_t)found] = profile;
-    }
-    else if (s_profile_index_count < OBJECT_STORE_MAX_OBJECTS) {
-        s_profile_index[s_profile_index_count++] = profile;
-        object_store_profile_index_sort_locked();
-    }
-}
-
 esp_err_t object_store_json_read_profile_locked(
     const char *object_id,
     bool active,
@@ -648,7 +743,9 @@ static esp_err_t object_store_profile_index_build_locked(void)
             free(summaries);
             return err;
         }
-        s_profile_index[s_profile_index_count++] = profile;
+        s_profile_index[s_profile_index_count] = profile;
+        ++s_profile_index_count;
+        object_store_profile_index_record_generation_locked(s_profile_index_count - 1U);
     }
 
     s_profile_index_valid = true;
@@ -711,6 +808,11 @@ static esp_err_t object_store_profile_index_reconcile_locked(void)
                 &s_profile_index[i + 1],
                 (s_profile_index_count - i - 1) * sizeof(s_profile_index[0])
             );
+            memmove(
+                &s_profile_index_generation[i],
+                &s_profile_index_generation[i + 1],
+                (s_profile_index_count - i - 1) * sizeof(s_profile_index_generation[0])
+            );
         }
         s_profile_index_count--;
         removed++;
@@ -724,7 +826,7 @@ static esp_err_t object_store_profile_index_reconcile_locked(void)
     size_t added = 0;
     for (size_t i = 0; i < count; ++i) {
         int found = object_store_profile_index_find_locked(summaries[i].id);
-        if (found >= 0) {
+        if (found >= 0 && object_store_profile_cache_entry_current_locked((size_t)found)) {
             s_profile_index[(size_t)found].summary.active = summaries[i].active;
             continue;
         }
@@ -751,7 +853,14 @@ static esp_err_t object_store_profile_index_reconcile_locked(void)
             free(summaries);
             return err;
         }
-        s_profile_index[s_profile_index_count++] = profile;
+        if (found >= 0) {
+            s_profile_index[(size_t)found] = profile;
+            object_store_profile_index_record_generation_locked((size_t)found);
+        } else {
+            s_profile_index[s_profile_index_count] = profile;
+            object_store_profile_index_record_generation_locked(s_profile_index_count);
+            ++s_profile_index_count;
+        }
         added++;
     }
 
@@ -792,50 +901,99 @@ static void object_store_profile_index_copy_locked(
     }
 }
 
-esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t *profile)
+static void object_store_profile_cache_store_locked(
+    const object_store_profile_t *profile,
+    uint64_t generation
+)
+{
+    const int found = object_store_profile_index_find_locked(profile->summary.id);
+    if (found >= 0) {
+        s_profile_index[(size_t)found] = *profile;
+        s_profile_index_generation[(size_t)found] = generation;
+        return;
+    }
+    if (s_profile_index_count >= OBJECT_STORE_MAX_OBJECTS) return;
+
+    const size_t index = s_profile_index_count++;
+    s_profile_index[index] = *profile;
+    s_profile_index_generation[index] = generation;
+    object_store_profile_index_sort_locked();
+}
+
+static esp_err_t object_store_profile_cache_require_storage(void)
+{
+    if (storage_manager_is_ready()) return ESP_OK;
+
+    if (object_store_internal_begin_state_operation() == ESP_OK) {
+        object_store_profile_cache_reset();
+        object_store_internal_end_state_operation();
+    }
+    return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t object_store_get_profile_cached(const char *object_id, object_store_profile_t *profile)
 {
     if (!object_format_id_is_valid(object_id) || profile == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* Hot path: no SD/LVGL arbitration at all when the index already knows it. */
-    esp_err_t err = object_store_internal_begin_state_operation();
+    esp_err_t err = object_store_profile_cache_require_storage();
     if (err != ESP_OK) return err;
-    if (s_profile_index_valid) {
-        int found = object_store_profile_index_find_locked(object_id);
-        if (found >= 0) {
-            *profile = s_profile_index[(size_t)found];
-            profile->summary.active = strcmp(object_store_internal_active_id(), object_id) == 0;
-            object_store_internal_end_state_operation();
-            return ESP_OK;
-        }
+
+    /* A cached profile read checks only RAM and the storage-ready flag. */
+    err = object_store_internal_begin_state_operation();
+    if (err != ESP_OK) return err;
+    if (object_store_profile_cache_copy_locked(object_id, profile)) {
+        object_store_internal_end_state_operation();
+        return ESP_OK;
     }
     object_store_internal_end_state_operation();
 
     err = object_store_internal_begin_file_operation();
     if (err != ESP_OK) return err;
 
-    if (!object_store_fs_object_exists(object_id)) {
-        err = ESP_ERR_NOT_FOUND;
-    }
-    else {
-        err = object_store_json_read_profile_locked(
-            object_id,
-            strcmp(object_store_internal_active_id(), object_id) == 0,
-            profile
-        );
-        if (err == ESP_OK && s_profile_index_valid) {
-            int found = object_store_profile_index_find_locked(object_id);
-            if (found >= 0) s_profile_index[(size_t)found] = *profile;
-            else if (s_profile_index_count < OBJECT_STORE_MAX_OBJECTS) {
-                s_profile_index[s_profile_index_count++] = *profile;
-                object_store_profile_index_sort_locked();
-            }
-        }
+    if (object_store_profile_cache_copy_locked(object_id, profile)) {
+        object_store_internal_end_file_operation();
+        return ESP_OK;
     }
 
-    object_store_internal_end_file_operation();
+    uint64_t generation = 0U;
+    const bool cache_generation_available =
+        object_store_cache_generation_get(object_id, &generation);
+    const bool active = strcmp(object_store_internal_active_id(), object_id) == 0;
+    object_store_internal_end_state_operation();
+
+    if (!object_store_fs_object_exists(object_id)) {
+        err = ESP_ERR_NOT_FOUND;
+    } else {
+        float defaults[OBJECT_STORE_POD_COUNT];
+        if (object_store_settings_snapshot_for_profile_read(defaults) != ESP_OK) {
+            object_store_default_cables(defaults);
+        }
+        err = object_store_json_read_profile_with_defaults_locked(
+            object_id,
+            active,
+            defaults,
+            profile
+        );
+    }
+
+    if (object_store_internal_begin_state_operation() == ESP_OK) {
+        if (err == ESP_OK && cache_generation_available &&
+            object_store_cache_generation_matches(object_id, generation)) {
+            object_store_profile_cache_store_locked(profile, generation);
+        }
+        object_store_internal_end_file_operation();
+    } else {
+        storage_manager_operation_end();
+        if (err == ESP_OK) err = ESP_ERR_INVALID_STATE;
+    }
     return err;
+}
+
+esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t *profile)
+{
+    return object_store_get_profile_cached(object_id, profile);
 }
 
 esp_err_t object_store_list_profiles_with_defaults(
@@ -853,13 +1011,16 @@ esp_err_t object_store_list_profiles_with_defaults(
     }
 
     *object_count = 0;
+    esp_err_t err = object_store_profile_cache_require_storage();
+    if (err != ESP_OK) return err;
     const int64_t now_us = esp_timer_get_time();
 
     /* Pure RAM snapshot while the periodic directory census is still fresh. */
-    esp_err_t err = object_store_internal_begin_state_operation();
+    err = object_store_internal_begin_state_operation();
     if (err != ESP_OK) return err;
     if (
         s_profile_index_valid &&
+        object_store_profile_index_all_current_locked() &&
         now_us - s_profile_index_reconcile_us >= 0 &&
         now_us - s_profile_index_reconcile_us < OBJECT_STORE_INDEX_RECONCILE_INTERVAL_US
     ) {
@@ -883,6 +1044,7 @@ esp_err_t object_store_list_profiles_with_defaults(
         err = object_store_profile_index_build_locked();
     }
     else if (
+        !object_store_profile_index_all_current_locked() ||
         locked_now_us - s_profile_index_reconcile_us >= OBJECT_STORE_INDEX_RECONCILE_INTERVAL_US ||
         locked_now_us < s_profile_index_reconcile_us
     ) {
@@ -917,100 +1079,32 @@ void object_store_profile_cache_note_create_locked(
     const char *name
 )
 {
-    if (!s_profile_index_valid || !object_format_id_is_valid(object_id)) return;
-
-    const int found = object_store_profile_index_find_locked(object_id);
-    if (object_store_profile_cache_create_requires_membership_refresh(
-        s_profile_index_valid,
-        s_profile_index_count,
-        found >= 0
-    )) {
-        object_store_profile_index_invalidate_membership_locked();
-        return;
-    }
-
-    if (found >= 0) {
-        object_store_profile_cache_note_rename_locked(
-            object_id,
-            name != NULL ? name : object_id
-        );
-        object_store_profile_cache_note_active_locked(object_id);
-        return;
-    }
-
-    object_store_profile_t *profile = &s_profile_index[s_profile_index_count++];
-    memset(profile, 0, sizeof(*profile));
-    snprintf(profile->summary.id, sizeof(profile->summary.id), "%s", object_id);
-    snprintf(
-        profile->summary.name,
-        sizeof(profile->summary.name),
-        "%s",
-        name != NULL ? name : object_id
-    );
-    snprintf(profile->location.source, sizeof(profile->location.source), "NONE");
-
-    float defaults[OBJECT_STORE_POD_COUNT];
-    if (object_store_settings_load_locked(defaults) != ESP_OK) object_store_default_cables(defaults);
-    memcpy(profile->cable_lengths_m, defaults, sizeof(profile->cable_lengths_m));
-
-    object_store_profile_cache_note_active_locked(object_id);
-    object_store_profile_index_sort_locked();
+    (void)name;
+    if (!object_format_id_is_valid(object_id)) return;
+    (void)object_store_cache_generation_bump(object_id, NULL);
+    object_store_profile_index_invalidate_membership_locked();
 }
 
 void object_store_profile_cache_note_delete_locked(const char *object_id)
 {
-    if (!s_profile_index_valid) return;
-
-    const int found = object_store_profile_index_find_locked(object_id);
-    if (object_store_profile_cache_delete_requires_membership_refresh(
-        s_profile_index_valid,
-        s_profile_index_count,
-        found >= 0
-    )) {
-        object_store_profile_index_invalidate_membership_locked();
-        return;
-    }
-    if (found < 0) return;
-
-    const size_t index = (size_t)found;
-    if (index + 1 < s_profile_index_count) {
-        memmove(
-            &s_profile_index[index],
-            &s_profile_index[index + 1],
-            (s_profile_index_count - index - 1) * sizeof(s_profile_index[0])
-        );
-    }
-    s_profile_index_count--;
+    if (!object_format_id_is_valid(object_id)) return;
+    (void)object_store_cache_generation_bump(object_id, NULL);
+    object_store_profile_index_invalidate_membership_locked();
 }
 
 void object_store_profile_cache_note_active_locked(const char *object_id)
 {
-    if (!s_profile_index_valid) return;
-
-    const int found = object_id != NULL && object_id[0] != '\0'
-        ? object_store_profile_index_find_locked(object_id)
-        : -1;
-    if (object_store_profile_cache_active_requires_membership_refresh(
-        s_profile_index_valid,
-        found >= 0,
-        object_id
-    )) {
-        object_store_profile_index_invalidate_membership_locked();
-        return;
-    }
-
-    for (size_t i = 0; i < s_profile_index_count; ++i) {
-        s_profile_index[i].summary.active =
-            object_id != NULL && object_id[0] != '\0' &&
-            strcmp(s_profile_index[i].summary.id, object_id) == 0;
-    }
+    (void)object_id;
+    object_store_cache_generation_bump_all();
+    object_store_profile_index_invalidate_membership_locked();
 }
 
 void object_store_profile_cache_note_rename_locked(const char *object_id, const char *name)
 {
-    if (!s_profile_index_valid || name == NULL) return;
-    int found = object_store_profile_index_find_locked(object_id);
-    if (found >= 0) snprintf(s_profile_index[(size_t)found].summary.name, OBJECT_STORE_NAME_SIZE, "%s", name);
+    (void)name;
+    if (!object_format_id_is_valid(object_id)) return;
+    (void)object_store_cache_generation_bump(object_id, NULL);
+    object_store_profile_index_invalidate_membership_locked();
 }
 
 void object_store_profile_cache_note_location_locked(
@@ -1018,24 +1112,38 @@ void object_store_profile_cache_note_location_locked(
     const object_store_location_t *location
 )
 {
-    if (!s_profile_index_valid || location == NULL) return;
-    int found = object_store_profile_index_find_locked(object_id);
-    if (found >= 0) s_profile_index[(size_t)found].location = *location;
+    (void)location;
+    if (!object_format_id_is_valid(object_id)) return;
+    (void)object_store_cache_generation_bump(object_id, NULL);
+    object_store_profile_index_invalidate_membership_locked();
 }
 
 void object_store_profile_cache_note_cable_locked(const char *object_id, size_t pod_index, float length_m)
 {
-    if (!s_profile_index_valid || pod_index >= OBJECT_STORE_POD_COUNT) return;
-    int found = object_store_profile_index_find_locked(object_id);
-    if (found >= 0) s_profile_index[(size_t)found].cable_lengths_m[pod_index] = length_m;
+    (void)pod_index;
+    (void)length_m;
+    if (!object_format_id_is_valid(object_id)) return;
+    (void)object_store_cache_generation_bump(object_id, NULL);
+    object_store_profile_index_invalidate_membership_locked();
 }
 
 void object_store_profile_cache_note_default_locked(size_t pod_index, float length_m)
 {
     if (pod_index >= OBJECT_STORE_POD_COUNT) return;
+    object_store_cache_generation_bump_all();
+    object_store_profile_index_invalidate_membership_locked();
     if (!s_settings_cache_valid) object_store_default_cables(s_settings_cache);
     s_settings_cache[pod_index] = length_m;
     s_settings_cache_valid = true;
+}
+
+void object_store_profile_cache_note_calc_settings_saved_locked(
+    const char *object_id,
+    uint64_t generation
+)
+{
+    const int found = object_store_profile_index_find_locked(object_id);
+    if (found >= 0) s_profile_index_generation[(size_t)found] = generation;
 }
 
 static esp_err_t object_store_mutation_begin(const char *object_id, cJSON **root_out)
@@ -1059,8 +1167,8 @@ static esp_err_t object_store_mutation_finish(const char *object_id, cJSON *root
 {
     esp_err_t err = object_store_write_metadata_locked(object_id, root);
     if (err == ESP_OK) {
-        /* Project the already-parsed committed metadata into RAM; no reread. */
-        object_store_profile_index_upsert_from_root_locked(object_id, root);
+        (void)object_store_cache_generation_bump(object_id, NULL);
+        object_store_profile_index_invalidate_membership_locked();
     }
     cJSON_Delete(root);
     object_store_internal_end_file_operation();
@@ -1287,7 +1395,9 @@ esp_err_t object_store_get_cable_defaults(float lengths_m[OBJECT_STORE_POD_COUNT
 {
     if (lengths_m == NULL) return ESP_ERR_INVALID_ARG;
 
-    esp_err_t err = object_store_internal_begin_state_operation();
+    esp_err_t err = object_store_profile_cache_require_storage();
+    if (err != ESP_OK) return err;
+    err = object_store_internal_begin_state_operation();
     if (err != ESP_OK) return err;
     if (s_settings_cache_valid) {
         memcpy(lengths_m, s_settings_cache, sizeof(s_settings_cache));

@@ -133,6 +133,7 @@
         "components/nrf_topology_service/nrf_topology_leveling_policy.c",
         "components/nrf_topology_service/nrf_topology_bus_recovery.c",
         "components/sensor_bus/sensor_bus.c",
+        "components/sensor_bus/sensor_bus_diag.c",
         "components/sensor_bus/i2c_line_recovery.c",
         "components/tca9548a_mux/tca9548a_mux.c",
         "components/tca9548a_mux/tca9548a_mux_i2c_bus.c",
@@ -215,22 +216,45 @@
     },
     {
       "name": "app_pod_status_bridge_runtime",
+      "defines": ["HW_INVENTORY_HOST_TEST=1", "APP_POD_STATUS_BRIDGE_TEST_LOG_CAPTURE=1"],
       "sources": [
         "components/device_status_pod_bridge/app_pod_status_barometer_policy.c",
+        "components/device_status_pod_bridge/app_pod_status_inventory_policy.c",
         "components/device_status_pod_bridge/app_pod_status_local_position_policy.c",
         "components/device_status_pod_bridge/app_pod_status_state_policy.c",
         "components/device_status_pod_bridge/app_pod_status_bridge.c",
+        "components/hw_inventory/hw_inventory.c",
         "tests/host/app_pod_status_bridge_runtime_test.c"
       ],
       "include_dirs": [
         "components/device_status/include",
         "tests/host/stubs/app_pod_status_bridge",
+        "tests/host/stubs/ina3221_driver",
+        "tests/host/stubs/app_events",
         "components/app_config/include",
         "components/device_status_pod_bridge/include",
+        "components/hw_inventory/include",
         "components/nrf_topology_service/include",
         "components/object_store/tests/stubs",
         "components/object_store/include",
         "components/object_format/include",
+        "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "app_pod_status_inventory_policy",
+      "defines": ["HW_INVENTORY_HOST_TEST=1"],
+      "sources": [
+        "components/device_status_pod_bridge/app_pod_status_inventory_policy.c",
+        "components/hw_inventory/hw_inventory.c",
+        "tests/host/app_pod_status_inventory_policy_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ina3221_driver",
+        "tests/host/stubs/app_events",
+        "components/device_status_pod_bridge/include",
+        "components/hw_inventory/include",
+        "components/nrf_topology_service/include",
         "nRF54L15/include"
       ]
     }

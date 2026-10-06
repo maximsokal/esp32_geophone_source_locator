@@ -64,6 +64,7 @@ esp_err_t object_store_scan_present(const char *object_id, const char *session_i
     return ESP_OK;
 }
 
+#if !defined(WORKFLOW_SERVICE_REAL_OBJECT_STORE_CACHE)
 esp_err_t object_store_get_calc_settings_json(const char *object_id, char **json_out)
 {
     assert(object_id != NULL && json_out != NULL);
@@ -79,6 +80,11 @@ esp_err_t object_store_get_calc_settings_json(const char *object_id, char **json
     return ESP_OK;
 }
 
+esp_err_t object_store_get_calc_settings_json_cached(const char *object_id, char **json_out)
+{
+    return object_store_get_calc_settings_json(object_id, json_out);
+}
+
 esp_err_t object_store_set_calc_settings_json(const char *object_id, const char *json)
 {
     assert(object_id != NULL && json != NULL);
@@ -90,6 +96,7 @@ esp_err_t object_store_set_calc_settings_json(const char *object_id, const char 
     workflow_test_saved_settings_valid = true;
     return ESP_OK;
 }
+#endif
 
 esp_err_t localization_job_init(void) { return ESP_OK; }
 

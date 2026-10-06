@@ -356,15 +356,55 @@ static void adc_script_prepend(int raw, esp_err_t err, unsigned count)
 }
 
 
+static sd_card_mount_stage_t pipeline_mount_stage_for_result(esp_err_t err)
+{
+    if (err == ESP_ERR_TIMEOUT || err == ESP_ERR_INVALID_RESPONSE) {
+        return SD_CARD_MOUNT_STAGE_CARD_INIT;
+    }
+
+    return err == ESP_OK
+        ? SD_CARD_MOUNT_STAGE_NONE
+        : SD_CARD_MOUNT_STAGE_FS_MOUNT;
+}
+
+
+static bool pipeline_mount_failure_is_retryable(
+    sd_card_mount_stage_t stage,
+    esp_err_t err,
+    int fresult
+)
+{
+    if (stage == SD_CARD_MOUNT_STAGE_FS_MOUNT) {
+        return fresult == 1  /* FR_DISK_ERR */ ||
+            fresult == 3     /* FR_NOT_READY */ ||
+            fresult == 15;   /* FR_TIMEOUT */
+    }
+
+    return stage == SD_CARD_MOUNT_STAGE_HOST_INIT ||
+        stage == SD_CARD_MOUNT_STAGE_CARD_INIT ||
+        err == ESP_ERR_TIMEOUT ||
+        err == ESP_ERR_INVALID_RESPONSE;
+}
+
+
 /* Samples consumed by the boot-time delays before the recovery prompt: the SD
- * power-up delay, plus two 150 ms retry gaps (three attempts) whenever the
- * mount fails. Call after s_mount_result is set. */
+ * power-up delay and retry gaps only for failures that will be retried. Call
+ * after s_mount_result and s_mount_fresult are set. */
 static void prepend_powerup_samples(int raw)
 {
     unsigned poll_count = (unsigned)(
         pdMS_TO_TICKS(APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS) / 10U
     );
-    if (s_mount_result != ESP_OK) {
+    const sd_card_mount_stage_t stage =
+        pipeline_mount_stage_for_result(s_mount_result);
+    const int fresult = stage == SD_CARD_MOUNT_STAGE_FS_MOUNT
+        ? s_mount_fresult
+        : -1;
+    if (s_mount_result != ESP_OK && pipeline_mount_failure_is_retryable(
+            stage,
+            s_mount_result,
+            fresult
+        )) {
         poll_count += 2U * (150U / 10U);
     }
     adc_script_prepend(raw, ESP_OK, poll_count);
@@ -859,15 +899,19 @@ esp_err_t sd_card_mount_recovery(sd_card_mount_report_t *report)
 {
     ++s_mount_calls;
     if (report != NULL) {
+        const sd_card_mount_stage_t stage =
+            pipeline_mount_stage_for_result(s_mount_result);
         *report = (sd_card_mount_report_t){
-            .stage = s_mount_result == ESP_OK
-                ? SD_CARD_MOUNT_STAGE_NONE
-                : SD_CARD_MOUNT_STAGE_FS_MOUNT,
+            .stage = stage,
             .err = s_mount_result,
-            .fresult = s_mount_result == ESP_OK ? -1 : s_mount_fresult,
+            .fresult = stage == SD_CARD_MOUNT_STAGE_FS_MOUNT
+                ? s_mount_fresult
+                : -1,
             .health = s_mount_result == ESP_OK
                 ? SD_CARD_HEALTH_READY
-                : SD_CARD_HEALTH_FILESYSTEM_UNAVAILABLE,
+                : (stage == SD_CARD_MOUNT_STAGE_FS_MOUNT
+                    ? SD_CARD_HEALTH_FILESYSTEM_UNAVAILABLE
+                    : SD_CARD_HEALTH_CARD_UNAVAILABLE),
         };
     }
     return s_mount_result;
@@ -1118,8 +1162,8 @@ static void test_failed_format_power_notification_cancels_and_powers_off(void)
     adc_script_append(2873, ESP_OK, 12U);
     adc_script_append(4095, ESP_OK, 80U);
     s_mount_result = ESP_FAIL;
-    prepend_powerup_samples(4095);
     s_mount_fresult = APP_STORAGE_BOOT_FR_NO_FILESYSTEM;
+    prepend_powerup_samples(4095);
     s_card_capacity_bytes = 32ULL * 1000U * 1000U * 1000U;
     s_probe_result = ESP_OK;
 

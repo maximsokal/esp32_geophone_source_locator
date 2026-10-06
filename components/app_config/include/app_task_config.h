@@ -42,7 +42,7 @@
  * the lowest application priority so it cannot migrate onto acquisition.
  */
 #define APP_TASK_PRIORITY_NRF_TOPOLOGY    1
-#define APP_TASK_STACK_NRF_TOPOLOGY    4096
+#define APP_TASK_STACK_NRF_TOPOLOGY    5120
 
 /*
  * esp_lvgl_port owns the LVGL handler task. It stays on Core 0 so

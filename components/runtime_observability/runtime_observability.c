@@ -116,6 +116,15 @@ const char *runtime_observability_task_name(
 #ifdef ESP_PLATFORM
 
 
+#define RUNTIME_OBSERVABILITY_LOW_STACK_THRESHOLD  512U
+
+
+static bool runtime_observability_stack_is_low(uint32_t stack_free_bytes)
+{
+    return stack_free_bytes < RUNTIME_OBSERVABILITY_LOW_STACK_THRESHOLD;
+}
+
+
 static const char *TAG = "RUNTIME_OBSERVABILITY";
 
 #define RUNTIME_OBSERVABILITY_PERIOD_MS 10000U
@@ -554,20 +563,35 @@ void runtime_observability_log_snapshot(const char *stage)
     for (size_t i = 0U; i < top_count; ++i) {
         const runtime_task_usage_t *usage = &top_tasks[i];
         const TaskStatus_t *status = usage->status;
-        ESP_LOGI(
-            TAG,
-            "RUNTIME_TASK rank=%u name=%s core=%d priority_current=%u priority_base=%u inherited=%u runtime_delta_us=%llu cpu=%u.%u stack_free=%u",
-            (unsigned)(i + 1U),
-            status->pcTaskName != NULL ? status->pcTaskName : "?",
-            runtime_task_core(status),
-            (unsigned)status->uxCurrentPriority,
-            (unsigned)status->uxBasePriority,
-            status->uxCurrentPriority > status->uxBasePriority ? 1U : 0U,
-            (unsigned long long)usage->runtime_delta,
-            usage->cpu_tenths / 10U,
-            usage->cpu_tenths % 10U,
-            (unsigned)status->usStackHighWaterMark
-        );
+        /*
+         * ESP-IDF Xtensa and RISC-V ports use uint8_t StackType_t, so
+         * usStackHighWaterMark is already in bytes; threshold and output use that raw value.
+         */
+        const uint32_t stack_free =
+            (uint32_t)status->usStackHighWaterMark;
+        if (runtime_observability_stack_is_low(stack_free)) {
+            ESP_LOGW(
+                TAG,
+                "RUNTIME_TASK_LOW_STACK name=%s stack_free=%u",
+                status->pcTaskName != NULL ? status->pcTaskName : "?",
+                (unsigned)stack_free
+            );
+        } else {
+            ESP_LOGI(
+                TAG,
+                "RUNTIME_TASK rank=%u name=%s core=%d priority_current=%u priority_base=%u inherited=%u runtime_delta_us=%llu cpu=%u.%u stack_free=%u",
+                (unsigned)(i + 1U),
+                status->pcTaskName != NULL ? status->pcTaskName : "?",
+                runtime_task_core(status),
+                (unsigned)status->uxCurrentPriority,
+                (unsigned)status->uxBasePriority,
+                status->uxCurrentPriority > status->uxBasePriority ? 1U : 0U,
+                (unsigned long long)usage->runtime_delta,
+                usage->cpu_tenths / 10U,
+                usage->cpu_tenths % 10U,
+                (unsigned)stack_free
+            );
+        }
     }
 
     if (count > 0U) {

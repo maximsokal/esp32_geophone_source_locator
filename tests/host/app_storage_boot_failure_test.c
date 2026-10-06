@@ -574,6 +574,7 @@ static void test_mount_failure_uses_same_safe_shutdown_helper(void)
 {
     reset_fakes();
     s_mount_result = ESP_FAIL;
+    s_mount_fresult = 1; /* FatFs FR_DISK_ERR. */
     run_diagnostic_until_poweroff();
 
     assert(s_mount_attempts == 3U);
@@ -594,7 +595,25 @@ static void test_mount_failure_uses_same_safe_shutdown_helper(void)
     assert(s_events[s_event_count - 1U] == EVENT_IDLE);
     const hw_module_info_t inventory = get_sd_inventory();
     assert(inventory.state == HW_STATE_FAULT);
-    assert(strcmp(inventory.reason, "no filesystem") == 0);
+    assert(strcmp(inventory.reason, "mount failed") == 0);
+}
+
+
+static void test_other_transient_fatfs_results_retry(void)
+{
+    const int fresults[] = {3, 15}; /* FR_NOT_READY and FR_TIMEOUT. */
+
+    for (size_t i = 0U; i < sizeof(fresults) / sizeof(fresults[0]); ++i) {
+        reset_fakes();
+        s_mount_result = ESP_FAIL;
+        s_mount_fresult = fresults[i];
+        run_diagnostic_until_poweroff();
+
+        assert(s_mount_attempts == 3U);
+        const size_t powerup_delay_count =
+            APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS > 0U ? 1U : 0U;
+        assert(s_delay_calls == 2U + powerup_delay_count);
+    }
 }
 
 
@@ -606,8 +625,8 @@ static void test_absent_mount_failures_continue_without_prompt(void)
     } cases[] = {
         {SD_CARD_MOUNT_STAGE_HOST_INIT, ESP_FAIL},
         {SD_CARD_MOUNT_STAGE_CARD_INIT, ESP_FAIL},
-        {SD_CARD_MOUNT_STAGE_FS_MOUNT, ESP_ERR_TIMEOUT},
-        {SD_CARD_MOUNT_STAGE_FS_MOUNT, ESP_ERR_INVALID_RESPONSE},
+        {SD_CARD_MOUNT_STAGE_CARD_INIT, ESP_ERR_TIMEOUT},
+        {SD_CARD_MOUNT_STAGE_CARD_INIT, ESP_ERR_INVALID_RESPONSE},
     };
 
     for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
@@ -620,6 +639,9 @@ static void test_absent_mount_failures_continue_without_prompt(void)
         app_storage_boot_run_diagnostic();
 
         assert(s_mount_attempts == 3U);
+        const size_t powerup_delay_count =
+            APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS > 0U ? 1U : 0U;
+        assert(s_delay_calls == 2U + powerup_delay_count);
         assert_absent_run_continued_without_prompt();
     }
 }
@@ -722,6 +744,7 @@ static void test_write_failure_uses_same_safe_shutdown_helper(void)
 static void test_mount_retry_succeeds_before_boot_failure(void)
 {
     reset_fakes();
+    s_mount_fresult = 1; /* The second attempt fails with FR_DISK_ERR. */
     const esp_err_t script[] = {
         ESP_ERR_TIMEOUT,
         ESP_ERR_INVALID_STATE,
@@ -752,7 +775,7 @@ static void test_mount_retry_succeeds_before_boot_failure(void)
 }
 
 
-static void test_user_cancel_on_format_offer_continues_without_storage(void)
+static void test_no_filesystem_does_not_retry(void)
 {
     reset_fakes();
     s_mount_result = ESP_FAIL;
@@ -760,14 +783,17 @@ static void test_user_cancel_on_format_offer_continues_without_storage(void)
     install_recovery_ui();
     app_storage_boot_run_diagnostic();
 
+    assert(s_mount_attempts == 1U);
+    assert(s_delay_calls == (APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS > 0U ? 1U : 0U));
     assert(s_reason_calls == 1U);
     assert(s_decision_calls == 1U);
     assert(s_seen_reason.reason == APP_STORAGE_BOOT_REASON_FS_MOUNT_FAILED);
     assert(s_seen_action == APP_STORAGE_BOOT_ACTION_OFFER_FORMAT);
     assert(strcmp(s_seen_reason.reason_text_code, "FS_MOUNT err=ESP_FAIL fr=13") == 0);
-    assert(s_events[3] == EVENT_RECOVERY_REASON);
-    assert(s_events[4] == EVENT_RECOVERY_DECISION);
-    assert(s_events[5] == EVENT_CONTINUE_WITHOUT_STORAGE);
+    assert(s_events[0] == EVENT_SD_MOUNT);
+    assert(s_events[1] == EVENT_RECOVERY_REASON);
+    assert(s_events[2] == EVENT_RECOVERY_DECISION);
+    assert(s_events[3] == EVENT_CONTINUE_WITHOUT_STORAGE);
     assert(s_continue_without_storage_calls == 1U);
     assert(s_format_start_calls == 0U);
     assert(strcmp(
@@ -810,6 +836,27 @@ static void test_card_error_cancel_keeps_sd_faulted(void)
 }
 
 
+static void test_other_deterministic_fatfs_results_do_not_retry(void)
+{
+    const int fresults[] = {
+        2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 17, 18, 19,
+    };
+
+    for (size_t i = 0U; i < sizeof(fresults) / sizeof(fresults[0]); ++i) {
+        reset_fakes();
+        s_mount_result = ESP_FAIL;
+        s_mount_fresult = fresults[i];
+        s_decision = APP_STORAGE_RECOVERY_DECISION_CANCEL;
+        install_recovery_ui();
+
+        app_storage_boot_run_diagnostic();
+
+        assert(s_mount_attempts == 1U);
+        assert(s_delay_calls == (APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS > 0U ? 1U : 0U));
+    }
+}
+
+
 static void test_card_error_retry_still_retries_mount(void)
 {
     reset_fakes();
@@ -827,6 +874,14 @@ static void test_card_error_retry_still_retries_mount(void)
     assert(s_reason_calls == 1U);
     assert(s_decision_calls == 1U);
     assert(s_mount_attempts == 4U);
+    const size_t powerup_delay_count =
+        APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS > 0U ? 1U : 0U;
+    assert(s_delay_calls == 2U + powerup_delay_count);
+    if (powerup_delay_count > 0U) {
+        assert(s_delay_ticks[0] == pdMS_TO_TICKS(APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS));
+    }
+    assert(s_delay_ticks[powerup_delay_count] == 150U);
+    assert(s_delay_ticks[powerup_delay_count + 1U] == 150U);
     assert(s_format_start_calls == 0U);
     assert(s_continue_without_storage_calls == 0U);
     assert(count_events(EVENT_POWER_SHUTDOWN) == 0U);
@@ -968,6 +1023,7 @@ int main(void)
     test_arm_failure_skips_unreachable_wait_but_keeps_cleanup();
     test_display_failure_still_arms_and_waits();
     test_mount_failure_uses_same_safe_shutdown_helper();
+    test_other_transient_fatfs_results_retry();
     test_absent_mount_failures_continue_without_prompt();
     test_early_probe_no_response_continues_without_prompt();
     test_final_write_read_no_response_continues_without_prompt();
@@ -976,8 +1032,9 @@ int main(void)
     test_successful_probe_reports_present();
     test_write_failure_uses_same_safe_shutdown_helper();
     test_mount_retry_succeeds_before_boot_failure();
-    test_user_cancel_on_format_offer_continues_without_storage();
+    test_no_filesystem_does_not_retry();
     test_card_error_cancel_keeps_sd_faulted();
+    test_other_deterministic_fatfs_results_do_not_retry();
     test_card_error_retry_still_retries_mount();
     test_power_notification_during_recovery_still_powers_off();
     test_probe_details_reach_recovery_ui();

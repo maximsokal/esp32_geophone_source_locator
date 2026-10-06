@@ -39,7 +39,7 @@ def test_shutdown_stops_topology_before_shared_i2c_owner():
 def test_task_policy_and_service_defaults_are_centralized():
     task_config = read("components/app_config/include/app_task_config.h")
     assert re.search(r"#define\s+APP_TASK_PRIORITY_NRF_TOPOLOGY\s+1\b", task_config)
-    assert re.search(r"#define\s+APP_TASK_STACK_NRF_TOPOLOGY\s+4096\b", task_config)
+    assert re.search(r"#define\s+APP_TASK_STACK_NRF_TOPOLOGY\s+5120\b", task_config)
 
     service = read("components/nrf_topology_service/nrf_topology_service.c")
     assert "APP_TASK_CORE_SERVICES" in service

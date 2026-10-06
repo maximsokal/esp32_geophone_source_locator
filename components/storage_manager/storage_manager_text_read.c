@@ -7,30 +7,71 @@
 #include "esp_timer.h"
 
 #include "storage_manager_internal.h"
+#include "storage_manager_slow_op_policy.h"
 
 
 static const char *TAG =
     "STORAGE_READ";
 
 
-static void storage_read_log_io(
+/* This source runs under the storage operation mutex, so its slot is serialized. */
+static storage_manager_slow_op_state_t s_slow_op_state;
+
+
+enum
+{
+    STORAGE_READ_SLOW_OP_SOURCE_RECOVER_BACKUP = 0U
+};
+
+
+static int64_t storage_read_log_io(
     const char *operation,
     const char *path,
     int result,
     int64_t started_us
 )
 {
+    const int64_t elapsed_us = esp_timer_get_time() - started_us;
     ESP_LOGI(
         TAG,
         "IO_TIMING: %s path=%s result=%d elapsed=%lld us",
         operation,
         path,
         result,
-        (long long)(
-            esp_timer_get_time() -
-            started_us
-        )
+        (long long)elapsed_us
     );
+
+    return elapsed_us;
+}
+
+
+static void storage_read_log_slow_op(
+    const char *operation,
+    int64_t elapsed_us
+)
+{
+    const int64_t now_us = esp_timer_get_time();
+    const uint32_t now_ms = now_us > 0
+        ? (uint32_t)(now_us / 1000LL)
+        : 0U;
+    const uint32_t elapsed_ms =
+        storage_manager_slow_op_elapsed_ms(elapsed_us);
+
+    if (
+        storage_manager_slow_op_should_warn(
+            &s_slow_op_state,
+            STORAGE_READ_SLOW_OP_SOURCE_RECOVER_BACKUP,
+            now_ms,
+            elapsed_ms
+        )
+    ) {
+        ESP_LOGW(
+            TAG,
+            "STORAGE_SLOW op=%s elapsed_ms=%u",
+            operation,
+            (unsigned)elapsed_ms
+        );
+    }
 }
 
 
@@ -96,11 +137,15 @@ static esp_err_t storage_manager_read_text_impl(
                 path
             );
 
-        storage_read_log_io(
+        const int64_t recovery_elapsed_us = storage_read_log_io(
             "recover-backup",
             path,
             (int)err,
             started_us
+        );
+        storage_read_log_slow_op(
+            "recover-backup",
+            recovery_elapsed_us
         );
 
         if (err != ESP_OK) {
@@ -134,12 +179,21 @@ static esp_err_t storage_manager_read_text_impl(
     if (file == NULL) {
         storage_manager_operation_end();
 
-        ESP_LOGE(
-            TAG,
-            "Could not open %s: errno=%d",
-            path,
-            open_errno
-        );
+        if (open_errno == ENOENT) {
+            ESP_LOGD(
+                TAG,
+                "Could not open %s: errno=%d",
+                path,
+                open_errno
+            );
+        } else {
+            ESP_LOGE(
+                TAG,
+                "Could not open %s: errno=%d",
+                path,
+                open_errno
+            );
+        }
 
         return storage_read_errno_to_error(
             open_errno

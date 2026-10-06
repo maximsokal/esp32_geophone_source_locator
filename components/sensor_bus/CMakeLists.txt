@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "sensor_bus.c"
+        "sensor_bus_diag.c"
         "sensor_bus_lines.c"
         "i2c_line_recovery.c"
 

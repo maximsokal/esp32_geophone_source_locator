@@ -47,14 +47,32 @@ typedef enum {
 #define APP_STORAGE_BOOT_SD_MOUNT_RETRY_MS   150
 
 /*
- * EXPERIMENT: blind delay before the very first SD command, to test whether
- * cold power-on SD failures are a card power-up timing problem (holding RST
- * long before release made the card behave). A 250 ms delay was tried before
- * and made brownouts worse; this is a deliberate, time-boxed re-test with a
- * longer value. If it does not change cold-boot behaviour, set it to 0 and
- * remove it. 0 disables the delay and its log line.
+ * Optional blind delay before the very first SD command (0 disables it and
+ * its log line). A 1000 ms value was tried on 2026-10-06 against cold-boot SD
+ * failures and changed nothing: the cause was a defective card that did not
+ * persist writes (replacing the card fixed it). Kept at 0; see the note above
+ * the retry function about earlier delay experiments.
  */
-#define APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS 1000U
+#define APP_STORAGE_BOOT_SD_POWERUP_DELAY_MS 0U
+
+static bool sd_mount_failure_is_retryable(
+    sd_card_mount_stage_t stage,
+    esp_err_t err,
+    int fresult
+)
+{
+    if (stage == SD_CARD_MOUNT_STAGE_FS_MOUNT) {
+        return fresult == 1  /* FR_DISK_ERR */ ||
+            fresult == 3     /* FR_NOT_READY */ ||
+            fresult == 15;   /* FR_TIMEOUT */
+    }
+
+    return stage == SD_CARD_MOUNT_STAGE_HOST_INIT ||
+        stage == SD_CARD_MOUNT_STAGE_CARD_INIT ||
+        err == ESP_ERR_TIMEOUT ||
+        err == ESP_ERR_INVALID_RESPONSE;
+}
+
 
 /*
  * A 250 ms delay before the first attempt was tried here on the theory
@@ -100,6 +118,21 @@ static esp_err_t app_storage_boot_mount_sd_with_retry(
             }
 
             return ESP_OK;
+        }
+
+        if (!sd_mount_failure_is_retryable(
+                report.stage,
+                report.err,
+                report.fresult
+            )) {
+            ESP_LOGW(
+                TAG,
+                "SD mount retry skipped for deterministic failure at stage=%d (%s, fr=%d)",
+                (int)report.stage,
+                esp_err_to_name(report.err),
+                report.fresult
+            );
+            break;
         }
 
         if (attempt < APP_STORAGE_BOOT_SD_MOUNT_ATTEMPTS) {

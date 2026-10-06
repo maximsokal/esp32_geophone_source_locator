@@ -1078,7 +1078,7 @@ export const en: Record<I18nKey, string> = {
   "system.heap_empty": "HEAP     -- KB internal free",
   "system.idf_version": "ESP-IDF  %s",
   "system.language_english": "LANGUAGE: ENGLISH",
-  "system.language_footer": "UP/DN LANG  OK SET  RIGHT HARDWARE",
+  "system.language_footer": "UP/DN SELECT  OK SET",
   "system.language_ukrainian": "LANGUAGE: UKRAINIAN",
   "system.lvgl_version": "LVGL     %d.%d.%d + esp_lvgl_port",
   "system.psram": "PSRAM    %lu KB free",

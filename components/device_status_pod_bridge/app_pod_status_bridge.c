@@ -4,7 +4,14 @@
 #include <stdbool.h>
 #include <string.h>
 
+#if defined(ESP_PLATFORM)
+#include "esp_heap_caps.h"
+#else
+#include <stdlib.h>
+#endif
+
 #include "app_pod_status_barometer_policy.h"
+#include "app_pod_status_inventory_policy.h"
 #include "app_pod_status_local_position_policy.h"
 #include "app_pod_status_state_policy.h"
 #include "app_task_config.h"
@@ -45,6 +52,116 @@ static bool s_starting =
 static bool s_stop_requested =
     false;
 
+typedef struct {
+    object_store_summary_t active;
+    object_store_profile_t profile;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t sensor_cache;
+} app_pod_status_bridge_scratch_t;
+
+/* Single consumer: production cycles run on bridge_task; host calls are synchronous. */
+static app_pod_status_bridge_scratch_t *s_scratch =
+    NULL;
+static bool s_scratch_allocation_warning_logged =
+    false;
+
+/* Keep the non-profile publications available if the combined scratch cannot
+ * be allocated. These are module storage, never task-stack temporaries. */
+static nrf_topology_snapshot_t s_topology_fallback;
+static nrf_remote_sensor_cache_t s_sensor_cache_fallback;
+
+#if !defined(ESP_PLATFORM)
+static unsigned s_test_scratch_allocations_to_fail;
+static unsigned s_test_scratch_allocation_attempts;
+static unsigned s_test_scratch_allocation_count;
+
+static void *bridge_scratch_allocate(size_t size)
+{
+    ++s_test_scratch_allocation_attempts;
+    if (s_test_scratch_allocations_to_fail > 0U) {
+        --s_test_scratch_allocations_to_fail;
+        return NULL;
+    }
+
+    void *scratch = malloc(size);
+    if (scratch != NULL) {
+        ++s_test_scratch_allocation_count;
+    }
+    return scratch;
+}
+
+void app_pod_status_bridge_test_fail_next_scratch_allocations(unsigned count)
+{
+    s_test_scratch_allocations_to_fail = count;
+}
+
+unsigned app_pod_status_bridge_test_scratch_allocation_attempts(void)
+{
+    return s_test_scratch_allocation_attempts;
+}
+
+unsigned app_pod_status_bridge_test_scratch_allocation_count(void)
+{
+    return s_test_scratch_allocation_count;
+}
+#endif
+
+
+static void bridge_scratch_release(void)
+{
+    if (s_scratch == NULL) {
+        s_scratch_allocation_warning_logged = false;
+        return;
+    }
+
+#if defined(ESP_PLATFORM)
+    heap_caps_free(s_scratch);
+#else
+    free(s_scratch);
+#endif
+    s_scratch = NULL;
+    s_scratch_allocation_warning_logged = false;
+}
+
+
+static app_pod_status_bridge_scratch_t *bridge_scratch_get(void)
+{
+    if (s_scratch != NULL) {
+        return s_scratch;
+    }
+
+#if defined(ESP_PLATFORM)
+    app_pod_status_bridge_scratch_t *scratch =
+        heap_caps_malloc(
+            sizeof(*scratch),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (scratch == NULL) {
+        scratch =
+            heap_caps_malloc(
+                sizeof(*scratch),
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+#else
+    app_pod_status_bridge_scratch_t *scratch =
+        bridge_scratch_allocate(sizeof(*scratch));
+#endif
+
+    if (scratch == NULL) {
+        if (!s_scratch_allocation_warning_logged) {
+            ESP_LOGW(
+                TAG,
+                "Unable to allocate publication scratch; local positions will be invalid");
+            s_scratch_allocation_warning_logged = true;
+        }
+        return NULL;
+    }
+
+    memset(scratch, 0, sizeof(*scratch));
+    s_scratch = scratch;
+    s_scratch_allocation_warning_logged = false;
+    return s_scratch;
+}
+
 
 static bool bridge_stop_requested(void)
 {
@@ -79,13 +196,15 @@ static void bridge_clear_current_task(void)
 
 static void publish_channel_barometer(uint8_t channel)
 {
-    nrf_remote_sensor_cache_t cache;
+    nrf_remote_sensor_cache_t *cache = s_scratch != NULL
+        ? &s_scratch->sensor_cache
+        : &s_sensor_cache_fallback;
     const esp_err_t err =
-        nrf_topology_service_get_sensor_snapshot(channel, &cache);
+        nrf_topology_service_get_sensor_snapshot(channel, cache);
 
     const app_pod_status_barometer_reading_t reading =
         app_pod_status_bridge_compute_barometer_reading(
-            err == ESP_OK ? &cache : NULL);
+            err == ESP_OK ? cache : NULL);
 
     (void)device_status_set_pod_barometer(
         channel,
@@ -98,17 +217,19 @@ static void publish_channel_barometer(uint8_t channel)
 
 static void publish_channel_height_reference(uint8_t channel)
 {
-    nrf_remote_sensor_cache_t cache;
-    const esp_err_t err = nrf_topology_service_get_sensor_snapshot(channel, &cache);
+    nrf_remote_sensor_cache_t *cache = s_scratch != NULL
+        ? &s_scratch->sensor_cache
+        : &s_sensor_cache_fallback;
+    const esp_err_t err = nrf_topology_service_get_sensor_snapshot(channel, cache);
     device_height_reference_state_t state = DEVICE_HEIGHT_REFERENCE_NOT_ESTABLISHED;
     uint16_t generation = 0U;
     int32_t relative_z_mm = 0;
 
     if (err == ESP_OK) {
-        switch (cache.sensor.reference_state) {
+        switch (cache->sensor.reference_state) {
             case NRF_UPSTREAM_REFERENCE_VALID:
                 state = DEVICE_HEIGHT_REFERENCE_VALID;
-                relative_z_mm = cache.sensor.relative_z_mm;
+                relative_z_mm = cache->sensor.relative_z_mm;
                 break;
             case NRF_UPSTREAM_REFERENCE_REJECTED_MOVING:
                 state = DEVICE_HEIGHT_REFERENCE_REJECTED_MOVING;
@@ -120,7 +241,7 @@ static void publish_channel_height_reference(uint8_t channel)
             default:
                 break;
         }
-        generation = cache.sensor.reference_generation;
+        generation = cache->sensor.reference_generation;
     }
 
     (void)device_status_set_pod_height_reference(channel, state, generation, relative_z_mm);
@@ -155,29 +276,34 @@ static void publish_channel_local_position(
 
 static void publish_pod_connection_states(void)
 {
-    nrf_topology_snapshot_t topology;
-    if (nrf_topology_service_get_snapshot(&topology) != ESP_OK) {
+    nrf_topology_snapshot_t *topology = s_scratch != NULL
+        ? &s_scratch->topology
+        : &s_topology_fallback;
+    if (nrf_topology_service_get_snapshot(topology) != ESP_OK) {
         return;
     }
+
+    (void)app_pod_status_bridge_report_topology_inventory(topology);
 
     for (size_t channel = 0U; channel < DEVICE_STATUS_POD_COUNT; ++channel) {
         (void)device_status_set_pod_state(
             channel,
-            app_pod_status_bridge_map_topology_state(topology.remotes[channel].state));
+            app_pod_status_bridge_map_topology_state(topology->remotes[channel].state));
     }
 }
 
 
 static void publish_cycle(void)
 {
-    object_store_summary_t active;
-    object_store_profile_t profile;
-    memset(&profile, 0, sizeof(profile));
-    const bool has_profile =
-        object_store_get_active(&active) == ESP_OK &&
-        active.active &&
-        active.id[0] != '\0' &&
-        object_store_get_profile(active.id, &profile) == ESP_OK;
+    app_pod_status_bridge_scratch_t *scratch = bridge_scratch_get();
+    if (scratch != NULL) {
+        memset(&scratch->profile, 0, sizeof(scratch->profile));
+    }
+    const bool has_profile = scratch != NULL &&
+        object_store_get_active(&scratch->active) == ESP_OK &&
+        scratch->active.active &&
+        scratch->active.id[0] != '\0' &&
+        object_store_get_profile_cached(scratch->active.id, &scratch->profile) == ESP_OK;
 
     publish_pod_connection_states();
 
@@ -188,7 +314,10 @@ static void publish_cycle(void)
     ) {
         publish_channel_height_reference(channel);
         publish_channel_barometer(channel);
-        publish_channel_local_position(channel, has_profile, &profile);
+        publish_channel_local_position(
+            channel,
+            has_profile,
+            scratch != NULL ? &scratch->profile : NULL);
     }
 }
 
@@ -219,6 +348,7 @@ static void bridge_task(void *argument)
         }
     }
 
+    bridge_scratch_release();
     bridge_clear_current_task();
     vTaskDelete(NULL);
 }
@@ -273,6 +403,7 @@ void app_pod_status_bridge_stop(void)
     portEXIT_CRITICAL(&s_state_lock);
 
     if (task == NULL && !starting) {
+        bridge_scratch_release();
         portENTER_CRITICAL(&s_state_lock);
         s_stop_requested = false;
         portEXIT_CRITICAL(&s_state_lock);

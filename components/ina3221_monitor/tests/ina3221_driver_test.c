@@ -72,6 +72,16 @@ esp_err_t sensor_bus_probe_address(uint8_t address)
     return s_device_present ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
+esp_err_t sensor_bus_probe_address_with_context(
+    uint8_t address,
+    const char *source,
+    int channel)
+{
+    assert(source != NULL && strcmp(source, "ina3221") == 0);
+    assert(channel == -1);
+    return sensor_bus_probe_address(address);
+}
+
 esp_err_t sensor_bus_classify_transfer_error(uint8_t address, esp_err_t err)
 {
     assert(address == 0x40U);
@@ -81,6 +91,17 @@ esp_err_t sensor_bus_classify_transfer_error(uint8_t address, esp_err_t err)
     return sensor_bus_probe_address(address) == ESP_ERR_NOT_FOUND
         ? ESP_ERR_NOT_FOUND
         : err;
+}
+
+esp_err_t sensor_bus_classify_transfer_error_with_context(
+    uint8_t address,
+    esp_err_t err,
+    const char *source,
+    int channel)
+{
+    assert(source != NULL && strcmp(source, "ina3221") == 0);
+    assert(channel == -1);
+    return sensor_bus_classify_transfer_error(address, err);
 }
 
 esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address, size_t data_len, uint8_t *data)

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "app_startup_status",
+      "sources": [
+        "tests/host/app_startup_status_test.c",
+        "main/app_startup_status.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/startup_status",
+        "main"
+      ]
+    }
+  ]
+}

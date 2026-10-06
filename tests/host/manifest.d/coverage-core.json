@@ -5,6 +5,7 @@
       "name": "sensor_bus_lifecycle",
       "sources": [
         "components/sensor_bus/sensor_bus.c",
+        "components/sensor_bus/sensor_bus_diag.c",
         "components/sensor_bus/i2c_line_recovery.c",
         "tests/host/stubs/sensor_bus/sensor_bus_lines_fake.c",
         "tests/host/sensor_bus_lifecycle_test.c"

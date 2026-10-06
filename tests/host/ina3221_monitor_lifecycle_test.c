@@ -11,6 +11,11 @@
 
 #include "../../components/ina3221_monitor/ina3221_monitor.c"
 
+void sensor_bus_log_diag_summary(uint32_t now_ms)
+{
+    (void)now_ms;
+}
+
 void main_barometer_init(main_barometer_t *barometer)
 {
     memset(barometer, 0, sizeof(*barometer));
@@ -853,6 +858,48 @@ static void test_read_failure_clears_last_power_state(void)
     assert_lock_balanced();
 }
 
+static void test_repeated_read_failures_do_not_request_shutdown(void)
+{
+    reset_fakes();
+    ina3221_monitor_set_critical_battery_handler(critical_handler);
+    s_fake_source_state = INA3221_POWER_STATE_BATTERY;
+    s_fake_battery_v = 3.20f;
+    s_read_result = ESP_FAIL;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 12U;
+    s_worker_entry(s_worker_argument);
+
+    assert(s_read_calls > 1U);
+    assert(s_status_power_state == DEVICE_POWER_STATE_UNKNOWN);
+    assert(s_status_low_battery == DEVICE_LOW_BATTERY_NORMAL);
+    assert(s_critical_handler_calls == 0U);
+    assert(s_alert_count == 0U);
+    assert_lock_balanced();
+}
+
+static void test_repeated_read_failures_do_not_cancel_critical_countdown(void)
+{
+    reset_fakes();
+    ina3221_monitor_set_critical_battery_handler(critical_handler);
+    s_fake_source_state = INA3221_POWER_STATE_BATTERY;
+    s_fake_battery_v = 3.20f;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_wait_hook = fail_next_power_read;
+    s_wait_hook_at = 5U;
+    s_stop_after_waits = 15U;
+    s_worker_entry(s_worker_argument);
+
+    assert(s_read_calls > 5U);
+    assert(s_critical_handler_calls == 1U);
+    assert(s_critical_handler_time_us == 14000000);
+    assert(s_status_power_state == DEVICE_POWER_STATE_UNKNOWN);
+    assert(s_status_low_battery == DEVICE_LOW_BATTERY_SHUTDOWN);
+    assert(s_alert_count == 2U);
+    assert(s_alerts[0] == APP_POWER_ALERT_CRITICAL_GRACE);
+    assert(s_alerts[1] == APP_POWER_ALERT_SHUTDOWN);
+    assert_lock_balanced();
+}
+
 static void test_critical_battery_requests_shutdown_after_grace(void)
 {
     reset_fakes();
@@ -931,6 +978,8 @@ int main(void)
     test_limits_are_programmed_after_open();
     test_ad7606_overcurrent_latches_and_is_published();
     test_overcurrent_clear_reaches_the_running_worker();
+    test_repeated_read_failures_do_not_request_shutdown();
+    test_repeated_read_failures_do_not_cancel_critical_countdown();
     test_critical_battery_requests_shutdown_after_grace();
     test_usb_during_grace_cancels_the_shutdown();
     test_healthy_battery_never_alerts();

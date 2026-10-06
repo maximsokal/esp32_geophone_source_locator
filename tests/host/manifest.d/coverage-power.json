@@ -8,12 +8,14 @@
         "components/ina3221_monitor/ina3221_power_ux.c",
         "components/ina3221_monitor/ina3221_low_battery.c",
         "components/ina3221_monitor/ina3221_soc.c",
+        "components/sensor_bus/sensor_bus_diag.c",
         "tests/host/ina3221_monitor_lifecycle_test.c"
       ],
       "include_dirs": [
         "components/ina3221_monitor",
         "tests/host/stubs/ina3221_monitor",
-        "components/ina3221_monitor/include"
+        "components/ina3221_monitor/include",
+        "components/sensor_bus/include"
       ],
       "libraries": ["m"]
     },

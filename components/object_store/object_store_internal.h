@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 #include "object_store.h"
@@ -49,6 +50,38 @@ void object_store_profile_cache_note_rename_locked(const char *object_id, const 
 void object_store_profile_cache_note_location_locked(const char *object_id, const object_store_location_t *location);
 void object_store_profile_cache_note_cable_locked(const char *object_id, size_t pod_index, float length_m);
 void object_store_profile_cache_note_default_locked(size_t pod_index, float length_m);
+void object_store_profile_cache_note_calc_settings_saved_locked(
+    const char *object_id,
+    uint64_t generation
+);
+
+typedef enum {
+    OBJECT_STORE_CACHE_CALC_MISS = 0,
+    OBJECT_STORE_CACHE_CALC_PRESENT,
+    OBJECT_STORE_CACHE_CALC_ABSENT,
+} object_store_cache_calc_state_t;
+
+void object_store_cache_reset(void);
+bool object_store_cache_generation_get(const char *object_id, uint64_t *generation_out);
+bool object_store_cache_generation_matches(const char *object_id, uint64_t generation);
+bool object_store_cache_generation_bump(const char *object_id, uint64_t *generation_out);
+void object_store_cache_generation_bump_all(void);
+object_store_cache_calc_state_t object_store_cache_calc_state(
+    const char *object_id,
+    uint64_t generation
+);
+bool object_store_cache_calc_copy(
+    const char *object_id,
+    uint64_t generation,
+    char *buffer,
+    size_t buffer_size
+);
+void object_store_cache_calc_store(
+    const char *object_id,
+    uint64_t generation,
+    const char *json,
+    bool present
+);
 
 /* Pure bounded-membership policy used by the RAM profile index. */
 bool object_store_profile_cache_create_requires_membership_refresh(

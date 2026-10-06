@@ -169,6 +169,7 @@ esp_err_t object_store_list_profiles_responsive(
 
 esp_err_t object_store_get_active(object_store_summary_t *object);
 esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t *profile);
+esp_err_t object_store_get_profile_cached(const char *object_id, object_store_profile_t *profile);
 esp_err_t object_store_set_active(const char *object_id);
 esp_err_t object_store_delete(const char *object_id);
 esp_err_t object_store_rename(const char *object_id, const char *name);
@@ -194,6 +195,7 @@ esp_err_t object_store_set_cs_pairs(const char *object_id, const object_store_cs
 /* Per-object calculation input profile and shared scan artifact presence. */
 esp_err_t object_store_set_calc_settings_json(const char *object_id, const char *json);
 esp_err_t object_store_get_calc_settings_json(const char *object_id, char **json_out);
+esp_err_t object_store_get_calc_settings_json_cached(const char *object_id, char **json_out);
 esp_err_t object_store_scan_present(
     const char *object_id,
     const char *session_id,

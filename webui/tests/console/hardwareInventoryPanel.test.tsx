@@ -39,6 +39,22 @@ describe('hardware inventory dashboard panel', () => {
     expect(html).toContain(translate(locale, 'web.hw.degraded_banner' as I18nKey));
   });
 
+  it.each([
+    ['en', 'Not tested'],
+    ['uk', 'Не перевірено'],
+  ] as const)('labels an unknown inventory state as not tested in %s', (locale, expected) => {
+    const status = {
+      hardware: {
+        modules: [{ id: 'ad7606', state: 'unknown', required: true, reason: '' }],
+        required_missing: false,
+      },
+    } as unknown as DeviceStatus;
+
+    const html = render(status, locale);
+    expect(translate(locale, 'web.hw.state.unknown' as I18nKey)).toBe(expected);
+    expect(html).toContain(expected);
+  });
+
   it('falls back to raw identifiers for unknown modules and states', () => {
     const status = {
       hardware: {

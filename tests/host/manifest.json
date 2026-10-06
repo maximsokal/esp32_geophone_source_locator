@@ -307,6 +307,7 @@
         "components/nrf_topology_service/nrf_topology_leveling_policy.c",
         "components/nrf_topology_service/nrf_topology_bus_recovery.c",
         "components/sensor_bus/sensor_bus.c",
+        "components/sensor_bus/sensor_bus_diag.c",
         "components/sensor_bus/i2c_line_recovery.c",
         "components/tca9548a_mux/tca9548a_mux.c",
         "components/tca9548a_mux/tca9548a_mux_i2c_bus.c",
@@ -410,12 +411,14 @@
         "components/ina3221_monitor/ina3221_low_battery.c",
         "components/ina3221_monitor/ina3221_power_ux.c",
         "components/ina3221_monitor/ina3221_soc.c",
+        "components/sensor_bus/sensor_bus_diag.c",
         "tests/host/ina3221_monitor_lifecycle_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/ina3221_monitor",
         "components/ina3221_monitor",
-        "components/ina3221_monitor/include"
+        "components/ina3221_monitor/include",
+        "components/sensor_bus/include"
       ],
       "libraries": ["m"]
     },
@@ -430,6 +433,14 @@
         "components/ina3221_monitor"
       ],
       "libraries": ["m"]
+    },
+    {
+      "name": "sensor_bus_diag",
+      "sources": [
+        "components/sensor_bus/sensor_bus_diag.c",
+        "tests/host/sensor_bus_diag_test.c"
+      ],
+      "include_dirs": ["components/sensor_bus/include"]
     },
     {
       "name": "ina3221_limits",
@@ -1236,6 +1247,7 @@
       "name": "object_store_profile_round_trip",
       "sources": [
         "components/object_format/object_format.c",
+        "components/object_store/object_store_cache.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/object_store/tests/object_store_profile_round_trip_test.c"
       ],
@@ -1251,6 +1263,7 @@
       "name": "object_store_cs_pairs_round_trip",
       "sources": [
         "components/object_format/object_format.c",
+        "components/object_store/object_store_cache.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/object_store/tests/object_store_cs_pairs_round_trip_test.c"
       ],
@@ -1651,6 +1664,15 @@
       "include_dirs": [
         "components/storage_manager/tests/stubs",
         "components/storage_manager",
+        "components/storage_manager/include"
+      ]
+    },
+    {
+      "name": "storage_manager_slow_op_policy",
+      "sources": [
+        "components/storage_manager/tests/storage_manager_slow_op_policy_test.c"
+      ],
+      "include_dirs": [
         "components/storage_manager/include"
       ]
     },

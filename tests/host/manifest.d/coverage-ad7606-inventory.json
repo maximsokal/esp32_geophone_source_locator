@@ -7,6 +7,7 @@
       "sources": [
         "components/hw_inventory/hw_inventory.c",
         "components/seismic_acquisition/seismic_source_ad7606.c",
+        "components/seismic_acquisition/seismic_source_ad7606_inventory_policy.c",
         "components/seismic_acquisition/tests/seismic_source_ad7606_inventory_test.c"
       ],
       "include_dirs": [

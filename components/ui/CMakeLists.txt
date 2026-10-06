@@ -13,6 +13,7 @@ idf_component_register(
         "ui_home.c"
         "ui_hardware.c"
         "ui_hardware_model.c"
+        "ui_system_model.c"
         "ui_measurements.c"
         "ui_measurements_nodes.c"
         "ui_measurement_trace.c"

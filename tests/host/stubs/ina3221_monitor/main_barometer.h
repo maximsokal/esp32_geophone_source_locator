@@ -15,6 +15,7 @@ typedef enum {
 typedef struct {
     bool bmp280_present;
     bool bmp280_valid;
+    uint8_t bmp280_address;
     uint32_t pressure_pa;
     int32_t temperature_mc;
     main_barometer_reference_state_t height_reference_state;

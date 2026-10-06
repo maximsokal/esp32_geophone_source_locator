@@ -15,6 +15,8 @@
 #include "app_events.h"
 #include "ina3221_policy.h"
 #include "main_barometer.h"
+#include "sensor_bus.h"
+#include "sensor_bus_diag.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -38,6 +40,55 @@
 
 static const char *TAG =
     "INA3221";
+static sensor_bus_diag_state_t s_i2c_diag_state;
+
+static void ina3221_monitor_log_main_barometer_error(
+    main_barometer_t *barometer,
+    esp_err_t err,
+    uint32_t now_ms)
+{
+    if (err == ESP_OK || !sensor_bus_diag_rate_limit_allow(
+            &s_i2c_diag_state, now_ms, "main_barometer")) {
+        return;
+    }
+
+    main_barometer_reading_t reading = { 0 };
+    main_barometer_get_reading(barometer, &reading);
+    const bool bmp280_invalid =
+        reading.bmp280_address != 0U && !reading.bmp280_valid;
+    const bool aht20_invalid =
+        reading.aht20_present && !reading.aht20_valid;
+    if (bmp280_invalid && aht20_invalid) {
+        ESP_LOGW(TAG,
+                 "I2C_BAROMETER_WARN src=main_barometer bmp_addr=0x%02X bmp_dev=%s aht20_addr=0x38 aht20_dev=%s err=%s",
+                 (unsigned)reading.bmp280_address,
+                 sensor_bus_diag_device_name(
+                     reading.bmp280_address, "main_barometer"),
+                 sensor_bus_diag_device_name(0x38U, "main_barometer"),
+                 esp_err_to_name(err));
+    } else if (bmp280_invalid) {
+        ESP_LOGW(TAG,
+                 "I2C_BAROMETER_WARN src=main_barometer addr=0x%02X dev=%s err=%s",
+                 (unsigned)reading.bmp280_address,
+                 sensor_bus_diag_device_name(
+                     reading.bmp280_address, "main_barometer"),
+                 esp_err_to_name(err));
+    } else if (aht20_invalid) {
+        ESP_LOGW(TAG,
+                 "I2C_BAROMETER_WARN src=main_barometer addr=0x38 dev=%s err=%s",
+                 sensor_bus_diag_device_name(0x38U, "main_barometer"),
+                 esp_err_to_name(err));
+    } else {
+        const uint8_t address = reading.bmp280_address != 0U
+            ? reading.bmp280_address
+            : reading.aht20_present ? 0x38U : 0U;
+        ESP_LOGW(TAG,
+                 "I2C_BAROMETER_WARN src=main_barometer addr=0x%02X dev=%s err=%s",
+                 (unsigned)address,
+                 sensor_bus_diag_device_name(address, "main_barometer"),
+                 esp_err_to_name(err));
+    }
+}
 
 
 static TaskHandle_t s_task =
@@ -630,9 +681,12 @@ static void ina3221_monitor_worker(
         while (true) {
             const uint64_t now_ms =
                 (uint64_t)(esp_timer_get_time() / INT64_C(1000));
-            (void)main_barometer_poll(
+            const esp_err_t barometer_err = main_barometer_poll(
                 &main_barometer,
                 now_ms);
+            sensor_bus_log_diag_summary((uint32_t)now_ms);
+            ina3221_monitor_log_main_barometer_error(
+                &main_barometer, barometer_err, (uint32_t)now_ms);
             ina3221_monitor_publish_main_barometer(&main_barometer);
 
             if (!driver.ready) {
@@ -663,7 +717,8 @@ static void ina3221_monitor_worker(
                     ) {
                         ESP_LOGW(
                             TAG,
-                            "INA3221 unavailable at 0x40; retrying: %s",
+                            "I2C_DEVICE_WARN src=ina3221 addr=0x40 dev=%s err=%s action=retry",
+                            sensor_bus_diag_device_name(0x40U, "ina3221"),
                             esp_err_to_name(
                                 open_err
                             )
@@ -697,7 +752,8 @@ static void ina3221_monitor_worker(
                 if (limits_err != ESP_OK) {
                     ESP_LOGW(
                         TAG,
-                        "INA3221 alert limits not programmed: %s",
+                        "I2C_DEVICE_WARN src=ina3221 addr=0x40 dev=%s err=%s action=limits_unprogrammed",
+                        sensor_bus_diag_device_name(0x40U, "ina3221"),
                         esp_err_to_name(limits_err)
                     );
                 }

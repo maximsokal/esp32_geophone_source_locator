@@ -6,6 +6,7 @@ idf_component_register(
         "seismic_source_test.c"
         "seismic_source_esp_adc.c"
         "seismic_source_ad7606.c"
+        "seismic_source_ad7606_inventory_policy.c"
 
     INCLUDE_DIRS
         "include"

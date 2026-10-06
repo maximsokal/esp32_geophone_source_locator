@@ -117,6 +117,7 @@ typedef struct
     lv_obj_t *system_uptime;
     ui_locale_t system_language_selection;
     bool system_hardware_open;
+    bool system_hardware_selected;
 
     ui_objects_mode_t objects_mode;
     size_t object_action;

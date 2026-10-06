@@ -1,4 +1,5 @@
 #include "app_pod_status_bridge.h"
+#include "app_pod_status_inventory_policy.h"
 #include "app_shutdown.h"
 #include "app_startup.h"
 #include "board_config.h"
@@ -35,43 +36,8 @@ static void app_main_report_topology_inventory(esp_err_t topology_start_err)
         if (!topology_resolved) {
             nrf_topology_snapshot_t snapshot;
             if (nrf_topology_service_get_snapshot(&snapshot) == ESP_OK) {
-                const hw_module_state_t mux_state = snapshot.tca_fault
-                    ? HW_STATE_FAULT
-                    : snapshot.tca_available
-                        ? HW_STATE_PRESENT
-                        : HW_STATE_ABSENT;
-                hw_inventory_report(
-                    HW_MODULE_SENSOR_MUX,
-                    mux_state,
-                    snapshot.tca_fault
-                        ? "topology probe fault"
-                        : snapshot.tca_available
-                            ? "topology probe ok"
-                            : "no response");
-
-                switch (snapshot.main.state) {
-                    case NRF_TOPOLOGY_NODE_ASSIGNED:
-                        hw_inventory_report(
-                            HW_MODULE_MAIN_XIAO,
-                            HW_STATE_PRESENT,
-                            "upstream target assigned");
-                        break;
-                    case NRF_TOPOLOGY_NODE_ABSENT:
-                        hw_inventory_report(
-                            HW_MODULE_MAIN_XIAO,
-                            HW_STATE_ABSENT,
-                            "no upstream response");
-                        break;
-                    case NRF_TOPOLOGY_NODE_UNKNOWN:
-                        break;
-                    default:
-                        hw_inventory_report(
-                            HW_MODULE_MAIN_XIAO,
-                            HW_STATE_FAULT,
-                            "upstream topology fault");
-                        break;
-                }
-                topology_resolved = true;
+                topology_resolved =
+                    app_pod_status_bridge_report_topology_inventory(&snapshot);
             }
         }
 

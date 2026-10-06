@@ -116,6 +116,7 @@ static void ui_screen_open_wifi(void)
 static void ui_screen_open_system(void)
 {
     ui_context()->system_hardware_open = false;
+    ui_context()->system_hardware_selected = false;
     ui_context()->system_language_selection = ui_i18n_get_locale();
     ui_set_notice_locked(NULL);
     ui_render_system_locked();

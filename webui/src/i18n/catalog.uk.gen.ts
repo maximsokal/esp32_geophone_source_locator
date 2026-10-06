@@ -1078,7 +1078,7 @@ export const uk: Record<I18nKey, string> = {
   "system.heap_empty": "ВНУТР. КУЧА -- KB вільно",
   "system.idf_version": "ESP-IDF  %s",
   "system.language_english": "МОВА: АНГЛІЙСЬКА",
-  "system.language_footer": "UP/DN МОВА  OK ВИБІР  RIGHT ОБЛАДНАННЯ",
+  "system.language_footer": "UP/DN ВИБІР  OK ЗАСТОС.",
   "system.language_ukrainian": "МОВА: УКРАЇНСЬКА",
   "system.lvgl_version": "LVGL     %d.%d.%d + esp_lvgl_port",
   "system.psram": "PSRAM    %lu KB вільно",
