@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -7,6 +8,7 @@ import {
   occupancyFrameIdForScan,
 } from '../../src/xr/occupancySolverArtifact';
 import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
+import { localFloorMatrixToProject } from '../../src/xr/projectFrame';
 import {
   buildVoxelPreviewArtifact,
   buildVoxelPreviewGrid,
@@ -18,6 +20,7 @@ import {
 } from '../../src/xr/voxelPreview';
 
 const scanA = new Uint8Array([0x11, 0x22, 0x33, 0x44]);
+const PREVIEW_VECTOR_PATH = resolve(__dirname, '../../../tests/vectors/voxel_preview_v2.bin');
 
 function snapshot(cells: readonly (readonly [number, number, number])[], voxelSize = 1): ScanPointCloudSnapshot {
   const occupiedSurfacePositions = new Float32Array(cells.flatMap(([x, y, z]) => [x + 0.5, y + 0.5, z + 0.5]));
@@ -59,7 +62,44 @@ function registeredArtifact(): VoxelPreviewArtifact {
   };
 }
 
-describe('voxel preview grid and preview-v1 format', () => {
+function smokeRegistration() {
+  return {
+    frame: 'webxr_local_floor' as const,
+    source: 'test',
+    geometry_computed_at_ms: 123456,
+    sensor_to_scan: [1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1, 3, 0, 0, 0, 1],
+    residual_m: 0,
+  };
+}
+
+function projectSmokePreviewBytes(): Uint8Array {
+  return encodeVoxelPreviewArtifact({
+    sourceScanCrc32: occupancyCrc32(scanA),
+    geometryComputedAtMs: 123456n,
+    registration: {
+      geometry_computed_at_ms: 123456,
+      sensor_to_scan: localFloorMatrixToProject(smokeRegistration().sensor_to_scan),
+    },
+    origin: [-0.5, -3.5, 1.5],
+    voxelSizeMeters: 1,
+    dimensions: [1, 1, 1],
+    voxelCount: 1,
+    indexWidth: 2,
+    indices: new Uint32Array([0]),
+    faceMasks: new Uint8Array([0x3f]),
+    coarseningSteps: 0,
+  });
+}
+
+describe('voxel preview grid and preview-v1/v2 format', () => {
+  it.skipIf(process.env.WRITE_GOLDEN_VECTORS !== '1')('writes the registered v2 vector from the production encoder', () => {
+    writeFileSync(PREVIEW_VECTOR_PATH, projectSmokePreviewBytes());
+  });
+
+  it('matches the registered v2 vector consumed by the C parser tests', () => {
+    expect(Array.from(new Uint8Array(readFileSync(PREVIEW_VECTOR_PATH)))).toEqual(Array.from(projectSmokePreviewBytes()));
+  });
+
   it('decodes the shared golden vector used by the C parser test', () => {
     const source = readFileSync(new URL('../../../components/scan_preview/tests/preview_v1_golden_bytes.inc', import.meta.url), 'utf8');
     const bytes = Uint8Array.from([...source.matchAll(/0x([0-9a-f]{2})/gi)].map((match) => Number.parseInt(match[1], 16)));
@@ -120,6 +160,7 @@ describe('voxel preview grid and preview-v1 format', () => {
 
   it('round-trips the registered header, final voxel size, and coarsening count', () => {
     const encoded = encodeVoxelPreviewArtifact(registeredArtifact());
+    expect(new DataView(encoded.buffer).getUint16(8, true)).toBe(2);
     const decoded = decodeVoxelPreviewArtifact(encoded, scanA);
     expect(decoded).toMatchObject({
       sourceScanCrc32: occupancyCrc32(scanA),
@@ -131,6 +172,24 @@ describe('voxel preview grid and preview-v1 format', () => {
     });
     expect(decoded.indices).toEqual(new Uint32Array([0, 5]));
     expect(decoded.faceMasks).toEqual(new Uint8Array([0x3f, 0x15]));
+  });
+
+  it('converts local-floor registration before writing v2 and drops registered v1 transforms', () => {
+    const encoded = buildVoxelPreviewArtifact(snapshot([[0, 0, 0]]), scanA, { registration: smokeRegistration() });
+    const decoded = decodeVoxelPreviewArtifact(encoded);
+    expect(decoded.registration?.sensor_to_scan).toEqual([
+      1, 0, 0, 0,
+      0, 0, -1, -3,
+      0, 1, 0, 2,
+      0, 0, 0, 1,
+    ]);
+
+    const legacyRegistered = encoded.slice();
+    new DataView(legacyRegistered.buffer).setUint16(8, 1, true);
+    const repaired = fixCrc(legacyRegistered);
+    const legacy = decodeVoxelPreviewArtifact(repaired);
+    expect(legacy.registration).toBeNull();
+    expect(legacy.geometryComputedAtMs).toBe(0n);
   });
 
   it('uses u32 indices when the grid volume exceeds 65536 cells', () => {
@@ -150,7 +209,7 @@ describe('voxel preview grid and preview-v1 format', () => {
   it('rejects corrupt magic, version, truncation, counts, indices, masks, order, and CRC', () => {
     const good = encodeVoxelPreviewArtifact(registeredArtifact());
     const badMagic = good.slice(); badMagic[0] ^= 0xff;
-    const badVersion = good.slice(); new DataView(badVersion.buffer).setUint16(8, 2, true);
+    const badVersion = good.slice(); new DataView(badVersion.buffer).setUint16(8, 3, true);
     const badCount = good.slice(); new DataView(badCount.buffer).setUint32(48, 0xffffffff, true);
     const badIndex = good.slice(); new DataView(badIndex.buffer).setUint16(118, 6, true);
     const badMask = good.slice(); badMask[118 + 2 * 2] = 0xc0;

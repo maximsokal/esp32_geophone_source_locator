@@ -1,4 +1,5 @@
 import type { OccupancyRegistration } from '../occupancySolverArtifact';
+import { localFloorMatrixToProject } from '../projectFrame';
 import type { RegistrationNode, RegistrationNodeStatus, RegistrationTier } from './rigidRegistration';
 
 export const DEFAULT_REMOTE_TAG_SIZE_M = 0.032;
@@ -27,6 +28,8 @@ export interface RegistrationArtifactNode {
 
 export interface RegistrationArtifact {
   schema: 1;
+  /** Missing only on legacy files; those matrices are WebXR local-floor. */
+  frame?: 'webxr_local_floor';
   source: 'apriltag';
   family: 'tag36h11';
   geometry_computed_at_ms: number;
@@ -44,7 +47,7 @@ export interface RegistrationArtifact {
 }
 
 const NODES: readonly RegistrationNode[] = ['MAIN', 'G1', 'G2', 'G3', 'G4'];
-const ROOT_KEYS = ['schema', 'source', 'family', 'geometry_computed_at_ms', 'created_at_ms', 'tag_size_m', 'bindings', 'sensor_to_scan', 'mirrored', 'residual_rms_m', 'threshold_m', 'per_node', 'tier', 'valid', 'reason'];
+const ROOT_KEYS = ['schema', 'frame', 'source', 'family', 'geometry_computed_at_ms', 'created_at_ms', 'tag_size_m', 'bindings', 'sensor_to_scan', 'mirrored', 'residual_rms_m', 'threshold_m', 'per_node', 'tier', 'valid', 'reason'];
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -89,7 +92,11 @@ function validateMatrix(value: unknown): number[] | null {
 
 function validateArtifact(value: unknown): RegistrationArtifact {
   if (!record(value)) throw new Error('Registration artifact must be a JSON object.');
-  exactKeys(value, ROOT_KEYS, 'Registration artifact');
+  const hasFrame = Object.prototype.hasOwnProperty.call(value, 'frame');
+  exactKeys(value, hasFrame ? ROOT_KEYS : ROOT_KEYS.filter((key) => key !== 'frame'), 'Registration artifact');
+  if (hasFrame && value.frame !== 'webxr_local_floor') {
+    throw new Error('Unknown registration frame marker; expected webxr_local_floor.');
+  }
   if (value.schema !== 1) throw new Error('Unsupported registration artifact schema.');
   if (value.source !== 'apriltag') throw new Error('Unknown registration source.');
   if (value.family !== 'tag36h11') throw new Error('Unknown AprilTag family.');
@@ -161,7 +168,7 @@ function validateArtifact(value: unknown): RegistrationArtifact {
   if (value.valid && perNode.some((item) => item.status === 'provisional')) throw new Error('Valid artifacts cannot contain provisional nodes.');
 
   return {
-    schema: 1, source: 'apriltag', family: 'tag36h11',
+    schema: 1, frame: 'webxr_local_floor', source: 'apriltag', family: 'tag36h11',
     geometry_computed_at_ms: geometryComputedAtMs, created_at_ms: createdAtMs,
     tag_size_m: tagSizes, bindings, sensor_to_scan: matrix,
     mirrored: value.mirrored, residual_rms_m: residual, threshold_m: threshold,
@@ -185,7 +192,8 @@ export function toOccupancyRegistration(artifact: RegistrationArtifact): Occupan
     return {
       source: 'apriltag',
       geometry_computed_at_ms: checked.geometry_computed_at_ms,
-      sensor_to_scan: [...checked.sensor_to_scan],
+      sensor_to_scan: localFloorMatrixToProject(checked.sensor_to_scan),
+      frame: 'project_z_up',
       residual_m: checked.residual_rms_m,
     };
   } catch {

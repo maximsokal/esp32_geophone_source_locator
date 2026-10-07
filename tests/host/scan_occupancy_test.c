@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,21 +8,30 @@
 
 /*
  * MAX-162: parses the golden vector the WebUI encoder produces
- * (webui/tests/xr/occupancySolverArtifact.test.ts writes/verifies
- * tests/vectors/scan_occupancy_v1.bin), so both sides agree on the format.
+ * (webui/tests/xr/occupancySolverArtifact.test.ts writes/verifies the v2
+ * vector), so both sides agree on the format. The v1 file remains a legacy
+ * reader fixture and its registration must be ignored.
  *
- * Golden content: voxel 0.18 m; FREE (0,0,0) and (1,-1,2); OCCUPIED
- * (0,1,-1); envelope [-1,-1,-0.5]..[1,1,0.5]; 2 m below surface;
- * registration: translation +0.5 m in x, geometry version 123456.
+ * The legacy v1 fixture has a small FREE/OCCUPIED grid. The project-frame
+ * v2 fixture uses a fitted 90-degree yaw and local-floor translation (1,2,3),
+ * which maps sensor origin to project [1,-3,2].
  */
 
-static uint8_t *read_vector(size_t *length)
+static uint8_t *read_vector(bool project_v2, size_t *length)
 {
-    static const char *const candidates[] = {
+    static const char *const v1_candidates[] = {
         "tests/vectors/scan_occupancy_v1.bin",
         "../../../tests/vectors/scan_occupancy_v1.bin",
     };
-    for (size_t i = 0U; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+    static const char *const v2_candidates[] = {
+        "tests/vectors/scan_occupancy_v2.bin",
+        "../../../tests/vectors/scan_occupancy_v2.bin",
+    };
+    const char *const *candidates = project_v2 ? v2_candidates : v1_candidates;
+    const size_t candidate_count = project_v2
+        ? sizeof(v2_candidates) / sizeof(v2_candidates[0])
+        : sizeof(v1_candidates) / sizeof(v1_candidates[0]);
+    for (size_t i = 0U; i < candidate_count; ++i) {
         FILE *file = fopen(candidates[i], "rb");
         if (file == NULL) {
             continue;
@@ -36,7 +46,7 @@ static uint8_t *read_vector(size_t *length)
         *length = (size_t)size;
         return data;
     }
-    assert(!"golden vector tests/vectors/scan_occupancy_v1.bin not found");
+    assert(!"occupancy golden vector not found");
     return NULL;
 }
 
@@ -44,7 +54,7 @@ static uint8_t *read_vector(size_t *length)
 static void test_golden_vector_parses_and_classifies(void)
 {
     size_t length = 0U;
-    uint8_t *data = read_vector(&length);
+    uint8_t *data = read_vector(false, &length);
     scan_occupancy_t occupancy;
     assert(scan_occupancy_parse(data, length, &occupancy) == ESP_OK);
 
@@ -53,8 +63,8 @@ static void test_golden_vector_parses_and_classifies(void)
     assert(occupancy.below_surface_m == 2.0);
     assert(occupancy.free_count == 2U && occupancy.occupied_count == 1U);
     assert(occupancy.has_envelope);
-    assert(occupancy.registration.present);
-    assert(occupancy.registration.geometry_computed_at_ms == 123456U);
+    assert(!occupancy.registration.present);
+    assert(occupancy.registration.geometry_computed_at_ms == 0U);
 
     const double free_point[3] = { 0.10, 0.05, 0.02 };        /* cell (0,0,0) */
     const double free_point2[3] = { 0.20, -0.10, 0.40 };      /* cell (1,-1,2) -- outside envelope z but FREE wins */
@@ -71,16 +81,94 @@ static void test_golden_vector_parses_and_classifies(void)
     assert(scan_occupancy_classify(&occupancy, outside_below) == SCAN_OCCUPANCY_OUTSIDE);
     assert(scan_occupancy_classify(&occupancy, outside_side) == SCAN_OCCUPANCY_OUTSIDE);
 
-    /* Registration binds to the exact geometry version; a stale one fails closed. */
-    assert(scan_occupancy_registration_usable(&occupancy, 123456U));
+    /* Legacy schema 1 keeps its voxels but never applies its ambiguous frame. */
+    assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
     assert(!scan_occupancy_registration_usable(&occupancy, 123457U));
     assert(!scan_occupancy_registration_usable(&occupancy, 0U));
 
-    const double sensor[3] = { 1.0, 2.0, 3.0 };
-    double scan[3];
-    scan_occupancy_sensor_to_scan(&occupancy, sensor, scan);
-    assert(scan[0] == 1.5 && scan[1] == 2.0 && scan[2] == 3.0);
+    scan_occupancy_free(&occupancy);
+    free(data);
+}
 
+
+static void test_project_frame_v2_registration_and_candidate_classification(void)
+{
+    size_t length = 0U;
+    uint8_t *data = read_vector(true, &length);
+    scan_occupancy_t occupancy;
+    assert(scan_occupancy_parse(data, length, &occupancy) == ESP_OK);
+    assert(occupancy.registration.present);
+    assert(occupancy.registration.geometry_computed_at_ms == 123456U);
+    assert(scan_occupancy_registration_usable(&occupancy, 123456U));
+
+    const double sensor_origin[3] = { 0.0, 0.0, 0.0 };
+    double project[3];
+    scan_occupancy_sensor_to_scan(&occupancy, sensor_origin, project);
+    assert(fabs(project[0] - 1.0) < 1e-6);
+    assert(fabs(project[1] + 3.0) < 1e-6);
+    assert(fabs(project[2] - 2.0) < 1e-6);
+    assert(scan_occupancy_classify(&occupancy, project) == SCAN_OCCUPANCY_FREE);
+
+    /* The unconverted local-floor result occupies a different, OCCUPIED cell. */
+    const double unconverted[3] = { 1.0, 2.0, 3.0 };
+    assert(scan_occupancy_classify(&occupancy, unconverted) == SCAN_OCCUPANCY_OCCUPIED);
+    scan_occupancy_free(&occupancy);
+    free(data);
+}
+
+
+static uint32_t test_crc32(const uint8_t *data, size_t length)
+{
+    uint32_t crc = UINT32_C(0xffffffff);
+    for (size_t i = 0U; i < length; ++i) {
+        crc ^= data[i];
+        for (unsigned bit = 0U; bit < 8U; ++bit) {
+            const uint32_t mask = (uint32_t)-(int32_t)(crc & 1U);
+            crc = (crc >> 1U) ^ (UINT32_C(0xedb88320) & mask);
+        }
+    }
+    return crc ^ UINT32_C(0xffffffff);
+}
+
+static void write_u32(uint8_t *data, size_t offset, uint32_t value)
+{
+    data[offset] = (uint8_t)value;
+    data[offset + 1U] = (uint8_t)(value >> 8U);
+    data[offset + 2U] = (uint8_t)(value >> 16U);
+    data[offset + 3U] = (uint8_t)(value >> 24U);
+}
+
+static void write_u16(uint8_t *data, size_t offset, uint16_t value)
+{
+    data[offset] = (uint8_t)value;
+    data[offset + 1U] = (uint8_t)(value >> 8U);
+}
+
+static void test_schema1_without_registration_still_classifies(void)
+{
+    static const char header[] =
+        "{\"schema\":1,\"frame_id\":\"legacy-empty\",\"voxel_size_m\":0.5,"
+        "\"below_surface_m\":1,\"envelope\":{\"min\":[-1,-1,-1],\"max\":[1,1,1]},"
+        "\"free_count\":1,\"occupied_count\":0,\"saturated\":false,"
+        "\"created_at_ms\":1,\"registration\":null}";
+    const size_t header_length = sizeof(header) - 1U;
+    const size_t length = 20U + header_length + 6U;
+    uint8_t *data = calloc(length, sizeof(*data));
+    assert(data != NULL);
+    memcpy(data, "GOCCUPY1", 8U);
+    write_u32(data, 8U, (uint32_t)header_length);
+    write_u32(data, 12U, 6U);
+    memcpy(data + 20U, header, header_length);
+    write_u16(data, 20U + header_length, 0U);
+    write_u16(data, 20U + header_length + 2U, 0U);
+    write_u16(data, 20U + header_length + 4U, 0U);
+    write_u32(data, 16U, test_crc32(data + 20U, length - 20U));
+
+    scan_occupancy_t occupancy;
+    assert(scan_occupancy_parse(data, length, &occupancy) == ESP_OK);
+    const double free_point[3] = { 0.1, 0.1, 0.1 };
+    assert(scan_occupancy_classify(&occupancy, free_point) == SCAN_OCCUPANCY_FREE);
+    assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
     scan_occupancy_free(&occupancy);
     free(data);
 }
@@ -89,7 +177,7 @@ static void test_golden_vector_parses_and_classifies(void)
 static void test_corruption_and_bad_registration_fail_closed(void)
 {
     size_t length = 0U;
-    uint8_t *data = read_vector(&length);
+    uint8_t *data = read_vector(true, &length);
     scan_occupancy_t occupancy;
 
     data[length - 1U] ^= 0xFFU;
@@ -104,10 +192,21 @@ static void test_corruption_and_bad_registration_fail_closed(void)
 
     /* A non-rigid (scaled) transform is never usable. */
     assert(scan_occupancy_parse(data, length, &occupancy) == ESP_OK);
+    const double original[16] = {
+        occupancy.registration.sensor_to_scan[0], occupancy.registration.sensor_to_scan[1],
+        occupancy.registration.sensor_to_scan[2], occupancy.registration.sensor_to_scan[3],
+        occupancy.registration.sensor_to_scan[4], occupancy.registration.sensor_to_scan[5],
+        occupancy.registration.sensor_to_scan[6], occupancy.registration.sensor_to_scan[7],
+        occupancy.registration.sensor_to_scan[8], occupancy.registration.sensor_to_scan[9],
+        occupancy.registration.sensor_to_scan[10], occupancy.registration.sensor_to_scan[11],
+        occupancy.registration.sensor_to_scan[12], occupancy.registration.sensor_to_scan[13],
+        occupancy.registration.sensor_to_scan[14], occupancy.registration.sensor_to_scan[15],
+    };
     occupancy.registration.sensor_to_scan[0] = 2.0;
     assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
     /* A mirror (det = -1) is allowed: CS layouts may be reflected. */
-    occupancy.registration.sensor_to_scan[0] = -1.0;
+    memcpy(occupancy.registration.sensor_to_scan, original, sizeof(original));
+    occupancy.registration.sensor_to_scan[1] = -occupancy.registration.sensor_to_scan[1];
     assert(scan_occupancy_registration_usable(&occupancy, 123456U));
     /* No registration at all: fail closed. */
     occupancy.registration.present = false;
@@ -120,6 +219,8 @@ static void test_corruption_and_bad_registration_fail_closed(void)
 int main(void)
 {
     test_golden_vector_parses_and_classifies();
+    test_project_frame_v2_registration_and_candidate_classification();
+    test_schema1_without_registration_still_classifies();
     test_corruption_and_bad_registration_fail_closed();
     return 0;
 }

@@ -78,11 +78,24 @@ describe('sensor placement scene', () => {
     });
     const unregistered = buildSensorPlacementScene(sensorGeometry, invalid).markers;
     expect(unregistered.find((marker) => marker.node === 'G1')).toMatchObject({
-      status: 'visual_only', source: 'apriltag', positionScanM: [0.1, 0.2, 0.3], uncertaintyM: 0.006, tagId: 1,
+      status: 'visual_only', source: 'apriltag', positionScanM: [0.1, -0.3, 0.2], uncertaintyM: 0.006, tagId: 1,
     });
     expect(unregistered.find((marker) => marker.node === 'G2')).toMatchObject({
       status: 'cs_unregistered', positionScanM: null, source: 'channel_sounding',
     });
+  });
+
+  it('converts an unregistered local-floor tag marker to the project frame', () => {
+    const invalid = artifact({
+      sensor_to_scan: null,
+      tier: null,
+      valid: false,
+      reason: 'missing_main',
+      bindings: [binding('G1', 1, [1, 2, 3])],
+      per_node: [{ node: 'G1', tagId: 1, residualM: null, status: 'visual_only' }],
+    });
+    const marker = buildSensorPlacementScene(geometry([]), invalid).markers.find((item) => item.node === 'G1');
+    expect(marker?.positionScanM).toEqual([1, -3, 2]);
   });
 
   it.each([

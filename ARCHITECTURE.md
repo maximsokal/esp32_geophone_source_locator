@@ -863,7 +863,7 @@ phone scan (WebXR) -> FREE / OCCUPIED voxels (UNKNOWN implicit)
   -> tdcas/psafuvs_scan_constrained, suea_scan_voids (persisted, never fused)
 ```
 
-`tests/vectors/scan_occupancy_void_scene_v1.bin` is written by the WebUI encoder and consumed by `localization_calculate_scan_methods_test.c`, so the whole path is tested across both languages. SUEA accuracy is bounded by the grid (0.1 m cells by default).
+`tests/vectors/scan_occupancy_void_scene_v2.bin` is written by the WebUI encoder and consumed by `localization_calculate_scan_methods_test.c`, so the whole path is tested across both languages. SUEA accuracy is bounded by the grid (0.1 m cells by default).
 
 ### Extended methods: waveform delays, robust fits, P-S, eikonal, posterior
 

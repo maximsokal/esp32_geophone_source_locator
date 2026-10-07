@@ -12,9 +12,11 @@ import {
   type OccupancyRegistration,
 } from './occupancySolverArtifact';
 import type { ScanPointCloudSnapshot } from './webxrRuntime';
+import { localFloorMatrixToProject } from './projectFrame';
 
 const MAGIC = new TextEncoder().encode('GXPRV1\0\0');
-const VERSION = 1;
+const LEGACY_VERSION = 1;
+const VERSION = 2;
 const BASE_HEADER_BYTES = 54;
 const REGISTERED_HEADER_BYTES = BASE_HEADER_BYTES + 16 * Float32Array.BYTES_PER_ELEMENT;
 export const MAX_VOXEL_PREVIEW_BYTES = 64 * 1024;
@@ -33,6 +35,7 @@ const FACE = {
 
 export interface VoxelPreviewRegistration {
   geometry_computed_at_ms: number;
+  /** Version 2 row-major transform from sensor Z-up to project Z-up. */
   sensor_to_scan: number[];
 }
 
@@ -76,6 +79,8 @@ function rigidRegistration(value: OccupancyRegistration | null | undefined): Vox
       !Number.isSafeInteger(value.geometry_computed_at_ms) || value.geometry_computed_at_ms <= 0 ||
       !Array.isArray(value.sensor_to_scan) || value.sensor_to_scan.length !== 16 ||
       value.sensor_to_scan.some((entry) => !Number.isFinite(entry))) return null;
+  const frame: unknown = value.frame;
+  if (frame !== undefined && frame !== 'webxr_local_floor' && frame !== 'project_z_up') return null;
 
   const m = value.sensor_to_scan;
   if (m[12] !== 0 || m[13] !== 0 || m[14] !== 0 || m[15] !== 1) return null;
@@ -87,7 +92,10 @@ function rigidRegistration(value: OccupancyRegistration | null | undefined): Vox
   }
   const determinant = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) + m[2] * (m[4] * m[9] - m[5] * m[8]);
   if (Math.abs(Math.abs(determinant) - 1) > 1e-3) return null;
-  return { geometry_computed_at_ms: value.geometry_computed_at_ms, sensor_to_scan: [...m] };
+  return {
+    geometry_computed_at_ms: value.geometry_computed_at_ms,
+    sensor_to_scan: frame === 'project_z_up' ? [...m] : localFloorMatrixToProject(m),
+  };
 }
 
 function matchingOccupancy(
@@ -267,6 +275,7 @@ export function encodeVoxelPreviewArtifact(artifact: VoxelPreviewArtifact): Uint
     if (artifact.geometryComputedAtMs !== 0n) throw new Error('Unregistered voxel preview must have a zero geometry timestamp.');
   } else {
     const checked = rigidRegistration({
+      frame: 'project_z_up',
       source: 'preview',
       geometry_computed_at_ms: Number(artifact.geometryComputedAtMs),
       sensor_to_scan: artifact.registration.sensor_to_scan,
@@ -281,7 +290,7 @@ export function encodeVoxelPreviewArtifact(artifact: VoxelPreviewArtifact): Uint
   const result = new Uint8Array(totalBytes);
   result.set(MAGIC, 0);
   const view = new DataView(result.buffer);
-  view.setUint16(8, VERSION, true);
+  view.setUint16(8, artifact.registration === null ? LEGACY_VERSION : VERSION, true);
   view.setUint16(10, headerBytes, true);
   view.setUint32(12, artifact.sourceScanCrc32, true);
   view.setBigUint64(16, artifact.geometryComputedAtMs, true);
@@ -317,7 +326,8 @@ export function decodeVoxelPreviewArtifact(source: ArrayBuffer | Uint8Array, exp
   if (bytes.byteLength < BASE_HEADER_BYTES + 4 || bytes.byteLength > MAX_VOXEL_PREVIEW_BYTES) throw new Error('Invalid voxel preview size.');
   for (let i = 0; i < MAGIC.length; i += 1) if (bytes[i] !== MAGIC[i]) throw new Error('Voxel preview magic mismatch.');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (view.getUint16(8, true) !== VERSION) throw new Error('Unsupported voxel preview version.');
+  const version = view.getUint16(8, true);
+  if (version !== LEGACY_VERSION && version !== VERSION) throw new Error('Unsupported voxel preview version.');
   const headerBytes = view.getUint16(10, true);
   const registered = view.getUint8(24);
   if (registered > 1 || headerBytes !== (registered ? REGISTERED_HEADER_BYTES : BASE_HEADER_BYTES)) throw new Error('Voxel preview header length is invalid.');
@@ -334,17 +344,18 @@ export function decodeVoxelPreviewArtifact(source: ArrayBuffer | Uint8Array, exp
   if (voxelCount > MAX_VOXEL_PREVIEW_COUNT || voxelCount > volume) throw new Error('Voxel preview count exceeds the grid or hard limit.');
   if (headerBytes + voxelCount * (indexWidth + 1) + 4 !== bytes.byteLength) throw new Error('Voxel preview counts disagree with its length.');
 
-  const geometryComputedAtMs = view.getBigUint64(16, true);
+  const encodedGeometryComputedAtMs = view.getBigUint64(16, true);
   const origin: [number, number, number] = [view.getFloat32(32, true), view.getFloat32(36, true), view.getFloat32(40, true)];
   const voxelSizeMeters = view.getFloat32(44, true);
   if (!origin.every(Number.isFinite) || !Number.isFinite(voxelSizeMeters) || voxelSizeMeters <= 0) throw new Error('Voxel preview geometry is invalid.');
   let registration: VoxelPreviewRegistration | null = null;
   if (registered) {
     const sensor_to_scan = Array.from({ length: 16 }, (_, i) => view.getFloat32(BASE_HEADER_BYTES + i * 4, true));
-    const checked = rigidRegistration({ source: 'preview', geometry_computed_at_ms: Number(geometryComputedAtMs), sensor_to_scan, residual_m: 0 });
-    if (checked === null || BigInt(checked.geometry_computed_at_ms) !== geometryComputedAtMs) throw new Error('Voxel preview registration is invalid.');
-    registration = checked;
-  } else if (geometryComputedAtMs !== 0n) throw new Error('Unregistered voxel preview has a geometry timestamp.');
+    const checked = rigidRegistration({ frame: 'project_z_up', source: 'preview', geometry_computed_at_ms: Number(encodedGeometryComputedAtMs), sensor_to_scan, residual_m: 0 });
+    if (checked === null || BigInt(checked.geometry_computed_at_ms) !== encodedGeometryComputedAtMs) throw new Error('Voxel preview registration is invalid.');
+    if (version === VERSION) registration = checked;
+  } else if (encodedGeometryComputedAtMs !== 0n) throw new Error('Unregistered voxel preview has a geometry timestamp.');
+  const geometryComputedAtMs = registration === null ? 0n : encodedGeometryComputedAtMs;
 
   const indices = new Uint32Array(voxelCount);
   const faceMasks = new Uint8Array(voxelCount);

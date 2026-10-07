@@ -12,6 +12,7 @@ import {
 function artifact(): RegistrationArtifact {
   return {
     schema: 1,
+    frame: 'webxr_local_floor',
     source: 'apriltag',
     family: 'tag36h11',
     geometry_computed_at_ms: 1234,
@@ -45,6 +46,12 @@ describe('registration-v1.json artifact', () => {
     expect(defaultRegistrationTagSizes(0.04, 0.03)).toEqual({ '0': 0.04, '1': 0.03, '2': 0.03, '3': 0.03, '4': 0.03 });
     const value = artifact();
     expect(decodeRegistrationArtifact(encodeRegistrationArtifact(value))).toEqual(value);
+    expect(JSON.parse(encodeRegistrationArtifact(value)).frame).toBe('webxr_local_floor');
+
+    const legacy = { ...value } as Record<string, unknown>;
+    delete legacy.frame;
+    expect(decodeRegistrationArtifact(JSON.stringify(legacy)).frame).toBe('webxr_local_floor');
+    expect(JSON.parse(encodeRegistrationArtifact(legacy as unknown as RegistrationArtifact)).frame).toBe('webxr_local_floor');
   });
 
   it('rejects each unsupported schema, type, number, matrix, timestamp, and tag binding', () => {
@@ -52,6 +59,7 @@ describe('registration-v1.json artifact', () => {
     expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, schema: 2 } as RegistrationArtifact))).toThrow(/schema/i);
     expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, family: 'tag25h9' } as RegistrationArtifact))).toThrow(/family/i);
     expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, source: 'aruco' } as RegistrationArtifact))).toThrow(/source/i);
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, frame: 'unknown' } as unknown as RegistrationArtifact))).toThrow(/frame marker/i);
     expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, sensor_to_scan: Array(15).fill(0) } as RegistrationArtifact))).toThrow(/16-value/);
     expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, valid: true, sensor_to_scan: null }))).toThrow(/valid artifact/i);
     expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, bindings: [{ ...base.bindings[0], tag_id: 5 }] }))).toThrow(/tag id/i);
@@ -69,7 +77,8 @@ describe('registration-v1.json artifact', () => {
     expect(toOccupancyRegistration(value)).toEqual({
       source: 'apriltag',
       geometry_computed_at_ms: 1234,
-      sensor_to_scan: value.sensor_to_scan,
+      sensor_to_scan: [1, 0, 0, 0.2, 0, 0, -1, -0.1, 0, 1, 0, -0.3, 0, 0, 0, 1],
+      frame: 'project_z_up',
       residual_m: 0.01,
     });
   });

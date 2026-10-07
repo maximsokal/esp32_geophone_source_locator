@@ -37,6 +37,30 @@ static char *read_source_vectors(void)
     return text;
 }
 
+static uint8_t *read_preview_v2_vector(size_t *length_out)
+{
+    static const char *const paths[] = {
+        "tests/vectors/voxel_preview_v2.bin",
+        "../../../tests/vectors/voxel_preview_v2.bin",
+    };
+    for (size_t i = 0U; i < sizeof(paths) / sizeof(paths[0]); ++i) {
+        FILE *file = fopen(paths[i], "rb");
+        if (file == NULL) continue;
+        assert(fseek(file, 0L, SEEK_END) == 0);
+        const long length = ftell(file);
+        assert(length > 0L);
+        assert(fseek(file, 0L, SEEK_SET) == 0);
+        uint8_t *bytes = malloc((size_t)length);
+        assert(bytes != NULL);
+        assert(fread(bytes, 1U, (size_t)length, file) == (size_t)length);
+        assert(fclose(file) == 0);
+        *length_out = (size_t)length;
+        return bytes;
+    }
+    assert(!"registered preview v2 golden vector not found");
+    return NULL;
+}
+
 static size_t read_source_vector_rows(
     const char *fixture,
     const char *section,
@@ -506,6 +530,37 @@ static void test_voxel_depth_order_and_registration_binding(void)
     frame_assert_guards(100, 100);
 }
 
+static void test_v2_preview_sensor_origin_uses_project_z_up(void)
+{
+    size_t length = 0U;
+    uint8_t *bytes = read_preview_v2_vector(&length);
+    scan_preview_t preview;
+    assert(scan_preview_parse(bytes, length, NULL, &preview) == SCAN_PREVIEW_OK);
+    assert(preview.registration_usable && preview.geometry_computed_at_ms == 123456U);
+
+    ui_preview3d_scene_set_voxel_preview(
+        &s_scene, &preview, 123456U, s_voxel_order, VOXEL_TEST_BUDGET);
+    assert(s_scene.registered);
+    assert(fabs(s_scene.sensor_to_scan[7] + 3.0) < 1e-6);
+    assert(fabs(s_scene.sensor_to_scan[11] - 2.0) < 1e-6);
+    s_scene.sensor_valid[0] = true;
+    s_scene.sensors[0] = (ui_preview3d_vec3_t){0.0f, 0.0f, 0.0f};
+
+    ui_preview3d_view_t view;
+    ui_preview3d_stats_t stats;
+    ui_preview3d_view_preset(&view, UI_PREVIEW3D_PRESET_TOP);
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), 100, 100, &stats);
+    assert(stats.drew_scan && stats.drew_sensors && !stats.overlay_suppressed_unregistered);
+    assert(count_colour(100, 100, UI_PREVIEW3D_PX_MAIN) > 0U);
+    /* The sole voxel is centered at the converted sensor origin [0,-3,2]. */
+    assert(frame_pixels()[50U * 100U + 50U] == UI_PREVIEW3D_PX_MAIN);
+    frame_assert_guards(100, 100);
+
+    scan_preview_free(&preview);
+    free(bytes);
+}
+
 static void test_voxel_viewport_clipping_far_depth_and_budget(void)
 {
     static uint32_t one_index[] = {0U};
@@ -712,6 +767,7 @@ int main(void)
     test_occupancy_decimation_and_registration();
     test_voxel_cube_faces_and_projected_corners();
     test_voxel_depth_order_and_registration_binding();
+    test_v2_preview_sensor_origin_uses_project_z_up();
     test_voxel_viewport_clipping_far_depth_and_budget();
     test_localization_source_selection();
     test_source_to_voxel_mapping();

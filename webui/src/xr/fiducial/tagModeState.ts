@@ -75,6 +75,7 @@ export function registrationArtifactFromResult(
   }));
   return {
     schema: 1,
+    frame: 'webxr_local_floor',
     source: 'apriltag',
     family: 'tag36h11',
     geometry_computed_at_ms: geometryComputedAtMs,

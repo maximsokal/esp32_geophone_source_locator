@@ -30,6 +30,7 @@ export type ApiRequestOwner = object;
 
 export interface ApiRequestOptions {
   owner?: ApiRequestOwner;
+  read?: boolean;
   preemptible?: boolean;
 }
 
@@ -38,6 +39,8 @@ export interface ControlResult {
   action: string;
   object_id?: string;
   bytes?: number;
+  id?: string;
+  current_id?: string | null;
   error_class?: string;
   error?: string;
   outcome?: 'blocked_recording';
@@ -99,6 +102,20 @@ export class BulkTransferPreemptedError extends Error {
   constructor() {
     super('Bulk transfer paused for a critical control action. Retry when ready.');
     this.name = 'BulkTransferPreemptedError';
+  }
+}
+
+export type ScanWriteOutcome = 'confirmed_not_committed' | 'unknown';
+
+export class ScanWriteOutcomeError extends Error {
+  constructor(
+    readonly outcome: ScanWriteOutcome,
+    message: string,
+    readonly httpStatus?: number,
+    readonly currentId: string | null = null,
+  ) {
+    super(message);
+    this.name = 'ScanWriteOutcomeError';
   }
 }
 
@@ -181,9 +198,7 @@ interface QueuedApiRequest {
   context?: ApiRequestContext;
 }
 
-interface QueuedApiRequestOptions extends ApiRequestOptions {
-  read?: boolean;
-}
+type QueuedApiRequestOptions = ApiRequestOptions;
 
 const apiRequestQueues: Record<ApiRequestLane, QueuedApiRequest[]> = {
   critical: [],
@@ -430,19 +445,27 @@ function jsonRequest<T>(
   options: ApiRequestOptions = {},
 ): Promise<T> {
   const method = (init.method ?? 'GET').toUpperCase();
-  const preemptible = method === 'GET' && (options.preemptible ?? true);
+  const read = options.read ?? method === 'GET';
+  const preemptible = read && (options.preemptible ?? true);
   return queuedApiRequest((context) => performJsonRequest<T>(url, context, init, timeoutMs), lane, {
     ...options,
-    read: method === 'GET',
+    read,
     preemptible,
   });
 }
 
 export type ScanStoreKind = 'scan' | 'occupancy' | 'preview' | 'registration';
 
-function scanControlUrl(action: 'save' | 'load' | 'delete' | 'info', objectId: string, sessionId: string, kind: ScanStoreKind = 'scan'): string {
+function scanControlUrl(
+  action: 'save' | 'load' | 'delete' | 'info',
+  objectId: string,
+  sessionId: string,
+  kind: ScanStoreKind = 'scan',
+  scanId?: string,
+): string {
   const query = new URLSearchParams({ scan: action, object_id: objectId, session_id: sessionId });
   if (kind !== 'scan') query.set('kind', kind);
+  if (scanId !== undefined && (kind === 'occupancy' || kind === 'preview')) query.set('scan_id', scanId);
   return `/api/control?${query.toString()}`;
 }
 
@@ -452,8 +475,9 @@ async function performScanSave(
   artifact: Uint8Array,
   context: ApiRequestContext,
   kind: ScanStoreKind = 'scan',
+  scanId?: string,
 ): Promise<ControlResult> {
-  const url = scanControlUrl('save', objectId, sessionId, kind);
+  const url = scanControlUrl('save', objectId, sessionId, kind, scanId);
   const timeout = globalThis.setTimeout(() => {
     context.timedOut = true;
     context.controller.abort();
@@ -474,17 +498,48 @@ async function performScanSave(
         },
         body,
       });
-      text = await response.text();
     }
     catch (reason) {
-      if (context.timedOut) throw new Error(`ESP scan save timeout (${DEVICE_API_SCAN_TIMEOUT_MS} ms)`);
-      throw new Error(`ESP scan save network error: ${errorText(reason)}`);
+      if (context.timedOut) {
+        throw new ScanWriteOutcomeError('unknown', `ESP scan save timeout (${DEVICE_API_SCAN_TIMEOUT_MS} ms)`);
+      }
+      throw new ScanWriteOutcomeError('unknown', `ESP scan save network error: ${errorText(reason)}`);
+    }
+    try {
+      text = await response.text();
+    } catch (reason) {
+      if (!response.ok) {
+        throw new ScanWriteOutcomeError(
+          'confirmed_not_committed',
+          `ESP scan save ${response.status}: response body unavailable`,
+          response.status,
+        );
+      }
+      throw new ScanWriteOutcomeError('unknown', `ESP scan save response body error: ${errorText(reason)}`);
     }
 
     const body = parsedResponseBody(text);
     if (!response.ok) {
       if (recordingBlocked(body, response.status)) return blockedControlResult(body);
-      throw new Error(`ESP scan save ${response.status}: ${responseError(body, response)}`);
+      const currentId = typeof body === 'object' && body !== null && 'current_id' in body &&
+        typeof (body as { current_id?: unknown }).current_id === 'string'
+        ? (body as { current_id: string }).current_id
+        : null;
+      throw new ScanWriteOutcomeError(
+        'confirmed_not_committed',
+        `ESP scan save ${response.status}: ${responseError(body, response)}`,
+        response.status,
+        currentId,
+      );
+    }
+    if (typeof body !== 'object' || body === null || !('ok' in body)) {
+      throw new ScanWriteOutcomeError('unknown', 'ESP scan save response was unreadable.');
+    }
+    if ((body as { ok?: unknown }).ok === false) {
+      throw new ScanWriteOutcomeError('confirmed_not_committed', `ESP scan save was rejected: ${responseError(body, response)}`);
+    }
+    if ((body as { ok?: unknown }).ok !== true) {
+      throw new ScanWriteOutcomeError('unknown', 'ESP scan save response did not confirm the write.');
     }
     return body as ControlResult;
   }
@@ -738,13 +793,23 @@ export function saveObjectScanArtifact(objectId: string, sessionId: string, arti
  * MAX-162: the compact FREE/OCCUPIED occupancy artifact derived from the
  * session's saved scan, stored beside it (deleted together with the scan).
  */
-export function saveSessionOccupancyArtifact(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {
-  return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context, 'occupancy'), 'bulk');
+export function saveSessionOccupancyArtifact(
+  objectId: string,
+  sessionId: string,
+  artifact: Uint8Array,
+  scanId?: string,
+): Promise<ControlResult> {
+  return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context, 'occupancy', scanId), 'bulk');
 }
 
 /** MAX-24/MAX-187: bounded surface-voxel preview for the ESP32 TFT. */
-export function saveSessionPreviewArtifact(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {
-  return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context, 'preview'), 'bulk');
+export function saveSessionPreviewArtifact(
+  objectId: string,
+  sessionId: string,
+  artifact: Uint8Array,
+  scanId?: string,
+): Promise<ControlResult> {
+  return queuedApiRequest((context) => performScanSave(objectId, sessionId, artifact, context, 'preview', scanId), 'bulk');
 }
 
 export function saveSessionRegistration(objectId: string, sessionId: string, json: string): Promise<ControlResult> {
@@ -778,23 +843,32 @@ export function loadSessionPreviewArtifact(objectId: string, sessionId: string):
 export interface ScanArtifactInfo {
   present: boolean;
   bytes: number;
+  id?: string | null;
+  sourceId?: string | null;
 }
 
 /** MAX-169: presence/size of a session's scan (or occupancy) without downloading it. */
 export async function fetchScanInfo(objectId: string, sessionId: string, kind: ScanStoreKind = 'scan'): Promise<ScanArtifactInfo> {
   try {
-    const result = await jsonRequest<{ ok: boolean; bytes?: number; error?: string }>(
+    const result = await jsonRequest<{ ok: boolean; bytes?: number; id?: unknown; source_id?: unknown; error?: string }>(
       scanControlUrl('info', objectId, sessionId, kind),
       { method: 'POST' },
       DEVICE_API_EXTENDED_TIMEOUT_MS,
+      'normal',
+      { read: true },
     );
-    if (result.ok) return { present: true, bytes: result.bytes ?? 0 };
-    if (result.error === 'ESP_ERR_NOT_FOUND') return { present: false, bytes: 0 };
+    if (result.ok) return {
+      present: true,
+      bytes: result.bytes ?? 0,
+      id: typeof result.id === 'string' ? result.id : null,
+      sourceId: typeof result.source_id === 'string' ? result.source_id : null,
+    };
+    if (result.error === 'ESP_ERR_NOT_FOUND') return { present: false, bytes: 0, id: null, sourceId: null };
     throw new Error(result.error ?? 'scan info failed');
   }
   catch (reason) {
     const text = reason instanceof Error ? reason.message : String(reason);
-    if (text.includes('ESP API 404') || text.includes('ESP_ERR_NOT_FOUND')) return { present: false, bytes: 0 };
+    if (text.includes('ESP API 404') || text.includes('ESP_ERR_NOT_FOUND')) return { present: false, bytes: 0, id: null, sourceId: null };
     throw reason;
   }
 }

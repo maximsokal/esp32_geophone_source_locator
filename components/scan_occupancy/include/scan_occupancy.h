@@ -9,8 +9,9 @@
 /*
  * MAX-162: ESP32-side reader for the compact FREE/OCCUPIED occupancy
  * artifact the WebUI derives from a saved scan (layout documented in
- * webui/src/xr/occupancySolverArtifact.ts, golden vector
- * tests/vectors/scan_occupancy_v1.bin). Pure: no file I/O, no RTOS.
+ * webui/src/xr/occupancySolverArtifact.ts and the legacy/project-frame golden
+ * vectors tests/vectors/scan_occupancy_v1.bin and scan_occupancy_v2.bin).
+ * Pure: no file I/O, no RTOS.
  *
  * Coordinates are the scan's project frame (meters, Z up). A voxel index is
  * floor(coordinate / voxel_size_m). UNKNOWN is never stored: a cell inside
@@ -18,7 +19,8 @@
  * neither FREE nor OCCUPIED is UNKNOWN.
  */
 
-#define SCAN_OCCUPANCY_SCHEMA 1U
+#define SCAN_OCCUPANCY_SCHEMA 2U
+#define SCAN_OCCUPANCY_LEGACY_SCHEMA 1U
 #define SCAN_OCCUPANCY_MAX_BYTES (1024U * 1024U)
 #define SCAN_OCCUPANCY_FRAME_ID_SIZE 64U
 #define SCAN_OCCUPANCY_SOURCE_SIZE 32U
@@ -39,7 +41,8 @@ typedef struct
     bool present;
     char source[SCAN_OCCUPANCY_SOURCE_SIZE];
     uint64_t geometry_computed_at_ms;
-    /* Row-major 4x4 homogeneous sensor(localization) -> scan transform. */
+    /* Schema 2: row-major sensor Z-up -> project Z-up transform. A schema 1
+     * registration is parsed for compatibility but is always marked absent. */
     double sensor_to_scan[16];
     double residual_m;
 
@@ -81,7 +84,7 @@ esp_err_t scan_occupancy_parse(
 
 void scan_occupancy_free(scan_occupancy_t *occupancy);
 
-/* Classifies a point given in the SCAN frame. */
+/* Classifies a point given in the project Z-up scan frame. */
 scan_occupancy_class_t scan_occupancy_classify(
     const scan_occupancy_t *occupancy,
     const double point_scan[3]
@@ -99,7 +102,7 @@ bool scan_occupancy_registration_usable(
     uint64_t geometry_computed_at_ms
 );
 
-/* Applies the registration transform: sensor frame -> scan frame. */
+/* Applies a usable schema 2 transform: sensor Z-up -> project Z-up. */
 void scan_occupancy_sensor_to_scan(
     const scan_occupancy_t *occupancy,
     const double point_sensor[3],

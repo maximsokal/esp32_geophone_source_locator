@@ -102,22 +102,30 @@ static bool read_vec3(const cJSON *array, double out[3])
 }
 
 
-static bool parse_registration(const cJSON *item, scan_occupancy_registration_t *out)
+static bool parse_registration(
+    const cJSON *item,
+    uint32_t schema,
+    scan_occupancy_registration_t *out
+)
 {
     memset(out, 0, sizeof(*out));
-    if (!cJSON_IsObject(item)) {
+    if (item == NULL || cJSON_IsNull(item)) {
         /* null/absent: a valid artifact whose constraint stays disabled. */
         return true;
     }
+    if (!cJSON_IsObject(item)) return false;
     const cJSON *source = cJSON_GetObjectItemCaseSensitive(item, "source");
     const cJSON *matrix = cJSON_GetObjectItemCaseSensitive(item, "sensor_to_scan");
+    const cJSON *frame = cJSON_GetObjectItemCaseSensitive(item, "frame");
     double geometry_ms = 0.0;
     double residual = 0.0;
     if (
         !cJSON_IsString(source) ||
         !read_number(item, "geometry_computed_at_ms", &geometry_ms) || geometry_ms < 0.0 ||
         !read_number(item, "residual_m", &residual) ||
-        !cJSON_IsArray(matrix) || cJSON_GetArraySize(matrix) != 16
+        !cJSON_IsArray(matrix) || cJSON_GetArraySize(matrix) != 16 ||
+        (schema == SCAN_OCCUPANCY_SCHEMA &&
+         (!cJSON_IsString(frame) || strcmp(frame->valuestring, "project_z_up") != 0))
     ) {
         return false;
     }
@@ -131,7 +139,11 @@ static bool parse_registration(const cJSON *item, scan_occupancy_registration_t 
     snprintf(out->source, sizeof(out->source), "%s", source->valuestring);
     out->geometry_computed_at_ms = (uint64_t)geometry_ms;
     out->residual_m = residual;
-    out->present = true;
+    if (schema == SCAN_OCCUPANCY_SCHEMA) {
+        out->present = true;
+    } else {
+        memset(out, 0, sizeof(*out));
+    }
     return true;
 }
 
@@ -152,7 +164,7 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
         return ESP_ERR_INVALID_ARG;
     }
 
-    double schema = 0.0;
+    double schema_value = 0.0;
     double voxel = 0.0;
     double below = 0.0;
     double frees = 0.0;
@@ -163,7 +175,9 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
     const cJSON *saturated = cJSON_GetObjectItemCaseSensitive(root, "saturated");
 
     esp_err_t err = ESP_OK;
-    if (!read_number(root, "schema", &schema) || schema != (double)SCAN_OCCUPANCY_SCHEMA) {
+    if (!read_number(root, "schema", &schema_value) ||
+        (schema_value != (double)SCAN_OCCUPANCY_SCHEMA &&
+         schema_value != (double)SCAN_OCCUPANCY_LEGACY_SCHEMA)) {
         err = ESP_ERR_INVALID_VERSION;
     } else if (
         !cJSON_IsString(frame_id) || frame_id->valuestring[0] == '\0' ||
@@ -172,7 +186,10 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
         !read_number(root, "free_count", &frees) || frees < 0.0 ||
         !read_number(root, "occupied_count", &occupieds) || occupieds < 0.0 ||
         !read_number(root, "created_at_ms", &created) || created < 0.0 ||
-        !parse_registration(cJSON_GetObjectItemCaseSensitive(root, "registration"), &out->registration)
+        !parse_registration(
+            cJSON_GetObjectItemCaseSensitive(root, "registration"),
+            (uint32_t)schema_value,
+            &out->registration)
     ) {
         err = ESP_ERR_INVALID_ARG;
     } else {

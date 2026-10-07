@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -17,16 +17,17 @@ import { encodeVoidScene, GRID, toScan, TRENCH, VOID_SCENE_REGISTRATION, VOXEL }
  *   - UNKNOWN:  everything else inside the candidate volume (the unseen
  *               interior) -- implicit, never stored.
  *
- * The scan frame is NOT the sensor frame: registration rotates 90 degrees
- * about Z and translates (10, -5, 2), so the ESP32 must apply it to use the
- * sectors at all. components/localization_calculate/tests/
- * localization_calculate_scan_methods_test.c parses these exact bytes and
- * locates a source behind the trench with every method. Regenerate with
- * UPDATE_VECTORS=1 only after an intentional format change.
+ * The saved scan uses project Z-up. Its registration is a 90-degree yaw with
+ * project translation (10, -3, 2). Regenerate with WRITE_GOLDEN_VECTORS=1
+ * only after an intentional format change.
  */
-const VECTOR_PATH = resolve(__dirname, '../../../tests/vectors/scan_occupancy_void_scene_v1.bin');
+const VECTOR_PATH = resolve(__dirname, '../../../tests/vectors/scan_occupancy_void_scene_v2.bin');
 
 describe('void-scene occupancy vector for ESP32 source location', () => {
+  it.skipIf(process.env.WRITE_GOLDEN_VECTORS !== '1')('writes the v2 vector from the production encoder', () => {
+    writeFileSync(VECTOR_PATH, encodeVoidScene());
+  });
+
   it('stores every empty (FREE) and filled (OCCUPIED) sector exactly once', () => {
     const decoded = decodeOccupancySolverArtifact(encodeVoidScene());
     const airCells = GRID * GRID * 2;
@@ -48,7 +49,7 @@ describe('void-scene occupancy vector for ESP32 source location', () => {
     for (const key of occupied) expect(free.has(key)).toBe(false);
   });
 
-  it('indexes sectors in the SCAN frame through the registration', () => {
+  it('indexes sectors in the project frame through the registration', () => {
     const decoded = decodeOccupancySolverArtifact(encodeVoidScene());
     const cell = (x: number, y: number, z: number) => toScan(x, y, z).map((value) => Math.floor(value / VOXEL)).join(':');
     const has = (values: Int16Array, key: string) => {
@@ -62,15 +63,16 @@ describe('void-scene occupancy vector for ESP32 source location', () => {
     expect(has(decoded.occupied, cell(0.55, 0.55, -0.05))).toBe(true); // surface skin
     expect(has(decoded.free, cell(0.55, 0.55, -0.55))).toBe(false); // unseen interior: never FREE
     expect(has(decoded.occupied, cell(0.55, 0.55, -0.55))).toBe(false);
-    expect(decoded.header.registration).toEqual(VOID_SCENE_REGISTRATION);
+    expect(decoded.header.registration).toMatchObject({
+      frame: 'project_z_up',
+      geometry_computed_at_ms: VOID_SCENE_REGISTRATION.geometry_computed_at_ms,
+      sensor_to_scan: [0, -1, 0, 10, 1, 0, 0, -3, 0, 0, 1, 2, 0, 0, 0, 1],
+    });
     expect(decoded.header.below_surface_m).toBe(2);
   });
 
   it('matches the vector the ESP32 host test consumes', () => {
     const bytes = encodeVoidScene();
-    if (process.env.UPDATE_VECTORS === '1' || !existsSync(VECTOR_PATH)) {
-      writeFileSync(VECTOR_PATH, bytes);
-    }
     expect(Array.from(new Uint8Array(readFileSync(VECTOR_PATH)))).toEqual(Array.from(bytes));
   });
 });

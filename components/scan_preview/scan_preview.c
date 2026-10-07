@@ -112,7 +112,8 @@ static scan_preview_error_t parse_internal(
     if (data == NULL || parsed == NULL) return SCAN_PREVIEW_ERROR_ARGUMENT;
     if (length < SCAN_PREVIEW_BASE_HEADER_BYTES + 4U || length > SCAN_PREVIEW_MAX_BYTES) return SCAN_PREVIEW_ERROR_SIZE;
     if (memcmp(data, s_magic, sizeof(s_magic)) != 0) return SCAN_PREVIEW_ERROR_MAGIC;
-    if (read_u16(data + 8U) != SCAN_PREVIEW_VERSION) return SCAN_PREVIEW_ERROR_VERSION;
+    const uint16_t version = read_u16(data + 8U);
+    if (version != SCAN_PREVIEW_LEGACY_VERSION && version != SCAN_PREVIEW_VERSION) return SCAN_PREVIEW_ERROR_VERSION;
 
     const uint8_t registration_flag = data[24U];
     if (registration_flag > 1U) return SCAN_PREVIEW_ERROR_HEADER;
@@ -143,6 +144,11 @@ static scan_preview_error_t parse_internal(
         if (parsed->geometry_computed_at_ms == 0U) return SCAN_PREVIEW_ERROR_REGISTRATION;
         for (size_t i = 0U; i < 16U; ++i) parsed->sensor_to_scan[i] = read_f32(data + SCAN_PREVIEW_BASE_HEADER_BYTES + i * 4U);
         if (!matrix_is_rigid(parsed->sensor_to_scan)) return SCAN_PREVIEW_ERROR_REGISTRATION;
+        if (version == SCAN_PREVIEW_LEGACY_VERSION) {
+            parsed->registration_usable = false;
+            parsed->geometry_computed_at_ms = 0U;
+            memset(parsed->sensor_to_scan, 0, sizeof(parsed->sensor_to_scan));
+        }
     } else if (parsed->geometry_computed_at_ms != 0U) {
         return SCAN_PREVIEW_ERROR_REGISTRATION;
     }

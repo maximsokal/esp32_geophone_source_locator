@@ -4,7 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCAN_PREVIEW_VERSION 1U
+#define SCAN_PREVIEW_LEGACY_VERSION 1U
+#define SCAN_PREVIEW_VERSION 2U
 #define SCAN_PREVIEW_MAX_BYTES 65536U
 #define SCAN_PREVIEW_MAX_VOXELS 65535U
 #define SCAN_PREVIEW_BASE_HEADER_BYTES 54U
@@ -61,7 +62,9 @@ typedef struct
 } scan_preview_t;
 
 /*
- * Parse and strictly validate preview-v1.bin. A caller-supplied allocator is
+ * Parse and strictly validate preview-v1/v2.bin. Version 1 registered
+ * headers are accepted with registration dropped; version 2 registrations
+ * map sensor Z-up coordinates into project Z-up. A caller-supplied allocator is
  * useful for host tests; NULL selects malloc on host and PSRAM on ESP-IDF.
  * Failure leaves `out` completely zeroed.
  */

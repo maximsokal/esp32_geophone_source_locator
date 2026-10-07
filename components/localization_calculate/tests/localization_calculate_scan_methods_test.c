@@ -19,7 +19,7 @@
  * -> TDCAS, PSAFUVS, SUEA, and the eikonal travel times shared by eikonal
  * location, eikonal-focused semblance and the Bayesian posterior. The
  * bytes are tests/vectors/
- * scan_occupancy_void_scene_v1.bin, written by the WebUI encoder
+ * scan_occupancy_void_scene_v2.bin, written by the WebUI encoder
  * (webui/tests/xr/occupancyVoidSceneVector.test.ts), so a format drift on
  * either side fails here.
  *
@@ -93,8 +93,8 @@ static double true_path(localization_point3d_t sensor, localization_point3d_t so
 static uint8_t *read_vector(size_t *length)
 {
     static const char *const candidates[] = {
-        "tests/vectors/scan_occupancy_void_scene_v1.bin",
-        "../../../tests/vectors/scan_occupancy_void_scene_v1.bin",
+        "tests/vectors/scan_occupancy_void_scene_v2.bin",
+        "../../../tests/vectors/scan_occupancy_void_scene_v2.bin",
     };
     for (size_t i = 0U; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
         FILE *file = fopen(candidates[i], "rb");
@@ -111,7 +111,7 @@ static uint8_t *read_vector(size_t *length)
         *length = (size_t)size;
         return data;
     }
-    assert(!"vector tests/vectors/scan_occupancy_void_scene_v1.bin not found");
+    assert(!"vector tests/vectors/scan_occupancy_void_scene_v2.bin not found");
     return NULL;
 }
 

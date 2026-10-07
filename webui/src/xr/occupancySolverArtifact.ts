@@ -18,26 +18,30 @@
  * volume (the envelope extended below_surface_m downward) that is neither
  * FREE nor OCCUPIED. UNKNOWN is never stored as FREE.
  *
- * `registration` is the sensor(localization)->scan rigid transform. It is
- * null until an AprilTag/ArUco registration (MAX-145) exists; the ESP32 then
- * fails closed and never applies the occupancy constraint.
+ * Schema 2 registrations map sensor Z-up coordinates into the project
+ * Z-up frame. Schema 1 registered artifacts remain readable, but their
+ * ambiguous-frame registration is ignored by both readers.
  */
 
 import type { ScanPointCloudSnapshot } from './depthPointCloud';
+import { localFloorMatrixToProject } from './projectFrame';
 
 const MAGIC = new TextEncoder().encode('GOCCUPY1');
 const FIXED_HEADER_BYTES = 20;
-export const OCCUPANCY_ARTIFACT_SCHEMA = 1;
+export const OCCUPANCY_ARTIFACT_SCHEMA = 2;
+export const LEGACY_OCCUPANCY_ARTIFACT_SCHEMA = 1;
 export const MAX_OCCUPANCY_ARTIFACT_BYTES = 1024 * 1024;
 const INT16_MIN = -32768;
 const INT16_MAX = 32767;
 
 export interface OccupancyRegistration {
+  /** Omitted only by legacy in-memory callers; those matrices are local-floor. */
+  frame?: 'webxr_local_floor' | 'project_z_up';
   /** How the transform was obtained, e.g. 'apriltag'. */
   source: string;
   /** The frozen session geometry version this registration was made against. */
   geometry_computed_at_ms: number;
-  /** Row-major 4x4 homogeneous sensor->scan transform (meters). */
+  /** Row-major sensor Z-up -> project Z-up matrix once encoded as schema 2. */
   sensor_to_scan: number[];
   /** RMS registration residual (meters). */
   residual_m: number;
@@ -60,6 +64,25 @@ export interface DecodedOccupancyArtifact {
   header: OccupancyArtifactHeader;
   free: Int16Array;
   occupied: Int16Array;
+  legacyRegistrationIgnored: boolean;
+}
+
+function registrationInProjectFrame(value: OccupancyRegistration | null): OccupancyRegistration | null {
+  if (value === null) return null;
+  const frame: unknown = value.frame;
+  if (frame !== undefined && frame !== 'webxr_local_floor' && frame !== 'project_z_up') {
+    throw new Error('Unknown occupancy registration frame; expected project_z_up.');
+  }
+  if (value.sensor_to_scan.length !== 16 || value.sensor_to_scan.some((entry) => !Number.isFinite(entry))) {
+    throw new Error('Occupancy registration must be a finite 4x4 matrix.');
+  }
+  return {
+    ...value,
+    frame: 'project_z_up',
+    sensor_to_scan: frame === 'project_z_up'
+      ? [...value.sensor_to_scan]
+      : localFloorMatrixToProject(value.sensor_to_scan),
+  };
 }
 
 export function occupancyCrc32(bytes: Uint8Array, start = 0): number {
@@ -110,10 +133,7 @@ export function encodeOccupancySolverArtifact(
   const fineVoxelSizeMeters = snapshot.occupancyFineVoxelSizeMeters ?? snapshot.occupancyVoxelSizeMeters;
   if (!(fineVoxelSizeMeters > 0)) throw new Error('Invalid occupancy voxel size.');
   if (options.frameId.trim().length === 0) throw new Error('Occupancy artifact needs a frame id.');
-  const registration = options.registration ?? null;
-  if (registration !== null && registration.sensor_to_scan.length !== 16) {
-    throw new Error('Occupancy registration must be a 4x4 matrix.');
-  }
+  const registration = registrationInProjectFrame(options.registration ?? null);
 
   const free = voxelIndices(snapshot.freeAirPositions, fineVoxelSizeMeters, 'FREE');
   const occupied = voxelIndices(snapshot.occupiedSurfacePositions, fineVoxelSizeMeters, 'OCCUPIED');
@@ -174,7 +194,16 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   const header = JSON.parse(
     new TextDecoder().decode(source.subarray(FIXED_HEADER_BYTES, FIXED_HEADER_BYTES + headerLength)),
   ) as OccupancyArtifactHeader;
-  if (header.schema !== OCCUPANCY_ARTIFACT_SCHEMA) throw new Error('Unsupported occupancy artifact schema.');
+  if (header.schema !== LEGACY_OCCUPANCY_ARTIFACT_SCHEMA && header.schema !== OCCUPANCY_ARTIFACT_SCHEMA) {
+    throw new Error('Unsupported occupancy artifact schema.');
+  }
+  const registrationPresent = header.registration !== null && header.registration !== undefined;
+  const legacyRegistrationIgnored = header.schema === LEGACY_OCCUPANCY_ARTIFACT_SCHEMA && registrationPresent;
+  const declaredRegistration = header.registration;
+  if (header.schema === OCCUPANCY_ARTIFACT_SCHEMA && declaredRegistration !== null && declaredRegistration !== undefined &&
+      (typeof declaredRegistration !== 'object' || declaredRegistration.frame !== 'project_z_up')) {
+    throw new Error('Unknown occupancy registration frame; expected project_z_up.');
+  }
   if (payloadLength !== 6 * (header.free_count + header.occupied_count)) {
     throw new Error('Occupancy artifact counts disagree with the payload.');
   }
@@ -189,7 +218,12 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   };
   const free = read(header.free_count);
   const occupied = read(header.occupied_count);
-  return { header, free, occupied };
+  return {
+    header: legacyRegistrationIgnored ? { ...header, registration: null } : header,
+    free,
+    occupied,
+    legacyRegistrationIgnored,
+  };
 }
 
 /** Identity of the exact saved scan an occupancy artifact was derived from. */

@@ -94,7 +94,8 @@ function registeredPosition(positionM: SensorPlacementPosition, matrix: number[]
 
 function validTransform(artifact: RegistrationArtifact | null): number[] | null {
   const matrix = artifact?.sensor_to_scan;
-  return artifact?.valid === true && matrix !== null && matrix !== undefined && matrix.length === 16 &&
+  return artifact?.valid === true && (artifact.frame === undefined || artifact.frame === 'webxr_local_floor') &&
+    matrix !== null && matrix !== undefined && matrix.length === 16 &&
     matrix.every(Number.isFinite) ? matrix : null;
 }
 
@@ -187,7 +188,7 @@ export function buildSensorPlacementScene(
         node,
         status: 'visual_only',
         source: 'apriltag',
-        positionScanM: binding.position,
+        positionScanM: webXrLocalFloorToProject(binding.position[0], binding.position[1], binding.position[2]),
         uncertaintyM: binding.binding.spread_m,
         residualM: registration?.per_node.find((item) => item.node === node)?.residualM ?? null,
         tagId: binding.binding.tag_id,
