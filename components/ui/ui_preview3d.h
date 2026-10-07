@@ -92,6 +92,10 @@ typedef struct
     float horizontal_std_x_m;
     float horizontal_std_y_m;
     bool uncertainty_valid;
+    /* Sensor-frame vertical sigma; 0 = unavailable (MAX-412). */
+    float vertical_std_m;
+    /* Frozen geometry version the run was solved against (MAX-412). */
+    uint64_t geometry_computed_at_ms;
 } ui_preview3d_source_t;
 
 typedef struct
@@ -102,6 +106,10 @@ typedef struct
     ui_preview3d_vec3_t position;
     double horizontal_std_x_m;
     double horizontal_std_y_m;
+    /* Sensor-frame vertical sigma; 0 = unavailable. */
+    double vertical_std_m;
+    /* run->geometry_computed_at_ms; must equal the scene registration's. */
+    uint64_t geometry_computed_at_ms;
     bool joint_fusion;
     bool solved;
     bool uncertainty_too_high;
@@ -120,6 +128,9 @@ typedef enum
     UI_PREVIEW3D_SOURCE_REASON_NONE = 0,
     UI_PREVIEW3D_SOURCE_REASON_UNREGISTERED,
     UI_PREVIEW3D_SOURCE_REASON_OUTSIDE_GRID,
+    /* At least one source was solved against another geometry version than
+     * the registration and is not drawn in the registered overlay. */
+    UI_PREVIEW3D_SOURCE_REASON_STALE_GEOMETRY,
 } ui_preview3d_source_reason_t;
 
 typedef struct
@@ -147,6 +158,9 @@ typedef struct
 
     bool registered;
     double sensor_to_scan[16];   /* row-major 4x4, valid when registered */
+    /* Geometry version the registration is bound to; a source is overlaid
+     * only when its geometry_computed_at_ms equals it. */
+    uint64_t registration_geometry_computed_at_ms;
 } ui_preview3d_scene_t;
 
 typedef struct
@@ -162,6 +176,8 @@ typedef struct
     uint32_t faces_drawn;
     uint32_t lines_drawn;
     uint32_t primitives_clipped;
+    /* Sources withheld from the registered overlay for a geometry mismatch. */
+    uint32_t sources_suppressed_stale_geometry;
 } ui_preview3d_stats_t;
 
 void ui_preview3d_view_preset(ui_preview3d_view_t *view, ui_preview3d_preset_t preset);
@@ -191,6 +207,23 @@ size_t ui_preview3d_source_uncertainty_voxels(
     bool uncertainty_valid,
     uint32_t *indices,
     size_t capacity);
+
+/* MAX-412: scan-frame support of a sensor-frame position uncertainty. Only
+ * per-axis sigmas exist (no covariance), so this returns the conservative
+ * axis-aligned scan-frame half-extents of the projected diagonal covariance:
+ * half_extent_i = sqrt(sum_j (R_ij * sigma_j)^2) for scan X and Y, with R the
+ * upper-left 3x3 of the row-major sensor_to_scan (rotation or reflection;
+ * magnitudes are identical). An identity rotation returns the sigmas exactly.
+ * sigma_z_m may be 0 when unavailable; the vertical (scan Z) extent is not
+ * produced because the preview draws uncertainty in the source's Z layer.
+ * False (outputs 0) for null/non-finite/negative input or a degenerate result. */
+bool ui_preview3d_uncertainty_to_scan_frame(
+    const double sensor_to_scan[16],
+    double sigma_x_m,
+    double sigma_y_m,
+    double sigma_z_m,
+    double *scan_x_out,
+    double *scan_y_out);
 
 /* RIGHT adds 15 deg of yaw (wrapped to [0, 360)); UP/DOWN change pitch by
  * 10 deg (clamped to 0..90); OK cycles TOP -> SIDE -> ISO -> TOP. LEFT is

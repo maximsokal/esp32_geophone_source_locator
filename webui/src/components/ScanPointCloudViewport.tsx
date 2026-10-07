@@ -8,6 +8,8 @@ import { buildLocalizationOverlay } from '../domain/localizationOverlay';
 import type { SceneModel } from '../domain/scene';
 import { clientDiagnostics } from '../data/clientDiagnostics';
 import type { RegistrationArtifact } from '../xr/fiducial/registrationArtifact';
+import { REGISTRATION_INAPPLICABLE_KEYS } from '../xr/registrationApplicability';
+import { solverCandidateVolume } from '../xr/candidateVolume';
 import { describeMeshQuality } from '../xr/meshQualityUi';
 import { useLocale, useT } from '../i18n';
 import { formatDistance, formatNumber } from '../i18n/format';
@@ -24,6 +26,7 @@ import {
   clamp,
   orbitDistanceLimits,
   prepareScanScene,
+  scanViewFitExtent,
   scanDimensionsText,
   scanLayerPlan,
   scanSourceBadgeText,
@@ -52,10 +55,18 @@ interface ScanPointCloudViewportProps {
   objectId?: string | null;
   sessionId?: string | null;
   localizationRuns?: readonly LocalizationRun[];
+  /** CRC identity of the displayed scan; null means that its generation is unknown. */
+  currentScanId?: string | null;
 }
 
 const NO_SENSOR_MARKERS: SensorPlacementMarker[] = [];
 const NO_LOCALIZATION_RUNS: LocalizationRun[] = [];
+
+function sourceReasonText(reason: SourceHighlightScene['reason'], t: ReturnType<typeof useT>): string | null {
+  if (reason === null) return null;
+  if (reason === 'outside_grid') return t('scan.source_highlight.outside_grid');
+  return t(REGISTRATION_INAPPLICABLE_KEYS[reason]);
+}
 
 function nodeForId(nodeId: number | null | undefined): SensorPlacementNode | null {
   return Number.isInteger(nodeId) && nodeId! >= 0 && nodeId! <= 4
@@ -249,15 +260,23 @@ export function ScanPointCloudViewport({
   objectId = null,
   sessionId = null,
   localizationRuns = NO_LOCALIZATION_RUNS,
+  currentScanId = null,
 }: ScanPointCloudViewportProps) {
   const { locale } = useLocale();
   const t = useT();
   const prepared = useMemo(() => prepareScanScene(snapshot), [snapshot]);
+  const candidateVolume = useMemo(() => solverCandidateVolume(snapshot), [snapshot]);
   const sourceGrid = useMemo(() => sourceVoxelGridForScan(snapshot), [snapshot]);
   const sourceHighlights = useMemo(() => objectId === null || sessionId === null
-    ? { reason: null, primary: null, uncertaintyVoxels: [], secondary: [], voxelSizeMeters: 0 } as SourceHighlightScene
-    : buildSourceHighlightScene(localizationRuns, { objectId, sessionId }, registrationArtifact, sourceGrid),
-  [localizationRuns, objectId, registrationArtifact, sessionId, sourceGrid]);
+    ? { reason: null, primary: null, uncertaintyVoxels: [], secondary: [], voxelSizeMeters: 0, historyRuns: [], staleRuns: [] } as SourceHighlightScene
+    : buildSourceHighlightScene(localizationRuns, { objectId, sessionId }, registrationArtifact, sourceGrid, { currentScanId }),
+  [localizationRuns, objectId, registrationArtifact, currentScanId, sessionId, sourceGrid]);
+  const cameraFitExtent = useMemo(() => scanViewFitExtent(
+    prepared,
+    sourceHighlights,
+    candidateVolume,
+    display.freeAir || display.unknownSpace,
+  ), [candidateVolume, display.freeAir, display.unknownSpace, prepared, sourceHighlights]);
   const tsdfClient = useMemo(() => new SparseTsdfMeshClient(), []);
   const [tsdfMesh, setTsdfMesh] = useState<SparseTsdfMesh | null>(null);
   const [tsdfError, setTsdfError] = useState<string | null>(null);
@@ -378,10 +397,18 @@ export function ScanPointCloudViewport({
       : meshQuality === null
         ? t('scan.badge.mesh_building')
         : t('scan.surfel_count', { label: meshQuality.label, count: formatNumber(locale, snapshot.tsdfPointCount) });
+  const sourceReasonLabel = sourceReasonText(sourceHighlights.reason, t);
 
   return <div className="viewport-shell scan-viewport" aria-label={t('scan.aria_label')} data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)} data-source-highlight-reason={sourceHighlights.reason ?? undefined}>
-    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} /><CameraController command={viewCommand} extent={prepared.extent} onInteractionEnd={handleInteractionEnd} /></Canvas>
+    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} /><CameraController command={viewCommand} extent={cameraFitExtent} onInteractionEnd={handleInteractionEnd} /></Canvas>
     <div className="scan-source-badge">{scanSourceBadgeText(snapshot, locale)}</div>
+    {candidateVolume.candidateDepthUnavailable && <div className="scan-source-candidate-depth" role="status">{t('scan.candidate_depth_unavailable')}</div>}
+    {sourceReasonLabel !== null && <div className="scan-source-highlight-status" role="status">{sourceReasonLabel}</div>}
+    {sourceHighlights.historyRuns.length > 0 && <div className="scan-source-history" aria-label={t('scan.source_history')}>
+      {sourceHighlights.historyRuns.map(({ run, currency }) => <span key={`${run.method_name}-${run.computed_at_ms}`}>
+        {run.method_name} · {t(currency === 'history_previous_scan' ? 'scan.source_history.previous_scan' : 'scan.source_history.scan_unknown')}
+      </span>)}
+    </div>}
     <div className="scan-mode-overlay">{modeLabel} · {fingerprint.toUpperCase()}</div>
     {display.dimensions && <div className="scan-dimension-overlay">{scanDimensionsText(prepared, locale)}</div>}
     {display.mesh && <div className="scan-mesh-overlay" data-mesh-quality={meshQuality?.severity ?? 'pending'}>{meshStatus}</div>}

@@ -1,6 +1,15 @@
 import type { LocalizationRun, LocalizationRunPosition } from '../api/deviceApi';
+import { classifyRunCurrency } from '../domain/localizationOverlay';
 import type { RegistrationArtifact } from './fiducial/registrationArtifact';
+import { registrationApplicability, type RegistrationInapplicableReason } from './registrationApplicability';
+import { localFloorMatrixToProject } from './projectFrame';
+import { solverCandidateVolume } from './candidateVolume';
 import { webXrLocalFloorToProject, type Vec3Tuple } from './scanViewportScene';
+import {
+  sensorSigmasToProjectHalfExtents,
+  transformSensorBoxToProjectAabb,
+  type ProjectAxisAlignedBox,
+} from './uncertaintyTransform';
 
 export interface SourceSessionIdentity {
   objectId: string;
@@ -36,11 +45,13 @@ export interface HighlightedLocalizationSource {
 }
 
 export interface SourceHighlightScene {
-  reason: 'unregistered' | 'outside_grid' | null;
+  reason: RegistrationInapplicableReason | 'outside_grid' | null;
   primary: HighlightedLocalizationSource | null;
   uncertaintyVoxels: readonly SourceVoxelCell[];
   secondary: readonly HighlightedLocalizationSource[];
   voxelSizeMeters: number;
+  historyRuns: readonly { run: LocalizationRun; currency: 'history_previous_scan' | 'history_scan_unknown' }[];
+  staleRuns: readonly { run: LocalizationRun; reason: RegistrationInapplicableReason }[];
 }
 
 function finitePosition(position: LocalizationRunPosition | undefined): position is LocalizationRunPosition {
@@ -58,11 +69,20 @@ function sourceConfidence(run: LocalizationRun): number {
   return run.confidence_score === undefined ? 0 : run.confidence_score;
 }
 
-function latestPerMethod(runs: readonly LocalizationRun[], identity: SourceSessionIdentity): LocalizationRun[] {
+function belongsToIdentity(run: LocalizationRun, identity: SourceSessionIdentity): boolean {
+  return run.object_id === identity.objectId && run.session_id === identity.sessionId &&
+    Number.isFinite(run.computed_at_ms) && typeof run.method_name === 'string' && run.method_name.length > 0;
+}
+
+function latestPerMethod(
+  runs: readonly LocalizationRun[],
+  identity: SourceSessionIdentity,
+  currentScanId: string | null,
+): LocalizationRun[] {
   const latest = new Map<string, LocalizationRun>();
   for (const run of runs) {
-    if (run.object_id !== identity.objectId || run.session_id !== identity.sessionId ||
-        !Number.isFinite(run.computed_at_ms) || typeof run.method_name !== 'string' || run.method_name.length === 0) continue;
+    if (!belongsToIdentity(run, identity) || classifyRunCurrency(run, currentScanId) === 'history_previous_scan' ||
+        classifyRunCurrency(run, currentScanId) === 'history_scan_unknown') continue;
     const key = `${run.kind}/${run.method_name}`;
     const current = latest.get(key);
     if (current === undefined || run.computed_at_ms > current.computed_at_ms) latest.set(key, run);
@@ -75,8 +95,9 @@ function latestPerMethod(runs: readonly LocalizationRun[], identity: SourceSessi
 export function selectLocalizationSources(
   runs: readonly LocalizationRun[],
   identity: SourceSessionIdentity,
+  currentScanId: string | null = null,
 ): SelectedLocalizationSource[] {
-  const solved = latestPerMethod(runs, identity);
+  const solved = latestPerMethod(runs, identity, currentScanId);
   const joint = solved.filter((run) => run.kind === 'joint_fusion' && run.uncertainty_too_high !== true)
     .sort((left, right) => right.computed_at_ms - left.computed_at_ms || compareSourceQuality(left, right))[0] ?? null;
   const method = solved.filter((run) => run.kind === 'individual_method')
@@ -144,16 +165,29 @@ export function voxelCell(index: number, grid: SourceVoxelGrid): SourceVoxelCell
   };
 }
 
-/** Returns the capped XY ellipse in the source's Z layer using source-centered rings. */
+/** Returns capped project-frame uncertainty voxels; without a box it keeps the legacy XY ellipse. */
 export function sourceUncertaintyVoxelIndices(
   position: Vec3Tuple,
   sigmaX: number | undefined,
   sigmaY: number | undefined,
   grid: SourceVoxelGrid,
   cap = MAX_SOURCE_UNCERTAINTY_VOXELS,
+  sigmaZ = 0,
+  projectBounds?: ProjectAxisAlignedBox,
 ): number[] {
   const sourceIndex = sourceToVoxelIndex(position, grid);
   if (sourceIndex === null || !Number.isSafeInteger(cap) || cap <= 0) return [];
+  if (projectBounds !== undefined || sigmaZ > 0) {
+    const bounds = projectBounds ?? (
+      sigmaX !== undefined && sigmaY !== undefined && [sigmaX, sigmaY, sigmaZ].every((sigma) => Number.isFinite(sigma) && sigma >= 0)
+        ? {
+          min: [position[0] - sigmaX, position[1] - sigmaY, position[2] - sigmaZ] as Vec3Tuple,
+          max: [position[0] + sigmaX, position[1] + sigmaY, position[2] + sigmaZ] as Vec3Tuple,
+        }
+        : undefined
+    );
+    return bounds === undefined ? [sourceIndex] : uncertaintyBoxVoxelIndices(bounds, sourceIndex, grid, cap);
+  }
   if (sigmaX === undefined || sigmaY === undefined || !Number.isFinite(sigmaX) || !Number.isFinite(sigmaY) ||
       sigmaX <= 0 || sigmaY <= 0) return [sourceIndex];
 
@@ -203,15 +237,104 @@ export function sourceUncertaintyVoxelIndices(
   return indices;
 }
 
+function uncertaintyBoxVoxelIndices(
+  bounds: ProjectAxisAlignedBox,
+  sourceIndex: number,
+  grid: SourceVoxelGrid,
+  cap: number,
+): number[] {
+  if (!bounds.min.every(Number.isFinite) || !bounds.max.every(Number.isFinite) ||
+      bounds.min.some((value, axis) => value > bounds.max[axis])) return [sourceIndex];
+  const sourceCell = [
+    sourceIndex % grid.dimensions[0],
+    Math.floor(sourceIndex / grid.dimensions[0]) % grid.dimensions[1],
+    Math.floor(sourceIndex / (grid.dimensions[0] * grid.dimensions[1])),
+  ];
+  const first = [0, 1, 2].map((axis) => Math.max(0, Math.ceil(
+    (bounds.min[axis] - grid.origin[axis]) / grid.voxelSizeMeters - 0.5 - 1e-9,
+  )));
+  const last = [0, 1, 2].map((axis) => Math.min(grid.dimensions[axis] - 1, Math.floor(
+    (bounds.max[axis] - grid.origin[axis]) / grid.voxelSizeMeters - 0.5 + 1e-9,
+  )));
+  if (first.some((value, axis) => value > last[axis])) return [sourceIndex];
+
+  const maxRadius = Math.max(...[0, 1, 2].flatMap((axis) => [
+    Math.abs(first[axis] - sourceCell[axis]), Math.abs(last[axis] - sourceCell[axis]),
+  ]));
+  const indices = [sourceIndex];
+  const seen = new Set(indices);
+  for (let radius = 0; radius <= maxRadius && indices.length < cap; radius += 1) {
+    const xStart = Math.max(first[0], sourceCell[0] - radius);
+    const xEnd = Math.min(last[0], sourceCell[0] + radius);
+    const yStart = Math.max(first[1], sourceCell[1] - radius);
+    const yEnd = Math.min(last[1], sourceCell[1] + radius);
+    const zStart = Math.max(first[2], sourceCell[2] - radius);
+    const zEnd = Math.min(last[2], sourceCell[2] + radius);
+    for (let z = zStart; z <= zEnd && indices.length < cap; z += 1) {
+      for (let y = yStart; y <= yEnd && indices.length < cap; y += 1) {
+        for (let x = xStart; x <= xEnd && indices.length < cap; x += 1) {
+          if (Math.max(Math.abs(x - sourceCell[0]), Math.abs(y - sourceCell[1]), Math.abs(z - sourceCell[2])) !== radius) continue;
+          const index = (z * grid.dimensions[1] + y) * grid.dimensions[0] + x;
+          if (seen.has(index)) continue;
+          const center: Vec3Tuple = [
+            grid.origin[0] + (x + 0.5) * grid.voxelSizeMeters,
+            grid.origin[1] + (y + 0.5) * grid.voxelSizeMeters,
+            grid.origin[2] + (z + 0.5) * grid.voxelSizeMeters,
+          ];
+          if (center.every((value, axis) => value >= bounds.min[axis] - 1e-9 && value <= bounds.max[axis] + 1e-9)) {
+            indices.push(index);
+            seen.add(index);
+          }
+        }
+      }
+    }
+  }
+  return indices;
+}
+
+function projectUncertaintyBounds(
+  run: LocalizationRun,
+  position: Vec3Tuple,
+  registration: RegistrationArtifact,
+): ProjectAxisAlignedBox {
+  const uncertainty = run.uncertainty;
+  if (uncertainty === undefined) return { min: position, max: position };
+  const sensorToProject = localFloorMatrixToProject(registration.sensor_to_scan ?? []);
+  const credibleMin = uncertainty.credible_min;
+  const credibleMax = uncertainty.credible_max;
+  let credibleBox: ProjectAxisAlignedBox | null = null;
+  if (finitePosition(credibleMin) && finitePosition(credibleMax)) {
+    credibleBox = transformSensorBoxToProjectAabb(
+      [credibleMin.x_m, credibleMin.y_m, credibleMin.z_m],
+      [credibleMax.x_m, credibleMax.y_m, credibleMax.z_m],
+      sensorToProject,
+    );
+  }
+  const standardDeviation = uncertainty.std_m;
+  const extents = standardDeviation === undefined ? null : sensorSigmasToProjectHalfExtents(
+    [standardDeviation.x_m, standardDeviation.y_m, standardDeviation.z_m], sensorToProject,
+  );
+  const sigmaBox: ProjectAxisAlignedBox | null = extents === null ? null : {
+    min: [position[0] - extents[0], position[1] - extents[1], position[2] - extents[2]],
+    max: [position[0] + extents[0], position[1] + extents[1], position[2] + extents[2]],
+  };
+  if (credibleBox !== null && sigmaBox !== null) return {
+    min: [0, 1, 2].map((axis) => Math.min(credibleBox!.min[axis], sigmaBox.min[axis])) as unknown as Vec3Tuple,
+    max: [0, 1, 2].map((axis) => Math.max(credibleBox!.max[axis], sigmaBox.max[axis])) as unknown as Vec3Tuple,
+  };
+  return credibleBox ?? sigmaBox ?? { min: position, max: position };
+}
+
 export function sourceVoxelGridForScan(snapshot: Pick<
   import('./webxrRuntime').ScanPointCloudSnapshot,
-  'bounds' | 'occupancyVoxelSizeMeters' | 'occupancyFineVoxelSizeMeters'
+  'bounds' | 'occupancyEnvelopeBounds' | 'occupancySolverCandidateBelowSurfaceMeters' |
+  'occupancyVoxelSizeMeters' | 'occupancyFineVoxelSizeMeters'
 >): SourceVoxelGrid | null {
-  const bounds = snapshot.bounds;
-  const size = snapshot.occupancyFineVoxelSizeMeters ?? snapshot.occupancyVoxelSizeMeters;
-  if (bounds === null || !Number.isFinite(size) || size <= 0) return null;
-  const minimum = bounds.min.map((value) => Math.floor(value / size));
-  const maximum = bounds.max.map((value) => Math.floor(value / size));
+  const volume = solverCandidateVolume(snapshot);
+  const { min: boundsMin, max: boundsMax, voxelSize: size } = volume;
+  if (boundsMin === null || boundsMax === null || !Number.isFinite(size) || size <= 0) return null;
+  const minimum = boundsMin.map((value) => Math.floor(value / size));
+  const maximum = boundsMax.map((value) => Math.floor(value / size));
   const dimensions = maximum.map((value, axis) => value - minimum[axis] + 1);
   const grid: SourceVoxelGrid = {
     origin: [minimum[0] * size, minimum[1] * size, minimum[2] * size],
@@ -236,17 +359,42 @@ export function buildSourceHighlightScene(
   identity: SourceSessionIdentity,
   registration: RegistrationArtifact | null,
   grid: SourceVoxelGrid | null,
+  options: { currentScanId?: string | null } = {},
 ): SourceHighlightScene {
-  const selected = selectLocalizationSources(runs, identity);
-  if (selected.length === 0) return { reason: null, primary: null, uncertaintyVoxels: [], secondary: [], voxelSizeMeters: 0 };
-  if (usableTransform(registration) === null) {
-    return { reason: 'unregistered', primary: null, uncertaintyVoxels: [], secondary: [], voxelSizeMeters: 0 };
-  }
+  const currentScanId = options.currentScanId ?? null;
+  const historyRuns = runs.flatMap((run) => {
+    if (!belongsToIdentity(run, identity)) return [];
+    const currency = classifyRunCurrency(run, currentScanId);
+    return currency === 'history_previous_scan' || currency === 'history_scan_unknown' ? [{ run, currency }] : [];
+  });
+  const selected = selectLocalizationSources(runs, identity, currentScanId);
+  const inapplicable: Array<{ run: LocalizationRun; reason: RegistrationInapplicableReason }> = [];
+  const applicable = selected.filter(({ run }) => {
+    const expectedGeometry = Number.isFinite(run.geometry_computed_at_ms) ? run.geometry_computed_at_ms : null;
+    const result = registrationApplicability(registration, { geometryComputedAtMs: expectedGeometry, scanFrameId: currentScanId });
+    if (!result.ok) {
+      inapplicable.push({ run, reason: result.reason });
+      return false;
+    }
+    if (registration === null || !Number.isFinite(run.geometry_computed_at_ms) ||
+        registration.geometry_computed_at_ms !== run.geometry_computed_at_ms) {
+      inapplicable.push({ run, reason: 'geometry_mismatch' });
+      return false;
+    }
+    return true;
+  });
+  const staleReason = inapplicable.find(({ run }) => selected.find((source) => source.primary)?.run === run)?.reason ??
+    inapplicable[0]?.reason ?? null;
+  const emptyScene = (reason: SourceHighlightScene['reason']): SourceHighlightScene => ({
+    reason, primary: null, uncertaintyVoxels: [], secondary: [], voxelSizeMeters: 0, historyRuns, staleRuns: inapplicable,
+  });
+  if (selected.length === 0) return emptyScene(null);
+  if (applicable.length === 0) return emptyScene(staleReason);
   if (grid === null || !validGrid(grid)) {
-    return { reason: 'outside_grid', primary: null, uncertaintyVoxels: [], secondary: [], voxelSizeMeters: 0 };
+    return emptyScene(staleReason ?? 'outside_grid');
   }
   let outside = false;
-  const transformed = selected.flatMap((source) => {
+  const transformed = applicable.flatMap((source) => {
     const position = sourcePositionToProject(source.run.source_position!, registration);
     if (position === null) return [];
     const index = sourceToVoxelIndex(position, grid);
@@ -256,17 +404,17 @@ export function buildSourceHighlightScene(
     return [{ ...source, positionProjectM: position, voxel, edgeMarker }];
   });
   const primary = transformed.find((source) => source.primary) ?? null;
-  const uncertainty = primary?.run.uncertainty;
-  const uncertaintyValid = uncertainty !== undefined && Number.isFinite(uncertainty.credible_level) &&
-    uncertainty.credible_level > 0;
   const uncertaintyIndices = primary?.voxel === null || primary === null ? [] : sourceUncertaintyVoxelIndices(
     primary.positionProjectM,
-    uncertaintyValid ? uncertainty.std_m.x_m : undefined,
-    uncertaintyValid ? uncertainty.std_m.y_m : undefined,
+    undefined,
+    undefined,
     grid,
+    MAX_SOURCE_UNCERTAINTY_VOXELS,
+    0,
+    projectUncertaintyBounds(primary.run, primary.positionProjectM, registration!),
   );
   return {
-    reason: outside ? 'outside_grid' : null,
+    reason: staleReason ?? (outside ? 'outside_grid' : null),
     primary,
     uncertaintyVoxels: uncertaintyIndices.flatMap((index) => {
       const cell = voxelCell(index, grid);
@@ -274,5 +422,7 @@ export function buildSourceHighlightScene(
     }),
     secondary: transformed.filter((source) => !source.primary),
     voxelSizeMeters: grid.voxelSizeMeters,
+    historyRuns,
+    staleRuns: inapplicable,
   };
 }

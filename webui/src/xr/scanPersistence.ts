@@ -194,6 +194,16 @@ interface PendingPreview {
   bytes: Uint8Array;
 }
 
+/**
+ * Derivative builders may be asynchronous (MAX-403): a registered derivative can wait for the
+ * bounded tag-finalization window. They always run AFTER the scan commit, never before the upload.
+ */
+export type DerivativeBytes = Uint8Array | Promise<Uint8Array>;
+
+function isPromiseLike(value: DerivativeBytes): value is Promise<Uint8Array> {
+  return typeof (value as { then?: unknown }).then === 'function';
+}
+
 interface PendingScan {
   objectId: string;
   sessionId: string;
@@ -201,8 +211,8 @@ interface PendingScan {
   scanId: string;
   previous: ScanIdentity;
   previousPersistence: ScanPersistenceState | null;
-  buildOccupancy: () => Uint8Array;
-  buildPreview: (occupancyBytes: Uint8Array | null) => Uint8Array;
+  buildOccupancy: () => DerivativeBytes;
+  buildPreview: (occupancyBytes: Uint8Array | null) => DerivativeBytes;
 }
 
 function errorText(reason: unknown): string {
@@ -276,8 +286,8 @@ export class ScanPersistenceController {
     objectId: string,
     sessionId: string,
     scanBytes: Uint8Array,
-    buildOccupancy: () => Uint8Array,
-    buildPreview: (occupancyBytes: Uint8Array | null) => Uint8Array,
+    buildOccupancy: () => DerivativeBytes,
+    buildPreview: (occupancyBytes: Uint8Array | null) => DerivativeBytes,
     blockedByRecording = false,
     candidateId?: string,
   ): Promise<ScanPersistenceState | null> {
@@ -390,18 +400,17 @@ export class ScanPersistenceController {
     this.pendingOccupancy = null;
     this.pendingPreview = null;
     this.dispatch(epoch, { type: 'scan-saved', scanId: pending.scanId });
-    let occupancyBytes: Uint8Array | null = null;
-    try {
-      occupancyBytes = pending.buildOccupancy().slice();
-      this.pendingOccupancy = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, bytes: occupancyBytes };
-    } catch (reason) {
-      this.dispatch(epoch, { type: 'occupancy-failed', error: `Occupancy could not be prepared: ${errorText(reason)}` });
+    const occupancyWait = this.prepareOccupancy(epoch, pending);
+    if (occupancyWait !== undefined) {
+      await occupancyWait;
+      if (epoch !== this.epoch) return this.state;
     }
-    try {
-      const preview = pending.buildPreview(occupancyBytes).slice();
-      this.pendingPreview = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, bytes: preview };
-    } catch (reason) {
-      this.dispatch(epoch, { type: 'preview-failed', error: `Preview could not be prepared: ${errorText(reason)}` });
+    // The builders above may have assigned these fields while awaited; read them through the declared type.
+    const preparedOccupancy = this.pendingOccupancy as PendingOccupancy | null;
+    const previewWait = this.preparePreview(epoch, pending, preparedOccupancy?.bytes ?? null);
+    if (previewWait !== undefined) {
+      await previewWait;
+      if (epoch !== this.epoch) return this.state;
     }
     if (this.pendingOccupancy === null && this.pendingPreview === null) return this.state;
     if (this.pendingScan === pending && this.pendingOccupancy !== null && this.pendingPreview !== null) this.pendingScan = null;
@@ -422,13 +431,23 @@ export class ScanPersistenceController {
     }
     if (this.state?.scan !== 'saved') return this.state;
     if (this.state.occupancy === 'failed' || this.state.occupancy === 'stale') {
-      if (this.pendingOccupancy === null && pendingScan !== null) this.prepareOccupancy(epoch, pendingScan);
+      if (this.pendingOccupancy === null && pendingScan !== null) {
+        const wait = this.prepareOccupancy(epoch, pendingScan);
+        if (wait !== undefined) {
+          await wait;
+          if (epoch !== this.epoch) return this.state;
+        }
+      }
       if (this.pendingOccupancy !== null && this.pendingOccupancy.objectId === objectId && this.pendingOccupancy.sessionId === sessionId) {
         return this.uploadOccupancy(epoch);
       }
     }
     if ((this.state.preview === 'failed' || this.state.preview === 'stale') && this.pendingPreview === null && pendingScan !== null) {
-      this.preparePreview(epoch, pendingScan, this.pendingOccupancy?.bytes ?? null);
+      const wait = this.preparePreview(epoch, pendingScan, this.pendingOccupancy?.bytes ?? null);
+      if (wait !== undefined) {
+        await wait;
+        if (epoch !== this.epoch) return this.state;
+      }
     }
     if ((this.state.preview === 'failed' || this.state.preview === 'stale') && this.pendingPreview !== null &&
         this.pendingPreview.objectId === objectId && this.pendingPreview.sessionId === sessionId) return this.uploadPreview(epoch);
@@ -439,8 +458,8 @@ export class ScanPersistenceController {
     objectId: string,
     sessionId: string,
     savedScanBytes: Uint8Array | null,
-    buildOccupancy?: () => Uint8Array,
-    buildPreview?: (occupancyBytes: Uint8Array | null) => Uint8Array,
+    buildOccupancy?: () => DerivativeBytes,
+    buildPreview?: (occupancyBytes: Uint8Array | null) => DerivativeBytes,
     loadedScanId?: string,
   ): Promise<ScanPersistenceState | null> {
     const epoch = ++this.epoch;
@@ -510,12 +529,20 @@ export class ScanPersistenceController {
     if (occupancyMatches) this.dispatch(epoch, { type: 'reconcile-occupancy-ready' });
     else if (pending !== null && pending.objectId === objectId && pending.sessionId === sessionId && pending.scanId === scanId) {
       if (occupancyInfo.present) {
-        this.prepareOccupancy(epoch, pending);
+        const wait = this.prepareOccupancy(epoch, pending);
+        if (wait !== undefined) {
+          await wait;
+          if (epoch !== this.epoch) return this.state;
+        }
         this.dispatch(epoch, { type: 'reconcile-occupancy-stale', error: 'Occupancy belongs to a different scan generation; rebuild it for the current scan.' });
       } else if (matchingPendingOccupancy) {
         this.dispatch(epoch, { type: 'reconcile-occupancy-missing-retryable' });
       } else {
-        this.prepareOccupancy(epoch, pending);
+        const wait = this.prepareOccupancy(epoch, pending);
+        if (wait !== undefined) {
+          await wait;
+          if (epoch !== this.epoch) return this.state;
+        }
         if (this.pendingOccupancy === null) this.dispatch(epoch, { type: 'reconcile-occupancy-unavailable', error: 'Occupancy is missing and could not be rebuilt from the loaded scan.' });
         else this.dispatch(epoch, { type: 'reconcile-occupancy-missing-retryable' });
       }
@@ -530,12 +557,20 @@ export class ScanPersistenceController {
     if (previewMatches) this.dispatch(epoch, { type: 'reconcile-preview-ready' });
     else if (pending !== null && pending.objectId === objectId && pending.sessionId === sessionId && pending.scanId === scanId) {
       if (previewInfo.present) {
-        this.preparePreview(epoch, pending, this.pendingOccupancy?.bytes ?? null);
+        const wait = this.preparePreview(epoch, pending, this.pendingOccupancy?.bytes ?? null);
+        if (wait !== undefined) {
+          await wait;
+          if (epoch !== this.epoch) return this.state;
+        }
         this.dispatch(epoch, { type: 'reconcile-preview-stale', error: 'Preview belongs to a different scan generation; rebuild it for the current scan.' });
       } else if (matchingPendingPreview) {
         this.dispatch(epoch, { type: 'reconcile-preview-missing-retryable' });
       } else {
-        this.preparePreview(epoch, pending, this.pendingOccupancy?.bytes ?? null);
+        const wait = this.preparePreview(epoch, pending, this.pendingOccupancy?.bytes ?? null);
+        if (wait !== undefined) {
+          await wait;
+          if (epoch !== this.epoch) return this.state;
+        }
         if (this.pendingPreview === null) this.dispatch(epoch, { type: 'reconcile-preview-unavailable', error: 'Preview is missing and could not be rebuilt from the loaded scan.' });
         else this.dispatch(epoch, { type: 'reconcile-preview-missing-retryable' });
       }
@@ -550,28 +585,73 @@ export class ScanPersistenceController {
     return this.state;
   }
 
-  private prepareOccupancy(epoch: number, pending: PendingScan): void {
-    try {
-      const bytes = pending.buildOccupancy().slice();
+  /** Returns a promise only for an asynchronous builder; a synchronous builder completes before returning. */
+  private prepareOccupancy(epoch: number, pending: PendingScan): Promise<void> | undefined {
+    const accept = (built: Uint8Array): void => {
+      const bytes = built.slice();
       this.pendingOccupancy = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, bytes };
-    } catch (reason) {
+    };
+    const fail = (reason: unknown): void => {
       this.pendingOccupancy = null;
       if (this.state?.scan === 'saved' && this.state.occupancy !== 'ready') {
         this.dispatch(epoch, { type: 'occupancy-failed', error: `Occupancy could not be prepared: ${errorText(reason)}` });
       }
+    };
+    let built: DerivativeBytes;
+    try {
+      built = pending.buildOccupancy();
+      if (!isPromiseLike(built)) {
+        accept(built);
+        return undefined;
+      }
+    } catch (reason) {
+      fail(reason);
+      return undefined;
     }
+    return built.then(
+      (bytes) => {
+        if (epoch !== this.epoch) return;
+        try { accept(bytes); } catch (reason) { fail(reason); }
+      },
+      (reason: unknown) => {
+        if (epoch !== this.epoch) return;
+        fail(reason);
+      },
+    );
   }
 
-  private preparePreview(epoch: number, pending: PendingScan, occupancyBytes: Uint8Array | null): void {
-    try {
-      const bytes = pending.buildPreview(occupancyBytes).slice();
+  private preparePreview(epoch: number, pending: PendingScan, occupancyBytes: Uint8Array | null): Promise<void> | undefined {
+    const accept = (built: Uint8Array): void => {
+      const bytes = built.slice();
       this.pendingPreview = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, bytes };
-    } catch (reason) {
+    };
+    const fail = (reason: unknown): void => {
       this.pendingPreview = null;
       if (this.state?.scan === 'saved' && this.state.preview !== 'ready') {
         this.dispatch(epoch, { type: 'preview-failed', error: `Preview could not be prepared: ${errorText(reason)}` });
       }
+    };
+    let built: DerivativeBytes;
+    try {
+      built = pending.buildPreview(occupancyBytes);
+      if (!isPromiseLike(built)) {
+        accept(built);
+        return undefined;
+      }
+    } catch (reason) {
+      fail(reason);
+      return undefined;
     }
+    return built.then(
+      (bytes) => {
+        if (epoch !== this.epoch) return;
+        try { accept(bytes); } catch (reason) { fail(reason); }
+      },
+      (reason: unknown) => {
+        if (epoch !== this.epoch) return;
+        fail(reason);
+      },
+    );
   }
 
   private async uploadOccupancy(epoch: number): Promise<ScanPersistenceState | null> {

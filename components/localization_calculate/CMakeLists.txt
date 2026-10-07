@@ -19,6 +19,7 @@ idf_component_register(
         localization_traveltime_inversion
         localization_velocity_free
         object_store
+        power_control
         scan_occupancy
         storage_manager
         seismic_dsp

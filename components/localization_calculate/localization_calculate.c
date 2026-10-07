@@ -23,6 +23,10 @@
 #include "scan_occupancy.h"
 #include "seismic_recorder.h"
 #include "storage_manager.h"
+#ifdef ESP_PLATFORM
+#include "power_control.h"
+#include "storage_bulk_admission.h"
+#endif
 
 
 #ifndef CONFIG_LOCALIZATION_MAX_ANALYSIS_S
@@ -77,6 +81,7 @@ static const char *TAG = "LOCALIZATION_CALCULATE";
  * picks; PSAFUVS (x, y, z, t0, vP, vS) over 2N P and S picks. */
 #define LOCALIZATION_CALCULATE_TDCAS_UNKNOWNS 5U
 #define LOCALIZATION_CALCULATE_PSAFUVS_UNKNOWNS 6U
+#define LOCALIZATION_SCAN_IDENTITY_CHUNK_BYTES (4U * 1024U)
 
 
 /*
@@ -209,6 +214,156 @@ static esp_err_t load_session_occupancy(
 }
 
 
+typedef struct
+{
+    FILE *file;
+    uint8_t *buffer;
+    size_t requested_bytes;
+    size_t bytes_read;
+} localization_scan_identity_read_t;
+
+
+static uint32_t localization_scan_crc32_update(
+    uint32_t crc,
+    const uint8_t *bytes,
+    size_t length
+)
+{
+    for (size_t i = 0U; i < length; ++i) {
+        crc ^= bytes[i];
+        for (unsigned bit = 0U; bit < 8U; ++bit) {
+            const uint32_t mask = (uint32_t)-(int32_t)(crc & 1U);
+            crc = (crc >> 1U) ^ (0xEDB88320U & mask);
+        }
+    }
+    return crc;
+}
+
+
+static esp_err_t localization_scan_identity_read_chunk(void *context)
+{
+    localization_scan_identity_read_t *read = (localization_scan_identity_read_t *)context;
+    if (read == NULL || read->file == NULL || read->buffer == NULL || read->requested_bytes == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+#ifdef ESP_PLATFORM
+    if (power_control_is_shutdown_requested()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+#endif
+    read->bytes_read = fread(read->buffer, 1U, read->requested_bytes, read->file);
+    return read->bytes_read == read->requested_bytes && !ferror(read->file)
+        ? ESP_OK
+        : ESP_FAIL;
+}
+
+
+static esp_err_t localization_scan_identity_run_chunk(
+    localization_scan_identity_read_t *read
+)
+{
+#ifdef ESP_PLATFORM
+    return storage_bulk_admission_run_chunk(localization_scan_identity_read_chunk, read);
+#else
+    return localization_scan_identity_read_chunk(read);
+#endif
+}
+
+
+/*
+ * The host harness supplies scan-v1.bin beside its occupancy fixture under
+ * STORAGE_MANAGER_OBJECTS_PATH, the same I/O seam used by load_session_occupancy.
+ * On device, each bounded read is admitted independently so active bulk work
+ * can pause identity calculation and a pending shutdown stops at a chunk edge.
+ */
+static esp_err_t load_session_scan_frame_id(
+    const char *object_id,
+    const char *session_id,
+    char frame_id[SCAN_OCCUPANCY_FRAME_ID_SIZE]
+)
+{
+    if (object_id == NULL || session_id == NULL || frame_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char path[192];
+    const int written = snprintf(
+        path, sizeof(path), "%s/%s/sessions/%s/scan-v1.bin",
+        STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id
+    );
+    if (written <= 0 || (size_t)written >= sizeof(path)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    FILE *file = fopen(path, "rb");
+    uint8_t *buffer = NULL;
+    if (file == NULL) {
+        err = ESP_ERR_NOT_FOUND;
+    } else {
+        long file_size = -1L;
+        if (fseek(file, 0L, SEEK_END) == 0) {
+            file_size = ftell(file);
+        }
+        if (file_size <= 0L || fseek(file, 0L, SEEK_SET) != 0) {
+            err = ESP_ERR_INVALID_SIZE;
+        } else {
+            buffer = heap_caps_malloc(
+                LOCALIZATION_SCAN_IDENTITY_CHUNK_BYTES,
+                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+            );
+            if (buffer == NULL) {
+                err = ESP_ERR_NO_MEM;
+            } else {
+                uint32_t crc = 0xFFFFFFFFU;
+                size_t remaining = (size_t)file_size;
+                while (remaining > 0U && err == ESP_OK) {
+                    const size_t chunk_bytes = remaining < LOCALIZATION_SCAN_IDENTITY_CHUNK_BYTES
+                        ? remaining
+                        : LOCALIZATION_SCAN_IDENTITY_CHUNK_BYTES;
+                    localization_scan_identity_read_t read = {
+                        .file = file,
+                        .buffer = buffer,
+                        .requested_bytes = chunk_bytes,
+                        .bytes_read = 0U,
+                    };
+                    err = localization_scan_identity_run_chunk(&read);
+                    if (err == ESP_OK) {
+                        crc = localization_scan_crc32_update(crc, buffer, read.bytes_read);
+                        remaining -= read.bytes_read;
+                    }
+                }
+                if (err == ESP_OK) {
+                    crc ^= 0xFFFFFFFFU;
+                    const int frame_written = snprintf(
+                        frame_id, SCAN_OCCUPANCY_FRAME_ID_SIZE,
+                        "scan-crc32:%08x", (unsigned)crc
+                    );
+                    if (frame_written <= 0 ||
+                        (size_t)frame_written >= SCAN_OCCUPANCY_FRAME_ID_SIZE) {
+                        err = ESP_ERR_INVALID_SIZE;
+                    }
+                }
+            }
+        }
+        if (fclose(file) != 0 && err == ESP_OK) {
+            err = ESP_FAIL;
+        }
+    }
+
+    heap_caps_free(buffer);
+    storage_manager_operation_end();
+    if (err != ESP_OK) {
+        frame_id[0] = '\0';
+    }
+    return err;
+}
+
+
 static esp_err_t session_occupancy_probe(const char *object_id, const char *session_id)
 {
     char path[192];
@@ -230,6 +385,36 @@ static esp_err_t session_occupancy_probe(const char *object_id, const char *sess
     }
     storage_manager_operation_end();
     return found ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+
+static void localization_calculate_set_scan_provenance(
+    localization_run_record_t *record,
+    bool constraint_applied,
+    const scan_occupancy_t *occupancy
+)
+{
+    if (record == NULL) {
+        return;
+    }
+    record->scan_provenance_present = true;
+    record->scan_constraint_applied = false;
+    record->scan_frame_id[0] = '\0';
+    record->occupancy_created_at_ms = 0U;
+    record->registration_geometry_computed_at_ms = 0U;
+    if (!constraint_applied || occupancy == NULL) {
+        return;
+    }
+
+    const size_t frame_id_length = strnlen(occupancy->frame_id, sizeof(occupancy->frame_id));
+    if (frame_id_length == 0U || frame_id_length >= sizeof(record->scan_frame_id)) {
+        return;
+    }
+    memcpy(record->scan_frame_id, occupancy->frame_id, frame_id_length + 1U);
+    record->scan_constraint_applied = true;
+    record->occupancy_created_at_ms = occupancy->created_at_ms;
+    record->registration_geometry_computed_at_ms =
+        occupancy->registration.geometry_computed_at_ms;
 }
 
 
@@ -287,6 +472,7 @@ static void localization_calculate_persist_memory_failure(
 {
     localization_run_record_t record = {0};
     record.schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
+    record.scan_provenance_present = true;
     snprintf(record.object_id, sizeof(record.object_id), "%s", object_id);
     snprintf(record.session_id, sizeof(record.session_id), "%s", session_id);
     record.computed_at_ms = computed_at_ms;
@@ -1407,33 +1593,48 @@ esp_err_t localization_calculate_run(
     ++record_count;
 
     const size_t fused_record_count = record_count;
+    /* Joint fusion consumes only this unconstrained prefix, so its v6 scan
+     * provenance remains explicitly false/null/0. */
 
     /* --- MAX-147: scan-occupancy-constrained variants ---------------------
      * Only from the occupancy saved with THIS session's scan, and only with a
      * registration made against this exact frozen geometry; otherwise the
      * constraint is recorded as not applied (fail closed). The
      * unconstrained records above are always kept for comparison. */
+    const size_t scan_record_start = record_count;
+    bool scan_constraint_applied[LOCALIZATION_CALCULATE_SCAN_METHODS] = { false };
     scan_occupancy_t occupancy;
     const esp_err_t occupancy_err = scan_variants_planned
         ? load_session_occupancy(object_id, session_id, &occupancy)
         : ESP_ERR_NOT_FOUND;
     if (scan_variants_planned) {
-        const bool usable =
-            occupancy_err == ESP_OK &&
+        char current_scan_frame_id[SCAN_OCCUPANCY_FRAME_ID_SIZE] = { 0 };
+        const esp_err_t scan_identity_err = occupancy_err == ESP_OK
+            ? load_session_scan_frame_id(object_id, session_id, current_scan_frame_id)
+            : ESP_ERR_NOT_FOUND;
+        const bool scan_identity_matches = occupancy_err == ESP_OK &&
+            scan_identity_err == ESP_OK && strcmp(occupancy.frame_id, current_scan_frame_id) == 0;
+        const bool usable = scan_identity_matches &&
             scan_occupancy_registration_usable(&occupancy, geometry_computed_at_ms);
-        const char *not_applied_reason =
-            occupancy_err != ESP_OK
-                ? "scan occupancy artifact unreadable or invalid: constraint not applied"
-                : "no valid sensor<->scan registration for this session geometry (MAX-145): constraint not applied";
-        const localization_failure_class_t not_applied_failure_class = occupancy_err != ESP_OK
-            ? LOCALIZATION_FAILURE_CLASS_INTERNAL
-            : LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
+        const char *not_applied_reason = occupancy_err != ESP_OK
+            ? "scan occupancy artifact unreadable or invalid: constraint not applied"
+            : (scan_identity_err != ESP_OK
+                ? "current scan identity unavailable (scan_identity_unavailable): constraint not applied"
+                : (!scan_identity_matches
+                    ? "scan generation mismatch (scan_generation_mismatch): constraint not applied"
+                    : "no valid sensor<->scan registration for this session geometry (MAX-145): constraint not applied"));
+        const localization_failure_class_t not_applied_failure_class =
+            occupancy_err != ESP_OK || scan_identity_err != ESP_OK || !scan_identity_matches
+                ? LOCALIZATION_FAILURE_CLASS_INTERNAL
+                : LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
 
         /* Traveltime, constrained. */
         localization_traveltime_result_t constrained_traveltime;
         memset(&constrained_traveltime, 0, sizeof(constrained_traveltime));
         esp_err_t constrained_traveltime_err = ESP_ERR_INVALID_STATE;
-        if (localization_calculate_budget_begin(&budget, "traveltime_scan_constrained", true) && usable) {
+        scan_constraint_applied[0] =
+            localization_calculate_budget_begin(&budget, "traveltime_scan_constrained", true) && usable;
+        if (scan_constraint_applied[0]) {
             localization_traveltime_config_t constrained_config = traveltime_config;
             constrained_config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
             constrained_config.candidate_filter.context = &occupancy;
@@ -1471,7 +1672,10 @@ esp_err_t localization_calculate_run(
         localization_semblance_result_t constrained_semblance;
         memset(&constrained_semblance, 0, sizeof(constrained_semblance));
         esp_err_t constrained_semblance_err = ESP_ERR_INVALID_STATE;
-        if (localization_calculate_budget_begin(&budget, "semblance_scan_constrained", true) && usable && semblance_attempted) {
+        scan_constraint_applied[1] =
+            localization_calculate_budget_begin(&budget, "semblance_scan_constrained", true) &&
+            usable && semblance_attempted;
+        if (scan_constraint_applied[1]) {
             localization_semblance_channel_t semblance_channels[OBJECT_STORE_POD_COUNT];
             size_t semblance_channel_count = 0U;
             for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
@@ -1536,7 +1740,10 @@ esp_err_t localization_calculate_run(
         /* TDCAS, constrained. */
         localization_tdcas_result_t *constrained_tdcas = &workspace->scan_tdcas;
         esp_err_t constrained_tdcas_err = ESP_ERR_INVALID_STATE;
-        if (localization_calculate_budget_begin(&budget, "tdcas_scan_constrained", true) && usable && p_observation_count > 0U) {
+        scan_constraint_applied[2] =
+            localization_calculate_budget_begin(&budget, "tdcas_scan_constrained", true) &&
+            usable && p_observation_count > 0U;
+        if (scan_constraint_applied[2]) {
             const localization_tdcas_config_t constrained_config = {
                 .candidate_filter = {
                     .allowed = localization_calculate_scan_candidate_allowed,
@@ -1583,7 +1790,10 @@ esp_err_t localization_calculate_run(
         /* PSAFUVS, constrained. */
         localization_psafuvs_result_t *constrained_psafuvs = &workspace->scan_psafuvs;
         esp_err_t constrained_psafuvs_err = ESP_ERR_INVALID_STATE;
-        if (localization_calculate_budget_begin(&budget, "psafuvs_scan_constrained", true) && usable && ps_observation_count > 0U) {
+        scan_constraint_applied[3] =
+            localization_calculate_budget_begin(&budget, "psafuvs_scan_constrained", true) &&
+            usable && ps_observation_count > 0U;
+        if (scan_constraint_applied[3]) {
             localization_psafuvs_config_t constrained_config = localization_psafuvs_default_config();
             constrained_config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
             constrained_config.candidate_filter.context = &occupancy;
@@ -1623,7 +1833,10 @@ esp_err_t localization_calculate_run(
          * EMPTY, observed surface SOLID, the unseen interior UNKNOWN). */
         localization_suea_result_t *scan_suea = &workspace->scan_suea;
         esp_err_t scan_suea_err = ESP_ERR_INVALID_STATE;
-        if (localization_calculate_budget_begin(&budget, "suea_scan_voids", true) && usable && suea_grid_err == ESP_OK) {
+        scan_constraint_applied[4] =
+            localization_calculate_budget_begin(&budget, "suea_scan_voids", true) &&
+            usable && suea_grid_err == ESP_OK;
+        if (scan_constraint_applied[4]) {
             localization_suea_grid_classify(suea_grid, localization_calculate_scan_suea_cell, &occupancy);
             localization_suea_config_t scan_suea_config = suea_config;
             scan_suea_config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
@@ -1678,6 +1891,7 @@ esp_err_t localization_calculate_run(
                 eikonal_model, workspace->eikonal_sensors, participants, &workspace->eikonal_fields
             ) == ESP_OK;
         }
+        scan_constraint_applied[5] = scan_fields_ready;
         workspace->eikonal_times.model = eikonal_model;
         workspace->eikonal_times.fields = &workspace->eikonal_fields;
         const char *scan_fields_reason = !usable
@@ -1724,8 +1938,10 @@ esp_err_t localization_calculate_run(
         localization_semblance_result_t eikonal_semblance;
         memset(&eikonal_semblance, 0, sizeof(eikonal_semblance));
         esp_err_t eikonal_semblance_err = ESP_ERR_INVALID_STATE;
-        if (localization_calculate_budget_begin(&budget, "semblance_eikonal_voids", true) &&
-            scan_fields_ready && semblance_attempted) {
+        scan_constraint_applied[6] =
+            localization_calculate_budget_begin(&budget, "semblance_eikonal_voids", true) &&
+            scan_fields_ready && semblance_attempted;
+        if (scan_constraint_applied[6]) {
             localization_semblance_channel_t semblance_channels[OBJECT_STORE_POD_COUNT];
             for (size_t i = 0U; i < participants; ++i) {
                 const size_t ch = workspace->participant_channel[i];
@@ -1782,7 +1998,9 @@ esp_err_t localization_calculate_run(
          * air as zero prior. */
         localization_bayes_result_t *scan_bayes = &workspace->scan_bayes;
         esp_err_t scan_bayes_err = ESP_ERR_INVALID_STATE;
-        if (localization_calculate_budget_begin(&budget, "bayesian_scan_voids", true) && scan_fields_ready) {
+        scan_constraint_applied[7] =
+            localization_calculate_budget_begin(&budget, "bayesian_scan_voids", true) && scan_fields_ready;
+        if (scan_constraint_applied[7]) {
             localization_bayes_config_t scan_config = bayes_config;
             scan_config.model_error_relative = LOCALIZATION_CALCULATE_EIKONAL_RELATIVE_ERROR;
             scan_config.model_error_floor_us = localization_calculate_discretization_error_us(
@@ -1814,6 +2032,13 @@ esp_err_t localization_calculate_run(
         localization_calculate_budget_end(&budget, &records[record_count]);
     ++record_count;
         localization_eikonal_fields_free(&workspace->eikonal_fields);
+
+        for (size_t i = 0U; i < LOCALIZATION_CALCULATE_SCAN_METHODS; ++i) {
+            localization_calculate_set_scan_provenance(
+                &records[scan_record_start + i], scan_constraint_applied[i],
+                usable ? &occupancy : NULL
+            );
+        }
 
         if (occupancy_err == ESP_OK) {
             scan_occupancy_free(&occupancy);

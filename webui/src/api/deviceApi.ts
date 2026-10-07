@@ -1017,6 +1017,14 @@ export interface LocalizationRun {
   velocity_range?: LocalizationVelocityRange;
   /** MAX-301 (schema v5): TDCAS/PSAFUVS/SUEA verdict on that range; absent = unknown. */
   velocity_status?: LocalizationVelocityStatus;
+  /** MAX-414 (schema v6): whether this run actually applied the current scan constraint. */
+  scan_constraint_applied?: boolean | null;
+  /** MAX-414 (schema v6): CRC identity of the scan used by a constrained run. */
+  scan_frame_id?: string | null;
+  /** MAX-414 (schema v6): occupancy generation consumed by the run. */
+  occupancy_created_at_ms?: number | null;
+  /** MAX-414 (schema v6): registration geometry generation consumed by the run. */
+  registration_geometry_computed_at_ms?: number | null;
   /** Bayesian methods: the posterior's spread and credible region; absent = not computed. */
   uncertainty?: LocalizationRunUncertainty;
   solved: boolean;
@@ -1027,6 +1035,42 @@ export interface LocalizationRun {
   iterations?: number;
   converged?: boolean;
   rejection_reason?: string;
+}
+
+/** Decodes the optional MAX-414 fields while leaving legacy v3-v5 records valid. */
+export function decodeLocalizationRun(value: unknown): LocalizationRun {
+  if (!isRecord(value) || Array.isArray(value)) throw new Error('Invalid localization run record.');
+  const decoded = { ...value };
+  const nullableBoolean = (key: string): void => {
+    const field = value[key];
+    if (!Object.prototype.hasOwnProperty.call(value, key) || field === undefined) return;
+    if (field !== null && typeof field !== 'boolean') throw new Error(`Invalid localization run field: ${key}.`);
+  };
+  const nullableString = (key: string): void => {
+    const field = value[key];
+    if (!Object.prototype.hasOwnProperty.call(value, key) || field === undefined) return;
+    if (field !== null && typeof field !== 'string') throw new Error(`Invalid localization run field: ${key}.`);
+  };
+  const nullableTimestamp = (key: string): void => {
+    const field = value[key];
+    if (!Object.prototype.hasOwnProperty.call(value, key) || field === undefined) return;
+    if (field !== null && (typeof field !== 'number' || !Number.isFinite(field) || field < 0)) {
+      throw new Error(`Invalid localization run field: ${key}.`);
+    }
+  };
+  nullableBoolean('scan_constraint_applied');
+  nullableString('scan_frame_id');
+  nullableTimestamp('occupancy_created_at_ms');
+  nullableTimestamp('registration_geometry_computed_at_ms');
+  return decoded as unknown as LocalizationRun;
+}
+
+function decodeLocalizationRunListing(value: unknown): LocalizationRunListing {
+  // Only the runs are decoded here; the listing envelope keeps its previous (unvalidated) contract.
+  if (isRecord(value) && Array.isArray(value.runs)) {
+    return { ...value, runs: value.runs.map(decodeLocalizationRun) } as unknown as LocalizationRunListing;
+  }
+  return value as unknown as LocalizationRunListing;
 }
 
 export interface LocalizationSessionPodGeometry {
@@ -1127,13 +1171,13 @@ export function fetchLocalizationRuns(
   options: ApiRequestOptions = {},
 ): Promise<LocalizationRunListing> {
   const query = new URLSearchParams({ object_id: objectId, session_id: sessionId });
-  return jsonRequest<LocalizationRunListing>(
+  return jsonRequest<unknown>(
     `/api/localization/runs?${query.toString()}`,
     {},
     DEVICE_API_EXTENDED_TIMEOUT_MS,
     'normal',
     options,
-  );
+  ).then(decodeLocalizationRunListing);
 }
 
 /** The background "Calculate source" job: progress, measured timings and stack. */

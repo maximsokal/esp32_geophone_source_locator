@@ -328,6 +328,7 @@ static void fill_common_fields(
     memset(record_out, 0, sizeof(*record_out));
 
     record_out->schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
+    record_out->scan_provenance_present = true;
     snprintf(record_out->object_id, sizeof(record_out->object_id), "%s", context->object_id);
     snprintf(record_out->session_id, sizeof(record_out->session_id), "%s", context->session_id);
     record_out->computed_at_ms = context->computed_at_ms;

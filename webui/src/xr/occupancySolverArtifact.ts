@@ -45,6 +45,13 @@ export interface OccupancyRegistration {
   sensor_to_scan: number[];
   /** RMS registration residual (meters). */
   residual_m: number;
+  /**
+   * Acceptance threshold (meters) the residual was judged against. REQUIRED (finite, > 0, and
+   * `residual_m <= threshold_m + 1e-9`) for every registration written to or read from a schema 2
+   * artifact; it is optional in the type only because the preview builders reuse this shape for
+   * in-memory transform checks that never reach the occupancy encoder.
+   */
+  threshold_m?: number;
 }
 
 export interface OccupancyArtifactHeader {
@@ -67,6 +74,19 @@ export interface DecodedOccupancyArtifact {
   legacyRegistrationIgnored: boolean;
 }
 
+const REGISTRATION_QUALITY_EPSILON_M = 1e-9;
+
+function assertRegistrationQuality(value: OccupancyRegistration): void {
+  const threshold = value.threshold_m;
+  if (typeof threshold !== 'number' || !Number.isFinite(threshold) || !(threshold > 0)) {
+    throw new Error('Occupancy registration needs a finite positive threshold_m.');
+  }
+  if (typeof value.residual_m !== 'number' || !Number.isFinite(value.residual_m) || value.residual_m < 0 ||
+      value.residual_m > threshold + REGISTRATION_QUALITY_EPSILON_M) {
+    throw new Error('Occupancy registration residual exceeds its threshold.');
+  }
+}
+
 function registrationInProjectFrame(value: OccupancyRegistration | null): OccupancyRegistration | null {
   if (value === null) return null;
   const frame: unknown = value.frame;
@@ -76,6 +96,7 @@ function registrationInProjectFrame(value: OccupancyRegistration | null): Occupa
   if (value.sensor_to_scan.length !== 16 || value.sensor_to_scan.some((entry) => !Number.isFinite(entry))) {
     throw new Error('Occupancy registration must be a finite 4x4 matrix.');
   }
+  assertRegistrationQuality(value);
   return {
     ...value,
     frame: 'project_z_up',
@@ -203,6 +224,9 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   if (header.schema === OCCUPANCY_ARTIFACT_SCHEMA && declaredRegistration !== null && declaredRegistration !== undefined &&
       (typeof declaredRegistration !== 'object' || declaredRegistration.frame !== 'project_z_up')) {
     throw new Error('Unknown occupancy registration frame; expected project_z_up.');
+  }
+  if (header.schema === OCCUPANCY_ARTIFACT_SCHEMA && declaredRegistration !== null && declaredRegistration !== undefined) {
+    assertRegistrationQuality(declaredRegistration);
   }
   if (payloadLength !== 6 * (header.free_count + header.occupied_count)) {
     throw new Error('Occupancy artifact counts disagree with the payload.');

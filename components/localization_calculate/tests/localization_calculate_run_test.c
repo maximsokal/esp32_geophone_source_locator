@@ -1032,6 +1032,224 @@ static void prepare_session_directory(const char *object_id, const char *session
 }
 
 
+static uint32_t test_crc32(const uint8_t *bytes, size_t length)
+{
+    uint32_t crc = 0xFFFFFFFFU;
+    for (size_t i = 0U; i < length; ++i) {
+        crc ^= bytes[i];
+        for (unsigned bit = 0U; bit < 8U; ++bit) {
+            const uint32_t mask = (uint32_t)-(int32_t)(crc & 1U);
+            crc = (crc >> 1U) ^ (0xEDB88320U & mask);
+        }
+    }
+    return crc ^ 0xFFFFFFFFU;
+}
+
+
+static void test_write_u32_le(uint8_t *bytes, size_t offset, uint32_t value)
+{
+    bytes[offset] = (uint8_t)value;
+    bytes[offset + 1U] = (uint8_t)(value >> 8U);
+    bytes[offset + 2U] = (uint8_t)(value >> 16U);
+    bytes[offset + 3U] = (uint8_t)(value >> 24U);
+}
+
+
+static void test_scan_frame_id(const uint8_t *scan_bytes, size_t scan_length, char frame_id[32])
+{
+    (void)snprintf(frame_id, 32U, "scan-crc32:%08x", (unsigned)test_crc32(scan_bytes, scan_length));
+}
+
+
+static void write_test_scan_file(
+    const char *object_id,
+    const char *session_id,
+    const uint8_t *scan_bytes,
+    size_t scan_length
+)
+{
+    char path[256];
+    const int written = snprintf(
+        path, sizeof(path), "%s/%s/sessions/%s/scan-v1.bin",
+        STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id
+    );
+    assert(written > 0 && (size_t)written < sizeof(path));
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(scan_bytes, 1U, scan_length, file) == scan_length);
+    assert(fclose(file) == 0);
+}
+
+
+static void write_test_occupancy_file(
+    const char *object_id,
+    const char *session_id,
+    const char *frame_id
+)
+{
+    char path[256];
+    const int path_written = snprintf(
+        path, sizeof(path), "%s/%s/sessions/%s/occupancy-v1.bin",
+        STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id
+    );
+    assert(path_written > 0 && (size_t)path_written < sizeof(path));
+
+    char header[1024];
+    const int header_written = snprintf(
+        header, sizeof(header),
+        "{\"schema\":2,\"frame_id\":\"%s\",\"voxel_size_m\":0.5,"
+        "\"below_surface_m\":1,\"free_count\":0,\"occupied_count\":0,"
+        "\"created_at_ms\":234567,\"registration\":{\"source\":\"test\","
+        "\"frame\":\"project_z_up\",\"geometry_computed_at_ms\":1000,"
+        "\"residual_m\":0.01,\"threshold_m\":0.05,"
+        "\"sensor_to_scan\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}}",
+        frame_id
+    );
+    assert(header_written > 0 && (size_t)header_written < sizeof(header));
+
+    const size_t header_length = (size_t)header_written;
+    const size_t artifact_length = 20U + header_length;
+    uint8_t *artifact = calloc(artifact_length, sizeof(*artifact));
+    assert(artifact != NULL);
+    memcpy(artifact, "GOCCUPY1", 8U);
+    test_write_u32_le(artifact, 8U, (uint32_t)header_length);
+    test_write_u32_le(artifact, 12U, 0U);
+    memcpy(artifact + 20U, header, header_length);
+    test_write_u32_le(artifact, 16U, test_crc32(artifact + 20U, header_length));
+
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(artifact, 1U, artifact_length, file) == artifact_length);
+    assert(fclose(file) == 0);
+    free(artifact);
+}
+
+
+static void remove_test_scan_artifacts(const char *object_id, const char *session_id)
+{
+    char path[256];
+    (void)snprintf(
+        path, sizeof(path), "%s/%s/sessions/%s/occupancy-v1.bin",
+        STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id
+    );
+    (void)remove(path);
+    (void)snprintf(
+        path, sizeof(path), "%s/%s/sessions/%s/scan-v1.bin",
+        STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id
+    );
+    (void)remove(path);
+}
+
+
+static void assert_scan_identity_rejected(
+    const char *object_id,
+    const char *session_id,
+    const char *reason_token
+)
+{
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    const esp_err_t err = localization_calculate_run(
+        object_id, session_id, &config, 51000ULL, &summary
+    );
+    assert(err == ESP_OK);
+    assert(g_recorded_count == 21U);
+
+    static const char *const unconstrained_methods[] = {
+        "tdoa_gauss_newton", "traveltime_inversion", "joint_fusion"
+    };
+    for (size_t i = 0U; i < sizeof(unconstrained_methods) / sizeof(unconstrained_methods[0]); ++i) {
+        const localization_run_record_t *record = find_record(unconstrained_methods[i]);
+        assert(record != NULL);
+        assert(strstr(record->rejection_reason, reason_token) == NULL);
+    }
+
+    static const char *const scan_methods[] = {
+        "traveltime_scan_constrained", "semblance_scan_constrained",
+        "tdcas_scan_constrained", "psafuvs_scan_constrained", "suea_scan_voids",
+        "eikonal_scan_voids", "semblance_eikonal_voids", "bayesian_scan_voids"
+    };
+    for (size_t i = 0U; i < sizeof(scan_methods) / sizeof(scan_methods[0]); ++i) {
+        const localization_run_record_t *record = find_record(scan_methods[i]);
+        assert(record != NULL && !record->solved);
+        assert(strstr(record->rejection_reason, reason_token) != NULL);
+        assert(record->scan_provenance_present);
+        assert(!record->scan_constraint_applied);
+        assert(record->scan_frame_id[0] == '\0');
+        assert(record->occupancy_created_at_ms == 0U);
+        assert(record->registration_geometry_computed_at_ms == 0U);
+    }
+}
+
+
+static void test_scan_identity_mismatch_and_unavailable_fail_closed(void)
+{
+    const size_t scan_length = 9000U;
+    uint8_t *scan_a = malloc(scan_length);
+    uint8_t *scan_b = malloc(scan_length);
+    assert(scan_a != NULL && scan_b != NULL);
+    for (size_t i = 0U; i < scan_length; ++i) {
+        scan_a[i] = (uint8_t)(i % 251U);
+    }
+    memcpy(scan_b, scan_a, scan_length);
+    scan_b[scan_length - 1U] ^= 0x5AU;
+    char occupancy_frame_id[32];
+    test_scan_frame_id(scan_a, scan_length, occupancy_frame_id);
+
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    const char *mismatch_object = "OBJSCANB";
+    const char *mismatch_session = "S098001";
+    prepare_session_directory(mismatch_object, mismatch_session);
+    write_test_occupancy_file(mismatch_object, mismatch_session, occupancy_frame_id);
+    write_test_scan_file(mismatch_object, mismatch_session, scan_b, scan_length);
+    assert_scan_identity_rejected(
+        mismatch_object, mismatch_session, "scan_generation_mismatch"
+    );
+    remove_test_scan_artifacts(mismatch_object, mismatch_session);
+
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    const char *unavailable_object = "OBJSCANMISS";
+    const char *unavailable_session = "S098002";
+    prepare_session_directory(unavailable_object, unavailable_session);
+    write_test_occupancy_file(unavailable_object, unavailable_session, occupancy_frame_id);
+    assert_scan_identity_rejected(
+        unavailable_object, unavailable_session, "scan_identity_unavailable"
+    );
+    remove_test_scan_artifacts(unavailable_object, unavailable_session);
+
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    const char *matching_object = "OBJSCANMATCH";
+    const char *matching_session = "S098003";
+    prepare_session_directory(matching_object, matching_session);
+    write_test_occupancy_file(matching_object, matching_session, occupancy_frame_id);
+    write_test_scan_file(matching_object, matching_session, scan_a, scan_length);
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run(
+        matching_object, matching_session, &config, 52000ULL, &summary
+    ) == ESP_OK);
+    const localization_run_record_t *traveltime = find_record("traveltime_scan_constrained");
+    assert(traveltime != NULL && traveltime->scan_provenance_present);
+    assert(traveltime->scan_constraint_applied);
+    assert(strcmp(traveltime->scan_frame_id, occupancy_frame_id) == 0);
+    assert(traveltime->occupancy_created_at_ms == 234567U);
+    assert(traveltime->registration_geometry_computed_at_ms == 1000U);
+    const localization_run_record_t *joint = find_record("joint_fusion");
+    assert(joint != NULL && !joint->scan_constraint_applied);
+    assert(joint->scan_frame_id[0] == '\0');
+    assert(joint->occupancy_created_at_ms == 0U);
+    assert(joint->registration_geometry_computed_at_ms == 0U);
+    remove_test_scan_artifacts(matching_object, matching_session);
+
+    free(scan_a);
+    free(scan_b);
+    puts("  scan generation mismatch/unavailable reject all constrained methods; matching id is recorded -- OK");
+}
+
+
 /*
  * A session with an occupancy artifact on disk that is not a valid/usable
  * scan (garbage bytes: fails scan_occupancy_parse's magic/CRC check, same
@@ -1108,6 +1326,7 @@ int main(void)
     test_read_failures_propagate_with_no_partial_writes();
     test_run_store_write_failure_midway_contract();
     test_time_budget_exhausted_skips_remaining_methods();
+    test_scan_identity_mismatch_and_unavailable_fail_closed();
     test_unusable_scan_reports_constraint_not_applied();
     test_record_stop_then_localize_with_reserved_psram();
 

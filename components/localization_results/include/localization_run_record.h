@@ -30,13 +30,18 @@
  * (semblance/coherency, statistical traveltime inversion, and the joint
  * fusion, MAX-136/137/138) have no equivalent of. Schema v4 adds the
  * producer-assigned failure class; schema v3 records without it still read
- * as LOCALIZATION_FAILURE_CLASS_NONE.
- */
+ * as LOCALIZATION_FAILURE_CLASS_NONE. Schema v6 adds the scan-generation
+ * provenance for scan-constrained runs; older records remain history-only
+ * when their scan generation cannot be established.
+*/
 
-#define LOCALIZATION_RUN_SCHEMA_VERSION 5U
-/* Schema v4: producer failure class, no velocity range (MAX-301 adds it in v5). */
+#define LOCALIZATION_RUN_SCHEMA_VERSION 6U
+/* Schema v5: producer velocity range (MAX-301). */
+#define LOCALIZATION_RUN_SCHEMA_VERSION_V5 5U
+/* Schema v4: producer failure class, no velocity range. */
 #define LOCALIZATION_RUN_SCHEMA_VERSION_V4 4U
 #define LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY 3U
+#define LOCALIZATION_RUN_SCAN_FRAME_ID_SIZE 32U
 
 #define LOCALIZATION_RUN_VELOCITY_SOURCE_UNKNOWN        0U
 #define LOCALIZATION_RUN_VELOCITY_SOURCE_PRESET         1U
@@ -118,6 +123,16 @@ typedef struct
      * (MAX-166), not whatever the object's live topology is now. 0 means
      * "not available" rather than "computed at epoch". */
     uint64_t geometry_computed_at_ms;
+
+    /* Schema v6 scan provenance. scan_provenance_present distinguishes old
+     * JSON records whose missing fields mean "unknown" from v6 records that
+     * explicitly declare a constraint was or was not applied. Unconstrained
+     * records use false, an empty frame id, and zero timestamps. */
+    bool scan_provenance_present;
+    bool scan_constraint_applied;
+    char scan_frame_id[LOCALIZATION_RUN_SCAN_FRAME_ID_SIZE];
+    uint64_t occupancy_created_at_ms;
+    uint64_t registration_geometry_computed_at_ms;
 
     /* The propagation model actually used for this run (MAX-139). Name is
      * empty when the caller did not attach a named/calibrated model (still

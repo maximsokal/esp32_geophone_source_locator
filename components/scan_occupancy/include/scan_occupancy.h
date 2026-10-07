@@ -45,6 +45,8 @@ typedef struct
      * registration is parsed for compatibility but is always marked absent. */
     double sensor_to_scan[16];
     double residual_m;
+    /* Schema 2 quality bound: finite and > 0; residual_m must not exceed it. */
+    double threshold_m;
 
 } scan_occupancy_registration_t;
 
@@ -93,7 +95,8 @@ scan_occupancy_class_t scan_occupancy_classify(
 /*
  * The occupancy constraint may be applied to a localization run only when
  * the artifact carries a registration made against exactly this session's
- * frozen geometry version and its transform is a finite rigid motion
+ * frozen geometry version, whose residual is within its positive finite
+ * threshold, and whose transform is a finite rigid motion
  * (rotation or reflection, the CS layout may be mirrored). Anything else
  * fails closed.
  */

@@ -4,6 +4,7 @@ import type { LocalizationRun, LocalizationSessionGeometry } from '../../src/api
 import {
   NOMINAL_SECTOR_RADIUS_M,
   buildLocalizationOverlay,
+  classifyRunCurrency,
   credibleBox,
   dimensionalityLabel,
   filterOverlayByVariant,
@@ -246,6 +247,28 @@ describe('constrained vs unconstrained method names (MAX-147)', () => {
     expect(model.sectors.find((s) => s.method === 'gauss_newton_tdoa')?.variant).toBe('unconstrained');
     expect(model.sectors.find((s) => s.method === 'traveltime_scan_constrained')?.variant).toBe('scan_constrained');
     expect(model.unavailable.find((u) => u.method === 'bayesian_scan_voids')?.variant).toBe('scan_constrained');
+  });
+});
+
+describe('localization run scan currency (MAX-414)', () => {
+  it('treats a constrained run as current only for the scan it actually constrained', () => {
+    const constrained = run({
+      method_name: 'traveltime_scan_constrained',
+      scan_constraint_applied: true,
+      scan_frame_id: 'scan-crc32:continue-a',
+    });
+    expect(classifyRunCurrency(constrained, 'scan-crc32:continue-a')).toBe('current');
+    // Continue creates a new whole-file scan identity, so the pre-merge run becomes history.
+    expect(classifyRunCurrency(constrained, 'scan-crc32:continue-b')).toBe('history_previous_scan');
+    expect(classifyRunCurrency({ ...constrained, scan_constraint_applied: false }, 'scan-crc32:continue-a'))
+      .toBe('history_previous_scan');
+  });
+
+  it('labels legacy constrained runs as unknown-generation and leaves unconstrained runs independent', () => {
+    expect(classifyRunCurrency(run({ method_name: 'bayesian_scan_voids' }), 'scan-crc32:current'))
+      .toBe('history_scan_unknown');
+    expect(classifyRunCurrency(run({ method_name: 'gauss_newton_tdoa' }), 'scan-crc32:current'))
+      .toBe('unconstrained');
   });
 });
 

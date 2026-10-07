@@ -33,6 +33,7 @@ def test_component_is_registered_in_cmake():
         "localization_traveltime_inversion",
         "localization_velocity_free",
         "object_store",
+        "power_control",
         "seismic_dsp",
         "seismic_recorder",
     ):
@@ -202,6 +203,19 @@ def test_scan_constraint_is_session_scoped_fail_closed_and_never_fused():
     fused_index = source.index("const size_t fused_record_count = record_count;")
     constrained_index = source.index('"traveltime_scan_constrained"')
     assert fused_index < constrained_index
+
+
+def test_scan_constraints_require_the_current_whole_file_generation():
+    source = orchestrator_source()
+    assert '"%s/%s/sessions/%s/scan-v1.bin"' in source
+    assert "0xEDB88320U" in source
+    assert '"scan-crc32:%08x"' in source
+    assert "storage_bulk_admission_run_chunk" in source
+    assert "power_control_is_shutdown_requested" in source
+    assert "scan_generation_mismatch" in source
+    assert "scan_identity_unavailable" in source
+    assert "scan_occupancy_registration_usable(&occupancy, geometry_computed_at_ms)" in source
+    assert "scan_constraint_applied[i]" in source
 
 
 def test_velocity_free_methods_run_on_the_same_picks_and_are_fused_once():

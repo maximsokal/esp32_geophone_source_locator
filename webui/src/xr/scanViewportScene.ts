@@ -2,6 +2,7 @@ import type { ScanDisplayOptions } from './scanDisplayModes';
 import type { ScanPointCloudSnapshot } from './webxrRuntime';
 import type { SensorPlacementMarker } from './sensorPlacementScene';
 import type { SourceHighlightScene } from './sourceHighlight';
+import type { SolverCandidateVolume } from './candidateVolume';
 import type { I18nLocale } from '../i18n';
 import { formatDistance, formatNumber } from '../i18n/format';
 import { translate } from '../i18n';
@@ -130,6 +131,34 @@ export function prepareScanScene(snapshot: ScanSceneSource): PreparedScanScene {
     boundsLines: boundsLinePositions(snapshot, centerX, centerY, centerZ),
     centerX, centerY, centerZ, extent, extentX, extentY, extentZ,
   };
+}
+
+/** Camera radius that contains the surface, displayed source markers, uncertainty, and optional search depth. */
+export function scanViewFitExtent(
+  prepared: Pick<PreparedScanScene, 'centerX' | 'centerY' | 'centerZ' | 'extent'>,
+  sourceHighlights: SourceHighlightScene | null,
+  candidateVolume: SolverCandidateVolume | null = null,
+  includeCandidateDepth = false,
+): number {
+  let extent = prepared.extent;
+  const positions: Vec3Tuple[] = [];
+  if (sourceHighlights !== null) {
+    const primary = sourceHighlights.primary;
+    if (primary !== null) positions.push(primary.voxel?.center ?? primary.edgeMarker ?? primary.positionProjectM);
+    for (const source of sourceHighlights.secondary) positions.push(source.edgeMarker ?? source.positionProjectM);
+    for (const cell of sourceHighlights.uncertaintyVoxels) positions.push(cell.center);
+  }
+  for (const position of positions) {
+    extent = Math.max(extent,
+      2 * Math.abs(position[0] - prepared.centerX),
+      2 * Math.abs(position[1] - prepared.centerY),
+      2 * Math.abs(position[2] - prepared.centerZ));
+  }
+  const candidateMinZ = candidateVolume?.min?.[2];
+  if (includeCandidateDepth && candidateMinZ !== undefined) {
+    extent = Math.max(extent, 2 * Math.abs(candidateMinZ - prepared.centerZ));
+  }
+  return Math.max(0.8, extent);
 }
 
 /* ---- Layer plan ---------------------------------------------------------- */

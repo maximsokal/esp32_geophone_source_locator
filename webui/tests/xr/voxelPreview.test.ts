@@ -130,6 +130,45 @@ describe('voxel preview grid and preview-v1/v2 format', () => {
     expect(buildVoxelPreviewGrid(snapshot([[0, 0, 0], [10, 0, 0]]), scanA).indices).toHaveLength(2);
   });
 
+  it('extends preview dimensions into candidate depth without adding occupied voxels and round-trips', () => {
+    const occupiedSurfacePositions = new Float32Array([0.05, 0.05, 0.05, 0.05, 0.05, 0.15]);
+    const surfaceOnly = {
+      ...snapshot([], 0.1), occupiedSurfacePositions,
+    } as unknown as Parameters<typeof buildVoxelPreviewGrid>[0];
+    const candidate = {
+      ...surfaceOnly,
+      bounds: { min: [0, 0, 0], max: [0.2, 0.2, 0.2] },
+      occupancyEnvelopeBounds: { min: [0, 0, 0], max: [0.2, 0.2, 0.2] },
+      occupancySolverCandidateBelowSurfaceMeters: 2,
+    } as Parameters<typeof buildVoxelPreviewGrid>[0];
+    const before = buildVoxelPreviewGrid(surfaceOnly, scanA);
+    const extended = buildVoxelPreviewGrid(candidate, scanA);
+    expect(extended.origin[2]).toBe(-2);
+    expect(extended.dimensions[2]).toBeGreaterThan(before.dimensions[2]);
+    expect(extended.indices).toHaveLength(before.indices.length);
+    expect(extended.candidateDepthClamped).toBe(false);
+
+    const decoded = decodeVoxelPreviewArtifact(buildVoxelPreviewArtifact(candidate, scanA));
+    expect(decoded.origin).toEqual(extended.origin);
+    expect(decoded.dimensions).toEqual(extended.dimensions);
+    expect(decoded.voxelCount).toBe(extended.indices.length);
+    expect(decoded.indices).toEqual(extended.indices);
+  });
+
+  it('clips only candidate depth at the uint16 dimension limit and reports the clip', () => {
+    const candidate = {
+      ...snapshot([[0, 0, 0]], 1),
+      bounds: { min: [0, 0, 0], max: [0, 0, 0] },
+      occupancyEnvelopeBounds: { min: [0, 0, 0], max: [0, 0, 0] },
+      occupancySolverCandidateBelowSurfaceMeters: 70_000,
+    } as unknown as Parameters<typeof buildVoxelPreviewGrid>[0];
+    const grid = buildVoxelPreviewGrid(candidate, scanA);
+    expect(grid.dimensions[2]).toBe(0xffff);
+    expect(grid.origin[2]).toBe(-65_534);
+    expect(grid.candidateDepthClamped).toBe(true);
+    expect(grid.indices).toHaveLength(1);
+  });
+
   it('doubles voxel size until the exact requested surface budget fits', () => {
     const grid = buildVoxelPreviewGrid(snapshot(cube(3)), scanA, { maxSurfaceVoxels: 1 });
     expect(grid.coarseningSteps).toBe(2);

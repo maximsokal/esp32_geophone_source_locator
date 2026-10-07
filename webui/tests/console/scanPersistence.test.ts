@@ -744,3 +744,40 @@ describe('scan persistence after bulk preemption', () => {
     expect(previewAttempts).toBe(1);
   });
 });
+
+describe('asynchronous derivative builders (MAX-403)', () => {
+  function fakePorts() {
+    const calls: string[] = [];
+    const ports: ScanPersistencePorts = {
+      saveScan: async () => { calls.push('scan'); return { ok: true, action: 'scan', id: occupancyFrameIdForScan(scanBytes) }; },
+      saveOccupancy: async () => { calls.push('occupancy'); return { ok: true, action: 'occupancy' }; },
+      savePreview: async () => { calls.push('preview'); return { ok: true, action: 'preview' }; },
+      fetchInfo: async () => ({ present: false, bytes: 0 } as ScanArtifactInfo),
+    };
+    return { ports, calls };
+  }
+
+  it('uploads the scan before a held asynchronous occupancy builder resolves, then uploads the awaited bytes', async () => {
+    const { ports, calls } = fakePorts();
+    const controller = new ScanPersistenceController(ports);
+    let release!: (bytes: Uint8Array) => void;
+    const held = new Promise<Uint8Array>((resolve) => { release = resolve; });
+    const pending = controller.save('OBJ', 'SESSION', scanBytes, () => held, () => previewBytes);
+    for (let i = 0; i < 100; i += 1) await Promise.resolve();
+    expect(calls).toEqual(['scan']);
+    expect(controller.currentState).toMatchObject({ scan: 'saved', occupancy: 'pending' });
+    release(occupancyBytes);
+    const state = await pending;
+    expect(calls).toEqual(['scan', 'occupancy', 'preview']);
+    expect(state).toMatchObject({ scan: 'saved', occupancy: 'ready', preview: 'ready' });
+  });
+
+  it('reports an explicit occupancy failure when the asynchronous builder rejects, and still builds the preview', async () => {
+    const { ports, calls } = fakePorts();
+    const controller = new ScanPersistenceController(ports);
+    const state = await controller.save('OBJ', 'SESSION', scanBytes, () => Promise.reject(new Error('registration unavailable')), () => previewBytes);
+    expect(calls).toEqual(['scan', 'preview']);
+    expect(state).toMatchObject({ scan: 'saved', occupancy: 'failed', preview: 'ready' });
+    expect(state?.occupancyError).toContain('registration unavailable');
+  });
+});

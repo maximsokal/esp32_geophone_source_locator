@@ -18,6 +18,7 @@ export const VOID_SCENE_REGISTRATION: OccupancyRegistration = {
   geometry_computed_at_ms: 424242,
   sensor_to_scan: [0, -1, 0, 10, 0, 0, 1, 2, -1, 0, 0, 3, 0, 0, 0, 1],
   residual_m: 0.004,
+  threshold_m: 0.05,
 };
 
 export function toScan(x: number, y: number, z: number): [number, number, number] {

@@ -13,6 +13,7 @@ import {
 } from './occupancySolverArtifact';
 import type { ScanPointCloudSnapshot } from './webxrRuntime';
 import { localFloorMatrixToProject } from './projectFrame';
+import { solverCandidateVolume } from './candidateVolume';
 
 const MAGIC = new TextEncoder().encode('GXPRV1\0\0');
 const LEGACY_VERSION = 1;
@@ -66,7 +67,15 @@ export interface VoxelPreviewGrid {
   indices: Uint32Array;
   faceMasks: Uint8Array;
   coarseningSteps: number;
+  /** True when the candidate volume exceeded the preview's uint16 Z dimension and was clipped. */
+  candidateDepthClamped: boolean;
 }
+
+type VoxelGridSnapshot = Pick<ScanPointCloudSnapshot,
+  'occupiedSurfacePositions' | 'occupancyFineVoxelSizeMeters' | 'occupancyVoxelSizeMeters'
+> & Partial<Pick<ScanPointCloudSnapshot,
+  'bounds' | 'occupancyEnvelopeBounds' | 'occupancySolverCandidateBelowSurfaceMeters'
+>>;
 
 function finiteFloat32(value: number, label: string): void {
   if (!Number.isFinite(value) || !Number.isFinite(Math.fround(value))) {
@@ -112,7 +121,7 @@ function matchingOccupancy(
 }
 
 function eachOccupiedSample(
-  snapshot: Pick<ScanPointCloudSnapshot, 'occupiedSurfacePositions' | 'occupancyFineVoxelSizeMeters' | 'occupancyVoxelSizeMeters'>,
+  snapshot: VoxelGridSnapshot,
   occupancy: ReturnType<typeof matchingOccupancy>,
   visit: (x: number, y: number, z: number) => void,
 ): void {
@@ -140,7 +149,7 @@ function key(x: number, y: number, z: number): string {
 }
 
 function buildAtSize(
-  snapshot: Parameters<typeof eachOccupiedSample>[0],
+  snapshot: VoxelGridSnapshot,
   occupancy: ReturnType<typeof matchingOccupancy>,
   voxelSizeMeters: number,
   coarseningSteps: number,
@@ -148,6 +157,7 @@ function buildAtSize(
   const cells = new Map<string, [number, number, number]>();
   let minX = Infinity; let minY = Infinity; let minZ = Infinity;
   let maxX = -Infinity; let maxY = -Infinity; let maxZ = -Infinity;
+  let surfaceMinZ = Infinity;
   eachOccupiedSample(snapshot, occupancy, (x, y, z) => {
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
       throw new Error('Voxel preview surface sample is non-finite.');
@@ -159,12 +169,32 @@ function buildAtSize(
     cells.set(key(ix, iy, iz), [ix, iy, iz]);
     minX = Math.min(minX, ix); minY = Math.min(minY, iy); minZ = Math.min(minZ, iz);
     maxX = Math.max(maxX, ix); maxY = Math.max(maxY, iy); maxZ = Math.max(maxZ, iz);
+    surfaceMinZ = Math.min(surfaceMinZ, iz);
   });
   if (cells.size === 0) throw new Error('Voxel preview has no occupied surface samples.');
 
+  const candidateVolume = solverCandidateVolume(snapshot);
+  let candidateMinZ = Infinity;
+  let candidateDepthClamped = false;
+  if (candidateVolume.min !== null && candidateVolume.max !== null) {
+    const candidateMin = candidateVolume.min.map((value) => Math.floor(value / voxelSizeMeters));
+    const candidateMax = candidateVolume.max.map((value) => Math.floor(value / voxelSizeMeters));
+    minX = Math.min(minX, candidateMin[0]); minY = Math.min(minY, candidateMin[1]);
+    maxX = Math.max(maxX, candidateMax[0]); maxY = Math.max(maxY, candidateMax[1]);
+    candidateMinZ = candidateMin[2];
+    minZ = Math.min(minZ, candidateMin[2]); maxZ = Math.max(maxZ, candidateMax[2]);
+  }
+
   const dx = maxX - minX + 1;
   const dy = maxY - minY + 1;
-  const dz = maxZ - minZ + 1;
+  let dz = maxZ - minZ + 1;
+  if (dz > 0xffff) {
+    const minimumAllowedZ = maxZ - 0xffff + 1;
+    if (surfaceMinZ < minimumAllowedZ || candidateMinZ >= minimumAllowedZ) throw new Error('coarsen');
+    minZ = minimumAllowedZ;
+    dz = maxZ - minZ + 1;
+    candidateDepthClamped = true;
+  }
   const volume = dx * dy * dz;
   if (![dx, dy, dz].every((value) => Number.isInteger(value) && value > 0 && value <= 0xffff) ||
       !Number.isSafeInteger(volume) || volume > 0x1_0000_0000) {
@@ -199,11 +229,12 @@ function buildAtSize(
     indices,
     faceMasks,
     coarseningSteps,
+    candidateDepthClamped,
   };
 }
 
 export function buildVoxelPreviewGrid(
-  snapshot: Parameters<typeof eachOccupiedSample>[0],
+  snapshot: VoxelGridSnapshot,
   scanArtifact: Uint8Array,
   options: BuildVoxelPreviewOptions = {},
 ): VoxelPreviewGrid {

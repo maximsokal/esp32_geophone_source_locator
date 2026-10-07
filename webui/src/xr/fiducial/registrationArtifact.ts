@@ -1,5 +1,10 @@
 import type { OccupancyRegistration } from '../occupancySolverArtifact';
 import { localFloorMatrixToProject } from '../projectFrame';
+import {
+  registrationApplicability,
+  registrationQualityOk,
+  type RegistrationExpectation,
+} from '../registrationApplicability';
 import type { RegistrationNode, RegistrationNodeStatus, RegistrationTier } from './rigidRegistration';
 
 export const DEFAULT_REMOTE_TAG_SIZE_M = 0.032;
@@ -30,6 +35,11 @@ export interface RegistrationArtifact {
   schema: 1;
   /** Missing only on legacy files; those matrices are WebXR local-floor. */
   frame?: 'webxr_local_floor';
+  /**
+   * MAX-405: identity (`scan-crc32:xxxxxxxx`) of the scan this registration is bound to. Absent or
+   * null means a legacy/unbound file, which is never applicable to any scan (fail closed).
+   */
+  scan_frame_id?: string | null;
   source: 'apriltag';
   family: 'tag36h11';
   geometry_computed_at_ms: number;
@@ -47,7 +57,7 @@ export interface RegistrationArtifact {
 }
 
 const NODES: readonly RegistrationNode[] = ['MAIN', 'G1', 'G2', 'G3', 'G4'];
-const ROOT_KEYS = ['schema', 'frame', 'source', 'family', 'geometry_computed_at_ms', 'created_at_ms', 'tag_size_m', 'bindings', 'sensor_to_scan', 'mirrored', 'residual_rms_m', 'threshold_m', 'per_node', 'tier', 'valid', 'reason'];
+const ROOT_KEYS = ['schema', 'frame', 'scan_frame_id', 'source', 'family', 'geometry_computed_at_ms', 'created_at_ms', 'tag_size_m', 'bindings', 'sensor_to_scan', 'mirrored', 'residual_rms_m', 'threshold_m', 'per_node', 'tier', 'valid', 'reason'];
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -93,9 +103,13 @@ function validateMatrix(value: unknown): number[] | null {
 function validateArtifact(value: unknown): RegistrationArtifact {
   if (!record(value)) throw new Error('Registration artifact must be a JSON object.');
   const hasFrame = Object.prototype.hasOwnProperty.call(value, 'frame');
-  exactKeys(value, hasFrame ? ROOT_KEYS : ROOT_KEYS.filter((key) => key !== 'frame'), 'Registration artifact');
+  const hasScanFrameId = Object.prototype.hasOwnProperty.call(value, 'scan_frame_id');
+  exactKeys(value, ROOT_KEYS.filter((key) => (hasFrame || key !== 'frame') && (hasScanFrameId || key !== 'scan_frame_id')), 'Registration artifact');
   if (hasFrame && value.frame !== 'webxr_local_floor') {
     throw new Error('Unknown registration frame marker; expected webxr_local_floor.');
+  }
+  if (hasScanFrameId && value.scan_frame_id !== null && (typeof value.scan_frame_id !== 'string' || value.scan_frame_id.length === 0)) {
+    throw new Error('scan_frame_id must be null or a non-empty string.');
   }
   if (value.schema !== 1) throw new Error('Unsupported registration artifact schema.');
   if (value.source !== 'apriltag') throw new Error('Unknown registration source.');
@@ -166,9 +180,14 @@ function validateArtifact(value: unknown): RegistrationArtifact {
   if (!value.valid && (value.tier !== null || value.reason === null)) throw new Error('An invalid artifact needs a reason and null tier.');
   if (perNode.some((item) => item.status === 'anchored') && !value.valid) throw new Error('Invalid artifacts cannot contain anchored nodes.');
   if (value.valid && perNode.some((item) => item.status === 'provisional')) throw new Error('Valid artifacts cannot contain provisional nodes.');
+  // MAX-405 quality invariant: a valid registration must be within its own threshold.
+  if (value.valid && !registrationQualityOk({ residual_rms_m: residual, threshold_m: threshold })) {
+    throw new Error('A valid artifact needs a positive threshold_m and residual_rms_m within it.');
+  }
 
   return {
-    schema: 1, frame: 'webxr_local_floor', source: 'apriltag', family: 'tag36h11',
+    schema: 1, frame: 'webxr_local_floor', scan_frame_id: (value.scan_frame_id as string | null | undefined) ?? null,
+    source: 'apriltag', family: 'tag36h11',
     geometry_computed_at_ms: geometryComputedAtMs, created_at_ms: createdAtMs,
     tag_size_m: tagSizes, bindings, sensor_to_scan: matrix,
     mirrored: value.mirrored, residual_rms_m: residual, threshold_m: threshold,
@@ -184,17 +203,26 @@ export function decodeRegistrationArtifact(json: string): RegistrationArtifact {
   return validateArtifact(JSON.parse(json) as unknown);
 }
 
-/** The firmware stores only this compact transform copy in the occupancy header. */
-export function toOccupancyRegistration(artifact: RegistrationArtifact): OccupancyRegistration | null {
+/**
+ * The firmware stores only this compact transform copy in the occupancy header. Returns null for an
+ * invalid, over-threshold or (when `expected` is given) inapplicable registration: a registration is
+ * embedded only for the exact scan frame and geometry generation it was computed for.
+ */
+export function toOccupancyRegistration(
+  artifact: RegistrationArtifact,
+  expected?: RegistrationExpectation,
+): OccupancyRegistration | null {
   try {
     const checked = validateArtifact(artifact);
     if (!checked.valid || checked.sensor_to_scan === null) return null;
+    if (expected !== undefined && !registrationApplicability(checked, expected).ok) return null;
     return {
       source: 'apriltag',
       geometry_computed_at_ms: checked.geometry_computed_at_ms,
       sensor_to_scan: localFloorMatrixToProject(checked.sensor_to_scan),
       frame: 'project_z_up',
       residual_m: checked.residual_rms_m,
+      threshold_m: checked.threshold_m,
     };
   } catch {
     return null;

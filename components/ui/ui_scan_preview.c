@@ -25,6 +25,7 @@
 #include "storage_bulk_admission.h"
 #include "storage_manager.h"
 #include "ui_preview3d.h"
+#include "ui_scan_preview_policy.h"
 #include "ui_workflow_model.h"
 #include "workflow_service.h"
 
@@ -217,7 +218,9 @@ static esp_err_t source_runs_callback(void *context)
     );
 }
 
-static void load_sources(const preview_request_t *request, preview_result_t *result)
+/* `scan_identity` is "scan-crc32:%08x" of the validated current scan, or NULL
+ * when it could not be established (scan-constrained runs are then excluded). */
+static void load_sources(const preview_request_t *request, preview_result_t *result, const char *scan_identity)
 {
     const size_t capacity = LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION;
     localization_run_record_t *records = heap_caps_malloc(capacity * sizeof(*records), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -228,23 +231,44 @@ static void load_sources(const preview_request_t *request, preview_result_t *res
         ui_preview3d_source_candidate_t *candidates = heap_caps_calloc(
             read.record_count, sizeof(*candidates), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (candidates != NULL) {
+            size_t candidate_count = 0U;
+            size_t history_only = 0U;
             for (size_t i = 0U; i < read.record_count; ++i) {
                 const localization_run_record_t *run = &records[i];
-                candidates[i] = (ui_preview3d_source_candidate_t){
+                /* MAX-414: constrained runs are current only for the scan they were solved against.
+                 * Others stay in storage as history and never become the overlaid source. */
+                const ui_scan_preview_run_binding_t binding = {
+                    .method_name = run->method_name,
+                    .scan_provenance_present = run->scan_provenance_present,
+                    .scan_constraint_applied = run->scan_constraint_applied,
+                    .scan_frame_id = memchr(run->scan_frame_id, '\0', sizeof(run->scan_frame_id)) != NULL ?
+                        run->scan_frame_id : NULL,
+                };
+                if (ui_scan_preview_run_eligibility(&binding, scan_identity) != UI_SCAN_PREVIEW_RUN_ELIGIBLE) {
+                    ++history_only;
+                    continue;
+                }
+                candidates[candidate_count++] = (ui_preview3d_source_candidate_t){
                     .method_name = run->method_name,
                     .computed_at_ms = run->computed_at_ms,
                     .confidence_score = run->confidence_score,
                     .position = { (float)run->source_position.x_m, (float)run->source_position.y_m, (float)run->source_position.z_m },
                     .horizontal_std_x_m = run->uncertainty.std_m.x_m,
                     .horizontal_std_y_m = run->uncertainty.std_m.y_m,
+                    .vertical_std_m = run->uncertainty.std_m.z_m,
+                    .geometry_computed_at_ms = run->geometry_computed_at_ms,
                     .joint_fusion = run->kind == LOCALIZATION_RUN_KIND_JOINT_FUSION,
                     .solved = run->solved,
                     .uncertainty_too_high = run->uncertainty_too_high,
                     .uncertainty_valid = run->uncertainty.credible_level > 0.0,
                 };
             }
+            if (history_only > 0U) {
+                ESP_LOGI(TAG, "PREVIEW_SOURCES history_only=%u of %u (scan-constrained, not bound to the current scan)",
+                         (unsigned)history_only, (unsigned)read.record_count);
+            }
             result->source_count = ui_preview3d_select_sources(
-                candidates, read.record_count, result->sources, UI_PREVIEW3D_MAX_SOURCES);
+                candidates, candidate_count, result->sources, UI_PREVIEW3D_MAX_SOURCES);
             heap_caps_free(candidates);
         }
     }
@@ -363,8 +387,6 @@ static void load_session(const preview_request_t *request, preview_result_t *res
         return;
     }
 
-    load_sources(request, result);
-
     geometry_read_t geometry_read = {.request = request, .geometry = &result->geometry};
     if (storage_chunk(request, session_geometry_callback, &geometry_read) == ESP_OK) {
         result->geometry_computed_at_ms = localization_calculate_geometry_computed_at_ms(&result->geometry);
@@ -377,6 +399,9 @@ static void load_session(const preview_request_t *request, preview_result_t *res
         set_reason(result, "scan missing");
         return;
     }
+    char scan_identity[UI_SCAN_PREVIEW_IDENTITY_SIZE] = "";
+    if (scan_err == ESP_OK) (void)ui_scan_preview_format_identity(scan_crc, scan_identity, sizeof(scan_identity));
+    load_sources(request, result, scan_identity[0] != '\0' ? scan_identity : NULL);
     if (scan_err != ESP_OK) {
         set_reason(result, storage_bulk_admission_is_protected() ? "recording active" : "scan unreadable");
     } else {
@@ -414,8 +439,13 @@ static void load_session(const preview_request_t *request, preview_result_t *res
         const esp_err_t occupancy_err = scan_occupancy_parse(occupancy_bytes, occupancy_length, &result->occupancy);
         heap_caps_free(occupancy_bytes);
         if (occupancy_err == ESP_OK) {
-            result->status = SCAN_PREVIEW_SCREEN_READY;
-            return;
+            /* MAX-415: occupancy of a replaced scan must not be shown or supply a registration. */
+            if (scan_err == ESP_OK && ui_scan_preview_occupancy_matches_scan(result->occupancy.frame_id, scan_crc)) {
+                result->status = SCAN_PREVIEW_SCREEN_READY;
+                return;
+            }
+            scan_occupancy_free(&result->occupancy);
+            if (scan_err == ESP_OK) set_reason(result, "stale scan CRC");
         }
     }
     if (storage_bulk_admission_is_protected()) set_reason(result, "recording active");
@@ -541,7 +571,8 @@ static void render_ready_locked(void)
              flush_us,
              s_state.fallback_reason[0] != '\0' ? s_state.fallback_reason : "none",
              stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_UNREGISTERED ? "unregistered" :
-                 stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_OUTSIDE_GRID ? "outside_grid" : "none");
+                 stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_OUTSIDE_GRID ? "outside_grid" :
+                 stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_STALE_GEOMETRY ? "stale_geometry" : "none");
     (void)stats;
     scan_preview_state_render_end(&s_state, generation);
     taskYIELD();

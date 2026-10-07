@@ -11,6 +11,7 @@ import {
   cameraPoseForPreset,
   orbitDistanceLimits,
   prepareScanScene,
+  scanViewFitExtent,
   scanDimensionsText,
   scanLayerPlan,
   scanSourceBadgeText,
@@ -22,6 +23,8 @@ import {
   type ScanSceneSource,
 } from '../../src/xr/scanViewportScene';
 import type { SensorPlacementMarker } from '../../src/xr/sensorPlacementScene';
+import type { SourceHighlightScene } from '../../src/xr/sourceHighlight';
+import type { SolverCandidateVolume } from '../../src/xr/candidateVolume';
 import { formatDistance, formatNumber } from '../../src/i18n/format';
 import { translate, type I18nLocale } from '../../src/i18n';
 
@@ -242,6 +245,37 @@ describe('3D / Top / Front camera switching', () => {
     const radius = Math.hypot(...perspective.position);
     expect(radius).toBeGreaterThan(limits.minDistance);
     expect(radius).toBeLessThan(limits.maxDistance);
+  });
+
+  it('fits active source and uncertainty, adds candidate depth only for the search-volume view', () => {
+    const thinSurface = prepareScanScene(source({ bounds: { min: [0, 0, 0], max: [0.1, 0.1, 0] } }));
+    const sourceLayer = {
+      reason: null,
+      primary: {
+        run: {} as never,
+        positionProjectM: [0.05, 0.05, -1.5],
+        primary: true,
+        voxel: { index: 0, coordinates: [0, 0, 0], center: [0.05, 0.05, -1.5] },
+        edgeMarker: null,
+      },
+      uncertaintyVoxels: [{ index: 1, coordinates: [0, 0, 0], center: [0.05, 0.05, -2] }],
+      secondary: [],
+      voxelSizeMeters: 0.1,
+      historyRuns: [],
+      staleRuns: [],
+    } as unknown as SourceHighlightScene;
+    const candidateVolume: SolverCandidateVolume = {
+      min: [0, 0, -2.5], max: [0.1, 0.1, 0], voxelSize: 0.1, candidateDepthUnavailable: false,
+    };
+
+    const surfaceOnlyExtent = scanViewFitExtent(thinSurface, null, candidateVolume, false);
+    const sourceExtent = scanViewFitExtent(thinSurface, sourceLayer, candidateVolume, false);
+    const searchVolumeExtent = scanViewFitExtent(thinSurface, sourceLayer, candidateVolume, true);
+    expect(surfaceOnlyExtent).toBe(thinSurface.extent);
+    expect(sourceExtent).toBeGreaterThanOrEqual(4);
+    expect(searchVolumeExtent).toBeGreaterThanOrEqual(5);
+    expect(orbitDistanceLimits(searchVolumeExtent).maxDistance)
+      .toBeGreaterThan(orbitDistanceLimits(surfaceOnlyExtent).maxDistance);
   });
 });
 

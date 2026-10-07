@@ -211,6 +211,9 @@ esp_err_t localization_run_record_to_json(
     const uint32_t write_schema_version = legacy_unclassified_rejection
         ? LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY
         : LOCALIZATION_RUN_SCHEMA_VERSION;
+    const size_t scan_frame_id_length = strnlen(
+        record->scan_frame_id, sizeof(record->scan_frame_id)
+    );
     if (
         failure_class == NULL ||
         (record->uncertainty_too_high &&
@@ -218,7 +221,12 @@ esp_err_t localization_run_record_to_json(
         (record->solved && !record->uncertainty_too_high &&
          record->failure_class != LOCALIZATION_FAILURE_CLASS_NONE) ||
         (!record->solved && record->failure_class == LOCALIZATION_FAILURE_CLASS_NONE &&
-         record->schema_version != LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY)
+         record->schema_version != LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY) ||
+        (write_schema_version == LOCALIZATION_RUN_SCHEMA_VERSION &&
+         (record->scan_constraint_applied
+            ? (scan_frame_id_length == 0U || scan_frame_id_length >= sizeof(record->scan_frame_id))
+            : (scan_frame_id_length != 0U || record->occupancy_created_at_ms != 0U ||
+               record->registration_geometry_computed_at_ms != 0U)))
     ) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -325,6 +333,22 @@ esp_err_t localization_run_record_to_json(
         cJSON_AddBoolToObject(root, "solved", record->solved) != NULL &&
         cJSON_AddStringToObject(root, "failure_class", failure_class) != NULL &&
         cJSON_AddBoolToObject(root, "uncertainty_too_high", record->uncertainty_too_high) != NULL;
+
+    if (ok && write_schema_version == LOCALIZATION_RUN_SCHEMA_VERSION) {
+        ok = cJSON_AddBoolToObject(
+                root, "scan_constraint_applied", record->scan_constraint_applied
+            ) != NULL &&
+            (record->scan_constraint_applied
+                ? cJSON_AddStringToObject(root, "scan_frame_id", record->scan_frame_id) != NULL
+                : cJSON_AddNullToObject(root, "scan_frame_id") != NULL) &&
+            cJSON_AddNumberToObject(
+                root, "occupancy_created_at_ms", (double)record->occupancy_created_at_ms
+            ) != NULL &&
+            cJSON_AddNumberToObject(
+                root, "registration_geometry_computed_at_ms",
+                (double)record->registration_geometry_computed_at_ms
+            ) != NULL;
+    }
 
     if (ok && record->material[0] != '\0') {
         ok = cJSON_AddStringToObject(root, "material", record->material) != NULL;
@@ -467,6 +491,24 @@ static bool read_number(
 }
 
 
+static bool read_timestamp_ms(
+    const cJSON *root,
+    const char *name,
+    uint64_t *out
+)
+{
+    double value = 0.0;
+    if (
+        !read_number(root, name, &value) || value < 0.0 ||
+        floor(value) != value || value > 9007199254740991.0
+    ) {
+        return false;
+    }
+    *out = (uint64_t)value;
+    return true;
+}
+
+
 static bool read_point(const cJSON *parent, const char *name, localization_point3d_t *p)
 {
     const cJSON *object = cJSON_GetObjectItemCaseSensitive(parent, name);
@@ -562,11 +604,11 @@ esp_err_t localization_run_record_from_json(
         cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
     }
-    /* Readable: v5 (current, MAX-301 velocity range), v4 and legacy v3. */
+    /* Readable: all schemas 3 through 6; older records have unknown scan
+     * provenance and readers never infer it from their method name. */
     if (
-        (uint32_t)schema_version != LOCALIZATION_RUN_SCHEMA_VERSION &&
-        (uint32_t)schema_version != LOCALIZATION_RUN_SCHEMA_VERSION_V4 &&
-        (uint32_t)schema_version != LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY
+        schema_version < (double)LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY ||
+        schema_version > (double)LOCALIZATION_RUN_SCHEMA_VERSION
     ) {
         cJSON_Delete(root);
         return ESP_ERR_NOT_FOUND;
@@ -673,6 +715,34 @@ esp_err_t localization_run_record_from_json(
     const cJSON *uncertainty_too_high_item = cJSON_GetObjectItemCaseSensitive(root, "uncertainty_too_high");
     if (uncertainty_too_high_item != NULL) {
         ok = ok && read_bool(root, "uncertainty_too_high", &uncertainty_too_high);
+    }
+
+    if (ok && schema_version >= (double)LOCALIZATION_RUN_SCHEMA_VERSION) {
+        bool scan_constraint_applied = false;
+        uint64_t occupancy_created_at_ms = 0U;
+        uint64_t registration_geometry_computed_at_ms = 0U;
+        const cJSON *scan_frame_id = cJSON_GetObjectItemCaseSensitive(root, "scan_frame_id");
+        ok = read_bool(root, "scan_constraint_applied", &scan_constraint_applied) &&
+            read_timestamp_ms(root, "occupancy_created_at_ms", &occupancy_created_at_ms) &&
+            read_timestamp_ms(
+                root, "registration_geometry_computed_at_ms",
+                &registration_geometry_computed_at_ms
+            );
+        if (ok && scan_constraint_applied) {
+            ok = read_string(
+                root, "scan_frame_id", record->scan_frame_id,
+                sizeof(record->scan_frame_id)
+            ) && record->scan_frame_id[0] != '\0';
+        } else if (ok) {
+            ok = cJSON_IsNull(scan_frame_id) && occupancy_created_at_ms == 0U &&
+                registration_geometry_computed_at_ms == 0U;
+        }
+        if (ok) {
+            record->scan_provenance_present = true;
+            record->scan_constraint_applied = scan_constraint_applied;
+            record->occupancy_created_at_ms = occupancy_created_at_ms;
+            record->registration_geometry_computed_at_ms = registration_geometry_computed_at_ms;
+        }
     }
 
     if (!ok) {

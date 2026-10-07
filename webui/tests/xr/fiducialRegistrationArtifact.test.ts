@@ -13,6 +13,7 @@ function artifact(): RegistrationArtifact {
   return {
     schema: 1,
     frame: 'webxr_local_floor',
+    scan_frame_id: null,
     source: 'apriltag',
     family: 'tag36h11',
     geometry_computed_at_ms: 1234,
@@ -80,6 +81,37 @@ describe('registration-v1.json artifact', () => {
       sensor_to_scan: [1, 0, 0, 0.2, 0, 0, -1, -0.1, 0, 1, 0, -0.3, 0, 0, 0, 1],
       frame: 'project_z_up',
       residual_m: 0.01,
+      threshold_m: 0.05,
     });
+  });
+
+  it('enforces the quality invariant: valid needs residual within a positive threshold, boundary equality is valid', () => {
+    const over = { ...artifact(), residual_rms_m: 0.3, threshold_m: 0.05 };
+    expect(() => decodeRegistrationArtifact(encodeRaw(over))).toThrow(/threshold/i);
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...artifact(), threshold_m: 0 }))).toThrow(/threshold/i);
+    const boundary = { ...artifact(), residual_rms_m: 0.05, threshold_m: 0.05 };
+    expect(decodeRegistrationArtifact(encodeRaw(boundary)).residual_rms_m).toBe(0.05);
+    expect(toOccupancyRegistration(boundary)?.threshold_m).toBe(0.05);
+    // a residual_too_high result stays decodable but unusable
+    const tooHigh = { ...artifact(), sensor_to_scan: null, tier: null, valid: false, reason: 'residual_too_high', residual_rms_m: 0.3, per_node: [] };
+    expect(decodeRegistrationArtifact(encodeRaw(tooHigh)).valid).toBe(false);
+    expect(toOccupancyRegistration(tooHigh)).toBeNull();
+  });
+
+  it('round-trips scan_frame_id and treats an absent field as unbound', () => {
+    const bound = { ...artifact(), scan_frame_id: 'scan-crc32:0badf00d' };
+    expect(decodeRegistrationArtifact(encodeRegistrationArtifact(bound)).scan_frame_id).toBe('scan-crc32:0badf00d');
+    const legacy = { ...artifact() } as Record<string, unknown>;
+    delete legacy.scan_frame_id;
+    expect(decodeRegistrationArtifact(JSON.stringify(legacy)).scan_frame_id).toBeNull();
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...artifact(), scan_frame_id: '' }))).toThrow(/scan_frame_id/);
+  });
+
+  it('adapts to the occupancy contract only for an applicable scan and geometry', () => {
+    const bound = { ...artifact(), scan_frame_id: 'scan-crc32:aaaaaaaa' };
+    expect(toOccupancyRegistration(bound, { geometryComputedAtMs: 1234, scanFrameId: 'scan-crc32:aaaaaaaa' })).not.toBeNull();
+    expect(toOccupancyRegistration(bound, { geometryComputedAtMs: 1234, scanFrameId: 'scan-crc32:bbbbbbbb' })).toBeNull();
+    expect(toOccupancyRegistration(bound, { geometryComputedAtMs: 9999, scanFrameId: 'scan-crc32:aaaaaaaa' })).toBeNull();
+    expect(toOccupancyRegistration(artifact(), { geometryComputedAtMs: 1234, scanFrameId: 'scan-crc32:aaaaaaaa' })).toBeNull();
   });
 });

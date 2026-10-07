@@ -65,6 +65,7 @@ static void test_golden_vector_parses_and_classifies(void)
     assert(occupancy.has_envelope);
     assert(!occupancy.registration.present);
     assert(occupancy.registration.geometry_computed_at_ms == 0U);
+    assert(occupancy.registration.threshold_m == 0.0);
 
     const double free_point[3] = { 0.10, 0.05, 0.02 };        /* cell (0,0,0) */
     const double free_point2[3] = { 0.20, -0.10, 0.40 };      /* cell (1,-1,2) -- outside envelope z but FREE wins */
@@ -99,6 +100,7 @@ static void test_project_frame_v2_registration_and_candidate_classification(void
     assert(scan_occupancy_parse(data, length, &occupancy) == ESP_OK);
     assert(occupancy.registration.present);
     assert(occupancy.registration.geometry_computed_at_ms == 123456U);
+    assert(occupancy.registration.threshold_m > 0.0);
     assert(scan_occupancy_registration_usable(&occupancy, 123456U));
 
     const double sensor_origin[3] = { 0.0, 0.0, 0.0 };
@@ -142,6 +144,59 @@ static void write_u16(uint8_t *data, size_t offset, uint16_t value)
 {
     data[offset] = (uint8_t)value;
     data[offset + 1U] = (uint8_t)(value >> 8U);
+}
+
+static uint8_t *make_header_only_artifact(const char *header, size_t *length_out)
+{
+    const size_t header_length = strlen(header);
+    const size_t length = 20U + header_length;
+    uint8_t *data = calloc(length, sizeof(*data));
+    assert(data != NULL);
+    memcpy(data, "GOCCUPY1", 8U);
+    write_u32(data, 8U, (uint32_t)header_length);
+    write_u32(data, 12U, 0U);
+    memcpy(data + 20U, header, header_length);
+    write_u32(data, 16U, test_crc32(data + 20U, length - 20U));
+    *length_out = length;
+    return data;
+}
+
+
+static void test_registration_quality_requires_positive_threshold(void)
+{
+    scan_occupancy_t occupancy = { 0 };
+    occupancy.registration.present = true;
+    occupancy.registration.geometry_computed_at_ms = 123456U;
+    occupancy.registration.threshold_m = 0.05;
+    occupancy.registration.residual_m = 0.30;
+    occupancy.registration.sensor_to_scan[0] = 1.0;
+    occupancy.registration.sensor_to_scan[5] = 1.0;
+    occupancy.registration.sensor_to_scan[10] = 1.0;
+    occupancy.registration.sensor_to_scan[15] = 1.0;
+    assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
+
+    occupancy.registration.residual_m = occupancy.registration.threshold_m + 1e-12;
+    assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
+    occupancy.registration.residual_m = occupancy.registration.threshold_m;
+    assert(scan_occupancy_registration_usable(&occupancy, 123456U));
+    occupancy.registration.threshold_m = 0.0;
+    assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
+}
+
+
+static void test_schema2_registration_without_threshold_is_rejected(void)
+{
+    static const char header[] =
+        "{\"schema\":2,\"frame_id\":\"scan-crc32:12345678\",\"voxel_size_m\":0.5,"
+        "\"below_surface_m\":1,\"free_count\":0,\"occupied_count\":0,\"created_at_ms\":1,"
+        "\"registration\":{\"source\":\"test\",\"frame\":\"project_z_up\","
+        "\"geometry_computed_at_ms\":123456,\"residual_m\":0.01,"
+        "\"sensor_to_scan\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}}";
+    size_t length = 0U;
+    uint8_t *data = make_header_only_artifact(header, &length);
+    scan_occupancy_t occupancy;
+    assert(scan_occupancy_parse(data, length, &occupancy) == ESP_ERR_INVALID_ARG);
+    free(data);
 }
 
 static void test_schema1_without_registration_still_classifies(void)
@@ -221,6 +276,8 @@ int main(void)
     test_golden_vector_parses_and_classifies();
     test_project_frame_v2_registration_and_candidate_classification();
     test_schema1_without_registration_still_classifies();
+    test_registration_quality_requires_positive_threshold();
+    test_schema2_registration_without_threshold_is_rejected();
     test_corruption_and_bad_registration_fail_closed();
     return 0;
 }

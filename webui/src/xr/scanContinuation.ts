@@ -14,16 +14,20 @@ export interface ScanContinuationDiagnostics {
   extensionSampleCount: number;
 }
 
-export type ScanContinuationResult =
-  | { ok: true; snapshot: ScanPointCloudSnapshot; diagnostics: ScanContinuationDiagnostics }
-  | { ok: false; reason: string; diagnostics: ScanContinuationDiagnostics | null };
-
-interface RigidTransform {
+/**
+ * Rigid transform in the PROJECT frame (Z up): yaw about +Z, then XYZ translation.
+ * For a continuation it maps extension (frame B) points into the base frame A.
+ */
+export interface RigidTransform {
   yaw: number;
   tx: number;
   ty: number;
   tz: number;
 }
+
+export type ScanContinuationResult =
+  | { ok: true; snapshot: ScanPointCloudSnapshot; diagnostics: ScanContinuationDiagnostics; extensionToBase: RigidTransform }
+  | { ok: false; reason: string; diagnostics: ScanContinuationDiagnostics | null };
 
 interface Point3 {
   x: number;
@@ -696,5 +700,5 @@ export function registerAndMergeScanContinuation(
     manualControlPoints,
     operatorEdges,
   };
-  return { ok: true, snapshot, diagnostics };
+  return { ok: true, snapshot, diagnostics, extensionToBase: { yaw: transform.yaw, tx: transform.tx, ty: transform.ty, tz: transform.tz } };
 }

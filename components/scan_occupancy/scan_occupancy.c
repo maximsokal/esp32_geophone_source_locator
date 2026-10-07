@@ -119,13 +119,15 @@ static bool parse_registration(
     const cJSON *frame = cJSON_GetObjectItemCaseSensitive(item, "frame");
     double geometry_ms = 0.0;
     double residual = 0.0;
+    double threshold = 0.0;
     if (
         !cJSON_IsString(source) ||
         !read_number(item, "geometry_computed_at_ms", &geometry_ms) || geometry_ms < 0.0 ||
         !read_number(item, "residual_m", &residual) ||
         !cJSON_IsArray(matrix) || cJSON_GetArraySize(matrix) != 16 ||
         (schema == SCAN_OCCUPANCY_SCHEMA &&
-         (!cJSON_IsString(frame) || strcmp(frame->valuestring, "project_z_up") != 0))
+         (!read_number(item, "threshold_m", &threshold) || !(threshold > 0.0) ||
+          !cJSON_IsString(frame) || strcmp(frame->valuestring, "project_z_up") != 0))
     ) {
         return false;
     }
@@ -139,6 +141,7 @@ static bool parse_registration(
     snprintf(out->source, sizeof(out->source), "%s", source->valuestring);
     out->geometry_computed_at_ms = (uint64_t)geometry_ms;
     out->residual_m = residual;
+    out->threshold_m = threshold;
     if (schema == SCAN_OCCUPANCY_SCHEMA) {
         out->present = true;
     } else {
@@ -351,6 +354,16 @@ bool scan_occupancy_registration_usable(
         !occupancy->registration.present ||
         geometry_computed_at_ms == 0U ||
         occupancy->registration.geometry_computed_at_ms != geometry_computed_at_ms
+    ) {
+        return false;
+    }
+
+    const double residual_m = occupancy->registration.residual_m;
+    const double threshold_m = occupancy->registration.threshold_m;
+    if (
+        !isfinite(residual_m) || residual_m < 0.0 ||
+        !isfinite(threshold_m) || !(threshold_m > 0.0) ||
+        residual_m > threshold_m
     ) {
         return false;
     }

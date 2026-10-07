@@ -93,6 +93,13 @@ function runtimeState(phase='idle',patch:Record<string,unknown>={}){
 }
 function geometry():LocalizationSessionGeometry{return{available:true,pods:[{pod:1,computed:true,leveled:true,computed_at_ms:1234}]};}
 function listing(){return{geometry:geometry()};}
+const BASE_ID='scan-crc32:aaaaaaaa';
+const CONTINUE={scanIntent:'continue' as const,baseScanFrameId:BASE_ID};
+/** The decoder is mocked as JSON.parse here, so the fixture must already satisfy the applicability predicate. */
+function registrationFixture(session:string,patch:Record<string,unknown>={}){
+  return{session,schema:1,valid:true,geometry_computed_at_ms:1234,scan_frame_id:BASE_ID,sensor_to_scan:[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],residual_rms_m:0.01,threshold_m:0.05,tier:'minimum',reason:null,...patch};
+}
+function registrationJson(session:string,patch:Record<string,unknown>={}):string{return JSON.stringify(registrationFixture(session,patch));}
 async function settleReact():Promise<void>{for(let i=0;i<6;i+=1)await Promise.resolve();}
 async function mountPanel(props:ComponentProps<typeof XrRuntimePanel>={}){
   let renderer!:ReactTestRenderer;await act(async()=>{renderer=create(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,props)));await settleReact();});mounted.push(renderer);return renderer;
@@ -199,35 +206,86 @@ describe('XrRuntimePanel lifecycle',()=>{
     expect(worker.terminated).toBe(1);expect(runtime.tagListeners.size).toBe(0);
   });
 
-  it('still saves registration once on explicit Finish and hands off the runtime snapshot',async()=>{
-    const registration=vi.fn();const ready=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:registration,onPointCloudReady:ready});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+  it('hands the Finished scan over at once, delivers the tag result separately and never saves registration itself',async()=>{
+    const registration=vi.fn();const tagResult=vi.fn();const ready=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:registration,onPointCloudReady:ready,onTagRegistrationResult:tagResult});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
     await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
     runtime.emitTagFrame({width:1,height:1,rgba:new Uint8Array(4),capturedAtMs:1,projectionMatrix:new Float32Array(16),worldFromView:new Float32Array(16)});emitTagDetection(worker);await act(async()=>{await settleReact();});
+    registration.mockClear();ready.mockClear();
     await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
-    expect(panelHarness.saveSessionRegistration).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot);unmount(renderer);
+    expect(ready).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot);
+    expect(tagResult).toHaveBeenCalledTimes(1);expect(tagResult.mock.calls[0][1]).toBe(true);expect(tagResult.mock.calls[0][0]).toMatchObject({schema:1,scan_frame_id:null});
+    expect(ready.mock.invocationCallOrder[0]).toBeLessThan(tagResult.mock.invocationCallOrder[0]);
+    expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();expect(registration).not.toHaveBeenCalled();unmount(renderer);
+  });
+
+  it('does not wait for a stalled detector to hand over the scan, then cancels it after the bounded window',async()=>{
+    vi.useFakeTimers();
+    try{
+      const ready=vi.fn();const tagResult=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onPointCloudReady:ready,onTagRegistrationResult:tagResult});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+      await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+      runtime.emitTagFrame({width:1,height:1,rgba:new Uint8Array(4),capturedAtMs:1,projectionMatrix:new Float32Array(16),worldFromView:new Float32Array(16)});
+      await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});
+      expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot);expect(tagResult).not.toHaveBeenCalled();expect(worker.terminated).toBe(0);
+      await act(async()=>{await vi.advanceTimersByTimeAsync(2999);await settleReact();});expect(tagResult).not.toHaveBeenCalled();
+      await act(async()=>{await vi.advanceTimersByTimeAsync(2);await settleReact();});
+      expect(worker.terminated).toBe(1);expect(tagResult).toHaveBeenCalledTimes(1);expect(tagResult.mock.calls[0][1]).toBe(true);
+      emitTagDetection(worker);await act(async()=>{await settleReact();});expect(tagResult).toHaveBeenCalledTimes(1);
+      expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();unmount(renderer);
+    }finally{vi.useRealTimers();}
+  });
+
+  it('never promotes an interrupted session: no scan hand-over and no tag result',async()=>{
+    const ready=vi.fn();const tagResult=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onPointCloudReady:ready,onTagRegistrationResult:tagResult});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    ready.mockClear();await act(async()=>{runtime.setPhase('interrupted',{pointCount:5});await settleReact();});await act(async()=>{await settleReact();});
+    expect(ready).not.toHaveBeenCalled();expect(tagResult).not.toHaveBeenCalled();expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();unmount(renderer);
+  });
+
+  it('does not restore or republish the previous registration for a Fresh scan',async()=>{
+    panelHarness.loadSessionRegistration.mockResolvedValue(registrationJson('OLD'));const callback=vi.fn();
+    const renderer=await mountPanel({scanIntent:'fresh',baseScanFrameId:BASE_ID,objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:callback});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    expect(panelHarness.loadSessionRegistration).not.toHaveBeenCalled();expect(callback).not.toHaveBeenCalled();unmount(renderer);
+  });
+
+  it('republishes a Continue registration only when bound to the base scan and the frozen geometry',async()=>{
+    const cases:Array<[string,Record<string,unknown>,string|null]>=[
+      ['applicable',{},null],
+      ['geometry mismatch',{geometry_computed_at_ms:999},translate('en','xr.tag.registration.reason.geometry_mismatch')],
+      ['wrong scan generation',{scan_frame_id:'scan-crc32:bbbbbbbb'},translate('en','xr.tag.registration.reason.scan_mismatch')],
+      ['legacy unbound',{scan_frame_id:null},translate('en','xr.tag.registration.reason.scan_unbound')],
+      ['over threshold',{residual_rms_m:0.3},translate('en','xr.tag.registration.reason.quality')],
+    ];
+    for(const [,patch,reason] of cases){
+      panelHarness.runtimes=[];panelHarness.loadSessionRegistration.mockResolvedValue(registrationJson('S',patch));const callback=vi.fn();
+      const renderer=await mountPanel({...CONTINUE,objectId:'OBJ_A',sessionId:'S',onRegistrationChange:callback});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+      const notices=renderer.root.findAll((node)=>node.props.role==='status').map(textOf).join(' ');
+      expect(callback).toHaveBeenCalledTimes(1);
+      if(reason===null){expect(callback.mock.calls[0][0]).toMatchObject({session:'S'});expect(notices).not.toContain('was not applied');}
+      else{expect(callback.mock.calls[0][0]).toBeNull();expect(notices).toContain(reason);}
+      unmount(renderer);
+    }
   });
 
   it('does not issue a registration request when geometry resolves after unmount',async()=>{
     const pending=deferred<ReturnType<typeof listing>>();panelHarness.fetchLocalizationRuns.mockReturnValue(pending.promise);const callback=vi.fn();
-    const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:callback});const runtime=panelHarness.runtimes[0];
+    const renderer=await mountPanel({...CONTINUE,objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:callback});const runtime=panelHarness.runtimes[0];
     await act(async()=>{runtime.setPhase('starting');await settleReact();});expect(panelHarness.fetchLocalizationRuns).toHaveBeenCalledTimes(1);
     unmount(renderer);pending.resolve(listing());await settleReact();expect(panelHarness.loadSessionRegistration).not.toHaveBeenCalled();expect(callback).not.toHaveBeenCalled();
   });
 
   it('ignores a deferred registration response after unmount',async()=>{
     const pending=deferred<string|null>();panelHarness.loadSessionRegistration.mockReturnValue(pending.promise);const callback=vi.fn();
-    const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:callback});const runtime=panelHarness.runtimes[0];
+    const renderer=await mountPanel({...CONTINUE,objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:callback});const runtime=panelHarness.runtimes[0];
     await act(async()=>{runtime.setPhase('starting');await settleReact();});expect(panelHarness.loadSessionRegistration).toHaveBeenCalledTimes(1);
-    unmount(renderer);callback.mockClear();pending.resolve(JSON.stringify({session:'A'}));await settleReact();expect(callback).not.toHaveBeenCalled();
+    unmount(renderer);callback.mockClear();pending.resolve(registrationJson('A'));await settleReact();expect(callback).not.toHaveBeenCalled();
   });
 
   it('keeps session B geometry and registration when session A resolves last',async()=>{
     const aGeometry=deferred<ReturnType<typeof listing>>();const callbackA=vi.fn();const callbackB=vi.fn();
     panelHarness.fetchLocalizationRuns.mockImplementation((_objectId:string,sessionId:string)=>sessionId==='A'?aGeometry.promise:Promise.resolve(listing()));
-    panelHarness.loadSessionRegistration.mockImplementation(async(_objectId:string,sessionId:string)=>JSON.stringify({session:sessionId}));
-    let renderer=await mountPanel({objectId:'OBJ_A',sessionId:'A',onRegistrationChange:callbackA});const runtime=panelHarness.runtimes[0];
+    panelHarness.loadSessionRegistration.mockImplementation(async(_objectId:string,sessionId:string)=>registrationJson(sessionId));
+    let renderer=await mountPanel({...CONTINUE,objectId:'OBJ_A',sessionId:'A',onRegistrationChange:callbackA});const runtime=panelHarness.runtimes[0];
     await act(async()=>{runtime.setPhase('starting');await settleReact();});
-    await act(async()=>{renderer.update(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,{objectId:'OBJ_B',sessionId:'B',onRegistrationChange:callbackB})));await settleReact();});
+    await act(async()=>{renderer.update(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,{...CONTINUE,objectId:'OBJ_B',sessionId:'B',onRegistrationChange:callbackB})));await settleReact();});
     await act(async()=>{await settleReact();});expect(panelHarness.fetchLocalizationRuns).toHaveBeenCalledTimes(2);
     aGeometry.resolve(listing());await act(async()=>{await settleReact();});
     expect(panelHarness.loadSessionRegistration.mock.calls.map((call)=>call[1])).toEqual(['B']);
@@ -237,20 +295,20 @@ describe('XrRuntimePanel lifecycle',()=>{
 
   it('does not let session A registration reach session B callback when A resolves last',async()=>{
     const aRegistration=deferred<string|null>();const callbackA=vi.fn();const callbackB=vi.fn();
-    panelHarness.loadSessionRegistration.mockImplementation((_objectId:string,sessionId:string)=>sessionId==='A'?aRegistration.promise:Promise.resolve(JSON.stringify({session:sessionId})));
-    let renderer=await mountPanel({objectId:'OBJ_A',sessionId:'A',onRegistrationChange:callbackA});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    panelHarness.loadSessionRegistration.mockImplementation((_objectId:string,sessionId:string)=>sessionId==='A'?aRegistration.promise:Promise.resolve(registrationJson(sessionId)));
+    let renderer=await mountPanel({...CONTINUE,objectId:'OBJ_A',sessionId:'A',onRegistrationChange:callbackA});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
     expect(panelHarness.loadSessionRegistration.mock.calls.map((call)=>call[1])).toEqual(['A']);
-    await act(async()=>{renderer.update(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,{objectId:'OBJ_B',sessionId:'B',onRegistrationChange:callbackB})));await settleReact();});
+    await act(async()=>{renderer.update(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,{...CONTINUE,objectId:'OBJ_B',sessionId:'B',onRegistrationChange:callbackB})));await settleReact();});
     expect(callbackA).not.toHaveBeenCalled();expect(callbackB).toHaveBeenCalledTimes(1);expect(callbackB.mock.calls[0][0]).toMatchObject({session:'B'});
-    aRegistration.resolve(JSON.stringify({session:'A'}));await act(async()=>{await settleReact();});
+    aRegistration.resolve(registrationJson('A'));await act(async()=>{await settleReact();});
     expect(callbackA).not.toHaveBeenCalled();expect(callbackB).toHaveBeenCalledTimes(1);unmount(renderer);
   });
 
   it('does not apply a stale registration error after switching sessions',async()=>{
     const oldRegistration=deferred<string|null>();const callback=vi.fn();
-    panelHarness.loadSessionRegistration.mockImplementation((_objectId:string,sessionId:string)=>sessionId==='A'?oldRegistration.promise:Promise.resolve(JSON.stringify({session:'B'})));
-    let renderer=await mountPanel({objectId:'OBJ_A',sessionId:'A',onRegistrationChange:callback});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
-    await act(async()=>{renderer.update(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,{objectId:'OBJ_B',sessionId:'B',onRegistrationChange:callback})));await settleReact();});
+    panelHarness.loadSessionRegistration.mockImplementation((_objectId:string,sessionId:string)=>sessionId==='A'?oldRegistration.promise:Promise.resolve(registrationJson('B')));
+    let renderer=await mountPanel({...CONTINUE,objectId:'OBJ_A',sessionId:'A',onRegistrationChange:callback});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{renderer.update(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,{...CONTINUE,objectId:'OBJ_B',sessionId:'B',onRegistrationChange:callback})));await settleReact();});
     expect(callback).toHaveBeenCalledTimes(1);expect(callback.mock.calls[0][0]).toMatchObject({session:'B'});
     oldRegistration.reject(new Error('retired registration response'));await act(async()=>{await settleReact();});
     expect(renderer.root.findAll((node)=>node.props.role==='alert').map(textOf).join(' ')).not.toContain('retired registration');unmount(renderer);

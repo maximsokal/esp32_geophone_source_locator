@@ -11,6 +11,8 @@ static localization_run_record_t solved_record(void)
 {
     localization_run_record_t record;
     memset(&record, 0, sizeof(record));
+    record.schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
+    record.scan_provenance_present = true;
 
     snprintf(record.object_id, sizeof(record.object_id), "OBJ_0007");
     snprintf(record.session_id, sizeof(record.session_id), "S000003");
@@ -44,6 +46,8 @@ static localization_run_record_t rejected_record(void)
 {
     localization_run_record_t record;
     memset(&record, 0, sizeof(record));
+    record.schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
+    record.scan_provenance_present = true;
 
     snprintf(record.object_id, sizeof(record.object_id), "OBJ_0007");
     snprintf(record.session_id, sizeof(record.session_id), "S000003");
@@ -161,6 +165,8 @@ static void test_old_rejected_record_without_failure_class_reads_as_none(void)
     assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
     assert(parsed.schema_version == LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY);
     assert(!parsed.solved && parsed.failure_class == LOCALIZATION_FAILURE_CLASS_NONE);
+    assert(!parsed.scan_provenance_present && !parsed.scan_constraint_applied);
+    assert(strstr(json, "scan_constraint_applied") == NULL);
     free(json);
 }
 
@@ -540,8 +546,8 @@ static void test_uncertainty_round_trips_and_stays_optional(void)
 }
 
 
-/* MAX-301 S4 (new behaviour): the range and method status round-trip in v5. */
-static void test_velocity_range_and_status_round_trip_in_v5(void)
+/* MAX-301 S4 (new behaviour): range/status and scan provenance round-trip in v6. */
+static void test_velocity_range_and_status_round_trip_in_v6(void)
 {
     localization_run_record_t original = solved_record();
     original.velocity_range_min_mps = 3000.0f;
@@ -553,14 +559,15 @@ static void test_velocity_range_and_status_round_trip_in_v5(void)
 
     char *json = NULL;
     assert(localization_run_record_to_json(&original, &json) == ESP_OK);
-    assert(strstr(json, "\"schema_version\":5") != NULL);
+    assert(strstr(json, "\"schema_version\":6") != NULL);
     assert(strstr(json, "\"velocity_range\"") != NULL);
     assert(strstr(json, "\"source\":\"preset\"") != NULL);
     assert(strstr(json, "\"velocity_status\":\"at_bound\"") != NULL);
 
     localization_run_record_t parsed;
     assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
-    assert(parsed.schema_version == 5U);
+    assert(parsed.schema_version == 6U);
+    assert(parsed.scan_provenance_present && !parsed.scan_constraint_applied);
     assert(parsed.velocity_range_min_mps == 3000.0f);
     assert(parsed.velocity_range_max_mps == 4800.0f);
     assert(fabsf(parsed.velocity_range_vp_vs_min - 1.55f) < 1e-6f);
@@ -574,6 +581,93 @@ static void test_velocity_range_and_status_round_trip_in_v5(void)
     assert(localization_run_record_to_json(&plain, &json) == ESP_OK);
     assert(strstr(json, "velocity_range") == NULL);
     assert(strstr(json, "velocity_status") == NULL);
+    free(json);
+}
+
+
+static void test_scan_provenance_round_trips_in_v6(void)
+{
+    localization_run_record_t original = solved_record();
+    original.scan_constraint_applied = true;
+    snprintf(original.scan_frame_id, sizeof(original.scan_frame_id), "scan-crc32:deadbeef");
+    original.occupancy_created_at_ms = 234567U;
+    original.registration_geometry_computed_at_ms = 123456U;
+
+    char *json = NULL;
+    assert(localization_run_record_to_json(&original, &json) == ESP_OK);
+    assert(strstr(json, "\"scan_constraint_applied\":true") != NULL);
+    assert(strstr(json, "\"scan_frame_id\":\"scan-crc32:deadbeef\"") != NULL);
+    assert(strstr(json, "\"occupancy_created_at_ms\":234567") != NULL);
+    assert(strstr(json, "\"registration_geometry_computed_at_ms\":123456") != NULL);
+
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.schema_version == LOCALIZATION_RUN_SCHEMA_VERSION);
+    assert(parsed.scan_provenance_present && parsed.scan_constraint_applied);
+    assert(strcmp(parsed.scan_frame_id, original.scan_frame_id) == 0);
+    assert(parsed.occupancy_created_at_ms == original.occupancy_created_at_ms);
+    assert(parsed.registration_geometry_computed_at_ms ==
+        original.registration_geometry_computed_at_ms);
+    free(json);
+
+    localization_run_record_t unconstrained = solved_record();
+    assert(localization_run_record_to_json(&unconstrained, &json) == ESP_OK);
+    assert(strstr(json, "\"scan_constraint_applied\":false") != NULL);
+    assert(strstr(json, "\"scan_frame_id\":null") != NULL);
+    assert(strstr(json, "\"occupancy_created_at_ms\":0") != NULL);
+    assert(strstr(json, "\"registration_geometry_computed_at_ms\":0") != NULL);
+    assert(localization_run_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.scan_provenance_present && !parsed.scan_constraint_applied);
+    assert(parsed.scan_frame_id[0] == '\0');
+    assert(parsed.occupancy_created_at_ms == 0U);
+    assert(parsed.registration_geometry_computed_at_ms == 0U);
+    free(json);
+}
+
+
+static char *replace_json_once(const char *json, const char *old_text, const char *new_text)
+{
+    const char *position = strstr(json, old_text);
+    assert(position != NULL);
+    const size_t prefix_length = (size_t)(position - json);
+    const size_t old_length = strlen(old_text);
+    const size_t new_length = strlen(new_text);
+    const size_t json_length = strlen(json);
+    char *result = malloc(json_length - old_length + new_length + 1U);
+    assert(result != NULL);
+    memcpy(result, json, prefix_length);
+    memcpy(result + prefix_length, new_text, new_length);
+    memcpy(
+        result + prefix_length + new_length,
+        position + old_length,
+        json_length - prefix_length - old_length + 1U
+    );
+    return result;
+}
+
+
+static void test_malformed_v6_scan_provenance_is_rejected(void)
+{
+    char *json = NULL;
+    localization_run_record_t record = solved_record();
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+
+    char *broken = replace_json_once(json, ",\"scan_constraint_applied\":false", "");
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(broken, &parsed) == ESP_ERR_INVALID_RESPONSE);
+    free(broken);
+
+    broken = replace_json_once(
+        json, ",\"scan_frame_id\":null", ",\"scan_frame_id\":\"scan-crc32:deadbeef\""
+    );
+    assert(localization_run_record_from_json(broken, &parsed) == ESP_ERR_INVALID_RESPONSE);
+    free(broken);
+
+    broken = replace_json_once(
+        json, ",\"occupancy_created_at_ms\":0", ",\"occupancy_created_at_ms\":-1"
+    );
+    assert(localization_run_record_from_json(broken, &parsed) == ESP_ERR_INVALID_RESPONSE);
+    free(broken);
     free(json);
 }
 
@@ -595,9 +689,39 @@ static void test_v4_record_reads_with_unknown_velocity_range(void)
     localization_run_record_t parsed;
     assert(localization_run_record_from_json(v4, &parsed) == ESP_OK);
     assert(parsed.schema_version == 4U);
+    assert(!parsed.scan_provenance_present && !parsed.scan_constraint_applied);
     assert(parsed.velocity_range_min_mps == 0.0f && parsed.velocity_range_max_mps == 0.0f);
     assert(parsed.velocity_range_source == LOCALIZATION_RUN_VELOCITY_SOURCE_UNKNOWN);
     assert(parsed.velocity_status == LOCALIZATION_RUN_VELOCITY_STATUS_UNKNOWN);
+}
+
+
+static void test_v5_record_reads_without_scan_provenance(void)
+{
+    const char *v4 =
+        "{\"schema_version\":4,\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\","
+        "\"computed_at_ms\":1,\"kind\":\"individual_method\",\"method_name\":\"suea\","
+        "\"method_version\":1,\"channel_mask_used\":15,\"channel_mask_rejected\":0,"
+        "\"dimensionality\":\"capable_3d\",\"geometry_computed_at_ms\":1,"
+        "\"propagation_model_name\":\"\",\"propagation_speed_mps\":400,"
+        "\"propagation_speed_uncertainty_mps\":250,\"confidence_score\":0.5,"
+        "\"solved\":true,\"failure_class\":\"none\",\"uncertainty_too_high\":false,"
+        "\"source_position\":{\"x_m\":1,\"y_m\":2,\"z_m\":-1},\"emission_time_us\":0,"
+        "\"rms_residual_us\":10,\"iterations\":0,\"converged\":false}";
+    char v5[1024];
+    assert(strlen(v4) + 1U <= sizeof(v5));
+    strcpy(v5, v4);
+    char *version = strstr(v5, "\"schema_version\":4");
+    assert(version != NULL);
+    version[strlen("\"schema_version\":")] = '5';
+
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(v5, &parsed) == ESP_OK);
+    assert(parsed.schema_version == LOCALIZATION_RUN_SCHEMA_VERSION_V5);
+    assert(!parsed.scan_provenance_present && !parsed.scan_constraint_applied);
+    assert(parsed.scan_frame_id[0] == '\0');
+    assert(parsed.occupancy_created_at_ms == 0U);
+    assert(parsed.registration_geometry_computed_at_ms == 0U);
 }
 
 
@@ -664,8 +788,11 @@ static void test_inconsistent_run_is_not_a_primary_candidate(void)
 int main(void)
 {
     test_inconsistent_run_is_not_a_primary_candidate();
-    test_velocity_range_and_status_round_trip_in_v5();
+    test_velocity_range_and_status_round_trip_in_v6();
+    test_scan_provenance_round_trips_in_v6();
+    test_malformed_v6_scan_provenance_is_rejected();
     test_v4_record_reads_with_unknown_velocity_range();
+    test_v5_record_reads_without_scan_provenance();
     test_malformed_velocity_range_is_rejected();
     test_solved_record_round_trips();
     test_rejected_record_round_trips_with_reason();

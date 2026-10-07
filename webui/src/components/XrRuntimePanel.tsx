@@ -8,7 +8,6 @@ import {
   isRequestCancellation,
   loadSessionRegistration,
   retryPreemptedRead,
-  saveSessionRegistration,
 } from '../api/deviceApi';
 import type { LocalizationSessionGeometry } from '../api/deviceApi';
 import { StructuralGuideOverlay } from './StructuralGuideOverlay';
@@ -34,7 +33,8 @@ import { defaultRegistrationTagSizes, decodeRegistrationArtifact, encodeRegistra
 import { estimateTagPose } from '../xr/fiducial/tagPose';
 import { fuseTagObservations, type TagObservation, type TagObservationFusion } from '../xr/fiducial/tagObservationFusion';
 import { registerSensorToScan } from '../xr/fiducial/rigidRegistration';
-import { registrationArtifactFromResult, registrationOutcome, tagChipStatuses, tagModeErrorLabel } from '../xr/fiducial/tagModeState';
+import { registrationArtifactFromResult, registrationOutcome, tagChipStatuses, tagModeErrorLabel, TAG_FINALIZE_WINDOW_MS } from '../xr/fiducial/tagModeState';
+import { registrationApplicability, REGISTRATION_INAPPLICABLE_KEYS, type RegistrationInapplicableReason } from '../xr/registrationApplicability';
 import {
   canAttemptImmersiveAr,
   launchImmersiveArFromUserGesture,
@@ -75,7 +75,20 @@ interface XrRuntimePanelProps {
   onSessionActiveChange?: (active:boolean)=>void;
   onPointCloudReady?: (snapshot:ScanPointCloudSnapshot|null)=>void;
   onCapabilitiesChange?: (capabilities:WebXrCapabilities)=>void;
+  /** Restores (Continue, only when applicable) or clears the authoritative registration held by the parent. */
   onRegistrationChange?: (artifact:RegistrationArtifact|null)=>void;
+  /** Intent of the scan being started; Fresh never restores the previous registration. */
+  scanIntent?: ScanStartIntent;
+  /** Identity of the durable base scan a Continue extends; the saved registration must be bound to it. */
+  baseScanFrameId?: string|null;
+  /**
+   * Provisional tag result of this AR session (unbound to any scan). final=true is sent exactly once
+   * after Finish, always after onPointCloudReady, and is the signal that tag finalization is done.
+   */
+  onTagRegistrationResult?: (artifact:RegistrationArtifact|null,final:boolean)=>void;
+}
+function boundedWait(promise:Promise<unknown>,ms:number):Promise<void>{
+  return new Promise<void>((resolve)=>{const timer=setTimeout(resolve,ms);promise.then(()=>{clearTimeout(timer);resolve();},()=>{clearTimeout(timer);resolve();});});
 }
 interface ManualPointerState {
   pointerId:number;startX:number;startY:number;startU:number;startV:number;latestX:number;latestY:number;
@@ -120,20 +133,26 @@ export function XrRuntimePanel({
   onPointCloudReady,
   onCapabilitiesChange,
   onRegistrationChange,
+  scanIntent='fresh',
+  baseScanFrameId=null,
+  onTagRegistrationResult,
 }:XrRuntimePanelProps){
   const {locale}=useLocale();const t=useT();
   const runtime=useMemo(()=>new WebXrRuntime(),[]);const[capabilities,setCapabilities]=useState<WebXrCapabilities|null>(null);const[runtimeState,setRuntimeState]=useState<WebXrRuntimeState>(emptyRuntimeState);const[manualMode,setManualMode]=useState(false);const[aiPriorEnabled,setAiPriorEnabled]=useState(readAiPriorPreference);const[computePreparing,setComputePreparing]=useState(false);const[activeScanIntent,setActiveScanIntent]=useState<ScanStartIntent>('fresh');const[,setAiPriorRevision]=useState(0);const[,setCertifiedGeometryRevision]=useState(0);
   const[tagModeEnabled,setTagModeEnabled]=useState(false);const[tagGeometry,setTagGeometry]=useState<LocalizationSessionGeometry|null>(null);const[tagGeometryAt,setTagGeometryAt]=useState<number|null>(null);const[tagGeometryLoading,setTagGeometryLoading]=useState(false);const[tagModeError,setTagModeError]=useState<string|null>(null);const[tagFusion,setTagFusion]=useState<TagObservationFusion>({byTagId:{},rejectedCount:0});const[tagRegistrationLabel,setTagRegistrationLabel]=useState<Parameters<typeof registrationOutcome>[0]>(null);
   const[manualCursor,setManualCursor]=useState<ManualCursorState>({u:.5,v:.5,phase:'scan-more',preview:null,distanceMeters:null});const manualPointer=useRef<ManualPointerState|null>(null);const lastPreviewUpdateMs=useRef(Number.NEGATIVE_INFINITY);const previousManualCount=useRef(0);const previousRuntimePhase=useRef<XrRuntimePhase>('idle');
   const onSessionActiveChangeRef=useRef(onSessionActiveChange),onPointCloudReadyRef=useRef(onPointCloudReady),onCapabilitiesChangeRef=useRef(onCapabilitiesChange),onRegistrationChangeRef=useRef(onRegistrationChange);
-  const tagGeometryRef=useRef<{objectId:string;sessionId:string;geometry:LocalizationSessionGeometry;geometryComputedAtMs:number}|null>(null);const tagObservationsRef=useRef<TagObservation[]>([]);const tagClientRef=useRef<TagDetectorClient|null>(null);const tagFramesUnsubscribeRef=useRef<(()=>void)|null>(null);const tagTaskRef=useRef<Promise<void>|null>(null);const tagModeActiveRef=useRef(false);const tagStopRef=useRef<()=>Promise<void>>(async()=>undefined);const tagGeometryEpoch=useRef(0);
+  const tagGeometryRef=useRef<{objectId:string;sessionId:string;geometry:LocalizationSessionGeometry;geometryComputedAtMs:number}|null>(null);const tagObservationsRef=useRef<TagObservation[]>([]);const tagClientRef=useRef<TagDetectorClient|null>(null);const tagFramesUnsubscribeRef=useRef<(()=>void)|null>(null);const tagTaskRef=useRef<Promise<void>|null>(null);const tagModeActiveRef=useRef(false);const tagStopRef=useRef<(options?:{discard?:boolean})=>Promise<RegistrationArtifact|null>>(async()=>null);const tagGeometryEpoch=useRef(0);
+  const scanIntentRef=useRef<ScanStartIntent>(scanIntent);const baseScanFrameIdRef=useRef<string|null>(baseScanFrameId);baseScanFrameIdRef.current=baseScanFrameId;
+  const onTagRegistrationResultRef=useRef(onTagRegistrationResult);const sessionTagResultRef=useRef<RegistrationArtifact|null>(null);const tagSessionToken=useRef(0);
+  const[staleRegistrationReason,setStaleRegistrationReason]=useState<RegistrationInapplicableReason|null>(null);
   const tagMountedRef=useRef(true);const tagTargetRef=useRef({objectId,sessionId});tagTargetRef.current={objectId,sessionId};const previousTagTargetRef=useRef({objectId,sessionId});
   const bleMountedRef=useRef(true);const bleIntentRef=useRef(0);
   const teardownTagModeForUnmount=():void=>{
     tagModeActiveRef.current=false;tagFramesUnsubscribeRef.current?.();tagFramesUnsubscribeRef.current=null;runtime.setTagCaptureEnabled(false);
     tagClientRef.current?.dispose();tagClientRef.current=null;tagTaskRef.current=null;tagObservationsRef.current=[];tagGeometryRef.current=null;
   };
-  useEffect(()=>{onSessionActiveChangeRef.current=onSessionActiveChange;},[onSessionActiveChange]);useEffect(()=>{onPointCloudReadyRef.current=onPointCloudReady;},[onPointCloudReady]);useEffect(()=>{onCapabilitiesChangeRef.current=onCapabilitiesChange;},[onCapabilitiesChange]);useEffect(()=>{onRegistrationChangeRef.current=onRegistrationChange;},[onRegistrationChange]);
+  useEffect(()=>{onSessionActiveChangeRef.current=onSessionActiveChange;},[onSessionActiveChange]);useEffect(()=>{onPointCloudReadyRef.current=onPointCloudReady;},[onPointCloudReady]);useEffect(()=>{onCapabilitiesChangeRef.current=onCapabilitiesChange;},[onCapabilitiesChange]);useEffect(()=>{onRegistrationChangeRef.current=onRegistrationChange;},[onRegistrationChange]);useEffect(()=>{onTagRegistrationResultRef.current=onTagRegistrationResult;},[onTagRegistrationResult]);useEffect(()=>{scanIntentRef.current=scanIntent;},[scanIntent]);
   useEffect(()=>optionalMonocularPrior.subscribe(()=>setAiPriorRevision((revision)=>revision+1)),[]);
   useEffect(()=>subscribeCertifiedGuideRegistry(()=>setCertifiedGeometryRevision((revision)=>revision+1)),[]);
   useEffect(()=>{optionalMonocularPrior.setEnabled(aiPriorEnabled);},[aiPriorEnabled]);
@@ -147,7 +166,7 @@ export function XrRuntimePanel({
     const retargeting=targetChanged&&(runtimeState.phase==='starting'||runtimeState.phase==='running');
     if(bootstrapping||retargeting){
       if(bootstrapping)onPointCloudReadyRef.current?.(null);
-      const epoch=++tagGeometryEpoch.current;const runtimeGeneration=runtime.getLifecycleGeneration();tagGeometryRef.current=null;setTagGeometry(null);setTagGeometryAt(null);setTagGeometryLoading(true);setTagModeError(null);setTagRegistrationLabel(null);
+      const epoch=++tagGeometryEpoch.current;const runtimeGeneration=runtime.getLifecycleGeneration();tagGeometryRef.current=null;setTagGeometry(null);setTagGeometryAt(null);setTagGeometryLoading(true);setTagModeError(null);setTagRegistrationLabel(null);setStaleRegistrationReason(null);if(bootstrapping)sessionTagResultRef.current=null;
       const ownsRequest=():boolean=>tagMountedRef.current&&epoch===tagGeometryEpoch.current&&tagTargetRef.current.objectId===objectId&&tagTargetRef.current.sessionId===sessionId&&runtime.getLifecycleGeneration()===runtimeGeneration&&['starting','running'].includes(runtime.getState().phase);
       if(objectId===null||sessionId===null){setTagGeometryLoading(false);setTagModeError('Open a recording before using tag registration.');return;}
       void (async()=>{
@@ -155,16 +174,29 @@ export function XrRuntimePanel({
           const listing=await retryPreemptedRead(()=>fetchLocalizationRuns(objectId,sessionId));if(!ownsRequest())return;
           const geometry=listing.geometry;const geometryComputedAtMs=Math.max(0,...geometry.pods.filter((pod)=>pod.computed).map((pod)=>pod.computed_at_ms??0));
           tagGeometryRef.current={objectId,sessionId,geometry,geometryComputedAtMs};setTagGeometry(geometry);setTagGeometryAt(geometryComputedAtMs);setTagGeometryLoading(false);
+          /* MAX-405: Fresh replaces the scan frame, so the previous registration is never restored for it. */
+          if(scanIntentRef.current!=='continue')return;
           try{
             const registrationJson=await loadSessionRegistration(objectId,sessionId);if(!ownsRequest())return;
-            const registration=registrationJson===null?null:decodeRegistrationArtifact(registrationJson);onRegistrationChangeRef.current?.(registration);if(registration!==null)setTagRegistrationLabel(registration);
+            const registration=registrationJson===null?null:decodeRegistrationArtifact(registrationJson);
+            const applicability=registrationApplicability(registration,{geometryComputedAtMs:geometryComputedAtMs>0?geometryComputedAtMs:null,scanFrameId:baseScanFrameIdRef.current});
+            if(registration===null||applicability.ok){onRegistrationChangeRef.current?.(registration);if(registration!==null)setTagRegistrationLabel(registration);}
+            else{onRegistrationChangeRef.current?.(null);setStaleRegistrationReason(applicability.reason);}
           }catch(reason){if(!ownsRequest())return;if(isRequestCancellation(reason))return;setTagModeError(`Saved anchor status unavailable: ${reason instanceof Error?reason.message:String(reason)}`);}
         }catch(reason){if(!ownsRequest())return;setTagGeometryLoading(false);if(isRequestCancellation(reason))return;setTagModeError(`Frozen session geometry unavailable: ${reason instanceof Error?reason.message:String(reason)}`);}
       })();
     }else if((runtimeState.phase==='ended'||runtimeState.phase==='interrupted')&&previous!==runtimeState.phase){
       tagGeometryEpoch.current+=1;
-      void tagStopRef.current().then(()=>{if(tagMountedRef.current&&runtimeState.phase==='ended'&&runtimeState.pointCount>0)onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot());});
-    }else if(runtimeState.phase==='error'&&previous!==runtimeState.phase){tagGeometryEpoch.current+=1;void tagStopRef.current();}
+      const finished=runtimeState.phase==='ended'&&runtimeState.pointCount>0;
+      /* MAX-403: the Finished scan is primary evidence and is handed over at once; tag finalization is a separate bounded stage. */
+      if(finished&&tagMountedRef.current)onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot());
+      void (async()=>{
+        let artifact:RegistrationArtifact|null=null;
+        try{artifact=await tagStopRef.current({discard:!finished});}catch{artifact=null;}
+        if(!tagMountedRef.current||!finished)return;
+        onTagRegistrationResultRef.current?.(artifact??sessionTagResultRef.current,true);
+      })();
+    }else if(runtimeState.phase==='error'&&previous!==runtimeState.phase){tagGeometryEpoch.current+=1;void tagStopRef.current({discard:true});}
   },[runtime,runtimeState.phase,runtimeState.pointCount,objectId,sessionId]);
   useEffect(()=>{if(runtimeState.manualPointCount>previousManualCount.current)setManualCursor((current)=>({...current,phase:'confirmed'}));previousManualCount.current=runtimeState.manualPointCount;},[runtimeState.manualPointCount]);
   useEffect(()=>{if(runtimeState.manualPointError!==null)setManualCursor((current)=>({...current,phase:'scan-more'}));},[runtimeState.manualPointError]);
@@ -186,22 +218,24 @@ export function XrRuntimePanel({
     if(!bleMountedRef.current||intent!==bleIntentRef.current)return;setBleActive(started);clientDiagnostics.info('XR_BLE_RSSI',{enabled:started,support:bleSupport});void clientDiagnostics.flush();
   };
 
-  const stopTagMode=async():Promise<void>=>{
-    if(!tagModeActiveRef.current)return;
+  const stopTagMode=async(options:{discard?:boolean}={}):Promise<RegistrationArtifact|null>=>{
+    if(!tagModeActiveRef.current)return null;
     tagModeActiveRef.current=false;setTagModeEnabled(false);runtime.setTagCaptureEnabled(false);tagFramesUnsubscribeRef.current?.();tagFramesUnsubscribeRef.current=null;
-    const pending=tagTaskRef.current;if(pending!==null)await pending.catch(()=>undefined);tagTaskRef.current=null;if(!tagMountedRef.current)return;
+    const pending=tagTaskRef.current;
+    /* A stalled detector gets a bounded window; its worker is then disposed and a late result is ignored (capture is already inactive). */
+    if(pending!==null&&options.discard!==true)await boundedWait(pending,TAG_FINALIZE_WINDOW_MS);
+    tagTaskRef.current=null;
     tagClientRef.current?.dispose();tagClientRef.current=null;
+    if(!tagMountedRef.current||options.discard===true)return null;
     const bound=tagGeometryRef.current;
-    if(bound===null||bound.objectId!==objectId||bound.sessionId!==sessionId){setTagModeError('Frozen session geometry is unavailable; tag observations were not registered.');return;}
+    if(bound===null||bound.objectId!==objectId||bound.sessionId!==sessionId){setTagModeError('Frozen session geometry is unavailable; tag observations were not registered.');return null;}
     const fusion=fuseTagObservations(tagObservationsRef.current,{minObservations:5});setTagFusion(fusion);
     const result=registerSensorToScan({tags:fusion.byTagId,geometry:bound.geometry,geometryComputedAtMs:bound.geometryComputedAtMs});
     const artifact=registrationArtifactFromResult(result,fusion,defaultRegistrationTagSizes(),bound.geometryComputedAtMs,Date.now());
-    const json=encodeRegistrationArtifact(artifact);setTagRegistrationLabel(result);onRegistrationChangeRef.current?.(artifact);
-    try{
-      const saved=await saveSessionRegistration(bound.objectId,bound.sessionId,json);if(!tagMountedRef.current)return;
-      if(saved?.ok!==true){setTagModeError(`Registration result is in memory but could not be saved: ${saved?.error??'Registration artifact was not accepted.'}`);return;}
-      setTagModeError(null);
-    }catch(reason){if(tagMountedRef.current)setTagModeError(`Registration result is in memory but could not be saved: ${reason instanceof Error?reason.message:String(reason)}`);}
+    /* Persistence is a separate stage owned by the parent after the scan commit (it needs the committed scan id). */
+    try{encodeRegistrationArtifact(artifact);}catch{setTagModeError('Registration artifact was not accepted.');return null;}
+    setTagRegistrationLabel(result);setTagModeError(null);
+    return artifact;
   };
 
   tagStopRef.current=stopTagMode;
@@ -212,11 +246,12 @@ export function XrRuntimePanel({
     const client=new TagDetectorClient();
     if(!client.workerBacked){client.dispose();runtime.setTagCaptureEnabled(false);setTagModeError('AprilTag detector worker could not start.');return;}
     tagObservationsRef.current=[];setTagFusion({byTagId:{},rejectedCount:0});setTagRegistrationLabel(null);setTagModeError(null);
+    const token=++tagSessionToken.current;
     tagClientRef.current=client;tagModeActiveRef.current=true;setTagModeEnabled(true);
     tagFramesUnsubscribeRef.current=runtime.subscribeTagFrames((frame)=>{
       if(!tagModeActiveRef.current||client.busy)return;
       const task=client.detect(frame).then((detected)=>{
-        if(detected===null||!tagModeActiveRef.current)return;
+        if(detected===null||!tagModeActiveRef.current||tagSessionToken.current!==token)return;
         const observations:TagObservation[]=[];
         for(const detection of detected.detections){
           const size=defaultRegistrationTagSizes()[String(detection.tagId) as '0'|'1'|'2'|'3'|'4'];
@@ -230,7 +265,10 @@ export function XrRuntimePanel({
     });
   };
 
-  const toggleTagMode=():void=>{if(tagModeActiveRef.current)void stopTagMode();else startTagMode();};
+  const toggleTagMode=():void=>{
+    if(!tagModeActiveRef.current){startTagMode();return;}
+    void stopTagMode().then((artifact)=>{if(artifact===null||!tagMountedRef.current)return;sessionTagResultRef.current=artifact;onTagRegistrationResultRef.current?.(artifact,false);});
+  };
   const tagChips=tagChipStatuses(tagFusion,locale);
   const tagUnavailableReason=objectId===null||sessionId===null?t('xr.tag.open_recording'):tagGeometryLoading?t('xr.tag.loading_geometry'):tagGeometry===null||!tagGeometry.available||tagGeometryAt===null||tagGeometryAt<=0?t('xr.tag.geometry_unavailable'):capabilities?.rawXrRgbApi===false?t('xr.tag.camera_unavailable'):null;
 
@@ -280,7 +318,7 @@ export function XrRuntimePanel({
   const startPreparedScan=async(intent:ScanStartIntent):Promise<void>=>{
     if(computePreparing||!canStart)return;
     if(onScanIntent?.(intent)===false)return;
-    setActiveScanIntent(intent);
+    setActiveScanIntent(intent);scanIntentRef.current=intent;sessionTagResultRef.current=null;
     setComputePreparing(true);
     try{
       await launchImmersiveArFromUserGesture({beginScan:()=>liveComputeScheduler.beginScan(),startRuntime:()=>runtime.start(),prepareCompute:()=>liveComputeScheduler.prepare(),onPrepared:(prepared)=>{clientDiagnostics.info('XR_COMPUTE_BUDGET_PREPARED',{maximumWorkers:prepared.maximumBudget,effectiveWorkers:prepared.effectiveBudget,pressure:prepared.pressure,degraded:prepared.degraded,scanIntent:intent});void clientDiagnostics.flush();}});
@@ -334,6 +372,7 @@ export function XrRuntimePanel({
         {running&&!tagModeEnabled&&tagUnavailableReason!==null&&<div className="xr-overlay-hint">{t('xr.tag.unavailable',{reason:tagUnavailableReason})}</div>}
         {tagModeEnabled&&<div className="xr-manual-status" aria-label={t('xr.tag.observations')}>{tagChips.map((chip)=><span key={chip.tagId} className={`xr-manual-toggle ${chip.status}`}>{chip.text}</span>)}</div>}
         {tagModeError!==null&&<div className="xr-overlay-warning" role="status">{tagModeErrorLabel(tagModeError,locale)}</div>}
+        {staleRegistrationReason!==null&&<div className="xr-overlay-warning" role="status">{t('xr.tag.registration.stale',{reason:t(REGISTRATION_INAPPLICABLE_KEYS[staleRegistrationReason])})}</div>}
         {tagRegistrationLabel!==null&&<div className="xr-overlay-hint" role="status">{registrationOutcome(tagRegistrationLabel,locale)}</div>}
         <button className="xr-finish-button" type="button" onClick={()=>void runtime.stop()}>{t('xr.finish_save')}</button>
       </div>

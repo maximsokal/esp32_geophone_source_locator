@@ -42,6 +42,7 @@ const GOLDEN_OPTIONS = {
     geometry_computed_at_ms: 123456,
     sensor_to_scan: [1, 0, 0, 0.5, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
     residual_m: 0.01,
+    threshold_m: 0.05,
   },
 };
 
@@ -121,6 +122,15 @@ describe('compact occupancy solver artifact (MAX-162)', () => {
     const bytes = encodeOccupancySolverArtifact(goldenSnapshot(), GOLDEN_OPTIONS);
     bytes[bytes.length - 1] ^= 0xff;
     expect(() => decodeOccupancySolverArtifact(bytes)).toThrow(/checksum/);
+  });
+
+  it('writes threshold_m and refuses a registration whose residual exceeds it or that lacks one', () => {
+    const decoded = decodeOccupancySolverArtifact(encodeOccupancySolverArtifact(goldenSnapshot(), GOLDEN_OPTIONS));
+    expect(decoded.header.registration?.threshold_m).toBe(0.05);
+    const withReg = (patch: Record<string, unknown>) => ({ ...GOLDEN_OPTIONS, registration: { ...GOLDEN_OPTIONS.registration, ...patch } });
+    expect(() => encodeOccupancySolverArtifact(goldenSnapshot(), withReg({ residual_m: 0.3 }))).toThrow(/threshold/i);
+    expect(() => encodeOccupancySolverArtifact(goldenSnapshot(), withReg({ threshold_m: undefined }))).toThrow(/threshold/i);
+    expect(() => encodeOccupancySolverArtifact(goldenSnapshot(), withReg({ residual_m: 0.05 }))).not.toThrow();
   });
 
   it('keeps registration null until a real registration exists', () => {

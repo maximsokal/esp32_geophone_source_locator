@@ -163,6 +163,18 @@ export function isConstrainedMethod(methodName: string): boolean {
   return CONSTRAINED_SUFFIXES.some((suffix) => methodName.endsWith(suffix));
 }
 
+export type RunCurrency = 'current' | 'history_previous_scan' | 'history_scan_unknown' | 'unconstrained';
+
+/** Whether a persisted result still belongs to the scan currently being viewed. */
+export function classifyRunCurrency(run: LocalizationRun, currentScanId: string | null): RunCurrency {
+  if (!isConstrainedMethod(run.method_name)) return 'unconstrained';
+  if (typeof run.scan_constraint_applied !== 'boolean') return 'history_scan_unknown';
+  return run.scan_constraint_applied === true && currentScanId !== null && currentScanId.trim().length > 0 &&
+    run.scan_frame_id === currentScanId
+    ? 'current'
+    : 'history_previous_scan';
+}
+
 export function resultVariant(methodName: string): ResultVariant {
   return isConstrainedMethod(methodName) ? 'scan_constrained' : 'unconstrained';
 }

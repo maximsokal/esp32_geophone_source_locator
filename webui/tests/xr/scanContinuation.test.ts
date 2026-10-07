@@ -202,6 +202,10 @@ describe('saved 3D scan continuation', () => {
     expect(result.diagnostics.overlapRatio).toBeGreaterThan(0.7);
     expect(result.diagnostics.rmsMeters).toBeLessThan(0.05);
     expect(result.snapshot.pointCount).toBeGreaterThanOrEqual(base.pointCount * 0.85);
+    // MAX-416: the accepted B->A transform is returned explicitly, not reconstructed from diagnostics.
+    expect(result.extensionToBase.yaw).toBeCloseTo(result.diagnostics.yawRadians, 12);
+    expect([result.extensionToBase.tx, result.extensionToBase.ty, result.extensionToBase.tz]).toEqual([...result.diagnostics.translation]);
+    expect(Math.abs(Math.abs(result.extensionToBase.yaw) - yaw)).toBeLessThan(0.05);
 
     const restored = decodeScanArtifact(encodeScanArtifact(result.snapshot));
     expect(restored.pointCount).toBe(result.snapshot.pointCount);

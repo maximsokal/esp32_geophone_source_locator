@@ -1,5 +1,11 @@
 import type { LocalizationSessionGeometry, LocalizationSessionPodGeometry } from '../api/deviceApi';
 import type { RegistrationArtifact } from './fiducial/registrationArtifact';
+import {
+  registrationApplicability,
+  registrationBindingApplicability,
+  registrationQualityOk,
+  type RegistrationExpectation,
+} from './registrationApplicability';
 import { webXrLocalFloorToProject } from './scanViewportScene';
 
 export type SensorPlacementNode = 'MAIN' | 'G1' | 'G2' | 'G3' | 'G4';
@@ -95,16 +101,33 @@ function registeredPosition(positionM: SensorPlacementPosition, matrix: number[]
 function validTransform(artifact: RegistrationArtifact | null): number[] | null {
   const matrix = artifact?.sensor_to_scan;
   return artifact?.valid === true && (artifact.frame === undefined || artifact.frame === 'webxr_local_floor') &&
+    registrationQualityOk(artifact) &&
     matrix !== null && matrix !== undefined && matrix.length === 16 &&
     matrix.every(Number.isFinite) ? matrix : null;
 }
 
-/** Builds deterministic scan-frame markers from saved CS geometry and tag registration data. */
+/**
+ * Builds deterministic scan-frame markers from saved CS geometry and tag registration data.
+ *
+ * MAX-405: when `expected` (the geometry generation and scan identity the viewer is showing) is
+ * given, a registration is used only if the shared applicability predicate accepts it; a
+ * registration bound to another scan or geometry contributes neither a transform nor tag markers.
+ * Callers that omit `expected` keep the structural checks only.
+ */
 export function buildSensorPlacementScene(
   geometry: LocalizationSessionGeometry | null,
-  registration: RegistrationArtifact | null,
+  registrationInput: RegistrationArtifact | null,
+  expected?: RegistrationExpectation,
 ): SensorPlacementScene {
   const skipped: SkippedSensorPlacement[] = [];
+  let registration = registrationInput;
+  if (expected !== undefined && registration !== null) {
+    const binding = registrationBindingApplicability(registration, expected);
+    if (!binding.ok) {
+      skipped.push({ node: null, reason: `registration_${binding.reason}` });
+      registration = null;
+    }
+  }
   const geometryByNode = new Map<SensorPlacementNode, CsPosition>();
   const invalidGeometryNodes = new Set<SensorPlacementNode>();
 
@@ -144,7 +167,9 @@ export function buildSensorPlacementScene(
     }
   }
 
-  const transform = validTransform(registration);
+  const transform = expected !== undefined && !registrationApplicability(registration, expected).ok
+    ? null
+    : validTransform(registration);
   const bindingByNode = new Map<SensorPlacementNode, { binding: RegistrationArtifact['bindings'][number]; position: SensorPlacementPosition }>();
   const invalidBindingNodes = new Set<SensorPlacementNode>();
   for (const binding of registration?.bindings ?? []) {

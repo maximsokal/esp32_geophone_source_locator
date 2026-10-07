@@ -8,6 +8,7 @@ idf_component_register(
         "ui_power_badge.c"
         "ui_preview3d.c"
         "ui_scan_preview.c"
+        "ui_scan_preview_policy.c"
         "ui_screen_registry.c"
         "ui_navigation.c"
         "ui_boot_error.c"

@@ -718,6 +718,8 @@ static void test_scan_candidate_filter_rejects_free_and_outside(void)
     occupancy.occupied_count = 1U;
     occupancy.registration.present = true;
     occupancy.registration.geometry_computed_at_ms = 42U;
+    occupancy.registration.residual_m = 0.01;
+    occupancy.registration.threshold_m = 0.05;
     const double identity_shift[16] = { 1, 0, 0, 1,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1 };
     memcpy(occupancy.registration.sensor_to_scan, identity_shift, sizeof(identity_shift));
     assert(scan_occupancy_registration_usable(&occupancy, 42U));
@@ -942,6 +944,8 @@ static void test_scan_sectors_map_to_suea_cells_and_ray_screening(void)
     occupancy.occupied_count = 1U;
     occupancy.registration.present = true;
     occupancy.registration.geometry_computed_at_ms = 42U;
+    occupancy.registration.residual_m = 0.01;
+    occupancy.registration.threshold_m = 0.05;
     const double shift[16] = { 1, 0, 0, 1,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1 };
     memcpy(occupancy.registration.sensor_to_scan, shift, sizeof(shift));
 
