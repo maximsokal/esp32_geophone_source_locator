@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { fetchSavedSeismicSession } from '../../api/deviceApi';
+import { fetchSavedSeismicSession, isRequestCancellation, retryPreemptedRead } from '../../api/deviceApi';
 import type {
   RecordingSessionSummary,
   SavedSeismicSnapshot,
@@ -47,15 +47,15 @@ export default function SavedSeismicViewer({ objectId, sessionId, summary, onClo
   const load = (start: number, count: number): void => {
     setLoading(true);
     setError(null);
-    void fetchSavedSeismicSession(objectId, sessionId, {
+    void retryPreemptedRead(() => fetchSavedSeismicSession(objectId, sessionId, {
       startFrame: start,
       ...(count > 0 ? { frameCount: count } : {}),
       points: 240,
-    }).then((next) => {
+    })).then((next) => {
       setSnapshot(next);
       setRange({ start: next.start_frame, count: next.frame_count });
     }).catch((reason: unknown) => {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (!isRequestCancellation(reason)) setError(reason instanceof Error ? reason.message : String(reason));
     }).finally(() => setLoading(false));
   };
 

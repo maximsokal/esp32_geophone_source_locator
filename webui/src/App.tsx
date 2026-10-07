@@ -6,11 +6,13 @@ import {
   deleteObjectScanArtifact,
   fetchLocalizationRuns,
   fetchScanInfo,
+  isRequestCancellation,
   loadObjectScanArtifact,
   loadSessionRegistration,
   saveObjectScanArtifact,
   saveSessionOccupancyArtifact,
   saveSessionPreviewArtifact,
+  retryPreemptedRead,
 } from './api/deviceApi';
 import type { LocalizationRunListing, LocalizationSessionGeometry } from './api/deviceApi';
 import type { DeviceStatus } from './domain/device';
@@ -312,7 +314,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     let cancelled = false;
     if (shouldLoadEvidence) {
       void Promise.all([
-        fetchLocalizationRuns(objectId, sessionId).then(
+        retryPreemptedRead(() => fetchLocalizationRuns(objectId, sessionId)).then(
           (listing) => ({ ok: true as const, listing }),
           (reason: unknown) => ({ ok: false as const, reason }),
         ),
@@ -327,7 +329,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
           setLocalizationGeometry(geometryResult.listing.geometry);
           setLocalizationRunListing(geometryResult.listing);
         }
-        else {
+        else if (!isRequestCancellation(geometryResult.reason)) {
           const message = geometryResult.reason instanceof Error ? geometryResult.reason.message : String(geometryResult.reason);
           setLocalizationGeometry(null);
           setLocalizationRunListing(null);

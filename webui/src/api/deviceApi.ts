@@ -1,4 +1,5 @@
 import type { LocalizationJobStatus } from '../domain/localizationJob';
+import { normalizeDeviceStatus } from './deviceStatusSchema';
 import {
   normalizeSeismicSnapshot,
   normalizeSavedSeismicSnapshot,
@@ -15,6 +16,22 @@ export const DEVICE_API_FAST_TIMEOUT_MS = 5000;
 export const DEVICE_API_EXTENDED_TIMEOUT_MS = 12000;
 export const DEVICE_API_CONTROL_TIMEOUT_MS = 12000;
 export const DEVICE_API_SCAN_TIMEOUT_MS = 30000;
+export const NORMAL_BEFORE_BULK_LIMIT = 4;
+
+let normalBeforeBulkLimit = NORMAL_BEFORE_BULK_LIMIT;
+let consecutiveNormalDispatches = 0;
+
+export function setNormalBeforeBulkLimitForTests(limit: number): void {
+  if (!Number.isInteger(limit) || limit < 1) throw new RangeError();
+  normalBeforeBulkLimit = limit;
+}
+
+export type ApiRequestOwner = object;
+
+export interface ApiRequestOptions {
+  owner?: ApiRequestOwner;
+  preemptible?: boolean;
+}
 
 export interface ControlResult {
   ok: boolean;
@@ -85,6 +102,41 @@ export class BulkTransferPreemptedError extends Error {
   }
 }
 
+export class ApiRequestPreemptedError extends Error {
+  readonly code = 'API_REQUEST_PREEMPTED' as const;
+
+  constructor() {
+    super();
+    this.name = 'ApiRequestPreemptedError';
+  }
+}
+
+export class ApiRequestOwnerRetiredError extends Error {
+  readonly code = 'API_REQUEST_OWNER_RETIRED' as const;
+
+  constructor() {
+    super();
+    this.name = 'ApiRequestOwnerRetiredError';
+  }
+}
+
+export function isRequestCancellation(error: unknown): boolean {
+  return error instanceof ApiRequestPreemptedError || error instanceof ApiRequestOwnerRetiredError;
+}
+
+export async function retryPreemptedRead<T>(operation: () => Promise<T>, maxRetries = 2): Promise<T> {
+  let retries = 0;
+  for (;;) {
+    const pending = operation();
+    try {
+      return await pending;
+    } catch (reason) {
+      if (!(reason instanceof ApiRequestPreemptedError) || retries >= maxRetries) throw reason;
+      retries += 1;
+    }
+  }
+}
+
 function recordingBlocked(body: unknown, status: number): boolean {
   return status === 409 && typeof body === 'object' && body !== null &&
     'busy_reason' in body && (body as { busy_reason?: unknown }).busy_reason === 'recording_active';
@@ -113,6 +165,8 @@ type ApiRequestLane = 'critical' | 'normal' | 'bulk';
 interface ApiRequestContext {
   controller: AbortController;
   preempted: boolean;
+  preemptionKind: 'bulk' | 'read' | null;
+  ownerRetired: boolean;
   timedOut: boolean;
 }
 
@@ -121,7 +175,14 @@ interface QueuedApiRequest {
   operation: (context: ApiRequestContext) => Promise<unknown>;
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
+  isRead: boolean;
+  preemptible: boolean;
+  owner?: ApiRequestOwner;
   context?: ApiRequestContext;
+}
+
+interface QueuedApiRequestOptions extends ApiRequestOptions {
+  read?: boolean;
 }
 
 const apiRequestQueues: Record<ApiRequestLane, QueuedApiRequest[]> = {
@@ -130,6 +191,35 @@ const apiRequestQueues: Record<ApiRequestLane, QueuedApiRequest[]> = {
   bulk: [],
 };
 let activeApiRequest: QueuedApiRequest | null = null;
+const retiredRequestOwners = new WeakSet<ApiRequestOwner>();
+
+export function createRequestOwner(): ApiRequestOwner {
+  return Object.freeze({});
+}
+
+export function retireRequestOwner(owner: ApiRequestOwner): void {
+  if (retiredRequestOwners.has(owner)) return;
+  retiredRequestOwners.add(owner);
+
+  for (const queue of Object.values(apiRequestQueues)) {
+    for (let index = queue.length - 1; index >= 0; index -= 1) {
+      const request = queue[index];
+      if (request !== undefined && request.owner === owner && request.isRead) {
+        queue.splice(index, 1);
+        pendingApiRequests = Math.max(0, pendingApiRequests - 1);
+        request.reject(new ApiRequestOwnerRetiredError());
+      }
+    }
+  }
+
+  const active = activeApiRequest;
+  if (active !== null && active.owner === owner && active.preemptible && active.context !== undefined &&
+      !active.context.timedOut && !active.context.controller.signal.aborted) {
+    active.context.ownerRetired = true;
+    active.context.controller.abort();
+  }
+  startNextApiRequest();
+}
 
 /* Keep safety and calibration controls out of the bulk transfer lane. */
 const CRITICAL_CONTROL_ACTIONS = new Set([
@@ -196,6 +286,8 @@ async function performJsonRequest<T>(
       text = await response.text();
     }
     catch (reason) {
+      if (context.ownerRetired) throw new ApiRequestOwnerRetiredError();
+      if (context.preemptionKind === 'read') throw new ApiRequestPreemptedError();
       if (context.timedOut) {
         throw new Error(`ESP API timeout (${method} ${url}, ${timeoutMs} ms)`);
       }
@@ -225,9 +317,20 @@ async function performJsonRequest<T>(
 }
 
 function nextApiRequest(): QueuedApiRequest | undefined {
-  return apiRequestQueues.critical.shift()
-    ?? apiRequestQueues.normal.shift()
-    ?? apiRequestQueues.bulk.shift();
+  if (apiRequestQueues.normal.length === 0) consecutiveNormalDispatches = 0;
+  const critical = apiRequestQueues.critical.shift();
+  if (critical !== undefined) return critical;
+
+  if (apiRequestQueues.normal.length === 0) {
+    return apiRequestQueues.bulk.shift();
+  }
+  if (apiRequestQueues.bulk.length > 0 && consecutiveNormalDispatches >= normalBeforeBulkLimit) {
+    consecutiveNormalDispatches = 0;
+    return apiRequestQueues.bulk.shift();
+  }
+
+  consecutiveNormalDispatches += 1;
+  return apiRequestQueues.normal.shift();
 }
 
 function startNextApiRequest(): void {
@@ -238,6 +341,8 @@ function startNextApiRequest(): void {
   const context: ApiRequestContext = {
     controller: new AbortController(),
     preempted: false,
+    preemptionKind: null,
+    ownerRetired: false,
     timedOut: false,
   };
   request.context = context;
@@ -246,7 +351,12 @@ function startNextApiRequest(): void {
   const finish = (fulfilled: boolean, value: unknown): void => {
     pendingApiRequests = Math.max(0, pendingApiRequests - 1);
     activeApiRequest = null;
-    if (context.preempted) {
+    if (context.ownerRetired ||
+        (request.isRead && request.owner !== undefined && retiredRequestOwners.has(request.owner))) {
+      request.reject(new ApiRequestOwnerRetiredError());
+    } else if (context.preempted && context.preemptionKind === 'read') {
+      request.reject(new ApiRequestPreemptedError());
+    } else if (context.preempted) {
       request.reject(new BulkTransferPreemptedError());
     } else if (fulfilled) {
       request.resolve(value);
@@ -269,7 +379,12 @@ function startNextApiRequest(): void {
 function queuedApiRequest<T>(
   operation: (context: ApiRequestContext) => Promise<T>,
   lane: ApiRequestLane = 'normal',
+  options: QueuedApiRequestOptions = {},
 ): Promise<T> {
+  if (options.owner !== undefined && retiredRequestOwners.has(options.owner)) {
+    return Promise.reject(new ApiRequestOwnerRetiredError());
+  }
+
   /*
    * ESP-IDF's HTTPS server executes application handlers serially. Opening a
    * second fetch while the first request is doing an SD write only starts a
@@ -284,6 +399,9 @@ function queuedApiRequest<T>(
       operation,
       resolve: (value) => resolve(value as T),
       reject,
+      isRead: options.read ?? false,
+      preemptible: options.preemptible ?? false,
+      owner: options.owner,
     };
     apiRequestQueues[lane].push(request);
 
@@ -292,6 +410,12 @@ function queuedApiRequest<T>(
     if (lane === 'critical' && active?.lane === 'bulk' && context !== undefined &&
         !context.timedOut && !context.controller.signal.aborted) {
       context.preempted = true;
+      context.preemptionKind = 'bulk';
+      context.controller.abort();
+    } else if (lane === 'critical' && active !== null && active.lane !== 'critical' && active.preemptible &&
+        context !== undefined && !context.timedOut && !context.controller.signal.aborted) {
+      context.preempted = true;
+      context.preemptionKind = 'read';
       context.controller.abort();
     }
     startNextApiRequest();
@@ -303,8 +427,15 @@ function jsonRequest<T>(
   init: RequestInit = {},
   timeoutMs = DEVICE_API_FAST_TIMEOUT_MS,
   lane: ApiRequestLane = 'normal',
+  options: ApiRequestOptions = {},
 ): Promise<T> {
-  return queuedApiRequest((context) => performJsonRequest<T>(url, context, init, timeoutMs), lane);
+  const method = (init.method ?? 'GET').toUpperCase();
+  const preemptible = method === 'GET' && (options.preemptible ?? true);
+  return queuedApiRequest((context) => performJsonRequest<T>(url, context, init, timeoutMs), lane, {
+    ...options,
+    read: method === 'GET',
+    preemptible,
+  });
 }
 
 export type ScanStoreKind = 'scan' | 'occupancy' | 'preview' | 'registration';
@@ -410,9 +541,11 @@ export function deviceApiHasPendingRequest(): boolean {
 export function fetchDeviceStatus(
   includeObjects = false,
   sessionsObjectId?: string | null,
+  options: ApiRequestOptions = {},
 ): Promise<DeviceStatus> {
+  const coalesce = options.owner === undefined && options.preemptible === undefined;
   /* An extended response is a strict superset of the fast RAM status. */
-  if (!includeObjects && !sessionsObjectId && extendedStatusRequest !== null) {
+  if (coalesce && !includeObjects && !sessionsObjectId && extendedStatusRequest !== null) {
     return extendedStatusRequest;
   }
 
@@ -422,14 +555,17 @@ export function fetchDeviceStatus(
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
   const url = `/api/status${suffix}`;
 
-  const existing = statusRequests.get(url);
+  const existing = coalesce ? statusRequests.get(url) : undefined;
   if (existing !== undefined) return existing;
 
   const extended = includeObjects || Boolean(sessionsObjectId);
   const timeoutMs = extended ? DEVICE_API_EXTENDED_TIMEOUT_MS : DEVICE_API_FAST_TIMEOUT_MS;
 
+  const rawRequest = jsonRequest<unknown>(url, {}, timeoutMs, 'normal', options).then(normalizeDeviceStatus);
+  if (!coalesce) return rawRequest;
+
   let request: Promise<DeviceStatus>;
-  request = jsonRequest<DeviceStatus>(url, {}, timeoutMs).then(
+  request = rawRequest.then(
     (value) => {
       statusRequests.delete(url);
       if (extendedStatusRequest === request) extendedStatusRequest = null;
@@ -483,12 +619,17 @@ function isNrfLogPage(value: unknown, expectedNode: string): value is NrfLogPage
 }
 
 /** The after cursor is opaque; it is only encoded as a query value and returned unchanged by the server. */
-export async function fetchNrfLogs(node: string, afterToken?: string, limit = 50): Promise<FetchNrfLogsResult> {
+export async function fetchNrfLogs(
+  node: string,
+  afterToken?: string,
+  limit = 50,
+  options: ApiRequestOptions = {},
+): Promise<FetchNrfLogsResult> {
   const query = new URLSearchParams({ node, limit: String(limit) });
   if (afterToken !== undefined) query.set('after', afterToken);
 
   try {
-    const value = await jsonRequest<unknown>(`/api/nrf/logs?${query.toString()}`);
+    const value = await jsonRequest<unknown>(`/api/nrf/logs?${query.toString()}`, {}, DEVICE_API_FAST_TIMEOUT_MS, 'normal', options);
     if (isRecord(value) && value.ok === false && isNrfLogBadRequestReason(value.reason)) {
       return { ok: false, kind: 'bad_request', reason: value.reason };
     }
@@ -496,6 +637,7 @@ export async function fetchNrfLogs(node: string, afterToken?: string, limit = 50
       ? { ok: true, value }
       : { ok: false, kind: 'network_error', error: 'invalid_response' };
   } catch (reason) {
+    if (reason instanceof ApiRequestPreemptedError || reason instanceof ApiRequestOwnerRetiredError) throw reason;
     if (reason instanceof ApiHttpError && reason.httpStatus === 400 &&
         isRecord(reason.responseBody) && isNrfLogBadRequestReason(reason.responseBody.reason)) {
       return { ok: false, kind: 'bad_request', reason: reason.responseBody.reason };
@@ -507,21 +649,22 @@ export async function fetchNrfLogs(node: string, afterToken?: string, limit = 50
 export function sendControl(
   action: string,
   payload: Record<string, unknown> = {},
+  options: ApiRequestOptions = {},
 ): Promise<ControlResult> {
   return jsonRequest<ControlResult>('/api/control', {
     method: 'POST',
     body: JSON.stringify({ action, ...payload }),
-  }, DEVICE_API_CONTROL_TIMEOUT_MS, CRITICAL_CONTROL_ACTIONS.has(action) ? 'critical' : 'normal');
+  }, DEVICE_API_CONTROL_TIMEOUT_MS, CRITICAL_CONTROL_ACTIONS.has(action) ? 'critical' : 'normal', options);
 }
 
-export function getCalcSettings(objectId: string): Promise<CalcSettingsResponse> {
+export function getCalcSettings(objectId: string, options: ApiRequestOptions = {}): Promise<CalcSettingsResponse> {
   const query = new URLSearchParams({ job: 'settings', object_id: objectId });
   return jsonRequest<{
     ok: boolean;
     settings: CalcSettingsProfile | null;
     presets: CalcMaterialPreset[];
     standard_processing: CalcProcessingSettings;
-  }>('/api/localization/runs?' + query.toString(), {}, DEVICE_API_EXTENDED_TIMEOUT_MS).then((response) => ({
+  }>('/api/localization/runs?' + query.toString(), {}, DEVICE_API_EXTENDED_TIMEOUT_MS, 'normal', options).then((response) => ({
     settings: response.settings,
     presets: response.presets,
     standardProcessing: response.standard_processing,
@@ -531,12 +674,13 @@ export function getCalcSettings(objectId: string): Promise<CalcSettingsResponse>
 export async function saveCalcSettings(
   objectId: string,
   payload: SaveCalcSettingsPayload,
+  options: ApiRequestOptions = {},
 ): Promise<SaveCalcSettingsResult> {
   try {
     const result = await jsonRequest<ControlResult>('/api/control', {
       method: 'POST',
       body: JSON.stringify({ action: 'save_calc_settings', object_id: objectId, ...payload }),
-    }, DEVICE_API_CONTROL_TIMEOUT_MS);
+    }, DEVICE_API_CONTROL_TIMEOUT_MS, 'normal', options);
     return result.ok
       ? { ok: true }
       : { ok: false, error: result.error ?? 'save_calc_settings failed', httpStatus: 200 };
@@ -558,7 +702,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-export function sendWorkflowCommand(command: string, generation: number): Promise<WorkflowCommandResult> {
+export function sendWorkflowCommand(
+  command: string,
+  generation: number,
+  options: ApiRequestOptions = {},
+): Promise<WorkflowCommandResult> {
   const request = queuedApiRequest<WorkflowCommandResult>(async (context) => {
     const body = await performJsonRequest<unknown>('/api/control', context, {
       method: 'POST',
@@ -573,7 +721,7 @@ export function sendWorkflowCommand(command: string, generation: number): Promis
       return { ok: false, reason: body.reason };
     }
     return { ok: false, reason: 'error', message: 'invalid_response' };
-  }, 'critical');
+  }, 'critical', { ...options, preemptible: false });
 
   return request.catch((reason: unknown) => ({
     ok: false as const,
@@ -660,21 +808,28 @@ export function deleteObjectScanArtifact(objectId: string, sessionId: string): P
 export interface LiveSeismicRequestOptions {
   spanMs?: number;
   maxPoints?: number;
+  owner?: ApiRequestOwner;
 }
 
 export function fetchSeismic(options: LiveSeismicRequestOptions = {}): Promise<SeismicSnapshot> {
-  if (seismicRequest !== null) return seismicRequest;
+  const coalesce = options.owner === undefined;
+  if (coalesce && seismicRequest !== null) return seismicRequest;
 
   const maxPoints = Math.max(16, Math.min(1200, Math.round(options.maxPoints ?? 220)));
   const spanMs = Math.max(1, Math.min(60000, Math.round(options.spanMs ?? 440)));
   const query = new URLSearchParams({ span_ms: String(spanMs), max_points: String(maxPoints) });
-  let request: Promise<SeismicSnapshot>;
-  request = jsonRequest<SeismicSnapshot>(
+  const rawRequest = jsonRequest<unknown>(
     `/api/seismic?${query.toString()}`,
     {},
     DEVICE_API_FAST_TIMEOUT_MS,
-  ).then((value) => normalizeSeismicSnapshot(value)).finally(() => {
-      if (seismicRequest === request) seismicRequest = null;
+    'normal',
+    options,
+  ).then((value) => normalizeSeismicSnapshot(value));
+  if (!coalesce) return rawRequest;
+
+  let request: Promise<SeismicSnapshot>;
+  request = rawRequest.finally(() => {
+    if (seismicRequest === request) seismicRequest = null;
   });
   seismicRequest = request;
   return request;
@@ -684,6 +839,7 @@ export interface SavedSeismicRequestOptions {
   startFrame?: number;
   frameCount?: number;
   points?: number;
+  owner?: ApiRequestOwner;
 }
 
 export function fetchSavedSeismicSession(
@@ -715,6 +871,7 @@ export function fetchSavedSeismicSession(
     {},
     DEVICE_API_EXTENDED_TIMEOUT_MS,
     'bulk',
+    options,
   ).then(normalizeSavedSeismicSnapshot);
 }
 
@@ -890,18 +1047,24 @@ export interface LocalizationRunListing {
   runs: LocalizationRun[];
 }
 
-export function fetchLocalizationRuns(objectId: string, sessionId: string): Promise<LocalizationRunListing> {
+export function fetchLocalizationRuns(
+  objectId: string,
+  sessionId: string,
+  options: ApiRequestOptions = {},
+): Promise<LocalizationRunListing> {
   const query = new URLSearchParams({ object_id: objectId, session_id: sessionId });
   return jsonRequest<LocalizationRunListing>(
     `/api/localization/runs?${query.toString()}`,
     {},
     DEVICE_API_EXTENDED_TIMEOUT_MS,
+    'normal',
+    options,
   );
 }
 
 /** The background "Calculate source" job: progress, measured timings and stack. */
-export function fetchLocalizationJob(): Promise<LocalizationJobStatus> {
-  return jsonRequest<LocalizationJobStatus>('/api/localization/runs?job=status', {}, DEVICE_API_CONTROL_TIMEOUT_MS);
+export function fetchLocalizationJob(options: ApiRequestOptions = {}): Promise<LocalizationJobStatus> {
+  return jsonRequest<LocalizationJobStatus>('/api/localization/runs?job=status', {}, DEVICE_API_CONTROL_TIMEOUT_MS, 'normal', options);
 }
 
 export function capturePhoneLocation(): Promise<PhoneLocationInput> {

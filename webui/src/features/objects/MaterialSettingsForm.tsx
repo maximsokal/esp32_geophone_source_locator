@@ -1,6 +1,8 @@
 import { useEffect, useState, type ChangeEvent } from 'react';
 import {
   getCalcSettings,
+  isRequestCancellation,
+  retryPreemptedRead,
   saveCalcSettings,
   type CalcSettingsProfile,
   type CalcSettingsResponse,
@@ -144,11 +146,11 @@ export default function MaterialSettingsForm({
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
-    void getCalcSettings(objectId).then((next) => {
+    void retryPreemptedRead(() => getCalcSettings(objectId)).then((next) => {
       if (cancelled) return;
       applyResponse(next);
     }).catch((reason: unknown) => {
-      if (!cancelled) setLoadError(reason instanceof Error ? reason.message : String(reason));
+      if (!cancelled && !isRequestCancellation(reason)) setLoadError(reason instanceof Error ? reason.message : String(reason));
     }).finally(() => {
       if (!cancelled) setLoading(false);
     });
@@ -252,10 +254,10 @@ export default function MaterialSettingsForm({
     }
     setSaved(true);
     try {
-      const refreshed = await getCalcSettings(objectId);
+      const refreshed = await retryPreemptedRead(() => getCalcSettings(objectId));
       applyResponse(refreshed);
     } catch (reason) {
-      setLoadError(reason instanceof Error ? reason.message : String(reason));
+      if (!isRequestCancellation(reason)) setLoadError(reason instanceof Error ? reason.message : String(reason));
     }
     await onSaved?.();
     setEditing(false);

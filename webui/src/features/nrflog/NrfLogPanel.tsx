@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { fetchNrfLogs } from '../../api/deviceApi';
+import {
+  ApiRequestOwnerRetiredError,
+  ApiRequestPreemptedError,
+  createRequestOwner,
+  fetchNrfLogs,
+  retireRequestOwner,
+} from '../../api/deviceApi';
 import type { DeviceStatus, NrfLogCounters, NrfLogNodeId, NrfLogNodeSummary, NrfLogRecord } from '../../domain/device';
 import { useLocale, useT, type I18nKey } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
@@ -152,9 +158,19 @@ export default function NrfLogPanel({ status }: { status: DeviceStatus | null })
     if (activeNode === null || !visible || summaryUnsupported || pageUnsupported) return undefined;
     let cancelled = false;
     let timer: number | null = null;
+    const owner = createRequestOwner();
 
     const poll = async (): Promise<void> => {
-      const result = await fetchNrfLogs(activeNode, afterTokenRef.current, 200);
+      let result: Awaited<ReturnType<typeof fetchNrfLogs>>;
+      try {
+        result = await fetchNrfLogs(activeNode, afterTokenRef.current, 200, { owner });
+      } catch (reason) {
+        if (cancelled || reason instanceof ApiRequestOwnerRetiredError) return;
+        setLoading(false);
+        if (!(reason instanceof ApiRequestPreemptedError)) setRequestFailed(true);
+        if (!cancelled) timer = window.setTimeout(() => void poll(), 2000);
+        return;
+      }
       if (cancelled) return;
       setLoading(false);
       if (!result.ok) {
@@ -192,6 +208,7 @@ export default function NrfLogPanel({ status }: { status: DeviceStatus | null })
     return () => {
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
+      retireRequestOwner(owner);
     };
   }, [activeNode, visible, summaryUnsupported, pageUnsupported]);
 

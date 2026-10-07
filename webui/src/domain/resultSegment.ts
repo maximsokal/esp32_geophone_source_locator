@@ -1,4 +1,4 @@
-import { fetchSavedSeismicSession } from '../api/deviceApi';
+import { fetchSavedSeismicSession, retryPreemptedRead } from '../api/deviceApi';
 import type {
   LocalizationPickChannel,
   LocalizationRunPosition,
@@ -146,9 +146,9 @@ export async function fetchResultSegment(
 ): Promise<{ window: ResultSegmentWindow; session: SavedSeismicSnapshot } | null> {
   const window = resultViewSegmentWindow(picks, sampleRateHz, sessionFrameCount, preSeconds, postSeconds);
   if (!window.available) return null;
-  const session = await fetchSavedSeismicSession(objectId, sessionId, {
+  const session = await retryPreemptedRead(() => fetchSavedSeismicSession(objectId, sessionId, {
     startFrame: window.start_frame,
     frameCount: window.frame_count,
-  });
+  }));
   return { window, session };
 }

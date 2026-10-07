@@ -10,6 +10,7 @@
 
 import { TranslatedError, translate, type I18nLocale } from '../i18n';
 import { formatNumber } from '../i18n/format';
+import { ApiRequestOwnerRetiredError, isRequestCancellation } from '../api/deviceApi';
 
 export type LocalizationJobState = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed';
 
@@ -142,7 +143,8 @@ export async function waitForLocalizationJob(
         if (isJobFinished(status)) return status;
       }
     } catch (reason: unknown) {
-      lastError = reason;
+      if (reason instanceof ApiRequestOwnerRetiredError) throw reason;
+      lastError = isRequestCancellation(reason) ? null : reason;
     }
     if (now() >= deadline) {
       throw TranslatedError.fromKey('calc.job_timeout', {

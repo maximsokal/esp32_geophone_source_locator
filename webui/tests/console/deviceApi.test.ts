@@ -16,6 +16,17 @@ function jsonResponse(body: unknown, status = 200, statusText = 'OK'): Response 
   });
 }
 
+function validDeviceStatus() {
+  return {
+    system: { state: 'NOT_READY', mode: 'NORMAL', uptime_ms: 0, acquisition_ready: false, ready_pods: 0, required_pods: 0 },
+    power: { valid: false, voltage_v: 0, current_a: 0, power_w: 0 },
+    environment: { valid: false, temperature_c: 0, humidity_percent: 0, pressure_pa: 0 },
+    mux: { valid: false, active_channel: -1, active_pod: -1 },
+    pods: [],
+    acquisition: { running: false, requested_running: false, hardware_ready: false, source: 'NONE', sample_rate_hz: 0, samples_recorded: 0, recording_ms: 0 },
+  };
+}
+
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -68,12 +79,12 @@ describe('device API request pressure and failures', () => {
     expect(first).toBe(second);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    resolveFetch(jsonResponse({ system: { state: 'NOT_READY' } }));
+    resolveFetch(jsonResponse(validDeviceStatus()));
     await Promise.all([first, second]);
   });
 
   it('releases single-flight state after a request settles', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ system: { state: 'NOT_READY' } }));
+    const fetchMock = vi.fn(async () => jsonResponse(validDeviceStatus()));
     vi.stubGlobal('fetch', fetchMock);
 
     await fetchDeviceStatus(false);
@@ -92,12 +103,12 @@ describe('device API request pressure and failures', () => {
 
     expect(fast).toBe(extended);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    resolveFetch(jsonResponse({ system: { state: 'NOT_READY' }, object_store: { available: true, objects: [] } }));
+    resolveFetch(jsonResponse(validDeviceStatus()));
     await Promise.all([extended, fast]);
   });
 
   it('does not coalesce different extended status URLs', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ system: { state: 'NOT_READY' } }));
+    const fetchMock = vi.fn(async () => jsonResponse(validDeviceStatus()));
     vi.stubGlobal('fetch', fetchMock);
 
     await Promise.all([
@@ -128,7 +139,7 @@ describe('device API request pressure and failures', () => {
       if (requests === 2) {
         return jsonResponse({ storage_busy: true }, 503, 'Service Unavailable');
       }
-      return jsonResponse({ system: { state: 'NOT_READY' } });
+      return jsonResponse(validDeviceStatus());
     });
     vi.stubGlobal('fetch', fetchMock);
 

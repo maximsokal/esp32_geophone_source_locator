@@ -12,6 +12,17 @@ function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
 
+function validDeviceStatus() {
+  return {
+    system: { state: 'NOT_READY', mode: 'NORMAL', uptime_ms: 0, acquisition_ready: false, ready_pods: 0, required_pods: 0 },
+    power: { valid: false, voltage_v: 0, current_a: 0, power_w: 0 },
+    environment: { valid: false, temperature_c: 0, humidity_percent: 0, pressure_pa: 0 },
+    mux: { valid: false, active_channel: -1, active_pod: -1 },
+    pods: [],
+    acquisition: { running: false, requested_running: false, hardware_ready: false, source: 'NONE', sample_rate_hz: 0, samples_recorded: 0, recording_ms: 0 },
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
@@ -42,7 +53,7 @@ describe('ESP API request lanes', () => {
       }
       if (url.includes('scan=save')) return Promise.resolve(jsonResponse({ ok: true, action: 'scan_save' }));
       if (url === '/api/control') return Promise.resolve(jsonResponse({ ok: true, action: 'measurement_start' }));
-      return Promise.resolve(jsonResponse({ system: { state: 'NOT_READY' } }));
+      return Promise.resolve(jsonResponse(validDeviceStatus()));
     });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -62,7 +73,7 @@ describe('ESP API request lanes', () => {
     ]);
   });
 
-  it('drains queued work in critical, normal, then bulk order after completion', async () => {
+  it('drains queued work in critical, normal, then bulk order after a non-preemptible active read completes', async () => {
     const statusResponse = deferred<Response>();
     const starts: Array<{ url: string; action?: string }> = [];
     const fetchMock = vi.fn((url: string, init?: RequestInit) => {
@@ -76,11 +87,11 @@ describe('ESP API request lanes', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const activeNormal = fetchDeviceStatus(false);
+    const activeNormal = fetchDeviceStatus(false, undefined, { preemptible: false });
     const queuedNormal = sendControl('activate_object', { object_id: 'OBJ_0001' });
     const queuedBulk = saveObjectScanArtifact('OBJ_0001', 'S000001', new Uint8Array([1]));
     const queuedCritical = sendControl('measurement_stop');
-    statusResponse.resolve(jsonResponse({ system: { state: 'NOT_READY' } }));
+    statusResponse.resolve(jsonResponse(validDeviceStatus()));
 
     await Promise.all([activeNormal, queuedNormal, queuedBulk, queuedCritical]);
     expect(starts.map(({ url, action }) => action ?? (url.includes('scan=save') ? 'scan_save' : url))).toEqual([
@@ -118,7 +129,7 @@ describe('ESP API request lanes', () => {
     await vi.advanceTimersByTimeAsync(DEVICE_API_FAST_TIMEOUT_MS - 1);
     expect(statusSignal.aborted).toBe(false);
 
-    statusResponse.resolve(jsonResponse({ system: { state: 'NOT_READY' } }));
+    statusResponse.resolve(jsonResponse(validDeviceStatus()));
     await status;
   });
 

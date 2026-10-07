@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchLocalizationJob, fetchLocalizationRuns, fetchScanInfo, sendControl } from '../../api/deviceApi';
+import {
+  fetchLocalizationJob,
+  fetchLocalizationRuns,
+  fetchScanInfo,
+  isRequestCancellation,
+  retryPreemptedRead,
+  sendControl,
+} from '../../api/deviceApi';
 import type { CalcSettingsProfile, LocalizationVelocityRange } from '../../api/deviceApi';
 import MaterialSettingsForm from './MaterialSettingsForm';
 import LocalizationJobReport from './LocalizationJobReport';
@@ -316,6 +323,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   const [csPairs, setCsPairs] = useState<LocalizationSessionCsPairs | null>(null);
   const [picks, setPicks] = useState<LocalizationPickRecord[] | null>(null);
   const [geometryError, setGeometryError] = useState<unknown | null>(null);
+  const [geometryLoadPending, setGeometryLoadPending] = useState(true);
   /* MAX-148: drives the unconstrained/scan-constrained toggle; null = still checking. */
   const [hasScan, setHasScan] = useState<boolean | null>(null);
   const [calcSettings, setCalcSettings] = useState<CalcSettingsProfile | null>(null);
@@ -337,10 +345,12 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
     setCsPairs(null);
     setPicks(null);
     setGeometryError(null);
+    setGeometryLoadPending(true);
     setHasScan(null);
-    fetchLocalizationRuns(objectId, sessionId)
+    retryPreemptedRead(() => fetchLocalizationRuns(objectId, sessionId))
       .then((listing) => {
         if (cancelled) return;
+        setGeometryLoadPending(false);
         setGeometry(listing.geometry);
         setCsPairs(listing.cs_pairs);
         setPicks(listing.picks);
@@ -348,6 +358,8 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
+        setGeometryLoadPending(false);
+        if (isRequestCancellation(reason)) return;
         setGeometryError(reason);
       });
     fetchScanInfo(objectId, sessionId)
@@ -461,13 +473,13 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
             error: finished.error ?? TranslatedError.fromKey('calc.job_unknown_error'),
           });
         }
-        return fetchLocalizationRuns(objectId, sessionId);
+        return retryPreemptedRead(() => fetchLocalizationRuns(objectId, sessionId));
       })
       .then((listing) => {
         setRuns(listing.runs);
         setPicks(listing.picks);
       })
-      .catch((reason: unknown) => setError(reason))
+      .catch((reason: unknown) => { if (!isRequestCancellation(reason)) setError(reason); })
       .finally(() => setRunning(false));
   };
 
@@ -482,7 +494,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
 
       <h3>{t('calc.geometry')}</h3>
       {geometryError !== null && <div className="console-alert" role="alert">{formatErrorText(locale, geometryError)}</div>}
-      {geometry === null && geometryError === null && <p>{t('calc.loading_geometry')}</p>}
+      {geometry === null && geometryLoadPending && geometryError === null && <p>{t('calc.loading_geometry')}</p>}
       {geometry !== null && !geometry.available && (
         <p>{t('calc.no_geometry')}</p>
       )}

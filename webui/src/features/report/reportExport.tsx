@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { fetchLocalizationRuns, loadObjectScanArtifact } from '../../api/deviceApi';
+import { fetchLocalizationRuns, isRequestCancellation, loadObjectScanArtifact, retryPreemptedRead } from '../../api/deviceApi';
 import type { ObjectProfile, RecordingSessionSummary } from '../../domain/device';
 import { buildRecordingReport } from '../../domain/reportModel';
 import { decodeScanArtifact } from '../../xr/scanArtifact';
@@ -58,7 +58,10 @@ export async function openRecordingReport(
   target.document.write(`<p style="font-family:Montserrat,sans-serif">${translate(locale, 'report.preparing')}</p>`);
 
   /* Sequential: the ESP serves one HTTPS request at a time. */
-  const listing = await fetchLocalizationRuns(object.id, session.session_id).catch(() => null);
+  const listing = await retryPreemptedRead(() => fetchLocalizationRuns(object.id, session.session_id)).catch((reason: unknown) => {
+    if (isRequestCancellation(reason)) throw reason;
+    return null;
+  });
   let positions: Float32Array | null = null;
   try {
     const artifact = await loadObjectScanArtifact(object.id, session.session_id);

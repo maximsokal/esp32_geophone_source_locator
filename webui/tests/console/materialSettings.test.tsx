@@ -9,6 +9,7 @@ import type {
   CalcSettingsProfile,
   CalcSettingsResponse,
 } from '../../src/api/deviceApi';
+import { ApiRequestOwnerRetiredError, ApiRequestPreemptedError } from '../../src/api/deviceApi';
 import type { DeviceStatus } from '../../src/domain/device';
 import MaterialSettingsForm from '../../src/features/objects/MaterialSettingsForm';
 import LocalizationCalculatePanel from '../../src/features/objects/LocalizationCalculatePanel';
@@ -113,6 +114,24 @@ afterEach(() => {
 });
 
 describe('material settings form', () => {
+  it('retries a preempted initial settings read without showing a load error', async () => {
+    api.getCalcSettings.mockRejectedValueOnce(new ApiRequestPreemptedError())
+      .mockResolvedValueOnce(settingsResponse());
+    const renderer = await mount(createElement(MaterialSettingsForm, { objectId: 'OBJ_0001' }));
+    expect(api.getCalcSettings).toHaveBeenCalledTimes(2);
+    expect(renderer.root.findAllByProps({ role: 'alert' })).toHaveLength(0);
+    expect(renderer.root.findByType('select')).toBeTruthy();
+    renderer.unmount();
+  });
+
+  it('silently drops a retired settings read', async () => {
+    api.getCalcSettings.mockRejectedValueOnce(new ApiRequestOwnerRetiredError());
+    const renderer = await mount(createElement(MaterialSettingsForm, { objectId: 'OBJ_0001' }));
+    expect(api.getCalcSettings).toHaveBeenCalledTimes(1);
+    expect(renderer.root.findAllByProps({ role: 'alert' })).toHaveLength(0);
+    renderer.unmount();
+  });
+
   it('loads preset values from the API and changes an edited preset to Custom', async () => {
     const renderer = await mount(createElement(MaterialSettingsForm, { objectId: 'OBJ_0001' }));
     const select = renderer.root.findByType('select');
@@ -255,6 +274,34 @@ it('prefills the manual calculate form from the saved object settings', async ()
   renderer.unmount();
 });
 
+it('retries a preempted localization listing without showing a geometry error', async () => {
+  api.fetchLocalizationRuns.mockRejectedValueOnce(new ApiRequestPreemptedError())
+    .mockResolvedValueOnce(runListing());
+  const renderer = await mount(createElement(LocalizationCalculatePanel, {
+    objectId: 'OBJ_0001',
+    sessionId: 'S000001',
+    busy: false,
+    onClose: () => undefined,
+  }));
+  expect(api.fetchLocalizationRuns).toHaveBeenCalledTimes(2);
+  expect(renderer.root.findAllByProps({ role: 'alert' })).toHaveLength(0);
+  renderer.unmount();
+});
+
+it('silently drops a retired localization listing without leaving the geometry spinner active', async () => {
+  api.fetchLocalizationRuns.mockRejectedValueOnce(new ApiRequestOwnerRetiredError());
+  const renderer = await mount(createElement(LocalizationCalculatePanel, {
+    objectId: 'OBJ_0001',
+    sessionId: 'S000001',
+    busy: false,
+    onClose: () => undefined,
+  }));
+  expect(api.fetchLocalizationRuns).toHaveBeenCalledTimes(1);
+  expect(renderer.root.findAllByProps({ role: 'alert' })).toHaveLength(0);
+  expect(JSON.stringify(renderer.toJSON())).not.toContain(translate('en', 'calc.loading_geometry'));
+  renderer.unmount();
+});
+
 async function calculatePanel(settings: CalcSettingsProfile): Promise<ReactTestRenderer> {
   api.getCalcSettings.mockResolvedValueOnce(settingsResponse(settings));
   return mount(createElement(LocalizationCalculatePanel, {
@@ -359,6 +406,29 @@ it('shows a run material name in the workflow result view', async () => {
   expect(JSON.stringify(renderer.toJSON())).toContain(translate('en', 'workflow.material.run', {
     name: translate('en', 'workflow.material.name.brick_masonry'),
   }));
+  renderer.unmount();
+});
+
+it('retries a preempted workflow result read without showing a failure alert', async () => {
+  api.fetchLocalizationRuns.mockRejectedValueOnce(new ApiRequestPreemptedError())
+    .mockResolvedValueOnce(runListing());
+  const renderer = await mount(createElement(WorkflowResultViewer, {
+    objectId: 'OBJ_0001',
+    sessionId: 'S000001',
+  }));
+  expect(api.fetchLocalizationRuns).toHaveBeenCalledTimes(2);
+  expect(renderer.root.findAllByProps({ role: 'alert' })).toHaveLength(0);
+  renderer.unmount();
+});
+
+it('silently drops a retired workflow result read without showing a failure alert', async () => {
+  api.fetchLocalizationRuns.mockRejectedValueOnce(new ApiRequestOwnerRetiredError());
+  const renderer = await mount(createElement(WorkflowResultViewer, {
+    objectId: 'OBJ_0001',
+    sessionId: 'S000001',
+  }));
+  expect(api.fetchLocalizationRuns).toHaveBeenCalledTimes(1);
+  expect(renderer.root.findAllByProps({ role: 'alert' })).toHaveLength(0);
   renderer.unmount();
 });
 

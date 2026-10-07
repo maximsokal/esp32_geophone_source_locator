@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
 
-import { fetchLocalizationRuns, fetchScanInfo, loadSessionRegistration } from '../../api/deviceApi';
+import {
+  fetchLocalizationRuns,
+  fetchScanInfo,
+  isRequestCancellation,
+  loadSessionRegistration,
+  retryPreemptedRead,
+} from '../../api/deviceApi';
 import type { LocalizationRunListing, ScanArtifactInfo } from '../../api/deviceApi';
 import { buildRecordingEvidence, localizationSemanticStatus } from '../../domain/recordingEvidence';
 import type { RecordingEvidence } from '../../domain/recordingEvidence';
@@ -92,7 +98,7 @@ export default function RecordingEvidenceCard({ objectId, sessionId, refreshKey 
     /* Sequential on purpose: the ESP serves one HTTPS request at a time. */
     void (async () => {
       try {
-        const runs = await fetchLocalizationRuns(objectId, sessionId);
+        const runs = await retryPreemptedRead(() => fetchLocalizationRuns(objectId, sessionId));
         if (cancelled) return;
         setListing(runs);
         const scanInfo = await fetchScanInfo(objectId, sessionId, 'scan');
@@ -105,7 +111,7 @@ export default function RecordingEvidenceCard({ objectId, sessionId, refreshKey 
         if (!cancelled) setRegistration(registrationJson === null ? null : decodeRegistrationArtifact(registrationJson));
       }
       catch (reason) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+        if (!cancelled && !isRequestCancellation(reason)) setError(reason instanceof Error ? reason.message : String(reason));
       }
     })();
     return () => { cancelled = true; };

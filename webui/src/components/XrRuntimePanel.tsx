@@ -3,7 +3,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { clientDiagnostics } from '../data/clientDiagnostics';
 import { formatErrorText, translate, useLocale, useT } from '../i18n';
 import { formatDistance, formatNumber, formatPercent } from '../i18n/format';
-import { fetchLocalizationRuns, loadSessionRegistration, saveSessionRegistration } from '../api/deviceApi';
+import {
+  fetchLocalizationRuns,
+  isRequestCancellation,
+  loadSessionRegistration,
+  retryPreemptedRead,
+  saveSessionRegistration,
+} from '../api/deviceApi';
 import type { LocalizationSessionGeometry } from '../api/deviceApi';
 import { StructuralGuideOverlay } from './StructuralGuideOverlay';
 import { BleRoughPlacementHud } from './BleRoughPlacementHud';
@@ -134,7 +140,7 @@ export function XrRuntimePanel({
       if(objectId===null||sessionId===null){setTagGeometryLoading(false);setTagModeError('Open a recording before using tag registration.');return;}
       void (async()=>{
         try{
-          const listing=await fetchLocalizationRuns(objectId,sessionId);const geometry=listing.geometry;
+          const listing=await retryPreemptedRead(()=>fetchLocalizationRuns(objectId,sessionId));const geometry=listing.geometry;
           const geometryComputedAtMs=Math.max(0,...geometry.pods.filter((pod)=>pod.computed).map((pod)=>pod.computed_at_ms??0));
           if(epoch!==tagGeometryEpoch.current||!['starting','running'].includes(runtime.getState().phase))return;
           tagGeometryRef.current={objectId,sessionId,geometry,geometryComputedAtMs};setTagGeometry(geometry);setTagGeometryAt(geometryComputedAtMs);setTagGeometryLoading(false);
@@ -143,7 +149,7 @@ export function XrRuntimePanel({
             if(epoch!==tagGeometryEpoch.current||!['starting','running'].includes(runtime.getState().phase))return;
             const registration=registrationJson===null?null:decodeRegistrationArtifact(registrationJson);onRegistrationChangeRef.current?.(registration);if(registration!==null)setTagRegistrationLabel(registration);
           }catch(reason){if(epoch===tagGeometryEpoch.current)setTagModeError(`Saved anchor status unavailable: ${reason instanceof Error?reason.message:String(reason)}`);}
-        }catch(reason){if(epoch!==tagGeometryEpoch.current)return;setTagGeometryLoading(false);setTagModeError(`Frozen session geometry unavailable: ${reason instanceof Error?reason.message:String(reason)}`);}
+        }catch(reason){if(epoch!==tagGeometryEpoch.current)return;setTagGeometryLoading(false);if(isRequestCancellation(reason))return;setTagModeError(`Frozen session geometry unavailable: ${reason instanceof Error?reason.message:String(reason)}`);}
       })();
     }else if((runtimeState.phase==='ended'||runtimeState.phase==='interrupted')&&previous!==runtimeState.phase){
       void tagStopRef.current().then(()=>{if(runtimeState.phase==='ended'&&runtimeState.pointCount>0)onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot());});

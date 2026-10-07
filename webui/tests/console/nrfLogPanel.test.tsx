@@ -2,10 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
-const api = vi.hoisted(() => ({ fetchNrfLogs: vi.fn() }));
+const api = vi.hoisted(() => ({
+  fetchNrfLogs: vi.fn(),
+  createRequestOwner: vi.fn(),
+  retireRequestOwner: vi.fn(),
+  actualApi: null as unknown,
+}));
 vi.mock('../../src/api/deviceApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/api/deviceApi')>();
-  return { ...actual, ...api };
+  api.actualApi = actual;
+  api.createRequestOwner.mockImplementation(() => actual.createRequestOwner());
+  api.retireRequestOwner.mockImplementation((owner: object) => actual.retireRequestOwner(owner));
+  return {
+    ...actual,
+    fetchNrfLogs: api.fetchNrfLogs,
+    createRequestOwner: api.createRequestOwner,
+    retireRequestOwner: api.retireRequestOwner,
+  };
 });
 
 import NrfLogPanel, { NRF_LOG_PANEL_I18N_KEYS, nrfLogsCsv, nrfLogsJson } from '../../src/features/nrflog/NrfLogPanel';
@@ -51,12 +64,21 @@ function text(node: ReactTestInstance | string | number): string {
 }
 
 let renderer: ReactTestRenderer | undefined;
+let rendererMounted = false;
 
 async function mount(nodeStatus: DeviceStatus = status(summary())): Promise<ReactTestRenderer> {
   await act(async () => {
     renderer = create(createElement(NrfLogPanel, { status: nodeStatus }));
+    rendererMounted = true;
   });
   return renderer!;
+}
+
+function unmount(view: ReactTestRenderer | undefined = renderer): void {
+  if (view === undefined || !rendererMounted) return;
+  act(() => view.unmount());
+  rendererMounted = false;
+  if (renderer === view) renderer = undefined;
 }
 
 beforeEach(() => {
@@ -67,14 +89,21 @@ beforeEach(() => {
     clearTimeout: (id: number) => globalThis.clearTimeout(id),
   });
   api.fetchNrfLogs.mockReset().mockResolvedValue(okPage([]));
+  const actual = api.actualApi as typeof import('../../src/api/deviceApi');
+  api.createRequestOwner.mockClear().mockImplementation(() => actual.createRequestOwner());
+  api.retireRequestOwner.mockClear().mockImplementation((owner: object) => actual.retireRequestOwner(owner));
 });
 
 afterEach(() => {
-  if (renderer !== undefined) act(() => renderer?.unmount());
-  renderer = undefined;
-  vi.useRealTimers();
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
+  try {
+    unmount();
+  } finally {
+    rendererMounted = false;
+    renderer = undefined;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  }
 });
 
 describe('nRF log panel', () => {
@@ -89,14 +118,14 @@ describe('nRF log panel', () => {
 
     const view = await mount();
     expect(text(view.root)).toContain('Device booted');
-    expect(api.fetchNrfLogs).toHaveBeenNthCalledWith(1, 'remote2', undefined, 200);
+    expect(api.fetchNrfLogs).toHaveBeenNthCalledWith(1, 'remote2', undefined, 200, expect.objectContaining({ owner: expect.any(Object) }));
 
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(api.fetchNrfLogs).toHaveBeenNthCalledWith(2, 'remote2', first.token, 200);
+    expect(api.fetchNrfLogs).toHaveBeenNthCalledWith(2, 'remote2', first.token, 200, expect.objectContaining({ owner: expect.any(Object) }));
     expect(text(view.root)).toContain('Network role assigned');
 
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(api.fetchNrfLogs).toHaveBeenNthCalledWith(3, 'remote2', second.token, 200);
+    expect(api.fetchNrfLogs).toHaveBeenNthCalledWith(3, 'remote2', second.token, 200, expect.objectContaining({ owner: expect.any(Object) }));
     expect(text(view.root)).toContain('Log history changed; reloaded the oldest available records.');
     expect(text(view.root)).toContain('Network role lost');
     expect(text(view.root)).not.toContain('Device booted');
@@ -218,9 +247,49 @@ describe('nRF log panel', () => {
     expect(api.fetchNrfLogs).toHaveBeenCalledTimes(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     expect(api.fetchNrfLogs).toHaveBeenCalledTimes(3);
-    act(() => view.unmount());
-    renderer = undefined;
+    unmount(view);
   });
+
+  it('retires the active read on unmount without showing a request failure or updating state', async () => {
+    const actualApi = api.actualApi as typeof import('../../src/api/deviceApi');
+    let signal!: AbortSignal;
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url.startsWith('/api/nrf/logs?')) {
+        signal = init?.signal as AbortSignal;
+        return new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+        });
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    api.fetchNrfLogs.mockImplementation((node, after, limit, options) => actualApi.fetchNrfLogs(node, after, limit, options));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const view = await mount();
+    await act(async () => { await Promise.resolve(); });
+    expect(signal).toBeDefined();
+    expect(view.root.findAllByProps({ role: 'alert' })).toHaveLength(0);
+    const request = api.fetchNrfLogs.mock.results[0]?.value as Promise<unknown>;
+    const retiredOwner = api.createRequestOwner.mock.results[0]?.value;
+    expect((api.fetchNrfLogs.mock.calls[0]?.[3] as { owner?: object } | undefined)?.owner).toBe(retiredOwner);
+    const rejection = expect(request).rejects.toBeInstanceOf(actualApi.ApiRequestOwnerRetiredError);
+    const queuedOwner = actualApi.createRequestOwner();
+    const queuedRead = actualApi.fetchLocalizationRuns('OBJ_0001', 'S000001', { owner: queuedOwner });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    unmount(view);
+    await rejection;
+    await expect(queuedRead).resolves.toEqual({});
+
+    expect(signal.aborted).toBe(true);
+    expect(api.retireRequestOwner).toHaveBeenCalledTimes(1);
+    expect(api.retireRequestOwner).toHaveBeenCalledWith(retiredOwner);
+    expect(api.retireRequestOwner.mock.calls[0]?.[0]).toBe(retiredOwner);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    /* react-test-renderer prints its own deprecation notice once per process: ignore only that. */
+    expect(consoleError.mock.calls.filter(([message]) => !String(message).includes('react-test-renderer is deprecated'))).toEqual([]);
+  }, 1500);
 
   it('includes every nrf_log key used by the panel and generated event lookup in EN and UK', () => {
     const eventKeys = Object.values(NRF_LOG_EVENTS).map((event) => `nrf_log.event.${event.name.toLowerCase()}` as I18nKey);

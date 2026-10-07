@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { fetchSeismic } from '../../api/deviceApi';
+import {
+  ApiRequestOwnerRetiredError,
+  ApiRequestPreemptedError,
+  createRequestOwner,
+  fetchSeismic,
+  retireRequestOwner,
+} from '../../api/deviceApi';
 import type { SeismicSnapshot } from '../../domain/device';
 import { useLocale, useT } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
@@ -19,6 +25,7 @@ export default function LiveSeismicPanel() {
     let cancelled = false;
     let timer: number | null = null;
     let consecutiveFailures = 0;
+    const owner = createRequestOwner();
 
     const schedule = (delay: number): void => {
       if (cancelled) return;
@@ -33,7 +40,7 @@ export default function LiveSeismicPanel() {
       }
 
       try {
-        const next = await fetchSeismic({ spanMs: 440, maxPoints: 220 });
+        const next = await fetchSeismic({ spanMs: 440, maxPoints: 220, owner });
         if (cancelled) return;
         consecutiveFailures = 0;
         setSnapshot(next);
@@ -41,7 +48,11 @@ export default function LiveSeismicPanel() {
         schedule(LIVE_REFRESH_MS);
       }
       catch (reason) {
-        if (cancelled) return;
+        if (cancelled || reason instanceof ApiRequestOwnerRetiredError) return;
+        if (reason instanceof ApiRequestPreemptedError) {
+          schedule(LIVE_REFRESH_MS);
+          return;
+        }
         consecutiveFailures = Math.min(consecutiveFailures + 1, 5);
         setError(reason instanceof Error ? reason.message : String(reason));
         const delay = Math.min(
@@ -56,6 +67,7 @@ export default function LiveSeismicPanel() {
     return () => {
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
+      retireRequestOwner(owner);
     };
   }, []);
 

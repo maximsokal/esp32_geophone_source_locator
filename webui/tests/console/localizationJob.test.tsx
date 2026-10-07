@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { ApiRequestOwnerRetiredError, ApiRequestPreemptedError } from '../../src/api/deviceApi';
 
 import { translate } from '../../src/i18n';
 import { formatNumber, formatPercent } from '../../src/i18n/format';
@@ -68,6 +69,26 @@ describe('waiting for the device job', () => {
       lastPoll: translate('en', 'calc.job_last_poll', { error: 'HTTP 503' }),
     }));
     expect(clock).toBeGreaterThanOrEqual(5000 + JOB_WAIT_GRACE_MS);
+  });
+
+  it('does not retain preemption as the last poll failure and exits on a retired owner', async () => {
+    const preempted = vi.fn()
+      .mockRejectedValueOnce(new ApiRequestPreemptedError())
+      .mockResolvedValueOnce(status());
+    const done = await waitForLocalizationJob(preempted, {
+      objectId: 'OBJ_0001', sessionId: 'S000001', budgetMs: 5000,
+      sleep: vi.fn(async () => undefined), now: () => 0,
+    });
+    expect(done.state).toBe('succeeded');
+    expect(preempted).toHaveBeenCalledTimes(2);
+
+    const retired = vi.fn().mockRejectedValue(new ApiRequestOwnerRetiredError());
+    let nowCalls = 0;
+    await expect(waitForLocalizationJob(retired, {
+      objectId: 'OBJ_0001', sessionId: 'S000001', budgetMs: 5000,
+      sleep: vi.fn(async () => undefined), now: () => nowCalls++ === 0 ? 0 : Number.MAX_SAFE_INTEGER,
+    })).rejects.toBeInstanceOf(ApiRequestOwnerRetiredError);
+    expect(retired).toHaveBeenCalledTimes(1);
   });
 });
 

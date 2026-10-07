@@ -10,7 +10,10 @@ const api = vi.hoisted(() => ({
   sendControl: vi.fn(),
   saveCalcSettings: vi.fn(),
 }));
-vi.mock('../../src/api/deviceApi', () => api);
+vi.mock('../../src/api/deviceApi', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/api/deviceApi')>(),
+  ...api,
+}));
 
 import type { LocalizationRunListing } from '../../src/api/deviceApi';
 import LocalizationCalculatePanel from '../../src/features/objects/LocalizationCalculatePanel';

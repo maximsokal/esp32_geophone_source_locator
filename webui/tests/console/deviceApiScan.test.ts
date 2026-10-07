@@ -17,6 +17,17 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function validDeviceStatus() {
+  return {
+    system: { state: 'NOT_READY', mode: 'NORMAL', uptime_ms: 0, acquisition_ready: false, ready_pods: 0, required_pods: 0 },
+    power: { valid: false, voltage_v: 0, current_a: 0, power_w: 0 },
+    environment: { valid: false, temperature_c: 0, humidity_percent: 0, pressure_pa: 0 },
+    mux: { valid: false, active_channel: -1, active_pod: -1 },
+    pods: [],
+    acquisition: { running: false, requested_running: false, hardware_ready: false, source: 'NONE', sample_rate_hz: 0, samples_recorded: 0, recording_ms: 0 },
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -106,7 +117,7 @@ describe('session-owned 3D scan transport (MAX-167)', () => {
         saveSignal = init?.signal as AbortSignal;
         return new Promise<Response>((resolve) => { resolveSave = resolve; });
       }
-      return Promise.resolve(jsonResponse({ system: { state: 'NOT_READY' } }));
+      return Promise.resolve(jsonResponse(validDeviceStatus()));
     });
     vi.stubGlobal('fetch', fetchMock);
 

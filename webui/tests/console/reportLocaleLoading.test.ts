@@ -17,7 +17,10 @@ const lazyUk = vi.hoisted(() => {
     resolve: (module: { uk: Record<string, string> }) => resolve(module),
   };
 });
-vi.mock('../../src/api/deviceApi', () => api);
+vi.mock('../../src/api/deviceApi', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/api/deviceApi')>(),
+  ...api,
+}));
 vi.mock('../../src/i18n/catalog.uk.gen', async () => {
   lazyUk.markStarted();
   return await lazyUk.promise;
@@ -25,6 +28,7 @@ vi.mock('../../src/i18n/catalog.uk.gen', async () => {
 
 import { openRecordingReport } from '../../src/features/report/reportExport';
 import { translate } from '../../src/i18n';
+import { ApiRequestPreemptedError } from '../../src/api/deviceApi';
 import type { ObjectProfile, RecordingSessionSummary } from '../../src/domain/device';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -66,4 +70,22 @@ it('waits for UK strings before writing the exported report', async () => {
   }
   expect(html).toContain(translate('uk', 'report.print_pdf'));
   expect(html).not.toContain(translate('en', 'report.print_pdf'));
+});
+
+it('does not export a report with missing localization data after repeated preemption', async () => {
+  const object = {
+    id: 'OBJ_0001', name: 'Bridge pier', active: true, location: { valid: false }, cable_lengths_m: [5, 5, 5, 5],
+  } as unknown as ObjectProfile;
+  const session = {
+    session_id: 'S000007', complete: true, source: 'AD7606', sample_rate_hz: 500, channel_count: 4,
+    samples_written: 12000, dropped_frames: 0, recording_ms: 24000,
+  } as RecordingSessionSummary;
+  const writes: string[] = [];
+  const target = { document: { write: (html: string) => writes.push(html), open: vi.fn(), close: vi.fn() } };
+  vi.stubGlobal('window', { open: vi.fn(() => target) });
+  api.fetchLocalizationRuns.mockReset().mockRejectedValue(new ApiRequestPreemptedError());
+
+  await expect(openRecordingReport(object, session)).rejects.toBeInstanceOf(ApiRequestPreemptedError);
+  expect(api.fetchLocalizationRuns).toHaveBeenCalledTimes(3);
+  expect(writes).toHaveLength(1);
 });
