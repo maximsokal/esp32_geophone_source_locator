@@ -166,6 +166,12 @@ static void set_metadata(const char *json)
     memcpy(persisted_json, json, strlen(json) + 1U);
 }
 
+static void assert_location_equal(
+    const object_store_location_t *expected,
+    const object_store_location_t *actual
+);
+
+
 static void test_profile_cache_reads_once_and_reloads_after_mutation(void)
 {
     set_metadata("{\"schema_version\":1,\"id\":\"OBJ_0001\",\"name\":\"FIELD\"}");

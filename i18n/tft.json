@@ -1420,7 +1420,7 @@
     "tft.hw.module.main_xiao": {"en": "Main XIAO", "uk": "Основний XIAO", "max_len": 13},
     "tft.hw.module.barometer": {"en": "Barometer", "uk": "Барометр", "max_len": 9},
     "tft.hw.module.power_monitor": {"en": "Power monitor", "uk": "Монітор живлення", "max_len": 16},
-    "tft.hw.state.unknown": {"en": "NOT TESTED", "uk": "НЕ ПЕРЕВІР.", "max_len": 11},
+    "tft.hw.state.unknown": {"en": "NOT TESTED", "uk": "Не тестовано", "max_len": 12},
     "tft.hw.state.present": {"en": "Present", "uk": "Підключено", "max_len": 10},
     "tft.hw.state.absent": {"en": "Absent", "uk": "Не підключено", "max_len": 13},
     "tft.hw.state.fault": {"en": "Fault", "uk": "Несправність", "max_len": 12},

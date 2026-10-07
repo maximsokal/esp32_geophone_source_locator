@@ -226,7 +226,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Degraded", /* tft.hw.state.degraded */
     "Fault", /* tft.hw.state.fault */
     "Present", /* tft.hw.state.present */
-    "Unknown", /* tft.hw.state.unknown */
+    "NOT TESTED", /* tft.hw.state.unknown */
     "HARDWARE", /* tft.hw.title */
     "Back", /* tft.workflow.action.back */
     "Calculate positions", /* tft.workflow.action.calculate_positions */
@@ -625,7 +625,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Обмежено", /* tft.hw.state.degraded */
     "Несправність", /* tft.hw.state.fault */
     "Підключено", /* tft.hw.state.present */
-    "Невідомо", /* tft.hw.state.unknown */
+    "Не тестовано", /* tft.hw.state.unknown */
     "ОБЛАДНАННЯ", /* tft.hw.title */
     "Назад", /* tft.workflow.action.back */
     "Розрахувати координати", /* tft.workflow.action.calculate_positions */

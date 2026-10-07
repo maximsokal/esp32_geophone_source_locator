@@ -118,7 +118,7 @@ void ui_render_hardware_locked(void)
             card,
             128,
             y,
-            98,
+            104,
             ui_tr(state.label_key),
             state.color
         );

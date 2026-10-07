@@ -25,70 +25,6 @@
 #include "workflow_service.h"
 #include "workflow_service_host_fakes.h"
 
-#if defined(WORKFLOW_SERVICE_REAL_OBJECT_STORE_CACHE)
-#include "object_store_internal.h"
-#include "storage_manager.h"
-
-static char s_workflow_calc_settings[OBJECT_STORE_CALC_SETTINGS_JSON_SIZE];
-static unsigned s_workflow_calc_storage_reads;
-static unsigned s_workflow_calc_object_stats;
-static bool s_workflow_storage_ready = true;
-
-bool storage_manager_is_ready(void)
-{
-    return s_workflow_storage_ready;
-}
-
-void storage_manager_operation_end(void)
-{
-}
-
-esp_err_t object_store_internal_begin_file_operation(void) { return ESP_OK; }
-void object_store_internal_end_file_operation(void) {}
-esp_err_t object_store_internal_begin_state_operation(void) { return ESP_OK; }
-void object_store_internal_end_state_operation(void) {}
-
-bool object_store_fs_object_exists(const char *object_id)
-{
-    ++s_workflow_calc_object_stats;
-    return object_id != NULL && strcmp(object_id, "OBJ_0001") == 0;
-}
-
-bool storage_manager_path_exists(const char *path)
-{
-    (void)path;
-    return false;
-}
-
-esp_err_t storage_manager_read_text(const char *path, char *buffer, size_t buffer_size)
-{
-    assert(path != NULL && strstr(path, "/OBJ_0001/calc_settings.json") != NULL);
-    ++s_workflow_calc_storage_reads;
-    if (s_workflow_calc_settings[0] == '\0') return ESP_ERR_NOT_FOUND;
-    const size_t length = strlen(s_workflow_calc_settings) + 1U;
-    if (length > buffer_size) return ESP_ERR_INVALID_SIZE;
-    memcpy(buffer, s_workflow_calc_settings, length);
-    return ESP_OK;
-}
-
-esp_err_t storage_manager_atomic_write_text(const char *path, const char *text)
-{
-    assert(path != NULL && strstr(path, "/OBJ_0001/calc_settings.json") != NULL);
-    if (text == NULL || strlen(text) >= sizeof(s_workflow_calc_settings)) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-    (void)snprintf(s_workflow_calc_settings, sizeof(s_workflow_calc_settings), "%s", text);
-    return ESP_OK;
-}
-
-void object_store_profile_cache_note_calc_settings_saved_locked(
-    const char *object_id,
-    uint64_t generation)
-{
-    (void)object_id;
-    (void)generation;
-}
-#endif
 
 static const char s_deep_nested_settings_json[] =
     "{\"propagation_speed_mps\":340,\"propagation_speed_uncertainty_mps\":5,"
@@ -1004,77 +940,9 @@ static void test_tft_custom_range_is_persisted_and_auto_omits_it(void)
     workflow_service_shutdown();
 }
 
-#if defined(WORKFLOW_SERVICE_REAL_OBJECT_STORE_CACHE)
-static void test_workflow_poll_uses_calc_cache_after_warm_cycle(void)
-{
-    s_fake_object_id = "OBJ_0001";
-    s_workflow_calc_settings[0] = '\0';
-    s_workflow_calc_storage_reads = 0U;
-    s_workflow_calc_object_stats = 0U;
-    s_workflow_storage_ready = true;
-    object_store_cache_reset();
-    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 0U);
-
-    assert(workflow_service_poll() == ESP_OK);
-    assert(s_workflow_calc_storage_reads == 1U);
-    assert(s_workflow_calc_object_stats == 1U);
-    for (unsigned poll = 0U; poll < 6U; ++poll) {
-        s_now_ms += UINT64_C(10000);
-        assert(workflow_service_poll() == ESP_OK);
-    }
-    assert(s_workflow_calc_storage_reads == 1U);
-    assert(s_workflow_calc_object_stats == 1U);
-    assert(!try_snapshot().calc_settings_ready);
-
-    assert(workflow_test_settings_json != NULL);
-    assert(object_store_set_calc_settings_json(
-        "OBJ_0001",
-        workflow_test_settings_json
-    ) == ESP_OK);
-    const unsigned reads_after_save = s_workflow_calc_storage_reads;
-    const unsigned stats_after_save = s_workflow_calc_object_stats;
-    s_now_ms += UINT64_C(10000);
-    assert(workflow_service_poll() == ESP_OK);
-    assert(s_workflow_calc_storage_reads == reads_after_save + 1U);
-    assert(s_workflow_calc_object_stats == stats_after_save + 1U);
-    assert(try_snapshot().calc_settings_ready);
-
-    const unsigned reads_after_refresh = s_workflow_calc_storage_reads;
-    const unsigned stats_after_refresh = s_workflow_calc_object_stats;
-    for (unsigned poll = 0U; poll < 6U; ++poll) {
-        s_now_ms += UINT64_C(10000);
-        assert(workflow_service_poll() == ESP_OK);
-    }
-    assert(s_workflow_calc_storage_reads == reads_after_refresh);
-    assert(s_workflow_calc_object_stats == stats_after_refresh);
-    workflow_service_shutdown();
-}
-#endif
 
 static void test_material_is_carried_into_run_provenance(void);
 
-#if defined(WORKFLOW_SERVICE_REAL_OBJECT_STORE_CACHE)
-static void (*const s_workflow_fallback_tests[])(void) = {
-    test_tft_custom_range_is_persisted_and_auto_omits_it,
-    test_reconciliation_review_error_and_async_recording_commands,
-    test_reboot_resumes_only_at_object_or_idle,
-    test_object_poll_preserves_workflow_on_read_error_and_resets_on_change,
-    test_concurrent_commands_use_generation_as_a_single_winner_gate,
-    test_try_snapshot_is_nonblocking_while_mutex_is_held,
-    test_async_fifo_stale_generation_full_queue_and_monotonic_sequence,
-    test_async_rejects_internal_completion_commands,
-    test_periodic_poll_alone_advances_calibration_timeout,
-    test_scan_presence_and_settings_refresh_are_cached_for_two_seconds,
-    test_calc_settings_readiness_gates_calculate_and_save_invalidates_cache,
-    test_calculation_success_progress_failure_classes_and_submit_errors,
-    test_invalid_settings_at_submit_and_orphaned_job_completion,
-    test_second_calculation_while_orphaned_is_busy_without_duplicate_submit,
-    test_material_save_runs_in_poll_and_refreshes_settings_ready,
-    test_material_save_reports_sd_error_and_missing_active_object,
-    test_material_save_queue_full_is_rejected_without_sd_write,
-    test_material_is_carried_into_run_provenance,
-};
-#endif
 
 static void test_material_is_carried_into_run_provenance(void)
 {
@@ -1089,10 +957,6 @@ static void test_material_is_carried_into_run_provenance(void)
 
 int main(void)
 {
-#if defined(WORKFLOW_SERVICE_REAL_OBJECT_STORE_CACHE)
-    assert(s_workflow_fallback_tests[0] != NULL);
-    test_workflow_poll_uses_calc_cache_after_warm_cycle();
-#else
     test_tft_custom_range_is_persisted_and_auto_omits_it();
     test_reconciliation_review_error_and_async_recording_commands();
     test_reboot_resumes_only_at_object_or_idle();
@@ -1111,6 +975,5 @@ int main(void)
     test_material_save_reports_sd_error_and_missing_active_object();
     test_material_save_queue_full_is_rejected_without_sd_write();
     test_material_is_carried_into_run_provenance();
-#endif
     return 0;
 }

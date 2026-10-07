@@ -47,6 +47,7 @@
         "components/ui/ui_screen_registry.c",
         "components/ui/ui_navigation.c",
         "components/ui/ui_system.c",
+        "components/ui/ui_system_model.c",
         "components/ui_i18n/ui_utf8_format.c",
         "components/ui_i18n/ui_i18n.c",
         "components/ui_i18n/ui_i18n_catalog.gen.c",

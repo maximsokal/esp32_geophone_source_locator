@@ -41,7 +41,7 @@ describe('hardware inventory dashboard panel', () => {
 
   it.each([
     ['en', 'Not tested'],
-    ['uk', 'Не перевірено'],
+    ['uk', 'Не тестовано'],
   ] as const)('labels an unknown inventory state as not tested in %s', (locale, expected) => {
     const status = {
       hardware: {
