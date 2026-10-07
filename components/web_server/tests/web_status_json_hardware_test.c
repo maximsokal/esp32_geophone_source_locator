@@ -12,9 +12,9 @@ static void test_snapshot_is_serialized_and_escaped(void)
 {
     const hw_module_info_t fixture[HW_MODULE_COUNT] = {
         { HW_MODULE_SD_CARD, HW_STATE_ABSENT, HW_REQ_REQUIRED, "missing \"card\"\\retry\n" },
-        { HW_MODULE_AD7606, HW_STATE_FAULT, HW_REQ_REQUIRED, "spi timeout" },
-        { HW_MODULE_SENSOR_MUX, HW_STATE_PRESENT, HW_REQ_OPTIONAL, "" },
-        { HW_MODULE_MAIN_XIAO, HW_STATE_DEGRADED, HW_REQ_OPTIONAL, "limited" },
+        { HW_MODULE_AD7606, HW_STATE_FAULT, HW_REQ_REQUIRED, "ready" },
+        { HW_MODULE_SENSOR_MUX, HW_STATE_PRESENT, HW_REQ_OPTIONAL, "topology probe ok" },
+        { HW_MODULE_MAIN_XIAO, HW_STATE_DEGRADED, HW_REQ_OPTIONAL, "totally new text" },
         { HW_MODULE_BAROMETER, HW_STATE_UNKNOWN, HW_REQ_OPTIONAL, "" },
         { HW_MODULE_POWER_MONITOR, HW_STATE_ABSENT, HW_REQ_OPTIONAL, "not fitted" },
     };
@@ -35,6 +35,15 @@ static void test_snapshot_is_serialized_and_escaped(void)
     cJSON *modules = cJSON_GetObjectItemCaseSensitive(hardware, "modules");
     assert(cJSON_IsArray(modules));
     assert(cJSON_GetArraySize(modules) == HW_MODULE_COUNT);
+    for (size_t i = 0U; i < (size_t)HW_MODULE_COUNT; ++i) {
+        cJSON *module = cJSON_GetArrayItem(modules, (int)i);
+        cJSON *reason = cJSON_GetObjectItemCaseSensitive(module, "reason");
+        cJSON *reason_code = cJSON_GetObjectItemCaseSensitive(module, "reason_code");
+        assert(cJSON_IsString(reason));
+        assert(strcmp(reason->valuestring, fixture[i].reason) == 0);
+        assert(cJSON_IsString(reason_code));
+        assert(reason_code->valuestring[0] != '\0');
+    }
     cJSON *first = cJSON_GetArrayItem(modules, 0);
     assert(strcmp(cJSON_GetObjectItemCaseSensitive(first, "id")->valuestring, "sd_card") == 0);
     assert(strcmp(cJSON_GetObjectItemCaseSensitive(first, "state")->valuestring, "absent") == 0);
@@ -42,6 +51,21 @@ static void test_snapshot_is_serialized_and_escaped(void)
     assert(strcmp(
         cJSON_GetObjectItemCaseSensitive(first, "reason")->valuestring,
         fixture[0].reason
+    ) == 0);
+    cJSON *known = cJSON_GetArrayItem(modules, 1);
+    assert(strcmp(
+        cJSON_GetObjectItemCaseSensitive(known, "reason_code")->valuestring,
+        "ready"
+    ) == 0);
+    cJSON *unknown = cJSON_GetArrayItem(modules, 3);
+    assert(strcmp(
+        cJSON_GetObjectItemCaseSensitive(unknown, "reason_code")->valuestring,
+        "unrecognized"
+    ) == 0);
+    cJSON *empty = cJSON_GetArrayItem(modules, 4);
+    assert(strcmp(
+        cJSON_GetObjectItemCaseSensitive(empty, "reason_code")->valuestring,
+        "none"
     ) == 0);
     cJSON *optional = cJSON_GetArrayItem(modules, 2);
     assert(strcmp(cJSON_GetObjectItemCaseSensitive(optional, "id")->valuestring, "sensor_mux") == 0);

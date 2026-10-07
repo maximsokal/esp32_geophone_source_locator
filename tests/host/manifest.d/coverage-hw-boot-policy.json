@@ -7,7 +7,8 @@
       "sources": [
         "tests/host/app_startup_module_policy_test.c",
         "main/app_startup_module_policy.c",
-        "components/hw_inventory/hw_inventory.c"
+        "components/hw_inventory/hw_inventory.c",
+        "components/hw_inventory/hw_inventory_reason.c"
       ],
       "include_dirs": [
         "tests/host/stubs/ina3221_driver",

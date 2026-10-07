@@ -233,6 +233,7 @@
         "components/device_status_pod_bridge/app_pod_status_state_policy.c",
         "components/device_status_pod_bridge/app_pod_status_bridge.c",
         "components/hw_inventory/hw_inventory.c",
+        "components/hw_inventory/hw_inventory_reason.c",
         "tests/host/app_pod_status_bridge_runtime_test.c"
       ],
       "include_dirs": [
@@ -256,6 +257,7 @@
       "sources": [
         "components/device_status_pod_bridge/app_pod_status_inventory_policy.c",
         "components/hw_inventory/hw_inventory.c",
+        "components/hw_inventory/hw_inventory_reason.c",
         "tests/host/app_pod_status_inventory_policy_test.c"
       ],
       "include_dirs": [

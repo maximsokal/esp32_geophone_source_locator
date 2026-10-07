@@ -37,6 +37,7 @@
       "sources": [
         "components/web_server/web_status_json.c",
         "components/web_server/web_status_json_hardware.c",
+        "components/hw_inventory/hw_inventory_reason.c",
         "components/web_server/tests/hw_inventory_status_fake.c",
         "components/web_server/web_status_json_pods.c",
         "components/web_server/web_status_policy.c",

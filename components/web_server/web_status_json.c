@@ -149,37 +149,49 @@ static bool web_status_json_add_power(cJSON *root, const device_power_status_t *
     cJSON *object = cJSON_AddObjectToObject(root, "power");
     if (object == NULL) return false;
 
-    cJSON_AddBoolToObject(object, "valid", power->valid);
-    cJSON_AddNumberToObject(object, "voltage_v", power->voltage_v);
-    cJSON_AddNumberToObject(object, "current_a", power->current_a);
-    cJSON_AddNumberToObject(object, "power_w", power->power_w);
-
-    cJSON_AddStringToObject(
-        object,
-        "source",
-        device_status_power_source_name(power->source)
-    );
-    cJSON_AddBoolToObject(object, "battery_present", power->battery_present);
-    cJSON_AddBoolToObject(object, "battery_percent_valid", power->battery_percent_valid);
-    cJSON_AddNumberToObject(object, "battery_voltage_v", power->battery_voltage_v);
-    cJSON_AddNumberToObject(object, "battery_current_a", power->battery_current_a);
+    if (
+        cJSON_AddBoolToObject(object, "valid", power->valid) == NULL ||
+        cJSON_AddNumberToObject(object, "voltage_v", power->voltage_v) == NULL ||
+        cJSON_AddNumberToObject(object, "current_a", power->current_a) == NULL ||
+        cJSON_AddNumberToObject(object, "power_w", power->power_w) == NULL ||
+        cJSON_AddStringToObject(
+            object,
+            "source",
+            device_status_power_source_name(power->source)
+        ) == NULL ||
+        cJSON_AddBoolToObject(object, "battery_present", power->battery_present) == NULL ||
+        cJSON_AddBoolToObject(object, "battery_percent_valid", power->battery_percent_valid) == NULL ||
+        cJSON_AddNumberToObject(object, "battery_voltage_v", power->battery_voltage_v) == NULL ||
+        cJSON_AddNumberToObject(object, "battery_current_a", power->battery_current_a) == NULL
+    ) {
+        return false;
+    }
     const bool battery_percent_added = power->battery_percent_valid &&
         isfinite(power->battery_percent_estimate)
         ? cJSON_AddNumberToObject(object, "battery_percent_estimate", power->battery_percent_estimate) != NULL
         : cJSON_AddNullToObject(object, "battery_percent_estimate") != NULL;
-    if (!battery_percent_added) return false;
-    cJSON_AddBoolToObject(object, "usb_present", power->usb_present);
-    cJSON_AddBoolToObject(object, "charging", power->charging);
+    if (
+        !battery_percent_added ||
+        cJSON_AddBoolToObject(object, "usb_present", power->usb_present) == NULL ||
+        cJSON_AddBoolToObject(object, "charging", power->charging) == NULL
+    ) {
+        return false;
+    }
     /* MAX-180/183: user-facing state and the low-battery reaction. */
-    cJSON_AddStringToObject(object, "state", device_status_power_state_name(power->state));
-    cJSON_AddBoolToObject(object, "battery_full", power->battery_full);
-    cJSON_AddStringToObject(object, "low_battery", device_status_low_battery_name(power->low_battery));
-    cJSON_AddNumberToObject(object, "shutdown_in_s", (double)power->shutdown_in_s);
-    /* MAX-181: provenance of battery_percent_estimate. */
-    cJSON_AddStringToObject(
-        object,
-        "battery_soc_source",
-        device_status_battery_soc_quality_name(power->battery_soc_quality));
+    if (
+        cJSON_AddStringToObject(object, "state", device_status_power_state_name(power->state)) == NULL ||
+        cJSON_AddBoolToObject(object, "battery_full", power->battery_full) == NULL ||
+        cJSON_AddStringToObject(object, "low_battery", device_status_low_battery_name(power->low_battery)) == NULL ||
+        cJSON_AddNumberToObject(object, "shutdown_in_s", (double)power->shutdown_in_s) == NULL ||
+        /* MAX-181: provenance of battery_percent_estimate. */
+        cJSON_AddStringToObject(
+            object,
+            "battery_soc_source",
+            device_status_battery_soc_quality_name(power->battery_soc_quality)
+        ) == NULL
+    ) {
+        return false;
+    }
 
     cJSON *channels = cJSON_AddArrayToObject(object, "channels");
     if (channels == NULL) return false;
@@ -187,19 +199,27 @@ static bool web_status_json_add_power(cJSON *root, const device_power_status_t *
         const device_power_channel_status_t *channel = &power->channels[i];
         cJSON *channel_object = cJSON_CreateObject();
         if (channel_object == NULL) return false;
-        cJSON_AddItemToArray(channels, channel_object);
-        cJSON_AddNumberToObject(channel_object, "id", i + 1);
-        cJSON_AddStringToObject(channel_object, "name", web_status_power_channel_name(i));
-        cJSON_AddBoolToObject(channel_object, "valid", channel->valid);
-        cJSON_AddNumberToObject(channel_object, "voltage_v", channel->voltage_v);
-        cJSON_AddNumberToObject(channel_object, "current_a", channel->current_a);
-        cJSON_AddNumberToObject(channel_object, "power_w", channel->power_w);
+        if (!cJSON_AddItemToArray(channels, channel_object)) {
+            cJSON_Delete(channel_object);
+            return false;
+        }
         /* MAX-245 software over-current state. */
-        cJSON_AddStringToObject(
-            channel_object,
-            "overcurrent",
-            device_status_power_overcurrent_name(channel->overcurrent));
-        cJSON_AddBoolToObject(channel_object, "overcurrent_latched", channel->overcurrent_latched);
+        if (
+            cJSON_AddNumberToObject(channel_object, "id", i + 1) == NULL ||
+            cJSON_AddStringToObject(channel_object, "name", web_status_power_channel_name(i)) == NULL ||
+            cJSON_AddBoolToObject(channel_object, "valid", channel->valid) == NULL ||
+            cJSON_AddNumberToObject(channel_object, "voltage_v", channel->voltage_v) == NULL ||
+            cJSON_AddNumberToObject(channel_object, "current_a", channel->current_a) == NULL ||
+            cJSON_AddNumberToObject(channel_object, "power_w", channel->power_w) == NULL ||
+            cJSON_AddStringToObject(
+                channel_object,
+                "overcurrent",
+                device_status_power_overcurrent_name(channel->overcurrent)
+            ) == NULL ||
+            cJSON_AddBoolToObject(channel_object, "overcurrent_latched", channel->overcurrent_latched) == NULL
+        ) {
+            return false;
+        }
     }
     return true;
 }
@@ -208,11 +228,11 @@ static bool web_status_json_add_environment(cJSON *root, const device_environmen
 {
     cJSON *object = cJSON_AddObjectToObject(root, "environment");
     if (object == NULL) return false;
-    cJSON_AddBoolToObject(object, "valid", environment->valid);
-    cJSON_AddNumberToObject(object, "temperature_c", environment->temperature_c);
-    cJSON_AddNumberToObject(object, "humidity_percent", environment->humidity_percent);
-    cJSON_AddNumberToObject(object, "pressure_pa", environment->pressure_pa);
-    return true;
+    return
+        cJSON_AddBoolToObject(object, "valid", environment->valid) != NULL &&
+        cJSON_AddNumberToObject(object, "temperature_c", environment->temperature_c) != NULL &&
+        cJSON_AddNumberToObject(object, "humidity_percent", environment->humidity_percent) != NULL &&
+        cJSON_AddNumberToObject(object, "pressure_pa", environment->pressure_pa) != NULL;
 }
 
 static const char *web_status_main_height_reference_state_name(
@@ -260,10 +280,10 @@ static bool web_status_json_add_mux(cJSON *root, const device_mux_status_t *mux)
 {
     cJSON *object = cJSON_AddObjectToObject(root, "mux");
     if (object == NULL) return false;
-    cJSON_AddBoolToObject(object, "valid", mux->valid);
-    cJSON_AddNumberToObject(object, "active_channel", mux->active_channel);
-    cJSON_AddNumberToObject(object, "active_pod", mux->active_pod);
-    return true;
+    return
+        cJSON_AddBoolToObject(object, "valid", mux->valid) != NULL &&
+        cJSON_AddNumberToObject(object, "active_channel", mux->active_channel) != NULL &&
+        cJSON_AddNumberToObject(object, "active_pod", mux->active_pod) != NULL;
 }
 
 static bool web_status_json_add_acquisition(

@@ -1,6 +1,7 @@
 #include "web_status_json_hardware.h"
 
 #include "hw_inventory.h"
+#include "hw_inventory_reason.h"
 
 bool web_status_json_add_hardware(cJSON *root)
 {
@@ -37,7 +38,12 @@ bool web_status_json_add_hardware(cJSON *root)
             cJSON_AddStringToObject(entry, "id", hw_inventory_module_name(module->id)) == NULL ||
             cJSON_AddStringToObject(entry, "state", hw_inventory_state_name(module->state)) == NULL ||
             cJSON_AddBoolToObject(entry, "required", module->requirement == HW_REQ_REQUIRED) == NULL ||
-            cJSON_AddStringToObject(entry, "reason", module->reason) == NULL
+            cJSON_AddStringToObject(entry, "reason", module->reason) == NULL ||
+            cJSON_AddStringToObject(
+                entry,
+                "reason_code",
+                hw_inventory_reason_code(module->id, module->reason)
+            ) == NULL
         ) {
             return false;
         }

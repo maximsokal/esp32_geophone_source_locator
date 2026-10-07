@@ -36,31 +36,11 @@ static bool web_status_json_add_barometer(
         return false;
     }
 
-    cJSON_AddBoolToObject(
-        object,
-        "valid",
-        barometer->valid
-    );
-
-    cJSON_AddNumberToObject(
-        object,
-        "pressure_pa",
-        barometer->pressure_pa
-    );
-
-    cJSON_AddNumberToObject(
-        object,
-        "relative_altitude_cm",
-        barometer->relative_altitude_cm
-    );
-
-    cJSON_AddNumberToObject(
-        object,
-        "reference_pressure_pa",
-        barometer->reference_pressure_pa
-    );
-
-    return true;
+    return
+        cJSON_AddBoolToObject(object, "valid", barometer->valid) != NULL &&
+        cJSON_AddNumberToObject(object, "pressure_pa", barometer->pressure_pa) != NULL &&
+        cJSON_AddNumberToObject(object, "relative_altitude_cm", barometer->relative_altitude_cm) != NULL &&
+        cJSON_AddNumberToObject(object, "reference_pressure_pa", barometer->reference_pressure_pa) != NULL;
 }
 
 
@@ -130,31 +110,11 @@ static bool web_status_json_add_imu(
         return false;
     }
 
-    cJSON_AddBoolToObject(
-        object,
-        "valid",
-        imu->valid
-    );
-
-    cJSON_AddNumberToObject(
-        object,
-        "roll_deg",
-        imu->roll_deg
-    );
-
-    cJSON_AddNumberToObject(
-        object,
-        "pitch_deg",
-        imu->pitch_deg
-    );
-
-    cJSON_AddNumberToObject(
-        object,
-        "yaw_relative_deg",
-        imu->yaw_relative_deg
-    );
-
-    return true;
+    return
+        cJSON_AddBoolToObject(object, "valid", imu->valid) != NULL &&
+        cJSON_AddNumberToObject(object, "roll_deg", imu->roll_deg) != NULL &&
+        cJSON_AddNumberToObject(object, "pitch_deg", imu->pitch_deg) != NULL &&
+        cJSON_AddNumberToObject(object, "yaw_relative_deg", imu->yaw_relative_deg) != NULL;
 }
 
 
@@ -173,43 +133,13 @@ static bool web_status_json_add_geophone(
         return false;
     }
 
-    cJSON_AddBoolToObject(
-        object,
-        "valid",
-        geophone->valid
-    );
-
-    cJSON_AddNumberToObject(
-        object,
-        "instant_uv",
-        geophone->instant_uv
-    );
-
-    cJSON_AddNumberToObject(
-        object,
-        "rms_uv",
-        geophone->rms_uv
-    );
-
-    cJSON_AddNumberToObject(
-        object,
-        "peak_uv",
-        geophone->peak_uv
-    );
-
-    cJSON_AddNumberToObject(
-        object,
-        "noise_rms_uv",
-        geophone->noise_rms_uv
-    );
-
-    cJSON_AddNumberToObject(
-        object,
-        "snr_db",
-        geophone->snr_db
-    );
-
-    return true;
+    return
+        cJSON_AddBoolToObject(object, "valid", geophone->valid) != NULL &&
+        cJSON_AddNumberToObject(object, "instant_uv", geophone->instant_uv) != NULL &&
+        cJSON_AddNumberToObject(object, "rms_uv", geophone->rms_uv) != NULL &&
+        cJSON_AddNumberToObject(object, "peak_uv", geophone->peak_uv) != NULL &&
+        cJSON_AddNumberToObject(object, "noise_rms_uv", geophone->noise_rms_uv) != NULL &&
+        cJSON_AddNumberToObject(object, "snr_db", geophone->snr_db) != NULL;
 }
 
 
@@ -265,24 +195,21 @@ bool web_status_json_add_pods(
             return false;
         }
 
-        cJSON_AddItemToArray(
-            pods,
-            pod_object
-        );
+        if (!cJSON_AddItemToArray(pods, pod_object)) {
+            cJSON_Delete(pod_object);
+            return false;
+        }
 
-        cJSON_AddNumberToObject(
-            pod_object,
-            "id",
-            i + 1
-        );
-
-        cJSON_AddStringToObject(
-            pod_object,
-            "state",
-            device_status_pod_name(
-                pod->state
-            )
-        );
+        if (
+            cJSON_AddNumberToObject(pod_object, "id", i + 1) == NULL ||
+            cJSON_AddStringToObject(
+                pod_object,
+                "state",
+                device_status_pod_name(pod->state)
+            ) == NULL
+        ) {
+            return false;
+        }
 
         if (
             !web_status_json_add_capabilities(

@@ -134,7 +134,10 @@ bool web_status_json_add_recording_gate(cJSON *root)
             if (item == NULL) {
                 return false;
             }
-            cJSON_AddItemToArray(list, item);
+            if (!cJSON_AddItemToArray(list, item)) {
+                cJSON_Delete(item);
+                return false;
+            }
             if (cJSON_AddNumberToObject(item, "channel", (double)node->channel) == NULL ||
                 cJSON_AddNumberToObject(item, "node_id", (double)node->node_id) == NULL ||
                 cJSON_AddStringToObject(

@@ -321,6 +321,7 @@ idf_component_register(
         "web_scan_store.c"
         "web_client_log.c"
         "web_status_json.c"
+        "web_cjson_hooks.c"
         "web_status_json_hardware.c"
         "web_status_json_ranging.c"
         "web_status_policy.c"

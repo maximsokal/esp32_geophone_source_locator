@@ -7,7 +7,8 @@
       "sources": [
         "tests/host/app_storage_boot_failure_test.c",
         "main/app_storage_boot_policy.c",
-        "components/hw_inventory/hw_inventory.c"
+        "components/hw_inventory/hw_inventory.c",
+        "components/hw_inventory/hw_inventory_reason.c"
       ],
       "include_dirs": [
         "tests/host/stubs/app_storage_boot",
@@ -34,6 +35,7 @@
         "components/ui_i18n/ui_i18n_catalog.gen.c",
         "main/app_storage_boot_policy.c",
         "components/hw_inventory/hw_inventory.c",
+        "components/hw_inventory/hw_inventory_reason.c",
         "tests/host/app_storage_boot_keypad_pipeline_test.c"
       ],
       "include_dirs": [

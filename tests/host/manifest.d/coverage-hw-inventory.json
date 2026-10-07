@@ -6,11 +6,23 @@
       "defines": ["HW_INVENTORY_HOST_TEST=1"],
       "sources": [
         "components/hw_inventory/hw_inventory.c",
+        "components/hw_inventory/hw_inventory_reason.c",
         "components/hw_inventory/tests/hw_inventory_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/ina3221_driver",
         "tests/host/stubs/app_events",
+        "components/hw_inventory/include"
+      ]
+    },
+    {
+      "name": "hw_inventory_reason",
+      "sources": [
+        "components/hw_inventory/hw_inventory_reason.c",
+        "components/hw_inventory/tests/hw_inventory_reason_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ina3221_driver",
         "components/hw_inventory/include"
       ]
     }

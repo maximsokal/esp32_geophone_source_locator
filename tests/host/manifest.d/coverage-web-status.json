@@ -27,6 +27,7 @@
       "sources": [
         "components/web_server/web_status_json.c",
         "components/web_server/web_status_json_hardware.c",
+        "components/hw_inventory/hw_inventory_reason.c",
         "components/web_server/web_status_json_pods.c",
         "components/web_server/web_status_policy.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
@@ -47,9 +48,45 @@
       ]
     },
     {
+      "name": "web_status_json_alloc_budget",
+      "sources": [
+        "components/web_server/web_status_json.c",
+        "components/web_server/web_status_json_hardware.c",
+        "components/hw_inventory/hw_inventory_reason.c",
+        "components/web_server/web_status_json_pods.c",
+        "components/web_server/web_status_policy.c",
+        "tests/host/stubs/web_status_json/cjson_counting_alloc.c",
+        "components/web_server/tests/hw_inventory_status_fake.c",
+        "tests/host/stubs/web_status_json/storage_manager_fake.c",
+        "tests/host/web_status_json_alloc_budget_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_status_json",
+        "tests/host/stubs/object_store_profile",
+        "components/web_server",
+        "components/hw_inventory/include",
+        "components/web_server/tests",
+        "components/device_status/include",
+        "components/runtime_observability/include",
+        "components/seismic_acquisition/include",
+        "components/seismic_buffer/include"
+      ]
+    },
+    {
+      "name": "web_cjson_hooks",
+      "sources": [
+        "components/web_server/web_cjson_hooks.c",
+        "tests/host/web_cjson_hooks_test.c"
+      ],
+      "include_dirs": [
+        "components/web_server"
+      ]
+    },
+    {
       "name": "web_status_json_hardware",
       "sources": [
         "components/web_server/web_status_json_hardware.c",
+        "components/hw_inventory/hw_inventory_reason.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/web_server/tests/hw_inventory_status_fake.c",
         "components/web_server/tests/web_status_json_hardware_test.c"
