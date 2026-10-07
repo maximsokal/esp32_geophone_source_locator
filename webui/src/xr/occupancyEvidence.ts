@@ -12,6 +12,12 @@ export interface OccupancyBounds {
   max: OccupancyPoint;
 }
 
+export interface UnknownCandidateEnumeration {
+  occupancyVoxelSizeMeters: number;
+  unknownCandidateVoxelCount: number;
+  unknownCandidatePositions: Float32Array;
+}
+
 export interface OccupancyDepthFrameLike {
   width: number;
   height: number;
@@ -96,6 +102,56 @@ const MIN_DEPTH_METERS = 0.18;
 const MIN_LOCAL_SCORE = 0.45;
 const MAX_RAY_VOXELS = 192;
 const MAX_ENUMERATED_VOLUME_CELLS = 120000;
+
+/**
+ * Enumerate UNKNOWN candidate cells using the bounded, world-origin-aligned
+ * MAX-213 grid. The callback receives the fine-grid cell used to classify
+ * each candidate; returned positions are centers of the reported grid.
+ */
+export function enumerateUnknownCandidatePositions(
+  candidateBounds: OccupancyBounds | null,
+  fineVoxelSizeMeters: number,
+  isUnknownFineCell: (x: number, y: number, z: number) => boolean,
+): UnknownCandidateEnumeration {
+  if (candidateBounds === null) {
+    return {
+      occupancyVoxelSizeMeters: fineVoxelSizeMeters,
+      unknownCandidateVoxelCount: 0,
+      unknownCandidatePositions: new Float32Array(0),
+    };
+  }
+
+  const minX = gridCoordinate(candidateBounds.min[0], fineVoxelSizeMeters);
+  const minY = gridCoordinate(candidateBounds.min[1], fineVoxelSizeMeters);
+  const minZ = gridCoordinate(candidateBounds.min[2], fineVoxelSizeMeters);
+  const maxX = gridCoordinate(candidateBounds.max[0], fineVoxelSizeMeters);
+  const maxY = gridCoordinate(candidateBounds.max[1], fineVoxelSizeMeters);
+  const maxZ = gridCoordinate(candidateBounds.max[2], fineVoxelSizeMeters);
+  const nx = Math.max(1, maxX - minX + 1);
+  const ny = Math.max(1, maxY - minY + 1);
+  const nz = Math.max(1, maxZ - minZ + 1);
+  const totalCells = nx * ny * nz;
+  const stride = Math.max(1, Math.ceil(Math.cbrt(totalCells / MAX_ENUMERATED_VOLUME_CELLS)));
+  const half = Math.floor(stride / 2);
+  const unknown: number[] = [];
+  const coarseSize = fineVoxelSizeMeters * stride;
+
+  for (let cx = Math.floor(minX / stride); cx <= Math.floor(maxX / stride); cx += 1) {
+    for (let cy = Math.floor(minY / stride); cy <= Math.floor(maxY / stride); cy += 1) {
+      for (let cz = Math.floor(minZ / stride); cz <= Math.floor(maxZ / stride); cz += 1) {
+        if (!isUnknownFineCell(cx * stride + half, cy * stride + half, cz * stride + half)) continue;
+        unknown.push((cx + 0.5) * coarseSize, (cy + 0.5) * coarseSize, (cz + 0.5) * coarseSize);
+      }
+    }
+  }
+
+  const unknownCandidatePositions = Float32Array.from(unknown);
+  return {
+    occupancyVoxelSizeMeters: coarseSize,
+    unknownCandidateVoxelCount: unknownCandidatePositions.length / 3,
+    unknownCandidatePositions,
+  };
+}
 
 function probabilityToLogOdds(probability: number): number {
   const p = Math.min(0.999999, Math.max(0.000001, probability));
@@ -421,58 +477,20 @@ export class SparseOccupancyGrid {
       occupancyDroppedCellUpdates: this.droppedCellUpdates,
       occupancyFineVoxelSizeMeters: this.voxelSizeMeters,
     };
-
-    if (candidateBounds === null) {
-      return {
-        occupancyVoxelSizeMeters: this.voxelSizeMeters,
-        knownFreeVoxelCount,
-        occupiedSurfaceVoxelCount,
-        unknownCandidateVoxelCount: 0,
-        freeAirPositions: Float32Array.from(free),
-        occupiedSurfacePositions: Float32Array.from(occupied),
-        unknownCandidatePositions: new Float32Array(0),
-        ...saturation,
-      };
-    }
-
-    // Unknown candidate volume is intentionally bounded by the measured object
-    // envelope, not by camera positions. Otherwise all exterior air around the
-    // operator would become a fake source-search volume.
-    const minX = gridCoordinate(candidateBounds.min[0], this.voxelSizeMeters);
-    const minY = gridCoordinate(candidateBounds.min[1], this.voxelSizeMeters);
-    const minZ = gridCoordinate(candidateBounds.min[2], this.voxelSizeMeters);
-    const maxX = gridCoordinate(candidateBounds.max[0], this.voxelSizeMeters);
-    const maxY = gridCoordinate(candidateBounds.max[1], this.voxelSizeMeters);
-    const maxZ = gridCoordinate(candidateBounds.max[2], this.voxelSizeMeters);
-    const nx = Math.max(1, maxX - minX + 1);
-    const ny = Math.max(1, maxY - minY + 1);
-    const nz = Math.max(1, maxZ - minZ + 1);
-    const totalCells = nx * ny * nz;
-    const stride = Math.max(1, Math.ceil(Math.cbrt(totalCells / MAX_ENUMERATED_VOLUME_CELLS)));
-    const half = Math.floor(stride / 2);
-    const unknown: number[] = [];
-    const coarseSize = this.voxelSizeMeters * stride;
-
-    for (let cx = Math.floor(minX / stride); cx <= Math.floor(maxX / stride); cx += 1) {
-      for (let cy = Math.floor(minY / stride); cy <= Math.floor(maxY / stride); cy += 1) {
-        for (let cz = Math.floor(minZ / stride); cz <= Math.floor(maxZ / stride); cz += 1) {
-          const state = this.classifyCell(
-            this.cells.get(keyFromCoordinates(cx * stride + half, cy * stride + half, cz * stride + half)),
-          );
-          if (state !== 'unknown') continue;
-          unknown.push((cx + 0.5) * coarseSize, (cy + 0.5) * coarseSize, (cz + 0.5) * coarseSize);
-        }
-      }
-    }
+    const unknown = enumerateUnknownCandidatePositions(
+      candidateBounds,
+      this.voxelSizeMeters,
+      (x, y, z) => this.classifyCell(this.cells.get(keyFromCoordinates(x, y, z))) === 'unknown',
+    );
 
     return {
-      occupancyVoxelSizeMeters: coarseSize,
+      occupancyVoxelSizeMeters: unknown.occupancyVoxelSizeMeters,
       knownFreeVoxelCount,
       occupiedSurfaceVoxelCount,
-      unknownCandidateVoxelCount: unknown.length / 3,
+      unknownCandidateVoxelCount: unknown.unknownCandidateVoxelCount,
       freeAirPositions: Float32Array.from(free),
       occupiedSurfacePositions: Float32Array.from(occupied),
-      unknownCandidatePositions: Float32Array.from(unknown),
+      unknownCandidatePositions: unknown.unknownCandidatePositions,
       ...saturation,
     };
   }

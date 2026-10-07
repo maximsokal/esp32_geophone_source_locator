@@ -8,6 +8,7 @@ import {
 } from '../../src/xr/bleRssiSource';
 import { BleRoughPlacementHud } from '../../src/components/BleRoughPlacementHud';
 import type { BleNodeEstimate } from '../../src/xr/bleRoughPlacement';
+import { deferred, type Deferred } from '../xr/support/xrFakes';
 
 /* MAX-146: RSSI hints are optional; the scanner never depends on them. */
 
@@ -16,15 +17,76 @@ function serviceData(bytes: number[]): { get(uuid: string): DataView | undefined
   return { get: (uuid: string) => map.get(uuid) };
 }
 
-class FakeBluetooth extends EventTarget {
+interface FakeScan {
+  stop(): void;
+  stopCalls: number;
+}
+
+class FakeBluetooth {
   stopped = 0;
+  requestCalls = 0;
+  liveScans = 0;
+  listenerRemovals = 0;
   options: unknown = null;
-  constructor(private readonly fail = false) { super(); }
-  requestLEScan = async (options: unknown) => {
+  private readonly listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
+  private readonly queuedScans: Promise<FakeScan>[] = [];
+
+  constructor(private readonly fail = false) {}
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject | null): void {
+    if (listener === null) return;
+    const bucket = this.listeners.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+    bucket.add(listener);
+    this.listeners.set(type, bucket);
+  }
+
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null): void {
+    if (listener === null) return;
+    this.listenerRemovals += 1;
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatchEvent(event: Event): boolean {
+    for (const listener of this.listeners.get(event.type) ?? []) {
+      if (typeof listener === 'function') listener.call(this, event);
+      else listener.handleEvent(event);
+    }
+    return true;
+  }
+
+  listenerCount(type = 'advertisementreceived'): number {
+    return this.listeners.get(type)?.size ?? 0;
+  }
+
+  deferNextScan(): Deferred<FakeScan> {
+    const pending = deferred<FakeScan>();
+    this.queuedScans.push(pending.promise);
+    return pending;
+  }
+
+  createScan(): FakeScan {
+    this.liveScans += 1;
+    let stopped = false;
+    const scan: FakeScan = {
+      stopCalls: 0,
+      stop: () => {
+        if (stopped) return;
+        stopped = true;
+        scan.stopCalls += 1;
+        this.stopped += 1;
+        this.liveScans -= 1;
+      },
+    };
+    return scan;
+  }
+
+  requestLEScan = async (options: unknown): Promise<FakeScan> => {
+    this.requestCalls += 1;
     this.options = options;
     if (this.fail) throw new DOMException('denied', 'NotAllowedError');
-    return { stop: () => { this.stopped += 1; } };
+    const queued = this.queuedScans.shift();
+    return queued === undefined ? this.createScan() : queued;
   };
+
   advertise(fields: Record<string, unknown>): void {
     this.dispatchEvent(Object.assign(new Event('advertisementreceived'), fields));
   }
@@ -85,6 +147,98 @@ describe('WebBluetoothRssiSource', () => {
     expect(received).toHaveLength(0);
     expect(await new WebBluetoothRssiSource({}).start(() => undefined)).toBe(false);
     expect(await new WebBluetoothRssiSource(undefined).start(() => undefined)).toBe(false);
+  });
+
+  it('stops a handle that resolves after stop and removes its advertisement listener', async () => {
+    const bluetooth = new FakeBluetooth();
+    const pending = bluetooth.deferNextScan();
+    const source = new WebBluetoothRssiSource({ bluetooth });
+    let received = 0;
+    const starting = source.start(() => { received += 1; });
+
+    expect(bluetooth.requestCalls).toBe(1);
+    expect(bluetooth.listenerCount()).toBe(1);
+    source.stop();
+    expect(bluetooth.listenerCount()).toBe(0);
+    const late = bluetooth.createScan();
+    pending.resolve(late);
+
+    await expect(starting).resolves.toBe(false);
+    expect(late.stopCalls).toBe(1);
+    expect(source.active).toBe(false);
+    expect(bluetooth.liveScans).toBe(0);
+    expect(bluetooth.listenerRemovals).toBe(1);
+    bluetooth.advertise({ rssi: -60, serviceData: serviceData([1]) });
+    expect(received).toBe(0);
+  });
+
+  it('shares the same in-flight request between concurrent starts', async () => {
+    const bluetooth = new FakeBluetooth();
+    const pending = bluetooth.deferNextScan();
+    const source = new WebBluetoothRssiSource({ bluetooth });
+    const first = source.start(() => undefined);
+    const second = source.start(() => undefined);
+
+    expect(second).toBe(first);
+    expect(bluetooth.requestCalls).toBe(1);
+    const scan = bluetooth.createScan();
+    pending.resolve(scan);
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    expect(source.active).toBe(true);
+    source.stop();
+    expect(scan.stopCalls).toBe(1);
+    expect(bluetooth.listenerCount()).toBe(0);
+  });
+
+  it('queues a fresh start behind a stopped request and ignores the late first scan', async () => {
+    const bluetooth = new FakeBluetooth();
+    const firstPending = bluetooth.deferNextScan();
+    const secondPending = bluetooth.deferNextScan();
+    const source = new WebBluetoothRssiSource({ bluetooth });
+    let firstReceived = 0;
+    let secondReceived = 0;
+    const first = source.start(() => { firstReceived += 1; });
+    source.stop();
+    const second = source.start(() => { secondReceived += 1; });
+
+    expect(bluetooth.requestCalls).toBe(1);
+    const firstScan = bluetooth.createScan();
+    firstPending.resolve(firstScan);
+    await expect(first).resolves.toBe(false);
+    for (let index = 0; index < 5 && bluetooth.requestCalls < 2; index += 1) await Promise.resolve();
+    expect(bluetooth.requestCalls).toBe(2);
+    const secondScan = bluetooth.createScan();
+    secondPending.resolve(secondScan);
+    await expect(second).resolves.toBe(true);
+    bluetooth.advertise({ rssi: -60, serviceData: serviceData([2]) });
+    expect(firstReceived).toBe(0);
+    expect(secondReceived).toBe(1);
+    expect(firstScan.stopCalls).toBe(1);
+    source.stop();
+    expect(secondScan.stopCalls).toBe(1);
+    expect(bluetooth.liveScans).toBe(0);
+    expect(bluetooth.listenerCount()).toBe(0);
+  });
+
+  it('returns handles and listeners to baseline through 100 delayed unmount teardowns', async () => {
+    const bluetooth = new FakeBluetooth();
+    for (let index = 0; index < 100; index += 1) {
+      const pending = bluetooth.deferNextScan();
+      const source = new WebBluetoothRssiSource({ bluetooth });
+      let received = 0;
+      const starting = source.start(() => { received += 1; });
+      source.stop();
+      const late = bluetooth.createScan();
+      pending.resolve(late);
+
+      await expect(starting).resolves.toBe(false);
+      bluetooth.advertise({ rssi: -60, serviceData: serviceData([1]) });
+      expect(late.stopCalls).toBe(1);
+      expect(bluetooth.liveScans).toBe(0);
+      expect(bluetooth.listenerCount()).toBe(0);
+      expect(bluetooth.listenerRemovals).toBe(index + 1);
+      expect(received).toBe(0);
+    }
   });
 });
 

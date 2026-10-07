@@ -262,8 +262,10 @@ export class LiveCoveragePointRenderer {
   }
 
   update(snapshot: CoverageRenderSnapshot): void {
-    const started = performance.now();
+    // The policy read is O(1) and sits outside the timed region, so the profiler
+    // never measures its own bookkeeping as upload cost.
     const policy = activeXrRenderPolicy();
+    const started = performance.now();
     const bounded = applyCoverageRenderBudget(snapshot, policy.pointBudget);
     this.pointCount = bounded.pointCount;
     this.manualPointCount = bounded.manualPointCount ?? 0;
@@ -284,8 +286,9 @@ export class LiveCoveragePointRenderer {
 
   render(layer: CoverageRenderLayer, views: readonly CoverageRenderView[]): void {
     if (this.pointCount <= 0) return;
-    const now = performance.now();
+    // Cached O(1) policy read, taken before the clock so it is never counted as draw cost.
     const policy = activeXrRenderPolicy();
+    const now = performance.now();
     if (policy.drawIntervalMs > 0 && now - this.lastDrawMs < policy.drawIntervalMs) return;
     this.lastDrawMs = now;
     const started = now;

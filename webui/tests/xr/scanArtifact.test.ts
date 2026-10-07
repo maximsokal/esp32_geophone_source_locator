@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { decodeScanArtifact, encodeScanArtifact } from '../../src/xr/scanArtifact';
 import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
+import { rewriteScanArtifactMetadata } from './support/scanArtifactTestTools';
 
 function snapshot(): ScanPointCloudSnapshot {
   return {
     positions: new Float32Array([1, 2, 3, 4, 5, 6]),
     confidence: new Float32Array([0.81, 0.92]),
     normals: new Float32Array([0, 1, 0, 1, 0, 0]),
+    normalConfidence: new Float32Array([0.95, 0.9]),
     pointCount: 2,
     tentativePositions: new Float32Array([7, 8, 9]),
     tentativeConfidence: new Float32Array([0.42]),
@@ -45,7 +47,11 @@ function snapshot(): ScanPointCloudSnapshot {
     freeAirPositions: new Float32Array([0, 0, 0, 0.18, 0, 0]),
     occupiedSurfacePositions: new Float32Array([1, 2, 3]),
     unknownCandidatePositions: new Float32Array([2, 2, 2, 3, 3, 3]),
+    occupancyCellsSaturated: false,
+    occupancyFineVoxelSizeMeters: 0.06,
+    occupancyDroppedCellUpdates: 0,
     occupancyEnvelopeBounds: { min: [0, 0, 0], max: [4, 5, 6] },
+    occupancySolverCandidateBelowSurfaceMeters: 2,
     occupancyEnvelopeComponentCount: 1,
     occupancyQuarantinedSurfaceComponentCount: 2,
     occupancyQuarantinedSurfacePointCount: 4,
@@ -70,6 +76,7 @@ describe('3D scan artifact', () => {
     const encoded = encodeScanArtifact(original);
     const restored = decodeScanArtifact(encoded);
 
+    expect(restored).toEqual(original);
     expect(restored.pointCount).toBe(original.pointCount);
     expect(Array.from(restored.positions)).toEqual(Array.from(original.positions));
     expect(Array.from(restored.normals)).toEqual(Array.from(original.normals));
@@ -87,5 +94,23 @@ describe('3D scan artifact', () => {
     corrupted[corrupted.length - 1] ^= 0x01;
     expect(() => decodeScanArtifact(corrupted)).toThrow(/checksum/i);
     expect(() => decodeScanArtifact(encoded.slice(0, encoded.length - 3))).toThrow(/checksum/i);
+  });
+
+  it('decodes the original round-trip shape with later schema-1 additions absent', () => {
+    const original = snapshot();
+    const legacyExpected = { ...original };
+    const optionalFields = [
+      'normalConfidence',
+      'occupancyFineVoxelSizeMeters',
+      'occupancyCellsSaturated',
+      'occupancyDroppedCellUpdates',
+      'occupancySolverCandidateBelowSurfaceMeters',
+    ];
+    for (const field of optionalFields) Reflect.deleteProperty(legacyExpected, field);
+
+    const encoded = rewriteScanArtifactMetadata(encodeScanArtifact(original), (metadata) => {
+      for (const field of optionalFields) delete metadata[field];
+    });
+    expect(decodeScanArtifact(encoded)).toEqual(legacyExpected);
   });
 });

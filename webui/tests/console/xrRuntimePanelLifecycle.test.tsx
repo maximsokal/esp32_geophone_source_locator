@@ -1,0 +1,311 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createElement, type ComponentProps } from 'react';
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+
+const panelHarness=vi.hoisted(()=>({
+  runtimes:[] as any[],workers:[] as any[],
+  fetchLocalizationRuns:vi.fn(),loadSessionRegistration:vi.fn(),saveSessionRegistration:vi.fn(),probeCapabilities:vi.fn(),
+  makeState:(()=>({})) as (()=>any)|null,
+}));
+
+vi.mock('../../src/api/deviceApi',async(importOriginal)=>{
+  const original=await importOriginal<typeof import('../../src/api/deviceApi')>();
+  return{...original,fetchLocalizationRuns:panelHarness.fetchLocalizationRuns,loadSessionRegistration:panelHarness.loadSessionRegistration,saveSessionRegistration:panelHarness.saveSessionRegistration};
+});
+vi.mock('../../src/xr/webxrRuntime',()=>({
+  WebXrRuntime:class{
+    state:any;generation=0;listeners=new Set<(state:any)=>void>();tagListeners=new Set<(frame:any)=>void>();tagUnsubscribes=0;tagCaptureDisables=0;disposed=0;
+    finalSnapshot={identity:Symbol('scan snapshot')};
+    constructor(){this.state=panelHarness.makeState?.()??{phase:'idle'};panelHarness.runtimes.push(this);}
+    getState=()=>this.state;getLifecycleGeneration=()=>this.generation;
+    subscribe=(listener:(state:any)=>void)=>{this.listeners.add(listener);listener(this.state);return()=>this.listeners.delete(listener);};
+    subscribeTagFrames=(listener:(frame:any)=>void)=>{this.tagListeners.add(listener);return()=>{this.tagListeners.delete(listener);this.tagUnsubscribes+=1;};};
+    emitTagFrame=(frame:any)=>{for(const listener of this.tagListeners)listener(frame);};
+    setTagCaptureEnabled=(enabled:boolean)=>{if(!enabled)this.tagCaptureDisables+=1;return null;};
+    getPointCloudSnapshot=()=>this.finalSnapshot;getLastManualPointId=()=>null;getStructuralGuideSnapshot=()=>({positions:new Float32Array(),normals:new Float32Array(),confidence:new Float32Array(),pointCount:0,keyframeCount:0,voxelSizeMeters:0});
+    projectProjectPointToNormalized=()=>null;addSuggestedManualPoint=()=>null;queueManualPointAtNormalized=()=>undefined;undoLastManualPoint=()=>undefined;
+    private publish(phase:string,patch:Record<string,unknown>={}){this.state={...this.state,...patch,phase};for(const listener of this.listeners)listener(this.state);}
+    setPhase=(phase:string,patch:Record<string,unknown>={})=>{if(['ended','interrupted','error'].includes(phase)&&this.state.phase!==phase)this.generation+=1;this.publish(phase,patch);};
+    start=async()=>{this.generation+=1;this.publish('starting');};
+    stop=async()=>{this.publish('stopping');this.generation+=1;this.publish('ended',{pointCount:1});};
+    dispose=async()=>{this.disposed+=1;};
+  },
+  probeWebXrCapabilities:()=>panelHarness.probeCapabilities(),
+}));
+vi.mock('../../src/xr/xrLaunchPolicy',()=>({
+  canAttemptImmersiveAr:()=>true,
+  launchImmersiveArFromUserGesture:async(options:any)=>options.startRuntime(),
+}));
+vi.mock('../../src/xr/optionalMonocularPrior',()=>({optionalMonocularPrior:{status:'disabled',error:null,calibrationConfidence:0,calibrationModel:null,hasStagedPostScanFrame:false,isBusy:false,subscribe:()=>()=>undefined,setEnabled:()=>undefined}}));
+vi.mock('../../src/components/StructuralGuideOverlay',()=>({StructuralGuideOverlay:()=>null}));
+vi.mock('../../src/xr/fiducial/tagDetector.worker.ts?worker&inline',()=>({default:class{
+  messages:any[]=[];terminated=0;private listeners=new Map<string,Set<(event:any)=>void>>();
+  constructor(){panelHarness.workers.push(this);}
+  addEventListener(type:string,listener:(event:any)=>void){const bucket=this.listeners.get(type)??new Set();bucket.add(listener);this.listeners.set(type,bucket);}
+  removeEventListener(type:string,listener:(event:any)=>void){this.listeners.get(type)?.delete(listener);}
+  postMessage(message:any){this.messages.push(message);}
+  terminate(){this.terminated+=1;}
+  emit(type:string,data:unknown){for(const listener of this.listeners.get(type)??[])listener({data,message:'fake worker error'});}
+}}));
+vi.mock('../../src/xr/fiducial/tagPose',async(importOriginal)=>{
+  const original=await importOriginal<typeof import('../../src/xr/fiducial/tagPose')>();
+  return{...original,estimateTagPose:()=>({ok:true,positionScan:[1,2,3]})};
+});
+vi.mock('../../src/xr/fiducial/registrationArtifact',async(importOriginal)=>{
+  const original=await importOriginal<typeof import('../../src/xr/fiducial/registrationArtifact')>();
+  return{...original,decodeRegistrationArtifact:(json:string)=>JSON.parse(json)};
+});
+
+import { XrRuntimePanel } from '../../src/components/XrRuntimePanel';
+import { LocaleProvider, translate } from '../../src/i18n';
+import type { LocalizationSessionGeometry } from '../../src/api/deviceApi';
+import { deferred } from '../xr/support/xrFakes';
+
+const mounted:ReactTestRenderer[]=[];
+type BrowserListener=EventListenerOrEventListenerObject;
+interface PanelWindowStub{
+  isSecureContext:boolean;
+  innerWidth:number;
+  innerHeight:number;
+  devicePixelRatio:number;
+  localStorage:{getItem:(key:string)=>string|null;setItem:(key:string,value:string)=>void};
+  setTimeout:(callback:()=>void,delay?:number)=>number;
+  clearTimeout:(id:number)=>void;
+  setInterval:(callback:()=>void,delay?:number)=>number;
+  clearInterval:(id:number)=>void;
+  addEventListener:(type:string,listener:BrowserListener|null)=>void;
+  removeEventListener:(type:string,listener:BrowserListener|null)=>void;
+}
+interface PanelDocumentStub{
+  hidden:boolean;
+  visibilityState:string;
+  body:object;
+  documentElement:{classList:{add:(name:string)=>void;remove:(name:string)=>void;contains:(name:string)=>boolean}};
+  addEventListener:(type:string,listener:BrowserListener|null)=>void;
+  removeEventListener:(type:string,listener:BrowserListener|null)=>void;
+}
+let browserWindow:PanelWindowStub;
+let browserDocument:PanelDocumentStub;
+const validCapabilities={secureContext:true,cameraApi:true,rawXrRgbApi:true,webGl:true,xrApi:true,immersiveAr:true,wakeLockApi:true,videoInputEnumeration:false,videoInputsEnumerated:false,videoInputCount:null,videoInputLabelsExposed:false,hardwareDepthSensor:'unknown',workerApi:true,sharedMemory:false,wasmThreads:false,webGpu:false};
+
+function runtimeState(phase='idle',patch:Record<string,unknown>={}){
+  return{phase,referenceSpace:null,domOverlay:false,environmentBlendMode:null,frameCount:0,tracking:false,pose:null,scanPaused:false,wakeLockActive:false,wakeLockError:null,depthAvailable:false,depthUsage:null,depthDataFormat:null,depthType:null,depthWidth:null,depthHeight:null,depthFrameCount:0,sampledDepthFrames:0,pointCount:0,retainedPointCount:0,pointCloudVersion:0,keyframeCount:0,polishFrameCount:0,motionRejectedFrames:0,motionState:null,motionQuality:0,linearSpeedMetersPerSecond:0,angularSpeedRadiansPerSecond:0,linearAccelerationMetersPerSecond2:0,coverageGuideActive:false,coverageGuideRenderPoints:0,coverageVisibleCells:0,coverageReadyCells:0,coverageTotalCells:0,coverageTargetIndependentViews:3,coverageAverageConfidence:0,coverageWeakPoints:0,coverageImprovingPoints:0,coverageStablePoints:0,coverageGuideError:null,manualPointCount:0,manualEdgeCount:0,manualPointError:null,performance:{pressure:'low',adaptiveCoverageIntervalMs:550,frameDeltaP95Ms:0,fusionP50Ms:0,fusionP95Ms:0,coverageP95Ms:0,longFrames33Ms:0,longFrames50Ms:0},lightingEstimateAvailable:false,primaryLightIntensity:null,rgbGuidanceAvailable:false,rgbGuidanceWidth:null,rgbGuidanceHeight:null,visualEvidenceFrames:0,monocularPriorStatus:'disabled',depthError:null,error:null,...patch};
+}
+function geometry():LocalizationSessionGeometry{return{available:true,pods:[{pod:1,computed:true,leveled:true,computed_at_ms:1234}]};}
+function listing(){return{geometry:geometry()};}
+async function settleReact():Promise<void>{for(let i=0;i<6;i+=1)await Promise.resolve();}
+async function mountPanel(props:ComponentProps<typeof XrRuntimePanel>={}){
+  let renderer!:ReactTestRenderer;await act(async()=>{renderer=create(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,props)));await settleReact();});mounted.push(renderer);return renderer;
+}
+function unmount(renderer:ReactTestRenderer):void{act(()=>renderer.unmount());const index=mounted.indexOf(renderer);if(index>=0)mounted.splice(index,1);}
+function textOf(node:ReactTestInstance|string):string{return typeof node==='string'?node:node.children.map(textOf).join('');}
+function tagButton(renderer:ReactTestRenderer):ReactTestInstance{
+  const title=translate('en','xr.tag.capture_title');const result=renderer.root.findAllByType('button').find((button)=>button.props.title===title);if(result===undefined)throw new Error('Missing AprilTag button.');return result;
+}
+function emitTagDetection(worker:any):void{
+  const request=worker.messages.find((item:any)=>item.type==='detect');if(request===undefined)throw new Error('Expected an in-flight tag detection.');
+  worker.emit('message',{type:'result',requestId:request.requestId,epoch:request.epoch,detections:[{tagId:0,corners:[[0,0],[1,0],[1,1],[0,1]],hammingDistance:0}]});
+}
+async function startGeometry(runtime:any):Promise<void>{
+  await act(async()=>{runtime.setPhase('starting');await settleReact();});
+  await act(async()=>{runtime.setPhase('running');await settleReact();});
+}
+
+class PanelBluetooth{
+  listeners=new Set<EventListenerOrEventListenerObject>();requestCalls=0;scanStops=0;liveScans=0;nextRequest:Promise<{stop():void}>|null=null;
+  addEventListener(_type:string,listener:EventListenerOrEventListenerObject|null){if(listener!==null)this.listeners.add(listener);}
+  removeEventListener(_type:string,listener:EventListenerOrEventListenerObject|null){if(listener!==null)this.listeners.delete(listener);}
+  requestLEScan=async():Promise<{stop():void}>=>{this.requestCalls+=1;if(this.nextRequest!==null)return this.nextRequest;return this.createScan();};
+  createScan(){this.liveScans+=1;let stopped=false;return{stop:()=>{if(stopped)return;stopped=true;this.scanStops+=1;this.liveScans-=1;}};}
+  advertise(){const event=Object.assign(new Event('advertisementreceived'),{rssi:-60,serviceData:{get:()=>new DataView(new Uint8Array([1]).buffer)}});for(const listener of this.listeners){if(typeof listener==='function')listener.call(this,event);else listener.handleEvent(event);}}
+}
+
+beforeEach(()=>{
+  panelHarness.runtimes=[];panelHarness.workers=[];panelHarness.makeState=()=>runtimeState();
+  panelHarness.fetchLocalizationRuns.mockReset().mockResolvedValue(listing());panelHarness.loadSessionRegistration.mockReset().mockResolvedValue(null);
+  panelHarness.saveSessionRegistration.mockReset().mockResolvedValue({ok:true});panelHarness.probeCapabilities.mockReset().mockResolvedValue(validCapabilities);
+  let nextTimerId=0;
+  const timers=new Map<number,()=>void>();
+  const intervals=new Map<number,()=>void>();
+  const listeners=new Map<string,Set<BrowserListener>>();
+  const classes=new Set<string>();
+  const addListener=(type:string,listener:BrowserListener|null):void=>{
+    if(listener===null)return;
+    const bucket=listeners.get(type)??new Set<BrowserListener>();
+    bucket.add(listener);
+    listeners.set(type,bucket);
+  };
+  const removeListener=(type:string,listener:BrowserListener|null):void=>{
+    if(listener===null)return;
+    listeners.get(type)?.delete(listener);
+  };
+  browserWindow={
+    isSecureContext:false,
+    innerWidth:1280,
+    innerHeight:720,
+    devicePixelRatio:1,
+    localStorage:{getItem:()=>null,setItem:()=>undefined},
+    setTimeout:(callback)=>{const id=++nextTimerId;timers.set(id,callback);return id;},
+    clearTimeout:(id)=>{timers.delete(id);},
+    setInterval:(callback)=>{const id=++nextTimerId;intervals.set(id,callback);return id;},
+    clearInterval:(id)=>{intervals.delete(id);},
+    addEventListener:addListener,
+    removeEventListener:removeListener,
+  };
+  browserDocument={
+    hidden:false,
+    visibilityState:'visible',
+    body:{},
+    documentElement:{classList:{
+      add:(name)=>{classes.add(name);},
+      remove:(name)=>{classes.delete(name);},
+      contains:(name)=>classes.has(name),
+    }},
+    addEventListener:addListener,
+    removeEventListener:removeListener,
+  };
+  vi.stubGlobal('window',browserWindow);
+  vi.stubGlobal('document',browserDocument);
+  vi.stubGlobal('navigator',{});
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);
+});
+afterEach(()=>{for(const renderer of [...mounted])unmount(renderer);vi.unstubAllGlobals();vi.clearAllMocks();});
+
+describe('XrRuntimePanel lifecycle',()=>{
+  it('tears down tag worker and subscription on unmount without saving registration',async()=>{
+    const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A'});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    expect(worker).toBeDefined();expect(runtime.tagListeners.size).toBe(1);unmount(renderer);await settleReact();
+    expect(worker.terminated).toBe(1);expect(runtime.tagUnsubscribes).toBe(1);expect(runtime.tagListeners.size).toBe(0);
+    expect(runtime.tagCaptureDisables).toBeGreaterThan(0);expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();
+  });
+
+  it('returns tag workers and frame subscribers to baseline through 100 mount/unmount cycles',async()=>{
+    for(let index=0;index<100;index+=1){
+      const renderer=await mountPanel({objectId:`OBJ_${index}`,sessionId:`SESSION_${index}`});const runtime=panelHarness.runtimes.at(-1);
+      await startGeometry(runtime);await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});
+      const worker=panelHarness.workers.at(-1);expect(worker).toBeDefined();expect(runtime.tagListeners.size).toBe(1);
+      unmount(renderer);expect(worker.terminated).toBe(1);expect(runtime.tagUnsubscribes).toBe(1);expect(runtime.tagListeners.size).toBe(0);
+    }
+    expect(panelHarness.workers).toHaveLength(100);expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();
+  });
+
+  it('cancels pending detection on unmount and never publishes its late result',async()=>{
+    const registration=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:registration});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    runtime.emitTagFrame({width:1,height:1,rgba:new Uint8Array(4),capturedAtMs:1,projectionMatrix:new Float32Array(16),worldFromView:new Float32Array(16)});
+    expect(worker.messages.some((message:any)=>message.type==='detect')).toBe(true);registration.mockClear();unmount(renderer);
+    emitTagDetection(worker);await settleReact();expect(registration).not.toHaveBeenCalled();expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();
+    expect(worker.terminated).toBe(1);expect(runtime.tagListeners.size).toBe(0);
+  });
+
+  it('still saves registration once on explicit Finish and hands off the runtime snapshot',async()=>{
+    const registration=vi.fn();const ready=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:registration,onPointCloudReady:ready});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    runtime.emitTagFrame({width:1,height:1,rgba:new Uint8Array(4),capturedAtMs:1,projectionMatrix:new Float32Array(16),worldFromView:new Float32Array(16)});emitTagDetection(worker);await act(async()=>{await settleReact();});
+    await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
+    expect(panelHarness.saveSessionRegistration).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot);unmount(renderer);
+  });
+
+  it('does not issue a registration request when geometry resolves after unmount',async()=>{
+    const pending=deferred<ReturnType<typeof listing>>();panelHarness.fetchLocalizationRuns.mockReturnValue(pending.promise);const callback=vi.fn();
+    const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:callback});const runtime=panelHarness.runtimes[0];
+    await act(async()=>{runtime.setPhase('starting');await settleReact();});expect(panelHarness.fetchLocalizationRuns).toHaveBeenCalledTimes(1);
+    unmount(renderer);pending.resolve(listing());await settleReact();expect(panelHarness.loadSessionRegistration).not.toHaveBeenCalled();expect(callback).not.toHaveBeenCalled();
+  });
+
+  it('ignores a deferred registration response after unmount',async()=>{
+    const pending=deferred<string|null>();panelHarness.loadSessionRegistration.mockReturnValue(pending.promise);const callback=vi.fn();
+    const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:callback});const runtime=panelHarness.runtimes[0];
+    await act(async()=>{runtime.setPhase('starting');await settleReact();});expect(panelHarness.loadSessionRegistration).toHaveBeenCalledTimes(1);
+    unmount(renderer);callback.mockClear();pending.resolve(JSON.stringify({session:'A'}));await settleReact();expect(callback).not.toHaveBeenCalled();
+  });
+
+  it('keeps session B geometry and registration when session A resolves last',async()=>{
+    const aGeometry=deferred<ReturnType<typeof listing>>();const callbackA=vi.fn();const callbackB=vi.fn();
+    panelHarness.fetchLocalizationRuns.mockImplementation((_objectId:string,sessionId:string)=>sessionId==='A'?aGeometry.promise:Promise.resolve(listing()));
+    panelHarness.loadSessionRegistration.mockImplementation(async(_objectId:string,sessionId:string)=>JSON.stringify({session:sessionId}));
+    let renderer=await mountPanel({objectId:'OBJ_A',sessionId:'A',onRegistrationChange:callbackA});const runtime=panelHarness.runtimes[0];
+    await act(async()=>{runtime.setPhase('starting');await settleReact();});
+    await act(async()=>{renderer.update(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,{objectId:'OBJ_B',sessionId:'B',onRegistrationChange:callbackB})));await settleReact();});
+    await act(async()=>{await settleReact();});expect(panelHarness.fetchLocalizationRuns).toHaveBeenCalledTimes(2);
+    aGeometry.resolve(listing());await act(async()=>{await settleReact();});
+    expect(panelHarness.loadSessionRegistration.mock.calls.map((call)=>call[1])).toEqual(['B']);
+    expect(callbackA).not.toHaveBeenCalled();expect(callbackB).toHaveBeenCalledTimes(1);expect(callbackB.mock.calls[0][0]).toMatchObject({session:'B'});
+    unmount(renderer);
+  });
+
+  it('does not let session A registration reach session B callback when A resolves last',async()=>{
+    const aRegistration=deferred<string|null>();const callbackA=vi.fn();const callbackB=vi.fn();
+    panelHarness.loadSessionRegistration.mockImplementation((_objectId:string,sessionId:string)=>sessionId==='A'?aRegistration.promise:Promise.resolve(JSON.stringify({session:sessionId})));
+    let renderer=await mountPanel({objectId:'OBJ_A',sessionId:'A',onRegistrationChange:callbackA});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    expect(panelHarness.loadSessionRegistration.mock.calls.map((call)=>call[1])).toEqual(['A']);
+    await act(async()=>{renderer.update(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,{objectId:'OBJ_B',sessionId:'B',onRegistrationChange:callbackB})));await settleReact();});
+    expect(callbackA).not.toHaveBeenCalled();expect(callbackB).toHaveBeenCalledTimes(1);expect(callbackB.mock.calls[0][0]).toMatchObject({session:'B'});
+    aRegistration.resolve(JSON.stringify({session:'A'}));await act(async()=>{await settleReact();});
+    expect(callbackA).not.toHaveBeenCalled();expect(callbackB).toHaveBeenCalledTimes(1);unmount(renderer);
+  });
+
+  it('does not apply a stale registration error after switching sessions',async()=>{
+    const oldRegistration=deferred<string|null>();const callback=vi.fn();
+    panelHarness.loadSessionRegistration.mockImplementation((_objectId:string,sessionId:string)=>sessionId==='A'?oldRegistration.promise:Promise.resolve(JSON.stringify({session:'B'})));
+    let renderer=await mountPanel({objectId:'OBJ_A',sessionId:'A',onRegistrationChange:callback});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{renderer.update(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,{objectId:'OBJ_B',sessionId:'B',onRegistrationChange:callback})));await settleReact();});
+    expect(callback).toHaveBeenCalledTimes(1);expect(callback.mock.calls[0][0]).toMatchObject({session:'B'});
+    oldRegistration.reject(new Error('retired registration response'));await act(async()=>{await settleReact();});
+    expect(renderer.root.findAll((node)=>node.props.role==='alert').map(textOf).join(' ')).not.toContain('retired registration');unmount(renderer);
+  });
+
+  it('survives 100 delayed open/close/session-change cycles without stale loads or callbacks',async()=>{
+    const callback=vi.fn();
+    for(let index=0;index<100;index+=1){
+      const pendingA=deferred<ReturnType<typeof listing>>();const pendingB=deferred<ReturnType<typeof listing>>();
+      panelHarness.fetchLocalizationRuns.mockReturnValueOnce(pendingA.promise).mockReturnValueOnce(pendingB.promise);
+      let renderer=await mountPanel({objectId:`OBJ_A_${index}`,sessionId:`SESSION_A_${index}`,onRegistrationChange:callback});const runtime=panelHarness.runtimes.at(-1);
+      await act(async()=>{runtime.setPhase('starting');await settleReact();});
+      await act(async()=>{renderer.update(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,{objectId:`OBJ_B_${index}`,sessionId:`SESSION_B_${index}`,onRegistrationChange:callback})));await settleReact();});
+      unmount(renderer);pendingA.reject(new Error('retired geometry A'));pendingB.reject(new Error('retired geometry B'));await settleReact();
+    }
+    expect(panelHarness.fetchLocalizationRuns).toHaveBeenCalledTimes(200);expect(panelHarness.loadSessionRegistration).not.toHaveBeenCalled();expect(callback).not.toHaveBeenCalled();
+  });
+
+  it.each(['ended','interrupted'])('stops BLE on %s and prevents later advertisements',async(phase)=>{
+    const bluetooth=new PanelBluetooth();vi.stubGlobal('navigator',{bluetooth});browserWindow.isSecureContext=true;
+    const renderer=await mountPanel();const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    const bleButton=renderer.root.findAllByType('button').find((button)=>textOf(button)===translate('en','xr.ble_hints_off'));
+    if(bleButton===undefined)throw new Error('Missing BLE hints button.');await act(async()=>{bleButton.props.onClick();await settleReact();});
+    expect(bluetooth.liveScans).toBe(1);expect(bluetooth.listeners.size).toBe(1);
+    await act(async()=>{runtime.setPhase(phase);await settleReact();});expect(bluetooth.scanStops).toBe(1);expect(bluetooth.listeners.size).toBe(0);
+    bluetooth.advertise();expect(bluetooth.liveScans).toBe(0);unmount(renderer);
+  });
+
+  it('keeps BLE disabled outside a live XR session',async()=>{
+    const bluetooth=new PanelBluetooth();vi.stubGlobal('navigator',{bluetooth});browserWindow.isSecureContext=true;
+    const renderer=await mountPanel();
+    const bleButton=renderer.root.findAllByType('button').find((button)=>textOf(button)===translate('en','xr.ble_hints_off'));
+    if(bleButton===undefined)throw new Error('Missing BLE hints button.');expect(bleButton.props.disabled).toBe(true);
+    await act(async()=>{await bleButton.props.onClick();await settleReact();});expect(bluetooth.requestCalls).toBe(0);unmount(renderer);
+  });
+
+  it('stops a pending BLE permission request when the XR session ends',async()=>{
+    const bluetooth=new PanelBluetooth();const pending=deferred<{stop():void}>();bluetooth.nextRequest=pending.promise;vi.stubGlobal('navigator',{bluetooth});browserWindow.isSecureContext=true;
+    const renderer=await mountPanel();const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    const bleButton=renderer.root.findAllByType('button').find((button)=>textOf(button)===translate('en','xr.ble_hints_off'));
+    if(bleButton===undefined)throw new Error('Missing BLE hints button.');await act(async()=>{bleButton.props.onClick();await settleReact();});expect(bluetooth.requestCalls).toBe(1);
+    await act(async()=>{runtime.setPhase('ended');await settleReact();});const late=bluetooth.createScan();pending.resolve(late);await act(async()=>{await settleReact();});
+    expect(bluetooth.scanStops).toBe(1);expect(bluetooth.liveScans).toBe(0);expect(bluetooth.listeners.size).toBe(0);unmount(renderer);
+  });
+
+  it('returns BLE handles and listeners to baseline through 100 delayed panel unmounts',async()=>{
+    browserWindow.isSecureContext=true;
+    for(let index=0;index<100;index+=1){
+      const bluetooth=new PanelBluetooth();const pending=deferred<{stop():void}>();bluetooth.nextRequest=pending.promise;vi.stubGlobal('navigator',{bluetooth});
+      const renderer=await mountPanel();const runtime=panelHarness.runtimes.at(-1);
+      await act(async()=>{runtime.setPhase('running');await settleReact();});
+      const button=renderer.root.findAllByType('button').find((candidate)=>textOf(candidate)===translate('en','xr.ble_hints_off'));
+      if(button===undefined)throw new Error('Missing BLE hints button.');await act(async()=>{button.props.onClick();await settleReact();});
+      expect(bluetooth.listeners.size).toBe(1);unmount(renderer);const late=bluetooth.createScan();pending.resolve(late);await settleReact();bluetooth.advertise();
+      expect(bluetooth.scanStops).toBe(1);expect(bluetooth.liveScans).toBe(0);expect(bluetooth.listeners.size).toBe(0);
+    }
+  });
+});

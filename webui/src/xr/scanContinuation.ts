@@ -1,4 +1,8 @@
 import type { ScanPointCloudSnapshot } from './webxrRuntime';
+import {
+  enumerateUnknownCandidatePositions,
+  type OccupancyBounds,
+} from './occupancyEvidence';
 
 export interface ScanContinuationDiagnostics {
   yawRadians: number;
@@ -95,6 +99,10 @@ function voxelCoordinate(value: number, size: number): number {
 
 function voxelKey(x: number, y: number, z: number, size: number): string {
   return `${voxelCoordinate(x, size)}:${voxelCoordinate(y, size)}:${voxelCoordinate(z, size)}`;
+}
+
+function fineOccupancyVoxelSize(snapshot: ScanPointCloudSnapshot): number {
+  return snapshot.occupancyFineVoxelSizeMeters ?? snapshot.occupancyVoxelSizeMeters;
 }
 
 function buildPointHash(points: readonly Point3[], cellSize: number): Map<string, Point3[]> {
@@ -403,14 +411,16 @@ function mergeOccupancy(
   base: ScanPointCloudSnapshot,
   extension: ScanPointCloudSnapshot,
   transform: RigidTransform,
+  envelopeBounds: ScanPointCloudSnapshot['occupancyEnvelopeBounds'],
 ): {
   freeAirPositions: Float32Array;
   occupiedSurfacePositions: Float32Array;
   unknownCandidatePositions: Float32Array;
+  occupancyVoxelSizeMeters: number;
 } | null {
   if (assertCompleteOccupancy(base) !== null || assertCompleteOccupancy(extension) !== null) return null;
-  if (Math.abs(base.occupancyVoxelSizeMeters - extension.occupancyVoxelSizeMeters) > 1e-6) return null;
-  const voxel = base.occupancyVoxelSizeMeters;
+  const voxel = fineOccupancyVoxelSize(base);
+  if (Math.abs(voxel - fineOccupancyVoxelSize(extension)) > 1e-6) return null;
   const occupied = positionsMap(base.occupiedSurfacePositions, voxel);
   for (const [key, point] of positionsMap(transformPositions(extension.occupiedSurfacePositions, transform), voxel)) occupied.set(key, point);
   const free = positionsMap(base.freeAirPositions, voxel);
@@ -418,16 +428,16 @@ function mergeOccupancy(
     if (!occupied.has(key)) free.set(key, point);
   }
   for (const key of occupied.keys()) free.delete(key);
-  const unknown = positionsMap(base.unknownCandidatePositions, voxel);
-  for (const [key, point] of positionsMap(transformPositions(extension.unknownCandidatePositions, transform), voxel)) {
-    if (!occupied.has(key) && !free.has(key)) unknown.set(key, point);
-  }
-  for (const key of occupied.keys()) unknown.delete(key);
-  for (const key of free.keys()) unknown.delete(key);
+  const unknown = enumerateUnknownCandidatePositions(
+    envelopeBounds as OccupancyBounds | null,
+    voxel,
+    (x, y, z) => !occupied.has(`${x}:${y}:${z}`) && !free.has(`${x}:${y}:${z}`),
+  );
   return {
     freeAirPositions: mapToPositions(free),
     occupiedSurfacePositions: mapToPositions(occupied),
-    unknownCandidatePositions: mapToPositions(unknown),
+    unknownCandidatePositions: unknown.unknownCandidatePositions,
+    occupancyVoxelSizeMeters: unknown.occupancyVoxelSizeMeters,
   };
 }
 
@@ -487,6 +497,48 @@ function boundsFor(values: Float32Array): ScanPointCloudSnapshot['bounds'] {
   return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
 }
 
+function transformBounds(
+  bounds: ScanPointCloudSnapshot['occupancyEnvelopeBounds'],
+  transform: RigidTransform,
+): ScanPointCloudSnapshot['occupancyEnvelopeBounds'] {
+  if (bounds === null) return null;
+  let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY, minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY, maxZ = Number.NEGATIVE_INFINITY;
+  for (let corner = 0; corner < 8; corner += 1) {
+    const point = transformPoint({
+      x: (corner & 1) === 0 ? bounds.min[0] : bounds.max[0],
+      y: (corner & 2) === 0 ? bounds.min[1] : bounds.max[1],
+      z: (corner & 4) === 0 ? bounds.min[2] : bounds.max[2],
+      sourceIndex: corner,
+    }, transform);
+    minX = Math.min(minX, point.x); minY = Math.min(minY, point.y); minZ = Math.min(minZ, point.z);
+    maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y); maxZ = Math.max(maxZ, point.z);
+  }
+  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
+}
+
+function mergeOccupancyEnvelopeBounds(
+  base: ScanPointCloudSnapshot['occupancyEnvelopeBounds'],
+  extension: ScanPointCloudSnapshot['occupancyEnvelopeBounds'],
+  transform: RigidTransform,
+): ScanPointCloudSnapshot['occupancyEnvelopeBounds'] {
+  const transformedExtension = transformBounds(extension, transform);
+  if (base === null) return transformedExtension;
+  if (transformedExtension === null) return base;
+  return {
+    min: [
+      Math.min(base.min[0], transformedExtension.min[0]),
+      Math.min(base.min[1], transformedExtension.min[1]),
+      Math.min(base.min[2], transformedExtension.min[2]),
+    ],
+    max: [
+      Math.max(base.max[0], transformedExtension.max[0]),
+      Math.max(base.max[1], transformedExtension.max[1]),
+      Math.max(base.max[2], transformedExtension.max[2]),
+    ],
+  };
+}
+
 function transformedManualPoints(snapshot: ScanPointCloudSnapshot, transform: RigidTransform, startId: number) {
   return snapshot.manualControlPoints.map((point, index) => {
     const transformed = transformPoint({ x: point.position[0], y: point.position[1], z: point.position[2], sourceIndex: 0 }, transform);
@@ -523,8 +575,8 @@ export function registerAndMergeScanContinuation(
   if (occupancyProblem !== null) {
     return { ok: false, reason: `Cannot safely continue: ${occupancyProblem}. Old saved scan was kept.`, diagnostics: null };
   }
-  if (Math.abs(base.occupancyVoxelSizeMeters - extension.occupancyVoxelSizeMeters) > 1e-6) {
-    return { ok: false, reason: 'Cannot safely continue scans with different occupancy voxel sizes.', diagnostics: null };
+  if (Math.abs(fineOccupancyVoxelSize(base) - fineOccupancyVoxelSize(extension)) > 1e-6) {
+    return { ok: false, reason: 'Cannot safely continue scans with different occupancy fine voxel sizes.', diagnostics: null };
   }
 
   const registration = registerExtension(base, extension);
@@ -565,7 +617,12 @@ export function registerAndMergeScanContinuation(
     stable.positions,
     mergeVoxel,
   );
-  const occupancy = mergeOccupancy(base, extension, transform);
+  const occupancyEnvelopeBounds = mergeOccupancyEnvelopeBounds(
+    base.occupancyEnvelopeBounds,
+    extension.occupancyEnvelopeBounds,
+    transform,
+  );
+  const occupancy = mergeOccupancy(base, extension, transform, occupancyEnvelopeBounds);
   if (occupancy === null) {
     return { ok: false, reason: 'Continuation occupancy evidence could not be merged safely. Old saved scan was kept.', diagnostics };
   }
@@ -618,17 +675,22 @@ export function registerAndMergeScanContinuation(
     freeAirPositions: occupancy.freeAirPositions,
     occupiedSurfacePositions: occupancy.occupiedSurfacePositions,
     unknownCandidatePositions: occupancy.unknownCandidatePositions,
+    occupancyVoxelSizeMeters: occupancy.occupancyVoxelSizeMeters,
     knownFreeVoxelCount: pointCount(occupancy.freeAirPositions),
     occupiedSurfaceVoxelCount: pointCount(occupancy.occupiedSurfacePositions),
     unknownCandidateVoxelCount: pointCount(occupancy.unknownCandidatePositions),
-    occupancyEnvelopeBounds: boundsFor(occupancy.unknownCandidatePositions),
+    occupancyEnvelopeBounds,
+    occupancySolverCandidateBelowSurfaceMeters: occupancyEnvelopeBounds === null
+      ? 0
+      : Math.max(base.occupancySolverCandidateBelowSurfaceMeters ?? 0, extension.occupancySolverCandidateBelowSurfaceMeters ?? 0),
+    // Keep the established per-scan aggregation policy for component and bridge diagnostics.
     occupancyEnvelopeComponentCount: base.occupancyEnvelopeComponentCount + extension.occupancyEnvelopeComponentCount,
     occupancyQuarantinedSurfaceComponentCount: base.occupancyQuarantinedSurfaceComponentCount + extension.occupancyQuarantinedSurfaceComponentCount,
     occupancyQuarantinedSurfacePointCount: base.occupancyQuarantinedSurfacePointCount + extension.occupancyQuarantinedSurfacePointCount,
     occupancyBridgeRescanComponentCount: base.occupancyBridgeRescanComponentCount + extension.occupancyBridgeRescanComponentCount,
     occupancyBridgeEvidenceTruncated: base.occupancyBridgeEvidenceTruncated || extension.occupancyBridgeEvidenceTruncated,
     occupancyCellsSaturated: Boolean(base.occupancyCellsSaturated) || Boolean(extension.occupancyCellsSaturated),
-    occupancyFineVoxelSizeMeters: base.occupancyFineVoxelSizeMeters ?? extension.occupancyFineVoxelSizeMeters,
+    occupancyFineVoxelSizeMeters: fineOccupancyVoxelSize(base),
     occupancyDroppedCellUpdates: (base.occupancyDroppedCellUpdates ?? 0) + (extension.occupancyDroppedCellUpdates ?? 0),
     ...tsdf,
     manualControlPoints,

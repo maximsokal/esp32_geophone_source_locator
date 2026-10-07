@@ -185,6 +185,7 @@ interface XrWebGlLayerLike {
 interface XrSessionLike extends EventTarget {
   requestReferenceSpace(type:'local-floor'|'local'):Promise<XrReferenceSpaceLike>;
   requestAnimationFrame(callback:XrFrameCallback):number;
+  cancelAnimationFrame?(handle:number):void;
   updateRenderState(state:{baseLayer:XrWebGlLayerLike}):void|Promise<void>;
   end():Promise<void>;
   requestLightProbe?():Promise<XrLightProbeLike>;
@@ -292,11 +293,18 @@ export class WebXrRuntime{
   private state:WebXrRuntimeState=initialRuntimeState;
   private listeners=new Set<RuntimeListener>();
   private session:XrSessionLike|null=null;private referenceSpace:XrReferenceSpaceLike|null=null;private gl:XrCompatibleGl|null=null;
+  private lifecycleGeneration=0;private disposed=false;private disposePromise:Promise<void>|null=null;
+  private sessionEndListener:(()=>void)|null=null;private sessionVisibilityListener:(()=>void)|null=null;
+  private readonly sessionEndRequests=new WeakMap<object,Promise<void>>();
+  private rafHandle:number|null=null;
   private layer:XrWebGlLayerLike|null=null;private coverageRenderer:LiveCoveragePointRenderer|null=null;
   private cameraBinding:XrWebGlBindingLike|null=null;private cameraCapture:RawCameraGuidanceCapture|null=null;
   private tagCameraCapture:RawCameraGuidanceCapture|null=null;private tagCaptureEnabled=false;private lastTagCaptureMs=Number.NEGATIVE_INFINITY;
   private tagFrameListeners=new Set<TagFrameListener>();
   private lightProbe:XrLightProbeLike|null=null;private wakeLock:WakeLockSentinelLike|null=null;
+  private wakeLockReleaseListener:(()=>void)|null=null;private wakeLockRequest:{generation:number;promise:Promise<void>}|null=null;
+  private readonly wakeLockReleases=new Set<Promise<void>>();
+  private finalSnapshot:ScanPointCloudSnapshot|null=null;
   private explicitStopRequested=false;private scanPaused=false;private frameCount=0;private lastUiUpdateMs=0;
   private lastDepthSampleMs=Number.NEGATIVE_INFINITY;private lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;
   private lastLightEstimateMs=Number.NEGATIVE_INFINITY;private lastClientTelemetryMs=Number.NEGATIVE_INFINITY;
@@ -316,16 +324,18 @@ export class WebXrRuntime{
   private readonly latestWorldFromView=new Float32Array(16);private hasLatestProjection=false;
 
   constructor(){document.addEventListener('visibilitychange',this.handleDocumentVisibilityChange);}
-  subscribe(listener:RuntimeListener):()=>void{this.listeners.add(listener);listener(this.state);return()=>this.listeners.delete(listener);}
-  subscribeTagFrames(listener:TagFrameListener):()=>void{this.tagFrameListeners.add(listener);return()=>this.tagFrameListeners.delete(listener);}
+  subscribe(listener:RuntimeListener):()=>void{if(this.disposed)return()=>undefined;this.listeners.add(listener);listener(this.state);return()=>this.listeners.delete(listener);}
+  subscribeTagFrames(listener:TagFrameListener):()=>void{if(this.disposed)return()=>undefined;this.tagFrameListeners.add(listener);return()=>this.tagFrameListeners.delete(listener);}
   setTagCaptureEnabled(enabled:boolean):string|null{
+    if(this.disposed)return enabled?'XR camera capture is unavailable for this session.':null;
     if(!enabled){this.tagCaptureEnabled=false;this.tagCameraCapture?.dispose();this.tagCameraCapture=null;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;return null;}
     if(this.state.phase!=='running'||this.gl===null||this.cameraBinding===null)return'XR camera capture is unavailable for this session.';
     try{this.tagCameraCapture??=new RawCameraGuidanceCapture(this.gl, TAG_CAPTURE_WIDTH, TAG_CAPTURE_HEIGHT);this.tagCaptureEnabled=true;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;return null;}
     catch(error){this.tagCameraCapture?.dispose();this.tagCameraCapture=null;return`High-resolution tag capture unavailable: ${errorText(error)}`;}
   }
   getState():WebXrRuntimeState{return this.state;}
-  getPointCloudSnapshot():ScanPointCloudSnapshot{return{...this.pointCloud.snapshot(this.depthFrameCount,this.sampledDepthFrames),manualControlPoints:this.manualPoints.snapshot(),operatorEdges:this.operatorEdges.snapshot()};}
+  getPointCloudSnapshot():ScanPointCloudSnapshot{return this.finalSnapshot??this.createPointCloudSnapshot();}
+  getLifecycleGeneration():number{return this.lifecycleGeneration;}
   getLastManualPointId():number|null{return this.manualPoints.lastId;}
   getStructuralWorkerSnapshot(){return this.pointCloud.structuralWorkerSnapshot();}
   getStructuralGuideSnapshot(){return this.pointCloud.structuralGuideSnapshot();}
@@ -356,12 +366,14 @@ export class WebXrRuntime{
   undoLastManualPoint():void{const removed=this.manualPoints.removeLast();if(removed===null)return;this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.publish({manualPointCount:this.manualPoints.size,manualPointError:null});clientDiagnostics.info('XR_MANUAL_POINT_UNDO',{id:removed.id,remaining:this.manualPoints.size});void clientDiagnostics.flush();}
 
   async start():Promise<void>{
-    if(this.session!==null||this.state.phase==='starting')return;clientDiagnostics.info('XR_START_REQUEST');void clientDiagnostics.flush();
+    if(this.disposed||this.session!==null||this.state.phase==='starting')return;clientDiagnostics.info('XR_START_REQUEST');void clientDiagnostics.flush();
+    const generation=++this.lifecycleGeneration;
+    const ownsAttempt=():boolean=>!this.disposed&&this.lifecycleGeneration===generation;
     const xr=(navigator as NavigatorWithXr).xr;const Layer=(window as WindowWithXr).XRWebGLLayer;
     if(!window.isSecureContext){this.publish({phase:'error',error:'Trusted HTTPS is required for WebXR.'});return;}
     if(xr===undefined){this.publish({phase:'error',error:'WebXR is not available in this browser.'});return;}
     if(Layer===undefined){this.publish({phase:'error',error:'XRWebGLLayer is unavailable.'});return;}
-    this.resetScanState();this.publish({...initialRuntimeState,phase:'starting',monocularPriorStatus:optionalMonocularPrior.status});
+    this.finalSnapshot=null;this.resetScanState();this.publish({...initialRuntimeState,phase:'starting',monocularPriorStatus:optionalMonocularPrior.status});if(!ownsAttempt())return;
     let session:XrSessionLike|null=null;
     try{
       // luminance-alpha remains first because every depth-capable UA MUST support
@@ -372,36 +384,54 @@ export class WebXrRuntime{
         optionalFeatures:['local-floor','dom-overlay','depth-sensing','light-estimation','camera-access','plane-detection'],domOverlay:{root:document.body},
         depthSensing:{usagePreference:['cpu-optimized','gpu-optimized'],dataFormatPreference:depthFormats,depthTypeRequest:['raw','smooth'],matchDepthView:true},
       });
-      this.session=session;session.addEventListener('end',this.handleSessionEnd);session.addEventListener('visibilitychange',this.handleSessionVisibilityChange);
-      const gl=createWebGlContext();if(gl===null)throw new Error('Unable to create WebGL for WebXR.');await gl.makeXRCompatible?.();
-      const layer=new Layer(session,gl);await session.updateRenderState({baseLayer:layer});
+      if(!ownsAttempt()){await this.endObsoleteSession(session);return;}
+      this.attachSession(session,generation);
+      const gl=createWebGlContext();if(gl===null)throw new Error('Unable to create WebGL for WebXR.');this.gl=gl;
+      await gl.makeXRCompatible?.();if(!ownsAttempt())return;
+      const layer=new Layer(session,gl);this.layer=layer;await session.updateRenderState({baseLayer:layer});if(!ownsAttempt())return;
       let referenceSpaceType:'local-floor'|'local'='local-floor';let referenceSpace:XrReferenceSpaceLike;
-      try{referenceSpace=await session.requestReferenceSpace('local-floor');}catch{referenceSpaceType='local';referenceSpace=await session.requestReferenceSpace('local');}
-      this.referenceSpace=referenceSpace;this.gl=gl;this.layer=layer;
+      try{referenceSpace=await session.requestReferenceSpace('local-floor');if(!ownsAttempt())return;}
+      catch(error){if(!ownsAttempt())return;referenceSpaceType='local';referenceSpace=await session.requestReferenceSpace('local');if(!ownsAttempt())return;}
+      this.referenceSpace=referenceSpace;
       try{this.coverageRenderer=new LiveCoveragePointRenderer(gl);}catch(error){this.coverageRenderer=null;this.coverageGuideError=`Coverage renderer unavailable: ${errorText(error)}`;}
       const Binding=(window as WindowWithXr).XRWebGLBinding;
       if(Binding!==undefined){try{this.cameraBinding=new Binding(session,gl);this.cameraCapture=new RawCameraGuidanceCapture(gl);}catch(error){this.cameraBinding=null;this.cameraCapture=null;clientDiagnostics.warn('XR_RAW_CAMERA_UNAVAILABLE',error);}}
-      if(typeof session.requestLightProbe==='function'){try{this.lightProbe=await session.requestLightProbe();}catch{this.lightProbe=null;}}
-      document.documentElement.classList.add('xr-session-active');const depthConfiguration=readDepthConfiguration(session);this.depthEnabled=depthConfiguration.enabled;void this.acquireWakeLock();
+      if(typeof session.requestLightProbe==='function'){try{const lightProbe=await session.requestLightProbe();if(!ownsAttempt())return;this.lightProbe=lightProbe;}catch{if(!ownsAttempt())return;this.lightProbe=null;}}
+      if(!ownsAttempt())return;
+      document.documentElement.classList.add('xr-session-active');const depthConfiguration=readDepthConfiguration(session);this.depthEnabled=depthConfiguration.enabled;void this.acquireWakeLock(generation);
       this.publish({phase:'running',referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,
         depthAvailable:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthDataFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,
         coverageGuideError:this.coverageGuideError,wakeLockActive:this.wakeLock!==null&&!this.wakeLock.released,monocularPriorStatus:optionalMonocularPrior.status,
         depthError:depthConfiguration.enabled?null:depthConfiguration.gpuDepth?'WebXR negotiated GPU-optimized depth, but metric surfel fusion currently requires CPU depth access.':'WebXR tracking is running, but CPU depth was not enabled.',error:null});
       clientDiagnostics.info('XR_SESSION_RUNNING',{referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,depthEnabled:depthConfiguration.enabled,depthActive:depthConfiguration.active,depthUsage:depthConfiguration.usage,depthFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,rawDepth:depthConfiguration.rawDepth,smoothDepth:depthConfiguration.smoothDepth,cpuDepth:depthConfiguration.cpuDepth,gpuDepth:depthConfiguration.gpuDepth,cameraAccessRequested:true,rawXrRgbApi:Binding!==undefined,planeDetectionRequested:true,rgbReadback:this.cameraCapture?.usesNonBlockingReadback?'pbo-fence':'sync-or-unavailable',monocularPriorStatus:optionalMonocularPrior.status});
-      void clientDiagnostics.flush();session.requestAnimationFrame(this.handleFrame);
+      if(!ownsAttempt())return;void clientDiagnostics.flush();this.rafHandle=session.requestAnimationFrame(this.handleFrame);
     }catch(error){
-      if(session!==null){session.removeEventListener('end',this.handleSessionEnd);session.removeEventListener('visibilitychange',this.handleSessionVisibilityChange);try{await session.end();}catch{/*best effort*/}}
-      this.cleanupRuntime();const message=errorText(error);clientDiagnostics.error('XR_START_FAILED',message);void clientDiagnostics.flush();
+      if(!ownsAttempt())return;
+      const failedSession=session;this.cleanupRuntime();if(failedSession!==null)await this.endObsoleteSession(failedSession,true);await this.waitForWakeLockReleases();
+      const message=errorText(error);clientDiagnostics.error('XR_START_FAILED',message);void clientDiagnostics.flush();
+      if(this.disposed)return;
       this.publish({phase:'error',referenceSpace:null,domOverlay:false,environmentBlendMode:null,tracking:false,pose:null,scanPaused:false,depthAvailable:false,monocularPriorStatus:optionalMonocularPrior.status,error:message});
     }
   }
 
-  async stop():Promise<void>{const session=this.session;if(session===null)return;this.explicitStopRequested=true;clientDiagnostics.info('XR_FINISH_REQUEST',{stablePoints:this.pointCloud.promotedCount,retainedPoints:this.pointCloud.pointCount,keyframes:this.pointCloud.keyframeCount,manualPoints:this.manualPoints.size,operatorEdges:this.operatorEdges.size});void clientDiagnostics.flush();this.publish({phase:'stopping',error:null});try{await session.end();}catch(error){this.explicitStopRequested=false;this.publish({phase:'error',error:errorText(error)});}}
-  async dispose():Promise<void>{document.removeEventListener('visibilitychange',this.handleDocumentVisibilityChange);const session=this.session;if(session!==null){session.removeEventListener('end',this.handleSessionEnd);session.removeEventListener('visibilitychange',this.handleSessionVisibilityChange);try{await session.end();}catch{/*ended*/}}this.cleanupRuntime();this.listeners.clear();}
+  async stop():Promise<void>{
+    const session=this.session;const generation=this.lifecycleGeneration;if(session===null||this.state.phase==='stopping'||this.disposed)return;
+    this.explicitStopRequested=true;clientDiagnostics.info('XR_FINISH_REQUEST',{stablePoints:this.pointCloud.promotedCount,retainedPoints:this.pointCloud.pointCount,keyframes:this.pointCloud.keyframeCount,manualPoints:this.manualPoints.size,operatorEdges:this.operatorEdges.size});void clientDiagnostics.flush();this.publish({phase:'stopping',error:null});
+    try{await this.requestSessionEnd(session);if(this.session===session&&this.lifecycleGeneration===generation)this.handleSessionEnd(session,generation);await this.waitForWakeLockReleases();}
+    catch(error){if(this.session!==session||this.lifecycleGeneration!==generation||this.disposed)return;this.explicitStopRequested=false;this.publish({phase:'running',error:errorText(error)});}
+  }
+
+  dispose():Promise<void>{
+    if(this.disposePromise!==null)return this.disposePromise;
+    this.disposed=true;this.lifecycleGeneration+=1;document.removeEventListener('visibilitychange',this.handleDocumentVisibilityChange);
+    this.tagFrameListeners.clear();this.finalSnapshot=null;const session=this.session;this.cleanupRuntime();
+    this.disposePromise=(async()=>{if(session!==null)await this.endObsoleteSession(session,true);await this.waitForWakeLockReleases();this.listeners.clear();})();
+    return this.disposePromise;
+  }
   private publish(patch:Partial<WebXrRuntimeState>):void{this.state={...this.state,...patch};for(const listener of this.listeners)listener(this.state);}
 
   private resetScanState():void{
-    this.pointCloud.reset();this.keyframeSelector.reset();this.manualPoints.reset();this.operatorEdges.reset();this.performanceProfiler.reset();resetXrGuidanceRegistry();resetXrPlaneGuidanceRegistry();resetLatestProjectionMatrices();
+    this.finalSnapshot=null;this.pointCloud.reset();this.keyframeSelector.reset();this.manualPoints.reset();this.operatorEdges.reset();this.performanceProfiler.reset();resetXrGuidanceRegistry();resetXrPlaneGuidanceRegistry();resetLatestProjectionMatrices();
     this.hasLatestProjection=false;this.explicitStopRequested=false;this.scanPaused=false;this.depthSensingPausedByApp=false;this.frameCount=0;this.lastUiUpdateMs=0;this.lastDepthSampleMs=Number.NEGATIVE_INFINITY;
     this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.lastLightEstimateMs=Number.NEGATIVE_INFINITY;this.lastClientTelemetryMs=Number.NEGATIVE_INFINITY;
     this.lastRgbCaptureMs=Number.NEGATIVE_INFINITY;this.lastVisualEvidenceMs=Number.NEGATIVE_INFINITY;this.lastPlaneGuidanceMs=Number.NEGATIVE_INFINITY;this.depthFrameCount=0;this.sampledDepthFrames=0;this.pointCloudVersion=0;
@@ -413,9 +443,39 @@ export class WebXrRuntime{
   }
 
   private cleanupRuntime():void{
+    this.lifecycleGeneration+=1;this.detachSessionListeners(this.session);
+    if(this.session!==null&&this.rafHandle!==null){try{this.session.cancelAnimationFrame?.(this.rafHandle);}catch{/* session ended */}}this.rafHandle=null;
     document.documentElement.classList.remove('xr-session-active');this.coverageRenderer?.dispose();this.coverageRenderer=null;this.cameraCapture?.dispose();this.cameraCapture=null;this.tagCameraCapture?.dispose();this.tagCameraCapture=null;this.tagCaptureEnabled=false;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;this.cameraBinding=null;
     setLatestRgbGuidance(null);resetXrPlaneGuidanceRegistry();resetLatestProjectionMatrices();this.lightProbe=null;void this.releaseWakeLock();releaseWebGlContext(this.gl);this.session=null;this.referenceSpace=null;this.gl=null;this.layer=null;
     this.scanPaused=false;this.depthEnabled=false;this.depthSensingPausedByApp=false;this.coverageGuideActive=false;this.coverageGuideRenderPoints=0;this.rgbGuidanceAvailable=false;
+  }
+
+  private attachSession(session:XrSessionLike,generation:number):void{
+    this.session=session;const onEnd=():void=>this.handleSessionEnd(session,generation);const onVisibility=():void=>this.handleSessionVisibilityChange(session,generation);
+    this.sessionEndListener=onEnd;this.sessionVisibilityListener=onVisibility;session.addEventListener('end',onEnd);session.addEventListener('visibilitychange',onVisibility);
+  }
+
+  private detachSessionListeners(session:XrSessionLike|null):void{
+    if(session!==null){if(this.sessionEndListener!==null)session.removeEventListener('end',this.sessionEndListener);if(this.sessionVisibilityListener!==null)session.removeEventListener('visibilitychange',this.sessionVisibilityListener);}
+    this.sessionEndListener=null;this.sessionVisibilityListener=null;
+  }
+
+  private async endObsoleteSession(session:XrSessionLike,retryOnce=false):Promise<void>{
+    try{await this.requestSessionEnd(session);}catch{
+      if(retryOnce){try{await this.requestSessionEnd(session);}catch{/* best-effort cleanup of an unowned browser session */}}
+    }
+  }
+
+  private requestSessionEnd(session:XrSessionLike):Promise<void>{
+    const existing=this.sessionEndRequests.get(session);if(existing!==undefined)return existing;
+    let request:Promise<void>;
+    try{request=Promise.resolve(session.end());}catch(error){return Promise.reject(error);}
+    const tracked=request.catch((error:unknown)=>{if(this.sessionEndRequests.get(session)===tracked)this.sessionEndRequests.delete(session);throw error;});
+    this.sessionEndRequests.set(session,tracked);return tracked;
+  }
+
+  private createPointCloudSnapshot():ScanPointCloudSnapshot{
+    return{...this.pointCloud.snapshot(this.depthFrameCount,this.sampledDepthFrames),manualControlPoints:this.manualPoints.snapshot(),operatorEdges:this.operatorEdges.snapshot()};
   }
 
   /** Must only be called from the active XR animation-frame callback. */
@@ -433,24 +493,56 @@ export class WebXrRuntime{
     }catch(error){clientDiagnostics.warn('XR_DEPTH_SENSING_PAUSE_CONTROL_FAILED',error);}
   }
 
-  private async acquireWakeLock():Promise<void>{if(this.session===null||document.visibilityState!=='visible'||(this.wakeLock!==null&&!this.wakeLock.released))return;const api=(navigator as NavigatorWithWakeLock).wakeLock;if(api===undefined){this.publish({wakeLockActive:false,wakeLockError:'Screen Wake Lock API unavailable.'});return;}try{const sentinel=await api.request('screen');this.wakeLock=sentinel;sentinel.addEventListener('release',this.handleWakeLockRelease);this.publish({wakeLockActive:true,wakeLockError:null});}catch(error){this.wakeLock=null;this.publish({wakeLockActive:false,wakeLockError:errorText(error)});}}
-  private async releaseWakeLock():Promise<void>{const sentinel=this.wakeLock;this.wakeLock=null;if(sentinel===null)return;sentinel.removeEventListener('release',this.handleWakeLockRelease);if(!sentinel.released){try{await sentinel.release();}catch{/*released*/}}}
-  private readonly handleWakeLockRelease=():void=>{this.wakeLock=null;this.publish({wakeLockActive:false});};
-  private readonly handleDocumentVisibilityChange=():void=>{const hidden=document.visibilityState!=='visible';if(this.session!==null){this.scanPaused=shouldPauseXrScan(document.visibilityState,this.session.visibilityState);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});if(!hidden)void this.acquireWakeLock();}};
-  private readonly handleSessionVisibilityChange=():void=>{const session=this.session;if(session===null)return;this.scanPaused=shouldPauseXrScan(document.visibilityState,session.visibilityState);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});if(!this.scanPaused)void this.acquireWakeLock();};
+  private acquireWakeLock(generation:number):Promise<void>{
+    const ownsAttempt=():boolean=>!this.disposed&&this.lifecycleGeneration===generation&&this.session!==null;
+    if(!ownsAttempt()||document.visibilityState!=='visible'||(this.wakeLock!==null&&!this.wakeLock.released))return Promise.resolve();
+    if(this.wakeLockRequest?.generation===generation)return this.wakeLockRequest.promise;
+    const api=(navigator as NavigatorWithWakeLock).wakeLock;if(api===undefined){this.publish({wakeLockActive:false,wakeLockError:'Screen Wake Lock API unavailable.'});return Promise.resolve();}
+    const request={generation,promise:Promise.resolve()};this.wakeLockRequest=request;
+    request.promise=(async()=>{
+      try{
+        const sentinel=await api.request('screen');
+        if(!ownsAttempt()||document.visibilityState!=='visible'){if(!sentinel.released){try{await sentinel.release();}catch{/*obsolete wake lock*/}}return;}
+        this.wakeLock=sentinel;const onRelease=():void=>{if(this.wakeLock!==sentinel)return;this.wakeLock=null;this.wakeLockReleaseListener=null;this.publish({wakeLockActive:false});};
+        this.wakeLockReleaseListener=onRelease;sentinel.addEventListener('release',onRelease);this.publish({wakeLockActive:true,wakeLockError:null});
+      }catch(error){if(ownsAttempt())this.publish({wakeLockActive:false,wakeLockError:errorText(error)});}
+      finally{if(this.wakeLockRequest===request)this.wakeLockRequest=null;}
+    })();
+    return request.promise;
+  }
+  private releaseWakeLock():Promise<void>{
+    const sentinel=this.wakeLock;this.wakeLock=null;if(sentinel===null)return Promise.resolve();
+    if(this.wakeLockReleaseListener!==null)sentinel.removeEventListener('release',this.wakeLockReleaseListener);this.wakeLockReleaseListener=null;
+    if(sentinel.released)return Promise.resolve();
+    const releasing=(async()=>{try{await sentinel.release();}catch{/*released*/}})();this.wakeLockReleases.add(releasing);
+    void releasing.finally(()=>this.wakeLockReleases.delete(releasing));return releasing;
+  }
+  private async waitForWakeLockReleases():Promise<void>{while(this.wakeLockReleases.size>0)await Promise.all([...this.wakeLockReleases]);}
+  private readonly handleDocumentVisibilityChange=():void=>{
+    const hidden=document.visibilityState!=='visible';if(this.session!==null){this.scanPaused=shouldPauseXrScan(document.visibilityState,this.session.visibilityState);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState,wakeLockActive:hidden?false:this.state.wakeLockActive});if(hidden)void this.releaseWakeLock();else void this.acquireWakeLock(this.lifecycleGeneration);}
+  };
+  private handleSessionVisibilityChange(session:XrSessionLike,generation:number):void{
+    if(this.session!==session||this.lifecycleGeneration!==generation)return;this.scanPaused=shouldPauseXrScan(document.visibilityState,session.visibilityState);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});
+    if(this.scanPaused)void this.releaseWakeLock();else void this.acquireWakeLock(generation);
+  }
 
-  private readonly handleSessionEnd=():void=>{
-    const normalFinish=this.explicitStopRequested;const snapshot=this.getPointCloudSnapshot();const performance=this.performanceProfiler.snapshot();const session=this.session;
-    session?.removeEventListener('end',this.handleSessionEnd);session?.removeEventListener('visibilitychange',this.handleSessionVisibilityChange);this.cleanupRuntime();this.explicitStopRequested=false;
+  private handleSessionEnd(session:XrSessionLike,generation:number):void{
+    if(this.session!==session||this.lifecycleGeneration!==generation)return;
+    const normalFinish=this.explicitStopRequested;const snapshot=normalFinish?this.createPointCloudSnapshot():null;this.finalSnapshot=snapshot;const performance=this.performanceProfiler.snapshot();
+    const pointCount=snapshot?.pointCount??this.pointCloud.promotedCount;const retainedPointCount=snapshot?.rawPointCount??this.pointCloud.pointCount;
+    const keyframeCount=snapshot?.integrationKeyframes??this.pointCloud.keyframeCount;const polishFrameCount=snapshot?.polishFrames??this.pointCloud.polishFrameCount;
+    this.cleanupRuntime();this.explicitStopRequested=false;
     this.publish({phase:normalFinish?'ended':'interrupted',referenceSpace:null,domOverlay:false,environmentBlendMode:null,tracking:false,pose:null,scanPaused:false,wakeLockActive:false,
-      depthFrameCount:this.depthFrameCount,sampledDepthFrames:this.sampledDepthFrames,pointCount:snapshot.pointCount,retainedPointCount:snapshot.rawPointCount,keyframeCount:snapshot.integrationKeyframes,
-      polishFrameCount:snapshot.polishFrames,pointCloudVersion:this.pointCloudVersion,coverageGuideActive:false,coverageGuideRenderPoints:0,coverageVisibleCells:this.coverageVisibleCells,
+      depthFrameCount:this.depthFrameCount,sampledDepthFrames:this.sampledDepthFrames,pointCount,retainedPointCount,keyframeCount,
+      polishFrameCount,pointCloudVersion:this.pointCloudVersion,coverageGuideActive:false,coverageGuideRenderPoints:0,coverageVisibleCells:this.coverageVisibleCells,
       coverageReadyCells:this.coverageReadyCells,coverageTotalCells:this.coverageTotalCells,coverageTargetIndependentViews:this.coverageTargetIndependentViews,coverageAverageConfidence:this.coverageAverageConfidence,
       coverageWeakPoints:this.coverageWeakPoints,coverageImprovingPoints:this.coverageImprovingPoints,coverageStablePoints:this.coverageStablePoints,manualPointCount:this.manualPoints.size,manualEdgeCount:this.operatorEdges.size,
       performance,lightingEstimateAvailable:this.lightingEstimateAvailable,primaryLightIntensity:this.primaryLightIntensity,rgbGuidanceAvailable:this.rgbGuidanceAvailable,rgbGuidanceWidth:this.rgbGuidanceWidth,
       rgbGuidanceHeight:this.rgbGuidanceHeight,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status,motionState:normalFinish?this.motionState:'paused',error:null});
-    clientDiagnostics.info(normalFinish?'XR_SCAN_FINISHED':'XR_SCAN_INTERRUPTED',{stablePoints:snapshot.pointCount,tentativePoints:snapshot.tentativePointCount,retainedPoints:snapshot.rawPointCount,keyframes:snapshot.integrationKeyframes,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:snapshot.manualControlPoints.length,operatorEdges:snapshot.operatorEdges.length,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status,monocularPriorCalibration:Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),performance,residualMm:Math.round(snapshot.averageStableResidualMeters*1000)});void clientDiagnostics.flush();
-  };
+    const diagnostics={stablePoints:pointCount,retainedPoints:retainedPointCount,keyframes:keyframeCount,polishFrames:polishFrameCount,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:this.manualPoints.size,operatorEdges:this.operatorEdges.size,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status,monocularPriorCalibration:Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),performance};
+    if(snapshot!==null)Object.assign(diagnostics,{tentativePoints:snapshot.tentativePointCount,residualMm:Math.round(snapshot.averageStableResidualMeters*1000)});
+    clientDiagnostics.info(normalFinish?'XR_SCAN_FINISHED':'XR_SCAN_INTERRUPTED',diagnostics);void clientDiagnostics.flush();
+  }
 
   private refreshCoverageGuide(time:number,force=false):void{
     const adaptiveIntervalMs=Math.max(COVERAGE_GPU_UPLOAD_INTERVAL_MS,this.performanceProfiler.recommendedCoverageIntervalMs());if(!force&&time-this.lastCoverageGpuUploadMs<adaptiveIntervalMs)return;
@@ -536,7 +628,7 @@ export class WebXrRuntime{
 
   private readonly handleFrame:XrFrameCallback=(time,frame):void=>{
     const session=this.session,referenceSpace=this.referenceSpace,gl=this.gl,layer=this.layer;if(session===null||referenceSpace===null||gl===null||layer===null||frame.session!==session)return;
-    session.requestAnimationFrame(this.handleFrame);this.performanceProfiler.recordFrameTimestamp(time);const frameWorkStarted=performance.now();
+    this.rafHandle=session.requestAnimationFrame(this.handleFrame);this.performanceProfiler.recordFrameTimestamp(time);const frameWorkStarted=performance.now();
     // WebXR requires pauseDepthSensing()/resumeDepthSensing() while this current
     // XR animation frame is active. Visibility handlers only change scanPaused.
     this.syncDepthSensingPauseInsideFrame();

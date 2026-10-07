@@ -1,8 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
+import {
+  decodeOccupancySolverArtifact,
+  encodeOccupancySolverArtifact,
+} from '../../src/xr/occupancySolverArtifact';
 import { decodeScanArtifact, encodeScanArtifact } from '../../src/xr/scanArtifact';
 import { registerAndMergeScanContinuation } from '../../src/xr/scanContinuation';
 import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
+
+type ContinuationOccupancyFixture = Partial<Pick<ScanPointCloudSnapshot,
+  'freeAirPositions' | 'occupiedSurfacePositions' | 'unknownCandidatePositions' |
+  'occupancyVoxelSizeMeters' | 'occupancyFineVoxelSizeMeters' | 'occupancyEnvelopeBounds' |
+  'occupancySolverCandidateBelowSurfaceMeters' | 'occupancyCellsSaturated' | 'occupancyDroppedCellUpdates' |
+  'occupancyEnvelopeComponentCount' | 'occupancyQuarantinedSurfaceComponentCount' |
+  'occupancyQuarantinedSurfacePointCount' | 'occupancyBridgeRescanComponentCount' |
+  'occupancyBridgeEvidenceTruncated'>>;
 
 function cloudPoints(count = 240): Float32Array {
   const points = new Float32Array(count * 3);
@@ -65,8 +77,7 @@ function boundsFor(points: Float32Array): ScanPointCloudSnapshot['bounds'] {
 
 function snapshot(
   positions: Float32Array,
-  occupancy: Partial<Pick<ScanPointCloudSnapshot,
-    'freeAirPositions' | 'occupiedSurfacePositions' | 'unknownCandidatePositions'>> = {},
+  occupancy: ContinuationOccupancyFixture = {},
 ): ScanPointCloudSnapshot {
   const confidence = confidenceFor(positions);
   const normals = normalsFor(positions);
@@ -107,19 +118,25 @@ function snapshot(
     residualRejectedSamples: 50,
     staleTentativePruned: 3,
     averageStableResidualMeters: 0.012,
-    occupancyVoxelSizeMeters: 0.18,
+    occupancyVoxelSizeMeters: occupancy.occupancyVoxelSizeMeters ?? 0.18,
+    occupancyFineVoxelSizeMeters: occupancy.occupancyFineVoxelSizeMeters,
+    occupancySolverCandidateBelowSurfaceMeters: occupancy.occupancySolverCandidateBelowSurfaceMeters,
     knownFreeVoxelCount: freeAirPositions.length / 3,
     occupiedSurfaceVoxelCount: occupiedSurfacePositions.length / 3,
     unknownCandidateVoxelCount: unknownCandidatePositions.length / 3,
     freeAirPositions,
     occupiedSurfacePositions,
     unknownCandidatePositions,
-    occupancyEnvelopeBounds: boundsFor(positions),
-    occupancyEnvelopeComponentCount: 1,
-    occupancyQuarantinedSurfaceComponentCount: 0,
-    occupancyQuarantinedSurfacePointCount: 0,
-    occupancyBridgeRescanComponentCount: 0,
-    occupancyBridgeEvidenceTruncated: false,
+    occupancyEnvelopeBounds: occupancy.occupancyEnvelopeBounds === undefined
+      ? boundsFor(positions)
+      : occupancy.occupancyEnvelopeBounds,
+    occupancyEnvelopeComponentCount: occupancy.occupancyEnvelopeComponentCount ?? 1,
+    occupancyQuarantinedSurfaceComponentCount: occupancy.occupancyQuarantinedSurfaceComponentCount ?? 0,
+    occupancyQuarantinedSurfacePointCount: occupancy.occupancyQuarantinedSurfacePointCount ?? 0,
+    occupancyBridgeRescanComponentCount: occupancy.occupancyBridgeRescanComponentCount ?? 0,
+    occupancyBridgeEvidenceTruncated: occupancy.occupancyBridgeEvidenceTruncated ?? false,
+    occupancyCellsSaturated: occupancy.occupancyCellsSaturated,
+    occupancyDroppedCellUpdates: occupancy.occupancyDroppedCellUpdates,
     tsdfPositions: positions.slice(),
     tsdfNormals: normals.slice(),
     tsdfConfidence: confidence.slice(),
@@ -143,6 +160,31 @@ function hasVoxel(points: Float32Array, target: readonly [number, number, number
     ) return true;
   }
   return false;
+}
+
+function classifyDecodedOccupancy(
+  decoded: ReturnType<typeof decodeOccupancySolverArtifact>,
+  point: readonly [number, number, number],
+): 'free' | 'occupied' | 'unknown' {
+  const cell = point.map((value) => Math.floor(value / decoded.header.voxel_size_m));
+  const contains = (indices: Int16Array): boolean => {
+    for (let offset = 0; offset < indices.length; offset += 3) {
+      if (indices[offset] === cell[0] && indices[offset + 1] === cell[1] && indices[offset + 2] === cell[2]) return true;
+    }
+    return false;
+  };
+  if (contains(decoded.occupied)) return 'occupied';
+  if (contains(decoded.free)) return 'free';
+  return 'unknown';
+}
+
+function sortedIndices(values: Int16Array): number[] {
+  const triples: number[][] = [];
+  for (let offset = 0; offset < values.length; offset += 3) {
+    triples.push([values[offset], values[offset + 1], values[offset + 2]]);
+  }
+  triples.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+  return triples.flat();
 }
 
 describe('saved 3D scan continuation', () => {
@@ -205,5 +247,308 @@ describe('saved 3D scan continuation', () => {
     const result = registerAndMergeScanContinuation(base, snapshot(cloudPoints()));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain('display-truncated');
+  });
+
+  it('preserves distinct fine FREE/OCCUPIED cells when UNKNOWN uses a coarse grid', () => {
+    const free = new Float32Array([
+      0.05, 0.05, 0.05,
+      0.15, 0.05, 0.05,
+      0.25, 0.05, 0.05,
+      0.35, 0.05, 0.05,
+    ]);
+    const occupied = new Float32Array([
+      0.05, 0.15, 0.05,
+      0.15, 0.15, 0.05,
+      0.25, 0.15, 0.05,
+      0.35, 0.15, 0.05,
+    ]);
+    const envelope = { min: [0, 0, 0] as const, max: [0.39, 0.39, 0.39] as const };
+    const base = snapshot(cloudPoints(), {
+      freeAirPositions: free,
+      occupiedSurfacePositions: occupied,
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.4,
+      occupancyEnvelopeBounds: envelope,
+      occupancyCellsSaturated: true,
+      occupancyDroppedCellUpdates: 9,
+      occupancyEnvelopeComponentCount: 2,
+      occupancyQuarantinedSurfaceComponentCount: 1,
+      occupancyQuarantinedSurfacePointCount: 4,
+      occupancyBridgeRescanComponentCount: 2,
+    });
+    const extension = snapshot(cloudPoints(), {
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.4,
+      occupancyEnvelopeBounds: envelope,
+      occupancyDroppedCellUpdates: 3,
+      occupancyEnvelopeComponentCount: 3,
+      occupancyQuarantinedSurfaceComponentCount: 2,
+      occupancyQuarantinedSurfacePointCount: 5,
+      occupancyBridgeRescanComponentCount: 1,
+      occupancyBridgeEvidenceTruncated: true,
+    });
+
+    const result = registerAndMergeScanContinuation(base, extension);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.knownFreeVoxelCount).toBe(4);
+    expect(result.snapshot.occupiedSurfaceVoxelCount).toBe(4);
+    expect(result.snapshot.unknownCandidateVoxelCount).toBe(result.snapshot.unknownCandidatePositions.length / 3);
+    expect(result.snapshot.occupancyFineVoxelSizeMeters).toBe(0.1);
+    expect(result.snapshot.occupancyCellsSaturated).toBe(true);
+    expect(result.snapshot.occupancyDroppedCellUpdates).toBe(12);
+    expect(result.snapshot.occupancyEnvelopeComponentCount).toBe(5);
+    expect(result.snapshot.occupancyQuarantinedSurfaceComponentCount).toBe(3);
+    expect(result.snapshot.occupancyQuarantinedSurfacePointCount).toBe(9);
+    expect(result.snapshot.occupancyBridgeRescanComponentCount).toBe(3);
+    expect(result.snapshot.occupancyBridgeEvidenceTruncated).toBe(true);
+
+    const decoded = decodeOccupancySolverArtifact(encodeOccupancySolverArtifact(result.snapshot, {
+      frameId: 'fine-grid-continuation',
+      createdAtMs: 1,
+    }));
+    expect(decoded.header.voxel_size_m).toBe(0.1);
+    expect(sortedIndices(decoded.free)).toEqual([0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0]);
+    expect(sortedIndices(decoded.occupied)).toEqual([0, 1, 0, 1, 1, 0, 2, 1, 0, 3, 1, 0]);
+  });
+
+  it('accepts different UNKNOWN strides and regenerates them from the merged envelope policy', () => {
+    const base = snapshot(cloudPoints(), {
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.2,
+      occupancyEnvelopeBounds: { min: [0, 0, 0], max: [5, 5, 5] },
+    });
+    const extension = snapshot(cloudPoints(), {
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.4,
+      occupancyEnvelopeBounds: { min: [0, 0, 0], max: [15.9, 15.9, 15.9] },
+    });
+
+    const result = registerAndMergeScanContinuation(base, extension);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.occupancyFineVoxelSizeMeters).toBe(0.1);
+    expect(result.snapshot.occupancyVoxelSizeMeters).toBeCloseTo(0.4, 6);
+    expect(result.snapshot.unknownCandidateVoxelCount).toBe(result.snapshot.unknownCandidatePositions.length / 3);
+    expect(result.snapshot.knownFreeVoxelCount).toBe(result.snapshot.freeAirPositions.length / 3);
+    expect(result.snapshot.occupiedSurfaceVoxelCount).toBe(result.snapshot.occupiedSurfacePositions.length / 3);
+  });
+
+  it('keeps the physical envelope when boundary candidates are classified and UNKNOWN remains only at the center', () => {
+    const free: number[] = [];
+    const occupied: number[] = [];
+    for (let x = 0; x <= 20; x += 1) {
+      for (let y = 0; y <= 20; y += 1) {
+        for (let z = 0; z <= 20; z += 1) {
+          if (x === 10 && y === 10 && z === 10) continue;
+          const destination = (x + y + z) % 2 === 0 ? free : occupied;
+          destination.push((x + 0.5) * 0.1, (y + 0.5) * 0.1, (z + 0.5) * 0.1);
+        }
+      }
+    }
+    const envelope = { min: [0, 0, 0] as const, max: [2, 2, 2] as const };
+    const base = snapshot(cloudPoints(), {
+      freeAirPositions: new Float32Array(free),
+      occupiedSurfacePositions: new Float32Array(occupied),
+      unknownCandidatePositions: new Float32Array([1.05, 1.05, 1.05]),
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.1,
+      occupancyEnvelopeBounds: envelope,
+    });
+    const extension = snapshot(cloudPoints(), {
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.1,
+      occupancyEnvelopeBounds: envelope,
+    });
+
+    const result = registerAndMergeScanContinuation(base, extension);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.unknownCandidateVoxelCount).toBe(1);
+    expect(result.snapshot.occupancyEnvelopeBounds).toEqual(envelope);
+  });
+
+  it('retains the envelope when the candidate volume is fully classified', () => {
+    const free: number[] = [];
+    const occupied: number[] = [];
+    for (let x = 0; x <= 20; x += 1) {
+      for (let y = 0; y <= 20; y += 1) {
+        for (let z = 0; z <= 20; z += 1) {
+          const destination = (x + y + z) % 2 === 0 ? free : occupied;
+          destination.push((x + 0.5) * 0.1, (y + 0.5) * 0.1, (z + 0.5) * 0.1);
+        }
+      }
+    }
+    const envelope = { min: [0, 0, 0] as const, max: [2, 2, 2] as const };
+    const base = snapshot(cloudPoints(), {
+      freeAirPositions: new Float32Array(free),
+      occupiedSurfacePositions: new Float32Array(occupied),
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.1,
+      occupancyEnvelopeBounds: envelope,
+      occupancySolverCandidateBelowSurfaceMeters: 2,
+    });
+    const extension = snapshot(cloudPoints(), {
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.1,
+      occupancyEnvelopeBounds: envelope,
+      occupancySolverCandidateBelowSurfaceMeters: 1,
+    });
+
+    const result = registerAndMergeScanContinuation(base, extension);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.unknownCandidatePositions).toHaveLength(0);
+    expect(result.snapshot.unknownCandidateVoxelCount).toBe(0);
+    expect(result.snapshot.occupancyEnvelopeBounds).toEqual(envelope);
+    expect(result.snapshot.occupancySolverCandidateBelowSurfaceMeters).toBe(2);
+  });
+
+  it('transforms all eight corners of a non-square continuation envelope before union', () => {
+    const world = cloudPoints();
+    const yaw = Math.PI / 4;
+    const translation: readonly [number, number, number] = [0.3, -0.2, 0.4];
+    const baseEnvelope = { min: [0, 0, 0] as const, max: [0.1, 0.1, 0.1] as const };
+    const extensionEnvelope = { min: [0, 0, 0] as const, max: [4, 1, 2] as const };
+    const base = snapshot(world, {
+      occupancyEnvelopeBounds: baseEnvelope,
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.3,
+    });
+    const extension = snapshot(transformIntoSession(world, yaw, translation), {
+      occupancyEnvelopeBounds: extensionEnvelope,
+      unknownCandidatePositions: new Float32Array([0.15, 0.15, 0.15, 3.75, 0.75, 1.95]),
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.3,
+    });
+
+    const result = registerAndMergeScanContinuation(base, extension);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const { yawRadians, translation: registeredTranslation } = result.diagnostics;
+    const c = Math.cos(yawRadians), s = Math.sin(yawRadians);
+    const corners: Array<[number, number, number]> = [];
+    for (let corner = 0; corner < 8; corner += 1) {
+      const x = (corner & 1) === 0 ? extensionEnvelope.min[0] : extensionEnvelope.max[0];
+      const y = (corner & 2) === 0 ? extensionEnvelope.min[1] : extensionEnvelope.max[1];
+      const z = (corner & 4) === 0 ? extensionEnvelope.min[2] : extensionEnvelope.max[2];
+      corners.push([
+        c * x - s * y + registeredTranslation[0],
+        s * x + c * y + registeredTranslation[1],
+        z + registeredTranslation[2],
+      ]);
+    }
+    const endpointMin = corners[0];
+    const endpointMax = corners[7];
+    const missedCorner = corners[1];
+    expect(missedCorner[0]).toBeGreaterThan(Math.max(endpointMin[0], endpointMax[0]) + 0.2);
+
+    const expectedMin = [
+      Math.min(baseEnvelope.min[0], ...corners.map((corner) => corner[0])),
+      Math.min(baseEnvelope.min[1], ...corners.map((corner) => corner[1])),
+      Math.min(baseEnvelope.min[2], ...corners.map((corner) => corner[2])),
+    ];
+    const expectedMax = [
+      Math.max(baseEnvelope.max[0], ...corners.map((corner) => corner[0])),
+      Math.max(baseEnvelope.max[1], ...corners.map((corner) => corner[1])),
+      Math.max(baseEnvelope.max[2], ...corners.map((corner) => corner[2])),
+    ];
+    expect(result.snapshot.occupancyEnvelopeBounds?.min[0]).toBeCloseTo(expectedMin[0], 4);
+    expect(result.snapshot.occupancyEnvelopeBounds?.min[1]).toBeCloseTo(expectedMin[1], 4);
+    expect(result.snapshot.occupancyEnvelopeBounds?.min[2]).toBeCloseTo(expectedMin[2], 4);
+    expect(result.snapshot.occupancyEnvelopeBounds?.max[0]).toBeCloseTo(expectedMax[0], 4);
+    expect(result.snapshot.occupancyEnvelopeBounds?.max[1]).toBeCloseTo(expectedMax[1], 4);
+    expect(result.snapshot.occupancyEnvelopeBounds?.max[2]).toBeCloseTo(expectedMax[2], 4);
+  });
+
+  it('clears below-surface distance when neither merged scan has an envelope', () => {
+    const base = snapshot(cloudPoints(), {
+      occupancyEnvelopeBounds: null,
+      occupancySolverCandidateBelowSurfaceMeters: 2,
+    });
+    const extension = snapshot(cloudPoints(), {
+      occupancyEnvelopeBounds: null,
+      occupancySolverCandidateBelowSurfaceMeters: 2,
+    });
+
+    const result = registerAndMergeScanContinuation(base, extension);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.occupancyEnvelopeBounds).toBeNull();
+    expect(result.snapshot.occupancySolverCandidateBelowSurfaceMeters).toBe(0);
+  });
+
+  it('uses the defined transformed envelope and maximum below-surface distance', () => {
+    const extensionEnvelope = { min: [1, 1, 1] as const, max: [2, 2, 2] as const };
+    const base = snapshot(cloudPoints(), {
+      occupancyEnvelopeBounds: null,
+      occupancySolverCandidateBelowSurfaceMeters: 1,
+    });
+    const extension = snapshot(cloudPoints(), {
+      occupancyEnvelopeBounds: extensionEnvelope,
+      occupancySolverCandidateBelowSurfaceMeters: 2,
+    });
+
+    const result = registerAndMergeScanContinuation(base, extension);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.occupancyEnvelopeBounds).not.toBeNull();
+    expect(result.snapshot.occupancySolverCandidateBelowSurfaceMeters).toBe(2);
+  });
+
+  it('keeps a fine FREE veto through artifact encoding where coarse deduplication loses it', () => {
+    const free = new Float32Array([
+      0.05, 0.05, 0.05,
+      0.15, 0.05, 0.05,
+      0.25, 0.05, 0.05,
+      0.35, 0.05, 0.05,
+    ]);
+    const base = snapshot(cloudPoints(), {
+      freeAirPositions: free,
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.4,
+      occupancyEnvelopeBounds: { min: [0, 0, 0], max: [0.39, 0.39, 0.39] },
+    });
+    const extension = snapshot(cloudPoints(), {
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.4,
+      occupancyEnvelopeBounds: { min: [0, 0, 0], max: [0.39, 0.39, 0.39] },
+    });
+    // The former 0.4 m merge kept only the last of these four FREE centers.
+    const legacy = snapshot(cloudPoints(), {
+      freeAirPositions: free.slice(-3),
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.4,
+      occupancyEnvelopeBounds: { min: [0, 0, 0], max: [0.39, 0.39, 0.39] },
+    });
+    const legacyDecoded = decodeOccupancySolverArtifact(encodeOccupancySolverArtifact(legacy, {
+      frameId: 'legacy-coarse-dedup',
+      createdAtMs: 1,
+    }));
+    expect(classifyDecodedOccupancy(legacyDecoded, [0.05, 0.05, 0.05])).not.toBe('free');
+
+    const result = registerAndMergeScanContinuation(base, extension);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const decoded = decodeOccupancySolverArtifact(encodeOccupancySolverArtifact(result.snapshot, {
+      frameId: 'free-veto-continuation',
+      createdAtMs: 1,
+    }));
+    expect(classifyDecodedOccupancy(decoded, [0.05, 0.05, 0.05])).toBe('free');
+  });
+
+  it('rejects differing FINE occupancy sizes even when UNKNOWN sizes are otherwise compatible', () => {
+    const base = snapshot(cloudPoints(), {
+      occupancyFineVoxelSizeMeters: 0.1,
+      occupancyVoxelSizeMeters: 0.2,
+    });
+    const extension = snapshot(cloudPoints(), {
+      occupancyFineVoxelSizeMeters: 0.12,
+      occupancyVoxelSizeMeters: 0.2,
+    });
+
+    const result = registerAndMergeScanContinuation(base, extension);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('different occupancy fine voxel sizes');
   });
 });

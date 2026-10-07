@@ -68,35 +68,92 @@ export function parseRangingAdvertisement(event: AdvertisementLike): BleAdvertis
 export class WebBluetoothRssiSource {
   private scan: LeScanLike | null = null;
   private listener: ((event: Event) => void) | null = null;
+  private phase: 'idle' | 'starting' | 'active' | 'stopping' | 'disposed' = 'idle';
+  private generation = 0;
+  private pendingStart: Promise<boolean> | null = null;
 
   constructor(private readonly nav: NavigatorLike | undefined) {}
 
-  get active(): boolean { return this.scan !== null; }
+  get active(): boolean { return this.phase === 'active' && this.scan !== null; }
+  get starting(): boolean { return this.phase === 'starting'; }
 
   /** Must be called from a user gesture. Resolves to false instead of throwing. */
-  async start(onAdvertisement: (advert: BleAdvertisement) => void): Promise<boolean> {
+  start(onAdvertisement: (advert: BleAdvertisement) => void): Promise<boolean> {
     const bluetooth = this.nav?.bluetooth;
-    if (this.scan !== null) return true;
-    if (bluetooth?.requestLEScan === undefined) return false;
+    if (this.phase === 'disposed') return Promise.resolve(false);
+    if (this.phase === 'active') return Promise.resolve(true);
+    if (this.phase === 'starting' && this.pendingStart !== null) return this.pendingStart;
+    if (bluetooth?.requestLEScan === undefined) return Promise.resolve(false);
+
+    const generation = ++this.generation;
+    const previous = this.pendingStart;
+    this.phase = 'starting';
+    let attempt: Promise<boolean>;
+    const begin = async (): Promise<boolean> => {
+      if (this.generation !== generation || this.phase !== 'starting') return false;
+      return this.requestScan(bluetooth, generation, onAdvertisement);
+    };
+    attempt = previous === null ? begin() : previous.catch(() => false).then(begin);
+    this.pendingStart = attempt;
+    void attempt.finally(() => {
+      if (this.pendingStart === attempt) this.pendingStart = null;
+    }).catch(() => undefined);
+    return attempt;
+  }
+
+  private async requestScan(
+    bluetooth: BluetoothLike,
+    generation: number,
+    onAdvertisement: (advert: BleAdvertisement) => void,
+  ): Promise<boolean> {
+    if (bluetooth.requestLEScan === undefined) return false;
     const listener = (event: Event): void => {
+      if (this.generation !== generation || this.phase !== 'active') return;
       const advert = parseRangingAdvertisement(event as unknown as AdvertisementLike);
       if (advert !== null) onAdvertisement(advert);
     };
+    this.listener = listener;
     try {
       bluetooth.addEventListener('advertisementreceived', listener);
-      this.listener = listener;
-      this.scan = await bluetooth.requestLEScan({ filters: [{ services: [RANGING_SERVICE_UUID] }], keepRepeatedDevices: true });
+      const scan = await bluetooth.requestLEScan({ filters: [{ services: [RANGING_SERVICE_UUID] }], keepRepeatedDevices: true });
+      if (this.generation !== generation || this.phase !== 'starting') {
+        try { scan.stop(); } catch { /* obsolete scan */ }
+        this.detachListener(listener);
+        return false;
+      }
+      this.scan = scan;
+      this.phase = 'active';
       return true;
     } catch {
-      this.stop();
+      this.detachListener(listener);
+      if (this.generation === generation && this.phase === 'starting') this.phase = 'idle';
       return false;
     }
   }
 
   stop(): void {
+    if (this.phase === 'disposed') return;
+    this.phase = 'stopping';
+    this.generation += 1;
     try { this.scan?.stop(); } catch { /* already stopped */ }
     this.scan = null;
-    if (this.listener !== null) this.nav?.bluetooth?.removeEventListener('advertisementreceived', this.listener);
+    this.detachListener(this.listener);
+    this.phase = 'idle';
+  }
+
+  dispose(): void {
+    if (this.phase === 'disposed') return;
+    this.phase = 'stopping';
+    this.generation += 1;
+    try { this.scan?.stop(); } catch { /* already stopped */ }
+    this.scan = null;
+    this.detachListener(this.listener);
+    this.phase = 'disposed';
+  }
+
+  private detachListener(listener: ((event: Event) => void) | null): void {
+    if (listener === null || this.listener !== listener) return;
+    this.nav?.bluetooth?.removeEventListener('advertisementreceived', listener);
     this.listener = null;
   }
 }

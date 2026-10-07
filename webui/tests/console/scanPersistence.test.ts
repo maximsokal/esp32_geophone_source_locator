@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadObjectScanArtifact, saveObjectScanArtifact, sendControl } from '../../src/api/deviceApi';
 import type { ControlResult, ScanArtifactInfo } from '../../src/api/deviceApi';
 import { decodeScanArtifact, encodeScanArtifact } from '../../src/xr/scanArtifact';
-import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
+import { makeValidScanSnapshot } from '../xr/support/validScanSnapshot';
 import {
   ScanPersistenceController,
   SCAN_STORAGE_BLOCKED_MESSAGE,
@@ -354,15 +354,7 @@ describe('scan persistence over real HTTP sockets', () => {
 
   it('rejects a truncated scan loaded from a real HTTP response with its CRC', async () => {
     server = await startControlServer();
-    const artifact = encodeScanArtifact({
-      positions: new Float32Array([0, 0, 0]), confidence: new Float32Array([1]), normals: new Float32Array([0, 1, 0]),
-      pointCount: 1, tentativePositions: new Float32Array(0), tentativeConfidence: new Float32Array(0), tentativePointCount: 0,
-      tsdfPointCount: 0,
-      freeAirPositions: new Float32Array(0), occupiedSurfacePositions: new Float32Array(0), unknownCandidatePositions: new Float32Array(0),
-      tsdfPositions: new Float32Array(0), tsdfNormals: new Float32Array(0), tsdfConfidence: new Float32Array(0),
-      tsdfResidualMeters: new Float32Array(0), tsdfNormalConfidence: new Float32Array(0), tsdfCoverageConfidence: new Float32Array(0),
-      tsdfCoverageReady: new Uint8Array(0),
-    } as ScanPointCloudSnapshot);
+    const artifact = encodeScanArtifact(makeValidScanSnapshot());
     server.files.set('OBJ_0001/S000005/scan', artifact);
     server.truncateScanLoad = true;
     const nativeFetch = globalThis.fetch;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  enumerateUnknownCandidatePositions,
   SparseOccupancyGrid,
   occupancyMathForTests,
   type OccupancyDepthFrameLike,
@@ -96,6 +97,39 @@ describe('occupancy log-odds and ray traversal', () => {
 });
 
 describe('OctoMap-style free / occupied / unknown evidence', () => {
+  it('keeps snapshot UNKNOWN enumeration on the shared world-origin fine grid policy', () => {
+    const bounds = {
+      min: [0, 0, 0] as const,
+      max: [0.2, 0.2, 0.2] as const,
+    };
+    const enumerated = enumerateUnknownCandidatePositions(bounds, 0.1, () => true);
+    const fromGrid = new SparseOccupancyGrid(0.1).snapshot(bounds);
+    const noEnvelope = new SparseOccupancyGrid(0.1).snapshot(null);
+    const noCandidates = enumerateUnknownCandidatePositions(null, 0.1, () => {
+      throw new Error('No candidate cell should be classified without an envelope.');
+    });
+    const expected: number[] = [];
+    for (let x = 0; x <= 2; x += 1) {
+      for (let y = 0; y <= 2; y += 1) {
+        for (let z = 0; z <= 2; z += 1) {
+          expected.push((x + 0.5) * 0.1, (y + 0.5) * 0.1, (z + 0.5) * 0.1);
+        }
+      }
+    }
+
+    expect(enumerated.occupancyVoxelSizeMeters).toBe(0.1);
+    expect(enumerated.unknownCandidateVoxelCount).toBe(27);
+    expect(Array.from(enumerated.unknownCandidatePositions)).toEqual(Array.from(Float32Array.from(expected)));
+    expect(fromGrid.occupancyVoxelSizeMeters).toBe(enumerated.occupancyVoxelSizeMeters);
+    expect(fromGrid.unknownCandidateVoxelCount).toBe(enumerated.unknownCandidateVoxelCount);
+    expect(Array.from(fromGrid.unknownCandidatePositions)).toEqual(Array.from(enumerated.unknownCandidatePositions));
+    expect(noEnvelope.occupancyVoxelSizeMeters).toBe(0.1);
+    expect(noEnvelope.unknownCandidateVoxelCount).toBe(0);
+    expect(Array.from(noEnvelope.unknownCandidatePositions)).toEqual([]);
+    expect(noCandidates.occupancyVoxelSizeMeters).toBe(noEnvelope.occupancyVoxelSizeMeters);
+    expect(noCandidates.unknownCandidateVoxelCount).toBe(noEnvelope.unknownCandidateVoxelCount);
+  });
+
   it('does not let polish frames alter occupancy', () => {
     const grid = new SparseOccupancyGrid();
     const result = grid.integrateDepthFrame(flatDepth(), view, context(1, false));

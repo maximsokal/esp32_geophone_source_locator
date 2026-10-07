@@ -127,33 +127,44 @@ export function XrRuntimePanel({
   const[manualCursor,setManualCursor]=useState<ManualCursorState>({u:.5,v:.5,phase:'scan-more',preview:null,distanceMeters:null});const manualPointer=useRef<ManualPointerState|null>(null);const lastPreviewUpdateMs=useRef(Number.NEGATIVE_INFINITY);const previousManualCount=useRef(0);const previousRuntimePhase=useRef<XrRuntimePhase>('idle');
   const onSessionActiveChangeRef=useRef(onSessionActiveChange),onPointCloudReadyRef=useRef(onPointCloudReady),onCapabilitiesChangeRef=useRef(onCapabilitiesChange),onRegistrationChangeRef=useRef(onRegistrationChange);
   const tagGeometryRef=useRef<{objectId:string;sessionId:string;geometry:LocalizationSessionGeometry;geometryComputedAtMs:number}|null>(null);const tagObservationsRef=useRef<TagObservation[]>([]);const tagClientRef=useRef<TagDetectorClient|null>(null);const tagFramesUnsubscribeRef=useRef<(()=>void)|null>(null);const tagTaskRef=useRef<Promise<void>|null>(null);const tagModeActiveRef=useRef(false);const tagStopRef=useRef<()=>Promise<void>>(async()=>undefined);const tagGeometryEpoch=useRef(0);
+  const tagMountedRef=useRef(true);const tagTargetRef=useRef({objectId,sessionId});tagTargetRef.current={objectId,sessionId};const previousTagTargetRef=useRef({objectId,sessionId});
+  const bleMountedRef=useRef(true);const bleIntentRef=useRef(0);
+  const teardownTagModeForUnmount=():void=>{
+    tagModeActiveRef.current=false;tagFramesUnsubscribeRef.current?.();tagFramesUnsubscribeRef.current=null;runtime.setTagCaptureEnabled(false);
+    tagClientRef.current?.dispose();tagClientRef.current=null;tagTaskRef.current=null;tagObservationsRef.current=[];tagGeometryRef.current=null;
+  };
   useEffect(()=>{onSessionActiveChangeRef.current=onSessionActiveChange;},[onSessionActiveChange]);useEffect(()=>{onPointCloudReadyRef.current=onPointCloudReady;},[onPointCloudReady]);useEffect(()=>{onCapabilitiesChangeRef.current=onCapabilitiesChange;},[onCapabilitiesChange]);useEffect(()=>{onRegistrationChangeRef.current=onRegistrationChange;},[onRegistrationChange]);
   useEffect(()=>optionalMonocularPrior.subscribe(()=>setAiPriorRevision((revision)=>revision+1)),[]);
   useEffect(()=>subscribeCertifiedGuideRegistry(()=>setCertifiedGeometryRevision((revision)=>revision+1)),[]);
   useEffect(()=>{optionalMonocularPrior.setEnabled(aiPriorEnabled);},[aiPriorEnabled]);
-  useEffect(()=>{const unsubscribe=runtime.subscribe(setRuntimeState);let cancelled=false;void probeWebXrCapabilities().then((result)=>{clientDiagnostics.info('XR_CAPABILITIES',result);void clientDiagnostics.flush();if(!cancelled){setCapabilities(result);onCapabilitiesChangeRef.current?.(result);}});return()=>{cancelled=true;const pointer=manualPointer.current;if(pointer?.timer!=null)window.clearTimeout(pointer.timer);manualPointer.current=null;unsubscribe();void runtime.dispose();};},[runtime]);
+  useEffect(()=>{tagMountedRef.current=true;bleMountedRef.current=true;const unsubscribe=runtime.subscribe(setRuntimeState);let cancelled=false;void probeWebXrCapabilities().then((result)=>{clientDiagnostics.info('XR_CAPABILITIES',result);void clientDiagnostics.flush();if(!cancelled){setCapabilities(result);onCapabilitiesChangeRef.current?.(result);}});return()=>{cancelled=true;tagMountedRef.current=false;bleMountedRef.current=false;tagGeometryEpoch.current+=1;bleIntentRef.current+=1;teardownTagModeForUnmount();const pointer=manualPointer.current;if(pointer?.timer!=null)window.clearTimeout(pointer.timer);manualPointer.current=null;unsubscribe();void runtime.dispose();};},[runtime]);
+  useEffect(()=>{tagGeometryEpoch.current+=1;tagGeometryRef.current=null;setTagGeometry(null);setTagGeometryAt(null);setTagGeometryLoading(false);setTagModeError(null);setTagRegistrationLabel(null);return()=>{tagGeometryEpoch.current+=1;};},[objectId,sessionId]);
   useEffect(()=>{const active=runtimeState.phase==='starting'||runtimeState.phase==='running'||runtimeState.phase==='stopping';onSessionActiveChangeRef.current?.(active);if(!active){setManualMode(false);manualPointer.current=null;}},[runtimeState.phase]);
   useEffect(()=>{
-    const previous=previousRuntimePhase.current;previousRuntimePhase.current=runtimeState.phase;
-    if(runtimeState.phase==='starting'&&previous!=='starting'){
-      onPointCloudReadyRef.current?.(null);const epoch=++tagGeometryEpoch.current;tagGeometryRef.current=null;setTagGeometry(null);setTagGeometryAt(null);setTagGeometryLoading(true);setTagModeError(null);setTagRegistrationLabel(null);
+    const previous=previousRuntimePhase.current;const previousTarget=previousTagTargetRef.current;const targetChanged=previousTarget.objectId!==objectId||previousTarget.sessionId!==sessionId;
+    previousRuntimePhase.current=runtimeState.phase;previousTagTargetRef.current={objectId,sessionId};
+    const bootstrapping=runtimeState.phase==='starting'&&previous!=='starting';
+    const retargeting=targetChanged&&(runtimeState.phase==='starting'||runtimeState.phase==='running');
+    if(bootstrapping||retargeting){
+      if(bootstrapping)onPointCloudReadyRef.current?.(null);
+      const epoch=++tagGeometryEpoch.current;const runtimeGeneration=runtime.getLifecycleGeneration();tagGeometryRef.current=null;setTagGeometry(null);setTagGeometryAt(null);setTagGeometryLoading(true);setTagModeError(null);setTagRegistrationLabel(null);
+      const ownsRequest=():boolean=>tagMountedRef.current&&epoch===tagGeometryEpoch.current&&tagTargetRef.current.objectId===objectId&&tagTargetRef.current.sessionId===sessionId&&runtime.getLifecycleGeneration()===runtimeGeneration&&['starting','running'].includes(runtime.getState().phase);
       if(objectId===null||sessionId===null){setTagGeometryLoading(false);setTagModeError('Open a recording before using tag registration.');return;}
       void (async()=>{
         try{
-          const listing=await retryPreemptedRead(()=>fetchLocalizationRuns(objectId,sessionId));const geometry=listing.geometry;
-          const geometryComputedAtMs=Math.max(0,...geometry.pods.filter((pod)=>pod.computed).map((pod)=>pod.computed_at_ms??0));
-          if(epoch!==tagGeometryEpoch.current||!['starting','running'].includes(runtime.getState().phase))return;
+          const listing=await retryPreemptedRead(()=>fetchLocalizationRuns(objectId,sessionId));if(!ownsRequest())return;
+          const geometry=listing.geometry;const geometryComputedAtMs=Math.max(0,...geometry.pods.filter((pod)=>pod.computed).map((pod)=>pod.computed_at_ms??0));
           tagGeometryRef.current={objectId,sessionId,geometry,geometryComputedAtMs};setTagGeometry(geometry);setTagGeometryAt(geometryComputedAtMs);setTagGeometryLoading(false);
           try{
-            const registrationJson=await loadSessionRegistration(objectId,sessionId);
-            if(epoch!==tagGeometryEpoch.current||!['starting','running'].includes(runtime.getState().phase))return;
+            const registrationJson=await loadSessionRegistration(objectId,sessionId);if(!ownsRequest())return;
             const registration=registrationJson===null?null:decodeRegistrationArtifact(registrationJson);onRegistrationChangeRef.current?.(registration);if(registration!==null)setTagRegistrationLabel(registration);
-          }catch(reason){if(epoch===tagGeometryEpoch.current)setTagModeError(`Saved anchor status unavailable: ${reason instanceof Error?reason.message:String(reason)}`);}
-        }catch(reason){if(epoch!==tagGeometryEpoch.current)return;setTagGeometryLoading(false);if(isRequestCancellation(reason))return;setTagModeError(`Frozen session geometry unavailable: ${reason instanceof Error?reason.message:String(reason)}`);}
+          }catch(reason){if(!ownsRequest())return;if(isRequestCancellation(reason))return;setTagModeError(`Saved anchor status unavailable: ${reason instanceof Error?reason.message:String(reason)}`);}
+        }catch(reason){if(!ownsRequest())return;setTagGeometryLoading(false);if(isRequestCancellation(reason))return;setTagModeError(`Frozen session geometry unavailable: ${reason instanceof Error?reason.message:String(reason)}`);}
       })();
     }else if((runtimeState.phase==='ended'||runtimeState.phase==='interrupted')&&previous!==runtimeState.phase){
-      void tagStopRef.current().then(()=>{if(runtimeState.phase==='ended'&&runtimeState.pointCount>0)onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot());});
-    }else if(runtimeState.phase==='error'&&previous!==runtimeState.phase){void tagStopRef.current();}
+      tagGeometryEpoch.current+=1;
+      void tagStopRef.current().then(()=>{if(tagMountedRef.current&&runtimeState.phase==='ended'&&runtimeState.pointCount>0)onPointCloudReadyRef.current?.(runtime.getPointCloudSnapshot());});
+    }else if(runtimeState.phase==='error'&&previous!==runtimeState.phase){tagGeometryEpoch.current+=1;void tagStopRef.current();}
   },[runtime,runtimeState.phase,runtimeState.pointCount,objectId,sessionId]);
   useEffect(()=>{if(runtimeState.manualPointCount>previousManualCount.current)setManualCursor((current)=>({...current,phase:'confirmed'}));previousManualCount.current=runtimeState.manualPointCount;},[runtimeState.manualPointCount]);
   useEffect(()=>{if(runtimeState.manualPointError!==null)setManualCursor((current)=>({...current,phase:'scan-more'}));},[runtimeState.manualPointError]);
@@ -163,20 +174,22 @@ export function XrRuntimePanel({
   const blePlacement=useMemo(()=>new BleRoughPlacement(),[]);const bleSource=useMemo(()=>new WebBluetoothRssiSource(bleNavigator),[bleNavigator]);
   const[bleActive,setBleActive]=useState(false);const[bleTick,setBleTick]=useState(0);const posePointer=useRef<WebXrPoseSnapshot|null>(null);
   useEffect(()=>{posePointer.current=runtimeState.phase==='running'&&runtimeState.tracking?runtimeState.pose:null;},[runtimeState.phase,runtimeState.tracking,runtimeState.pose]);
-  useEffect(()=>()=>bleSource.stop(),[bleSource]);
-  useEffect(()=>{if(runtimeState.phase==='starting')blePlacement.reset();else if((runtimeState.phase==='ended'||runtimeState.phase==='interrupted')&&bleSource.active){clientDiagnostics.info('XR_BLE_RSSI_DIAGNOSTICS',blePlacement.diagnostics(Date.now()));void clientDiagnostics.flush();}},[runtimeState.phase,blePlacement,bleSource]);
+  useEffect(()=>()=>bleSource.dispose(),[bleSource]);
+  useEffect(()=>{if(runtimeState.phase==='starting')blePlacement.reset();else if(runtimeState.phase==='ended'||runtimeState.phase==='interrupted'||runtimeState.phase==='error'){if(bleSource.active){clientDiagnostics.info('XR_BLE_RSSI_DIAGNOSTICS',blePlacement.diagnostics(Date.now()));void clientDiagnostics.flush();}bleIntentRef.current+=1;bleSource.stop();if(bleMountedRef.current)setBleActive(false);}},[runtimeState.phase,blePlacement,bleSource]);
   useEffect(()=>{if(!bleActive||runtimeState.phase!=='running')return;const id=window.setInterval(()=>setBleTick((tick)=>tick+1),1000);return()=>window.clearInterval(id);},[bleActive,runtimeState.phase]);
   const bleEstimates=useMemo(()=>(bleActive&&bleTick>=0?blePlacement.estimates(Date.now()):[]),[blePlacement,bleActive,bleTick]);
   const toggleBle=async():Promise<void>=>{
-    if(bleSource.active){bleSource.stop();setBleActive(false);clientDiagnostics.info('XR_BLE_RSSI',{enabled:false});return;}
+    if(runtimeState.phase!=='running')return;
+    if(bleSource.active||bleSource.starting){bleIntentRef.current+=1;bleSource.stop();setBleActive(false);clientDiagnostics.info('XR_BLE_RSSI',{enabled:false});return;}
+    const intent=++bleIntentRef.current;
     const started=await bleSource.start((advert)=>{const pose=posePointer.current;if(pose===null)return;blePlacement.addSample({...advert,phonePosition:pose.position,timestampMs:Date.now()});});
-    setBleActive(started);clientDiagnostics.info('XR_BLE_RSSI',{enabled:started,support:bleSupport});void clientDiagnostics.flush();
+    if(!bleMountedRef.current||intent!==bleIntentRef.current)return;setBleActive(started);clientDiagnostics.info('XR_BLE_RSSI',{enabled:started,support:bleSupport});void clientDiagnostics.flush();
   };
 
   const stopTagMode=async():Promise<void>=>{
     if(!tagModeActiveRef.current)return;
     tagModeActiveRef.current=false;setTagModeEnabled(false);runtime.setTagCaptureEnabled(false);tagFramesUnsubscribeRef.current?.();tagFramesUnsubscribeRef.current=null;
-    const pending=tagTaskRef.current;if(pending!==null)await pending.catch(()=>undefined);tagTaskRef.current=null;
+    const pending=tagTaskRef.current;if(pending!==null)await pending.catch(()=>undefined);tagTaskRef.current=null;if(!tagMountedRef.current)return;
     tagClientRef.current?.dispose();tagClientRef.current=null;
     const bound=tagGeometryRef.current;
     if(bound===null||bound.objectId!==objectId||bound.sessionId!==sessionId){setTagModeError('Frozen session geometry is unavailable; tag observations were not registered.');return;}
@@ -185,10 +198,10 @@ export function XrRuntimePanel({
     const artifact=registrationArtifactFromResult(result,fusion,defaultRegistrationTagSizes(),bound.geometryComputedAtMs,Date.now());
     const json=encodeRegistrationArtifact(artifact);setTagRegistrationLabel(result);onRegistrationChangeRef.current?.(artifact);
     try{
-      const saved=await saveSessionRegistration(bound.objectId,bound.sessionId,json);
+      const saved=await saveSessionRegistration(bound.objectId,bound.sessionId,json);if(!tagMountedRef.current)return;
       if(saved?.ok!==true){setTagModeError(`Registration result is in memory but could not be saved: ${saved?.error??'Registration artifact was not accepted.'}`);return;}
       setTagModeError(null);
-    }catch(reason){setTagModeError(`Registration result is in memory but could not be saved: ${reason instanceof Error?reason.message:String(reason)}`);}
+    }catch(reason){if(tagMountedRef.current)setTagModeError(`Registration result is in memory but could not be saved: ${reason instanceof Error?reason.message:String(reason)}`);}
   };
 
   tagStopRef.current=stopTagMode;
@@ -290,7 +303,7 @@ export function XrRuntimePanel({
           <button type="button" className="xr-start-button" disabled={!canStart||savedScanBusy} onClick={()=>void startPreparedScan('fresh')}>{computePreparing?t('xr.starting_ar'):runtimeState.phase==='interrupted'?t('xr.discard_partial_start'):t('xr.start_scan')}</button>
         </>}
         <button type="button" className={aiPriorEnabled?'xr-undo-button active':'xr-undo-button'} aria-pressed={aiPriorEnabled} onClick={toggleAiPrior} title={aiPriorUi.explanation}>{aiPriorEnabled?t('xr.ai_check_on'):t('xr.ai_check_off')}</button>
-        {bleSupport==='supported'?<button type="button" className={bleActive?'xr-undo-button active':'xr-undo-button'} aria-pressed={bleActive} onClick={()=>void toggleBle()} title={t('xr.ble_hints_title')}>{bleActive?t('xr.ble_hints_on'):t('xr.ble_hints_off')}</button>:<div className="xr-finish-explainer">{describeBleRssiSupport(bleSupport,locale)}</div>}
+        {bleSupport==='supported'?<button type="button" className={bleActive?'xr-undo-button active':'xr-undo-button'} aria-pressed={bleActive} disabled={runtimeState.phase!=='running'} onClick={()=>void toggleBle()} title={t('xr.ble_hints_title')}>{bleActive?t('xr.ble_hints_on'):t('xr.ble_hints_off')}</button>:<div className="xr-finish-explainer">{describeBleRssiSupport(bleSupport,locale)}</div>}
         <div className="xr-finish-explainer">{t('xr.ai_optional_description')}</div>
       </div>
       {aiPriorEnabled&&optionalMonocularPrior.status==='unavailable'&&<div className="xr-runtime-warning" role="status">{t('xr.ai_unavailable_warning')}</div>}
