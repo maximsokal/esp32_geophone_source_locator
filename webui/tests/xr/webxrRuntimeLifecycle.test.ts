@@ -2,13 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DepthPointCloudAccumulator } from '../../src/xr/depthPointCloud';
 import { WebXrRuntime } from '../../src/xr/webxrRuntime';
+import { activeXrPerformancePressure, activeXrRenderPolicy, recordActiveXrPerformanceMetric } from '../../src/xr/xrPerformanceProfiler';
 import { deferred, FakeWakeLock, FakeXrLayer, FakeXrSession, FakeXrSystem } from './support/xrFakes';
 
 const runtimes:WebXrRuntime[]=[];
 let xr:FakeXrSystem;
 let wakeLock:FakeWakeLock;
-let gl:{getExtension:()=>{loseContext:()=>void}|null;makeXRCompatible?:()=>Promise<void>};
+let gl:{getExtension:()=>{loseContext:()=>void}|null;makeXRCompatible?:()=>Promise<void>;canvas:EventTarget;FRAMEBUFFER:number;COLOR_BUFFER_BIT:number;DEPTH_BUFFER_BIT:number;bindFramebuffer:()=>void;viewport:()=>void;clearColor:()=>void;clearDepth:()=>void;clear:()=>void};
 let glContextsCreated=0;let glContextsLost=0;
+let throwOnGlClear=false;
 type StubListener=EventListenerOrEventListenerObject;
 interface StubDocument{
   visibilityState:string;
@@ -19,7 +21,7 @@ interface StubDocument{
   dispatchEvent:(event:Event)=>boolean;
   createElement:(name:string)=>{getContext:(kind:string,attributes?:unknown)=>unknown|null};
 }
-let browserDocument:StubDocument;
+let browserDocument:StubDocument;let browserCanvas:EventTarget;
 
 function dispatchDocument(type:string):void{
   browserDocument.dispatchEvent({type} as Event);
@@ -31,7 +33,9 @@ function setVisibility(value:string):void{
 }
 
 function installEnvironment(makeCompatible?:()=>Promise<void>):void{
-  xr=new FakeXrSystem();wakeLock=new FakeWakeLock();glContextsCreated=0;glContextsLost=0;gl={getExtension:()=>({loseContext:()=>{glContextsLost+=1;}}),makeXRCompatible:makeCompatible??(()=>Promise.resolve())};
+  xr=new FakeXrSystem();wakeLock=new FakeWakeLock();glContextsCreated=0;glContextsLost=0;throwOnGlClear=false;
+  browserCanvas=new EventTarget();
+  gl={canvas:browserCanvas,FRAMEBUFFER:1,COLOR_BUFFER_BIT:2,DEPTH_BUFFER_BIT:4,bindFramebuffer:()=>undefined,viewport:()=>undefined,clearColor:()=>undefined,clearDepth:()=>undefined,clear:()=>{if(throwOnGlClear)throw new Error('XR clear failed.');},getExtension:()=>({loseContext:()=>{glContextsLost+=1;}}),makeXRCompatible:makeCompatible??(()=>Promise.resolve())};
   const listeners=new Map<string,Set<StubListener>>();
   const classes=new Set<string>();
   browserDocument={
@@ -59,8 +63,8 @@ function installEnvironment(makeCompatible?:()=>Promise<void>):void{
       }
       return true;
     },
-    createElement:()=>({
-      getContext:(kind)=>{
+    createElement:()=>Object.assign(browserCanvas,{
+      getContext:(kind:string)=>{
         if(kind!=='webgl2'&&kind!=='webgl')return null;
         glContextsCreated+=1;
         return gl;
@@ -81,9 +85,11 @@ function installEnvironment(makeCompatible?:()=>Promise<void>):void{
   vi.stubGlobal('navigator',{xr,wakeLock});
 }
 
-function createRuntime():WebXrRuntime{const runtime=new WebXrRuntime();runtimes.push(runtime);return runtime;}
+function createRuntime():WebXrRuntime{const runtime=new WebXrRuntime();runtimes.push(runtime);runtime.attach();return runtime;}
 async function flushMicrotasks():Promise<void>{for(let i=0;i<8;i+=1)await Promise.resolve();}
 async function until(check:()=>boolean):Promise<void>{for(let i=0;i<20&&!check();i+=1)await Promise.resolve();if(!check())throw new Error('Expected lifecycle operation did not reach its deferred boundary.');}
+function emptyPose(){return{transform:{position:{x:0,y:0,z:0},orientation:{x:0,y:0,z:0,w:1},matrix:new Float32Array(16)},views:[]};}
+function fakeFrame(session:FakeXrSession,getViewerPose:()=>unknown):never{return{session,getViewerPose} as never;}
 
 beforeEach(()=>installEnvironment());
 afterEach(async()=>{
@@ -92,6 +98,114 @@ afterEach(async()=>{
 });
 
 describe('WebXrRuntime lifecycle ownership',()=>{
+  it('keeps construction pure and protects the active profiler from stale detach',async()=>{
+    const addListener=vi.spyOn(document,'addEventListener');const removeListener=vi.spyOn(document,'removeEventListener');
+    const policyBefore=activeXrRenderPolicy();const abandoned=new WebXrRuntime();runtimes.push(abandoned);
+    const abandonedProfiler=(abandoned as unknown as {performanceProfiler:{snapshot:()=>{sampleCount:number}}}).performanceProfiler;
+    expect(addListener.mock.calls.filter(([type])=>type==='visibilitychange')).toHaveLength(0);
+    expect(activeXrRenderPolicy()).toBe(policyBefore);
+    recordActiveXrPerformanceMetric('fusion',100);
+    expect(abandonedProfiler.snapshot().sampleCount).toBe(0);
+    await abandoned.dispose();
+    expect(removeListener.mock.calls.filter(([type])=>type==='visibilitychange')).toHaveLength(0);
+
+    const first=new WebXrRuntime();runtimes.push(first);first.attach();
+    const firstProfiler=(first as unknown as {performanceProfiler:{record:(metric:'coverageDraw',durationMs:number)=>void}}).performanceProfiler;
+    for(let index=0;index<16;index+=1)firstProfiler.record('coverageDraw',15);
+    const firstPolicy=activeXrRenderPolicy();expect(firstPolicy.pointBudget).toBe(4800);
+    const throwaway=new WebXrRuntime();runtimes.push(throwaway);
+    expect(activeXrRenderPolicy()).toBe(firstPolicy);
+    throwaway.attach();
+    const secondProfiler=(throwaway as unknown as {performanceProfiler:{record:(metric:'coverageDraw',durationMs:number)=>void}}).performanceProfiler;
+    for(let index=0;index<16;index+=1)secondProfiler.record('coverageDraw',15);
+    const secondPolicy=activeXrRenderPolicy();expect(secondPolicy.pointBudget).toBe(4800);
+    await first.dispose();
+    expect(activeXrRenderPolicy()).toBe(secondPolicy);
+    expect(activeXrPerformancePressure()).toBe('high');
+    await throwaway.dispose();
+    expect(activeXrRenderPolicy()).toEqual(policyBefore);
+    expect(activeXrPerformancePressure()).toBe('low');
+  });
+
+  it('returns committed visibility listeners to baseline across 100 attach/dispose cycles',async()=>{
+    const addListener=vi.spyOn(document,'addEventListener');const removeListener=vi.spyOn(document,'removeEventListener');
+    for(let index=0;index<100;index+=1){const runtime=new WebXrRuntime();runtimes.push(runtime);runtime.attach();runtime.detach();runtime.detach();await runtime.dispose();}
+    expect(addListener.mock.calls.filter(([type])=>type==='visibilitychange')).toHaveLength(100);
+    expect(removeListener.mock.calls.filter(([type])=>type==='visibilitychange')).toHaveLength(100);
+    expect(activeXrPerformancePressure()).toBe('low');
+    expect(activeXrRenderPolicy()).toEqual({pointBudget:12000,drawIntervalMs:0});
+  });
+
+  it('detaches a StrictMode replay attachment when unmount races the prior cleanup',async()=>{
+    const addListener=vi.spyOn(document,'addEventListener');const removeListener=vi.spyOn(document,'removeEventListener');
+    const runtime=new WebXrRuntime();runtimes.push(runtime);runtime.attach();const firstDetach=runtime.detach();runtime.attach();const finalDetach=runtime.detach();
+    await Promise.all([firstDetach,finalDetach]);
+    expect(addListener.mock.calls.filter(([type])=>type==='visibilitychange')).toHaveLength(2);
+    expect(removeListener.mock.calls.filter(([type])=>type==='visibilitychange')).toHaveLength(2);
+    expect(activeXrPerformancePressure()).toBe('low');
+    expect(activeXrRenderPolicy()).toEqual({pointBudget:12000,drawIntervalMs:0});
+  });
+
+  it('publishes the same pressure used by render policy and scheduler readers',async()=>{
+    const session=new FakeXrSession();xr.queue(session);const runtime=createRuntime();await runtime.start();
+    const profiler=(runtime as unknown as {performanceProfiler:{record:(metric:'coverageDraw',durationMs:number)=>void}}).performanceProfiler;
+    for(let index=0;index<16;index+=1)profiler.record('coverageDraw',15);
+    expect(activeXrRenderPolicy()).toEqual({pointBudget:4800,drawIntervalMs:32});
+    session.driveNextFrame(16,fakeFrame(session,()=>emptyPose()));
+    expect(runtime.getState().performance.pressure).toBe('high');
+    expect(activeXrPerformancePressure()).toBe(runtime.getState().performance.pressure);
+    expect(activeXrRenderPolicy()).toEqual({pointBudget:runtime.getState().performance.adaptiveCoveragePointBudget,drawIntervalMs:32});
+  });
+
+  it('copies a tag frame only for additional subscribers before transfer can detach the first',()=>{
+    const runtime=createRuntime();let secondFrame:any=null;const original=Uint8Array.from([1,2,3,4]);
+    runtime.subscribeTagFrames((frame)=>frame.rgba.fill(0));
+    runtime.subscribeTagFrames((frame)=>{secondFrame=frame;});
+    (runtime as unknown as {acceptTagFrame:(frame:any)=>void}).acceptTagFrame({width:1,height:1,rgba:original,rgbaOwnership:'owned',capturedAtMs:1,projectionMatrix:new Float32Array(16),worldFromView:new Float32Array(16)});
+    expect(secondFrame.rgba).not.toBe(original);expect(Array.from(secondFrame.rgba)).toEqual([1,2,3,4]);
+  });
+
+  it('tears down once after a viewer-pose fault without queuing another RAF',async()=>{
+    const session=new FakeXrSession();xr.queue(session);const runtime=createRuntime();await runtime.start();await flushMicrotasks();
+    session.driveNextFrame(16,fakeFrame(session,()=>{throw new Error('viewer pose failed');}));
+    await until(()=>session.endCalls===1);await flushMicrotasks();
+    expect(session.rafRequests).toBe(1);expect(session.liveFrameCallbacks).toBe(0);expect(session.endCalls).toBe(1);
+    expect(runtime.getState().phase).toBe('error');expect(runtime.getState().error).toContain('viewer-pose');
+    expect(wakeLock.liveSentinels.size).toBe(0);expect(glContextsCreated).toBe(glContextsLost);
+    expect(document.documentElement.classList.contains('xr-session-active')).toBe(false);
+  });
+
+  it('tears down on a core WebGL clear fault before another frame is scheduled',async()=>{
+    const session=new FakeXrSession();xr.queue(session);const runtime=createRuntime();await runtime.start();throwOnGlClear=true;
+    session.driveNextFrame(16,fakeFrame(session,()=>emptyPose()));
+    await until(()=>session.endCalls===1);await flushMicrotasks();
+    expect(session.rafRequests).toBe(1);expect(session.liveFrameCallbacks).toBe(0);expect(runtime.getState().phase).toBe('error');
+    expect(runtime.getState().error).toContain('xr-core-gl');expect(glContextsCreated).toBe(glContextsLost);
+  });
+
+  it('disables a failed coverage renderer but keeps depth capture and the frame loop alive',async()=>{
+    const session=new FakeXrSession();xr.queue(session);const runtime=createRuntime();await runtime.start();
+    const failingRenderer={render:vi.fn(()=>{throw new Error('coverage draw failed');}),dispose:vi.fn()};
+    (runtime as unknown as {coverageRenderer:typeof failingRenderer}).coverageRenderer=failingRenderer;
+    const captureDepth=vi.spyOn(runtime as unknown as {captureDepth:(time:number,frame:unknown,pose:unknown)=>void},'captureDepth');
+    session.driveNextFrame(16,fakeFrame(session,()=>emptyPose()));
+    await flushMicrotasks();
+    expect(failingRenderer.render).toHaveBeenCalledTimes(1);expect(failingRenderer.dispose).toHaveBeenCalledTimes(1);
+    expect(captureDepth).toHaveBeenCalledTimes(1);expect(runtime.getState().coverageGuideError).toContain('coverage draw failed');
+    expect(runtime.getState().phase).toBe('running');expect(session.endCalls).toBe(0);expect(session.liveFrameCallbacks).toBe(1);
+    session.driveNextFrame(32,fakeFrame(session,()=>emptyPose()));await flushMicrotasks();
+    expect(failingRenderer.render).toHaveBeenCalledTimes(1);expect(captureDepth).toHaveBeenCalledTimes(2);expect(session.liveFrameCallbacks).toBe(1);
+  });
+
+  it('treats context loss as fatal and ignores restoration after teardown',async()=>{
+    const session=new FakeXrSession();xr.queue(session);const runtime=createRuntime();await runtime.start();
+    const lost=new Event('webglcontextlost',{cancelable:true});browserCanvas.dispatchEvent(lost);
+    await until(()=>session.endCalls===1);await flushMicrotasks();
+    expect(lost.defaultPrevented).toBe(true);expect(session.endCalls).toBe(1);expect(runtime.getState().phase).toBe('error');
+    browserCanvas.dispatchEvent(new Event('webglcontextrestored'));await flushMicrotasks();
+    expect(runtime.getState().phase).toBe('error');expect(session.rafRequests).toBe(1);
+  });
+
   it('ends a session that resolves after dispose without starting its frame loop',async()=>{
     const pending=xr.queueDeferred();const runtime=createRuntime();const phases:string[]=[];runtime.subscribe((state)=>phases.push(state.phase));
     const start=runtime.start();await until(()=>xr.requests===1);await runtime.dispose();

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   XR_POLICY_REFRESH_INTERVAL_MS,
@@ -10,9 +10,14 @@ import {
   type XrPerformanceSnapshot,
 } from '../../src/xr/xrPerformanceProfiler';
 
+const activations: { profiler: XrPerformanceProfiler; token: number }[] = [];
+function activateProfiler(profiler: XrPerformanceProfiler): void { activations.push({ profiler, token: profiler.activate() }); }
+afterEach(() => { for (const activation of activations.splice(0)) activation.profiler.deactivate(activation.token); });
+
 describe('XrPerformanceProfiler', () => {
   it('keeps frame timing bounded and reports low-pressure full-detail policy', () => {
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     for (let index = 0; index < 220; index += 1) {
       profiler.recordFrameTimestamp(index * 16.67);
       profiler.record('fusion', 18 + (index % 7));
@@ -34,6 +39,7 @@ describe('XrPerformanceProfiler', () => {
 
   it('reduces only live-render detail under medium pressure', () => {
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     for (let index = 0; index < 80; index += 1) {
       profiler.recordFrameTimestamp(index * 30);
       profiler.record('fusion', 62);
@@ -51,6 +57,7 @@ describe('XrPerformanceProfiler', () => {
 
   it('degrades render budget and cadence aggressively under high pressure', () => {
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     for (let index = 0; index < 80; index += 1) {
       profiler.recordFrameTimestamp(index * 46);
       profiler.record('fusion', 105);
@@ -70,6 +77,7 @@ describe('XrPerformanceProfiler', () => {
 
   it('can raise pressure from draw/upload cost even when fusion is healthy', () => {
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     for (let index = 0; index < 40; index += 1) {
       profiler.recordFrameTimestamp(index * 16.7);
       profiler.record('fusion', 20);
@@ -81,6 +89,7 @@ describe('XrPerformanceProfiler', () => {
 
   it('reset clears historical pressure and restores full-detail rendering', () => {
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     for (let index = 0; index < 20; index += 1) {
       profiler.recordFrameTimestamp(index * 60);
       profiler.record('fusion', 120);
@@ -226,6 +235,7 @@ const wobble = (frame: number, salt: number, span: number): number => (frame * 7
 describe('cached render policy (MAX-409)', () => {
   it('stays within the documented refresh interval of the reference math and converges to it exactly', () => {
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     const oracle = new OldSnapshotMathOracle();
     const feed = (metric: XrPerfMetric, value: number): void => {
       profiler.record(metric, value);
@@ -288,6 +298,7 @@ describe('cached render policy (MAX-409)', () => {
 
   it('adopts the exact pressure whenever a full snapshot is taken', () => {
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     // One sample short of the unclocked cadence: reads alone have not re-evaluated the windows.
     for (let index = 0; index < XR_POLICY_UNCLOCKED_REFRESH_SAMPLES - 1; index += 1) profiler.record('coverageDraw', 15);
     expect(activeXrRenderPolicy()).toEqual({ pointBudget: 12000, drawIntervalMs: 0 });
@@ -297,6 +308,7 @@ describe('cached render policy (MAX-409)', () => {
 
   it('falls back to a sample-count refresh when no frame clock is available', () => {
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     for (let index = 0; index < XR_POLICY_UNCLOCKED_REFRESH_SAMPLES; index += 1) profiler.record('coverageDraw', 15);
     expect(activeXrRenderPolicy()).toEqual({ pointBudget: 4800, drawIntervalMs: 32 });
     expect(activeXrPerformancePressure()).toBe('high');
@@ -304,6 +316,7 @@ describe('cached render policy (MAX-409)', () => {
 
   it('refreshes at once when the XR frame clock moves backwards without a reset', () => {
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     for (let index = 0; index < 20; index += 1) {
       profiler.recordFrameTimestamp(100000 + index * 16.67);
       profiler.record('frameWork', 10);
@@ -319,6 +332,7 @@ describe('cached render policy (MAX-409)', () => {
 
   it('serves the recommended*() helpers and the scheduler pressure from the same cached policy', () => {
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     for (let index = 0; index < 40; index += 1) {
       profiler.recordFrameTimestamp(index * 46);
       profiler.record('frameWork', 38);
@@ -333,6 +347,7 @@ describe('cached render policy (MAX-409)', () => {
 
   it('reset() drops the cached policy together with the windows', () => {
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     for (let index = 0; index < 40; index += 1) {
       profiler.recordFrameTimestamp(index * 60);
       profiler.record('fusion', 120);

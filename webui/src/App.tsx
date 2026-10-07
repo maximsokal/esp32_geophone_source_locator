@@ -18,7 +18,7 @@ import {
 } from './api/deviceApi';
 import type { LocalizationRunListing, LocalizationSessionGeometry } from './api/deviceApi';
 import type { DeviceStatus } from './domain/device';
-import { buildSessionOccupancyArtifact } from './xr/occupancySolverArtifact';
+import { buildSessionOccupancyArtifact, decodeOccupancySolverArtifact, type DecodedOccupancyArtifact } from './xr/occupancySolverArtifact';
 import { buildVoxelPreviewArtifact } from './xr/voxelPreview';
 import { decodeRegistrationArtifact, encodeRegistrationArtifact, toOccupancyRegistration, type RegistrationArtifact } from './xr/fiducial/registrationArtifact';
 import { TAG_FINALIZE_WINDOW_MS } from './xr/fiducial/tagModeState';
@@ -40,10 +40,14 @@ import {
   deviceComputeProfilePromise,
   type DeviceComputeProfile,
 } from './xr/deviceComputeProfile';
-import { decodeScanArtifact, encodeScanArtifact } from './xr/scanArtifact';
+import {
+  decodeScanArtifactWithIdentity,
+  encodeScanArtifactWithIdentity,
+  SCAN_ANNOTATION_CAPACITY_ERROR,
+} from './xr/scanArtifact';
 import { buildSensorPlacementScene } from './xr/sensorPlacementScene';
 import { registerAndMergeScanContinuation } from './xr/scanContinuation';
-import { occupancyFrameIdForScan } from './xr/occupancySolverArtifact';
+import type { ScanIdentity } from './xr/scanIdentity';
 import {
   beginProvisionalScan,
   captureAborted,
@@ -539,13 +543,18 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     setRegistrationStageView('idle');
     setRegistrationNotice(null);
 
+    const abandonScannerOwner = (): void => {
+      storageGeneration.current += 1;
+      persistenceController.abandon();
+    };
+
     if (objectId === null || sessionId === null) {
       setScanStoragePhase('unbound');
-      return undefined;
+      return abandonScannerOwner;
     }
 
     setScanStoragePhase('loading');
-    return () => { storageGeneration.current += 1; };
+    return abandonScannerOwner;
   }, [objectId, sessionId, persistenceController, updateScanDurability, applyGeometry, publishRegistration]);
 
   useEffect(() => {
@@ -610,19 +619,45 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         }
 
         try {
-          const restored = decodeScanArtifact(artifact);
+          const decoded = decodeScanArtifactWithIdentity(artifact);
+          const restored = decoded.snapshot;
+          const loadedIdentity = decoded.identity;
           if (restored.pointCount <= 0) throw new Error('scan.error.no_stable_surface');
-          const loadedScanId = occupancyFrameIdForScan(artifact);
+          const loadedScanId = loadedIdentity.frameId;
+          const restoreSummary = Object.freeze({
+            objectId,
+            sessionId,
+            bytes: loadedIdentity.byteLength,
+            scanId: loadedIdentity.frameId,
+            scanCrc32: loadedIdentity.crc32,
+            stablePoints: restored.pointCount,
+            tentativePoints: restored.tentativePointCount,
+            manualPoints: restored.manualControlPoints.length,
+            operatorEdges: restored.operatorEdges.length,
+          });
+          clientDiagnostics.info('SCAN_RESULT_RESTORE_VALIDATED', restoreSummary);
+          void clientDiagnostics.flush();
+          let decodedOccupancy: DecodedOccupancyArtifact | null = null;
           /* The restored registration is embedded only if it is bound to exactly this scan and geometry. */
           const buildOccupancy = async () => {
             await evidenceReady.current;
-            return buildSessionOccupancyArtifact(restored, artifact, Date.now(), registrationEmbedFor(loadedScanId));
+            const bytes = buildSessionOccupancyArtifact(restored, loadedIdentity, Date.now(), registrationEmbedFor(loadedScanId));
+            decodedOccupancy = decodeOccupancySolverArtifact(bytes);
+            return bytes;
           };
           const buildPreview = async (occupancyArtifact: Uint8Array | null) => {
             await evidenceReady.current;
-            return buildVoxelPreviewArtifact(restored, artifact, { occupancyArtifact, registration: registrationEmbedFor(loadedScanId) });
+            if (occupancyArtifact !== null && decodedOccupancy === null) {
+              decodedOccupancy = decodeOccupancySolverArtifact(occupancyArtifact);
+            }
+            return buildVoxelPreviewArtifact(restored, loadedIdentity, {
+              occupancyArtifact,
+              decodedOccupancy,
+              identity: loadedIdentity,
+              registration: registrationEmbedFor(loadedScanId),
+            });
           };
-          void persistenceController.reconcile(objectId, sessionId, artifact, buildOccupancy, buildPreview, loadedScanId).then((reconciled) => {
+          void persistenceController.reconcile(objectId, sessionId, artifact, buildOccupancy, buildPreview, loadedScanId, loadedIdentity).then((reconciled) => {
             if (cancelled || generation !== storageGeneration.current) return;
             scanLoadSession.current = key;
             if (reconciled?.scan === 'saved' && reconciled.scanId === loadedScanId) {
@@ -635,7 +670,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
             clientDiagnostics.info('SCAN_RESULT_RESTORED', {
               objectId,
               sessionId,
-              bytes: artifact.byteLength,
+              bytes: restoreSummary.bytes,
               stablePoints: restored.pointCount,
               tentativePoints: restored.tentativePointCount,
               manualPoints: restored.manualControlPoints.length,
@@ -793,6 +828,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         yawDegrees: Number((merged.diagnostics.yawRadians * 180 / Math.PI).toFixed(1)),
         translation: merged.diagnostics.translation.map((value) => Number(value.toFixed(3))),
         mergedStablePoints: snapshot.pointCount,
+        annotationsTruncated: merged.diagnostics.annotationsTruncated ?? false,
       });
       void clientDiagnostics.flush();
     }
@@ -821,13 +857,18 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     }
 
     let artifact: Uint8Array;
+    let identity: ScanIdentity;
     try {
-      artifact = encodeScanArtifact(snapshot);
+      const encoded = encodeScanArtifactWithIdentity(snapshot);
+      artifact = encoded.bytes;
+      identity = encoded.identity;
     }
     catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
       updateScanDurability((current) => confirmScanNotCommitted(beginProvisionalScan(current, snapshot, 'unencoded'), current.durableSnapshot !== null));
-      setScanStorageError(TranslatedError.fromKey('scan.error.prepare_failed'));
+      setScanStorageError(TranslatedError.fromKey(message === SCAN_ANNOTATION_CAPACITY_ERROR
+        ? SCAN_ANNOTATION_CAPACITY_ERROR
+        : 'scan.error.prepare_failed'));
       setScanStoragePhase('error');
       clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId: scanSessionId, stage: 'encode', error: message });
       void clientDiagnostics.flush();
@@ -835,7 +876,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     }
 
     const generation = ++storageGeneration.current;
-    const candidateId = occupancyFrameIdForScan(artifact);
+    const candidateId = identity.frameId;
     activeScanCandidate.current = { snapshot, id: candidateId };
     /* MAX-403/405/416: registration for this candidate is resolved after the bounded tag window, never before the upload. */
     const stage: ScanRegistrationStage | null = sessionId === null ? null : {
@@ -855,16 +896,32 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         ? null
         : toOccupancyRegistration(resolved.artifact, { geometryComputedAtMs: geometryGenerationRef.current, scanFrameId: candidateId });
     };
+    let decodedOccupancy: DecodedOccupancyArtifact | null = null;
     updateScanDurability((current) => beginProvisionalScan(current, snapshot, candidateId));
     setScanStoragePhase('saving');
     void persistenceController.save(
       objectId,
       scanSessionId,
       artifact,
-      async () => buildSessionOccupancyArtifact(snapshot, artifact, Date.now(), await embedRegistration()),
-      async (occupancyArtifact) => buildVoxelPreviewArtifact(snapshot, artifact, { occupancyArtifact, registration: await embedRegistration() }),
+      async () => {
+        const bytes = buildSessionOccupancyArtifact(snapshot, identity, Date.now(), await embedRegistration());
+        decodedOccupancy = decodeOccupancySolverArtifact(bytes);
+        return bytes;
+      },
+      async (occupancyArtifact) => {
+        if (occupancyArtifact !== null && decodedOccupancy === null) {
+          decodedOccupancy = decodeOccupancySolverArtifact(occupancyArtifact);
+        }
+        return buildVoxelPreviewArtifact(snapshot, identity, {
+          occupancyArtifact,
+          decodedOccupancy,
+          identity,
+          registration: await embedRegistration(),
+        });
+      },
       storageActionsDisabled,
       candidateId,
+      identity,
     ).then((state) => {
         if (generation !== storageGeneration.current) return;
         if (state?.scan !== 'saved') {
@@ -895,7 +952,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         clientDiagnostics.info('SCAN_RESULT_SAVED', {
           objectId,
           sessionId: scanSessionId,
-          bytes: artifact.byteLength,
+          bytes: identity.byteLength,
           stablePoints: snapshot.pointCount,
           manualPoints: snapshot.manualControlPoints.length,
           operatorEdges: snapshot.operatorEdges.length,

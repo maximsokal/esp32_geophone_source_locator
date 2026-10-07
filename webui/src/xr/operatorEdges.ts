@@ -1,4 +1,11 @@
 export type ProjectPoint = readonly [number, number, number];
+export const MAX_OPERATOR_EDGES = 128;
+
+export interface OperatorEdgeCapacityDiagnostics {
+  count: number;
+  maximum: number;
+  capacityReached: boolean;
+}
 
 export interface OperatorEdge {
   id: number;
@@ -22,8 +29,9 @@ function sameEndpoints(a: OperatorEdge, start: ProjectPoint, end: ProjectPoint, 
 export class OperatorEdgeStore {
   private readonly edges: OperatorEdge[] = [];
   private nextId = 1;
+  private reachedCapacity = false;
 
-  reset(): void { this.edges.length = 0; this.nextId = 1; }
+  reset(): void { this.edges.length = 0; this.nextId = 1; this.reachedCapacity = false; }
 
   add(start: ProjectPoint, end: ProjectPoint, confidence = 1, dedupeMeters = 0.08): OperatorEdge | null {
     if (distance(start, end) < 0.05) return null;
@@ -34,6 +42,10 @@ export class OperatorEdgeStore {
       existing.end = [...end] as ProjectPoint;
       return { ...existing, start: [...existing.start] as ProjectPoint, end: [...existing.end] as ProjectPoint };
     }
+    if (this.edges.length >= MAX_OPERATOR_EDGES) {
+      this.reachedCapacity = true;
+      return null;
+    }
     const edge: OperatorEdge = {
       id: this.nextId++,
       start: [...start] as ProjectPoint,
@@ -41,6 +53,7 @@ export class OperatorEdgeStore {
       confidence: Math.max(0, Math.min(1, confidence)),
     };
     this.edges.push(edge);
+    if (this.edges.length === MAX_OPERATOR_EDGES) this.reachedCapacity = true;
     return { ...edge, start: [...edge.start] as ProjectPoint, end: [...edge.end] as ProjectPoint };
   }
 
@@ -50,6 +63,10 @@ export class OperatorEdgeStore {
   }
 
   get size(): number { return this.edges.length; }
+  get capacityReached(): boolean { return this.reachedCapacity; }
+  get capacityDiagnostics(): OperatorEdgeCapacityDiagnostics {
+    return { count: this.size, maximum: MAX_OPERATOR_EDGES, capacityReached: this.reachedCapacity };
+  }
 
   snapshot(): readonly OperatorEdge[] {
     return this.edges.map((edge) => ({ ...edge, start: [...edge.start] as ProjectPoint, end: [...edge.end] as ProjectPoint }));

@@ -64,4 +64,15 @@ describe('tag detector worker client', () => {
     expect(client.busy).toBe(false);
     client.dispose();
   });
+
+  it('transfers a capture-owned RGBA buffer without a detector clone', async () => {
+    const worker = new FakeWorker(); const client = new TagDetectorClient(() => worker as never);
+    const frame = cameraFrame(); frame.rgbaOwnership = 'owned';
+    const pending = client.detect(frame); const request = worker.messages[1].message;
+    expect(request.rgba).toBe(frame.rgba);
+    expect(worker.messages[1].transfer).toEqual([frame.rgba.buffer]);
+    worker.emit('message', { type: 'result', requestId: request.requestId, epoch: request.epoch, detections: [] });
+    await expect(pending).resolves.toMatchObject({ detections: [] });
+    client.dispose();
+  });
 });

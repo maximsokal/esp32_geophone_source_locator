@@ -765,6 +765,7 @@ export const i18nKeys = [
   "report.y_m",
   "report.yes",
   "report.z_m",
+  "scan.annotations.capacity_exceeded",
   "scan.aria_label",
   "scan.axis_help",
   "scan.axis_note",

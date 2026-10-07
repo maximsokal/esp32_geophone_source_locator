@@ -1,6 +1,6 @@
 import { encodeScanArtifact } from '../../../src/xr/scanArtifact';
 import { makeValidScanSnapshot } from '../support/validScanSnapshot';
-import { rewriteScanArtifactMetadata } from '../support/scanArtifactTestTools';
+import { rewriteNormalConfidenceAsLegacy, rewriteScanArtifactMetadata } from '../support/scanArtifactTestTools';
 
 export interface HistoricalScanArtifactFixture {
   name: string;
@@ -19,14 +19,18 @@ const LATER_FIELDS = [
 
 export function makeHistoricalScanArtifactFixtures(): HistoricalScanArtifactFixture[] {
   const current = encodeScanArtifact(makeValidScanSnapshot());
+  const withoutNormalConfidence = rewriteNormalConfidenceAsLegacy(current, false);
+  const withLegacyNormalConfidence = rewriteNormalConfidenceAsLegacy(current, true);
   const stages = [
     {
       name: 'first schema-1 emission (0d66a158)',
+      source: withoutNormalConfidence,
       absentFields: LATER_FIELDS,
       presentFields: [] as const,
     },
     {
       name: 'fine occupancy voxel addition (a7bed6a5)',
+      source: withoutNormalConfidence,
       absentFields: [
         'normalConfidence',
         'occupancyCellsSaturated',
@@ -37,6 +41,7 @@ export function makeHistoricalScanArtifactFixtures(): HistoricalScanArtifactFixt
     },
     {
       name: 'occupancy diagnostics addition (c1db8590)',
+      source: withoutNormalConfidence,
       absentFields: ['normalConfidence'] as const,
       presentFields: [
         'occupancyFineVoxelSizeMeters',
@@ -47,6 +52,7 @@ export function makeHistoricalScanArtifactFixtures(): HistoricalScanArtifactFixt
     },
     {
       name: 'normal confidence addition (74867942)',
+      source: withLegacyNormalConfidence,
       absentFields: [] as const,
       presentFields: LATER_FIELDS,
     },
@@ -54,7 +60,7 @@ export function makeHistoricalScanArtifactFixtures(): HistoricalScanArtifactFixt
 
   return stages.map((stage) => ({
     ...stage,
-    bytes: rewriteScanArtifactMetadata(current, (metadata) => {
+    bytes: rewriteScanArtifactMetadata(stage.source, (metadata) => {
       for (const field of stage.absentFields) delete metadata[field];
     }),
   }));

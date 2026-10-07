@@ -1,6 +1,7 @@
 #include "web_server_internal.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,6 +95,24 @@ static esp_err_t web_scan_get_scan_identity(
     size_t *size_out,
     uint32_t *crc_out
 );
+static esp_err_t web_scan_validate_path_locked(
+    const char *path,
+    const web_scan_kind_t *kind,
+    bool *valid_out,
+    uint32_t *source_crc_out,
+    bool *registration_bound_out
+);
+static esp_err_t web_scan_validate_uploaded_temp(
+    const char *temp_path,
+    const web_scan_kind_t *kind,
+    uint32_t *source_crc_out,
+    bool *registration_bound_out,
+    bool *valid_out
+);
+#if defined(WEB_SCAN_STORE_TESTING)
+void web_scan_store_test_before_derivative_commit(void);
+void web_scan_store_test_before_identity_cache_store(void);
+#endif
 
 static uint32_t web_scan_crc32_update(uint32_t crc, const unsigned char *bytes, size_t length)
 {
@@ -567,20 +586,107 @@ static void web_scan_drain_request_body(
 
 
 /* storage_manager_operation_begin() must be held by the caller. */
+static esp_err_t web_scan_recover_file_locked(
+    const char *final_path,
+    const char *temp_path,
+    const char *backup_path,
+    const web_scan_kind_t *kind
+)
+{
+    const bool final_exists = web_scan_file_exists(final_path);
+    const bool temp_exists = web_scan_file_exists(temp_path);
+    const bool backup_exists = web_scan_file_exists(backup_path);
+    if (!temp_exists && !backup_exists) {
+        return final_exists ? ESP_OK : ESP_ERR_NOT_FOUND;
+    }
+
+    bool final_valid = false;
+    bool backup_valid = false;
+    esp_err_t err = ESP_OK;
+    if (final_exists) {
+        err = web_scan_validate_path_locked(final_path, kind, &final_valid, NULL, NULL);
+        if (err != ESP_OK) return err;
+    }
+    if (backup_exists) {
+        err = web_scan_validate_path_locked(backup_path, kind, &backup_valid, NULL, NULL);
+        if (err != ESP_OK) return err;
+    }
+
+    if (final_valid) {
+        if (remove(temp_path) != 0 && errno != ENOENT) return ESP_FAIL;
+        if (remove(backup_path) != 0 && errno != ENOENT) return ESP_FAIL;
+        return ESP_OK;
+    }
+
+    if (backup_valid) {
+        if (final_exists && remove(final_path) != 0) return ESP_FAIL;
+        if (remove(temp_path) != 0 && errno != ENOENT) return ESP_FAIL;
+        if (rename(backup_path, final_path) != 0) return ESP_FAIL;
+        if (kind == &WEB_SCAN_KIND_SCAN) web_scan_identity_cache_clear_locked(final_path);
+        ESP_LOGW(TAG, "Recovered %s from backup", kind->label);
+        return ESP_OK;
+    }
+
+    if (!final_exists && !backup_exists) {
+        if (remove(temp_path) != 0 && errno != ENOENT) return ESP_FAIL;
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (kind == &WEB_SCAN_KIND_SCAN) web_scan_identity_cache_clear_locked(final_path);
+    return ESP_ERR_INVALID_RESPONSE;
+}
+
+
+typedef struct
+{
+    const char *final_path;
+    const char *temp_path;
+    const char *backup_path;
+    const web_scan_kind_t *kind;
+
+} web_scan_recovery_context_t;
+
+
+static esp_err_t web_scan_recovery_chunk(void *context)
+{
+    web_scan_recovery_context_t *recovery = context;
+    if (recovery == NULL) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+    err = web_scan_recover_file_locked(
+        recovery->final_path,
+        recovery->temp_path,
+        recovery->backup_path,
+        recovery->kind
+    );
+    storage_manager_operation_end();
+    return err;
+}
+
+
 static esp_err_t web_scan_recover_file(
     const char *final_path,
     const char *temp_path,
-    const char *backup_path
+    const char *backup_path,
+    const web_scan_kind_t *kind
 )
 {
-    if (web_scan_file_exists(final_path)) {
-        (void)remove(temp_path);
-        (void)remove(backup_path);
-        return ESP_OK;
+    if (final_path == NULL || temp_path == NULL || backup_path == NULL || kind == NULL) {
+        return ESP_ERR_INVALID_ARG;
     }
-    (void)remove(temp_path);
-    if (!web_scan_file_exists(backup_path)) return ESP_ERR_NOT_FOUND;
-    return rename(backup_path, final_path) == 0 ? ESP_OK : ESP_FAIL;
+    if (!web_scan_file_exists(temp_path) && !web_scan_file_exists(backup_path)) {
+        return web_scan_file_exists(final_path) ? ESP_OK : ESP_ERR_NOT_FOUND;
+    }
+    const web_scan_recovery_context_t context = {
+        .final_path = final_path,
+        .temp_path = temp_path,
+        .backup_path = backup_path,
+        .kind = kind,
+    };
+    /* Admission is acquired before storage. Recovery validates at most 8 MiB
+     * in fixed chunks, then makes its decision under the same storage lock as
+     * scan commits, so no writer can replace a candidate during validation. */
+    return storage_bulk_admission_run_chunk(web_scan_recovery_chunk, (void *)&context);
 }
 
 
@@ -689,7 +795,8 @@ static esp_err_t web_scan_close_reader(FILE **file)
 }
 
 
-static esp_err_t web_scan_commit_temp(
+/* The caller holds storage_manager_operation_begin() while committing paths. */
+static esp_err_t web_scan_commit_temp_locked(
     const char *final_path,
     const char *temp_path,
     const char *backup_path,
@@ -698,11 +805,9 @@ static esp_err_t web_scan_commit_temp(
     uint32_t scan_crc32
 )
 {
-    esp_err_t err = storage_manager_operation_begin();
-    if (err != ESP_OK) return err;
-
     (void)remove(backup_path);
     const bool had_final = web_scan_file_exists(final_path);
+    esp_err_t err = ESP_OK;
     if (had_final && rename(final_path, backup_path) != 0) {
         err = ESP_FAIL;
     }
@@ -718,8 +823,6 @@ static esp_err_t web_scan_commit_temp(
         if (err == ESP_OK) web_scan_identity_cache_set_locked(final_path, scan_size, scan_crc32);
         else web_scan_identity_cache_clear_locked(final_path);
     }
-
-    storage_manager_operation_end();
     return err;
 }
 
@@ -769,21 +872,152 @@ static esp_err_t web_scan_remove_kind_locked(
 }
 
 
-static esp_err_t web_scan_remove_derivatives_before_commit(
+/*
+ * Scan replacement and derivative removal use one storage lock. Derivative
+ * compare-and-commit takes the same lock, so no derivative can land between
+ * invalidation and the scan rename. Bulk-admission callbacks acquire this
+ * storage lock only after the admission mutex; commit paths never acquire
+ * admission while holding storage.
+ */
+static esp_err_t web_scan_commit_scan_temp(
     const char *object_id,
-    const char *session_id
+    const char *session_id,
+    const char *final_path,
+    const char *temp_path,
+    const char *backup_path,
+    size_t scan_size,
+    uint32_t scan_crc32
 )
 {
     esp_err_t err = storage_manager_operation_begin();
     if (err != ESP_OK) return err;
 
-    /* Delete before scan rename: a power cut can leave the old scan without
-     * regenerable derivatives, but can never expose a new scan with old ones. */
+    /* Delete before scan rename: a power cut leaves no stale derivative. */
     err = web_scan_remove_kind_locked(object_id, session_id, &WEB_SCAN_KIND_OCCUPANCY);
     if (err == ESP_OK) {
         err = web_scan_remove_kind_locked(object_id, session_id, &WEB_SCAN_KIND_PREVIEW);
     }
+    if (err == ESP_OK) {
+        err = web_scan_commit_temp_locked(
+            final_path,
+            temp_path,
+            backup_path,
+            true,
+            scan_size,
+            scan_crc32
+        );
+    }
+    if (err != ESP_OK) {
+        web_scan_identity_cache_clear_locked(final_path);
+    }
+    storage_manager_operation_end();
+    return err;
+}
 
+
+static esp_err_t web_scan_send_registration_unbound(httpd_req_t *request)
+{
+    static const char body[] = "{\"ok\":false,\"error\":\"registration_unbound\"}";
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_status(request, "409 Conflict");
+    return httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
+}
+
+
+static esp_err_t web_scan_commit_derivative_temp(
+    const char *object_id,
+    const char *session_id,
+    const char *final_path,
+    const char *temp_path,
+    const char *backup_path,
+    uint32_t source_crc32,
+    const char *requested_scan_id,
+    bool query_present,
+    bool query_valid,
+    bool *generation_mismatch_out,
+    char current_id[WEB_SCAN_CRC32_ID_SIZE]
+)
+{
+    if (generation_mismatch_out == NULL || current_id == NULL) return ESP_ERR_INVALID_ARG;
+    *generation_mismatch_out = false;
+    current_id[0] = '\0';
+
+    bool current_present = false;
+    size_t current_size = 0U;
+    uint32_t current_crc32 = 0U;
+    esp_err_t err = web_scan_get_scan_identity(
+        object_id,
+        session_id,
+        &current_present,
+        &current_size,
+        &current_crc32
+    );
+    (void)current_size;
+    if (err == ESP_OK && current_present) web_scan_format_crc32_id(current_crc32, current_id);
+    else if (err != ESP_ERR_NOT_FOUND && err != ESP_OK) return err;
+
+    char content_id[WEB_SCAN_CRC32_ID_SIZE];
+    web_scan_format_crc32_id(source_crc32, content_id);
+    if (
+        !current_present || current_id[0] == '\0' || strcmp(current_id, content_id) != 0 ||
+        (query_present && (!query_valid || strcmp(requested_scan_id, content_id) != 0))
+    ) {
+        *generation_mismatch_out = true;
+        web_scan_remove_temp_best_effort(temp_path);
+        return ESP_OK;
+    }
+
+    /* The storage operation lock is the generation lock. Scan replacement
+     * holds it across derivative invalidation and scan rename; this final read
+     * and derivative rename therefore cannot straddle a scan commit. */
+    err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+#if defined(WEB_SCAN_STORE_TESTING)
+    web_scan_store_test_before_derivative_commit();
+#endif
+    char scan_path[WEB_SCAN_PATH_SIZE];
+    char scan_temp_path[WEB_SCAN_PATH_SIZE];
+    char scan_backup_path[WEB_SCAN_PATH_SIZE];
+    err = web_scan_paths(
+        object_id,
+        session_id,
+        &WEB_SCAN_KIND_SCAN,
+        scan_path,
+        scan_temp_path,
+        scan_backup_path
+    );
+    current_present = false;
+    current_crc32 = 0U;
+    if (
+        err == ESP_OK && s_scan_identity_cache.valid &&
+        strcmp(s_scan_identity_cache.path, scan_path) == 0
+    ) {
+        current_present = true;
+        current_crc32 = s_scan_identity_cache.crc32;
+        web_scan_format_crc32_id(current_crc32, current_id);
+    }
+    else {
+        current_id[0] = '\0';
+    }
+
+    if (
+        err == ESP_OK && (!current_present || current_crc32 != source_crc32 ||
+        (query_present && (!query_valid || strcmp(requested_scan_id, content_id) != 0)))
+    ) {
+        *generation_mismatch_out = true;
+        if (remove(temp_path) != 0 && errno != ENOENT) err = ESP_FAIL;
+    }
+    else if (err == ESP_OK) {
+        err = web_scan_commit_temp_locked(
+            final_path,
+            temp_path,
+            backup_path,
+            false,
+            0U,
+            0U
+        );
+    }
     storage_manager_operation_end();
     return err;
 }
@@ -816,41 +1050,15 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
         return web_scan_send_registration_conflict(request);
     }
 
-    if (kind == &WEB_SCAN_KIND_OCCUPANCY || kind == &WEB_SCAN_KIND_PREVIEW) {
-        char requested_scan_id[WEB_SCAN_QUERY_SIZE] = {0};
-        const esp_err_t query_err = web_scan_query_value(
-            request,
-            "scan_id",
-            requested_scan_id,
-            sizeof(requested_scan_id)
-        );
-        if (query_err != ESP_ERR_NOT_FOUND) {
-            bool current_present = false;
-            size_t current_size = 0U;
-            uint32_t current_crc32 = 0U;
-            char current_id[WEB_SCAN_CRC32_ID_SIZE];
-            const esp_err_t identity_err = web_scan_get_scan_identity(
-                object_id,
-                session_id,
-                &current_present,
-                &current_size,
-                &current_crc32
-            );
-            (void)current_size;
-            const char *current_id_value = NULL;
-            if (identity_err == ESP_OK && current_present) {
-                web_scan_format_crc32_id(current_crc32, current_id);
-                current_id_value = current_id;
-            }
-            if (
-                query_err != ESP_OK || current_id_value == NULL ||
-                strcmp(requested_scan_id, current_id_value) != 0
-            ) {
-                web_scan_drain_request_body(request, 0U, kind->max_bytes);
-                return web_scan_send_generation_mismatch(request, current_id_value);
-            }
-        }
-    }
+    char requested_scan_id[WEB_SCAN_QUERY_SIZE] = {0};
+    const esp_err_t query_err = web_scan_query_value(
+        request,
+        "scan_id",
+        requested_scan_id,
+        sizeof(requested_scan_id)
+    );
+    const bool query_present = query_err != ESP_ERR_NOT_FOUND;
+    const bool query_valid = query_err == ESP_OK;
 
     if (!web_scan_kind_size_valid(kind, request->content_len)) {
         return web_scan_send_json(request, "scan_save", object_id, session_id, ESP_ERR_INVALID_SIZE, 0U);
@@ -878,6 +1086,9 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
     uint32_t scan_crc_state = UINT32_C(0xffffffff);
     unsigned timeout_count = 0U;
     bool admission_rejected = false;
+    bool generation_rejected = false;
+    bool registration_unbound = false;
+    char mismatch_current_id[WEB_SCAN_CRC32_ID_SIZE] = {0};
 
     err = web_scan_open_temp(temp_path, &file);
     if (err == ESP_OK) {
@@ -948,27 +1159,71 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
     }
 
     if (err == ESP_OK) {
-        if (kind == &WEB_SCAN_KIND_SCAN) {
-            err = web_scan_remove_derivatives_before_commit(object_id, session_id);
+        if (
+            kind == &WEB_SCAN_KIND_OCCUPANCY || kind == &WEB_SCAN_KIND_PREVIEW ||
+            kind == &WEB_SCAN_KIND_REGISTRATION
+        ) {
+            bool valid = false;
+            bool registration_bound = false;
+            uint32_t source_crc32 = 0U;
+            err = web_scan_validate_uploaded_temp(
+                temp_path,
+                kind,
+                &source_crc32,
+                &registration_bound,
+                &valid
+            );
+            if (err == ESP_OK && !valid) {
+                bool current_present = false;
+                size_t current_size = 0U;
+                uint32_t current_crc32 = 0U;
+                const esp_err_t identity_err = web_scan_get_scan_identity(
+                    object_id,
+                    session_id,
+                    &current_present,
+                    &current_size,
+                    &current_crc32
+                );
+                (void)current_size;
+                if (identity_err == ESP_OK && current_present) {
+                    web_scan_format_crc32_id(current_crc32, mismatch_current_id);
+                }
+                generation_rejected = true;
+            }
+            else if (err == ESP_OK && kind == &WEB_SCAN_KIND_REGISTRATION && !registration_bound) {
+                registration_unbound = true;
+            }
+            else if (err == ESP_OK) {
+                err = web_scan_commit_derivative_temp(
+                    object_id,
+                    session_id,
+                    final_path,
+                    temp_path,
+                    backup_path,
+                    source_crc32,
+                    requested_scan_id,
+                    query_present,
+                    query_valid,
+                    &generation_rejected,
+                    mismatch_current_id
+                );
+            }
+            if (generation_rejected || registration_unbound) err = ESP_ERR_INVALID_STATE;
         }
-        if (err == ESP_OK) {
+        else if (kind == &WEB_SCAN_KIND_SCAN) {
             /* A scan whose final chunk was accepted before the latch is already
              * in-flight work. Finish its existing temp-file commit; do not turn the
              * shutdown admission boundary into a transactional rollback boundary. */
             const uint32_t scan_crc32 = scan_crc_state ^ UINT32_C(0xffffffff);
-            err = web_scan_commit_temp(
+            err = web_scan_commit_scan_temp(
+                object_id,
+                session_id,
                 final_path,
                 temp_path,
                 backup_path,
-                kind == &WEB_SCAN_KIND_SCAN,
                 received_total,
                 scan_crc32
             );
-            if (err != ESP_OK && kind == &WEB_SCAN_KIND_SCAN) {
-                /* A failed rename can have rolled back to the old file. Re-read
-                 * it on the next request instead of trusting stale RAM state. */
-                s_scan_identity_cache.valid = false;
-            }
         }
     }
     if (err != ESP_OK) {
@@ -1003,6 +1258,13 @@ static esp_err_t web_scan_save(httpd_req_t *request, const char *object_id, cons
         );
     }
     if (admission_rejected) return web_scan_send_recording_busy(request, "scan_save");
+    if (registration_unbound) return web_scan_send_registration_unbound(request);
+    if (generation_rejected) {
+        return web_scan_send_generation_mismatch(
+            request,
+            mismatch_current_id[0] == '\0' ? NULL : mismatch_current_id
+        );
+    }
     if (err == ESP_OK && kind == &WEB_SCAN_KIND_SCAN) {
         char scan_id[WEB_SCAN_CRC32_ID_SIZE];
         web_scan_format_crc32_id(scan_crc_state ^ UINT32_C(0xffffffff), scan_id);
@@ -1035,15 +1297,15 @@ static esp_err_t web_scan_open_for_stream(
     *file_out = NULL;
     *size_out = 0U;
 
-    esp_err_t err = storage_manager_operation_begin();
+    esp_err_t err = web_scan_recover_file(final_path, temp_path, backup_path, kind);
+    if (err != ESP_OK) return err;
+
+    err = storage_manager_operation_begin();
     if (err != ESP_OK) return err;
 
     FILE *file = NULL;
-    err = web_scan_recover_file(final_path, temp_path, backup_path);
-    if (err == ESP_OK) {
-        file = fopen(final_path, "rb");
-        if (file == NULL) err = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
-    }
+    file = fopen(final_path, "rb");
+    if (file == NULL) err = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
 
     if (err == ESP_OK && fseek(file, 0L, SEEK_END) != 0) err = ESP_FAIL;
     long file_size = 0L;
@@ -1133,11 +1395,39 @@ static esp_err_t web_scan_identity_cache_lookup(
 }
 
 
-static void web_scan_identity_cache_store(const char *path, size_t size, uint32_t crc32)
+static esp_err_t web_scan_identity_cache_store(
+    const char *path,
+    size_t size,
+    uint32_t crc32,
+    size_t *size_out,
+    uint32_t *crc32_out
+)
 {
-    if (storage_manager_operation_begin() != ESP_OK) return;
-    web_scan_identity_cache_set_locked(path, size, crc32);
+    if (path == NULL || size_out == NULL || crc32_out == NULL) return ESP_ERR_INVALID_ARG;
+#if defined(WEB_SCAN_STORE_TESTING)
+    web_scan_store_test_before_identity_cache_store();
+#endif
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+    /* A scan commit may have replaced this path while the opened file was
+     * being hashed. Keep the identity published by that commit. */
+    if (
+        s_scan_identity_cache.valid &&
+        strcmp(s_scan_identity_cache.path, path) == 0
+    ) {
+        *size_out = s_scan_identity_cache.size;
+        *crc32_out = s_scan_identity_cache.crc32;
+    }
+    else if (!web_scan_file_exists(path)) {
+        err = ESP_ERR_NOT_FOUND;
+    }
+    else {
+        web_scan_identity_cache_set_locked(path, size, crc32);
+        *size_out = size;
+        *crc32_out = crc32;
+    }
     storage_manager_operation_end();
+    return ESP_OK;
 }
 
 
@@ -1236,7 +1526,16 @@ static esp_err_t web_scan_get_scan_identity(
     if (err == ESP_OK) err = close_err;
     if (err != ESP_OK) return err;
 
-    if (!cached) web_scan_identity_cache_store(final_path, file_size, crc32);
+    if (!cached) {
+        err = web_scan_identity_cache_store(final_path, file_size, crc32, &file_size, &crc32);
+        if (err != ESP_OK) {
+            if (err == ESP_ERR_NOT_FOUND) {
+                *present_out = false;
+                *size_out = 0U;
+            }
+            return err;
+        }
+    }
     *present_out = true;
     *size_out = file_size;
     *crc_out = crc32;
@@ -1377,6 +1676,440 @@ static bool web_scan_preview_source_crc32(FILE *file, size_t file_size, uint32_t
 
     *crc_out = web_scan_read_u32_le(header + 12U);
     return true;
+}
+
+
+static esp_err_t web_scan_read_bounded(
+    FILE *file,
+    unsigned char *bytes,
+    size_t length,
+    bool storage_locked
+)
+{
+    if (file == NULL || bytes == NULL || length == 0U) return ESP_ERR_INVALID_ARG;
+    size_t remaining = length;
+    while (remaining > 0U) {
+        if (web_server_shutdown_requested()) return ESP_ERR_INVALID_STATE;
+        const size_t chunk_size = remaining < WEB_SCAN_IO_BUFFER_SIZE
+            ? remaining
+            : WEB_SCAN_IO_BUFFER_SIZE;
+        if (storage_locked) {
+            if (fread(bytes, 1U, chunk_size, file) != chunk_size || ferror(file) != 0) {
+                return ESP_FAIL;
+            }
+        }
+        else {
+            size_t read_count = 0U;
+            web_scan_read_chunk_context_t chunk = {
+                .file = file,
+                .buffer = bytes,
+                .capacity = chunk_size,
+                .read_out = &read_count,
+            };
+            const esp_err_t err = storage_bulk_admission_run_chunk(web_scan_read_chunk, &chunk);
+            if (err != ESP_OK) return err;
+            if (read_count != chunk_size) return ESP_FAIL;
+        }
+        bytes += chunk_size;
+        remaining -= chunk_size;
+        if (!storage_locked) taskYIELD();
+    }
+    return ESP_OK;
+}
+
+
+static esp_err_t web_scan_seek_file(FILE *file, size_t offset, bool storage_locked)
+{
+    if (file == NULL || offset > (size_t)LONG_MAX) return ESP_ERR_INVALID_ARG;
+    if (storage_locked) return fseek(file, (long)offset, SEEK_SET) == 0 ? ESP_OK : ESP_FAIL;
+
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+    const bool seek_ok = fseek(file, (long)offset, SEEK_SET) == 0;
+    storage_manager_operation_end();
+    return seek_ok ? ESP_OK : ESP_FAIL;
+}
+
+
+static esp_err_t web_scan_crc32_range(
+    FILE *file,
+    size_t offset,
+    size_t length,
+    bool storage_locked,
+    uint32_t *crc_out
+)
+{
+    if (file == NULL || crc_out == NULL || length == 0U) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = web_scan_seek_file(file, offset, storage_locked);
+    if (err != ESP_OK) return err;
+
+    unsigned char *buffer = heap_caps_malloc(
+        WEB_SCAN_IO_BUFFER_SIZE,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (buffer == NULL) return ESP_ERR_NO_MEM;
+
+    size_t remaining = length;
+    uint32_t crc = UINT32_C(0xffffffff);
+    while (remaining > 0U) {
+        if (web_server_shutdown_requested()) {
+            err = ESP_ERR_INVALID_STATE;
+            break;
+        }
+        const size_t request_size = remaining < WEB_SCAN_IO_BUFFER_SIZE
+            ? remaining
+            : WEB_SCAN_IO_BUFFER_SIZE;
+        if (storage_locked) {
+            const size_t read_count = fread(buffer, 1U, request_size, file);
+            if (read_count != request_size || ferror(file) != 0) {
+                err = ESP_FAIL;
+                break;
+            }
+            crc = web_scan_crc32_update(crc, buffer, read_count);
+            remaining -= read_count;
+        }
+        else {
+            size_t read_count = 0U;
+            web_scan_read_chunk_context_t chunk = {
+                .file = file,
+                .buffer = buffer,
+                .capacity = request_size,
+                .read_out = &read_count,
+            };
+            err = storage_bulk_admission_run_chunk(web_scan_read_chunk, &chunk);
+            if (err != ESP_OK || read_count == 0U) {
+                if (err == ESP_OK) err = ESP_FAIL;
+                break;
+            }
+            crc = web_scan_crc32_update(crc, buffer, read_count);
+            remaining -= read_count;
+            taskYIELD();
+        }
+    }
+
+    free(buffer);
+    if (err == ESP_OK) *crc_out = crc ^ UINT32_C(0xffffffff);
+    return err;
+}
+
+
+static const char *web_scan_json_property_value(
+    const char *json,
+    size_t length,
+    const char *key
+)
+{
+    const size_t key_length = strlen(key);
+    const char *cursor = json;
+    const char *limit = json + length;
+    while (cursor < limit) {
+        const char *found = strstr(cursor, key);
+        if (found == NULL || found >= limit) return NULL;
+        size_t boundary = (size_t)(found - json);
+        while (boundary > 0U && web_scan_is_json_space(json[boundary - 1U])) --boundary;
+        if (boundary > 0U && (json[boundary - 1U] == '{' || json[boundary - 1U] == ',')) {
+            const char *value = found + key_length;
+            while (value < limit && web_scan_is_json_space(*value)) ++value;
+            if (value >= limit || *value++ != ':') return NULL;
+            while (value < limit && web_scan_is_json_space(*value)) ++value;
+            return value < limit ? value : NULL;
+        }
+        cursor = found + 1;
+    }
+    return NULL;
+}
+
+
+static bool web_scan_parse_registration_json(
+    char *json,
+    size_t length,
+    uint32_t *source_crc_out,
+    bool *bound_out
+)
+{
+    static const char schema_key[] = "\"schema\"";
+    static const char frame_key[] = "\"scan_frame_id\"";
+    if (json == NULL || length == 0U || memchr(json, '\0', length) != NULL) return false;
+    json[length] = '\0';
+
+    size_t first = 0U;
+    while (first < length && web_scan_is_json_space(json[first])) ++first;
+    size_t last = length;
+    while (last > first && web_scan_is_json_space(json[last - 1U])) --last;
+    if (first >= last || json[first] != '{' || json[last - 1U] != '}') return false;
+
+    bool in_string = false;
+    bool escaped = false;
+    int brace_depth = 0;
+    for (size_t i = first; i < last; ++i) {
+        const char value = json[i];
+        if (in_string) {
+            if (escaped) escaped = false;
+            else if (value == '\\') escaped = true;
+            else if (value == '"') in_string = false;
+        }
+        else if (value == '"') in_string = true;
+        else if (value == '{') ++brace_depth;
+        else if (value == '}') {
+            if (--brace_depth < 0) return false;
+        }
+    }
+    if (in_string || brace_depth != 0) return false;
+    if (web_scan_json_property_value(json + first, last - first, schema_key) == NULL) return false;
+
+    if (bound_out != NULL) *bound_out = false;
+    const char *frame_value = web_scan_json_property_value(json + first, last - first, frame_key);
+    if (frame_value == NULL || *frame_value == 'n') return true;
+    if (*frame_value != '"') return true;
+
+    ++frame_value;
+    if (strlen(frame_value) < WEB_SCAN_CRC32_ID_SIZE) return false;
+    char id[WEB_SCAN_CRC32_ID_SIZE];
+    memcpy(id, frame_value, WEB_SCAN_CRC32_ID_SIZE - 1U);
+    id[WEB_SCAN_CRC32_ID_SIZE - 1U] = '\0';
+    if (frame_value[WEB_SCAN_CRC32_ID_SIZE - 1U] != '"') return false;
+    const char after = frame_value[WEB_SCAN_CRC32_ID_SIZE];
+    if (after != ',' && after != '}') return false;
+
+    uint32_t crc32 = 0U;
+    if (!web_scan_parse_crc32_id(id, &crc32)) return false;
+    if (source_crc_out != NULL) *source_crc_out = crc32;
+    if (bound_out != NULL) *bound_out = true;
+    return true;
+}
+
+
+static esp_err_t web_scan_validate_artifact(
+    FILE *file,
+    size_t file_size,
+    const web_scan_kind_t *kind,
+    bool storage_locked,
+    bool *valid_out,
+    uint32_t *source_crc_out,
+    bool *registration_bound_out
+)
+{
+    if (file == NULL || kind == NULL || valid_out == NULL) return ESP_ERR_INVALID_ARG;
+    *valid_out = false;
+    if (source_crc_out != NULL) *source_crc_out = 0U;
+    if (registration_bound_out != NULL) *registration_bound_out = false;
+
+    if (kind == &WEB_SCAN_KIND_SCAN) {
+        static const unsigned char magic[8] = {'G', 'X', 'R', 'S', 'C', 'A', 'N', '1'};
+        unsigned char header[20];
+        if (file_size < sizeof(header)) return ESP_OK;
+        esp_err_t err = web_scan_seek_file(file, 0U, storage_locked);
+        if (err == ESP_OK) err = web_scan_read_bounded(file, header, sizeof(header), storage_locked);
+        if (err != ESP_OK) return err;
+        if (memcmp(header, magic, sizeof(magic)) != 0) return ESP_OK;
+        const uint32_t header_length = web_scan_read_u32_le(header + 8U);
+        const uint32_t payload_length = web_scan_read_u32_le(header + 12U);
+        const uint64_t expected_size = UINT64_C(20) + (uint64_t)header_length + (uint64_t)payload_length;
+        if (header_length == 0U || expected_size != (uint64_t)file_size) return ESP_OK;
+        uint32_t actual_crc = 0U;
+        err = web_scan_crc32_range(file, 20U, file_size - 20U, storage_locked, &actual_crc);
+        if (err != ESP_OK) return err;
+        *valid_out = actual_crc == web_scan_read_u32_le(header + 16U);
+        return ESP_OK;
+    }
+
+    if (kind == &WEB_SCAN_KIND_OCCUPANCY) {
+        static const unsigned char magic[8] = {'G', 'O', 'C', 'C', 'U', 'P', 'Y', '1'};
+        unsigned char header[20];
+        esp_err_t err = web_scan_seek_file(file, 0U, storage_locked);
+        if (file_size < sizeof(header)) return ESP_OK;
+        if (err == ESP_OK) err = web_scan_read_bounded(file, header, sizeof(header), storage_locked);
+        if (err != ESP_OK) return err;
+        if (memcmp(header, magic, sizeof(magic)) != 0) return ESP_OK;
+        const uint32_t json_length = web_scan_read_u32_le(header + 8U);
+        const uint32_t payload_length = web_scan_read_u32_le(header + 12U);
+        const uint64_t expected_size = UINT64_C(20) + (uint64_t)json_length + (uint64_t)payload_length;
+        if (
+            json_length == 0U || json_length > WEB_SCAN_HEADER_PEEK_MAX_BYTES ||
+            expected_size != (uint64_t)file_size
+        ) return ESP_OK;
+
+        uint32_t actual_crc = 0U;
+        err = web_scan_crc32_range(file, 20U, file_size - 20U, storage_locked, &actual_crc);
+        if (err != ESP_OK) return err;
+        if (actual_crc != web_scan_read_u32_le(header + 16U)) return ESP_OK;
+
+        char *json = heap_caps_malloc((size_t)json_length + 1U, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (json == NULL) return ESP_ERR_NO_MEM;
+        err = web_scan_seek_file(file, 20U, storage_locked);
+        if (err == ESP_OK) err = web_scan_read_bounded(file, (unsigned char *)json, (size_t)json_length, storage_locked);
+        uint32_t source_crc32 = 0U;
+        const bool parsed = err == ESP_OK && memchr(json, '\0', (size_t)json_length) == NULL &&
+            (json[json_length] = '\0', web_scan_parse_occupancy_frame_id(json, (size_t)json_length, &source_crc32));
+        free(json);
+        if (err != ESP_OK) return err;
+        *valid_out = parsed;
+        if (parsed && source_crc_out != NULL) *source_crc_out = source_crc32;
+        return ESP_OK;
+    }
+
+    if (kind == &WEB_SCAN_KIND_PREVIEW) {
+        static const unsigned char magic[8] = {'G', 'X', 'P', 'R', 'V', '1', 0U, 0U};
+        unsigned char header[118];
+        esp_err_t err = web_scan_seek_file(file, 0U, storage_locked);
+        if (file_size < 58U) return ESP_OK;
+        if (err == ESP_OK) err = web_scan_read_bounded(file, header, 54U, storage_locked);
+        if (err != ESP_OK) return err;
+        if (memcmp(header, magic, sizeof(magic)) != 0) return ESP_OK;
+        const uint16_t version = web_scan_read_u16_le(header + 8U);
+        const uint16_t header_length = web_scan_read_u16_le(header + 10U);
+        const uint8_t registration_flag = header[24U];
+        const uint16_t expected_header_length = registration_flag != 0U ? 118U : 54U;
+        const uint8_t index_width = header[25U];
+        const uint16_t dim_x = web_scan_read_u16_le(header + 26U);
+        const uint16_t dim_y = web_scan_read_u16_le(header + 28U);
+        const uint16_t dim_z = web_scan_read_u16_le(header + 30U);
+        const uint32_t voxel_count = web_scan_read_u32_le(header + 48U);
+        const uint64_t volume = (uint64_t)dim_x * (uint64_t)dim_y * (uint64_t)dim_z;
+        const uint64_t expected_size = (uint64_t)header_length +
+            (uint64_t)voxel_count * ((uint64_t)index_width + 1U) + UINT64_C(4);
+        if (
+            (version != 1U && version != 2U) || registration_flag > 1U ||
+            header_length != expected_header_length ||
+            (index_width != 2U && index_width != 4U) ||
+            dim_x == 0U || dim_y == 0U || dim_z == 0U ||
+            volume == 0U || (uint64_t)voxel_count > volume ||
+            expected_size != (uint64_t)file_size
+        ) return ESP_OK;
+        if (registration_flag != 0U) {
+            err = web_scan_seek_file(file, 0U, storage_locked);
+            if (err == ESP_OK) err = web_scan_read_bounded(file, header, expected_header_length, storage_locked);
+            if (err != ESP_OK) return err;
+        }
+
+        unsigned char crc_bytes[4];
+        err = web_scan_seek_file(file, file_size - sizeof(crc_bytes), storage_locked);
+        if (err == ESP_OK) err = web_scan_read_bounded(file, crc_bytes, sizeof(crc_bytes), storage_locked);
+        if (err != ESP_OK) return err;
+        uint32_t actual_crc = 0U;
+        err = web_scan_crc32_range(file, 0U, file_size - sizeof(crc_bytes), storage_locked, &actual_crc);
+        if (err != ESP_OK) return err;
+        *valid_out = actual_crc == web_scan_read_u32_le(crc_bytes);
+        if (*valid_out && source_crc_out != NULL) *source_crc_out = web_scan_read_u32_le(header + 12U);
+        return ESP_OK;
+    }
+
+    if (kind == &WEB_SCAN_KIND_REGISTRATION) {
+        if (file_size == 0U || file_size > WEB_REGISTRATION_MAX_BYTES) return ESP_OK;
+        char *json = heap_caps_malloc(file_size + 1U, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (json == NULL) return ESP_ERR_NO_MEM;
+        esp_err_t err = web_scan_seek_file(file, 0U, storage_locked);
+        if (err == ESP_OK) err = web_scan_read_bounded(file, (unsigned char *)json, file_size, storage_locked);
+        uint32_t source_crc32 = 0U;
+        bool registration_bound = false;
+        const bool parsed = err == ESP_OK && web_scan_parse_registration_json(
+            json,
+            file_size,
+            &source_crc32,
+            &registration_bound
+        );
+        free(json);
+        if (err != ESP_OK) return err;
+        *valid_out = parsed;
+        if (parsed && registration_bound_out != NULL) *registration_bound_out = registration_bound;
+        if (parsed && registration_bound && source_crc_out != NULL) *source_crc_out = source_crc32;
+        return ESP_OK;
+    }
+
+    return ESP_ERR_INVALID_ARG;
+}
+
+
+static esp_err_t web_scan_validate_path_locked(
+    const char *path,
+    const web_scan_kind_t *kind,
+    bool *valid_out,
+    uint32_t *source_crc_out,
+    bool *registration_bound_out
+)
+{
+    if (path == NULL || kind == NULL || valid_out == NULL) return ESP_ERR_INVALID_ARG;
+    *valid_out = false;
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) return ESP_ERR_NOT_FOUND;
+    esp_err_t err = ESP_OK;
+    if (fseek(file, 0L, SEEK_END) != 0) err = ESP_FAIL;
+    const long size = err == ESP_OK ? ftell(file) : -1L;
+    if (err == ESP_OK && (size <= 0L || (unsigned long)size > kind->max_bytes)) {
+        (void)fclose(file);
+        return ESP_OK;
+    }
+    if (err == ESP_OK && fseek(file, 0L, SEEK_SET) != 0) err = ESP_FAIL;
+    if (err == ESP_OK) {
+        err = web_scan_validate_artifact(
+            file,
+            (size_t)size,
+            kind,
+            true,
+            valid_out,
+            source_crc_out,
+            registration_bound_out
+        );
+    }
+    if (fclose(file) != 0 && err == ESP_OK) err = ESP_FAIL;
+    return err;
+}
+
+
+static esp_err_t web_scan_validate_uploaded_temp(
+    const char *temp_path,
+    const web_scan_kind_t *kind,
+    uint32_t *source_crc_out,
+    bool *registration_bound_out,
+    bool *valid_out
+)
+{
+    if (temp_path == NULL || kind == NULL || valid_out == NULL) return ESP_ERR_INVALID_ARG;
+    *valid_out = false;
+    const bool registration = kind == &WEB_SCAN_KIND_REGISTRATION;
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+    FILE *file = fopen(temp_path, "rb");
+    if (file == NULL) err = errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    if (err == ESP_OK && fseek(file, 0L, SEEK_END) != 0) err = ESP_FAIL;
+    const long file_size = err == ESP_OK ? ftell(file) : -1L;
+    if (err == ESP_OK && !web_scan_kind_size_valid(kind, file_size)) err = ESP_ERR_INVALID_SIZE;
+    if (err == ESP_OK && fseek(file, 0L, SEEK_SET) != 0) err = ESP_FAIL;
+
+    if (registration && err == ESP_OK) {
+        err = web_scan_validate_artifact(
+            file,
+            (size_t)file_size,
+            kind,
+            true,
+            valid_out,
+            source_crc_out,
+            registration_bound_out
+        );
+        if (fclose(file) != 0 && err == ESP_OK) err = ESP_FAIL;
+        file = NULL;
+        storage_manager_operation_end();
+    }
+    else {
+        storage_manager_operation_end();
+    }
+
+    if (err == ESP_OK && !registration) {
+        err = web_scan_validate_artifact(
+            file,
+            (size_t)file_size,
+            kind,
+            false,
+            valid_out,
+            source_crc_out,
+            registration_bound_out
+        );
+    }
+    if (file != NULL) {
+        const esp_err_t close_err = web_scan_close_reader(&file);
+        if (err == ESP_OK) err = close_err;
+    }
+    return err;
 }
 
 

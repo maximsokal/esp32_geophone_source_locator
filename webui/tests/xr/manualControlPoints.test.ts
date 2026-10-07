@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  MANUAL_ANNOTATION_CAPACITY_MESSAGE,
+  MAX_MANUAL_CONTROL_POINTS,
   ManualControlPointStore,
   projectDepthSampleToProject,
   projectPointToXrReference,
@@ -99,5 +101,17 @@ describe('manual control point store', () => {
     const position = snapshot[0].position as [number, number, number];
     position[0] = 99;
     expect(store.snapshot()[0].position[0]).toBe(1);
+  });
+
+  it('keeps the store bounded while allowing a snap to update a pin at capacity', () => {
+    const store = new ManualControlPointStore();
+    for (let index = 0; index < MAX_MANUAL_CONTROL_POINTS; index += 1) store.add([index, 0, 0]);
+
+    const snapped = store.addCertifiedOrSnap([0.02, 0, 0], 0.9, 0.065);
+    expect(snapped.created).toBe(false);
+    expect(store.size).toBe(MAX_MANUAL_CONTROL_POINTS);
+    expect(store.capacityDiagnostics).toEqual({ count: MAX_MANUAL_CONTROL_POINTS, maximum: MAX_MANUAL_CONTROL_POINTS, capacityReached: true });
+    expect(() => store.add([1000, 0, 0])).toThrow(MANUAL_ANNOTATION_CAPACITY_MESSAGE);
+    expect(store.size).toBe(MAX_MANUAL_CONTROL_POINTS);
   });
 });

@@ -15,6 +15,8 @@ type ContinuationOccupancyFixture = Partial<Pick<ScanPointCloudSnapshot,
   'occupancyEnvelopeComponentCount' | 'occupancyQuarantinedSurfaceComponentCount' |
   'occupancyQuarantinedSurfacePointCount' | 'occupancyBridgeRescanComponentCount' |
   'occupancyBridgeEvidenceTruncated'>>;
+type ContinuationAnnotations = Partial<Pick<ScanPointCloudSnapshot,
+  'normalConfidence' | 'manualControlPoints' | 'operatorEdges'>>;
 
 function cloudPoints(count = 240): Float32Array {
   const points = new Float32Array(count * 3);
@@ -77,7 +79,7 @@ function boundsFor(points: Float32Array): ScanPointCloudSnapshot['bounds'] {
 
 function snapshot(
   positions: Float32Array,
-  occupancy: ContinuationOccupancyFixture = {},
+  occupancy: ContinuationOccupancyFixture & ContinuationAnnotations = {},
 ): ScanPointCloudSnapshot {
   const confidence = confidenceFor(positions);
   const normals = normalsFor(positions);
@@ -88,6 +90,7 @@ function snapshot(
     positions,
     confidence,
     normals,
+    ...(occupancy.normalConfidence === undefined ? {} : { normalConfidence: occupancy.normalConfidence }),
     pointCount: positions.length / 3,
     tentativePositions: new Float32Array(0),
     tentativeConfidence: new Float32Array(0),
@@ -145,8 +148,8 @@ function snapshot(
     tsdfCoverageConfidence: new Float32Array(confidence.length).fill(0.9),
     tsdfCoverageReady: new Uint8Array(confidence.length).fill(1),
     tsdfPointCount: confidence.length,
-    manualControlPoints: [],
-    operatorEdges: [],
+    manualControlPoints: occupancy.manualControlPoints ?? [],
+    operatorEdges: occupancy.operatorEdges ?? [],
   };
 }
 
@@ -251,6 +254,82 @@ describe('saved 3D scan continuation', () => {
     const result = registerAndMergeScanContinuation(base, snapshot(cloudPoints()));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain('display-truncated');
+  });
+
+  it('preserves per-surfel normal confidence through reload and the same voxel ownership rule', () => {
+    const basePoints = cloudPoints();
+    const extensionPoints = new Float32Array(basePoints.length + 3);
+    extensionPoints.set(basePoints);
+    extensionPoints.set([4, 4, 4], basePoints.length);
+    const base = snapshot(basePoints, { normalConfidence: new Float32Array(basePoints.length / 3).fill(0.35) });
+    const extensionConfidence = new Float32Array(extensionPoints.length / 3).fill(0.8);
+    extensionConfidence[extensionConfidence.length - 1] = 0.97;
+    const extension = snapshot(extensionPoints, { normalConfidence: extensionConfidence });
+    const loadedBase = decodeScanArtifact(encodeScanArtifact(base));
+    const loadedExtension = decodeScanArtifact(encodeScanArtifact(extension));
+
+    const result = registerAndMergeScanContinuation(loadedBase, loadedExtension);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.normalConfidence).toBeInstanceOf(Float32Array);
+    expect(result.snapshot.normalConfidence).toHaveLength(result.snapshot.pointCount);
+    expect(result.snapshot.normalConfidence?.[0]).toBeCloseTo(0.35);
+    expect(result.snapshot.normalConfidence?.[result.snapshot.pointCount - 1]).toBeCloseTo(0.97);
+    const roundTrip = decodeScanArtifact(encodeScanArtifact(result.snapshot));
+    expect(roundTrip.normalConfidence).toEqual(result.snapshot.normalConfidence);
+  });
+
+  it('fills unknown confidence with zero when only one side has normalConfidence', () => {
+    const points = cloudPoints();
+    const withConfidence = snapshot(points, { normalConfidence: new Float32Array(points.length / 3).fill(0.6) });
+    const withoutConfidence = snapshot(points);
+    const missingBase = registerAndMergeScanContinuation(withoutConfidence, withConfidence);
+    expect(missingBase.ok).toBe(true);
+    if (missingBase.ok) {
+      expect(missingBase.snapshot.normalConfidence).toHaveLength(missingBase.snapshot.pointCount);
+      expect(missingBase.snapshot.normalConfidence?.every((value) => value === 0)).toBe(true);
+    }
+    const extensionPoints = new Float32Array(points.length + 3);
+    extensionPoints.set(points);
+    extensionPoints.set([4, 4, 4], points.length);
+    const missingExtension = registerAndMergeScanContinuation(withConfidence, snapshot(extensionPoints));
+    expect(missingExtension.ok).toBe(true);
+    if (missingExtension.ok) {
+      expect(missingExtension.snapshot.normalConfidence).toHaveLength(missingExtension.snapshot.pointCount);
+      expect(missingExtension.snapshot.normalConfidence?.slice(0, points.length / 3).every((value) => Math.abs(value - 0.6) < 1e-6)).toBe(true);
+      expect(missingExtension.snapshot.normalConfidence?.[missingExtension.snapshot.pointCount - 1]).toBe(0);
+    }
+  });
+
+  it('keeps continuation annotations within total budgets and reports deterministic truncation', () => {
+    const base = snapshot(cloudPoints(), {
+      manualControlPoints: Array.from({ length: 250 }, (_, index) => ({ id: index + 1, position: [index, 0, 0] as const })),
+      operatorEdges: Array.from({ length: 120 }, (_, index) => ({
+        id: index + 1,
+        start: [index, 0, 0] as const,
+        end: [index + 0.1, 0, 0] as const,
+        confidence: 1,
+      })),
+    });
+    const extension = snapshot(cloudPoints(), {
+      manualControlPoints: Array.from({ length: 20 }, (_, index) => ({ id: 100 - index, position: [index, 1, 0] as const })),
+      operatorEdges: Array.from({ length: 20 }, (_, index) => ({
+        id: 100 - index,
+        start: [index, 1, 0] as const,
+        end: [index + 0.1, 1, 0] as const,
+        confidence: 0.9,
+      })),
+    });
+
+    const result = registerAndMergeScanContinuation(base, extension);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.manualControlPoints).toHaveLength(256);
+    expect(result.snapshot.manualControlPoints.slice(0, 250)).toEqual(base.manualControlPoints);
+    expect(result.snapshot.manualControlPoints.slice(250).map((point) => point.id)).toEqual([251, 252, 253, 254, 255, 256]);
+    expect(result.snapshot.operatorEdges).toHaveLength(128);
+    expect(result.snapshot.operatorEdges.slice(0, 120)).toEqual(base.operatorEdges);
+    expect(result.diagnostics.annotationsTruncated).toBe(true);
   });
 
   it('preserves distinct fine FREE/OCCUPIED cells when UNKNOWN uses a coarse grid', () => {

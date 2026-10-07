@@ -8,12 +8,14 @@
 import {
   decodeOccupancySolverArtifact,
   occupancyCrc32,
-  occupancyFrameIdForScan,
+  type DecodedOccupancyArtifact,
   type OccupancyRegistration,
 } from './occupancySolverArtifact';
 import type { ScanPointCloudSnapshot } from './webxrRuntime';
 import { localFloorMatrixToProject } from './projectFrame';
 import { solverCandidateVolume } from './candidateVolume';
+import { crc32 } from './crc32';
+import { createScanIdentity, type ScanIdentity } from './scanIdentity';
 
 const MAGIC = new TextEncoder().encode('GXPRV1\0\0');
 const LEGACY_VERSION = 1;
@@ -56,6 +58,9 @@ export interface VoxelPreviewArtifact {
 
 export interface BuildVoxelPreviewOptions {
   occupancyArtifact?: Uint8Array | null;
+  /** Reuse the decoded derivative prepared for this scan. */
+  decodedOccupancy?: DecodedOccupancyArtifact | null;
+  identity?: ScanIdentity;
   registration?: OccupancyRegistration | null;
   maxSurfaceVoxels?: number;
 }
@@ -109,15 +114,22 @@ function rigidRegistration(value: OccupancyRegistration | null | undefined): Vox
 
 function matchingOccupancy(
   bytes: Uint8Array | null | undefined,
-  scanArtifact: Uint8Array,
+  identity: ScanIdentity,
+  decoded?: DecodedOccupancyArtifact | null,
 ) {
+  if (decoded !== undefined) return decoded?.header.frame_id === identity.frameId ? decoded : null;
   if (bytes === null || bytes === undefined) return null;
   try {
-    const decoded = decodeOccupancySolverArtifact(bytes);
-    return decoded.header.frame_id === occupancyFrameIdForScan(scanArtifact) ? decoded : null;
+    const parsed = decodeOccupancySolverArtifact(bytes);
+    return parsed.header.frame_id === identity.frameId ? parsed : null;
   } catch {
     return null;
   }
+}
+
+function scanIdentityFor(value: Uint8Array | ScanIdentity, supplied?: ScanIdentity): ScanIdentity {
+  if (!(value instanceof Uint8Array)) return value;
+  return supplied ?? createScanIdentity(value);
 }
 
 function eachOccupiedSample(
@@ -235,14 +247,15 @@ function buildAtSize(
 
 export function buildVoxelPreviewGrid(
   snapshot: VoxelGridSnapshot,
-  scanArtifact: Uint8Array,
+  scanArtifact: Uint8Array | ScanIdentity,
   options: BuildVoxelPreviewOptions = {},
 ): VoxelPreviewGrid {
   const budget = options.maxSurfaceVoxels ?? DEFAULT_MAX_SURFACE_VOXELS;
   if (!Number.isInteger(budget) || budget < 1 || budget > MAX_VOXEL_PREVIEW_COUNT) {
     throw new Error(`Voxel preview budget must be an integer from 1 to ${MAX_VOXEL_PREVIEW_COUNT}.`);
   }
-  const occupancy = matchingOccupancy(options.occupancyArtifact, scanArtifact);
+  const identity = scanIdentityFor(scanArtifact, options.identity);
+  const occupancy = matchingOccupancy(options.occupancyArtifact, identity, options.decodedOccupancy);
   const registration = rigidRegistration(options.registration ?? occupancy?.header.registration);
   const initialSize = occupancy?.header.voxel_size_m ??
     snapshot.occupancyFineVoxelSizeMeters ?? snapshot.occupancyVoxelSizeMeters;
@@ -272,14 +285,16 @@ export function buildVoxelPreviewGrid(
 
 export function buildVoxelPreviewArtifact(
   snapshot: Parameters<typeof buildVoxelPreviewGrid>[0],
-  scanArtifact: Uint8Array,
+  scanArtifact: Uint8Array | ScanIdentity,
   options: BuildVoxelPreviewOptions = {},
 ): Uint8Array {
-  const grid = buildVoxelPreviewGrid(snapshot, scanArtifact, options);
-  const occupancy = matchingOccupancy(options.occupancyArtifact, scanArtifact);
+  const identity = scanIdentityFor(scanArtifact, options.identity);
+  const occupancy = matchingOccupancy(options.occupancyArtifact, identity, options.decodedOccupancy);
+  const preparedOptions = { ...options, identity, decodedOccupancy: occupancy };
+  const grid = buildVoxelPreviewGrid(snapshot, identity, preparedOptions);
   const registration = rigidRegistration(options.registration ?? occupancy?.header.registration);
   return encodeVoxelPreviewArtifact({
-    sourceScanCrc32: occupancyCrc32(scanArtifact),
+    sourceScanCrc32: identity.crc32,
     geometryComputedAtMs: BigInt(registration?.geometry_computed_at_ms ?? 0),
     registration,
     ...grid,
@@ -348,7 +363,7 @@ export function encodeVoxelPreviewArtifact(artifact: VoxelPreviewArtifact): Uint
     previous = index;
   }
   result.set(faceMasks, offset);
-  view.setUint32(totalBytes - 4, occupancyCrc32(result.subarray(0, totalBytes - 4)), true);
+  view.setUint32(totalBytes - 4, crc32(result.subarray(0, totalBytes - 4)), true);
   return result;
 }
 
@@ -362,7 +377,7 @@ export function decodeVoxelPreviewArtifact(source: ArrayBuffer | Uint8Array, exp
   const headerBytes = view.getUint16(10, true);
   const registered = view.getUint8(24);
   if (registered > 1 || headerBytes !== (registered ? REGISTERED_HEADER_BYTES : BASE_HEADER_BYTES)) throw new Error('Voxel preview header length is invalid.');
-  if (occupancyCrc32(bytes.subarray(0, bytes.byteLength - 4)) !== view.getUint32(bytes.byteLength - 4, true)) throw new Error('Voxel preview CRC mismatch.');
+  if (crc32(bytes.subarray(0, bytes.byteLength - 4)) !== view.getUint32(bytes.byteLength - 4, true)) throw new Error('Voxel preview CRC mismatch.');
 
   const dimensions: [number, number, number] = [view.getUint16(26, true), view.getUint16(28, true), view.getUint16(30, true)];
   if (dimensions.some((value) => value === 0)) throw new Error('Voxel preview dimensions are invalid.');

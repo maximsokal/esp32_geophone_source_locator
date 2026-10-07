@@ -156,7 +156,7 @@ export function XrRuntimePanel({
   useEffect(()=>optionalMonocularPrior.subscribe(()=>setAiPriorRevision((revision)=>revision+1)),[]);
   useEffect(()=>subscribeCertifiedGuideRegistry(()=>setCertifiedGeometryRevision((revision)=>revision+1)),[]);
   useEffect(()=>{optionalMonocularPrior.setEnabled(aiPriorEnabled);},[aiPriorEnabled]);
-  useEffect(()=>{tagMountedRef.current=true;bleMountedRef.current=true;const unsubscribe=runtime.subscribe(setRuntimeState);let cancelled=false;void probeWebXrCapabilities().then((result)=>{clientDiagnostics.info('XR_CAPABILITIES',result);void clientDiagnostics.flush();if(!cancelled){setCapabilities(result);onCapabilitiesChangeRef.current?.(result);}});return()=>{cancelled=true;tagMountedRef.current=false;bleMountedRef.current=false;tagGeometryEpoch.current+=1;bleIntentRef.current+=1;teardownTagModeForUnmount();const pointer=manualPointer.current;if(pointer?.timer!=null)window.clearTimeout(pointer.timer);manualPointer.current=null;unsubscribe();void runtime.dispose();};},[runtime]);
+  useEffect(()=>{runtime.attach();tagMountedRef.current=true;bleMountedRef.current=true;const unsubscribe=runtime.subscribe(setRuntimeState);let cancelled=false;void probeWebXrCapabilities().then((result)=>{clientDiagnostics.info('XR_CAPABILITIES',result);void clientDiagnostics.flush();if(!cancelled){setCapabilities(result);onCapabilitiesChangeRef.current?.(result);}});return()=>{cancelled=true;tagMountedRef.current=false;bleMountedRef.current=false;tagGeometryEpoch.current+=1;bleIntentRef.current+=1;teardownTagModeForUnmount();const pointer=manualPointer.current;if(pointer?.timer!=null)window.clearTimeout(pointer.timer);manualPointer.current=null;unsubscribe();void runtime.detach();};},[runtime]);
   useEffect(()=>{tagGeometryEpoch.current+=1;tagGeometryRef.current=null;setTagGeometry(null);setTagGeometryAt(null);setTagGeometryLoading(false);setTagModeError(null);setTagRegistrationLabel(null);return()=>{tagGeometryEpoch.current+=1;};},[objectId,sessionId]);
   useEffect(()=>{const active=runtimeState.phase==='starting'||runtimeState.phase==='running'||runtimeState.phase==='stopping';onSessionActiveChangeRef.current?.(active);if(!active){setManualMode(false);manualPointer.current=null;}},[runtimeState.phase]);
   useEffect(()=>{
@@ -250,6 +250,7 @@ export function XrRuntimePanel({
     tagClientRef.current=client;tagModeActiveRef.current=true;setTagModeEnabled(true);
     tagFramesUnsubscribeRef.current=runtime.subscribeTagFrames((frame)=>{
       if(!tagModeActiveRef.current||client.busy)return;
+      // The capture marks its fresh RGBA buffer as owned; detect transfers that buffer to the worker.
       const task=client.detect(frame).then((detected)=>{
         if(detected===null||!tagModeActiveRef.current||tagSessionToken.current!==token)return;
         const observations:TagObservation[]=[];

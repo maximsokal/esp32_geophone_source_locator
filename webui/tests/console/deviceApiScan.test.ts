@@ -12,6 +12,7 @@ import {
   saveSessionRegistration,
   sendControl,
 } from '../../src/api/deviceApi';
+import { getScanIdentityMetrics, resetScanIdentityMetrics } from '../../src/xr/scanIdentity';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -38,10 +39,12 @@ afterEach(() => {
 
 describe('session-owned 3D scan transport (MAX-167)', () => {
   it('uploads the artifact as exact opaque bytes to the selected recording/session', async () => {
+    resetScanIdentityMetrics();
     const artifact = new Uint8Array([0x47, 0x58, 0x52, 0x53, 1, 2, 3, 255]);
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = init?.body;
       expect(body).toBeInstanceOf(ArrayBuffer);
+      expect(body).toBe(artifact.buffer);
       expect(Array.from(new Uint8Array(body as ArrayBuffer))).toEqual(Array.from(artifact));
       return jsonResponse({ ok: true, action: 'scan_save', object_id: 'OBJ_0008', bytes: artifact.length, id: 'scan-crc32:12345678' });
     });
@@ -56,6 +59,25 @@ describe('session-owned 3D scan transport (MAX-167)', () => {
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/octet-stream');
+    expect(getScanIdentityMetrics().persistenceBytesCopied).toBe(0);
+  });
+
+  it('makes exactly one owned copy when the upload view covers only part of its buffer', async () => {
+    resetScanIdentityMetrics();
+    const backing = new Uint8Array([90, 1, 2, 3, 91]);
+    const artifact = backing.subarray(1, 4);
+    let uploadedBuffer: ArrayBuffer | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      uploadedBuffer = init?.body as ArrayBuffer;
+      return jsonResponse({ ok: true, action: 'scan_save', bytes: artifact.byteLength });
+    }));
+
+    await saveObjectScanArtifact('OBJ_0008', 'S000001', artifact);
+
+    expect(uploadedBuffer).toBeInstanceOf(ArrayBuffer);
+    expect(uploadedBuffer).not.toBe(backing.buffer);
+    expect(Array.from(new Uint8Array(uploadedBuffer as ArrayBuffer))).toEqual([1, 2, 3]);
+    expect(getScanIdentityMetrics().persistenceBytesCopied).toBe(artifact.byteLength);
   });
 
   it('builds staging URLs for scan, occupancy, preview, and registration uploads', async () => {

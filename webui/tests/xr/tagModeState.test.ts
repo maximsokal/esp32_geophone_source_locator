@@ -8,7 +8,12 @@ describe('tag-mode status', () => {
   it.each(['en', 'uk'] as const)('maps fused observations to localized chip labels in %s', (locale: I18nLocale) => {
     const fusion = fuseTagObservations([
       { tagId: 0, positionScan: [0, 0, 0] }, { tagId: 0, positionScan: [0.001, 0, 0] },
-      ...Array.from({ length: 5 }, (_, i) => ({ tagId: 2, positionScan: [1 + i * 0.001, 0, 0] as const })),
+      ...Array.from({ length: 5 }, (_, i) => ({
+        tagId: 2,
+        positionScan: [1 + i * 0.001, 0, 0] as const,
+        cameraPosition: [i * 0.3, 0, 0] as const,
+        cameraForward: [0, 0, 1] as const,
+      })),
     ]);
     const chips = tagChipStatuses(fusion, locale);
     expect(chips.map(({ tagId, node, status }) => ({ tagId, node, status }))).toEqual([

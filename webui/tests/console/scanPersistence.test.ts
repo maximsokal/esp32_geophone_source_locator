@@ -11,6 +11,7 @@ import {
 import type { ControlResult, ScanArtifactInfo } from '../../src/api/deviceApi';
 import { decodeScanArtifact, encodeScanArtifact } from '../../src/xr/scanArtifact';
 import { occupancyFrameIdForScan } from '../../src/xr/occupancySolverArtifact';
+import { createScanIdentity, getScanIdentityMetrics, resetScanIdentityMetrics } from '../../src/xr/scanIdentity';
 import { makeValidScanSnapshot } from '../xr/support/validScanSnapshot';
 import {
   ScanPersistenceController,
@@ -779,5 +780,232 @@ describe('asynchronous derivative builders (MAX-403)', () => {
     expect(calls).toEqual(['scan', 'preview']);
     expect(state).toMatchObject({ scan: 'saved', occupancy: 'failed', preview: 'ready' });
     expect(state?.occupancyError).toContain('registration unavailable');
+  });
+});
+
+describe('scan persistence ownership and owner invalidation (MAX-392/MAX-415)', () => {
+  it('releases owned scan bytes and prevents late info from reviving an abandoned owner', async () => {
+    const sourceBytes = new Uint8Array([7, 8, 9]);
+    let finishInfo!: (info: ScanArtifactInfo) => void;
+    const infoPending = new Promise<ScanArtifactInfo>((resolve) => { finishInfo = resolve; });
+    const controller = new ScanPersistenceController({
+      saveScan: async () => ({ ok: true, action: 'scan' }),
+      saveOccupancy: async () => ({ ok: true, action: 'occupancy' }),
+      savePreview: async () => ({ ok: true, action: 'preview' }),
+      fetchInfo: async () => infoPending,
+    });
+    const saving = controller.save('OBJ', 'SESSION', sourceBytes, () => new Uint8Array([1]), () => new Uint8Array([2]));
+    const pending = (controller as unknown as { pendingScan: { bytes: Uint8Array | null; buildOccupancy: () => unknown } | null }).pendingScan;
+
+    expect(pending).not.toBeNull();
+    expect(pending?.bytes).not.toBe(sourceBytes);
+    controller.abandon();
+    expect(pending?.bytes).toBeNull();
+    expect(() => pending?.buildOccupancy()).toThrow(/owner was abandoned/);
+    finishInfo({ present: false, bytes: 0, id: null, sourceId: null });
+    await expect(saving).resolves.toMatchObject({ scan: 'saving' });
+    expect((controller as unknown as { knownScan: unknown }).knownScan).toBeNull();
+  });
+
+  it('rejects a loaded scan ID that disagrees with its immutable identity', async () => {
+    const bytes = new Uint8Array([17, 18, 19]);
+    const identity = createScanIdentity(bytes);
+    let builderCalls = 0;
+    const controller = new ScanPersistenceController({
+      saveScan: async () => ({ ok: true, action: 'scan' }),
+      saveOccupancy: async () => ({ ok: true, action: 'occupancy' }),
+      savePreview: async () => ({ ok: true, action: 'preview' }),
+      fetchInfo: async (_objectId, _sessionId, kind) => kind === 'scan'
+        ? { present: true, bytes: identity.byteLength, id: identity.frameId, sourceId: null }
+        : { present: false, bytes: 0, id: null, sourceId: null },
+    });
+
+    const state = await controller.reconcile(
+      'OBJ', 'SESSION', bytes,
+      () => { builderCalls += 1; return new Uint8Array([1]); },
+      () => { builderCalls += 1; return new Uint8Array([2]); },
+      'scan-crc32:ffffffff',
+      identity,
+    );
+
+    expect(state).toMatchObject({ scan: 'unknown', scanError: expect.stringContaining('do not match') });
+    expect(builderCalls).toBe(0);
+  });
+
+  it('keeps one owned scan payload and adopts derivative buffers without copying', async () => {
+    const sourceBytes = new Uint8Array([11, 22, 33, 44]);
+    const identity = createScanIdentity(sourceBytes);
+    resetScanIdentityMetrics();
+    const occupancyBytes = new Uint8Array([51, 52]);
+    const previewBytes = new Uint8Array([61, 62, 63]);
+    let uploadedScan: Uint8Array | null = null;
+    let uploadedOccupancy: Uint8Array | null = null;
+    let uploadedPreview: Uint8Array | null = null;
+    const controller = new ScanPersistenceController({
+      saveScan: async (_objectId, _sessionId, bytes) => {
+        uploadedScan = bytes;
+        return { ok: true, action: 'scan', id: identity.frameId };
+      },
+      saveOccupancy: async (_objectId, _sessionId, bytes) => {
+        uploadedOccupancy = bytes;
+        return { ok: true, action: 'occupancy' };
+      },
+      savePreview: async (_objectId, _sessionId, bytes) => {
+        uploadedPreview = bytes;
+        return { ok: true, action: 'preview' };
+      },
+      fetchInfo: async () => ({ present: false, bytes: 0, id: null, sourceId: null }),
+    });
+
+    const state = await controller.save(
+      'OBJ', 'SESSION', sourceBytes, () => occupancyBytes, () => previewBytes, false, identity.frameId, identity,
+    );
+
+    expect(state).toMatchObject({ scan: 'saved', occupancy: 'ready', preview: 'ready' });
+    expect(uploadedScan).not.toBe(sourceBytes);
+    expect(uploadedScan?.buffer).not.toBe(sourceBytes.buffer);
+    expect(uploadedOccupancy).toBe(occupancyBytes);
+    expect(uploadedPreview).toBe(previewBytes);
+    expect(getScanIdentityMetrics()).toEqual({
+      wholeScanCrcInvocations: 0,
+      wholeScanCrcBytesVisited: 0,
+      persistenceBytesCopied: sourceBytes.byteLength,
+    });
+    expect(controller.retryAvailable).toBe(false);
+  });
+
+  it('does not retain loaded bytes in a reconciliation descriptor', async () => {
+    const savedBytes = new Uint8Array([71, 72, 73]);
+    const identity = createScanIdentity(savedBytes);
+    let releaseOccupancy!: (bytes: Uint8Array) => void;
+    let signalBuilderStarted!: () => void;
+    const builderStarted = new Promise<void>((resolve) => { signalBuilderStarted = resolve; });
+    const held = new Promise<Uint8Array>((resolve) => { releaseOccupancy = resolve; });
+    const controller = new ScanPersistenceController({
+      saveScan: async () => ({ ok: true, action: 'scan' }),
+      saveOccupancy: async () => ({ ok: true, action: 'occupancy' }),
+      savePreview: async () => ({ ok: true, action: 'preview' }),
+      fetchInfo: async (_objectId, _sessionId, kind) => kind === 'scan'
+        ? { present: true, bytes: identity.byteLength, id: identity.frameId }
+        : { present: false, bytes: 0, id: null, sourceId: null },
+    });
+    const reconciling = controller.reconcile(
+      'OBJ', 'SESSION', savedBytes,
+      () => { signalBuilderStarted(); return held; },
+      () => new Uint8Array([81]),
+      identity.frameId,
+      identity,
+    );
+    await builderStarted;
+    const descriptor = (controller as unknown as { pendingScan: { bytes: Uint8Array | null; identity: unknown } | null }).pendingScan;
+
+    expect(descriptor?.bytes).toBeNull();
+    expect(descriptor?.identity).toBe(identity);
+    expect(descriptor !== null && Object.values(descriptor).includes(savedBytes)).toBe(false);
+    releaseOccupancy(new Uint8Array([91]));
+    await reconciling;
+  });
+
+  it('abandons A derivatives after its primary commit when B replaces the scan', async () => {
+    const server = await startControlServer();
+    server.acceptOccupancy = true;
+    try {
+      const bytesA = new Uint8Array([101, 1, 1]);
+      const bytesB = new Uint8Array([102, 2, 2]);
+      let releaseOccupancyA!: (bytes: Uint8Array) => void;
+      let signalBuilderStarted!: () => void;
+      const builderStarted = new Promise<void>((resolve) => { signalBuilderStarted = resolve; });
+      const heldOccupancyA = new Promise<Uint8Array>((resolve) => { releaseOccupancyA = resolve; });
+      const controllerA = new ScanPersistenceController(server.ports);
+      const controllerB = new ScanPersistenceController(server.ports);
+      const savingA = controllerA.save('OBJ_ABANDON', 'S000001', bytesA, () => {
+        signalBuilderStarted();
+        return heldOccupancyA;
+      }, () => new Uint8Array([1]));
+
+      await builderStarted;
+      expect(server.files.get('OBJ_ABANDON/S000001/scan')).toEqual(bytesA);
+      controllerA.abandon();
+      const identityB = createScanIdentity(bytesB);
+      const savedB = await controllerB.save(
+        'OBJ_ABANDON', 'S000001', bytesB,
+        () => new Uint8Array([2]),
+        () => new Uint8Array([3]),
+        false,
+        identityB.frameId,
+        identityB,
+      );
+      releaseOccupancyA(new Uint8Array([4]));
+      await savingA;
+
+      expect(savedB).toMatchObject({ scan: 'saved', occupancy: 'ready', preview: 'ready' });
+      expect(server.files.get('OBJ_ABANDON/S000001/scan')).toEqual(bytesB);
+      expect(server.occupancyUploads).toEqual([new Uint8Array([2])]);
+      expect(server.previewUploads).toEqual([new Uint8Array([3])]);
+      expect(server.derivativeScanIds).toEqual([identityB.frameId, identityB.frameId]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('rejects controller A derivatives with 409 after controller B replaces the scan generation', async () => {
+    const server = await startControlServer();
+    server.acceptOccupancy = true;
+    try {
+      const objectId = 'OBJ_GENERATION';
+      const sessionId = 'S000002';
+      const bytesA = new Uint8Array([111, 1, 1]);
+      const bytesB = new Uint8Array([112, 2, 2]);
+      const identityA = createScanIdentity(bytesA);
+      const identityB = createScanIdentity(bytesB);
+      let releaseOccupancyA!: (bytes: Uint8Array) => void;
+      let signalBuilderStarted!: () => void;
+      const builderStarted = new Promise<void>((resolve) => { signalBuilderStarted = resolve; });
+      const heldOccupancyA = new Promise<Uint8Array>((resolve) => { releaseOccupancyA = resolve; });
+      const controllerA = new ScanPersistenceController(server.ports);
+      const controllerB = new ScanPersistenceController(server.ports);
+      const savingA = controllerA.save(
+        objectId,
+        sessionId,
+        bytesA,
+        () => { signalBuilderStarted(); return heldOccupancyA; },
+        () => new Uint8Array([5]),
+        false,
+        identityA.frameId,
+        identityA,
+      );
+
+      await builderStarted;
+      expect(server.files.get(`${objectId}/${sessionId}/scan`)).toEqual(bytesA);
+      const savedB = await controllerB.save(
+        objectId,
+        sessionId,
+        bytesB,
+        () => new Uint8Array([2]),
+        () => new Uint8Array([3]),
+        false,
+        identityB.frameId,
+        identityB,
+      );
+      releaseOccupancyA(new Uint8Array([4]));
+      const staleA = await savingA;
+
+      expect(savedB).toMatchObject({ scan: 'saved', occupancy: 'ready', preview: 'ready' });
+      expect(staleA).toMatchObject({
+        scan: 'derived_stale',
+        occupancy: 'stale',
+        preview: 'stale',
+        scanError: expect.stringContaining('scan_generation_mismatch'),
+      });
+      expect(server.files.get(`${objectId}/${sessionId}/scan`)).toEqual(bytesB);
+      expect(server.files.get(`${objectId}/${sessionId}/occupancy`)).toEqual(new Uint8Array([2]));
+      expect(server.files.get(`${objectId}/${sessionId}/preview`)).toEqual(new Uint8Array([3]));
+      expect(server.occupancyUploads).toEqual([new Uint8Array([2]), new Uint8Array([4])]);
+      expect(server.previewUploads).toEqual([new Uint8Array([3])]);
+      expect(server.derivativeScanIds).toEqual([identityB.frameId, identityB.frameId, identityA.frameId]);
+      expect(controllerA.retryAvailable).toBe(false);
+    } finally {
+      await server.close();
+    }
   });
 });

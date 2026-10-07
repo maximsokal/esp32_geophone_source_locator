@@ -9,6 +9,14 @@ import {
 } from './manualPlacementSurface';
 
 export type ProjectPoint = readonly [number, number, number];
+export const MAX_MANUAL_CONTROL_POINTS = 256;
+export const MANUAL_ANNOTATION_CAPACITY_MESSAGE = 'Manual annotation capacity reached. Remove an existing pin before adding another.';
+
+export interface ManualPointCapacityDiagnostics {
+  count: number;
+  maximum: number;
+  capacityReached: boolean;
+}
 
 export interface ManualControlPoint { id: number; position: ProjectPoint; }
 export interface ManualProjectionInput {
@@ -115,12 +123,19 @@ export class ManualControlPointStore {
   private readonly points = new Map<number, ManualControlPoint>();
   private readonly order: number[] = [];
   private nextId = 1;
+  private reachedCapacity = false;
 
-  reset(): void { this.points.clear(); this.order.length = 0; this.nextId = 1; certifiedPlacementToken = null; }
+  reset(): void { this.points.clear(); this.order.length = 0; this.nextId = 1; this.reachedCapacity = false; certifiedPlacementToken = null; }
 
   add(position: ProjectPoint): ManualControlPoint {
+    if (this.points.size >= MAX_MANUAL_CONTROL_POINTS) {
+      this.reachedCapacity = true;
+      throw new ManualPlacementRejectedError(MANUAL_ANNOTATION_CAPACITY_MESSAGE);
+    }
     const point: ManualControlPoint = { id: this.nextId++, position: [position[0], position[1], position[2]] };
-    this.points.set(point.id, point); this.order.push(point.id); return point;
+    this.points.set(point.id, point); this.order.push(point.id);
+    if (this.points.size === MAX_MANUAL_CONTROL_POINTS) this.reachedCapacity = true;
+    return point;
   }
 
   private updateStored(id: number, position: ProjectPoint): ManualControlPoint | null {
@@ -196,6 +211,10 @@ export class ManualControlPointStore {
 
   get lastId(): number | null { return this.order.length > 0 ? this.order[this.order.length - 1] : null; }
   get size(): number { return this.points.size; }
+  get capacityReached(): boolean { return this.reachedCapacity; }
+  get capacityDiagnostics(): ManualPointCapacityDiagnostics {
+    return { count: this.size, maximum: MAX_MANUAL_CONTROL_POINTS, capacityReached: this.reachedCapacity };
+  }
 
   snapshot(): readonly ManualControlPoint[] {
     const output: ManualControlPoint[] = [];

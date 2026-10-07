@@ -1,8 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { decodeScanArtifact, encodeScanArtifact } from '../../src/xr/scanArtifact';
+import {
+  decodeScanArtifact,
+  encodeScanArtifact,
+  MAX_ANNOTATION_JSON_BYTES,
+  SCAN_ANNOTATION_CAPACITY_ERROR,
+} from '../../src/xr/scanArtifact';
 import { makeHistoricalScanArtifactFixtures } from './fixtures/scanArtifactSchema1History';
-import { rewriteScanArtifactMetadata } from './support/scanArtifactTestTools';
+import { rewriteNormalConfidenceAsLegacy, rewriteScanArtifactMetadata } from './support/scanArtifactTestTools';
 import { makeValidScanSnapshot } from './support/validScanSnapshot';
 
 function artifactWithMetadata(update: (metadata: Record<string, unknown>) => void): Uint8Array {
@@ -206,8 +211,9 @@ describe('scan artifact metadata contract', () => {
   });
 
   it('keeps absent optional fields absent without inventing localization evidence', () => {
-    const encoded = rewriteScanArtifactMetadata(encodeScanArtifact(makeValidScanSnapshot()), (metadata) => {
-      delete metadata.normalConfidence;
+    const encoded = rewriteScanArtifactMetadata(rewriteNormalConfidenceAsLegacy(
+      encodeScanArtifact(makeValidScanSnapshot()), false,
+    ), (metadata) => {
       delete metadata.occupancyFineVoxelSizeMeters;
       delete metadata.occupancyCellsSaturated;
       delete metadata.occupancyDroppedCellUpdates;
@@ -220,6 +226,44 @@ describe('scan artifact metadata contract', () => {
     expect(Object.hasOwn(decoded, 'occupancyCellsSaturated')).toBe(false);
     expect(Object.hasOwn(decoded, 'occupancyDroppedCellUpdates')).toBe(false);
     expect(Object.hasOwn(decoded, 'occupancySolverCandidateBelowSurfaceMeters')).toBe(false);
+  });
+
+  it.each([
+    { name: 'extra property', value: { 0: 0.88, extra: 0.5 } },
+    { name: 'non-canonical numeric index', value: { 0: 0.88, '01': 0.5 } },
+    { name: 'prototype-shaped key', value: JSON.parse('{"0":0.88,"__proto__":{"polluted":true}}') },
+  ])('rejects malicious historical normalConfidence with $name', ({ value }) => {
+    const legacy = rewriteNormalConfidenceAsLegacy(encodeScanArtifact(makeValidScanSnapshot()), true);
+    const encoded = rewriteScanArtifactMetadata(legacy, (metadata) => { metadata.normalConfidence = value; });
+
+    expect(() => decodeScanArtifact(encoded)).toThrow(/normalConfidence/);
+  });
+
+  it('rejects an excessive legacy annotation count before mapping entries', () => {
+    const encoded = artifactWithMetadata((metadata) => {
+      metadata.manualControlPoints = Array.from({ length: 257 }, (_, index) => ({ id: index + 1, position: [0, 0, 0] }));
+    });
+
+    expect(() => decodeScanArtifact(encoded)).toThrow(SCAN_ANNOTATION_CAPACITY_ERROR);
+  });
+
+  it('rejects annotation JSON above the byte budget before full metadata stringify', () => {
+    const oversized = makeValidScanSnapshot();
+    oversized.manualControlPoints = Array.from({ length: 256 }, (_, index) => ({
+      id: index + 1,
+      position: [Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE] as const,
+    }));
+    oversized.operatorEdges = Array.from({ length: 128 }, (_, index) => ({
+      id: index + 1,
+      start: [Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE] as const,
+      end: [-Number.MAX_VALUE, -Number.MAX_VALUE, -Number.MAX_VALUE] as const,
+      confidence: 1,
+    }));
+    const stringify = vi.spyOn(JSON, 'stringify');
+
+    expect(() => encodeScanArtifact(oversized)).toThrow(SCAN_ANNOTATION_CAPACITY_ERROR);
+    expect(stringify.mock.calls.some(([value]) => typeof value === 'object' && value !== null)).toBe(false);
+    expect(MAX_ANNOTATION_JSON_BYTES).toBeLessThan(256 * 1024);
   });
 
   it.each(makeHistoricalScanArtifactFixtures())('supports the historical schema-1 shape: $name', (fixture) => {

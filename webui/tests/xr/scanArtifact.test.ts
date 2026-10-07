@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { decodeScanArtifact, encodeScanArtifact } from '../../src/xr/scanArtifact';
+import {
+  decodeScanArtifact,
+  decodeScanArtifactWithIdentity,
+  encodeScanArtifact,
+  encodeScanArtifactWithIdentity,
+  getScanArtifactMetrics,
+  resetScanArtifactMetrics,
+  SCAN_ARTIFACT_BINARY_ARRAY_KEYS,
+} from '../../src/xr/scanArtifact';
+import { getScanIdentityMetrics, resetScanIdentityMetrics } from '../../src/xr/scanIdentity';
 import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
 import { rewriteScanArtifactMetadata } from './support/scanArtifactTestTools';
 
@@ -88,6 +97,89 @@ describe('3D scan artifact', () => {
     expect(restored.bounds).toEqual(original.bounds);
   });
 
+  it('stores normalConfidence in the binary table and restores it as a bounded Float32Array', () => {
+    const encoded = encodeScanArtifact(snapshot());
+    const headerLength = new DataView(encoded.buffer).getUint32(8, true);
+    const header = JSON.parse(new TextDecoder().decode(encoded.subarray(20, 20 + headerLength)));
+    const restored = decodeScanArtifact(encoded);
+
+    expect(header.metadata).not.toHaveProperty('normalConfidence');
+    expect(header.lengths.normalConfidence).toBe(snapshot().pointCount);
+    expect(restored.normalConfidence).toBeInstanceOf(Float32Array);
+    expect(restored.normalConfidence).toEqual(new Float32Array([0.95, 0.9]));
+  });
+
+  it('keeps the schema-1 payload table unchanged when normalConfidence is absent', () => {
+    const withoutNormalConfidence = { ...snapshot() };
+    delete withoutNormalConfidence.normalConfidence;
+    const encoded = encodeScanArtifact(withoutNormalConfidence);
+    const headerLength = new DataView(encoded.buffer).getUint32(8, true);
+    const header = JSON.parse(new TextDecoder().decode(encoded.subarray(20, 20 + headerLength)));
+
+    expect(header.metadata).not.toHaveProperty('normalConfidence');
+    expect(header.lengths).not.toHaveProperty('normalConfidence');
+    expect(decodeScanArtifact(encoded)).not.toHaveProperty('normalConfidence');
+  });
+
+  it('keeps normalConfidence metadata bounded for a 50,000-point scan', () => {
+    const large = snapshot();
+    large.pointCount = 50000;
+    large.maxPointCapacity = 50000;
+    large.memoryBudgetPoints = 50000;
+    large.positions = new Float32Array(large.pointCount * 3);
+    large.confidence = new Float32Array(large.pointCount).fill(0.8);
+    large.normals = new Float32Array(large.pointCount * 3);
+    large.normalConfidence = new Float32Array(large.pointCount).fill(0.75);
+    const encoded = encodeScanArtifact(large);
+    const headerLength = new DataView(encoded.buffer).getUint32(8, true);
+
+    expect(headerLength).toBeLessThan(4096);
+    expect(decodeScanArtifact(encoded).normalConfidence).toHaveLength(large.pointCount);
+  });
+
+  it('classifies every typed-array snapshot field as binary persisted', () => {
+    const typedArrayFields = Object.entries(snapshot())
+      .filter(([, value]) => ArrayBuffer.isView(value))
+      .map(([field]) => field);
+    const binaryFields: readonly string[] = SCAN_ARTIFACT_BINARY_ARRAY_KEYS;
+
+    expect(typedArrayFields.length).toBeGreaterThan(0);
+    expect(typedArrayFields.every((field) => binaryFields.includes(field))).toBe(true);
+  });
+
+  it('decodes binary arrays as views over one owned payload copy', () => {
+    const decoded = decodeScanArtifact(encodeScanArtifact(snapshot()));
+
+    expect(decoded.positions.buffer).toBe(decoded.confidence.buffer);
+    expect(decoded.normalConfidence?.buffer).toBe(decoded.positions.buffer);
+    expect(decoded.tsdfCoverageReady.buffer).toBe(decoded.positions.buffer);
+  });
+
+  it('measures validation and checksum passes while producing one scan identity', () => {
+    resetScanArtifactMetrics();
+    resetScanIdentityMetrics();
+    const encoded = encodeScanArtifactWithIdentity(snapshot());
+    const headerLength = new DataView(encoded.bytes.buffer).getUint32(8, true);
+    const payloadLength = new DataView(encoded.bytes.buffer).getUint32(12, true);
+
+    expect(getScanArtifactMetrics().validationBytesVisited).toBeGreaterThan(0);
+    expect(getScanArtifactMetrics().artifactChecksumCrcBytesVisited).toBe(headerLength + payloadLength);
+    expect(getScanIdentityMetrics()).toMatchObject({
+      wholeScanCrcInvocations: 1,
+      wholeScanCrcBytesVisited: encoded.bytes.byteLength,
+    });
+
+    resetScanArtifactMetrics();
+    resetScanIdentityMetrics();
+    const decoded = decodeScanArtifactWithIdentity(encoded.bytes);
+    expect(decoded.identity).toEqual(encoded.identity);
+    expect(getScanArtifactMetrics().artifactChecksumCrcBytesVisited).toBe(encoded.bytes.byteLength - 20);
+    expect(getScanIdentityMetrics()).toMatchObject({
+      wholeScanCrcInvocations: 1,
+      wholeScanCrcBytesVisited: encoded.bytes.byteLength,
+    });
+  });
+
   it('rejects a truncated or modified SD artifact instead of rendering fabricated geometry', () => {
     const encoded = encodeScanArtifact(snapshot());
     const corrupted = encoded.slice();
@@ -98,6 +190,8 @@ describe('3D scan artifact', () => {
 
   it('decodes the original round-trip shape with later schema-1 additions absent', () => {
     const original = snapshot();
+    // Older schema-1 artifacts have no binary normalConfidence length entry.
+    delete original.normalConfidence;
     const legacyExpected = { ...original };
     const optionalFields = [
       'normalConfidence',

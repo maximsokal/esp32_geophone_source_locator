@@ -23,7 +23,12 @@ export function createProjectFrameRegistration() {
       rotation[3] * point[0] + rotation[4] * point[1] + rotation[5] * point[2] + translation[1],
       rotation[6] * point[0] + rotation[7] * point[1] + rotation[8] * point[2] + translation[2],
     ];
-    return Array.from({ length: 5 }, () => ({ tagId, positionScan }));
+    return Array.from({ length: 5 }, (_, view) => ({
+      tagId,
+      positionScan,
+      cameraPosition: [view * 0.3, 0, 0] as const,
+      cameraForward: [0, 0, 1] as const,
+    }));
   });
   const fusion = fuseTagObservations(observations);
   const geometry = {

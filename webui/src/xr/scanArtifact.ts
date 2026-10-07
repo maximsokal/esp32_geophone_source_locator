@@ -1,4 +1,8 @@
 import type { ScanPointCloudSnapshot } from './webxrRuntime';
+import { crc32Pair, crc32Update, crc32Finalize } from './crc32';
+import { createScanIdentity, scanIdentityFromCrc, type ScanIdentity } from './scanIdentity';
+import { MAX_MANUAL_CONTROL_POINTS } from './manualControlPoints';
+import { MAX_OPERATOR_EDGES } from './operatorEdges';
 
 const MAGIC = new TextEncoder().encode('GXRSCAN1');
 const FIXED_HEADER_BYTES = 20;
@@ -11,12 +15,38 @@ const FLOAT_ARRAY_KEYS = [
   'tsdfPositions', 'tsdfNormals', 'tsdfConfidence', 'tsdfResidualMeters',
   'tsdfNormalConfidence', 'tsdfCoverageConfidence',
 ] as const;
+const OPTIONAL_FLOAT_ARRAY_KEYS = ['normalConfidence'] as const;
 const BYTE_ARRAY_KEYS = ['tsdfCoverageReady'] as const;
+export const MAX_ANNOTATION_JSON_BYTES = 32 * 1024;
+export const SCAN_ANNOTATION_CAPACITY_ERROR = 'scan.annotations.capacity_exceeded';
+
+let validationBytesVisited = 0;
+let artifactChecksumCrcBytesVisited = 0;
+
+export function getScanArtifactMetrics(): Readonly<{
+  validationBytesVisited: number;
+  artifactChecksumCrcBytesVisited: number;
+}> {
+  return { validationBytesVisited, artifactChecksumCrcBytesVisited };
+}
+
+export function resetScanArtifactMetrics(): void {
+  validationBytesVisited = 0;
+  artifactChecksumCrcBytesVisited = 0;
+}
+
+export const SCAN_ARTIFACT_BINARY_ARRAY_KEYS = Object.freeze([
+  ...FLOAT_ARRAY_KEYS, ...OPTIONAL_FLOAT_ARRAY_KEYS, ...BYTE_ARRAY_KEYS,
+]);
 
 type FloatArrayKey = (typeof FLOAT_ARRAY_KEYS)[number];
+type OptionalFloatArrayKey = (typeof OPTIONAL_FLOAT_ARRAY_KEYS)[number];
 type ByteArrayKey = (typeof BYTE_ARRAY_KEYS)[number];
-type BinaryArrayKey = FloatArrayKey | ByteArrayKey;
+type BinaryArrayKey = FloatArrayKey | OptionalFloatArrayKey | ByteArrayKey;
 type SnapshotMetadata = Omit<ScanPointCloudSnapshot, BinaryArrayKey>;
+type BinaryArrays = Record<FloatArrayKey, Float32Array> & Record<ByteArrayKey, Uint8Array> & {
+  normalConfidence?: Float32Array;
+};
 type ProjectPoint = readonly [number, number, number];
 
 interface ScanArtifactHeader {
@@ -26,7 +56,6 @@ interface ScanArtifactHeader {
 }
 
 const METADATA_FIELDS = [
-  'normalConfidence',
   'pointCount', 'tentativePointCount', 'rawPointCount', 'bounds', 'fullBounds',
   'voxelSizeMeters', 'maxDepthMeters', 'depthFrameCount', 'sampledDepthFrames',
   'capacityReached', 'maxPointCapacity', 'boundsTrimFraction', 'coverageCellCount',
@@ -49,18 +78,6 @@ const METADATA_FIELDS = [
 // consumers keep their local fallback, fine occupancy uses the coarse voxel,
 // saturation falls back to false, dropped updates to zero, and candidate depth to zero.
 
-function crc32(bytes: Uint8Array, start = 0): number {
-  let crc = 0xffffffff;
-  for (let index = start; index < bytes.length; index += 1) {
-    crc ^= bytes[index];
-    for (let bit = 0; bit < 8; bit += 1) {
-      const mask = -(crc & 1);
-      crc = (crc >>> 1) ^ (0xedb88320 & mask);
-    }
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
 function invalidField(field: string, expectation: string): never {
   throw new Error('Invalid 3D scan artifact field ' + field + ': ' + expectation + '.');
 }
@@ -71,6 +88,46 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasOwn(record: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function annotationNumberLength(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? JSON.stringify(value).length : 0;
+}
+
+function annotationEntry(record: unknown): Record<string, unknown> | null {
+  return isRecord(record) ? record : null;
+}
+
+/** Exact UTF-8 size for the number-only annotation object; every emitted character is ASCII. */
+export function serializedAnnotationBytes(manualPoints: readonly unknown[], operatorEdges: readonly unknown[]): number {
+  let manualBytes = 2 + Math.max(0, manualPoints.length - 1);
+  for (const item of manualPoints) {
+    const point = annotationEntry(item);
+    const position = point !== null && Array.isArray(point.position) ? point.position : [];
+    manualBytes += '{"id":'.length + annotationNumberLength(point?.id) + ',"position":['.length +
+      annotationNumberLength(position[0]) + 1 + annotationNumberLength(position[1]) + 1 +
+      annotationNumberLength(position[2]) + ']}'.length;
+  }
+  let edgeBytes = 2 + Math.max(0, operatorEdges.length - 1);
+  for (const item of operatorEdges) {
+    const edge = annotationEntry(item);
+    const start = edge !== null && Array.isArray(edge.start) ? edge.start : [];
+    const end = edge !== null && Array.isArray(edge.end) ? edge.end : [];
+    edgeBytes += '{"id":'.length + annotationNumberLength(edge?.id) + ',"start":['.length +
+      annotationNumberLength(start[0]) + 1 + annotationNumberLength(start[1]) + 1 + annotationNumberLength(start[2]) +
+      '],"end":['.length + annotationNumberLength(end[0]) + 1 + annotationNumberLength(end[1]) + 1 +
+      annotationNumberLength(end[2]) + '],"confidence":'.length + annotationNumberLength(edge?.confidence) + '}'.length;
+  }
+  return manualBytes + edgeBytes + '{"manualControlPoints":'.length + ',"operatorEdges":'.length + '}'.length;
+}
+
+function assertAnnotationBudget(manualPoints: unknown, operatorEdges: unknown): asserts manualPoints is unknown[] {
+  if (!Array.isArray(manualPoints)) invalidField('manualControlPoints', 'must be an array');
+  if (!Array.isArray(operatorEdges)) invalidField('operatorEdges', 'must be an array');
+  if (manualPoints.length > MAX_MANUAL_CONTROL_POINTS || operatorEdges.length > MAX_OPERATOR_EDGES ||
+      serializedAnnotationBytes(manualPoints, operatorEdges) > MAX_ANNOTATION_JSON_BYTES) {
+    throw new Error(SCAN_ANNOTATION_CAPACITY_ERROR);
+  }
 }
 
 function requiredValue(record: Record<string, unknown>, field: string): unknown {
@@ -144,10 +201,12 @@ function byteArray(record: Record<string, unknown>, field: ByteArrayKey): Uint8A
   return value;
 }
 
-function validateConfidenceArray(values: Float32Array, field: string): void {
+function validateFloatArray(values: Float32Array, field: string, confidence: boolean): void {
+  validationBytesVisited += values.byteLength;
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
-    if (!Number.isFinite(value) || value < 0 || value > 1) {
+    if (!Number.isFinite(value)) invalidField(field + '[' + index + ']', 'must be finite');
+    if (confidence && (value < 0 || value > 1)) {
       invalidField(field + '[' + index + ']', 'must be a finite number from zero through one');
     }
   }
@@ -155,8 +214,17 @@ function validateConfidenceArray(values: Float32Array, field: string): void {
 
 function readNormalConfidenceMetadata(value: unknown, pointCount: number): Float32Array {
   if (!isRecord(value)) invalidField('normalConfidence', 'must be a Float32Array metadata object');
+  if (Object.getPrototypeOf(value) !== Object.prototype) {
+    invalidField('normalConfidence', 'must not contain a custom prototype');
+  }
   const keys = Object.keys(value);
   if (keys.length !== pointCount) invalidField('normalConfidence', 'length must equal pointCount');
+  for (const key of keys) {
+    const index = Number(key);
+    if (!/^(0|[1-9][0-9]*)$/.test(key) || !Number.isSafeInteger(index) || index >= pointCount || String(index) !== key) {
+      invalidField('normalConfidence', 'must contain only numeric point indices');
+    }
+  }
   const result = new Float32Array(pointCount);
   for (let index = 0; index < pointCount; index += 1) {
     const key = String(index);
@@ -172,6 +240,7 @@ function readNormalConfidenceMetadata(value: unknown, pointCount: number): Float
 
 function controlPointsField(value: unknown): ScanPointCloudSnapshot['manualControlPoints'] {
   if (!Array.isArray(value)) invalidField('manualControlPoints', 'must be an array');
+  if (value.length > MAX_MANUAL_CONTROL_POINTS) throw new Error(SCAN_ANNOTATION_CAPACITY_ERROR);
   const ids = new Set<number>();
   return value.map((entry, index) => {
     const field = 'manualControlPoints[' + index + ']';
@@ -188,6 +257,7 @@ function controlPointsField(value: unknown): ScanPointCloudSnapshot['manualContr
 
 function operatorEdgesField(value: unknown): ScanPointCloudSnapshot['operatorEdges'] {
   if (!Array.isArray(value)) invalidField('operatorEdges', 'must be an array');
+  if (value.length > MAX_OPERATOR_EDGES) throw new Error(SCAN_ANNOTATION_CAPACITY_ERROR);
   const ids = new Set<number>();
   return value.map((entry, index) => {
     const field = 'operatorEdges[' + index + ']';
@@ -234,6 +304,12 @@ function optionalBooleanField(record: Record<string, unknown>, field: string): b
 }
 
 function validateSnapshotShape(snapshot: ScanPointCloudSnapshot): void {
+  if (snapshot.manualControlPoints.length > MAX_MANUAL_CONTROL_POINTS || snapshot.operatorEdges.length > MAX_OPERATOR_EDGES) {
+    throw new Error(SCAN_ANNOTATION_CAPACITY_ERROR);
+  }
+  if (serializedAnnotationBytes(snapshot.manualControlPoints, snapshot.operatorEdges) > MAX_ANNOTATION_JSON_BYTES) {
+    throw new Error(SCAN_ANNOTATION_CAPACITY_ERROR);
+  }
   if (snapshot.positions.length !== snapshot.pointCount * 3) invalidField('positions', 'length must equal pointCount * 3');
   if (snapshot.normals.length !== snapshot.pointCount * 3) invalidField('normals', 'length must equal pointCount * 3');
   if (snapshot.confidence.length !== snapshot.pointCount) invalidField('confidence', 'length must equal pointCount');
@@ -285,16 +361,12 @@ function validateSnapshotShape(snapshot: ScanPointCloudSnapshot): void {
 
   for (const key of FLOAT_ARRAY_KEYS) {
     const values = snapshot[key];
-    for (let index = 0; index < values.length; index += 1) {
-      if (!Number.isFinite(values[index])) invalidField(key + '[' + index + ']', 'must be finite');
-    }
+    const confidence = key === 'confidence' || key === 'tentativeConfidence' || key === 'tsdfConfidence' ||
+      key === 'tsdfNormalConfidence' || key === 'tsdfCoverageConfidence';
+    validateFloatArray(values, key, confidence);
   }
-  if (snapshot.normalConfidence !== undefined) validateConfidenceArray(snapshot.normalConfidence, 'normalConfidence');
-  validateConfidenceArray(snapshot.confidence, 'confidence');
-  validateConfidenceArray(snapshot.tentativeConfidence, 'tentativeConfidence');
-  validateConfidenceArray(snapshot.tsdfConfidence, 'tsdfConfidence');
-  validateConfidenceArray(snapshot.tsdfNormalConfidence, 'tsdfNormalConfidence');
-  validateConfidenceArray(snapshot.tsdfCoverageConfidence, 'tsdfCoverageConfidence');
+  if (snapshot.normalConfidence !== undefined) validateFloatArray(snapshot.normalConfidence, 'normalConfidence', true);
+  validationBytesVisited += snapshot.tsdfCoverageReady.byteLength;
   for (let index = 0; index < snapshot.tsdfCoverageReady.length; index += 1) {
     if (snapshot.tsdfCoverageReady[index] !== 0 && snapshot.tsdfCoverageReady[index] !== 1) {
       invalidField('tsdfCoverageReady[' + index + ']', 'must be zero or one');
@@ -304,6 +376,9 @@ function validateSnapshotShape(snapshot: ScanPointCloudSnapshot): void {
 
 function normalizeSnapshot(value: unknown): ScanPointCloudSnapshot {
   if (!isRecord(value)) invalidField('metadata', 'must be an object');
+  const manualControlPointsValue = requiredValue(value, 'manualControlPoints');
+  const operatorEdgesValue = requiredValue(value, 'operatorEdges');
+  assertAnnotationBudget(manualControlPointsValue, operatorEdgesValue);
 
   const normalized: ScanPointCloudSnapshot = {
     positions: typedFloatArray(value, 'positions'),
@@ -360,8 +435,8 @@ function normalizeSnapshot(value: unknown): ScanPointCloudSnapshot {
     tsdfCoverageConfidence: typedFloatArray(value, 'tsdfCoverageConfidence'),
     tsdfCoverageReady: byteArray(value, 'tsdfCoverageReady'),
     tsdfPointCount: counterField(value, 'tsdfPointCount'),
-    manualControlPoints: controlPointsField(requiredValue(value, 'manualControlPoints')),
-    operatorEdges: operatorEdgesField(requiredValue(value, 'operatorEdges')),
+    manualControlPoints: controlPointsField(manualControlPointsValue),
+    operatorEdges: operatorEdgesField(operatorEdgesValue),
   };
 
   if (hasOwn(value, 'normalConfidence') && value.normalConfidence !== undefined) {
@@ -398,13 +473,13 @@ function normalizeSnapshot(value: unknown): ScanPointCloudSnapshot {
 
 function metadataAndArrays(snapshot: ScanPointCloudSnapshot, source: ScanPointCloudSnapshot): {
   metadata: SnapshotMetadata;
-  arrays: Record<BinaryArrayKey, Float32Array | Uint8Array>;
+  arrays: BinaryArrays;
 } {
   const {
     positions, confidence, normals, tentativePositions, tentativeConfidence,
     freeAirPositions, occupiedSurfacePositions, unknownCandidatePositions,
     tsdfPositions, tsdfNormals, tsdfConfidence, tsdfResidualMeters,
-    tsdfNormalConfidence, tsdfCoverageConfidence, tsdfCoverageReady,
+    tsdfNormalConfidence, tsdfCoverageConfidence, tsdfCoverageReady, normalConfidence,
     ...metadata
   } = snapshot;
   const canonicalMetadata = metadata as Record<string, unknown>;
@@ -422,21 +497,34 @@ function metadataAndArrays(snapshot: ScanPointCloudSnapshot, source: ScanPointCl
       freeAirPositions, occupiedSurfacePositions, unknownCandidatePositions,
       tsdfPositions, tsdfNormals, tsdfConfidence, tsdfResidualMeters,
       tsdfNormalConfidence, tsdfCoverageConfidence, tsdfCoverageReady,
+      ...(normalConfidence === undefined ? {} : { normalConfidence }),
     },
   };
 }
 
 export function encodeScanArtifact(snapshot: ScanPointCloudSnapshot): Uint8Array {
+  return encodeScanArtifactWithIdentity(snapshot).bytes;
+}
+
+export function encodeScanArtifactWithIdentity(snapshot: ScanPointCloudSnapshot): {
+  bytes: Uint8Array;
+  identity: ScanIdentity;
+} {
+  assertAnnotationBudget(snapshot.manualControlPoints, snapshot.operatorEdges);
   const normalized = normalizeSnapshot(snapshot);
   const { metadata, arrays } = metadataAndArrays(normalized, snapshot);
-  const lengths = {} as Record<BinaryArrayKey, number>;
+  const lengths: Record<string, number> = {};
   for (const key of FLOAT_ARRAY_KEYS) lengths[key] = arrays[key].length;
+  if (arrays.normalConfidence !== undefined) lengths.normalConfidence = arrays.normalConfidence.length;
   for (const key of BYTE_ARRAY_KEYS) lengths[key] = arrays[key].length;
 
   const header = { schema: SCHEMA_VERSION, metadata, lengths };
+  const annotationBytes = serializedAnnotationBytes(normalized.manualControlPoints, normalized.operatorEdges);
+  if (annotationBytes > MAX_ANNOTATION_JSON_BYTES) throw new Error(SCAN_ANNOTATION_CAPACITY_ERROR);
   const headerBytes = new TextEncoder().encode(JSON.stringify(header));
   let payloadBytes = 0;
   for (const key of FLOAT_ARRAY_KEYS) payloadBytes += lengths[key] * Float32Array.BYTES_PER_ELEMENT;
+  if (arrays.normalConfidence !== undefined) payloadBytes += arrays.normalConfidence.length * Float32Array.BYTES_PER_ELEMENT;
   for (const key of BYTE_ARRAY_KEYS) payloadBytes += lengths[key];
   const totalBytes = FIXED_HEADER_BYTES + headerBytes.length + payloadBytes;
   if (totalBytes > MAX_SCAN_ARTIFACT_BYTES) {
@@ -451,20 +539,34 @@ export function encodeScanArtifact(snapshot: ScanPointCloudSnapshot): Uint8Array
   result.set(headerBytes, FIXED_HEADER_BYTES);
 
   let offset = FIXED_HEADER_BYTES + headerBytes.length;
+  let artifactCrc = crc32Update(0xffffffff, headerBytes);
+  artifactChecksumCrcBytesVisited += headerBytes.byteLength + payloadBytes;
   for (const key of FLOAT_ARRAY_KEYS) {
     const source = arrays[key] as Float32Array;
     const bytes = new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
     result.set(bytes, offset);
+    artifactCrc = crc32Update(artifactCrc, bytes);
+    offset += bytes.length;
+  }
+  if (arrays.normalConfidence !== undefined) {
+    const bytes = new Uint8Array(
+      arrays.normalConfidence.buffer,
+      arrays.normalConfidence.byteOffset,
+      arrays.normalConfidence.byteLength,
+    );
+    result.set(bytes, offset);
+    artifactCrc = crc32Update(artifactCrc, bytes);
     offset += bytes.length;
   }
   for (const key of BYTE_ARRAY_KEYS) {
     const source = arrays[key] as Uint8Array;
     result.set(source, offset);
+    artifactCrc = crc32Update(artifactCrc, source);
     offset += source.byteLength;
   }
 
-  view.setUint32(16, crc32(result, FIXED_HEADER_BYTES), true);
-  return result;
+  view.setUint32(16, crc32Finalize(artifactCrc), true);
+  return { bytes: result, identity: createScanIdentity(result) };
 }
 
 function parseHeader(bytes: Uint8Array, headerLength: number): ScanArtifactHeader {
@@ -489,15 +591,10 @@ function checkedLength(value: unknown, key: BinaryArrayKey): number {
   return value;
 }
 
-function decodeNormalConfidence(metadata: Record<string, unknown>): Float32Array | undefined {
-  if (!hasOwn(metadata, 'normalConfidence')) return undefined;
-  const pointCount = counterField(metadata, 'pointCount');
-  return readNormalConfidenceMetadata(metadata.normalConfidence, pointCount);
-}
-
 function buildSnapshot(
   metadata: Record<string, unknown>,
-  decoded: Record<BinaryArrayKey, Float32Array | Uint8Array>,
+  decoded: Record<string, Float32Array | Uint8Array>,
+  legacyNormalConfidence?: Float32Array,
 ): ScanPointCloudSnapshot {
   const candidate: Record<string, unknown> = {};
   for (const key of METADATA_FIELDS) {
@@ -505,12 +602,17 @@ function buildSnapshot(
   }
   for (const key of FLOAT_ARRAY_KEYS) candidate[key] = decoded[key];
   for (const key of BYTE_ARRAY_KEYS) candidate[key] = decoded[key];
-  const normalConfidence = decodeNormalConfidence(metadata);
+  const normalConfidence = decoded.normalConfidence instanceof Float32Array
+    ? decoded.normalConfidence
+    : legacyNormalConfidence;
   if (normalConfidence !== undefined) candidate.normalConfidence = normalConfidence;
   return normalizeSnapshot(candidate);
 }
 
-export function decodeScanArtifact(source: ArrayBuffer | Uint8Array): ScanPointCloudSnapshot {
+export function decodeScanArtifactWithIdentity(source: ArrayBuffer | Uint8Array): {
+  snapshot: ScanPointCloudSnapshot;
+  identity: ScanIdentity;
+} {
   const bytes = source instanceof Uint8Array ? source : new Uint8Array(source);
   if (bytes.byteLength < FIXED_HEADER_BYTES || bytes.byteLength > MAX_SCAN_ARTIFACT_BYTES) {
     throw new Error('Invalid 3D scan artifact size ' + bytes.byteLength + '.');
@@ -523,7 +625,9 @@ export function decodeScanArtifact(source: ArrayBuffer | Uint8Array): ScanPointC
   const payloadLength = view.getUint32(12, true);
   const expectedCrc = view.getUint32(16, true);
   if (headerLength === 0) throw new Error('3D scan artifact length table is inconsistent.');
-  if (crc32(bytes, FIXED_HEADER_BYTES) !== expectedCrc) {
+  artifactChecksumCrcBytesVisited += bytes.byteLength - FIXED_HEADER_BYTES;
+  const [wholeCrc, payloadCrc] = crc32Pair(bytes, FIXED_HEADER_BYTES);
+  if (payloadCrc !== expectedCrc) {
     throw new Error('3D scan artifact checksum mismatch; saved scan is incomplete or corrupted.');
   }
   if (FIXED_HEADER_BYTES + headerLength + payloadLength !== bytes.byteLength) {
@@ -531,23 +635,54 @@ export function decodeScanArtifact(source: ArrayBuffer | Uint8Array): ScanPointC
   }
 
   const header = parseHeader(bytes, headerLength);
-  let offset = FIXED_HEADER_BYTES + headerLength;
-  const decoded = {} as Record<BinaryArrayKey, Float32Array | Uint8Array>;
+  assertAnnotationBudget(header.metadata.manualControlPoints, header.metadata.operatorEdges);
+  const hasBinaryNormalConfidence = hasOwn(header.lengths, 'normalConfidence');
+  let binaryNormalConfidenceLength: number | null = null;
+  let legacyNormalConfidence: Float32Array | undefined;
+  if (hasBinaryNormalConfidence) {
+    if (hasOwn(header.metadata, 'normalConfidence')) {
+      invalidField('normalConfidence', 'must be stored in the binary payload, not metadata');
+    }
+    const pointCount = counterField(header.metadata, 'pointCount');
+    binaryNormalConfidenceLength = checkedLength(header.lengths.normalConfidence, 'normalConfidence');
+    if (binaryNormalConfidenceLength !== pointCount) invalidField('normalConfidence', 'length must equal pointCount');
+  } else if (hasOwn(header.metadata, 'normalConfidence')) {
+    legacyNormalConfidence = readNormalConfidenceMetadata(
+      header.metadata.normalConfidence,
+      counterField(header.metadata, 'pointCount'),
+    );
+  }
+
+  const payload = bytes.slice(FIXED_HEADER_BYTES + headerLength);
+  let offset = 0;
+  const decoded: Record<string, Float32Array | Uint8Array> = {};
   for (const key of FLOAT_ARRAY_KEYS) {
     const length = checkedLength(header.lengths[key], key);
     const byteLength = length * Float32Array.BYTES_PER_ELEMENT;
-    if (byteLength > bytes.byteLength - offset) throw new Error('3D scan artifact ' + key + ' exceeds payload.');
-    const copy = bytes.slice(offset, offset + byteLength);
-    decoded[key] = new Float32Array(copy.buffer, copy.byteOffset, length);
+    if (byteLength > payload.byteLength - offset) throw new Error('3D scan artifact ' + key + ' exceeds payload.');
+    decoded[key] = new Float32Array(payload.buffer, payload.byteOffset + offset, length);
+    offset += byteLength;
+  }
+  if (binaryNormalConfidenceLength !== null) {
+    const byteLength = binaryNormalConfidenceLength * Float32Array.BYTES_PER_ELEMENT;
+    if (byteLength > payload.byteLength - offset) throw new Error('3D scan artifact normalConfidence exceeds payload.');
+    decoded.normalConfidence = new Float32Array(payload.buffer, payload.byteOffset + offset, binaryNormalConfidenceLength);
     offset += byteLength;
   }
   for (const key of BYTE_ARRAY_KEYS) {
     const length = checkedLength(header.lengths[key], key);
-    if (length > bytes.byteLength - offset) throw new Error('3D scan artifact ' + key + ' exceeds payload.');
-    decoded[key] = bytes.slice(offset, offset + length);
+    if (length > payload.byteLength - offset) throw new Error('3D scan artifact ' + key + ' exceeds payload.');
+    decoded[key] = payload.subarray(offset, offset + length);
     offset += length;
   }
-  if (offset !== bytes.byteLength) throw new Error('3D scan artifact has trailing payload bytes.');
+  if (offset !== payload.byteLength) throw new Error('3D scan artifact has trailing payload bytes.');
 
-  return buildSnapshot(header.metadata, decoded);
+  return {
+    snapshot: buildSnapshot(header.metadata, decoded, legacyNormalConfidence),
+    identity: scanIdentityFromCrc(bytes.byteLength, wholeCrc),
+  };
+}
+
+export function decodeScanArtifact(source: ArrayBuffer | Uint8Array): ScanPointCloudSnapshot {
+  return decodeScanArtifactWithIdentity(source).snapshot;
 }

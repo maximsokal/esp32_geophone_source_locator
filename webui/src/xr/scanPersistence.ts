@@ -5,7 +5,7 @@ import {
   type ControlResult,
   type ScanArtifactInfo,
 } from '../api/deviceApi';
-import { occupancyFrameIdForScan } from './occupancySolverArtifact';
+import { createScanIdentity, recordPersistenceBytesCopied, type ScanIdentity } from './scanIdentity';
 
 export type ScanSaveState = 'saving' | 'verifying' | 'saved' | 'error' | 'unknown' | 'derived_stale' | 'blocked_recording';
 export type OccupancySaveState = 'pending' | 'saving' | 'ready' | 'failed' | 'stale' | 'unavailable';
@@ -174,7 +174,7 @@ export function scanPersistenceSessionId(sessionId: string | null): string {
   return sessionId ?? 'staging';
 }
 
-interface ScanIdentity {
+interface KnownScanIdentity {
   known: boolean;
   present: boolean;
   id: string | null;
@@ -200,6 +200,10 @@ interface PendingPreview {
  */
 export type DerivativeBytes = Uint8Array | Promise<Uint8Array>;
 
+function abandonedDerivativeBuilder(): never {
+  throw new Error('Scan persistence owner was abandoned.');
+}
+
 function isPromiseLike(value: DerivativeBytes): value is Promise<Uint8Array> {
   return typeof (value as { then?: unknown }).then === 'function';
 }
@@ -207,9 +211,11 @@ function isPromiseLike(value: DerivativeBytes): value is Promise<Uint8Array> {
 interface PendingScan {
   objectId: string;
   sessionId: string;
-  bytes: Uint8Array;
+  /** A single owned payload is retained only until the primary scan is durable. */
+  bytes: Uint8Array | null;
+  identity: ScanIdentity;
   scanId: string;
-  previous: ScanIdentity;
+  previous: KnownScanIdentity;
   previousPersistence: ScanPersistenceState | null;
   buildOccupancy: () => DerivativeBytes;
   buildPreview: (occupancyBytes: Uint8Array | null) => DerivativeBytes;
@@ -219,11 +225,11 @@ function errorText(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
-function infoIdentity(info: ScanArtifactInfo): ScanIdentity {
+function infoIdentity(info: ScanArtifactInfo): KnownScanIdentity {
   return { known: true, present: info.present, id: info.id ?? null };
 }
 
-function sameScan(left: ScanIdentity, right: ScanArtifactInfo): boolean {
+function sameScan(left: KnownScanIdentity, right: ScanArtifactInfo): boolean {
   if (!left.known) return false;
   if (!left.present) return !right.present;
   return left.id !== null && right.present && right.id === left.id;
@@ -253,7 +259,7 @@ export class ScanPersistenceController {
   private pendingOccupancy: PendingOccupancy | null = null;
   private pendingPreview: PendingPreview | null = null;
   private pendingScan: PendingScan | null = null;
-  private knownScan: { key: string; identity: ScanIdentity } | null = null;
+  private knownScan: { key: string; identity: KnownScanIdentity } | null = null;
   private epoch = 0;
 
   constructor(
@@ -273,13 +279,23 @@ export class ScanPersistenceController {
   }
 
   reset(): void {
+    this.abandon();
+    this.state = null;
+    this.onState(null);
+  }
+
+  /** Cancel derivative work owned by an unmounted scanner without publishing state. */
+  abandon(): void {
     this.epoch += 1;
     this.pendingOccupancy = null;
     this.pendingPreview = null;
+    if (this.pendingScan !== null) {
+      this.pendingScan.bytes = null;
+      this.pendingScan.buildOccupancy = abandonedDerivativeBuilder;
+      this.pendingScan.buildPreview = abandonedDerivativeBuilder;
+    }
     this.pendingScan = null;
     this.knownScan = null;
-    this.state = null;
-    this.onState(null);
   }
 
   async save(
@@ -290,41 +306,56 @@ export class ScanPersistenceController {
     buildPreview: (occupancyBytes: Uint8Array | null) => DerivativeBytes,
     blockedByRecording = false,
     candidateId?: string,
+    suppliedIdentity?: ScanIdentity,
   ): Promise<ScanPersistenceState | null> {
+    const identity = suppliedIdentity ?? createScanIdentity(scanBytes);
+    if (identity.byteLength !== scanBytes.byteLength || (candidateId !== undefined && candidateId !== identity.frameId)) {
+      throw new Error('Scan identity does not match the encoded scan bytes.');
+    }
     const epoch = ++this.epoch;
     this.pendingOccupancy = null;
     this.pendingPreview = null;
-    const bytes = scanBytes.slice();
+    const copiedByteLength = scanBytes.byteLength;
     const key = `${objectId}/${sessionId}`;
     const pending: PendingScan = {
       objectId,
       sessionId,
-      bytes,
-      scanId: candidateId ?? occupancyFrameIdForScan(bytes),
+      bytes: scanBytes.slice(),
+      identity,
+      scanId: candidateId ?? identity.frameId,
       previous: this.knownScan?.key === key ? this.knownScan.identity : { known: false, present: false, id: null },
       previousPersistence: this.state,
       buildOccupancy,
       buildPreview,
     };
+    recordPersistenceBytesCopied(copiedByteLength);
+    scanBytes = new Uint8Array();
     this.pendingScan = pending;
     this.dispatch(epoch, { type: 'scan-saving', scanId: pending.scanId });
     if (blockedByRecording) {
       this.dispatch(epoch, { type: 'scan-blocked-recording', scanId: pending.scanId });
       return this.state;
     }
+    return this.prepareAndUploadScan(epoch, pending);
+  }
+
+  private async prepareAndUploadScan(epoch: number, pending: PendingScan): Promise<ScanPersistenceState | null> {
     if (!pending.previous.known) {
       try {
-        pending.previous = infoIdentity(await this.readInfo(objectId, sessionId, 'scan'));
-        this.knownScan = { key, identity: pending.previous };
+        const previous = infoIdentity(await this.readInfo(pending.objectId, pending.sessionId, 'scan'));
+        if (epoch !== this.epoch) return this.state;
+        pending.previous = previous;
+        this.knownScan = { key: `${pending.objectId}/${pending.sessionId}`, identity: pending.previous };
       } catch {
+        if (epoch !== this.epoch) return this.state;
         pending.previous = { known: false, present: false, id: null };
       }
-      if (epoch !== this.epoch) return this.state;
     }
     return this.uploadScan(epoch, pending);
   }
 
   private async uploadScan(epoch: number, pending: PendingScan): Promise<ScanPersistenceState | null> {
+    if (pending.bytes === null) return this.state;
     try {
       const result = await this.ports.saveScan(pending.objectId, pending.sessionId, pending.bytes);
       if (epoch !== this.epoch) return this.state;
@@ -396,6 +427,7 @@ export class ScanPersistenceController {
 
   private async commitScan(epoch: number, pending: PendingScan): Promise<ScanPersistenceState | null> {
     if (epoch !== this.epoch) return this.state;
+    pending.bytes = null;
     this.knownScan = { key: `${pending.objectId}/${pending.sessionId}`, identity: { known: true, present: true, id: pending.scanId } };
     this.pendingOccupancy = null;
     this.pendingPreview = null;
@@ -420,12 +452,12 @@ export class ScanPersistenceController {
   async retry(objectId: string, sessionId: string): Promise<ScanPersistenceState | null> {
     const epoch = ++this.epoch;
     const pendingScan = this.pendingScan;
-    if (pendingScan !== null && pendingScan.objectId === objectId && pendingScan.sessionId === sessionId &&
+    if (pendingScan !== null && pendingScan.bytes !== null && pendingScan.objectId === objectId && pendingScan.sessionId === sessionId &&
         (this.state?.scan === 'blocked_recording' || this.state?.scan === 'error')) {
       this.dispatch(epoch, { type: 'scan-saving', scanId: pendingScan.scanId });
       return this.uploadScan(epoch, pendingScan);
     }
-    if (pendingScan !== null && pendingScan.objectId === objectId && pendingScan.sessionId === sessionId &&
+    if (pendingScan !== null && pendingScan.bytes !== null && pendingScan.objectId === objectId && pendingScan.sessionId === sessionId &&
         (this.state?.scan === 'unknown' || this.state?.scan === 'verifying')) {
       return this.verifyUnknown(epoch, pendingScan, this.state.scanError ?? 'Scan save outcome is still unknown.');
     }
@@ -461,7 +493,12 @@ export class ScanPersistenceController {
     buildOccupancy?: () => DerivativeBytes,
     buildPreview?: (occupancyBytes: Uint8Array | null) => DerivativeBytes,
     loadedScanId?: string,
+    loadedScanIdentity?: ScanIdentity,
   ): Promise<ScanPersistenceState | null> {
+    const loadedScanByteLength = savedScanBytes?.byteLength ?? loadedScanIdentity?.byteLength ?? null;
+    const loadedIdentity = loadedScanIdentity ?? (savedScanBytes === null ? null : createScanIdentity(savedScanBytes));
+    const identityMatchesBytes = savedScanBytes === null || loadedIdentity?.byteLength === savedScanBytes.byteLength;
+    savedScanBytes = null;
     const epoch = ++this.epoch;
     let scanInfo: ScanArtifactInfo;
     let occupancyInfo: ScanArtifactInfo;
@@ -493,8 +530,9 @@ export class ScanPersistenceController {
       this.dispatch(epoch, { type: 'reconcile-unknown', scanId: null, error: 'The saved scan has no readable generation identity.' });
       return this.state;
     }
-    const bytesId = savedScanBytes === null ? null : loadedScanId ?? occupancyFrameIdForScan(savedScanBytes);
-    if (bytesId !== null && (bytesId !== scanId || scanInfo.bytes !== savedScanBytes?.byteLength)) {
+    const bytesId = loadedIdentity?.frameId ?? loadedScanId ?? null;
+    if (!identityMatchesBytes || (loadedIdentity !== null && loadedScanId !== undefined && loadedScanId !== loadedIdentity.frameId) ||
+        (bytesId !== null && (bytesId !== scanId || scanInfo.bytes !== loadedScanByteLength))) {
       this.knownScan = { key, identity: infoIdentity(scanInfo) };
       this.dispatch(epoch, { type: 'reconcile-unknown', scanId, error: 'Loaded scan bytes do not match the current device generation.' });
       return this.state;
@@ -506,8 +544,8 @@ export class ScanPersistenceController {
     const previewMatches = previewInfo.present && previewInfo.sourceId != null && previewInfo.sourceId === scanId;
     const occupancyNeedsBuild = !occupancyMatches;
     const previewNeedsBuild = !previewMatches;
-    const canBuild = savedScanBytes !== null && bytesId === scanId &&
-      scanInfo.bytes === savedScanBytes.byteLength && buildOccupancy !== undefined && buildPreview !== undefined;
+    const canBuild = loadedIdentity !== null && bytesId === scanId &&
+      scanInfo.bytes === loadedScanByteLength && buildOccupancy !== undefined && buildPreview !== undefined;
     const matchingPendingOccupancy = this.pendingOccupancy?.objectId === objectId &&
       this.pendingOccupancy.sessionId === sessionId && this.pendingOccupancy.scanId === scanId;
     const matchingPendingPreview = this.pendingPreview?.objectId === objectId &&
@@ -517,7 +555,8 @@ export class ScanPersistenceController {
       pending = {
         objectId,
         sessionId,
-        bytes: savedScanBytes!.slice(),
+        bytes: null,
+        identity: loadedIdentity!,
         scanId,
         previous: infoIdentity(scanInfo),
         previousPersistence: this.state,
@@ -588,8 +627,7 @@ export class ScanPersistenceController {
   /** Returns a promise only for an asynchronous builder; a synchronous builder completes before returning. */
   private prepareOccupancy(epoch: number, pending: PendingScan): Promise<void> | undefined {
     const accept = (built: Uint8Array): void => {
-      const bytes = built.slice();
-      this.pendingOccupancy = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, bytes };
+      this.pendingOccupancy = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, bytes: built };
     };
     const fail = (reason: unknown): void => {
       this.pendingOccupancy = null;
@@ -622,8 +660,7 @@ export class ScanPersistenceController {
 
   private preparePreview(epoch: number, pending: PendingScan, occupancyBytes: Uint8Array | null): Promise<void> | undefined {
     const accept = (built: Uint8Array): void => {
-      const bytes = built.slice();
-      this.pendingPreview = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, bytes };
+      this.pendingPreview = { objectId: pending.objectId, sessionId: pending.sessionId, scanId: pending.scanId, bytes: built };
     };
     const fail = (reason: unknown): void => {
       this.pendingPreview = null;

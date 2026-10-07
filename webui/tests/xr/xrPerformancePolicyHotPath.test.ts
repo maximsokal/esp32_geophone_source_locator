@@ -13,6 +13,9 @@ import {
   activeXrRenderPolicy,
 } from '../../src/xr/xrPerformanceProfiler';
 
+const profilerActivations: { profiler: XrPerformanceProfiler; token: number }[] = [];
+function activateProfiler(profiler: XrPerformanceProfiler): void { profilerActivations.push({ profiler, token: profiler.activate() }); }
+
 /*
  * MAX-409: the render policy is read on every visible XR frame, so a read must
  * not evaluate (sort) the rolling percentile windows. Array.prototype.sort is
@@ -49,19 +52,37 @@ function coverageSnapshot(pointCount: number): CoverageRenderSnapshot {
 function createFakeGl(onDraw: () => void = () => undefined) {
   const uploadedLengths: number[] = [];
   const noop = (): void => undefined;
+  let arrayBuffer: object | null = null;
+  let activeTexture = 0x84c0;
   const gl = {
     VERTEX_SHADER: 0x8b31, FRAGMENT_SHADER: 0x8b30, COMPILE_STATUS: 0x8b81, LINK_STATUS: 0x8b82,
     ARRAY_BUFFER: 0x8892, DYNAMIC_DRAW: 0x88e8, FLOAT: 0x1406, POINTS: 0, BLEND: 0x0be2,
     SRC_ALPHA: 0x0302, ONE_MINUS_SRC_ALPHA: 0x0303, DEPTH_TEST: 0x0b71, LEQUAL: 0x0203,
+    FUNC_ADD: 0x8006, ACTIVE_TEXTURE: 0x84e0, TEXTURE_BINDING_2D: 0x8069, FRAMEBUFFER_BINDING: 0x8ca6,
+    VIEWPORT: 0x0ba2, CURRENT_PROGRAM: 0x8b8d, ARRAY_BUFFER_BINDING: 0x8894, TEXTURE0: 0x84c0,
+    TEXTURE_2D: 0x0de1, FRAMEBUFFER: 0x8d40, VERTEX_ATTRIB_ARRAY_ENABLED: 0x8622,
+    VERTEX_ATTRIB_ARRAY_BUFFER_BINDING: 0x889f, VERTEX_ATTRIB_ARRAY_SIZE: 0x8623,
+    VERTEX_ATTRIB_ARRAY_TYPE: 0x8625, VERTEX_ATTRIB_ARRAY_NORMALIZED: 0x886a,
+    VERTEX_ATTRIB_ARRAY_STRIDE: 0x8624, VERTEX_ATTRIB_ARRAY_POINTER: 0x8645,
+    BLEND_SRC_RGB: 0x80c9, BLEND_DST_RGB: 0x80c8, BLEND_SRC_ALPHA: 0x80cb, BLEND_DST_ALPHA: 0x80ca,
+    BLEND_EQUATION_RGB: 0x8009, BLEND_EQUATION_ALPHA: 0x883d, DEPTH_FUNC: 0x0b74,
+    DEPTH_WRITEMASK: 0x0b72, SCISSOR_TEST: 0x0c11, CULL_FACE: 0x0b44, STENCIL_TEST: 0x0b90,
+    COLOR_WRITEMASK: 0x0c23,
     createShader: () => ({}), shaderSource: noop, compileShader: noop,
     getShaderParameter: () => true, getShaderInfoLog: () => null, deleteShader: noop,
     createProgram: () => ({}), attachShader: noop, linkProgram: noop,
     getProgramParameter: () => true, getProgramInfoLog: () => null, deleteProgram: noop,
     createBuffer: () => ({}), deleteBuffer: noop, getAttribLocation: () => 0, getUniformLocation: () => ({}),
-    bindBuffer: noop,
+    getParameter: (parameter: number) => parameter === 0x8894 ? arrayBuffer : (parameter === 0x84e0 ? activeTexture : null),
+    isEnabled: () => false,
+    bindBuffer: (_target: number, value: object | null) => { arrayBuffer = value; },
     bufferData: (_target: number, data: Float32Array) => { uploadedLengths.push(data.length); },
-    useProgram: noop, enable: noop, disable: noop, blendFunc: noop, depthFunc: noop, depthMask: noop,
+    useProgram: noop, enable: noop, disable: noop, blendFunc: noop, blendFuncSeparate: noop, blendEquationSeparate: noop,
+    depthFunc: noop, depthMask: noop, colorMask: noop, scissor: noop,
+    getVertexAttrib: (_location: number, parameter: number) => parameter === 0x8623 ? 4 : (parameter === 0x8625 ? 0x1406 : (parameter === 0x8622 ? false : null)),
+    getVertexAttribOffset: () => 0,
     enableVertexAttribArray: noop, vertexAttribPointer: noop, disableVertexAttribArray: noop,
+    activeTexture: (texture: number) => { activeTexture = texture; }, bindTexture: noop, bindFramebuffer: noop,
     viewport: noop, uniformMatrix4fv: noop,
     drawArrays: () => onDraw(),
   };
@@ -78,6 +99,7 @@ function createFakeGl(onDraw: () => void = () => undefined) {
 function simulateCoverageFrames(options: { snapshotEveryFrames?: number } = {}) {
   const sortSpy = vi.spyOn(Array.prototype, 'sort');
   const profiler = new XrPerformanceProfiler();
+  activateProfiler(profiler);
   const { gl } = createFakeGl();
   const renderer = new LiveCoveragePointRenderer(gl);
   const coverage = coverageSnapshot(3000);
@@ -115,6 +137,7 @@ function simulateCoverageFrames(options: { snapshotEveryFrames?: number } = {}) 
 describe('XR render policy hot path (MAX-409)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    for (const activation of profilerActivations.splice(0)) activation.profiler.deactivate(activation.token);
   });
 
   it('never sorts a rolling window when the renderer, scheduler or recommendation helpers read the policy', () => {
@@ -172,6 +195,7 @@ describe('XR render policy hot path (MAX-409)', () => {
     );
     vi.spyOn(performance, 'now').mockImplementation(clock);
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     const { gl } = createFakeGl(() => { intraFrameMs += testCase.drawMs; });
     const renderer = new LiveCoveragePointRenderer(gl);
     renderer.update(coverageSnapshot(3000));
@@ -195,6 +219,7 @@ describe('XR render policy hot path (MAX-409)', () => {
 
   it('feeds the cached policy point budget into the live render upload once pressure is refreshed', () => {
     const profiler = new XrPerformanceProfiler();
+    activateProfiler(profiler);
     const { gl, uploadedLengths } = createFakeGl();
     const renderer = new LiveCoveragePointRenderer(gl);
     const coverage = coverageSnapshot(20000);

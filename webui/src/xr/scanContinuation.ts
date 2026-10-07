@@ -3,6 +3,9 @@ import {
   enumerateUnknownCandidatePositions,
   type OccupancyBounds,
 } from './occupancyEvidence';
+import { MAX_MANUAL_CONTROL_POINTS } from './manualControlPoints';
+import { MAX_OPERATOR_EDGES } from './operatorEdges';
+import { MAX_ANNOTATION_JSON_BYTES, serializedAnnotationBytes } from './scanArtifact';
 
 export interface ScanContinuationDiagnostics {
   yawRadians: number;
@@ -12,6 +15,8 @@ export interface ScanContinuationDiagnostics {
   rmsMeters: number;
   baseSampleCount: number;
   extensionSampleCount: number;
+  /** True when the bounded annotation budgets omitted lower-priority extension data. */
+  annotationsTruncated?: boolean;
 }
 
 /**
@@ -329,16 +334,20 @@ function mergeSurface(
   basePositions: Float32Array,
   baseConfidence: Float32Array,
   baseNormals: Float32Array,
+  baseNormalConfidence: Float32Array | undefined,
   extensionPositions: Float32Array,
   extensionConfidence: Float32Array,
   extensionNormals: Float32Array,
+  extensionNormalConfidence: Float32Array | undefined,
   voxelSizeMeters: number,
-): { positions: Float32Array; confidence: Float32Array; normals: Float32Array } {
+): { positions: Float32Array; confidence: Float32Array; normals: Float32Array; normalConfidence?: Float32Array } {
   const keys = new Set<string>();
   const positions: number[] = [];
   const confidence: number[] = [];
   const normals: number[] = [];
-  const add = (p: Float32Array, c: Float32Array, n: Float32Array, index: number): void => {
+  const normalConfidence: number[] = [];
+  const hasNormalConfidence = baseNormalConfidence !== undefined || extensionNormalConfidence !== undefined;
+  const add = (p: Float32Array, c: Float32Array, n: Float32Array, nc: Float32Array | undefined, index: number): void => {
     const offset = index * 3;
     const key = voxelKey(p[offset], p[offset + 1], p[offset + 2], voxelSizeMeters);
     if (keys.has(key)) return;
@@ -346,13 +355,15 @@ function mergeSurface(
     positions.push(p[offset], p[offset + 1], p[offset + 2]);
     confidence.push(c[index] ?? 0);
     normals.push(n[offset] ?? 0, n[offset + 1] ?? 0, n[offset + 2] ?? 1);
+    if (hasNormalConfidence) normalConfidence.push(nc?.[index] ?? 0);
   };
-  for (let index = 0; index < pointCount(basePositions); index += 1) add(basePositions, baseConfidence, baseNormals, index);
-  for (let index = 0; index < pointCount(extensionPositions); index += 1) add(extensionPositions, extensionConfidence, extensionNormals, index);
+  for (let index = 0; index < pointCount(basePositions); index += 1) add(basePositions, baseConfidence, baseNormals, baseNormalConfidence, index);
+  for (let index = 0; index < pointCount(extensionPositions); index += 1) add(extensionPositions, extensionConfidence, extensionNormals, extensionNormalConfidence, index);
   return {
     positions: new Float32Array(positions),
     confidence: new Float32Array(confidence),
     normals: new Float32Array(normals),
+    ...(hasNormalConfidence ? { normalConfidence: new Float32Array(normalConfidence) } : {}),
   };
 }
 
@@ -563,6 +574,50 @@ function transformedEdges(snapshot: ScanPointCloudSnapshot, transform: RigidTran
   });
 }
 
+function mergeAnnotations(
+  base: ScanPointCloudSnapshot,
+  extension: ScanPointCloudSnapshot,
+  transform: RigidTransform,
+): {
+  manualControlPoints: ScanPointCloudSnapshot['manualControlPoints'];
+  operatorEdges: ScanPointCloudSnapshot['operatorEdges'];
+  annotationsTruncated: boolean;
+} {
+  const manualControlPoints: Array<ScanPointCloudSnapshot['manualControlPoints'][number]> = [];
+  const operatorEdges: Array<ScanPointCloudSnapshot['operatorEdges'][number]> = [];
+  let annotationsTruncated = false;
+  const addManual = (point: ScanPointCloudSnapshot['manualControlPoints'][number]): void => {
+    if (manualControlPoints.length >= MAX_MANUAL_CONTROL_POINTS ||
+        serializedAnnotationBytes([...manualControlPoints, point], operatorEdges) > MAX_ANNOTATION_JSON_BYTES) {
+      annotationsTruncated = true;
+      return;
+    }
+    manualControlPoints.push(point);
+  };
+  const addEdge = (edge: ScanPointCloudSnapshot['operatorEdges'][number]): void => {
+    if (operatorEdges.length >= MAX_OPERATOR_EDGES ||
+        serializedAnnotationBytes(manualControlPoints, [...operatorEdges, edge]) > MAX_ANNOTATION_JSON_BYTES) {
+      annotationsTruncated = true;
+      return;
+    }
+    operatorEdges.push(edge);
+  };
+
+  /* Preserve all accepted base annotations first; extension entries follow by stable ID order. */
+  for (const point of [...base.manualControlPoints].sort((a, b) => a.id - b.id)) addManual(point);
+  for (const edge of [...base.operatorEdges].sort((a, b) => a.id - b.id)) addEdge(edge);
+  const maxManualId = base.manualControlPoints.reduce((max, point) => Math.max(max, point.id), 0);
+  const maxEdgeId = base.operatorEdges.reduce((max, edge) => Math.max(max, edge.id), 0);
+  const orderedExtension: ScanPointCloudSnapshot = {
+    ...extension,
+    manualControlPoints: [...extension.manualControlPoints].sort((a, b) => a.id - b.id),
+    operatorEdges: [...extension.operatorEdges].sort((a, b) => a.id - b.id),
+  };
+  for (const point of transformedManualPoints(orderedExtension, transform, maxManualId + 1)) addManual(point);
+  for (const edge of transformedEdges(orderedExtension, transform, maxEdgeId + 1)) addEdge(edge);
+  return { manualControlPoints, operatorEdges, annotationsTruncated };
+}
+
 function weightedAverage(a: number, aCount: number, b: number, bCount: number): number {
   const total = aCount + bCount;
   return total > 0 ? (a * aCount + b * bCount) / total : 0;
@@ -608,9 +663,11 @@ export function registerAndMergeScanContinuation(
     base.positions,
     base.confidence,
     base.normals,
+    base.normalConfidence,
     extensionStablePositions,
     extension.confidence,
     extensionStableNormals,
+    extension.normalConfidence,
     mergeVoxel,
   );
   const tentative = mergeSimplePoints(
@@ -631,16 +688,7 @@ export function registerAndMergeScanContinuation(
     return { ok: false, reason: 'Continuation occupancy evidence could not be merged safely. Old saved scan was kept.', diagnostics };
   }
   const tsdf = mergeTsdf(base, extension, transform);
-  const maxManualId = base.manualControlPoints.reduce((max, point) => Math.max(max, point.id), 0);
-  const maxEdgeId = base.operatorEdges.reduce((max, edge) => Math.max(max, edge.id), 0);
-  const manualControlPoints = [
-    ...base.manualControlPoints,
-    ...transformedManualPoints(extension, transform, maxManualId + 1),
-  ];
-  const operatorEdges = [
-    ...base.operatorEdges,
-    ...transformedEdges(extension, transform, maxEdgeId + 1),
-  ];
+  const annotations = mergeAnnotations(base, extension, transform);
   const fullPositions = appendFloatArrays(stable.positions, tentative.positions);
 
   const snapshot: ScanPointCloudSnapshot = {
@@ -648,6 +696,7 @@ export function registerAndMergeScanContinuation(
     positions: stable.positions,
     confidence: stable.confidence,
     normals: stable.normals,
+    ...(stable.normalConfidence === undefined ? {} : { normalConfidence: stable.normalConfidence }),
     pointCount: pointCount(stable.positions),
     tentativePositions: tentative.positions,
     tentativeConfidence: tentative.confidence,
@@ -697,8 +746,13 @@ export function registerAndMergeScanContinuation(
     occupancyFineVoxelSizeMeters: fineOccupancyVoxelSize(base),
     occupancyDroppedCellUpdates: (base.occupancyDroppedCellUpdates ?? 0) + (extension.occupancyDroppedCellUpdates ?? 0),
     ...tsdf,
-    manualControlPoints,
-    operatorEdges,
+    manualControlPoints: annotations.manualControlPoints,
+    operatorEdges: annotations.operatorEdges,
   };
-  return { ok: true, snapshot, diagnostics, extensionToBase: { yaw: transform.yaw, tx: transform.tx, ty: transform.ty, tz: transform.tz } };
+  return {
+    ok: true,
+    snapshot,
+    diagnostics: { ...diagnostics, annotationsTruncated: annotations.annotationsTruncated },
+    extensionToBase: { yaw: transform.yaw, tx: transform.tx, ty: transform.ty, tz: transform.tz },
+  };
 }

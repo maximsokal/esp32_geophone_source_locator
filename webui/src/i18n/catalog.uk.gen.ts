@@ -767,6 +767,7 @@ export const uk: Record<I18nKey, string> = {
   "report.y_m": "y (м)",
   "report.yes": "так",
   "report.z_m": "z (м)",
+  "scan.annotations.capacity_exceeded": "Досягнуто ліміт анотацій для цього скану. Перед збереженням видаліть точки або ребра.",
   "scan.aria_label": "Виміряний WebXR-об’єм пошуку",
   "scan.axis_help": "X/Y — горизонталь · Z — висота",
   "scan.axis_note": "1 палець — обертання · 2 пальці — масштаб/панорама · X/Y — горизонталь · Z — висота",

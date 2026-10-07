@@ -48,4 +48,16 @@ describe('composeCoverageRenderSnapshot', () => {
     expect(Array.from(result.positions)).toEqual([1, 2, 3]);
     expect(result.confidence[0]).toBeCloseTo(0.2, 6);
   });
+
+  it('reuses growable composition buffers and explicitly reserves the manual tail', () => {
+    const reusable = { positions: new Float32Array(0), confidence: new Float32Array(0) };
+    const first = composeCoverageRenderSnapshot(coverageFixture(), new Float32Array([7, 8, 9]), reusable);
+    const positionsBuffer = first.positions.buffer;const confidenceBuffer = first.confidence.buffer;
+    const second = composeCoverageRenderSnapshot(coverageFixture(), new Float32Array([10, 11, 12]), reusable);
+    expect(first.manualPointCount).toBe(1);expect(second.manualPointCount).toBe(1);
+    expect(first.positions.buffer).toBe(positionsBuffer);expect(second.positions.buffer).toBe(positionsBuffer);
+    expect(first.confidence.buffer).toBe(confidenceBuffer);expect(second.confidence.buffer).toBe(confidenceBuffer);
+    expect(second.positions.length).toBe(9);expect(second.confidence.length).toBe(3);
+    expect(Array.from(second.positions)).toEqual([1, 2, 3, 4, 5, 6, 10, 11, 12]);
+  });
 });

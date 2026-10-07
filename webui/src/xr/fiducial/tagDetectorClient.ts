@@ -8,6 +8,8 @@ export interface TagCameraFrame {
   capturedAtMs: number;
   projectionMatrix: ArrayLike<number>;
   worldFromView: ArrayLike<number>;
+  /** The RGBA buffer is a fresh, top-left-origin readback owned by this frame. */
+  rgbaOwnership?: 'owned';
 }
 
 export interface DetectedAprilTagFrame {
@@ -54,7 +56,10 @@ export class TagDetectorClient {
     if (this.worker === null) return Promise.reject(new Error('Tag detector worker is unavailable.'));
     if (this.pending.size > 0) return Promise.resolve(null);
     const requestId = ++this.requestId;
-    const rgba = frame.rgba.slice();
+    const backing = frame.rgba.buffer;
+    const canTransferOwnedRgba = frame.rgbaOwnership === 'owned' && backing instanceof ArrayBuffer &&
+      frame.rgba.byteOffset === 0 && frame.rgba.byteLength === backing.byteLength;
+    const rgba = canTransferOwnedRgba ? frame.rgba : frame.rgba.slice();
     return new Promise((resolve, reject) => {
       this.pending.set(requestId, {
         epoch: this.epoch, width: frame.width, height: frame.height, capturedAtMs: frame.capturedAtMs,

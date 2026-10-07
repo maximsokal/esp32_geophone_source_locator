@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { captureWebGlState, restoreWebGlState } from '../../src/xr/webGlStateGuard';
+import { captureWebGlRasterState, captureWebGlState, restoreWebGlRasterState, restoreWebGlState, setWebGlCopyRasterState } from '../../src/xr/webGlStateGuard';
 
 interface FakeState {
   activeTexture: number;
@@ -16,6 +16,13 @@ interface FakeState {
   attribEnabled: boolean;
   attribBuffer: object | null;
   attribPointer: { size: number; type: number; normalized: boolean; stride: number; offset: number };
+  enabled: Set<number>;
+  blendFactors: [number, number, number, number];
+  blendEquations: [number, number];
+  depthFunc: number;
+  depthMask: boolean;
+  scissorBox: Int32Array;
+  colorMask: [boolean, boolean, boolean, boolean];
 }
 
 function fakeGl(webgl2: boolean) {
@@ -44,6 +51,10 @@ function fakeGl(webgl2: boolean) {
     DRAW_FRAMEBUFFER: 115,
     PIXEL_PACK_BUFFER: 116,
     PIXEL_PACK_BUFFER_BINDING: 117,
+    BLEND: 118, DEPTH_TEST: 119, SCISSOR_TEST: 120, CULL_FACE: 121, STENCIL_TEST: 122,
+    COLOR_WRITEMASK: 123, DEPTH_WRITEMASK: 124, BLEND_SRC_RGB: 125, BLEND_DST_RGB: 126,
+    BLEND_SRC_ALPHA: 127, BLEND_DST_ALPHA: 128, BLEND_EQUATION_RGB: 129, BLEND_EQUATION_ALPHA: 130,
+    DEPTH_FUNC: 131, SCISSOR_BOX: 132,
   };
   const state: FakeState = {
     activeTexture: 103,
@@ -59,6 +70,9 @@ function fakeGl(webgl2: boolean) {
     attribEnabled: false,
     attribBuffer: { id: 'attrib-buffer' },
     attribPointer: { size: 3, type: 5126, normalized: true, stride: 20, offset: 8 },
+    enabled: new Set([constants.BLEND, constants.DEPTH_TEST, constants.SCISSOR_TEST, constants.CULL_FACE, constants.STENCIL_TEST]),
+    blendFactors: [770, 771, 1, 0], blendEquations: [32774, 32778], depthFunc: 515, depthMask: false,
+    scissorBox: new Int32Array([9, 7, 32, 24]), colorMask: [true, false, true, false],
   };
 
   const gl: Record<string, unknown> = {
@@ -74,6 +88,16 @@ function fakeGl(webgl2: boolean) {
         case constants.CURRENT_PROGRAM: return state.program;
         case constants.ARRAY_BUFFER_BINDING: return state.arrayBuffer;
         case constants.PIXEL_PACK_BUFFER_BINDING: return state.pixelPackBuffer;
+        case constants.COLOR_WRITEMASK: return state.colorMask;
+        case constants.DEPTH_WRITEMASK: return state.depthMask;
+        case constants.BLEND_SRC_RGB: return state.blendFactors[0];
+        case constants.BLEND_DST_RGB: return state.blendFactors[1];
+        case constants.BLEND_SRC_ALPHA: return state.blendFactors[2];
+        case constants.BLEND_DST_ALPHA: return state.blendFactors[3];
+        case constants.BLEND_EQUATION_RGB: return state.blendEquations[0];
+        case constants.BLEND_EQUATION_ALPHA: return state.blendEquations[1];
+        case constants.DEPTH_FUNC: return state.depthFunc;
+        case constants.SCISSOR_BOX: return state.scissorBox;
         case constants.VERTEX_ARRAY_BINDING: return state.vao;
         default: return null;
       }
@@ -109,6 +133,15 @@ function fakeGl(webgl2: boolean) {
     },
     enableVertexAttribArray() { state.attribEnabled = true; },
     disableVertexAttribArray() { state.attribEnabled = false; },
+    isEnabled(capability: number) { return state.enabled.has(capability); },
+    enable(capability: number) { state.enabled.add(capability); },
+    disable(capability: number) { state.enabled.delete(capability); },
+    colorMask(red: boolean, green: boolean, blue: boolean, alpha: boolean) { state.colorMask = [red, green, blue, alpha]; },
+    depthMask(value: boolean) { state.depthMask = value; },
+    depthFunc(value: number) { state.depthFunc = value; },
+    scissor(x: number, y: number, width: number, height: number) { state.scissorBox = new Int32Array([x, y, width, height]); },
+    blendFuncSeparate(srcRgb: number, dstRgb: number, srcAlpha: number, dstAlpha: number) { state.blendFactors = [srcRgb, dstRgb, srcAlpha, dstAlpha]; },
+    blendEquationSeparate(rgb: number, alpha: number) { state.blendEquations = [rgb, alpha]; },
   };
   if (webgl2) {
     gl.bindVertexArray = (vao: object | null) => { state.vao = vao; };
@@ -130,9 +163,32 @@ function disturb(state: FakeState): void {
   state.attribEnabled = true;
   state.attribBuffer = { id: 'capture-attrib' };
   state.attribPointer = { size: 2, type: 5126, normalized: false, stride: 0, offset: 0 };
+  state.enabled = new Set();
+  state.blendFactors = [1, 0, 1, 0]; state.blendEquations = [32774, 32774]; state.depthFunc = 515; state.depthMask = true;
+  state.scissorBox = new Int32Array([0, 0, 8, 8]); state.colorMask = [false, true, false, true];
 }
 
 describe('raw-camera WebGL state guard', () => {
+  it('uses explicit exact-copy raster state and restores dirty caller values exactly', () => {
+    const { gl, state, constants } = fakeGl(false);
+    const snapshot = captureWebGlRasterState(gl);
+
+    setWebGlCopyRasterState(gl);
+
+    expect(state.enabled.has(constants.BLEND)).toBe(false);
+    expect(state.enabled.has(constants.DEPTH_TEST)).toBe(false);
+    expect(state.enabled.has(constants.SCISSOR_TEST)).toBe(false);
+    expect(state.enabled.has(constants.STENCIL_TEST)).toBe(false);
+    expect(state.enabled.has(constants.CULL_FACE)).toBe(false);
+    expect(state.colorMask).toEqual([true, true, true, true]);
+    expect(state.depthMask).toBe(true);
+
+    restoreWebGlRasterState(gl, snapshot);
+    expect(state.enabled).toEqual(new Set([constants.BLEND, constants.DEPTH_TEST, constants.SCISSOR_TEST, constants.CULL_FACE, constants.STENCIL_TEST]));
+    expect(state.colorMask).toEqual([true, false, true, false]);
+    expect(state.depthMask).toBe(false);
+  });
+
   it('restores WebGL1 texture units, framebuffer and vertex attribute state', () => {
     const { gl, state } = fakeGl(false);
     const originalTexture0 = state.textures.get(100);

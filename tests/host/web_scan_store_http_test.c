@@ -50,11 +50,17 @@ static unsigned s_fwrite_calls;
 static const char *s_fail_remove_path;
 static const char *s_cut_after_remove_path;
 static const char *s_cut_after_rename_path;
+static bool s_replace_scan_before_derivative_commit;
+static bool s_replace_scan_before_identity_cache_store;
 static bool s_storage_power_lost;
 static bool s_chunked_response_terminated;
 static seismic_recorder_snapshot_t s_recorder_snapshot;
 
 static void reset_web_scan_test_state(void);
+static bool save_kind(const char *query, const unsigned char *body, size_t length);
+#define WEB_SCAN_STORE_TESTING
+void web_scan_store_test_before_derivative_commit(void);
+void web_scan_store_test_before_identity_cache_store(void);
 
 size_t web_scan_store_test_fwrite(
     const void *buffer,
@@ -502,6 +508,8 @@ static void reset_web_scan_test_state(void)
     s_fail_remove_path = NULL;
     s_cut_after_remove_path = NULL;
     s_cut_after_rename_path = NULL;
+    s_replace_scan_before_derivative_commit = false;
+    s_replace_scan_before_identity_cache_store = false;
     s_storage_power_lost = false;
     s_scan_identity_cache.valid = false;
 }
@@ -536,6 +544,34 @@ static uint32_t reference_crc32(const unsigned char *bytes, size_t length)
         }
     }
     return crc ^ UINT32_C(0xffffffff);
+}
+
+
+void web_scan_store_test_before_derivative_commit(void)
+{
+    if (!s_replace_scan_before_derivative_commit) return;
+    s_replace_scan_before_derivative_commit = false;
+    static const unsigned char replacement_scan[] = {0x71U, 0x72U, 0x73U, 0x74U};
+    const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
+    write_bytes(scan_path, replacement_scan, sizeof(replacement_scan));
+    assert(s_scan_identity_cache.valid);
+    s_scan_identity_cache.size = sizeof(replacement_scan);
+    s_scan_identity_cache.crc32 = reference_crc32(replacement_scan, sizeof(replacement_scan));
+}
+
+
+void web_scan_store_test_before_identity_cache_store(void)
+{
+    if (!s_replace_scan_before_identity_cache_store) return;
+    s_replace_scan_before_identity_cache_store = false;
+    static const unsigned char replacement_scan[] = {0x71U, 0x72U, 0x73U, 0x74U};
+    const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
+    write_bytes(scan_path, replacement_scan, sizeof(replacement_scan));
+    web_scan_identity_cache_set_locked(
+        scan_path,
+        sizeof(replacement_scan),
+        reference_crc32(replacement_scan, sizeof(replacement_scan))
+    );
 }
 
 
@@ -585,6 +621,34 @@ static size_t make_occupancy_header(unsigned char *artifact, size_t capacity, co
 }
 
 
+static size_t make_large_occupancy(
+    unsigned char *artifact,
+    size_t capacity,
+    size_t total_size,
+    const char *frame_id
+)
+{
+    char json[256];
+    const int written = snprintf(
+        json,
+        sizeof(json),
+        "{\"schema\":2,\"frame_id\":\"%s\",\"voxel_size_m\":0.1}",
+        frame_id
+    );
+    assert(written > 0 && (size_t)written < sizeof(json));
+    const size_t json_length = (size_t)written;
+    assert(total_size >= 20U + json_length && total_size <= capacity);
+    const size_t payload_length = total_size - 20U - json_length;
+    memset(artifact, 0, total_size);
+    memcpy(artifact, "GOCCUPY1", 8U);
+    write_u32_le(artifact + 8U, (uint32_t)json_length);
+    write_u32_le(artifact + 12U, (uint32_t)payload_length);
+    memcpy(artifact + 20U, json, json_length);
+    write_u32_le(artifact + 16U, reference_crc32(artifact + 20U, total_size - 20U));
+    return total_size;
+}
+
+
 static size_t make_preview_header(unsigned char *artifact, size_t capacity, uint32_t source_crc32)
 {
     const size_t total = 58U;
@@ -595,12 +659,89 @@ static size_t make_preview_header(unsigned char *artifact, size_t capacity, uint
     write_u16_le(artifact + 10U, 54U);
     write_u32_le(artifact + 12U, source_crc32);
     artifact[24U] = 0U;
-    artifact[25U] = 1U;
+    artifact[25U] = 2U;
     write_u16_le(artifact + 26U, 1U);
     write_u16_le(artifact + 28U, 1U);
     write_u16_le(artifact + 30U, 1U);
     write_u32_le(artifact + 44U, UINT32_C(0x3f800000));
+    write_u32_le(artifact + total - 4U, reference_crc32(artifact, total - 4U));
     return total;
+}
+
+
+static size_t make_large_preview(
+    unsigned char *artifact,
+    size_t capacity,
+    size_t total_size,
+    uint32_t source_crc32
+)
+{
+    assert(total_size >= 58U && total_size <= capacity);
+    const size_t payload_size = total_size - 58U;
+    assert(payload_size % 3U == 0U);
+    const size_t voxel_count = payload_size / 3U;
+    assert(voxel_count <= UINT32_MAX && voxel_count <= UINT16_MAX);
+    memset(artifact, 0, total_size);
+    memcpy(artifact, "GXPRV1\0\0", 8U);
+    write_u16_le(artifact + 8U, 2U);
+    write_u16_le(artifact + 10U, 54U);
+    write_u32_le(artifact + 12U, source_crc32);
+    artifact[24U] = 0U;
+    artifact[25U] = 2U;
+    write_u16_le(artifact + 26U, (uint16_t)voxel_count);
+    write_u16_le(artifact + 28U, 1U);
+    write_u16_le(artifact + 30U, 1U);
+    write_u32_le(artifact + 44U, UINT32_C(0x3f800000));
+    write_u32_le(artifact + 48U, (uint32_t)voxel_count);
+    write_u32_le(artifact + total_size - 4U, reference_crc32(artifact, total_size - 4U));
+    return total_size;
+}
+
+
+static size_t make_scan_artifact(unsigned char *artifact, size_t capacity, unsigned char marker)
+{
+    static const unsigned char header_json[] = "{}";
+    const size_t total = 20U + sizeof(header_json) - 1U + 1U;
+    assert(artifact != NULL && capacity >= total);
+    memset(artifact, 0, total);
+    memcpy(artifact, "GXRSCAN1", 8U);
+    write_u32_le(artifact + 8U, (uint32_t)(sizeof(header_json) - 1U));
+    write_u32_le(artifact + 12U, 1U);
+    memcpy(artifact + 20U, header_json, sizeof(header_json) - 1U);
+    artifact[total - 1U] = marker;
+    write_u32_le(artifact + 16U, reference_crc32(artifact + 20U, total - 20U));
+    return total;
+}
+
+
+static size_t make_registration_json(unsigned char *buffer, size_t capacity, const char *scan_id)
+{
+    const int written = snprintf(
+        (char *)buffer,
+        capacity,
+        "{\"schema\":1,\"scan_frame_id\":\"%s\",\"source\":\"apriltag\"}",
+        scan_id
+    );
+    assert(written > 0 && (size_t)written < capacity);
+    return (size_t)written;
+}
+
+
+static void prepare_staging_artifacts(unsigned char marker)
+{
+    const unsigned char scan[] = {marker};
+    char scan_id[20];
+    make_scan_id(reference_crc32(scan, sizeof(scan)), scan_id);
+    unsigned char occupancy[256];
+    unsigned char preview[64];
+    unsigned char registration[128];
+    const size_t occupancy_size = make_occupancy_header(occupancy, sizeof(occupancy), scan_id);
+    const size_t preview_size = make_preview_header(preview, sizeof(preview), reference_crc32(scan, sizeof(scan)));
+    const size_t registration_size = make_registration_json(registration, sizeof(registration), scan_id);
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=staging", scan, sizeof(scan)));
+    assert(save_kind("scan=save&kind=occupancy&object_id=OBJ_0001&session_id=staging", occupancy, occupancy_size));
+    assert(save_kind("scan=save&kind=preview&object_id=OBJ_0001&session_id=staging", preview, preview_size));
+    assert(save_kind("scan=save&kind=registration&object_id=OBJ_0001&session_id=staging", registration, registration_size));
 }
 
 
@@ -609,8 +750,20 @@ static bool file_matches_bytes(const char *path, const unsigned char *expected, 
     FILE *file = fopen(path, "rb");
     if (file == NULL) return false;
     unsigned char buffer[64];
-    const bool read_ok = length <= sizeof(buffer) && fread(buffer, 1U, length, file) == length;
-    const bool content_ok = read_ok && memcmp(buffer, expected, length) == 0 && fgetc(file) == EOF;
+    size_t compared = 0U;
+    while (compared < length) {
+        size_t chunk_size = length - compared;
+        if (chunk_size > sizeof(buffer)) chunk_size = sizeof(buffer);
+        if (
+            fread(buffer, 1U, chunk_size, file) != chunk_size ||
+            memcmp(buffer, expected + compared, chunk_size) != 0
+        ) {
+            (void)fclose(file);
+            return false;
+        }
+        compared += chunk_size;
+    }
+    const bool content_ok = fgetc(file) == EOF;
     const int close_result = fclose(file);
     return content_ok && close_result == 0;
 }
@@ -730,6 +883,19 @@ static size_t load_kind(const char *query, char *response, size_t capacity)
     return request.response_length;
 }
 
+
+static void request_info_kind(const char *kind_name, char *response, size_t capacity, httpd_req_t *request_out)
+{
+    char query[160];
+    const int written = strcmp(kind_name, "scan") == 0
+        ? snprintf(query, sizeof(query), "scan=info&object_id=OBJ_0001&session_id=S000001")
+        : snprintf(query, sizeof(query), "scan=info&kind=%s&object_id=OBJ_0001&session_id=S000001", kind_name);
+    assert(written > 0 && (size_t)written < sizeof(query));
+    *request_out = make_request(query, NULL, 0U, response, capacity);
+    bool handled = false;
+    assert(web_scan_store_try_handle(request_out, &handled) == ESP_OK && handled);
+}
+
 static void stage_query(
     char *query,
     size_t query_size,
@@ -750,30 +916,40 @@ static void stage_query(
 static void test_staging_round_trip_kinds_and_limits(void)
 {
     make_layout();
+    static const unsigned char scan_payload[] = {0x11U};
+    char scan_id[20];
+    make_scan_id(reference_crc32(scan_payload, sizeof(scan_payload)), scan_id);
+    unsigned char occupancy[256];
+    unsigned char preview[64];
+    unsigned char registration[128];
+    const size_t occupancy_size = make_occupancy_header(occupancy, sizeof(occupancy), scan_id);
+    const size_t preview_size = make_preview_header(preview, sizeof(preview), reference_crc32(scan_payload, sizeof(scan_payload)));
+    const size_t registration_size = make_registration_json(registration, sizeof(registration), scan_id);
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=staging", scan_payload, sizeof(scan_payload)));
     const struct {
         const char *name;
         const web_scan_kind_t *kind;
-        unsigned char payload;
+        const unsigned char *payload;
+        size_t payload_size;
     } cases[] = {
-        {"scan", &WEB_SCAN_KIND_SCAN, 0x11U},
-        {"occupancy", &WEB_SCAN_KIND_OCCUPANCY, 0x22U},
-        {"preview", &WEB_SCAN_KIND_PREVIEW, 0x33U},
-        {"registration", &WEB_SCAN_KIND_REGISTRATION, 0x44U},
+        {"occupancy", &WEB_SCAN_KIND_OCCUPANCY, occupancy, occupancy_size},
+        {"preview", &WEB_SCAN_KIND_PREVIEW, preview, preview_size},
+        {"registration", &WEB_SCAN_KIND_REGISTRATION, registration, registration_size},
     };
     const unsigned session_checks_before = s_session_list_calls;
 
     for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         char query[160], response[512] = {0};
         stage_query(query, sizeof(query), "save", cases[i].name);
-        assert(save_kind(query, &cases[i].payload, sizeof(cases[i].payload)));
+        assert(save_kind(query, cases[i].payload, cases[i].payload_size));
 
         char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
         assert(web_scan_paths("OBJ_0001", "staging", cases[i].kind, final_path, temp_path, backup_path) == ESP_OK);
         assert(path_exists(final_path));
 
         stage_query(query, sizeof(query), "load", cases[i].name);
-        assert(load_kind(query, response, sizeof(response)) == sizeof(cases[i].payload));
-        assert((unsigned char)response[0] == cases[i].payload);
+        assert(load_kind(query, response, sizeof(response)) == cases[i].payload_size);
+        assert(memcmp(response, cases[i].payload, cases[i].payload_size) == 0);
 
         memset(response, 0, sizeof(response));
         stage_query(query, sizeof(query), "info", cases[i].name);
@@ -781,7 +957,15 @@ static void test_staging_round_trip_kinds_and_limits(void)
         bool handled = false;
         assert(web_scan_store_try_handle(&info, &handled) == ESP_OK && handled);
         assert(strstr(response, "\"ok\":true") != NULL);
-        assert(strstr(response, "\"bytes\":1") != NULL);
+        char expected_bytes[32];
+        const int bytes_written = snprintf(
+            expected_bytes,
+            sizeof(expected_bytes),
+            "\"bytes\":%u",
+            (unsigned)cases[i].payload_size
+        );
+        assert(bytes_written > 0 && (size_t)bytes_written < sizeof(expected_bytes));
+        assert(strstr(response, expected_bytes) != NULL);
 
         stage_query(query, sizeof(query), "delete", cases[i].name);
         assert(save_kind(query, NULL, 0U));
@@ -791,7 +975,7 @@ static void test_staging_round_trip_kinds_and_limits(void)
         stage_query(query, sizeof(query), "save", cases[i].name);
         httpd_req_t oversized = make_request(
             query,
-            &cases[i].payload,
+            cases[i].payload,
             cases[i].kind->max_bytes + 1U,
             response,
             sizeof(response)
@@ -849,11 +1033,7 @@ static void test_staging_operations_return_409_while_protected(void)
     static const char *const kinds[] = {"scan", "occupancy", "preview", "registration"};
     static const char *const actions[] = {"save", "load", "info", "delete"};
     const unsigned char payload = 0x61U;
-    for (size_t kind_index = 0U; kind_index < sizeof(kinds) / sizeof(kinds[0]); ++kind_index) {
-        char query[160];
-        stage_query(query, sizeof(query), "save", kinds[kind_index]);
-        assert(save_kind(query, &payload, sizeof(payload)));
-    }
+    prepare_staging_artifacts(payload);
 
     assert(storage_bulk_admission_enter_protected() == ESP_OK);
     for (size_t kind_index = 0U; kind_index < sizeof(kinds) / sizeof(kinds[0]); ++kind_index) {
@@ -881,13 +1061,8 @@ static void test_staging_operations_return_409_while_protected(void)
 static void test_object_change_hook_clears_all_staged_files(void)
 {
     make_layout();
-    static const char *const kinds[] = {"scan", "occupancy", "preview", "registration"};
     const unsigned char payload = 0x71U;
-    for (size_t i = 0U; i < sizeof(kinds) / sizeof(kinds[0]); ++i) {
-        char query[160];
-        stage_query(query, sizeof(query), "save", kinds[i]);
-        assert(save_kind(query, &payload, sizeof(payload)));
-    }
+    prepare_staging_artifacts(payload);
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
     assert(web_scan_paths("OBJ_0001", "staging", &WEB_SCAN_KIND_SCAN, final_path, temp_path, backup_path) == ESP_OK);
@@ -957,6 +1132,7 @@ static void test_scan_and_occupancy_size_limits(void)
     assert(strstr(response, "\"ok\":true") != NULL);
     assert(strstr(response, "\"bytes\":8388608") != NULL);
     assert(request.body_offset == scan_limit);
+    const uint32_t initial_scan_crc = reference_crc32(body, scan_limit);
 
     memset(response, 0, sizeof(response));
     request = make_request(
@@ -971,17 +1147,23 @@ static void test_scan_and_occupancy_size_limits(void)
     assert(strstr(response, "ESP_ERR_INVALID_SIZE") != NULL);
     assert(request.body_offset == 0U);
 
+    const size_t preview_size = make_large_preview(
+        body,
+        scan_limit + 1U,
+        WEB_SCAN_KIND_PREVIEW.max_bytes,
+        initial_scan_crc
+    );
     memset(response, 0, sizeof(response));
     request = make_request(
         "scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001",
         body,
-        WEB_SCAN_KIND_PREVIEW.max_bytes,
+        preview_size,
         response,
         sizeof(response)
     );
     assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
     assert(strstr(response, "\"ok\":true") != NULL);
-    assert(request.body_offset == WEB_SCAN_KIND_PREVIEW.max_bytes);
+    assert(request.body_offset == preview_size);
 
     memset(response, 0, sizeof(response));
     request = make_request(
@@ -1009,6 +1191,9 @@ static void test_scan_and_occupancy_size_limits(void)
     assert(strstr(response, "\"ok\":true") != NULL);
     assert(request.body_offset == medium_scan_size);
 
+    char medium_scan_id[20];
+    make_scan_id(reference_crc32(body, medium_scan_size), medium_scan_id);
+
     char *large_response = malloc(medium_scan_size);
     assert(large_response != NULL);
     memset(large_response, 0, medium_scan_size);
@@ -1025,17 +1210,24 @@ static void test_scan_and_occupancy_size_limits(void)
     assert(s_chunked_response_bytes == medium_scan_size);
     assert(memcmp(large_response, body, medium_scan_size) == 0);
 
+    const size_t occupancy_size = make_large_occupancy(
+        body,
+        scan_limit + 1U,
+        occupancy_limit,
+        medium_scan_id
+    );
+
     memset(response, 0, sizeof(response));
     request = make_request(
         "scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001",
         body,
-        occupancy_limit,
+        occupancy_size,
         response,
         sizeof(response)
     );
     assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
     assert(strstr(response, "\"ok\":true") != NULL);
-    assert(request.body_offset == occupancy_limit);
+    assert(request.body_offset == occupancy_size);
 
     memset(response, 0, sizeof(response));
     request = make_request(
@@ -1187,17 +1379,19 @@ static void test_occupancy_kind_is_stored_beside_the_scan(void)
         assert(strstr(info, "\"source_id\":null") != NULL);
     }
 
-    const unsigned char registration[] = "{\"schema\":1}";
+    unsigned char registration[128];
+    make_scan_id(reference_crc32(scan, sizeof(scan)), scan_id);
+    const size_t registration_size = make_registration_json(registration, sizeof(registration), scan_id);
     const char *registration_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json";
     const char *registration_temp = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json.tmp";
     const char *registration_backup = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json.bak";
     assert(save_kind(
         "scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001",
         registration,
-        sizeof(registration) - 1U
+        registration_size
     ));
-    write_bytes(registration_temp, registration, sizeof(registration) - 1U);
-    write_bytes(registration_backup, registration, sizeof(registration) - 1U);
+    write_bytes(registration_temp, registration, registration_size);
+    write_bytes(registration_backup, registration, registration_size);
 
     /* Deleting the scan also removes its registration and derivatives. */
     assert(save_kind("scan=delete&object_id=OBJ_0001&session_id=S000001", NULL, 0U));
@@ -1245,9 +1439,14 @@ static void test_scan_replacement_invalidates_derivatives_and_returns_crc(void)
     make_layout();
     const unsigned char scan_a[] = {1U, 2U, 3U, 4U};
     const unsigned char scan_b[] = {9U, 8U, 7U, 6U, 5U};
-    const unsigned char occupancy[] = {'o', 'c', 'c'};
-    const unsigned char preview[] = {'p', 'r', 'v'};
-    const unsigned char registration[] = "{\"valid\":true}";
+    char scan_a_id[20];
+    make_scan_id(reference_crc32(scan_a, sizeof(scan_a)), scan_a_id);
+    unsigned char occupancy[256];
+    unsigned char preview[64];
+    unsigned char registration[128];
+    const size_t occupancy_size = make_occupancy_header(occupancy, sizeof(occupancy), scan_a_id);
+    const size_t preview_size = make_preview_header(preview, sizeof(preview), reference_crc32(scan_a, sizeof(scan_a)));
+    const size_t registration_size = make_registration_json(registration, sizeof(registration), scan_a_id);
     const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
     const char *occupancy_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin";
     const char *occupancy_temp = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin.tmp";
@@ -1260,19 +1459,19 @@ static void test_scan_replacement_invalidates_derivatives_and_returns_crc(void)
     const char *registration_backup = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json.bak";
 
     assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, sizeof(scan_a)));
-    assert(save_kind("scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001", occupancy, sizeof(occupancy)));
-    assert(save_kind("scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001", preview, sizeof(preview)));
+    assert(save_kind("scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001", occupancy, occupancy_size));
+    assert(save_kind("scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001", preview, preview_size));
     assert(save_kind(
         "scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001",
         registration,
-        sizeof(registration) - 1U
+        registration_size
     ));
-    write_bytes(occupancy_temp, occupancy, sizeof(occupancy));
-    write_bytes(occupancy_backup, occupancy, sizeof(occupancy));
-    write_bytes(preview_temp, preview, sizeof(preview));
-    write_bytes(preview_backup, preview, sizeof(preview));
-    write_bytes(registration_temp, registration, sizeof(registration) - 1U);
-    write_bytes(registration_backup, registration, sizeof(registration) - 1U);
+    write_bytes(occupancy_temp, occupancy, occupancy_size);
+    write_bytes(occupancy_backup, occupancy, occupancy_size);
+    write_bytes(preview_temp, preview, preview_size);
+    write_bytes(preview_backup, preview, preview_size);
+    write_bytes(registration_temp, registration, registration_size);
+    write_bytes(registration_backup, registration, registration_size);
 
     char expected_id[20];
     make_scan_id(reference_crc32(scan_b, sizeof(scan_b)), expected_id);
@@ -1290,9 +1489,9 @@ static void test_scan_replacement_invalidates_derivatives_and_returns_crc(void)
     assert(file_matches_bytes(scan_path, scan_b, sizeof(scan_b)));
     assert(!path_exists(occupancy_path) && !path_exists(occupancy_temp) && !path_exists(occupancy_backup));
     assert(!path_exists(preview_path) && !path_exists(preview_temp) && !path_exists(preview_backup));
-    assert(file_matches_bytes(registration_path, registration, sizeof(registration) - 1U));
-    assert(file_matches_bytes(registration_temp, registration, sizeof(registration) - 1U));
-    assert(file_matches_bytes(registration_backup, registration, sizeof(registration) - 1U));
+    assert(file_matches_bytes(registration_path, registration, registration_size));
+    assert(file_matches_bytes(registration_temp, registration, registration_size));
+    assert(file_matches_bytes(registration_backup, registration, registration_size));
     remove_layout();
 }
 
@@ -1302,15 +1501,19 @@ static void test_scan_replacement_delete_failure_keeps_old_scan(void)
     make_layout();
     const unsigned char scan_a[] = {1U, 3U, 5U};
     const unsigned char scan_b[] = {2U, 4U, 6U};
-    const unsigned char occupancy[] = {'o', 'c', 'c'};
-    const unsigned char preview[] = {'p', 'r', 'v'};
+    char scan_a_id[20];
+    make_scan_id(reference_crc32(scan_a, sizeof(scan_a)), scan_a_id);
+    unsigned char occupancy[256];
+    unsigned char preview[64];
+    const size_t occupancy_size = make_occupancy_header(occupancy, sizeof(occupancy), scan_a_id);
+    const size_t preview_size = make_preview_header(preview, sizeof(preview), reference_crc32(scan_a, sizeof(scan_a)));
     const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
     const char *scan_temp = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin.tmp";
     const char *occupancy_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin";
     const char *preview_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/preview-v1.bin";
     assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, sizeof(scan_a)));
-    assert(save_kind("scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001", occupancy, sizeof(occupancy)));
-    assert(save_kind("scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001", preview, sizeof(preview)));
+    assert(save_kind("scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001", occupancy, occupancy_size));
+    assert(save_kind("scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001", preview, preview_size));
 
     s_fail_remove_path = occupancy_path;
     char response[512] = {0};
@@ -1326,8 +1529,8 @@ static void test_scan_replacement_delete_failure_keeps_old_scan(void)
     assert(request.response_status != NULL && strcmp(request.response_status, "500 Internal Server Error") == 0);
     assert(file_matches_bytes(scan_path, scan_a, sizeof(scan_a)));
     assert(!path_exists(scan_temp));
-    assert(file_matches_bytes(occupancy_path, occupancy, sizeof(occupancy)));
-    assert(file_matches_bytes(preview_path, preview, sizeof(preview)));
+    assert(file_matches_bytes(occupancy_path, occupancy, occupancy_size));
+    assert(file_matches_bytes(preview_path, preview, preview_size));
     remove_layout();
 }
 
@@ -1336,8 +1539,12 @@ static void test_scan_replacement_power_loss_ordering(void)
 {
     const unsigned char scan_a[] = {1U, 3U, 5U};
     const unsigned char scan_b[] = {2U, 4U, 6U};
-    const unsigned char occupancy[] = {'o', 'c', 'c'};
-    const unsigned char preview[] = {'p', 'r', 'v'};
+    char scan_a_id[20];
+    make_scan_id(reference_crc32(scan_a, sizeof(scan_a)), scan_a_id);
+    unsigned char occupancy[256];
+    unsigned char preview[64];
+    const size_t occupancy_size = make_occupancy_header(occupancy, sizeof(occupancy), scan_a_id);
+    const size_t preview_size = make_preview_header(preview, sizeof(preview), reference_crc32(scan_a, sizeof(scan_a)));
     const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
     const char *occupancy_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin";
     const char *preview_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/preview-v1.bin";
@@ -1345,8 +1552,8 @@ static void test_scan_replacement_power_loss_ordering(void)
 
     make_layout();
     assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, sizeof(scan_a)));
-    assert(save_kind("scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001", occupancy, sizeof(occupancy)));
-    assert(save_kind("scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001", preview, sizeof(preview)));
+    assert(save_kind("scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001", occupancy, occupancy_size));
+    assert(save_kind("scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001", preview, preview_size));
     s_cut_after_remove_path = preview_backup;
     char response[512] = {0};
     httpd_req_t request = make_request(
@@ -1365,8 +1572,8 @@ static void test_scan_replacement_power_loss_ordering(void)
 
     make_layout();
     assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, sizeof(scan_a)));
-    assert(save_kind("scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001", occupancy, sizeof(occupancy)));
-    assert(save_kind("scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001", preview, sizeof(preview)));
+    assert(save_kind("scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001", occupancy, occupancy_size));
+    assert(save_kind("scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001", preview, preview_size));
     s_cut_after_rename_path = scan_path;
     memset(response, 0, sizeof(response));
     request = make_request(
@@ -1383,92 +1590,224 @@ static void test_scan_replacement_power_loss_ordering(void)
 }
 
 
-static void test_derivative_upload_scan_id_generation_checks(void)
+static void test_derivative_compare_and_commit_rejects_stale_uploads(void)
 {
     make_layout();
-    const unsigned char scan[] = {10U, 20U, 30U, 40U};
-    const unsigned char occupancy[] = {'o', 'c', 'c'};
-    const unsigned char replacement[] = {'n', 'e', 'w'};
+    static const unsigned char scan_a[] = {10U, 20U, 30U, 40U};
+    static const unsigned char scan_b[] = {1U, 3U, 5U, 7U};
+    char scan_a_id[20];
+    char scan_b_id[20];
+    make_scan_id(reference_crc32(scan_a, sizeof(scan_a)), scan_a_id);
+    make_scan_id(reference_crc32(scan_b, sizeof(scan_b)), scan_b_id);
+    unsigned char occupancy_a[256], occupancy_b[256];
+    unsigned char preview_a[64], preview_b[64];
+    unsigned char registration_a[128], registration_b[128];
+    const size_t occupancy_a_size = make_occupancy_header(occupancy_a, sizeof(occupancy_a), scan_a_id);
+    const size_t occupancy_b_size = make_occupancy_header(occupancy_b, sizeof(occupancy_b), scan_b_id);
+    const size_t preview_a_size = make_preview_header(preview_a, sizeof(preview_a), reference_crc32(scan_a, sizeof(scan_a)));
+    const size_t preview_b_size = make_preview_header(preview_b, sizeof(preview_b), reference_crc32(scan_b, sizeof(scan_b)));
+    const size_t registration_a_size = make_registration_json(registration_a, sizeof(registration_a), scan_a_id);
+    const size_t registration_b_size = make_registration_json(registration_b, sizeof(registration_b), scan_b_id);
     const char *occupancy_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin";
     const char *preview_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/preview-v1.bin";
-    char query[160];
+    const char *registration_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json";
+    char query[192];
     char response[512] = {0};
     bool handled = false;
 
+    int written = snprintf(
+        query,
+        sizeof(query),
+        "scan=save&kind=occupancy&scan_id=%s&object_id=OBJ_0001&session_id=S000001",
+        scan_a_id
+    );
+    assert(written > 0 && (size_t)written < sizeof(query));
+    httpd_req_t request = make_request(query, occupancy_a, occupancy_a_size, response, sizeof(response));
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+    assert(strcmp(response, "{\"ok\":false,\"error\":\"scan_generation_mismatch\",\"current_id\":null}") == 0);
+    assert(!path_exists(occupancy_path));
+
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, sizeof(scan_a)));
+    assert(save_kind("scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001", occupancy_a, occupancy_a_size));
+    assert(save_kind("scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001", preview_a, preview_a_size));
+    assert(save_kind("scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001", registration_a, registration_a_size));
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_b, sizeof(scan_b)));
+    assert(!path_exists(occupancy_path) && !path_exists(preview_path));
+
+    written = snprintf(
+        query,
+        sizeof(query),
+        "scan=save&kind=occupancy&scan_id=%s&object_id=OBJ_0001&session_id=S000001",
+        scan_b_id
+    );
+    assert(written > 0 && (size_t)written < sizeof(query));
+    assert(save_kind(query, occupancy_b, occupancy_b_size));
+    written = snprintf(
+        query,
+        sizeof(query),
+        "scan=save&kind=preview&scan_id=%s&object_id=OBJ_0001&session_id=S000001",
+        scan_b_id
+    );
+    assert(written > 0 && (size_t)written < sizeof(query));
+    assert(save_kind(query, preview_b, preview_b_size));
+    written = snprintf(
+        query,
+        sizeof(query),
+        "scan=save&kind=registration&scan_id=%s&object_id=OBJ_0001&session_id=S000001",
+        scan_b_id
+    );
+    assert(written > 0 && (size_t)written < sizeof(query));
+    assert(save_kind(query, registration_b, registration_b_size));
+
+    const struct {
+        const char *kind;
+        const unsigned char *body;
+        size_t body_size;
+        const char *path;
+        const unsigned char *expected;
+        size_t expected_size;
+    } stale_uploads[] = {
+        {"occupancy", occupancy_a, occupancy_a_size, occupancy_path, occupancy_b, occupancy_b_size},
+        {"preview", preview_a, preview_a_size, preview_path, preview_b, preview_b_size},
+        {"registration", registration_a, registration_a_size, registration_path, registration_b, registration_b_size},
+    };
+    for (size_t i = 0U; i < sizeof(stale_uploads) / sizeof(stale_uploads[0]); ++i) {
+        for (size_t with_query = 0U; with_query < 2U; ++with_query) {
+            written = with_query == 0U
+                ? snprintf(query, sizeof(query), "scan=save&kind=%s&object_id=OBJ_0001&session_id=S000001", stale_uploads[i].kind)
+                : snprintf(query, sizeof(query), "scan=save&kind=%s&scan_id=%s&object_id=OBJ_0001&session_id=S000001", stale_uploads[i].kind, scan_a_id);
+            assert(written > 0 && (size_t)written < sizeof(query));
+            memset(response, 0, sizeof(response));
+            request = make_request(query, stale_uploads[i].body, stale_uploads[i].body_size, response, sizeof(response));
+            assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+            assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+            assert(strstr(response, "\"error\":\"scan_generation_mismatch\"") != NULL);
+            assert(strstr(response, scan_b_id) != NULL);
+            assert(file_matches_bytes(stale_uploads[i].path, stale_uploads[i].expected, stale_uploads[i].expected_size));
+        }
+    }
+
+    /* A query bound to B cannot relabel content bound to A. */
+    written = snprintf(
+        query,
+        sizeof(query),
+        "scan=save&kind=occupancy&scan_id=%s&object_id=OBJ_0001&session_id=S000001",
+        scan_b_id
+    );
+    assert(written > 0 && (size_t)written < sizeof(query));
+    memset(response, 0, sizeof(response));
+    request = make_request(query, occupancy_a, occupancy_a_size, response, sizeof(response));
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+    assert(file_matches_bytes(occupancy_path, occupancy_b, occupancy_b_size));
+    remove_layout();
+}
+
+
+static void test_derivative_compare_and_commit_toctou_recheck(void)
+{
+    make_layout();
+    static const unsigned char scan_a[] = {2U, 4U, 6U, 8U};
+    static const unsigned char scan_b[] = {0x71U, 0x72U, 0x73U, 0x74U};
+    char scan_a_id[20];
+    char scan_b_id[20];
+    make_scan_id(reference_crc32(scan_a, sizeof(scan_a)), scan_a_id);
+    make_scan_id(reference_crc32(scan_b, sizeof(scan_b)), scan_b_id);
+    unsigned char occupancy[256];
+    const size_t occupancy_size = make_occupancy_header(occupancy, sizeof(occupancy), scan_a_id);
+    const char *occupancy_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin";
+    const char *occupancy_temp = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin.tmp";
+    char response[512] = {0};
     httpd_req_t request = make_request(
-        "scan=save&kind=occupancy&scan_id=scan-crc32:00000000&object_id=OBJ_0001&session_id=S000001",
+        "scan=save&object_id=OBJ_0001&session_id=S000001",
+        scan_a,
+        sizeof(scan_a),
+        response,
+        sizeof(response)
+    );
+    bool handled = false;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+
+    s_replace_scan_before_derivative_commit = true;
+    memset(response, 0, sizeof(response));
+    request = make_request(
+        "scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001",
         occupancy,
-        sizeof(occupancy),
+        occupancy_size,
         response,
         sizeof(response)
     );
     assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
     assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
-    assert(strcmp(
+    assert(strstr(response, "\"error\":\"scan_generation_mismatch\"") != NULL);
+    assert(strstr(response, scan_b_id) != NULL);
+    assert(!path_exists(occupancy_path) && !path_exists(occupancy_temp));
+    remove_layout();
+}
+
+
+static void test_identity_cache_publish_preserves_replacement(void)
+{
+    make_layout();
+    static const unsigned char scan_a[] = {1U, 3U, 5U, 7U};
+    static const unsigned char scan_b[] = {0x71U, 0x72U, 0x73U, 0x74U};
+    char scan_a_id[20];
+    char scan_b_id[20];
+    make_scan_id(reference_crc32(scan_a, sizeof(scan_a)), scan_a_id);
+    make_scan_id(reference_crc32(scan_b, sizeof(scan_b)), scan_b_id);
+    unsigned char occupancy[256];
+    const size_t occupancy_size = make_occupancy_header(
+        occupancy,
+        sizeof(occupancy),
+        scan_a_id
+    );
+    const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
+    const char *occupancy_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin";
+    const char *occupancy_temp = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin.tmp";
+    char response[512] = {0};
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan_a, sizeof(scan_a)));
+    web_scan_identity_cache_clear_locked(scan_path);
+    s_replace_scan_before_identity_cache_store = true;
+
+    httpd_req_t request = make_request(
+        "scan=save&kind=occupancy&object_id=OBJ_0001&session_id=S000001",
+        occupancy,
+        occupancy_size,
         response,
-        "{\"ok\":false,\"error\":\"scan_generation_mismatch\",\"current_id\":null}"
-    ) == 0);
-    assert(!path_exists(occupancy_path));
+        sizeof(response)
+    );
+    bool handled = false;
+    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
+    assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+    assert(strstr(response, "\"error\":\"scan_generation_mismatch\"") != NULL);
+    assert(strstr(response, scan_b_id) != NULL);
+    assert(file_matches_bytes(scan_path, scan_b, sizeof(scan_b)));
+    assert(!path_exists(occupancy_path) && !path_exists(occupancy_temp));
+    remove_layout();
+}
 
+
+static void test_registration_unbound_is_rejected(void)
+{
+    make_layout();
+    static const unsigned char scan[] = {3U, 6U, 9U};
+    static const unsigned char registration[] = "{\"schema\":1,\"source\":\"apriltag\"}";
+    const char *registration_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/registration-v1.json";
+    char response[512] = {0};
     assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan, sizeof(scan)));
-    char scan_id[20];
-    make_scan_id(reference_crc32(scan, sizeof(scan)), scan_id);
-    char wrong_scan_id[20];
-    memcpy(wrong_scan_id, scan_id, sizeof(wrong_scan_id));
-    wrong_scan_id[11] = wrong_scan_id[11] == '0' ? '1' : '0';
-    int written = snprintf(
-        query,
-        sizeof(query),
-        "scan=save&kind=occupancy&scan_id=%s&object_id=OBJ_0001&session_id=S000001",
-        scan_id
+    httpd_req_t request = make_request(
+        "scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001",
+        registration,
+        sizeof(registration) - 1U,
+        response,
+        sizeof(response)
     );
-    assert(written > 0 && (size_t)written < sizeof(query));
-    memset(response, 0, sizeof(response));
-    request = make_request(query, occupancy, sizeof(occupancy), response, sizeof(response));
-    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
-    assert(strstr(response, "\"ok\":true") != NULL && path_exists(occupancy_path));
-
-    written = snprintf(
-        query,
-        sizeof(query),
-        "scan=save&kind=occupancy&scan_id=%s&object_id=OBJ_0001&session_id=S000001",
-        wrong_scan_id
-    );
-    assert(written > 0 && (size_t)written < sizeof(query));
-    memset(response, 0, sizeof(response));
-    request = make_request(query, replacement, sizeof(replacement), response, sizeof(response));
+    bool handled = false;
     assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
     assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
-    char expected_mismatch[128];
-    written = snprintf(
-        expected_mismatch,
-        sizeof(expected_mismatch),
-        "{\"ok\":false,\"error\":\"scan_generation_mismatch\",\"current_id\":\"%s\"}",
-        scan_id
-    );
-    assert(written > 0 && (size_t)written < sizeof(expected_mismatch));
-    assert(strcmp(response, expected_mismatch) == 0);
-    assert(file_matches_bytes(occupancy_path, occupancy, sizeof(occupancy)));
-
-    written = snprintf(
-        query,
-        sizeof(query),
-        "scan=save&kind=preview&scan_id=%s&object_id=OBJ_0001&session_id=S000001",
-        wrong_scan_id
-    );
-    assert(written > 0 && (size_t)written < sizeof(query));
-    memset(response, 0, sizeof(response));
-    request = make_request(query, replacement, sizeof(replacement), response, sizeof(response));
-    assert(web_scan_store_try_handle(&request, &handled) == ESP_OK && handled);
-    assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
-    assert(!path_exists(preview_path));
-
-    assert(save_kind(
-        "scan=save&kind=preview&object_id=OBJ_0001&session_id=S000001",
-        replacement,
-        sizeof(replacement)
-    ));
-    assert(path_exists(preview_path));
+    assert(strcmp(response, "{\"ok\":false,\"error\":\"registration_unbound\"}") == 0);
+    assert(!path_exists(registration_path));
     remove_layout();
 }
 
@@ -1476,12 +1815,17 @@ static void test_derivative_upload_scan_id_generation_checks(void)
 static void test_registration_round_trip_bounds_and_session_validation(void)
 {
     make_layout();
-    const unsigned char registration[] = "{\"schema\":1,\"source\":\"apriltag\"}";
+    static const unsigned char scan[] = {4U, 8U, 12U};
+    unsigned char registration[128];
+    char scan_id[20];
+    make_scan_id(reference_crc32(scan, sizeof(scan)), scan_id);
+    const size_t registration_size = make_registration_json(registration, sizeof(registration), scan_id);
     const char *registration_kind = "kind=registration&";
     char query[160];
     char response[512] = {0};
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan, sizeof(scan)));
     (void)snprintf(query, sizeof(query), "scan=save&%sobject_id=OBJ_0001&session_id=S000001", registration_kind);
-    assert(save_kind(query, registration, sizeof(registration) - 1U));
+    assert(save_kind(query, registration, registration_size));
 
     memset(response, 0, sizeof(response));
     httpd_req_t load = make_request(
@@ -1489,15 +1833,18 @@ static void test_registration_round_trip_bounds_and_session_validation(void)
     bool handled = false;
     assert(web_scan_store_try_handle(&load, &handled) == ESP_OK && handled);
     assert(load.content_type != NULL && strcmp(load.content_type, "application/json; charset=utf-8") == 0);
-    assert(load.response_length == sizeof(registration) - 1U);
-    assert(memcmp(response, registration, sizeof(registration) - 1U) == 0);
+    assert(load.response_length == registration_size);
+    assert(memcmp(response, registration, registration_size) == 0);
 
     memset(response, 0, sizeof(response));
     httpd_req_t info = make_request(
         "scan=info&kind=registration&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
     assert(web_scan_store_try_handle(&info, &handled) == ESP_OK && handled);
     assert(strstr(response, "\"ok\":true") != NULL);
-    assert(strstr(response, "\"bytes\":32") != NULL);
+    char expected_bytes[32];
+    const int bytes_written = snprintf(expected_bytes, sizeof(expected_bytes), "\"bytes\":%u", (unsigned)registration_size);
+    assert(bytes_written > 0 && (size_t)bytes_written < sizeof(expected_bytes));
+    assert(strstr(response, expected_bytes) != NULL);
 
     static const unsigned char oversized[16385] = {0U};
     memset(response, 0, sizeof(response));
@@ -1526,7 +1873,7 @@ static void test_registration_round_trip_bounds_and_session_validation(void)
 
     memset(response, 0, sizeof(response));
     httpd_req_t missing = make_request(
-        "scan=save&kind=registration&object_id=OBJ_0001&session_id=S000002", registration, sizeof(registration) - 1U, response, sizeof(response));
+        "scan=save&kind=registration&object_id=OBJ_0001&session_id=S000002", registration, registration_size, response, sizeof(response));
     assert(web_scan_store_try_handle(&missing, &handled) == ESP_OK && handled);
     assert(missing.response_status != NULL && strcmp(missing.response_status, "404 Not Found") == 0);
 
@@ -1545,17 +1892,22 @@ static void test_registration_round_trip_bounds_and_session_validation(void)
 static void test_registration_recording_guard_is_session_scoped(void)
 {
     make_layout();
-    const unsigned char registration[] = "{\"valid\":true}";
+    static const unsigned char scan[] = {5U, 10U, 15U};
+    unsigned char registration[128];
+    char scan_id[20];
+    make_scan_id(reference_crc32(scan, sizeof(scan)), scan_id);
+    const size_t registration_size = make_registration_json(registration, sizeof(registration), scan_id);
     char response[512] = {0};
     const char *query = "scan=save&kind=registration&object_id=OBJ_0001&session_id=S000001";
-    assert(save_kind(query, registration, sizeof(registration) - 1U));
+    assert(save_kind("scan=save&object_id=OBJ_0001&session_id=S000001", scan, sizeof(scan)));
+    assert(save_kind(query, registration, registration_size));
 
     assert(storage_bulk_admission_enter_protected() == ESP_OK);
 
     s_recorder_snapshot.running = true;
     (void)snprintf(s_recorder_snapshot.object_id, sizeof(s_recorder_snapshot.object_id), "OBJ_0001");
     (void)snprintf(s_recorder_snapshot.session_id, sizeof(s_recorder_snapshot.session_id), "S000001");
-    httpd_req_t save = make_request(query, registration, sizeof(registration) - 1U, response, sizeof(response));
+    httpd_req_t save = make_request(query, registration, registration_size, response, sizeof(response));
     bool handled = false;
     assert(web_scan_store_try_handle(&save, &handled) == ESP_OK && handled);
     assert(save.response_status != NULL && strcmp(save.response_status, "409 Conflict") == 0);
@@ -1579,7 +1931,7 @@ static void test_registration_recording_guard_is_session_scoped(void)
         "scan=load&kind=registration&object_id=OBJ_0001&session_id=S000001", NULL, 0U, response, sizeof(response));
     assert(web_scan_store_try_handle(&load, &handled) == ESP_OK && handled);
     assert(load.response_status == NULL);
-    assert(load.response_length == sizeof(registration) - 1U);
+    assert(load.response_length == registration_size);
 
     memset(response, 0, sizeof(response));
     httpd_req_t info = make_request(
@@ -1589,7 +1941,7 @@ static void test_registration_recording_guard_is_session_scoped(void)
 
     (void)snprintf(s_recorder_snapshot.session_id, sizeof(s_recorder_snapshot.session_id), "S000002");
     memset(response, 0, sizeof(response));
-    save = make_request(query, registration, sizeof(registration) - 1U, response, sizeof(response));
+    save = make_request(query, registration, registration_size, response, sizeof(response));
     assert(web_scan_store_try_handle(&save, &handled) == ESP_OK && handled);
     assert(save.response_status == NULL && strstr(response, "\"ok\":true") != NULL);
     s_recorder_snapshot.running = false;
@@ -1966,6 +2318,119 @@ static void test_write_failure_removes_temp_and_balances_storage_guard(void)
     remove_layout();
 }
 
+
+static void test_recovery_matrix_validates_every_artifact_kind(void)
+{
+    static const unsigned char bad_bytes[] = {'b', 'a', 'd'};
+    static const unsigned char temp_bytes[] = {'t', 'm', 'p'};
+    static const unsigned char registration_final[] = "{\"schema\":1}";
+    static const unsigned char registration_backup[] = "{\"schema\":2}";
+    char scan_id_a[20];
+    char scan_id_b[20];
+    make_scan_id(UINT32_C(0x11111111), scan_id_a);
+    make_scan_id(UINT32_C(0x22222222), scan_id_b);
+    unsigned char scan_final[64], scan_backup[64];
+    unsigned char occupancy_final[256], occupancy_backup[256];
+    unsigned char preview_final[64], preview_backup[64];
+    const size_t scan_final_size = make_scan_artifact(scan_final, sizeof(scan_final), 0xa1U);
+    const size_t scan_backup_size = make_scan_artifact(scan_backup, sizeof(scan_backup), 0xb2U);
+    const size_t occupancy_final_size = make_occupancy_header(occupancy_final, sizeof(occupancy_final), scan_id_a);
+    const size_t occupancy_backup_size = make_occupancy_header(occupancy_backup, sizeof(occupancy_backup), scan_id_b);
+    const size_t preview_final_size = make_preview_header(preview_final, sizeof(preview_final), UINT32_C(0x11111111));
+    const size_t preview_backup_size = make_preview_header(preview_backup, sizeof(preview_backup), UINT32_C(0x22222222));
+    const struct {
+        const char *name;
+        const web_scan_kind_t *kind;
+        const unsigned char *final_bytes;
+        size_t final_size;
+        const unsigned char *backup_bytes;
+        size_t backup_size;
+    } cases[] = {
+        {"scan", &WEB_SCAN_KIND_SCAN, scan_final, scan_final_size, scan_backup, scan_backup_size},
+        {"occupancy", &WEB_SCAN_KIND_OCCUPANCY, occupancy_final, occupancy_final_size, occupancy_backup, occupancy_backup_size},
+        {"preview", &WEB_SCAN_KIND_PREVIEW, preview_final, preview_final_size, preview_backup, preview_backup_size},
+        {"registration", &WEB_SCAN_KIND_REGISTRATION, registration_final, sizeof(registration_final) - 1U, registration_backup, sizeof(registration_backup) - 1U},
+    };
+
+    for (size_t kind_index = 0U; kind_index < sizeof(cases) / sizeof(cases[0]); ++kind_index) {
+        for (size_t state = 0U; state < 4U; ++state) {
+            make_layout();
+            char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
+            assert(web_scan_paths("OBJ_0001", "S000001", cases[kind_index].kind, final_path, temp_path, backup_path) == ESP_OK);
+            if (state != 2U) {
+                const unsigned char *final_bytes = state == 0U ? cases[kind_index].final_bytes : bad_bytes;
+                const size_t final_size = state == 0U ? cases[kind_index].final_size : sizeof(bad_bytes);
+                write_bytes(final_path, final_bytes, final_size);
+            }
+            const unsigned char *backup_bytes = state == 3U ? bad_bytes : cases[kind_index].backup_bytes;
+            const size_t backup_size = state == 3U ? sizeof(bad_bytes) : cases[kind_index].backup_size;
+            write_bytes(backup_path, backup_bytes, backup_size);
+            write_bytes(temp_path, temp_bytes, sizeof(temp_bytes));
+
+            char response[512] = {0};
+            httpd_req_t info_request;
+            request_info_kind(cases[kind_index].name, response, sizeof(response), &info_request);
+            if (state == 3U) {
+                assert(strstr(response, "\"ok\":false") != NULL);
+                assert(file_matches_bytes(final_path, bad_bytes, sizeof(bad_bytes)));
+                assert(file_matches_bytes(backup_path, bad_bytes, sizeof(bad_bytes)));
+                assert(file_matches_bytes(temp_path, temp_bytes, sizeof(temp_bytes)));
+            }
+            else {
+                const unsigned char *expected_final = state == 0U
+                    ? cases[kind_index].final_bytes
+                    : cases[kind_index].backup_bytes;
+                const size_t expected_size = state == 0U
+                    ? cases[kind_index].final_size
+                    : cases[kind_index].backup_size;
+                assert(strstr(response, "\"ok\":true") != NULL);
+                assert(file_matches_bytes(final_path, expected_final, expected_size));
+                assert(!path_exists(backup_path));
+                assert(!path_exists(temp_path));
+            }
+            remove_layout();
+        }
+    }
+}
+
+
+static void test_scan_recovery_keeps_derivative_generation_distinct(void)
+{
+    make_layout();
+    unsigned char recovered_scan[64];
+    const size_t recovered_size = make_scan_artifact(recovered_scan, sizeof(recovered_scan), 0x31U);
+    unsigned char invalid_scan[64];
+    memcpy(invalid_scan, recovered_scan, recovered_size);
+    invalid_scan[0] = (unsigned char)'X';
+    static const unsigned char other_scan[] = {8U, 6U, 4U, 2U};
+    char other_scan_id[20];
+    make_scan_id(reference_crc32(other_scan, sizeof(other_scan)), other_scan_id);
+    unsigned char occupancy[256];
+    const size_t occupancy_size = make_occupancy_header(occupancy, sizeof(occupancy), other_scan_id);
+    const char *scan_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin";
+    const char *scan_backup = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin.bak";
+    const char *occupancy_path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/occupancy-v1.bin";
+    write_bytes(scan_path, invalid_scan, recovered_size);
+    write_bytes(scan_backup, recovered_scan, recovered_size);
+    write_bytes(occupancy_path, occupancy, occupancy_size);
+    web_scan_identity_cache_set_locked(scan_path, recovered_size, reference_crc32(invalid_scan, recovered_size));
+
+    char scan_info[512] = {0};
+    httpd_req_t request;
+    request_info_kind("scan", scan_info, sizeof(scan_info), &request);
+    char recovered_id[20];
+    make_scan_id(reference_crc32(recovered_scan, recovered_size), recovered_id);
+    assert(strstr(scan_info, recovered_id) != NULL);
+    assert(file_matches_bytes(scan_path, recovered_scan, recovered_size));
+    assert(!path_exists(scan_backup));
+
+    char occupancy_info[512] = {0};
+    request_info_kind("occupancy", occupancy_info, sizeof(occupancy_info), &request);
+    assert(strstr(occupancy_info, other_scan_id) != NULL);
+    assert(strcmp(recovered_id, other_scan_id) != 0);
+    remove_layout();
+}
+
 int main(void)
 {
     assert(storage_bulk_admission_initialize() == ESP_OK);
@@ -1977,13 +2442,18 @@ int main(void)
     test_scan_replacement_invalidates_derivatives_and_returns_crc();
     test_scan_replacement_delete_failure_keeps_old_scan();
     test_scan_replacement_power_loss_ordering();
-    test_derivative_upload_scan_id_generation_checks();
+    test_derivative_compare_and_commit_rejects_stale_uploads();
+    test_derivative_compare_and_commit_toctou_recheck();
+    test_identity_cache_publish_preserves_replacement();
+    test_registration_unbound_is_rejected();
     test_registration_round_trip_bounds_and_session_validation();
     test_recording_admission_truth_table();
     test_mid_transfer_admission_aborts_save_and_preserves_final();
     test_mid_transfer_preview_admission_abort_preserves_final();
     test_mid_stream_admission_aborts_load();
     test_write_failure_removes_temp_and_balances_storage_guard();
+    test_recovery_matrix_validates_every_artifact_kind();
+    test_scan_recovery_keeps_derivative_generation_distinct();
     test_registration_recording_guard_is_session_scoped();
     test_staging_round_trip_kinds_and_limits();
     test_staging_accepts_only_reserved_literal_and_safe_object_ids();

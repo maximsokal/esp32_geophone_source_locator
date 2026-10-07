@@ -4,24 +4,33 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
 const h = vi.hoisted(() => ({
   props: null as any,
+  viewportProps: null as any,
+  useRealScanLoad: false,
   fetchRuns: vi.fn(), loadScan: vi.fn(), loadReg: vi.fn(), saveReg: vi.fn(), delReg: vi.fn(),
   saveScan: vi.fn(), saveOcc: vi.fn(), savePrev: vi.fn(), info: vi.fn(), delScan: vi.fn(),
 }));
 
-vi.mock('../../src/api/deviceApi', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/api/deviceApi')>()),
-  fetchLocalizationRuns: h.fetchRuns, loadObjectScanArtifact: h.loadScan, loadSessionRegistration: h.loadReg,
-  saveSessionRegistration: h.saveReg, deleteSessionRegistration: h.delReg, saveObjectScanArtifact: h.saveScan,
-  saveSessionOccupancyArtifact: h.saveOcc, saveSessionPreviewArtifact: h.savePrev, fetchScanInfo: h.info,
-  deleteObjectScanArtifact: h.delScan,
-}));
+vi.mock('../../src/api/deviceApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/api/deviceApi')>();
+  return {
+    ...actual,
+    fetchLocalizationRuns: h.fetchRuns,
+    loadObjectScanArtifact: (...args: Parameters<typeof actual.loadObjectScanArtifact>) =>
+      h.useRealScanLoad ? actual.loadObjectScanArtifact(...args) : h.loadScan(...args),
+    loadSessionRegistration: h.loadReg,
+    saveSessionRegistration: h.saveReg, deleteSessionRegistration: h.delReg, saveObjectScanArtifact: h.saveScan,
+    saveSessionOccupancyArtifact: h.saveOcc, saveSessionPreviewArtifact: h.savePrev, fetchScanInfo: h.info,
+    deleteObjectScanArtifact: h.delScan,
+  };
+});
 vi.mock('../../src/components/XrRuntimePanel', () => ({ XrRuntimePanel: (props: unknown) => { h.props = props; return null; } }));
-vi.mock('../../src/components/ScanPointCloudViewport', () => ({ ScanPointCloudViewport: () => null }));
+vi.mock('../../src/components/ScanPointCloudViewport', () => ({ ScanPointCloudViewport: (props: unknown) => { h.viewportProps = props; return null; } }));
 vi.mock('../../src/xr/deviceComputeProfile', () => ({ deviceComputeProfilePromise: new Promise(() => undefined) }));
 
 import App from '../../src/App';
 import { LocaleProvider, translate } from '../../src/i18n';
 import { decodeScanArtifact, encodeScanArtifact } from '../../src/xr/scanArtifact';
+import { rewriteScanArtifactMetadata } from '../xr/support/scanArtifactTestTools';
 import { decodeOccupancySolverArtifact, occupancyFrameIdForScan } from '../../src/xr/occupancySolverArtifact';
 import { decodeVoxelPreviewArtifact } from '../../src/xr/voxelPreview';
 import {
@@ -63,6 +72,8 @@ const device = { scan: null as Uint8Array | null, occupancy: null as Uint8Array 
 
 beforeEach(() => {
   h.props = null;
+  h.viewportProps = null;
+  h.useRealScanLoad = false;
   device.scan = null; device.occupancy = null; device.preview = null;
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('window', { localStorage: { getItem: () => null, setItem: () => undefined }, addEventListener: () => undefined, removeEventListener: () => undefined, isSecureContext: false, location: { href: 'http://localhost/' }, setTimeout: globalThis.setTimeout.bind(globalThis), clearTimeout: globalThis.clearTimeout.bind(globalThis) });
@@ -167,6 +178,35 @@ describe('App scan / registration lifecycle (MAX-405, MAX-403)', () => {
     expect(device.scan).not.toBeNull();
     const text = JSON.stringify(renderer.toJSON());
     expect(text).toContain('Not saved (the scan itself is saved)');
+  });
+});
+
+describe('App scan restore validation (MAX-408)', () => {
+  it('rejects a CRC-valid semantic failure before viewport reconciliation and preserves device bytes', async () => {
+    const goodDeviceBytes = scanBytes();
+    device.scan = goodDeviceBytes.slice();
+    const malformed = rewriteScanArtifactMetadata(encodeScanArtifact(makeValidScanSnapshot()), (metadata) => {
+      metadata.pointCount = 2;
+    });
+    h.useRealScanLoad = true;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (!url.includes('scan=load')) throw new Error(`Unexpected HTTP request: ${url}`);
+      return new Response(malformed.slice().buffer, { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const renderer = await mountApp();
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toContain('scan=load');
+    expect(h.viewportProps).toBeNull();
+    expect(h.info).not.toHaveBeenCalled();
+    expect(h.saveOcc).not.toHaveBeenCalled();
+    expect(h.savePrev).not.toHaveBeenCalled();
+    expect(h.delScan).not.toHaveBeenCalled();
+    expect(device.scan).toEqual(goodDeviceBytes);
+    expect(JSON.stringify(renderer.toJSON())).toContain(translate('en', 'scan.error.restore_failed'));
   });
 });
 

@@ -1,4 +1,5 @@
 import { activeXrRenderPolicy, recordActiveXrPerformanceMetric } from './xrPerformanceProfiler';
+import { captureWebGlDrawState, restoreWebGlDrawState } from './webGlStateGuard';
 
 export interface CoverageRenderView {
   projectionMatrix: ArrayLike<number>;
@@ -270,11 +271,17 @@ export class LiveCoveragePointRenderer {
     this.pointCount = bounded.pointCount;
     this.manualPointCount = bounded.manualPointCount ?? 0;
     const gl = this.gl;
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, bounded.positions.subarray(0, this.pointCount * 3), gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.confidenceBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, bounded.confidence.subarray(0, this.pointCount), gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    const previousArrayBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer | null;
+    try {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
+      // WebGL bufferData copies the typed-array bytes into GPU storage before it
+      // returns, so the caller may reuse its composition buffers next refresh.
+      gl.bufferData(gl.ARRAY_BUFFER, bounded.positions.subarray(0, this.pointCount * 3), gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.confidenceBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, bounded.confidence.subarray(0, this.pointCount), gl.DYNAMIC_DRAW);
+    } finally {
+      gl.bindBuffer(gl.ARRAY_BUFFER, previousArrayBuffer);
+    }
     recordActiveXrPerformanceMetric('coverageUpload', performance.now() - started);
   }
 
@@ -294,44 +301,43 @@ export class LiveCoveragePointRenderer {
     const started = now;
     const gl = this.gl;
     const regularCount = this.pointCount - this.manualPointCount;
-    gl.useProgram(this.program);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.enable(gl.DEPTH_TEST);
-    gl.depthFunc(gl.LEQUAL);
-    gl.depthMask(false);
+    const previous = captureWebGlDrawState(gl, [this.positionLocation, this.confidenceLocation]);
+    try {
+      gl.useProgram(this.program);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.blendEquationSeparate(gl.FUNC_ADD, gl.FUNC_ADD);
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
+      gl.depthMask(false);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
-    gl.enableVertexAttribArray(this.positionLocation);
-    gl.vertexAttribPointer(this.positionLocation, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.confidenceBuffer);
-    gl.enableVertexAttribArray(this.confidenceLocation);
-    gl.vertexAttribPointer(this.confidenceLocation, 1, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
+      gl.enableVertexAttribArray(this.positionLocation);
+      gl.vertexAttribPointer(this.positionLocation, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.confidenceBuffer);
+      gl.enableVertexAttribArray(this.confidenceLocation);
+      gl.vertexAttribPointer(this.confidenceLocation, 1, gl.FLOAT, false, 0, 0);
 
-    for (const view of views) {
-      const viewport = layer.getViewport(view);
-      gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
-      if (!rigidInverse(view.transform.matrix, this.viewMatrix)) continue;
-      if (!multiplyMat4(view.projectionMatrix, this.viewMatrix, this.viewProjection)) continue;
-      gl.uniformMatrix4fv(this.viewProjectionLocation, false, this.viewProjection);
+      for (const view of views) {
+        const viewport = layer.getViewport(view);
+        gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+        if (!rigidInverse(view.transform.matrix, this.viewMatrix)) continue;
+        if (!multiplyMat4(view.projectionMatrix, this.viewMatrix, this.viewProjection)) continue;
+        gl.uniformMatrix4fv(this.viewProjectionLocation, false, this.viewProjection);
 
-      if (regularCount > 0) {
-        gl.enable(gl.DEPTH_TEST);
-        gl.drawArrays(gl.POINTS, 0, regularCount);
+        if (regularCount > 0) {
+          gl.enable(gl.DEPTH_TEST);
+          gl.drawArrays(gl.POINTS, 0, regularCount);
+        }
+        if (this.manualPointCount > 0) {
+          gl.disable(gl.DEPTH_TEST);
+          gl.drawArrays(gl.POINTS, regularCount, this.manualPointCount);
+        }
       }
-      if (this.manualPointCount > 0) {
-        gl.disable(gl.DEPTH_TEST);
-        gl.drawArrays(gl.POINTS, regularCount, this.manualPointCount);
-      }
+    } finally {
+      restoreWebGlDrawState(gl, previous);
+      recordActiveXrPerformanceMetric('coverageDraw', performance.now() - started);
     }
-
-    gl.depthMask(true);
-    gl.enable(gl.DEPTH_TEST);
-    gl.disableVertexAttribArray(this.positionLocation);
-    gl.disableVertexAttribArray(this.confidenceLocation);
-    gl.bindBuffer(gl.ARRAY_BUFFER, null);
-    gl.useProgram(null);
-    recordActiveXrPerformanceMetric('coverageDraw', performance.now() - started);
   }
 
   dispose(): void {

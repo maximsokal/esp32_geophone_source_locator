@@ -3,10 +3,14 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  decodeOccupancySolverArtifact,
   encodeOccupancySolverArtifact,
+  getOccupancyArtifactMetrics,
   occupancyCrc32,
   occupancyFrameIdForScan,
+  resetOccupancyArtifactMetrics,
 } from '../../src/xr/occupancySolverArtifact';
+import { createScanIdentity } from '../../src/xr/scanIdentity';
 import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
 import { localFloorMatrixToProject } from '../../src/xr/projectFrame';
 import {
@@ -195,6 +199,33 @@ describe('voxel preview grid and preview-v1/v2 format', () => {
 
     const stale = encodeOccupancySolverArtifact(fullSnapshot, { frameId: 'scan-crc32:00000000', createdAtMs: 1 });
     expect(buildVoxelPreviewGrid(sparseSnapshot, scanA, { occupancyArtifact: stale }).indices).toHaveLength(1);
+  });
+
+  it('reuses the decoded occupancy and scan identity when building the preview artifact', () => {
+    const cells = cube(3);
+    const fullSnapshot = {
+      ...snapshot(cells),
+      freeAirPositions: new Float32Array(),
+      occupancyEnvelopeBounds: null,
+      occupancySolverCandidateBelowSurfaceMeters: 0,
+      occupancyCellsSaturated: false,
+    } as unknown as Parameters<typeof buildVoxelPreviewArtifact>[0];
+    const identity = createScanIdentity(scanA);
+    const occupancyArtifact = encodeOccupancySolverArtifact(fullSnapshot, {
+      frameId: identity.frameId,
+      createdAtMs: 1,
+    });
+    const decodedOccupancy = decodeOccupancySolverArtifact(occupancyArtifact);
+    resetOccupancyArtifactMetrics();
+
+    const preview = buildVoxelPreviewArtifact(fullSnapshot, identity, {
+      occupancyArtifact,
+      decodedOccupancy,
+      identity,
+    });
+
+    expect(getOccupancyArtifactMetrics()).toMatchObject({ decodeInvocations: 0, crcInvocations: 0 });
+    expect(decodeVoxelPreviewArtifact(preview).sourceScanCrc32).toBe(identity.crc32);
   });
 
   it('round-trips the registered header, final voxel size, and coarsening count', () => {

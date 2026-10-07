@@ -3,9 +3,13 @@ import {
   type RgbDepthGuidanceFrame,
 } from './rgbDepthGuidance';
 import { NonBlockingRgbaReadback } from './webGlPixelReadback';
+import type { TagCameraFrame } from './fiducial/tagDetectorClient';
 import {
+  captureWebGlRasterState,
   captureWebGlState,
+  restoreWebGlRasterState,
   restoreWebGlState,
+  setWebGlCopyRasterState,
   webGl2Context,
 } from './webGlStateGuard';
 
@@ -130,6 +134,30 @@ function buildGuidance(
     };
   }
   return guidance;
+}
+
+/**
+ * Make the single owned RGBA copy needed by the worker transfer. readPixels is
+ * bottom-left-origin; the AprilTag detector consumes top-left-origin rows.
+ */
+function buildTagFrame(
+  pixels: Uint8Array,
+  metadata: CameraReadbackMetadata,
+  width: number,
+  height: number,
+): TagCameraFrame | null {
+  if (metadata.projectionMatrix === undefined || metadata.worldFromView === undefined) return null;
+  const rowBytes = width * 4;
+  const rgba = new Uint8Array(rowBytes * height);
+  for (let y = 0; y < height; y += 1) {
+    const sourceOffset = (height - 1 - y) * rowBytes;
+    rgba.set(pixels.subarray(sourceOffset, sourceOffset + rowBytes), y * rowBytes);
+  }
+  return {
+    width, height, rgba, capturedAtMs: metadata.capturedAtMs,
+    projectionMatrix: metadata.projectionMatrix, worldFromView: metadata.worldFromView,
+    rgbaOwnership: 'owned',
+  };
 }
 
 export class RawCameraGuidanceCapture {
@@ -265,6 +293,13 @@ export class RawCameraGuidanceCapture {
     return ready === null ? null : buildGuidance(ready.pixels, ready.metadata, this.width, this.height);
   }
 
+  /** Drain the tag readback ring without building luma, Sobel, or gradient planes. */
+  pollReadyTag(): TagCameraFrame | null {
+    if (this.disposed || this.asyncReadback === null) return null;
+    const ready = this.asyncReadback.poll();
+    return ready === null ? null : buildTagFrame(ready.pixels, ready.metadata, this.width, this.height);
+  }
+
   capture(
     binding: XrWebGlBindingLike,
     view: XrCameraViewLike,
@@ -277,6 +312,7 @@ export class RawCameraGuidanceCapture {
     const gl = this.gl;
     const gl2 = webGl2Context(gl);
     const previous = captureWebGlState(gl, this.positionLocation);
+    const previousRaster = captureWebGlRasterState(gl);
     const metadata = captureMetadata(view, capturedAtMs);
 
     try {
@@ -297,6 +333,7 @@ export class RawCameraGuidanceCapture {
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
       gl.uniform1i(this.samplerLocation, 0);
+      setWebGlCopyRasterState(gl);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
 
       if (this.asyncReadback !== null) {
@@ -310,6 +347,53 @@ export class RawCameraGuidanceCapture {
       return buildGuidance(this.pixels, metadata, this.width, this.height);
     } finally {
       restoreWebGlState(gl, this.positionLocation, previous);
+      restoreWebGlRasterState(gl, previousRaster);
+    }
+  }
+
+  /** Capture the high-resolution tag path with one top-left RGBA ownership copy. */
+  captureTag(
+    binding: XrWebGlBindingLike,
+    view: XrCameraViewLike,
+    capturedAtMs: number,
+  ): TagCameraFrame | null {
+    if (this.disposed || view.camera == null) return null;
+    const cameraTexture = binding.getCameraImage(view.camera);
+    if (cameraTexture === null) return null;
+
+    const gl = this.gl;
+    const gl2 = webGl2Context(gl);
+    const previous = captureWebGlState(gl, this.positionLocation);
+    const previousRaster = captureWebGlRasterState(gl);
+    const metadata = captureMetadata(view, capturedAtMs);
+
+    try {
+      const ready = this.asyncReadback?.poll() ?? null;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+      gl.viewport(0, 0, this.width, this.height);
+      gl.useProgram(this.program);
+      if (gl2 !== null && this.vertexArray !== null) {
+        gl2.bindVertexArray(this.vertexArray);
+      } else {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+        gl.enableVertexAttribArray(this.positionLocation);
+        gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
+      }
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
+      gl.uniform1i(this.samplerLocation, 0);
+      setWebGlCopyRasterState(gl);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      if (this.asyncReadback !== null) {
+        this.asyncReadback.enqueue(metadata);
+        return ready === null ? null : buildTagFrame(ready.pixels, ready.metadata, this.width, this.height);
+      }
+      gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, this.pixels);
+      return buildTagFrame(this.pixels, metadata, this.width, this.height);
+    } finally {
+      restoreWebGlState(gl, this.positionLocation, previous);
+      restoreWebGlRasterState(gl, previousRaster);
     }
   }
 

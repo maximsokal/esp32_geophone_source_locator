@@ -767,6 +767,7 @@ export const en: Record<I18nKey, string> = {
   "report.y_m": "y (m)",
   "report.yes": "yes",
   "report.z_m": "z (m)",
+  "scan.annotations.capacity_exceeded": "The annotation limit for this scan was reached. Remove pins or edges before saving.",
   "scan.aria_label": "Measured WebXR rescue search volume",
   "scan.axis_help": "X/Y horizontal · Z height",
   "scan.axis_note": "1 finger = orbit · 2 fingers = zoom/pan · X/Y horizontal · Z height",

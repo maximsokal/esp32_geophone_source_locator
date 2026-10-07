@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createElement, type ComponentProps } from 'react';
+import { createElement, StrictMode, type ComponentProps } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 const panelHarness=vi.hoisted(()=>({
@@ -14,10 +14,10 @@ vi.mock('../../src/api/deviceApi',async(importOriginal)=>{
 });
 vi.mock('../../src/xr/webxrRuntime',()=>({
   WebXrRuntime:class{
-    state:any;generation=0;listeners=new Set<(state:any)=>void>();tagListeners=new Set<(frame:any)=>void>();tagUnsubscribes=0;tagCaptureDisables=0;disposed=0;
+    state:any;generation=0;listeners=new Set<(state:any)=>void>();tagListeners=new Set<(frame:any)=>void>();tagUnsubscribes=0;tagCaptureDisables=0;attachCalls=0;attached=false;detachCalls=0;disposed=0;
     finalSnapshot={identity:Symbol('scan snapshot')};
     constructor(){this.state=panelHarness.makeState?.()??{phase:'idle'};panelHarness.runtimes.push(this);}
-    getState=()=>this.state;getLifecycleGeneration=()=>this.generation;
+    attach=()=>{this.attachCalls+=1;this.attached=true;};detach=async()=>{this.detachCalls+=1;this.attached=false;};getState=()=>this.state;getLifecycleGeneration=()=>this.generation;
     subscribe=(listener:(state:any)=>void)=>{this.listeners.add(listener);listener(this.state);return()=>this.listeners.delete(listener);};
     subscribeTagFrames=(listener:(frame:any)=>void)=>{this.tagListeners.add(listener);return()=>{this.tagListeners.delete(listener);this.tagUnsubscribes+=1;};};
     emitTagFrame=(frame:any)=>{for(const listener of this.tagListeners)listener(frame);};
@@ -101,8 +101,8 @@ function registrationFixture(session:string,patch:Record<string,unknown>={}){
 }
 function registrationJson(session:string,patch:Record<string,unknown>={}):string{return JSON.stringify(registrationFixture(session,patch));}
 async function settleReact():Promise<void>{for(let i=0;i<6;i+=1)await Promise.resolve();}
-async function mountPanel(props:ComponentProps<typeof XrRuntimePanel>={}){
-  let renderer!:ReactTestRenderer;await act(async()=>{renderer=create(createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,props)));await settleReact();});mounted.push(renderer);return renderer;
+async function mountPanel(props:ComponentProps<typeof XrRuntimePanel>={},strict=false){
+  let renderer!:ReactTestRenderer;await act(async()=>{const panel=createElement(LocaleProvider,{initialLocale:'en'},createElement(XrRuntimePanel,props));renderer=create(strict?createElement(StrictMode,null,panel):panel);await settleReact();});mounted.push(renderer);return renderer;
 }
 function unmount(renderer:ReactTestRenderer):void{act(()=>renderer.unmount());const index=mounted.indexOf(renderer);if(index>=0)mounted.splice(index,1);}
 function textOf(node:ReactTestInstance|string):string{return typeof node==='string'?node:node.children.map(textOf).join('');}
@@ -179,8 +179,17 @@ beforeEach(()=>{
 afterEach(()=>{for(const renderer of [...mounted])unmount(renderer);vi.unstubAllGlobals();vi.clearAllMocks();});
 
 describe('XrRuntimePanel lifecycle',()=>{
+  it('attaches only a committed runtime through StrictMode and detaches it on cleanup',async()=>{
+    const renderer=await mountPanel({objectId:'OBJ_STRICT',sessionId:'SESSION_STRICT'},true);
+    const activated=panelHarness.runtimes.filter((runtime:any)=>runtime.attached);
+    expect(activated).toHaveLength(1);expect(activated[0].attachCalls).toBeGreaterThan(0);
+    const runtime=activated[0];unmount(renderer);
+    expect(runtime.attached).toBe(false);expect(runtime.detachCalls).toBeGreaterThan(0);
+  });
+
   it('tears down tag worker and subscription on unmount without saving registration',async()=>{
     const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A'});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    expect(runtime.attached).toBe(true);
     await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
     expect(worker).toBeDefined();expect(runtime.tagListeners.size).toBe(1);unmount(renderer);await settleReact();
     expect(worker.terminated).toBe(1);expect(runtime.tagUnsubscribes).toBe(1);expect(runtime.tagListeners.size).toBe(0);

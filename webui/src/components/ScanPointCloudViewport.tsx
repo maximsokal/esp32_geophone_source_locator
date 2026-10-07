@@ -10,6 +10,7 @@ import { clientDiagnostics } from '../data/clientDiagnostics';
 import type { RegistrationArtifact } from '../xr/fiducial/registrationArtifact';
 import { REGISTRATION_INAPPLICABLE_KEYS } from '../xr/registrationApplicability';
 import { solverCandidateVolume } from '../xr/candidateVolume';
+import { fineOccupancyVoxelSizeMeters } from '../xr/occupancyScales';
 import { describeMeshQuality } from '../xr/meshQualityUi';
 import { useLocale, useT } from '../i18n';
 import { formatDistance, formatNumber } from '../i18n/format';
@@ -61,6 +62,28 @@ interface ScanPointCloudViewportProps {
 
 const NO_SENSOR_MARKERS: SensorPlacementMarker[] = [];
 const NO_LOCALIZATION_RUNS: LocalizationRun[] = [];
+
+type TsdfRequestSnapshot = Pick<ScanPointCloudSnapshot,
+  'tsdfPointCount' | 'tsdfPositions' | 'tsdfNormals' | 'tsdfCoverageConfidence' |
+  'voxelSizeMeters' | 'freeAirPositions' | 'occupancyVoxelSizeMeters' | 'occupancyFineVoxelSizeMeters'>;
+
+/** Build the exact post-scan TSDF input, keeping fine FREE spacing separate from coarsened UNKNOWN spacing. */
+export function buildTsdfRequestArgs(snapshot: TsdfRequestSnapshot) {
+  return {
+    // Use ONLY locally certified geometry for the implicit surface. Display
+    // surfels remain unchanged, so the operator can still see excluded evidence.
+    positions: snapshot.tsdfPositions.slice(),
+    normals: snapshot.tsdfNormals.slice(),
+    confidence: snapshot.tsdfCoverageConfidence.slice(),
+    // A slightly coarser field than the 4-cm association grid suppresses
+    // sub-voxel ripples that are unsupported at this depth resolution.
+    voxelSizeMeters: snapshot.voxelSizeMeters * 1.20,
+    freeSpacePositions: snapshot.freeAirPositions.slice(),
+    freeSpaceVoxelSizeMeters: fineOccupancyVoxelSizeMeters(snapshot),
+    maxInputPoints: Math.min(9000, Math.max(1000, snapshot.tsdfPointCount)),
+    maxTriangles: Math.max(3000, Math.min(18000, snapshot.tsdfPointCount * 14)),
+  };
+}
 
 function sourceReasonText(reason: SourceHighlightScene['reason'], t: ReturnType<typeof useT>): string | null {
   if (reason === null) return null;
@@ -327,22 +350,7 @@ export function ScanPointCloudViewport({
     if (snapshot.tsdfPointCount < MESH_MIN_POINTS) return () => { cancelled = true; };
 
     const started = performance.now();
-    const maxTriangles = Math.max(3000, Math.min(18000, snapshot.tsdfPointCount * 14));
-    void tsdfClient.reconstruct({
-      // Use ONLY locally certified geometry for the implicit surface. Display
-      // surfels remain unchanged, so the operator can still see where evidence
-      // exists even when a region is deliberately excluded from the mesh.
-      positions: snapshot.tsdfPositions.slice(),
-      normals: snapshot.tsdfNormals.slice(),
-      confidence: snapshot.tsdfCoverageConfidence.slice(),
-      // A slightly coarser field than the 4-cm association grid suppresses
-      // sub-voxel ripples that are unsupported at this depth resolution.
-      voxelSizeMeters: snapshot.voxelSizeMeters * 1.20,
-      freeSpacePositions: snapshot.freeAirPositions.slice(),
-      freeSpaceVoxelSizeMeters: snapshot.occupancyVoxelSizeMeters,
-      maxInputPoints: Math.min(9000, Math.max(1000, snapshot.tsdfPointCount)),
-      maxTriangles,
-    }).then((result) => {
+    void tsdfClient.reconstruct(buildTsdfRequestArgs(snapshot)).then((result) => {
       if (cancelled) return;
       setTsdfMesh(result);
       clientDiagnostics.info('SCAN_TSDF_READY', {

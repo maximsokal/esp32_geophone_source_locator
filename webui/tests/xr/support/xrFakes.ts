@@ -81,6 +81,14 @@ export class FakeXrSession {
     return id;
   }
 
+  driveNextFrame(time: number, frame: never): void {
+    const next = this.callbacks.entries().next();
+    if (next.done) throw new Error('No fake XR animation frame is pending.');
+    const [id, callback] = next.value;
+    this.callbacks.delete(id);
+    callback(time, frame);
+  }
+
   cancelAnimationFrame(id: number): void {
     this.rafCancellations += 1;
     this.callbacks.delete(id);

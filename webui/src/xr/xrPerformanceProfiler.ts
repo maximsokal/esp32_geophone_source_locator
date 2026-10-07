@@ -144,6 +144,8 @@ class RollingSamples {
 }
 
 let activeProfiler: XrPerformanceProfiler | null = null;
+let activeProfilerToken = 0;
+let nextProfilerToken = 0;
 
 /**
  * Rolling profiler for the hot WebXR path. It deliberately stores only a small
@@ -168,11 +170,19 @@ export class XrPerformanceProfiler {
   private pendingPolicySamples = 0;
   private policyRefreshFrameMs: number | null = null;
 
-  constructor() {
-    // There is one immersive XR runtime per page. Renderer instrumentation uses
-    // this bounded active sink so upload/draw timings do not require callbacks in
-    // the frame hot path.
+  /** Activate this profiler after its owning XR runtime has committed. */
+  activate(): number {
+    const token = ++nextProfilerToken;
     activeProfiler = this;
+    activeProfilerToken = token;
+    return token;
+  }
+
+  /** A stale runtime cannot deactivate a profiler activated later. */
+  deactivate(token: number): void {
+    if (activeProfiler !== this || activeProfilerToken !== token) return;
+    activeProfiler = null;
+    activeProfilerToken = 0;
   }
 
   reset(): void {
@@ -182,7 +192,6 @@ export class XrPerformanceProfiler {
     this.cachedPressure = 'low';
     this.pendingPolicySamples = 0;
     this.policyRefreshFrameMs = null;
-    activeProfiler = this;
   }
 
   recordFrameTimestamp(timeMs: number): void {

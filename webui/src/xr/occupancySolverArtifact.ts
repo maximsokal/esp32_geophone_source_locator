@@ -25,6 +25,8 @@
 
 import type { ScanPointCloudSnapshot } from './depthPointCloud';
 import { localFloorMatrixToProject } from './projectFrame';
+import { crc32 } from './crc32';
+import { createScanIdentity, type ScanIdentity } from './scanIdentity';
 
 const MAGIC = new TextEncoder().encode('GOCCUPY1');
 const FIXED_HEADER_BYTES = 20;
@@ -75,6 +77,23 @@ export interface DecodedOccupancyArtifact {
 }
 
 const REGISTRATION_QUALITY_EPSILON_M = 1e-9;
+let occupancyDecodeInvocations = 0;
+let occupancyCrcInvocations = 0;
+let occupancyCrcBytesVisited = 0;
+
+export function getOccupancyArtifactMetrics(): Readonly<{
+  decodeInvocations: number;
+  crcInvocations: number;
+  crcBytesVisited: number;
+}> {
+  return { decodeInvocations: occupancyDecodeInvocations, crcInvocations: occupancyCrcInvocations, crcBytesVisited: occupancyCrcBytesVisited };
+}
+
+export function resetOccupancyArtifactMetrics(): void {
+  occupancyDecodeInvocations = 0;
+  occupancyCrcInvocations = 0;
+  occupancyCrcBytesVisited = 0;
+}
 
 function assertRegistrationQuality(value: OccupancyRegistration): void {
   const threshold = value.threshold_m;
@@ -107,15 +126,9 @@ function registrationInProjectFrame(value: OccupancyRegistration | null): Occupa
 }
 
 export function occupancyCrc32(bytes: Uint8Array, start = 0): number {
-  let crc = 0xffffffff;
-  for (let index = start; index < bytes.length; index += 1) {
-    crc ^= bytes[index];
-    for (let bit = 0; bit < 8; bit += 1) {
-      const mask = -(crc & 1);
-      crc = (crc >>> 1) ^ (0xedb88320 & mask);
-    }
-  }
-  return (crc ^ 0xffffffff) >>> 0;
+  occupancyCrcInvocations += 1;
+  occupancyCrcBytesVisited += bytes.length - start;
+  return crc32(bytes, start);
 }
 
 function voxelIndices(positions: Float32Array, voxelSize: number, label: string): Int16Array {
@@ -197,6 +210,7 @@ export function encodeOccupancySolverArtifact(
 }
 
 export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupancyArtifact {
+  occupancyDecodeInvocations += 1;
   if (source.byteLength < FIXED_HEADER_BYTES || source.byteLength > MAX_OCCUPANCY_ARTIFACT_BYTES) {
     throw new Error('Invalid occupancy artifact size.');
   }
@@ -251,8 +265,8 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
 }
 
 /** Identity of the exact saved scan an occupancy artifact was derived from. */
-export function occupancyFrameIdForScan(scanArtifact: Uint8Array): string {
-  return `scan-crc32:${occupancyCrc32(scanArtifact).toString(16).padStart(8, '0')}`;
+export function occupancyFrameIdForScan(scanArtifact: Uint8Array, identity?: ScanIdentity): string {
+  return identity?.frameId ?? createScanIdentity(scanArtifact).frameId;
 }
 
 /**
@@ -263,12 +277,14 @@ export function occupancyFrameIdForScan(scanArtifact: Uint8Array): string {
  */
 export function buildSessionOccupancyArtifact(
   snapshot: Parameters<typeof encodeOccupancySolverArtifact>[0],
-  scanArtifact: Uint8Array,
+  scanArtifact: Uint8Array | ScanIdentity,
   createdAtMs: number,
   registration: OccupancyRegistration | null = null,
+  identity?: ScanIdentity,
 ): Uint8Array {
+  const scanIdentity = scanArtifact instanceof Uint8Array ? identity ?? createScanIdentity(scanArtifact) : scanArtifact;
   return encodeOccupancySolverArtifact(snapshot, {
-    frameId: occupancyFrameIdForScan(scanArtifact),
+    frameId: scanIdentity.frameId,
     createdAtMs,
     registration,
   });

@@ -198,9 +198,9 @@ export class DepthPointCloudAccumulator extends SurfaceDepthPointCloudAccumulato
     return result;
   }
 
-  override liveCoverageSnapshot(): LiveCoverageSnapshot {
+  override liveCoverageSnapshot(pointBudget?: number): LiveCoverageSnapshot {
     const started = performance.now();
-    try { return super.liveCoverageSnapshot(); }
+    try { return super.liveCoverageSnapshot(pointBudget); }
     finally { recordActiveXrPerformanceMetric('coverageSnapshot', performance.now() - started); }
   }
 
