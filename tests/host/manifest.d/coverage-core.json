@@ -77,6 +77,16 @@
         "components/ui_i18n/include"
       ],
       "libraries": ["pthread"]
+    },
+    {
+      "name": "ui_perf_policy",
+      "sources": [
+        "components/ui/ui_perf_policy.c",
+        "components/ui/tests/ui_perf_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/ui"
+      ]
     }
   ]
 }

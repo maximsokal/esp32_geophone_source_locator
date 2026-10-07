@@ -30,9 +30,12 @@ static TaskStatus_t s_mock_task_statuses[4];
 static UBaseType_t s_mock_task_count;
 static unsigned s_runtime_task_info_logs;
 static unsigned s_low_stack_warning_logs;
+static unsigned s_memory_snapshot_logs;
+static unsigned s_runtime_cpu_logs;
 static bool s_saw_low_stack_511;
 static bool s_saw_low_stack_0;
 static char s_last_runtime_task_info[512];
+static char s_last_runtime_cpu[512];
 static unsigned s_free_caps_internal_8bit;
 static unsigned s_free_caps_internal_dma;
 static unsigned s_free_caps_spiram;
@@ -55,7 +58,9 @@ static void reset_runtime_storage(void)
     s_previous_idle_us[0] = 0U;
     s_previous_idle_us[1] = 0U;
     s_have_previous_snapshot = false;
+    memset(&s_dump_policy_state, 0, sizeof(s_dump_policy_state));
 
+    s_now_us = 0;
     s_fail_spiram = false;
     s_fail_internal = false;
     s_spiram_allocs = 0U;
@@ -65,9 +70,12 @@ static void reset_runtime_storage(void)
     memset(s_mock_task_statuses, 0, sizeof(s_mock_task_statuses));
     s_runtime_task_info_logs = 0U;
     s_low_stack_warning_logs = 0U;
+    s_memory_snapshot_logs = 0U;
+    s_runtime_cpu_logs = 0U;
     s_saw_low_stack_511 = false;
     s_saw_low_stack_0 = false;
     s_last_runtime_task_info[0] = '\0';
+    s_last_runtime_cpu[0] = '\0';
     s_snapshot_mutex = NULL;
     s_free_caps_internal_8bit = 0U;
     s_free_caps_internal_dma = 0U;
@@ -103,6 +111,19 @@ void fake_runtime_log(
     char message[512];
     (void)vsnprintf(message, sizeof(message), format, args);
     va_end(args);
+
+    if (strstr(message, "MEM_RUNTIME stage=") != NULL) {
+        ++s_memory_snapshot_logs;
+    }
+    if (strstr(message, "RUNTIME_CPU stage=") != NULL) {
+        ++s_runtime_cpu_logs;
+        (void)snprintf(
+            s_last_runtime_cpu,
+            sizeof(s_last_runtime_cpu),
+            "%s",
+            message
+        );
+    }
 
     if (strcmp(level, "I") == 0 && strstr(message, "RUNTIME_TASK rank=") != NULL) {
         ++s_runtime_task_info_logs;
@@ -473,6 +494,41 @@ static void test_low_stack_warning_boundary_and_log_selection(void)
 }
 
 
+static void test_suppressed_periodic_sample_preserves_cpu_baseline(void)
+{
+    uint64_t first_snapshot_us;
+
+    reset_runtime_storage();
+    s_snapshot_mutex = (SemaphoreHandle_t)(uintptr_t)1U;
+    s_mock_task_count = 1U;
+    s_mock_task_statuses[0].xHandle = (TaskHandle_t)(uintptr_t)1U;
+    s_mock_task_statuses[0].pcTaskName = "steady";
+    s_mock_task_statuses[0].usStackHighWaterMark = 512U;
+    s_mock_task_statuses[0].ulRunTimeCounter = 100U;
+
+    s_now_us = 1000000LL;
+    runtime_observability_log_snapshot("periodic");
+    first_snapshot_us = s_previous_snapshot_us;
+    assert(s_runtime_cpu_logs == 1U);
+    assert(s_memory_snapshot_logs == 1U);
+
+    s_mock_task_statuses[0].ulRunTimeCounter = 200U;
+    s_now_us += 10000000LL;
+    runtime_observability_log_snapshot("periodic");
+    assert(s_runtime_cpu_logs == 1U);
+    assert(s_memory_snapshot_logs == 1U);
+    assert(s_previous_snapshot_us == first_snapshot_us);
+
+    s_mock_task_statuses[0].ulRunTimeCounter = 6000U;
+    s_now_us += 50000000LL;
+    runtime_observability_log_snapshot("periodic");
+    assert(s_runtime_cpu_logs == 2U);
+    assert(s_memory_snapshot_logs == 2U);
+    assert(s_previous_snapshot_us == (uint64_t)s_now_us);
+    assert(strstr(s_last_runtime_cpu, "window_ms=60000") != NULL);
+}
+
+
 int main(void)
 {
     test_percent_tenths_edges();
@@ -483,6 +539,7 @@ int main(void)
     test_status_arrays_fail_cleanly_when_both_heaps_fail();
     test_memory_snapshot_queries_each_heap_semantic_once();
     test_low_stack_warning_boundary_and_log_selection();
+    test_suppressed_periodic_sample_preserves_cpu_baseline();
     reset_runtime_storage();
     return 0;
 }

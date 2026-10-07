@@ -33,6 +33,15 @@
         "components/ina3221_monitor"
       ],
       "libraries": ["m"]
+    },
+    {
+      "name": "ina3221_status_log_policy",
+      "sources": [
+        "components/ina3221_monitor/tests/ina3221_status_log_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/ina3221_monitor/include"
+      ]
     }
   ]
 }

@@ -12,6 +12,7 @@
 #include "ina3221_low_battery.h"
 #include "ina3221_power_ux.h"
 #include "ina3221_soc.h"
+#include "ina3221_status_log_policy.h"
 #include "app_events.h"
 #include "ina3221_policy.h"
 #include "main_barometer.h"
@@ -138,6 +139,17 @@ static ina3221_soc_config_t s_soc_config;
 static ina3221_soc_t s_soc;
 /* MAX-186: last logged evidence (worker only). */
 static ina3221_power_evidence_t s_evidence;
+static ina3221_status_log_state_t s_status_log_state;
+
+
+static int32_t ina3221_monitor_log_milli_units(float value)
+{
+    const float scaled = value * 1000.0f;
+
+    return scaled >= 0.0f
+        ? (int32_t)(scaled + 0.5f)
+        : (int32_t)(scaled - 0.5f);
+}
 
 
 static void ina3221_monitor_log_evidence_changes(
@@ -589,6 +601,35 @@ static void ina3221_monitor_log_sample(
     const ina3221_power_decision_t *decision
 )
 {
+    int32_t rail_mv[INA3221_STATUS_LOG_RAIL_COUNT];
+    int32_t rail_ma[INA3221_STATUS_LOG_RAIL_COUNT];
+    size_t i;
+    uint32_t now_ms;
+
+    for (i = 0U; i < INA3221_STATUS_LOG_RAIL_COUNT; ++i) {
+        rail_mv[i] = ina3221_monitor_log_milli_units(channels[i].bus_voltage_v);
+        rail_ma[i] = ina3221_monitor_log_milli_units(channels[i].current_a);
+    }
+    if (decision->battery_present) {
+        rail_mv[INA3221_POLICY_BATTERY_INDEX] =
+            ina3221_monitor_log_milli_units(decision->battery_voltage_v);
+        rail_ma[INA3221_POLICY_BATTERY_INDEX] =
+            ina3221_monitor_log_milli_units(decision->battery_current_a);
+    }
+    now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+    if (!ina3221_status_log_should_emit(
+            &s_status_log_state,
+            now_ms,
+            (uint32_t)s_ux.state,
+            (uint32_t)decision->state,
+            decision->usb_present,
+            decision->battery_present,
+            rail_mv,
+            rail_ma
+        )) {
+        return;
+    }
+
     if (decision->battery_present) {
         ESP_LOGI(
             TAG,

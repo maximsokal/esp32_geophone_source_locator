@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "ui.c"
+        "ui_perf_policy.c"
         "ui_lvgl.c"
         "ui_event_dispatcher.c"
         "ui_shell.c"

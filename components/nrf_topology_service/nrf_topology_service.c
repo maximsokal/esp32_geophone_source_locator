@@ -21,6 +21,7 @@
 #include "sensor_bus.h"
 #include "sensor_bus_diag.h"
 #include "nrf_topology_bus_recovery.h"
+#include "nrf_topology_log_policy.h"
 #include "tca9548a_mux.h"
 #include "tca9548a_mux_i2c_bus.h"
 
@@ -135,6 +136,7 @@ static EXT_RAM_BSS_ATTR nrf_topology_ranging_progress_t s_ranging_progress;
 static bool s_frozen_ranging_result_valid = false;
 static EXT_RAM_BSS_ATTR nrf_topology_ranging_result_t s_frozen_ranging_result;
 static nrf_topology_worker_state_t s_worker_state;
+static nrf_topology_log_state_t s_topology_log_state;
 static nrf_topology_service_stack_stats_t s_stack_stats;
 #if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
 static nrf_log_collector_t *s_nrf_log_collector;
@@ -1054,10 +1056,26 @@ static void service_log_snapshot(const nrf_topology_snapshot_t *snapshot)
 {
     unsigned assigned = snapshot->main.state == NRF_TOPOLOGY_NODE_ASSIGNED ? 1U : 0U;
     unsigned conflicts = snapshot->main.state == NRF_TOPOLOGY_NODE_CONFLICT ? 1U : 0U;
+    uint32_t now_ms;
+
     for (size_t index = 0U; index < NRF_TOPOLOGY_REMOTE_COUNT; ++index) {
         assigned += snapshot->remotes[index].state == NRF_TOPOLOGY_NODE_ASSIGNED ? 1U : 0U;
         conflicts += snapshot->remotes[index].state == NRF_TOPOLOGY_NODE_CONFLICT ? 1U : 0U;
     }
+    now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+    if (!nrf_topology_log_should_emit(
+            &s_topology_log_state,
+            now_ms,
+            snapshot->generation,
+            snapshot->tca_available,
+            snapshot->tca_fault,
+            assigned,
+            conflicts,
+            (int32_t)snapshot->main.state
+        )) {
+        return;
+    }
+
     ESP_LOGI(
         TAG,
         "generation=%u tca=%s%s assigned=%u conflicts=%u main_state=%d",

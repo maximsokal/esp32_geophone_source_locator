@@ -11,6 +11,7 @@
 #include "app_task_config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "runtime_observability_dump_policy.h"
 #include "freertos/idf_additions.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -116,7 +117,8 @@ const char *runtime_observability_task_name(
 #ifdef ESP_PLATFORM
 
 
-#define RUNTIME_OBSERVABILITY_LOW_STACK_THRESHOLD  512U
+#define RUNTIME_OBSERVABILITY_LOW_STACK_THRESHOLD \
+    RUNTIME_OBSERVABILITY_DUMP_LOW_STACK_BYTES
 
 
 static bool runtime_observability_stack_is_low(uint32_t stack_free_bytes)
@@ -127,10 +129,10 @@ static bool runtime_observability_stack_is_low(uint32_t stack_free_bytes)
 
 static const char *TAG = "RUNTIME_OBSERVABILITY";
 
-#define RUNTIME_OBSERVABILITY_PERIOD_MS 10000U
+#define RUNTIME_OBSERVABILITY_SAMPLE_PERIOD_MS 10000U
 #define RUNTIME_OBSERVABILITY_CPU_COUNT 2U
 #define RUNTIME_OBSERVABILITY_STAGE_SIZE 32U
-#define RUNTIME_OBSERVABILITY_TOP_TASKS 10U
+#define RUNTIME_OBSERVABILITY_TOP_TASKS RUNTIME_OBSERVABILITY_DUMP_TRACKED_TASKS
 
 static SemaphoreHandle_t s_snapshot_mutex = NULL;
 static TaskHandle_t s_snapshot_task = NULL;
@@ -141,6 +143,7 @@ static UBaseType_t s_previous_count = 0U;
 static uint64_t s_previous_snapshot_us = 0U;
 static uint64_t s_previous_idle_us[RUNTIME_OBSERVABILITY_CPU_COUNT];
 static bool s_have_previous_snapshot = false;
+static runtime_observability_dump_policy_state_t s_dump_policy_state;
 static portMUX_TYPE s_request_lock = portMUX_INITIALIZER_UNLOCKED;
 static char s_requested_stage[RUNTIME_OBSERVABILITY_STAGE_SIZE];
 static bool s_snapshot_requested = false;
@@ -416,10 +419,12 @@ static int runtime_task_core(const TaskStatus_t *status)
 }
 
 
-void runtime_observability_log_memory(const char *stage)
+static void runtime_observability_log_memory_with_internal(
+    const char *stage,
+    uint32_t internal_free,
+    uint32_t internal_largest
+)
 {
-    const uint32_t internal_caps =
-        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const uint32_t dma_caps =
         MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA;
     const uint32_t psram_caps =
@@ -431,8 +436,8 @@ void runtime_observability_log_memory(const char *stage)
         TAG,
         "MEM_RUNTIME stage=%s internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u psram_free=%u psram_largest=%u psram_dma_free=%u psram_dma_largest=%u",
         runtime_stage_or_unknown(stage),
-        (unsigned)heap_caps_get_free_size(internal_caps),
-        (unsigned)heap_caps_get_largest_free_block(internal_caps),
+        (unsigned)internal_free,
+        (unsigned)internal_largest,
         (unsigned)heap_caps_get_free_size(dma_caps),
         (unsigned)heap_caps_get_largest_free_block(dma_caps),
         (unsigned)heap_caps_get_free_size(psram_caps),
@@ -443,11 +448,47 @@ void runtime_observability_log_memory(const char *stage)
 }
 
 
+void runtime_observability_log_memory(const char *stage)
+{
+    const uint32_t internal_caps =
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const uint32_t internal_free =
+        (uint32_t)heap_caps_get_free_size(internal_caps);
+    const uint32_t internal_largest =
+        (uint32_t)heap_caps_get_largest_free_block(internal_caps);
+
+    runtime_observability_log_memory_with_internal(
+        stage, internal_free, internal_largest
+    );
+}
+
+
 void runtime_observability_log_snapshot(const char *stage)
 {
-    runtime_observability_log_memory(stage);
+    const bool periodic = stage != NULL && strcmp(stage, "periodic") == 0;
+    const uint32_t internal_caps =
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    uint32_t internal_free = 0U;
+    uint32_t internal_largest = 0U;
+    uint32_t dump_reason = RUNTIME_OBSERVABILITY_DUMP_NONE;
+    runtime_observability_dump_task_t policy_tasks[
+        RUNTIME_OBSERVABILITY_DUMP_TRACKED_TASKS
+    ];
+    size_t policy_task_count;
+
+    if (!periodic) {
+        internal_free = (uint32_t)heap_caps_get_free_size(internal_caps);
+        internal_largest =
+            (uint32_t)heap_caps_get_largest_free_block(internal_caps);
+        runtime_observability_log_memory_with_internal(
+            stage, internal_free, internal_largest
+        );
+    }
 
     if (s_snapshot_mutex == NULL) {
+        if (periodic) {
+            runtime_observability_log_memory(stage);
+        }
         ESP_LOGW(
             TAG,
             "RUNTIME_SNAPSHOT_ERROR stage=%s reason=not_started",
@@ -457,6 +498,9 @@ void runtime_observability_log_snapshot(const char *stage)
     }
 
     if (xSemaphoreTake(s_snapshot_mutex, portMAX_DELAY) != pdTRUE) {
+        if (periodic) {
+            runtime_observability_log_memory(stage);
+        }
         ESP_LOGW(
             TAG,
             "RUNTIME_SNAPSHOT_ERROR stage=%s reason=mutex",
@@ -468,6 +512,9 @@ void runtime_observability_log_snapshot(const char *stage)
     const UBaseType_t requested_count = uxTaskGetNumberOfTasks();
     if (!runtime_status_arrays_ensure(requested_count)) {
         xSemaphoreGive(s_snapshot_mutex);
+        if (periodic) {
+            runtime_observability_log_memory(stage);
+        }
         ESP_LOGW(
             TAG,
             "RUNTIME_SNAPSHOT_ERROR stage=%s reason=status_alloc tasks=%u",
@@ -510,22 +557,6 @@ void runtime_observability_log_snapshot(const char *stage)
         busy_tenths[core] = 1000U - idle_tenths[core];
     }
 
-    ESP_LOGI(
-        TAG,
-        "RUNTIME_CPU stage=%s window_ms=%u valid=%d cpu0_busy=%u.%u cpu0_idle=%u.%u cpu1_busy=%u.%u cpu1_idle=%u.%u",
-        runtime_stage_or_unknown(stage),
-        (unsigned)(window_us / 1000U),
-        s_have_previous_snapshot ? 1 : 0,
-        busy_tenths[0] / 10U,
-        busy_tenths[0] % 10U,
-        idle_tenths[0] / 10U,
-        idle_tenths[0] % 10U,
-        busy_tenths[1] / 10U,
-        busy_tenths[1] % 10U,
-        idle_tenths[1] / 10U,
-        idle_tenths[1] % 10U
-    );
-
     runtime_task_usage_t top_tasks[RUNTIME_OBSERVABILITY_TOP_TASKS] = {0};
     size_t top_count = 0U;
 
@@ -559,6 +590,66 @@ void runtime_observability_log_snapshot(const char *stage)
             cpu_tenths
         );
     }
+
+    policy_task_count = top_count;
+    for (size_t i = 0U; i < policy_task_count; ++i) {
+        policy_tasks[i].task_handle = (uintptr_t)top_tasks[i].status->xHandle;
+        policy_tasks[i].stack_free_bytes =
+            (uint32_t)top_tasks[i].status->usStackHighWaterMark;
+        policy_tasks[i].low_stack = runtime_observability_stack_is_low(
+            policy_tasks[i].stack_free_bytes
+        );
+    }
+
+    if (periodic) {
+        internal_free = (uint32_t)heap_caps_get_free_size(internal_caps);
+        internal_largest =
+            (uint32_t)heap_caps_get_largest_free_block(internal_caps);
+        dump_reason = runtime_observability_dump_decide(
+            &s_dump_policy_state,
+            (uint32_t)(now_us / 1000U),
+            internal_free,
+            internal_largest,
+            policy_tasks,
+            policy_task_count
+        );
+        if (dump_reason == RUNTIME_OBSERVABILITY_DUMP_NONE) {
+            xSemaphoreGive(s_snapshot_mutex);
+            return;
+        }
+    } else {
+        runtime_observability_dump_record_logged(
+            &s_dump_policy_state,
+            (uint32_t)(now_us / 1000U),
+            internal_free,
+            internal_largest,
+            policy_tasks,
+            policy_task_count
+        );
+    }
+
+    if (periodic) {
+        /* Non-periodic stages already logged MEM_RUNTIME before the mutex. */
+        runtime_observability_log_memory_with_internal(
+            stage, internal_free, internal_largest
+        );
+    }
+
+    ESP_LOGI(
+        TAG,
+        "RUNTIME_CPU stage=%s window_ms=%u valid=%d cpu0_busy=%u.%u cpu0_idle=%u.%u cpu1_busy=%u.%u cpu1_idle=%u.%u",
+        runtime_stage_or_unknown(stage),
+        (unsigned)(window_us / 1000U),
+        s_have_previous_snapshot ? 1 : 0,
+        busy_tenths[0] / 10U,
+        busy_tenths[0] % 10U,
+        idle_tenths[0] / 10U,
+        idle_tenths[0] % 10U,
+        busy_tenths[1] / 10U,
+        busy_tenths[1] % 10U,
+        idle_tenths[1] / 10U,
+        idle_tenths[1] % 10U
+    );
 
     for (size_t i = 0U; i < top_count; ++i) {
         const runtime_task_usage_t *usage = &top_tasks[i];
@@ -623,7 +714,7 @@ static void runtime_observability_task(void *argument)
     for (;;) {
         const uint32_t notified = ulTaskNotifyTake(
             pdTRUE,
-            pdMS_TO_TICKS(RUNTIME_OBSERVABILITY_PERIOD_MS)
+            pdMS_TO_TICKS(RUNTIME_OBSERVABILITY_SAMPLE_PERIOD_MS)
         );
         char requested_stage[RUNTIME_OBSERVABILITY_STAGE_SIZE];
         if (runtime_take_requested_stage(requested_stage, sizeof(requested_stage))) {
@@ -683,9 +774,10 @@ bool runtime_observability_start(void)
 
     ESP_LOGI(
         TAG,
-        "RUNTIME_START core=%d period_ms=%u stack=%u stack_caps=spiram|8bit",
+        "RUNTIME_START core=%d period_ms=%u sample_period_ms=%u stack=%u stack_caps=spiram|8bit",
         APP_TASK_CORE_SERVICES,
-        RUNTIME_OBSERVABILITY_PERIOD_MS,
+        RUNTIME_OBSERVABILITY_HEARTBEAT_PERIOD_MS,
+        RUNTIME_OBSERVABILITY_SAMPLE_PERIOD_MS,
         APP_TASK_STACK_RUNTIME_OBSERVABILITY
     );
     return true;
@@ -716,6 +808,7 @@ void runtime_observability_stop(void)
     s_previous_count = 0U;
     s_previous_snapshot_us = 0U;
     s_have_previous_snapshot = false;
+    memset(&s_dump_policy_state, 0, sizeof(s_dump_policy_state));
 
     if (s_snapshot_mutex != NULL) {
         xSemaphoreGive(s_snapshot_mutex);

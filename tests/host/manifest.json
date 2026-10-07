@@ -47,6 +47,15 @@
       ]
     },
     {
+      "name": "runtime_observability_dump_policy",
+      "sources": [
+        "tests/host/runtime_observability_dump_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/runtime_observability/include"
+      ]
+    },
+    {
       "name": "sd_card_mount",
       "sources": [
         "components/sd_card/sd_card.c",
@@ -333,6 +342,15 @@
       "libraries": ["m"]
     },
     {
+      "name": "nrf_topology_log_policy",
+      "sources": [
+        "components/nrf_topology_service/tests/nrf_topology_log_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/nrf_topology_service/include"
+      ]
+    },
+    {
       "name": "ad7606_serial",
       "sources": [
         "components/ad7606_driver/ad7606_serial.c",
@@ -421,6 +439,15 @@
         "components/sensor_bus/include"
       ],
       "libraries": ["m"]
+    },
+    {
+      "name": "ina3221_status_log_policy",
+      "sources": [
+        "components/ina3221_monitor/tests/ina3221_status_log_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/ina3221_monitor/include"
+      ]
     },
     {
       "name": "ina3221_low_battery",
@@ -1866,6 +1893,16 @@
       "sources": [
         "components/ui/ui_frame_scheduler.c",
         "components/ui/tests/ui_frame_scheduler_test.c"
+      ],
+      "include_dirs": [
+        "components/ui"
+      ]
+    },
+    {
+      "name": "ui_perf_policy",
+      "sources": [
+        "components/ui/ui_perf_policy.c",
+        "components/ui/tests/ui_perf_policy_test.c"
       ],
       "include_dirs": [
         "components/ui"

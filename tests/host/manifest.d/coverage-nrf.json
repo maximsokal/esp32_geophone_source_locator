@@ -162,6 +162,15 @@
       "libraries": ["m"]
     },
     {
+      "name": "nrf_topology_log_policy",
+      "sources": [
+        "components/nrf_topology_service/tests/nrf_topology_log_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/nrf_topology_service/include"
+      ]
+    },
+    {
       "name": "nrf_topology_leveling_policy",
       "sources": [
         "components/nrf_topology_service/nrf_topology_leveling_policy.c",
