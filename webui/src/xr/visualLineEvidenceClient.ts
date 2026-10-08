@@ -49,7 +49,11 @@ export class VisualLineEvidenceClient {
   private readonly allowMainThreadFallback: boolean;
   private readonly deferWorkerUntilAnalyze: boolean;
 
-  constructor(options: VisualLineEvidenceClientOptions = {}) {
+  constructor(
+    options: VisualLineEvidenceClientOptions = {},
+    private readonly workerFactory: () => Worker = () => new VisualLineEvidenceWorker(),
+    private readonly computeScheduler = liveComputeScheduler,
+  ) {
     this.allowMainThreadFallback = options.allowMainThreadFallback ?? true;
     this.deferWorkerUntilAnalyze = options.deferWorkerUntilAnalyze ?? false;
     if (!this.deferWorkerUntilAnalyze) this.tryCreateWorker();
@@ -60,7 +64,7 @@ export class VisualLineEvidenceClient {
     try {
       // Inline Vite worker keeps ESP deployment to the existing one-JS/one-CSS
       // contract. No hashed worker asset or extra HTTPS URI is required.
-      this.worker = new VisualLineEvidenceWorker();
+      this.worker = this.workerFactory();
       this.worker.addEventListener('message', this.handleWorkerMessage);
       this.worker.addEventListener('error', this.handleWorkerError);
       this.worker.postMessage({ type: 'reset', epoch: this.epoch });
@@ -184,7 +188,7 @@ export class VisualLineEvidenceClient {
 
     const requestEpoch = this.epoch;
     this.workerStartupInFlight += 1;
-    const lease = await liveComputeScheduler.tryAcquire('visual');
+    const lease = await this.computeScheduler.tryAcquire('visual');
     if (lease === null) {
       this.workerStartupInFlight = Math.max(0, this.workerStartupInFlight - 1);
       throw new Error('Live compute budget is busy; visual evidence frame was dropped.');

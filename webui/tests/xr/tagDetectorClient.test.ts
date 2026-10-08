@@ -18,6 +18,7 @@ class FakeWorker {
 function cameraFrame(): TagCameraFrame {
   return {
     width: 960, height: 540, rgba: new Uint8Array(960 * 540 * 4), capturedAtMs: 1234,
+    cameraPosition: [1, 2, 3], cameraForward: [0, 0, -1],
     projectionMatrix: new Float32Array(16).fill(1), worldFromView: new Float32Array(16).fill(2),
   };
 }
@@ -36,7 +37,7 @@ describe('tag detector worker client', () => {
     const detection = { tagId: 0, corners: [[0.1, 0.2], [0.8, 0.2], [0.8, 0.9], [0.1, 0.9]], hammingDistance: 0 };
     worker.emit('message', { type: 'result', requestId: request.requestId, epoch: 1, detections: [detection] });
     const result = await resultPromise;
-    expect(result).toMatchObject({ capturedAtMs: 1234, detections: [detection] });
+    expect(result).toMatchObject({ capturedAtMs: 1234, cameraPosition: [1,2,3], cameraForward: [0,0,-1], detections: [detection] });
     expect(Array.from(result?.projectionMatrix ?? [])).toEqual(Array.from(frame.projectionMatrix));
     expect(Array.from(result?.worldFromView ?? [])).toEqual(Array.from(frame.worldFromView));
     client.dispose();

@@ -20,6 +20,10 @@ export class FakeXrSession {
   active = true;
   endCalls = 0;
   endFailures = 0;
+  depthUsage: string | undefined;
+  depthDataFormat: string | undefined;
+  depthType: string | null = null;
+  depthActive: boolean | null = null;
   updateCalls = 0;
   referenceSpaceRequests: string[] = [];
   lightProbeRequests = 0;
@@ -34,6 +38,7 @@ export class FakeXrSession {
   readonly domOverlayState = { type: 'screen' };
   environmentBlendMode = 'opaque';
   visibilityState: 'visible' | 'visible-blurred' | 'hidden' = 'visible';
+  private pendingEnd: Deferred<void> | null = null;
 
   addEventListener(type: string, listener: Listener | null): void {
     if (listener === null) return;
@@ -104,8 +109,19 @@ export class FakeXrSession {
       this.endFailures -= 1;
       return Promise.reject(new Error('Fake XR session end failed.'));
     }
+    if (this.pendingEnd !== null) {
+      const pending = this.pendingEnd;
+      this.pendingEnd = null;
+      return pending.promise.then(() => this.finish());
+    }
     this.finish();
     return Promise.resolve();
+  }
+
+  deferEnd(): Deferred<void> {
+    const pending = deferred<void>();
+    this.pendingEnd = pending;
+    return pending;
   }
 
   finish(): void {

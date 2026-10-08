@@ -248,6 +248,91 @@ describe('budgeted live coverage snapshots (MAX-409)', () => {
   });
 });
 
+describe('structural guide snapshots (MAX-409)', () => {
+  it('preserves eligible representative order and values with exact-sized allocations under pressure', () => {
+    const accumulator = new DepthPointCloudAccumulator();
+    const internal = accumulator as unknown as {
+      representatives: Map<string, any>;
+      integrationKeyframes: number;
+    };
+    internal.integrationKeyframes = 17;
+
+    for (let index = 0; index < 60000; index += 1) {
+      const promoted = index % 1000 !== 0;
+      internal.representatives.set(String(index), {
+        id: String(index),
+        x: index * 0.001,
+        y: index * 0.002,
+        z: -index * 0.001,
+        normalX: 0.1,
+        normalY: 0.9,
+        normalZ: -0.2,
+        normalConfidence: 0.8,
+        normalKnown: index % 5 === 0,
+        independentViews: 3 + index % 3,
+        weight: 4 + index % 2,
+        varianceX: 0.000001 * (1 + index % 4),
+        varianceY: 0.000002 * (1 + index % 3),
+        varianceZ: 0.000003 * (1 + index % 2),
+        residualEwma: 0.001 + (index % 7) * 0.0001,
+        maxViewAngleRadians: Math.PI / 5,
+        contradictionWeight: (index % 4) * 0.03,
+        promoted,
+      });
+    }
+
+    const eligible = [...internal.representatives.values()].filter((point) => point.promoted && point.normalKnown);
+    const expectedPositions = new Float32Array(eligible.length * 3);
+    const expectedNormals = new Float32Array(eligible.length * 3);
+    const expectedConfidence = new Float32Array(eligible.length);
+    eligible.forEach((point, index) => {
+      const offset = index * 3;
+      expectedPositions[offset] = point.x;
+      expectedPositions[offset + 1] = point.y;
+      expectedPositions[offset + 2] = point.z;
+      expectedNormals[offset] = point.normalX;
+      expectedNormals[offset + 1] = point.normalY;
+      expectedNormals[offset + 2] = point.normalZ;
+      const residual = Math.max(
+        Math.sqrt(Math.max(0, (point.varianceX + point.varianceY + point.varianceZ) / 3)),
+        point.residualEwma * 0.55,
+      );
+      expectedConfidence[index] = surfaceRenderConfidence({
+        promoted: point.promoted,
+        independentViews: point.independentViews,
+        weight: point.weight,
+        residualMeters: residual,
+        maxViewAngleRadians: point.maxViewAngleRadians,
+        contradictionWeight: point.contradictionWeight,
+        normalConfidence: point.normalConfidence,
+      });
+    });
+
+    const nativeFloat32Array = Float32Array;
+    const allocatedLengths: number[] = [];
+    vi.stubGlobal('Float32Array', class extends nativeFloat32Array {
+      constructor(length: number) {
+        super(length);
+        allocatedLengths.push(length);
+      }
+    });
+    try {
+      const snapshot = accumulator.structuralGuideSnapshot();
+      expect(snapshot.pointCount).toBe(eligible.length);
+      expect(snapshot.keyframeCount).toBe(17);
+      expect(Array.from(snapshot.positions)).toEqual(Array.from(expectedPositions));
+      expect(Array.from(snapshot.normals)).toEqual(Array.from(expectedNormals));
+      expect(Array.from(snapshot.confidence)).toEqual(Array.from(expectedConfidence));
+      expect(allocatedLengths).toEqual([eligible.length * 3, eligible.length * 3, eligible.length]);
+      expect(snapshot.positions.byteLength).toBe(eligible.length * 3 * Float32Array.BYTES_PER_ELEMENT);
+      expect(snapshot.normals.byteLength).toBe(eligible.length * 3 * Float32Array.BYTES_PER_ELEMENT);
+      expect(snapshot.confidence.byteLength).toBe(eligible.length * Float32Array.BYTES_PER_ELEMENT);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('surface reconstruction behaviour', () => {
   it('rejects isolated single-pixel-like depth spikes instead of promoting them', () => {
     const accumulator = new DepthPointCloudAccumulator();

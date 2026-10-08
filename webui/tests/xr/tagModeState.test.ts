@@ -24,7 +24,7 @@ describe('tag-mode status', () => {
       { tagId: 4, node: 'G4', status: 'not-seen' },
     ]);
     expect(chips.map(({ text }) => text)).toEqual([
-      translate(locale, 'xr.tag.chip.seen', { node: 'MAIN', inliers: formatNumber(locale, 2), minimum: formatNumber(locale, 5) }),
+      translate(locale, 'xr.tag.chip.views_seen', { node: 'MAIN', views: formatNumber(locale, 1), minimum: formatNumber(locale, 3) }),
       translate(locale, 'xr.tag.chip.not_seen', { node: 'G1' }),
       translate(locale, 'xr.tag.chip.confirmed', { node: 'G2' }),
       translate(locale, 'xr.tag.chip.not_seen', { node: 'G3' }),

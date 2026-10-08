@@ -33,7 +33,8 @@ export interface MonocularDepthProvider {
   readonly error: string | null;
   isSupported(): boolean;
   estimateRgba(rgba: Uint8Array, width: number, height: number, capturedAtMs: number): Promise<MonocularDepthPriorFrame | null>;
-  dispose(): void;
+  releaseMemory?(): Promise<void> | void;
+  dispose(): Promise<void> | void;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -106,8 +107,12 @@ export interface TransformersRawImageConstructor {
   new (data: Uint8Array | Uint8ClampedArray, width: number, height: number, channels: 4): unknown;
 }
 
-interface TransformersModuleLike {
-  pipeline(task: string, model: string, options?: Record<string, unknown>): Promise<(input: unknown) => Promise<unknown>>;
+export type TransformersDepthPipeline = ((input: unknown) => Promise<unknown>) & {
+  dispose?: () => Promise<void> | void;
+};
+
+export interface TransformersModuleLike {
+  pipeline(task: string, model: string, options?: Record<string, unknown>): Promise<TransformersDepthPipeline>;
   RawImage?: TransformersRawImageConstructor;
 }
 
@@ -168,36 +173,66 @@ export class DepthAnythingV2WebGpuProvider implements MonocularDepthProvider {
   readonly name = 'Depth Anything V2 Small (optional WebGPU prior)';
   status: MonocularDepthProviderStatus = 'disabled';
   error: string | null = null;
-  private estimator: ((input: unknown) => Promise<unknown>) | null = null;
+  private estimator: TransformersDepthPipeline | null = null;
   private rawImageConstructor: TransformersRawImageConstructor | null = null;
-  private disposed = false;
+  private generation = 0;
+  private loadPromise: Promise<boolean> | null = null;
+  private releasePromise: Promise<void> | null = null;
+  private readonly releasedPipelines = new WeakSet<object>();
 
   constructor(
     private readonly model = 'onnx-community/depth-anything-v2-small',
     private readonly moduleUrl = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/+esm',
+    private readonly moduleLoader?: () => Promise<TransformersModuleLike>,
   ) {}
 
   isSupported(): boolean {
     return typeof navigator !== 'undefined' && 'gpu' in navigator && typeof document !== 'undefined';
   }
 
-  private async load(): Promise<boolean> {
-    if (this.estimator !== null) return true;
-    if (this.disposed || !this.isSupported()) { this.status = 'unavailable'; return false; }
+  private load(): Promise<boolean> {
+    if (this.releasePromise !== null) return this.releasePromise.then(() => this.load());
+    if (this.estimator !== null) return Promise.resolve(true);
+    if (this.loadPromise !== null) return this.loadPromise;
+    if (!this.isSupported()) { this.status = 'unavailable'; return Promise.resolve(false); }
+    const generation = this.generation;
     this.status = 'loading';
+    const pending = this.createEstimator(generation).finally(() => {
+      if (this.loadPromise === pending) this.loadPromise = null;
+    });
+    this.loadPromise = pending;
+    return pending;
+  }
+
+  private async createEstimator(generation: number): Promise<boolean> {
     try {
-      const dynamicImport = new Function('url', 'return import(url)') as (url: string) => Promise<TransformersModuleLike>;
-      const module = await dynamicImport(this.moduleUrl);
-      this.estimator = await module.pipeline('depth-estimation', this.model, { device: 'webgpu', dtype: 'q4f16' });
+      const module = this.moduleLoader === undefined
+        ? await (new Function('url', 'return import(url)') as (url: string) => Promise<TransformersModuleLike>)(this.moduleUrl)
+        : await this.moduleLoader();
+      if (generation !== this.generation) return false;
+      const estimator = await module.pipeline('depth-estimation', this.model, { device: 'webgpu', dtype: 'q4f16' });
+      if (generation !== this.generation) {
+        await this.releasePipeline(estimator);
+        return false;
+      }
+      this.estimator = estimator;
       this.rawImageConstructor = module.RawImage ?? null;
       this.status = 'ready';
       this.error = null;
       return true;
     } catch (error) {
-      this.status = 'error';
-      this.error = error instanceof Error ? error.message : String(error);
+      if (generation === this.generation) {
+        this.status = 'error';
+        this.error = error instanceof Error ? error.message : String(error);
+      }
       return false;
     }
+  }
+
+  private async releasePipeline(pipeline: TransformersDepthPipeline): Promise<void> {
+    if (this.releasedPipelines.has(pipeline)) return;
+    this.releasedPipelines.add(pipeline);
+    await pipeline.dispose?.();
   }
 
   async estimateRgba(
@@ -206,7 +241,10 @@ export class DepthAnythingV2WebGpuProvider implements MonocularDepthProvider {
     height: number,
     capturedAtMs: number,
   ): Promise<MonocularDepthPriorFrame | null> {
-    if (!(await this.load()) || this.estimator === null || this.disposed) return null;
+    if (!(await this.load())) return null;
+    const generation = this.generation;
+    const estimator = this.estimator;
+    if (estimator === null) return null;
     try {
       const rawInput = this.rawImageConstructor === null
         ? null
@@ -215,7 +253,8 @@ export class DepthAnythingV2WebGpuProvider implements MonocularDepthProvider {
       // module build that does not export it; never JPEG-compress structural RGB.
       const input = rawInput ?? canvasModelInput(rgba, width, height);
       if (input === null) throw new Error('Unable to prepare Depth Anything image input.');
-      const output = await this.estimator(input);
+      const output = await estimator(input);
+      if (generation !== this.generation || estimator !== this.estimator) return null;
       const tensor = tensorFromOutput(output);
       if (tensor === null) throw new Error('Depth Anything output did not expose a depth tensor.');
       const relativeDepth = new Float32Array(tensor.width * tensor.height);
@@ -224,15 +263,38 @@ export class DepthAnythingV2WebGpuProvider implements MonocularDepthProvider {
       this.error = null;
       return { width: tensor.width, height: tensor.height, relativeDepth, capturedAtMs, source: this.model };
     } catch (error) {
-      this.status = 'error';
-      this.error = error instanceof Error ? error.message : String(error);
+      if (generation === this.generation && estimator === this.estimator) {
+        this.status = 'error';
+        this.error = error instanceof Error ? error.message : String(error);
+      }
       return null;
     }
   }
 
-  dispose(): void {
-    this.disposed = true;
+  async releaseMemory(): Promise<void> {
+    const precedingRelease = this.releasePromise;
+    const loadPromise = this.loadPromise;
+    this.generation += 1;
+    this.loadPromise = null;
+    const estimator = this.estimator;
     this.estimator = null;
     this.rawImageConstructor = null;
+    this.status = 'disabled';
+    this.error = null;
+    const release = (async (): Promise<void> => {
+      if (estimator !== null) await this.releasePipeline(estimator);
+      if (loadPromise !== null) await loadPromise;
+      if (precedingRelease !== null) await precedingRelease;
+    })();
+    this.releasePromise = release;
+    try {
+      await release;
+    } finally {
+      if (this.releasePromise === release) this.releasePromise = null;
+    }
+  }
+
+  async dispose(): Promise<void> {
+    await this.releaseMemory();
   }
 }

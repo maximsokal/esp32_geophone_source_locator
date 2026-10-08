@@ -27,7 +27,7 @@ export function tagChipStatuses(fusion: TagObservationFusion, locale: I18nLocale
     const tag = fusion.byTagId[tagId as 0 | 1 | 2 | 3 | 4];
     if (tag === undefined) return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, text: translate(locale, 'xr.tag.chip.not_seen', { node: label }), status: 'not-seen' };
     if (tag.confirmed) return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, status: 'confirmed', text: translate(locale, 'xr.tag.chip.confirmed', { node: label }) };
-    return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, status: 'seen', text: translate(locale, 'xr.tag.chip.seen', { node: label, inliers: formatNumber(locale, tag.inlierCount), minimum: formatNumber(locale, 5) }) };
+    return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, status: 'seen', text: translate(locale, 'xr.tag.chip.views_seen', { node: label, views: formatNumber(locale, tag.independentViewCount), minimum: formatNumber(locale, 3) }) };
   });
 }
 
@@ -44,6 +44,7 @@ export function registrationOutcome(result: Pick<SensorToScanRegistration, 'vali
 
 const TAG_ERROR_KEYS: Readonly<Record<string, I18nKey>> = {
   'Open a recording before using tag registration.': 'xr.tag.open_recording',
+  'High-resolution tag capture requires non-blocking WebGL2 readback.': 'xr.tag.readback_unavailable',
   'Frozen localization geometry is unavailable for this recording.': 'xr.tag.geometry_unavailable',
   'AprilTag detector worker could not start.': 'xr.tag.error.detector_unavailable',
   'Frozen session geometry is unavailable; tag observations were not registered.': 'xr.tag.error.geometry_unavailable',

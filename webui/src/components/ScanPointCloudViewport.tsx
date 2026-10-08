@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
@@ -11,6 +11,11 @@ import type { RegistrationArtifact } from '../xr/fiducial/registrationArtifact';
 import { REGISTRATION_INAPPLICABLE_KEYS } from '../xr/registrationApplicability';
 import { solverCandidateVolume } from '../xr/candidateVolume';
 import { fineOccupancyVoxelSizeMeters } from '../xr/occupancyScales';
+import { deriveDeviceComputeProfile, type DeviceComputeProfile } from '../xr/deviceComputeProfile';
+import { PostScanAdmissionCoordinator, runAdmittedTsdfRequest } from '../xr/postScanAdmission';
+import type { ScanSceneMaterializationNeeds } from '../xr/postScanAdmission';
+import { optionalMonocularPrior } from '../xr/monocularPriorRuntime';
+import { releaseXrGuidanceRegistryWorkers } from '../xr/xrGuidanceRegistry';
 import { describeMeshQuality } from '../xr/meshQualityUi';
 import { useLocale, useT } from '../i18n';
 import { formatDistance, formatNumber } from '../i18n/format';
@@ -26,11 +31,11 @@ import {
   cameraPoseForPreset,
   clamp,
   orbitDistanceLimits,
-  prepareScanScene,
   scanViewFitExtent,
   scanDimensionsText,
   scanLayerPlan,
   scanSourceBadgeText,
+  ScanSceneMaterializer,
   toViewportPositions,
   type PreparedScanScene,
   type SensorMarkerLayerSpec,
@@ -58,10 +63,26 @@ interface ScanPointCloudViewportProps {
   localizationRuns?: readonly LocalizationRun[];
   /** CRC identity of the displayed scan; null means that its generation is unknown. */
   currentScanId?: string | null;
+  /** True during the Finish-triggered scan/occupancy/preview transaction. */
+  persistenceBusy?: boolean;
+  /** Storage generation advanced at the Finish -> persistence handoff. */
+  postScanGeneration?: number;
+  computeProfile?: DeviceComputeProfile | null;
 }
 
 const NO_SENSOR_MARKERS: SensorPlacementMarker[] = [];
 const NO_LOCALIZATION_RUNS: LocalizationRun[] = [];
+const FALLBACK_COMPUTE_PROFILE = deriveDeviceComputeProfile({
+  reportedLogicalProcessors: 1,
+  reportedDeviceMemoryGiB: null,
+  workerApi: true,
+  crossOriginIsolated: false,
+  sharedArrayBufferApi: false,
+  wasmApi: true,
+  wasmSharedMemory: false,
+  webGpuApi: false,
+  webGpuAdapter: false,
+});
 
 type TsdfRequestSnapshot = Pick<ScanPointCloudSnapshot,
   'tsdfPointCount' | 'tsdfPositions' | 'tsdfNormals' | 'tsdfCoverageConfidence' |
@@ -284,10 +305,85 @@ export function ScanPointCloudViewport({
   sessionId = null,
   localizationRuns = NO_LOCALIZATION_RUNS,
   currentScanId = null,
+  persistenceBusy = false,
+  postScanGeneration = 0,
+  computeProfile = null,
 }: ScanPointCloudViewportProps) {
   const { locale } = useLocale();
   const t = useT();
-  const prepared = useMemo(() => prepareScanScene(snapshot), [snapshot]);
+  const requestedMaterialization: ScanSceneMaterializationNeeds = {
+    good: display.goodPoints,
+    bad: display.badPoints,
+    freeAir: display.freeAir,
+    unknownSpace: display.unknownSpace,
+    manualPoints: display.manualPoints,
+    dimensions: display.dimensions,
+  };
+  const admissionCoordinator = useRef(new PostScanAdmissionCoordinator());
+  const materializer = useRef<ScanSceneMaterializer | null>(null);
+  if (materializer.current === null) materializer.current = new ScanSceneMaterializer();
+  const profile = computeProfile ?? FALLBACK_COMPUTE_PROFILE;
+  const admission = useMemo(() => admissionCoordinator.current.evaluate({
+    generation: postScanGeneration,
+    snapshot,
+    profile,
+    persistenceBusy,
+    materialization: requestedMaterialization,
+    meshRequested: display.mesh,
+    aiRequested: display.mesh && optionalMonocularPrior.isEnabled && optionalMonocularPrior.hasStagedPostScanFrame,
+  }), [
+    display.badPoints,
+    display.dimensions,
+    display.freeAir,
+    display.goodPoints,
+    display.mesh,
+    display.manualPoints,
+    display.unknownSpace,
+    persistenceBusy,
+    optionalMonocularPrior.hasStagedPostScanFrame,
+    optionalMonocularPrior.isEnabled,
+    postScanGeneration,
+    profile,
+    snapshot,
+  ]);
+  useEffect(() => {
+    clientDiagnostics.info('SCAN_POST_SCAN_ADMISSION', {
+      generation: admission.generation,
+      persistenceBusy: admission.persistenceBusy,
+      stages: admission.stages,
+      admitted: admission.admitted,
+      deferredReason: admission.deferredReason,
+      originalSnapshotBytes: admission.bytes.originalSnapshotBytes,
+      plannedViewportCopyBytes: admission.bytes.plannedViewportCopyBytes,
+      plannedTsdfSliceBytes: admission.bytes.plannedTsdfSliceBytes,
+      plannedWorkerScratchBytes: admission.bytes.plannedWorkerScratchBytes,
+      totalPlannedBytes: admission.bytes.totalPlannedBytes,
+      optionalAiReservationBytes: admission.bytes.optionalAiReservationBytes,
+      memoryBudgetBytes: admission.bytes.memoryBudgetBytes,
+      workerConcurrency: admission.bytes.workerConcurrency,
+    });
+  }, [admission]);
+  const admittedNeeds: ScanSceneMaterializationNeeds = admission.admitted.viewportPointMaterialization
+    ? requestedMaterialization
+    : { good: false, bad: false, freeAir: false, unknownSpace: false, manualPoints: false, dimensions: false };
+  const prepared = useMemo(() => materializer.current!.prepare(
+    snapshot,
+    postScanGeneration,
+    admittedNeeds,
+  ), [
+    admittedNeeds.bad,
+    admittedNeeds.dimensions,
+    admittedNeeds.freeAir,
+    admittedNeeds.good,
+    admittedNeeds.manualPoints,
+    admittedNeeds.unknownSpace,
+    postScanGeneration,
+    snapshot,
+  ]);
+  useEffect(() => () => materializer.current?.release(), []);
+  useEffect(() => {
+    releaseXrGuidanceRegistryWorkers();
+  }, [postScanGeneration]);
   const candidateVolume = useMemo(() => solverCandidateVolume(snapshot), [snapshot]);
   const sourceGrid = useMemo(() => sourceVoxelGridForScan(snapshot), [snapshot]);
   const sourceHighlights = useMemo(() => objectId === null || sessionId === null
@@ -343,14 +439,41 @@ export function ScanPointCloudViewport({
 
   useEffect(() => () => tsdfClient.dispose(), [tsdfClient]);
   useEffect(() => {
+    if ((!display.mesh || admission.bytes.underMemoryPressure || snapshot.tsdfPointCount < MESH_MIN_POINTS) && optionalMonocularPrior.isEnabled) {
+      void optionalMonocularPrior.releaseMemory();
+    }
+  }, [admission.bytes.underMemoryPressure, display.mesh, optionalMonocularPrior.hasStagedPostScanFrame, optionalMonocularPrior.isEnabled, snapshot.tsdfPointCount]);
+  useEffect(() => {
     let cancelled = false;
-    tsdfClient.reset();
-    setTsdfMesh(null);
-    setTsdfError(null);
-    if (snapshot.tsdfPointCount < MESH_MIN_POINTS) return () => { cancelled = true; };
+    if (snapshot.tsdfPointCount < MESH_MIN_POINTS) {
+      tsdfClient.cancel('Scan does not meet the TSDF minimum point count.', true);
+      setTsdfMesh(null);
+      setTsdfError(null);
+      return () => { cancelled = true; };
+    }
 
     const started = performance.now();
-    void tsdfClient.reconstruct(buildTsdfRequestArgs(snapshot)).then((result) => {
+    const reconstruction = runAdmittedTsdfRequest(
+      display.mesh,
+      admission.admitted.tsdfReconstruction,
+      () => buildTsdfRequestArgs(snapshot),
+      (input) => tsdfClient.reconstruct(input, {
+        postScanWorkerBudget: admission.bytes.workerConcurrency,
+        allowOptionalAi: admission.admitted.optionalAi,
+      }),
+    );
+    if (reconstruction === null) {
+      tsdfClient.cancel(display.mesh ? 'TSDF reconstruction deferred by post-scan admission.' : 'Mesh layer hidden.', true);
+      if (!display.mesh) {
+        setTsdfMesh(null);
+        setTsdfError(null);
+      }
+      return () => { cancelled = true; };
+    }
+
+    setTsdfMesh(null);
+    setTsdfError(null);
+    void reconstruction.then((result) => {
       if (cancelled) return;
       setTsdfMesh(result);
       clientDiagnostics.info('SCAN_TSDF_READY', {
@@ -385,8 +508,11 @@ export function ScanPointCloudViewport({
       setTsdfError(message);
       clientDiagnostics.warn('SCAN_TSDF_FAILED', error);
     });
-    return () => { cancelled = true; };
-  }, [snapshot, tsdfClient]);
+    return () => {
+      cancelled = true;
+      tsdfClient.cancel('TSDF reconstruction demand or admission changed.', true);
+    };
+  }, [admission.admitted.optionalAi, admission.admitted.tsdfReconstruction, admission.bytes.workerConcurrency, display.mesh, postScanGeneration, snapshot, tsdfClient]);
 
   const meshPositions = useMemo(
     () => tsdfMesh === null
@@ -398,9 +524,14 @@ export function ScanPointCloudViewport({
   const fingerprint = displayFingerprint(display); const modeLabel = scanModeLabel(mode, locale);
   const handleInteractionEnd = useCallback((distance: number): void => { setCameraDistance(distance); setInteractionRevision((current) => current+1); }, []);
   const meshQuality = tsdfMesh === null ? null : describeMeshQuality(tsdfMesh, locale);
-  const meshStatus = snapshot.tsdfPointCount < MESH_MIN_POINTS
-    ? t('scan.badge.mesh_more')
-    : tsdfError !== null
+  const postScanDeferred =
+    (Object.values(requestedMaterialization).some(Boolean) && !admission.admitted.viewportPointMaterialization) ||
+    (display.mesh && !admission.admitted.tsdfReconstruction);
+  const meshStatus = postScanDeferred
+    ? t('scan.badge.building_after_save')
+    : snapshot.tsdfPointCount < MESH_MIN_POINTS
+      ? t('scan.badge.mesh_more')
+      : tsdfError !== null
       ? t('scan.badge.mesh_unavailable')
       : meshQuality === null
         ? t('scan.badge.mesh_building')
@@ -411,6 +542,7 @@ export function ScanPointCloudViewport({
     <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} /><CameraController command={viewCommand} extent={cameraFitExtent} onInteractionEnd={handleInteractionEnd} /></Canvas>
     <div className="scan-source-badge">{scanSourceBadgeText(snapshot, locale)}</div>
     {candidateVolume.candidateDepthUnavailable && <div className="scan-source-candidate-depth" role="status">{t('scan.candidate_depth_unavailable')}</div>}
+    {postScanDeferred && !display.mesh && <div className="scan-mesh-overlay" role="status" aria-live="polite">{t('scan.badge.building_after_save')}</div>}
     {sourceReasonLabel !== null && <div className="scan-source-highlight-status" role="status">{sourceReasonLabel}</div>}
     {sourceHighlights.historyRuns.length > 0 && <div className="scan-source-history" aria-label={t('scan.source_history')}>
       {sourceHighlights.historyRuns.map(({ run, currency }) => <span key={`${run.method_name}-${run.computed_at_ms}`}>

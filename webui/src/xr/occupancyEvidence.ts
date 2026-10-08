@@ -434,7 +434,17 @@ export class SparseOccupancyGrid {
     relevantBounds: OccupancyBounds | null = null,
     marginMeters = 0,
   ): FreeSpaceEvidenceSnapshot {
-    const positions = new Float32Array(this.freeCellKeys.size * 3);
+    // Two passes so the backing ArrayBuffer (the worker transfer unit) is
+    // exactly the relevant output, never FREE capacity plus a slice copy.
+    let included = 0;
+    if (relevantBounds === null) {
+      included = this.freeCellKeys.size;
+    } else {
+      for (const key of this.freeCellKeys) {
+        if (pointInsideExpandedBounds(voxelCenterFromKey(key, this.voxelSizeMeters), relevantBounds, marginMeters)) included++;
+      }
+    }
+    const positions = new Float32Array(included * 3);
     let write = 0;
     for (const key of this.freeCellKeys) {
       const point = voxelCenterFromKey(key, this.voxelSizeMeters);
@@ -443,12 +453,11 @@ export class SparseOccupancyGrid {
       positions[write++] = point[1];
       positions[write++] = point[2];
     }
-    const includedFreeVoxelCount = Math.floor(write / 3);
     return {
       occupancyVoxelSizeMeters: this.voxelSizeMeters,
       knownFreeVoxelCount: this.freeCellKeys.size,
-      includedFreeVoxelCount,
-      freeAirPositions: write === positions.length ? positions : positions.slice(0, write),
+      includedFreeVoxelCount: included,
+      freeAirPositions: positions,
     };
   }
 

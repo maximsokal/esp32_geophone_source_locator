@@ -4,6 +4,7 @@ import type { SensorPlacementMarker } from './sensorPlacementScene';
 import type { SourceHighlightScene } from './sourceHighlight';
 import type { SolverCandidateVolume } from './candidateVolume';
 import type { I18nLocale } from '../i18n';
+import type { ScanSceneMaterializationNeeds } from './postScanAdmission';
 import { formatDistance, formatNumber } from '../i18n/format';
 import { translate } from '../i18n';
 
@@ -42,6 +43,12 @@ export interface PreparedScanScene {
   extentZ: number;
 }
 
+const EMPTY_POSITIONS = new Float32Array(0);
+const EMPTY_BANDS: QualityBands = { weak: EMPTY_POSITIONS, improving: EMPTY_POSITIONS, stable: EMPTY_POSITIONS };
+const ALL_MATERIALIZATION_NEEDS: ScanSceneMaterializationNeeds = {
+  good: true, bad: true, freeAir: true, unknownSpace: true, manualPoints: true, dimensions: true,
+};
+
 /** Confidence below this is WEAK, below STABLE_CONFIDENCE is IMPROVING. */
 export const WEAK_CONFIDENCE = 0.42;
 export const STABLE_CONFIDENCE = 0.72;
@@ -73,15 +80,36 @@ export function toViewportPositions(source: Float32Array, centerX: number, cente
 }
 
 export function splitConfidenceBands(positions: Float32Array, confidence: Float32Array, centerX: number, centerY: number, centerZ: number): QualityBands {
-  const weak: number[] = []; const improving: number[] = []; const stable: number[] = [];
   const count = Math.min(Math.floor(positions.length / 3), confidence.length);
+  let weakCount = 0;
+  let improvingCount = 0;
+  let stableCount = 0;
+  for (let index = 0; index < count; index += 1) {
+    if (confidence[index] < WEAK_CONFIDENCE) weakCount += 1;
+    else if (confidence[index] < STABLE_CONFIDENCE) improvingCount += 1;
+    else stableCount += 1;
+  }
+  const weak = new Float32Array(weakCount * 3);
+  const improving = new Float32Array(improvingCount * 3);
+  const stable = new Float32Array(stableCount * 3);
+  let weakWrite = 0;
+  let improvingWrite = 0;
+  let stableWrite = 0;
   for (let index = 0; index < count; index += 1) {
     const offset = index * 3;
     const transformed = toViewport(positions[offset], positions[offset + 1], positions[offset + 2], centerX, centerY, centerZ);
-    const target = confidence[index] < WEAK_CONFIDENCE ? weak : confidence[index] < STABLE_CONFIDENCE ? improving : stable;
-    target.push(transformed[0], transformed[1], transformed[2]);
+    const target = confidence[index] < WEAK_CONFIDENCE ? weak
+      : confidence[index] < STABLE_CONFIDENCE ? improving
+        : stable;
+    const write = target === weak ? weakWrite : target === improving ? improvingWrite : stableWrite;
+    target[write] = transformed[0];
+    target[write + 1] = transformed[1];
+    target[write + 2] = transformed[2];
+    if (target === weak) weakWrite += 3;
+    else if (target === improving) improvingWrite += 3;
+    else stableWrite += 3;
   }
-  return { weak: Float32Array.from(weak), improving: Float32Array.from(improving), stable: Float32Array.from(stable) };
+  return { weak, improving, stable };
 }
 
 const BOX_EDGES: ReadonlyArray<readonly [number, number]> = [[0, 1], [0, 2], [0, 4], [1, 3], [1, 5], [2, 3], [2, 6], [3, 7], [4, 5], [4, 6], [5, 7], [6, 7]];
@@ -112,7 +140,7 @@ export type ScanSceneSource = Pick<ScanPointCloudSnapshot,
   'bounds' | 'positions' | 'confidence' | 'tentativePositions' | 'tentativeConfidence' |
   'manualControlPoints' | 'operatorEdges' | 'freeAirPositions' | 'unknownCandidatePositions'>;
 
-export function prepareScanScene(snapshot: ScanSceneSource): PreparedScanScene {
+function scanSceneMetrics(snapshot: ScanSceneSource) {
   const bounds = snapshot.bounds;
   const centerX = bounds === null ? 0 : (bounds.min[0] + bounds.max[0]) * 0.5;
   const centerY = bounds === null ? 0 : (bounds.min[1] + bounds.max[1]) * 0.5;
@@ -121,16 +149,86 @@ export function prepareScanScene(snapshot: ScanSceneSource): PreparedScanScene {
   const extentY = bounds === null ? 0 : bounds.max[1] - bounds.min[1];
   const extentZ = bounds === null ? 0 : bounds.max[2] - bounds.min[2];
   const extent = Math.max(0.8, extentX, extentY, extentZ);
+  return { centerX, centerY, centerZ, extent, extentX, extentY, extentZ };
+}
+
+export function prepareScanScene(
+  snapshot: ScanSceneSource,
+  needs: ScanSceneMaterializationNeeds = ALL_MATERIALIZATION_NEEDS,
+): PreparedScanScene {
+  const metrics = scanSceneMetrics(snapshot);
   return {
-    good: splitConfidenceBands(snapshot.positions, snapshot.confidence, centerX, centerY, centerZ),
-    bad: splitConfidenceBands(snapshot.tentativePositions, snapshot.tentativeConfidence, centerX, centerY, centerZ),
-    manualPositions: snapshot.manualControlPoints.map((point) => toViewport(point.position[0], point.position[1], point.position[2], centerX, centerY, centerZ)),
-    operatorEdgePositions: operatorEdgePositions(snapshot, centerX, centerY, centerZ),
-    freeAirPositions: toViewportPositions(snapshot.freeAirPositions, centerX, centerY, centerZ),
-    unknownPositions: toViewportPositions(snapshot.unknownCandidatePositions, centerX, centerY, centerZ),
-    boundsLines: boundsLinePositions(snapshot, centerX, centerY, centerZ),
-    centerX, centerY, centerZ, extent, extentX, extentY, extentZ,
+    good: needs.good ? splitConfidenceBands(snapshot.positions, snapshot.confidence, metrics.centerX, metrics.centerY, metrics.centerZ) : EMPTY_BANDS,
+    bad: needs.bad ? splitConfidenceBands(snapshot.tentativePositions, snapshot.tentativeConfidence, metrics.centerX, metrics.centerY, metrics.centerZ) : EMPTY_BANDS,
+    manualPositions: needs.manualPoints
+      ? snapshot.manualControlPoints.map((point) => toViewport(point.position[0], point.position[1], point.position[2], metrics.centerX, metrics.centerY, metrics.centerZ))
+      : [],
+    operatorEdgePositions: needs.manualPoints ? operatorEdgePositions(snapshot, metrics.centerX, metrics.centerY, metrics.centerZ) : EMPTY_POSITIONS,
+    freeAirPositions: needs.freeAir ? toViewportPositions(snapshot.freeAirPositions, metrics.centerX, metrics.centerY, metrics.centerZ) : EMPTY_POSITIONS,
+    unknownPositions: needs.unknownSpace ? toViewportPositions(snapshot.unknownCandidatePositions, metrics.centerX, metrics.centerY, metrics.centerZ) : EMPTY_POSITIONS,
+    boundsLines: needs.dimensions ? boundsLinePositions(snapshot, metrics.centerX, metrics.centerY, metrics.centerZ) : EMPTY_POSITIONS,
+    ...metrics,
   };
+}
+
+/** Reuses requested viewport buffers and releases them when the scan generation changes. */
+export class ScanSceneMaterializer {
+  private generation: string | number | object | null = null;
+  private snapshot: ScanSceneSource | null = null;
+  private metrics: ReturnType<typeof scanSceneMetrics> | null = null;
+  private good: QualityBands | null = null;
+  private bad: QualityBands | null = null;
+  private freeAir: Float32Array | null = null;
+  private unknown: Float32Array | null = null;
+  private manualPositions: ReadonlyArray<Vec3Tuple> | null = null;
+  private operatorEdges: Float32Array | null = null;
+  private boundsLines: Float32Array | null = null;
+
+  prepare(
+    snapshot: ScanSceneSource,
+    generation: string | number | object,
+    needs: ScanSceneMaterializationNeeds,
+  ): PreparedScanScene {
+    if (this.snapshot !== snapshot || this.generation !== generation) {
+      this.release();
+      this.snapshot = snapshot;
+      this.generation = generation;
+      this.metrics = scanSceneMetrics(snapshot);
+    }
+    const metrics = this.metrics ?? scanSceneMetrics(snapshot);
+    if (needs.good && this.good === null) this.good = splitConfidenceBands(snapshot.positions, snapshot.confidence, metrics.centerX, metrics.centerY, metrics.centerZ);
+    if (needs.bad && this.bad === null) this.bad = splitConfidenceBands(snapshot.tentativePositions, snapshot.tentativeConfidence, metrics.centerX, metrics.centerY, metrics.centerZ);
+    if (needs.freeAir && this.freeAir === null) this.freeAir = toViewportPositions(snapshot.freeAirPositions, metrics.centerX, metrics.centerY, metrics.centerZ);
+    if (needs.unknownSpace && this.unknown === null) this.unknown = toViewportPositions(snapshot.unknownCandidatePositions, metrics.centerX, metrics.centerY, metrics.centerZ);
+    if (needs.manualPoints && this.manualPositions === null) {
+      this.manualPositions = snapshot.manualControlPoints.map((point) => toViewport(point.position[0], point.position[1], point.position[2], metrics.centerX, metrics.centerY, metrics.centerZ));
+      this.operatorEdges = operatorEdgePositions(snapshot, metrics.centerX, metrics.centerY, metrics.centerZ);
+    }
+    if (needs.dimensions && this.boundsLines === null) this.boundsLines = boundsLinePositions(snapshot, metrics.centerX, metrics.centerY, metrics.centerZ);
+    return {
+      good: this.good ?? EMPTY_BANDS,
+      bad: this.bad ?? EMPTY_BANDS,
+      manualPositions: this.manualPositions ?? [],
+      operatorEdgePositions: this.operatorEdges ?? EMPTY_POSITIONS,
+      freeAirPositions: this.freeAir ?? EMPTY_POSITIONS,
+      unknownPositions: this.unknown ?? EMPTY_POSITIONS,
+      boundsLines: this.boundsLines ?? EMPTY_POSITIONS,
+      ...metrics,
+    };
+  }
+
+  release(): void {
+    this.generation = null;
+    this.snapshot = null;
+    this.metrics = null;
+    this.good = null;
+    this.bad = null;
+    this.freeAir = null;
+    this.unknown = null;
+    this.manualPositions = null;
+    this.operatorEdges = null;
+    this.boundsLines = null;
+  }
 }
 
 /** Camera radius that contains the surface, displayed source markers, uncertainty, and optional search depth. */

@@ -6,6 +6,8 @@ export interface TagCameraFrame {
   height: number;
   rgba: Uint8Array;
   capturedAtMs: number;
+  cameraPosition: readonly [number, number, number];
+  cameraForward: readonly [number, number, number];
   projectionMatrix: ArrayLike<number>;
   worldFromView: ArrayLike<number>;
   /** The RGBA buffer is a fresh, top-left-origin readback owned by this frame. */
@@ -16,6 +18,8 @@ export interface DetectedAprilTagFrame {
   width: number;
   height: number;
   capturedAtMs: number;
+  cameraPosition: readonly [number, number, number];
+  cameraForward: readonly [number, number, number];
   detections: DetectedAprilTag[];
   projectionMatrix: Float32Array;
   worldFromView: Float32Array;
@@ -25,6 +29,7 @@ type WorkerResult = { type: 'result'; requestId: number; epoch: number; detectio
 type WorkerLike = Pick<Worker, 'addEventListener' | 'removeEventListener' | 'postMessage' | 'terminate'>;
 interface Pending {
   epoch: number; width: number; height: number; capturedAtMs: number;
+  cameraPosition: readonly [number, number, number]; cameraForward: readonly [number, number, number];
   projectionMatrix: Float32Array; worldFromView: Float32Array;
   resolve: (frame: DetectedAprilTagFrame | null) => void;
   reject: (error: Error) => void;
@@ -63,6 +68,7 @@ export class TagDetectorClient {
     return new Promise((resolve, reject) => {
       this.pending.set(requestId, {
         epoch: this.epoch, width: frame.width, height: frame.height, capturedAtMs: frame.capturedAtMs,
+        cameraPosition: [...frame.cameraPosition], cameraForward: [...frame.cameraForward],
         projectionMatrix: Float32Array.from(frame.projectionMatrix),
         worldFromView: Float32Array.from(frame.worldFromView), resolve, reject,
       });
@@ -97,6 +103,7 @@ export class TagDetectorClient {
     }
     request.resolve({
       width: request.width, height: request.height, capturedAtMs: request.capturedAtMs,
+      cameraPosition: request.cameraPosition, cameraForward: request.cameraForward,
       detections: message.detections, projectionMatrix: request.projectionMatrix, worldFromView: request.worldFromView,
     });
   };

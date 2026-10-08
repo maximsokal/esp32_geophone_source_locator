@@ -7,6 +7,12 @@ import type { DeviceComputeProfile } from './deviceComputeProfile';
  */
 export type HardwareDepthSensorStatus = 'unknown';
 
+export type TagReadbackMode = 'nonblocking' | 'synchronous' | 'unavailable';
+
+export function isTagReadbackPerformanceSafe(mode: TagReadbackMode): boolean {
+  return mode === 'nonblocking';
+}
+
 export interface VideoInputDeviceLike {
   kind: string;
   label?: string;

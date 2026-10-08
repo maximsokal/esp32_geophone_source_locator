@@ -12,6 +12,9 @@ export interface TagPoseInput {
   projectionMatrix: ArrayLike<number>;
   /** Column-major transform from WebXR view space to the scan frame. */
   worldFromView: ArrayLike<number>;
+  capturedAtMs?: number;
+  cameraPosition?: readonly [number, number, number];
+  cameraForward?: readonly [number, number, number];
   /** Edge length of the black square in metres. */
   tagSizeM: number;
   /** Minimum inferred corner depth in front of the camera, in metres; defaults to 0.05. */
@@ -19,7 +22,7 @@ export interface TagPoseInput {
 }
 
 export type TagPoseResult =
-  | { ok: true; positionScan: [number, number, number]; rotationScan: Matrix3; /** RMS 2D corner error in normalized image coordinates. */ reprojectionErrorNorm: number; distanceM: number }
+  | { ok: true; positionScan: [number, number, number]; rotationScan: Matrix3; /** RMS 2D corner error in normalized image coordinates. */ reprojectionErrorNorm: number; distanceM: number; capturedAtMs?: number; cameraPosition?: readonly [number, number, number]; cameraForward?: readonly [number, number, number] }
   | { ok: false; reason: string };
 
 type Vec2 = [number, number];
@@ -276,5 +279,14 @@ export function estimateTagPose(input: TagPoseInput): TagPoseResult {
     Number(worldFromView[1]) * x + Number(worldFromView[5]) * y + Number(worldFromView[9]) * z + Number(worldFromView[13]),
     Number(worldFromView[2]) * x + Number(worldFromView[6]) * y + Number(worldFromView[10]) * z + Number(worldFromView[14]),
   ];
-  return { ok: true, positionScan, rotationScan: worldRotation, reprojectionErrorNorm: best.error, distanceM: Math.hypot(x, y, z) };
+  return {
+    ok: true,
+    positionScan,
+    rotationScan: worldRotation,
+    reprojectionErrorNorm: best.error,
+    distanceM: Math.hypot(x, y, z),
+    ...(Number.isFinite(input.capturedAtMs) ? { capturedAtMs: input.capturedAtMs } : {}),
+    ...(input.cameraPosition !== undefined ? { cameraPosition: [...input.cameraPosition] as [number, number, number] } : {}),
+    ...(input.cameraForward !== undefined ? { cameraForward: [...input.cameraForward] as [number, number, number] } : {}),
+  };
 }

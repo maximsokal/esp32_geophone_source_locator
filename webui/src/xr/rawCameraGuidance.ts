@@ -4,6 +4,7 @@ import {
 } from './rgbDepthGuidance';
 import { NonBlockingRgbaReadback } from './webGlPixelReadback';
 import type { TagCameraFrame } from './fiducial/tagDetectorClient';
+import type { TagReadbackMode } from './xrCapabilityProfile';
 import {
   captureWebGlRasterState,
   captureWebGlState,
@@ -36,6 +37,8 @@ interface CameraReadbackMetadata {
   capturedAtMs: number;
   projectionMatrix?: Float32Array;
   worldFromView?: Float32Array;
+  cameraPosition?: readonly [number, number, number];
+  cameraForward?: readonly [number, number, number];
 }
 
 export const RAW_CAMERA_GUIDANCE_WIDTH = 256;
@@ -106,6 +109,8 @@ function captureMetadata(view: XrCameraViewLike, capturedAtMs: number): CameraRe
       capturedAtMs,
       projectionMatrix: Float32Array.from(view.projectionMatrix),
       worldFromView: Float32Array.from(view.transform.matrix),
+      cameraPosition: [Number(view.transform.matrix[12]), Number(view.transform.matrix[13]), Number(view.transform.matrix[14])],
+      cameraForward: [-Number(view.transform.matrix[8]), -Number(view.transform.matrix[9]), -Number(view.transform.matrix[10])],
     };
   }
   return { capturedAtMs };
@@ -146,7 +151,8 @@ function buildTagFrame(
   width: number,
   height: number,
 ): TagCameraFrame | null {
-  if (metadata.projectionMatrix === undefined || metadata.worldFromView === undefined) return null;
+  if (metadata.projectionMatrix === undefined || metadata.worldFromView === undefined ||
+      metadata.cameraPosition === undefined || metadata.cameraForward === undefined) return null;
   const rowBytes = width * 4;
   const rgba = new Uint8Array(rowBytes * height);
   for (let y = 0; y < height; y += 1) {
@@ -156,6 +162,7 @@ function buildTagFrame(
   return {
     width, height, rgba, capturedAtMs: metadata.capturedAtMs,
     projectionMatrix: metadata.projectionMatrix, worldFromView: metadata.worldFromView,
+    cameraPosition: metadata.cameraPosition, cameraForward: metadata.cameraForward,
     rgbaOwnership: 'owned',
   };
 }
@@ -280,6 +287,7 @@ export class RawCameraGuidanceCapture {
   }
 
   get usesNonBlockingReadback(): boolean { return this.asyncReadback !== null; }
+  get tagReadbackMode(): TagReadbackMode { return this.usesNonBlockingReadback ? 'nonblocking' : 'synchronous'; }
 
   /**
    * Poll a previously queued WebGL2 PBO without waiting. The ring itself touches

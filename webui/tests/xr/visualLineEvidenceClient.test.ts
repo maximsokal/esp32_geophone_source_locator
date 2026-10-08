@@ -1,7 +1,34 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { LiveComputeScheduler } from '../../src/xr/liveComputeScheduler';
 import { buildRgbDepthGuidanceFrameFromLuma } from '../../src/xr/rgbDepthGuidance';
 import { VisualLineEvidenceClient } from '../../src/xr/visualLineEvidenceClient';
+
+class HoldingVisualWorker {
+  terminated = false;
+  private readonly messageListeners = new Set<(event: MessageEvent) => void>();
+  private readonly errorListeners = new Set<(event: ErrorEvent) => void>();
+  private resolveAnalyzePosted!: () => void;
+  readonly analyzePosted = new Promise<void>((resolve) => { this.resolveAnalyzePosted = resolve; });
+
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+    if (typeof listener !== 'function') return;
+    if (type === 'message') this.messageListeners.add(listener as (event: MessageEvent) => void);
+    if (type === 'error') this.errorListeners.add(listener as (event: ErrorEvent) => void);
+  }
+
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+    if (typeof listener !== 'function') return;
+    if (type === 'message') this.messageListeners.delete(listener as (event: MessageEvent) => void);
+    if (type === 'error') this.errorListeners.delete(listener as (event: ErrorEvent) => void);
+  }
+
+  postMessage(message: Record<string, unknown>): void {
+    if (message.type === 'analyze') this.resolveAnalyzePosted();
+  }
+
+  terminate(): void { this.terminated = true; }
+}
 
 const identity = new Float32Array([
   1, 0, 0, 0,
@@ -21,6 +48,33 @@ function lineFrame() {
 }
 
 describe('visual line evidence client', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('terminates the visual-evidence role at Finish and uses a fresh worker for the next scan', async () => {
+    vi.stubGlobal('Worker', class {});
+    const workers = [new HoldingVisualWorker(), new HoldingVisualWorker()];
+    let workerIndex = 0;
+    const makeClient = () => new VisualLineEvidenceClient(
+      { allowMainThreadFallback: false, deferWorkerUntilAnalyze: true },
+      () => workers[workerIndex++] as unknown as Worker,
+      new LiveComputeScheduler(async () => 2),
+    );
+    const first = makeClient();
+    const firstJob = first.analyze(lineFrame(), 1, identity, identity);
+    await workers[0].analyzePosted;
+    first.dispose();
+    await expect(firstJob).rejects.toThrow('disposed');
+    expect(workers[0].terminated).toBe(true);
+
+    const second = makeClient();
+    const secondJob = second.analyze(lineFrame(), 2, identity, identity);
+    await workers[1].analyzePosted;
+    second.dispose();
+    await expect(secondJob).rejects.toThrow('disposed');
+    expect(workers[1].terminated).toBe(true);
+    expect(workers[1]).not.toBe(workers[0]);
+  });
+
   it('keeps the non-worker fallback asynchronous and backpressured for offline callers', async () => {
     const client = new VisualLineEvidenceClient();
     try {

@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { clientDiagnostics } from '../../src/data/clientDiagnostics';
 import * as rgbGuidance from '../../src/xr/rgbDepthGuidance';
 import { RawCameraGuidanceCapture, type XrCameraViewLike } from '../../src/xr/rawCameraGuidance';
 import { TagDetectorClient } from '../../src/xr/fiducial/tagDetectorClient';
+import { WebXrRuntime } from '../../src/xr/webxrRuntime';
 import { LiveCoveragePointRenderer } from '../../src/xr/liveCoverageRenderer';
 
 interface FakeAttribute {
@@ -54,6 +56,7 @@ function fakeGl(pixels: Uint8Array) {
   const deleted: string[] = [];
   const drawRasterStates: object[] = [];
   const readbackTargets: Uint8Array[] = [];
+  const readbackSizes: number[][] = [];
   const make = (kind: string): object => { const value = { kind, id: created.length }; created.push({ kind, value }); return value; };
   const gl: any = {
     ...c,
@@ -124,7 +127,8 @@ function fakeGl(pixels: Uint8Array) {
       drawRasterStates.push({ blend: enabled.has(c.BLEND), depth: enabled.has(c.DEPTH_TEST), scissor: enabled.has(c.SCISSOR_TEST),
         cull: enabled.has(c.CULL_FACE), stencil: enabled.has(c.STENCIL_TEST), colorMask: [...colorMask], depthMask });
     },
-    readPixels(_x: number, _y: number, _width: number, _height: number, _format: number, _type: number, destination: Uint8Array) {
+    readPixels(_x: number, _y: number, width: number, height: number, _format: number, _type: number, destination: Uint8Array) {
+      readbackSizes.push([width, height, destination.byteLength]);
       readbackTargets.push(destination);
       destination.set(pixels.subarray(0, destination.length));
     },
@@ -135,6 +139,7 @@ function fakeGl(pixels: Uint8Array) {
     deleted,
     drawRasterStates,
     readbackTargets,
+    readbackSizes,
     state: () => ({ activeTexture, textures: [...textures], framebuffer, viewport: Array.from(viewport), program, arrayBuffer,
       enabled: [...enabled].sort(), depthMask, colorMask: [...colorMask], blendFactors: [...blendFactors], blendEquations: [...blendEquations], depthFunc,
       attributes: [...attributes].map(([key, value]) => [key, { ...value }]) }),
@@ -157,12 +162,15 @@ describe('RawCameraGuidanceCapture tag path', () => {
     for (let index = 0; index < source.length; index += 1) source[index] = index % 251;
     const fake = fakeGl(source); const capture = new RawCameraGuidanceCapture(fake.gl, width, height);
     const initialState = fake.state(); const builder = vi.spyOn(rgbGuidance, 'buildRgbDepthGuidanceFrame');
-    const input = view(); const binding = { getCameraImage: () => ({ id: 'camera-texture' } as WebGLTexture) };
+    const input = view();input.transform!.matrix[12]=1.25;input.transform!.matrix[13]=2;input.transform!.matrix[14]=3;
+    const binding = { getCameraImage: () => ({ id: 'camera-texture' } as WebGLTexture) };
     const frame = capture.captureTag(binding, input, 441);
 
     expect(builder).not.toHaveBeenCalled();
     expect(frame).not.toBeNull();
     expect(frame).toMatchObject({ width, height, capturedAtMs: 441, rgbaOwnership: 'owned' });
+    expect(frame!.cameraPosition).toEqual([1.25,2,3]);
+    expect(frame!.cameraForward.map((axis)=>Object.is(axis,-0)?0:axis)).toEqual([0,0,-1]);
     expect(frame!.rgba.byteOffset).toBe(0); expect(frame!.rgba.byteLength).toBe(width * height * 4);
     const oldOutput = rgbGuidance.buildRgbDepthGuidanceFrame(source, width, height, width, height, 'bottom-left', 441).rgba!;
     expect(frame!.rgba).toEqual(oldOutput);
@@ -171,6 +179,18 @@ describe('RawCameraGuidanceCapture tag path', () => {
     expect(fake.drawRasterStates).toEqual([{ blend: false, depth: false, scissor: false, cull: false, stencil: false, colorMask: [true, true, true, true], depthMask: true }]);
     expect(fake.state()).toEqual(initialState);
     capture.dispose();
+  });
+
+  it('refuses WebGL1 high-resolution tag capture before any synchronous pixel readback', async() => {
+    const fake=fakeGl(new Uint8Array(960*540*4));const runtime=new WebXrRuntime();const warning=vi.spyOn(clientDiagnostics,'warn');
+    const internal=runtime as unknown as {state:{phase:string};gl:WebGLRenderingContext|null;cameraBinding:unknown;tagCaptureEnabled:boolean};
+    internal.state={phase:'running'};internal.gl=fake.gl;internal.cameraBinding={getCameraImage:()=>({id:'webgl1-camera'} as WebGLTexture)};
+    const reason=runtime.setTagCaptureEnabled(true);
+    expect(reason).toBe('High-resolution tag capture requires non-blocking WebGL2 readback.');
+    expect(warning).toHaveBeenCalledWith('XR_TAG_CAPTURE_REFUSED',expect.objectContaining({tagReadbackMode:'synchronous',width:960,height:540}));
+    (runtime as unknown as {captureTagGuidance:(time:number,view:XrCameraViewLike)=>void}).captureTagGuidance(441,view());
+    expect(internal.tagCaptureEnabled).toBe(false);expect(fake.readbackSizes).toEqual([]);
+    runtime.setTagCaptureEnabled(false);internal.gl=null;await runtime.dispose();
   });
 
   it('releases all high-resolution capture resources on repeated disable cycles', () => {

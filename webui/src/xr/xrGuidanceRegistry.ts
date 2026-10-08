@@ -12,10 +12,14 @@ const visualStore = new PoseDiverseVisualEvidenceStore(64);
 // Live XR never runs Hough on the UI/XR thread. The worker is allocated lazily
 // after the pre-scan compute capability promise resolves; if no worker slot is
 // available, visual corroboration simply remains unavailable/fail-open.
-const visualClient = new VisualLineEvidenceClient({
+function createVisualClient(): VisualLineEvidenceClient {
+  return new VisualLineEvidenceClient({
   allowMainThreadFallback: false,
   deferWorkerUntilAnalyze: true,
-});
+  });
+}
+let visualClient = createVisualClient();
+let visualClientGeneration = 1;
 let visualDetectionError: string | null = null;
 const POSE_TAGGED_RGB_MAX_AGE_MS = 650;
 
@@ -61,17 +65,21 @@ export function addVisualEvidenceFrame(frame: VisualEvidenceFrame): void {
     // metadata, but production Raw Camera frames always provide it.
     const projectionMatrix = guidance.projectionMatrix ?? frame.projectionMatrix;
     const worldFromView = guidance.worldFromView ?? frame.worldFromView;
-    void visualClient.analyze(
+    const client = visualClient;
+    const generation = visualClientGeneration;
+    void client.analyze(
       guidance,
       frame.keyframeId,
       projectionMatrix,
       worldFromView,
     ).then((resolved) => {
+      if (generation !== visualClientGeneration) return;
       visualDetectionError = null;
       // Empty Hough results do not consume the bounded reservoir. The displayed
       // count therefore represents frames that can actually validate geometry.
       if (usefulVisualFrame(resolved)) visualStore.add(resolved);
     }).catch((error: unknown) => {
+      if (generation !== visualClientGeneration) return;
       visualDetectionError = error instanceof Error ? error.message : String(error);
     });
     return;
@@ -88,6 +96,17 @@ export function getVisualEvidenceFrames(): readonly VisualEvidenceFrame[] {
 export function getVisualEvidenceFrameCount(): number { return visualStore.size; }
 export function isVisualEvidenceWorkerBacked(): boolean { return visualClient.workerBacked; }
 export function getVisualEvidenceDetectionError(): string | null { return visualDetectionError; }
+export function getVisualEvidenceClientGeneration(): number { return visualClientGeneration; }
+
+/** Release the role-owned live worker at Finish while keeping the registry reusable. */
+export function releaseXrGuidanceRegistryWorkers(): void {
+  latestRgb = null;
+  visualStore.reset();
+  visualClient.dispose();
+  visualClient = createVisualClient();
+  visualClientGeneration += 1;
+  visualDetectionError = null;
+}
 
 /**
  * Reset all pose-synchronised guidance for a new immersive scan epoch.
@@ -102,7 +121,7 @@ export function getVisualEvidenceDetectionError(): string | null { return visual
 export function resetXrGuidanceRegistry(): void {
   latestRgb = null;
   visualStore.reset();
-  visualClient.reset();
+  releaseXrGuidanceRegistryWorkers();
   liveComputeScheduler.beginScan();
   visualDetectionError = null;
 }

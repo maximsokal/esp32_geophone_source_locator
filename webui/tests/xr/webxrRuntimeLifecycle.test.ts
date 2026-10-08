@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DepthPointCloudAccumulator } from '../../src/xr/depthPointCloud';
 import { WebXrRuntime } from '../../src/xr/webxrRuntime';
+import { clientDiagnostics } from '../../src/data/clientDiagnostics';
+import type { TagCameraFrame } from '../../src/xr/fiducial/tagDetectorClient';
 import { activeXrPerformancePressure, activeXrRenderPolicy, recordActiveXrPerformanceMetric } from '../../src/xr/xrPerformanceProfiler';
 import { deferred, FakeWakeLock, FakeXrLayer, FakeXrSession, FakeXrSystem } from './support/xrFakes';
 
@@ -90,6 +92,19 @@ async function flushMicrotasks():Promise<void>{for(let i=0;i<8;i+=1)await Promis
 async function until(check:()=>boolean):Promise<void>{for(let i=0;i<20&&!check();i+=1)await Promise.resolve();if(!check())throw new Error('Expected lifecycle operation did not reach its deferred boundary.');}
 function emptyPose(){return{transform:{position:{x:0,y:0,z:0},orientation:{x:0,y:0,z:0,w:1},matrix:new Float32Array(16)},views:[]};}
 function fakeFrame(session:FakeXrSession,getViewerPose:()=>unknown):never{return{session,getViewerPose} as never;}
+function evidencePose(){
+  const matrix=new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+  const position={x:0,y:0,z:0};const orientation={x:0,y:0,z:0,w:1};
+  const view={projectionMatrix:matrix,transform:{matrix,position,orientation},camera:{width:960,height:540}};
+  return{transform:{matrix,position,orientation},views:[view]};
+}
+function evidenceFrame(session:FakeXrSession):never{
+  const pose=evidencePose();const matrix=pose.transform.matrix;
+  return{session,getViewerPose:()=>pose,getDepthInformation:()=>({width:64,height:48,projectionMatrix:matrix,transform:{matrix},getDepthInMeters:()=>1.5})} as never;
+}
+function fakeTagFrame(capturedAtMs:number):TagCameraFrame{
+  return{width:1,height:1,rgba:new Uint8Array(4),capturedAtMs,cameraPosition:[0,0,0],cameraForward:[0,0,-1],projectionMatrix:new Float32Array(16),worldFromView:new Float32Array(16)};
+}
 
 beforeEach(()=>installEnvironment());
 afterEach(async()=>{
@@ -275,11 +290,68 @@ describe('WebXrRuntime lifecycle ownership',()=>{
   });
 
   it('keeps Finish failure recoverable and retries to a fully ended session',async()=>{
-    const session=new FakeXrSession();session.endFailures=1;xr.queue(session);const runtime=createRuntime();await runtime.start();
+    const session=new FakeXrSession();session.depthUsage='cpu-optimized';session.depthDataFormat='luminance-alpha';session.depthType='raw';session.depthActive=true;session.endFailures=1;xr.queue(session);const runtime=createRuntime();await runtime.start();
     await runtime.stop();expect(runtime.getState().phase).toBe('running');expect(runtime.getState().error).toContain('Fake XR session end failed');
     expect(session.active).toBe(true);expect(session.liveFrameCallbacks).toBe(1);
+    const frozen=runtime.getPointCloudSnapshot();session.driveNextFrame(16,evidenceFrame(session));
+    expect(runtime.getPointCloudSnapshot()).toBe(frozen);expect(runtime.getState().depthFrameCount).toBe(frozen.depthFrameCount);
     await runtime.stop();expect(runtime.getState().phase).toBe('ended');expect(session.active).toBe(false);
     expect(session.liveFrameCallbacks).toBe(0);expect(wakeLock.liveSentinels.size).toBe(0);expect(session.endCalls).toBe(2);
+  });
+
+  it('freezes the evidence epoch at Finish while RAF rendering continues until XR end',async()=>{
+    const info=vi.spyOn(clientDiagnostics,'info');
+    const run=async(endFrames:number)=>{
+      const session=new FakeXrSession();session.depthUsage='cpu-optimized';session.depthDataFormat='luminance-alpha';session.depthType='raw';session.depthActive=true;
+      const ending=session.deferEnd();xr.queue(session);const runtime=createRuntime();await runtime.start();
+      const internal=runtime as unknown as {
+        keyframeSelector:{evaluate:(time:number,pose:unknown)=>unknown};
+        pointCloud:{sampleDepthFrame:(...args:any[])=>unknown};
+        captureNativePlaneGuidance:(...args:any[])=>void;captureRgbGuidance:(...args:any[])=>void;
+        captureTagGuidance:(time:number,view:unknown)=>void;maybeRecordVisualEvidence:(...args:any[])=>void;
+        acceptTagFrame:(frame:TagCameraFrame|null)=>void;
+      };
+      let keyframeId=0;
+      internal.keyframeSelector.evaluate=()=>({kind:'keyframe',state:'keyframe',frameWeight:1,keyframeId:++keyframeId,translationFromKeyframeMeters:0,rotationFromKeyframeRadians:0,linearSpeedMetersPerSecond:0,angularSpeedRadiansPerSecond:0,linearAccelerationMetersPerSecond2:0,angularAccelerationRadiansPerSecond2:0,motionQuality:1});
+      const admitted={native:0,rgb:0,tag:0,visual:0};
+      internal.captureNativePlaneGuidance=()=>{admitted.native+=1;};
+      internal.captureRgbGuidance=()=>{admitted.rgb+=1;};
+      internal.captureTagGuidance=(time)=>{admitted.tag+=1;internal.acceptTagFrame(fakeTagFrame(time));};
+      internal.maybeRecordVisualEvidence=()=>{admitted.visual+=1;};
+      const sampleDepth=vi.spyOn(internal.pointCloud,'sampleDepthFrame');
+      const tagFrames:TagCameraFrame[]=[];runtime.subscribeTagFrames((frame)=>tagFrames.push(frame));
+      for(const time of [16,200,400,600])session.driveNextFrame(time,evidenceFrame(session));
+      expect(runtime.getState().depthFrameCount).toBe(4);expect(runtime.getState().sampledDepthFrames).toBe(4);
+      expect(sampleDepth).toHaveBeenCalledTimes(4);expect(admitted.native).toBe(4);expect(admitted.rgb).toBe(4);
+      expect(admitted.tag).toBe(4);expect(admitted.visual).toBe(4);expect(tagFrames).toHaveLength(4);
+
+      const stop=runtime.stop();await until(()=>session.endCalls===1);expect(runtime.getState().phase).toBe('stopping');
+      const frozen=runtime.getPointCloudSnapshot();const evidenceBefore={...admitted};const sampledBefore=sampleDepth.mock.calls.length;
+      for(let index=0;index<endFrames;index+=1)session.driveNextFrame(800+index*16,evidenceFrame(session));
+      internal.acceptTagFrame(fakeTagFrame(5000));
+      expect(runtime.getPointCloudSnapshot()).toBe(frozen);
+      expect(runtime.getState().depthFrameCount).toBe(frozen.depthFrameCount);expect(runtime.getState().sampledDepthFrames).toBe(frozen.sampledDepthFrames);
+      expect(sampleDepth).toHaveBeenCalledTimes(sampledBefore);expect(admitted).toEqual(evidenceBefore);expect(tagFrames).toHaveLength(4);
+      await runtime.stop();expect(session.endCalls).toBe(1);
+      ending.resolve(undefined);await stop;
+      expect(runtime.getState().phase).toBe('ended');expect(runtime.getPointCloudSnapshot()).toBe(frozen);
+      const data=frozen as unknown as Record<string,unknown>;
+      const encoded=JSON.stringify(Object.fromEntries(Object.entries(data).map(([key,value])=>ArrayBuffer.isView(value)
+        ?[key,Array.from(new Uint8Array(value.buffer,value.byteOffset,value.byteLength))]:[key,value])));
+      await runtime.dispose();
+      return{encoded,frozen};
+    };
+
+    const short=await run(6);const long=await run(240);
+    expect(short.encoded).toBe(long.encoded);
+    const finishRequests=info.mock.calls.filter(([message])=>message==='XR_FINISH_REQUEST').map(([,details])=>details as Record<string,unknown>);
+    const finished=info.mock.calls.filter(([message])=>message==='XR_SCAN_FINISHED').map(([,details])=>details as Record<string,unknown>);
+    expect(finishRequests).toHaveLength(2);expect(finished).toHaveLength(2);
+    for(let index=0;index<2;index+=1){
+      const snapshot=index===0?short.frozen:long.frozen;
+      expect(finishRequests[index]).toMatchObject({evidenceEpoch:1,depthFrames:snapshot.depthFrameCount,integratedFrames:snapshot.sampledDepthFrames,stablePoints:snapshot.pointCount,retainedPoints:snapshot.rawPointCount,keyframes:snapshot.integrationKeyframes});
+      expect(finished[index]).toMatchObject({evidenceEpoch:1,depthFrames:snapshot.depthFrameCount,integratedFrames:snapshot.sampledDepthFrames,stablePoints:snapshot.pointCount,retainedPoints:snapshot.rawPointCount,keyframes:snapshot.integrationKeyframes});
+    }
   });
 
   it('finalizes one cached snapshot for Finish and uses cheap counters for interruption',async()=>{

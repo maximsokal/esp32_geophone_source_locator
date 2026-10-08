@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { RgbDepthGuidanceFrame } from '../../src/xr/rgbDepthGuidance';
 import {
+  getVisualEvidenceClientGeneration,
   getFreshRgbGuidance,
+  isVisualEvidenceWorkerBacked,
+  releaseXrGuidanceRegistryWorkers,
   resetXrGuidanceRegistry,
   setLatestRgbGuidance,
 } from '../../src/xr/xrGuidanceRegistry';
@@ -25,6 +28,13 @@ function guidance(capturedAtMs: number, poseTagged: boolean): RgbDepthGuidanceFr
 afterEach(() => resetXrGuidanceRegistry());
 
 describe('RGB guidance freshness policy', () => {
+  it('replaces the visual-evidence client generation when post-scan admission releases live workers', () => {
+    const before = getVisualEvidenceClientGeneration();
+    releaseXrGuidanceRegistryWorkers();
+    expect(getVisualEvidenceClientGeneration()).toBe(before + 1);
+    expect(isVisualEvidenceWorkerBacked()).toBe(false);
+  });
+
   it('keeps legacy/unposed RGB on the caller-requested strict TTL', () => {
     setLatestRgbGuidance(guidance(1000, false));
     expect(getFreshRgbGuidance(1299, 300)).not.toBeNull();

@@ -49,7 +49,7 @@ vi.mock('../../src/xr/fiducial/tagDetector.worker.ts?worker&inline',()=>({defaul
 }}));
 vi.mock('../../src/xr/fiducial/tagPose',async(importOriginal)=>{
   const original=await importOriginal<typeof import('../../src/xr/fiducial/tagPose')>();
-  return{...original,estimateTagPose:()=>({ok:true,positionScan:[1,2,3]})};
+  return{...original,estimateTagPose:(input:any)=>({ok:true,positionScan:[Number(input.corners[0][0]),2,3],capturedAtMs:input.capturedAtMs,cameraPosition:input.cameraPosition,cameraForward:input.cameraForward})};
 });
 vi.mock('../../src/xr/fiducial/registrationArtifact',async(importOriginal)=>{
   const original=await importOriginal<typeof import('../../src/xr/fiducial/registrationArtifact')>();
@@ -59,6 +59,8 @@ vi.mock('../../src/xr/fiducial/registrationArtifact',async(importOriginal)=>{
 import { XrRuntimePanel } from '../../src/components/XrRuntimePanel';
 import { LocaleProvider, translate } from '../../src/i18n';
 import type { LocalizationSessionGeometry } from '../../src/api/deviceApi';
+import { TagObservationStore } from '../../src/xr/fiducial/tagObservationStore';
+import * as tagObservationFusion from '../../src/xr/fiducial/tagObservationFusion';
 import { deferred } from '../xr/support/xrFakes';
 
 const mounted:ReactTestRenderer[]=[];
@@ -86,7 +88,7 @@ interface PanelDocumentStub{
 }
 let browserWindow:PanelWindowStub;
 let browserDocument:PanelDocumentStub;
-const validCapabilities={secureContext:true,cameraApi:true,rawXrRgbApi:true,webGl:true,xrApi:true,immersiveAr:true,wakeLockApi:true,videoInputEnumeration:false,videoInputsEnumerated:false,videoInputCount:null,videoInputLabelsExposed:false,hardwareDepthSensor:'unknown',workerApi:true,sharedMemory:false,wasmThreads:false,webGpu:false};
+const validCapabilities={secureContext:true,cameraApi:true,rawXrRgbApi:true,tagReadbackMode:'nonblocking',webGl:true,xrApi:true,immersiveAr:true,wakeLockApi:true,videoInputEnumeration:false,videoInputsEnumerated:false,videoInputCount:null,videoInputLabelsExposed:false,hardwareDepthSensor:'unknown',workerApi:true,sharedMemory:false,wasmThreads:false,webGpu:false};
 
 function runtimeState(phase='idle',patch:Record<string,unknown>={}){
   return{phase,referenceSpace:null,domOverlay:false,environmentBlendMode:null,frameCount:0,tracking:false,pose:null,scanPaused:false,wakeLockActive:false,wakeLockError:null,depthAvailable:false,depthUsage:null,depthDataFormat:null,depthType:null,depthWidth:null,depthHeight:null,depthFrameCount:0,sampledDepthFrames:0,pointCount:0,retainedPointCount:0,pointCloudVersion:0,keyframeCount:0,polishFrameCount:0,motionRejectedFrames:0,motionState:null,motionQuality:0,linearSpeedMetersPerSecond:0,angularSpeedRadiansPerSecond:0,linearAccelerationMetersPerSecond2:0,coverageGuideActive:false,coverageGuideRenderPoints:0,coverageVisibleCells:0,coverageReadyCells:0,coverageTotalCells:0,coverageTargetIndependentViews:3,coverageAverageConfidence:0,coverageWeakPoints:0,coverageImprovingPoints:0,coverageStablePoints:0,coverageGuideError:null,manualPointCount:0,manualEdgeCount:0,manualPointError:null,performance:{pressure:'low',adaptiveCoverageIntervalMs:550,frameDeltaP95Ms:0,fusionP50Ms:0,fusionP95Ms:0,coverageP95Ms:0,longFrames33Ms:0,longFrames50Ms:0},lightingEstimateAvailable:false,primaryLightIntensity:null,rgbGuidanceAvailable:false,rgbGuidanceWidth:null,rgbGuidanceHeight:null,visualEvidenceFrames:0,monocularPriorStatus:'disabled',depthError:null,error:null,...patch};
@@ -109,9 +111,12 @@ function textOf(node:ReactTestInstance|string):string{return typeof node==='stri
 function tagButton(renderer:ReactTestRenderer):ReactTestInstance{
   const title=translate('en','xr.tag.capture_title');const result=renderer.root.findAllByType('button').find((button)=>button.props.title===title);if(result===undefined)throw new Error('Missing AprilTag button.');return result;
 }
-function emitTagDetection(worker:any):void{
-  const request=worker.messages.find((item:any)=>item.type==='detect');if(request===undefined)throw new Error('Expected an in-flight tag detection.');
-  worker.emit('message',{type:'result',requestId:request.requestId,epoch:request.epoch,detections:[{tagId:0,corners:[[0,0],[1,0],[1,1],[0,1]],hammingDistance:0}]});
+function emitTagDetection(worker:any,options:{tagId?:number;positionX?:number}={}):void{
+  const request=worker.messages.filter((item:any)=>item.type==='detect').at(-1);if(request===undefined)throw new Error('Expected an in-flight tag detection.');
+  const x=options.positionX??1;worker.emit('message',{type:'result',requestId:request.requestId,epoch:request.epoch,detections:[{tagId:options.tagId??0,corners:[[x,0],[x+1,0],[x+1,1],[x,1]],hammingDistance:0}]});
+}
+function tagFrame(capturedAtMs=1,cameraPosition:readonly[number,number,number]=[0,0,0],cameraForward:readonly[number,number,number]=[0,0,-1]){
+  return{width:1,height:1,rgba:new Uint8Array(4),capturedAtMs,cameraPosition,cameraForward,projectionMatrix:new Float32Array(16),worldFromView:new Float32Array(16)};
 }
 async function startGeometry(runtime:any):Promise<void>{
   await act(async()=>{runtime.setPhase('starting');await settleReact();});
@@ -187,6 +192,17 @@ describe('XrRuntimePanel lifecycle',()=>{
     expect(runtime.attached).toBe(false);expect(runtime.detachCalls).toBeGreaterThan(0);
   });
 
+  it('refuses tag mode without non-blocking readback and disables Finish while stopping',async()=>{
+    panelHarness.probeCapabilities.mockResolvedValue({...validCapabilities,tagReadbackMode:'synchronous'});
+    const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A'});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    expect(tagButton(renderer).props.disabled).toBe(true);
+    expect(renderer.root.findAll((node)=>node.props.className==='xr-overlay-hint').map(textOf).join(' ')).toContain(translate('en','xr.tag.readback_unavailable'));
+    const finish=renderer.root.findAllByType('button').find((button)=>textOf(button)===translate('en','xr.finish_save'));
+    if(finish===undefined)throw new Error('Missing Finish button.');expect(finish.props.disabled).toBe(false);
+    await act(async()=>{runtime.setPhase('stopping');await settleReact();});expect(finish.props.disabled).toBe(true);
+    unmount(renderer);
+  });
+
   it('tears down tag worker and subscription on unmount without saving registration',async()=>{
     const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A'});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
     expect(runtime.attached).toBe(true);
@@ -209,7 +225,7 @@ describe('XrRuntimePanel lifecycle',()=>{
   it('cancels pending detection on unmount and never publishes its late result',async()=>{
     const registration=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:registration});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
     await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
-    runtime.emitTagFrame({width:1,height:1,rgba:new Uint8Array(4),capturedAtMs:1,projectionMatrix:new Float32Array(16),worldFromView:new Float32Array(16)});
+    runtime.emitTagFrame(tagFrame());
     expect(worker.messages.some((message:any)=>message.type==='detect')).toBe(true);registration.mockClear();unmount(renderer);
     emitTagDetection(worker);await settleReact();expect(registration).not.toHaveBeenCalled();expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();
     expect(worker.terminated).toBe(1);expect(runtime.tagListeners.size).toBe(0);
@@ -218,7 +234,7 @@ describe('XrRuntimePanel lifecycle',()=>{
   it('hands the Finished scan over at once, delivers the tag result separately and never saves registration itself',async()=>{
     const registration=vi.fn();const tagResult=vi.fn();const ready=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onRegistrationChange:registration,onPointCloudReady:ready,onTagRegistrationResult:tagResult});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
     await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
-    runtime.emitTagFrame({width:1,height:1,rgba:new Uint8Array(4),capturedAtMs:1,projectionMatrix:new Float32Array(16),worldFromView:new Float32Array(16)});emitTagDetection(worker);await act(async()=>{await settleReact();});
+    runtime.emitTagFrame(tagFrame());emitTagDetection(worker);await act(async()=>{await settleReact();});
     registration.mockClear();ready.mockClear();
     await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
     expect(ready).toHaveBeenCalledTimes(1);expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot);
@@ -227,12 +243,54 @@ describe('XrRuntimePanel lifecycle',()=>{
     expect(panelHarness.saveSessionRegistration).not.toHaveBeenCalled();expect(registration).not.toHaveBeenCalled();unmount(renderer);
   });
 
+  it('uses camera pose from the captured frame when detector results arrive after the XR pose changes',async()=>{
+    const fusionSpy=vi.spyOn(tagObservationFusion,'fuseTagObservations');
+    const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A'});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    runtime.emitTagFrame(tagFrame(10,[0,0,0]));
+    await act(async()=>{runtime.setPhase('running',{tracking:true,pose:{position:[10,0,0],orientation:[0,0,0,1],views:1}});emitTagDetection(worker);await settleReact();});
+    expect(fusionSpy.mock.calls[0][0][0]).toMatchObject({capturedAtMs:10,cameraPosition:[0,0,0],cameraForward:[0,0,-1]});
+    runtime.emitTagFrame(tagFrame(20,[0,0,0]));
+    await act(async()=>{runtime.setPhase('running',{tracking:true,pose:{position:[20,0,0],orientation:[0,0,0,1],views:1}});emitTagDetection(worker);await settleReact();});
+    const chips=renderer.root.findAll((node)=>node.props['aria-label']===translate('en','xr.tag.observations'))[0];
+    expect(textOf(chips)).toContain(translate('en','xr.tag.chip.views_seen',{node:'MAIN',views:'1',minimum:'3'}));
+    unmount(renderer);
+  });
+
+  it('does not let a repeated same-view outlier dominate diverse observations',async()=>{
+    const tagResult=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onTagRegistrationResult:tagResult});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    for(let index=0;index<5;index+=1){runtime.emitTagFrame(tagFrame(index+1,[0.3+index*0.3,0,0]));await act(async()=>{emitTagDetection(worker,{positionX:1});await settleReact();});}
+    for(let repeat=0;repeat<20;repeat+=1){runtime.emitTagFrame(tagFrame(100+repeat,[10,0,0]));await act(async()=>{emitTagDetection(worker,{positionX:100});await settleReact();});}
+    await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});await act(async()=>{await settleReact();});
+    expect(tagResult).toHaveBeenCalledTimes(1);
+    expect(tagResult.mock.calls[0][0].bindings[0]).toMatchObject({tag_id:0,observation_count:6,inlier_count:5,position_scan_m:[1,2,3]});
+    unmount(renderer);
+  });
+
+  it('keeps panel fusion input and retained observations bounded through a long tag session',async()=>{
+    const original=TagObservationStore.prototype.getObservations;const retainedCounts:number[]=[];
+    vi.spyOn(TagObservationStore.prototype,'getObservations').mockImplementation(function(this:TagObservationStore,tagId?:number){
+      const observations=original.call(this,tagId);retainedCounts.push(this.retainedCount);return observations;
+    });
+    const fuseSpy=vi.spyOn(tagObservationFusion,'fuseTagObservations');
+    const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A'});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    for(let index=0;index<60;index+=1){runtime.emitTagFrame(tagFrame(index*330,[index*0.2,0,0]));await act(async()=>{emitTagDetection(worker,{positionX:1});await settleReact();});}
+    expect(retainedCounts).toHaveLength(60);expect(Math.max(...retainedCounts)).toBeLessThanOrEqual(48);
+    expect(retainedCounts.slice(-10)).toEqual(Array(10).fill(48));
+    const fusionInputLengths=fuseSpy.mock.calls.map(([observations])=>observations.length);
+    expect(fusionInputLengths).toHaveLength(60);expect(Math.max(...fusionInputLengths)).toBeLessThanOrEqual(48);
+    expect(fusionInputLengths.slice(-10)).toEqual(Array(10).fill(48));
+    unmount(renderer);
+  });
+
   it('does not wait for a stalled detector to hand over the scan, then cancels it after the bounded window',async()=>{
     vi.useFakeTimers();
     try{
       const ready=vi.fn();const tagResult=vi.fn();const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A',onPointCloudReady:ready,onTagRegistrationResult:tagResult});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
       await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
-      runtime.emitTagFrame({width:1,height:1,rgba:new Uint8Array(4),capturedAtMs:1,projectionMatrix:new Float32Array(16),worldFromView:new Float32Array(16)});
+      runtime.emitTagFrame(tagFrame());
       await act(async()=>{runtime.setPhase('ended',{pointCount:1});await settleReact();});
       expect(ready).toHaveBeenCalledWith(runtime.finalSnapshot);expect(tagResult).not.toHaveBeenCalled();expect(worker.terminated).toBe(0);
       await act(async()=>{await vi.advanceTimersByTimeAsync(2999);await settleReact();});expect(tagResult).not.toHaveBeenCalled();

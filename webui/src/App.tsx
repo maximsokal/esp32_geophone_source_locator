@@ -1205,6 +1205,9 @@ export default function App({ objectId, sessionId, status }: AppProps) {
                 currentScanId={durableViewport ? scanDurability.durableId : null}
                 objectId={objectId}
                 sessionId={sessionId}
+                persistenceBusy={scanStoragePhase === 'saving'}
+                postScanGeneration={storageGeneration.current}
+                computeProfile={computeProfile}
                 localizationRuns={durableViewport && localizationRunListing?.object_id === objectId && localizationRunListing.session_id === sessionId
                   ? localizationRunListing.runs
                   : []}

@@ -172,12 +172,19 @@ export class SparseTsdfMeshClient {
     this.preflightClient = new MeshReconstructionPreflightClient(preflightWorkerFactory);
   }
 
-  async reconstruct(input: SparseTsdfReconstructInput): Promise<SparseTsdfMesh> {
-    this.resetPending('Sparse TSDF reconstruction superseded by a newer scan.');
-    this.preflightClient.reset('Mesh preflight superseded by a newer scan.');
-    this.parallelDirectional.reset('Parallel TSDF reconstruction superseded by a newer scan.');
+  async reconstruct(
+    input: SparseTsdfReconstructInput,
+    options: { postScanWorkerBudget?: number; allowOptionalAi?: boolean } = {},
+  ): Promise<SparseTsdfMesh> {
+    this.cancel('Sparse TSDF reconstruction superseded by a newer request.');
     const generation = ++this.generation;
     const epoch = this.epoch;
+    if (options.allowOptionalAi === false && optionalMonocularPrior.isEnabled) {
+      await optionalMonocularPrior.releaseMemory();
+      if (generation !== this.generation || epoch !== this.epoch) {
+        throw new Error('Sparse TSDF reconstruction superseded while optional AI memory was released.');
+      }
+    }
 
     const physicalPreflightStarted = performance.now();
     const physicalWorkerResult = await this.preflightClient.analyze({
@@ -221,7 +228,7 @@ export class SparseTsdfMeshClient {
     }
 
     let reconstructionInput = physicalInput;
-    if (optionalMonocularPrior.isEnabled && optionalMonocularPrior.hasStagedPostScanFrame) {
+    if (options.allowOptionalAi !== false && optionalMonocularPrior.isEnabled && optionalMonocularPrior.hasStagedPostScanFrame) {
       const started = performance.now();
       clientDiagnostics.info('SCAN_AI_POST_SCAN_START', {
         sourcePoints: Math.floor(physicalInput.positions.length / 3),
@@ -296,15 +303,16 @@ export class SparseTsdfMeshClient {
     if (generation !== this.generation || epoch !== this.epoch) {
       throw new Error('Sparse TSDF reconstruction superseded during compute-budget negotiation.');
     }
-    if (computeProfile.postScanWorkerBudget >= 2) {
+    const postScanWorkerBudget = options.postScanWorkerBudget ?? computeProfile.postScanWorkerBudget;
+    if (postScanWorkerBudget >= 2) {
       clientDiagnostics.info('SCAN_TSDF_MULTI_CORE_ENABLED', {
-        postScanWorkerBudget: computeProfile.postScanWorkerBudget,
+        postScanWorkerBudget,
         logicalProcessors: computeProfile.reportedLogicalProcessors,
         tier: computeProfile.tier,
       });
       const result = await this.parallelDirectional.reconstruct(
         reconstructionInput,
-        computeProfile.postScanWorkerBudget,
+        postScanWorkerBudget,
       );
       if (generation !== this.generation || epoch !== this.epoch) {
         throw new Error('Sparse TSDF reconstruction superseded during multi-core reconstruction.');
@@ -338,17 +346,27 @@ export class SparseTsdfMeshClient {
   }
 
   reset(): void {
+    this.cancel('Sparse TSDF reconstruction reset.');
+  }
+
+  /** Cancel by terminating every worker so synchronous reconstruction cannot outlive its admission. */
+  cancel(reason = 'Sparse TSDF reconstruction cancelled.', releaseOptionalAi = false): void {
     this.generation += 1;
     this.epoch += 1;
-    this.resetPending('Sparse TSDF reconstruction reset.');
-    this.preflightClient.reset();
-    this.parallelDirectional.reset();
-    this.worker?.postMessage({ type: 'reset', epoch: this.epoch });
+    this.resetPending(reason);
+    this.preflightClient.reset(reason);
+    this.parallelDirectional.reset(reason);
+    if (this.worker !== null) {
+      this.worker.removeEventListener('message', this.handleMessage);
+      this.worker.removeEventListener('error', this.handleError);
+      this.worker.terminate();
+      this.worker = null;
+    }
+    if (releaseOptionalAi && optionalMonocularPrior.isEnabled) void optionalMonocularPrior.releaseMemory();
   }
 
   dispose(): void {
-    this.generation += 1;
-    this.resetPending('Sparse TSDF worker disposed.');
+    this.cancel('Sparse TSDF worker disposed.');
     this.preflightClient.dispose();
     this.parallelDirectional.dispose();
     if (this.worker !== null) {

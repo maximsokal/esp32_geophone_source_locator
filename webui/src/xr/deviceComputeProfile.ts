@@ -2,6 +2,8 @@ export type DeviceComputeTier = 'limited' | 'balanced' | 'high';
 
 export interface DeviceComputeSignals {
   reportedLogicalProcessors: number;
+  /** Coarse browser RAM hint (Navigator.deviceMemory), absent outside Chromium. */
+  reportedDeviceMemoryGiB?: number | null;
   workerApi: boolean;
   crossOriginIsolated: boolean;
   sharedArrayBufferApi: boolean;
@@ -18,6 +20,8 @@ export interface DeviceComputeProfile extends DeviceComputeSignals {
   liveWorkerBudget: number;
   /** Maximum CPU workers recommended after XR has stopped. */
   postScanWorkerBudget: number;
+  /** Conservative post-scan working-set budget, independent of the CPU hint. */
+  postScanMemoryBudgetBytes: number;
   sharedMemory: boolean;
   wasmThreads: boolean;
   webGpu: boolean;
@@ -26,6 +30,7 @@ export interface DeviceComputeProfile extends DeviceComputeSignals {
 
 interface NavigatorComputeLike {
   hardwareConcurrency?: number;
+  deviceMemory?: number;
   gpu?: {
     requestAdapter(options?: { powerPreference?: 'low-power' | 'high-performance' }): Promise<unknown | null>;
   };
@@ -45,6 +50,19 @@ interface GlobalComputeLike {
 const MAX_REPORTED_LOGICAL_PROCESSORS = 32;
 const MAX_LIVE_HEAVY_WORKERS = 2;
 const MAX_POST_SCAN_WORKERS = 6;
+const MIB = 1024 * 1024;
+
+function postScanMemoryBudgetBytes(deviceMemoryGiB: number | null | undefined, logicalProcessors: number): number {
+  // deviceMemory is rounded, optional, and says nothing about browser pressure.
+  // Bound it again by the CPU working-set hint; when RAM is unavailable, use a
+  // conservative 128 MiB default before applying that CPU ceiling.
+  const reportedMemoryBudget = deviceMemoryGiB === null || deviceMemoryGiB === undefined ||
+      !Number.isFinite(deviceMemoryGiB) || deviceMemoryGiB <= 0
+    ? 128 * MIB
+    : Math.max(64 * MIB, Math.min(768 * MIB, Math.floor(deviceMemoryGiB * 1024 * MIB * 0.15)));
+  const cpuWorkingSetBudget = Math.max(96 * MIB, Math.min(768 * MIB, logicalProcessors * 96 * MIB));
+  return Math.min(reportedMemoryBudget, cpuWorkingSetBudget);
+}
 
 function clampInteger(value: number, minimum: number, maximum: number): number {
   if (!Number.isFinite(value)) return minimum;
@@ -82,9 +100,11 @@ export function deriveDeviceComputeProfile(signals: DeviceComputeSignals): Devic
   return {
     ...signals,
     reportedLogicalProcessors: logical,
+    reportedDeviceMemoryGiB: signals.reportedDeviceMemoryGiB ?? null,
     reservedLogicalProcessors,
     liveWorkerBudget,
     postScanWorkerBudget,
+    postScanMemoryBudgetBytes: postScanMemoryBudgetBytes(signals.reportedDeviceMemoryGiB, logical),
     sharedMemory,
     wasmThreads,
     webGpu,
@@ -121,6 +141,10 @@ export async function probeDeviceComputeProfile(): Promise<DeviceComputeProfile>
     1,
     MAX_REPORTED_LOGICAL_PROCESSORS,
   );
+  const reportedDeviceMemoryGiB = Number.isFinite(navigatorLike.deviceMemory) &&
+      (navigatorLike.deviceMemory ?? 0) > 0
+    ? navigatorLike.deviceMemory!
+    : null;
   const workerApi = typeof globalScope.Worker !== 'undefined';
   const crossOriginIsolated = globalScope.crossOriginIsolated === true;
   const sharedArrayBufferApi = globalScope.SharedArrayBuffer !== undefined;
@@ -138,6 +162,7 @@ export async function probeDeviceComputeProfile(): Promise<DeviceComputeProfile>
 
   return deriveDeviceComputeProfile({
     reportedLogicalProcessors,
+    reportedDeviceMemoryGiB,
     workerApi,
     crossOriginIsolated,
     sharedArrayBufferApi,

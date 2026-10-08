@@ -970,7 +970,10 @@ export class DepthPointCloudAccumulator {
     // the off-main-thread plane/corner detector.
     // MAX-253: a point without a measured orientation carries no structural
     // evidence (plane fits, edge families), so it is not exported here.
-    const count = this.promotedRepresentativeCount;
+    let count = 0;
+    for (const point of this.representatives.values()) {
+      if (point.promoted && point.normalKnown) count += 1;
+    }
     const positions = new Float32Array(count * 3);
     const normals = new Float32Array(count * 3);
     const confidence = new Float32Array(count);
@@ -988,9 +991,9 @@ export class DepthPointCloudAccumulator {
       write += 1;
     }
     return {
-      positions: write === count ? positions : positions.subarray(0, write * 3),
-      normals: write === count ? normals : normals.subarray(0, write * 3),
-      confidence: write === count ? confidence : confidence.subarray(0, write),
+      positions,
+      normals,
+      confidence,
       pointCount: write,
       keyframeCount: this.integrationKeyframes,
       voxelSizeMeters: this.voxelSizeMeters,
