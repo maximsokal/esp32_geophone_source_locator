@@ -18,6 +18,18 @@ export interface UnknownCandidateEnumeration {
   unknownCandidatePositions: Float32Array;
 }
 
+interface UnknownCandidateGrid {
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
+  stride: number;
+  half: number;
+  coarseSize: number;
+}
+
 export interface OccupancyDepthFrameLike {
   width: number;
   height: number;
@@ -103,6 +115,71 @@ const MIN_LOCAL_SCORE = 0.45;
 const MAX_RAY_VOXELS = 192;
 const MAX_ENUMERATED_VOLUME_CELLS = 120000;
 
+function unknownCandidateGrid(
+  candidateBounds: OccupancyBounds,
+  fineVoxelSizeMeters: number,
+): UnknownCandidateGrid {
+  const minX = gridCoordinate(candidateBounds.min[0], fineVoxelSizeMeters);
+  const minY = gridCoordinate(candidateBounds.min[1], fineVoxelSizeMeters);
+  const minZ = gridCoordinate(candidateBounds.min[2], fineVoxelSizeMeters);
+  const maxX = gridCoordinate(candidateBounds.max[0], fineVoxelSizeMeters);
+  const maxY = gridCoordinate(candidateBounds.max[1], fineVoxelSizeMeters);
+  const maxZ = gridCoordinate(candidateBounds.max[2], fineVoxelSizeMeters);
+  const nx = Math.max(1, maxX - minX + 1);
+  const ny = Math.max(1, maxY - minY + 1);
+  const nz = Math.max(1, maxZ - minZ + 1);
+  const totalCells = nx * ny * nz;
+  const stride = Math.max(1, Math.ceil(Math.cbrt(totalCells / MAX_ENUMERATED_VOLUME_CELLS)));
+  return {
+    minX,
+    minY,
+    minZ,
+    maxX,
+    maxY,
+    maxZ,
+    stride,
+    half: Math.floor(stride / 2),
+    coarseSize: fineVoxelSizeMeters * stride,
+  };
+}
+
+function forEachUnknownCandidatePosition(
+  grid: UnknownCandidateGrid,
+  isUnknownFineCell: (x: number, y: number, z: number) => boolean,
+  visit: (x: number, y: number, z: number) => void,
+): void {
+  for (let cx = Math.floor(grid.minX / grid.stride); cx <= Math.floor(grid.maxX / grid.stride); cx += 1) {
+    for (let cy = Math.floor(grid.minY / grid.stride); cy <= Math.floor(grid.maxY / grid.stride); cy += 1) {
+      for (let cz = Math.floor(grid.minZ / grid.stride); cz <= Math.floor(grid.maxZ / grid.stride); cz += 1) {
+        if (!isUnknownFineCell(
+          cx * grid.stride + grid.half,
+          cy * grid.stride + grid.half,
+          cz * grid.stride + grid.half,
+        )) continue;
+        visit(
+          (cx + 0.5) * grid.coarseSize,
+          (cy + 0.5) * grid.coarseSize,
+          (cz + 0.5) * grid.coarseSize,
+        );
+      }
+    }
+  }
+}
+
+function writeVoxelCenters(
+  keys: ReadonlySet<string>,
+  voxelSizeMeters: number,
+  positions: Float32Array,
+): void {
+  let write = 0;
+  for (const key of keys) {
+    const [xText, yText, zText] = key.split(':');
+    positions[write++] = (Number(xText) + 0.5) * voxelSizeMeters;
+    positions[write++] = (Number(yText) + 0.5) * voxelSizeMeters;
+    positions[write++] = (Number(zText) + 0.5) * voxelSizeMeters;
+  }
+}
+
 /**
  * Enumerate UNKNOWN candidate cells using the bounded, world-origin-aligned
  * MAX-213 grid. The callback receives the fine-grid cell used to classify
@@ -121,34 +198,22 @@ export function enumerateUnknownCandidatePositions(
     };
   }
 
-  const minX = gridCoordinate(candidateBounds.min[0], fineVoxelSizeMeters);
-  const minY = gridCoordinate(candidateBounds.min[1], fineVoxelSizeMeters);
-  const minZ = gridCoordinate(candidateBounds.min[2], fineVoxelSizeMeters);
-  const maxX = gridCoordinate(candidateBounds.max[0], fineVoxelSizeMeters);
-  const maxY = gridCoordinate(candidateBounds.max[1], fineVoxelSizeMeters);
-  const maxZ = gridCoordinate(candidateBounds.max[2], fineVoxelSizeMeters);
-  const nx = Math.max(1, maxX - minX + 1);
-  const ny = Math.max(1, maxY - minY + 1);
-  const nz = Math.max(1, maxZ - minZ + 1);
-  const totalCells = nx * ny * nz;
-  const stride = Math.max(1, Math.ceil(Math.cbrt(totalCells / MAX_ENUMERATED_VOLUME_CELLS)));
-  const half = Math.floor(stride / 2);
-  const unknown: number[] = [];
-  const coarseSize = fineVoxelSizeMeters * stride;
+  const grid = unknownCandidateGrid(candidateBounds, fineVoxelSizeMeters);
+  let unknownCandidateVoxelCount = 0;
+  forEachUnknownCandidatePosition(grid, isUnknownFineCell, () => {
+    unknownCandidateVoxelCount += 1;
+  });
 
-  for (let cx = Math.floor(minX / stride); cx <= Math.floor(maxX / stride); cx += 1) {
-    for (let cy = Math.floor(minY / stride); cy <= Math.floor(maxY / stride); cy += 1) {
-      for (let cz = Math.floor(minZ / stride); cz <= Math.floor(maxZ / stride); cz += 1) {
-        if (!isUnknownFineCell(cx * stride + half, cy * stride + half, cz * stride + half)) continue;
-        unknown.push((cx + 0.5) * coarseSize, (cy + 0.5) * coarseSize, (cz + 0.5) * coarseSize);
-      }
-    }
-  }
-
-  const unknownCandidatePositions = Float32Array.from(unknown);
+  const unknownCandidatePositions = new Float32Array(unknownCandidateVoxelCount * 3);
+  let write = 0;
+  forEachUnknownCandidatePosition(grid, isUnknownFineCell, (x, y, z) => {
+    unknownCandidatePositions[write++] = x;
+    unknownCandidatePositions[write++] = y;
+    unknownCandidatePositions[write++] = z;
+  });
   return {
-    occupancyVoxelSizeMeters: coarseSize,
-    unknownCandidateVoxelCount: unknownCandidatePositions.length / 3,
+    occupancyVoxelSizeMeters: grid.coarseSize,
+    unknownCandidateVoxelCount,
     unknownCandidatePositions,
   };
 }
@@ -474,13 +539,12 @@ export class SparseOccupancyGrid {
    * saved points at the declared size lands every point in its own cell.
    */
   snapshot(candidateBounds: OccupancyBounds | null): OccupancySnapshot {
-    const free: number[] = [];
-    const occupied: number[] = [];
-
-    for (const key of this.freeCellKeys) free.push(...voxelCenterFromKey(key, this.voxelSizeMeters));
-    for (const key of this.occupiedCellKeys) occupied.push(...voxelCenterFromKey(key, this.voxelSizeMeters));
     const knownFreeVoxelCount = this.freeCellKeys.size;
     const occupiedSurfaceVoxelCount = this.occupiedCellKeys.size;
+    const freeAirPositions = new Float32Array(knownFreeVoxelCount * 3);
+    const occupiedSurfacePositions = new Float32Array(occupiedSurfaceVoxelCount * 3);
+    writeVoxelCenters(this.freeCellKeys, this.voxelSizeMeters, freeAirPositions);
+    writeVoxelCenters(this.occupiedCellKeys, this.voxelSizeMeters, occupiedSurfacePositions);
     const saturation = {
       occupancyCellsSaturated: this.droppedCellUpdates > 0,
       occupancyDroppedCellUpdates: this.droppedCellUpdates,
@@ -497,8 +561,8 @@ export class SparseOccupancyGrid {
       knownFreeVoxelCount,
       occupiedSurfaceVoxelCount,
       unknownCandidateVoxelCount: unknown.unknownCandidateVoxelCount,
-      freeAirPositions: Float32Array.from(free),
-      occupiedSurfacePositions: Float32Array.from(occupied),
+      freeAirPositions,
+      occupiedSurfacePositions,
       unknownCandidatePositions: unknown.unknownCandidatePositions,
       ...saturation,
     };

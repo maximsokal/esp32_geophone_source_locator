@@ -45,12 +45,7 @@ export class TagDetectorClient {
 
   constructor(factory: () => WorkerLike = () => new TagDetectorWorker()) {
     this.factory = factory;
-    try {
-      this.worker = factory();
-      this.worker.addEventListener('message', this.onMessage);
-      this.worker.addEventListener('error', this.onError);
-      this.worker.postMessage({ type: 'reset', epoch: this.epoch });
-    } catch { this.worker = null; }
+    this.ensureWorker();
   }
 
   get busy(): boolean { return this.pending.size > 0; }
@@ -58,7 +53,7 @@ export class TagDetectorClient {
 
   detect(frame: TagCameraFrame): Promise<DetectedAprilTagFrame | null> {
     if (this.disposed) return Promise.reject(new Error('Tag detector client is disposed.'));
-    if (this.worker === null) return Promise.reject(new Error('Tag detector worker is unavailable.'));
+    if (!this.ensureWorker()) return Promise.reject(new Error('Tag detector worker is unavailable.'));
     if (this.pending.size > 0) return Promise.resolve(null);
     const requestId = ++this.requestId;
     const backing = frame.rgba.buffer;
@@ -78,18 +73,33 @@ export class TagDetectorClient {
 
   reset(): void {
     this.epoch += 1;
+    this.detachWorker();
     for (const item of this.pending.values()) item.reject(new Error('Tag detector reset for a new XR session.'));
     this.pending.clear();
-    this.worker?.postMessage({ type: 'reset', epoch: this.epoch });
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.epoch += 1;
+    this.detachWorker();
     for (const item of this.pending.values()) item.reject(new Error('Tag detector client disposed.'));
     this.pending.clear();
-    this.detachWorker();
+  }
+
+  private ensureWorker(): boolean {
+    if (this.worker !== null) return true;
+    try {
+      const worker = this.factory();
+      this.worker = worker;
+      worker.addEventListener('message', this.onMessage);
+      worker.addEventListener('error', this.onError);
+      worker.postMessage({ type: 'reset', epoch: this.epoch });
+      return true;
+    } catch {
+      this.detachWorker();
+      return false;
+    }
   }
 
   private readonly onMessage = (event: MessageEvent<WorkerResult>): void => {
@@ -110,9 +120,9 @@ export class TagDetectorClient {
 
   private readonly onError = (event: ErrorEvent): void => {
     const error = new Error(event.message || 'Tag detector worker failed.');
+    this.detachWorker();
     for (const item of this.pending.values()) item.reject(error);
     this.pending.clear();
-    this.detachWorker();
   };
 
   private detachWorker(): void {

@@ -68,9 +68,15 @@ export class StructuralGuideClient {
     // still executes in a Dedicated Worker scheduled independently of the XR/UI
     // main thread. Creation is deliberately lazy: a tiny scan never pays for it.
     const worker = this.workerFactory();
-    worker.addEventListener('message', this.handleMessage);
-    worker.addEventListener('error', this.handleError);
     this.worker = worker;
+    try {
+      worker.addEventListener('message', this.handleMessage);
+      worker.addEventListener('error', this.handleError);
+      worker.postMessage({ type: 'reset', epoch: this.epoch });
+    } catch (error) {
+      this.terminateWorker();
+      throw error;
+    }
     return worker;
   }
 
@@ -131,39 +137,39 @@ export class StructuralGuideClient {
 
   reset(): void {
     this.epoch += 1;
+    this.terminateWorker();
     if (this.pending !== null) {
       this.pending.reject(new Error('Structural guide analysis reset for a new scan.'));
       this.pending = null;
     }
-    this.worker?.postMessage({ type: 'reset', epoch: this.epoch });
   }
 
   /** Stop live work and release its worker at the XR -> post-scan boundary. */
   park(): void {
     this.epoch += 1;
+    this.terminateWorker();
     if (this.pending !== null) {
       this.pending.reject(new Error('Structural guide worker parked after XR ended.'));
       this.pending = null;
-    }
-    if (this.worker !== null) {
-      this.worker.removeEventListener('message', this.handleMessage);
-      this.worker.removeEventListener('error', this.handleError);
-      this.worker.terminate();
-      this.worker = null;
     }
   }
 
   dispose(): void {
     this.disposed = true;
+    this.terminateWorker();
     if (this.pending !== null) {
       this.pending.reject(new Error('Structural guide worker disposed.'));
       this.pending = null;
     }
+  }
+
+  private terminateWorker(): void {
     if (this.worker !== null) {
-      this.worker.removeEventListener('message', this.handleMessage);
-      this.worker.removeEventListener('error', this.handleError);
-      this.worker.terminate();
+      const worker = this.worker;
       this.worker = null;
+      worker.removeEventListener('message', this.handleMessage);
+      worker.removeEventListener('error', this.handleError);
+      worker.terminate();
     }
   }
 
@@ -202,9 +208,9 @@ export class StructuralGuideClient {
   };
 
   private readonly handleError = (event: ErrorEvent): void => {
-    if (this.pending !== null) {
-      this.pending.reject(event.error ?? new Error(event.message));
-      this.pending = null;
-    }
+    const pending = this.pending;
+    this.pending = null;
+    this.terminateWorker();
+    pending?.reject(event.error ?? new Error(event.message));
   };
 }

@@ -61,16 +61,22 @@ export class VisualLineEvidenceClient {
 
   private tryCreateWorker(): boolean {
     if (this.disposed || this.worker !== null || typeof Worker === 'undefined') return this.worker !== null;
+    let worker: Worker;
+    try {
+      worker = this.workerFactory();
+    } catch {
+      return false;
+    }
+    this.worker = worker;
     try {
       // Inline Vite worker keeps ESP deployment to the existing one-JS/one-CSS
       // contract. No hashed worker asset or extra HTTPS URI is required.
-      this.worker = this.workerFactory();
-      this.worker.addEventListener('message', this.handleWorkerMessage);
-      this.worker.addEventListener('error', this.handleWorkerError);
-      this.worker.postMessage({ type: 'reset', epoch: this.epoch });
+      worker.addEventListener('message', this.handleWorkerMessage);
+      worker.addEventListener('error', this.handleWorkerError);
+      worker.postMessage({ type: 'reset', epoch: this.epoch });
       return true;
     } catch {
-      this.worker = null;
+      this.detachBrokenWorker();
       return false;
     }
   }
@@ -80,12 +86,13 @@ export class VisualLineEvidenceClient {
 
   reset(): void {
     this.epoch += 1;
+    this.detachBrokenWorker();
     for (const request of this.pending.values()) request.reject(new Error('Visual evidence client reset for a new scan.'));
     this.pending.clear();
     // A fallback task already queued on the event loop is allowed to finish but
     // remains counted as busy and will reject itself by epoch. This prevents a
-    // new scan from stacking another main-thread Hough job on top of it.
-    this.worker?.postMessage({ type: 'reset', epoch: this.epoch });
+    // new scan from stacking another main-thread Hough job on top of it. Live XR
+    // never enables that fallback, and worker-backed CPU work is stopped above.
   }
 
   private analyzeFallback(
@@ -182,7 +189,9 @@ export class VisualLineEvidenceClient {
     // opts into deferred mode, where every heavy Hough pass must hold one slot
     // from the same global scheduler used by structural analysis.
     if (!this.deferWorkerUntilAnalyze) {
-      if (this.worker === null) return this.analyzeFallback(frame, keyframeId, projectionMatrix, worldFromView);
+      if (this.worker === null && !this.tryCreateWorker()) {
+        return this.analyzeFallback(frame, keyframeId, projectionMatrix, worldFromView);
+      }
       return this.analyzeWithWorker(frame, keyframeId, projectionMatrix, worldFromView);
     }
 
@@ -211,9 +220,9 @@ export class VisualLineEvidenceClient {
     if (this.disposed) return;
     this.disposed = true;
     this.epoch += 1;
+    this.detachBrokenWorker();
     for (const request of this.pending.values()) request.reject(new Error('Visual evidence client disposed.'));
     this.pending.clear();
-    this.detachBrokenWorker();
   }
 
   private detachBrokenWorker(): void {
@@ -246,10 +255,10 @@ export class VisualLineEvidenceClient {
 
   private readonly handleWorkerError = (event: ErrorEvent): void => {
     const error = new Error(event.message || 'Visual evidence worker failed.');
+    this.detachBrokenWorker();
     for (const request of this.pending.values()) request.reject(error);
     this.pending.clear();
     // A broken live worker must never silently migrate a heavy Hough pass back to
     // the XR main thread. Offline/test clients can still opt into the fallback.
-    this.detachBrokenWorker();
   };
 }
