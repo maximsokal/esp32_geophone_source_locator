@@ -174,6 +174,13 @@ BLUE is steady for `ACCEPTED`, blinks at 2 Hz for `STABILIZING` or `TILTED`, and
 is off for `FAULT`. GREEN/YELLOW/RED logger-status latch semantics remain the
 separate contract in `ARCHITECTURE.md`.
 
+The platform-neutral REMOTE logger policy shows GREEN only while READY with no
+latched condition, YELLOW after a WARNING holds for 2000 ms, and RED immediately
+for an ERROR or FATAL; RED suppresses YELLOW, and latches persist until reset. A
+missing or failed BME280 after REMOTE READY is an ERROR. The D1-D3 GPIO backend,
+device-tree mapping, and polarity remain BLOCKED on MAX-43; this policy is not
+wired into firmware, so logger LED operation is not claimed.
+
 ## Supported Windows production interface
 
 From an ordinary PowerShell at the repository root:

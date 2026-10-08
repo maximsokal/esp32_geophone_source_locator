@@ -1,5 +1,6 @@
-from pathlib import Path
+import json
 import re
+from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -14,6 +15,8 @@ CMAKE = REPO_ROOT / "nRF54L15" / "zephyr" / "CMakeLists.txt"
 PRJ_CONF = REPO_ROOT / "nRF54L15" / "zephyr" / "prj.conf"
 PLATFORMIO_CONF = REPO_ROOT / "nRF54L15" / "zephyr" / "prj.platformio.conf"
 APP_OVERLAY = REPO_ROOT / "nRF54L15" / "zephyr" / "app.overlay"
+HOST_NRF_MANIFEST = REPO_ROOT / "tests" / "host" / "manifest.d" / "coverage-nrf.json"
+LOGGER_LED_SOURCE = REPO_ROOT / "nRF54L15" / "src" / "nrf_logger_led.c"
 MAIN = REPO_ROOT / "nRF54L15" / "src" / "main.c"
 SENSOR_BUS_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_sensor_bus_zephyr.c"
 BMI160_HEADER = REPO_ROOT / "nRF54L15" / "include" / "nrf_bmi160.h"
@@ -72,6 +75,18 @@ def test_nrf_zephyr_target_compiles_runtime_policy_and_sensor_pipeline_sources()
     assert "../src/nrf_remote_sensor_runtime_zephyr.c" in source
     assert "../src/nrf_cs_scheduler.c" in source
     assert "target_include_directories(app PRIVATE ../include)" in source
+
+
+def test_nrf_logger_led_policy_is_host_covered_and_zephyr_neutral():
+    cmake = CMAKE.read_text(encoding="utf-8")
+    source = LOGGER_LED_SOURCE.read_text(encoding="utf-8")
+    manifest = json.loads(HOST_NRF_MANIFEST.read_text(encoding="utf-8"))
+    suite = next(test for test in manifest["tests"] if test["name"] == "nrf_logger_led")
+
+    assert "../src/nrf_logger_led.c" in cmake
+    assert "nRF54L15/src/nrf_logger_led.c" in suite["sources"]
+    assert "tests/host/nrf_logger_led_test.c" in suite["sources"]
+    assert not re.search(r'(?m)^\s*#\s*include\s*[<"][^>"]*zephyr/', source)
 
 
 def test_platformio_uses_a_minimal_compatibility_config_without_changing_ncs_production():

@@ -78,6 +78,11 @@
       "include_dirs": ["nRF54L15/include"]
     },
     {
+      "name": "nrf_logger_led",
+      "sources": ["nRF54L15/src/nrf_logger_led.c", "tests/host/nrf_logger_led_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
       "name": "nrf_ema_filter",
       "sources": ["nRF54L15/src/nrf_ema_filter.c", "nRF54L15/src/nrf_orientation.c", "tests/host/nrf_ema_filter_test.c"],
       "include_dirs": ["nRF54L15/include"]
