@@ -74,7 +74,6 @@ The project deliberately separates service work from acquisition work.
 ### Core 1 - real-time side
 
 - AD7606 acquisition
-- ESP ADC bench acquisition source
 - synthetic seismic source
 - future preprocessing / arrival picking
 - future localization worker if it becomes a continuous task
@@ -90,7 +89,6 @@ Current policy:
 | Task | Core | Priority | Stack |
 | --- | ---: | ---: | ---: |
 | AD7606 acquisition | 1 | 7 | 4096 |
-| ESP ADC bench | 1 | 6 | 4096 |
 | Synthetic seismic source | 1 | 4 | 3072 |
 | APP_EVENT user loop | 0 | 6 | 6144 |
 | Optional Insights retry worker | 0 | 1 | 4096 |
@@ -707,7 +705,6 @@ typedef struct {
 Current descriptors are:
 
 - `seismic_source_test.c`
-- `seismic_source_esp_adc.c`
 - `seismic_source_ad7606.c`
 
 `seismic_source_registry.c` performs the compile-time Kconfig selection. Runtime source switching is intentionally not exposed yet; changing the selected backend requires a firmware configuration/build change. Adding a backend should not require editing the acquisition orchestrator.

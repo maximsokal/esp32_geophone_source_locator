@@ -16,10 +16,6 @@ if(GEOLOCATOR_KEYPAD_TIMING_PROFILE OR "$ENV{GEOLOCATOR_KEYPAD_TIMING_PROFILE}" 
     list(APPEND SDKCONFIG_DEFAULTS "sdkconfig.keypad-timing.defaults")
 endif()
 
-if(GEOLOCATOR_ADC_BENCH_PROFILE OR "$ENV{GEOLOCATOR_ADC_BENCH_PROFILE}" STREQUAL "1")
-    list(APPEND SDKCONFIG_DEFAULTS "sdkconfig.adc-bench.defaults")
-endif()
-
 # The production project is pinned to ESP32-S3. ESP-TEE is an optional IDF
 # component, but IDF 5.5 only supports it on C6/H2/C5 and otherwise prints a
 # misleading configure-time notice while scanning every component.

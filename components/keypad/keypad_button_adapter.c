@@ -318,10 +318,7 @@ static uint32_t s_timer_timing_histogram[KEYPAD_TIMING_HISTOGRAM_BUCKETS];
 
 static const char *keypad_timing_source_name(void)
 {
-#if defined(CONFIG_SEISMIC_SOURCE_ESP_ADC_BENCH) && \
-    CONFIG_SEISMIC_SOURCE_ESP_ADC_BENCH
-    return "ESP_ADC_BENCH";
-#elif defined(CONFIG_SEISMIC_SOURCE_AD7606) && CONFIG_SEISMIC_SOURCE_AD7606
+#if defined(CONFIG_SEISMIC_SOURCE_AD7606) && CONFIG_SEISMIC_SOURCE_AD7606
     return "AD7606";
 #else
     return "UNKNOWN";

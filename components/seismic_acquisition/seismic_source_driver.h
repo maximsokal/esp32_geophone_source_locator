@@ -30,9 +30,6 @@ typedef struct
 #if CONFIG_SEISMIC_SOURCE_TEST
 extern const seismic_source_driver_t
     g_seismic_source_test;
-#elif CONFIG_SEISMIC_SOURCE_ESP_ADC_BENCH
-extern const seismic_source_driver_t
-    g_seismic_source_esp_adc;
 #elif CONFIG_SEISMIC_SOURCE_AD7606
 extern const seismic_source_driver_t
     g_seismic_source_ad7606;

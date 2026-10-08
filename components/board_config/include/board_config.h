@@ -54,6 +54,5 @@ esp_err_t board_gpio_isr_service_install(void);
 // 5-button analog keypad KS0466
 #define BOARD_KEYPAD_GPIO       GPIO_NUM_8
 
-// Temporary direct geophone bench input / existing divider wiring.
-// GPIO1 is reserved here and must not be reused by AD7606.
-#define BOARD_GEOPHONE_BENCH_GPIO GPIO_NUM_1
+// GPIO1 remains physically occupied by the existing divider wiring and must
+// not be reused by AD7606.

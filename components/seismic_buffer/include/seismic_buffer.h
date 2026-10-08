@@ -15,8 +15,7 @@ typedef enum
 {
     SEISMIC_SOURCE_NONE = 0,
     SEISMIC_SOURCE_TEST,
-    SEISMIC_SOURCE_ESP_ADC_BENCH,
-    SEISMIC_SOURCE_AD7606
+    SEISMIC_SOURCE_AD7606 = 3
 
 } seismic_source_t;
 

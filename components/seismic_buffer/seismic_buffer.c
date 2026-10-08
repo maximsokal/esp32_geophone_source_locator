@@ -1065,9 +1065,6 @@ const char *seismic_buffer_source_name(
         case SEISMIC_SOURCE_TEST:
             return "TEST";
 
-        case SEISMIC_SOURCE_ESP_ADC_BENCH:
-            return "ESP_ADC_BENCH";
-
         case SEISMIC_SOURCE_AD7606:
             return "AD7606";
 

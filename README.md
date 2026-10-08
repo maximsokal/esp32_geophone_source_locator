@@ -6,6 +6,8 @@ The project targets **ESP-IDF v5.5.4** on an ESP32-S3 N16R8 board.
 
 For the component/runtime design, task ownership and extension rules, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
+Structural code search and linting use [ast-grep](docs/ast-grep.md).
+
 ## Current hardware architecture
 
 ### ESP32-S3
@@ -63,7 +65,6 @@ The first four AD7606 channels currently feed the application seismic ring buffe
 | Analog keypad KS0466 | 8 |
 | Pololu power-off control | 18 |
 | External power-button sense | 21 |
-| Temporary ESP ADC bench/divider input | 1 |
 
 GPIO1 is reserved by the existing divider/bench wiring and must not be reused for AD7606.
 
@@ -167,7 +168,6 @@ Application-owned tasks are split by role.
 ### Core 1 - real-time side
 
 - AD7606 acquisition;
-- ESP ADC bench acquisition source;
 - synthetic seismic test source;
 - future signal preprocessing / event detection;
 - future continuous localization worker if required.
@@ -202,7 +202,6 @@ The seismic ring buffer uses short metadata critical sections plus per-slot publ
 The source is selected at build time in `menuconfig`:
 
 - `AD7606 SPI acquisition` - normal hardware path;
-- `ESP32-S3 ADC geophone bench input` - temporary direct ADC bench mode;
 - `Synthetic test waveform` - software-only waveform source.
 
 Each backend implements the same private `seismic_source_driver_t` interface. The acquisition orchestrator itself is backend-agnostic; compile-time selection is isolated in the source registry. Runtime source switching is intentionally not exposed yet.
@@ -210,7 +209,6 @@ Each backend implements the same private `seismic_source_driver_t` interface. Th
 Current backend files:
 
 - `seismic_source_ad7606.c`;
-- `seismic_source_esp_adc.c`;
 - `seismic_source_test.c`.
 
 Adding a new source should add a descriptor and registry entry rather than adding source-specific branches to `seismic_acquisition.c`.
@@ -355,7 +353,7 @@ For repeatable local verification, use the tasks in `.vscode/tasks.json`:
 For the keypad ADC/timer-task watchlist, use the dedicated opt-in procedure in
 [docs/keypad-adc-timing-hil.md](docs/keypad-adc-timing-hil.md). It measures
 broker snapshot `min/avg/p95/max` and shared `ESP_TIMER_TASK` dispatch lateness
-for separate AD7606 and ESP ADC bench 500 Hz windows; it does not change the
+for separate AD7606 500 Hz windows; it does not change the
 production defaults. Its `KEYPAD_TIMING_TELEMETRY_RESULT` confirms only
 telemetry validity and is independent of the physical keypad condition;
 `PHYSICAL_CONDITION` and `KEYPAD_TIMING_RUN_RESULT` report the separate HIL
