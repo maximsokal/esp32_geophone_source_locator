@@ -15,7 +15,7 @@ import sys
 from typing import Iterable, Sequence
 
 
-SCOPES = ("software", "host", "python", "web", "nrf", "firmware", "all")
+SCOPES = ("software", "ast", "host", "python", "web", "nrf", "firmware", "all")
 
 
 class VerificationError(RuntimeError):
@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
         "--scope",
         choices=SCOPES,
         default="software",
-        help="verification surface; software = host + python + web; nrf = isolated nRF54L15 host policy + canonical NCS build/test-build boundary",
+        help="verification surface; software = host + python + web + ast; ast = structural rule tests + scan; nrf = isolated nRF54L15 host policy + canonical NCS build/test-build boundary",
     )
     parser.add_argument(
         "--project-path",
@@ -144,6 +144,22 @@ def python_steps(root: Path, python_executable: str) -> list[Step]:
                 str(root / "tests" / "python"),
             ),
         )
+    ]
+
+
+def ast_steps(root: Path) -> list[Step]:
+    executable = find_required_executable(("ast-grep",), "ast-grep verification")
+    config = str(root / "sgconfig.yml")
+    return [
+        Step(
+            "ast/rules", root,
+            (executable, "test", "--config", config, "--skip-snapshot-tests"),
+        ),
+        Step(
+            "ast/scan", root,
+            (executable, "scan", "--config", config,
+             "main", "components", "nRF54L15/src", "webui/src"),
+        ),
     ]
 
 
@@ -326,7 +342,7 @@ def scope_includes(scope: str, surface: str) -> bool:
     if scope == "all":
         return True
     if scope == "software":
-        return surface in {"host", "python", "web"}
+        return surface in {"host", "python", "web", "ast"}
     return scope == surface
 
 
@@ -357,6 +373,8 @@ def build_plan(
     steps: list[Step] = []
     if scope_includes(scope, "host"):
         steps.extend(host_steps(root, python_executable))
+    if scope_includes(scope, "ast"):
+        steps.extend(ast_steps(root))
     if scope_includes(scope, "python"):
         steps.extend(python_steps(root, python_executable))
     if scope_includes(scope, "web"):

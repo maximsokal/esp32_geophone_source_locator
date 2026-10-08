@@ -1,0 +1,15 @@
+id: ui-no-spi-flush-wait
+valid:
+  - 'void flush(void) { esp_lcd_panel_io_tx_param(io, cmd, data, len); }'
+  - 'void flush(void) { lv_display_flush_ready(display); }'
+  - '/* lv_display_set_flush_wait_cb(display, cb); */'
+  - 'const char *s = "esp_lcd_panel_io_register_event_callbacks(io, cb, user)";'
+invalid:
+  - 'void init(void) { esp_lcd_panel_io_register_event_callbacks(io, &callbacks, user); }'
+  - 'void init(void) { lv_display_set_flush_wait_cb(display, wait_cb); }'
+  - |
+    void init(void) {
+      lv_display_set_flush_wait_cb(
+        display,
+        wait_cb);
+    }

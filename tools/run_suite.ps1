@@ -221,6 +221,9 @@ if ($Suite -eq "Host" -or $Suite -eq "All") {
 }
 
 if ($Suite -eq "All") {
+    Invoke-SuiteStep -Name "ast-grep rules and scan" -WorkingDirectory $repo -FilePath "python" -ArgumentList @(
+        "tools/run_local_verify.py", "--scope", "ast"
+    )
     Invoke-SuiteStep -Name "Python tests" -WorkingDirectory $repo -FilePath "python" -ArgumentList @("-m", "pytest", "-q")
     Invoke-SuiteStep -Name "nRF54L15 NCS production build" -WorkingDirectory $repo -FilePath $powershell -ArgumentList @(
         "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $nrfNcsWrapper,
