@@ -47,6 +47,12 @@ import type { SparseTsdfMesh } from '../xr/sparseTsdf';
 import { MESH_MIN_POINTS } from '../xr/surfaceComponents';
 import type { ScanPointCloudSnapshot } from '../xr/webxrRuntime';
 import { SceneViewport, type ViewCommand } from './SceneViewport';
+import {
+  resultViewportIdentityKey,
+  VIEWPORT_FAILURE_MAX_ATTEMPTS,
+  ViewportFailureBoundary,
+  type ViewportFailure,
+} from './ViewportFailureBoundary';
 
 interface ScanPointCloudViewportProps {
   snapshot: ScanPointCloudSnapshot;
@@ -63,6 +69,8 @@ interface ScanPointCloudViewportProps {
   localizationRuns?: readonly LocalizationRun[];
   /** CRC identity of the displayed scan; null means that its generation is unknown. */
   currentScanId?: string | null;
+  /** React identity for durable and provisional viewer resources. */
+  scanIdentityKey?: string;
   /** True during the Finish-triggered scan/occupancy/preview transaction. */
   persistenceBusy?: boolean;
   /** Storage generation advanced at the Finish -> persistence handoff. */
@@ -277,7 +285,7 @@ function LayerView({ layer, extent, selectedNode, onSensorSelect }: {
   }
 }
 
-function SceneLayers({ prepared, display, meshPositions, wireframe, sensorMarkers, sourceHighlights, selectedNode, onSensorSelect }: {
+function SceneLayers({ prepared, display, meshPositions, wireframe, sensorMarkers, sourceHighlights, selectedNode, onSensorSelect, identityKey, overlayResetKeys, onOverlayFailure, onOverlayRecovered }: {
   prepared: PreparedScanScene;
   display: ScanDisplayOptions;
   meshPositions: Float32Array;
@@ -286,9 +294,29 @@ function SceneLayers({ prepared, display, meshPositions, wireframe, sensorMarker
   sourceHighlights: SourceHighlightScene;
   selectedNode: SensorPlacementNode | null;
   onSensorSelect: (node: SensorPlacementNode) => void;
+  identityKey: string;
+  overlayResetKeys: readonly unknown[];
+  onOverlayFailure: (failure: ViewportFailure) => void;
+  onOverlayRecovered: () => void;
 }) {
   const layers = useMemo(() => scanLayerPlan(prepared, display, meshPositions, wireframe, sensorMarkers, sourceHighlights), [prepared, display, meshPositions, wireframe, sensorMarkers, sourceHighlights]);
-  return <><color attach="background" args={['#07101a']} />{layers.map((layer) => <LayerView key={layer.id} layer={layer} extent={prepared.extent} selectedNode={selectedNode} onSensorSelect={onSensorSelect} />)}</>;
+  const isOverlayLayer = (layer: ScanLayerSpec): boolean => layer.dataType === 'sensor-markers' || layer.dataType === 'source-highlight';
+  const baseLayers = layers.filter((layer) => !isOverlayLayer(layer));
+  const overlayLayers = layers.filter(isOverlayLayer);
+  return <>
+    <color attach="background" args={['#07101a']} />
+    {baseLayers.map((layer) => <LayerView key={layer.id} layer={layer} extent={prepared.extent} selectedNode={selectedNode} onSensorSelect={onSensorSelect} />)}
+    <ViewportFailureBoundary
+      key={identityKey}
+      resetKeys={overlayResetKeys}
+      diagnosticEvent="SCAN_RESULT_OVERLAY_RENDER_FAILED"
+      onFailure={onOverlayFailure}
+      onRecovered={onOverlayRecovered}
+      renderFailure={() => <group />}
+    >
+      {overlayLayers.map((layer) => <LayerView key={layer.id} layer={layer} extent={prepared.extent} selectedNode={selectedNode} onSensorSelect={onSensorSelect} />)}
+    </ViewportFailureBoundary>
+  </>;
 }
 
 export function ScanPointCloudViewport({
@@ -305,6 +333,7 @@ export function ScanPointCloudViewport({
   sessionId = null,
   localizationRuns = NO_LOCALIZATION_RUNS,
   currentScanId = null,
+  scanIdentityKey,
   persistenceBusy = false,
   postScanGeneration = 0,
   computeProfile = null,
@@ -386,10 +415,18 @@ export function ScanPointCloudViewport({
   }, [postScanGeneration]);
   const candidateVolume = useMemo(() => solverCandidateVolume(snapshot), [snapshot]);
   const sourceGrid = useMemo(() => sourceVoxelGridForScan(snapshot), [snapshot]);
+  const viewportIdentityKey = scanIdentityKey ?? resultViewportIdentityKey(currentScanId, postScanGeneration);
   const sourceHighlights = useMemo(() => objectId === null || sessionId === null
     ? { reason: null, primary: null, uncertaintyVoxels: [], secondary: [], voxelSizeMeters: 0, historyRuns: [], staleRuns: [] } as SourceHighlightScene
     : buildSourceHighlightScene(localizationRuns, { objectId, sessionId }, registrationArtifact, sourceGrid, { currentScanId }),
   [localizationRuns, objectId, registrationArtifact, currentScanId, sessionId, sourceGrid]);
+  const overlayResetKeys = useMemo<readonly unknown[]>(
+    () => [viewportIdentityKey, snapshot, sourceGrid, sensorMarkers, sensorGeometry, registrationArtifact, localizationRuns, objectId, sessionId],
+    [localizationRuns, objectId, registrationArtifact, sensorGeometry, sensorMarkers, sessionId, snapshot, sourceGrid, viewportIdentityKey],
+  );
+  const [overlayFailure, setOverlayFailure] = useState<ViewportFailure | null>(null);
+  const handleOverlayFailure = useCallback((failure: ViewportFailure): void => setOverlayFailure(failure), []);
+  const handleOverlayRecovered = useCallback((): void => setOverlayFailure(null), []);
   const cameraFitExtent = useMemo(() => scanViewFitExtent(
     prepared,
     sourceHighlights,
@@ -539,7 +576,14 @@ export function ScanPointCloudViewport({
   const sourceReasonLabel = sourceReasonText(sourceHighlights.reason, t);
 
   return <div className="viewport-shell scan-viewport" aria-label={t('scan.aria_label')} data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)} data-source-highlight-reason={sourceHighlights.reason ?? undefined}>
-    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} /><CameraController command={viewCommand} extent={cameraFitExtent} onInteractionEnd={handleInteractionEnd} /></Canvas>
+    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} identityKey={viewportIdentityKey} overlayResetKeys={overlayResetKeys} onOverlayFailure={handleOverlayFailure} onOverlayRecovered={handleOverlayRecovered} /><CameraController command={viewCommand} extent={cameraFitExtent} onInteractionEnd={handleInteractionEnd} /></Canvas>
+    {overlayFailure !== null && <div className="xr-runtime-warning scan-overlay-failure" role="alert">
+      <div>{t('scan.overlay.failed')}</div>
+      <div>{overlayFailure.message}</div>
+      {overlayFailure.attempts < VIEWPORT_FAILURE_MAX_ATTEMPTS && (
+        <button type="button" onClick={overlayFailure.retry}>{t('scan.renderer.retry')}</button>
+      )}
+    </div>}
     <div className="scan-source-badge">{scanSourceBadgeText(snapshot, locale)}</div>
     {candidateVolume.candidateDepthUnavailable && <div className="scan-source-candidate-depth" role="status">{t('scan.candidate_depth_unavailable')}</div>}
     {postScanDeferred && !display.mesh && <div className="scan-mesh-overlay" role="status" aria-live="polite">{t('scan.badge.building_after_save')}</div>}
@@ -564,11 +608,26 @@ export function ScanPointCloudViewport({
       </dl>
       <p>{t(`scan.marker_detail.${selectedMarker.status}` as 'scan.marker_detail.anchored' | 'scan.marker_detail.cs_projected' | 'scan.marker_detail.visual_only' | 'scan.marker_detail.cs_unregistered')}</p>
     </section>}
-    {sensorFrameScene !== null && <section className="scan-sensor-inset" aria-label={t('scan.unregistered_geometry')}>
-      <div className="scan-sensor-inset-caption">{t('scan.unregistered_geometry')}</div>
-      <SceneViewport scene={sensorFrameScene} selectedId={selectedNode ?? ''} viewCommand={viewCommand}
-        onSelect={(node) => { const selected = sensorNode(node); if (selected !== null) selectSensorNode(selected); }} />
-    </section>}
+    {sensorFrameScene !== null && <ViewportFailureBoundary
+      key={viewportIdentityKey}
+      resetKeys={overlayResetKeys}
+      diagnosticEvent="SCAN_RESULT_OVERLAY_RENDER_FAILED"
+      renderFailure={({ message, attempts, retry }) => (
+        <div className="xr-runtime-warning scan-overlay-failure" role="alert">
+          <div>{t('scan.overlay.failed')}</div>
+          <div>{message}</div>
+          {attempts < VIEWPORT_FAILURE_MAX_ATTEMPTS && (
+            <button type="button" onClick={retry}>{t('scan.renderer.retry')}</button>
+          )}
+        </div>
+      )}
+    >
+      <section className="scan-sensor-inset" aria-label={t('scan.unregistered_geometry')}>
+        <div className="scan-sensor-inset-caption">{t('scan.unregistered_geometry')}</div>
+        <SceneViewport scene={sensorFrameScene} selectedId={selectedNode ?? ''} viewCommand={viewCommand}
+          onSelect={(node) => { const selected = sensorNode(node); if (selected !== null) selectSensorNode(selected); }} />
+      </section>
+    </ViewportFailureBoundary>}
     <div className="axis-note">{t('scan.axis_note')}</div>
   </div>;
 }

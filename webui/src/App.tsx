@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import './scan.css';
 
@@ -33,6 +33,11 @@ import { ScanPersistenceController, SCAN_STORAGE_BLOCKED_MESSAGE, scanPersistenc
 import { scannerStorageActionsDisabled } from './features/objects/measurementTransition';
 import type { ViewCommand, ViewPreset } from './components/SceneViewport';
 import { XrRuntimePanel, type ScanStartIntent } from './components/XrRuntimePanel';
+import {
+  resultViewportIdentityKey,
+  VIEWPORT_FAILURE_MAX_ATTEMPTS,
+  ViewportFailureBoundary,
+} from './components/ViewportFailureBoundary';
 import { clientDiagnostics } from './data/clientDiagnostics';
 import { countCoverageQualityBands } from './xr/coverageQuality';
 import {
@@ -120,34 +125,12 @@ interface AppProps {
   status: DeviceStatus | null;
 }
 
-class ResultViewportErrorBoundary extends Component<
-  { children: ReactNode; formatFailure: (error: string) => string },
-  { message: string | null }
-> {
-  state: { message: string | null } = { message: null };
-
-  static getDerivedStateFromError(error: unknown): { message: string } {
-    return { message: error instanceof Error ? error.message : String(error) };
-  }
-
-  componentDidCatch(error: unknown, info: ErrorInfo): void {
-    clientDiagnostics.warn('SCAN_RESULT_RENDERER_LOAD_FAILED', {
-      error: error instanceof Error ? error.message : String(error),
-      componentStack: info.componentStack ?? '',
-    });
-    void clientDiagnostics.flush();
-  }
-
-  render(): ReactNode {
-    if (this.state.message !== null) {
-      return (
-        <div className="viewport-shell scan-viewport" role="alert">
-          {this.props.formatFailure(this.state.message)}
-        </div>
-      );
-    }
-    return this.props.children;
-  }
+/** Build the React identity for the result viewport from the durable scan ID or provisional generation. */
+export function resultViewportKey(
+  scan: { objectId: string | null; durableScanId: string | null },
+  provisionalGeneration: number,
+): string {
+  return `${scan.objectId ?? 'none'}:${resultViewportIdentityKey(scan.durableScanId, provisionalGeneration)}`;
 }
 
 /** Wait for the final tag result slightly longer than the panel own bounded window (never delays the scan upload). */
@@ -1198,6 +1181,10 @@ export default function App({ objectId, sessionId, status }: AppProps) {
 
   const hasMeasuredScan = resultControlsAvailable(scanDurability) && scanSnapshot !== null && scanSnapshot.pointCount > 0;
   const durableViewport = scanViewportProvenance === 'durable' && scanAuthority !== null && scanAuthority === scanSnapshot;
+  const viewportDurableScanId = scanSnapshot !== null && scanSnapshot === scanDurability.durableSnapshot
+    ? scanDurability.durableId
+    : null;
+  const viewportScanIdentityKey = resultViewportKey({ objectId, durableScanId: viewportDurableScanId }, scanEncodeOwnerGeneration.current);
   const registrationExpected = useMemo<RegistrationExpectation>(
     () => ({ geometryComputedAtMs: geometryGeneration(localizationGeometry), scanFrameId: durableViewport ? scanDurability.durableId : null }),
     [durableViewport, localizationGeometry, scanDurability.durableId],
@@ -1352,7 +1339,18 @@ export default function App({ objectId, sessionId, status }: AppProps) {
               {t('scan.storage.provisional')}
             </div>
           )}
-          <ResultViewportErrorBoundary key={`${objectId ?? 'none'}-${scanSnapshot.depthFrameCount}-${scanSnapshot.pointCount}`} formatFailure={(error) => t('scan.renderer.failed', { error })}>
+          <ViewportFailureBoundary
+            key={viewportScanIdentityKey}
+            diagnosticEvent="SCAN_RESULT_RENDERER_LOAD_FAILED"
+            renderFailure={({ message, attempts, retry }) => (
+              <div className="viewport-shell scan-viewport" role="alert">
+                <div>{t('scan.renderer.failed', { error: message })}</div>
+                {attempts < VIEWPORT_FAILURE_MAX_ATTEMPTS && (
+                  <button type="button" onClick={retry}>{t('scan.renderer.retry')}</button>
+                )}
+              </div>
+            )}
+          >
             <Suspense
               fallback={
                 <div className="viewport-shell scan-viewport" role="status" aria-live="polite">
@@ -1369,6 +1367,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
                 sensorGeometry={durableViewport ? localizationGeometry : null}
                 registrationArtifact={viewerRegistration}
                 currentScanId={durableViewport ? scanDurability.durableId : null}
+                scanIdentityKey={viewportScanIdentityKey}
                 objectId={objectId}
                 sessionId={sessionId}
                 persistenceBusy={scanStoragePhase === 'preparing' || scanStoragePhase === 'saving'}
@@ -1376,10 +1375,10 @@ export default function App({ objectId, sessionId, status }: AppProps) {
                 computeProfile={computeProfile}
                 localizationRuns={durableViewport && localizationRunListing?.object_id === objectId && localizationRunListing.session_id === sessionId
                   ? localizationRunListing.runs
-                  : []}
+                  : undefined}
               />
             </Suspense>
-          </ResultViewportErrorBoundary>
+          </ViewportFailureBoundary>
 
           <aside className="side-panel scan-result-panel">
             <section className="panel-card">

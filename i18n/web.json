@@ -388,6 +388,8 @@
     "scan.preview.unavailable": { "en": "PREVIEW UNAVAILABLE", "uk": "ПОПЕРЕДНІЙ ПЕРЕГЛЯД НЕДОСТУПНИЙ" },
     "scan.preview.stale": { "en": "PREVIEW GENERATION STALE", "uk": "\u041f\u043e\u043a\u043e\u043b\u0456\u043d\u043d\u044f \u043f\u043e\u043f\u0435\u0440\u0435\u0434\u043d\u044c\u043e\u0433\u043e \u043f\u0435\u0440\u0435\u0433\u043b\u044f\u0434\u0443 \u0437\u0430\u0441\u0442\u0430\u0440\u0456\u043b\u043e" },
     "scan.renderer.failed": { "en": "3D result renderer failed: {error}", "uk": "Не вдалося показати 3D-результат: {error}" },
+    "scan.renderer.retry": { "en": "Retry", "uk": "Повторити" },
+    "scan.overlay.failed": { "en": "A scan overlay could not be rendered.", "uk": "Не вдалося відобразити додатковий шар сканування." },
     "scan.loading_renderer": { "en": "Loading 3D result renderer…", "uk": "Завантаження засобу показу 3D-результату…" },
     "scan.deleting": { "en": "Deleting…", "uk": "Видалення…" },
     "scan.delete_saved": { "en": "Delete saved scan", "uk": "Видалити збережений скан" },
