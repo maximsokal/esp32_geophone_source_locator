@@ -23,7 +23,6 @@
 #include "nrf_log_events.h"
 #include "nrf_log_runtime_zephyr.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
-#include "nrf_upstream_target_zephyr.h"
 #include "nrf_watchdog_zephyr.h"
 
 #include <zephyr/sys/printk.h>
