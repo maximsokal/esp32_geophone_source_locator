@@ -104,9 +104,10 @@ def test_response_field_order_is_geometry_then_cs_pairs_then_picks_then_runs():
 def test_picks_listing_failure_does_not_fail_the_request():
     source = handler_source()
     list_index = source.index(
-        "localization_run_store_list_picks(\n"
-        "                object_id, session_id, picks, LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &pick_count\n"
-        "            )"
+        "localization_run_store_list_picks_ex(\n"
+        "            object_id, session_id, picks, LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION,\n"
+        "            &pick_count, &picks_list_status\n"
+        "        )"
     )
     after_list = source[list_index:list_index + 400]
     assert "return httpd_resp_send_err" not in after_list
@@ -133,7 +134,7 @@ def test_run_store_provides_a_pick_record_write_and_list_analog():
 def test_orchestrator_persists_pick_evidence_before_any_method_record():
     source = orchestrator_source()
     pick_write_index = source.index(
-        "const esp_err_t pick_write_err = localization_calculate_write_picks_retry("
+        "pick_write_err = localization_calculate_write_picks_retry("
     )
     first_method_write_index = source.index("localization_run_store_write(object_id, session_id, &records[i]);")
     assert pick_write_index < first_method_write_index

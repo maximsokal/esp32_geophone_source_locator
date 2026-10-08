@@ -60,6 +60,52 @@ static const char *web_localization_cs_pair_failure(const char *failure)
     return "unknown";
 }
 
+static const char *web_localization_partial_error_name(uint32_t code)
+{
+    switch (code) {
+        case LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_PARSE_FAILED:
+            return "run_record_parse_failed";
+        case LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_READ_FAILED:
+            return "run_record_read_failed";
+        case LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_RECORD_PARSE_FAILED:
+            return "picks_record_parse_failed";
+        case LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED:
+            return "picks_listing_failed";
+        case LOCALIZATION_RUN_STORE_PARTIAL_ERROR_LISTING_ENUMERATION_FAILED:
+            return "listing_enumeration_failed";
+        default:
+            return NULL;
+    }
+}
+
+static void web_localization_write_partial_errors(web_json_writer_t *writer, uint32_t codes)
+{
+    static const uint32_t error_codes[] = {
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_PARSE_FAILED,
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_READ_FAILED,
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_RECORD_PARSE_FAILED,
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED,
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_LISTING_ENUMERATION_FAILED,
+    };
+    bool first = true;
+    web_json_writer_write(writer, "[");
+    for (size_t i = 0U; i < sizeof(error_codes) / sizeof(error_codes[0]); ++i) {
+        if ((codes & error_codes[i]) == 0U) {
+            continue;
+        }
+        const char *name = web_localization_partial_error_name(error_codes[i]);
+        if (name == NULL) {
+            continue;
+        }
+        if (!first) {
+            web_json_writer_write(writer, ",");
+        }
+        web_json_writer_printf(writer, "\"%s\"", name);
+        first = false;
+    }
+    web_json_writer_write(writer, "]");
+}
+
 /*
  * MAX-168: read-only listing of every localization run already persisted
  * for one session (by localization_calculate_run(), via /api/control's
@@ -74,10 +120,10 @@ static const char *web_localization_cs_pair_failure(const char *failure)
  * evidence record (one per past "Calculate source" invocation) -- the
  * exact session-frozen state and per-computation evidence a run was
  * actually produced from, never the object's current live topology. All
- * three are best-effort: a read/listing failure (e.g. a session recorded
- * before MAX-166/MAX-148) reports empty/unavailable rather than failing
- * the whole request -- the run listing remains this route's primary
- * payload.
+ * Geometry and CS-pair reads are best-effort. Run and pick record listing
+ * failures that can retain valid entries are exposed through `partial_error`
+ * and stable `partial_errors` codes. A missing run directory and hard run
+ * listing failures retain their existing HTTP status responses.
  *
  * `?job=status` instead reports the background "Calculate source" job
  * (localization_job): state, method running, elapsed / budget, every
@@ -296,10 +342,16 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
     }
 
     size_t record_count = 0U;
-    const esp_err_t list_err = localization_run_store_list(
-        object_id, session_id, records, LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION, &record_count
+    localization_run_store_list_status_t run_list_status = {0};
+    const esp_err_t list_err = localization_run_store_list_ex(
+        object_id, session_id, records, LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION,
+        &record_count, &run_list_status
     );
-    if (list_err != ESP_OK) {
+    /* The extended store uses ESP_FAIL for enumeration errors after setting
+     * partial_error. Retain any valid records and return them with the
+     * warning envelope. Missing directories and hard failures keep their
+     * existing 404/422/500 behavior. */
+    if (list_err != ESP_OK && !(list_err == ESP_FAIL && run_list_status.partial_error)) {
         free(records);
         return httpd_resp_send_err(
             request,
@@ -322,6 +374,44 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
     const bool cs_pairs_available =
         seismic_recorder_read_session_cs_pairs(object_id, session_id, &cs_pairs) == ESP_OK;
 
+    /* Pick evidence is best-effort. A genuinely absent picks directory
+     * means no pick history; any other listing failure is made visible in
+     * the envelope while successfully read entries remain available. */
+    localization_pick_record_t *picks = calloc(
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, sizeof(*picks)
+    );
+    size_t pick_count = 0U;
+    localization_run_store_list_status_t picks_list_status = {0};
+    uint32_t partial_error_codes = run_list_status.partial_error_codes;
+    bool partial_error = run_list_status.partial_error;
+    if (partial_error && partial_error_codes == 0U) {
+        partial_error_codes |= LOCALIZATION_RUN_STORE_PARTIAL_ERROR_LISTING_ENUMERATION_FAILED;
+    }
+    if (picks == NULL) {
+        partial_error = true;
+        partial_error_codes |= LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED;
+    } else {
+        const esp_err_t picks_err = localization_run_store_list_picks_ex(
+            object_id, session_id, picks, LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION,
+            &pick_count, &picks_list_status
+        );
+        partial_error = partial_error || picks_list_status.partial_error;
+        partial_error_codes |= picks_list_status.partial_error_codes;
+        if (picks_list_status.partial_error && picks_list_status.partial_error_codes == 0U) {
+            partial_error_codes |= LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED;
+        }
+        if (picks_err != ESP_OK && picks_err != ESP_ERR_NOT_FOUND) {
+            partial_error = true;
+            if (picks_list_status.partial_error_codes == 0U) {
+                partial_error_codes |= LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED;
+            }
+            if (!picks_list_status.partial_error) {
+                pick_count = 0U;
+            }
+        }
+    }
+    partial_error = partial_error || partial_error_codes != 0U;
+
     httpd_resp_set_type(request, "application/json; charset=utf-8");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
 
@@ -329,10 +419,13 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
     web_json_writer_init(&writer, request);
     web_json_writer_printf(
         &writer,
-        "{\"object_id\":\"%s\",\"session_id\":\"%s\",",
+        "{\"object_id\":\"%s\",\"session_id\":\"%s\",\"partial_error\":%s,\"partial_errors\":",
         object_id,
-        session_id
+        session_id,
+        partial_error ? "true" : "false"
     );
+    web_localization_write_partial_errors(&writer, partial_error_codes);
+    web_json_writer_write(&writer, ",");
 
     web_json_writer_printf(
         &writer, "\"geometry\":{\"available\":%s", geometry_available ? "true" : "false"
@@ -541,27 +634,7 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
     }
     web_json_writer_write(&writer, "]},");
 
-    /*
-     * MAX-148 (slice 3): every persisted pick-evidence record for this
-     * session (one per past "Calculate source" invocation, versioned by
-     * computed_at_ms -- see localization_pick_record.h). Best-effort like
-     * geometry/cs_pairs above: a listing failure reports an empty array
-     * rather than failing the whole response.
-     */
-    localization_pick_record_t *picks = calloc(
-        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, sizeof(*picks)
-    );
-    size_t pick_count = 0U;
-    if (picks != NULL) {
-        if (
-            localization_run_store_list_picks(
-                object_id, session_id, picks, LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &pick_count
-            ) != ESP_OK
-        ) {
-            pick_count = 0U;
-        }
-    }
-
+    /* Record serializers own the per-run and per-pick wire shape. */
     web_json_writer_write(&writer, "\"picks\":[");
     for (size_t i = 0U; i < pick_count; ++i) {
         if (i > 0U) {

@@ -85,9 +85,9 @@ static const char *TAG = "LOCALIZATION_CALCULATE";
 
 
 /*
- * The run's records and fusion state live on the heap, not the stack:
- * localization_calculate_run() runs on the 8 KiB HTTPS task, and the
- * records alone are ~4 KiB.
+ * The run's records and fusion state live on the heap, not the task stack.
+ * localization_calculate_run() runs in the dedicated localization job
+ * task; keeping per-method results here preserves stack for the solver chain.
  */
 typedef struct
 {
@@ -440,6 +440,105 @@ static esp_err_t localization_calculate_write_picks_retry(
 }
 
 
+static esp_err_t localization_calculate_persist_trace_rejection(
+    const char *object_id,
+    const char *session_id,
+    const localization_calculate_config_t *config,
+    const object_store_geometry_t *geometry,
+    uint32_t channel_mask,
+    localization_dimensionality_t dimensionality,
+    uint64_t computed_at_ms,
+    size_t frame_count,
+    int64_t session_epoch_timestamp_us,
+    const char *reason,
+    localization_calculate_summary_t *summary
+)
+{
+    localization_run_record_t record = {0};
+    record.schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
+    record.scan_provenance_present = true;
+    snprintf(record.object_id, sizeof(record.object_id), "%s", object_id);
+    snprintf(record.session_id, sizeof(record.session_id), "%s", session_id);
+    record.computed_at_ms = computed_at_ms;
+    record.kind = LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD;
+    snprintf(record.method_name, sizeof(record.method_name), "%s", "localization_analysis");
+    record.method_version = LOCALIZATION_CALCULATE_METHOD_VERSION;
+    record.channel_mask_rejected = channel_mask;
+    record.dimensionality = dimensionality;
+    record.geometry_computed_at_ms = localization_calculate_geometry_computed_at_ms(geometry);
+    snprintf(record.propagation_model_name, sizeof(record.propagation_model_name), "%s",
+             config->propagation_model_name);
+    snprintf(record.material, sizeof(record.material), "%s", config->material);
+    record.propagation_speed_mps = config->propagation_speed_mps;
+    record.propagation_speed_uncertainty_mps = config->propagation_speed_uncertainty_mps;
+    record.session_epoch_known = true;
+    record.session_epoch_timestamp_us = session_epoch_timestamp_us;
+    record.analysis_window_start_index = 0U;
+    record.analysis_window_frames = frame_count;
+    snprintf(record.rejection_reason, sizeof(record.rejection_reason), "%s", reason);
+    record.failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
+
+    summary->methods_total = 1U;
+    summary->methods_completed = 1U;
+    summary->methods_attempted = 1U;
+    const esp_err_t err = localization_run_store_write(object_id, session_id, &record);
+    if (err == ESP_OK) {
+        summary->methods_persisted = 1U;
+    }
+    return err;
+}
+
+
+static const char *secondary_pick_reason(
+    const geophone_channel_pick_t *pick,
+    size_t primary_sample_index
+)
+{
+    if (pick->status == GEOPHONE_PICK_ACCEPTED) {
+        return "accepted";
+    }
+    if (pick->status == GEOPHONE_PICK_REJECTED_LOW_SNR) {
+        return pick->arrival_sample_index <= primary_sample_index ? "not_after_p" : "low_snr";
+    }
+    return "no_trigger";
+}
+
+
+static void localization_calculate_store_s_pick(
+    localization_pick_phase_t *phase,
+    const geophone_channel_pick_t *pick,
+    size_t primary_sample_index,
+    uint32_t sample_rate_hz
+)
+{
+    memset(phase, 0, sizeof(*phase));
+    phase->present = true;
+    phase->fields_present = LOCALIZATION_PICK_PHASE_FIELD_STATUS |
+        LOCALIZATION_PICK_PHASE_FIELD_METHOD;
+    phase->status = pick->status;
+    phase->method = pick->method;
+    snprintf(phase->reason, sizeof(phase->reason), "%s",
+             secondary_pick_reason(pick, primary_sample_index));
+    if (pick->status == GEOPHONE_PICK_REJECTED_NO_TRIGGER) {
+        return;
+    }
+    phase->fields_present |= LOCALIZATION_PICK_PHASE_FIELD_SAMPLE_INDEX |
+        LOCALIZATION_PICK_PHASE_FIELD_SUBSAMPLE_OFFSET |
+        LOCALIZATION_PICK_PHASE_FIELD_ARRIVAL_TIME_US |
+        LOCALIZATION_PICK_PHASE_FIELD_SNR |
+        LOCALIZATION_PICK_PHASE_FIELD_UNCERTAINTY_US;
+    phase->sample_index = pick->arrival_sample_index;
+    phase->subsample_offset = pick->arrival_subsample_offset;
+    phase->arrival_time_us = (double)localization_calculate_arrival_time_us(
+        pick->arrival_sample_index, sample_rate_hz
+    );
+    phase->snr = pick->snr;
+    phase->uncertainty_us = sample_rate_hz > 0U
+        ? (double)pick->uncertainty_samples * 1.0e6 / (double)sample_rate_hz
+        : 0.0;
+}
+
+
 static int64_t monotonic_us(void)
 {
     return esp_timer_get_time();
@@ -598,8 +697,8 @@ esp_err_t localization_calculate_run(
     }
     config = &session_config;
 
-    const size_t bytes_per_frame =
-        sizeof(seismic_frame_t) + SEISMIC_CHANNEL_COUNT * sizeof(float);
+    const size_t bytes_per_frame = sizeof(seismic_frame_t) +
+        SEISMIC_CHANNEL_COUNT * sizeof(float) + sizeof(uint64_t) + sizeof(bool);
     const size_t largest_free_psram_block =
         heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
     bool analysis_limited_by_free_memory = false;
@@ -637,23 +736,40 @@ esp_err_t localization_calculate_run(
         sizeof(*frames) * frame_capacity,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     );
-    if (frames == NULL) {
+    uint64_t *source_sample_indices = heap_caps_malloc(
+        sizeof(*source_sample_indices) * frame_capacity,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    bool *gap_before = heap_caps_malloc(
+        sizeof(*gap_before) * frame_capacity,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+    );
+    if (frames == NULL || source_sample_indices == NULL || gap_before == NULL) {
+        heap_caps_free(frames);
+        heap_caps_free(source_sample_indices);
+        heap_caps_free(gap_before);
         return ESP_ERR_NO_MEM;
     }
 
     size_t frame_count = 0U;
-    err = seismic_recorder_read_session_range(
-        object_id, session_id, 0U, frame_capacity, frames, NULL, NULL,
-        &frame_count, NULL
+    seismic_recorder_raw_window_stats_t raw_window_stats;
+    err = seismic_recorder_read_session_range_ex(
+        object_id, session_id, 0U, frame_capacity, frames,
+        source_sample_indices, gap_before, &frame_count, NULL, &raw_window_stats
     );
     if (err != ESP_OK) {
         heap_caps_free(frames);
+        heap_caps_free(source_sample_indices);
+        heap_caps_free(gap_before);
         return err;
     }
     if (frame_count == 0U || session_summary.sample_rate_hz == 0U) {
         heap_caps_free(frames);
+        heap_caps_free(source_sample_indices);
+        heap_caps_free(gap_before);
         return ESP_ERR_INVALID_STATE;
     }
+    const int64_t session_epoch_timestamp_us = frames[0].timestamp_us;
     const bool analysis_window_truncated =
         session_summary.samples_written > (uint64_t)frame_count;
     const bool analysis_window_memory_limited =
@@ -665,6 +781,7 @@ esp_err_t localization_calculate_run(
     float *channel_samples[OBJECT_STORE_POD_COUNT] = { 0 };
     localization_event_channel_input_t event_channels[OBJECT_STORE_POD_COUNT];
     memset(event_channels, 0, sizeof(event_channels));
+    bool frame_metadata_validated = false;
 
     for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
         event_channels[ch].sample_rate_hz = session_summary.sample_rate_hz;
@@ -691,11 +808,38 @@ esp_err_t localization_calculate_run(
         if (samples == NULL) {
             free_channel_buffers(channel_samples);
             heap_caps_free(frames);
+            heap_caps_free(source_sample_indices);
+            heap_caps_free(gap_before);
             return ESP_ERR_NO_MEM;
         }
         channel_samples[ch] = samples;
 
         for (size_t i = 0U; i < frame_count; ++i) {
+            if (!frame_metadata_validated) {
+                const char *trace_rejection_reason = NULL;
+                if (i > 0U && frames[i].timestamp_us <= frames[i - 1U].timestamp_us) {
+                    trace_rejection_reason = LOCALIZATION_RUN_REJECTION_REASON_TIMESTAMP_NON_MONOTONIC;
+                } else if (
+                    gap_before[i] ||
+                    (i > 0U && (source_sample_indices[i - 1U] == UINT64_MAX ||
+                        source_sample_indices[i] != source_sample_indices[i - 1U] + 1U))
+                ) {
+                    trace_rejection_reason = LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP;
+                }
+                if (trace_rejection_reason != NULL) {
+                    const int64_t epoch_timestamp_us = frames[0].timestamp_us;
+                    free_channel_buffers(channel_samples);
+                    heap_caps_free(frames);
+                    heap_caps_free(source_sample_indices);
+                    heap_caps_free(gap_before);
+                    return localization_calculate_persist_trace_rejection(
+                        object_id, session_id, config, &geometry, all_channel_mask,
+                        dimensionality, computed_at_ms, frame_count, epoch_timestamp_us,
+                        trace_rejection_reason, summary_out
+                    );
+                }
+                frame_metadata_validated = i + 1U == frame_count;
+            }
             samples[i] = frames[i].channel_uv[ch];
         }
 
@@ -719,9 +863,12 @@ esp_err_t localization_calculate_run(
             return err;
         }
 
-        geophone_event_pick_channel_arrival(
+        const bool raw_saturated = geophone_event_i16_rail_count_is_saturated(
+            raw_window_stats.rail_sample_counts[ch], raw_window_stats.samples_examined
+        );
+        geophone_event_pick_channel_arrival_with_saturation(
             samples, frame_count, session_summary.sample_rate_hz,
-            &config->pick_config, &event_channels[ch].pick
+            &config->pick_config, raw_saturated, &event_channels[ch].pick
         );
     }
 
@@ -729,6 +876,10 @@ esp_err_t localization_calculate_run(
      * DC-removed windows; nothing below needs the interleaved copy. */
     heap_caps_free(frames);
     frames = NULL;
+    heap_caps_free(source_sample_indices);
+    source_sample_indices = NULL;
+    heap_caps_free(gap_before);
+    gap_before = NULL;
 
     /* --- MAX-209: cross-channel physical consistency + xcorr refinement --- */
 
@@ -827,9 +978,11 @@ esp_err_t localization_calculate_run(
     }
 
     bool any_accepted = false;
+    uint32_t accepted_pick_mask = 0U;
     size_t reference_sample_index = 0U;
     for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
         if (event_channels[ch].pick.status == GEOPHONE_PICK_ACCEPTED) {
+            accepted_pick_mask |= 1U << ch;
             if (!any_accepted || event_channels[ch].pick.arrival_sample_index < reference_sample_index) {
                 reference_sample_index = event_channels[ch].pick.arrival_sample_index;
             }
@@ -858,20 +1011,30 @@ esp_err_t localization_calculate_run(
     snprintf(pick_record->object_id, sizeof(pick_record->object_id), "%s", object_id);
     snprintf(pick_record->session_id, sizeof(pick_record->session_id), "%s", session_id);
     pick_record->computed_at_ms = computed_at_ms;
+    pick_record->session_epoch_known = true;
+    pick_record->session_epoch_timestamp_us = session_epoch_timestamp_us;
     for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
         pick_record->channels[ch].participating = geometry.pods[ch].computed;
         pick_record->channels[ch].pick = event_channels[ch].pick;
+        if (event_channels[ch].pick.reason != GEOPHONE_PICK_REASON_NONE) {
+            snprintf(pick_record->channels[ch].reason,
+                     sizeof(pick_record->channels[ch].reason), "%s",
+                     geophone_pick_reason_name(event_channels[ch].pick.reason));
+        }
     }
-    const esp_err_t pick_write_err = localization_calculate_write_picks_retry(
-        object_id, session_id, pick_record
-    );
+    esp_err_t pick_write_err = ESP_OK;
 
     localization_point3d_t participant_positions[OBJECT_STORE_POD_COUNT];
     size_t participant_position_count = 0U;
     for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
         if (geometry.pods[ch].computed) {
-            workspace->participant_channel[participant_position_count] = ch;
             participant_positions[participant_position_count++] = event_channels[ch].sensor_position;
+        }
+    }
+    size_t accepted_participant_count = 0U;
+    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        if ((accepted_pick_mask & (1U << ch)) != 0U) {
+            workspace->participant_channel[accepted_participant_count++] = ch;
         }
     }
 
@@ -889,6 +1052,8 @@ esp_err_t localization_calculate_run(
         .object_id = object_id,
         .session_id = session_id,
         .computed_at_ms = computed_at_ms,
+        .session_epoch_known = true,
+        .session_epoch_timestamp_us = session_epoch_timestamp_us,
         .geometry_computed_at_ms = geometry_computed_at_ms,
         .dimensionality = dimensionality,
         .propagation_model_name = config->propagation_model_name,
@@ -930,6 +1095,25 @@ esp_err_t localization_calculate_run(
     localization_config_t tdoa_config = localization_default_config();
     tdoa_config.propagation_speed_mps = config->propagation_speed_mps;
 
+    localization_observation_t geometry_validation_observations[OBJECT_STORE_POD_COUNT];
+    size_t geometry_validation_count = 0U;
+    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        if (geometry.pods[ch].computed) {
+            geometry_validation_observations[geometry_validation_count++] = (localization_observation_t) {
+                .sensor_position = event_channels[ch].sensor_position,
+                .arrival_time_us = 0
+            };
+        }
+    }
+    localization_validation_reason_t geometry_validation_reason =
+        LOCALIZATION_VALIDATION_REASON_NONE;
+    if (geometry_validation_count >= 4U) {
+        (void)localization_validate_ex(
+            geometry_validation_observations, geometry_validation_count,
+            &tdoa_config, NULL, &geometry_validation_reason
+        );
+    }
+
     localization_event_result_t event_result;
     const esp_err_t tdoa_err = localization_event_solve(
         event_channels, OBJECT_STORE_POD_COUNT, &tdoa_config, NULL, &event_result
@@ -942,6 +1126,20 @@ esp_err_t localization_calculate_run(
         config->propagation_speed_mps, config->propagation_speed_uncertainty_mps,
         config->timing_uncertainty_us, &records[record_count]
     );
+    if (geometry_validation_reason == LOCALIZATION_INVALID_DUPLICATE_SENSOR_POSITION) {
+        event_result.validation_reason = geometry_validation_reason;
+    }
+    records[record_count].session_epoch_known = true;
+    records[record_count].session_epoch_timestamp_us = session_epoch_timestamp_us;
+    localization_calculate_set_tdoa_terminal_status(
+        &event_result, tdoa_config.max_iterations, &records[record_count]
+    );
+    if (event_result.validation_reason == LOCALIZATION_INVALID_DUPLICATE_SENSOR_POSITION) {
+        snprintf(records[record_count].rejection_reason,
+                 sizeof(records[record_count].rejection_reason), "%s",
+                 LOCALIZATION_RUN_REJECTION_REASON_DUPLICATE_SENSOR_POSITION);
+        records[record_count].failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
+    }
     if (tdoa_err != ESP_OK) {
         localization_calculate_set_rejection(
             &records[record_count], "TDOA event bridge call failed", LOCALIZATION_FAILURE_CLASS_INTERNAL
@@ -955,6 +1153,8 @@ esp_err_t localization_calculate_run(
     localization_calculate_budget_end(&budget, &records[record_count]);
     ++record_count;
 
+    /* Absolute recorder timestamps stay separate: solver emission_time_us
+     * and every pick arrival_time_us remain relative to sample zero. */
     /* --- Statistical traveltime inversion (MAX-136) ---------------------- */
 
     localization_traveltime_pick_t traveltime_picks[OBJECT_STORE_POD_COUNT];
@@ -1019,10 +1219,7 @@ esp_err_t localization_calculate_run(
     free(traveltime_result.surface);
 
     /* --- Semblance / coherency (MAX-137) ---------------------------------
-     * Uses every participating channel's raw DC-removed window regardless
-     * of that channel's own pick outcome (a coherency operator measures the
-     * waveform shape directly), but can only run at all once some channel,
-     * anywhere, has an accepted pick to anchor its search window on. */
+     * Only channels with an accepted P pick enter the waveform solver. */
 
     const bool semblance_attempted = any_accepted;
     localization_semblance_result_t semblance_result;
@@ -1034,7 +1231,7 @@ esp_err_t localization_calculate_run(
         localization_semblance_channel_t semblance_channels[OBJECT_STORE_POD_COUNT];
         size_t semblance_channel_count = 0U;
         for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
-            if (geometry.pods[ch].computed) {
+            if ((accepted_pick_mask & (1U << ch)) != 0U) {
                 semblance_channels[semblance_channel_count].samples = channel_samples[ch];
                 semblance_channels[semblance_channel_count].sample_count = frame_count;
                 semblance_channels[semblance_channel_count].sample_rate_hz = session_summary.sample_rate_hz;
@@ -1064,7 +1261,7 @@ esp_err_t localization_calculate_run(
         semblance_attempted
             ? LOCALIZATION_FAILURE_CLASS_INTERNAL
             : LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN,
-        all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
+        accepted_pick_mask, all_channel_mask & ~accepted_pick_mask,
         LOCALIZATION_CALCULATE_METHOD_VERSION, &records[record_count]
     );
     localization_calculate_budget_end(&budget, &records[record_count]);
@@ -1091,7 +1288,7 @@ esp_err_t localization_calculate_run(
     localization_energy_baseline_channel_t energy_channels[OBJECT_STORE_POD_COUNT];
     size_t energy_channel_count = 0U;
     for (size_t ch = 0U; energy_window_known && ch < OBJECT_STORE_POD_COUNT; ++ch) {
-        if (geometry.pods[ch].computed && channel_samples[ch] != NULL) {
+        if ((accepted_pick_mask & (1U << ch)) != 0U && channel_samples[ch] != NULL) {
             double sum_squares = 0.0;
             for (size_t i = energy_start; i < energy_end; ++i) {
                 sum_squares += (double)channel_samples[ch][i] * (double)channel_samples[ch][i];
@@ -1116,7 +1313,7 @@ esp_err_t localization_calculate_run(
 
     localization_calculate_energy_baseline_to_run_record(
         &context, energy_err == ESP_OK ? &energy_result : NULL,
-        all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
+        accepted_pick_mask, all_channel_mask & ~accepted_pick_mask,
         LOCALIZATION_CALCULATE_METHOD_VERSION, &records[record_count]
     );
     if (!energy_window_known) {
@@ -1192,8 +1389,16 @@ esp_err_t localization_calculate_run(
                 channel_samples[ch], frame_count, session_summary.sample_rate_hz,
                 event_channels[ch].pick.arrival_sample_index, &config->s_pick_config, &s_pick
             )) {
+            localization_calculate_store_s_pick(
+                &pick_record->channels[ch].s_pick, &s_pick,
+                event_channels[ch].pick.arrival_sample_index, session_summary.sample_rate_hz
+            );
             continue;
         }
+        localization_calculate_store_s_pick(
+            &pick_record->channels[ch].s_pick, &s_pick,
+            event_channels[ch].pick.arrival_sample_index, session_summary.sample_rate_hz
+        );
         const int64_t s_arrival_us = localization_calculate_arrival_time_us(
             s_pick.arrival_sample_index, session_summary.sample_rate_hz
         );
@@ -1243,6 +1448,9 @@ esp_err_t localization_calculate_run(
         )
     );
     localization_calculate_budget_end(&budget, &records[record_count]);
+    pick_write_err = localization_calculate_write_picks_retry(
+        object_id, session_id, pick_record
+    );
     ++record_count;
 
     /* SUEA without a scan: every cell passable (straight rays); the
@@ -1256,14 +1464,15 @@ esp_err_t localization_calculate_run(
         suea_grid, &suea_min, &suea_max, traveltime_bounds.step_m, 0U
     );
     localization_suea_pick_t *suea_picks = workspace->suea_picks;
-    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
-        suea_picks[ch].sensor_position = event_channels[ch].sensor_position;
+    for (size_t i = 0U; i < p_observation_count; ++i) {
+        const size_t ch = workspace->p_channel[i];
+        suea_picks[i].sensor_position = event_channels[ch].sensor_position;
         if (dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D) {
             /* The planar search is one layer at the mean sensor height. */
-            suea_picks[ch].sensor_position.z_m = traveltime_bounds.min_corner.z_m;
+            suea_picks[i].sensor_position.z_m = traveltime_bounds.min_corner.z_m;
         }
-        suea_picks[ch].arrival_time_us = traveltime_picks[ch].observation.arrival_time_us;
-        suea_picks[ch].weight = traveltime_picks[ch].weight;
+        suea_picks[i].arrival_time_us = traveltime_picks[ch].observation.arrival_time_us;
+        suea_picks[i].weight = 1.0;
     }
     const localization_suea_config_t suea_config = {
         .timing_uncertainty_us = config->timing_uncertainty_us,
@@ -1278,7 +1487,7 @@ esp_err_t localization_calculate_run(
         suea_err = suea_grid_err;
         if (suea_grid_err == ESP_OK) {
             suea_err = localization_suea_locate(
-                suea_grid, suea_picks, OBJECT_STORE_POD_COUNT, &suea_config, suea_result
+                suea_grid, suea_picks, p_observation_count, &suea_config, suea_result
             );
         }
         summary_out->methods_attempted++;
@@ -1316,7 +1525,7 @@ esp_err_t localization_calculate_run(
     const localization_extended_bounds_t extended_bounds =
         localization_calculate_extended_bounds(&traveltime_bounds);
     const bool planar = dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D;
-    const size_t participants = participant_position_count;
+    const size_t participants = accepted_participant_count;
 
     /* Cross-correlation TDOA over every participating pod's waveform. */
     localization_xcorr_tdoa_result_t *xcorr_result = &workspace->xcorr;
@@ -1476,8 +1685,8 @@ esp_err_t localization_calculate_run(
     localization_calculate_budget_end(&budget, &records[record_count]);
     ++record_count;
 
-    /* Participant-indexed picks for the eikonal and Bayesian methods (a pod
-     * without an accepted pick has weight 0). */
+    /* Participant-indexed inputs for eikonal and Bayesian contain only
+     * accepted P picks. */
     for (size_t i = 0U; i < participants; ++i) {
         const size_t ch = workspace->participant_channel[i];
         workspace->eikonal_sensors[i] = event_channels[ch].sensor_position;
@@ -1614,15 +1823,20 @@ esp_err_t localization_calculate_run(
             : ESP_ERR_NOT_FOUND;
         const bool scan_identity_matches = occupancy_err == ESP_OK &&
             scan_identity_err == ESP_OK && strcmp(occupancy.frame_id, current_scan_frame_id) == 0;
-        const bool usable = scan_identity_matches &&
-            scan_occupancy_registration_usable(&occupancy, geometry_computed_at_ms);
+        const char *registration_reason = scan_identity_matches
+            ? scan_occupancy_registration_reason(&occupancy, geometry_computed_at_ms)
+            : NULL;
+        const bool usable = scan_identity_matches && registration_reason == NULL;
         const char *not_applied_reason = occupancy_err != ESP_OK
             ? "scan occupancy artifact unreadable or invalid: constraint not applied"
             : (scan_identity_err != ESP_OK
                 ? "current scan identity unavailable (scan_identity_unavailable): constraint not applied"
                 : (!scan_identity_matches
                     ? "scan generation mismatch (scan_generation_mismatch): constraint not applied"
-                    : "no valid sensor<->scan registration for this session geometry (MAX-145): constraint not applied"));
+                    : (registration_reason != NULL &&
+                        strcmp(registration_reason, "reflected_transform") == 0
+                        ? LOCALIZATION_RUN_REJECTION_REASON_REFLECTED_TRANSFORM
+                        : "no valid sensor<->scan registration for this session geometry (MAX-145): constraint not applied")));
         const localization_failure_class_t not_applied_failure_class =
             occupancy_err != ESP_OK || scan_identity_err != ESP_OK || !scan_identity_matches
                 ? LOCALIZATION_FAILURE_CLASS_INTERNAL
@@ -1679,7 +1893,7 @@ esp_err_t localization_calculate_run(
             localization_semblance_channel_t semblance_channels[OBJECT_STORE_POD_COUNT];
             size_t semblance_channel_count = 0U;
             for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
-                if (geometry.pods[ch].computed) {
+                if ((accepted_pick_mask & (1U << ch)) != 0U) {
                     semblance_channels[semblance_channel_count].samples = channel_samples[ch];
                     semblance_channels[semblance_channel_count].sample_count = frame_count;
                     semblance_channels[semblance_channel_count].sample_rate_hz = session_summary.sample_rate_hz;
@@ -1718,7 +1932,7 @@ esp_err_t localization_calculate_run(
                         ? LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS
                         : LOCALIZATION_FAILURE_CLASS_INTERNAL)
                     : LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN),
-            all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
+            accepted_pick_mask, all_channel_mask & ~accepted_pick_mask,
             LOCALIZATION_CALCULATE_METHOD_VERSION, &records[record_count]
         );
         snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
@@ -1842,16 +2056,18 @@ esp_err_t localization_calculate_run(
             scan_suea_config.candidate_filter.allowed = localization_calculate_scan_candidate_allowed;
             scan_suea_config.candidate_filter.context = &occupancy;
             scan_suea_err = localization_suea_locate(
-                suea_grid, suea_picks, OBJECT_STORE_POD_COUNT, &scan_suea_config, scan_suea
+                suea_grid, suea_picks, p_observation_count, &scan_suea_config, scan_suea
             );
             summary_out->methods_attempted++;
         }
+        const uint32_t scan_suea_used_mask = observation_mask_to_channels(
+            scan_suea_err == ESP_OK ? scan_suea->pick_mask_used : 0U,
+            workspace->p_channel, p_observation_count
+        );
         localization_calculate_suea_to_run_record(
             &context, scan_suea_err == ESP_OK ? scan_suea : NULL,
-            scan_suea->pick_mask_used != 0U ? scan_suea->pick_mask_used : traveltime_used_mask,
-            scan_suea->pick_mask_used != 0U
-                ? (~scan_suea->pick_mask_used) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK
-                : traveltime_rejected_mask,
+            scan_suea_used_mask != 0U ? scan_suea_used_mask : traveltime_used_mask,
+            all_channel_mask & ~(scan_suea_used_mask != 0U ? scan_suea_used_mask : traveltime_used_mask),
             LOCALIZATION_CALCULATE_METHOD_VERSION, config->timing_uncertainty_us,
             &records[record_count], &summary_out->suea_scan_velocity_status
         );
@@ -1986,7 +2202,7 @@ esp_err_t localization_calculate_run(
                         ? LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS
                         : LOCALIZATION_FAILURE_CLASS_INTERNAL)
                     : LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN),
-            all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
+            accepted_pick_mask, all_channel_mask & ~accepted_pick_mask,
             LOCALIZATION_CALCULATE_METHOD_VERSION, &records[record_count]
         );
         snprintf(records[record_count].method_name, sizeof(records[record_count].method_name),
@@ -2103,7 +2319,7 @@ esp_err_t localization_calculate_run(
     localization_run_record_t *joint_record = &workspace->joint_record;
     localization_calculate_joint_to_run_record(
         &context, comparison_err == ESP_OK ? comparison_result : NULL,
-        all_channel_mask, (~all_channel_mask) & LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK,
+        accepted_pick_mask, all_channel_mask & ~accepted_pick_mask,
         LOCALIZATION_CALCULATE_METHOD_VERSION, joint_record
     );
     if (analysis_window_truncated) {

@@ -74,6 +74,7 @@ esp_err_t localization_eikonal_model_init(
         }
         model->origin = *min_corner;
         model->cell_m = step;
+        model->resolution_limited = factor > 1U;
         model->nx = nx;
         model->ny = ny;
         model->nz = nz;
@@ -805,6 +806,7 @@ esp_err_t localization_eikonal_locate(
     }
     memset(result, 0, sizeof(*result));
     result->cell_m = model->cell_m;
+    result->resolution_limited = model->resolution_limited;
 
     locate_problem_t problem;
     memset(&problem, 0, sizeof(problem));

@@ -296,6 +296,13 @@ bool geophone_event_raw_i16_window_is_saturated(
 );
 
 
+/* Apply the shared int16-rail saturation threshold to a decoded window. */
+bool geophone_event_i16_rail_count_is_saturated(
+    size_t rail_count,
+    size_t window_samples
+);
+
+
 bool geophone_event_pick_channel_arrival_with_saturation(
     const float *samples,
     size_t sample_count,

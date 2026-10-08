@@ -47,6 +47,33 @@ uint32_t nrf_watchdog_zephyr_boot_reset_cause(void)
     return 0x00000080U;
 }
 
+static void test_led_event_counters(void)
+{
+    nrf_log_runtime_zephyr_led_counters_t counters = {0};
+
+    assert(nrf_log_runtime_zephyr_get_led_counters(&counters) == NRF_LOG_ERROR_OK);
+    assert(counters.twis_protocol_error_total == 0U);
+    assert(counters.cs_ranging_failure_total == 0U);
+    assert(counters.watchdog_participant_stale_total == 0U);
+    assert(counters.role_lost_total == 0U);
+
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME, 1U, 2U);
+    assert(nrf_log_runtime_zephyr_get_led_counters(&counters) == NRF_LOG_ERROR_OK);
+    assert(counters.twis_protocol_error_total == 1U);
+
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_TIMEOUT, 1U, 2U);
+    assert(nrf_log_runtime_zephyr_get_led_counters(&counters) == NRF_LOG_ERROR_OK);
+    assert(counters.cs_ranging_failure_total == 1U);
+
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_WATCHDOG_PARTICIPANT_STALE, 1U, 2U);
+    assert(nrf_log_runtime_zephyr_get_led_counters(&counters) == NRF_LOG_ERROR_OK);
+    assert(counters.watchdog_participant_stale_total == 1U);
+
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_ROLE_LOST, 1U, 2U);
+    assert(nrf_log_runtime_zephyr_get_led_counters(&counters) == NRF_LOG_ERROR_OK);
+    assert(counters.role_lost_total == 1U);
+}
+
 int main(void)
 {
     nrf_log_status_t status;
@@ -127,5 +154,6 @@ int main(void)
     assert(block.records[0].arg0 == old_boot_id);
     assert(block.records[0].arg1 == status.boot_id);
     assert(block.records[1].event_id == NRF_LOG_EVENT_LOG_TEST_EVENT);
+    test_led_event_counters();
     return 0;
 }

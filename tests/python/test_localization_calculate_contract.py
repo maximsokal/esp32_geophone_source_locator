@@ -62,7 +62,7 @@ def test_fails_closed_before_any_run_store_write():
     run_source = source[source.index("esp_err_t localization_calculate_run("):]
 
     dimensionality_check = run_source.index("LOCALIZATION_DIMENSIONALITY_INSUFFICIENT")
-    range_read_call = run_source.index("seismic_recorder_read_session_range(")
+    range_read_call = run_source.index("seismic_recorder_read_session_range_ex(")
     first_write = run_source.index("localization_run_store_write(")
 
     # Every fail-closed gate (geometry read, dimensionality, raw sample
@@ -156,7 +156,7 @@ def test_pick_evidence_persistence_retries_once_then_reports_after_records_saved
 
     run_start = source.index("esp_err_t localization_calculate_run(")
     pick_assignment = (
-        "const esp_err_t pick_write_err = localization_calculate_write_picks_retry(\n"
+        "pick_write_err = localization_calculate_write_picks_retry(\n"
         "        object_id, session_id, pick_record\n"
         "    );"
     )
@@ -194,7 +194,9 @@ def test_scan_constraint_is_session_scoped_fail_closed_and_never_fused():
     unconstrained results."""
     source = orchestrator_source()
     assert '"%s/%s/sessions/%s/occupancy-v1.bin"' in source
-    assert "scan_occupancy_registration_usable(&occupancy, geometry_computed_at_ms)" in source
+    assert "scan_occupancy_registration_reason(&occupancy, geometry_computed_at_ms)" in source
+    assert "scan_identity_err == ESP_OK && strcmp(occupancy.frame_id, current_scan_frame_id) == 0;" in source
+    assert "const bool usable = scan_identity_matches && registration_reason == NULL;" in source
     assert "constraint not applied" in source
     assert '"traveltime_scan_constrained"' in source
     assert '"semblance_scan_constrained"' in source
@@ -214,7 +216,10 @@ def test_scan_constraints_require_the_current_whole_file_generation():
     assert "power_control_is_shutdown_requested" in source
     assert "scan_generation_mismatch" in source
     assert "scan_identity_unavailable" in source
-    assert "scan_occupancy_registration_usable(&occupancy, geometry_computed_at_ms)" in source
+    assert "scan_occupancy_registration_reason(&occupancy, geometry_computed_at_ms)" in source
+    assert "load_session_scan_frame_id(object_id, session_id, current_scan_frame_id)" in source
+    assert "scan_identity_err == ESP_OK && strcmp(occupancy.frame_id, current_scan_frame_id) == 0;" in source
+    assert "const bool usable = scan_identity_matches && registration_reason == NULL;" in source
     assert "scan_constraint_applied[i]" in source
 
 
@@ -289,7 +294,7 @@ def test_run_state_lives_on_the_heap_not_the_https_stack():
         run_start,
     )
     pick_write_index = source.index(
-        "const esp_err_t pick_write_err = localization_calculate_write_picks_retry(",
+        "pick_write_err = localization_calculate_write_picks_retry(",
         run_start,
     )
     first_method_write_index = source.index(

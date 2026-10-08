@@ -53,6 +53,16 @@ function formatPosition(x: number, y: number, z: number, locale: 'en' | 'uk'): s
   return `${formatNumber(locale, x, digits)}, ${formatNumber(locale, y, digits)}, ${formatNumber(locale, z, digits)} m`;
 }
 
+function unavailableReasonLabel(reason: string, t: ReturnType<typeof useT>): string {
+  switch (reason) {
+    case 'session_gap': return t('calc.reason.session_gap');
+    case 'timestamp_non_monotonic': return t('calc.reason.timestamp_non_monotonic');
+    case 'duplicate_sensor_position': return t('calc.reason.duplicate_sensor_position');
+    case 'reflected_transform': return t('calc.reason.reflected_transform');
+    default: return reason;
+  }
+}
+
 /**
  * MAX-161: every persisted method of this recording in one scene; the
  * selected method is vivid, the others dim. Selecting never recomputes.
@@ -159,7 +169,7 @@ export default function LocalizationOverlay({ runs, geometry, hasScan = null, re
           {model.unavailable.map((entry) => (
             <tr key={`unavailable-${entry.method}`} className="unavailable" data-state="rejected" data-severity="warning">
               <td>{entry.method}</td>
-              <td colSpan={6}>{t('overlay.unavailable_reason', { reason: entry.reason })}</td>
+              <td colSpan={6}>{t('overlay.unavailable_reason', { reason: unavailableReasonLabel(entry.reason, t) })}</td>
             </tr>
           ))}
         </tbody>

@@ -90,6 +90,12 @@ esp_err_t localization_event_solve(
         return ESP_OK;
     }
 
+    localization_validation_reason_t validation_reason = LOCALIZATION_VALIDATION_REASON_NONE;
+    (void)localization_validate_ex(
+        observations, used_count, config, initial_guess, &validation_reason
+    );
+    result->validation_reason = validation_reason;
+
     const esp_err_t solve_err = localization_tdoa_solve(
         observations,
         used_count,

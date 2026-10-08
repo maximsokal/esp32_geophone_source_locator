@@ -414,12 +414,12 @@ static const tdoa_case_t g_tdoa_cases[] = {
     { "zero iteration limit", "ESP_ERR_INVALID_ARG_ITERATIONS_ZERO", ESP_ERR_INVALID_ARG, setup_zero_iterations, false },
     { "zero convergence distance", "ESP_ERR_INVALID_ARG_CONVERGENCE_LE_0", ESP_ERR_INVALID_ARG, setup_zero_convergence, false },
     { "negative damping", "ESP_ERR_INVALID_ARG_DAMPING_LT_0", ESP_ERR_INVALID_ARG, setup_negative_damping, false },
-    { "all sensors colocated", "duplicate_sensor_position", ESP_ERR_INVALID_ARG, setup_all_colocated, false },
+    { "all sensors colocated", "duplicate_sensor_position", ESP_ERR_INVALID_STATE, setup_all_colocated, false },
     { "collinear sensors", "ESP_ERR_INVALID_STATE_GEOMETRY_NOT_3D", ESP_ERR_INVALID_STATE, setup_collinear, false },
-    { "coplanar sensors with colocated points", "duplicate_sensor_position", ESP_ERR_INVALID_ARG, setup_coplanar, false },
+    { "coplanar sensors with colocated points", "duplicate_sensor_position", ESP_ERR_INVALID_STATE, setup_coplanar, false },
     { "near-degenerate depth just below 0.05", "ESP_ERR_INVALID_STATE_DEPTH_THRESHOLD_NOT_MET", ESP_ERR_INVALID_STATE, setup_depth_just_below_threshold, false },
     { "depth ratio exactly 0.05 boundary", "ESP_ERR_INVALID_STATE_DEPTH_THRESHOLD_IS_STRICTLY_GREATER", ESP_ERR_INVALID_STATE, setup_depth_threshold_equal, false },
-    { "duplicate positions with remaining 3D geometry", "duplicate_sensor_position", ESP_ERR_INVALID_ARG, setup_duplicate_positions, false },
+    { "duplicate positions with remaining 3D geometry", "duplicate_sensor_position", ESP_ERR_INVALID_STATE, setup_duplicate_positions, false },
     { "invalid speed clears old result", "ESP_ERR_INVALID_ARG_SPEED_LE_0", ESP_ERR_INVALID_ARG, setup_stale_result, false },
     { "INT64_MAX epoch loses microsecond precision", "KNOWN_DEFECT_INT64_EPOCH_CAST_TO_DOUBLE", ESP_OK, setup_high_epoch, true },
 };
@@ -457,7 +457,7 @@ static void test_tdoa_case_matrix(void)
                 state.config_arg,
                 state.guess_arg,
                 &reason
-            ) == ESP_ERR_INVALID_ARG);
+            ) == ESP_ERR_INVALID_STATE);
             assert(reason == LOCALIZATION_INVALID_DUPLICATE_SENSOR_POSITION);
             assert(strcmp(localization_validation_reason_string(reason),
                 "duplicate_sensor_position") == 0);
@@ -512,7 +512,7 @@ static void test_duplicate_position_reason_is_order_independent(void)
 
     localization_validation_reason_t original_reason = LOCALIZATION_VALIDATION_REASON_NONE;
     assert(localization_validate_ex(state.observations, state.count, &state.config,
-        NULL, &original_reason) == ESP_ERR_INVALID_ARG);
+        NULL, &original_reason) == ESP_ERR_INVALID_STATE);
     assert(original_reason == LOCALIZATION_INVALID_DUPLICATE_SENSOR_POSITION);
 
     const localization_observation_t first = state.observations[0];
@@ -520,7 +520,7 @@ static void test_duplicate_position_reason_is_order_independent(void)
     state.observations[1] = first;
     localization_validation_reason_t permuted_reason = LOCALIZATION_VALIDATION_REASON_NONE;
     assert(localization_validate_ex(state.observations, state.count, &state.config,
-        NULL, &permuted_reason) == ESP_ERR_INVALID_ARG);
+        NULL, &permuted_reason) == ESP_ERR_INVALID_STATE);
     assert(permuted_reason == original_reason);
     assert(strcmp(localization_validation_reason_string(permuted_reason),
         "duplicate_sensor_position") == 0);

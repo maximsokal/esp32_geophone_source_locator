@@ -44,9 +44,22 @@ bool geophone_event_raw_i16_window_is_saturated(
         }
     }
 
-    const size_t fraction_minimum = sample_count / 200u +
-        (sample_count % 200u != 0u ? 1u : 0u);
-    const size_t required_rails = fraction_minimum > 8u ? fraction_minimum : 8u;
+    return geophone_event_i16_rail_count_is_saturated(rail_count, sample_count);
+}
+
+
+bool geophone_event_i16_rail_count_is_saturated(
+    size_t rail_count,
+    size_t window_samples
+)
+{
+    if (window_samples == 0U) {
+        return false;
+    }
+
+    const size_t fraction_minimum = window_samples / 200U +
+        (window_samples % 200U != 0U ? 1U : 0U);
+    const size_t required_rails = fraction_minimum > 8U ? fraction_minimum : 8U;
     return rail_count >= required_rails;
 }
 

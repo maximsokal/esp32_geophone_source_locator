@@ -407,6 +407,9 @@ static void test_c8_ad7606_int16_saturation_rejected(void)
     }
     CHECK("C8", seed, geophone_event_raw_i16_window_is_saturated(raw_samples, SAMPLE_COUNT));
     CHECK("C8", seed, saturated_samples >= 8u);
+    CHECK("C8-count-helper", seed, geophone_event_i16_rail_count_is_saturated(
+        saturated_samples, SAMPLE_COUNT
+    ) == geophone_event_raw_i16_window_is_saturated(raw_samples, SAMPLE_COUNT));
     const geophone_channel_pick_config_t config = pick_config();
     geophone_channel_pick_t snr_only_pick;
     CHECK("C8", seed, geophone_event_pick_channel_arrival(
@@ -429,6 +432,40 @@ static void test_c8_ad7606_int16_saturation_rejected(void)
     CHECK("C8", seed, strcmp(geophone_pick_reason_name(pick.reason), "saturated") == 0);
     printf("CASE C8 detection=%s reason=%s saturated_samples=%zu threshold=8-and-0.5%%\n",
            status_name(pick.status), geophone_pick_reason_name(pick.reason), saturated_samples);
+}
+
+
+static void test_raw_saturation_count_helper_equivalence(void)
+{
+    int16_t raw_samples[SAMPLE_COUNT] = { 0 };
+    const struct
+    {
+        size_t window_samples;
+        size_t rail_count;
+        bool expected;
+    } cases[] = {
+        { 1000U, 7U, false },
+        { 1000U, 8U, true },
+        { 2000U, 9U, false },
+        { 2000U, 10U, true },
+    };
+
+    for (size_t test = 0U; test < sizeof(cases) / sizeof(cases[0]); ++test) {
+        memset(raw_samples, 0, sizeof(raw_samples));
+        for (size_t rail = 0U; rail < cases[test].rail_count; ++rail) {
+            raw_samples[rail] = (rail & 1U) == 0U ? INT16_MIN : INT16_MAX;
+        }
+        const bool from_codes = geophone_event_raw_i16_window_is_saturated(
+            raw_samples, cases[test].window_samples
+        );
+        const bool from_count = geophone_event_i16_rail_count_is_saturated(
+            cases[test].rail_count, cases[test].window_samples
+        );
+        CHECK("C8-count-equivalence", test, from_codes == from_count);
+        CHECK("C8-count-boundary", test, from_count == cases[test].expected);
+    }
+    CHECK("C8-count-empty", 0U, !geophone_event_i16_rail_count_is_saturated(8U, 0U));
+    puts("CASE C8-count-helper equivalent=raw-codes threshold=at-least-8-and-0.5%");
 }
 
 
@@ -948,6 +985,7 @@ int main(void)
     test_c6_impulse_and_later_event_are_ambiguous();
     test_c7_clipped_waveform();
     test_c8_ad7606_int16_saturation_rejected();
+    test_raw_saturation_count_helper_equivalence();
     test_c8_high_snr_non_saturated_control();
     test_c8_clipped_peak_below_threshold_is_accepted();
     test_c8_saturation_is_per_channel();

@@ -2,7 +2,7 @@
 
 #include "esp_err.h"
 
-#define STORAGE_MANAGER_MOUNT_POINT "/sdcard"
+#define STORAGE_MANAGER_MOUNT_POINT "test-storage"
 #define STORAGE_MANAGER_ROOT_PATH STORAGE_MANAGER_MOUNT_POINT "/geolocator"
 #define STORAGE_MANAGER_OBJECTS_PATH STORAGE_MANAGER_ROOT_PATH "/objects"
 

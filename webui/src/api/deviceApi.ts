@@ -976,6 +976,61 @@ export interface LocalizationRunUncertainty {
 
 export type LocalizationVelocityRangeSource = 'unknown' | 'preset' | 'user' | 'scalar_derived' | 'measured_reserved';
 export type LocalizationVelocityStatus = 'unknown' | 'not_applicable' | 'ok' | 'at_bound' | 'inconsistent';
+export type LocalizationRunTerminalStatus =
+  | 'none'
+  | 'iteration_limit'
+  | 'time_budget_skipped'
+  | 'time_budget_hit'
+  | 'cell_budget'
+  | 'resolution_limited';
+export type LocalizationPickStatus =
+  | 'accepted'
+  | 'rejected_no_trigger'
+  | 'rejected_no_refinement'
+  | 'rejected_low_snr'
+  | 'rejected_inconsistent'
+  | 'rejected_saturated'
+  | 'rejected_ambiguous';
+export type LocalizationPartialErrorCode =
+  | 'run_record_parse_failed'
+  | 'run_record_read_failed'
+  | 'picks_record_parse_failed'
+  | 'picks_listing_failed'
+  | 'listing_enumeration_failed';
+
+const LOCALIZATION_RUN_TERMINAL_STATUSES: readonly LocalizationRunTerminalStatus[] = [
+  'none', 'iteration_limit', 'time_budget_skipped', 'time_budget_hit', 'cell_budget', 'resolution_limited',
+];
+const LOCALIZATION_PICK_STATUSES: readonly LocalizationPickStatus[] = [
+  'accepted', 'rejected_no_trigger', 'rejected_no_refinement', 'rejected_low_snr', 'rejected_inconsistent',
+  'rejected_saturated', 'rejected_ambiguous',
+];
+const LOCALIZATION_PARTIAL_ERROR_CODES: readonly LocalizationPartialErrorCode[] = [
+  'run_record_parse_failed', 'run_record_read_failed', 'picks_record_parse_failed', 'picks_listing_failed',
+  'listing_enumeration_failed',
+];
+
+function isOneOf<T extends readonly string[]>(value: unknown, values: T): value is T[number] {
+  return typeof value === 'string' && values.includes(value);
+}
+
+function decodeSessionEpoch(value: Record<string, unknown>, entity: string): {
+  session_epoch_known: boolean;
+  session_epoch_timestamp_us: number | null;
+} {
+  const knownValue = value.session_epoch_known;
+  const timestampValue = value.session_epoch_timestamp_us;
+  const known = knownValue === undefined ? false : knownValue;
+  const timestamp = timestampValue === undefined ? null : timestampValue;
+  if (typeof known !== 'boolean') throw new Error(`Invalid ${entity} field: session_epoch_known.`);
+  if (timestamp !== null && (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp))) {
+    throw new Error(`Invalid ${entity} field: session_epoch_timestamp_us.`);
+  }
+  if ((known && typeof timestamp !== 'number') || (!known && timestamp !== null)) {
+    throw new Error(`Invalid ${entity} field: session_epoch_timestamp_us.`);
+  }
+  return { session_epoch_known: known, session_epoch_timestamp_us: timestamp };
+}
 
 export interface LocalizationVelocityRange {
   v_min_mps: number;
@@ -1032,6 +1087,11 @@ export interface LocalizationRun {
   /** Bayesian methods: the posterior's spread and credible region; absent = not computed. */
   uncertainty?: LocalizationRunUncertainty;
   solved: boolean;
+  /** MAX-132 wave B (schema v7); older records decode as `none`. */
+  terminal_status: LocalizationRunTerminalStatus;
+  /** Absolute timestamp for recording sample zero; null means unknown. */
+  session_epoch_known: boolean;
+  session_epoch_timestamp_us: number | null;
   uncertainty_too_high?: boolean;
   source_position?: LocalizationRunPosition;
   emission_time_us?: number;
@@ -1041,7 +1101,7 @@ export interface LocalizationRun {
   rejection_reason?: string;
 }
 
-/** Decodes the optional MAX-414 fields while leaving legacy v3-v5 records valid. */
+/** Decodes additive MAX-414 and MAX-132 fields while leaving legacy records valid. */
 export function decodeLocalizationRun(value: unknown): LocalizationRun {
   if (!isRecord(value) || Array.isArray(value)) throw new Error('Invalid localization run record.');
   const decoded = { ...value };
@@ -1066,15 +1126,128 @@ export function decodeLocalizationRun(value: unknown): LocalizationRun {
   nullableString('scan_frame_id');
   nullableTimestamp('occupancy_created_at_ms');
   nullableTimestamp('registration_geometry_computed_at_ms');
-  return decoded as unknown as LocalizationRun;
+  if (value.rejection_reason !== undefined && typeof value.rejection_reason !== 'string') {
+    throw new Error('Invalid localization run field: rejection_reason.');
+  }
+  const terminalStatus = value.terminal_status === undefined ? 'none' : value.terminal_status;
+  if (!isOneOf(terminalStatus, LOCALIZATION_RUN_TERMINAL_STATUSES)) {
+    throw new Error('Invalid localization run field: terminal_status.');
+  }
+  return {
+    ...decoded,
+    terminal_status: terminalStatus,
+    ...decodeSessionEpoch(value, 'localization run'),
+  } as unknown as LocalizationRun;
 }
 
-function decodeLocalizationRunListing(value: unknown): LocalizationRunListing {
-  // Only the runs are decoded here; the listing envelope keeps its previous (unvalidated) contract.
-  if (isRecord(value) && Array.isArray(value.runs)) {
-    return { ...value, runs: value.runs.map(decodeLocalizationRun) } as unknown as LocalizationRunListing;
+function decodeLocalizationPickPhase(value: unknown): LocalizationPickPhase {
+  if (!isRecord(value) || Array.isArray(value)) throw new Error('Invalid localization S-pick record.');
+  const decoded: LocalizationPickPhase = {};
+  if (value.status !== undefined) {
+    if (!isOneOf(value.status, LOCALIZATION_PICK_STATUSES)) throw new Error('Invalid localization S-pick field: status.');
+    decoded.status = value.status;
   }
-  return value as unknown as LocalizationRunListing;
+  if (value.reason !== undefined) {
+    if (typeof value.reason !== 'string') throw new Error('Invalid localization S-pick field: reason.');
+    decoded.reason = value.reason;
+  }
+  if (value.method !== undefined) {
+    if (value.method !== 'sta_lta_refined') throw new Error('Invalid localization S-pick field: method.');
+    decoded.method = value.method;
+  }
+  for (const field of ['sample_index', 'arrival_time_us', 'snr', 'uncertainty_us'] as const) {
+    const number = value[field];
+    if (number !== undefined) {
+      const minimum = field === 'sample_index' || field === 'uncertainty_us' ? 0 : Number.NEGATIVE_INFINITY;
+      const validInteger = field !== 'sample_index' || Number.isSafeInteger(number);
+      if (typeof number !== 'number' || !Number.isFinite(number) || number < minimum || !validInteger) {
+        throw new Error(`Invalid localization S-pick field: ${field}.`);
+      }
+      decoded[field] = number;
+    }
+  }
+  if (value.subsample_offset !== undefined) {
+    const offset = value.subsample_offset;
+    if (typeof offset !== 'number' || !Number.isFinite(offset) || offset <= -1 || offset > 0) {
+      throw new Error('Invalid localization S-pick field: subsample_offset.');
+    }
+    decoded.subsample_offset = offset;
+  }
+  return decoded;
+}
+
+function decodeLocalizationPickChannel(value: unknown): LocalizationPickChannel {
+  if (!isRecord(value) || Array.isArray(value)) throw new Error('Invalid localization pick channel.');
+  if (!Number.isSafeInteger(value.channel) || typeof value.channel !== 'number' || value.channel < 1) {
+    throw new Error('Invalid localization pick channel field: channel.');
+  }
+  if (typeof value.participating !== 'boolean') throw new Error('Invalid localization pick channel field: participating.');
+  if (!isOneOf(value.status, LOCALIZATION_PICK_STATUSES)) throw new Error('Invalid localization pick channel field: status.');
+  if (typeof value.method !== 'string') throw new Error('Invalid localization pick channel field: method.');
+  if (value.reason !== undefined && typeof value.reason !== 'string') {
+    throw new Error('Invalid localization pick channel field: reason.');
+  }
+  for (const field of ['arrival_sample_index', 'arrival_time_s', 'snr', 'uncertainty_samples'] as const) {
+    const number = value[field];
+    if (typeof number !== 'number' || !Number.isFinite(number) || number < 0) {
+      throw new Error(`Invalid localization pick channel field: ${field}.`);
+    }
+  }
+  if (value.arrival_subsample_offset !== undefined &&
+    (typeof value.arrival_subsample_offset !== 'number' || !Number.isFinite(value.arrival_subsample_offset))) {
+    throw new Error('Invalid localization pick channel field: arrival_subsample_offset.');
+  }
+  let s_pick: LocalizationPickPhase | undefined;
+  if (value.s_pick !== undefined) s_pick = decodeLocalizationPickPhase(value.s_pick);
+  return {
+    channel: value.channel,
+    participating: value.participating,
+    status: value.status,
+    method: value.method,
+    arrival_sample_index: value.arrival_sample_index as number,
+    arrival_subsample_offset: value.arrival_subsample_offset as number | undefined,
+    arrival_time_s: value.arrival_time_s as number,
+    snr: value.snr as number,
+    uncertainty_samples: value.uncertainty_samples as number,
+    reason: value.reason as string | undefined,
+    ...(s_pick === undefined ? {} : { s_pick }),
+  };
+}
+
+function decodeLocalizationPickRecord(value: unknown): LocalizationPickRecord {
+  if (!isRecord(value) || Array.isArray(value) || !Array.isArray(value.channels)) {
+    throw new Error('Invalid localization pick record.');
+  }
+  return {
+    ...value,
+    channels: value.channels.map(decodeLocalizationPickChannel),
+    ...decodeSessionEpoch(value, 'localization pick record'),
+  } as unknown as LocalizationPickRecord;
+}
+
+export function decodeLocalizationRunListing(value: unknown): LocalizationRunListing {
+  if (!isRecord(value) || Array.isArray(value)) {
+    throw new Error('Invalid localization run listing.');
+  }
+  /* Older firmware and minimal responses may omit either list: absent means empty, a present non-array is malformed. */
+  const runs: unknown = value.runs === undefined ? [] : value.runs;
+  const picks: unknown = value.picks === undefined ? [] : value.picks;
+  if (!Array.isArray(runs) || !Array.isArray(picks)) {
+    throw new Error('Invalid localization run listing.');
+  }
+  const partialError = value.partial_error === undefined ? false : value.partial_error;
+  if (typeof partialError !== 'boolean') throw new Error('Invalid localization listing field: partial_error.');
+  const rawPartialErrors = value.partial_errors === undefined ? [] : value.partial_errors;
+  if (!Array.isArray(rawPartialErrors) || rawPartialErrors.some((code) => !isOneOf(code, LOCALIZATION_PARTIAL_ERROR_CODES))) {
+    throw new Error('Invalid localization listing field: partial_errors.');
+  }
+  return {
+    ...value,
+    partial_error: partialError,
+    partial_errors: rawPartialErrors,
+    runs: runs.map(decodeLocalizationRun),
+    picks: picks.map(decodeLocalizationPickRecord),
+  } as unknown as LocalizationRunListing;
 }
 
 export interface LocalizationSessionPodGeometry {
@@ -1144,12 +1317,26 @@ export interface LocalizationSessionCsPairs {
 export interface LocalizationPickChannel {
   channel: number;
   participating: boolean;
-  status: 'accepted' | 'rejected_no_trigger' | 'rejected_no_refinement' | 'rejected_low_snr' | 'rejected_inconsistent';
+  status: LocalizationPickStatus;
   method: string;
   arrival_sample_index: number;
+  arrival_subsample_offset?: number;
   arrival_time_s: number;
   snr: number;
   uncertainty_samples: number;
+  reason?: string;
+  s_pick?: LocalizationPickPhase;
+}
+
+export interface LocalizationPickPhase {
+  status?: LocalizationPickStatus;
+  reason?: string;
+  method?: 'sta_lta_refined';
+  sample_index?: number;
+  subsample_offset?: number;
+  arrival_time_us?: number;
+  snr?: number;
+  uncertainty_us?: number;
 }
 
 export interface LocalizationPickRecord {
@@ -1157,6 +1344,8 @@ export interface LocalizationPickRecord {
   object_id: string;
   session_id: string;
   computed_at_ms: number;
+  session_epoch_known: boolean;
+  session_epoch_timestamp_us: number | null;
   channels: LocalizationPickChannel[];
 }
 
@@ -1165,6 +1354,8 @@ export interface LocalizationRunListing {
   session_id: string;
   geometry: LocalizationSessionGeometry;
   cs_pairs: LocalizationSessionCsPairs;
+  partial_error: boolean;
+  partial_errors: LocalizationPartialErrorCode[];
   picks: LocalizationPickRecord[];
   runs: LocalizationRun[];
 }

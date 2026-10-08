@@ -437,6 +437,7 @@ static esp_err_t solve_levels(
     size_t map_index = 0U;
     size_t evaluated = 0U;
     bool have_level = false;
+    bool reached_resolution_goal = false;
     const double sigma = problem->sigma_s;
     double slowest = 1.0 / config->velocity_mps;
     for (size_t k = 0U; k < problem->node_count; ++k) {
@@ -475,6 +476,7 @@ static esp_err_t solve_levels(
         map_index = level_map;
         have_level = true;
         if (problem->sigma_s <= sigma && result->credible_cells >= BAYES_RESOLVED_CELLS) {
+            reached_resolution_goal = true;
             break;
         }
         const double margin = candidate.step_m;
@@ -491,6 +493,7 @@ static esp_err_t solve_levels(
         }
     }
     result->cells_evaluated = evaluated;
+    result->cell_budget_exhausted = have_level && !reached_resolution_goal;
 
     /* MAP refined on a finer local lattice (continuous log posterior). */
     localization_point3d_t best = ext_lattice_point(&lattice, map_index);

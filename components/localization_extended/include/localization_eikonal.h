@@ -46,6 +46,7 @@ typedef struct
 {
     localization_point3d_t origin;   /* node (0, 0, 0) */
     double cell_m;
+    bool resolution_limited;
     size_t nx;
     size_t ny;
     size_t nz;
@@ -210,6 +211,7 @@ typedef struct
     uint32_t pick_mask_downweighted;    /* robust weight < 0.5 at the solution */
     size_t candidates_evaluated;
     double cell_m;
+    bool resolution_limited;
 
 } localization_eikonal_result_t;
 

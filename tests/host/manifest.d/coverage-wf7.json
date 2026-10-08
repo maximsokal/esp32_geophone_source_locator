@@ -296,6 +296,23 @@
                                     ]
                   },
                   {
+                      "name": "seismic_recorder_raw_rail_decode",
+                      "sources": [
+                                      "components/seismic_recorder/seismic_recorder_samples.c",
+                                      "components/seismic_recorder/tests/seismic_recorder_raw_rail_decode_test.c"
+                                  ],
+                      "include_dirs": [
+                                           "components/seismic_recorder/tests/stubs",
+                                           "components/seismic_recorder",
+                                           "components/seismic_recorder/include",
+                                           "components/seismic_acquisition/include",
+                                           "components/seismic_buffer/include",
+                                           "components/object_store/include",
+                                           "components/object_format/include"
+                                       ],
+                      "libraries": ["m"]
+                  },
+                  {
                       "name":  "web_localization_runs_http",
                       "sources":  [
                                       "tests/host/stubs/object_store_profile/cJSON.c",

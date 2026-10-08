@@ -274,7 +274,8 @@ static size_t irls(
     double k,
     uint32_t mask,
     localization_point3d_t *position,
-    double *t0
+    double *t0,
+    bool *iteration_limit_reached
 )
 {
     for (size_t i = 0U; i < problem->count; ++i) {
@@ -284,12 +285,17 @@ static size_t irls(
     (void)reweight(problem, loss, k, mask, *position, *t0);
     const size_t rounds = config->max_iterations > 0U ? config->max_iterations : ROBUST_DEFAULT_ITERATIONS;
     size_t round = 0U;
+    bool converged = false;
     while (round < rounds) {
         fit_from(problem, &config->candidate_filter, *position, position, t0);
         ++round;
         if (reweight(problem, loss, k, mask, *position, *t0) < 1.0e-4) {
+            converged = true;
             break;
         }
+    }
+    if (iteration_limit_reached != NULL) {
+        *iteration_limit_reached = !converged && round >= rounds;
     }
     return round;
 }
@@ -445,13 +451,16 @@ esp_err_t localization_robust_solve(
              * by the outlier: begin from the convex Huber fit. */
             double t0 = 0.0;
             (void)irls(&problem, config, LOCALIZATION_EXTENDED_LOSS_HUBER,
-                       LOCALIZATION_EXTENDED_HUBER_K, all, &position, &t0);
+                       LOCALIZATION_EXTENDED_HUBER_K, all, &position, &t0, NULL);
         }
     }
     free(admitted);
 
     double t0 = 0.0;
-    result->irls_iterations = irls(&problem, config, loss, k, fit_mask, &position, &t0);
+    bool iteration_limit_reached = false;
+    result->irls_iterations = irls(
+        &problem, config, loss, k, fit_mask, &position, &t0, &iteration_limit_reached
+    );
 
     /* Re-admit an excluded pick that the final fit explains after all. */
     uint32_t inliers = 0U;
@@ -464,11 +473,14 @@ esp_err_t localization_robust_solve(
     if (result->consensus_run && !result->consensus_ambiguous) {
         if ((inliers & ~fit_mask) != 0U && popcount(inliers) >= minimal) {
             fit_mask |= inliers;
-            result->irls_iterations += irls(&problem, config, loss, k, fit_mask, &position, &t0);
+            result->irls_iterations += irls(
+                &problem, config, loss, k, fit_mask, &position, &t0, &iteration_limit_reached
+            );
         }
     } else {
         fit_mask = all;
     }
+    result->iteration_limit_reached = iteration_limit_reached;
 
     result->status = LOCALIZATION_ROBUST_SOLVED;
     result->position = position;

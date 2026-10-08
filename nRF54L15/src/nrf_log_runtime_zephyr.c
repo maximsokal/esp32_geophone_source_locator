@@ -15,8 +15,7 @@
 static nrf_log_ring_t s_log_ring;
 static struct k_spinlock s_log_ring_lock;
 static struct k_spinlock s_metrics_lock;
-static struct k_spinlock s_led_counters_lock;
-static nrf_log_runtime_zephyr_led_counters_t s_led_counters;
+static volatile nrf_log_runtime_zephyr_led_counters_t s_led_counters;
 static uint32_t s_max_block_build_cycles;
 static bool s_initialized;
 
@@ -89,7 +88,7 @@ static uint32_t generate_next_boot_id(void *context)
     return boot_id;
 }
 
-static void increment_saturating(uint32_t *counter)
+static void increment_saturating(volatile uint32_t *counter)
 {
     if (*counter < UINT32_MAX) {
         ++(*counter);
@@ -98,8 +97,11 @@ static void increment_saturating(uint32_t *counter)
 
 static void track_led_event(uint16_t event_id)
 {
-    k_spinlock_key_t key = k_spin_lock(&s_led_counters_lock);
-
+    /*
+     * Aligned 32-bit loads/stores are atomic on Cortex-M33. Concurrent writers
+     * may lose exact increments, but the first event stores one and no racing
+     * update stores zero. The LED consumer only checks these totals for nonzero.
+     */
     switch (event_id) {
     case NRF_LOG_EVENT_TWIS_INVALID_FRAME:
     case NRF_LOG_EVENT_TWIS_UNKNOWN_TYPE:
@@ -119,8 +121,6 @@ static void track_led_event(uint16_t event_id)
     default:
         break;
     }
-
-    k_spin_unlock(&s_led_counters_lock, key);
 }
 
 int nrf_log_runtime_zephyr_init(void)
@@ -182,7 +182,6 @@ nrf_log_error_t nrf_log_runtime_zephyr_get_led_counters(
     nrf_log_runtime_zephyr_led_counters_t *counters)
 {
     nrf_log_status_t log_status;
-    k_spinlock_key_t key;
     nrf_log_error_t result;
 
     if (counters == NULL) {
@@ -197,9 +196,11 @@ nrf_log_error_t nrf_log_runtime_zephyr_get_led_counters(
         return result;
     }
 
-    key = k_spin_lock(&s_led_counters_lock);
-    *counters = s_led_counters;
-    k_spin_unlock(&s_led_counters_lock, key);
+    counters->twis_protocol_error_total = s_led_counters.twis_protocol_error_total;
+    counters->cs_ranging_failure_total = s_led_counters.cs_ranging_failure_total;
+    counters->watchdog_participant_stale_total =
+        s_led_counters.watchdog_participant_stale_total;
+    counters->role_lost_total = s_led_counters.role_lost_total;
     counters->overwritten_total = log_status.overwritten_total;
     counters->lost_internal_total = log_status.lost_internal_total;
     return NRF_LOG_ERROR_OK;

@@ -153,8 +153,9 @@ localization_config_t localization_default_config(void);
 /*
  * Validates a TDOA input without starting the solver. Duplicate positions
  * are within 1e-9 m Euclidean distance, matching the solver's existing
- * distance epsilon. `reason` may be NULL; otherwise it is reset to NONE
- * and set to a stable reason when available.
+ * distance epsilon, and return ESP_ERR_INVALID_STATE as degenerate geometry.
+ * `reason` may be NULL; otherwise it is reset to NONE and set to a stable
+ * reason when available.
  */
 esp_err_t localization_validate_ex(
     const localization_observation_t *observations,

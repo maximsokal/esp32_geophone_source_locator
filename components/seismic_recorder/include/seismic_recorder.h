@@ -150,6 +150,16 @@ typedef struct
 } seismic_recorder_session_summary_t;
 
 
+typedef struct
+{
+    /* Number of v2 int16 samples examined in the requested range. */
+    size_t samples_examined;
+    /* Exact INT16_MIN or INT16_MAX code counts, one per recorder channel. */
+    size_t rail_sample_counts[SEISMIC_CHANNEL_COUNT];
+
+} seismic_recorder_raw_window_stats_t;
+
+
 #define SEISMIC_RECORDER_WAVEFORM_CHANNEL_COUNT  4U
 #define SEISMIC_RECORDER_MAX_WAVEFORM_POINTS     1200U
 
@@ -394,6 +404,29 @@ esp_err_t seismic_recorder_read_session_range(
     bool *gap_before,
     size_t *frame_count_out,
     seismic_recorder_session_summary_t *summary_out
+);
+
+
+/**
+ * Read the same logical range as seismic_recorder_read_session_range() and,
+ * while decoding v2 raw int16 codes, count exact rail samples per channel.
+ * Source indexes and gap flags are returned from the same read. The stats
+ * output is zeroed before reading; `samples_examined` counts v2 sample frames
+ * only, so legacy float recordings report zero raw samples examined.
+ *
+ * `raw_stats_out` may be NULL when rail evidence is not needed.
+ */
+esp_err_t seismic_recorder_read_session_range_ex(
+    const char *object_id,
+    const char *session_id,
+    uint64_t start_index,
+    size_t max_frames,
+    seismic_frame_t *frames,
+    uint64_t *source_sample_indices,
+    bool *gap_before,
+    size_t *frame_count_out,
+    seismic_recorder_session_summary_t *summary_out,
+    seismic_recorder_raw_window_stats_t *raw_stats_out
 );
 
 

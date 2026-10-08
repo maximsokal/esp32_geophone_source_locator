@@ -280,7 +280,8 @@ describe('nRF log panel', () => {
 
     unmount(view);
     await rejection;
-    await expect(queuedRead).resolves.toEqual({});
+    /* The minimal mock listing decodes with the documented defaults (absent lists are empty). */
+    await expect(queuedRead).resolves.toEqual({ runs: [], picks: [], partial_error: false, partial_errors: [] });
 
     expect(signal.aborted).toBe(true);
     expect(api.retireRequestOwner).toHaveBeenCalledTimes(1);

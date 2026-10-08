@@ -351,7 +351,7 @@ esp_err_t localization_validate_ex(
                 if (reason != NULL) {
                     *reason = LOCALIZATION_INVALID_DUPLICATE_SENSOR_POSITION;
                 }
-                return ESP_ERR_INVALID_ARG;
+                return ESP_ERR_INVALID_STATE;
             }
         }
     }

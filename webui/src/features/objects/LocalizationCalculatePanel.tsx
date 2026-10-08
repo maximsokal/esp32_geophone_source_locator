@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import {
   fetchLocalizationJob,
   fetchLocalizationRuns,
@@ -24,6 +24,8 @@ import type {
   LocalizationRun,
   LocalizationSessionCsPairs,
   LocalizationSessionGeometry,
+  LocalizationRunTerminalStatus,
+  LocalizationPickStatus,
 } from '../../api/deviceApi';
 import { formatErrorText, TranslatedError, useLocale, useT, translate, type I18nLocale, type I18nKey } from '../../i18n';
 import { formatDistance, formatNumber } from '../../i18n/format';
@@ -292,14 +294,48 @@ function podProvenanceFields(pod: LocalizationSessionPodGeometry, t: (key: I18nK
   ]);
 }
 
-function pickStatusLabel(status: LocalizationPickRecord['channels'][number]['status'], t: (key: I18nKey) => string): string {
+function pickStatusLabel(status: LocalizationPickStatus, t: (key: I18nKey) => string): string {
   switch (status) {
     case 'accepted': return t('calc.pick.accepted');
     case 'rejected_no_trigger': return t('calc.pick.no_trigger');
     case 'rejected_no_refinement': return t('calc.pick.no_refinement');
     case 'rejected_low_snr': return t('calc.pick.low_snr');
     case 'rejected_inconsistent': return t('calc.pick.inconsistent');
+    case 'rejected_saturated': return t('calc.pick.saturated');
+    case 'rejected_ambiguous': return t('calc.pick.ambiguous');
     default: return status;
+  }
+}
+
+function pickEvidenceLabel(
+  status: LocalizationPickStatus,
+  reason: string | undefined,
+  t: (key: I18nKey) => string,
+): string {
+  if (reason === 'saturated') return t('calc.pick.saturated');
+  if (reason === 'ambiguous') return t('calc.pick.ambiguous');
+  return pickStatusLabel(status, t);
+}
+
+function terminalStatusLabel(status: LocalizationRunTerminalStatus, t: (key: I18nKey) => string): string {
+  switch (status) {
+    case 'iteration_limit': return t('calc.terminal.iteration_limit');
+    case 'time_budget_skipped': return t('calc.terminal.time_budget_skipped');
+    case 'time_budget_hit': return t('calc.terminal.time_budget_hit');
+    case 'cell_budget': return t('calc.terminal.cell_budget');
+    case 'resolution_limited': return t('calc.terminal.resolution_limited');
+    case 'none': return '';
+    default: return status;
+  }
+}
+
+function runRejectionLabel(reason: string, t: (key: I18nKey) => string): string {
+  switch (reason) {
+    case 'session_gap': return t('calc.reason.session_gap');
+    case 'timestamp_non_monotonic': return t('calc.reason.timestamp_non_monotonic');
+    case 'duplicate_sensor_position': return t('calc.reason.duplicate_sensor_position');
+    case 'reflected_transform': return t('calc.reason.reflected_transform');
+    default: return reason;
   }
 }
 
@@ -322,6 +358,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
   const [geometry, setGeometry] = useState<LocalizationSessionGeometry | null>(null);
   const [csPairs, setCsPairs] = useState<LocalizationSessionCsPairs | null>(null);
   const [picks, setPicks] = useState<LocalizationPickRecord[] | null>(null);
+  const [listingPartialError, setListingPartialError] = useState(false);
   const [geometryError, setGeometryError] = useState<unknown | null>(null);
   const [geometryLoadPending, setGeometryLoadPending] = useState(true);
   /* MAX-148: drives the unconstrained/scan-constrained toggle; null = still checking. */
@@ -344,6 +381,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
     setGeometry(null);
     setCsPairs(null);
     setPicks(null);
+    setListingPartialError(false);
     setGeometryError(null);
     setGeometryLoadPending(true);
     setHasScan(null);
@@ -354,6 +392,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
         setGeometry(listing.geometry);
         setCsPairs(listing.cs_pairs);
         setPicks(listing.picks);
+        setListingPartialError(listing.partial_error);
         setRuns(listing.runs.length > 0 ? listing.runs : null);
       })
       .catch((reason: unknown) => {
@@ -478,6 +517,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
       .then((listing) => {
         setRuns(listing.runs);
         setPicks(listing.picks);
+        setListingPartialError(listing.partial_error);
       })
       .catch((reason: unknown) => { if (!isRequestCancellation(reason)) setError(reason); })
       .finally(() => setRunning(false));
@@ -557,6 +597,10 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
         </details>
       )}
 
+      {listingPartialError && (
+        <div className="console-alert" role="alert">{t('calc.partial_listing_warning')}</div>
+      )}
+
       {picks !== null && picks.length > 0 && (() => {
         const latest = latestPickRecord(picks);
         if (latest === null) return null;
@@ -564,17 +608,53 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
           <details className="settings-details">
             <summary>{t('calc.arrival_picks', { count: formatNumber(locale, picks.length) })}</summary>
             <div className="session-list">
+              {latest.session_epoch_known && latest.session_epoch_timestamp_us !== null && (
+                <small>{t('calc.session_epoch', { value: formatNumber(locale, latest.session_epoch_timestamp_us) })}</small>
+              )}
               {latest.channels.map((channel) => (
-                <div className="session-row" key={channel.channel}>
-                  <span>
-                    <strong>{t('calc.channel', { number: formatNumber(locale, channel.channel) })}</strong>
-                    <small>{channel.participating ? pickStatusLabel(channel.status, t) : t('calc.not_participating')}</small>
-                  </span>
-                  <span>
-                    <strong>{channel.status === 'accepted' ? `${formatNumber(locale, channel.arrival_time_s, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} s` : '—'}</strong>
-                    <small>{t('calc.snr_value', { value: formatNumber(locale, channel.snr, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}</small>
-                  </span>
-                </div>
+                <Fragment key={channel.channel}>
+                  <div className="session-row">
+                    <span>
+                      <strong>{t('calc.channel', { number: formatNumber(locale, channel.channel) })}</strong>
+                      <small>{channel.participating
+                        ? pickEvidenceLabel(channel.status, channel.reason, t)
+                        : t('calc.not_participating')}</small>
+                    </span>
+                    <span>
+                      <strong>{channel.status === 'accepted' ? `${formatNumber(locale, channel.arrival_time_s, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} s` : '—'}</strong>
+                      <small>{t('calc.snr_value', { value: formatNumber(locale, channel.snr, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}</small>
+                    </span>
+                  </div>
+                  {channel.s_pick !== undefined && (
+                    <div className="session-row">
+                      <span>
+                        <strong>{t('calc.s_pick')}</strong>
+                        <small>
+                          {channel.s_pick.status === undefined
+                            ? t('report.unknown')
+                            : pickEvidenceLabel(channel.s_pick.status, channel.s_pick.reason, t)}
+                          {channel.s_pick.method !== undefined ? ` · ${channel.s_pick.method}` : ''}
+                          {channel.s_pick.sample_index !== undefined
+                            ? ` · ${t('calc.s_pick_sample', { index: formatNumber(locale, channel.s_pick.sample_index) })}`
+                            : ''}
+                        </small>
+                      </span>
+                      <span>
+                        <strong>{channel.s_pick.arrival_time_us === undefined
+                          ? '—'
+                          : `${formatNumber(locale, channel.s_pick.arrival_time_us / 1_000_000, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} s`}</strong>
+                        <small>
+                          {channel.s_pick.snr === undefined
+                            ? ''
+                            : t('calc.snr_value', { value: formatNumber(locale, channel.s_pick.snr, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
+                          {channel.s_pick.uncertainty_us === undefined
+                            ? ''
+                            : ` · ${t('calc.s_pick_uncertainty', { value: formatNumber(locale, channel.s_pick.uncertainty_us) })}`}
+                        </small>
+                      </span>
+                    </div>
+                  )}
+                </Fragment>
               ))}
             </div>
           </details>
@@ -713,6 +793,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
               <span>
                 <strong>{run.method_name}</strong>
                 <small>{run.kind === 'joint_fusion' ? t('calc.joint_fusion') : run.dimensionality}</small>
+                {run.terminal_status !== 'none' && <small>{terminalStatusLabel(run.terminal_status, t)}</small>}
               </span>
               <span>
                 <strong>{run.solved ? formatPosition(run, locale) : t('calc.unsolved')}</strong>
@@ -723,7 +804,7 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
                       estimatedVelocityText(run, locale) +
                       (uncertaintyText(run, locale) === '' ? '' : ` · ${uncertaintyText(run, locale)}`) +
                       (run.method_name === 'energy_baseline' ? ` · ${t('calc.diagnostic_only')}` : '')
-                    : run.rejection_reason}
+                    : run.rejection_reason === undefined ? '' : runRejectionLabel(run.rejection_reason, t)}
                 </small>
               </span>
             </div>

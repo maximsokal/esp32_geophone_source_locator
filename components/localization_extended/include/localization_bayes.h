@@ -126,6 +126,7 @@ typedef struct
     uint32_t pick_mask_used;
     size_t cells_evaluated;
     double cell_m;                          /* the finest level's lattice step */
+    bool cell_budget_exhausted;
     /* The pick sigma the finest level could resolve: the configured one,
      * or larger (a wider, conservative region) when the cell budget ran
      * out before the lattice matched the posterior's width. */
