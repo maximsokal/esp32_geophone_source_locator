@@ -22,10 +22,12 @@ static uint8_t *read_vector(bool project_v2, size_t *length)
     static const char *const v1_candidates[] = {
         "tests/vectors/scan_occupancy_v1.bin",
         "../../../tests/vectors/scan_occupancy_v1.bin",
+        "../../../../tests/vectors/scan_occupancy_v1.bin",
     };
     static const char *const v2_candidates[] = {
         "tests/vectors/scan_occupancy_v2.bin",
         "../../../tests/vectors/scan_occupancy_v2.bin",
+        "../../../../tests/vectors/scan_occupancy_v2.bin",
     };
     const char *const *candidates = project_v2 ? v2_candidates : v1_candidates;
     const size_t candidate_count = project_v2
@@ -102,6 +104,7 @@ static void test_project_frame_v2_registration_and_candidate_classification(void
     assert(occupancy.registration.geometry_computed_at_ms == 123456U);
     assert(occupancy.registration.threshold_m > 0.0);
     assert(scan_occupancy_registration_usable(&occupancy, 123456U));
+    assert(scan_occupancy_registration_reason(&occupancy, 123456U) == NULL);
 
     const double sensor_origin[3] = { 0.0, 0.0, 0.0 };
     double project[3];
@@ -179,8 +182,108 @@ static void test_registration_quality_requires_positive_threshold(void)
     assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
     occupancy.registration.residual_m = occupancy.registration.threshold_m;
     assert(scan_occupancy_registration_usable(&occupancy, 123456U));
+    assert(scan_occupancy_registration_reason(&occupancy, 123456U) == NULL);
     occupancy.registration.threshold_m = 0.0;
     assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
+}
+
+
+static void setup_usable_registration(scan_occupancy_t *occupancy)
+{
+    memset(occupancy, 0, sizeof(*occupancy));
+    occupancy->registration.present = true;
+    occupancy->registration.geometry_computed_at_ms = 123456U;
+    occupancy->registration.residual_m = 0.01;
+    occupancy->registration.threshold_m = 0.05;
+    occupancy->registration.sensor_to_scan[0] = 1.0;
+    occupancy->registration.sensor_to_scan[5] = 1.0;
+    occupancy->registration.sensor_to_scan[10] = 1.0;
+    occupancy->registration.sensor_to_scan[15] = 1.0;
+}
+
+
+static void test_proper_rotations_are_usable(void)
+{
+    scan_occupancy_t occupancy;
+    setup_usable_registration(&occupancy);
+    assert(scan_occupancy_registration_usable(&occupancy, 123456U));
+
+    occupancy.registration.sensor_to_scan[0] = 0.0;
+    occupancy.registration.sensor_to_scan[1] = -1.0;
+    occupancy.registration.sensor_to_scan[4] = 1.0;
+    occupancy.registration.sensor_to_scan[5] = 0.0;
+    assert(scan_occupancy_registration_usable(&occupancy, 123456U));
+
+    const double roll = 0.7;
+    const double pitch = -0.4;
+    const double yaw = 0.3;
+    const double cr = cos(roll);
+    const double sr = sin(roll);
+    const double cp = cos(pitch);
+    const double sp = sin(pitch);
+    const double cy = cos(yaw);
+    const double sy = sin(yaw);
+    const double rotation[9] = {
+        cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr,
+        sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr,
+        -sp, cp * sr, cp * cr,
+    };
+    for (int row = 0; row < 3; ++row) {
+        for (int column = 0; column < 3; ++column) {
+            occupancy.registration.sensor_to_scan[row * 4 + column] =
+                rotation[row * 3 + column];
+        }
+    }
+    occupancy.registration.sensor_to_scan[3] = 1.25;
+    occupancy.registration.sensor_to_scan[7] = -0.5;
+    occupancy.registration.sensor_to_scan[11] = 2.0;
+    assert(scan_occupancy_registration_usable(&occupancy, 123456U));
+
+    setup_usable_registration(&occupancy);
+    occupancy.registration.sensor_to_scan[0] = 1.0004;
+    assert(scan_occupancy_registration_usable(&occupancy, 123456U));
+    assert(scan_occupancy_registration_reason(&occupancy, 123456U) == NULL);
+}
+
+
+static void test_reflections_are_rejected_with_stable_reason(void)
+{
+    static const int reflection_axes[] = { 0, 1, 2 };
+    for (size_t i = 0U; i < sizeof(reflection_axes) / sizeof(reflection_axes[0]); ++i) {
+        scan_occupancy_t occupancy;
+        setup_usable_registration(&occupancy);
+        occupancy.registration.sensor_to_scan[reflection_axes[i] * 4 + reflection_axes[i]] = -1.0;
+        assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
+        assert(strcmp(scan_occupancy_registration_reason(&occupancy, 123456U),
+            "reflected_transform") == 0);
+    }
+
+    scan_occupancy_t occupancy;
+    setup_usable_registration(&occupancy);
+    occupancy.registration.sensor_to_scan[0] = 0.0;
+    occupancy.registration.sensor_to_scan[1] = 1.0;
+    occupancy.registration.sensor_to_scan[4] = 1.0;
+    occupancy.registration.sensor_to_scan[5] = 0.0;
+    assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
+    assert(strcmp(scan_occupancy_registration_reason(&occupancy, 123456U),
+        "reflected_transform") == 0);
+}
+
+
+static void test_scaled_and_sheared_transforms_are_rejected(void)
+{
+    scan_occupancy_t occupancy;
+    setup_usable_registration(&occupancy);
+    occupancy.registration.sensor_to_scan[0] = 1.01;
+    assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
+    assert(strcmp(scan_occupancy_registration_reason(&occupancy, 123456U),
+        "invalid_registration") == 0);
+
+    setup_usable_registration(&occupancy);
+    occupancy.registration.sensor_to_scan[1] = 0.01;
+    assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
+    assert(strcmp(scan_occupancy_registration_reason(&occupancy, 123456U),
+        "invalid_registration") == 0);
 }
 
 
@@ -259,10 +362,12 @@ static void test_corruption_and_bad_registration_fail_closed(void)
     };
     occupancy.registration.sensor_to_scan[0] = 2.0;
     assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
-    /* A mirror (det = -1) is allowed: CS layouts may be reflected. */
+    /* The decoded project-frame yaw remains proper; a mirrored block fails closed. */
     memcpy(occupancy.registration.sensor_to_scan, original, sizeof(original));
     occupancy.registration.sensor_to_scan[1] = -occupancy.registration.sensor_to_scan[1];
-    assert(scan_occupancy_registration_usable(&occupancy, 123456U));
+    assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
+    assert(strcmp(scan_occupancy_registration_reason(&occupancy, 123456U),
+        "reflected_transform") == 0);
     /* No registration at all: fail closed. */
     occupancy.registration.present = false;
     assert(!scan_occupancy_registration_usable(&occupancy, 123456U));
@@ -277,6 +382,9 @@ int main(void)
     test_project_frame_v2_registration_and_candidate_classification();
     test_schema1_without_registration_still_classifies();
     test_registration_quality_requires_positive_threshold();
+    test_proper_rotations_are_usable();
+    test_reflections_are_rejected_with_stable_reason();
+    test_scaled_and_sheared_transforms_are_rejected();
     test_schema2_registration_without_threshold_is_rejected();
     test_corruption_and_bad_registration_fail_closed();
     return 0;

@@ -159,10 +159,12 @@ function tagMap(tags: readonly FusedRegistrationTag[] | FusedTagsById): Map<numb
 
 /**
  * Fits scan = R * sensor + t. Sensor positions are converted from millimetres
- * to metres. The chosen proper/reflected fit must map sensor +Z toward scan +Y
- * within maxTiltDeg (default 30 degrees because the nodes are leveled and XR
- * gravity aligns the scan frame); collinearity uses 1e-9 of the maximum
- * centered sensor-position covariance eigenvalue.
+ * to metres. An accepted proper fit must map sensor +Z toward scan +Y within
+ * maxTiltDeg (default 30 degrees because the nodes are leveled and XR gravity
+ * aligns the scan frame). A reflected fit can only identify the stable
+ * `reflected_transform` rejection reason; it is never returned as usable.
+ * Collinearity uses 1e-9 of the maximum centered sensor-position covariance
+ * eigenvalue.
  */
 export function registerSensorToScan(input: {
   tags: readonly FusedRegistrationTag[] | FusedTagsById;
@@ -207,10 +209,15 @@ export function registerSensorToScan(input: {
   const proper = fitCandidate(correspondences, 1);
   const reflected = fitCandidate(correspondences, -1);
   const minimumGravityDot = Math.cos((input.maxTiltDeg ?? 30) * Math.PI / 180);
-  const admissible = [proper, reflected].filter((candidate) => candidate.rotation[5] >= minimumGravityDot);
-  if (admissible.length === 0) return noTransform('gravity_inconsistent');
-  const best = admissible.reduce((lowerRms, candidate) => candidate.rms < lowerRms.rms ? candidate : lowerRms);
-  const determinant = determinant3(best.rotation);
+  const reflectedGravityAdmissible = reflected.rotation[5] >= minimumGravityDot;
+  if (proper.rotation[5] < minimumGravityDot) {
+    return noTransform(reflectedGravityAdmissible ? 'reflected_transform' : 'gravity_inconsistent');
+  }
+  if (proper.rms > thresholdM && reflectedGravityAdmissible && reflected.rms <= thresholdM) {
+    return noTransform('reflected_transform');
+  }
+
+  const best = proper;
   const matrix = [
     ...best.rotation.slice(0, 3), best.translation[0],
     ...best.rotation.slice(3, 6), best.translation[1],
@@ -236,7 +243,7 @@ export function registerSensorToScan(input: {
     reason: valid ? null : 'residual_too_high',
     tier: valid ? (full ? 'full' : 'minimum') : null,
     sensorToScan: matrix,
-    mirrored: determinant < 0,
+    mirrored: false,
     rmsResidualM: best.rms,
     thresholdM,
     perNode: resultPerNode,

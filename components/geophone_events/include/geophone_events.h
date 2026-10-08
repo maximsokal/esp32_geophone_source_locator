@@ -88,6 +88,15 @@ bool geophone_event_sta_lta_detect(
 );
 
 
+bool geophone_event_sta_lta_detect_after(
+    const float *samples,
+    size_t sample_count,
+    const geophone_sta_lta_config_t *config,
+    size_t minimum_trigger_index,
+    geophone_sta_lta_result_t *result
+);
+
+
 /* ---- First-arrival refinement around a coarse trigger ------------------- */
 
 typedef struct
@@ -206,7 +215,9 @@ typedef enum
      * incompatible with the other channels' picks (a time difference larger
      * than the sensor separation allows at the propagation speed) -- most
      * likely a different event, e.g. a footstep next to one sensor. */
-    GEOPHONE_PICK_REJECTED_INCONSISTENT
+    GEOPHONE_PICK_REJECTED_INCONSISTENT,
+    GEOPHONE_PICK_REJECTED_SATURATED,
+    GEOPHONE_PICK_REJECTED_AMBIGUOUS
 
 } geophone_pick_status_t;
 
@@ -229,9 +240,23 @@ typedef struct
 } geophone_channel_pick_config_t;
 
 
+typedef enum
+{
+    GEOPHONE_PICK_REASON_NONE = 0,
+    GEOPHONE_PICK_REASON_SATURATED = 1,
+    GEOPHONE_PICK_REASON_AMBIGUOUS = 2
+
+} geophone_pick_reason_t;
+
+
+/* Stable lowercase reason names for logs and later persisted pick evidence. */
+const char *geophone_pick_reason_name(geophone_pick_reason_t reason);
+
+
 typedef struct
 {
     geophone_pick_status_t status;
+    geophone_pick_reason_t reason;
     geophone_pick_method_t method;
     size_t arrival_sample_index;
     /* MAX-209: sub-sample correction in (-1, 0]; the onset is at
@@ -256,6 +281,27 @@ bool geophone_event_pick_channel_arrival(
     size_t sample_count,
     uint32_t sample_rate_hz,
     const geophone_channel_pick_config_t *config,
+    geophone_channel_pick_t *result
+);
+
+
+/* Check the original int16 analysis window before unit conversion or
+ * filtering. A window is saturated only when it contains at least 8 exact
+ * INT16_MIN/INT16_MAX samples and those rails make up at least 0.5% of the
+ * full window (ceil(sample_count * 0.005)). Pass the resulting compact flag
+ * to the picker below while retaining the normal float trace for detection. */
+bool geophone_event_raw_i16_window_is_saturated(
+    const int16_t *raw_samples,
+    size_t sample_count
+);
+
+
+bool geophone_event_pick_channel_arrival_with_saturation(
+    const float *samples,
+    size_t sample_count,
+    uint32_t sample_rate_hz,
+    const geophone_channel_pick_config_t *config,
+    bool raw_i16_saturated,
     geophone_channel_pick_t *result
 );
 

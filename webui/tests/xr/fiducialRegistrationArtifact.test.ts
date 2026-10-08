@@ -85,6 +85,21 @@ describe('registration-v1.json artifact', () => {
     });
   });
 
+  it('rejects reflected valid transforms and preserves the stable reason on rejected artifacts', () => {
+    const reflectedMatrix = [-1, 0, 0, 0.2, 0, 1, 0, -0.3, 0, 0, 1, 0.1, 0, 0, 0, 1];
+    expect(() => decodeRegistrationArtifact(encodeRaw({
+      ...artifact(), sensor_to_scan: reflectedMatrix, mirrored: true,
+    }))).toThrow('reflected_transform');
+
+    const rejected: RegistrationArtifact = {
+      ...artifact(), sensor_to_scan: reflectedMatrix, mirrored: true,
+      tier: null, valid: false, reason: 'reflected_transform',
+      per_node: artifact().per_node.map((item) => ({ ...item, status: 'provisional' })),
+    };
+    expect(decodeRegistrationArtifact(encodeRaw(rejected))).toEqual(rejected);
+    expect(toOccupancyRegistration(rejected)).toBeNull();
+  });
+
   it('enforces the quality invariant: valid needs residual within a positive threshold, boundary equality is valid', () => {
     const over = { ...artifact(), residual_rms_m: 0.3, threshold_m: 0.05 };
     expect(() => decodeRegistrationArtifact(encodeRaw(over))).toThrow(/threshold/i);

@@ -344,7 +344,7 @@ scan_occupancy_class_t scan_occupancy_classify(
 }
 
 
-bool scan_occupancy_registration_usable(
+const char *scan_occupancy_registration_reason(
     const scan_occupancy_t *occupancy,
     uint64_t geometry_computed_at_ms
 )
@@ -355,7 +355,7 @@ bool scan_occupancy_registration_usable(
         geometry_computed_at_ms == 0U ||
         occupancy->registration.geometry_computed_at_ms != geometry_computed_at_ms
     ) {
-        return false;
+        return "invalid_registration";
     }
 
     const double residual_m = occupancy->registration.residual_m;
@@ -365,14 +365,19 @@ bool scan_occupancy_registration_usable(
         !isfinite(threshold_m) || !(threshold_m > 0.0) ||
         residual_m > threshold_m
     ) {
-        return false;
+        return "invalid_registration";
     }
 
     const double *m = occupancy->registration.sensor_to_scan;
-    if (m[12] != 0.0 || m[13] != 0.0 || m[14] != 0.0 || m[15] != 1.0) {
-        return false;
+    for (size_t i = 0U; i < 16U; ++i) {
+        if (!isfinite(m[i])) {
+            return "invalid_registration";
+        }
     }
-    /* Rotation block must be orthonormal (|det| = 1; a mirror is allowed). */
+    if (m[12] != 0.0 || m[13] != 0.0 || m[14] != 0.0 || m[15] != 1.0) {
+        return "invalid_registration";
+    }
+    /* Rotation block must be orthonormal within the existing 1e-3 tolerance. */
     for (int r = 0; r < 3; ++r) {
         for (int c = 0; c < 3; ++c) {
             double dot = 0.0;
@@ -380,11 +385,31 @@ bool scan_occupancy_registration_usable(
                 dot += m[r * 4 + k] * m[c * 4 + k];
             }
             if (fabs(dot - (r == c ? 1.0 : 0.0)) > 1e-3) {
-                return false;
+                return "invalid_registration";
             }
         }
     }
-    return true;
+
+    const double determinant =
+        m[0] * (m[5] * m[10] - m[6] * m[9]) -
+        m[1] * (m[4] * m[10] - m[6] * m[8]) +
+        m[2] * (m[4] * m[9] - m[5] * m[8]);
+    if (fabs(determinant - 1.0) <= 1e-3) {
+        return NULL;
+    }
+    if (determinant < 0.0 && fabs(determinant + 1.0) <= 1e-3) {
+        return "reflected_transform";
+    }
+    return "invalid_registration";
+}
+
+
+bool scan_occupancy_registration_usable(
+    const scan_occupancy_t *occupancy,
+    uint64_t geometry_computed_at_ms
+)
+{
+    return scan_occupancy_registration_reason(occupancy, geometry_computed_at_ms) == NULL;
 }
 
 

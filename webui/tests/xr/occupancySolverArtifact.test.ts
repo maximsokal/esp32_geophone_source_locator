@@ -118,6 +118,17 @@ describe('compact occupancy solver artifact (MAX-162)', () => {
     }))).toThrow(/frame/i);
   });
 
+  it('rejects reflected registrations on both artifact write and read paths', () => {
+    const reflected = [-1, 0, 0, 0.5, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    const registration = { ...GOLDEN_OPTIONS.registration, sensor_to_scan: reflected };
+    expect(() => encodeOccupancySolverArtifact(goldenSnapshot(), { ...GOLDEN_OPTIONS, registration })).toThrow('reflected_transform');
+
+    const bytes = projectGoldenBytes();
+    expect(() => decodeOccupancySolverArtifact(rewriteHeader(bytes, (header) => {
+      (header.registration as Record<string, unknown>).sensor_to_scan = reflected;
+    }))).toThrow('reflected_transform');
+  });
+
   it('rejects corruption instead of reading garbage', () => {
     const bytes = encodeOccupancySolverArtifact(goldenSnapshot(), GOLDEN_OPTIONS);
     bytes[bytes.length - 1] ^= 0xff;

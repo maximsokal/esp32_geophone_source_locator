@@ -25,6 +25,7 @@
 
 import type { ScanPointCloudSnapshot } from './depthPointCloud';
 import { localFloorMatrixToProject } from './projectFrame';
+import { registrationTransformIssue } from './registrationApplicability';
 import { crc32 } from './crc32';
 import { createScanIdentity, type ScanIdentity } from './scanIdentity';
 
@@ -116,12 +117,16 @@ function registrationInProjectFrame(value: OccupancyRegistration | null): Occupa
     throw new Error('Occupancy registration must be a finite 4x4 matrix.');
   }
   assertRegistrationQuality(value);
+  const projectMatrix = frame === 'project_z_up'
+    ? [...value.sensor_to_scan]
+    : localFloorMatrixToProject(value.sensor_to_scan);
+  const transformIssue = registrationTransformIssue(projectMatrix);
+  if (transformIssue === 'reflected_transform') throw new Error('reflected_transform');
+  if (transformIssue !== null) throw new Error('Occupancy registration transform must be a proper rigid transform.');
   return {
     ...value,
     frame: 'project_z_up',
-    sensor_to_scan: frame === 'project_z_up'
-      ? [...value.sensor_to_scan]
-      : localFloorMatrixToProject(value.sensor_to_scan),
+    sensor_to_scan: projectMatrix,
   };
 }
 
@@ -242,6 +247,9 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   }
   if (header.schema === OCCUPANCY_ARTIFACT_SCHEMA && declaredRegistration !== null && declaredRegistration !== undefined) {
     assertRegistrationQuality(declaredRegistration);
+    const transformIssue = registrationTransformIssue(declaredRegistration.sensor_to_scan);
+    if (transformIssue === 'reflected_transform') throw new Error('reflected_transform');
+    if (transformIssue !== null) throw new Error('Occupancy registration transform must be a proper rigid transform.');
   }
   if (payloadLength !== 6 * (header.free_count + header.occupied_count)) {
     throw new Error('Occupancy artifact counts disagree with the payload.');

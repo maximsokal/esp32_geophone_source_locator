@@ -105,9 +105,9 @@ describe('fiducial rigid registration', () => {
 
     const reflection = gravityYaw(0, true, [0.1, 0.2, -0.05]);
     const reflectedResult = registerSensorToScan({ tags: tagsFor(reflection), geometry: geometry({ assigned: true }), geometryComputedAtMs: 1234 });
-    expect(reflectedResult.valid).toBe(true);
-    expect(reflectedResult.mirrored).toBe(true);
-    expect(reflectedResult.rmsResidualM).toBeLessThanOrEqual(1e-9);
+    expect(reflectedResult.valid).toBe(false);
+    expect(reflectedResult.reason).toBe('reflected_transform');
+    expect(reflectedResult.sensorToScan).toBeNull();
   });
 
   it('uses gravity to select the proper near-planar fit with realistic sensor-side z noise', () => {
@@ -124,21 +124,24 @@ describe('fiducial rigid registration', () => {
     expect(rmsTransformError(result.sensorToScan!, truth, NEAR_PLANAR_IDEAL_POINTS)).toBeLessThan(0.01);
   });
 
-  it('uses gravity to select a mirrored near-planar fit when the sensor frame is reflected', () => {
+  it('never returns a mirrored near-planar fit when the sensor frame is reflected', () => {
     const truth = gravityYaw(23, true);
     const result = registerSensorToScan({
       tags: tagsFor(truth, [], undefined, NEAR_PLANAR_IDEAL_POINTS),
       geometry: geometry({ assigned: true, points: NEAR_PLANAR_SENSOR_POINTS.slice(1) }),
       geometryComputedAtMs: 1234,
     });
-    expect(result.valid).toBe(true);
-    expect(result.mirrored).toBe(true);
-    expect(result.sensorToScan).not.toBeNull();
-    expect(result.sensorToScan?.[6]).toBeGreaterThan(Math.cos(30 * Math.PI / 180));
-    expect(rmsTransformError(result.sensorToScan!, truth, NEAR_PLANAR_IDEAL_POINTS)).toBeLessThan(0.01);
+    expect(result.mirrored).toBe(false);
+    if (result.sensorToScan !== null) {
+      const matrix = result.sensorToScan;
+      const determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9]) -
+        matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8]) +
+        matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
+      expect(determinant).toBeCloseTo(1, 9);
+    }
   });
 
-  it('chooses an upright fit even when the exact upside-down fit has lower residual', () => {
+  it('rejects an upright fit that would require reflecting an upside-down sensor transform', () => {
     const upsideDown: Transform = { rotation: [1, 0, 0, 0, 0, -1, 0, 1, 0], translation: [0.2, 0.3, -0.1] };
     // Exact tags from this 180-degree fit give the upside-down candidate essentially zero RMS.
     // The near-planar measurements leave an upright alternate, which gravity must prefer.
@@ -153,10 +156,9 @@ describe('fiducial rigid registration', () => {
       geometryComputedAtMs: 1234,
     });
     expect(upsideDownRms).toBeLessThan(1e-9);
-    expect(result.sensorToScan).not.toBeNull();
-    expect(result.sensorToScan?.[6]).toBeGreaterThan(Math.cos(30 * Math.PI / 180));
-    expect(result.mirrored).toBe(true);
-    expect(result.rmsResidualM).toBeGreaterThan(upsideDownRms + 1e-6);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('reflected_transform');
+    expect(result.sensorToScan).toBeNull();
   });
 
   it('rejects a 180-degree gravity mismatch with no transform', () => {

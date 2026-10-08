@@ -389,9 +389,7 @@ static void setup_high_epoch(tdoa_case_state_t *state)
     state->config.propagation_speed_mps = state->speed_mps;
 }
 
-/* KNOWN_DEFECT rows are asserted as reproduced behavior and reported as
- * expected failures; they keep the suite green while preserving an alarm
- * that flips when a later production fix changes the behavior. */
+/* The remaining KNOWN_DEFECT row records the unresolved large-epoch precision issue. */
 static const tdoa_case_t g_tdoa_cases[] = {
     { "zero sensors", "ESP_ERR_INVALID_ARG_COUNT_LT_4", ESP_ERR_INVALID_ARG, setup_count_zero, false },
     { "one sensor", "ESP_ERR_INVALID_ARG_COUNT_LT_4", ESP_ERR_INVALID_ARG, setup_count_one, false },
@@ -416,13 +414,13 @@ static const tdoa_case_t g_tdoa_cases[] = {
     { "zero iteration limit", "ESP_ERR_INVALID_ARG_ITERATIONS_ZERO", ESP_ERR_INVALID_ARG, setup_zero_iterations, false },
     { "zero convergence distance", "ESP_ERR_INVALID_ARG_CONVERGENCE_LE_0", ESP_ERR_INVALID_ARG, setup_zero_convergence, false },
     { "negative damping", "ESP_ERR_INVALID_ARG_DAMPING_LT_0", ESP_ERR_INVALID_ARG, setup_negative_damping, false },
-    { "all sensors colocated", "ESP_ERR_INVALID_STATE_GEOMETRY_NOT_3D", ESP_ERR_INVALID_STATE, setup_all_colocated, false },
+    { "all sensors colocated", "duplicate_sensor_position", ESP_ERR_INVALID_ARG, setup_all_colocated, false },
     { "collinear sensors", "ESP_ERR_INVALID_STATE_GEOMETRY_NOT_3D", ESP_ERR_INVALID_STATE, setup_collinear, false },
-    { "coplanar sensors", "ESP_ERR_INVALID_STATE_GEOMETRY_NOT_3D", ESP_ERR_INVALID_STATE, setup_coplanar, false },
+    { "coplanar sensors with colocated points", "duplicate_sensor_position", ESP_ERR_INVALID_ARG, setup_coplanar, false },
     { "near-degenerate depth just below 0.05", "ESP_ERR_INVALID_STATE_DEPTH_THRESHOLD_NOT_MET", ESP_ERR_INVALID_STATE, setup_depth_just_below_threshold, false },
     { "depth ratio exactly 0.05 boundary", "ESP_ERR_INVALID_STATE_DEPTH_THRESHOLD_IS_STRICTLY_GREATER", ESP_ERR_INVALID_STATE, setup_depth_threshold_equal, false },
-    { "duplicate positions with remaining 3D geometry", "KNOWN_DEFECT_DUPLICATE_POSITION_ACCEPTED", ESP_OK, setup_duplicate_positions, true },
-    { "invalid speed leaves old result intact", "KNOWN_DEFECT_REJECTED_CALL_DOES_NOT_CLEAR_RESULT", ESP_ERR_INVALID_ARG, setup_stale_result, true },
+    { "duplicate positions with remaining 3D geometry", "duplicate_sensor_position", ESP_ERR_INVALID_ARG, setup_duplicate_positions, false },
+    { "invalid speed clears old result", "ESP_ERR_INVALID_ARG_SPEED_LE_0", ESP_ERR_INVALID_ARG, setup_stale_result, false },
     { "INT64_MAX epoch loses microsecond precision", "KNOWN_DEFECT_INT64_EPOCH_CAST_TO_DOUBLE", ESP_OK, setup_high_epoch, true },
 };
 
@@ -444,7 +442,26 @@ static void test_tdoa_case_matrix(void)
             state.guess_arg,
             state.result_arg
         );
+        if (actual != test->expected_status) {
+            printf("FAIL %s expected status=%d actual=%d reason=%s\n",
+                test->name, test->expected_status, actual, test->expected_reason);
+            fflush(stdout);
+        }
         assert(actual == test->expected_status);
+
+        if (strcmp(test->expected_reason, "duplicate_sensor_position") == 0) {
+            localization_validation_reason_t reason = LOCALIZATION_VALIDATION_REASON_NONE;
+            assert(localization_validate_ex(
+                state.observations_arg,
+                state.count,
+                state.config_arg,
+                state.guess_arg,
+                &reason
+            ) == ESP_ERR_INVALID_ARG);
+            assert(reason == LOCALIZATION_INVALID_DUPLICATE_SENSOR_POSITION);
+            assert(strcmp(localization_validation_reason_string(reason),
+                "duplicate_sensor_position") == 0);
+        }
 
         if (!test->known_defect && actual == ESP_OK) {
             assert(state.result.converged);
@@ -455,36 +472,27 @@ static void test_tdoa_case_matrix(void)
         } else if (!test->known_defect && state.result_arg != NULL) {
             assert(!state.result.converged);
             assert(state.result.iterations == 0U);
+            if (test->setup == setup_stale_result) {
+                const unsigned char zero_result[sizeof(state.result)] = { 0U };
+                assert(memcmp(&state.result, zero_result, sizeof(state.result)) == 0);
+                printf("PASS rejected invalid-speed call clears the full result struct\n");
+            }
         }
         if (test->known_defect) {
-            if (strcmp(test->expected_reason, "KNOWN_DEFECT_DUPLICATE_POSITION_ACCEPTED") == 0) {
-                assert(actual == ESP_OK && point_is_finite(state.result.source_position));
-                printf("KNOWN_DEFECT_REPRO input=5 observations, rows 0 and 4 share position/time, "
-                    "3 remaining positions span depth; returned=ESP_OK source=(%.6f,%.6f,%.6f)\n",
-                    state.result.source_position.x_m,
-                    state.result.source_position.y_m,
-                    state.result.source_position.z_m);
-            } else if (strcmp(test->expected_reason, "KNOWN_DEFECT_REJECTED_CALL_DOES_NOT_CLEAR_RESULT") == 0) {
-                assert(state.result.converged);
-                assert(state.result.source_position.x_m == 8.0);
-                assert(state.result.source_position.y_m == -4.0);
-                assert(state.result.source_position.z_m == 2.0);
-                printf("KNOWN_DEFECT_REPRO input=speed 0, returned=ESP_ERR_INVALID_ARG, "
-                    "result still converged at (8,-4,2)\n");
-            } else {
-                assert(actual == ESP_OK);
-                assert(point_is_finite(state.result.source_position));
-                /* At this epoch, converting absolute int64 us to double has
-                 * a 1024 us ULP; valid differential arrivals lose precision. */
-                const double source_error_m = distance_m(
-                    state.result.source_position, state.truth
-                );
-                assert(source_error_m > 0.02);
-                printf("KNOWN_DEFECT_REPRO input=8 sensors, speed=1850 m/s, "
-                    "emission_us=INT64_MAX-1000000, returned source error=%.6f m, "
-                    "reported emission_us=%lld\n",
-                    source_error_m, (long long)state.result.emission_time_us);
-            }
+            assert(strcmp(test->expected_reason,
+                "KNOWN_DEFECT_INT64_EPOCH_CAST_TO_DOUBLE") == 0);
+            assert(actual == ESP_OK);
+            assert(point_is_finite(state.result.source_position));
+            /* At this epoch, converting absolute int64 us to double has
+             * a 1024 us ULP; valid differential arrivals lose precision. */
+            const double source_error_m = distance_m(
+                state.result.source_position, state.truth
+            );
+            assert(source_error_m > 0.02);
+            printf("KNOWN_DEFECT_REPRO input=8 sensors, speed=1850 m/s, "
+                "emission_us=INT64_MAX-1000000, returned source error=%.6f m, "
+                "reported emission_us=%lld\n",
+                source_error_m, (long long)state.result.emission_time_us);
             printf("KNOWN_DEFECT %s reason=%s\n", test->name, test->expected_reason);
         } else {
             printf("%s %s reason=%s status=%d\n",
@@ -492,6 +500,31 @@ static void test_tdoa_case_matrix(void)
                 test->name, test->expected_reason, actual);
         }
     }
+}
+
+
+static void test_duplicate_position_reason_is_order_independent(void)
+{
+    tdoa_case_state_t state;
+    memset(&state, 0, sizeof(state));
+    setup_base(&state);
+    setup_duplicate_positions(&state);
+
+    localization_validation_reason_t original_reason = LOCALIZATION_VALIDATION_REASON_NONE;
+    assert(localization_validate_ex(state.observations, state.count, &state.config,
+        NULL, &original_reason) == ESP_ERR_INVALID_ARG);
+    assert(original_reason == LOCALIZATION_INVALID_DUPLICATE_SENSOR_POSITION);
+
+    const localization_observation_t first = state.observations[0];
+    state.observations[0] = state.observations[1];
+    state.observations[1] = first;
+    localization_validation_reason_t permuted_reason = LOCALIZATION_VALIDATION_REASON_NONE;
+    assert(localization_validate_ex(state.observations, state.count, &state.config,
+        NULL, &permuted_reason) == ESP_ERR_INVALID_ARG);
+    assert(permuted_reason == original_reason);
+    assert(strcmp(localization_validation_reason_string(permuted_reason),
+        "duplicate_sensor_position") == 0);
+    puts("PASS duplicate sensor rejection reason is independent of sensor order");
 }
 
 static void test_iteration_limit_is_reported(void)
@@ -589,6 +622,7 @@ int main(void)
     }
     test_rigid_coordinate_frame_transform();
     test_tdoa_case_matrix();
+    test_duplicate_position_reason_is_order_independent();
     test_depth_ratio_equality_boundary();
     test_iteration_limit_is_reported();
     puts("MAX-132 TDOA oracle and validation tests passed");

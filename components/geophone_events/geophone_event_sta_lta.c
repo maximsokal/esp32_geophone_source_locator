@@ -17,10 +17,11 @@ static bool samples_are_finite(
 }
 
 
-bool geophone_event_sta_lta_detect(
+bool geophone_event_sta_lta_detect_after(
     const float *samples,
     size_t sample_count,
     const geophone_sta_lta_config_t *config,
+    size_t minimum_trigger_index,
     geophone_sta_lta_result_t *result
 )
 {
@@ -68,7 +69,10 @@ bool geophone_event_sta_lta_detect(
             const double sta_mean = sta_sum / (double)sta_w;
             const double ratio = sta_mean / lta_mean;
 
-            if (ratio >= (double)config->trigger_ratio) {
+            if (
+                ratio >= (double)config->trigger_ratio &&
+                end - sta_w >= minimum_trigger_index
+            ) {
                 result->found = true;
                 result->trigger_index = end - sta_w;
                 result->ratio_at_trigger = (float)ratio;
@@ -86,4 +90,17 @@ bool geophone_event_sta_lta_detect(
     }
 
     return false;
+}
+
+
+bool geophone_event_sta_lta_detect(
+    const float *samples,
+    size_t sample_count,
+    const geophone_sta_lta_config_t *config,
+    geophone_sta_lta_result_t *result
+)
+{
+    return geophone_event_sta_lta_detect_after(
+        samples, sample_count, config, 0u, result
+    );
 }

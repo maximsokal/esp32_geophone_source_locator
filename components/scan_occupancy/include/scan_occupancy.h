@@ -96,11 +96,17 @@ scan_occupancy_class_t scan_occupancy_classify(
  * The occupancy constraint may be applied to a localization run only when
  * the artifact carries a registration made against exactly this session's
  * frozen geometry version, whose residual is within its positive finite
- * threshold, and whose transform is a finite rigid motion
- * (rotation or reflection, the CS layout may be mirrored). Anything else
- * fails closed.
+ * threshold, and whose transform is a finite proper rigid motion. The
+ * rotation block must be orthonormal and have determinant +1 within 1e-3;
+ * reflections fail closed.
  */
 bool scan_occupancy_registration_usable(
+    const scan_occupancy_t *occupancy,
+    uint64_t geometry_computed_at_ms
+);
+
+/* Returns NULL when usable, otherwise a stable invalid-registration reason. */
+const char *scan_occupancy_registration_reason(
     const scan_occupancy_t *occupancy,
     uint64_t geometry_computed_at_ms
 );

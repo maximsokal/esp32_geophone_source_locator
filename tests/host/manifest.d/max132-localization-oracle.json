@@ -16,6 +16,22 @@
       ]
     },
     {
+      "name": "scan_occupancy_registration",
+      "sources": [
+        "components/scan_occupancy/scan_occupancy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/scan_occupancy_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/scan_occupancy",
+        "tests/host/stubs/object_store_profile",
+        "components/scan_occupancy/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
       "name": "max132_calculate_validation",
       "defines": [
         "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072"

@@ -9,8 +9,27 @@ import type { RegistrationArtifact } from './fiducial/registrationArtifact';
  * disagree about which scan a registration belongs to.
  */
 export type RegistrationInapplicableReason =
-  | 'missing' | 'invalid' | 'quality' | 'geometry_mismatch' | 'scan_unbound' | 'scan_mismatch' | 'scan_unknown';
+  | 'missing' | 'invalid' | 'reflected_transform' | 'quality' | 'geometry_mismatch' | 'scan_unbound' | 'scan_mismatch' | 'scan_unknown';
 export type RegistrationApplicability = { ok: true } | { ok: false; reason: RegistrationInapplicableReason };
+
+export type RegistrationTransformIssue = 'invalid' | 'reflected_transform' | null;
+
+/** Uses the firmware registration tolerances for a row-major sensor-to-scan matrix. */
+export function registrationTransformIssue(value: unknown): RegistrationTransformIssue {
+  if (!Array.isArray(value) || value.length !== 16 || value.some((entry) => typeof entry !== 'number' || !Number.isFinite(entry))) return 'invalid';
+  const matrix = value as number[];
+  if (matrix[12] !== 0 || matrix[13] !== 0 || matrix[14] !== 0 || matrix[15] !== 1) return 'invalid';
+  const rotation = [matrix[0], matrix[1], matrix[2], matrix[4], matrix[5], matrix[6], matrix[8], matrix[9], matrix[10]];
+  for (let row = 0; row < 3; row += 1) for (let other = 0; other < 3; other += 1) {
+    const dot = rotation[row * 3] * rotation[other * 3] + rotation[row * 3 + 1] * rotation[other * 3 + 1] + rotation[row * 3 + 2] * rotation[other * 3 + 2];
+    if (Math.abs(dot - (row === other ? 1 : 0)) > 1e-3) return 'invalid';
+  }
+  const determinant = rotation[0] * (rotation[4] * rotation[8] - rotation[5] * rotation[7]) -
+    rotation[1] * (rotation[3] * rotation[8] - rotation[5] * rotation[6]) +
+    rotation[2] * (rotation[3] * rotation[7] - rotation[4] * rotation[6]);
+  if (Math.abs(determinant - 1) <= 1e-3) return null;
+  return determinant < 0 && Math.abs(determinant + 1) <= 1e-3 ? 'reflected_transform' : 'invalid';
+}
 
 export interface RegistrationExpectation {
   /** Maximum computed_at_ms of the frozen localization geometry; null when unknown (not checked). */
@@ -26,12 +45,6 @@ export function registrationQualityOk(artifact: Pick<RegistrationArtifact, 'resi
   return Number.isFinite(artifact.threshold_m) && artifact.threshold_m > 0 &&
     Number.isFinite(artifact.residual_rms_m) && artifact.residual_rms_m >= 0 &&
     artifact.residual_rms_m <= artifact.threshold_m + REGISTRATION_QUALITY_EPSILON_M;
-}
-
-function usableMatrix(artifact: RegistrationArtifact): boolean {
-  const matrix = artifact.sensor_to_scan;
-  return artifact.valid === true && Array.isArray(matrix) && matrix.length === 16 &&
-    matrix.every((value) => typeof value === 'number' && Number.isFinite(value));
 }
 
 /** Frame binding only: geometry generation and scan identity (used for tag-only evidence too). */
@@ -56,7 +69,9 @@ export function registrationApplicability(
   expected: RegistrationExpectation,
 ): RegistrationApplicability {
   if (artifact === null || artifact === undefined) return { ok: false, reason: 'missing' };
-  if (!usableMatrix(artifact)) return { ok: false, reason: 'invalid' };
+  const transformIssue = registrationTransformIssue(artifact.sensor_to_scan);
+  if (transformIssue === 'reflected_transform') return { ok: false, reason: 'reflected_transform' };
+  if (artifact.valid !== true || transformIssue !== null) return { ok: false, reason: 'invalid' };
   if (!registrationQualityOk(artifact)) return { ok: false, reason: 'quality' };
   return registrationBindingApplicability(artifact, expected);
 }
@@ -64,6 +79,7 @@ export function registrationApplicability(
 export const REGISTRATION_INAPPLICABLE_KEYS: Readonly<Record<RegistrationInapplicableReason, I18nKey>> = {
   missing: 'xr.tag.registration.reason.missing',
   invalid: 'xr.tag.registration.reason.invalid',
+  reflected_transform: 'xr.tag.registration.reason.invalid',
   quality: 'xr.tag.registration.reason.quality',
   geometry_mismatch: 'xr.tag.registration.reason.geometry_mismatch',
   scan_unbound: 'xr.tag.registration.reason.scan_unbound',

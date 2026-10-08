@@ -136,12 +136,38 @@ typedef struct
 
 } localization_result_t;
 
+typedef enum
+{
+    LOCALIZATION_VALIDATION_REASON_NONE = 0,
+    LOCALIZATION_INVALID_DUPLICATE_SENSOR_POSITION,
+
+} localization_validation_reason_t;
+
 
 /*
  * Returns numerical solver defaults. propagation_speed_mps is deliberately
  * zero so the caller must set a measured/modelled value before solving.
  */
 localization_config_t localization_default_config(void);
+
+/*
+ * Validates a TDOA input without starting the solver. Duplicate positions
+ * are within 1e-9 m Euclidean distance, matching the solver's existing
+ * distance epsilon. `reason` may be NULL; otherwise it is reset to NONE
+ * and set to a stable reason when available.
+ */
+esp_err_t localization_validate_ex(
+    const localization_observation_t *observations,
+    size_t observation_count,
+    const localization_config_t *config,
+    const localization_point3d_t *initial_guess,
+    localization_validation_reason_t *reason
+);
+
+/* Returns a stable diagnostic string, including duplicate_sensor_position. */
+const char *localization_validation_reason_string(
+    localization_validation_reason_t reason
+);
 
 
 /*

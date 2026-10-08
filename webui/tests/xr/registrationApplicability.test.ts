@@ -35,6 +35,31 @@ describe('registration applicability predicate (MAX-405)', () => {
     expect(registrationApplicability(artifact(), { ...EXPECTED, scanFrameId: 'scan-crc32:ffffffff' })).toEqual({ ok: false, reason: 'scan_mismatch' });
   });
 
+  it('never applies a reflected registration as a scan constraint', () => {
+    const reflected = artifact({
+      sensor_to_scan: [-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+      mirrored: true,
+    });
+    expect(registrationApplicability(reflected, EXPECTED)).toEqual({ ok: false, reason: 'reflected_transform' });
+    expect(registrationApplicability(artifact({
+      ...reflected, valid: false, tier: null, reason: 'reflected_transform',
+    }), EXPECTED)).toEqual({ ok: false, reason: 'reflected_transform' });
+  });
+
+  it('uses the firmware 1e-3 rigid-transform tolerance and rejects scale or shear', () => {
+    const nearOrthonormal = [...IDENTITY];
+    nearOrthonormal[0] = 1.0004;
+    expect(registrationApplicability(artifact({ sensor_to_scan: nearOrthonormal }), EXPECTED)).toEqual({ ok: true });
+
+    const scaled = [...IDENTITY];
+    scaled[0] = 1.01;
+    expect(registrationApplicability(artifact({ sensor_to_scan: scaled }), EXPECTED)).toEqual({ ok: false, reason: 'invalid' });
+
+    const sheared = [...IDENTITY];
+    sheared[1] = 0.01;
+    expect(registrationApplicability(artifact({ sensor_to_scan: sheared }), EXPECTED)).toEqual({ ok: false, reason: 'invalid' });
+  });
+
   it('keeps boundary equality of residual and threshold valid and skips the geometry check when it is unknown', () => {
     expect(registrationApplicability(artifact({ residual_rms_m: 0.05 }), EXPECTED)).toEqual({ ok: true });
     expect(registrationApplicability(artifact(), { geometryComputedAtMs: null, scanFrameId: SCAN })).toEqual({ ok: true });
