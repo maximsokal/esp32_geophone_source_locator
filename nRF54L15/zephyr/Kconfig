@@ -9,4 +9,23 @@ config APP_LOG_TEST_EVENTS
 	  Emit bounded LOG_TEST_EVENT bursts from the main loop for HIL ring-flood
 	  and transport checks. Leave disabled in production images.
 
+config APP_LED_BOOT_LAMP_TEST
+	bool "Run the boot LED lamp test"
+	default y
+	help
+	  Drive the external BLUE, GREEN, YELLOW, and RED LEDs briefly at boot.
+
+config APP_NRF_STATUS_PRINT_PERIOD_MS
+	int "nRF console status period in milliseconds"
+	range 0 3600000
+	default 5000
+	help
+	  Print one bounded runtime status line from the main loop. Set to zero to disable.
+
+config APP_NRF_VERBOSE_LOG
+	bool "Print nRF runtime diagnostics"
+	default y
+	help
+	  Print upstream transaction records, state transitions, and periodic status.
+
 endmenu

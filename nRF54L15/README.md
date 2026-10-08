@@ -204,6 +204,46 @@ current-limited test to confirm D1-D3 polarity and series-resistor wiring;
 exercise green, warning confirmation, red priority, and reset behavior; confirm
 MAIN and LED-less boards still boot and communicate.
 
+## Boot lamp test and console status
+
+At boot, the image briefly drives BLUE, GREEN, YELLOW, then RED for 300 ms
+each, and turns each available pin off before normal runtime startup. The
+test uses the same DeviceTree GPIO specs and polarity handling as the runtime
+drivers. It does not verify LED polarity. If a lamp stayed dark, check wiring
+and polarity (MAX-43).
+
+Open the serial monitor from the repository root:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File nRF54L15/ncs.ps1 monitor -Port COMx -Baud 115200
+```
+
+`APP_LED_BOOT_LAMP_TEST` and `APP_NRF_VERBOSE_LOG` default to `y`;
+`APP_NRF_STATUS_PRINT_PERIOD_MS` defaults to `5000`. Set the period to `0` to
+disable periodic status, or set `APP_NRF_VERBOSE_LOG=n` to disable runtime
+transactions after the first callback, change lines, and periodic status. The
+first TWIS callback always prints one compact transaction line, including its
+direction, length, up to eight bytes, and result. With verbose logging enabled,
+the first 64 callback transactions get one compact line each. Later traffic
+gets at most one summary per second; up to four error records per second print
+immediately, with excess errors counted in the next summary. The fixed event
+ring holds 64 records and reports any overflow in status.
+
+For example, startup reports the backend result and each logger LED pin state,
+then emits one `lamp_test` line per available LED. Main-loop change lines carry
+uptime; a status line carries the latest state and counters:
+
+```text
+status: up=5000ms lifecycle=ready role=unassigned twis={addr_match=n/a,write_requested=n/a,write_received=0,write_bytes=0,read_requested=0,stop=n/a,callback_err=0,last_type=n/a,last_count=0,ring_dropped=0} sensors={imu=0/init=0,env=0/init=0} led={g=0,y=0,r=0,sev=none/source=none,blue=off} logs={overwritten=0,lost=0} led_counters={gpio_fail=0,policy_invalid=0,policy_time=0,blue_fail=0}
+```
+
+The TWIS buffer API exposes completed write buffers and read requests, so the
+line counts those callbacks and received bytes. It does not expose address
+match, write-requested, or stop callbacks; those fields are printed as `n/a`.
+`callback_err` counts nonzero write-handling and read-response results. The
+unconditional `twis: tx=1 ...` line identifies the first target callback and
+includes its compact record even when verbose logging is disabled.
+
 ## Supported Windows production interface
 
 From an ordinary PowerShell at the repository root:

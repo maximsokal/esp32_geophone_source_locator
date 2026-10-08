@@ -83,6 +83,10 @@ static uint64_t s_next_orientation_due_ms;
 static bool s_orientation_config_set;
 static bool s_started;
 static bool s_activation_queued;
+static volatile nrf_sensor_upstream_runtime_zephyr_diagnostics_t s_published_diagnostics;
+static volatile bool s_diagnostics_published;
+static uint32_t s_activation_generation;
+static uint32_t s_activation_complete_generation;
 static uint32_t s_imu_calibration_request_id;
 static uint32_t s_imu_calibration_completed_request_id;
 
@@ -574,6 +578,33 @@ static void update_logger_led(uint32_t uptime_ms)
     }
 }
 
+static void publish_diagnostics(void)
+{
+    s_published_diagnostics.activation_generation = s_activation_generation;
+    s_published_diagnostics.activation_complete_generation =
+        s_activation_complete_generation;
+    s_published_diagnostics.imu_ready = s_runtime.core.imu_ready;
+    s_published_diagnostics.imu_init_result = (int32_t)s_runtime.core.imu_init_result;
+    s_published_diagnostics.env_ready = s_runtime.core.env_ready;
+    s_published_diagnostics.env_init_result = (int32_t)s_runtime.core.env_init_result;
+    s_published_diagnostics.logger_led_output.green = s_logger_led.output.green;
+    s_published_diagnostics.logger_led_output.yellow = s_logger_led.output.yellow;
+    s_published_diagnostics.logger_led_output.red = s_logger_led.output.red;
+    s_published_diagnostics.logger_led_output.severity_latched =
+        s_logger_led.output.severity_latched;
+    s_published_diagnostics.logger_led_output.reason_source =
+        s_logger_led.output.reason_source;
+    s_published_diagnostics.logger_policy_invalid_count =
+        s_logger_led.invalid_input_count;
+    s_published_diagnostics.logger_policy_timestamp_anomaly_count =
+        s_logger_led.timestamp_anomaly_count;
+    s_published_diagnostics.orientation_state =
+        (uint8_t)s_orientation_estimator.output.state;
+    s_published_diagnostics.verticality_state =
+        (uint8_t)s_verticality_estimator.state;
+    s_diagnostics_published = true;
+}
+
 /* MAX-244: never wait longer than the worker heartbeat, so an idle
  * (non-REMOTE) worker still checks in with the watchdog. */
 static k_timeout_t sensor_worker_wait_timeout(void)
@@ -838,6 +869,11 @@ static void handle_activation(const nrf_upstream_assign_t *assign)
         return;
     }
 
+    if (s_activation_generation != UINT32_MAX) {
+        ++s_activation_generation;
+    }
+    publish_diagnostics();
+
     nrf_node_state_init(&s_worker_node_state);
     if (nrf_node_state_mark_ready(&s_worker_node_state) != NRF_NODE_STATE_OK ||
         nrf_node_state_assign_role(
@@ -849,11 +885,15 @@ static void handle_activation(const nrf_upstream_assign_t *assign)
         key = k_spin_lock(&s_session_lock);
         (void)nrf_sensor_session_complete(&s_session, 0U, &failed);
         k_spin_unlock(&s_session_lock, key);
+        s_activation_complete_generation = s_activation_generation;
+        publish_diagnostics();
         return;
     }
 
     orientation_reset();
     publish_refresh(0U, NULL);
+    s_activation_complete_generation = s_activation_generation;
+    publish_diagnostics();
 }
 
 static void sensor_worker(void *arg1, void *arg2, void *arg3)
@@ -868,6 +908,7 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
         NRF_VERTICALITY_FAULT,
         runtime_uptime_ms());
     nrf_logger_led_reset(&s_logger_led);
+    publish_diagnostics();
 
     while (true) {
         /* MAX-244: check in every iteration and never block longer than
@@ -893,6 +934,7 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
             orientation_periodic_read();
         }
         update_logger_led((uint32_t)runtime_uptime_ms());
+        publish_diagnostics();
     }
 }
 
@@ -1211,5 +1253,41 @@ bool nrf_sensor_upstream_runtime_zephyr_get_orientation(
     key = k_spin_lock(&s_orientation_lock);
     nrf_orientation_estimator_get(&s_orientation_estimator, orientation);
     k_spin_unlock(&s_orientation_lock, key);
+    return true;
+}
+
+bool nrf_sensor_upstream_runtime_zephyr_get_diagnostics(
+    nrf_sensor_upstream_runtime_zephyr_diagnostics_t *diagnostics)
+{
+    if (diagnostics == NULL || !s_diagnostics_published) {
+        return false;
+    }
+
+    diagnostics->activation_generation =
+        s_published_diagnostics.activation_generation;
+    diagnostics->activation_complete_generation =
+        s_published_diagnostics.activation_complete_generation;
+    diagnostics->imu_ready = s_published_diagnostics.imu_ready;
+    diagnostics->imu_init_result = s_published_diagnostics.imu_init_result;
+    diagnostics->env_ready = s_published_diagnostics.env_ready;
+    diagnostics->env_init_result = s_published_diagnostics.env_init_result;
+    diagnostics->logger_led_output.green =
+        s_published_diagnostics.logger_led_output.green;
+    diagnostics->logger_led_output.yellow =
+        s_published_diagnostics.logger_led_output.yellow;
+    diagnostics->logger_led_output.red =
+        s_published_diagnostics.logger_led_output.red;
+    diagnostics->logger_led_output.severity_latched =
+        s_published_diagnostics.logger_led_output.severity_latched;
+    diagnostics->logger_led_output.reason_source =
+        s_published_diagnostics.logger_led_output.reason_source;
+    diagnostics->logger_policy_invalid_count =
+        s_published_diagnostics.logger_policy_invalid_count;
+    diagnostics->logger_policy_timestamp_anomaly_count =
+        s_published_diagnostics.logger_policy_timestamp_anomaly_count;
+    diagnostics->orientation_state =
+        s_published_diagnostics.orientation_state;
+    diagnostics->verticality_state =
+        s_published_diagnostics.verticality_state;
     return true;
 }

@@ -634,6 +634,7 @@ int main(void)
 {
     nrf_node_state_t node_state;
     nrf_upstream_status_t status;
+    nrf_bootstrap_twis_diagnostics_t twis_diagnostics;
     nrf_upstream_assign_t assign;
     unsigned i;
     uint32_t read_length;
@@ -655,6 +656,12 @@ int main(void)
     assert(status.request_id == 0U && status.role == NRF_UPSTREAM_ROLE_UNASSIGNED);
     assert(status.target_address == NRF_UPSTREAM_ADDRESS_DISCOVERY);
     assert(status.flags == NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED);
+    nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&twis_diagnostics);
+    assert(twis_diagnostics.first_transaction_seen);
+    assert(twis_diagnostics.first_transaction_kind ==
+           NRF_BOOTSTRAP_TWIS_TRANSACTION_READ_REQUESTED);
+    assert(twis_diagnostics.read_requested_count == 1U);
+    assert(twis_diagnostics.write_received_count == 0U);
 
     assign = make_assign(10U);
     s_readdress_result = -5;
@@ -973,6 +980,29 @@ int main(void)
 #if defined(NRF_BOOTSTRAP_SPINLOCK_INTERLEAVE_TEST)
     test_twis_log_response_interleaves_application_append();
 #endif
+    nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&twis_diagnostics);
+    {
+        uint8_t unknown_request[4] = {0U, 0U, 0U, 0xA5U};
+        const uint32_t previous_write_count = twis_diagnostics.write_received_count;
+        const uint32_t previous_write_bytes = twis_diagnostics.write_received_bytes;
+        const uint32_t previous_read_count = twis_diagnostics.read_requested_count;
+        const uint32_t previous_error_count = twis_diagnostics.callback_error_count;
+
+        s_callbacks->buf_write_received(
+            NULL, unknown_request, (uint32_t)sizeof(unknown_request));
+        s_callbacks->buf_write_received(
+            NULL, unknown_request, (uint32_t)sizeof(unknown_request));
+        assert(s_callbacks->buf_read_requested(NULL, NULL, &read_length) == -EINVAL);
+        nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&twis_diagnostics);
+        assert(twis_diagnostics.write_received_count == previous_write_count + 2U);
+        assert(twis_diagnostics.write_received_bytes == previous_write_bytes + 8U);
+        assert(twis_diagnostics.read_requested_count == previous_read_count + 1U);
+        /* Both unsupported writes and the failed read response are counted. */
+        assert(twis_diagnostics.callback_error_count == previous_error_count + 3U);
+        assert(twis_diagnostics.last_request_type_valid);
+        assert(twis_diagnostics.last_request_type == 0xA5U);
+        assert(twis_diagnostics.last_request_type_count == 2U);
+    }
     assert(s_reboot_calls == 1U);
     return 0;
 }

@@ -18,6 +18,9 @@ static const struct gpio_dt_spec s_red_led =
 static bool s_green_ready;
 static bool s_yellow_ready;
 static bool s_red_ready;
+static volatile nrf_logger_led_pin_state_t s_green_pin_state;
+static volatile nrf_logger_led_pin_state_t s_yellow_pin_state;
+static volatile nrf_logger_led_pin_state_t s_red_pin_state;
 static bool s_initialized;
 static bool s_failure_logged;
 static struct k_spinlock s_diagnostics_lock;
@@ -43,25 +46,30 @@ static void record_gpio_failure(const char *name, int error)
 static nrf_logger_led_zephyr_result_t configure_led(
     const struct gpio_dt_spec *spec,
     bool *configured,
+    volatile nrf_logger_led_pin_state_t *pin_state,
     const char *name)
 {
     int result;
 
     if (spec->port == NULL || !gpio_is_ready_dt(spec)) {
+        *pin_state = NRF_LOGGER_LED_PIN_UNAVAILABLE;
         return NRF_LOGGER_LED_ZEPHYR_UNAVAILABLE;
     }
     result = gpio_pin_configure_dt(spec, GPIO_OUTPUT_INACTIVE);
     if (result != 0) {
+        *pin_state = NRF_LOGGER_LED_PIN_FAILED;
         record_gpio_failure(name, result);
         return NRF_LOGGER_LED_ZEPHYR_ERR_GPIO;
     }
     *configured = true;
+    *pin_state = NRF_LOGGER_LED_PIN_READY;
     return NRF_LOGGER_LED_ZEPHYR_OK;
 }
 
 static nrf_logger_led_zephyr_result_t apply_led(
     const struct gpio_dt_spec *spec,
     bool *configured,
+    volatile nrf_logger_led_pin_state_t *pin_state,
     bool on,
     const char *name)
 {
@@ -75,6 +83,7 @@ static nrf_logger_led_zephyr_result_t apply_led(
         record_gpio_failure(name, result);
         /* Keep a failed pin disabled until reboot instead of retrying on each event. */
         *configured = false;
+        *pin_state = NRF_LOGGER_LED_PIN_FAILED;
         return NRF_LOGGER_LED_ZEPHYR_ERR_GPIO;
     }
     return NRF_LOGGER_LED_ZEPHYR_OK;
@@ -98,9 +107,12 @@ nrf_logger_led_zephyr_result_t nrf_logger_led_zephyr_init(void)
     k_spin_unlock(&s_diagnostics_lock, key);
     atomic_set(&s_init_boot_fatal, 0);
 
-    green_result = configure_led(&s_green_led, &s_green_ready, "GREEN");
-    yellow_result = configure_led(&s_yellow_led, &s_yellow_ready, "YELLOW");
-    red_result = configure_led(&s_red_led, &s_red_ready, "RED");
+    green_result = configure_led(
+        &s_green_led, &s_green_ready, &s_green_pin_state, "GREEN");
+    yellow_result = configure_led(
+        &s_yellow_led, &s_yellow_ready, &s_yellow_pin_state, "YELLOW");
+    red_result = configure_led(
+        &s_red_led, &s_red_ready, &s_red_pin_state, "RED");
     if (green_result == NRF_LOGGER_LED_ZEPHYR_OK ||
         yellow_result == NRF_LOGGER_LED_ZEPHYR_OK ||
         red_result == NRF_LOGGER_LED_ZEPHYR_OK) {
@@ -130,10 +142,20 @@ nrf_logger_led_zephyr_result_t nrf_logger_led_zephyr_apply(
         return NRF_LOGGER_LED_ZEPHYR_ERR_NOT_INITIALIZED;
     }
 
-    green_result = apply_led(&s_green_led, &s_green_ready, output->green, "GREEN");
+    green_result = apply_led(
+        &s_green_led,
+        &s_green_ready,
+        &s_green_pin_state,
+        output->green,
+        "GREEN");
     yellow_result = apply_led(
-        &s_yellow_led, &s_yellow_ready, output->yellow, "YELLOW");
-    red_result = apply_led(&s_red_led, &s_red_ready, output->red, "RED");
+        &s_yellow_led,
+        &s_yellow_ready,
+        &s_yellow_pin_state,
+        output->yellow,
+        "YELLOW");
+    red_result = apply_led(
+        &s_red_led, &s_red_ready, &s_red_pin_state, output->red, "RED");
     if (green_result == NRF_LOGGER_LED_ZEPHYR_OK ||
         yellow_result == NRF_LOGGER_LED_ZEPHYR_OK ||
         red_result == NRF_LOGGER_LED_ZEPHYR_OK) {
@@ -145,6 +167,40 @@ nrf_logger_led_zephyr_result_t nrf_logger_led_zephyr_apply(
         result = NRF_LOGGER_LED_ZEPHYR_ERR_GPIO;
     }
     return result;
+}
+
+nrf_logger_led_zephyr_result_t nrf_logger_led_zephyr_set_test_pin(
+    nrf_logger_led_color_t color,
+    bool on)
+{
+    switch (color) {
+    case NRF_LOGGER_LED_COLOR_GREEN:
+        return apply_led(
+            &s_green_led, &s_green_ready, &s_green_pin_state, on, "GREEN");
+    case NRF_LOGGER_LED_COLOR_YELLOW:
+        return apply_led(
+            &s_yellow_led, &s_yellow_ready, &s_yellow_pin_state, on, "YELLOW");
+    case NRF_LOGGER_LED_COLOR_RED:
+        return apply_led(
+            &s_red_led, &s_red_ready, &s_red_pin_state, on, "RED");
+    default:
+        return NRF_LOGGER_LED_ZEPHYR_ERR_ARGUMENT;
+    }
+}
+
+nrf_logger_led_pin_state_t nrf_logger_led_zephyr_pin_state(
+    nrf_logger_led_color_t color)
+{
+    switch (color) {
+    case NRF_LOGGER_LED_COLOR_GREEN:
+        return s_green_pin_state;
+    case NRF_LOGGER_LED_COLOR_YELLOW:
+        return s_yellow_pin_state;
+    case NRF_LOGGER_LED_COLOR_RED:
+        return s_red_pin_state;
+    default:
+        return NRF_LOGGER_LED_PIN_INVALID;
+    }
 }
 
 uint32_t nrf_logger_led_zephyr_failure_count(void)

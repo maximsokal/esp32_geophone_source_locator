@@ -13,6 +13,7 @@ README = REPO_ROOT / "nRF54L15" / "README.md"
 TEST_TASK = REPO_ROOT / "docs" / "nrf54l15-test-task.md"
 CMAKE = REPO_ROOT / "nRF54L15" / "zephyr" / "CMakeLists.txt"
 PRJ_CONF = REPO_ROOT / "nRF54L15" / "zephyr" / "prj.conf"
+KCONFIG = REPO_ROOT / "nRF54L15" / "zephyr" / "Kconfig"
 PLATFORMIO_CONF = REPO_ROOT / "nRF54L15" / "zephyr" / "prj.platformio.conf"
 APP_OVERLAY = REPO_ROOT / "nRF54L15" / "zephyr" / "app.overlay"
 HOST_NRF_MANIFEST = REPO_ROOT / "tests" / "host" / "manifest.d" / "coverage-nrf.json"
@@ -302,3 +303,31 @@ def test_nrf_automatic_test_contract_does_not_equate_no_upload_with_native_execu
     assert "no-upload mode does not replace NCS evidence" in task
     assert "considered physically verified" in task
     assert "NCS-native" in task
+
+
+def test_nrf_boot_diagnostic_kconfig_defaults_are_enabled_and_rate_limited():
+    kconfig = KCONFIG.read_text(encoding="utf-8")
+    production = PRJ_CONF.read_text(encoding="utf-8")
+
+    assert kconfig.startswith('source "Kconfig.zephyr"\n\nmenu "Application options"')
+    assert kconfig.rstrip().endswith("endmenu")
+    assert re.search(
+        r"(?ms)^config APP_LED_BOOT_LAMP_TEST\s+bool[^\n]*\s+default y\b",
+        kconfig,
+    )
+    assert re.search(
+        r"(?ms)^config APP_NRF_STATUS_PRINT_PERIOD_MS\s+int[^\n]*"
+        r"\s+range 0 3600000\s+default 5000\b",
+        kconfig,
+    )
+    assert re.search(
+        r"(?ms)^config APP_NRF_VERBOSE_LOG\s+bool[^\n]*\s+default y\b",
+        kconfig,
+    )
+    assert re.search(
+        r"(?ms)^config APP_LOG_TEST_EVENTS\s+bool[^\n]*\s+default n\b",
+        kconfig,
+    )
+    assert "CONFIG_APP_LED_BOOT_LAMP_TEST=y" in production
+    assert "CONFIG_APP_NRF_STATUS_PRINT_PERIOD_MS=5000" in production
+    assert "CONFIG_APP_NRF_VERBOSE_LOG=y" in production

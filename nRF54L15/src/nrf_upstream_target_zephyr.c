@@ -9,6 +9,38 @@
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/drivers/i2c.h>
 
+#if defined(CONFIG_I2C_TARGET)
+#include <zephyr/devicetree/pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/nrf-pinctrl.h>
+#include <zephyr/sys/printk.h>
+
+#define NRF_UPSTREAM_I2C22_PIN_GROUP \
+    DT_CHILD(DT_NODELABEL(i2c22_default), group1)
+#define NRF_UPSTREAM_I2C22_SDA_LINEAR \
+    (DT_PROP_BY_IDX(NRF_UPSTREAM_I2C22_PIN_GROUP, psels, 0) & NRF_PIN_MSK)
+#define NRF_UPSTREAM_I2C22_SCL_LINEAR \
+    (DT_PROP_BY_IDX(NRF_UPSTREAM_I2C22_PIN_GROUP, psels, 1) & NRF_PIN_MSK)
+
+static void report_registration(uint16_t address, int result)
+{
+    printk(
+        "twis: i2c22 target register bus=i2c22 address=0x%02x ret=%d "
+        "sda=P%u.%02u scl=P%u.%02u\n",
+        (unsigned int)address,
+        result,
+        (unsigned int)(NRF_UPSTREAM_I2C22_SDA_LINEAR / 32U),
+        (unsigned int)(NRF_UPSTREAM_I2C22_SDA_LINEAR % 32U),
+        (unsigned int)(NRF_UPSTREAM_I2C22_SCL_LINEAR / 32U),
+        (unsigned int)(NRF_UPSTREAM_I2C22_SCL_LINEAR % 32U));
+}
+#else
+static void report_registration(uint16_t address, int result)
+{
+    (void)address;
+    (void)result;
+}
+#endif
+
 #define NRF_UPSTREAM_TARGET_MAX_7BIT_ADDRESS 0x7FU
 
 typedef struct {
@@ -71,6 +103,7 @@ int nrf_upstream_target_zephyr_register(uint16_t address)
     s_target.config.flags = 0U;
     s_target.config.address = address;
     result = i2c_target_register(s_target.device, &s_target.config);
+    report_registration(address, result);
     if (result != 0) {
         return result;
     }
@@ -128,6 +161,7 @@ int nrf_upstream_target_zephyr_readdress(uint16_t address)
 
     s_target.config.address = address;
     result = i2c_target_register(s_target.device, &s_target.config);
+    report_registration(address, result);
     if (result == 0) {
         s_target.registered = true;
         s_target.address = address;
@@ -139,6 +173,7 @@ int nrf_upstream_target_zephyr_readdress(uint16_t address)
      */
     s_target.config.address = old_address;
     rollback_result = i2c_target_register(s_target.device, &s_target.config);
+    report_registration(old_address, rollback_result);
     if (rollback_result == 0) {
         s_target.registered = true;
         s_target.address = old_address;

@@ -1,6 +1,7 @@
 #ifndef NRF_BLUE_LED_H
 #define NRF_BLUE_LED_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "nrf_verticality_state.h"
@@ -21,6 +22,9 @@ nrf_blue_led_action_t nrf_blue_led_policy(nrf_verticality_state_t state);
 
 /* Zephyr adapter; both functions are called from the sensor worker. */
 int nrf_blue_led_zephyr_init(void);
+int nrf_blue_led_zephyr_set_test_pin(bool on);
+int8_t nrf_blue_led_zephyr_state(void);
+uint32_t nrf_blue_led_zephyr_failure_count(void);
 void nrf_blue_led_zephyr_update(
     nrf_verticality_state_t state,
     uint64_t uptime_ms);
