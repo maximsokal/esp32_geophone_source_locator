@@ -8,6 +8,7 @@ import {
 function signals(overrides: Partial<DeviceComputeSignals> = {}): DeviceComputeSignals {
   return {
     reportedLogicalProcessors: 8,
+    reportedDeviceMemoryGiB: null,
     workerApi: true,
     crossOriginIsolated: false,
     sharedArrayBufferApi: true,
@@ -78,5 +79,19 @@ describe('device compute profile', () => {
   it('caps privacy-noisy hardwareConcurrency values to a bounded scheduler input', () => {
     expect(deriveDeviceComputeProfile(signals({ reportedLogicalProcessors: 128 })).reportedLogicalProcessors).toBe(32);
     expect(deriveDeviceComputeProfile(signals({ reportedLogicalProcessors: 0 })).reportedLogicalProcessors).toBe(1);
+  });
+
+  it('uses reported device memory as one conservative post-scan budget signal', () => {
+    const unavailable = deriveDeviceComputeProfile(signals({ reportedDeviceMemoryGiB: null }));
+    const small = deriveDeviceComputeProfile(signals({ reportedDeviceMemoryGiB: 0.25 }));
+    const large = deriveDeviceComputeProfile(signals({ reportedDeviceMemoryGiB: 8 }));
+    expect(unavailable.postScanMemoryBudgetBytes).toBe(128 * 1024 * 1024);
+    expect(small.postScanMemoryBudgetBytes).toBe(64 * 1024 * 1024);
+    expect(large.postScanMemoryBudgetBytes).toBe(768 * 1024 * 1024);
+    expect(small.postScanWorkerBudget).toBe(large.postScanWorkerBudget);
+    expect(deriveDeviceComputeProfile(signals({
+      reportedLogicalProcessors: 1,
+      reportedDeviceMemoryGiB: 8,
+    })).postScanMemoryBudgetBytes).toBeLessThan(large.postScanMemoryBudgetBytes);
   });
 });

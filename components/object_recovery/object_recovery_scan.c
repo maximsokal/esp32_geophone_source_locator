@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -143,14 +144,17 @@ static esp_err_t object_recovery_check_one_with_policy(
     *removed =
         false;
 
-    char object_directory[
+    char *object_directory = malloc(
         OBJECT_RECOVERY_PATH_SIZE
-    ];
+    );
+    if (object_directory == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
 
     int written =
         snprintf(
             object_directory,
-            sizeof(object_directory),
+            OBJECT_RECOVERY_PATH_SIZE,
             "%s/%s",
             STORAGE_MANAGER_OBJECTS_PATH,
             object_id
@@ -159,8 +163,9 @@ static esp_err_t object_recovery_check_one_with_policy(
     if (
         written < 0 ||
         written >=
-            (int)sizeof(object_directory)
+            OBJECT_RECOVERY_PATH_SIZE
     ) {
+        free(object_directory);
         return ESP_ERR_INVALID_SIZE;
     }
 
@@ -182,6 +187,7 @@ static esp_err_t object_recovery_check_one_with_policy(
     );
 
     if (stat_result != 0) {
+        free(object_directory);
         return ESP_FAIL;
     }
 
@@ -190,6 +196,7 @@ static esp_err_t object_recovery_check_one_with_policy(
             info.st_mode
         )
     ) {
+        free(object_directory);
         return ESP_OK;
     }
 
@@ -223,6 +230,7 @@ static esp_err_t object_recovery_check_one_with_policy(
             object_id
         );
 
+        free(object_directory);
         return err;
     }
 
@@ -235,6 +243,7 @@ static esp_err_t object_recovery_check_one_with_policy(
             );
         }
 
+        free(object_directory);
         return ESP_OK;
     }
 
@@ -255,11 +264,13 @@ static esp_err_t object_recovery_check_one_with_policy(
     if (protect_persisted_active) {
         err = object_recovery_background_delete_guard(object_id);
         if (err != ESP_OK) {
+            free(object_directory);
             return err;
         }
 
         err = object_recovery_background_lease_guard(object_id);
         if (err != ESP_OK) {
+            free(object_directory);
             return err;
         }
     }
@@ -279,6 +290,7 @@ static esp_err_t object_recovery_check_one_with_policy(
     );
 
     if (err != ESP_OK) {
+        free(object_directory);
         return err;
     }
 
@@ -291,6 +303,7 @@ static esp_err_t object_recovery_check_one_with_policy(
     *removed =
         true;
 
+    free(object_directory);
     return ESP_OK;
 }
 

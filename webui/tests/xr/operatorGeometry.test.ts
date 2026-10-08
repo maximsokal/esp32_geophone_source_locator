@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { ManualControlPointStore } from '../../src/xr/manualControlPoints';
-import { OperatorEdgeStore } from '../../src/xr/operatorEdges';
+import { MAX_OPERATOR_EDGES, OperatorEdgeStore } from '../../src/xr/operatorEdges';
 import { projectProjectPointToNormalized } from '../../src/xr/projectionMath';
 
 describe('ManualControlPointStore snapping', () => {
@@ -39,6 +39,19 @@ describe('OperatorEdgeStore', () => {
     const store = new OperatorEdgeStore();
     expect(store.add([0,0,0],[0.01,0,0])).toBeNull();
     expect(store.size).toBe(0);
+  });
+
+  it('keeps the edge store bounded while allowing endpoint dedupe at capacity', () => {
+    const store = new OperatorEdgeStore();
+    for (let index = 0; index < MAX_OPERATOR_EDGES; index += 1) {
+      const x = index * 2;
+      expect(store.add([x, 0, 0], [x + 0.5, 0, 0])).not.toBeNull();
+    }
+
+    expect(store.capacityDiagnostics).toEqual({ count: MAX_OPERATOR_EDGES, maximum: MAX_OPERATOR_EDGES, capacityReached: true });
+    expect(store.add([0, 0, 0], [0.5, 0, 0])).not.toBeNull();
+    expect(store.add([1000, 0, 0], [1000.5, 0, 0])).toBeNull();
+    expect(store.size).toBe(MAX_OPERATOR_EDGES);
   });
 });
 

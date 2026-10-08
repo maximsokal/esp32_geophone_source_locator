@@ -9,6 +9,7 @@
 #include "ui_frame_scheduler.h"
 #include "ui_internal.h"
 #include "ui_i18n_nvs.h"
+#include "ui_perf_policy.h"
 
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -23,6 +24,7 @@ static uint64_t s_refresh_generation;
 static int64_t s_perf_started_us;
 static uint64_t s_render_total_us;
 static uint64_t s_render_max_us;
+static ui_perf_policy_state_t s_perf_log_state;
 
 
 ui_context_t *ui_context(void)
@@ -64,14 +66,23 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
     if ((int64_t)now_us - s_perf_started_us >= 10000000LL) {
         const uint64_t frames = s_frame_scheduler.frames_rendered;
         const uint64_t elapsed_us = now_us - (uint64_t)s_perf_started_us;
-        ESP_LOGI(TAG,
-                 "UI_PERF: target_fps=%u actual_fps=%.1f frames_rendered=%llu frames_coalesced=%llu max_render_us=%llu avg_render_us=%llu",
-                 (unsigned)UI_FRAME_TARGET_FPS,
-                 elapsed_us > 0U ? (double)frames * 1000000.0 / (double)elapsed_us : 0.0,
-                 (unsigned long long)frames,
-                 (unsigned long long)s_frame_scheduler.frames_coalesced,
-                 (unsigned long long)s_render_max_us,
-                 (unsigned long long)(frames > 0U ? s_render_total_us / frames : 0U));
+        if (ui_perf_policy_should_log(
+                &s_perf_log_state,
+                (uint32_t)(now_us / 1000U),
+                frames,
+                elapsed_us,
+                UI_FRAME_TARGET_FPS,
+                s_render_max_us
+            )) {
+            ESP_LOGI(TAG,
+                     "UI_PERF: target_fps=%u actual_fps=%.1f frames_rendered=%llu frames_coalesced=%llu max_render_us=%llu avg_render_us=%llu",
+                     (unsigned)UI_FRAME_TARGET_FPS,
+                     elapsed_us > 0U ? (double)frames * 1000000.0 / (double)elapsed_us : 0.0,
+                     (unsigned long long)frames,
+                     (unsigned long long)s_frame_scheduler.frames_coalesced,
+                     (unsigned long long)s_render_max_us,
+                     (unsigned long long)(frames > 0U ? s_render_total_us / frames : 0U));
+        }
         ui_frame_scheduler_init(&s_frame_scheduler, now_us + UI_FRAME_MIN_PERIOD_US);
         s_perf_started_us = (int64_t)now_us;
         s_render_total_us = 0U;
@@ -122,6 +133,10 @@ static void ui_runtime_init_rollback(void)
 
 esp_err_t ui_boot_init(void)
 {
+    if (s_context.port_ready) {
+        return ESP_OK;
+    }
+
     memset(&s_context, 0, sizeof(s_context));
     atomic_init(
         &s_context.runtime_ready,
@@ -178,6 +193,69 @@ void ui_boot_show_error(const char *message)
     }
 
     ui_render_boot_error_locked(message);
+    lvgl_port_unlock();
+}
+
+
+void ui_boot_show_storage_recovery(
+    const char *reason,
+    const char *technical_code,
+    const char *warning,
+    const char *primary_hint,
+    const char *retry_hint,
+    const char *cancel_hint
+)
+{
+    if (!s_context.port_ready) {
+        return;
+    }
+
+    if (!lvgl_port_lock(500)) {
+        return;
+    }
+
+    ui_render_boot_recovery_locked(
+        reason,
+        technical_code,
+        warning,
+        primary_hint,
+        retry_hint,
+        cancel_hint
+    );
+    lvgl_port_unlock();
+}
+
+
+void ui_boot_show_format_progress(unsigned percent)
+{
+    if (!s_context.port_ready) {
+        return;
+    }
+
+    if (!lvgl_port_lock(500)) {
+        return;
+    }
+
+    ui_render_boot_format_progress_locked(percent);
+    lvgl_port_unlock();
+}
+
+
+void ui_boot_show_recovery_result(
+    bool success,
+    bool formatted,
+    const char *error_name
+)
+{
+    if (!s_context.port_ready) {
+        return;
+    }
+
+    if (!lvgl_port_lock(500)) {
+        return;
+    }
+
+    ui_render_boot_recovery_result_locked(success, formatted, error_name);
     lvgl_port_unlock();
 }
 

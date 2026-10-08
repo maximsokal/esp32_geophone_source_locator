@@ -12,9 +12,12 @@
 #include "ina3221_low_battery.h"
 #include "ina3221_power_ux.h"
 #include "ina3221_soc.h"
+#include "ina3221_status_log_policy.h"
 #include "app_events.h"
 #include "ina3221_policy.h"
 #include "main_barometer.h"
+#include "sensor_bus.h"
+#include "sensor_bus_diag.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -33,10 +36,60 @@
 #define INA3221_MONITOR_FAST_PERIOD_MS  20u
 #define INA3221_MONITOR_LOG_INTERVAL    5u
 #define INA3221_RETRY_LOG_INTERVAL      30u
+#define INA3221_RETRY_BACKOFF_MS        5000u
 
 
 static const char *TAG =
     "INA3221";
+static sensor_bus_diag_state_t s_i2c_diag_state;
+
+static void ina3221_monitor_log_main_barometer_error(
+    main_barometer_t *barometer,
+    esp_err_t err,
+    uint32_t now_ms)
+{
+    if (err == ESP_OK || !sensor_bus_diag_rate_limit_allow(
+            &s_i2c_diag_state, now_ms, "main_barometer")) {
+        return;
+    }
+
+    main_barometer_reading_t reading = { 0 };
+    main_barometer_get_reading(barometer, &reading);
+    const bool bmp280_invalid =
+        reading.bmp280_address != 0U && !reading.bmp280_valid;
+    const bool aht20_invalid =
+        reading.aht20_present && !reading.aht20_valid;
+    if (bmp280_invalid && aht20_invalid) {
+        ESP_LOGW(TAG,
+                 "I2C_BAROMETER_WARN src=main_barometer bmp_addr=0x%02X bmp_dev=%s aht20_addr=0x38 aht20_dev=%s err=%s",
+                 (unsigned)reading.bmp280_address,
+                 sensor_bus_diag_device_name(
+                     reading.bmp280_address, "main_barometer"),
+                 sensor_bus_diag_device_name(0x38U, "main_barometer"),
+                 esp_err_to_name(err));
+    } else if (bmp280_invalid) {
+        ESP_LOGW(TAG,
+                 "I2C_BAROMETER_WARN src=main_barometer addr=0x%02X dev=%s err=%s",
+                 (unsigned)reading.bmp280_address,
+                 sensor_bus_diag_device_name(
+                     reading.bmp280_address, "main_barometer"),
+                 esp_err_to_name(err));
+    } else if (aht20_invalid) {
+        ESP_LOGW(TAG,
+                 "I2C_BAROMETER_WARN src=main_barometer addr=0x38 dev=%s err=%s",
+                 sensor_bus_diag_device_name(0x38U, "main_barometer"),
+                 esp_err_to_name(err));
+    } else {
+        const uint8_t address = reading.bmp280_address != 0U
+            ? reading.bmp280_address
+            : reading.aht20_present ? 0x38U : 0U;
+        ESP_LOGW(TAG,
+                 "I2C_BAROMETER_WARN src=main_barometer addr=0x%02X dev=%s err=%s",
+                 (unsigned)address,
+                 sensor_bus_diag_device_name(address, "main_barometer"),
+                 esp_err_to_name(err));
+    }
+}
 
 
 static TaskHandle_t s_task =
@@ -86,6 +139,17 @@ static ina3221_soc_config_t s_soc_config;
 static ina3221_soc_t s_soc;
 /* MAX-186: last logged evidence (worker only). */
 static ina3221_power_evidence_t s_evidence;
+static ina3221_status_log_state_t s_status_log_state;
+
+
+static int32_t ina3221_monitor_log_milli_units(float value)
+{
+    const float scaled = value * 1000.0f;
+
+    return scaled >= 0.0f
+        ? (int32_t)(scaled + 0.5f)
+        : (int32_t)(scaled - 0.5f);
+}
 
 
 static void ina3221_monitor_log_evidence_changes(
@@ -537,6 +601,35 @@ static void ina3221_monitor_log_sample(
     const ina3221_power_decision_t *decision
 )
 {
+    int32_t rail_mv[INA3221_STATUS_LOG_RAIL_COUNT];
+    int32_t rail_ma[INA3221_STATUS_LOG_RAIL_COUNT];
+    size_t i;
+    uint32_t now_ms;
+
+    for (i = 0U; i < INA3221_STATUS_LOG_RAIL_COUNT; ++i) {
+        rail_mv[i] = ina3221_monitor_log_milli_units(channels[i].bus_voltage_v);
+        rail_ma[i] = ina3221_monitor_log_milli_units(channels[i].current_a);
+    }
+    if (decision->battery_present) {
+        rail_mv[INA3221_POLICY_BATTERY_INDEX] =
+            ina3221_monitor_log_milli_units(decision->battery_voltage_v);
+        rail_ma[INA3221_POLICY_BATTERY_INDEX] =
+            ina3221_monitor_log_milli_units(decision->battery_current_a);
+    }
+    now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+    if (!ina3221_status_log_should_emit(
+            &s_status_log_state,
+            now_ms,
+            (uint32_t)s_ux.state,
+            (uint32_t)decision->state,
+            decision->usb_present,
+            decision->battery_present,
+            rail_mv,
+            rail_ma
+        )) {
+        return;
+    }
+
     if (decision->battery_present) {
         ESP_LOGI(
             TAG,
@@ -617,6 +710,7 @@ static void ina3221_monitor_worker(
 
     uint32_t sample_count = 0;
     uint32_t retry_count = 0;
+    uint64_t next_retry_ms = 0U;
 
     bool hardware_available =
         false;
@@ -626,12 +720,26 @@ static void ina3221_monitor_worker(
 
     if (!stop_before_start) {
         while (true) {
-            (void)main_barometer_poll(
+            const uint64_t now_ms =
+                (uint64_t)(esp_timer_get_time() / INT64_C(1000));
+            const esp_err_t barometer_err = main_barometer_poll(
                 &main_barometer,
-                (uint64_t)(esp_timer_get_time() / INT64_C(1000)));
+                now_ms);
+            sensor_bus_log_diag_summary((uint32_t)now_ms);
+            ina3221_monitor_log_main_barometer_error(
+                &main_barometer, barometer_err, (uint32_t)now_ms);
             ina3221_monitor_publish_main_barometer(&main_barometer);
 
             if (!driver.ready) {
+                if (now_ms < next_retry_ms) {
+                    ina3221_monitor_publish_invalid();
+                    hardware_available = false;
+                    if (ina3221_monitor_wait_for_period_or_stop()) {
+                        break;
+                    }
+                    continue;
+                }
+
                 const esp_err_t open_err =
                     ina3221_driver_open(
                         &driver
@@ -641,6 +749,7 @@ static void ina3221_monitor_worker(
                     ina3221_monitor_publish_invalid();
 
                     retry_count++;
+                    next_retry_ms = now_ms + INA3221_RETRY_BACKOFF_MS;
 
                     if (
                         retry_count == 1 ||
@@ -649,7 +758,8 @@ static void ina3221_monitor_worker(
                     ) {
                         ESP_LOGW(
                             TAG,
-                            "INA3221 unavailable at 0x40; retrying: %s",
+                            "I2C_DEVICE_WARN src=ina3221 addr=0x40 dev=%s err=%s action=retry",
+                            sensor_bus_diag_device_name(0x40U, "ina3221"),
                             esp_err_to_name(
                                 open_err
                             )
@@ -667,6 +777,7 @@ static void ina3221_monitor_worker(
 
                 retry_count =
                     0;
+                next_retry_ms = 0U;
 
                 memset(
                     &classifier,
@@ -682,7 +793,8 @@ static void ina3221_monitor_worker(
                 if (limits_err != ESP_OK) {
                     ESP_LOGW(
                         TAG,
-                        "INA3221 alert limits not programmed: %s",
+                        "I2C_DEVICE_WARN src=ina3221 addr=0x40 dev=%s err=%s action=limits_unprogrammed",
+                        sensor_bus_diag_device_name(0x40U, "ina3221"),
                         esp_err_to_name(limits_err)
                     );
                 }
@@ -721,6 +833,7 @@ static void ina3221_monitor_worker(
                 ina3221_driver_close(
                     &driver
                 );
+                next_retry_ms = now_ms + INA3221_RETRY_BACKOFF_MS;
 
                 memset(
                     &classifier,

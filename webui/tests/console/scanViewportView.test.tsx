@@ -41,6 +41,8 @@ function snapshot(overrides: Partial<ScanPointCloudSnapshot> = {}): ScanPointClo
     unknownCandidateVoxelCount: 1,
     tsdfPointCount: 0,
     tsdfPositions: new Float32Array(0),
+    tsdfNormals: new Float32Array(0),
+    tsdfCoverageConfidence: new Float32Array(0),
     voxelSizeMeters: 0.04,
     occupancyVoxelSizeMeters: 0.18,
     ...overrides,

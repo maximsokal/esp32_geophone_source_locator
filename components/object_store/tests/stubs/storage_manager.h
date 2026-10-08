@@ -22,6 +22,8 @@
 #endif
 
 bool storage_manager_path_exists(const char *path);
+bool storage_manager_is_ready(void);
+void storage_manager_operation_end(void);
 esp_err_t storage_manager_create_directory(const char *path);
 esp_err_t storage_manager_create_directory_exclusive(const char *path);
 esp_err_t storage_manager_remove_tree(const char *path);

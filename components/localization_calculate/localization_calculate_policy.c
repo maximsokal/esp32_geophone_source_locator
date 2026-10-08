@@ -328,9 +328,12 @@ static void fill_common_fields(
     memset(record_out, 0, sizeof(*record_out));
 
     record_out->schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
+    record_out->scan_provenance_present = true;
     snprintf(record_out->object_id, sizeof(record_out->object_id), "%s", context->object_id);
     snprintf(record_out->session_id, sizeof(record_out->session_id), "%s", context->session_id);
     record_out->computed_at_ms = context->computed_at_ms;
+    record_out->session_epoch_known = context->session_epoch_known;
+    record_out->session_epoch_timestamp_us = context->session_epoch_timestamp_us;
     record_out->kind = kind;
     snprintf(record_out->method_name, sizeof(record_out->method_name), "%s", method_name);
     record_out->method_version = method_version;
@@ -357,6 +360,23 @@ static void fill_common_fields(
         record_out->velocity_range_vp_vs_min = range->bounds.vp_vs_min;
         record_out->velocity_range_vp_vs_max = range->bounds.vp_vs_max;
         record_out->velocity_range_source = (uint8_t)range->source;
+    }
+}
+
+
+void localization_calculate_set_tdoa_terminal_status(
+    const localization_event_result_t *event_result,
+    uint8_t max_iterations,
+    localization_run_record_t *record
+)
+{
+    if (event_result == NULL || record == NULL ||
+        event_result->status != LOCALIZATION_EVENT_SOLVED) {
+        return;
+    }
+    if (!event_result->solver_result.converged && max_iterations > 0U &&
+        event_result->solver_result.iterations >= max_iterations) {
+        record->terminal_status = LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT;
     }
 }
 
@@ -1001,6 +1021,9 @@ void localization_calculate_psafuvs_to_run_record(
     record_out->confidence_score = localization_calculate_quality_from_residual_us(
         result->rms_residual_us, timing_uncertainty_us
     );
+    if (!result->converged && result->iterations > 0U) {
+        record_out->terminal_status = LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT;
+    }
 }
 
 
@@ -1426,6 +1449,12 @@ void localization_calculate_robust_to_run_record(
     record_out->confidence_score = localization_calculate_quality_from_residual_us(
         result->rms_residual_us, timing_uncertainty_us
     );
+    record_out->iterations = result->irls_iterations > UINT8_MAX
+        ? UINT8_MAX : (uint8_t)result->irls_iterations;
+    record_out->converged = !result->iteration_limit_reached;
+    if (result->iteration_limit_reached) {
+        record_out->terminal_status = LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT;
+    }
     if (result->consensus_ambiguous && record_out->confidence_score > LOCALIZATION_CALCULATE_UNVERIFIED_CONFIDENCE_CAP) {
         record_out->confidence_score = LOCALIZATION_CALCULATE_UNVERIFIED_CONFIDENCE_CAP;
     }
@@ -1484,11 +1513,17 @@ void localization_calculate_psp_to_run_record(
     record_out->source_position = result->position;
     record_out->emission_time_us = result->emission_time_us;
     record_out->rms_residual_us = result->rms_p_residual_us;
+    record_out->iterations = result->iterations > UINT8_MAX
+        ? UINT8_MAX : (uint8_t)result->iterations;
+    record_out->converged = result->converged;
     record_out->estimated_p_velocity_mps = result->p_velocity_mps;
     record_out->estimated_s_velocity_mps = result->s_velocity_mps;
     record_out->confidence_score = localization_calculate_quality_from_residual_us(
         result->rms_p_residual_us, timing_uncertainty_us
     );
+    if (!result->converged && result->iterations > 0U) {
+        record_out->terminal_status = LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT;
+    }
 }
 
 
@@ -1542,6 +1577,9 @@ void localization_calculate_eikonal_to_run_record(
     record_out->confidence_score = localization_calculate_quality_from_residual_us(
         result->rms_residual_us, timing_uncertainty_us
     );
+    if (result->resolution_limited) {
+        record_out->terminal_status = LOCALIZATION_RUN_TERMINAL_STATUS_RESOLUTION_LIMITED;
+    }
 }
 
 
@@ -1600,6 +1638,9 @@ void localization_calculate_bayes_to_run_record(
     record_out->confidence_score = localization_calculate_quality_from_residual_us(
         result->rms_residual_us, timing_uncertainty_us
     );
+    if (result->cell_budget_exhausted) {
+        record_out->terminal_status = LOCALIZATION_RUN_TERMINAL_STATUS_CELL_BUDGET;
+    }
 }
 
 
@@ -1720,6 +1761,7 @@ void localization_calculate_budget_end(
             summary->methods_skipped_for_time++;
         }
         if (record != NULL) {
+            record->terminal_status = LOCALIZATION_RUN_TERMINAL_STATUS_TIME_BUDGET_SKIPPED;
             record->confidence_score = 0.0;
             localization_calculate_set_rejection(
                 record, LOCALIZATION_CALCULATE_TIME_BUDGET_REASON, LOCALIZATION_FAILURE_CLASS_INTERNAL

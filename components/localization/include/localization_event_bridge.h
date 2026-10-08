@@ -79,6 +79,9 @@ typedef struct
     /* Classification of channels_used_count, per MAX-170's project-wide
      * policy. Always populated, regardless of status. */
     localization_dimensionality_t dimensionality;
+    /* Specific reason exposed by localization_validate_ex when the 3D
+     * solver rejects duplicate sensor positions. */
+    localization_validation_reason_t validation_reason;
 
     /* Valid only when status == LOCALIZATION_EVENT_SOLVED. */
     localization_result_t solver_result;

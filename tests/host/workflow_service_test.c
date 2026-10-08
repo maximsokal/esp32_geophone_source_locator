@@ -25,6 +25,7 @@
 #include "workflow_service.h"
 #include "workflow_service_host_fakes.h"
 
+
 static const char s_deep_nested_settings_json[] =
     "{\"propagation_speed_mps\":340,\"propagation_speed_uncertainty_mps\":5,"
     "\"timing_uncertainty_us\":2000,\"noise_window_samples\":50,"
@@ -69,6 +70,7 @@ static nrf_remote_sensor_cache_t s_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static device_status_snapshot_t s_device;
 static uint16_t s_height_generation;
 static uint64_t s_now_ms;
+static const char *s_fake_object_id = "object-a";
 static bool s_placement_ready;
 static nrf_topology_ranging_progress_t s_ranging_progress;
 
@@ -286,7 +288,7 @@ static void reset_fakes(bool active_object, measurement_service_state_t state, s
     s_delete_calls = 0U;
     memset(&s_object, 0, sizeof(s_object));
     s_object.active = active_object;
-    (void)snprintf(s_object.id, sizeof(s_object.id), "%s", active_object ? "object-a" : "");
+    (void)snprintf(s_object.id, sizeof(s_object.id), "%s", active_object ? s_fake_object_id : "");
     s_object_result = ESP_OK;
     memset(&s_topology, 0, sizeof(s_topology));
     for (size_t i = 0U; i < assigned && i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
@@ -937,6 +939,10 @@ static void test_tft_custom_range_is_persisted_and_auto_omits_it(void)
     assert(!snapshot.calc_velocity_range_set);
     workflow_service_shutdown();
 }
+
+
+static void test_material_is_carried_into_run_provenance(void);
+
 
 static void test_material_is_carried_into_run_provenance(void)
 {

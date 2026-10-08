@@ -689,7 +689,10 @@ static bool web_status_json_add_objects_from_payload(
     for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
         cJSON *number = cJSON_CreateNumber(payload->defaults[i]);
         if (number == NULL) return false;
-        cJSON_AddItemToArray(default_array, number);
+        if (!cJSON_AddItemToArray(default_array, number)) {
+            cJSON_Delete(number);
+            return false;
+        }
     }
 
     for (size_t i = 0U; i < payload->profile_count; ++i) {
@@ -700,7 +703,10 @@ static bool web_status_json_add_objects_from_payload(
 
         cJSON *object = cJSON_CreateObject();
         if (object == NULL) return false;
-        cJSON_AddItemToArray(objects, object);
+        if (!cJSON_AddItemToArray(objects, object)) {
+            cJSON_Delete(object);
+            return false;
+        }
 
         if (
             cJSON_AddStringToObject(object, "id", profile->summary.id) == NULL ||
@@ -716,7 +722,10 @@ static bool web_status_json_add_objects_from_payload(
         for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) {
             cJSON *number = cJSON_CreateNumber(profile->cable_lengths_m[pod]);
             if (number == NULL) return false;
-            cJSON_AddItemToArray(cables, number);
+            if (!cJSON_AddItemToArray(cables, number)) {
+                cJSON_Delete(number);
+                return false;
+            }
         }
     }
 
@@ -824,7 +833,10 @@ esp_err_t web_status_json_add_sessions(cJSON *root, const char *object_id)
         if (session == NULL) {
             goto no_mem;
         }
-        cJSON_AddItemToArray(array, session);
+        if (!cJSON_AddItemToArray(array, session)) {
+            cJSON_Delete(session);
+            goto no_mem;
+        }
 
         if (
             cJSON_AddStringToObject(session, "session_id", summary->session_id) == NULL ||

@@ -32,6 +32,7 @@
 #include "web_server_lifecycle_policy.h"
 #include "web_server_internal.h"
 #include "web_route_capacity.h"
+#include "web_cjson_hooks.h"
 
 #define WEB_TLS_FATAL_ALERT_CODE 0x7780
 #define WEB_TLS_HANDSHAKE_TIMEOUT_MS 5000U
@@ -1470,6 +1471,8 @@ static void web_server_event_handlers_unregister(void)
 
 esp_err_t web_server_start(void)
 {
+    web_cjson_install_psram_hooks();
+
     if (s_event_handlers_registered) {
         ESP_LOGW(TAG, "Web server lifecycle already running");
         return ESP_OK;

@@ -2,6 +2,7 @@ import type { DeviceStatus, ObjectStoreState } from '../../domain/device';
 import { activeObject, connectedPodCount, formatCoordinate } from '../../domain/device';
 import { useT, useLocale } from '../../i18n';
 import { formatDistance, formatNumber } from '../../i18n/format';
+import HardwareInventoryPanel from './HardwareInventoryPanel';
 
 interface Props {
   status: DeviceStatus | null;
@@ -87,6 +88,8 @@ export default function DeviceDashboard({
         <span>{t('dashboard.objects_metric')}</span><strong>{objects?.available ? formatNumber(locale, objects.objects.length) : '—'}</strong>
         <small>{t(objects?.available ? 'dashboard.stored_sd' : 'dashboard.store_unavailable')}</small>
       </article>
+
+      <HardwareInventoryPanel status={status} />
 
       <article className="console-card wide-card">
         <div className="card-heading">

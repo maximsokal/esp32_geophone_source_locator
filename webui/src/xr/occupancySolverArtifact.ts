@@ -18,29 +18,43 @@
  * volume (the envelope extended below_surface_m downward) that is neither
  * FREE nor OCCUPIED. UNKNOWN is never stored as FREE.
  *
- * `registration` is the sensor(localization)->scan rigid transform. It is
- * null until an AprilTag/ArUco registration (MAX-145) exists; the ESP32 then
- * fails closed and never applies the occupancy constraint.
+ * Schema 2 registrations map sensor Z-up coordinates into the project
+ * Z-up frame. Schema 1 registered artifacts remain readable, but their
+ * ambiguous-frame registration is ignored by both readers.
  */
 
 import type { ScanPointCloudSnapshot } from './depthPointCloud';
+import { localFloorMatrixToProject } from './projectFrame';
+import { registrationTransformIssue } from './registrationApplicability';
+import { crc32 } from './crc32';
+import { createScanIdentity, type ScanIdentity } from './scanIdentity';
 
 const MAGIC = new TextEncoder().encode('GOCCUPY1');
 const FIXED_HEADER_BYTES = 20;
-export const OCCUPANCY_ARTIFACT_SCHEMA = 1;
+export const OCCUPANCY_ARTIFACT_SCHEMA = 2;
+export const LEGACY_OCCUPANCY_ARTIFACT_SCHEMA = 1;
 export const MAX_OCCUPANCY_ARTIFACT_BYTES = 1024 * 1024;
 const INT16_MIN = -32768;
 const INT16_MAX = 32767;
 
 export interface OccupancyRegistration {
+  /** Omitted only by legacy in-memory callers; those matrices are local-floor. */
+  frame?: 'webxr_local_floor' | 'project_z_up';
   /** How the transform was obtained, e.g. 'apriltag'. */
   source: string;
   /** The frozen session geometry version this registration was made against. */
   geometry_computed_at_ms: number;
-  /** Row-major 4x4 homogeneous sensor->scan transform (meters). */
+  /** Row-major sensor Z-up -> project Z-up matrix once encoded as schema 2. */
   sensor_to_scan: number[];
   /** RMS registration residual (meters). */
   residual_m: number;
+  /**
+   * Acceptance threshold (meters) the residual was judged against. REQUIRED (finite, > 0, and
+   * `residual_m <= threshold_m + 1e-9`) for every registration written to or read from a schema 2
+   * artifact; it is optional in the type only because the preview builders reuse this shape for
+   * in-memory transform checks that never reach the occupancy encoder.
+   */
+  threshold_m?: number;
 }
 
 export interface OccupancyArtifactHeader {
@@ -60,18 +74,66 @@ export interface DecodedOccupancyArtifact {
   header: OccupancyArtifactHeader;
   free: Int16Array;
   occupied: Int16Array;
+  legacyRegistrationIgnored: boolean;
+}
+
+const REGISTRATION_QUALITY_EPSILON_M = 1e-9;
+let occupancyDecodeInvocations = 0;
+let occupancyCrcInvocations = 0;
+let occupancyCrcBytesVisited = 0;
+
+export function getOccupancyArtifactMetrics(): Readonly<{
+  decodeInvocations: number;
+  crcInvocations: number;
+  crcBytesVisited: number;
+}> {
+  return { decodeInvocations: occupancyDecodeInvocations, crcInvocations: occupancyCrcInvocations, crcBytesVisited: occupancyCrcBytesVisited };
+}
+
+export function resetOccupancyArtifactMetrics(): void {
+  occupancyDecodeInvocations = 0;
+  occupancyCrcInvocations = 0;
+  occupancyCrcBytesVisited = 0;
+}
+
+function assertRegistrationQuality(value: OccupancyRegistration): void {
+  const threshold = value.threshold_m;
+  if (typeof threshold !== 'number' || !Number.isFinite(threshold) || !(threshold > 0)) {
+    throw new Error('Occupancy registration needs a finite positive threshold_m.');
+  }
+  if (typeof value.residual_m !== 'number' || !Number.isFinite(value.residual_m) || value.residual_m < 0 ||
+      value.residual_m > threshold + REGISTRATION_QUALITY_EPSILON_M) {
+    throw new Error('Occupancy registration residual exceeds its threshold.');
+  }
+}
+
+function registrationInProjectFrame(value: OccupancyRegistration | null): OccupancyRegistration | null {
+  if (value === null) return null;
+  const frame: unknown = value.frame;
+  if (frame !== undefined && frame !== 'webxr_local_floor' && frame !== 'project_z_up') {
+    throw new Error('Unknown occupancy registration frame; expected project_z_up.');
+  }
+  if (value.sensor_to_scan.length !== 16 || value.sensor_to_scan.some((entry) => !Number.isFinite(entry))) {
+    throw new Error('Occupancy registration must be a finite 4x4 matrix.');
+  }
+  assertRegistrationQuality(value);
+  const projectMatrix = frame === 'project_z_up'
+    ? [...value.sensor_to_scan]
+    : localFloorMatrixToProject(value.sensor_to_scan);
+  const transformIssue = registrationTransformIssue(projectMatrix);
+  if (transformIssue === 'reflected_transform') throw new Error('reflected_transform');
+  if (transformIssue !== null) throw new Error('Occupancy registration transform must be a proper rigid transform.');
+  return {
+    ...value,
+    frame: 'project_z_up',
+    sensor_to_scan: projectMatrix,
+  };
 }
 
 export function occupancyCrc32(bytes: Uint8Array, start = 0): number {
-  let crc = 0xffffffff;
-  for (let index = start; index < bytes.length; index += 1) {
-    crc ^= bytes[index];
-    for (let bit = 0; bit < 8; bit += 1) {
-      const mask = -(crc & 1);
-      crc = (crc >>> 1) ^ (0xedb88320 & mask);
-    }
-  }
-  return (crc ^ 0xffffffff) >>> 0;
+  occupancyCrcInvocations += 1;
+  occupancyCrcBytesVisited += bytes.length - start;
+  return crc32(bytes, start);
 }
 
 function voxelIndices(positions: Float32Array, voxelSize: number, label: string): Int16Array {
@@ -110,10 +172,7 @@ export function encodeOccupancySolverArtifact(
   const fineVoxelSizeMeters = snapshot.occupancyFineVoxelSizeMeters ?? snapshot.occupancyVoxelSizeMeters;
   if (!(fineVoxelSizeMeters > 0)) throw new Error('Invalid occupancy voxel size.');
   if (options.frameId.trim().length === 0) throw new Error('Occupancy artifact needs a frame id.');
-  const registration = options.registration ?? null;
-  if (registration !== null && registration.sensor_to_scan.length !== 16) {
-    throw new Error('Occupancy registration must be a 4x4 matrix.');
-  }
+  const registration = registrationInProjectFrame(options.registration ?? null);
 
   const free = voxelIndices(snapshot.freeAirPositions, fineVoxelSizeMeters, 'FREE');
   const occupied = voxelIndices(snapshot.occupiedSurfacePositions, fineVoxelSizeMeters, 'OCCUPIED');
@@ -156,6 +215,7 @@ export function encodeOccupancySolverArtifact(
 }
 
 export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupancyArtifact {
+  occupancyDecodeInvocations += 1;
   if (source.byteLength < FIXED_HEADER_BYTES || source.byteLength > MAX_OCCUPANCY_ARTIFACT_BYTES) {
     throw new Error('Invalid occupancy artifact size.');
   }
@@ -168,13 +228,29 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   if (headerLength === 0 || FIXED_HEADER_BYTES + headerLength + payloadLength !== source.byteLength) {
     throw new Error('Occupancy artifact length table is inconsistent.');
   }
+  // Keep the decoder's independent checksum pass: callers decode a freshly encoded artifact to validate its emitted bytes.
   if (occupancyCrc32(source, FIXED_HEADER_BYTES) !== view.getUint32(16, true)) {
     throw new Error('Occupancy artifact checksum mismatch.');
   }
   const header = JSON.parse(
     new TextDecoder().decode(source.subarray(FIXED_HEADER_BYTES, FIXED_HEADER_BYTES + headerLength)),
   ) as OccupancyArtifactHeader;
-  if (header.schema !== OCCUPANCY_ARTIFACT_SCHEMA) throw new Error('Unsupported occupancy artifact schema.');
+  if (header.schema !== LEGACY_OCCUPANCY_ARTIFACT_SCHEMA && header.schema !== OCCUPANCY_ARTIFACT_SCHEMA) {
+    throw new Error('Unsupported occupancy artifact schema.');
+  }
+  const registrationPresent = header.registration !== null && header.registration !== undefined;
+  const legacyRegistrationIgnored = header.schema === LEGACY_OCCUPANCY_ARTIFACT_SCHEMA && registrationPresent;
+  const declaredRegistration = header.registration;
+  if (header.schema === OCCUPANCY_ARTIFACT_SCHEMA && declaredRegistration !== null && declaredRegistration !== undefined &&
+      (typeof declaredRegistration !== 'object' || declaredRegistration.frame !== 'project_z_up')) {
+    throw new Error('Unknown occupancy registration frame; expected project_z_up.');
+  }
+  if (header.schema === OCCUPANCY_ARTIFACT_SCHEMA && declaredRegistration !== null && declaredRegistration !== undefined) {
+    assertRegistrationQuality(declaredRegistration);
+    const transformIssue = registrationTransformIssue(declaredRegistration.sensor_to_scan);
+    if (transformIssue === 'reflected_transform') throw new Error('reflected_transform');
+    if (transformIssue !== null) throw new Error('Occupancy registration transform must be a proper rigid transform.');
+  }
   if (payloadLength !== 6 * (header.free_count + header.occupied_count)) {
     throw new Error('Occupancy artifact counts disagree with the payload.');
   }
@@ -189,12 +265,17 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   };
   const free = read(header.free_count);
   const occupied = read(header.occupied_count);
-  return { header, free, occupied };
+  return {
+    header: legacyRegistrationIgnored ? { ...header, registration: null } : header,
+    free,
+    occupied,
+    legacyRegistrationIgnored,
+  };
 }
 
 /** Identity of the exact saved scan an occupancy artifact was derived from. */
-export function occupancyFrameIdForScan(scanArtifact: Uint8Array): string {
-  return `scan-crc32:${occupancyCrc32(scanArtifact).toString(16).padStart(8, '0')}`;
+export function occupancyFrameIdForScan(scanArtifact: Uint8Array, identity?: ScanIdentity): string {
+  return identity?.frameId ?? createScanIdentity(scanArtifact).frameId;
 }
 
 /**
@@ -205,12 +286,14 @@ export function occupancyFrameIdForScan(scanArtifact: Uint8Array): string {
  */
 export function buildSessionOccupancyArtifact(
   snapshot: Parameters<typeof encodeOccupancySolverArtifact>[0],
-  scanArtifact: Uint8Array,
+  scanArtifact: Uint8Array | ScanIdentity,
   createdAtMs: number,
   registration: OccupancyRegistration | null = null,
+  identity?: ScanIdentity,
 ): Uint8Array {
+  const scanIdentity = scanArtifact instanceof Uint8Array ? identity ?? createScanIdentity(scanArtifact) : scanArtifact;
   return encodeOccupancySolverArtifact(snapshot, {
-    frameId: occupancyFrameIdForScan(scanArtifact),
+    frameId: scanIdentity.frameId,
     createdAtMs,
     registration,
   });

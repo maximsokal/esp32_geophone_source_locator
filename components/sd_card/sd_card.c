@@ -45,11 +45,23 @@ const char *sd_card_mount_point(void)
 }
 
 
+sdmmc_card_t *sd_card_get_card_handle(void)
+{
+    return sd_card_internal_card();
+}
+
+
 esp_err_t sd_card_unmount(void)
 {
     sdmmc_card_t *card = sd_card_internal_card();
     if (card == NULL) {
         return ESP_OK;
+    }
+
+    sd_card_internal_unmount_fn_t recovery_unmount =
+        sd_card_internal_recovery_unmount();
+    if (recovery_unmount != NULL) {
+        return recovery_unmount();
     }
 
     /*

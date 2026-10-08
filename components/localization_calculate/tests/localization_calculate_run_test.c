@@ -69,6 +69,9 @@ static object_store_geometry_t g_fixture_geometry;
 static seismic_frame_t *g_fixture_frames;
 static size_t g_fixture_frame_count;
 static seismic_recorder_session_summary_t g_fixture_summary;
+static size_t g_fixture_gap_index;
+static size_t g_fixture_nonmonotonic_index;
+static size_t g_fixture_rail_counts[OBJECT_STORE_POD_COUNT];
 static esp_err_t g_fixture_geometry_err;
 static esp_err_t g_fixture_raw_err;
 static size_t g_geometry_read_calls;
@@ -110,7 +113,7 @@ esp_err_t seismic_recorder_get_session_summary(
     return ESP_OK;
 }
 
-esp_err_t seismic_recorder_read_session_range(
+esp_err_t seismic_recorder_read_session_range_ex(
     const char *object_id,
     const char *session_id,
     uint64_t start_index,
@@ -119,13 +122,12 @@ esp_err_t seismic_recorder_read_session_range(
     uint64_t *source_sample_indices,
     bool *gap_before,
     size_t *frame_count_out,
-    seismic_recorder_session_summary_t *summary_out
+    seismic_recorder_session_summary_t *summary_out,
+    seismic_recorder_raw_window_stats_t *raw_stats_out
 )
 {
     (void)object_id;
     (void)session_id;
-    (void)source_sample_indices;
-    (void)gap_before;
     ++g_range_read_calls;
     if (g_fixture_raw_err != ESP_OK) {
         return g_fixture_raw_err;
@@ -139,7 +141,26 @@ esp_err_t seismic_recorder_read_session_range(
     const size_t remaining = g_fixture_frame_count - (size_t)start_index;
     const size_t count = remaining < max_frames ? remaining : max_frames;
     memcpy(frames, g_fixture_frames + (size_t)start_index, sizeof(*frames) * count);
+    for (size_t i = 0U; i < count; ++i) {
+        const size_t sample_index = (size_t)start_index + i;
+        if (source_sample_indices != NULL) {
+            source_sample_indices[i] = (uint64_t)sample_index;
+        }
+        if (gap_before != NULL) {
+            gap_before[i] = sample_index == g_fixture_gap_index;
+        }
+        if (sample_index == g_fixture_nonmonotonic_index && i > 0U) {
+            frames[i].timestamp_us = frames[i - 1U].timestamp_us - 1;
+        }
+    }
     *frame_count_out = count;
+    if (raw_stats_out != NULL) {
+        memset(raw_stats_out, 0, sizeof(*raw_stats_out));
+        raw_stats_out->samples_examined = count;
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+            raw_stats_out->rail_sample_counts[ch] = g_fixture_rail_counts[ch];
+        }
+    }
     if (summary_out != NULL) {
         *summary_out = g_fixture_summary;
     }
@@ -155,6 +176,7 @@ static localization_run_record_t g_recorded[MAX_RECORDED_WRITES];
 static size_t g_recorded_count;
 static size_t g_write_call_count;
 static size_t g_pick_write_calls;
+static localization_pick_record_t g_pick_record;
 
 static bool g_fail_write_at_set;
 static size_t g_fail_write_at_index;
@@ -186,8 +208,8 @@ esp_err_t localization_run_store_write_picks(
 {
     (void)object_id;
     (void)session_id;
-    (void)record;
     ++g_pick_write_calls;
+    g_pick_record = *record;
     return ESP_OK;
 }
 
@@ -201,10 +223,14 @@ static void reset_fakes(void)
     g_geometry_read_calls = 0U;
     g_summary_read_calls = 0U;
     g_range_read_calls = 0U;
+    g_fixture_gap_index = SIZE_MAX;
+    g_fixture_nonmonotonic_index = SIZE_MAX;
+    memset(g_fixture_rail_counts, 0, sizeof(g_fixture_rail_counts));
 
     g_recorded_count = 0U;
     g_write_call_count = 0U;
     g_pick_write_calls = 0U;
+    memset(&g_pick_record, 0, sizeof(g_pick_record));
     g_fail_write_at_set = false;
     g_fail_write_at_index = 0U;
     g_fail_write_err = ESP_ERR_NO_MEM;
@@ -332,6 +358,9 @@ static void build_fixture(
     }
 
     memset(&g_fixture_summary, 0, sizeof(g_fixture_summary));
+    for (size_t i = 0U; i < buffer_len; ++i) {
+        g_fixture_frames[i].timestamp_us = 5000000LL + (int64_t)i * 20LL;
+    }
     g_fixture_summary.sample_rate_hz = FIX_SAMPLE_RATE_HZ;
     g_fixture_summary.channel_count = OBJECT_STORE_POD_COUNT;
     g_fixture_summary.samples_written = buffer_len;
@@ -353,6 +382,9 @@ static void extend_fixture_frames(size_t frame_count)
         0,
         sizeof(*g_fixture_frames) * (frame_count - g_fixture_frame_count)
     );
+    for (size_t i = g_fixture_frame_count; i < frame_count; ++i) {
+        extended[i].timestamp_us = 5000000LL + (int64_t)i * 20LL;
+    }
     g_fixture_frames = extended;
     g_fixture_frame_count = frame_count;
     g_fixture_summary.samples_written = frame_count;
@@ -587,6 +619,30 @@ static const localization_point3d_t s_source = { 0.25, 0.40, 0.30 };
 #define TEST_EMISSION_S 0.01
 
 
+static size_t fixture_p_arrival_index(
+    size_t channel,
+    const localization_point3d_t *source,
+    double speed_mps,
+    double emission_s
+)
+{
+    const double dx = source->x_m - s_pod_positions[channel].x_m;
+    const double dy = source->y_m - s_pod_positions[channel].y_m;
+    const double dz = source->z_m - s_pod_positions[channel].z_m;
+    return (size_t)llround((emission_s + sqrt(dx * dx + dy * dy + dz * dz) / speed_mps) *
+                           (double)FIX_SAMPLE_RATE_HZ);
+}
+
+
+static void add_ramp_pulse_to_channel(size_t channel, size_t onset, size_t width, float amplitude)
+{
+    for (size_t k = 0U; k < width && onset + k < g_fixture_frame_count; ++k) {
+        const float envelope = k < 8U ? (float)(k + 1U) / 8.0f : 1.0f;
+        g_fixture_frames[onset + k].channel_uv[channel] += amplitude * envelope;
+    }
+}
+
+
 /* ==== Scenarios ============================================================ */
 
 /*
@@ -623,9 +679,10 @@ static void test_truncated_session_persists_analysis_window(void)
 {
     reset_fakes();
     build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    const size_t bytes_per_frame = sizeof(seismic_frame_t) +
+        SEISMIC_CHANNEL_COUNT * sizeof(float) + sizeof(uint64_t) + sizeof(bool);
     const size_t expected_window_frames =
-        (3072U * 1024U) /
-        (sizeof(seismic_frame_t) + SEISMIC_CHANNEL_COUNT * sizeof(float));
+        (3072U * 1024U) / bytes_per_frame;
     extend_fixture_frames(expected_window_frames + 1U);
 
     localization_calculate_config_t config = default_test_config();
@@ -658,6 +715,9 @@ static void test_limited_free_psram_truncates_with_memory_provenance(void)
     build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
     extend_fixture_frames(39322U);
     g_fixture_summary.sample_rate_hz = 20000U;
+    const size_t bytes_per_frame = sizeof(seismic_frame_t) +
+        SEISMIC_CHANNEL_COUNT * sizeof(float) + sizeof(uint64_t) + sizeof(bool);
+    const size_t expected_window_frames = (1024U * 1024U) / bytes_per_frame;
 
     localization_calculate_config_t config = default_test_config();
     localization_calculate_summary_t summary;
@@ -667,7 +727,7 @@ static void test_limited_free_psram_truncates_with_memory_provenance(void)
     assert(g_recorded_count > 0U);
     for (size_t i = 0U; i < g_recorded_count; ++i) {
         assert(g_recorded[i].analysis_window_truncated);
-        assert(g_recorded[i].analysis_window_frames == 26214U);
+        assert(g_recorded[i].analysis_window_frames == expected_window_frames);
         assert(strcmp(g_recorded[i].analysis_window_reason, "memory") == 0);
     }
     assert(localization_test_psram_model_allocated_bytes() == 0U);
@@ -804,6 +864,9 @@ static void test_four_pods_clean_event_solves_near_truth(void)
     assert(summary.participating_channel_count == 4U);
     assert(summary.methods_total == 13U && summary.methods_completed == 13U);
     assert(g_recorded_count == 13U);
+    assert(g_pick_record.session_epoch_known);
+    assert(g_pick_record.session_epoch_timestamp_us == 5000000LL);
+    assert(!g_pick_record.channels[0].s_pick.present);
 
     for (size_t i = 0U; i < g_recorded_count; ++i) {
         assert(g_recorded[i].dimensionality == LOCALIZATION_DIMENSIONALITY_CAPABLE_3D);
@@ -846,6 +909,167 @@ static void test_four_pods_clean_event_solves_near_truth(void)
     assert(within_tolerance);
 
     puts("  4 pods clean event: CAPABLE_3D, solved near true source -- OK");
+}
+
+
+static void test_gap_and_nonmonotonic_timestamps_reject_before_picking(void)
+{
+    static const struct {
+        size_t gap_index;
+        size_t nonmonotonic_index;
+        const char *reason;
+        const char *session_id;
+    } cases[] = {
+        { 25U, SIZE_MAX, LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP, "S132101" },
+        { SIZE_MAX, 25U, LOCALIZATION_RUN_REJECTION_REASON_TIMESTAMP_NON_MONOTONIC, "S132102" },
+    };
+    for (size_t case_index = 0U; case_index < sizeof(cases) / sizeof(cases[0]); ++case_index) {
+        reset_fakes();
+        build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+        g_fixture_gap_index = cases[case_index].gap_index;
+        g_fixture_nonmonotonic_index = cases[case_index].nonmonotonic_index;
+        localization_calculate_config_t config = default_test_config();
+        localization_calculate_summary_t summary;
+        assert(localization_calculate_run(
+            "OBJ01", cases[case_index].session_id, &config, 532101U + case_index, &summary
+        ) == ESP_OK);
+        assert(g_recorded_count == 1U && g_pick_write_calls == 0U);
+        assert(strcmp(g_recorded[0].method_name, "localization_analysis") == 0);
+        assert(strcmp(g_recorded[0].rejection_reason, cases[case_index].reason) == 0);
+        assert(g_recorded[0].session_epoch_known);
+        assert(g_recorded[0].session_epoch_timestamp_us == 5000000LL);
+        assert(summary.methods_total == 1U && summary.methods_persisted == 1U);
+        free_fixture_frames();
+    }
+    puts("  gap and non-monotonic timestamps persist exact rejection reason and sample-zero epoch before picks");
+}
+
+
+static void test_duplicate_sensor_position_persists_validation_reason(void)
+{
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    g_fixture_geometry.pods[3].x_mm = g_fixture_geometry.pods[0].x_mm;
+    g_fixture_geometry.pods[3].y_mm = g_fixture_geometry.pods[0].y_mm;
+    g_fixture_geometry.pods[3].z_mm = g_fixture_geometry.pods[0].z_mm;
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run("OBJ01", "S132103", &config, 532103U, &summary) == ESP_OK);
+    const localization_run_record_t *tdoa = find_record("tdoa_gauss_newton");
+    assert(tdoa != NULL && !tdoa->solved);
+    assert(strcmp(tdoa->rejection_reason,
+                  LOCALIZATION_RUN_REJECTION_REASON_DUPLICATE_SENSOR_POSITION) == 0);
+    assert(tdoa->session_epoch_known && tdoa->session_epoch_timestamp_us == 5000000LL);
+    puts("  duplicate sensor positions persist duplicate_sensor_position on the TDOA record");
+    free_fixture_frames();
+}
+
+
+static void test_saturated_and_ambiguous_picks_are_excluded(void)
+{
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    g_fixture_rail_counts[0] = 8U;
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run("OBJ01", "S132104", &config, 532104U, &summary) == ESP_OK);
+    assert(g_pick_record.channels[0].pick.status == GEOPHONE_PICK_REJECTED_SATURATED);
+    assert(strcmp(g_pick_record.channels[0].reason, "saturated") == 0);
+    for (size_t i = 0U; i < g_recorded_count; ++i) {
+        assert((g_recorded[i].channel_mask_used & 1U) == 0U);
+    }
+    free_fixture_frames();
+
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    const size_t p_index = fixture_p_arrival_index(0U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S);
+    extend_fixture_frames(p_index + 1200U);
+    s_noise_state = 0x13201313U;
+    for (size_t i = 0U; i < g_fixture_frame_count; ++i) {
+        g_fixture_frames[i].channel_uv[0] = next_noise_sample(0.02f);
+    }
+    add_ramp_pulse_to_channel(0U, p_index, 32U, 0.45f);
+    add_ramp_pulse_to_channel(0U, p_index + 800U, 32U, 1.2f);
+    assert(localization_calculate_run("OBJ01", "S132105", &config, 532105U, &summary) == ESP_OK);
+    assert(g_pick_record.channels[0].pick.status == GEOPHONE_PICK_REJECTED_AMBIGUOUS);
+    assert(strcmp(g_pick_record.channels[0].reason, "ambiguous") == 0);
+    for (size_t i = 0U; i < g_recorded_count; ++i) {
+        assert((g_recorded[i].channel_mask_used & 1U) == 0U);
+    }
+    puts("  saturated and two-event ambiguous channels retain reasons and never enter solver masks");
+    free_fixture_frames();
+}
+
+
+static void test_secondary_pick_evidence_is_persisted_only_when_enabled(void)
+{
+    static const struct {
+        float minimum_snr;
+        geophone_pick_status_t expected_status;
+        const char *expected_reason;
+        const char *session_id;
+    } cases[] = {
+        { 2.0f, GEOPHONE_PICK_ACCEPTED, "accepted", "S132106" },
+        { 2000000.0f, GEOPHONE_PICK_REJECTED_LOW_SNR, "low_snr", "S132107" },
+    };
+    for (size_t case_index = 0U; case_index < sizeof(cases) / sizeof(cases[0]); ++case_index) {
+        reset_fakes();
+        build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+        size_t last_sample = 0U;
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+            const size_t p_index = fixture_p_arrival_index(ch, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S);
+            if (p_index + 950U > last_sample) last_sample = p_index + 950U;
+        }
+        extend_fixture_frames(last_sample);
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+            const size_t p_index = fixture_p_arrival_index(ch, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S);
+            add_ramp_pulse_to_channel(ch, p_index + 500U, 40U, 3.0f);
+        }
+
+        localization_calculate_config_t config = default_test_config();
+        /* Keep the known P-to-S separation outside the P picker's second-
+         * crossing ambiguity guard; the independent S picker still sees it. */
+        config.pick_config.lta_window_samples = 600U;
+        config.s_pick_enabled = true;
+        config.s_pick_config = (geophone_secondary_pick_config_t){
+            .min_separation_samples = 321U,
+            .max_separation_samples = 900U,
+            .sta_window_samples = 10U,
+            .lta_window_samples = 60U,
+            .sta_lta_trigger_ratio = 3.0f,
+            .minimum_snr = cases[case_index].minimum_snr,
+        };
+        localization_calculate_summary_t summary;
+        assert(localization_calculate_run(
+            "OBJ01", cases[case_index].session_id, &config, 532106U + case_index, &summary
+        ) == ESP_OK);
+        assert(g_pick_record.session_epoch_known && g_pick_record.session_epoch_timestamp_us == 5000000LL);
+        assert(find_record("psafuvs") != NULL && find_record("psp_joint") != NULL);
+        bool saw_s_pick = false;
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+            const localization_pick_phase_t *phase = &g_pick_record.channels[ch].s_pick;
+            if (g_pick_record.channels[ch].pick.status != GEOPHONE_PICK_ACCEPTED) {
+                assert(!phase->present);
+                continue;
+            }
+            saw_s_pick = true;
+            assert(phase->present);
+            assert(phase->status == cases[case_index].expected_status);
+            assert(strcmp(phase->reason, cases[case_index].expected_reason) == 0);
+            assert((phase->fields_present & LOCALIZATION_PICK_PHASE_FIELD_STATUS) != 0U);
+            assert((phase->fields_present & LOCALIZATION_PICK_PHASE_FIELD_METHOD) != 0U);
+            if (cases[case_index].expected_status == GEOPHONE_PICK_ACCEPTED) {
+                assert(phase->fields_present == LOCALIZATION_PICK_PHASE_FIELDS_ALL);
+                assert((int64_t)phase->arrival_time_us > 0);
+            } else {
+                assert((phase->fields_present & LOCALIZATION_PICK_PHASE_FIELD_SAMPLE_INDEX) != 0U);
+                assert((phase->fields_present & LOCALIZATION_PICK_PHASE_FIELD_SNR) != 0U);
+            }
+        }
+        assert(saw_s_pick);
+        free_fixture_frames();
+    }
+    puts("  accepted and rejected S-pick phases persist for PSAFUVS/PSP; non-S runs leave them absent");
 }
 
 
@@ -1032,6 +1256,254 @@ static void prepare_session_directory(const char *object_id, const char *session
 }
 
 
+static uint32_t test_crc32(const uint8_t *bytes, size_t length)
+{
+    uint32_t crc = 0xFFFFFFFFU;
+    for (size_t i = 0U; i < length; ++i) {
+        crc ^= bytes[i];
+        for (unsigned bit = 0U; bit < 8U; ++bit) {
+            const uint32_t mask = (uint32_t)-(int32_t)(crc & 1U);
+            crc = (crc >> 1U) ^ (0xEDB88320U & mask);
+        }
+    }
+    return crc ^ 0xFFFFFFFFU;
+}
+
+
+static void test_write_u32_le(uint8_t *bytes, size_t offset, uint32_t value)
+{
+    bytes[offset] = (uint8_t)value;
+    bytes[offset + 1U] = (uint8_t)(value >> 8U);
+    bytes[offset + 2U] = (uint8_t)(value >> 16U);
+    bytes[offset + 3U] = (uint8_t)(value >> 24U);
+}
+
+
+static void test_scan_frame_id(const uint8_t *scan_bytes, size_t scan_length, char frame_id[32])
+{
+    (void)snprintf(frame_id, 32U, "scan-crc32:%08x", (unsigned)test_crc32(scan_bytes, scan_length));
+}
+
+
+static void write_test_scan_file(
+    const char *object_id,
+    const char *session_id,
+    const uint8_t *scan_bytes,
+    size_t scan_length
+)
+{
+    char path[256];
+    const int written = snprintf(
+        path, sizeof(path), "%s/%s/sessions/%s/scan-v1.bin",
+        STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id
+    );
+    assert(written > 0 && (size_t)written < sizeof(path));
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(scan_bytes, 1U, scan_length, file) == scan_length);
+    assert(fclose(file) == 0);
+}
+
+
+static void write_test_occupancy_file(
+    const char *object_id,
+    const char *session_id,
+    const char *frame_id,
+    bool reflected
+)
+{
+    char path[256];
+    const int path_written = snprintf(
+        path, sizeof(path), "%s/%s/sessions/%s/occupancy-v1.bin",
+        STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id
+    );
+    assert(path_written > 0 && (size_t)path_written < sizeof(path));
+
+    char header[1024];
+    const char *transform = reflected
+        ? "[-1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]"
+        : "[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]";
+    const int header_written = snprintf(
+        header, sizeof(header),
+        "{\"schema\":2,\"frame_id\":\"%s\",\"voxel_size_m\":0.5,"
+        "\"below_surface_m\":1,\"free_count\":0,\"occupied_count\":0,"
+        "\"created_at_ms\":234567,\"registration\":{\"source\":\"test\","
+        "\"frame\":\"project_z_up\",\"geometry_computed_at_ms\":1000,"
+        "\"residual_m\":0.01,\"threshold_m\":0.05,"
+        "\"sensor_to_scan\":%s}}",
+        frame_id, transform
+    );
+    assert(header_written > 0 && (size_t)header_written < sizeof(header));
+
+    const size_t header_length = (size_t)header_written;
+    const size_t artifact_length = 20U + header_length;
+    uint8_t *artifact = calloc(artifact_length, sizeof(*artifact));
+    assert(artifact != NULL);
+    memcpy(artifact, "GOCCUPY1", 8U);
+    test_write_u32_le(artifact, 8U, (uint32_t)header_length);
+    test_write_u32_le(artifact, 12U, 0U);
+    memcpy(artifact + 20U, header, header_length);
+    test_write_u32_le(artifact, 16U, test_crc32(artifact + 20U, header_length));
+
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(artifact, 1U, artifact_length, file) == artifact_length);
+    assert(fclose(file) == 0);
+    free(artifact);
+}
+
+
+static void remove_test_scan_artifacts(const char *object_id, const char *session_id)
+{
+    char path[256];
+    (void)snprintf(
+        path, sizeof(path), "%s/%s/sessions/%s/occupancy-v1.bin",
+        STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id
+    );
+    (void)remove(path);
+    (void)snprintf(
+        path, sizeof(path), "%s/%s/sessions/%s/scan-v1.bin",
+        STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id
+    );
+    (void)remove(path);
+}
+
+
+static void assert_scan_identity_rejected(
+    const char *object_id,
+    const char *session_id,
+    const char *reason_token
+)
+{
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    const esp_err_t err = localization_calculate_run(
+        object_id, session_id, &config, 51000ULL, &summary
+    );
+    assert(err == ESP_OK);
+    assert(g_recorded_count == 21U);
+
+    static const char *const unconstrained_methods[] = {
+        "tdoa_gauss_newton", "traveltime_inversion", "joint_fusion"
+    };
+    for (size_t i = 0U; i < sizeof(unconstrained_methods) / sizeof(unconstrained_methods[0]); ++i) {
+        const localization_run_record_t *record = find_record(unconstrained_methods[i]);
+        assert(record != NULL);
+        assert(strstr(record->rejection_reason, reason_token) == NULL);
+    }
+
+    static const char *const scan_methods[] = {
+        "traveltime_scan_constrained", "semblance_scan_constrained",
+        "tdcas_scan_constrained", "psafuvs_scan_constrained", "suea_scan_voids",
+        "eikonal_scan_voids", "semblance_eikonal_voids", "bayesian_scan_voids"
+    };
+    for (size_t i = 0U; i < sizeof(scan_methods) / sizeof(scan_methods[0]); ++i) {
+        const localization_run_record_t *record = find_record(scan_methods[i]);
+        assert(record != NULL && !record->solved);
+        assert(strstr(record->rejection_reason, reason_token) != NULL);
+        assert(record->scan_provenance_present);
+        assert(!record->scan_constraint_applied);
+        assert(record->scan_frame_id[0] == '\0');
+        assert(record->occupancy_created_at_ms == 0U);
+        assert(record->registration_geometry_computed_at_ms == 0U);
+    }
+}
+
+
+static void test_scan_identity_mismatch_and_unavailable_fail_closed(void)
+{
+    const size_t scan_length = 9000U;
+    uint8_t *scan_a = malloc(scan_length);
+    uint8_t *scan_b = malloc(scan_length);
+    assert(scan_a != NULL && scan_b != NULL);
+    for (size_t i = 0U; i < scan_length; ++i) {
+        scan_a[i] = (uint8_t)(i % 251U);
+    }
+    memcpy(scan_b, scan_a, scan_length);
+    scan_b[scan_length - 1U] ^= 0x5AU;
+    char occupancy_frame_id[32];
+    test_scan_frame_id(scan_a, scan_length, occupancy_frame_id);
+
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    const char *mismatch_object = "OBJSCANB";
+    const char *mismatch_session = "S098001";
+    prepare_session_directory(mismatch_object, mismatch_session);
+    write_test_occupancy_file(mismatch_object, mismatch_session, occupancy_frame_id, false);
+    write_test_scan_file(mismatch_object, mismatch_session, scan_b, scan_length);
+    assert_scan_identity_rejected(
+        mismatch_object, mismatch_session, "scan_generation_mismatch"
+    );
+    remove_test_scan_artifacts(mismatch_object, mismatch_session);
+
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    const char *unavailable_object = "OBJSCANMISS";
+    const char *unavailable_session = "S098002";
+    prepare_session_directory(unavailable_object, unavailable_session);
+    write_test_occupancy_file(unavailable_object, unavailable_session, occupancy_frame_id, false);
+    assert_scan_identity_rejected(
+        unavailable_object, unavailable_session, "scan_identity_unavailable"
+    );
+    remove_test_scan_artifacts(unavailable_object, unavailable_session);
+
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    const char *matching_object = "OBJSCANMATCH";
+    const char *matching_session = "S098003";
+    prepare_session_directory(matching_object, matching_session);
+    write_test_occupancy_file(matching_object, matching_session, occupancy_frame_id, false);
+    write_test_scan_file(matching_object, matching_session, scan_a, scan_length);
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run(
+        matching_object, matching_session, &config, 52000ULL, &summary
+    ) == ESP_OK);
+    const localization_run_record_t *traveltime = find_record("traveltime_scan_constrained");
+    assert(traveltime != NULL && traveltime->scan_provenance_present);
+    assert(traveltime->scan_constraint_applied);
+    assert(strcmp(traveltime->scan_frame_id, occupancy_frame_id) == 0);
+    assert(traveltime->occupancy_created_at_ms == 234567U);
+    assert(traveltime->registration_geometry_computed_at_ms == 1000U);
+    const localization_run_record_t *joint = find_record("joint_fusion");
+    assert(joint != NULL && !joint->scan_constraint_applied);
+    assert(joint->scan_frame_id[0] == '\0');
+    assert(joint->occupancy_created_at_ms == 0U);
+    assert(joint->registration_geometry_computed_at_ms == 0U);
+    remove_test_scan_artifacts(matching_object, matching_session);
+
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    const char *reflected_object = "OBJSCANREFL";
+    const char *reflected_session = "S098004";
+    prepare_session_directory(reflected_object, reflected_session);
+    write_test_occupancy_file(reflected_object, reflected_session, occupancy_frame_id, true);
+    write_test_scan_file(reflected_object, reflected_session, scan_a, scan_length);
+    localization_calculate_config_t reflected_config = default_test_config();
+    localization_calculate_summary_t reflected_summary;
+    assert(localization_calculate_run(
+        reflected_object, reflected_session, &reflected_config, 52001ULL, &reflected_summary
+    ) == ESP_OK);
+    static const char *const scan_methods[] = {
+        "traveltime_scan_constrained", "semblance_scan_constrained",
+        "tdcas_scan_constrained", "psafuvs_scan_constrained", "suea_scan_voids",
+        "eikonal_scan_voids", "semblance_eikonal_voids", "bayesian_scan_voids"
+    };
+    for (size_t i = 0U; i < sizeof(scan_methods) / sizeof(scan_methods[0]); ++i) {
+        const localization_run_record_t *record = find_record(scan_methods[i]);
+        assert(record != NULL && !record->solved);
+        assert(strcmp(record->rejection_reason,
+                      LOCALIZATION_RUN_REJECTION_REASON_REFLECTED_TRANSFORM) == 0);
+        assert(record->scan_provenance_present && !record->scan_constraint_applied);
+    }
+    remove_test_scan_artifacts(reflected_object, reflected_session);
+
+    free(scan_a);
+    free(scan_b);
+    puts("  scan generation mismatch, unavailable identity, and reflected registration persist their reasons");
+}
+
+
 /*
  * A session with an occupancy artifact on disk that is not a valid/usable
  * scan (garbage bytes: fails scan_occupancy_parse's magic/CRC check, same
@@ -1104,10 +1576,15 @@ int main(void)
     test_insufficient_free_psram_records_internal_failure();
     test_three_pods_planar_no_fabricated_z();
     test_four_pods_clean_event_solves_near_truth();
+    test_gap_and_nonmonotonic_timestamps_reject_before_picking();
+    test_duplicate_sensor_position_persists_validation_reason();
+    test_saturated_and_ambiguous_picks_are_excluded();
+    test_secondary_pick_evidence_is_persisted_only_when_enabled();
     test_flat_signal_every_method_unsolved_with_reason();
     test_read_failures_propagate_with_no_partial_writes();
     test_run_store_write_failure_midway_contract();
     test_time_budget_exhausted_skips_remaining_methods();
+    test_scan_identity_mismatch_and_unavailable_fail_closed();
     test_unusable_scan_reports_constraint_not_applied();
     test_record_stop_then_localize_with_reserved_psram();
 

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("AD7606", "ESP_ADC_BENCH")]
+    [ValidateSet("AD7606")]
     [string]$Source = "AD7606",
 
     [string]$FlashPort = "COM4",
@@ -75,11 +75,7 @@ function Test-TimingBackendMarker {
         [int]$ExpectedRate
     )
 
-    $pattern = if ($SelectedSource -eq "AD7606") {
-        "(?im)AD7606[_ ]?ACQ:.*Started:\s*(?<rate>\d+)\s*Hz,\s*8\s*channels,\s*SPI3 dedicated,\s*core=1"
-    } else {
-        "(?im)GEOPHONE_ADC:.*ESP ADC bench enabled:.*at\s+(?<rate>\d+)\s+Hz\s+core=1"
-    }
+    $pattern = "(?im)AD7606[_ ]?ACQ:.*Started:\s*(?<rate>\d+)\s*Hz,\s*8\s*channels,\s*SPI3 dedicated,\s*core=1"
 
     $marker = [regex]::Match($Content, $pattern)
     if ($marker.Success) {
@@ -162,11 +158,7 @@ try {
     }
 
     if ([string]::IsNullOrWhiteSpace($BuildDir)) {
-        $BuildDir = if ($Source -eq "AD7606") {
-            "build-keypad-timing-ad7606"
-        } else {
-            "build-keypad-timing-esp-adc"
-        }
+        $BuildDir = "build-keypad-timing-ad7606"
     }
 
     if ($isReplay) {
@@ -177,14 +169,8 @@ try {
     } else {
         $profileSdkconfig = [IO.Path]::GetFullPath((Join-Path $repo (Join-Path $BuildDir "sdkconfig")))
         $oldTimingProfile = [Environment]::GetEnvironmentVariable("GEOLOCATOR_KEYPAD_TIMING_PROFILE", "Process")
-        $oldAdcBenchProfile = [Environment]::GetEnvironmentVariable("GEOLOCATOR_ADC_BENCH_PROFILE", "Process")
         try {
             $env:GEOLOCATOR_KEYPAD_TIMING_PROFILE = "1"
-            if ($Source -eq "ESP_ADC_BENCH") {
-                $env:GEOLOCATOR_ADC_BENCH_PROFILE = "1"
-            } else {
-                Remove-Item Env:GEOLOCATOR_ADC_BENCH_PROFILE -ErrorAction SilentlyContinue
-            }
 
             & $powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $runIdf `
                 -Action build -ProjectPath $ProjectPath -BuildDir $BuildDir `
@@ -194,7 +180,6 @@ try {
             }
         } finally {
             Restore-ProcessEnvironment "GEOLOCATOR_KEYPAD_TIMING_PROFILE" $oldTimingProfile
-            Restore-ProcessEnvironment "GEOLOCATOR_ADC_BENCH_PROFILE" $oldAdcBenchProfile
         }
         Add-Check $checks "Timing-profile build" "PASS" ("Built isolated $Source timing profile in {0}." -f $BuildDir)
 
@@ -362,7 +347,7 @@ foreach ($check in $checks) {
 if ($isReplay) {
     Write-Host ("LOG_REPLAY: {0}" -f $logFile)
 }
-Write-Host "LIMITATIONS: The opt-in probe adds diagnostic load. A valid p95 is a bounded-histogram upper bound; samples at or above 2048us are excluded from normal buckets, and p95 is censored only when its rank lands in that overflow tail. Repeat separate live windows for AD7606 idle, AD7606 with frequent keypad presses, and ESP_ADC_BENCH at its reported rate with frequent keypad presses; serial replay cannot prove physical activity or board timing."
+Write-Host "LIMITATIONS: The opt-in probe adds diagnostic load. A valid p95 is a bounded-histogram upper bound; samples at or above 2048us are excluded from normal buckets, and p95 is censored only when its rank lands in that overflow tail. Repeat separate live windows for AD7606 idle and AD7606 with frequent keypad presses; serial replay cannot prove physical activity or board timing."
 Write-Host ("KEYPAD_TIMING_TELEMETRY_RESULT: {0}" -f $telemetryResult)
 Write-Host ("PHYSICAL_CONDITION: {0}" -f $physicalCondition)
 Write-Host "PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED"

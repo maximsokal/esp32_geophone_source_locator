@@ -1,7 +1,9 @@
 #include "app_startup.h"
 
 #include "app_startup_status.h"
+#include "app_startup_module_policy.h"
 #include "app_storage_boot.h"
+#include "app_storage_boot_ui.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -12,6 +14,7 @@
 #include "display.h"
 #include "ina3221_monitor.h"
 #include "insights_bridge.h"
+#include "hw_inventory.h"
 #include "keypad.h"
 #include "localization_job.h"
 #include "measurement_service.h"
@@ -43,6 +46,14 @@
 
 static const char *TAG =
     "APP";
+
+
+static app_startup_module_policy_t app_startup_snapshot_module_policy(void)
+{
+    hw_module_info_t modules[HW_MODULE_COUNT];
+    const size_t count = hw_inventory_snapshot(modules, HW_MODULE_COUNT);
+    return app_startup_module_policy_from_inventory(modules, count);
+}
 
 
 /* MAX-183: runs on the INA3221 monitor task. */
@@ -284,14 +295,15 @@ static void app_startup_initialize_core(void)
 
 
 static void app_startup_initialize_services(
-    uint32_t startup_started_ms
+    uint32_t startup_started_ms,
+    const app_startup_module_policy_t *module_policy
 )
 {
     uint32_t stage_started_ms =
         esp_log_timestamp();
 
     ESP_ERROR_CHECK(
-        display_init()
+        app_storage_boot_ui_ensure_display_initialized()
     );
 
     app_startup_log_elapsed(
@@ -303,7 +315,7 @@ static void app_startup_initialize_services(
         esp_log_timestamp();
 
     ESP_ERROR_CHECK(
-        ui_boot_init()
+        app_storage_boot_ui_ensure_initialized()
     );
 
     runtime_observability_log_snapshot("after-lvgl");
@@ -314,15 +326,22 @@ static void app_startup_initialize_services(
     );
 
     ui_boot_set_stage(
-        "STORAGE..."
+        module_policy->storage_allowed
+            ? "STORAGE..."
+            : "STORAGE UNAVAILABLE"
     );
 
     stage_started_ms =
         esp_log_timestamp();
 
-    ESP_ERROR_CHECK(
-        storage_manager_init()
-    );
+    if (module_policy->storage_allowed) {
+        esp_err_t storage_err = storage_manager_init();
+        if (storage_err != ESP_OK) {
+            app_storage_boot_recover_storage_manager_failure(storage_err);
+        }
+    } else {
+        ESP_LOGW(TAG, "SD card is not PRESENT; skipping storage manager initialization");
+    }
 
     app_startup_log_elapsed(
         "storage_manager_init",
@@ -335,55 +354,59 @@ static void app_startup_initialize_services(
      * walk every historical object here: a large archive used to keep the
      * boot screen and keypad gate blocked for tens of seconds.
      */
-    ui_boot_set_stage(
-        "ACTIVE OBJECT..."
-    );
+    if (module_policy->storage_allowed) {
+        ui_boot_set_stage(
+            "ACTIVE OBJECT..."
+        );
 
-    stage_started_ms =
-        esp_log_timestamp();
+        stage_started_ms =
+            esp_log_timestamp();
 
-    ESP_ERROR_CHECK(
-        object_recovery_run_active()
-    );
+        ESP_ERROR_CHECK(
+            object_recovery_run_active()
+        );
 
-    app_startup_log_elapsed(
-        "object_recovery_active",
-        stage_started_ms
-    );
+        app_startup_log_elapsed(
+            "object_recovery_active",
+            stage_started_ms
+        );
 
-    ui_boot_set_stage(
-        "OBJECT STORE..."
-    );
+        ui_boot_set_stage(
+            "OBJECT STORE..."
+        );
 
-    stage_started_ms =
-        esp_log_timestamp();
+        stage_started_ms =
+            esp_log_timestamp();
 
-    ESP_ERROR_CHECK(
-        object_store_init()
-    );
+        ESP_ERROR_CHECK(
+            object_store_init()
+        );
 
-    app_startup_log_elapsed(
-        "object_store_init",
-        stage_started_ms
-    );
+        app_startup_log_elapsed(
+            "object_store_init",
+            stage_started_ms
+        );
 
-    stage_started_ms =
-        esp_log_timestamp();
+        stage_started_ms =
+            esp_log_timestamp();
 
-    ESP_ERROR_CHECK(
-        seismic_recorder_init()
-    );
-    ESP_ERROR_CHECK(
-        seismic_recorder_set_recovery_request_callback(
-            app_startup_recorder_recovery_requested,
-            NULL
-        )
-    );
+        ESP_ERROR_CHECK(
+            seismic_recorder_init()
+        );
+        ESP_ERROR_CHECK(
+            seismic_recorder_set_recovery_request_callback(
+                app_startup_recorder_recovery_requested,
+                NULL
+            )
+        );
 
-    app_startup_log_elapsed(
-        "seismic_recorder_init",
-        stage_started_ms
-    );
+        app_startup_log_elapsed(
+            "seismic_recorder_init",
+            stage_started_ms
+        );
+    } else {
+        ESP_LOGW(TAG, "Skipping SD-backed active-object recovery, object store, and recorder startup");
+    }
 
     ui_boot_set_stage(
         "NETWORK + UI..."
@@ -534,6 +557,8 @@ static void app_startup_initialize_services(
 
 void app_startup_run(void)
 {
+    hw_inventory_init();
+
     const uint32_t startup_started_ms =
         esp_log_timestamp();
 
@@ -542,6 +567,8 @@ void app_startup_run(void)
     }
 
     app_startup_initialize_core();
+
+    app_storage_boot_ui_register();
 
     const uint32_t sd_started_ms =
         esp_log_timestamp();
@@ -553,11 +580,17 @@ void app_startup_run(void)
         sd_started_ms
     );
 
+    const app_startup_module_policy_t module_policy =
+        app_startup_snapshot_module_policy();
+    if (!module_policy.storage_allowed) {
+        ESP_LOGW(TAG, "Storage-dependent boot services will be skipped; UI and network startup continue");
+    }
+
     /*
-     * Prepare/seed the immutable React bundle immediately after the SD mount,
-     * before display_init() creates the esp_lcd device on shared SPI2. This
-     * guarantees that Web UI seed FAT/SDSPI traffic cannot overlap TFT DMA.
-     * Runtime HTTP delivery itself is flash-only.
+     * On the healthy-card path, prepare/seed the immutable React bundle
+     * before the shared boot display is initialized. A recovery prompt may
+     * initialize the display earlier so the user can see the failure and
+     * format progress. Runtime HTTP delivery itself is flash-only.
      */
     const uint32_t webui_started_ms =
         esp_log_timestamp();
@@ -576,10 +609,13 @@ void app_startup_run(void)
      * gate before service startup so neither interactive_ready nor
      * startup_total includes an archive-wide cache scan. Recovery completion
      * will reopen and explicitly queue the first archive-wide cache refresh. */
-    web_server_defer_status_cache_refresh();
+    if (module_policy.storage_allowed) {
+        web_server_defer_status_cache_refresh();
+    }
 
     app_startup_initialize_services(
-        startup_started_ms
+        startup_started_ms,
+        &module_policy
     );
 
     /*
@@ -627,36 +663,47 @@ void app_startup_run(void)
      * archive-wide SD scans from alternating TFT quiesce windows and making
      * keypad events stale.
      */
-    const esp_err_t recovery_status_err =
-        app_events_post_best_effort(
-            APP_EVENT_STORAGE_RECOVERY_STARTED,
-            0
-        );
-    if (recovery_status_err != ESP_OK) {
-        ESP_LOGW(
-            TAG,
-            "Background recovery UI start event dropped: %s",
-            esp_err_to_name(recovery_status_err)
-        );
-    }
+    if (module_policy.storage_allowed) {
+        const esp_err_t recovery_status_err =
+            app_events_post_best_effort(
+                APP_EVENT_STORAGE_RECOVERY_STARTED,
+                0
+            );
+        if (recovery_status_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "Background recovery UI start event dropped: %s",
+                esp_err_to_name(recovery_status_err)
+            );
+        }
 
-    const esp_err_t recovery_err =
-        object_recovery_start_background_with_callback(
-            app_startup_background_recovery_complete,
-            NULL
-        );
-    if (recovery_err != ESP_OK) {
-        ESP_LOGW(
-            TAG,
-            "Background object recovery unavailable: %s",
-            esp_err_to_name(recovery_err)
-        );
+        const esp_err_t recovery_err =
+            object_recovery_start_background_with_callback(
+                app_startup_background_recovery_complete,
+                NULL
+            );
+        if (recovery_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "Background object recovery unavailable: %s",
+                esp_err_to_name(recovery_err)
+            );
 
-        /* Do not leave the Web object/session cache permanently disabled when
-         * the optional recovery worker cannot be created. */
-        app_startup_background_recovery_complete(
-            recovery_err,
-            NULL
-        );
+            /* Do not leave the Web object/session cache permanently disabled when
+             * the optional recovery worker cannot be created. */
+            app_startup_background_recovery_complete(
+                recovery_err,
+                NULL
+            );
+        }
+    } else {
+        const esp_err_t refresh_err = web_server_enable_status_cache_refresh();
+        if (refresh_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "Web status cache refresh request failed in degraded storage mode: %s",
+                esp_err_to_name(refresh_err)
+            );
+        }
     }
 }

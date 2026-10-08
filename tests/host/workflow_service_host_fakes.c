@@ -79,6 +79,11 @@ esp_err_t object_store_get_calc_settings_json(const char *object_id, char **json
     return ESP_OK;
 }
 
+esp_err_t object_store_get_calc_settings_json_cached(const char *object_id, char **json_out)
+{
+    return object_store_get_calc_settings_json(object_id, json_out);
+}
+
 esp_err_t object_store_set_calc_settings_json(const char *object_id, const char *json)
 {
     assert(object_id != NULL && json != NULL);

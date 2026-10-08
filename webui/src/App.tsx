@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import './scan.css';
 
@@ -6,30 +6,84 @@ import {
   deleteObjectScanArtifact,
   fetchLocalizationRuns,
   fetchScanInfo,
+  isRequestCancellation,
+  deleteSessionRegistration,
   loadObjectScanArtifact,
   loadSessionRegistration,
   saveObjectScanArtifact,
+  saveSessionRegistration,
   saveSessionOccupancyArtifact,
   saveSessionPreviewArtifact,
+  retryPreemptedRead,
 } from './api/deviceApi';
 import type { LocalizationRunListing, LocalizationSessionGeometry } from './api/deviceApi';
 import type { DeviceStatus } from './domain/device';
-import { buildSessionOccupancyArtifact } from './xr/occupancySolverArtifact';
+import { buildSessionOccupancyArtifact, decodeOccupancySolverArtifact, type DecodedOccupancyArtifact } from './xr/occupancySolverArtifact';
 import { buildVoxelPreviewArtifact } from './xr/voxelPreview';
-import { decodeRegistrationArtifact, toOccupancyRegistration, type RegistrationArtifact } from './xr/fiducial/registrationArtifact';
+import { decodeRegistrationArtifact, encodeRegistrationArtifact, toOccupancyRegistration, type RegistrationArtifact } from './xr/fiducial/registrationArtifact';
+import { TAG_FINALIZE_WINDOW_MS } from './xr/fiducial/tagModeState';
+import {
+  registrationApplicability,
+  registrationBindingApplicability,
+  REGISTRATION_INAPPLICABLE_KEYS,
+  type RegistrationExpectation,
+} from './xr/registrationApplicability';
+import { bindRegistrationToScan, decideContinuationRegistration, type RegistrationAgreement } from './xr/registrationCompose';
 import { ScanPersistenceController, SCAN_STORAGE_BLOCKED_MESSAGE, scanPersistenceSessionId, type ScanPersistenceState } from './xr/scanPersistence';
 import { scannerStorageActionsDisabled } from './features/objects/measurementTransition';
 import type { ViewCommand, ViewPreset } from './components/SceneViewport';
 import { XrRuntimePanel, type ScanStartIntent } from './components/XrRuntimePanel';
+import {
+  resultViewportIdentityKey,
+  VIEWPORT_FAILURE_MAX_ATTEMPTS,
+  ViewportFailureBoundary,
+} from './components/ViewportFailureBoundary';
 import { clientDiagnostics } from './data/clientDiagnostics';
 import { countCoverageQualityBands } from './xr/coverageQuality';
 import {
   deviceComputeProfilePromise,
   type DeviceComputeProfile,
 } from './xr/deviceComputeProfile';
-import { decodeScanArtifact, encodeScanArtifact } from './xr/scanArtifact';
+import {
+  decodeScanArtifactWithIdentity,
+  SCAN_ANNOTATION_CAPACITY_ERROR,
+} from './xr/scanArtifact';
 import { buildSensorPlacementScene } from './xr/sensorPlacementScene';
-import { registerAndMergeScanContinuation } from './xr/scanContinuation';
+import {
+  CONTINUATION_TRANSIENT_BUDGET_BYTES,
+  type ScanContinuationPhase,
+  type RigidTransform,
+} from './xr/scanContinuation';
+import { ContinuationBudgetExceededError, ContinuationCancelledError, ContinuationClient } from './xr/continuationClient';
+import {
+  ScanEncodeClient,
+  ScanEncodeCancelledError,
+  SCAN_ENCODE_TRANSIENT_COPY_BUDGET_BYTES,
+  releaseScanEncodeResult,
+  type ScanEncodeResult,
+} from './xr/scanEncodeClient';
+import {
+  beginProvisionalScan,
+  captureAborted,
+  captureStarted,
+  authoritativeSnapshot,
+  continueAvailable,
+  confirmScanCommitted,
+  confirmScanNotCommitted,
+  emptyScanDurability,
+  localizationReady,
+  markScanUnknown,
+  markScanVerifying,
+  previousKeptProvable,
+  reconcileDurableScan,
+  resultControlsAvailable,
+  savedScanAvailable,
+  shouldShowScanningPresentation,
+  setScanDerivativesReady,
+  viewportProvenance,
+  viewportSnapshot,
+  type ScanDurabilityState,
+} from './xr/scanDurability';
 import {
   displayForScanMode,
   scanViewForMode,
@@ -51,6 +105,8 @@ type ScanStoragePhase =
   | 'loading'
   | 'none'
   | 'scanning'
+  | 'continuing'
+  | 'preparing'
   | 'saving'
   | 'saved'
   | 'loaded'
@@ -69,34 +125,43 @@ interface AppProps {
   status: DeviceStatus | null;
 }
 
-class ResultViewportErrorBoundary extends Component<
-  { children: ReactNode; formatFailure: (error: string) => string },
-  { message: string | null }
-> {
-  state: { message: string | null } = { message: null };
+/** Build the React identity for the result viewport from the durable scan ID or provisional generation. */
+export function resultViewportKey(
+  scan: { objectId: string | null; durableScanId: string | null },
+  provisionalGeneration: number,
+): string {
+  return `${scan.objectId ?? 'none'}:${resultViewportIdentityKey(scan.durableScanId, provisionalGeneration)}`;
+}
 
-  static getDerivedStateFromError(error: unknown): { message: string } {
-    return { message: error instanceof Error ? error.message : String(error) };
-  }
+/** Wait for the final tag result slightly longer than the panel own bounded window (never delays the scan upload). */
+const TAG_RESULT_WAIT_MS = TAG_FINALIZE_WINDOW_MS + 500;
 
-  componentDidCatch(error: unknown, info: ErrorInfo): void {
-    clientDiagnostics.warn('SCAN_RESULT_RENDERER_LOAD_FAILED', {
-      error: error instanceof Error ? error.message : String(error),
-      componentStack: info.componentStack ?? '',
-    });
-    void clientDiagnostics.flush();
-  }
+type RegistrationStageState = 'idle' | 'pending' | 'saving' | 'saved' | 'failed';
 
-  render(): ReactNode {
-    if (this.state.message !== null) {
-      return (
-        <div className="viewport-shell scan-viewport" role="alert">
-          {this.props.formatFailure(this.state.message)}
-        </div>
-      );
-    }
-    return this.props.children;
-  }
+/**
+ * MAX-403/405/416: registration of one accepted scan candidate. It is resolved once (memoized) after
+ * the bounded tag window and then feeds the derivative builders and the standalone registration
+ * write, so occupancy, preview and registration-v1.json always agree about the same scan identity.
+ */
+interface ScanRegistrationStage {
+  objectId: string;
+  sessionId: string;
+  intent: ScanStartIntent;
+  scanId: string;
+  base: RegistrationArtifact | null;
+  extensionToBase: RigidTransform | null;
+  tagFinal: boolean;
+  tagResult: RegistrationArtifact | null;
+  windowClosed: boolean;
+  waiters: Array<() => void>;
+  resolution: Promise<{ artifact: RegistrationArtifact | null; conflict: RegistrationAgreement | null }> | null;
+  persistStarted: boolean;
+}
+
+function geometryGeneration(geometry: LocalizationSessionGeometry | null): number | null {
+  if (geometry === null) return null;
+  const value = Math.max(0, ...geometry.pods.filter((pod) => pod.computed).map((pod) => pod.computed_at_ms ?? 0));
+  return value > 0 ? value : null;
 }
 
 function formatMeters(value: number, locale: I18nLocale): string {
@@ -130,8 +195,8 @@ function computeProfileTitle(profile: DeviceComputeProfile, locale: I18nLocale):
 function scanStorageLabel(phase: ScanStoragePhase, objectId: string | null, locale: I18nLocale): string {
   if (phase === 'unbound') return translate(locale, 'scan.storage.unbound');
   const keys = {
-    loading: 'scan.storage.loading', none: 'scan.storage.none', scanning: 'scan.storage.scanning',
-    saving: 'scan.storage.saving', saved: 'scan.storage.saved', loaded: 'scan.storage.loaded',
+    loading: 'scan.storage.loading', none: 'scan.storage.none', scanning: 'scan.storage.scanning', continuing: 'scan.storage.continuing',
+    preparing: 'scan.storage.preparing', saving: 'scan.storage.saving', saved: 'scan.storage.saved', loaded: 'scan.storage.loaded',
     deleting: 'scan.storage.deleting', error: 'scan.storage.error',
   } as const;
   return translate(locale, keys[phase], {
@@ -140,19 +205,19 @@ function scanStorageLabel(phase: ScanStoragePhase, objectId: string | null, loca
 }
 
 function occupancyStatusLabel(persistence: ScanPersistenceState | null, locale: I18nLocale): string {
-  if (persistence?.scan !== 'saved') return translate(locale, 'scan.occupancy.checking');
+  if (persistence?.scan !== 'saved' && persistence?.scan !== 'derived_stale') return translate(locale, 'scan.occupancy.checking');
   const keys = {
     pending: 'scan.occupancy.pending', saving: 'scan.occupancy.saving', ready: 'scan.occupancy.ready',
-    failed: 'scan.occupancy.failed', unavailable: 'scan.occupancy.unavailable',
+    failed: 'scan.occupancy.failed', stale: 'scan.occupancy.stale', unavailable: 'scan.occupancy.unavailable',
   } as const;
   return translate(locale, keys[persistence.occupancy]);
 }
 
 function previewStatusLabel(persistence: ScanPersistenceState | null, locale: I18nLocale): string {
-  if (persistence?.scan !== 'saved') return translate(locale, 'scan.preview.checking');
+  if (persistence?.scan !== 'saved' && persistence?.scan !== 'derived_stale') return translate(locale, 'scan.preview.checking');
   const keys = {
     pending: 'scan.preview.pending', saving: 'scan.preview.saving', ready: 'scan.preview.ready',
-    failed: 'scan.preview.failed', unavailable: 'scan.preview.unavailable',
+    failed: 'scan.preview.failed', stale: 'scan.preview.stale', unavailable: 'scan.preview.unavailable',
   } as const;
   return translate(locale, keys[persistence.preview]);
 }
@@ -163,6 +228,9 @@ function persistedScanStorageLabel(
   persistence: ScanPersistenceState | null,
   locale: I18nLocale,
 ): string {
+  if (phase === 'preparing') return scanStorageLabel(phase, objectId, locale);
+  if (persistence?.scan === 'verifying') return translate(locale, 'scan.storage.verifying');
+  if (persistence?.scan === 'unknown' || persistence?.scan === 'derived_stale') return translate(locale, 'scan.storage.unknown');
   const scanLabel = scanStorageLabel(phase, objectId, locale);
   if (phase !== 'saved' && phase !== 'loaded') return scanLabel;
   return `${scanLabel} | ${occupancyStatusLabel(persistence, locale)}`;
@@ -176,11 +244,22 @@ export default function App({ objectId, sessionId, status }: AppProps) {
   const [xrSessionActive, setXrSessionActive] = useState(false);
   const [xrCapabilities, setXrCapabilities] = useState<WebXrCapabilities | null>(null);
   const [computeProfile, setComputeProfile] = useState<DeviceComputeProfile | null>(null);
-  const [scanSnapshot, setScanSnapshot] = useState<ScanPointCloudSnapshot | null>(null);
+  const [scanDurability, setScanDurability] = useState<ScanDurabilityState<ScanPointCloudSnapshot>>(() => emptyScanDurability());
+  const scanDurabilityRef = useRef(scanDurability);
+  const activeScanCandidate = useRef<{ snapshot: ScanPointCloudSnapshot; id: string } | null>(null);
+  const updateScanDurability = useCallback((update: (current: ScanDurabilityState<ScanPointCloudSnapshot>) => ScanDurabilityState<ScanPointCloudSnapshot>): void => {
+    const next = update(scanDurabilityRef.current);
+    scanDurabilityRef.current = next;
+    setScanDurability(next);
+  }, []);
+  const scanSnapshot = viewportSnapshot(scanDurability);
+  const scanAuthority = authoritativeSnapshot(scanDurability);
+  const scanViewportProvenance = viewportProvenance(scanDurability);
   const [scanStoragePhase, setScanStoragePhase] = useState<ScanStoragePhase>(
     objectId === null || sessionId === null ? 'unbound' : 'loading',
   );
   const [scanStorageError, setScanStorageError] = useState<unknown | null>(null);
+  const [continuationPhase, setContinuationPhase] = useState<ScanContinuationPhase | null>(null);
   const [scanPersistence, setScanPersistence] = useState<ScanPersistenceState | null>(null);
   const [localizationGeometry, setLocalizationGeometry] = useState<LocalizationSessionGeometry | null>(null);
   const [localizationRunListing, setLocalizationRunListing] = useState<LocalizationRunListing | null>(null);
@@ -192,26 +271,80 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     sequence: 0,
   });
   const storageGeneration = useRef(0);
+  const scanEncodeOwner = useRef({ objectId, sessionId });
+  scanEncodeOwner.current = { objectId, sessionId };
+  const scanEncodeClient = useRef<ScanEncodeClient | null>(null);
+  const scanEncodeOwnerGeneration = useRef(0);
+  const scanEncodePreviousPhase = useRef<ScanStoragePhase | null>(null);
   const scanLoadSession = useRef<string | null>(null);
   const sessionEvidenceLoad = useRef<string | null>(null);
+  /* Raw mirror of registrationArtifact. Builders and viewers never use it without the applicability predicate. */
   const registrationForSession = useRef<{ objectId: string; sessionId: string; artifact: RegistrationArtifact } | null>(null);
+  const geometryGenerationRef = useRef<number | null>(null);
+  const evidenceReady = useRef<Promise<unknown>>(Promise.resolve());
+  const registrationStage = useRef<ScanRegistrationStage | null>(null);
+  const provisionalTag = useRef<{ artifact: RegistrationArtifact | null; final: boolean }>({ artifact: null, final: false });
+  const rejectedContinuation = useRef(false);
+  const freshClearedRegistration = useRef(false);
+  const continuationBaseRegistration = useRef<RegistrationArtifact | null>(null);
+  const persistStageRef = useRef<(stage: ScanRegistrationStage) => void>(() => undefined);
+  const [registrationStageView, setRegistrationStageView] = useState<RegistrationStageState>('idle');
+  const [registrationNotice, setRegistrationNotice] = useState<{ translationM: number; yawDeg: number } | null>(null);
+  const [scanIntentState, setScanIntentState] = useState<ScanStartIntent>('fresh');
+  const applyGeometry = useCallback((geometry: LocalizationSessionGeometry | null): void => {
+    geometryGenerationRef.current = geometryGeneration(geometry);
+    setLocalizationGeometry(geometry);
+  }, []);
+  const publishRegistration = useCallback((owner: { objectId: string; sessionId: string } | null, artifact: RegistrationArtifact | null): void => {
+    registrationForSession.current = owner === null || artifact === null ? null : { objectId: owner.objectId, sessionId: owner.sessionId, artifact };
+    setRegistrationArtifact(owner === null ? null : artifact);
+  }, []);
   const onRegistrationChange = useCallback((artifact: RegistrationArtifact | null): void => {
-    if (artifact === null || objectId === null || sessionId === null) {
-      registrationForSession.current = null;
-      setRegistrationArtifact(null);
-      return;
-    }
-    registrationForSession.current = { objectId, sessionId, artifact };
-    setRegistrationArtifact(artifact);
-  }, [objectId, sessionId]);
+    publishRegistration(objectId === null || sessionId === null ? null : { objectId, sessionId }, artifact);
+  }, [objectId, sessionId, publishRegistration]);
   useEffect(() => {
     registrationForSession.current = null;
-    setLocalizationGeometry(null);
+    registrationStage.current = null;
+    geometryGenerationRef.current = null;
+    applyGeometry(null);
     setLocalizationRunListing(null);
     setRegistrationArtifact(null);
-  }, [objectId, sessionId]);
+    setRegistrationStageView('idle');
+    setRegistrationNotice(null);
+  }, [objectId, sessionId, applyGeometry]);
+  /* The registration to embed in a derivative of scanId, or null: same predicate as every other consumer. */
+  const registrationEmbedFor = (scanId: string): ReturnType<typeof toOccupancyRegistration> => {
+    const current = registrationForSession.current;
+    if (current === null || current.objectId !== objectId || current.sessionId !== sessionId) return null;
+    return toOccupancyRegistration(current.artifact, { geometryComputedAtMs: geometryGenerationRef.current, scanFrameId: scanId });
+  };
   const scanIntent = useRef<ScanStartIntent>('fresh');
   const continuationBase = useRef<ScanPointCloudSnapshot | null>(null);
+  const continuationClient = useRef<ContinuationClient | null>(null);
+  const continuationOwnerGeneration = useRef(0);
+  const continuationPreviousPhase = useRef<ScanStoragePhase | null>(null);
+  const continuationActive = useRef(false);
+  const cancelScanEncode = useCallback((reason: string): void => {
+    scanEncodeOwnerGeneration.current += 1;
+    const client = scanEncodeClient.current;
+    const wasBusy = client?.busy ?? false;
+    client?.cancel(reason);
+    if (wasBusy) {
+      setScanStoragePhase(scanEncodePreviousPhase.current ?? 'loaded');
+      scanEncodePreviousPhase.current = null;
+    }
+  }, []);
+  const cancelContinuation = useCallback((reason: string, notify = false): void => {
+    continuationOwnerGeneration.current += 1;
+    const active = continuationActive.current;
+    continuationClient.current?.cancel(reason);
+    if (!active) return;
+    continuationActive.current = false;
+    setScanStoragePhase(continuationPreviousPhase.current ?? 'loaded');
+    continuationPreviousPhase.current = null;
+    setContinuationPhase(null);
+    if (notify) setScanStorageError(TranslatedError.fromKey('scan.continuation.cancelled'));
+  }, []);
   const scanPersistenceController = useRef<ScanPersistenceController | null>(null);
   if (scanPersistenceController.current === null) {
     scanPersistenceController.current = new ScanPersistenceController({
@@ -219,9 +352,157 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       saveOccupancy: saveSessionOccupancyArtifact,
       savePreview: saveSessionPreviewArtifact,
       fetchInfo: fetchScanInfo,
-    }, setScanPersistence);
+    }, (state) => {
+      setScanPersistence(state);
+      const candidate = activeScanCandidate.current;
+      if (state === null) {
+        activeScanCandidate.current = null;
+        return;
+      }
+      if (candidate !== null && state.scanId === candidate.id) {
+        if (state.scan === 'saving') updateScanDurability((current) => beginProvisionalScan(current, candidate.snapshot, candidate.id));
+        else if (state.scan === 'verifying') updateScanDurability(markScanVerifying);
+        else if (state.scan === 'unknown' || state.scan === 'derived_stale') updateScanDurability(markScanUnknown);
+        else if (state.scan === 'saved') {
+          setScanStoragePhase('saved');
+          updateScanDurability((current) => setScanDerivativesReady(confirmScanCommitted(current, candidate.id), state.occupancy === 'ready'));
+          /* Registration is a separate stage that starts once the scan is committed and never blocks it. */
+          const stage = registrationStage.current;
+          if (stage !== null && stage.scanId === candidate.id) persistStageRef.current(stage);
+        } else if (state.scan === 'error' && state.outcome === 'confirmed_not_committed') {
+          updateScanDurability((current) => confirmScanNotCommitted(current, state.previousKept));
+        }
+      } else if (state.scan === 'saved' && state.scanId !== null && scanDurabilityRef.current.durableId === state.scanId) {
+        updateScanDurability((current) => setScanDerivativesReady(current, state.occupancy === 'ready'));
+      }
+    });
   }
   const persistenceController = scanPersistenceController.current;
+
+  useEffect(() => () => {
+    scanEncodeOwnerGeneration.current += 1;
+    scanEncodeClient.current?.dispose();
+    scanEncodeClient.current = null;
+    scanEncodePreviousPhase.current = null;
+    continuationOwnerGeneration.current += 1;
+    continuationClient.current?.dispose();
+    continuationClient.current = null;
+    continuationActive.current = false;
+  }, []);
+
+  const waitForTagResult = (stage: ScanRegistrationStage): Promise<void> => {
+    if (stage.tagFinal) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const timer = setTimeout(() => finish(), TAG_RESULT_WAIT_MS);
+      const finish = (): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      stage.waiters.push(finish);
+    });
+  };
+
+  /* Resolved exactly once per stage: occupancy, preview and the standalone write all use this one answer. */
+  const resolveStageRegistration = (stage: ScanRegistrationStage): NonNullable<ScanRegistrationStage['resolution']> => {
+    if (stage.resolution === null) {
+      stage.resolution = (async () => {
+        await waitForTagResult(stage);
+        stage.windowClosed = true;
+        const tag = stage.tagFinal ? stage.tagResult : null;
+        if (stage.intent === 'fresh') {
+          if (tag === null) return { artifact: null, conflict: null };
+          const bound = bindRegistrationToScan(tag, stage.scanId);
+          const binding = registrationBindingApplicability(bound, { geometryComputedAtMs: geometryGenerationRef.current, scanFrameId: stage.scanId });
+          if (!binding.ok) {
+            clientDiagnostics.warn('SCAN_REGISTRATION_NOT_APPLICABLE', { objectId: stage.objectId, sessionId: stage.sessionId, reason: binding.reason });
+            return { artifact: null, conflict: null };
+          }
+          return { artifact: bound, conflict: null };
+        }
+        if (stage.extensionToBase === null) return { artifact: null, conflict: null };
+        const decision = decideContinuationRegistration({
+          base: stage.base, artifactB: tag, extensionToBase: stage.extensionToBase, mergedScanFrameId: stage.scanId,
+        });
+        if (decision.kind === 'none') return { artifact: null, conflict: null };
+        return { artifact: decision.artifact, conflict: decision.kind === 'conflict' ? decision.agreement : null };
+      })();
+    }
+    return stage.resolution;
+  };
+
+  const persistStageRegistration = (stage: ScanRegistrationStage): void => {
+    if (stage.persistStarted) return;
+    stage.persistStarted = true;
+    const owns = (): boolean => registrationStage.current === stage;
+    void (async () => {
+      const resolved = await resolveStageRegistration(stage);
+      if (!owns()) return;
+      if (resolved.artifact === null) {
+        if (stage.intent === 'fresh') {
+          /* The replaced scan frame no longer has a registration: remove the old standalone file. */
+          try { await deleteSessionRegistration(stage.objectId, stage.sessionId); }
+          catch (reason) {
+            clientDiagnostics.warn('SCAN_REGISTRATION_DELETE_FAILED', { objectId: stage.objectId, sessionId: stage.sessionId, error: reason instanceof Error ? reason.message : String(reason) });
+          }
+        }
+        if (owns()) setRegistrationStageView('idle');
+        return;
+      }
+      if (resolved.conflict !== null) {
+        setRegistrationNotice({ translationM: resolved.conflict.translationDeltaM, yawDeg: resolved.conflict.yawDeltaDeg });
+        clientDiagnostics.warn('SCAN_REGISTRATION_CONFLICT', { objectId: stage.objectId, translationM: resolved.conflict.translationDeltaM, yawDeg: resolved.conflict.yawDeltaDeg });
+      }
+      setRegistrationStageView('saving');
+      try {
+        const result = await saveSessionRegistration(stage.objectId, stage.sessionId, encodeRegistrationArtifact(resolved.artifact));
+        if (!owns()) return;
+        if (result?.ok !== true) throw new Error(result?.error ?? 'registration_rejected');
+        publishRegistration({ objectId: stage.objectId, sessionId: stage.sessionId }, resolved.artifact);
+        setRegistrationStageView('saved');
+      } catch (reason) {
+        if (!owns()) return;
+        setRegistrationStageView('failed');
+        clientDiagnostics.warn('SCAN_REGISTRATION_SAVE_FAILED', { objectId: stage.objectId, sessionId: stage.sessionId, error: reason instanceof Error ? reason.message : String(reason) });
+      }
+      void clientDiagnostics.flush();
+    })();
+  };
+  persistStageRef.current = persistStageRegistration;
+
+  const onTagRegistrationResult = useCallback((artifact: RegistrationArtifact | null, final: boolean): void => {
+    provisionalTag.current = { artifact, final };
+    if (!final) return;
+    const stage = registrationStage.current;
+    if (stage === null) {
+      if (rejectedContinuation.current) {
+        clientDiagnostics.info('SCAN_CONTINUATION_REGISTRATION_DISCARDED', {
+          valid: artifact?.valid ?? null, reason: artifact?.reason ?? null, residualM: artifact?.residual_rms_m ?? null,
+        });
+      }
+      return;
+    }
+    if (stage.windowClosed || stage.tagFinal) {
+      clientDiagnostics.warn('SCAN_REGISTRATION_LATE_RESULT_DISCARDED', { objectId: stage.objectId, scanId: stage.scanId });
+      return;
+    }
+    stage.tagResult = artifact;
+    stage.tagFinal = true;
+    for (const wake of stage.waiters.splice(0)) wake();
+  }, []);
+
+  const reloadSessionRegistration = useCallback((): void => {
+    if (objectId === null || sessionId === null) return;
+    const generation = storageGeneration.current;
+    void loadSessionRegistration(objectId, sessionId).then((json) => {
+      if (generation !== storageGeneration.current) return;
+      publishRegistration({ objectId, sessionId }, json === null ? null : decodeRegistrationArtifact(json));
+    }).catch((reason: unknown) => {
+      clientDiagnostics.warn('SENSOR_REGISTRATION_RESTORE_FAILED', { objectId, sessionId, error: reason instanceof Error ? reason.message : String(reason) });
+    });
+  }, [objectId, sessionId, publishRegistration]);
 
   useEffect(() => {
     let cancelled = false;
@@ -281,26 +562,44 @@ export default function App({ objectId, sessionId, status }: AppProps) {
 
   /* Restore the object-owned scan every time the scanner feature is opened. */
   useEffect(() => {
+    cancelScanEncode('Scanner owner changed.');
     storageGeneration.current += 1;
     persistenceController.reset();
+    updateScanDurability(() => emptyScanDurability());
+    setContinuationPhase(null);
     scanLoadSession.current = null;
     sessionEvidenceLoad.current = null;
     scanIntent.current = 'fresh';
     continuationBase.current = null;
-    setScanSnapshot(null);
+    continuationBaseRegistration.current = null;
+    registrationStage.current = null;
+    rejectedContinuation.current = false;
+    provisionalTag.current = { artifact: null, final: false };
     setScanStorageError(null);
-    setLocalizationGeometry(null);
+    applyGeometry(null);
     setLocalizationRunListing(null);
-    setRegistrationArtifact(null);
+    publishRegistration(null, null);
+    setRegistrationStageView('idle');
+    setRegistrationNotice(null);
+
+    const abandonScannerOwner = (): void => {
+      storageGeneration.current += 1;
+      cancelScanEncode('Scanner owner changed.');
+      continuationOwnerGeneration.current += 1;
+      continuationClient.current?.cancel('Scanner owner changed.');
+      continuationActive.current = false;
+      continuationPreviousPhase.current = null;
+      persistenceController.abandon();
+    };
 
     if (objectId === null || sessionId === null) {
       setScanStoragePhase('unbound');
-      return undefined;
+      return abandonScannerOwner;
     }
 
     setScanStoragePhase('loading');
-    return () => { storageGeneration.current += 1; };
-  }, [objectId, sessionId, persistenceController]);
+    return abandonScannerOwner;
+  }, [objectId, sessionId, persistenceController, updateScanDurability, applyGeometry, publishRegistration, cancelContinuation, cancelScanEncode]);
 
   useEffect(() => {
     if (objectId === null || sessionId === null || storageActionsDisabled) return undefined;
@@ -311,8 +610,8 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     const generation = storageGeneration.current;
     let cancelled = false;
     if (shouldLoadEvidence) {
-      void Promise.all([
-        fetchLocalizationRuns(objectId, sessionId).then(
+      evidenceReady.current = Promise.all([
+        retryPreemptedRead(() => fetchLocalizationRuns(objectId, sessionId)).then(
           (listing) => ({ ok: true as const, listing }),
           (reason: unknown) => ({ ok: false as const, reason }),
         ),
@@ -324,25 +623,26 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         if (cancelled || generation !== storageGeneration.current) return;
         sessionEvidenceLoad.current = key;
         if (geometryResult.ok) {
-          setLocalizationGeometry(geometryResult.listing.geometry);
+          applyGeometry(geometryResult.listing.geometry);
           setLocalizationRunListing(geometryResult.listing);
         }
-        else {
+        else if (!isRequestCancellation(geometryResult.reason)) {
           const message = geometryResult.reason instanceof Error ? geometryResult.reason.message : String(geometryResult.reason);
-          setLocalizationGeometry(null);
+          applyGeometry(null);
           setLocalizationRunListing(null);
           clientDiagnostics.warn('SENSOR_GEOMETRY_RESTORE_FAILED', { objectId, sessionId, error: message });
         }
         if (!registrationResult.ok) {
           const message = registrationResult.reason instanceof Error ? registrationResult.reason.message : String(registrationResult.reason);
-          setRegistrationArtifact(null);
+          publishRegistration(null, null);
           clientDiagnostics.warn('SENSOR_REGISTRATION_RESTORE_FAILED', { objectId, sessionId, error: message });
-        } else if (registrationResult.json === null) setRegistrationArtifact(null);
+        } else if (registrationResult.json === null) publishRegistration(null, null);
         else {
-          try { setRegistrationArtifact(decodeRegistrationArtifact(registrationResult.json)); }
+          /* Restored into the raw mirror too; every consumer still applies the predicate against the loaded scan. */
+          try { publishRegistration({ objectId, sessionId }, decodeRegistrationArtifact(registrationResult.json)); }
           catch (reason) {
             const message = reason instanceof Error ? reason.message : String(reason);
-            setRegistrationArtifact(null);
+            publishRegistration(null, null);
             clientDiagnostics.warn('SENSOR_REGISTRATION_RESTORE_FAILED', { objectId, sessionId, error: message });
           }
         }
@@ -362,25 +662,66 @@ export default function App({ objectId, sessionId, status }: AppProps) {
           return;
         }
 
-        void persistenceController.reconcile(objectId, sessionId, artifact);
-
         try {
-          const restored = decodeScanArtifact(artifact);
+          const decoded = decodeScanArtifactWithIdentity(artifact);
+          const restored = decoded.snapshot;
+          const loadedIdentity = decoded.identity;
           if (restored.pointCount <= 0) throw new Error('scan.error.no_stable_surface');
-          scanLoadSession.current = key;
-          setScanSnapshot(restored);
-          selectMode('quality');
-          setScanStoragePhase('loaded');
-          clientDiagnostics.info('SCAN_RESULT_RESTORED', {
+          const loadedScanId = loadedIdentity.frameId;
+          const restoreSummary = Object.freeze({
             objectId,
             sessionId,
-            bytes: artifact.byteLength,
+            bytes: loadedIdentity.byteLength,
+            scanId: loadedIdentity.frameId,
+            scanCrc32: loadedIdentity.crc32,
             stablePoints: restored.pointCount,
             tentativePoints: restored.tentativePointCount,
             manualPoints: restored.manualControlPoints.length,
             operatorEdges: restored.operatorEdges.length,
           });
-          void clientDiagnostics.flush();
+          clientDiagnostics.info('SCAN_RESULT_RESTORE_VALIDATED', restoreSummary);
+          /* Defer the best-effort flush until reconciliation commits; diagnostics never gate restore authority. */
+          let decodedOccupancy: DecodedOccupancyArtifact | null = null;
+          /* The restored registration is embedded only if it is bound to exactly this scan and geometry. */
+          const buildOccupancy = async () => {
+            await evidenceReady.current;
+            const bytes = buildSessionOccupancyArtifact(restored, loadedIdentity, Date.now(), registrationEmbedFor(loadedScanId));
+            decodedOccupancy = decodeOccupancySolverArtifact(bytes);
+            return bytes;
+          };
+          const buildPreview = async (occupancyArtifact: Uint8Array | null) => {
+            await evidenceReady.current;
+            if (occupancyArtifact !== null && decodedOccupancy === null) {
+              decodedOccupancy = decodeOccupancySolverArtifact(occupancyArtifact);
+            }
+            return buildVoxelPreviewArtifact(restored, loadedIdentity, {
+              occupancyArtifact,
+              decodedOccupancy,
+              identity: loadedIdentity,
+              registration: registrationEmbedFor(loadedScanId),
+            });
+          };
+          void persistenceController.reconcile(objectId, sessionId, artifact, buildOccupancy, buildPreview, loadedScanId, loadedIdentity).then((reconciled) => {
+            if (cancelled || generation !== storageGeneration.current) return;
+            scanLoadSession.current = key;
+            if (reconciled?.scan === 'saved' && reconciled.scanId === loadedScanId) {
+              updateScanDurability((current) => reconcileDurableScan(current, restored, loadedScanId, reconciled.occupancy === 'ready'));
+            } else {
+              updateScanDurability((current) => markScanUnknown(beginProvisionalScan(emptyScanDurability(), restored, loadedScanId)));
+            }
+            selectMode('quality');
+            setScanStoragePhase('loaded');
+            clientDiagnostics.info('SCAN_RESULT_RESTORED', {
+              objectId,
+              sessionId,
+              bytes: restoreSummary.bytes,
+              stablePoints: restored.pointCount,
+              tentativePoints: restored.tentativePointCount,
+              manualPoints: restored.manualControlPoints.length,
+              operatorEdges: restored.operatorEdges.length,
+            });
+            void clientDiagnostics.flush();
+          });
         }
         catch (reason) {
           scanLoadSession.current = key;
@@ -406,59 +747,100 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     );
 
     return () => { cancelled = true; };
-  }, [objectId, sessionId, persistenceController, selectMode, storageActionsDisabled]);
+  }, [objectId, sessionId, persistenceController, selectMode, storageActionsDisabled, updateScanDurability, applyGeometry, publishRegistration]);
 
   const handleScanIntent = useCallback((intent: ScanStartIntent): boolean => {
+    cancelScanEncode('A newer scanner intent was requested.');
+    cancelContinuation('A newer scanner intent was requested.');
     setScanStorageError(null);
     if (intent === 'continue') {
-      const durable = scanStoragePhase === 'saved' || scanStoragePhase === 'loaded';
-      if (!durable || scanSnapshot === null || scanSnapshot.pointCount <= 0) {
+      const base = authoritativeSnapshot(scanDurability);
+      if (!continueAvailable(scanDurability) || base === null || base.pointCount <= 0) {
         setScanStorageError(TranslatedError.fromKey('scan.error.continue_unavailable'));
         return false;
       }
-      continuationBase.current = scanSnapshot;
+      continuationBase.current = base;
       scanIntent.current = 'continue';
+      setScanIntentState('continue');
+      /* Keep the base registration only if it is applicable to the durable base scan right now. */
+      const baseRegistration = registrationForSession.current;
+      continuationBaseRegistration.current = baseRegistration !== null && baseRegistration.objectId === objectId && baseRegistration.sessionId === sessionId &&
+        registrationApplicability(baseRegistration.artifact, { geometryComputedAtMs: geometryGenerationRef.current, scanFrameId: scanDurability.durableId }).ok
+        ? baseRegistration.artifact
+        : null;
       clientDiagnostics.info('SCAN_CONTINUATION_REQUEST', {
         objectId,
-        stablePoints: scanSnapshot.pointCount,
-        freeVoxels: scanSnapshot.knownFreeVoxelCount,
-        unknownVoxels: scanSnapshot.unknownCandidateVoxelCount,
+        stablePoints: base.pointCount,
+        freeVoxels: base.knownFreeVoxelCount,
+        unknownVoxels: base.unknownCandidateVoxelCount,
       });
       void clientDiagnostics.flush();
       return true;
     }
 
     scanIntent.current = 'fresh';
+    setScanIntentState('fresh');
     continuationBase.current = null;
+    /* MAX-405: the previous registration belongs to the frame being replaced; drop it from memory now. */
+    continuationBaseRegistration.current = null;
+    registrationStage.current = null;
+    freshClearedRegistration.current = true;
+    publishRegistration(null, null);
+    setRegistrationNotice(null);
+    setRegistrationStageView('idle');
     clientDiagnostics.info('SCAN_REPLACEMENT_REQUEST', {
       objectId,
-      previousSavedScanKeptUntilCommit: scanStoragePhase === 'saved' || scanStoragePhase === 'loaded',
+      previousSavedScanKeptUntilCommit: savedScanAvailable(scanDurability),
     });
     void clientDiagnostics.flush();
     return true;
-  }, [objectId, scanSnapshot, scanStoragePhase]);
+  }, [objectId, sessionId, scanDurability, publishRegistration, cancelContinuation, cancelScanEncode]);
+
+  const handleSessionActiveChange = useCallback((active: boolean): void => {
+    setXrSessionActive(active);
+    if (!active) {
+      cancelScanEncode('Scanner session ended.');
+      cancelContinuation('Scanner session ended.', true);
+    }
+    if (!active && scanDurabilityRef.current.captureActive) {
+      const stateAtSessionEnd = scanDurabilityRef.current;
+      updateScanDurability((current) => captureAborted(current));
+      if (stateAtSessionEnd.phase === 'none') setScanStoragePhase(objectId === null ? 'unbound' : 'none');
+      if (freshClearedRegistration.current) {
+        /* Finish hands a scan over in the same tick; if none arrived the Fresh capture was aborted and the old registration still stands. */
+        setTimeout(() => {
+          if (!freshClearedRegistration.current) return;
+          freshClearedRegistration.current = false;
+          reloadSessionRegistration();
+        }, 0);
+      }
+    }
+  }, [objectId, updateScanDurability, reloadSessionRegistration, cancelContinuation, cancelScanEncode]);
 
   const handleScanReady = useCallback((incoming: ScanPointCloudSnapshot | null): void => {
     setScanStorageError(null);
 
     if (incoming === null) {
       /*
-       * Starting a continuation must not make the already durable result vanish
-       * from parent state. WebXR uses a fresh local frame; the saved base remains
-       * authoritative until the extension is successfully registered and saved.
+       * The null callback marks XR startup. Keep the current durable scan and
+       * its storage presentation intact until a replacement candidate exists.
        */
-      if (scanIntent.current === 'continue' && continuationBase.current !== null) {
-        setScanSnapshot(continuationBase.current);
+      const current = scanDurabilityRef.current;
+      cancelScanEncode('A new scanner generation started.');
+      cancelContinuation('A new scanner generation started.');
+      provisionalTag.current = { artifact: null, final: false };
+      rejectedContinuation.current = false;
+      registrationStage.current = null;
+      updateScanDurability((state) => captureStarted(state, scanIntent.current));
+      if (shouldShowScanningPresentation(current)) {
+        setScanStoragePhase(objectId === null ? 'unbound' : 'scanning');
       }
-      else {
-        setScanSnapshot(null);
-      }
-      setScanStoragePhase(objectId === null ? 'unbound' : 'scanning');
       return;
     }
 
-    let snapshot = incoming;
-    if (scanIntent.current === 'continue') {
+    freshClearedRegistration.current = false;
+    const intentAtFinish = scanIntent.current;
+    if (intentAtFinish === 'continue') {
       const base = continuationBase.current;
       if (base === null) {
         setScanStorageError(TranslatedError.fromKey('scan.error.continue_base_missing'));
@@ -468,36 +850,82 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         return;
       }
 
-      const merged = registerAndMergeScanContinuation(base, incoming);
-      if (!merged.ok) {
-        setScanSnapshot(base);
-        setScanStoragePhase('loaded');
-        setScanStorageError(TranslatedError.fromKey('scan.error.continue_not_saved', { reason: merged.reason }));
-        clientDiagnostics.warn('SCAN_CONTINUATION_REJECTED', {
+      const previousPhase = scanStoragePhase;
+      const generation = ++continuationOwnerGeneration.current;
+      continuationPreviousPhase.current = previousPhase;
+      continuationActive.current = true;
+      setContinuationPhase('registration');
+      setScanStoragePhase('continuing');
+      const client = continuationClient.current ?? (continuationClient.current = new ContinuationClient());
+      void client.continue(base, incoming, {
+        generation,
+        budgetLimitBytes: computeProfile === null
+          ? CONTINUATION_TRANSIENT_BUDGET_BYTES
+          : Math.min(CONTINUATION_TRANSIENT_BUDGET_BYTES, computeProfile.postScanMemoryBudgetBytes),
+        onPhase: (phase) => {
+          if (generation === continuationOwnerGeneration.current) setContinuationPhase(phase);
+        },
+      }).then((merged) => {
+        if (generation !== continuationOwnerGeneration.current) return;
+        continuationActive.current = false;
+        setContinuationPhase(null);
+        continuationPreviousPhase.current = null;
+        if (!merged.ok) {
+          setScanStoragePhase(previousPhase);
+          setScanStorageError(TranslatedError.fromKey('scan.error.continue_not_saved', { reason: merged.reason }));
+          clientDiagnostics.warn('SCAN_CONTINUATION_REJECTED', {
+            objectId,
+            reason: merged.reason,
+            diagnostics: merged.diagnostics,
+          });
+          scanIntent.current = 'fresh';
+          /* Keep the durable base and its registration available for another Continue attempt. */
+          rejectedContinuation.current = true;
+          void clientDiagnostics.flush();
+          return;
+        }
+        clientDiagnostics.info('SCAN_CONTINUATION_REGISTERED', {
           objectId,
-          reason: merged.reason,
-          diagnostics: merged.diagnostics,
+          inliers: merged.diagnostics.inliers,
+          overlapPercent: Math.round(merged.diagnostics.overlapRatio * 100),
+          rmsMm: Math.round(merged.diagnostics.rmsMeters * 1000),
+          yawDegrees: Number((merged.diagnostics.yawRadians * 180 / Math.PI).toFixed(1)),
+          translation: merged.diagnostics.translation.map((value) => Number(value.toFixed(3))),
+          mergedStablePoints: merged.snapshot.pointCount,
+          annotationsTruncated: merged.diagnostics.annotationsTruncated ?? false,
         });
-        scanIntent.current = 'fresh';
-        continuationBase.current = null;
         void clientDiagnostics.flush();
-        return;
-      }
-
-      snapshot = merged.snapshot;
-      clientDiagnostics.info('SCAN_CONTINUATION_REGISTERED', {
-        objectId,
-        inliers: merged.diagnostics.inliers,
-        overlapPercent: Math.round(merged.diagnostics.overlapRatio * 100),
-        rmsMm: Math.round(merged.diagnostics.rmsMeters * 1000),
-        yawDegrees: Number((merged.diagnostics.yawRadians * 180 / Math.PI).toFixed(1)),
-        translation: merged.diagnostics.translation.map((value) => Number(value.toFixed(3))),
-        mergedStablePoints: snapshot.pointCount,
+        void finalizeScanReady(merged.snapshot, intentAtFinish, merged.extensionToBase);
+      }).catch((reason: unknown) => {
+        if (generation !== continuationOwnerGeneration.current) return;
+        continuationActive.current = false;
+        setContinuationPhase(null);
+        continuationPreviousPhase.current = null;
+        setScanStoragePhase(previousPhase);
+        scanIntent.current = 'fresh';
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setScanStorageError(reason instanceof ContinuationBudgetExceededError
+          ? TranslatedError.fromKey('scan.continuation.memory_budget_exceeded', {
+            estimate: formatNumber(locale, reason.estimate.estimatedBytes),
+            limit: formatNumber(locale, reason.estimate.limitBytes),
+          })
+          : reason instanceof ContinuationCancelledError
+            ? TranslatedError.fromKey('scan.continuation.cancelled')
+            : TranslatedError.fromKey('scan.error.continue_not_saved', { reason: message }));
+        clientDiagnostics.warn('SCAN_CONTINUATION_REJECTED', { objectId, reason: message });
+        void clientDiagnostics.flush();
       });
-      void clientDiagnostics.flush();
+      return;
     }
 
-    setScanSnapshot(snapshot);
+    void finalizeScanReady(incoming, intentAtFinish, null);
+
+    async function finalizeScanReady(
+      snapshot: ScanPointCloudSnapshot,
+      intentAtFinish: ScanStartIntent,
+      extensionToBase: RigidTransform | null,
+    ): Promise<void> {
+
     selectMode('quality');
     clientDiagnostics.info('SCAN_RESULT_READY', {
       stablePoints: snapshot.pointCount,
@@ -515,53 +943,135 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     void clientDiagnostics.flush();
 
     if (objectId === null) {
+      if (intentAtFinish !== 'continue') {
+        updateScanDurability((current) => confirmScanNotCommitted(beginProvisionalScan(current, snapshot, 'unbound'), current.durableSnapshot !== null));
+      }
       setScanStorageError(TranslatedError.fromKey('scan.error.no_object_selected'));
       setScanStoragePhase('error');
       return;
     }
 
-    let artifact: Uint8Array;
+    const previousEncodePhase = scanEncodePreviousPhase.current ?? scanStoragePhase;
+    cancelScanEncode('A newer scan finish superseded this encode.');
+    const encodeGeneration = scanEncodeOwnerGeneration.current;
+    const encodeOwner = { objectId, sessionId };
+    const generation = ++storageGeneration.current;
+    scanEncodePreviousPhase.current = previousEncodePhase;
+    setScanStorageError(null);
+    setScanStoragePhase('preparing');
+    const encoder = scanEncodeClient.current ?? (scanEncodeClient.current = new ScanEncodeClient());
+    let encoded: ScanEncodeResult;
     try {
-      artifact = encodeScanArtifact(snapshot);
+      encoded = await encoder.encode(snapshot, {
+        generation: encodeGeneration,
+        budgetLimitBytes: computeProfile === null
+          ? SCAN_ENCODE_TRANSIENT_COPY_BUDGET_BYTES
+          : Math.min(SCAN_ENCODE_TRANSIENT_COPY_BUDGET_BYTES, computeProfile.postScanMemoryBudgetBytes),
+        onFallback: () => {
+          clientDiagnostics.warn('SCAN_ENCODE_SYNC_FALLBACK', {
+            objectId, sessionId: scanSessionId, reason: 'Worker is unavailable',
+          });
+          void clientDiagnostics.flush();
+        },
+      });
     }
     catch (reason) {
+      if (encodeGeneration !== scanEncodeOwnerGeneration.current ||
+          scanEncodeOwner.current.objectId !== encodeOwner.objectId ||
+          scanEncodeOwner.current.sessionId !== encodeOwner.sessionId ||
+          generation !== storageGeneration.current ||
+          reason instanceof ScanEncodeCancelledError) return;
+      scanEncodePreviousPhase.current = null;
       const message = reason instanceof Error ? reason.message : String(reason);
-      setScanStorageError(TranslatedError.fromKey('scan.error.prepare_failed'));
+      if (intentAtFinish !== 'continue') {
+        updateScanDurability((current) => confirmScanNotCommitted(beginProvisionalScan(current, snapshot, 'unencoded'), current.durableSnapshot !== null));
+      }
+      setScanStorageError(TranslatedError.fromKey(message === SCAN_ANNOTATION_CAPACITY_ERROR
+        ? SCAN_ANNOTATION_CAPACITY_ERROR
+        : 'scan.error.prepare_failed'));
       setScanStoragePhase('error');
       clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId: scanSessionId, stage: 'encode', error: message });
       void clientDiagnostics.flush();
       return;
     }
 
-    const generation = ++storageGeneration.current;
+    if (encodeGeneration !== scanEncodeOwnerGeneration.current ||
+        scanEncodeOwner.current.objectId !== encodeOwner.objectId ||
+        scanEncodeOwner.current.sessionId !== encodeOwner.sessionId ||
+        generation !== storageGeneration.current) {
+      releaseScanEncodeResult(encoded);
+      return;
+    }
+    scanEncodePreviousPhase.current = null;
+    const artifact = encoded.bytes;
+    const identity = encoded.identity;
+
+    const candidateId = identity.frameId;
+    activeScanCandidate.current = { snapshot, id: candidateId };
+    /* MAX-403/405/416: registration for this candidate is resolved after the bounded tag window, never before the upload. */
+    const stage: ScanRegistrationStage | null = sessionId === null ? null : {
+      objectId, sessionId, intent: intentAtFinish, scanId: candidateId,
+      base: continuationBaseRegistration.current, extensionToBase,
+      tagFinal: provisionalTag.current.final, tagResult: provisionalTag.current.final ? provisionalTag.current.artifact : null,
+      windowClosed: false, waiters: [], resolution: null, persistStarted: false,
+    };
+    registrationStage.current = stage;
+    if (intentAtFinish === 'fresh') continuationBaseRegistration.current = null;
+    setRegistrationNotice(null);
+    setRegistrationStageView(stage === null ? 'idle' : 'pending');
+    const embedRegistration = async () => {
+      if (stage === null) return null;
+      const resolved = await resolveStageRegistration(stage);
+      return resolved.artifact === null
+        ? null
+        : toOccupancyRegistration(resolved.artifact, { geometryComputedAtMs: geometryGenerationRef.current, scanFrameId: candidateId });
+    };
+    let decodedOccupancy: DecodedOccupancyArtifact | null = null;
+    updateScanDurability((current) => beginProvisionalScan(current, snapshot, candidateId));
     setScanStoragePhase('saving');
     void persistenceController.save(
       objectId,
       scanSessionId,
       artifact,
-      () => {
-        const registration = registrationForSession.current;
-        const occupancyRegistration = registration?.objectId === objectId && registration.sessionId === scanSessionId
-          ? toOccupancyRegistration(registration.artifact)
-          : null;
-        return buildSessionOccupancyArtifact(snapshot, artifact, Date.now(), occupancyRegistration);
+      async () => {
+        const bytes = buildSessionOccupancyArtifact(snapshot, identity, Date.now(), await embedRegistration());
+        decodedOccupancy = decodeOccupancySolverArtifact(bytes);
+        return bytes;
       },
-      (occupancyArtifact) => {
-        const registration = registrationForSession.current;
-        const occupancyRegistration = registration?.objectId === objectId && registration.sessionId === scanSessionId
-          ? toOccupancyRegistration(registration.artifact)
-          : null;
-        return buildVoxelPreviewArtifact(snapshot, artifact, { occupancyArtifact, registration: occupancyRegistration });
+      async (occupancyArtifact) => {
+        if (occupancyArtifact !== null && decodedOccupancy === null) {
+          decodedOccupancy = decodeOccupancySolverArtifact(occupancyArtifact);
+        }
+        return buildVoxelPreviewArtifact(snapshot, identity, {
+          occupancyArtifact,
+          decodedOccupancy,
+          identity,
+          registration: await embedRegistration(),
+        });
       },
       storageActionsDisabled,
+      candidateId,
+      identity,
     ).then((state) => {
         if (generation !== storageGeneration.current) return;
         if (state?.scan !== 'saved') {
           const message = state?.scanError ?? SCAN_STORAGE_BLOCKED_MESSAGE;
-          setScanStorageError(TranslatedError.fromKey('scan.storage.previous_kept', {
-            reason: new Error(message),
-          }));
+          if (state?.outcome === 'unknown' || state?.scan === 'unknown' || state?.scan === 'derived_stale') {
+            setScanStorageError(TranslatedError.fromKey('scan.storage.unknown'));
+          } else if (state?.scan === 'blocked_recording') {
+            setScanStorageError(TranslatedError.fromKey('scan.storage.paused'));
+          } else if (state?.previousKept && previousKeptProvable(scanDurabilityRef.current)) {
+            setScanStorageError(TranslatedError.fromKey('scan.storage.previous_kept', { reason: new Error(message) }));
+          } else {
+            setScanStorageError(TranslatedError.fromKey('scan.storage.not_committed', { reason: new Error(message) }));
+          }
           setScanStoragePhase('error');
+          if (state?.scan === 'error' && registrationStage.current === stage) {
+            registrationStage.current = null;
+            setRegistrationStageView('idle');
+            if (intentAtFinish === 'continue') continuationBaseRegistration.current = stage?.base ?? continuationBaseRegistration.current;
+            if (intentAtFinish === 'fresh' && state?.previousKept) reloadSessionRegistration();
+          }
           clientDiagnostics.warn('SCAN_RESULT_SAVE_FAILED', { objectId, sessionId: scanSessionId, stage: 'transport', error: message });
           void clientDiagnostics.flush();
           return;
@@ -570,10 +1080,11 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         setScanStorageError(null);
         scanIntent.current = 'fresh';
         continuationBase.current = null;
+        continuationBaseRegistration.current = null;
         clientDiagnostics.info('SCAN_RESULT_SAVED', {
           objectId,
           sessionId: scanSessionId,
-          bytes: artifact.byteLength,
+          bytes: identity.byteLength,
           stablePoints: snapshot.pointCount,
           manualPoints: snapshot.manualControlPoints.length,
           operatorEdges: snapshot.operatorEdges.length,
@@ -581,7 +1092,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         void clientDiagnostics.flush();
         if (state.occupancy === 'ready') {
           clientDiagnostics.info('SCAN_OCCUPANCY_SAVED', { objectId, sessionId: scanSessionId });
-        } else if (state.occupancy === 'failed' || state.occupancy === 'unavailable') {
+        } else if (state.occupancy === 'failed' || state.occupancy === 'unavailable' || state.occupancy === 'stale') {
           clientDiagnostics.warn('SCAN_OCCUPANCY_SAVE_FAILED', {
             objectId, sessionId: scanSessionId, error: state.occupancyError,
           });
@@ -589,14 +1100,15 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         }
         if (state.preview === 'ready') {
           clientDiagnostics.info('SCAN_VOXEL_PREVIEW_SAVED', { objectId, sessionId: scanSessionId });
-        } else if (state.preview === 'failed' || state.preview === 'unavailable') {
+        } else if (state.preview === 'failed' || state.preview === 'unavailable' || state.preview === 'stale') {
           clientDiagnostics.warn('SCAN_VOXEL_PREVIEW_SAVE_FAILED', {
             objectId, sessionId: scanSessionId, error: state.previewError,
           });
           void clientDiagnostics.flush();
         }
     });
-  }, [objectId, scanSessionId, persistenceController, selectMode, storageActionsDisabled]);
+    }
+  }, [objectId, sessionId, scanSessionId, persistenceController, selectMode, storageActionsDisabled, updateScanDurability, reloadSessionRegistration, cancelContinuation, cancelScanEncode, scanStoragePhase, computeProfile, locale]);
 
   const retryPersistence = useCallback((): void => {
     if (storageActionsDisabled || objectId === null) return;
@@ -611,14 +1123,19 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       } else if (state.scan === 'blocked_recording') {
         setScanStorageError(state.scanError ?? SCAN_STORAGE_BLOCKED_MESSAGE);
       } else if (state.scan === 'error') {
-        setScanStorageError(state.scanError);
+        setScanStorageError(state.previousKept
+          && previousKeptProvable(scanDurabilityRef.current)
+          ? TranslatedError.fromKey('scan.storage.previous_kept', { reason: new Error(state.scanError ?? '') })
+          : TranslatedError.fromKey('scan.storage.not_committed', { reason: new Error(state.scanError ?? '') }));
+      } else if (state.scan === 'unknown' || state.scan === 'derived_stale') {
+        setScanStorageError(TranslatedError.fromKey('scan.storage.unknown'));
       }
-      const event = state.scan === 'blocked_recording' || state.scan === 'error'
+      const event = state.scan === 'blocked_recording' || state.scan === 'error' || state.scan === 'unknown' || state.scan === 'derived_stale'
         ? 'SCAN_RESULT_SAVE_FAILED'
         : state.occupancy === 'ready' ? 'SCAN_OCCUPANCY_SAVED'
           : state.preview === 'ready' ? 'SCAN_VOXEL_PREVIEW_SAVED'
-            : state.preview === 'failed' || state.preview === 'unavailable' ? 'SCAN_VOXEL_PREVIEW_SAVE_FAILED'
-              : 'SCAN_OCCUPANCY_SAVE_FAILED';
+              : state.preview === 'failed' || state.preview === 'unavailable' || state.preview === 'stale' ? 'SCAN_VOXEL_PREVIEW_SAVE_FAILED'
+                : 'SCAN_OCCUPANCY_SAVE_FAILED';
       clientDiagnostics.info(event, { objectId, sessionId: scanSessionId, occupancyError: state.occupancyError, previewError: state.previewError });
       void clientDiagnostics.flush();
     });
@@ -626,11 +1143,17 @@ export default function App({ objectId, sessionId, status }: AppProps) {
 
   const deleteSavedScan = useCallback((): void => {
     if (storageActionsDisabled) return;
+    cancelScanEncode('Saved scan deleted.');
+    cancelContinuation('Saved scan deleted.');
     scanIntent.current = 'fresh';
     continuationBase.current = null;
+    continuationBaseRegistration.current = null;
+    registrationStage.current = null;
+    publishRegistration(null, null);
+    setRegistrationNotice(null);
+    setRegistrationStageView('idle');
     persistenceController.reset();
     if (objectId === null) {
-      setScanSnapshot(null);
       setScanStoragePhase('unbound');
       return;
     }
@@ -640,8 +1163,8 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     void deleteObjectScanArtifact(objectId, scanSessionId).then(
       () => {
         if (generation !== storageGeneration.current) return;
-        setScanSnapshot(null);
         setScanStoragePhase('none');
+        updateScanDurability(() => emptyScanDurability());
         clientDiagnostics.info('SCAN_RESULT_DELETED', { objectId, sessionId: scanSessionId });
         void clientDiagnostics.flush();
       },
@@ -654,13 +1177,36 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         void clientDiagnostics.flush();
       },
     );
-  }, [objectId, scanSessionId, persistenceController, storageActionsDisabled]);
+  }, [objectId, scanSessionId, persistenceController, storageActionsDisabled, updateScanDurability, publishRegistration, cancelContinuation, cancelScanEncode]);
 
-  const hasMeasuredScan = scanSnapshot !== null && scanSnapshot.pointCount > 0;
-  const sensorPlacementScene = useMemo(
-    () => buildSensorPlacementScene(localizationGeometry, registrationArtifact),
-    [localizationGeometry, registrationArtifact],
+  const hasMeasuredScan = resultControlsAvailable(scanDurability) && scanSnapshot !== null && scanSnapshot.pointCount > 0;
+  const durableViewport = scanViewportProvenance === 'durable' && scanAuthority !== null && scanAuthority === scanSnapshot;
+  const viewportDurableScanId = scanSnapshot !== null && scanSnapshot === scanDurability.durableSnapshot
+    ? scanDurability.durableId
+    : null;
+  const viewportScanIdentityKey = resultViewportKey({ objectId, durableScanId: viewportDurableScanId }, scanEncodeOwnerGeneration.current);
+  const registrationExpected = useMemo<RegistrationExpectation>(
+    () => ({ geometryComputedAtMs: geometryGeneration(localizationGeometry), scanFrameId: durableViewport ? scanDurability.durableId : null }),
+    [durableViewport, localizationGeometry, scanDurability.durableId],
   );
+  const registrationFit = registrationArtifact === null ? null : registrationApplicability(registrationArtifact, registrationExpected);
+  const viewerRegistration = durableViewport && registrationFit?.ok === true ? registrationArtifact : null;
+  const sensorPlacementScene = useMemo(
+    () => buildSensorPlacementScene(durableViewport ? localizationGeometry : null, durableViewport ? registrationArtifact : null, registrationExpected),
+    [durableViewport, localizationGeometry, registrationArtifact, registrationExpected],
+  );
+  const registrationStatusText = registrationStageView === 'pending' ? t('scan.registration.state.pending')
+    : registrationStageView === 'saving' ? t('scan.registration.state.saving')
+      : registrationStageView === 'failed' ? t('scan.registration.state.failed')
+        : registrationFit === null ? t('scan.registration.state.none')
+          : registrationFit.ok ? t('scan.registration.state.saved')
+            : t('scan.registration.state.stale', { reason: t(REGISTRATION_INAPPLICABLE_KEYS[registrationFit.reason]) });
+  const continuationPhaseLabel = continuationPhase === null ? null : ({
+    registration: t('scan.continuation.phase.registration'),
+    stable: t('scan.continuation.phase.stable'),
+    occupancy: t('scan.continuation.phase.occupancy'),
+    tsdf: t('scan.continuation.phase.tsdf'),
+  } as const)[continuationPhase];
   const httpsReady = xrCapabilities?.secureContext === true;
   const webXrReady = xrCapabilities?.immersiveAr === true;
   const extent = extentFromBounds(scanSnapshot?.bounds ?? null);
@@ -675,9 +1221,10 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     improving: stableBands.improving + tentativeBands.improving,
     stable: stableBands.stable + tentativeBands.stable,
   };
-  const storageGood = scanStoragePhase === 'saved' || scanStoragePhase === 'loaded';
-  const storageBusy = storageActionsDisabled || scanStoragePhase === 'loading' || scanStoragePhase === 'saving' || scanStoragePhase === 'deleting';
-  const localizationDataReady = scanPersistence?.scan === 'saved' && scanPersistence.occupancy === 'ready';
+  const storageGood = savedScanAvailable(scanDurability);
+  const storageBusy = storageActionsDisabled || scanStoragePhase === 'loading' || scanStoragePhase === 'preparing' || scanStoragePhase === 'saving' || scanStoragePhase === 'deleting';
+  const localizationDataReady = localizationReady(scanDurability) &&
+    ((scanPersistence?.scan === 'saved' && scanPersistence.occupancy === 'ready') || previousKeptProvable(scanDurability));
 
   return (
     <main className="app-shell">
@@ -715,8 +1262,24 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       {!xrSessionActive && scanStorageError !== null && (
         <div className="xr-runtime-error" role="alert">{formatErrorText(locale, scanStorageError)}</div>
       )}
+      {!xrSessionActive && continuationPhaseLabel !== null && (
+        <div className="xr-runtime-warning" role="status" aria-live="polite">{continuationPhaseLabel}</div>
+      )}
+      {xrSessionActive && scanStoragePhase === 'preparing' && (
+        <div className="xr-runtime-warning" role="status" aria-live="polite">
+          {scanStorageLabel('preparing', objectId, locale)}
+        </div>
+      )}
       {storageActionsDisabled && (
         <div className="xr-runtime-warning" role="status">{t('scan.storage.paused')}</div>
+      )}
+      {!xrSessionActive && registrationNotice !== null && (
+        <div className="xr-runtime-warning" role="status" data-registration-conflict="true">
+          {t('scan.registration.conflict', {
+            offset: formatMeters(registrationNotice.translationM, locale),
+            rotation: `${formatNumber(locale, Math.round(registrationNotice.yawDeg * 10) / 10)}°`,
+          })}
+        </div>
       )}
 
       {!xrSessionActive && hasMeasuredScan && (
@@ -756,19 +1319,38 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       <XrRuntimePanel
         objectId={objectId}
         sessionId={sessionId}
-        savedScanAvailable={storageGood && hasMeasuredScan}
+        savedScanAvailable={storageGood && durableViewport && hasMeasuredScan}
         savedScanBusy={storageBusy}
         onScanIntent={handleScanIntent}
         onDeleteSavedScan={deleteSavedScan}
-        onSessionActiveChange={setXrSessionActive}
+        onSessionActiveChange={handleSessionActiveChange}
         onPointCloudReady={handleScanReady}
         onCapabilitiesChange={setXrCapabilities}
         onRegistrationChange={onRegistrationChange}
+        scanIntent={scanIntentState}
+        baseScanFrameId={scanDurability.durableId}
+        onTagRegistrationResult={onTagRegistrationResult}
       />
 
       {!xrSessionActive && hasMeasuredScan && scanSnapshot !== null && (
-        <section className="workspace">
-          <ResultViewportErrorBoundary key={`${objectId ?? 'none'}-${scanSnapshot.depthFrameCount}-${scanSnapshot.pointCount}`} formatFailure={(error) => t('scan.renderer.failed', { error })}>
+        <section className="workspace" data-scan-provenance={scanViewportProvenance}>
+          {scanViewportProvenance === 'provisional' && (
+            <div className="xr-runtime-warning" role="status" data-scan-provenance="provisional">
+              {t('scan.storage.provisional')}
+            </div>
+          )}
+          <ViewportFailureBoundary
+            key={viewportScanIdentityKey}
+            diagnosticEvent="SCAN_RESULT_RENDERER_LOAD_FAILED"
+            renderFailure={({ message, attempts, retry }) => (
+              <div className="viewport-shell scan-viewport" role="alert">
+                <div>{t('scan.renderer.failed', { error: message })}</div>
+                {attempts < VIEWPORT_FAILURE_MAX_ATTEMPTS && (
+                  <button type="button" onClick={retry}>{t('scan.renderer.retry')}</button>
+                )}
+              </div>
+            )}
+          >
             <Suspense
               fallback={
                 <div className="viewport-shell scan-viewport" role="status" aria-live="polite">
@@ -781,17 +1363,22 @@ export default function App({ objectId, sessionId, status }: AppProps) {
                 viewCommand={viewCommand}
                 display={display}
                 mode={scanMode}
-                sensorMarkers={sensorPlacementScene.markers}
-                sensorGeometry={localizationGeometry}
-                registrationArtifact={registrationArtifact}
+                sensorMarkers={durableViewport ? sensorPlacementScene.markers : []}
+                sensorGeometry={durableViewport ? localizationGeometry : null}
+                registrationArtifact={viewerRegistration}
+                currentScanId={durableViewport ? scanDurability.durableId : null}
+                scanIdentityKey={viewportScanIdentityKey}
                 objectId={objectId}
                 sessionId={sessionId}
-                localizationRuns={localizationRunListing?.object_id === objectId && localizationRunListing.session_id === sessionId
+                persistenceBusy={scanStoragePhase === 'preparing' || scanStoragePhase === 'saving'}
+                postScanGeneration={storageGeneration.current}
+                computeProfile={computeProfile}
+                localizationRuns={durableViewport && localizationRunListing?.object_id === objectId && localizationRunListing.session_id === sessionId
                   ? localizationRunListing.runs
-                  : []}
+                  : undefined}
               />
             </Suspense>
-          </ResultViewportErrorBoundary>
+          </ViewportFailureBoundary>
 
           <aside className="side-panel scan-result-panel">
             <section className="panel-card">
@@ -800,6 +1387,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
                 <div><dt>{t('scan.volume.sd_persistence')}</dt><dd>{persistedScanStorageLabel(scanStoragePhase, objectId, scanPersistence, locale)}</dd></div>
                 <div><dt>{t('scan.volume.occupancy')}</dt><dd>{occupancyStatusLabel(scanPersistence, locale)}</dd></div>
                 <div><dt>{t('scan.volume.preview')}</dt><dd>{previewStatusLabel(scanPersistence, locale)}</dd></div>
+                <div><dt>{t('scan.volume.registration')}</dt><dd>{registrationStatusText}</dd></div>
                 <div><dt>{t('scan.volume.stable_points')}</dt><dd>{formatNumber(locale, scanSnapshot.pointCount)}</dd></div>
                 <div><dt>{t('scan.volume.tentative_points')}</dt><dd>{formatNumber(locale, scanSnapshot.tentativePointCount)}</dd></div>
                 <div><dt>{t('scan.volume.manual_pins')}</dt><dd>{formatNumber(locale, scanSnapshot.manualControlPoints.length)}</dd></div>
@@ -824,22 +1412,26 @@ export default function App({ objectId, sessionId, status }: AppProps) {
               </dl>
 
               {scanPersistence?.scan === 'saved' &&
-                (scanPersistence.occupancy === 'failed' || scanPersistence.occupancy === 'unavailable') && (
+                (scanPersistence.occupancy === 'failed' || scanPersistence.occupancy === 'unavailable' || scanPersistence.occupancy === 'stale') && (
                 <p className="scan-volume-note" role="status">
-                  {scanPersistence.occupancyError ?? t('scan.volume.occupancy_not_ready')}
+                  {scanPersistence.occupancy === 'stale'
+                    ? t('scan.occupancy.stale')
+                    : t('scan.volume.occupancy_not_ready')}
                 </p>
               )}
 
               {scanPersistence?.scan === 'saved' &&
-                (scanPersistence.preview === 'failed' || scanPersistence.preview === 'unavailable') && (
+                (scanPersistence.preview === 'failed' || scanPersistence.preview === 'unavailable' || scanPersistence.preview === 'stale') && (
                 <p className="scan-volume-note" role="status">
-                  {scanPersistence.previewError ?? t('scan.volume.preview_not_ready')}
+                  {scanPersistence.preview === 'stale'
+                    ? t('scan.preview.stale')
+                    : t('scan.volume.preview_not_ready')}
                 </p>
               )}
 
               {persistenceController.retryAvailable && (
-                <button type="button" className="scan-clear-button" disabled={storageActionsDisabled || scanPersistence?.scan === 'saving' || scanPersistence?.occupancy === 'saving' || scanPersistence?.preview === 'saving'} onClick={retryPersistence}>
-                  {scanPersistence?.scan === 'blocked_recording' ? t('scan.retry.scan') : scanPersistence?.occupancy === 'failed' ? t('scan.retry.occupancy') : t('scan.retry.preview')}
+                <button type="button" className="scan-clear-button" disabled={storageActionsDisabled || scanPersistence?.scan === 'saving' || scanPersistence?.scan === 'verifying' || scanPersistence?.occupancy === 'saving' || scanPersistence?.preview === 'saving'} onClick={retryPersistence}>
+                  {scanPersistence?.scan === 'blocked_recording' || scanPersistence?.scan === 'error' || scanPersistence?.scan === 'unknown' ? t('scan.retry.scan') : scanPersistence?.occupancy === 'failed' || scanPersistence?.occupancy === 'stale' ? t('scan.retry.occupancy') : t('scan.retry.preview')}
                 </button>
               )}
 

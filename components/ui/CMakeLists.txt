@@ -1,16 +1,21 @@
 idf_component_register(
     SRCS
         "ui.c"
+        "ui_perf_policy.c"
         "ui_lvgl.c"
         "ui_event_dispatcher.c"
         "ui_shell.c"
         "ui_power_badge.c"
         "ui_preview3d.c"
         "ui_scan_preview.c"
+        "ui_scan_preview_policy.c"
         "ui_screen_registry.c"
         "ui_navigation.c"
         "ui_boot_error.c"
         "ui_home.c"
+        "ui_hardware.c"
+        "ui_hardware_model.c"
+        "ui_system_model.c"
         "ui_measurements.c"
         "ui_measurements_nodes.c"
         "ui_measurement_trace.c"
@@ -38,6 +43,7 @@ idf_component_register(
         display
         keypad
         device_status
+        hw_inventory
         nrf_topology_service
         wifi_manager
         object_service

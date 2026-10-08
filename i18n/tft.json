@@ -142,6 +142,101 @@
       "uk": "МЕРЕЖА + UI...",
       "max_len": 15
     },
+    "boot.recovery_title": {
+      "en": "SD RECOVERY",
+      "uk": "ЗБІЙ SD",
+      "max_len": 11
+    },
+    "boot.reason_host_init": {
+      "en": "SD INTERFACE FAILED",
+      "uk": "ЗБІЙ SD-ІНТЕРФЕЙСУ",
+      "max_len": 24
+    },
+    "boot.reason_card_unavailable": {
+      "en": "CARD NOT RESPONDING",
+      "uk": "КАРТА НЕ ВІДПОВІДАЄ",
+      "max_len": 22
+    },
+    "boot.reason_fs_mount": {
+      "en": "FILESYSTEM NOT READABLE",
+      "uk": "ФАЙЛОВУ СИСТЕМУ НЕ ПРОЧИТАНО",
+      "max_len": 30
+    },
+    "boot.reason_write_probe": {
+      "en": "CARD READ/WRITE TEST FAILED",
+      "uk": "ЗБІЙ ПЕРЕВІРКИ ЧИТАННЯ/ЗАПИСУ",
+      "max_len": 34
+    },
+    "boot.reason_layout_init": {
+      "en": "STORAGE LAYOUT INIT FAILED",
+      "uk": "ЗБІЙ ІНІЦІАЛІЗАЦІЇ СХОВИЩА",
+      "max_len": 30
+    },
+    "boot.recovery_warning": {
+      "en": "ERASES ALL CARD DATA!",
+      "uk": "СТИРАЄ ВСІ ДАНІ КАРТИ!",
+      "max_len": 23
+    },
+    "boot.recovery_insert_card": {
+      "en": "INSERT CARD",
+      "uk": "ВСТАВТЕ КАРТУ",
+      "max_len": 13
+    },
+    "boot.recovery_format_hint": {
+      "en": "OK: FORMAT",
+      "uk": "OK: ФОРМАТ",
+      "max_len": 11
+    },
+    "boot.recovery_retry_hint": {
+      "en": "RIGHT: RETRY",
+      "uk": "RIGHT: ПОВТОРИТИ",
+      "max_len": 16
+    },
+    "boot.format_retry_hint": {
+      "en": "OK: RETRY FORMAT",
+      "uk": "OK: ПОВТОРИТИ",
+      "max_len": 16
+    },
+    "boot.format_power_hint": {
+      "en": "POWER OFF: INSERT CARD",
+      "uk": "ВИМКНІТЬ: ЗМІНІТЬ КАРТУ",
+      "max_len": 23
+    },
+    "boot.recovery_cancel_hint": {
+      "en": "LEFT/UP/DOWN: NO SD",
+      "uk": "LEFT/UP/DOWN: БЕЗ SD",
+      "max_len": 24
+    },
+    "boot.format_progress": {
+      "en": "FORMATTING CARD,",
+      "uk": "ФОРМАТУВАННЯ КАРТИ,",
+      "max_len": 20
+    },
+    "boot.format_do_not_power_off": {
+      "en": "DO NOT POWER OFF",
+      "uk": "НЕ ВИМИКАЙТЕ ЖИВЛЕННЯ",
+      "max_len": 22
+    },
+    "boot.format_complete": {
+      "en": "FORMAT COMPLETE",
+      "uk": "ФОРМАТ ЗАВЕРШЕНО",
+      "max_len": 16
+    },
+    "boot.format_failed": {
+      "en": "FORMAT FAILED",
+      "uk": "ФОРМАТ НЕ ВДАВСЯ",
+      "max_len": 17
+    },
+    "boot.recovery_card_ready": {
+      "en": "CARD READY - CONTINUING",
+      "uk": "КАРТА ГОТОВА - ЗАПУСК ДАЛІ",
+      "max_len": 27
+    },
+    "boot.continue_no_storage": {
+      "en": "NO STORAGE - CONTINUING",
+      "uk": "БЕЗ SD - ПРОДОВЖУЄМО",
+      "max_len": 24
+    },
     "header.adc_idle": {
       "en": "ADC --",
       "uk": "ADC --",
@@ -193,9 +288,9 @@
       "max_len": 19
     },
     "system.language_footer": {
-      "en": "UP/DN SELECT  OK APPLY  LEFT BACK",
-      "uk": "UP/DN ВИБІР  OK ЗБЕРЕГТИ  LEFT НАЗАД",
-      "max_len": 36
+      "en": "UP/DN SELECT  OK SET",
+      "uk": "UP/DN ВИБІР  OK ЗАСТОС.",
+      "max_len": 23
     },
     "system.firmware": {
       "en": "FW      %s",
@@ -1313,6 +1408,22 @@
     "tft.workflow.material.name.soil_dry": {"en": "Dry soil / backfill", "uk": "Сухий ґрунт / засипка", "max_len": 40},
     "tft.workflow.material.name.soil_saturated": {"en": "Saturated soil", "uk": "Водонасичений ґрунт", "max_len": 40},
     "tft.workflow.material.name.custom": {"en": "Custom value", "uk": "Власне значення", "max_len": 40},
-    "tft.workflow.material.name.unknown": {"en": "Unknown material", "uk": "Невідомий матеріал", "max_len": 40}
+    "tft.workflow.material.name.unknown": {"en": "Unknown material", "uk": "Невідомий матеріал", "max_len": 40},
+    "tft.hw.title": {"en": "HARDWARE", "uk": "ОБЛАДНАННЯ", "max_len": 11},
+    "tft.hw.required": {"en": "REQ", "uk": "ОБОВ.", "max_len": 5},
+    "tft.hw.optional": {"en": "OPT", "uk": "НЕОБ.", "max_len": 5},
+    "tft.hw.remotes": {"en": "Remote sensors: {count}", "uk": "Віддалені датчики: {count}", "max_len": 26},
+    "tft.hw.degraded_banner": {"en": "Required module issue", "uk": "Проблема з обов’язковим модулем", "max_len": 31},
+    "tft.hw.module.sd_card": {"en": "SD card", "uk": "SD-картка", "max_len": 9},
+    "tft.hw.module.ad7606": {"en": "AD7606", "uk": "AD7606", "max_len": 6},
+    "tft.hw.module.sensor_mux": {"en": "Sensor mux", "uk": "Мультиплексор", "max_len": 13},
+    "tft.hw.module.main_xiao": {"en": "Main XIAO", "uk": "Основний XIAO", "max_len": 13},
+    "tft.hw.module.barometer": {"en": "Barometer", "uk": "Барометр", "max_len": 9},
+    "tft.hw.module.power_monitor": {"en": "Power monitor", "uk": "Монітор живлення", "max_len": 16},
+    "tft.hw.state.unknown": {"en": "NOT TESTED", "uk": "Не тестовано", "max_len": 12},
+    "tft.hw.state.present": {"en": "Present", "uk": "Підключено", "max_len": 10},
+    "tft.hw.state.absent": {"en": "Absent", "uk": "Не підключено", "max_len": 13},
+    "tft.hw.state.fault": {"en": "Fault", "uk": "Несправність", "max_len": 12},
+    "tft.hw.state.degraded": {"en": "Degraded", "uk": "Обмежено", "max_len": 8}
   }
 }

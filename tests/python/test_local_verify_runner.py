@@ -54,12 +54,13 @@ def test_host_plan_runs_base_then_sorted_manifest_fragments(tmp_path: Path):
     assert steps[0].command[-1] == "--keep-going"
     assert steps[1].command[-3:] == (
         "--build-dir",
-        str(root / "build" / "host-tests-a-first"),
+        str(root / ".test-build" / "host-tests-a-first"),
         "--keep-going",
     )
 
 
-def test_software_plan_is_local_and_never_contains_firmware_or_github(tmp_path: Path):
+def test_software_plan_is_local_and_never_contains_firmware_or_github(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(runner.shutil, "which", lambda name: "ast-grep-test")
     root = make_repo(tmp_path)
     steps = runner.build_plan(
         root,
@@ -81,6 +82,8 @@ def test_software_plan_is_local_and_never_contains_firmware_or_github(tmp_path: 
         "host/z-last",
     ]
     assert "python/deterministic" in names
+    assert "ast/rules" in names
+    assert "ast/scan" in names
     assert "web/npm-ci" in names
     assert "web/typecheck" in names
     assert "web/console" in names
@@ -164,7 +167,8 @@ def test_nrf_plan_uses_host_policy_then_canonical_ncs_wrapper(tmp_path: Path):
     assert steps[3].command[-2:] == ("-Action", "ncs-cs-test-build")
 
 
-def test_all_scope_does_not_duplicate_nrf_host_policy(tmp_path: Path):
+def test_all_scope_does_not_duplicate_nrf_host_policy(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(runner.shutil, "which", lambda name: "ast-grep-test")
     root = make_repo(tmp_path)
     steps = runner.build_plan(
         root,
@@ -183,6 +187,36 @@ def test_all_scope_does_not_duplicate_nrf_host_policy(tmp_path: Path):
     assert "nrf/host-policy" not in names
     nrf_build = next(step for step in steps if step.name == "nrf/build")
     assert any("ncs.ps1" in arg for arg in nrf_build.command)
+
+
+def test_ast_scope_requires_installed_cli(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(runner.shutil, "which", lambda name: None)
+    with pytest.raises(runner.VerificationError, match="ast-grep verification"):
+        runner.ast_steps(tmp_path)
+
+
+def test_ast_scan_reports_violation_but_allows_bus_owner(tmp_path: Path):
+    import shutil
+    import subprocess
+
+    executable = shutil.which("ast-grep")
+    if executable is None:
+        pytest.skip("ast-grep CLI is not installed")
+    shutil.copy(REPO_ROOT / "sgconfig.yml", tmp_path)
+    shutil.copytree(REPO_ROOT / "tools" / "ast-grep", tmp_path / "tools" / "ast-grep")
+    driver = tmp_path / "components" / "ina3221_monitor" / "driver.c"
+    owner = tmp_path / "components" / "sensor_bus" / "sensor_bus.c"
+    driver.parent.mkdir(parents=True)
+    owner.parent.mkdir(parents=True)
+    bad_call = "void init(void) { i2c_new_master_bus(&config, &bus); }\n"
+    owner.write_text(bad_call)
+    driver.write_text("/* i2c_new_master_bus(&config, &bus); */\n")
+    command = (executable, "scan", "--config", str(tmp_path / "sgconfig.yml"), "components")
+    assert subprocess.run(command, cwd=tmp_path, capture_output=True).returncode == 0
+    driver.write_text(bad_call)
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "ina3221-shared-bus" in result.stdout + result.stderr
 
 
 def test_non_windows_firmware_does_not_fall_back_to_cloud(tmp_path: Path):

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   fetchDeviceStatus,
   fetchLocalizationRuns,
+  isRequestCancellation,
+  retryPreemptedRead,
 } from '../../api/deviceApi';
 import { runIsPrimaryCandidate, type LocalizationSessionPodGeometry } from '../../api/deviceApi';
 import type { SavedSeismicSnapshot } from '../../domain/device';
@@ -44,8 +46,8 @@ export default function WorkflowResultViewer({ objectId, sessionId }: Props) {
           return;
         }
         const [status, listing] = await Promise.all([
-          fetchDeviceStatus(false, objectId),
-          fetchLocalizationRuns(objectId, sessionId),
+          retryPreemptedRead(() => fetchDeviceStatus(false, objectId)),
+          retryPreemptedRead(() => fetchLocalizationRuns(objectId, sessionId)),
         ]);
         const summary = status.recording_sessions?.sessions.find((item) => item.session_id === sessionId);
         const pick = listing.picks
@@ -77,8 +79,8 @@ export default function WorkflowResultViewer({ objectId, sessionId }: Props) {
             material: run?.material ?? null,
           });
         }
-      } catch {
-        if (!cancelled) setFailed(true);
+      } catch (reason) {
+        if (!cancelled && !isRequestCancellation(reason)) setFailed(true);
       } finally {
         if (!cancelled) setLoading(false);
       }

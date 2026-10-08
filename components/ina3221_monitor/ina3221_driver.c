@@ -5,6 +5,7 @@
 #include <string.h>
 
 #define INA3221_REG_CONFIG            0x00u
+#define INA3221_I2C_ADDRESS            0x40u
 #define INA3221_REG_SHUNT_CH1         0x01u
 #define INA3221_REG_BUS_CH1           0x02u
 #define INA3221_REG_MASK_ENABLE       0x0Fu
@@ -23,6 +24,8 @@
      INA3221_CONFIG_CONT_SHUNT_BUS)
 
 #define INA3221_SHUNT_RESISTANCE_OHM  0.1f
+
+static const char s_i2c_diag_source[] = "ina3221";
 
 
 static esp_err_t ina3221_driver_read_register(
@@ -49,8 +52,11 @@ static esp_err_t ina3221_driver_read_register(
             data
         );
 
-    if (err != ESP_OK) {
-        return err;
+    const esp_err_t classified_err =
+        sensor_bus_classify_transfer_error_with_context(
+            INA3221_I2C_ADDRESS, err, s_i2c_diag_source, -1);
+    if (classified_err != ESP_OK) {
+        return classified_err;
     }
 
     *value =
@@ -79,13 +85,13 @@ static esp_err_t ina3221_driver_write_register(
         (uint8_t)(value & 0xFFu),
     };
 
-    return
-        i2c_bus_write_bytes(
+    const esp_err_t err = i2c_bus_write_bytes(
             driver->device,
             register_address,
             sizeof(data),
-            data
-        );
+            data);
+    return sensor_bus_classify_transfer_error_with_context(
+        INA3221_I2C_ADDRESS, err, s_i2c_diag_source, -1);
 }
 
 
@@ -115,6 +121,13 @@ esp_err_t ina3221_driver_open(
         handles.bus;
     driver->device =
         handles.ina3221;
+
+    err = sensor_bus_probe_address_with_context(
+        INA3221_I2C_ADDRESS, s_i2c_diag_source, -1);
+    if (err != ESP_OK) {
+        ina3221_driver_close(driver);
+        return err;
+    }
 
     uint16_t probe_value = 0;
 

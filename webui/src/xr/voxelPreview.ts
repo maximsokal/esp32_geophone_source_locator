@@ -8,13 +8,18 @@
 import {
   decodeOccupancySolverArtifact,
   occupancyCrc32,
-  occupancyFrameIdForScan,
+  type DecodedOccupancyArtifact,
   type OccupancyRegistration,
 } from './occupancySolverArtifact';
 import type { ScanPointCloudSnapshot } from './webxrRuntime';
+import { localFloorMatrixToProject } from './projectFrame';
+import { solverCandidateVolume } from './candidateVolume';
+import { crc32 } from './crc32';
+import { createScanIdentity, type ScanIdentity } from './scanIdentity';
 
 const MAGIC = new TextEncoder().encode('GXPRV1\0\0');
-const VERSION = 1;
+const LEGACY_VERSION = 1;
+const VERSION = 2;
 const BASE_HEADER_BYTES = 54;
 const REGISTERED_HEADER_BYTES = BASE_HEADER_BYTES + 16 * Float32Array.BYTES_PER_ELEMENT;
 export const MAX_VOXEL_PREVIEW_BYTES = 64 * 1024;
@@ -33,6 +38,7 @@ const FACE = {
 
 export interface VoxelPreviewRegistration {
   geometry_computed_at_ms: number;
+  /** Version 2 row-major transform from sensor Z-up to project Z-up. */
   sensor_to_scan: number[];
 }
 
@@ -52,6 +58,9 @@ export interface VoxelPreviewArtifact {
 
 export interface BuildVoxelPreviewOptions {
   occupancyArtifact?: Uint8Array | null;
+  /** Reuse the decoded derivative prepared for this scan. */
+  decodedOccupancy?: DecodedOccupancyArtifact | null;
+  identity?: ScanIdentity;
   registration?: OccupancyRegistration | null;
   maxSurfaceVoxels?: number;
 }
@@ -63,7 +72,15 @@ export interface VoxelPreviewGrid {
   indices: Uint32Array;
   faceMasks: Uint8Array;
   coarseningSteps: number;
+  /** True when the candidate volume exceeded the preview's uint16 Z dimension and was clipped. */
+  candidateDepthClamped: boolean;
 }
+
+type VoxelGridSnapshot = Pick<ScanPointCloudSnapshot,
+  'occupiedSurfacePositions' | 'occupancyFineVoxelSizeMeters' | 'occupancyVoxelSizeMeters'
+> & Partial<Pick<ScanPointCloudSnapshot,
+  'bounds' | 'occupancyEnvelopeBounds' | 'occupancySolverCandidateBelowSurfaceMeters'
+>>;
 
 function finiteFloat32(value: number, label: string): void {
   if (!Number.isFinite(value) || !Number.isFinite(Math.fround(value))) {
@@ -76,6 +93,8 @@ function rigidRegistration(value: OccupancyRegistration | null | undefined): Vox
       !Number.isSafeInteger(value.geometry_computed_at_ms) || value.geometry_computed_at_ms <= 0 ||
       !Array.isArray(value.sensor_to_scan) || value.sensor_to_scan.length !== 16 ||
       value.sensor_to_scan.some((entry) => !Number.isFinite(entry))) return null;
+  const frame: unknown = value.frame;
+  if (frame !== undefined && frame !== 'webxr_local_floor' && frame !== 'project_z_up') return null;
 
   const m = value.sensor_to_scan;
   if (m[12] !== 0 || m[13] !== 0 || m[14] !== 0 || m[15] !== 1) return null;
@@ -87,24 +106,34 @@ function rigidRegistration(value: OccupancyRegistration | null | undefined): Vox
   }
   const determinant = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) + m[2] * (m[4] * m[9] - m[5] * m[8]);
   if (Math.abs(Math.abs(determinant) - 1) > 1e-3) return null;
-  return { geometry_computed_at_ms: value.geometry_computed_at_ms, sensor_to_scan: [...m] };
+  return {
+    geometry_computed_at_ms: value.geometry_computed_at_ms,
+    sensor_to_scan: frame === 'project_z_up' ? [...m] : localFloorMatrixToProject(m),
+  };
 }
 
 function matchingOccupancy(
   bytes: Uint8Array | null | undefined,
-  scanArtifact: Uint8Array,
+  identity: ScanIdentity,
+  decoded?: DecodedOccupancyArtifact | null,
 ) {
+  if (decoded !== undefined) return decoded?.header.frame_id === identity.frameId ? decoded : null;
   if (bytes === null || bytes === undefined) return null;
   try {
-    const decoded = decodeOccupancySolverArtifact(bytes);
-    return decoded.header.frame_id === occupancyFrameIdForScan(scanArtifact) ? decoded : null;
+    const parsed = decodeOccupancySolverArtifact(bytes);
+    return parsed.header.frame_id === identity.frameId ? parsed : null;
   } catch {
     return null;
   }
 }
 
+function scanIdentityFor(value: Uint8Array | ScanIdentity, supplied?: ScanIdentity): ScanIdentity {
+  if (!(value instanceof Uint8Array)) return value;
+  return supplied ?? createScanIdentity(value);
+}
+
 function eachOccupiedSample(
-  snapshot: Pick<ScanPointCloudSnapshot, 'occupiedSurfacePositions' | 'occupancyFineVoxelSizeMeters' | 'occupancyVoxelSizeMeters'>,
+  snapshot: VoxelGridSnapshot,
   occupancy: ReturnType<typeof matchingOccupancy>,
   visit: (x: number, y: number, z: number) => void,
 ): void {
@@ -132,7 +161,7 @@ function key(x: number, y: number, z: number): string {
 }
 
 function buildAtSize(
-  snapshot: Parameters<typeof eachOccupiedSample>[0],
+  snapshot: VoxelGridSnapshot,
   occupancy: ReturnType<typeof matchingOccupancy>,
   voxelSizeMeters: number,
   coarseningSteps: number,
@@ -140,6 +169,7 @@ function buildAtSize(
   const cells = new Map<string, [number, number, number]>();
   let minX = Infinity; let minY = Infinity; let minZ = Infinity;
   let maxX = -Infinity; let maxY = -Infinity; let maxZ = -Infinity;
+  let surfaceMinZ = Infinity;
   eachOccupiedSample(snapshot, occupancy, (x, y, z) => {
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
       throw new Error('Voxel preview surface sample is non-finite.');
@@ -151,12 +181,32 @@ function buildAtSize(
     cells.set(key(ix, iy, iz), [ix, iy, iz]);
     minX = Math.min(minX, ix); minY = Math.min(minY, iy); minZ = Math.min(minZ, iz);
     maxX = Math.max(maxX, ix); maxY = Math.max(maxY, iy); maxZ = Math.max(maxZ, iz);
+    surfaceMinZ = Math.min(surfaceMinZ, iz);
   });
   if (cells.size === 0) throw new Error('Voxel preview has no occupied surface samples.');
 
+  const candidateVolume = solverCandidateVolume(snapshot);
+  let candidateMinZ = Infinity;
+  let candidateDepthClamped = false;
+  if (candidateVolume.min !== null && candidateVolume.max !== null) {
+    const candidateMin = candidateVolume.min.map((value) => Math.floor(value / voxelSizeMeters));
+    const candidateMax = candidateVolume.max.map((value) => Math.floor(value / voxelSizeMeters));
+    minX = Math.min(minX, candidateMin[0]); minY = Math.min(minY, candidateMin[1]);
+    maxX = Math.max(maxX, candidateMax[0]); maxY = Math.max(maxY, candidateMax[1]);
+    candidateMinZ = candidateMin[2];
+    minZ = Math.min(minZ, candidateMin[2]); maxZ = Math.max(maxZ, candidateMax[2]);
+  }
+
   const dx = maxX - minX + 1;
   const dy = maxY - minY + 1;
-  const dz = maxZ - minZ + 1;
+  let dz = maxZ - minZ + 1;
+  if (dz > 0xffff) {
+    const minimumAllowedZ = maxZ - 0xffff + 1;
+    if (surfaceMinZ < minimumAllowedZ || candidateMinZ >= minimumAllowedZ) throw new Error('coarsen');
+    minZ = minimumAllowedZ;
+    dz = maxZ - minZ + 1;
+    candidateDepthClamped = true;
+  }
   const volume = dx * dy * dz;
   if (![dx, dy, dz].every((value) => Number.isInteger(value) && value > 0 && value <= 0xffff) ||
       !Number.isSafeInteger(volume) || volume > 0x1_0000_0000) {
@@ -191,19 +241,21 @@ function buildAtSize(
     indices,
     faceMasks,
     coarseningSteps,
+    candidateDepthClamped,
   };
 }
 
 export function buildVoxelPreviewGrid(
-  snapshot: Parameters<typeof eachOccupiedSample>[0],
-  scanArtifact: Uint8Array,
+  snapshot: VoxelGridSnapshot,
+  scanArtifact: Uint8Array | ScanIdentity,
   options: BuildVoxelPreviewOptions = {},
 ): VoxelPreviewGrid {
   const budget = options.maxSurfaceVoxels ?? DEFAULT_MAX_SURFACE_VOXELS;
   if (!Number.isInteger(budget) || budget < 1 || budget > MAX_VOXEL_PREVIEW_COUNT) {
     throw new Error(`Voxel preview budget must be an integer from 1 to ${MAX_VOXEL_PREVIEW_COUNT}.`);
   }
-  const occupancy = matchingOccupancy(options.occupancyArtifact, scanArtifact);
+  const identity = scanIdentityFor(scanArtifact, options.identity);
+  const occupancy = matchingOccupancy(options.occupancyArtifact, identity, options.decodedOccupancy);
   const registration = rigidRegistration(options.registration ?? occupancy?.header.registration);
   const initialSize = occupancy?.header.voxel_size_m ??
     snapshot.occupancyFineVoxelSizeMeters ?? snapshot.occupancyVoxelSizeMeters;
@@ -233,14 +285,16 @@ export function buildVoxelPreviewGrid(
 
 export function buildVoxelPreviewArtifact(
   snapshot: Parameters<typeof buildVoxelPreviewGrid>[0],
-  scanArtifact: Uint8Array,
+  scanArtifact: Uint8Array | ScanIdentity,
   options: BuildVoxelPreviewOptions = {},
 ): Uint8Array {
-  const grid = buildVoxelPreviewGrid(snapshot, scanArtifact, options);
-  const occupancy = matchingOccupancy(options.occupancyArtifact, scanArtifact);
+  const identity = scanIdentityFor(scanArtifact, options.identity);
+  const occupancy = matchingOccupancy(options.occupancyArtifact, identity, options.decodedOccupancy);
+  const preparedOptions = { ...options, identity, decodedOccupancy: occupancy };
+  const grid = buildVoxelPreviewGrid(snapshot, identity, preparedOptions);
   const registration = rigidRegistration(options.registration ?? occupancy?.header.registration);
   return encodeVoxelPreviewArtifact({
-    sourceScanCrc32: occupancyCrc32(scanArtifact),
+    sourceScanCrc32: identity.crc32,
     geometryComputedAtMs: BigInt(registration?.geometry_computed_at_ms ?? 0),
     registration,
     ...grid,
@@ -267,6 +321,7 @@ export function encodeVoxelPreviewArtifact(artifact: VoxelPreviewArtifact): Uint
     if (artifact.geometryComputedAtMs !== 0n) throw new Error('Unregistered voxel preview must have a zero geometry timestamp.');
   } else {
     const checked = rigidRegistration({
+      frame: 'project_z_up',
       source: 'preview',
       geometry_computed_at_ms: Number(artifact.geometryComputedAtMs),
       sensor_to_scan: artifact.registration.sensor_to_scan,
@@ -281,7 +336,7 @@ export function encodeVoxelPreviewArtifact(artifact: VoxelPreviewArtifact): Uint
   const result = new Uint8Array(totalBytes);
   result.set(MAGIC, 0);
   const view = new DataView(result.buffer);
-  view.setUint16(8, VERSION, true);
+  view.setUint16(8, artifact.registration === null ? LEGACY_VERSION : VERSION, true);
   view.setUint16(10, headerBytes, true);
   view.setUint32(12, artifact.sourceScanCrc32, true);
   view.setBigUint64(16, artifact.geometryComputedAtMs, true);
@@ -308,7 +363,7 @@ export function encodeVoxelPreviewArtifact(artifact: VoxelPreviewArtifact): Uint
     previous = index;
   }
   result.set(faceMasks, offset);
-  view.setUint32(totalBytes - 4, occupancyCrc32(result.subarray(0, totalBytes - 4)), true);
+  view.setUint32(totalBytes - 4, crc32(result.subarray(0, totalBytes - 4)), true);
   return result;
 }
 
@@ -317,11 +372,12 @@ export function decodeVoxelPreviewArtifact(source: ArrayBuffer | Uint8Array, exp
   if (bytes.byteLength < BASE_HEADER_BYTES + 4 || bytes.byteLength > MAX_VOXEL_PREVIEW_BYTES) throw new Error('Invalid voxel preview size.');
   for (let i = 0; i < MAGIC.length; i += 1) if (bytes[i] !== MAGIC[i]) throw new Error('Voxel preview magic mismatch.');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (view.getUint16(8, true) !== VERSION) throw new Error('Unsupported voxel preview version.');
+  const version = view.getUint16(8, true);
+  if (version !== LEGACY_VERSION && version !== VERSION) throw new Error('Unsupported voxel preview version.');
   const headerBytes = view.getUint16(10, true);
   const registered = view.getUint8(24);
   if (registered > 1 || headerBytes !== (registered ? REGISTERED_HEADER_BYTES : BASE_HEADER_BYTES)) throw new Error('Voxel preview header length is invalid.');
-  if (occupancyCrc32(bytes.subarray(0, bytes.byteLength - 4)) !== view.getUint32(bytes.byteLength - 4, true)) throw new Error('Voxel preview CRC mismatch.');
+  if (crc32(bytes.subarray(0, bytes.byteLength - 4)) !== view.getUint32(bytes.byteLength - 4, true)) throw new Error('Voxel preview CRC mismatch.');
 
   const dimensions: [number, number, number] = [view.getUint16(26, true), view.getUint16(28, true), view.getUint16(30, true)];
   if (dimensions.some((value) => value === 0)) throw new Error('Voxel preview dimensions are invalid.');
@@ -334,17 +390,18 @@ export function decodeVoxelPreviewArtifact(source: ArrayBuffer | Uint8Array, exp
   if (voxelCount > MAX_VOXEL_PREVIEW_COUNT || voxelCount > volume) throw new Error('Voxel preview count exceeds the grid or hard limit.');
   if (headerBytes + voxelCount * (indexWidth + 1) + 4 !== bytes.byteLength) throw new Error('Voxel preview counts disagree with its length.');
 
-  const geometryComputedAtMs = view.getBigUint64(16, true);
+  const encodedGeometryComputedAtMs = view.getBigUint64(16, true);
   const origin: [number, number, number] = [view.getFloat32(32, true), view.getFloat32(36, true), view.getFloat32(40, true)];
   const voxelSizeMeters = view.getFloat32(44, true);
   if (!origin.every(Number.isFinite) || !Number.isFinite(voxelSizeMeters) || voxelSizeMeters <= 0) throw new Error('Voxel preview geometry is invalid.');
   let registration: VoxelPreviewRegistration | null = null;
   if (registered) {
     const sensor_to_scan = Array.from({ length: 16 }, (_, i) => view.getFloat32(BASE_HEADER_BYTES + i * 4, true));
-    const checked = rigidRegistration({ source: 'preview', geometry_computed_at_ms: Number(geometryComputedAtMs), sensor_to_scan, residual_m: 0 });
-    if (checked === null || BigInt(checked.geometry_computed_at_ms) !== geometryComputedAtMs) throw new Error('Voxel preview registration is invalid.');
-    registration = checked;
-  } else if (geometryComputedAtMs !== 0n) throw new Error('Unregistered voxel preview has a geometry timestamp.');
+    const checked = rigidRegistration({ frame: 'project_z_up', source: 'preview', geometry_computed_at_ms: Number(encodedGeometryComputedAtMs), sensor_to_scan, residual_m: 0 });
+    if (checked === null || BigInt(checked.geometry_computed_at_ms) !== encodedGeometryComputedAtMs) throw new Error('Voxel preview registration is invalid.');
+    if (version === VERSION) registration = checked;
+  } else if (encodedGeometryComputedAtMs !== 0n) throw new Error('Unregistered voxel preview has a geometry timestamp.');
+  const geometryComputedAtMs = registration === null ? 0n : encodedGeometryComputedAtMs;
 
   const indices = new Uint32Array(voxelCount);
   const faceMasks = new Uint8Array(voxelCount);

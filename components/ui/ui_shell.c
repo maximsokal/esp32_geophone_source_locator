@@ -517,6 +517,83 @@ void ui_render_boot_locked(const char *stage)
 }
 
 
+void ui_render_boot_format_progress_locked(unsigned percent)
+{
+    if (percent > 100U) {
+        percent = 100U;
+    }
+
+    lv_obj_t *screen = ui_create_screen_base_locked(
+        ui_tr(UI_I18N_KEY_BOOT_RECOVERY_TITLE),
+        ui_tr(UI_I18N_KEY_BOOT_FOOTER)
+    );
+    if (screen == NULL) {
+        return;
+    }
+
+    lv_obj_t *card = ui_create_card_locked(screen, 18, 48, 284, 148);
+    if (card == NULL) {
+        return;
+    }
+
+    (void)ui_create_label_locked(
+        card,
+        18,
+        14,
+        248,
+        ui_tr(UI_I18N_KEY_BOOT_STARTUP),
+        UI_COLOR_ACCENT
+    );
+    (void)ui_create_label_locked(
+        card,
+        18,
+        43,
+        248,
+        ui_tr(UI_I18N_KEY_BOOT_FORMAT_PROGRESS),
+        UI_COLOR_TEXT
+    );
+    (void)ui_create_label_locked(
+        card,
+        18,
+        64,
+        248,
+        ui_tr(UI_I18N_KEY_BOOT_FORMAT_DO_NOT_POWER_OFF),
+        UI_COLOR_WARNING
+    );
+
+    lv_obj_t *bar = lv_bar_create(card);
+    if (bar == NULL) {
+        return;
+    }
+
+    lv_obj_set_pos(bar, 18, 91);
+    lv_obj_set_size(bar, 248, 10);
+    lv_bar_set_range(bar, 0, 100);
+    lv_bar_set_value(bar, (int)percent, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(
+        bar,
+        lv_color_hex(UI_COLOR_PANEL_ALT),
+        LV_PART_MAIN
+    );
+    lv_obj_set_style_bg_color(
+        bar,
+        lv_color_hex(UI_COLOR_ACCENT),
+        LV_PART_INDICATOR
+    );
+
+    char percent_text[8];
+    (void)snprintf(percent_text, sizeof(percent_text), "%u%%", percent);
+    (void)ui_create_label_locked(
+        card,
+        230,
+        108,
+        36,
+        percent_text,
+        UI_COLOR_MUTED
+    );
+}
+
+
 void ui_render_current_locked(void)
 {
     ui_screen_render_locked(ui_context()->screen);

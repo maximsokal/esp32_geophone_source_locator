@@ -9,16 +9,63 @@
 #include "ad7606_driver.h"
 #include "ad7606_power_policy.h"
 #include "app_task_config.h"
+#include "hw_inventory.h"
+#include "seismic_source_ad7606_inventory_policy.h"
+
+
+static seismic_source_ad7606_start_failure_stage_t
+seismic_source_ad7606_start_failure_stage(esp_err_t err)
+{
+    if (err == ESP_ERR_INVALID_STATE) {
+        ad7606_acquisition_status_t status;
+        if (ad7606_acquisition_get_status(&status) == ESP_OK &&
+            status.power_fault_latched &&
+            status.power_gate == AD7606_POWER_GATE_RAIL_LOW) {
+            return SEISMIC_SOURCE_AD7606_START_FAILURE_RAIL_GATE;
+        }
+    }
+
+    if (err == ESP_ERR_TIMEOUT) {
+        ad7606_serial_observation_t observation;
+        /* Self-test BUSY waits finish before a serial read or after its
+         * successful serial read; SPI polling timeout has conversion_complete
+         * set but spi_transaction_ok clear. */
+        if (ad7606_driver_get_last_serial_observation(&observation) == ESP_OK &&
+            (!observation.conversion_complete || observation.spi_transaction_ok)) {
+            return SEISMIC_SOURCE_AD7606_START_FAILURE_BUSY_TIMEOUT;
+        }
+    }
+
+    return SEISMIC_SOURCE_AD7606_START_FAILURE_UNRESOLVED;
+}
 
 
 static esp_err_t seismic_source_ad7606_start(void)
 {
     esp_err_t err = ad7606_acquisition_start();
     if (err != ESP_OK) {
+        const seismic_source_ad7606_start_failure_t failure =
+            seismic_source_ad7606_classify_start_failure(
+                err,
+                seismic_source_ad7606_start_failure_stage(err)
+            );
+        hw_inventory_report(HW_MODULE_AD7606, failure.state, failure.reason);
         return err;
     }
 
     err = ad7606_driver_presence_monitor_start();
+    const char *presence_reason = "presence probe failed";
+    if (err == ESP_OK) {
+        presence_reason = "busy responds";
+    } else if (err == ESP_ERR_NOT_FOUND) {
+        presence_reason = "no BUSY response";
+    }
+    hw_inventory_report(
+        HW_MODULE_AD7606,
+        hw_inventory_classify_probe_error(err),
+        presence_reason
+    );
+
     if (err != ESP_OK) {
         ad7606_acquisition_stop();
         return err;

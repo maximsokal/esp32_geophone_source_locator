@@ -75,6 +75,7 @@ typedef struct
     bool consensus_ambiguous;
     size_t subsets_evaluated;
     size_t irls_iterations;
+    bool iteration_limit_reached;
 
     /* inliers - (spatial unknowns + 1); <= 0 means the fit cannot confirm
      * itself. */

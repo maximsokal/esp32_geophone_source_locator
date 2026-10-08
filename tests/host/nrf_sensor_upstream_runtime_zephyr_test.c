@@ -9,6 +9,7 @@
 #include <zephyr/kernel.h>
 
 #include "nrf_blue_led.h"
+#include "nrf_logger_led_zephyr.h"
 #include "nrf_log_events.h"
 #include "nrf_log_runtime_zephyr.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
@@ -83,6 +84,28 @@ void nrf_log_runtime_zephyr_append_event(uint16_t event_id, uint32_t arg0, uint3
     s_log_events[s_log_event_count].arg0 = arg0;
     s_log_events[s_log_event_count].arg1 = arg1;
     ++s_log_event_count;
+}
+
+nrf_log_error_t nrf_log_runtime_zephyr_get_led_counters(
+    nrf_log_runtime_zephyr_led_counters_t *counters)
+{
+    if (counters == NULL) {
+        return NRF_LOG_ERROR_NULL_ARGUMENT;
+    }
+    memset(counters, 0, sizeof(*counters));
+    return NRF_LOG_ERROR_OK;
+}
+
+nrf_logger_led_zephyr_result_t nrf_logger_led_zephyr_apply(
+    const nrf_logger_led_output_t *output)
+{
+    assert(output != NULL);
+    return NRF_LOGGER_LED_ZEPHYR_OK;
+}
+
+bool nrf_logger_led_zephyr_init_fatal(void)
+{
+    return false;
 }
 
 static unsigned log_event_count(uint16_t event_id)

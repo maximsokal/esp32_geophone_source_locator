@@ -652,10 +652,24 @@ static void test_session_range_v1_preserves_timestamps_and_bounds(void)
         "OBJ_0001", session, 3U, 4U, frames, indices, gaps, &count, &summary
     ) == ESP_OK);
     assert(count == 4U && summary.format_version == SEISMIC_RECORDER_BINARY_VERSION_V1);
+    seismic_frame_t ex_frames[5] = {0};
+    uint64_t ex_indices[5] = {0};
+    bool ex_gaps[5] = {false};
+    size_t ex_count = 0U;
+    seismic_recorder_raw_window_stats_t raw_stats;
+    assert(seismic_recorder_read_session_range_ex(
+        "OBJ_0001", session, 3U, 4U, ex_frames, ex_indices, ex_gaps,
+        &ex_count, NULL, &raw_stats
+    ) == ESP_OK);
+    assert(ex_count == count && raw_stats.samples_examined == 0U);
     for (size_t i = 0U; i < count; ++i) {
         assert(frames[i].timestamp_us == written[i + 3U].timestamp_us);
         assert(indices[i] == (uint64_t)i + 3U);
         assert(!gaps[i]);
+        assert(ex_frames[i].timestamp_us == frames[i].timestamp_us);
+        assert(ex_indices[i] == indices[i] && ex_gaps[i] == gaps[i]);
+        assert(memcmp(ex_frames[i].channel_uv, frames[i].channel_uv,
+                      sizeof(frames[i].channel_uv)) == 0);
     }
 
     count = 99U;
@@ -707,11 +721,25 @@ static void test_session_range_v2_seeks_blocks_and_preserves_gaps(void)
         "OBJ_0001", session, 254U, 8U, frames, indices, gaps, &count, NULL
     ) == ESP_OK);
     assert(count == 8U);
+    seismic_frame_t ex_frames[8] = {0};
+    uint64_t ex_indices[8] = {0};
+    bool ex_gaps[8] = {false};
+    size_t ex_count = 0U;
+    seismic_recorder_raw_window_stats_t raw_stats;
+    assert(seismic_recorder_read_session_range_ex(
+        "OBJ_0001", session, 254U, 8U, ex_frames, ex_indices, ex_gaps,
+        &ex_count, NULL, &raw_stats
+    ) == ESP_OK);
+    assert(ex_count == count && raw_stats.samples_examined == count);
     const uint64_t expected_indices[8] = {254U, 255U, 256U, 257U, 261U, 262U, 263U, 264U};
     for (size_t i = 0U; i < count; ++i) {
         assert(indices[i] == expected_indices[i]);
         assert(frames[i].timestamp_us == (int64_t)indices[i] * 2000LL);
         assert(gaps[i] == (i == 4U));
+        assert(ex_indices[i] == indices[i] && ex_gaps[i] == gaps[i]);
+        assert(ex_frames[i].timestamp_us == frames[i].timestamp_us);
+        assert(memcmp(ex_frames[i].channel_uv, frames[i].channel_uv,
+                      sizeof(frames[i].channel_uv)) == 0);
     }
 
     /* An early range must not inspect the later block's header or payload. */

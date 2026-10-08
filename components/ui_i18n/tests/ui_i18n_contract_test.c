@@ -91,6 +91,15 @@ static void test_catalog_lookup_utf8_and_unknown_ids(void)
     }
 }
 
+
+static void test_hardware_remote_count_placeholder_is_localized(void)
+{
+    for (unsigned locale = 0U; locale < 2U; ++locale) {
+        ui_i18n_set_locale(locale == 0U ? UI_LOCALE_EN : UI_LOCALE_UK);
+        assert(strstr(ui_tr(UI_I18N_KEY_TFT_HW_REMOTES), "{count}") != NULL);
+    }
+}
+
 typedef struct {
     bool has_locale;
     bool read_ok;
@@ -153,6 +162,7 @@ static void test_persisted_locale_falls_back_without_touching_other_settings(voi
 int main(void)
 {
     test_catalog_lookup_utf8_and_unknown_ids();
+    test_hardware_remote_count_placeholder_is_localized();
     test_persisted_locale_falls_back_without_touching_other_settings();
     return 0;
 }

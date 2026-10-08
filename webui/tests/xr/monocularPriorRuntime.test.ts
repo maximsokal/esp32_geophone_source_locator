@@ -112,6 +112,10 @@ class DeferredPriorProvider implements MonocularDepthProvider {
   dispose(): void { this.resolvePending = null; }
 }
 
+class ReleasableDeferredPriorProvider extends DeferredPriorProvider {
+  override dispose(): void {}
+}
+
 describe('optional monocular prior runtime', () => {
   it('collects calibration anchors only from physical depth samples', () => {
     const anchors = collectPhysicalMetricAnchors(metricDepth(), guidance(100));
@@ -216,5 +220,19 @@ describe('optional monocular prior runtime', () => {
     const agreement = runtime.surfaceAgreement(0.5, 0.5, 6.5, 200);
     expect(agreement.available).toBe(false);
     expect(agreement.accepted).toBe(true);
+  });
+
+  it('drops an inference result that completes after memory release and keeps calibration empty', async () => {
+    const provider = new ReleasableDeferredPriorProvider();
+    const runtime = new MonocularPriorRuntime(provider);
+    runtime.setEnabled(true);
+    const pending = runtime.maybeUpdate(guidance(100), metricDepth(), 100);
+    await runtime.releaseMemory();
+    provider.resolve();
+
+    expect(await pending).toBe(false);
+    expect(runtime.isBusy).toBe(false);
+    expect(runtime.calibrationConfidence).toBe(0);
+    expect(runtime.surfaceAgreement(0.5, 0.5, 6.5, 200).available).toBe(false);
   });
 });

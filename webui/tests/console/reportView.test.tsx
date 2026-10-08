@@ -14,7 +14,10 @@ import { uk } from '../../src/i18n/catalog.uk.gen';
 import { formatDate, formatNumber } from '../../src/i18n/format';
 
 const api = vi.hoisted(() => ({ fetchLocalizationRuns: vi.fn(), loadObjectScanArtifact: vi.fn() }));
-vi.mock('../../src/api/deviceApi', () => api);
+vi.mock('../../src/api/deviceApi', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/api/deviceApi')>(),
+  ...api,
+}));
 
 afterEach(() => {
   vi.unstubAllGlobals();

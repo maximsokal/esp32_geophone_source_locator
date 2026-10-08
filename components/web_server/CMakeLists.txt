@@ -321,6 +321,8 @@ idf_component_register(
         "web_scan_store.c"
         "web_client_log.c"
         "web_status_json.c"
+        "web_cjson_hooks.c"
+        "web_status_json_hardware.c"
         "web_status_json_ranging.c"
         "web_status_policy.c"
         "web_status_cache_arbitration.c"
@@ -332,6 +334,7 @@ idf_component_register(
         "web_seismic_api.c"
         "web_seismic_page.c"
         "web_localization_api.c"
+        "web_localization_storage.c"
         "web_wifi_setup.c"
         "web_wifi_setup_page.c"
         "web_wifi_setup_request.c"
@@ -350,6 +353,7 @@ idf_component_register(
         app_config
         app_events
         device_status
+        hw_inventory
         localization_calculate
         localization_job
         localization_results

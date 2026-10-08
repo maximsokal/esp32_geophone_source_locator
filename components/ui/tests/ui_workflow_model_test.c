@@ -115,11 +115,12 @@ static void test_sensor_counts(void)
 {
     static const ui_i18n_key_t expected[] = {
         UI_I18N_KEY_TFT_WORKFLOW_SENSOR_INSUFFICIENT,
+        UI_I18N_KEY_TFT_WORKFLOW_SENSOR_INSUFFICIENT,
         UI_I18N_KEY_TFT_WORKFLOW_SENSOR_PLANAR,
         UI_I18N_KEY_TFT_WORKFLOW_SENSOR_READY,
         UI_I18N_KEY_TFT_WORKFLOW_SENSOR_READY,
     };
-    static const unsigned counts[] = {2U, 3U, 4U, 5U};
+    static const unsigned counts[] = {1U, 2U, 3U, 4U, 5U};
     ui_workflow_model_state_t state = {0};
     ui_workflow_ranging_t ranging = {0};
     ui_workflow_model_t model;

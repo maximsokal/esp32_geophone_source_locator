@@ -314,7 +314,7 @@ static void workflow_service_refresh_calc_settings_locked(uint64_t now_ms)
         s_calc_velocity_range_max_mps = 0.0f;
         if (s_active_object_id[0] != '\0') {
             char *json = NULL;
-            if (object_store_get_calc_settings_json(s_active_object_id, &json) == ESP_OK && json != NULL) {
+            if (object_store_get_calc_settings_json_cached(s_active_object_id, &json) == ESP_OK && json != NULL) {
                 uint32_t budget_ms = 0U;
                 bool range_present = false;
                 s_calc_settings_ready = workflow_service_parse_calc_settings_locked(
@@ -1217,7 +1217,7 @@ static void workflow_service_calculation_start_locked(void)
     uint32_t budget_ms = 0U;
     esp_err_t err = s_active_object_id[0] == '\0'
         ? ESP_ERR_NOT_FOUND
-        : object_store_get_calc_settings_json(s_active_object_id, &json);
+        : object_store_get_calc_settings_json_cached(s_active_object_id, &json);
     if (err == ESP_OK && json != NULL) {
         err = workflow_service_parse_calc_settings_locked(
             json, &budget_ms, &s_poll_scratch.calculation_config, NULL, NULL);
@@ -1440,8 +1440,8 @@ static void workflow_service_snapshot_locked(workflow_snapshot_t *snapshot)
  * Poll waits indefinitely for the workflow mutex; measurement, object-service,
  * topology/calibration/ranging, and localization-job getters may also wait on
  * their service mutexes. Device-status reads are try-only. Presence refresh
- * takes object-store/storage guards and touches SD (scan stat plus settings
- * read/JSON parse) only on identity changes or at most every 2 s. The task is
+ * checks scan presence and uses the object store's cached settings snapshot;
+ * settings file reads occur on a cold cache or generation change. The task is
  * low priority and the LVGL path uses try_get_snapshot(), never this poll.
  */
 esp_err_t workflow_service_poll(void)

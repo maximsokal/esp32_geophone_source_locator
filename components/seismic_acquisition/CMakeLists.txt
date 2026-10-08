@@ -4,8 +4,8 @@ idf_component_register(
         "seismic_source_registry.c"
         "seismic_source_common.c"
         "seismic_source_test.c"
-        "seismic_source_esp_adc.c"
         "seismic_source_ad7606.c"
+        "seismic_source_ad7606_inventory_policy.c"
 
     INCLUDE_DIRS
         "include"
@@ -20,13 +20,15 @@ idf_component_register(
     # Because each adapter is a separate object file, unselected adapters
     # and their backend archives remain unreferenced and can be omitted
     # from the final ELF by normal static-library resolution / GC.
+    REQUIRES
+        hw_inventory
+
     PRIV_REQUIRES
         ad7606_acquisition
         ad7606_driver
         app_config
         device_status
         freertos
-        geophone_adc_test
         seismic_buffer
         seismic_test_generator
         log

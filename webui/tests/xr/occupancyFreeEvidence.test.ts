@@ -64,6 +64,26 @@ describe('solver-specific physical FREE evidence', () => {
     }
   });
 
+  it('backs the bounded snapshot with exactly the relevant output, in the unbounded order (MAX-409)', () => {
+    const grid = buildFreeEvidence();
+    const all = grid.freeSpaceEvidenceSnapshot();
+    const bounds = { min: [-2, 0.36, -2], max: [2, 0.90, 2] } as const;
+    const bounded = grid.freeSpaceEvidenceSnapshot({ min: [...bounds.min], max: [...bounds.max] });
+
+    expect(bounded.freeAirPositions.buffer.byteLength).toBe(bounded.includedFreeVoxelCount * 3 * Float32Array.BYTES_PER_ELEMENT);
+    expect(bounded.freeAirPositions.byteOffset).toBe(0);
+    expect(all.freeAirPositions.buffer.byteLength).toBe(all.freeAirPositions.byteLength);
+
+    const expected: number[] = [];
+    for (let index = 0; index < all.freeAirPositions.length; index += 3) {
+      const y = all.freeAirPositions[index + 1];
+      if (y >= 0.36 && y <= 0.90) {
+        expected.push(all.freeAirPositions[index], y, all.freeAirPositions[index + 2]);
+      }
+    }
+    expect(Array.from(bounded.freeAirPositions)).toEqual(expected);
+  });
+
   it('spatially filters solver evidence without changing FREE classification or exact global count', () => {
     const grid = buildFreeEvidence();
     const all = grid.freeSpaceEvidenceSnapshot();

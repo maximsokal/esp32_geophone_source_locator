@@ -70,24 +70,6 @@ def test_ad7606_replay_reports_adc_and_timer_aggregates(tmp_path: Path):
     assert "PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED" in result.stdout
 
 
-def test_esp_adc_bench_replay_uses_the_reported_backend_rate(tmp_path: Path):
-    path = tmp_path / "esp-adc-bench.log"
-    path.write_text(
-        timing_log(
-            "ESP_ADC_BENCH",
-            "W GEOPHONE_ADC: ESP ADC bench enabled: GPIO1 at 500 Hz core=1",
-        ),
-        encoding="utf-8",
-    )
-
-    result = run_replay(path, "-Source", "ESP_ADC_BENCH")
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "ESP_ADC_BENCH backend marker reports 500Hz" in result.stdout
-    assert "KEYPAD_TIMING_TELEMETRY_RESULT: PASS" in result.stdout
-    assert "PERFORMANCE_ACCEPTANCE: NOT_ESTABLISHED" in result.stdout
-
-
 def test_default_rate_accepts_reported_20khz_and_override_can_reject_it(tmp_path: Path):
     path = tmp_path / "ad7606-20khz.log"
     path.write_text(

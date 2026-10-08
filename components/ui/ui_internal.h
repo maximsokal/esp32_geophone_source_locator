@@ -87,6 +87,7 @@ typedef struct
 
     ui_screen_t screen;
     size_t selected;
+    bool home_required_missing;
 
     lv_obj_t *home_rows[UI_HOME_SCREEN_COUNT];
 
@@ -115,6 +116,8 @@ typedef struct
     lv_obj_t *system_psram;
     lv_obj_t *system_uptime;
     ui_locale_t system_language_selection;
+    bool system_hardware_open;
+    bool system_hardware_selected;
 
     ui_objects_mode_t objects_mode;
     size_t object_action;
@@ -166,6 +169,23 @@ void ui_render_boot_locked(
 
 void ui_render_boot_error_locked(
     const char *message
+);
+
+void ui_render_boot_recovery_locked(
+    const char *reason,
+    const char *technical_code,
+    const char *warning,
+    const char *primary_hint,
+    const char *retry_hint,
+    const char *cancel_hint
+);
+
+void ui_render_boot_format_progress_locked(unsigned percent);
+
+void ui_render_boot_recovery_result_locked(
+    bool success,
+    bool formatted,
+    const char *error_name
 );
 
 void ui_render_current_locked(void);
@@ -242,6 +262,7 @@ void ui_screen_refresh_locked(
 
 /* Screen renderers. */
 void ui_render_home_locked(void);
+void ui_home_refresh_locked(void);
 void ui_render_measurements_locked(void);
 void ui_measurements_refresh_locked(void);
 void ui_render_objects_locked(void);
@@ -250,6 +271,7 @@ void ui_render_wifi_locked(void);
 void ui_render_system_locked(void);
 void ui_system_refresh_locked(void);
 void ui_system_handle_key_locked(keypad_key_t key);
+void ui_render_hardware_locked(void);
 void ui_system_handle_key_locked(keypad_key_t key);
 void ui_workflow_screen_open_locked(void);
 void ui_workflow_screen_close_locked(void);

@@ -131,15 +131,6 @@ function render(data) {
     }
     else if (
         data.source ===
-        'ESP_ADC_BENCH'
-    ) {
-        setStatus(
-            'BENCH / ESP ADC',
-            'warning'
-        );
-    }
-    else if (
-        data.source ===
         'AD7606'
     ) {
         setStatus(

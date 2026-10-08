@@ -15,6 +15,7 @@
 
 #include "spi_bus.h"
 #include "storage_manager_internal.h"
+#include "storage_manager_slow_op_policy.h"
 
 
 #ifndef S_ISDIR
@@ -62,6 +63,48 @@ static int64_t s_outer_mutex_wait_us =
 
 static int64_t s_outer_tft_quiesce_us =
     0;
+
+/* Concurrent callers may occasionally duplicate or suppress a diagnostic;
+ * each fixed-size scalar slot remains valid without a lock or heap storage. */
+static storage_manager_slow_op_state_t s_slow_op_state;
+
+
+enum
+{
+    STORAGE_MANAGER_SLOW_OP_SOURCE_BEGIN_FAILED = 0U,
+    STORAGE_MANAGER_SLOW_OP_SOURCE_END = 1U
+};
+
+
+static void storage_manager_log_slow_op(
+    size_t source_id,
+    const char *operation,
+    int64_t elapsed_us
+)
+{
+    const uint32_t elapsed_ms =
+        storage_manager_slow_op_elapsed_ms(elapsed_us);
+    const int64_t now_us = esp_timer_get_time();
+    const uint32_t now_ms = now_us > 0
+        ? (uint32_t)(now_us / 1000LL)
+        : 0U;
+
+    if (
+        storage_manager_slow_op_should_warn(
+            &s_slow_op_state,
+            source_id,
+            now_ms,
+            elapsed_ms
+        )
+    ) {
+        ESP_LOGW(
+            TAG,
+            "STORAGE_SLOW op=%s elapsed_ms=%u",
+            operation,
+            (unsigned)elapsed_ms
+        );
+    }
+}
 
 
 static void storage_manager_log_dma_headroom(
@@ -417,6 +460,11 @@ esp_err_t storage_manager_operation_begin(void)
                 s_operation_mutex
             );
 
+            storage_manager_log_slow_op(
+                STORAGE_MANAGER_SLOW_OP_SOURCE_BEGIN_FAILED,
+                "begin-failed",
+                elapsed_us
+            );
             ESP_LOGI(
                 TAG,
                 "STORAGE_OP_TIMING stage=begin-failed mutex_wait_us=%lld tft_quiesce_us=%lld depth=%u result=%d elapsed_us=%lld",
@@ -456,6 +504,11 @@ esp_err_t storage_manager_operation_begin(void)
                 s_operation_depth;
             s_outer_operation_started_us = 0;
             xSemaphoreGiveRecursive(s_operation_mutex);
+            storage_manager_log_slow_op(
+                STORAGE_MANAGER_SLOW_OP_SOURCE_BEGIN_FAILED,
+                "begin-failed",
+                elapsed_us
+            );
             ESP_LOGI(
                 TAG,
                 "STORAGE_OP_TIMING stage=begin-failed mutex_wait_us=%lld tft_quiesce_us=%lld depth=%u result=%d elapsed_us=%lld",
@@ -586,6 +639,11 @@ void storage_manager_operation_end(void)
             s_operation_mutex
         );
 
+        storage_manager_log_slow_op(
+            STORAGE_MANAGER_SLOW_OP_SOURCE_END,
+            "end",
+            elapsed_us
+        );
         ESP_LOGI(
             TAG,
             "STORAGE_OP_TIMING stage=end mutex_wait_us=%lld tft_resume_us=%lld depth=%u elapsed_us=%lld",

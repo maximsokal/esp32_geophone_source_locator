@@ -1,6 +1,13 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './console.css';
-import { capturePhoneLocation, fetchDeviceStatus, sendControl, sendWorkflowCommand } from './api/deviceApi';
+import {
+  capturePhoneLocation,
+  fetchDeviceStatus,
+  isStorageAvailabilityError,
+  sendControl,
+  sendWorkflowCommand,
+} from './api/deviceApi';
+import { DeviceStatusValidationError } from './api/deviceStatusSchema';
 import type {
   DeviceStatus,
   ObjectStoreState,
@@ -23,13 +30,14 @@ import {
 } from './features/objects/measurementTransition';
 import SensorsFeature from './features/sensors/SensorsFeature';
 import PowerBanner from './components/PowerBanner';
+import StorageUnavailableBanner from './components/StorageUnavailableBanner';
 import { formatErrorText, TranslatedError, useLocale, useT } from './i18n';
+import ScannerFeatureHost from './features/scanner/ScannerFeatureHost';
 import WorkflowPanel from './features/workflow/WorkflowPanel';
 import { workflowStatusPollDelay } from './features/workflow/workflowPolling';
 
-const XrScannerFeature = lazy(() => import('./App'));
-
 type Screen = 'dashboard' | 'objects' | 'sensors' | 'workflow' | 'scanner';
+const MAX_CONSOLE_ERROR_LENGTH = 200;
 
 const LOCAL_OBJECT_MUTATION_ACTIONS = new Set([
   'create_object',
@@ -48,6 +56,25 @@ function transportFailure(message: string): boolean {
   return message.includes('network error') || message.includes('timeout');
 }
 
+function boundErrorText(message: string): string {
+  return message.length <= MAX_CONSOLE_ERROR_LENGTH
+    ? message
+    : `${message.slice(0, MAX_CONSOLE_ERROR_LENGTH - 1)}…`;
+}
+
+function pollingAllowed(): boolean {
+  if (typeof document !== 'undefined' &&
+      (document.visibilityState === 'hidden' || document.hidden === true)) {
+    return false;
+  }
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
+}
+
+interface StatusPollController {
+  onControlSettled: (authoritativeStatusRead: boolean) => void;
+  cadenceChanged: () => void;
+}
+
 export default function DeviceConsoleApp() {
   const { locale, selectedLocale, localeLoading, localeLoadFailed, setLocale } = useLocale();
   const t = useT();
@@ -62,16 +89,27 @@ export default function DeviceConsoleApp() {
   const [linkError, setLinkError] = useState<unknown | null>(null);
   const [workspaceError, setWorkspaceError] = useState<unknown | null>(null);
   const [busy, setBusy] = useState(false);
+  const storageUnavailable = status?.storage_available === false;
+  const storageUnavailableRef = useRef(storageUnavailable);
+  storageUnavailableRef.current = storageUnavailable;
+  const previousStorageUnavailableRef = useRef(storageUnavailable);
   const objectRefreshEpoch = useRef(0);
   const sessionRefreshEpoch = useRef(0);
   const objectsRef = useRef<ObjectStoreState | null>(null);
   const reconcileTimer = useRef<number | null>(null);
+  const controlsInFlightRef = useRef(0);
+  const pollControllerRef = useRef<StatusPollController | null>(null);
+  const storageRecoveryOwedRef = useRef(false);
+  const refreshWorkspaceAfterStorageRecoveryRef = useRef<() => void>(() => undefined);
+  const workflowStepRef = useRef(status?.workflow?.step);
+  workflowStepRef.current = status?.workflow?.step;
 
   const refreshStatus = useCallback(async (): Promise<boolean> => {
     try {
       const next = await fetchDeviceStatus(false);
       setStatus(next);
       setLinkError(null);
+      setWorkspaceError((current: unknown) => current instanceof DeviceStatusValidationError ? null : current);
       return true;
     }
     catch (reason) {
@@ -85,9 +123,26 @@ export default function DeviceConsoleApp() {
     selectionMode: ObjectSelectionMode = 'preserve',
   ): Promise<ObjectStoreState | null> => {
     const epoch = ++objectRefreshEpoch.current;
+    if (storageUnavailableRef.current) {
+      objectsRef.current = null;
+      setObjects(null);
+      setSessions(null);
+      setWorkspaceError(null);
+      return null;
+    }
     try {
       const next = await fetchDeviceStatus(true);
       if (epoch !== objectRefreshEpoch.current) return null;
+
+      if (next.storage_available === false) {
+        setStatus(next);
+        objectsRef.current = null;
+        setObjects(null);
+        setSessions(null);
+        setLinkError(null);
+        setWorkspaceError(null);
+        return null;
+      }
 
       const nextStore = next.object_store ?? null;
       setStatus(next);
@@ -110,6 +165,7 @@ export default function DeviceConsoleApp() {
     catch (reason) {
       if (epoch !== objectRefreshEpoch.current) return null;
       setWorkspaceError(reason);
+      if (reason instanceof DeviceStatusValidationError) setLinkError(reason);
       return null;
     }
   }, []);
@@ -120,22 +176,41 @@ export default function DeviceConsoleApp() {
       setSessions(null);
       return true;
     }
+    if (storageUnavailableRef.current) {
+      setSessions(null);
+      return false;
+    }
 
     try {
       /* Sessions are an SD model of one object; do not re-read every object profile. */
       const next = await fetchDeviceStatus(false, objectId);
       if (epoch !== sessionRefreshEpoch.current) return true;
       setStatus(next);
+      if (next.storage_available === false) {
+        objectsRef.current = null;
+        setObjects(null);
+        setSessions(null);
+        setLinkError(null);
+        setWorkspaceError(null);
+        return false;
+      }
       setSessions(next.recording_sessions ?? null);
       setLinkError(null);
+      setWorkspaceError((current: unknown) => current instanceof DeviceStatusValidationError ? null : current);
       return next.recording_sessions?.available !== false;
     }
     catch (reason) {
       if (epoch !== sessionRefreshEpoch.current) return false;
       setWorkspaceError(reason);
+      if (reason instanceof DeviceStatusValidationError) setLinkError(reason);
       return false;
     }
   }, []);
+
+  refreshWorkspaceAfterStorageRecoveryRef.current = () => {
+    void refreshObjects();
+    if (screen === 'objects') void refreshSessions(selectedId);
+  };
 
   const scheduleObjectReconcile = useCallback((selectionMode: ObjectSelectionMode): void => {
     if (reconcileTimer.current !== null) {
@@ -148,35 +223,166 @@ export default function DeviceConsoleApp() {
   }, [refreshObjects]);
 
   /*
-   * ESP HTTPS is intentionally low-concurrency. Poll slowly enough that status
-   * remains useful without competing with SD-backed controls or session reads.
-   * deviceApi serializes the actual fetches, so a poll waits behind a mutation
-   * instead of opening another TLS request while the ESP is busy writing FATFS.
+   * Poll ownership contract: hidden/offline pauses clear the timer; resume does
+   * one immediate read and then restores cadence. A tick during a control is
+   * owed once; the final control's successful transition read satisfies it,
+   * otherwise one immediate read runs after that control settles.
    */
   useEffect(() => {
     let cancelled = false;
     let timer: number | null = null;
     let failures = 0;
+    let readInFlight = false;
+    let refreshOwed = false;
+    let wasAllowed = pollingAllowed();
 
-    const poll = async (): Promise<void> => {
+    const clearTimer = (): void => {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    let poll: () => Promise<void>;
+    const schedule = (delay: number): void => {
+      if (cancelled || !pollingAllowed()) return;
+      clearTimer();
+      timer = window.setTimeout(() => {
+        timer = null;
+        void poll();
+      }, delay);
+    };
+
+    poll = async (): Promise<void> => {
+      if (cancelled || !pollingAllowed()) {
+        clearTimer();
+        return;
+      }
+      if (controlsInFlightRef.current > 0) {
+        refreshOwed = true;
+        schedule(workflowStatusPollDelay(workflowStepRef.current, true, 0));
+        return;
+      }
+      if (readInFlight) return;
+
+      refreshOwed = false;
+      readInFlight = true;
       const ok = await refreshStatus();
+      readInFlight = false;
       if (cancelled) return;
       failures = ok ? 0 : Math.min(failures + 1, 4);
-      const delay = workflowStatusPollDelay(status?.workflow?.step, ok, failures);
-      timer = window.setTimeout(() => void poll(), delay);
+      if (!pollingAllowed()) return;
+      if (controlsInFlightRef.current === 0 && refreshOwed) {
+        refreshOwed = false;
+        clearTimer();
+        void poll();
+        return;
+      }
+      schedule(workflowStatusPollDelay(workflowStepRef.current, ok, failures));
     };
 
-    timer = window.setTimeout(() => void poll(), workflowStatusPollDelay(status?.workflow?.step, true, 0));
+    const onEnvironmentChange = (): void => {
+      const allowed = pollingAllowed();
+      if (!allowed) {
+        wasAllowed = false;
+        clearTimer();
+        return;
+      }
+      if (!wasAllowed) {
+        wasAllowed = true;
+        clearTimer();
+        void poll();
+      }
+    };
+
+    const visibilityDocument = typeof document === 'undefined' ? undefined : document;
+    const browserWindow = typeof window === 'undefined' ? undefined : window;
+    if (typeof visibilityDocument?.addEventListener === 'function') {
+      visibilityDocument.addEventListener('visibilitychange', onEnvironmentChange);
+    }
+    if (typeof browserWindow?.addEventListener === 'function') {
+      browserWindow.addEventListener('online', onEnvironmentChange);
+      browserWindow.addEventListener('offline', onEnvironmentChange);
+    }
+
+    pollControllerRef.current = {
+      onControlSettled: (authoritativeStatusRead) => {
+        if (controlsInFlightRef.current > 0) return;
+        if (authoritativeStatusRead) {
+          refreshOwed = false;
+          clearTimer();
+          if (!readInFlight && pollingAllowed()) {
+            schedule(workflowStatusPollDelay(workflowStepRef.current, true, 0));
+          }
+          return;
+        }
+        if (!refreshOwed || !pollingAllowed()) return;
+        if (readInFlight) {
+          clearTimer();
+          return;
+        }
+        refreshOwed = false;
+        clearTimer();
+        void poll();
+      },
+      cadenceChanged: () => {
+        failures = 0;
+        clearTimer();
+        if (!readInFlight && pollingAllowed()) {
+          schedule(workflowStatusPollDelay(workflowStepRef.current, true, 0));
+        }
+      },
+    };
+
+    if (wasAllowed) schedule(workflowStatusPollDelay(workflowStepRef.current, true, 0));
     return () => {
       cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
+      clearTimer();
+      if (pollControllerRef.current !== null) pollControllerRef.current = null;
+      /* MAX-387 integration point -- when deviceApi exposes a request owner, own the poll reads here and retire the owner on hidden/offline/unmount. */
+      if (typeof visibilityDocument?.removeEventListener === 'function') {
+        visibilityDocument.removeEventListener('visibilitychange', onEnvironmentChange);
+      }
+      if (typeof browserWindow?.removeEventListener === 'function') {
+        browserWindow.removeEventListener('online', onEnvironmentChange);
+        browserWindow.removeEventListener('offline', onEnvironmentChange);
+      }
     };
-  }, [refreshStatus, status?.workflow?.step]);
+  }, [refreshStatus]);
+
+  const pollCadence = workflowStatusPollDelay(status?.workflow?.step, true, 0);
+  const previousPollCadence = useRef(pollCadence);
+  useEffect(() => {
+    if (previousPollCadence.current === pollCadence) return;
+    previousPollCadence.current = pollCadence;
+    pollControllerRef.current?.cadenceChanged();
+  }, [pollCadence]);
 
   /* Populate Home/Objects from one extended request. */
   useEffect(() => {
     void refreshObjects();
   }, [refreshObjects]);
+
+  useEffect(() => {
+    const wasUnavailable = previousStorageUnavailableRef.current;
+    previousStorageUnavailableRef.current = storageUnavailable;
+    if (wasUnavailable === storageUnavailable) return;
+    if (storageUnavailable) {
+      objectRefreshEpoch.current += 1;
+      sessionRefreshEpoch.current += 1;
+      objectsRef.current = null;
+      setObjects(null);
+      setSessions(null);
+      setWorkspaceError(null);
+      return;
+    }
+    /* Refill the object cache once after recovery instead of replaying every screen effect. */
+    if (controlsInFlightRef.current > 0) {
+      storageRecoveryOwedRef.current = true;
+      return;
+    }
+    refreshWorkspaceAfterStorageRecoveryRef.current();
+  }, [refreshSessions, refreshObjects, screen, selectedId, storageUnavailable]);
 
   /*
    * Reconcile the complete object database infrequently. Confirmed web writes
@@ -188,7 +394,9 @@ export default function DeviceConsoleApp() {
     if (screen !== 'objects') return undefined;
 
     void refreshObjects();
-    const slow = window.setInterval(() => void refreshObjects(), 60000);
+    const slow = window.setInterval(() => {
+      if (pollingAllowed() && controlsInFlightRef.current === 0) void refreshObjects();
+    }, 60000);
     return () => window.clearInterval(slow);
   }, [refreshObjects, screen]);
 
@@ -209,7 +417,14 @@ export default function DeviceConsoleApp() {
   ): Promise<boolean> => {
     const followsActive = action === 'create_object' || action === 'activate_object';
     const selectionMode: ObjectSelectionMode = followsActive ? 'active' : 'preserve';
+    let authoritativeStatusRead = false;
+    const readTransitionStatus = async (): Promise<DeviceStatus> => {
+      const next = await fetchDeviceStatus(false);
+      authoritativeStatusRead = true;
+      return next;
+    };
 
+    controlsInFlightRef.current += 1;
     setBusy(true);
     try {
       return await runAfterControlConfirmation(sendControl(action, payload), async (result) => {
@@ -246,7 +461,7 @@ export default function DeviceConsoleApp() {
          */
         const transitionStatus = await waitForMeasurementTransition(
           action as 'measurement_start' | 'measurement_stop',
-          () => fetchDeviceStatus(false),
+          readTransitionStatus,
         );
         setStatus(transitionStatus);
         if (measurementTransitionNeedsSessionRefresh(
@@ -258,7 +473,7 @@ export default function DeviceConsoleApp() {
            * the cached session list, otherwise the expected 503 becomes a UI
            * error immediately after every STOP. */
           const cacheIdleStatus = await waitForStorageCacheIdle(
-            () => fetchDeviceStatus(false),
+            readTransitionStatus,
           );
           setStatus(cacheIdleStatus);
           const confirmedObjectId = selectedId
@@ -276,7 +491,7 @@ export default function DeviceConsoleApp() {
         }
       }
       else if (!LOCAL_OBJECT_MUTATION_ACTIONS.has(action)) {
-        await refreshStatus();
+        authoritativeStatusRead = await refreshStatus();
       }
 
       return true;
@@ -290,10 +505,11 @@ export default function DeviceConsoleApp() {
        * on SD. A delayed authoritative GET is safe and, unlike the old code,
        * does not block the button handler or race the fast status poll.
        */
-      if (transportFailure(rawMessage) && LOCAL_OBJECT_MUTATION_ACTIONS.has(action)) {
+      const storageAvailabilityFailure = isStorageAvailabilityError(reason);
+      if (!storageAvailabilityFailure && transportFailure(rawMessage) && LOCAL_OBJECT_MUTATION_ACTIONS.has(action)) {
         scheduleObjectReconcile(selectionMode);
       }
-      else if (action === 'measurement_start') {
+      else if (!storageAvailabilityFailure && action === 'measurement_start') {
         /* Reconcile the authoritative selection after a rejected or failed
          * async START; admission itself is reject-safe before activation. */
         scheduleObjectReconcile('active');
@@ -304,6 +520,14 @@ export default function DeviceConsoleApp() {
       return false;
     }
     finally {
+      controlsInFlightRef.current = Math.max(0, controlsInFlightRef.current - 1);
+      if (controlsInFlightRef.current === 0) {
+        if (storageRecoveryOwedRef.current) {
+          storageRecoveryOwedRef.current = false;
+          refreshWorkspaceAfterStorageRecoveryRef.current();
+        }
+        pollControllerRef.current?.onControlSettled(authoritativeStatusRead);
+      }
       setBusy(false);
     }
   }, [refreshSessions, refreshStatus, scheduleObjectReconcile, selectedId]);
@@ -326,9 +550,14 @@ export default function DeviceConsoleApp() {
     return (
       <div className="scanner-feature-shell">
         <button className="console-floating-back" onClick={() => setScreen('objects')}>{t('console.back_object')}</button>
-        <Suspense fallback={<main className="console-loading">{t('console.loading_xr')}</main>}>
-          <XrScannerFeature objectId={scannerObjectId} sessionId={scannerSessionId} status={status} />
-        </Suspense>
+        <StorageUnavailableBanner status={status} />
+        <ScannerFeatureHost
+          objectId={scannerObjectId}
+          sessionId={scannerSessionId}
+          status={status}
+          onBack={() => setScreen('objects')}
+          onDashboard={() => setScreen('dashboard')}
+        />
       </div>
     );
   }
@@ -336,7 +565,7 @@ export default function DeviceConsoleApp() {
   const apiOnline = status !== null && linkError === null;
   const apiLabel = status === null && linkError === null ? t('console.api_connecting') : apiOnline ? t('console.api_link') : t('console.api_error');
   const pageErrorReason = workspaceError ?? linkError;
-  const pageError = pageErrorReason === null ? null : formatErrorText(locale, pageErrorReason);
+  const pageError = pageErrorReason === null ? null : boundErrorText(formatErrorText(locale, pageErrorReason));
 
   return (
     <main className="device-console-shell">
@@ -370,6 +599,7 @@ export default function DeviceConsoleApp() {
       </header>
 
       <PowerBanner status={status} />
+      <StorageUnavailableBanner status={status} />
 
       {screen === 'dashboard' && (
         <DeviceDashboard

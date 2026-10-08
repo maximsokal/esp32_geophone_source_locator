@@ -11,10 +11,9 @@
  */
 #define KEYPAD_DECODE_DEADBAND_RAW 160
 
-/* A real released KS0466 ladder is near full scale. Require that baseline
- * before admitting the first press after adapter startup; this prevents a
- * floating GPIO8 that boots inside a key range from becoming a command. */
-#define KEYPAD_RELEASE_MIN_RAW 3800
+/* A real released KS0466 ladder sits above the final key window. Use margin
+ * below full scale because the ESP32-S3 ADC can vary near its upper range. */
+#define KEYPAD_RELEASE_MIN_RAW 3600
 
 keypad_key_t keypad_decode_raw(int raw);
 

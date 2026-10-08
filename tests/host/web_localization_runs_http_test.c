@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -15,6 +16,8 @@
 
 static unsigned s_list_calls;
 static esp_err_t s_list_result;
+static size_t s_list_record_count;
+static localization_run_store_list_status_t s_list_status;
 static char s_list_object_id[OBJECT_STORE_ID_SIZE];
 static char s_list_session_id[LOCALIZATION_RUN_SESSION_ID_SIZE];
 static unsigned s_geometry_calls;
@@ -26,6 +29,8 @@ static unsigned s_cs_pairs_calls;
 static esp_err_t s_cs_pairs_result;
 static unsigned s_picks_list_calls;
 static esp_err_t s_picks_list_result;
+static size_t s_picks_record_count;
+static localization_run_store_list_status_t s_picks_list_status;
 static esp_err_t s_calc_settings_result;
 static const char *s_calc_settings_json;
 
@@ -33,6 +38,8 @@ static void reset_fakes(void)
 {
     s_list_calls = 0U;
     s_list_result = ESP_OK;
+    s_list_record_count = 2U;
+    memset(&s_list_status, 0, sizeof(s_list_status));
     memset(s_list_object_id, 0, sizeof(s_list_object_id));
     memset(s_list_session_id, 0, sizeof(s_list_session_id));
     s_geometry_calls = 0U;
@@ -75,6 +82,8 @@ static void reset_fakes(void)
     s_cs_pairs_result = ESP_OK;
     s_picks_list_calls = 0U;
     s_picks_list_result = ESP_OK;
+    s_picks_record_count = 1U;
+    memset(&s_picks_list_status, 0, sizeof(s_picks_list_status));
     s_calc_settings_result = ESP_OK;
     s_calc_settings_json =
         "{\"propagation_speed_mps\":340,\"propagation_speed_uncertainty_mps\":5,"
@@ -179,38 +188,53 @@ esp_err_t seismic_recorder_read_session_cs_pairs(
     return ESP_OK;
 }
 
-esp_err_t localization_run_store_list_picks(
+esp_err_t localization_run_store_list_picks_ex(
     const char *object_id,
     const char *session_id,
     localization_pick_record_t *records,
     size_t max_records,
-    size_t *record_count_out
+    size_t *record_count_out,
+    localization_run_store_list_status_t *status_out
 )
 {
     (void)object_id;
     (void)session_id;
-    assert(records != NULL && max_records >= 1U && record_count_out != NULL);
+    assert(records != NULL && max_records >= 1U && record_count_out != NULL && status_out != NULL);
     s_picks_list_calls++;
     *record_count_out = 0U;
-    if (s_picks_list_result != ESP_OK) {
-        return s_picks_list_result;
-    }
+    *status_out = s_picks_list_status;
+    assert(s_picks_record_count <= max_records);
 
-    memset(&records[0], 0, sizeof(records[0]));
-    records[0].schema_version = LOCALIZATION_PICK_RECORD_SCHEMA_VERSION;
-    snprintf(records[0].object_id, sizeof(records[0].object_id), "OBJ_0001");
-    snprintf(records[0].session_id, sizeof(records[0].session_id), "S000001");
-    records[0].computed_at_ms = 999ULL;
-    records[0].channels[0].participating = true;
-    records[0].channels[0].pick.status = GEOPHONE_PICK_ACCEPTED;
-    records[0].channels[0].pick.arrival_sample_index = 1200U;
-    records[0].channels[0].pick.arrival_time_s = 2.4f;
-    records[0].channels[0].pick.snr = 14.5f;
-    records[0].channels[0].pick.uncertainty_samples = 5U;
-    records[0].channels[1].participating = true;
-    records[0].channels[1].pick.status = GEOPHONE_PICK_REJECTED_LOW_SNR;
-    *record_count_out = 1U;
-    return ESP_OK;
+    if (s_picks_record_count > 0U) {
+        memset(&records[0], 0, sizeof(records[0]));
+        records[0].schema_version = LOCALIZATION_PICK_RECORD_SCHEMA_VERSION;
+        snprintf(records[0].object_id, sizeof(records[0].object_id), "OBJ_0001");
+        snprintf(records[0].session_id, sizeof(records[0].session_id), "S000001");
+        records[0].computed_at_ms = 999ULL;
+        records[0].session_epoch_known = true;
+        records[0].session_epoch_timestamp_us = INT64_C(1700000000123456);
+        records[0].channels[0].participating = true;
+        records[0].channels[0].pick.status = GEOPHONE_PICK_ACCEPTED;
+        records[0].channels[0].pick.method = GEOPHONE_PICK_METHOD_STA_LTA_REFINED;
+        records[0].channels[0].pick.arrival_sample_index = 1200U;
+        records[0].channels[0].pick.arrival_time_s = 2.4f;
+        records[0].channels[0].pick.snr = 14.5f;
+        records[0].channels[0].pick.uncertainty_samples = 5U;
+        records[0].channels[0].s_pick.present = true;
+        records[0].channels[0].s_pick.status = GEOPHONE_PICK_ACCEPTED;
+        records[0].channels[0].s_pick.method = GEOPHONE_PICK_METHOD_STA_LTA_REFINED;
+        records[0].channels[0].s_pick.sample_index = 2400U;
+        records[0].channels[0].s_pick.subsample_offset = -0.25f;
+        records[0].channels[0].s_pick.arrival_time_us = 4800000.0;
+        records[0].channels[0].s_pick.snr = 9.5;
+        records[0].channels[0].s_pick.uncertainty_us = 20.0;
+        records[0].channels[0].s_pick.fields_present = LOCALIZATION_PICK_PHASE_FIELDS_ALL;
+        records[0].channels[1].participating = true;
+        records[0].channels[1].pick.status = GEOPHONE_PICK_REJECTED_SATURATED;
+        snprintf(records[0].channels[1].reason, sizeof(records[0].channels[1].reason), "saturated");
+    }
+    *record_count_out = s_picks_record_count;
+    return s_picks_list_result;
 }
 
 bool power_control_is_shutdown_requested(void)
@@ -218,53 +242,60 @@ bool power_control_is_shutdown_requested(void)
     return false;
 }
 
-esp_err_t localization_run_store_list(
+esp_err_t localization_run_store_list_ex(
     const char *object_id,
     const char *session_id,
     localization_run_record_t *records,
     size_t max_records,
-    size_t *record_count_out
+    size_t *record_count_out,
+    localization_run_store_list_status_t *status_out
 )
 {
-    assert(records != NULL && record_count_out != NULL && max_records >= 2U);
+    assert(records != NULL && record_count_out != NULL && status_out != NULL && max_records >= 2U);
     s_list_calls++;
     snprintf(s_list_object_id, sizeof(s_list_object_id), "%s", object_id);
     snprintf(s_list_session_id, sizeof(s_list_session_id), "%s", session_id);
 
     *record_count_out = 0U;
-    if (s_list_result != ESP_OK) {
-        return s_list_result;
+    *status_out = s_list_status;
+    assert(s_list_record_count <= max_records);
+
+    if (s_list_record_count > 0U) {
+        memset(&records[0], 0, sizeof(records[0]));
+        records[0].schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
+        snprintf(records[0].object_id, sizeof(records[0].object_id), "OBJ_0001");
+        snprintf(records[0].session_id, sizeof(records[0].session_id), "S000001");
+        records[0].computed_at_ms = 123456ULL;
+        records[0].kind = LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD;
+        snprintf(records[0].method_name, sizeof(records[0].method_name), "tdoa_gauss_newton");
+        records[0].dimensionality = LOCALIZATION_DIMENSIONALITY_CAPABLE_3D;
+        records[0].solved = true;
+        records[0].source_position = (localization_point3d_t) { 1.0, 2.0, 3.0 };
+        records[0].confidence_score = 0.8;
+        records[0].terminal_status = LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT;
+        records[0].session_epoch_known = true;
+        records[0].session_epoch_timestamp_us = INT64_C(1700000000123456);
     }
 
-    memset(&records[0], 0, sizeof(records[0]));
-    records[0].schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
-    snprintf(records[0].object_id, sizeof(records[0].object_id), "OBJ_0001");
-    snprintf(records[0].session_id, sizeof(records[0].session_id), "S000001");
-    records[0].computed_at_ms = 123456ULL;
-    records[0].kind = LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD;
-    snprintf(records[0].method_name, sizeof(records[0].method_name), "tdoa_gauss_newton");
-    records[0].dimensionality = LOCALIZATION_DIMENSIONALITY_CAPABLE_3D;
-    records[0].solved = true;
-    records[0].source_position = (localization_point3d_t) { 1.0, 2.0, 3.0 };
-    records[0].confidence_score = 0.8;
+    if (s_list_record_count > 1U) {
+        memset(&records[1], 0, sizeof(records[1]));
+        records[1].schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
+        snprintf(records[1].object_id, sizeof(records[1].object_id), "OBJ_0001");
+        snprintf(records[1].session_id, sizeof(records[1].session_id), "S000001");
+        records[1].computed_at_ms = 123456ULL;
+        records[1].kind = LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD;
+        snprintf(records[1].method_name, sizeof(records[1].method_name), "semblance");
+        records[1].dimensionality = LOCALIZATION_DIMENSIONALITY_CAPABLE_3D;
+        records[1].solved = false;
+        snprintf(
+            records[1].rejection_reason, sizeof(records[1].rejection_reason),
+            "semblance search found no coherent candidate"
+        );
+        records[1].failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
+    }
 
-    memset(&records[1], 0, sizeof(records[1]));
-    records[1].schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
-    snprintf(records[1].object_id, sizeof(records[1].object_id), "OBJ_0001");
-    snprintf(records[1].session_id, sizeof(records[1].session_id), "S000001");
-    records[1].computed_at_ms = 123456ULL;
-    records[1].kind = LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD;
-    snprintf(records[1].method_name, sizeof(records[1].method_name), "semblance");
-    records[1].dimensionality = LOCALIZATION_DIMENSIONALITY_CAPABLE_3D;
-    records[1].solved = false;
-    snprintf(
-        records[1].rejection_reason, sizeof(records[1].rejection_reason),
-        "semblance search found no coherent candidate"
-    );
-    records[1].failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
-
-    *record_count_out = 2U;
-    return ESP_OK;
+    *record_count_out = s_list_record_count;
+    return s_list_result;
 }
 
 static esp_err_t query_value(
@@ -391,6 +422,11 @@ static unsigned s_job_status_calls;
 static const char *s_job_status_json =
     "{\"state\":\"running\",\"job_id\":3,\"current_method\":\"eikonal_scan_voids\",\"elapsed_ms\":4200}";
 
+bool storage_manager_is_ready(void)
+{
+    return true;
+}
+
 esp_err_t localization_job_status_json(char **json_out)
 {
     s_job_status_calls++;
@@ -406,6 +442,7 @@ esp_err_t localization_job_status_json(char **json_out)
 #define static
 #include "../../components/web_server/web_localization_api.c"
 #undef static
+#include "../../components/web_server/web_localization_storage.c"
 
 void localization_calculate_recommendation(
     const localization_run_record_t *records,
@@ -450,12 +487,17 @@ static void test_runs_listing_round_trips_persisted_records(void)
     assert(strcmp(s_list_session_id, "S000001") == 0);
     assert(strstr(response, "\"object_id\":\"OBJ_0001\"") != NULL);
     assert(strstr(response, "\"session_id\":\"S000001\"") != NULL);
+    assert(strstr(response, "\"partial_error\":false,\"partial_errors\":[]") != NULL);
     assert(strstr(response, "\"runs\":[") != NULL);
     assert(strstr(response, "tdoa_gauss_newton") != NULL);
     assert(strstr(response, "semblance") != NULL);
     assert(strstr(response, "\"solved\":true") != NULL);
     assert(strstr(response, "\"solved\":false") != NULL);
     assert(strstr(response, "\"failure_class\":\"record_again\"") != NULL);
+    assert(strstr(response, "\"terminal_status\":\"iteration_limit\"") != NULL);
+    assert(strstr(response, "\"session_epoch_known\":true,\"session_epoch_timestamp_us\":1700000000123456") != NULL);
+    assert(strstr(response, "\"terminal_status\":\"none\"") != NULL);
+    assert(strstr(response, "\"session_epoch_known\":false,\"session_epoch_timestamp_us\":null") != NULL);
     assert(strstr(response, "\"successful\":true") != NULL);
     assert(strstr(response, "\"recommendation\":{\"action\":\"none\",\"reason_summary\":\"At least one method produced a usable result.\"}") != NULL);
     assert(strstr(response, "no coherent candidate") != NULL);
@@ -491,18 +533,27 @@ static void test_runs_listing_round_trips_persisted_records(void)
     assert(strstr(response, "\"picks\":[") != NULL);
     assert(strstr(response, "\"computed_at_ms\":999") != NULL);
     assert(strstr(response, "\"accepted\"") != NULL);
-    assert(strstr(response, "\"rejected_low_snr\"") != NULL);
+    assert(strstr(response, "\"rejected_saturated\"") != NULL);
+    assert(strstr(response, "\"reason\":\"saturated\"") != NULL);
+    assert(strstr(response, "\"s_pick\":{\"status\":\"accepted\",\"method\":\"sta_lta_refined\"") != NULL);
+    assert(strstr(response, "\"sample_index\":2400,\"subsample_offset\":-0.25,\"arrival_time_us\":4800000") != NULL);
+    assert(strstr(response, "\"uncertainty_us\":20") != NULL);
+    assert(strstr(response, "\"session_epoch_known\":true,\"session_epoch_timestamp_us\":1700000000123456") != NULL);
     /* picks must appear between cs_pairs and runs. */
     assert(strstr(response, "\"cs_pairs\":") < strstr(response, "\"picks\":["));
     assert(strstr(response, "\"picks\":[") < strstr(response, "\"runs\":["));
 }
 
-static void test_runs_listing_reports_geometry_unavailable_without_failing(void)
+static void test_runs_listing_reports_pick_listing_failure_without_failing(void)
 {
     reset_fakes();
     s_geometry_result = ESP_ERR_NOT_FOUND;
     s_cs_pairs_result = ESP_ERR_NOT_FOUND;
-    s_picks_list_result = ESP_ERR_NOT_FOUND;
+    s_picks_list_result = ESP_FAIL;
+    s_picks_list_status.partial_error = true;
+    s_picks_list_status.partial_error_codes =
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED;
+    s_picks_record_count = 0U;
     char response[8192] = {0};
     httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
 
@@ -515,7 +566,68 @@ static void test_runs_listing_reports_geometry_unavailable_without_failing(void)
     assert(strstr(response, "\"cs_pairs\":{\"available\":false,\"pairs\":[]}") != NULL);
     assert(s_picks_list_calls == 1U);
     assert(strstr(response, "\"picks\":[]") != NULL);
+    assert(strstr(response, "\"partial_error\":true") != NULL);
+    assert(strstr(response, "\"partial_errors\":[\"picks_listing_failed\"]") != NULL);
     assert(strstr(response, "\"runs\":[") != NULL);
+}
+
+static void test_runs_listing_keeps_valid_records_and_reports_partial_errors(void)
+{
+    reset_fakes();
+    s_list_status.partial_error = true;
+    s_list_status.partial_error_codes = LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_READ_FAILED;
+    s_list_record_count = 1U;
+    s_picks_list_result = ESP_FAIL;
+    s_picks_list_status.partial_error = true;
+    s_picks_list_status.partial_error_codes = LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_RECORD_PARSE_FAILED;
+    char response[8192] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(strstr(response, "\"partial_error\":true") != NULL);
+    assert(strstr(response, "\"partial_errors\":[\"run_record_read_failed\",\"picks_record_parse_failed\"]") != NULL);
+    assert(strstr(response, "\"runs\":[{\"schema_version\":7") != NULL);
+    assert(strstr(response, "\"picks\":[{\"schema_version\":1") != NULL);
+    assert(strstr(response, "tdoa_gauss_newton") != NULL);
+    assert(strstr(response, "\"accepted\"") != NULL);
+}
+
+static void test_all_corrupt_records_return_empty_arrays_with_parse_errors(void)
+{
+    reset_fakes();
+    s_list_record_count = 0U;
+    s_list_status.partial_error = true;
+    s_list_status.partial_error_codes = LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_PARSE_FAILED;
+    s_picks_record_count = 0U;
+    s_picks_list_status.partial_error = true;
+    s_picks_list_status.partial_error_codes = LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_RECORD_PARSE_FAILED;
+    char response[8192] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(strstr(response, "\"partial_error\":true") != NULL);
+    assert(strstr(response, "\"partial_errors\":[\"run_record_parse_failed\",\"picks_record_parse_failed\"]") != NULL);
+    assert(strstr(response, "\"picks\":[],\"runs\":[]") != NULL);
+}
+
+static void test_total_run_enumeration_failure_is_reported_in_envelope(void)
+{
+    reset_fakes();
+    s_list_record_count = 0U;
+    s_list_result = ESP_FAIL;
+    s_list_status.partial_error = true;
+    s_list_status.partial_error_codes = LOCALIZATION_RUN_STORE_PARTIAL_ERROR_LISTING_ENUMERATION_FAILED;
+    s_picks_record_count = 0U;
+    s_picks_list_result = ESP_ERR_NOT_FOUND;
+    char response[8192] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(strstr(response, "\"partial_error\":true,\"partial_errors\":[\"listing_enumeration_failed\"]") != NULL);
+    assert(strstr(response, "\"runs\":[]") != NULL);
 }
 
 
@@ -584,6 +696,7 @@ static void test_runs_listing_surfaces_not_found_as_404(void)
 {
     reset_fakes();
     s_list_result = ESP_ERR_NOT_FOUND;
+    s_list_record_count = 0U;
     char response[512] = {0};
     httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
 
@@ -594,6 +707,20 @@ static void test_runs_listing_surfaces_not_found_as_404(void)
     assert(s_geometry_calls == 0U);
     assert(s_cs_pairs_calls == 0U);
     assert(s_picks_list_calls == 0U);
+}
+
+static void test_absent_picks_directory_is_empty_without_partial_error(void)
+{
+    reset_fakes();
+    s_picks_list_result = ESP_ERR_NOT_FOUND;
+    s_picks_record_count = 0U;
+    char response[8192] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(strstr(response, "\"partial_error\":false,\"partial_errors\":[]") != NULL);
+    assert(strstr(response, "\"picks\":[]") != NULL);
 }
 
 static void test_runs_listing_surfaces_invalid_arg_as_422(void)
@@ -752,12 +879,16 @@ static void test_settings_read_returns_valid_json_or_null(void)
 int main(void)
 {
     test_runs_listing_round_trips_persisted_records();
-    test_runs_listing_reports_geometry_unavailable_without_failing();
+    test_runs_listing_reports_pick_listing_failure_without_failing();
+    test_runs_listing_keeps_valid_records_and_reports_partial_errors();
+    test_all_corrupt_records_return_empty_arrays_with_parse_errors();
+    test_total_run_enumeration_failure_is_reported_in_envelope();
     test_participation_read_failure_keeps_geometry_response();
     test_runs_listing_includes_planar_fallback_reason();
     test_unknown_provenance_is_omitted_and_source_age_is_null();
     test_runs_listing_requires_both_query_parameters();
     test_runs_listing_surfaces_not_found_as_404();
+    test_absent_picks_directory_is_empty_without_partial_error();
     test_runs_listing_surfaces_invalid_arg_as_422();
     test_runs_listing_surfaces_invalid_size_as_422();
     test_runs_listing_surfaces_unexpected_errors_as_500();

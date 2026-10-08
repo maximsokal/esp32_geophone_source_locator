@@ -1,0 +1,14 @@
+id: ui-no-spi-flush-wait
+language: C
+severity: error
+message: Preserve the shared SPI2 LVGL flush contract; do not install SPI completion/wait callbacks.
+files:
+  - components/ui/ui_lvgl.c
+rule:
+  any:
+    - pattern:
+        context: esp_lcd_panel_io_register_event_callbacks($$$ARGS);
+        selector: call_expression
+    - pattern:
+        context: lv_display_set_flush_wait_cb($$$ARGS);
+        selector: call_expression

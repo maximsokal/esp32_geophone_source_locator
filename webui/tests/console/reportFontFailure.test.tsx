@@ -4,7 +4,10 @@ import { createHash } from 'node:crypto';
 
 const brokenFontUrl = 'data:font/woff2;base64,AA==';
 const api = vi.hoisted(() => ({ fetchLocalizationRuns: vi.fn(), loadObjectScanArtifact: vi.fn() }));
-vi.mock('../../src/api/deviceApi', () => api);
+vi.mock('../../src/api/deviceApi', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/api/deviceApi')>(),
+  ...api,
+}));
 vi.mock('@fontsource/montserrat/files/montserrat-latin-400-normal.woff2?inline', () => ({ default: 'data:font/woff2;base64,AA==' }));
 vi.mock('@fontsource/montserrat/files/montserrat-latin-700-normal.woff2?inline', () => ({ default: 'data:font/woff2;base64,AA==' }));
 vi.mock('@fontsource/montserrat/files/montserrat-cyrillic-400-normal.woff2?inline', () => ({ default: 'data:font/woff2;base64,AA==' }));

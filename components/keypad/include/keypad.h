@@ -32,3 +32,11 @@ esp_err_t keypad_start_event_monitor(
 );
 
 void keypad_stop_event_monitor(void);
+
+/* Route debounced key presses to a boot prompt without opening APP_EVENT input. */
+esp_err_t keypad_start_boot_event_monitor(
+    keypad_event_callback_t callback,
+    void *user_context
+);
+
+void keypad_stop_boot_event_monitor(void);

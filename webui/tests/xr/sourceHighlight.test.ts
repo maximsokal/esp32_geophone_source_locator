@@ -5,6 +5,7 @@ import type { LocalizationRun } from '../../src/api/deviceApi';
 import {
   buildSourceHighlightScene,
   selectLocalizationSources,
+  sourceVoxelGridForScan,
   sourceUncertaintyVoxelIndices,
   sourcePositionToProject,
   sourceToVoxelIndex,
@@ -19,9 +20,10 @@ const IDENTITY = { objectId: 'OBJ_0001', sessionId: 'S000001' } as const;
 const GRID: SourceVoxelGrid = { origin: [0, 0, 0], dimensions: [2, 2, 2], voxelSizeMeters: 1 };
 const SENSOR_TO_LOCAL_FLOOR = [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1];
 
-function registration(matrix = SENSOR_TO_LOCAL_FLOOR): RegistrationArtifact {
+function registration(matrix = SENSOR_TO_LOCAL_FLOOR, geometryComputedAtMs = 1, scanFrameId = 'scan-crc32:current'): RegistrationArtifact {
   return {
-    schema: 1, source: 'apriltag', family: 'tag36h11', geometry_computed_at_ms: 1, created_at_ms: 1,
+    schema: 1, source: 'apriltag', family: 'tag36h11', geometry_computed_at_ms: geometryComputedAtMs, created_at_ms: 1,
+    scan_frame_id: scanFrameId,
     tag_size_m: { '0': 0.032, '1': 0.032, '2': 0.032, '3': 0.032, '4': 0.032 },
     bindings: [], sensor_to_scan: matrix, mirrored: false, residual_rms_m: 0, threshold_m: 0.05,
     per_node: [], tier: 'minimum', valid: true, reason: null,
@@ -113,9 +115,9 @@ describe('persisted run selection and source layer', () => {
       .toHaveLength(2);
   });
 
-  it('suppresses every source layer when registration is unusable and reports unregistered', () => {
+  it('suppresses every source layer when registration is missing and reports the predicate reason', () => {
     const result = buildSourceHighlightScene([run()], IDENTITY, null, GRID);
-    expect(result.reason).toBe('unregistered');
+    expect(result.reason).toBe('missing');
     expect(result.primary).toBeNull();
     expect(result.secondary).toEqual([]);
     const plan = scanLayerPlan(prepareScanScene(sceneSource()), displayForScanMode('quality'), new Float32Array(0), false, [], result);
@@ -130,21 +132,121 @@ describe('persisted run selection and source layer', () => {
     };
     const inside = buildSourceHighlightScene(
       [run({ uncertainty }), run({ method_name: 'method_b', source_position: { x_m: 1.5, y_m: 0.5, z_m: 0.5 } })],
-      IDENTITY, registration(), GRID,
+      IDENTITY, registration(), GRID, { currentScanId: 'scan-crc32:current' },
     );
     expect(inside.primary?.voxel?.index).toBe(0);
-    expect(inside.uncertaintyVoxels.map((cell) => cell.index)).toEqual([0, 1, 2]);
+    expect(inside.uncertaintyVoxels.map((cell) => cell.index)).toEqual([0, 1, 2, 3]);
     expect(inside.secondary).toHaveLength(1);
     const plan = scanLayerPlan(prepareScanScene(sceneSource()), displayForScanMode('quality'), new Float32Array(0), false, [], inside);
     const sourceLayer = plan.find((layer) => layer.dataType === 'source-highlight');
     expect(sourceLayer?.kind).toBe('source-highlights');
-    if (sourceLayer?.kind === 'source-highlights') expect(sourceLayer.uncertaintyVoxels).toHaveLength(3);
+    if (sourceLayer?.kind === 'source-highlights') expect(sourceLayer.uncertaintyVoxels).toHaveLength(4);
 
     const outside = buildSourceHighlightScene(
       [run({ source_position: { x_m: 2.5, y_m: 0.5, z_m: 0.5 } })], IDENTITY, registration(), GRID,
+      { currentScanId: 'scan-crc32:current' },
     );
     expect(outside.reason).toBe('outside_grid');
     expect(outside.primary?.voxel).toBeNull();
     expect(outside.primary?.edgeMarker).toEqual([1.5, 0.5, 0.5]);
+  });
+
+  it('places buried candidates inside the envelope depth and clamps only candidates below that volume', () => {
+    const grid = sourceVoxelGridForScan({
+      bounds: { min: [-10, -10, -4], max: [10, 10, 4] },
+      occupancyEnvelopeBounds: { min: [0, 0, 0], max: [0.2, 0.2, 0.2] },
+      occupancySolverCandidateBelowSurfaceMeters: 2,
+      occupancyVoxelSizeMeters: 0.2,
+      occupancyFineVoxelSizeMeters: 0.1,
+    });
+    expect(grid?.origin).toEqual([0, 0, -2]);
+    expect(grid?.voxelSizeMeters).toBe(0.1);
+    const inside = buildSourceHighlightScene(
+      [run({ source_position: { x_m: 0.05, y_m: 0.05, z_m: -1 } })],
+      IDENTITY, registration(), grid, { currentScanId: 'scan-crc32:current' },
+    );
+    expect(inside.primary?.voxel).not.toBeNull();
+    expect(inside.reason).toBeNull();
+
+    const outside = buildSourceHighlightScene(
+      [run({ source_position: { x_m: 0.05, y_m: 0.05, z_m: -2.5 } })],
+      IDENTITY, registration(), grid, { currentScanId: 'scan-crc32:current' },
+    );
+    expect(outside.reason).toBe('outside_grid');
+    expect(outside.primary?.voxel).toBeNull();
+    expect(outside.primary?.edgeMarker).toEqual([0.05, 0.05, -1.95]);
+  });
+
+  it('uses rotated legacy standard deviations as a conservative 3D project-frame box', () => {
+    const localFloorYaw90 = [0, -1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, 0, 0, 0, 1];
+    const uncertain = run({
+      source_position: { x_m: 1, y_m: 1, z_m: 1 },
+      uncertainty: {
+        std_m: { x_m: 0.1, y_m: 0.6, z_m: 0.2 },
+        credible_level: 0.9,
+        credible_volume_m3: 1,
+        credible_area_m2: 0,
+        credible_min: { x_m: Number.NaN, y_m: 0, z_m: 0 },
+        credible_max: { x_m: 0, y_m: 0, z_m: 0 },
+      },
+    });
+    const result = buildSourceHighlightScene(
+      [uncertain], IDENTITY, registration(localFloorYaw90),
+      { origin: [-3, -3, -3], dimensions: [30, 30, 30], voxelSizeMeters: 0.2 },
+      { currentScanId: 'scan-crc32:current' },
+    );
+    const cells = result.uncertaintyVoxels;
+    const xSpan = Math.max(...cells.map((cell) => cell.center[0])) - Math.min(...cells.map((cell) => cell.center[0]));
+    const ySpan = Math.max(...cells.map((cell) => cell.center[1])) - Math.min(...cells.map((cell) => cell.center[1]));
+    const zLayers = new Set(cells.map((cell) => cell.coordinates[2]));
+    expect(result.primary?.positionProjectM).toEqual([-1, 1, 1]);
+    expect(xSpan).toBeGreaterThan(ySpan);
+    expect(zLayers.size).toBeGreaterThan(1);
+  });
+
+  it('rejects run geometry that differs from the registration and suppresses its uncertainty', () => {
+    const result = buildSourceHighlightScene(
+      [run({ geometry_computed_at_ms: 100, uncertainty: {
+        std_m: { x_m: 1, y_m: 1, z_m: 1 }, credible_level: 0.9, credible_volume_m3: 1,
+        credible_area_m2: 0, credible_min: { x_m: 0, y_m: 0, z_m: 0 }, credible_max: { x_m: 1, y_m: 1, z_m: 1 },
+      } })],
+      IDENTITY,
+      registration(SENSOR_TO_LOCAL_FLOOR, 200),
+      GRID,
+      { currentScanId: 'scan-crc32:current' },
+    );
+    expect(result.reason).toBe('geometry_mismatch');
+    expect(result.primary).toBeNull();
+    expect(result.uncertaintyVoxels).toEqual([]);
+    expect(result.staleRuns.map(({ reason }) => reason)).toEqual(['geometry_mismatch']);
+  });
+
+  it('keeps replaced-scan constrained runs in history while allowing matching unconstrained and current runs', () => {
+    const previous = run({
+      method_name: 'traveltime_scan_constrained', computed_at_ms: 1,
+      scan_constraint_applied: true, scan_frame_id: 'scan-crc32:previous',
+    });
+    const legacy = run({ method_name: 'bayesian_scan_voids', computed_at_ms: 2 });
+    const current = run({
+      method_name: 'eikonal_scan_voids', computed_at_ms: 3,
+      scan_constraint_applied: true, scan_frame_id: 'scan-crc32:current',
+    });
+    const unconstrained = run({ method_name: 'method_a', computed_at_ms: 4 });
+    const result = buildSourceHighlightScene(
+      [previous, legacy, current, unconstrained], IDENTITY, registration(), GRID,
+      { currentScanId: 'scan-crc32:current' },
+    );
+    expect(result.primary?.run.method_name).toBe('method_a');
+    expect(result.secondary.map(({ run: selected }) => selected.method_name)).toEqual(['eikonal_scan_voids']);
+    expect(result.historyRuns.map(({ run: historical, currency }) => [historical.method_name, currency])).toEqual([
+      ['traveltime_scan_constrained', 'history_previous_scan'],
+      ['bayesian_scan_voids', 'history_scan_unknown'],
+    ]);
+  });
+
+  it('fails closed with scan_unknown when the displayed scan id is omitted', () => {
+    const result = buildSourceHighlightScene([run()], IDENTITY, registration(), GRID);
+    expect(result.reason).toBe('scan_unknown');
+    expect(result.primary).toBeNull();
   });
 });

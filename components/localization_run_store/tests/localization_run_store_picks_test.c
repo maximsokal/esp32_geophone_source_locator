@@ -1,5 +1,7 @@
 #include <assert.h>
+#include <float.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
 #include <direct.h>
@@ -13,10 +15,16 @@
 #include "storage_manager.h"
 
 
+static const char *s_read_failure_path;
+
+
 esp_err_t storage_manager_read_text(const char *path, char *buffer, size_t buffer_size)
 {
     if (path == NULL || buffer == NULL || buffer_size == 0U) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (s_read_failure_path != NULL && strcmp(path, s_read_failure_path) == 0) {
+        return ESP_FAIL;
     }
     FILE *file = fopen(path, "rb");
     if (file == NULL) {
@@ -90,6 +98,42 @@ static localization_pick_record_t make_pick_record(
     for (size_t i = 1U; i < LOCALIZATION_PICK_RECORD_CHANNEL_COUNT; ++i) {
         record.channels[i].participating = true;
         record.channels[i].pick.status = GEOPHONE_PICK_REJECTED_LOW_SNR;
+    }
+    return record;
+}
+
+
+static localization_pick_record_t make_max_pick_record(void)
+{
+    localization_pick_record_t record = make_pick_record(
+        "OBJ_0005", "S000005", 9007199254740991ULL
+    );
+    record.session_epoch_known = true;
+    record.session_epoch_timestamp_us = INT64_MIN;
+    for (size_t i = 0U; i < LOCALIZATION_PICK_RECORD_CHANNEL_COUNT; ++i) {
+        localization_pick_channel_t *channel = &record.channels[i];
+        channel->participating = true;
+        channel->pick.status = GEOPHONE_PICK_REJECTED_NO_REFINEMENT;
+        channel->pick.method = GEOPHONE_PICK_METHOD_STA_LTA_REFINED;
+        channel->pick.arrival_sample_index = (size_t)9007199254740991ULL;
+        channel->pick.arrival_subsample_offset = -0.999f;
+        channel->pick.arrival_time_s = FLT_MAX;
+        channel->pick.snr = FLT_MAX;
+        channel->pick.uncertainty_samples = (size_t)9007199254740991ULL;
+        memset(channel->reason, 'r', sizeof(channel->reason) - 1U);
+        channel->reason[sizeof(channel->reason) - 1U] = '\0';
+
+        channel->s_pick.present = true;
+        channel->s_pick.fields_present = LOCALIZATION_PICK_PHASE_FIELDS_ALL;
+        channel->s_pick.status = GEOPHONE_PICK_REJECTED_NO_REFINEMENT;
+        channel->s_pick.method = GEOPHONE_PICK_METHOD_STA_LTA_REFINED;
+        channel->s_pick.sample_index = (size_t)9007199254740991ULL;
+        channel->s_pick.subsample_offset = -0.999f;
+        channel->s_pick.arrival_time_us = DBL_MAX;
+        channel->s_pick.snr = DBL_MAX;
+        channel->s_pick.uncertainty_us = DBL_MAX;
+        memset(channel->s_pick.reason, 's', sizeof(channel->s_pick.reason) - 1U);
+        channel->s_pick.reason[sizeof(channel->s_pick.reason) - 1U] = '\0';
     }
     return record;
 }
@@ -181,6 +225,130 @@ static void test_missing_session_directory_is_not_found(void)
     assert(
         localization_run_store_list_picks("OBJ_9999", "S000099", records, 4U, &count) == ESP_ERR_NOT_FOUND
     );
+
+    localization_run_store_list_status_t status;
+    count = 99U;
+    assert(localization_run_store_list_picks_ex(
+        "OBJ_9999", "S000099", records, 4U, &count, &status
+    ) == ESP_ERR_NOT_FOUND);
+    assert(count == 0U && !status.partial_error && status.partial_error_count == 0U);
+}
+
+
+static void test_partial_error_codes_and_legacy_list_behavior(void)
+{
+    prepare_session_directory("OBJ_0006", "S000006");
+    cleanup_session_picks("OBJ_0006", "S000006");
+    localization_pick_record_t valid = make_pick_record("OBJ_0006", "S000006", 6000ULL);
+    assert(localization_run_store_write_picks("OBJ_0006", "S000006", &valid) == ESP_OK);
+
+    char corrupt_path[LOCALIZATION_RUN_STORE_PATH_MAX];
+    assert(localization_run_store_build_picks_path(
+        "OBJ_0006", "S000006", 6001ULL, corrupt_path, sizeof(corrupt_path)
+    ) == ESP_OK);
+    assert(storage_manager_atomic_write_text(corrupt_path, "not-json") == ESP_OK);
+
+    localization_pick_record_t records[LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION];
+    size_t count = 0U;
+    localization_run_store_list_status_t status;
+    assert(localization_run_store_list_picks_ex(
+        "OBJ_0006", "S000006", records,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &count, &status
+    ) == ESP_OK);
+    assert(count == 1U && status.partial_error && status.partial_error_count == 1U);
+    assert((status.partial_error_codes &
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_RECORD_PARSE_FAILED) != 0U);
+
+    count = 0U;
+    assert(localization_run_store_list_picks(
+        "OBJ_0006", "S000006", records,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &count
+    ) == ESP_OK);
+    assert(count == 1U);
+
+    assert(remove(corrupt_path) == 0);
+    char valid_path[LOCALIZATION_RUN_STORE_PATH_MAX];
+    assert(localization_run_store_build_picks_path(
+        "OBJ_0006", "S000006", valid.computed_at_ms, valid_path, sizeof(valid_path)
+    ) == ESP_OK);
+    s_read_failure_path = valid_path;
+    count = 0U;
+    assert(localization_run_store_list_picks_ex(
+        "OBJ_0006", "S000006", records,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &count, &status
+    ) == ESP_OK);
+    assert(count == 0U && status.partial_error && status.partial_error_count == 1U);
+    assert((status.partial_error_codes &
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED) != 0U);
+    s_read_failure_path = NULL;
+    cleanup_session_picks("OBJ_0006", "S000006");
+
+    char non_directory_path[LOCALIZATION_RUN_STORE_PATH_MAX];
+    (void)snprintf(non_directory_path, sizeof(non_directory_path),
+        "%s/%s/sessions/%s", STORAGE_MANAGER_OBJECTS_PATH, "OBJ_0007", "S000007");
+    char parent_path[LOCALIZATION_RUN_STORE_PATH_MAX];
+    (void)snprintf(parent_path, sizeof(parent_path),
+        "%s/%s", STORAGE_MANAGER_OBJECTS_PATH, "OBJ_0007");
+    ensure_dir(STORAGE_MANAGER_MOUNT_POINT);
+    ensure_dir(STORAGE_MANAGER_ROOT_PATH);
+    ensure_dir(STORAGE_MANAGER_OBJECTS_PATH);
+    ensure_dir(parent_path);
+    (void)snprintf(parent_path, sizeof(parent_path),
+        "%s/%s/sessions", STORAGE_MANAGER_OBJECTS_PATH, "OBJ_0007");
+    ensure_dir(parent_path);
+    FILE *not_directory = fopen(non_directory_path, "wb");
+    assert(not_directory != NULL);
+    assert(fclose(not_directory) == 0);
+    count = 0U;
+    assert(localization_run_store_list_picks_ex(
+        "OBJ_0007", "S000007", records,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &count, &status
+    ) == ESP_FAIL);
+    assert(count == 0U && status.partial_error && status.partial_error_count == 1U);
+    assert((status.partial_error_codes &
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED) != 0U);
+    count = 99U;
+    assert(localization_run_store_list_picks(
+        "OBJ_0007", "S000007", records,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &count
+    ) == ESP_ERR_NOT_FOUND);
+    assert(count == 0U);
+    (void)remove(non_directory_path);
+}
+
+
+static void test_max_pick_record_with_s_picks_fits_store_buffer(void)
+{
+    prepare_session_directory("OBJ_0005", "S000005");
+    cleanup_session_picks("OBJ_0005", "S000005");
+    localization_pick_record_t original = make_max_pick_record();
+    char *json = NULL;
+    assert(localization_pick_record_to_json(&original, &json) == ESP_OK);
+    const size_t json_length = strlen(json);
+    printf("  maximal v1 picks record with four S-picks: %u bytes, store buffer %u bytes\n",
+        (unsigned)json_length, (unsigned)LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE);
+    fflush(stdout);
+    assert(json_length + 1U <= LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE);
+    free(json);
+
+    const localization_pick_record_t store_record = original;
+    assert(localization_run_store_write_picks("OBJ_0005", "S000005", &store_record) == ESP_OK);
+    localization_pick_record_t records[LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION];
+    size_t count = 0U;
+    localization_run_store_list_status_t status;
+    assert(localization_run_store_list_picks_ex(
+        "OBJ_0005", "S000005", records,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &count, &status
+    ) == ESP_OK);
+    assert(count == 1U && !status.partial_error);
+    assert(records[0].session_epoch_known);
+    assert(records[0].session_epoch_timestamp_us == store_record.session_epoch_timestamp_us);
+    for (size_t i = 0U; i < LOCALIZATION_PICK_RECORD_CHANNEL_COUNT; ++i) {
+        assert(records[0].channels[i].s_pick.present);
+        assert(records[0].channels[i].s_pick.sample_index == original.channels[i].s_pick.sample_index);
+        assert(records[0].channels[i].s_pick.arrival_time_us == original.channels[i].s_pick.arrival_time_us);
+    }
+    cleanup_session_picks("OBJ_0005", "S000005");
 }
 
 
@@ -205,8 +373,10 @@ static void test_rejects_invalid_arguments(void)
 
 int main(void)
 {
+    test_max_pick_record_with_s_picks_fits_store_buffer();
     test_write_and_list_round_trip();
     test_pick_files_never_collide_with_run_record_files();
+    test_partial_error_codes_and_legacy_list_behavior();
     test_missing_session_directory_is_not_found();
     test_rejects_invalid_arguments();
     puts("localization run store picks tests passed");

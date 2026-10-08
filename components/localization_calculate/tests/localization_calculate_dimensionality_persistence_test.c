@@ -160,7 +160,7 @@ esp_err_t seismic_recorder_get_session_summary(
     return ESP_OK;
 }
 
-esp_err_t seismic_recorder_read_session_range(
+esp_err_t seismic_recorder_read_session_range_ex(
     const char *object_id,
     const char *session_id,
     uint64_t start_index,
@@ -169,19 +169,26 @@ esp_err_t seismic_recorder_read_session_range(
     uint64_t *source_sample_indices,
     bool *gap_before,
     size_t *frame_count_out,
-    seismic_recorder_session_summary_t *summary_out
+    seismic_recorder_session_summary_t *summary_out,
+    seismic_recorder_raw_window_stats_t *raw_stats_out
 )
 {
     (void)object_id;
     (void)session_id;
-    (void)source_sample_indices;
-    (void)gap_before;
     if (frames == NULL || frame_count_out == NULL || start_index > g_frame_count || max_frames == 0U) {
         return ESP_ERR_INVALID_ARG;
     }
     const size_t remaining = g_frame_count - (size_t)start_index;
     const size_t count = remaining < max_frames ? remaining : max_frames;
     memcpy(frames, g_frames + (size_t)start_index, sizeof(*frames) * count);
+    for (size_t i = 0U; i < count; ++i) {
+        if (source_sample_indices != NULL) source_sample_indices[i] = start_index + (uint64_t)i;
+        if (gap_before != NULL) gap_before[i] = false;
+    }
+    if (raw_stats_out != NULL) {
+        memset(raw_stats_out, 0, sizeof(*raw_stats_out));
+        raw_stats_out->samples_examined = count;
+    }
     *frame_count_out = count;
     if (summary_out != NULL) {
         *summary_out = g_session_summary;
@@ -255,6 +262,9 @@ static void build_fixture(size_t remote_count, const localization_point3d_t *sou
             add_pulse(channel, s_index[channel]);
         }
     }
+    for (size_t i = 0U; i < g_frame_count; ++i) {
+        g_frames[i].timestamp_us = 7000000LL + (int64_t)i * 20LL;
+    }
 
     memset(&g_session_summary, 0, sizeof(g_session_summary));
     g_session_summary.sample_rate_hz = FIX_SAMPLE_RATE_HZ;
@@ -275,7 +285,7 @@ static localization_calculate_config_t fixture_config(void)
     config.sample_rate_hz = FIX_SAMPLE_RATE_HZ;
     config.pick_config.noise_window_samples = FIX_NOISE_WIDTH;
     config.pick_config.sta_window_samples = 10U;
-    config.pick_config.lta_window_samples = 100U;
+    config.pick_config.lta_window_samples = 250U;
     config.pick_config.sta_lta_trigger_ratio = 3.0f;
     config.pick_config.refine_lookback_samples = 10U;
     config.pick_config.refine_lookahead_samples = 10U;

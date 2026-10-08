@@ -1,0 +1,17 @@
+id: ina3221-shared-bus
+valid:
+  - 'void init(void) { sensor_bus_get_handles(&bus, &device); }'
+  - 'void read(void) { i2c_bus_read_bytes(device, reg, data, len); }'
+  - '/* i2c_new_master_bus(&config, &bus); */'
+  - 'const char *s = "i2c_del_master_bus(bus)";'
+invalid:
+  - 'void init(void) { i2c_new_master_bus(&config, &bus); }'
+  - 'void stop(void) { i2c_del_master_bus(bus); }'
+  - 'void init(void) { i2c_master_bus_add_device(bus, &config, &device); }'
+  - 'void stop(void) { i2c_master_bus_rm_device(device); }'
+  - |
+    void init(void) {
+      ESP_ERROR_CHECK(i2c_new_master_bus(
+        &config,
+        &bus));
+    }

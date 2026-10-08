@@ -12,6 +12,8 @@ import {
 function artifact(): RegistrationArtifact {
   return {
     schema: 1,
+    frame: 'webxr_local_floor',
+    scan_frame_id: null,
     source: 'apriltag',
     family: 'tag36h11',
     geometry_computed_at_ms: 1234,
@@ -45,6 +47,12 @@ describe('registration-v1.json artifact', () => {
     expect(defaultRegistrationTagSizes(0.04, 0.03)).toEqual({ '0': 0.04, '1': 0.03, '2': 0.03, '3': 0.03, '4': 0.03 });
     const value = artifact();
     expect(decodeRegistrationArtifact(encodeRegistrationArtifact(value))).toEqual(value);
+    expect(JSON.parse(encodeRegistrationArtifact(value)).frame).toBe('webxr_local_floor');
+
+    const legacy = { ...value } as Record<string, unknown>;
+    delete legacy.frame;
+    expect(decodeRegistrationArtifact(JSON.stringify(legacy)).frame).toBe('webxr_local_floor');
+    expect(JSON.parse(encodeRegistrationArtifact(legacy as unknown as RegistrationArtifact)).frame).toBe('webxr_local_floor');
   });
 
   it('rejects each unsupported schema, type, number, matrix, timestamp, and tag binding', () => {
@@ -52,6 +60,7 @@ describe('registration-v1.json artifact', () => {
     expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, schema: 2 } as RegistrationArtifact))).toThrow(/schema/i);
     expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, family: 'tag25h9' } as RegistrationArtifact))).toThrow(/family/i);
     expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, source: 'aruco' } as RegistrationArtifact))).toThrow(/source/i);
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, frame: 'unknown' } as unknown as RegistrationArtifact))).toThrow(/frame marker/i);
     expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, sensor_to_scan: Array(15).fill(0) } as RegistrationArtifact))).toThrow(/16-value/);
     expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, valid: true, sensor_to_scan: null }))).toThrow(/valid artifact/i);
     expect(() => decodeRegistrationArtifact(encodeRaw({ ...base, bindings: [{ ...base.bindings[0], tag_id: 5 }] }))).toThrow(/tag id/i);
@@ -69,8 +78,55 @@ describe('registration-v1.json artifact', () => {
     expect(toOccupancyRegistration(value)).toEqual({
       source: 'apriltag',
       geometry_computed_at_ms: 1234,
-      sensor_to_scan: value.sensor_to_scan,
+      sensor_to_scan: [1, 0, 0, 0.2, 0, 0, -1, -0.1, 0, 1, 0, -0.3, 0, 0, 0, 1],
+      frame: 'project_z_up',
       residual_m: 0.01,
+      threshold_m: 0.05,
     });
+  });
+
+  it('rejects reflected valid transforms and preserves the stable reason on rejected artifacts', () => {
+    const reflectedMatrix = [-1, 0, 0, 0.2, 0, 1, 0, -0.3, 0, 0, 1, 0.1, 0, 0, 0, 1];
+    expect(() => decodeRegistrationArtifact(encodeRaw({
+      ...artifact(), sensor_to_scan: reflectedMatrix, mirrored: true,
+    }))).toThrow('reflected_transform');
+
+    const rejected: RegistrationArtifact = {
+      ...artifact(), sensor_to_scan: reflectedMatrix, mirrored: true,
+      tier: null, valid: false, reason: 'reflected_transform',
+      per_node: artifact().per_node.map((item) => ({ ...item, status: 'provisional' })),
+    };
+    expect(decodeRegistrationArtifact(encodeRaw(rejected))).toEqual(rejected);
+    expect(toOccupancyRegistration(rejected)).toBeNull();
+  });
+
+  it('enforces the quality invariant: valid needs residual within a positive threshold, boundary equality is valid', () => {
+    const over = { ...artifact(), residual_rms_m: 0.3, threshold_m: 0.05 };
+    expect(() => decodeRegistrationArtifact(encodeRaw(over))).toThrow(/threshold/i);
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...artifact(), threshold_m: 0 }))).toThrow(/threshold/i);
+    const boundary = { ...artifact(), residual_rms_m: 0.05, threshold_m: 0.05 };
+    expect(decodeRegistrationArtifact(encodeRaw(boundary)).residual_rms_m).toBe(0.05);
+    expect(toOccupancyRegistration(boundary)?.threshold_m).toBe(0.05);
+    // a residual_too_high result stays decodable but unusable
+    const tooHigh = { ...artifact(), sensor_to_scan: null, tier: null, valid: false, reason: 'residual_too_high', residual_rms_m: 0.3, per_node: [] };
+    expect(decodeRegistrationArtifact(encodeRaw(tooHigh)).valid).toBe(false);
+    expect(toOccupancyRegistration(tooHigh)).toBeNull();
+  });
+
+  it('round-trips scan_frame_id and treats an absent field as unbound', () => {
+    const bound = { ...artifact(), scan_frame_id: 'scan-crc32:0badf00d' };
+    expect(decodeRegistrationArtifact(encodeRegistrationArtifact(bound)).scan_frame_id).toBe('scan-crc32:0badf00d');
+    const legacy = { ...artifact() } as Record<string, unknown>;
+    delete legacy.scan_frame_id;
+    expect(decodeRegistrationArtifact(JSON.stringify(legacy)).scan_frame_id).toBeNull();
+    expect(() => decodeRegistrationArtifact(encodeRaw({ ...artifact(), scan_frame_id: '' }))).toThrow(/scan_frame_id/);
+  });
+
+  it('adapts to the occupancy contract only for an applicable scan and geometry', () => {
+    const bound = { ...artifact(), scan_frame_id: 'scan-crc32:aaaaaaaa' };
+    expect(toOccupancyRegistration(bound, { geometryComputedAtMs: 1234, scanFrameId: 'scan-crc32:aaaaaaaa' })).not.toBeNull();
+    expect(toOccupancyRegistration(bound, { geometryComputedAtMs: 1234, scanFrameId: 'scan-crc32:bbbbbbbb' })).toBeNull();
+    expect(toOccupancyRegistration(bound, { geometryComputedAtMs: 9999, scanFrameId: 'scan-crc32:aaaaaaaa' })).toBeNull();
+    expect(toOccupancyRegistration(artifact(), { geometryComputedAtMs: 1234, scanFrameId: 'scan-crc32:aaaaaaaa' })).toBeNull();
   });
 });

@@ -102,22 +102,32 @@ static bool read_vec3(const cJSON *array, double out[3])
 }
 
 
-static bool parse_registration(const cJSON *item, scan_occupancy_registration_t *out)
+static bool parse_registration(
+    const cJSON *item,
+    uint32_t schema,
+    scan_occupancy_registration_t *out
+)
 {
     memset(out, 0, sizeof(*out));
-    if (!cJSON_IsObject(item)) {
+    if (item == NULL || cJSON_IsNull(item)) {
         /* null/absent: a valid artifact whose constraint stays disabled. */
         return true;
     }
+    if (!cJSON_IsObject(item)) return false;
     const cJSON *source = cJSON_GetObjectItemCaseSensitive(item, "source");
     const cJSON *matrix = cJSON_GetObjectItemCaseSensitive(item, "sensor_to_scan");
+    const cJSON *frame = cJSON_GetObjectItemCaseSensitive(item, "frame");
     double geometry_ms = 0.0;
     double residual = 0.0;
+    double threshold = 0.0;
     if (
         !cJSON_IsString(source) ||
         !read_number(item, "geometry_computed_at_ms", &geometry_ms) || geometry_ms < 0.0 ||
         !read_number(item, "residual_m", &residual) ||
-        !cJSON_IsArray(matrix) || cJSON_GetArraySize(matrix) != 16
+        !cJSON_IsArray(matrix) || cJSON_GetArraySize(matrix) != 16 ||
+        (schema == SCAN_OCCUPANCY_SCHEMA &&
+         (!read_number(item, "threshold_m", &threshold) || !(threshold > 0.0) ||
+          !cJSON_IsString(frame) || strcmp(frame->valuestring, "project_z_up") != 0))
     ) {
         return false;
     }
@@ -131,7 +141,12 @@ static bool parse_registration(const cJSON *item, scan_occupancy_registration_t 
     snprintf(out->source, sizeof(out->source), "%s", source->valuestring);
     out->geometry_computed_at_ms = (uint64_t)geometry_ms;
     out->residual_m = residual;
-    out->present = true;
+    out->threshold_m = threshold;
+    if (schema == SCAN_OCCUPANCY_SCHEMA) {
+        out->present = true;
+    } else {
+        memset(out, 0, sizeof(*out));
+    }
     return true;
 }
 
@@ -152,7 +167,7 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
         return ESP_ERR_INVALID_ARG;
     }
 
-    double schema = 0.0;
+    double schema_value = 0.0;
     double voxel = 0.0;
     double below = 0.0;
     double frees = 0.0;
@@ -163,7 +178,9 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
     const cJSON *saturated = cJSON_GetObjectItemCaseSensitive(root, "saturated");
 
     esp_err_t err = ESP_OK;
-    if (!read_number(root, "schema", &schema) || schema != (double)SCAN_OCCUPANCY_SCHEMA) {
+    if (!read_number(root, "schema", &schema_value) ||
+        (schema_value != (double)SCAN_OCCUPANCY_SCHEMA &&
+         schema_value != (double)SCAN_OCCUPANCY_LEGACY_SCHEMA)) {
         err = ESP_ERR_INVALID_VERSION;
     } else if (
         !cJSON_IsString(frame_id) || frame_id->valuestring[0] == '\0' ||
@@ -172,7 +189,10 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
         !read_number(root, "free_count", &frees) || frees < 0.0 ||
         !read_number(root, "occupied_count", &occupieds) || occupieds < 0.0 ||
         !read_number(root, "created_at_ms", &created) || created < 0.0 ||
-        !parse_registration(cJSON_GetObjectItemCaseSensitive(root, "registration"), &out->registration)
+        !parse_registration(
+            cJSON_GetObjectItemCaseSensitive(root, "registration"),
+            (uint32_t)schema_value,
+            &out->registration)
     ) {
         err = ESP_ERR_INVALID_ARG;
     } else {
@@ -324,7 +344,7 @@ scan_occupancy_class_t scan_occupancy_classify(
 }
 
 
-bool scan_occupancy_registration_usable(
+const char *scan_occupancy_registration_reason(
     const scan_occupancy_t *occupancy,
     uint64_t geometry_computed_at_ms
 )
@@ -335,14 +355,29 @@ bool scan_occupancy_registration_usable(
         geometry_computed_at_ms == 0U ||
         occupancy->registration.geometry_computed_at_ms != geometry_computed_at_ms
     ) {
-        return false;
+        return "invalid_registration";
+    }
+
+    const double residual_m = occupancy->registration.residual_m;
+    const double threshold_m = occupancy->registration.threshold_m;
+    if (
+        !isfinite(residual_m) || residual_m < 0.0 ||
+        !isfinite(threshold_m) || !(threshold_m > 0.0) ||
+        residual_m > threshold_m
+    ) {
+        return "invalid_registration";
     }
 
     const double *m = occupancy->registration.sensor_to_scan;
-    if (m[12] != 0.0 || m[13] != 0.0 || m[14] != 0.0 || m[15] != 1.0) {
-        return false;
+    for (size_t i = 0U; i < 16U; ++i) {
+        if (!isfinite(m[i])) {
+            return "invalid_registration";
+        }
     }
-    /* Rotation block must be orthonormal (|det| = 1; a mirror is allowed). */
+    if (m[12] != 0.0 || m[13] != 0.0 || m[14] != 0.0 || m[15] != 1.0) {
+        return "invalid_registration";
+    }
+    /* Rotation block must be orthonormal within the existing 1e-3 tolerance. */
     for (int r = 0; r < 3; ++r) {
         for (int c = 0; c < 3; ++c) {
             double dot = 0.0;
@@ -350,11 +385,31 @@ bool scan_occupancy_registration_usable(
                 dot += m[r * 4 + k] * m[c * 4 + k];
             }
             if (fabs(dot - (r == c ? 1.0 : 0.0)) > 1e-3) {
-                return false;
+                return "invalid_registration";
             }
         }
     }
-    return true;
+
+    const double determinant =
+        m[0] * (m[5] * m[10] - m[6] * m[9]) -
+        m[1] * (m[4] * m[10] - m[6] * m[8]) +
+        m[2] * (m[4] * m[9] - m[5] * m[8]);
+    if (fabs(determinant - 1.0) <= 1e-3) {
+        return NULL;
+    }
+    if (determinant < 0.0 && fabs(determinant + 1.0) <= 1e-3) {
+        return "reflected_transform";
+    }
+    return "invalid_registration";
+}
+
+
+bool scan_occupancy_registration_usable(
+    const scan_occupancy_t *occupancy,
+    uint64_t geometry_computed_at_ms
+)
+{
+    return scan_occupancy_registration_reason(occupancy, geometry_computed_at_ms) == NULL;
 }
 
 

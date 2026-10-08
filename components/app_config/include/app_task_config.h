@@ -42,7 +42,7 @@
  * the lowest application priority so it cannot migrate onto acquisition.
  */
 #define APP_TASK_PRIORITY_NRF_TOPOLOGY    1
-#define APP_TASK_STACK_NRF_TOPOLOGY    4096
+#define APP_TASK_STACK_NRF_TOPOLOGY    5120
 
 /*
  * esp_lvgl_port owns the LVGL handler task. It stays on Core 0 so
@@ -55,6 +55,15 @@
 #define APP_TASK_PRIORITY_STORAGE_SERVICE 3
 #define APP_TASK_STACK_STORAGE_SERVICE 8192
 
+/*
+ * Explicit SD reformat is low-priority service-core work. Filesystem calls
+ * yield after each successful sector-write batch; the external stack is safe
+ * while FatFs/SDSPI run with flash cache enabled and falls back to internal
+ * RAM if PSRAM allocation is unavailable.
+ */
+#define APP_TASK_PRIORITY_SD_FORMAT       2
+#define APP_TASK_STACK_SD_FORMAT       12288
+
 #define APP_TASK_PRIORITY_OBJECT_SERVICE  3
 #define APP_TASK_STACK_OBJECT_SERVICE  8192
 
@@ -64,7 +73,7 @@
  * scans the remaining directories one bounded storage window at a time.
  */
 #define APP_TASK_PRIORITY_OBJECT_RECOVERY 1
-#define APP_TASK_STACK_OBJECT_RECOVERY  7168
+#define APP_TASK_STACK_OBJECT_RECOVERY  9216
 
 /*
  * Measurement commands can stop/finalize the recorder and delete a reviewed

@@ -78,11 +78,24 @@ describe('sensor placement scene', () => {
     });
     const unregistered = buildSensorPlacementScene(sensorGeometry, invalid).markers;
     expect(unregistered.find((marker) => marker.node === 'G1')).toMatchObject({
-      status: 'visual_only', source: 'apriltag', positionScanM: [0.1, 0.2, 0.3], uncertaintyM: 0.006, tagId: 1,
+      status: 'visual_only', source: 'apriltag', positionScanM: [0.1, -0.3, 0.2], uncertaintyM: 0.006, tagId: 1,
     });
     expect(unregistered.find((marker) => marker.node === 'G2')).toMatchObject({
       status: 'cs_unregistered', positionScanM: null, source: 'channel_sounding',
     });
+  });
+
+  it('converts an unregistered local-floor tag marker to the project frame', () => {
+    const invalid = artifact({
+      sensor_to_scan: null,
+      tier: null,
+      valid: false,
+      reason: 'missing_main',
+      bindings: [binding('G1', 1, [1, 2, 3])],
+      per_node: [{ node: 'G1', tagId: 1, residualM: null, status: 'visual_only' }],
+    });
+    const marker = buildSensorPlacementScene(geometry([]), invalid).markers.find((item) => item.node === 'G1');
+    expect(marker?.positionScanM).toEqual([1, -3, 2]);
   });
 
   it.each([
@@ -162,6 +175,29 @@ describe('sensor placement scene', () => {
     const savedRegistration = artifact({ bindings: [binding('G1', 1)] });
     expect(buildSensorPlacementScene(savedGeometry, savedRegistration))
       .toEqual(buildSensorPlacementScene(savedGeometry, savedRegistration));
+  });
+
+  it('applies a registration only when it is bound to the viewed scan and geometry generation (MAX-405)', () => {
+    const sensorGeometry = geometry([pod(0), pod(1)]);
+    const bound = artifact({ scan_frame_id: 'scan-crc32:aaaaaaaa', bindings: [binding('G1', 1)], per_node: [{ node: 'G1', tagId: 1, residualM: 0.007, status: 'anchored' }] });
+    const expected = { geometryComputedAtMs: 100, scanFrameId: 'scan-crc32:aaaaaaaa' };
+    expect(buildSensorPlacementScene(sensorGeometry, bound, expected).markers.find((m) => m.node === 'G1')?.status).toBe('anchored');
+    for (const [other, reason] of [
+      [{ ...expected, scanFrameId: 'scan-crc32:bbbbbbbb' }, 'registration_scan_mismatch'],
+      [{ ...expected, geometryComputedAtMs: 101 }, 'registration_geometry_mismatch'],
+    ] as const) {
+      const stale = buildSensorPlacementScene(sensorGeometry, bound, other);
+      expect(stale.markers.find((m) => m.node === 'G1')?.status).toBe('cs_unregistered');
+      expect(stale.skipped).toContainEqual({ node: null, reason });
+    }
+    const unbound = buildSensorPlacementScene(sensorGeometry, artifact({ bindings: [binding('G1', 1)] }), expected);
+    expect(unbound.markers.every((m) => m.status === 'cs_unregistered')).toBe(true);
+    expect(unbound.skipped).toContainEqual({ node: null, reason: 'registration_scan_unbound' });
+  });
+
+  it('refuses a transform whose residual exceeds its threshold', () => {
+    const over = artifact({ residual_rms_m: 0.3, threshold_m: 0.05 });
+    expect(buildSensorPlacementScene(geometry([pod(0), pod(1)]), over).markers.every((m) => m.status === 'cs_unregistered')).toBe(true);
   });
 });
 

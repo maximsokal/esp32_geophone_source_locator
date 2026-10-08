@@ -148,6 +148,8 @@ typedef struct
     const char *object_id;
     const char *session_id;
     uint64_t computed_at_ms;
+    bool session_epoch_known;
+    int64_t session_epoch_timestamp_us;
     uint64_t geometry_computed_at_ms;
     localization_dimensionality_t dimensionality;
     const char *propagation_model_name;
@@ -159,6 +161,13 @@ typedef struct
     const localization_velocity_range_t *velocity_range;
 
 } localization_calculate_run_context_t;
+
+/* Add the TDOA iteration-cap outcome after the legacy event-record adapter. */
+void localization_calculate_set_tdoa_terminal_status(
+    const localization_event_result_t *event_result,
+    uint8_t max_iterations,
+    localization_run_record_t *record
+);
 
 
 void localization_calculate_traveltime_to_run_record(

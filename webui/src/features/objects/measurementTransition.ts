@@ -64,8 +64,8 @@ export function measurementControlLocked(status: DeviceStatus): boolean {
 }
 
 export function isStorageCacheIdle(status: DeviceStatus): boolean {
-  /* Older firmware has no cache field; keep it usable while upgrading. */
-  return status.storage_busy !== true;
+  /* Missing fields on older firmware keep the existing cache-idle behavior. */
+  return status.storage_available === false || status.storage_busy !== true;
 }
 
 export async function waitForStorageCacheIdle(

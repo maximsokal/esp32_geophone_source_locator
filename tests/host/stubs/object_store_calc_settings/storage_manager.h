@@ -8,3 +8,5 @@
 
 esp_err_t storage_manager_atomic_write_text(const char *path, const char *text);
 esp_err_t storage_manager_read_text(const char *path, char *buffer, size_t buffer_size);
+bool storage_manager_is_ready(void);
+void storage_manager_operation_end(void);

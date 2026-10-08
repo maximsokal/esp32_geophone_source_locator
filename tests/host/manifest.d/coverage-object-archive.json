@@ -41,6 +41,7 @@
       "name": "object_store_profile_round_trip",
       "sources": [
         "components/object_format/object_format.c",
+        "components/object_store/object_store_cache.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/object_store/tests/object_store_profile_round_trip_test.c"
       ],

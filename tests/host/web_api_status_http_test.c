@@ -31,9 +31,16 @@ static char s_response_body[256];
 static int s_error_status;
 static char s_error_message[96];
 static esp_err_t s_send_result;
+static bool s_storage_ready;
+
+bool storage_manager_is_ready(void)
+{
+    return s_storage_ready;
+}
 
 static void reset_fake(void)
 {
+    s_storage_ready = true;
     s_register_result = ESP_OK;
     s_register_calls = 0U;
     s_tracking_result = ESP_OK;

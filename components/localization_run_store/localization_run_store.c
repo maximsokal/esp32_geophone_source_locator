@@ -2,10 +2,12 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "object_format.h"
 #include "storage_manager.h"
@@ -170,33 +172,43 @@ static bool is_run_record_filename(
 }
 
 
+static void set_partial_error(
+    localization_run_store_list_status_t *status,
+    localization_run_store_partial_error_code_t code
+)
+{
+    status->partial_error = true;
+    ++status->partial_error_count;
+    status->partial_error_codes |= (uint32_t)code;
+}
+
+
 /*
- * MAX-168: enumerate every localization run already persisted for one
- * session -- the WebUI needs this to show past "Calculate source" results,
- * and a caller deciding whether to recompute needs it to see what already
- * exists. Every run lives in its own file (localization_run_store_write()'s
- * own doc comment explains why), so this is a directory listing, not a
- * single-record read.
- *
- * A file that fails to read or parse is skipped rather than failing the
- * whole listing -- one corrupt run record must not hide every other valid
- * one for the same session. `record_count_out` reports how many were
- * actually parsed into `records`; it does not distinguish "no runs yet"
- * from "some runs were unreadable", since neither is actionable
- * differently by a caller that just wants what is available now.
+ * Enumerates valid run records while retaining the successfully parsed
+ * entries when a matching file cannot be read or parsed. The status reports
+ * how many failures occurred and which stable error-code categories applied.
  */
-esp_err_t localization_run_store_list(
+static esp_err_t localization_run_store_list_internal(
     const char *object_id,
     const char *session_id,
     localization_run_record_t *records,
     size_t max_records,
-    size_t *record_count_out
+    size_t *record_count_out,
+    localization_run_store_list_status_t *status_out,
+    bool *directory_opened_out
 )
 {
-    if (records == NULL || max_records == 0U || record_count_out == NULL) {
+    if (directory_opened_out != NULL) {
+        *directory_opened_out = false;
+    }
+    if (
+        records == NULL || max_records == 0U || record_count_out == NULL ||
+        status_out == NULL
+    ) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    memset(status_out, 0, sizeof(*status_out));
     *record_count_out = 0U;
 
     char directory_path[LOCALIZATION_RUN_STORE_PATH_MAX];
@@ -207,20 +219,64 @@ esp_err_t localization_run_store_list(
         return path_err;
     }
 
+    struct stat directory_info;
+    errno = 0;
+    if (stat(directory_path, &directory_info) != 0) {
+        if (errno == ENOENT) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        set_partial_error(
+            status_out,
+            LOCALIZATION_RUN_STORE_PARTIAL_ERROR_LISTING_ENUMERATION_FAILED
+        );
+        return ESP_FAIL;
+    }
+    errno = 0;
     DIR *directory = opendir(directory_path);
     if (directory == NULL) {
-        return ESP_ERR_NOT_FOUND;
+        if (errno == ENOENT) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        set_partial_error(
+            status_out,
+            LOCALIZATION_RUN_STORE_PARTIAL_ERROR_LISTING_ENUMERATION_FAILED
+        );
+        return ESP_FAIL;
+    }
+    if (directory_opened_out != NULL) {
+        *directory_opened_out = true;
     }
 
     char *json = malloc(LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE);
     if (json == NULL) {
         closedir(directory);
+        set_partial_error(
+            status_out,
+            LOCALIZATION_RUN_STORE_PARTIAL_ERROR_LISTING_ENUMERATION_FAILED
+        );
         return ESP_ERR_NO_MEM;
     }
 
     size_t count = 0U;
     struct dirent *entry;
-    while (count < max_records && (entry = readdir(directory)) != NULL) {
+    size_t max_count = max_records;
+    if (max_count > LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION) {
+        max_count = LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION;
+    }
+    esp_err_t result = ESP_OK;
+    while (count < max_count) {
+        errno = 0;
+        entry = readdir(directory);
+        if (entry == NULL) {
+            if (errno != 0) {
+                set_partial_error(
+                    status_out,
+                    LOCALIZATION_RUN_STORE_PARTIAL_ERROR_LISTING_ENUMERATION_FAILED
+                );
+                result = ESP_FAIL;
+            }
+            break;
+        }
         if (!is_run_record_filename(entry->d_name)) {
             continue;
         }
@@ -230,14 +286,26 @@ esp_err_t localization_run_store_list(
             file_path, sizeof(file_path), "%s/%s", directory_path, entry->d_name
         );
         if (written < 0 || written >= (int)sizeof(file_path)) {
+            set_partial_error(
+                status_out,
+                LOCALIZATION_RUN_STORE_PARTIAL_ERROR_LISTING_ENUMERATION_FAILED
+            );
             continue;
         }
 
         if (storage_manager_read_text(file_path, json, LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE) != ESP_OK) {
+            set_partial_error(
+                status_out,
+                LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_READ_FAILED
+            );
             continue;
         }
 
         if (localization_run_record_from_json(json, &records[count]) != ESP_OK) {
+            set_partial_error(
+                status_out,
+                LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_PARSE_FAILED
+            );
             continue;
         }
 
@@ -245,10 +313,52 @@ esp_err_t localization_run_store_list(
     }
 
     free(json);
-    closedir(directory);
+    if (closedir(directory) != 0) {
+        set_partial_error(
+            status_out,
+            LOCALIZATION_RUN_STORE_PARTIAL_ERROR_LISTING_ENUMERATION_FAILED
+        );
+        result = ESP_FAIL;
+    }
 
     *record_count_out = count;
-    return ESP_OK;
+    return result;
+}
+
+
+esp_err_t localization_run_store_list_ex(
+    const char *object_id,
+    const char *session_id,
+    localization_run_record_t *records,
+    size_t max_records,
+    size_t *record_count_out,
+    localization_run_store_list_status_t *status_out
+)
+{
+    return localization_run_store_list_internal(
+        object_id, session_id, records, max_records, record_count_out, status_out, NULL
+    );
+}
+
+
+esp_err_t localization_run_store_list(
+    const char *object_id,
+    const char *session_id,
+    localization_run_record_t *records,
+    size_t max_records,
+    size_t *record_count_out
+)
+{
+    localization_run_store_list_status_t status;
+    bool directory_opened = false;
+    const esp_err_t result = localization_run_store_list_internal(
+        object_id, session_id, records, max_records, record_count_out, &status,
+        &directory_opened
+    );
+    if (result == ESP_FAIL) {
+        return directory_opened ? ESP_OK : ESP_ERR_NOT_FOUND;
+    }
+    return result;
 }
 
 
@@ -331,18 +441,27 @@ static bool is_pick_record_filename(
 }
 
 
-esp_err_t localization_run_store_list_picks(
+static esp_err_t localization_run_store_list_picks_internal(
     const char *object_id,
     const char *session_id,
     localization_pick_record_t *records,
     size_t max_records,
-    size_t *record_count_out
+    size_t *record_count_out,
+    localization_run_store_list_status_t *status_out,
+    bool *directory_opened_out
 )
 {
-    if (records == NULL || max_records == 0U || record_count_out == NULL) {
+    if (directory_opened_out != NULL) {
+        *directory_opened_out = false;
+    }
+    if (
+        records == NULL || max_records == 0U || record_count_out == NULL ||
+        status_out == NULL
+    ) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    memset(status_out, 0, sizeof(*status_out));
     *record_count_out = 0U;
 
     char directory_path[LOCALIZATION_RUN_STORE_PATH_MAX];
@@ -353,20 +472,64 @@ esp_err_t localization_run_store_list_picks(
         return path_err;
     }
 
+    struct stat directory_info;
+    errno = 0;
+    if (stat(directory_path, &directory_info) != 0) {
+        if (errno == ENOENT) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        set_partial_error(
+            status_out,
+            LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED
+        );
+        return ESP_FAIL;
+    }
+    errno = 0;
     DIR *directory = opendir(directory_path);
     if (directory == NULL) {
-        return ESP_ERR_NOT_FOUND;
+        if (errno == ENOENT) {
+            return ESP_ERR_NOT_FOUND;
+        }
+        set_partial_error(
+            status_out,
+            LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED
+        );
+        return ESP_FAIL;
+    }
+    if (directory_opened_out != NULL) {
+        *directory_opened_out = true;
     }
 
     char *json = malloc(LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE);
     if (json == NULL) {
         closedir(directory);
+        set_partial_error(
+            status_out,
+            LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED
+        );
         return ESP_ERR_NO_MEM;
     }
 
     size_t count = 0U;
     struct dirent *entry;
-    while (count < max_records && (entry = readdir(directory)) != NULL) {
+    size_t max_count = max_records;
+    if (max_count > LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION) {
+        max_count = LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION;
+    }
+    esp_err_t result = ESP_OK;
+    while (count < max_count) {
+        errno = 0;
+        entry = readdir(directory);
+        if (entry == NULL) {
+            if (errno != 0) {
+                set_partial_error(
+                    status_out,
+                    LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED
+                );
+                result = ESP_FAIL;
+            }
+            break;
+        }
         if (!is_pick_record_filename(entry->d_name)) {
             continue;
         }
@@ -376,14 +539,26 @@ esp_err_t localization_run_store_list_picks(
             file_path, sizeof(file_path), "%s/%s", directory_path, entry->d_name
         );
         if (written < 0 || written >= (int)sizeof(file_path)) {
+            set_partial_error(
+                status_out,
+                LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED
+            );
             continue;
         }
 
         if (storage_manager_read_text(file_path, json, LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE) != ESP_OK) {
+            set_partial_error(
+                status_out,
+                LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED
+            );
             continue;
         }
 
         if (localization_pick_record_from_json(json, &records[count]) != ESP_OK) {
+            set_partial_error(
+                status_out,
+                LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_RECORD_PARSE_FAILED
+            );
             continue;
         }
 
@@ -391,8 +566,50 @@ esp_err_t localization_run_store_list_picks(
     }
 
     free(json);
-    closedir(directory);
+    if (closedir(directory) != 0) {
+        set_partial_error(
+            status_out,
+            LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED
+        );
+        result = ESP_FAIL;
+    }
 
     *record_count_out = count;
-    return ESP_OK;
+    return result;
+}
+
+
+esp_err_t localization_run_store_list_picks_ex(
+    const char *object_id,
+    const char *session_id,
+    localization_pick_record_t *records,
+    size_t max_records,
+    size_t *record_count_out,
+    localization_run_store_list_status_t *status_out
+)
+{
+    return localization_run_store_list_picks_internal(
+        object_id, session_id, records, max_records, record_count_out, status_out, NULL
+    );
+}
+
+
+esp_err_t localization_run_store_list_picks(
+    const char *object_id,
+    const char *session_id,
+    localization_pick_record_t *records,
+    size_t max_records,
+    size_t *record_count_out
+)
+{
+    localization_run_store_list_status_t status;
+    bool directory_opened = false;
+    const esp_err_t result = localization_run_store_list_picks_internal(
+        object_id, session_id, records, max_records, record_count_out, &status,
+        &directory_opened
+    );
+    if (result == ESP_FAIL) {
+        return directory_opened ? ESP_OK : ESP_ERR_NOT_FOUND;
+    }
+    return result;
 }

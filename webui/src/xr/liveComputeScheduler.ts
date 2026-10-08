@@ -6,6 +6,7 @@ export type LiveComputePressure = 'low' | 'medium' | 'high';
 
 export interface LiveComputeLease {
   readonly kind: LiveComputeTaskKind;
+  /** Release after the worker job settles or its worker has been terminated. */
   release(): void;
 }
 
@@ -18,6 +19,7 @@ export interface LiveComputeSchedulerSnapshot {
   effectiveBudget: number | null;
   pressure: LiveComputePressure;
   degraded: boolean;
+  /** Admitted CPU jobs; epoch invalidation alone does not make a job inactive. */
   active: number;
   structural: number;
   visual: number;

@@ -25,8 +25,12 @@ static bool add_pairs(cJSON *object, const nrf_cs_pair_result_t *pairs, size_t c
     for (size_t i = 0U; i < count; ++i) {
         const nrf_cs_pair_result_t *pair = &pairs[i];
         cJSON *item = cJSON_CreateObject();
-        if (item == NULL || !cJSON_AddItemToArray(array, item) ||
-            cJSON_AddNumberToObject(item, "node_a", pair->node_a) == NULL ||
+        if (item == NULL) return false;
+        if (!cJSON_AddItemToArray(array, item)) {
+            cJSON_Delete(item);
+            return false;
+        }
+        if (cJSON_AddNumberToObject(item, "node_a", pair->node_a) == NULL ||
             cJSON_AddNumberToObject(item, "node_b", pair->node_b) == NULL ||
             cJSON_AddStringToObject(item, "state", pair_state_name(pair->state)) == NULL ||
             cJSON_AddNumberToObject(item, "distance_mm", pair->distance_mm) == NULL ||
@@ -62,8 +66,12 @@ static bool add_geometry(
     for (size_t i = 0U; i < geometry->node_count; ++i) {
         const nrf_topology_ranging_node_t *node = &geometry->nodes[i];
         cJSON *item = cJSON_CreateObject();
-        if (item == NULL || !cJSON_AddItemToArray(nodes, item) ||
-            cJSON_AddNumberToObject(item, "node_id", node->node_id) == NULL ||
+        if (item == NULL) return false;
+        if (!cJSON_AddItemToArray(nodes, item)) {
+            cJSON_Delete(item);
+            return false;
+        }
+        if (cJSON_AddNumberToObject(item, "node_id", node->node_id) == NULL ||
             cJSON_AddBoolToObject(item, "solved", node->solved) == NULL ||
             cJSON_AddNumberToObject(item, "x_mm", node->x_mm) == NULL ||
             cJSON_AddNumberToObject(item, "y_mm", node->y_mm) == NULL ||

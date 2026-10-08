@@ -16,6 +16,7 @@ import {
   occupancyCrc32,
   occupancyFrameIdForScan,
 } from '../../src/xr/occupancySolverArtifact';
+import { localFloorMatrixToProject } from '../../src/xr/projectFrame';
 import { encodeVoidScene, VOID_SCENE_REGISTRATION } from '../xr/support/voidScene';
 
 /*
@@ -44,6 +45,7 @@ async function readBody(request: AsyncIterable<Uint8Array>): Promise<Uint8Array>
 async function startVirtualEsp32() {
   const { createServer } = await import('node:http');
   const files = new Map<string, Uint8Array>();
+  const sourceIds = new Map<string, string>();
   const requests: StoredRequest[] = [];
 
   const server = createServer((request, response) => {
@@ -72,14 +74,38 @@ async function startVirtualEsp32() {
       const fileName = kind === 'scan' ? 'scan-v1.bin' : kind === 'occupancy' ? 'occupancy-v1.bin' : 'preview-v1.bin';
       const file = `${objectId}/sessions/${sessionId}/${fileName}`;
       const occupancyFile = `${objectId}/sessions/${sessionId}/occupancy-v1.bin`;
+      const scanFile = `${objectId}/sessions/${sessionId}/scan-v1.bin`;
 
       if (action === 'save') {
         if (body.byteLength === 0 || (kind === 'occupancy' && body.byteLength > OCCUPANCY_MAX_BYTES) || (kind === 'preview' && body.byteLength > PREVIEW_MAX_BYTES)) {
           json(400, { ok: false, action: 'scan_save', object_id: objectId, session_id: sessionId, error: 'ESP_ERR_INVALID_SIZE' });
           return;
         }
+        if ((kind === 'occupancy' || kind === 'preview') && url.searchParams.has('scan_id')) {
+          const currentScan = files.get(scanFile);
+          const currentId = currentScan === undefined ? null : occupancyFrameIdForScan(currentScan);
+          const requestedId = url.searchParams.get('scan_id');
+          if (requestedId !== currentId) {
+            json(409, { ok: false, error: 'scan_generation_mismatch', current_id: currentId });
+            return;
+          }
+          sourceIds.set(file, requestedId);
+        }
+        if (kind === 'scan') {
+          files.delete(occupancyFile);
+          files.delete(`${objectId}/sessions/${sessionId}/preview-v1.bin`);
+          sourceIds.delete(occupancyFile);
+          sourceIds.delete(`${objectId}/sessions/${sessionId}/preview-v1.bin`);
+        }
         files.set(file, body);
-        json(200, { ok: true, action: 'scan_save', object_id: objectId, session_id: sessionId, bytes: body.byteLength });
+        json(200, {
+          ok: true,
+          action: 'scan_save',
+          object_id: objectId,
+          session_id: sessionId,
+          bytes: body.byteLength,
+          ...(kind === 'scan' ? { id: occupancyFrameIdForScan(body) } : {}),
+        });
         return;
       }
       if (action === 'load') {
@@ -95,7 +121,14 @@ async function startVirtualEsp32() {
       if (action === 'info') {
         const stored = files.get(file);
         if (stored === undefined) json(404, { ok: false, action: 'scan_info', error: 'ESP_ERR_NOT_FOUND' });
-        else json(200, { ok: true, action: 'scan_info', object_id: objectId, session_id: sessionId, bytes: stored.byteLength });
+        else json(200, {
+          ok: true,
+          action: 'scan_info',
+          object_id: objectId,
+          session_id: sessionId,
+          bytes: stored.byteLength,
+          ...(kind === 'scan' ? { id: occupancyFrameIdForScan(stored) } : { source_id: sourceIds.get(file) ?? null }),
+        });
         return;
       }
       if (action === 'delete') {
@@ -104,6 +137,8 @@ async function startVirtualEsp32() {
         if (kind === 'scan') {
           files.delete(occupancyFile);
           files.delete(`${objectId}/sessions/${sessionId}/preview-v1.bin`);
+          sourceIds.delete(occupancyFile);
+          sourceIds.delete(`${objectId}/sessions/${sessionId}/preview-v1.bin`);
         }
         json(200, { ok: true, action: 'scan_delete', object_id: objectId, session_id: sessionId });
         return;
@@ -153,13 +188,14 @@ describe('3D scan empty/filled sectors -> ESP32', () => {
       const scan = new Uint8Array([0x47, 0x58, 0x52, 0x53, 0x43, 0x41, 0x4e, 0x31, 9, 8, 7]);
       await saveObjectScanArtifact('OBJ_0003', 'S000002', scan);
       const occupancy = buildSessionOccupancyArtifact(scanSnapshot(), scan, 1700000000000);
-      await expect(saveSessionOccupancyArtifact('OBJ_0003', 'S000002', occupancy))
+      const scanId = occupancyFrameIdForScan(scan);
+      await expect(saveSessionOccupancyArtifact('OBJ_0003', 'S000002', occupancy, scanId))
         .resolves.toMatchObject({ ok: true, bytes: occupancy.byteLength });
 
       const upload = esp.requests.find((request) => request.path.includes('kind=occupancy'));
       expect(upload).toMatchObject({
         method: 'POST',
-        path: '/api/control?scan=save&object_id=OBJ_0003&session_id=S000002&kind=occupancy',
+        path: `/api/control?scan=save&object_id=OBJ_0003&session_id=S000002&kind=occupancy&scan_id=${encodeURIComponent(scanId)}`,
         contentType: 'application/octet-stream',
         bodyLength: occupancy.byteLength,
       });
@@ -167,8 +203,12 @@ describe('3D scan empty/filled sectors -> ESP32', () => {
       // Two artifacts, the scan intact.
       expect(esp.files.size).toBe(2);
       await expect(loadObjectScanArtifact('OBJ_0003', 'S000002')).resolves.toEqual(scan);
-      await expect(fetchScanInfo('OBJ_0003', 'S000002', 'occupancy')).resolves.toEqual({ present: true, bytes: occupancy.byteLength });
-      await expect(fetchScanInfo('OBJ_0003', 'S000002', 'scan')).resolves.toEqual({ present: true, bytes: scan.byteLength });
+      await expect(fetchScanInfo('OBJ_0003', 'S000002', 'occupancy')).resolves.toEqual({
+        present: true, bytes: occupancy.byteLength, id: null, sourceId: scanId,
+      });
+      await expect(fetchScanInfo('OBJ_0003', 'S000002', 'scan')).resolves.toEqual({
+        present: true, bytes: scan.byteLength, id: scanId, sourceId: null,
+      });
 
       // What the ESP32 holds decodes to exactly the scan's sectors.
       const stored = esp.files.get('OBJ_0003/sessions/S000002/occupancy-v1.bin');
@@ -195,7 +235,11 @@ describe('3D scan empty/filled sectors -> ESP32', () => {
       const stored = esp.files.get('OBJ_0001/sessions/S000001/occupancy-v1.bin');
       expect(Array.from(stored ?? [])).toEqual(Array.from(bytes));
       const decoded = decodeOccupancySolverArtifact(stored as Uint8Array);
-      expect(decoded.header.registration).toEqual(VOID_SCENE_REGISTRATION);
+      expect(decoded.header.registration).toEqual({
+        ...VOID_SCENE_REGISTRATION,
+        frame: 'project_z_up',
+        sensor_to_scan: localFloorMatrixToProject(VOID_SCENE_REGISTRATION.sensor_to_scan),
+      });
       expect(decoded.header.free_count).toBeGreaterThan(decoded.header.occupied_count);
     }
     finally {
@@ -209,7 +253,9 @@ describe('3D scan empty/filled sectors -> ESP32', () => {
       const bytes = new Uint8Array([0x47, 0x58, 0x50, 0x52, 0x56, 0x31, 0, 0, 1, 0]);
       await expect(saveSessionPreviewArtifact('OBJ_0003', 'S000010', bytes)).resolves.toMatchObject({ ok: true, bytes: bytes.length });
       await expect(loadSessionPreviewArtifact('OBJ_0003', 'S000010')).resolves.toEqual(bytes);
-      await expect(fetchScanInfo('OBJ_0003', 'S000010', 'preview')).resolves.toEqual({ present: true, bytes: bytes.length });
+      await expect(fetchScanInfo('OBJ_0003', 'S000010', 'preview')).resolves.toEqual({
+        present: true, bytes: bytes.length, id: null, sourceId: null,
+      });
       const request = esp.requests[0];
       expect(request).toMatchObject({
         path: '/api/control?scan=save&object_id=OBJ_0003&session_id=S000010&kind=preview',
@@ -230,8 +276,8 @@ describe('3D scan empty/filled sectors -> ESP32', () => {
       await saveSessionOccupancyArtifact('OBJ_0003', 'S000004', buildSessionOccupancyArtifact(scanSnapshot(), scan, 1));
       await saveSessionPreviewArtifact('OBJ_0003', 'S000004', new Uint8Array([1, 2, 3]));
       await deleteObjectScanArtifact('OBJ_0003', 'S000004');
-      await expect(fetchScanInfo('OBJ_0003', 'S000004', 'occupancy')).resolves.toEqual({ present: false, bytes: 0 });
-      await expect(fetchScanInfo('OBJ_0003', 'S000004', 'scan')).resolves.toEqual({ present: false, bytes: 0 });
+      await expect(fetchScanInfo('OBJ_0003', 'S000004', 'occupancy')).resolves.toEqual({ present: false, bytes: 0, id: null, sourceId: null });
+      await expect(fetchScanInfo('OBJ_0003', 'S000004', 'scan')).resolves.toEqual({ present: false, bytes: 0, id: null, sourceId: null });
       await expect(loadObjectScanArtifact('OBJ_0003', 'S000004')).resolves.toBeNull();
       await expect(loadSessionPreviewArtifact('OBJ_0003', 'S000004')).resolves.toBeNull();
     }
@@ -245,7 +291,9 @@ describe('3D scan empty/filled sectors -> ESP32', () => {
     try {
       const scan = new Uint8Array([5, 5, 5]);
       await saveSessionOccupancyArtifact('OBJ_0003', 'S000005', buildSessionOccupancyArtifact(scanSnapshot(), scan, 1));
-      await expect(fetchScanInfo('OBJ_0003', 'S000006', 'occupancy')).resolves.toEqual({ present: false, bytes: 0 });
+      await expect(fetchScanInfo('OBJ_0003', 'S000006', 'occupancy')).resolves.toEqual({
+        present: false, bytes: 0, id: null, sourceId: null,
+      });
 
       const oversized = new Uint8Array(OCCUPANCY_MAX_BYTES + 1);
       await expect(saveSessionOccupancyArtifact('OBJ_0003', 'S000005', oversized))

@@ -3,6 +3,7 @@
 #endif
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -18,6 +19,7 @@
 #include "freertos/semphr.h"
 #include "board_config.h"
 #include "sensor_bus.h"
+#include "sensor_bus_lines_fake.h"
 
 /*
  * Regression guard for sensor_bus.c's shared s_bus/s_ina3221/s_tca9548a
@@ -277,6 +279,11 @@ static void *topology_like_worker_fn(void *arg)
 int main(void)
 {
     assert(sensor_bus_lock_init() == ESP_OK);
+    g_fake_lines.probe_configured = true;
+    for (size_t address = 0U; address < 128U; ++address) {
+        g_fake_lines.probe_result[address] = ESP_ERR_NOT_FOUND;
+    }
+    g_fake_lines.probe_result[TCA_RESPONDING_ADDRESS] = ESP_OK;
 
     test_thread_t ina3221_thread = test_thread_start(ina3221_like_worker_fn, NULL);
     test_thread_t topology_thread = test_thread_start(topology_like_worker_fn, NULL);

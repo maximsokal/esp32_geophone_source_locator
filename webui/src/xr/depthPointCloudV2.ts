@@ -199,6 +199,9 @@ interface CellQuality {
   promotedPoints: number;
 }
 
+interface LiveCoverageQualityScratch extends CellQuality { cell: CoverageCell; }
+interface RankedCoveragePoint { point: RepresentativePoint; score: number; }
+
 interface LocalQuality {
   accepted: boolean;
   score: number;
@@ -616,6 +619,10 @@ export class DepthPointCloudAccumulator {
   private polishFrames = 0;
   private lastPrunedKeyframe = 0;
   private nextId = 1;
+  private liveCoveragePositions = new Float32Array(0);
+  private liveCoverageConfidence = new Float32Array(0);
+  private readonly liveCoverageQualityScratch: LiveCoverageQualityScratch[] = [];
+  private readonly liveCoverageRankedScratch: RankedCoveragePoint[] = [];
 
   constructor(
     voxelSizeMeters = DEFAULT_VOXEL_SIZE_METERS,
@@ -823,55 +830,117 @@ export class DepthPointCloudAccumulator {
     };
   }
 
-  liveCoverageSnapshot(): LiveCoverageSnapshot {
+  liveCoverageSnapshot(pointBudget = LIVE_GUIDE_POINT_BUDGET): LiveCoverageSnapshot {
     const promotedPointCount = this.promotedRepresentativeCount;
     const active =
       this.integrationKeyframes >= LIVE_GUIDE_MIN_KEYFRAMES &&
       this.representativeCount >= LIVE_GUIDE_MIN_RETAINED &&
       this.coverageCells.size >= LIVE_GUIDE_MIN_COVERAGE_CELLS;
     let visibleCoverageCells = 0; let readyCoverageCells = 0; let confidenceSum = 0;
-    const qualities = new Map<CoverageCell, CellQuality>();
+    let qualityCount = 0;
     for (const cell of this.coverageCells.values()) {
-      const quality = this.cellQuality(cell); qualities.set(cell, quality);
+      let quality = this.liveCoverageQualityScratch[qualityCount];
+      if (quality === undefined) {
+        quality = { cell, confidence: 0, visible: false, ready: false, promotedPoints: 0 };
+        this.liveCoverageQualityScratch.push(quality);
+      }
+      quality.cell = cell;
+      // A live visualization refresh must not invalidate a cache or sort full
+      // cell contents. On a stale face-readiness cache, report the display-only
+      // cell as not ready until the fusion path refreshes the exact result.
+      this.cellQuality(cell, quality, false);
+      qualityCount += 1;
       if (quality.visible) { visibleCoverageCells += 1; confidenceSum += quality.confidence; }
       if (quality.ready) readyCoverageCells += 1;
     }
+    this.liveCoverageQualityScratch.length = qualityCount;
     const averageCoverageConfidence = visibleCoverageCells > 0 ? confidenceSum / visibleCoverageCells : 0;
     if (!active || visibleCoverageCells === 0) return {
-      positions: new Float32Array(0), confidence: new Float32Array(0), pointCount: 0, active,
+      positions: this.liveCoveragePositions.subarray(0, 0), confidence: this.liveCoverageConfidence.subarray(0, 0), pointCount: 0, active,
       visibleCoverageCells, readyCoverageCells, totalCoverageCells: this.coverageCells.size,
       minimumVisibleFrameHits: PROMOTION_MIN_INDEPENDENT_VIEWS, targetFrameHits: TARGET_INDEPENDENT_VIEWS,
       averageCandidatesPerSampledFrame: this.averageCandidatesPerSampledFrame,
       promotedPointCount, averageCoverageConfidence,
     };
 
-    const perCellBudget = clamp(
-      Math.floor(LIVE_GUIDE_POINT_BUDGET / visibleCoverageCells),
-      1,
-      LIVE_GUIDE_MAX_POINTS_PER_CELL,
-    );
-    const positions = new Float32Array(LIVE_GUIDE_POINT_BUDGET * 3);
-    const confidence = new Float32Array(LIVE_GUIDE_POINT_BUDGET);
-    let pointCount = 0;
-    for (const cell of this.coverageCells.values()) {
-      const quality = qualities.get(cell); if (quality === undefined || !quality.visible) continue;
-      const ranked = [...cell.representatives.values()].sort((a, b) => representativeScore(a) - representativeScore(b));
-      const take = Math.min(
-        Math.max(1, Math.round(perCellBudget * (0.45 + 0.55 * Math.max(0.2, quality.confidence)))),
-        ranked.length,
+    const budget = clamp(Number.isFinite(pointBudget) ? Math.floor(pointBudget) : LIVE_GUIDE_POINT_BUDGET, 0, LIVE_GUIDE_POINT_BUDGET);
+    if (budget === 0) return {
+      positions: this.liveCoveragePositions.subarray(0, 0), confidence: this.liveCoverageConfidence.subarray(0, 0), pointCount: 0, active,
+      visibleCoverageCells, readyCoverageCells, totalCoverageCells: this.coverageCells.size,
+      minimumVisibleFrameHits: PROMOTION_MIN_INDEPENDENT_VIEWS, targetFrameHits: TARGET_INDEPENDENT_VIEWS,
+      averageCandidatesPerSampledFrame: this.averageCandidatesPerSampledFrame,
+      promotedPointCount, averageCoverageConfidence,
+    };
+
+    const perCellBudget = Math.floor(budget / visibleCoverageCells);
+    const remainderBudget = budget - perCellBudget * visibleCoverageCells;
+    let outputCapacity = 0;
+    let visibleCellIndex = 0;
+    for (const quality of this.liveCoverageQualityScratch) {
+      if (!quality.visible) continue;
+      const cellBudget = Math.min(
+        LIVE_GUIDE_MAX_POINTS_PER_CELL,
+        perCellBudget + Math.floor((visibleCellIndex + 1) * remainderBudget / visibleCoverageCells) -
+          Math.floor(visibleCellIndex * remainderBudget / visibleCoverageCells),
       );
-      for (let index = 0; index < take && pointCount < LIVE_GUIDE_POINT_BUDGET; index += 1) {
-        const point = ranked[index]; const offset = pointCount * 3;
+      visibleCellIndex += 1;
+      if (cellBudget === 0) continue;
+      const take = Math.min(
+        Math.max(1, Math.round(cellBudget * (0.45 + 0.55 * Math.max(0.2, quality.confidence)))),
+        quality.cell.representatives.size,
+      );
+      outputCapacity = Math.min(budget, outputCapacity + take);
+      if (outputCapacity === budget) break;
+    }
+    this.ensureLiveCoverageCapacity(outputCapacity);
+    const positions = this.liveCoveragePositions;
+    const confidence = this.liveCoverageConfidence;
+    let pointCount = 0;
+    visibleCellIndex = 0;
+    for (const quality of this.liveCoverageQualityScratch) {
+      const cell = quality.cell;
+      if (!quality.visible) continue;
+      const cellBudget = Math.min(
+        LIVE_GUIDE_MAX_POINTS_PER_CELL,
+        perCellBudget + Math.floor((visibleCellIndex + 1) * remainderBudget / visibleCoverageCells) -
+          Math.floor(visibleCellIndex * remainderBudget / visibleCoverageCells),
+      );
+      visibleCellIndex += 1;
+      if (cellBudget === 0) continue;
+      const take = Math.min(
+        Math.max(1, Math.round(cellBudget * (0.45 + 0.55 * Math.max(0.2, quality.confidence)))),
+        cell.representatives.size,
+      );
+      let rankedCount = 0;
+      for (const point of cell.representatives.values()) {
+        const score = representativeScore(point);
+        let insertAt = rankedCount;
+        while (insertAt > 0 && score < this.liveCoverageRankedScratch[insertAt - 1].score) insertAt -= 1;
+        if (insertAt >= take && rankedCount >= take) continue;
+        if (rankedCount < take) rankedCount += 1;
+        for (let index = rankedCount - 1; index > insertAt; index -= 1) {
+          const previous = this.liveCoverageRankedScratch[index - 1];
+          let slot = this.liveCoverageRankedScratch[index];
+          if (slot === undefined) { slot = { point: previous.point, score: previous.score }; this.liveCoverageRankedScratch[index] = slot; }
+          slot.point = previous.point;slot.score = previous.score;
+        }
+        let selected = this.liveCoverageRankedScratch[insertAt];
+        if (selected === undefined) { selected = { point, score }; this.liveCoverageRankedScratch[insertAt] = selected; }
+        selected.point = point;selected.score = score;
+      }
+      for (let index = 0; index < rankedCount && pointCount < budget; index += 1) {
+        const point = this.liveCoverageRankedScratch[index].point; const offset = pointCount * 3;
         positions[offset] = point.x;
         positions[offset + 1] = point.z;
         positions[offset + 2] = -point.y;
         confidence[pointCount] = representativeQuality(point);
         pointCount += 1;
       }
+      if (pointCount >= budget) break;
     }
     return {
-      positions: positions.subarray(0, pointCount * 3),
-      confidence: confidence.subarray(0, pointCount),
+      positions: this.liveCoveragePositions.subarray(0, pointCount * 3),
+      confidence: this.liveCoverageConfidence.subarray(0, pointCount),
       pointCount,
       active,
       visibleCoverageCells,
@@ -885,6 +954,15 @@ export class DepthPointCloudAccumulator {
     };
   }
 
+  private ensureLiveCoverageCapacity(pointCount: number): void {
+    const currentPointCapacity = Math.floor(this.liveCoveragePositions.length / 3);
+    if (currentPointCapacity >= pointCount) return;
+    let nextPointCapacity = Math.max(16, currentPointCapacity);
+    while (nextPointCapacity < pointCount) nextPointCapacity = Math.min(LIVE_GUIDE_POINT_BUDGET, nextPointCapacity * 2);
+    this.liveCoveragePositions = new Float32Array(nextPointCapacity * 3);
+    this.liveCoverageConfidence = new Float32Array(nextPointCapacity);
+  }
+
   structuralGuideSnapshot(): StructuralGuidePointCloudSnapshot {
     // The live guide must not call the full final snapshot: final snapshot also
     // builds tentative arrays, support maps, robust sorted bounds and occupancy
@@ -892,7 +970,10 @@ export class DepthPointCloudAccumulator {
     // the off-main-thread plane/corner detector.
     // MAX-253: a point without a measured orientation carries no structural
     // evidence (plane fits, edge families), so it is not exported here.
-    const count = this.promotedRepresentativeCount;
+    let count = 0;
+    for (const point of this.representatives.values()) {
+      if (point.promoted && point.normalKnown) count += 1;
+    }
     const positions = new Float32Array(count * 3);
     const normals = new Float32Array(count * 3);
     const confidence = new Float32Array(count);
@@ -910,9 +991,9 @@ export class DepthPointCloudAccumulator {
       write += 1;
     }
     return {
-      positions: write === count ? positions : positions.subarray(0, write * 3),
-      normals: write === count ? normals : normals.subarray(0, write * 3),
-      confidence: write === count ? confidence : confidence.subarray(0, write),
+      positions,
+      normals,
+      confidence,
       pointCount: write,
       keyframeCount: this.integrationKeyframes,
       voxelSizeMeters: this.voxelSizeMeters,
@@ -1288,7 +1369,7 @@ export class DepthPointCloudAccumulator {
       Math.hypot(camera[0] - cell.firstCameraX, camera[1] - cell.firstCameraY, camera[2] - cell.firstCameraZ),
     );
   }
-  private cellQuality(cell: CoverageCell): CellQuality {
+  private cellQuality(cell: CoverageCell, result?: CellQuality, evaluateFaceReadiness = true): CellQuality {
     let promotedPoints = 0; let promotedQualitySum = 0; let allQualitySum = 0; let maxAngle = 0;
     for (const point of cell.representatives.values()) {
       const quality = representativeQuality(point);
@@ -1312,7 +1393,13 @@ export class DepthPointCloudAccumulator {
       cell.evidenceKeyframes >= TARGET_INDEPENDENT_VIEWS &&
       cell.maxBaselineMeters >= CELL_READY_BASELINE_METERS &&
       confidence >= 0.72 &&
-      this.everyCellFaceReady(cell);
+      (evaluateFaceReadiness
+        ? this.everyCellFaceReady(cell)
+        : cell.facesReadyCachedRevision === cell.retentionComplexityRevision && cell.facesReadyCachedValue);
+    if (result !== undefined) {
+      result.confidence = confidence;result.visible = visible;result.ready = ready;result.promotedPoints = promotedPoints;
+      return result;
+    }
     return { confidence, visible, ready, promotedPoints };
   }
 

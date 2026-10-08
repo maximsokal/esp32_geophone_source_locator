@@ -4,12 +4,91 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "app_pod_status_bridge.h"
 #include "app_pod_status_bridge_internal.h"
 #include "device_status.h"
+#include "hw_inventory.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nrf_topology_service.h"
 #include "object_store.h"
+
+static object_store_summary_t s_active;
+
+#if defined(APP_POD_BRIDGE_REAL_PROFILE_CACHE_TEST)
+#include "object_store_internal.h"
+#include "storage_manager.h"
+
+static char s_persisted_profile_json[2048];
+static unsigned s_profile_storage_reads;
+static unsigned s_profile_object_stats;
+static unsigned s_profile_path_stats;
+static unsigned s_settings_path_stats;
+
+bool storage_manager_is_ready(void) { return true; }
+void storage_manager_operation_end(void) {}
+esp_err_t object_store_internal_begin_file_operation(void) { return ESP_OK; }
+void object_store_internal_end_file_operation(void) {}
+esp_err_t object_store_internal_begin_state_operation(void) { return ESP_OK; }
+void object_store_internal_end_state_operation(void) {}
+const char *object_store_internal_active_id(void) { return s_active.id; }
+
+bool storage_manager_path_exists(const char *path)
+{
+    if (path != NULL && strstr(path, "/object.json") != NULL) {
+        ++s_profile_path_stats;
+        return true;
+    }
+    if (path != NULL && strstr(path, "/settings.json") != NULL) {
+        ++s_settings_path_stats;
+    }
+    return false;
+}
+
+esp_err_t storage_manager_read_text(const char *path, char *buffer, size_t buffer_size)
+{
+    if (path == NULL || buffer == NULL) return ESP_ERR_INVALID_ARG;
+    if (strstr(path, "/object.json") == NULL) return ESP_ERR_NOT_FOUND;
+    ++s_profile_storage_reads;
+    const size_t length = strlen(s_persisted_profile_json) + 1U;
+    if (length > buffer_size) return ESP_ERR_INVALID_SIZE;
+    memcpy(buffer, s_persisted_profile_json, length);
+    return ESP_OK;
+}
+
+esp_err_t storage_manager_atomic_write_text(const char *path, const char *text)
+{
+    (void)path;
+    (void)text;
+    return ESP_OK;
+}
+
+bool object_store_fs_object_exists(const char *object_id)
+{
+    ++s_profile_object_stats;
+    return object_id != NULL && strcmp(object_id, "OBJ_0001") == 0;
+}
+
+esp_err_t object_store_fs_list(
+    object_store_summary_t *objects,
+    size_t max_objects,
+    size_t *object_count,
+    const char *active_object_id)
+{
+    (void)objects;
+    (void)max_objects;
+    (void)active_object_id;
+    *object_count = 0U;
+    return ESP_OK;
+}
+
+int64_t esp_timer_get_time(void)
+{
+    static int64_t now_us;
+    now_us += 1000;
+    return now_us;
+}
+#endif
 
 typedef struct {
     float pressure_pa;
@@ -27,26 +106,51 @@ typedef struct {
 static fake_barometer_t s_barometers[DEVICE_STATUS_POD_COUNT];
 static device_height_reference_status_t s_height_references[DEVICE_STATUS_POD_COUNT];
 static fake_position_t s_positions[DEVICE_STATUS_POD_COUNT];
+static pod_state_t s_pod_states[DEVICE_STATUS_POD_COUNT];
 static unsigned s_barometer_calls;
 static unsigned s_height_reference_calls;
 static unsigned s_position_calls;
+static unsigned s_pod_state_calls;
+static unsigned s_topology_snapshot_calls;
 static bool s_active_available;
 static bool s_profile_available;
-static object_store_summary_t s_active;
 static object_store_profile_t s_profile;
+static nrf_topology_snapshot_t s_topology;
+static esp_err_t s_topology_error;
 static nrf_remote_sensor_cache_t s_sensor_cache[DEVICE_STATUS_POD_COUNT];
 static esp_err_t s_sensor_errors[DEVICE_STATUS_POD_COUNT];
+static unsigned s_warning_log_calls;
+
+void app_pod_status_bridge_test_log(
+    char level,
+    const char *tag,
+    const char *format,
+    ...
+)
+{
+    (void)tag;
+    (void)format;
+    if (level == 'W') {
+        ++s_warning_log_calls;
+    }
+}
 
 static void reset_fakes(void)
 {
+    hw_inventory_init();
     memset(s_barometers, 0, sizeof(s_barometers));
     memset(s_height_references, 0, sizeof(s_height_references));
     memset(s_positions, 0, sizeof(s_positions));
+    memset(s_pod_states, 0, sizeof(s_pod_states));
     memset(s_sensor_cache, 0, sizeof(s_sensor_cache));
+    memset(&s_topology, 0, sizeof(s_topology));
     memset(s_sensor_errors, 0, sizeof(s_sensor_errors));
     s_barometer_calls = 0U;
     s_height_reference_calls = 0U;
     s_position_calls = 0U;
+    s_pod_state_calls = 0U;
+    s_topology_snapshot_calls = 0U;
+    s_topology_error = ESP_OK;
     s_active_available = true;
     s_profile_available = true;
     memset(&s_active, 0, sizeof(s_active));
@@ -62,6 +166,7 @@ esp_err_t object_store_get_active(object_store_summary_t *object)
     return ESP_OK;
 }
 
+#if !defined(APP_POD_BRIDGE_REAL_PROFILE_CACHE_TEST)
 esp_err_t object_store_get_profile(
     const char *object_id,
     object_store_profile_t *profile
@@ -73,6 +178,7 @@ esp_err_t object_store_get_profile(
     *profile = s_profile;
     return ESP_OK;
 }
+#endif
 
 esp_err_t nrf_topology_service_get_sensor_snapshot(
     uint8_t channel,
@@ -84,6 +190,31 @@ esp_err_t nrf_topology_service_get_sensor_snapshot(
     }
     if (s_sensor_errors[channel] != ESP_OK) return s_sensor_errors[channel];
     *snapshot = s_sensor_cache[channel];
+    return ESP_OK;
+}
+
+esp_err_t object_store_get_profile_cached(
+    const char *object_id,
+    object_store_profile_t *profile
+)
+{
+    return object_store_get_profile(object_id, profile);
+}
+
+esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot)
+{
+    s_topology_snapshot_calls++;
+    if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
+    if (s_topology_error != ESP_OK) return s_topology_error;
+    *snapshot = s_topology;
+    return ESP_OK;
+}
+
+esp_err_t device_status_set_pod_state(size_t pod_index, pod_state_t state)
+{
+    assert(pod_index < DEVICE_STATUS_POD_COUNT);
+    s_pod_state_calls++;
+    s_pod_states[pod_index] = state;
     return ESP_OK;
 }
 
@@ -186,6 +317,115 @@ static void configure_sensor(
     s_sensor_cache[channel].sensor.altitude_mm = altitude_mm;
 }
 
+static void assert_inventory_state(
+    hw_module_id_t id,
+    hw_module_state_t expected_state,
+    const char *expected_reason)
+{
+    hw_module_info_t module;
+    assert(hw_inventory_get(id, &module));
+    assert(module.state == expected_state);
+    assert(strcmp(module.reason, expected_reason) == 0);
+}
+
+static void test_scratch_failure_retries_and_successful_cycles_reuse_storage(void)
+{
+    reset_fakes();
+    s_topology.generation = 1U;
+    s_topology.tca_available = true;
+    s_topology.remotes[0].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    s_profile.geometry.pods[0].computed = true;
+    s_profile.geometry.pods[0].x_mm = 1250;
+    s_profile.geometry.pods[0].y_mm = -500;
+    configure_sensor(0U, true, true, true, 100000U, 1250);
+    s_sensor_cache[0].sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+    s_sensor_cache[0].sensor.reference_generation = 21U;
+    s_sensor_cache[0].sensor.relative_z_mm = 750;
+
+    app_pod_status_bridge_test_fail_next_scratch_allocations(3U);
+
+    app_pod_status_bridge_publish_cycle();
+    app_pod_status_bridge_publish_cycle();
+    app_pod_status_bridge_publish_cycle();
+
+    assert(app_pod_status_bridge_test_scratch_allocation_attempts() == 3U);
+    assert(app_pod_status_bridge_test_scratch_allocation_count() == 0U);
+    assert(s_warning_log_calls == 1U);
+    assert(s_topology_snapshot_calls == 3U);
+    assert(s_pod_state_calls == 3U * DEVICE_STATUS_POD_COUNT);
+    assert(s_barometer_calls == 3U * DEVICE_STATUS_POD_COUNT);
+    assert(s_height_reference_calls == 3U * DEVICE_STATUS_POD_COUNT);
+    assert(s_position_calls == 3U * DEVICE_STATUS_POD_COUNT);
+    assert(s_barometers[0].valid);
+    assert(s_barometers[0].pressure_pa == 100000.0f);
+    assert(s_height_references[0].state == DEVICE_HEIGHT_REFERENCE_VALID);
+    assert(s_height_references[0].generation == 21U);
+    assert(s_height_references[0].relative_z_mm == 750);
+    assert(s_pod_states[0] == POD_STATE_READY);
+    assert_inventory_state(HW_MODULE_SENSOR_MUX, HW_STATE_PRESENT, "topology probe ok");
+    assert(!s_positions[0].valid);
+    assert(s_positions[0].local_x_m == 0.0f);
+    assert(s_positions[0].local_y_m == 0.0f);
+
+    app_pod_status_bridge_test_fail_next_scratch_allocations(0U);
+    app_pod_status_bridge_publish_cycle();
+
+    assert(app_pod_status_bridge_test_scratch_allocation_attempts() == 4U);
+    assert(app_pod_status_bridge_test_scratch_allocation_count() == 1U);
+    assert(s_positions[0].valid);
+    assert(s_positions[0].local_x_m == 1.25f);
+    assert(s_positions[0].local_y_m == -0.5f);
+
+    const unsigned allocation_attempts =
+        app_pod_status_bridge_test_scratch_allocation_attempts();
+    const unsigned allocation_count =
+        app_pod_status_bridge_test_scratch_allocation_count();
+    for (unsigned cycle = 0U; cycle < 3U; ++cycle) {
+        app_pod_status_bridge_publish_cycle();
+        assert(s_positions[0].valid);
+        assert(s_positions[0].local_x_m == 1.25f);
+        assert(s_positions[0].local_y_m == -0.5f);
+        assert(s_pod_states[0] == POD_STATE_READY);
+    }
+    assert(app_pod_status_bridge_test_scratch_allocation_attempts() == allocation_attempts);
+    assert(app_pod_status_bridge_test_scratch_allocation_count() == allocation_count);
+
+    s_active_available = false;
+    app_pod_status_bridge_publish_cycle();
+    assert(!s_positions[0].valid);
+    assert(s_positions[0].local_x_m == 0.0f);
+    assert(s_positions[0].local_y_m == 0.0f);
+    assert(s_barometers[0].valid);
+
+    s_active_available = true;
+    s_profile_available = false;
+    app_pod_status_bridge_publish_cycle();
+    assert(!s_positions[0].valid);
+    assert(s_positions[0].local_x_m == 0.0f);
+    assert(s_positions[0].local_y_m == 0.0f);
+    assert(app_pod_status_bridge_test_scratch_allocation_attempts() == allocation_attempts);
+    assert(app_pod_status_bridge_test_scratch_allocation_count() == allocation_count);
+    assert(s_warning_log_calls == 1U);
+}
+
+
+static void test_stop_releases_scratch_for_reallocation(void)
+{
+    reset_fakes();
+    const unsigned allocations_before_stop =
+        app_pod_status_bridge_test_scratch_allocation_count();
+    const unsigned attempts_before_stop =
+        app_pod_status_bridge_test_scratch_allocation_attempts();
+
+    app_pod_status_bridge_stop();
+    app_pod_status_bridge_publish_cycle();
+
+    assert(app_pod_status_bridge_test_scratch_allocation_count() == allocations_before_stop + 1U);
+    assert(app_pod_status_bridge_test_scratch_allocation_attempts() == attempts_before_stop + 1U);
+
+    app_pod_status_bridge_stop();
+}
+
 static void test_cycle_publishes_fresh_sensor_and_frozen_geometry(void)
 {
     reset_fakes();
@@ -215,6 +455,8 @@ static void test_cycle_publishes_fresh_sensor_and_frozen_geometry(void)
     assert(s_barometer_calls == DEVICE_STATUS_POD_COUNT);
     assert(s_height_reference_calls == DEVICE_STATUS_POD_COUNT);
     assert(s_position_calls == DEVICE_STATUS_POD_COUNT);
+    assert(s_topology_snapshot_calls == 1U);
+    assert(s_pod_state_calls == DEVICE_STATUS_POD_COUNT);
     assert(s_barometers[0].valid);
     assert(s_barometers[0].pressure_pa == 100000.0f);
     assert(s_barometers[0].relative_altitude_cm == 125.0f);
@@ -266,9 +508,153 @@ static void test_cycle_invalidates_local_position_when_active_profile_disappears
     }
 }
 
+static void test_cycle_publishes_topology_pod_connection_states(void)
+{
+    reset_fakes();
+    s_topology.remotes[0].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    s_topology.remotes[1].state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
+    s_topology.remotes[2].state = NRF_TOPOLOGY_NODE_CONFLICT;
+    s_topology.remotes[3].state = NRF_TOPOLOGY_NODE_ABSENT;
+
+    app_pod_status_bridge_publish_cycle();
+
+    assert(s_topology_snapshot_calls == 1U);
+    assert(s_pod_state_calls == DEVICE_STATUS_POD_COUNT);
+    assert(s_pod_states[0] == POD_STATE_READY);
+    assert(s_pod_states[1] == POD_STATE_WARNING);
+    assert(s_pod_states[2] == POD_STATE_ERROR);
+    assert(s_pod_states[3] == POD_STATE_DISCONNECTED);
+
+    s_topology.remotes[0].state = NRF_TOPOLOGY_NODE_ABSENT;
+    app_pod_status_bridge_publish_cycle();
+
+    assert(s_topology_snapshot_calls == 2U);
+    assert(s_pod_state_calls == 2U * DEVICE_STATUS_POD_COUNT);
+    assert(s_pod_states[0] == POD_STATE_DISCONNECTED);
+
+    const pod_state_t previously_published[DEVICE_STATUS_POD_COUNT] = {
+        s_pod_states[0],
+        s_pod_states[1],
+        s_pod_states[2],
+        s_pod_states[3],
+    };
+    const unsigned previous_pod_state_calls = s_pod_state_calls;
+    const unsigned previous_barometer_calls = s_barometer_calls;
+    const unsigned previous_height_reference_calls = s_height_reference_calls;
+    const unsigned previous_position_calls = s_position_calls;
+
+    s_topology_error = ESP_FAIL;
+    s_topology.remotes[0].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    app_pod_status_bridge_publish_cycle();
+
+    assert(s_topology_snapshot_calls == 3U);
+    assert(s_pod_state_calls == previous_pod_state_calls);
+    for (size_t channel = 0U; channel < DEVICE_STATUS_POD_COUNT; ++channel) {
+        assert(s_pod_states[channel] == previously_published[channel]);
+    }
+    assert(s_barometer_calls == previous_barometer_calls + DEVICE_STATUS_POD_COUNT);
+    assert(s_height_reference_calls == previous_height_reference_calls + DEVICE_STATUS_POD_COUNT);
+    assert(s_position_calls == previous_position_calls + DEVICE_STATUS_POD_COUNT);
+}
+
+static void test_cycle_updates_topology_inventory_from_existing_snapshot(void)
+{
+    reset_fakes();
+    s_topology.generation = 1U;
+    s_topology.tca_available = true;
+    s_topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
+
+    app_pod_status_bridge_publish_cycle();
+
+    assert(s_topology_snapshot_calls == 1U);
+    assert_inventory_state(HW_MODULE_SENSOR_MUX, HW_STATE_PRESENT, "topology probe ok");
+    assert_inventory_state(HW_MODULE_MAIN_XIAO, HW_STATE_PRESENT, "upstream target assigned");
+
+    s_topology.generation = 2U;
+    s_topology.tca_available = false;
+    s_topology.main.state = NRF_TOPOLOGY_NODE_ABSENT;
+    app_pod_status_bridge_publish_cycle();
+
+    assert(s_topology_snapshot_calls == 2U);
+    assert_inventory_state(HW_MODULE_SENSOR_MUX, HW_STATE_ABSENT, "no response");
+    assert_inventory_state(HW_MODULE_MAIN_XIAO, HW_STATE_ABSENT, "no upstream response");
+
+    s_topology.generation = 3U;
+    s_topology.tca_available = true;
+    s_topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    app_pod_status_bridge_publish_cycle();
+
+    assert(s_topology_snapshot_calls == 3U);
+    assert_inventory_state(HW_MODULE_SENSOR_MUX, HW_STATE_PRESENT, "topology probe ok");
+    assert_inventory_state(HW_MODULE_MAIN_XIAO, HW_STATE_PRESENT, "upstream target assigned");
+}
+
+#if defined(APP_POD_BRIDGE_REAL_PROFILE_CACHE_TEST)
+static void test_pod_bridge_profile_cache_stops_storage_work_after_warm_cycle(void)
+{
+    reset_fakes();
+    object_store_profile_cache_reset();
+    (void)snprintf(
+        s_persisted_profile_json,
+        sizeof(s_persisted_profile_json),
+        "{\"schema_version\":1,\"id\":\"OBJ_0001\",\"name\":\"FIELD\","
+        "\"geometry\":{\"pods\":[{\"computed\":true,\"x_mm\":1000,"
+        "\"y_mm\":-500,\"z_mm\":0}]}}"
+    );
+    s_profile_storage_reads = 0U;
+    s_profile_object_stats = 0U;
+    s_profile_path_stats = 0U;
+    s_settings_path_stats = 0U;
+
+    app_pod_status_bridge_publish_cycle();
+    assert(s_profile_storage_reads == 1U);
+    assert(s_profile_object_stats == 1U);
+    assert(s_profile_path_stats == 1U);
+    const unsigned reads_after_warm = s_profile_storage_reads;
+    const unsigned stats_after_warm = s_profile_object_stats;
+    const unsigned path_stats_after_warm = s_profile_path_stats;
+    const unsigned settings_stats_after_warm = s_settings_path_stats;
+
+    for (unsigned cycle = 0U; cycle < 6U; ++cycle) {
+        app_pod_status_bridge_publish_cycle();
+        assert(s_positions[0].valid);
+        assert(s_positions[0].local_x_m == 1.0f);
+        assert(s_positions[0].local_y_m == -0.5f);
+    }
+    assert(s_profile_storage_reads == reads_after_warm);
+    assert(s_profile_object_stats == stats_after_warm);
+    assert(s_profile_path_stats == path_stats_after_warm);
+    assert(s_settings_path_stats == settings_stats_after_warm);
+}
+#endif
+
+#if defined(APP_POD_BRIDGE_REAL_PROFILE_CACHE_TEST)
+static void (*const s_bridge_fallback_tests[])(void) = {
+    test_scratch_failure_retries_and_successful_cycles_reuse_storage,
+    test_cycle_publishes_fresh_sensor_and_frozen_geometry,
+    test_cycle_invalidates_local_position_when_active_profile_disappears,
+    test_cycle_publishes_topology_pod_connection_states,
+    test_cycle_updates_topology_inventory_from_existing_snapshot,
+    test_stop_releases_scratch_for_reallocation,
+};
+#endif
+
 int main(void)
 {
+#if defined(APP_POD_BRIDGE_REAL_PROFILE_CACHE_TEST)
+    assert(s_bridge_fallback_tests[0] != NULL);
+    test_pod_bridge_profile_cache_stops_storage_work_after_warm_cycle();
+#else
+    test_scratch_failure_retries_and_successful_cycles_reuse_storage();
     test_cycle_publishes_fresh_sensor_and_frozen_geometry();
     test_cycle_invalidates_local_position_when_active_profile_disappears();
+    test_cycle_publishes_topology_pod_connection_states();
+    test_cycle_updates_topology_inventory_from_existing_snapshot();
+    test_stop_releases_scratch_for_reallocation();
+#endif
     return 0;
 }
+
+#if defined(APP_POD_BRIDGE_REAL_PROFILE_CACHE_TEST)
+#include "../../components/object_store/object_store_profile.c"
+#endif

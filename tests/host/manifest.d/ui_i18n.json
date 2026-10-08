@@ -74,6 +74,30 @@
       "libraries": ["m"]
     },
     {
+      "name": "ui_hardware_model",
+      "sources": [
+        "components/ui/ui_hardware_model.c",
+        "components/ui/tests/ui_hardware_model_test.c"
+      ],
+      "include_dirs": [
+        "components/ui/tests/stubs",
+        "components/hw_inventory/include",
+        "components/ui_i18n/include",
+        "components/ui"
+      ]
+    },
+    {
+      "name": "ui_system_model",
+      "sources": [
+        "components/ui/ui_system_model.c",
+        "components/ui/tests/ui_system_model_test.c"
+      ],
+      "include_dirs": [
+        "components/ui_i18n/include",
+        "components/ui"
+      ]
+    },
+    {
       "name": "ui_measurement_nodes",
       "sources": [
         "components/ui/ui_measurements_nodes.c",

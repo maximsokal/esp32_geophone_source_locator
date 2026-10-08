@@ -86,16 +86,24 @@ describe('presentation-only locale changes', () => {
     act(() => objectsTab?.props.onClick());
     expect(api.fetchDeviceStatus).toHaveBeenCalledTimes(2);
 
+    // Start a real status read before submitting: periodic reads are suppressed while a control is pending.
+    const pollEntry = timers.entries().next().value as [number, () => void] | undefined;
+    const poll = pollEntry?.[1];
+    expect(poll).toBeDefined();
+    await act(async () => {
+      if (pollEntry !== undefined) timers.delete(pollEntry[0]);
+      poll?.();
+    });
+    expect(api.fetchDeviceStatus).toHaveBeenCalledTimes(3);
+    expect(api.fetchDeviceStatus).toHaveBeenLastCalledWith(false);
+
     const form = renderer.root.findByType('form');
     act(() => form.props.onSubmit({ preventDefault: () => undefined }));
     expect(api.sendControl).toHaveBeenCalledTimes(1);
     expect(api.sendControl).toHaveBeenCalledWith('create_object', {});
 
-    const poll = timers.values().next().value as (() => void) | undefined;
-    expect(poll).toBeDefined();
     await act(async () => { poll?.(); });
     expect(api.fetchDeviceStatus).toHaveBeenCalledTimes(3);
-    expect(api.fetchDeviceStatus).toHaveBeenLastCalledWith(false);
 
     const localizationJobPoll = deferred<LocalizationJobStatus>();
     const fetchLocalizationJobStatus = vi.fn(() => localizationJobPoll.promise);

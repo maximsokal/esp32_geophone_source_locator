@@ -3,9 +3,11 @@ import { countCoverageQualityBands } from './coverageQuality';
 import { deviceComputeProfilePromise } from './deviceComputeProfile';
 import {
   deriveNegotiatedXrDepthCapability,
+  isTagReadbackPerformanceSafe,
   probeVideoInputInventory,
   summarizeComputeCapabilities,
   type NegotiatedXrDepthCapability,
+  type TagReadbackMode,
 } from './xrCapabilityProfile';
 import {
   DepthPointCloudAccumulator,
@@ -40,6 +42,7 @@ import {
   type XrWebGlBindingConstructorLike,
   type XrWebGlBindingLike,
 } from './rawCameraGuidance';
+import { webGl2Context } from './webGlStateGuard';
 import type { TagCameraFrame } from './fiducial/tagDetectorClient';
 import { detectVisualLines } from './visualLineEvidence';
 import {
@@ -86,6 +89,7 @@ export interface WebXrCapabilities {
   cameraApi: boolean;
   /** XRWebGLBinding exists; actual raw RGB is only proven by runtime capture. */
   rawXrRgbApi: boolean;
+  tagReadbackMode: TagReadbackMode;
   webGl: boolean;
   xrApi: boolean;
   immersiveAr: boolean;
@@ -185,6 +189,7 @@ interface XrWebGlLayerLike {
 interface XrSessionLike extends EventTarget {
   requestReferenceSpace(type:'local-floor'|'local'):Promise<XrReferenceSpaceLike>;
   requestAnimationFrame(callback:XrFrameCallback):number;
+  cancelAnimationFrame?(handle:number):void;
   updateRenderState(state:{baseLayer:XrWebGlLayerLike}):void|Promise<void>;
   end():Promise<void>;
   requestLightProbe?():Promise<XrLightProbeLike>;
@@ -225,6 +230,7 @@ const RGB_CAPTURE_INTERVAL_MS=520;
 const TAG_CAPTURE_INTERVAL_MS=330;
 const TAG_CAPTURE_WIDTH=960;
 const TAG_CAPTURE_HEIGHT=540;
+const TAG_CAPTURE_READBACK_REQUIRED='High-resolution tag capture requires non-blocking WebGL2 readback.';
 const VISUAL_EVIDENCE_INTERVAL_MS=760;
 const PLANE_GUIDANCE_INTERVAL_MS=350;
 
@@ -250,6 +256,15 @@ function createWebGlContext():XrCompatibleGl|null{
 }
 function releaseWebGlContext(context:XrCompatibleGl|null):void{context?.getExtension('WEBGL_lose_context')?.loseContext();}
 function hasWebGl():boolean{const c=createWebGlContext();if(c===null)return false;releaseWebGlContext(c);return true;}
+function probeTagReadbackMode():TagReadbackMode{
+  let context:XrCompatibleGl|null=null;let capture:RawCameraGuidanceCapture|null=null;
+  try{
+    context=createWebGlContext();if(context===null)return'unavailable';
+    capture=new RawCameraGuidanceCapture(context,1,1);
+    return capture.tagReadbackMode;
+  }catch{return'unavailable';}
+  finally{try{capture?.dispose();}catch{/* capability probe is advisory */}try{releaseWebGlContext(context);}catch{/* capability probe is advisory */}}
+}
 function errorText(error:unknown):string{return error instanceof Error?error.message:String(error);}
 function readDepthConfiguration(session:XrSessionLike):DepthConfiguration{
   try{const negotiated=deriveNegotiatedXrDepthCapability(session);return{...negotiated,enabled:negotiated.cpuDepth};}
@@ -261,13 +276,20 @@ function depthGeometry(depth:CpuDepthInformationLike,fallbackView:XrViewLike):De
 }
 function projectCameraPosition(pose:XrViewerPoseLike):readonly[number,number,number]{const p=pose.transform.position;return webXrLocalFloorToProject(p.x,p.y,p.z);}
 
-export function composeCoverageRenderSnapshot(coverage:LiveCoverageSnapshot,manualReferencePositions:Float32Array):CoverageRenderSnapshot{
+/** Copy snapshot and manual positions once into reusable views for the GPU upload path. */
+export function composeCoverageRenderSnapshot(coverage:LiveCoverageSnapshot,manualReferencePositions:Float32Array,reusable?:{positions:Float32Array;confidence:Float32Array}):CoverageRenderSnapshot{
   const coverageCount=Math.min(coverage.pointCount,Math.floor(coverage.positions.length/3),coverage.confidence.length);
   const manualCount=Math.floor(manualReferencePositions.length/3),pointCount=coverageCount+manualCount;
-  const positions=new Float32Array(pointCount*3),confidence=new Float32Array(pointCount);
+  let positions:Float32Array;let confidence:Float32Array;
+  if(reusable===undefined){positions=new Float32Array(pointCount*3);confidence=new Float32Array(pointCount);}
+  else{
+    if(reusable.positions.length<pointCount*3){let capacity=Math.max(16,reusable.positions.length);while(capacity<pointCount*3)capacity=Math.max(pointCount*3,capacity*2);reusable.positions=new Float32Array(capacity);}
+    if(reusable.confidence.length<pointCount){let capacity=Math.max(16,reusable.confidence.length);while(capacity<pointCount)capacity=Math.max(pointCount,capacity*2);reusable.confidence=new Float32Array(capacity);}
+    positions=reusable.positions;confidence=reusable.confidence;
+  }
   if(coverageCount>0){positions.set(coverage.positions.subarray(0,coverageCount*3),0);confidence.set(coverage.confidence.subarray(0,coverageCount),0);}
   if(manualCount>0){positions.set(manualReferencePositions.subarray(0,manualCount*3),coverageCount*3);confidence.fill(2,coverageCount,pointCount);}
-  return{positions,confidence,pointCount};
+  return{positions:positions.subarray(0,pointCount*3),confidence:confidence.subarray(0,pointCount),pointCount,manualPointCount:manualCount};
 }
 
 export async function probeWebXrCapabilities():Promise<WebXrCapabilities>{
@@ -279,8 +301,10 @@ export async function probeWebXrCapabilities():Promise<WebXrCapabilities>{
   ]);
   const compute=summarizeComputeCapabilities(computeProfile);
   const rawXrRgbApi=Boolean((window as WindowWithXr).XRWebGLBinding);
+  const tagReadbackMode=probeTagReadbackMode();
+  clientDiagnostics.info('XR_TAG_READBACK_CAPABILITY',{tagReadbackMode});void clientDiagnostics.flush();
   return{
-    secureContext:window.isSecureContext===true,cameraApi:rawXrRgbApi,rawXrRgbApi,webGl:hasWebGl(),xrApi,immersiveAr,
+    secureContext:window.isSecureContext===true,cameraApi:rawXrRgbApi,rawXrRgbApi,tagReadbackMode,webGl:hasWebGl(),xrApi,immersiveAr,
     wakeLockApi:(navigator as NavigatorWithWakeLock).wakeLock!==undefined,
     videoInputEnumeration:videoInputs.enumerationAvailable,videoInputsEnumerated:videoInputs.enumerated,
     videoInputCount:videoInputs.videoInputCount,videoInputLabelsExposed:videoInputs.labelsExposed,
@@ -292,12 +316,21 @@ export class WebXrRuntime{
   private state:WebXrRuntimeState=initialRuntimeState;
   private listeners=new Set<RuntimeListener>();
   private session:XrSessionLike|null=null;private referenceSpace:XrReferenceSpaceLike|null=null;private gl:XrCompatibleGl|null=null;
+  private lifecycleGeneration=0;private disposed=false;private disposePromise:Promise<void>|null=null;private detachPromise:Promise<void>|null=null;private attached=false;private profilerActivationToken:number|null=null;
+  private sessionEndListener:(()=>void)|null=null;private sessionVisibilityListener:(()=>void)|null=null;
+  private readonly sessionEndRequests=new WeakMap<object,Promise<void>>();
+  private rafHandle:number|null=null;
   private layer:XrWebGlLayerLike|null=null;private coverageRenderer:LiveCoveragePointRenderer|null=null;
   private cameraBinding:XrWebGlBindingLike|null=null;private cameraCapture:RawCameraGuidanceCapture|null=null;
   private tagCameraCapture:RawCameraGuidanceCapture|null=null;private tagCaptureEnabled=false;private lastTagCaptureMs=Number.NEGATIVE_INFINITY;
   private tagFrameListeners=new Set<TagFrameListener>();
   private lightProbe:XrLightProbeLike|null=null;private wakeLock:WakeLockSentinelLike|null=null;
-  private explicitStopRequested=false;private scanPaused=false;private frameCount=0;private lastUiUpdateMs=0;
+  private wakeLockReleaseListener:(()=>void)|null=null;private wakeLockRequest:{generation:number;promise:Promise<void>}|null=null;
+  private readonly wakeLockReleases=new Set<Promise<void>>();
+  private readonly frameFaultCounts=new Map<string,number>();private readonly loggedFrameFaults=new Set<string>();private frameFaultedGeneration:number|null=null;private fatalFrameTeardown=false;
+  private contextCanvas:EventTarget|null=null;private contextLostListener:((event:Event)=>void)|null=null;private contextRestoredListener:(()=>void)|null=null;
+  private finalSnapshot:ScanPointCloudSnapshot|null=null;
+  private explicitStopRequested=false;private evidenceFrozen=false;private evidenceEpoch=0;private frozenVisualEvidenceFrames=0;private scanPaused=false;private frameCount=0;private lastUiUpdateMs=0;
   private lastDepthSampleMs=Number.NEGATIVE_INFINITY;private lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;
   private lastLightEstimateMs=Number.NEGATIVE_INFINITY;private lastClientTelemetryMs=Number.NEGATIVE_INFINITY;
   private lastRgbCaptureMs=Number.NEGATIVE_INFINITY;private lastVisualEvidenceMs=Number.NEGATIVE_INFINITY;private lastPlaneGuidanceMs=Number.NEGATIVE_INFINITY;
@@ -312,20 +345,74 @@ export class WebXrRuntime{
   private rgbGuidanceAvailable=false;private rgbGuidanceWidth:number|null=null;private rgbGuidanceHeight:number|null=null;
   private readonly pointCloud=new DepthPointCloudAccumulator();private readonly keyframeSelector=new WebXrFusionKeyframeSelector();
   private readonly manualPoints=new ManualControlPointStore();private readonly operatorEdges=new OperatorEdgeStore();
+  private readonly coverageCompositionBuffers={positions:new Float32Array(0),confidence:new Float32Array(0)};
   private readonly performanceProfiler=new XrPerformanceProfiler();private readonly latestProjectionMatrix=new Float32Array(16);
   private readonly latestWorldFromView=new Float32Array(16);private hasLatestProjection=false;
 
-  constructor(){document.addEventListener('visibilitychange',this.handleDocumentVisibilityChange);}
-  subscribe(listener:RuntimeListener):()=>void{this.listeners.add(listener);listener(this.state);return()=>this.listeners.delete(listener);}
-  subscribeTagFrames(listener:TagFrameListener):()=>void{this.tagFrameListeners.add(listener);return()=>this.tagFrameListeners.delete(listener);}
+  attach():void{
+    if(this.disposed||this.attached)return;
+    this.attached=true;
+    document.addEventListener('visibilitychange',this.handleDocumentVisibilityChange);
+    this.profilerActivationToken=this.performanceProfiler.activate();
+  }
+  detach():Promise<void>{
+    if(this.detachPromise!==null){
+      if(!this.attached)return this.detachPromise;
+      // A StrictMode replay can re-attach while the first cleanup is still
+      // awaiting session or wake-lock completion. A later real unmount must
+      // release that replay attachment too.
+      this.attached=false;
+      document.removeEventListener('visibilitychange',this.handleDocumentVisibilityChange);
+      if(this.profilerActivationToken!==null)this.performanceProfiler.deactivate(this.profilerActivationToken);
+      this.profilerActivationToken=null;
+      this.lifecycleGeneration+=1;this.tagFrameListeners.clear();this.finalSnapshot=null;
+      if(!this.disposed)this.state={...initialRuntimeState};
+      const pending=this.detachPromise;
+      let tracked:Promise<void>;
+      tracked=Promise.all([pending,this.waitForWakeLockReleases()]).then(()=>undefined).finally(()=>{if(this.detachPromise===tracked)this.detachPromise=null;});
+      this.detachPromise=tracked;
+      return tracked;
+    }
+    if(!this.attached&&this.session===null&&this.gl===null)return Promise.resolve();
+    if(this.attached){
+      this.attached=false;
+      document.removeEventListener('visibilitychange',this.handleDocumentVisibilityChange);
+      if(this.profilerActivationToken!==null)this.performanceProfiler.deactivate(this.profilerActivationToken);
+      this.profilerActivationToken=null;
+    }
+    this.lifecycleGeneration+=1;
+    const session=this.session;
+    this.tagFrameListeners.clear();this.finalSnapshot=null;
+    this.cleanupRuntime();
+    if(!this.disposed)this.state={...initialRuntimeState};
+    const work=(async()=>{if(session!==null)await this.endObsoleteSession(session,true);await this.waitForWakeLockReleases();})();
+    let tracked:Promise<void>;
+    tracked=work.finally(()=>{if(this.detachPromise===tracked)this.detachPromise=null;});
+    this.detachPromise=tracked;
+    return tracked;
+  }
+  subscribe(listener:RuntimeListener):()=>void{if(this.disposed)return()=>undefined;this.listeners.add(listener);listener(this.state);return()=>this.listeners.delete(listener);}
+  subscribeTagFrames(listener:TagFrameListener):()=>void{if(this.disposed)return()=>undefined;this.tagFrameListeners.add(listener);return()=>this.tagFrameListeners.delete(listener);}
   setTagCaptureEnabled(enabled:boolean):string|null{
+    if(this.disposed)return enabled?'XR camera capture is unavailable for this session.':null;
     if(!enabled){this.tagCaptureEnabled=false;this.tagCameraCapture?.dispose();this.tagCameraCapture=null;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;return null;}
-    if(this.state.phase!=='running'||this.gl===null||this.cameraBinding===null)return'XR camera capture is unavailable for this session.';
-    try{this.tagCameraCapture??=new RawCameraGuidanceCapture(this.gl, TAG_CAPTURE_WIDTH, TAG_CAPTURE_HEIGHT);this.tagCaptureEnabled=true;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;return null;}
-    catch(error){this.tagCameraCapture?.dispose();this.tagCameraCapture=null;return`High-resolution tag capture unavailable: ${errorText(error)}`;}
+    if(this.state.phase!=='running'||this.evidenceFrozen||this.gl===null||this.cameraBinding===null)return'XR camera capture is unavailable for this session.';
+    if(webGl2Context(this.gl)===null){clientDiagnostics.warn('XR_TAG_CAPTURE_REFUSED',{tagReadbackMode:'synchronous',width:TAG_CAPTURE_WIDTH,height:TAG_CAPTURE_HEIGHT,reason:'webgl1'});void clientDiagnostics.flush();return TAG_CAPTURE_READBACK_REQUIRED;}
+    try{
+      this.tagCameraCapture??=new RawCameraGuidanceCapture(this.gl, TAG_CAPTURE_WIDTH, TAG_CAPTURE_HEIGHT);
+      if(!isTagReadbackPerformanceSafe(this.tagCameraCapture.tagReadbackMode)){
+        const tagReadbackMode=this.tagCameraCapture.tagReadbackMode;this.tagCameraCapture.dispose();this.tagCameraCapture=null;
+        clientDiagnostics.warn('XR_TAG_CAPTURE_REFUSED',{tagReadbackMode,width:TAG_CAPTURE_WIDTH,height:TAG_CAPTURE_HEIGHT,reason:'nonblocking-readback-unavailable'});void clientDiagnostics.flush();return TAG_CAPTURE_READBACK_REQUIRED;
+      }
+      this.tagCaptureEnabled=true;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;
+      clientDiagnostics.info('XR_TAG_CAPTURE_ENABLED',{tagReadbackMode:this.tagCameraCapture.tagReadbackMode,width:TAG_CAPTURE_WIDTH,height:TAG_CAPTURE_HEIGHT});void clientDiagnostics.flush();
+      return null;
+    }
+    catch(error){this.tagCameraCapture?.dispose();this.tagCameraCapture=null;clientDiagnostics.warn('XR_TAG_CAPTURE_REFUSED',{tagReadbackMode:'unavailable',width:TAG_CAPTURE_WIDTH,height:TAG_CAPTURE_HEIGHT,reason:errorText(error)});void clientDiagnostics.flush();return`High-resolution tag capture unavailable: ${errorText(error)}`;}
   }
   getState():WebXrRuntimeState{return this.state;}
-  getPointCloudSnapshot():ScanPointCloudSnapshot{return{...this.pointCloud.snapshot(this.depthFrameCount,this.sampledDepthFrames),manualControlPoints:this.manualPoints.snapshot(),operatorEdges:this.operatorEdges.snapshot()};}
+  getPointCloudSnapshot():ScanPointCloudSnapshot{return this.finalSnapshot??this.createPointCloudSnapshot();}
+  getLifecycleGeneration():number{return this.lifecycleGeneration;}
   getLastManualPointId():number|null{return this.manualPoints.lastId;}
   getStructuralWorkerSnapshot(){return this.pointCloud.structuralWorkerSnapshot();}
   getStructuralGuideSnapshot(){return this.pointCloud.structuralGuideSnapshot();}
@@ -334,16 +421,16 @@ export class WebXrRuntime{
   projectProjectPointToNormalized(point:ProjectPoint):NormalizedProjection|null{return this.hasLatestProjection?projectProjectPointToScreen(point,this.latestProjectionMatrix,this.latestWorldFromView):null;}
 
   addSuggestedManualPoint(position:ProjectPoint):{point:ManualControlPoint;created:boolean;snapped:boolean}|null{
-    if(this.session===null||this.state.phase!=='running')return null;
+    if(this.session===null||this.state.phase!=='running'||this.evidenceFrozen)return null;
     const stored=this.manualPoints.addOrSnap(position);this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.publish({manualPointCount:this.manualPoints.size,manualPointError:null});return stored;
   }
   addOperatorEdge(start:ProjectPoint,end:ProjectPoint,confidence=1):OperatorEdge|null{
-    if(this.session===null||this.state.phase!=='running')return null;const stored=this.operatorEdges.add(start,end,confidence);if(stored!==null)this.publish({manualEdgeCount:this.operatorEdges.size});return stored;
+    if(this.session===null||this.state.phase!=='running'||this.evidenceFrozen)return null;const stored=this.operatorEdges.add(start,end,confidence);if(stored!==null)this.publish({manualEdgeCount:this.operatorEdges.size});return stored;
   }
 
   /** Robust manual placement only. No screen coordinate is ever converted from one raw depth texel. */
   queueManualPointAtNormalized(u:number,v:number,pointId:number|null=null):void{
-    if(this.session===null||this.state.phase!=='running'){this.publish({manualPointError:'Manual point can only be placed during an active AR scan.'});return;}
+    if(this.session===null||this.state.phase!=='running'||this.evidenceFrozen){this.publish({manualPointError:'Manual point can only be placed during an active AR scan.'});return;}
     try{
       const preview=previewManualPlacementFromStableSurface(clamp01(u),clamp01(v),this.getStructuralGuideSnapshot(),(point)=>this.projectProjectPointToNormalized(point));
       const resolution=preview.resolution;if(!resolution.accepted||resolution.position===null){this.publish({manualPointError:resolution.message});return;}
@@ -353,15 +440,17 @@ export class WebXrRuntime{
       clientDiagnostics.info(pointId===null?'XR_MANUAL_CERTIFIED_POINT_ADDED':'XR_MANUAL_CERTIFIED_POINT_MOVED',{id:stored.id,mode:resolution.mode,confidence:Number(resolution.confidence.toFixed(3)),x:Number(stored.position[0].toFixed(3)),y:Number(stored.position[1].toFixed(3)),z:Number(stored.position[2].toFixed(3))});
     }catch(error){this.publish({manualPointError:errorText(error)});clientDiagnostics.warn('XR_MANUAL_CERTIFIED_POINT_FAILED',error);}
   }
-  undoLastManualPoint():void{const removed=this.manualPoints.removeLast();if(removed===null)return;this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.publish({manualPointCount:this.manualPoints.size,manualPointError:null});clientDiagnostics.info('XR_MANUAL_POINT_UNDO',{id:removed.id,remaining:this.manualPoints.size});void clientDiagnostics.flush();}
+  undoLastManualPoint():void{if(this.evidenceFrozen)return;const removed=this.manualPoints.removeLast();if(removed===null)return;this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.publish({manualPointCount:this.manualPoints.size,manualPointError:null});clientDiagnostics.info('XR_MANUAL_POINT_UNDO',{id:removed.id,remaining:this.manualPoints.size});void clientDiagnostics.flush();}
 
   async start():Promise<void>{
-    if(this.session!==null||this.state.phase==='starting')return;clientDiagnostics.info('XR_START_REQUEST');void clientDiagnostics.flush();
+    if(this.disposed||!this.attached||this.detachPromise!==null||this.fatalFrameTeardown||this.session!==null||this.state.phase==='starting')return;clientDiagnostics.info('XR_START_REQUEST');void clientDiagnostics.flush();
+    const generation=++this.lifecycleGeneration;
+    const ownsAttempt=():boolean=>!this.disposed&&this.lifecycleGeneration===generation;
     const xr=(navigator as NavigatorWithXr).xr;const Layer=(window as WindowWithXr).XRWebGLLayer;
     if(!window.isSecureContext){this.publish({phase:'error',error:'Trusted HTTPS is required for WebXR.'});return;}
     if(xr===undefined){this.publish({phase:'error',error:'WebXR is not available in this browser.'});return;}
     if(Layer===undefined){this.publish({phase:'error',error:'XRWebGLLayer is unavailable.'});return;}
-    this.resetScanState();this.publish({...initialRuntimeState,phase:'starting',monocularPriorStatus:optionalMonocularPrior.status});
+    this.finalSnapshot=null;this.resetScanState();this.publish({...initialRuntimeState,phase:'starting',monocularPriorStatus:optionalMonocularPrior.status});if(!ownsAttempt())return;
     let session:XrSessionLike|null=null;
     try{
       // luminance-alpha remains first because every depth-capable UA MUST support
@@ -372,36 +461,129 @@ export class WebXrRuntime{
         optionalFeatures:['local-floor','dom-overlay','depth-sensing','light-estimation','camera-access','plane-detection'],domOverlay:{root:document.body},
         depthSensing:{usagePreference:['cpu-optimized','gpu-optimized'],dataFormatPreference:depthFormats,depthTypeRequest:['raw','smooth'],matchDepthView:true},
       });
-      this.session=session;session.addEventListener('end',this.handleSessionEnd);session.addEventListener('visibilitychange',this.handleSessionVisibilityChange);
-      const gl=createWebGlContext();if(gl===null)throw new Error('Unable to create WebGL for WebXR.');await gl.makeXRCompatible?.();
-      const layer=new Layer(session,gl);await session.updateRenderState({baseLayer:layer});
+      if(!ownsAttempt()){await this.endObsoleteSession(session);return;}
+      this.attachSession(session,generation);
+      const gl=createWebGlContext();if(gl===null)throw new Error('Unable to create WebGL for WebXR.');this.gl=gl;this.attachWebGlContextHandlers(gl,session,generation);
+      await gl.makeXRCompatible?.();if(!ownsAttempt())return;
+      const layer=new Layer(session,gl);this.layer=layer;await session.updateRenderState({baseLayer:layer});if(!ownsAttempt())return;
       let referenceSpaceType:'local-floor'|'local'='local-floor';let referenceSpace:XrReferenceSpaceLike;
-      try{referenceSpace=await session.requestReferenceSpace('local-floor');}catch{referenceSpaceType='local';referenceSpace=await session.requestReferenceSpace('local');}
-      this.referenceSpace=referenceSpace;this.gl=gl;this.layer=layer;
+      try{referenceSpace=await session.requestReferenceSpace('local-floor');if(!ownsAttempt())return;}
+      catch(error){if(!ownsAttempt())return;referenceSpaceType='local';referenceSpace=await session.requestReferenceSpace('local');if(!ownsAttempt())return;}
+      this.referenceSpace=referenceSpace;
       try{this.coverageRenderer=new LiveCoveragePointRenderer(gl);}catch(error){this.coverageRenderer=null;this.coverageGuideError=`Coverage renderer unavailable: ${errorText(error)}`;}
       const Binding=(window as WindowWithXr).XRWebGLBinding;
       if(Binding!==undefined){try{this.cameraBinding=new Binding(session,gl);this.cameraCapture=new RawCameraGuidanceCapture(gl);}catch(error){this.cameraBinding=null;this.cameraCapture=null;clientDiagnostics.warn('XR_RAW_CAMERA_UNAVAILABLE',error);}}
-      if(typeof session.requestLightProbe==='function'){try{this.lightProbe=await session.requestLightProbe();}catch{this.lightProbe=null;}}
-      document.documentElement.classList.add('xr-session-active');const depthConfiguration=readDepthConfiguration(session);this.depthEnabled=depthConfiguration.enabled;void this.acquireWakeLock();
+      if(typeof session.requestLightProbe==='function'){try{const lightProbe=await session.requestLightProbe();if(!ownsAttempt())return;this.lightProbe=lightProbe;}catch{if(!ownsAttempt())return;this.lightProbe=null;}}
+      if(!ownsAttempt())return;
+      document.documentElement.classList.add('xr-session-active');const depthConfiguration=readDepthConfiguration(session);this.depthEnabled=depthConfiguration.enabled;void this.acquireWakeLock(generation);
       this.publish({phase:'running',referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,
         depthAvailable:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthDataFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,
         coverageGuideError:this.coverageGuideError,wakeLockActive:this.wakeLock!==null&&!this.wakeLock.released,monocularPriorStatus:optionalMonocularPrior.status,
         depthError:depthConfiguration.enabled?null:depthConfiguration.gpuDepth?'WebXR negotiated GPU-optimized depth, but metric surfel fusion currently requires CPU depth access.':'WebXR tracking is running, but CPU depth was not enabled.',error:null});
       clientDiagnostics.info('XR_SESSION_RUNNING',{referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,depthEnabled:depthConfiguration.enabled,depthActive:depthConfiguration.active,depthUsage:depthConfiguration.usage,depthFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,rawDepth:depthConfiguration.rawDepth,smoothDepth:depthConfiguration.smoothDepth,cpuDepth:depthConfiguration.cpuDepth,gpuDepth:depthConfiguration.gpuDepth,cameraAccessRequested:true,rawXrRgbApi:Binding!==undefined,planeDetectionRequested:true,rgbReadback:this.cameraCapture?.usesNonBlockingReadback?'pbo-fence':'sync-or-unavailable',monocularPriorStatus:optionalMonocularPrior.status});
-      void clientDiagnostics.flush();session.requestAnimationFrame(this.handleFrame);
+      if(!ownsAttempt())return;void clientDiagnostics.flush();this.rafHandle=session.requestAnimationFrame(this.handleFrame);
     }catch(error){
-      if(session!==null){session.removeEventListener('end',this.handleSessionEnd);session.removeEventListener('visibilitychange',this.handleSessionVisibilityChange);try{await session.end();}catch{/*best effort*/}}
-      this.cleanupRuntime();const message=errorText(error);clientDiagnostics.error('XR_START_FAILED',message);void clientDiagnostics.flush();
+      if(!ownsAttempt())return;
+      const failedSession=session;this.cleanupRuntime();if(failedSession!==null)await this.endObsoleteSession(failedSession,true);await this.waitForWakeLockReleases();
+      const message=errorText(error);clientDiagnostics.error('XR_START_FAILED',message);void clientDiagnostics.flush();
+      if(this.disposed)return;
       this.publish({phase:'error',referenceSpace:null,domOverlay:false,environmentBlendMode:null,tracking:false,pose:null,scanPaused:false,depthAvailable:false,monocularPriorStatus:optionalMonocularPrior.status,error:message});
     }
   }
 
-  async stop():Promise<void>{const session=this.session;if(session===null)return;this.explicitStopRequested=true;clientDiagnostics.info('XR_FINISH_REQUEST',{stablePoints:this.pointCloud.promotedCount,retainedPoints:this.pointCloud.pointCount,keyframes:this.pointCloud.keyframeCount,manualPoints:this.manualPoints.size,operatorEdges:this.operatorEdges.size});void clientDiagnostics.flush();this.publish({phase:'stopping',error:null});try{await session.end();}catch(error){this.explicitStopRequested=false;this.publish({phase:'error',error:errorText(error)});}}
-  async dispose():Promise<void>{document.removeEventListener('visibilitychange',this.handleDocumentVisibilityChange);const session=this.session;if(session!==null){session.removeEventListener('end',this.handleSessionEnd);session.removeEventListener('visibilitychange',this.handleSessionVisibilityChange);try{await session.end();}catch{/*ended*/}}this.cleanupRuntime();this.listeners.clear();}
+  async stop():Promise<void>{
+    const session=this.session;const generation=this.lifecycleGeneration;if(session===null||this.state.phase==='stopping'||this.disposed)return;
+    this.evidenceFrozen=true;this.explicitStopRequested=true;this.finalSnapshot??=this.createPointCloudSnapshot();this.frozenVisualEvidenceFrames=getVisualEvidenceFrameCount();this.tagCaptureEnabled=false;
+    const snapshot=this.finalSnapshot;
+    clientDiagnostics.info('XR_FINISH_REQUEST',{evidenceEpoch:this.evidenceEpoch,depthFrames:snapshot.depthFrameCount,integratedFrames:snapshot.sampledDepthFrames,stablePoints:snapshot.pointCount,retainedPoints:snapshot.rawPointCount,keyframes:snapshot.integrationKeyframes,polishFrames:snapshot.polishFrames,manualPoints:snapshot.manualControlPoints.length,operatorEdges:snapshot.operatorEdges.length,visualEvidenceFrames:this.frozenVisualEvidenceFrames});void clientDiagnostics.flush();this.publish({phase:'stopping',error:null});
+    try{await this.requestSessionEnd(session);if(this.session===session&&this.lifecycleGeneration===generation)this.handleSessionEnd(session,generation);await this.waitForWakeLockReleases();}
+    catch(error){if(this.session!==session||this.lifecycleGeneration!==generation||this.disposed)return;this.explicitStopRequested=false;this.publish({phase:'running',error:errorText(error)});}
+  }
+
+  dispose():Promise<void>{
+    if(this.disposePromise!==null)return this.disposePromise;
+    this.disposed=true;this.lifecycleGeneration+=1;
+    this.disposePromise=(async()=>{await this.detach();this.listeners.clear();})();
+    return this.disposePromise;
+  }
   private publish(patch:Partial<WebXrRuntimeState>):void{this.state={...this.state,...patch};for(const listener of this.listeners)listener(this.state);}
 
+  private recordFrameFault(faultClass:string,error:unknown):number{
+    const count=(this.frameFaultCounts.get(faultClass)??0)+1;this.frameFaultCounts.set(faultClass,count);
+    if(!this.loggedFrameFaults.has(faultClass)){
+      this.loggedFrameFaults.add(faultClass);
+      clientDiagnostics.warn('XR_FRAME_FAULT',{faultClass,generation:this.lifecycleGeneration,count,message:errorText(error)});
+      void clientDiagnostics.flush();
+    }
+    return count;
+  }
+
+  private disableCoverageGuide(error:unknown):void{
+    const faultClass='coverage-render';this.recordFrameFault(faultClass,error);
+    try{this.coverageRenderer?.dispose();}catch{/* a failed optional renderer is already unusable */}
+    this.coverageRenderer=null;this.coverageGuideActive=false;this.coverageGuideRenderPoints=0;
+    this.coverageGuideError=`Coverage guide disabled: ${errorText(error)}`;
+    this.publish({coverageGuideActive:false,coverageGuideRenderPoints:0,coverageGuideError:this.coverageGuideError});
+  }
+
+  private disableCameraGuidance(kind:'rgb'|'tag',error:unknown,faultClass:string):void{
+    this.recordFrameFault(faultClass,error);
+    const capture=kind==='rgb'?this.cameraCapture:this.tagCameraCapture;
+    if(kind==='rgb'){
+      this.cameraCapture=null;setLatestRgbGuidance(null);this.rgbGuidanceAvailable=false;this.rgbGuidanceWidth=null;this.rgbGuidanceHeight=null;
+    }else{this.tagCameraCapture=null;this.tagCaptureEnabled=false;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;}
+    try{capture?.dispose();}catch{/* optional camera resources may already be invalid */}
+    this.coverageGuideError=`${kind==='rgb'?'RGB':'Tag'} camera guidance disabled: ${errorText(error)}`;
+    this.publish({coverageGuideError:this.coverageGuideError,rgbGuidanceAvailable:this.rgbGuidanceAvailable,rgbGuidanceWidth:this.rgbGuidanceWidth,rgbGuidanceHeight:this.rgbGuidanceHeight});
+  }
+
+  private handleFatalFrameFault(session:XrSessionLike,generation:number,error:unknown,faultClass:string):void{
+    if(this.disposed||this.session!==session||this.lifecycleGeneration!==generation||this.frameFaultedGeneration===generation)return;
+    this.frameFaultedGeneration=generation;this.recordFrameFault(faultClass,error);this.fatalFrameTeardown=true;
+    const message=`XR frame failed (${faultClass}): ${errorText(error)}`;
+    try{this.publish({phase:'stopping',tracking:false,pose:null,scanPaused:false,error:null});}catch{/* continue deterministic teardown if a subscriber fails */}
+    this.cleanupRuntime();
+    const teardownGeneration=this.lifecycleGeneration;
+    void (async()=>{
+      try{await this.endObsoleteSession(session,true);await this.waitForWakeLockReleases();}
+      finally{
+        this.fatalFrameTeardown=false;
+        if(!this.disposed&&this.lifecycleGeneration===teardownGeneration){
+          try{this.publish({phase:'error',referenceSpace:null,domOverlay:false,environmentBlendMode:null,tracking:false,pose:null,scanPaused:false,wakeLockActive:false,depthAvailable:false,error:message});}
+          catch{/* terminal state is already stored before listeners are called */}
+        }
+      }
+    })();
+  }
+
+  private attachWebGlContextHandlers(gl:XrCompatibleGl,session:XrSessionLike,generation:number):void{
+    const canvas=gl.canvas as unknown as EventTarget|null;
+    if(canvas===null||typeof canvas.addEventListener!=='function')return;
+    const onLost=(event:Event):void=>{
+      // A lost XR context invalidates the renderer and readback resources, so this session is torn down as fatal.
+      event.preventDefault();
+      if(this.gl!==gl||this.session!==session||this.lifecycleGeneration!==generation)return;
+      this.handleFatalFrameFault(session,generation,new Error('WebGL context was lost.'),'webgl-context-lost');
+    };
+    const onRestored=():void=>{
+      // Context restoration after fatal teardown is intentionally ignored. The
+      // XR session and its GL resources have already been released.
+      if(this.gl!==gl||this.session!==session||this.lifecycleGeneration!==generation)return;
+    };
+    this.contextCanvas=canvas;this.contextLostListener=onLost;this.contextRestoredListener=onRestored;
+    canvas.addEventListener('webglcontextlost',onLost);canvas.addEventListener('webglcontextrestored',onRestored);
+  }
+
+  private detachWebGlContextHandlers():void{
+    if(this.contextCanvas!==null){
+      try{if(this.contextLostListener!==null)this.contextCanvas.removeEventListener('webglcontextlost',this.contextLostListener);}catch{/* continue teardown */}
+      try{if(this.contextRestoredListener!==null)this.contextCanvas.removeEventListener('webglcontextrestored',this.contextRestoredListener);}catch{/* continue teardown */}
+    }
+    this.contextCanvas=null;this.contextLostListener=null;this.contextRestoredListener=null;
+  }
+
   private resetScanState():void{
-    this.pointCloud.reset();this.keyframeSelector.reset();this.manualPoints.reset();this.operatorEdges.reset();this.performanceProfiler.reset();resetXrGuidanceRegistry();resetXrPlaneGuidanceRegistry();resetLatestProjectionMatrices();
+    this.finalSnapshot=null;this.evidenceEpoch+=1;this.evidenceFrozen=false;this.frozenVisualEvidenceFrames=0;this.frameFaultCounts.clear();this.loggedFrameFaults.clear();this.frameFaultedGeneration=null;this.pointCloud.reset();this.keyframeSelector.reset();this.manualPoints.reset();this.operatorEdges.reset();this.performanceProfiler.reset();resetXrGuidanceRegistry();resetXrPlaneGuidanceRegistry();resetLatestProjectionMatrices();
     this.hasLatestProjection=false;this.explicitStopRequested=false;this.scanPaused=false;this.depthSensingPausedByApp=false;this.frameCount=0;this.lastUiUpdateMs=0;this.lastDepthSampleMs=Number.NEGATIVE_INFINITY;
     this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.lastLightEstimateMs=Number.NEGATIVE_INFINITY;this.lastClientTelemetryMs=Number.NEGATIVE_INFINITY;
     this.lastRgbCaptureMs=Number.NEGATIVE_INFINITY;this.lastVisualEvidenceMs=Number.NEGATIVE_INFINITY;this.lastPlaneGuidanceMs=Number.NEGATIVE_INFINITY;this.depthFrameCount=0;this.sampledDepthFrames=0;this.pointCloudVersion=0;
@@ -413,9 +595,45 @@ export class WebXrRuntime{
   }
 
   private cleanupRuntime():void{
-    document.documentElement.classList.remove('xr-session-active');this.coverageRenderer?.dispose();this.coverageRenderer=null;this.cameraCapture?.dispose();this.cameraCapture=null;this.tagCameraCapture?.dispose();this.tagCameraCapture=null;this.tagCaptureEnabled=false;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;this.cameraBinding=null;
-    setLatestRgbGuidance(null);resetXrPlaneGuidanceRegistry();resetLatestProjectionMatrices();this.lightProbe=null;void this.releaseWakeLock();releaseWebGlContext(this.gl);this.session=null;this.referenceSpace=null;this.gl=null;this.layer=null;
+    this.lifecycleGeneration+=1;this.detachSessionListeners(this.session);
+    if(this.session!==null&&this.rafHandle!==null){try{this.session.cancelAnimationFrame?.(this.rafHandle);}catch{/* session ended */}}this.rafHandle=null;
+    this.detachWebGlContextHandlers();try{document.documentElement.classList.remove('xr-session-active');}catch{/* document is already tearing down */}
+    try{this.coverageRenderer?.dispose();}catch{/* continue releasing the remaining XR resources */}this.coverageRenderer=null;
+    try{this.cameraCapture?.dispose();}catch{/* continue releasing the remaining XR resources */}this.cameraCapture=null;
+    try{this.tagCameraCapture?.dispose();}catch{/* continue releasing the remaining XR resources */}this.tagCameraCapture=null;
+    this.tagCaptureEnabled=false;this.lastTagCaptureMs=Number.NEGATIVE_INFINITY;this.cameraBinding=null;
+    setLatestRgbGuidance(null);resetXrPlaneGuidanceRegistry();resetLatestProjectionMatrices();this.lightProbe=null;void this.releaseWakeLock();
+    try{releaseWebGlContext(this.gl);}catch{/* context loss can make WEBGL_lose_context unavailable */}
+    this.session=null;this.referenceSpace=null;this.gl=null;this.layer=null;
     this.scanPaused=false;this.depthEnabled=false;this.depthSensingPausedByApp=false;this.coverageGuideActive=false;this.coverageGuideRenderPoints=0;this.rgbGuidanceAvailable=false;
+  }
+
+  private attachSession(session:XrSessionLike,generation:number):void{
+    this.session=session;const onEnd=():void=>this.handleSessionEnd(session,generation);const onVisibility=():void=>this.handleSessionVisibilityChange(session,generation);
+    this.sessionEndListener=onEnd;this.sessionVisibilityListener=onVisibility;session.addEventListener('end',onEnd);session.addEventListener('visibilitychange',onVisibility);
+  }
+
+  private detachSessionListeners(session:XrSessionLike|null):void{
+    if(session!==null){try{if(this.sessionEndListener!==null)session.removeEventListener('end',this.sessionEndListener);}catch{/* continue teardown */}try{if(this.sessionVisibilityListener!==null)session.removeEventListener('visibilitychange',this.sessionVisibilityListener);}catch{/* continue teardown */}}
+    this.sessionEndListener=null;this.sessionVisibilityListener=null;
+  }
+
+  private async endObsoleteSession(session:XrSessionLike,retryOnce=false):Promise<void>{
+    try{await this.requestSessionEnd(session);}catch{
+      if(retryOnce){try{await this.requestSessionEnd(session);}catch{/* best-effort cleanup of an unowned browser session */}}
+    }
+  }
+
+  private requestSessionEnd(session:XrSessionLike):Promise<void>{
+    const existing=this.sessionEndRequests.get(session);if(existing!==undefined)return existing;
+    let request:Promise<void>;
+    try{request=Promise.resolve(session.end());}catch(error){return Promise.reject(error);}
+    const tracked=request.catch((error:unknown)=>{if(this.sessionEndRequests.get(session)===tracked)this.sessionEndRequests.delete(session);throw error;});
+    this.sessionEndRequests.set(session,tracked);return tracked;
+  }
+
+  private createPointCloudSnapshot():ScanPointCloudSnapshot{
+    return{...this.pointCloud.snapshot(this.depthFrameCount,this.sampledDepthFrames),manualControlPoints:this.manualPoints.snapshot(),operatorEdges:this.operatorEdges.snapshot()};
   }
 
   /** Must only be called from the active XR animation-frame callback. */
@@ -430,35 +648,73 @@ export class WebXrRuntime{
         if(typeof session.resumeDepthSensing!=='function')return;
         session.resumeDepthSensing();this.depthSensingPausedByApp=false;clientDiagnostics.info('XR_DEPTH_SENSING_RESUMED');
       }
-    }catch(error){clientDiagnostics.warn('XR_DEPTH_SENSING_PAUSE_CONTROL_FAILED',error);}
+    }catch(error){this.recordFrameFault('depth-pause-control',error);}
   }
 
-  private async acquireWakeLock():Promise<void>{if(this.session===null||document.visibilityState!=='visible'||(this.wakeLock!==null&&!this.wakeLock.released))return;const api=(navigator as NavigatorWithWakeLock).wakeLock;if(api===undefined){this.publish({wakeLockActive:false,wakeLockError:'Screen Wake Lock API unavailable.'});return;}try{const sentinel=await api.request('screen');this.wakeLock=sentinel;sentinel.addEventListener('release',this.handleWakeLockRelease);this.publish({wakeLockActive:true,wakeLockError:null});}catch(error){this.wakeLock=null;this.publish({wakeLockActive:false,wakeLockError:errorText(error)});}}
-  private async releaseWakeLock():Promise<void>{const sentinel=this.wakeLock;this.wakeLock=null;if(sentinel===null)return;sentinel.removeEventListener('release',this.handleWakeLockRelease);if(!sentinel.released){try{await sentinel.release();}catch{/*released*/}}}
-  private readonly handleWakeLockRelease=():void=>{this.wakeLock=null;this.publish({wakeLockActive:false});};
-  private readonly handleDocumentVisibilityChange=():void=>{const hidden=document.visibilityState!=='visible';if(this.session!==null){this.scanPaused=shouldPauseXrScan(document.visibilityState,this.session.visibilityState);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});if(!hidden)void this.acquireWakeLock();}};
-  private readonly handleSessionVisibilityChange=():void=>{const session=this.session;if(session===null)return;this.scanPaused=shouldPauseXrScan(document.visibilityState,session.visibilityState);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});if(!this.scanPaused)void this.acquireWakeLock();};
+  private acquireWakeLock(generation:number):Promise<void>{
+    const ownsAttempt=():boolean=>!this.disposed&&this.lifecycleGeneration===generation&&this.session!==null;
+    if(!ownsAttempt()||document.visibilityState!=='visible'||(this.wakeLock!==null&&!this.wakeLock.released))return Promise.resolve();
+    if(this.wakeLockRequest?.generation===generation)return this.wakeLockRequest.promise;
+    const api=(navigator as NavigatorWithWakeLock).wakeLock;if(api===undefined){this.publish({wakeLockActive:false,wakeLockError:'Screen Wake Lock API unavailable.'});return Promise.resolve();}
+    const request={generation,promise:Promise.resolve()};this.wakeLockRequest=request;
+    request.promise=(async()=>{
+      try{
+        const sentinel=await api.request('screen');
+        if(!ownsAttempt()||document.visibilityState!=='visible'){if(!sentinel.released){try{await sentinel.release();}catch{/*obsolete wake lock*/}}return;}
+        this.wakeLock=sentinel;const onRelease=():void=>{if(this.wakeLock!==sentinel)return;this.wakeLock=null;this.wakeLockReleaseListener=null;this.publish({wakeLockActive:false});};
+        this.wakeLockReleaseListener=onRelease;sentinel.addEventListener('release',onRelease);this.publish({wakeLockActive:true,wakeLockError:null});
+      }catch(error){if(ownsAttempt())this.publish({wakeLockActive:false,wakeLockError:errorText(error)});}
+      finally{if(this.wakeLockRequest===request)this.wakeLockRequest=null;}
+    })();
+    return request.promise;
+  }
+  private releaseWakeLock():Promise<void>{
+    const sentinel=this.wakeLock;this.wakeLock=null;if(sentinel===null)return Promise.resolve();
+    if(this.wakeLockReleaseListener!==null)sentinel.removeEventListener('release',this.wakeLockReleaseListener);this.wakeLockReleaseListener=null;
+    if(sentinel.released)return Promise.resolve();
+    const releasing=(async()=>{try{await sentinel.release();}catch{/*released*/}})();this.wakeLockReleases.add(releasing);
+    void releasing.finally(()=>this.wakeLockReleases.delete(releasing));return releasing;
+  }
+  private async waitForWakeLockReleases():Promise<void>{while(this.wakeLockReleases.size>0)await Promise.all([...this.wakeLockReleases]);}
+  private readonly handleDocumentVisibilityChange=():void=>{
+    const hidden=document.visibilityState!=='visible';if(this.session!==null){this.scanPaused=shouldPauseXrScan(document.visibilityState,this.session.visibilityState);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState,wakeLockActive:hidden?false:this.state.wakeLockActive});if(hidden)void this.releaseWakeLock();else void this.acquireWakeLock(this.lifecycleGeneration);}
+  };
+  private handleSessionVisibilityChange(session:XrSessionLike,generation:number):void{
+    if(this.session!==session||this.lifecycleGeneration!==generation)return;this.scanPaused=shouldPauseXrScan(document.visibilityState,session.visibilityState);this.publish({scanPaused:this.scanPaused,motionState:this.scanPaused?'paused':this.motionState});
+    if(this.scanPaused)void this.releaseWakeLock();else void this.acquireWakeLock(generation);
+  }
 
-  private readonly handleSessionEnd=():void=>{
-    const normalFinish=this.explicitStopRequested;const snapshot=this.getPointCloudSnapshot();const performance=this.performanceProfiler.snapshot();const session=this.session;
-    session?.removeEventListener('end',this.handleSessionEnd);session?.removeEventListener('visibilitychange',this.handleSessionVisibilityChange);this.cleanupRuntime();this.explicitStopRequested=false;
+  private handleSessionEnd(session:XrSessionLike,generation:number):void{
+    if(this.session!==session||this.lifecycleGeneration!==generation)return;
+    const normalFinish=this.explicitStopRequested;const snapshot=normalFinish?(this.finalSnapshot??this.createPointCloudSnapshot()):null;this.finalSnapshot=snapshot;const performance=this.performanceProfiler.snapshot();
+    const visualEvidenceFrames=normalFinish?this.frozenVisualEvidenceFrames:getVisualEvidenceFrameCount();
+    const pointCount=snapshot?.pointCount??this.pointCloud.promotedCount;const retainedPointCount=snapshot?.rawPointCount??this.pointCloud.pointCount;
+    const keyframeCount=snapshot?.integrationKeyframes??this.pointCloud.keyframeCount;const polishFrameCount=snapshot?.polishFrames??this.pointCloud.polishFrameCount;
+    this.cleanupRuntime();this.explicitStopRequested=false;
     this.publish({phase:normalFinish?'ended':'interrupted',referenceSpace:null,domOverlay:false,environmentBlendMode:null,tracking:false,pose:null,scanPaused:false,wakeLockActive:false,
-      depthFrameCount:this.depthFrameCount,sampledDepthFrames:this.sampledDepthFrames,pointCount:snapshot.pointCount,retainedPointCount:snapshot.rawPointCount,keyframeCount:snapshot.integrationKeyframes,
-      polishFrameCount:snapshot.polishFrames,pointCloudVersion:this.pointCloudVersion,coverageGuideActive:false,coverageGuideRenderPoints:0,coverageVisibleCells:this.coverageVisibleCells,
+      depthFrameCount:this.depthFrameCount,sampledDepthFrames:this.sampledDepthFrames,pointCount,retainedPointCount,keyframeCount,
+      polishFrameCount,pointCloudVersion:this.pointCloudVersion,coverageGuideActive:false,coverageGuideRenderPoints:0,coverageVisibleCells:this.coverageVisibleCells,
       coverageReadyCells:this.coverageReadyCells,coverageTotalCells:this.coverageTotalCells,coverageTargetIndependentViews:this.coverageTargetIndependentViews,coverageAverageConfidence:this.coverageAverageConfidence,
       coverageWeakPoints:this.coverageWeakPoints,coverageImprovingPoints:this.coverageImprovingPoints,coverageStablePoints:this.coverageStablePoints,manualPointCount:this.manualPoints.size,manualEdgeCount:this.operatorEdges.size,
       performance,lightingEstimateAvailable:this.lightingEstimateAvailable,primaryLightIntensity:this.primaryLightIntensity,rgbGuidanceAvailable:this.rgbGuidanceAvailable,rgbGuidanceWidth:this.rgbGuidanceWidth,
-      rgbGuidanceHeight:this.rgbGuidanceHeight,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status,motionState:normalFinish?this.motionState:'paused',error:null});
-    clientDiagnostics.info(normalFinish?'XR_SCAN_FINISHED':'XR_SCAN_INTERRUPTED',{stablePoints:snapshot.pointCount,tentativePoints:snapshot.tentativePointCount,retainedPoints:snapshot.rawPointCount,keyframes:snapshot.integrationKeyframes,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:snapshot.manualControlPoints.length,operatorEdges:snapshot.operatorEdges.length,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status,monocularPriorCalibration:Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),performance,residualMm:Math.round(snapshot.averageStableResidualMeters*1000)});void clientDiagnostics.flush();
-  };
+      rgbGuidanceHeight:this.rgbGuidanceHeight,visualEvidenceFrames,monocularPriorStatus:optionalMonocularPrior.status,motionState:normalFinish?this.motionState:'paused',error:null});
+    const diagnostics={evidenceEpoch:this.evidenceEpoch,depthFrames:snapshot?.depthFrameCount??this.depthFrameCount,integratedFrames:snapshot?.sampledDepthFrames??this.sampledDepthFrames,stablePoints:pointCount,retainedPoints:retainedPointCount,keyframes:keyframeCount,polishFrames:polishFrameCount,weak:this.coverageWeakPoints,improving:this.coverageImprovingPoints,stable:this.coverageStablePoints,manualPoints:snapshot?.manualControlPoints.length??this.manualPoints.size,operatorEdges:snapshot?.operatorEdges.length??this.operatorEdges.size,visualEvidenceFrames,monocularPriorStatus:optionalMonocularPrior.status,monocularPriorCalibration:Number(optionalMonocularPrior.calibrationConfidence.toFixed(3)),performance};
+    if(snapshot!==null)Object.assign(diagnostics,{tentativePoints:snapshot.tentativePointCount,residualMm:Math.round(snapshot.averageStableResidualMeters*1000)});
+    clientDiagnostics.info(normalFinish?'XR_SCAN_FINISHED':'XR_SCAN_INTERRUPTED',diagnostics);void clientDiagnostics.flush();
+  }
 
   private refreshCoverageGuide(time:number,force=false):void{
     const adaptiveIntervalMs=Math.max(COVERAGE_GPU_UPLOAD_INTERVAL_MS,this.performanceProfiler.recommendedCoverageIntervalMs());if(!force&&time-this.lastCoverageGpuUploadMs<adaptiveIntervalMs)return;
-    this.lastCoverageGpuUploadMs=time;const started=performance.now();const coverage=this.pointCloud.liveCoverageSnapshot();const counts=countCoverageQualityBands(coverage.confidence.subarray(0,coverage.pointCount));
-    this.coverageGuideActive=coverage.active&&this.coverageRenderer!==null;this.coverageVisibleCells=coverage.visibleCoverageCells;this.coverageReadyCells=coverage.readyCoverageCells;this.coverageTotalCells=coverage.totalCoverageCells;
-    this.coverageTargetIndependentViews=coverage.targetFrameHits;this.coverageAverageConfidence=coverage.averageCoverageConfidence;this.coverageWeakPoints=counts.weak;this.coverageImprovingPoints=counts.improving;this.coverageStablePoints=counts.stable;
-    if(this.coverageRenderer!==null){const renderSnapshot=composeCoverageRenderSnapshot(coverage,this.manualPoints.xrReferencePositions());if(renderSnapshot.pointCount>0)this.coverageRenderer.update(renderSnapshot);else this.coverageRenderer.clear();this.coverageGuideRenderPoints=coverage.pointCount;}else this.coverageGuideRenderPoints=0;
-    this.performanceProfiler.record('coverage',performance.now()-started);
+    this.lastCoverageGpuUploadMs=time;const started=performance.now();
+    try{
+      const manualPositions=this.manualPoints.xrReferencePositions();const pointBudget=this.performanceProfiler.renderPolicy().pointBudget;
+      const regularBudget=Math.max(0,pointBudget-Math.floor(manualPositions.length/3));
+      const coverage=this.pointCloud.liveCoverageSnapshot(regularBudget);const counts=countCoverageQualityBands(coverage.confidence.subarray(0,coverage.pointCount));
+      this.coverageGuideActive=coverage.active&&this.coverageRenderer!==null;this.coverageVisibleCells=coverage.visibleCoverageCells;this.coverageReadyCells=coverage.readyCoverageCells;this.coverageTotalCells=coverage.totalCoverageCells;
+      this.coverageTargetIndependentViews=coverage.targetFrameHits;this.coverageAverageConfidence=coverage.averageCoverageConfidence;this.coverageWeakPoints=counts.weak;this.coverageImprovingPoints=counts.improving;this.coverageStablePoints=counts.stable;
+      if(this.coverageRenderer!==null){const renderSnapshot=composeCoverageRenderSnapshot(coverage,manualPositions,this.coverageCompositionBuffers);if(renderSnapshot.pointCount>0)this.coverageRenderer.update(renderSnapshot);else this.coverageRenderer.clear();this.coverageGuideRenderPoints=coverage.pointCount;}else this.coverageGuideRenderPoints=0;
+      this.performanceProfiler.record('coverage',performance.now()-started);
+    }catch(error){this.disableCoverageGuide(error);}
   }
 
   private updateLightEstimate(time:number,frame:XrFrameLike):void{
@@ -475,33 +731,36 @@ export class WebXrRuntime{
     // WebGL2 PBO readback is polled every RAF with timeout=0, independently of
     // the lower capture cadence. This avoids both GPU stalls and a 520 ms
     // artificial delivery delay.
-    try{this.acceptRgbGuidance(capture.pollReady());}catch(error){clientDiagnostics.warn('XR_RGB_GUIDANCE_READBACK_FAILED',error);}
+    try{this.acceptRgbGuidance(capture.pollReady());}catch(error){this.disableCameraGuidance('rgb',error,'rgb-camera-readback');return;}
     if(this.cameraBinding===null||view.camera==null||time-this.lastRgbCaptureMs<RGB_CAPTURE_INTERVAL_MS)return;this.lastRgbCaptureMs=time;
     try{this.acceptRgbGuidance(capture.capture(this.cameraBinding,view,time));}
-    catch(error){clientDiagnostics.warn('XR_RGB_GUIDANCE_CAPTURE_FAILED',error);}
+    catch(error){this.disableCameraGuidance('rgb',error,'rgb-camera-capture');}
   }
 
-  private acceptTagFrame(frame:ReturnType<RawCameraGuidanceCapture['pollReady']>):void{
-    if(frame?.rgba===undefined||frame.projectionMatrix===undefined||frame.worldFromView===undefined)return;
-    const value:TagCameraFrame={width:frame.width,height:frame.height,rgba:frame.rgba,capturedAtMs:frame.capturedAtMs,projectionMatrix:frame.projectionMatrix,worldFromView:frame.worldFromView};
-    for(const listener of this.tagFrameListeners)listener(value);
+  private acceptTagFrame(frame:TagCameraFrame|null):void{
+    if(frame===null||this.evidenceFrozen)return;
+    const listeners=[...this.tagFrameListeners];
+    // Transferring the first owned frame detaches its ArrayBuffer. Prepare one
+    // explicit copy per additional subscriber before any listener can transfer.
+    const values=listeners.map((_,index)=>index===0||frame.rgbaOwnership!=='owned'?frame:{...frame,rgba:frame.rgba.slice()});
+    for(let index=0;index<listeners.length;index+=1)listeners[index](values[index]);
   }
 
   private captureTagGuidance(time:number,view:XrViewLike):void{
-    if(!this.tagCaptureEnabled)return;
+    if(this.evidenceFrozen||!this.tagCaptureEnabled)return;
     const capture=this.tagCameraCapture;if(capture===null)return;
-    try{this.acceptTagFrame(capture.pollReady());}catch(error){clientDiagnostics.warn('XR_TAG_CAMERA_READBACK_FAILED',error);}
+    try{this.acceptTagFrame(capture.pollReadyTag());}catch(error){this.disableCameraGuidance('tag',error,'tag-camera-readback');return;}
     if(this.cameraBinding===null||view.camera==null||time-this.lastTagCaptureMs<TAG_CAPTURE_INTERVAL_MS)return;
     this.lastTagCaptureMs=time;
-    try{this.acceptTagFrame(capture.capture(this.cameraBinding,view,time));}
-    catch(error){clientDiagnostics.warn('XR_TAG_CAMERA_CAPTURE_FAILED',error);}
+    try{this.acceptTagFrame(capture.captureTag(this.cameraBinding,view,time));}
+    catch(error){this.disableCameraGuidance('tag',error,'tag-camera-capture');}
   }
 
   private captureNativePlaneGuidance(time:number,frame:XrFrameLike,referenceSpace:XrReferenceSpaceLike):void{
     if(time-this.lastPlaneGuidanceMs<PLANE_GUIDANCE_INTERVAL_MS)return;
     this.lastPlaneGuidanceMs=time;
     try{captureLatestStructuralPlanePriors(frame,referenceSpace);}
-    catch(error){resetXrPlaneGuidanceRegistry();clientDiagnostics.warn('XR_PLANE_GUIDANCE_CAPTURE_FAILED',error);}
+    catch(error){resetXrPlaneGuidanceRegistry();this.recordFrameFault('native-plane-guidance',error);}
   }
 
   private maybeRecordVisualEvidence(time:number,keyframeId:number,view:XrViewLike):void{
@@ -536,20 +795,37 @@ export class WebXrRuntime{
 
   private readonly handleFrame:XrFrameCallback=(time,frame):void=>{
     const session=this.session,referenceSpace=this.referenceSpace,gl=this.gl,layer=this.layer;if(session===null||referenceSpace===null||gl===null||layer===null||frame.session!==session)return;
-    session.requestAnimationFrame(this.handleFrame);this.performanceProfiler.recordFrameTimestamp(time);const frameWorkStarted=performance.now();
-    // WebXR requires pauseDepthSensing()/resumeDepthSensing() while this current
-    // XR animation frame is active. Visibility handlers only change scanPaused.
-    this.syncDepthSensingPauseInsideFrame();
-    this.captureNativePlaneGuidance(time,frame,referenceSpace);
-    gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);gl.viewport(0,0,layer.framebufferWidth,layer.framebufferHeight);gl.clearColor(0,0,0,0);gl.clearDepth(1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
-    const pose=frame.getViewerPose(referenceSpace);
-    if(pose!==null&&pose.views.length>0){const view=pose.views[0];for(let index=0;index<16;index+=1){this.latestProjectionMatrix[index]=Number(view.projectionMatrix[index]);this.latestWorldFromView[index]=Number(view.transform.matrix[index]);}this.hasLatestProjection=true;setLatestProjectionMatrices(this.latestProjectionMatrix,this.latestWorldFromView);this.captureRgbGuidance(time,view);this.captureTagGuidance(time,view);}
-    this.frameCount+=1;this.updateLightEstimate(time,frame);
-    if(pose!==null&&!this.scanPaused){this.captureDepth(time,frame,pose);this.coverageRenderer?.render(layer,pose.views);}
-    this.performanceProfiler.record('frameWork',performance.now()-frameWorkStarted);this.reportClientTelemetry(time);
-    if(time-this.lastUiUpdateMs<100&&this.frameCount>1)return;this.lastUiUpdateMs=time;
-    const commonPatch={frameCount:this.frameCount,scanPaused:this.scanPaused,wakeLockActive:this.wakeLock!==null&&!this.wakeLock.released,depthWidth:this.depthWidth,depthHeight:this.depthHeight,depthFrameCount:this.depthFrameCount,sampledDepthFrames:this.sampledDepthFrames,pointCount:this.pointCloud.promotedCount,retainedPointCount:this.pointCloud.pointCount,pointCloudVersion:this.pointCloudVersion,keyframeCount:this.pointCloud.keyframeCount,polishFrameCount:this.pointCloud.polishFrameCount,motionRejectedFrames:this.motionRejectedFrames,motionState:this.scanPaused?'paused' as const:this.motionState,motionQuality:this.motionQuality,linearSpeedMetersPerSecond:this.linearSpeedMetersPerSecond,angularSpeedRadiansPerSecond:this.angularSpeedRadiansPerSecond,linearAccelerationMetersPerSecond2:this.linearAccelerationMetersPerSecond2,coverageGuideActive:this.coverageGuideActive,coverageGuideRenderPoints:this.coverageGuideRenderPoints,coverageVisibleCells:this.coverageVisibleCells,coverageReadyCells:this.coverageReadyCells,coverageTotalCells:this.coverageTotalCells,coverageTargetIndependentViews:this.coverageTargetIndependentViews,coverageAverageConfidence:this.coverageAverageConfidence,coverageWeakPoints:this.coverageWeakPoints,coverageImprovingPoints:this.coverageImprovingPoints,coverageStablePoints:this.coverageStablePoints,coverageGuideError:this.coverageGuideError,manualPointCount:this.manualPoints.size,manualEdgeCount:this.operatorEdges.size,performance:this.performanceProfiler.snapshot(),lightingEstimateAvailable:this.lightingEstimateAvailable,primaryLightIntensity:this.primaryLightIntensity,rgbGuidanceAvailable:this.rgbGuidanceAvailable,rgbGuidanceWidth:this.rgbGuidanceWidth,rgbGuidanceHeight:this.rgbGuidanceHeight,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status};
-    if(pose===null){this.publish({...commonPatch,tracking:false,pose:null});return;}
-    const{position,orientation}=pose.transform;this.publish({...commonPatch,tracking:true,pose:{position:[position.x,position.y,position.z],orientation:[orientation.x,orientation.y,orientation.z,orientation.w],views:pose.views.length}});
+    this.rafHandle=null;
+    const generation=this.lifecycleGeneration;let faultClass='xr-frame-body';
+    try{
+      if(this.evidenceFrozen){
+        faultClass='xr-core-gl';gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);gl.viewport(0,0,layer.framebufferWidth,layer.framebufferHeight);gl.clearColor(0,0,0,0);gl.clearDepth(1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+        if(this.session===session&&this.lifecycleGeneration===generation&&(this.state.phase==='stopping'||this.state.phase==='running')){faultClass='raf-schedule';this.rafHandle=session.requestAnimationFrame(this.handleFrame);}
+        return;
+      }
+      this.performanceProfiler.recordFrameTimestamp(time);const frameWorkStarted=performance.now();
+      // WebXR requires pauseDepthSensing()/resumeDepthSensing() while this current
+      // XR animation frame is active. Visibility handlers only change scanPaused.
+      this.syncDepthSensingPauseInsideFrame();
+      this.captureNativePlaneGuidance(time,frame,referenceSpace);
+      faultClass='xr-core-gl';
+      gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);gl.viewport(0,0,layer.framebufferWidth,layer.framebufferHeight);gl.clearColor(0,0,0,0);gl.clearDepth(1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+      faultClass='viewer-pose';
+      const pose=frame.getViewerPose(referenceSpace);
+      faultClass='xr-frame-body';
+      if(pose!==null&&pose.views.length>0){const view=pose.views[0];for(let index=0;index<16;index+=1){this.latestProjectionMatrix[index]=Number(view.projectionMatrix[index]);this.latestWorldFromView[index]=Number(view.transform.matrix[index]);}this.hasLatestProjection=true;setLatestProjectionMatrices(this.latestProjectionMatrix,this.latestWorldFromView);this.captureRgbGuidance(time,view);this.captureTagGuidance(time,view);}
+      this.frameCount+=1;this.updateLightEstimate(time,frame);
+      if(pose!==null&&!this.scanPaused){this.captureDepth(time,frame,pose);const renderer=this.coverageRenderer;if(renderer!==null){try{renderer.render(layer,pose.views);}catch(error){this.disableCoverageGuide(error);}}}
+      this.performanceProfiler.record('frameWork',performance.now()-frameWorkStarted);this.reportClientTelemetry(time);
+      if(time-this.lastUiUpdateMs>=100||this.frameCount<=1){
+        this.lastUiUpdateMs=time;
+        const commonPatch={frameCount:this.frameCount,scanPaused:this.scanPaused,wakeLockActive:this.wakeLock!==null&&!this.wakeLock.released,depthWidth:this.depthWidth,depthHeight:this.depthHeight,depthFrameCount:this.depthFrameCount,sampledDepthFrames:this.sampledDepthFrames,pointCount:this.pointCloud.promotedCount,retainedPointCount:this.pointCloud.pointCount,pointCloudVersion:this.pointCloudVersion,keyframeCount:this.pointCloud.keyframeCount,polishFrameCount:this.pointCloud.polishFrameCount,motionRejectedFrames:this.motionRejectedFrames,motionState:this.scanPaused?'paused' as const:this.motionState,motionQuality:this.motionQuality,linearSpeedMetersPerSecond:this.linearSpeedMetersPerSecond,angularSpeedRadiansPerSecond:this.angularSpeedRadiansPerSecond,linearAccelerationMetersPerSecond2:this.linearAccelerationMetersPerSecond2,coverageGuideActive:this.coverageGuideActive,coverageGuideRenderPoints:this.coverageGuideRenderPoints,coverageVisibleCells:this.coverageVisibleCells,coverageReadyCells:this.coverageReadyCells,coverageTotalCells:this.coverageTotalCells,coverageTargetIndependentViews:this.coverageTargetIndependentViews,coverageAverageConfidence:this.coverageAverageConfidence,coverageWeakPoints:this.coverageWeakPoints,coverageImprovingPoints:this.coverageImprovingPoints,coverageStablePoints:this.coverageStablePoints,coverageGuideError:this.coverageGuideError,manualPointCount:this.manualPoints.size,manualEdgeCount:this.operatorEdges.size,performance:this.performanceProfiler.snapshot(),lightingEstimateAvailable:this.lightingEstimateAvailable,primaryLightIntensity:this.primaryLightIntensity,rgbGuidanceAvailable:this.rgbGuidanceAvailable,rgbGuidanceWidth:this.rgbGuidanceWidth,rgbGuidanceHeight:this.rgbGuidanceHeight,visualEvidenceFrames:getVisualEvidenceFrameCount(),monocularPriorStatus:optionalMonocularPrior.status};
+        if(pose===null)this.publish({...commonPatch,tracking:false,pose:null});
+        else{const{position,orientation}=pose.transform;this.publish({...commonPatch,tracking:true,pose:{position:[position.x,position.y,position.z],orientation:[orientation.x,orientation.y,orientation.z,orientation.w],views:pose.views.length}});}
+      }
+      if(this.session===session&&this.lifecycleGeneration===generation&&this.state.phase==='running'){
+        faultClass='raf-schedule';this.rafHandle=session.requestAnimationFrame(this.handleFrame);
+      }
+    }catch(error){this.handleFatalFrameFault(session,generation,error,faultClass);}
   };
 }

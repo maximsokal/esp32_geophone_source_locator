@@ -4,6 +4,13 @@ import type { SensorToScanRegistration } from './rigidRegistration';
 import { formatErrorText, translate, type I18nKey, type I18nLocale } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
 
+/**
+ * MAX-403: upper bound for tag finalization after an explicit Finish. A pending detector task gets
+ * this long to settle; then its worker is disposed and the late result is ignored. The scan itself
+ * is handed over for persistence immediately and never waits for this window.
+ */
+export const TAG_FINALIZE_WINDOW_MS = 3000;
+
 export type TagChipStatus = { tagId: 0 | 1 | 2 | 3 | 4; node: string; text: string; status: 'not-seen' | 'seen' | 'confirmed' };
 const TAG_NAMES = ['MAIN', 'G1', 'G2', 'G3', 'G4'] as const;
 const REGISTRATION_REASON_KEYS: Readonly<Record<string, I18nKey>> = {
@@ -20,7 +27,7 @@ export function tagChipStatuses(fusion: TagObservationFusion, locale: I18nLocale
     const tag = fusion.byTagId[tagId as 0 | 1 | 2 | 3 | 4];
     if (tag === undefined) return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, text: translate(locale, 'xr.tag.chip.not_seen', { node: label }), status: 'not-seen' };
     if (tag.confirmed) return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, status: 'confirmed', text: translate(locale, 'xr.tag.chip.confirmed', { node: label }) };
-    return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, status: 'seen', text: translate(locale, 'xr.tag.chip.seen', { node: label, inliers: formatNumber(locale, tag.inlierCount), minimum: formatNumber(locale, 5) }) };
+    return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, status: 'seen', text: translate(locale, 'xr.tag.chip.views_seen', { node: label, views: formatNumber(locale, tag.independentViewCount), minimum: formatNumber(locale, 3) }) };
   });
 }
 
@@ -37,6 +44,7 @@ export function registrationOutcome(result: Pick<SensorToScanRegistration, 'vali
 
 const TAG_ERROR_KEYS: Readonly<Record<string, I18nKey>> = {
   'Open a recording before using tag registration.': 'xr.tag.open_recording',
+  'High-resolution tag capture requires non-blocking WebGL2 readback.': 'xr.tag.readback_unavailable',
   'Frozen localization geometry is unavailable for this recording.': 'xr.tag.geometry_unavailable',
   'AprilTag detector worker could not start.': 'xr.tag.error.detector_unavailable',
   'Frozen session geometry is unavailable; tag observations were not registered.': 'xr.tag.error.geometry_unavailable',
@@ -64,6 +72,7 @@ export function registrationArtifactFromResult(
   tagSizeM: Record<'0' | '1' | '2' | '3' | '4', number>,
   geometryComputedAtMs: number,
   createdAtMs: number,
+  scanFrameId: string | null = null,
 ): RegistrationArtifact {
   const bindings = Object.values(fusion.byTagId).filter((tag) => tag !== undefined).map((tag) => ({
     tag_id: tag.tagId,
@@ -75,6 +84,8 @@ export function registrationArtifactFromResult(
   }));
   return {
     schema: 1,
+    frame: 'webxr_local_floor',
+    scan_frame_id: scanFrameId,
     source: 'apriltag',
     family: 'tag36h11',
     geometry_computed_at_ms: geometryComputedAtMs,

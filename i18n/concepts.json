@@ -301,6 +301,147 @@
     "equivalent_terms": null
   },
   {
+    "id": "hardware.inventory.title",
+    "tft": "tft.hw.title",
+    "web": "web.hw.title",
+    "report": null,
+    "note": "TFT and Web use the same hardware inventory heading.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
+    "id": "hardware.inventory.required",
+    "tft": "tft.hw.required",
+    "web": "web.hw.required",
+    "report": null,
+    "note": "The TFT abbreviation and Web label both mark required modules.",
+    "rule": "equivalent",
+    "equivalent_terms": [
+      {"en": "REQ", "uk": "ОБОВ."},
+      {"en": "Required", "uk": "Обов’язковий"}
+    ]
+  },
+  {
+    "id": "hardware.inventory.optional",
+    "tft": "tft.hw.optional",
+    "web": "web.hw.optional",
+    "report": null,
+    "note": "The TFT abbreviation and Web label both mark optional modules.",
+    "rule": "equivalent",
+    "equivalent_terms": [
+      {"en": "OPT", "uk": "НЕОБ."},
+      {"en": "Optional", "uk": "Необов’язковий"}
+    ]
+  },
+  {
+    "id": "hardware.inventory.module.sd_card",
+    "tft": "tft.hw.module.sd_card",
+    "web": "web.hw.module.sd_card",
+    "report": null,
+    "note": "TFT and Web use the same SD card module name.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
+    "id": "hardware.inventory.module.ad7606",
+    "tft": "tft.hw.module.ad7606",
+    "web": "web.hw.module.ad7606",
+    "report": null,
+    "note": "TFT and Web use the same AD7606 module name.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
+    "id": "hardware.inventory.module.sensor_mux",
+    "tft": "tft.hw.module.sensor_mux",
+    "web": "web.hw.module.sensor_mux",
+    "report": null,
+    "note": "TFT and Web use the same sensor mux module name.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
+    "id": "hardware.inventory.module.main_xiao",
+    "tft": "tft.hw.module.main_xiao",
+    "web": "web.hw.module.main_xiao",
+    "report": null,
+    "note": "TFT and Web use the same main XIAO module name.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
+    "id": "hardware.inventory.module.barometer",
+    "tft": "tft.hw.module.barometer",
+    "web": "web.hw.module.barometer",
+    "report": null,
+    "note": "TFT and Web use the same barometer module name.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
+    "id": "hardware.inventory.module.power_monitor",
+    "tft": "tft.hw.module.power_monitor",
+    "web": "web.hw.module.power_monitor",
+    "report": null,
+    "note": "TFT and Web use the same power monitor module name.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
+    "id": "hardware.inventory.state.unknown",
+    "tft": "tft.hw.state.unknown",
+    "web": "web.hw.state.unknown",
+    "report": null,
+    "note": "TFT and Web use the same unknown module state.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
+    "id": "hardware.inventory.state.present",
+    "tft": "tft.hw.state.present",
+    "web": "web.hw.state.present",
+    "report": null,
+    "note": "TFT and Web use the same present module state.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
+    "id": "hardware.inventory.state.absent",
+    "tft": "tft.hw.state.absent",
+    "web": "web.hw.state.absent",
+    "report": null,
+    "note": "TFT and Web use the same absent module state.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
+    "id": "hardware.inventory.state.fault",
+    "tft": "tft.hw.state.fault",
+    "web": "web.hw.state.fault",
+    "report": null,
+    "note": "TFT and Web use the same fault module state.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
+    "id": "hardware.inventory.state.degraded",
+    "tft": "tft.hw.state.degraded",
+    "web": "web.hw.state.degraded",
+    "report": null,
+    "note": "TFT and Web use the same degraded module state.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
+    "id": "hardware.inventory.degraded_banner",
+    "tft": "tft.hw.degraded_banner",
+    "web": "web.hw.degraded_banner",
+    "report": null,
+    "note": "TFT and Web show when a required module is unavailable.",
+    "rule": "same_uk",
+    "equivalent_terms": null
+  },
+  {
     "id": "unavailable",
     "tft": "scan.reason_preview_unavailable",
     "web": "leveling.unavailable",

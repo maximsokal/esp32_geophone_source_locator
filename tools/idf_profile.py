@@ -28,7 +28,6 @@ _CMAKE_DEFAULTS = re.compile(
 _CONDITIONAL_DEFAULTS = (
     ("GEOLOCATOR_INSIGHTS_PROFILE", "sdkconfig.insights.defaults"),
     ("GEOLOCATOR_KEYPAD_TIMING_PROFILE", "sdkconfig.keypad-timing.defaults"),
-    ("GEOLOCATOR_ADC_BENCH_PROFILE", "sdkconfig.adc-bench.defaults"),
 )
 
 

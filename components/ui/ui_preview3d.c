@@ -137,6 +137,40 @@ static void copy_source_candidate(ui_preview3d_source_t *source, const ui_previe
         candidate->horizontal_std_x_m <= FLT_MAX && candidate->horizontal_std_y_m <= FLT_MAX;
     source->horizontal_std_x_m = source->uncertainty_valid ? (float)candidate->horizontal_std_x_m : 0.0f;
     source->horizontal_std_y_m = source->uncertainty_valid ? (float)candidate->horizontal_std_y_m : 0.0f;
+    source->vertical_std_m = source->uncertainty_valid && isfinite(candidate->vertical_std_m) &&
+        candidate->vertical_std_m > 0.0 && candidate->vertical_std_m <= FLT_MAX ?
+        (float)candidate->vertical_std_m : 0.0f;
+    source->geometry_computed_at_ms = candidate->geometry_computed_at_ms;
+}
+
+bool ui_preview3d_uncertainty_to_scan_frame(
+    const double sensor_to_scan[16],
+    double sigma_x_m,
+    double sigma_y_m,
+    double sigma_z_m,
+    double *scan_x_out,
+    double *scan_y_out)
+{
+    if (scan_x_out != NULL) *scan_x_out = 0.0;
+    if (scan_y_out != NULL) *scan_y_out = 0.0;
+    if (sensor_to_scan == NULL || scan_x_out == NULL || scan_y_out == NULL ||
+        !isfinite(sigma_x_m) || !isfinite(sigma_y_m) || !isfinite(sigma_z_m) ||
+        sigma_x_m < 0.0 || sigma_y_m < 0.0 || sigma_z_m < 0.0) return false;
+
+    const double sigma[3] = {sigma_x_m, sigma_y_m, sigma_z_m};
+    double extent[2];
+    for (size_t row = 0U; row < 2U; ++row) {
+        double sum = 0.0;
+        for (size_t column = 0U; column < 3U; ++column) {
+            const double term = sensor_to_scan[row * 4U + column] * sigma[column];
+            sum += term * term;
+        }
+        extent[row] = sqrt(sum);
+        if (!isfinite(extent[row]) || !(extent[row] > 0.0)) return false;
+    }
+    *scan_x_out = extent[0];
+    *scan_y_out = extent[1];
+    return true;
 }
 
 size_t ui_preview3d_select_sources(
@@ -314,6 +348,7 @@ void ui_preview3d_scene_set_occupancy(
     scene->point_count = 0;
     scene->points_available = 0;
     scene->registered = false;
+    scene->registration_geometry_computed_at_ms = 0U;
     scene->voxel_indices = NULL;
     scene->voxel_face_masks = NULL;
     scene->voxel_count = 0U;
@@ -339,6 +374,7 @@ void ui_preview3d_scene_set_occupancy(
     scene->point_count = out;
     if (scan_occupancy_registration_usable(occupancy, geometry_computed_at_ms)) {
         scene->registered = true;
+        scene->registration_geometry_computed_at_ms = occupancy->registration.geometry_computed_at_ms;
         memcpy(scene->sensor_to_scan, occupancy->registration.sensor_to_scan, sizeof(scene->sensor_to_scan));
     }
 }
@@ -354,6 +390,7 @@ void ui_preview3d_scene_set_voxel_preview(
     scene->point_count = 0U;
     scene->points_available = 0U;
     scene->registered = false;
+    scene->registration_geometry_computed_at_ms = 0U;
     scene->voxel_indices = NULL;
     scene->voxel_face_masks = NULL;
     scene->voxel_count = 0U;
@@ -369,6 +406,7 @@ void ui_preview3d_scene_set_voxel_preview(
     scene->voxel_size_m = preview->voxel_size_m;
     if (preview->registration_usable && preview->geometry_computed_at_ms == geometry_computed_at_ms) {
         scene->registered = true;
+        scene->registration_geometry_computed_at_ms = preview->geometry_computed_at_ms;
         for (size_t i = 0U; i < 16U; ++i) scene->sensor_to_scan[i] = preview->sensor_to_scan[i];
     }
 }
@@ -880,6 +918,7 @@ void ui_preview3d_render(
     uint32_t uncertainty_voxel_indices[UI_PREVIEW3D_SOURCE_UNCERTAINTY_VOXEL_CAP];
     size_t uncertainty_voxel_count = 0U;
     bool source_at_edge[UI_PREVIEW3D_MAX_SOURCES] = {false};
+    bool source_stale[UI_PREVIEW3D_MAX_SOURCES] = {false};
     bounds_t bounds = {0};
     bool any_sensor = false;
     bool draw_scan;
@@ -943,6 +982,16 @@ void ui_preview3d_render(
     for (size_t i = 0; i < scene->source_count && i < UI_PREVIEW3D_MAX_SOURCES; ++i) {
         sources[i] = sensor_to_render(scene, &scene->sources[i].position, draw_scan && draw_sensors);
     }
+    if (draw_scan && draw_sensors) {
+        /* MAX-412: a source solved against another geometry version than the
+         * registration would land at a plausible but wrong coordinate. */
+        for (size_t i = 0U; i < scene->source_count && i < UI_PREVIEW3D_MAX_SOURCES; ++i) {
+            if (scene->sources[i].geometry_computed_at_ms != scene->registration_geometry_computed_at_ms) {
+                source_stale[i] = true;
+                stats->sources_suppressed_stale_geometry++;
+            }
+        }
+    }
     if (draw_scan && draw_sensors && voxel_mode) {
         const ui_preview3d_voxel_grid_t grid = {
             .origin = scene->voxel_origin,
@@ -951,13 +1000,20 @@ void ui_preview3d_render(
         };
         for (size_t i = 0U; i < scene->source_count && i < UI_PREVIEW3D_MAX_SOURCES; ++i) {
             uint32_t index = 0U;
+            if (source_stale[i]) continue;
             if (ui_preview3d_source_to_voxel_index(&grid, &sources[i], &index)) {
                 if (scene->sources[i].selected) {
+                    /* The sigmas are sensor-frame axes; rotate their support into the scan frame. */
+                    double scan_sigma_x = 0.0, scan_sigma_y = 0.0;
+                    const bool sigma_valid = scene->sources[i].uncertainty_valid &&
+                        ui_preview3d_uncertainty_to_scan_frame(
+                            scene->sensor_to_scan, scene->sources[i].horizontal_std_x_m,
+                            scene->sources[i].horizontal_std_y_m, scene->sources[i].vertical_std_m,
+                            &scan_sigma_x, &scan_sigma_y);
                     primary_voxel_valid = true;
                     primary_voxel_index = index;
                     uncertainty_voxel_count = ui_preview3d_source_uncertainty_voxels(
-                        &grid, &sources[i], scene->sources[i].horizontal_std_x_m,
-                        scene->sources[i].horizontal_std_y_m, scene->sources[i].uncertainty_valid,
+                        &grid, &sources[i], (float)scan_sigma_x, (float)scan_sigma_y, sigma_valid,
                         uncertainty_voxel_indices, UI_PREVIEW3D_SOURCE_UNCERTAINTY_VOXEL_CAP);
                 }
                 continue;
@@ -977,6 +1033,9 @@ void ui_preview3d_render(
             }
             sources[i] = (ui_preview3d_vec3_t){edge[0], edge[1], edge[2]};
         }
+    }
+    if (stats->sources_suppressed_stale_geometry > 0U) {
+        stats->source_reason = UI_PREVIEW3D_SOURCE_REASON_STALE_GEOMETRY;
     }
 
     if (draw_scan) {
@@ -998,6 +1057,7 @@ void ui_preview3d_render(
             }
         }
         for (size_t i = 0; i < scene->source_count && i < UI_PREVIEW3D_MAX_SOURCES; ++i) {
+            if (source_stale[i]) continue;
             bounds_add(&bounds, &sources[i], fmaxf(0.0f, scene->sources[i].radius_m));
         }
     }
@@ -1071,6 +1131,7 @@ void ui_preview3d_render(
     }
     for (size_t i = 0; i < scene->source_count && i < UI_PREVIEW3D_MAX_SOURCES; ++i) {
         float x, y;
+        if (source_stale[i]) continue;
         const uint8_t colour = source_at_edge[i] ? UI_PREVIEW3D_PX_SOURCE_OUTSIDE_GRID :
             scene->sources[i].selected ? UI_PREVIEW3D_PX_SOURCE_SELECTED : UI_PREVIEW3D_PX_SOURCE;
         const float r = fmaxf(MIN_SOURCE_PIXELS, scene->sources[i].radius_m * scale);

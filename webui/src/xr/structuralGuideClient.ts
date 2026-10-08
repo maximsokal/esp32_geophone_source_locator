@@ -54,6 +54,11 @@ export class StructuralGuideClient {
   private starting = false;
   private disposed = false;
 
+  constructor(
+    private readonly workerFactory: () => Worker = () => new StructuralGuideWorker(),
+    private readonly computeScheduler = liveComputeScheduler,
+  ) {}
+
   get busy(): boolean { return this.pending !== null || this.starting; }
 
   private ensureWorker(): Worker {
@@ -62,10 +67,16 @@ export class StructuralGuideClient {
     // Vite inlines the payload into the single ESP WebUI JS asset, but the code
     // still executes in a Dedicated Worker scheduled independently of the XR/UI
     // main thread. Creation is deliberately lazy: a tiny scan never pays for it.
-    const worker = new StructuralGuideWorker();
-    worker.addEventListener('message', this.handleMessage);
-    worker.addEventListener('error', this.handleError);
+    const worker = this.workerFactory();
     this.worker = worker;
+    try {
+      worker.addEventListener('message', this.handleMessage);
+      worker.addEventListener('error', this.handleError);
+      worker.postMessage({ type: 'reset', epoch: this.epoch });
+    } catch (error) {
+      this.terminateWorker();
+      throw error;
+    }
     return worker;
   }
 
@@ -73,15 +84,19 @@ export class StructuralGuideClient {
     if (this.busy) throw new Error('Structural guide analysis is already running.');
     if (this.disposed) throw new Error('Structural guide worker disposed.');
     this.starting = true;
-    const lease = await liveComputeScheduler.tryAcquire('structural');
+    const requestEpoch = this.epoch;
+    const lease = await this.computeScheduler.tryAcquire('structural');
     if (lease === null) {
       this.starting = false;
       throw new Error('Live compute budget is busy; structural analysis will retry on a later keyframe.');
     }
     try {
+      if (this.disposed || requestEpoch !== this.epoch) {
+        throw new Error('Structural guide analysis belongs to an obsolete XR session.');
+      }
       const worker = this.ensureWorker();
       const id = this.nextRequestId++;
-      const epoch = this.epoch;
+      const epoch = requestEpoch;
       // Callers may explicitly override priors for deterministic tests. Production
       // analyses otherwise consume the latest frame-owned numeric plane snapshot.
       // Native planes remain advisory: the worker can only rotate normals of
@@ -122,24 +137,39 @@ export class StructuralGuideClient {
 
   reset(): void {
     this.epoch += 1;
+    this.terminateWorker();
     if (this.pending !== null) {
       this.pending.reject(new Error('Structural guide analysis reset for a new scan.'));
       this.pending = null;
     }
-    this.worker?.postMessage({ type: 'reset', epoch: this.epoch });
+  }
+
+  /** Stop live work and release its worker at the XR -> post-scan boundary. */
+  park(): void {
+    this.epoch += 1;
+    this.terminateWorker();
+    if (this.pending !== null) {
+      this.pending.reject(new Error('Structural guide worker parked after XR ended.'));
+      this.pending = null;
+    }
   }
 
   dispose(): void {
     this.disposed = true;
+    this.terminateWorker();
     if (this.pending !== null) {
       this.pending.reject(new Error('Structural guide worker disposed.'));
       this.pending = null;
     }
+  }
+
+  private terminateWorker(): void {
     if (this.worker !== null) {
-      this.worker.removeEventListener('message', this.handleMessage);
-      this.worker.removeEventListener('error', this.handleError);
-      this.worker.terminate();
+      const worker = this.worker;
       this.worker = null;
+      worker.removeEventListener('message', this.handleMessage);
+      worker.removeEventListener('error', this.handleError);
+      worker.terminate();
     }
   }
 
@@ -178,9 +208,9 @@ export class StructuralGuideClient {
   };
 
   private readonly handleError = (event: ErrorEvent): void => {
-    if (this.pending !== null) {
-      this.pending.reject(event.error ?? new Error(event.message));
-      this.pending = null;
-    }
+    const pending = this.pending;
+    this.pending = null;
+    this.terminateWorker();
+    pending?.reject(event.error ?? new Error(event.message));
   };
 }

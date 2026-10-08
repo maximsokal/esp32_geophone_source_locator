@@ -19,6 +19,16 @@
         "components/ui/tests"
       ],
       "libraries": ["m"]
+    },
+    {
+      "name": "wfC_ui_scan_preview_policy",
+      "sources": [
+        "components/ui/ui_scan_preview_policy.c",
+        "components/ui/tests/ui_scan_preview_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/ui"
+      ]
     }
   ]
 }

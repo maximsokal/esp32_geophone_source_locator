@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "seismic_source_ad7606_inventory",
+      "defines": ["HW_INVENTORY_HOST_TEST=1"],
+      "sources": [
+        "components/hw_inventory/hw_inventory.c",
+        "components/hw_inventory/hw_inventory_reason.c",
+        "components/seismic_acquisition/seismic_source_ad7606.c",
+        "components/seismic_acquisition/seismic_source_ad7606_inventory_policy.c",
+        "components/seismic_acquisition/tests/seismic_source_ad7606_inventory_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_source_ad7606_inventory",
+        "tests/host/stubs/ina3221_driver",
+        "tests/host/stubs/app_events",
+        "components/hw_inventory/include",
+        "components/seismic_acquisition/include",
+        "components/seismic_acquisition",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "components/app_config/include"
+      ]
+    }
+  ]
+}

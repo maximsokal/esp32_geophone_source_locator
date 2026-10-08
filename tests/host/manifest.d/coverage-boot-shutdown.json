@@ -3,12 +3,81 @@
   "tests": [
     {
       "name": "app_storage_boot_failure",
+      "defines": ["HW_INVENTORY_HOST_TEST=1"],
       "sources": [
-        "tests/host/app_storage_boot_failure_test.c"
+        "tests/host/app_storage_boot_failure_test.c",
+        "main/app_storage_boot_policy.c",
+        "components/hw_inventory/hw_inventory.c",
+        "components/hw_inventory/hw_inventory_reason.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/app_storage_boot",
+        "main",
+        "components/keypad/include",
+        "components/ui_i18n/include",
+        "components/sd_card/include",
+        "components/hw_inventory/include"
+      ]
+    },
+    {
+      "name": "app_storage_boot_keypad_pipeline",
+      "defines": ["KEYPAD_TEST_LOG_CAPTURE=1", "HW_INVENTORY_HOST_TEST=1"],
+      "sources": [
+        "tests/host/button_vendor_runtime.c",
+        "components/adc_service/adc_service.c",
+        "components/adc_service/adc_service_channel.c",
+        "components/adc_service/adc_service_read.c",
+        "components/keypad/keypad.c",
+        "components/keypad/keypad_button_adapter.c",
+        "components/keypad/keypad_decode.c",
+        "main/app_storage_boot_ui.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
+        "main/app_storage_boot_policy.c",
+        "components/hw_inventory/hw_inventory.c",
+        "components/hw_inventory/hw_inventory_reason.c",
+        "tests/host/app_storage_boot_keypad_pipeline_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/button_runtime",
+        "managed_components/espressif__button/include",
+        "managed_components/espressif__button/interface",
+        "components/keypad/tests/stubs",
+        "tests/host/stubs/app_storage_boot_ui",
+        "components/adc_service/include",
+        "tests/host/stubs/app_storage_boot",
+        "main",
+        "components/keypad/include",
+        "components/ui_i18n/include",
+        "components/sd_card/include",
+        "components/hw_inventory/include"
+      ]
+    },
+    {
+      "name": "app_storage_boot_policy",
+      "sources": [
+        "tests/host/app_storage_boot_policy_test.c",
+        "main/app_storage_boot_policy.c"
       ],
       "include_dirs": [
         "tests/host/stubs/app_storage_boot",
         "main"
+      ]
+    },
+    {
+      "name": "app_storage_boot_ui",
+      "sources": [
+        "main/app_storage_boot_ui.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
+        "tests/host/app_storage_boot_ui_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/app_storage_boot_ui",
+        "tests/host/stubs/app_storage_boot",
+        "main",
+        "components/keypad/include",
+        "components/ui_i18n/include"
       ]
     }
   ]

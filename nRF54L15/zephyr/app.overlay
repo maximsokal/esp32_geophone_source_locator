@@ -1,10 +1,13 @@
-/* Default is active-high; confirm the installed LED polarity with HIL. */
+/* ASSUMED active-high, same as BLUE; NOT verified (MAX-43); verify with a current-limited test before trusting. */
 #include <zephyr/dt-bindings/gpio/gpio.h>
 
 /
 {
     aliases {
         blue-led = &blue_led;
+        logger-green = &logger_green;
+        logger-yellow = &logger_yellow;
+        logger-red = &logger_red;
     };
 
     leds {
@@ -12,6 +15,18 @@
         blue_led: led_1 {
             gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
             label = "REMOTE blue LED";
+        };
+        logger_green: led_2 {
+            gpios = <&gpio1 5 GPIO_ACTIVE_HIGH>;
+            label = "REMOTE green LED";
+        };
+        logger_yellow: led_3 {
+            gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
+            label = "REMOTE yellow LED";
+        };
+        logger_red: led_4 {
+            gpios = <&gpio1 7 GPIO_ACTIVE_HIGH>;
+            label = "REMOTE red LED";
         };
     };
 };

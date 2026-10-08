@@ -1,4 +1,11 @@
 import type { OccupancyRegistration } from '../occupancySolverArtifact';
+import { localFloorMatrixToProject } from '../projectFrame';
+import {
+  registrationApplicability,
+  registrationQualityOk,
+  registrationTransformIssue,
+  type RegistrationExpectation,
+} from '../registrationApplicability';
 import type { RegistrationNode, RegistrationNodeStatus, RegistrationTier } from './rigidRegistration';
 
 export const DEFAULT_REMOTE_TAG_SIZE_M = 0.032;
@@ -27,6 +34,13 @@ export interface RegistrationArtifactNode {
 
 export interface RegistrationArtifact {
   schema: 1;
+  /** Missing only on legacy files; those matrices are WebXR local-floor. */
+  frame?: 'webxr_local_floor';
+  /**
+   * MAX-405: identity (`scan-crc32:xxxxxxxx`) of the scan this registration is bound to. Absent or
+   * null means a legacy/unbound file, which is never applicable to any scan (fail closed).
+   */
+  scan_frame_id?: string | null;
   source: 'apriltag';
   family: 'tag36h11';
   geometry_computed_at_ms: number;
@@ -44,7 +58,7 @@ export interface RegistrationArtifact {
 }
 
 const NODES: readonly RegistrationNode[] = ['MAIN', 'G1', 'G2', 'G3', 'G4'];
-const ROOT_KEYS = ['schema', 'source', 'family', 'geometry_computed_at_ms', 'created_at_ms', 'tag_size_m', 'bindings', 'sensor_to_scan', 'mirrored', 'residual_rms_m', 'threshold_m', 'per_node', 'tier', 'valid', 'reason'];
+const ROOT_KEYS = ['schema', 'frame', 'scan_frame_id', 'source', 'family', 'geometry_computed_at_ms', 'created_at_ms', 'tag_size_m', 'bindings', 'sensor_to_scan', 'mirrored', 'residual_rms_m', 'threshold_m', 'per_node', 'tier', 'valid', 'reason'];
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -77,19 +91,20 @@ function validateMatrix(value: unknown): number[] | null {
   if (!Array.isArray(value) || value.length !== 16) throw new Error('sensor_to_scan must be null or a 16-value row-major matrix.');
   const matrix = value.map((item) => finite(item, 'sensor_to_scan value'));
   if (matrix[12] !== 0 || matrix[13] !== 0 || matrix[14] !== 0 || matrix[15] !== 1) throw new Error('sensor_to_scan must have a homogeneous bottom row.');
-  const rotation = [matrix[0], matrix[1], matrix[2], matrix[4], matrix[5], matrix[6], matrix[8], matrix[9], matrix[10]];
-  for (let row = 0; row < 3; row += 1) for (let other = 0; other < 3; other += 1) {
-    const dot = rotation[row * 3] * rotation[other * 3] + rotation[row * 3 + 1] * rotation[other * 3 + 1] + rotation[row * 3 + 2] * rotation[other * 3 + 2];
-    if (Math.abs(dot - (row === other ? 1 : 0)) > 1e-3) throw new Error('sensor_to_scan rotation must be orthonormal.');
-  }
-  const determinant = rotation[0] * (rotation[4] * rotation[8] - rotation[5] * rotation[7]) - rotation[1] * (rotation[3] * rotation[8] - rotation[5] * rotation[6]) + rotation[2] * (rotation[3] * rotation[7] - rotation[4] * rotation[6]);
-  if (Math.abs(Math.abs(determinant) - 1) > 1e-3) throw new Error('sensor_to_scan rotation determinant must be plus or minus one.');
   return matrix;
 }
 
 function validateArtifact(value: unknown): RegistrationArtifact {
   if (!record(value)) throw new Error('Registration artifact must be a JSON object.');
-  exactKeys(value, ROOT_KEYS, 'Registration artifact');
+  const hasFrame = Object.prototype.hasOwnProperty.call(value, 'frame');
+  const hasScanFrameId = Object.prototype.hasOwnProperty.call(value, 'scan_frame_id');
+  exactKeys(value, ROOT_KEYS.filter((key) => (hasFrame || key !== 'frame') && (hasScanFrameId || key !== 'scan_frame_id')), 'Registration artifact');
+  if (hasFrame && value.frame !== 'webxr_local_floor') {
+    throw new Error('Unknown registration frame marker; expected webxr_local_floor.');
+  }
+  if (hasScanFrameId && value.scan_frame_id !== null && (typeof value.scan_frame_id !== 'string' || value.scan_frame_id.length === 0)) {
+    throw new Error('scan_frame_id must be null or a non-empty string.');
+  }
   if (value.schema !== 1) throw new Error('Unsupported registration artifact schema.');
   if (value.source !== 'apriltag') throw new Error('Unknown registration source.');
   if (value.family !== 'tag36h11') throw new Error('Unknown AprilTag family.');
@@ -127,6 +142,8 @@ function validateArtifact(value: unknown): RegistrationArtifact {
   });
 
   const matrix = validateMatrix(value.sensor_to_scan);
+  const matrixIssue = matrix === null ? null : registrationTransformIssue(matrix);
+  if (matrixIssue === 'invalid') throw new Error('sensor_to_scan rotation must be orthonormal with determinant +1.');
   if (typeof value.mirrored !== 'boolean') throw new Error('mirrored must be a boolean.');
   if (matrix !== null) {
     const determinant = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9]) - matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8]) + matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
@@ -155,13 +172,21 @@ function validateArtifact(value: unknown): RegistrationArtifact {
   if (value.tier !== null && value.tier !== 'full' && value.tier !== 'minimum') throw new Error('Unknown registration tier.');
   if (typeof value.valid !== 'boolean') throw new Error('valid must be a boolean.');
   if (value.reason !== null && (typeof value.reason !== 'string' || value.reason.length === 0)) throw new Error('reason must be null or a non-empty string.');
+  if (matrixIssue === 'reflected_transform' && (value.valid !== false || value.reason !== 'reflected_transform')) {
+    throw new Error('reflected_transform');
+  }
   if (value.valid && (matrix === null || value.tier === null || value.reason !== null)) throw new Error('A valid artifact needs a transform, tier, and null reason.');
   if (!value.valid && (value.tier !== null || value.reason === null)) throw new Error('An invalid artifact needs a reason and null tier.');
   if (perNode.some((item) => item.status === 'anchored') && !value.valid) throw new Error('Invalid artifacts cannot contain anchored nodes.');
   if (value.valid && perNode.some((item) => item.status === 'provisional')) throw new Error('Valid artifacts cannot contain provisional nodes.');
+  // MAX-405 quality invariant: a valid registration must be within its own threshold.
+  if (value.valid && !registrationQualityOk({ residual_rms_m: residual, threshold_m: threshold })) {
+    throw new Error('A valid artifact needs a positive threshold_m and residual_rms_m within it.');
+  }
 
   return {
-    schema: 1, source: 'apriltag', family: 'tag36h11',
+    schema: 1, frame: 'webxr_local_floor', scan_frame_id: (value.scan_frame_id as string | null | undefined) ?? null,
+    source: 'apriltag', family: 'tag36h11',
     geometry_computed_at_ms: geometryComputedAtMs, created_at_ms: createdAtMs,
     tag_size_m: tagSizes, bindings, sensor_to_scan: matrix,
     mirrored: value.mirrored, residual_rms_m: residual, threshold_m: threshold,
@@ -177,16 +202,26 @@ export function decodeRegistrationArtifact(json: string): RegistrationArtifact {
   return validateArtifact(JSON.parse(json) as unknown);
 }
 
-/** The firmware stores only this compact transform copy in the occupancy header. */
-export function toOccupancyRegistration(artifact: RegistrationArtifact): OccupancyRegistration | null {
+/**
+ * The firmware stores only this compact transform copy in the occupancy header. Returns null for an
+ * invalid, over-threshold or (when `expected` is given) inapplicable registration: a registration is
+ * embedded only for the exact scan frame and geometry generation it was computed for.
+ */
+export function toOccupancyRegistration(
+  artifact: RegistrationArtifact,
+  expected?: RegistrationExpectation,
+): OccupancyRegistration | null {
   try {
     const checked = validateArtifact(artifact);
     if (!checked.valid || checked.sensor_to_scan === null) return null;
+    if (expected !== undefined && !registrationApplicability(checked, expected).ok) return null;
     return {
       source: 'apriltag',
       geometry_computed_at_ms: checked.geometry_computed_at_ms,
-      sensor_to_scan: [...checked.sensor_to_scan],
+      sensor_to_scan: localFloorMatrixToProject(checked.sensor_to_scan),
+      frame: 'project_z_up',
       residual_m: checked.residual_rms_m,
+      threshold_m: checked.threshold_m,
     };
   } catch {
     return null;

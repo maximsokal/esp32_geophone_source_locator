@@ -741,6 +741,26 @@ esp_err_t seismic_recorder_samples_reader_next(
     bool *gap_before
 )
 {
+    return seismic_recorder_samples_reader_next_ex(
+        read_at, read_context, reader, frames, frame_capacity, frame_count,
+        first_sample_index, gap_before, NULL, NULL
+    );
+}
+
+
+esp_err_t seismic_recorder_samples_reader_next_ex(
+    seismic_recorder_waveform_read_at_fn read_at,
+    void *read_context,
+    seismic_recorder_samples_reader_t *reader,
+    seismic_frame_t *frames,
+    size_t frame_capacity,
+    size_t *frame_count,
+    uint64_t *first_sample_index,
+    bool *gap_before,
+    size_t rail_sample_counts[SEISMIC_CHANNEL_COUNT],
+    size_t *samples_examined
+)
+{
     if (
         read_at == NULL || reader == NULL || frames == NULL ||
         frame_capacity == 0U || frame_count == NULL
@@ -748,6 +768,12 @@ esp_err_t seismic_recorder_samples_reader_next(
         return ESP_ERR_INVALID_ARG;
     }
     *frame_count = 0U;
+    if (rail_sample_counts != NULL) {
+        memset(rail_sample_counts, 0, sizeof(size_t) * SEISMIC_CHANNEL_COUNT);
+    }
+    if (samples_examined != NULL) {
+        *samples_examined = 0U;
+    }
     esp_err_t err = ESP_OK;
     if (first_sample_index != NULL) {
         *first_sample_index = 0U;
@@ -844,9 +870,18 @@ esp_err_t seismic_recorder_samples_reader_next(
             const int16_t raw = seismic_recorder_samples_get_le16(
                 packed + index * SEISMIC_RECORDER_BINARY_I16_FRAME_BYTES + channel * sizeof(raw)
             );
+            if (
+                rail_sample_counts != NULL &&
+                (raw == INT16_MIN || raw == INT16_MAX)
+            ) {
+                ++rail_sample_counts[channel];
+            }
             decoded.channel_uv[channel] =
                 (float)raw * reader->v2_metadata.scale_uv_per_lsb[channel] +
                 reader->v2_metadata.offset_uv[channel];
+        }
+        if (samples_examined != NULL) {
+            ++*samples_examined;
         }
         frames[index] = decoded;
     }

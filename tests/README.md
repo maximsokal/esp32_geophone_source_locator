@@ -4,7 +4,7 @@ The repository has four intentionally separate test surfaces:
 
 * `tools/run_host_tests.py` builds and runs the manifest-driven C contract suites in
   `tests/host/manifest.json`. It applies strict C11 warnings consistently and
-  writes a machine-readable report under `build/host-tests`.
+  writes a machine-readable report under `.test-build/host-tests`.
 * `tests/python` contains deterministic pytest checks. Run `python -m pytest`
   from the repository root. HIL tests are marked `hil` and are skipped by
   default.

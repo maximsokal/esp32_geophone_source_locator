@@ -586,6 +586,26 @@ static void test_corrupt_saved_records_are_skipped(void)
         LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &pick_count) == ESP_OK);
     assert(pick_count == 1U);
 
+    localization_run_store_list_status_t run_status;
+    size_t extended_run_count = 0U;
+    assert(localization_run_store_list_ex("OBJ_0001", "S070001", records,
+        LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION, &extended_run_count,
+        &run_status) == ESP_OK);
+    assert(extended_run_count == 13U);
+    assert(run_status.partial_error && run_status.partial_error_count == 4U);
+    assert((run_status.partial_error_codes &
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_PARSE_FAILED) != 0U);
+
+    localization_run_store_list_status_t pick_status;
+    size_t extended_pick_count = 0U;
+    assert(localization_run_store_list_picks_ex("OBJ_0001", "S070001", picks,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &extended_pick_count,
+        &pick_status) == ESP_OK);
+    assert(extended_pick_count == 1U);
+    assert(pick_status.partial_error && pick_status.partial_error_count == 4U);
+    assert((pick_status.partial_error_codes &
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_RECORD_PARSE_FAILED) != 0U);
+
     for (size_t i = 0U; i < sizeof(corrupt) / sizeof(corrupt[0]); ++i) {
         write_bad_run_file("S070002", bad_methods[i], 7300000U + i, corrupt[i]);
         write_bad_pick_file("S070002", 7400000U + i, corrupt[i]);
@@ -597,6 +617,21 @@ static void test_corrupt_saved_records_are_skipped(void)
     assert(localization_run_store_list_picks("OBJ_0001", "S070002", picks,
         LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &corrupt_pick_count) == ESP_OK);
     assert(corrupt_pick_count == 0U);
+
+    assert(localization_run_store_list_ex("OBJ_0001", "S070002", records,
+        LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION, &corrupt_run_count,
+        &run_status) == ESP_OK);
+    assert(corrupt_run_count == 0U);
+    assert(run_status.partial_error && run_status.partial_error_count == 4U);
+    assert((run_status.partial_error_codes &
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_PARSE_FAILED) != 0U);
+    assert(localization_run_store_list_picks_ex("OBJ_0001", "S070002", picks,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &corrupt_pick_count,
+        &pick_status) == ESP_OK);
+    assert(corrupt_pick_count == 0U);
+    assert(pick_status.partial_error && pick_status.partial_error_count == 4U);
+    assert((pick_status.partial_error_codes &
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_RECORD_PARSE_FAILED) != 0U);
 
     const char *empty_session = "S070003";
     char empty_directory[LOCALIZATION_RUN_STORE_PATH_MAX];
@@ -611,8 +646,28 @@ static void test_corrupt_saved_records_are_skipped(void)
         LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &empty_pick_count) == ESP_OK);
     assert(empty_pick_count == corrupt_pick_count);
 
+    assert(localization_run_store_list_ex("OBJ_0001", empty_session, records,
+        LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION, &empty_run_count,
+        &run_status) == ESP_OK);
+    assert(empty_run_count == 0U && !run_status.partial_error);
+    assert(localization_run_store_list_picks_ex("OBJ_0001", empty_session, picks,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &empty_pick_count,
+        &pick_status) == ESP_OK);
+    assert(empty_pick_count == 0U && !pick_status.partial_error);
+
+    size_t missing_count = 99U;
+    assert(localization_run_store_list_ex("OBJ_0001", "S070004", records,
+        LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION, &missing_count,
+        &run_status) == ESP_ERR_NOT_FOUND);
+    assert(missing_count == 0U && !run_status.partial_error);
+    missing_count = 99U;
+    assert(localization_run_store_list_picks_ex("OBJ_0001", "S070004", picks,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &missing_count,
+        &pick_status) == ESP_ERR_NOT_FOUND);
+    assert(missing_count == 0U && !pick_status.partial_error);
+
     free_fixture_frames();
-    puts("  corrupt run/pick records: valid entries remain readable; all-bad and empty listings are identical");
+    puts("  corrupt run/pick records: valid entries preserved with partial-error codes; empty/missing distinguished");
 }
 
 static void test_tdoa_iteration_cap_is_persisted_as_unconverged(void)
@@ -657,14 +712,17 @@ static void test_tdoa_iteration_cap_is_persisted_as_unconverged(void)
         &event, "OBJ_0001", "S090001", 9000001U, 9000000U, 1U,
         "test-model", "custom", TEST_SPEED_MPS, 20.0, 60.0, &record
     ) == ESP_OK);
+    localization_calculate_set_tdoa_terminal_status(&event, config.max_iterations, &record);
     assert(record.solved && record.iterations == 1U && !record.converged);
+    assert(record.terminal_status == LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT);
     assert(record.rejection_reason[0] == '\0');
     assert(localization_run_store_write("OBJ_0001", "S090001", &record) == ESP_OK);
     localization_run_record_t persisted[LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION];
     size_t count = 0U;
     assert(read_session("S090001", persisted, &count) == ESP_OK && count == 1U);
     assert(persisted[0].solved && persisted[0].iterations == 1U && !persisted[0].converged);
-    puts("  TDOA cap: 1 iteration persisted with converged=false");
+    assert(persisted[0].terminal_status == LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT);
+    puts("  TDOA cap: iteration_limit persisted separately from solved");
 }
 
 static localization_calculate_run_context_t cap_test_context(
@@ -688,7 +746,8 @@ static localization_calculate_run_context_t cap_test_context(
 
 static void persist_and_read_cap_result(
     const char *session_id,
-    const localization_run_record_t *record
+    const localization_run_record_t *record,
+    localization_run_terminal_status_t expected_terminal_status
 )
 {
     assert(localization_run_store_write("OBJ_0001", session_id, record) == ESP_OK);
@@ -697,9 +756,10 @@ static void persist_and_read_cap_result(
     assert(read_session(session_id, persisted, &count) == ESP_OK && count == 1U);
     assert(persisted[0].solved);
     assert(strcmp(persisted[0].method_name, record->method_name) == 0);
+    assert(persisted[0].terminal_status == expected_terminal_status);
 }
 
-static void test_psp_iteration_cap_is_not_persisted(void)
+static void test_psp_iteration_cap_sets_terminal_status(void)
 {
     const localization_point3d_t source = { 1.7, 1.4, -1.2 };
     localization_psp_observation_t observations[6];
@@ -728,19 +788,18 @@ static void test_psp_iteration_cap_is_not_persisted(void)
     assert(result.status == LOCALIZATION_PSP_SOLVED);
     assert(result.iterations == config.max_iterations && !result.converged);
 
-    /* KNOWN_DEFECT, build/max132_survey.md:108: the PSP converter drops its cap/convergence
-     * status. Minimal repro: noisy six-pick fit with max_iterations=1. */
     const localization_calculate_run_context_t context = cap_test_context("S090003", 9000003U);
     localization_run_record_t record;
     localization_calculate_psp_to_run_record(&context, &result, NULL,
         LOCALIZATION_FAILURE_CLASS_INTERNAL, 0x3FU, 0U, 1U, 20.0, &record);
-    assert(record.solved && record.iterations == 0U && !record.converged);
+    assert(record.solved && record.iterations == 1U && !record.converged);
+    assert(record.terminal_status == LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT);
     assert(record.rejection_reason[0] == '\0');
-    persist_and_read_cap_result("S090003", &record);
-    puts("  KNOWN_DEFECT build/max132_survey.md:108: PSP one-iteration cap is omitted from its saved run record");
+    persist_and_read_cap_result("S090003", &record, LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT);
+    puts("  PSP cap: iteration_limit persisted separately from solved");
 }
 
-static void test_psafuvs_iteration_cap_is_persisted_without_rejection(void)
+static void test_psafuvs_iteration_cap_sets_terminal_status(void)
 {
     const localization_point3d_t source = { 2.2, 1.4, -1.1 };
     localization_psafuvs_observation_t observations[6];
@@ -761,20 +820,18 @@ static void test_psafuvs_iteration_cap_is_persisted_without_rejection(void)
     assert(result.status == LOCALIZATION_PSAFUVS_SOLVED);
     assert(result.iterations == config.max_iterations && !result.converged);
 
-    /* KNOWN_DEFECT, build/max132_survey.md:108: a cap-hit PSAFUVS candidate is still saved
-     * as solved, with no rejection reason. Minimal repro: perturbed six-pick
-     * fit with max_iterations=1. */
     const localization_calculate_run_context_t context = cap_test_context("S090004", 9000004U);
     localization_run_record_t record;
     localization_calculate_psafuvs_to_run_record(&context, &result, NULL,
         LOCALIZATION_FAILURE_CLASS_INTERNAL, 0x3FU, 0U, 1U, 20.0, &record, NULL);
     assert(record.solved && record.iterations == 1U && !record.converged);
+    assert(record.terminal_status == LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT);
     assert(record.rejection_reason[0] == '\0');
-    persist_and_read_cap_result("S090004", &record);
-    puts("  KNOWN_DEFECT build/max132_survey.md:108: PSAFUVS cap-hit candidate is persisted as solved");
+    persist_and_read_cap_result("S090004", &record, LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT);
+    puts("  PSAFUVS cap: iteration_limit persisted separately from solved");
 }
 
-static void test_bayesian_cell_budget_limit_has_no_persisted_status(void)
+static void test_bayesian_cell_budget_sets_terminal_status(void)
 {
     const localization_point3d_t source = { 1.7, 1.4, -1.2 };
     localization_bayes_pick_t picks[6];
@@ -799,20 +856,18 @@ static void test_bayesian_cell_budget_limit_has_no_persisted_status(void)
     assert(result.cells_evaluated > 0U);
     assert(result.timing_uncertainty_used_us > config.timing_uncertainty_us);
 
-    /* KNOWN_DEFECT, build/max132_survey.md:108: a cell-budget-limited posterior has no
-     * persisted budget/convergence status. Minimal repro: six picks with
-     * max_cells=64, then serialize the Bayes method record. */
     const localization_calculate_run_context_t context = cap_test_context("S090005", 9000005U);
     localization_run_record_t record;
     localization_calculate_bayes_to_run_record(&context, &result, "bayesian", NULL,
         LOCALIZATION_FAILURE_CLASS_INTERNAL, false, 0x3FU, 0U, 1U, 20.0, &record);
     assert(record.solved && record.rejection_reason[0] == '\0');
+    assert(record.terminal_status == LOCALIZATION_RUN_TERMINAL_STATUS_CELL_BUDGET);
     assert(record.iterations == 0U && !record.converged);
-    persist_and_read_cap_result("S090005", &record);
-    puts("  KNOWN_DEFECT build/max132_survey.md:108: Bayesian cell-budget status is omitted from its saved run record");
+    persist_and_read_cap_result("S090005", &record, LOCALIZATION_RUN_TERMINAL_STATUS_CELL_BUDGET);
+    puts("  Bayesian cap: cell_budget persisted separately from solved");
 }
 
-static void test_eikonal_node_cap_resolution_is_not_persisted(void)
+static void test_eikonal_node_cap_sets_resolution_status(void)
 {
     const localization_extended_bounds_t bounds = ext_test_bounds_3d();
     localization_eikonal_model_t model;
@@ -820,6 +875,7 @@ static void test_eikonal_node_cap_resolution_is_not_persisted(void)
         bounds.step_m, 64U, 300.0) == ESP_OK);
     assert(localization_eikonal_node_count(&model) <= 64U);
     assert(model.cell_m > bounds.step_m);
+    assert(model.resolution_limited);
 
     localization_eikonal_fields_t fields;
     assert(localization_eikonal_fields_compute(&model, EXT_TEST_SENSORS_3D, 6U, &fields) == ESP_OK);
@@ -841,26 +897,22 @@ static void test_eikonal_node_cap_resolution_is_not_persisted(void)
     localization_eikonal_result_t result;
     assert(localization_eikonal_locate(&model, &fields, picks, 6U, &config, &result) == ESP_OK);
     assert(result.status == LOCALIZATION_EIKONAL_SOLVED && result.candidates_evaluated > 0U);
+    assert(result.resolution_limited);
 
-    /* KNOWN_DEFECT, build/max132_survey.md:108: the max_nodes cap coarsens the FMM grid,
-     * but the saved result omits the actual cell spacing/budget status.
-     * Minimal repro: six picks, requested cell=0.1 m, max_nodes=64. */
     const localization_calculate_run_context_t context = cap_test_context("S090006", 9000006U);
     localization_run_record_t record;
     localization_calculate_eikonal_to_run_record(&context, &result, "eikonal_fmm", NULL,
         LOCALIZATION_FAILURE_CLASS_INTERNAL, false, 0x3FU, 0U, 1U, 20.0, &record);
     assert(record.solved && record.rejection_reason[0] == '\0');
-    persist_and_read_cap_result("S090006", &record);
+    assert(record.terminal_status == LOCALIZATION_RUN_TERMINAL_STATUS_RESOLUTION_LIMITED);
+    persist_and_read_cap_result("S090006", &record, LOCALIZATION_RUN_TERMINAL_STATUS_RESOLUTION_LIMITED);
     localization_eikonal_fields_free(&fields);
     localization_eikonal_model_free(&model);
-    puts("  KNOWN_DEFECT build/max132_survey.md:108: coarse FMM grid resolution is omitted from its saved run record");
+    puts("  Eikonal cap: resolution_limited persisted separately from solved");
 }
 
-static void test_robust_iteration_cap_status_is_not_persisted(void)
+static void test_robust_iteration_cap_sets_terminal_status(void)
 {
-    /* KNOWN_DEFECT, build/max132_survey.md:108: robust records use the default zero/false
-     * TDOA-only iteration fields even after their configured IRLS cap is hit.
-     * Minimal repro: solve six picks with max_iterations=1, then persist. */
     const localization_point3d_t source = { 1.7, 1.4, -1.2 };
     uint32_t random_state = 11U;
     localization_observation_t observations[6];
@@ -894,13 +946,15 @@ static void test_robust_iteration_cap_status_is_not_persisted(void)
         &context, &result, 0x3FU, 0U, 1U, 20.0, &record
     );
     assert(record.solved);
-    assert(record.iterations == 0U && !record.converged && record.rejection_reason[0] == '\0');
+    assert(record.iterations == 1U && !record.converged && record.rejection_reason[0] == '\0');
+    assert(record.terminal_status == LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT);
     assert(localization_run_store_write("OBJ_0001", "S090002", &record) == ESP_OK);
     localization_run_record_t persisted[LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION];
     size_t count = 0U;
     assert(read_session("S090002", persisted, &count) == ESP_OK && count == 1U);
-    assert(persisted[0].solved && persisted[0].iterations == 0U && !persisted[0].converged);
-    puts("  KNOWN_DEFECT build/max132_survey.md:108: robust cap is omitted from its saved run record");
+    assert(persisted[0].solved && persisted[0].iterations == 1U && !persisted[0].converged);
+    assert(persisted[0].terminal_status == LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT);
+    puts("  robust cap: iteration_limit persisted separately from solved");
 }
 
 static void test_pick_write_failure_retries_and_reports(void)
@@ -945,6 +999,79 @@ static void test_pick_write_failure_retries_and_reports(void)
     puts("  pick writes retry once; persistent failure is returned after run records persist");
 }
 
+
+static void test_session_epoch_known_zero_round_trips_through_store(void)
+{
+    static const char *const session_id = "S090010";
+    localization_run_record_t known_run = {0};
+    known_run.schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
+    known_run.scan_provenance_present = true;
+    snprintf(known_run.object_id, sizeof(known_run.object_id), "%s", "OBJ_0001");
+    snprintf(known_run.session_id, sizeof(known_run.session_id), "%s", session_id);
+    known_run.computed_at_ms = 901001U;
+    known_run.kind = LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD;
+    snprintf(known_run.method_name, sizeof(known_run.method_name), "%s", "epoch_known");
+    known_run.dimensionality = LOCALIZATION_DIMENSIONALITY_CAPABLE_3D;
+    known_run.solved = true;
+    known_run.session_epoch_known = true;
+    known_run.session_epoch_timestamp_us = 0;
+    assert(localization_run_store_write("OBJ_0001", session_id, &known_run) == ESP_OK);
+
+    localization_run_record_t unknown_run = known_run;
+    unknown_run.computed_at_ms = 901002U;
+    snprintf(unknown_run.method_name, sizeof(unknown_run.method_name), "%s", "epoch_unknown");
+    unknown_run.session_epoch_known = false;
+    unknown_run.session_epoch_timestamp_us = 0;
+    assert(localization_run_store_write("OBJ_0001", session_id, &unknown_run) == ESP_OK);
+
+    localization_run_record_t runs[LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION];
+    size_t run_count = 0U;
+    assert(read_session(session_id, runs, &run_count) == ESP_OK && run_count == 2U);
+    const localization_run_record_t *known_saved = find_saved(runs, run_count, "epoch_known");
+    const localization_run_record_t *unknown_saved = find_saved(runs, run_count, "epoch_unknown");
+    assert(known_saved != NULL && known_saved->session_epoch_known);
+    assert(known_saved->session_epoch_timestamp_us == 0);
+    assert(unknown_saved != NULL && !unknown_saved->session_epoch_known);
+    assert(unknown_saved->session_epoch_timestamp_us == 0);
+
+    localization_pick_record_t known_picks = {0};
+    known_picks.schema_version = LOCALIZATION_PICK_RECORD_SCHEMA_VERSION;
+    snprintf(known_picks.object_id, sizeof(known_picks.object_id), "%s", "OBJ_0001");
+    snprintf(known_picks.session_id, sizeof(known_picks.session_id), "%s", session_id);
+    known_picks.computed_at_ms = 901001U;
+    known_picks.session_epoch_known = true;
+    known_picks.session_epoch_timestamp_us = 0;
+    for (size_t channel = 0U; channel < LOCALIZATION_PICK_RECORD_CHANNEL_COUNT; ++channel) {
+        known_picks.channels[channel].participating = true;
+        known_picks.channels[channel].pick.status = GEOPHONE_PICK_REJECTED_NO_TRIGGER;
+    }
+    assert(localization_run_store_write_picks("OBJ_0001", session_id, &known_picks) == ESP_OK);
+
+    localization_pick_record_t unknown_picks = known_picks;
+    unknown_picks.computed_at_ms = 901002U;
+    unknown_picks.session_epoch_known = false;
+    unknown_picks.session_epoch_timestamp_us = 0;
+    assert(localization_run_store_write_picks("OBJ_0001", session_id, &unknown_picks) == ESP_OK);
+    localization_pick_record_t picks[LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION];
+    size_t pick_count = 0U;
+    assert(localization_run_store_list_picks(
+        "OBJ_0001", session_id, picks,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &pick_count
+    ) == ESP_OK && pick_count == 2U);
+    bool saw_known_zero = false;
+    bool saw_unknown_zero = false;
+    for (size_t i = 0U; i < pick_count; ++i) {
+        if (picks[i].session_epoch_known && picks[i].session_epoch_timestamp_us == 0) {
+            saw_known_zero = true;
+        }
+        if (!picks[i].session_epoch_known && picks[i].session_epoch_timestamp_us == 0) {
+            saw_unknown_zero = true;
+        }
+    }
+    assert(saw_known_zero && saw_unknown_zero);
+    puts("  run store round-trip distinguishes known epoch 0 from unknown for run and pick records");
+}
+
 int main(void)
 {
     isolate_test_store();
@@ -956,11 +1083,12 @@ int main(void)
     test_corrupt_saved_records_are_skipped();
     test_pick_write_failure_retries_and_reports();
     test_tdoa_iteration_cap_is_persisted_as_unconverged();
-    test_robust_iteration_cap_status_is_not_persisted();
-    test_psp_iteration_cap_is_not_persisted();
-    test_psafuvs_iteration_cap_is_persisted_without_rejection();
-    test_bayesian_cell_budget_limit_has_no_persisted_status();
-    test_eikonal_node_cap_resolution_is_not_persisted();
+    test_robust_iteration_cap_sets_terminal_status();
+    test_psp_iteration_cap_sets_terminal_status();
+    test_psafuvs_iteration_cap_sets_terminal_status();
+    test_bayesian_cell_budget_sets_terminal_status();
+    test_eikonal_node_cap_sets_resolution_status();
+    test_session_epoch_known_zero_round_trips_through_store();
     localization_test_psram_model_reset();
     assert(max132_fault_allocator_live_blocks() == 0U);
     puts("MAX-132 failure/recovery integration passed");

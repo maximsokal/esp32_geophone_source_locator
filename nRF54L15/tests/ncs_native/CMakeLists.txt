@@ -27,6 +27,7 @@ target_sources(app PRIVATE
     ../../src/nrf_remote_sensor_runtime_zephyr.c
     ../../src/nrf_cs_scheduler.c
     ../../src/nrf_cs_pair_adapter.c
+    ../../src/nrf_cs_measurement_quality.c
     ../../src/nrf_cs_pair_runtime_zephyr.c
 )
 

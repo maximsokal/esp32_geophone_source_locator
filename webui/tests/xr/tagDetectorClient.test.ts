@@ -18,6 +18,7 @@ class FakeWorker {
 function cameraFrame(): TagCameraFrame {
   return {
     width: 960, height: 540, rgba: new Uint8Array(960 * 540 * 4), capturedAtMs: 1234,
+    cameraPosition: [1, 2, 3], cameraForward: [0, 0, -1],
     projectionMatrix: new Float32Array(16).fill(1), worldFromView: new Float32Array(16).fill(2),
   };
 }
@@ -36,7 +37,7 @@ describe('tag detector worker client', () => {
     const detection = { tagId: 0, corners: [[0.1, 0.2], [0.8, 0.2], [0.8, 0.9], [0.1, 0.9]], hammingDistance: 0 };
     worker.emit('message', { type: 'result', requestId: request.requestId, epoch: 1, detections: [detection] });
     const result = await resultPromise;
-    expect(result).toMatchObject({ capturedAtMs: 1234, detections: [detection] });
+    expect(result).toMatchObject({ capturedAtMs: 1234, cameraPosition: [1,2,3], cameraForward: [0,0,-1], detections: [detection] });
     expect(Array.from(result?.projectionMatrix ?? [])).toEqual(Array.from(frame.projectionMatrix));
     expect(Array.from(result?.worldFromView ?? [])).toEqual(Array.from(frame.worldFromView));
     client.dispose();
@@ -55,13 +56,38 @@ describe('tag detector worker client', () => {
   });
 
   it('rejects pending work when the epoch resets and ignores its stale response', async () => {
-    const worker = new FakeWorker(); const client = new TagDetectorClient(() => worker as never);
+    const workers = [new FakeWorker(), new FakeWorker()]; let workerIndex = 0;
+    const client = new TagDetectorClient(() => workers[workerIndex++] as never);
+    const worker = workers[0];
     const pending = client.detect(cameraFrame()); const request = worker.messages[1].message;
     client.reset();
     await expect(pending).rejects.toThrow(/obsolete XR session|reset/);
-    expect(worker.messages[2].message).toEqual({ type: 'reset', epoch: 2 });
+    expect(worker.terminated).toBe(true);
+    expect(workerIndex).toBe(1);
     worker.emit('message', { type: 'result', requestId: request.requestId, epoch: 1, detections: [] });
     expect(client.busy).toBe(false);
+
+    const next = client.detect(cameraFrame());
+    expect(workerIndex).toBe(2);
+    expect(workers[1].messages.map((item) => item.message)).toEqual([
+      { type: 'reset', epoch: 2 },
+      expect.objectContaining({ type: 'detect', epoch: 2 }),
+    ]);
+    const nextRequest = workers[1].messages[1].message;
+    workers[1].emit('message', { type: 'result', requestId: nextRequest.requestId, epoch: 2, detections: [] });
+    await expect(next).resolves.toMatchObject({ detections: [] });
+    client.dispose();
+    expect(workers[1].terminated).toBe(true);
+  });
+
+  it('transfers a capture-owned RGBA buffer without a detector clone', async () => {
+    const worker = new FakeWorker(); const client = new TagDetectorClient(() => worker as never);
+    const frame = cameraFrame(); frame.rgbaOwnership = 'owned';
+    const pending = client.detect(frame); const request = worker.messages[1].message;
+    expect(request.rgba).toBe(frame.rgba);
+    expect(worker.messages[1].transfer).toEqual([frame.rgba.buffer]);
+    worker.emit('message', { type: 'result', requestId: request.requestId, epoch: request.epoch, detections: [] });
+    await expect(pending).resolves.toMatchObject({ detections: [] });
     client.dispose();
   });
 });

@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   DepthPointCloudAccumulator,
   type CpuDepthInformationLike,
   type DepthFusionFrameContext,
   type DepthSampleView,
 } from '../../src/xr/depthPointCloudV2';
+import { surfaceRenderConfidence } from '../../src/xr/surfelEvidence';
 import {
   ARCORE_NOISE, nearestPolygon, orbitPoses, rectangle, scanScene, stepScene, tiltedPlaneScene,
   type SyntheticScene,
@@ -40,6 +41,65 @@ function meanDepth(positions: Float32Array): number {
 
 function assertFiniteArray(values: Float32Array): void {
   for (const value of values) expect(Number.isFinite(value)).toBe(true);
+}
+
+function syntheticCoverageAccumulator(cellCount: number, representativesPerCell: number): DepthPointCloudAccumulator {
+  const accumulator = new DepthPointCloudAccumulator();
+  const internal = accumulator as unknown as {
+    coverageCells: Map<string, any>; representativeCount: number; promotedRepresentativeCount: number; integrationKeyframes: number;
+  };
+  internal.integrationKeyframes = 2;
+  for (let cellIndex = 0; cellIndex < cellCount; cellIndex += 1) {
+    const representatives = new Map<string, any>();
+    for (let pointIndex = 0; pointIndex < representativesPerCell; pointIndex += 1) {
+      const id = `${cellIndex}:${pointIndex}`;
+      representatives.set(id, {
+        id, x: cellIndex + pointIndex * 0.01, y: pointIndex * 0.02, z: cellIndex * 0.03,
+        normalX: 0, normalY: 1, normalZ: 0, normalConfidence: 0.95, normalKnown: true,
+        weight: 5, acceptedSamples: 8, independentViews: 4, viewCodesPacked: 0, viewCodeCount: 4,
+        lastProcessedKeyframe: 2, lastEvidenceKeyframe: 2, lastSeenEpoch: 2, lastEvidenceEpoch: 2,
+        varianceX: 0.000001, varianceY: 0.000001, varianceZ: 0.000001, residualEwma: 0.001,
+        viewDirX: 0, viewDirY: 0, viewDirZ: -1, maxViewAngleRadians: Math.PI / 4,
+        contradictionWeight: 0, promoted: true, priority: 0.5 + (pointIndex % 6) * 0.1,
+        voxelKey: id, voxelIndexKey: id, coverageKey: String(cellIndex),
+      });
+    }
+    internal.coverageCells.set(String(cellIndex), {
+      representatives, lastEvidenceKeyframe: 2, evidenceKeyframes: 2, firstCameraX: 0, firstCameraY: 0, firstCameraZ: 0,
+      hasFirstCamera: true, maxBaselineMeters: 1, retentionComplexityRevision: 0, retentionComplexityCachedRevision: 0,
+      retentionComplexityCachedScore: 0, facesReadyCachedRevision: 0, facesReadyCachedValue: false,
+    });
+    internal.representativeCount += representativesPerCell;
+    internal.promotedRepresentativeCount += representativesPerCell;
+  }
+  return accumulator;
+}
+
+function oldCoverageSelection(accumulator: DepthPointCloudAccumulator) {
+  const internal = accumulator as unknown as { coverageCells: Map<string, any>; cellQuality: (cell: any) => { confidence: number; visible: boolean } };
+  const cells = [...internal.coverageCells.values()];
+  let visibleCoverageCells = 0;
+  for (const cell of cells) if (internal.cellQuality(cell).visible) visibleCoverageCells += 1;
+  const perCellBudget = Math.max(1, Math.min(12, Math.floor(12000 / Math.max(1, visibleCoverageCells))));
+  const positions = new Float32Array(12000 * 3); const confidence = new Float32Array(12000); let pointCount = 0;
+  const quality = (point: any): number => {
+    const residual = Math.max(Math.sqrt(Math.max(0, (point.varianceX + point.varianceY + point.varianceZ) / 3)), point.residualEwma * 0.55);
+    return surfaceRenderConfidence({ promoted: point.promoted, independentViews: point.independentViews, weight: point.weight,
+      residualMeters: residual, maxViewAngleRadians: point.maxViewAngleRadians, contradictionWeight: point.contradictionWeight,
+      normalConfidence: point.normalConfidence });
+  };
+  const score = (point: any): number => point.priority / (Math.max(0.06, quality(point)) * (1 + Math.min(point.independentViews, 4) * 0.35));
+  for (const cell of cells) {
+    const cellQuality = internal.cellQuality(cell); if (!cellQuality.visible) continue;
+    const ranked = [...cell.representatives.values()].sort((a, b) => score(a) - score(b));
+    const take = Math.min(Math.max(1, Math.round(perCellBudget * (0.45 + 0.55 * Math.max(0.2, cellQuality.confidence)))), ranked.length);
+    for (let index = 0; index < take && pointCount < 12000; index += 1) {
+      const point = ranked[index];const offset = pointCount * 3;
+      positions[offset] = point.x;positions[offset + 1] = point.z;positions[offset + 2] = -point.y;
+      confidence[pointCount] = quality(point);pointCount += 1;
+    }
+  }
+  return { positions: positions.subarray(0, pointCount * 3), confidence: confidence.subarray(0, pointCount), pointCount };
 }
 
 describe('DepthPointCloudAccumulator basic invariants', () => {
@@ -159,6 +219,117 @@ describe('independent evidence and anti-saturation', () => {
     const snapshot = accumulator.snapshot(1, 1);
     expect(snapshot.pointCount).toBe(0);
     expect(snapshot.tentativePointCount).toBe(accumulator.pointCount);
+  });
+});
+
+describe('budgeted live coverage snapshots (MAX-409)', () => {
+  it('matches the old stable-score selection and reuses exact-sized views under pressure', () => {
+    const accumulator = syntheticCoverageAccumulator(1000, 12);
+    const internal = accumulator as unknown as { representativeCount: number };
+    const scientificPointCount = internal.representativeCount;
+    const old = oldCoverageSelection(accumulator);
+    const full = accumulator.liveCoverageSnapshot(12000);
+    expect(full.pointCount).toBe(12000);
+    expect(full.positions).toEqual(old.positions);
+    expect(full.confidence).toEqual(old.confidence);
+
+    const positionBuffer = full.positions.buffer;const confidenceBuffer = full.confidence.buffer;
+    const sortSpy = vi.spyOn(Array.prototype, 'sort');
+    try {
+      const reduced = accumulator.liveCoverageSnapshot(4800);
+      expect(reduced.pointCount).toBe(4800);
+      expect(reduced.positions.length).toBe(reduced.pointCount * 3);
+      expect(reduced.confidence.length).toBe(reduced.pointCount);
+      expect(reduced.positions.buffer).toBe(positionBuffer);
+      expect(reduced.confidence.buffer).toBe(confidenceBuffer);
+      expect(sortSpy).not.toHaveBeenCalled();
+    } finally { sortSpy.mockRestore(); }
+    expect(internal.representativeCount).toBe(scientificPointCount);
+  });
+});
+
+describe('structural guide snapshots (MAX-409)', () => {
+  it('preserves eligible representative order and values with exact-sized allocations under pressure', () => {
+    const accumulator = new DepthPointCloudAccumulator();
+    const internal = accumulator as unknown as {
+      representatives: Map<string, any>;
+      integrationKeyframes: number;
+    };
+    internal.integrationKeyframes = 17;
+
+    for (let index = 0; index < 60000; index += 1) {
+      const promoted = index % 1000 !== 0;
+      internal.representatives.set(String(index), {
+        id: String(index),
+        x: index * 0.001,
+        y: index * 0.002,
+        z: -index * 0.001,
+        normalX: 0.1,
+        normalY: 0.9,
+        normalZ: -0.2,
+        normalConfidence: 0.8,
+        normalKnown: index % 5 === 0,
+        independentViews: 3 + index % 3,
+        weight: 4 + index % 2,
+        varianceX: 0.000001 * (1 + index % 4),
+        varianceY: 0.000002 * (1 + index % 3),
+        varianceZ: 0.000003 * (1 + index % 2),
+        residualEwma: 0.001 + (index % 7) * 0.0001,
+        maxViewAngleRadians: Math.PI / 5,
+        contradictionWeight: (index % 4) * 0.03,
+        promoted,
+      });
+    }
+
+    const eligible = [...internal.representatives.values()].filter((point) => point.promoted && point.normalKnown);
+    const expectedPositions = new Float32Array(eligible.length * 3);
+    const expectedNormals = new Float32Array(eligible.length * 3);
+    const expectedConfidence = new Float32Array(eligible.length);
+    eligible.forEach((point, index) => {
+      const offset = index * 3;
+      expectedPositions[offset] = point.x;
+      expectedPositions[offset + 1] = point.y;
+      expectedPositions[offset + 2] = point.z;
+      expectedNormals[offset] = point.normalX;
+      expectedNormals[offset + 1] = point.normalY;
+      expectedNormals[offset + 2] = point.normalZ;
+      const residual = Math.max(
+        Math.sqrt(Math.max(0, (point.varianceX + point.varianceY + point.varianceZ) / 3)),
+        point.residualEwma * 0.55,
+      );
+      expectedConfidence[index] = surfaceRenderConfidence({
+        promoted: point.promoted,
+        independentViews: point.independentViews,
+        weight: point.weight,
+        residualMeters: residual,
+        maxViewAngleRadians: point.maxViewAngleRadians,
+        contradictionWeight: point.contradictionWeight,
+        normalConfidence: point.normalConfidence,
+      });
+    });
+
+    const nativeFloat32Array = Float32Array;
+    const allocatedLengths: number[] = [];
+    vi.stubGlobal('Float32Array', class extends nativeFloat32Array {
+      constructor(length: number) {
+        super(length);
+        allocatedLengths.push(length);
+      }
+    });
+    try {
+      const snapshot = accumulator.structuralGuideSnapshot();
+      expect(snapshot.pointCount).toBe(eligible.length);
+      expect(snapshot.keyframeCount).toBe(17);
+      expect(Array.from(snapshot.positions)).toEqual(Array.from(expectedPositions));
+      expect(Array.from(snapshot.normals)).toEqual(Array.from(expectedNormals));
+      expect(Array.from(snapshot.confidence)).toEqual(Array.from(expectedConfidence));
+      expect(allocatedLengths).toEqual([eligible.length * 3, eligible.length * 3, eligible.length]);
+      expect(snapshot.positions.byteLength).toBe(eligible.length * 3 * Float32Array.BYTES_PER_ELEMENT);
+      expect(snapshot.normals.byteLength).toBe(eligible.length * 3 * Float32Array.BYTES_PER_ELEMENT);
+      expect(snapshot.confidence.byteLength).toBe(eligible.length * Float32Array.BYTES_PER_ELEMENT);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

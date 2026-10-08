@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +58,30 @@ static void write_u32(uint8_t *bytes, size_t offset, uint32_t value)
 static void repair_crc(uint8_t *bytes, size_t length)
 {
     write_u32(bytes, length - 4U, scan_preview_crc32(bytes, length - 4U));
+}
+
+static uint8_t *read_v2_vector(size_t *length_out)
+{
+    static const char *const paths[] = {
+        "tests/vectors/voxel_preview_v2.bin",
+        "../../../tests/vectors/voxel_preview_v2.bin",
+    };
+    for (size_t i = 0U; i < sizeof(paths) / sizeof(paths[0]); ++i) {
+        FILE *file = fopen(paths[i], "rb");
+        if (file == NULL) continue;
+        assert(fseek(file, 0, SEEK_END) == 0);
+        const long size = ftell(file);
+        assert(size >= 0L);
+        assert(fseek(file, 0, SEEK_SET) == 0);
+        uint8_t *bytes = malloc((size_t)size);
+        assert(bytes != NULL);
+        assert(fread(bytes, 1U, (size_t)size, file) == (size_t)size);
+        assert(fclose(file) == 0);
+        *length_out = (size_t)size;
+        return bytes;
+    }
+    assert(!"voxel preview v2 golden vector not found");
+    return NULL;
 }
 
 static uint8_t *two_voxel_vector(size_t *length_out)
@@ -122,7 +147,7 @@ static void test_corrupt_inputs(void)
     expect_error(bytes, sizeof(bytes), SCAN_PREVIEW_ERROR_MAGIC);
 
     memcpy(bytes, s_golden, sizeof(bytes));
-    write_u16(bytes, 8U, 2U);
+    write_u16(bytes, 8U, 3U);
     repair_crc(bytes, sizeof(bytes));
     expect_error(bytes, sizeof(bytes), SCAN_PREVIEW_ERROR_VERSION);
 
@@ -199,6 +224,13 @@ static void test_registration_and_allocator_failures(void)
     repair_crc(bytes, length);
     scan_preview_t parsed;
     assert(scan_preview_parse(bytes, length, NULL, &parsed) == SCAN_PREVIEW_OK);
+    assert(!parsed.registration_usable && parsed.geometry_computed_at_ms == 0U);
+    scan_preview_free(&parsed);
+
+    /* Version 2 assigns the matrix to the project Z-up frame. */
+    write_u16(bytes, 8U, SCAN_PREVIEW_VERSION);
+    repair_crc(bytes, length);
+    assert(scan_preview_parse(bytes, length, NULL, &parsed) == SCAN_PREVIEW_OK);
     assert(parsed.registration_usable && parsed.geometry_computed_at_ms == 1U);
     scan_preview_free(&parsed);
 
@@ -217,12 +249,36 @@ static void test_registration_and_allocator_failures(void)
     assert(counts.outstanding == 0U && counts.allocations == 0U);
 }
 
+static void test_v2_project_frame_vector_and_legacy_registered_vector(void)
+{
+    size_t length = 0U;
+    uint8_t *bytes = read_v2_vector(&length);
+    scan_preview_t parsed;
+    assert(scan_preview_parse(bytes, length, NULL, &parsed) == SCAN_PREVIEW_OK);
+    assert(parsed.registration_usable && parsed.geometry_computed_at_ms == 123456U);
+    assert(fabsf(parsed.sensor_to_scan[0] - 1.0f) < 1e-6f);
+    assert(fabsf(parsed.sensor_to_scan[7] + 3.0f) < 1e-6f);
+    assert(fabsf(parsed.sensor_to_scan[9] - 1.0f) < 1e-6f);
+    assert(fabsf(parsed.sensor_to_scan[11] - 2.0f) < 1e-6f);
+    scan_preview_free(&parsed);
+
+    /* Same registered bytes labeled v1 are accepted, but fail closed. */
+    write_u16(bytes, 8U, SCAN_PREVIEW_LEGACY_VERSION);
+    repair_crc(bytes, length);
+    assert(scan_preview_parse(bytes, length, NULL, &parsed) == SCAN_PREVIEW_OK);
+    assert(!parsed.registration_usable && parsed.geometry_computed_at_ms == 0U);
+    for (size_t i = 0U; i < 16U; ++i) assert(parsed.sensor_to_scan[i] == 0.0f);
+    scan_preview_free(&parsed);
+    free(bytes);
+}
+
 int main(void)
 {
     test_golden_vector_and_allocator_cycles();
     test_corrupt_inputs();
     test_sorted_unique_indices_and_registration_validation();
     test_registration_and_allocator_failures();
+    test_v2_project_frame_vector_and_legacy_registered_vector();
     puts("scan_preview parser tests passed");
     return 0;
 }

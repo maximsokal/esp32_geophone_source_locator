@@ -50,8 +50,11 @@ keypad_key_t keypad_decode_raw(int raw)
 
     if (
         raw >= KEYPAD_SW4_MAX_RAW + KEYPAD_DECODE_DEADBAND_RAW &&
-        raw <= KEYPAD_SW5_MAX_RAW - KEYPAD_DECODE_DEADBAND_RAW
+        raw <= KEYPAD_SW5_MAX_RAW
     ) {
+        /* The last key has no adjacent key above it. Its release is handled
+         * separately by KEYPAD_RELEASE_MIN_RAW, so subtracting the inter-key
+         * deadband here rejected valid upper-range OK samples (e.g. 3340). */
         return KEYPAD_KEY_OK;
     }
 
@@ -75,7 +78,7 @@ keypad_key_t keypad_decode_raw_with_previous(
      * one ADC-count wobble from becoming a release/press pair. */
     if (
         raw < 0 ||
-        raw > KEYPAD_SW5_MAX_RAW - KEYPAD_DECODE_DEADBAND_RAW ||
+        raw > KEYPAD_SW5_MAX_RAW ||
         !keypad_key_is_valid(previous)
     ) {
         return KEYPAD_KEY_NONE;

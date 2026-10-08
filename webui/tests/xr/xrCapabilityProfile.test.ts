@@ -3,12 +3,19 @@ import { describe, expect, it } from 'vitest';
 import { deriveDeviceComputeProfile } from '../../src/xr/deviceComputeProfile';
 import {
   deriveNegotiatedXrDepthCapability,
+  isTagReadbackPerformanceSafe,
   probeVideoInputInventory,
   summarizeComputeCapabilities,
   summarizeVideoInputDevices,
 } from '../../src/xr/xrCapabilityProfile';
 
 describe('XR capability profile', () => {
+  it('treats only non-blocking PBO/fence readback as safe for high-resolution tag capture',()=>{
+    expect(isTagReadbackPerformanceSafe('nonblocking')).toBe(true);
+    expect(isTagReadbackPerformanceSafe('synchronous')).toBe(false);
+    expect(isTagReadbackPerformanceSafe('unavailable')).toBe(false);
+  });
+
   it('distinguishes negotiated raw CPU depth from physical sensor identity', () => {
     const depth = deriveNegotiatedXrDepthCapability({
       depthUsage: 'cpu-optimized',

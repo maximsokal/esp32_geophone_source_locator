@@ -17,6 +17,7 @@
       "name": "sensor_bus_tca_lifecycle",
       "sources": [
         "components/sensor_bus/sensor_bus.c",
+        "components/sensor_bus/sensor_bus_diag.c",
         "components/sensor_bus/i2c_line_recovery.c",
         "tests/host/stubs/sensor_bus/sensor_bus_lines_fake.c",
         "tests/host/sensor_bus_tca_lifecycle_test.c"
@@ -31,6 +32,7 @@
       "name": "sensor_bus_concurrency",
       "sources": [
         "components/sensor_bus/sensor_bus.c",
+        "components/sensor_bus/sensor_bus_diag.c",
         "components/sensor_bus/i2c_line_recovery.c",
         "tests/host/stubs/sensor_bus/sensor_bus_lines_fake.c",
         "tests/host/sensor_bus_concurrency_test.c"
@@ -40,6 +42,14 @@
         "components/sensor_bus/include"
       ],
       "libraries": ["pthread"]
+    },
+    {
+      "name": "sensor_bus_diag",
+      "sources": [
+        "components/sensor_bus/sensor_bus_diag.c",
+        "tests/host/sensor_bus_diag_test.c"
+      ],
+      "include_dirs": ["components/sensor_bus/include"]
     },
     {
       "name": "nrf_topology_reconcile",

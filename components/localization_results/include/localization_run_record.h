@@ -30,13 +30,21 @@
  * (semblance/coherency, statistical traveltime inversion, and the joint
  * fusion, MAX-136/137/138) have no equivalent of. Schema v4 adds the
  * producer-assigned failure class; schema v3 records without it still read
- * as LOCALIZATION_FAILURE_CLASS_NONE.
- */
+ * as LOCALIZATION_FAILURE_CLASS_NONE. Schema v6 adds the scan-generation
+ * provenance for scan-constrained runs; older records remain history-only
+ * when their scan generation cannot be established. Schema v7 adds
+ * terminal solver status and optional recording-session epoch metadata.
+*/
 
-#define LOCALIZATION_RUN_SCHEMA_VERSION 5U
-/* Schema v4: producer failure class, no velocity range (MAX-301 adds it in v5). */
+#define LOCALIZATION_RUN_SCHEMA_VERSION 7U
+/* Schema v6: scan-generation provenance. */
+#define LOCALIZATION_RUN_SCHEMA_VERSION_V6 6U
+/* Schema v5: producer velocity range (MAX-301). */
+#define LOCALIZATION_RUN_SCHEMA_VERSION_V5 5U
+/* Schema v4: producer failure class, no velocity range. */
 #define LOCALIZATION_RUN_SCHEMA_VERSION_V4 4U
 #define LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY 3U
+#define LOCALIZATION_RUN_SCAN_FRAME_ID_SIZE 32U
 
 #define LOCALIZATION_RUN_VELOCITY_SOURCE_UNKNOWN        0U
 #define LOCALIZATION_RUN_VELOCITY_SOURCE_PRESET         1U
@@ -62,6 +70,11 @@
  */
 #define LOCALIZATION_RUN_REJECTION_REASON_SIZE 128U
 
+#define LOCALIZATION_RUN_REJECTION_REASON_TIMESTAMP_NON_MONOTONIC "timestamp_non_monotonic"
+#define LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP "session_gap"
+#define LOCALIZATION_RUN_REJECTION_REASON_DUPLICATE_SENSOR_POSITION "duplicate_sensor_position"
+#define LOCALIZATION_RUN_REJECTION_REASON_REFLECTED_TRANSFORM "reflected_transform"
+
 
 typedef enum
 {
@@ -69,6 +82,18 @@ typedef enum
     LOCALIZATION_RUN_KIND_JOINT_FUSION
 
 } localization_run_kind_t;
+
+
+typedef enum
+{
+    LOCALIZATION_RUN_TERMINAL_STATUS_NONE = 0,
+    LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT,
+    LOCALIZATION_RUN_TERMINAL_STATUS_TIME_BUDGET_SKIPPED,
+    LOCALIZATION_RUN_TERMINAL_STATUS_TIME_BUDGET_HIT,
+    LOCALIZATION_RUN_TERMINAL_STATUS_CELL_BUDGET,
+    LOCALIZATION_RUN_TERMINAL_STATUS_RESOLUTION_LIMITED
+
+} localization_run_terminal_status_t;
 
 
 /*
@@ -119,6 +144,16 @@ typedef struct
      * "not available" rather than "computed at epoch". */
     uint64_t geometry_computed_at_ms;
 
+    /* Schema v6 scan provenance. scan_provenance_present distinguishes old
+     * JSON records whose missing fields mean "unknown" from v6 records that
+     * explicitly declare a constraint was or was not applied. Unconstrained
+     * records use false, an empty frame id, and zero timestamps. */
+    bool scan_provenance_present;
+    bool scan_constraint_applied;
+    char scan_frame_id[LOCALIZATION_RUN_SCAN_FRAME_ID_SIZE];
+    uint64_t occupancy_created_at_ms;
+    uint64_t registration_geometry_computed_at_ms;
+
     /* The propagation model actually used for this run (MAX-139). Name is
      * empty when the caller did not attach a named/calibrated model (still
      * a caller-supplied scalar via localization_config_t.propagation_speed_mps,
@@ -131,6 +166,14 @@ typedef struct
     double propagation_speed_uncertainty_mps;
 
     bool solved;
+
+    /* Candidate availability and solver completion are separate outcomes. */
+    localization_run_terminal_status_t terminal_status;
+
+    /* Absolute timestamp for recording sample zero. When unknown, this bool
+     * is false and the timestamp value is ignored; zero is a valid epoch. */
+    bool session_epoch_known;
+    int64_t session_epoch_timestamp_us;
 
     /* The operator action class attached by the method that produced a
      * rejection. NONE is also the backward-compatible value for old JSON. */

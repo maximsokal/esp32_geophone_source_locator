@@ -26,7 +26,7 @@ class RunnerError(RuntimeError):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=Path("tests/host/manifest.json"))
-    parser.add_argument("--build-dir", type=Path, default=Path("build/host-tests"))
+    parser.add_argument("--build-dir", type=Path, default=Path(".test-build/host-tests"))
     parser.add_argument("--compiler", type=Path, help="native compiler; otherwise HOST_CC/CC/PATH")
     parser.add_argument(
         "--sanitizers",

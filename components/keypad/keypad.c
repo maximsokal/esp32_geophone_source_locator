@@ -1,5 +1,7 @@
 #include "keypad.h"
 
+#include <stddef.h>
+
 #include <stdbool.h>
 
 #include "app_events.h"
@@ -21,6 +23,11 @@ esp_err_t keypad_button_adapter_start(
     void *user_context
 );
 void keypad_button_adapter_stop(void);
+esp_err_t keypad_button_adapter_start_boot(
+    keypad_event_callback_t callback,
+    void *user_context
+);
+void keypad_button_adapter_stop_boot(void);
 esp_err_t keypad_button_adapter_read_key(keypad_key_t *key);
 
 
@@ -105,4 +112,26 @@ void keypad_stop_event_monitor(void)
     app_events_set_keypad_delivery_enabled(false);
     keypad_button_adapter_stop();
     s_initialized = false;
+}
+
+
+esp_err_t keypad_start_boot_event_monitor(
+    keypad_event_callback_t callback,
+    void *user_context
+)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (callback == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return keypad_button_adapter_start_boot(callback, user_context);
+}
+
+
+void keypad_stop_boot_event_monitor(void)
+{
+    keypad_button_adapter_stop_boot();
 }

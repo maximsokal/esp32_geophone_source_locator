@@ -5,6 +5,7 @@
       "name": "sensor_bus_lifecycle",
       "sources": [
         "components/sensor_bus/sensor_bus.c",
+        "components/sensor_bus/sensor_bus_diag.c",
         "components/sensor_bus/i2c_line_recovery.c",
         "tests/host/stubs/sensor_bus/sensor_bus_lines_fake.c",
         "tests/host/sensor_bus_lifecycle_test.c"
@@ -46,6 +47,7 @@
         "components/ui/ui_screen_registry.c",
         "components/ui/ui_navigation.c",
         "components/ui/ui_system.c",
+        "components/ui/ui_system_model.c",
         "components/ui_i18n/ui_utf8_format.c",
         "components/ui_i18n/ui_i18n.c",
         "components/ui_i18n/ui_i18n_catalog.gen.c",
@@ -75,6 +77,16 @@
         "components/ui_i18n/include"
       ],
       "libraries": ["pthread"]
+    },
+    {
+      "name": "ui_perf_policy",
+      "sources": [
+        "components/ui/ui_perf_policy.c",
+        "components/ui/tests/ui_perf_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/ui"
+      ]
     }
   ]
 }

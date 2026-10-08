@@ -1044,6 +1044,26 @@ esp_err_t seismic_recorder_read_session_range(
     seismic_recorder_session_summary_t *summary_out
 )
 {
+    return seismic_recorder_read_session_range_ex(
+        object_id, session_id, start_index, max_frames, frames,
+        source_sample_indices, gap_before, frame_count_out, summary_out, NULL
+    );
+}
+
+
+esp_err_t seismic_recorder_read_session_range_ex(
+    const char *object_id,
+    const char *session_id,
+    uint64_t start_index,
+    size_t max_frames,
+    seismic_frame_t *frames,
+    uint64_t *source_sample_indices,
+    bool *gap_before,
+    size_t *frame_count_out,
+    seismic_recorder_session_summary_t *summary_out,
+    seismic_recorder_raw_window_stats_t *raw_stats_out
+)
+{
     if (
         object_id == NULL || session_id == NULL || max_frames == 0U ||
         frames == NULL || frame_count_out == NULL
@@ -1051,6 +1071,9 @@ esp_err_t seismic_recorder_read_session_range(
         return ESP_ERR_INVALID_ARG;
     }
     *frame_count_out = 0U;
+    if (raw_stats_out != NULL) {
+        memset(raw_stats_out, 0, sizeof(*raw_stats_out));
+    }
 
     seismic_recorder_session_summary_t summary;
     esp_err_t err = seismic_recorder_get_session_summary(object_id, session_id, &summary);
@@ -1132,9 +1155,11 @@ esp_err_t seismic_recorder_read_session_range(
     size_t frames_read = 0U;
     while (err == ESP_OK && frames_read < frames_to_read) {
         size_t count = 0U;
+        size_t rail_sample_counts[SEISMIC_CHANNEL_COUNT] = { 0U };
+        size_t samples_examined = 0U;
         uint64_t first_sample_index = 0U;
         bool block_gap_before = false;
-        err = seismic_recorder_samples_reader_next(
+        err = seismic_recorder_samples_reader_next_ex(
             seismic_recorder_reader_read_at,
             &raw_reader,
             &samples_reader,
@@ -1142,7 +1167,9 @@ esp_err_t seismic_recorder_read_session_range(
             frames_to_read - frames_read,
             &count,
             &first_sample_index,
-            &block_gap_before
+            &block_gap_before,
+            raw_stats_out != NULL ? rail_sample_counts : NULL,
+            raw_stats_out != NULL ? &samples_examined : NULL
         );
         if (err != ESP_OK) {
             break;
@@ -1157,6 +1184,12 @@ esp_err_t seismic_recorder_read_session_range(
             }
             if (gap_before != NULL) {
                 gap_before[frames_read + i] = i == 0U && block_gap_before;
+            }
+        }
+        if (raw_stats_out != NULL) {
+            raw_stats_out->samples_examined += samples_examined;
+            for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+                raw_stats_out->rail_sample_counts[channel] += rail_sample_counts[channel];
             }
         }
         frames_read += count;

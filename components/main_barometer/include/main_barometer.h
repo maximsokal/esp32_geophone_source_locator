@@ -56,9 +56,15 @@ typedef struct {
     nrf_ema_filter_t pressure_filter;
     main_barometer_reading_t reading;
     uint64_t next_bmp280_poll_ms;
+    uint64_t bmp280_retry_after_ms;
+    uint64_t aht20_retry_after_ms;
     uint64_t last_aht20_attempt_ms;
+    esp_err_t bmp280_retry_error;
+    esp_err_t aht20_retry_error;
     bool bmp280_initialized;
     bool aht20_initialized;
+    bool bmp280_probe_required;
+    bool aht20_probe_required;
     bool aht20_attempted;
     bool height_reference_capture_active;
     bool height_reference_has_sample;

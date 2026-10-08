@@ -10,6 +10,16 @@
 
 static char persisted_json[8192];
 static int64_t fake_time_us;
+static bool s_storage_ready = true;
+
+bool storage_manager_is_ready(void)
+{
+    return s_storage_ready;
+}
+
+void storage_manager_operation_end(void)
+{
+}
 
 bool storage_manager_path_exists(const char *path)
 {
@@ -136,6 +146,8 @@ bool object_store_profile_cache_delete_requires_membership_refresh(
 
 static void set_metadata(const char *json)
 {
+    object_store_profile_cache_reset();
+    s_storage_ready = true;
     assert(strlen(json) + 1U < sizeof(persisted_json));
     memcpy(persisted_json, json, strlen(json) + 1U);
 }

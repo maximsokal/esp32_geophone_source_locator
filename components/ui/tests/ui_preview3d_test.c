@@ -37,6 +37,30 @@ static char *read_source_vectors(void)
     return text;
 }
 
+static uint8_t *read_preview_v2_vector(size_t *length_out)
+{
+    static const char *const paths[] = {
+        "tests/vectors/voxel_preview_v2.bin",
+        "../../../tests/vectors/voxel_preview_v2.bin",
+    };
+    for (size_t i = 0U; i < sizeof(paths) / sizeof(paths[0]); ++i) {
+        FILE *file = fopen(paths[i], "rb");
+        if (file == NULL) continue;
+        assert(fseek(file, 0L, SEEK_END) == 0);
+        const long length = ftell(file);
+        assert(length > 0L);
+        assert(fseek(file, 0L, SEEK_SET) == 0);
+        uint8_t *bytes = malloc((size_t)length);
+        assert(bytes != NULL);
+        assert(fread(bytes, 1U, (size_t)length, file) == (size_t)length);
+        assert(fclose(file) == 0);
+        *length_out = (size_t)length;
+        return bytes;
+    }
+    assert(!"registered preview v2 golden vector not found");
+    return NULL;
+}
+
 static size_t read_source_vector_rows(
     const char *fixture,
     const char *section,
@@ -362,6 +386,8 @@ static void test_occupancy_decimation_and_registration(void)
     /* Registration only for the matching geometry version. */
     occ.registration.present = true;
     occ.registration.geometry_computed_at_ms = 77;
+    occ.registration.residual_m = 0.004;
+    occ.registration.threshold_m = 0.05;
     occ.registration.sensor_to_scan[0] = occ.registration.sensor_to_scan[5] = 1.0;
     occ.registration.sensor_to_scan[10] = occ.registration.sensor_to_scan[15] = 1.0;
     ui_preview3d_scene_set_occupancy(&s_scene, &occ, 78);
@@ -504,6 +530,37 @@ static void test_voxel_depth_order_and_registration_binding(void)
     assert(s_voxel_order[0] == 1U && s_voxel_order[1] == 0U);
     assert(stats.faces_drawn == 2U && stats.voxels_drawn == 2U);
     frame_assert_guards(100, 100);
+}
+
+static void test_v2_preview_sensor_origin_uses_project_z_up(void)
+{
+    size_t length = 0U;
+    uint8_t *bytes = read_preview_v2_vector(&length);
+    scan_preview_t preview;
+    assert(scan_preview_parse(bytes, length, NULL, &preview) == SCAN_PREVIEW_OK);
+    assert(preview.registration_usable && preview.geometry_computed_at_ms == 123456U);
+
+    ui_preview3d_scene_set_voxel_preview(
+        &s_scene, &preview, 123456U, s_voxel_order, VOXEL_TEST_BUDGET);
+    assert(s_scene.registered);
+    assert(fabs(s_scene.sensor_to_scan[7] + 3.0) < 1e-6);
+    assert(fabs(s_scene.sensor_to_scan[11] - 2.0) < 1e-6);
+    s_scene.sensor_valid[0] = true;
+    s_scene.sensors[0] = (ui_preview3d_vec3_t){0.0f, 0.0f, 0.0f};
+
+    ui_preview3d_view_t view;
+    ui_preview3d_stats_t stats;
+    ui_preview3d_view_preset(&view, UI_PREVIEW3D_PRESET_TOP);
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), 100, 100, &stats);
+    assert(stats.drew_scan && stats.drew_sensors && !stats.overlay_suppressed_unregistered);
+    assert(count_colour(100, 100, UI_PREVIEW3D_PX_MAIN) > 0U);
+    /* The sole voxel is centered at the converted sensor origin [0,-3,2]. */
+    assert(frame_pixels()[50U * 100U + 50U] == UI_PREVIEW3D_PX_MAIN);
+    frame_assert_guards(100, 100);
+
+    scan_preview_free(&preview);
+    free(bytes);
 }
 
 static void test_voxel_viewport_clipping_far_depth_and_budget(void)
@@ -701,6 +758,303 @@ static void test_primary_source_highlights_voxel_faces(void)
     assert(count_colour(100, 100, UI_PREVIEW3D_PX_VOXEL_UNCERTAINTY) > 0U);
 }
 
+static void colour_extent(int width, int height, uint8_t colour, int *extent_x, int *extent_y)
+{
+    int min_x = width, max_x = -1, min_y = height, max_y = -1;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            if (frame_pixels()[y * width + x] != colour) continue;
+            if (x < min_x) min_x = x;
+            if (x > max_x) max_x = x;
+            if (y < min_y) min_y = y;
+            if (y > max_y) max_y = y;
+        }
+    }
+    *extent_x = max_x < 0 ? 0 : max_x - min_x + 1;
+    *extent_y = max_y < 0 ? 0 : max_y - min_y + 1;
+}
+
+static void set_yaw_registration(double *matrix, double yaw_deg)
+{
+    const double yaw = yaw_deg * 3.14159265358979323846 / 180.0;
+    memset(matrix, 0, 16U * sizeof(*matrix));
+    matrix[0] = cos(yaw);
+    matrix[1] = -sin(yaw);
+    matrix[4] = sin(yaw);
+    matrix[5] = cos(yaw);
+    matrix[10] = 1.0;
+    matrix[15] = 1.0;
+}
+
+static void test_uncertainty_support_follows_registration_rotation(void)
+{
+    double matrix[16];
+    double scan_x = -1.0, scan_y = -1.0;
+
+    /* Identity reproduces the sensor-frame sigmas exactly. */
+    set_yaw_registration(matrix, 0.0);
+    matrix[1] = matrix[4] = 0.0;
+    matrix[0] = matrix[5] = 1.0;
+    assert(ui_preview3d_uncertainty_to_scan_frame(matrix, (double)0.5f, (double)0.1f, 0.0, &scan_x, &scan_y));
+    assert(scan_x == (double)0.5f && scan_y == (double)0.1f);
+    assert(ui_preview3d_uncertainty_to_scan_frame(matrix, (double)0.37f, (double)0.0125f, 0.0, &scan_x, &scan_y));
+    assert(scan_x == (double)0.37f && scan_y == (double)0.0125f);
+
+    /* 90 degrees of yaw swaps the axes. */
+    set_yaw_registration(matrix, 90.0);
+    assert(ui_preview3d_uncertainty_to_scan_frame(matrix, 0.50, 0.10, 0.0, &scan_x, &scan_y));
+    assert(fabs(scan_x - 0.10) < 1e-9 && fabs(scan_y - 0.50) < 1e-9);
+
+    /* 45 degrees mixes both: sqrt(0.5 * (0.5^2 + 0.1^2)) = 0.3606. */
+    set_yaw_registration(matrix, 45.0);
+    assert(ui_preview3d_uncertainty_to_scan_frame(matrix, 0.50, 0.10, 0.0, &scan_x, &scan_y));
+    assert(fabs(scan_x - 0.3606) < 1e-4 && fabs(scan_y - 0.3606) < 1e-4);
+
+    /* A reflection (determinant -1) has the same magnitudes as the rotation. */
+    set_yaw_registration(matrix, 0.0);
+    matrix[0] = -1.0;
+    assert(ui_preview3d_uncertainty_to_scan_frame(matrix, 0.50, 0.10, 0.0, &scan_x, &scan_y));
+    assert(scan_x == 0.50 && scan_y == 0.10);
+    set_yaw_registration(matrix, 90.0);
+    matrix[1] = 1.0;
+    assert(ui_preview3d_uncertainty_to_scan_frame(matrix, 0.50, 0.10, 0.0, &scan_x, &scan_y));
+    assert(fabs(scan_x - 0.10) < 1e-9 && fabs(scan_y - 0.50) < 1e-9);
+
+    /* A tilted registration brings the vertical sigma into the scan X axis. */
+    memset(matrix, 0, sizeof(matrix));
+    matrix[2] = 1.0;
+    matrix[5] = 1.0;
+    matrix[8] = -1.0;
+    matrix[15] = 1.0;
+    assert(ui_preview3d_uncertainty_to_scan_frame(matrix, 0.10, 0.20, 0.30, &scan_x, &scan_y));
+    assert(fabs(scan_x - 0.30) < 1e-9 && fabs(scan_y - 0.20) < 1e-9);
+
+    /* Invalid input fails closed with zeroed outputs. */
+    scan_x = scan_y = 7.0;
+    assert(!ui_preview3d_uncertainty_to_scan_frame(NULL, 0.5, 0.1, 0.0, &scan_x, &scan_y));
+    assert(scan_x == 0.0 && scan_y == 0.0);
+    assert(!ui_preview3d_uncertainty_to_scan_frame(matrix, -0.5, 0.1, 0.0, &scan_x, &scan_y));
+    assert(!ui_preview3d_uncertainty_to_scan_frame(matrix, NAN, 0.1, 0.0, &scan_x, &scan_y));
+    assert(!ui_preview3d_uncertainty_to_scan_frame(matrix, 0.5, 0.1, INFINITY, &scan_x, &scan_y));
+    assert(!ui_preview3d_uncertainty_to_scan_frame(matrix, 0.5, 0.1, 0.0, NULL, &scan_y));
+}
+
+static void test_uncertainty_footprint_is_drawn_in_the_scan_frame(void)
+{
+    static uint32_t indices[] = {0U};
+    static uint8_t masks[] = {0x3fU};
+    ui_preview3d_view_t view;
+    ui_preview3d_stats_t stats;
+    int extent_x = 0, extent_y = 0;
+
+    ui_preview3d_view_preset(&view, UI_PREVIEW3D_PRESET_TOP);
+
+    /* Identity registration: the long sensor-X sigma stays along scan X. */
+    set_voxel_scene(&s_scene, indices, masks, 1U, 21U, 21U, 1U,
+                    (ui_preview3d_vec3_t){-1.05f, -1.05f, -0.05f}, 0.1f);
+    s_scene.registered = true;
+    set_yaw_registration(s_scene.sensor_to_scan, 0.0);
+    s_scene.sensor_to_scan[1] = s_scene.sensor_to_scan[4] = 0.0;
+    s_scene.sources[0] = (ui_preview3d_source_t){
+        .position = {0.0f, 0.0f, 0.0f}, .selected = true,
+        .horizontal_std_x_m = 0.5f, .horizontal_std_y_m = 0.1f, .uncertainty_valid = true,
+    };
+    s_scene.source_count = 1U;
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), 100, 100, &stats);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_NONE);
+    colour_extent(100, 100, UI_PREVIEW3D_PX_VOXEL_UNCERTAINTY, &extent_x, &extent_y);
+    assert(extent_y > 0 && extent_x >= 2 * extent_y);
+
+    /* 90 degree yaw registration: the same sensor-frame sigmas now spread along scan Y. */
+    set_yaw_registration(s_scene.sensor_to_scan, 90.0);
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), 100, 100, &stats);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_NONE);
+    colour_extent(100, 100, UI_PREVIEW3D_PX_VOXEL_UNCERTAINTY, &extent_x, &extent_y);
+    assert(extent_x > 0 && extent_y >= 2 * extent_x);
+}
+
+static void layout_registered_point_scene(uint64_t registration_geometry)
+{
+    layout_scene();
+    s_scene.points[0] = (ui_preview3d_vec3_t){1.0f, 1.0f, 0.0f};
+    s_scene.points[1] = (ui_preview3d_vec3_t){3.0f, 2.0f, 0.0f};
+    s_scene.point_count = 2U;
+    s_scene.registered = true;
+    set_yaw_registration(s_scene.sensor_to_scan, 0.0);
+    s_scene.sensor_to_scan[1] = s_scene.sensor_to_scan[4] = 0.0;
+    s_scene.registration_geometry_computed_at_ms = registration_geometry;
+    s_scene.sources[0].selected = true;
+}
+
+static void test_source_geometry_must_match_registration(void)
+{
+    static uint8_t reference[64 * 48];
+    static uint8_t current[64 * 48];
+    const int w = 64, h = 48;
+    ui_preview3d_view_t view;
+    ui_preview3d_stats_t stats;
+
+    ui_preview3d_view_preset(&view, UI_PREVIEW3D_PRESET_TOP);
+
+    /* Registration and source from the same geometry (unversioned): drawn. */
+    layout_registered_point_scene(0U);
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), w, h, &stats);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_NONE && stats.sources_suppressed_stale_geometry == 0U);
+    assert(count_colour(w, h, UI_PREVIEW3D_PX_SOURCE_SELECTED) > 0);
+    memcpy(reference, frame_pixels(), sizeof(reference));
+
+    /* The same geometry generation A/A with a real timestamp draws identically. */
+    layout_registered_point_scene(77U);
+    s_scene.sources[0].geometry_computed_at_ms = 77U;
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), w, h, &stats);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_NONE && stats.sources_suppressed_stale_geometry == 0U);
+    assert(memcmp(reference, frame_pixels(), sizeof(reference)) == 0);
+
+    /* Source from geometry A against registration B: withheld, with an explicit reason. */
+    layout_registered_point_scene(78U);
+    s_scene.sources[0].geometry_computed_at_ms = 77U;
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), w, h, &stats);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_STALE_GEOMETRY);
+    assert(stats.sources_suppressed_stale_geometry == 1U);
+    assert(count_colour(w, h, UI_PREVIEW3D_PX_SOURCE_SELECTED) == 0);
+    assert(count_colour(w, h, UI_PREVIEW3D_PX_SOURCE) == 0);
+    assert(stats.drew_sensors && count_colour(w, h, UI_PREVIEW3D_PX_MAIN) > 0);
+    /* Nothing about the withheld source leaks into the picture, not even the view fit. */
+    memcpy(current, frame_pixels(), sizeof(current));
+    layout_registered_point_scene(78U);
+    s_scene.source_count = 0U;
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), w, h, &stats);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_NONE);
+    assert(memcmp(current, frame_pixels(), sizeof(current)) == 0);
+
+    /* A source without a recorded geometry never matches a real registration. */
+    layout_registered_point_scene(78U);
+    s_scene.sources[0].geometry_computed_at_ms = 0U;
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), w, h, &stats);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_STALE_GEOMETRY);
+    assert(count_colour(w, h, UI_PREVIEW3D_PX_SOURCE_SELECTED) == 0);
+
+    /* The sensor-only layer needs no registration, so the source is neither transformed nor withheld. */
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_SENSORS, frame_pixels(), w, h, &stats);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_NONE && stats.sources_suppressed_stale_geometry == 0U);
+    assert(count_colour(w, h, UI_PREVIEW3D_PX_SOURCE_SELECTED) > 0);
+}
+
+static void test_scene_setup_binds_registration_geometry(void)
+{
+    static uint32_t indices[] = {0U};
+    static uint8_t masks[] = {0x3fU};
+    scan_preview_t preview = {0};
+    static int64_t keys[1];
+    scan_occupancy_t occupancy;
+
+    preview.indices = indices;
+    preview.face_masks = masks;
+    preview.voxel_count = 1U;
+    preview.dimensions[0] = preview.dimensions[1] = preview.dimensions[2] = 1U;
+    preview.voxel_size_m = 1.0f;
+    preview.registration_usable = true;
+    preview.geometry_computed_at_ms = 91U;
+    preview.sensor_to_scan[0] = preview.sensor_to_scan[5] = preview.sensor_to_scan[10] = preview.sensor_to_scan[15] = 1.0f;
+    ui_preview3d_scene_set_voxel_preview(&s_scene, &preview, 91U, s_voxel_order, VOXEL_TEST_BUDGET);
+    assert(s_scene.registered && s_scene.registration_geometry_computed_at_ms == 91U);
+    ui_preview3d_scene_set_voxel_preview(&s_scene, &preview, 92U, s_voxel_order, VOXEL_TEST_BUDGET);
+    assert(!s_scene.registered && s_scene.registration_geometry_computed_at_ms == 0U);
+
+    memset(&occupancy, 0, sizeof(occupancy));
+    keys[0] = pack(0, 0, 0);
+    occupancy.voxel_size_m = 0.1;
+    occupancy.occupied_keys = keys;
+    occupancy.occupied_count = 1U;
+    occupancy.registration.present = true;
+    occupancy.registration.geometry_computed_at_ms = 93U;
+    occupancy.registration.residual_m = 0.004;
+    occupancy.registration.threshold_m = 0.05;
+    occupancy.registration.sensor_to_scan[0] = occupancy.registration.sensor_to_scan[5] = 1.0;
+    occupancy.registration.sensor_to_scan[10] = occupancy.registration.sensor_to_scan[15] = 1.0;
+    ui_preview3d_scene_set_occupancy(&s_scene, &occupancy, 93U);
+    assert(s_scene.registered && s_scene.registration_geometry_computed_at_ms == 93U);
+    ui_preview3d_scene_set_occupancy(&s_scene, &occupancy, 94U);
+    assert(!s_scene.registered && s_scene.registration_geometry_computed_at_ms == 0U);
+}
+
+static void test_candidates_carry_geometry_and_vertical_sigma(void)
+{
+    ui_preview3d_source_t selected[UI_PREVIEW3D_MAX_SOURCES];
+    ui_preview3d_source_candidate_t candidate = {
+        .method_name = "semblance", .computed_at_ms = 10U, .confidence_score = 0.9,
+        .position = {1.0f, 2.0f, 3.0f}, .horizontal_std_x_m = 0.5, .horizontal_std_y_m = 0.25,
+        .vertical_std_m = 0.125, .geometry_computed_at_ms = 55U, .solved = true, .uncertainty_valid = true,
+    };
+    assert(ui_preview3d_select_sources(&candidate, 1U, selected, UI_PREVIEW3D_MAX_SOURCES) == 1U);
+    assert(selected[0].geometry_computed_at_ms == 55U && selected[0].vertical_std_m == 0.125f);
+    assert(selected[0].uncertainty_valid && selected[0].horizontal_std_x_m == 0.5f);
+
+    candidate.vertical_std_m = NAN;
+    assert(ui_preview3d_select_sources(&candidate, 1U, selected, UI_PREVIEW3D_MAX_SOURCES) == 1U);
+    assert(selected[0].vertical_std_m == 0.0f && selected[0].uncertainty_valid);
+    candidate.vertical_std_m = -1.0;
+    assert(ui_preview3d_select_sources(&candidate, 1U, selected, UI_PREVIEW3D_MAX_SOURCES) == 1U);
+    assert(selected[0].vertical_std_m == 0.0f);
+}
+
+static void test_buried_source_maps_into_extended_preview_grid(void)
+{
+    /* MAX-413: surface voxels occupy z from 0 to 0.5; the grid was extended down to z = -2.0. */
+    static uint32_t indices[] = {8U};
+    static uint8_t masks[] = {0x3fU};
+    const ui_preview3d_voxel_grid_t grid = {
+        .origin = {-0.25f, -0.25f, -2.0f}, .dimensions = {2U, 1U, 5U}, .voxel_size_m = 0.5f,
+    };
+    ui_preview3d_view_t view;
+    ui_preview3d_stats_t stats;
+    uint32_t index = UINT32_MAX;
+
+    assert(ui_preview3d_source_to_voxel_index(&grid, &(ui_preview3d_vec3_t){0.5f, 0.0f, -1.0f}, &index));
+    assert(index == 5U);
+    assert(ui_preview3d_source_to_voxel_index(&grid, &(ui_preview3d_vec3_t){0.5f, 0.0f, -2.0f}, &index));
+    assert(index == 1U);
+    assert(ui_preview3d_source_to_voxel_index(&grid, &(ui_preview3d_vec3_t){-0.25f, 0.0f, 0.4999f}, &index));
+    assert(index == 8U);
+    assert(!ui_preview3d_source_to_voxel_index(&grid, &(ui_preview3d_vec3_t){0.5f, 0.0f, -2.5f}, &index));
+    assert(!ui_preview3d_source_to_voxel_index(&grid, &(ui_preview3d_vec3_t){0.5f, 0.0f, -2.0001f}, &index));
+    assert(!ui_preview3d_source_to_voxel_index(&grid, &(ui_preview3d_vec3_t){0.5f, 0.0f, 0.5f}, &index));
+
+    set_voxel_scene(&s_scene, indices, masks, 1U, 2U, 1U, 5U, grid.origin, grid.voxel_size_m);
+    s_scene.registered = true;
+    set_yaw_registration(s_scene.sensor_to_scan, 0.0);
+    s_scene.sensor_to_scan[1] = s_scene.sensor_to_scan[4] = 0.0;
+    s_scene.sources[0] = (ui_preview3d_source_t){.position = {0.5f, 0.0f, -1.0f}, .selected = true};
+    s_scene.source_count = 1U;
+    ui_preview3d_view_preset(&view, UI_PREVIEW3D_PRESET_TOP);
+
+    /* In range: a highlight cell is synthesized; the occupied voxel list is untouched. */
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), 100, 100, &stats);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_NONE);
+    assert(count_colour(100, 100, UI_PREVIEW3D_PX_VOXEL_HIGHLIGHT) > 0);
+    assert(count_colour(100, 100, UI_PREVIEW3D_PX_SOURCE_OUTSIDE_GRID) == 0);
+    assert(s_scene.voxel_count == 1U && s_scene.voxel_indices[0] == 8U);
+    assert(stats.voxels_drawn == 2U);
+
+    /* Below the extended grid: still reported as outside, without a highlight cell. */
+    s_scene.sources[0].position.z = -2.5f;
+    frame_reset();
+    ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), 100, 100, &stats);
+    assert(stats.source_reason == UI_PREVIEW3D_SOURCE_REASON_OUTSIDE_GRID);
+    assert(count_colour(100, 100, UI_PREVIEW3D_PX_VOXEL_HIGHLIGHT) == 0);
+    assert(count_colour(100, 100, UI_PREVIEW3D_PX_SOURCE_OUTSIDE_GRID) > 0);
+    assert(stats.voxels_drawn == 1U);
+}
+
 int main(void)
 {
     test_presets_and_keys();
@@ -712,12 +1066,19 @@ int main(void)
     test_occupancy_decimation_and_registration();
     test_voxel_cube_faces_and_projected_corners();
     test_voxel_depth_order_and_registration_binding();
+    test_v2_preview_sensor_origin_uses_project_z_up();
     test_voxel_viewport_clipping_far_depth_and_budget();
     test_localization_source_selection();
     test_source_to_voxel_mapping();
     test_shared_source_mapping_vectors();
     test_shared_source_uncertainty_vectors();
     test_primary_source_highlights_voxel_faces();
+    test_uncertainty_support_follows_registration_rotation();
+    test_uncertainty_footprint_is_drawn_in_the_scan_frame();
+    test_source_geometry_must_match_registration();
+    test_scene_setup_binds_registration_geometry();
+    test_candidates_carry_geometry_and_vertical_sigma();
+    test_buried_source_maps_into_extended_preview_grid();
     puts("ui_preview3d tests passed");
     return 0;
 }

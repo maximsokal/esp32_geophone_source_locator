@@ -57,6 +57,18 @@ esp_err_t sensor_bus_get_tca9548a(
     uint8_t *address
 );
 
+/* Short (20 ms) address-only probe on the shared bus. A NACK is
+ * ESP_ERR_NOT_FOUND; a busy/stuck bus is reported as ESP_ERR_TIMEOUT. */
+esp_err_t sensor_bus_probe_address(uint8_t address);
+
+/* Context variants add source/channel to timeout diagnostics; -1 means direct.
+ * The source pointer must remain stable for rate limiting. */
+esp_err_t sensor_bus_probe_address_with_context(
+    uint8_t address,
+    const char *source,
+    int channel
+);
+
 /*
  * MAX-248: map a failed transfer to "nobody answered at this address".
  *
@@ -72,6 +84,21 @@ esp_err_t sensor_bus_get_tca9548a(
 esp_err_t sensor_bus_classify_transfer_error(
     uint8_t address,
     esp_err_t transfer_err
+);
+
+esp_err_t sensor_bus_classify_transfer_error_with_context(
+    uint8_t address,
+    esp_err_t transfer_err,
+    const char *source,
+    int channel
+);
+
+/* Record a raw result without probing; raw INVALID_STATE remains unclassified. */
+void sensor_bus_record_transfer_result_with_context(
+    uint8_t address,
+    esp_err_t transfer_err,
+    const char *source,
+    int channel
 );
 
 /*
@@ -106,6 +133,9 @@ esp_err_t sensor_bus_recover(
 esp_err_t sensor_bus_get_recovery_status(
     sensor_bus_recovery_status_t *status
 );
+
+/* Emit at most one bounded summary block per 10 s, only after recent failures. */
+void sensor_bus_log_diag_summary(uint32_t now_ms);
 
 /*
  * Release the shared bus after every consumer has stopped. Owned device

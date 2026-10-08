@@ -368,6 +368,54 @@ export interface DeviceSystemStatus {
   required_pods: number;
 }
 
+export type HardwareModuleId =
+  | 'sd_card'
+  | 'ad7606'
+  | 'sensor_mux'
+  | 'main_xiao'
+  | 'barometer'
+  | 'power_monitor';
+
+export type HardwareModuleState = 'unknown' | 'present' | 'absent' | 'fault' | 'degraded';
+
+export type HardwareReasonCode =
+  | 'ready'
+  | 'no_response'
+  | 'no_filesystem'
+  | 'mount_failed'
+  | 'read_probe_failed'
+  | 'topology_probe_ok'
+  | 'topology_probe_fault'
+  | 'no_upstream_response'
+  | 'sensor_invalid'
+  | 'first_sample_ok'
+  | 'no_valid_sample'
+  | 'busy_responds'
+  | 'no_busy_response'
+  | 'presence_probe_failed'
+  | 'blocked_5v_rail_low'
+  | 'init_failed'
+  | 'start_failed'
+  | 'sensor_ok'
+  | 'upstream_target_assigned'
+  | 'upstream_topology_fault'
+  | 'none'
+  | 'unrecognized';
+
+export interface HardwareModuleStatus {
+  /** Wire values stay open so older/newer firmware payloads remain parseable. */
+  id: string;
+  state: string;
+  required: boolean;
+  reason: string;
+  reason_code?: string;
+}
+
+export interface DeviceHardwareStatus {
+  modules: HardwareModuleStatus[];
+  required_missing: boolean;
+}
+
 export type NrfLogNodeId = 'main' | `remote${0 | 1 | 2 | 3 | 4 | 5 | 6 | 7}`;
 
 export interface NrfLogCounters {
@@ -431,8 +479,8 @@ export interface DeviceAcquisitionStatus {
   requested_running: boolean;
   hardware_ready: boolean;
   source: string;
-  last_error: number;
-  last_error_name: string;
+  last_error?: number;
+  last_error_name?: string;
   sample_rate_hz: number;
   samples_recorded: number;
   recording_ms: number;
@@ -488,8 +536,12 @@ export interface DevicePowerChannel {
 }
 
 export interface DeviceStatus {
+  /** Missing on older firmware; absence is treated as storage being available. */
+  storage_available?: boolean;
   storage_busy?: boolean;
   system: DeviceSystemStatus;
+  /** Absent on firmware that predates MAX-383 hardware inventory reporting. */
+  hardware?: DeviceHardwareStatus;
   power: ValidValue & {
     voltage_v: number;
     current_a: number;
@@ -927,8 +979,9 @@ export function connectedPodCount(status: DeviceStatus | null): number {
   return status.pods.filter((pod) => pod.state !== 'DISCONNECTED').length;
 }
 
-export function formatCoordinate(value: number): string {
-  return value.toFixed(6);
+/* The firmware prints a non-finite float as JSON null, so a coordinate can arrive as null. */
+export function formatCoordinate(value: number | null): string {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(6) : '—';
 }
 
 export function normalizeCableLength(value: number): number {

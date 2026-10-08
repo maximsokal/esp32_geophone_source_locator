@@ -10,3 +10,12 @@ export function recordingGateBlocksStart(
 ): boolean {
   return !selectedRecording && gate?.available === true && gate.allowed === false;
 }
+
+export function recordingStartUnavailable(
+  recordingAvailable: boolean | undefined,
+  storageAvailable: boolean | undefined,
+  selectedRecording: boolean,
+): boolean {
+  return !selectedRecording &&
+    (recordingAvailable === false || storageAvailable === false);
+}

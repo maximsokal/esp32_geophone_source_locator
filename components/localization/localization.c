@@ -303,27 +303,28 @@ static bool solve_3x3(
 }
 
 
-static esp_err_t localization_validate(
+esp_err_t localization_validate_ex(
     const localization_observation_t *observations,
     size_t count,
     const localization_config_t *config,
     const localization_point3d_t *initial_guess,
-    localization_result_t *result,
-    double *geometry_scale
+    localization_validation_reason_t *reason
 )
 {
+    if (reason != NULL) {
+        *reason = LOCALIZATION_VALIDATION_REASON_NONE;
+    }
+
     if (
         observations == NULL ||
         config == NULL ||
-        result == NULL ||
-        geometry_scale == NULL
+        count < LOCALIZATION_MIN_SENSORS_3D ||
+        count > LOCALIZATION_MAX_SENSORS
     ) {
         return ESP_ERR_INVALID_ARG;
     }
 
     if (
-        count < LOCALIZATION_MIN_SENSORS_3D ||
-        count > LOCALIZATION_MAX_SENSORS ||
         !isfinite(config->propagation_speed_mps) ||
         config->propagation_speed_mps <= 0.0 ||
         config->max_iterations == 0 ||
@@ -341,6 +342,20 @@ static esp_err_t localization_validate(
         }
     }
 
+    for (size_t i = 0; i < count; ++i) {
+        for (size_t j = i + 1U; j < count; ++j) {
+            if (point_distance(
+                    observations[i].sensor_position,
+                    observations[j].sensor_position
+                ) <= LOCALIZATION_DISTANCE_EPSILON_M) {
+                if (reason != NULL) {
+                    *reason = LOCALIZATION_INVALID_DUPLICATE_SENSOR_POSITION;
+                }
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+    }
+
     if (
         initial_guess != NULL &&
         !point_is_finite(*initial_guess)
@@ -348,15 +363,55 @@ static esp_err_t localization_validate(
         return ESP_ERR_INVALID_ARG;
     }
 
-    *geometry_scale = localization_geometry_scale(observations, count);
+    const double geometry_scale = localization_geometry_scale(observations, count);
 
     if (
-        !isfinite(*geometry_scale) ||
-        !localization_geometry_is_3d(observations, count, *geometry_scale)
+        !isfinite(geometry_scale) ||
+        !localization_geometry_is_3d(observations, count, geometry_scale)
     ) {
         return ESP_ERR_INVALID_STATE;
     }
 
+    return ESP_OK;
+}
+
+
+const char *localization_validation_reason_string(
+    localization_validation_reason_t reason
+)
+{
+    switch (reason) {
+        case LOCALIZATION_VALIDATION_REASON_NONE:
+            return "none";
+        case LOCALIZATION_INVALID_DUPLICATE_SENSOR_POSITION:
+            return "duplicate_sensor_position";
+        default:
+            return "unknown";
+    }
+}
+
+
+static esp_err_t localization_validate(
+    const localization_observation_t *observations,
+    size_t count,
+    const localization_config_t *config,
+    const localization_point3d_t *initial_guess,
+    localization_result_t *result,
+    double *geometry_scale
+)
+{
+    if (result == NULL || geometry_scale == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const esp_err_t err = localization_validate_ex(
+        observations, count, config, initial_guess, NULL
+    );
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    *geometry_scale = localization_geometry_scale(observations, count);
     return ESP_OK;
 }
 
@@ -381,6 +436,12 @@ esp_err_t localization_tdoa_solve(
     localization_result_t *result
 )
 {
+    if (result == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(result, 0, sizeof(*result));
+
     double geometry_scale = 0.0;
 
     esp_err_t err = localization_validate(
@@ -395,8 +456,6 @@ esp_err_t localization_tdoa_solve(
     if (err != ESP_OK) {
         return err;
     }
-
-    memset(result, 0, sizeof(*result));
 
     localization_point3d_t estimate =
         initial_guess != NULL

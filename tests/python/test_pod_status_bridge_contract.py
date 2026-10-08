@@ -30,9 +30,9 @@ def test_active_object_profile_is_fetched_once_per_cycle_not_per_channel():
     fetch_section = bridge[cycle_start:loop_start]
 
     assert "object_store_get_active(" in fetch_section
-    assert "object_store_get_profile(" in fetch_section
+    assert "object_store_get_profile_cached(" in fetch_section
     assert "object_store_get_active(" not in bridge[loop_start:]
-    assert "object_store_get_profile(" not in bridge[loop_start:]
+    assert "object_store_get_profile_cached(" not in bridge[loop_start:]
 
 
 def test_no_active_object_never_falls_back_to_stale_profile():
@@ -45,6 +45,6 @@ def test_no_active_object_never_falls_back_to_stale_profile():
     cycle_end = bridge.index("\n}\n", cycle_start)
     cycle_body = bridge[cycle_start:cycle_end]
 
-    assert "memset(&profile, 0, sizeof(profile));" in cycle_body
-    assert "active.active" in cycle_body
-    assert "active.id[0] != '\\0'" in cycle_body
+    assert "memset(&scratch->profile, 0, sizeof(scratch->profile));" in cycle_body
+    assert "scratch->active.active" in cycle_body
+    assert "scratch->active.id[0] != '\\0'" in cycle_body

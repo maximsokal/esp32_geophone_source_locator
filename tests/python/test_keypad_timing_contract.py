@@ -35,24 +35,27 @@ def test_timing_instrumentation_is_opt_in_and_stays_on_the_timer_task():
     assert "CONFIG_APP_KEYPAD_TIMING_DIAGNOSTICS=y" in defaults
 
 
-def test_timing_profiles_select_separate_sources_and_do_not_touch_production_defaults():
+def test_timing_profile_uses_the_ad7606_default_without_touching_production_defaults():
     root_cmake = read("CMakeLists.txt")
     timing_defaults = read("sdkconfig.keypad-timing.defaults")
-    bench_defaults = read("sdkconfig.adc-bench.defaults")
     production_defaults = read("sdkconfig.defaults")
+    kconfig = read("main/Kconfig.projbuild")
     runner = read("tools/run_keypad_timing_hil.ps1")
+    profile_resolver = read("tools/idf_profile.py")
     timing_doc = read("docs/keypad-adc-timing-hil.md")
 
     assert "GEOLOCATOR_KEYPAD_TIMING_PROFILE" in root_cmake
-    assert "GEOLOCATOR_ADC_BENCH_PROFILE" in root_cmake
+    assert "GEOLOCATOR_ADC_BENCH_PROFILE" not in root_cmake
     assert "CONFIG_APP_KEYPAD_TIMING_DIAGNOSTICS=y" in timing_defaults
-    assert "CONFIG_SEISMIC_SOURCE_ESP_ADC_BENCH=y" in bench_defaults
-    assert "CONFIG_SEISMIC_ADC_BENCH_SAMPLE_RATE_HZ=500" in bench_defaults
     assert "CONFIG_APP_KEYPAD_TIMING_DIAGNOSTICS" not in production_defaults
+    assert "default SEISMIC_SOURCE_AD7606" in kconfig
+    assert "CONFIG_SEISMIC_SOURCE_ESP_ADC_BENCH" not in kconfig
+    assert "CONFIG_SEISMIC_ADC_BENCH_SAMPLE_RATE_HZ" not in kconfig
     assert "-Sdkconfig $profileSdkconfig" in runner
-    assert 'ValidateSet("AD7606", "ESP_ADC_BENCH")' in runner
+    assert 'ValidateSet("AD7606")' in runner
     assert "GEOLOCATOR_KEYPAD_TIMING_PROFILE" in runner
-    assert "GEOLOCATOR_ADC_BENCH_PROFILE" in runner
+    assert "GEOLOCATOR_ADC_BENCH_PROFILE" not in runner
+    assert "GEOLOCATOR_ADC_BENCH_PROFILE" not in profile_resolver
     assert 'Add-Check $checks "Timing-profile flash"' in runner
     assert 'Add-Check $checks "Production flash"' not in runner
     assert "InvalidTelemetry" in runner
@@ -63,7 +66,44 @@ def test_timing_profiles_select_separate_sources_and_do_not_touch_production_def
     assert "MinimumWindows" in runner
     assert "MinimumSnapshots" in runner
     assert "AD7606 with no deliberate keypad activity" in timing_doc
-    assert "ESP ADC bench at its configured rate while pressing" in timing_doc
+    assert "AD7606 while pressing the keypad repeatedly" in timing_doc
+    assert "ESP ADC bench" not in timing_doc
     assert "bounded-histogram `p95`" in timing_doc
     assert "p95_overflow" in timing_doc
     assert "NOT_ESTABLISHED" in timing_doc
+
+
+def test_removed_adc_bench_backend_has_no_unprotected_source_or_build_references():
+    forbidden = (
+        "ESP_ADC_BENCH",
+        "geophone_adc_test",
+        "SEISMIC_ADC_BENCH_SAMPLE_RATE_HZ",
+        "GEOLOCATOR_ADC_BENCH_PROFILE",
+    )
+    suffixes = {
+        ".c", ".h", ".cc", ".hh", ".cpp", ".hpp", ".js", ".ts",
+        ".tsx", ".py", ".ps1", ".cmake",
+    }
+    files = [REPO_ROOT / "CMakeLists.txt", *REPO_ROOT.glob("sdkconfig*.defaults")]
+    for source_root in (REPO_ROOT / "components", REPO_ROOT / "main", REPO_ROOT / "tools"):
+        files.extend(
+            path
+            for path in source_root.rglob("*")
+            if path.is_file()
+            and (
+                path.suffix.lower() in suffixes
+                or path.name == "CMakeLists.txt"
+                or path.name.startswith("Kconfig")
+            )
+        )
+
+    violations = []
+    for path in sorted(set(files)):
+        relative = path.relative_to(REPO_ROOT)
+        content = path.read_text(encoding="utf-8")
+        for token in forbidden:
+            if token in content:
+                violations.append(f"{relative}: {token}")
+
+    assert not (REPO_ROOT / "components/geophone_adc_test").exists()
+    assert not violations, "removed backend references remain:\n" + "\n".join(violations)

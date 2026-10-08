@@ -13,6 +13,8 @@ function statusWith(overrides: {
   serial?: Record<string, unknown>;
   channels?: Array<Record<string, unknown>>;
   pods?: DevicePod[];
+  acquisition?: Record<string, unknown>;
+  hardware?: Record<string, unknown>;
 }): DeviceStatus {
   return {
     system: {},
@@ -26,7 +28,8 @@ function statusWith(overrides: {
     environment: { valid: false, temperature_c: 0, humidity_percent: 0, pressure_pa: 0 },
     mux: { valid: false, active_channel: 0, active_pod: 0 },
     pods: overrides.pods ?? [],
-    acquisition: { serial: overrides.serial },
+    acquisition: { ...overrides.acquisition, serial: overrides.serial },
+    hardware: overrides.hardware,
   } as unknown as DeviceStatus;
 }
 
@@ -98,5 +101,54 @@ describe('Sensors power alerts', () => {
       expect(html).toContain(`<dt>${translate(locale, key)}</dt><dd>${unavailable}</dd>`);
     }
     expect(html).not.toContain(`<dd>${formatNumber(locale, 0, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %</dd>`);
+  });
+});
+
+describe('Sensors AD7606 status', () => {
+  it.each([
+    ['ESP_OK error fields', { running: false, hardware_ready: false, last_error: 0, last_error_name: 'ESP_OK' }],
+    ['missing error fields', { running: false, hardware_ready: false }],
+  ] as const)('reports an unstarted ADC for unknown inventory state with %s', (_case, acquisition) => {
+    const html = render(statusWith({
+      acquisition,
+      hardware: {
+        modules: [{ id: 'ad7606', state: 'unknown', required: true, reason: '' }],
+        required_missing: false,
+      },
+    }));
+
+    expect(html).toContain('AD7606 not started yet');
+    expect(html).not.toContain('NOT DETECTED');
+  });
+
+  it('shows the acquisition error name when AD7606 startup failed', () => {
+    const html = render(statusWith({
+      acquisition: { running: false, hardware_ready: false, last_error: 123, last_error_name: 'ESP_ERR_TIMEOUT' },
+      hardware: {
+        modules: [{ id: 'ad7606', state: 'unknown', required: true, reason: '' }],
+        required_missing: false,
+      },
+    }));
+
+    expect(html).toContain('AD7606 failed: ESP_ERR_TIMEOUT');
+  });
+
+  it('shows not detected only when inventory explicitly marks AD7606 absent', () => {
+    const html = render(statusWith({
+      acquisition: { running: false, hardware_ready: false, last_error: 0, last_error_name: 'ESP_OK' },
+      hardware: {
+        modules: [{ id: 'ad7606', state: 'absent', required: true, reason: '' }],
+        required_missing: true,
+      },
+    }));
+
+    expect(html).toContain('NOT DETECTED');
+    expect(html).not.toContain('AD7606 not started yet');
+  });
+
+  it('preserves the legacy hardware-ready label when old firmware omits new status fields', () => {
+    const html = render(statusWith({ acquisition: { running: false, hardware_ready: false } }));
+
+    expect(html).toContain('NOT DETECTED');
   });
 });

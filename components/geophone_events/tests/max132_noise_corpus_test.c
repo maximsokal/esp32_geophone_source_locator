@@ -117,6 +117,8 @@ static const char *status_name(geophone_pick_status_t status)
     case GEOPHONE_PICK_REJECTED_NO_REFINEMENT: return "REJECTED_NO_REFINEMENT";
     case GEOPHONE_PICK_REJECTED_LOW_SNR: return "REJECTED_LOW_SNR";
     case GEOPHONE_PICK_REJECTED_INCONSISTENT: return "REJECTED_INCONSISTENT";
+    case GEOPHONE_PICK_REJECTED_SATURATED: return "REJECTED_SATURATED";
+    case GEOPHONE_PICK_REJECTED_AMBIGUOUS: return "REJECTED_AMBIGUOUS";
     }
     return "UNKNOWN";
 }
@@ -140,6 +142,7 @@ static double check_event_pick(
     check_finite_pick(name, seed, &pick);
     CHECK(name, seed, accepted);
     CHECK(name, seed, pick.status == GEOPHONE_PICK_ACCEPTED);
+    CHECK(name, seed, pick.reason == GEOPHONE_PICK_REASON_NONE);
     CHECK(name, seed, pick.arrival_time_s >= 0.0f);
 
     const double error = sample_position(&pick) - (double)truth;
@@ -331,7 +334,7 @@ static void test_c5_configured_50hz_notch_and_bandpass(void)
 }
 
 
-static void test_c6_isolated_impulse_outlier_known_defect(void)
+static void test_c6_impulse_and_later_event_are_ambiguous(void)
 {
     const uint32_t seed = 0x13200606u;
     const size_t outlier_index = 400u;
@@ -349,13 +352,14 @@ static void test_c6_isolated_impulse_outlier_known_defect(void)
         samples, SAMPLE_COUNT, SAMPLE_RATE_HZ, &config, &pick
     );
     check_finite_pick("C6", seed, &pick);
-    CHECK("C6", seed, accepted);
-    CHECK("C6", seed, pick.status == GEOPHONE_PICK_ACCEPTED);
+    CHECK("C6", seed, !accepted);
+    CHECK("C6", seed, pick.status == GEOPHONE_PICK_REJECTED_AMBIGUOUS);
+    CHECK("C6", seed, pick.reason == GEOPHONE_PICK_REASON_AMBIGUOUS);
     CHECK("C6", seed, fabs(sample_position(&pick) - (double)outlier_index) <= 1.0);
     const double source_error = sample_position(&pick) - (double)physical_event_index;
-    printf("CASE C6 detection=%s pick_error_vs_physical_event_samples=%.3f\n",
-           status_name(pick.status), source_error);
-    printf("KNOWN_DEFECT C6 isolated impulsive outlier is accepted before the later source event\n");
+    printf("CASE C6 detection=%s reason=%s first_pick_error_vs_physical_event_samples=%.3f\n",
+           status_name(pick.status), geophone_pick_reason_name(pick.reason), source_error);
+    printf("NOTE C6 is rejected by the same second-crossing guard as C13; the isolated outlier is no longer passed onward\n");
 }
 
 
@@ -387,27 +391,184 @@ static int16_t saturate_i16(float value)
 }
 
 
-static void test_c8_ad7606_int16_saturation_known_defect(void)
+static void test_c8_ad7606_int16_saturation_rejected(void)
 {
     const uint32_t seed = 0x13200808u;
     float samples[SAMPLE_COUNT];
+    int16_t raw_samples[SAMPLE_COUNT];
     fill_white_noise(samples, SAMPLE_COUNT, seed, 20.0f);
     add_ramp_pulse(samples, SAMPLE_COUNT, EVENT_INDEX, 40u, 60000.0f);
     check_finite_samples("C8", seed, samples, SAMPLE_COUNT);
     size_t saturated_samples = 0u;
     for (size_t i = 0u; i < SAMPLE_COUNT; ++i) {
-        const int16_t raw = saturate_i16(samples[i]);
-        if (raw == INT16_MAX || raw == INT16_MIN) ++saturated_samples;
-        samples[i] = (float)raw;
+        raw_samples[i] = saturate_i16(samples[i]);
+        if (raw_samples[i] == INT16_MAX || raw_samples[i] == INT16_MIN) ++saturated_samples;
+        samples[i] = (float)raw_samples[i];
     }
-    CHECK("C8", seed, saturated_samples > 0u);
+    CHECK("C8", seed, geophone_event_raw_i16_window_is_saturated(raw_samples, SAMPLE_COUNT));
+    CHECK("C8", seed, saturated_samples >= 8u);
+    CHECK("C8-count-helper", seed, geophone_event_i16_rail_count_is_saturated(
+        saturated_samples, SAMPLE_COUNT
+    ) == geophone_event_raw_i16_window_is_saturated(raw_samples, SAMPLE_COUNT));
     const geophone_channel_pick_config_t config = pick_config();
-    const double error = check_event_pick(
-        "C8", seed, samples, SAMPLE_COUNT, &config, EVENT_INDEX, EVENT_TOLERANCE_SAMPLES
+    geophone_channel_pick_t snr_only_pick;
+    CHECK("C8", seed, geophone_event_pick_channel_arrival(
+        samples, SAMPLE_COUNT, SAMPLE_RATE_HZ, &config, &snr_only_pick
+    ));
+    CHECK("C8", seed, snr_only_pick.snr >= config.minimum_snr);
+
+    geophone_channel_pick_t pick;
+    const bool accepted = geophone_event_pick_channel_arrival_with_saturation(
+        samples,
+        SAMPLE_COUNT,
+        SAMPLE_RATE_HZ,
+        &config,
+        geophone_event_raw_i16_window_is_saturated(raw_samples, SAMPLE_COUNT),
+        &pick
     );
-    printf("CASE C8 detection=ACCEPTED saturated_samples=%zu max_pick_error_samples=%.3f\n",
-           saturated_samples, error);
-    printf("KNOWN_DEFECT C8 raw int16 saturation is accepted without a saturation rejection status\n");
+    CHECK("C8", seed, !accepted);
+    CHECK("C8", seed, pick.status == GEOPHONE_PICK_REJECTED_SATURATED);
+    CHECK("C8", seed, pick.reason == GEOPHONE_PICK_REASON_SATURATED);
+    CHECK("C8", seed, strcmp(geophone_pick_reason_name(pick.reason), "saturated") == 0);
+    printf("CASE C8 detection=%s reason=%s saturated_samples=%zu threshold=8-and-0.5%%\n",
+           status_name(pick.status), geophone_pick_reason_name(pick.reason), saturated_samples);
+}
+
+
+static void test_raw_saturation_count_helper_equivalence(void)
+{
+    int16_t raw_samples[SAMPLE_COUNT] = { 0 };
+    const struct
+    {
+        size_t window_samples;
+        size_t rail_count;
+        bool expected;
+    } cases[] = {
+        { 1000U, 7U, false },
+        { 1000U, 8U, true },
+        { 2000U, 9U, false },
+        { 2000U, 10U, true },
+    };
+
+    for (size_t test = 0U; test < sizeof(cases) / sizeof(cases[0]); ++test) {
+        memset(raw_samples, 0, sizeof(raw_samples));
+        for (size_t rail = 0U; rail < cases[test].rail_count; ++rail) {
+            raw_samples[rail] = (rail & 1U) == 0U ? INT16_MIN : INT16_MAX;
+        }
+        const bool from_codes = geophone_event_raw_i16_window_is_saturated(
+            raw_samples, cases[test].window_samples
+        );
+        const bool from_count = geophone_event_i16_rail_count_is_saturated(
+            cases[test].rail_count, cases[test].window_samples
+        );
+        CHECK("C8-count-equivalence", test, from_codes == from_count);
+        CHECK("C8-count-boundary", test, from_count == cases[test].expected);
+    }
+    CHECK("C8-count-empty", 0U, !geophone_event_i16_rail_count_is_saturated(8U, 0U));
+    puts("CASE C8-count-helper equivalent=raw-codes threshold=at-least-8-and-0.5%");
+}
+
+
+static void convert_to_i16_trace(
+    float *samples,
+    int16_t *raw_samples,
+    size_t sample_count
+)
+{
+    for (size_t i = 0u; i < sample_count; ++i) {
+        raw_samples[i] = saturate_i16(samples[i]);
+        samples[i] = (float)raw_samples[i];
+    }
+}
+
+
+static void test_c8_high_snr_non_saturated_control(void)
+{
+    const uint32_t seed = 0x13200818u;
+    float samples[SAMPLE_COUNT];
+    int16_t raw_samples[SAMPLE_COUNT];
+    fill_white_noise(samples, SAMPLE_COUNT, seed, 20.0f);
+    add_ramp_pulse(samples, SAMPLE_COUNT, EVENT_INDEX, 40u, 30000.0f);
+    convert_to_i16_trace(samples, raw_samples, SAMPLE_COUNT);
+    const bool raw_i16_saturated = geophone_event_raw_i16_window_is_saturated(
+        raw_samples, SAMPLE_COUNT
+    );
+    CHECK("C8-control", seed, !raw_i16_saturated);
+
+    const geophone_channel_pick_config_t config = pick_config();
+    geophone_channel_pick_t pick;
+    CHECK("C8-control", seed, geophone_event_pick_channel_arrival_with_saturation(
+        samples, SAMPLE_COUNT, SAMPLE_RATE_HZ, &config, raw_i16_saturated, &pick
+    ));
+    CHECK("C8-control", seed, pick.status == GEOPHONE_PICK_ACCEPTED);
+    CHECK("C8-control", seed, pick.reason == GEOPHONE_PICK_REASON_NONE);
+    CHECK("C8-control", seed, pick.snr >= config.minimum_snr);
+    CHECK("C8-control", seed, fabs(sample_position(&pick) - (double)EVENT_INDEX) <= EVENT_TOLERANCE_SAMPLES);
+    printf("CASE C8-control detection=ACCEPTED reason=none high_snr=yes saturated=no\n");
+}
+
+
+static void test_c8_clipped_peak_below_threshold_is_accepted(void)
+{
+    const uint32_t seed = 0x13200828u;
+    float samples[SAMPLE_COUNT];
+    int16_t raw_samples[SAMPLE_COUNT];
+    fill_white_noise(samples, SAMPLE_COUNT, seed, 20.0f);
+    add_ramp_pulse(samples, SAMPLE_COUNT, EVENT_INDEX, 40u, 30000.0f);
+    convert_to_i16_trace(samples, raw_samples, SAMPLE_COUNT);
+    for (size_t i = EVENT_INDEX + 12u; i < EVENT_INDEX + 16u; ++i) {
+        raw_samples[i] = INT16_MAX;
+        samples[i] = (float)INT16_MAX;
+    }
+    const bool raw_i16_saturated = geophone_event_raw_i16_window_is_saturated(
+        raw_samples, SAMPLE_COUNT
+    );
+    CHECK("C8-below-threshold", seed, !raw_i16_saturated);
+
+    const geophone_channel_pick_config_t config = pick_config();
+    geophone_channel_pick_t pick;
+    CHECK("C8-below-threshold", seed, geophone_event_pick_channel_arrival_with_saturation(
+        samples, SAMPLE_COUNT, SAMPLE_RATE_HZ, &config, raw_i16_saturated, &pick
+    ));
+    CHECK("C8-below-threshold", seed, pick.status == GEOPHONE_PICK_ACCEPTED);
+    CHECK("C8-below-threshold", seed, pick.reason == GEOPHONE_PICK_REASON_NONE);
+    CHECK("C8-below-threshold", seed, fabs(sample_position(&pick) - (double)EVENT_INDEX) <= EVENT_TOLERANCE_SAMPLES);
+    printf("CASE C8-below-threshold detection=ACCEPTED rail_samples=4 threshold=8-and-0.5%%\n");
+}
+
+
+static void test_c8_saturation_is_per_channel(void)
+{
+    const uint32_t seed = 0x13200838u;
+    float samples[2][SAMPLE_COUNT];
+    int16_t raw_samples[2][SAMPLE_COUNT];
+    geophone_channel_pick_t picks[2];
+    const geophone_channel_pick_config_t config = pick_config();
+
+    fill_white_noise(samples[0], SAMPLE_COUNT, seed, 20.0f);
+    add_ramp_pulse(samples[0], SAMPLE_COUNT, EVENT_INDEX, 40u, 60000.0f);
+    fill_white_noise(samples[1], SAMPLE_COUNT, seed + 1u, 20.0f);
+    add_ramp_pulse(samples[1], SAMPLE_COUNT, EVENT_INDEX, 40u, 30000.0f);
+    convert_to_i16_trace(samples[0], raw_samples[0], SAMPLE_COUNT);
+    convert_to_i16_trace(samples[1], raw_samples[1], SAMPLE_COUNT);
+
+    const bool saturated[2] = {
+        geophone_event_raw_i16_window_is_saturated(raw_samples[0], SAMPLE_COUNT),
+        geophone_event_raw_i16_window_is_saturated(raw_samples[1], SAMPLE_COUNT)
+    };
+    CHECK("C8-channel", seed, saturated[0]);
+    CHECK("C8-channel", seed, !saturated[1]);
+    CHECK("C8-channel", seed, !geophone_event_pick_channel_arrival_with_saturation(
+        samples[0], SAMPLE_COUNT, SAMPLE_RATE_HZ, &config, saturated[0], &picks[0]
+    ));
+    CHECK("C8-channel", seed, picks[0].status == GEOPHONE_PICK_REJECTED_SATURATED);
+    CHECK("C8-channel", seed, picks[0].reason == GEOPHONE_PICK_REASON_SATURATED);
+    CHECK("C8-channel", seed, geophone_event_pick_channel_arrival_with_saturation(
+        samples[1], SAMPLE_COUNT, SAMPLE_RATE_HZ, &config, saturated[1], &picks[1]
+    ));
+    CHECK("C8-channel", seed, picks[1].status == GEOPHONE_PICK_ACCEPTED);
+    CHECK("C8-channel", seed, picks[1].reason == GEOPHONE_PICK_REASON_NONE);
+    printf("CASE C8-channel saturated_channel=REJECTED_SATURATED independent_channel=ACCEPTED\n");
 }
 
 
@@ -558,6 +719,7 @@ static void test_c11_multipath_prefers_first_arrival(void)
         ));
         check_finite_pick("C11", seed, &picks[ch]);
         CHECK("C11", seed, picks[ch].status == GEOPHONE_PICK_ACCEPTED);
+        CHECK("C11", seed, picks[ch].reason == GEOPHONE_PICK_REASON_NONE);
     }
     const double max_error = check_cross_channel_errors(
         "C11", seed, picks, truth, present, 4u, EVENT_TOLERANCE_SAMPLES
@@ -624,6 +786,7 @@ static void test_c12_known_p_s_separation(void)
         ));
         check_finite_pick("C12", trace_seed, &p_pick);
         CHECK("C12", trace_seed, p_pick.status == GEOPHONE_PICK_ACCEPTED);
+        CHECK("C12", trace_seed, p_pick.reason == GEOPHONE_PICK_REASON_NONE);
         const double p_error = fabs(sample_position(&p_pick) - (double)p_truth);
         CHECK("C12", trace_seed, p_error <= 20.0); /* 80 Hz P period is 12.5 samples; plus rise/search quantization. */
         if (p_error > max_p_error) max_p_error = p_error;
@@ -644,7 +807,7 @@ static void test_c12_known_p_s_separation(void)
 }
 
 
-static void test_c13_two_events_first_only_characterization(void)
+static void test_c13_two_events_are_ambiguous(void)
 {
     const uint32_t seed = 0x13201313u;
     static const size_t delays[4] = { 0u, 3u, 6u, 9u };
@@ -660,19 +823,84 @@ static void test_c13_two_events_first_only_characterization(void)
         add_ramp_pulse(traces[ch], SAMPLE_COUNT, truth[ch], 32u, 0.45f);
         add_ramp_pulse(traces[ch], SAMPLE_COUNT, second_index + delays[ch], 32u, 1.2f);
         check_finite_samples("C13", seed, traces[ch], SAMPLE_COUNT);
-        CHECK("C13", seed, geophone_event_pick_channel_arrival(
+        const bool accepted = geophone_event_pick_channel_arrival(
             traces[ch], SAMPLE_COUNT, SAMPLE_RATE_HZ, &config, &picks[ch]
-        ));
+        );
         check_finite_pick("C13", seed, &picks[ch]);
-        CHECK("C13", seed, picks[ch].status == GEOPHONE_PICK_ACCEPTED);
+        CHECK("C13", seed, !accepted);
+        CHECK("C13", seed, picks[ch].status == GEOPHONE_PICK_REJECTED_AMBIGUOUS);
+        CHECK("C13", seed, picks[ch].reason == GEOPHONE_PICK_REASON_AMBIGUOUS);
+        CHECK("C13", seed, strcmp(geophone_pick_reason_name(picks[ch].reason), "ambiguous") == 0);
         CHECK("C13", seed, sample_position(&picks[ch]) < (double)second_index);
     }
     const double max_error = check_cross_channel_errors(
         "C13", seed, picks, truth, present, 4u, EVENT_TOLERANCE_SAMPLES
     );
-    printf("CASE C13 detection=first_event_only both_events_present=yes max_pick_error_samples=%.3f\n",
+    printf("CASE C13 detection=REJECTED_AMBIGUOUS reason=ambiguous both_events_present=yes max_pick_error_samples=%.3f\n",
            max_error);
-    printf("KNOWN_DEFECT C13 second event is not surfaced as ambiguity or a second pick; safe_pipeline_match=NO\n");
+}
+
+
+static void test_equal_pulses_far_apart_are_ambiguous(void)
+{
+    const uint32_t seed = 0x13201323u;
+    const size_t second_index = 1200u;
+    float samples[SAMPLE_COUNT] = { 0.0f };
+    const geophone_channel_pick_config_t config = pick_config();
+    add_ramp_pulse(samples, SAMPLE_COUNT, EVENT_INDEX, 32u, 0.8f);
+    add_ramp_pulse(samples, SAMPLE_COUNT, second_index, 32u, 0.8f);
+
+    geophone_channel_pick_t pick;
+    CHECK("C13-equal", seed, !geophone_event_pick_channel_arrival(
+        samples, SAMPLE_COUNT, SAMPLE_RATE_HZ, &config, &pick
+    ));
+    CHECK("C13-equal", seed, pick.status == GEOPHONE_PICK_REJECTED_AMBIGUOUS);
+    CHECK("C13-equal", seed, pick.reason == GEOPHONE_PICK_REASON_AMBIGUOUS);
+    CHECK("C13-equal", seed, sample_position(&pick) < (double)second_index);
+    printf("CASE C13-equal detection=REJECTED_AMBIGUOUS separation_samples=%zu\n",
+           second_index - EVENT_INDEX);
+}
+
+
+static void test_two_pulses_inside_guard_keep_first_pick(void)
+{
+    const uint32_t seed = 0x13201333u;
+    const size_t second_index = EVENT_INDEX + 250u;
+    float samples[SAMPLE_COUNT] = { 0.0f };
+    const geophone_channel_pick_config_t config = pick_config();
+    add_ramp_pulse(samples, SAMPLE_COUNT, EVENT_INDEX, 32u, 0.8f);
+    add_ramp_pulse(samples, SAMPLE_COUNT, second_index, 32u, 0.8f);
+
+    geophone_channel_pick_t pick;
+    CHECK("C13-close", seed, geophone_event_pick_channel_arrival(
+        samples, SAMPLE_COUNT, SAMPLE_RATE_HZ, &config, &pick
+    ));
+    CHECK("C13-close", seed, pick.status == GEOPHONE_PICK_ACCEPTED);
+    CHECK("C13-close", seed, pick.reason == GEOPHONE_PICK_REASON_NONE);
+    CHECK("C13-close", seed, sample_position(&pick) < (double)second_index);
+    printf("CASE C13-close detection=ACCEPTED first_pick_only separation_samples=250 guard_min_samples=321\n");
+}
+
+
+static void test_noise_windows_never_report_ambiguity(void)
+{
+    const uint32_t seed = 0x13201343u;
+    const geophone_channel_pick_config_t config = pick_config();
+    size_t ambiguous_windows = 0u;
+
+    for (size_t window = 0u; window < 200u; ++window) {
+        float samples[SAMPLE_COUNT];
+        fill_white_noise(samples, SAMPLE_COUNT, seed + (uint32_t)window, 0.01f);
+        geophone_channel_pick_t pick;
+        (void)geophone_event_pick_channel_arrival(
+            samples, SAMPLE_COUNT, SAMPLE_RATE_HZ, &config, &pick
+        );
+        if (pick.status == GEOPHONE_PICK_REJECTED_AMBIGUOUS) ++ambiguous_windows;
+        CHECK("C13-noise", seed + (uint32_t)window,
+              pick.reason != GEOPHONE_PICK_REASON_AMBIGUOUS);
+    }
+    CHECK("C13-noise", seed, ambiguous_windows == 0u);
+    printf("CASE C13-noise windows=200 ambiguous=0\n");
 }
 
 
@@ -754,14 +982,21 @@ int main(void)
     test_c3_white_noise_snr_sweep();
     test_c4_colored_drift();
     test_c5_configured_50hz_notch_and_bandpass();
-    test_c6_isolated_impulse_outlier_known_defect();
+    test_c6_impulse_and_later_event_are_ambiguous();
     test_c7_clipped_waveform();
-    test_c8_ad7606_int16_saturation_known_defect();
+    test_c8_ad7606_int16_saturation_rejected();
+    test_raw_saturation_count_helper_equivalence();
+    test_c8_high_snr_non_saturated_control();
+    test_c8_clipped_peak_below_threshold_is_accepted();
+    test_c8_saturation_is_per_channel();
     test_c9_missing_channel_is_dropped();
     test_c10_delayed_duplicate_event_and_cross_channel_delay();
     test_c11_multipath_prefers_first_arrival();
     test_c12_known_p_s_separation();
-    test_c13_two_events_first_only_characterization();
+    test_c13_two_events_are_ambiguous();
+    test_equal_pulses_far_apart_are_ambiguous();
+    test_two_pulses_inside_guard_keep_first_pick();
+    test_noise_windows_never_report_ambiguity();
     test_c14_random_phase_and_amplitude_channels();
     return EXIT_SUCCESS;
 }

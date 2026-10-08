@@ -280,6 +280,7 @@ export function StructuralGuideOverlay({ runtime, runtimeState, interactionEnabl
       lastAnalysisMs.current = Number.NEGATIVE_INFINITY;
       lastAnalysisKeyframe.current = 0;
     } else if (runtimeState.phase !== 'running') {
+      client.park();
       deactivateCertifiedGuideRegistry();
     }
   }, [client, runtimeState.phase]);

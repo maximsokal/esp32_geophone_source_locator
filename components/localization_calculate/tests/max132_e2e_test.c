@@ -221,7 +221,7 @@ esp_err_t seismic_recorder_get_session_summary(
     return ESP_OK;
 }
 
-esp_err_t seismic_recorder_read_session_range(
+esp_err_t seismic_recorder_read_session_range_ex(
     const char *object_id,
     const char *session_id,
     uint64_t start_index,
@@ -230,19 +230,35 @@ esp_err_t seismic_recorder_read_session_range(
     uint64_t *source_sample_indices,
     bool *gap_before,
     size_t *frame_count_out,
-    seismic_recorder_session_summary_t *summary_out
+    seismic_recorder_session_summary_t *summary_out,
+    seismic_recorder_raw_window_stats_t *raw_stats_out
 )
 {
     (void)object_id;
     (void)session_id;
-    (void)source_sample_indices;
-    (void)gap_before;
     if (frames == NULL || frame_count_out == NULL || start_index > s_e2e_frame_count || max_frames == 0U) {
         return ESP_ERR_INVALID_ARG;
     }
     const size_t remaining = s_e2e_frame_count - (size_t)start_index;
     const size_t count = remaining < max_frames ? remaining : max_frames;
     memcpy(frames, s_e2e_decoded_frames + (size_t)start_index, count * sizeof(*frames));
+    for (size_t i = 0U; i < count; ++i) {
+        const size_t sample = (size_t)start_index + i;
+        if (source_sample_indices != NULL) source_sample_indices[i] = (uint64_t)sample;
+        if (gap_before != NULL) gap_before[i] = false;
+    }
+    if (raw_stats_out != NULL) {
+        memset(raw_stats_out, 0, sizeof(*raw_stats_out));
+        raw_stats_out->samples_examined = count;
+        for (size_t sample = (size_t)start_index; sample < (size_t)start_index + count; ++sample) {
+            for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+                if (s_e2e_raw_frames[sample][channel] == INT16_MIN ||
+                    s_e2e_raw_frames[sample][channel] == INT16_MAX) {
+                    ++raw_stats_out->rail_sample_counts[channel];
+                }
+            }
+        }
+    }
     *frame_count_out = count;
     if (summary_out != NULL) {
         *summary_out = s_e2e_session_summary;
@@ -459,6 +475,14 @@ esp_err_t web_server_route_tracking_register(const char *uri, int method)
 
 #define static
 #include "../../web_server/web_localization_api.c"
+
+/* The production runs handler now refuses to list while storage is unavailable;
+ * this E2E uses a real store in a temp directory, so storage is always ready. */
+bool storage_manager_is_ready(void)
+{
+    return true;
+}
+#include "../../web_server/web_localization_storage.c"
 #undef static
 
 static uint32_t e2e_random_u32(void)
@@ -1106,13 +1130,17 @@ static char *e2e_read_file(const char *path, const char *stage)
 
 static void e2e_write_build_observation(const char *normalized_json)
 {
-    static const char output_path[] = "../../../build/max132_e2e_actual.json";
+    static const char output_directory[] = "../../../.test-build";
+    static const char output_path[] = "../../../.test-build/max132_e2e_actual.json";
+    if (mkdir(output_directory, 0775) != 0 && errno != EEXIST) {
+        e2e_require(false, "golden JSON", "could not create .test-build for the actual observation");
+    }
     FILE *file = fopen(output_path, "wb");
-    e2e_require(file != NULL, "golden JSON", "could not write normalized API JSON under build/");
+    e2e_require(file != NULL, "golden JSON", "could not write normalized API JSON under .test-build/");
     const size_t length = strlen(normalized_json);
     const bool wrote = fwrite(normalized_json, 1U, length, file) == length;
     const bool closed = fclose(file) == 0;
-    e2e_require(wrote && closed, "golden JSON", "could not persist normalized API JSON under build/");
+    e2e_require(wrote && closed, "golden JSON", "could not persist normalized API JSON under .test-build/");
 }
 
 static void e2e_assert_golden_json(void)
@@ -1132,7 +1160,7 @@ static void e2e_assert_golden_json(void)
     char *golden_normalized = cJSON_PrintUnformatted(golden_tree);
     e2e_require(golden_normalized != NULL, "golden JSON", "frozen fixture could not be normalized");
     if (strcmp(actual_normalized, golden_normalized) != 0) {
-        e2e_require(false, "golden JSON", "normalized production API response differs from the frozen JSON fixture; see build/max132_e2e_actual.json");
+        e2e_require(false, "golden JSON", "normalized production API response differs from the frozen JSON fixture; see .test-build/max132_e2e_actual.json");
     }
     (void)printf("[MAX-132 E2E] golden JSON: normalized production browser response matches the frozen fixture\n");
 

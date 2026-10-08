@@ -289,6 +289,22 @@ esp_err_t seismic_recorder_samples_reader_next(
 );
 
 
+/* Add raw v2 rail counts and examined sample frames to the supplied outputs.
+ * The caller initializes them to zero before the first call. */
+esp_err_t seismic_recorder_samples_reader_next_ex(
+    seismic_recorder_waveform_read_at_fn read_at,
+    void *read_context,
+    seismic_recorder_samples_reader_t *reader,
+    seismic_frame_t *frames,
+    size_t frame_capacity,
+    size_t *frame_count,
+    uint64_t *first_sample_index,
+    bool *gap_before,
+    size_t rail_sample_counts[SEISMIC_CHANNEL_COUNT],
+    size_t *samples_examined
+);
+
+
 esp_err_t seismic_recorder_samples_reader_finish(
     seismic_recorder_waveform_read_at_fn read_at,
     void *read_context,

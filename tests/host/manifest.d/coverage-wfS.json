@@ -27,6 +27,7 @@
         "components/object_format/object_format.c",
         "components/object_store/object_store_fs.c",
         "components/object_store/object_store_artifacts.c",
+        "components/object_store/object_store_cache.c",
         "components/object_store/tests/object_store_artifacts_test.c"
       ],
       "include_dirs": [

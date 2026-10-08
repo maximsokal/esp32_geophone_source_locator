@@ -30,7 +30,7 @@ def main() -> int:
     command = (
         f"npx --yes lv_font_conv@{CONVERTER_VERSION} "
         f"--font {FONT.as_posix()} -r {GLYPH_RANGES} "
-        f"--size 14 --bpp 4 --format lvgl "
+        f"--size 14 --bpp 4 --no-compress --format lvgl "
         f"--lv-include lvgl.h "
         f"--lv-font-name ui_font_montserrat_14 "
         f"--lv-fallback lv_font_montserrat_14 "

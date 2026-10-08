@@ -73,8 +73,14 @@ def test_runtime_observability_uses_raw_task_status_without_formatted_stats():
     assert "RUNTIME_CPU stage=" in source
     assert "RUNTIME_TASK rank=" in source
     assert "MEM_RUNTIME stage=" in source
-    assert "RUNTIME_OBSERVABILITY_PERIOD_MS 10000U" in source
-    assert "RUNTIME_OBSERVABILITY_TOP_TASKS 10U" in source
+    assert "RUNTIME_OBSERVABILITY_SAMPLE_PERIOD_MS 10000U" in source
+    assert 'period_ms=%u sample_period_ms=%u' in source
+    assert "RUNTIME_OBSERVABILITY_TOP_TASKS RUNTIME_OBSERVABILITY_DUMP_TRACKED_TASKS" in source
+    dump_policy = read("components/runtime_observability/include/runtime_observability_dump_policy.h")
+    assert "RUNTIME_OBSERVABILITY_HEARTBEAT_PERIOD_MS 60000U" in dump_policy
+    assert "RUNTIME_OBSERVABILITY_DUMP_INTERNAL_FREE_LOW_BYTES 20480U" in dump_policy
+    assert "RUNTIME_OBSERVABILITY_DUMP_INTERNAL_LARGEST_LOW_BYTES 16384U" in dump_policy
+    assert "RUNTIME_OBSERVABILITY_DUMP_LOW_STACK_BYTES 512U" in dump_policy
     assert "runtime_task_usage_insert" in source
     assert "runtime_task_is_interesting" not in source
     assert "needles[]" not in source

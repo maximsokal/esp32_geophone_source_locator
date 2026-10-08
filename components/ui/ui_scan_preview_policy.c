@@ -1,0 +1,59 @@
+#include "ui_scan_preview_policy.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#define IDENTITY_PREFIX "scan-crc32:"
+
+bool ui_scan_preview_format_identity(uint32_t scan_crc, char *out, size_t capacity)
+{
+    if (out == NULL || capacity == 0U) return false;
+    out[0] = '\0';
+    if (capacity < UI_SCAN_PREVIEW_IDENTITY_SIZE) return false;
+    const int length = snprintf(out, capacity, IDENTITY_PREFIX "%08x", (unsigned)scan_crc);
+    if (length != (int)(sizeof(IDENTITY_PREFIX) - 1U + 8U)) {
+        out[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+bool ui_scan_preview_occupancy_matches_scan(const char *frame_id, uint32_t scan_crc)
+{
+    char expected[UI_SCAN_PREVIEW_IDENTITY_SIZE];
+    if (frame_id == NULL) return false;
+    if (!ui_scan_preview_format_identity(scan_crc, expected, sizeof(expected))) return false;
+    return strcmp(frame_id, expected) == 0;
+}
+
+static bool has_suffix(const char *text, const char *suffix)
+{
+    const size_t text_length = strlen(text);
+    const size_t suffix_length = strlen(suffix);
+    return text_length >= suffix_length && strcmp(text + text_length - suffix_length, suffix) == 0;
+}
+
+bool ui_scan_preview_method_is_scan_constrained(const char *method_name)
+{
+    if (method_name == NULL) return false;
+    return has_suffix(method_name, "_scan_constrained") || has_suffix(method_name, "_voids");
+}
+
+ui_scan_preview_run_eligibility_t ui_scan_preview_run_eligibility(
+    const ui_scan_preview_run_binding_t *run,
+    const char *current_scan_identity)
+{
+    if (run == NULL) return UI_SCAN_PREVIEW_RUN_SCAN_UNKNOWN;
+    const bool named_constrained = ui_scan_preview_method_is_scan_constrained(run->method_name);
+    const bool recorded_constrained = run->scan_provenance_present && run->scan_constraint_applied;
+    if (!named_constrained && !recorded_constrained) return UI_SCAN_PREVIEW_RUN_ELIGIBLE;
+
+    if (!run->scan_provenance_present) return UI_SCAN_PREVIEW_RUN_LEGACY_CONSTRAINED;
+    if (!run->scan_constraint_applied) return UI_SCAN_PREVIEW_RUN_CONSTRAINT_NOT_APPLIED;
+    if (current_scan_identity == NULL || current_scan_identity[0] == '\0') return UI_SCAN_PREVIEW_RUN_SCAN_UNKNOWN;
+    if (run->scan_frame_id == NULL || run->scan_frame_id[0] == '\0' ||
+        strcmp(run->scan_frame_id, current_scan_identity) != 0) {
+        return UI_SCAN_PREVIEW_RUN_STALE_SCAN;
+    }
+    return UI_SCAN_PREVIEW_RUN_ELIGIBLE;
+}

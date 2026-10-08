@@ -17,6 +17,36 @@ def test_schema_is_versioned_and_rejects_unknown_future_versions():
     assert "ESP_ERR_NOT_FOUND" in source  # unknown schema_version -> not silently accepted
 
 
+def test_schema7_always_carries_explicit_scan_provenance():
+    header = read("components/localization_results/include/localization_run_record.h")
+    source = read("components/localization_results/localization_run_record_json.c")
+
+    assert "#define LOCALIZATION_RUN_SCHEMA_VERSION 7U" in header
+    assert "#define LOCALIZATION_RUN_SCHEMA_VERSION_V6 6U" in header
+    assert "#define LOCALIZATION_RUN_SCHEMA_VERSION_V5 5U" in header
+    for field in (
+        "bool scan_provenance_present;",
+        "bool scan_constraint_applied;",
+        "char scan_frame_id[LOCALIZATION_RUN_SCAN_FRAME_ID_SIZE];",
+        "uint64_t occupancy_created_at_ms;",
+        "uint64_t registration_geometry_computed_at_ms;",
+    ):
+        assert field in header
+    for key in (
+        '"scan_constraint_applied"',
+        '"scan_frame_id"',
+        '"occupancy_created_at_ms"',
+        '"registration_geometry_computed_at_ms"',
+    ):
+        assert key in source
+    assert (
+        'if (ok && write_schema_version == LOCALIZATION_RUN_SCHEMA_VERSION) {\n'
+        '        ok = cJSON_AddBoolToObject(\n'
+        '                root, "scan_constraint_applied"'
+    ) in source
+    assert "record->scan_provenance_present = true;" in source
+
+
 def test_component_owns_no_file_io():
     """This is pure serialize/parse; storage path/versioning conventions
     belong to whatever caller writes the JSON (MAX-166/167/168), not here."""

@@ -14,6 +14,8 @@ void ui_workflow_screen_render_locked(void) {}
 void ui_workflow_screen_refresh_locked(void) {}
 void ui_workflow_screen_handle_key_locked(keypad_key_t key) { (void)key; }
 void ui_scan_preview_refresh_locked(void) {}
+void ui_home_refresh_locked(void) {}
+void ui_render_hardware_locked(void) {}
 #endif
 
 
@@ -113,6 +115,8 @@ static void ui_screen_open_wifi(void)
 
 static void ui_screen_open_system(void)
 {
+    ui_context()->system_hardware_open = false;
+    ui_context()->system_hardware_selected = false;
     ui_context()->system_language_selection = ui_i18n_get_locale();
     ui_set_notice_locked(NULL);
     ui_render_system_locked();
@@ -172,7 +176,7 @@ static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
         .open = ui_screen_open_home,
         .render = ui_render_home_locked,
         .handle_key = ui_screen_handle_home_key,
-        .refresh = NULL,
+        .refresh = ui_home_refresh_locked,
     },
 
     [UI_SCREEN_OBJECTS] = {

@@ -22,7 +22,7 @@ $arguments = @(
     "--manifest", (Join-Path $repo "tests\host\manifest.d\performance-acceptance-foundation.json"),
     "--only", "virtual_board_stress",
     "--only", "scheduler_replay_stress",
-    "--build-dir", (Join-Path $repo "build\virtual-board-stress"),
+    "--build-dir", (Join-Path $repo ".test-build\virtual-board-stress"),
     "--sanitizers", $Sanitizers
 )
 if ($Compiler) {
@@ -39,7 +39,7 @@ if ($exitCode -eq 0 -or $KeepGoing) {
         $runner,
         "--manifest", (Join-Path $repo "tests\host\manifest.json"),
         "--only", "scheduler_replay_stress",
-        "--build-dir", (Join-Path $repo "build\virtual-board-scheduler-stress"),
+        "--build-dir", (Join-Path $repo ".test-build\virtual-board-scheduler-stress"),
         "--sanitizers", $Sanitizers
     )
     if ($Compiler) {

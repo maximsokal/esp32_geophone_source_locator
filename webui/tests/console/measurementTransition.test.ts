@@ -166,6 +166,21 @@ describe('measurement transition polling', () => {
     expect(sleeps).toEqual([1]);
   });
 
+  it('does not poll a cache reported unavailable by status', async () => {
+    const unavailable = status('REVIEW', false, true);
+    unavailable.storage_available = false;
+    let reads = 0;
+    const sleeps: number[] = [];
+
+    expect(isStorageCacheIdle(unavailable)).toBe(true);
+    await expect(waitForStorageCacheIdle(
+      async () => { reads += 1; return unavailable; },
+      { intervalMs: 1, timeoutMs: 20, sleep: async (milliseconds) => { sleeps.push(milliseconds); } },
+    )).resolves.toBe(unavailable);
+    expect(reads).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
   it('treats ERROR as terminal so the caller can refresh sessions before surfacing it', async () => {
     const result = await waitForMeasurementTransition(
       'measurement_stop',

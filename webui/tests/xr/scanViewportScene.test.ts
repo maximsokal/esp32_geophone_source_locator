@@ -11,9 +11,11 @@ import {
   cameraPoseForPreset,
   orbitDistanceLimits,
   prepareScanScene,
+  scanViewFitExtent,
   scanDimensionsText,
   scanLayerPlan,
   scanSourceBadgeText,
+  ScanSceneMaterializer,
   splitConfidenceBands,
   STABLE_CONFIDENCE,
   toViewport,
@@ -22,6 +24,8 @@ import {
   type ScanSceneSource,
 } from '../../src/xr/scanViewportScene';
 import type { SensorPlacementMarker } from '../../src/xr/sensorPlacementScene';
+import type { SourceHighlightScene } from '../../src/xr/sourceHighlight';
+import type { SolverCandidateVolume } from '../../src/xr/candidateVolume';
 import { formatDistance, formatNumber } from '../../src/i18n/format';
 import { translate, type I18nLocale } from '../../src/i18n';
 
@@ -242,6 +246,94 @@ describe('3D / Top / Front camera switching', () => {
     const radius = Math.hypot(...perspective.position);
     expect(radius).toBeGreaterThan(limits.minDistance);
     expect(radius).toBeLessThan(limits.maxDistance);
+  });
+
+  it('fits active source and uncertainty, adds candidate depth only for the search-volume view', () => {
+    const thinSurface = prepareScanScene(source({ bounds: { min: [0, 0, 0], max: [0.1, 0.1, 0] } }));
+    const sourceLayer = {
+      reason: null,
+      primary: {
+        run: {} as never,
+        positionProjectM: [0.05, 0.05, -1.5],
+        primary: true,
+        voxel: { index: 0, coordinates: [0, 0, 0], center: [0.05, 0.05, -1.5] },
+        edgeMarker: null,
+      },
+      uncertaintyVoxels: [{ index: 1, coordinates: [0, 0, 0], center: [0.05, 0.05, -2] }],
+      secondary: [],
+      voxelSizeMeters: 0.1,
+      historyRuns: [],
+      staleRuns: [],
+    } as unknown as SourceHighlightScene;
+    const candidateVolume: SolverCandidateVolume = {
+      min: [0, 0, -2.5], max: [0.1, 0.1, 0], voxelSize: 0.1, candidateDepthUnavailable: false,
+    };
+
+    const surfaceOnlyExtent = scanViewFitExtent(thinSurface, null, candidateVolume, false);
+    const sourceExtent = scanViewFitExtent(thinSurface, sourceLayer, candidateVolume, false);
+    const searchVolumeExtent = scanViewFitExtent(thinSurface, sourceLayer, candidateVolume, true);
+    expect(surfaceOnlyExtent).toBe(thinSurface.extent);
+    expect(sourceExtent).toBeGreaterThanOrEqual(4);
+    expect(searchVolumeExtent).toBeGreaterThanOrEqual(5);
+    expect(orbitDistanceLimits(searchVolumeExtent).maxDistance)
+      .toBeGreaterThan(orbitDistanceLimits(surfaceOnlyExtent).maxDistance);
+  });
+
+  it('matches the former boxed splitter byte-for-byte across truncated and threshold inputs', () => {
+    const positions = new Float32Array([
+      -1.2, 0.4, 2.5, 0.2, -0.8, 1.3, 4.1, 2.2, -0.5, 0.9, 1.7, 3.3, 2.1, 0, 0.4,
+    ]);
+    const confidence = new Float32Array([
+      WEAK_CONFIDENCE - 0.01,
+      WEAK_CONFIDENCE,
+      STABLE_CONFIDENCE - 0.01,
+      STABLE_CONFIDENCE,
+    ]);
+    const weak: number[] = [];
+    const improving: number[] = [];
+    const stable: number[] = [];
+    for (let index = 0; index < Math.min(Math.floor(positions.length / 3), confidence.length); index += 1) {
+      const offset = index * 3;
+      const transformed = toViewport(positions[offset], positions[offset + 1], positions[offset + 2], 0.4, -0.2, 1.1);
+      const target = confidence[index] < WEAK_CONFIDENCE ? weak
+        : confidence[index] < STABLE_CONFIDENCE ? improving
+          : stable;
+      target.push(transformed[0], transformed[1], transformed[2]);
+    }
+    const actual = splitConfidenceBands(positions, confidence, 0.4, -0.2, 1.1);
+    expect(actual.weak).toEqual(Float32Array.from(weak));
+    expect(actual.improving).toEqual(Float32Array.from(improving));
+    expect(actual.stable).toEqual(Float32Array.from(stable));
+  });
+
+  it('materializes hidden volume layers on demand, reuses other layers, and drops caches on generation change', () => {
+    const snapshot = source({
+      freeAirPositions: new Float32Array(12).fill(2),
+      unknownCandidatePositions: new Float32Array(36).fill(3),
+    });
+    const materializer = new ScanSceneMaterializer();
+    const qualityNeeds = {
+      good: true, bad: true, freeAir: false, unknownSpace: false, manualPoints: true, dimensions: true,
+    };
+    const quality = materializer.prepare(snapshot, 'scan-a', qualityNeeds);
+    expect(quality.freeAirPositions).toHaveLength(0);
+    expect(quality.unknownPositions).toHaveLength(0);
+
+    const search = materializer.prepare(snapshot, 'scan-a', { ...qualityNeeds, freeAir: true, unknownSpace: true });
+    expect(search.freeAirPositions).toHaveLength(snapshot.freeAirPositions.length);
+    expect(search.unknownPositions).toHaveLength(snapshot.unknownCandidatePositions.length);
+    expect(search.good).toBe(quality.good);
+    const unrelatedToggle = materializer.prepare(snapshot, 'scan-a', {
+      ...qualityNeeds, freeAir: true, unknownSpace: true, dimensions: false,
+    });
+    expect(unrelatedToggle.freeAirPositions).toBe(search.freeAirPositions);
+    expect(unrelatedToggle.unknownPositions).toBe(search.unknownPositions);
+    expect(unrelatedToggle.good).toBe(search.good);
+
+    const nextGeneration = materializer.prepare(snapshot, 'scan-b', { ...qualityNeeds, freeAir: true, unknownSpace: true });
+    expect(nextGeneration.freeAirPositions).not.toBe(search.freeAirPositions);
+    expect(nextGeneration.unknownPositions).not.toBe(search.unknownPositions);
+    materializer.release();
   });
 });
 

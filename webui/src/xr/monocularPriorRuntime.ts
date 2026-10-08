@@ -182,6 +182,7 @@ export function physicalDepthGuardAllowsAiVeto(
 export class MonocularPriorRuntime {
   private enabled = false;
   private providerBusy = false;
+  private providerBusyEpoch: number | null = null;
   private epoch = 1;
   private calibrated: CalibratedPrior | null = null;
   private staged: StagedPostScanPrior | null = null;
@@ -207,11 +208,14 @@ export class MonocularPriorRuntime {
     if (this.enabled === enabled) return;
     this.enabled = enabled;
     this.epoch += 1;
+    this.providerBusy = false;
+    this.providerBusyEpoch = null;
     this.calibrated = null;
     this.staged = null;
     this.lastError = null;
     this.lastCalibrationDiagnostics = null;
     this.notify();
+    if (!enabled) void this.releaseProviderMemory();
   }
 
   get isEnabled(): boolean { return this.enabled; }
@@ -234,6 +238,24 @@ export class MonocularPriorRuntime {
     this.lastError = null;
     this.lastCalibrationDiagnostics = null;
     this.notify();
+  }
+
+  /** Release model/runtime memory and invalidate every per-scan result in flight. */
+  async releaseMemory(): Promise<void> {
+    this.epoch += 1;
+    this.providerBusy = false;
+    this.providerBusyEpoch = null;
+    this.calibrated = null;
+    this.staged = null;
+    this.lastError = null;
+    this.lastCalibrationDiagnostics = null;
+    this.notify();
+    await this.releaseProviderMemory();
+  }
+
+  private async releaseProviderMemory(): Promise<void> {
+    if (this.provider.releaseMemory !== undefined) await this.provider.releaseMemory();
+    else await this.provider.dispose();
   }
 
   stagePostScan(guidance: RgbDepthGuidanceFrame, depth: CpuDepthInformationLike): boolean {
@@ -259,6 +281,7 @@ export class MonocularPriorRuntime {
     const requestEpoch = this.epoch;
     this.staged = null;
     this.providerBusy = true;
+    this.providerBusyEpoch = requestEpoch;
     this.notify();
     try {
       const prior = await this.provider.estimateRgba(
@@ -307,8 +330,11 @@ export class MonocularPriorRuntime {
       }
       return false;
     } finally {
-      this.providerBusy = false;
-      this.notify();
+      if (this.providerBusyEpoch === requestEpoch) {
+        this.providerBusy = false;
+        this.providerBusyEpoch = null;
+        this.notify();
+      }
     }
   }
 
@@ -458,10 +484,8 @@ export class MonocularPriorRuntime {
     );
   }
 
-  dispose(): void {
-    this.epoch += 1;
-    this.provider.dispose();
-    this.reset();
+  async dispose(): Promise<void> {
+    await this.releaseMemory();
     this.listeners.clear();
   }
 }

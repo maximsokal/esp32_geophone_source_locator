@@ -6,14 +6,20 @@ export interface TagCameraFrame {
   height: number;
   rgba: Uint8Array;
   capturedAtMs: number;
+  cameraPosition: readonly [number, number, number];
+  cameraForward: readonly [number, number, number];
   projectionMatrix: ArrayLike<number>;
   worldFromView: ArrayLike<number>;
+  /** The RGBA buffer is a fresh, top-left-origin readback owned by this frame. */
+  rgbaOwnership?: 'owned';
 }
 
 export interface DetectedAprilTagFrame {
   width: number;
   height: number;
   capturedAtMs: number;
+  cameraPosition: readonly [number, number, number];
+  cameraForward: readonly [number, number, number];
   detections: DetectedAprilTag[];
   projectionMatrix: Float32Array;
   worldFromView: Float32Array;
@@ -23,6 +29,7 @@ type WorkerResult = { type: 'result'; requestId: number; epoch: number; detectio
 type WorkerLike = Pick<Worker, 'addEventListener' | 'removeEventListener' | 'postMessage' | 'terminate'>;
 interface Pending {
   epoch: number; width: number; height: number; capturedAtMs: number;
+  cameraPosition: readonly [number, number, number]; cameraForward: readonly [number, number, number];
   projectionMatrix: Float32Array; worldFromView: Float32Array;
   resolve: (frame: DetectedAprilTagFrame | null) => void;
   reject: (error: Error) => void;
@@ -38,12 +45,7 @@ export class TagDetectorClient {
 
   constructor(factory: () => WorkerLike = () => new TagDetectorWorker()) {
     this.factory = factory;
-    try {
-      this.worker = factory();
-      this.worker.addEventListener('message', this.onMessage);
-      this.worker.addEventListener('error', this.onError);
-      this.worker.postMessage({ type: 'reset', epoch: this.epoch });
-    } catch { this.worker = null; }
+    this.ensureWorker();
   }
 
   get busy(): boolean { return this.pending.size > 0; }
@@ -51,13 +53,17 @@ export class TagDetectorClient {
 
   detect(frame: TagCameraFrame): Promise<DetectedAprilTagFrame | null> {
     if (this.disposed) return Promise.reject(new Error('Tag detector client is disposed.'));
-    if (this.worker === null) return Promise.reject(new Error('Tag detector worker is unavailable.'));
+    if (!this.ensureWorker()) return Promise.reject(new Error('Tag detector worker is unavailable.'));
     if (this.pending.size > 0) return Promise.resolve(null);
     const requestId = ++this.requestId;
-    const rgba = frame.rgba.slice();
+    const backing = frame.rgba.buffer;
+    const canTransferOwnedRgba = frame.rgbaOwnership === 'owned' && backing instanceof ArrayBuffer &&
+      frame.rgba.byteOffset === 0 && frame.rgba.byteLength === backing.byteLength;
+    const rgba = canTransferOwnedRgba ? frame.rgba : frame.rgba.slice();
     return new Promise((resolve, reject) => {
       this.pending.set(requestId, {
         epoch: this.epoch, width: frame.width, height: frame.height, capturedAtMs: frame.capturedAtMs,
+        cameraPosition: [...frame.cameraPosition], cameraForward: [...frame.cameraForward],
         projectionMatrix: Float32Array.from(frame.projectionMatrix),
         worldFromView: Float32Array.from(frame.worldFromView), resolve, reject,
       });
@@ -67,18 +73,33 @@ export class TagDetectorClient {
 
   reset(): void {
     this.epoch += 1;
+    this.detachWorker();
     for (const item of this.pending.values()) item.reject(new Error('Tag detector reset for a new XR session.'));
     this.pending.clear();
-    this.worker?.postMessage({ type: 'reset', epoch: this.epoch });
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.epoch += 1;
+    this.detachWorker();
     for (const item of this.pending.values()) item.reject(new Error('Tag detector client disposed.'));
     this.pending.clear();
-    this.detachWorker();
+  }
+
+  private ensureWorker(): boolean {
+    if (this.worker !== null) return true;
+    try {
+      const worker = this.factory();
+      this.worker = worker;
+      worker.addEventListener('message', this.onMessage);
+      worker.addEventListener('error', this.onError);
+      worker.postMessage({ type: 'reset', epoch: this.epoch });
+      return true;
+    } catch {
+      this.detachWorker();
+      return false;
+    }
   }
 
   private readonly onMessage = (event: MessageEvent<WorkerResult>): void => {
@@ -92,15 +113,16 @@ export class TagDetectorClient {
     }
     request.resolve({
       width: request.width, height: request.height, capturedAtMs: request.capturedAtMs,
+      cameraPosition: request.cameraPosition, cameraForward: request.cameraForward,
       detections: message.detections, projectionMatrix: request.projectionMatrix, worldFromView: request.worldFromView,
     });
   };
 
   private readonly onError = (event: ErrorEvent): void => {
     const error = new Error(event.message || 'Tag detector worker failed.');
+    this.detachWorker();
     for (const item of this.pending.values()) item.reject(error);
     this.pending.clear();
-    this.detachWorker();
   };
 
   private detachWorker(): void {

@@ -4,17 +4,20 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "esp_log.h"
 #include "storage_manager.h"
 #include "storage_manager_internal.h"
 
 
 #define STORAGE_TEXT_TEST_PATH "storage_manager_text_read_contract_tmp.txt"
+#define STORAGE_TEXT_MISSING_PATH "storage_manager_text_missing_contract_tmp.txt"
 
 
 static esp_err_t fake_operation_begin_result;
 static unsigned fake_operation_begin_calls;
 static unsigned fake_operation_end_calls;
 static unsigned fake_stat_calls;
+static int fake_fopen_errno;
 
 
 esp_err_t storage_manager_operation_begin(void)
@@ -40,6 +43,20 @@ static int storage_manager_test_stat(
 }
 
 
+static FILE *storage_manager_test_fopen(
+    const char *path,
+    const char *mode
+)
+{
+    if (fake_fopen_errno != 0) {
+        errno = fake_fopen_errno;
+        return NULL;
+    }
+
+    return fopen(path, mode);
+}
+
+
 /* Rename helper-local symbols so both production translation units can share this TU. */
 #define TAG storage_manager_text_helper_TAG
 #define storage_text_log_io storage_manager_text_helper_log_io
@@ -51,7 +68,9 @@ static int storage_manager_test_stat(
 #undef storage_text_errno_to_error
 #undef stat
 
+#define fopen(...) storage_manager_test_fopen(__VA_ARGS__)
 #include "../storage_manager_text_read.c"
+#undef fopen
 
 
 static void reset_fake_state(void)
@@ -60,6 +79,9 @@ static void reset_fake_state(void)
     fake_operation_begin_calls = 0U;
     fake_operation_end_calls = 0U;
     fake_stat_calls = 0U;
+    fake_fopen_errno = 0;
+    storage_manager_test_last_log_level = '\0';
+    storage_manager_test_last_log_message[0] = '\0';
 }
 
 
@@ -176,6 +198,60 @@ static void test_known_present_errors_still_pair_operation_guard(void)
 }
 
 
+static void test_missing_optional_file_logs_at_debug(void)
+{
+    (void)remove(STORAGE_TEXT_MISSING_PATH);
+    reset_fake_state();
+
+    char buffer[32] = {0};
+    assert(
+        storage_manager_read_text(
+            STORAGE_TEXT_MISSING_PATH,
+            buffer,
+            sizeof(buffer)
+        ) == ESP_ERR_NOT_FOUND
+    );
+    assert(fake_operation_end_calls == 1U);
+    assert(storage_manager_test_last_log_level == 'D');
+    assert(
+        strcmp(
+            storage_manager_test_last_log_message,
+            "Could not open " STORAGE_TEXT_MISSING_PATH ": errno=2"
+        ) == 0
+    );
+}
+
+
+static void test_non_missing_open_error_remains_error(void)
+{
+    write_text_file(STORAGE_TEXT_TEST_PATH, "primary");
+    reset_fake_state();
+    fake_fopen_errno = EACCES;
+
+    char buffer[32] = {0};
+    assert(
+        storage_manager_read_text_known_present(
+            STORAGE_TEXT_TEST_PATH,
+            buffer,
+            sizeof(buffer)
+        ) == ESP_FAIL
+    );
+    assert(fake_operation_end_calls == 1U);
+    assert(storage_manager_test_last_log_level == 'E');
+
+    char expected[128];
+    (void)snprintf(
+        expected,
+        sizeof(expected),
+        "Could not open %s: errno=%d",
+        STORAGE_TEXT_TEST_PATH,
+        EACCES
+    );
+    assert(strcmp(storage_manager_test_last_log_message, expected) == 0);
+    remove_test_files();
+}
+
+
 static void test_invalid_arguments(void)
 {
     char buffer[4] = {0};
@@ -191,6 +267,8 @@ int main(void)
     test_known_present_reads_without_recovery_probe();
     test_normal_reader_keeps_backup_recovery();
     test_known_present_errors_still_pair_operation_guard();
+    test_missing_optional_file_logs_at_debug();
+    test_non_missing_open_error_remains_error();
     puts("storage manager text read contract tests passed");
     return 0;
 }

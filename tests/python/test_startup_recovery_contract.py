@@ -82,7 +82,7 @@ def test_full_recovery_is_not_on_interactive_startup_critical_path():
 
     run_patterns = [
         r"web_server_defer_status_cache_refresh\(\)",
-        r"app_startup_initialize_services\(\s*startup_started_ms\s*\)",
+        r"app_startup_initialize_services\(\s*startup_started_ms,\s*&module_policy\s*\)",
         r"power_control_arm_shutdown_button\(\)",
         r'app_startup_log_elapsed\(\s*"startup_total"',
         r"object_recovery_start_background_with_callback\(",

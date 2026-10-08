@@ -2,6 +2,7 @@ import {
   encodeOccupancySolverArtifact,
   type OccupancyRegistration,
 } from '../../../src/xr/occupancySolverArtifact';
+import { localFloorMatrixToProject } from '../../../src/xr/projectFrame';
 
 /*
  * Shared builder for the void-scene occupancy artifact (see
@@ -12,14 +13,16 @@ export const GRID = 30;
 export const TRENCH = { lowIndex: 14, highIndex: 16, bottomIndex: -9 };
 
 export const VOID_SCENE_REGISTRATION: OccupancyRegistration = {
+  frame: 'webxr_local_floor',
   source: 'apriltag',
   geometry_computed_at_ms: 424242,
-  sensor_to_scan: [0, -1, 0, 10, 1, 0, 0, -5, 0, 0, 1, 2, 0, 0, 0, 1],
+  sensor_to_scan: [0, -1, 0, 10, 0, 0, 1, 2, -1, 0, 0, 3, 0, 0, 0, 1],
   residual_m: 0.004,
+  threshold_m: 0.05,
 };
 
 export function toScan(x: number, y: number, z: number): [number, number, number] {
-  const m = VOID_SCENE_REGISTRATION.sensor_to_scan;
+  const m = localFloorMatrixToProject(VOID_SCENE_REGISTRATION.sensor_to_scan);
   return [
     m[0] * x + m[1] * y + m[2] * z + m[3],
     m[4] * x + m[5] * y + m[6] * z + m[7],

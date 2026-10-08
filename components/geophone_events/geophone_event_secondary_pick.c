@@ -67,6 +67,7 @@ bool geophone_event_pick_secondary_arrival(
 
     *result = (geophone_channel_pick_t) {
         .status = GEOPHONE_PICK_REJECTED_NO_TRIGGER,
+        .reason = GEOPHONE_PICK_REASON_NONE,
         .method = GEOPHONE_PICK_METHOD_STA_LTA_REFINED,
         .uncertainty_samples = config != NULL ? config->sta_window_samples : 0u,
     };

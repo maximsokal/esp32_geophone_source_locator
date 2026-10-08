@@ -11,6 +11,7 @@
 #include "runtime_observability.h"
 #include "seismic_acquisition.h"
 #include "nrf_topology_service.h"
+#include "storage_manager.h"
 #include "web_server_internal.h"
 
 static device_status_snapshot_t g_status;
@@ -74,6 +75,7 @@ static void reset_fakes(void)
     memset(&g_topology, 0, sizeof(g_topology));
     memset(g_nrf_logs, 0, sizeof(g_nrf_logs));
     g_topology_result = ESP_OK;
+    storage_manager_test_set_ready(true);
     g_topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
     g_topology.remotes[0].state = NRF_TOPOLOGY_NODE_ASSIGNED;
     g_nrf_logs[0] = (nrf_log_node_summary_t) {
@@ -558,6 +560,7 @@ static void test_full_builder_and_pods(void)
     assert(cJSON_IsNull(object_item(remote0_logs, "boot_id")));
     assert_number_near(number_item(remote0_logs, "stored"), 0.0);
 
+    assert(bool_item(root, "storage_available"));
     assert(!bool_item(root, "storage_busy"));
     cJSON *system = object_item(root, "system");
     assert(strcmp(string_item(system, "state"), "READY") == 0);
@@ -874,6 +877,27 @@ static void test_extended_cache_and_errors(void)
     test_runtime_metrics_accept_zero_and_max_values();
 }
 
+static void test_storage_unavailable_is_not_reported_as_busy(void)
+{
+    reset_fakes();
+    fill_status();
+    storage_manager_test_set_ready(false);
+    g_cache_ready = false;
+
+    cJSON *root = build_json(false, NULL);
+    assert(!bool_item(root, "storage_available"));
+    assert(!bool_item(root, "storage_busy"));
+    cJSON_Delete(root);
+
+    reset_fakes();
+    fill_status();
+    g_cache_ready = false;
+    root = build_json(false, NULL);
+    assert(bool_item(root, "storage_available"));
+    assert(bool_item(root, "storage_busy"));
+    cJSON_Delete(root);
+}
+
 static void test_jitter_p99_nearest_rank_from_histogram(void)
 {
     reset_fakes();
@@ -925,6 +949,7 @@ int main(void)
     test_main_status_omits_aht_humidity_when_absent();
     test_policy_fault_and_snapshot_fallback();
     test_extended_cache_and_errors();
+    test_storage_unavailable_is_not_reported_as_busy();
     test_jitter_p99_nearest_rank_from_histogram();
     puts("web_status_json_builder_test: PASS");
     return 0;

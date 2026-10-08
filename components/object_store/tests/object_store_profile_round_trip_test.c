@@ -10,15 +10,34 @@
 
 static char persisted_json[8192];
 static int64_t fake_time_us;
+static unsigned s_metadata_read_calls;
+static unsigned s_object_exists_calls;
+static unsigned s_path_exists_calls;
+static esp_err_t s_metadata_read_error;
+static bool s_storage_ready = true;
 
 bool storage_manager_path_exists(const char *path)
 {
+    if (path != NULL && strstr(path, "/object.json") != NULL) ++s_path_exists_calls;
     return path != NULL && strstr(path, "/object.json") != NULL;
+}
+
+bool storage_manager_is_ready(void)
+{
+    return s_storage_ready;
+}
+
+void storage_manager_operation_end(void)
+{
 }
 
 esp_err_t storage_manager_read_text(const char *path, char *buffer, size_t buffer_size)
 {
     if (path == NULL || buffer == NULL || buffer_size == 0U) return ESP_ERR_INVALID_ARG;
+    if (strstr(path, "/object.json") != NULL) {
+        ++s_metadata_read_calls;
+        if (s_metadata_read_error != ESP_OK) return s_metadata_read_error;
+    }
     if (!storage_manager_path_exists(path)) return ESP_ERR_NOT_FOUND;
     if (strlen(persisted_json) + 1U > buffer_size) return ESP_ERR_INVALID_SIZE;
     memcpy(buffer, persisted_json, strlen(persisted_json) + 1U);
@@ -79,6 +98,7 @@ esp_err_t object_store_fs_metadata_path(const char *object_id, char *path, size_
 
 bool object_store_fs_object_exists(const char *object_id)
 {
+    ++s_object_exists_calls;
     return object_format_id_is_valid(object_id);
 }
 
@@ -136,8 +156,88 @@ bool object_store_profile_cache_delete_requires_membership_refresh(
 
 static void set_metadata(const char *json)
 {
+    object_store_profile_cache_reset();
+    s_metadata_read_calls = 0U;
+    s_object_exists_calls = 0U;
+    s_path_exists_calls = 0U;
+    s_metadata_read_error = ESP_OK;
+    s_storage_ready = true;
     assert(strlen(json) + 1U < sizeof(persisted_json));
     memcpy(persisted_json, json, strlen(json) + 1U);
+}
+
+static void assert_location_equal(
+    const object_store_location_t *expected,
+    const object_store_location_t *actual
+);
+
+
+static void test_profile_cache_reads_once_and_reloads_after_mutation(void)
+{
+    set_metadata("{\"schema_version\":1,\"id\":\"OBJ_0001\",\"name\":\"FIELD\"}");
+
+    object_store_profile_t profile;
+    for (unsigned read = 0U; read < 5U; ++read) {
+        assert(object_store_get_profile("OBJ_0001", &profile) == ESP_OK);
+    }
+    assert(s_metadata_read_calls == 1U);
+    assert(s_object_exists_calls == 1U);
+    assert(s_path_exists_calls == 1U);
+
+    object_store_location_t expected = {
+        .valid = true,
+        .latitude = 51.5,
+        .longitude = -0.12,
+        .accuracy_m = 2.0f,
+        .captured_at_ms = 77U,
+    };
+    (void)snprintf(expected.source, sizeof(expected.source), "PHONE_GPS");
+    assert(object_store_set_location("OBJ_0001", &expected) == ESP_OK);
+
+    const unsigned reads_after_write = s_metadata_read_calls;
+    const unsigned exists_after_write = s_object_exists_calls;
+    const unsigned path_stats_after_write = s_path_exists_calls;
+    assert(object_store_get_profile("OBJ_0001", &profile) == ESP_OK);
+    assert_location_equal(&expected, &profile.location);
+    assert(s_metadata_read_calls == reads_after_write + 1U);
+    assert(s_object_exists_calls == exists_after_write + 1U);
+    assert(s_path_exists_calls == path_stats_after_write + 1U);
+
+    const unsigned reads_after_reload = s_metadata_read_calls;
+    const unsigned exists_after_reload = s_object_exists_calls;
+    const unsigned path_stats_after_reload = s_path_exists_calls;
+    for (unsigned read = 0U; read < 5U; ++read) {
+        assert(object_store_get_profile("OBJ_0001", &profile) == ESP_OK);
+    }
+    assert(s_metadata_read_calls == reads_after_reload);
+    assert(s_object_exists_calls == exists_after_reload);
+    assert(s_path_exists_calls == path_stats_after_reload);
+}
+
+static void test_profile_cache_does_not_cache_errors_and_drops_on_reset_or_unmount(void)
+{
+    set_metadata("{\"schema_version\":1,\"id\":\"OBJ_0001\",\"name\":\"FIELD\"}");
+    object_store_profile_t profile;
+
+    s_metadata_read_error = ESP_FAIL;
+    assert(object_store_get_profile("OBJ_0001", &profile) == ESP_FAIL);
+    assert(s_metadata_read_calls == 1U);
+    s_metadata_read_error = ESP_OK;
+    assert(object_store_get_profile("OBJ_0001", &profile) == ESP_OK);
+    assert(s_metadata_read_calls == 2U);
+    assert(object_store_get_profile("OBJ_0001", &profile) == ESP_OK);
+    assert(s_metadata_read_calls == 2U);
+
+    s_storage_ready = false;
+    assert(object_store_get_profile("OBJ_0001", &profile) == ESP_ERR_INVALID_STATE);
+    assert(s_metadata_read_calls == 2U);
+    s_storage_ready = true;
+    assert(object_store_get_profile("OBJ_0001", &profile) == ESP_OK);
+    assert(s_metadata_read_calls == 3U);
+
+    object_store_profile_cache_reset();
+    assert(object_store_get_profile("OBJ_0001", &profile) == ESP_OK);
+    assert(s_metadata_read_calls == 4U);
 }
 
 static void assert_geometry_equal(
@@ -282,6 +382,8 @@ static void test_interrupted_update_is_rejected(void)
 
 int main(void)
 {
+    test_profile_cache_reads_once_and_reloads_after_mutation();
+    test_profile_cache_does_not_cache_errors_and_drops_on_reset_or_unmount();
     test_geometry_write_close_reopen_round_trip();
     test_old_and_partial_geometry_are_safe();
     test_phone_location_write_close_reopen_round_trip();

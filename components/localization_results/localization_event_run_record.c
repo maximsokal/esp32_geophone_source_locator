@@ -70,6 +70,8 @@ esp_err_t localization_event_result_to_run_record(
 
     localization_run_record_t record;
     memset(&record, 0, sizeof(record));
+    record.schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
+    record.scan_provenance_present = true;
     /* Redundancy is attached by the caller that knows the search dimensionality. */
     record.degrees_of_freedom = -1;
 

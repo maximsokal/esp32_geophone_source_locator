@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { RecordingGateStatus } from '../../src/domain/device';
-import { recordingGateBlocksStart } from '../../src/features/objects/recordingGate';
+import {
+  recordingGateBlocksStart,
+  recordingStartUnavailable,
+} from '../../src/features/objects/recordingGate';
+import { recordingGateReason } from '../../src/features/objects/recordingGateUi';
 
 function gate(overrides: Partial<RecordingGateStatus> = {}): RecordingGateStatus {
   return {
@@ -53,5 +57,19 @@ describe('recording gate admission', () => {
       gate({ decision: 'ALLOWED_3D_CAPABLE', dimensionality: 'CAPABLE_3D', allowed: true }),
       false,
     )).toBe(false);
+  });
+
+  it('disables new recording when storage or the recorder is unavailable', () => {
+    expect(recordingStartUnavailable(false, true, false)).toBe(true);
+    expect(recordingStartUnavailable(true, false, false)).toBe(true);
+    expect(recordingStartUnavailable(undefined, undefined, false)).toBe(false);
+    expect(recordingStartUnavailable(false, false, true)).toBe(false);
+  });
+
+  it('prefers the storage-unavailable reason code over an eligible topology decision', () => {
+    expect(recordingGateReason(
+      gate({ reason: 'STORAGE_UNAVAILABLE' }),
+      (key) => key,
+    )).toBe('recording_gate.reason.storage_unavailable');
   });
 });

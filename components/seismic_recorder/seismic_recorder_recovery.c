@@ -682,11 +682,18 @@ esp_err_t seismic_recorder_recover_object_sessions(
         return ESP_ERR_INVALID_SIZE;
     }
 
-    char session_ids[SEISMIC_RECORDER_MAX_SESSIONS][SEISMIC_RECORDER_SESSION_ID_SIZE];
+    char (*session_ids)[SEISMIC_RECORDER_SESSION_ID_SIZE] = malloc(
+        SEISMIC_RECORDER_MAX_SESSIONS * sizeof(*session_ids)
+    );
+    if (session_ids == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
     size_t session_count = 0U;
 
     err = storage_manager_operation_begin();
     if (err != ESP_OK) {
+        free(session_ids);
         return err;
     }
 
@@ -694,6 +701,7 @@ esp_err_t seismic_recorder_recover_object_sessions(
     if (directory == NULL) {
         const int open_errno = errno;
         storage_manager_operation_end();
+        free(session_ids);
         return open_errno == ENOENT || open_errno == ENOTDIR
             ? ESP_OK
             : ESP_FAIL;
@@ -720,6 +728,7 @@ esp_err_t seismic_recorder_recover_object_sessions(
     const int close_result = closedir(directory);
     storage_manager_operation_end();
     if (read_errno != 0 || close_result != 0) {
+        free(session_ids);
         return ESP_FAIL;
     }
 
@@ -766,5 +775,6 @@ esp_err_t seismic_recorder_recover_object_sessions(
 #endif
     }
 
+    free(session_ids);
     return first_operational_error;
 }

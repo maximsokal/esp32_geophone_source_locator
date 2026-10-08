@@ -105,7 +105,7 @@ def test_scan_upload_keeps_bulk_timeout_policy_and_finishes_fully_accepted_work(
     assert post_recv_gate < write_index
 
     close_index = save.index("web_scan_close_writer")
-    commit_index = save.index("web_scan_commit_temp", close_index)
+    commit_index = save.index("web_scan_commit_scan_temp", close_index)
     assert "web_server_shutdown_requested()" not in save[close_index:commit_index]
     assert "shutdown admission boundary" in save[close_index:commit_index]
     assert "web_scan_remove_temp_best_effort(temp_path)" in save
