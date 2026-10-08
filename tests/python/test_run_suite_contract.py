@@ -14,6 +14,8 @@ def test_all_suite_runs_base_and_every_host_manifest_fragment():
     assert 'Sort-Object Name' in source
     assert '"--manifest"' in source
     assert '"--build-dir"' in source
+    assert '$baseBuildDir = Join-Path $repo ".test-build\\host-tests"' in source
+    assert 'Join-Path $repo (".test-build\\host-tests-{0}" -f $suiteName)' in source
     assert '"--keep-going"' in source
 
     shared_host_branch = 'if ($Suite -eq "Host" -or $Suite -eq "All") {'
@@ -21,6 +23,15 @@ def test_all_suite_runs_base_and_every_host_manifest_fragment():
     branch_start = source.index(shared_host_branch)
     python_start = source.index('if ($Suite -eq "All") {', branch_start)
     assert "Invoke-HostSuites" in source[branch_start:python_start]
+
+
+def test_virtual_board_stress_native_builds_use_test_build():
+    source = (
+        REPO_ROOT / "tools" / "run_virtual_board_stress.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert 'Join-Path $repo ".test-build\\virtual-board-stress"' in source
+    assert 'Join-Path $repo ".test-build\\virtual-board-scheduler-stress"' in source
 
 
 def test_all_suite_surfaces_only_current_host_failures_in_final_report():

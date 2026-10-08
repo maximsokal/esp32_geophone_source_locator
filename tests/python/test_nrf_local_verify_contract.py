@@ -49,6 +49,7 @@ def test_nrf_scope_runs_host_policy_and_canonical_ncs_build(tmp_path: Path):
     assert steps[0].skip_reason is None
     assert steps[0].command[0] == "python-test"
     assert "coverage-nrf.json" in steps[0].command[steps[0].command.index("--manifest") + 1]
+    assert str(root / ".test-build" / "host-tests-coverage-nrf") in steps[0].command
 
     build = steps[1]
     assert build.skip_reason is None

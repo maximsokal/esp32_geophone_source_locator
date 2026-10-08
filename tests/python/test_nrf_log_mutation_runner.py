@@ -137,7 +137,8 @@ def test_dry_run_writes_nothing(tmp_path: Path) -> None:
     assert not errors
     assert rows[0][3] == "OK"
     assert tree_hash(root) == before
-    assert not (root / "build" / "mutation-backup").exists()
+    assert runner.BACKUP_DIR == Path(".test-build/mutation-backup")
+    assert not (root / ".test-build" / "mutation-backup").exists()
 
 
 def test_file_restored_after_test_runner_exception(tmp_path: Path) -> None:
@@ -151,7 +152,8 @@ def test_file_restored_after_test_runner_exception(tmp_path: Path) -> None:
     assert exit_code == 3
     assert results[0].status == "ERROR"
     assert target.read_bytes() == b"ORIGINAL\n"
-    assert not list((root / "build" / "mutation-backup").glob("*.json"))
+    assert runner.recovery_directory(root) == root / ".test-build" / "mutation-backup"
+    assert not list((root / ".test-build" / "mutation-backup").glob("*.json"))
 
 
 def test_file_restored_after_simulated_keyboard_interrupt(tmp_path: Path) -> None:
@@ -166,7 +168,8 @@ def test_file_restored_after_simulated_keyboard_interrupt(tmp_path: Path) -> Non
     assert results[0].status == "ERROR"
     assert results[0].detail == "interrupted"
     assert target.read_bytes() == b"ORIGINAL\n"
-    assert not list((root / "build" / "mutation-backup").glob("*.json"))
+    assert runner.recovery_directory(root) == root / ".test-build" / "mutation-backup"
+    assert not list((root / ".test-build" / "mutation-backup").glob("*.json"))
 
 
 def test_leftover_marker_blocks_execution_and_restore_recovers_it(tmp_path: Path) -> None:

@@ -123,7 +123,7 @@ def host_steps(root: Path, python_executable: str) -> list[Step]:
                         "--manifest",
                         str(manifest),
                         "--build-dir",
-                        str(root / "build" / f"host-tests-{suite}"),
+                        str(root / ".test-build" / f"host-tests-{suite}"),
                         "--keep-going",
                     ),
                 )
@@ -258,7 +258,7 @@ def nrf_host_policy_step(root: Path, python_executable: str) -> Step:
             "--manifest",
             str(manifest),
             "--build-dir",
-            str(root / "build" / "host-tests-coverage-nrf"),
+            str(root / ".test-build" / "host-tests-coverage-nrf"),
             "--keep-going",
         ),
     )

@@ -1,8 +1,21 @@
-from pathlib import Path
+import importlib.util
 import re
+import sys
+from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_host_runner_default_build_dir_uses_test_build(monkeypatch):
+    runner_path = REPO_ROOT / "tools" / "run_host_tests.py"
+    spec = importlib.util.spec_from_file_location("run_host_tests_default_path", runner_path)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    monkeypatch.setattr(sys, "argv", [str(runner_path)])
+
+    assert runner.parse_args().build_dir == Path(".test-build/host-tests")
 
 
 def host_log_stubs() -> list[Path]:

@@ -54,7 +54,7 @@ def test_host_plan_runs_base_then_sorted_manifest_fragments(tmp_path: Path):
     assert steps[0].command[-1] == "--keep-going"
     assert steps[1].command[-3:] == (
         "--build-dir",
-        str(root / "build" / "host-tests-a-first"),
+        str(root / ".test-build" / "host-tests-a-first"),
         "--keep-going",
     )
 

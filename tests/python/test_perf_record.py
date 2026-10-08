@@ -26,7 +26,7 @@ from tools.validate_perf_record import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BUILD_ROOT = REPO_ROOT / "build"
+BUILD_ROOT = REPO_ROOT / ".test-build"
 HOST_RUNNER = REPO_ROOT / "tools" / "run_host_tests.py"
 PERF_PREFIX = "PERF_RECORD_JSON: "
 
@@ -236,7 +236,8 @@ def test_max361_build_evidence_is_the_only_profile_sha_source(tmp_path):
     validate_record(record)
 
 
-def test_virtual_stress_target_emits_valid_records_under_host_build_lock():
+def test_virtual_stress_target_emits_valid_records_under_test_build_lock():
+    assert BUILD_ROOT == REPO_ROOT / ".test-build"
     unique = uuid.uuid4().hex
     build_dir = BUILD_ROOT / f"perf-record-host-{unique}"
     log_path = BUILD_ROOT / f"perf-record-host-{unique}.log"

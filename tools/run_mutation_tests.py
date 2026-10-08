@@ -18,8 +18,8 @@ from typing import Callable, Sequence
 import uuid
 
 
-BACKUP_DIR = Path("build/mutation-backup")
-TEST_BUILD_DIR = Path("build/host-tests-mutation")
+BACKUP_DIR = Path(".test-build/mutation-backup")
+TEST_BUILD_DIR = Path(".test-build/host-tests-mutation")
 TEST_TIMEOUT_SECONDS = 180.0
 ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
 MUTATION_KEYS = {"id", "description", "file", "find", "replace", "tests", "expected_killer"}
