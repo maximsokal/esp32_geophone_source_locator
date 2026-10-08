@@ -22,17 +22,32 @@ export const SCAN_ANNOTATION_CAPACITY_ERROR = 'scan.annotations.capacity_exceede
 
 let validationBytesVisited = 0;
 let artifactChecksumCrcBytesVisited = 0;
+let encoderArrayBytesCopied = 0;
+let decoderPayloadBytesCopied = 0;
+let normalConfidenceValidationPasses = 0;
 
 export function getScanArtifactMetrics(): Readonly<{
   validationBytesVisited: number;
   artifactChecksumCrcBytesVisited: number;
+  encoderArrayBytesCopied: number;
+  decoderPayloadBytesCopied: number;
+  normalConfidenceValidationPasses: number;
 }> {
-  return { validationBytesVisited, artifactChecksumCrcBytesVisited };
+  return {
+    validationBytesVisited,
+    artifactChecksumCrcBytesVisited,
+    encoderArrayBytesCopied,
+    decoderPayloadBytesCopied,
+    normalConfidenceValidationPasses,
+  };
 }
 
 export function resetScanArtifactMetrics(): void {
   validationBytesVisited = 0;
   artifactChecksumCrcBytesVisited = 0;
+  encoderArrayBytesCopied = 0;
+  decoderPayloadBytesCopied = 0;
+  normalConfidenceValidationPasses = 0;
 }
 
 export const SCAN_ARTIFACT_BINARY_ARRAY_KEYS = Object.freeze([
@@ -226,6 +241,8 @@ function readNormalConfidenceMetadata(value: unknown, pointCount: number): Float
     }
   }
   const result = new Float32Array(pointCount);
+  validationBytesVisited += result.byteLength;
+  normalConfidenceValidationPasses += 1;
   for (let index = 0; index < pointCount; index += 1) {
     const key = String(index);
     if (!hasOwn(value, key)) invalidField('normalConfidence[' + index + ']', 'is required');
@@ -303,7 +320,7 @@ function optionalBooleanField(record: Record<string, unknown>, field: string): b
   return booleanField(record, field);
 }
 
-function validateSnapshotShape(snapshot: ScanPointCloudSnapshot): void {
+function validateSnapshotShape(snapshot: ScanPointCloudSnapshot, normalConfidenceAlreadyValidated = false): void {
   if (snapshot.manualControlPoints.length > MAX_MANUAL_CONTROL_POINTS || snapshot.operatorEdges.length > MAX_OPERATOR_EDGES) {
     throw new Error(SCAN_ANNOTATION_CAPACITY_ERROR);
   }
@@ -365,7 +382,10 @@ function validateSnapshotShape(snapshot: ScanPointCloudSnapshot): void {
       key === 'tsdfNormalConfidence' || key === 'tsdfCoverageConfidence';
     validateFloatArray(values, key, confidence);
   }
-  if (snapshot.normalConfidence !== undefined) validateFloatArray(snapshot.normalConfidence, 'normalConfidence', true);
+  if (snapshot.normalConfidence !== undefined && !normalConfidenceAlreadyValidated) {
+    normalConfidenceValidationPasses += 1;
+    validateFloatArray(snapshot.normalConfidence, 'normalConfidence', true);
+  }
   validationBytesVisited += snapshot.tsdfCoverageReady.byteLength;
   for (let index = 0; index < snapshot.tsdfCoverageReady.length; index += 1) {
     if (snapshot.tsdfCoverageReady[index] !== 0 && snapshot.tsdfCoverageReady[index] !== 1) {
@@ -374,7 +394,7 @@ function validateSnapshotShape(snapshot: ScanPointCloudSnapshot): void {
   }
 }
 
-function normalizeSnapshot(value: unknown): ScanPointCloudSnapshot {
+function normalizeSnapshot(value: unknown, normalConfidenceAlreadyValidated = false): ScanPointCloudSnapshot {
   if (!isRecord(value)) invalidField('metadata', 'must be an object');
   const manualControlPointsValue = requiredValue(value, 'manualControlPoints');
   const operatorEdgesValue = requiredValue(value, 'operatorEdges');
@@ -467,7 +487,7 @@ function normalizeSnapshot(value: unknown): ScanPointCloudSnapshot {
   if (normalized.adaptivePointsPerCell <= 0) invalidField('adaptivePointsPerCell', 'must be greater than zero');
   if (normalized.memoryBudgetPoints <= 0) invalidField('memoryBudgetPoints', 'must be greater than zero');
 
-  validateSnapshotShape(normalized);
+  validateSnapshotShape(normalized, normalConfidenceAlreadyValidated);
   return normalized;
 }
 
@@ -545,6 +565,7 @@ export function encodeScanArtifactWithIdentity(snapshot: ScanPointCloudSnapshot)
     const source = arrays[key] as Float32Array;
     const bytes = new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
     result.set(bytes, offset);
+    encoderArrayBytesCopied += bytes.byteLength;
     artifactCrc = crc32Update(artifactCrc, bytes);
     offset += bytes.length;
   }
@@ -555,12 +576,14 @@ export function encodeScanArtifactWithIdentity(snapshot: ScanPointCloudSnapshot)
       arrays.normalConfidence.byteLength,
     );
     result.set(bytes, offset);
+    encoderArrayBytesCopied += bytes.byteLength;
     artifactCrc = crc32Update(artifactCrc, bytes);
     offset += bytes.length;
   }
   for (const key of BYTE_ARRAY_KEYS) {
     const source = arrays[key] as Uint8Array;
     result.set(source, offset);
+    encoderArrayBytesCopied += source.byteLength;
     artifactCrc = crc32Update(artifactCrc, source);
     offset += source.byteLength;
   }
@@ -606,7 +629,7 @@ function buildSnapshot(
     ? decoded.normalConfidence
     : legacyNormalConfidence;
   if (normalConfidence !== undefined) candidate.normalConfidence = normalConfidence;
-  return normalizeSnapshot(candidate);
+  return normalizeSnapshot(candidate, legacyNormalConfidence !== undefined);
 }
 
 export function decodeScanArtifactWithIdentity(source: ArrayBuffer | Uint8Array): {
@@ -654,6 +677,7 @@ export function decodeScanArtifactWithIdentity(source: ArrayBuffer | Uint8Array)
   }
 
   const payload = bytes.slice(FIXED_HEADER_BYTES + headerLength);
+  decoderPayloadBytesCopied += payload.byteLength;
   let offset = 0;
   const decoded: Record<string, Float32Array | Uint8Array> = {};
   for (const key of FLOAT_ARRAY_KEYS) {

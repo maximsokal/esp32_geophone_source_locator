@@ -223,6 +223,7 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   if (headerLength === 0 || FIXED_HEADER_BYTES + headerLength + payloadLength !== source.byteLength) {
     throw new Error('Occupancy artifact length table is inconsistent.');
   }
+  // Keep the decoder's independent checksum pass: callers decode a freshly encoded artifact to validate its emitted bytes.
   if (occupancyCrc32(source, FIXED_HEADER_BYTES) !== view.getUint32(16, true)) {
     throw new Error('Occupancy artifact checksum mismatch.');
   }

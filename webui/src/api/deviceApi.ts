@@ -1,6 +1,6 @@
 import type { LocalizationJobStatus } from '../domain/localizationJob';
 import { normalizeDeviceStatus } from './deviceStatusSchema';
-import { recordPersistenceBytesCopied } from '../xr/scanIdentity';
+import { recordApiBoundaryCopy } from '../xr/scanIdentity';
 import {
   normalizeSeismicSnapshot,
   normalizeSavedSeismicSnapshot,
@@ -490,7 +490,7 @@ async function performScanSave(
       const canUseArtifactBuffer = artifact.byteOffset === 0 &&
         artifact.byteLength === artifact.buffer.byteLength && artifact.buffer instanceof ArrayBuffer;
       const body: ArrayBuffer = canUseArtifactBuffer ? artifact.buffer as ArrayBuffer : artifact.slice().buffer as ArrayBuffer;
-      if (!canUseArtifactBuffer) recordPersistenceBytesCopied(artifact.byteLength);
+      if (!canUseArtifactBuffer) recordApiBoundaryCopy(artifact.byteLength);
       response = await fetch(url, {
         method: 'POST',
         cache: 'no-store',

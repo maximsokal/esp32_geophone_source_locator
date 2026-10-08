@@ -38,7 +38,7 @@ afterEach(() => {
 });
 
 describe('session-owned 3D scan transport (MAX-167)', () => {
-  it('uploads the artifact as exact opaque bytes to the selected recording/session', async () => {
+  it('uploads the full-view artifact buffer with exact opaque bytes to the selected recording/session', async () => {
     resetScanIdentityMetrics();
     const artifact = new Uint8Array([0x47, 0x58, 0x52, 0x53, 1, 2, 3, 255]);
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
@@ -59,10 +59,14 @@ describe('session-owned 3D scan transport (MAX-167)', () => {
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/octet-stream');
-    expect(getScanIdentityMetrics().persistenceBytesCopied).toBe(0);
+    expect(getScanIdentityMetrics()).toMatchObject({
+      persistenceBytesCopied: 0,
+      apiBoundaryCopies: 0,
+      apiBoundaryBytesCopied: 0,
+    });
   });
 
-  it('makes exactly one owned copy when the upload view covers only part of its buffer', async () => {
+  it('copies only a partial upload view and excludes surrounding bytes', async () => {
     resetScanIdentityMetrics();
     const backing = new Uint8Array([90, 1, 2, 3, 91]);
     const artifact = backing.subarray(1, 4);
@@ -77,7 +81,11 @@ describe('session-owned 3D scan transport (MAX-167)', () => {
     expect(uploadedBuffer).toBeInstanceOf(ArrayBuffer);
     expect(uploadedBuffer).not.toBe(backing.buffer);
     expect(Array.from(new Uint8Array(uploadedBuffer as ArrayBuffer))).toEqual([1, 2, 3]);
-    expect(getScanIdentityMetrics().persistenceBytesCopied).toBe(artifact.byteLength);
+    expect(getScanIdentityMetrics()).toMatchObject({
+      persistenceBytesCopied: artifact.byteLength,
+      apiBoundaryCopies: 1,
+      apiBoundaryBytesCopied: artifact.byteLength,
+    });
   });
 
   it('builds staging URLs for scan, occupancy, preview, and registration uploads', async () => {

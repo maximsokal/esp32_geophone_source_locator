@@ -11,7 +11,7 @@ import {
 } from '../../src/xr/scanArtifact';
 import { getScanIdentityMetrics, resetScanIdentityMetrics } from '../../src/xr/scanIdentity';
 import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
-import { rewriteScanArtifactMetadata } from './support/scanArtifactTestTools';
+import { rewriteNormalConfidenceAsLegacy, rewriteScanArtifactMetadata } from './support/scanArtifactTestTools';
 
 function snapshot(): ScanPointCloudSnapshot {
   return {
@@ -164,6 +164,7 @@ describe('3D scan artifact', () => {
 
     expect(getScanArtifactMetrics().validationBytesVisited).toBeGreaterThan(0);
     expect(getScanArtifactMetrics().artifactChecksumCrcBytesVisited).toBe(headerLength + payloadLength);
+    expect(getScanArtifactMetrics().encoderArrayBytesCopied).toBe(payloadLength);
     expect(getScanIdentityMetrics()).toMatchObject({
       wholeScanCrcInvocations: 1,
       wholeScanCrcBytesVisited: encoded.bytes.byteLength,
@@ -174,10 +175,26 @@ describe('3D scan artifact', () => {
     const decoded = decodeScanArtifactWithIdentity(encoded.bytes);
     expect(decoded.identity).toEqual(encoded.identity);
     expect(getScanArtifactMetrics().artifactChecksumCrcBytesVisited).toBe(encoded.bytes.byteLength - 20);
+    expect(getScanArtifactMetrics().decoderPayloadBytesCopied).toBe(payloadLength);
     expect(getScanIdentityMetrics()).toMatchObject({
       wholeScanCrcInvocations: 1,
       wholeScanCrcBytesVisited: encoded.bytes.byteLength,
     });
+  });
+
+  it('checks legacy normalConfidence once while preserving the full validation byte count', () => {
+    const original = snapshot();
+    const legacy = rewriteNormalConfidenceAsLegacy(encodeScanArtifact(original), true);
+    resetScanArtifactMetrics();
+
+    const decoded = decodeScanArtifact(legacy);
+    const expectedValidationBytes = Object.values(original)
+      .filter((value): value is Float32Array | Uint8Array => ArrayBuffer.isView(value))
+      .reduce((total, value) => total + value.byteLength, 0);
+
+    expect(decoded.normalConfidence).toEqual(original.normalConfidence);
+    expect(getScanArtifactMetrics().normalConfidenceValidationPasses).toBe(1);
+    expect(getScanArtifactMetrics().validationBytesVisited).toBe(expectedValidationBytes);
   });
 
   it('rejects a truncated or modified SD artifact instead of rendering fabricated geometry', () => {

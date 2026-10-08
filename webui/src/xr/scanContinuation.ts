@@ -78,6 +78,34 @@ export type ScanContinuationResult =
   | { ok: true; snapshot: ScanPointCloudSnapshot; diagnostics: ScanContinuationDiagnostics; extensionToBase: RigidTransform }
   | { ok: false; reason: string; diagnostics: ScanContinuationDiagnostics | null };
 
+export type ScanContinuationPhase = 'registration' | 'stable' | 'occupancy' | 'tsdf';
+
+export interface ScanContinuationHooks {
+  onPhase?: (phase: ScanContinuationPhase) => void;
+}
+
+export interface ContinuationBudgetFamilyEstimate {
+  inputCopyBytes: number;
+  transformedIntermediateBytes: number;
+  mergeScratchBytes: number;
+  outputBytes: number;
+  totalBytes: number;
+}
+
+export type ContinuationBudgetFamily =
+  | 'stablePositions' | 'stableConfidence' | 'stableNormals' | 'stableNormalConfidence'
+  | 'tentativePositions' | 'tentativeConfidence'
+  | 'freeAirPositions' | 'occupiedSurfacePositions' | 'unknownCandidatePositions'
+  | 'tsdfPositions' | 'tsdfNormals' | 'tsdfConfidence' | 'tsdfResidualMeters'
+  | 'tsdfNormalConfidence' | 'tsdfCoverageConfidence' | 'tsdfCoverageReady'
+  | 'annotationJson' | 'registrationScratch';
+
+export interface ContinuationBudgetEstimate {
+  estimatedBytes: number;
+  limitBytes: number;
+  families: Readonly<Record<ContinuationBudgetFamily, ContinuationBudgetFamilyEstimate>>;
+}
+
 interface Point3 extends ContinuationSpatialPoint {
   featureIndex: number;
 }
@@ -151,6 +179,12 @@ const FEATURE_DESCRIPTOR_SCRATCH_BYTES = 2 * SAMPLE_LIMIT * FEATURE_NEIGHBOR_COU
 const SCAN_ARTIFACT_FIXED_HEADER_BYTES = 20;
 const SCAN_ARTIFACT_METADATA_RESERVE_BYTES = 16 * 1024;
 const UNKNOWN_ENUMERATION_MAX_CELLS = 120_000;
+/** Peak continuation working set allowed before the worker is started (256 MiB). */
+export const CONTINUATION_TRANSIENT_BUDGET_BYTES = 256 * 1024 * 1024;
+const CONTINUATION_MAP_ENTRY_ESTIMATE_BYTES = 160;
+const CONTINUATION_TENTATIVE_ENTRY_ESTIMATE_BYTES = 96;
+/* Bounded vote table + feature descriptors + 1 MiB for sampled match objects and sorting overhead. */
+const CONTINUATION_REGISTRATION_SCRATCH_BYTES = 2_723_840 + FEATURE_DESCRIPTOR_SCRATCH_BYTES + 1024 * 1024;
 const LOCAL_YAW_SWEEP_DEGREES = 5;
 const LOCAL_YAW_STEP_DEGREES = 1;
 const LOCAL_YAW_TOP_HYPOTHESES = 8;
@@ -167,6 +201,93 @@ function finite(value: number): boolean {
 
 function pointCount(values: ArrayLike<number>): number {
   return Math.floor(values.length / 3);
+}
+
+/** Conservative peak live bytes across request copies, transformed arrays, merge maps and output arrays. */
+export function estimateContinuationBudget(
+  base: ScanPointCloudSnapshot,
+  extension: ScanPointCloudSnapshot,
+  limitBytes = CONTINUATION_TRANSIENT_BUDGET_BYTES,
+): ContinuationBudgetEstimate {
+  const baseStable = pointCount(base.positions);
+  const extensionStable = pointCount(extension.positions);
+  const stable = baseStable + extensionStable;
+  const baseTentative = pointCount(base.tentativePositions);
+  const extensionTentative = pointCount(extension.tentativePositions);
+  const tentative = baseTentative + extensionTentative;
+  const tsdf = Math.max(base.tsdfPointCount, pointCount(base.tsdfPositions)) +
+    Math.max(extension.tsdfPointCount, pointCount(extension.tsdfPositions));
+  const annotationBaseBytes = serializedAnnotationBytes(base.manualControlPoints, base.operatorEdges);
+  const annotationExtensionBytes = serializedAnnotationBytes(extension.manualControlPoints, extension.operatorEdges);
+  const annotationTotalBytes = annotationBaseBytes + annotationExtensionBytes;
+  const families = {} as Record<ContinuationBudgetFamily, ContinuationBudgetFamilyEstimate>;
+  const addFamily = (
+    name: ContinuationBudgetFamily,
+    inputCopyBytes: number,
+    transformedIntermediateBytes: number,
+    mergeScratchBytes: number,
+    outputBytes: number,
+  ): void => {
+    families[name] = {
+      inputCopyBytes,
+      transformedIntermediateBytes,
+      mergeScratchBytes,
+      outputBytes,
+      totalBytes: inputCopyBytes + transformedIntermediateBytes + mergeScratchBytes + outputBytes,
+    };
+  };
+  const inputBytes = (baseValues: ArrayBufferView, extensionValues: ArrayBufferView): number =>
+    baseValues.byteLength + extensionValues.byteLength;
+
+  addFamily('stablePositions', inputBytes(base.positions, extension.positions), extension.positions.byteLength,
+    stable * CONTINUATION_MAP_ENTRY_ESTIMATE_BYTES + (stable + tentative) * 3 * Float32Array.BYTES_PER_ELEMENT,
+    stable * 3 * Float32Array.BYTES_PER_ELEMENT);
+  addFamily('stableConfidence', inputBytes(base.confidence, extension.confidence), 0, 0,
+    stable * Float32Array.BYTES_PER_ELEMENT);
+  addFamily('stableNormals', inputBytes(base.normals, extension.normals), extension.normals.byteLength, 0,
+    stable * 3 * Float32Array.BYTES_PER_ELEMENT);
+  addFamily('stableNormalConfidence', (base.normalConfidence?.byteLength ?? 0) + (extension.normalConfidence?.byteLength ?? 0), 0, 0,
+    base.normalConfidence === undefined && extension.normalConfidence === undefined ? 0 : stable * Float32Array.BYTES_PER_ELEMENT);
+  addFamily('tentativePositions', inputBytes(base.tentativePositions, extension.tentativePositions), extension.tentativePositions.byteLength,
+    tentative * CONTINUATION_TENTATIVE_ENTRY_ESTIMATE_BYTES, tentative * 3 * Float32Array.BYTES_PER_ELEMENT);
+  addFamily('tentativeConfidence', inputBytes(base.tentativeConfidence, extension.tentativeConfidence), 0, 0,
+    tentative * Float32Array.BYTES_PER_ELEMENT);
+
+  const occupancyFamily = (
+    name: 'freeAirPositions' | 'occupiedSurfacePositions',
+    baseValues: Float32Array,
+    extensionValues: Float32Array,
+  ): void => {
+    const points = pointCount(baseValues) + pointCount(extensionValues);
+    addFamily(name, inputBytes(baseValues, extensionValues), extensionValues.byteLength,
+      points * CONTINUATION_MAP_ENTRY_ESTIMATE_BYTES, points * 3 * Float32Array.BYTES_PER_ELEMENT);
+  };
+  occupancyFamily('freeAirPositions', base.freeAirPositions, extension.freeAirPositions);
+  occupancyFamily('occupiedSurfacePositions', base.occupiedSurfacePositions, extension.occupiedSurfacePositions);
+  addFamily('unknownCandidatePositions', inputBytes(base.unknownCandidatePositions, extension.unknownCandidatePositions), 0,
+    UNKNOWN_ENUMERATION_MAX_CELLS * CONTINUATION_MAP_ENTRY_ESTIMATE_BYTES,
+    UNKNOWN_ENUMERATION_MAX_CELLS * 3 * Float32Array.BYTES_PER_ELEMENT);
+
+  addFamily('tsdfPositions', inputBytes(base.tsdfPositions, extension.tsdfPositions), extension.tsdfPositions.byteLength,
+    tsdf * CONTINUATION_MAP_ENTRY_ESTIMATE_BYTES, tsdf * 3 * Float32Array.BYTES_PER_ELEMENT);
+  addFamily('tsdfNormals', inputBytes(base.tsdfNormals, extension.tsdfNormals), extension.tsdfNormals.byteLength, 0,
+    tsdf * 3 * Float32Array.BYTES_PER_ELEMENT);
+  addFamily('tsdfConfidence', inputBytes(base.tsdfConfidence, extension.tsdfConfidence), 0, 0, tsdf * Float32Array.BYTES_PER_ELEMENT);
+  addFamily('tsdfResidualMeters', inputBytes(base.tsdfResidualMeters, extension.tsdfResidualMeters), 0, 0, tsdf * Float32Array.BYTES_PER_ELEMENT);
+  addFamily('tsdfNormalConfidence', inputBytes(base.tsdfNormalConfidence, extension.tsdfNormalConfidence), 0, 0, tsdf * Float32Array.BYTES_PER_ELEMENT);
+  addFamily('tsdfCoverageConfidence', inputBytes(base.tsdfCoverageConfidence, extension.tsdfCoverageConfidence), 0, 0, tsdf * Float32Array.BYTES_PER_ELEMENT);
+  addFamily('tsdfCoverageReady', inputBytes(base.tsdfCoverageReady, extension.tsdfCoverageReady), 0, 0, tsdf * Uint8Array.BYTES_PER_ELEMENT);
+  addFamily('annotationJson', annotationTotalBytes, annotationExtensionBytes, 0,
+    Math.min(MAX_ANNOTATION_JSON_BYTES, annotationTotalBytes));
+  addFamily('registrationScratch', 0, 0, CONTINUATION_REGISTRATION_SCRATCH_BYTES, 0);
+
+  const estimatedBytes = Object.values(families).reduce((sum, family) => sum + family.totalBytes, 0);
+  return { estimatedBytes, limitBytes: Math.max(0, Math.floor(limitBytes)), families };
+}
+
+function reportContinuationPhase(hooks: ScanContinuationHooks | undefined, phase: ScanContinuationPhase): void {
+  try { hooks?.onPhase?.(phase); }
+  catch { /* Progress observers cannot alter the deterministic merge result. */ }
 }
 
 function samplePositions(values: Float32Array, limit = SAMPLE_LIMIT): Point3[] {
@@ -1306,6 +1427,7 @@ function estimateMergedArtifactBudget(
 export function registerAndMergeScanContinuation(
   base: ScanPointCloudSnapshot,
   extension: ScanPointCloudSnapshot,
+  hooks?: ScanContinuationHooks,
 ): ScanContinuationResult {
   if (base.pointCount < 120 || extension.pointCount < 120) {
     return { ok: false, reason: 'Need at least 120 stable points in both the saved scan and the continuation.', diagnostics: null };
@@ -1325,6 +1447,7 @@ export function registerAndMergeScanContinuation(
     return { ok: false, reason: 'Cannot safely continue scans with different occupancy fine voxel sizes.', diagnostics: null };
   }
 
+  reportContinuationPhase(hooks, 'registration');
   const registration = registerExtension(base, extension);
   if (registration === null) {
     return { ok: false, reason: 'Could not align the continuation. Start by scanning an overlapping part of the saved scene.', diagnostics: null };
@@ -1380,6 +1503,7 @@ export function registerAndMergeScanContinuation(
     };
   }
 
+  reportContinuationPhase(hooks, 'stable');
   const extensionStablePositions = transformPositions(extension.positions, transform);
   const extensionStableNormals = transformNormals(extension.normals, transform);
   const mergeVoxel = base.voxelSizeMeters;
@@ -1402,10 +1526,12 @@ export function registerAndMergeScanContinuation(
     stable.positions,
     mergeVoxel,
   );
+  reportContinuationPhase(hooks, 'occupancy');
   const occupancy = mergeOccupancy(base, extension, transform, occupancyEnvelopeBounds);
   if (occupancy === null) {
     return { ok: false, reason: 'Continuation occupancy evidence could not be merged safely. Old saved scan was kept.', diagnostics };
   }
+  reportContinuationPhase(hooks, 'tsdf');
   const tsdf = mergeTsdf(base, extension, transform);
   const fullPositions = appendFloatArrays(stable.positions, tentative.positions);
   const mergedPointCount = pointCount(stable.positions) + pointCount(tentative.positions);

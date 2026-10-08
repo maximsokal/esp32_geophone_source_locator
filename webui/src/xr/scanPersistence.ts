@@ -5,7 +5,7 @@ import {
   type ControlResult,
   type ScanArtifactInfo,
 } from '../api/deviceApi';
-import { createScanIdentity, recordPersistenceBytesCopied, type ScanIdentity } from './scanIdentity';
+import { createScanIdentity, recordControllerOwnedScanCopy, type ScanIdentity } from './scanIdentity';
 
 export type ScanSaveState = 'saving' | 'verifying' | 'saved' | 'error' | 'unknown' | 'derived_stale' | 'blocked_recording';
 export type OccupancySaveState = 'pending' | 'saving' | 'ready' | 'failed' | 'stale' | 'unavailable';
@@ -253,7 +253,13 @@ function requireAccepted(result: ControlResult): void {
   if (result?.ok !== true) throw new Error(result?.error ?? 'ESP scan save was not accepted.');
 }
 
-/** Keeps exact candidate and derivative bytes until their generation is confirmed on the device. */
+/**
+ * Scan byte ownership:
+ * - Retry payload: this controller's one synchronous copy in `pendingScan.bytes`.
+ * - Fetch copies BufferSource bodies internally, so it does not detach the controller's retained retry buffer. Revisit this assumption before using ReadableStream or transferred bodies.
+ * - The controller drops retry bytes on confirmed commit, abandon, reset, or generation mismatch; fetch manages its internal request copy.
+ * - Derivatives: each pending slot owns its builder's bytes until that upload succeeds or the owner is abandoned.
+ */
 export class ScanPersistenceController {
   private state: ScanPersistenceState | null = null;
   private pendingOccupancy: PendingOccupancy | null = null;
@@ -328,7 +334,7 @@ export class ScanPersistenceController {
       buildOccupancy,
       buildPreview,
     };
-    recordPersistenceBytesCopied(copiedByteLength);
+    recordControllerOwnedScanCopy(copiedByteLength);
     scanBytes = new Uint8Array();
     this.pendingScan = pending;
     this.dispatch(epoch, { type: 'scan-saving', scanId: pending.scanId });

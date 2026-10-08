@@ -870,6 +870,10 @@ describe('scan persistence ownership and owner invalidation (MAX-392/MAX-415)', 
       wholeScanCrcInvocations: 0,
       wholeScanCrcBytesVisited: 0,
       persistenceBytesCopied: sourceBytes.byteLength,
+      controllerOwnedCopies: 1,
+      controllerOwnedBytesCopied: sourceBytes.byteLength,
+      apiBoundaryCopies: 0,
+      apiBoundaryBytesCopied: 0,
     });
     expect(controller.retryAvailable).toBe(false);
   });
