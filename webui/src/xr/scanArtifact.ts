@@ -1,6 +1,6 @@
 import type { ScanPointCloudSnapshot } from './webxrRuntime';
 import { crc32Pair, crc32Update, crc32Finalize } from './crc32';
-import { createScanIdentity, scanIdentityFromCrc, type ScanIdentity } from './scanIdentity';
+import { createScanIdentity, getScanIdentityMetrics, scanIdentityFromCrc, type ScanIdentity } from './scanIdentity';
 import { MAX_MANUAL_CONTROL_POINTS } from './manualControlPoints';
 import { MAX_OPERATOR_EDGES } from './operatorEdges';
 
@@ -21,6 +21,7 @@ export const MAX_ANNOTATION_JSON_BYTES = 32 * 1024;
 export const SCAN_ANNOTATION_CAPACITY_ERROR = 'scan.annotations.capacity_exceeded';
 
 let validationBytesVisited = 0;
+let floatValuesVisited = 0;
 let artifactChecksumCrcBytesVisited = 0;
 let encoderArrayBytesCopied = 0;
 let decoderPayloadBytesCopied = 0;
@@ -28,6 +29,7 @@ let normalConfidenceValidationPasses = 0;
 
 export function getScanArtifactMetrics(): Readonly<{
   validationBytesVisited: number;
+  floatValuesVisited: number;
   artifactChecksumCrcBytesVisited: number;
   encoderArrayBytesCopied: number;
   decoderPayloadBytesCopied: number;
@@ -35,6 +37,7 @@ export function getScanArtifactMetrics(): Readonly<{
 }> {
   return {
     validationBytesVisited,
+    floatValuesVisited,
     artifactChecksumCrcBytesVisited,
     encoderArrayBytesCopied,
     decoderPayloadBytesCopied,
@@ -44,6 +47,7 @@ export function getScanArtifactMetrics(): Readonly<{
 
 export function resetScanArtifactMetrics(): void {
   validationBytesVisited = 0;
+  floatValuesVisited = 0;
   artifactChecksumCrcBytesVisited = 0;
   encoderArrayBytesCopied = 0;
   decoderPayloadBytesCopied = 0;
@@ -53,6 +57,24 @@ export function resetScanArtifactMetrics(): void {
 export const SCAN_ARTIFACT_BINARY_ARRAY_KEYS = Object.freeze([
   ...FLOAT_ARRAY_KEYS, ...OPTIONAL_FLOAT_ARRAY_KEYS, ...BYTE_ARRAY_KEYS,
 ]);
+
+export function scanArtifactSnapshotArrayBytes(snapshot: ScanPointCloudSnapshot): number {
+  let bytes = 0;
+  for (const value of Object.values(snapshot)) {
+    if (value instanceof Float32Array || value instanceof Uint8Array) bytes += value.byteLength;
+  }
+  return bytes;
+}
+
+export interface ScanArtifactEncodingMetrics {
+  floatsVisited: number;
+  validationBytesVisited: number;
+  encoderArrayBytesCopied: number;
+  artifactChecksumCrcBytesVisited: number;
+  crcBytesVisited: number;
+  wholeScanCrcInvocations: number;
+  wholeScanCrcBytesVisited: number;
+}
 
 type FloatArrayKey = (typeof FLOAT_ARRAY_KEYS)[number];
 type OptionalFloatArrayKey = (typeof OPTIONAL_FLOAT_ARRAY_KEYS)[number];
@@ -218,6 +240,7 @@ function byteArray(record: Record<string, unknown>, field: ByteArrayKey): Uint8A
 
 function validateFloatArray(values: Float32Array, field: string, confidence: boolean): void {
   validationBytesVisited += values.byteLength;
+  floatValuesVisited += values.length;
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
     if (!Number.isFinite(value)) invalidField(field + '[' + index + ']', 'must be finite');
@@ -530,6 +553,18 @@ export function encodeScanArtifactWithIdentity(snapshot: ScanPointCloudSnapshot)
   bytes: Uint8Array;
   identity: ScanIdentity;
 } {
+  const encoded = encodeScanArtifactWithIdentityAndMetrics(snapshot);
+  return { bytes: encoded.bytes, identity: encoded.identity };
+}
+
+/** Same canonical encoder for synchronous callers and the scan encoding worker. */
+export function encodeScanArtifactWithIdentityAndMetrics(snapshot: ScanPointCloudSnapshot): {
+  bytes: Uint8Array;
+  identity: ScanIdentity;
+  metrics: ScanArtifactEncodingMetrics;
+} {
+  const artifactMetricsStart = getScanArtifactMetrics();
+  const identityMetricsStart = getScanIdentityMetrics();
   assertAnnotationBudget(snapshot.manualControlPoints, snapshot.operatorEdges);
   const normalized = normalizeSnapshot(snapshot);
   const { metadata, arrays } = metadataAndArrays(normalized, snapshot);
@@ -589,7 +624,25 @@ export function encodeScanArtifactWithIdentity(snapshot: ScanPointCloudSnapshot)
   }
 
   view.setUint32(16, crc32Finalize(artifactCrc), true);
-  return { bytes: result, identity: createScanIdentity(result) };
+  const identity = createScanIdentity(result);
+  const artifactMetricsEnd = getScanArtifactMetrics();
+  const identityMetricsEnd = getScanIdentityMetrics();
+  const artifactChecksumCrcBytes = artifactMetricsEnd.artifactChecksumCrcBytesVisited -
+    artifactMetricsStart.artifactChecksumCrcBytesVisited;
+  const wholeScanCrcBytes = identityMetricsEnd.wholeScanCrcBytesVisited - identityMetricsStart.wholeScanCrcBytesVisited;
+  return {
+    bytes: result,
+    identity,
+    metrics: {
+      floatsVisited: artifactMetricsEnd.floatValuesVisited - artifactMetricsStart.floatValuesVisited,
+      validationBytesVisited: artifactMetricsEnd.validationBytesVisited - artifactMetricsStart.validationBytesVisited,
+      encoderArrayBytesCopied: artifactMetricsEnd.encoderArrayBytesCopied - artifactMetricsStart.encoderArrayBytesCopied,
+      artifactChecksumCrcBytesVisited: artifactChecksumCrcBytes,
+      crcBytesVisited: artifactChecksumCrcBytes + wholeScanCrcBytes,
+      wholeScanCrcInvocations: identityMetricsEnd.wholeScanCrcInvocations - identityMetricsStart.wholeScanCrcInvocations,
+      wholeScanCrcBytesVisited: wholeScanCrcBytes,
+    },
+  };
 }
 
 function parseHeader(bytes: Uint8Array, headerLength: number): ScanArtifactHeader {

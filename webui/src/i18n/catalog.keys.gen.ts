@@ -930,6 +930,7 @@ export const i18nKeys = [
   "scan.storage.not_committed",
   "scan.storage.paused",
   "scan.storage.preempted",
+  "scan.storage.preparing",
   "scan.storage.previous_kept",
   "scan.storage.provisional",
   "scan.storage.saved",

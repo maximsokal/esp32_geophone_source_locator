@@ -932,6 +932,7 @@ export const en: Record<I18nKey, string> = {
   "scan.storage.not_committed": "The scan was not saved. Previous device state could not be confirmed. {reason}",
   "scan.storage.paused": "Recording in progress — scan storage is paused",
   "scan.storage.preempted": "Scan save paused for a critical control action. Retry to save it.",
+  "scan.storage.preparing": "Preparing scan for saving · {object}",
   "scan.storage.previous_kept": "New scan is only in browser memory; previous SD scan was kept. {reason}",
   "scan.storage.provisional": "This scan is provisional until the device confirms it was saved.",
   "scan.storage.saved": "3D scan saved to SD · {object}",

@@ -41,13 +41,22 @@ import {
 } from './xr/deviceComputeProfile';
 import {
   decodeScanArtifactWithIdentity,
-  encodeScanArtifactWithIdentity,
   SCAN_ANNOTATION_CAPACITY_ERROR,
 } from './xr/scanArtifact';
 import { buildSensorPlacementScene } from './xr/sensorPlacementScene';
-import { CONTINUATION_TRANSIENT_BUDGET_BYTES, type ScanContinuationPhase, type RigidTransform } from './xr/scanContinuation';
+import {
+  CONTINUATION_TRANSIENT_BUDGET_BYTES,
+  type ScanContinuationPhase,
+  type RigidTransform,
+} from './xr/scanContinuation';
 import { ContinuationBudgetExceededError, ContinuationCancelledError, ContinuationClient } from './xr/continuationClient';
-import type { ScanIdentity } from './xr/scanIdentity';
+import {
+  ScanEncodeClient,
+  ScanEncodeCancelledError,
+  SCAN_ENCODE_TRANSIENT_COPY_BUDGET_BYTES,
+  releaseScanEncodeResult,
+  type ScanEncodeResult,
+} from './xr/scanEncodeClient';
 import {
   beginProvisionalScan,
   captureAborted,
@@ -92,6 +101,7 @@ type ScanStoragePhase =
   | 'none'
   | 'scanning'
   | 'continuing'
+  | 'preparing'
   | 'saving'
   | 'saved'
   | 'loaded'
@@ -203,7 +213,7 @@ function scanStorageLabel(phase: ScanStoragePhase, objectId: string | null, loca
   if (phase === 'unbound') return translate(locale, 'scan.storage.unbound');
   const keys = {
     loading: 'scan.storage.loading', none: 'scan.storage.none', scanning: 'scan.storage.scanning', continuing: 'scan.storage.continuing',
-    saving: 'scan.storage.saving', saved: 'scan.storage.saved', loaded: 'scan.storage.loaded',
+    preparing: 'scan.storage.preparing', saving: 'scan.storage.saving', saved: 'scan.storage.saved', loaded: 'scan.storage.loaded',
     deleting: 'scan.storage.deleting', error: 'scan.storage.error',
   } as const;
   return translate(locale, keys[phase], {
@@ -235,6 +245,7 @@ function persistedScanStorageLabel(
   persistence: ScanPersistenceState | null,
   locale: I18nLocale,
 ): string {
+  if (phase === 'preparing') return scanStorageLabel(phase, objectId, locale);
   if (persistence?.scan === 'verifying') return translate(locale, 'scan.storage.verifying');
   if (persistence?.scan === 'unknown' || persistence?.scan === 'derived_stale') return translate(locale, 'scan.storage.unknown');
   const scanLabel = scanStorageLabel(phase, objectId, locale);
@@ -277,6 +288,11 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     sequence: 0,
   });
   const storageGeneration = useRef(0);
+  const scanEncodeOwner = useRef({ objectId, sessionId });
+  scanEncodeOwner.current = { objectId, sessionId };
+  const scanEncodeClient = useRef<ScanEncodeClient | null>(null);
+  const scanEncodeOwnerGeneration = useRef(0);
+  const scanEncodePreviousPhase = useRef<ScanStoragePhase | null>(null);
   const scanLoadSession = useRef<string | null>(null);
   const sessionEvidenceLoad = useRef<string | null>(null);
   /* Raw mirror of registrationArtifact. Builders and viewers never use it without the applicability predicate. */
@@ -325,6 +341,16 @@ export default function App({ objectId, sessionId, status }: AppProps) {
   const continuationOwnerGeneration = useRef(0);
   const continuationPreviousPhase = useRef<ScanStoragePhase | null>(null);
   const continuationActive = useRef(false);
+  const cancelScanEncode = useCallback((reason: string): void => {
+    scanEncodeOwnerGeneration.current += 1;
+    const client = scanEncodeClient.current;
+    const wasBusy = client?.busy ?? false;
+    client?.cancel(reason);
+    if (wasBusy) {
+      setScanStoragePhase(scanEncodePreviousPhase.current ?? 'loaded');
+      scanEncodePreviousPhase.current = null;
+    }
+  }, []);
   const cancelContinuation = useCallback((reason: string, notify = false): void => {
     continuationOwnerGeneration.current += 1;
     const active = continuationActive.current;
@@ -371,6 +397,10 @@ export default function App({ objectId, sessionId, status }: AppProps) {
   const persistenceController = scanPersistenceController.current;
 
   useEffect(() => () => {
+    scanEncodeOwnerGeneration.current += 1;
+    scanEncodeClient.current?.dispose();
+    scanEncodeClient.current = null;
+    scanEncodePreviousPhase.current = null;
     continuationOwnerGeneration.current += 1;
     continuationClient.current?.dispose();
     continuationClient.current = null;
@@ -549,6 +579,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
 
   /* Restore the object-owned scan every time the scanner feature is opened. */
   useEffect(() => {
+    cancelScanEncode('Scanner owner changed.');
     storageGeneration.current += 1;
     persistenceController.reset();
     updateScanDurability(() => emptyScanDurability());
@@ -570,6 +601,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
 
     const abandonScannerOwner = (): void => {
       storageGeneration.current += 1;
+      cancelScanEncode('Scanner owner changed.');
       continuationOwnerGeneration.current += 1;
       continuationClient.current?.cancel('Scanner owner changed.');
       continuationActive.current = false;
@@ -584,7 +616,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
 
     setScanStoragePhase('loading');
     return abandonScannerOwner;
-  }, [objectId, sessionId, persistenceController, updateScanDurability, applyGeometry, publishRegistration, cancelContinuation]);
+  }, [objectId, sessionId, persistenceController, updateScanDurability, applyGeometry, publishRegistration, cancelContinuation, cancelScanEncode]);
 
   useEffect(() => {
     if (objectId === null || sessionId === null || storageActionsDisabled) return undefined;
@@ -735,6 +767,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
   }, [objectId, sessionId, persistenceController, selectMode, storageActionsDisabled, updateScanDurability, applyGeometry, publishRegistration]);
 
   const handleScanIntent = useCallback((intent: ScanStartIntent): boolean => {
+    cancelScanEncode('A newer scanner intent was requested.');
     cancelContinuation('A newer scanner intent was requested.');
     setScanStorageError(null);
     if (intent === 'continue') {
@@ -778,11 +811,14 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     });
     void clientDiagnostics.flush();
     return true;
-  }, [objectId, sessionId, scanDurability, publishRegistration, cancelContinuation]);
+  }, [objectId, sessionId, scanDurability, publishRegistration, cancelContinuation, cancelScanEncode]);
 
   const handleSessionActiveChange = useCallback((active: boolean): void => {
     setXrSessionActive(active);
-    if (!active) cancelContinuation('Scanner session ended.', true);
+    if (!active) {
+      cancelScanEncode('Scanner session ended.');
+      cancelContinuation('Scanner session ended.', true);
+    }
     if (!active && scanDurabilityRef.current.captureActive) {
       const stateAtSessionEnd = scanDurabilityRef.current;
       updateScanDurability((current) => captureAborted(current));
@@ -796,7 +832,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         }, 0);
       }
     }
-  }, [objectId, updateScanDurability, reloadSessionRegistration, cancelContinuation]);
+  }, [objectId, updateScanDurability, reloadSessionRegistration, cancelContinuation, cancelScanEncode]);
 
   const handleScanReady = useCallback((incoming: ScanPointCloudSnapshot | null): void => {
     setScanStorageError(null);
@@ -807,6 +843,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
        * its storage presentation intact until a replacement candidate exists.
        */
       const current = scanDurabilityRef.current;
+      cancelScanEncode('A new scanner generation started.');
       cancelContinuation('A new scanner generation started.');
       provisionalTag.current = { artifact: null, final: false };
       rejectedContinuation.current = false;
@@ -875,7 +912,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
           annotationsTruncated: merged.diagnostics.annotationsTruncated ?? false,
         });
         void clientDiagnostics.flush();
-        finalizeScanReady(merged.snapshot, intentAtFinish, merged.extensionToBase);
+        void finalizeScanReady(merged.snapshot, intentAtFinish, merged.extensionToBase);
       }).catch((reason: unknown) => {
         if (generation !== continuationOwnerGeneration.current) return;
         continuationActive.current = false;
@@ -898,13 +935,13 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       return;
     }
 
-    finalizeScanReady(incoming, intentAtFinish, null);
+    void finalizeScanReady(incoming, intentAtFinish, null);
 
-    function finalizeScanReady(
+    async function finalizeScanReady(
       snapshot: ScanPointCloudSnapshot,
       intentAtFinish: ScanStartIntent,
       extensionToBase: RigidTransform | null,
-    ): void {
+    ): Promise<void> {
 
     selectMode('quality');
     clientDiagnostics.info('SCAN_RESULT_READY', {
@@ -931,14 +968,37 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       return;
     }
 
-    let artifact: Uint8Array;
-    let identity: ScanIdentity;
+    const previousEncodePhase = scanEncodePreviousPhase.current ?? scanStoragePhase;
+    cancelScanEncode('A newer scan finish superseded this encode.');
+    const encodeGeneration = scanEncodeOwnerGeneration.current;
+    const encodeOwner = { objectId, sessionId };
+    const generation = ++storageGeneration.current;
+    scanEncodePreviousPhase.current = previousEncodePhase;
+    setScanStorageError(null);
+    setScanStoragePhase('preparing');
+    const encoder = scanEncodeClient.current ?? (scanEncodeClient.current = new ScanEncodeClient());
+    let encoded: ScanEncodeResult;
     try {
-      const encoded = encodeScanArtifactWithIdentity(snapshot);
-      artifact = encoded.bytes;
-      identity = encoded.identity;
+      encoded = await encoder.encode(snapshot, {
+        generation: encodeGeneration,
+        budgetLimitBytes: computeProfile === null
+          ? SCAN_ENCODE_TRANSIENT_COPY_BUDGET_BYTES
+          : Math.min(SCAN_ENCODE_TRANSIENT_COPY_BUDGET_BYTES, computeProfile.postScanMemoryBudgetBytes),
+        onFallback: () => {
+          clientDiagnostics.warn('SCAN_ENCODE_SYNC_FALLBACK', {
+            objectId, sessionId: scanSessionId, reason: 'Worker is unavailable',
+          });
+          void clientDiagnostics.flush();
+        },
+      });
     }
     catch (reason) {
+      if (encodeGeneration !== scanEncodeOwnerGeneration.current ||
+          scanEncodeOwner.current.objectId !== encodeOwner.objectId ||
+          scanEncodeOwner.current.sessionId !== encodeOwner.sessionId ||
+          generation !== storageGeneration.current ||
+          reason instanceof ScanEncodeCancelledError) return;
+      scanEncodePreviousPhase.current = null;
       const message = reason instanceof Error ? reason.message : String(reason);
       if (intentAtFinish !== 'continue') {
         updateScanDurability((current) => confirmScanNotCommitted(beginProvisionalScan(current, snapshot, 'unencoded'), current.durableSnapshot !== null));
@@ -952,7 +1012,17 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       return;
     }
 
-    const generation = ++storageGeneration.current;
+    if (encodeGeneration !== scanEncodeOwnerGeneration.current ||
+        scanEncodeOwner.current.objectId !== encodeOwner.objectId ||
+        scanEncodeOwner.current.sessionId !== encodeOwner.sessionId ||
+        generation !== storageGeneration.current) {
+      releaseScanEncodeResult(encoded);
+      return;
+    }
+    scanEncodePreviousPhase.current = null;
+    const artifact = encoded.bytes;
+    const identity = encoded.identity;
+
     const candidateId = identity.frameId;
     activeScanCandidate.current = { snapshot, id: candidateId };
     /* MAX-403/405/416: registration for this candidate is resolved after the bounded tag window, never before the upload. */
@@ -1055,7 +1125,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         }
     });
     }
-  }, [objectId, sessionId, scanSessionId, persistenceController, selectMode, storageActionsDisabled, updateScanDurability, reloadSessionRegistration, cancelContinuation, scanStoragePhase, computeProfile, locale]);
+  }, [objectId, sessionId, scanSessionId, persistenceController, selectMode, storageActionsDisabled, updateScanDurability, reloadSessionRegistration, cancelContinuation, cancelScanEncode, scanStoragePhase, computeProfile, locale]);
 
   const retryPersistence = useCallback((): void => {
     if (storageActionsDisabled || objectId === null) return;
@@ -1090,6 +1160,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
 
   const deleteSavedScan = useCallback((): void => {
     if (storageActionsDisabled) return;
+    cancelScanEncode('Saved scan deleted.');
     cancelContinuation('Saved scan deleted.');
     scanIntent.current = 'fresh';
     continuationBase.current = null;
@@ -1123,7 +1194,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         void clientDiagnostics.flush();
       },
     );
-  }, [objectId, scanSessionId, persistenceController, storageActionsDisabled, updateScanDurability, publishRegistration, cancelContinuation]);
+  }, [objectId, scanSessionId, persistenceController, storageActionsDisabled, updateScanDurability, publishRegistration, cancelContinuation, cancelScanEncode]);
 
   const hasMeasuredScan = resultControlsAvailable(scanDurability) && scanSnapshot !== null && scanSnapshot.pointCount > 0;
   const durableViewport = scanViewportProvenance === 'durable' && scanAuthority !== null && scanAuthority === scanSnapshot;
@@ -1164,7 +1235,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
     stable: stableBands.stable + tentativeBands.stable,
   };
   const storageGood = savedScanAvailable(scanDurability);
-  const storageBusy = storageActionsDisabled || scanStoragePhase === 'loading' || scanStoragePhase === 'saving' || scanStoragePhase === 'deleting';
+  const storageBusy = storageActionsDisabled || scanStoragePhase === 'loading' || scanStoragePhase === 'preparing' || scanStoragePhase === 'saving' || scanStoragePhase === 'deleting';
   const localizationDataReady = localizationReady(scanDurability) &&
     ((scanPersistence?.scan === 'saved' && scanPersistence.occupancy === 'ready') || previousKeptProvable(scanDurability));
 
@@ -1206,6 +1277,11 @@ export default function App({ objectId, sessionId, status }: AppProps) {
       )}
       {!xrSessionActive && continuationPhaseLabel !== null && (
         <div className="xr-runtime-warning" role="status" aria-live="polite">{continuationPhaseLabel}</div>
+      )}
+      {xrSessionActive && scanStoragePhase === 'preparing' && (
+        <div className="xr-runtime-warning" role="status" aria-live="polite">
+          {scanStorageLabel('preparing', objectId, locale)}
+        </div>
       )}
       {storageActionsDisabled && (
         <div className="xr-runtime-warning" role="status">{t('scan.storage.paused')}</div>
@@ -1295,7 +1371,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
                 currentScanId={durableViewport ? scanDurability.durableId : null}
                 objectId={objectId}
                 sessionId={sessionId}
-                persistenceBusy={scanStoragePhase === 'saving'}
+                persistenceBusy={scanStoragePhase === 'preparing' || scanStoragePhase === 'saving'}
                 postScanGeneration={storageGeneration.current}
                 computeProfile={computeProfile}
                 localizationRuns={durableViewport && localizationRunListing?.object_id === objectId && localizationRunListing.session_id === sessionId

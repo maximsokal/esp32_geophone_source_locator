@@ -356,6 +356,7 @@
     "evidence.partly_unavailable": { "en": "Partly unavailable: {error}", "uk": "Частково недоступно: {error}" },
     "scan.storage.loading": { "en": "Loading saved 3D scan · {object}", "uk": "Завантаження збереженого 3D-скану · {object}" },
     "scan.storage.none": { "en": "No saved 3D scan · {object}", "uk": "Збереженого 3D-скану немає · {object}" },
+    "scan.storage.preparing": { "en": "Preparing scan for saving · {object}", "uk": "Підготовка скану до збереження · {object}" },
     "scan.storage.scanning": { "en": "New scan in browser memory · {object}", "uk": "Новий скан у пам’яті браузера · {object}" },
     "scan.storage.continuing": { "en": "Continuing 3D scan… · {object}", "uk": "Продовження 3D-сканування… · {object}" },
     "scan.storage.saving": { "en": "Saving 3D scan to SD · {object}", "uk": "Збереження 3D-скану на SD · {object}" },

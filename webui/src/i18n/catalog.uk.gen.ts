@@ -932,6 +932,7 @@ export const uk: Record<I18nKey, string> = {
   "scan.storage.not_committed": "Скан не збережено. Попередній стан пристрою не підтверджено. {reason}",
   "scan.storage.paused": "Триває запис — збереження скану призупинено",
   "scan.storage.preempted": "Збереження скану призупинено через важливу команду. Повторіть спробу зберегти.",
+  "scan.storage.preparing": "Підготовка скану до збереження · {object}",
   "scan.storage.previous_kept": "Новий скан є лише в пам’яті браузера; попередній скан на SD збережено. {reason}",
   "scan.storage.provisional": "Цей скан провізорний, доки пристрій не підтвердить збереження.",
   "scan.storage.saved": "3D-скан збережено на SD · {object}",
