@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -26,7 +27,8 @@
  */
 
 #define LOCALIZATION_RUN_STORE_PATH_MAX 160U
-#define LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE 2048U
+/* Maximal v1 picks JSON is 2730 bytes; include its terminating NUL. */
+#define LOCALIZATION_RUN_STORE_JSON_BUFFER_SIZE 2731U
 #define LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION 128U
 
 /*
@@ -37,6 +39,25 @@
  * LOCALIZATION_PICK_RECORD_CHANNEL_COUNT).
  */
 #define LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION 64U
+
+typedef enum
+{
+    LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_PARSE_FAILED = 1U << 0,
+    LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_READ_FAILED = 1U << 1,
+    LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_RECORD_PARSE_FAILED = 1U << 2,
+    LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_LISTING_FAILED = 1U << 3,
+    LOCALIZATION_RUN_STORE_PARTIAL_ERROR_LISTING_ENUMERATION_FAILED = 1U << 4
+
+} localization_run_store_partial_error_code_t;
+
+typedef struct
+{
+    bool partial_error;
+    size_t partial_error_count;
+    /* Bit mask of localization_run_store_partial_error_code_t values. */
+    uint32_t partial_error_codes;
+
+} localization_run_store_list_status_t;
 
 
 /*
@@ -85,6 +106,19 @@ esp_err_t localization_run_store_list(
 );
 
 
+/* Extended listing result. Valid records are retained when a matching file
+ * cannot be read or parsed. NOT_FOUND means the session directory is absent
+ * (ENOENT); other enumeration failures return an error and set partial_error. */
+esp_err_t localization_run_store_list_ex(
+    const char *object_id,
+    const char *session_id,
+    localization_run_record_t *records,
+    size_t max_records,
+    size_t *record_count_out,
+    localization_run_store_list_status_t *status_out
+);
+
+
 /*
  * MAX-148 (slice 3): the pick-record analog of the three functions above,
  * for localization_pick_record_t (components/localization_results). A
@@ -114,4 +148,14 @@ esp_err_t localization_run_store_list_picks(
     localization_pick_record_t *records,
     size_t max_records,
     size_t *record_count_out
+);
+
+
+esp_err_t localization_run_store_list_picks_ex(
+    const char *object_id,
+    const char *session_id,
+    localization_pick_record_t *records,
+    size_t max_records,
+    size_t *record_count_out,
+    localization_run_store_list_status_t *status_out
 );

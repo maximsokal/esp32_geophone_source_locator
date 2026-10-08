@@ -586,6 +586,26 @@ static void test_corrupt_saved_records_are_skipped(void)
         LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &pick_count) == ESP_OK);
     assert(pick_count == 1U);
 
+    localization_run_store_list_status_t run_status;
+    size_t extended_run_count = 0U;
+    assert(localization_run_store_list_ex("OBJ_0001", "S070001", records,
+        LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION, &extended_run_count,
+        &run_status) == ESP_OK);
+    assert(extended_run_count == 13U);
+    assert(run_status.partial_error && run_status.partial_error_count == 4U);
+    assert((run_status.partial_error_codes &
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_PARSE_FAILED) != 0U);
+
+    localization_run_store_list_status_t pick_status;
+    size_t extended_pick_count = 0U;
+    assert(localization_run_store_list_picks_ex("OBJ_0001", "S070001", picks,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &extended_pick_count,
+        &pick_status) == ESP_OK);
+    assert(extended_pick_count == 1U);
+    assert(pick_status.partial_error && pick_status.partial_error_count == 4U);
+    assert((pick_status.partial_error_codes &
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_RECORD_PARSE_FAILED) != 0U);
+
     for (size_t i = 0U; i < sizeof(corrupt) / sizeof(corrupt[0]); ++i) {
         write_bad_run_file("S070002", bad_methods[i], 7300000U + i, corrupt[i]);
         write_bad_pick_file("S070002", 7400000U + i, corrupt[i]);
@@ -597,6 +617,21 @@ static void test_corrupt_saved_records_are_skipped(void)
     assert(localization_run_store_list_picks("OBJ_0001", "S070002", picks,
         LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &corrupt_pick_count) == ESP_OK);
     assert(corrupt_pick_count == 0U);
+
+    assert(localization_run_store_list_ex("OBJ_0001", "S070002", records,
+        LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION, &corrupt_run_count,
+        &run_status) == ESP_OK);
+    assert(corrupt_run_count == 0U);
+    assert(run_status.partial_error && run_status.partial_error_count == 4U);
+    assert((run_status.partial_error_codes &
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_RUN_RECORD_PARSE_FAILED) != 0U);
+    assert(localization_run_store_list_picks_ex("OBJ_0001", "S070002", picks,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &corrupt_pick_count,
+        &pick_status) == ESP_OK);
+    assert(corrupt_pick_count == 0U);
+    assert(pick_status.partial_error && pick_status.partial_error_count == 4U);
+    assert((pick_status.partial_error_codes &
+        LOCALIZATION_RUN_STORE_PARTIAL_ERROR_PICKS_RECORD_PARSE_FAILED) != 0U);
 
     const char *empty_session = "S070003";
     char empty_directory[LOCALIZATION_RUN_STORE_PATH_MAX];
@@ -611,8 +646,28 @@ static void test_corrupt_saved_records_are_skipped(void)
         LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &empty_pick_count) == ESP_OK);
     assert(empty_pick_count == corrupt_pick_count);
 
+    assert(localization_run_store_list_ex("OBJ_0001", empty_session, records,
+        LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION, &empty_run_count,
+        &run_status) == ESP_OK);
+    assert(empty_run_count == 0U && !run_status.partial_error);
+    assert(localization_run_store_list_picks_ex("OBJ_0001", empty_session, picks,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &empty_pick_count,
+        &pick_status) == ESP_OK);
+    assert(empty_pick_count == 0U && !pick_status.partial_error);
+
+    size_t missing_count = 99U;
+    assert(localization_run_store_list_ex("OBJ_0001", "S070004", records,
+        LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION, &missing_count,
+        &run_status) == ESP_ERR_NOT_FOUND);
+    assert(missing_count == 0U && !run_status.partial_error);
+    missing_count = 99U;
+    assert(localization_run_store_list_picks_ex("OBJ_0001", "S070004", picks,
+        LOCALIZATION_RUN_STORE_MAX_PICK_RECORDS_PER_SESSION, &missing_count,
+        &pick_status) == ESP_ERR_NOT_FOUND);
+    assert(missing_count == 0U && !pick_status.partial_error);
+
     free_fixture_frames();
-    puts("  corrupt run/pick records: valid entries remain readable; all-bad and empty listings are identical");
+    puts("  corrupt run/pick records: valid entries preserved with partial-error codes; empty/missing distinguished");
 }
 
 static void test_tdoa_iteration_cap_is_persisted_as_unconverged(void)

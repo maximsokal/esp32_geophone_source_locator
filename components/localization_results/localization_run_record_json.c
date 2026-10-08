@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "localization_results_json_int64.h"
 
 
 static const char *kind_name(
@@ -102,6 +103,37 @@ static bool failure_class_from_name(const char *name, localization_failure_class
     else if (strcmp(name, "record_again") == 0) *failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
     else if (strcmp(name, "move_sensors") == 0) *failure_class = LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS;
     else if (strcmp(name, "internal") == 0) *failure_class = LOCALIZATION_FAILURE_CLASS_INTERNAL;
+    else return false;
+    return true;
+}
+
+
+static const char *terminal_status_name(localization_run_terminal_status_t status)
+{
+    switch (status) {
+        case LOCALIZATION_RUN_TERMINAL_STATUS_NONE: return "none";
+        case LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT: return "iteration_limit";
+        case LOCALIZATION_RUN_TERMINAL_STATUS_TIME_BUDGET_SKIPPED: return "time_budget_skipped";
+        case LOCALIZATION_RUN_TERMINAL_STATUS_TIME_BUDGET_HIT: return "time_budget_hit";
+        case LOCALIZATION_RUN_TERMINAL_STATUS_CELL_BUDGET: return "cell_budget";
+        case LOCALIZATION_RUN_TERMINAL_STATUS_RESOLUTION_LIMITED: return "resolution_limited";
+        default: return NULL;
+    }
+}
+
+
+static bool terminal_status_from_name(
+    const char *name,
+    localization_run_terminal_status_t *status
+)
+{
+    if (name == NULL || status == NULL) return false;
+    if (strcmp(name, "none") == 0) *status = LOCALIZATION_RUN_TERMINAL_STATUS_NONE;
+    else if (strcmp(name, "iteration_limit") == 0) *status = LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT;
+    else if (strcmp(name, "time_budget_skipped") == 0) *status = LOCALIZATION_RUN_TERMINAL_STATUS_TIME_BUDGET_SKIPPED;
+    else if (strcmp(name, "time_budget_hit") == 0) *status = LOCALIZATION_RUN_TERMINAL_STATUS_TIME_BUDGET_HIT;
+    else if (strcmp(name, "cell_budget") == 0) *status = LOCALIZATION_RUN_TERMINAL_STATUS_CELL_BUDGET;
+    else if (strcmp(name, "resolution_limited") == 0) *status = LOCALIZATION_RUN_TERMINAL_STATUS_RESOLUTION_LIMITED;
     else return false;
     return true;
 }
@@ -205,6 +237,7 @@ esp_err_t localization_run_record_to_json(
     }
 
     const char *failure_class = failure_class_name(record->failure_class);
+    const char *terminal_status = terminal_status_name(record->terminal_status);
     const bool legacy_unclassified_rejection = !record->solved &&
         record->failure_class == LOCALIZATION_FAILURE_CLASS_NONE &&
         record->schema_version == LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY;
@@ -216,6 +249,7 @@ esp_err_t localization_run_record_to_json(
     );
     if (
         failure_class == NULL ||
+        (write_schema_version == LOCALIZATION_RUN_SCHEMA_VERSION && terminal_status == NULL) ||
         (record->uncertainty_too_high &&
          (!record->solved || record->failure_class != LOCALIZATION_FAILURE_CLASS_MOVE_SENSORS)) ||
         (record->solved && !record->uncertainty_too_high &&
@@ -285,10 +319,20 @@ esp_err_t localization_run_record_to_json(
         return ESP_ERR_NO_MEM;
     }
 
-    bool ok =
-        cJSON_AddNumberToObject(
-            root, "schema_version", write_schema_version
-        ) != NULL &&
+    bool ok = cJSON_AddNumberToObject(
+        root, "schema_version", write_schema_version
+    ) != NULL;
+    if (ok && write_schema_version == LOCALIZATION_RUN_SCHEMA_VERSION) {
+        ok = cJSON_AddStringToObject(root, "terminal_status", terminal_status) != NULL &&
+            cJSON_AddBoolToObject(root, "session_epoch_known", record->session_epoch_known) != NULL &&
+            (record->session_epoch_known
+                ? cJSON_AddNumberToObject(
+                    root, "session_epoch_timestamp_us",
+                    (double)record->session_epoch_timestamp_us
+                ) != NULL
+                : cJSON_AddNullToObject(root, "session_epoch_timestamp_us") != NULL);
+    }
+    ok = ok &&
         cJSON_AddStringToObject(root, "object_id", record->object_id) != NULL &&
         cJSON_AddStringToObject(root, "session_id", record->session_id) != NULL &&
         cJSON_AddNumberToObject(
@@ -451,6 +495,16 @@ esp_err_t localization_run_record_to_json(
     if (json == NULL) {
         return ESP_ERR_NO_MEM;
     }
+    if (
+        write_schema_version == LOCALIZATION_RUN_SCHEMA_VERSION &&
+        record->session_epoch_known &&
+        !localization_results_json_replace_int64(
+            &json, "session_epoch_timestamp_us", record->session_epoch_timestamp_us
+        )
+    ) {
+        free(json);
+        return ESP_ERR_NO_MEM;
+    }
 
     *json_out = json;
     return ESP_OK;
@@ -604,8 +658,8 @@ esp_err_t localization_run_record_from_json(
         cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
     }
-    /* Readable: all schemas 3 through 6; older records have unknown scan
-     * provenance and readers never infer it from their method name. */
+    /* Readable: schemas 3 through 7. New schema fields default for older
+     * records rather than being inferred from method names or timestamps. */
     if (
         schema_version < (double)LOCALIZATION_RUN_SCHEMA_VERSION_LEGACY ||
         schema_version > (double)LOCALIZATION_RUN_SCHEMA_VERSION
@@ -717,7 +771,7 @@ esp_err_t localization_run_record_from_json(
         ok = ok && read_bool(root, "uncertainty_too_high", &uncertainty_too_high);
     }
 
-    if (ok && schema_version >= (double)LOCALIZATION_RUN_SCHEMA_VERSION) {
+    if (ok && schema_version >= (double)LOCALIZATION_RUN_SCHEMA_VERSION_V6) {
         bool scan_constraint_applied = false;
         uint64_t occupancy_created_at_ms = 0U;
         uint64_t registration_geometry_computed_at_ms = 0U;
@@ -742,6 +796,41 @@ esp_err_t localization_run_record_from_json(
             record->scan_constraint_applied = scan_constraint_applied;
             record->occupancy_created_at_ms = occupancy_created_at_ms;
             record->registration_geometry_computed_at_ms = registration_geometry_computed_at_ms;
+        }
+    }
+
+    if (ok && schema_version >= (double)LOCALIZATION_RUN_SCHEMA_VERSION) {
+        char terminal_status_buffer[32] = { 0 };
+        bool session_epoch_known = false;
+        int64_t session_epoch_timestamp_us = 0;
+        bool epoch_timestamp_present = false;
+        bool epoch_timestamp_is_null = false;
+        const cJSON *epoch_timestamp_item = cJSON_GetObjectItemCaseSensitive(
+            root, "session_epoch_timestamp_us"
+        );
+        ok = read_string(
+                root, "terminal_status", terminal_status_buffer,
+                sizeof(terminal_status_buffer)
+            ) && terminal_status_from_name(
+                terminal_status_buffer, &record->terminal_status
+            ) &&
+            read_bool(root, "session_epoch_known", &session_epoch_known) &&
+            localization_results_json_read_int64(
+                json, "session_epoch_timestamp_us", &session_epoch_timestamp_us,
+                &epoch_timestamp_present, &epoch_timestamp_is_null
+            );
+        if (ok && session_epoch_known) {
+            ok = cJSON_IsNumber(epoch_timestamp_item) && epoch_timestamp_present &&
+                !epoch_timestamp_is_null;
+            if (ok) {
+                record->session_epoch_timestamp_us = session_epoch_timestamp_us;
+            }
+        } else if (ok) {
+            ok = (!epoch_timestamp_present && epoch_timestamp_item == NULL) ||
+                (epoch_timestamp_is_null && cJSON_IsNull(epoch_timestamp_item));
+        }
+        if (ok) {
+            record->session_epoch_known = session_epoch_known;
         }
     }
 

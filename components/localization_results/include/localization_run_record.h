@@ -32,10 +32,13 @@
  * producer-assigned failure class; schema v3 records without it still read
  * as LOCALIZATION_FAILURE_CLASS_NONE. Schema v6 adds the scan-generation
  * provenance for scan-constrained runs; older records remain history-only
- * when their scan generation cannot be established.
+ * when their scan generation cannot be established. Schema v7 adds
+ * terminal solver status and optional recording-session epoch metadata.
 */
 
-#define LOCALIZATION_RUN_SCHEMA_VERSION 6U
+#define LOCALIZATION_RUN_SCHEMA_VERSION 7U
+/* Schema v6: scan-generation provenance. */
+#define LOCALIZATION_RUN_SCHEMA_VERSION_V6 6U
 /* Schema v5: producer velocity range (MAX-301). */
 #define LOCALIZATION_RUN_SCHEMA_VERSION_V5 5U
 /* Schema v4: producer failure class, no velocity range. */
@@ -67,6 +70,11 @@
  */
 #define LOCALIZATION_RUN_REJECTION_REASON_SIZE 128U
 
+#define LOCALIZATION_RUN_REJECTION_REASON_TIMESTAMP_NON_MONOTONIC "timestamp_non_monotonic"
+#define LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP "session_gap"
+#define LOCALIZATION_RUN_REJECTION_REASON_DUPLICATE_SENSOR_POSITION "duplicate_sensor_position"
+#define LOCALIZATION_RUN_REJECTION_REASON_REFLECTED_TRANSFORM "reflected_transform"
+
 
 typedef enum
 {
@@ -74,6 +82,18 @@ typedef enum
     LOCALIZATION_RUN_KIND_JOINT_FUSION
 
 } localization_run_kind_t;
+
+
+typedef enum
+{
+    LOCALIZATION_RUN_TERMINAL_STATUS_NONE = 0,
+    LOCALIZATION_RUN_TERMINAL_STATUS_ITERATION_LIMIT,
+    LOCALIZATION_RUN_TERMINAL_STATUS_TIME_BUDGET_SKIPPED,
+    LOCALIZATION_RUN_TERMINAL_STATUS_TIME_BUDGET_HIT,
+    LOCALIZATION_RUN_TERMINAL_STATUS_CELL_BUDGET,
+    LOCALIZATION_RUN_TERMINAL_STATUS_RESOLUTION_LIMITED
+
+} localization_run_terminal_status_t;
 
 
 /*
@@ -146,6 +166,14 @@ typedef struct
     double propagation_speed_uncertainty_mps;
 
     bool solved;
+
+    /* Candidate availability and solver completion are separate outcomes. */
+    localization_run_terminal_status_t terminal_status;
+
+    /* Absolute timestamp for recording sample zero. When unknown, this bool
+     * is false and the timestamp value is ignored; zero is a valid epoch. */
+    bool session_epoch_known;
+    int64_t session_epoch_timestamp_us;
 
     /* The operator action class attached by the method that produced a
      * rejection. NONE is also the backward-compatible value for old JSON. */

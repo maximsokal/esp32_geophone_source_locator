@@ -33,6 +33,16 @@
 
 #define LOCALIZATION_PICK_RECORD_OBJECT_ID_SIZE  16U
 #define LOCALIZATION_PICK_RECORD_SESSION_ID_SIZE 16U
+#define LOCALIZATION_PICK_RECORD_REASON_SIZE 32U
+
+#define LOCALIZATION_PICK_PHASE_FIELD_STATUS             (1U << 0)
+#define LOCALIZATION_PICK_PHASE_FIELD_METHOD             (1U << 1)
+#define LOCALIZATION_PICK_PHASE_FIELD_SAMPLE_INDEX       (1U << 2)
+#define LOCALIZATION_PICK_PHASE_FIELD_SUBSAMPLE_OFFSET   (1U << 3)
+#define LOCALIZATION_PICK_PHASE_FIELD_ARRIVAL_TIME_US    (1U << 4)
+#define LOCALIZATION_PICK_PHASE_FIELD_SNR                (1U << 5)
+#define LOCALIZATION_PICK_PHASE_FIELD_UNCERTAINTY_US     (1U << 6)
+#define LOCALIZATION_PICK_PHASE_FIELDS_ALL               ((1U << 7) - 1U)
 
 /* This project's AD7606 channel count (pod index == channel index,
  * confirmed elsewhere in this codebase) -- a local constant rather than a
@@ -45,11 +55,36 @@
 
 typedef struct
 {
+    bool present;
+    /* JSON field presence bits; absent measurements remain distinguishable
+     * from recorded zero values. */
+    uint8_t fields_present;
+    geophone_pick_status_t status;
+    char reason[LOCALIZATION_PICK_RECORD_REASON_SIZE];
+    geophone_pick_method_t method;
+    size_t sample_index;
+    float subsample_offset;
+    double arrival_time_us;
+    double snr;
+    double uncertainty_us;
+
+} localization_pick_phase_t;
+
+
+typedef struct
+{
     /* False for a channel whose pod had no valid frozen session geometry
      * at all (never a pick candidate); true otherwise, regardless of
      * whether `pick.status == GEOPHONE_PICK_ACCEPTED`. */
     bool participating;
     geophone_channel_pick_t pick;
+    /* Optional stable text reason. Empty means none; the serializer also
+     * maps the wave-A geophone reason enum when this field is empty. */
+    char reason[LOCALIZATION_PICK_RECORD_REASON_SIZE];
+
+    /* Optional S-phase evidence. `present == false` means it was not
+     * recorded for this channel. */
+    localization_pick_phase_t s_pick;
 
 } localization_pick_channel_t;
 
@@ -61,6 +96,9 @@ typedef struct
     char object_id[LOCALIZATION_PICK_RECORD_OBJECT_ID_SIZE];
     char session_id[LOCALIZATION_PICK_RECORD_SESSION_ID_SIZE];
     uint64_t computed_at_ms;
+
+    bool session_epoch_known;
+    int64_t session_epoch_timestamp_us;
 
     localization_pick_channel_t channels[LOCALIZATION_PICK_RECORD_CHANNEL_COUNT];
 
