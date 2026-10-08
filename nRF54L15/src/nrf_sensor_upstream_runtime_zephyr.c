@@ -14,6 +14,8 @@
 #include "nrf_baro_altitude.h"
 #include "nrf_height_reference.h"
 #include "nrf_imu_calibration.h"
+#include "nrf_logger_led.h"
+#include "nrf_logger_led_zephyr.h"
 #include "nrf_log_events.h"
 #include "nrf_log_runtime_zephyr.h"
 #include "nrf_verticality_state.h"
@@ -61,6 +63,7 @@ static struct k_spinlock s_session_lock;
 static struct k_spinlock s_orientation_lock;
 static nrf_sensor_session_t s_session;
 static nrf_remote_sensor_runtime_zephyr_t s_runtime;
+static nrf_logger_led_t s_logger_led;
 static nrf_node_state_t s_worker_node_state;
 static nrf_orientation_config_t s_orientation_config;
 static nrf_orientation_estimator_t s_orientation_estimator;
@@ -527,6 +530,50 @@ static bool orientation_periodic_enabled(void)
            s_runtime.core.sources.read_imu != NULL;
 }
 
+/*
+ * Logger source mapping:
+ * | Source | Persistent level from runtime truth |
+ * | Node | current lifecycle/role; policy gates display to READY REMOTE |
+ * | BMI160 | failed init or ready sensor with latest IMU fault -> ERROR |
+ * | BME280 | failed init or ready sensor with latest ENV fault -> ERROR; required on REMOTE |
+ * | Log ring | overwritten/lost total nonzero since boot -> WARNING |
+ * | TWIS | protocol error total nonzero since boot -> WARNING |
+ * | CS/ranging | failure total nonzero since boot -> ERROR |
+ * | Watchdog | stale participant total nonzero since boot -> FATAL |
+ * | Init | watchdog arm failure latched at boot -> FATAL |
+ * | Role | role-lost total nonzero since boot -> WARNING |
+ * Pending sensor preparation is not a fault; GREEN means no latched fault.
+ */
+static void update_logger_led(uint32_t uptime_ms)
+{
+    nrf_logger_led_state_t state = {0};
+    nrf_logger_led_input_t input;
+    nrf_log_runtime_zephyr_led_counters_t counters = {0};
+
+    (void)nrf_log_runtime_zephyr_get_led_counters(&counters);
+    state.node_state = s_worker_node_state;
+    state.bmi160_ready = s_runtime.core.imu_ready;
+    state.bme280_ready = s_runtime.core.env_ready;
+    state.bmi160_init_failed = !s_runtime.core.imu_ready &&
+        s_runtime.core.imu_init_result != 0;
+    state.bme280_init_failed = !s_runtime.core.env_ready &&
+        s_runtime.core.env_init_result != 0;
+    state.sensor_fault_mask = s_runtime.core.snapshot.fault_mask;
+    state.log_overwritten_total = counters.overwritten_total;
+    state.log_lost_internal_total = counters.lost_internal_total;
+    state.twis_protocol_error_total = counters.twis_protocol_error_total;
+    state.cs_ranging_failure_total = counters.cs_ranging_failure_total;
+    state.watchdog_participant_stale_total =
+        counters.watchdog_participant_stale_total;
+    state.role_lost_total = counters.role_lost_total;
+    state.init_boot_fatal = nrf_logger_led_zephyr_init_fatal();
+
+    if (nrf_logger_led_inputs_from_state(&state, &input) == NRF_LOGGER_LED_OK) {
+        (void)nrf_logger_led_update(&s_logger_led, &input, uptime_ms);
+        (void)nrf_logger_led_zephyr_apply(&s_logger_led.output);
+    }
+}
+
 /* MAX-244: never wait longer than the worker heartbeat, so an idle
  * (non-REMOTE) worker still checks in with the watchdog. */
 static k_timeout_t sensor_worker_wait_timeout(void)
@@ -820,6 +867,7 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
     nrf_blue_led_zephyr_update(
         NRF_VERTICALITY_FAULT,
         runtime_uptime_ms());
+    nrf_logger_led_reset(&s_logger_led);
 
     while (true) {
         /* MAX-244: check in every iteration and never block longer than
@@ -841,12 +889,10 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
             } else if (event.type == NRF_SENSOR_EVENT_IMU_CALIBRATE) {
                 handle_imu_calibration_request(&event.imu_calibration);
             }
-            continue;
-        }
-
-        if (orientation_due(runtime_uptime_ms())) {
+        } else if (orientation_due(runtime_uptime_ms())) {
             orientation_periodic_read();
         }
+        update_logger_led((uint32_t)runtime_uptime_ms());
     }
 }
 

@@ -443,8 +443,8 @@ temperature, environment temperature, pressure and humidity. The REMOTE sensor
 worker also contains a software-only orientation estimator that can consume
 BMI160 samples without triggering a BME280 conversion. It does not change the
 136-byte v3 upstream frame and does not provide persistent history, synchronized
-cross-node time, Channel Sounding geometry or physical external LED/logger
-state.
+cross-node time or Channel Sounding geometry. Logger LED state is handled by
+the separate REMOTE status path below.
 
 The dual-interface foundation uses distinct peripheral instances: local D11/D12
 remains `i2c30` in controller/TWIM mode and upstream D4/D5 uses `i2c22` as the
@@ -458,10 +458,11 @@ buffer-mode Zephyr target API through `i2c_target_register()` and
 re-address rollback and raw `hwinfo_get_device_id()` access. Project addresses
 `0x30`/`0x31`/`0x32`, ASSIGN/STATUS framing, deferred role assignment and the
 backward-compatible REMOTE sensor snapshot protocol are implemented above that
-adapter. Bluetooth Channel Sounding, synchronized clocks, persistent sensor
-history and the physical remote LED/logger backend remain separate future work,
-while 28-byte early-STOP versus full 136-byte TWIS behavior remains a physical
-HIL validation item.
+adapter. Bluetooth Channel Sounding, synchronized clocks and persistent sensor
+history remain separate future work. The physical remote LED/logger backend is
+IMPLEMENTED-BUT-UNVERIFIED pending MAX-43 polarity checks and HIL, while
+28-byte early-STOP versus full 136-byte TWIS behavior remains a physical HIL
+validation item.
 
 For static verticality, the accelerometer gravity vector is the primary
 measurement: it gives the direction of gravity while the geophone is still.
@@ -472,8 +473,9 @@ estimator uses integer fixed-point gravity geometry, a 1/4 EMA, explicit
 window and graded OUTSIDE severity. Its signed reference axis is intentionally
 `UNCONFIGURED` in production until the installed BMI160-to-geophone mechanical
 axis is recorded and HIL-verified, so this software slice does not silently
-assume that X/Y/Z is vertical. Physical LED polarity, resistor wiring, blink
-rates and logger warning/error latch policy also remain HIL/configuration work.
+assume that X/Y/Z is vertical. Resistor wiring and blink rates remain
+HIL/configuration work. D1-D3 use the same assumed active-high DeviceTree
+polarity as BLUE; this polarity has NOT been verified (MAX-43).
 
 Each remote nRF54L15 has four external LEDs; the main-enclosure nRF54L15 has
 none:
@@ -483,7 +485,7 @@ none:
 | `P1.04` | `D0` | BLUE | verticality indication |
 | `P1.05` | `D1` | GREEN | normal logger state |
 | `P1.06` | `D2` | YELLOW | latched warning |
-| `P1.07` | `D3` | RED | latched error |
+| `P1.07` | `D3` | RED | latched error or fatal |
 
 The current nRF bring-up's `led0` alias is the onboard user LED and is not this
 external remote assembly. Common firmware must tolerate absent external LEDs
@@ -497,14 +499,23 @@ slow/medium/fast blink classes. `ACCEPTED` maps to steady BLUE later; graded
 polarity or blink frequency is approved here, and `MOVING` must not be rendered
 as a false vertical indication.
 
+The REMOTE logger policy shows GREEN while READY when no fault has latched;
+GREEN means “no latched fault,” not that sensor preparation has completed.
+Unattempted sensor preparation is pending, not a fault. A failed BMI160 init
+or failed required BME280 init is an ERROR, as is an IMU/ENV fault bit once its
+sensor is READY. A WARNING must remain present for 2000 ms before YELLOW
+latches; ERROR and FATAL conditions, including a stale watchdog participant,
+apply with 0 ms confirmation. When WARNING and ERROR/FATAL coexist, RED is
+shown alone and suppresses YELLOW. Latches persist until reset. The GPIO glue
+and D1-D3 DeviceTree mapping are IMPLEMENTED-BUT-UNVERIFIED; polarity is an
+active-high assumption matching BLUE, and physical HIL remains pending MAX-43.
+
 The ESP32 `status_indicator` state machine consumes explicit application
 status decisions. WARNING and ERROR are sticky until power cycle, and a later
 NORMAL/CLEAR_NON_STICKY event does not clear them. Its effective state has
 priority `ERROR > WARNING > NORMAL`; the present ESP32 board has no connected
 status LED GPIOs, so this is a semantic contract rather than physical LED
-proof. The future remote logger must preserve that user-facing persistence.
-When WARNING and ERROR coexist, whether the remote shows red-only priority or
-yellow+red simultaneously requires explicit confirmation before implementation.
+proof. The remote logger preserves that user-facing persistence.
 
 The complete nRF test package, including the one-board/multi-node matrix and
 the separation between native evidence and physical HIL, is in

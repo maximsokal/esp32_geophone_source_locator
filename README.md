@@ -86,6 +86,16 @@ SCL and `D12/P0.04` is SDA. The upstream ESP32/TCA bus remains on
 `D4/P1.10` SDA and `D5/P1.11` SCL. The main-enclosure nRF54L15 does not
 require the remote-only sensor assembly.
 
+The REMOTE logger LEDs show GREEN while READY when no fault has latched; GREEN
+means “no latched fault,” not that sensor preparation has completed. An
+unattempted sensor is pending, while a failed BMI160 or required BME280 init is
+an immediate ERROR. Runtime IMU/ENV fault bits count only after that sensor is
+READY. WARNING must persist for 2000 ms before YELLOW latches; ERROR/FATAL is
+immediate, and latches clear only on reset. `LOG_RING_LOSS` latches WARNING
+when `overwritten_total > 0` (internal logger losses also map to WARNING). The
+128-record ring can overwrite during a bench run without an ESP32 collector,
+producing a latched YELLOW; this is expected bench behavior.
+
 The authoritative topology, local sensor/power contract, external
 GY-BMI160/verticality contract, Channel Sounding role rotation and remote LED
 pinout are in

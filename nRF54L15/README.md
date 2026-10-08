@@ -165,21 +165,44 @@ Remote external LED wiring is:
 | `P1.07 / D3` | RED |
 
 The main-enclosure board has none of these four external LEDs. The production
-firmware keeps onboard `led0` as a board/toolchain heartbeat and drives the
-REMOTE blue LED on D0 from the sensor worker. The default GPIO polarity is
-active-high; confirm the installed LED polarity and series-resistor wiring
-with HIL before treating the physical indication as verified.
+firmware keeps onboard `led0` as a board/toolchain heartbeat, drives the REMOTE
+blue LED on D0 from the sensor worker, and applies logger status to D1-D3. The
+logger GPIO backend tolerates missing or unavailable pins so MAIN and LED-less
+boards can continue booting and communicating.
+
+**ASSUMED active-high, same as BLUE; NOT verified (MAX-43); verify with a current-limited test before trusting.** This polarity is configured only in
+DeviceTree. The C GPIO glue reads each pin's DeviceTree flags.
 
 BLUE is steady for `ACCEPTED`, blinks at 2 Hz for `STABILIZING` or `TILTED`, and
-is off for `FAULT`. GREEN/YELLOW/RED logger-status latch semantics remain the
-separate contract in `ARCHITECTURE.md`.
+is off for `FAULT`.
 
-The platform-neutral REMOTE logger policy shows GREEN only while READY with no
-latched condition, YELLOW after a WARNING holds for 2000 ms, and RED immediately
-for an ERROR or FATAL; RED suppresses YELLOW, and latches persist until reset. A
-missing or failed BME280 after REMOTE READY is an ERROR. The D1-D3 GPIO backend,
-device-tree mapping, and polarity remain BLOCKED on MAX-43; this policy is not
-wired into firmware, so logger LED operation is not claimed.
+REMOTE logger LED state is:
+
+| Condition | GREEN D1 | YELLOW D2 | RED D3 |
+| --- | --- | --- | --- |
+| READY, no latched fault (sensor preparation may be pending) | On | Off | Off |
+| WARNING present for less than 2000 ms | On | Off | Off |
+| WARNING confirmed for 2000 ms, without higher severity | Off | On | Off |
+| ERROR or FATAL, including watchdog stale | Off | Off | On |
+| ERROR/FATAL while WARNING is latched | Off | Off | On |
+| MAIN, UNASSIGNED, or not READY | Off | Off | Off |
+
+Warnings need 2000 ms of continuous confirmation. Errors and fatals apply
+immediately. RED is shown alone and suppresses YELLOW. Logger latches persist
+until reset. GREEN means “no latched fault,” not that sensor preparation has
+completed. An unattempted sensor is pending, not a fault. A failed BMI160 init
+or failed required BME280 init produces RED immediately; runtime IMU/ENV fault
+bits count only after their sensor is READY. `LOG_RING_LOSS` latches WARNING
+when `overwritten_total > 0` (internal logger losses also map to WARNING). The
+128-record ring can overwrite during a bench run without an ESP32 collector,
+producing a latched YELLOW; this is expected bench behavior.
+
+The policy, Zephyr GPIO backend, and D1-D3 DeviceTree mapping are
+**IMPLEMENTED-BUT-UNVERIFIED**. LED polarity and physical operation remain
+unverified pending MAX-43 HIL. HIL checklist — **NOT RUN**: use a
+current-limited test to confirm D1-D3 polarity and series-resistor wiring;
+exercise green, warning confirmation, red priority, and reset behavior; confirm
+MAIN and LED-less boards still boot and communicate.
 
 ## Supported Windows production interface
 

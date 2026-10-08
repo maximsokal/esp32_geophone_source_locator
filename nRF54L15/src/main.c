@@ -14,6 +14,7 @@
 
 #include "nrf_bootstrap_runtime_zephyr.h"
 #include "nrf_cs_pair_runtime_zephyr.h"
+#include "nrf_logger_led_zephyr.h"
 #include "nrf_node_state.h"
 #include "nrf_log_events.h"
 #include "nrf_log_runtime_zephyr.h"
@@ -38,6 +39,7 @@ int main(void)
     if (ret != 0) {
         return ret;
     }
+    (void)nrf_logger_led_zephyr_init();
 
 #if defined(CONFIG_NRFX_POWER)
     nrfx_power_constlat_mode_request();
@@ -77,6 +79,7 @@ int main(void)
      * leaves the node running unprotected instead of refusing to boot. */
     ret = nrf_watchdog_zephyr_start();
     if (ret < 0) {
+        nrf_logger_led_zephyr_latch_init_fatal();
         printk("nrf_watchdog: NOT armed (%d); a hung node will not self-reset\n", ret);
     }
 

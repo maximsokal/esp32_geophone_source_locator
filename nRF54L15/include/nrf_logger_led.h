@@ -37,9 +37,27 @@ typedef enum {
 
 typedef struct {
     nrf_node_state_t node_state;
+    bool bmi160_init_failed;
+    bool bme280_init_failed;
     bool bme280_ready;
     nrf_logger_led_severity_t source_levels[NRF_LOGGER_LED_SOURCE_COUNT];
 } nrf_logger_led_input_t;
+
+typedef struct {
+    nrf_node_state_t node_state;
+    bool bmi160_ready;
+    bool bme280_ready;
+    bool bmi160_init_failed;
+    bool bme280_init_failed;
+    uint32_t sensor_fault_mask;
+    uint32_t log_overwritten_total;
+    uint32_t log_lost_internal_total;
+    uint32_t twis_protocol_error_total;
+    uint32_t cs_ranging_failure_total;
+    uint32_t watchdog_participant_stale_total;
+    uint32_t role_lost_total;
+    bool init_boot_fatal;
+} nrf_logger_led_state_t;
 
 typedef struct {
     bool green;
@@ -67,6 +85,10 @@ typedef struct {
 
 /* Call before first use and on the node's explicit reboot/reset path. */
 void nrf_logger_led_reset(nrf_logger_led_t *led);
+/* Convert persistent runtime state and counters into policy source levels. */
+nrf_logger_led_result_t nrf_logger_led_inputs_from_state(
+    const nrf_logger_led_state_t *state,
+    nrf_logger_led_input_t *input);
 /* The current output, latch, and diagnostic counters are stored on led. */
 nrf_logger_led_result_t nrf_logger_led_update(
     nrf_logger_led_t *led,

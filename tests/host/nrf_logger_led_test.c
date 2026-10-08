@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "nrf_logger_led.h"
+#include "nrf_sensor_snapshot.h"
 
 static nrf_logger_led_input_t ready_remote_input(void)
 {
@@ -37,6 +38,156 @@ static void update_ok(
 {
     assert(nrf_logger_led_update(led, in, now_ms) == NRF_LOGGER_LED_OK);
     assert_output_invariants(led);
+}
+
+static nrf_logger_led_state_t ready_remote_state(void)
+{
+    nrf_logger_led_state_t state = {0};
+    state.node_state.role = NRF_NODE_ROLE_REMOTE;
+    state.node_state.lifecycle = NRF_NODE_LIFECYCLE_READY;
+    state.bmi160_ready = true;
+    state.bme280_ready = true;
+    return state;
+}
+
+static void map_state_ok(
+    const nrf_logger_led_state_t *state,
+    nrf_logger_led_input_t *input)
+{
+    assert(nrf_logger_led_inputs_from_state(state, input) == NRF_LOGGER_LED_OK);
+}
+
+static void test_persistent_runtime_state_mapping(void)
+{
+    nrf_logger_led_state_t state = ready_remote_state();
+    nrf_logger_led_input_t input;
+    nrf_logger_led_t led;
+
+    map_state_ok(&state, &input);
+    assert(input.node_state.role == NRF_NODE_ROLE_REMOTE);
+    assert(input.node_state.lifecycle == NRF_NODE_LIFECYCLE_READY);
+    assert(input.bme280_ready);
+    assert(!input.bmi160_init_failed);
+    assert(!input.bme280_init_failed);
+    for (uint32_t source = 0U;
+         source < (uint32_t)NRF_LOGGER_LED_SOURCE_COUNT;
+         ++source) {
+        assert(input.source_levels[source] == NRF_LOGGER_LED_SEVERITY_NONE);
+    }
+
+    state.bmi160_ready = false;
+    map_state_ok(&state, &input);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_BMI160_FAULT] ==
+           NRF_LOGGER_LED_SEVERITY_NONE);
+    state.bmi160_init_failed = true;
+    map_state_ok(&state, &input);
+    assert(input.bmi160_init_failed);
+    nrf_logger_led_reset(&led);
+    update_ok(&led, &input, 0U);
+    assert(led.output.red);
+    assert(led.output.reason_source == NRF_LOGGER_LED_SOURCE_BMI160_FAULT);
+
+    state = ready_remote_state();
+    state.sensor_fault_mask = NRF_SENSOR_VALID_IMU;
+    map_state_ok(&state, &input);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_BMI160_FAULT] ==
+           NRF_LOGGER_LED_SEVERITY_ERROR);
+    nrf_logger_led_reset(&led);
+    update_ok(&led, &input, 1U);
+    assert(led.output.red);
+    assert(led.output.reason_source == NRF_LOGGER_LED_SOURCE_BMI160_FAULT);
+
+    state = ready_remote_state();
+    state.bme280_ready = false;
+    map_state_ok(&state, &input);
+    assert(!input.bme280_ready);
+    assert(!input.bme280_init_failed);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_BME280_FAULT] ==
+           NRF_LOGGER_LED_SEVERITY_NONE);
+    state.bme280_init_failed = true;
+    map_state_ok(&state, &input);
+    assert(input.bme280_init_failed);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_BME280_FAULT] ==
+           NRF_LOGGER_LED_SEVERITY_NONE);
+    nrf_logger_led_reset(&led);
+    update_ok(&led, &input, 2U);
+    assert(led.output.red);
+    assert(led.output.reason_source == NRF_LOGGER_LED_SOURCE_BME280_FAULT);
+    state = ready_remote_state();
+    state.sensor_fault_mask = NRF_SENSOR_VALID_ENV;
+    map_state_ok(&state, &input);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_BME280_FAULT] ==
+           NRF_LOGGER_LED_SEVERITY_ERROR);
+    nrf_logger_led_reset(&led);
+    update_ok(&led, &input, 3U);
+    assert(led.output.red);
+    assert(led.output.reason_source == NRF_LOGGER_LED_SOURCE_BME280_FAULT);
+
+    state = ready_remote_state();
+    map_state_ok(&state, &input);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_LOG_RING_LOSS] ==
+           NRF_LOGGER_LED_SEVERITY_NONE);
+    state.log_overwritten_total = 1U;
+    map_state_ok(&state, &input);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_LOG_RING_LOSS] ==
+           NRF_LOGGER_LED_SEVERITY_WARNING);
+    state.log_overwritten_total = 2U;
+    state.log_lost_internal_total = 1U;
+    map_state_ok(&state, &input);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_LOG_RING_LOSS] ==
+           NRF_LOGGER_LED_SEVERITY_WARNING);
+    nrf_logger_led_reset(&led);
+    update_ok(&led, &input, 0U);
+    assert(led.output.green);
+    update_ok(&led, &input, 1999U);
+    assert(led.output.green);
+    update_ok(&led, &input, 2000U);
+    assert(led.output.yellow);
+
+    state = ready_remote_state();
+    state.watchdog_participant_stale_total = 1U;
+    map_state_ok(&state, &input);
+    nrf_logger_led_reset(&led);
+    update_ok(&led, &input, 7U);
+    assert(led.output.red);
+    assert(led.output.severity_latched == NRF_LOGGER_LED_SEVERITY_FATAL);
+
+    state = ready_remote_state();
+    state.twis_protocol_error_total = 1U;
+    state.cs_ranging_failure_total = 1U;
+    state.role_lost_total = 1U;
+    state.watchdog_participant_stale_total = 1U;
+    state.init_boot_fatal = true;
+    map_state_ok(&state, &input);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_TWIS_PROTOCOL] ==
+           NRF_LOGGER_LED_SEVERITY_WARNING);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_CS_RANGING] ==
+           NRF_LOGGER_LED_SEVERITY_ERROR);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_ROLE_LOST] ==
+           NRF_LOGGER_LED_SEVERITY_WARNING);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_WATCHDOG_PARTICIPANT_STALE] ==
+           NRF_LOGGER_LED_SEVERITY_FATAL);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_INIT_BOOT_FATAL] ==
+           NRF_LOGGER_LED_SEVERITY_FATAL);
+
+    nrf_logger_led_reset(&led);
+    update_ok(&led, &input, 0U);
+    assert(led.output.red);
+    assert(led.output.severity_latched == NRF_LOGGER_LED_SEVERITY_FATAL);
+
+    state = ready_remote_state();
+    state.node_state.role = NRF_NODE_ROLE_MAIN;
+    state.init_boot_fatal = true;
+    map_state_ok(&state, &input);
+    nrf_logger_led_reset(&led);
+    update_ok(&led, &input, 1U);
+    assert(!led.output.green && !led.output.yellow && !led.output.red);
+    assert(led.output.severity_latched == NRF_LOGGER_LED_SEVERITY_NONE);
+
+    assert(nrf_logger_led_inputs_from_state(NULL, &input) ==
+           NRF_LOGGER_LED_ERR_ARGUMENT);
+    assert(nrf_logger_led_inputs_from_state(&state, NULL) ==
+           NRF_LOGGER_LED_ERR_ARGUMENT);
 }
 
 static void test_remote_ready_truth_table_for_each_source_and_level(void)
@@ -173,17 +324,62 @@ static void test_bme280_is_required_after_remote_ready(void)
     in.bme280_ready = false;
 
     update_ok(&led, &in, 1U);
-    assert(led.output.red);
-    assert(led.output.severity_latched == NRF_LOGGER_LED_SEVERITY_ERROR);
-    assert(led.output.reason_source == NRF_LOGGER_LED_SOURCE_BME280_FAULT);
+    assert(led.output.green);
+    assert(led.output.severity_latched == NRF_LOGGER_LED_SEVERITY_NONE);
 
     nrf_logger_led_reset(&led);
-    in = ready_remote_input();
-    in.source_levels[NRF_LOGGER_LED_SOURCE_BME280_FAULT] =
-        NRF_LOGGER_LED_SEVERITY_ERROR;
+    in.bme280_init_failed = true;
     update_ok(&led, &in, 2U);
     assert(led.output.red);
     assert(led.output.severity_latched == NRF_LOGGER_LED_SEVERITY_ERROR);
+    assert(led.output.reason_source == NRF_LOGGER_LED_SOURCE_BME280_FAULT);
+}
+
+static void test_pending_remote_sensor_preparation_does_not_latch(void)
+{
+    nrf_logger_led_state_t state = ready_remote_state();
+    nrf_logger_led_input_t input;
+    nrf_logger_led_t led;
+
+    state.bmi160_ready = false;
+    state.bme280_ready = false;
+    state.sensor_fault_mask = NRF_SENSOR_VALID_IMU | NRF_SENSOR_VALID_ENV;
+    map_state_ok(&state, &input);
+    assert(!input.bmi160_init_failed);
+    assert(!input.bme280_init_failed);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_BMI160_FAULT] ==
+           NRF_LOGGER_LED_SEVERITY_NONE);
+    assert(input.source_levels[NRF_LOGGER_LED_SOURCE_BME280_FAULT] ==
+           NRF_LOGGER_LED_SEVERITY_NONE);
+
+    nrf_logger_led_reset(&led);
+    for (uint32_t update = 0U; update < 32U; ++update) {
+        update_ok(&led, &input, update + 1U);
+        assert(led.output.green);
+        assert(led.output.severity_latched == NRF_LOGGER_LED_SEVERITY_NONE);
+    }
+}
+
+static void test_sensor_retry_does_not_clear_error_latch(void)
+{
+    nrf_logger_led_t led;
+    nrf_logger_led_input_t in = ready_remote_input();
+
+    nrf_logger_led_reset(&led);
+    in.bme280_ready = false;
+    in.bme280_init_failed = true;
+    update_ok(&led, &in, 1U);
+    assert(led.output.red);
+
+    in.bme280_ready = true;
+    in.bme280_init_failed = false;
+    update_ok(&led, &in, 2U);
+    assert(led.output.red);
+    assert(led.output.reason_source == NRF_LOGGER_LED_SOURCE_BME280_FAULT);
+
+    nrf_logger_led_reset(&led);
+    update_ok(&led, &in, 3U);
+    assert(led.output.green);
 }
 
 static void test_red_suppresses_yellow_when_warning_and_error_are_latched(void)
@@ -537,6 +733,9 @@ static void test_four_node_isolation_and_randomized_invariants(void)
 
 int main(void)
 {
+    test_persistent_runtime_state_mapping();
+    test_pending_remote_sensor_preparation_does_not_latch();
+    test_sensor_retry_does_not_clear_error_latch();
     test_bme280_is_required_after_remote_ready();
     test_red_suppresses_yellow_when_warning_and_error_are_latched();
     test_warning_requires_full_confirmation_and_flaps_restart();

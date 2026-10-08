@@ -15,6 +15,8 @@
 static nrf_log_ring_t s_log_ring;
 static struct k_spinlock s_log_ring_lock;
 static struct k_spinlock s_metrics_lock;
+static struct k_spinlock s_led_counters_lock;
+static nrf_log_runtime_zephyr_led_counters_t s_led_counters;
 static uint32_t s_max_block_build_cycles;
 static bool s_initialized;
 
@@ -87,6 +89,40 @@ static uint32_t generate_next_boot_id(void *context)
     return boot_id;
 }
 
+static void increment_saturating(uint32_t *counter)
+{
+    if (*counter < UINT32_MAX) {
+        ++(*counter);
+    }
+}
+
+static void track_led_event(uint16_t event_id)
+{
+    k_spinlock_key_t key = k_spin_lock(&s_led_counters_lock);
+
+    switch (event_id) {
+    case NRF_LOG_EVENT_TWIS_INVALID_FRAME:
+    case NRF_LOG_EVENT_TWIS_UNKNOWN_TYPE:
+    case NRF_LOG_EVENT_TWIS_BUSY:
+        increment_saturating(&s_led_counters.twis_protocol_error_total);
+        break;
+    case NRF_LOG_EVENT_CS_EXECUTE_FAILED:
+    case NRF_LOG_EVENT_CS_TIMEOUT:
+        increment_saturating(&s_led_counters.cs_ranging_failure_total);
+        break;
+    case NRF_LOG_EVENT_WATCHDOG_PARTICIPANT_STALE:
+        increment_saturating(&s_led_counters.watchdog_participant_stale_total);
+        break;
+    case NRF_LOG_EVENT_ROLE_LOST:
+        increment_saturating(&s_led_counters.role_lost_total);
+        break;
+    default:
+        break;
+    }
+
+    k_spin_unlock(&s_led_counters_lock, key);
+}
+
 int nrf_log_runtime_zephyr_init(void)
 {
     const nrf_log_lock_interface_t lock = {
@@ -131,6 +167,7 @@ void nrf_log_runtime_zephyr_append_event(uint16_t event_id, uint32_t arg0, uint3
     if (event == NULL) {
         return;
     }
+    track_led_event(event_id);
     (void)nrf_log_ring_append(
         &s_log_ring,
         event->subsystem,
@@ -139,6 +176,33 @@ void nrf_log_runtime_zephyr_append_event(uint16_t event_id, uint32_t arg0, uint3
         arg0,
         arg1,
         (uint32_t)k_uptime_get());
+}
+
+nrf_log_error_t nrf_log_runtime_zephyr_get_led_counters(
+    nrf_log_runtime_zephyr_led_counters_t *counters)
+{
+    nrf_log_status_t log_status;
+    k_spinlock_key_t key;
+    nrf_log_error_t result;
+
+    if (counters == NULL) {
+        return NRF_LOG_ERROR_NULL_ARGUMENT;
+    }
+    if (!s_initialized) {
+        return NRF_LOG_ERROR_INVARIANT_VIOLATION;
+    }
+
+    result = nrf_log_ring_status_snapshot(&s_log_ring, &log_status);
+    if (result != NRF_LOG_ERROR_OK) {
+        return result;
+    }
+
+    key = k_spin_lock(&s_led_counters_lock);
+    *counters = s_led_counters;
+    k_spin_unlock(&s_led_counters_lock, key);
+    counters->overwritten_total = log_status.overwritten_total;
+    counters->lost_internal_total = log_status.lost_internal_total;
+    return NRF_LOG_ERROR_OK;
 }
 
 nrf_log_error_t nrf_log_runtime_zephyr_build_status(

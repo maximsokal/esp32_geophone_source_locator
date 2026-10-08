@@ -1,5 +1,7 @@
 #include "nrf_logger_led.h"
 
+#include "nrf_sensor_snapshot.h"
+
 static void nrf_logger_led_increment(uint32_t *counter)
 {
     if (*counter < UINT32_MAX) {
@@ -134,6 +136,63 @@ void nrf_logger_led_reset(nrf_logger_led_t *led)
     led->has_last_update = false;
 }
 
+nrf_logger_led_result_t nrf_logger_led_inputs_from_state(
+    const nrf_logger_led_state_t *state,
+    nrf_logger_led_input_t *input)
+{
+    if (state == 0 || input == 0) {
+        return NRF_LOGGER_LED_ERR_ARGUMENT;
+    }
+
+    input->node_state = state->node_state;
+    input->bmi160_init_failed = state->bmi160_init_failed;
+    input->bme280_init_failed = state->bme280_init_failed;
+    input->bme280_ready = state->bme280_ready;
+    for (uint32_t source = 0U;
+         source < (uint32_t)NRF_LOGGER_LED_SOURCE_COUNT;
+         ++source) {
+        input->source_levels[source] = NRF_LOGGER_LED_SEVERITY_NONE;
+    }
+
+    if (state->bmi160_ready &&
+        (state->sensor_fault_mask & NRF_SENSOR_VALID_IMU) != 0U) {
+        input->source_levels[NRF_LOGGER_LED_SOURCE_BMI160_FAULT] =
+            NRF_LOGGER_LED_SEVERITY_ERROR;
+    }
+    if (state->bme280_ready &&
+        (state->sensor_fault_mask & NRF_SENSOR_VALID_ENV) != 0U) {
+        input->source_levels[NRF_LOGGER_LED_SOURCE_BME280_FAULT] =
+            NRF_LOGGER_LED_SEVERITY_ERROR;
+    }
+    if (state->log_overwritten_total != 0U ||
+        state->log_lost_internal_total != 0U) {
+        input->source_levels[NRF_LOGGER_LED_SOURCE_LOG_RING_LOSS] =
+            NRF_LOGGER_LED_SEVERITY_WARNING;
+    }
+    if (state->twis_protocol_error_total != 0U) {
+        input->source_levels[NRF_LOGGER_LED_SOURCE_TWIS_PROTOCOL] =
+            NRF_LOGGER_LED_SEVERITY_WARNING;
+    }
+    if (state->cs_ranging_failure_total != 0U) {
+        input->source_levels[NRF_LOGGER_LED_SOURCE_CS_RANGING] =
+            NRF_LOGGER_LED_SEVERITY_ERROR;
+    }
+    if (state->watchdog_participant_stale_total != 0U) {
+        input->source_levels[NRF_LOGGER_LED_SOURCE_WATCHDOG_PARTICIPANT_STALE] =
+            NRF_LOGGER_LED_SEVERITY_FATAL;
+    }
+    if (state->init_boot_fatal) {
+        input->source_levels[NRF_LOGGER_LED_SOURCE_INIT_BOOT_FATAL] =
+            NRF_LOGGER_LED_SEVERITY_FATAL;
+    }
+    if (state->role_lost_total != 0U) {
+        input->source_levels[NRF_LOGGER_LED_SOURCE_ROLE_LOST] =
+            NRF_LOGGER_LED_SEVERITY_WARNING;
+    }
+
+    return NRF_LOGGER_LED_OK;
+}
+
 nrf_logger_led_result_t nrf_logger_led_update(
     nrf_logger_led_t *led,
     const nrf_logger_led_input_t *in,
@@ -200,11 +259,14 @@ nrf_logger_led_result_t nrf_logger_led_update(
         nrf_logger_led_severity_t severity =
             nrf_logger_led_source_level(led, in, source);
 
-        if (source == (uint32_t)NRF_LOGGER_LED_SOURCE_BME280_FAULT &&
-            in->node_state.lifecycle == NRF_NODE_LIFECYCLE_READY &&
-            !in->bme280_ready &&
-            severity < NRF_LOGGER_LED_SEVERITY_ERROR) {
-            severity = NRF_LOGGER_LED_SEVERITY_ERROR;
+        /* Unready with zero init result means preparation is still pending. */
+        if ((source == (uint32_t)NRF_LOGGER_LED_SOURCE_BMI160_FAULT &&
+             in->bmi160_init_failed) ||
+            (source == (uint32_t)NRF_LOGGER_LED_SOURCE_BME280_FAULT &&
+             in->bme280_init_failed)) {
+            if (severity < NRF_LOGGER_LED_SEVERITY_ERROR) {
+                severity = NRF_LOGGER_LED_SEVERITY_ERROR;
+            }
         }
 
         nrf_logger_led_update_source(led, source, severity, effective_now_ms);

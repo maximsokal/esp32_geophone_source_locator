@@ -17,6 +17,11 @@ PLATFORMIO_CONF = REPO_ROOT / "nRF54L15" / "zephyr" / "prj.platformio.conf"
 APP_OVERLAY = REPO_ROOT / "nRF54L15" / "zephyr" / "app.overlay"
 HOST_NRF_MANIFEST = REPO_ROOT / "tests" / "host" / "manifest.d" / "coverage-nrf.json"
 LOGGER_LED_SOURCE = REPO_ROOT / "nRF54L15" / "src" / "nrf_logger_led.c"
+LOGGER_LED_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_logger_led_zephyr.c"
+SENSOR_RUNTIME_ZEPHYR = (
+    REPO_ROOT / "nRF54L15" / "src" / "nrf_sensor_upstream_runtime_zephyr.c"
+)
+LOG_RUNTIME_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_log_runtime_zephyr.c"
 MAIN = REPO_ROOT / "nRF54L15" / "src" / "main.c"
 SENSOR_BUS_ZEPHYR = REPO_ROOT / "nRF54L15" / "src" / "nrf_sensor_bus_zephyr.c"
 BMI160_HEADER = REPO_ROOT / "nRF54L15" / "include" / "nrf_bmi160.h"
@@ -84,9 +89,85 @@ def test_nrf_logger_led_policy_is_host_covered_and_zephyr_neutral():
     suite = next(test for test in manifest["tests"] if test["name"] == "nrf_logger_led")
 
     assert "../src/nrf_logger_led.c" in cmake
+    assert "../src/nrf_logger_led_zephyr.c" in cmake
     assert "nRF54L15/src/nrf_logger_led.c" in suite["sources"]
     assert "tests/host/nrf_logger_led_test.c" in suite["sources"]
     assert not re.search(r'(?m)^\s*#\s*include\s*[<"][^>"]*zephyr/', source)
+
+    runtime = SENSOR_RUNTIME_ZEPHYR.read_text(encoding="utf-8")
+    assert re.search(
+        r"state\.bmi160_init_failed\s*=\s*!s_runtime\.core\.imu_ready\s*"
+        r"&&\s*s_runtime\.core\.imu_init_result\s*!=\s*0",
+        runtime,
+    )
+    assert re.search(
+        r"state\.bme280_init_failed\s*=\s*!s_runtime\.core\.env_ready\s*"
+        r"&&\s*s_runtime\.core\.env_init_result\s*!=\s*0",
+        runtime,
+    )
+    assert "input->bmi160_init_failed = state->bmi160_init_failed;" in source
+    assert "input->bme280_init_failed = state->bme280_init_failed;" in source
+    assert re.search(
+        r"if\s*\(state->bme280_ready\s*&&\s*"
+        r"\(state->sensor_fault_mask\s*&\s*NRF_SENSOR_VALID_ENV\)\s*!=\s*0U\)",
+        source,
+    )
+    assert "in->bme280_init_failed" in source
+    assert "!in->bme280_ready" not in source
+    assert "!state->bme280_ready" not in source
+
+
+def test_logger_led_dt_backend_is_optional_and_main_hook_stays_small():
+    overlay = APP_OVERLAY.read_text(encoding="utf-8")
+    glue = LOGGER_LED_ZEPHYR.read_text(encoding="utf-8")
+    main = MAIN.read_text(encoding="utf-8")
+    runtime = SENSOR_RUNTIME_ZEPHYR.read_text(encoding="utf-8")
+    log_runtime = LOG_RUNTIME_ZEPHYR.read_text(encoding="utf-8")
+    readme = README.read_text(encoding="utf-8")
+
+    aliases = re.findall(r"(?m)^\s*(logger-(?:green|yellow|red))\s*=", overlay)
+    assert sorted(aliases) == ["logger-green", "logger-red", "logger-yellow"]
+    for color, pin in (("green", 5), ("yellow", 6), ("red", 7)):
+        assert re.search(
+            rf"logger_{color}:.*?gpios\s*=\s*<&gpio1\s+{pin}\s+GPIO_ACTIVE_HIGH>",
+            overlay,
+            re.DOTALL,
+        )
+        assert glue.count(
+            f"GPIO_DT_SPEC_GET_OR(DT_ALIAS(logger_{color}), gpios, {{0}})"
+        ) == 1
+
+    polarity_note = (
+        r"ASSUMED active-high, same as BLUE; NOT verified \(MAX-43\); "
+        r"verify with a current-limited test before trusting\."
+    )
+    overlay_comment = re.sub(r"(?m)^\s*\*\s?", "", overlay)
+    assert re.search(polarity_note, " ".join(overlay_comment.split()))
+    assert re.search(polarity_note, " ".join(readme.split()))
+    assert "GPIO_OUTPUT_INACTIVE" in glue
+    assert "gpio_pin_set_dt" in glue
+    assert "gpio_dt_spec" in glue
+    assert not re.search(
+        r"i2c_(?:read|write|transfer)|nrf_(?:sensor_bus|bmi160|bme280)",
+        glue,
+    )
+
+    assert main.count("nrf_logger_led_zephyr_init()") == 1
+    assert main.count("nrf_logger_led_zephyr_latch_init_fatal()") == 1
+    assert "nrf_logger_led_update(" not in main
+    assert runtime.count("nrf_logger_led_update(") == 1
+    assert runtime.count("nrf_logger_led_reset(") == 1
+    assert "nrf_log_runtime_zephyr_get_led_counters(&counters)" in runtime
+    for event in (
+        "TWIS_INVALID_FRAME",
+        "TWIS_UNKNOWN_TYPE",
+        "TWIS_BUSY",
+        "CS_EXECUTE_FAILED",
+        "CS_TIMEOUT",
+        "WATCHDOG_PARTICIPANT_STALE",
+        "ROLE_LOST",
+    ):
+        assert f"NRF_LOG_EVENT_{event}" in log_runtime
 
 
 def test_platformio_uses_a_minimal_compatibility_config_without_changing_ncs_production():
