@@ -24,6 +24,47 @@
 #include "object_store.h"
 #include "workflow_service.h"
 #include "workflow_service_host_fakes.h"
+#include "cJSON.h"
+
+/* The workflow service host stub omits the unrelated status-only leveling API. */
+typedef struct {
+    size_t assigned_count;
+    size_t accepted_count;
+} nrf_topology_leveling_summary_t;
+
+typedef enum {
+    NRF_TOPOLOGY_LEVELING_NO_DATA = 0,
+    NRF_TOPOLOGY_LEVELING_UNAVAILABLE,
+    NRF_TOPOLOGY_LEVELING_MOVING,
+    NRF_TOPOLOGY_LEVELING_ACCEPTED,
+    NRF_TOPOLOGY_LEVELING_OUTSIDE,
+} nrf_topology_leveling_node_state_t;
+
+typedef struct {
+    uint8_t channel;
+    uint8_t node_id;
+    nrf_topology_leveling_node_state_t state;
+    bool tilt_valid;
+    float tilt_deg;
+} nrf_topology_leveling_node_t;
+
+typedef struct {
+    size_t count;
+    nrf_topology_leveling_node_t nodes[8];
+} nrf_topology_leveling_nodes_t;
+
+esp_err_t nrf_topology_service_get_leveling_summary(nrf_topology_leveling_summary_t *summary);
+esp_err_t nrf_topology_service_get_leveling_nodes(nrf_topology_leveling_nodes_t *nodes);
+const char *nrf_topology_leveling_node_state_name(nrf_topology_leveling_node_state_t state);
+
+/* Exercise the production status serializer against this test's live service. */
+#undef ESP_FAIL
+#define ESP_FAIL -1
+#define ESP_LOGE(tag, format, ...) ((void)0)
+#include "../../components/web_server/web_status_json_recording.c"
+#undef ESP_LOGE
+#undef ESP_FAIL
+#define ESP_FAIL (-1)
 
 
 static const char s_deep_nested_settings_json[] =
@@ -253,6 +294,49 @@ esp_err_t nrf_topology_service_ranging_get_progress(
 esp_err_t nrf_topology_service_invalidate_ranging(void)
 {
     return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_get_leveling_summary(
+    nrf_topology_leveling_summary_t *summary
+)
+{
+    (void)summary;
+    return ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t nrf_topology_service_get_leveling_nodes(nrf_topology_leveling_nodes_t *nodes)
+{
+    (void)nodes;
+    return ESP_ERR_INVALID_STATE;
+}
+
+const char *nrf_topology_leveling_node_state_name(nrf_topology_leveling_node_state_t state)
+{
+    switch (state) {
+        case NRF_TOPOLOGY_LEVELING_NO_DATA: return "no_data";
+        case NRF_TOPOLOGY_LEVELING_UNAVAILABLE: return "unavailable";
+        case NRF_TOPOLOGY_LEVELING_MOVING: return "moving";
+        case NRF_TOPOLOGY_LEVELING_ACCEPTED: return "accepted";
+        case NRF_TOPOLOGY_LEVELING_OUTSIDE: return "outside";
+        default: return "unknown";
+    }
+}
+
+esp_err_t seismic_recorder_get_snapshot(seismic_recorder_snapshot_t *snapshot)
+{
+    (void)snapshot;
+    return ESP_ERR_INVALID_STATE;
+}
+
+const char *seismic_recorder_stop_stage_name(seismic_recorder_stop_stage_t stage)
+{
+    (void)stage;
+    return "NONE";
+}
+
+bool storage_manager_is_ready(void)
+{
+    return true;
 }
 
 esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
@@ -526,6 +610,90 @@ static workflow_snapshot_t try_snapshot(void)
     workflow_snapshot_t snapshot;
     assert(workflow_service_try_get_snapshot(&snapshot) == ESP_OK);
     return snapshot;
+}
+
+static void assert_workflow_json_matches_snapshot(const workflow_snapshot_t *expected)
+{
+    cJSON *root = cJSON_CreateObject();
+    assert(root != NULL);
+    assert(web_status_json_add_workflow(root));
+    const cJSON *workflow = cJSON_GetObjectItemCaseSensitive(root, "workflow");
+    assert(cJSON_IsObject(workflow));
+
+    const cJSON *step = cJSON_GetObjectItemCaseSensitive(workflow, "step");
+    assert(cJSON_IsString(step));
+    assert(strcmp(step->valuestring, workflow_core_step_name(expected->step)) == 0);
+
+    const cJSON *generation = cJSON_GetObjectItemCaseSensitive(workflow, "generation");
+    assert(cJSON_IsNumber(generation));
+    assert(generation->valuedouble == (double)expected->generation);
+
+    const cJSON *actions = cJSON_GetObjectItemCaseSensitive(workflow, "allowed_actions");
+    assert(cJSON_IsArray(actions));
+    uint32_t serialized_actions = 0U;
+    const int action_count = cJSON_GetArraySize(actions);
+    for (int index = 0; index < action_count; ++index) {
+        const cJSON *action = cJSON_GetArrayItem(actions, index);
+        workflow_command_t command_value;
+        assert(cJSON_IsString(action));
+        assert(workflow_core_command_from_name(action->valuestring, &command_value));
+        serialized_actions |= WORKFLOW_ACTION(command_value);
+    }
+    assert(serialized_actions == expected->allowed_actions);
+    cJSON_Delete(root);
+}
+
+static void test_phone_and_tft_workflow_views_share_step_and_generation(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    const workflow_snapshot_t initial = try_snapshot();
+    assert(initial.step == WORKFLOW_STEP_OBJECT);
+
+    /* This is the public service call made by /api/control's workflow handler. */
+    const workflow_command_params_t phone_params = {
+        .has_generation = true,
+        .expected_generation = initial.generation,
+        .calculation_class = WORKFLOW_CALCULATION_CLASS_NONE,
+    };
+    assert(workflow_service_command(WORKFLOW_COMMAND_START_MEASUREMENT, &phone_params) ==
+        WORKFLOW_COMMAND_RESULT_OK);
+    const workflow_snapshot_t phone_snapshot = try_snapshot();
+    assert(phone_snapshot.step == WORKFLOW_STEP_SENSOR_CHECK);
+    assert(phone_snapshot.generation == initial.generation + 1U);
+    assert((phone_snapshot.allowed_actions &
+        WORKFLOW_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION)) != 0U);
+
+    uint32_t tft_sequence = 0U;
+    assert(workflow_service_command_async(
+        WORKFLOW_COMMAND_GO_CALIBRATION,
+        true,
+        phone_snapshot.generation,
+        &tft_sequence
+    ) == ESP_OK);
+    assert(workflow_service_poll() == ESP_OK);
+    const workflow_snapshot_t tft_snapshot = try_snapshot();
+    assert(tft_snapshot.step == WORKFLOW_STEP_CALIB_PREP);
+    assert(tft_snapshot.generation == phone_snapshot.generation + 1U);
+    assert(tft_snapshot.last_async.seq == tft_sequence);
+    assert(tft_snapshot.last_async.command == WORKFLOW_COMMAND_GO_CALIBRATION);
+    assert(tft_snapshot.last_async.result == WORKFLOW_COMMAND_RESULT_OK);
+    assert((tft_snapshot.allowed_actions &
+        WORKFLOW_ACTION(WORKFLOW_COMMAND_SENSORS_PLACED)) != 0U);
+    assert_workflow_json_matches_snapshot(&tft_snapshot);
+
+    const workflow_command_params_t stale_phone_params = {
+        .has_generation = true,
+        .expected_generation = phone_snapshot.generation,
+        .calculation_class = WORKFLOW_CALCULATION_CLASS_NONE,
+    };
+    assert(workflow_service_command(WORKFLOW_COMMAND_BACK, &stale_phone_params) ==
+        WORKFLOW_COMMAND_RESULT_STALE);
+    const workflow_snapshot_t after_stale = try_snapshot();
+    assert(after_stale.step == tft_snapshot.step);
+    assert(after_stale.generation == tft_snapshot.generation);
+    assert(after_stale.allowed_actions == tft_snapshot.allowed_actions);
+    assert_workflow_json_matches_snapshot(&after_stale);
+    workflow_service_shutdown();
 }
 
 static void enter_stopped(void)
@@ -957,6 +1125,7 @@ static void test_material_is_carried_into_run_provenance(void)
 
 int main(void)
 {
+    test_phone_and_tft_workflow_views_share_step_and_generation();
     test_tft_custom_range_is_persisted_and_auto_omits_it();
     test_reconciliation_review_error_and_async_recording_commands();
     test_reboot_resumes_only_at_object_or_idle();

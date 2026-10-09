@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { DevicePod, DeviceStatus, DeviceWorkflowStatus } from '../../src/domain/device';
+import type { DevicePod, DeviceStatus, DeviceWorkflowStatus, WorkflowStep } from '../../src/domain/device';
 import { sendWorkflowCommand } from '../../src/api/deviceApi';
 import type { WorkflowCommandResult } from '../../src/api/deviceApi';
 import WorkflowPanel from '../../src/features/workflow/WorkflowPanel';
@@ -15,6 +15,7 @@ import {
 } from '../../src/features/workflow/workflowViewModel';
 import { workflowStatusPollDelay } from '../../src/features/workflow/workflowPolling';
 import { translate } from '../../src/i18n';
+import { en } from '../../src/i18n/catalog.en.gen';
 
 vi.mock('../../src/i18n', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/i18n')>();
@@ -25,11 +26,32 @@ vi.mock('../../src/i18n', async (importOriginal) => {
   };
 });
 
-const STEPS = [
-  'IDLE', 'OBJECT', 'SENSOR_CHECK', 'CALIB_PREP', 'CALIBRATING', 'CALIB_RESULT',
-  'PLACEMENT', 'RANGING', 'RANGING_RESULT', 'RECORD_READY', 'RECORDING', 'STOPPED',
-  'CALCULATING', 'RESULT',
-] as const;
+type WorkflowTitleStep = Uppercase<{
+  [Key in keyof typeof en]: Key extends `workflow.title.${infer Step}` ? Step : never;
+}[keyof typeof en]>;
+type WorkflowStepWithoutTitle = Exclude<WorkflowStep, WorkflowTitleStep>;
+const allWorkflowStepsHaveTitles: [WorkflowStepWithoutTitle] extends [never] ? true : false = true;
+
+const WORKFLOW_STEPS: readonly WorkflowStep[] = Object.keys(en)
+  .filter((key) => key.startsWith('workflow.title.') && !key.endsWith('.unknown'))
+  .map((key) => key.slice('workflow.title.'.length).toUpperCase() as WorkflowStep);
+
+const ACTIONS_BY_STEP: Record<WorkflowStep, readonly string[]> = {
+  IDLE: [],
+  OBJECT: ['START_MEASUREMENT', 'BACK'],
+  SENSOR_CHECK: ['GO_CALIBRATION', 'BACK'],
+  CALIB_PREP: ['SENSORS_PLACED', 'BACK'],
+  CALIBRATING: ['BACK'],
+  CALIB_RESULT: ['RETRY', 'BACK'],
+  PLACEMENT: ['CALCULATE_POSITIONS', 'BACK'],
+  RANGING: ['BACK'],
+  RANGING_RESULT: ['RETRY', 'BACK'],
+  RECORD_READY: ['START_RECORDING', 'MOVE_SENSORS', 'BACK'],
+  RECORDING: ['STOP_RECORDING'],
+  STOPPED: ['DELETE_RECORDING', 'RECORD_AGAIN', 'MOVE_SENSORS', 'BACK'],
+  CALCULATING: ['BACK'],
+  RESULT: ['MOVE_SENSORS', 'BACK'],
+};
 
 const calibration = {
   generation: 1,
@@ -92,7 +114,7 @@ afterEach(() => {
 });
 
 describe('workflow view model (MAX-296)', () => {
-  it.each(STEPS)('maps %s to a step title and body section', (step) => {
+  it.each(WORKFLOW_STEPS)('maps %s to a step title and body section', (step) => {
     const view = workflowViewModel(statusFor(step), 'Quarry');
     expect(view.titleKey).toBe(`workflow.title.${step.toLowerCase()}`);
     expect(view.sections).toHaveLength(1);
@@ -182,6 +204,78 @@ describe('workflow view model (MAX-296)', () => {
     const visible = panelHtml(statusFor('RECORD_READY', [], 4, { has_scan: true }));
     expect(hidden).not.toContain(translate('en', 'workflow.open_3d'));
     expect(visible).toContain(translate('en', 'workflow.open_3d'));
+  });
+
+  it('renders every production step from device state and only its allowed actions', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    expect(allWorkflowStepsHaveTitles).toBe(true);
+    expect(WORKFLOW_STEPS.slice().sort()).toEqual(
+      (Object.keys(ACTIONS_BY_STEP) as WorkflowStep[]).slice().sort(),
+    );
+
+    for (const step of WORKFLOW_STEPS) {
+      const allowedActions = ACTIONS_BY_STEP[step];
+      let renderer!: ReactTestRenderer;
+      await act(async () => {
+        renderer = create(createElement(WorkflowPanel, {
+          status: statusFor(step, [...allowedActions]),
+          objectName: 'Quarry',
+          sendCommand: vi.fn().mockResolvedValue({ ok: true, workflow: workflow(step) }),
+          onRefreshStatus: async () => true,
+          onWorkflowUpdate: () => undefined,
+          onOpenScanner: () => undefined,
+        }));
+      });
+
+      const title = renderer.root.findAllByType('h2')[0];
+      expect(title.children.join('')).toBe(
+        translate('en', `workflow.title.${step.toLowerCase()}` as Parameters<typeof translate>[1]),
+      );
+
+      const buttons = renderer.root.findByProps({ className: 'console-actions' })
+        .findAllByType('button')
+        .map((button) => button.children.join(''));
+      const expectedLabels = allowedActions.map((command) => translate(
+        'en',
+        `workflow.action.${command.toLowerCase()}` as Parameters<typeof translate>[1],
+      ));
+      expect(buttons.slice().sort()).toEqual(expectedLabels.slice().sort());
+      for (const command of ['CALIBRATION_DONE', 'RANGING_DONE', 'CALCULATION_DONE']) {
+        expect(buttons).not.toContain(translate(
+          'en',
+          `workflow.action.${command.toLowerCase()}` as Parameters<typeof translate>[1],
+        ));
+      }
+      act(() => renderer.unmount());
+    }
+
+    const sendCommand = vi.fn().mockResolvedValue({ ok: true, workflow: workflow('SENSOR_CHECK') } satisfies WorkflowCommandResult);
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(createElement(WorkflowPanel, {
+        status: statusFor('OBJECT', ACTIONS_BY_STEP.OBJECT),
+        objectName: 'Quarry',
+        sendCommand,
+        onRefreshStatus: async () => true,
+        onWorkflowUpdate: () => undefined,
+        onOpenScanner: () => undefined,
+      }));
+    });
+    expect(renderer.root.findAllByType('h2')[0].children.join('')).toBe(translate('en', 'workflow.title.object'));
+
+    await act(async () => {
+      renderer.update(createElement(WorkflowPanel, {
+        status: statusFor('SENSOR_CHECK', ACTIONS_BY_STEP.SENSOR_CHECK),
+        objectName: 'Quarry',
+        sendCommand,
+        onRefreshStatus: async () => true,
+        onWorkflowUpdate: () => undefined,
+        onOpenScanner: () => undefined,
+      }));
+    });
+    expect(renderer.root.findAllByType('h2')[0].children.join('')).toBe(translate('en', 'workflow.title.sensor_check'));
+    expect(sendCommand).not.toHaveBeenCalled();
+    act(() => renderer.unmount());
   });
 });
 
