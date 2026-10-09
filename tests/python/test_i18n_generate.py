@@ -313,6 +313,62 @@ def test_repository_concept_map_covers_requested_state_families(monkeypatch):
         assert any(concept[surface] is not None for surface in ("tft", "web", "report")), concept_id
 
 
+def test_repository_orientation_labels_are_bilingual_and_rendered_on_tft():
+    concepts = json.loads((REPO_ROOT / "i18n" / "concepts.json").read_text(encoding="utf-8"))
+    concept_by_id = {concept["id"]: concept for concept in concepts}
+    tft_entries = json.loads((REPO_ROOT / "i18n" / "tft.json").read_text(encoding="utf-8"))["entries"]
+    web_entries = json.loads((REPO_ROOT / "i18n" / "web.json").read_text(encoding="utf-8"))["entries"]
+    tft_source = (REPO_ROOT / "components" / "ui" / "ui_measurements.c").read_text(encoding="utf-8")
+    expected_keys = {
+        "orientation.accepted": ("measurement.node_level", "leveling.level"),
+        "orientation.moving": ("measurement.node_moving", "leveling.moving"),
+        "orientation.tilted": ("measurement.node_tilted", "leveling.tilted"),
+    }
+
+    for concept_id, (tft_key, web_key) in expected_keys.items():
+        concept = concept_by_id[concept_id]
+        assert concept["tft"] == tft_key
+        assert concept["web"] == web_key
+        for catalog_entries, key in ((tft_entries, tft_key), (web_entries, web_key)):
+            assert key in catalog_entries
+            assert catalog_entries[key]["en"].strip()
+            assert catalog_entries[key]["uk"].strip()
+
+        source_token = "UI_I18N_KEY_" + tft_key.replace(".", "_").upper()
+        assert source_token in tft_source
+
+
+def test_repository_concept_map_documents_unmapped_surface_gaps():
+    concepts = json.loads((REPO_ROOT / "i18n" / "concepts.json").read_text(encoding="utf-8"))
+    concept_by_id = {concept["id"]: concept for concept in concepts}
+
+    for concept in concepts:
+        for surface in ("tft", "web", "report"):
+            if concept[surface] is None:
+                assert concept["note"].strip(), f"{concept['id']} {surface} gap needs a note"
+
+    for concept_id in ("orientation.accepted", "orientation.moving", "orientation.tilted"):
+        concept = concept_by_id[concept_id]
+        assert concept["report"] is None
+        assert "no per-node orientation data" in concept["note"].casefold()
+
+    fault = concept_by_id["orientation.fault"]
+    assert fault["tft"] is None
+    assert fault["report"] is None
+    assert "owner decision" in fault["note"].casefold()
+    assert "no per-node orientation data" in fault["note"].casefold()
+
+    for concept_id in ("constrained", "unconstrained"):
+        concept = concept_by_id[concept_id]
+        assert concept["tft"] is None
+        assert concept["report"] is None
+        assert "no per-node constraint data" in concept["note"].casefold()
+
+    stopped = concept_by_id["stopped"]["note"].casefold()
+    assert "review stays unmapped" in stopped
+    assert "owner decision" in stopped
+
+
 def test_repository_concept_map_keys_are_referenced_by_production_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(generator, "REQUIRED_CONCEPTS", set(REPOSITORY_REQUIRED_CONCEPTS))
     for source in (REPO_ROOT / "i18n").glob("*.json"):

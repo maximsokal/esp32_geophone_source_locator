@@ -41,37 +41,46 @@
   },
   {
     "id": "orientation.accepted",
-    "tft": null,
+    "tft": "measurement.node_level",
     "web": "leveling.level",
     "report": null,
-    "note": "The Web leveling card labels the accepted orientation state.",
-    "rule": "same_uk",
-    "equivalent_terms": null
+    "note": "The TFT uses LEVEL as an abbreviation of the Web label; the report model has no per-node orientation data.",
+    "rule": "equivalent",
+    "equivalent_terms": [
+      {"en": "LEVEL", "uk": "РІВНО"},
+      {"en": "LEVEL", "uk": "ВИРІВНЯНО"}
+    ]
   },
   {
     "id": "orientation.moving",
-    "tft": null,
+    "tft": "measurement.node_moving",
     "web": "leveling.moving",
     "report": null,
-    "note": "The Web leveling card labels sensor movement.",
-    "rule": "same_uk",
-    "equivalent_terms": null
+    "note": "The TFT uses MOVE as an abbreviation of the Web label; the report model has no per-node orientation data.",
+    "rule": "equivalent",
+    "equivalent_terms": [
+      {"en": "MOVE", "uk": "РУХ"},
+      {"en": "MOVING", "uk": "РУХАЄТЬСЯ"}
+    ]
   },
   {
     "id": "orientation.tilted",
-    "tft": null,
+    "tft": "measurement.node_tilted",
     "web": "leveling.tilted",
     "report": null,
-    "note": "The Web leveling card labels a tilted sensor.",
-    "rule": "same_uk",
-    "equivalent_terms": null
+    "note": "The TFT uses TILT as an abbreviation of the Web label; the report model has no per-node orientation data.",
+    "rule": "equivalent",
+    "equivalent_terms": [
+      {"en": "TILT", "uk": "НАХИЛ"},
+      {"en": "TILTED", "uk": "НАХИЛЕНО"}
+    ]
   },
   {
     "id": "orientation.fault",
     "tft": null,
     "web": "leveling.unavailable_sensor_invalid",
     "report": null,
-    "note": "The Web leveling card labels an invalid sensor as unavailable.",
+    "note": "FAULT stays unmapped on TFT pending an owner decision on its meaning; the report model has no per-node orientation data.",
     "rule": "same_uk",
     "equivalent_terms": null
   },
@@ -80,7 +89,7 @@
     "tft": null,
     "web": "overlay.scan_constrained",
     "report": null,
-    "note": "The Web localization overlay labels scan-constrained results.",
+    "note": "TFT has no scan-constraint label, and the report model has no per-node constraint data.",
     "rule": "same_uk",
     "equivalent_terms": null
   },
@@ -89,7 +98,7 @@
     "tft": null,
     "web": "overlay.unconstrained",
     "report": null,
-    "note": "The Web localization overlay labels unconstrained results.",
+    "note": "TFT has no unconstrained-result label, and the report model has no per-node constraint data.",
     "rule": "same_uk",
     "equivalent_terms": null
   },
@@ -242,7 +251,7 @@
     "tft": "measurement.state_complete",
     "web": "dashboard.stopped",
     "report": "report.session_status.complete",
-    "note": "Completed recording status appears on all three surfaces.",
+    "note": "Completed recording status appears on all three surfaces. REVIEW stays unmapped pending an owner decision on whether it means an action, lifecycle phase, or completed/stopped state.",
     "rule": "equivalent",
     "equivalent_terms": [
       {
