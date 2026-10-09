@@ -7,6 +7,8 @@
 #include "i2c_bus.h"
 #include "i2c_line_recovery.h"
 
+#define SENSOR_BUS_LINES_PROBE_TIMEOUT_MS 20
+
 /*
  * MAX-243: internal platform seam of sensor_bus for the SDA/SCL lines
  * (sensor_bus_lines.c on the target, a line-model fake in host tests).

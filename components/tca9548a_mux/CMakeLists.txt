@@ -8,4 +8,5 @@ idf_component_register(
 
     REQUIRES
         i2c_bus
+        sensor_bus
 )

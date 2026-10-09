@@ -13,13 +13,17 @@ static void tca9548a_mux_set_fault(tca9548a_mux_t *mux)
 
 static esp_err_t tca9548a_mux_verify_closed_once(tca9548a_mux_t *mux)
 {
-    esp_err_t err = mux->io.write_control(mux->io.context, TCA9548A_CLOSED_MASK);
+    esp_err_t err = mux->io.write_control(
+        mux->io.context, mux->io.address, TCA9548A_CLOSED_MASK,
+        TCA9548A_MUX_PHASE_CLOSE, -1);
     if (err != ESP_OK) {
         return err;
     }
 
     uint8_t value = 0xFFU;
-    err = mux->io.read_control(mux->io.context, &value);
+    err = mux->io.read_control(
+        mux->io.context, mux->io.address, &value, TCA9548A_CLOSED_MASK,
+        TCA9548A_MUX_PHASE_VERIFY, -1);
     if (err != ESP_OK) {
         return err;
     }
@@ -80,14 +84,18 @@ esp_err_t tca9548a_mux_select(tca9548a_mux_t *mux, uint8_t channel)
     }
 
     const uint8_t mask = (uint8_t)(1U << channel);
-    err = mux->io.write_control(mux->io.context, mask);
+    err = mux->io.write_control(
+        mux->io.context, mux->io.address, mask,
+        TCA9548A_MUX_PHASE_SELECT, (int)channel);
     if (err != ESP_OK) {
         tca9548a_mux_best_effort_recover_closed(mux);
         return err;
     }
 
     uint8_t readback = 0U;
-    err = mux->io.read_control(mux->io.context, &readback);
+    err = mux->io.read_control(
+        mux->io.context, mux->io.address, &readback, mask,
+        TCA9548A_MUX_PHASE_VERIFY, (int)channel);
     if (err != ESP_OK) {
         tca9548a_mux_best_effort_recover_closed(mux);
         return err;

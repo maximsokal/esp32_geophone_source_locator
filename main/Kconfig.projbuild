@@ -233,6 +233,27 @@ config APP_KEYPAD_TIMING_DIAGNOSTICS
 
 endmenu
 
+menu "I2C probe diagnostics"
+
+config APP_I2C_PROBE_DIAGNOSTICS
+    bool "Log bounded TCA9548A and nRF upstream I2C diagnostics"
+    default y
+    help
+        Record transaction results, elapsed time, bus line levels, and bounded
+        per-route summaries for TCA9548A and nRF upstream I2C traffic.
+
+config APP_I2C_PROBE_DIAGNOSTICS_FULL_PASSES
+    int "Number of initial topology passes with full transaction logs"
+    range 0 64
+    default 3
+    depends on APP_I2C_PROBE_DIAGNOSTICS
+    help
+        Print every captured transaction for this many nRF topology reconcile
+        passes. Later passes print when results change or a 60 second summary
+        becomes due.
+
+endmenu
+
 menu "WebUI delivery"
 
 config WEB_SERVER_WEBUI_PSRAM_CACHE

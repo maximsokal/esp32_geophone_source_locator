@@ -20,6 +20,7 @@
 #include "app_task_config.h"
 #include "sensor_bus.h"
 #include "sensor_bus_diag.h"
+#include "sensor_bus_probe_diag.h"
 #include "nrf_topology_bus_recovery.h"
 #include "nrf_topology_log_policy.h"
 #include "tca9548a_mux.h"
@@ -68,6 +69,9 @@ typedef struct {
     bool mux_bound;
     uint8_t selected_mux_channel;
     bool selected_mux_channel_valid;
+    bool reconcile_pass_active;
+    bool reconcile_idle_logged;
+    uint32_t reconcile_pass_count;
     bool read_probe_valid[NRF_PLATFORM_READ_ROUTE_COUNT][NRF_PLATFORM_READ_ADDRESS_COUNT];
 } nrf_topology_platform_t;
 
@@ -332,6 +336,64 @@ static i2c_bus_device_handle_t platform_device_for_address(
     return NULL;
 }
 
+static esp_err_t platform_i2c_read_transfer(
+    void *context,
+    const uint8_t *tx,
+    size_t tx_len,
+    uint8_t *rx,
+    size_t rx_len)
+{
+    (void)tx;
+    (void)tx_len;
+    return i2c_bus_read_bytes(
+        (i2c_bus_device_handle_t)context, NULL_I2C_MEM_ADDR, rx_len, rx);
+}
+
+static esp_err_t platform_i2c_write_transfer(
+    void *context,
+    const uint8_t *tx,
+    size_t tx_len,
+    uint8_t *rx,
+    size_t rx_len)
+{
+    (void)rx;
+    (void)rx_len;
+    return i2c_bus_write_bytes(
+        (i2c_bus_device_handle_t)context, NULL_I2C_MEM_ADDR, tx_len, tx);
+}
+
+static int platform_selected_channel(const nrf_topology_platform_t *platform)
+{
+    return platform != NULL && platform->selected_mux_channel_valid
+        ? (int)platform->selected_mux_channel : -1;
+}
+
+static esp_err_t platform_i2c_read_bytes(
+    nrf_topology_platform_t *platform,
+    i2c_bus_device_handle_t device,
+    uint8_t address,
+    size_t length,
+    uint8_t *data)
+{
+    return sensor_bus_probe_diag_transaction(
+        SENSOR_BUS_PROBE_PHASE_READ, address,
+        platform_selected_channel(platform), NULL, 0U, data, length,
+        false, 0U, platform_i2c_read_transfer, device);
+}
+
+static esp_err_t platform_i2c_write_bytes(
+    nrf_topology_platform_t *platform,
+    i2c_bus_device_handle_t device,
+    uint8_t address,
+    size_t length,
+    const uint8_t *data)
+{
+    return sensor_bus_probe_diag_transaction(
+        SENSOR_BUS_PROBE_PHASE_WRITE, address,
+        platform_selected_channel(platform), data, length, NULL, 0U,
+        false, 0U, platform_i2c_write_transfer, device);
+}
+
 static esp_err_t platform_normalize_transfer_error(
     nrf_topology_platform_t *platform,
     uint8_t address,
@@ -409,6 +471,19 @@ static esp_err_t platform_recovery_bus_recover(void *context, i2c_line_result_t 
     return sensor_bus_recover(result);
 }
 
+static void platform_log_reconcile_idle_if_needed(
+    nrf_topology_platform_t *platform)
+{
+    if (platform != NULL && platform->reconcile_pass_active &&
+        !platform->reconcile_idle_logged &&
+        (!platform->mux_bound ||
+         tca9548a_mux_get_state(&platform->mux) ==
+             TCA9548A_MUX_STATE_CLOSED)) {
+        sensor_bus_probe_diag_log_bus_idle();
+        platform->reconcile_idle_logged = true;
+    }
+}
+
 static esp_err_t platform_recovery_mux_close(void *context)
 {
     nrf_topology_platform_t *platform = context;
@@ -419,6 +494,7 @@ static esp_err_t platform_recovery_mux_close(void *context)
     sensor_bus_record_transfer_result_with_context(
         platform->tca_address, err, "tca9548a", -1);
     platform->selected_mux_channel_valid = false;
+    platform_log_reconcile_idle_if_needed(platform);
     return err;
 }
 
@@ -511,11 +587,8 @@ static esp_err_t platform_read_status(
         return err;
     }
 
-    err = i2c_bus_read_bytes(
-        device,
-        NULL_I2C_MEM_ADDR,
-        sizeof(frame),
-        frame);
+    err = platform_i2c_read_bytes(
+        platform, device, address, sizeof(frame), frame);
     if (err != ESP_OK) {
         platform_record_read_result(platform, address, route_index, false);
     } else {
@@ -552,11 +625,8 @@ static esp_err_t platform_write_assign(
         return ESP_ERR_INVALID_ARG;
     }
 
-    err = i2c_bus_write_bytes(
-        device,
-        NULL_I2C_MEM_ADDR,
-        sizeof(frame),
-        frame);
+    err = platform_i2c_write_bytes(
+        platform, device, address, sizeof(frame), frame);
     return platform_normalize_transfer_error(platform, address, err);
 }
 
@@ -574,11 +644,9 @@ static esp_err_t platform_write_sensor_refresh(
     if (nrf_upstream_protocol_encode_sensor_refresh(request, frame) != NRF_UPSTREAM_RESULT_OK) {
         return ESP_ERR_INVALID_ARG;
     }
-    err = i2c_bus_write_bytes(
-        platform->remote_device,
-        NULL_I2C_MEM_ADDR,
-        sizeof(frame),
-        frame);
+    err = platform_i2c_write_bytes(
+        platform, platform->remote_device, NRF_UPSTREAM_ADDRESS_REMOTE,
+        sizeof(frame), frame);
     return platform_normalize_transfer_error(
         platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
 }
@@ -597,11 +665,9 @@ static esp_err_t platform_write_height_reference(
     if (nrf_upstream_protocol_encode_height_reference(request, frame) != NRF_UPSTREAM_RESULT_OK) {
         return ESP_ERR_INVALID_ARG;
     }
-    err = i2c_bus_write_bytes(
-        platform->remote_device,
-        NULL_I2C_MEM_ADDR,
-        sizeof(frame),
-        frame);
+    err = platform_i2c_write_bytes(
+        platform, platform->remote_device, NRF_UPSTREAM_ADDRESS_REMOTE,
+        sizeof(frame), frame);
     return platform_normalize_transfer_error(
         platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
 }
@@ -620,11 +686,9 @@ static esp_err_t platform_write_imu_calibration(
     if (nrf_upstream_protocol_encode_imu_calibrate(request, frame) != NRF_UPSTREAM_RESULT_OK) {
         return ESP_ERR_INVALID_ARG;
     }
-    err = i2c_bus_write_bytes(
-        platform->remote_device,
-        NULL_I2C_MEM_ADDR,
-        sizeof(frame),
-        frame);
+    err = platform_i2c_write_bytes(
+        platform, platform->remote_device, NRF_UPSTREAM_ADDRESS_REMOTE,
+        sizeof(frame), frame);
     return platform_normalize_transfer_error(
         platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
 }
@@ -647,11 +711,9 @@ static esp_err_t platform_read_remote_snapshot(
     if (err != ESP_OK) {
         return err;
     }
-    err = i2c_bus_read_bytes(
-        platform->remote_device,
-        NULL_I2C_MEM_ADDR,
-        sizeof(frame),
-        frame);
+    err = platform_i2c_read_bytes(
+        platform, platform->remote_device, NRF_UPSTREAM_ADDRESS_REMOTE,
+        sizeof(frame), frame);
     if (err != ESP_OK) {
         platform_record_read_result(
             platform, NRF_UPSTREAM_ADDRESS_REMOTE, route_index, false);
@@ -721,7 +783,8 @@ static esp_err_t platform_log_write_frame(
         node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) return ESP_ERR_INVALID_ARG;
     device = platform_device_for_address(log_context->platform, address);
     if (device == NULL) return ESP_ERR_INVALID_STATE;
-    err = i2c_bus_write_bytes(device, NULL_I2C_MEM_ADDR, frame_length, (void *)frame);
+    err = platform_i2c_write_bytes(
+        log_context->platform, device, address, frame_length, frame);
     err = platform_normalize_transfer_error(log_context->platform, address, err);
     if (err == ESP_ERR_NOT_FOUND) service_request_topology_refresh_from_worker();
     return err;
@@ -752,7 +815,8 @@ static esp_err_t platform_log_read_frame(
         if (err == ESP_ERR_NOT_FOUND) service_request_topology_refresh_from_worker();
         return err;
     }
-    err = i2c_bus_read_bytes(device, NULL_I2C_MEM_ADDR, frame_capacity, frame);
+    err = platform_i2c_read_bytes(
+        log_context->platform, device, address, frame_capacity, frame);
     if (err != ESP_OK) {
         platform_record_read_result(log_context->platform, address, route_index, false);
     } else {
@@ -880,6 +944,7 @@ static esp_err_t platform_mux_close(void *context)
     sensor_bus_record_transfer_result_with_context(
         platform->tca_address, err, "tca9548a", -1);
     platform->selected_mux_channel_valid = false;
+    platform_log_reconcile_idle_if_needed(platform);
     return err;
 }
 
@@ -1037,7 +1102,7 @@ static void platform_prepare_tca(
         return;
     }
 
-    err = tca9548a_mux_bind_i2c_bus(&platform->mux, tca);
+    err = tca9548a_mux_bind_i2c_bus(&platform->mux, tca, address);
     if (err != ESP_OK) {
         *fault = true;
         return;
@@ -1104,11 +1169,19 @@ static bool service_run_topology_reconcile(
     nrf_topology_snapshot_t *snapshot,
     nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT])
 {
+    if (platform->reconcile_pass_count < UINT32_MAX) {
+        platform->reconcile_pass_count++;
+    }
+    sensor_bus_probe_diag_begin_pass(platform->reconcile_pass_count);
+    platform->reconcile_pass_active = true;
+    platform->reconcile_idle_logged = false;
+
     const esp_err_t open_err = platform_open_address_handles(platform);
     esp_err_t reconcile_err;
 
     if (open_err != ESP_OK) {
         ESP_LOGW(TAG, "nRF topology address handles unavailable: %s", esp_err_to_name(open_err));
+        platform_log_reconcile_idle_if_needed(platform);
         const nrf_topology_io_t failed_io = {
             .context = platform,
             .tca_available = false,
@@ -1126,6 +1199,9 @@ static bool service_run_topology_reconcile(
         bool tca_available;
         bool tca_fault;
         platform_prepare_tca(platform, &tca_available, &tca_fault);
+        if (!tca_available || tca_fault) {
+            platform_log_reconcile_idle_if_needed(platform);
+        }
         const nrf_topology_io_t io = {
             .context = platform,
             .tca_available = tca_available,
@@ -1139,6 +1215,9 @@ static bool service_run_topology_reconcile(
         };
         reconcile_err = nrf_topology_reconcile(controller, &io, snapshot);
     }
+
+    sensor_bus_probe_diag_end_pass();
+    platform->reconcile_pass_active = false;
 
     if (reconcile_err != ESP_OK) {
         return false;
@@ -1295,8 +1374,8 @@ static int cs_write_execute(void *context, const nrf_cs_control_request_t *reque
     if (err == ESP_OK) {
         const uint8_t address = remote
             ? NRF_UPSTREAM_ADDRESS_REMOTE : NRF_UPSTREAM_ADDRESS_MAIN;
-        err = i2c_bus_write_bytes(
-            device, NULL_I2C_MEM_ADDR, sizeof(frame), frame);
+        err = platform_i2c_write_bytes(
+            ctx->platform, device, address, sizeof(frame), frame);
         sensor_bus_record_transfer_result_with_context(
             address, err, s_i2c_diag_source,
             ctx->platform->selected_mux_channel_valid
@@ -1321,8 +1400,8 @@ static int cs_poll_result(void *context, const nrf_cs_control_request_t *request
     err = cs_route_open(ctx, request->step.initiator, &device, &remote);
     if (err == ESP_OK) {
         if (remote) address = NRF_UPSTREAM_ADDRESS_REMOTE;
-        err = i2c_bus_write_bytes(
-            device, NULL_I2C_MEM_ADDR, sizeof(selector), selector);
+        err = platform_i2c_write_bytes(
+            ctx->platform, device, address, sizeof(selector), selector);
         sensor_bus_record_transfer_result_with_context(
             address, err, s_i2c_diag_source,
             ctx->platform->selected_mux_channel_valid
@@ -1332,7 +1411,8 @@ static int cs_poll_result(void *context, const nrf_cs_control_request_t *request
         err = platform_probe_before_read(ctx->platform, address, &route_index);
     }
     if (err == ESP_OK) {
-        err = i2c_bus_read_bytes(device, NULL_I2C_MEM_ADDR, sizeof(frame), frame);
+        err = platform_i2c_read_bytes(
+            ctx->platform, device, address, sizeof(frame), frame);
         platform_record_read_result(ctx->platform, address, route_index, err == ESP_OK);
         err = platform_normalize_transfer_error(ctx->platform, address, err);
     }

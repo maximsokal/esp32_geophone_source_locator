@@ -1,6 +1,7 @@
 #include "sensor_bus.h"
 #include "sensor_bus_diag.h"
 #include "sensor_bus_lines.h"
+#include "sensor_bus_probe_diag.h"
 #include "board_config.h"
 
 #include <string.h>
@@ -15,6 +16,8 @@
 #define SENSOR_BUS_TCA9548A_ADDR_MAX 0x77U
 #define SENSOR_BUS_BMP280_ADDR_MIN 0x76U
 #define SENSOR_BUS_BMP280_ADDR_MAX 0x77U
+/* espressif__i2c_bus v2 currently builds its i2c_master config with 7. */
+#define SENSOR_BUS_I2C_GLITCH_IGNORE_COUNT 7U
 
 static const char *TAG = "sensor_bus";
 static const char s_tca_diag_source[] = "tca9548a";
@@ -48,6 +51,113 @@ static sensor_bus_recovery_status_t s_recovery;
  * normal transaction or clock stretch cannot look stuck. */
 #define SENSOR_BUS_STUCK_SAMPLES 10U
 #define SENSOR_BUS_STUCK_SAMPLE_US 100U
+
+#ifndef CONFIG_APP_I2C_PROBE_DIAGNOSTICS
+#define CONFIG_APP_I2C_PROBE_DIAGNOSTICS 0
+#endif
+
+#if CONFIG_APP_I2C_PROBE_DIAGNOSTICS
+static esp_err_t sensor_bus_probe_transfer(
+    void *context,
+    const uint8_t *tx,
+    size_t tx_len,
+    uint8_t *rx,
+    size_t rx_len)
+{
+    const uint8_t address = *(const uint8_t *)context;
+    (void)tx;
+    (void)tx_len;
+    (void)rx;
+    (void)rx_len;
+    return sensor_bus_lines_probe(s_bus, address);
+}
+
+static esp_err_t sensor_bus_read_byte_transfer(
+    void *context,
+    const uint8_t *tx,
+    size_t tx_len,
+    uint8_t *rx,
+    size_t rx_len)
+{
+    (void)tx;
+    (void)tx_len;
+    if (rx == NULL || rx_len == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return i2c_bus_read_byte(
+        (i2c_bus_device_handle_t)context, NULL_I2C_MEM_ADDR, rx);
+}
+
+static esp_err_t sensor_bus_write_byte_transfer(
+    void *context,
+    const uint8_t *tx,
+    size_t tx_len,
+    uint8_t *rx,
+    size_t rx_len)
+{
+    (void)rx;
+    (void)rx_len;
+    if (tx == NULL || tx_len == 0U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return i2c_bus_write_byte(
+        (i2c_bus_device_handle_t)context, NULL_I2C_MEM_ADDR, tx[0]);
+}
+#endif
+
+static esp_err_t sensor_bus_probe_address_raw(uint8_t address, int channel)
+{
+#if CONFIG_APP_I2C_PROBE_DIAGNOSTICS
+    return sensor_bus_probe_diag_transaction(
+        SENSOR_BUS_PROBE_PHASE_PROBE, address, channel,
+        NULL, 0U, NULL, 0U, false, 0U,
+        sensor_bus_probe_transfer, &address);
+#else
+    (void)channel;
+    return sensor_bus_lines_probe(s_bus, address);
+#endif
+}
+
+static esp_err_t sensor_bus_read_byte_diagnostic(
+    i2c_bus_device_handle_t device,
+    uint8_t address,
+    int channel,
+    bool expected_valid,
+    uint8_t expected,
+    uint8_t *value)
+{
+#if CONFIG_APP_I2C_PROBE_DIAGNOSTICS
+    return sensor_bus_probe_diag_transaction(
+        SENSOR_BUS_PROBE_PHASE_TCA_VERIFY, address, channel,
+        NULL, 0U, value, 1U, expected_valid, expected,
+        sensor_bus_read_byte_transfer, device);
+#else
+    (void)address;
+    (void)channel;
+    (void)expected_valid;
+    (void)expected;
+    return i2c_bus_read_byte(device, NULL_I2C_MEM_ADDR, value);
+#endif
+}
+
+static esp_err_t sensor_bus_write_byte_diagnostic(
+    i2c_bus_device_handle_t device,
+    uint8_t address,
+    int channel,
+    sensor_bus_probe_phase_t phase,
+    uint8_t value)
+{
+#if CONFIG_APP_I2C_PROBE_DIAGNOSTICS
+    return sensor_bus_probe_diag_transaction(
+        phase, address, channel, &value, 1U, NULL, 0U, true, value,
+        sensor_bus_write_byte_transfer, device);
+#else
+    (void)address;
+    (void)channel;
+    (void)phase;
+    return i2c_bus_write_byte(device, NULL_I2C_MEM_ADDR, value);
+#endif
+}
 
 static esp_err_t sensor_bus_delete_device(i2c_bus_device_handle_t *device)
 {
@@ -265,7 +375,7 @@ static esp_err_t sensor_bus_classify_locked(
             address, source, channel, transfer_err, false, false);
         return transfer_err;
     }
-    const esp_err_t probe_err = sensor_bus_lines_probe(s_bus, address);
+    const esp_err_t probe_err = sensor_bus_probe_address_raw(address, channel);
     if (probe_err == ESP_ERR_NOT_FOUND) {
         sensor_bus_record_result(
             address, source, channel, transfer_err, false, true);
@@ -287,7 +397,8 @@ static bool sensor_bus_verify_tca_candidate_locked(
 )
 {
     uint8_t original_mask = 0U;
-    esp_err_t err = i2c_bus_read_byte(device, NULL_I2C_MEM_ADDR, &original_mask);
+    esp_err_t err = sensor_bus_read_byte_diagnostic(
+        device, address, -1, false, 0U, &original_mask);
     sensor_bus_record_result(
         address, s_tca_diag_source, -1, err, false, false);
     if (err != ESP_OK) {
@@ -300,14 +411,16 @@ static bool sensor_bus_verify_tca_candidate_locked(
     }
 
     const uint8_t test_mask = (uint8_t)(original_mask ^ 0x01U);
-    err = i2c_bus_write_byte(device, NULL_I2C_MEM_ADDR, test_mask);
+    err = sensor_bus_write_byte_diagnostic(
+        device, address, -1, SENSOR_BUS_PROBE_PHASE_TCA_SELECT, test_mask);
     sensor_bus_record_result(
         address, s_tca_diag_source, -1, err, false, false);
     bool valid = err == ESP_OK;
     const char *reason = "control write failed";
     if (valid) {
         uint8_t readback = 0U;
-        err = i2c_bus_read_byte(device, NULL_I2C_MEM_ADDR, &readback);
+        err = sensor_bus_read_byte_diagnostic(
+            device, address, -1, true, test_mask, &readback);
         sensor_bus_record_result(
             address, s_tca_diag_source, -1, err, false, false);
         if (err != ESP_OK) {
@@ -319,14 +432,16 @@ static bool sensor_bus_verify_tca_candidate_locked(
         }
     }
 
-    const esp_err_t restore_err = i2c_bus_write_byte(
-        device, NULL_I2C_MEM_ADDR, original_mask);
+    const esp_err_t restore_err = sensor_bus_write_byte_diagnostic(
+        device, address, -1, SENSOR_BUS_PROBE_PHASE_TCA_CLOSE,
+        original_mask);
     sensor_bus_record_result(
         address, s_tca_diag_source, -1, restore_err, false, false);
     uint8_t restored_mask = 0U;
     const bool restore_read_attempted = restore_err == ESP_OK;
     const esp_err_t restore_read_err = restore_read_attempted
-        ? i2c_bus_read_byte(device, NULL_I2C_MEM_ADDR, &restored_mask)
+        ? sensor_bus_read_byte_diagnostic(
+            device, address, -1, true, original_mask, &restored_mask)
         : restore_err;
     if (restore_read_attempted) {
         sensor_bus_record_result(
@@ -381,6 +496,19 @@ static esp_err_t sensor_bus_init_locked(void)
     if (s_bus == NULL) {
         return ESP_ERR_NO_MEM;
     }
+
+#if CONFIG_APP_I2C_PROBE_DIAGNOSTICS
+    ESP_LOGI(TAG,
+             "I2C_CONFIG sda_gpio=%d scl_gpio=%d speed_hz=%lu sda_pullup=%u scl_pullup=%u glitch_ignore_cnt=%u timeout_ms=%u probe_timeout_ms=%u",
+             (int)config.sda_io_num,
+             (int)config.scl_io_num,
+             (unsigned long)config.master.clk_speed,
+             config.sda_pullup_en == GPIO_PULLUP_ENABLE ? 1U : 0U,
+             config.scl_pullup_en == GPIO_PULLUP_ENABLE ? 1U : 0U,
+             (unsigned)SENSOR_BUS_I2C_GLITCH_IGNORE_COUNT,
+             (unsigned)CONFIG_I2C_MS_TO_WAIT,
+             (unsigned)SENSOR_BUS_LINES_PROBE_TIMEOUT_MS);
+#endif
 
     s_ina3221 = i2c_bus_device_create(s_bus, BOARD_INA3221_I2C_ADDRESS, SENSOR_BUS_I2C_SPEED_HZ);
     if (s_ina3221 == NULL) {
@@ -466,7 +594,7 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
         }
 
         const esp_err_t address_probe_err =
-            sensor_bus_lines_probe(s_bus, candidate_address);
+            sensor_bus_probe_address_raw(candidate_address, -1);
         sensor_bus_record_result(
             candidate_address, s_tca_diag_source, -1,
             address_probe_err, false, false);
@@ -490,7 +618,8 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
         uint8_t response = 0U;
         const esp_err_t probe_err = sensor_bus_classify_locked(
             candidate_address,
-            i2c_bus_read_byte(candidate, NULL_I2C_MEM_ADDR, &response),
+            sensor_bus_read_byte_diagnostic(
+                candidate, candidate_address, -1, false, 0U, &response),
             s_tca_diag_source,
             -1);
 
@@ -563,7 +692,7 @@ esp_err_t sensor_bus_probe_address_with_context(
 
     esp_err_t err = sensor_bus_init_locked();
     if (err == ESP_OK) {
-        err = sensor_bus_lines_probe(s_bus, address);
+        err = sensor_bus_probe_address_raw(address, channel);
         if (err == ESP_OK || source == NULL ||
             strcmp(source, s_nrf_diag_source) != 0) {
             sensor_bus_record_result(

@@ -17,9 +17,17 @@ typedef struct {
     uint8_t forced_read_value;
 } fake_io_t;
 
-static esp_err_t fake_write(void *context, uint8_t value)
+static esp_err_t fake_write(
+    void *context,
+    uint8_t address,
+    uint8_t value,
+    tca9548a_mux_phase_t phase,
+    int channel)
 {
     fake_io_t *io = context;
+    (void)address;
+    (void)phase;
+    (void)channel;
     assert(io != NULL);
     ++io->write_calls;
     if (io->fail_write_call == io->write_calls ||
@@ -30,9 +38,19 @@ static esp_err_t fake_write(void *context, uint8_t value)
     return ESP_OK;
 }
 
-static esp_err_t fake_read(void *context, uint8_t *value)
+static esp_err_t fake_read(
+    void *context,
+    uint8_t address,
+    uint8_t *value,
+    uint8_t expected,
+    tca9548a_mux_phase_t phase,
+    int channel)
 {
     fake_io_t *io = context;
+    (void)address;
+    (void)expected;
+    (void)phase;
+    (void)channel;
     assert(io != NULL);
     assert(value != NULL);
     ++io->read_calls;
@@ -109,7 +127,8 @@ static void test_i2c_bus_adapter_uses_control_byte_without_register_address(void
     s_i2c_read_calls = 0U;
 
     tca9548a_mux_t mux;
-    assert(tca9548a_mux_bind_i2c_bus(&mux, &s_i2c_device_token) == ESP_OK);
+    assert(tca9548a_mux_bind_i2c_bus(
+        &mux, &s_i2c_device_token, 0x70U) == ESP_OK);
     assert(tca9548a_mux_select(&mux, 6U) == ESP_OK);
     assert(s_i2c_control == 0x40U);
     assert(s_i2c_write_calls == 2U);

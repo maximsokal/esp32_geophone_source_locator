@@ -6,9 +6,6 @@
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 
-#define SENSOR_BUS_LINES_PROBE_TIMEOUT_MS 20
-
-
 static bool line_read(void *context, gpio_num_t pin)
 {
     (void)context;

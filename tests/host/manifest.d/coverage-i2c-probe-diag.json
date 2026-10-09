@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "sensor_bus_probe_diag_policy",
+      "sources": [
+        "components/sensor_bus/sensor_bus_probe_diag_policy.c",
+        "tests/host/sensor_bus_probe_diag_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/sensor_bus/include"
+      ]
+    }
+  ]
+}
