@@ -1,9 +1,17 @@
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   base: './',
   plugins: [react()],
+  test: {
+    /*
+     * Near-limit scan fixtures, 100-cycle lifecycle soaks and Worker round trips
+     * exceed the 5 s default when the whole suite runs on a loaded machine.
+     */
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

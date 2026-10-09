@@ -317,6 +317,7 @@
         "components/nrf_topology_service/nrf_topology_bus_recovery.c",
         "components/sensor_bus/sensor_bus.c",
         "components/sensor_bus/sensor_bus_diag.c",
+        "components/sensor_bus/sensor_bus_probe_diag.c",
         "components/sensor_bus/i2c_line_recovery.c",
         "components/tca9548a_mux/tca9548a_mux.c",
         "components/tca9548a_mux/tca9548a_mux_i2c_bus.c",

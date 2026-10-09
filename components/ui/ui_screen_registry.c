@@ -159,16 +159,6 @@ static void ui_screen_handle_home_key(
 }
 
 
-static void ui_screen_handle_back_key(
-    keypad_key_t key
-)
-{
-    if (key == KEYPAD_KEY_LEFT) {
-        ui_screen_open_locked(UI_SCREEN_HOME);
-    }
-}
-
-
 static const ui_screen_driver_t s_screens[UI_SCREEN_COUNT] = {
     [UI_SCREEN_HOME] = {
         .name = "HOME",

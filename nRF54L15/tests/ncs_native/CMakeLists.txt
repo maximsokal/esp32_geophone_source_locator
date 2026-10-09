@@ -5,6 +5,10 @@ if(NCS_NATIVE_CS)
     set(EXTRA_CONF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/prj.cs.conf")
 endif()
 
+# The CS target build reuses the production prj.conf, which assigns the APP_* symbols
+# declared by the production Kconfig; the bridge build only gains unused defaults.
+set(KCONFIG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../zephyr/Kconfig")
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(nrf54l15_ncs_native)
 
