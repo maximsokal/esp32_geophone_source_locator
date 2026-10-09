@@ -35,6 +35,10 @@ static uint32_t s_tick;
 static int s_critical_depth;
 
 static gpio_isr_t s_isr;
+static void *s_isr_argument;
+static gpio_isr_t s_queued_stale_isr;
+static void *s_queued_stale_argument;
+static bool s_stale_pulse_queued;
 static bool s_intr_enabled;
 static gpio_int_type_t s_intr_type;
 static gpio_pull_mode_t s_pull;
@@ -62,6 +66,10 @@ static void reset_world(busy_mode_t mode, int pulse_budget)
     s_critical_depth = 0;
     s_intr_enabled = false;
     s_isr = NULL;
+    s_isr_argument = NULL;
+    s_queued_stale_isr = NULL;
+    s_queued_stale_argument = NULL;
+    s_stale_pulse_queued = false;
     s_intr_type = GPIO_INTR_DISABLE;
     s_pull_set = false;
     s_add_result = ESP_OK;
@@ -95,12 +103,37 @@ static void drive(int level)
     }
     s_level = level;
     if (s_isr != NULL && s_intr_enabled && s_intr_type == GPIO_INTR_ANYEDGE) {
-        s_isr(NULL);
+        s_isr(s_isr_argument);
     }
+}
+
+static void queue_stale_isr_pulse(gpio_isr_t isr, void *argument)
+{
+    assert(isr != NULL);
+    assert(!s_stale_pulse_queued);
+    s_queued_stale_isr = isr;
+    s_queued_stale_argument = argument;
+    s_stale_pulse_queued = true;
+}
+
+static void deliver_stale_isr_pulse(void)
+{
+    assert(s_stale_pulse_queued);
+    assert(s_queued_stale_isr != NULL);
+    s_stale_pulse_queued = false;
+    s_level = 1;
+    s_queued_stale_isr(s_queued_stale_argument);
+    s_level = 0;
+    s_queued_stale_isr(s_queued_stale_argument);
 }
 
 static void simulate_tick(void)
 {
+    if (s_stale_pulse_queued) {
+        /* A callback queued under the previous registration is delivered
+         * during the next startup window, before its current-generation edge. */
+        deliver_stale_isr_pulse();
+    }
     if (s_mode != BUSY_CONVERTING || s_pulse_budget == 0) {
         return;
     }
@@ -180,6 +213,7 @@ esp_err_t gpio_isr_handler_add(gpio_num_t gpio_num, gpio_isr_t isr, void *args)
     }
     assert(s_isr == NULL); /* never double-registered */
     s_isr = isr;
+    s_isr_argument = args;
     return ESP_OK;
 }
 
@@ -188,6 +222,7 @@ esp_err_t gpio_isr_handler_remove(gpio_num_t gpio_num)
     assert(gpio_num == BOARD_AD7606_BUSY_GPIO);
     ++s_remove_calls;
     s_isr = NULL;
+    s_isr_argument = NULL;
     return ESP_OK;
 }
 
@@ -270,6 +305,32 @@ static void test_restart_does_not_reuse_old_pulses(void)
     /* Only two new pulses: the three from the previous run must not count. */
     s_pulse_budget = 2;
     assert(ad7606_driver_presence_monitor_start() == ESP_ERR_NOT_FOUND);
+    assert_monitor_released();
+}
+
+static void test_stale_queued_isr_cannot_count_toward_new_start(void)
+{
+    reset_world(BUSY_CONVERTING, -1);
+    assert(ad7606_driver_presence_monitor_start() == ESP_OK);
+    const gpio_isr_t stale_isr = s_isr;
+    void *const stale_argument = s_isr_argument;
+    assert(stale_isr != NULL);
+
+    ad7606_driver_presence_monitor_stop();
+    assert_monitor_released();
+    /* The old-generation pulse is queued while stopped, then delivered by the
+     * simulated ISR service during the next start, alongside only two fresh
+     * conversions. It must not satisfy the three-pulse threshold. */
+    queue_stale_isr_pulse(stale_isr, stale_argument);
+    s_pulse_budget = 2;
+    assert(ad7606_driver_presence_monitor_start() == ESP_ERR_NOT_FOUND);
+    assert(!s_stale_pulse_queued);
+    assert_monitor_released();
+
+    /* New-generation pulses remain valid after stale-event rejection. */
+    s_pulse_budget = -1;
+    assert(ad7606_driver_presence_monitor_start() == ESP_OK);
+    ad7606_driver_presence_monitor_stop();
     assert_monitor_released();
 }
 
@@ -359,6 +420,7 @@ int main(void)
     test_missing_adc_times_out_and_releases_the_isr();
     test_too_few_pulses_are_not_a_device();
     test_restart_does_not_reuse_old_pulses();
+    test_stale_queued_isr_cannot_count_toward_new_start();
     test_registration_failures_leave_nothing_armed();
     test_isr_service_installed_once_and_shared_service_accepted();
     test_stop_is_idempotent();

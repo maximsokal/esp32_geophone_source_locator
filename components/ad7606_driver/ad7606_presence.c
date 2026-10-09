@@ -24,18 +24,20 @@ static ad7606_presence_observer_t s_observer;
 static bool s_monitor_active = false;
 static bool s_external_busy_isr = false;
 static TickType_t s_last_complete_pulse_tick = 0;
+static uint32_t s_presence_generation = 0U;
 
 static void IRAM_ATTR ad7606_presence_isr(void *argument)
 {
-    (void)argument;
-
+    const uint32_t event_generation = (uint32_t)(uintptr_t)argument;
     const int level = gpio_get_level(BOARD_AD7606_BUSY_GPIO);
 
     portENTER_CRITICAL_ISR(&s_presence_lock);
-    const uint32_t before = s_observer.completed_pulses;
-    ad7606_presence_observer_observe(&s_observer, level);
-    if (s_observer.completed_pulses != before) {
-        s_last_complete_pulse_tick = xTaskGetTickCountFromISR();
+    if (s_monitor_active && event_generation == s_presence_generation) {
+        const uint32_t before = s_observer.completed_pulses;
+        ad7606_presence_observer_observe(&s_observer, level);
+        if (s_observer.completed_pulses != before) {
+            s_last_complete_pulse_tick = xTaskGetTickCountFromISR();
+        }
     }
     portEXIT_CRITICAL_ISR(&s_presence_lock);
 }
@@ -57,6 +59,11 @@ esp_err_t ad7606_driver_presence_monitor_start(void)
 
     portENTER_CRITICAL(&s_presence_lock);
     const bool external_busy_isr = s_external_busy_isr;
+    ++s_presence_generation;
+    if (s_presence_generation == 0U) {
+        ++s_presence_generation;
+    }
+    const uint32_t generation = s_presence_generation;
     portEXIT_CRITICAL(&s_presence_lock);
 
     /*
@@ -101,7 +108,7 @@ esp_err_t ad7606_driver_presence_monitor_start(void)
         err = gpio_isr_handler_add(
             BOARD_AD7606_BUSY_GPIO,
             ad7606_presence_isr,
-            NULL
+            (void *)(uintptr_t)generation
         );
         if (err != ESP_OK) {
             portENTER_CRITICAL(&s_presence_lock);
@@ -157,6 +164,10 @@ void ad7606_driver_presence_monitor_stop(void)
     bool was_active;
 
     portENTER_CRITICAL(&s_presence_lock);
+    ++s_presence_generation;
+    if (s_presence_generation == 0U) {
+        ++s_presence_generation;
+    }
     was_active = s_monitor_active;
     s_monitor_active = false;
     s_last_complete_pulse_tick = 0;

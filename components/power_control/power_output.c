@@ -15,6 +15,7 @@ static const char *TAG =
 
 
 #define OFF_PULSE_MS  200
+#define OFF_LOW_RETRY_COUNT  3U
 
 
 esp_err_t power_output_init(void)
@@ -79,10 +80,19 @@ esp_err_t power_output_init(void)
 
 void power_output_pulse_off(void)
 {
-    gpio_set_level(
+    esp_err_t err = gpio_set_level(
         BOARD_POWER_OFF_GPIO,
         1
     );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Failed to set OFF GPIO HIGH: %s",
+            esp_err_to_name(err)
+        );
+        return;
+    }
 
     vTaskDelay(
         pdMS_TO_TICKS(
@@ -90,8 +100,29 @@ void power_output_pulse_off(void)
         )
     );
 
-    gpio_set_level(
+    err = gpio_set_level(
         BOARD_POWER_OFF_GPIO,
         0
     );
+
+    for (unsigned retry = 0U;
+         err != ESP_OK && retry < OFF_LOW_RETRY_COUNT;
+         ++retry) {
+        if (retry > 0U) {
+            vTaskDelay(1);
+        }
+
+        err = gpio_set_level(
+            BOARD_POWER_OFF_GPIO,
+            0
+        );
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Failed to set OFF GPIO LOW after retries: %s",
+            esp_err_to_name(err)
+        );
+    }
 }

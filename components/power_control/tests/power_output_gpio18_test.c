@@ -32,6 +32,10 @@ static unsigned s_pulses;
 static uint32_t s_last_pulse_ms;
 static esp_err_t s_config_result;
 static esp_err_t s_set_level_result;
+static unsigned s_set_level_calls;
+static unsigned s_failed_set_level_calls[8];
+static size_t s_failed_set_level_call_count;
+static unsigned s_scripted_set_level_failures;
 
 /* Order of adapter/pulse events. */
 static char s_trace[64];
@@ -69,7 +73,17 @@ static void reset_model(uint32_t stale_register_level)
     s_last_pulse_ms = 0U;
     s_config_result = ESP_OK;
     s_set_level_result = ESP_OK;
+    s_set_level_calls = 0U;
+    s_failed_set_level_call_count = 0U;
+    s_scripted_set_level_failures = 0U;
     s_trace[0] = '\0';
+}
+
+static void fail_gpio_set_call(unsigned call_number)
+{
+    assert(s_failed_set_level_call_count <
+        sizeof(s_failed_set_level_calls) / sizeof(s_failed_set_level_calls[0]));
+    s_failed_set_level_calls[s_failed_set_level_call_count++] = call_number;
 }
 
 esp_err_t gpio_config(const gpio_config_t *config)
@@ -89,8 +103,15 @@ esp_err_t gpio_config(const gpio_config_t *config)
 esp_err_t gpio_set_level(gpio_num_t gpio_num, uint32_t level)
 {
     assert(gpio_num == OFF_PIN);
+    ++s_set_level_calls;
     if (s_set_level_result != ESP_OK) {
         return s_set_level_result;
+    }
+    for (size_t i = 0U; i < s_failed_set_level_call_count; ++i) {
+        if (s_set_level_calls == s_failed_set_level_calls[i]) {
+            ++s_scripted_set_level_failures;
+            return ESP_FAIL;
+        }
     }
     s_register_level = level;
     update_pad();
@@ -235,6 +256,75 @@ static void test_shutdown_is_one_exact_pulse_after_button_stop(void)
     }
 }
 
+static void test_return_low_retries_once_without_extending_the_pulse(void)
+{
+    reset_model(0U);
+    assert(power_control_init() == ESP_OK);
+    s_trace[0] = '\0';
+    s_adapter_stop_calls = 0U;
+    s_set_level_calls = 0U;
+    fail_gpio_set_call(2U); /* HIGH succeeds; the first LOW fails. */
+    const uint32_t pulse_start_ms = s_now_ms;
+
+    power_control_shutdown();
+
+    assert(s_adapter_stop_calls == 1U);
+    assert(strcmp(s_trace, "sHL") == 0);
+    assert(s_scripted_set_level_failures == 1U);
+    assert(s_set_level_calls == 3U); /* HIGH, failed LOW, successful retry. */
+    assert(s_pulses == 1U);
+    assert(s_last_pulse_ms == EXPECTED_PULSE_MS);
+    assert(s_now_ms - pulse_start_ms == EXPECTED_PULSE_MS);
+    assert(!s_pad_high);
+    assert(s_register_level == 0U);
+}
+
+static void test_return_low_exhaustion_is_bounded_and_observable(void)
+{
+    reset_model(0U);
+    assert(power_control_init() == ESP_OK);
+    s_trace[0] = '\0';
+    s_adapter_stop_calls = 0U;
+    s_set_level_calls = 0U;
+    fail_gpio_set_call(2U); /* Initial LOW write. */
+    fail_gpio_set_call(3U);
+    fail_gpio_set_call(4U);
+    fail_gpio_set_call(5U);
+
+    power_control_shutdown();
+
+    assert(s_adapter_stop_calls == 1U);
+    assert(strcmp(s_trace, "sH") == 0);
+    assert(s_scripted_set_level_failures == 4U);
+    assert(s_set_level_calls == 5U); /* One HIGH and one LOW plus 3 retries. */
+    assert(s_now_ms < 1000U + 200U + 10U);
+    assert(s_pad_high);
+    assert(s_register_level == 1U);
+    assert(s_pulses == 0U);
+}
+
+static void test_failed_high_does_not_delay_or_storm_low(void)
+{
+    reset_model(0U);
+    assert(power_control_init() == ESP_OK);
+    s_trace[0] = '\0';
+    s_adapter_stop_calls = 0U;
+    s_set_level_calls = 0U;
+    fail_gpio_set_call(1U);
+    const uint32_t pulse_start_ms = s_now_ms;
+
+    power_control_shutdown();
+
+    assert(s_adapter_stop_calls == 1U);
+    assert(strcmp(s_trace, "s") == 0);
+    assert(s_scripted_set_level_failures == 1U);
+    assert(s_set_level_calls == 1U);
+    assert(s_now_ms == pulse_start_ms);
+    assert(!s_pad_high);
+    assert(s_register_level == 0U);
+    assert(s_pulses == 0U);
+}
+
 /* MAX-183: a firmware shutdown request (critical battery) uses the same
  * latch, never pulses GPIO18 by itself, and keeps the first reason. */
 static void test_low_battery_request_uses_the_latch_without_pulsing(void)
@@ -288,6 +378,9 @@ int main(void)
     test_init_failure_never_drives_high();
     test_runtime_api_never_pulses();
     test_shutdown_is_one_exact_pulse_after_button_stop();
+    test_return_low_retries_once_without_extending_the_pulse();
+    test_return_low_exhaustion_is_bounded_and_observable();
+    test_failed_high_does_not_delay_or_storm_low();
     test_low_battery_request_uses_the_latch_without_pulsing();
     test_request_failure_leaves_no_reason();
     return 0;
