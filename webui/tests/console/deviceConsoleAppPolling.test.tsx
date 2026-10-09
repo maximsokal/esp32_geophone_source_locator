@@ -228,7 +228,11 @@ describe('DeviceConsoleApp status polling', () => {
     expect(browser.timeoutCalls[0]?.delay).toBe(5000);
     expect(nextTimer(browser)?.delay).toBe(5000);
     expect(api.fetchDeviceStatus).toHaveBeenCalledTimes(1);
-    expect(api.fetchDeviceStatus).toHaveBeenLastCalledWith(true);
+    expect(api.fetchDeviceStatus).toHaveBeenLastCalledWith(
+      true,
+      undefined,
+      expect.objectContaining({ owner: expect.any(Object), preemptible: true }),
+    );
 
     await setHidden(browser, true);
     expect(browser.timers.size).toBe(0);
@@ -427,7 +431,7 @@ describe('DeviceConsoleApp status polling', () => {
 
     // measurement_start needs no session read; the earlier OBJ_0001 read came from opening Objects.
     // The suppressed tick is satisfied by exactly this transition status read.
-    expect(api.fetchDeviceStatus.mock.calls.slice(callsBeforeControl)).toEqual([[false]]);
+    expect(api.fetchDeviceStatus.mock.calls.slice(callsBeforeControl).map(([includeObjects]) => includeObjects)).toEqual([false]);
     expect(browser.timers.size).toBe(1);
   });
 

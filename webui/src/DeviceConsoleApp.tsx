@@ -2,11 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './console.css';
 import {
   capturePhoneLocation,
+  createRequestOwner,
   fetchDeviceStatus,
   isStorageAvailabilityError,
+  retireRequestOwner,
   sendControl,
   sendWorkflowCommand,
 } from './api/deviceApi';
+import type { ApiRequestOwner } from './api/deviceApi';
 import { DeviceStatusValidationError } from './api/deviceStatusSchema';
 import type {
   DeviceStatus,
@@ -98,21 +101,35 @@ export default function DeviceConsoleApp() {
   const objectsRef = useRef<ObjectStoreState | null>(null);
   const reconcileTimer = useRef<number | null>(null);
   const controlsInFlightRef = useRef(0);
+  const requestOwnerRef = useRef<ApiRequestOwner | null>(null);
   const pollControllerRef = useRef<StatusPollController | null>(null);
   const storageRecoveryOwedRef = useRef(false);
   const refreshWorkspaceAfterStorageRecoveryRef = useRef<() => void>(() => undefined);
   const workflowStepRef = useRef(status?.workflow?.step);
   workflowStepRef.current = status?.workflow?.step;
 
+  useEffect(() => {
+    const owner = createRequestOwner();
+    requestOwnerRef.current = owner;
+    return () => {
+      if (requestOwnerRef.current === owner) requestOwnerRef.current = null;
+      retireRequestOwner(owner);
+    };
+  }, []);
+
   const refreshStatus = useCallback(async (): Promise<boolean> => {
+    const owner = requestOwnerRef.current;
+    if (owner === null) return false;
     try {
-      const next = await fetchDeviceStatus(false);
+      const next = await fetchDeviceStatus(false, undefined, { owner, preemptible: true });
+      if (requestOwnerRef.current !== owner) return false;
       setStatus(next);
       setLinkError(null);
       setWorkspaceError((current: unknown) => current instanceof DeviceStatusValidationError ? null : current);
       return true;
     }
     catch (reason) {
+      if (requestOwnerRef.current !== owner) return false;
       setLinkError(reason);
       return false;
     }
@@ -123,6 +140,8 @@ export default function DeviceConsoleApp() {
     selectionMode: ObjectSelectionMode = 'preserve',
   ): Promise<ObjectStoreState | null> => {
     const epoch = ++objectRefreshEpoch.current;
+    const owner = requestOwnerRef.current;
+    if (owner === null) return null;
     if (storageUnavailableRef.current) {
       objectsRef.current = null;
       setObjects(null);
@@ -131,8 +150,8 @@ export default function DeviceConsoleApp() {
       return null;
     }
     try {
-      const next = await fetchDeviceStatus(true);
-      if (epoch !== objectRefreshEpoch.current) return null;
+      const next = await fetchDeviceStatus(true, undefined, { owner, preemptible: true });
+      if (requestOwnerRef.current !== owner || epoch !== objectRefreshEpoch.current) return null;
 
       if (next.storage_available === false) {
         setStatus(next);
@@ -163,7 +182,7 @@ export default function DeviceConsoleApp() {
       return nextStore?.available === false ? null : nextStore;
     }
     catch (reason) {
-      if (epoch !== objectRefreshEpoch.current) return null;
+      if (requestOwnerRef.current !== owner || epoch !== objectRefreshEpoch.current) return null;
       setWorkspaceError(reason);
       if (reason instanceof DeviceStatusValidationError) setLinkError(reason);
       return null;
@@ -171,6 +190,8 @@ export default function DeviceConsoleApp() {
   }, []);
 
   const refreshSessions = useCallback(async (objectId: string | null): Promise<boolean> => {
+    const owner = requestOwnerRef.current;
+    if (owner === null) return false;
     const epoch = ++sessionRefreshEpoch.current;
     if (objectId === null) {
       setSessions(null);
@@ -183,8 +204,8 @@ export default function DeviceConsoleApp() {
 
     try {
       /* Sessions are an SD model of one object; do not re-read every object profile. */
-      const next = await fetchDeviceStatus(false, objectId);
-      if (epoch !== sessionRefreshEpoch.current) return true;
+      const next = await fetchDeviceStatus(false, objectId, { owner, preemptible: true });
+      if (requestOwnerRef.current !== owner || epoch !== sessionRefreshEpoch.current) return true;
       setStatus(next);
       if (next.storage_available === false) {
         objectsRef.current = null;
@@ -200,7 +221,7 @@ export default function DeviceConsoleApp() {
       return next.recording_sessions?.available !== false;
     }
     catch (reason) {
-      if (epoch !== sessionRefreshEpoch.current) return false;
+      if (requestOwnerRef.current !== owner || epoch !== sessionRefreshEpoch.current) return false;
       setWorkspaceError(reason);
       if (reason instanceof DeviceStatusValidationError) setLinkError(reason);
       return false;
@@ -339,7 +360,6 @@ export default function DeviceConsoleApp() {
       cancelled = true;
       clearTimer();
       if (pollControllerRef.current !== null) pollControllerRef.current = null;
-      /* MAX-387 integration point -- when deviceApi exposes a request owner, own the poll reads here and retire the owner on hidden/offline/unmount. */
       if (typeof visibilityDocument?.removeEventListener === 'function') {
         visibilityDocument.removeEventListener('visibilitychange', onEnvironmentChange);
       }
@@ -415,12 +435,15 @@ export default function DeviceConsoleApp() {
     action: string,
     payload: Record<string, unknown> = {},
   ): Promise<boolean> => {
+    const owner = requestOwnerRef.current;
+    if (owner === null) return false;
+    const isCurrentRequestOwner = (): boolean => requestOwnerRef.current === owner;
     const followsActive = action === 'create_object' || action === 'activate_object';
     const selectionMode: ObjectSelectionMode = followsActive ? 'active' : 'preserve';
     let authoritativeStatusRead = false;
     const readTransitionStatus = async (): Promise<DeviceStatus> => {
-      const next = await fetchDeviceStatus(false);
-      authoritativeStatusRead = true;
+      const next = await fetchDeviceStatus(false, undefined, { owner, preemptible: true });
+      if (isCurrentRequestOwner()) authoritativeStatusRead = true;
       return next;
     };
 
@@ -428,6 +451,7 @@ export default function DeviceConsoleApp() {
     setBusy(true);
     try {
       return await runAfterControlConfirmation(sendControl(action, payload), async (result) => {
+      if (!isCurrentRequestOwner()) return false;
       const currentStore = objectsRef.current;
       const projectedStore = applyConfirmedObjectMutation(currentStore, action, payload, result);
       if (projectedStore !== currentStore) {
@@ -463,6 +487,7 @@ export default function DeviceConsoleApp() {
           action as 'measurement_start' | 'measurement_stop',
           readTransitionStatus,
         );
+        if (!isCurrentRequestOwner()) return false;
         setStatus(transitionStatus);
         if (measurementTransitionNeedsSessionRefresh(
           action as 'measurement_start' | 'measurement_stop',
@@ -475,6 +500,7 @@ export default function DeviceConsoleApp() {
           const cacheIdleStatus = await waitForStorageCacheIdle(
             readTransitionStatus,
           );
+          if (!isCurrentRequestOwner()) return false;
           setStatus(cacheIdleStatus);
           const confirmedObjectId = selectedId
             ?? transitionStatus.measurement?.object_id
@@ -498,6 +524,7 @@ export default function DeviceConsoleApp() {
       });
     }
     catch (reason) {
+      if (!isCurrentRequestOwner()) return false;
       const rawMessage = reason instanceof Error ? reason.message : String(reason);
 
       /*
@@ -521,14 +548,14 @@ export default function DeviceConsoleApp() {
     }
     finally {
       controlsInFlightRef.current = Math.max(0, controlsInFlightRef.current - 1);
-      if (controlsInFlightRef.current === 0) {
+      if (controlsInFlightRef.current === 0 && isCurrentRequestOwner()) {
         if (storageRecoveryOwedRef.current) {
           storageRecoveryOwedRef.current = false;
           refreshWorkspaceAfterStorageRecoveryRef.current();
         }
         pollControllerRef.current?.onControlSettled(authoritativeStatusRead);
       }
-      setBusy(false);
+      if (isCurrentRequestOwner()) setBusy(false);
     }
   }, [refreshSessions, refreshStatus, scheduleObjectReconcile, selectedId]);
 

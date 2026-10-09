@@ -174,7 +174,9 @@ function blockedControlResult(body: unknown): ControlResult {
 }
 
 const statusRequests = new Map<string, Promise<DeviceStatus>>();
+const ownerStatusRequests = new WeakMap<ApiRequestOwner, Map<string, Promise<DeviceStatus>>>();
 let extendedStatusRequest: Promise<DeviceStatus> | null = null;
+const ownerExtendedStatusRequests = new WeakMap<ApiRequestOwner, Promise<DeviceStatus>>();
 let seismicRequest: Promise<SeismicSnapshot> | null = null;
 let pendingApiRequests = 0;
 
@@ -602,10 +604,20 @@ export function fetchDeviceStatus(
   sessionsObjectId?: string | null,
   options: ApiRequestOptions = {},
 ): Promise<DeviceStatus> {
-  const coalesce = options.owner === undefined && options.preemptible === undefined;
+  const owner = options.owner;
+  const coalesce = owner !== undefined || options.preemptible === undefined;
+  let requests = statusRequests;
+  if (owner !== undefined) {
+    const existingRequests = ownerStatusRequests.get(owner);
+    requests = existingRequests ?? new Map<string, Promise<DeviceStatus>>();
+    if (existingRequests === undefined) ownerStatusRequests.set(owner, requests);
+  }
   /* An extended response is a strict superset of the fast RAM status. */
-  if (coalesce && !includeObjects && !sessionsObjectId && extendedStatusRequest !== null) {
-    return extendedStatusRequest;
+  const extendedRequest = owner === undefined
+    ? extendedStatusRequest
+    : ownerExtendedStatusRequests.get(owner) ?? null;
+  if (coalesce && !includeObjects && !sessionsObjectId && extendedRequest !== null) {
+    return extendedRequest;
   }
 
   const query = new URLSearchParams();
@@ -614,7 +626,7 @@ export function fetchDeviceStatus(
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
   const url = `/api/status${suffix}`;
 
-  const existing = coalesce ? statusRequests.get(url) : undefined;
+  const existing = coalesce ? requests.get(url) : undefined;
   if (existing !== undefined) return existing;
 
   const extended = includeObjects || Boolean(sessionsObjectId);
@@ -626,18 +638,29 @@ export function fetchDeviceStatus(
   let request: Promise<DeviceStatus>;
   request = rawRequest.then(
     (value) => {
-      statusRequests.delete(url);
-      if (extendedStatusRequest === request) extendedStatusRequest = null;
+      if (requests.get(url) === request) requests.delete(url);
+      if (owner === undefined) {
+        if (extendedStatusRequest === request) extendedStatusRequest = null;
+      } else if (ownerExtendedStatusRequests.get(owner) === request) {
+        ownerExtendedStatusRequests.delete(owner);
+      }
       return value;
     },
     (reason) => {
-      statusRequests.delete(url);
-      if (extendedStatusRequest === request) extendedStatusRequest = null;
+      if (requests.get(url) === request) requests.delete(url);
+      if (owner === undefined) {
+        if (extendedStatusRequest === request) extendedStatusRequest = null;
+      } else if (ownerExtendedStatusRequests.get(owner) === request) {
+        ownerExtendedStatusRequests.delete(owner);
+      }
       throw reason;
     },
   );
-  statusRequests.set(url, request);
-  if (extended) extendedStatusRequest = request;
+  requests.set(url, request);
+  if (extended) {
+    if (owner === undefined) extendedStatusRequest = request;
+    else ownerExtendedStatusRequests.set(owner, request);
+  }
   return request;
 }
 

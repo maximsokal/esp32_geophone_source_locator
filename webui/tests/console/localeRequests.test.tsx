@@ -79,7 +79,7 @@ describe('presentation-only locale changes', () => {
       ));
     });
     expect(api.fetchDeviceStatus).toHaveBeenCalledTimes(1);
-    expect(api.fetchDeviceStatus).toHaveBeenLastCalledWith(true);
+    expect(api.fetchDeviceStatus).toHaveBeenLastCalledWith(true, undefined, expect.objectContaining({ preemptible: true }));
 
     const objectsTab = renderer.root.findAllByType('button').find((button) => button.children.join('') === translate('en', 'nav.objects'));
     expect(objectsTab).toBeDefined();
@@ -95,7 +95,7 @@ describe('presentation-only locale changes', () => {
       poll?.();
     });
     expect(api.fetchDeviceStatus).toHaveBeenCalledTimes(3);
-    expect(api.fetchDeviceStatus).toHaveBeenLastCalledWith(false);
+    expect(api.fetchDeviceStatus).toHaveBeenLastCalledWith(false, undefined, expect.objectContaining({ preemptible: true }));
 
     const form = renderer.root.findByType('form');
     act(() => form.props.onSubmit({ preventDefault: () => undefined }));

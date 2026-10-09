@@ -237,7 +237,7 @@ describe('locale changes during WebUI state transitions', () => {
     const objectsTab = findButton(renderer, (button) => button.props['aria-pressed'] === false && textOf(button) === translate('en', 'nav.objects'));
     await act(async () => { objectsTab.props.onClick(); await Promise.resolve(); await Promise.resolve(); });
     fireNextTimeout(browser);
-    expect(api.fetchDeviceStatus).toHaveBeenCalledWith(false);
+    expect(api.fetchDeviceStatus).toHaveBeenCalledWith(false, undefined, expect.objectContaining({ preemptible: true }));
 
     const requestsBeforeUk = api.fetchDeviceStatus.mock.calls.length;
     await act(async () => { setLocale('uk'); await loadUkrainianCatalog(); });
@@ -282,10 +282,10 @@ describe('locale changes during WebUI state transitions', () => {
 
     const objectsTab = findButton(renderer, (button) => button.props['aria-pressed'] === false && textOf(button) === translate('en', 'nav.objects'));
     await act(async () => { objectsTab.props.onClick(); await Promise.resolve(); await Promise.resolve(); });
-    expect(api.fetchDeviceStatus).toHaveBeenCalledWith(false, OBJECT_A);
+    expect(api.fetchDeviceStatus).toHaveBeenCalledWith(false, OBJECT_A, expect.objectContaining({ preemptible: true }));
     const objectBButton = findButton(renderer, (button) => String(button.props.className).includes('object-row') && textOf(button).includes(OBJECT_B));
     await act(async () => { objectBButton.props.onClick(); await Promise.resolve(); await Promise.resolve(); });
-    expect(api.fetchDeviceStatus).toHaveBeenCalledWith(false, OBJECT_B);
+    expect(api.fetchDeviceStatus).toHaveBeenCalledWith(false, OBJECT_B, expect.objectContaining({ preemptible: true }));
 
     const requestsBeforeUk = api.fetchDeviceStatus.mock.calls.length;
     await act(async () => { setLocale('uk'); await loadUkrainianCatalog(); });
