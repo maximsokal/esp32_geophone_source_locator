@@ -238,9 +238,20 @@ def load_msvc_environment(compiler: list[str]) -> dict[str, str]:
     return environment
 
 
+RUN_TIMEOUT_SECONDS = 60.0
+# Sanitizers and coverage slow allocation-heavy targets (e.g. the MAX-132
+# failure sweep) several times over; a timeout is a performance limit there,
+# not a defect, so instrumented runs get a larger budget.
+INSTRUMENTED_RUN_TIMEOUT_SECONDS = 300.0
+
+
+def run_timeout_seconds(sanitizers: str, coverage: bool) -> float:
+    return INSTRUMENTED_RUN_TIMEOUT_SECONDS if sanitizers != "none" or coverage else RUN_TIMEOUT_SECONDS
+
+
 def run_command(
     command: list[str],
-    timeout: float = 60.0,
+    timeout: float = RUN_TIMEOUT_SECONDS,
     *,
     cwd: Path | None = None,
     environment: dict[str, str] | None = None,
@@ -370,7 +381,12 @@ def main() -> int:
             else:
                 print(f"[RUN]   {entry['name']}")
                 try:
-                    test_result = run_command([str(output)], cwd=entry_dir, environment=compiler_environment)
+                    test_result = run_command(
+                        [str(output)],
+                        run_timeout_seconds(args.sanitizers, args.coverage),
+                        cwd=entry_dir,
+                        environment=compiler_environment,
+                    )
                 except (OSError, subprocess.TimeoutExpired) as exc:
                     result = {"name": entry["name"], "status": "FAIL", "phase": "run", "error": str(exc)}
                 else:

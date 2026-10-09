@@ -18,6 +18,21 @@ def test_host_runner_default_build_dir_uses_test_build(monkeypatch):
     assert runner.parse_args().build_dir == Path(".test-build/host-tests")
 
 
+def test_host_runner_gives_instrumented_runs_a_larger_timeout():
+    runner_path = REPO_ROOT / "tools" / "run_host_tests.py"
+    spec = importlib.util.spec_from_file_location("run_host_tests_timeout", runner_path)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    plain = runner.run_timeout_seconds("none", False)
+    assert plain == 60.0
+    assert runner.run_timeout_seconds("address", False) > plain
+    assert runner.run_timeout_seconds("undefined", False) > plain
+    assert runner.run_timeout_seconds("address,undefined", False) > plain
+    assert runner.run_timeout_seconds("none", True) > plain
+
+
 def host_log_stubs() -> list[Path]:
     paths = list(REPO_ROOT.glob("components/*/tests/stubs/esp_log.h"))
     paths.extend(REPO_ROOT.glob("tests/host/stubs/**/esp_log.h"))
