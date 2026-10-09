@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "scan_occupancy.h"
 #include "ui_preview3d.h"
 
 /* MAX-187: bounded software 3D preview (host math, clipping, golden). */
@@ -13,17 +14,19 @@
 #define CANARY 0xA5
 #define VOXEL_TEST_BUDGET 3000U
 #define SOURCE_VECTORS_PATH "../../../tests/fixtures/source_highlight_vectors.json"
+#define CANDIDATE_VOLUME_VECTORS_PATH "../../../tests/fixtures/candidate_volume_vectors.json"
 #define SOURCE_VECTOR_ROWS 16U
 #define SOURCE_MAPPING_COLUMNS 11U
 #define SOURCE_UNCERTAINTY_COLUMNS 22U
+#define CANDIDATE_VOLUME_VECTOR_COLUMNS 12U
 
 static uint8_t s_frame[GUARD + 320 * 240 + GUARD];
 static ui_preview3d_scene_t s_scene;
 static uint32_t s_voxel_order[VOXEL_TEST_BUDGET];
 
-static char *read_source_vectors(void)
+static char *read_vector_fixture(const char *path)
 {
-    FILE *file = fopen(SOURCE_VECTORS_PATH, "rb");
+    FILE *file = fopen(path, "rb");
     assert(file != NULL);
     assert(fseek(file, 0L, SEEK_END) == 0);
     const long length = ftell(file);
@@ -35,6 +38,16 @@ static char *read_source_vectors(void)
     text[length] = '\0';
     assert(fclose(file) == 0);
     return text;
+}
+
+static char *read_source_vectors(void)
+{
+    return read_vector_fixture(SOURCE_VECTORS_PATH);
+}
+
+static char *read_candidate_volume_vectors(void)
+{
+    return read_vector_fixture(CANDIDATE_VOLUME_VECTORS_PATH);
 }
 
 static uint8_t *read_preview_v2_vector(size_t *length_out)
@@ -1055,6 +1068,75 @@ static void test_buried_source_maps_into_extended_preview_grid(void)
     assert(stats.voxels_drawn == 1U);
 }
 
+static void test_shared_candidate_volume_vectors(void)
+{
+    static const uint32_t indices[] = {0U};
+    static const uint8_t masks[] = {0x3fU};
+    char *fixture = read_candidate_volume_vectors();
+    double rows[SOURCE_VECTOR_ROWS][SOURCE_UNCERTAINTY_COLUMNS] = {{0.0}};
+    const size_t count = read_source_vector_rows(
+        fixture, "\"vectors\"", CANDIDATE_VOLUME_VECTOR_COLUMNS, rows);
+    ui_preview3d_view_t view;
+    ui_preview3d_stats_t stats;
+
+    assert(count > 0U);
+    ui_preview3d_view_preset(&view, UI_PREVIEW3D_PRESET_TOP);
+    for (size_t vector = 0U; vector < count; ++vector) {
+        const double *row = rows[vector];
+        const double envelope_min[3] = {row[0], row[1], row[2]};
+        const double envelope_max[3] = {row[3], row[4], row[5]};
+        const double below_surface_m = row[6];
+        const double voxel_size_m = row[7];
+        const double point[3] = {row[8], row[9], row[10]};
+        const bool expected_inside = row[11] == 1.0;
+        scan_occupancy_t occupancy = {0};
+        ui_preview3d_voxel_grid_t grid = {0};
+        ui_preview3d_vec3_t preview_point = {
+            (float)point[0], (float)point[1], (float)point[2],
+        };
+        uint32_t index = UINT32_MAX;
+
+        assert(row[11] == 0.0 || row[11] == 1.0);
+        occupancy.voxel_size_m = voxel_size_m;
+        occupancy.below_surface_m = below_surface_m;
+        occupancy.has_envelope = true;
+        memcpy(occupancy.envelope_min, envelope_min, sizeof(envelope_min));
+        memcpy(occupancy.envelope_max, envelope_max, sizeof(envelope_max));
+        assert(scan_occupancy_classify(&occupancy, point) == (expected_inside
+            ? SCAN_OCCUPANCY_UNKNOWN
+            : SCAN_OCCUPANCY_OUTSIDE));
+
+        grid.origin = (ui_preview3d_vec3_t){
+            (float)envelope_min[0],
+            (float)envelope_min[1],
+            (float)(envelope_min[2] - below_surface_m),
+        };
+        grid.voxel_size_m = (float)voxel_size_m;
+        for (size_t axis = 0U; axis < 3U; ++axis) {
+            const double lower = axis == 2U ? envelope_min[axis] - below_surface_m : envelope_min[axis];
+            const double span_cells = (envelope_max[axis] - lower) / voxel_size_m;
+            const double dimension = floor(span_cells) + 1.0;
+            assert(span_cells >= 0.0 && fabs(span_cells - floor(span_cells)) < 1e-9);
+            assert(dimension > 0.0 && dimension <= (double)UINT16_MAX);
+            grid.dimensions[axis] = (uint16_t)dimension;
+        }
+        assert(ui_preview3d_source_to_voxel_index(&grid, &preview_point, &index) == expected_inside);
+
+        set_voxel_scene(&s_scene, indices, masks, 1U, grid.dimensions[0], grid.dimensions[1],
+                        grid.dimensions[2], grid.origin, grid.voxel_size_m);
+        s_scene.registered = true;
+        set_yaw_registration(s_scene.sensor_to_scan, 0.0);
+        s_scene.sources[0] = (ui_preview3d_source_t){.position = preview_point, .selected = true};
+        s_scene.source_count = 1U;
+        frame_reset();
+        ui_preview3d_render(&s_scene, &view, UI_PREVIEW3D_LAYER_AUTO, frame_pixels(), 100, 100, &stats);
+        assert(stats.source_reason == (expected_inside
+            ? UI_PREVIEW3D_SOURCE_REASON_NONE
+            : UI_PREVIEW3D_SOURCE_REASON_OUTSIDE_GRID));
+    }
+    free(fixture);
+}
+
 int main(void)
 {
     test_presets_and_keys();
@@ -1079,6 +1161,7 @@ int main(void)
     test_scene_setup_binds_registration_geometry();
     test_candidates_carry_geometry_and_vertical_sigma();
     test_buried_source_maps_into_extended_preview_grid();
+    test_shared_candidate_volume_vectors();
     puts("ui_preview3d tests passed");
     return 0;
 }

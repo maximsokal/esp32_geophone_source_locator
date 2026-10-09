@@ -1,0 +1,28 @@
+{
+  "names": [
+    "headline source z=-1.0 is inside",
+    "headline source z=-2.5 is outside",
+    "exact lower face is inside",
+    "one voxel below lower face is outside",
+    "just below lower face is outside",
+    "upper surface is inside",
+    "x upper XY edge is inside",
+    "y upper XY edge is inside",
+    "outside the x upper edge is outside",
+    "negative coordinate floors are inside",
+    "negative x below the envelope is outside"
+  ],
+  "vectors": [
+    [0, 0, 0, 0.2, 0.2, 0.2, 2, 0.1, 0.05, 0.05, -1.0, 1],
+    [0, 0, 0, 0.2, 0.2, 0.2, 2, 0.1, 0.05, 0.05, -2.5, 0],
+    [0, 0, 0, 0.2, 0.2, 0.2, 2, 0.1, 0.05, 0.05, -2.0, 1],
+    [0, 0, 0, 0.2, 0.2, 0.2, 2, 0.1, 0.05, 0.05, -2.1, 0],
+    [0, 0, 0, 0.2, 0.2, 0.2, 2, 0.1, 0.05, 0.05, -2.0001, 0],
+    [0, 0, 0, 0.2, 0.2, 0.2, 2, 0.1, 0.05, 0.05, 0.2, 1],
+    [0, 0, 0, 0.2, 0.2, 0.2, 2, 0.1, 0.2, 0.1, 0.1, 1],
+    [0, 0, 0, 0.2, 0.2, 0.2, 2, 0.1, 0.1, 0.2, 0.1, 1],
+    [0, 0, 0, 0.2, 0.2, 0.2, 2, 0.1, 0.4, 0.1, 0.1, 0],
+    [-0.5, -0.25, -0.25, 0.5, 0.75, 0.5, 0.5, 0.25, -0.125, -0.125, -0.375, 1],
+    [-0.5, -0.25, -0.25, 0.5, 0.75, 0.5, 0.5, 0.25, -0.75, -0.125, -0.375, 0]
+  ]
+}
