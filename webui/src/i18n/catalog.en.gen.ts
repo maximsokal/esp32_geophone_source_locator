@@ -953,6 +953,7 @@ export const en: Record<I18nKey, string> = {
   "scan.storage.preparing": "Preparing scan for saving · {object}",
   "scan.storage.previous_kept": "New scan is only in browser memory; previous SD scan was kept. {reason}",
   "scan.storage.provisional": "This scan is provisional until the device confirms it was saved.",
+  "scan.storage.reading": "Reading saved scan…",
   "scan.storage.saved": "3D scan saved to SD · {object}",
   "scan.storage.saving": "Saving 3D scan to SD · {object}",
   "scan.storage.scanning": "New scan in browser memory · {object}",

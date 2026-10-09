@@ -953,6 +953,7 @@ export const uk: Record<I18nKey, string> = {
   "scan.storage.preparing": "Підготовка скану до збереження · {object}",
   "scan.storage.previous_kept": "Новий скан є лише в пам’яті браузера; попередній скан на SD збережено. {reason}",
   "scan.storage.provisional": "Цей скан провізорний, доки пристрій не підтвердить збереження.",
+  "scan.storage.reading": "Читання збереженого скану…",
   "scan.storage.saved": "3D-скан збережено на SD · {object}",
   "scan.storage.saving": "Збереження 3D-скану на SD · {object}",
   "scan.storage.scanning": "Новий скан у пам’яті браузера · {object}",

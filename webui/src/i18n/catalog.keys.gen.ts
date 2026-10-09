@@ -951,6 +951,7 @@ export const i18nKeys = [
   "scan.storage.preparing",
   "scan.storage.previous_kept",
   "scan.storage.provisional",
+  "scan.storage.reading",
   "scan.storage.saved",
   "scan.storage.saving",
   "scan.storage.scanning",

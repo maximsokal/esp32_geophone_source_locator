@@ -71,6 +71,16 @@ async function mount(objectId = 'OBJ', sessionId = 'S'): Promise<ReactTestRender
   return renderer;
 }
 
+async function mountWithSyncDecodeFallback(objectId = 'OBJ', sessionId = 'S'): Promise<ReactTestRenderer> {
+  const worker = globalThis.Worker;
+  vi.stubGlobal('Worker', undefined);
+  try {
+    return await mount(objectId, sessionId);
+  } finally {
+    vi.stubGlobal('Worker', worker);
+  }
+}
+
 function workerResult(worker: any): ScanEncodeWorkerResponse {
   let response: ScanEncodeWorkerResponse | null = null;
   processScanEncodeWorkerMessage(worker.request, { postMessage: (message) => { response = message; } });
@@ -145,7 +155,8 @@ describe('App off-thread scan encoding lifecycle (MAX-392)', () => {
   it('keeps the durable base and enters a clean encode error when the worker crashes', async () => {
     const baseBytes = encodeScanArtifact(makeValidScanSnapshot());
     device.scan = baseBytes.slice();
-    const renderer = await mount();
+    // This test covers encode failure; restore through the supported logged fallback.
+    const renderer = await mountWithSyncDecodeFallback();
     const baseSnapshot = h.viewportProps.snapshot as ScanPointCloudSnapshot;
     await act(async () => { startFinish(); });
     await flush();

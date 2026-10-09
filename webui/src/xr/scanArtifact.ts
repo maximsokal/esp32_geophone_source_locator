@@ -76,6 +76,17 @@ export interface ScanArtifactEncodingMetrics {
   wholeScanCrcBytesVisited: number;
 }
 
+export interface ScanArtifactDecodingMetrics {
+  floatsVisited: number;
+  validationBytesVisited: number;
+  decoderPayloadBytesCopied: number;
+  artifactChecksumCrcBytesVisited: number;
+  crcBytesVisited: number;
+  wholeScanCrcInvocations: number;
+  wholeScanCrcBytesVisited: number;
+  normalConfidenceValidationPasses: number;
+}
+
 type FloatArrayKey = (typeof FLOAT_ARRAY_KEYS)[number];
 type OptionalFloatArrayKey = (typeof OPTIONAL_FLOAT_ARRAY_KEYS)[number];
 type ByteArrayKey = (typeof BYTE_ARRAY_KEYS)[number];
@@ -757,6 +768,37 @@ export function decodeScanArtifactWithIdentity(source: ArrayBuffer | Uint8Array)
   return {
     snapshot: buildSnapshot(header.metadata, decoded, legacyNormalConfidence),
     identity: scanIdentityFromCrc(bytes.byteLength, wholeCrc),
+  };
+}
+
+/** Decode a persisted artifact and return the work counters used by the worker response. */
+export function decodeScanArtifactWithIdentityAndMetrics(source: ArrayBuffer | Uint8Array): {
+  snapshot: ScanPointCloudSnapshot;
+  identity: ScanIdentity;
+  metrics: ScanArtifactDecodingMetrics;
+} {
+  const artifactMetricsStart = getScanArtifactMetrics();
+  const identityMetricsStart = getScanIdentityMetrics();
+  const decoded = decodeScanArtifactWithIdentity(source);
+  const artifactMetricsEnd = getScanArtifactMetrics();
+  const identityMetricsEnd = getScanIdentityMetrics();
+  const artifactChecksumCrcBytesVisited = artifactMetricsEnd.artifactChecksumCrcBytesVisited -
+    artifactMetricsStart.artifactChecksumCrcBytesVisited;
+  const wholeScanCrcBytesVisited = identityMetricsEnd.wholeScanCrcBytesVisited -
+    identityMetricsStart.wholeScanCrcBytesVisited;
+  return {
+    ...decoded,
+    metrics: {
+      floatsVisited: artifactMetricsEnd.floatValuesVisited - artifactMetricsStart.floatValuesVisited,
+      validationBytesVisited: artifactMetricsEnd.validationBytesVisited - artifactMetricsStart.validationBytesVisited,
+      decoderPayloadBytesCopied: artifactMetricsEnd.decoderPayloadBytesCopied - artifactMetricsStart.decoderPayloadBytesCopied,
+      artifactChecksumCrcBytesVisited,
+      crcBytesVisited: artifactChecksumCrcBytesVisited + wholeScanCrcBytesVisited,
+      wholeScanCrcInvocations: identityMetricsEnd.wholeScanCrcInvocations - identityMetricsStart.wholeScanCrcInvocations,
+      wholeScanCrcBytesVisited,
+      normalConfidenceValidationPasses: artifactMetricsEnd.normalConfidenceValidationPasses -
+        artifactMetricsStart.normalConfidenceValidationPasses,
+    },
   };
 }
 
