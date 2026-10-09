@@ -1,16 +1,37 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
   decodeOccupancySolverArtifact,
   encodeOccupancySolverArtifact,
 } from '../../src/xr/occupancySolverArtifact';
+import { enumerateUnknownCandidatePositions } from '../../src/xr/occupancyEvidence';
 import { decodeScanArtifact, encodeScanArtifact, MAX_SCAN_ARTIFACT_BYTES } from '../../src/xr/scanArtifact';
 import {
   buildContinuationSpatialHash,
   nearestContinuationPoint,
 } from '../../src/xr/continuationSpatialIndex';
 import { registerAndMergeScanContinuation } from '../../src/xr/scanContinuation';
+import { analyzeSurfaceComponents } from '../../src/xr/surfaceComponents';
+import { computeOperationalSurfaceEnvelope } from '../../src/xr/surfaceOperationalEnvelope';
+import { STRUCTURAL_MIN_CONFIDENCE } from '../../src/xr/structuralSurfacePreprocess';
 import type { ScanPointCloudSnapshot } from '../../src/xr/webxrRuntime';
+
+const CONTINUATION_VECTOR_PATH = resolve(__dirname, '../../../tests/vectors/scan_occupancy_continuation_v2.bin');
+const CONTINUATION_ARTIFACT_OPTIONS = {
+  frameId: 'scan-continuation-fine-free-v2',
+  createdAtMs: 1700000000001,
+  registration: {
+    frame: 'project_z_up' as const,
+    source: 'continuation-parity-test',
+    geometry_computed_at_ms: 123456,
+    sensor_to_scan: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    residual_m: 0.01,
+    threshold_m: 0.05,
+  },
+};
 
 type ContinuationOccupancyFixture = Partial<Pick<ScanPointCloudSnapshot,
   'freeAirPositions' | 'occupiedSurfacePositions' | 'unknownCandidatePositions' |
@@ -20,7 +41,7 @@ type ContinuationOccupancyFixture = Partial<Pick<ScanPointCloudSnapshot,
   'occupancyQuarantinedSurfacePointCount' | 'occupancyBridgeRescanComponentCount' |
   'occupancyBridgeEvidenceTruncated'>>;
 type ContinuationAnnotations = Partial<Pick<ScanPointCloudSnapshot,
-  'normalConfidence' | 'manualControlPoints' | 'operatorEdges'>>;
+  'confidence' | 'normals' | 'normalConfidence' | 'manualControlPoints' | 'operatorEdges'>>;
 
 function cloudPoints(count = 240): Float32Array {
   const points = new Float32Array(count * 3);
@@ -53,6 +74,7 @@ function partialOverlapPair(
   appendedLengthMeters: number,
   yaw = 23 * Math.PI / 180,
   translation: readonly [number, number, number] = [0.8, -0.5, 0.3],
+  overlapStartIndex = 24,
 ): {
   base: ScanPointCloudSnapshot;
   extension: ScanPointCloudSnapshot;
@@ -69,7 +91,7 @@ function partialOverlapPair(
         0.13 * Math.cos(xIndex * 0.83 - yIndex * 0.29) +
         0.04 * Math.sin(xIndex * yIndex * 0.17);
       world.push(x, y, z);
-      if (xIndex >= 24) overlap.push(x, y, z);
+      if (xIndex >= overlapStartIndex) overlap.push(x, y, z);
     }
   }
   if (appendedLengthMeters > 0) {
@@ -152,8 +174,8 @@ function snapshot(
   positions: Float32Array,
   occupancy: ContinuationOccupancyFixture & ContinuationAnnotations = {},
 ): ScanPointCloudSnapshot {
-  const confidence = confidenceFor(positions);
-  const normals = normalsFor(positions);
+  const confidence = occupancy.confidence ?? confidenceFor(positions);
+  const normals = occupancy.normals ?? normalsFor(positions);
   const freeAirPositions = occupancy.freeAirPositions ?? new Float32Array(0);
   const occupiedSurfacePositions = occupancy.occupiedSurfacePositions ?? new Float32Array(0);
   const unknownCandidatePositions = occupancy.unknownCandidatePositions ?? new Float32Array(0);
@@ -222,6 +244,172 @@ function snapshot(
     manualControlPoints: occupancy.manualControlPoints ?? [],
     operatorEdges: occupancy.operatorEdges ?? [],
   };
+}
+
+function denseContinuationPair(): { base: ScanPointCloudSnapshot; extension: ScanPointCloudSnapshot } {
+  const anchors = partialOverlapPair(0, 0, [0, 0, 0], 0);
+  // Keep low-confidence registration texture out of the structural surface voxels.
+  const baseAnchors = offsetPositions(anchors.base.positions, [0, 0, 1]);
+  const extensionAnchors = offsetPositions(anchors.extension.positions, [0, 0, 1]);
+  const basePoints: number[] = [];
+  for (let xCell = 0; xCell < 40; xCell += 1) {
+    for (let yCell = 0; yCell < 20; yCell += 1) {
+      const x = xCell * 0.04 + 0.005;
+      const y = yCell * 0.04 + 0.005;
+      const z = denseSurfaceHeight(xCell, yCell);
+      basePoints.push(x, y, z);
+    }
+  }
+  const basePositions = appendPositions(baseAnchors, new Float32Array(basePoints));
+  const extensionPositions = extensionAnchors;
+  const baseConfidence = new Float32Array(basePositions.length / 3).fill(0.2);
+  baseConfidence.set(confidenceFor(new Float32Array(basePoints)), anchors.base.pointCount);
+  const extensionConfidence = new Float32Array(extensionPositions.length / 3).fill(0.2);
+  return {
+    base: snapshot(basePositions, { confidence: baseConfidence }),
+    extension: snapshot(extensionPositions, { confidence: extensionConfidence }),
+  };
+}
+
+function denseSurfaceHeight(xCell: number, yCell: number): number {
+  return 0.12 * Math.sin(xCell * 0.11) +
+    0.08 * Math.cos(yCell * 0.17) +
+    0.06 * Math.sin((xCell + yCell) * 0.08);
+}
+
+function operationalEnvelopeFor(surface: ScanPointCloudSnapshot) {
+  const analysis = analyzeSurfaceComponents({
+    positions: surface.positions,
+    normals: surface.normals,
+    confidence: surface.confidence,
+    voxelSizeMeters: surface.voxelSizeMeters,
+    minimumConfidence: STRUCTURAL_MIN_CONFIDENCE,
+  });
+  return computeOperationalSurfaceEnvelope(
+    surface.positions,
+    analysis,
+    surface.voxelSizeMeters,
+    boundsFor(surface.positions),
+  );
+}
+
+function setOperationalEnvelopeDiagnostics(surface: ScanPointCloudSnapshot) {
+  const envelope = operationalEnvelopeFor(surface);
+  surface.occupancyEnvelopeBounds = envelope.bounds;
+  surface.occupancyEnvelopeComponentCount = envelope.retainedComponentIds.length;
+  surface.occupancyQuarantinedSurfaceComponentCount = envelope.quarantinedComponentIds.length;
+  surface.occupancyQuarantinedSurfacePointCount = envelope.quarantinedPointCount;
+  surface.occupancyBridgeRescanComponentCount = envelope.rescanBridgeComponentIds.length;
+  surface.occupancyBridgeEvidenceTruncated = envelope.bridgeEvidenceTruncated;
+  return envelope;
+}
+
+function expectOperationalEnvelopeDiagnostics(surface: ScanPointCloudSnapshot): void {
+  const envelope = operationalEnvelopeFor(surface);
+  expect(surface.occupancyEnvelopeBounds).toEqual(envelope.bounds);
+  expect(surface.occupancyEnvelopeComponentCount).toBe(envelope.retainedComponentIds.length);
+  expect(surface.occupancyQuarantinedSurfaceComponentCount).toBe(envelope.quarantinedComponentIds.length);
+  expect(surface.occupancyQuarantinedSurfacePointCount).toBe(envelope.quarantinedPointCount);
+  expect(surface.occupancyBridgeRescanComponentCount).toBe(envelope.rescanBridgeComponentIds.length);
+  expect(surface.occupancyBridgeEvidenceTruncated).toBe(envelope.bridgeEvidenceTruncated);
+}
+
+function appendPositions(...arrays: readonly Float32Array[]): Float32Array {
+  const result = new Float32Array(arrays.reduce((total, array) => total + array.length, 0));
+  let offset = 0;
+  for (const array of arrays) {
+    result.set(array, offset);
+    offset += array.length;
+  }
+  return result;
+}
+
+function pointsFromTriples(points: readonly (readonly [number, number, number])[]): Float32Array {
+  return Float32Array.from(points.flatMap((point) => point));
+}
+
+function continuationParitySnapshot(): ScanPointCloudSnapshot {
+  const pair = denseContinuationPair();
+  const fineFree = new Float32Array([
+    0.05, 0.05, 0.05,
+    0.15, 0.05, 0.05,
+    0.05, 0.35, 0.05,
+    0.25, 0.35, 0.05,
+  ]);
+  const base = snapshot(pair.base.positions, {
+    confidence: pair.base.confidence,
+    normals: pair.base.normals,
+    freeAirPositions: fineFree,
+    occupancyFineVoxelSizeMeters: 0.1,
+    occupancyVoxelSizeMeters: 0.4,
+  });
+  const extension = snapshot(pair.extension.positions, {
+    confidence: pair.extension.confidence,
+    normals: pair.extension.normals,
+    occupancyFineVoxelSizeMeters: 0.1,
+    occupancyVoxelSizeMeters: 0.4,
+  });
+  const result = registerAndMergeScanContinuation(base, extension);
+  if (!result.ok) throw new Error(`Continuation parity fixture did not register: ${result.reason}`);
+  return result.snapshot;
+}
+
+function continuationParityBytes(): Uint8Array {
+  return encodeOccupancySolverArtifact(continuationParitySnapshot(), CONTINUATION_ARTIFACT_OPTIONS);
+}
+
+function weakBridgeContinuation(supportedBridge: boolean): {
+  base: ScanPointCloudSnapshot;
+  extension: ScanPointCloudSnapshot;
+  baseEnvelope: ReturnType<typeof operationalEnvelopeFor>;
+  extensionEnvelope: ReturnType<typeof operationalEnvelopeFor>;
+} {
+  const pair = denseContinuationPair();
+  const weakBridge = pointsFromTriples([
+    [1.405, 0.805, denseSurfaceHeight(35, 20)],
+    [1.445, 0.845, denseSurfaceHeight(36, 21)],
+  ]);
+  const quarantinedIsland = pointsFromTriples([
+    [1.405, 0.905, denseSurfaceHeight(35, 22.5)],
+    [1.445, 0.905, denseSurfaceHeight(36, 22.5)],
+    [1.405, 0.945, denseSurfaceHeight(35, 23.5)],
+    [1.445, 0.945, denseSurfaceHeight(36, 23.5)],
+  ]);
+  const basePositions = appendPositions(pair.base.positions, weakBridge, quarantinedIsland);
+  const baseConfidence = confidenceFor(basePositions);
+  baseConfidence.set(pair.base.confidence);
+  for (let index = pair.base.positions.length / 3; index < pair.base.positions.length / 3 + weakBridge.length / 3; index += 1) {
+    baseConfidence[index] = 0.2;
+  }
+  const base = snapshot(basePositions, { confidence: baseConfidence });
+  const extensionPositions = supportedBridge
+    ? appendPositions(pair.extension.positions, supportedBridgePoints())
+    : appendPositions(pair.extension.positions, pointsFromTriples([
+      [2.10, 0.20, 0.01],
+      [2.10, 0.20, 0.01],
+      [2.10, 0.20, 0.01],
+      [2.10, 0.20, 0.01],
+    ]));
+  const extensionConfidence = confidenceFor(extensionPositions);
+  extensionConfidence.set(pair.extension.confidence);
+  const extension = snapshot(extensionPositions, { confidence: extensionConfidence });
+  const baseEnvelope = setOperationalEnvelopeDiagnostics(base);
+  const extensionEnvelope = setOperationalEnvelopeDiagnostics(extension);
+  return { base, extension, baseEnvelope, extensionEnvelope };
+}
+
+function supportedBridgePoints(): Float32Array {
+  const points: number[] = [];
+  for (let xCell = 32; xCell <= 39; xCell += 1) {
+    for (let yCell = 14; yCell <= 28; yCell += 1) {
+      points.push(
+        xCell * 0.04 + 0.005,
+        yCell * 0.04 + 0.005,
+        denseSurfaceHeight(xCell, yCell),
+      );
+    }
+  }
+  return new Float32Array(points);
 }
 
 function hasVoxel(points: Float32Array, target: readonly [number, number, number], voxel = 0.18): boolean {
@@ -295,6 +483,43 @@ function classifyDecodedOccupancy(
   if (contains(decoded.occupied)) return 'occupied';
   if (contains(decoded.free)) return 'free';
   return 'unknown';
+}
+
+function classifiedGridForBounds(
+  bounds: ScanPointCloudSnapshot['occupancyEnvelopeBounds'],
+  voxelSizeMeters: number,
+  leaveUnknownCell: boolean,
+): { freeAirPositions: Float32Array; occupiedSurfacePositions: Float32Array; unknownCenter: readonly [number, number, number] | null } {
+  if (bounds === null) throw new Error('Expected a merged physical envelope.');
+  const min = bounds.min.map((value) => Math.floor(value / voxelSizeMeters));
+  const max = bounds.max.map((value) => Math.floor(value / voxelSizeMeters));
+  const unknownCell = leaveUnknownCell
+    ? [
+      Math.floor((min[0] + max[0]) / 2),
+      Math.floor((min[1] + max[1]) / 2),
+      Math.floor((min[2] + max[2]) / 2),
+    ] as const
+    : null;
+  const freeAirPositions: number[] = [];
+  const occupiedSurfacePositions: number[] = [];
+  for (let x = min[0]; x <= max[0]; x += 1) {
+    for (let y = min[1]; y <= max[1]; y += 1) {
+      for (let z = min[2]; z <= max[2]; z += 1) {
+        if (unknownCell !== null && x === unknownCell[0] && y === unknownCell[1] && z === unknownCell[2]) continue;
+        const destination = (x + y + z) % 2 === 0 ? freeAirPositions : occupiedSurfacePositions;
+        destination.push((x + 0.5) * voxelSizeMeters, (y + 0.5) * voxelSizeMeters, (z + 0.5) * voxelSizeMeters);
+      }
+    }
+  }
+  return {
+    freeAirPositions: new Float32Array(freeAirPositions),
+    occupiedSurfacePositions: new Float32Array(occupiedSurfacePositions),
+    unknownCenter: unknownCell === null ? null : [
+      (unknownCell[0] + 0.5) * voxelSizeMeters,
+      (unknownCell[1] + 0.5) * voxelSizeMeters,
+      (unknownCell[2] + 0.5) * voxelSizeMeters,
+    ],
+  };
 }
 
 function sortedIndices(values: Int16Array): number[] {
@@ -758,11 +983,7 @@ describe('saved 3D scan continuation', () => {
     expect(result.snapshot.occupancyFineVoxelSizeMeters).toBe(0.1);
     expect(result.snapshot.occupancyCellsSaturated).toBe(true);
     expect(result.snapshot.occupancyDroppedCellUpdates).toBe(12);
-    expect(result.snapshot.occupancyEnvelopeComponentCount).toBe(5);
-    expect(result.snapshot.occupancyQuarantinedSurfaceComponentCount).toBe(3);
-    expect(result.snapshot.occupancyQuarantinedSurfacePointCount).toBe(9);
-    expect(result.snapshot.occupancyBridgeRescanComponentCount).toBe(3);
-    expect(result.snapshot.occupancyBridgeEvidenceTruncated).toBe(true);
+    expectOperationalEnvelopeDiagnostics(result.snapshot);
 
     const decoded = decodeOccupancySolverArtifact(encodeOccupancySolverArtifact(result.snapshot, {
       frameId: 'fine-grid-continuation',
@@ -789,34 +1010,27 @@ describe('saved 3D scan continuation', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.snapshot.occupancyFineVoxelSizeMeters).toBe(0.1);
-    expect(result.snapshot.occupancyVoxelSizeMeters).toBeCloseTo(0.4, 6);
+    const envelope = operationalEnvelopeFor(result.snapshot).bounds;
+    const expectedUnknown = enumerateUnknownCandidatePositions(envelope, 0.1, () => true);
+    expect(result.snapshot.occupancyVoxelSizeMeters).toBeCloseTo(expectedUnknown.occupancyVoxelSizeMeters, 6);
+    expect(result.snapshot.unknownCandidateVoxelCount).toBe(expectedUnknown.unknownCandidateVoxelCount);
     expect(result.snapshot.unknownCandidateVoxelCount).toBe(result.snapshot.unknownCandidatePositions.length / 3);
     expect(result.snapshot.knownFreeVoxelCount).toBe(result.snapshot.freeAirPositions.length / 3);
     expect(result.snapshot.occupiedSurfaceVoxelCount).toBe(result.snapshot.occupiedSurfacePositions.length / 3);
   });
 
   it('keeps the physical envelope when boundary candidates are classified and UNKNOWN remains only at the center', () => {
-    const free: number[] = [];
-    const occupied: number[] = [];
-    for (let x = 0; x <= 20; x += 1) {
-      for (let y = 0; y <= 20; y += 1) {
-        for (let z = 0; z <= 20; z += 1) {
-          if (x === 10 && y === 10 && z === 10) continue;
-          const destination = (x + y + z) % 2 === 0 ? free : occupied;
-          destination.push((x + 0.5) * 0.1, (y + 0.5) * 0.1, (z + 0.5) * 0.1);
-        }
-      }
-    }
-    const envelope = { min: [0, 0, 0] as const, max: [2, 2, 2] as const };
-    const base = snapshot(cloudPoints(), {
-      freeAirPositions: new Float32Array(free),
-      occupiedSurfacePositions: new Float32Array(occupied),
-      unknownCandidatePositions: new Float32Array([1.05, 1.05, 1.05]),
+    const surface = cloudPoints();
+    const envelope = operationalEnvelopeFor(snapshot(surface)).bounds;
+    const classified = classifiedGridForBounds(envelope, 0.1, true);
+    const base = snapshot(surface, {
+      freeAirPositions: classified.freeAirPositions,
+      occupiedSurfacePositions: classified.occupiedSurfacePositions,
       occupancyFineVoxelSizeMeters: 0.1,
       occupancyVoxelSizeMeters: 0.1,
       occupancyEnvelopeBounds: envelope,
     });
-    const extension = snapshot(cloudPoints(), {
+    const extension = snapshot(surface, {
       occupancyFineVoxelSizeMeters: 0.1,
       occupancyVoxelSizeMeters: 0.1,
       occupancyEnvelopeBounds: envelope,
@@ -827,29 +1041,26 @@ describe('saved 3D scan continuation', () => {
     if (!result.ok) return;
     expect(result.snapshot.unknownCandidateVoxelCount).toBe(1);
     expect(result.snapshot.occupancyEnvelopeBounds).toEqual(envelope);
+    const unknown = classified.unknownCenter;
+    expect(unknown).not.toBeNull();
+    if (unknown !== null) {
+      for (let axis = 0; axis < 3; axis += 1) expect(result.snapshot.unknownCandidatePositions[axis]).toBeCloseTo(unknown[axis], 6);
+    }
   });
 
   it('retains the envelope when the candidate volume is fully classified', () => {
-    const free: number[] = [];
-    const occupied: number[] = [];
-    for (let x = 0; x <= 20; x += 1) {
-      for (let y = 0; y <= 20; y += 1) {
-        for (let z = 0; z <= 20; z += 1) {
-          const destination = (x + y + z) % 2 === 0 ? free : occupied;
-          destination.push((x + 0.5) * 0.1, (y + 0.5) * 0.1, (z + 0.5) * 0.1);
-        }
-      }
-    }
-    const envelope = { min: [0, 0, 0] as const, max: [2, 2, 2] as const };
-    const base = snapshot(cloudPoints(), {
-      freeAirPositions: new Float32Array(free),
-      occupiedSurfacePositions: new Float32Array(occupied),
+    const surface = cloudPoints();
+    const envelope = operationalEnvelopeFor(snapshot(surface)).bounds;
+    const classified = classifiedGridForBounds(envelope, 0.1, false);
+    const base = snapshot(surface, {
+      freeAirPositions: classified.freeAirPositions,
+      occupiedSurfacePositions: classified.occupiedSurfacePositions,
       occupancyFineVoxelSizeMeters: 0.1,
       occupancyVoxelSizeMeters: 0.1,
       occupancyEnvelopeBounds: envelope,
       occupancySolverCandidateBelowSurfaceMeters: 2,
     });
-    const extension = snapshot(cloudPoints(), {
+    const extension = snapshot(surface, {
       occupancyFineVoxelSizeMeters: 0.1,
       occupancyVoxelSizeMeters: 0.1,
       occupancyEnvelopeBounds: envelope,
@@ -865,7 +1076,7 @@ describe('saved 3D scan continuation', () => {
     expect(result.snapshot.occupancySolverCandidateBelowSurfaceMeters).toBe(2);
   });
 
-  it('transforms all eight corners of a non-square continuation envelope before union', () => {
+  it('uses the merged stable-surface analysis instead of the transformed envelope union', () => {
     const world = cloudPoints();
     const yaw = Math.PI / 4;
     const translation: readonly [number, number, number] = [0.3, -0.2, 0.4];
@@ -904,25 +1115,24 @@ describe('saved 3D scan continuation', () => {
     const missedCorner = corners[1];
     expect(missedCorner[0]).toBeGreaterThan(Math.max(endpointMin[0], endpointMax[0]) + 0.2);
 
-    const expectedMin = [
+    const unionMin = [
       Math.min(baseEnvelope.min[0], ...corners.map((corner) => corner[0])),
       Math.min(baseEnvelope.min[1], ...corners.map((corner) => corner[1])),
       Math.min(baseEnvelope.min[2], ...corners.map((corner) => corner[2])),
     ];
-    const expectedMax = [
+    const unionMax = [
       Math.max(baseEnvelope.max[0], ...corners.map((corner) => corner[0])),
       Math.max(baseEnvelope.max[1], ...corners.map((corner) => corner[1])),
       Math.max(baseEnvelope.max[2], ...corners.map((corner) => corner[2])),
     ];
-    expect(result.snapshot.occupancyEnvelopeBounds?.min[0]).toBeCloseTo(expectedMin[0], 4);
-    expect(result.snapshot.occupancyEnvelopeBounds?.min[1]).toBeCloseTo(expectedMin[1], 4);
-    expect(result.snapshot.occupancyEnvelopeBounds?.min[2]).toBeCloseTo(expectedMin[2], 4);
-    expect(result.snapshot.occupancyEnvelopeBounds?.max[0]).toBeCloseTo(expectedMax[0], 4);
-    expect(result.snapshot.occupancyEnvelopeBounds?.max[1]).toBeCloseTo(expectedMax[1], 4);
-    expect(result.snapshot.occupancyEnvelopeBounds?.max[2]).toBeCloseTo(expectedMax[2], 4);
+    const expectedEnvelope = operationalEnvelopeFor(result.snapshot).bounds;
+    expect(result.snapshot.occupancyEnvelopeBounds).toEqual(expectedEnvelope);
+    if (expectedEnvelope === null) throw new Error('Merged stable surface did not produce an operational envelope.');
+    expect(expectedEnvelope.min[0]).not.toBeCloseTo(unionMin[0], 3);
+    expect(expectedEnvelope.max[0]).not.toBeCloseTo(unionMax[0], 3);
   });
 
-  it('clears below-surface distance when neither merged scan has an envelope', () => {
+  it('recomputes an envelope from the merged surface when input envelope metadata is missing', () => {
     const base = snapshot(cloudPoints(), {
       occupancyEnvelopeBounds: null,
       occupancySolverCandidateBelowSurfaceMeters: 2,
@@ -935,8 +1145,9 @@ describe('saved 3D scan continuation', () => {
     const result = registerAndMergeScanContinuation(base, extension);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.snapshot.occupancyEnvelopeBounds).toBeNull();
-    expect(result.snapshot.occupancySolverCandidateBelowSurfaceMeters).toBe(0);
+    expect(result.snapshot.occupancyEnvelopeBounds).toEqual(operationalEnvelopeFor(result.snapshot).bounds);
+    expect(result.snapshot.occupancyEnvelopeBounds).not.toBeNull();
+    expect(result.snapshot.occupancySolverCandidateBelowSurfaceMeters).toBe(2);
   });
 
   it('uses the defined transformed envelope and maximum below-surface distance', () => {
@@ -957,12 +1168,128 @@ describe('saved 3D scan continuation', () => {
     expect(result.snapshot.occupancySolverCandidateBelowSurfaceMeters).toBe(2);
   });
 
+  it('recomputes merged component and bridge diagnostics after supported continuation closes the weak gap', () => {
+    const fixture = weakBridgeContinuation(true);
+    expect(fixture.baseEnvelope.quarantinedComponentIds.length).toBeGreaterThan(0);
+    expect(fixture.baseEnvelope.quarantinedPointCount).toBeGreaterThan(0);
+    expect(fixture.baseEnvelope.rescanBridgeComponentIds.length).toBeGreaterThan(0);
+    expect(fixture.extensionEnvelope.rescanBridgeComponentIds).toHaveLength(0);
+
+    const result = registerAndMergeScanContinuation(fixture.base, fixture.extension);
+    expect(result.ok, result.ok ? '' : JSON.stringify(result.diagnostics)).toBe(true);
+    if (!result.ok) return;
+    expectOperationalEnvelopeDiagnostics(result.snapshot);
+    const mergedEnvelope = operationalEnvelopeFor(result.snapshot);
+    const mergedComponents = analyzeSurfaceComponents({
+      positions: result.snapshot.positions,
+      normals: result.snapshot.normals,
+      confidence: result.snapshot.confidence,
+      voxelSizeMeters: result.snapshot.voxelSizeMeters,
+      minimumConfidence: STRUCTURAL_MIN_CONFIDENCE,
+    });
+    expect(result.snapshot.occupancyQuarantinedSurfaceComponentCount, JSON.stringify({
+      retained: mergedEnvelope.retainedComponentIds,
+      quarantined: mergedEnvelope.quarantinedComponentIds,
+      rescan: mergedEnvelope.rescanBridgeComponentIds,
+      components: mergedComponents.components.map(({ id, pointCount, occupiedCellCount, meshReadiness, majorExtentMeters, minorExtentMeters }) =>
+        ({ id, pointCount, occupiedCellCount, meshReadiness, majorExtentMeters, minorExtentMeters })),
+    })).toBe(0);
+    expect(result.snapshot.occupancyBridgeRescanComponentCount).toBe(0);
+    expect(result.snapshot.occupancyBridgeEvidenceTruncated).toBe(false);
+  });
+
+  it('keeps the bridge rescan warning when the continuation adds insufficient support', () => {
+    const fixture = weakBridgeContinuation(false);
+    expect(fixture.baseEnvelope.rescanBridgeComponentIds.length).toBeGreaterThan(0);
+    expect(fixture.extensionEnvelope.quarantinedComponentIds).toHaveLength(0);
+
+    const result = registerAndMergeScanContinuation(fixture.base, fixture.extension);
+    expect(result.ok, result.ok ? '' : JSON.stringify(result.diagnostics)).toBe(true);
+    if (!result.ok) return;
+    expectOperationalEnvelopeDiagnostics(result.snapshot);
+    expect(result.snapshot.occupancyQuarantinedSurfaceComponentCount).toBeGreaterThan(0);
+    expect(result.snapshot.occupancyQuarantinedSurfacePointCount).toBeGreaterThan(fixture.baseEnvelope.quarantinedPointCount);
+    expect(result.snapshot.occupancyBridgeRescanComponentCount).toBeGreaterThan(0);
+  });
+
+  it('discovers quarantined diagnostics only after the registered union becomes disconnected', () => {
+    const anchors = partialOverlapPair(0, 0, [0, 0, 0], 0);
+    const baseAnchors = offsetPositions(anchors.base.positions, [0, 0, 1]);
+    const extensionAnchors = offsetPositions(anchors.extension.positions, [0, 0, 1]);
+    const baseMesh: number[] = [];
+    for (let xCell = 0; xCell < 40; xCell += 1) {
+      for (let yCell = 0; yCell < 20; yCell += 1) {
+        baseMesh.push(
+          xCell * 0.04 + 0.005,
+          yCell * 0.04 + 0.005,
+          denseSurfaceHeight(xCell, yCell),
+        );
+      }
+    }
+    const quarantinedIsland = pointsFromTriples([
+      [3.0, 3.0, 0.01],
+      [3.0, 3.0, 0.015],
+      [3.0, 3.0, 0.01],
+      [3.0, 3.0, 0.015],
+    ]);
+    const basePositions = appendPositions(baseAnchors, new Float32Array(baseMesh));
+    const baseConfidence = new Float32Array(basePositions.length / 3).fill(0.2);
+    baseConfidence.set(confidenceFor(new Float32Array(baseMesh)), anchors.base.pointCount);
+    const base = snapshot(basePositions, { confidence: baseConfidence });
+    const extensionPositions = appendPositions(extensionAnchors, quarantinedIsland);
+    const extensionConfidence = new Float32Array(extensionPositions.length / 3).fill(0.2);
+    extensionConfidence.set(confidenceFor(quarantinedIsland), anchors.extension.pointCount);
+    const extension = snapshot(extensionPositions, { confidence: extensionConfidence });
+    const baseEnvelope = setOperationalEnvelopeDiagnostics(base);
+    const extensionEnvelope = setOperationalEnvelopeDiagnostics(extension);
+    expectOperationalEnvelopeDiagnostics(base);
+    expectOperationalEnvelopeDiagnostics(extension);
+    expect(baseEnvelope.quarantinedComponentIds).toHaveLength(0);
+    expect(baseEnvelope.rescanBridgeComponentIds).toHaveLength(0);
+    expect(extensionEnvelope.quarantinedComponentIds).toHaveLength(0);
+    expect(extensionEnvelope.rescanBridgeComponentIds).toHaveLength(0);
+    expect(base.occupancyQuarantinedSurfacePointCount).toBe(0);
+    expect(extension.occupancyQuarantinedSurfacePointCount).toBe(0);
+
+    const result = registerAndMergeScanContinuation(base, extension);
+    expect(result.ok, result.ok ? '' : JSON.stringify(result.diagnostics)).toBe(true);
+    if (!result.ok) return;
+    expectOperationalEnvelopeDiagnostics(result.snapshot);
+    const mergedEnvelope = operationalEnvelopeFor(result.snapshot);
+    expect(result.snapshot.occupancyQuarantinedSurfaceComponentCount, JSON.stringify({
+      retained: mergedEnvelope.retainedComponentIds,
+      quarantined: mergedEnvelope.quarantinedComponentIds,
+      rescan: mergedEnvelope.rescanBridgeComponentIds,
+    })).toBeGreaterThan(0);
+    const mergedComponents = analyzeSurfaceComponents({
+      positions: result.snapshot.positions,
+      normals: result.snapshot.normals,
+      confidence: result.snapshot.confidence,
+      voxelSizeMeters: result.snapshot.voxelSizeMeters,
+      minimumConfidence: STRUCTURAL_MIN_CONFIDENCE,
+    });
+    expect(mergedComponents.componentCount).toBeGreaterThan(1);
+  });
+
+  it.skipIf(process.env.WRITE_GOLDEN_VECTORS !== '1')('writes the firmware continuation vector from the production merge and encoder', () => {
+    writeFileSync(CONTINUATION_VECTOR_PATH, continuationParityBytes());
+  });
+
+  it('matches the firmware continuation vector and preserves the fine FREE candidate veto', () => {
+    const bytes = continuationParityBytes();
+    const decoded = decodeOccupancySolverArtifact(bytes);
+    expect(classifyDecodedOccupancy(decoded, [0.05, 0.05, 0.05])).toBe('free');
+    expect(decoded.header.voxel_size_m).toBe(0.1);
+    expect(sortedIndices(decoded.free)).toEqual([0, 0, 0, 0, 3, 0, 1, 0, 0, 2, 3, 0]);
+    expect(Array.from(bytes)).toEqual(Array.from(readFileSync(CONTINUATION_VECTOR_PATH)));
+  });
+
   it('keeps a fine FREE veto through artifact encoding where coarse deduplication loses it', () => {
     const free = new Float32Array([
       0.05, 0.05, 0.05,
       0.15, 0.05, 0.05,
-      0.25, 0.05, 0.05,
-      0.35, 0.05, 0.05,
+      0.05, 0.35, 0.05,
+      0.25, 0.35, 0.05,
     ]);
     const base = snapshot(cloudPoints(), {
       freeAirPositions: free,

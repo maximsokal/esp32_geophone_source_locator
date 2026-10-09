@@ -15,6 +15,9 @@ import {
   nearestContinuationPoint,
   type ContinuationSpatialPoint,
 } from './continuationSpatialIndex';
+import { analyzeSurfaceComponents } from './surfaceComponents';
+import { computeOperationalSurfaceEnvelope } from './surfaceOperationalEnvelope';
+import { STRUCTURAL_MIN_CONFIDENCE } from './structuralSurfacePreprocess';
 
 export interface ScanContinuationDiagnostics {
   yawRadians: number;
@@ -1480,7 +1483,7 @@ export function registerAndMergeScanContinuation(
   }
 
   const transform = registration.transform;
-  const occupancyEnvelopeBounds = mergeOccupancyEnvelopeBounds(
+  const occupancyEnvelopeBoundsUnion = mergeOccupancyEnvelopeBounds(
     base.occupancyEnvelopeBounds,
     extension.occupancyEnvelopeBounds,
     transform,
@@ -1489,7 +1492,7 @@ export function registerAndMergeScanContinuation(
   const budgetEstimate = estimateMergedArtifactBudget(
     base,
     extension,
-    occupancyEnvelopeBounds,
+    occupancyEnvelopeBoundsUnion,
     serializedAnnotationBytes(annotations.manualControlPoints, annotations.operatorEdges),
   );
   diagnostics.mergedBudgetEstimate = budgetEstimate;
@@ -1526,6 +1529,20 @@ export function registerAndMergeScanContinuation(
     stable.positions,
     mergeVoxel,
   );
+  const envelopeAnalysis = analyzeSurfaceComponents({
+    positions: stable.positions,
+    normals: stable.normals,
+    confidence: stable.confidence,
+    voxelSizeMeters: mergeVoxel,
+    minimumConfidence: STRUCTURAL_MIN_CONFIDENCE,
+  });
+  const operationalEnvelope = computeOperationalSurfaceEnvelope(
+    stable.positions,
+    envelopeAnalysis,
+    mergeVoxel,
+    boundsFor(stable.positions),
+  );
+  const occupancyEnvelopeBounds = operationalEnvelope.bounds;
   reportContinuationPhase(hooks, 'occupancy');
   const occupancy = mergeOccupancy(base, extension, transform, occupancyEnvelopeBounds);
   if (occupancy === null) {
@@ -1592,12 +1609,11 @@ export function registerAndMergeScanContinuation(
     occupancySolverCandidateBelowSurfaceMeters: occupancyEnvelopeBounds === null
       ? 0
       : Math.max(base.occupancySolverCandidateBelowSurfaceMeters ?? 0, extension.occupancySolverCandidateBelowSurfaceMeters ?? 0),
-    // Capture counters aggregate both acquisitions; they are provenance counts, not deduplicated cells.
-    occupancyEnvelopeComponentCount: base.occupancyEnvelopeComponentCount + extension.occupancyEnvelopeComponentCount,
-    occupancyQuarantinedSurfaceComponentCount: base.occupancyQuarantinedSurfaceComponentCount + extension.occupancyQuarantinedSurfaceComponentCount,
-    occupancyQuarantinedSurfacePointCount: base.occupancyQuarantinedSurfacePointCount + extension.occupancyQuarantinedSurfacePointCount,
-    occupancyBridgeRescanComponentCount: base.occupancyBridgeRescanComponentCount + extension.occupancyBridgeRescanComponentCount,
-    occupancyBridgeEvidenceTruncated: base.occupancyBridgeEvidenceTruncated || extension.occupancyBridgeEvidenceTruncated,
+    occupancyEnvelopeComponentCount: operationalEnvelope.retainedComponentIds.length,
+    occupancyQuarantinedSurfaceComponentCount: operationalEnvelope.quarantinedComponentIds.length,
+    occupancyQuarantinedSurfacePointCount: operationalEnvelope.quarantinedPointCount,
+    occupancyBridgeRescanComponentCount: operationalEnvelope.rescanBridgeComponentIds.length,
+    occupancyBridgeEvidenceTruncated: operationalEnvelope.bridgeEvidenceTruncated,
     occupancyCellsSaturated: Boolean(base.occupancyCellsSaturated) || Boolean(extension.occupancyCellsSaturated),
     occupancyFineVoxelSizeMeters: fineOccupancyVoxelSize(base),
     occupancyDroppedCellUpdates: (base.occupancyDroppedCellUpdates ?? 0) + (extension.occupancyDroppedCellUpdates ?? 0),
