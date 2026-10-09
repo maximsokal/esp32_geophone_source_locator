@@ -7,6 +7,7 @@ import {
   resolveManualPlacementCandidate,
   type ManualPlacementMode,
 } from './manualPlacementSurface';
+import type { I18nKey } from '../i18n';
 
 export type ProjectPoint = readonly [number, number, number];
 export const MAX_MANUAL_CONTROL_POINTS = 256;
@@ -35,7 +36,12 @@ export interface ManualPointPlacementResult {
 }
 
 export class ManualPlacementRejectedError extends Error {
-  constructor(message: string) { super(message); this.name = 'ManualPlacementRejectedError'; }
+  readonly i18nKey?: I18nKey;
+  constructor(message: string, i18nKey?: I18nKey) {
+    super(message);
+    this.name = 'ManualPlacementRejectedError';
+    if (i18nKey !== undefined) this.i18nKey = i18nKey;
+  }
 }
 
 interface CertifiedPlacementToken { position: ProjectPoint; confidence: number; }
@@ -130,7 +136,7 @@ export class ManualControlPointStore {
   add(position: ProjectPoint): ManualControlPoint {
     if (this.points.size >= MAX_MANUAL_CONTROL_POINTS) {
       this.reachedCapacity = true;
-      throw new ManualPlacementRejectedError(MANUAL_ANNOTATION_CAPACITY_MESSAGE);
+      throw new ManualPlacementRejectedError(MANUAL_ANNOTATION_CAPACITY_MESSAGE, 'xr.manual.pin_capacity_reached');
     }
     const point: ManualControlPoint = { id: this.nextId++, position: [position[0], position[1], position[2]] };
     this.points.set(point.id, point); this.order.push(point.id);

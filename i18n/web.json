@@ -939,6 +939,8 @@
     "xr.manual.reason.ray_misses_edge": { "en": "SCAN MORE · reticle ray misses the certified 3D edge.", "uk": "СКАНУЙТЕ ДАЛІ · промінь прицілу не перетинає підтверджене ребро 3D." },
     "xr.manual.reason.scan_not_active": { "en": "Manual point can only be placed during an active AR scan.", "uk": "Точку можна позначити вручну лише під час активного сканування AR." },
     "xr.manual.reason.point_disappeared": { "en": "The selected manual point no longer exists.", "uk": "Вибрана точка більше не існує." },
+    "xr.manual.pin_capacity_reached": { "en": "The manual pin limit has been reached. Remove an existing pin before adding another.", "uk": "Досягнуто ліміт ручних точок. Видаліть наявну точку, перш ніж додавати іншу." },
+    "xr.manual.edge_capacity_reached": { "en": "The manual edge limit has been reached. Remove an existing edge before adding another.", "uk": "Досягнуто ліміт ручних ребер. Видаліть наявне ребро, перш ніж додавати інше." },
     "xr.tag.chip.not_seen": { "en": "{node} not seen", "uk": "{node} не виявлено" },
     "xr.tag.chip.seen": { "en": "{node} seen {inliers}/{minimum}", "uk": "{node}: спостережень {inliers}/{minimum}" },
     "xr.tag.chip.views_seen": { "en": "{node}: independent views {views}/{minimum}", "uk": "{node}: незалежних ракурсів {views}/{minimum}" },

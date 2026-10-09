@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   MANUAL_ANNOTATION_CAPACITY_MESSAGE,
   MAX_MANUAL_CONTROL_POINTS,
+  ManualPlacementRejectedError,
   ManualControlPointStore,
   projectDepthSampleToProject,
   projectPointToXrReference,
 } from '../../src/xr/manualControlPoints';
+import { loadUkrainianCatalog, translate, type I18nKey } from '../../src/i18n';
 
 const identity = new Float32Array([
   1, 0, 0, 0,
@@ -113,5 +115,27 @@ describe('manual control point store', () => {
     expect(store.capacityDiagnostics).toEqual({ count: MAX_MANUAL_CONTROL_POINTS, maximum: MAX_MANUAL_CONTROL_POINTS, capacityReached: true });
     expect(() => store.add([1000, 0, 0])).toThrow(MANUAL_ANNOTATION_CAPACITY_MESSAGE);
     expect(store.size).toBe(MAX_MANUAL_CONTROL_POINTS);
+  });
+
+  it('tags pin-capacity refusals with a key that resolves in English and Ukrainian', async () => {
+    const store = new ManualControlPointStore();
+    for (let index = 0; index < MAX_MANUAL_CONTROL_POINTS; index += 1) store.add([index * 2, 0, 0]);
+
+    let rejection: unknown;
+    try {
+      store.add([1000, 0, 0]);
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toBeInstanceOf(ManualPlacementRejectedError);
+    expect(rejection).toMatchObject({ message: MANUAL_ANNOTATION_CAPACITY_MESSAGE, i18nKey: 'xr.manual.pin_capacity_reached' });
+    const key = (rejection as ManualPlacementRejectedError & { i18nKey: I18nKey }).i18nKey;
+    await loadUkrainianCatalog();
+    const english = translate('en', key);
+    const ukrainian = translate('uk', key);
+    expect(english.trim()).not.toBe('');
+    expect(ukrainian.trim()).not.toBe('');
+    expect(ukrainian).not.toBe(english);
   });
 });

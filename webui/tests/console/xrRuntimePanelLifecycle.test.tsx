@@ -91,7 +91,7 @@ let browserDocument:PanelDocumentStub;
 const validCapabilities={secureContext:true,cameraApi:true,rawXrRgbApi:true,tagReadbackMode:'nonblocking',webGl:true,xrApi:true,immersiveAr:true,wakeLockApi:true,videoInputEnumeration:false,videoInputsEnumerated:false,videoInputCount:null,videoInputLabelsExposed:false,hardwareDepthSensor:'unknown',workerApi:true,sharedMemory:false,wasmThreads:false,webGpu:false};
 
 function runtimeState(phase='idle',patch:Record<string,unknown>={}){
-  return{phase,referenceSpace:null,domOverlay:false,environmentBlendMode:null,frameCount:0,tracking:false,pose:null,scanPaused:false,wakeLockActive:false,wakeLockError:null,depthAvailable:false,depthUsage:null,depthDataFormat:null,depthType:null,depthWidth:null,depthHeight:null,depthFrameCount:0,sampledDepthFrames:0,pointCount:0,retainedPointCount:0,pointCloudVersion:0,keyframeCount:0,polishFrameCount:0,motionRejectedFrames:0,motionState:null,motionQuality:0,linearSpeedMetersPerSecond:0,angularSpeedRadiansPerSecond:0,linearAccelerationMetersPerSecond2:0,coverageGuideActive:false,coverageGuideRenderPoints:0,coverageVisibleCells:0,coverageReadyCells:0,coverageTotalCells:0,coverageTargetIndependentViews:3,coverageAverageConfidence:0,coverageWeakPoints:0,coverageImprovingPoints:0,coverageStablePoints:0,coverageGuideError:null,manualPointCount:0,manualEdgeCount:0,manualPointError:null,performance:{pressure:'low',adaptiveCoverageIntervalMs:550,frameDeltaP95Ms:0,fusionP50Ms:0,fusionP95Ms:0,coverageP95Ms:0,longFrames33Ms:0,longFrames50Ms:0},lightingEstimateAvailable:false,primaryLightIntensity:null,rgbGuidanceAvailable:false,rgbGuidanceWidth:null,rgbGuidanceHeight:null,visualEvidenceFrames:0,monocularPriorStatus:'disabled',depthError:null,error:null,...patch};
+  return{phase,referenceSpace:null,domOverlay:false,environmentBlendMode:null,frameCount:0,tracking:false,pose:null,scanPaused:false,wakeLockActive:false,wakeLockError:null,depthAvailable:false,depthUsage:null,depthDataFormat:null,depthType:null,depthWidth:null,depthHeight:null,depthFrameCount:0,sampledDepthFrames:0,pointCount:0,retainedPointCount:0,pointCloudVersion:0,keyframeCount:0,polishFrameCount:0,motionRejectedFrames:0,motionState:null,motionQuality:0,linearSpeedMetersPerSecond:0,angularSpeedRadiansPerSecond:0,linearAccelerationMetersPerSecond2:0,coverageGuideActive:false,coverageGuideRenderPoints:0,coverageVisibleCells:0,coverageReadyCells:0,coverageTotalCells:0,coverageTargetIndependentViews:3,coverageAverageConfidence:0,coverageWeakPoints:0,coverageImprovingPoints:0,coverageStablePoints:0,coverageGuideError:null,manualPointCount:0,manualEdgeCount:0,manualPointError:null,manualPointErrorKey:null,performance:{pressure:'low',adaptiveCoverageIntervalMs:550,frameDeltaP95Ms:0,fusionP50Ms:0,fusionP95Ms:0,coverageP95Ms:0,longFrames33Ms:0,longFrames50Ms:0},lightingEstimateAvailable:false,primaryLightIntensity:null,rgbGuidanceAvailable:false,rgbGuidanceWidth:null,rgbGuidanceHeight:null,visualEvidenceFrames:0,monocularPriorStatus:'disabled',depthError:null,error:null,...patch};
 }
 function geometry():LocalizationSessionGeometry{return{available:true,pods:[{pod:1,computed:true,leveled:true,computed_at_ms:1234}]};}
 function listing(){return{geometry:geometry()};}
@@ -184,6 +184,14 @@ beforeEach(()=>{
 afterEach(()=>{for(const renderer of [...mounted])unmount(renderer);vi.unstubAllGlobals();vi.clearAllMocks();});
 
 describe('XrRuntimePanel lifecycle',()=>{
+  it('renders a runtime capacity key as a localized AR overlay warning',async()=>{
+    panelHarness.makeState=()=>runtimeState('running',{manualPointErrorKey:'xr.manual.pin_capacity_reached'});
+    const renderer=await mountPanel();
+    const warnings=renderer.root.findAll((node)=>node.props.className==='xr-overlay-warning').map(textOf);
+    expect(warnings).toContain(translate('en','xr.manual.pin_capacity_reached'));
+    unmount(renderer);
+  });
+
   it('attaches only a committed runtime through StrictMode and detaches it on cleanup',async()=>{
     const renderer=await mountPanel({objectId:'OBJ_STRICT',sessionId:'SESSION_STRICT'},true);
     const activated=panelHarness.runtimes.filter((runtime:any)=>runtime.attached);

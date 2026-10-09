@@ -1,4 +1,5 @@
 import { clientDiagnostics } from '../data/clientDiagnostics';
+import type { I18nKey } from '../i18n';
 import { countCoverageQualityBands } from './coverageQuality';
 import { deviceComputeProfilePromise } from './deviceComputeProfile';
 import {
@@ -25,6 +26,7 @@ import {
 } from './liveCoverageRenderer';
 import {
   ManualControlPointStore,
+  ManualPlacementRejectedError,
   type ManualControlPoint,
   type ProjectPoint,
 } from './manualControlPoints';
@@ -156,6 +158,7 @@ export interface WebXrRuntimeState {
   manualPointCount: number;
   manualEdgeCount: number;
   manualPointError: string|null;
+  manualPointErrorKey: I18nKey|null;
   performance: XrPerformanceSnapshot;
   lightingEstimateAvailable: boolean;
   primaryLightIntensity: number|null;
@@ -242,7 +245,7 @@ const initialRuntimeState:WebXrRuntimeState={
   linearSpeedMetersPerSecond:0,angularSpeedRadiansPerSecond:0,linearAccelerationMetersPerSecond2:0,
   coverageGuideActive:false,coverageGuideRenderPoints:0,coverageVisibleCells:0,coverageReadyCells:0,coverageTotalCells:0,
   coverageTargetIndependentViews:3,coverageAverageConfidence:0,coverageWeakPoints:0,coverageImprovingPoints:0,coverageStablePoints:0,
-  coverageGuideError:null,manualPointCount:0,manualEdgeCount:0,manualPointError:null,performance:emptyXrPerformanceSnapshot,
+  coverageGuideError:null,manualPointCount:0,manualEdgeCount:0,manualPointError:null,manualPointErrorKey:null,performance:emptyXrPerformanceSnapshot,
   lightingEstimateAvailable:false,primaryLightIntensity:null,rgbGuidanceAvailable:false,rgbGuidanceWidth:null,rgbGuidanceHeight:null,
   visualEvidenceFrames:0,monocularPriorStatus:'disabled',depthError:null,error:null,
 };
@@ -422,25 +425,33 @@ export class WebXrRuntime{
 
   addSuggestedManualPoint(position:ProjectPoint):{point:ManualControlPoint;created:boolean;snapped:boolean}|null{
     if(this.session===null||this.state.phase!=='running'||this.evidenceFrozen)return null;
-    const stored=this.manualPoints.addOrSnap(position);this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.publish({manualPointCount:this.manualPoints.size,manualPointError:null});return stored;
+    try{
+      const stored=this.manualPoints.addOrSnap(position);this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.publish({manualPointCount:this.manualPoints.size,manualPointError:null,manualPointErrorKey:null});return stored;
+    }catch(error){
+      if(error instanceof ManualPlacementRejectedError&&error.i18nKey!==undefined)this.publish({manualPointError:error.message,manualPointErrorKey:error.i18nKey});
+      throw error;
+    }
   }
   addOperatorEdge(start:ProjectPoint,end:ProjectPoint,confidence=1):OperatorEdge|null{
-    if(this.session===null||this.state.phase!=='running'||this.evidenceFrozen)return null;const stored=this.operatorEdges.add(start,end,confidence);if(stored!==null)this.publish({manualEdgeCount:this.operatorEdges.size});return stored;
+    if(this.session===null||this.state.phase!=='running'||this.evidenceFrozen)return null;const stored=this.operatorEdges.add(start,end,confidence);
+    if(stored!==null)this.publish({manualEdgeCount:this.operatorEdges.size,manualPointError:null,manualPointErrorKey:null});
+    else if(this.operatorEdges.lastAddRejectionReason==='capacity')this.publish({manualPointError:null,manualPointErrorKey:'xr.manual.edge_capacity_reached'});
+    return stored;
   }
 
   /** Robust manual placement only. No screen coordinate is ever converted from one raw depth texel. */
   queueManualPointAtNormalized(u:number,v:number,pointId:number|null=null):void{
-    if(this.session===null||this.state.phase!=='running'||this.evidenceFrozen){this.publish({manualPointError:'Manual point can only be placed during an active AR scan.'});return;}
+    if(this.session===null||this.state.phase!=='running'||this.evidenceFrozen){this.publish({manualPointError:'Manual point can only be placed during an active AR scan.',manualPointErrorKey:null});return;}
     try{
       const preview=previewManualPlacementFromStableSurface(clamp01(u),clamp01(v),this.getStructuralGuideSnapshot(),(point)=>this.projectProjectPointToNormalized(point));
-      const resolution=preview.resolution;if(!resolution.accepted||resolution.position===null){this.publish({manualPointError:resolution.message});return;}
+      const resolution=preview.resolution;if(!resolution.accepted||resolution.position===null){this.publish({manualPointError:resolution.message,manualPointErrorKey:null});return;}
       const stored=pointId===null?this.manualPoints.addOrSnap(resolution.position):this.manualPoints.update(pointId,resolution.position);
-      if(stored===null){this.publish({manualPointError:'The selected manual point no longer exists.'});return;}
-      this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.publish({manualPointCount:this.manualPoints.size,manualPointError:null});
+      if(stored===null){this.publish({manualPointError:'The selected manual point no longer exists.',manualPointErrorKey:null});return;}
+      this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.publish({manualPointCount:this.manualPoints.size,manualPointError:null,manualPointErrorKey:null});
       clientDiagnostics.info(pointId===null?'XR_MANUAL_CERTIFIED_POINT_ADDED':'XR_MANUAL_CERTIFIED_POINT_MOVED',{id:stored.id,mode:resolution.mode,confidence:Number(resolution.confidence.toFixed(3)),x:Number(stored.position[0].toFixed(3)),y:Number(stored.position[1].toFixed(3)),z:Number(stored.position[2].toFixed(3))});
-    }catch(error){this.publish({manualPointError:errorText(error)});clientDiagnostics.warn('XR_MANUAL_CERTIFIED_POINT_FAILED',error);}
+    }catch(error){this.publish({manualPointError:errorText(error),manualPointErrorKey:error instanceof ManualPlacementRejectedError?error.i18nKey??null:null});clientDiagnostics.warn('XR_MANUAL_CERTIFIED_POINT_FAILED',error);}
   }
-  undoLastManualPoint():void{if(this.evidenceFrozen)return;const removed=this.manualPoints.removeLast();if(removed===null)return;this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.publish({manualPointCount:this.manualPoints.size,manualPointError:null});clientDiagnostics.info('XR_MANUAL_POINT_UNDO',{id:removed.id,remaining:this.manualPoints.size});void clientDiagnostics.flush();}
+  undoLastManualPoint():void{if(this.evidenceFrozen)return;const removed=this.manualPoints.removeLast();if(removed===null)return;this.lastCoverageGpuUploadMs=Number.NEGATIVE_INFINITY;this.publish({manualPointCount:this.manualPoints.size,manualPointError:null,manualPointErrorKey:null});clientDiagnostics.info('XR_MANUAL_POINT_UNDO',{id:removed.id,remaining:this.manualPoints.size});void clientDiagnostics.flush();}
 
   async start():Promise<void>{
     if(this.disposed||!this.attached||this.detachPromise!==null||this.fatalFrameTeardown||this.session!==null||this.state.phase==='starting')return;clientDiagnostics.info('XR_START_REQUEST');void clientDiagnostics.flush();
