@@ -217,20 +217,22 @@ static void test_runtime_api_never_pulses(void)
 
 static void test_shutdown_is_one_exact_pulse_after_button_stop(void)
 {
-    reset_model(0U);
-    assert(power_control_init() == ESP_OK);
-    s_trace[0] = '\0';
-    s_adapter_stop_calls = 0U;
+    for (unsigned cycle = 0U; cycle < 32U; ++cycle) {
+        reset_model(0U);
+        assert(power_control_init() == ESP_OK);
+        s_trace[0] = '\0';
+        s_adapter_stop_calls = 0U;
 
-    power_control_shutdown();
+        power_control_shutdown();
 
-    assert(s_adapter_stop_calls == 1U);
-    /* Button stopped first, then exactly one HIGH..LOW pulse. */
-    assert(strcmp(s_trace, "sHL") == 0);
-    assert(s_pulses == 1U);
-    assert(s_last_pulse_ms == EXPECTED_PULSE_MS);
-    assert(!s_pad_high);
-    assert(s_register_level == 0U);
+        assert(s_adapter_stop_calls == 1U);
+        /* Button stopped first, then exactly one HIGH..LOW pulse. */
+        assert(strcmp(s_trace, "sHL") == 0);
+        assert(s_pulses == 1U);
+        assert(s_last_pulse_ms == EXPECTED_PULSE_MS);
+        assert(!s_pad_high);
+        assert(s_register_level == 0U);
+    }
 }
 
 /* MAX-183: a firmware shutdown request (critical battery) uses the same

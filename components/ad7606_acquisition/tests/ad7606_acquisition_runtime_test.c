@@ -1070,6 +1070,25 @@ static void assert_fully_released(void)
 
 /* ---- tests ---- */
 
+static void test_repeated_start_stop_and_error_cycles_release_everything(void)
+{
+    for (unsigned iteration = 0U; iteration < 40U; ++iteration) {
+        reset_world();
+        if ((iteration % 2U) == 0U) {
+            s_driver_init_result = ESP_ERR_NOT_FOUND;
+            assert(ad7606_acquisition_start() == ESP_ERR_NOT_FOUND);
+        } else {
+            script(EV_TICK, 1U);
+            script(EV_STOP, 0U);
+            assert(ad7606_acquisition_start() == ESP_OK);
+            assert(s_reads == 1U && s_pushes == 1U);
+        }
+        assert(s_driver_deinits == 1U);
+        assert(s_reads_after_deinit == 0U);
+        assert_fully_released();
+    }
+}
+
 static void test_run_samples_then_stop_releases_everything(void)
 {
     reset_world();
@@ -2125,6 +2144,7 @@ static void test_diag_integer_accumulator_contract(void)
 
 int main(void)
 {
+    test_repeated_start_stop_and_error_cycles_release_everything();
     test_diag_integer_accumulator_contract();
     test_diag_logging_virtual_time_characterization();
     test_serial_diag_rate_limit_boundary();

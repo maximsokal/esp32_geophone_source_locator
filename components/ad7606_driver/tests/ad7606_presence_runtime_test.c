@@ -308,6 +308,24 @@ static void test_stop_is_idempotent(void)
     assert(!ad7606_driver_presence_is_healthy());
 }
 
+static void test_repeated_start_stop_and_timeout_releases_isr(void)
+{
+    reset_world(BUSY_CONVERTING, -1);
+    for (unsigned cycle = 0U; cycle < 32U; ++cycle) {
+        s_pulse_budget = (cycle % 2U) == 0U ? -1 : 2;
+        if ((cycle % 2U) == 0U) {
+            assert(ad7606_driver_presence_monitor_start() == ESP_OK);
+            ad7606_driver_presence_monitor_stop();
+        }
+        else {
+            assert(ad7606_driver_presence_monitor_start() == ESP_ERR_NOT_FOUND);
+        }
+        assert(s_remove_calls == cycle + 1U);
+        assert(s_disable_calls == cycle + 1U);
+        assert_monitor_released();
+    }
+}
+
 static void test_external_busy_isr_uses_acquisition_pulses_without_gpio_claim(void)
 {
     reset_world(BUSY_CONVERTING, -1);
@@ -332,6 +350,7 @@ int main(void)
 {
     /* A service installed by another driver is accepted on first use. */
     s_install_result = ESP_ERR_INVALID_STATE;
+    test_repeated_start_stop_and_timeout_releases_isr();
     test_converting_adc_is_detected_and_healthy();
     assert(s_install_calls == 1U);
     assert(s_install_flags == ESP_INTR_FLAG_IRAM);

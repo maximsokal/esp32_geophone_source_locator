@@ -27,6 +27,7 @@ static unsigned s_writes;
 static uint8_t s_last_write_reg;
 static uint8_t s_last_write_bytes[2];
 static uint8_t s_limit_stuck_reg;
+static uint8_t s_short_read_reg;
 
 static void reset_chip(void)
 {
@@ -41,6 +42,7 @@ static void reset_chip(void)
     s_get_handles_err = ESP_OK;
     s_writes = 0U;
     s_limit_stuck_reg = 0U;
+    s_short_read_reg = 0xFFU;
     /* Power-on default alert limits: all disabled. */
     for (uint8_t r = 0x07U; r <= 0x0CU; ++r) {
         s_regs[r] = 0x7FF8U;
@@ -116,6 +118,9 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
         return ESP_ERR_INVALID_STATE; /* IDF 5.5 wrapper NACK */
     }
     data[0] = (uint8_t)(s_regs[mem_address] >> 8);
+    if (mem_address == s_short_read_reg) {
+        return ESP_ERR_INVALID_RESPONSE; /* adapter could not supply byte 2 */
+    }
     data[1] = (uint8_t)(s_regs[mem_address] & 0xFFU);
     return ESP_OK;
 }
@@ -286,6 +291,75 @@ static void test_read_channels_addressing_scaling_and_signs(void)
     assert(near(ch[0].shunt_voltage_v, 0.010f));
 }
 
+static void test_read_channels_match_independent_conversion_oracle(void)
+{
+    reset_chip();
+    ina3221_driver_t driver;
+    open_ok(&driver);
+
+    const int shunt_count_fixture[INA3221_POLICY_CHANNEL_COUNT] = {
+        -123, 0, -45
+    };
+    const unsigned bus_count_fixture[INA3221_POLICY_CHANNEL_COUNT] = {
+        487U, 37U, 571U
+    };
+    const float current_polarity[INA3221_POLICY_CHANNEL_COUNT] = {
+        1.0f, -1.0f, -1.0f
+    };
+    for (size_t channel = 0U; channel < INA3221_POLICY_CHANNEL_COUNT; ++channel) {
+        const uint8_t shunt_register = (uint8_t)(0x01U + (2U * channel));
+        const uint8_t bus_register = (uint8_t)(0x02U + (2U * channel));
+        s_regs[shunt_register] = shunt_counts(shunt_count_fixture[channel]);
+        s_regs[bus_register] = bus_counts(bus_count_fixture[channel]);
+    }
+
+    ina3221_channel_sample_t channels[INA3221_POLICY_CHANNEL_COUNT];
+    assert(ina3221_driver_read_channels(&driver, channels) == ESP_OK);
+    for (size_t channel = 0U; channel < INA3221_POLICY_CHANNEL_COUNT; ++channel) {
+        /* INA3221 LSBs from the data format: 40 uV shunt, 8 mV bus,
+         * 0.1 ohm shunt; rail channels reverse the measured current sign. */
+        const float expected_shunt_v = (float)shunt_count_fixture[channel] * 0.000040f;
+        const float expected_bus_v = (float)bus_count_fixture[channel] * 0.008f;
+        const float expected_current_a = expected_shunt_v / 0.1f * current_polarity[channel];
+        assert(channels[channel].valid);
+        assert(near(channels[channel].shunt_voltage_v, expected_shunt_v));
+        assert(near(channels[channel].bus_voltage_v, expected_bus_v));
+        assert(near(channels[channel].current_a, expected_current_a));
+    }
+}
+
+static void test_short_read_invalidates_the_previous_snapshot(void)
+{
+    for (unsigned cycle = 0U; cycle < 32U; ++cycle) {
+        reset_chip();
+        ina3221_driver_t driver;
+        open_ok(&driver);
+        s_regs[0x01] = shunt_counts(125);
+        s_regs[0x02] = bus_counts(500U);
+        s_regs[0x03] = shunt_counts(-75);
+        s_regs[0x04] = bus_counts(625U);
+        s_regs[0x05] = shunt_counts(25);
+        s_regs[0x06] = bus_counts(600U);
+
+        ina3221_channel_sample_t channels[INA3221_POLICY_CHANNEL_COUNT];
+        assert(ina3221_driver_read_channels(&driver, channels) == ESP_OK);
+        for (size_t channel = 0U; channel < INA3221_POLICY_CHANNEL_COUNT; ++channel) {
+            assert(channels[channel].valid);
+        }
+
+        s_short_read_reg = 0x01U;
+        assert(ina3221_driver_read_channels(&driver, channels) == ESP_ERR_INVALID_RESPONSE);
+        for (size_t channel = 0U; channel < INA3221_POLICY_CHANNEL_COUNT; ++channel) {
+            assert(!channels[channel].valid);
+            assert(near(channels[channel].shunt_voltage_v, 0.0f));
+            assert(near(channels[channel].bus_voltage_v, 0.0f));
+            assert(near(channels[channel].current_a, 0.0f));
+        }
+        ina3221_driver_close(&driver);
+        assert(!driver.ready);
+    }
+}
+
 static void test_read_channels_propagates_any_bus_error(void)
 {
     /* 6 register reads per sample; each failing position aborts. */
@@ -389,6 +463,8 @@ static void test_alert_flags(void)
 
 int main(void)
 {
+    test_read_channels_match_independent_conversion_oracle();
+    test_short_read_invalidates_the_previous_snapshot();
     test_open_writes_exact_config_and_verifies();
     test_open_fails_closed_on_every_bus_error();
     test_nack_is_classified_then_retries_probe_only_until_ack();

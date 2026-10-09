@@ -70,6 +70,8 @@ typedef struct {
     int16_t gravity_ref_mg[3];
     uint8_t imu_cal_state;
     uint16_t imu_cal_generation;
+    bool delayed_assign_pending;
+    nrf_upstream_assign_t delayed_assign;
     unsigned height_reference_captures;
     uint16_t captured_generation[8];
     unsigned imu_calibration_requests;
@@ -111,6 +113,10 @@ static bool s_reconcile_stop_waiting;
 static jmp_buf s_reconcile_stop_return;
 static unsigned s_malformed_cs_results_remaining;
 static unsigned s_malformed_cs_results_seen;
+static unsigned s_malformed_sensor_snapshots_remaining;
+static unsigned s_malformed_sensor_snapshots_seen;
+static bool s_delay_next_assignment_confirmation;
+static unsigned s_delayed_assignment_confirmations;
 static unsigned s_cs_execute_count;
 static unsigned s_task_create_count;
 static unsigned s_task_delete_count;
@@ -408,6 +414,12 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
         }
         ++node->status_reads;
         assert(nrf_upstream_protocol_encode_status(&status, data) == NRF_UPSTREAM_RESULT_OK);
+        if (node->delayed_assign_pending) {
+            assert(nrf_bootstrap_process_assign(&node->bootstrap, &node->delayed_assign) ==
+                   NRF_UPSTREAM_RESULT_OK);
+            node->delayed_assign_pending = false;
+            ++s_delayed_assignment_confirmations;
+        }
         return ESP_OK;
     }
     if (data_len == NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH) {
@@ -438,6 +450,12 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
             data[111] = (uint8_t)(crc >> 8U);
             memset(&data[112], 0xFF, data_len - 112U);
         }
+        if (s_malformed_sensor_snapshots_remaining > 0U) {
+            data[32] = 0xFFU;
+            data[33] = 0xFFU;
+            --s_malformed_sensor_snapshots_remaining;
+            ++s_malformed_sensor_snapshots_seen;
+        }
         return ESP_OK;
     }
     assert(false);
@@ -455,7 +473,13 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
     if (data_len == NRF_UPSTREAM_PROTOCOL_ASSIGN_LENGTH) {
         nrf_upstream_assign_t assign;
         assert(nrf_upstream_protocol_decode_assign(data, data_len, &assign) == NRF_UPSTREAM_RESULT_OK);
-        (void)nrf_bootstrap_process_assign(&node->bootstrap, &assign);
+        if (s_delay_next_assignment_confirmation) {
+            s_delay_next_assignment_confirmation = false;
+            node->delayed_assign = assign;
+            node->delayed_assign_pending = true;
+        } else {
+            (void)nrf_bootstrap_process_assign(&node->bootstrap, &assign);
+        }
         return ESP_OK;
     }
     if (data_len == NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH) {
@@ -697,6 +721,12 @@ static void script_waits(size_t count, uint32_t ms)
 static nrf_topology_snapshot_t s_seen;
 static nrf_remote_sensor_cache_t s_seen_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static uint8_t s_seen_tca_control;
+static nrf_topology_snapshot_t s_initial_topology;
+static nrf_remote_sensor_cache_t s_initial_sensor_cache;
+static nrf_remote_sensor_cache_t s_unplug_sensor_cache;
+static nrf_remote_sensor_cache_t s_rejoin_sensor_cache;
+static nrf_remote_sensor_cache_t s_malformed_sensor_cache_before;
+static nrf_remote_sensor_cache_t s_malformed_sensor_cache_after;
 
 static void capture(void)
 {
@@ -707,6 +737,13 @@ static void capture(void)
     for (uint8_t c = 0U; c < NRF_TOPOLOGY_REMOTE_COUNT; ++c) {
         assert(nrf_topology_service_get_sensor_snapshot(c, &s_seen_cache[c]) == ESP_OK);
     }
+}
+
+static void capture_initial_topology(void)
+{
+    capture();
+    s_initial_topology = s_seen;
+    s_initial_sensor_cache = s_seen_cache[5];
 }
 
 static void unplug_channel5(void)
@@ -1289,6 +1326,7 @@ static void capture_unplug_snapshot(void)
 {
     capture();
     s_unplug_snapshot = s_seen;
+    s_unplug_sensor_cache = s_seen_cache[5];
 }
 
 static void replug_channel5_and_refresh(void)
@@ -1301,6 +1339,25 @@ static void capture_rejoin_snapshot(void)
 {
     capture();
     s_rejoin_snapshot = s_seen;
+    s_rejoin_sensor_cache = s_seen_cache[5];
+}
+
+static void request_malformed_sensor_snapshot(void)
+{
+    s_malformed_sensor_snapshots_remaining = 1U;
+    assert(nrf_topology_service_request_sensor_refresh(2U) == ESP_OK);
+}
+
+static void capture_sensor_cache_before_malformed_snapshot(void)
+{
+    capture();
+    s_malformed_sensor_cache_before = s_seen_cache[2];
+}
+
+static void capture_sensor_cache_after_malformed_snapshot(void)
+{
+    capture();
+    s_malformed_sensor_cache_after = s_seen_cache[2];
 }
 
 static void test_stack_phase_tracking_and_cs_cycle_path(void)
@@ -1485,6 +1542,10 @@ static void reset_world(void)
     s_reconcile_stop_waiting = false;
     s_malformed_cs_results_remaining = 0U;
     s_malformed_cs_results_seen = 0U;
+    s_malformed_sensor_snapshots_remaining = 0U;
+    s_malformed_sensor_snapshots_seen = 0U;
+    s_delay_next_assignment_confirmation = false;
+    s_delayed_assignment_confirmations = 0U;
     s_cs_execute_count = 0U;
     s_in_height_calibration_handler = false;
     s_height_reference_writes = 0U;
@@ -1584,6 +1645,38 @@ static void test_full_topology_is_assigned_one_hot(void)
     assert(s_tca_writes >= 2U * NRF_TOPOLOGY_REMOTE_COUNT);
 }
 
+static void test_assignment_confirmation_race_preserves_node_mapping(void)
+{
+    reset_world();
+    s_tca_present = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    node_boot(&s_nodes[1], 2U, 0x22U);
+    node_boot(&s_nodes[2], 5U, 0x33U);
+    s_delay_next_assignment_confirmation = true;
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    assert(s_delayed_assignment_confirmations == 1U);
+    assert(s_seen.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_seen.remotes[2].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_seen.remotes[5].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_seen.main.node_id == NRF_TOPOLOGY_MAIN_NODE_ID);
+    assert(s_seen.remotes[2].node_id == 3U && s_seen.remotes[5].node_id == 6U);
+    assert(memcmp(s_seen.main.hardware_id, s_nodes[0].hardware_id,
+                  sizeof(s_nodes[0].hardware_id)) == 0);
+    assert(memcmp(s_seen.remotes[2].hardware_id, s_nodes[1].hardware_id,
+                  sizeof(s_nodes[1].hardware_id)) == 0);
+    assert(memcmp(s_seen.remotes[5].hardware_id, s_nodes[2].hardware_id,
+                  sizeof(s_nodes[2].hardware_id)) == 0);
+    assert(s_seen.main.assignment_request_id != 0U);
+    assert(s_seen.remotes[2].assignment_request_id != s_seen.main.assignment_request_id);
+    assert(s_seen.remotes[5].assignment_request_id != s_seen.remotes[2].assignment_request_id);
+    assert(s_collisions == 0U && s_tca_control == 0x00U);
+}
+
 static void test_remote_snapshot_v1_and_v2_cache_read_path(void)
 {
     reset_world();
@@ -1611,6 +1704,38 @@ static void test_remote_snapshot_v1_and_v2_cache_read_path(void)
     assert(s_seen_cache[5].sensor.relative_z_mm == -2467);
     assert(s_seen_cache[5].sensor.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
     assert(s_seen_cache[5].sensor.reference_generation == 91U);
+}
+
+static void test_malformed_snapshot_marks_cached_sample_stale(void)
+{
+    reset_world();
+    s_tca_present = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    node_boot(&s_nodes[1], 2U, 0x22U);
+    s_nodes[1].snapshot_result = NRF_UPSTREAM_SENSOR_RESULT_OK;
+    s_nodes[1].relative_z_mm = -1350;
+    s_nodes[1].reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+    s_nodes[1].reference_generation = 12U;
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture_sensor_cache_before_malformed_snapshot);
+    script(EV_ACTION, 0U, request_malformed_sensor_snapshot);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture_sensor_cache_after_malformed_snapshot);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    assert(s_malformed_sensor_snapshots_seen == 1U);
+    assert(s_malformed_sensor_cache_before.response_valid);
+    assert(s_malformed_sensor_cache_before.topology_current);
+    assert(s_malformed_sensor_cache_before.sensor.relative_z_mm == -1350);
+    assert(s_malformed_sensor_cache_after.state == NRF_SENSOR_CACHE_PROTOCOL_ERROR);
+    assert(s_malformed_sensor_cache_after.last_attempt_state == NRF_SENSOR_CACHE_PROTOCOL_ERROR);
+    assert(!s_malformed_sensor_cache_after.topology_current);
+    /* Keep the previous sample as history, but mark it unusable for the current topology. */
+    assert(s_malformed_sensor_cache_after.response_valid);
+    assert(s_malformed_sensor_cache_after.sensor.relative_z_mm == -1350);
+    assert(s_tca_control == 0x00U);
 }
 
 static void test_without_tca_only_main_is_managed(void)
@@ -1642,12 +1767,14 @@ static void test_unplug_and_replug_between_reconciles(void)
     node_boot(&s_nodes[2], 5U, 0x33U);
 
     script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture_initial_topology);
     script(EV_ACTION, 0U, unplug_channel5);
     script(EV_WAIT_MS, 5000U, NULL);    /* periodic reconcile */
-    script(EV_ACTION, 0U, capture);
+    script(EV_ACTION, 0U, capture_unplug_snapshot);
     script(EV_ACTION, 0U, replug_channel5);
     script(EV_WAIT_MS, 5000U, NULL);
     script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture_rejoin_snapshot);
     script(EV_STOP, 0U, NULL);
 
     assert(sensor_bus_lock_init() == ESP_OK);
@@ -1655,8 +1782,17 @@ static void test_unplug_and_replug_between_reconciles(void)
     nrf_topology_service_stop();
 
     /* After the unplug the channel read as absent, not as a fault. */
-    assert(s_seen.remotes[5].state == NRF_TOPOLOGY_NODE_ABSENT);
-    assert(s_seen.remotes[2].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_unplug_snapshot.remotes[5].state == NRF_TOPOLOGY_NODE_ABSENT);
+    assert(s_unplug_snapshot.remotes[2].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_initial_sensor_cache.identity_valid && s_initial_sensor_cache.topology_current);
+    assert(s_unplug_snapshot.generation > s_initial_topology.generation);
+    assert(s_rejoin_snapshot.generation > s_unplug_snapshot.generation);
+    assert(!s_unplug_sensor_cache.identity_valid);
+    assert(!s_unplug_sensor_cache.response_valid);
+    assert(s_rejoin_snapshot.remotes[5].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_rejoin_snapshot.remotes[5].assignment_request_id !=
+           s_initial_topology.remotes[5].assignment_request_id);
+    assert(s_rejoin_sensor_cache.identity_valid && s_rejoin_sensor_cache.topology_current);
     /* A periodic reconcile without sensor work also leaves the mux closed. */
     assert(s_seen_tca_control == 0x00U);
     /* The re-plugged cold node was found at 0x30 and assigned again. */
@@ -1706,13 +1842,15 @@ int main(void)
 {
     test_api_guards_when_stopped();
     test_lifecycle_failures_mid_reconcile_and_repeated_restart();
+    test_assignment_confirmation_race_preserves_node_mapping();
+    test_malformed_snapshot_marks_cached_sample_stale();
+    test_unplug_and_replug_between_reconciles();
     test_full_topology_is_assigned_one_hot();
     test_remote_snapshot_v1_and_v2_cache_read_path();
     test_height_calibration_worker_queue_and_generation_wrap();
     test_height_calibration_without_remotes();
     test_imu_calibration_worker_dispatch_and_v3_cache();
     test_without_tca_only_main_is_managed();
-    test_unplug_and_replug_between_reconciles();
     test_stack_phase_tracking_and_cs_cycle_path();
     test_error_recovery_stack_hwm_and_long_error_name();
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)

@@ -497,6 +497,28 @@
       "libraries": ["m"]
     },
     {
+      "name": "r4a_power_ina_ad7606_integration",
+      "sources": [
+        "components/power_control/power_output.c",
+        "components/power_control/power_control.c",
+        "components/ina3221_monitor/ina3221_driver.c",
+        "components/ina3221_monitor/ina3221_limits.c",
+        "components/ina3221_monitor/ina3221_policy.c",
+        "components/ad7606_acquisition/ad7606_power_policy.c",
+        "tests/host/r4a_power_ina_ad7606_integration_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/r4a_power_ina_ad7606",
+        "components/power_control",
+        "components/power_control/include",
+        "components/sensor_bus/include",
+        "components/ina3221_monitor",
+        "components/ina3221_monitor/include",
+        "components/ad7606_acquisition/include"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "main_barometer",
       "sources": [
         "components/main_barometer/main_barometer.c",
