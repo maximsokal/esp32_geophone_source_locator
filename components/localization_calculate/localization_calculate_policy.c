@@ -864,6 +864,10 @@ bool localization_calculate_xcorr_relative_delay(
 }
 
 
+/* Saturation omits sparse-grid cells, so those unlisted cells classify UNKNOWN
+ * and candidates there stay admissible; a listed FREE voxel remains evidence
+ * and still rejects its candidate. Saturation only weakens constraints where
+ * occupancy evidence was dropped. */
 bool localization_calculate_scan_candidate_allowed(
     const localization_point3d_t *candidate,
     void *context

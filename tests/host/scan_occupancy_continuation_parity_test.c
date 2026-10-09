@@ -2,9 +2,98 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "localization_calculate_policy.h"
 #include "scan_occupancy.h"
+
+static uint32_t test_crc32(const uint8_t *data, size_t length)
+{
+    uint32_t crc = UINT32_C(0xffffffff);
+    for (size_t index = 0U; index < length; ++index) {
+        crc ^= data[index];
+        for (unsigned bit = 0U; bit < 8U; ++bit) {
+            const uint32_t mask = (uint32_t)-(int32_t)(crc & 1U);
+            crc = (crc >> 1U) ^ (UINT32_C(0xedb88320) & mask);
+        }
+    }
+    return crc ^ UINT32_C(0xffffffff);
+}
+
+static void write_u16(uint8_t *data, size_t offset, uint16_t value)
+{
+    data[offset] = (uint8_t)value;
+    data[offset + 1U] = (uint8_t)(value >> 8U);
+}
+
+static void write_u32(uint8_t *data, size_t offset, uint32_t value)
+{
+    data[offset] = (uint8_t)value;
+    data[offset + 1U] = (uint8_t)(value >> 8U);
+    data[offset + 2U] = (uint8_t)(value >> 16U);
+    data[offset + 3U] = (uint8_t)(value >> 24U);
+}
+
+static uint8_t *make_saturated_artifact(size_t *length_out)
+{
+    static const char header[] =
+        "{\"schema\":2,\"frame_id\":\"saturated-test\",\"voxel_size_m\":1,"
+        "\"below_surface_m\":0,\"envelope\":null,\"free_count\":1,"
+        "\"occupied_count\":1,\"saturated\":true,\"created_at_ms\":1,"
+        "\"registration\":{\"frame\":\"project_z_up\",\"source\":\"test\","
+        "\"geometry_computed_at_ms\":123456,\"sensor_to_scan\":[1,0,0,0,"
+        "0,1,0,0,0,0,1,0,0,0,0,1],\"residual_m\":0,\"threshold_m\":0.05}}";
+    static const int16_t cells[][3] = {
+        { 0, 0, 0 },
+        { 2, 0, 0 },
+    };
+    const size_t header_length = sizeof(header) - 1U;
+    const size_t payload_length = 6U * (sizeof(cells) / sizeof(cells[0]));
+    const size_t length = 20U + header_length + payload_length;
+    uint8_t *data = calloc(length, sizeof(*data));
+    assert(data != NULL);
+
+    memcpy(data, "GOCCUPY1", 8U);
+    write_u32(data, 8U, (uint32_t)header_length);
+    write_u32(data, 12U, (uint32_t)payload_length);
+    memcpy(data + 20U, header, header_length);
+    size_t offset = 20U + header_length;
+    for (size_t cell = 0U; cell < sizeof(cells) / sizeof(cells[0]); ++cell) {
+        for (size_t axis = 0U; axis < 3U; ++axis) {
+            write_u16(data, offset, (uint16_t)cells[cell][axis]);
+            offset += 2U;
+        }
+    }
+    write_u32(data, 16U, test_crc32(data + 20U, length - 20U));
+    *length_out = length;
+    return data;
+}
+
+static void test_saturated_artifact_preserves_listed_evidence(void)
+{
+    size_t length = 0U;
+    uint8_t *data = make_saturated_artifact(&length);
+    scan_occupancy_t occupancy;
+    assert(scan_occupancy_parse(data, length, &occupancy) == ESP_OK);
+    free(data);
+
+    assert(occupancy.saturated);
+    assert(occupancy.free_count == 1U && occupancy.occupied_count == 1U);
+    assert(scan_occupancy_registration_usable(&occupancy, 123456U));
+
+    const double omitted[3] = { 1.5, 0.5, 0.5 };
+    const double listed_free[3] = { 0.5, 0.5, 0.5 };
+    const double listed_occupied[3] = { 2.5, 0.5, 0.5 };
+    assert(scan_occupancy_classify(&occupancy, omitted) == SCAN_OCCUPANCY_UNKNOWN);
+    assert(scan_occupancy_classify(&occupancy, listed_free) == SCAN_OCCUPANCY_FREE);
+    assert(scan_occupancy_classify(&occupancy, listed_occupied) == SCAN_OCCUPANCY_OCCUPIED);
+
+    const localization_point3d_t omitted_candidate = { 1.5, 0.5, 0.5 };
+    const localization_point3d_t free_candidate = { 0.5, 0.5, 0.5 };
+    assert(localization_calculate_scan_candidate_allowed(&omitted_candidate, &occupancy));
+    assert(!localization_calculate_scan_candidate_allowed(&free_candidate, &occupancy));
+    scan_occupancy_free(&occupancy);
+}
 
 static uint8_t *read_vector(size_t *length_out)
 {
@@ -95,6 +184,7 @@ static void test_occupied_candidates_survive_project_frame_decode(void)
 
 int main(void)
 {
+    test_saturated_artifact_preserves_listed_evidence();
     size_t length = 0U;
     uint8_t *data = read_vector(&length);
     scan_occupancy_t occupancy;
