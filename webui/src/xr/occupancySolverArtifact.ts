@@ -34,6 +34,8 @@ const FIXED_HEADER_BYTES = 20;
 export const OCCUPANCY_ARTIFACT_SCHEMA = 2;
 export const LEGACY_OCCUPANCY_ARTIFACT_SCHEMA = 1;
 export const MAX_OCCUPANCY_ARTIFACT_BYTES = 1024 * 1024;
+/* Sanity bound only: production clamps fine voxels to 0.08..0.50 m, fixtures may use coarser grids. */
+const MAX_OCCUPANCY_VOXEL_SIZE_METERS = 10;
 const INT16_MIN = -32768;
 const INT16_MAX = 32767;
 
@@ -148,6 +150,18 @@ function voxelIndices(positions: Float32Array, voxelSize: number, label: string)
   return result;
 }
 
+function assertUniqueVoxelKeys(free: Int16Array, occupied: Int16Array): void {
+  const seen = new Set<number>();
+  for (const values of [free, occupied]) {
+    for (let index = 0; index < values.length; index += 3) {
+      const key = (((values[index] + 32768) * 65536 + (values[index + 1] + 32768)) * 65536) +
+        values[index + 2] + 32768;
+      if (seen.has(key)) throw new Error('Duplicate occupancy voxel key.');
+      seen.add(key);
+    }
+  }
+}
+
 export interface OccupancyArtifactOptions {
   /** Identity of the exact saved scan this occupancy was derived from. */
   frameId: string;
@@ -238,6 +252,10 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   if (header.schema !== LEGACY_OCCUPANCY_ARTIFACT_SCHEMA && header.schema !== OCCUPANCY_ARTIFACT_SCHEMA) {
     throw new Error('Unsupported occupancy artifact schema.');
   }
+  if (!Number.isFinite(header.voxel_size_m) || !(header.voxel_size_m > 0) ||
+      header.voxel_size_m > MAX_OCCUPANCY_VOXEL_SIZE_METERS) {
+    throw new Error('Invalid occupancy voxel size.');
+  }
   const registrationPresent = header.registration !== null && header.registration !== undefined;
   const legacyRegistrationIgnored = header.schema === LEGACY_OCCUPANCY_ARTIFACT_SCHEMA && registrationPresent;
   const declaredRegistration = header.registration;
@@ -265,6 +283,7 @@ export function decodeOccupancySolverArtifact(source: Uint8Array): DecodedOccupa
   };
   const free = read(header.free_count);
   const occupied = read(header.occupied_count);
+  assertUniqueVoxelKeys(free, occupied);
   return {
     header: legacyRegistrationIgnored ? { ...header, registration: null } : header,
     free,

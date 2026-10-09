@@ -9,6 +9,8 @@
 
 
 #define FIXED_HEADER_BYTES 20U
+/* Sanity bound only: production clamps fine voxels to 0.08..0.50 m, fixtures may use coarser grids. */
+#define MAX_SUPPORTED_VOXEL_SIZE_M 10.0
 static const uint8_t MAGIC[8] = { 'G', 'O', 'C', 'C', 'U', 'P', 'Y', '1' };
 
 
@@ -185,6 +187,7 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
     } else if (
         !cJSON_IsString(frame_id) || frame_id->valuestring[0] == '\0' ||
         !read_number(root, "voxel_size_m", &voxel) || !(voxel > 0.0) ||
+        voxel > MAX_SUPPORTED_VOXEL_SIZE_M ||
         !read_number(root, "below_surface_m", &below) || below < 0.0 ||
         !read_number(root, "free_count", &frees) || frees < 0.0 ||
         !read_number(root, "occupied_count", &occupieds) || occupieds < 0.0 ||
@@ -233,6 +236,40 @@ static int64_t *read_keys(const uint8_t *payload, size_t count)
     }
     qsort(keys, count, sizeof(int64_t), compare_keys);
     return keys;
+}
+
+
+static bool has_duplicate_keys(const int64_t *keys, size_t count)
+{
+    for (size_t i = 1U; i < count; ++i) {
+        if (keys[i - 1U] == keys[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+static bool key_lists_intersect(
+    const int64_t *left,
+    size_t left_count,
+    const int64_t *right,
+    size_t right_count
+)
+{
+    size_t left_index = 0U;
+    size_t right_index = 0U;
+    while (left_index < left_count && right_index < right_count) {
+        if (left[left_index] == right[right_index]) {
+            return true;
+        }
+        if (left[left_index] < right[right_index]) {
+            ++left_index;
+        } else {
+            ++right_index;
+        }
+    }
+    return false;
 }
 
 
@@ -288,6 +325,12 @@ esp_err_t scan_occupancy_parse(
     }
     out->free_count = free_count;
     out->occupied_count = occupied_count;
+    if (has_duplicate_keys(out->free_keys, free_count) ||
+        has_duplicate_keys(out->occupied_keys, occupied_count) ||
+        key_lists_intersect(out->free_keys, free_count, out->occupied_keys, occupied_count)) {
+        scan_occupancy_free(out);
+        return ESP_ERR_INVALID_ARG;
+    }
     return ESP_OK;
 }
 

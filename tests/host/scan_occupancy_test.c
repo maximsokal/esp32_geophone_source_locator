@@ -165,6 +165,107 @@ static uint8_t *make_header_only_artifact(const char *header, size_t *length_out
 }
 
 
+static uint8_t *make_voxel_artifact(
+    const char *voxel_size_json,
+    const int16_t (*free_cells)[3],
+    size_t free_count,
+    const int16_t (*occupied_cells)[3],
+    size_t occupied_count,
+    size_t *length_out
+)
+{
+    char header[256];
+    const int header_length_signed = snprintf(
+        header,
+        sizeof(header),
+        "{\"schema\":1,\"frame_id\":\"voxel-test\",\"voxel_size_m\":%s,"
+        "\"below_surface_m\":0,\"envelope\":null,\"free_count\":%zu,"
+        "\"occupied_count\":%zu,\"saturated\":false,\"created_at_ms\":1,"
+        "\"registration\":null}",
+        voxel_size_json,
+        free_count,
+        occupied_count
+    );
+    assert(header_length_signed > 0 && (size_t)header_length_signed < sizeof(header));
+
+    const size_t header_length = (size_t)header_length_signed;
+    const size_t payload_length = 6U * (free_count + occupied_count);
+    const size_t length = 20U + header_length + payload_length;
+    uint8_t *data = calloc(length, sizeof(*data));
+    assert(data != NULL);
+    memcpy(data, "GOCCUPY1", 8U);
+    write_u32(data, 8U, (uint32_t)header_length);
+    write_u32(data, 12U, (uint32_t)payload_length);
+    memcpy(data + 20U, header, header_length);
+
+    size_t offset = 20U + header_length;
+    for (size_t cell = 0U; cell < free_count + occupied_count; ++cell) {
+        const int16_t *coordinates = cell < free_count
+            ? free_cells[cell]
+            : occupied_cells[cell - free_count];
+        for (size_t axis = 0U; axis < 3U; ++axis) {
+            write_u16(data, offset, (uint16_t)coordinates[axis]);
+            offset += 2U;
+        }
+    }
+    write_u32(data, 16U, test_crc32(data + 20U, length - 20U));
+    *length_out = length;
+    return data;
+}
+
+
+static void assert_voxel_artifact_rejected(
+    const char *voxel_size_json,
+    const int16_t (*free_cells)[3],
+    size_t free_count,
+    const int16_t (*occupied_cells)[3],
+    size_t occupied_count
+)
+{
+    size_t length = 0U;
+    uint8_t *data = make_voxel_artifact(
+        voxel_size_json, free_cells, free_count, occupied_cells, occupied_count, &length
+    );
+    scan_occupancy_t occupancy;
+    memset(&occupancy, 0xA5, sizeof(occupancy));
+    assert(scan_occupancy_parse(data, length, &occupancy) == ESP_ERR_INVALID_ARG);
+    assert(occupancy.frame_id[0] == '\0');
+    assert(occupancy.free_keys == NULL && occupancy.free_count == 0U);
+    assert(occupancy.occupied_keys == NULL && occupancy.occupied_count == 0U);
+    free(data);
+}
+
+
+static void test_duplicate_voxel_keys_and_voxel_size_fail_closed(void)
+{
+    static const int16_t free_cells[][3] = { { 0, 0, 0 }, { 1, -1, 2 } };
+    static const int16_t occupied_cells[][3] = { { 0, 1, -1 } };
+    size_t length = 0U;
+    uint8_t *data = make_voxel_artifact(
+        "0.5", free_cells, 2U, occupied_cells, 1U, &length
+    );
+    scan_occupancy_t occupancy;
+    assert(scan_occupancy_parse(data, length, &occupancy) == ESP_OK);
+    assert(occupancy.voxel_size_m == 0.5);
+    assert(occupancy.free_count == 2U && occupancy.occupied_count == 1U);
+    scan_occupancy_free(&occupancy);
+    free(data);
+
+    static const int16_t duplicate_free[][3] = { { 4, -2, 7 }, { 4, -2, 7 } };
+    static const int16_t duplicate_occupied[][3] = { { -3, 8, 1 }, { -3, 8, 1 } };
+    static const int16_t shared_key[][3] = { { 11, -9, 2 } };
+    assert_voxel_artifact_rejected("0.18", duplicate_free, 2U, NULL, 0U);
+    assert_voxel_artifact_rejected("0.18", NULL, 0U, duplicate_occupied, 2U);
+    assert_voxel_artifact_rejected("0.18", shared_key, 1U, shared_key, 1U);
+
+    /* JSON 1e999 is parsed as a non-finite number; all fixtures carry a fresh CRC. */
+    assert_voxel_artifact_rejected("1e999", NULL, 0U, NULL, 0U);
+    assert_voxel_artifact_rejected("0", NULL, 0U, NULL, 0U);
+    assert_voxel_artifact_rejected("-0.18", NULL, 0U, NULL, 0U);
+    assert_voxel_artifact_rejected("1e308", NULL, 0U, NULL, 0U);
+}
+
+
 static void test_registration_quality_requires_positive_threshold(void)
 {
     scan_occupancy_t occupancy = { 0 };
@@ -381,6 +482,7 @@ int main(void)
     test_golden_vector_parses_and_classifies();
     test_project_frame_v2_registration_and_candidate_classification();
     test_schema1_without_registration_still_classifies();
+    test_duplicate_voxel_keys_and_voxel_size_fail_closed();
     test_registration_quality_requires_positive_threshold();
     test_proper_rotations_are_usable();
     test_reflections_are_rejected_with_stable_reason();

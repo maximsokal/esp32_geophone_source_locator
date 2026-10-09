@@ -72,6 +72,36 @@ function rewriteHeader(bytes: Uint8Array, update: (header: Record<string, unknow
   return result;
 }
 
+type TestVoxel = readonly [number, number, number];
+
+function makeVoxelArtifact(
+  voxelSizeJson: string,
+  free: readonly TestVoxel[],
+  occupied: readonly TestVoxel[],
+): Uint8Array {
+  const header = new TextEncoder().encode(
+    `{"schema":1,"frame_id":"voxel-test","voxel_size_m":${voxelSizeJson},` +
+    `"below_surface_m":0,"envelope":null,"free_count":${free.length},` +
+    `"occupied_count":${occupied.length},"saturated":false,"created_at_ms":1,"registration":null}`,
+  );
+  const cells = [...free, ...occupied];
+  const result = new Uint8Array(20 + header.length + cells.length * 6);
+  result.set(new TextEncoder().encode('GOCCUPY1'), 0);
+  const view = new DataView(result.buffer);
+  view.setUint32(8, header.length, true);
+  view.setUint32(12, cells.length * 6, true);
+  result.set(header, 20);
+  let offset = 20 + header.length;
+  for (const [x, y, z] of cells) {
+    view.setInt16(offset, x, true);
+    view.setInt16(offset + 2, y, true);
+    view.setInt16(offset + 4, z, true);
+    offset += 6;
+  }
+  view.setUint32(16, occupancyCrc32(result, 20), true);
+  return result;
+}
+
 describe('compact occupancy solver artifact (MAX-162)', () => {
   it.skipIf(process.env.WRITE_GOLDEN_VECTORS !== '1')('writes the registered v2 vector from the production encoder', () => {
     writeFileSync(VECTOR_PATH, projectGoldenBytes());
@@ -133,6 +163,32 @@ describe('compact occupancy solver artifact (MAX-162)', () => {
     const bytes = encodeOccupancySolverArtifact(goldenSnapshot(), GOLDEN_OPTIONS);
     bytes[bytes.length - 1] ^= 0xff;
     expect(() => decodeOccupancySolverArtifact(bytes)).toThrow(/checksum/);
+  });
+
+  it('rejects duplicate FREE, OCCUPIED, and cross-state voxel keys', () => {
+    const valid = decodeOccupancySolverArtifact(makeVoxelArtifact(
+      '0.5', [[0, 0, 0], [1, -1, 2]], [[0, 1, -1]],
+    ));
+    expect(valid.header.voxel_size_m).toBe(0.5);
+    expect(valid.free).toHaveLength(6);
+    expect(valid.occupied).toHaveLength(3);
+
+    expect(() => decodeOccupancySolverArtifact(makeVoxelArtifact(
+      '0.18', [[4, -2, 7], [4, -2, 7]], [],
+    ))).toThrow(/duplicate/i);
+    expect(() => decodeOccupancySolverArtifact(makeVoxelArtifact(
+      '0.18', [], [[-3, 8, 1], [-3, 8, 1]],
+    ))).toThrow(/duplicate/i);
+    expect(() => decodeOccupancySolverArtifact(makeVoxelArtifact(
+      '0.18', [[11, -9, 2]], [[11, -9, 2]],
+    ))).toThrow(/duplicate/i);
+  });
+
+  it('rejects non-finite, non-positive, and absurd voxel sizes', () => {
+    expect(() => decodeOccupancySolverArtifact(makeVoxelArtifact('1e999', [], []))).toThrow(/voxel size/i);
+    expect(() => decodeOccupancySolverArtifact(makeVoxelArtifact('0', [], []))).toThrow(/voxel size/i);
+    expect(() => decodeOccupancySolverArtifact(makeVoxelArtifact('-0.18', [], []))).toThrow(/voxel size/i);
+    expect(() => decodeOccupancySolverArtifact(makeVoxelArtifact('1e308', [], []))).toThrow(/voxel size/i);
   });
 
   it('writes threshold_m and refuses a registration whose residual exceeds it or that lacks one', () => {
