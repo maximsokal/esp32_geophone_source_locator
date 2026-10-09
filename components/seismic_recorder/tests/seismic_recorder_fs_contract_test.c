@@ -9,6 +9,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -24,6 +25,7 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <io.h>
 #define mkdir(path, mode) _mkdir(path)
 #define rmdir(path) _rmdir(path)
 #else
@@ -39,8 +41,10 @@
 #include "seismic_recorder_cache.h"
 
 /* The embedded libc declares these through its POSIX compatibility headers. */
+#if !defined(_MSC_VER)
 int fileno(FILE *stream);
 size_t strnlen(const char *string, size_t max_length);
+#endif
 
 static unsigned storage_begin_calls;
 static unsigned storage_end_calls;
@@ -68,7 +72,7 @@ static bool injected_fflush_error;
 static bool injected_fsync_error;
 static bool injected_fclose_error;
 static char injected_rename_source[256];
-static int seismic_recorder_test_rename(const char *source, const char *destination);
+static int seismic_recorder_contract_test_rename(const char *source, const char *destination);
 
 #if defined(MAX371_RECORDER_RAW_ORACLE_HOST_TEST)
 /* The oracle calls only the production driver's pure raw-to-uV function. */
@@ -496,7 +500,7 @@ static int recorder_test_fflush(FILE *stream)
     return fflush(stream);
 }
 
-static int recorder_test_fsync(int descriptor)
+static int seismic_recorder_contract_test_fsync(int descriptor)
 {
     (void)descriptor;
     ++recorder_test_fsync_calls;
@@ -513,12 +517,12 @@ static int recorder_test_fclose(FILE *stream)
 #define fwrite recorder_test_fwrite
 #define fflush recorder_test_fflush
 #ifdef _WIN32
-#define _commit recorder_test_fsync
+#define _commit seismic_recorder_contract_test_fsync
 #else
-#define fsync recorder_test_fsync
+#define fsync seismic_recorder_contract_test_fsync
 #endif
 #define fclose recorder_test_fclose
-#define rename seismic_recorder_test_rename
+#define rename seismic_recorder_contract_test_rename
 #define opendir seismic_recorder_test_opendir
 #define readdir seismic_recorder_test_readdir
 #define closedir seismic_recorder_test_closedir
@@ -870,7 +874,7 @@ static esp_err_t test_fs_write_frames(
 #define seismic_recorder_fs_create_session test_fs_create_session
 #define seismic_recorder_fs_write_frames test_fs_write_frames
 
-static int seismic_recorder_test_rename(const char *source, const char *destination)
+static int seismic_recorder_contract_test_rename(const char *source, const char *destination)
 {
     if (injected_rename_source[0] != '\0' && strcmp(source, injected_rename_source) == 0) {
         injected_rename_source[0] = '\0';
