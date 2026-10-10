@@ -316,9 +316,27 @@ function Invoke-WestBuild([string]$BuildDir, [bool]$WithChannelSoundingProof) {
 }
 
 function Invoke-WestFlash([string]$BuildDir) {
+    $appArtifactDir = Get-ZephyrAppArtifactDir $BuildDir
+    $hexPath = Join-Path $appArtifactDir "zephyr.hex"
+    if (-not (Test-Path -LiteralPath $hexPath -PathType Leaf)) {
+        throw "Production zephyr.hex not found: $hexPath. Run .\nRF54L15\ncs.ps1 build first."
+    }
+
+    $padScript = Join-Path $project "pad_hex_rram_line.ps1"
+    if (-not (Test-Path -LiteralPath $padScript -PathType Leaf)) {
+        throw "Intel HEX RRAM padding script not found: $padScript"
+    }
+    $paddedHex = Join-Path (Split-Path -Parent $hexPath) "zephyr.padded.hex"
+
     Write-Host ""
-    Write-Host "west flash -d $BuildDir" -ForegroundColor Cyan
-    & west flash -d $BuildDir
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $padScript -InputHex $hexPath -OutputHex $paddedHex
+    $padExitCode = $LASTEXITCODE
+    if ($padExitCode -ne 0) {
+        throw "Intel HEX RRAM padding failed: $padExitCode"
+    }
+
+    Write-Host "west flash -d $BuildDir --skip-rebuild -f $paddedHex" -ForegroundColor Cyan
+    & west flash -d $BuildDir --skip-rebuild -f $paddedHex
     if ($LASTEXITCODE -ne 0) {
         throw "west flash failed: $LASTEXITCODE"
     }

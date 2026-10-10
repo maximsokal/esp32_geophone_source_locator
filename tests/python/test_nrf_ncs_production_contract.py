@@ -75,10 +75,18 @@ def test_production_build_uses_permanent_max51_channel_sounding_config():
 def test_canonical_flash_is_explicit_ncs_hardware_action():
     source = text(NCS)
     flash_case = source[source.index('"flash" {'):source.index('"cs-proof" {')]
+    flash_function_start = source.index("function Invoke-WestFlash")
+    flash_function_end = source.index("function Invoke-WestNativeTestBuild", flash_function_start)
+    flash_function = source[flash_function_start:flash_function_end]
     assert "Invoke-WestBuild $productionBuild $false" in flash_case
     assert "Probe-ProductionBuild" in flash_case
     assert "Invoke-WestFlash $productionBuild" in flash_case
     assert "west flash -d $BuildDir" in source
+    assert "Get-ZephyrAppArtifactDir $BuildDir" in flash_function
+    assert 'Join-Path $appArtifactDir "zephyr.hex"' in flash_function
+    assert 'Join-Path (Split-Path -Parent $hexPath) "zephyr.padded.hex"' in flash_function
+    assert "pad_hex_rram_line.ps1" in flash_function
+    assert "--skip-rebuild -f $paddedHex" in flash_function
 
 
 def test_local_verify_routes_nrf_build_to_ncs_not_platformio():

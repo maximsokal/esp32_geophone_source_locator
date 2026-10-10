@@ -255,6 +255,10 @@ From an ordinary PowerShell at the repository root:
 .\nRF54L15\ncs.ps1 monitor -Port COM7
 ```
 
+Before flashing, the wrapper pads the final Intel HEX data to a 16-byte
+boundary because OpenOCD can leave the last partial RRAM write-buffer line
+erased. The padded HEX is stored beside `zephyr.hex` in the external build dir.
+
 `ncs.ps1` is pinned to NCS v3.4.0. If `west` is not already available, the
 wrapper relaunches itself through:
 
