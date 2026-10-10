@@ -7,6 +7,10 @@
 #include <string.h>
 
 #include <zephyr/kernel.h>
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS && \
+    defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+#include <zephyr/sys/printk.h>
+#endif
 
 #include "nrf_bme280.h"
 #include "nrf_blue_led.h"
@@ -23,6 +27,12 @@
 #include "nrf_remote_sensor_runtime_zephyr.h"
 #include "nrf_sensor_session.h"
 #include "nrf_watchdog_zephyr.h"
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
+#include "nrf_stage_signal.h"
+#ifndef CONFIG_APP_NRF_UPSTREAM_LOSS_TIMEOUT_MS
+#define CONFIG_APP_NRF_UPSTREAM_LOSS_TIMEOUT_MS 15000
+#endif
+#endif
 
 #define NRF_SENSOR_EVENT_QUEUE_DEPTH 4U
 #define NRF_SENSOR_WORKER_STACK_SIZE 3072U
@@ -89,6 +99,14 @@ static uint32_t s_activation_generation;
 static uint32_t s_activation_complete_generation;
 static uint32_t s_imu_calibration_request_id;
 static uint32_t s_imu_calibration_completed_request_id;
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
+static nrf_stage_signal_t s_stage_signal;
+static volatile uint32_t s_stage_transaction_count;
+static volatile uint32_t s_stage_role_assignment_sequence;
+static volatile uint8_t s_stage_role_assignment_role;
+static uint32_t s_stage_last_role_assignment_sequence;
+static uint32_t s_stage_last_activation_complete_generation;
+#endif
 
 static void log_sensor_fault_edges(
     uint32_t previous_fault_mask,
@@ -574,7 +592,84 @@ static void update_logger_led(uint32_t uptime_ms)
 
     if (nrf_logger_led_inputs_from_state(&state, &input) == NRF_LOGGER_LED_OK) {
         (void)nrf_logger_led_update(&s_logger_led, &input, uptime_ms);
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
+        nrf_logger_led_output_t apply_output = s_logger_led.output;
+        nrf_stage_signal_output_t signal_output = {0};
+        const bool was_link_lost = nrf_stage_signal_link_lost(&s_stage_signal);
+        const uint8_t role_assignment_role = s_stage_role_assignment_role;
+        uint32_t role_assignment_sequence = s_stage_role_assignment_sequence;
+
+        (void)nrf_stage_signal_set_suppressed(
+            &s_stage_signal,
+            state.init_boot_fatal);
+        (void)nrf_stage_signal_note_transactions(
+            &s_stage_signal,
+            s_stage_transaction_count,
+            uptime_ms);
+
+        if (role_assignment_sequence != s_stage_last_role_assignment_sequence) {
+            s_stage_last_role_assignment_sequence = role_assignment_sequence;
+            if (role_assignment_role == NRF_UPSTREAM_ROLE_REMOTE) {
+                (void)nrf_stage_signal_post_event(
+                    &s_stage_signal,
+                    NRF_STAGE_SIGNAL_EVENT_ROLE_REMOTE,
+                    uptime_ms);
+            }
+        }
+
+        if (s_activation_complete_generation != 0U &&
+            s_activation_complete_generation !=
+                s_stage_last_activation_complete_generation) {
+            s_stage_last_activation_complete_generation =
+                s_activation_complete_generation;
+            (void)nrf_stage_signal_post_event(
+                &s_stage_signal,
+                !s_runtime.core.imu_ready || state.bmi160_init_failed ||
+                        state.bme280_init_failed
+                    ? NRF_STAGE_SIGNAL_EVENT_SENSORS_FAILED
+                    : NRF_STAGE_SIGNAL_EVENT_SENSORS_READY,
+                uptime_ms);
+        }
+
+        (void)nrf_stage_signal_update(
+            &s_stage_signal,
+            uptime_ms,
+            &signal_output);
+        {
+            nrf_stage_signal_event_t started_event;
+            if (nrf_stage_signal_started_event(
+                    &s_stage_signal,
+                    &started_event) == NRF_STAGE_SIGNAL_OK) {
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+                printk("signal: stage=%s up=%ums\n",
+                       nrf_stage_signal_event_name(started_event),
+                       (unsigned int)uptime_ms);
+#endif
+            }
+        }
+        {
+            const bool link_lost = nrf_stage_signal_link_lost(&s_stage_signal);
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+            if (link_lost != was_link_lost) {
+                printk("signal: upstream_%s up=%ums\n",
+                       link_lost ? "lost" : "restored",
+                       (unsigned int)uptime_ms);
+            }
+#else
+            (void)link_lost;
+            (void)was_link_lost;
+#endif
+        }
+
+        if (signal_output.overlay_active) {
+            apply_output.green = signal_output.green;
+            apply_output.yellow = signal_output.yellow;
+            apply_output.red = signal_output.red;
+        }
+        (void)nrf_logger_led_zephyr_apply(&apply_output);
+#else
         (void)nrf_logger_led_zephyr_apply(&s_logger_led.output);
+#endif
     }
 }
 
@@ -938,6 +1033,18 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
     }
 }
 
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
+void nrf_sensor_upstream_runtime_zephyr_note_upstream(
+    uint32_t transaction_count,
+    uint32_t role_assignment_sequence,
+    uint8_t role_assignment_role)
+{
+    s_stage_transaction_count = transaction_count;
+    s_stage_role_assignment_role = role_assignment_role;
+    s_stage_role_assignment_sequence = role_assignment_sequence;
+}
+#endif
+
 int nrf_sensor_upstream_runtime_zephyr_configure_orientation(
     const nrf_orientation_config_t *config)
 {
@@ -1012,6 +1119,19 @@ int nrf_sensor_upstream_runtime_zephyr_start(void)
         return -EINVAL;
     }
     nrf_node_state_init(&s_worker_node_state);
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
+    s_stage_transaction_count = 0U;
+    s_stage_role_assignment_sequence = 0U;
+    s_stage_role_assignment_role = NRF_UPSTREAM_ROLE_UNASSIGNED;
+    s_stage_last_role_assignment_sequence = 0U;
+    s_stage_last_activation_complete_generation = 0U;
+    if (nrf_stage_signal_init(
+            &s_stage_signal,
+            (uint32_t)CONFIG_APP_NRF_UPSTREAM_LOSS_TIMEOUT_MS) !=
+        NRF_STAGE_SIGNAL_OK) {
+        return -EINVAL;
+    }
+#endif
     k_msgq_purge(&s_sensor_queue);
     s_next_orientation_due_ms = 0U;
     s_activation_queued = false;

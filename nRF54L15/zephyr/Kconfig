@@ -28,4 +28,19 @@ config APP_NRF_VERBOSE_LOG
 	help
 	  Print upstream transaction records, state transitions, and periodic status.
 
+config APP_NRF_STAGE_SIGNALS
+	bool "Show lifecycle stage signals on the logger LEDs"
+	default y
+	help
+	  Briefly overlay lifecycle progress and upstream-loss signals on the logger LEDs.
+
+config APP_NRF_UPSTREAM_LOSS_TIMEOUT_MS
+	int "Upstream loss signal timeout in milliseconds"
+	depends on APP_NRF_STAGE_SIGNALS
+	range 3000 120000
+	default 15000
+	help
+	  ESP32 topology reconcile runs every 5 s, so the timeout must be >= 3x that;
+	  the log collector polls every 1 s.
+
 endmenu

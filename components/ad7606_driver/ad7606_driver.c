@@ -58,6 +58,28 @@ static bool s_busy_release_error_logged =
 
 static uint32_t s_measured_tconv_ns = 0U;
 
+typedef enum {
+    AD7606_TCONV_DIAG_STAGE_BUSY_NOT_LOW_BEFORE_CONVST,
+    AD7606_TCONV_DIAG_STAGE_NO_RISING_EDGE,
+    AD7606_TCONV_DIAG_STAGE_NO_FALLING_EDGE,
+    AD7606_TCONV_DIAG_STAGE_OK,
+} ad7606_tconv_diag_stage_t;
+
+typedef struct {
+    ad7606_tconv_diag_stage_t stage;
+    int busy_at_fail;
+    int busy_before_convst;
+    uint32_t waited_cycles;
+    uint32_t rise_after_cycles;
+    uint32_t cpu_hz;
+} ad7606_tconv_diag_t;
+
+static ad7606_tconv_diag_t s_last_tconv_diag = {
+    .stage = AD7606_TCONV_DIAG_STAGE_OK,
+    .busy_at_fail = -1,
+    .busy_before_convst = -1,
+};
+
 static ad7606_serial_observation_t s_last_serial_observation = {
     .pattern = AD7606_SERIAL_PATTERN_UNKNOWN,
 };
@@ -101,7 +123,8 @@ static esp_err_t ad7606_wait_busy_edge_cycles(
     int expected_level,
     uint32_t timeout_start_cycles,
     uint32_t timeout_cycles,
-    uint32_t *edge_cycles
+    uint32_t *edge_cycles,
+    uint32_t *elapsed_cycles_at_timeout
 )
 {
     for (;;) {
@@ -111,23 +134,64 @@ static esp_err_t ad7606_wait_busy_edge_cycles(
             return ESP_OK;
         }
         if ((uint32_t)(now_cycles - timeout_start_cycles) >= timeout_cycles) {
+            *elapsed_cycles_at_timeout = (uint32_t)(now_cycles - timeout_start_cycles);
             return ESP_ERR_TIMEOUT;
         }
     }
 }
 
 
+static const char *ad7606_tconv_diag_stage_name(ad7606_tconv_diag_stage_t stage)
+{
+    switch (stage) {
+    case AD7606_TCONV_DIAG_STAGE_BUSY_NOT_LOW_BEFORE_CONVST:
+        return "BUSY_NOT_LOW_BEFORE_CONVST";
+    case AD7606_TCONV_DIAG_STAGE_NO_RISING_EDGE:
+        return "NO_RISING_EDGE";
+    case AD7606_TCONV_DIAG_STAGE_NO_FALLING_EDGE:
+        return "NO_FALLING_EDGE";
+    case AD7606_TCONV_DIAG_STAGE_OK:
+    default:
+        return "OK";
+    }
+}
+
+
+static uint64_t ad7606_cycles_to_ns(uint32_t cycles, uint32_t cpu_hz)
+{
+    if (cpu_hz == 0U) {
+        return 0U;
+    }
+    return ((uint64_t)cycles * UINT64_C(1000000000) + cpu_hz / 2U) / cpu_hz;
+}
+
+
 static esp_err_t ad7606_measure_busy_tconv(void)
 {
+    s_last_tconv_diag = (ad7606_tconv_diag_t) {
+        .stage = AD7606_TCONV_DIAG_STAGE_OK,
+        .busy_at_fail = -1,
+        .busy_before_convst = -1,
+    };
+
     const int cpu_hz = esp_clk_cpu_freq();
     if (cpu_hz <= 0) {
         return ESP_ERR_INVALID_STATE;
     }
+    s_last_tconv_diag.cpu_hz = (uint32_t)cpu_hz;
 
     esp_err_t err = ad7606_wait_busy_level(0, AD7606_BUSY_RELEASE_TIMEOUT_US);
     if (err != ESP_OK) {
+        if (err == ESP_ERR_TIMEOUT) {
+            s_last_tconv_diag.stage = AD7606_TCONV_DIAG_STAGE_BUSY_NOT_LOW_BEFORE_CONVST;
+            s_last_tconv_diag.busy_at_fail = gpio_get_level(BOARD_AD7606_BUSY_GPIO);
+            /* No CONVST was raised; retain the final pre-CONVST level sample. */
+            s_last_tconv_diag.busy_before_convst = s_last_tconv_diag.busy_at_fail;
+        }
         return err;
     }
+    /* The wait helper returned on its existing BUSY LOW sample. */
+    s_last_tconv_diag.busy_before_convst = 0;
     err = gpio_set_level(BOARD_AD7606_CONVST_GPIO, 1);
     if (err != ESP_OK) {
         return err;
@@ -147,14 +211,27 @@ static esp_err_t ad7606_measure_busy_tconv(void)
     const uint32_t timeout_cycles = (uint32_t)timeout_cycles_64;
     uint32_t busy_rising_cycles = 0U;
     uint32_t busy_falling_cycles = 0U;
+    uint32_t elapsed_cycles_at_timeout = 0U;
 
     err = ad7606_wait_busy_edge_cycles(
-        1, timeout_start_cycles, timeout_cycles, &busy_rising_cycles);
-    if (err == ESP_OK) {
-        err = ad7606_wait_busy_edge_cycles(
-            0, timeout_start_cycles, timeout_cycles, &busy_falling_cycles);
-    }
+        1, timeout_start_cycles, timeout_cycles, &busy_rising_cycles,
+        &elapsed_cycles_at_timeout);
     if (err != ESP_OK) {
+        s_last_tconv_diag.stage = AD7606_TCONV_DIAG_STAGE_NO_RISING_EDGE;
+        s_last_tconv_diag.waited_cycles = elapsed_cycles_at_timeout;
+        s_last_tconv_diag.busy_at_fail = gpio_get_level(BOARD_AD7606_BUSY_GPIO);
+        return err;
+    }
+
+    err = ad7606_wait_busy_edge_cycles(
+        0, timeout_start_cycles, timeout_cycles, &busy_falling_cycles,
+        &elapsed_cycles_at_timeout);
+    if (err != ESP_OK) {
+        s_last_tconv_diag.stage = AD7606_TCONV_DIAG_STAGE_NO_FALLING_EDGE;
+        s_last_tconv_diag.waited_cycles = elapsed_cycles_at_timeout;
+        s_last_tconv_diag.rise_after_cycles =
+            (uint32_t)(busy_rising_cycles - timeout_start_cycles);
+        s_last_tconv_diag.busy_at_fail = gpio_get_level(BOARD_AD7606_BUSY_GPIO);
         return err;
     }
 
@@ -166,6 +243,7 @@ static esp_err_t ad7606_measure_busy_tconv(void)
         return ESP_ERR_INVALID_RESPONSE;
     }
     s_measured_tconv_ns = (uint32_t)width_ns;
+    s_last_tconv_diag.stage = AD7606_TCONV_DIAG_STAGE_OK;
     return ESP_OK;
 }
 
@@ -595,6 +673,18 @@ static esp_err_t ad7606_self_test(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Self-test BUSY tCONV measurement failed: %s",
             esp_err_to_name(err));
+        ESP_LOGE(TAG,
+            "AD7606_TCONV_DIAG: stage=%s busy_at_fail=%d busy_before_convst=%d rise_after_ns=%llu waited_ns=%llu timeout_us=%u",
+            ad7606_tconv_diag_stage_name(s_last_tconv_diag.stage),
+            s_last_tconv_diag.busy_at_fail,
+            s_last_tconv_diag.busy_before_convst,
+            (unsigned long long)ad7606_cycles_to_ns(
+                s_last_tconv_diag.rise_after_cycles,
+                s_last_tconv_diag.cpu_hz),
+            (unsigned long long)ad7606_cycles_to_ns(
+                s_last_tconv_diag.waited_cycles,
+                s_last_tconv_diag.cpu_hz),
+            (unsigned)AD7606_BUSY_RELEASE_TIMEOUT_US);
         return err;
     }
     ESP_LOGI(TAG, "AD7606_TCONV_MEASURED: %u ns",

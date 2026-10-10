@@ -10,6 +10,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/random/random.h>
 
+#include "nrf_boot_diagnostics.h"
 #include "nrf_bootstrap_runtime_zephyr.h"
 #include "nrf_cs_control_protocol.h"
 #include "nrf_log_events.h"
@@ -638,6 +639,8 @@ int main(void)
     nrf_upstream_assign_t assign;
     unsigned i;
     uint32_t read_length;
+    uint8_t initial_status_frame[NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH];
+    uint8_t *initial_frame;
 
     memset(&s_sensor_snapshot, 0, sizeof(s_sensor_snapshot));
     s_sensor_snapshot.result = NRF_UPSTREAM_SENSOR_RESULT_NOT_READY;
@@ -651,8 +654,11 @@ int main(void)
     assert(nrf_bootstrap_runtime_zephyr_start(&node_state) == 0);
     assert(s_address == NRF_UPSTREAM_ADDRESS_DISCOVERY);
 
-    status = read_status(&read_length);
+    initial_frame = read_frame(&read_length);
     assert(read_length == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH);
+    memcpy(initial_status_frame, initial_frame, read_length);
+    assert(nrf_upstream_protocol_decode_status(
+               initial_frame, read_length, &status) == NRF_UPSTREAM_RESULT_OK);
     assert(status.request_id == 0U && status.role == NRF_UPSTREAM_ROLE_UNASSIGNED);
     assert(status.target_address == NRF_UPSTREAM_ADDRESS_DISCOVERY);
     assert(status.flags == NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED);
@@ -662,6 +668,71 @@ int main(void)
            NRF_BOOTSTRAP_TWIS_TRANSACTION_READ_REQUESTED);
     assert(twis_diagnostics.read_requested_count == 1U);
     assert(twis_diagnostics.write_received_count == 0U);
+
+    {
+        nrf_log_read_request_t request;
+        nrf_log_status_t logs;
+        uint8_t *response_frame;
+        uint32_t response_length;
+
+        send_log_status(0x7007U);
+        s_callbacks->buf_write_received(NULL, NULL, 0U);
+        response_frame = read_frame(&response_length);
+        assert(response_length == sizeof(initial_status_frame));
+        assert(response_frame[3] == 0x80U);
+        assert(memcmp(initial_status_frame, response_frame, response_length) == 0);
+
+        logs = read_log_status();
+        request = (nrf_log_read_request_t){
+            .request_id = 0x8008U,
+            .expected_boot_id = logs.boot_id,
+            .cursor_seq = logs.next_seq,
+            .max_records = NRF_LOG_PROTOCOL_MAX_RECORDS,
+        };
+        send_log_read(&request);
+        s_callbacks->buf_write_received(NULL, NULL, 0U);
+        response_frame = read_frame(&response_length);
+        assert(response_length == sizeof(initial_status_frame));
+        assert(response_frame[3] == 0x80U);
+        assert(memcmp(initial_status_frame, response_frame, response_length) == 0);
+    }
+
+    {
+        const nrf_log_status_t logs_before = read_log_status();
+        nrf_bootstrap_twis_diagnostics_t diagnostics_before;
+        nrf_bootstrap_twis_diagnostics_t diagnostics_after;
+        nrf_boot_twis_record_t record;
+        uint8_t *after_frame;
+        uint32_t after_length;
+
+        while (nrf_bootstrap_runtime_zephyr_drain_twis_record(&record)) {
+        }
+        nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&diagnostics_before);
+        s_callbacks->buf_write_received(NULL, NULL, 0U);
+        nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&diagnostics_after);
+        assert(nrf_bootstrap_runtime_zephyr_drain_twis_record(&record));
+        assert(!nrf_bootstrap_runtime_zephyr_drain_twis_record(&record));
+        after_frame = read_frame(&after_length);
+        assert(after_length == sizeof(initial_status_frame));
+        assert(memcmp(initial_status_frame, after_frame, after_length) == 0);
+        assert(nrf_upstream_protocol_decode_status(
+                   after_frame, after_length, &status) == NRF_UPSTREAM_RESULT_OK);
+        assert(status.request_id == 0U &&
+               status.result != NRF_UPSTREAM_RESULT_INVALID_FRAME);
+        assert(diagnostics_after.transaction_count ==
+               diagnostics_before.transaction_count + 1U);
+        assert(diagnostics_after.write_received_count ==
+               diagnostics_before.write_received_count + 1U);
+        assert(diagnostics_after.write_received_bytes ==
+               diagnostics_before.write_received_bytes);
+        assert(diagnostics_after.callback_error_count ==
+               diagnostics_before.callback_error_count);
+        assert(record.index == diagnostics_after.transaction_count);
+        assert(record.direction == NRF_BOOT_TWIS_DIRECTION_WRITE_RECEIVED);
+        assert(record.length == 0U && record.prefix_length == 0U);
+        assert(record.result == 0);
+        assert(read_log_status().next_seq == logs_before.next_seq);
+    }
 
     assign = make_assign(10U);
     s_readdress_result = -5;
@@ -688,6 +759,24 @@ int main(void)
     assert(status.request_id == 10U && status.result == NRF_UPSTREAM_RESULT_OK);
     assert(status.role == NRF_UPSTREAM_ROLE_REMOTE && status.node_id == 2U && status.mux_channel == 1U);
     assert(status.target_address == NRF_UPSTREAM_ADDRESS_REMOTE);
+    {
+        uint8_t before_frame[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH];
+        uint8_t *frame = read_frame(&read_length);
+        const nrf_log_status_t logs_before = read_log_status();
+        uint32_t after_length;
+
+        assert(read_length == sizeof(before_frame));
+        memcpy(before_frame, frame, read_length);
+        s_callbacks->buf_write_received(NULL, NULL, 0U);
+        frame = read_frame(&after_length);
+        assert(after_length == read_length);
+        assert(memcmp(before_frame, frame, after_length) == 0);
+        assert(nrf_upstream_protocol_decode_status(
+                   frame, NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH, &status) ==
+               NRF_UPSTREAM_RESULT_OK);
+        assert(status.request_id == 10U && status.result == NRF_UPSTREAM_RESULT_OK);
+        assert(read_log_status().next_seq == logs_before.next_seq);
+    }
     {
         const nrf_log_record_t assigned = find_log_event(NRF_LOG_EVENT_ROLE_ASSIGNED);
         const nrf_log_status_t logs = read_log_status();
@@ -773,6 +862,13 @@ int main(void)
     status = read_status(NULL);
     assert(status.request_id == 12U && status.result == NRF_UPSTREAM_RESULT_OK);
     assert(read_log_status().next_seq == 2U);
+
+    {
+        uint8_t invalid_frame[1] = {0U};
+        s_callbacks->buf_write_received(NULL, invalid_frame, sizeof(invalid_frame));
+        status = read_status(NULL);
+        assert(status.result == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+    }
 
     {
         const unsigned before_sensor_assignment_calls = s_sensor_assignment_calls;

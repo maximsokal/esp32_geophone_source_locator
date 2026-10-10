@@ -158,6 +158,9 @@ esp_err_t nrf_topology_service_get_nrf_log_page(
 
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
 void nrf_topology_service_test_set_height_reference_generation(uint16_t generation);
+esp_err_t nrf_topology_service_test_read_status_cached_probe(
+    uint8_t address,
+    nrf_upstream_status_t *status);
 /* Test-only state injection; never enabled by production builds. */
 esp_err_t nrf_topology_service_test_publish_state(
     bool topology_valid,

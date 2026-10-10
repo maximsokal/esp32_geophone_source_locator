@@ -1,5 +1,11 @@
 #include <assert.h>
 #include <errno.h>
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS && \
+    defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+#include <stdarg.h>
+#include <stdio.h>
+#include <zephyr/sys/printk.h>
+#endif
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -56,6 +62,7 @@ void nrf_watchdog_zephyr_checkin(nrf_watchdog_participant_t participant)
     ++s_sensor_worker_checkins;
 }
 static bool s_exit_worker_when_empty;
+static unsigned s_empty_worker_returns_remaining;
 static bool s_include_env;
 static bool s_force_stationary;
 static bool s_force_moving;
@@ -76,6 +83,40 @@ static struct {
     uint32_t arg1;
 } s_log_events[16];
 static unsigned s_log_event_count;
+static bool s_init_fatal;
+static bool s_fail_imu_init;
+
+#define NRF_TEST_LED_SAMPLE_CAPACITY 2048U
+static nrf_logger_led_output_t s_led_samples[NRF_TEST_LED_SAMPLE_CAPACITY];
+static unsigned s_led_sample_count;
+
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS && \
+    defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+#define NRF_TEST_SIGNAL_LOG_CAPACITY 32U
+#define NRF_TEST_SIGNAL_LOG_LENGTH 128U
+static char s_signal_logs[NRF_TEST_SIGNAL_LOG_CAPACITY][NRF_TEST_SIGNAL_LOG_LENGTH];
+static unsigned s_signal_log_count;
+
+int printk(const char *format, ...)
+{
+    int result;
+    va_list args;
+
+    if (s_signal_log_count >= NRF_TEST_SIGNAL_LOG_CAPACITY) {
+        assert(false);
+        return -1;
+    }
+    va_start(args, format);
+    result = vsnprintf(
+        s_signal_logs[s_signal_log_count],
+        NRF_TEST_SIGNAL_LOG_LENGTH,
+        format,
+        args);
+    va_end(args);
+    ++s_signal_log_count;
+    return result;
+}
+#endif
 
 void nrf_log_runtime_zephyr_append_event(uint16_t event_id, uint32_t arg0, uint32_t arg1)
 {
@@ -100,12 +141,14 @@ nrf_logger_led_zephyr_result_t nrf_logger_led_zephyr_apply(
     const nrf_logger_led_output_t *output)
 {
     assert(output != NULL);
+    assert(s_led_sample_count < NRF_TEST_LED_SAMPLE_CAPACITY);
+    s_led_samples[s_led_sample_count++] = *output;
     return NRF_LOGGER_LED_ZEPHYR_OK;
 }
 
 bool nrf_logger_led_zephyr_init_fatal(void)
 {
-    return false;
+    return s_init_fatal;
 }
 
 static unsigned log_event_count(uint16_t event_id)
@@ -170,7 +213,11 @@ int k_msgq_get(struct k_msgq *q, void *data, k_timeout_t timeout)
             return -ENOMSG;
         }
         if (s_exit_worker_when_empty) {
-            longjmp(s_worker_exit, 1);
+            if (s_empty_worker_returns_remaining == 0U) {
+                longjmp(s_worker_exit, 1);
+            }
+            --s_empty_worker_returns_remaining;
+            return -ENOMSG;
         }
         return -ENOMSG;
     }
@@ -277,8 +324,10 @@ nrf_remote_sensor_prepare_result_t nrf_remote_sensor_runtime_zephyr_prepare(
 {
     (void)node_state;
     ++s_prepare_calls;
-    runtime->core.imu_ready = true;
+    runtime->core.imu_ready = !s_fail_imu_init;
+    runtime->core.imu_init_result = s_fail_imu_init ? -EIO : 0;
     runtime->core.env_ready = s_include_env;
+    runtime->core.env_init_result = 0;
     runtime->core.sources.read_imu = fake_read_imu;
     runtime->core.sources.imu_context = NULL;
     return NRF_REMOTE_SENSOR_PREPARE_PARTIAL;
@@ -330,6 +379,256 @@ static void run_worker_until_empty(void)
     }
     s_exit_worker_when_empty = false;
 }
+
+#if defined(NRF_STAGE_SIGNAL_SUCCESS_TEST) || defined(NRF_STAGE_SIGNAL_FAILED_TEST)
+static void run_worker_ticks(unsigned tick_count)
+{
+    for (unsigned tick = 0U; tick < tick_count; ++tick) {
+        s_empty_worker_returns_remaining = 1U;
+        run_worker_until_empty();
+    }
+}
+#endif
+
+static void run_worker_advancing(uint32_t duration_ms);
+
+static void assert_last_applied_matches_policy(void)
+{
+    nrf_sensor_upstream_runtime_zephyr_diagnostics_t diagnostics = {0};
+    const nrf_logger_led_output_t *applied;
+
+    assert(s_led_sample_count != 0U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    applied = &s_led_samples[s_led_sample_count - 1U];
+    assert(applied->green == diagnostics.logger_led_output.green);
+    assert(applied->yellow == diagnostics.logger_led_output.yellow);
+    assert(applied->red == diagnostics.logger_led_output.red);
+    assert(applied->severity_latched == diagnostics.logger_led_output.severity_latched);
+    assert(applied->reason_source == diagnostics.logger_led_output.reason_source);
+}
+
+#if defined(NRF_STAGE_SIGNAL_SUCCESS_TEST) || defined(NRF_STAGE_SIGNAL_FAILED_TEST)
+static void assert_last_applied_colors(bool green, bool yellow, bool red)
+{
+    assert(s_led_sample_count != 0U);
+    assert(s_led_samples[s_led_sample_count - 1U].green == green);
+    assert(s_led_samples[s_led_sample_count - 1U].yellow == yellow);
+    assert(s_led_samples[s_led_sample_count - 1U].red == red);
+}
+#endif
+
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS && \
+    (defined(NRF_STAGE_SIGNAL_SUCCESS_TEST) || \
+     defined(NRF_STAGE_SIGNAL_FAILED_TEST))
+static unsigned signal_log_count_containing(const char *needle)
+{
+    unsigned count = 0U;
+    for (unsigned index = 0U; index < s_signal_log_count; ++index) {
+        if (strstr(s_signal_logs[index], needle) != NULL) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+static void stage_tick_after(uint32_t delta_ms)
+{
+    s_test_uptime_ms += (int64_t)delta_ms;
+    run_worker_ticks(1U);
+}
+
+static void assert_stage_pattern(
+    uint8_t flash_count,
+    bool green,
+    bool yellow,
+    bool red)
+{
+    assert(flash_count != 0U);
+    assert_last_applied_colors(false, false, false);
+
+    stage_tick_after(300U);
+    assert_last_applied_colors(green, yellow, red);
+    for (uint8_t index = 0U; index < flash_count; ++index) {
+        stage_tick_after(150U);
+        assert_last_applied_colors(false, false, false);
+        stage_tick_after(150U);
+        if (index + 1U < flash_count) {
+            assert_last_applied_colors(green, yellow, red);
+        } else {
+            assert_last_applied_colors(false, false, false);
+        }
+    }
+    stage_tick_after(300U);
+}
+
+#if defined(NRF_STAGE_SIGNAL_SUCCESS_TEST)
+static void test_first_transaction_signal(void)
+{
+    assert_last_applied_colors(false, false, false);
+    assert_last_applied_matches_policy();
+
+    nrf_sensor_upstream_runtime_zephyr_note_upstream(
+        1U,
+        0U,
+        NRF_UPSTREAM_ROLE_UNASSIGNED);
+    run_worker_ticks(1U);
+    assert_last_applied_colors(false, false, false);
+    assert(signal_log_count_containing("signal: stage=I2C_ALIVE ") == 1U);
+
+    assert_stage_pattern(1U, true, false, false);
+    assert_last_applied_matches_policy();
+    assert(signal_log_count_containing("signal: stage=I2C_ALIVE ") == 1U);
+}
+
+static void test_assignment_and_sensor_ready_signals(void)
+{
+    nrf_sensor_upstream_runtime_zephyr_diagnostics_t diagnostics = {0};
+
+    assert_last_applied_colors(false, false, false);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    assert(diagnostics.logger_led_output.green);
+    assert(signal_log_count_containing("signal: stage=ROLE_REMOTE ") == 1U);
+    assert(signal_log_count_containing("signal: stage=SENSORS_READY ") == 0U);
+
+    assert_stage_pattern(2U, true, false, false);
+    assert(signal_log_count_containing("signal: stage=ROLE_REMOTE ") == 1U);
+    assert(signal_log_count_containing("signal: stage=SENSORS_READY ") == 1U);
+
+    assert_stage_pattern(3U, true, false, false);
+    assert_last_applied_colors(true, false, false);
+    assert_last_applied_matches_policy();
+    assert(signal_log_count_containing("signal: stage=SENSORS_READY ") == 1U);
+
+    nrf_sensor_upstream_runtime_zephyr_note_upstream(
+        1U,
+        1U,
+        NRF_UPSTREAM_ROLE_REMOTE);
+    run_worker_ticks(1U);
+    assert_last_applied_matches_policy();
+    assert(signal_log_count_containing("signal: stage=ROLE_REMOTE ") == 1U);
+    assert(signal_log_count_containing("signal: stage=SENSORS_READY ") == 1U);
+}
+
+static void test_upstream_loss_restore_and_init_fatal(void)
+{
+    nrf_sensor_upstream_runtime_zephyr_diagnostics_t diagnostics = {0};
+    const unsigned lost_before_rebase =
+        signal_log_count_containing("signal: upstream_lost ");
+    unsigned restored_after_rebase;
+
+    nrf_sensor_upstream_runtime_zephyr_note_upstream(
+        2U,
+        1U,
+        NRF_UPSTREAM_ROLE_REMOTE);
+    run_worker_ticks(1U);
+    restored_after_rebase =
+        signal_log_count_containing("signal: upstream_restored ");
+
+    run_worker_advancing(
+        (uint32_t)CONFIG_APP_NRF_UPSTREAM_LOSS_TIMEOUT_MS);
+    assert(signal_log_count_containing("signal: upstream_lost ") ==
+           lost_before_rebase + 1U);
+    assert_last_applied_colors(false, true, false);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    assert(diagnostics.logger_led_output.green);
+
+    stage_tick_after(150U);
+    assert_last_applied_colors(true, false, false);
+    stage_tick_after(1850U);
+    assert_last_applied_colors(false, true, false);
+    assert(signal_log_count_containing("signal: upstream_lost ") ==
+           lost_before_rebase + 1U);
+
+    nrf_sensor_upstream_runtime_zephyr_note_upstream(
+        3U,
+        1U,
+        NRF_UPSTREAM_ROLE_REMOTE);
+    run_worker_ticks(1U);
+    assert_last_applied_colors(true, false, false);
+    assert_last_applied_matches_policy();
+    assert(signal_log_count_containing("signal: upstream_restored ") ==
+           restored_after_rebase + 1U);
+    run_worker_ticks(1U);
+    assert(signal_log_count_containing("signal: upstream_restored ") ==
+           restored_after_rebase + 1U);
+
+    s_init_fatal = true;
+    nrf_sensor_upstream_runtime_zephyr_note_upstream(
+        3U,
+        2U,
+        NRF_UPSTREAM_ROLE_REMOTE);
+    run_worker_ticks(1U);
+    assert_last_applied_colors(false, false, true);
+    assert_last_applied_matches_policy();
+    assert(signal_log_count_containing("signal: stage=ROLE_REMOTE ") == 1U);
+    assert(signal_log_count_containing("signal: upstream_lost ") ==
+           lost_before_rebase + 1U);
+    assert(signal_log_count_containing("signal: upstream_restored ") ==
+           restored_after_rebase + 1U);
+}
+
+static void test_successful_stage_signals(void)
+{
+    nrf_orientation_config_t orientation_config;
+    nrf_upstream_assign_t assign = make_assign();
+    nrf_sensor_upstream_runtime_zephyr_diagnostics_t diagnostics = {0};
+
+    nrf_orientation_default_config(&orientation_config);
+    assert(nrf_sensor_upstream_runtime_zephyr_configure_orientation(
+               &orientation_config) == 0);
+    assert(nrf_sensor_upstream_runtime_zephyr_start() == 0);
+    run_worker_ticks(1U);
+    assert_last_applied_colors(false, false, false);
+    assert_last_applied_matches_policy();
+    test_first_transaction_signal();
+
+    assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
+    nrf_sensor_upstream_runtime_zephyr_note_upstream(
+        1U,
+        1U,
+        NRF_UPSTREAM_ROLE_REMOTE);
+    run_worker_until_empty();
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    assert(diagnostics.activation_complete_generation == 1U);
+    assert(diagnostics.imu_ready);
+    assert(diagnostics.logger_led_output.green);
+
+    test_assignment_and_sensor_ready_signals();
+    test_upstream_loss_restore_and_init_fatal();
+}
+#endif
+
+#if defined(NRF_STAGE_SIGNAL_FAILED_TEST)
+static void test_failed_sensor_signal(void)
+{
+    nrf_orientation_config_t orientation_config;
+    nrf_upstream_assign_t assign = make_assign();
+    nrf_sensor_upstream_runtime_zephyr_diagnostics_t diagnostics = {0};
+
+    nrf_orientation_default_config(&orientation_config);
+    assert(nrf_sensor_upstream_runtime_zephyr_configure_orientation(
+               &orientation_config) == 0);
+    s_fail_imu_init = true;
+    assert(nrf_sensor_upstream_runtime_zephyr_start() == 0);
+    run_worker_ticks(1U);
+    assert_last_applied_colors(false, false, false);
+
+    assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
+    run_worker_until_empty();
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    assert(diagnostics.activation_complete_generation == 1U);
+    assert(!diagnostics.imu_ready && diagnostics.imu_init_result == -EIO);
+    assert(diagnostics.logger_led_output.red);
+    assert_last_applied_colors(false, false, false);
+    assert(signal_log_count_containing("signal: stage=SENSORS_FAILED ") == 1U);
+
+    assert_stage_pattern(3U, false, false, true);
+    assert_last_applied_colors(false, false, true);
+    assert_last_applied_matches_policy();
+    assert(signal_log_count_containing("signal: stage=SENSORS_FAILED ") == 1U);
+}
+#endif
+#endif
 
 static void process_refresh_request(uint32_t request_id)
 {
@@ -398,6 +697,13 @@ static void process_imu_calibration_request(
 
 int main(void)
 {
+#if defined(NRF_STAGE_SIGNAL_FAILED_TEST)
+    test_failed_sensor_signal();
+    return 0;
+#elif defined(NRF_STAGE_SIGNAL_SUCCESS_TEST)
+    test_successful_stage_signals();
+    return 0;
+#else
     nrf_orientation_config_t orientation_config;
     nrf_orientation_output_t orientation;
     nrf_upstream_assign_t assign = make_assign();
@@ -493,6 +799,10 @@ int main(void)
     assert(s_blue_led_action == NRF_BLUE_LED_BLINK_2HZ);
     assert(snapshot.orientation_blink_class == (uint8_t)orientation.blink_class);
     assert(snapshot.orientation_tilt_sin2_ppm == orientation.tilt_sin2_ppm);
+
+#if !defined(CONFIG_APP_NRF_STAGE_SIGNALS) || !CONFIG_APP_NRF_STAGE_SIGNALS
+    assert_last_applied_matches_policy();
+#endif
 
     /* The explicit request is accepted after the activation sample completes. */
     assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == 0);
@@ -702,4 +1012,5 @@ int main(void)
         assert(s_queue_put_calls == queue_calls_before);
     }
     return 0;
+#endif
 }

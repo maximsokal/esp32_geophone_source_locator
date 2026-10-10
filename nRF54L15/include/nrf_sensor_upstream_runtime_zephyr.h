@@ -20,6 +20,14 @@ int nrf_sensor_upstream_runtime_zephyr_start(void);
 int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
     const nrf_upstream_assign_t *assign);
 
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
+/* Snapshot of upstream activity and role assignment for the worker LED tick. */
+void nrf_sensor_upstream_runtime_zephyr_note_upstream(
+    uint32_t transaction_count,
+    uint32_t role_assignment_sequence,
+    uint8_t role_assignment_role);
+#endif
+
 int nrf_sensor_upstream_runtime_zephyr_request_refresh(
     const nrf_upstream_sensor_refresh_t *request);
 

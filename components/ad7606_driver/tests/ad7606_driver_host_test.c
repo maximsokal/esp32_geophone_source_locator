@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -8,10 +9,49 @@
 #include "sdkconfig.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+#include "esp_log.h"
+
+typedef enum {
+    FAKE_TCONV_NORMAL,
+    FAKE_TCONV_BUSY_NOT_LOW,
+    FAKE_TCONV_NO_RISING_EDGE,
+    FAKE_TCONV_NO_FALLING_EDGE,
+} fake_tconv_scenario_t;
+
+#define FAKE_LOG_CAPACITY 16384U
+static char fake_log_capture[FAKE_LOG_CAPACITY];
+
+void ad7606_test_log(const char *tag, const char *format, ...)
+{
+    (void)tag;
+    const size_t used = strlen(fake_log_capture);
+    if (used >= sizeof(fake_log_capture) - 1U) {
+        return;
+    }
+
+    va_list args;
+    va_start(args, format);
+    const int written = vsnprintf(
+        fake_log_capture + used,
+        sizeof(fake_log_capture) - used,
+        format,
+        args);
+    va_end(args);
+
+    if (written > 0) {
+        const size_t new_used = strlen(fake_log_capture);
+        if (new_used < sizeof(fake_log_capture) - 1U) {
+            fake_log_capture[new_used] = '\n';
+            fake_log_capture[new_used + 1U] = '\0';
+        }
+    }
+}
 
 static int fake_busy_level;
 static unsigned fake_convst_pulses;
+static unsigned fake_first_conversion_busy_reads;
 static unsigned fake_measured_busy_reads;
+static fake_tconv_scenario_t fake_tconv_scenario;
 static uint32_t fake_cycle_count;
 static int fake_spi_error;
 static int fake_gpio_error;
@@ -91,10 +131,29 @@ static void assert_ad7606_pins_hi_z(void)
 
 int gpio_get_level(gpio_num_t gpio_num)
 {
-    if (gpio_num == BOARD_AD7606_BUSY_GPIO && fake_convst_pulses >= 2U) {
-        return fake_measured_busy_reads++ == 0U ? 1 : 0;
+    if (gpio_num != BOARD_AD7606_BUSY_GPIO) {
+        return fake_busy_level;
     }
-    return fake_busy_level;
+
+    if (fake_convst_pulses == 0U) {
+        return fake_tconv_scenario == FAKE_TCONV_BUSY_NOT_LOW ? 1 : fake_busy_level;
+    }
+
+    if (fake_convst_pulses == 1U) {
+        const unsigned read_index = fake_first_conversion_busy_reads++;
+        if (read_index < 2U) {
+            return 0;
+        }
+        return fake_tconv_scenario == FAKE_TCONV_BUSY_NOT_LOW ? 1 : 0;
+    }
+
+    if (fake_tconv_scenario == FAKE_TCONV_NO_RISING_EDGE) {
+        return 0;
+    }
+    if (fake_tconv_scenario == FAKE_TCONV_NO_FALLING_EDGE) {
+        return 1;
+    }
+    return fake_measured_busy_reads++ == 0U ? 1 : 0;
 }
 
 uint32_t esp_cpu_get_cycle_count(void)
@@ -201,7 +260,9 @@ static void reset_fake(void)
     cs_driven_low_events = 0;
     fake_busy_level = 0;
     fake_convst_pulses = 0U;
+    fake_first_conversion_busy_reads = 0U;
     fake_measured_busy_reads = 0U;
+    fake_tconv_scenario = FAKE_TCONV_NORMAL;
     fake_cycle_count = 0U;
     fake_spi_error = 0;
     fake_gpio_error = 0;
@@ -211,6 +272,7 @@ static void reset_fake(void)
     fake_freq_limit_calls = 0;
     fake_freq_limit_gpio_used = false;
     fake_freq_limit_input_delay_ns = 0;
+    fake_log_capture[0] = '\0';
     last_transaction = NULL;
     last_rx_buffer = NULL;
     fake_time_us = 1000;
@@ -322,14 +384,44 @@ static void test_constant_payload_is_observable_but_not_transport_failure(void)
     ad7606_driver_deinit();
 }
 
-static void test_busy_timeout_fails_initialization_and_releases_bus(void)
+static void test_busy_not_low_before_convst_timeout_is_diagnosed(void)
 {
     reset_fake();
-    fake_busy_level = 1;
+    fake_tconv_scenario = FAKE_TCONV_BUSY_NOT_LOW;
     assert(ad7606_driver_init() == ESP_ERR_TIMEOUT);
+    assert(fake_transmit_calls == 1);
+    assert(fake_convst_pulses == 1U);
     assert(fake_spi_free_calls == 1);
+    assert(strstr(fake_log_capture,
+        "AD7606_TCONV_DIAG: stage=BUSY_NOT_LOW_BEFORE_CONVST busy_at_fail=1 busy_before_convst=1 rise_after_ns=0 waited_ns=0 timeout_us=100") != NULL);
     ad7606_sample_t sample = { 0 };
     assert(ad7606_driver_read(&sample) == ESP_ERR_INVALID_STATE);
+    ad7606_driver_deinit();
+}
+
+static void test_no_rising_edge_timeout_is_diagnosed(void)
+{
+    reset_fake();
+    fake_tconv_scenario = FAKE_TCONV_NO_RISING_EDGE;
+    assert(ad7606_driver_init() == ESP_ERR_TIMEOUT);
+    assert(fake_transmit_calls == 1);
+    assert(fake_convst_pulses == 2U);
+    assert(fake_spi_free_calls == 1);
+    assert(strstr(fake_log_capture,
+        "AD7606_TCONV_DIAG: stage=NO_RISING_EDGE busy_at_fail=0 busy_before_convst=0 rise_after_ns=0 waited_ns=100000 timeout_us=100") != NULL);
+    ad7606_driver_deinit();
+}
+
+static void test_no_falling_edge_timeout_is_diagnosed(void)
+{
+    reset_fake();
+    fake_tconv_scenario = FAKE_TCONV_NO_FALLING_EDGE;
+    assert(ad7606_driver_init() == ESP_ERR_TIMEOUT);
+    assert(fake_transmit_calls == 1);
+    assert(fake_convst_pulses == 2U);
+    assert(fake_spi_free_calls == 1);
+    assert(strstr(fake_log_capture,
+        "AD7606_TCONV_DIAG: stage=NO_FALLING_EDGE busy_at_fail=1 busy_before_convst=0 rise_after_ns=4000 waited_ns=100000 timeout_us=100") != NULL);
     ad7606_driver_deinit();
 }
 
@@ -396,7 +488,9 @@ int main(void)
     test_two_complement_boundary_codes_convert_to_documented_uv_scale();
     test_spi_error_does_not_publish_sample();
     test_constant_payload_is_observable_but_not_transport_failure();
-    test_busy_timeout_fails_initialization_and_releases_bus();
+    test_busy_not_low_before_convst_timeout_is_diagnosed();
+    test_no_rising_edge_timeout_is_diagnosed();
+    test_no_falling_edge_timeout_is_diagnosed();
     test_spi_initialization_error_is_returned();
     puts("AD7606 driver host tests passed");
     return 0;

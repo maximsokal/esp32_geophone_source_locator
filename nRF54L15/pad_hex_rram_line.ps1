@@ -83,8 +83,6 @@ try {
     $activeBaseType = 0
     $sawEof = $false
     $hasData = $false
-    [long]$highestEnd = 0
-    $lastHighestData = $null
 
     for ($lineIndex = 0; $lineIndex -lt $lines.Count; $lineIndex++) {
         $lineNumber = $lineIndex + 1
@@ -127,6 +125,7 @@ try {
             Address = $address
             Base = $activeBase
             BaseType = $activeBaseType
+            Start = $null
             End = $null
         }
 
@@ -140,14 +139,9 @@ try {
                     throw "Data record exceeds the Intel HEX address range at line $lineNumber."
                 }
                 $recordInfo.End = $recordEnd
+                $recordInfo.Start = $activeBase + $address
                 if ($count -gt 0) {
                     $hasData = $true
-                    if ($recordEnd -gt $highestEnd -or $lastHighestData -eq $null) {
-                        $highestEnd = $recordEnd
-                        $lastHighestData = $recordInfo
-                    } elseif ($recordEnd -eq $highestEnd) {
-                        $lastHighestData = $recordInfo
-                    }
                 }
             }
             1 {
@@ -196,42 +190,82 @@ try {
     if (-not $sawEof) {
         throw "Intel HEX is missing its EOF record: $InputHex"
     }
-    if (-not $hasData -or $lastHighestData -eq $null) {
+    if (-not $hasData) {
         throw "Intel HEX contains no non-empty data records: $InputHex"
     }
 
-    $padding = (0 - $highestEnd) % $Alignment
-    if ($padding -lt 0) {
-        $padding += $Alignment
+    $sortedIntervals = @(
+        $parsedRecords |
+            Where-Object { $_.Type -eq 0 -and $_.End -gt $_.Start } |
+            Sort-Object -Property Start, End
+    )
+    $runs = New-Object 'System.Collections.Generic.List[object]'
+    $currentRun = $null
+    foreach ($interval in $sortedIntervals) {
+        if ($null -eq $currentRun -or $interval.Start -gt $currentRun.End) {
+            if ($null -ne $currentRun) {
+                [void]$runs.Add($currentRun)
+            }
+            $currentRun = [pscustomobject]@{
+                Start = [long]$interval.Start
+                End = [long]$interval.End
+                LastData = $interval
+                Padding = 0
+            }
+        } else {
+            if ($interval.End -gt $currentRun.End -or
+                ($interval.End -eq $currentRun.End -and $interval.Index -gt $currentRun.LastData.Index)) {
+                $currentRun.End = [long]$interval.End
+                $currentRun.LastData = $interval
+            }
+        }
+    }
+    if ($null -ne $currentRun) {
+        [void]$runs.Add($currentRun)
     }
 
-    $insertedLines = New-Object 'System.Collections.Generic.List[string]'
-    $extensionChanged = $false
-    if ($padding -gt 0) {
-        [long]$cursor = $highestEnd
-        [long]$paddingBase = $lastHighestData.Base
-        $paddingBaseType = [int]$lastHighestData.BaseType
+    $insertions = @{}
+    [long]$totalPadding = 0
+    for ($runIndex = 0; $runIndex -lt $runs.Count; $runIndex++) {
+        $run = $runs[$runIndex]
+        [long]$alignedEnd = [long]([Math]::Ceiling($run.End / [double]$Alignment) * $Alignment)
+        [long]$targetEnd = $alignedEnd
+        if ($runIndex + 1 -lt $runs.Count -and $runs[$runIndex + 1].Start -lt $targetEnd) {
+            $targetEnd = [long]$runs[$runIndex + 1].Start
+        }
+        [long]$padding = $targetEnd - $run.End
+        if ($padding -le 0) {
+            continue
+        }
+        if ($targetEnd -gt 4294967296) {
+            throw "Padding after address 0x$('{0:x}' -f $run.End) exceeds the Intel HEX address range."
+        }
+
+        $insertedLines = New-Object 'System.Collections.Generic.List[string]'
+        [long]$cursor = $run.End
+        [long]$paddingBase = $run.LastData.Base
+        $paddingBaseType = [int]$run.LastData.BaseType
         $remaining = $padding
+        $extensionChanged = $false
 
         while ($remaining -gt 0) {
             $offset = $cursor - $paddingBase
             if ($offset -lt 0 -or $offset -gt 65535) {
                 if ($paddingBaseType -eq 2) {
-                    $nextSegment = ($paddingBase -shr 4) + 4096
-                    if ($nextSegment -le 65535) {
-                        $paddingBase += 65536
-                        $segmentData = New-Object byte[] 2
-                        $segmentData[0] = [byte](([int]($nextSegment -shr 8)) -band 0xFF)
-                        $segmentData[1] = [byte]([int]$nextSegment -band 0xFF)
-                        [void]$insertedLines.Add((New-IHexRecord 2 0 $segmentData))
-                        $paddingBaseType = 2
+                    [long]$nextSegmentBase = $paddingBase + 65536
+                    if ($nextSegmentBase -le 1048560) {
+                        $paddingBase = $nextSegmentBase
+                        [void]$insertedLines.Add((New-SegmentBaseRecord $paddingBase))
                     } else {
                         $paddingBase = [long]([Math]::Floor($cursor / 65536) * 65536)
                         [void]$insertedLines.Add((New-ExtendedLinearRecord $paddingBase))
                         $paddingBaseType = 4
                     }
-                } else {
+                } elseif ($paddingBaseType -eq 4) {
                     $paddingBase += 65536
+                    [void]$insertedLines.Add((New-ExtendedLinearRecord $paddingBase))
+                } else {
+                    $paddingBase = [long]([Math]::Floor($cursor / 65536) * 65536)
                     [void]$insertedLines.Add((New-ExtendedLinearRecord $paddingBase))
                     $paddingBaseType = 4
                 }
@@ -258,21 +292,20 @@ try {
 
             if ($remaining -gt 0 -and ($cursor - $paddingBase) -eq 65536) {
                 if ($paddingBaseType -eq 2) {
-                    $nextSegment = ($paddingBase -shr 4) + 4096
-                    if ($nextSegment -le 65535) {
-                        $paddingBase += 65536
-                        $segmentData = New-Object byte[] 2
-                        $segmentData[0] = [byte](([int]($nextSegment -shr 8)) -band 0xFF)
-                        $segmentData[1] = [byte]([int]$nextSegment -band 0xFF)
-                        [void]$insertedLines.Add((New-IHexRecord 2 0 $segmentData))
-                        $paddingBaseType = 2
+                    [long]$nextSegmentBase = $paddingBase + 65536
+                    if ($nextSegmentBase -le 1048560) {
+                        $paddingBase = $nextSegmentBase
+                        [void]$insertedLines.Add((New-SegmentBaseRecord $paddingBase))
                     } else {
                         $paddingBase = [long]([Math]::Floor($cursor / 65536) * 65536)
                         [void]$insertedLines.Add((New-ExtendedLinearRecord $paddingBase))
                         $paddingBaseType = 4
                     }
-                } else {
+                } elseif ($paddingBaseType -eq 4) {
                     $paddingBase += 65536
+                    [void]$insertedLines.Add((New-ExtendedLinearRecord $paddingBase))
+                } else {
+                    $paddingBase = [long]([Math]::Floor($cursor / 65536) * 65536)
                     [void]$insertedLines.Add((New-ExtendedLinearRecord $paddingBase))
                     $paddingBaseType = 4
                 }
@@ -282,12 +315,12 @@ try {
 
         if ($extensionChanged) {
             $restoreBase = $false
-            for ($tailIndex = $lastHighestData.Index + 1; $tailIndex -lt $parsedRecords.Count; $tailIndex++) {
+            for ($tailIndex = $run.LastData.Index + 1; $tailIndex -lt $parsedRecords.Count; $tailIndex++) {
                 $tailType = $parsedRecords[$tailIndex].Type
                 if ($tailType -eq 2 -or $tailType -eq 4) {
                     break
                 }
-                if ($tailType -eq 0) {
+                if ($tailType -eq 0 -and $parsedRecords[$tailIndex].End -gt $parsedRecords[$tailIndex].Start) {
                     $restoreBase = $true
                     break
                 }
@@ -295,24 +328,35 @@ try {
                     break
                 }
             }
-
             if ($restoreBase) {
-                if ($lastHighestData.BaseType -eq 2) {
-                    [void]$insertedLines.Add((New-SegmentBaseRecord $lastHighestData.Base))
-                } elseif ($lastHighestData.BaseType -eq 4) {
-                    [void]$insertedLines.Add((New-ExtendedLinearRecord $lastHighestData.Base))
+                if ($run.LastData.BaseType -eq 2) {
+                    [void]$insertedLines.Add((New-SegmentBaseRecord $run.LastData.Base))
+                } elseif ($run.LastData.BaseType -eq 4) {
+                    [void]$insertedLines.Add((New-ExtendedLinearRecord $run.LastData.Base))
                 } else {
                     [void]$insertedLines.Add((New-ExtendedLinearRecord 0))
                 }
             }
         }
+
+        if (-not $insertions.ContainsKey($run.LastData.Index)) {
+            $insertions[$run.LastData.Index] = New-Object 'System.Collections.Generic.List[string]'
+        }
+        foreach ($insertedLine in $insertedLines) {
+            [void]$insertions[$run.LastData.Index].Add($insertedLine)
+        }
+        $run.Padding = $padding
+        $totalPadding += $padding
     }
+
+    $highestRun = $runs[$runs.Count - 1]
+    $highestPadding = [long]$highestRun.Padding
 
     $outputLines = New-Object 'System.Collections.Generic.List[string]'
     for ($lineIndex = 0; $lineIndex -lt $lines.Count; $lineIndex++) {
         [void]$outputLines.Add($lines[$lineIndex])
-        if ($lineIndex -eq $lastHighestData.Index) {
-            foreach ($insertedLine in $insertedLines) {
+        if ($insertions.ContainsKey($lineIndex)) {
+            foreach ($insertedLine in $insertions[$lineIndex]) {
                 [void]$outputLines.Add($insertedLine)
             }
         }
@@ -320,7 +364,13 @@ try {
 
     $outputText = ($outputLines -join "`n") + "`n"
     [System.IO.File]::WriteAllText($OutputHex, $outputText, [System.Text.Encoding]::ASCII)
-    Write-Output ("hex tail pad: end=0x{0:x} pad={1} bytes" -f $highestEnd, $padding)
+    Write-Output ("hex tail pad: end=0x{0:x} pad={1} bytes" -f $highestRun.End, $highestPadding)
+    foreach ($run in $runs) {
+        if ($run.Padding -gt 0) {
+            Write-Output ("hex run pad: run=0x{0:x}..0x{1:x} pad={2} bytes" -f $run.Start, $run.End, $run.Padding)
+        }
+    }
+    Write-Output ("hex total pad: bytes={0}" -f $totalPadding)
     exit 0
 } catch {
     [Console]::Error.WriteLine("pad_hex_rram_line: {0}" -f $_.Exception.Message)

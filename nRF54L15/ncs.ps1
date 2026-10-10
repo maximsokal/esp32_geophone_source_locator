@@ -327,6 +327,10 @@ function Invoke-WestFlash([string]$BuildDir) {
         throw "Intel HEX RRAM padding script not found: $padScript"
     }
     $paddedHex = Join-Path (Split-Path -Parent $hexPath) "zephyr.padded.hex"
+    $verifyScript = Join-Path $project "verify_rram_tail.ps1"
+    if (-not (Test-Path -LiteralPath $verifyScript -PathType Leaf)) {
+        throw "RRAM tail readback verification script not found: $verifyScript"
+    }
 
     Write-Host ""
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $padScript -InputHex $hexPath -OutputHex $paddedHex
@@ -339,6 +343,18 @@ function Invoke-WestFlash([string]$BuildDir) {
     & west flash -d $BuildDir --skip-rebuild -f $paddedHex
     if ($LASTEXITCODE -ne 0) {
         throw "west flash failed: $LASTEXITCODE"
+    }
+
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifyScript -Hex $paddedHex -BuildAppDir $appArtifactDir
+    $verifyExitCode = $LASTEXITCODE
+    if ($verifyExitCode -eq 1) {
+        throw "RRAM readback mismatch (exit 1); flash content does not match the padded HEX."
+    }
+    if ($verifyExitCode -eq 3) {
+        throw "Firmware locked up after flashing (exit 3); flash content was verified by readback."
+    }
+    if ($verifyExitCode -ne 0) {
+        throw "RRAM tail readback check failed: $verifyExitCode; flash content was not verified."
     }
 }
 

@@ -2,6 +2,7 @@
 #include "nrf_sensor_transport.h"
 #include "nrf_cs_authority.h"
 #include "nrf_cs_control_protocol.h"
+#include "nrf_log_protocol.h"
 
 #if defined(ESP_PLATFORM) || defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
 #define NRF_TOPOLOGY_HAS_RANGING_SOLVER 1
@@ -452,6 +453,20 @@ static esp_err_t platform_probe_before_read(
         : platform_normalize_transfer_error(platform, address, probe_err);
 }
 
+static esp_err_t platform_probe_status_reselect(
+    nrf_topology_platform_t *platform,
+    uint8_t address)
+{
+    if (platform == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const esp_err_t probe_err = sensor_bus_probe_address_with_context(
+        address,
+        s_i2c_diag_source,
+        platform_selected_channel(platform));
+    return platform_normalize_transfer_error(platform, address, probe_err);
+}
+
 static void platform_record_read_result(
     nrf_topology_platform_t *platform,
     uint8_t address,
@@ -563,6 +578,23 @@ static esp_err_t platform_recover_classified_error(
     return result;
 }
 
+static void platform_log_stale_log_response(
+    uint8_t address,
+    uint8_t type,
+    bool reselected)
+{
+    static uint8_t warning_count;
+    if (warning_count >= 4U) {
+        return;
+    }
+    ++warning_count;
+    ESP_LOGW(TAG,
+             "NRF_STATUS_STALE_LOG_RESPONSE addr=0x%02X type=0x%02X reselect=%s",
+             (unsigned)address,
+             (unsigned)type,
+             reselected ? "ok" : "fail");
+}
+
 static esp_err_t platform_read_status(
     void *context,
     uint8_t address,
@@ -599,6 +631,29 @@ static esp_err_t platform_read_status(
         return err;
     }
 
+    if (nrf_upstream_protocol_decode_status(frame, sizeof(frame), status) == NRF_UPSTREAM_RESULT_OK) {
+        return ESP_OK;
+    }
+    if (sizeof(frame) < 4U || frame[0] != 'G' || frame[1] != 'S' ||
+        (frame[3] != NRF_LOG_MESSAGE_STATUS && frame[3] != NRF_LOG_MESSAGE_BLOCK)) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    const uint8_t stale_type = frame[3];
+    err = platform_probe_status_reselect(platform, address);
+    if (err != ESP_OK) {
+        platform_log_stale_log_response(address, stale_type, false);
+        return err;
+    }
+    platform_log_stale_log_response(address, stale_type, true);
+
+    err = platform_i2c_read_bytes(
+        platform, device, address, sizeof(frame), frame);
+    platform_record_read_result(platform, address, route_index, err == ESP_OK);
+    err = platform_normalize_transfer_error(platform, address, err);
+    if (err != ESP_OK) {
+        return err;
+    }
     return nrf_upstream_protocol_decode_status(frame, sizeof(frame), status) == NRF_UPSTREAM_RESULT_OK
         ? ESP_OK
         : ESP_ERR_INVALID_RESPONSE;
@@ -2522,6 +2577,38 @@ esp_err_t nrf_topology_service_get_leveling_nodes(
 }
 
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+esp_err_t nrf_topology_service_test_read_status_cached_probe(
+    uint8_t address,
+    nrf_upstream_status_t *status)
+{
+    nrf_topology_platform_t platform = {0};
+    size_t route_index;
+    size_t address_index;
+    esp_err_t err;
+
+    if (status == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    err = platform_open_address_handles(&platform);
+    if (err != ESP_OK) {
+        platform_close(&platform);
+        return err;
+    }
+    route_index = platform_read_route_index(&platform);
+    address_index = platform_read_address_index(address);
+    if (route_index >= NRF_PLATFORM_READ_ROUTE_COUNT ||
+        address_index >= NRF_PLATFORM_READ_ADDRESS_COUNT) {
+        platform_close(&platform);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Model a prior successful address probe, as after a cached log exchange. */
+    platform.read_probe_valid[route_index][address_index] = true;
+    err = platform_read_status(&platform, address, status);
+    platform_close(&platform);
+    return err;
+}
+
 void nrf_topology_service_test_set_height_reference_generation(uint16_t generation)
 {
     portENTER_CRITICAL(&s_state_lock);

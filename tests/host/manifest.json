@@ -214,7 +214,8 @@
         "components/ad7606_driver/tests/stubs",
         "components/ad7606_driver/include",
         "components/ad7606_driver"
-      ]
+      ],
+      "defines": ["AD7606_DRIVER_HOST_TEST=1"]
     },
     {
       "name": "ad7606_power_policy",

@@ -204,6 +204,22 @@ current-limited test to confirm D1-D3 polarity and series-resistor wiring;
 exercise green, warning confirmation, red priority, and reset behavior; confirm
 MAIN and LED-less boards still boot and communicate.
 
+### Lifecycle stage signals
+
+| Event | Signal | Source |
+| --- | --- | --- |
+| 1. First I2C transaction | 1x GREEN | TWIS `transaction_count` becomes nonzero |
+| 2. REMOTE assigned | 2x GREEN | New `role_assignment_sequence` with role `REMOTE` |
+| 3a. Sensors ready | 3x GREEN | Completed activation generation; BMI160 ready and no BMI160/BME280 init failure |
+| 3b. Sensor init failed | 3x RED | Completed activation generation with BMI160 not ready or BMI160/BME280 init failure |
+| L. Upstream lost | One 150 ms YELLOW flash every 2 s | No change to TWIS `transaction_count` for `APP_NRF_UPSTREAM_LOSS_TIMEOUT_MS`; repeats until traffic resumes |
+
+Each numbered stage pattern starts with 300 ms all-off, then N flashes of
+150 ms on and 150 ms off, then 300 ms all-off before normal policy output
+resumes. The overlay temporarily hides the normal logger LED indication.
+The init-fatal latch suppresses stage signals. LED polarity remains unverified
+(MAX-43).
+
 ## Boot lamp test and console status
 
 At boot, the image briefly drives BLUE, GREEN, YELLOW, then RED for 300 ms
@@ -255,9 +271,11 @@ From an ordinary PowerShell at the repository root:
 .\nRF54L15\ncs.ps1 monitor -Port COM7
 ```
 
-Before flashing, the wrapper pads the final Intel HEX data to a 16-byte
-boundary because OpenOCD can leave the last partial RRAM write-buffer line
-erased. The padded HEX is stored beside `zephyr.hex` in the external build dir.
+Before flashing, the wrapper pads every contiguous Intel HEX data segment to a
+16-byte boundary because OpenOCD can leave the last partial RRAM write-buffer
+line of each segment erased. After flashing, it independently checks the first
+bytes and tail of every segment in RRAM. The padded HEX is stored beside
+`zephyr.hex` in the external build dir.
 
 `ncs.ps1` is pinned to NCS v3.4.0. If `west` is not already available, the
 wrapper relaunches itself through:

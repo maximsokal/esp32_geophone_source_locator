@@ -351,6 +351,19 @@ static void print_state_transitions(const nrf_node_state_t *node_state)
 }
 #endif
 
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
+static void note_stage_signal_upstream(void)
+{
+    nrf_bootstrap_twis_diagnostics_t diagnostics = {0};
+
+    nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&diagnostics);
+    nrf_sensor_upstream_runtime_zephyr_note_upstream(
+        diagnostics.transaction_count,
+        diagnostics.role_assignment_sequence,
+        diagnostics.role_assignment_role);
+}
+#endif
+
 int main(void)
 {
     int ret;
@@ -476,6 +489,9 @@ int main(void)
         }
 
         drain_twis_transaction_records();
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
+        note_stage_signal_upstream();
+#endif
 #if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
         print_state_transitions(&node_state);
 #endif

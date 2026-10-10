@@ -87,6 +87,16 @@ def test_canonical_flash_is_explicit_ncs_hardware_action():
     assert 'Join-Path (Split-Path -Parent $hexPath) "zephyr.padded.hex"' in flash_function
     assert "pad_hex_rram_line.ps1" in flash_function
     assert "--skip-rebuild -f $paddedHex" in flash_function
+    assert 'Join-Path $project "verify_rram_tail.ps1"' in flash_function
+    assert "-Hex $paddedHex -BuildAppDir $appArtifactDir" in flash_function
+    flash_call = flash_function.index("& west flash -d $BuildDir")
+    verify_call = flash_function.index("-File $verifyScript -Hex $paddedHex")
+    flash_failure = flash_function.index('throw "west flash failed: $LASTEXITCODE"')
+    assert flash_call < flash_failure < verify_call
+    assert "$verifyExitCode = $LASTEXITCODE" in flash_function
+    assert 'throw "RRAM readback mismatch (exit 1); flash content does not match the padded HEX."' in flash_function
+    assert 'throw "Firmware locked up after flashing (exit 3); flash content was verified by readback."' in flash_function
+    assert 'throw "RRAM tail readback check failed: $verifyExitCode; flash content was not verified."' in flash_function
 
 
 def test_local_verify_routes_nrf_build_to_ncs_not_platformio():

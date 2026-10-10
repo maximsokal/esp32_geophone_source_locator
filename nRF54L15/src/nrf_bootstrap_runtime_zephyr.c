@@ -341,6 +341,10 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
     record_twis_request_type(ptr, len);
 
     s_log_response_selected=false;
+    if (len == 0U) {
+        goto record_transaction;
+    }
+
     if(handle_log_write(ptr,(size_t)len,&transaction_result))goto record_transaction;
 
     if((size_t)len==NRF_CS_CONTROL_EXECUTE_LENGTH&&ptr!=NULL&&ptr[3]==NRF_CS_CONTROL_MESSAGE_EXECUTE){
