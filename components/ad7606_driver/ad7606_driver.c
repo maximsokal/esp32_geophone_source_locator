@@ -180,6 +180,17 @@ static esp_err_t ad7606_measure_busy_tconv(void)
     }
     s_last_tconv_diag.cpu_hz = (uint32_t)cpu_hz;
 
+    const uint64_t timeout_cycles_64 =
+        (uint64_t)(unsigned)cpu_hz * AD7606_BUSY_RELEASE_TIMEOUT_US / 1000000U;
+    const uint64_t convst_pulse_cycles_64 =
+        ((uint64_t)(unsigned)cpu_hz * AD7606_CONVST_PULSE_US + 999999U) / 1000000U;
+    if (timeout_cycles_64 == 0U || timeout_cycles_64 > UINT32_MAX ||
+        convst_pulse_cycles_64 == 0U || convst_pulse_cycles_64 > UINT32_MAX) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const uint32_t timeout_cycles = (uint32_t)timeout_cycles_64;
+    const uint32_t convst_pulse_cycles = (uint32_t)convst_pulse_cycles_64;
+
     esp_err_t err = ad7606_wait_busy_level(0, AD7606_BUSY_RELEASE_TIMEOUT_US);
     if (err != ESP_OK) {
         if (err == ESP_ERR_TIMEOUT) {
@@ -196,26 +207,24 @@ static esp_err_t ad7606_measure_busy_tconv(void)
     if (err != ESP_OK) {
         return err;
     }
-    esp_rom_delay_us(AD7606_CONVST_PULSE_US);
-    err = gpio_set_level(BOARD_AD7606_CONVST_GPIO, 0);
-    if (err != ESP_OK) {
-        return err;
-    }
+    const uint32_t convst_rise_cycles = (uint32_t)esp_cpu_get_cycle_count();
 
-    const uint64_t timeout_cycles_64 =
-        (uint64_t)(unsigned)cpu_hz * AD7606_BUSY_RELEASE_TIMEOUT_US / 1000000U;
-    if (timeout_cycles_64 == 0U || timeout_cycles_64 > UINT32_MAX) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    const uint32_t timeout_start_cycles = (uint32_t)esp_cpu_get_cycle_count();
-    const uint32_t timeout_cycles = (uint32_t)timeout_cycles_64;
     uint32_t busy_rising_cycles = 0U;
     uint32_t busy_falling_cycles = 0U;
     uint32_t elapsed_cycles_at_timeout = 0U;
 
     err = ad7606_wait_busy_edge_cycles(
-        1, timeout_start_cycles, timeout_cycles, &busy_rising_cycles,
+        1, convst_rise_cycles, timeout_cycles, &busy_rising_cycles,
         &elapsed_cycles_at_timeout);
+
+    while ((uint32_t)((uint32_t)esp_cpu_get_cycle_count() - convst_rise_cycles) <
+        convst_pulse_cycles) {
+    }
+    const esp_err_t convst_fall_err = gpio_set_level(BOARD_AD7606_CONVST_GPIO, 0);
+    if (convst_fall_err != ESP_OK) {
+        return convst_fall_err;
+    }
+
     if (err != ESP_OK) {
         s_last_tconv_diag.stage = AD7606_TCONV_DIAG_STAGE_NO_RISING_EDGE;
         s_last_tconv_diag.waited_cycles = elapsed_cycles_at_timeout;
@@ -224,13 +233,13 @@ static esp_err_t ad7606_measure_busy_tconv(void)
     }
 
     err = ad7606_wait_busy_edge_cycles(
-        0, timeout_start_cycles, timeout_cycles, &busy_falling_cycles,
+        0, convst_rise_cycles, timeout_cycles, &busy_falling_cycles,
         &elapsed_cycles_at_timeout);
     if (err != ESP_OK) {
         s_last_tconv_diag.stage = AD7606_TCONV_DIAG_STAGE_NO_FALLING_EDGE;
         s_last_tconv_diag.waited_cycles = elapsed_cycles_at_timeout;
         s_last_tconv_diag.rise_after_cycles =
-            (uint32_t)(busy_rising_cycles - timeout_start_cycles);
+            (uint32_t)(busy_rising_cycles - convst_rise_cycles);
         s_last_tconv_diag.busy_at_fail = gpio_get_level(BOARD_AD7606_BUSY_GPIO);
         return err;
     }
@@ -689,6 +698,10 @@ static esp_err_t ad7606_self_test(void)
     }
     ESP_LOGI(TAG, "AD7606_TCONV_MEASURED: %u ns",
         (unsigned)s_measured_tconv_ns);
+    if (s_measured_tconv_ns < 1000U || s_measured_tconv_ns > 20000U) {
+        ESP_LOGW(TAG, "AD7606_TCONV_IMPLAUSIBLE ns=%u",
+            (unsigned)s_measured_tconv_ns);
+    }
 
     uint8_t self_test_window[1] = {0};
     ad7606_serial_diag_state_t self_test_diag;

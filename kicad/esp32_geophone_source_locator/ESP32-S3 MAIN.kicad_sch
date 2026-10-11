@@ -2073,8 +2073,8 @@
 		(uuid "23135e37-3b22-4836-bb06-b34e1df4f57b")
 	)
 	(no_connect
-		(at 163.83 77.47)
-		(uuid "70da3d30-ac41-463d-8eab-3156cb69ecea")
+		(at 163.83 80.01)
+		(uuid "6c86adfc-80bf-4450-a76b-177d1a2e8334")
 	)
 	(no_connect
 		(at 163.83 118.11)
@@ -2991,6 +2991,42 @@
 			)
 		)
 	)
+	(global_label "AD7606_RESET"
+		(shape output)
+		(at 163.83 77.47 0)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "ab83b6a9-3958-475c-86c6-5b9eb926ddfd")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 180.7245 77.47 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "AD7606_RESET" ""
+			(at 163.83 81.3118 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+	)
 	(global_label "TFT_RST"
 		(shape output)
 		(at 113.03 64.77 180)
@@ -3268,42 +3304,6 @@
 		)
 		(property "LOGGER_YELLOW" ""
 			(at 163.83 91.4718 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-	)
-	(global_label "AD7606_RESET"
-		(shape output)
-		(at 163.83 80.01 0)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left)
-		)
-		(uuid "ed3538ed-21f8-4d8d-80df-407a017d15c5")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 180.7245 80.01 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "AD7606_RESET" ""
-			(at 163.83 83.8518 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
