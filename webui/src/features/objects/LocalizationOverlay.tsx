@@ -27,6 +27,7 @@ interface Props {
   hasScan?: boolean | null;
   /** Tests render without WebGL. */
   renderScene?: boolean;
+  showMethodEstimateNote?: boolean;
 }
 
 /** The latest run of a method's posterior summary, or a dash. */
@@ -67,7 +68,7 @@ function unavailableReasonLabel(reason: string, t: ReturnType<typeof useT>): str
  * MAX-161: every persisted method of this recording in one scene; the
  * selected method is vivid, the others dim. Selecting never recomputes.
  */
-export default function LocalizationOverlay({ runs, geometry, hasScan = null, renderScene = true }: Props) {
+export default function LocalizationOverlay({ runs, geometry, hasScan = null, renderScene = true, showMethodEstimateNote = true }: Props) {
   const t = useT();
   const { locale } = useLocale();
   const base = useMemo(() => buildLocalizationOverlay(runs, geometry, null), [runs, geometry]);
@@ -139,6 +140,9 @@ export default function LocalizationOverlay({ runs, geometry, hasScan = null, re
 
       {model.sectors.length === 0 && model.unavailable.length === 0 && (
         <p className="overlay-note">{t('overlay.no_results', { variant: t(variant === 'scan_constrained' ? 'overlay.scan_constrained' : 'overlay.unconstrained') })}</p>
+      )}
+      {model.sectors.length > 0 && showMethodEstimateNote && (
+        <p className="overlay-note">{t('overlay.method_estimates_one_source')}</p>
       )}
       {model.sectors.length > 0 && renderScene && (
         <Suspense fallback={<p>{t('overlay.loading_3d')}</p>}>

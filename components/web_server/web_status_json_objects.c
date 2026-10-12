@@ -29,6 +29,8 @@ typedef struct
     seismic_recorder_session_summary_t sessions[SEISMIC_RECORDER_MAX_SESSIONS];
     size_t count;
     esp_err_t error;
+    object_store_delete_scope_t delete_scope;
+    bool delete_scope_available;
 
 } web_status_session_cache_t;
 
@@ -282,6 +284,9 @@ esp_err_t web_status_json_objects_refresh(void)
                 "%s",
                 staging->profiles[i].summary.id
             );
+
+            session_cache->delete_scope_available =
+                object_store_get_delete_scope(session_cache->object_id, &session_cache->delete_scope) == ESP_OK;
 
             /*
              * Session history uses the same cooperative rule: one parent
@@ -714,6 +719,16 @@ static bool web_status_json_add_objects_from_payload(
             cJSON_AddBoolToObject(object, "active", active) == NULL ||
             !web_status_json_add_location(object, &profile->location)
         ) {
+            return false;
+        }
+
+        const web_status_session_cache_t *cached_scope = &payload->session_cache[i];
+        cJSON *delete_scope = cJSON_AddObjectToObject(object, "delete_scope");
+        if (delete_scope == NULL ||
+            cJSON_AddBoolToObject(delete_scope, "available", cached_scope->delete_scope_available) == NULL ||
+            cJSON_AddNumberToObject(delete_scope, "sessions", (double)cached_scope->delete_scope.sessions) == NULL ||
+            cJSON_AddNumberToObject(delete_scope, "artifacts", (double)cached_scope->delete_scope.artifacts) == NULL ||
+            cJSON_AddNumberToObject(delete_scope, "localization_runs", (double)cached_scope->delete_scope.localization_runs) == NULL) {
             return false;
         }
 

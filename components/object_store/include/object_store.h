@@ -121,6 +121,13 @@ typedef struct
     object_store_cs_pairs_t cs_pairs;
 } object_store_profile_t;
 
+typedef struct
+{
+    uint32_t sessions;
+    uint32_t artifacts;
+    uint32_t localization_runs;
+} object_store_delete_scope_t;
+
 /*
  * Opaque process-lifetime anti-delete ownership token. A zero token means the
  * caller holds no lease. Multiple independent owners may lease the same object
@@ -172,6 +179,7 @@ esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t
 esp_err_t object_store_get_profile_cached(const char *object_id, object_store_profile_t *profile);
 esp_err_t object_store_set_active(const char *object_id);
 esp_err_t object_store_delete(const char *object_id);
+esp_err_t object_store_get_delete_scope(const char *object_id, object_store_delete_scope_t *scope);
 esp_err_t object_store_rename(const char *object_id, const char *name);
 esp_err_t object_store_set_location(const char *object_id, const object_store_location_t *location);
 esp_err_t object_store_set_cable_length(const char *object_id, size_t pod_index, float length_m);

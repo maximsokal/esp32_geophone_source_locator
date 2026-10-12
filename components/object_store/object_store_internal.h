@@ -35,6 +35,7 @@ esp_err_t object_store_fs_load_active(char *object_id, size_t object_id_size);
 esp_err_t object_store_fs_save_active(const char *object_id);
 esp_err_t object_store_fs_clear_active(void);
 esp_err_t object_store_fs_delete_object(const char *object_id);
+esp_err_t object_store_fs_get_delete_scope(const char *object_id, object_store_delete_scope_t *scope);
 
 esp_err_t object_store_json_write_metadata(const char *object_id, const char *initial_name);
 esp_err_t object_store_json_read_name_locked(const char *object_id, char *name, size_t name_size);

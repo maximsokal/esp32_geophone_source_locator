@@ -95,6 +95,19 @@ static void test_actions_follow_allowed_mask(void)
     for (size_t i = 0U; i < model.action_count; ++i) assert(model.actions[i] == expected[i]);
     assert(model.selected_action == 0U);
 
+    workflow_snapshot_t object_snapshot = make_snapshot(WORKFLOW_STEP_OBJECT);
+    object_snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_START_MEASUREMENT);
+    ui_workflow_model_state_t object_state = {0};
+    build(&object_snapshot, &object_state, &ranging, &model);
+    assert(object_snapshot.step == WORKFLOW_STEP_OBJECT);
+    assert(model.action_count == 1U);
+    assert(model.actions[0] == WORKFLOW_COMMAND_START_MEASUREMENT);
+    ui_workflow_event_t start_event = ui_workflow_model_handle_key(
+        &object_snapshot, &object_state, UI_WORKFLOW_KEY_OK, 99U);
+    assert(start_event.type == UI_WORKFLOW_EVENT_SEND_COMMAND);
+    assert(start_event.command == WORKFLOW_COMMAND_START_MEASUREMENT);
+    assert(object_snapshot.step == WORKFLOW_STEP_OBJECT);
+
     ui_workflow_event_t event = ui_workflow_model_handle_key(
         &snapshot, &state, UI_WORKFLOW_KEY_DOWN, 100U);
     assert(event.type == UI_WORKFLOW_EVENT_NONE);

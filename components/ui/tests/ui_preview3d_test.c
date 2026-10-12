@@ -7,6 +7,7 @@
 
 #include "scan_occupancy.h"
 #include "ui_preview3d.h"
+#include "ui_scan_preview_policy.h"
 
 /* MAX-187: bounded software 3D preview (host math, clipping, golden). */
 
@@ -1137,8 +1138,53 @@ static void test_shared_candidate_volume_vectors(void)
     free(fixture);
 }
 
+static void test_sensor_frame_fallback_with_method_estimate_marker_limits(void)
+{
+    ui_preview3d_view_t view;
+    ui_preview3d_stats_t stats;
+    ui_preview3d_view_preset(&view, UI_PREVIEW3D_PRESET_ISO);
+
+    assert(ui_scan_preview_select_view(false, false, 4U, 3U) == UI_SCAN_PREVIEW_VIEW_SENSOR_ESTIMATES);
+    assert(ui_scan_preview_select_view(false, false, 0U, 0U) == UI_SCAN_PREVIEW_VIEW_UNAVAILABLE);
+    assert(ui_scan_preview_select_view(true, true, 4U, 3U) == UI_SCAN_PREVIEW_VIEW_SCAN);
+
+    ui_preview3d_source_candidate_t candidates[18] = {0};
+    char methods[18][16];
+    for (size_t i = 0U; i < 18U; ++i) {
+        (void)snprintf(methods[i], sizeof(methods[i]), "method_%u", (unsigned)i);
+        candidates[i].method_name = methods[i];
+        candidates[i].computed_at_ms = i + 1U;
+        candidates[i].position = (ui_preview3d_vec3_t){(float)i, (float)(i % 5U), 0.0f};
+        candidates[i].solved = true;
+    }
+    ui_preview3d_source_t selected[UI_PREVIEW3D_MAX_SOURCES] = {0};
+    const size_t boundaries[] = {16U, 17U, 18U};
+    const size_t expected[] = {16U, 17U, 17U};
+    for (size_t boundary = 0U; boundary < 3U; ++boundary) {
+        const size_t count = ui_preview3d_select_sources(candidates, boundaries[boundary],
+                                                        selected, UI_PREVIEW3D_MAX_SOURCES);
+        assert(count == expected[boundary]);
+    }
+
+    ui_preview3d_scene_t scene = {0};
+    scene.sensor_valid[0] = true;
+    scene.sensors[0] = (ui_preview3d_vec3_t){0.0f, 0.0f, 0.0f};
+    scene.sensor_valid[1] = true;
+    scene.sensors[1] = (ui_preview3d_vec3_t){4.0f, 0.0f, 0.0f};
+    memcpy(scene.sources, selected, sizeof(selected));
+    scene.source_count = UI_PREVIEW3D_MAX_SOURCES;
+    frame_reset();
+    ui_preview3d_render(&scene, &view, UI_PREVIEW3D_LAYER_SENSORS, frame_pixels(), 320, 240, &stats);
+    assert(stats.drew_sensors);
+    assert(count_colour(320, 240, UI_PREVIEW3D_PX_MAIN) > 0);
+    assert(count_colour(320, 240, UI_PREVIEW3D_PX_SOURCE) > 0 ||
+           count_colour(320, 240, UI_PREVIEW3D_PX_SOURCE_SELECTED) > 0);
+    frame_assert_guards(320, 240);
+}
+
 int main(void)
 {
+    test_sensor_frame_fallback_with_method_estimate_marker_limits();
     test_presets_and_keys();
     test_projection_axes();
     test_line_clipping();

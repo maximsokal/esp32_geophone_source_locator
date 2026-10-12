@@ -15,7 +15,7 @@ vi.mock('../../src/api/deviceApi', async (importOriginal) => ({
   ...api,
 }));
 
-import type { LocalizationRunListing } from '../../src/api/deviceApi';
+import type { LocalizationRun, LocalizationRunListing } from '../../src/api/deviceApi';
 import LocalizationCalculatePanel from '../../src/features/objects/LocalizationCalculatePanel';
 import { loadUkrainianCatalog, LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
 
@@ -66,6 +66,22 @@ function dispose(renderer: ReactTestRenderer): void {
 }
 
 describe('localization geometry provenance', () => {
+  it.each(['en', 'uk'] as const)('labels panel results as method estimates in %s', async (locale) => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const run: LocalizationRun = {
+      schema_version: 1, object_id: 'OBJ_0001', session_id: 'S000009', computed_at_ms: 1,
+      kind: 'individual_method', method_name: 'gauss_newton_tdoa', method_version: 1,
+      channel_mask_used: 15, channel_mask_rejected: 0, dimensionality: 'planar_2d',
+      geometry_computed_at_ms: 1, propagation_model_name: 'constant', propagation_speed_mps: 300,
+      propagation_speed_uncertainty_mps: 10, confidence_score: 0.7, solved: true,
+      terminal_status: 'none', session_epoch_known: false, session_epoch_timestamp_us: null,
+      source_position: { x_m: 1, y_m: 2, z_m: 0 }, rms_residual_us: 500,
+    };
+    const renderer = await renderPanel(listing({ runs: [run] }), locale);
+    expect(textContent(renderer.toJSON()).join(' ')).toContain(translate(locale, 'overlay.method_estimates_one_source'));
+    dispose(renderer);
+  });
+
   it('shows every field and preserves IDs and generations in both locales', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const value = listing({

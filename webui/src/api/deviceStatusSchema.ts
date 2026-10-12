@@ -471,6 +471,13 @@ function checkObjectStore(store: StatusObject): void {
     requiredString(profile, 'name', path);
     requiredBoolean(profile, 'active', path);
     nullableFloatNumberArray(profile, 'cable_lengths_m', path);
+    if (profile.delete_scope !== undefined) {
+      const scope = objectValue(profile.delete_scope, `${path}.delete_scope`);
+      requiredBoolean(scope, 'available', `${path}.delete_scope`);
+      requiredNumber(scope, 'sessions', `${path}.delete_scope`);
+      requiredNumber(scope, 'artifacts', `${path}.delete_scope`);
+      requiredNumber(scope, 'localization_runs', `${path}.delete_scope`);
+    }
     const location = requiredObject(profile, 'location', path);
     requiredBoolean(location, 'valid', `${path}.location`);
     requiredFloatNumber(location, 'latitude', `${path}.location`);

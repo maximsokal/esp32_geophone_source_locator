@@ -25,6 +25,7 @@ idf_component_register(
         "fonts/ui_font_montserrat_14.c"
         "ui_frame_scheduler.c"
         "ui_objects.c"
+        "ui_objects_delete_model.c"
         "ui_objects_input.c"
         "ui_storage.c"
         "ui_storage_input.c"
@@ -48,6 +49,7 @@ idf_component_register(
         nrf_topology_service
         wifi_manager
         object_service
+        object_store
         measurement_service
         localization_calculate
         localization_job

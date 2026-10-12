@@ -1202,6 +1202,36 @@
       "uk": "НЕМАЄ ОГЛЯДУ",
       "max_len": 12
     },
+    "objects.delete_scope.sessions": {
+      "en": "Sessions: %u",
+      "uk": "Сеансів: %u",
+      "max_len": 16
+    },
+    "objects.delete_scope.artifacts": {
+      "en": "Scans/files: %u",
+      "uk": "Скани/файли: %u",
+      "max_len": 17
+    },
+    "objects.delete_scope.runs": {
+      "en": "Localization runs: %u",
+      "uk": "Запуски локалізації: %u",
+      "max_len": 25
+    },
+    "objects.delete_scope.unavailable": {
+      "en": "Delete counts unavailable",
+      "uk": "Кількість невідома",
+      "max_len": 25
+    },
+    "scan.sensor_estimates_frame": {
+      "en": "SENSOR FRAME, NO SCAN",
+      "uk": "РАМКА, БЕЗ СКАНА",
+      "max_len": 21
+    },
+    "scan.method_estimates": {
+      "en": "Method estimates, one source",
+      "uk": "Оцінки методів, одне джерело",
+      "max_len": 31
+    },
     "scan.voxels": {
       "en": "VOXELS %u  COARSEN %u%s%s",
       "uk": "ВОКСЕЛІ %u  СПРОЩЕННЯ %u%s%s",

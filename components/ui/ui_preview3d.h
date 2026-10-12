@@ -120,7 +120,7 @@ typedef enum
 {
     UI_PREVIEW3D_LAYER_AUTO = 0,   /* combined if registered, else scan */
     UI_PREVIEW3D_LAYER_SCAN,
-    UI_PREVIEW3D_LAYER_SENSORS,
+    UI_PREVIEW3D_LAYER_SENSORS,    /* Sensor-frame layout and estimates; works without a scan. */
 } ui_preview3d_layer_t;
 
 typedef enum

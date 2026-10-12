@@ -778,8 +778,11 @@ export default function LocalizationCalculatePanel({ objectId, sessionId, busy, 
 
       {job !== null && <LocalizationJobReport status={job} />}
 
+      {runs !== null && runs.some((run) => run.solved) && (
+        <p className="overlay-note">{t('overlay.method_estimates_one_source')}</p>
+      )}
       {runs !== null && runs.length > 0 && (
-        <LocalizationOverlay runs={runs} geometry={geometry} hasScan={hasScan} />
+        <LocalizationOverlay runs={runs} geometry={geometry} hasScan={hasScan} showMethodEstimateNote={false} />
       )}
 
       {runs !== null && (

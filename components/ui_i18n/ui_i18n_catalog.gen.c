@@ -129,6 +129,10 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "CREATED %s", /* objects.created */
     "CREATING OBJECT...", /* objects.creating */
     "DELETE OBJECT", /* objects.delete */
+    "Scans/files: %u", /* objects.delete_scope.artifacts */
+    "Localization runs: %u", /* objects.delete_scope.runs */
+    "Sessions: %u", /* objects.delete_scope.sessions */
+    "Delete counts unavailable", /* objects.delete_scope.unavailable */
     "DELETE FAILED TO START", /* objects.delete_start_failed */
     "DELETED %s", /* objects.deleted */
     "DELETING...", /* objects.deleting */
@@ -160,6 +164,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "LOW", /* power_badge.low */
     "LEFT BACK RIGHT YAW UP/DN PITCH OK VIEW", /* scan.footer */
     "LOADING...", /* scan.loading */
+    "Method estimates, one source", /* scan.method_estimates */
     "NO 3D SCAN", /* scan.no_3d_scan */
     "NO PREVIEW", /* scan.no_preview */
     "OCCUPANCY %u  %s", /* scan.occupancy */
@@ -178,6 +183,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "scan unreadable", /* scan.reason_scan_unreadable */
     "screen allocation failed", /* scan.reason_screen_memory */
     "stale scan CRC", /* scan.reason_stale_crc */
+    "SENSOR FRAME, NO SCAN", /* scan.sensor_estimates_frame */
     "3D PREVIEW", /* scan.title */
     "VOXELS %u  COARSEN %u%s%s", /* scan.voxels */
     "CHECKING STORAGE...", /* shared.checking_storage */
@@ -533,6 +539,10 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "СТВОРЕНО %s", /* objects.created */
     "СТВОРЕННЯ ОБ’ЄКТА...", /* objects.creating */
     "ВИДАЛИТИ ОБ’ЄКТ", /* objects.delete */
+    "Скани/файли: %u", /* objects.delete_scope.artifacts */
+    "Запуски локалізації: %u", /* objects.delete_scope.runs */
+    "Сеансів: %u", /* objects.delete_scope.sessions */
+    "Кількість невідома", /* objects.delete_scope.unavailable */
     "НЕ ВДАЛОСЯ ПОЧАТИ ВИДАЛЕННЯ", /* objects.delete_start_failed */
     "ВИДАЛЕНО %s", /* objects.deleted */
     "ВИДАЛЕННЯ...", /* objects.deleting */
@@ -564,6 +574,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "НИЗЬК.", /* power_badge.low */
     "LEFT НАЗАД RIGHT ОБЕРТ UP/DN НАХИЛ OK ОГЛЯД", /* scan.footer */
     "ЗАВАНТАЖЕННЯ...", /* scan.loading */
+    "Оцінки методів, одне джерело", /* scan.method_estimates */
     "НЕМАЄ 3D-СКАНУ", /* scan.no_3d_scan */
     "НЕМАЄ ОГЛЯДУ", /* scan.no_preview */
     "ЗАПОВНЕННЯ %u  %s", /* scan.occupancy */
@@ -582,6 +593,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "НЕ ВДАЛОСЯ ПРОЧИТАТИ СКАН", /* scan.reason_scan_unreadable */
     "НЕ ВДАЛОСЯ СТВОРИТИ ЕКРАН", /* scan.reason_screen_memory */
     "СКАН CRC ЗАСТАРІВ", /* scan.reason_stale_crc */
+    "РАМКА, БЕЗ СКАНА", /* scan.sensor_estimates_frame */
     "3D ОГЛЯД", /* scan.title */
     "ВОКСЕЛІ %u  СПРОЩЕННЯ %u%s%s", /* scan.voxels */
     "ПЕРЕВІРКА СХОВИЩА...", /* shared.checking_storage */

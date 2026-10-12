@@ -1,5 +1,7 @@
 #include "ui_internal.h"
 
+#include "object_store.h"
+
 
 static bool ui_objects_measurement_mutation_allowed_locked(void)
 {
@@ -239,6 +241,11 @@ void ui_handle_objects_key_locked(
         } else {
             context->objects_mode =
                 UI_OBJECTS_DELETE_CONFIRM;
+
+            object_store_delete_scope_t delete_scope = {0};
+            const object_service_summary_t *selected = &context->objects[context->object_index];
+            const bool scope_available = object_store_get_delete_scope(selected->id, &delete_scope) == ESP_OK;
+            ui_objects_delete_model_build(scope_available, &delete_scope, &context->object_delete_model);
 
             ui_set_notice_locked(
                 NULL

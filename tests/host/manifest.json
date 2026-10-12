@@ -502,6 +502,7 @@
       "name": "ui_preview3d",
       "sources": [
         "components/ui/ui_preview3d.c",
+        "components/ui/ui_scan_preview_policy.c",
         "components/scan_preview/scan_preview.c",
         "components/scan_occupancy/scan_occupancy.c",
         "tests/host/stubs/object_store_profile/cJSON.c",

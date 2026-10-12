@@ -57,3 +57,18 @@ ui_scan_preview_run_eligibility_t ui_scan_preview_run_eligibility(
     }
     return UI_SCAN_PREVIEW_RUN_ELIGIBLE;
 }
+
+
+ui_scan_preview_view_t ui_scan_preview_select_view(
+    bool scan_present,
+    bool scan_view_ready,
+    size_t sensor_count,
+    size_t source_count)
+{
+    if (scan_present) {
+        return scan_view_ready ? UI_SCAN_PREVIEW_VIEW_SCAN : UI_SCAN_PREVIEW_VIEW_UNAVAILABLE;
+    }
+    return sensor_count > 0U || source_count > 0U
+        ? UI_SCAN_PREVIEW_VIEW_SENSOR_ESTIMATES
+        : UI_SCAN_PREVIEW_VIEW_UNAVAILABLE;
+}

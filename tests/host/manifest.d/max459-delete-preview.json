@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "max459_object_store_delete_scope",
+      "sources": ["components/object_store/tests/object_store_fs_contract_test.c"],
+      "include_dirs": ["components/object_store/tests/stubs", "components/object_store", "components/object_store/include", "components/object_format/include"]
+    },
+    {
+      "name": "max459_ui_objects_delete_model",
+      "sources": ["components/ui/ui_objects_delete_model.c", "components/ui/tests/ui_objects_delete_model_test.c"],
+      "include_dirs": ["components/object_store/tests/stubs", "components/object_store/include", "components/object_format/include", "components/ui_i18n/include", "components/ui"]
+    }
+  ]
+}

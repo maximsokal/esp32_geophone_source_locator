@@ -112,3 +112,17 @@ esp_err_t object_store_delete(
     object_store_internal_end_file_operation();
     return err;
 }
+
+
+esp_err_t object_store_get_delete_scope(
+    const char *object_id,
+    object_store_delete_scope_t *scope)
+{
+    if (object_id == NULL || scope == NULL) return ESP_ERR_INVALID_ARG;
+
+    const esp_err_t err = object_store_internal_begin_file_operation();
+    if (err != ESP_OK) return err;
+    const esp_err_t count_err = object_store_fs_get_delete_scope(object_id, scope);
+    object_store_internal_end_file_operation();
+    return count_err;
+}

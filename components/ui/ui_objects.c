@@ -179,55 +179,37 @@ static void ui_objects_render_delete_confirm(lv_obj_t *screen)
 {
     ui_context_t *context = ui_context();
 
-    lv_obj_t *card = ui_create_card_locked(
-        screen, 16, 62, 288, 112
-    );
-
-    if (card == NULL) {
-        return;
-    }
+    lv_obj_t *card = ui_create_card_locked(screen, 16, 42, 288, 156);
+    if (card == NULL) return;
 
     (void)ui_create_label_locked(
-        card,
-        14,
-        14,
-        260,
-        ui_tr(UI_I18N_KEY_OBJECTS_CONFIRM_DELETE),
-        UI_COLOR_ERROR
-    );
+        card, 14, 8, 260, ui_tr(UI_I18N_KEY_OBJECTS_CONFIRM_DELETE), UI_COLOR_ERROR);
 
-    if (
-        context->object_count > 0 &&
-        context->object_index < context->object_count
-    ) {
+    if (context->object_count > 0U && context->object_index < context->object_count) {
         char text[UI_OBJECTS_TEXT_SIZE];
         ui_utf8_format(
             text,
             sizeof(text),
             ui_tr(UI_I18N_KEY_OBJECTS_NAME_PAIR),
             context->objects[context->object_index].id,
-            context->objects[context->object_index].name
-        );
+            context->objects[context->object_index].name);
+        (void)ui_create_label_locked(card, 14, 31, 260, text, UI_COLOR_TEXT);
+    }
 
-        (void)ui_create_label_locked(
-            card,
-            14,
-            45,
-            260,
-            text,
-            UI_COLOR_TEXT
-        );
+    for (size_t i = 0U; i < context->object_delete_model.line_count &&
+         i < UI_OBJECTS_DELETE_MODEL_MAX_LINES; ++i) {
+        char text[64];
+        const ui_objects_delete_model_line_t *line = &context->object_delete_model.lines[i];
+        if (line->key == UI_I18N_KEY_OBJECTS_DELETE_SCOPE_UNAVAILABLE) {
+            (void)ui_utf8_format(text, sizeof(text), "%s", ui_tr(line->key));
+        } else {
+            (void)ui_utf8_format(text, sizeof(text), ui_tr(line->key), (unsigned)line->count);
+        }
+        (void)ui_create_label_locked(card, 14, 55 + (int)(i * 19U), 260, text, UI_COLOR_MUTED);
     }
 
     (void)ui_create_label_locked(
-        card,
-        14,
-        75,
-        260,
-        ui_tr(UI_I18N_KEY_OBJECTS_CONFIRM_FOOTER),
-        UI_COLOR_WARNING
-    );
-
+        card, 14, 119, 260, ui_tr(UI_I18N_KEY_OBJECTS_CONFIRM_FOOTER), UI_COLOR_WARNING);
     ui_objects_render_notice(screen, 196);
 }
 

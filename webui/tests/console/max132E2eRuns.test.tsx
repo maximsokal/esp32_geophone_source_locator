@@ -17,6 +17,9 @@ vi.mock('../../src/api/deviceApi', async (importOriginal) => ({
   ...api,
 }));
 
+// This panel test checks localization output without mounting its browser-only Canvas scene.
+vi.mock('../../src/features/objects/LocalizationOverlayScene', () => ({ default: () => null }));
+
 import type { LocalizationRunListing } from '../../src/api/deviceApi';
 import LocalizationCalculatePanel from '../../src/features/objects/LocalizationCalculatePanel';
 import { loadUkrainianCatalog, LocaleProvider, translate, type I18nLocale } from '../../src/i18n';

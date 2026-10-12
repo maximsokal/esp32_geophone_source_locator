@@ -49,6 +49,7 @@
         "components/ui/ui_system.c",
         "components/ui/ui_system_model.c",
         "components/ui/ui_objects_input.c",
+        "components/ui/ui_objects_delete_model.c",
         "components/ui_i18n/ui_utf8_format.c",
         "components/ui_i18n/ui_i18n.c",
         "components/ui_i18n/ui_i18n_catalog.gen.c",
@@ -88,6 +89,8 @@
         "tests/host/stubs/ui_event_dispatcher",
         "tests/host/stubs/app_events",
         "components/ui",
+        "components/object_store/include",
+        "components/object_format/include",
         "components/nrf_topology_service/include",
         "components/ui_i18n/include"
       ],

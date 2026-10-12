@@ -819,10 +819,8 @@ void ui_workflow_screen_open_locked(void)
     s_workflow->last_snapshot_ms = 0U;
     const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
     ui_workflow_refresh_snapshot(s_workflow, now_ms);
-    if (s_workflow->snapshot_valid && s_workflow->snapshot.step == WORKFLOW_STEP_OBJECT &&
-        (s_workflow->snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_START_MEASUREMENT)) != 0U) {
-        ui_workflow_send_command(s_workflow, WORKFLOW_COMMAND_START_MEASUREMENT, now_ms);
-    }
+    /* Opening the screen only renders the OBJECT-step action; the operator
+     * explicitly sends START_MEASUREMENT by pressing OK. */
     s_workflow->last_snapshot_ms = now_ms;
     ui_workflow_build_ranging_view(s_workflow);
     ui_workflow_update(s_workflow, now_ms);

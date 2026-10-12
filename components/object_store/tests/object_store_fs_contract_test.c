@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <dirent.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -153,23 +154,37 @@ esp_err_t object_store_fs_clear_active(void)
 #include "../object_store_mutations.c"
 #include "../../object_format/object_format.c"
 
+static void remove_test_tree(const char *path)
+{
+    struct stat info;
+    if (stat(path, &info) != 0) return;
+#ifdef _WIN32
+    const bool is_directory = (info.st_mode & _S_IFMT) == _S_IFDIR;
+#else
+    const bool is_directory = S_ISDIR(info.st_mode);
+#endif
+    if (!is_directory) {
+        (void)remove(path);
+        return;
+    }
+
+    DIR *directory = opendir(path);
+    if (directory != NULL) {
+        struct dirent *entry;
+        while ((entry = readdir(directory)) != NULL) {
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+            char child[512];
+            const int written = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+            if (written >= 0 && written < (int)sizeof(child)) remove_test_tree(child);
+        }
+        closedir(directory);
+    }
+    (void)rmdir(path);
+}
+
 static void remove_known_tree(void)
 {
-    (void)remove(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/object.json");
-    (void)remove(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0002/object.json");
-    (void)remove(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0003");
-    (void)remove(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0007/object.json");
-    (void)remove(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_9999");
-    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions");
-    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001");
-    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0002/sessions");
-    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0002");
-    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0007/sessions");
-    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0007");
-    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_bad");
-    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH);
-    (void)rmdir(STORAGE_MANAGER_ROOT_PATH);
-    (void)rmdir(STORAGE_MANAGER_MOUNT_POINT);
+    remove_test_tree(STORAGE_MANAGER_MOUNT_POINT);
 }
 
 static void make_base_tree(void)
@@ -253,6 +268,62 @@ static void test_exclusive_layout_reports_ownership(void)
 
     assert(object_store_fs_create_layout("OBJ_0002", NULL) == ESP_ERR_INVALID_ARG);
     assert(object_store_fs_create_layout("OBJ_0002/..", &root_created) == ESP_ERR_INVALID_ARG);
+}
+
+static void write_file(const char *path, const char *text)
+{
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fputs(text, file) >= 0);
+    assert(fclose(file) == 0);
+}
+
+static void make_object_session(const char *object_id, const char *session_id)
+{
+    char path[OBJECT_STORE_FS_PATH_SIZE];
+    const int written = snprintf(path, sizeof(path), "%s/%s/sessions/%s",
+                                 STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id);
+    assert(written >= 0 && written < (int)sizeof(path));
+    assert(storage_manager_create_directory(path) == ESP_OK);
+}
+
+static void test_delete_scope_counts_zero_one_and_many(void)
+{
+    object_store_delete_scope_t scope;
+    bool root_created = false;
+
+    make_base_tree();
+    assert(object_store_fs_create_layout("OBJ_0001", &root_created) == ESP_OK);
+    assert(root_created);
+    write_metadata("OBJ_0001");
+    assert(object_store_get_delete_scope("OBJ_0001", &scope) == ESP_OK);
+    assert(scope.sessions == 0U && scope.artifacts == 0U && scope.localization_runs == 0U);
+
+    make_object_session("OBJ_0001", "S000001");
+    char path[OBJECT_STORE_FS_PATH_SIZE];
+    (void)snprintf(path, sizeof(path), "%s/OBJ_0001/sessions/S000001/scan-v1.bin", STORAGE_MANAGER_OBJECTS_PATH);
+    write_file(path, "scan");
+    (void)snprintf(path, sizeof(path), "%s/OBJ_0001/sessions/S000001/localization_run_tdoa_1.json", STORAGE_MANAGER_OBJECTS_PATH);
+    write_file(path, "{}");
+    assert(object_store_get_delete_scope("OBJ_0001", &scope) == ESP_OK);
+    assert(scope.sessions == 1U && scope.artifacts == 1U && scope.localization_runs == 1U);
+
+    make_object_session("OBJ_0001", "S000002");
+    make_object_session("OBJ_0001", "S000003");
+    (void)snprintf(path, sizeof(path), "%s/OBJ_0001/sessions/S000002/preview-v1.bin", STORAGE_MANAGER_OBJECTS_PATH);
+    write_file(path, "preview");
+    (void)snprintf(path, sizeof(path), "%s/OBJ_0001/sessions/S000002/occupancy-v1.bin", STORAGE_MANAGER_OBJECTS_PATH);
+    write_file(path, "occupancy");
+    (void)snprintf(path, sizeof(path), "%s/OBJ_0001/sessions/S000003/localization_run_eikonal_2.json", STORAGE_MANAGER_OBJECTS_PATH);
+    write_file(path, "{}");
+    (void)snprintf(path, sizeof(path), "%s/OBJ_0001/sessions/S000003/localization_picks_3.json", STORAGE_MANAGER_OBJECTS_PATH);
+    write_file(path, "picks");
+    assert(object_store_get_delete_scope("OBJ_0001", &scope) == ESP_OK);
+    assert(scope.sessions == 3U && scope.artifacts == 4U && scope.localization_runs == 2U);
+
+    assert(object_store_get_delete_scope(NULL, &scope) == ESP_ERR_INVALID_ARG);
+    assert(object_store_get_delete_scope("OBJ_9999", &scope) == ESP_ERR_NOT_FOUND);
+    remove_known_tree();
 }
 
 static void test_create_exists_list_and_delete_contracts(void)
@@ -388,6 +459,7 @@ int main(void)
     test_path_validation_and_copy();
     test_next_id_uses_only_committed_directories();
     test_exclusive_layout_reports_ownership();
+    test_delete_scope_counts_zero_one_and_many();
     test_create_exists_list_and_delete_contracts();
     test_set_active_validates_before_commit();
     test_object_lifetime_leases_block_delete();

@@ -58,6 +58,13 @@ describe('LocalizationOverlay view', () => {
     expect(renderToStaticMarkup(createElement(LocalizationOverlay, { runs: [], geometry: null, renderScene: false }))).toBe('');
   });
 
+  it.each(['en', 'uk'] as const)('labels the rendered source markers as method estimates in %s', (locale: I18nLocale) => {
+    const html = renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale }, createElement(LocalizationOverlay, {
+      runs: [run('gauss_newton_tdoa')], geometry: null, renderScene: false,
+    })));
+    expect(html).toContain(translate(locale, 'overlay.method_estimates_one_source'));
+  });
+
   it.each(['en', 'uk'] as const)('renders the localized overlay heading and scan explanation in %s', (locale: I18nLocale) => {
     const html = renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale }, createElement(LocalizationOverlay, {
       runs: [run('gauss_newton_tdoa')], geometry: null, hasScan: false, renderScene: false,

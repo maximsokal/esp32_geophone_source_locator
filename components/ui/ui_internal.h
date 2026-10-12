@@ -12,6 +12,7 @@
 #include "measurement_service.h"
 #include "object_service.h"
 #include "sd_card_info.h"
+#include "ui_objects_delete_model.h"
 #include "seismic_acquisition.h"
 #include "seismic_buffer.h"
 #include "storage_service.h"
@@ -139,6 +140,7 @@ typedef struct
     bool workflow_activation_pending;
     size_t workflow_object_index;
     bool objects_workflow_picker_on_open;
+    ui_objects_delete_model_t object_delete_model;
     object_service_summary_t objects[
         OBJECT_SERVICE_MAX_OBJECTS
     ];

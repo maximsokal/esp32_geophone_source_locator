@@ -10,12 +10,20 @@ export interface ObjectLocation {
   source: string;
 }
 
+export interface ObjectDeleteScope {
+  available: boolean;
+  sessions: number;
+  artifacts: number;
+  localization_runs: number;
+}
+
 export interface ObjectProfile {
   id: string;
   name: string;
   active: boolean;
   location: ObjectLocation;
   cable_lengths_m: number[];
+  delete_scope?: ObjectDeleteScope;
 }
 
 export interface ObjectStoreState {

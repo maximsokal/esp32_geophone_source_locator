@@ -156,6 +156,13 @@ esp_err_t object_service_delete_async(const char *object_id)
     return object_id != NULL && object_id[0] != '\0' ? ESP_OK : ESP_ERR_INVALID_ARG;
 }
 
+esp_err_t object_store_get_delete_scope(const char *object_id, object_store_delete_scope_t *scope)
+{
+    if (object_id == NULL || scope == NULL) return ESP_ERR_INVALID_ARG;
+    memset(scope, 0, sizeof(*scope));
+    return ESP_OK;
+}
+
 
 esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snapshot)
 {
@@ -479,7 +486,8 @@ static void test_home_measurements_redirects_active_object_for_ok_and_right(void
     for (size_t i = 0U; i < sizeof(keys) / sizeof(keys[0]); ++i) {
         reset_state();
         s_active_object_present = true;
-        s_workflow_snapshot.step = WORKFLOW_STEP_SENSOR_CHECK;
+        s_workflow_snapshot.step = WORKFLOW_STEP_OBJECT;
+        s_workflow_snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_START_MEASUREMENT);
         (void)snprintf(s_workflow_snapshot.object_id,
             sizeof(s_workflow_snapshot.object_id), "%s", "active-object");
 
@@ -488,6 +496,8 @@ static void test_home_measurements_redirects_active_object_for_ok_and_right(void
         ui_screen_handle_key_locked(UI_SCREEN_HOME, keys[i]);
 
         assert(s_context.screen == UI_SCREEN_WORKFLOW);
+        assert(s_workflow_snapshot.step == WORKFLOW_STEP_OBJECT);
+        assert((s_workflow_snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_START_MEASUREMENT)) != 0U);
         assert(s_acquisition_start_calls == 0U);
         assert(s_measurement_renders == 0U);
     }

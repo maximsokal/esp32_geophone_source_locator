@@ -111,6 +111,12 @@ export default function ObjectsFeature(props: Props) {
     && measurementOwnsTheRecorder
     && measurementObjectId === selected.id;
   const anotherRecording = measurementOwnsTheRecorder && !selectedRecording;
+  const recordingOwnerObject = measurement?.object_name || measurementObjectId || recording?.object_id || '';
+  const recordingOwnerSession = measurement?.session_id || recording?.session_id || '';
+  const objectMutationDisabled = busy || anotherRecording;
+  const recordingLockReason = anotherRecording
+    ? t('objects.controls_locked_recording', { object: recordingOwnerObject, session: recordingOwnerSession })
+    : null;
   const recordingGate = status?.recording_gate;
   const gateReason = recordingGate === undefined ? null : recordingGateReason(recordingGate, t);
   const gateWarning = recordingGate === undefined ? null : recordingGateWarning(recordingGate, t);
@@ -147,7 +153,7 @@ export default function ObjectsFeature(props: Props) {
         {active !== null && (
           <div className="workflow-entry">
             <small>{active.name}</small>
-            <button type="button" className="secondary" disabled={busy} onClick={() => props.onStartWorkflow(active.id)}>
+            <button type="button" className="secondary" disabled={busy || (measurementOwnsTheRecorder && active.id !== measurementObjectId)} onClick={() => props.onStartWorkflow(active.id)}>
               {t('workflow.entry_button')}
             </button>
           </div>
@@ -216,17 +222,29 @@ export default function ObjectsFeature(props: Props) {
                 <div><span className="eyebrow">{t('objects.object_label', { id: selected.id })}</span><h1>{selected.name}</h1></div>
                 <span className={`state-pill ${selected.active ? 'ready' : 'offline'}`}>{selected.active ? t('web.objects.active') : t('objects.inactive')}</span>
               </div>
+              {recordingLockReason !== null && <p className="console-alert" role="status">{recordingLockReason}</p>}
               <div className="inline-form">
-                <input value={rename} maxLength={31} onChange={(event) => setRename(event.target.value)} />
-                <button disabled={busy || rename.trim().length === 0 || rename.trim() === selected.name} onClick={() => void props.onRename(selected.id, rename.trim())}>{t('objects.rename')}</button>
+                <input value={rename} maxLength={31} disabled={objectMutationDisabled} onChange={(event) => setRename(event.target.value)} />
+                <button disabled={objectMutationDisabled || rename.trim().length === 0 || rename.trim() === selected.name} onClick={() => void props.onRename(selected.id, rename.trim())}>{t('objects.rename')}</button>
               </div>
               <div className="console-actions">
-                {!selected.active && <button disabled={busy} onClick={() => void props.onActivate(selected.id)}>{t('web.objects.set_active')}</button>}
+                {!selected.active && <button disabled={objectMutationDisabled} onClick={() => void props.onActivate(selected.id)}>{t('web.objects.set_active')}</button>}
                 <button
-                  disabled={busy || selectedRecording}
+                  disabled={objectMutationDisabled || selectedRecording}
                   className="danger"
                   title={selectedRecording ? t('objects.delete_stop_first') : undefined}
-                  onClick={() => { if (window.confirm(t('objects.delete_confirm', { name: selected.name }))) void props.onDelete(selected.id); }}
+                  onClick={() => {
+                    const scope = selected.delete_scope;
+                    const confirmation = scope?.available === true
+                      ? t('objects.delete_confirm_scope', {
+                        name: selected.name,
+                        sessions: formatNumber(locale, scope.sessions),
+                        artifacts: formatNumber(locale, scope.artifacts),
+                        runs: formatNumber(locale, scope.localization_runs),
+                      })
+                      : t('objects.delete_confirm_scope_unavailable', { name: selected.name });
+                    if (window.confirm(confirmation)) void props.onDelete(selected.id);
+                  }}
                 >{t('web.objects.delete')}</button>
               </div>
             </article>
@@ -235,7 +253,7 @@ export default function ObjectsFeature(props: Props) {
               <div className="card-heading">
                 <div><span className="eyebrow">{t('objects.base_station')}</span><h2>{t('objects.phone_gps')}</h2></div>
                 <button
-                  disabled={busy}
+                  disabled={objectMutationDisabled}
                   onClick={() => {
                     setGpsMessage({ kind: 'requesting' });
                     void props.onBindGps(selected.id)
@@ -271,13 +289,14 @@ export default function ObjectsFeature(props: Props) {
                       max="100"
                       step="0.1"
                       value={length}
+                      disabled={objectMutationDisabled}
                       onChange={(event) => {
                         const next = [...cables];
                         next[index] = Number(event.target.value);
                         setCables(next);
                       }}
                     />
-                    <button disabled={busy} onClick={() => void props.onCable(selected.id, index + 1, normalizeCableLength(cables[index]))}>{t('objects.save')}</button>
+                    <button disabled={objectMutationDisabled} onClick={() => void props.onCable(selected.id, index + 1, normalizeCableLength(cables[index]))}>{t('objects.save')}</button>
                   </label>
                 ))}
               </div>
@@ -299,12 +318,6 @@ export default function ObjectsFeature(props: Props) {
                   <div><dt>{t('objects.written')}</dt><dd>{formatNumber(locale, recording?.samples_written ?? 0)} {t('objects.frames')}</dd></div>
                   <div><dt>{t('objects.ring_drops')}</dt><dd>{formatNumber(locale, recording?.dropped_frames ?? 0)}</dd></div>
                 </dl>
-              )}
-
-              {anotherRecording && (
-                <div className="console-alert">
-                  {t('objects.another_recording', { session: recording?.session_id ?? '', object: recording?.object_id ?? '' })}
-                </div>
               )}
 
               {recordingGateBlocksStart && (
@@ -358,7 +371,7 @@ export default function ObjectsFeature(props: Props) {
                     onClick={() => void props.onRecording(selected.id, false)}
                   >{t('objects.stop_recording')}</button>
                 ) : (
-                  <button type="button" className="secondary" disabled={busy} onClick={() => props.onStartWorkflow(selected.id)}>
+                  <button type="button" className="secondary" disabled={objectMutationDisabled} onClick={() => props.onStartWorkflow(selected.id)}>
                     {t('objects.recording_workflow_required')}
                   </button>
                 )}

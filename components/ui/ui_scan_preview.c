@@ -65,6 +65,7 @@ typedef struct
     uint32_t *draw_order;
     ui_preview3d_source_t sources[UI_PREVIEW3D_MAX_SOURCES];
     size_t source_count;
+    bool sensor_estimates_fallback;
     char fallback_reason[40];
 } preview_result_t;
 
@@ -105,6 +106,7 @@ static TaskHandle_t s_worker_task;
 static lv_obj_t *s_canvas;
 static lv_obj_t *s_status_label;
 static lv_obj_t *s_info_label;
+static lv_obj_t *s_legend_label;
 static uint8_t *s_canvas_storage;
 static uint8_t *s_canvas_pixels;
 static uint32_t *s_draw_order;
@@ -116,6 +118,7 @@ static object_store_geometry_t s_geometry;
 static uint64_t s_geometry_computed_at_ms;
 static ui_preview3d_source_t s_sources[UI_PREVIEW3D_MAX_SOURCES];
 static size_t s_source_count;
+static bool s_sensor_estimates_fallback;
 static bool s_from_workflow;
 static bool s_workflow_recording;
 static bool s_stop_armed;
@@ -375,6 +378,16 @@ static void set_reason(preview_result_t *result, const char *reason)
     (void)ui_utf8_truncate(result->fallback_reason, sizeof(result->fallback_reason));
 }
 
+
+static size_t geometry_sensor_count(const object_store_geometry_t *geometry)
+{
+    size_t count = 0U;
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        if (geometry->pods[i].computed) ++count;
+    }
+    return count;
+}
+
 static void load_session(const preview_request_t *request, preview_result_t *result)
 {
     result->status = SCAN_PREVIEW_SCREEN_NO_PREVIEW;
@@ -395,6 +408,16 @@ static void load_session(const preview_request_t *request, preview_result_t *res
     uint32_t scan_crc = 0U;
     const esp_err_t scan_err = read_scan_crc(request, &scan_crc);
     if (scan_err == ESP_ERR_NOT_FOUND) {
+        load_sources(request, result, NULL);
+        const size_t sensor_count = geometry_sensor_count(&result->geometry);
+        const ui_scan_preview_view_t view = ui_scan_preview_select_view(
+            false, false, sensor_count, result->source_count);
+        if (view == UI_SCAN_PREVIEW_VIEW_SENSOR_ESTIMATES) {
+            result->status = SCAN_PREVIEW_SCREEN_READY;
+            result->sensor_estimates_fallback = true;
+            set_reason(result, "sensor estimates without scan");
+            return;
+        }
         result->status = SCAN_PREVIEW_SCREEN_NO_3D_SCAN;
         set_reason(result, "scan missing");
         return;
@@ -488,6 +511,7 @@ static const char *preview_reason_text(const char *reason)
     if (strcmp(reason, "preview missing") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_PREVIEW_MISSING);
     if (strcmp(reason, "preview unreadable") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_PREVIEW_UNREADABLE);
     if (strcmp(reason, "no preview or occupancy") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_NO_DATA);
+    if (strcmp(reason, "sensor estimates without scan") == 0) return ui_tr(UI_I18N_KEY_SCAN_SENSOR_ESTIMATES_FRAME);
     if (strcmp(reason, "no valid preview or occupancy") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_NO_VALID_DATA);
     if (strcmp(reason, "screen allocation failed") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_SCREEN_MEMORY);
     if (strcmp(reason, "canvas memory unavailable") == 0) return ui_tr(UI_I18N_KEY_SCAN_REASON_CANVAS_MEMORY);
@@ -498,6 +522,7 @@ static const char *preview_reason_text(const char *reason)
 static void show_status_locked(scan_preview_screen_status_t status, const char *reason)
 {
     if (s_status_label == NULL) return;
+    if (s_legend_label != NULL) lv_obj_set_hidden(s_legend_label, true);
     const char *text = status == SCAN_PREVIEW_SCREEN_LOADING ? ui_tr(UI_I18N_KEY_SCAN_LOADING) :
         status == SCAN_PREVIEW_SCREEN_NO_3D_SCAN ? ui_tr(UI_I18N_KEY_SCAN_NO_3D_SCAN) : ui_tr(UI_I18N_KEY_SCAN_NO_PREVIEW);
     lv_label_set_text(s_status_label, text);
@@ -511,18 +536,25 @@ static void show_ready_locked(void)
 {
     if (s_status_label != NULL) lv_obj_set_hidden(s_status_label, true);
     if (s_info_label == NULL) return;
-    char text[128];
-    const char *reason = preview_reason_text(s_state.fallback_reason);
-    if (s_state.has_preview) {
-        ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_SCAN_VOXELS),
-                 (unsigned)s_state.preview.voxel_count,
-                 (unsigned)s_state.preview.coarsening_steps,
-                 reason[0] != '\0' ? "  " : "", reason);
+    if (s_sensor_estimates_fallback) {
+        lv_label_set_text(s_info_label, ui_tr(UI_I18N_KEY_SCAN_SENSOR_ESTIMATES_FRAME));
     } else {
-        ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_SCAN_OCCUPANCY),
-                 (unsigned)s_state.occupancy.occupied_count, reason);
+        char text[128];
+        const char *reason = preview_reason_text(s_state.fallback_reason);
+        if (s_state.has_preview) {
+            ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_SCAN_VOXELS),
+                           (unsigned)s_state.preview.voxel_count,
+                           (unsigned)s_state.preview.coarsening_steps,
+                           reason[0] != '\0' ? "  " : "", reason);
+        } else {
+            ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_SCAN_OCCUPANCY),
+                     (unsigned)s_state.occupancy.occupied_count, reason);
+        }
+        lv_label_set_text(s_info_label, text);
     }
-    lv_label_set_text(s_info_label, text);
+    if (s_legend_label != NULL) {
+        lv_obj_set_hidden(s_legend_label, s_source_count == 0U);
+    }
 }
 
 static void add_geometry_overlay(ui_preview3d_scene_t *scene)
@@ -556,8 +588,9 @@ static void render_ready_locked(void)
     add_geometry_overlay(&scene);
     ui_preview3d_stats_t stats;
     const int64_t render_started = esp_timer_get_time();
-    ui_preview3d_render(&scene, &s_view, UI_PREVIEW3D_LAYER_AUTO, s_canvas_pixels,
-                        PREVIEW_WIDTH, PREVIEW_HEIGHT, &stats);
+    ui_preview3d_render(&scene, &s_view,
+                        s_sensor_estimates_fallback ? UI_PREVIEW3D_LAYER_SENSORS : UI_PREVIEW3D_LAYER_AUTO,
+                        s_canvas_pixels, PREVIEW_WIDTH, PREVIEW_HEIGHT, &stats);
     const int64_t render_elapsed = esp_timer_get_time() - render_started;
     const uint64_t render_us = render_elapsed > 0 ? (uint64_t)render_elapsed : 0U;
     show_ready_locked();
@@ -618,6 +651,13 @@ static void accept_result_locked(const preview_request_t *request, preview_resul
     result->draw_order = NULL;
     s_source_count = result->source_count;
     memcpy(s_sources, result->sources, s_source_count * sizeof(*s_sources));
+    s_sensor_estimates_fallback = result->sensor_estimates_fallback;
+    /* scan_preview_state normally requires an artifact payload for READY. A
+     * sensor-frame view owns only geometry and sources, so promote this local
+     * state after the shared loader has consumed the empty payload. */
+    if (s_sensor_estimates_fallback && s_state.status == SCAN_PREVIEW_SCREEN_NO_PREVIEW) {
+        s_state.status = SCAN_PREVIEW_SCREEN_READY;
+    }
     render_current_locked();
 }
 
@@ -705,6 +745,7 @@ void ui_scan_preview_screen_open_locked(void)
     atomic_store_explicit(&s_active_generation, generation, memory_order_release);
     s_session_id[0] = '\0';
     s_source_count = 0U;
+    s_sensor_estimates_fallback = false;
     s_workflow_recording = false;
     s_stop_armed = false;
     s_stop_armed_until_ms = 0U;
@@ -743,6 +784,13 @@ void ui_scan_preview_screen_open_locked(void)
     s_status_label = ui_create_label_locked(screen, 10, 106, 300, ui_tr(UI_I18N_KEY_SCAN_LOADING), UI_COLOR_TEXT);
     if (s_status_label != NULL) lv_obj_set_style_text_align(s_status_label, LV_TEXT_ALIGN_CENTER, 0);
     s_info_label = ui_create_label_locked(screen, 8, 38, 304, "", UI_COLOR_TEXT);
+    s_legend_label = ui_create_label_locked(screen, 8, 195, 304, ui_tr(UI_I18N_KEY_SCAN_METHOD_ESTIMATES), UI_COLOR_TEXT);
+    if (s_legend_label != NULL) {
+        lv_obj_set_style_bg_color(s_legend_label, lv_color_hex(UI_COLOR_HEADER), 0);
+        lv_obj_set_style_bg_opa(s_legend_label, LV_OPA_80, 0);
+        lv_obj_set_style_pad_hor(s_legend_label, 3, 0);
+        lv_obj_set_hidden(s_legend_label, true);
+    }
     if (s_info_label != NULL) {
         lv_obj_set_style_bg_color(s_info_label, lv_color_hex(UI_COLOR_HEADER), 0);
         lv_obj_set_style_bg_opa(s_info_label, LV_OPA_80, 0);
@@ -796,6 +844,7 @@ void ui_scan_preview_release_locked(void)
     s_canvas = NULL;
     s_status_label = NULL;
     s_info_label = NULL;
+    s_legend_label = NULL;
     s_draw_order = NULL;
     s_session_id[0] = '\0';
     memset(&s_geometry, 0, sizeof(s_geometry));

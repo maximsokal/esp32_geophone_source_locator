@@ -133,3 +133,97 @@ esp_err_t object_store_fs_list(
      * order, now selects newest/top-N plus a pinned existing ACTIVE object. */
     return ESP_OK;
 }
+
+
+static void object_store_fs_delete_scope_increment(uint32_t *value)
+{
+    if (*value < UINT32_MAX) ++(*value);
+}
+
+static bool object_store_fs_is_directory_mode(const struct stat *info)
+{
+#ifdef _WIN32
+    return (info->st_mode & _S_IFMT) == _S_IFDIR;
+#else
+    return S_ISDIR(info->st_mode);
+#endif
+}
+
+static bool object_store_fs_is_localization_run_file(const char *name)
+{
+    static const char prefix[] = "localization_run_";
+    const size_t prefix_length = sizeof(prefix) - 1U;
+    const size_t name_length = strlen(name);
+    return name_length > prefix_length + 5U &&
+        strncmp(name, prefix, prefix_length) == 0 &&
+        strcmp(name + name_length - 5U, ".json") == 0;
+}
+
+static esp_err_t object_store_fs_count_delete_scope_directory(
+    const char *path,
+    bool object_root,
+    bool sessions_parent,
+    object_store_delete_scope_t *scope)
+{
+    DIR *directory = opendir(path);
+    if (directory == NULL) return ESP_FAIL;
+
+    esp_err_t result = ESP_OK;
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+
+        char child_path[OBJECT_STORE_FS_PATH_SIZE];
+        const int written = snprintf(child_path, sizeof(child_path), "%s/%s", path, entry->d_name);
+        if (written < 0 || written >= (int)sizeof(child_path)) {
+            result = ESP_ERR_INVALID_SIZE;
+            break;
+        }
+
+        struct stat info;
+        if (stat(child_path, &info) != 0) {
+            result = ESP_FAIL;
+            break;
+        }
+        if (object_store_fs_is_directory_mode(&info)) {
+            if (sessions_parent) object_store_fs_delete_scope_increment(&scope->sessions);
+            const bool child_is_sessions_parent = object_root && strcmp(entry->d_name, "sessions") == 0;
+            result = object_store_fs_count_delete_scope_directory(
+                child_path,
+                false,
+                child_is_sessions_parent,
+                scope
+            );
+            if (result != ESP_OK) break;
+            continue;
+        }
+
+        if (object_root && strcmp(entry->d_name, "object.json") == 0) continue;
+        if (object_store_fs_is_localization_run_file(entry->d_name)) {
+            object_store_fs_delete_scope_increment(&scope->localization_runs);
+        } else {
+            object_store_fs_delete_scope_increment(&scope->artifacts);
+        }
+    }
+
+    closedir(directory);
+    return result;
+}
+
+esp_err_t object_store_fs_get_delete_scope(
+    const char *object_id,
+    object_store_delete_scope_t *scope)
+{
+    if (scope == NULL || !object_format_id_is_valid(object_id)) return ESP_ERR_INVALID_ARG;
+    memset(scope, 0, sizeof(*scope));
+
+    char object_path[OBJECT_STORE_FS_PATH_SIZE];
+    esp_err_t err = object_store_fs_object_path(object_id, object_path, sizeof(object_path));
+    if (err != ESP_OK) return err;
+
+    struct stat info;
+    if (stat(object_path, &info) != 0 || !object_store_fs_is_directory_mode(&info)) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    return object_store_fs_count_delete_scope_directory(object_path, true, false, scope);
+}

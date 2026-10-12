@@ -181,9 +181,19 @@ static void test_joint_fusion_follows_its_own_provenance(void)
     assert(ui_scan_preview_run_eligibility(&fusion, b) == UI_SCAN_PREVIEW_RUN_ELIGIBLE);
 }
 
+static void test_scan_and_sensor_estimate_view_selection(void)
+{
+    assert(ui_scan_preview_select_view(false, false, 0U, 0U) == UI_SCAN_PREVIEW_VIEW_UNAVAILABLE);
+    assert(ui_scan_preview_select_view(false, false, 2U, 0U) == UI_SCAN_PREVIEW_VIEW_SENSOR_ESTIMATES);
+    assert(ui_scan_preview_select_view(false, false, 0U, 1U) == UI_SCAN_PREVIEW_VIEW_SENSOR_ESTIMATES);
+    assert(ui_scan_preview_select_view(true, true, 2U, 17U) == UI_SCAN_PREVIEW_VIEW_SCAN);
+    assert(ui_scan_preview_select_view(true, false, 2U, 17U) == UI_SCAN_PREVIEW_VIEW_UNAVAILABLE);
+}
+
 int main(void)
 {
     test_identity_format();
+    test_scan_and_sensor_estimate_view_selection();
     test_occupancy_frame_id_must_match_current_scan();
     test_method_classification_table();
     test_replaced_scan_run_eligibility();

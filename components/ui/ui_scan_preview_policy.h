@@ -16,6 +16,20 @@
 /* "scan-crc32:" (11) + 8 hex digits + NUL. */
 #define UI_SCAN_PREVIEW_IDENTITY_SIZE 20U
 
+typedef enum
+{
+    UI_SCAN_PREVIEW_VIEW_UNAVAILABLE = 0,
+    UI_SCAN_PREVIEW_VIEW_SCAN,
+    UI_SCAN_PREVIEW_VIEW_SENSOR_ESTIMATES,
+} ui_scan_preview_view_t;
+
+/* Preserve scan-backed previews; use sensor-frame estimates only when no scan exists. */
+ui_scan_preview_view_t ui_scan_preview_select_view(
+    bool scan_present,
+    bool scan_view_ready,
+    size_t sensor_count,
+    size_t source_count);
+
 /* Writes the identity of `scan_crc`; false (and an empty string) when the
  * buffer is too small. */
 bool ui_scan_preview_format_identity(uint32_t scan_crc, char *out, size_t capacity);
