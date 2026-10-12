@@ -98,11 +98,43 @@ static void test_heartbeat_handles_uint32_wraparound(void)
     ));
 }
 
+static void test_tca_fault_set_clear_and_busy_reasons_emit_once(void)
+{
+    nrf_topology_tca_log_state_t state = {0};
+    assert(nrf_topology_tca_log_update(
+        &state, true, false, "verify_timeout") == NRF_TOPOLOGY_TCA_LOG_SET);
+    assert(strcmp(state.last_reason, "verify_timeout") == 0);
+    assert(state.latched_count == 1U);
+    assert(nrf_topology_tca_log_update(
+        &state, true, false, "verify_timeout") == NRF_TOPOLOGY_TCA_LOG_NONE);
+
+    assert(nrf_topology_tca_log_update(
+        &state, true, true, "mutex_busy") == NRF_TOPOLOGY_TCA_LOG_BUSY);
+    assert(strcmp(state.last_reason, "mutex_busy") == 0);
+    assert(nrf_topology_tca_log_update(
+        &state, true, true, "mutex_busy") == NRF_TOPOLOGY_TCA_LOG_NONE);
+
+    assert(nrf_topology_tca_log_update(
+        &state, false, false, "successful_close_verify") == NRF_TOPOLOGY_TCA_LOG_CLEARED);
+    assert(strcmp(state.last_reason, "successful_close_verify") == 0);
+    assert(state.auto_cleared_count == 1U);
+    assert(nrf_topology_tca_log_update(
+        &state, false, false, "successful_close_verify") == NRF_TOPOLOGY_TCA_LOG_NONE);
+
+    assert(nrf_topology_tca_log_update(
+        &state, true, false, "readback_mismatch") == NRF_TOPOLOGY_TCA_LOG_SET);
+    assert(strcmp(state.last_reason, "readback_mismatch") == 0);
+    assert(state.latched_count == 2U);
+    assert(nrf_topology_tca_log_update(
+        &state, false, false, "successful_close_verify") == NRF_TOPOLOGY_TCA_LOG_CLEARED);
+}
+
 
 int main(void)
 {
     test_first_identical_generation_and_heartbeat();
     test_each_reported_field_logs_immediately();
     test_heartbeat_handles_uint32_wraparound();
+    test_tca_fault_set_clear_and_busy_reasons_emit_once();
     return 0;
 }

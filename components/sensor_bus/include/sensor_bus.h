@@ -1,10 +1,13 @@
 #pragma once
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
 #include "i2c_bus.h"
 #include "i2c_line_recovery.h"
+#include "sensor_bus_errors.h"
 
 
 /*
@@ -15,6 +18,11 @@
  * Consumers borrow returned device handles and must not delete them.
  */
 #define SENSOR_BUS_I2C_SPEED_HZ  100000U
+#define SENSOR_BUS_TRANSACTION_TIMEOUT_MS 20U
+#define SENSOR_BUS_MUTEX_WAIT_MS 200U
+#define SENSOR_BUS_OWNER_MAX_HOLD_MS 150U
+
+#define SENSOR_BUS_TASK_NAME_SIZE 16U
 
 
 typedef struct
@@ -23,6 +31,14 @@ typedef struct
     i2c_bus_device_handle_t ina3221;
 
 } sensor_bus_handles_t;
+
+typedef struct {
+    uint32_t busy_count;
+    uint32_t recover_attempts;
+    uint64_t last_waited_for_mutex_us;
+    uint64_t last_hold_us;
+    char holder_task[SENSOR_BUS_TASK_NAME_SIZE];
+} sensor_bus_owner_stats_t;
 
 
 /*
@@ -35,6 +51,14 @@ typedef struct
  * INA3221 monitor task and the nRF topology service task.
  */
 esp_err_t sensor_bus_lock_init(void);
+
+/* Priority-inheriting, bounded-wait owner lock. The owner may call other
+ * sensor_bus APIs recursively while holding it. Use it across a TCA
+ * select -> downstream transfer(s) -> close sequence. */
+esp_err_t sensor_bus_owner_acquire(void);
+void sensor_bus_owner_release(void);
+bool sensor_bus_owner_hold_budget_exceeded(void);
+esp_err_t sensor_bus_get_owner_stats(sensor_bus_owner_stats_t *stats);
 
 /* Create the shared I2C0 bus and the currently contracted INA3221 device. */
 esp_err_t sensor_bus_init(void);
@@ -56,6 +80,33 @@ esp_err_t sensor_bus_get_tca9548a(
     i2c_bus_device_handle_t *device,
     uint8_t *address
 );
+
+/* Opaque sensor_bus-owned handles preserve the existing consumer type, while
+ * transfers use the IDF master API with millisecond timeouts. */
+esp_err_t sensor_bus_device_create(
+    i2c_bus_handle_t bus,
+    uint8_t address,
+    uint32_t speed_hz,
+    i2c_bus_device_handle_t *device);
+esp_err_t sensor_bus_device_delete(i2c_bus_device_handle_t *device);
+esp_err_t sensor_bus_read_byte(
+    i2c_bus_device_handle_t device,
+    uint8_t mem_address,
+    uint8_t *data);
+esp_err_t sensor_bus_write_byte(
+    i2c_bus_device_handle_t device,
+    uint8_t mem_address,
+    uint8_t data);
+esp_err_t sensor_bus_read_bytes(
+    i2c_bus_device_handle_t device,
+    uint8_t mem_address,
+    size_t data_len,
+    uint8_t *data);
+esp_err_t sensor_bus_write_bytes(
+    i2c_bus_device_handle_t device,
+    uint8_t mem_address,
+    size_t data_len,
+    const uint8_t *data);
 
 /* Short (20 ms) address-only probe on the shared bus. A NACK is
  * ESP_ERR_NOT_FOUND; a busy/stuck bus is reported as ESP_ERR_TIMEOUT. */

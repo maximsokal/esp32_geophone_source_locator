@@ -1,30 +1,37 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "ad7606_driver.h"
+#include "ad7606_tconv_calibration.h"
+#include "ad7606_tconv_limits.h"
 #include "board_config.h"
 #include "sdkconfig.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
 
 typedef enum {
     FAKE_TCONV_NORMAL,
     FAKE_TCONV_BUSY_NOT_LOW,
     FAKE_TCONV_NO_RISING_EDGE,
     FAKE_TCONV_NO_FALLING_EDGE,
+    FAKE_TCONV_PREEMPT_FIRST_ATTEMPT,
 } fake_tconv_scenario_t;
 
 #define FAKE_CPU_HZ 160000000U
 #define FAKE_GPIO_SET_CYCLES 160U
-#define FAKE_GPIO_GET_CYCLES 80U
+#define FAKE_GPIO_GET_CYCLES 96U
 #define FAKE_CYCLE_READ_CYCLES 8U
 #define FAKE_DELAY_CALL_CYCLES 40U
 #define FAKE_TCONV_RISE_DELAY_CYCLES 16U
-#define FAKE_TCONV_BUSY_WIDTH_CYCLES 720U
+/* BUSY-high duration; the rising delay above is added to form its end time. */
+#define FAKE_TCONV_BUSY_WIDTH_CYCLES 704U
+#define FAKE_PREEMPT_DELAY_CYCLES (FAKE_CPU_HZ * 5U / 1000000U)
 #define FAKE_POST_FALL_DIVISION_CYCLES 400U
 
 #define FAKE_LOG_CAPACITY 16384U
@@ -64,9 +71,16 @@ static fake_tconv_scenario_t fake_tconv_scenario;
 static uint32_t fake_cycle_count;
 static uint32_t fake_convst_rise_cycles;
 static uint32_t fake_pending_division_cycles;
+static uint32_t fake_tconv_width_samples[AD7606_TCONV_MEASUREMENT_COUNT];
+static uint32_t fake_current_tconv_width_cycles;
+static uint32_t fake_gpio_get_cycles;
+static unsigned fake_measurement_index;
+static bool fake_tconv_width_samples_enabled;
 static int fake_tconv_rise_observed;
 static int fake_spi_error;
 static int fake_gpio_error;
+static bool fake_fail_measurement_convst_rise;
+static bool fake_fail_measurement_convst_fall;
 static int fake_spi_initialize_calls;
 static int fake_spi_free_calls;
 static int fake_transmit_calls;
@@ -92,6 +106,38 @@ static gpio_mode_t fake_pin_mode[FAKE_GPIO_COUNT];
 static int fake_pin_level[FAKE_GPIO_COUNT];
 static int fake_pin_configured[FAKE_GPIO_COUNT];
 static int cs_driven_low_events;
+static unsigned fake_critical_enters;
+static unsigned fake_critical_exits;
+static unsigned fake_critical_depth;
+static uint32_t fake_critical_start_cycles;
+static uint32_t fake_critical_max_cycles;
+
+void ad7606_test_port_enter_critical(portMUX_TYPE *mux)
+{
+    assert(mux != NULL);
+    assert(fake_critical_depth == 0U);
+    ++fake_critical_enters;
+    ++fake_critical_depth;
+    fake_critical_start_cycles = fake_cycle_count;
+}
+
+void ad7606_test_port_exit_critical(portMUX_TYPE *mux)
+{
+    assert(mux != NULL);
+    assert(fake_critical_depth == 1U);
+    const uint32_t elapsed_cycles = fake_cycle_count - fake_critical_start_cycles;
+    if (elapsed_cycles > fake_critical_max_cycles) {
+        fake_critical_max_cycles = elapsed_cycles;
+    }
+    ++fake_critical_exits;
+    --fake_critical_depth;
+}
+
+static void assert_critical_balanced(void)
+{
+    assert(fake_critical_depth == 0U);
+    assert(fake_critical_enters == fake_critical_exits);
+}
 
 static void check_cs(void)
 {
@@ -126,10 +172,30 @@ esp_err_t gpio_set_level(gpio_num_t gpio_num, uint32_t level)
     }
     assert(gpio_num >= 0 && gpio_num < FAKE_GPIO_COUNT);
     const int previous_level = fake_pin_level[gpio_num];
+    if (gpio_num == BOARD_AD7606_CONVST_GPIO && level != 0U &&
+        fake_convst_rises >= 1U && fake_fail_measurement_convst_rise) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (gpio_num == BOARD_AD7606_CONVST_GPIO && level == 0U &&
+        fake_convst_rises >= 2U && fake_fail_measurement_convst_fall) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    bool convst_rose_this_call = false;
     if (gpio_num == BOARD_AD7606_CONVST_GPIO && previous_level == 0 && level != 0U) {
         ++fake_convst_rises;
+        convst_rose_this_call = true;
         fake_convst_rise_cycles = fake_cycle_count;
         fake_tconv_rise_observed = 0;
+        if (fake_convst_rises > 1U) {
+            if (fake_tconv_width_samples_enabled &&
+                fake_measurement_index < AD7606_TCONV_MEASUREMENT_COUNT) {
+                fake_current_tconv_width_cycles =
+                    fake_tconv_width_samples[fake_measurement_index++];
+            }
+            else {
+                fake_current_tconv_width_cycles = FAKE_TCONV_BUSY_WIDTH_CYCLES;
+            }
+        }
     }
     if (gpio_num == BOARD_AD7606_CONVST_GPIO && fake_pin_level[gpio_num] != 0 && level == 0U) {
         ++fake_convst_pulses;
@@ -139,6 +205,12 @@ esp_err_t gpio_set_level(gpio_num_t gpio_num, uint32_t level)
         }
     }
     fake_pin_level[gpio_num] = level != 0U ? 1 : 0;
+    if (convst_rose_this_call &&
+        fake_tconv_scenario == FAKE_TCONV_PREEMPT_FIRST_ATTEMPT &&
+        fake_convst_rises == 2U) {
+        /* A missed BUSY pulse when polling starts more than 4.4 us late. */
+        fake_cycle_count += FAKE_PREEMPT_DELAY_CYCLES;
+    }
     check_cs();
     return ESP_OK;
 }
@@ -154,7 +226,7 @@ static void assert_ad7606_pins_hi_z(void)
 
 int gpio_get_level(gpio_num_t gpio_num)
 {
-    fake_cycle_count += FAKE_GPIO_GET_CYCLES;
+    fake_cycle_count += fake_gpio_get_cycles;
     if (gpio_num != BOARD_AD7606_BUSY_GPIO) {
         return fake_busy_level;
     }
@@ -170,7 +242,8 @@ int gpio_get_level(gpio_num_t gpio_num)
         }
         const uint32_t elapsed_cycles = fake_cycle_count - fake_convst_rise_cycles;
         return elapsed_cycles >= FAKE_TCONV_RISE_DELAY_CYCLES &&
-                elapsed_cycles < FAKE_TCONV_BUSY_WIDTH_CYCLES
+                elapsed_cycles < FAKE_TCONV_RISE_DELAY_CYCLES +
+                    fake_current_tconv_width_cycles
             ? 1
             : 0;
     }
@@ -185,7 +258,8 @@ int gpio_get_level(gpio_num_t gpio_num)
 
     const uint32_t elapsed_cycles = fake_cycle_count - fake_convst_rise_cycles;
     const int busy_level = elapsed_cycles >= FAKE_TCONV_RISE_DELAY_CYCLES &&
-            elapsed_cycles < FAKE_TCONV_BUSY_WIDTH_CYCLES
+            elapsed_cycles < FAKE_TCONV_RISE_DELAY_CYCLES +
+                fake_current_tconv_width_cycles
         ? 1
         : 0;
     if (fake_pin_level[BOARD_AD7606_CONVST_GPIO] != 0 && busy_level != 0) {
@@ -292,6 +366,7 @@ void esp_rom_delay_us(uint32_t us)
 
 static void reset_fake(void)
 {
+    assert_critical_balanced();
     for (int pin = 0; pin < FAKE_GPIO_COUNT; ++pin) {
         /* Reset/boot state: every pin a floating input, output register 0. */
         fake_pin_mode[pin] = GPIO_MODE_INPUT;
@@ -307,9 +382,16 @@ static void reset_fake(void)
     fake_cycle_count = 0U;
     fake_convst_rise_cycles = 0U;
     fake_pending_division_cycles = 0U;
+    memset(fake_tconv_width_samples, 0, sizeof(fake_tconv_width_samples));
+    fake_current_tconv_width_cycles = FAKE_TCONV_BUSY_WIDTH_CYCLES;
+    fake_gpio_get_cycles = FAKE_GPIO_GET_CYCLES;
+    fake_measurement_index = 0U;
+    fake_tconv_width_samples_enabled = false;
     fake_tconv_rise_observed = 0;
     fake_spi_error = 0;
     fake_gpio_error = 0;
+    fake_fail_measurement_convst_rise = false;
+    fake_fail_measurement_convst_fall = false;
     fake_spi_initialize_calls = 0;
     fake_spi_free_calls = 0;
     fake_transmit_calls = 0;
@@ -317,6 +399,11 @@ static void reset_fake(void)
     fake_freq_limit_gpio_used = false;
     fake_freq_limit_input_delay_ns = 0;
     fake_log_capture[0] = '\0';
+    fake_critical_enters = 0U;
+    fake_critical_exits = 0U;
+    fake_critical_depth = 0U;
+    fake_critical_start_cycles = 0U;
+    fake_critical_max_cycles = 0U;
     last_transaction = NULL;
     last_rx_buffer = NULL;
     fake_time_us = 1000;
@@ -370,12 +457,84 @@ static void test_successful_init_and_conversion(void)
     assert(ad7606_driver_read(&sample) == ESP_ERR_INVALID_STATE);
 }
 
+
+static unsigned s_max435_failures;
+
+static void test_max435_tconv_measurement_subtracts_gpio_read_overhead(void)
+{
+    reset_fake();
+    const esp_err_t init_result = ad7606_driver_init();
+    uint32_t measured_tconv_ns = 0U;
+    const esp_err_t measure_result = init_result == ESP_OK
+        ? ad7606_driver_get_measured_tconv_ns(&measured_tconv_ns)
+        : init_result;
+    /* A 600 ns fake GPIO read bounds one poll phase; no additive bias is applied. */
+    const bool passed = measure_result == ESP_OK &&
+        measured_tconv_ns >= 4000U && measured_tconv_ns <= 4650U &&
+        strstr(fake_log_capture, "overhead_ns=1200") != NULL &&
+        strstr(fake_log_capture, "calibration_ns=0") != NULL &&
+        strstr(fake_log_capture, "retries=0") != NULL;
+    if (init_result == ESP_OK) {
+        ad7606_driver_deinit();
+    }
+    if (passed) {
+        puts("MAX435 T1 PASS");
+        fflush(stdout);
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 T1 FAIL init=%d measure=%d measured_ns=%u\n",
+            (int)init_result,
+            (int)measure_result,
+            (unsigned)measured_tconv_ns);
+        printf("MAX435 T1 LOG %s\n", fake_log_capture);
+        fflush(stdout);
+    }
+}
+
+
+static void test_max435_median_of_three_discards_single_outlier(void)
+{
+    reset_fake();
+    fake_tconv_width_samples[0] = 1070U; /* 6688 ns preempted-sample outlier. */
+    fake_tconv_width_samples[1] = 720U;  /* 4500 ns. */
+    fake_tconv_width_samples[2] = 720U;  /* 4500 ns. */
+    fake_tconv_width_samples_enabled = true;
+    const esp_err_t init_result = ad7606_driver_init();
+    uint32_t measured_tconv_ns = 0U;
+    const esp_err_t measure_result = init_result == ESP_OK
+        ? ad7606_driver_get_measured_tconv_ns(&measured_tconv_ns)
+        : init_result;
+    const bool passed = measure_result == ESP_OK &&
+        measured_tconv_ns >= 4000U && measured_tconv_ns <= 4650U &&
+        strstr(fake_log_capture, "AD7606_TCONV_SAMPLES:") != NULL &&
+        strstr(fake_log_capture, "samples=3") != NULL &&
+        strstr(fake_log_capture, "calibration_ns=0") != NULL;
+    if (init_result == ESP_OK) {
+        ad7606_driver_deinit();
+    }
+    if (passed) {
+        puts("MAX435 T5 PASS");
+        fflush(stdout);
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 T5 FAIL init=%d measure=%d measured_ns=%u\n",
+            (int)init_result,
+            (int)measure_result,
+            (unsigned)measured_tconv_ns);
+        printf("MAX435 T5 LOG %s\n", fake_log_capture);
+        fflush(stdout);
+    }
+}
+
 static void test_tconv_rise_is_captured_while_convst_is_high(void)
 {
     reset_fake();
     assert(ad7606_driver_init() == ESP_OK);
-    assert(fake_convst_pulses == 2U);
+    assert(fake_convst_pulses == 1U + AD7606_TCONV_MEASUREMENT_COUNT);
     assert(fake_tconv_rise_observed);
+    assert_critical_balanced();
 
     uint32_t measured_tconv_ns = 0U;
     assert(ad7606_driver_get_measured_tconv_ns(&measured_tconv_ns) == ESP_OK);
@@ -383,6 +542,233 @@ static void test_tconv_rise_is_captured_while_convst_is_high(void)
     assert(strstr(fake_log_capture, "AD7606_TCONV_MEASURED: ") != NULL);
     assert(strstr(fake_log_capture, "AD7606_TCONV_IMPLAUSIBLE") == NULL);
     ad7606_driver_deinit();
+}
+
+
+static void test_tconv_preempted_first_attempt_is_retried(void)
+{
+    reset_fake();
+    fake_tconv_scenario = FAKE_TCONV_PREEMPT_FIRST_ATTEMPT;
+    const esp_err_t init_result = ad7606_driver_init();
+    uint32_t measured_tconv_ns = 0U;
+    const esp_err_t measure_result = init_result == ESP_OK
+        ? ad7606_driver_get_measured_tconv_ns(&measured_tconv_ns)
+        : init_result;
+    const bool passed = init_result == ESP_OK && measure_result == ESP_OK &&
+        measured_tconv_ns >= 4000U && measured_tconv_ns <= 4650U &&
+        fake_convst_pulses == 5U && fake_convst_rises == 5U &&
+        strstr(fake_log_capture, "retries=1") != NULL &&
+        fake_critical_enters == 4U && fake_critical_exits == 4U;
+    if (init_result == ESP_OK) {
+        ad7606_driver_deinit();
+    }
+    assert_critical_balanced();
+    if (passed) {
+        puts("MAX435 preempt retry PASS");
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 preempt retry FAIL init=%d measure=%d measured=%u rises=%u pulses=%u enters=%u exits=%u\n",
+            (int)init_result, (int)measure_result, (unsigned)measured_tconv_ns,
+            fake_convst_rises, fake_convst_pulses,
+            fake_critical_enters, fake_critical_exits);
+    }
+}
+
+
+static void test_tconv_critical_section_balanced_on_gpio_failures(void)
+{
+    reset_fake();
+    fake_fail_measurement_convst_rise = true;
+    const esp_err_t rise_result = ad7606_driver_init();
+    const bool rise_balanced = rise_result == ESP_ERR_INVALID_STATE &&
+        fake_critical_enters == 1U && fake_critical_exits == 1U &&
+        fake_critical_depth == 0U;
+    const unsigned rise_enters = fake_critical_enters;
+    const unsigned rise_exits = fake_critical_exits;
+    assert_critical_balanced();
+    ad7606_driver_deinit();
+
+    reset_fake();
+    fake_fail_measurement_convst_fall = true;
+    const esp_err_t fall_result = ad7606_driver_init();
+    const bool fall_balanced = fall_result == ESP_ERR_INVALID_STATE &&
+        fake_critical_enters == 1U && fake_critical_exits == 1U &&
+        fake_critical_depth == 0U;
+    const unsigned fall_enters = fake_critical_enters;
+    const unsigned fall_exits = fake_critical_exits;
+    assert_critical_balanced();
+    ad7606_driver_deinit();
+    if (rise_balanced && fall_balanced) {
+        puts("MAX435 critical balance PASS");
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 critical balance FAIL rise=%d fall=%d rise_counts=%u/%u fall_counts=%u/%u\n",
+            (int)rise_result, (int)fall_result,
+            rise_enters, rise_exits, fall_enters, fall_exits);
+    }
+}
+
+
+static void tol_4_critical_section_duration_stays_within_budget(void)
+{
+    const uint32_t maximum_cycles = AD7606_TCONV_CRITICAL_MAX_US *
+        (FAKE_CPU_HZ / 1000000U);
+
+    reset_fake();
+    const esp_err_t success_result = ad7606_driver_init();
+    const bool success_bounded = success_result == ESP_OK &&
+        fake_critical_max_cycles <= maximum_cycles &&
+        fake_critical_enters > 0U &&
+        fake_critical_enters == fake_critical_exits;
+    const uint32_t success_max_cycles = fake_critical_max_cycles;
+    if (success_result == ESP_OK) {
+        ad7606_driver_deinit();
+    }
+    assert_critical_balanced();
+
+    reset_fake();
+    fake_tconv_scenario = FAKE_TCONV_PREEMPT_FIRST_ATTEMPT;
+    const esp_err_t retry_result = ad7606_driver_init();
+    const bool retry_bounded = retry_result == ESP_OK &&
+        strstr(fake_log_capture, "retries=1") != NULL &&
+        fake_critical_max_cycles <= maximum_cycles &&
+        fake_critical_enters > 0U &&
+        fake_critical_enters == fake_critical_exits;
+    const uint32_t retry_max_cycles = fake_critical_max_cycles;
+    if (retry_result == ESP_OK) {
+        ad7606_driver_deinit();
+    }
+    assert_critical_balanced();
+
+    reset_fake();
+    fake_tconv_scenario = FAKE_TCONV_NO_RISING_EDGE;
+    const esp_err_t timeout_result = ad7606_driver_init();
+    const bool timeout_bounded = timeout_result == ESP_ERR_TIMEOUT &&
+        fake_critical_max_cycles <= maximum_cycles &&
+        fake_critical_enters > 0U &&
+        fake_critical_enters == fake_critical_exits;
+    const uint32_t timeout_max_cycles = fake_critical_max_cycles;
+    assert_critical_balanced();
+    ad7606_driver_deinit();
+
+    if (success_bounded && retry_bounded && timeout_bounded) {
+        puts("MAX435 TOL-4 PASS");
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 TOL-4 FAIL success=%d retry=%d timeout=%d max_us=%u/%u/%u budget=%u\n",
+            success_bounded ? 1 : 0,
+            retry_bounded ? 1 : 0,
+            timeout_bounded ? 1 : 0,
+            (unsigned)(success_max_cycles / (FAKE_CPU_HZ / 1000000U)),
+            (unsigned)(retry_max_cycles / (FAKE_CPU_HZ / 1000000U)),
+            (unsigned)(timeout_max_cycles / (FAKE_CPU_HZ / 1000000U)),
+            (unsigned)AD7606_TCONV_CRITICAL_MAX_US);
+    }
+}
+
+
+static void tol_5_timeout_retry_count_and_total_budget_are_pinned(void)
+{
+    assert(AD7606_TCONV_EDGE_WAIT_TIMEOUT_US == 100U);
+    assert(AD7606_TCONV_MAX_RETRIES == 3U);
+    const uint32_t maximum_measurement_cycles = AD7606_TCONV_MEASUREMENT_MAX_US *
+        (FAKE_CPU_HZ / 1000000U);
+
+    reset_fake();
+    fake_tconv_scenario = FAKE_TCONV_NO_RISING_EDGE;
+    const uint32_t start_cycles = fake_cycle_count;
+    const esp_err_t result = ad7606_driver_init();
+    const uint32_t elapsed_cycles = fake_cycle_count - start_cycles;
+    const bool passed = result == ESP_ERR_TIMEOUT &&
+        fake_convst_pulses == 5U &&
+        fake_critical_enters == 4U &&
+        fake_critical_exits == 4U &&
+        strstr(fake_log_capture,
+            "AD7606_TCONV_DIAG: stage=NO_RISING_EDGE retries=3") != NULL &&
+        strstr(fake_log_capture, "timeout_us=100") != NULL &&
+        elapsed_cycles <= maximum_measurement_cycles &&
+        fake_critical_max_cycles >= AD7606_TCONV_EDGE_WAIT_TIMEOUT_US *
+            (FAKE_CPU_HZ / 1000000U) &&
+        fake_critical_max_cycles <= AD7606_TCONV_CRITICAL_MAX_US *
+            (FAKE_CPU_HZ / 1000000U);
+    assert_critical_balanced();
+    ad7606_driver_deinit();
+
+    if (passed) {
+        puts("MAX435 TOL-5 PASS");
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 TOL-5 FAIL result=%d pulses=%u enters=%u/%u elapsed_us=%u budget_us=%u\n",
+            (int)result,
+            fake_convst_pulses,
+            fake_critical_enters,
+            fake_critical_exits,
+            (unsigned)(elapsed_cycles / (FAKE_CPU_HZ / 1000000U)),
+            (unsigned)AD7606_TCONV_MEASUREMENT_MAX_US);
+    }
+}
+
+
+static uint32_t fake_tconv_width_cycles_from_ns(uint32_t tconv_ns)
+{
+    return (uint32_t)(((uint64_t)tconv_ns * FAKE_CPU_HZ +
+        UINT64_C(500000000)) / UINT64_C(1000000000));
+}
+
+
+static uint32_t measure_fake_tconv_widths(const uint32_t widths_ns[3])
+{
+    reset_fake();
+    /* A fast fake GPIO read isolates median/outlier behavior from poll cadence. */
+    fake_gpio_get_cycles = 0U;
+    for (size_t i = 0U; i < 3U; ++i) {
+        fake_tconv_width_samples[i] = fake_tconv_width_cycles_from_ns(widths_ns[i]);
+    }
+    fake_tconv_width_samples_enabled = true;
+    const esp_err_t init_result = ad7606_driver_init();
+    uint32_t measured_ns = 0U;
+    const esp_err_t measure_result = init_result == ESP_OK
+        ? ad7606_driver_get_measured_tconv_ns(&measured_ns)
+        : init_result;
+    const bool complete = measure_result == ESP_OK && fake_measurement_index == 3U;
+    if (init_result == ESP_OK) {
+        ad7606_driver_deinit();
+    }
+    return complete ? measured_ns : 0U;
+}
+
+
+static void tol_6_driver_discards_one_outlier_in_any_sample_position(void)
+{
+    static const uint32_t one_outlier_orders_ns[3][3] = {
+        {6688U, 4500U, 4500U},
+        {4500U, 6688U, 4500U},
+        {4500U, 4500U, 6688U},
+    };
+    bool passed = true;
+    for (size_t order = 0U; order < 3U; ++order) {
+        passed = passed && measure_fake_tconv_widths(
+            one_outlier_orders_ns[order]) == 4500U;
+    }
+
+    /* Two high samples are not a lone preemption artifact; never accept OS1. */
+    const uint32_t two_outliers_ns[] = {6688U, 6700U, 4500U};
+    const uint32_t two_outlier_result_ns =
+        measure_fake_tconv_widths(two_outliers_ns);
+    passed = passed && two_outlier_result_ns > 4650U;
+
+    if (passed) {
+        puts("MAX435 TOL-6 driver PASS");
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 TOL-6 driver FAIL two-outlier-result=%u\n",
+            (unsigned)two_outlier_result_ns);
+    }
 }
 
 static void test_two_complement_boundary_codes_convert_to_documented_uv_scale(void)
@@ -463,12 +849,27 @@ static void test_no_rising_edge_timeout_is_diagnosed(void)
 {
     reset_fake();
     fake_tconv_scenario = FAKE_TCONV_NO_RISING_EDGE;
-    assert(ad7606_driver_init() == ESP_ERR_TIMEOUT);
-    assert(fake_transmit_calls == 1);
-    assert(fake_convst_pulses == 2U);
-    assert(fake_spi_free_calls == 1);
-    assert(strstr(fake_log_capture, "AD7606_TCONV_DIAG: stage=NO_RISING_EDGE") != NULL);
-    assert(strstr(fake_log_capture, "timeout_us=100") != NULL);
+    const esp_err_t init_result = ad7606_driver_init();
+    const bool passed = init_result == ESP_ERR_TIMEOUT &&
+        fake_transmit_calls == 1 && fake_convst_pulses == 5U &&
+        fake_spi_free_calls == 1 &&
+        strstr(fake_log_capture,
+            "AD7606_TCONV_DIAG: stage=NO_RISING_EDGE retries=3") != NULL &&
+        strstr(fake_log_capture, "timeout_us=100") != NULL &&
+        fake_critical_enters == 4U && fake_critical_exits == 4U;
+    assert_critical_balanced();
+    if (init_result == ESP_OK) {
+        ad7606_driver_deinit();
+    }
+    if (passed) {
+        puts("MAX435 persistent no rising PASS");
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 persistent no rising FAIL init=%d pulses=%u enters=%u exits=%u\n",
+            (int)init_result, fake_convst_pulses,
+            fake_critical_enters, fake_critical_exits);
+    }
     ad7606_driver_deinit();
 }
 
@@ -476,13 +877,27 @@ static void test_no_falling_edge_timeout_is_diagnosed(void)
 {
     reset_fake();
     fake_tconv_scenario = FAKE_TCONV_NO_FALLING_EDGE;
-    assert(ad7606_driver_init() == ESP_ERR_TIMEOUT);
-    assert(fake_transmit_calls == 1);
-    assert(fake_convst_pulses == 2U);
-    assert(fake_spi_free_calls == 1);
-    assert(strstr(fake_log_capture, "AD7606_TCONV_DIAG: stage=NO_FALLING_EDGE") != NULL);
-    assert(strstr(fake_log_capture, "timeout_us=100") != NULL);
-    ad7606_driver_deinit();
+    const esp_err_t init_result = ad7606_driver_init();
+    const bool passed = init_result == ESP_ERR_TIMEOUT &&
+        fake_transmit_calls == 1 && fake_convst_pulses == 2U &&
+        fake_spi_free_calls == 1 &&
+        strstr(fake_log_capture,
+            "AD7606_TCONV_DIAG: stage=NO_FALLING_EDGE") != NULL &&
+        strstr(fake_log_capture, "timeout_us=100") != NULL &&
+        fake_critical_enters == 1U && fake_critical_exits == 1U;
+    assert_critical_balanced();
+    if (init_result == ESP_OK) {
+        ad7606_driver_deinit();
+    }
+    if (passed) {
+        puts("MAX435 no falling edge PASS");
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 no falling edge FAIL init=%d pulses=%u enters=%u exits=%u\n",
+            (int)init_result, fake_convst_pulses,
+            fake_critical_enters, fake_critical_exits);
+    }
 }
 
 static void test_spi_initialization_error_is_returned(void)
@@ -540,6 +955,14 @@ static void test_safe_state_is_callable_any_time(void)
 
 int main(void)
 {
+#if defined(AD7606_TCONV_TOL_ONLY)
+    tol_6_driver_discards_one_outlier_in_any_sample_position();
+    tol_4_critical_section_duration_stays_within_budget();
+    tol_5_timeout_retry_count_and_total_budget_are_pinned();
+    return s_max435_failures == 0U ? 0 : 1;
+#else
+    test_max435_tconv_measurement_subtracts_gpio_read_overhead();
+    test_max435_median_of_three_discards_single_outlier();
     test_tconv_rise_is_captured_while_convst_is_high();
     test_init_never_drives_cs_low_and_sets_safe_levels();
     test_deinit_releases_every_ad7606_pin_to_hi_z();
@@ -550,9 +973,16 @@ int main(void)
     test_spi_error_does_not_publish_sample();
     test_constant_payload_is_observable_but_not_transport_failure();
     test_busy_not_low_before_convst_timeout_is_diagnosed();
+    test_tconv_preempted_first_attempt_is_retried();
+    test_tconv_critical_section_balanced_on_gpio_failures();
+    tol_6_driver_discards_one_outlier_in_any_sample_position();
+    tol_4_critical_section_duration_stays_within_budget();
+    tol_5_timeout_retry_count_and_total_budget_are_pinned();
     test_no_rising_edge_timeout_is_diagnosed();
     test_no_falling_edge_timeout_is_diagnosed();
     test_spi_initialization_error_is_returned();
+    assert_critical_balanced();
     puts("AD7606 driver host tests passed");
-    return 0;
+    return s_max435_failures == 0U ? 0 : 1;
+#endif
 }

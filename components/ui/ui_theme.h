@@ -17,6 +17,7 @@
 #define UI_COLOR_GOOD        0x4CD681
 #define UI_COLOR_WARNING     0xF3B84B
 #define UI_COLOR_ERROR       0xF05A67
+#define UI_COLOR_LINK_MEASURING 0x4A90E2
 
 #define UI_COLOR_TEXT        0xF3F7FB
 #define UI_COLOR_MUTED       0x94A7BC

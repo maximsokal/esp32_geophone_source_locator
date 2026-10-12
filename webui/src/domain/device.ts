@@ -69,6 +69,7 @@ export interface RecordingGateStatus {
   decision?: RecordingGateDecision;
   dimensionality?: LocalizationDimensionality;
   allowed?: boolean;
+  bypassed?: boolean;
   reason?: string;
   warning?: string;
   error?: string;
@@ -347,9 +348,12 @@ export interface DeviceMainStatus {
   sensor_valid?: { bmp280: boolean; aht20: boolean };
 }
 
+export type NodeLinkStatus = 'NOT_CONNECTED' | 'CONNECTED' | 'READY' | 'MEASURING';
+
 export interface DevicePod {
   id: number;
   state: string;
+  node_link_status?: NodeLinkStatus;
   capabilities: PodCapabilities;
   barometer: PodBarometer;
   environment: PodEnvironment;

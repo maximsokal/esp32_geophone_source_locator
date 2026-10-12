@@ -594,6 +594,44 @@ static void test_summary_reader_accepts_v1_v2_and_rejects_unsupported_versions(v
 }
 
 
+static void test_recording_gate_metadata_round_trips(void)
+{
+    object_store_profile_t profile = {0};
+    seismic_recorder_snapshot_t snapshot = {0};
+    seismic_recorder_session_participation_t participation = {0};
+    snprintf(snapshot.object_id, sizeof(snapshot.object_id), "OBJ_0001");
+    snprintf(snapshot.session_id, sizeof(snapshot.session_id), "S000001");
+    snprintf(snapshot.source_name, sizeof(snapshot.source_name), "AD7606");
+    snapshot.sample_rate_hz = 500U;
+    snapshot.channel_count = SEISMIC_CHANNEL_COUNT;
+    participation.recording_gate = (seismic_recorder_gate_metadata_t){
+        .available = true,
+        .gate_bypassed = true,
+        .assigned_remote_count = 2U,
+        .accepted_remote_count = 1U,
+        .leveling_state = SEISMIC_RECORDER_LEVELING_INCOMPLETE,
+    };
+
+    assert(seismic_recorder_json_write_metadata(
+        &profile, &snapshot, "recording", &participation
+    ) == ESP_OK);
+    assert(strstr(s_persisted_json, "\"gate_bypassed\":true") != NULL);
+    assert(strstr(s_persisted_json, "\"assigned_remote_count\":2") != NULL);
+    assert(strstr(s_persisted_json, "\"accepted_remote_count\":1") != NULL);
+    assert(strstr(s_persisted_json, "\"leveling_state\":\"incomplete\"") != NULL);
+
+    seismic_recorder_session_participation_t readback = {0};
+    assert(seismic_recorder_read_session_participation(
+        "OBJ_0001", "S000001", &readback
+    ) == ESP_OK);
+    assert(readback.recording_gate.available);
+    assert(readback.recording_gate.gate_bypassed);
+    assert(readback.recording_gate.assigned_remote_count == 2U);
+    assert(readback.recording_gate.accepted_remote_count == 1U);
+    assert(readback.recording_gate.leveling_state == SEISMIC_RECORDER_LEVELING_INCOMPLETE);
+}
+
+
 int main(void)
 {
     test_valid_geometry_round_trips();
@@ -609,6 +647,7 @@ int main(void)
     test_v2_geometry_provenance_defaults_old_source();
     test_unsupported_schema_versions_are_rejected();
     test_summary_reader_accepts_v1_v2_and_rejects_unsupported_versions();
+    test_recording_gate_metadata_round_trips();
     puts("seismic recorder session geometry tests passed");
     return 0;
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdbool.h>
 
 #include "localization_dimensionality_policy.h"
 
@@ -52,6 +53,12 @@ typedef struct
     size_t assigned_count;
     size_t accepted_count;
 
+    /* decision is always the diagnostic result. start_allowed also applies
+     * CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING; when that option is
+     * disabled, bypassed is true while decision still explains the gap. */
+    bool start_allowed;
+    bool bypassed;
+
     /* Meaningful only for the two ALLOWED_* decisions. */
     localization_dimensionality_t dimensionality;
 
@@ -76,5 +83,11 @@ const char *recording_gate_decision_reason(
  * higher uncertainty, planar/2D-only, advice to connect one more). Returns
  * "" (never NULL) for every other decision. */
 const char *recording_gate_planar_warning(
+    recording_gate_decision_t decision
+);
+
+
+/* Stable reason token for a bypassed diagnostic decision; otherwise "". */
+const char *recording_gate_bypass_reason(
     recording_gate_decision_t decision
 );

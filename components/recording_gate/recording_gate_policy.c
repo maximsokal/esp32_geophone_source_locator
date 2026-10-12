@@ -1,5 +1,9 @@
 #include "recording_gate.h"
 
+#ifndef CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
+#define CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING 0
+#endif
+
 
 recording_gate_result_t recording_gate_evaluate(
     size_t assigned_remote_count,
@@ -19,18 +23,21 @@ recording_gate_result_t recording_gate_evaluate(
 
     if (dimensionality == LOCALIZATION_DIMENSIONALITY_INSUFFICIENT) {
         result.decision = RECORDING_GATE_BLOCKED_INSUFFICIENT_REMOTES;
-        return result;
-    }
-
-    if (accepted_remote_count < assigned_remote_count) {
+    } else if (accepted_remote_count < assigned_remote_count) {
         result.decision = RECORDING_GATE_BLOCKED_NOT_LEVEL;
-        return result;
+    } else {
+        result.decision =
+            dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D
+            ? RECORDING_GATE_ALLOWED_PLANAR_2D
+            : RECORDING_GATE_ALLOWED_3D_CAPABLE;
     }
 
-    result.decision =
-        dimensionality == LOCALIZATION_DIMENSIONALITY_PLANAR_2D
-        ? RECORDING_GATE_ALLOWED_PLANAR_2D
-        : RECORDING_GATE_ALLOWED_3D_CAPABLE;
+    const bool diagnostic_allowed =
+        result.decision == RECORDING_GATE_ALLOWED_PLANAR_2D ||
+        result.decision == RECORDING_GATE_ALLOWED_3D_CAPABLE;
+    result.start_allowed = diagnostic_allowed ||
+        !CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING;
+    result.bypassed = !diagnostic_allowed && result.start_allowed;
     return result;
 }
 
@@ -71,4 +78,21 @@ const char *recording_gate_planar_warning(
         "higher and this recording is limited to planar/2D source "
         "localization. Connect at least one more REMOTE for full 3D "
         "localization.";
+}
+
+
+const char *recording_gate_bypass_reason(
+    recording_gate_decision_t decision
+)
+{
+    switch (decision) {
+        case RECORDING_GATE_BLOCKED_INSUFFICIENT_REMOTES:
+            return "remotes_lt_3";
+        case RECORDING_GATE_BLOCKED_NOT_LEVEL:
+            return "no_leveling";
+        case RECORDING_GATE_ALLOWED_PLANAR_2D:
+        case RECORDING_GATE_ALLOWED_3D_CAPABLE:
+        default:
+            return "";
+    }
 }

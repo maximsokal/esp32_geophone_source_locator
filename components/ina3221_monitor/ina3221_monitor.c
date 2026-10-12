@@ -37,6 +37,9 @@
 #define INA3221_MONITOR_LOG_INTERVAL    5u
 #define INA3221_RETRY_LOG_INTERVAL      30u
 #define INA3221_RETRY_BACKOFF_MS        5000u
+#define INA3221_CONSECUTIVE_DEVICE_ERROR_LIMIT 3u
+#define INA3221_MONITOR_STALE_LIMIT_MS  5000u
+#define INA3221_BUS_BUSY_LOG_INTERVAL_MS 5000u
 
 
 static const char *TAG =
@@ -118,6 +121,32 @@ static void ina3221_monitor_store_rail(size_t index, bool valid, float voltage_v
     s_rails[index].sampled_at_us = now_us;
     portEXIT_CRITICAL(&s_state_lock);
 }
+
+
+static void ina3221_monitor_keep_last_good_sample_time(uint64_t sampled_at_ms)
+{
+    const int64_t sampled_at_us = (int64_t)(sampled_at_ms * UINT64_C(1000));
+    portENTER_CRITICAL(&s_state_lock);
+    for (size_t i = 0U; i < INA3221_POLICY_CHANNEL_COUNT; ++i) {
+        if (s_rails[i].available) {
+            s_rails[i].sampled_at_us = sampled_at_us;
+        }
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+}
+
+
+static bool ina3221_monitor_device_error_invalidates(
+    uint32_t consecutive_device_errors,
+    bool has_last_good_sample,
+    uint64_t last_good_age_ms
+)
+{
+    return !has_last_good_sample ||
+        consecutive_device_errors >= INA3221_CONSECUTIVE_DEVICE_ERROR_LIMIT ||
+        last_good_age_ms >= INA3221_MONITOR_STALE_LIMIT_MS;
+}
+#define INA3221_MONITOR_HAS_DEVICE_ERROR_POLICY 1
 
 static int64_t s_fast_sampling_deadline_us =
     0;
@@ -711,6 +740,13 @@ static void ina3221_monitor_worker(
     uint32_t sample_count = 0;
     uint32_t retry_count = 0;
     uint64_t next_retry_ms = 0U;
+    bool has_last_good_sample = false;
+    uint64_t last_good_sample_ms = 0U;
+    bool last_good_sample_expired = false;
+    uint32_t consecutive_device_errors = 0U;
+    uint32_t consecutive_busy_count = 0U;
+    uint32_t last_busy_log_ms = 0U;
+    bool busy_log_started = false;
 
     bool hardware_available =
         false;
@@ -730,9 +766,30 @@ static void ina3221_monitor_worker(
                 &main_barometer, barometer_err, (uint32_t)now_ms);
             ina3221_monitor_publish_main_barometer(&main_barometer);
 
+            if (
+                has_last_good_sample &&
+                !last_good_sample_expired &&
+                now_ms >= last_good_sample_ms &&
+                now_ms - last_good_sample_ms >= INA3221_MONITOR_STALE_LIMIT_MS
+            ) {
+                ina3221_monitor_publish_invalid();
+                ina3221_monitor_keep_last_good_sample_time(last_good_sample_ms);
+                last_good_sample_expired = true;
+                memset(
+                    &classifier,
+                    0,
+                    sizeof(classifier)
+                );
+            }
+
             if (!driver.ready) {
                 if (now_ms < next_retry_ms) {
-                    ina3221_monitor_publish_invalid();
+                    if (!has_last_good_sample || last_good_sample_expired) {
+                        ina3221_monitor_publish_invalid();
+                        if (has_last_good_sample) {
+                            ina3221_monitor_keep_last_good_sample_time(last_good_sample_ms);
+                        }
+                    }
                     hardware_available = false;
                     if (ina3221_monitor_wait_for_period_or_stop()) {
                         break;
@@ -746,7 +803,24 @@ static void ina3221_monitor_worker(
                     );
 
                 if (open_err != ESP_OK) {
-                    ina3221_monitor_publish_invalid();
+                    ++consecutive_device_errors;
+                    if (ina3221_monitor_device_error_invalidates(
+                            consecutive_device_errors,
+                            has_last_good_sample,
+                            has_last_good_sample && now_ms >= last_good_sample_ms
+                                ? now_ms - last_good_sample_ms
+                                : UINT64_MAX)) {
+                        ina3221_monitor_publish_invalid();
+                        if (has_last_good_sample) {
+                            ina3221_monitor_keep_last_good_sample_time(last_good_sample_ms);
+                            last_good_sample_expired = true;
+                        }
+                        memset(
+                            &classifier,
+                            0,
+                            sizeof(classifier)
+                        );
+                    }
 
                     retry_count++;
                     next_retry_ms = now_ms + INA3221_RETRY_BACKOFF_MS;
@@ -819,16 +893,65 @@ static void ina3221_monitor_worker(
                     channels
                 );
 
+            if (
+                read_err == SENSOR_BUS_ERR_MUTEX_BUSY ||
+                read_err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET
+            ) {
+                consecutive_device_errors = 0U;
+                ++consecutive_busy_count;
+                const uint64_t age_ms = has_last_good_sample && now_ms >= last_good_sample_ms
+                    ? now_ms - last_good_sample_ms
+                    : UINT32_MAX;
+                if (
+                    !busy_log_started ||
+                    (uint32_t)now_ms - last_busy_log_ms >= INA3221_BUS_BUSY_LOG_INTERVAL_MS
+                ) {
+                    ESP_LOGW(
+                        TAG,
+                        "INA3221_BUS_BUSY_SKIPPED consecutive=%u age_ms=%u",
+                        (unsigned)consecutive_busy_count,
+                        (unsigned)(age_ms > UINT32_MAX ? UINT32_MAX : age_ms)
+                    );
+                    last_busy_log_ms = (uint32_t)now_ms;
+                    busy_log_started = true;
+                }
+
+                if (ina3221_monitor_wait_for_period_or_stop()) {
+                    break;
+                }
+                continue;
+            }
+
             if (read_err != ESP_OK) {
+                consecutive_busy_count = 0U;
+                ++consecutive_device_errors;
                 ESP_LOGW(
                     TAG,
-                    "INA3221 read failed; measurements invalidated: %s",
+                    "INA3221 read failed: %s",
                     esp_err_to_name(
                         read_err
                     )
                 );
 
-                ina3221_monitor_publish_invalid();
+                const uint64_t last_good_age_ms =
+                    has_last_good_sample && now_ms >= last_good_sample_ms
+                        ? now_ms - last_good_sample_ms
+                        : UINT64_MAX;
+                if (ina3221_monitor_device_error_invalidates(
+                        consecutive_device_errors,
+                        has_last_good_sample,
+                        last_good_age_ms)) {
+                    ina3221_monitor_publish_invalid();
+                    if (has_last_good_sample) {
+                        ina3221_monitor_keep_last_good_sample_time(last_good_sample_ms);
+                        last_good_sample_expired = true;
+                    }
+                    memset(
+                        &classifier,
+                        0,
+                        sizeof(classifier)
+                    );
+                }
 
                 ina3221_driver_close(
                     &driver
@@ -849,6 +972,12 @@ static void ina3221_monitor_worker(
                 }
                 continue;
             }
+
+            has_last_good_sample = true;
+            last_good_sample_ms = now_ms;
+            last_good_sample_expired = false;
+            consecutive_device_errors = 0U;
+            consecutive_busy_count = 0U;
 
             const ina3221_power_state_t instantaneous_state =
                 ina3221_policy_classify_instant(
@@ -1091,6 +1220,24 @@ esp_err_t ina3221_monitor_get_rail(
     portENTER_CRITICAL(&s_state_lock);
     *rail_out = s_rails[channel_index];
     portEXIT_CRITICAL(&s_state_lock);
+
+    const int64_t now_us = esp_timer_get_time();
+    if (!rail_out->available) {
+        rail_out->age_ms = UINT32_MAX;
+    }
+    else if (now_us >= rail_out->sampled_at_us) {
+        const uint64_t age_ms =
+            (uint64_t)(now_us - rail_out->sampled_at_us) / UINT64_C(1000);
+        rail_out->age_ms = age_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)age_ms;
+    }
+    else {
+        rail_out->age_ms = 0U;
+    }
+
+    if (rail_out->valid && rail_out->age_ms >= INA3221_MONITOR_STALE_LIMIT_MS) {
+        rail_out->valid = false;
+    }
+    rail_out->stale = !rail_out->valid || rail_out->age_ms != 0U;
     return ESP_OK;
 }
 

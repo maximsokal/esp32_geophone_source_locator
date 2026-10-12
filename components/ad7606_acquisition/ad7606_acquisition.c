@@ -1037,7 +1037,10 @@ static esp_err_t ad7606_resolve_measured_timing(
     uint32_t measured_tconv_ns
 )
 {
-    const bool os_mismatch = measured_os != CONFIG_AD7606_OVERSAMPLING_RATIO;
+    const bool unknown_degraded = measured_os == 0U &&
+        ad7606_acquisition_tconv_is_unknown_degraded_window(measured_tconv_ns);
+    const bool os_mismatch = measured_os != 0U &&
+        measured_os != CONFIG_AD7606_OVERSAMPLING_RATIO;
 #if defined(AD7606_ACQUISITION_HOST_TEST)
     ++s_test_counters.status_critical_entries;
 #endif
@@ -1046,29 +1049,71 @@ static esp_err_t ad7606_resolve_measured_timing(
     s_status.os_ratio_measured = measured_os;
     s_status.os_mismatch = os_mismatch;
     portEXIT_CRITICAL(&s_status_lock);
-    if (measured_os == 0U) {
+    if (measured_os == 0U && !unknown_degraded) {
         ESP_LOGE(TAG,
             "AD7606_OS_UNKNOWN: configured=OS%u measured=unknown tCONV=%u ns is outside calibrated bands",
             (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
             (unsigned)measured_tconv_ns);
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+        ad7606_test_log_event(
+            AD7606_ACQUISITION_TEST_LOG_OS_RESOLUTION,
+            0U,
+            measured_os,
+            measured_tconv_ns,
+            "ERROR AD7606_OS_UNKNOWN"
+        );
+#endif
         return ESP_ERR_INVALID_RESPONSE;
     }
+    if (unknown_degraded) {
+        ESP_LOGW(TAG,
+            "AD7606_OS_UNKNOWN_DEGRADED: configured=OS%u measured=unknown tCONV=%u ns; using configured timing",
+            (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
+            (unsigned)measured_tconv_ns);
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+        ad7606_test_log_event(
+            AD7606_ACQUISITION_TEST_LOG_OS_RESOLUTION,
+            0U,
+            measured_os,
+            measured_tconv_ns,
+            "WARN AD7606_OS_UNKNOWN_DEGRADED"
+        );
+#endif
+    }
     if (os_mismatch) {
-        ESP_LOGE(TAG, "AD7606_OS_MISMATCH: configured=OS%u measured=OS%u tCONV=%u ns",
+        ESP_LOGW(TAG, "AD7606_OS_MISMATCH: configured=OS%u measured=OS%u tCONV=%u ns",
             (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
             (unsigned)measured_os,
             (unsigned)measured_tconv_ns);
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+        ad7606_test_log_event(
+            AD7606_ACQUISITION_TEST_LOG_OS_RESOLUTION,
+            0U,
+            measured_os,
+            measured_tconv_ns,
+            "WARN AD7606_OS_MISMATCH"
+        );
+#endif
     }
 
     ad7606_timing_result_t timing;
-    if (!ad7606_acquisition_timing_resolve_measured(
+    const bool timing_valid = unknown_degraded
+        ? ad7606_acquisition_timing_resolve(
+            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+            CONFIG_AD7606_OVERSAMPLING_RATIO,
+            CONFIG_AD7606_SPI_CLOCK_HZ,
+            ad7606_requested_read_mode(),
+            s_convst_high_ns,
+            &timing)
+        : ad7606_acquisition_timing_resolve_measured(
             CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
             CONFIG_AD7606_OVERSAMPLING_RATIO,
             measured_os,
             CONFIG_AD7606_SPI_CLOCK_HZ,
             ad7606_requested_read_mode(),
             s_convst_high_ns,
-            &timing)) {
+            &timing);
+    if (!timing_valid) {
         ESP_LOGE(TAG,
             "Measured timing unsafe or read mode differs: rate=%u configured=OS%u "
             "measured=OS%u SCLK=%u requested=%s tCONV=%u ns",

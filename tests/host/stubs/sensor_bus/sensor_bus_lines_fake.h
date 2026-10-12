@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
 /* MAX-243: line model behind sensor_bus_lines.h for host tests. */
@@ -18,9 +19,11 @@ typedef struct
     int controller_reset_calls;
     int scl_driven_low;
     int rising_edges;
-    int64_t now_us;
+    atomic_int_fast64_t now_us;
     unsigned log_calls;
-    char last_log[128];
+    char last_log[512];
+    char timeout_config_log[512];
+    bool hold_budget_exceeded_logged;
 
     /* MAX-248 address probe: result per 7-bit address (default ESP_OK is
      * overridden by probe_default when probe_configured is false). */

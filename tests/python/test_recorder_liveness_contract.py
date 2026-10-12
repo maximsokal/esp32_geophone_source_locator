@@ -193,8 +193,10 @@ def test_status_api_exposes_measurement_service_terminal_states():
     status_source = WEB_STATUS_JSON.read_text(encoding="utf-8")
     recording_source = WEB_STATUS_RECORDING.read_text(encoding="utf-8")
 
-    assert "web_status_json_add_measurement(root)" in status_source
+    assert "web_status_json_add_measurement(root, &measurement_recording)" in status_source
+    assert "web_status_json_add_pods(root, &status, measurement_recording)" in status_source
     assert "measurement_service_get_snapshot" in recording_source
+    assert "*recording_out = snapshot.state == MEASUREMENT_SERVICE_RECORDING;" in recording_source
     assert '"state",' in recording_source
     assert 'return "RECORDING";' in recording_source
     assert 'return "REVIEW";' in recording_source

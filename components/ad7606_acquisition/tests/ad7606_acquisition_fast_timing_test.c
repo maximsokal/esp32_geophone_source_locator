@@ -1,8 +1,10 @@
 #include <assert.h>
 #include <limits.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 
+#include "../../ad7606_driver/include/ad7606_tconv_calibration.h"
 #include "ad7606_acquisition_timing.h"
 
 enum {
@@ -15,6 +17,79 @@ static const uint32_t s_os[] = {1U, 2U, 4U, 8U};
 static const uint32_t s_spi[] = {1000000U, 10000000U, 15000000U};
 static const uint32_t s_resolutions[] = {14U, 12U, 11U, 10U, 9U};
 static const uint32_t s_convst_high_ns[] = {2198U, 2149U, 2149U, 2149U, 2149U};
+static unsigned s_max435_failures;
+
+
+static void tol_1_classification_band_edges(void)
+{
+    assert(ad7606_acquisition_classify_tconv_ns(2949U) == 0U);
+    assert(ad7606_acquisition_classify_tconv_ns(2950U) == 1U);
+    assert(ad7606_acquisition_classify_tconv_ns(4650U) == 1U);
+    assert(ad7606_acquisition_classify_tconv_ns(4651U) == 0U);
+    assert(ad7606_acquisition_classify_tconv_ns(7399U) == 0U);
+    assert(ad7606_acquisition_classify_tconv_ns(7400U) == 2U);
+    assert(ad7606_acquisition_classify_tconv_ns(9600U) == 2U);
+    assert(ad7606_acquisition_classify_tconv_ns(9601U) == 0U);
+}
+
+static void tol_1_degraded_window_is_exact(void)
+{
+    for (uint32_t tconv_ns = 0U; tconv_ns <= 10000U; ++tconv_ns) {
+        const bool expected = tconv_ns >= 4651U && tconv_ns <= 7399U;
+        assert(ad7606_acquisition_tconv_is_unknown_degraded_window(tconv_ns) ==
+            expected);
+    }
+}
+
+static void tol_1_band_edges_and_degraded_window_exact(void)
+{
+    tol_1_classification_band_edges();
+    tol_1_degraded_window_is_exact();
+    puts("MAX435 TOL-1 PASS");
+}
+
+
+static void tol_3_gpio_read_overhead_subtracted_once_with_150ns_bound(void)
+{
+    static const uint32_t true_widths_ns[] = {4150U, 4400U, 4500U};
+    static const uint32_t per_poll_gpio_read_ns[] = {0U, 488U, 600U};
+    assert(AD7606_TCONV_MEASUREMENT_CALIBRATION_NS == 0);
+
+    for (size_t width_index = 0U;
+        width_index < sizeof(true_widths_ns) / sizeof(true_widths_ns[0]);
+        ++width_index) {
+        for (size_t overhead_index = 0U;
+            overhead_index < sizeof(per_poll_gpio_read_ns) /
+                sizeof(per_poll_gpio_read_ns[0]);
+            ++overhead_index) {
+            const uint32_t true_width_ns = true_widths_ns[width_index];
+            const uint32_t per_poll_overhead_ns =
+                per_poll_gpio_read_ns[overhead_index];
+            const uint32_t measured_overhead_ns = per_poll_overhead_ns * 2U;
+            /* Rising and falling edge polls each contribute one fake read cost. */
+            const uint32_t raw_after_poll_overhead_ns =
+                true_width_ns + measured_overhead_ns;
+            const uint32_t corrected_ns =
+                ad7606_tconv_apply_overhead_correction_ns(
+                    raw_after_poll_overhead_ns,
+                    measured_overhead_ns);
+            const uint32_t error_ns = corrected_ns > true_width_ns
+                ? corrected_ns - true_width_ns
+                : true_width_ns - corrected_ns;
+            assert(error_ns <= 150U);
+            assert(raw_after_poll_overhead_ns - corrected_ns ==
+                measured_overhead_ns);
+            if (measured_overhead_ns != 0U) {
+                const uint32_t corrected_twice_ns =
+                    ad7606_tconv_apply_overhead_correction_ns(
+                        corrected_ns,
+                        measured_overhead_ns);
+                assert(corrected_twice_ns != corrected_ns);
+            }
+        }
+    }
+    puts("MAX435 TOL-3 PASS");
+}
 
 /* Per rate row, OS1..OS8, then SCLK1/10/15 MHz: after=1, during=2. */
 static const uint8_t s_expected_modes[5][4][3] = {
@@ -166,6 +241,154 @@ static void test_measured_busy_width_classification_and_timing_gate(void)
 }
 
 
+static void tconv_4500_ns_after_overhead_subtraction_classifies_os1(void)
+{
+    const uint32_t measured_ns =
+        ad7606_tconv_apply_overhead_correction_ns(5700U, 1200U);
+    const bool passed = AD7606_TCONV_MEASUREMENT_CALIBRATION_NS == 0 &&
+        measured_ns == 4500U &&
+        ad7606_acquisition_classify_tconv_ns(measured_ns) == 1U;
+    if (passed) {
+        puts("MAX435 T2 PASS");
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 T2 FAIL calibration=%d measured=%u class=%u\n",
+            AD7606_TCONV_MEASUREMENT_CALIBRATION_NS,
+            (unsigned)measured_ns,
+            (unsigned)ad7606_acquisition_classify_tconv_ns(measured_ns));
+    }
+}
+
+
+static void classify_bands_do_not_overlap_and_os1_upper_below_os2_lower(void)
+{
+    assert(AD7606_OS1_TCONV_MIN_NS < AD7606_OS1_TCONV_MAX_NS);
+    assert(AD7606_OS1_TCONV_MAX_NS < AD7606_OS2_TCONV_MIN_NS);
+    assert(AD7606_OS2_TCONV_MIN_NS < AD7606_OS2_TCONV_MAX_NS);
+    assert(AD7606_OS2_TCONV_MIN_NS - AD7606_OS1_TCONV_MAX_NS >=
+        AD7606_OS_CLASSIFICATION_GAP_MIN_NS);
+    assert(ad7606_acquisition_tconv_is_unknown_degraded_window(
+        AD7606_OS1_TCONV_MAX_NS + 1U));
+    assert(ad7606_acquisition_tconv_is_unknown_degraded_window(
+        AD7606_OS2_TCONV_MIN_NS - 1U));
+    assert(!ad7606_acquisition_tconv_is_unknown_degraded_window(
+        AD7606_OS1_TCONV_MAX_NS));
+    assert(!ad7606_acquisition_tconv_is_unknown_degraded_window(
+        AD7606_OS2_TCONV_MIN_NS));
+}
+
+
+static void classify_rejects_value_between_bands_6000_to_7000(void)
+{
+    for (uint32_t tconv_ns = 6000U; tconv_ns <= 7000U; ++tconv_ns) {
+        assert(ad7606_acquisition_classify_tconv_ns(tconv_ns) == 0U);
+    }
+    assert(ad7606_acquisition_classify_tconv_ns(
+        ad7606_tconv_apply_overhead_correction_ns(6500U, 0U)) == 0U);
+}
+
+
+static void median_of_three_discards_single_outlier(void)
+{
+    const uint32_t raw_measurements_ns[] = {6688U, 4500U, 4500U};
+    uint32_t measurements_ns[
+        sizeof(raw_measurements_ns) / sizeof(raw_measurements_ns[0])];
+    for (size_t i = 0U; i <
+        sizeof(raw_measurements_ns) / sizeof(raw_measurements_ns[0]); ++i) {
+        measurements_ns[i] =
+            ad7606_tconv_apply_known_calibration_ns(raw_measurements_ns[i]);
+    }
+    const uint32_t median_ns = ad7606_tconv_median_ns(
+        measurements_ns,
+        sizeof(measurements_ns) / sizeof(measurements_ns[0]));
+    const bool passed = median_ns == 4500U &&
+        ad7606_acquisition_classify_tconv_ns(median_ns) == 1U;
+    if (passed) {
+        puts("MAX435 T5 PASS");
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 T5 FAIL median=%u class=%u\n",
+            (unsigned)median_ns,
+            (unsigned)ad7606_acquisition_classify_tconv_ns(median_ns));
+    }
+}
+
+
+static void tol_6_outlier_discard_is_order_independent(void)
+{
+    static const uint32_t one_outlier_orders_ns[3][3] = {
+        {6688U, 4500U, 4500U},
+        {4500U, 6688U, 4500U},
+        {4500U, 4500U, 6688U},
+    };
+    for (size_t order = 0U; order < 3U; ++order) {
+        uint32_t corrected[3];
+        for (size_t sample = 0U; sample < 3U; ++sample) {
+            corrected[sample] = ad7606_tconv_apply_known_calibration_ns(
+                one_outlier_orders_ns[order][sample]);
+        }
+        const uint32_t median_ns = ad7606_tconv_median_ns(corrected, 3U);
+        assert(median_ns == 4500U);
+        assert(ad7606_acquisition_classify_tconv_ns(median_ns) == 1U);
+    }
+
+    /* Two high samples are not a lone preemption artifact: do not accept OS1. */
+    const uint32_t two_outliers_ns[] = {6688U, 6700U, 4500U};
+    uint32_t corrected_two_outliers[3];
+    for (size_t sample = 0U; sample < 3U; ++sample) {
+        corrected_two_outliers[sample] =
+            ad7606_tconv_apply_known_calibration_ns(two_outliers_ns[sample]);
+    }
+    const uint32_t median_ns = ad7606_tconv_median_ns(
+        corrected_two_outliers,
+        3U);
+    assert(median_ns > AD7606_OS1_TCONV_MAX_NS);
+    assert(ad7606_acquisition_classify_tconv_ns(median_ns) != 1U);
+    puts("MAX435 TOL-6 PASS");
+}
+
+
+static void tol_7_convst_pulse_and_pwm_period_are_pinned(void)
+{
+    static const uint32_t rates_hz[] = {500U, 20000U};
+    const uint64_t scaled_clock = UINT64_C(40000000) * 256U;
+    for (size_t i = 0U; i < sizeof(rates_hz) / sizeof(rates_hz[0]); ++i) {
+        const uint32_t rate_hz = rates_hz[i];
+        const uint32_t bits = ad7606_acquisition_ledc_exact_resolution(
+            rate_hz,
+            40000000U,
+            14U);
+        uint32_t convst_high_ns = 0U;
+        const uint32_t duty = ad7606_acquisition_ledc_duty_count(
+            rate_hz,
+            bits,
+            2100U,
+            &convst_high_ns);
+        assert(bits != 0U && duty != 0U);
+        assert(convst_high_ns >= 1000U && convst_high_ns <= 4000U);
+
+        const uint64_t period_counts = UINT64_C(1) << bits;
+        const uint64_t divider_denominator = (uint64_t)rate_hz * period_counts;
+        assert(divider_denominator != 0U);
+        assert(scaled_clock % divider_denominator == 0U);
+        const uint64_t clock_divider = scaled_clock / divider_denominator;
+        const uint64_t actual_period_numerator =
+            clock_divider * period_counts;
+        const uint64_t target_period_numerator =
+            scaled_clock / rate_hz;
+        const uint64_t period_error_numerator =
+            actual_period_numerator > target_period_numerator
+                ? actual_period_numerator - target_period_numerator
+                : target_period_numerator - actual_period_numerator;
+        assert(period_error_numerator * UINT64_C(1000000) <=
+            target_period_numerator);
+    }
+    puts("MAX435 TOL-7 PASS");
+}
+
+
 static void test_invalid_timing_boundaries(void)
 {
     ad7606_timing_result_t result = {0};
@@ -297,6 +520,22 @@ static void test_missed_conversion_accounting_and_restart(void)
 
 int main(void)
 {
+#if defined(AD7606_TCONV_TOL1_BANDS_ONLY)
+    tol_1_classification_band_edges();
+    return 0;
+#elif defined(AD7606_TCONV_TOL3_ONLY)
+    tol_3_gpio_read_overhead_subtracted_once_with_150ns_bound();
+    return 0;
+#elif defined(AD7606_TCONV_TOL7_ONLY)
+    tol_7_convst_pulse_and_pwm_period_are_pinned();
+    return 0;
+#elif defined(AD7606_TCONV_TOL_ONLY)
+    tol_1_band_edges_and_degraded_window_exact();
+    tol_3_gpio_read_overhead_subtracted_once_with_150ns_bound();
+    tol_6_outlier_discard_is_order_independent();
+    tol_7_convst_pulse_and_pwm_period_are_pinned();
+    return s_max435_failures == 0U ? 0 : 1;
+#else
     test_ledc_convst_pulse_quantization();
     test_full_rate_os_clock_mode_matrix();
     test_default_20khz_os1_auto_reads_after_conversion();
@@ -306,6 +545,15 @@ int main(void)
     test_pcnt_extension_wrap_restart_and_monotonicity();
     test_pcnt_sample_index_by_read_mode();
     test_missed_conversion_accounting_and_restart();
+    tconv_4500_ns_after_overhead_subtraction_classifies_os1();
+    classify_bands_do_not_overlap_and_os1_upper_below_os2_lower();
+    classify_rejects_value_between_bands_6000_to_7000();
+    median_of_three_discards_single_outlier();
+    tol_1_band_edges_and_degraded_window_exact();
+    tol_3_gpio_read_overhead_subtracted_once_with_150ns_bound();
+    tol_6_outlier_discard_is_order_independent();
+    tol_7_convst_pulse_and_pwm_period_are_pinned();
     puts("AD7606 fast timing/accounting tests passed");
-    return 0;
+    return s_max435_failures == 0U ? 0 : 1;
+#endif
 }

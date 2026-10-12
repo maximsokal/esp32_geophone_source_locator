@@ -2,14 +2,30 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "device_status.h"
+#include "sensor_bus_errors.h"
 
 #include "../../components/ina3221_monitor/ina3221_monitor.c"
+
+#ifndef INA3221_MONITOR_HAS_DEVICE_ERROR_POLICY
+/* Scratch-baseline adapter for the pre-MAX-440 source snapshot. */
+static bool ina3221_monitor_device_error_invalidates(
+    uint32_t consecutive_device_errors,
+    bool has_last_good_sample,
+    uint64_t last_good_age_ms
+)
+{
+    return !has_last_good_sample || consecutive_device_errors >= 3U ||
+        last_good_age_ms >= 5000U;
+}
+#endif
 
 void sensor_bus_log_diag_summary(uint32_t now_ms)
 {
@@ -67,6 +83,9 @@ static bool s_stop_on_wait;
 
 static esp_err_t s_open_result;
 static esp_err_t s_read_result;
+static esp_err_t s_read_results[64];
+static unsigned s_read_result_count;
+static unsigned s_read_result_index;
 static unsigned s_open_calls;
 static uint64_t s_open_times_ms[16];
 static unsigned s_read_calls;
@@ -88,6 +107,28 @@ static bool s_last_charging;
 static device_power_source_t s_last_source;
 static float s_last_power_voltage;
 static float s_last_power_current;
+static bool s_fake_battery_present = true;
+static uint64_t s_fake_wait_advance_us = 1000000U;
+static unsigned s_busy_log_calls;
+static char s_last_busy_log[128];
+static device_power_state_t s_power_state_at_busy;
+static ina3221_monitor_rail_t s_rail_at_busy;
+static device_power_state_t s_power_state_after_device_error;
+static ina3221_monitor_rail_t s_rail_after_device_error;
+
+void ina3221_test_log(const char *tag, const char *format, ...)
+{
+    (void)tag;
+    if (format == NULL || strstr(format, "INA3221_BUS_BUSY_SKIPPED") == NULL) {
+        return;
+    }
+
+    va_list arguments;
+    va_start(arguments, format);
+    (void)vsnprintf(s_last_busy_log, sizeof(s_last_busy_log), format, arguments);
+    va_end(arguments);
+    ++s_busy_log_calls;
+}
 
 /* MAX-180/183 */
 static ina3221_power_state_t s_fake_source_state = INA3221_POWER_STATE_USB_CHARGING;
@@ -243,7 +284,7 @@ uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
     }
 
     if (s_stop_after_waits != 0U && s_notify_take_calls < s_stop_after_waits) {
-        s_fake_time_us += 1000000;
+        s_fake_time_us += (int64_t)s_fake_wait_advance_us;
         return 0U;
     }
     if (s_stop_on_wait || s_stop_after_waits != 0U) {
@@ -317,8 +358,12 @@ esp_err_t ina3221_driver_read_channels(
     assert(driver->ready);
     ++s_read_calls;
 
-    if (s_read_result != ESP_OK) {
-        return s_read_result;
+    esp_err_t read_result = s_read_result;
+    if (s_read_result_index < s_read_result_count) {
+        read_result = s_read_results[s_read_result_index++];
+    }
+    if (read_result != ESP_OK) {
+        return read_result;
     }
 
     channels[0] = (ina3221_channel_sample_t) {
@@ -373,7 +418,7 @@ void ina3221_policy_make_decision(
 
     *decision = (ina3221_power_decision_t) {
         .state = stable_state,
-        .battery_present = true,
+        .battery_present = s_fake_battery_present,
         .battery_percent_valid = true,
         .battery_voltage_v = s_fake_battery_v,
         .battery_current_a = -0.25f,
@@ -448,6 +493,7 @@ static void reset_fakes(void)
     s_notify_take_calls = 0U;
     s_last_wait_ticks = 0U;
     s_fake_time_us = 0;
+    s_fake_wait_advance_us = 1000000U;
     s_delay_calls = 0U;
     s_delete_calls = 0U;
     s_critical_enters = 0U;
@@ -457,6 +503,9 @@ static void reset_fakes(void)
 
     s_open_result = ESP_OK;
     s_read_result = ESP_OK;
+    memset(s_read_results, 0, sizeof(s_read_results));
+    s_read_result_count = 0U;
+    s_read_result_index = 0U;
     s_open_calls = 0U;
     memset(s_open_times_ms, 0, sizeof(s_open_times_ms));
     s_read_calls = 0U;
@@ -478,6 +527,13 @@ static void reset_fakes(void)
     s_last_source = DEVICE_POWER_SOURCE_UNKNOWN;
     s_last_power_voltage = 0.0f;
     s_last_power_current = 0.0f;
+    s_fake_battery_present = true;
+    s_busy_log_calls = 0U;
+    s_last_busy_log[0] = '\0';
+    s_power_state_at_busy = DEVICE_POWER_STATE_UNKNOWN;
+    memset(&s_rail_at_busy, 0, sizeof(s_rail_at_busy));
+    s_power_state_after_device_error = DEVICE_POWER_STATE_UNKNOWN;
+    memset(&s_rail_after_device_error, 0, sizeof(s_rail_after_device_error));
 
     s_task = NULL;
     s_starting = false;
@@ -505,6 +561,34 @@ static void reset_fakes(void)
     memset(s_status_overcurrent_latched, 0, sizeof(s_status_overcurrent_latched));
     memset(s_rails, 0, sizeof(s_rails));
     s_overcurrent_clear_mask = 0U;
+}
+
+
+static void set_fake_read_results(const esp_err_t *results, unsigned count)
+{
+    assert(results != NULL);
+    assert(count <= sizeof(s_read_results) / sizeof(s_read_results[0]));
+    memcpy(s_read_results, results, count * sizeof(s_read_results[0]));
+    s_read_result_count = count;
+    s_read_result_index = 0U;
+}
+
+
+static void capture_power_state_during_busy(void)
+{
+    s_power_state_at_busy = s_status_power_state;
+    assert(ina3221_monitor_get_rail(
+        INA3221_MONITOR_RAIL_BATTERY, &s_rail_at_busy
+    ) == ESP_OK);
+}
+
+
+static void capture_after_device_error(void)
+{
+    s_power_state_after_device_error = s_status_power_state;
+    assert(ina3221_monitor_get_rail(
+        INA3221_MONITOR_RAIL_AD7606_5V, &s_rail_after_device_error
+    ) == ESP_OK);
 }
 
 static void assert_lock_balanced(void)
@@ -710,6 +794,227 @@ static void test_read_failure_invalidates_and_closes_driver(void)
     assert_lock_balanced();
 }
 
+
+static void test_I6_device_NACK_error_policy_pinned(void)
+{
+    reset_fakes();
+    s_fake_source_state = INA3221_POWER_STATE_USB;
+    s_fake_battery_present = false;
+    const esp_err_t results[] = { ESP_OK, ESP_FAIL };
+    set_fake_read_results(results, sizeof(results) / sizeof(results[0]));
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 2U;
+    s_worker_entry(s_worker_argument);
+
+    assert(s_read_calls == 2U);
+    assert(s_close_calls == 2U); /* error close plus normal worker cleanup */
+    assert(s_classifier_update_calls == 1U);
+    assert(s_status_power_state == DEVICE_POWER_STATE_USB_ONLY_NO_BATTERY);
+    assert(s_last_source == DEVICE_POWER_SOURCE_USB);
+    assert(s_set_battery_calls == 1U);
+    ina3221_monitor_rail_t rail;
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_BATTERY, &rail) == ESP_OK);
+    assert(rail.available && rail.valid && rail.stale && rail.age_ms == 1000U);
+    assert_lock_balanced();
+}
+
+
+static void test_I3_three_consecutive_device_errors_invalidate_after_backoff(void)
+{
+    assert(!ina3221_monitor_device_error_invalidates(1U, true, 1000U));
+    assert(!ina3221_monitor_device_error_invalidates(2U, true, 2000U));
+    assert(ina3221_monitor_device_error_invalidates(3U, true, 3000U));
+
+    reset_fakes();
+    const esp_err_t results[] = { ESP_OK, ESP_FAIL, ESP_FAIL, ESP_FAIL };
+    set_fake_read_results(results, sizeof(results) / sizeof(results[0]));
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_wait_hook = capture_after_device_error;
+    s_wait_hook_at = 2U;
+    s_stop_after_waits = 12U;
+    s_worker_entry(s_worker_argument);
+
+    assert(s_read_calls == 4U);
+    assert(s_open_calls == 3U);
+    assert(s_open_times_ms[1] - s_open_times_ms[0] >= 5000U);
+    assert(s_open_times_ms[2] - s_open_times_ms[1] >= 5000U);
+    assert(s_close_calls == 4U);
+    assert(s_classifier_update_calls == 1U);
+    assert(s_power_state_after_device_error != DEVICE_POWER_STATE_UNKNOWN);
+    assert(s_rail_after_device_error.valid && s_rail_after_device_error.stale);
+    assert(s_rail_after_device_error.age_ms == 1000U);
+    assert(s_status_power_state == DEVICE_POWER_STATE_UNKNOWN);
+    ina3221_monitor_rail_t rail;
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_AD7606_5V, &rail) == ESP_OK);
+    assert(!rail.valid && rail.stale && rail.age_ms >= 5000U);
+    assert_lock_balanced();
+}
+
+
+static void test_I1_single_mutex_busy_does_not_invalidate_or_close_driver(void)
+{
+    reset_fakes();
+    const esp_err_t results[] = { ESP_OK, SENSOR_BUS_ERR_MUTEX_BUSY };
+    set_fake_read_results(results, sizeof(results) / sizeof(results[0]));
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 2U;
+    s_worker_entry(s_worker_argument);
+
+    assert(s_read_calls == 2U);
+    assert(s_close_calls == 1U); /* normal worker cleanup only */
+    assert(s_classifier_update_calls == 1U);
+    assert(s_set_power_calls == 1U);
+    assert(s_last_power_valid);
+
+    ina3221_monitor_rail_t rail;
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_AD7606_5V, &rail) == ESP_OK);
+    assert(rail.available && rail.valid && rail.stale);
+    assert(rail.age_ms == 1000U);
+    assert(rail.bus_voltage_v == 5.0f);
+    assert(rail.current_a == s_ad7606_current_a);
+    assert_lock_balanced();
+}
+
+
+static void test_I2_owner_hold_budget_error_treated_like_busy(void)
+{
+    reset_fakes();
+    const esp_err_t results[] = { ESP_OK, SENSOR_BUS_ERR_OWNER_HOLD_BUDGET };
+    set_fake_read_results(results, sizeof(results) / sizeof(results[0]));
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 2U;
+    s_worker_entry(s_worker_argument);
+
+    assert(s_read_calls == 2U);
+    assert(s_close_calls == 1U);
+    assert(s_classifier_update_calls == 1U);
+    ina3221_monitor_rail_t rail;
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_BATTERY, &rail) == ESP_OK);
+    assert(rail.valid && rail.stale && rail.age_ms == 1000U);
+    assert_lock_balanced();
+}
+
+
+static void test_I4_stale_limit_5s(void)
+{
+    ina3221_monitor_rail_t rail;
+    const esp_err_t results[] = { ESP_OK, SENSOR_BUS_ERR_MUTEX_BUSY };
+
+    reset_fakes();
+    set_fake_read_results(results, sizeof(results) / sizeof(results[0]));
+    s_fake_wait_advance_us = 4999000U;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 2U;
+    s_worker_entry(s_worker_argument);
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_BATTERY, &rail) == ESP_OK);
+    assert(rail.available && rail.valid && rail.stale);
+    assert(rail.age_ms == 4999U);
+    assert_lock_balanced();
+
+    reset_fakes();
+    set_fake_read_results(results, sizeof(results) / sizeof(results[0]));
+    s_fake_wait_advance_us = 5000000U;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 2U;
+    s_worker_entry(s_worker_argument);
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_BATTERY, &rail) == ESP_OK);
+    assert(rail.available && !rail.valid && rail.stale);
+    assert(rail.age_ms == 5000U);
+    assert_lock_balanced();
+}
+
+
+static void test_I5_busy_then_ok_clears_stale_and_keeps_power_state(void)
+{
+    reset_fakes();
+    s_fake_source_state = INA3221_POWER_STATE_USB;
+    s_fake_battery_present = false;
+    const esp_err_t results[] = {
+        ESP_OK, ESP_OK, ESP_OK, ESP_OK, ESP_OK,
+        SENSOR_BUS_ERR_MUTEX_BUSY,
+        ESP_OK,
+    };
+    set_fake_read_results(results, sizeof(results) / sizeof(results[0]));
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_wait_hook = capture_power_state_during_busy;
+    s_wait_hook_at = 6U;
+    s_stop_after_waits = 7U;
+    s_worker_entry(s_worker_argument);
+
+    assert(s_power_state_at_busy == DEVICE_POWER_STATE_USB_ONLY_NO_BATTERY);
+    assert(s_rail_at_busy.valid && s_rail_at_busy.stale);
+    assert(s_rail_at_busy.age_ms == 1000U);
+    assert(s_status_power_state == DEVICE_POWER_STATE_USB_ONLY_NO_BATTERY);
+    assert(s_read_calls == 7U);
+    assert(s_close_calls == 1U);
+
+    ina3221_monitor_rail_t rail;
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_BATTERY, &rail) == ESP_OK);
+    assert(rail.valid && !rail.stale && rail.age_ms == 0U);
+    assert_lock_balanced();
+}
+
+
+static void test_I7_period_retry_and_fast_period_tolerances(void)
+{
+    reset_fakes();
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 2U;
+    s_worker_entry(s_worker_argument);
+    assert(s_fake_time_us >= 950000 && s_fake_time_us <= 1050000);
+    assert(s_last_wait_ticks == pdMS_TO_TICKS(1000U));
+
+    reset_fakes();
+    s_open_result = ESP_FAIL;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 7U;
+    s_worker_entry(s_worker_argument);
+    assert(s_open_calls == 2U);
+    assert(s_open_times_ms[1] - s_open_times_ms[0] >= 5000U);
+
+    reset_fakes();
+    s_read_result = ESP_FAIL;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 7U;
+    s_worker_entry(s_worker_argument);
+    assert(s_read_calls == 2U);
+    assert(s_open_calls == 2U);
+    assert(s_open_times_ms[1] - s_open_times_ms[0] >= 5000U);
+
+    reset_fakes();
+    ina3221_monitor_request_fast_sampling(100U);
+    s_fake_wait_advance_us = 20000U;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 2U;
+    s_worker_entry(s_worker_argument);
+    assert(s_last_wait_ticks == pdMS_TO_TICKS(20U));
+    assert(s_fake_time_us >= 19000 && s_fake_time_us <= 21000);
+    assert_lock_balanced();
+}
+
+
+static void test_I8_busy_skip_log_has_counter_age_and_rate_limit(void)
+{
+    reset_fakes();
+    const esp_err_t results[] = {
+        ESP_OK,
+        SENSOR_BUS_ERR_MUTEX_BUSY, SENSOR_BUS_ERR_MUTEX_BUSY,
+        SENSOR_BUS_ERR_MUTEX_BUSY, SENSOR_BUS_ERR_MUTEX_BUSY,
+        SENSOR_BUS_ERR_MUTEX_BUSY, SENSOR_BUS_ERR_MUTEX_BUSY,
+    };
+    set_fake_read_results(results, sizeof(results) / sizeof(results[0]));
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_stop_after_waits = 7U;
+    s_worker_entry(s_worker_argument);
+
+    assert(s_busy_log_calls == 2U);
+    assert(strstr(s_last_busy_log, "consecutive=6") != NULL);
+    assert(strstr(s_last_busy_log, "age_ms=6000") != NULL);
+    assert(s_close_calls == 1U);
+    assert(s_classifier_update_calls == 1U);
+    assert_lock_balanced();
+}
+
 static void test_fast_sampling_request_without_running_task_stores_deadline_only(void)
 {
     reset_fakes();
@@ -843,7 +1148,7 @@ static void test_read_failure_clears_last_power_state(void)
     assert(ina3221_monitor_start() == ESP_OK);
     s_wait_hook = fail_next_power_read;
     s_wait_hook_at = 1U;
-    s_stop_after_waits = 2U;
+    s_stop_after_waits = 6U; /* wait through the 5 s last-good expiry */
     s_worker_entry(s_worker_argument);
 
     assert(s_read_calls == 2U);
@@ -961,8 +1266,27 @@ static void test_healthy_battery_never_alerts(void)
     assert(s_status_soc_quality == DEVICE_BATTERY_SOC_VOLTAGE_ONLY);
 }
 
-int main(void)
+static bool run_requested_max440_test(const char *name)
 {
+    if (strcmp(name, "I1") == 0) test_I1_single_mutex_busy_does_not_invalidate_or_close_driver();
+    else if (strcmp(name, "I2") == 0) test_I2_owner_hold_budget_error_treated_like_busy();
+    else if (strcmp(name, "I3") == 0) test_I3_three_consecutive_device_errors_invalidate_after_backoff();
+    else if (strcmp(name, "I6") == 0) test_I6_device_NACK_error_policy_pinned();
+    else if (strcmp(name, "I4") == 0) test_I4_stale_limit_5s();
+    else if (strcmp(name, "I5") == 0) test_I5_busy_then_ok_clears_stale_and_keeps_power_state();
+    else if (strcmp(name, "I7") == 0) test_I7_period_retry_and_fast_period_tolerances();
+    else if (strcmp(name, "I8") == 0) test_I8_busy_skip_log_has_counter_age_and_rate_limit();
+    else return false;
+    return true;
+}
+
+
+int main(int argc, char **argv)
+{
+    if (argc == 2) {
+        return run_requested_max440_test(argv[1]) ? 0 : 2;
+    }
+
     test_create_failure_rolls_back_and_retries();
     test_start_is_idempotent_during_creation_handoff();
     test_start_is_rejected_while_stop_is_active();
@@ -972,6 +1296,14 @@ int main(void)
     test_open_failure_publishes_invalid_and_stops_on_notification();
     test_absent_ina_retries_at_least_five_seconds_apart();
     test_read_failure_invalidates_and_closes_driver();
+    test_I1_single_mutex_busy_does_not_invalidate_or_close_driver();
+    test_I2_owner_hold_budget_error_treated_like_busy();
+    test_I3_three_consecutive_device_errors_invalidate_after_backoff();
+    test_I6_device_NACK_error_policy_pinned();
+    test_I4_stale_limit_5s();
+    test_I5_busy_then_ok_clears_stale_and_keeps_power_state();
+    test_I7_period_retry_and_fast_period_tolerances();
+    test_I8_busy_skip_log_has_counter_age_and_rate_limit();
     test_read_failure_clears_last_power_state();
     test_fast_sampling_request_without_running_task_stores_deadline_only();
     test_fast_sampling_wakes_worker_and_uses_fast_period();

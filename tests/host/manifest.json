@@ -309,6 +309,84 @@
       "defines": ["AD7606_ACQUISITION_HOST_TEST=1"]
     },
     {
+      "name": "ad7606_acquisition_unsafe_measured_timing",
+      "sources": [
+        "components/ad7606_acquisition/ad7606_acquisition.c",
+        "components/ad7606_acquisition/ad7606_acquisition_timing.c",
+        "components/ad7606_acquisition/ad7606_power_policy.c",
+        "components/ad7606_driver/ad7606_serial.c",
+        "components/ad7606_acquisition/tests/ad7606_acquisition_runtime_test.c",
+        "tests/host/ad7606_acquisition_unsafe_measured_timing_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/ad7606_acquisition_unsafe_os8",
+        "tests/host/stubs/ad7606_acquisition",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "components/seismic_buffer/include",
+        "components/runtime_observability/include",
+        "components/app_config/include",
+        "components/ina3221_monitor/include"
+      ],
+      "libraries": ["m"],
+      "defines": [
+        "AD7606_ACQUISITION_HOST_TEST=1",
+        "AD7606_ACQUISITION_RUNTIME_TEST_SUPPORT_ONLY=1"
+      ]
+    },
+    {
+      "name": "ad7606_recorder_start_integration",
+      "sources": [
+        "components/ad7606_acquisition/ad7606_acquisition.c",
+        "components/ad7606_acquisition/ad7606_acquisition_timing.c",
+        "components/ad7606_acquisition/ad7606_power_policy.c",
+        "components/ad7606_driver/ad7606_serial.c",
+        "components/ad7606_acquisition/tests/ad7606_acquisition_runtime_test.c",
+        "components/seismic_recorder/seismic_recorder_cache.c",
+        "components/seismic_recorder/seismic_recorder_geometry_policy.c",
+        "components/seismic_recorder/seismic_recorder_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "tests/host/ad7606_recorder_start_integration_test.c"
+      ],
+      "include_dirs": [
+        "components/ad7606_acquisition/tests/stubs/max435_recorder_integration",
+        "tests/host/stubs/seismic_recorder_start",
+        "tests/host/stubs/ad7606_acquisition",
+        "components/seismic_recorder/tests/stubs/session_geometry",
+        "tests/host/stubs/object_store_profile",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "components/ad7606_driver",
+        "components/seismic_buffer/include",
+        "components/runtime_observability/include",
+        "components/app_config/include",
+        "components/ina3221_monitor/include",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/seismic_acquisition/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/device_status/include",
+        "components/nrf_geometry_solver/include",
+        "components/nrf_topology_service/include",
+        "components/nrf_cs_authority/include",
+        "components/recording_gate/include",
+        "components/localization/include",
+        "nRF54L15/include"
+      ],
+      "defines": [
+        "AD7606_ACQUISITION_HOST_TEST=1",
+        "AD7606_ACQUISITION_RUNTIME_TEST_SUPPORT_ONLY=1",
+        "CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"
+      ],
+      "libraries": ["m"]
+    },
+    {
       "name": "nrf_topology_service_integration",
       "sources": [
         "components/nrf_topology_service/nrf_topology_service.c",
@@ -332,6 +410,7 @@
       ],
       "include_dirs": [
         "tests/host/stubs/nrf_topology_service",
+        "tests/host/stubs/sensor_bus",
         "components/nrf_topology_service/include",
         "components/nrf_topology_service",
         "components/sensor_bus/include",
@@ -342,6 +421,31 @@
       ],
       "defines": ["NRF_TOPOLOGY_SERVICE_TEST_HARNESS"],
       "libraries": ["m"]
+    },
+    {
+      "name": "nrf_sensor_transport",
+      "sources": [
+        "components/nrf_topology_service/nrf_sensor_transport.c",
+        "components/nrf_topology_service/nrf_node_link_status_policy.c",
+        "tests/host/nrf_sensor_transport_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/tca9548a",
+        "nRF54L15/include",
+        "components/nrf_topology_service/include",
+        "components/nrf_topology_service"
+      ]
+    },
+    {
+      "name": "nrf_node_link_status_policy",
+      "sources": [
+        "components/nrf_topology_service/nrf_node_link_status_policy.c",
+        "components/nrf_topology_service/tests/nrf_node_link_status_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
+      ]
     },
     {
       "name": "nrf_topology_log_policy",
@@ -506,10 +610,12 @@
         "components/ina3221_monitor/ina3221_limits.c",
         "components/ina3221_monitor/ina3221_policy.c",
         "components/ad7606_acquisition/ad7606_power_policy.c",
-        "tests/host/r4a_power_ina_ad7606_integration_test.c"
+        "tests/host/r4a_power_ina_ad7606_integration_test.c",
+        "tests/host/stubs/sensor_bus/sensor_bus_transfer_api_fake.c"
       ],
       "include_dirs": [
         "tests/host/stubs/r4a_power_ina_ad7606",
+        "tests/host/stubs/sensor_bus",
         "components/power_control",
         "components/power_control/include",
         "components/sensor_bus/include",
@@ -525,7 +631,8 @@
         "components/main_barometer/main_barometer.c",
         "nRF54L15/src/nrf_baro_altitude.c",
         "nRF54L15/src/nrf_ema_filter.c",
-        "tests/host/main_barometer_test.c"
+        "tests/host/main_barometer_test.c",
+        "tests/host/stubs/sensor_bus/sensor_bus_api_fake.c"
       ],
       "include_dirs": [
         "tests/host/stubs/sensor_bus",
@@ -786,6 +893,31 @@
         "components/localization/include",
         "components/recording_gate/include"
       ]
+    },
+    {
+      "name": "recording_gate_bypass_policy",
+      "sources": [
+        "components/localization/localization_dimensionality_policy.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/recording_gate/tests/recording_gate_bypass_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/include",
+        "components/recording_gate/include"
+      ]
+    },
+    {
+      "name": "recording_gate_required_policy",
+      "sources": [
+        "components/localization/localization_dimensionality_policy.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/recording_gate/tests/recording_gate_bypass_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/include",
+        "components/recording_gate/include"
+      ],
+      "defines": ["CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"]
     },
     {
       "name": "localization_run_record",
@@ -1337,6 +1469,7 @@
         "components/nrf_geometry_solver/include",
         "nRF54L15/include"
       ],
+      "defines": ["NRF_GEOMETRY_SOLVER_HOST_TEST=1"],
       "libraries": [
         "m"
       ]
@@ -1577,10 +1710,145 @@
         "components/localization/include",
         "nRF54L15/include"
       ],
-      "defines": ["CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1"],
+      "defines": [
+        "CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"
+      ],
       "libraries": [
         "m"
       ]
+    },
+    {
+      "name": "seismic_recorder_gate_bypass_start_0",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder.c",
+        "components/seismic_recorder/seismic_recorder_cache.c",
+        "components/seismic_recorder/seismic_recorder_start_policy.c",
+        "components/seismic_recorder/seismic_recorder_geometry_policy.c",
+        "components/seismic_recorder/seismic_recorder_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "tests/host/seismic_recorder_start_integration_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_gate_bypass",
+        "tests/host/stubs/seismic_recorder_start",
+        "components/seismic_recorder/tests/stubs/session_geometry",
+        "tests/host/stubs/object_store_profile",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/seismic_acquisition/include",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/app_config/include",
+        "components/seismic_buffer/include",
+        "components/device_status/include",
+        "components/nrf_geometry_solver/include",
+        "components/nrf_topology_service/include",
+        "components/nrf_cs_authority/include",
+        "components/recording_gate/include",
+        "components/localization/include",
+        "nRF54L15/include"
+      ],
+      "defines": [
+        "CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1",
+        "SEISMIC_RECORDER_GATE_BYPASS_TEST=1",
+        "SEISMIC_RECORDER_GATE_BYPASS_REMOTE_COUNT=0"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "seismic_recorder_gate_bypass_start_1",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder.c",
+        "components/seismic_recorder/seismic_recorder_cache.c",
+        "components/seismic_recorder/seismic_recorder_start_policy.c",
+        "components/seismic_recorder/seismic_recorder_geometry_policy.c",
+        "components/seismic_recorder/seismic_recorder_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "tests/host/seismic_recorder_start_integration_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_gate_bypass",
+        "tests/host/stubs/seismic_recorder_start",
+        "components/seismic_recorder/tests/stubs/session_geometry",
+        "tests/host/stubs/object_store_profile",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/seismic_acquisition/include",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/app_config/include",
+        "components/seismic_buffer/include",
+        "components/device_status/include",
+        "components/nrf_geometry_solver/include",
+        "components/nrf_topology_service/include",
+        "components/nrf_cs_authority/include",
+        "components/recording_gate/include",
+        "components/localization/include",
+        "nRF54L15/include"
+      ],
+      "defines": [
+        "CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1",
+        "SEISMIC_RECORDER_GATE_BYPASS_TEST=1",
+        "SEISMIC_RECORDER_GATE_BYPASS_REMOTE_COUNT=1"
+      ],
+      "libraries": ["m"]
+    },
+    {
+      "name": "seismic_recorder_gate_bypass_start_2",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder.c",
+        "components/seismic_recorder/seismic_recorder_cache.c",
+        "components/seismic_recorder/seismic_recorder_start_policy.c",
+        "components/seismic_recorder/seismic_recorder_geometry_policy.c",
+        "components/seismic_recorder/seismic_recorder_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "tests/host/seismic_recorder_start_integration_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_gate_bypass",
+        "tests/host/stubs/seismic_recorder_start",
+        "components/seismic_recorder/tests/stubs/session_geometry",
+        "tests/host/stubs/object_store_profile",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/seismic_acquisition/include",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/app_config/include",
+        "components/seismic_buffer/include",
+        "components/device_status/include",
+        "components/nrf_geometry_solver/include",
+        "components/nrf_topology_service/include",
+        "components/nrf_cs_authority/include",
+        "components/recording_gate/include",
+        "components/localization/include",
+        "nRF54L15/include"
+      ],
+      "defines": [
+        "CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1",
+        "SEISMIC_RECORDER_GATE_BYPASS_TEST=1",
+        "SEISMIC_RECORDER_GATE_BYPASS_REMOTE_COUNT=2"
+      ],
+      "libraries": ["m"]
     },
     {
       "name": "seismic_recorder_waveform",
@@ -1872,7 +2140,9 @@
         "components/web_server/tests/stubs",
         "components/web_server",
         "components/recording_gate/include",
-        "components/localization/include"
+        "components/localization/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
       ]
     },
     {
@@ -1883,6 +2153,7 @@
         "components/hw_inventory/hw_inventory_reason.c",
         "components/web_server/tests/hw_inventory_status_fake.c",
         "components/web_server/web_status_json_pods.c",
+        "components/nrf_topology_service/nrf_node_link_status_policy.c",
         "components/web_server/web_status_policy.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "tests/host/stubs/web_status_json/storage_manager_fake.c",
@@ -1897,7 +2168,9 @@
         "components/device_status/include",
         "components/runtime_observability/include",
         "components/seismic_acquisition/include",
-        "components/seismic_buffer/include"
+        "components/seismic_buffer/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
       ]
     },
     {
@@ -1908,6 +2181,7 @@
         "components/hw_inventory/hw_inventory_reason.c",
         "components/web_server/tests/hw_inventory_status_fake.c",
         "components/web_server/web_status_json_pods.c",
+        "components/nrf_topology_service/nrf_node_link_status_policy.c",
         "components/web_server/web_status_policy.c",
         "tests/host/stubs/web_status_json/cjson_counting_alloc.c",
         "tests/host/stubs/web_status_json/storage_manager_fake.c",
@@ -1922,7 +2196,9 @@
         "components/device_status/include",
         "components/runtime_observability/include",
         "components/seismic_acquisition/include",
-        "components/seismic_buffer/include"
+        "components/seismic_buffer/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
       ]
     },
     {
@@ -1978,6 +2254,19 @@
       ],
       "include_dirs": [
         "components/ui_i18n/include"
+      ]
+    },
+    {
+      "name": "ui_node_link_status",
+      "sources": [
+        "components/ui/ui_node_link_status.c",
+        "components/ui/tests/ui_node_link_status_test.c"
+      ],
+      "include_dirs": [
+        "components/ui",
+        "components/ui_i18n/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
       ]
     },
     {

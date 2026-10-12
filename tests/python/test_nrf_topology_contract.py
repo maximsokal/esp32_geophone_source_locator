@@ -45,7 +45,11 @@ def test_task_policy_and_service_defaults_are_centralized():
     assert "APP_TASK_CORE_SERVICES" in service
     assert "APP_TASK_PRIORITY_NRF_TOPOLOGY" in service
     assert "APP_TASK_STACK_NRF_TOPOLOGY" in service
-    assert "NRF_TOPOLOGY_RECONCILE_PERIOD_MS 5000U" in service
+    periods = read("components/nrf_topology_service/include/nrf_topology_periods.h")
+    assert "NRF_TOPOLOGY_RECONCILE_PERIOD_MS 5000U" in periods
+    assert "NRF_LOG_COLLECTOR_PERIOD_MS CONFIG_NRF_LOG_POLL_PERIOD_MS" in periods
+    assert "NRF_SENSOR_REFRESH_PERIOD_MS 2000U" in periods
+    assert "NRF_CS_PUMP_INTERVAL_MS 10U" in periods
 
     header = read("components/nrf_topology_service/include/nrf_topology.h")
     assert "NRF_TOPOLOGY_DEFAULT_CONFIRM_TIMEOUT_MS 500U" in header
@@ -55,11 +59,14 @@ def test_task_policy_and_service_defaults_are_centralized():
 
 def test_service_owns_only_nrf_address_handles_not_shared_bus_or_tca():
     service = read("components/nrf_topology_service/nrf_topology_service.c")
-    assert service.count("i2c_bus_device_create(") == 3
+    assert service.count("sensor_bus_device_create(") == 3
+    assert "sensor_bus_device_delete(" in service
     assert "platform_delete_device(&platform->remote_device);" in service
     assert "platform_delete_device(&platform->main_device);" in service
     assert "platform_delete_device(&platform->discovery_device);" in service
     assert "platform->tca_device = NULL;" in service
+    assert "i2c_bus_device_create(" not in service
+    assert "i2c_bus_device_delete(" not in service
     assert "i2c_bus_delete(" not in service
     assert "sensor_bus_get_tca9548a" in service
 

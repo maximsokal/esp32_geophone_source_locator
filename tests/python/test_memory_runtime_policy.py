@@ -129,13 +129,15 @@ def test_https_and_tft_policies_preserve_payload_and_dma_safety():
     web_server = read("components/web_server/web_server.c")
     web_asset = read("components/web_server/web_webui_flash.c")
     tft = read("components/ui/ui_lvgl.c")
+    ui_perf_policy = read("components/ui/ui_perf_policy.h")
 
     assert "WEB_HTTPS_MAX_CLIENTS           2U" in web_server
     assert '"Connection",\n            "close"' not in web_asset
     assert '"Connection: close"' not in web_asset
     assert "#define WEB_FLASH_SEND_CHUNK_BYTES  2048U" in read("components/web_server/web_webui_flash.c")
     assert "DMA_RUNTIME owner=tft location=internal" in tft
-    assert "#define UI_LVGL_BUFFER_ROWS  8" in tft
+    assert "UI_PERF_FLUSH_CHUNK_ROWS" in tft
+    assert "#define UI_PERF_FLUSH_CHUNK_ROWS 8U" in ui_perf_policy
     assert "single and internal" in tft
 
 
@@ -330,12 +332,14 @@ def test_tft_measurement_path_uses_envelope_arrays_without_point_updates():
     reducer = read("components/ui/ui_measurement_trace.c")
     envelope = read("components/seismic_buffer/seismic_envelope.c")
     kconfig = read("main/Kconfig.projbuild")
+    ui_perf_policy = read("components/ui/ui_perf_policy.h")
 
     assert "lv_chart_set_series_ext_y_array" in measurements
     assert "lv_chart_set_series_value_by_id" not in measurements
     assert "LV_PART_INDICATOR" in measurements
     assert "config UI_MEASUREMENTS_GRAPHS_ENABLED" in kconfig
-    assert "UI_MEASUREMENT_CHART_PERIOD_US 125000U" in measurements
+    assert "#define UI_PERF_CHART_REFRESH_INTERVAL_MS 125U" in ui_perf_policy
+    assert "ui_perf_policy_chart_refresh_due(" in measurements
     assert "ui_measurements_create_graph_container_locked" in measurements
     assert "lv_obj_invalidate(context->measurement_graphs)" in measurements
     assert "lv_obj_invalidate(context->measurement_screen)" not in measurements
@@ -348,7 +352,10 @@ def test_tft_measurement_path_uses_envelope_arrays_without_point_updates():
     assert "bucket_min" in envelope
     assert "bucket_max" in envelope
     assert "frames_consumed" in envelope
-    assert "UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES 1024U" in measurements
+    assert "#define UI_PERF_PREVIEW_CHUNK_FRAMES 1024U" in ui_perf_policy
+    assert "#define UI_PERF_LIMITED_PREVIEW_CHUNK_FRAMES 128U" in ui_perf_policy
+    assert "UI_PERF_PREVIEW_CHUNK_FRAMES" in measurements
+    assert "ui_perf_policy_preview_chunk_limit" in measurements
     assert "ui_measurement_trace_accumulator_add" in measurements
     assert "trace_min" in reducer
     assert "trace_max" in reducer

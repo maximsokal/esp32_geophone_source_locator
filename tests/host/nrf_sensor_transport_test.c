@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "nrf_sensor_transport.h"
+#include "nrf_node_link_status_policy.h"
 
 typedef enum {
     M_OK,
@@ -17,6 +18,7 @@ typedef enum {
     M_BUSY,
     M_ABORT_AFTER_PENDING,
     M_SNAPSHOT_IDENTITY_MISMATCH,
+    M_STATUS_BOOTING,
 } mode_t;
 
 typedef enum {
@@ -192,6 +194,9 @@ static esp_err_t read_status(void *context, uint8_t address, nrf_upstream_status
             bus->remote_hw,
             bus->remote_epoch);
         status(status_frame, &node_snapshot, NRF_UPSTREAM_ROLE_REMOTE);
+        if (bus->mode == M_STATUS_BOOTING) {
+            status_frame->lifecycle = NRF_UPSTREAM_LIFECYCLE_BOOTING;
+        }
         return ESP_OK;
     }
     return ESP_ERR_INVALID_ARG;
@@ -389,7 +394,7 @@ static void test_cache_identity_lifecycle(void)
 static void test_success_order_and_no_discovery(void)
 {
     const event_t expected[] = {
-        E_SELECT, E_MAIN_READ, E_REMOTE_READ, E_WRITE, E_SNAPSHOT, E_CLOSE,
+        E_MAIN_READ, E_SELECT, E_REMOTE_READ, E_WRITE, E_SNAPSHOT, E_CLOSE,
     };
 
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
@@ -493,6 +498,97 @@ static void test_final_result_mapping_and_timestamps(void)
     assert(cache[1].esp_receipt_uptime_ms != cache[1].sensor.sample_complete_uptime_ms);
 }
 
+static void test_status_cache_survives_busy_topology_refresh(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    topo(&bus, &topology, 1U);
+    init_cache(&topology, cache, 1U);
+    nrf_sensor_transport_controller_t controller = make_controller();
+    nrf_sensor_transport_io_t io = make_io(&bus);
+    bool reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 1U, &cache[1], &reconcile) == ESP_OK);
+    assert(cache[1].upstream_status.valid);
+
+    topology.bus_busy = true;
+    topology.stale = true;
+    assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 0U);
+    assert(cache[1].upstream_status.valid);
+    assert(cache[1].upstream_status.identity_matches);
+    assert(cache[1].upstream_status.lifecycle == NRF_UPSTREAM_LIFECYCLE_READY);
+    assert(cache[1].upstream_status.result == NRF_UPSTREAM_RESULT_OK);
+    assert(cache[1].upstream_status.flags == (
+        NRF_UPSTREAM_STATUS_FLAG_ASSIGNED | NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED));
+    nrf_node_link_status_input_t input = {
+        .assigned = true,
+        .status_valid = cache[1].upstream_status.valid,
+        .status_identity_matches = cache[1].upstream_status.identity_matches,
+        .lifecycle = cache[1].upstream_status.lifecycle,
+        .result = cache[1].upstream_status.result,
+        .flags = cache[1].upstream_status.flags,
+        .status_receipt_uptime_ms = cache[1].upstream_status.esp_receipt_uptime_ms,
+    };
+    assert(nrf_node_link_status_evaluate(
+               &input,
+               input.status_receipt_uptime_ms + NRF_NODE_LINK_STATUS_STALE_LIMIT_MS - 1U,
+               false) == NRF_NODE_LINK_STATUS_READY);
+    assert(nrf_node_link_status_evaluate(
+               &input,
+               input.status_receipt_uptime_ms + NRF_NODE_LINK_STATUS_STALE_LIMIT_MS,
+               false) == NRF_NODE_LINK_STATUS_NOT_CONNECTED);
+}
+
+static void test_status_cache_retains_lifecycle_result_flags(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    topo(&bus, &topology, 2U);
+    init_cache(&topology, cache, 2U);
+    nrf_sensor_transport_controller_t controller = make_controller();
+    nrf_sensor_transport_io_t io = make_io(&bus);
+    bool reconcile = false;
+
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 2U, &cache[2], &reconcile) == ESP_OK);
+    assert(controller.main_status_cache.valid);
+    assert(controller.main_status_cache.identity_matches);
+    assert(controller.main_status_cache.lifecycle == NRF_UPSTREAM_LIFECYCLE_READY);
+    assert(controller.main_status_cache.result == NRF_UPSTREAM_RESULT_OK);
+    assert(controller.main_status_cache.flags == (
+        NRF_UPSTREAM_STATUS_FLAG_ASSIGNED | NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED));
+    assert(cache[2].upstream_status.valid);
+    assert(cache[2].upstream_status.identity_matches);
+    assert(cache[2].upstream_status.lifecycle == NRF_UPSTREAM_LIFECYCLE_READY);
+    assert(cache[2].upstream_status.result == NRF_UPSTREAM_RESULT_OK);
+    assert(cache[2].upstream_status.flags == (
+        NRF_UPSTREAM_STATUS_FLAG_ASSIGNED | NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED));
+    assert(cache[2].upstream_status.esp_receipt_uptime_ms == bus.now);
+}
+
+static void test_fresh_booting_status_is_retained_without_reconcile(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    topo(&bus, &topology, 3U);
+    init_cache(&topology, cache, 3U);
+    bus.mode = M_STATUS_BOOTING;
+    nrf_sensor_transport_controller_t controller = make_controller();
+    nrf_sensor_transport_io_t io = make_io(&bus);
+    bool reconcile = false;
+
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 3U, &cache[3], &reconcile) ==
+        ESP_ERR_INVALID_STATE);
+    assert(cache[3].upstream_status.valid);
+    assert(cache[3].upstream_status.identity_matches);
+    assert(cache[3].upstream_status.lifecycle == NRF_UPSTREAM_LIFECYCLE_BOOTING);
+    assert(!reconcile && bus.writes == 0U && bus.close == 1U);
+}
+
 static void test_foreign_retry_and_second_conflict(void)
 {
     bus_t bus;
@@ -586,7 +682,7 @@ static void test_timeout_abort_and_faults(void)
     assert(nrf_sensor_transport_refresh_channel(
                &controller, &io, &topology, 4U, &cache[4], &reconcile) == ESP_ERR_INVALID_RESPONSE);
     assert(cache[4].state == NRF_SENSOR_CACHE_IDENTITY_STALE);
-    assert(bus.remote_reads == 0U && reconcile && bus.close == 1U);
+    assert(bus.remote_reads == 0U && reconcile && bus.select == 0U && bus.close == 0U);
 
     topo(&bus, &topology, 4U);
     init_cache(&topology, cache, 4U);
@@ -618,7 +714,8 @@ static void test_timeout_abort_and_faults(void)
     reconcile = false;
     assert(nrf_sensor_transport_refresh_channel(
                &controller, &io, &topology, 7U, &cache[7], &reconcile) == ESP_FAIL);
-    assert(bus.close == 1U && bus.main_reads == 0U && bus.discovery == 0U);
+    assert(bus.close == 1U && bus.select == 1U && bus.main_reads == 1U);
+    assert(bus.remote_reads == 0U && bus.discovery == 0U);
 }
 
 static void test_sequence_can_reset_after_new_assignment_epoch(void)
@@ -656,8 +753,11 @@ static void test_sequence_can_reset_after_new_assignment_epoch(void)
 int main(void)
 {
     test_cache_identity_lifecycle();
+    test_status_cache_survives_busy_topology_refresh();
     test_success_order_and_no_discovery();
     test_final_result_mapping_and_timestamps();
+    test_status_cache_retains_lifecycle_result_flags();
+    test_fresh_booting_status_is_retained_without_reconcile();
     test_foreign_retry_and_second_conflict();
     test_timeout_abort_and_faults();
     test_sequence_can_reset_after_new_assignment_epoch();

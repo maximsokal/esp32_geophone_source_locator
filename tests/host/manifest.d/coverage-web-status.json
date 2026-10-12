@@ -29,6 +29,7 @@
         "components/web_server/web_status_json_hardware.c",
         "components/hw_inventory/hw_inventory_reason.c",
         "components/web_server/web_status_json_pods.c",
+        "components/nrf_topology_service/nrf_node_link_status_policy.c",
         "components/web_server/web_status_policy.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/web_server/tests/hw_inventory_status_fake.c",
@@ -44,7 +45,9 @@
         "components/device_status/include",
         "components/runtime_observability/include",
         "components/seismic_acquisition/include",
-        "components/seismic_buffer/include"
+        "components/seismic_buffer/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
       ]
     },
     {
@@ -54,6 +57,7 @@
         "components/web_server/web_status_json_hardware.c",
         "components/hw_inventory/hw_inventory_reason.c",
         "components/web_server/web_status_json_pods.c",
+        "components/nrf_topology_service/nrf_node_link_status_policy.c",
         "components/web_server/web_status_policy.c",
         "tests/host/stubs/web_status_json/cjson_counting_alloc.c",
         "components/web_server/tests/hw_inventory_status_fake.c",
@@ -69,7 +73,9 @@
         "components/device_status/include",
         "components/runtime_observability/include",
         "components/seismic_acquisition/include",
-        "components/seismic_buffer/include"
+        "components/seismic_buffer/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
       ]
     },
     {
@@ -96,7 +102,9 @@
         "tests/host/stubs/object_store_profile",
         "components/hw_inventory/include",
         "components/web_server",
-        "components/web_server/tests"
+        "components/web_server/tests",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
       ]
     },
     {
@@ -112,7 +120,9 @@
         "tests/host/stubs/object_store_profile",
         "components/web_server/tests/stubs",
         "components/web_server/include",
-        "components/web_server"
+        "components/web_server",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
       ]
     },
     {
@@ -125,7 +135,9 @@
       "include_dirs": [
         "tests/host/stubs/web_api_status",
         "tests/host/stubs/web_status_json",
-        "components/web_server"
+        "components/web_server",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
       ]
     },
     {
@@ -146,7 +158,9 @@
         "components/web_server",
         "components/web_server/include",
         "components/recording_gate/include",
-        "components/localization/include"
+        "components/localization/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
       ]
     }
   ]

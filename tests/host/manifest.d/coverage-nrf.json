@@ -33,7 +33,7 @@
     },
     {
       "name": "main_barometer",
-      "sources": ["components/main_barometer/main_barometer.c", "nRF54L15/src/nrf_baro_altitude.c", "nRF54L15/src/nrf_ema_filter.c", "tests/host/main_barometer_test.c"],
+      "sources": ["components/main_barometer/main_barometer.c", "nRF54L15/src/nrf_baro_altitude.c", "nRF54L15/src/nrf_ema_filter.c", "tests/host/main_barometer_test.c", "tests/host/stubs/sensor_bus/sensor_bus_api_fake.c"],
       "include_dirs": ["tests/host/stubs/sensor_bus", "components/main_barometer/include", "components/sensor_bus/include", "nRF54L15/include"],
       "libraries": ["m"]
     },
@@ -177,6 +177,7 @@
       ],
       "include_dirs": [
         "tests/host/stubs/nrf_topology_service",
+        "tests/host/stubs/sensor_bus",
         "components/nrf_topology_service/include",
         "components/nrf_topology_service",
         "components/sensor_bus/include",
@@ -296,6 +297,20 @@
         "components/hw_inventory/include",
         "components/nrf_topology_service/include",
         "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "nrf_sensor_transport",
+      "sources": [
+        "components/nrf_topology_service/nrf_sensor_transport.c",
+        "components/nrf_topology_service/nrf_node_link_status_policy.c",
+        "tests/host/nrf_sensor_transport_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/tca9548a",
+        "nRF54L15/include",
+        "components/nrf_topology_service/include",
+        "components/nrf_topology_service"
       ]
     }
   ]

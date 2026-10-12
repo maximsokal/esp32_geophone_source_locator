@@ -17,6 +17,7 @@ idf_component_register(
         "ui_hardware_model.c"
         "ui_system_model.c"
         "ui_measurements.c"
+        "ui_node_link_status.c"
         "ui_measurements_nodes.c"
         "ui_measurement_trace.c"
         "ui_workflow_model.c"

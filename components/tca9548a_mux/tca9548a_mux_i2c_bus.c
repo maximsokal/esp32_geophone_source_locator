@@ -1,4 +1,5 @@
 #include "tca9548a_mux_i2c_bus.h"
+#include "sensor_bus.h"
 #include "sensor_bus_probe_diag.h"
 
 #include <stddef.h>
@@ -19,8 +20,8 @@ static esp_err_t tca9548a_i2c_write_transfer(
     if (context == NULL || tx == NULL || tx_len == 0U) {
         return ESP_ERR_INVALID_ARG;
     }
-    return i2c_bus_write_byte((i2c_bus_device_handle_t)context,
-                              NULL_I2C_MEM_ADDR, tx[0]);
+    return sensor_bus_write_byte((i2c_bus_device_handle_t)context,
+                                 NULL_I2C_MEM_ADDR, tx[0]);
 }
 
 static esp_err_t tca9548a_i2c_read_transfer(
@@ -35,8 +36,8 @@ static esp_err_t tca9548a_i2c_read_transfer(
     if (context == NULL || rx == NULL || rx_len == 0U) {
         return ESP_ERR_INVALID_ARG;
     }
-    return i2c_bus_read_byte((i2c_bus_device_handle_t)context,
-                             NULL_I2C_MEM_ADDR, rx);
+    return sensor_bus_read_byte((i2c_bus_device_handle_t)context,
+                                NULL_I2C_MEM_ADDR, rx);
 }
 
 #if CONFIG_APP_I2C_PROBE_DIAGNOSTICS

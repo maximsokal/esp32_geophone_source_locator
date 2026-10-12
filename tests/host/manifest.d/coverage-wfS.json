@@ -106,7 +106,9 @@
         "components/web_server/tests/stubs",
         "components/web_server",
         "components/recording_gate/include",
-        "components/localization/include"
+        "components/localization/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
       ]
     },
     {

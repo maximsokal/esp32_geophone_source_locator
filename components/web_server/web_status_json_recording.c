@@ -88,11 +88,9 @@ static const char *web_status_dimensionality_name(
 
 
 /*
- * MAX-165: the same decision seismic_recorder_start() itself enforces
- * (recording_gate_evaluate(), reusing nrf_topology_service's own leveling
- * summary), surfaced ahead of time so the WebUI Record button can disable
- * itself and show the exact required reason/warning text instead of the
- * operator only discovering a rejection after pressing Record.
+ * MAX-165/MAX-444: expose the diagnostic decision and admission result
+ * together. The decision/reason remain visible when the default policy
+ * bypasses the gate, while "allowed" reflects the actual start policy.
  */
 bool web_status_json_add_recording_gate(cJSON *root)
 {
@@ -164,12 +162,11 @@ bool web_status_json_add_recording_gate(cJSON *root)
             "dimensionality",
             web_status_dimensionality_name(gate.dimensionality)
         ) != NULL &&
+        cJSON_AddBoolToObject(object, "bypassed", gate.bypassed) != NULL &&
         cJSON_AddBoolToObject(
             object,
             "allowed",
-            storage_available &&
-                (gate.decision == RECORDING_GATE_ALLOWED_PLANAR_2D ||
-                 gate.decision == RECORDING_GATE_ALLOWED_3D_CAPABLE)
+            storage_available && gate.start_allowed
         ) != NULL &&
         cJSON_AddStringToObject(
             object,
@@ -253,8 +250,11 @@ bool web_status_json_add_recording(cJSON *root)
 
     return true;
 }
-bool web_status_json_add_measurement(cJSON *root)
+bool web_status_json_add_measurement(cJSON *root, bool *recording_out)
 {
+    if (recording_out != NULL) {
+        *recording_out = false;
+    }
     cJSON *object = cJSON_AddObjectToObject(root, "measurement");
     if (object == NULL) {
         return false;
@@ -269,6 +269,9 @@ bool web_status_json_add_measurement(cJSON *root)
 
     if (err != ESP_OK) {
         return cJSON_AddStringToObject(object, "error", esp_err_to_name(err)) != NULL;
+    }
+    if (recording_out != NULL) {
+        *recording_out = snapshot.state == MEASUREMENT_SERVICE_RECORDING;
     }
 
     if (

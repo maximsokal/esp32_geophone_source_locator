@@ -18,6 +18,7 @@
 #include "ui_theme.h"
 #include "ui_i18n.h"
 #include "ui_measurements_nodes.h"
+#include "ui_node_link_status.h"
 
 
 typedef enum
@@ -94,6 +95,15 @@ typedef struct
     lv_obj_t *measurement_channel_labels[
         SEISMIC_CHANNEL_COUNT
     ];
+    lv_obj_t *measurement_link_labels[
+        SEISMIC_CHANNEL_COUNT
+    ];
+    nrf_node_link_status_t measurement_link_status[
+        SEISMIC_CHANNEL_COUNT
+    ];
+    bool measurement_link_status_valid[
+        SEISMIC_CHANNEL_COUNT
+    ];
     lv_obj_t *measurement_charts[
         SEISMIC_CHANNEL_COUNT
     ];
@@ -106,6 +116,7 @@ typedef struct
         SEISMIC_CHANNEL_COUNT
     ];
     lv_obj_t *measurement_summary;
+    lv_obj_t *measurement_link_legend;
     lv_obj_t *measurement_transport;
     lv_obj_t *measurement_health;
     lv_obj_t *measurement_node_labels[UI_MEASUREMENTS_NODE_COUNT];
@@ -160,6 +171,7 @@ ui_context_t *ui_context(void);
 /* LVGL/esp_lcd bridge lifecycle. */
 esp_err_t ui_lvgl_init(void);
 void ui_lvgl_deinit(void);
+void ui_lvgl_set_measurement_load_active(bool load_active);
 
 
 /* Shared shell/layout primitives. Caller holds the LVGL port lock. */

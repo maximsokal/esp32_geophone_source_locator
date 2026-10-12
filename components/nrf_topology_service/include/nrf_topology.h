@@ -33,8 +33,11 @@ typedef struct {
 
 typedef struct {
     uint32_t generation;
+    uint32_t age_ms;
     bool tca_available;
     bool tca_fault;
+    bool bus_busy;
+    bool stale;
     nrf_topology_node_snapshot_t main;
     nrf_topology_node_snapshot_t remotes[NRF_TOPOLOGY_REMOTE_COUNT];
 } nrf_topology_snapshot_t;

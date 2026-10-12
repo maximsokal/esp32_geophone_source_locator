@@ -20,6 +20,7 @@ typedef struct {
 typedef struct {
     nrf_sensor_transport_config_t config;
     uint32_t next_request_id;
+    nrf_upstream_status_cache_t main_status_cache;
 } nrf_sensor_transport_controller_t;
 
 typedef struct {

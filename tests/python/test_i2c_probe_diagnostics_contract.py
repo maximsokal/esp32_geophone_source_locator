@@ -24,8 +24,10 @@ def test_i2c_probe_diagnostics_kconfig_defaults_are_bounded():
 def test_every_nrf_read_and_write_uses_the_diagnostic_transaction_wrapper():
     service = _read("components/nrf_topology_service/nrf_topology_service.c")
 
-    assert service.count("i2c_bus_read_bytes(") == 1
-    assert service.count("i2c_bus_write_bytes(") == 1
+    assert service.count("sensor_bus_read_bytes(") == 1
+    assert service.count("sensor_bus_write_bytes(") == 1
+    assert "i2c_bus_read_bytes(" not in service
+    assert "i2c_bus_write_bytes(" not in service
     assert "SENSOR_BUS_PROBE_PHASE_READ" in service
     assert "SENSOR_BUS_PROBE_PHASE_WRITE" in service
     assert "sensor_bus_probe_diag_begin_pass(platform->reconcile_pass_count)" in service
@@ -68,7 +70,8 @@ def test_transaction_log_captures_timing_and_line_levels_around_driver_call():
     assert "config.master.clk_speed" in sensor_bus
     assert "config.sda_pullup_en" in sensor_bus
     assert "config.scl_pullup_en" in sensor_bus
-    assert "CONFIG_I2C_MS_TO_WAIT" in sensor_bus
+    assert "SENSOR_BUS_MUTEX_WAIT_MS" in sensor_bus
+    assert "SENSOR_BUS_TRANSACTION_TIMEOUT_MS" in sensor_bus
     assert "SENSOR_BUS_I2C_GLITCH_IGNORE_COUNT" in sensor_bus
     assert "probe_timeout_ms=%u" in sensor_bus
 

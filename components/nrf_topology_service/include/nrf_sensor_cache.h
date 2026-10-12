@@ -24,6 +24,16 @@ typedef enum {
 } nrf_sensor_cache_state_t;
 
 typedef struct {
+    bool valid;
+    bool identity_matches;
+    nrf_topology_node_snapshot_t identity;
+    uint8_t lifecycle;
+    uint8_t result;
+    uint8_t flags;
+    uint64_t esp_receipt_uptime_ms;
+} nrf_upstream_status_cache_t;
+
+typedef struct {
     bool identity_valid;
     bool topology_current;
     bool response_valid;
@@ -33,6 +43,7 @@ typedef struct {
     uint32_t sensor_request_id;
     nrf_sensor_cache_state_t state;
     nrf_sensor_cache_state_t last_attempt_state;
+    nrf_upstream_status_cache_t upstream_status;
     nrf_upstream_sensor_snapshot_t sensor;
     uint64_t esp_receipt_uptime_ms;
 } nrf_remote_sensor_cache_t;

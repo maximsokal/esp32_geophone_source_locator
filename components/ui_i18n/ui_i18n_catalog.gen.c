@@ -70,6 +70,11 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "FAILED TO KEEP SESSION", /* measurement.keep_failed */
     "FAILED TO LEAVE MEASUREMENT", /* measurement.leave_failed */
     "LEAVING WHEN OPERATION FINISHES...", /* measurement.leaving_after_operation */
+    "connected", /* measurement.link_connected */
+    "LINK", /* measurement.link_legend */
+    "measuring", /* measurement.link_measuring */
+    "not connected", /* measurement.link_not_connected */
+    "ready", /* measurement.link_ready */
     "NO SAVED SESSION TO PREVIEW", /* measurement.no_session_preview */
     "G1", /* measurement.node_g1 */
     "G2", /* measurement.node_g2 */
@@ -469,6 +474,11 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "НЕ ВДАЛОСЯ ЗБЕРЕГТИ СЕАНС", /* measurement.keep_failed */
     "НЕ ВДАЛОСЯ ЗАВЕРШИТИ ВИМІРЮВАННЯ", /* measurement.leave_failed */
     "ВИХІД ПІСЛЯ ЗАВЕРШЕННЯ ДІЇ...", /* measurement.leaving_after_operation */
+    "підключено", /* measurement.link_connected */
+    "ЗВ’ЯЗОК", /* measurement.link_legend */
+    "вимірювання", /* measurement.link_measuring */
+    "не підключено", /* measurement.link_not_connected */
+    "готовий", /* measurement.link_ready */
     "НЕМАЄ ЗБЕРЕЖЕНОГО СЕАНСУ ДЛЯ 3D ОГЛЯДУ", /* measurement.no_session_preview */
     "G1", /* measurement.node_g1 */
     "G2", /* measurement.node_g2 */

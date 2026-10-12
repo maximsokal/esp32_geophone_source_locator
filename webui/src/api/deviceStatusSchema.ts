@@ -214,6 +214,7 @@ function checkPod(podValue: unknown, path: string): void {
   const pod = objectValue(podValue, path);
   requiredNumber(pod, 'id', path);
   requiredString(pod, 'state', path);
+  optionalString(pod, 'node_link_status', path);
 
   const capabilitiesValue = pod.capabilities;
   if (capabilitiesValue !== undefined) {
@@ -403,6 +404,7 @@ function checkRecordingGate(gate: StatusObject): void {
   for (const key of ['assigned_count', 'accepted_count']) optionalNumber(gate, key, 'recording_gate');
   for (const key of ['decision', 'dimensionality', 'reason', 'warning', 'error']) optionalString(gate, key, 'recording_gate');
   optionalBoolean(gate, 'allowed', 'recording_gate');
+  optionalBoolean(gate, 'bypassed', 'recording_gate');
   const nodes = optionalArray(gate, 'nodes', 'recording_gate');
   if (nodes !== undefined) {
     for (let index = 0; index < nodes.length; index++) {

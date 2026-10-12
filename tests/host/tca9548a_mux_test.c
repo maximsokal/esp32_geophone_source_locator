@@ -5,6 +5,7 @@
 
 #include "tca9548a_mux.h"
 #include "tca9548a_mux_i2c_bus.h"
+#include "sensor_bus.h"
 
 typedef struct {
     uint8_t control;
@@ -13,8 +14,11 @@ typedef struct {
     unsigned fail_write_call;
     unsigned second_fail_write_call;
     unsigned fail_read_call;
+    unsigned second_fail_read_call;
     unsigned forced_read_call;
     uint8_t forced_read_value;
+    unsigned forced_read_call2;
+    uint8_t forced_read_value2;
 } fake_io_t;
 
 static esp_err_t fake_write(
@@ -54,11 +58,15 @@ static esp_err_t fake_read(
     assert(io != NULL);
     assert(value != NULL);
     ++io->read_calls;
-    if (io->fail_read_call == io->read_calls) {
+    if (io->fail_read_call == io->read_calls ||
+        io->second_fail_read_call == io->read_calls) {
         return ESP_ERR_TIMEOUT;
     }
     if (io->forced_read_call == io->read_calls) {
         *value = io->forced_read_value;
+    }
+    else if (io->forced_read_call2 == io->read_calls) {
+        *value = io->forced_read_value2;
     }
     else {
         *value = io->control;
@@ -93,7 +101,7 @@ static uint8_t s_i2c_control;
 static unsigned s_i2c_write_calls;
 static unsigned s_i2c_read_calls;
 
-esp_err_t i2c_bus_write_byte(
+esp_err_t sensor_bus_write_byte(
     i2c_bus_device_handle_t device,
     uint8_t mem_address,
     uint8_t data
@@ -106,7 +114,7 @@ esp_err_t i2c_bus_write_byte(
     return ESP_OK;
 }
 
-esp_err_t i2c_bus_read_byte(
+esp_err_t sensor_bus_read_byte(
     i2c_bus_device_handle_t device,
     uint8_t mem_address,
     uint8_t *data
@@ -171,6 +179,7 @@ static void test_selection_write_failure_recovers_closed(void)
     assert(io.read_calls == 2U);
     assert(io.control == 0U);
     assert_mux_state(&mux, TCA9548A_MUX_STATE_CLOSED);
+    assert(tca9548a_mux_get_fault_reason(&mux) == TCA9548A_MUX_FAULT_NONE);
     assert(tca9548a_mux_get_selected_channel(&mux) == -1);
 }
 
@@ -203,17 +212,65 @@ static void test_failed_recovery_leaves_fault(void)
     assert(tca9548a_mux_get_selected_channel(&mux) == -1);
 }
 
-static void test_close_retry_can_recover_but_reports_original_error(void)
+static void test_close_first_verify_timeout_retry_ok_returns_ok(void)
 {
     fake_io_t io = {
         .fail_read_call = 1U,
     };
     tca9548a_mux_t mux = make_mux(&io);
 
-    assert(tca9548a_mux_close(&mux) == ESP_ERR_TIMEOUT);
+    assert(tca9548a_mux_close(&mux) == ESP_OK);
     assert(io.write_calls == 2U);
     assert(io.read_calls == 2U);
     assert(io.control == 0U);
+    assert_mux_state(&mux, TCA9548A_MUX_STATE_CLOSED);
+}
+
+static void test_close_both_verifies_fail_latches_fault(void)
+{
+    fake_io_t io = {
+        .fail_read_call = 1U,
+        .second_fail_read_call = 2U,
+    };
+    tca9548a_mux_t mux = make_mux(&io);
+
+    assert(tca9548a_mux_close(&mux) == ESP_ERR_TIMEOUT);
+    assert(io.write_calls == 2U);
+    assert(io.read_calls == 2U);
+    assert_mux_state(&mux, TCA9548A_MUX_STATE_FAULT);
+    assert(tca9548a_mux_get_fault_reason(&mux) == TCA9548A_MUX_FAULT_VERIFY_TIMEOUT);
+}
+
+static void test_close_wrong_readback_latches_fault(void)
+{
+    fake_io_t io = {
+        .forced_read_call = 1U,
+        .forced_read_value = 0x04U,
+        .forced_read_call2 = 2U,
+        .forced_read_value2 = 0x04U,
+    };
+    tca9548a_mux_t mux = make_mux(&io);
+
+    assert(tca9548a_mux_close(&mux) == ESP_ERR_INVALID_RESPONSE);
+    assert(io.write_calls == 2U);
+    assert(io.read_calls == 2U);
+    assert_mux_state(&mux, TCA9548A_MUX_STATE_FAULT);
+    assert(tca9548a_mux_get_fault_reason(&mux) == TCA9548A_MUX_FAULT_READBACK_MISMATCH);
+}
+
+static void test_successful_close_auto_clears_prior_mux_fault(void)
+{
+    fake_io_t io = {
+        .fail_read_call = 1U,
+        .second_fail_read_call = 2U,
+    };
+    tca9548a_mux_t mux = make_mux(&io);
+    assert(tca9548a_mux_close(&mux) == ESP_ERR_TIMEOUT);
+    assert_mux_state(&mux, TCA9548A_MUX_STATE_FAULT);
+
+    io.fail_read_call = 0U;
+    io.second_fail_read_call = 0U;
+    assert(tca9548a_mux_close(&mux) == ESP_OK);
     assert_mux_state(&mux, TCA9548A_MUX_STATE_CLOSED);
 }
 
@@ -225,6 +282,9 @@ int main(void)
     test_selection_write_failure_recovers_closed();
     test_selection_readback_mismatch_recovers_closed();
     test_failed_recovery_leaves_fault();
-    test_close_retry_can_recover_but_reports_original_error();
+    test_close_first_verify_timeout_retry_ok_returns_ok();
+    test_close_both_verifies_fail_latches_fault();
+    test_close_wrong_readback_latches_fault();
+    test_successful_close_auto_clears_prior_mux_fault();
     return 0;
 }

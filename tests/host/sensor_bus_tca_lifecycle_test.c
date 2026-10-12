@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "board_config.h"
+#include "driver/i2c_master.h"
 #include "sensor_bus.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -16,6 +17,7 @@ struct test_semaphore
 };
 
 static struct test_semaphore s_lock_token;
+static int s_task_token;
 
 SemaphoreHandle_t xSemaphoreCreateMutex(void)
 {
@@ -35,12 +37,42 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore)
     return pdTRUE;
 }
 
+SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void)
+{
+    return &s_lock_token;
+}
+
+BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t semaphore, TickType_t ticks_to_wait)
+{
+    assert(semaphore == &s_lock_token);
+    assert(ticks_to_wait == pdMS_TO_TICKS(CONFIG_I2C_MS_TO_WAIT));
+    return pdTRUE;
+}
+
+BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t semaphore)
+{
+    assert(semaphore == &s_lock_token);
+    return pdTRUE;
+}
+
+TaskHandle_t xTaskGetCurrentTaskHandle(void)
+{
+    return &s_task_token;
+}
+
+const char *pcTaskGetName(TaskHandle_t task)
+{
+    (void)task;
+    return "tca-test";
+}
+
 typedef struct {
     uint8_t address;
     bool active;
 } fake_device_t;
 
 static int s_bus_token;
+static int s_master_bus_token;
 static fake_device_t s_devices[64];
 static size_t s_device_count;
 static bool s_present[128];
@@ -143,6 +175,87 @@ esp_err_t i2c_bus_device_delete(i2c_bus_device_handle_t *device)
     fake->active = false;
     s_delete_order[s_delete_count++] = fake->address;
     *device = NULL;
+    return ESP_OK;
+}
+
+i2c_master_bus_handle_t i2c_bus_get_internal_bus_handle(void *bus)
+{
+    assert(bus == &s_bus_token);
+    return &s_master_bus_token;
+}
+
+esp_err_t i2c_master_bus_add_device(
+    i2c_master_bus_handle_t bus,
+    const i2c_device_config_t *config,
+    i2c_master_dev_handle_t *device)
+{
+    assert(bus == &s_master_bus_token);
+    assert(config != NULL && config->dev_addr_length == I2C_ADDR_BIT_LEN_7);
+    assert(device != NULL);
+    assert(s_device_count < 64U);
+    fake_device_t *fake = &s_devices[s_device_count++];
+    fake->address = (uint8_t)config->device_address;
+    fake->active = true;
+    *device = fake;
+    return ESP_OK;
+}
+
+esp_err_t i2c_master_bus_rm_device(i2c_master_dev_handle_t device)
+{
+    fake_device_t *fake = device;
+    assert(fake != NULL && fake->active);
+    fake->active = false;
+    s_delete_order[s_delete_count++] = fake->address;
+    return ESP_OK;
+}
+
+static esp_err_t fake_master_read(
+    i2c_master_dev_handle_t device, uint8_t *data, size_t data_len)
+{
+    fake_device_t *fake = device;
+    assert(fake != NULL && fake->active && data != NULL && data_len > 0U);
+    if (s_present[fake->address]) {
+        data[0] = s_tca_present[fake->address]
+            ? s_tca_control[fake->address] : 0U;
+        return ESP_OK;
+    }
+    return s_probe_error[fake->address];
+}
+
+esp_err_t i2c_master_receive(
+    i2c_master_dev_handle_t device, uint8_t *data, size_t data_len, int timeout_ms)
+{
+    (void)timeout_ms;
+    return fake_master_read(device, data, data_len);
+}
+
+esp_err_t i2c_master_transmit_receive(
+    i2c_master_dev_handle_t device,
+    const uint8_t *write_buffer,
+    size_t write_size,
+    uint8_t *read_buffer,
+    size_t read_size,
+    int timeout_ms)
+{
+    (void)write_buffer;
+    (void)write_size;
+    (void)timeout_ms;
+    return fake_master_read(device, read_buffer, read_size);
+}
+
+esp_err_t i2c_master_transmit(
+    i2c_master_dev_handle_t device,
+    const uint8_t *data,
+    size_t data_len,
+    int timeout_ms)
+{
+    fake_device_t *fake = device;
+    (void)timeout_ms;
+    assert(fake != NULL && fake->active && data != NULL && data_len > 0U);
+    if (s_tca_present[fake->address] &&
+        !(s_tca_readback_failure[fake->address] && data[0] == 0x01U)) {
+        s_tca_control[fake->address] = data[0];
+    }
     return ESP_OK;
 }
 
@@ -379,7 +492,7 @@ static void test_tca_with_bad_readback_is_logged_and_rejected(void)
     assert(sensor_bus_get_tca9548a(&tca, NULL) == ESP_ERR_NOT_FOUND);
     assert(tca == NULL);
     assert(s_tca_control[0x72U] == 0U);
-    assert(g_fake_lines.log_calls == 1U);
+    assert(g_fake_lines.log_calls == 2U); /* timeout config + rejected candidate */
     assert(strstr(g_fake_lines.last_log, "control readback mismatch") != NULL);
     assert(sensor_bus_deinit() == ESP_OK);
 }

@@ -199,7 +199,8 @@ static void test_not_level_gate_is_serialized_as_blocked(void)
     const cJSON *gate = item(root, "recording_gate");
     assert_string(gate, "decision", "BLOCKED_NOT_LEVEL");
     assert_string(gate, "dimensionality", "CAPABLE_3D");
-    assert_bool(gate, "allowed", false);
+    assert_bool(gate, "bypassed", true);
+    assert_bool(gate, "allowed", true);
     assert(strstr(item(gate, "reason")->valuestring, "not reported") != NULL);
     assert_string(gate, "warning", "");
     cJSON_Delete(root);
@@ -269,7 +270,8 @@ static void test_insufficient_gate_is_serialized_as_blocked(void)
     const cJSON *gate = item(root, "recording_gate");
     assert_string(gate, "decision", "BLOCKED_INSUFFICIENT_REMOTES");
     assert_string(gate, "dimensionality", "INSUFFICIENT");
-    assert_bool(gate, "allowed", false);
+    assert_bool(gate, "bypassed", true);
+    assert_bool(gate, "allowed", true);
     assert(strstr(item(gate, "reason")->valuestring, "fewer than 3") != NULL);
     assert_string(gate, "warning", "");
     cJSON_Delete(root);

@@ -5,10 +5,15 @@
 #include "app_task_config.h"
 #include "display.h"
 #include "spi_bus.h"
+#include "ui_perf_policy.h"
 
 #include "esp_lcd_panel_io.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_timer.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 
 static const char *TAG =
@@ -22,7 +27,87 @@ static const char *TAG =
  * transaction count while costing only 320 * 8 * 2 = 5120 bytes. The buffer
  * remains single and internal so SDSPI/Wi-Fi DMA headroom is still explicit.
  */
-#define UI_LVGL_BUFFER_ROWS  8
+#define UI_LVGL_SPI_CLOCK_HZ 40000000U
+
+_Static_assert(
+    ((uint64_t)DISPLAY_WIDTH * UI_PERF_FLUSH_CHUNK_ROWS * sizeof(uint16_t) * 8U * 1000000U +
+     UI_LVGL_SPI_CLOCK_HZ - 1U) / UI_LVGL_SPI_CLOCK_HZ <=
+        UI_PERF_FLUSH_CHUNK_BUDGET_US,
+    "One LVGL TFT chunk must fit within the 5 ms wire-time budget"
+);
+
+
+static bool s_measurement_load_active;
+static uint64_t s_render_started_us;
+static uint64_t s_render_flush_submit_us;
+static uint64_t s_render_flush_wait_us;
+static uint64_t s_flush_submit_started_us;
+static uint64_t s_flush_wait_started_us;
+static uint64_t s_flush_submit_us;
+static uint64_t s_flush_wait_us;
+static bool s_flush_wait_yielded;
+
+
+static void ui_lvgl_perf_event(lv_event_t *event)
+{
+    if (event == NULL) return;
+    const uint64_t now_us = (uint64_t)esp_timer_get_time();
+
+    switch (lv_event_get_code(event)) {
+        case LV_EVENT_RENDER_START:
+            s_render_started_us = now_us;
+            s_render_flush_submit_us = s_flush_submit_us;
+            s_render_flush_wait_us = s_flush_wait_us;
+            break;
+
+        case LV_EVENT_RENDER_READY:
+            if (s_render_started_us != 0U && now_us >= s_render_started_us) {
+                const uint64_t elapsed_us = now_us - s_render_started_us;
+                const uint64_t flush_us =
+                    (s_flush_submit_us - s_render_flush_submit_us) +
+                    (s_flush_wait_us - s_render_flush_wait_us);
+                ui_perf_policy_record_render(elapsed_us > flush_us ? elapsed_us - flush_us : 0U);
+            }
+            s_render_started_us = 0U;
+            break;
+
+        case LV_EVENT_FLUSH_START:
+            s_flush_submit_started_us = now_us;
+            break;
+
+        case LV_EVENT_FLUSH_FINISH:
+            if (s_flush_submit_started_us != 0U && now_us >= s_flush_submit_started_us) {
+                const uint64_t elapsed_us = now_us - s_flush_submit_started_us;
+                ui_perf_policy_record_flush_submit(elapsed_us);
+                s_flush_submit_us += elapsed_us;
+            }
+            s_flush_submit_started_us = 0U;
+            break;
+
+        case LV_EVENT_FLUSH_WAIT_START:
+            s_flush_wait_started_us = now_us;
+            s_flush_wait_yielded = s_measurement_load_active;
+            if (s_flush_wait_yielded) {
+                /* LVGL's single-buffer wait spins after this event. Give the
+                 * acquisition and sensor tasks a tick between TFT chunks. */
+                vTaskDelay(1U);
+            }
+            break;
+
+        case LV_EVENT_FLUSH_WAIT_FINISH:
+            if (s_flush_wait_started_us != 0U && now_us >= s_flush_wait_started_us) {
+                const uint64_t elapsed_us = now_us - s_flush_wait_started_us;
+                ui_perf_policy_record_flush_wait(elapsed_us, s_flush_wait_yielded);
+                s_flush_wait_us += elapsed_us;
+            }
+            s_flush_wait_started_us = 0U;
+            s_flush_wait_yielded = false;
+            break;
+
+        default:
+            break;
+    }
+}
 
 
 static esp_err_t ui_lvgl_drain_panel_io_locked(void)
@@ -138,7 +223,7 @@ esp_err_t ui_lvgl_init(void)
 
         .buffer_size =
             DISPLAY_WIDTH *
-            UI_LVGL_BUFFER_ROWS,
+            UI_PERF_FLUSH_CHUNK_ROWS,
 
         .double_buffer =
             false,
@@ -190,6 +275,10 @@ esp_err_t ui_lvgl_init(void)
         return ESP_FAIL;
     }
 
+    if (lv_display_add_event_cb(context->display, ui_lvgl_perf_event, LV_EVENT_ALL, NULL) == NULL) {
+        ESP_LOGW(TAG, "Unable to register LVGL render and flush timing hooks");
+    }
+
     context->port_ready =
         true;
 
@@ -211,16 +300,22 @@ esp_err_t ui_lvgl_init(void)
         DISPLAY_WIDTH,
         DISPLAY_HEIGHT,
         APP_TASK_CORE_SERVICES,
-        UI_LVGL_BUFFER_ROWS
+        UI_PERF_FLUSH_CHUNK_ROWS
     );
 
     ESP_LOGI(
         TAG,
         "DMA_RUNTIME owner=tft location=internal bytes=%u mode=lvgl_dma_buffer",
-        (unsigned)(DISPLAY_WIDTH * UI_LVGL_BUFFER_ROWS * sizeof(uint16_t))
+        (unsigned)(DISPLAY_WIDTH * UI_PERF_FLUSH_CHUNK_ROWS * sizeof(uint16_t))
     );
 
     return ESP_OK;
+}
+
+
+void ui_lvgl_set_measurement_load_active(bool load_active)
+{
+    s_measurement_load_active = load_active;
 }
 
 

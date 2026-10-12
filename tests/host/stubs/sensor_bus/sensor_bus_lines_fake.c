@@ -11,9 +11,9 @@ fake_lines_t g_fake_lines;
 void fake_lines_reset(void)
 {
     memset(&g_fake_lines, 0, sizeof(g_fake_lines));
+    atomic_init(&g_fake_lines.now_us, INT64_C(1000000));
     g_fake_lines.ctrl_sda_low = false;
     g_fake_lines.ctrl_scl_low = false;
-        g_fake_lines.now_us = 1000000;
 }
 
 static bool sda_held(void)
@@ -117,7 +117,7 @@ void sensor_bus_lines_delay_us(uint32_t us)
 
 int64_t sensor_bus_lines_now_us(void)
 {
-    return g_fake_lines.now_us;
+    return atomic_load(&g_fake_lines.now_us);
 }
 
 void fake_sensor_bus_log(const char *tag, const char *format, ...)
@@ -128,4 +128,12 @@ void fake_sensor_bus_log(const char *tag, const char *format, ...)
     va_start(args, format);
     (void)vsnprintf(g_fake_lines.last_log, sizeof(g_fake_lines.last_log), format, args);
     va_end(args);
+    if (strstr(g_fake_lines.last_log, "I2C_TIMEOUT_CONFIG") != NULL) {
+        (void)strncpy(g_fake_lines.timeout_config_log, g_fake_lines.last_log,
+                      sizeof(g_fake_lines.timeout_config_log) - 1U);
+        g_fake_lines.timeout_config_log[sizeof(g_fake_lines.timeout_config_log) - 1U] = '\0';
+    }
+    if (strstr(g_fake_lines.last_log, "TCA_HOLD_BUDGET_EXCEEDED") != NULL) {
+        g_fake_lines.hold_budget_exceeded_logged = true;
+    }
 }

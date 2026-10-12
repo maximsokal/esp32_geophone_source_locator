@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "nrf_node_link_status_policy.h"
+
 #define NRF_TOPOLOGY_REMOTE_COUNT 8U
 #define NRF_LOG_COLLECTOR_NODE_COUNT 9U
 
@@ -37,6 +39,9 @@ typedef struct {
 } nrf_log_node_summary_t;
 
 int32_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot);
+int32_t nrf_topology_service_get_node_status_snapshot(
+    uint8_t node_slot,
+    nrf_node_link_status_input_t *snapshot);
 int32_t nrf_topology_service_get_nrf_log_summary(
     uint8_t node_index,
     nrf_log_node_summary_t *summary);

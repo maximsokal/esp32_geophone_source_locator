@@ -1,5 +1,8 @@
 #include "web_server_internal.h"
 
+#include "esp_timer.h"
+#include "nrf_topology_service.h"
+
 
 static bool web_status_json_add_capabilities(
     cJSON *pod_object,
@@ -167,7 +170,8 @@ static bool web_status_json_add_position(
 
 bool web_status_json_add_pods(
     cJSON *root,
-    const device_status_snapshot_t *status
+    const device_status_snapshot_t *status,
+    bool recording
 )
 {
     cJSON *pods =
@@ -179,6 +183,9 @@ bool web_status_json_add_pods(
     if (pods == NULL) {
         return false;
     }
+
+    const int64_t now_us = esp_timer_get_time();
+    const uint64_t now_ms = now_us >= 0 ? (uint64_t)now_us / 1000U : 0U;
 
     for (
         size_t i = 0;
@@ -208,6 +215,21 @@ bool web_status_json_add_pods(
                 device_status_pod_name(pod->state)
             ) == NULL
         ) {
+            return false;
+        }
+
+        nrf_node_link_status_input_t link_input = {0};
+        const esp_err_t link_snapshot_err =
+            nrf_topology_service_get_node_status_snapshot(
+                (uint8_t)(i + 1U),
+                &link_input);
+        const nrf_node_link_status_t link_status = link_snapshot_err == ESP_OK
+            ? nrf_node_link_status_evaluate(&link_input, now_ms, recording)
+            : NRF_NODE_LINK_STATUS_NOT_CONNECTED;
+        if (cJSON_AddStringToObject(
+                pod_object,
+                "node_link_status",
+                nrf_node_link_status_name(link_status)) == NULL) {
             return false;
         }
 

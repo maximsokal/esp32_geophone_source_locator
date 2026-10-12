@@ -3,6 +3,7 @@
 #include "nrf_cs_authority.h"
 #include "nrf_cs_control_protocol.h"
 #include "nrf_log_protocol.h"
+#include "nrf_topology_periods.h"
 
 #if defined(ESP_PLATFORM) || defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
 #define NRF_TOPOLOGY_HAS_RANGING_SOLVER 1
@@ -39,8 +40,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define NRF_TOPOLOGY_RECONCILE_PERIOD_MS 5000U
-#define NRF_CS_PUMP_INTERVAL_MS 10U
+#define NRF_TOPOLOGY_TIMEOUT_ESCALATION_WINDOWS 3U
 #define NRF_TOPOLOGY_STACK_MARGIN_BYTES 1024U
 
 #ifndef CONFIG_NRF_LOG_POLL_NODE_BUDGET_MS
@@ -49,10 +49,6 @@
 #ifndef CONFIG_NRF_LOG_POLL_ITERATION_BUDGET_MS
 #define CONFIG_NRF_LOG_POLL_ITERATION_BUDGET_MS 100U
 #endif
-#ifndef CONFIG_NRF_LOG_POLL_PERIOD_MS
-#define CONFIG_NRF_LOG_POLL_PERIOD_MS 1000U
-#endif
-
 static const char *TAG = "NRF_TOPOLOGY";
 static const char s_i2c_diag_source[] = "nrf_topology";
 
@@ -70,9 +66,22 @@ typedef struct {
     bool mux_bound;
     uint8_t selected_mux_channel;
     bool selected_mux_channel_valid;
+    uint8_t requested_mux_channel;
+    bool requested_mux_channel_valid;
+    bool bus_owner_held;
     bool reconcile_pass_active;
     bool reconcile_idle_logged;
     uint32_t reconcile_pass_count;
+    uint32_t timeout_error_pass;
+    uint32_t timeout_error_windows;
+    uint32_t timeout_recovery_pass;
+    nrf_topology_tca_log_state_t tca_log_state;
+    bool last_good_snapshot_valid;
+    uint64_t last_good_snapshot_ms;
+    nrf_topology_snapshot_t last_good_snapshot;
+    bool expected_main_identity_valid;
+    nrf_topology_node_snapshot_t expected_main_identity;
+    nrf_upstream_status_cache_t main_status_cache;
     bool read_probe_valid[NRF_PLATFORM_READ_ROUTE_COUNT][NRF_PLATFORM_READ_ADDRESS_COUNT];
 } nrf_topology_platform_t;
 
@@ -128,6 +137,7 @@ static uint8_t s_imu_calibration_pending_mask = 0U;
 static uint16_t s_imu_calibration_pending_generation = 0U;
 static nrf_topology_snapshot_t s_snapshot;
 static nrf_remote_sensor_cache_t s_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
+static nrf_upstream_status_cache_t s_main_status_cache;
 static bool s_cs_request_pending = false;
 static bool s_cs_request_is_ranging = false;
 static uint32_t s_cs_requested_ranging_timeout_ms = 0U;
@@ -226,11 +236,21 @@ static void service_clear_current_task(void)
 
 static void service_publish_state(
     const nrf_topology_snapshot_t *snapshot,
-    const nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT])
+    const nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT],
+    const nrf_upstream_status_cache_t *main_status_cache)
 {
     portENTER_CRITICAL(&s_state_lock);
     s_snapshot = *snapshot;
     memcpy(s_sensor_cache, cache, sizeof(s_sensor_cache));
+    if (snapshot->bus_busy || snapshot->stale) {
+        /* Preserve the receipt time of the last good MAIN STATUS. */
+    }
+    else if (snapshot->main.state == NRF_TOPOLOGY_NODE_ABSENT) {
+        memset(&s_main_status_cache, 0, sizeof(s_main_status_cache));
+    }
+    else if (main_status_cache != NULL) {
+        s_main_status_cache = *main_status_cache;
+    }
     s_snapshot_valid = true;
     s_sensor_cache_valid = true;
     portEXIT_CRITICAL(&s_state_lock);
@@ -238,10 +258,14 @@ static void service_publish_state(
 
 static void service_publish_sensor_channel(
     uint8_t channel,
-    const nrf_remote_sensor_cache_t *cache)
+    const nrf_remote_sensor_cache_t *cache,
+    const nrf_upstream_status_cache_t *main_status_cache)
 {
     portENTER_CRITICAL(&s_state_lock);
     s_sensor_cache[channel] = *cache;
+    if (main_status_cache != NULL) {
+        s_main_status_cache = *main_status_cache;
+    }
     s_sensor_cache_valid = true;
     portEXIT_CRITICAL(&s_state_lock);
 }
@@ -315,10 +339,30 @@ static bool service_has_immediate_work(void)
 {
     bool pending;
     portENTER_CRITICAL(&s_state_lock);
-    pending = s_topology_refresh_requested || s_sensor_pending_mask != 0U ||
-        s_height_reference_pending || s_imu_calibration_pending || s_cs_request_pending;
+    const bool cs_active = s_ranging_active || s_cs_request_pending ||
+        (s_cs_snapshot_valid && s_cs_cycle_snapshot.active);
+    const bool sensor_snapshot_usable = s_snapshot_valid &&
+        !s_snapshot.bus_busy && !s_snapshot.stale;
+    pending = s_cs_request_pending || (!cs_active &&
+        (s_topology_refresh_requested ||
+         (sensor_snapshot_usable && s_sensor_pending_mask != 0U) ||
+         s_height_reference_pending || s_imu_calibration_pending));
     portEXIT_CRITICAL(&s_state_lock);
     return pending;
+}
+
+static bool service_background_deferred(
+    const nrf_topology_worker_state_t *worker,
+    bool cs_initialized)
+{
+    bool requested_or_published_active;
+    portENTER_CRITICAL(&s_state_lock);
+    requested_or_published_active = s_cs_request_pending || s_ranging_active ||
+        (s_cs_snapshot_valid && s_cs_cycle_snapshot.active);
+    portEXIT_CRITICAL(&s_state_lock);
+    return requested_or_published_active ||
+        (worker != NULL && (worker->ranging_active ||
+         (cs_initialized && nrf_cs_authority_is_active(&worker->authority))));
 }
 
 static i2c_bus_device_handle_t platform_device_for_address(
@@ -346,7 +390,7 @@ static esp_err_t platform_i2c_read_transfer(
 {
     (void)tx;
     (void)tx_len;
-    return i2c_bus_read_bytes(
+    return sensor_bus_read_bytes(
         (i2c_bus_device_handle_t)context, NULL_I2C_MEM_ADDR, rx_len, rx);
 }
 
@@ -359,14 +403,57 @@ static esp_err_t platform_i2c_write_transfer(
 {
     (void)rx;
     (void)rx_len;
-    return i2c_bus_write_bytes(
+    return sensor_bus_write_bytes(
         (i2c_bus_device_handle_t)context, NULL_I2C_MEM_ADDR, tx_len, tx);
 }
 
 static int platform_selected_channel(const nrf_topology_platform_t *platform)
 {
-    return platform != NULL && platform->selected_mux_channel_valid
-        ? (int)platform->selected_mux_channel : -1;
+    if (platform == NULL) {
+        return -1;
+    }
+    if (platform->selected_mux_channel_valid) {
+        return (int)platform->selected_mux_channel;
+    }
+    return platform->requested_mux_channel_valid
+        ? (int)platform->requested_mux_channel : -1;
+}
+
+static esp_err_t platform_mux_select(void *context, uint8_t channel);
+static esp_err_t platform_close_selected_mux(
+    nrf_topology_platform_t *platform,
+    bool preserve_requested_channel);
+
+static esp_err_t platform_begin_remote_transfer(
+    nrf_topology_platform_t *platform,
+    uint8_t address)
+{
+    const bool channel_routed_address = address == NRF_UPSTREAM_ADDRESS_REMOTE ||
+        address == NRF_UPSTREAM_ADDRESS_DISCOVERY;
+    if (!channel_routed_address || platform == NULL || !platform->mux_bound ||
+        !platform->requested_mux_channel_valid) {
+        return ESP_OK;
+    }
+    if (platform->bus_owner_held && platform->selected_mux_channel_valid &&
+        platform->selected_mux_channel == platform->requested_mux_channel) {
+        return ESP_OK;
+    }
+    return platform_mux_select(platform, platform->requested_mux_channel);
+}
+
+static esp_err_t platform_end_remote_transfer(
+    nrf_topology_platform_t *platform,
+    uint8_t address,
+    esp_err_t transfer_err)
+{
+    const bool channel_routed_address = address == NRF_UPSTREAM_ADDRESS_REMOTE ||
+        address == NRF_UPSTREAM_ADDRESS_DISCOVERY;
+    if (!channel_routed_address || platform == NULL || !platform->mux_bound ||
+        !platform->requested_mux_channel_valid || !platform->bus_owner_held) {
+        return transfer_err;
+    }
+    const esp_err_t close_err = platform_close_selected_mux(platform, true);
+    return transfer_err == ESP_OK ? close_err : transfer_err;
 }
 
 static esp_err_t platform_i2c_read_bytes(
@@ -376,10 +463,15 @@ static esp_err_t platform_i2c_read_bytes(
     size_t length,
     uint8_t *data)
 {
-    return sensor_bus_probe_diag_transaction(
+    esp_err_t err = platform_begin_remote_transfer(platform, address);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = sensor_bus_probe_diag_transaction(
         SENSOR_BUS_PROBE_PHASE_READ, address,
         platform_selected_channel(platform), NULL, 0U, data, length,
         false, 0U, platform_i2c_read_transfer, device);
+    return platform_end_remote_transfer(platform, address, err);
 }
 
 static esp_err_t platform_i2c_write_bytes(
@@ -389,10 +481,15 @@ static esp_err_t platform_i2c_write_bytes(
     size_t length,
     const uint8_t *data)
 {
-    return sensor_bus_probe_diag_transaction(
+    esp_err_t err = platform_begin_remote_transfer(platform, address);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = sensor_bus_probe_diag_transaction(
         SENSOR_BUS_PROBE_PHASE_WRITE, address,
         platform_selected_channel(platform), data, length, NULL, 0U,
         false, 0U, platform_i2c_write_transfer, device);
+    return platform_end_remote_transfer(platform, address, err);
 }
 
 static esp_err_t platform_normalize_transfer_error(
@@ -420,8 +517,8 @@ static size_t platform_read_address_index(uint8_t address)
 
 static size_t platform_read_route_index(const nrf_topology_platform_t *platform)
 {
-    return platform->selected_mux_channel_valid
-        ? (size_t)platform->selected_mux_channel + 1U
+    return platform != NULL && platform->requested_mux_channel_valid
+        ? (size_t)platform->requested_mux_channel + 1U
         : 0U;
 }
 
@@ -443,11 +540,19 @@ static esp_err_t platform_probe_before_read(
         return ESP_OK;
     }
 
-    const esp_err_t probe_err = sensor_bus_probe_address_with_context(
+    esp_err_t probe_err = platform_begin_remote_transfer(platform, address);
+    if (probe_err != ESP_OK) {
+        return probe_err;
+    }
+    probe_err = sensor_bus_probe_address_with_context(
         address,
         s_i2c_diag_source,
-        platform->selected_mux_channel_valid
-            ? (int)platform->selected_mux_channel : -1);
+        platform_selected_channel(platform));
+    probe_err = platform_end_remote_transfer(platform, address, probe_err);
+    if (probe_err == SENSOR_BUS_ERR_MUTEX_BUSY ||
+        probe_err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) {
+        return probe_err;
+    }
     return probe_err == ESP_OK
         ? ESP_OK
         : platform_normalize_transfer_error(platform, address, probe_err);
@@ -460,10 +565,19 @@ static esp_err_t platform_probe_status_reselect(
     if (platform == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    const esp_err_t probe_err = sensor_bus_probe_address_with_context(
+    esp_err_t probe_err = platform_begin_remote_transfer(platform, address);
+    if (probe_err != ESP_OK) {
+        return probe_err;
+    }
+    probe_err = sensor_bus_probe_address_with_context(
         address,
         s_i2c_diag_source,
         platform_selected_channel(platform));
+    probe_err = platform_end_remote_transfer(platform, address, probe_err);
+    if (probe_err == SENSOR_BUS_ERR_MUTEX_BUSY ||
+        probe_err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) {
+        return probe_err;
+    }
     return platform_normalize_transfer_error(platform, address, probe_err);
 }
 
@@ -486,6 +600,95 @@ static esp_err_t platform_recovery_bus_recover(void *context, i2c_line_result_t 
     return sensor_bus_recover(result);
 }
 
+static void platform_log_tca_state(nrf_topology_platform_t *platform, bool busy)
+{
+    const bool faulted = platform != NULL && platform->mux_bound &&
+        tca9548a_mux_get_state(&platform->mux) == TCA9548A_MUX_STATE_FAULT;
+    const nrf_topology_tca_log_event_t event = nrf_topology_tca_log_update(
+        platform != NULL ? &platform->tca_log_state : NULL, faulted, busy,
+        busy ? "mutex_busy" : (faulted
+            ? tca9548a_mux_fault_reason_name(tca9548a_mux_get_fault_reason(&platform->mux))
+            : "successful_close_verify"));
+    if (platform == NULL || event == NRF_TOPOLOGY_TCA_LOG_NONE) {
+        return;
+    }
+    if (event == NRF_TOPOLOGY_TCA_LOG_SET) {
+        ESP_LOGE(TAG, "TCA_FAULT_SET reason=%s latched_count=%lu",
+                 platform->tca_log_state.last_reason,
+                 (unsigned long)platform->tca_log_state.latched_count);
+    } else if (event == NRF_TOPOLOGY_TCA_LOG_CLEARED) {
+        ESP_LOGI(TAG, "TCA_FAULT_CLEARED reason=%s auto_cleared_count=%lu",
+                 platform->tca_log_state.last_reason,
+                 (unsigned long)platform->tca_log_state.auto_cleared_count);
+    } else if (event == NRF_TOPOLOGY_TCA_LOG_BUSY) {
+        ESP_LOGW(TAG, "TCA_FAULT_SKIPPED reason=%s", platform->tca_log_state.last_reason);
+    }
+}
+
+static void platform_log_owner_busy(
+    nrf_topology_platform_t *platform,
+    const char *source)
+{
+    sensor_bus_owner_stats_t stats = {0};
+    platform_log_tca_state(platform, true);
+    if (sensor_bus_get_owner_stats(&stats) != ESP_OK) {
+        return;
+    }
+    ESP_LOGW(TAG,
+             "I2C_TIMEOUT_DIAG src=%s addr=0x%02X dev=%s ch=direct err=mutex_busy waited_for_mutex_us=%llu transfer_us=0 holder_task=%s recover_attempts=%lu",
+             source,
+             platform != NULL ? (unsigned)platform->tca_address : 0U,
+             sensor_bus_diag_device_name(
+                 platform != NULL ? platform->tca_address : 0U, source),
+             (unsigned long long)stats.last_waited_for_mutex_us,
+             stats.holder_task[0] != '\0' ? stats.holder_task : "unknown",
+             (unsigned long)stats.recover_attempts);
+}
+
+static esp_err_t platform_close_selected_mux(
+    nrf_topology_platform_t *platform,
+    bool preserve_requested_channel)
+{
+    if (!platform->bus_owner_held &&
+        tca9548a_mux_get_state(&platform->mux) == TCA9548A_MUX_STATE_CLOSED) {
+        platform->selected_mux_channel_valid = false;
+        if (!preserve_requested_channel) {
+            platform->requested_mux_channel_valid = false;
+        }
+        return ESP_OK;
+    }
+    if (!platform->bus_owner_held) {
+        const esp_err_t owner_err = sensor_bus_owner_acquire();
+        if (owner_err != ESP_OK) {
+            if (owner_err == SENSOR_BUS_ERR_MUTEX_BUSY) {
+                platform_log_owner_busy(platform, "tca9548a");
+            }
+            return owner_err;
+        }
+        platform->bus_owner_held = true;
+    }
+
+    esp_err_t err = tca9548a_mux_close(&platform->mux);
+    const bool hold_budget_exceeded = sensor_bus_owner_hold_budget_exceeded();
+    platform_log_tca_state(platform, false);
+    platform->selected_mux_channel_valid = false;
+    platform->bus_owner_held = false;
+    sensor_bus_owner_release();
+    if (!preserve_requested_channel) {
+        platform->requested_mux_channel_valid = false;
+    }
+    if (hold_budget_exceeded && err == ESP_OK) {
+        err = SENSOR_BUS_ERR_OWNER_HOLD_BUDGET;
+    }
+    return err;
+}
+
+static esp_err_t platform_mux_close_with_owner(
+    nrf_topology_platform_t *platform)
+{
+    return platform_close_selected_mux(platform, false);
+}
+
 static void platform_log_reconcile_idle_if_needed(
     nrf_topology_platform_t *platform)
 {
@@ -505,7 +708,7 @@ static esp_err_t platform_recovery_mux_close(void *context)
     if (platform == NULL || !platform->mux_bound) {
         return ESP_ERR_INVALID_STATE;
     }
-    const esp_err_t err = tca9548a_mux_close(&platform->mux);
+    const esp_err_t err = platform_close_selected_mux(platform, false);
     sensor_bus_record_transfer_result_with_context(
         platform->tca_address, err, "tca9548a", -1);
     platform->selected_mux_channel_valid = false;
@@ -518,6 +721,10 @@ static esp_err_t platform_normalize_transfer_error(
     uint8_t address,
     esp_err_t err)
 {
+    if (err == SENSOR_BUS_ERR_MUTEX_BUSY ||
+        err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) {
+        return err;
+    }
     /* MAX-248: a NACK is ESP_FAIL on the legacy driver but
      * ESP_ERR_INVALID_STATE on i2c_bus v2 / ESP-IDF 5.5 (like a timeout).
      * An absent XIAO must read as ESP_ERR_NOT_FOUND, never as a transport
@@ -546,6 +753,25 @@ static esp_err_t platform_recover_classified_error(
     if (err == ESP_OK || err == ESP_ERR_NOT_FOUND) {
         return err;
     }
+    if (err == ESP_ERR_TIMEOUT && platform != NULL &&
+        platform->reconcile_pass_active) {
+        if (platform->timeout_error_pass != platform->reconcile_pass_count) {
+            if (platform->timeout_error_pass == 0U ||
+                platform->reconcile_pass_count - platform->timeout_error_pass != 1U) {
+                platform->timeout_error_windows = 1U;
+            } else if (platform->timeout_error_windows < UINT32_MAX) {
+                ++platform->timeout_error_windows;
+            }
+            platform->timeout_error_pass = platform->reconcile_pass_count;
+        }
+        if (platform->timeout_error_windows < NRF_TOPOLOGY_TIMEOUT_ESCALATION_WINDOWS) {
+            return err;
+        }
+        if (platform->timeout_recovery_pass == platform->reconcile_pass_count) {
+            return err;
+        }
+        platform->timeout_recovery_pass = platform->reconcile_pass_count;
+    }
     /* MAX-243: a bus-level failure gets a line check; a stuck SDA is
      * cleared and the mux closed + verified before the next transfer. */
     const nrf_topology_bus_recovery_ops_t ops = {
@@ -557,8 +783,12 @@ static esp_err_t platform_recover_classified_error(
     const esp_err_t result = nrf_topology_bus_recover_after_error(err, &ops, &outcome);
     service_record_current_stack_hwm(NRF_TOPOLOGY_STACK_PHASE_ERROR_RECOVERY, "error-recovery");
     if (outcome == NRF_TOPOLOGY_BUS_STUCK) {
+        if (platform != NULL && platform->mux_bound) {
+            tca9548a_mux_latch_bus_stuck(&platform->mux);
+            platform_log_tca_state(platform, false);
+        }
         ESP_LOGE(TAG,
-                 "I2C_DEVICE_FAILURE src=nrf_topology addr=0x%02X dev=%s err=%s state=line_stuck",
+                 "I2C_DEVICE_FAILURE src=nrf_topology addr=0x%02X dev=%s err=%s state=line_stuck reason=TCA_BUS_STUCK",
                  (unsigned)address,
                  sensor_bus_diag_device_name(address, s_i2c_diag_source),
                  esp_err_to_name(err));
@@ -593,6 +823,46 @@ static void platform_log_stale_log_response(
              (unsigned)address,
              (unsigned)type,
              reselected ? "ok" : "fail");
+}
+
+static void platform_store_main_status(
+    nrf_topology_platform_t *platform,
+    const nrf_upstream_status_t *status)
+{
+    nrf_upstream_status_cache_t *cache = &platform->main_status_cache;
+    memset(cache, 0, sizeof(*cache));
+    cache->valid = true;
+    const bool wire_identity_valid = status->hardware_id_length > 0U &&
+        status->hardware_id_length <= NRF_UPSTREAM_PROTOCOL_HW_ID_MAX;
+    if (platform->expected_main_identity_valid) {
+        const nrf_topology_node_snapshot_t *expected = &platform->expected_main_identity;
+        cache->identity = *expected;
+        cache->identity_matches = wire_identity_valid &&
+            status->hardware_id_length == expected->hardware_id_length &&
+            memcmp(status->hardware_id, expected->hardware_id, status->hardware_id_length) == 0 &&
+            status->request_id == expected->assignment_request_id &&
+            status->role == NRF_UPSTREAM_ROLE_MAIN &&
+            status->node_id == expected->node_id &&
+            status->mux_channel == expected->mux_channel &&
+            status->target_address == expected->current_address;
+    }
+    else {
+        cache->identity_matches = wire_identity_valid;
+        cache->identity.state = NRF_TOPOLOGY_NODE_ASSIGNED;
+        cache->identity.hardware_id_length = status->hardware_id_length;
+        if (wire_identity_valid) {
+            memcpy(cache->identity.hardware_id, status->hardware_id, status->hardware_id_length);
+        }
+        cache->identity.node_id = status->node_id;
+        cache->identity.mux_channel = status->mux_channel;
+        cache->identity.current_address = status->target_address;
+        cache->identity.assignment_request_id = status->request_id;
+    }
+    cache->lifecycle = status->lifecycle;
+    cache->result = status->result;
+    cache->flags = status->flags;
+    const int64_t now_us = esp_timer_get_time();
+    cache->esp_receipt_uptime_ms = now_us >= 0 ? (uint64_t)now_us / 1000U : 0U;
 }
 
 static esp_err_t platform_read_status(
@@ -632,6 +902,9 @@ static esp_err_t platform_read_status(
     }
 
     if (nrf_upstream_protocol_decode_status(frame, sizeof(frame), status) == NRF_UPSTREAM_RESULT_OK) {
+        if (address == NRF_UPSTREAM_ADDRESS_MAIN) {
+            platform_store_main_status(platform, status);
+        }
         return ESP_OK;
     }
     if (sizeof(frame) < 4U || frame[0] != 'G' || frame[1] != 'S' ||
@@ -654,9 +927,13 @@ static esp_err_t platform_read_status(
     if (err != ESP_OK) {
         return err;
     }
-    return nrf_upstream_protocol_decode_status(frame, sizeof(frame), status) == NRF_UPSTREAM_RESULT_OK
-        ? ESP_OK
-        : ESP_ERR_INVALID_RESPONSE;
+    if (nrf_upstream_protocol_decode_status(frame, sizeof(frame), status) != NRF_UPSTREAM_RESULT_OK) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (address == NRF_UPSTREAM_ADDRESS_MAIN) {
+        platform_store_main_status(platform, status);
+    }
+    return ESP_OK;
 }
 
 static esp_err_t platform_write_assign(
@@ -995,7 +1272,7 @@ static esp_err_t platform_mux_close(void *context)
     if (platform == NULL || !platform->mux_bound) {
         return ESP_ERR_INVALID_STATE;
     }
-    const esp_err_t err = tca9548a_mux_close(&platform->mux);
+    const esp_err_t err = platform_close_selected_mux(platform, false);
     sensor_bus_record_transfer_result_with_context(
         platform->tca_address, err, "tca9548a", -1);
     platform->selected_mux_channel_valid = false;
@@ -1009,7 +1286,21 @@ static esp_err_t platform_mux_select(void *context, uint8_t channel)
     if (platform == NULL || !platform->mux_bound) {
         return ESP_ERR_INVALID_STATE;
     }
+    platform->requested_mux_channel = channel;
+    platform->requested_mux_channel_valid = true;
+    if (!platform->bus_owner_held) {
+        const esp_err_t owner_err = sensor_bus_owner_acquire();
+        if (owner_err != ESP_OK) {
+            if (owner_err == SENSOR_BUS_ERR_MUTEX_BUSY) {
+                platform_log_owner_busy(platform, "tca9548a");
+            }
+            platform->requested_mux_channel_valid = false;
+            return owner_err;
+        }
+        platform->bus_owner_held = true;
+    }
     const esp_err_t err = tca9548a_mux_select(&platform->mux, channel);
+    platform_log_tca_state(platform, false);
     sensor_bus_record_transfer_result_with_context(
         platform->tca_address, err, "tca9548a", -1);
     if (err == ESP_OK) {
@@ -1017,6 +1308,9 @@ static esp_err_t platform_mux_select(void *context, uint8_t channel)
         platform->selected_mux_channel_valid = true;
     } else {
         platform->selected_mux_channel_valid = false;
+        platform->requested_mux_channel_valid = false;
+        platform->bus_owner_held = false;
+        sensor_bus_owner_release();
     }
     return err;
 }
@@ -1050,7 +1344,7 @@ static bool platform_abort_requested(void *context)
 static void platform_delete_device(i2c_bus_device_handle_t *device)
 {
     if (device != NULL && *device != NULL) {
-        (void)i2c_bus_device_delete(device);
+        (void)sensor_bus_device_delete(device);
     }
 }
 
@@ -1060,7 +1354,7 @@ static void platform_close(nrf_topology_platform_t *platform)
         return;
     }
     if (platform->mux_bound) {
-        const esp_err_t close_err = tca9548a_mux_close(&platform->mux);
+        const esp_err_t close_err = platform_mux_close_with_owner(platform);
         sensor_bus_record_transfer_result_with_context(
             platform->tca_address, close_err, "tca9548a", -1);
         if (close_err != ESP_OK) {
@@ -1100,33 +1394,36 @@ static esp_err_t platform_open_address_handles(nrf_topology_platform_t *platform
     }
 
     if (platform->discovery_device == NULL) {
-        platform->discovery_device = i2c_bus_device_create(
+        err = sensor_bus_device_create(
             platform->bus_handles.bus,
             NRF_UPSTREAM_ADDRESS_DISCOVERY,
-            SENSOR_BUS_I2C_SPEED_HZ);
-        if (platform->discovery_device == NULL) {
-            return ESP_ERR_NO_MEM;
+            SENSOR_BUS_I2C_SPEED_HZ,
+            &platform->discovery_device);
+        if (err != ESP_OK) {
+            return err;
         }
     }
     if (platform->main_device == NULL) {
-        platform->main_device = i2c_bus_device_create(
+        err = sensor_bus_device_create(
             platform->bus_handles.bus,
             NRF_UPSTREAM_ADDRESS_MAIN,
-            SENSOR_BUS_I2C_SPEED_HZ);
-        if (platform->main_device == NULL) {
+            SENSOR_BUS_I2C_SPEED_HZ,
+            &platform->main_device);
+        if (err != ESP_OK) {
             platform_delete_device(&platform->discovery_device);
-            return ESP_ERR_NO_MEM;
+            return err;
         }
     }
     if (platform->remote_device == NULL) {
-        platform->remote_device = i2c_bus_device_create(
+        err = sensor_bus_device_create(
             platform->bus_handles.bus,
             NRF_UPSTREAM_ADDRESS_REMOTE,
-            SENSOR_BUS_I2C_SPEED_HZ);
-        if (platform->remote_device == NULL) {
+            SENSOR_BUS_I2C_SPEED_HZ,
+            &platform->remote_device);
+        if (err != ESP_OK) {
             platform_delete_device(&platform->main_device);
             platform_delete_device(&platform->discovery_device);
-            return ESP_ERR_NO_MEM;
+            return err;
         }
     }
     return ESP_OK;
@@ -1198,13 +1495,64 @@ static void service_log_snapshot(const nrf_topology_snapshot_t *snapshot)
 
     ESP_LOGI(
         TAG,
-        "generation=%u tca=%s%s assigned=%u conflicts=%u main_state=%d",
+        "generation=%u tca=%s%s assigned=%u conflicts=%u main_state=%d bus_busy=%u stale=%u age_ms=%lu",
         (unsigned)snapshot->generation,
         snapshot->tca_available ? "yes" : "no",
         snapshot->tca_fault ? "/fault" : "",
         assigned,
         conflicts,
-        (int)snapshot->main.state);
+        (int)snapshot->main.state,
+        snapshot->bus_busy ? 1U : 0U,
+        snapshot->stale ? 1U : 0U,
+        (unsigned long)snapshot->age_ms);
+}
+
+static void service_snapshot_set_nodes_unknown(nrf_topology_snapshot_t *snapshot)
+{
+    memset(&snapshot->main, 0, sizeof(snapshot->main));
+    snapshot->main.state = NRF_TOPOLOGY_NODE_UNKNOWN;
+    for (size_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        memset(&snapshot->remotes[channel], 0, sizeof(snapshot->remotes[channel]));
+        snapshot->remotes[channel].state = NRF_TOPOLOGY_NODE_UNKNOWN;
+    }
+}
+
+static void service_apply_snapshot_freshness(
+    nrf_topology_platform_t *platform,
+    nrf_topology_snapshot_t *snapshot)
+{
+    const uint64_t now_ms = platform_now_ms(platform);
+    if (!snapshot->bus_busy) {
+        snapshot->stale = false;
+        snapshot->age_ms = 0U;
+        platform->last_good_snapshot = *snapshot;
+        platform->last_good_snapshot_valid = true;
+        platform->last_good_snapshot_ms = now_ms;
+        if (snapshot->main.state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+            platform->expected_main_identity = snapshot->main;
+            platform->expected_main_identity_valid = true;
+        }
+        return;
+    }
+
+    const uint32_t attempted_generation = snapshot->generation;
+    if (!platform->last_good_snapshot_valid) {
+        snapshot->stale = true;
+        snapshot->age_ms = 0U;
+        service_snapshot_set_nodes_unknown(snapshot);
+        return;
+    }
+
+    *snapshot = platform->last_good_snapshot;
+    snapshot->generation = attempted_generation;
+    snapshot->bus_busy = true;
+    snapshot->stale = true;
+    const uint64_t age_ms = now_ms >= platform->last_good_snapshot_ms
+        ? now_ms - platform->last_good_snapshot_ms : 0U;
+    snapshot->age_ms = age_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)age_ms;
+    if (age_ms >= NRF_TOPOLOGY_STALE_LIMIT_MS) {
+        service_snapshot_set_nodes_unknown(snapshot);
+    }
 }
 
 static bool tick_period_due(TickType_t now, TickType_t last, TickType_t period)
@@ -1234,7 +1582,17 @@ static bool service_run_topology_reconcile(
     const esp_err_t open_err = platform_open_address_handles(platform);
     esp_err_t reconcile_err;
 
-    if (open_err != ESP_OK) {
+    if (open_err == SENSOR_BUS_ERR_MUTEX_BUSY ||
+        open_err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) {
+        ++controller->generation;
+        if (controller->generation == 0U) {
+            controller->generation = 1U;
+        }
+        memset(snapshot, 0, sizeof(*snapshot));
+        snapshot->generation = controller->generation;
+        snapshot->bus_busy = true;
+        reconcile_err = ESP_OK;
+    } else if (open_err != ESP_OK) {
         ESP_LOGW(TAG, "nRF topology address handles unavailable: %s", esp_err_to_name(open_err));
         platform_log_reconcile_idle_if_needed(platform);
         const nrf_topology_io_t failed_io = {
@@ -1278,8 +1636,9 @@ static bool service_run_topology_reconcile(
         return false;
     }
 
+    service_apply_snapshot_freshness(platform, snapshot);
     const uint8_t initial_mask = nrf_sensor_cache_reconcile_topology(snapshot, cache);
-    service_publish_state(snapshot, cache);
+    service_publish_state(snapshot, cache, &platform->main_status_cache);
     service_queue_sensor_mask(initial_mask, false);
     service_log_snapshot(snapshot);
     return true;
@@ -1307,6 +1666,11 @@ static void service_process_sensor_mask(
         .now_ms = platform_now_ms,
         .abort_requested = platform_abort_requested,
     };
+
+    if (snapshot->bus_busy || snapshot->stale) {
+        service_requeue_inflight_mask(mask);
+        return;
+    }
 
     while (mask != 0U && !service_stop_requested()) {
         const TickType_t now = xTaskGetTickCount();
@@ -1337,7 +1701,10 @@ static void service_process_sensor_mask(
                 channel,
                 &cache[channel],
                 &request_reconcile);
-            service_publish_sensor_channel(channel, &cache[channel]);
+            service_publish_sensor_channel(
+                channel,
+                &cache[channel],
+                &platform->main_status_cache);
             if (request_reconcile) {
                 service_request_topology_refresh_from_worker();
             }
@@ -1616,7 +1983,7 @@ static nrf_geometry_result_t service_ranging_solve(
         };
     }
 
-    const nrf_geometry_result_t result = nrf_geometry_solver_solve(
+    const nrf_geometry_result_t result = nrf_geometry_solver_solve_partial(
         inputs,
         input_count,
         worker->cs_cycle_snapshot.pairs,
@@ -1965,9 +2332,11 @@ static void service_worker(void *context)
         .request_seed = 0U,
     };
     const TickType_t reconcile_period_ticks = pdMS_TO_TICKS(NRF_TOPOLOGY_RECONCILE_PERIOD_MS);
+    const TickType_t sensor_refresh_period_ticks = pdMS_TO_TICKS(NRF_SENSOR_REFRESH_PERIOD_MS);
     TickType_t last_reconcile_tick = xTaskGetTickCount();
+    TickType_t last_sensor_refresh_tick = last_reconcile_tick;
 #if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
-    TickType_t last_log_poll_tick = (TickType_t)(last_reconcile_tick - pdMS_TO_TICKS(CONFIG_NRF_LOG_POLL_PERIOD_MS));
+    TickType_t last_log_poll_tick = (TickType_t)(last_reconcile_tick - pdMS_TO_TICKS(NRF_LOG_COLLECTOR_PERIOD_MS));
 #endif
     bool first_reconcile = true;
     bool controllers_ready = false;
@@ -2002,9 +2371,11 @@ static void service_worker(void *context)
 
     while (!stop_before_start && controllers_ready && !service_stop_requested()) {
         const TickType_t now = xTaskGetTickCount();
-        const bool explicit_refresh = service_take_topology_refresh_request();
-        if (first_reconcile || explicit_refresh ||
-            tick_period_due(now, last_reconcile_tick, reconcile_period_ticks)) {
+        const bool background_deferred = service_background_deferred(worker, cs_initialized);
+        const bool explicit_refresh = !background_deferred &&
+            service_take_topology_refresh_request();
+        if (first_reconcile || (!background_deferred &&
+            (explicit_refresh || tick_period_due(now, last_reconcile_tick, reconcile_period_ticks)))) {
             const bool was_first_reconcile = first_reconcile;
             const bool reconciled = service_run_topology_reconcile(
                 &worker->platform,
@@ -2034,6 +2405,24 @@ static void service_worker(void *context)
 
         if (service_stop_requested()) {
             break;
+        }
+
+        if (!service_background_deferred(worker, cs_initialized) &&
+            tick_period_due(
+                xTaskGetTickCount(),
+                last_sensor_refresh_tick,
+                sensor_refresh_period_ticks)) {
+            uint8_t assigned_mask = 0U;
+            if (!worker->snapshot.bus_busy && !worker->snapshot.stale &&
+                worker->snapshot.tca_available && !worker->snapshot.tca_fault) {
+                for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+                    if (worker->snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+                        assigned_mask |= (uint8_t)(1U << channel);
+                    }
+                }
+            }
+            service_queue_sensor_mask(assigned_mask, false);
+            last_sensor_refresh_tick = xTaskGetTickCount();
         }
 
         nrf_cs_policy_t requested_policy;
@@ -2109,8 +2498,7 @@ static void service_worker(void *context)
             break;
         }
 
-        if (!cs_initialized || !nrf_cs_authority_is_active(&worker->authority) ||
-            !worker->authority.command_active) {
+        if (!service_background_deferred(worker, cs_initialized)) {
             uint8_t height_reference_mask = 0U;
             uint16_t height_reference_generation = 0U;
             if (service_take_height_reference_request(
@@ -2167,12 +2555,13 @@ static void service_worker(void *context)
         }
 
 #if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
-        if (!service_stop_requested() && !service_has_immediate_work() &&
+        if (!service_stop_requested() && !service_background_deferred(worker, cs_initialized) &&
+            !service_has_immediate_work() &&
             !tick_period_due(xTaskGetTickCount(), last_reconcile_tick, reconcile_period_ticks) &&
             tick_period_due(
                 xTaskGetTickCount(),
                 last_log_poll_tick,
-                pdMS_TO_TICKS(CONFIG_NRF_LOG_POLL_PERIOD_MS))) {
+                pdMS_TO_TICKS(NRF_LOG_COLLECTOR_PERIOD_MS))) {
             /* Quiet nodes take about 5 x 7 ms per second; a busy node about 35 ms. */
             service_log_collect_iteration(worker, last_reconcile_tick, reconcile_period_ticks);
             last_log_poll_tick = xTaskGetTickCount();
@@ -2192,9 +2581,14 @@ static void service_worker(void *context)
                 const TickType_t log_wait_ticks = tick_wait_until_period(
                     xTaskGetTickCount(),
                     last_log_poll_tick,
-                    pdMS_TO_TICKS(CONFIG_NRF_LOG_POLL_PERIOD_MS));
+                    pdMS_TO_TICKS(NRF_LOG_COLLECTOR_PERIOD_MS));
                 if (log_wait_ticks < wait_ticks) wait_ticks = log_wait_ticks;
 #endif
+                const TickType_t sensor_wait_ticks = tick_wait_until_period(
+                    xTaskGetTickCount(),
+                    last_sensor_refresh_tick,
+                    sensor_refresh_period_ticks);
+                if (sensor_wait_ticks < wait_ticks) wait_ticks = sensor_wait_ticks;
             }
         }
         (void)ulTaskNotifyTake(pdTRUE, wait_ticks);
@@ -2250,6 +2644,7 @@ esp_err_t nrf_topology_service_start(void)
     s_frozen_ranging_result_valid = false;
     memset(&s_snapshot, 0, sizeof(s_snapshot));
     memset(s_sensor_cache, 0, sizeof(s_sensor_cache));
+    memset(&s_main_status_cache, 0, sizeof(s_main_status_cache));
     memset(&s_cs_requested_policy, 0, sizeof(s_cs_requested_policy));
     memset(&s_cs_cycle_snapshot, 0, sizeof(s_cs_cycle_snapshot));
     memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
@@ -2546,6 +2941,64 @@ esp_err_t nrf_topology_service_get_sensor_snapshot(
     return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
+static bool service_node_identity_equal(
+    const nrf_topology_node_snapshot_t *left,
+    const nrf_topology_node_snapshot_t *right)
+{
+    return left != NULL && right != NULL &&
+        left->hardware_id_length == right->hardware_id_length &&
+        left->hardware_id_length > 0U &&
+        left->hardware_id_length <= NRF_UPSTREAM_PROTOCOL_HW_ID_MAX &&
+        memcmp(left->hardware_id, right->hardware_id, left->hardware_id_length) == 0 &&
+        left->node_id == right->node_id &&
+        left->mux_channel == right->mux_channel &&
+        left->current_address == right->current_address &&
+        left->assignment_request_id == right->assignment_request_id;
+}
+
+esp_err_t nrf_topology_service_get_node_status_snapshot(
+    uint8_t node_slot,
+    nrf_node_link_status_input_t *snapshot)
+{
+    if (node_slot > NRF_TOPOLOGY_REMOTE_COUNT || snapshot == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    portENTER_CRITICAL(&s_state_lock);
+    if (!s_snapshot_valid) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const nrf_topology_node_snapshot_t *node = node_slot == 0U
+        ? &s_snapshot.main
+        : &s_snapshot.remotes[node_slot - 1U];
+    const nrf_upstream_status_cache_t *status_cache = node_slot == 0U
+        ? &s_main_status_cache
+        : &s_sensor_cache[node_slot - 1U].upstream_status;
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->status_valid = status_cache->valid;
+    snapshot->status_identity_matches = status_cache->identity_matches &&
+        service_node_identity_equal(node, &status_cache->identity);
+    snapshot->lifecycle = status_cache->lifecycle;
+    snapshot->result = status_cache->result;
+    snapshot->flags = status_cache->flags;
+    snapshot->status_receipt_uptime_ms = status_cache->esp_receipt_uptime_ms;
+    snapshot->assigned = node->state == NRF_TOPOLOGY_NODE_ASSIGNED ||
+        (node->state == NRF_TOPOLOGY_NODE_CONFLICT &&
+         snapshot->status_valid && snapshot->status_identity_matches &&
+         snapshot->lifecycle == NRF_UPSTREAM_LIFECYCLE_BOOTING &&
+         snapshot->result == NRF_UPSTREAM_RESULT_OK &&
+         (snapshot->flags & NRF_UPSTREAM_STATUS_FLAG_ASSIGNED) != 0U);
+    if (node_slot != 0U && s_sensor_cache_valid) {
+        const nrf_remote_sensor_cache_t *sensor_cache = &s_sensor_cache[node_slot - 1U];
+        snapshot->sensor_result_valid = sensor_cache->response_valid;
+        snapshot->sensor_result = sensor_cache->sensor.result;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return ESP_OK;
+}
+
 esp_err_t nrf_topology_service_get_leveling_summary(
     nrf_topology_leveling_summary_t *summary)
 {
@@ -2640,6 +3093,7 @@ esp_err_t nrf_topology_service_test_publish_state(
     } else {
         memset(s_sensor_cache, 0, sizeof(s_sensor_cache));
     }
+    memset(&s_main_status_cache, 0, sizeof(s_main_status_cache));
     portEXIT_CRITICAL(&s_state_lock);
     return ESP_OK;
 }

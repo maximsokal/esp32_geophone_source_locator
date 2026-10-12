@@ -947,6 +947,31 @@
       "uk": "НЕРОЗВ",
       "max_len": 6
     },
+    "measurement.link_not_connected": {
+      "en": "not connected",
+      "uk": "не підключено",
+      "max_len": 13
+    },
+    "measurement.link_connected": {
+      "en": "connected",
+      "uk": "підключено",
+      "max_len": 13
+    },
+    "measurement.link_ready": {
+      "en": "ready",
+      "uk": "готовий",
+      "max_len": 13
+    },
+    "measurement.link_measuring": {
+      "en": "measuring",
+      "uk": "вимірювання",
+      "max_len": 13
+    },
+    "measurement.link_legend": {
+      "en": "LINK",
+      "uk": "ЗВ’ЯЗОК",
+      "max_len": 13
+    },
     "measurement.state_live": {
       "en": "LIVE",
       "uk": "НАЖИВО",

@@ -35,12 +35,15 @@
         "components/sensor_bus/sensor_bus.c",
         "components/sensor_bus/sensor_bus_diag.c",
         "components/sensor_bus/i2c_line_recovery.c",
+        "components/tca9548a_mux/tca9548a_mux.c",
+        "components/tca9548a_mux/tca9548a_mux_i2c_bus.c",
         "tests/host/stubs/sensor_bus/sensor_bus_lines_fake.c",
         "tests/host/sensor_bus_concurrency_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/sensor_bus",
-        "components/sensor_bus/include"
+        "components/sensor_bus/include",
+        "components/tca9548a_mux/include"
       ],
       "libraries": ["pthread"]
     },
@@ -56,12 +59,16 @@
       "name": "nrf_topology_reconcile",
       "sources": [
         "components/nrf_topology_service/nrf_topology.c",
+        "components/tca9548a_mux/tca9548a_mux.c",
         "tests/host/nrf_topology_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/tca9548a",
         "nRF54L15/include",
-        "components/nrf_topology_service/include"
+        "components/nrf_topology_service/include",
+        "components/tca9548a_mux/include",
+        "tests/host/stubs/sensor_bus",
+        "components/sensor_bus/include"
       ]
     },
     {
@@ -73,13 +80,16 @@
       "include_dirs": [
         "tests/host/stubs/tca9548a",
         "nRF54L15/include",
-        "components/nrf_topology_service/include"
+        "components/nrf_topology_service/include",
+        "tests/host/stubs/sensor_bus",
+        "components/sensor_bus/include"
       ]
     },
     {
       "name": "nrf_sensor_transport",
       "sources": [
         "components/nrf_topology_service/nrf_sensor_transport.c",
+        "components/nrf_topology_service/nrf_node_link_status_policy.c",
         "tests/host/nrf_sensor_transport_test.c"
       ],
       "include_dirs": [

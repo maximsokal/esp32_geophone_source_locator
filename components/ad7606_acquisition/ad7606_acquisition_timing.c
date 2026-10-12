@@ -266,11 +266,22 @@ bool ad7606_acquisition_timing_resolve_measured(
 uint8_t ad7606_acquisition_classify_tconv_ns(uint32_t tconv_ns)
 {
     /* Datasheet-derived BUSY widths widened by +/-500 ns for board/clock tolerance. */
-    if (tconv_ns >= 2950U && tconv_ns <= 4650U) return 1U;
-    if (tconv_ns >= 7400U && tconv_ns <= 9600U) return 2U;
-    if (tconv_ns >= 15500U && tconv_ns <= 19300U) return 4U;
-    if (tconv_ns >= 32500U && tconv_ns <= 39500U) return 8U;
+    if (tconv_ns >= AD7606_OS1_TCONV_MIN_NS &&
+        tconv_ns <= AD7606_OS1_TCONV_MAX_NS) return 1U;
+    if (tconv_ns >= AD7606_OS2_TCONV_MIN_NS &&
+        tconv_ns <= AD7606_OS2_TCONV_MAX_NS) return 2U;
+    if (tconv_ns >= AD7606_OS4_TCONV_MIN_NS &&
+        tconv_ns <= AD7606_OS4_TCONV_MAX_NS) return 4U;
+    if (tconv_ns >= AD7606_OS8_TCONV_MIN_NS &&
+        tconv_ns <= AD7606_OS8_TCONV_MAX_NS) return 8U;
     return 0U;
+}
+
+
+bool ad7606_acquisition_tconv_is_unknown_degraded_window(uint32_t tconv_ns)
+{
+    return tconv_ns > AD7606_OS1_TCONV_MAX_NS &&
+        tconv_ns < AD7606_OS2_TCONV_MIN_NS;
 }
 
 

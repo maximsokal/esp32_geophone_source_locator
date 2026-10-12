@@ -14,6 +14,7 @@ void vTaskDelete(TaskHandle_t task);
 void vTaskDelay(TickType_t ticks);
 TickType_t xTaskGetTickCount(void);
 TaskHandle_t xTaskGetCurrentTaskHandle(void);
+const char *pcTaskGetName(TaskHandle_t task);
 uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait);
 BaseType_t xTaskNotifyGive(TaskHandle_t task);
 UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task);

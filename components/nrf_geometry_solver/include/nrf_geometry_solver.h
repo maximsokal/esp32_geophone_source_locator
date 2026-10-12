@@ -49,6 +49,7 @@ typedef struct {
 } nrf_geometry_node_position_t;
 
 #define NRF_GEOMETRY_MAX_NODES NRF_CS_MAX_NODES
+#define NRF_GEOMETRY_MIN_REMOTE_COUNT_FOR_RECORDING 3U
 
 /*
  * Distance-consistency tolerance (MAX-205), about 2.5x a typical single
@@ -86,6 +87,7 @@ typedef struct {
 
 typedef enum {
     NRF_GEOMETRY_OK = 0,
+    NRF_GEOMETRY_UNS_INSUFFICIENT_NODES = 1,
     NRF_GEOMETRY_ERR_ARGUMENT = -1,
     NRF_GEOMETRY_ERR_NO_MAIN = -2,
 } nrf_geometry_result_t;
@@ -115,6 +117,15 @@ typedef enum {
  *     a placement that disagrees with any reference by more than it.
  */
 nrf_geometry_result_t nrf_geometry_solver_solve(
+    const nrf_geometry_node_input_t *inputs,
+    size_t input_count,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    nrf_geometry_solution_t *solution);
+
+/* Partial ranging solve. Unlike solve(), this keeps geometric placements for
+ * any available node count; recorder admission remains guarded by solve(). */
+nrf_geometry_result_t nrf_geometry_solver_solve_partial(
     const nrf_geometry_node_input_t *inputs,
     size_t input_count,
     const nrf_cs_pair_result_t *pairs,

@@ -1,0 +1,12 @@
+menu "Recording gate"
+
+config RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
+	bool "Require three leveled remote geophones before recording"
+	default n
+	help
+	  When enabled, starting a recording requires at least three assigned
+	  REMOTE geophones and accepted leveling from every assigned REMOTE.
+	  The default is disabled, so recording may start while these conditions
+	  are missing; the status and session metadata still report the conditions.
+
+endmenu

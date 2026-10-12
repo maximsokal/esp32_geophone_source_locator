@@ -131,7 +131,10 @@ esp_err_t web_status_json_build_extended(
 );
 void web_status_json_free(char *json);
 
-bool web_status_json_add_pods(cJSON *root, const device_status_snapshot_t *status);
+bool web_status_json_add_pods(
+    cJSON *root,
+    const device_status_snapshot_t *status,
+    bool recording);
 esp_err_t web_status_json_objects_init(void);
 void web_status_json_objects_shutdown(void);
 esp_err_t web_status_json_objects_refresh(void);
@@ -145,7 +148,7 @@ void web_status_json_objects_storage_changed(void *user_context);
 void web_status_json_objects_set_active(const char *object_id);
 bool web_status_json_add_recording(cJSON *root);
 bool web_status_json_add_recording_gate(cJSON *root);
-bool web_status_json_add_measurement(cJSON *root);
+bool web_status_json_add_measurement(cJSON *root, bool *recording_out);
 
 void web_json_writer_init(web_json_writer_t *writer, httpd_req_t *request);
 esp_err_t web_json_writer_write(web_json_writer_t *writer, const char *text);

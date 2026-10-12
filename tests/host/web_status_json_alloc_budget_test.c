@@ -19,7 +19,7 @@
 #define WEB_STATUS_BUDGET_ALLOCS_CEILING 1250U
 #define WEB_STATUS_BUDGET_PEAK_BYTES_CEILING 68000U
 #define WEB_STATUS_BUDGET_JSON_BYTES_CEILING 12288U
-#define WEB_STATUS_BUDGET_EXPECTED_NODE_COUNT 544U
+#define WEB_STATUS_BUDGET_EXPECTED_NODE_COUNT 548U
 
 typedef struct {
     const char *label;
@@ -455,8 +455,8 @@ static void budget_assert_regression_ceilings(
     const budget_result_t *result
 )
 {
-    /* Full-scenario measured ceilings with about 10 percent headroom:
-     * 1122 allocs, 61375 peak bytes, 9222 JSON bytes, and 544 cJSON nodes. */
+    /* Full-scenario measurement with one node_link_status field per pod:
+     * 1134 allocs, 61691 peak bytes, 9330 JSON bytes, and 548 cJSON nodes. */
     if (result->allocs_per_build > WEB_STATUS_BUDGET_ALLOCS_CEILING) {
         fprintf(stderr, "%s allocation ceiling exceeded: %llu > %u\n",
                 scenario->label,

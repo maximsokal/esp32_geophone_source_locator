@@ -1,4 +1,5 @@
 #include "nrf_topology.h"
+#include "sensor_bus.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -8,6 +9,7 @@ typedef enum {
     ASSIGN_CONFIRM_CONFLICT,
     ASSIGN_CONFIRM_PROTOCOL_ERROR,
     ASSIGN_CONFIRM_TRANSPORT_ERROR,
+    ASSIGN_CONFIRM_BUS_BUSY,
 } assign_confirm_result_t;
 
 typedef struct {
@@ -116,8 +118,17 @@ static uint32_t next_request_id(nrf_topology_controller_t *controller)
     return id;
 }
 
+static bool bus_yield_error(esp_err_t err)
+{
+    return err == SENSOR_BUS_ERR_MUTEX_BUSY ||
+        err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET;
+}
+
 static nrf_topology_node_state_t state_for_read_error(esp_err_t err)
 {
+    if (bus_yield_error(err)) {
+        return NRF_TOPOLOGY_NODE_UNKNOWN;
+    }
     return err == ESP_ERR_INVALID_RESPONSE
         ? NRF_TOPOLOGY_NODE_PROTOCOL_ERROR
         : NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
@@ -128,7 +139,8 @@ static esp_err_t probe_status(
     uint8_t address,
     bool *present,
     nrf_upstream_status_t *status,
-    nrf_topology_node_state_t *error_state)
+    nrf_topology_node_state_t *error_state,
+    bool *bus_busy)
 {
     esp_err_t err;
     memset(status, 0, sizeof(*status));
@@ -143,7 +155,23 @@ static esp_err_t probe_status(
         return ESP_OK;
     }
     *error_state = state_for_read_error(err);
+    if (bus_yield_error(err) && bus_busy != NULL) {
+        *bus_busy = true;
+    }
     return err;
+}
+
+static assign_confirm_result_t assign_error_result(esp_err_t err, bool *bus_busy)
+{
+    if (bus_yield_error(err)) {
+        if (bus_busy != NULL) {
+            *bus_busy = true;
+        }
+        return ASSIGN_CONFIRM_BUS_BUSY;
+    }
+    return err == ESP_ERR_INVALID_RESPONSE
+        ? ASSIGN_CONFIRM_PROTOCOL_ERROR
+        : ASSIGN_CONFIRM_TRANSPORT_ERROR;
 }
 
 static bool status_matches_assignment(
@@ -175,6 +203,7 @@ static bool status_same_hardware(
 static assign_confirm_result_t assign_and_confirm(
     nrf_topology_controller_t *controller,
     const nrf_topology_io_t *io,
+    bool *bus_busy,
     const nrf_upstream_status_t *discovery,
     uint8_t role,
     uint8_t node_id,
@@ -199,8 +228,10 @@ static assign_confirm_result_t assign_and_confirm(
     if (topology_abort_requested(io)) {
         return ASSIGN_CONFIRM_TRANSPORT_ERROR;
     }
-    if (io->write_assign(io->context, NRF_UPSTREAM_ADDRESS_DISCOVERY, &assign) != ESP_OK) {
-        return ASSIGN_CONFIRM_TRANSPORT_ERROR;
+    esp_err_t assign_err = io->write_assign(
+        io->context, NRF_UPSTREAM_ADDRESS_DISCOVERY, &assign);
+    if (assign_err != ESP_OK) {
+        return assign_error_result(assign_err, bus_busy);
     }
 
     for (;;) {
@@ -227,9 +258,7 @@ static assign_confirm_result_t assign_and_confirm(
             }
         }
         else if (err != ESP_ERR_NOT_FOUND) {
-            return err == ESP_ERR_INVALID_RESPONSE
-                ? ASSIGN_CONFIRM_PROTOCOL_ERROR
-                : ASSIGN_CONFIRM_TRANSPORT_ERROR;
+            return assign_error_result(err, bus_busy);
         }
 
         memset(&discovery_status, 0, sizeof(discovery_status));
@@ -250,8 +279,10 @@ static assign_confirm_result_t assign_and_confirm(
                         return ASSIGN_CONFIRM_TRANSPORT_ERROR;
                     }
                     retry_used = true;
-                    if (io->write_assign(io->context, NRF_UPSTREAM_ADDRESS_DISCOVERY, &assign) != ESP_OK) {
-                        return ASSIGN_CONFIRM_TRANSPORT_ERROR;
+                    assign_err = io->write_assign(
+                        io->context, NRF_UPSTREAM_ADDRESS_DISCOVERY, &assign);
+                    if (assign_err != ESP_OK) {
+                        return assign_error_result(assign_err, bus_busy);
                     }
                 }
                 else if (discovery_status.result != NRF_UPSTREAM_RESULT_OK) {
@@ -269,9 +300,7 @@ static assign_confirm_result_t assign_and_confirm(
             }
         }
         else if (err != ESP_ERR_NOT_FOUND) {
-            return err == ESP_ERR_INVALID_RESPONSE
-                ? ASSIGN_CONFIRM_PROTOCOL_ERROR
-                : ASSIGN_CONFIRM_TRANSPORT_ERROR;
+            return assign_error_result(err, bus_busy);
         }
 
         if (elapsed_ms >= controller->config.confirm_timeout_ms) {
@@ -297,6 +326,8 @@ static nrf_topology_node_state_t node_state_for_assign_result(assign_confirm_res
         return NRF_TOPOLOGY_NODE_CONFLICT;
     case ASSIGN_CONFIRM_PROTOCOL_ERROR:
         return NRF_TOPOLOGY_NODE_PROTOCOL_ERROR;
+    case ASSIGN_CONFIRM_BUS_BUSY:
+        return NRF_TOPOLOGY_NODE_UNKNOWN;
     case ASSIGN_CONFIRM_TRANSPORT_ERROR:
     default:
         return NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
@@ -318,20 +349,21 @@ static main_reconcile_result_t reconcile_main(
     main_reconcile_result_t result = {0};
 
     if (probe_status(io, NRF_UPSTREAM_ADDRESS_DISCOVERY, &discovery_present,
-                     &discovery_status, &read_error) != ESP_OK) {
+                     &discovery_status, &read_error, &snapshot->bus_busy) != ESP_OK) {
         snapshot->main.state = read_error;
         return result;
     }
     if (probe_status(io, NRF_UPSTREAM_ADDRESS_MAIN, &main_present,
-                     &main_status, &read_error) != ESP_OK) {
+                     &main_status, &read_error, &snapshot->bus_busy) != ESP_OK) {
         snapshot->main.state = read_error;
         return result;
     }
     if (probe_status(io, NRF_UPSTREAM_ADDRESS_REMOTE, &remote_present,
-                     &remote_status, &read_error) != ESP_OK) {
+                     &remote_status, &read_error, &snapshot->bus_busy) != ESP_OK) {
         snapshot->main.state = read_error;
         return result;
     }
+
 
     if (remote_present) {
         node_from_status(&snapshot->main, NRF_TOPOLOGY_NODE_CONFLICT, &remote_status);
@@ -366,6 +398,7 @@ static main_reconcile_result_t reconcile_main(
     const assign_confirm_result_t assign_result = assign_and_confirm(
         controller,
         io,
+        &snapshot->bus_busy,
         &discovery_status,
         NRF_UPSTREAM_ROLE_MAIN,
         NRF_TOPOLOGY_MAIN_NODE_ID,
@@ -384,10 +417,15 @@ static main_reconcile_result_t reconcile_main(
 
 static bool verify_known_main(
     const nrf_topology_io_t *io,
-    const nrf_topology_node_snapshot_t *known_main)
+    const nrf_topology_node_snapshot_t *known_main,
+    bool *bus_busy)
 {
     nrf_upstream_status_t status;
     esp_err_t err = io->read_status(io->context, NRF_UPSTREAM_ADDRESS_MAIN, &status);
+    if (bus_yield_error(err)) {
+        *bus_busy = true;
+        return false;
+    }
     if (err != ESP_OK || !status_is_main(&status)) {
         return false;
     }
@@ -400,7 +438,12 @@ static bool close_mux_or_fault(const nrf_topology_io_t *io, nrf_topology_snapsho
     if (!io->tca_available) {
         return true;
     }
-    if (io->mux_close(io->context) != ESP_OK) {
+    const esp_err_t err = io->mux_close(io->context);
+    if (bus_yield_error(err)) {
+        snapshot->bus_busy = true;
+        return true;
+    }
+    if (err != ESP_OK) {
         snapshot->tca_fault = true;
         return false;
     }
@@ -423,15 +466,28 @@ static void scan_remote_channel(
     nrf_upstream_status_t remote_status;
     nrf_topology_node_state_t read_error = NRF_TOPOLOGY_NODE_UNKNOWN;
 
-    if (io->mux_select(io->context, channel) != ESP_OK) {
+    const esp_err_t select_err = io->mux_select(io->context, channel);
+    if (select_err != ESP_OK) {
+        if (bus_yield_error(select_err)) {
+            snapshot->bus_busy = true;
+            node->state = NRF_TOPOLOGY_NODE_UNKNOWN;
+            *continue_scan = false;
+            return;
+        }
         node->state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
-        if (!close_mux_or_fault(io, snapshot)) {
+        if (!close_mux_or_fault(io, snapshot) || snapshot->bus_busy) {
             *continue_scan = false;
         }
         return;
     }
 
-    if (main_assigned && !verify_known_main(io, &snapshot->main)) {
+    if (main_assigned && !verify_known_main(io, &snapshot->main, &snapshot->bus_busy)) {
+        if (snapshot->bus_busy) {
+            node->state = NRF_TOPOLOGY_NODE_UNKNOWN;
+            (void)close_mux_or_fault(io, snapshot);
+            *continue_scan = false;
+            return;
+        }
         node->state = NRF_TOPOLOGY_NODE_CONFLICT;
         *main_lost = true;
         (void)close_mux_or_fault(io, snapshot);
@@ -440,17 +496,19 @@ static void scan_remote_channel(
     }
 
     if (probe_status(io, NRF_UPSTREAM_ADDRESS_DISCOVERY, &discovery_present,
-                     &discovery_status, &read_error) != ESP_OK) {
+                     &discovery_status, &read_error, &snapshot->bus_busy) != ESP_OK) {
         node->state = read_error;
-        if (!close_mux_or_fault(io, snapshot)) {
+        if (!close_mux_or_fault(io, snapshot) || snapshot->bus_busy ||
+            read_error == NRF_TOPOLOGY_NODE_UNKNOWN) {
             *continue_scan = false;
         }
         return;
     }
     if (probe_status(io, NRF_UPSTREAM_ADDRESS_REMOTE, &remote_present,
-                     &remote_status, &read_error) != ESP_OK) {
+                     &remote_status, &read_error, &snapshot->bus_busy) != ESP_OK) {
         node->state = read_error;
-        if (!close_mux_or_fault(io, snapshot)) {
+        if (!close_mux_or_fault(io, snapshot) || snapshot->bus_busy ||
+            read_error == NRF_TOPOLOGY_NODE_UNKNOWN) {
             *continue_scan = false;
         }
         return;
@@ -476,6 +534,7 @@ static void scan_remote_channel(
             const assign_confirm_result_t assign_result = assign_and_confirm(
                 controller,
                 io,
+                &snapshot->bus_busy,
                 &discovery_status,
                 NRF_UPSTREAM_ROLE_REMOTE,
                 (uint8_t)(channel + 1U),
@@ -493,7 +552,7 @@ static void scan_remote_channel(
         node->state = NRF_TOPOLOGY_NODE_ABSENT;
     }
 
-    if (!close_mux_or_fault(io, snapshot)) {
+    if (!close_mux_or_fault(io, snapshot) || snapshot->bus_busy) {
         *continue_scan = false;
     }
 }
@@ -573,6 +632,9 @@ esp_err_t nrf_topology_reconcile(
         for (channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
             snapshot->remotes[channel].state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
         }
+        return ESP_OK;
+    }
+    if (snapshot->bus_busy) {
         return ESP_OK;
     }
 

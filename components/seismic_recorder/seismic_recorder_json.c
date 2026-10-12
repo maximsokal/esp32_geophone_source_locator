@@ -3,6 +3,7 @@
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -427,6 +428,49 @@ static bool seismic_recorder_json_add_geometry(
 }
 
 
+static const char *seismic_recorder_json_leveling_state_name(
+    seismic_recorder_leveling_state_t state
+)
+{
+    switch (state) {
+        case SEISMIC_RECORDER_LEVELING_NO_REMOTES:
+            return "no_remotes";
+        case SEISMIC_RECORDER_LEVELING_INCOMPLETE:
+            return "incomplete";
+        case SEISMIC_RECORDER_LEVELING_ALL_ACCEPTED:
+            return "all_accepted";
+        case SEISMIC_RECORDER_LEVELING_UNKNOWN:
+        default:
+            return NULL;
+    }
+}
+
+
+static bool seismic_recorder_json_add_recording_gate(
+    cJSON *root,
+    const seismic_recorder_gate_metadata_t *metadata
+)
+{
+    if (!metadata->available) {
+        return true;
+    }
+    const char *leveling_state =
+        seismic_recorder_json_leveling_state_name(metadata->leveling_state);
+    if (leveling_state == NULL) {
+        return false;
+    }
+
+    cJSON *gate = cJSON_AddObjectToObject(root, "recording_gate");
+    return gate != NULL &&
+        cJSON_AddBoolToObject(gate, "gate_bypassed", metadata->gate_bypassed) != NULL &&
+        cJSON_AddNumberToObject(
+            gate, "assigned_remote_count", (double)metadata->assigned_remote_count) != NULL &&
+        cJSON_AddNumberToObject(
+            gate, "accepted_remote_count", (double)metadata->accepted_remote_count) != NULL &&
+        cJSON_AddStringToObject(gate, "leveling_state", leveling_state) != NULL;
+}
+
+
 /*
  * MAX-148: freeze this recording's own CS pair evidence alongside its
  * geometry -- same rationale as seismic_recorder_json_add_geometry() above:
@@ -669,6 +713,11 @@ esp_err_t seismic_recorder_json_write_metadata(
     }
     if (ok) {
         ok = seismic_recorder_json_add_geometry(root, &profile->geometry, participation);
+    }
+    if (ok) {
+        ok = seismic_recorder_json_add_recording_gate(
+            root, &participation->recording_gate
+        );
     }
     if (ok) {
         ok = seismic_recorder_json_add_cs_pairs(root, &profile->cs_pairs);
@@ -1240,6 +1289,49 @@ static void seismic_recorder_json_parse_participation(
     seismic_recorder_session_participation_t *participation
 )
 {
+    const cJSON *recording_gate =
+        cJSON_GetObjectItemCaseSensitive(root, "recording_gate");
+    if (cJSON_IsObject(recording_gate)) {
+        const cJSON *gate_bypassed =
+            cJSON_GetObjectItemCaseSensitive(recording_gate, "gate_bypassed");
+        const cJSON *assigned_remote_count =
+            cJSON_GetObjectItemCaseSensitive(recording_gate, "assigned_remote_count");
+        const cJSON *accepted_remote_count =
+            cJSON_GetObjectItemCaseSensitive(recording_gate, "accepted_remote_count");
+        const cJSON *leveling_state =
+            cJSON_GetObjectItemCaseSensitive(recording_gate, "leveling_state");
+        uint64_t assigned_count_value = 0U;
+        uint64_t accepted_count_value = 0U;
+        seismic_recorder_leveling_state_t parsed_state =
+            SEISMIC_RECORDER_LEVELING_UNKNOWN;
+        if (cJSON_IsBool(gate_bypassed) &&
+            seismic_recorder_json_number_uint64(
+                assigned_remote_count, &assigned_count_value) &&
+            assigned_count_value <= UINT8_MAX &&
+            seismic_recorder_json_number_uint64(
+                accepted_remote_count, &accepted_count_value) &&
+            accepted_count_value <= UINT8_MAX &&
+            cJSON_IsString(leveling_state) && leveling_state->valuestring != NULL) {
+            if (strcmp(leveling_state->valuestring, "no_remotes") == 0) {
+                parsed_state = SEISMIC_RECORDER_LEVELING_NO_REMOTES;
+            } else if (strcmp(leveling_state->valuestring, "incomplete") == 0) {
+                parsed_state = SEISMIC_RECORDER_LEVELING_INCOMPLETE;
+            } else if (strcmp(leveling_state->valuestring, "all_accepted") == 0) {
+                parsed_state = SEISMIC_RECORDER_LEVELING_ALL_ACCEPTED;
+            }
+            if (parsed_state != SEISMIC_RECORDER_LEVELING_UNKNOWN) {
+                participation->recording_gate.available = true;
+                participation->recording_gate.gate_bypassed =
+                    cJSON_IsTrue(gate_bypassed);
+                participation->recording_gate.assigned_remote_count =
+                    (uint8_t)assigned_count_value;
+                participation->recording_gate.accepted_remote_count =
+                    (uint8_t)accepted_count_value;
+                participation->recording_gate.leveling_state = parsed_state;
+            }
+        }
+    }
+
     object_store_geometry_t geometry = {0};
     seismic_recorder_json_parse_geometry(root, &geometry);
     const cJSON *geometry_node = cJSON_GetObjectItemCaseSensitive(root, "geometry");

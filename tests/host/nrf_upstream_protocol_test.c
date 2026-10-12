@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -140,6 +141,14 @@ static void test_crc_known_vector(void)
     assert(nrf_upstream_protocol_crc16_ccitt_false(text, 9U) == 0x29B1U);
 }
 
+static void test_crc_empty_and_null_inputs(void)
+{
+    const uint8_t empty_frame = 0U;
+    assert(nrf_upstream_protocol_crc16_ccitt_false(&empty_frame, 0U) == 0xFFFFU);
+    assert(nrf_upstream_protocol_crc16_ccitt_false(NULL, 0U) == 0xFFFFU);
+    assert(nrf_upstream_protocol_crc16_ccitt_false(NULL, 1U) == 0U);
+}
+
 static void test_assign_exact_layout_and_roundtrip(void)
 {
     nrf_upstream_assign_t assign = make_assign();
@@ -240,6 +249,8 @@ static void test_status_exact_layout(void)
            nrf_upstream_protocol_crc16_ccitt_false(frame, 26U));
     assert(nrf_upstream_protocol_decode_status(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_OK);
     assert(memcmp(&status, &decoded, sizeof(status)) == 0);
+    assert(nrf_upstream_protocol_decode_status(
+               frame, sizeof(frame) + 1U, &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
 }
 
 static void test_sensor_refresh_layout_and_validation(void)
@@ -456,6 +467,8 @@ static void test_remote_snapshot_prefix_and_roundtrip(void)
     assert(nrf_upstream_protocol_decode_remote_snapshot(frame, sizeof(frame), &decoded_status, &decoded_sensor) == NRF_UPSTREAM_RESULT_OK);
     assert(memcmp(&status, &decoded_status, sizeof(status)) == 0);
     assert(memcmp(&sensor, &decoded_sensor, sizeof(sensor)) == 0);
+    assert(nrf_upstream_protocol_decode_remote_snapshot(
+               frame, sizeof(frame) + 1U, &decoded_status, &decoded_sensor) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
 }
 
 static void test_remote_snapshot_corruption_and_validation(void)
@@ -643,6 +656,7 @@ static void test_role_address_contract(void)
 int main(void)
 {
     test_crc_known_vector();
+    test_crc_empty_and_null_inputs();
     test_assign_exact_layout_and_roundtrip();
     test_assign_rejects_corruption_and_header_errors();
     test_assign_field_validation();

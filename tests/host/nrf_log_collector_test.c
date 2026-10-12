@@ -6,10 +6,12 @@
 
 #include "nrf_log_protocol.h"
 #include "nrf_log_ring.h"
+#include "nrf_topology_periods.h"
 #include "nrf_upstream_protocol.h"
+#include "sensor_bus_errors.h"
 
 #define FAKE_EVENT_CAPACITY 32768U
-#define ROUND_MS 1000U
+#define ROUND_MS NRF_LOG_COLLECTOR_PERIOD_MS
 
 typedef enum {
     EVENT_SELECT = 1,
@@ -114,6 +116,7 @@ typedef struct {
     uint32_t mux_selects;
     uint32_t mux_closes;
     bool mux_open;
+    esp_err_t begin_node_error;
     bool inject_page_read_during_write;
     bool readback_mismatch;
     bool select_failure;
@@ -384,6 +387,11 @@ static void fake_stop(void)
 static esp_err_t fake_begin_node(void *context, uint8_t node)
 {
     fake_bus_t *fake = context;
+    if (fake->begin_node_error != ESP_OK) {
+        const esp_err_t result = fake->begin_node_error;
+        fake->begin_node_error = ESP_OK;
+        return result;
+    }
     fake->active_node = node;
     fake->active_physical_node = fake->route_physical_node[node];
     fake->active_mux_channel = fake->targets[node].mux_channel;
@@ -1174,6 +1182,22 @@ static void test_round_cadence_and_yield(void)
     fake_stop();
 }
 
+static void test_log_collector_round_skipped_when_bus_busy(void)
+{
+    fake_start(2U);
+    s_fake.begin_node_error = SENSOR_BUS_ERR_MUTEX_BUSY;
+
+    const nrf_log_collector_iteration_t skipped = run_round_at_current_time(&s_fake);
+    CHECK(skipped.nodes_attempted == 0U);
+    CHECK(skipped.nodes_failed == 0U);
+
+    const nrf_log_collector_iteration_t retried = run_round(&s_fake);
+    CHECK(retried.nodes_attempted > 0U);
+    CHECK(retried.nodes_failed == 0U);
+    CHECK(retried.nodes_succeeded == retried.nodes_attempted);
+    fake_stop();
+}
+
 static void test_five_node_tca_matrix(void)
 {
     fake_start(5U);
@@ -1852,6 +1876,9 @@ static void test_priority_storm_during_refresh_and_cs(void)
 
 int main(void)
 {
+    volatile uint32_t collector_period_ms = NRF_LOG_COLLECTOR_PERIOD_MS;
+    CHECK(collector_period_ms == 1000U);
+    CHECK(collector_period_ms == ROUND_MS);
     const struct {
         const char *name;
         void (*run)(void);
@@ -1861,6 +1888,7 @@ int main(void)
         { "section 12.3 rejected frames preserve state", test_rejected_frames_preserve_collector_state },
         { "capability/generation/paging/store", test_capability_boot_and_paging },
         { "round cadence/pending-work yield", test_round_cadence_and_yield },
+        { "busy bus skips collector round without failure", test_log_collector_round_skipped_when_bus_busy },
         { "section 8 five-node TCA matrix", test_five_node_tca_matrix },
         { "section 9 fairness/storm/deadlines/seeded", test_backoff_storms_and_random_run },
         { "section 10.3 full-ring reset interleavings", test_full_ring_reboot_interleavings },

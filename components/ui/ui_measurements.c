@@ -21,6 +21,7 @@
 #include "nrf_topology_service.h"
 
 #include "ui_measurement_trace.h"
+#include "ui_perf_policy.h"
 
 
 #define UI_MEASUREMENT_MIN_SCALE_UV   1000.0f
@@ -33,9 +34,6 @@ static const char *TAG = "UI_MEASUREMENTS";
 #else
 #define UI_MEASUREMENTS_GRAPHS_ENABLED 1
 #endif
-
-#define UI_MEASUREMENT_CHART_PERIOD_US 125000U
-
 
 static bool ui_measurements_transport_fault(
     const seismic_acquisition_snapshot_t *acquisition
@@ -60,8 +58,6 @@ static bool ui_measurements_digital_interference(
 }
 
 #if UI_MEASUREMENTS_GRAPHS_ENABLED
-#define UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES 1024U
-
 /* 24 KiB fixed PSRAM read scratch; reducer state stays below 2 KiB in DRAM. */
 static seismic_frame_t *s_preview_chunk = NULL;
 static ui_measurement_trace_accumulator_t s_preview_reducer;
@@ -169,7 +165,7 @@ static bool ui_measurements_ensure_preview_chunk(void)
 {
     if (s_preview_chunk != NULL) return true;
     const size_t bytes =
-        sizeof(seismic_frame_t) * UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES;
+        sizeof(seismic_frame_t) * UI_PERF_PREVIEW_CHUNK_FRAMES;
     s_preview_chunk = heap_caps_malloc(
         bytes,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
@@ -187,7 +183,7 @@ static bool ui_measurements_ensure_preview_chunk(void)
     ESP_LOGI(
         TAG,
         "Measurement preview scratch allocated in PSRAM: %u frames, %u bytes",
-        (unsigned)UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES,
+        (unsigned)UI_PERF_PREVIEW_CHUNK_FRAMES,
         (unsigned)bytes
     );
 
@@ -198,6 +194,8 @@ static bool ui_measurements_ensure_preview_chunk(void)
 static esp_err_t ui_measurements_reduce_preview(
     size_t requested_frames,
     const seismic_buffer_info_t *snapshot,
+    bool load_limited,
+    uint64_t budget_started_us,
     size_t *frame_count_out,
     float *peak_out
 )
@@ -225,10 +223,18 @@ static esp_err_t ui_measurements_reduce_preview(
         : 0U;
     size_t copied_total = 0U;
     while (copied_total < frame_count) {
+        if (load_limited) {
+            const uint64_t now_us = (uint64_t)esp_timer_get_time();
+            const uint64_t elapsed_us = now_us >= budget_started_us
+                ? now_us - budget_started_us
+                : 0U;
+            if (ui_perf_policy_data_prep_budget_exhausted(elapsed_us)) {
+                return ESP_ERR_TIMEOUT;
+            }
+        }
         const size_t remaining = frame_count - copied_total;
-        const size_t chunk_size = remaining < UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES
-            ? remaining
-            : UI_MEASUREMENT_PREVIEW_CHUNK_FRAMES;
+        const size_t chunk_size =
+            ui_perf_policy_preview_chunk_limit(remaining, load_limited);
         size_t copied = 0U;
         uint64_t dropped = 0U;
         seismic_buffer_info_t chunk_info;
@@ -251,6 +257,15 @@ static esp_err_t ui_measurements_reduce_preview(
             return ESP_ERR_INVALID_STATE;
         }
         copied_total += copied;
+        if (load_limited) {
+            const uint64_t now_us = (uint64_t)esp_timer_get_time();
+            const uint64_t elapsed_us = now_us >= budget_started_us
+                ? now_us - budget_started_us
+                : 0U;
+            if (ui_perf_policy_data_prep_budget_exhausted(elapsed_us)) {
+                return ESP_ERR_TIMEOUT;
+            }
+        }
     }
 
     *frame_count_out = copied_total;
@@ -334,6 +349,16 @@ static lv_obj_t *ui_measurements_create_chart_locked(
             label,
             UI_COLOR_TEXT
         );
+    context->measurement_link_labels[channel] = ui_create_label_locked(
+        card,
+        65,
+        15,
+        78,
+        ui_tr(UI_I18N_KEY_MEASUREMENT_LINK_NOT_CONNECTED),
+        UI_COLOR_MUTED
+    );
+    context->measurement_link_status[channel] = NRF_NODE_LINK_STATUS_NOT_CONNECTED;
+    context->measurement_link_status_valid[channel] = false;
     context->measurement_charts[channel] = NULL;
     context->measurement_min_series[channel] = NULL;
     context->measurement_max_series[channel] = NULL;
@@ -344,7 +369,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
     }
 
     lv_obj_set_pos(chart, 4, 15);
-    lv_obj_set_size(chart, 140, 14);
+    lv_obj_set_size(chart, 58, 14);
     lv_obj_set_style_bg_opa(chart, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(chart, 0, 0);
     lv_obj_set_style_pad_all(chart, 0, 0);
@@ -434,6 +459,11 @@ void ui_measurements_refresh_charts_locked(
             ? acquisition->serial_pattern
             : ui_tr(UI_I18N_KEY_MEASUREMENT_UNKNOWN);
 
+    const bool load_limited = ui_perf_policy_measurements_load_active(
+        true,
+        acquisition != NULL && acquisition->running
+    );
+
     size_t frame_count = 0U;
     seismic_buffer_info_t buffer_info;
     seismic_frame_t latest_frame;
@@ -442,7 +472,10 @@ void ui_measurements_refresh_charts_locked(
     const uint64_t refresh_now_us = (uint64_t)esp_timer_get_time();
     if (
         s_last_chart_refresh_us != 0U &&
-        refresh_now_us - s_last_chart_refresh_us < UI_MEASUREMENT_CHART_PERIOD_US &&
+        !ui_perf_policy_chart_refresh_due(
+            refresh_now_us - s_last_chart_refresh_us,
+            load_limited
+        ) &&
         transport_fault == s_last_transport_fault &&
         digital_interference == s_last_digital_interference
     ) {
@@ -475,11 +508,35 @@ void ui_measurements_refresh_charts_locked(
     const int64_t reduce_started_us = esp_timer_get_time();
     float max_abs_uv = 0.0f;
     if (err == ESP_OK) {
-        s_last_chart_generation = buffer_info.total_frames;
-        const size_t requested_frames = ui_measurements_preview_frames_for_rate(buffer_info.sample_rate_hz);
+        size_t requested_frames = ui_measurements_preview_frames_for_rate(buffer_info.sample_rate_hz);
+        requested_frames = ui_perf_policy_preview_frame_limit(requested_frames, load_limited);
         err = ui_measurements_reduce_preview(
-            requested_frames, &buffer_info, &frame_count, &max_abs_uv
+            requested_frames,
+            &buffer_info,
+            load_limited,
+            (uint64_t)refresh_started_us,
+            &frame_count,
+            &max_abs_uv
         );
+        if (err != ESP_ERR_TIMEOUT) s_last_chart_generation = buffer_info.total_frames;
+    }
+
+    const uint64_t reduce_us =
+        (uint64_t)(esp_timer_get_time() - reduce_started_us);
+    const uint64_t data_prep_us = copy_us + reduce_us;
+
+    if (load_limited && err == ESP_ERR_TIMEOUT) {
+        const uint64_t now_us = (uint64_t)esp_timer_get_time();
+        ui_perf_policy_record_data_prep(data_prep_us);
+        ++s_measurement_perf_refreshes;
+        s_measurement_perf_copy_us += copy_us;
+        s_measurement_perf_reduce_us += reduce_us;
+        s_measurement_perf_total_us += data_prep_us;
+        if (data_prep_us > s_measurement_perf_max_total_us) {
+            s_measurement_perf_max_total_us = data_prep_us;
+        }
+        ui_measurements_perf_log_if_due(now_us);
+        return;
     }
 
     if (err != ESP_OK) {
@@ -489,16 +546,10 @@ void ui_measurements_refresh_charts_locked(
         memset(s_preview_min, 0, sizeof(s_preview_min));
         memset(s_preview_max, 0, sizeof(s_preview_max));
     }
-    const uint64_t reduce_us =
-        (uint64_t)(esp_timer_get_time() - reduce_started_us);
-
     const int32_t scale_uv =
         ui_measurements_update_scale(max_abs_uv);
 
     const bool scale_changed = s_last_applied_scale_uv != scale_uv;
-    const bool transport_state_changed =
-        s_last_transport_fault != transport_fault;
-
     const int64_t chart_started_us = esp_timer_get_time();
     for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
         lv_obj_t *chart = context->measurement_charts[channel];
@@ -515,14 +566,6 @@ void ui_measurements_refresh_charts_locked(
                     -scale_uv,
                     scale_uv
                 );
-            }
-
-            if (transport_state_changed) {
-                const lv_color_t series_color = lv_color_hex(
-                    transport_fault ? UI_COLOR_ERROR : UI_COLOR_ACCENT
-                );
-                lv_chart_set_series_color(chart, min_series, series_color);
-                lv_chart_set_series_color(chart, max_series, series_color);
             }
 
         }
@@ -619,6 +662,7 @@ void ui_measurements_refresh_charts_locked(
     s_measurement_perf_chart_us += chart_us;
     s_measurement_perf_label_us += label_us;
     s_measurement_perf_total_us += total_us;
+    ui_perf_policy_record_data_prep(data_prep_us);
     if (total_us > s_measurement_perf_max_total_us) {
         s_measurement_perf_max_total_us = total_us;
     }
@@ -668,6 +712,16 @@ static lv_obj_t *ui_measurements_create_chart_locked(
         label,
         UI_COLOR_TEXT
     );
+    context->measurement_link_labels[channel] = ui_create_label_locked(
+        card,
+        65,
+        15,
+        78,
+        ui_tr(UI_I18N_KEY_MEASUREMENT_LINK_NOT_CONNECTED),
+        UI_COLOR_MUTED
+    );
+    context->measurement_link_status[channel] = NRF_NODE_LINK_STATUS_NOT_CONNECTED;
+    context->measurement_link_status_valid[channel] = false;
     context->measurement_charts[channel] = NULL;
     context->measurement_min_series[channel] = NULL;
     context->measurement_max_series[channel] = NULL;
@@ -831,6 +885,49 @@ static void ui_measurements_refresh_nodes_locked(void)
 }
 
 
+static void ui_measurements_refresh_link_status_locked(bool recording)
+{
+    ui_context_t *context = ui_context();
+    const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
+
+    for (uint8_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+        nrf_node_link_status_input_t input = {0};
+        const ui_node_link_node_slot_t node_slot =
+            ui_node_link_node_for_channel(channel);
+        const esp_err_t err = nrf_topology_service_get_node_status_snapshot(
+            (uint8_t)node_slot,
+            &input);
+        const nrf_node_link_status_t current = err == ESP_OK
+            ? nrf_node_link_status_evaluate(&input, now_ms, recording)
+            : NRF_NODE_LINK_STATUS_NOT_CONNECTED;
+        if (context->measurement_link_status_valid[channel] &&
+            !ui_node_link_status_changed(
+                context->measurement_link_status[channel],
+                current)) {
+            continue;
+        }
+
+        const uint32_t color_hex = ui_node_link_status_color(current);
+        lv_obj_t *chart = context->measurement_charts[channel];
+        lv_chart_series_t *minimum = context->measurement_min_series[channel];
+        lv_chart_series_t *maximum = context->measurement_max_series[channel];
+        if (chart != NULL && minimum != NULL && maximum != NULL) {
+            const lv_color_t color = lv_color_hex(color_hex);
+            lv_chart_set_series_color(chart, minimum, color);
+            lv_chart_set_series_color(chart, maximum, color);
+        }
+        (void)ui_measurements_label_set_if_changed(
+            context->measurement_link_labels[channel],
+            ui_tr(ui_node_link_status_label_key(current)));
+        (void)ui_measurements_text_color_set_if_changed(
+            context->measurement_link_labels[channel],
+            color_hex);
+        context->measurement_link_status[channel] = current;
+        context->measurement_link_status_valid[channel] = true;
+    }
+}
+
+
 void ui_render_measurements_locked(void)
 {
     ui_context_t *context = ui_context();
@@ -863,9 +960,18 @@ void ui_render_measurements_locked(void)
         summary_card,
         8,
         1,
-        284,
+        222,
         ui_tr(UI_I18N_KEY_MEASUREMENT_SUMMARY_LIVE),
         UI_COLOR_TEXT
+    );
+
+    context->measurement_link_legend = ui_create_label_locked(
+        summary_card,
+        234,
+        1,
+        58,
+        ui_tr(UI_I18N_KEY_MEASUREMENT_LINK_LEGEND),
+        UI_COLOR_MUTED
     );
 
     context->measurement_transport = ui_create_label_locked(
@@ -933,6 +1039,9 @@ void ui_measurements_refresh_locked(void)
         acquisition_err == ESP_OK ? &acquisition : NULL
     );
     ui_measurements_refresh_nodes_locked();
+    ui_measurements_refresh_link_status_locked(
+        measurement_err == ESP_OK &&
+        measurement.state == MEASUREMENT_SERVICE_RECORDING);
 
     char text[128];
 

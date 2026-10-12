@@ -52,7 +52,10 @@
         "components/localization/include",
         "nRF54L15/include"
       ],
-      "defines": ["CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1"],
+      "defines": [
+        "CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"
+      ],
       "libraries": ["m"]
     }
   ]

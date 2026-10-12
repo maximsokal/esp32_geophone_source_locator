@@ -882,12 +882,13 @@ static bool resolve_ambiguous_pair(
     return false;
 }
 
-nrf_geometry_result_t nrf_geometry_solver_solve(
+static nrf_geometry_result_t nrf_geometry_solver_solve_impl(
     const nrf_geometry_node_input_t *inputs,
     size_t input_count,
     const nrf_cs_pair_result_t *pairs,
     size_t pair_count,
-    nrf_geometry_solution_t *solution)
+    nrf_geometry_solution_t *solution,
+    bool enforce_recording_minimum)
 {
     if (inputs == NULL || solution == NULL ||
         input_count == 0 || input_count > NRF_GEOMETRY_MAX_NODES ||
@@ -937,6 +938,11 @@ nrf_geometry_result_t nrf_geometry_solver_solve(
     solution->nodes[main_index].x_mm = 0;
     solution->nodes[main_index].y_mm = 0;
 
+    if (enforce_recording_minimum &&
+        input_count < 1U + NRF_GEOMETRY_MIN_REMOTE_COUNT_FOR_RECORDING) {
+        return NRF_GEOMETRY_UNS_INSUFFICIENT_NODES;
+    }
+
     /* Iteratively place every node reachable through valid CS pairs from
      * the already-solved set. Nodes with no such path stay unsolved. The
      * first node placed after MAIN defines +X (the refinement gauge). */
@@ -981,4 +987,30 @@ nrf_geometry_result_t nrf_geometry_solver_solve(
     refine_solution(pairs, pair_count, main_index, axis_index, solution);
     compute_residuals(pairs, pair_count, solution);
     return NRF_GEOMETRY_OK;
+}
+
+
+nrf_geometry_result_t nrf_geometry_solver_solve(
+    const nrf_geometry_node_input_t *inputs,
+    size_t input_count,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    nrf_geometry_solution_t *solution)
+{
+    return nrf_geometry_solver_solve_impl(
+        inputs, input_count, pairs, pair_count, solution, true
+    );
+}
+
+
+nrf_geometry_result_t nrf_geometry_solver_solve_partial(
+    const nrf_geometry_node_input_t *inputs,
+    size_t input_count,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    nrf_geometry_solution_t *solution)
+{
+    return nrf_geometry_solver_solve_impl(
+        inputs, input_count, pairs, pair_count, solution, false
+    );
 }

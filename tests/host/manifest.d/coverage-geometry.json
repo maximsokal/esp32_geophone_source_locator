@@ -11,6 +11,7 @@
         "components/nrf_geometry_solver/include",
         "nRF54L15/include"
       ],
+      "defines": ["NRF_GEOMETRY_SOLVER_HOST_TEST=1"],
       "libraries": ["m"]
     },
     {

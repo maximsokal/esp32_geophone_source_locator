@@ -1,4 +1,5 @@
 #include "nrf_log_collector.h"
+#include "sensor_bus_errors.h"
 
 #include <inttypes.h>
 #include <stdlib.h>
@@ -8,13 +9,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nrf_log_protocol.h"
+#include "nrf_topology_periods.h"
 #include "nrf_upstream_protocol.h"
 
 #define NRF_LOG_REQUEST_RETRIES 1U
 #define NRF_LOG_STAGED_RECORDS (NRF_LOG_PROTOCOL_MAX_RECORDS * 2U + 1U)
-#ifndef CONFIG_NRF_LOG_POLL_PERIOD_MS
-#define CONFIG_NRF_LOG_POLL_PERIOD_MS 1000U
-#endif
 #ifndef CONFIG_NRF_LOG_POLL_BACKOFF_MAX_ROUNDS
 #define CONFIG_NRF_LOG_POLL_BACKOFF_MAX_ROUNDS 32U
 #endif
@@ -406,6 +405,11 @@ static esp_err_t poll_node(
 
     *attempted = true;
     err = io->begin_node(io->context, node_index);
+    if (err == SENSOR_BUS_ERR_MUTEX_BUSY) {
+        *attempted = false;
+        *yielded = true;
+        return ESP_OK;
+    }
     node_open = node_index != 0U;
     if (err == ESP_OK) {
         status_request.request_id = status_request_id;
@@ -633,7 +637,7 @@ esp_err_t nrf_log_collector_poll_iteration(
     iteration_started_ms = io->now_ms(io->context);
     if (!collector_lock(collector)) return ESP_ERR_TIMEOUT;
     if (collector->has_polled && iteration_started_ms >= collector->last_poll_ms &&
-        iteration_started_ms - collector->last_poll_ms < CONFIG_NRF_LOG_POLL_PERIOD_MS) {
+        iteration_started_ms - collector->last_poll_ms < NRF_LOG_COLLECTOR_PERIOD_MS) {
         collector_unlock(collector);
         return ESP_OK;
     }

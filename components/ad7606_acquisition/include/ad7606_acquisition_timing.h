@@ -5,6 +5,23 @@
 #include <stdbool.h>
 
 
+#define AD7606_OS1_TCONV_MIN_NS 2950U
+#define AD7606_OS1_TCONV_MAX_NS 4650U
+#define AD7606_OS2_TCONV_MIN_NS 7400U
+#define AD7606_OS2_TCONV_MAX_NS 9600U
+#define AD7606_OS4_TCONV_MIN_NS 15500U
+#define AD7606_OS4_TCONV_MAX_NS 19300U
+#define AD7606_OS8_TCONV_MIN_NS 32500U
+#define AD7606_OS8_TCONV_MAX_NS 39500U
+#define AD7606_OS_CLASSIFICATION_GAP_MIN_NS 1000U
+
+_Static_assert(
+    AD7606_OS1_TCONV_MAX_NS + AD7606_OS_CLASSIFICATION_GAP_MIN_NS <=
+        AD7606_OS2_TCONV_MIN_NS,
+    "AD7606 OS1 upper band plus its minimum gap must not overlap OS2"
+);
+
+
 typedef enum
 {
     AD7606_READ_MODE_AUTO = 0,
@@ -108,6 +125,9 @@ bool ad7606_acquisition_timing_resolve_measured(
 
 /* Returns 1, 2, 4, or 8 for a calibrated BUSY width; zero means unknown. */
 uint8_t ad7606_acquisition_classify_tconv_ns(uint32_t tconv_ns);
+
+/* True only for the bounded OS1/OS2 gap eligible for degraded startup. */
+bool ad7606_acquisition_tconv_is_unknown_degraded_window(uint32_t tconv_ns);
 
 /* Exact-index timestamps avoid accumulated period rounding error. */
 bool ad7606_acquisition_timestamp_from_index(

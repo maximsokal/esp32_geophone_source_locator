@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "nrf_sensor_transport",
+      "sources": [
+        "components/nrf_topology_service/nrf_sensor_transport.c",
+        "components/nrf_topology_service/nrf_node_link_status_policy.c",
+        "tests/host/nrf_sensor_transport_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/tca9548a",
+        "nRF54L15/include",
+        "components/nrf_topology_service/include",
+        "components/nrf_topology_service"
+      ]
+    },
+    {
+      "name": "nrf_node_link_status_policy",
+      "sources": [
+        "components/nrf_topology_service/nrf_node_link_status_policy.c",
+        "components/nrf_topology_service/tests/nrf_node_link_status_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "ui_node_link_status",
+      "sources": [
+        "components/ui/ui_node_link_status.c",
+        "components/ui/tests/ui_node_link_status_test.c"
+      ],
+      "include_dirs": [
+        "components/ui",
+        "components/ui_i18n/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "web_status_json_builder",
+      "sources": [
+        "components/web_server/web_status_json.c",
+        "components/web_server/web_status_json_hardware.c",
+        "components/hw_inventory/hw_inventory_reason.c",
+        "components/web_server/tests/hw_inventory_status_fake.c",
+        "components/web_server/web_status_json_pods.c",
+        "components/nrf_topology_service/nrf_node_link_status_policy.c",
+        "components/web_server/web_status_policy.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/stubs/web_status_json/storage_manager_fake.c",
+        "tests/host/web_status_json_builder_test.c"
+      ],
+      "include_dirs": [
+        "components/hw_inventory/include",
+        "components/web_server/tests",
+        "tests/host/stubs/web_status_json",
+        "tests/host/stubs/object_store_profile",
+        "components/web_server",
+        "components/device_status/include",
+        "components/runtime_observability/include",
+        "components/seismic_acquisition/include",
+        "components/seismic_buffer/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
+      ]
+    }
+  ]
+}

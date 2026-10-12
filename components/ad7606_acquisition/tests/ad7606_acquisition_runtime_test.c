@@ -10,6 +10,7 @@
 #include "ad7606_acquisition.h"
 #include "ad7606_driver.h"
 #include "ad7606_power_policy.h"
+#include "ad7606_tconv_calibration.h"
 #include "sdkconfig.h"
 #include "../ad7606_diag_accum.h"
 #include "driver/gpio.h"
@@ -1068,6 +1069,7 @@ static void assert_fully_released(void)
     assert(!s_sem_live);
 }
 
+#if !defined(AD7606_ACQUISITION_RUNTIME_TEST_SUPPORT_ONLY)
 /* ---- tests ---- */
 
 static void test_repeated_start_stop_and_error_cycles_release_everything(void)
@@ -1178,6 +1180,133 @@ static void test_run_samples_then_stop_releases_everything(void)
 }
 
 
+static unsigned s_max435_failures;
+static void reset_log_capture(void);
+static size_t log_record_count(ad7606_acquisition_test_log_event_t event);
+static const test_log_record_t *find_log_record(
+    ad7606_acquisition_test_log_event_t event,
+    uint64_t sample_index
+);
+
+
+static void tol_2_real_hardware_widths_start_as_os1_without_degrade_or_mismatch(void)
+{
+    static const uint32_t raw_after_overhead_ns[] = {4400U, 4500U, 4600U};
+    assert(AD7606_TCONV_MEASUREMENT_CALIBRATION_NS == 0);
+    assert(ad7606_tconv_apply_known_calibration_ns(4500U) == 4500U);
+    assert(ad7606_tconv_apply_known_calibration_ns(4500U) != 4700U);
+
+    bool all_passed = true;
+    for (size_t i = 0U;
+        i < sizeof(raw_after_overhead_ns) / sizeof(raw_after_overhead_ns[0]);
+        ++i) {
+        reset_world();
+        reset_log_capture();
+        s_fake_measured_tconv_ns = raw_after_overhead_ns[i];
+        script(EV_STOP, 0U);
+        const esp_err_t result = ad7606_acquisition_start();
+        const ad7606_acquisition_status_t status = status_now();
+        const bool passed = result == ESP_OK &&
+            status.os_ratio_configured == 1U &&
+            status.os_ratio_measured == 1U &&
+            !status.os_mismatch &&
+            log_record_count(AD7606_ACQUISITION_TEST_LOG_OS_RESOLUTION) == 0U;
+        all_passed = all_passed && passed;
+    }
+
+    if (all_passed) {
+        puts("MAX435 TOL-2 PASS");
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 TOL-2 FAIL calibration=%d\n",
+            AD7606_TCONV_MEASUREMENT_CALIBRATION_NS);
+    }
+    fflush(stdout);
+}
+
+static void test_os_unknown_with_valid_payload_degrades_not_blocks(void)
+{
+    reset_world();
+    reset_log_capture();
+    s_fake_measured_tconv_ns = 6500U;
+    script(EV_STOP, 0U);
+    const esp_err_t degraded_result = ad7606_acquisition_start();
+    const ad7606_acquisition_status_t degraded_status = status_now();
+    const bool degraded_log =
+        log_record_count(AD7606_ACQUISITION_TEST_LOG_OS_RESOLUTION) == 1U &&
+        strcmp(find_log_record(
+            AD7606_ACQUISITION_TEST_LOG_OS_RESOLUTION,
+            0U)->state,
+            "WARN AD7606_OS_UNKNOWN_DEGRADED") == 0;
+    const bool degraded = degraded_result == ESP_OK &&
+        s_driver_inits == 1U &&
+        degraded_status.os_ratio_configured == 1U &&
+        degraded_status.os_ratio_measured == 0U &&
+        !degraded_status.os_mismatch &&
+        degraded_log;
+
+    reset_world();
+    reset_log_capture();
+    s_fake_measured_tconv_ns = 9601U;
+    const esp_err_t outside_result = ad7606_acquisition_start();
+    const ad7606_acquisition_status_t outside_status = status_now();
+    const bool outside_log =
+        log_record_count(AD7606_ACQUISITION_TEST_LOG_OS_RESOLUTION) == 1U &&
+        strcmp(find_log_record(
+            AD7606_ACQUISITION_TEST_LOG_OS_RESOLUTION,
+            0U)->state,
+            "ERROR AD7606_OS_UNKNOWN") == 0;
+    const bool outside_blocked = outside_result == ESP_ERR_INVALID_RESPONSE &&
+        outside_status.os_ratio_measured == 0U &&
+        !outside_status.os_mismatch &&
+        outside_log;
+
+    if (degraded && outside_blocked) {
+        puts("MAX435 T6 PASS");
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 T6 FAIL degraded=%d outside_blocked=%d\n",
+            degraded ? 1 : 0,
+            outside_blocked ? 1 : 0);
+    }
+    fflush(stdout);
+}
+
+
+static void test_safe_os2_mismatch_runs_and_is_reported(void)
+{
+    reset_world();
+    reset_log_capture();
+    s_fake_measured_tconv_ns = 9000U;
+    script(EV_STOP, 0U);
+    const esp_err_t result = ad7606_acquisition_start();
+    const ad7606_acquisition_status_t status = status_now();
+    const bool mismatch_log =
+        log_record_count(AD7606_ACQUISITION_TEST_LOG_OS_RESOLUTION) == 1U &&
+        strcmp(find_log_record(
+            AD7606_ACQUISITION_TEST_LOG_OS_RESOLUTION,
+            0U)->state,
+            "WARN AD7606_OS_MISMATCH") == 0;
+    const bool passed = result == ESP_OK &&
+        s_driver_inits == 1U &&
+        status.os_ratio_configured == 1U &&
+        status.os_ratio_measured == 2U &&
+        status.os_mismatch &&
+        mismatch_log;
+    if (passed) {
+        puts("MAX435 safe mismatch PASS");
+    }
+    else {
+        ++s_max435_failures;
+        printf("MAX435 safe mismatch FAIL result=%d measured=%u mismatch=%d\n",
+            (int)result,
+            (unsigned)status.os_ratio_measured,
+            status.os_mismatch ? 1 : 0);
+    }
+    fflush(stdout);
+}
 static void test_safe_os_mismatch_runs_and_is_reported(void)
 {
     reset_world();
@@ -1195,12 +1324,17 @@ static void test_safe_os_mismatch_runs_and_is_reported(void)
 static void test_unknown_os_measurement_refuses_start(void)
 {
     reset_world();
-    s_fake_measured_tconv_ns = 5000U; /* Outside every calibrated interval. */
+    reset_log_capture();
+    s_fake_measured_tconv_ns = 9601U; /* Unknown above the degraded OS1/OS2 gap. */
     assert(ad7606_acquisition_start() == ESP_ERR_INVALID_RESPONSE);
     const ad7606_acquisition_status_t status = status_now();
     assert(status.os_ratio_configured == 1U);
     assert(status.os_ratio_measured == 0U);
-    assert(status.os_mismatch);
+    assert(!status.os_mismatch);
+    assert(strcmp(find_log_record(
+        AD7606_ACQUISITION_TEST_LOG_OS_RESOLUTION,
+        0U)->state,
+        "ERROR AD7606_OS_UNKNOWN") == 0);
     assert_fully_released();
 }
 
@@ -2144,6 +2278,13 @@ static void test_diag_integer_accumulator_contract(void)
 
 int main(void)
 {
+#if defined(AD7606_TCONV_TOL_ONLY)
+    tol_2_real_hardware_widths_start_as_os1_without_degrade_or_mismatch();
+    return s_max435_failures == 0U ? 0 : 1;
+#else
+    tol_2_real_hardware_widths_start_as_os1_without_degrade_or_mismatch();
+    test_os_unknown_with_valid_payload_degrades_not_blocks();
+    test_safe_os2_mismatch_runs_and_is_reported();
     test_repeated_start_stop_and_error_cycles_release_everything();
     test_diag_integer_accumulator_contract();
     test_diag_logging_virtual_time_characterization();
@@ -2169,5 +2310,17 @@ int main(void)
     test_restart_clears_a_latched_fault();
     test_overcurrent_stops_and_latches();
     test_status_delay_negative_control_and_snapshot();
-    return 0;
+    return s_max435_failures == 0U ? 0 : 1;
+#endif
 }
+#endif
+
+#if defined(AD7606_ACQUISITION_RUNTIME_TEST_SUPPORT_ONLY)
+bool ad7606_acquisition_test_start_with_tconv(uint32_t tconv_ns)
+{
+    reset_world();
+    s_fake_measured_tconv_ns = tconv_ns;
+    script(EV_STOP, 0U);
+    return ad7606_acquisition_start() == ESP_OK && s_task_creates == 1U;
+}
+#endif

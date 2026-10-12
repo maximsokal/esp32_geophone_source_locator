@@ -55,7 +55,7 @@ static esp_err_t main_barometer_read_regs(
     size_t length)
 {
     return main_barometer_classify_error(
-        address, i2c_bus_read_bytes(device, reg, length, data));
+        address, sensor_bus_read_bytes(device, reg, length, data));
 }
 
 static esp_err_t main_barometer_write_reg(
@@ -65,7 +65,7 @@ static esp_err_t main_barometer_write_reg(
     uint8_t value)
 {
     return main_barometer_classify_error(
-        address, i2c_bus_write_bytes(device, reg, 1U, &value));
+        address, sensor_bus_write_bytes(device, reg, 1U, &value));
 }
 
 static bool main_barometer_retryable_bus_error(esp_err_t err)
@@ -189,10 +189,12 @@ static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
             continue;
         }
 
-        i2c_bus_device_handle_t candidate = i2c_bus_device_create(
-            barometer->handles.bus, addresses[i], SENSOR_BUS_I2C_SPEED_HZ);
-        if (candidate == NULL) {
-            return ESP_ERR_NO_MEM;
+        i2c_bus_device_handle_t candidate = NULL;
+        esp_err_t create_err = sensor_bus_device_create(
+            barometer->handles.bus, addresses[i], SENSOR_BUS_I2C_SPEED_HZ,
+            &candidate);
+        if (create_err != ESP_OK) {
+            return create_err;
         }
 
         uint8_t chip_id = 0U;
@@ -236,7 +238,7 @@ static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
         if (err != ESP_ERR_NOT_FOUND) {
             last_error = err;
         }
-        (void)i2c_bus_device_delete(&candidate);
+        (void)sensor_bus_device_delete(&candidate);
     }
 
     barometer->reading.bmp280_present = false;
@@ -265,10 +267,11 @@ uint8_t main_barometer_aht20_crc8(const uint8_t *data, uint8_t length)
 static esp_err_t main_barometer_init_aht20(main_barometer_t *barometer)
 {
     if (barometer->aht20 == NULL) {
-        barometer->aht20 = i2c_bus_device_create(
-            barometer->handles.bus, AHT20_ADDRESS, SENSOR_BUS_I2C_SPEED_HZ);
-        if (barometer->aht20 == NULL) {
-            return ESP_ERR_NO_MEM;
+        const esp_err_t create_err = sensor_bus_device_create(
+            barometer->handles.bus, AHT20_ADDRESS, SENSOR_BUS_I2C_SPEED_HZ,
+            &barometer->aht20);
+        if (create_err != ESP_OK) {
+            return create_err;
         }
     }
 
@@ -282,7 +285,7 @@ static esp_err_t main_barometer_init_aht20(main_barometer_t *barometer)
     uint8_t status = 0U;
     esp_err_t err = main_barometer_classify_error(
         AHT20_ADDRESS,
-        i2c_bus_read_byte(barometer->aht20, NULL_I2C_MEM_ADDR, &status));
+        sensor_bus_read_byte(barometer->aht20, NULL_I2C_MEM_ADDR, &status));
     if (err != ESP_OK) {
         main_barometer_aht20_transfer_failed(barometer);
         return err;
@@ -293,7 +296,7 @@ static esp_err_t main_barometer_init_aht20(main_barometer_t *barometer)
         const uint8_t initialize[3] = {AHT20_CMD_INITIALIZE, 0x08U, 0x00U};
         err = main_barometer_classify_error(
             AHT20_ADDRESS,
-            i2c_bus_write_bytes(
+            sensor_bus_write_bytes(
                 barometer->aht20, NULL_I2C_MEM_ADDR,
                 sizeof(initialize), initialize));
         if (err != ESP_OK) {
@@ -303,7 +306,7 @@ static esp_err_t main_barometer_init_aht20(main_barometer_t *barometer)
         vTaskDelay(pdMS_TO_TICKS(AHT20_INIT_DELAY_MS));
         err = main_barometer_classify_error(
             AHT20_ADDRESS,
-            i2c_bus_read_byte(barometer->aht20, NULL_I2C_MEM_ADDR, &status));
+            sensor_bus_read_byte(barometer->aht20, NULL_I2C_MEM_ADDR, &status));
         if (err != ESP_OK) {
             main_barometer_aht20_transfer_failed(barometer);
             return err;
@@ -339,7 +342,7 @@ static esp_err_t main_barometer_read_aht20(main_barometer_t *barometer)
     const uint8_t trigger[3] = {AHT20_CMD_MEASURE, 0x33U, 0x00U};
     esp_err_t err = main_barometer_classify_error(
         AHT20_ADDRESS,
-        i2c_bus_write_bytes(
+        sensor_bus_write_bytes(
             barometer->aht20, NULL_I2C_MEM_ADDR, sizeof(trigger), trigger));
     if (err != ESP_OK) {
         main_barometer_aht20_transfer_failed(barometer);
@@ -354,7 +357,7 @@ static esp_err_t main_barometer_read_aht20(main_barometer_t *barometer)
         waited_ms += AHT20_BUSY_POLL_MS;
         err = main_barometer_classify_error(
             AHT20_ADDRESS,
-            i2c_bus_read_bytes(
+            sensor_bus_read_bytes(
                 barometer->aht20, NULL_I2C_MEM_ADDR, sizeof(data), data));
         if (err != ESP_OK) {
             main_barometer_aht20_transfer_failed(barometer);
@@ -647,10 +650,10 @@ void main_barometer_close(main_barometer_t *barometer)
         return;
     }
     if (barometer->bmp280 != NULL) {
-        (void)i2c_bus_device_delete(&barometer->bmp280);
+        (void)sensor_bus_device_delete(&barometer->bmp280);
     }
     if (barometer->aht20 != NULL) {
-        (void)i2c_bus_device_delete(&barometer->aht20);
+        (void)sensor_bus_device_delete(&barometer->aht20);
     }
     memset(&barometer->handles, 0, sizeof(barometer->handles));
     barometer->bmp280_initialized = false;

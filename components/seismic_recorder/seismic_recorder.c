@@ -1095,15 +1095,16 @@ esp_err_t seismic_recorder_init(void)
 
 
 /*
- * MAX-118/MAX-165: block a recording session until the Record-button gate
+ * MAX-118/MAX-165/MAX-444: evaluate the Record-button gate
  * (recording_gate_evaluate(), MAX-165 -- at least 3 currently ASSIGNED
  * REMOTE pods, all reporting accepted/leveled orientation) allows it, then
  * run a completed Channel Sounding geometry cycle that places every one of
  * them in 3D relative to MAIN, and persist that geometry onto the object
  * being recorded. Exactly 3 assigned pods is allowed but planar/2D-only
  * (logged as a warning, matching the WebUI's required warning text); fewer
- * than 3, or any assigned pod not yet level, is rejected outright -- see
- * recording_gate.h for the exact decision table this reuses (shared with
+ * fewer than 3 or any assigned pod not yet level is reported in session
+ * metadata. MAX-444 can bypass that admission requirement; see
+ * recording_gate.h for the diagnostic decision table this reuses (shared with
  * MAX-170's post-recording method-availability policy, so both always
  * agree). See seismic_recorder_geometry_policy.h for the pure geometry
  * mapping logic and the documented MAIN-altitude-is-fixed-at-zero caveat.
@@ -1112,10 +1113,11 @@ static esp_err_t seismic_recorder_prepare_geometry(
     const char *object_id,
     seismic_recorder_session_participation_t *participation,
     object_store_cs_pairs_t *session_cs_pairs,
-    uint64_t start_uptime_ms
+    uint64_t start_uptime_ms,
+    recording_gate_result_t *gate_result_out
 )
 {
-    if (participation == NULL || session_cs_pairs == NULL) {
+    if (participation == NULL || session_cs_pairs == NULL || gate_result_out == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -1128,8 +1130,8 @@ static esp_err_t seismic_recorder_prepare_geometry(
 
     const recording_gate_result_t gate =
         recording_gate_evaluate(leveling.assigned_count, leveling.accepted_count);
-    if (gate.decision == RECORDING_GATE_BLOCKED_INSUFFICIENT_REMOTES ||
-        gate.decision == RECORDING_GATE_BLOCKED_NOT_LEVEL) {
+    *gate_result_out = gate;
+    if (!gate.start_allowed) {
         ESP_LOGE(
             TAG,
             "START rejected: %s (assigned=%u accepted=%u)",
@@ -1140,6 +1142,9 @@ static esp_err_t seismic_recorder_prepare_geometry(
         return gate.decision == RECORDING_GATE_BLOCKED_INSUFFICIENT_REMOTES
             ? ESP_ERR_NOT_FOUND
             : ESP_ERR_INVALID_STATE;
+    }
+    if (gate.bypassed) {
+        return ESP_OK;
     }
     if (gate.decision == RECORDING_GATE_ALLOWED_PLANAR_2D) {
         ESP_LOGW(TAG, "START: %s", recording_gate_planar_warning(gate.decision));
@@ -1458,13 +1463,28 @@ esp_err_t seismic_recorder_start(
      */
     seismic_recorder_session_participation_t participation = {0};
     object_store_cs_pairs_t session_cs_pairs = {0};
+    recording_gate_result_t recording_gate = {0};
     err = seismic_recorder_prepare_geometry(
-        object_id, &participation, &session_cs_pairs, start_uptime_ms
+        object_id, &participation, &session_cs_pairs, start_uptime_ms,
+        &recording_gate
     );
     if (err != ESP_OK) {
         free(profile);
         return err;
     }
+
+    participation.recording_gate.available = true;
+    participation.recording_gate.gate_bypassed = recording_gate.bypassed;
+    participation.recording_gate.assigned_remote_count =
+        (uint8_t)recording_gate.assigned_count;
+    participation.recording_gate.accepted_remote_count =
+        (uint8_t)recording_gate.accepted_count;
+    participation.recording_gate.leveling_state =
+        recording_gate.assigned_count == 0U
+            ? SEISMIC_RECORDER_LEVELING_NO_REMOTES
+            : recording_gate.accepted_count >= recording_gate.assigned_count
+                ? SEISMIC_RECORDER_LEVELING_ALL_ACCEPTED
+                : SEISMIC_RECORDER_LEVELING_INCOMPLETE;
 
     err = object_store_get_profile(object_id, profile);
     if (err != ESP_OK) {
@@ -1473,6 +1493,11 @@ esp_err_t seismic_recorder_start(
     }
     /* Freeze the completed cycle in the session copy even if the best-effort
      * object-store write failed and the reloaded live profile is stale. */
+    if (recording_gate.bypassed) {
+        /* A prior object's solved geometry must not masquerade as this
+         * session's geometry when the remote-count gate was bypassed. */
+        memset(&profile->geometry, 0, sizeof(profile->geometry));
+    }
     profile->cs_pairs = session_cs_pairs;
     seismic_recorder_lock();
     if (s_starting || s_snapshot.running || s_samples_file != NULL) {
@@ -1611,6 +1636,16 @@ esp_err_t seismic_recorder_start(
     xEventGroupClearBits(s_events, SEISMIC_RECORDER_EVENT_STOPPED);
     seismic_recorder_unlock();
     free(profile);
+
+    if (recording_gate.bypassed) {
+        ESP_LOGW(
+            TAG,
+            "RECORDING_GATE_BYPASS reason=%s assigned=%u leveling=%d",
+            recording_gate_bypass_reason(recording_gate.decision),
+            (unsigned)recording_gate.assigned_count,
+            recording_gate.accepted_count >= recording_gate.assigned_count ? 1 : 0
+        );
+    }
 
     ESP_LOGI(
         TAG,

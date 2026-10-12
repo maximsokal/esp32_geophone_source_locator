@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(SEISMIC_RECORDER_GATE_BYPASS_TEST)
+#include <stdarg.h>
+#endif
 
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
@@ -37,6 +40,28 @@ static unsigned metadata_write_calls;
 static char last_metadata_status[24];
 static TaskFunction_t fake_recorder_task;
 static bool final_metadata_written;
+#if defined(SEISMIC_RECORDER_GATE_BYPASS_TEST)
+static unsigned recording_gate_bypass_log_count;
+static char recording_gate_bypass_log_line[192];
+
+void seismic_recorder_gate_bypass_test_log(
+    const char *tag,
+    const char *format,
+    ...
+)
+{
+    (void)tag;
+    if (format == NULL || strstr(format, "RECORDING_GATE_BYPASS") == NULL) {
+        return;
+    }
+    ++recording_gate_bypass_log_count;
+    va_list args;
+    va_start(args, format);
+    (void)vsnprintf(recording_gate_bypass_log_line,
+        sizeof(recording_gate_bypass_log_line), format, args);
+    va_end(args);
+}
+#endif
 static jmp_buf worker_finished;
 
 typedef struct { unsigned held; } fake_mutex_t;
@@ -146,6 +171,58 @@ esp_err_t seismic_recorder_waveform_read_file(FILE *file, uint64_t size, const s
 
 int main(void)
 {
+#if defined(SEISMIC_RECORDER_GATE_BYPASS_TEST)
+#ifndef SEISMIC_RECORDER_GATE_BYPASS_REMOTE_COUNT
+#error "SEISMIC_RECORDER_GATE_BYPASS_REMOTE_COUNT must be set for this test"
+#endif
+    const uint8_t remote_count = SEISMIC_RECORDER_GATE_BYPASS_REMOTE_COUNT;
+    assert(remote_count <= 2U);
+    fake_acquisition.running = true;
+    fake_acquisition.source_healthy = false;
+    fake_acquisition.source_name = "AD7606";
+    fake_acquisition.sample_rate_hz = 500U;
+    fake_acquisition.latest_valid = true;
+    fake_acquisition.samples = 1U;
+    fake_acquisition.last_sample_timestamp_us = 999000;
+    fake_acquisition.cadence_available = true;
+    fake_acquisition.timer_ticks = 100U;
+    fake_acquisition.conversion_attempts = 100U;
+
+    memset(&fake_topology, 0, sizeof(fake_topology));
+    fake_topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    fake_topology.main.node_id = 0U;
+    memset(fake_sensor_cache, 0, sizeof(fake_sensor_cache));
+    for (uint8_t channel = 0U; channel < remote_count; ++channel) {
+        fake_topology.remotes[channel].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+        fake_topology.remotes[channel].node_id = (uint8_t)(channel + 1U);
+        fake_topology.remotes[channel].mux_channel = channel;
+        fake_sensor_cache[channel].response_valid = true;
+        fake_sensor_cache[channel].topology_current = true;
+        fake_sensor_cache[channel].sensor.orientation_state =
+            NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+    }
+    fake_leveling.assigned_count = remote_count;
+    fake_leveling.accepted_count = remote_count;
+
+    assert(seismic_recorder_init() == ESP_OK);
+    assert(seismic_recorder_start("OBJ_0444") == ESP_OK);
+    assert(fake_cs_cycle_requests == 0U);
+    assert(!last_geometry_set && !last_cs_pairs_set);
+    assert(metadata_write_calls == 1U && strcmp(last_metadata_status, "recording") == 0);
+    assert(strstr(persisted_session_json, "\"gate_bypassed\":true") != NULL);
+    char assigned_count_json[48];
+    snprintf(assigned_count_json, sizeof(assigned_count_json),
+        "\"assigned_remote_count\":%u", (unsigned)remote_count);
+    assert(strstr(persisted_session_json, assigned_count_json) != NULL);
+    assert(recording_gate_bypass_log_count == 1U);
+    assert(strstr(recording_gate_bypass_log_line, "reason=remotes_lt_3") != NULL);
+    assert(strstr(recording_gate_bypass_log_line, "leveling=1") != NULL);
+
+    /* A duplicate START cannot emit a second bypass record for this session. */
+    assert(seismic_recorder_start("OBJ_0444") == ESP_ERR_INVALID_STATE);
+    assert(recording_gate_bypass_log_count == 1U);
+    return 0;
+#else
     memset(&fake_acquisition, 0, sizeof(fake_acquisition));
     fake_acquisition.running = true;
     fake_acquisition.source_healthy = false;
@@ -459,4 +536,5 @@ int main(void)
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
     assert(!snapshot.running && snapshot.stop_stage == SEISMIC_RECORDER_STOP_STAGE_COMPLETE);
     return 0;
+#endif
 }

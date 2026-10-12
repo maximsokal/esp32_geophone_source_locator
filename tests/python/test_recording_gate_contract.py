@@ -39,17 +39,19 @@ def test_blocked_decisions_have_reasons_allowed_decisions_do_not_invent_one():
 
 def test_gate_is_actually_wired_into_the_real_recording_admission_path():
     """A tested-but-unwired pure function does not protect production: this
-    pins that seismic_recorder's own START path calls the real gate (not
-    just its own narrower assigned/accepted check), so a bench setup with
-    fewer than 3 REMOTEs is actually rejected before recording, not merely
-    provably rejectable in isolation."""
+    pins that seismic_recorder's START path applies the shared gate result.
+    The default bypass can admit a start while preserving the diagnostic
+    decision; strict configuration still blocks it."""
     recorder = read("components/seismic_recorder/seismic_recorder.c")
     cmake = read("components/seismic_recorder/CMakeLists.txt")
 
     assert '#include "recording_gate.h"' in recorder
     assert "recording_gate_evaluate(" in recorder
     assert "RECORDING_GATE_BLOCKED_INSUFFICIENT_REMOTES" in recorder
-    assert "RECORDING_GATE_BLOCKED_NOT_LEVEL" in recorder
+    assert "if (!gate.start_allowed)" in recorder
+    assert "recording_gate_decision_reason(gate.decision)" in recorder
+    assert "recording_gate_bypass_reason(recording_gate.decision)" in recorder
+    assert "RECORDING_GATE_BLOCKED_NOT_LEVEL" not in recorder
     assert "RECORDING_GATE_ALLOWED_PLANAR_2D" in recorder
     assert "recording_gate" in cmake
 

@@ -233,11 +233,31 @@ typedef struct
 } seismic_recorder_pod_participation_t;
 
 
+typedef enum
+{
+    SEISMIC_RECORDER_LEVELING_UNKNOWN = 0,
+    SEISMIC_RECORDER_LEVELING_NO_REMOTES,
+    SEISMIC_RECORDER_LEVELING_INCOMPLETE,
+    SEISMIC_RECORDER_LEVELING_ALL_ACCEPTED
+} seismic_recorder_leveling_state_t;
+
+
+typedef struct
+{
+    bool available;
+    bool gate_bypassed;
+    uint8_t assigned_remote_count;
+    uint8_t accepted_remote_count;
+    seismic_recorder_leveling_state_t leveling_state;
+} seismic_recorder_gate_metadata_t;
+
+
 typedef struct
 {
     seismic_recorder_pod_participation_t pods[OBJECT_STORE_POD_COUNT];
     seismic_recorder_geometry_z_provenance_t z_provenance;
     seismic_recorder_geometry_provenance_t geometry_provenance;
+    seismic_recorder_gate_metadata_t recording_gate;
 } seismic_recorder_session_participation_t;
 
 

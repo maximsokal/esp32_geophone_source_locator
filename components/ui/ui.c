@@ -22,8 +22,9 @@ static ui_context_t s_context;
 static ui_frame_scheduler_t s_frame_scheduler;
 static uint64_t s_refresh_generation;
 static int64_t s_perf_started_us;
-static uint64_t s_render_total_us;
 static uint64_t s_render_max_us;
+static uint64_t s_measurement_load_next_update_us;
+static bool s_measurement_load_active;
 static ui_perf_policy_state_t s_perf_log_state;
 
 
@@ -51,41 +52,134 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
 
     const uint64_t now_us = (uint64_t)esp_timer_get_time();
     seismic_acquisition_snapshot_t acquisition;
-    const uint64_t generation = seismic_acquisition_get_snapshot(&acquisition) == ESP_OK
+    const esp_err_t acquisition_error = seismic_acquisition_get_snapshot(&acquisition);
+    const bool acquisition_running =
+        acquisition_error == ESP_OK && acquisition.running;
+    const bool measurements_screen_active = s_context.screen == UI_SCREEN_MEASUREMENTS;
+    const bool measurement_load_active = ui_perf_policy_measurements_load_active(
+        measurements_screen_active,
+        acquisition_running
+    );
+    const bool measurement_load_started =
+        measurement_load_active && !s_measurement_load_active;
+    s_measurement_load_active = measurement_load_active;
+    ui_lvgl_set_measurement_load_active(measurement_load_active);
+
+    const uint64_t generation = acquisition_error == ESP_OK
         ? acquisition.samples
         : ++s_refresh_generation;
     ui_frame_scheduler_submit(&s_frame_scheduler, generation);
+    const uint32_t target_fps = ui_perf_policy_target_fps(measurement_load_active);
+    if (measurement_load_active) {
+        if (measurement_load_started) s_measurement_load_next_update_us = now_us;
+        if (now_us < s_measurement_load_next_update_us) return;
+        s_measurement_load_next_update_us = now_us +
+            ui_perf_policy_update_interval_us(measurement_load_active);
+    }
+    else {
+        s_measurement_load_next_update_us = 0U;
+    }
     if (!ui_frame_scheduler_take(&s_frame_scheduler, now_us, NULL)) return;
 
     const int64_t started_us = esp_timer_get_time();
     ui_refresh_dynamic_locked();
     const uint64_t render_us = (uint64_t)(esp_timer_get_time() - started_us);
-    s_render_total_us += render_us;
+    ui_perf_policy_record_update(render_us);
     if (render_us > s_render_max_us) s_render_max_us = render_us;
 
     if ((int64_t)now_us - s_perf_started_us >= 10000000LL) {
         const uint64_t frames = s_frame_scheduler.frames_rendered;
         const uint64_t elapsed_us = now_us - (uint64_t)s_perf_started_us;
+        const ui_perf_stage_metrics_t stage_snapshot = ui_perf_policy_stage_snapshot();
+        const uint64_t max_render_us = stage_snapshot.render_max_us > s_render_max_us
+            ? stage_snapshot.render_max_us
+            : s_render_max_us;
         if (ui_perf_policy_should_log(
                 &s_perf_log_state,
                 (uint32_t)(now_us / 1000U),
                 frames,
                 elapsed_us,
-                UI_FRAME_TARGET_FPS,
-                s_render_max_us
+                target_fps,
+                max_render_us
             )) {
-            ESP_LOGI(TAG,
-                     "UI_PERF: target_fps=%u actual_fps=%.1f frames_rendered=%llu frames_coalesced=%llu max_render_us=%llu avg_render_us=%llu",
-                     (unsigned)UI_FRAME_TARGET_FPS,
-                     elapsed_us > 0U ? (double)frames * 1000000.0 / (double)elapsed_us : 0.0,
-                     (unsigned long long)frames,
-                     (unsigned long long)s_frame_scheduler.frames_coalesced,
-                     (unsigned long long)s_render_max_us,
-                     (unsigned long long)(frames > 0U ? s_render_total_us / frames : 0U));
+            const ui_perf_stage_metrics_t stages = ui_perf_policy_stage_take();
+            const uint64_t reported_max_render_us = stages.render_max_us > s_render_max_us
+                ? stages.render_max_us
+                : s_render_max_us;
+            const bool warning = ui_perf_policy_render_warning(reported_max_render_us);
+            const unsigned long long avg_render_us = (unsigned long long)(
+                stages.render_samples > 0U
+                    ? stages.render_total_us / stages.render_samples
+                    : 0U);
+            const unsigned long long avg_update_us = (unsigned long long)(
+                stages.update_samples > 0U
+                    ? stages.update_total_us / stages.update_samples
+                    : 0U);
+            const unsigned long long avg_flush_submit_us = (unsigned long long)(
+                stages.flush_chunks > 0U
+                    ? stages.flush_submit_total_us / stages.flush_chunks
+                    : 0U);
+            const unsigned long long avg_flush_wait_us = (unsigned long long)(
+                stages.flush_waits > 0U
+                    ? stages.flush_wait_total_us / stages.flush_waits
+                    : 0U);
+            const unsigned long long avg_data_prep_us = (unsigned long long)(
+                stages.data_prep_samples > 0U
+                    ? stages.data_prep_total_us / stages.data_prep_samples
+                    : 0U);
+#define UI_LOG_PERF(level, ...) level(TAG, __VA_ARGS__)
+            if (warning) {
+                UI_LOG_PERF(
+                    ESP_LOGW,
+                    "UI_PERF: target_fps=%u actual_fps=%.1f frames_rendered=%llu frames_coalesced=%llu max_render_us=%llu avg_render_us=%llu max_update_us=%llu avg_update_us=%llu max_flush_submit_us=%llu avg_flush_submit_us=%llu max_flush_wait_us=%llu avg_flush_wait_us=%llu flush_chunks=%u flush_yields=%u flush_submit_over_5ms=%u max_data_prep_us=%llu avg_data_prep_us=%llu starvation_windows=%u",
+                    (unsigned)target_fps,
+                    elapsed_us > 0U ? (double)frames * 1000000.0 / (double)elapsed_us : 0.0,
+                    (unsigned long long)frames,
+                    (unsigned long long)s_frame_scheduler.frames_coalesced,
+                    (unsigned long long)reported_max_render_us,
+                    avg_render_us,
+                    (unsigned long long)stages.update_max_us,
+                    avg_update_us,
+                    (unsigned long long)stages.flush_submit_max_us,
+                    avg_flush_submit_us,
+                    (unsigned long long)stages.flush_wait_max_us,
+                    avg_flush_wait_us,
+                    (unsigned)stages.flush_chunks,
+                    (unsigned)stages.flush_yields,
+                    (unsigned)stages.flush_submit_over_budget_chunks,
+                    (unsigned long long)stages.data_prep_max_us,
+                    avg_data_prep_us,
+                    (unsigned)s_perf_log_state.starvation_windows
+                );
+            }
+            else {
+                UI_LOG_PERF(
+                    ESP_LOGI,
+                    "UI_PERF: target_fps=%u actual_fps=%.1f frames_rendered=%llu frames_coalesced=%llu max_render_us=%llu avg_render_us=%llu max_update_us=%llu avg_update_us=%llu max_flush_submit_us=%llu avg_flush_submit_us=%llu max_flush_wait_us=%llu avg_flush_wait_us=%llu flush_chunks=%u flush_yields=%u flush_submit_over_5ms=%u max_data_prep_us=%llu avg_data_prep_us=%llu starvation_windows=%u",
+                    (unsigned)target_fps,
+                    elapsed_us > 0U ? (double)frames * 1000000.0 / (double)elapsed_us : 0.0,
+                    (unsigned long long)frames,
+                    (unsigned long long)s_frame_scheduler.frames_coalesced,
+                    (unsigned long long)reported_max_render_us,
+                    avg_render_us,
+                    (unsigned long long)stages.update_max_us,
+                    avg_update_us,
+                    (unsigned long long)stages.flush_submit_max_us,
+                    avg_flush_submit_us,
+                    (unsigned long long)stages.flush_wait_max_us,
+                    avg_flush_wait_us,
+                    (unsigned)stages.flush_chunks,
+                    (unsigned)stages.flush_yields,
+                    (unsigned)stages.flush_submit_over_budget_chunks,
+                    (unsigned long long)stages.data_prep_max_us,
+                    avg_data_prep_us,
+                    (unsigned)s_perf_log_state.starvation_windows
+                );
+            }
+#undef UI_LOG_PERF
         }
         ui_frame_scheduler_init(&s_frame_scheduler, now_us + UI_FRAME_MIN_PERIOD_US);
         s_perf_started_us = (int64_t)now_us;
-        s_render_total_us = 0U;
         s_render_max_us = 0U;
     }
 }
@@ -300,8 +394,11 @@ esp_err_t ui_init(void)
     ui_frame_scheduler_init(&s_frame_scheduler, now_us);
     s_refresh_generation = 0U;
     s_perf_started_us = (int64_t)now_us;
-    s_render_total_us = 0U;
     s_render_max_us = 0U;
+    s_measurement_load_next_update_us = 0U;
+    s_measurement_load_active = false;
+    memset(&s_perf_log_state, 0, sizeof(s_perf_log_state));
+    (void)ui_perf_policy_stage_take();
 
     if (!lvgl_port_lock(1000)) {
         ui_runtime_init_rollback();
@@ -312,7 +409,7 @@ esp_err_t ui_init(void)
 
     s_context.refresh_timer = lv_timer_create(
         ui_refresh_timer_callback,
-        42,
+        ui_perf_policy_update_interval_ms(false),
         NULL
     );
 

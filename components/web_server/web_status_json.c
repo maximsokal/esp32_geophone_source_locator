@@ -768,6 +768,10 @@ esp_err_t web_status_json_build_extended(
         return ESP_ERR_NO_MEM;
     }
 
+    bool measurement_recording = false;
+    const bool measurement_ok =
+        web_status_json_add_measurement(root, &measurement_recording);
+
     const bool base_ok =
         web_status_json_add_system(
             root,
@@ -781,7 +785,7 @@ esp_err_t web_status_json_build_extended(
         web_status_json_add_environment(root, &status.environment) &&
         web_status_json_add_main(root, &status.main) &&
         web_status_json_add_mux(root, &status.mux) &&
-        web_status_json_add_pods(root, &status) &&
+        web_status_json_add_pods(root, &status, measurement_recording) &&
         web_status_json_add_nrf_logs(root) &&
         web_status_json_add_acquisition(
             root,
@@ -795,7 +799,7 @@ esp_err_t web_status_json_build_extended(
         web_status_json_add_runtime(root) &&
         web_status_json_add_recording(root) &&
         web_status_json_add_recording_gate(root) &&
-        web_status_json_add_measurement(root) &&
+        measurement_ok &&
         web_status_json_add_workflow(root);
 #if defined(ESP_PLATFORM)
     const bool ranging_ok = base_ok && web_status_json_add_ranging(root);

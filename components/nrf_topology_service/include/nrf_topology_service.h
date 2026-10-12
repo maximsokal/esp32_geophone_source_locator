@@ -7,6 +7,7 @@
 #include "esp_err.h"
 #include "nrf_cs_scheduler.h"
 #include "nrf_log_collector.h"
+#include "nrf_node_link_status_policy.h"
 #include "nrf_sensor_cache.h"
 #include "nrf_topology_leveling_policy.h"
 #include "nrf_topology.h"
@@ -126,6 +127,10 @@ esp_err_t nrf_topology_service_request_imu_calibration(
     uint16_t generation,
     uint8_t channel_mask);
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *snapshot);
+/* node_slot 0 is MAIN; node_slots 1..8 are G1..G8 in mux-channel order. */
+esp_err_t nrf_topology_service_get_node_status_snapshot(
+    uint8_t node_slot,
+    nrf_node_link_status_input_t *snapshot);
 esp_err_t nrf_topology_service_get_leveling_summary(nrf_topology_leveling_summary_t *summary);
 /* MAX-114: per-node levelling state of every assigned REMOTE. */
 esp_err_t nrf_topology_service_get_leveling_nodes(nrf_topology_leveling_nodes_t *nodes);

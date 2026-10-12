@@ -51,13 +51,47 @@ static void test_main_alone_is_the_origin(void)
     nrf_geometry_node_input_t inputs[1] = {{.node_id = 0U, .z_mm = 0}};
     nrf_geometry_solution_t solution;
 
-    assert(nrf_geometry_solver_solve(inputs, 1U, NULL, 0U, &solution) ==
+    assert(nrf_geometry_solver_solve_partial(inputs, 1U, NULL, 0U, &solution) ==
            NRF_GEOMETRY_OK);
     assert(solution.node_count == 1U);
     const nrf_geometry_node_position_t *main_node = find_node(&solution, 0U);
     assert(main_node != NULL);
     assert(main_node->solved);
     assert(main_node->x_mm == 0 && main_node->y_mm == 0);
+}
+
+
+static void test_less_than_three_remote_nodes_return_unsolved(void)
+{
+    nrf_geometry_node_input_t inputs[3] = {
+        {.node_id = 0U, .z_mm = 0},
+        {.node_id = 1U, .z_mm = 0},
+        {.node_id = 2U, .z_mm = 0},
+    };
+    nrf_cs_pair_result_t pairs[3] = {
+        make_pair(0U, 1U, NRF_CS_PAIR_VALID, 300),
+        make_pair(0U, 2U, NRF_CS_PAIR_VALID, 300),
+        make_pair(1U, 2U, NRF_CS_PAIR_VALID, 400),
+    };
+
+    for (size_t input_count = 1U; input_count <= 3U; ++input_count) {
+        const size_t pair_count = input_count == 1U ? 0U :
+            input_count == 2U ? 1U : 3U;
+        nrf_geometry_solution_t solution;
+        assert(nrf_geometry_solver_solve(
+            inputs, input_count, pair_count == 0U ? NULL : pairs,
+            pair_count, &solution
+        ) == NRF_GEOMETRY_UNS_INSUFFICIENT_NODES);
+        assert(solution.node_count == input_count);
+        const nrf_geometry_node_position_t *main_node = find_node(&solution, 0U);
+        assert(main_node != NULL && main_node->solved);
+        for (size_t node = 1U; node < input_count; ++node) {
+            const nrf_geometry_node_position_t *remote =
+                find_node(&solution, (nrf_cs_node_id_t)node);
+            assert(remote != NULL && !remote->solved);
+            assert(remote->x_mm == 0 && remote->y_mm == 0);
+        }
+    }
 }
 
 static void test_single_reference_places_along_arbitrary_heading(void)
@@ -71,7 +105,7 @@ static void test_single_reference_places_along_arbitrary_heading(void)
     };
     nrf_geometry_solution_t solution;
 
-    assert(nrf_geometry_solver_solve(inputs, 2U, pairs, 1U, &solution) ==
+    assert(nrf_geometry_solver_solve_partial(inputs, 2U, pairs, 1U, &solution) ==
            NRF_GEOMETRY_OK);
     const nrf_geometry_node_position_t *a = find_node(&solution, 1U);
     assert(a != NULL && a->solved);
@@ -87,7 +121,7 @@ static void test_isolated_node_with_no_valid_pair_stays_unsolved(void)
     nrf_geometry_solution_t solution;
 
     /* No pairs at all. */
-    assert(nrf_geometry_solver_solve(inputs, 2U, NULL, 0U, &solution) ==
+    assert(nrf_geometry_solver_solve_partial(inputs, 2U, NULL, 0U, &solution) ==
            NRF_GEOMETRY_OK);
     const nrf_geometry_node_position_t *a = find_node(&solution, 1U);
     assert(a != NULL && !a->solved);
@@ -106,7 +140,7 @@ static void test_missing_pair_state_is_not_treated_as_zero_distance(void)
     };
     nrf_geometry_solution_t solution;
 
-    assert(nrf_geometry_solver_solve(inputs, 2U, pairs, 1U, &solution) ==
+    assert(nrf_geometry_solver_solve_partial(inputs, 2U, pairs, 1U, &solution) ==
            NRF_GEOMETRY_OK);
     const nrf_geometry_node_position_t *a = find_node(&solution, 1U);
     assert(a != NULL && !a->solved);
@@ -152,7 +186,7 @@ static void test_overflowing_position_is_not_marked_solved(void)
     };
     nrf_geometry_solution_t solution;
 
-    assert(nrf_geometry_solver_solve(inputs, 3U, pairs, 2U, &solution) ==
+    assert(nrf_geometry_solver_solve_partial(inputs, 3U, pairs, 2U, &solution) ==
            NRF_GEOMETRY_OK);
     const nrf_geometry_node_position_t *first = find_node(&solution, 1U);
     const nrf_geometry_node_position_t *overflowing = find_node(&solution, 2U);
@@ -309,7 +343,7 @@ static void test_z_passes_through_unmodified(void)
     };
     nrf_geometry_solution_t solution;
 
-    assert(nrf_geometry_solver_solve(inputs, 2U, pairs, 1U, &solution) ==
+    assert(nrf_geometry_solver_solve_partial(inputs, 2U, pairs, 1U, &solution) ==
            NRF_GEOMETRY_OK);
     const nrf_geometry_node_position_t *a = find_node(&solution, 1U);
     assert(a != NULL && a->solved);
@@ -331,7 +365,7 @@ static void test_impossible_height_difference_is_not_solved(void)
     };
     nrf_geometry_solution_t solution;
 
-    assert(nrf_geometry_solver_solve(inputs, 2U, pairs, 1U, &solution) ==
+    assert(nrf_geometry_solver_solve_partial(inputs, 2U, pairs, 1U, &solution) ==
            NRF_GEOMETRY_OK);
     const nrf_geometry_node_position_t *a = find_node(&solution, 1U);
     assert(a != NULL && !a->solved);
@@ -354,7 +388,7 @@ static void test_disjoint_reference_circles_leave_node_unsolved(void)
     };
     nrf_geometry_solution_t solution;
 
-    assert(nrf_geometry_solver_solve(inputs, 3U, pairs, 3U, &solution) ==
+    assert(nrf_geometry_solver_solve_partial(inputs, 3U, pairs, 3U, &solution) ==
            NRF_GEOMETRY_OK);
     const nrf_geometry_node_position_t *b = find_node(&solution, 2U);
     assert(b != NULL && !b->solved);
@@ -380,7 +414,7 @@ static void test_near_miss_within_tolerance_is_solved_with_residual(void)
     };
     nrf_geometry_solution_t solution;
 
-    assert(nrf_geometry_solver_solve(inputs, 3U, pairs, 3U, &solution) ==
+    assert(nrf_geometry_solver_solve_partial(inputs, 3U, pairs, 3U, &solution) ==
            NRF_GEOMETRY_OK);
     const nrf_geometry_node_position_t *b = find_node(&solution, 2U);
     assert(b != NULL && b->solved);
@@ -408,7 +442,7 @@ static void test_second_single_reference_node_stays_unsolved(void)
     };
     nrf_geometry_solution_t solution;
 
-    assert(nrf_geometry_solver_solve(inputs, 3U, pairs, 2U, &solution) ==
+    assert(nrf_geometry_solver_solve_partial(inputs, 3U, pairs, 2U, &solution) ==
            NRF_GEOMETRY_OK);
     assert(find_node(&solution, 1U)->solved);
     assert(!find_node(&solution, 2U)->solved);
@@ -698,6 +732,7 @@ int main(void)
 {
     test_rejects_missing_main_and_bad_arguments();
     test_main_alone_is_the_origin();
+    test_less_than_three_remote_nodes_return_unsolved();
     test_single_reference_places_along_arbitrary_heading();
     test_isolated_node_with_no_valid_pair_stays_unsolved();
     test_missing_pair_state_is_not_treated_as_zero_distance();

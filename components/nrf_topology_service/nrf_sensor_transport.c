@@ -144,12 +144,13 @@ static uint32_t next_request_id(nrf_sensor_transport_controller_t *controller)
     return id;
 }
 
-static bool status_matches_node(
+static bool status_identity_matches_node(
     const nrf_upstream_status_t *status,
     const nrf_topology_node_snapshot_t *node,
     uint8_t expected_role)
 {
     if (status == NULL || node == NULL ||
+        status->hardware_id_length > NRF_UPSTREAM_PROTOCOL_HW_ID_MAX ||
         status->hardware_id_length != node->hardware_id_length ||
         status->hardware_id_length == 0U ||
         memcmp(status->hardware_id, node->hardware_id, status->hardware_id_length) != 0 ||
@@ -157,14 +158,47 @@ static bool status_matches_node(
         status->role != expected_role ||
         status->node_id != node->node_id ||
         status->mux_channel != node->mux_channel ||
-        status->target_address != node->current_address ||
-        status->lifecycle != NRF_UPSTREAM_LIFECYCLE_READY ||
-        status->result != NRF_UPSTREAM_RESULT_OK ||
-        (status->flags & NRF_UPSTREAM_STATUS_FLAG_ASSIGNED) == 0U ||
-        (status->flags & NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED) == 0U) {
+        status->target_address != node->current_address) {
         return false;
     }
     return true;
+}
+
+static void status_cache_store(
+    nrf_upstream_status_cache_t *cache,
+    const nrf_upstream_status_t *status,
+    const nrf_topology_node_snapshot_t *node,
+    uint8_t expected_role,
+    uint64_t receipt_uptime_ms)
+{
+    if (cache == NULL || status == NULL || node == NULL) {
+        return;
+    }
+    cache->valid = true;
+    cache->identity_matches = status_identity_matches_node(status, node, expected_role);
+    cache->identity = *node;
+    cache->lifecycle = status->lifecycle;
+    cache->result = status->result;
+    cache->flags = status->flags;
+    cache->esp_receipt_uptime_ms = receipt_uptime_ms;
+}
+
+static bool status_is_ready(const nrf_upstream_status_t *status)
+{
+    return status != NULL &&
+        status->lifecycle == NRF_UPSTREAM_LIFECYCLE_READY &&
+        status->result == NRF_UPSTREAM_RESULT_OK &&
+        (status->flags & NRF_UPSTREAM_STATUS_FLAG_ASSIGNED) != 0U &&
+        (status->flags & NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED) != 0U;
+}
+
+static bool status_matches_node(
+    const nrf_upstream_status_t *status,
+    const nrf_topology_node_snapshot_t *node,
+    uint8_t expected_role)
+{
+    return status_identity_matches_node(status, node, expected_role) &&
+        status_is_ready(status);
 }
 
 static void mark_failure(
@@ -285,6 +319,27 @@ esp_err_t nrf_sensor_transport_refresh_channel(
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (topology->main.state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+        memset(&status, 0, sizeof(status));
+        err = io->read_status(io->context, NRF_UPSTREAM_ADDRESS_MAIN, &status);
+        if (err != ESP_OK) {
+            mark_read_failure(err, cache, request_topology_reconcile);
+            goto done;
+        }
+        status_cache_store(
+            &controller->main_status_cache,
+            &status,
+            &topology->main,
+            NRF_UPSTREAM_ROLE_MAIN,
+            io->now_ms(io->context));
+        if (!controller->main_status_cache.identity_matches) {
+            mark_failure(cache, NRF_SENSOR_CACHE_IDENTITY_STALE, true);
+            *request_topology_reconcile = true;
+            err = ESP_ERR_INVALID_RESPONSE;
+            goto done;
+        }
+    }
+
     err = io->mux_select(io->context, channel);
     if (err != ESP_OK) {
         mark_failure(cache, NRF_SENSOR_CACHE_TRANSPORT_ERROR, true);
@@ -296,31 +351,27 @@ esp_err_t nrf_sensor_transport_refresh_channel(
     }
     selected = true;
 
-    if (topology->main.state == NRF_TOPOLOGY_NODE_ASSIGNED) {
-        memset(&status, 0, sizeof(status));
-        err = io->read_status(io->context, NRF_UPSTREAM_ADDRESS_MAIN, &status);
-        if (err != ESP_OK) {
-            mark_read_failure(err, cache, request_topology_reconcile);
-            goto done;
-        }
-        if (!status_matches_node(&status, &topology->main, NRF_UPSTREAM_ROLE_MAIN)) {
-            mark_failure(cache, NRF_SENSOR_CACHE_IDENTITY_STALE, true);
-            *request_topology_reconcile = true;
-            err = ESP_ERR_INVALID_RESPONSE;
-            goto done;
-        }
-    }
-
     memset(&status, 0, sizeof(status));
     err = io->read_status(io->context, NRF_UPSTREAM_ADDRESS_REMOTE, &status);
     if (err != ESP_OK) {
         mark_read_failure(err, cache, request_topology_reconcile);
         goto done;
     }
-    if (!status_matches_node(&status, remote, NRF_UPSTREAM_ROLE_REMOTE)) {
+    status_cache_store(
+        &cache->upstream_status,
+        &status,
+        remote,
+        NRF_UPSTREAM_ROLE_REMOTE,
+        io->now_ms(io->context));
+    if (!cache->upstream_status.identity_matches) {
         mark_failure(cache, NRF_SENSOR_CACHE_IDENTITY_STALE, true);
         *request_topology_reconcile = true;
         err = ESP_ERR_INVALID_RESPONSE;
+        goto done;
+    }
+    if (!status_is_ready(&status)) {
+        mark_failure(cache, NRF_SENSOR_CACHE_SENSOR_ERROR, false);
+        err = ESP_ERR_INVALID_STATE;
         goto done;
     }
 
@@ -349,10 +400,21 @@ esp_err_t nrf_sensor_transport_refresh_channel(
             mark_read_failure(err, cache, request_topology_reconcile);
             goto done;
         }
-        if (!status_matches_node(&status, remote, NRF_UPSTREAM_ROLE_REMOTE)) {
+        status_cache_store(
+            &cache->upstream_status,
+            &status,
+            remote,
+            NRF_UPSTREAM_ROLE_REMOTE,
+            io->now_ms(io->context));
+        if (!cache->upstream_status.identity_matches) {
             mark_failure(cache, NRF_SENSOR_CACHE_IDENTITY_STALE, true);
             *request_topology_reconcile = true;
             err = ESP_ERR_INVALID_RESPONSE;
+            goto done;
+        }
+        if (!status_is_ready(&status)) {
+            mark_failure(cache, NRF_SENSOR_CACHE_SENSOR_ERROR, false);
+            err = ESP_ERR_INVALID_STATE;
             goto done;
         }
 

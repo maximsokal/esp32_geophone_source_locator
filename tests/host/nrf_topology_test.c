@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include "nrf_topology.h"
+#include "sensor_bus.h"
+#include "tca9548a_mux.h"
 
 typedef enum {
     FAKE_ABSENT = 0,
@@ -32,6 +34,12 @@ typedef struct {
     bool tca_available;
     bool fail_initial_close;
     bool fail_close_after_select;
+    bool transient_close_timeout;
+    bool busy_next_close;
+    bool use_verified_mux_close;
+    uint8_t verified_mux_control;
+    tca9548a_mux_t verified_mux;
+    unsigned busy_count;
     int selected_channel;
     unsigned close_calls;
     unsigned select_calls;
@@ -99,6 +107,20 @@ static esp_err_t fake_close(void *context)
 {
     fake_bus_t *bus = context;
     bus->close_calls++;
+    if (bus->use_verified_mux_close) {
+        return tca9548a_mux_close(&bus->verified_mux);
+    }
+    if (bus->busy_next_close) {
+        bus->busy_next_close = false;
+        bus->busy_count++;
+        return SENSOR_BUS_ERR_MUTEX_BUSY;
+    }
+    if (bus->transient_close_timeout) {
+        bus->transient_close_timeout = false;
+        bus->close_calls++; /* retry close+verify confirms the closed state */
+        bus->selected_channel = -1;
+        return ESP_OK;
+    }
     if (bus->fail_initial_close && bus->close_calls == 1U) {
         return ESP_FAIL;
     }
@@ -106,6 +128,43 @@ static esp_err_t fake_close(void *context)
         return ESP_FAIL;
     }
     bus->selected_channel = -1;
+    return ESP_OK;
+}
+
+static esp_err_t fake_verified_mux_write(
+    void *context,
+    uint8_t address,
+    uint8_t value,
+    tca9548a_mux_phase_t phase,
+    int channel)
+{
+    fake_bus_t *bus = context;
+    assert(address == 0x70U);
+    (void)phase;
+    (void)channel;
+    bus->verified_mux_control = value;
+    return ESP_OK;
+}
+
+static esp_err_t fake_verified_mux_read(
+    void *context,
+    uint8_t address,
+    uint8_t *value,
+    uint8_t expected,
+    tca9548a_mux_phase_t phase,
+    int channel)
+{
+    fake_bus_t *bus = context;
+    assert(address == 0x70U);
+    assert(value != NULL);
+    (void)expected;
+    (void)phase;
+    (void)channel;
+    if (bus->transient_close_timeout) {
+        bus->transient_close_timeout = false;
+        return ESP_ERR_TIMEOUT;
+    }
+    *value = bus->verified_mux_control;
     return ESP_OK;
 }
 
@@ -561,6 +620,73 @@ static void test_absent_main_allows_diagnostic_remote_assignment(void)
     assert(snapshot.remotes[0].node_id == 1U);
 }
 
+static void test_mutex_busy_does_not_fault_mux_and_retries_next_window(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.busy_next_close = true;
+    bus.main.mode = FAKE_MAIN;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.main, 0xD8U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.bus_busy);
+    assert(!snapshot.tca_fault);
+    assert(bus.busy_count == 1U);
+    assert(bus.status_reads == 0U);
+
+    io = make_io(&bus);
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(!snapshot.bus_busy);
+    assert(!snapshot.tca_fault);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+}
+
+static void test_single_transient_close_timeout_preserves_assigned_nodes(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_MAIN;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.main, 0xE8U);
+    bus.remote[0].mode = FAKE_REMOTE;
+    bus.remote[0].node_id = 1U;
+    bus.remote[0].channel = 0U;
+    bus.remote[0].result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.remote[0], 0xF0U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(snapshot.remotes[0].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+
+    const tca9548a_mux_io_t mux_io = {
+        .write_control = fake_verified_mux_write,
+        .read_control = fake_verified_mux_read,
+        .context = &bus,
+        .address = 0x70U,
+    };
+    assert(tca9548a_mux_init(&bus.verified_mux, &mux_io) == ESP_OK);
+    bus.use_verified_mux_close = true;
+    bus.transient_close_timeout = true;
+    io = make_io(&bus);
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(!snapshot.tca_fault);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(snapshot.remotes[0].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+
+    io = make_io(&bus);
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(!snapshot.tca_fault);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(snapshot.remotes[0].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+}
+
 int main(void)
 {
     test_main_only_without_tca_assigns_safely();
@@ -576,5 +702,7 @@ int main(void)
     test_pending_assignment_times_out_with_bounded_polls();
     test_close_failure_after_remote_operation_sets_mux_fault();
     test_absent_main_allows_diagnostic_remote_assignment();
+    test_mutex_busy_does_not_fault_mux_and_retries_next_window();
+    test_single_transient_close_timeout_preserves_assigned_nodes();
     return 0;
 }

@@ -58,6 +58,7 @@
         "tests/host/stubs/ui_event_dispatcher",
         "tests/host/stubs/runtime_observability",
         "components/ui",
+        "components/nrf_topology_service/include",
         "components/ui_i18n/include"
       ]
     },
@@ -74,6 +75,7 @@
         "tests/host/stubs/ui_event_dispatcher",
         "tests/host/stubs/app_events",
         "components/ui",
+        "components/nrf_topology_service/include",
         "components/ui_i18n/include"
       ],
       "libraries": ["pthread"]

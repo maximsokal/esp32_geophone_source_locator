@@ -11,6 +11,7 @@
 #include "runtime_observability.h"
 #include "seismic_acquisition.h"
 #include "nrf_topology_service.h"
+#include "nrf_upstream_protocol.h"
 #include "storage_manager.h"
 #include "web_server_internal.h"
 
@@ -43,6 +44,7 @@ static int32_t g_https_last_error_esp_err;
 static nrf_topology_snapshot_t g_topology;
 static nrf_log_node_summary_t g_nrf_logs[NRF_LOG_COLLECTOR_NODE_COUNT];
 static int32_t g_topology_result;
+static bool g_measurement_recording;
 
 static void reset_fakes(void)
 {
@@ -56,6 +58,7 @@ static void reset_fakes(void)
     g_recording_called = false;
     g_workflow_called = false;
     g_now_us = 1234567;
+    g_measurement_recording = false;
 
     g_acquisition_running = true;
     g_acquisition_healthy = true;
@@ -103,6 +106,26 @@ int32_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot)
     if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
     if (g_topology_result != ESP_OK) return g_topology_result;
     *snapshot = g_topology;
+    return ESP_OK;
+}
+
+int32_t nrf_topology_service_get_node_status_snapshot(
+    uint8_t node_slot,
+    nrf_node_link_status_input_t *snapshot)
+{
+    if (node_slot == 0U || node_slot > 4U || snapshot == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *snapshot = (nrf_node_link_status_input_t) {
+        .assigned = true,
+        .status_valid = true,
+        .status_identity_matches = true,
+        .lifecycle = NRF_UPSTREAM_LIFECYCLE_READY,
+        .result = NRF_UPSTREAM_RESULT_OK,
+        .flags = NRF_UPSTREAM_STATUS_FLAG_ASSIGNED |
+            NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED,
+        .status_receipt_uptime_ms = (uint64_t)g_now_us / 1000U,
+    };
     return ESP_OK;
 }
 
@@ -295,8 +318,9 @@ bool web_status_json_add_recording_gate(cJSON *root)
     return cJSON_AddStringToObject(root, "recording_gate_marker", "gate-added") != NULL;
 }
 
-bool web_status_json_add_measurement(cJSON *root)
+bool web_status_json_add_measurement(cJSON *root, bool *recording_out)
 {
+    if (recording_out != NULL) *recording_out = g_measurement_recording;
     return cJSON_AddStringToObject(root, "measurement_marker", "measurement-added") != NULL;
 }
 
@@ -691,6 +715,26 @@ static void test_full_builder_and_pods(void)
     cJSON_Delete(root);
 }
 
+static void test_node_link_status_is_added_to_pods(void)
+{
+    reset_fakes();
+    fill_status();
+    cJSON *root = build_json(false, NULL);
+    cJSON *pods = object_item(root, "pods");
+    cJSON *pod = cJSON_GetArrayItem(pods, 0);
+    assert(pod != NULL);
+    assert(strcmp(string_item(pod, "node_link_status"), "READY") == 0);
+    cJSON_Delete(root);
+
+    g_measurement_recording = true;
+    root = build_json(false, NULL);
+    pods = object_item(root, "pods");
+    pod = cJSON_GetArrayItem(pods, 0);
+    assert(pod != NULL);
+    assert(strcmp(string_item(pod, "node_link_status"), "MEASURING") == 0);
+    cJSON_Delete(root);
+}
+
 static void test_invalid_battery_percentage_is_not_serialized_as_zero(void)
 {
     reset_fakes();
@@ -944,6 +988,7 @@ static void test_jitter_p99_nearest_rank_from_histogram(void)
 int main(void)
 {
     test_full_builder_and_pods();
+    test_node_link_status_is_added_to_pods();
     test_invalid_battery_percentage_is_not_serialized_as_zero();
     test_power_json_state_strings_remain_stable();
     test_main_status_omits_aht_humidity_when_absent();

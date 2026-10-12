@@ -45,7 +45,7 @@ static esp_err_t ina3221_driver_read_register(
     uint8_t data[2] = { 0 };
 
     esp_err_t err =
-        i2c_bus_read_bytes(
+        sensor_bus_read_bytes(
             driver->device,
             register_address,
             sizeof(data),
@@ -85,7 +85,7 @@ static esp_err_t ina3221_driver_write_register(
         (uint8_t)(value & 0xFFu),
     };
 
-    const esp_err_t err = i2c_bus_write_bytes(
+    const esp_err_t err = sensor_bus_write_bytes(
             driver->device,
             register_address,
             sizeof(data),

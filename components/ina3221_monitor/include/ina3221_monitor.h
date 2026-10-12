@@ -63,6 +63,10 @@ typedef struct
     bool overcurrent_latched;
     float overcurrent_latched_current_a;
 
+    /* Snapshot age at get_rail() time; stale is true for invalid or aged data. */
+    uint32_t age_ms;
+    bool stale;
+
 } ina3221_monitor_rail_t;
 
 /*

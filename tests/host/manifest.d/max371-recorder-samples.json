@@ -11,7 +11,7 @@
         "components/seismic_recorder/seismic_recorder_lod.c",
         "components/seismic_recorder/seismic_recorder_lod_reader.c",
         "components/seismic_recorder/tests/stubs/seismic_recorder_lod_store_stub.c",
-        "components/seismic_recorder/tests/seismic_recorder_fs_contract_test.c"
+        "tests/host/max371_recorder_samples_harness.c"
       ],
       "include_dirs": [
         "components/seismic_recorder/tests/stubs",

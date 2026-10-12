@@ -14,6 +14,7 @@ typedef void (*TaskFunction_t)(void *);
 #define pdFAIL 0
 #define portMAX_DELAY 0xFFFFFFFFU
 #define configTICK_RATE_HZ 100U
+#define CONFIG_I2C_MS_TO_WAIT 200U
 #define pdMS_TO_TICKS(ms) ((TickType_t)(((uint64_t)(ms) * configTICK_RATE_HZ) / 1000U))
 
 typedef struct { int unused; } portMUX_TYPE;
