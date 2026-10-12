@@ -19,6 +19,8 @@ typedef struct {
 } nrf_topology_test_node_t;
 
 typedef struct {
+    uint32_t age_ms;
+    bool stale;
     nrf_topology_test_node_t main;
     nrf_topology_test_node_t remotes[NRF_TOPOLOGY_REMOTE_COUNT];
 } nrf_topology_snapshot_t;

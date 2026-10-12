@@ -44,3 +44,10 @@ def test_test_scripts_do_not_install_remote_tooling():
         assert "--yes" not in command, f"{name} must not allow surprise installs"
         assert "--package=" not in command
         assert "vitest" in command
+
+
+def test_max452_workflow_parity_suite_is_wired_to_console_runner():
+    parity_test = WEBUI / "tests/console/max452GuidedWorkflowParity.test.tsx"
+    assert parity_test.is_file(), "MAX-452 Vitest coverage must live in tests/console"
+    command = PACKAGE["scripts"]["test:console"]
+    assert "tests/console" in command, "test:console must discover MAX-452 coverage"

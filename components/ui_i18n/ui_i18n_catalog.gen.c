@@ -325,7 +325,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Record again", /* tft.workflow.result.record_again */
     "Source calculated successfully", /* tft.workflow.result.success */
     "Waveform segment unavailable", /* tft.workflow.result.waveform_unavailable */
-    "Not enough sensors even for 2D", /* tft.workflow.sensor.insufficient */
+    "Under 3: limited position; calibration can continue", /* tft.workflow.sensor.insufficient */
     "2D possible; connect >=4 for 3D", /* tft.workflow.sensor.planar */
     "3D ready", /* tft.workflow.sensor.ready */
     "REMOTE: %s", /* tft.workflow.sensor.remote_count */
@@ -729,7 +729,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Запишіть ще раз", /* tft.workflow.result.record_again */
     "Джерело успішно визначено", /* tft.workflow.result.success */
     "Фрагмент хвильової форми недоступний", /* tft.workflow.result.waveform_unavailable */
-    "Недостатньо датчиків навіть для 2D", /* tft.workflow.sensor.insufficient */
+    "Менше 3: позиція обмежена; калібрування триває", /* tft.workflow.sensor.insufficient */
     "Можливе 2D; для 3D підключіть щонайменше 4", /* tft.workflow.sensor.planar */
     "3D готове", /* tft.workflow.sensor.ready */
     "REMOTE: %s", /* tft.workflow.sensor.remote_count */

@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "esp_timer.h"
+#include "ina3221_monitor.h"
 #include "nrf_topology_service.h"
 #include "runtime_observability.h"
 #include "seismic_acquisition.h"
@@ -144,6 +145,18 @@ static const char *web_status_power_channel_name(size_t index)
     return index < DEVICE_STATUS_POWER_CHANNEL_COUNT ? names[index] : "UNKNOWN";
 }
 
+static bool web_status_json_add_topology(cJSON *root)
+{
+    nrf_topology_snapshot_t snapshot = {0};
+    const bool valid = nrf_topology_service_get_snapshot(&snapshot) == ESP_OK;
+    cJSON *topology = cJSON_AddObjectToObject(root, "topology");
+    if (topology == NULL) return false;
+    return
+        cJSON_AddBoolToObject(topology, "valid", valid) != NULL &&
+        cJSON_AddNumberToObject(topology, "age_ms", valid ? snapshot.age_ms : 0U) != NULL &&
+        cJSON_AddBoolToObject(topology, "stale", !valid || snapshot.stale) != NULL;
+}
+
 static bool web_status_json_add_power(cJSON *root, const device_power_status_t *power)
 {
     cJSON *object = cJSON_AddObjectToObject(root, "power");
@@ -217,6 +230,14 @@ static bool web_status_json_add_power(cJSON *root, const device_power_status_t *
                 device_status_power_overcurrent_name(channel->overcurrent)
             ) == NULL ||
             cJSON_AddBoolToObject(channel_object, "overcurrent_latched", channel->overcurrent_latched) == NULL
+        ) {
+            return false;
+        }
+        ina3221_monitor_rail_t rail = {0};
+        const bool rail_valid = ina3221_monitor_get_rail(i, &rail) == ESP_OK;
+        if (
+            cJSON_AddNumberToObject(channel_object, "age_ms", rail_valid ? rail.age_ms : 0U) == NULL ||
+            cJSON_AddBoolToObject(channel_object, "stale", !rail_valid || rail.stale) == NULL
         ) {
             return false;
         }
@@ -782,6 +803,7 @@ esp_err_t web_status_json_build_extended(
         ) &&
         web_status_json_add_hardware(root) &&
         web_status_json_add_power(root, &status.power) &&
+        web_status_json_add_topology(root) &&
         web_status_json_add_environment(root, &status.environment) &&
         web_status_json_add_main(root, &status.main) &&
         web_status_json_add_mux(root, &status.mux) &&

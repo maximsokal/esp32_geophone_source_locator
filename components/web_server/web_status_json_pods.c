@@ -167,6 +167,35 @@ static bool web_status_json_add_position(
         cJSON_AddNumberToObject(object, "altitude_m", position->altitude_m) != NULL;
 }
 
+static bool web_status_json_add_node_links(cJSON *root, bool recording, uint64_t now_ms)
+{
+    static const char *const node_names[] = {"MAIN", "G1", "G2", "G3"};
+    cJSON *links = cJSON_AddArrayToObject(root, "node_links");
+    if (links == NULL) return false;
+
+    for (size_t i = 0U; i < sizeof(node_names) / sizeof(node_names[0]); ++i) {
+        nrf_node_link_status_input_t input = {0};
+        const esp_err_t snapshot_err = nrf_topology_service_get_node_status_snapshot((uint8_t)i, &input);
+        const nrf_node_link_status_t status = snapshot_err == ESP_OK
+            ? nrf_node_link_status_evaluate(&input, now_ms, recording)
+            : NRF_NODE_LINK_STATUS_NOT_CONNECTED;
+        cJSON *link = cJSON_CreateObject();
+        if (link == NULL) return false;
+        if (!cJSON_AddItemToArray(links, link)) {
+            cJSON_Delete(link);
+            return false;
+        }
+        if (
+            cJSON_AddNumberToObject(link, "channel", i + 1U) == NULL ||
+            cJSON_AddStringToObject(link, "node", node_names[i]) == NULL ||
+            cJSON_AddStringToObject(link, "status", nrf_node_link_status_name(status)) == NULL
+        ) {
+            return false;
+        }
+    }
+    return true;
+}
+
 
 bool web_status_json_add_pods(
     cJSON *root,
@@ -186,6 +215,7 @@ bool web_status_json_add_pods(
 
     const int64_t now_us = esp_timer_get_time();
     const uint64_t now_ms = now_us >= 0 ? (uint64_t)now_us / 1000U : 0U;
+    if (!web_status_json_add_node_links(root, recording, now_ms)) return false;
 
     for (
         size_t i = 0;

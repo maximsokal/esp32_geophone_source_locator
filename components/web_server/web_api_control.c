@@ -127,6 +127,14 @@ static esp_err_t web_control_send_result_with_error_class(
     if (object_id != NULL) cJSON_AddStringToObject(root, "object_id", object_id);
     if (result != ESP_OK) cJSON_AddStringToObject(root, "error", esp_err_to_name(result));
     if (error_class != NULL) cJSON_AddStringToObject(root, "error_class", error_class);
+    if (error_class != NULL && strcmp(error_class, "workflow_step_not_allowed") == 0) {
+        cJSON_AddStringToObject(root, "error_code", "workflow_step_not_allowed");
+        cJSON_AddStringToObject(
+            root,
+            "message",
+            "measurement_start is only allowed in RECORD_READY or RECORDING"
+        );
+    }
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -134,7 +142,7 @@ static esp_err_t web_control_send_result_with_error_class(
 
     httpd_resp_set_type(request, "application/json; charset=utf-8");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    if (error_class != NULL) {
+    if (error_class != NULL && strcmp(error_class, "workflow_step_not_allowed") != 0) {
         httpd_resp_set_status(request, "503 Service Unavailable");
     }
     else if (result == ESP_ERR_INVALID_ARG || result == ESP_ERR_INVALID_SIZE || result == ESP_ERR_NOT_SUPPORTED) {
@@ -631,6 +639,17 @@ static esp_err_t web_control_measurement_start(
 {
     if (object_id == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+
+    workflow_snapshot_t workflow;
+    const esp_err_t workflow_err = workflow_service_get_snapshot(&workflow);
+    if (workflow_err != ESP_OK) {
+        if (error_class_out != NULL) *error_class_out = "workflow_unavailable";
+        return workflow_err;
+    }
+    if (workflow.step != WORKFLOW_STEP_RECORD_READY && workflow.step != WORKFLOW_STEP_RECORDING) {
+        if (error_class_out != NULL) *error_class_out = "workflow_step_not_allowed";
+        return ESP_ERR_INVALID_STATE;
     }
 
     /* Acquisition must be ready before the asynchronous measurement start is

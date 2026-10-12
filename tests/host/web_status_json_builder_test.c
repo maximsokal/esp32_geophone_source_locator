@@ -8,6 +8,7 @@
 
 #include "cJSON.h"
 #include "device_status.h"
+#include "ina3221_monitor.h"
 #include "runtime_observability.h"
 #include "seismic_acquisition.h"
 #include "nrf_topology_service.h"
@@ -42,6 +43,7 @@ static uint32_t g_https_handshake_failures;
 static uint32_t g_https_fatal_alerts;
 static int32_t g_https_last_error_esp_err;
 static nrf_topology_snapshot_t g_topology;
+static ina3221_monitor_rail_t g_ina_rails[DEVICE_STATUS_POWER_CHANNEL_COUNT];
 static nrf_log_node_summary_t g_nrf_logs[NRF_LOG_COLLECTOR_NODE_COUNT];
 static int32_t g_topology_result;
 static bool g_measurement_recording;
@@ -76,6 +78,7 @@ static void reset_fakes(void)
     g_https_fatal_alerts = 0U;
     g_https_last_error_esp_err = 0;
     memset(&g_topology, 0, sizeof(g_topology));
+    memset(g_ina_rails, 0, sizeof(g_ina_rails));
     memset(g_nrf_logs, 0, sizeof(g_nrf_logs));
     g_topology_result = ESP_OK;
     storage_manager_test_set_ready(true);
@@ -113,7 +116,7 @@ int32_t nrf_topology_service_get_node_status_snapshot(
     uint8_t node_slot,
     nrf_node_link_status_input_t *snapshot)
 {
-    if (node_slot == 0U || node_slot > 4U || snapshot == NULL) {
+    if (node_slot > 4U || snapshot == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     *snapshot = (nrf_node_link_status_input_t) {
@@ -126,6 +129,15 @@ int32_t nrf_topology_service_get_node_status_snapshot(
             NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED,
         .status_receipt_uptime_ms = (uint64_t)g_now_us / 1000U,
     };
+    return ESP_OK;
+}
+
+esp_err_t ina3221_monitor_get_rail(size_t channel_index, ina3221_monitor_rail_t *rail_out)
+{
+    if (channel_index >= DEVICE_STATUS_POWER_CHANNEL_COUNT || rail_out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *rail_out = g_ina_rails[channel_index];
     return ESP_OK;
 }
 
@@ -715,11 +727,49 @@ static void test_full_builder_and_pods(void)
     cJSON_Delete(root);
 }
 
+static void test_snapshot_freshness_is_serialized(void)
+{
+    static const uint32_t power_age_ms[] = {0U, 4999U, 5000U};
+    static const uint32_t topology_age_ms[] = {0U, 24999U, 25000U};
+
+    for (size_t sample = 0U; sample < 3U; ++sample) {
+        reset_fakes();
+        fill_status();
+        for (size_t channel = 0U; channel < DEVICE_STATUS_POWER_CHANNEL_COUNT; ++channel) {
+            g_ina_rails[channel].age_ms = power_age_ms[sample];
+            g_ina_rails[channel].stale = power_age_ms[sample] >= 5000U;
+        }
+        g_topology.age_ms = topology_age_ms[sample];
+        g_topology.stale = topology_age_ms[sample] >= 25000U;
+
+        cJSON *root = build_json(false, NULL);
+        cJSON *channels = object_item(object_item(root, "power"), "channels");
+        for (size_t channel = 0U; channel < DEVICE_STATUS_POWER_CHANNEL_COUNT; ++channel) {
+            cJSON *item = cJSON_GetArrayItem(channels, (int)channel);
+            assert_number_near(number_item(item, "age_ms"), power_age_ms[sample]);
+            assert(bool_item(item, "stale") == (power_age_ms[sample] >= 5000U));
+        }
+        cJSON *topology = object_item(root, "topology");
+        assert(bool_item(topology, "valid"));
+        assert_number_near(number_item(topology, "age_ms"), topology_age_ms[sample]);
+        assert(bool_item(topology, "stale") == (topology_age_ms[sample] >= 25000U));
+        cJSON_Delete(root);
+    }
+}
+
 static void test_node_link_status_is_added_to_pods(void)
 {
     reset_fakes();
     fill_status();
     cJSON *root = build_json(false, NULL);
+    cJSON *links = object_item(root, "node_links");
+    static const char *const nodes[] = {"MAIN", "G1", "G2", "G3"};
+    assert(cJSON_GetArraySize(links) == 4);
+    for (size_t channel = 0U; channel < 4U; ++channel) {
+        cJSON *link = cJSON_GetArrayItem(links, (int)channel);
+        assert_number_near(number_item(link, "channel"), (double)(channel + 1U));
+        assert(strcmp(string_item(link, "node"), nodes[channel]) == 0);
+    }
     cJSON *pods = object_item(root, "pods");
     cJSON *pod = cJSON_GetArrayItem(pods, 0);
     assert(pod != NULL);
@@ -987,6 +1037,7 @@ static void test_jitter_p99_nearest_rank_from_histogram(void)
 
 int main(void)
 {
+    test_snapshot_freshness_is_serialized();
     test_full_builder_and_pods();
     test_node_link_status_is_added_to_pods();
     test_invalid_battery_percentage_is_not_serialized_as_zero();

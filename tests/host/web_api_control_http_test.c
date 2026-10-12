@@ -598,6 +598,47 @@ static void test_scan_recording_gate_precedes_object_lease(void)
     storage_bulk_admission_exit_protected();
 }
 
+static void test_measurement_start_requires_workflow_step(void)
+{
+    static const struct {
+        workflow_step_t step;
+        bool allowed;
+    } cases[] = {
+        {WORKFLOW_STEP_OBJECT, false},
+        {WORKFLOW_STEP_SENSOR_CHECK, false},
+        {WORKFLOW_STEP_RECORD_READY, true},
+        {WORKFLOW_STEP_RECORDING, true},
+    };
+    static const char *const body =
+        "{\"action\":\"measurement_start\",\"object_id\":\"OBJ_0001\"}";
+
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        reset_fakes();
+        s_workflow_snapshot.step = cases[i].step;
+        char response[512] = {0};
+        httpd_req_t request = make_request(body, response, sizeof(response));
+
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(s_workflow_snapshot_calls == 1U);
+        assert(strstr(response, "\"action\":\"measurement_start\"") != NULL);
+        if (cases[i].allowed) {
+            assert(request.response_status == NULL);
+            assert(strstr(response, "\"ok\":true") != NULL);
+            assert(s_acquisition_start_calls == 1U);
+            assert(s_measurement_start_calls == 1U);
+        }
+        else {
+            assert(request.response_status != NULL);
+            assert(strcmp(request.response_status, "409 Conflict") == 0);
+            assert(strstr(response, "\"ok\":false") != NULL);
+            assert(strstr(response, "\"error_code\":\"workflow_step_not_allowed\"") != NULL);
+            assert(strstr(response, "\"message\":\"measurement_start is only allowed in RECORD_READY or RECORDING\"") != NULL);
+            assert(s_acquisition_start_calls == 0U);
+            assert(s_measurement_start_calls == 0U);
+        }
+    }
+}
+
 static void test_measurement_start_rejects_acquisition_failures(void)
 {
     static const struct {
@@ -613,6 +654,7 @@ static void test_measurement_start_rejects_acquisition_failures(void)
 
     for (size_t i = 0U; i < sizeof(failures) / sizeof(failures[0]); ++i) {
         reset_fakes();
+        s_workflow_snapshot.step = WORKFLOW_STEP_RECORD_READY;
         s_acquisition_start_result = failures[i].result;
         char response[512] = {0};
         httpd_req_t request = make_request(body, response, sizeof(response));
@@ -634,6 +676,7 @@ static void test_measurement_start_rejects_acquisition_failures(void)
 static void test_measurement_start_success_stays_async(void)
 {
     reset_fakes();
+    s_workflow_snapshot.step = WORKFLOW_STEP_RECORD_READY;
     static const char *const body =
         "{\"action\":\"measurement_start\",\"object_id\":\"OBJ_0001\"}";
     char response[512] = {0};
@@ -650,6 +693,7 @@ static void test_measurement_start_success_stays_async(void)
 static void test_measurement_start_async_failure_keeps_existing_mapping(void)
 {
     reset_fakes();
+    s_workflow_snapshot.step = WORKFLOW_STEP_RECORD_READY;
     s_measurement_start_result = ESP_ERR_INVALID_STATE;
     static const char *const body =
         "{\"action\":\"measurement_start\",\"object_id\":\"OBJ_0001\"}";
@@ -1273,6 +1317,7 @@ int main(void)
 {
     assert(storage_bulk_admission_initialize() == ESP_OK);
     test_scan_recording_gate_precedes_object_lease();
+    test_measurement_start_requires_workflow_step();
     test_measurement_start_rejects_acquisition_failures();
     test_measurement_start_success_stays_async();
     test_measurement_start_async_failure_keeps_existing_mapping();

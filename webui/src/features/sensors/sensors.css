@@ -1,0 +1,38 @@
+.node-link-grid {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.node-link-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--line, #d7dce2);
+  border-radius: 0.55rem;
+}
+
+.node-link-status {
+  font-weight: 700;
+}
+
+.node-link-status--not-connected {
+  color: #b42318;
+}
+
+.node-link-status--connected {
+  color: #a15c00;
+}
+
+.node-link-status--ready {
+  color: #18794e;
+}
+
+.node-link-status--measuring {
+  color: #175cd3;
+}
+
+.node-link-status--unknown {
+  color: #667085;
+}

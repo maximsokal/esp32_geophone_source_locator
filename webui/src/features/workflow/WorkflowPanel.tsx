@@ -60,6 +60,44 @@ function yesNo(value: unknown, t: (key: I18nKey) => string): string {
   return WORKFLOW_UNKNOWN;
 }
 
+const CALIBRATION_REASON_KEYS: Record<string, I18nKey> = {
+  insufficient_nodes: 'workflow.calibration.reason.insufficient_nodes',
+  cs_spread_too_high: 'workflow.calibration.reason.cs_spread_too_high',
+  timeout: 'workflow.calibration.reason.timeout',
+};
+
+const NODE_CALIBRATION_REASON_KEYS: Record<string, I18nKey> = {
+  height_rejected_moving: 'workflow.calibration.reason.height_rejected_moving',
+  height_sensor_invalid: 'workflow.calibration.reason.height_sensor_invalid',
+  imu_rejected_moving: 'workflow.calibration.reason.imu_rejected_moving',
+  imu_rejected_gravity: 'workflow.calibration.reason.imu_rejected_gravity',
+  imu_sensor_invalid: 'workflow.calibration.reason.imu_sensor_invalid',
+};
+
+function calibrationReasonLabel(reason: string, t: (key: I18nKey, params?: Readonly<Record<string, string | number>>) => string): string {
+  const normalized = reason.trim();
+  const key = CALIBRATION_REASON_KEYS[normalized];
+  if (key !== undefined) return t(key);
+  const pair = normalized.match(/^cs_pair_invalid:(.+)$/);
+  if (pair !== null) return t('workflow.calibration.reason.cs_pair_invalid', { pair: pair[1] });
+  const nodeReason = normalized.match(/^([^:]+):([a-z_]+)$/);
+  if (nodeReason !== null) {
+    const nodeKey = NODE_CALIBRATION_REASON_KEYS[nodeReason[2]];
+    if (nodeKey !== undefined) return t(nodeKey, { node: nodeReason[1] });
+  }
+  return t('workflow.reason.unknown', { reason: normalized || WORKFLOW_UNKNOWN });
+}
+
+function rangingReasonLabel(reason: string, t: (key: I18nKey, params?: Readonly<Record<string, string | number>>) => string): string {
+  const normalized = reason.trim();
+  if (normalized === 'timeout') return t('workflow.ranging.reason.timeout');
+  const pair = normalized.match(/^pair_failed:(.+)$/);
+  if (pair !== null) return t('workflow.ranging.reason.pair_failed', { pair: pair[1] });
+  const node = normalized.match(/^geometry_unsolved:(.+)$/);
+  if (node !== null) return t('workflow.ranging.reason.geometry_unsolved', { node: node[1] });
+  return t('workflow.reason.unknown', { reason: normalized || WORKFLOW_UNKNOWN });
+}
+
 function imuVector(values: readonly (number | null)[] | undefined, locale: 'en' | 'uk'): string {
   if (values === undefined || values.length === 0 || values.some((value) => value === null)) return WORKFLOW_UNKNOWN;
   return values.map((value) => workflowNumberText(value, locale)).join(', ');
@@ -87,7 +125,7 @@ function CalibrationSection({ value }: { value: Extract<WorkflowBodySection, { k
       {value.reasons.length > 0 && (
         <div>
           <strong>{t('workflow.calibration.reasons')}</strong>
-          <ul>{value.reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason.trim() || WORKFLOW_UNKNOWN}</li>)}</ul>
+          <ul>{value.reasons.map((reason, index) => <li key={`${reason}-${index}`}>{calibrationReasonLabel(reason, t)}</li>)}</ul>
         </div>
       )}
     </div>
@@ -149,7 +187,7 @@ function RangingSection({ value }: { value: Extract<WorkflowBodySection, { kind:
       <p>{t('workflow.ranging.pairs')}: {workflowNumberText(done, locale)} / {workflowNumberText(total, locale)}</p>
       <progress max={100} value={percent ?? undefined} aria-label={t('workflow.ranging.pairs')} />
       <p>{t('workflow.ranging.residual')}: {mmText(residual, locale)}</p>
-      {failureReason !== '' && <p role="alert">{t('workflow.ranging.failure_reason')}: {failureReason}</p>}
+      {failureReason !== '' && <p role="alert">{t('workflow.ranging.failure_reason')}: {rangingReasonLabel(failureReason, t)}</p>}
       {(geometry?.nodes ?? []).map((node, index) => {
         const uncertainty = rangingUncertaintyMm(node.uncertainty_mm);
         return (

@@ -103,6 +103,13 @@ function optionalNumber(object: StatusObject, key: string, parentPath: string): 
   optionalField(object, key, parentPath, finiteNumber);
 }
 
+function optionalAgeMs(object: StatusObject, key: string, parentPath: string): void {
+  const value = object[key];
+  if (value === undefined) return;
+  const path = fieldPath(parentPath, key);
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) fail(path, 'not_nonnegative_integer');
+}
+
 function optionalFloatNumber(object: StatusObject, key: string, parentPath: string): void {
   optionalField(object, key, parentPath, finiteNumberOrNull);
 }
@@ -183,6 +190,8 @@ function checkPowerChannel(value: unknown, path: string): void {
   requiredFloatNumber(channel, 'power_w', path);
   optionalString(channel, 'overcurrent', path);
   optionalBoolean(channel, 'overcurrent_latched', path);
+  optionalAgeMs(channel, 'age_ms', path);
+  optionalBoolean(channel, 'stale', path);
 }
 
 function checkPower(power: StatusObject): void {
@@ -202,11 +211,32 @@ function checkPower(power: StatusObject): void {
   optionalNumber(power, 'shutdown_in_s', 'power');
   optionalString(power, 'battery_soc_source', 'power');
   optionalString(power, 'state', 'power');
+  optionalAgeMs(power, 'age_ms', 'power');
+  optionalBoolean(power, 'stale', 'power');
   const channels = optionalArray(power, 'channels', 'power');
   if (channels !== undefined) {
     for (let index = 0; index < channels.length; index++) {
       checkPowerChannel(channels[index], `power.channels.${index}`);
     }
+  }
+}
+
+function checkTopology(value: unknown): void {
+  const topology = objectValue(value, 'topology');
+  requiredBoolean(topology, 'valid', 'topology');
+  requiredNumber(topology, 'age_ms', 'topology');
+  optionalAgeMs(topology, 'age_ms', 'topology');
+  requiredBoolean(topology, 'stale', 'topology');
+}
+
+function checkNodeLinks(value: unknown): void {
+  const links = arrayValue(value, 'node_links');
+  for (let index = 0; index < links.length; index++) {
+    const path = `node_links.${index}`;
+    const link = objectValue(links[index], path);
+    requiredNumber(link, 'channel', path);
+    requiredString(link, 'node', path);
+    requiredString(link, 'status', path);
   }
 }
 
@@ -663,6 +693,8 @@ export function normalizeDeviceStatus(raw: unknown): DeviceStatus {
   checkMux(requiredObject(root, 'mux', ''));
   checkPods(requiredValue(root, 'pods', ''));
   checkAcquisition(requiredObject(root, 'acquisition', ''));
+  if (root.topology !== undefined) checkTopology(root.topology);
+  if (root.node_links !== undefined) checkNodeLinks(root.node_links);
 
   if (root.main !== undefined) checkMain(objectValue(root.main, 'main'));
   if (root.hardware !== undefined) checkHardware(objectValue(root.hardware, 'hardware'));

@@ -6,7 +6,7 @@ import type {
   PhoneLocationInput,
   RecordingSessionCollection,
 } from '../../domain/device';
-import { activeObject, normalizeCableLength } from '../../domain/device';
+import { activeObject, normalizeCableLength, recordingWorkflowStepAllowed } from '../../domain/device';
 import { formatErrorText, useLocale, useT } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
 import {
@@ -96,6 +96,11 @@ export default function ObjectsFeature(props: Props) {
   useEffect(() => {
     if (status?.acquisition.running !== true) setShowLive(false);
   }, [status?.acquisition.running]);
+
+  const recordingWorkflowAllowed = recordingWorkflowStepAllowed(status);
+  useEffect(() => {
+    if (!recordingWorkflowAllowed) setShowLive(false);
+  }, [recordingWorkflowAllowed]);
 
   const recording = status?.recording;
   const measurement = status?.measurement;
@@ -314,25 +319,49 @@ export default function ObjectsFeature(props: Props) {
                 </div>
               )}
 
+              {recordingGate?.bypassed === true && (
+                <div className="console-alert warning" role="status">
+                  {t('recording_gate.bypass_allowed', {
+                    reason: gateReason ?? recordingGate.reason ?? '',
+                    assigned: formatNumber(locale, recordingGate.assigned_count ?? 0),
+                    accepted: formatNumber(locale, recordingGate.accepted_count ?? 0),
+                  })}
+                </div>
+              )}
+
               <div className="console-actions">
-                <button disabled={busy || status?.acquisition.running === true} onClick={() => void props.onAcquisition(true)}>{t('objects.start_acquisition')}</button>
-                <button
-                  disabled={busy || status?.acquisition.running !== true || measurementLocked}
-                  onClick={() => void props.onAcquisition(false)}
-                >{t('objects.stop_acquisition')}</button>
-                <button
-                  className="secondary"
-                  disabled={!liveAvailable}
-                  title={liveAvailable ? undefined : t('objects.live_signal_start_first')}
-                  onClick={() => setShowLive((value) => !value)}
-                >{showLive ? t('objects.hide') : t('objects.show')} {t('objects.live_signal')}</button>
-                <button
-                  disabled={recordingToggleDisabled}
-                  className={selectedRecording ? 'danger' : undefined}
-                  onClick={() => void props.onRecording(selected.id, !selectedRecording)}
-                >
-                  {selectedRecording ? t('objects.stop_recording') : t('objects.record_session')}
-                </button>
+                {recordingWorkflowAllowed ? (
+                  <>
+                    <button disabled={busy || status?.acquisition.running === true} onClick={() => void props.onAcquisition(true)}>{t('objects.start_acquisition')}</button>
+                    <button
+                      disabled={busy || status?.acquisition.running !== true || measurementLocked}
+                      onClick={() => void props.onAcquisition(false)}
+                    >{t('objects.stop_acquisition')}</button>
+                    <button
+                      className="secondary"
+                      disabled={!liveAvailable}
+                      title={liveAvailable ? undefined : t('objects.live_signal_start_first')}
+                      onClick={() => setShowLive((value) => !value)}
+                    >{showLive ? t('objects.hide') : t('objects.show')} {t('objects.live_signal')}</button>
+                    <button
+                      disabled={recordingToggleDisabled}
+                      className={selectedRecording ? 'danger' : undefined}
+                      onClick={() => void props.onRecording(selected.id, !selectedRecording)}
+                    >
+                      {selectedRecording ? t('objects.stop_recording') : t('objects.record_session')}
+                    </button>
+                  </>
+                ) : selectedRecording ? (
+                  <button
+                    disabled={busy}
+                    className="danger"
+                    onClick={() => void props.onRecording(selected.id, false)}
+                  >{t('objects.stop_recording')}</button>
+                ) : (
+                  <button type="button" className="secondary" disabled={busy} onClick={() => props.onStartWorkflow(selected.id)}>
+                    {t('objects.recording_workflow_required')}
+                  </button>
+                )}
               </div>
             </article>
 
@@ -438,7 +467,7 @@ export default function ObjectsFeature(props: Props) {
               </>
             )}
 
-            {showLive && liveAvailable && (
+            {showLive && liveAvailable && recordingWorkflowAllowed && (
               <Suspense fallback={<div className="console-card">{t('objects.loading_waveform')}</div>}>
                 <LiveSeismicPanel />
               </Suspense>

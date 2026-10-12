@@ -350,6 +350,18 @@ export interface DeviceMainStatus {
 
 export type NodeLinkStatus = 'NOT_CONNECTED' | 'CONNECTED' | 'READY' | 'MEASURING';
 
+export interface DeviceNodeLink {
+  channel: number;
+  node: string;
+  status: NodeLinkStatus | (string & {});
+}
+
+export interface DeviceSnapshotFreshness {
+  valid: boolean;
+  age_ms: number;
+  stale: boolean;
+}
+
 export interface DevicePod {
   id: number;
   state: string;
@@ -537,6 +549,8 @@ export interface DevicePowerChannel {
   power_w: number;
   overcurrent?: 'none' | 'warning' | 'critical' | string;
   overcurrent_latched?: boolean;
+  age_ms?: number;
+  stale?: boolean;
 }
 
 export interface DeviceStatus {
@@ -551,6 +565,8 @@ export interface DeviceStatus {
     current_a: number;
     power_w: number;
     channels?: DevicePowerChannel[];
+    age_ms?: number;
+    stale?: boolean;
     /** Stable /api/status enum strings for the user-facing power state. */
     state?: DevicePowerState;
     battery_present?: boolean;
@@ -571,6 +587,8 @@ export interface DeviceStatus {
   mux: ValidValue & { active_channel: number; active_pod: number };
   main?: DeviceMainStatus;
   pods: DevicePod[];
+  node_links?: DeviceNodeLink[];
+  topology?: DeviceSnapshotFreshness;
   acquisition: DeviceAcquisitionStatus;
   recording?: RecordingState;
   recording_gate?: RecordingGateStatus;
@@ -981,6 +999,11 @@ export function activeObject(store: ObjectStoreState | null): ObjectProfile | nu
 export function connectedPodCount(status: DeviceStatus | null): number {
   if (status === null) return 0;
   return status.pods.filter((pod) => pod.state !== 'DISCONNECTED').length;
+}
+
+export function recordingWorkflowStepAllowed(status: DeviceStatus | null): boolean {
+  const step = status?.workflow?.step;
+  return step === 'RECORD_READY' || step === 'RECORDING';
 }
 
 /* The firmware prints a non-finite float as JSON null, so a coordinate can arrive as null. */

@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import type { DeviceStatus, ObjectProfile } from '../../domain/device';
 import LevelingCard from './LevelingCard';
 import '../nrflog/NrfLogPanel.css';
+import './sensors.css';
 import { useLocale, useT } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
 
@@ -18,10 +19,33 @@ function measured(valid: boolean, text: string, unavailable: string): string {
   return valid ? text : unavailable;
 }
 
+const POD_STATE_KEYS: Record<string, 'sensors.pod_state.disconnected' | 'sensors.pod_state.ready' | 'sensors.pod_state.warning' | 'sensors.pod_state.error'> = {
+  DISCONNECTED: 'sensors.pod_state.disconnected',
+  READY: 'sensors.pod_state.ready',
+  WARNING: 'sensors.pod_state.warning',
+  ERROR: 'sensors.pod_state.error',
+};
+
+const NODE_LINK_STATUS_KEYS: Record<string, 'sensors.node_link.not_connected' | 'sensors.node_link.connected' | 'sensors.node_link.ready' | 'sensors.node_link.measuring'> = {
+  NOT_CONNECTED: 'sensors.node_link.not_connected',
+  CONNECTED: 'sensors.node_link.connected',
+  READY: 'sensors.node_link.ready',
+  MEASURING: 'sensors.node_link.measuring',
+};
+
+const NODE_LINK_STATUS_CLASSES: Record<string, string> = {
+  NOT_CONNECTED: 'not-connected',
+  CONNECTED: 'connected',
+  READY: 'ready',
+  MEASURING: 'measuring',
+};
+
 export default function SensorsFeature({ status, object, error, onCalibrateHeights }: Props) {
   const t = useT();
   const { locale } = useLocale();
   const pods = status?.pods ?? [];
+  const stalePowerChannels = (status?.power.channels ?? []).filter((channel) => channel.stale === true);
+  const nodeLinks = status?.node_links ?? [];
   const acquisition = status?.acquisition;
   const serial = acquisition?.serial;
   const ad7606State = status?.hardware?.modules?.find((module) => module.id === 'ad7606')?.state;
@@ -93,6 +117,11 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
           })}.
         </div>
       ))}
+      {stalePowerChannels.map((channel) => (
+        <div className="console-alert warning" role="status" key={`stale-${channel.id}`}>
+          {t('sensors.power_snapshot_stale', { channel: channel.name, age: formatNumber(locale, channel.age_ms ?? 0) })}
+        </div>
+      ))}
 
       <div className="section-heading">
         <div><span className="eyebrow">{t('sensors.hardware_diagnostics')}</span><h1>{t('sensors.acquisition_four_remotes')}</h1></div>
@@ -122,17 +151,52 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
 
       <LevelingCard gate={status?.recording_gate} main={status?.main} pods={pods} onCalibrateHeights={onCalibrateHeights} />
 
+      {(nodeLinks.length > 0 || status?.topology?.stale === true) && (
+        <article className="console-card wide-card node-link-card">
+          <div className="card-heading">
+            <div><span className="eyebrow">{t('sensors.node_link.heading')}</span><h2>{t('sensors.node_link.mapping')}</h2></div>
+          </div>
+          {status?.topology?.stale === true && (
+            <p className="console-alert warning" role="status">
+              {t('sensors.topology_snapshot_stale', { age: formatNumber(locale, status.topology.age_ms) })}
+            </p>
+          )}
+          <div className="node-link-grid">
+            {nodeLinks.map((link) => {
+              const statusKey = NODE_LINK_STATUS_KEYS[link.status];
+              const statusClass = NODE_LINK_STATUS_CLASSES[link.status] ?? 'unknown';
+              return (
+                <div className="node-link-row" key={`${link.channel}-${link.node}`}>
+                  <strong>{t('sensors.node_link.channel', { channel: link.channel })} → {link.node}</strong>
+                  <span className={`node-link-status node-link-status--${statusClass}`}>
+                    {statusKey === undefined
+                      ? t('sensors.node_link.unknown', { status: link.status })
+                      : t(statusKey)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </article>
+      )}
+
       <Suspense fallback={null}><NrfLogPanel status={status} /></Suspense>
 
       <div className="pod-grid">
         {[0, 1, 2, 3].map((index) => {
           const pod = pods[index];
           const connected = pod !== undefined && pod.state !== 'DISCONNECTED';
+          const podState = pod?.state ?? 'DISCONNECTED';
+          const podStateKey = POD_STATE_KEYS[podState];
           return (
             <article className="console-card pod-card" key={index}>
               <div className="card-heading">
                 <h2>{t('sensors.pod', { number: formatNumber(locale, index + 1) })}</h2>
-                <span className={`state-pill ${connected ? 'ready' : 'offline'}`}>{pod?.state ?? 'DISCONNECTED'}</span>
+                <span className={`state-pill ${connected ? 'ready' : 'offline'}`}>
+                  {podStateKey === undefined
+                    ? t('sensors.pod_state.unknown', { state: podState })
+                    : t(podStateKey)}
+                </span>
               </div>
               <dl className="console-dl compact">
                 <div><dt>{t('sensors.cable')}</dt><dd>{formatNumber(locale, object?.cable_lengths_m[index] ?? 5, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} m</dd></div>

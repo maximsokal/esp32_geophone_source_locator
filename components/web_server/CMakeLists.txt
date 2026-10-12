@@ -354,6 +354,7 @@ idf_component_register(
         app_events
         device_status
         hw_inventory
+        ina3221_monitor
         localization_calculate
         localization_job
         localization_results

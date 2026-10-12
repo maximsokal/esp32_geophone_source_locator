@@ -136,9 +136,13 @@ function connectedRemotes(status: DeviceStatus | null, workflow: DeviceWorkflowS
   return typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? count : null;
 }
 
-function sensorMessageKey(count: number | null): I18nKey | null {
+function sensorMessageKey(count: number | null, allowedActions: readonly string[]): I18nKey | null {
   if (count === null) return null;
-  if (count < 3) return 'workflow.sensor_check.insufficient';
+  if (count < 3) {
+    return allowedActions.some((action) => action.toUpperCase() === 'GO_CALIBRATION')
+      ? 'workflow.sensor_check.limited_calibration'
+      : 'workflow.sensor_check.insufficient';
+  }
   if (count === 3) return 'workflow.sensor_check.planar';
   return 'workflow.sensor_check.spatial';
 }
@@ -177,7 +181,11 @@ export function workflowViewModel(status: DeviceStatus | null, objectName: strin
     case 'OBJECT': sections.push({ kind: 'object', name: objectName?.trim() || '—' }); break;
     case 'SENSOR_CHECK': {
       const count = connectedRemotes(status, workflow);
-      sections.push({ kind: 'sensor_check', connectedRemotes: count, messageKey: sensorMessageKey(count) });
+      sections.push({
+        kind: 'sensor_check',
+        connectedRemotes: count,
+        messageKey: sensorMessageKey(count, workflow.allowed_actions ?? []),
+      });
       break;
     }
     case 'CALIB_PREP': sections.push({ kind: 'calib_prep' }); break;
