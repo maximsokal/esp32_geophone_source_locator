@@ -2,6 +2,10 @@
 
 #include <string.h>
 
+#ifndef CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
+#define CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING 0
+#endif
+
 static void workflow_core_set_reason(workflow_core_t *core, const char *reason)
 {
     if (reason == NULL || reason[0] == '\0') {
@@ -55,6 +59,9 @@ static uint32_t workflow_core_actions(
 )
 {
     uint32_t actions = 0U;
+#if !CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
+    (void)assigned_remotes;
+#endif
 #define ADD_ACTION(command) (actions |= WORKFLOW_ACTION(command))
     switch (step) {
         case WORKFLOW_STEP_IDLE:
@@ -64,7 +71,11 @@ static uint32_t workflow_core_actions(
             ADD_ACTION(WORKFLOW_COMMAND_BACK);
             break;
         case WORKFLOW_STEP_SENSOR_CHECK:
+#if CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
             if (assigned_remotes >= 3U) ADD_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION);
+#else
+            ADD_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION);
+#endif
             ADD_ACTION(WORKFLOW_COMMAND_BACK);
             break;
         case WORKFLOW_STEP_CALIB_PREP:
@@ -205,10 +216,12 @@ workflow_command_result_t workflow_core_apply(
             break;
         case WORKFLOW_COMMAND_GO_CALIBRATION:
             if (core->step == WORKFLOW_STEP_SENSOR_CHECK) {
+#if CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
                 if (assigned_remotes < 3U) {
                     workflow_core_set_reason(core, "insufficient_remotes");
                     return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
                 }
+#endif
                 next = WORKFLOW_STEP_CALIB_PREP;
             }
             break;

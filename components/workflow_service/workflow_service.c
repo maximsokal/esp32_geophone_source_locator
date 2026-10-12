@@ -448,8 +448,24 @@ static void workflow_service_calibration_start_name(
         node_id == NRF_TOPOLOGY_MAIN_NODE_ID ? "not_applicable" : "pending");
 }
 
+static void workflow_service_calibration_finish(bool ok);
+
 static esp_err_t workflow_service_calibration_start(void)
 {
+    if (s_assigned_remotes == 0U) {
+        memset(&s_calibration, 0, sizeof(s_calibration));
+        workflow_service_copy_string(
+            s_calibration.status.phase,
+            sizeof(s_calibration.status.phase),
+            "running");
+        s_calibration.status.per_node_count = 1U;
+        workflow_service_calibration_start_name(
+            &s_calibration.status.per_node[0], NRF_TOPOLOGY_MAIN_NODE_ID);
+        workflow_service_calibration_add_reason("insufficient_nodes");
+        workflow_service_calibration_finish(false);
+        return ESP_OK;
+    }
+
     nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
     esp_err_t err = nrf_topology_service_get_snapshot(topology);
     if (err != ESP_OK) return err;
@@ -822,6 +838,11 @@ static void workflow_service_ranging_done(bool success, const char *reason)
 
 static void workflow_service_ranging_start(void)
 {
+    if (s_assigned_remotes < 3U) {
+        workflow_service_ranging_done(false, "insufficient_nodes");
+        return;
+    }
+
     (void)nrf_topology_service_invalidate_ranging();
     esp_err_t err = nrf_topology_service_ranging_start(
         &s_workflow_ranging_policy,

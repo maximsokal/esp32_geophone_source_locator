@@ -53,6 +53,7 @@ idf_component_register(
         localization_job
         localization_run_store
         result_view
+        recording_gate
         workflow_service
         runtime_observability
         ui_i18n

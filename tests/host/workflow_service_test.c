@@ -26,6 +26,10 @@
 #include "workflow_service_host_fakes.h"
 #include "cJSON.h"
 
+#ifndef CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
+#define CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING 0
+#endif
+
 /* The workflow service host stub omits the unrelated status-only leveling API. */
 typedef struct {
     size_t assigned_count;
@@ -845,6 +849,98 @@ static void test_periodic_poll_alone_advances_calibration_timeout(void)
     workflow_service_shutdown();
 }
 
+
+static bool snapshot_has_calibration_reason(
+    const workflow_snapshot_t *snapshot,
+    const char *expected)
+{
+    for (size_t i = 0U; i < snapshot->calibration.reasons_count; ++i) {
+        if (strcmp(snapshot->calibration.reasons[i], expected) == 0) return true;
+    }
+    return false;
+}
+
+
+static void test_low_remote_calibration_timeout_and_pair_counts(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 0U);
+    assert(command(WORKFLOW_COMMAND_START_MEASUREMENT, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION));
+    assert(command(WORKFLOW_COMMAND_GO_CALIBRATION, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_SENSORS_PLACED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_CALIB_RESULT);
+    assert(snapshot.calibration.result_valid && !snapshot.calibration.result_ok);
+    assert(snapshot_has_calibration_reason(&snapshot, "insufficient_nodes"));
+    workflow_service_shutdown();
+
+    for (size_t remotes = 1U; remotes < 3U; ++remotes) {
+        reset_fakes(true, MEASUREMENT_SERVICE_LIVE, remotes);
+        assert(command(WORKFLOW_COMMAND_START_MEASUREMENT, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        snapshot = try_snapshot();
+        assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION)) != 0U);
+        assert(command(WORKFLOW_COMMAND_GO_CALIBRATION, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        assert(command(WORKFLOW_COMMAND_SENSORS_PLACED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        snapshot = try_snapshot();
+        assert(snapshot.step == WORKFLOW_STEP_CALIBRATING);
+        assert(snapshot.calibration.pairs_total == remotes);
+        s_now_ms += UINT64_C(15000);
+        assert(workflow_service_poll() == ESP_OK);
+        snapshot = try_snapshot();
+        assert(snapshot.step == WORKFLOW_STEP_CALIB_RESULT);
+        assert(snapshot.calibration.result_valid && !snapshot.calibration.result_ok);
+        assert(snapshot_has_calibration_reason(&snapshot, "timeout"));
+        workflow_service_shutdown();
+    }
+}
+
+
+static void test_low_remote_placement_and_ranging_finish(void)
+{
+    for (size_t remotes = 1U; remotes <= 2U; ++remotes) {
+        reset_fakes(true, MEASUREMENT_SERVICE_LIVE, remotes);
+        assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+        assert(command(WORKFLOW_COMMAND_START_MEASUREMENT, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        assert(command(WORKFLOW_COMMAND_GO_CALIBRATION, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        assert(command(WORKFLOW_COMMAND_SENSORS_PLACED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        assert(command(WORKFLOW_COMMAND_CALIBRATION_DONE, true, true) == WORKFLOW_COMMAND_RESULT_OK);
+        assert(command(WORKFLOW_COMMAND_PLACE_SENSORS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        s_placement_ready = true;
+        for (unsigned sample = 0U; sample < WORKFLOW_PLACEMENT_MIN_SAMPLES; ++sample) {
+            s_now_ms += 100U;
+            s_device.main.bmp280_valid = true;
+            s_device.main.pressure_pa = 101325U;
+            s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
+            s_device.main.height_reference.generation = s_height_generation;
+            for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+                if (s_topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+                s_cache[channel].identity_valid = true;
+                s_cache[channel].topology_current = true;
+                s_cache[channel].response_valid = true;
+                s_cache[channel].identity.node_id = s_topology.remotes[channel].node_id;
+                s_cache[channel].esp_receipt_uptime_ms = s_now_ms;
+                s_cache[channel].sensor.valid_mask = NRF_UPSTREAM_SENSOR_VALID_ENV;
+                s_cache[channel].sensor.pressure_pa = 101325U;
+                s_cache[channel].sensor.orientation_state =
+                    NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+                s_cache[channel].sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+                s_cache[channel].sensor.reference_generation = s_height_generation;
+            }
+            assert(workflow_service_poll() == ESP_OK);
+        }
+        workflow_snapshot_t snapshot = try_snapshot();
+        assert(snapshot.placement.all_stable);
+        assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+
+        snapshot = try_snapshot();
+        assert(snapshot.step == WORKFLOW_STEP_RANGING_RESULT);
+        assert(strcmp(snapshot.reason, "insufficient_nodes") == 0);
+        assert(snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_RETRY));
+        workflow_service_shutdown();
+    }
+}
+
 static void test_scan_presence_and_settings_refresh_are_cached_for_two_seconds(void)
 {
     reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
@@ -1125,6 +1221,14 @@ static void test_material_is_carried_into_run_provenance(void)
 
 int main(void)
 {
+#ifdef MAX449_CASE
+#if MAX449_CASE == 4
+    test_low_remote_calibration_timeout_and_pair_counts();
+    test_low_remote_placement_and_ranging_finish();
+#else
+#error "unknown MAX449_CASE for workflow_service_test"
+#endif
+#else
     test_phone_and_tft_workflow_views_share_step_and_generation();
     test_tft_custom_range_is_persisted_and_auto_omits_it();
     test_reconciliation_review_error_and_async_recording_commands();
@@ -1145,4 +1249,5 @@ int main(void)
     test_material_save_queue_full_is_rejected_without_sd_write();
     test_material_is_carried_into_run_provenance();
     return 0;
+#endif
 }

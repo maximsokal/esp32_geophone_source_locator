@@ -77,3 +77,68 @@ def test_default_bypass_is_pinned_in_kconfig_and_project_defaults():
     assert "config RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING" in kconfig
     assert "\tdefault n" in kconfig
     assert "# CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING is not set" in defaults
+
+
+def test_max449_navigation_and_low_remote_tests_are_registered():
+    targets = _tests(ROOT / "tests/host/manifest.d/max449-measurements-workflow.json")
+    expected = {
+        "max449_n1_home_measurements_redirect",
+        "max449_n2_home_measurements_object_picker",
+        "max449_n3_measurements_state_matrix",
+        "max449_n4_low_remote_workflow",
+        "max449_n7_objects_start_measurement",
+        "max449_n5_workflow_gate_strict",
+        "max449_n6_ui_sensor_check_default",
+        "max449_n6_ui_sensor_check_strict",
+        "max449_n4_insufficient_node_result_text",
+        "max449_n7_workflow_preview_regression",
+    }
+    assert expected <= targets.keys()
+
+    navigation = (ROOT / "tests/host/ui_home_navigation_test.c").read_text(encoding="utf-8")
+    for case, function in (
+        (1, "test_home_measurements_redirects_active_object_for_ok_and_right"),
+        (2, "test_home_measurements_without_active_object_opens_workflow_picker"),
+        (3, "test_measurements_route_decision_all_workflow_states"),
+    ):
+        assert function in navigation
+        assert f"#if MAX449_CASE == {case}" in navigation or f"#elif MAX449_CASE == {case}" in navigation
+        assert "tests/host/ui_home_navigation_test.c" in targets[
+            next(name for name in expected if name.startswith(f"max449_n{case}_"))
+        ]["sources"]
+
+    service = (ROOT / "tests/host/workflow_service_test.c").read_text(encoding="utf-8")
+    assert "test_low_remote_calibration_timeout_and_pair_counts();" in service
+    assert "test_low_remote_placement_and_ranging_finish();" in service
+    assert "MAX449_CASE=4" in targets["max449_n4_low_remote_workflow"]["defines"]
+    assert "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0" in targets[
+        "max449_n4_low_remote_workflow"
+    ]["defines"]
+
+    core = (ROOT / "tests/host/workflow_core_test.c").read_text(encoding="utf-8")
+    assert "test_go_calibration_respects_recording_gate_config();" in core
+    assert "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1" in targets[
+        "max449_n5_workflow_gate_strict"
+    ]["defines"]
+
+    model = (ROOT / "components/ui/tests/ui_workflow_model_test.c").read_text(encoding="utf-8")
+    assert "test_sensor_check_action_and_warning_for_low_remote_counts();" in model
+    assert "test_workflow_start_and_preview_regressions();" in model
+    assert "test_insufficient_nodes_results_use_existing_warning();" in model
+    assert "MAX449_CASE=6" in targets["max449_n6_ui_sensor_check_default"]["defines"]
+    assert "MAX449_CASE=6" in targets["max449_n6_ui_sensor_check_strict"]["defines"]
+    assert "MAX449_CASE=8" in targets["max449_n4_insufficient_node_result_text"]["defines"]
+    assert "MAX449_CASE=4" in targets["max449_n7_objects_start_measurement"]["defines"]
+    assert "tests/host/ui_home_navigation_test.c" in targets[
+        "max449_n7_objects_start_measurement"
+    ]["sources"]
+    assert "MAX449_CASE=7" in targets["max449_n7_workflow_preview_regression"]["defines"]
+
+    objects_input = (ROOT / "components/ui/ui_objects_input.c").read_text(encoding="utf-8")
+    objects = (ROOT / "components/ui/ui_objects.c").read_text(encoding="utf-8")
+    preview = (ROOT / "components/ui/ui_scan_preview.c").read_text(encoding="utf-8")
+    assert "UI_OBJECTS_SELECT_WORKFLOW" in objects_input
+    assert "ui_screen_open_locked(UI_SCREEN_WORKFLOW);" in objects_input
+    assert "OBJECT_SERVICE_EVENT_SET_ACTIVE_DONE" in objects
+    assert "context->workflow_activation_pending" in objects
+    assert "if (s_from_workflow) ui_screen_open_locked(UI_SCREEN_WORKFLOW);" in preview

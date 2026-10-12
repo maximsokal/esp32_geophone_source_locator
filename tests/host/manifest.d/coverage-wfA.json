@@ -24,7 +24,8 @@
         "components/localization/include",
         "components/geophone_events/include",
         "nRF54L15/include"
-      ]
+      ],
+      "defines": ["CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"]
     },
     {
       "name": "workflow_json_wfa",

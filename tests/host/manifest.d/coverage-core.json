@@ -48,19 +48,32 @@
         "components/ui/ui_navigation.c",
         "components/ui/ui_system.c",
         "components/ui/ui_system_model.c",
+        "components/ui/ui_objects_input.c",
         "components/ui_i18n/ui_utf8_format.c",
         "components/ui_i18n/ui_i18n.c",
         "components/ui_i18n/ui_i18n_catalog.gen.c",
         "tests/host/ui_home_navigation_test.c"
       ],
       "include_dirs": [
+        "components/ui",
+        "components/workflow_service/include",
+        "components/measurement_service/include",
+        "components/object_service/include",
+        "components/object_format/include",
+        "components/object_store/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "components/seismic_acquisition/include",
+        "components/storage_manager/include",
+        "components/storage_service/include",
+        "components/keypad/include",
+        "components/nrf_topology_service/include",
+        "components/ui_i18n/include",
         "tests/host/stubs/ui_navigation",
         "tests/host/stubs/ui_event_dispatcher",
-        "tests/host/stubs/runtime_observability",
-        "components/ui",
-        "components/nrf_topology_service/include",
-        "components/ui_i18n/include"
-      ]
+        "tests/host/stubs/runtime_observability"
+      ],
+      "defines": ["CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"]
     },
     {
       "name": "ui_event_dispatcher_lifecycle",

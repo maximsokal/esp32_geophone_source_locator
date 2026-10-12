@@ -9,6 +9,8 @@
 #include "esp_timer.h"
 #include "lvgl.h"
 #include "ui_internal.h"
+#include "ui_measurements_route.h"
+#include "workflow_service.h"
 
 
 static ui_context_t s_context;
@@ -20,6 +22,9 @@ static unsigned s_wifi_renders;
 static unsigned s_system_renders;
 static unsigned s_object_list_requests;
 static unsigned s_storage_info_requests;
+static unsigned s_acquisition_start_calls;
+static bool s_active_object_present;
+static workflow_snapshot_t s_workflow_snapshot;
 static unsigned char s_fake_lvgl_object;
 
 
@@ -70,6 +75,17 @@ void ui_render_wifi_locked(void)
 }
 
 
+#if !defined(_MSC_VER)
+void ui_workflow_screen_open_locked(void) {}
+void ui_workflow_screen_close_locked(void) {}
+void ui_workflow_screen_render_locked(void) {}
+void ui_workflow_screen_refresh_locked(void) {}
+void ui_workflow_screen_handle_key_locked(keypad_key_t key) { (void)key; }
+void ui_scan_preview_refresh_locked(void) {}
+void ui_home_refresh_locked(void) {}
+#endif
+
+
 void ui_measurements_refresh_locked(void)
 {
 }
@@ -78,12 +94,6 @@ void ui_measurements_refresh_locked(void)
 static lv_obj_t *fake_lvgl_object(void)
 {
     return (lv_obj_t *)&s_fake_lvgl_object;
-}
-
-
-void ui_handle_objects_key_locked(keypad_key_t key)
-{
-    (void)key;
 }
 
 
@@ -108,6 +118,72 @@ void ui_handle_wifi_key_locked(keypad_key_t key)
 esp_err_t object_service_list_async(void)
 {
     ++s_object_list_requests;
+    return ESP_OK;
+}
+
+
+esp_err_t object_service_get_active(object_service_summary_t *object)
+{
+    if (object == NULL) return ESP_ERR_INVALID_ARG;
+    if (!s_active_object_present) return ESP_FAIL;
+    memset(object, 0, sizeof(*object));
+    object->active = true;
+    (void)snprintf(object->id, sizeof(object->id), "%s", "active-object");
+    return ESP_OK;
+}
+
+
+bool object_service_is_busy(void)
+{
+    return false;
+}
+
+
+esp_err_t object_service_set_active_async(const char *object_id)
+{
+    return object_id != NULL && object_id[0] != '\0' ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
+
+esp_err_t object_service_create_async(void)
+{
+    return ESP_OK;
+}
+
+
+esp_err_t object_service_delete_async(const char *object_id)
+{
+    return object_id != NULL && object_id[0] != '\0' ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
+
+esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
+    memset(snapshot, 0, sizeof(*snapshot));
+    return ESP_OK;
+}
+
+
+bool measurement_service_snapshot_allows_object_mutation(
+    const measurement_service_snapshot_t *snapshot)
+{
+    (void)snapshot;
+    return true;
+}
+
+
+esp_err_t workflow_service_try_get_snapshot(workflow_snapshot_t *snapshot)
+{
+    if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
+    *snapshot = s_workflow_snapshot;
+    return ESP_OK;
+}
+
+
+esp_err_t seismic_acquisition_start(void)
+{
+    ++s_acquisition_start_calls;
     return ESP_OK;
 }
 
@@ -266,6 +342,10 @@ static void reset_state(void)
     s_system_renders = 0U;
     s_object_list_requests = 0U;
     s_storage_info_requests = 0U;
+    s_acquisition_start_calls = 0U;
+    s_active_object_present = false;
+    memset(&s_workflow_snapshot, 0, sizeof(s_workflow_snapshot));
+    s_workflow_snapshot.step = WORKFLOW_STEP_IDLE;
 }
 
 
@@ -364,6 +444,10 @@ static void test_left_from_system_returns_home(void)
 static void test_dispatch_uses_current_screen_driver(void)
 {
     reset_state();
+    s_active_object_present = true;
+    s_workflow_snapshot.step = WORKFLOW_STEP_RECORD_READY;
+    (void)snprintf(s_workflow_snapshot.object_id,
+        sizeof(s_workflow_snapshot.object_id), "%s", "active-object");
 
     ui_screen_open_locked(UI_SCREEN_HOME);
     ui_dispatch_key_locked(KEYPAD_KEY_DOWN);
@@ -372,6 +456,85 @@ static void test_dispatch_uses_current_screen_driver(void)
     ui_dispatch_key_locked(KEYPAD_KEY_OK);
     assert(s_context.screen == UI_SCREEN_MEASUREMENTS);
     assert(s_measurement_renders == 1U);
+    assert(s_acquisition_start_calls == 1U);
+}
+
+
+static void test_measurements_route_decision_all_workflow_states(void)
+{
+    for (workflow_step_t step = WORKFLOW_STEP_IDLE; step < WORKFLOW_STEP_COUNT; ++step) {
+        const bool allowed = step == WORKFLOW_STEP_RECORD_READY ||
+            step == WORKFLOW_STEP_RECORDING;
+        assert(ui_measurements_route_decide(step, true) ==
+            (allowed ? UI_MEASUREMENTS_ROUTE_ALLOW : UI_MEASUREMENTS_ROUTE_WORKFLOW));
+        assert(ui_measurements_route_decide(step, false) ==
+            (allowed ? UI_MEASUREMENTS_ROUTE_ALLOW : UI_MEASUREMENTS_ROUTE_OBJECT_PICKER));
+    }
+}
+
+
+static void test_home_measurements_redirects_active_object_for_ok_and_right(void)
+{
+    const keypad_key_t keys[] = { KEYPAD_KEY_OK, KEYPAD_KEY_RIGHT };
+    for (size_t i = 0U; i < sizeof(keys) / sizeof(keys[0]); ++i) {
+        reset_state();
+        s_active_object_present = true;
+        s_workflow_snapshot.step = WORKFLOW_STEP_SENSOR_CHECK;
+        (void)snprintf(s_workflow_snapshot.object_id,
+            sizeof(s_workflow_snapshot.object_id), "%s", "active-object");
+
+        ui_screen_open_locked(UI_SCREEN_HOME);
+        s_context.selected = 1U;
+        ui_screen_handle_key_locked(UI_SCREEN_HOME, keys[i]);
+
+        assert(s_context.screen == UI_SCREEN_WORKFLOW);
+        assert(s_acquisition_start_calls == 0U);
+        assert(s_measurement_renders == 0U);
+    }
+}
+
+
+static void test_home_measurements_without_active_object_opens_workflow_picker(void)
+{
+    reset_state();
+    ui_screen_open_locked(UI_SCREEN_HOME);
+    s_context.selected = 1U;
+    ui_screen_handle_key_locked(UI_SCREEN_HOME, KEYPAD_KEY_OK);
+
+    assert(s_context.screen == UI_SCREEN_OBJECTS);
+    assert(s_context.objects_mode == UI_OBJECTS_SELECT_WORKFLOW);
+    assert(s_object_list_requests == 1U);
+    assert(s_acquisition_start_calls == 0U);
+
+    s_context.objects_loaded = true;
+    s_context.object_count = 1U;
+    s_context.objects[0].active = true;
+    (void)snprintf(s_context.objects[0].id, sizeof(s_context.objects[0].id), "%s", "picked-object");
+    ui_handle_objects_key_locked(KEYPAD_KEY_OK);
+    assert(s_context.screen == UI_SCREEN_WORKFLOW);
+    assert(s_acquisition_start_calls == 0U);
+}
+
+
+static void test_objects_start_measurement_opens_workflow_without_acquisition(void)
+{
+    reset_state();
+    s_active_object_present = true;
+    ui_screen_open_locked(UI_SCREEN_OBJECTS);
+
+    s_context.objects_loaded = true;
+    s_context.object_count = 1U;
+    s_context.objects[0].active = true;
+    (void)snprintf(s_context.objects[0].id, sizeof(s_context.objects[0].id), "%s", "active-object");
+    ui_handle_objects_key_locked(KEYPAD_KEY_UP); /* wrap to Start measurement */
+    assert(s_context.object_action == 3U);
+    ui_handle_objects_key_locked(KEYPAD_KEY_OK);
+    assert(s_context.objects_mode == UI_OBJECTS_SELECT_WORKFLOW);
+    ui_handle_objects_key_locked(KEYPAD_KEY_OK);
+
+    assert(s_context.screen == UI_SCREEN_WORKFLOW);
+    assert(s_acquisition_start_calls == 0U);
+    assert(s_measurement_renders == 0U);
 }
 
 
@@ -463,6 +626,19 @@ static void test_invalid_screen_is_noop(void)
 
 int main(void)
 {
+#ifdef MAX449_CASE
+#if MAX449_CASE == 1
+    test_home_measurements_redirects_active_object_for_ok_and_right();
+#elif MAX449_CASE == 2
+    test_home_measurements_without_active_object_opens_workflow_picker();
+#elif MAX449_CASE == 3
+    test_measurements_route_decision_all_workflow_states();
+#elif MAX449_CASE == 4
+    test_objects_start_measurement_opens_workflow_without_acquisition();
+#else
+#error "unknown MAX449_CASE for ui_home_navigation_test"
+#endif
+#else
     test_home_registry_mapping();
     test_home_up_down_wrap_and_render();
     test_right_and_ok_open_selected_screen();
@@ -470,6 +646,10 @@ int main(void)
     test_objects_entry_does_not_list_during_recovery();
     test_left_from_system_returns_home();
     test_dispatch_uses_current_screen_driver();
+    test_measurements_route_decision_all_workflow_states();
+    test_home_measurements_redirects_active_object_for_ok_and_right();
+    test_home_measurements_without_active_object_opens_workflow_picker();
+    test_objects_start_measurement_opens_workflow_without_acquisition();
     test_recovery_events_update_home_state();
     test_recovery_failure_is_sticky_until_next_start();
     test_recovery_event_does_not_force_other_screen_redraw();
@@ -478,4 +658,5 @@ int main(void)
 
     puts("ui_home_navigation_test: PASS");
     return 0;
+#endif
 }

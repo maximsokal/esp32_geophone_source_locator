@@ -1,0 +1,325 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "max449_n1_home_measurements_redirect",
+      "sources": [
+        "components/ui/ui_screen_registry.c",
+        "components/ui/ui_navigation.c",
+        "components/ui/ui_system.c",
+        "components/ui/ui_system_model.c",
+        "components/ui/ui_objects_input.c",
+        "components/ui_i18n/ui_utf8_format.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
+        "tests/host/ui_home_navigation_test.c"
+      ],
+      "include_dirs": [
+        "components/ui",
+        "components/workflow_service/include",
+        "components/measurement_service/include",
+        "components/object_service/include",
+        "components/object_format/include",
+        "components/object_store/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "components/seismic_acquisition/include",
+        "components/storage_manager/include",
+        "components/storage_service/include",
+        "components/keypad/include",
+        "components/nrf_topology_service/include",
+        "components/ui_i18n/include",
+        "tests/host/stubs/ui_navigation",
+        "tests/host/stubs/ui_event_dispatcher",
+        "tests/host/stubs/runtime_observability"
+      ],
+      "defines": [
+        "MAX449_CASE=1",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
+      ]
+    },
+    {
+      "name": "max449_n2_home_measurements_object_picker",
+      "sources": [
+        "components/ui/ui_screen_registry.c",
+        "components/ui/ui_navigation.c",
+        "components/ui/ui_system.c",
+        "components/ui/ui_system_model.c",
+        "components/ui/ui_objects_input.c",
+        "components/ui_i18n/ui_utf8_format.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
+        "tests/host/ui_home_navigation_test.c"
+      ],
+      "include_dirs": [
+        "components/ui",
+        "components/workflow_service/include",
+        "components/measurement_service/include",
+        "components/object_service/include",
+        "components/object_format/include",
+        "components/object_store/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "components/seismic_acquisition/include",
+        "components/storage_manager/include",
+        "components/storage_service/include",
+        "components/keypad/include",
+        "components/nrf_topology_service/include",
+        "components/ui_i18n/include",
+        "tests/host/stubs/ui_navigation",
+        "tests/host/stubs/ui_event_dispatcher",
+        "tests/host/stubs/runtime_observability"
+      ],
+      "defines": [
+        "MAX449_CASE=2",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
+      ]
+    },
+    {
+      "name": "max449_n3_measurements_state_matrix",
+      "sources": [
+        "components/ui/ui_screen_registry.c",
+        "components/ui/ui_navigation.c",
+        "components/ui/ui_system.c",
+        "components/ui/ui_system_model.c",
+        "components/ui/ui_objects_input.c",
+        "components/ui_i18n/ui_utf8_format.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
+        "tests/host/ui_home_navigation_test.c"
+      ],
+      "include_dirs": [
+        "components/ui",
+        "components/workflow_service/include",
+        "components/measurement_service/include",
+        "components/object_service/include",
+        "components/object_format/include",
+        "components/object_store/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "components/seismic_acquisition/include",
+        "components/storage_manager/include",
+        "components/storage_service/include",
+        "components/keypad/include",
+        "components/nrf_topology_service/include",
+        "components/ui_i18n/include",
+        "tests/host/stubs/ui_navigation",
+        "tests/host/stubs/ui_event_dispatcher",
+        "tests/host/stubs/runtime_observability"
+      ],
+      "defines": [
+        "MAX449_CASE=3",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
+      ]
+    },
+    {
+      "name": "max449_n4_low_remote_workflow",
+      "sources": [
+        "components/workflow_service/workflow_core.c",
+        "components/workflow_service/workflow_service.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "components/localization_job/localization_config.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/stubs/workflow_service/host_rtos.c",
+        "tests/host/workflow_service_host_fakes.c",
+        "tests/host/workflow_service_test.c"
+      ],
+      "include_dirs": [
+        "components/measurement_service/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "components/object_service/include",
+        "components/object_format/include",
+        "components/object_store/include",
+        "tests/host/stubs/workflow_service",
+        "tests/host/stubs/object_store_profile",
+        "components/workflow_service/include",
+        "components/recording_gate/include",
+        "components/localization/include",
+        "components/web_server/tests/stubs",
+        "components/web_server",
+        "components/localization_job/include",
+        "components/localization_calculate/include",
+        "components/localization_velocity_free/include",
+        "components/geophone_events/include"
+      ],
+      "defines": [
+        "MAX449_CASE=4",
+        "WORKFLOW_SERVICE_TEST_HARNESS",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
+      ],
+      "libraries": [
+        "pthread"
+      ]
+    },
+    {
+      "name": "max449_n5_workflow_gate_strict",
+      "sources": [
+        "components/workflow_service/workflow_core.c",
+        "tests/host/workflow_core_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/workflow_service",
+        "components/workflow_service/include"
+      ],
+      "defines": [
+        "MAX449_CASE=5",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"
+      ]
+    },
+    {
+      "name": "max449_n6_ui_sensor_check_default",
+      "sources": [
+        "components/result_view/result_view.c",
+        "components/workflow_service/workflow_core.c",
+        "components/ui/ui_workflow_model.c",
+        "components/ui_i18n/ui_utf8_format.c",
+        "components/ui/tests/ui_workflow_model_test.c"
+      ],
+      "include_dirs": [
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "tests/host/stubs/workflow_service",
+        "components/workflow_service/include",
+        "components/geophone_events/include",
+        "components/ui_i18n/include",
+        "components/result_view/include",
+        "components/ui"
+      ],
+      "defines": [
+        "MAX449_CASE=6",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "max449_n6_ui_sensor_check_strict",
+      "sources": [
+        "components/result_view/result_view.c",
+        "components/workflow_service/workflow_core.c",
+        "components/ui/ui_workflow_model.c",
+        "components/ui_i18n/ui_utf8_format.c",
+        "components/ui/tests/ui_workflow_model_test.c"
+      ],
+      "include_dirs": [
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "tests/host/stubs/workflow_service",
+        "components/workflow_service/include",
+        "components/geophone_events/include",
+        "components/ui_i18n/include",
+        "components/result_view/include",
+        "components/ui"
+      ],
+      "defines": [
+        "MAX449_CASE=6",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "max449_n7_objects_start_measurement",
+      "sources": [
+        "components/ui/ui_screen_registry.c",
+        "components/ui/ui_navigation.c",
+        "components/ui/ui_system.c",
+        "components/ui/ui_system_model.c",
+        "components/ui/ui_objects_input.c",
+        "components/ui_i18n/ui_utf8_format.c",
+        "components/ui_i18n/ui_i18n.c",
+        "components/ui_i18n/ui_i18n_catalog.gen.c",
+        "tests/host/ui_home_navigation_test.c"
+      ],
+      "include_dirs": [
+        "components/ui",
+        "components/workflow_service/include",
+        "components/measurement_service/include",
+        "components/object_service/include",
+        "components/object_format/include",
+        "components/object_store/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "components/seismic_acquisition/include",
+        "components/storage_manager/include",
+        "components/storage_service/include",
+        "components/keypad/include",
+        "components/nrf_topology_service/include",
+        "components/ui_i18n/include",
+        "tests/host/stubs/ui_navigation",
+        "tests/host/stubs/ui_event_dispatcher",
+        "tests/host/stubs/runtime_observability"
+      ],
+      "defines": [
+        "MAX449_CASE=4",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
+      ]
+    },
+    {
+      "name": "max449_n4_insufficient_node_result_text",
+      "sources": [
+        "components/result_view/result_view.c",
+        "components/workflow_service/workflow_core.c",
+        "components/ui/ui_workflow_model.c",
+        "components/ui_i18n/ui_utf8_format.c",
+        "components/ui/tests/ui_workflow_model_test.c"
+      ],
+      "include_dirs": [
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "tests/host/stubs/workflow_service",
+        "components/workflow_service/include",
+        "components/geophone_events/include",
+        "components/ui_i18n/include",
+        "components/result_view/include",
+        "components/ui"
+      ],
+      "defines": [
+        "MAX449_CASE=8",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "max449_n7_workflow_preview_regression",
+      "sources": [
+        "components/result_view/result_view.c",
+        "components/workflow_service/workflow_core.c",
+        "components/ui/ui_workflow_model.c",
+        "components/ui_i18n/ui_utf8_format.c",
+        "components/ui/tests/ui_workflow_model_test.c"
+      ],
+      "include_dirs": [
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "tests/host/stubs/workflow_service",
+        "components/workflow_service/include",
+        "components/geophone_events/include",
+        "components/ui_i18n/include",
+        "components/result_view/include",
+        "components/ui"
+      ],
+      "defines": [
+        "MAX449_CASE=7",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
+      ],
+      "libraries": [
+        "m"
+      ]
+    }
+  ]
+}

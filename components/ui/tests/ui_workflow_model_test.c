@@ -6,6 +6,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifndef CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
+#define CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING 0
+#endif
+
 static workflow_snapshot_t make_snapshot(workflow_step_t step)
 {
     workflow_snapshot_t snapshot = {0};
@@ -409,8 +413,98 @@ static void test_preview_stop_double_ok(void)
     assert(!ui_workflow_model_preview_ok(false, false, 5000U, &deadline));
 }
 
+
+static void test_sensor_check_action_and_warning_for_low_remote_counts(void)
+{
+    for (uint8_t remotes = 0U; remotes < 3U; ++remotes) {
+        workflow_core_t core;
+        workflow_core_init(&core, true);
+        core.step = WORKFLOW_STEP_SENSOR_CHECK;
+
+        workflow_snapshot_t snapshot;
+        workflow_core_snapshot(&core, remotes, false, &snapshot);
+        ui_workflow_model_state_t state = {0};
+        ui_workflow_ranging_t ranging = {0};
+        ui_workflow_model_t model;
+        build(&snapshot, &state, &ranging, &model);
+
+        const bool has_calibration_action =
+            (model.actions_mask & WORKFLOW_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION)) != 0U;
+#if CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
+        assert(!has_calibration_action);
+#else
+        assert(has_calibration_action);
+#endif
+        bool has_insufficient_warning = false;
+        for (size_t i = 0U; i < model.line_count; ++i) {
+            has_insufficient_warning = has_insufficient_warning ||
+                model.lines[i].key == UI_I18N_KEY_TFT_WORKFLOW_SENSOR_INSUFFICIENT;
+        }
+        assert(has_insufficient_warning);
+    }
+}
+
+
+static void test_workflow_start_and_preview_regressions(void)
+{
+    workflow_core_t core;
+    workflow_core_init(&core, true);
+    workflow_command_params_t params = {0};
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_START_MEASUREMENT,
+        &params, 2U, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(core.step == WORKFLOW_STEP_SENSOR_CHECK);
+
+    const workflow_step_t preview_steps[] = {
+        WORKFLOW_STEP_RECORD_READY,
+        WORKFLOW_STEP_RECORDING,
+        WORKFLOW_STEP_RESULT,
+    };
+    for (size_t i = 0U; i < sizeof(preview_steps) / sizeof(preview_steps[0]); ++i) {
+        workflow_snapshot_t snapshot = make_snapshot(preview_steps[i]);
+        snapshot.has_scan = true;
+        ui_workflow_model_state_t state = {0};
+        ui_workflow_event_t event = ui_workflow_model_handle_key(
+            &snapshot, &state, UI_WORKFLOW_KEY_RIGHT, 100U);
+        assert(event.type == UI_WORKFLOW_EVENT_OPEN_PREVIEW);
+    }
+}
+
+
+static void test_insufficient_nodes_results_use_existing_warning(void)
+{
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_CALIB_RESULT);
+    snapshot.calibration.result_valid = true;
+    snapshot.calibration.result_ok = false;
+    snapshot.calibration.reasons_count = 1U;
+    (void)snprintf(snapshot.calibration.reasons[0], WORKFLOW_CALIBRATION_REASON_MAX,
+        "insufficient_nodes");
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.line_count == 2U);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_SENSOR_INSUFFICIENT);
+
+    snapshot = make_snapshot(WORKFLOW_STEP_RANGING_RESULT);
+    (void)snprintf(snapshot.reason, sizeof(snapshot.reason), "insufficient_nodes");
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.line_count == 2U);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_SENSOR_INSUFFICIENT);
+}
+
 int main(void)
 {
+#ifdef MAX449_CASE
+#if MAX449_CASE == 6
+    test_sensor_check_action_and_warning_for_low_remote_counts();
+#elif MAX449_CASE == 7
+    test_workflow_start_and_preview_regressions();
+#elif MAX449_CASE == 8
+    test_insufficient_nodes_results_use_existing_warning();
+#else
+#error "unknown MAX449_CASE for ui_workflow_model_test"
+#endif
+#else
     test_all_steps();
     test_actions_follow_allowed_mask();
     test_sensor_counts();
@@ -423,5 +517,9 @@ int main(void)
     test_calibration_reason_mapping();
     test_result_routing_and_distances();
     test_preview_stop_double_ok();
+    test_sensor_check_action_and_warning_for_low_remote_counts();
+    test_workflow_start_and_preview_regressions();
+    test_insufficient_nodes_results_use_existing_warning();
     return 0;
+#endif
 }

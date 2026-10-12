@@ -5,6 +5,10 @@
 
 #include "workflow_core.h"
 
+#ifndef CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
+#define CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING 0
+#endif
+
 typedef struct {
     workflow_step_t from;
     workflow_command_t command;
@@ -151,6 +155,29 @@ static void test_back_from_result_returns_to_stopped(void)
     assert(core.step == WORKFLOW_STEP_STOPPED);
 }
 
+
+static void test_go_calibration_respects_recording_gate_config(void)
+{
+    for (size_t remotes = 0U; remotes <= 3U; ++remotes) {
+        workflow_core_t core;
+        workflow_core_init(&core, true);
+        core.step = WORKFLOW_STEP_SENSOR_CHECK;
+        workflow_command_params_t params = {0};
+        const workflow_command_result_t result = workflow_core_apply(
+            &core, WORKFLOW_COMMAND_GO_CALIBRATION, &params, remotes, false);
+
+#if CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
+        if (remotes < 3U) {
+            assert(result == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+            assert(core.step == WORKFLOW_STEP_SENSOR_CHECK);
+            continue;
+        }
+#endif
+        assert(result == WORKFLOW_COMMAND_RESULT_OK);
+        assert(core.step == WORKFLOW_STEP_CALIB_PREP);
+    }
+}
+
 static void test_retry_after_failed_calibration_restarts_calibration(void)
 {
     workflow_core_t core;
@@ -213,31 +240,33 @@ static void test_sensor_count_guards_zero_through_five(void)
         workflow_core_snapshot(&core, remotes, false, &snapshot);
         if (remotes < 3U) {
             assert(snapshot.sensor_sufficiency == WORKFLOW_SENSOR_INSUFFICIENT);
-            assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION)) == 0U);
-            assert(workflow_core_apply(
-                &core,
-                WORKFLOW_COMMAND_GO_CALIBRATION,
-                &params,
-                remotes,
-                false
-            ) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
-            assert(core.step == WORKFLOW_STEP_SENSOR_CHECK);
-            assert(strcmp(core.reason, "insufficient_remotes") == 0);
         }
         else {
             const workflow_sensor_sufficiency_t expected = remotes == 3U
                 ? WORKFLOW_SENSOR_PLANAR_2D
                 : WORKFLOW_SENSOR_CAPABLE_3D;
             assert(snapshot.sensor_sufficiency == expected);
-            assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION)) != 0U);
-            assert(workflow_core_apply(
-                &core,
-                WORKFLOW_COMMAND_GO_CALIBRATION,
-                &params,
-                remotes,
-                false
-            ) == WORKFLOW_COMMAND_RESULT_OK);
+        }
+#if CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
+        const bool should_allow_calibration = remotes >= 3U;
+#else
+        const bool should_allow_calibration = true;
+#endif
+        assert(((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION)) != 0U) ==
+            should_allow_calibration);
+        const workflow_command_result_t result = workflow_core_apply(
+            &core,
+            WORKFLOW_COMMAND_GO_CALIBRATION,
+            &params,
+            remotes,
+            false);
+        if (should_allow_calibration) {
+            assert(result == WORKFLOW_COMMAND_RESULT_OK);
             assert(core.step == WORKFLOW_STEP_CALIB_PREP);
+        } else {
+            assert(result == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+            assert(core.step == WORKFLOW_STEP_SENSOR_CHECK);
+            assert(strcmp(core.reason, "insufficient_remotes") == 0);
         }
         assert(snapshot.assigned_remotes == remotes);
     }
@@ -356,11 +385,19 @@ static void test_success_and_failure_result_routes(void)
 
 int main(void)
 {
+#ifdef MAX449_CASE
+#if MAX449_CASE == 5
+    test_go_calibration_respects_recording_gate_config();
+#else
+#error "unknown MAX449_CASE for workflow_core_test"
+#endif
+#else
     test_exhaustive_transition_table();
     test_calculation_requires_saved_settings();
     test_back_from_calibration_result_returns_to_prep();
     test_back_from_ranging_result_returns_to_placement();
     test_back_from_result_returns_to_stopped();
+    test_go_calibration_respects_recording_gate_config();
     test_retry_after_failed_calibration_restarts_calibration();
     test_delete_recording_returns_to_record_ready_preserving_setup();
     test_back_from_running_steps_records_cancellation_reason();
@@ -368,4 +405,5 @@ int main(void)
     test_stale_generation_and_placement_guard();
     test_success_and_failure_result_routes();
     return 0;
+#endif
 }

@@ -2,6 +2,8 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "ui_measurements_route.h"
+#include "workflow_service.h"
 
 
 static const char *TAG = "UI_SCREEN";
@@ -36,7 +38,10 @@ static void ui_screen_open_objects(void)
     ui_context_t *context = ui_context();
 
     context->selected = 0;
-    context->objects_mode = UI_OBJECTS_MENU;
+    context->objects_mode = context->objects_workflow_picker_on_open
+        ? UI_OBJECTS_SELECT_WORKFLOW
+        : UI_OBJECTS_MENU;
+    context->objects_workflow_picker_on_open = false;
     context->object_action = 0;
     context->object_index = 0;
     context->object_count = 0;
@@ -299,10 +304,46 @@ const char *ui_screen_home_label(
 }
 
 
+ui_measurements_route_t ui_measurements_route_decide(
+    workflow_step_t workflow_step,
+    bool has_active_object)
+{
+    if (workflow_step == WORKFLOW_STEP_RECORD_READY ||
+        workflow_step == WORKFLOW_STEP_RECORDING) {
+        return UI_MEASUREMENTS_ROUTE_ALLOW;
+    }
+    return has_active_object
+        ? UI_MEASUREMENTS_ROUTE_WORKFLOW
+        : UI_MEASUREMENTS_ROUTE_OBJECT_PICKER;
+}
+
+
 void ui_screen_open_locked(
     ui_screen_t screen
 )
 {
+    if (screen == UI_SCREEN_MEASUREMENTS) {
+        workflow_snapshot_t workflow = {0};
+        const bool workflow_available =
+            workflow_service_try_get_snapshot(&workflow) == ESP_OK;
+        bool has_active_object = workflow_available && workflow.object_id[0] != '\0';
+        if (!has_active_object) {
+            object_service_summary_t active_object;
+            has_active_object = object_service_get_active(&active_object) == ESP_OK &&
+                active_object.active && active_object.id[0] != '\0';
+        }
+
+        const ui_measurements_route_t route = ui_measurements_route_decide(
+            workflow_available ? workflow.step : WORKFLOW_STEP_IDLE,
+            has_active_object);
+        if (route == UI_MEASUREMENTS_ROUTE_WORKFLOW) {
+            screen = UI_SCREEN_WORKFLOW;
+        } else if (route == UI_MEASUREMENTS_ROUTE_OBJECT_PICKER) {
+            ui_context()->objects_workflow_picker_on_open = true;
+            screen = UI_SCREEN_OBJECTS;
+        }
+    }
+
     const ui_screen_driver_t *driver = ui_screen_driver(screen);
 
     if (

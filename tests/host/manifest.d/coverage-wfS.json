@@ -49,7 +49,8 @@
       "include_dirs": [
         "tests/host/stubs/workflow_service",
         "components/workflow_service/include"
-      ]
+      ],
+      "defines": ["CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"]
     },
     {
       "name": "workflow_service",
@@ -85,7 +86,8 @@
         "components/geophone_events/include"
       ],
       "defines": [
-        "WORKFLOW_SERVICE_TEST_HARNESS"
+        "WORKFLOW_SERVICE_TEST_HARNESS",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
       ],
       "libraries": [
         "pthread"

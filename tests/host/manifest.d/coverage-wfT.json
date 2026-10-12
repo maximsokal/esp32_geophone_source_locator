@@ -5,6 +5,7 @@
       "name": "ui_workflow_model",
       "sources": [
         "components/result_view/result_view.c",
+        "components/workflow_service/workflow_core.c",
         "components/ui/ui_workflow_model.c",
         "components/ui_i18n/ui_utf8_format.c",
         "components/ui/tests/ui_workflow_model_test.c"
@@ -21,6 +22,7 @@
         "components/result_view/include",
         "components/ui"
       ],
+      "defines": ["CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"],
       "libraries": ["m"]
     }
   ]

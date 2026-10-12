@@ -227,6 +227,7 @@ static ui_i18n_key_t phase_value_key(const char *value)
 static ui_i18n_key_t calibration_reason_key(const char *reason)
 {
     if (reason == NULL) return UI_I18N_KEY_COUNT;
+    if (strcmp(reason, "insufficient_nodes") == 0) return UI_I18N_KEY_TFT_WORKFLOW_SENSOR_INSUFFICIENT;
     if (strstr(reason, "height_rejected_moving") != NULL) return UI_I18N_KEY_TFT_WORKFLOW_REASON_HEIGHT_MOVING;
     if (strstr(reason, "height_sensor_invalid") != NULL || strstr(reason, "imu_sensor_invalid") != NULL) {
         return UI_I18N_KEY_TFT_WORKFLOW_REASON_SENSOR_INVALID;
@@ -247,6 +248,10 @@ static void unknown_arg(ui_workflow_model_line_t *line, size_t index)
 static void add_reason(ui_workflow_model_t *model, const char *reason)
 {
     if (reason == NULL || reason[0] == '\0') return;
+    if (strcmp(reason, "insufficient_nodes") == 0) {
+        (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_SENSOR_INSUFFICIENT);
+        return;
+    }
     const char *separator = reason != NULL ? strchr(reason, ':') : NULL;
     const ui_i18n_key_t reason_key = calibration_reason_key(reason);
     if (separator != NULL && separator != reason && reason_key != UI_I18N_KEY_COUNT) {
@@ -628,6 +633,10 @@ void ui_workflow_model_build(
             if (known) set_key_arg(status, 0U, result_status_key(success));
             else unknown_arg(status, 0U);
             if (snapshot->reason[0] != '\0') {
+                if (strcmp(snapshot->reason, "insufficient_nodes") == 0) {
+                    (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_SENSOR_INSUFFICIENT);
+                    break;
+                }
                 ui_workflow_model_line_t *reason = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_REASON);
                 set_arg(reason, 0U, snapshot->reason);
             }

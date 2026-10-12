@@ -35,6 +35,7 @@ typedef enum
 
 } ui_screen_t;
 
+
 #define UI_HOME_SCREEN_COUNT 5U
 
 
@@ -137,6 +138,7 @@ typedef struct
     bool objects_loaded;
     bool workflow_activation_pending;
     size_t workflow_object_index;
+    bool objects_workflow_picker_on_open;
     object_service_summary_t objects[
         OBJECT_SERVICE_MAX_OBJECTS
     ];
