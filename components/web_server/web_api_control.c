@@ -290,6 +290,8 @@ static esp_err_t web_control_send_internal_workflow_command(httpd_req_t *request
     return httpd_resp_send(request, response, HTTPD_RESP_USE_STRLEN);
 }
 
+static bool web_control_number(cJSON *root, const char *key, double *value);
+
 static workflow_command_result_t web_control_workflow_command(
     cJSON *root,
     bool *internal_command
@@ -321,6 +323,10 @@ static workflow_command_result_t web_control_workflow_command(
         params.has_generation = true;
         params.expected_generation = (uint32_t)value;
     }
+    if ((command == WORKFLOW_COMMAND_GPS_ACCEPT ||
+         command == WORKFLOW_COMMAND_GPS_CAPTURE_FAILED) && !params.has_generation) {
+        return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+    }
 
     const cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
     if (ok != NULL) {
@@ -346,6 +352,42 @@ static workflow_command_result_t web_control_workflow_command(
              &params.calculation_class
          ))) {
         return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+    }
+    if (command == WORKFLOW_COMMAND_GPS_ACCEPT) {
+        double latitude = 0.0;
+        double longitude = 0.0;
+        double accuracy = 0.0;
+        double captured_at_ms = 0.0;
+        double altitude = 0.0;
+        double altitude_accuracy = 0.0;
+        const cJSON *altitude_value = cJSON_GetObjectItemCaseSensitive(root, "altitude_m");
+        const cJSON *altitude_accuracy_value =
+            cJSON_GetObjectItemCaseSensitive(root, "altitude_accuracy_m");
+        if (!web_control_number(root, "latitude", &latitude) ||
+            !web_control_number(root, "longitude", &longitude) ||
+            !web_control_number(root, "accuracy_m", &accuracy) ||
+            !web_control_number(root, "captured_at_ms", &captured_at_ms) ||
+            captured_at_ms < 0.0 || captured_at_ms > 9007199254740991.0 ||
+            floor(captured_at_ms) != captured_at_ms) {
+            return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+        }
+        if (altitude_value != NULL &&
+            (!web_control_number(root, "altitude_m", &altitude) ||
+             (altitude_accuracy_value != NULL &&
+              !web_control_number(root, "altitude_accuracy_m", &altitude_accuracy)))) {
+            return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+        }
+        if (altitude_value == NULL && altitude_accuracy_value != NULL) {
+            return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+        }
+        params.has_location = true;
+        params.latitude = latitude;
+        params.longitude = longitude;
+        params.accuracy_m = accuracy;
+        params.altitude_valid = altitude_value != NULL;
+        params.altitude_m = altitude;
+        params.altitude_accuracy_m = altitude_accuracy;
+        params.captured_at_ms = (uint64_t)captured_at_ms;
     }
     return workflow_service_command(command, &params);
 }

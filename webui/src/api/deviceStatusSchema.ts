@@ -74,6 +74,10 @@ function booleanValue(value: unknown, path: string): void {
   if (typeof value !== 'boolean') fail(path, 'not_boolean');
 }
 
+function booleanOrNull(value: unknown, path: string): void {
+  if (value !== null) booleanValue(value, path);
+}
+
 function stringValue(value: unknown, path: string): void {
   if (typeof value !== 'string') fail(path, 'not_string');
 }
@@ -116,6 +120,10 @@ function optionalFloatNumber(object: StatusObject, key: string, parentPath: stri
 
 function optionalBoolean(object: StatusObject, key: string, parentPath: string): void {
   optionalField(object, key, parentPath, booleanValue);
+}
+
+function optionalBooleanOrNull(object: StatusObject, key: string, parentPath: string): void {
+  optionalField(object, key, parentPath, booleanOrNull);
 }
 
 function optionalString(object: StatusObject, key: string, parentPath: string): void {
@@ -529,6 +537,11 @@ function checkWorkflow(workflow: StatusObject): void {
   optionalBoolean(workflow, 'has_scan', 'workflow');
   optionalBoolean(workflow, 'calc_settings_ready', 'workflow');
   optionalString(workflow, 'calculation_class', 'workflow');
+  optionalString(workflow, 'gps_status', 'workflow');
+  optionalBooleanOrNull(workflow, 'layout_result', 'workflow');
+  optionalStringOrNull(workflow, 'layout_reason', 'workflow');
+  optionalString(workflow, 'scan_choice', 'workflow');
+  optionalString(workflow, 'scan_upload_status', 'workflow');
 
   const calibrationValue = workflow.calibration;
   if (calibrationValue === undefined && workflow.step === 'CALIB_RESULT') {

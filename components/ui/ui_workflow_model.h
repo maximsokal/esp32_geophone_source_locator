@@ -10,7 +10,7 @@
 #include "ui_i18n_catalog.gen.h"
 #include "workflow_core.h"
 
-#define UI_WORKFLOW_MODEL_MAX_ACTIONS 15U
+#define UI_WORKFLOW_MODEL_MAX_ACTIONS 18U
 #define UI_WORKFLOW_MODEL_MAX_LINES 40U
 #define UI_WORKFLOW_MODEL_ARGS 6U
 #define UI_WORKFLOW_MODEL_ARG_SIZE 80U

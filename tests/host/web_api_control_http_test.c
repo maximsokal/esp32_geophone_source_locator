@@ -1278,6 +1278,70 @@ static void test_workflow_command_rejects_unknown_name_before_dispatch(void)
     assert(strstr(response, "ESP_ERR_INVALID_ARG") != NULL);
 }
 
+static void test_workflow_gps_accept_parses_fix_and_optional_altitude(void)
+{
+    reset_fakes();
+    char response[512] = {0};
+    httpd_req_t request = make_request(
+        "{\"action\":\"workflow_command\",\"command\":\"GPS_ACCEPT\",\"generation\":9,"
+        "\"latitude\":50.4501,\"longitude\":30.5234,\"accuracy_m\":3.2,"
+        "\"captured_at_ms\":123456789,\"altitude_m\":179.4,\"altitude_accuracy_m\":5.5}",
+        response,
+        sizeof(response)
+    );
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(s_workflow_command_calls == 1U);
+    assert(s_workflow_command == WORKFLOW_COMMAND_GPS_ACCEPT);
+    assert(s_workflow_params.has_generation && s_workflow_params.expected_generation == 9U);
+    assert(s_workflow_params.has_location);
+    assert(s_workflow_params.latitude == 50.4501);
+    assert(s_workflow_params.longitude == 30.5234);
+    assert(s_workflow_params.accuracy_m == 3.2);
+    assert(s_workflow_params.captured_at_ms == UINT64_C(123456789));
+    assert(s_workflow_params.altitude_valid);
+    assert(s_workflow_params.altitude_m == 179.4);
+    assert(s_workflow_params.altitude_accuracy_m == 5.5);
+
+    reset_fakes();
+    request = make_request(
+        "{\"action\":\"workflow_command\",\"command\":\"GPS_ACCEPT\",\"generation\":10,"
+        "\"latitude\":-90,\"longitude\":180,\"accuracy_m\":0,\"captured_at_ms\":0}",
+        response,
+        sizeof(response)
+    );
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(request.response_status == NULL);
+    assert(s_workflow_command_calls == 1U);
+    assert(s_workflow_command == WORKFLOW_COMMAND_GPS_ACCEPT);
+    assert(s_workflow_params.has_location && !s_workflow_params.altitude_valid);
+}
+
+static void test_workflow_gps_accept_rejects_malformed_payload_before_dispatch(void)
+{
+    static const char *const bodies[] = {
+        "{\"action\":\"workflow_command\",\"command\":\"GPS_ACCEPT\",\"generation\":1,"
+            "\"longitude\":20,\"accuracy_m\":1,\"captured_at_ms\":2}",
+        "{\"action\":\"workflow_command\",\"command\":\"GPS_ACCEPT\",\"generation\":1,"
+            "\"latitude\":10,\"longitude\":20,\"accuracy_m\":1,\"captured_at_ms\":2,"
+            "\"altitude_accuracy_m\":3}",
+        "{\"action\":\"workflow_command\",\"command\":\"GPS_ACCEPT\",\"generation\":1,"
+            "\"latitude\":10,\"longitude\":20,\"accuracy_m\":1,\"captured_at_ms\":2.5}",
+        "{\"action\":\"workflow_command\",\"command\":\"GPS_ACCEPT\","
+            "\"latitude\":10,\"longitude\":20,\"accuracy_m\":1,\"captured_at_ms\":2}",
+        "{\"action\":\"workflow_command\",\"command\":\"GPS_CAPTURE_FAILED\","
+            "\"reason\":\"permission_denied\"}",
+    };
+    for (size_t index = 0U; index < sizeof(bodies) / sizeof(bodies[0]); ++index) {
+        reset_fakes();
+        char response[512] = {0};
+        httpd_req_t request = make_request(bodies[index], response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+        assert(s_workflow_command_calls == 0U);
+    }
+}
+
 static void test_workflow_command_rejects_internal_completion_commands(void)
 {
     static const struct {
@@ -1339,6 +1403,8 @@ int main(void)
     test_calculate_source_action_surfaces_solver_failure();
     test_calculate_source_time_budget();
     test_workflow_command_success_and_conflict_responses();
+    test_workflow_gps_accept_parses_fix_and_optional_altitude();
+    test_workflow_gps_accept_rejects_malformed_payload_before_dispatch();
     test_workflow_command_rejects_unknown_name_before_dispatch();
     test_workflow_command_rejects_internal_completion_commands();
     return 0;

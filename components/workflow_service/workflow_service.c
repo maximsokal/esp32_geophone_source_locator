@@ -137,6 +137,7 @@ static workflow_last_async_t s_last_async;
 static workflow_last_material_save_t s_last_material_save;
 static bool s_placement_ready;
 static bool s_has_scan;
+static bool s_scan_storage_available;
 static bool s_scan_cache_valid;
 static uint64_t s_scan_cache_updated_ms;
 static workflow_step_t s_scan_cache_step;
@@ -349,10 +350,18 @@ static void workflow_service_refresh_presence_locked(void)
     if (!s_scan_cache_valid || identity_changed ||
         now_ms - s_scan_cache_updated_ms >= WORKFLOW_SERVICE_STATUS_REFRESH_MS) {
         s_has_scan = false;
+        s_scan_storage_available = false;
         if (s_active_object_id[0] != '\0') {
             bool present = false;
             if (object_store_scan_present(s_active_object_id, s_session_id, &present) == ESP_OK) {
+                s_scan_storage_available = true;
                 s_has_scan = present;
+                if (!s_has_scan && s_session_id[0] != '\0') {
+                    bool staged = false;
+                    if (object_store_scan_present(s_active_object_id, "", &staged) == ESP_OK) {
+                        s_has_scan = staged;
+                    }
+                }
             }
         }
         workflow_service_copy_string(s_scan_cache_object_id, sizeof(s_scan_cache_object_id), s_active_object_id);
@@ -870,8 +879,9 @@ static void workflow_service_step_changed(workflow_step_t previous, workflow_ste
     if (previous == next) return;
     if (previous == WORKFLOW_STEP_RANGING && next != WORKFLOW_STEP_RANGING && s_ranging.active) {
         s_ranging.orphaned = true;
+        (void)nrf_topology_service_invalidate_ranging();
     }
-    if (next == WORKFLOW_STEP_PLACEMENT) {
+    else if (next == WORKFLOW_STEP_PLACEMENT) {
         (void)nrf_topology_service_invalidate_ranging();
     }
     if (next == WORKFLOW_STEP_RANGING) workflow_service_ranging_start();
@@ -997,12 +1007,20 @@ static void workflow_service_placement_set_name(
     }
 }
 
+static bool workflow_service_tracks_placement(workflow_step_t step)
+{
+    return step == WORKFLOW_STEP_PLACEMENT ||
+        step == WORKFLOW_STEP_GPS_CHOICE ||
+        step == WORKFLOW_STEP_GPS_PENDING ||
+        step == WORKFLOW_STEP_LAYOUT_READY;
+}
+
 static void workflow_service_placement_poll(bool collect_samples)
 {
     workflow_placement_snapshot_t *status = &s_placement.status;
     memset(status, 0, sizeof(*status));
     const uint64_t now_ms = workflow_service_now_ms();
-    const bool in_placement = s_core.step == WORKFLOW_STEP_PLACEMENT;
+    const bool tracks_placement = workflow_service_tracks_placement(s_core.step);
     device_status_snapshot_t *device = &s_poll_scratch.device;
     const bool device_valid = device_status_try_get_snapshot(device) == ESP_OK;
     const bool main_reference_valid = device_valid &&
@@ -1014,9 +1032,9 @@ static void workflow_service_placement_poll(bool collect_samples)
     const uint16_t main_generation = main_reference_valid
         ? device->main.height_reference.generation
         : 0U;
-    const bool take_samples = in_placement && collect_samples;
+    const bool take_samples = tracks_placement && collect_samples;
 
-    if (!in_placement) {
+    if (!tracks_placement) {
         for (size_t i = 0U; i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
             workflow_service_placement_reset_history(&s_placement.history[i]);
         }
@@ -1046,7 +1064,7 @@ static void workflow_service_placement_poll(bool collect_samples)
     nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
     const bool topology_valid = nrf_topology_service_get_snapshot(topology) == ESP_OK;
     bool assigned[NRF_TOPOLOGY_REMOTE_COUNT] = { false };
-    bool all_stable = topology_valid && in_placement && main_node->stable;
+    bool all_stable = topology_valid && tracks_placement && main_node->stable;
     if (topology_valid) {
         for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
             const nrf_topology_node_snapshot_t *remote = &topology->remotes[channel];
@@ -1150,6 +1168,7 @@ static void workflow_service_reconcile_locked(void)
         (void)snprintf(s_active_object_id, sizeof(s_active_object_id), "%s", object_id);
         s_session_id[0] = '\0';
         s_has_scan = false;
+        s_scan_storage_available = false;
         s_calc_settings_ready = false;
         s_scan_cache_valid = false;
         s_calc_settings_cache_valid = false;
@@ -1355,6 +1374,7 @@ esp_err_t workflow_service_init(void)
     memset(&s_last_material_save, 0, sizeof(s_last_material_save));
     s_placement_ready = false;
     s_has_scan = false;
+    s_scan_storage_available = false;
     s_scan_cache_valid = false;
     s_scan_cache_updated_ms = 0U;
     s_scan_cache_step = WORKFLOW_STEP_COUNT;
@@ -1424,6 +1444,7 @@ void workflow_service_shutdown(void)
     s_calculation_job_id = 0U;
     s_orphaned_job_id = 0U;
     s_scan_cache_valid = false;
+    s_scan_storage_available = false;
     s_calc_settings_cache_valid = false;
     s_calc_material[0] = '\0';
     s_calc_velocity_range_set = false;
@@ -1443,6 +1464,9 @@ static void workflow_service_snapshot_locked(workflow_snapshot_t *snapshot)
 {
     workflow_core_snapshot(
         &s_core, s_assigned_remotes, s_placement_ready, snapshot);
+    if (!s_scan_storage_available || s_active_object_id[0] == '\0') {
+        snapshot->allowed_actions &= ~WORKFLOW_ACTION(WORKFLOW_COMMAND_SCAN_START);
+    }
     workflow_service_copy_string(snapshot->object_id, sizeof(snapshot->object_id), s_active_object_id);
     workflow_service_copy_string(snapshot->session_id, sizeof(snapshot->session_id), s_session_id);
     snapshot->has_scan = s_has_scan;
@@ -1510,12 +1534,50 @@ static workflow_command_result_t workflow_service_command_locked(
     workflow_service_placement_poll(false);
     s_placement_ready = workflow_service_placement_ready();
 
+    workflow_command_params_t applied_params = *params;
+    if (command == WORKFLOW_COMMAND_SCAN_START || command == WORKFLOW_COMMAND_SCAN_COMPLETE) {
+        s_scan_cache_valid = false;
+        workflow_service_refresh_presence_locked();
+        if (s_active_object_id[0] == '\0' || !s_scan_storage_available ||
+            (command == WORKFLOW_COMMAND_SCAN_COMPLETE && !s_has_scan)) {
+            return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+        }
+        if (command == WORKFLOW_COMMAND_SCAN_COMPLETE) {
+            applied_params.has_ok = true;
+            applied_params.ok = true;
+        }
+    }
+    if ((command == WORKFLOW_COMMAND_GPS_ACCEPT ||
+         command == WORKFLOW_COMMAND_GPS_CAPTURE_FAILED) && !params->has_generation) {
+        return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+    }
+    if (command == WORKFLOW_COMMAND_GPS_ACCEPT && s_active_object_id[0] == '\0') {
+        return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+    }
+
     const workflow_core_t previous = s_core;
     char previous_session[SEISMIC_RECORDER_SESSION_ID_SIZE];
     memcpy(previous_session, s_session_id, sizeof(previous_session));
     const workflow_command_result_t result = workflow_core_apply(
-        &s_core, command, params, s_assigned_remotes, s_placement_ready);
+        &s_core, command, &applied_params, s_assigned_remotes, s_placement_ready);
     if (result != WORKFLOW_COMMAND_RESULT_OK) return result;
+
+    if (command == WORKFLOW_COMMAND_GPS_ACCEPT) {
+        object_store_location_t location = {0};
+        location.valid = true;
+        location.latitude = params->latitude;
+        location.longitude = params->longitude;
+        location.accuracy_m = (float)params->accuracy_m;
+        location.altitude_valid = params->altitude_valid;
+        location.altitude_m = params->altitude_m;
+        location.altitude_accuracy_m = (float)params->altitude_accuracy_m;
+        location.captured_at_ms = params->captured_at_ms;
+        workflow_service_copy_string(location.source, sizeof(location.source), "PHONE_GPS");
+        if (object_store_set_location(s_active_object_id, &location) != ESP_OK) {
+            s_core = previous;
+            return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+        }
+    }
 
     if (s_core.step != previous.step) {
         workflow_service_placement_poll(false);
@@ -1543,7 +1605,6 @@ static workflow_command_result_t workflow_service_command_locked(
     if (command == WORKFLOW_COMMAND_START_RECORDING) {
         s_session_id[0] = '\0';
         s_scan_cache_valid = false;
-        s_has_scan = false;
         measurement_err = measurement_service_start_async();
         if (measurement_err == ESP_OK) s_recorder_reconciliation_armed = true;
     } else if (command == WORKFLOW_COMMAND_STOP_RECORDING) {

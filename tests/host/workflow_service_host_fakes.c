@@ -8,6 +8,12 @@
 
 unsigned workflow_test_scan_calls;
 bool workflow_test_scan_present;
+bool workflow_test_staged_scan_present;
+bool workflow_test_session_scan_present;
+esp_err_t workflow_test_location_save_result;
+unsigned workflow_test_location_save_calls;
+object_store_location_t workflow_test_saved_location;
+char workflow_test_saved_location_object_id[16];
 esp_err_t workflow_test_settings_error;
 const char *workflow_test_settings_json;
 esp_err_t workflow_test_settings_save_result;
@@ -37,6 +43,12 @@ void workflow_service_host_fakes_reset(void)
 {
     workflow_test_scan_calls = 0U;
     workflow_test_scan_present = false;
+    workflow_test_staged_scan_present = false;
+    workflow_test_session_scan_present = false;
+    workflow_test_location_save_result = ESP_OK;
+    workflow_test_location_save_calls = 0U;
+    memset(&workflow_test_saved_location, 0, sizeof(workflow_test_saved_location));
+    workflow_test_saved_location_object_id[0] = '\0';
     workflow_test_settings_error = ESP_OK;
     workflow_test_settings_json = s_valid_settings;
     workflow_test_settings_save_result = ESP_OK;
@@ -58,9 +70,21 @@ void workflow_service_host_fakes_reset(void)
 esp_err_t object_store_scan_present(const char *object_id, const char *session_id, bool *present_out)
 {
     assert(object_id != NULL && present_out != NULL);
-    (void)session_id;
     ++workflow_test_scan_calls;
-    *present_out = workflow_test_scan_present;
+    *present_out = workflow_test_scan_present || (session_id != NULL && session_id[0] == '\0'
+        ? workflow_test_staged_scan_present
+        : workflow_test_session_scan_present);
+    return ESP_OK;
+}
+
+esp_err_t object_store_set_location(const char *object_id, const object_store_location_t *location)
+{
+    assert(object_id != NULL && location != NULL);
+    ++workflow_test_location_save_calls;
+    if (workflow_test_location_save_result != ESP_OK) return workflow_test_location_save_result;
+    workflow_test_saved_location = *location;
+    (void)snprintf(workflow_test_saved_location_object_id,
+        sizeof(workflow_test_saved_location_object_id), "%s", object_id);
     return ESP_OK;
 }
 

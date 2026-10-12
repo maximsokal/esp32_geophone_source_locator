@@ -25,8 +25,13 @@ typedef enum {
     WORKFLOW_STEP_CALIBRATING,
     WORKFLOW_STEP_CALIB_RESULT,
     WORKFLOW_STEP_PLACEMENT,
+    WORKFLOW_STEP_GPS_CHOICE,
+    WORKFLOW_STEP_GPS_PENDING,
+    WORKFLOW_STEP_LAYOUT_READY,
     WORKFLOW_STEP_RANGING,
     WORKFLOW_STEP_RANGING_RESULT,
+    WORKFLOW_STEP_SCAN_CHOICE,
+    WORKFLOW_STEP_SCANNING,
     WORKFLOW_STEP_RECORD_READY,
     WORKFLOW_STEP_RECORDING,
     WORKFLOW_STEP_STOPPED,
@@ -42,6 +47,11 @@ typedef enum {
     WORKFLOW_COMMAND_CALIBRATION_DONE,
     WORKFLOW_COMMAND_RETRY,
     WORKFLOW_COMMAND_PLACE_SENSORS,
+    WORKFLOW_COMMAND_PLACEMENT_CONFIRMED,
+    WORKFLOW_COMMAND_REQUEST_GPS,
+    WORKFLOW_COMMAND_GPS_ACCEPT,
+    WORKFLOW_COMMAND_GPS_CAPTURE_FAILED,
+    WORKFLOW_COMMAND_GPS_SKIP,
     WORKFLOW_COMMAND_CALCULATE_POSITIONS,
     WORKFLOW_COMMAND_RANGING_DONE,
     WORKFLOW_COMMAND_CONFIRM,
@@ -52,9 +62,33 @@ typedef enum {
     WORKFLOW_COMMAND_CALCULATION_DONE,
     WORKFLOW_COMMAND_DELETE_RECORDING,
     WORKFLOW_COMMAND_RECORD_AGAIN,
+    WORKFLOW_COMMAND_SCAN_START,
+    WORKFLOW_COMMAND_SCAN_SKIP,
+    WORKFLOW_COMMAND_SCAN_COMPLETE,
     WORKFLOW_COMMAND_BACK,
     WORKFLOW_COMMAND_COUNT
 } workflow_command_t;
+
+typedef enum {
+    WORKFLOW_GPS_STATUS_NONE = 0,
+    WORKFLOW_GPS_STATUS_SKIPPED,
+    WORKFLOW_GPS_STATUS_PENDING,
+    WORKFLOW_GPS_STATUS_ACCEPTED,
+    WORKFLOW_GPS_STATUS_FAILED
+} workflow_gps_status_t;
+
+typedef enum {
+    WORKFLOW_SCAN_CHOICE_NONE = 0,
+    WORKFLOW_SCAN_CHOICE_YES,
+    WORKFLOW_SCAN_CHOICE_NO
+} workflow_scan_choice_t;
+
+typedef enum {
+    WORKFLOW_SCAN_UPLOAD_NONE = 0,
+    WORKFLOW_SCAN_UPLOAD_PENDING,
+    WORKFLOW_SCAN_UPLOAD_VERIFIED,
+    WORKFLOW_SCAN_UPLOAD_FAILED
+} workflow_scan_upload_status_t;
 
 typedef enum {
     WORKFLOW_SENSOR_INSUFFICIENT = 0,
@@ -86,6 +120,14 @@ typedef struct {
     bool ok;
     const char *reason;
     workflow_calculation_class_t calculation_class;
+    bool has_location;
+    double latitude;
+    double longitude;
+    double accuracy_m;
+    bool altitude_valid;
+    double altitude_m;
+    double altitude_accuracy_m;
+    uint64_t captured_at_ms;
 } workflow_command_params_t;
 
 typedef struct {
@@ -154,6 +196,11 @@ typedef struct {
     char object_id[OBJECT_STORE_ID_SIZE];
     char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
     bool has_scan;
+    workflow_gps_status_t gps_status;
+    bool layout_result_valid;
+    bool layout_ok;
+    workflow_scan_choice_t scan_choice;
+    workflow_scan_upload_status_t scan_upload_status;
     bool calc_settings_ready;
     char calc_material[24];
     bool calc_velocity_range_set;
@@ -177,6 +224,11 @@ typedef struct {
     bool calibration_ok;
     bool ranging_ok;
     bool calc_settings_ready;
+    workflow_gps_status_t gps_status;
+    bool layout_result_valid;
+    bool layout_ok;
+    workflow_scan_choice_t scan_choice;
+    workflow_scan_upload_status_t scan_upload_status;
 } workflow_core_t;
 
 void workflow_core_init(workflow_core_t *core, bool active_object_present);
@@ -206,6 +258,9 @@ const char *workflow_core_step_name(workflow_step_t step);
 const char *workflow_core_command_name(workflow_command_t command);
 const char *workflow_core_sufficiency_name(workflow_sensor_sufficiency_t sufficiency);
 const char *workflow_core_calculation_class_name(workflow_calculation_class_t calculation_class);
+const char *workflow_core_gps_status_name(workflow_gps_status_t status);
+const char *workflow_core_scan_choice_name(workflow_scan_choice_t choice);
+const char *workflow_core_scan_upload_status_name(workflow_scan_upload_status_t status);
 bool workflow_core_command_from_name(const char *name, workflow_command_t *command);
 bool workflow_core_calculation_class_from_name(
     const char *name,

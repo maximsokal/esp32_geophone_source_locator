@@ -48,6 +48,7 @@ esp_err_t workflow_service_get_snapshot(workflow_snapshot_t *snapshot)
     return ESP_OK;
 }
 
+#if !defined(MAX460_WORKFLOW_ACTION_PARITY_ONLY)
 const char *workflow_core_step_name(workflow_step_t step)
 {
     return step == WORKFLOW_STEP_RESULT ? "RESULT" : "OTHER";
@@ -78,6 +79,25 @@ const char *workflow_core_calculation_class_name(workflow_calculation_class_t ca
         default: return "none";
     }
 }
+
+const char *workflow_core_gps_status_name(workflow_gps_status_t status)
+{
+    static const char *const names[] = { "none", "skipped", "pending", "accepted", "failed" };
+    return status < sizeof(names) / sizeof(names[0]) ? names[status] : "none";
+}
+
+const char *workflow_core_scan_choice_name(workflow_scan_choice_t choice)
+{
+    static const char *const names[] = { "none", "yes", "no" };
+    return choice < sizeof(names) / sizeof(names[0]) ? names[choice] : "none";
+}
+
+const char *workflow_core_scan_upload_status_name(workflow_scan_upload_status_t status)
+{
+    static const char *const names[] = { "none", "pending", "verified", "failed" };
+    return status < sizeof(names) / sizeof(names[0]) ? names[status] : "none";
+}
+#endif
 
 esp_err_t nrf_topology_service_get_leveling_nodes(nrf_topology_leveling_nodes_t *nodes)
 {
@@ -311,6 +331,11 @@ static void test_workflow_json_orders_recommended_action_and_handles_unknown_pro
         .reason = "geometry_degenerate",
         .progress = WORKFLOW_PROGRESS_UNKNOWN,
         .calculation_class = WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS,
+        .gps_status = WORKFLOW_GPS_STATUS_ACCEPTED,
+        .layout_result_valid = true,
+        .layout_ok = true,
+        .scan_choice = WORKFLOW_SCAN_CHOICE_YES,
+        .scan_upload_status = WORKFLOW_SCAN_UPLOAD_VERIFIED,
         .object_id = "OBJ_0001",
         .session_id = "S000001",
         .has_scan = true,
@@ -334,6 +359,11 @@ static void test_workflow_json_orders_recommended_action_and_handles_unknown_pro
     assert_bool(workflow, "has_scan", true);
     assert_bool(workflow, "calc_settings_ready", true);
     assert_string(workflow, "calculation_class", "move_sensors");
+    assert_string(workflow, "gps_status", "accepted");
+    assert_bool(workflow, "layout_result", true);
+    assert_string(workflow, "layout_reason", "geometry_degenerate");
+    assert_string(workflow, "scan_choice", "yes");
+    assert_string(workflow, "scan_upload_status", "verified");
     const cJSON *actions = item(workflow, "allowed_actions");
     assert(cJSON_GetArraySize(actions) == 3);
     assert(cJSON_IsString(cJSON_GetArrayItem(actions, 0)));
@@ -362,9 +392,17 @@ static void test_workflow_json_orders_recommended_action_and_handles_unknown_pro
     cJSON_Delete(root);
 
     g_workflow_snapshot.calculation_class = WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN;
+    g_workflow_snapshot.layout_result_valid = false;
+    g_workflow_snapshot.gps_status = WORKFLOW_GPS_STATUS_SKIPPED;
+    g_workflow_snapshot.scan_choice = WORKFLOW_SCAN_CHOICE_NO;
+    g_workflow_snapshot.scan_upload_status = WORKFLOW_SCAN_UPLOAD_NONE;
     root = cJSON_CreateObject();
     assert(web_status_json_add_workflow(root));
     assert_string(item(root, "workflow"), "calculation_class", "record_again");
+    assert_string(item(root, "workflow"), "gps_status", "skipped");
+    assert_string(item(root, "workflow"), "scan_choice", "no");
+    assert_string(item(root, "workflow"), "scan_upload_status", "none");
+    assert(cJSON_IsNull(item(item(root, "workflow"), "layout_result")));
     cJSON_Delete(root);
     g_workflow_snapshot.calculation_class = WORKFLOW_CALCULATION_CLASS_INTERNAL;
     root = cJSON_CreateObject();
@@ -542,8 +580,79 @@ static void test_workflow_calibration_json_serializes_values_and_nulls(void)
 }
 
 
+#if defined(MAX460_WORKFLOW_ACTION_PARITY_ONLY)
+static void test_max460_c_status_action_table_for_guided_steps(void)
+{
+    static const workflow_step_t steps[] = {
+        WORKFLOW_STEP_PLACEMENT,
+        WORKFLOW_STEP_GPS_CHOICE,
+        WORKFLOW_STEP_GPS_PENDING,
+        WORKFLOW_STEP_LAYOUT_READY,
+        WORKFLOW_STEP_SCAN_CHOICE,
+        WORKFLOW_STEP_SCANNING,
+    };
+    printf("MAX460_ALLOWED_ACTIONS={");
+    for (size_t step_index = 0U; step_index < sizeof(steps) / sizeof(steps[0]); ++step_index) {
+        workflow_core_t core;
+        workflow_core_init(&core, true);
+        core.step = steps[step_index];
+        core.generation = 460U;
+        core.calibration_ok = true;
+        core.ranging_ok = true;
+        core.gps_status = WORKFLOW_GPS_STATUS_ACCEPTED;
+        core.scan_choice = WORKFLOW_SCAN_CHOICE_YES;
+        core.scan_upload_status = WORKFLOW_SCAN_UPLOAD_PENDING;
+
+        workflow_snapshot_t snapshot;
+        workflow_core_snapshot(&core, 4U, true, &snapshot);
+        snapshot.generation = 460U;
+        snapshot.placement.all_stable = true;
+        (void)snprintf(snapshot.object_id, sizeof(snapshot.object_id), "%s", "OBJ_0001");
+
+        g_workflow_snapshot = snapshot;
+        g_workflow_snapshot_error = ESP_OK;
+        cJSON *root = cJSON_CreateObject();
+        assert(root != NULL);
+        assert(web_status_json_add_workflow(root));
+        const cJSON *workflow = item(root, "workflow");
+        assert_string(workflow, "step", workflow_core_step_name(steps[step_index]));
+        assert_number(workflow, "generation", 460.0);
+        const cJSON *actions = item(workflow, "allowed_actions");
+        size_t expected_count = 0U;
+        for (workflow_command_t command = 0; command < WORKFLOW_COMMAND_COUNT; ++command) {
+            if ((snapshot.allowed_actions & WORKFLOW_ACTION(command)) != 0U) ++expected_count;
+        }
+        assert(cJSON_GetArraySize(actions) == (int)expected_count);
+
+        for (int action_index = 0; action_index < cJSON_GetArraySize(actions); ++action_index) {
+            const cJSON *action = cJSON_GetArrayItem(actions, action_index);
+            workflow_command_t command;
+            assert(cJSON_IsString(action));
+            assert(workflow_core_command_from_name(action->valuestring, &command));
+            assert((snapshot.allowed_actions & WORKFLOW_ACTION(command)) != 0U);
+        }
+
+        if (step_index > 0U) printf(",");
+        printf("\"%s\":[", workflow_core_step_name(steps[step_index]));
+        for (int action_index = 0; action_index < cJSON_GetArraySize(actions); ++action_index) {
+            const cJSON *action = cJSON_GetArrayItem(actions, action_index);
+            if (action_index > 0) printf(",");
+            printf("\"%s\"", action->valuestring);
+        }
+        printf("]");
+        cJSON_Delete(root);
+    }
+    printf("}\n");
+}
+#endif
+
+
 int main(void)
 {
+#if defined(MAX460_WORKFLOW_ACTION_PARITY_ONLY)
+    test_max460_c_status_action_table_for_guided_steps();
+    return 0;
+#else
     test_planar_gate_is_serialized_with_warning();
     test_not_level_gate_is_serialized_as_blocked();
     test_three_dimensional_gate_is_serialized_without_warning();
@@ -555,4 +664,5 @@ int main(void)
     test_workflow_calibration_json_serializes_values_and_nulls();
     puts("web status recording gate host tests passed");
     return 0;
+#endif
 }

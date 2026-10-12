@@ -247,9 +247,11 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Go to calibration", /* tft.workflow.action.go_calibration */
     "Move sensors", /* tft.workflow.action.move_sensors */
     "Place sensors", /* tft.workflow.action.place_sensors */
+    "Sensors placed", /* tft.workflow.action.placement_confirmed */
     "Record again", /* tft.workflow.action.record_again */
     "Retry", /* tft.workflow.action.retry */
     "Sensors placed", /* tft.workflow.action.sensors_placed */
+    "Skip", /* tft.workflow.action.skip */
     "Start measurement", /* tft.workflow.action.start_measurement */
     "Start recording", /* tft.workflow.action.start_recording */
     "Stop recording", /* tft.workflow.action.stop_recording */
@@ -261,9 +263,11 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "%s H:%s z:%smm I:%s b:%s CS:%s", /* tft.workflow.calibration.row */
     "Calibration: %s", /* tft.workflow.calibration.status */
     "Delete recording? OK = yes, LEFT = no", /* tft.workflow.confirm.delete */
+    "Waiting for phone GPS", /* tft.workflow.gps.waiting */
     "UP/DOWN select OK run LEFT back RIGHT 3D", /* tft.workflow.hint.3d */
     "UP/DOWN actions  OK run  LEFT back", /* tft.workflow.hint.navigation */
     "Select an object", /* tft.workflow.idle.select_object */
+    "Layout ready to calculate", /* tft.workflow.layout.ready */
     "Set uncertainty (m/s)", /* tft.workflow.material.custom_sigma */
     "+/- %s m/s", /* tft.workflow.material.custom_sigma_value */
     "Set speed (m/s)", /* tft.workflow.material.custom_speed */
@@ -331,6 +335,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Record again", /* tft.workflow.result.record_again */
     "Source calculated successfully", /* tft.workflow.result.success */
     "Waveform segment unavailable", /* tft.workflow.result.waveform_unavailable */
+    "Scan on phone", /* tft.workflow.scan.phone */
     "Under 3: limited position; calibration can continue", /* tft.workflow.sensor.insufficient */
     "2D possible; connect >=4 for 3D", /* tft.workflow.sensor.planar */
     "3D ready", /* tft.workflow.sensor.ready */
@@ -346,7 +351,10 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "CALIBRATION SETUP", /* tft.workflow.title.calib_prep */
     "CALIBRATION RESULT", /* tft.workflow.title.calib_result */
     "CALIBRATION", /* tft.workflow.title.calibrating */
+    "PHONE GPS", /* tft.workflow.title.gps_choice */
+    "WAITING FOR GPS", /* tft.workflow.title.gps_pending */
     "IDLE", /* tft.workflow.title.idle */
+    "LAYOUT READY", /* tft.workflow.title.layout_ready */
     "OBJECT", /* tft.workflow.title.object */
     "SENSOR PLACEMENT", /* tft.workflow.title.placement */
     "BLUETOOTH RANGING", /* tft.workflow.title.ranging */
@@ -354,6 +362,8 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "READY TO RECORD", /* tft.workflow.title.record_ready */
     "RECORDING", /* tft.workflow.title.recording */
     "RESULT", /* tft.workflow.title.result */
+    "3D SCAN", /* tft.workflow.title.scan_choice */
+    "SCANNING", /* tft.workflow.title.scanning */
     "SENSOR CHECK", /* tft.workflow.title.sensor_check */
     "RECORDING STOPPED", /* tft.workflow.title.stopped */
     "FAIL", /* tft.workflow.value.fail */
@@ -657,9 +667,11 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Перейти до калібрування", /* tft.workflow.action.go_calibration */
     "Перемістити датчики", /* tft.workflow.action.move_sensors */
     "Розмістити датчики", /* tft.workflow.action.place_sensors */
+    "Датчики встановлено", /* tft.workflow.action.placement_confirmed */
     "Записати ще раз", /* tft.workflow.action.record_again */
     "Повторити", /* tft.workflow.action.retry */
     "Датчики розміщено", /* tft.workflow.action.sensors_placed */
+    "Пропустити", /* tft.workflow.action.skip */
     "Почати вимірювання", /* tft.workflow.action.start_measurement */
     "Почати запис", /* tft.workflow.action.start_recording */
     "Зупинити запис", /* tft.workflow.action.stop_recording */
@@ -671,9 +683,11 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "%s В:%s z:%sмм І:%s b:%s CS:%s", /* tft.workflow.calibration.row */
     "Калібрування: %s", /* tft.workflow.calibration.status */
     "Видалити запис? OK = так, LEFT = ні", /* tft.workflow.confirm.delete */
+    "Очікування GPS телефона", /* tft.workflow.gps.waiting */
     "UP/DOWN вибір OK дія LEFT назад RIGHT 3D", /* tft.workflow.hint.3d */
     "UP/DOWN дії  OK вибір  LEFT назад", /* tft.workflow.hint.navigation */
     "Виберіть об’єкт", /* tft.workflow.idle.select_object */
+    "Схема готова до розрахунку", /* tft.workflow.layout.ready */
     "Задати невизначеність (м/с)", /* tft.workflow.material.custom_sigma */
     "+/- %s м/с", /* tft.workflow.material.custom_sigma_value */
     "Задати швидкість (м/с)", /* tft.workflow.material.custom_speed */
@@ -741,6 +755,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Запишіть ще раз", /* tft.workflow.result.record_again */
     "Джерело успішно визначено", /* tft.workflow.result.success */
     "Фрагмент хвильової форми недоступний", /* tft.workflow.result.waveform_unavailable */
+    "Скануйте на телефоні", /* tft.workflow.scan.phone */
     "Менше 3: позиція обмежена; калібрування триває", /* tft.workflow.sensor.insufficient */
     "Можливе 2D; для 3D підключіть щонайменше 4", /* tft.workflow.sensor.planar */
     "3D готове", /* tft.workflow.sensor.ready */
@@ -756,7 +771,10 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Підготовка до калібрування", /* tft.workflow.title.calib_prep */
     "Результат калібрування", /* tft.workflow.title.calib_result */
     "Калібрування", /* tft.workflow.title.calibrating */
+    "GPS ТЕЛЕФОНА", /* tft.workflow.title.gps_choice */
+    "ОЧІКУВАННЯ GPS", /* tft.workflow.title.gps_pending */
     "Очікування", /* tft.workflow.title.idle */
+    "СХЕМА ГОТОВА", /* tft.workflow.title.layout_ready */
     "Об’єкт", /* tft.workflow.title.object */
     "Розміщення датчиків", /* tft.workflow.title.placement */
     "Вимірювання дальності", /* tft.workflow.title.ranging */
@@ -764,6 +782,8 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Готово до запису", /* tft.workflow.title.record_ready */
     "Запис", /* tft.workflow.title.recording */
     "Результат", /* tft.workflow.title.result */
+    "3D СКАНУВАННЯ", /* tft.workflow.title.scan_choice */
+    "СКАНУВАННЯ", /* tft.workflow.title.scanning */
     "Перевірка датчиків", /* tft.workflow.title.sensor_check */
     "Запис зупинено", /* tft.workflow.title.stopped */
     "НЕВДАЛО", /* tft.workflow.value.fail */

@@ -267,6 +267,10 @@ function Assert-MeasurementStartWorkflowReady {
 
     $status = Invoke-JsonRequest ("{0}/api/status" -f $Base) "GET" $null $RequestTimeoutSec
     $step = [string]$status.workflow.step
+    $guidedSteps = @("CALIB_RESULT", "PLACEMENT", "GPS_CHOICE", "GPS_PENDING", "LAYOUT_READY", "RANGING", "RANGING_RESULT", "SCAN_CHOICE", "SCANNING")
+    if ($step -in $guidedSteps) {
+        throw "$Action is waiting for the guided workflow at '$step'. Confirm placement, GPS choice, layout calculation, and scan choice before this HIL run."
+    }
     if ($step -notin @("RECORD_READY", "RECORDING")) {
         throw "$Action requires workflow step RECORD_READY or RECORDING; current step is '$step'. Complete the guided workflow before this HIL run."
     }

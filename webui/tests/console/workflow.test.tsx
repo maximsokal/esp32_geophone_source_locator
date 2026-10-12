@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { DevicePod, DeviceStatus, DeviceWorkflowStatus, WorkflowStep } from '../../src/domain/device';
+import type { DevicePod, DeviceStatus, DeviceWorkflowStatus, PhoneLocationInput, WorkflowStep } from '../../src/domain/device';
 import { sendWorkflowCommand } from '../../src/api/deviceApi';
 import type { WorkflowCommandResult } from '../../src/api/deviceApi';
 import WorkflowPanel from '../../src/features/workflow/WorkflowPanel';
@@ -16,6 +16,7 @@ import {
 import { workflowStatusPollDelay } from '../../src/features/workflow/workflowPolling';
 import { translate } from '../../src/i18n';
 import { en } from '../../src/i18n/catalog.en.gen';
+import max460AllowedActions from '../fixtures/max460_workflow_allowed_actions.json';
 
 vi.mock('../../src/i18n', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/i18n')>();
@@ -43,9 +44,14 @@ const ACTIONS_BY_STEP: Record<WorkflowStep, readonly string[]> = {
   CALIB_PREP: ['SENSORS_PLACED', 'BACK'],
   CALIBRATING: ['BACK'],
   CALIB_RESULT: ['RETRY', 'BACK'],
-  PLACEMENT: ['CALCULATE_POSITIONS', 'BACK'],
+  PLACEMENT: ['BACK'],
+  GPS_CHOICE: ['REQUEST_GPS', 'GPS_SKIP', 'BACK'],
+  GPS_PENDING: ['GPS_SKIP', 'BACK'],
+  LAYOUT_READY: ['CALCULATE_POSITIONS', 'BACK'],
   RANGING: ['BACK'],
   RANGING_RESULT: ['RETRY', 'BACK'],
+  SCAN_CHOICE: ['SCAN_START', 'SCAN_SKIP', 'BACK'],
+  SCANNING: ['BACK'],
   RECORD_READY: ['START_RECORDING', 'MOVE_SENSORS', 'BACK'],
   RECORDING: ['STOP_RECORDING'],
   STOPPED: ['DELETE_RECORDING', 'RECORD_AGAIN', 'MOVE_SENSORS', 'BACK'],
@@ -79,6 +85,11 @@ function workflow(step: string, actions: string[] = [], extra: Partial<DeviceWor
     session_id: 'S000001',
     has_scan: false,
     calculation_class: 'none',
+    gps_status: 'none',
+    layout_result: null,
+    layout_reason: '',
+    scan_choice: 'none',
+    scan_upload_status: 'none',
     ...extra,
   } as DeviceWorkflowStatus;
 }
@@ -277,6 +288,69 @@ describe('workflow view model (MAX-296)', () => {
     expect(sendCommand).not.toHaveBeenCalled();
     act(() => renderer.unmount());
   });
+
+  it('test_tft_webui_allowed_actions_generation_and_reconnect_parity', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const steps = ['PLACEMENT', 'GPS_CHOICE', 'GPS_PENDING', 'LAYOUT_READY', 'SCAN_CHOICE', 'SCANNING'] as const;
+
+    for (const step of steps) {
+      const expected = max460AllowedActions[step];
+      const status = statusFor(step, [...expected], 4, {
+        generation: 460,
+        placement: { per_node: [], all_stable: true },
+      });
+      const modelActions = workflowViewModel(status).actions;
+      expect(modelActions.map((action) => action.command).sort()).toEqual([...expected].sort());
+
+      let renderer!: ReactTestRenderer;
+      await act(async () => {
+        renderer = create(createElement(WorkflowPanel, {
+          status,
+          objectName: 'Quarry',
+          sendCommand: vi.fn().mockResolvedValue({ ok: true, workflow: workflow(step, [...expected], { generation: 461 }) }),
+          onRefreshStatus: async () => true,
+          onWorkflowUpdate: () => undefined,
+          onOpenScanner: () => undefined,
+        }));
+      });
+      const buttons = renderer.root.findByProps({ className: 'console-actions' }).findAllByType('button');
+      expect(buttons.map((button) => button.props['data-command']).sort()).toEqual([...expected].sort());
+      expect(buttons.map((button) => button.children.join('')).sort()).toEqual(
+        modelActions.map((action) => translate('en', action.labelKey)).sort(),
+      );
+      act(() => renderer.unmount());
+    }
+
+    const generation = 460;
+    const createScanChoiceSnapshot = () => statusFor('SCAN_CHOICE', [...max460AllowedActions.SCAN_CHOICE], 4, { generation });
+    const renderScanChoice = async (status: DeviceStatus): Promise<ReactTestRenderer> => {
+      let renderer!: ReactTestRenderer;
+      await act(async () => {
+        renderer = create(createElement(WorkflowPanel, {
+          status,
+          objectName: 'Quarry',
+          sendCommand: vi.fn().mockResolvedValue({ ok: true, workflow: workflow('SCAN_CHOICE', [...max460AllowedActions.SCAN_CHOICE], { generation }) }),
+          onRefreshStatus: async () => true,
+          onWorkflowUpdate: () => undefined,
+          onOpenScanner: () => undefined,
+        }));
+      });
+      return renderer;
+    };
+    const first = await renderScanChoice(createScanChoiceSnapshot());
+    const firstStep = first.root.findAllByType('h2')[0].children.join('');
+    const firstButtons = first.root.findByProps({ className: 'console-actions' })
+      .findAllByType('button')
+      .map((button) => ({ command: button.props['data-command'], label: button.children.join('') }));
+    act(() => first.unmount());
+
+    const reconnected = await renderScanChoice(createScanChoiceSnapshot());
+    expect(reconnected.root.findAllByType('h2')[0].children.join('')).toBe(firstStep);
+    expect(reconnected.root.findByProps({ className: 'console-actions' })
+      .findAllByType('button')
+      .map((button) => ({ command: button.props['data-command'], label: button.children.join('') }))).toEqual(firstButtons);
+    act(() => reconnected.unmount());
+  });
 });
 
 describe('workflow command API', () => {
@@ -289,6 +363,31 @@ describe('workflow command API', () => {
     expect(result).toEqual({ ok: true, workflow: next });
     expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({
       action: 'workflow_command', command: 'START_MEASUREMENT', generation: 7,
+    });
+  });
+
+  it('sends a phone GPS fix with GPS_ACCEPT and omits unavailable altitude fields', async () => {
+    const next = workflow('LAYOUT_READY', ['CALCULATE_POSITIONS']);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, workflow: next }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const location: PhoneLocationInput = {
+      latitude: 50.4501,
+      longitude: 30.5234,
+      accuracy_m: 3.2,
+      altitude_m: null,
+      altitude_accuracy_m: null,
+      captured_at_ms: 123456789,
+    };
+
+    await sendWorkflowCommand('GPS_ACCEPT', 21, {}, location);
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toEqual({
+      action: 'workflow_command',
+      command: 'GPS_ACCEPT',
+      generation: 21,
+      latitude: 50.4501,
+      longitude: 30.5234,
+      accuracy_m: 3.2,
+      captured_at_ms: 123456789,
     });
   });
 
@@ -306,6 +405,237 @@ describe('workflow command API', () => {
 });
 
 describe('workflow operator actions', () => {
+  it('requests a fresh phone fix, then reports permission denial with the pending generation', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const getCurrentPosition = vi.fn((_success: PositionCallback, failure: PositionErrorCallback) => {
+      failure({ code: 1, message: 'permission denied', PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3 } as GeolocationPositionError);
+    });
+    vi.stubGlobal('navigator', { geolocation: { getCurrentPosition } });
+    const pending = workflow('GPS_PENDING', ['GPS_SKIP', 'BACK'], { generation: 8, gps_status: 'pending' });
+    const failed = workflow('GPS_CHOICE', ['REQUEST_GPS', 'GPS_SKIP', 'BACK'], { generation: 9, gps_status: 'failed' });
+    const sendCommand = vi.fn(async (command: string, _generation: number, _location?: PhoneLocationInput) => ({
+      ok: true as const,
+      workflow: command === 'REQUEST_GPS' ? pending : failed,
+    }));
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(createElement(WorkflowPanel, {
+        status: statusFor('GPS_CHOICE', ACTIONS_BY_STEP.GPS_CHOICE),
+        objectName: 'Quarry',
+        sendCommand,
+        onRefreshStatus: async () => true,
+        onWorkflowUpdate: () => undefined,
+        onOpenScanner: () => undefined,
+      }));
+    });
+
+    const requestButton = renderer.root.findAllByType('button').find((button) =>
+      button.children.includes(translate('en', 'workflow.action.request_gps')));
+    await act(async () => {
+      requestButton?.props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getCurrentPosition).toHaveBeenCalledWith(expect.any(Function), expect.any(Function), expect.objectContaining({ maximumAge: 0 }));
+    expect(sendCommand.mock.calls.map(([command, generation]) => [command, generation])).toEqual([
+      ['REQUEST_GPS', 7],
+      ['GPS_CAPTURE_FAILED', 8],
+    ]);
+    expect(renderer.root.findAllByProps({ role: 'status' }).some((node) =>
+      node.children.includes(translate('en', 'workflow.gps.failed')))).toBe(true);
+    act(() => renderer.unmount());
+  });
+
+  it('test_gps_timeout_failure_returns_to_choice_with_skip_and_back', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const getCurrentPosition = vi.fn((_success: PositionCallback, failure: PositionErrorCallback) => {
+      failure({ code: 3, message: 'position timeout', PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3 } as GeolocationPositionError);
+    });
+    vi.stubGlobal('navigator', { geolocation: { getCurrentPosition } });
+    const pending = workflow('GPS_PENDING', ['GPS_SKIP', 'BACK'], { generation: 8, gps_status: 'pending' });
+    const failed = workflow('GPS_CHOICE', ['REQUEST_GPS', 'GPS_SKIP', 'BACK'], { generation: 9, gps_status: 'failed' });
+    const skipped = workflow('LAYOUT_READY', ['CALCULATE_POSITIONS', 'BACK'], { generation: 10, gps_status: 'skipped' });
+    const sendCommand = vi.fn(async (command: string, _generation: number, _location?: PhoneLocationInput) => ({
+      ok: true as const,
+      workflow: command === 'REQUEST_GPS' ? pending : command === 'GPS_CAPTURE_FAILED' ? failed : skipped,
+    }));
+    const onWorkflowUpdate = vi.fn();
+    const createPanel = (status: ReturnType<typeof statusFor>) => createElement(WorkflowPanel, {
+      status,
+      objectName: 'Quarry',
+      sendCommand,
+      onRefreshStatus: async () => true,
+      onWorkflowUpdate,
+      onOpenScanner: () => undefined,
+    });
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(createPanel(statusFor('GPS_CHOICE', ACTIONS_BY_STEP.GPS_CHOICE)));
+    });
+
+    const findCommandButton = (command: string) => renderer.root.findAllByType('button').find((button) =>
+      button.props['data-command'] === command);
+    await act(async () => {
+      findCommandButton('REQUEST_GPS')?.props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getCurrentPosition).toHaveBeenCalledWith(expect.any(Function), expect.any(Function), expect.objectContaining({ maximumAge: 0 }));
+    expect(sendCommand.mock.calls.map(([command, generation]) => [command, generation])).toEqual([
+      ['REQUEST_GPS', 7],
+      ['GPS_CAPTURE_FAILED', 8],
+    ]);
+    expect(onWorkflowUpdate).toHaveBeenCalledWith(failed);
+    await act(async () => {
+      renderer.update(createPanel(statusFor('GPS_CHOICE', ACTIONS_BY_STEP.GPS_CHOICE, null, {
+        generation: 9,
+        gps_status: 'failed',
+      })));
+    });
+    expect(findCommandButton('REQUEST_GPS')).toBeDefined();
+    expect(findCommandButton('GPS_SKIP')).toBeDefined();
+    expect(findCommandButton('BACK')).toBeDefined();
+
+    await act(async () => {
+      findCommandButton('GPS_SKIP')?.props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(sendCommand.mock.calls.at(-1)?.slice(0, 2)).toEqual(['GPS_SKIP', 9]);
+    act(() => renderer.unmount());
+  });
+
+  it('captures GPS when another controller leaves the workflow at GPS_PENDING', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const getCurrentPosition = vi.fn((success: PositionCallback) => {
+      success({
+        coords: {
+          latitude: 49.0,
+          longitude: 32.0,
+          accuracy: 2.5,
+          altitude: null,
+          altitudeAccuracy: null,
+          heading: null,
+          speed: null,
+        },
+        timestamp: 1234.9,
+      } as GeolocationPosition);
+    });
+    vi.stubGlobal('navigator', { geolocation: { getCurrentPosition } });
+    const layout = workflow('LAYOUT_READY', ['CALCULATE_POSITIONS'], { generation: 52, gps_status: 'accepted' });
+    const sendCommand = vi.fn(async () => ({ ok: true as const, workflow: layout }));
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(createElement(WorkflowPanel, {
+        status: statusFor('GPS_PENDING', [...max460AllowedActions.GPS_PENDING], 4, {
+          generation: 51,
+          gps_status: 'pending',
+        }),
+        objectName: 'Quarry',
+        sendCommand,
+        onRefreshStatus: async () => true,
+        onWorkflowUpdate: () => undefined,
+        onOpenScanner: () => undefined,
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getCurrentPosition).toHaveBeenCalledWith(expect.any(Function), expect.any(Function), expect.objectContaining({ maximumAge: 0 }));
+    expect(sendCommand).toHaveBeenCalledWith('GPS_ACCEPT', 51, {
+      latitude: 49.0,
+      longitude: 32.0,
+      accuracy_m: 2.5,
+      altitude_m: null,
+      altitude_accuracy_m: null,
+      captured_at_ms: 1234,
+    });
+    act(() => renderer.unmount());
+  });
+
+  it('accepts a fresh fix only through GPS_ACCEPT and opens the phone scanner only after SCAN_START', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const getCurrentPosition = vi.fn((success: PositionCallback) => {
+      success({
+        coords: {
+          latitude: 49.0,
+          longitude: 32.0,
+          accuracy: 2.5,
+          altitude: null,
+          altitudeAccuracy: null,
+          heading: null,
+          speed: null,
+        },
+        timestamp: 1234.9,
+      } as GeolocationPosition);
+    });
+    vi.stubGlobal('navigator', { geolocation: { getCurrentPosition } });
+    const pending = workflow('GPS_PENDING', ['GPS_SKIP', 'BACK'], { generation: 8, gps_status: 'pending' });
+    const layout = workflow('LAYOUT_READY', ['CALCULATE_POSITIONS'], { generation: 9, gps_status: 'accepted' });
+    const sendCommand = vi.fn(async (command: string, _generation: number, _location?: PhoneLocationInput) => ({
+      ok: true as const,
+      workflow: command === 'REQUEST_GPS' ? pending : layout,
+    }));
+    const onOpenScanner = vi.fn();
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(createElement(WorkflowPanel, {
+        status: statusFor('GPS_CHOICE', ACTIONS_BY_STEP.GPS_CHOICE),
+        objectName: 'Quarry',
+        sendCommand,
+        onRefreshStatus: async () => true,
+        onWorkflowUpdate: () => undefined,
+        onOpenScanner,
+      }));
+    });
+    const requestButton = renderer.root.findAllByType('button').find((button) =>
+      button.children.includes(translate('en', 'workflow.action.request_gps')));
+    await act(async () => {
+      requestButton?.props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(sendCommand.mock.calls.map(([command, generation, location]) => [command, generation, location])).toEqual([
+      ['REQUEST_GPS', 7, undefined],
+      ['GPS_ACCEPT', 8, {
+        latitude: 49.0,
+        longitude: 32.0,
+        accuracy_m: 2.5,
+        altitude_m: null,
+        altitude_accuracy_m: null,
+        captured_at_ms: 1234,
+      }],
+    ]);
+
+    const scanResult = workflow('SCANNING', ['BACK'], { object_id: 'OBJ_0001' });
+    sendCommand.mockImplementation(async () => ({ ok: true, workflow: scanResult }));
+    await act(async () => {
+      renderer.update(createElement(WorkflowPanel, {
+        status: statusFor('SCAN_CHOICE', ACTIONS_BY_STEP.SCAN_CHOICE),
+        objectName: 'Quarry',
+        sendCommand,
+        onRefreshStatus: async () => true,
+        onWorkflowUpdate: () => undefined,
+        onOpenScanner,
+      }));
+    });
+    const scanButton = renderer.root.findAllByType('button').find((button) =>
+      button.children.includes(translate('en', 'workflow.action.scan_start')));
+    await act(async () => {
+      scanButton?.props.onClick();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(onOpenScanner).toHaveBeenCalledWith('OBJ_0001', null);
+    act(() => renderer.unmount());
+  });
+
   it('refetches status and shows the state-changed notice on a stale command', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
     const refresh = vi.fn().mockResolvedValue(true);

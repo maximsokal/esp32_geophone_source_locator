@@ -11,6 +11,8 @@
 #include "web_server_internal.h"
 #include "workflow_service.h"
 
+bool web_status_json_add_workflow(cJSON *root);
+
 const char *esp_err_to_name(esp_err_t error)
 {
     (void)error;
@@ -19,6 +21,7 @@ const char *esp_err_to_name(esp_err_t error)
 
 static nrf_topology_leveling_summary_t s_leveling;
 static esp_err_t s_leveling_error;
+static workflow_snapshot_t s_workflow_snapshot;
 
 esp_err_t nrf_topology_service_get_leveling_summary(
     nrf_topology_leveling_summary_t *summary
@@ -61,8 +64,8 @@ esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snaps
 
 esp_err_t workflow_service_get_snapshot(workflow_snapshot_t *snapshot)
 {
-    (void)snapshot;
-    return ESP_ERR_INVALID_STATE;
+    *snapshot = s_workflow_snapshot;
+    return ESP_OK;
 }
 
 const char *workflow_core_step_name(workflow_step_t step)
@@ -89,6 +92,39 @@ const char *workflow_core_calculation_class_name(
 {
     (void)calculation_class;
     return "none";
+}
+
+const char *workflow_core_gps_status_name(workflow_gps_status_t status)
+{
+    switch (status) {
+        case WORKFLOW_GPS_STATUS_SKIPPED: return "skipped";
+        case WORKFLOW_GPS_STATUS_PENDING: return "pending";
+        case WORKFLOW_GPS_STATUS_ACCEPTED: return "accepted";
+        case WORKFLOW_GPS_STATUS_FAILED: return "failed";
+        case WORKFLOW_GPS_STATUS_NONE:
+        default: return "none";
+    }
+}
+
+const char *workflow_core_scan_choice_name(workflow_scan_choice_t choice)
+{
+    switch (choice) {
+        case WORKFLOW_SCAN_CHOICE_YES: return "yes";
+        case WORKFLOW_SCAN_CHOICE_NO: return "no";
+        case WORKFLOW_SCAN_CHOICE_NONE:
+        default: return "none";
+    }
+}
+
+const char *workflow_core_scan_upload_status_name(workflow_scan_upload_status_t status)
+{
+    switch (status) {
+        case WORKFLOW_SCAN_UPLOAD_PENDING: return "pending";
+        case WORKFLOW_SCAN_UPLOAD_VERIFIED: return "verified";
+        case WORKFLOW_SCAN_UPLOAD_FAILED: return "failed";
+        case WORKFLOW_SCAN_UPLOAD_NONE:
+        default: return "none";
+    }
 }
 
 static const cJSON *field(const cJSON *object, const char *name)
@@ -160,11 +196,34 @@ static void test_available_storage_preserves_topology_gate(void)
     cJSON_Delete(root);
 }
 
+static void test_workflow_json_serializes_gps_layout_and_scan_status(void)
+{
+    s_workflow_snapshot.step = WORKFLOW_STEP_SCANNING;
+    s_workflow_snapshot.gps_status = WORKFLOW_GPS_STATUS_ACCEPTED;
+    s_workflow_snapshot.layout_result_valid = true;
+    s_workflow_snapshot.layout_ok = true;
+    s_workflow_snapshot.scan_choice = WORKFLOW_SCAN_CHOICE_YES;
+    s_workflow_snapshot.scan_upload_status = WORKFLOW_SCAN_UPLOAD_PENDING;
+    s_workflow_snapshot.progress = WORKFLOW_PROGRESS_UNKNOWN;
+    (void)snprintf(s_workflow_snapshot.reason, sizeof(s_workflow_snapshot.reason), "%s", "");
+
+    cJSON *root = cJSON_CreateObject();
+    assert(root != NULL);
+    assert(web_status_json_add_workflow(root));
+    const cJSON *workflow = field(root, "workflow");
+    assert_string(workflow, "gps_status", "accepted");
+    assert_bool(workflow, "layout_result", true);
+    assert_string(workflow, "scan_choice", "yes");
+    assert_string(workflow, "scan_upload_status", "pending");
+    cJSON_Delete(root);
+}
+
 int main(void)
 {
     test_storage_unavailable_blocks_an_eligible_topology();
     test_storage_unavailable_reason_survives_topology_error();
     test_available_storage_preserves_topology_gate();
+    test_workflow_json_serializes_gps_layout_and_scan_status();
     puts("web_status_recording_gate_storage_test: PASS");
     return 0;
 }

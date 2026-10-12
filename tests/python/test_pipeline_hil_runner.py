@@ -267,6 +267,16 @@ def test_saved_lod_runner_checks_against_the_reported_rate_by_default():
     assert "[int]$saved.sample_rate_hz -ne $reportedSampleRateHz" in runner
 
 
+def test_saved_lod_runner_waits_for_all_explicit_guided_steps():
+    runner = (REPO_ROOT / "tools" / "run_saved_lod_hil.ps1").read_text(encoding="utf-8")
+    guided = ("CALIB_RESULT", "PLACEMENT", "GPS_CHOICE", "GPS_PENDING", "LAYOUT_READY",
+              "RANGING", "RANGING_RESULT", "SCAN_CHOICE", "SCANNING")
+    assert '$guidedSteps = @(' in runner
+    assert 'if ($step -in $guidedSteps)' in runner
+    for step in guided:
+        assert f'"{step}"' in runner
+
+
 def test_api_status_rejects_stale_runtime_heartbeat(tmp_path: Path):
     result = run_api_fixture(
         tmp_path,

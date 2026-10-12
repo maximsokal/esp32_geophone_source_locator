@@ -473,12 +473,26 @@ bool web_status_json_add_workflow(cJSON *root)
         cJSON_AddNumberToObject(workflow, "assigned_remotes", snapshot.assigned_remotes) == NULL ||
         cJSON_AddStringToObject(workflow, "reason", snapshot.reason) == NULL ||
         cJSON_AddBoolToObject(workflow, "has_scan", snapshot.has_scan) == NULL ||
+        cJSON_AddStringToObject(
+            workflow, "gps_status", workflow_core_gps_status_name(snapshot.gps_status)) == NULL ||
+        cJSON_AddStringToObject(
+            workflow, "scan_choice", workflow_core_scan_choice_name(snapshot.scan_choice)) == NULL ||
+        cJSON_AddStringToObject(
+            workflow, "scan_upload_status",
+            workflow_core_scan_upload_status_name(snapshot.scan_upload_status)) == NULL ||
         cJSON_AddBoolToObject(workflow, "calc_settings_ready", snapshot.calc_settings_ready) == NULL ||
         cJSON_AddStringToObject(
             workflow, "calculation_class",
             workflow_core_calculation_class_name(snapshot.calculation_class)) == NULL) {
         return false;
     }
+
+    if (snapshot.layout_result_valid) {
+        if (cJSON_AddBoolToObject(workflow, "layout_result", snapshot.layout_ok) == NULL) return false;
+    } else if (cJSON_AddNullToObject(workflow, "layout_result") == NULL) {
+        return false;
+    }
+    if (cJSON_AddStringToObject(workflow, "layout_reason", snapshot.reason) == NULL) return false;
 
     const bool object_id_added = snapshot.object_id[0] != '\0'
         ? cJSON_AddStringToObject(workflow, "object_id", snapshot.object_id) != NULL

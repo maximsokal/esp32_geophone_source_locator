@@ -86,8 +86,8 @@ export default function DeviceConsoleApp() {
   const [objects, setObjects] = useState<ObjectStoreState | null>(null);
   const [sessions, setSessions] = useState<RecordingSessionCollection | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  /* MAX-167: which recording/session a 3D scan attaches to -- a scan has no
-   * valid object-level home any more, so the scanner screen needs both IDs. */
+  /* Session scans use both IDs; the workflow intentionally passes a null
+   * session so the scanner saves into the object's pre-record staging area. */
   const [scannerSessionId, setScannerSessionId] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<unknown | null>(null);
   const [workspaceError, setWorkspaceError] = useState<unknown | null>(null);
@@ -106,6 +106,8 @@ export default function DeviceConsoleApp() {
   const storageRecoveryOwedRef = useRef(false);
   const refreshWorkspaceAfterStorageRecoveryRef = useRef<() => void>(() => undefined);
   const workflowStepRef = useRef(status?.workflow?.step);
+  const observedWorkflowStepRef = useRef(status?.workflow?.step);
+  const workflowResumeAppliedRef = useRef(false);
   workflowStepRef.current = status?.workflow?.step;
 
   useEffect(() => {
@@ -116,6 +118,30 @@ export default function DeviceConsoleApp() {
       retireRequestOwner(owner);
     };
   }, []);
+
+  useEffect(() => {
+    const workflow = status?.workflow;
+    const previousStep = observedWorkflowStepRef.current;
+    observedWorkflowStepRef.current = workflow?.step;
+    if (workflow === undefined) return;
+    if (workflow.step === 'SCANNING' && previousStep !== 'SCANNING') {
+      workflowResumeAppliedRef.current = true;
+      if (workflow.object_id) setSelectedId(workflow.object_id);
+      setScannerSessionId(null);
+      setScreen('scanner');
+      return;
+    }
+    if (workflowResumeAppliedRef.current) return;
+    workflowResumeAppliedRef.current = true;
+    if (workflow.step === 'IDLE' || workflow.step === 'OBJECT') return;
+    if (workflow.object_id) setSelectedId(workflow.object_id);
+    if (workflow.step === 'SCANNING') {
+      setScannerSessionId(null);
+      setScreen('scanner');
+    } else {
+      setScreen('workflow');
+    }
+  }, [status?.workflow]);
 
   const refreshStatus = useCallback(async (): Promise<boolean> => {
     const owner = requestOwnerRef.current;
@@ -572,18 +598,62 @@ export default function DeviceConsoleApp() {
     setScreen('objects');
   };
 
+  const returnToWorkflowFromScanner = async (): Promise<void> => {
+    if (scannerSessionId !== null) {
+      setScreen('objects');
+      return;
+    }
+    setScreen('workflow');
+    const owner = requestOwnerRef.current;
+    if (owner === null) return;
+    try {
+      const latest = await fetchDeviceStatus(false, undefined, { owner, preemptible: false });
+      if (requestOwnerRef.current !== owner) return;
+      setStatus(latest);
+      if (latest.workflow?.step === 'SCANNING' && Number.isSafeInteger(latest.workflow.generation)) {
+        const result = await sendWorkflowCommand('BACK', latest.workflow.generation);
+        if (requestOwnerRef.current !== owner) return;
+        if (result.ok) setStatus({ ...latest, workflow: result.workflow });
+        else await refreshStatus();
+      }
+    } catch (reason) {
+      setWorkspaceError(reason);
+      await refreshStatus();
+    }
+  };
+
+  const completeWorkflowScan = async (): Promise<void> => {
+    setScreen('workflow');
+    const owner = requestOwnerRef.current;
+    if (owner === null) return;
+    try {
+      const latest = await fetchDeviceStatus(false, undefined, { owner, preemptible: false });
+      if (requestOwnerRef.current !== owner) return;
+      setStatus(latest);
+      if (latest.workflow?.step !== 'SCANNING' || !Number.isSafeInteger(latest.workflow.generation)) return;
+      const result = await sendWorkflowCommand('SCAN_COMPLETE', latest.workflow.generation);
+      if (requestOwnerRef.current !== owner) return;
+      if (result.ok) setStatus((current) => current === null ? current : { ...current, workflow: result.workflow });
+      else await refreshStatus();
+    } catch (reason) {
+      setWorkspaceError(reason);
+      await refreshStatus();
+    }
+  };
+
   if (screen === 'scanner') {
     const scannerObjectId = selectedId ?? objects?.active_id ?? null;
     return (
       <div className="scanner-feature-shell">
-        <button className="console-floating-back" onClick={() => setScreen('objects')}>{t('console.back_object')}</button>
+        <button className="console-floating-back" onClick={() => { void returnToWorkflowFromScanner(); }}>{t('console.back_object')}</button>
         <StorageUnavailableBanner status={status} />
         <ScannerFeatureHost
           objectId={scannerObjectId}
           sessionId={scannerSessionId}
           status={status}
-          onBack={() => setScreen('objects')}
+          onBack={() => { void returnToWorkflowFromScanner(); }}
           onDashboard={() => setScreen('dashboard')}
+          onScanSaved={completeWorkflowScan}
         />
       </div>
     );
@@ -691,7 +761,7 @@ export default function DeviceConsoleApp() {
         <WorkflowPanel
           status={status}
           objectName={selectedObject?.name ?? null}
-          sendCommand={sendWorkflowCommand}
+          sendCommand={(command, generation, location) => sendWorkflowCommand(command, generation, {}, location)}
           onRefreshStatus={refreshStatus}
           onWorkflowUpdate={(workflow) => {
             setStatus((current) => current === null ? current : { ...current, workflow });

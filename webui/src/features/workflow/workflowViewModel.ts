@@ -32,7 +32,10 @@ export type WorkflowBodySection =
   | { kind: 'calib_prep' }
   | { kind: 'calibration'; value: WorkflowCalibrationStatus }
   | { kind: 'placement'; value: WorkflowPlacementStatus }
+  | { kind: 'gps'; value: DeviceWorkflowStatus }
+  | { kind: 'layout'; value: DeviceWorkflowStatus }
   | { kind: 'ranging'; value: DeviceRangingStatus | null }
+  | { kind: 'scan'; value: DeviceWorkflowStatus; scanning: boolean }
   | { kind: 'record_ready' }
   | { kind: 'recording'; value: DeviceStatus | null }
   | { kind: 'stopped' }
@@ -61,6 +64,9 @@ const ACTION_ORDER = [
   'CALIBRATION_DONE',
   'RETRY',
   'PLACE_SENSORS',
+  'PLACEMENT_CONFIRMED',
+  'REQUEST_GPS',
+  'GPS_SKIP',
   'CALCULATE_POSITIONS',
   'RANGING_DONE',
   'CONFIRM',
@@ -69,6 +75,8 @@ const ACTION_ORDER = [
   'CALCULATE_SOURCES',
   'DELETE_RECORDING',
   'RECORD_AGAIN',
+  'SCAN_START',
+  'SCAN_SKIP',
   'MOVE_SENSORS',
   'CALCULATION_DONE',
   'BACK',
@@ -81,6 +89,9 @@ const ACTION_LABELS: Record<string, I18nKey> = {
   CALIBRATION_DONE: 'workflow.action.calibration_done',
   RETRY: 'workflow.action.retry',
   PLACE_SENSORS: 'workflow.action.place_sensors',
+  PLACEMENT_CONFIRMED: 'workflow.action.placement_confirmed',
+  REQUEST_GPS: 'workflow.action.request_gps',
+  GPS_SKIP: 'workflow.action.gps_skip',
   CALCULATE_POSITIONS: 'workflow.action.calculate_positions',
   RANGING_DONE: 'workflow.action.ranging_done',
   CONFIRM: 'workflow.action.confirm',
@@ -89,6 +100,8 @@ const ACTION_LABELS: Record<string, I18nKey> = {
   CALCULATE_SOURCES: 'workflow.action.calculate_sources',
   DELETE_RECORDING: 'workflow.action.delete_recording',
   RECORD_AGAIN: 'workflow.action.record_again',
+  SCAN_START: 'workflow.action.scan_start',
+  SCAN_SKIP: 'workflow.action.scan_skip',
   MOVE_SENSORS: 'workflow.action.move_sensors',
   CALCULATION_DONE: 'workflow.action.calculation_done',
   BACK: 'workflow.action.back',
@@ -102,8 +115,13 @@ const STEP_TITLES: Record<string, I18nKey> = {
   CALIBRATING: 'workflow.title.calibrating',
   CALIB_RESULT: 'workflow.title.calib_result',
   PLACEMENT: 'workflow.title.placement',
+  GPS_CHOICE: 'workflow.title.gps_choice',
+  GPS_PENDING: 'workflow.title.gps_pending',
+  LAYOUT_READY: 'workflow.title.layout_ready',
   RANGING: 'workflow.title.ranging',
   RANGING_RESULT: 'workflow.title.ranging_result',
+  SCAN_CHOICE: 'workflow.title.scan_choice',
+  SCANNING: 'workflow.title.scanning',
   RECORD_READY: 'workflow.title.record_ready',
   RECORDING: 'workflow.title.recording',
   STOPPED: 'workflow.title.stopped',
@@ -192,8 +210,13 @@ export function workflowViewModel(status: DeviceStatus | null, objectName: strin
     case 'CALIBRATING':
     case 'CALIB_RESULT': sections.push({ kind: 'calibration', value: workflow.calibration }); break;
     case 'PLACEMENT': sections.push({ kind: 'placement', value: workflow.placement }); break;
+    case 'GPS_CHOICE':
+    case 'GPS_PENDING': sections.push({ kind: 'gps', value: workflow }); break;
+    case 'LAYOUT_READY': sections.push({ kind: 'layout', value: workflow }); break;
     case 'RANGING':
     case 'RANGING_RESULT': sections.push({ kind: 'ranging', value: status?.ranging ?? null }); break;
+    case 'SCAN_CHOICE':
+    case 'SCANNING': sections.push({ kind: 'scan', value: workflow, scanning: workflow.step === 'SCANNING' }); break;
     case 'RECORD_READY': sections.push({ kind: 'record_ready' }); break;
     case 'RECORDING': sections.push({ kind: 'recording', value: status }); break;
     case 'STOPPED': sections.push({ kind: 'stopped' }); break;

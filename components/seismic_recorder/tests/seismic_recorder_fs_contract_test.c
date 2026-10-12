@@ -39,6 +39,7 @@
 #include "object_store.h"
 #include "storage_manager.h"
 #include "seismic_recorder_cache.h"
+#include "workflow_core.h"
 
 /* The embedded libc declares these through its POSIX compatibility headers. */
 #if !defined(_MSC_VER)
@@ -2709,6 +2710,93 @@ static void test_staged_artifacts_attach_once_to_the_created_session(void)
 }
 
 
+static void apply_scan_workflow_command(
+    workflow_core_t *workflow,
+    workflow_command_t command,
+    bool has_ok,
+    bool ok
+)
+{
+    const workflow_command_params_t params = {
+        .has_ok = has_ok,
+        .ok = ok,
+    };
+    assert(workflow_core_apply(workflow, command, &params, 4U, true) ==
+        WORKFLOW_COMMAND_RESULT_OK);
+}
+
+
+static void test_workflow_scan_promotes_into_recording_session_or_stays_staged(void)
+{
+    for (unsigned promotion_succeeds = 0U; promotion_succeeds < 2U; ++promotion_succeeds) {
+        remove_layout();
+        make_layout();
+        injected_rename_source[0] = '\0';
+
+        workflow_core_t workflow;
+        workflow_core_init(&workflow, true);
+        workflow.step = WORKFLOW_STEP_CALIB_RESULT;
+        workflow.calibration_ok = true;
+        apply_scan_workflow_command(&workflow, WORKFLOW_COMMAND_PLACE_SENSORS, false, false);
+        apply_scan_workflow_command(&workflow, WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, false, false);
+        apply_scan_workflow_command(&workflow, WORKFLOW_COMMAND_GPS_SKIP, false, false);
+        apply_scan_workflow_command(&workflow, WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false);
+        apply_scan_workflow_command(&workflow, WORKFLOW_COMMAND_RANGING_DONE, true, true);
+        apply_scan_workflow_command(&workflow, WORKFLOW_COMMAND_CONFIRM, false, false);
+        apply_scan_workflow_command(&workflow, WORKFLOW_COMMAND_SCAN_START, false, false);
+        assert(workflow.step == WORKFLOW_STEP_SCANNING);
+        assert(workflow.scan_choice == WORKFLOW_SCAN_CHOICE_YES);
+        assert(workflow.scan_upload_status == WORKFLOW_SCAN_UPLOAD_PENDING);
+
+        write_staged_artifacts();
+        apply_scan_workflow_command(&workflow, WORKFLOW_COMMAND_SCAN_COMPLETE, true, true);
+        assert(workflow.step == WORKFLOW_STEP_RECORD_READY);
+        assert(workflow.scan_upload_status == WORKFLOW_SCAN_UPLOAD_VERIFIED);
+        apply_scan_workflow_command(&workflow, WORKFLOW_COMMAND_START_RECORDING, false, false);
+        assert(workflow.step == WORKFLOW_STEP_RECORDING);
+
+        char staged_scan_path[256], session_scan_path[256];
+        (void)snprintf(
+            staged_scan_path,
+            sizeof(staged_scan_path),
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/scan-v1.bin"
+        );
+        (void)snprintf(
+            session_scan_path,
+            sizeof(session_scan_path),
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin"
+        );
+        assert(path_exists(staged_scan_path));
+
+        if (promotion_succeeds == 0U) {
+            (void)snprintf(
+                injected_rename_source,
+                sizeof(injected_rename_source),
+                STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/scan-v1.bin"
+            );
+        }
+
+        char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+        FILE *file = NULL;
+        assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, session, &file) == ESP_OK);
+        assert(strcmp(session, "S000001") == 0);
+        assert(file != NULL);
+
+        if (promotion_succeeds != 0U) {
+            assert(!path_exists(staged_scan_path));
+            assert_file_contents(session_scan_path, "scan");
+        } else {
+            assert(path_exists(staged_scan_path));
+            assert(!path_exists(session_scan_path));
+            assert_file_contents(staged_scan_path, "scan");
+        }
+        assert(workflow.step == WORKFLOW_STEP_RECORDING);
+        assert(seismic_recorder_fs_close(file) == ESP_OK);
+        remove_layout();
+    }
+}
+
+
 static void test_missing_staging_is_a_noop(void)
 {
     remove_layout();
@@ -3077,6 +3165,7 @@ int main(void)
     test_writer_errors_are_propagated();
     test_session_id_increments();
     test_staged_artifacts_attach_once_to_the_created_session();
+    test_workflow_scan_promotes_into_recording_session_or_stays_staged();
     test_missing_staging_is_a_noop();
     test_one_staged_move_failure_does_not_fail_recording();
     test_failed_start_restores_staged_artifacts();

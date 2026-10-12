@@ -15,6 +15,9 @@ static const workflow_command_t s_action_order[] = {
     WORKFLOW_COMMAND_SENSORS_PLACED,
     WORKFLOW_COMMAND_RETRY,
     WORKFLOW_COMMAND_PLACE_SENSORS,
+    WORKFLOW_COMMAND_PLACEMENT_CONFIRMED,
+    WORKFLOW_COMMAND_REQUEST_GPS,
+    WORKFLOW_COMMAND_GPS_SKIP,
     WORKFLOW_COMMAND_CALCULATE_POSITIONS,
     WORKFLOW_COMMAND_CONFIRM,
     WORKFLOW_COMMAND_START_RECORDING,
@@ -23,6 +26,8 @@ static const workflow_command_t s_action_order[] = {
     WORKFLOW_COMMAND_CALCULATE_SOURCES,
     WORKFLOW_COMMAND_DELETE_RECORDING,
     WORKFLOW_COMMAND_RECORD_AGAIN,
+    WORKFLOW_COMMAND_SCAN_START,
+    WORKFLOW_COMMAND_SCAN_SKIP,
     WORKFLOW_COMMAND_BACK,
 };
 
@@ -65,6 +70,11 @@ static ui_i18n_key_t action_key(workflow_command_t command)
         case WORKFLOW_COMMAND_SENSORS_PLACED: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_SENSORS_PLACED;
         case WORKFLOW_COMMAND_RETRY: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_RETRY;
         case WORKFLOW_COMMAND_PLACE_SENSORS: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_PLACE_SENSORS;
+        case WORKFLOW_COMMAND_PLACEMENT_CONFIRMED: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_PLACEMENT_CONFIRMED;
+        case WORKFLOW_COMMAND_REQUEST_GPS: return UI_I18N_KEY_TFT_WORKFLOW_GPS_WAITING;
+        case WORKFLOW_COMMAND_GPS_SKIP:
+        case WORKFLOW_COMMAND_SCAN_SKIP: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_SKIP;
+        case WORKFLOW_COMMAND_SCAN_START: return UI_I18N_KEY_TFT_WORKFLOW_SCAN_PHONE;
         case WORKFLOW_COMMAND_CALCULATE_POSITIONS: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_CALCULATE_POSITIONS;
         case WORKFLOW_COMMAND_CONFIRM: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_CONFIRM;
         case WORKFLOW_COMMAND_START_RECORDING: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_START_RECORDING;
@@ -76,8 +86,11 @@ static ui_i18n_key_t action_key(workflow_command_t command)
         case WORKFLOW_COMMAND_BACK: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_BACK;
         case WORKFLOW_COMMAND_COUNT: return UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_ROW;
         case WORKFLOW_COMMAND_CALIBRATION_DONE:
+        case WORKFLOW_COMMAND_GPS_ACCEPT:
+        case WORKFLOW_COMMAND_GPS_CAPTURE_FAILED:
         case WORKFLOW_COMMAND_RANGING_DONE:
         case WORKFLOW_COMMAND_CALCULATION_DONE:
+        case WORKFLOW_COMMAND_SCAN_COMPLETE:
         default:
             return UI_I18N_KEY_COUNT;
     }
@@ -177,8 +190,13 @@ static ui_i18n_key_t title_key(workflow_step_t step)
         case WORKFLOW_STEP_CALIBRATING: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_CALIBRATING;
         case WORKFLOW_STEP_CALIB_RESULT: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_CALIB_RESULT;
         case WORKFLOW_STEP_PLACEMENT: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_PLACEMENT;
+        case WORKFLOW_STEP_GPS_CHOICE: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_GPS_CHOICE;
+        case WORKFLOW_STEP_GPS_PENDING: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_GPS_PENDING;
+        case WORKFLOW_STEP_LAYOUT_READY: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_LAYOUT_READY;
         case WORKFLOW_STEP_RANGING: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_RANGING;
         case WORKFLOW_STEP_RANGING_RESULT: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_RANGING_RESULT;
+        case WORKFLOW_STEP_SCAN_CHOICE: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_SCAN_CHOICE;
+        case WORKFLOW_STEP_SCANNING: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_SCANNING;
         case WORKFLOW_STEP_RECORD_READY: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_RECORD_READY;
         case WORKFLOW_STEP_RECORDING: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_RECORDING;
         case WORKFLOW_STEP_STOPPED: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_STOPPED;
@@ -589,6 +607,15 @@ void ui_workflow_model_build(
                 ? UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ALL_STABLE
                 : UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_WAITING);
             break;
+        case WORKFLOW_STEP_GPS_CHOICE:
+        case WORKFLOW_STEP_GPS_PENDING:
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_GPS_WAITING);
+            break;
+        case WORKFLOW_STEP_LAYOUT_READY:
+            (void)add_line(model, snapshot->placement.all_stable
+                ? UI_I18N_KEY_TFT_WORKFLOW_LAYOUT_READY
+                : UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_WAITING);
+            break;
         case WORKFLOW_STEP_RANGING: {
             char done[12], total[12], residual[20];
             if (ranging != NULL && ranging->available) {
@@ -640,8 +667,36 @@ void ui_workflow_model_build(
                 ui_workflow_model_line_t *reason = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_REASON);
                 set_arg(reason, 0U, snapshot->reason);
             }
+            if (ranging != NULL && ranging->available) {
+                char done[12], total[12], residual[20];
+                (void)snprintf(done, sizeof(done), "%u", (unsigned)ranging->pairs_done);
+                (void)snprintf(total, sizeof(total), "%u", (unsigned)ranging->pairs_total);
+                ui_workflow_model_line_t *pairs = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_PAIRS);
+                set_arg(pairs, 0U, done);
+                set_arg(pairs, 1U, total);
+                if (ranging->residual_valid) {
+                    (void)snprintf(residual, sizeof(residual), "%ld", (long)ranging->residual_mm);
+                    set_arg(pairs, 2U, residual);
+                } else {
+                    unknown_arg(pairs, 2U);
+                }
+                for (size_t i = 0U; i < ranging->node_count && i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
+                    char sigma[20];
+                    ui_workflow_model_line_t *row = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_SIGMA);
+                    set_arg(row, 0U, ranging->nodes[i]);
+                    if (ranging->sigma_mm[i] == INT32_MAX) unknown_arg(row, 1U);
+                    else {
+                        (void)snprintf(sigma, sizeof(sigma), "%ld", (long)ranging->sigma_mm[i]);
+                        set_arg(row, 1U, sigma);
+                    }
+                }
+            }
             break;
         }
+        case WORKFLOW_STEP_SCAN_CHOICE:
+        case WORKFLOW_STEP_SCANNING:
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_SCAN_PHONE);
+            break;
         case WORKFLOW_STEP_RECORD_READY:
             (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RECORD_READY_INSTRUCTION);
             break;

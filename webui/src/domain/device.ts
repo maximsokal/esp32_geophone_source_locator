@@ -130,8 +130,13 @@ export type WorkflowStep =
   | 'CALIBRATING'
   | 'CALIB_RESULT'
   | 'PLACEMENT'
+  | 'GPS_CHOICE'
+  | 'GPS_PENDING'
+  | 'LAYOUT_READY'
   | 'RANGING'
   | 'RANGING_RESULT'
+  | 'SCAN_CHOICE'
+  | 'SCANNING'
   | 'RECORD_READY'
   | 'RECORDING'
   | 'STOPPED'
@@ -188,6 +193,11 @@ export interface DeviceWorkflowStatus {
   has_scan?: boolean;
   calc_settings_ready?: boolean;
   calculation_class?: string | null;
+  gps_status?: string;
+  layout_result?: boolean | null;
+  layout_reason?: string | null;
+  scan_choice?: string;
+  scan_upload_status?: string;
 }
 
 export interface RangingPairStatus {

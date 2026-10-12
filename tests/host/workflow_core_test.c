@@ -25,15 +25,31 @@ static const transition_t allowed_transitions[] = {
     { WORKFLOW_STEP_CALIBRATING, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_CALIB_PREP },
     { WORKFLOW_STEP_CALIB_RESULT, WORKFLOW_COMMAND_RETRY, WORKFLOW_STEP_CALIBRATING },
     { WORKFLOW_STEP_CALIB_RESULT, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_CALIB_PREP },
-    { WORKFLOW_STEP_PLACEMENT, WORKFLOW_COMMAND_CALCULATE_POSITIONS, WORKFLOW_STEP_RANGING },
+    { WORKFLOW_STEP_CALIB_RESULT, WORKFLOW_COMMAND_PLACE_SENSORS, WORKFLOW_STEP_PLACEMENT },
+    { WORKFLOW_STEP_PLACEMENT, WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, WORKFLOW_STEP_GPS_CHOICE },
     { WORKFLOW_STEP_PLACEMENT, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_CALIB_RESULT },
+    { WORKFLOW_STEP_GPS_CHOICE, WORKFLOW_COMMAND_REQUEST_GPS, WORKFLOW_STEP_GPS_PENDING },
+    { WORKFLOW_STEP_GPS_CHOICE, WORKFLOW_COMMAND_GPS_SKIP, WORKFLOW_STEP_LAYOUT_READY },
+    { WORKFLOW_STEP_GPS_CHOICE, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_PLACEMENT },
+    { WORKFLOW_STEP_GPS_PENDING, WORKFLOW_COMMAND_GPS_CAPTURE_FAILED, WORKFLOW_STEP_GPS_CHOICE },
+    { WORKFLOW_STEP_GPS_PENDING, WORKFLOW_COMMAND_GPS_ACCEPT, WORKFLOW_STEP_LAYOUT_READY },
+    { WORKFLOW_STEP_GPS_PENDING, WORKFLOW_COMMAND_GPS_SKIP, WORKFLOW_STEP_LAYOUT_READY },
+    { WORKFLOW_STEP_GPS_PENDING, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_GPS_CHOICE },
+    { WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_CALCULATE_POSITIONS, WORKFLOW_STEP_RANGING },
+    { WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_GPS_CHOICE },
     { WORKFLOW_STEP_RANGING, WORKFLOW_COMMAND_RANGING_DONE, WORKFLOW_STEP_RANGING_RESULT },
-    { WORKFLOW_STEP_RANGING, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_PLACEMENT },
-    { WORKFLOW_STEP_RANGING_RESULT, WORKFLOW_COMMAND_RETRY, WORKFLOW_STEP_RANGING },
-    { WORKFLOW_STEP_RANGING_RESULT, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_PLACEMENT },
+    { WORKFLOW_STEP_RANGING, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_LAYOUT_READY },
+    { WORKFLOW_STEP_RANGING_RESULT, WORKFLOW_COMMAND_RETRY, WORKFLOW_STEP_LAYOUT_READY },
+    { WORKFLOW_STEP_RANGING_RESULT, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_LAYOUT_READY },
+    { WORKFLOW_STEP_RANGING_RESULT, WORKFLOW_COMMAND_CONFIRM, WORKFLOW_STEP_SCAN_CHOICE },
+    { WORKFLOW_STEP_SCAN_CHOICE, WORKFLOW_COMMAND_SCAN_START, WORKFLOW_STEP_SCANNING },
+    { WORKFLOW_STEP_SCAN_CHOICE, WORKFLOW_COMMAND_SCAN_SKIP, WORKFLOW_STEP_RECORD_READY },
+    { WORKFLOW_STEP_SCAN_CHOICE, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_RANGING_RESULT },
+    { WORKFLOW_STEP_SCANNING, WORKFLOW_COMMAND_SCAN_COMPLETE, WORKFLOW_STEP_RECORD_READY },
+    { WORKFLOW_STEP_SCANNING, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_SCAN_CHOICE },
     { WORKFLOW_STEP_RECORD_READY, WORKFLOW_COMMAND_START_RECORDING, WORKFLOW_STEP_RECORDING },
     { WORKFLOW_STEP_RECORD_READY, WORKFLOW_COMMAND_MOVE_SENSORS, WORKFLOW_STEP_PLACEMENT },
-    { WORKFLOW_STEP_RECORD_READY, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_RANGING_RESULT },
+    { WORKFLOW_STEP_RECORD_READY, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_SCAN_CHOICE },
     { WORKFLOW_STEP_RECORDING, WORKFLOW_COMMAND_STOP_RECORDING, WORKFLOW_STEP_STOPPED },
     { WORKFLOW_STEP_STOPPED, WORKFLOW_COMMAND_CALCULATE_SOURCES, WORKFLOW_STEP_CALCULATING },
     { WORKFLOW_STEP_STOPPED, WORKFLOW_COMMAND_DELETE_RECORDING, WORKFLOW_STEP_RECORD_READY },
@@ -67,13 +83,17 @@ static void test_exhaustive_transition_table(void)
             workflow_core_init(&core, true);
             core.step = step;
             core.generation = 41U;
-            core.calibration_ok = false;
-            core.ranging_ok = false;
+            core.calibration_ok = command == WORKFLOW_COMMAND_PLACE_SENSORS;
+            core.ranging_ok = command == WORKFLOW_COMMAND_CONFIRM;
             workflow_core_set_calc_settings_ready(&core, true);
             workflow_command_params_t params = {
                 .has_ok = true,
-                .ok = false,
+                .ok = command == WORKFLOW_COMMAND_SCAN_COMPLETE,
                 .calculation_class = WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN,
+                .has_location = command == WORKFLOW_COMMAND_GPS_ACCEPT,
+                .latitude = -90.0,
+                .longitude = 180.0,
+                .accuracy_m = 0.0,
             };
             const workflow_command_result_t result = workflow_core_apply(
                 &core,
@@ -94,6 +114,29 @@ static void test_exhaustive_transition_table(void)
             }
         }
     }
+}
+
+static void test_calib_result_requires_explicit_place_sensors(void)
+{
+    workflow_core_t core;
+    workflow_core_init(&core, true);
+    core.step = WORKFLOW_STEP_CALIB_RESULT;
+    core.generation = 19U;
+    core.calibration_ok = true;
+
+    workflow_snapshot_t snapshot;
+    workflow_core_snapshot(&core, 4U, false, &snapshot);
+    assert(snapshot.step == WORKFLOW_STEP_CALIB_RESULT);
+    assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACE_SENSORS)) != 0U);
+    assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED)) == 0U);
+    assert(core.step == WORKFLOW_STEP_CALIB_RESULT);
+    assert(core.generation == 19U);
+
+    const workflow_command_params_t params = {0};
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_PLACE_SENSORS, &params, 4U, false) ==
+        WORKFLOW_COMMAND_RESULT_OK);
+    assert(core.step == WORKFLOW_STEP_PLACEMENT);
+    assert(core.generation == 20U);
 }
 
 static void test_calculation_requires_saved_settings(void)
@@ -131,7 +174,7 @@ static void test_back_from_calibration_result_returns_to_prep(void)
     assert(core.step == WORKFLOW_STEP_CALIB_PREP);
 }
 
-static void test_back_from_ranging_result_returns_to_placement(void)
+static void test_back_from_ranging_result_returns_to_layout_ready(void)
 {
     workflow_core_t core;
     workflow_core_init(&core, true);
@@ -140,7 +183,42 @@ static void test_back_from_ranging_result_returns_to_placement(void)
 
     assert(workflow_core_apply(&core, WORKFLOW_COMMAND_BACK, &params, 4U, false) ==
         WORKFLOW_COMMAND_RESULT_OK);
-    assert(core.step == WORKFLOW_STEP_PLACEMENT);
+    assert(core.step == WORKFLOW_STEP_LAYOUT_READY);
+}
+
+static void test_back_clears_downstream_workflow_choices(void)
+{
+    workflow_core_t core;
+    workflow_core_init(&core, true);
+    core.step = WORKFLOW_STEP_LAYOUT_READY;
+    core.gps_status = WORKFLOW_GPS_STATUS_ACCEPTED;
+    core.layout_result_valid = true;
+    core.layout_ok = true;
+    core.scan_choice = WORKFLOW_SCAN_CHOICE_YES;
+    core.scan_upload_status = WORKFLOW_SCAN_UPLOAD_VERIFIED;
+    workflow_command_params_t params = {0};
+
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_BACK, &params, 4U, false) ==
+        WORKFLOW_COMMAND_RESULT_OK);
+    assert(core.step == WORKFLOW_STEP_GPS_CHOICE);
+    assert(core.gps_status == WORKFLOW_GPS_STATUS_NONE);
+    assert(!core.layout_result_valid && !core.layout_ok);
+    assert(core.scan_choice == WORKFLOW_SCAN_CHOICE_NONE);
+    assert(core.scan_upload_status == WORKFLOW_SCAN_UPLOAD_NONE);
+
+    core.step = WORKFLOW_STEP_SCAN_CHOICE;
+    core.gps_status = WORKFLOW_GPS_STATUS_ACCEPTED;
+    core.layout_result_valid = true;
+    core.layout_ok = true;
+    core.scan_choice = WORKFLOW_SCAN_CHOICE_YES;
+    core.scan_upload_status = WORKFLOW_SCAN_UPLOAD_PENDING;
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_BACK, &params, 4U, false) ==
+        WORKFLOW_COMMAND_RESULT_OK);
+    assert(core.step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(core.gps_status == WORKFLOW_GPS_STATUS_ACCEPTED);
+    assert(core.layout_result_valid && core.layout_ok);
+    assert(core.scan_choice == WORKFLOW_SCAN_CHOICE_NONE);
+    assert(core.scan_upload_status == WORKFLOW_SCAN_UPLOAD_NONE);
 }
 
 static void test_back_from_result_returns_to_stopped(void)
@@ -213,7 +291,7 @@ static void test_back_from_running_steps_records_cancellation_reason(void)
         workflow_step_t to;
     } cases[] = {
         { WORKFLOW_STEP_CALIBRATING, WORKFLOW_STEP_CALIB_PREP },
-        { WORKFLOW_STEP_RANGING, WORKFLOW_STEP_PLACEMENT },
+        { WORKFLOW_STEP_RANGING, WORKFLOW_STEP_LAYOUT_READY },
         { WORKFLOW_STEP_CALCULATING, WORKFLOW_STEP_STOPPED },
     };
     workflow_command_params_t params = {0};
@@ -301,7 +379,7 @@ static void test_stale_generation_and_placement_guard(void)
     params.has_generation = false;
     assert(workflow_core_apply(
         &core,
-        WORKFLOW_COMMAND_CALCULATE_POSITIONS,
+        WORKFLOW_COMMAND_PLACEMENT_CONFIRMED,
         &params,
         4U,
         false
@@ -309,11 +387,17 @@ static void test_stale_generation_and_placement_guard(void)
     assert(strcmp(core.reason, "placement_not_ready") == 0);
     assert(workflow_core_apply(
         &core,
-        WORKFLOW_COMMAND_CALCULATE_POSITIONS,
+        WORKFLOW_COMMAND_PLACEMENT_CONFIRMED,
         &params,
         4U,
         true
     ) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(core.step == WORKFLOW_STEP_GPS_CHOICE);
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_GPS_SKIP, &params, 4U, true) ==
+        WORKFLOW_COMMAND_RESULT_OK);
+    assert(core.step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_CALCULATE_POSITIONS, &params, 4U, true) ==
+        WORKFLOW_COMMAND_RESULT_OK);
     assert(core.step == WORKFLOW_STEP_RANGING);
 }
 
@@ -332,6 +416,9 @@ static void test_success_and_failure_result_routes(void)
     core.step = WORKFLOW_STEP_RANGING_RESULT;
     core.ranging_ok = true;
     assert(workflow_core_apply(&core, WORKFLOW_COMMAND_CONFIRM, &params, 4U, false) ==
+        WORKFLOW_COMMAND_RESULT_OK);
+    assert(core.step == WORKFLOW_STEP_SCAN_CHOICE);
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_SCAN_SKIP, &params, 4U, false) ==
         WORKFLOW_COMMAND_RESULT_OK);
     assert(core.step == WORKFLOW_STEP_RECORD_READY);
 
@@ -393,9 +480,11 @@ int main(void)
 #endif
 #else
     test_exhaustive_transition_table();
+    test_calib_result_requires_explicit_place_sensors();
     test_calculation_requires_saved_settings();
     test_back_from_calibration_result_returns_to_prep();
-    test_back_from_ranging_result_returns_to_placement();
+    test_back_from_ranging_result_returns_to_layout_ready();
+    test_back_clears_downstream_workflow_choices();
     test_back_from_result_returns_to_stopped();
     test_go_calibration_respects_recording_gate_config();
     test_retry_after_failed_calibration_restarts_calibration();

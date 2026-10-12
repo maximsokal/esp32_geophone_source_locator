@@ -9,12 +9,14 @@
     "components/seismic_recorder/seismic_recorder_lod.c",
     "components/seismic_recorder/seismic_recorder_lod_reader.c",
     "components/seismic_recorder/tests/stubs/seismic_recorder_lod_store_stub.c",
+        "components/workflow_service/workflow_core.c",
         "components/seismic_recorder/tests/seismic_recorder_fs_contract_test.c"
       ],
       "include_dirs": [
         "components/seismic_recorder/tests/stubs",
         "components/seismic_recorder",
         "components/seismic_recorder/include",
+        "components/workflow_service/include",
         "components/object_store/include",
         "components/object_format/include",
         "components/storage_manager/include",

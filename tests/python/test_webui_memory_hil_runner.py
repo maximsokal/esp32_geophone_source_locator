@@ -141,3 +141,14 @@ def test_live_runner_is_dedicated_and_non_destructive_by_contract():
     assert "never flashes" in source
     assert '"delete_object"' not in source
     assert "erase" in source
+
+
+def test_guided_workflow_steps_block_memory_measurement_start():
+    guided = ("CALIB_RESULT", "PLACEMENT", "GPS_CHOICE", "GPS_PENDING", "LAYOUT_READY",
+              "RANGING", "RANGING_RESULT", "SCAN_CHOICE", "SCANNING")
+    source = RUNNER.read_text(encoding="utf-8")
+    assert '$guidedSteps = @(' in source
+    for step in guided:
+        assert f'"{step}"' in source
+    assert 'if ($step -in $guidedSteps)' in source
+    assert "Confirm placement, GPS choice, layout calculation, and scan choice" in source

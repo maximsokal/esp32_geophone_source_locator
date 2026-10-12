@@ -20,6 +20,7 @@ vi.mock('../../src/App', () => {
 
 import DeviceConsoleApp from '../../src/DeviceConsoleApp';
 import ObjectsFeature from '../../src/features/objects/ObjectsFeature';
+import WorkflowPanel from '../../src/features/workflow/WorkflowPanel';
 import ScannerFeatureHost, {
   SCANNER_MAX_IN_PLACE_RETRIES,
   SCANNER_RELOAD_SESSION_KEY,
@@ -151,6 +152,139 @@ afterEach(() => {
 });
 
 describe('DeviceConsoleApp scanner chunk boundary', () => {
+  it('resumes a workflow step from the device snapshot after a browser reload', async () => {
+    stubBrowser();
+    const status = deviceStatus(false);
+    status.workflow = {
+      step: 'GPS_PENDING',
+      generation: 44,
+      allowed_actions: ['GPS_SKIP', 'BACK'],
+      gps_status: 'pending',
+      object_id: 'OBJ_0001',
+    } as DeviceStatus['workflow'];
+    api.fetchDeviceStatus.mockResolvedValue(status);
+
+    const renderer = await mountConsole();
+    expect(renderer.root.findByType(WorkflowPanel).props.status.workflow.step).toBe('GPS_PENDING');
+    expect(renderer.root.findByType(WorkflowPanel).props.status.workflow.generation).toBe(44);
+    expect(renderer.root.findAllByType('button').some((button) => textOf(button) === translate('en', 'workflow.action.gps_skip'))).toBe(true);
+  });
+
+  it('opens the phone scanner when a fresh device snapshot enters SCANNING', async () => {
+    stubBrowser();
+    const choice = deviceStatus(false);
+    choice.workflow = {
+      step: 'SCAN_CHOICE',
+      generation: 70,
+      allowed_actions: ['SCAN_START', 'SCAN_SKIP', 'BACK'],
+      object_id: 'OBJ_0001',
+      session_id: null,
+    } as DeviceStatus['workflow'];
+    const scanning = deviceStatus(false);
+    scanning.workflow = {
+      step: 'SCANNING',
+      generation: 71,
+      allowed_actions: ['BACK'],
+      object_id: 'OBJ_0001',
+      session_id: null,
+    } as DeviceStatus['workflow'];
+    let current = choice;
+    api.fetchDeviceStatus.mockImplementation(async () => current);
+
+    const renderer = await mountConsole();
+    expect(renderer.root.findByType(WorkflowPanel).props.status.workflow.step).toBe('SCAN_CHOICE');
+    current = scanning;
+    await act(async () => {
+      await renderer.root.findByType(WorkflowPanel).props.onRefreshStatus();
+      await settleReact();
+    });
+
+    expect(renderer.root.findByType(ScannerFeatureHost).props).toMatchObject({
+      objectId: 'OBJ_0001',
+      sessionId: null,
+    });
+  });
+
+  it('returns a staged workflow scan to the workflow with a generation-checked BACK command', async () => {
+    stubBrowser();
+    const scanning = deviceStatus(false);
+    scanning.workflow = {
+      step: 'SCANNING',
+      generation: 51,
+      allowed_actions: ['BACK'],
+      object_id: 'OBJ_0001',
+      session_id: null,
+    } as DeviceStatus['workflow'];
+    api.fetchDeviceStatus.mockResolvedValue(scanning);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      workflow: {
+        step: 'SCAN_CHOICE',
+        generation: 52,
+        allowed_actions: ['SCAN_START', 'SCAN_SKIP', 'BACK'],
+        object_id: 'OBJ_0001',
+      },
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const renderer = await mountConsole();
+    expect(renderer.root.findByType(ScannerFeatureHost).props).toMatchObject({
+      objectId: 'OBJ_0001',
+      sessionId: null,
+    });
+    await act(async () => {
+      renderer.root.findByProps({ className: 'console-floating-back' }).props.onClick();
+      await settleReact();
+      await settleReact();
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toMatchObject({
+      action: 'workflow_command',
+      command: 'BACK',
+      generation: 51,
+    });
+    expect(renderer.root.findByType(WorkflowPanel).props.status.workflow.step).toBe('SCAN_CHOICE');
+    expect(renderer.root.findByType(WorkflowPanel).props.status.workflow.generation).toBe(52);
+  });
+
+  it('marks the staged scan complete and returns to RECORD_READY after upload', async () => {
+    stubBrowser();
+    const scanning = deviceStatus(false);
+    scanning.workflow = {
+      step: 'SCANNING',
+      generation: 61,
+      allowed_actions: ['BACK'],
+      object_id: 'OBJ_0001',
+      session_id: null,
+    } as DeviceStatus['workflow'];
+    api.fetchDeviceStatus.mockResolvedValue(scanning);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      workflow: {
+        step: 'RECORD_READY',
+        generation: 62,
+        allowed_actions: ['START_RECORDING', 'MOVE_SENSORS', 'BACK'],
+        object_id: 'OBJ_0001',
+      },
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const renderer = await mountConsole();
+    const onScanSaved = renderer.root.findByType(ScannerFeatureHost).props.onScanSaved as () => Promise<void>;
+    await act(async () => {
+      await onScanSaved();
+      await settleReact();
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string)).toMatchObject({
+      action: 'workflow_command',
+      command: 'SCAN_COMPLETE',
+      generation: 61,
+    });
+    expect(renderer.root.findByType(WorkflowPanel).props.status.workflow.step).toBe('RECORD_READY');
+    expect(renderer.root.findByType(WorkflowPanel).props.status.workflow.generation).toBe(62);
+  });
+
   // Expected RED on old code: a rejected lazy import escapes the root instead of rendering an in-place failure.
   it('keeps the scanner shell and console state alive, then retries with a fresh import', async () => {
     const browser = stubBrowser();

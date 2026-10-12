@@ -192,6 +192,7 @@ static size_t ui_workflow_line_slots(const workflow_snapshot_t *snapshot, const 
         case WORKFLOW_STEP_CALIBRATING:
         case WORKFLOW_STEP_PLACEMENT:
         case WORKFLOW_STEP_RANGING:
+        case WORKFLOW_STEP_RANGING_RESULT:
             return 10U;
         case WORKFLOW_STEP_CALIB_RESULT:
             return model->line_count < 10U ? model->line_count : 10U;
@@ -490,7 +491,8 @@ static void ui_workflow_apply_result_waveform(ui_workflow_screen_state_t *state)
 static void ui_workflow_build_ranging_view(ui_workflow_screen_state_t *state)
 {
     memset(&state->ranging, 0, sizeof(state->ranging));
-    if (state->snapshot.step != WORKFLOW_STEP_RANGING ||
+    if ((state->snapshot.step != WORKFLOW_STEP_RANGING &&
+         state->snapshot.step != WORKFLOW_STEP_RANGING_RESULT) ||
         nrf_topology_service_ranging_get_progress(&state->ranging_snapshot) != ESP_OK) return;
     const nrf_topology_ranging_progress_t *progress = &state->ranging_snapshot;
     state->ranging.available = true;

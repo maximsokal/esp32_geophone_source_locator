@@ -3,6 +3,7 @@
 #endif
 
 #include <assert.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -403,6 +404,443 @@ static workflow_command_result_t command(workflow_command_t value, bool has_ok, 
     return workflow_service_command(value, &params);
 }
 
+static workflow_snapshot_t try_snapshot(void);
+
+static workflow_command_result_t command_with_params(
+    workflow_command_t value,
+    const workflow_command_params_t *params)
+{
+    assert(params != NULL);
+    return workflow_service_command(value, params);
+}
+
+static void enter_stable_placement(void)
+{
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    assert(command(WORKFLOW_COMMAND_START_MEASUREMENT, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_GO_CALIBRATION, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_SENSORS_PLACED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_CALIBRATION_DONE, true, true) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_PLACE_SENSORS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    s_placement_ready = true;
+    s_device.main.bmp280_valid = true;
+    s_device.main.pressure_pa = 101325U;
+    s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
+    s_device.main.height_reference.generation = s_height_generation;
+    for (unsigned sample = 0U; sample < 3U; ++sample) {
+        s_now_ms += 100U;
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            if (s_topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+            nrf_remote_sensor_cache_t *cache = &s_cache[channel];
+            cache->identity_valid = true;
+            cache->topology_current = true;
+            cache->response_valid = true;
+            cache->identity.node_id = s_topology.remotes[channel].node_id;
+            cache->esp_receipt_uptime_ms = s_now_ms;
+            cache->sensor.valid_mask = NRF_UPSTREAM_SENSOR_VALID_ENV;
+            cache->sensor.pressure_pa = 101325U;
+            cache->sensor.altitude_mm = (int32_t)(12000U + channel * 1000U);
+            cache->sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+            cache->sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+            cache->sensor.reference_generation = s_height_generation;
+            cache->sensor.relative_z_mm = (int32_t)(100U + channel * 100U);
+        }
+        assert(workflow_service_poll() == ESP_OK);
+    }
+    const workflow_snapshot_t placement = try_snapshot();
+    assert(placement.step == WORKFLOW_STEP_PLACEMENT);
+    assert(placement.placement.all_stable);
+}
+
+static void enter_gps_choice(void)
+{
+    enter_stable_placement();
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_GPS_CHOICE);
+}
+
+static void enter_scan_choice(void)
+{
+    enter_gps_choice();
+    assert(command(WORKFLOW_COMMAND_GPS_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_RANGING_DONE, true, true) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_CONFIRM, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_SCAN_CHOICE);
+}
+
+static void test_phone_gps_validates_and_persists_only_accepted_fixes(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    enter_gps_choice();
+    workflow_snapshot_t snapshot = try_snapshot();
+    const workflow_command_params_t request = {
+        .has_generation = true,
+        .expected_generation = snapshot.generation,
+    };
+    assert(command_with_params(WORKFLOW_COMMAND_REQUEST_GPS, &request) == WORKFLOW_COMMAND_RESULT_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_GPS_PENDING);
+
+    workflow_command_params_t generationless_failure = {
+        .reason = "phone_gps_unavailable",
+    };
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_CAPTURE_FAILED, &generationless_failure) ==
+        WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT);
+    assert(try_snapshot().step == WORKFLOW_STEP_GPS_PENDING);
+
+    workflow_command_params_t gps = {
+        .has_generation = true,
+        .expected_generation = snapshot.generation,
+        .has_location = true,
+        .latitude = -90.0,
+        .longitude = 180.0,
+        .accuracy_m = 0.0,
+        .altitude_valid = true,
+        .altitude_m = 34.5,
+        .altitude_accuracy_m = 0.5,
+        .captured_at_ms = 123456U,
+    };
+    gps.has_generation = false;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &gps) ==
+        WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT);
+    assert(workflow_test_location_save_calls == 0U);
+    assert(try_snapshot().step == WORKFLOW_STEP_GPS_PENDING);
+    gps.has_generation = true;
+    gps.latitude = 90.001;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &gps) == WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT);
+    gps.latitude = -90.001;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &gps) == WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT);
+    gps.latitude = -90.0;
+    gps.longitude = 180.001;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &gps) == WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT);
+    gps.longitude = -180.001;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &gps) == WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT);
+    gps.longitude = 180.0;
+    gps.accuracy_m = -0.001;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &gps) == WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT);
+    gps.accuracy_m = NAN;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &gps) == WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT);
+    gps.accuracy_m = INFINITY;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &gps) == WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT);
+    gps.accuracy_m = 0.0;
+    gps.altitude_accuracy_m = -0.001;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &gps) == WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT);
+    gps.altitude_accuracy_m = NAN;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &gps) == WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT);
+    gps.altitude_accuracy_m = 0.5;
+    assert(workflow_test_location_save_calls == 0U);
+    assert(try_snapshot().step == WORKFLOW_STEP_GPS_PENDING);
+
+    gps.latitude = 90.0;
+    gps.longitude = -180.0;
+    workflow_test_location_save_result = ESP_FAIL;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &gps) ==
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_GPS_PENDING);
+    assert(workflow_test_location_save_calls == 1U);
+    workflow_test_location_save_result = ESP_OK;
+    gps.latitude = -90.0;
+    gps.longitude = 180.0;
+    gps.expected_generation = snapshot.generation;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &gps) == WORKFLOW_COMMAND_RESULT_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(snapshot.gps_status == WORKFLOW_GPS_STATUS_ACCEPTED);
+    assert(workflow_test_location_save_calls == 2U);
+    assert(strcmp(workflow_test_saved_location_object_id, "object-a") == 0);
+    assert(workflow_test_saved_location.valid);
+    assert(workflow_test_saved_location.latitude == -90.0);
+    assert(workflow_test_saved_location.longitude == 180.0);
+    assert(workflow_test_saved_location.accuracy_m == 0.0f);
+    assert(workflow_test_saved_location.altitude_valid);
+    assert(workflow_test_saved_location.captured_at_ms == 123456U);
+    assert(strcmp(workflow_test_saved_location.source, "PHONE_GPS") == 0);
+
+    workflow_service_shutdown();
+}
+
+static void test_gps_failure_back_skip_and_late_callback_generation(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    workflow_test_saved_location = (object_store_location_t){
+        .valid = true,
+        .latitude = 48.25,
+        .longitude = 29.75,
+        .accuracy_m = 17.0f,
+        .captured_at_ms = 987654U,
+    };
+    (void)snprintf(workflow_test_saved_location.source,
+        sizeof(workflow_test_saved_location.source), "%s", "MANUAL");
+    const object_store_location_t stored_before_skip = workflow_test_saved_location;
+    enter_gps_choice();
+    workflow_snapshot_t snapshot = try_snapshot();
+    workflow_command_params_t params = {
+        .has_generation = true,
+        .expected_generation = snapshot.generation,
+    };
+    assert(command_with_params(WORKFLOW_COMMAND_REQUEST_GPS, &params) == WORKFLOW_COMMAND_RESULT_OK);
+    snapshot = try_snapshot();
+    const uint32_t pending_generation = snapshot.generation;
+    params.expected_generation = pending_generation;
+    params.reason = "phone_gps_unavailable";
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_CAPTURE_FAILED, &params) == WORKFLOW_COMMAND_RESULT_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_GPS_CHOICE);
+    assert(snapshot.gps_status == WORKFLOW_GPS_STATUS_FAILED);
+
+    params.reason = NULL;
+    params.expected_generation = snapshot.generation;
+    assert(command_with_params(WORKFLOW_COMMAND_REQUEST_GPS, &params) == WORKFLOW_COMMAND_RESULT_OK);
+    const workflow_snapshot_t second_pending = try_snapshot();
+    params.expected_generation = second_pending.generation;
+    assert(command_with_params(WORKFLOW_COMMAND_BACK, &params) == WORKFLOW_COMMAND_RESULT_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_GPS_CHOICE);
+    params.has_location = true;
+    params.latitude = 49.0;
+    params.longitude = 32.0;
+    params.accuracy_m = 5.0;
+    params.expected_generation = second_pending.generation;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_ACCEPT, &params) == WORKFLOW_COMMAND_RESULT_STALE);
+    assert(workflow_test_location_save_calls == 0U);
+
+    params.expected_generation = snapshot.generation;
+    assert(command_with_params(WORKFLOW_COMMAND_GPS_SKIP, &params) == WORKFLOW_COMMAND_RESULT_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(snapshot.gps_status == WORKFLOW_GPS_STATUS_SKIPPED);
+    assert(workflow_test_location_save_calls == 0U);
+    assert(memcmp(&workflow_test_saved_location, &stored_before_skip,
+        sizeof(stored_before_skip)) == 0);
+    workflow_service_shutdown();
+}
+
+static void test_gps_skip_keeps_existing_location_and_marks_run_skipped(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    workflow_test_saved_location = (object_store_location_t){
+        .valid = true,
+        .latitude = 48.25,
+        .longitude = 29.75,
+        .accuracy_m = 17.0f,
+        .captured_at_ms = 987654U,
+    };
+    (void)snprintf(workflow_test_saved_location.source,
+        sizeof(workflow_test_saved_location.source), "%s", "MANUAL");
+    const object_store_location_t stored_before_skip = workflow_test_saved_location;
+
+    enter_gps_choice();
+    assert(command(WORKFLOW_COMMAND_GPS_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    const workflow_snapshot_t snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(snapshot.gps_status == WORKFLOW_GPS_STATUS_SKIPPED);
+    assert(workflow_test_location_save_calls == 0U);
+    assert(memcmp(&workflow_test_saved_location, &stored_before_skip,
+        sizeof(stored_before_skip)) == 0);
+    workflow_service_shutdown();
+}
+
+static void test_scan_choice_requires_explicit_skip_before_recording(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    enter_scan_choice();
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_SCAN_CHOICE);
+    assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_SCAN_SKIP)) != 0U);
+    assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_START_RECORDING)) == 0U);
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(try_snapshot().step == WORKFLOW_STEP_SCAN_CHOICE);
+    assert(command(WORKFLOW_COMMAND_SCAN_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RECORD_READY);
+    assert(snapshot.scan_choice == WORKFLOW_SCAN_CHOICE_NO);
+    workflow_service_shutdown();
+}
+
+static void wait_workflow_without_command(workflow_step_t expected)
+{
+    workflow_snapshot_t before = try_snapshot();
+    assert(before.step == expected);
+    for (unsigned cycle = 0U; cycle < 3U; ++cycle) {
+        s_now_ms += UINT64_C(60000);
+        assert(workflow_service_poll() == ESP_OK);
+        const workflow_snapshot_t after = try_snapshot();
+        assert(after.step == expected);
+        assert(after.generation == before.generation);
+    }
+}
+
+static void refresh_placement_gate(void)
+{
+    for (unsigned sample = 0U; sample < 3U; ++sample) {
+        s_now_ms += 100U;
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            if (s_topology.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+                s_cache[channel].esp_receipt_uptime_ms = s_now_ms;
+            }
+        }
+        assert(workflow_service_poll() == ESP_OK);
+    }
+}
+
+static void test_new_workflow_steps_wait_for_explicit_commands(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    enter_gps_choice();
+    wait_workflow_without_command(WORKFLOW_STEP_GPS_CHOICE);
+    assert(command(WORKFLOW_COMMAND_REQUEST_GPS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    wait_workflow_without_command(WORKFLOW_STEP_GPS_PENDING);
+    assert(command(WORKFLOW_COMMAND_GPS_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    wait_workflow_without_command(WORKFLOW_STEP_LAYOUT_READY);
+    refresh_placement_gate();
+    assert(try_snapshot().placement.all_stable);
+
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = true;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(command(WORKFLOW_COMMAND_CONFIRM, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    wait_workflow_without_command(WORKFLOW_STEP_SCAN_CHOICE);
+    workflow_test_staged_scan_present = true;
+    assert(command(WORKFLOW_COMMAND_SCAN_START, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    wait_workflow_without_command(WORKFLOW_STEP_SCANNING);
+    workflow_service_shutdown();
+}
+
+static void prepare_max460_wait_step(workflow_step_t step)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    workflow_test_saved_location = (object_store_location_t){
+        .valid = true,
+        .latitude = 48.25,
+        .longitude = 29.75,
+        .accuracy_m = 17.0f,
+        .captured_at_ms = 987654U,
+    };
+    (void)snprintf(workflow_test_saved_location.source,
+        sizeof(workflow_test_saved_location.source), "%s", "MANUAL");
+    switch (step) {
+        case WORKFLOW_STEP_PLACEMENT:
+            enter_stable_placement();
+            break;
+        case WORKFLOW_STEP_GPS_CHOICE:
+            enter_gps_choice();
+            break;
+        case WORKFLOW_STEP_GPS_PENDING:
+            enter_gps_choice();
+            workflow_test_saved_location = (object_store_location_t){
+                .valid = true,
+                .latitude = 48.25,
+                .longitude = 29.75,
+                .accuracy_m = 17.0f,
+            };
+            assert(command(WORKFLOW_COMMAND_REQUEST_GPS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+            break;
+        case WORKFLOW_STEP_LAYOUT_READY:
+            enter_gps_choice();
+            assert(command(WORKFLOW_COMMAND_GPS_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+            break;
+        case WORKFLOW_STEP_SCAN_CHOICE:
+            enter_scan_choice();
+            workflow_test_staged_scan_present = true;
+            break;
+        case WORKFLOW_STEP_SCANNING:
+            enter_scan_choice();
+            workflow_test_staged_scan_present = true;
+            assert(command(WORKFLOW_COMMAND_SCAN_START, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+            break;
+        default:
+            assert(false);
+            break;
+    }
+}
+
+static void poll_after_fake_time_advance(
+    workflow_step_t expected_step,
+    uint32_t expected_generation,
+    uint64_t advance_ms)
+{
+    s_now_ms += advance_ms;
+    for (unsigned sample = 0U; sample < 3U; ++sample) {
+        s_now_ms += 100U;
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            if (s_topology.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+                s_cache[channel].esp_receipt_uptime_ms = s_now_ms;
+            }
+        }
+        assert(workflow_service_poll() == ESP_OK);
+        const workflow_snapshot_t after_poll = try_snapshot();
+        assert(after_poll.step == expected_step);
+        assert(after_poll.generation == expected_generation);
+    }
+}
+
+static void test_no_step_advances_without_a_command_fake_clock(void)
+{
+    static const struct {
+        workflow_step_t step;
+        workflow_command_t explicit_command;
+        workflow_step_t next_step;
+    } cases[] = {
+        { WORKFLOW_STEP_PLACEMENT, WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, WORKFLOW_STEP_GPS_CHOICE },
+        { WORKFLOW_STEP_GPS_CHOICE, WORKFLOW_COMMAND_GPS_SKIP, WORKFLOW_STEP_LAYOUT_READY },
+        { WORKFLOW_STEP_GPS_PENDING, WORKFLOW_COMMAND_GPS_SKIP, WORKFLOW_STEP_LAYOUT_READY },
+        { WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_CALCULATE_POSITIONS, WORKFLOW_STEP_RANGING },
+        { WORKFLOW_STEP_SCAN_CHOICE, WORKFLOW_COMMAND_SCAN_SKIP, WORKFLOW_STEP_RECORD_READY },
+        { WORKFLOW_STEP_SCANNING, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_SCAN_CHOICE },
+    };
+    static const uint64_t waits_ms[] = { UINT64_C(1000), UINT64_C(60000), UINT64_C(3600000) };
+
+    for (size_t index = 0U; index < sizeof(cases) / sizeof(cases[0]); ++index) {
+        prepare_max460_wait_step(cases[index].step);
+        workflow_snapshot_t before = try_snapshot();
+        assert(before.step == cases[index].step);
+        if (cases[index].step == WORKFLOW_STEP_PLACEMENT ||
+            cases[index].step == WORKFLOW_STEP_GPS_CHOICE ||
+            cases[index].step == WORKFLOW_STEP_GPS_PENDING ||
+            cases[index].step == WORKFLOW_STEP_LAYOUT_READY) {
+            assert(before.placement.all_stable);
+        }
+
+        for (size_t wait = 0U; wait < sizeof(waits_ms) / sizeof(waits_ms[0]); ++wait) {
+            poll_after_fake_time_advance(cases[index].step, before.generation, waits_ms[wait]);
+        }
+
+        assert(command(cases[index].explicit_command, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        const workflow_snapshot_t after_command = try_snapshot();
+        assert(after_command.step == cases[index].next_step);
+        assert(after_command.generation != before.generation);
+        workflow_service_shutdown();
+    }
+}
+
+static void test_staged_scan_remains_visible_across_session_creation(void)
+{
+    for (unsigned promotion_succeeded = 0U; promotion_succeeded < 2U; ++promotion_succeeded) {
+        reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+        enter_scan_choice();
+        workflow_test_staged_scan_present = true;
+        assert(command(WORKFLOW_COMMAND_SCAN_START, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        assert(command(WORKFLOW_COMMAND_SCAN_COMPLETE, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        workflow_snapshot_t completed = try_snapshot();
+        assert(completed.step == WORKFLOW_STEP_RECORD_READY);
+        assert(completed.scan_choice == WORKFLOW_SCAN_CHOICE_YES);
+        assert(completed.scan_upload_status == WORKFLOW_SCAN_UPLOAD_VERIFIED);
+        assert(completed.has_scan);
+        assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        workflow_test_session_scan_present = promotion_succeeded != 0U;
+        workflow_test_staged_scan_present = promotion_succeeded == 0U;
+        assert(workflow_service_poll() == ESP_OK);
+        const workflow_snapshot_t snapshot = try_snapshot();
+        assert(snapshot.step == WORKFLOW_STEP_RECORDING);
+        assert(strcmp(snapshot.session_id, "session-1") == 0);
+        assert(snapshot.has_scan);
+        workflow_service_shutdown();
+    }
+}
+
 static void enter_record_ready(void)
 {
     assert(command(WORKFLOW_COMMAND_START_MEASUREMENT, false, false) == WORKFLOW_COMMAND_RESULT_OK);
@@ -437,7 +875,7 @@ static void enter_record_ready(void)
     workflow_snapshot_t placement_snapshot;
     assert(workflow_service_get_snapshot(&placement_snapshot) == ESP_OK);
     assert(!placement_snapshot.placement.all_stable);
-    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false) ==
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, false, false) ==
         WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
     s_now_ms += 100U;
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
@@ -448,9 +886,12 @@ static void enter_record_ready(void)
     assert(workflow_service_poll() == ESP_OK);
     assert(workflow_service_get_snapshot(&placement_snapshot) == ESP_OK);
     assert(placement_snapshot.placement.all_stable);
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_GPS_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
     assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
     assert(command(WORKFLOW_COMMAND_RANGING_DONE, true, true) == WORKFLOW_COMMAND_RESULT_OK);
     assert(command(WORKFLOW_COMMAND_CONFIRM, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_SCAN_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
 }
 
 static void test_reconciliation_review_error_and_async_recording_commands(void)
@@ -631,6 +1072,27 @@ static void assert_workflow_json_matches_snapshot(const workflow_snapshot_t *exp
     const cJSON *generation = cJSON_GetObjectItemCaseSensitive(workflow, "generation");
     assert(cJSON_IsNumber(generation));
     assert(generation->valuedouble == (double)expected->generation);
+
+    const cJSON *gps_status = cJSON_GetObjectItemCaseSensitive(workflow, "gps_status");
+    assert(cJSON_IsString(gps_status));
+    assert(strcmp(gps_status->valuestring, workflow_core_gps_status_name(expected->gps_status)) == 0);
+    const cJSON *scan_choice = cJSON_GetObjectItemCaseSensitive(workflow, "scan_choice");
+    assert(cJSON_IsString(scan_choice));
+    assert(strcmp(scan_choice->valuestring, workflow_core_scan_choice_name(expected->scan_choice)) == 0);
+    const cJSON *scan_upload_status = cJSON_GetObjectItemCaseSensitive(workflow, "scan_upload_status");
+    assert(cJSON_IsString(scan_upload_status));
+    assert(strcmp(scan_upload_status->valuestring,
+        workflow_core_scan_upload_status_name(expected->scan_upload_status)) == 0);
+    const cJSON *layout_result = cJSON_GetObjectItemCaseSensitive(workflow, "layout_result");
+    if (expected->layout_result_valid) {
+        assert(cJSON_IsBool(layout_result));
+        assert(cJSON_IsTrue(layout_result) == expected->layout_ok);
+    } else {
+        assert(cJSON_IsNull(layout_result));
+    }
+    const cJSON *layout_reason = cJSON_GetObjectItemCaseSensitive(workflow, "layout_reason");
+    assert(cJSON_IsString(layout_reason));
+    assert(strcmp(layout_reason->valuestring, expected->reason) == 0);
 
     const cJSON *actions = cJSON_GetObjectItemCaseSensitive(workflow, "allowed_actions");
     assert(cJSON_IsArray(actions));
@@ -931,6 +1393,8 @@ static void test_low_remote_placement_and_ranging_finish(void)
         }
         workflow_snapshot_t snapshot = try_snapshot();
         assert(snapshot.placement.all_stable);
+        assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        assert(command(WORKFLOW_COMMAND_GPS_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
         assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
 
         snapshot = try_snapshot();
@@ -1239,6 +1703,13 @@ int main(void)
     test_async_fifo_stale_generation_full_queue_and_monotonic_sequence();
     test_async_rejects_internal_completion_commands();
     test_periodic_poll_alone_advances_calibration_timeout();
+    test_phone_gps_validates_and_persists_only_accepted_fixes();
+    test_gps_failure_back_skip_and_late_callback_generation();
+    test_gps_skip_keeps_existing_location_and_marks_run_skipped();
+    test_scan_choice_requires_explicit_skip_before_recording();
+    test_new_workflow_steps_wait_for_explicit_commands();
+    test_no_step_advances_without_a_command_fake_clock();
+    test_staged_scan_remains_visible_across_session_creation();
     test_scan_presence_and_settings_refresh_are_cached_for_two_seconds();
     test_calc_settings_readiness_gates_calculate_and_save_invalidates_cache();
     test_calculation_success_progress_failure_classes_and_submit_errors();

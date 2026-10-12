@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import './workflow.css';
 import type { DeviceStatus, WorkflowCalibrationNode } from '../../domain/device';
-import type { WorkflowCommandResult } from '../../api/deviceApi';
+import { capturePhoneLocation, type WorkflowCommandResult } from '../../api/deviceApi';
+import type { PhoneLocationInput } from '../../domain/device';
 import { useLocale, useT, type I18nKey } from '../../i18n';
 import { formatDistance, formatNumber } from '../../i18n/format';
 import MaterialSettingsForm from '../objects/MaterialSettingsForm';
@@ -19,10 +20,10 @@ import {
 interface Props {
   status: DeviceStatus | null;
   objectName: string | null;
-  sendCommand: (command: string, generation: number) => Promise<WorkflowCommandResult>;
+  sendCommand: (command: string, generation: number, location?: PhoneLocationInput) => Promise<WorkflowCommandResult>;
   onRefreshStatus: () => Promise<boolean>;
   onWorkflowUpdate: (workflow: NonNullable<DeviceStatus['workflow']>) => void;
-  onOpenScanner: (objectId: string, sessionId: string) => void;
+  onOpenScanner: (objectId: string, sessionId: string | null) => void;
 }
 
 const HEIGHT_STATE_KEYS: Record<string, I18nKey> = {
@@ -91,6 +92,7 @@ function calibrationReasonLabel(reason: string, t: (key: I18nKey, params?: Reado
 function rangingReasonLabel(reason: string, t: (key: I18nKey, params?: Readonly<Record<string, string | number>>) => string): string {
   const normalized = reason.trim();
   if (normalized === 'timeout') return t('workflow.ranging.reason.timeout');
+  if (normalized === 'insufficient_nodes') return t('workflow.ranging.reason.insufficient_nodes');
   const pair = normalized.match(/^pair_failed:(.+)$/);
   if (pair !== null) return t('workflow.ranging.reason.pair_failed', { pair: pair[1] });
   const node = normalized.match(/^geometry_unsolved:(.+)$/);
@@ -169,7 +171,10 @@ function PlacementSection({ value }: { value: Extract<WorkflowBodySection, { kin
   );
 }
 
-function RangingSection({ value }: { value: Extract<WorkflowBodySection, { kind: 'ranging' }>['value'] }) {
+function RangingSection({ value, workflowReason }: {
+  value: Extract<WorkflowBodySection, { kind: 'ranging' }>['value'];
+  workflowReason: string | null | undefined;
+}) {
   const { locale } = useLocale();
   const t = useT();
   const progress = value?.available === true ? value.progress : undefined;
@@ -180,7 +185,7 @@ function RangingSection({ value }: { value: Extract<WorkflowBodySection, { kind:
     ? Math.max(0, Math.min(100, (done / total) * 100))
     : null;
   const geometry = progress?.geometry ?? lastResult?.geometry;
-  const failureReason = progress?.failure_reason?.trim() || '';
+  const failureReason = progress?.failure_reason?.trim() || workflowReason?.trim() || '';
   const residual = progress?.solution_residual_mm ?? geometry?.residual_mm;
   return (
     <div className="workflow-ranging">
@@ -239,7 +244,29 @@ function WorkflowSection({ section, status }: {
     case 'calib_prep': return <p>{t('workflow.calib_prep.instruction')}</p>;
     case 'calibration': return <CalibrationSection value={section.value} />;
     case 'placement': return <PlacementSection value={section.value} />;
-    case 'ranging': return <RangingSection value={section.value} />;
+    case 'gps': {
+      const messageKey = section.value.step === 'GPS_PENDING'
+        ? 'workflow.gps.waiting'
+        : section.value.gps_status === 'accepted' ? 'workflow.gps.accepted'
+          : section.value.gps_status === 'skipped' ? 'workflow.gps.skipped'
+            : section.value.gps_status === 'failed' ? 'workflow.gps.failed'
+              : 'workflow.gps.choice';
+      return <p role="status">{t(messageKey)}</p>;
+    }
+    case 'layout': return <p role="status">{t(section.value.placement.all_stable ? 'workflow.layout.ready' : 'workflow.layout.waiting')}</p>;
+    case 'ranging': return (
+      <>
+        {status?.workflow?.layout_result !== null && status?.workflow?.layout_result !== undefined && (
+          <p role="status">{t(status.workflow.layout_result ? 'workflow.layout.solved' : 'workflow.layout.unsolved')}</p>
+        )}
+        <RangingSection value={section.value} workflowReason={status?.workflow?.layout_reason} />
+      </>
+    );
+    case 'scan': return (
+      <p role="status">{t(section.scanning
+        ? section.value.scan_upload_status === 'verified' ? 'workflow.scan.saved' : 'workflow.scan.phone'
+        : 'workflow.scan.choice')}</p>
+    );
     case 'record_ready': return <p>{t('workflow.record_ready.instruction')}</p>;
     case 'recording': return <RecordingSection value={section.value} />;
     case 'stopped': return <p>{t('workflow.stopped.instruction')}</p>;
@@ -279,6 +306,7 @@ function ActionButton({ action, pending, deleteArmed, onClick }: {
   return (
     <button
       type="button"
+      data-command={action.command}
       className={action.back || !action.primary ? 'secondary' : undefined}
       disabled={pending}
       onClick={onClick}
@@ -301,12 +329,65 @@ export default function WorkflowPanel({
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const gpsCaptureGenerationRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!model.actions.some((action) => action.command.toUpperCase() === 'DELETE_RECORDING')) {
       setDeleteArmed(false);
     }
   }, [model.actions]);
+
+  const handleCommandResult = (result: WorkflowCommandResult): boolean => {
+    if (result.ok) {
+      onWorkflowUpdate(result.workflow);
+      setDeleteArmed(false);
+      setNotice(null);
+      setError(null);
+      if (result.workflow.step === 'SCANNING' && result.workflow.object_id) {
+        onOpenScanner(result.workflow.object_id, null);
+      }
+      return true;
+    }
+    if (result.reason === 'stale' || result.reason === 'not_allowed') {
+      void onRefreshStatus();
+      setDeleteArmed(false);
+      setNotice(t('workflow.state_changed'));
+    } else if (result.reason === 'error') {
+      setDeleteArmed(false);
+      setError(result.message === 'invalid_response' ? t('workflow.command.invalid_response') : result.message);
+    }
+    return false;
+  };
+
+  const captureAndAcceptGps = async (generation: number, fix: Promise<PhoneLocationInput>): Promise<void> => {
+    let location: PhoneLocationInput;
+    try {
+      location = await fix;
+    } catch {
+      try {
+        const failed = await sendCommand('GPS_CAPTURE_FAILED', generation);
+        if (handleCommandResult(failed)) setNotice(t('workflow.gps.failed'));
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+      return;
+    }
+    try {
+      handleCommandResult(await sendCommand('GPS_ACCEPT', generation, location));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  useEffect(() => {
+    if (workflow?.step !== 'GPS_PENDING' || workflow.gps_status !== 'pending' ||
+        !Number.isSafeInteger(workflow.generation) || gpsCaptureGenerationRef.current === workflow.generation) {
+      return;
+    }
+    if (typeof navigator === 'undefined' || !('geolocation' in navigator)) return;
+    gpsCaptureGenerationRef.current = workflow.generation;
+    void captureAndAcceptGps(workflow.generation, capturePhoneLocation());
+  }, [workflow?.generation, workflow?.gps_status, workflow?.step]);
 
   const runAction = async (action: WorkflowViewAction): Promise<void> => {
     if (action.command.toUpperCase() === 'DELETE_RECORDING' && !deleteArmed) {
@@ -317,19 +398,20 @@ export default function WorkflowPanel({
 
     setPendingCommand(action.command);
     setError(null);
+    const requestsGps = action.command.toUpperCase() === 'REQUEST_GPS';
+    const gpsFix = requestsGps
+      ? capturePhoneLocation()
+      : undefined;
     try {
       const result = await sendCommand(action.command, workflow.generation);
-      if (result.ok) {
-        onWorkflowUpdate(result.workflow);
-        setDeleteArmed(false);
-        setNotice(null);
-      } else if (result.reason === 'stale' || result.reason === 'not_allowed') {
-        await onRefreshStatus();
-        setDeleteArmed(false);
-        setNotice(t('workflow.state_changed'));
-      } else if (result.reason === 'error') {
-        setDeleteArmed(false);
-        setError(result.message === 'invalid_response' ? t('workflow.command.invalid_response') : result.message);
+      if (requestsGps && result.ok && result.workflow.step === 'GPS_PENDING') {
+        const pendingGeneration = result.workflow.generation;
+        gpsCaptureGenerationRef.current = pendingGeneration;
+      }
+      if (handleCommandResult(result) && requestsGps && result.ok && result.workflow.step === 'GPS_PENDING') {
+        const pendingGeneration = result.workflow.generation;
+        setPendingCommand(null);
+        if (gpsFix !== undefined) void captureAndAcceptGps(pendingGeneration, gpsFix);
       }
     } catch (reason) {
       setDeleteArmed(false);

@@ -788,11 +788,20 @@ export function sendWorkflowCommand(
   command: string,
   generation: number,
   options: ApiRequestOptions = {},
+  location?: PhoneLocationInput,
 ): Promise<WorkflowCommandResult> {
   const request = queuedApiRequest<WorkflowCommandResult>(async (context) => {
+    const gpsPayload = location === undefined ? {} : {
+      latitude: location.latitude,
+      longitude: location.longitude,
+      accuracy_m: location.accuracy_m,
+      captured_at_ms: location.captured_at_ms,
+      ...(location.altitude_m === null ? {} : { altitude_m: location.altitude_m }),
+      ...(location.altitude_accuracy_m === null ? {} : { altitude_accuracy_m: location.altitude_accuracy_m }),
+    };
     const body = await performJsonRequest<unknown>('/api/control', context, {
       method: 'POST',
-      body: JSON.stringify({ action: 'workflow_command', command, generation }),
+      body: JSON.stringify({ action: 'workflow_command', command, generation, ...gpsPayload }),
     }, DEVICE_API_CONTROL_TIMEOUT_MS, true);
 
     if (isRecord(body) && body.ok === true && isRecord(body.workflow)) {
@@ -1416,7 +1425,7 @@ export function capturePhoneLocation(): Promise<PhoneLocationInput> {
         accuracy_m: position.coords.accuracy,
         altitude_m: position.coords.altitude,
         altitude_accuracy_m: position.coords.altitudeAccuracy,
-        captured_at_ms: position.timestamp,
+        captured_at_ms: Math.floor(position.timestamp),
       }),
       (error) => reject(new Error(`Phone GPS unavailable: ${error.message}`)),
       {

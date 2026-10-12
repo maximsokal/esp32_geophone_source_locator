@@ -41,7 +41,21 @@ function deviceStatus(options: {
         cable_lengths_m: [5, 5, 5, 5],
       }],
     },
-    ...(options.step === undefined ? {} : { workflow: { step: options.step } }),
+    ...(options.step === undefined ? {} : {
+      workflow: {
+        step: options.step,
+        ...(options.step === 'CALIBRATING' ? {
+          calibration: {
+            generation: 1,
+            phase: 'calibrating',
+            per_node: [],
+            cs: { pairs_done: 0, pairs_total: 0, max_spread_mm: null },
+            result: null,
+            reasons: [],
+          },
+        } : {}),
+      },
+    }),
     ...(options.measurementState === undefined ? {} : { measurement: { available: true, state: options.measurementState, busy: false, object_id: 'OBJ_0001' } }),
   } as unknown as DeviceStatus;
 }

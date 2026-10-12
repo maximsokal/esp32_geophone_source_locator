@@ -602,6 +602,10 @@ static void enter_ready_placement(void)
 static void start_ranging(void)
 {
     clear_ranging_calls();
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_GPS_CHOICE);
+    assert(command(WORKFLOW_COMMAND_GPS_SKIP) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_LAYOUT_READY);
     assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) == WORKFLOW_COMMAND_RESULT_OK);
 }
 
@@ -636,8 +640,12 @@ static void test_ranging_success_and_confirm_preserve_frozen_result(void)
     s_ranging_progress.success = true;
     assert(workflow_service_poll() == ESP_OK);
     assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(get_workflow_snapshot().layout_result_valid);
+    assert(get_workflow_snapshot().layout_ok);
     assert(s_ranging_invalidate_calls == 1U);
     assert(command(WORKFLOW_COMMAND_CONFIRM) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_SCAN_CHOICE);
+    assert(command(WORKFLOW_COMMAND_SCAN_SKIP) == WORKFLOW_COMMAND_RESULT_OK);
     assert(get_workflow_snapshot().step == WORKFLOW_STEP_RECORD_READY);
     assert(s_ranging_invalidate_calls == 1U);
     workflow_service_shutdown();
@@ -658,6 +666,7 @@ static void assert_ranging_failure_reason(const char *reason)
     assert(workflow_service_poll() == ESP_OK);
     const workflow_snapshot_t snapshot = get_workflow_snapshot();
     assert(snapshot.step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(snapshot.layout_result_valid && !snapshot.layout_ok);
     assert(strcmp(snapshot.reason, reason) == 0);
     assert(s_ranging_invalidate_calls == 2U);
     workflow_service_shutdown();
@@ -707,6 +716,16 @@ static void test_ranging_retry_starts_a_new_run_and_ignores_stale_completion(voi
     s_now_ms += 100U;
     clear_ranging_calls();
     assert(command(WORKFLOW_COMMAND_RETRY) == WORKFLOW_COMMAND_RESULT_OK);
+    workflow_snapshot_t retry_snapshot = get_workflow_snapshot();
+    assert(retry_snapshot.step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(!retry_snapshot.layout_result_valid);
+    assert(s_ranging_start_calls == 0U);
+    const int32_t heights[3] = { 100, 200, 300 };
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    publish_placement_sample(1400U, heights, upright);
+    publish_placement_sample(1500U, heights, upright);
+    publish_placement_sample(1600U, heights, upright);
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) == WORKFLOW_COMMAND_RESULT_OK);
     assert(s_ranging_start_calls == 1U);
     assert(s_ranging_progress_calls == 1U);
     assert(s_ranging_call_count == 3U);
@@ -736,16 +755,25 @@ static void test_ranging_back_orphans_run_and_invalidates_late_result(void)
     start_ranging();
     const uint64_t started_at_ms = s_ranging_progress.started_at_ms;
     assert(command(WORKFLOW_COMMAND_BACK) == WORKFLOW_COMMAND_RESULT_OK);
-    assert(get_workflow_snapshot().step == WORKFLOW_STEP_PLACEMENT);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_LAYOUT_READY);
     assert(s_ranging_invalidate_calls == 2U);
 
     s_ranging_progress.started_at_ms = started_at_ms;
     s_ranging_progress.complete = true;
     s_ranging_progress.success = true;
     assert(workflow_service_poll() == ESP_OK);
-    assert(get_workflow_snapshot().step == WORKFLOW_STEP_PLACEMENT);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_LAYOUT_READY);
     assert(s_ranging_invalidate_calls == 3U);
     workflow_service_shutdown();
+}
+
+static void test_max460_layout_success_failure_reason_retry_and_back(void)
+{
+    test_ranging_success_and_confirm_preserve_frozen_result();
+    test_ranging_failure_reasons_propagate();
+    test_ranging_start_error_reports_failure();
+    test_ranging_retry_starts_a_new_run_and_ignores_stale_completion();
+    test_ranging_back_orphans_run_and_invalidates_late_result();
 }
 
 static void test_placement_entry_invalidates_back_and_move_sensors(void)
@@ -763,10 +791,9 @@ static void test_placement_entry_invalidates_back_and_move_sensors(void)
     assert(workflow_service_poll() == ESP_OK);
     clear_ranging_calls();
     assert(command(WORKFLOW_COMMAND_BACK) == WORKFLOW_COMMAND_RESULT_OK);
-    assert(get_workflow_snapshot().step == WORKFLOW_STEP_PLACEMENT);
-    assert(s_ranging_invalidate_calls == 1U);
-    assert(s_ranging_call_count == 1U);
-    assert(s_ranging_calls[0] == RANGING_CALL_INVALIDATE);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(s_ranging_invalidate_calls == 0U);
+    assert(s_ranging_call_count == 0U);
     workflow_service_shutdown();
 
     reset_fakes();
@@ -776,6 +803,7 @@ static void test_placement_entry_invalidates_back_and_move_sensors(void)
     s_ranging_progress.success = true;
     assert(workflow_service_poll() == ESP_OK);
     assert(command(WORKFLOW_COMMAND_CONFIRM) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_SCAN_SKIP) == WORKFLOW_COMMAND_RESULT_OK);
     clear_ranging_calls();
     assert(command(WORKFLOW_COMMAND_MOVE_SENSORS) == WORKFLOW_COMMAND_RESULT_OK);
     assert(get_workflow_snapshot().step == WORKFLOW_STEP_PLACEMENT);
@@ -796,6 +824,8 @@ static void test_placement_sample_count_and_calculate_guard(void)
     workflow_snapshot_t snapshot = get_workflow_snapshot();
     assert(!snapshot.placement.all_stable);
     assert(!snapshot.placement.per_node[0].stable);
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) ==
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
     assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) ==
         WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
 
@@ -807,6 +837,8 @@ static void test_placement_sample_count_and_calculate_guard(void)
     assert(snapshot.placement.per_node[0].stable);
     assert(snapshot.placement.per_node[1].height_rel_main_mm == 100);
     assert(snapshot.placement.per_node[1].altitude_asl_m == 12.0);
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_GPS_SKIP) == WORKFLOW_COMMAND_RESULT_OK);
     assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) == WORKFLOW_COMMAND_RESULT_OK);
     workflow_service_shutdown();
 }
@@ -827,6 +859,7 @@ static void test_placement_height_range_50mm_boundary(void)
     workflow_snapshot_t snapshot = get_workflow_snapshot();
     assert(snapshot.placement.per_node[1].stable);
     assert(snapshot.placement.all_stable);
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) == WORKFLOW_COMMAND_RESULT_OK);
     workflow_service_shutdown();
 
     const int32_t outside_boundary[][3] = {
@@ -842,6 +875,8 @@ static void test_placement_height_range_50mm_boundary(void)
     snapshot = get_workflow_snapshot();
     assert(!snapshot.placement.per_node[1].stable);
     assert(!snapshot.placement.all_stable);
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) ==
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
     workflow_service_shutdown();
 }
 
@@ -859,12 +894,50 @@ static void test_placement_uses_inclusive_three_second_window(void)
     publish_placement_sample(1000U, outside_then_stable[0], upright);
     publish_placement_sample(2000U, outside_then_stable[1], upright);
     publish_placement_sample(3000U, outside_then_stable[2], upright);
-    publish_placement_sample(4000U, outside_then_stable[3], upright);
+    publish_placement_sample(3999U, outside_then_stable[3], upright);
     workflow_snapshot_t snapshot = get_workflow_snapshot();
     assert(!snapshot.placement.per_node[1].stable);
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) ==
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    publish_placement_sample(4000U, outside_then_stable[3], upright);
+    snapshot = get_workflow_snapshot();
+    assert(!snapshot.placement.per_node[1].stable);
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) ==
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
     publish_placement_sample(4001U, outside_then_stable[3], upright);
     snapshot = get_workflow_snapshot();
     assert(snapshot.placement.per_node[1].stable);
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) == WORKFLOW_COMMAND_RESULT_OK);
+    workflow_service_shutdown();
+}
+
+static void test_layout_rechecks_placement_after_gps_choice(void)
+{
+    reset_fakes();
+    enter_ready_placement();
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) == WORKFLOW_COMMAND_RESULT_OK);
+
+    const int32_t moved[3] = { 100, 400, 300 };
+    const int32_t steady[3] = { 100, 200, 300 };
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    publish_placement_sample(1300U, moved, upright);
+    workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_GPS_CHOICE);
+    assert(!snapshot.placement.all_stable);
+
+    assert(command(WORKFLOW_COMMAND_GPS_SKIP) == WORKFLOW_COMMAND_RESULT_OK);
+    snapshot = get_workflow_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(!snapshot.placement.all_stable);
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) ==
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+
+    publish_placement_sample(4301U, steady, upright);
+    publish_placement_sample(4401U, steady, upright);
+    publish_placement_sample(4501U, steady, upright);
+    snapshot = get_workflow_snapshot();
+    assert(snapshot.placement.all_stable);
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) == WORKFLOW_COMMAND_RESULT_OK);
     workflow_service_shutdown();
 }
 
@@ -989,15 +1062,12 @@ int main(void)
     test_calibration_back_cancels_pending_results();
     test_calibration_retry_changes_generation_and_ignores_stale_results();
     test_ranging_start_is_invalidated_and_nonblocking();
-    test_ranging_success_and_confirm_preserve_frozen_result();
-    test_ranging_failure_reasons_propagate();
-    test_ranging_start_error_reports_failure();
-    test_ranging_retry_starts_a_new_run_and_ignores_stale_completion();
-    test_ranging_back_orphans_run_and_invalidates_late_result();
+    test_max460_layout_success_failure_reason_retry_and_back();
     test_placement_entry_invalidates_back_and_move_sensors();
     test_placement_sample_count_and_calculate_guard();
     test_placement_height_range_50mm_boundary();
     test_placement_uses_inclusive_three_second_window();
+    test_layout_rechecks_placement_after_gps_choice();
     test_placement_vertical_flip_resets_sample_window();
     test_placement_generation_mismatch_and_node_dropout_are_unknown();
     test_main_is_vertical_but_needs_a_valid_height_reference();

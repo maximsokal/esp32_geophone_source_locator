@@ -121,14 +121,11 @@ type ScanStoragePhase =
 
 interface AppProps {
   objectId: string | null;
-  /*
-   * MAX-167: a 3D scan belongs to one recording/session, never directly to
-   * the object. Every scan storage action is gated on both IDs together --
-   * an object without an open session has nowhere valid to attach a new
-   * scan, exactly like objectId === null before this change.
-   */
+  /* Existing session scans remain session-owned; null marks an explicit
+   * workflow scan that is saved to pre-record object staging. */
   sessionId: string | null;
   status: DeviceStatus | null;
+  onScanSaved?: () => void | Promise<void>;
 }
 
 /** Build the React identity for the result viewport from the durable scan ID or provisional generation. */
@@ -243,7 +240,7 @@ function persistedScanStorageLabel(
   return `${scanLabel} | ${occupancyStatusLabel(persistence, locale)}`;
 }
 
-export default function App({ objectId, sessionId, status }: AppProps) {
+export default function App({ objectId, sessionId, status, onScanSaved }: AppProps) {
   const { locale } = useLocale();
   const t = useT();
   const scanSessionId = scanPersistenceSessionId(sessionId);
@@ -1148,6 +1145,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
           operatorEdges: snapshot.operatorEdges.length,
         });
         void clientDiagnostics.flush();
+        if (sessionId === null) void onScanSaved?.();
         if (state.occupancy === 'ready') {
           clientDiagnostics.info('SCAN_OCCUPANCY_SAVED', { objectId, sessionId: scanSessionId });
         } else if (state.occupancy === 'failed' || state.occupancy === 'unavailable' || state.occupancy === 'stale') {
@@ -1166,7 +1164,7 @@ export default function App({ objectId, sessionId, status }: AppProps) {
         }
     });
     }
-  }, [objectId, sessionId, scanSessionId, persistenceController, selectMode, storageActionsDisabled, updateScanDurability, reloadSessionRegistration, cancelContinuation, cancelScanEncode, cancelScanDecode, scanStoragePhase, computeProfile, locale]);
+  }, [objectId, sessionId, scanSessionId, persistenceController, selectMode, storageActionsDisabled, updateScanDurability, reloadSessionRegistration, cancelContinuation, cancelScanEncode, cancelScanDecode, scanStoragePhase, computeProfile, locale, onScanSaved]);
 
   const retryPersistence = useCallback((): void => {
     if (storageActionsDisabled || objectId === null) return;

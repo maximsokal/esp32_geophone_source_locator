@@ -1,5 +1,7 @@
 #include "workflow_core.h"
 
+#include <float.h>
+#include <math.h>
 #include <string.h>
 
 #ifndef CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
@@ -92,6 +94,19 @@ static uint32_t workflow_core_actions(
                 : WORKFLOW_COMMAND_RETRY);
             break;
         case WORKFLOW_STEP_PLACEMENT:
+            if (placement_ready) ADD_ACTION(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED);
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_GPS_CHOICE:
+            ADD_ACTION(WORKFLOW_COMMAND_REQUEST_GPS);
+            ADD_ACTION(WORKFLOW_COMMAND_GPS_SKIP);
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_GPS_PENDING:
+            ADD_ACTION(WORKFLOW_COMMAND_GPS_SKIP);
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_LAYOUT_READY:
             if (placement_ready) ADD_ACTION(WORKFLOW_COMMAND_CALCULATE_POSITIONS);
             ADD_ACTION(WORKFLOW_COMMAND_BACK);
             break;
@@ -101,6 +116,14 @@ static uint32_t workflow_core_actions(
         case WORKFLOW_STEP_RANGING_RESULT:
             ADD_ACTION(WORKFLOW_COMMAND_BACK);
             ADD_ACTION(ranging_ok ? WORKFLOW_COMMAND_CONFIRM : WORKFLOW_COMMAND_RETRY);
+            break;
+        case WORKFLOW_STEP_SCAN_CHOICE:
+            ADD_ACTION(WORKFLOW_COMMAND_SCAN_START);
+            ADD_ACTION(WORKFLOW_COMMAND_SCAN_SKIP);
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
+            break;
+        case WORKFLOW_STEP_SCANNING:
+            ADD_ACTION(WORKFLOW_COMMAND_BACK);
             break;
         case WORKFLOW_STEP_RECORD_READY:
             ADD_ACTION(WORKFLOW_COMMAND_START_RECORDING);
@@ -162,6 +185,11 @@ void workflow_core_reset_object(
         core->calibration_ok = false;
         core->ranging_ok = false;
         core->calc_settings_ready = false;
+        core->gps_status = WORKFLOW_GPS_STATUS_NONE;
+        core->layout_result_valid = false;
+        core->layout_ok = false;
+        core->scan_choice = WORKFLOW_SCAN_CHOICE_NONE;
+        core->scan_upload_status = WORKFLOW_SCAN_UPLOAD_NONE;
         workflow_core_set_reason(core, NULL);
         workflow_core_advance_generation(core);
     }
@@ -177,9 +205,14 @@ static workflow_step_t workflow_core_back_step(workflow_step_t step)
         case WORKFLOW_STEP_CALIBRATING: return WORKFLOW_STEP_CALIB_PREP;
         case WORKFLOW_STEP_CALIB_RESULT: return WORKFLOW_STEP_CALIB_PREP;
         case WORKFLOW_STEP_PLACEMENT: return WORKFLOW_STEP_CALIB_RESULT;
-        case WORKFLOW_STEP_RANGING: return WORKFLOW_STEP_PLACEMENT;
-        case WORKFLOW_STEP_RANGING_RESULT: return WORKFLOW_STEP_PLACEMENT;
-        case WORKFLOW_STEP_RECORD_READY: return WORKFLOW_STEP_RANGING_RESULT;
+        case WORKFLOW_STEP_GPS_CHOICE: return WORKFLOW_STEP_PLACEMENT;
+        case WORKFLOW_STEP_GPS_PENDING: return WORKFLOW_STEP_GPS_CHOICE;
+        case WORKFLOW_STEP_LAYOUT_READY: return WORKFLOW_STEP_GPS_CHOICE;
+        case WORKFLOW_STEP_RANGING: return WORKFLOW_STEP_LAYOUT_READY;
+        case WORKFLOW_STEP_RANGING_RESULT: return WORKFLOW_STEP_LAYOUT_READY;
+        case WORKFLOW_STEP_SCAN_CHOICE: return WORKFLOW_STEP_RANGING_RESULT;
+        case WORKFLOW_STEP_SCANNING: return WORKFLOW_STEP_SCAN_CHOICE;
+        case WORKFLOW_STEP_RECORD_READY: return WORKFLOW_STEP_SCAN_CHOICE;
         case WORKFLOW_STEP_STOPPED: return WORKFLOW_STEP_RECORD_READY;
         case WORKFLOW_STEP_CALCULATING: return WORKFLOW_STEP_STOPPED;
         case WORKFLOW_STEP_RESULT: return WORKFLOW_STEP_STOPPED;
@@ -189,6 +222,30 @@ static workflow_step_t workflow_core_back_step(workflow_step_t step)
         default:
             return WORKFLOW_STEP_COUNT;
     }
+}
+
+static void workflow_core_clear_layout_result(workflow_core_t *core)
+{
+    core->layout_result_valid = false;
+    core->layout_ok = false;
+}
+
+static void workflow_core_clear_scan_choice(workflow_core_t *core)
+{
+    core->scan_choice = WORKFLOW_SCAN_CHOICE_NONE;
+    core->scan_upload_status = WORKFLOW_SCAN_UPLOAD_NONE;
+}
+
+static bool workflow_core_location_valid(const workflow_command_params_t *params)
+{
+    return params->has_location &&
+        isfinite(params->latitude) && params->latitude >= -90.0 && params->latitude <= 90.0 &&
+        isfinite(params->longitude) && params->longitude >= -180.0 && params->longitude <= 180.0 &&
+        isfinite(params->accuracy_m) && params->accuracy_m >= 0.0 &&
+        params->accuracy_m <= (double)FLT_MAX &&
+        (!params->altitude_valid ||
+            (isfinite(params->altitude_m) && isfinite(params->altitude_accuracy_m) &&
+             params->altitude_accuracy_m >= 0.0 && params->altitude_accuracy_m <= (double)FLT_MAX));
 }
 
 workflow_command_result_t workflow_core_apply(
@@ -245,26 +302,80 @@ workflow_command_result_t workflow_core_apply(
                 next = WORKFLOW_STEP_CALIBRATING;
             }
             else if (core->step == WORKFLOW_STEP_RANGING_RESULT && !core->ranging_ok) {
-                next = WORKFLOW_STEP_RANGING;
+                workflow_core_clear_layout_result(core);
+                next = WORKFLOW_STEP_LAYOUT_READY;
             }
             break;
         case WORKFLOW_COMMAND_PLACE_SENSORS:
             if (core->step == WORKFLOW_STEP_CALIB_RESULT && core->calibration_ok) {
+                core->gps_status = WORKFLOW_GPS_STATUS_NONE;
+                workflow_core_clear_layout_result(core);
+                workflow_core_clear_scan_choice(core);
                 next = WORKFLOW_STEP_PLACEMENT;
             }
             break;
-        case WORKFLOW_COMMAND_CALCULATE_POSITIONS:
+        case WORKFLOW_COMMAND_PLACEMENT_CONFIRMED:
             if (core->step == WORKFLOW_STEP_PLACEMENT) {
                 if (!placement_ready) {
                     workflow_core_set_reason(core, "placement_not_ready");
                     return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
                 }
+                core->gps_status = WORKFLOW_GPS_STATUS_NONE;
+                workflow_core_clear_layout_result(core);
+                workflow_core_clear_scan_choice(core);
+                next = WORKFLOW_STEP_GPS_CHOICE;
+            }
+            break;
+        case WORKFLOW_COMMAND_REQUEST_GPS:
+            if (core->step == WORKFLOW_STEP_GPS_CHOICE) {
+                core->gps_status = WORKFLOW_GPS_STATUS_PENDING;
+                next = WORKFLOW_STEP_GPS_PENDING;
+            }
+            break;
+        case WORKFLOW_COMMAND_GPS_ACCEPT:
+            if (core->step == WORKFLOW_STEP_GPS_PENDING) {
+                if (!workflow_core_location_valid(params)) {
+                    return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+                }
+                core->gps_status = WORKFLOW_GPS_STATUS_ACCEPTED;
+                workflow_core_clear_layout_result(core);
+                workflow_core_clear_scan_choice(core);
+                next = WORKFLOW_STEP_LAYOUT_READY;
+            }
+            break;
+        case WORKFLOW_COMMAND_GPS_CAPTURE_FAILED:
+            if (core->step == WORKFLOW_STEP_GPS_PENDING) {
+                core->gps_status = WORKFLOW_GPS_STATUS_FAILED;
+                next = WORKFLOW_STEP_GPS_CHOICE;
+                reason = params->reason != NULL && params->reason[0] != '\0'
+                    ? params->reason
+                    : "gps_capture_failed";
+            }
+            break;
+        case WORKFLOW_COMMAND_GPS_SKIP:
+            if (core->step == WORKFLOW_STEP_GPS_CHOICE ||
+                core->step == WORKFLOW_STEP_GPS_PENDING) {
+                core->gps_status = WORKFLOW_GPS_STATUS_SKIPPED;
+                workflow_core_clear_layout_result(core);
+                workflow_core_clear_scan_choice(core);
+                next = WORKFLOW_STEP_LAYOUT_READY;
+            }
+            break;
+        case WORKFLOW_COMMAND_CALCULATE_POSITIONS:
+            if (core->step == WORKFLOW_STEP_LAYOUT_READY) {
+                if (!placement_ready) {
+                    workflow_core_set_reason(core, "placement_not_ready");
+                    return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+                }
+                workflow_core_clear_layout_result(core);
                 next = WORKFLOW_STEP_RANGING;
             }
             break;
         case WORKFLOW_COMMAND_RANGING_DONE:
             if (core->step == WORKFLOW_STEP_RANGING && params->has_ok) {
                 core->ranging_ok = params->ok;
+                core->layout_result_valid = true;
+                core->layout_ok = params->ok;
                 next = WORKFLOW_STEP_RANGING_RESULT;
                 reason = params->ok ? NULL : (params->reason != NULL && params->reason[0] != '\0'
                     ? params->reason
@@ -276,6 +387,30 @@ workflow_command_result_t workflow_core_apply(
             break;
         case WORKFLOW_COMMAND_CONFIRM:
             if (core->step == WORKFLOW_STEP_RANGING_RESULT && core->ranging_ok) {
+                workflow_core_clear_scan_choice(core);
+                next = WORKFLOW_STEP_SCAN_CHOICE;
+            }
+            break;
+        case WORKFLOW_COMMAND_SCAN_START:
+            if (core->step == WORKFLOW_STEP_SCAN_CHOICE) {
+                core->scan_choice = WORKFLOW_SCAN_CHOICE_YES;
+                core->scan_upload_status = WORKFLOW_SCAN_UPLOAD_PENDING;
+                next = WORKFLOW_STEP_SCANNING;
+            }
+            break;
+        case WORKFLOW_COMMAND_SCAN_SKIP:
+            if (core->step == WORKFLOW_STEP_SCAN_CHOICE) {
+                core->scan_choice = WORKFLOW_SCAN_CHOICE_NO;
+                core->scan_upload_status = WORKFLOW_SCAN_UPLOAD_NONE;
+                next = WORKFLOW_STEP_RECORD_READY;
+            }
+            break;
+        case WORKFLOW_COMMAND_SCAN_COMPLETE:
+            if (core->step == WORKFLOW_STEP_SCANNING) {
+                if (!params->has_ok || !params->ok) {
+                    return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+                }
+                core->scan_upload_status = WORKFLOW_SCAN_UPLOAD_VERIFIED;
                 next = WORKFLOW_STEP_RECORD_READY;
             }
             break;
@@ -289,6 +424,9 @@ workflow_command_result_t workflow_core_apply(
             if (core->step == WORKFLOW_STEP_RECORD_READY ||
                 core->step == WORKFLOW_STEP_STOPPED ||
                 core->step == WORKFLOW_STEP_RESULT) {
+                core->gps_status = WORKFLOW_GPS_STATUS_NONE;
+                workflow_core_clear_layout_result(core);
+                workflow_core_clear_scan_choice(core);
                 next = WORKFLOW_STEP_PLACEMENT;
             }
             break;
@@ -340,6 +478,27 @@ workflow_command_result_t workflow_core_apply(
                 reason = "cancelled_by_back";
             }
             next = workflow_core_back_step(core->step);
+            switch (core->step) {
+                case WORKFLOW_STEP_GPS_CHOICE:
+                case WORKFLOW_STEP_GPS_PENDING:
+                case WORKFLOW_STEP_LAYOUT_READY:
+                    core->gps_status = WORKFLOW_GPS_STATUS_NONE;
+                    workflow_core_clear_layout_result(core);
+                    workflow_core_clear_scan_choice(core);
+                    break;
+                case WORKFLOW_STEP_RANGING:
+                case WORKFLOW_STEP_RANGING_RESULT:
+                    workflow_core_clear_layout_result(core);
+                    workflow_core_clear_scan_choice(core);
+                    break;
+                case WORKFLOW_STEP_SCAN_CHOICE:
+                case WORKFLOW_STEP_SCANNING:
+                case WORKFLOW_STEP_RECORD_READY:
+                    workflow_core_clear_scan_choice(core);
+                    break;
+                default:
+                    break;
+            }
             break;
         case WORKFLOW_COMMAND_COUNT:
         default:
@@ -347,7 +506,9 @@ workflow_command_result_t workflow_core_apply(
     }
 
     if (next == WORKFLOW_STEP_COUNT) return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+    const uint32_t previous_generation = core->generation;
     workflow_core_transition(core, next, reason);
+    if (core->generation == previous_generation) workflow_core_advance_generation(core);
     if (command == WORKFLOW_COMMAND_CALCULATION_DONE) {
         core->calculation_class = params->ok
             ? WORKFLOW_CALCULATION_CLASS_NONE
@@ -397,6 +558,11 @@ void workflow_core_snapshot(
     memcpy(snapshot->reason, core->reason, sizeof(snapshot->reason));
     snapshot->progress = core->progress;
     snapshot->calculation_class = core->calculation_class;
+    snapshot->gps_status = core->gps_status;
+    snapshot->layout_result_valid = core->layout_result_valid;
+    snapshot->layout_ok = core->layout_ok;
+    snapshot->scan_choice = core->scan_choice;
+    snapshot->scan_upload_status = core->scan_upload_status;
     snapshot->calc_settings_ready = core->calc_settings_ready;
     snapshot->assigned_remotes = assigned_remotes > UINT8_MAX
         ? UINT8_MAX
@@ -426,8 +592,9 @@ const char *workflow_core_step_name(workflow_step_t step)
 {
     static const char *const names[WORKFLOW_STEP_COUNT] = {
         "IDLE", "OBJECT", "SENSOR_CHECK", "CALIB_PREP", "CALIBRATING",
-        "CALIB_RESULT", "PLACEMENT", "RANGING", "RANGING_RESULT",
-        "RECORD_READY", "RECORDING", "STOPPED", "CALCULATING", "RESULT"
+        "CALIB_RESULT", "PLACEMENT", "GPS_CHOICE", "GPS_PENDING", "LAYOUT_READY",
+        "RANGING", "RANGING_RESULT", "SCAN_CHOICE", "SCANNING", "RECORD_READY",
+        "RECORDING", "STOPPED", "CALCULATING", "RESULT"
     };
     return step >= 0 && step < WORKFLOW_STEP_COUNT ? names[step] : "UNKNOWN";
 }
@@ -436,10 +603,12 @@ const char *workflow_core_command_name(workflow_command_t command)
 {
     static const char *const names[WORKFLOW_COMMAND_COUNT] = {
         "START_MEASUREMENT", "GO_CALIBRATION", "SENSORS_PLACED",
-        "CALIBRATION_DONE", "RETRY", "PLACE_SENSORS", "CALCULATE_POSITIONS",
-        "RANGING_DONE", "CONFIRM", "START_RECORDING", "STOP_RECORDING",
+        "CALIBRATION_DONE", "RETRY", "PLACE_SENSORS", "PLACEMENT_CONFIRMED",
+        "REQUEST_GPS", "GPS_ACCEPT", "GPS_CAPTURE_FAILED", "GPS_SKIP",
+        "CALCULATE_POSITIONS", "RANGING_DONE", "CONFIRM", "START_RECORDING", "STOP_RECORDING",
         "MOVE_SENSORS", "CALCULATE_SOURCES", "CALCULATION_DONE",
-        "DELETE_RECORDING", "RECORD_AGAIN", "BACK"
+        "DELETE_RECORDING", "RECORD_AGAIN", "SCAN_START", "SCAN_SKIP",
+        "SCAN_COMPLETE", "BACK"
     };
     return command >= 0 && command < WORKFLOW_COMMAND_COUNT ? names[command] : "UNKNOWN";
 }
@@ -461,6 +630,39 @@ const char *workflow_core_calculation_class_name(workflow_calculation_class_t ca
         case WORKFLOW_CALCULATION_CLASS_MOVE_SENSORS: return "move_sensors";
         case WORKFLOW_CALCULATION_CLASS_INTERNAL: return "internal";
         case WORKFLOW_CALCULATION_CLASS_NONE:
+        default: return "none";
+    }
+}
+
+const char *workflow_core_gps_status_name(workflow_gps_status_t status)
+{
+    switch (status) {
+        case WORKFLOW_GPS_STATUS_SKIPPED: return "skipped";
+        case WORKFLOW_GPS_STATUS_PENDING: return "pending";
+        case WORKFLOW_GPS_STATUS_ACCEPTED: return "accepted";
+        case WORKFLOW_GPS_STATUS_FAILED: return "failed";
+        case WORKFLOW_GPS_STATUS_NONE:
+        default: return "none";
+    }
+}
+
+const char *workflow_core_scan_choice_name(workflow_scan_choice_t choice)
+{
+    switch (choice) {
+        case WORKFLOW_SCAN_CHOICE_YES: return "yes";
+        case WORKFLOW_SCAN_CHOICE_NO: return "no";
+        case WORKFLOW_SCAN_CHOICE_NONE:
+        default: return "none";
+    }
+}
+
+const char *workflow_core_scan_upload_status_name(workflow_scan_upload_status_t status)
+{
+    switch (status) {
+        case WORKFLOW_SCAN_UPLOAD_PENDING: return "pending";
+        case WORKFLOW_SCAN_UPLOAD_VERIFIED: return "verified";
+        case WORKFLOW_SCAN_UPLOAD_FAILED: return "failed";
+        case WORKFLOW_SCAN_UPLOAD_NONE:
         default: return "none";
     }
 }

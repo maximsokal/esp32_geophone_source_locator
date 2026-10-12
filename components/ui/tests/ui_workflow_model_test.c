@@ -37,8 +37,13 @@ static void test_all_steps(void)
         UI_I18N_KEY_TFT_WORKFLOW_TITLE_CALIBRATING,
         UI_I18N_KEY_TFT_WORKFLOW_TITLE_CALIB_RESULT,
         UI_I18N_KEY_TFT_WORKFLOW_TITLE_PLACEMENT,
+        UI_I18N_KEY_TFT_WORKFLOW_TITLE_GPS_CHOICE,
+        UI_I18N_KEY_TFT_WORKFLOW_TITLE_GPS_PENDING,
+        UI_I18N_KEY_TFT_WORKFLOW_TITLE_LAYOUT_READY,
         UI_I18N_KEY_TFT_WORKFLOW_TITLE_RANGING,
         UI_I18N_KEY_TFT_WORKFLOW_TITLE_RANGING_RESULT,
+        UI_I18N_KEY_TFT_WORKFLOW_TITLE_SCAN_CHOICE,
+        UI_I18N_KEY_TFT_WORKFLOW_TITLE_SCANNING,
         UI_I18N_KEY_TFT_WORKFLOW_TITLE_RECORD_READY,
         UI_I18N_KEY_TFT_WORKFLOW_TITLE_RECORDING,
         UI_I18N_KEY_TFT_WORKFLOW_TITLE_STOPPED,
@@ -48,7 +53,7 @@ static void test_all_steps(void)
     ui_workflow_model_state_t state = {0};
     ui_workflow_ranging_t ranging = {0};
     ui_workflow_model_t model;
-    assert(WORKFLOW_STEP_COUNT == 14);
+    assert(WORKFLOW_STEP_COUNT == 19);
     for (workflow_step_t step = WORKFLOW_STEP_IDLE; step < WORKFLOW_STEP_COUNT; ++step) {
         workflow_snapshot_t snapshot = make_snapshot(step);
         build(&snapshot, &state, &ranging, &model);
@@ -65,6 +70,8 @@ static void test_actions_follow_allowed_mask(void)
         WORKFLOW_COMMAND_SENSORS_PLACED,
         WORKFLOW_COMMAND_RETRY,
         WORKFLOW_COMMAND_PLACE_SENSORS,
+        WORKFLOW_COMMAND_PLACEMENT_CONFIRMED,
+        WORKFLOW_COMMAND_GPS_SKIP,
         WORKFLOW_COMMAND_CALCULATE_POSITIONS,
         WORKFLOW_COMMAND_CONFIRM,
         WORKFLOW_COMMAND_START_RECORDING,
@@ -73,17 +80,11 @@ static void test_actions_follow_allowed_mask(void)
         WORKFLOW_COMMAND_CALCULATE_SOURCES,
         WORKFLOW_COMMAND_DELETE_RECORDING,
         WORKFLOW_COMMAND_RECORD_AGAIN,
+        WORKFLOW_COMMAND_SCAN_SKIP,
         WORKFLOW_COMMAND_BACK,
     };
     uint32_t allowed = 0U;
-    for (workflow_command_t command = WORKFLOW_COMMAND_START_MEASUREMENT;
-         command < WORKFLOW_COMMAND_COUNT; ++command) {
-        if (command != WORKFLOW_COMMAND_CALIBRATION_DONE &&
-            command != WORKFLOW_COMMAND_RANGING_DONE &&
-            command != WORKFLOW_COMMAND_CALCULATION_DONE) {
-            allowed |= WORKFLOW_ACTION(command);
-        }
-    }
+    for (size_t i = 0U; i < sizeof(expected) / sizeof(expected[0]); ++i) allowed |= WORKFLOW_ACTION(expected[i]);
     workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_OBJECT);
     snapshot.allowed_actions = allowed;
     ui_workflow_model_state_t state = {0};
@@ -126,6 +127,89 @@ static void test_actions_follow_allowed_mask(void)
     build(&snapshot, &state, &ranging, &model);
     assert(model.action_count == 0U);
     assert(model.actions_mask == 0U);
+}
+
+static void test_max460_guided_step_content_and_placement_gate(void)
+{
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_PLACEMENT);
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.line_count == 1U);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_WAITING);
+    assert((model.actions_mask & WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED)) == 0U);
+
+    snapshot.placement.all_stable = true;
+    snapshot.allowed_actions |= WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ALL_STABLE);
+    assert((model.actions_mask & WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED)) != 0U);
+
+    snapshot = make_snapshot(WORKFLOW_STEP_GPS_CHOICE);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_GPS_WAITING);
+    snapshot.step = WORKFLOW_STEP_GPS_PENDING;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_GPS_WAITING);
+
+    snapshot = make_snapshot(WORKFLOW_STEP_LAYOUT_READY);
+    snapshot.placement.all_stable = true;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_LAYOUT_READY);
+    snapshot.placement.all_stable = false;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_WAITING);
+
+    snapshot = make_snapshot(WORKFLOW_STEP_SCAN_CHOICE);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_SCAN_PHONE);
+    snapshot.step = WORKFLOW_STEP_SCANNING;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_SCAN_PHONE);
+}
+
+static void test_max460_tft_action_set_matches_core_for_guided_steps(void)
+{
+    static const workflow_step_t steps[] = {
+        WORKFLOW_STEP_PLACEMENT,
+        WORKFLOW_STEP_GPS_CHOICE,
+        WORKFLOW_STEP_GPS_PENDING,
+        WORKFLOW_STEP_LAYOUT_READY,
+        WORKFLOW_STEP_SCAN_CHOICE,
+        WORKFLOW_STEP_SCANNING,
+    };
+    ui_workflow_ranging_t ranging = {0};
+
+    for (size_t step_index = 0U; step_index < sizeof(steps) / sizeof(steps[0]); ++step_index) {
+        workflow_core_t core;
+        workflow_core_init(&core, true);
+        core.step = steps[step_index];
+        core.calibration_ok = true;
+        core.ranging_ok = true;
+
+        workflow_snapshot_t snapshot;
+        workflow_core_snapshot(&core, 4U, true, &snapshot);
+        snapshot.placement.all_stable = true;
+
+        ui_workflow_model_state_t state = {0};
+        ui_workflow_model_t model;
+        build(&snapshot, &state, &ranging, &model);
+        assert(model.actions_mask == snapshot.allowed_actions);
+
+        size_t expected_count = 0U;
+        for (workflow_command_t command = 0; command < WORKFLOW_COMMAND_COUNT; ++command) {
+            const bool allowed = (snapshot.allowed_actions & WORKFLOW_ACTION(command)) != 0U;
+            bool offered = false;
+            for (size_t action = 0U; action < model.action_count; ++action) {
+                if (model.actions[action] == command) offered = true;
+            }
+            assert(offered == allowed);
+            if (allowed) ++expected_count;
+        }
+        assert(model.action_count == expected_count);
+    }
 }
 
 static void test_sensor_counts(void)
@@ -520,6 +604,8 @@ int main(void)
 #else
     test_all_steps();
     test_actions_follow_allowed_mask();
+    test_max460_guided_step_content_and_placement_gate();
+    test_max460_tft_action_set_matches_core_for_guided_steps();
     test_sensor_counts();
     test_left_behavior_each_step();
     test_right_preview_matrix();

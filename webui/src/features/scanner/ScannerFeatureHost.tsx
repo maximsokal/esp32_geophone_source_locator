@@ -9,6 +9,7 @@ export interface ScannerFeatureProps {
   objectId: string | null;
   sessionId: string | null;
   status: DeviceStatus | null;
+  onScanSaved?: () => void | Promise<void>;
 }
 
 export interface ScannerSessionStorage {
@@ -85,6 +86,7 @@ export default function ScannerFeatureHost({
   objectId,
   sessionId,
   status,
+  onScanSaved,
   onBack,
   onDashboard,
   loadScanner = loadScannerModule,
@@ -157,7 +159,7 @@ export default function ScannerFeatureHost({
   return (
     <ScannerLoadBoundary key={attempt} fallback={failureUi}>
       <Suspense fallback={<main className="console-loading">{t('console.loading_xr')}</main>}>
-        <ScannerFeature objectId={objectId} sessionId={sessionId} status={status} />
+        <ScannerFeature objectId={objectId} sessionId={sessionId} status={status} onScanSaved={onScanSaved} />
       </Suspense>
     </ScannerLoadBoundary>
   );
