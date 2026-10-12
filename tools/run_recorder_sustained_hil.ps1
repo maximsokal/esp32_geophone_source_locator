@@ -98,6 +98,20 @@ function Invoke-JsonRequest {
 }
 
 
+function Assert-MeasurementStartWorkflowReady {
+    param(
+        [string]$Base,
+        [string]$Action
+    )
+
+    $status = Invoke-JsonRequest ("{0}/api/status" -f $Base)
+    $step = [string]$status.workflow.step
+    if ($step -notin @("RECORD_READY", "RECORDING")) {
+        throw "$Action requires workflow step RECORD_READY or RECORDING; current step is '$step'. Complete the guided workflow before this HIL run."
+    }
+}
+
+
 function Save-JsonEvidence {
     param(
         [object]$Value,
@@ -283,6 +297,7 @@ try {
     if ($null -ne $initialStatus.recording -and $initialStatus.recording.running -eq $true) {
         throw "A recording is already active. Stop it before starting the isolated sustained HIL run."
     }
+    Assert-MeasurementStartWorkflowReady -Base $base -Action "recording_start"
 
     $powershellCommand = Get-Command powershell.exe -ErrorAction SilentlyContinue
     $powershell = if ($null -ne $powershellCommand) {

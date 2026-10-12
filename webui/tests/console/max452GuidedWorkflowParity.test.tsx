@@ -11,9 +11,17 @@ import { formatNumber } from '../../src/i18n/format';
 import { fullDeviceStatus } from './fixtures/deviceStatusFull';
 import { loadUkrainianCatalog, LocaleProvider, translate, type I18nLocale } from '../../src/i18n';
 
+const livePanelTracker = vi.hoisted(() => ({ mounts: 0, renders: 0 }));
+
 vi.mock('../../src/features/seismic/LiveSeismicPanel', async () => {
-  const { createElement: element } = await import('react');
-  return { default: () => element('div', { className: 'mock-live-seismic' }, 'LIVE_SEISMIC_PANEL') };
+  const { createElement: element, useEffect } = await import('react');
+  return {
+    default: () => {
+      livePanelTracker.renders += 1;
+      useEffect(() => { livePanelTracker.mounts += 1; }, []);
+      return element('div', { className: 'mock-live-seismic' }, 'LIVE_SEISMIC_PANEL');
+    },
+  };
 });
 
 function clone<T>(value: T): T {
@@ -131,6 +139,8 @@ describe('MAX-452 recording and acquisition controls', () => {
 
   it('mounts the live panel only after an allowed-step button opens it', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    livePanelTracker.mounts = 0;
+    livePanelTracker.renders = 0;
     let blocked!: ReactTestRenderer;
     let allowed!: ReactTestRenderer;
     await act(async () => {
@@ -147,6 +157,14 @@ describe('MAX-452 recording and acquisition controls', () => {
       await Promise.resolve();
     });
     expect(allowed.root.findAll((node) => node.props.className === 'mock-live-seismic')).toHaveLength(1);
+    const mountsAfterOpen = livePanelTracker.mounts;
+    const rendersAfterOpen = livePanelTracker.renders;
+    await act(async () => {
+      allowed.update(createElement(ObjectsFeature, objectProps(statusFor('SENSOR_CHECK'))));
+    });
+    expect(livePanelTracker.mounts).toBe(mountsAfterOpen);
+    expect(livePanelTracker.renders).toBe(rendersAfterOpen);
+    expect(allowed.root.findAll((node) => node.props.className === 'mock-live-seismic')).toHaveLength(0);
     act(() => { blocked.unmount(); allowed.unmount(); });
   });
 });
@@ -165,10 +183,14 @@ describe('MAX-452 recording bypass and sensor status display', () => {
   });
 
   it('shows no bypass indicator when bypassed is false', () => {
-    const status = statusFor('RECORD_READY');
-    status.recording_gate!.bypassed = false;
+    const status = statusFor('RECORD_READY', [], 2);
+    status.recording_gate = {
+      available: true, assigned_count: 2, accepted_count: 1,
+      decision: 'BLOCKED_INSUFFICIENT_REMOTES', dimensionality: 'INSUFFICIENT',
+      allowed: true, bypassed: false, reason: 'BLOCKED_INSUFFICIENT_REMOTES',
+    };
     expect(objectsHtml(status)).not.toContain(translate('en', 'recording_gate.bypass_allowed', {
-      reason: translate('en', 'recording_gate.reason.insufficient_remotes'), assigned: 4, accepted: 4,
+      reason: translate('en', 'recording_gate.reason.insufficient_remotes'), assigned: 2, accepted: 1,
     }));
   });
 
@@ -191,7 +213,9 @@ describe('MAX-452 recording bypass and sensor status display', () => {
       expect(html).toContain(channel);
       expect(html).toContain(node);
       expect(html).toContain(translate(locale, key));
-      expect(html).toContain('node-link-status--' + color);
+      expect(html).toContain(
+        `<div class="node-link-row"><strong>${channel} → ${node}</strong><span class="node-link-status node-link-status--${color}">`,
+      );
     }
   });
 
@@ -234,6 +258,10 @@ describe('MAX-452 sensor guidance and freshness schema', () => {
       const html = workflowHtml(statusFor('SENSOR_CHECK', ['GO_CALIBRATION'], remotes), locale);
       expect(html).toContain(translate(locale, 'workflow.sensor_check.limited_calibration'));
       expect(html).toContain(translate(locale, 'workflow.action.go_calibration'));
+
+      const withoutCalibration = workflowHtml(statusFor('SENSOR_CHECK', [], remotes), locale);
+      expect(withoutCalibration).toContain(translate(locale, 'workflow.sensor_check.insufficient'));
+      expect(withoutCalibration).not.toContain(translate(locale, 'workflow.sensor_check.limited_calibration'));
     }
   });
 

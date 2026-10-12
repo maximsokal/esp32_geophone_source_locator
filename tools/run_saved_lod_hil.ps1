@@ -105,6 +105,53 @@ function Wait-RecordingState {
 }
 
 
+function Assert-MeasurementStartWorkflowReady {
+    param(
+        [string]$Base,
+        [string]$Action
+    )
+
+    $status = Invoke-JsonRequest ("{0}/api/status" -f $Base)
+    $step = [string]$status.workflow.step
+    if ($step -notin @("RECORD_READY", "RECORDING")) {
+        throw "$Action requires workflow step RECORD_READY or RECORDING; current step is '$step'. Complete the guided workflow before this HIL run."
+    }
+}
+
+
+function Invoke-WorkflowRecordAgain {
+    param(
+        [string]$Base,
+        [int]$TimeoutSec,
+        [int]$PollMs
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    do {
+        $status = Invoke-JsonRequest ("{0}/api/status" -f $Base)
+        $workflow = $status.workflow
+        $step = [string]$workflow.step
+        if ($step -eq "RECORD_READY") { return }
+        if ($step -eq "STOPPED") {
+            $body = @{
+                action = "workflow_command"
+                command = "RECORD_AGAIN"
+                generation = $workflow.generation
+            } | ConvertTo-Json -Compress
+            $result = Invoke-JsonRequest ("{0}/api/control" -f $Base) "POST" $body
+            if ($result.ok -eq $true) { return }
+            throw "workflow RECORD_AGAIN rejected: $($result.reason)"
+        }
+        if ($step -ne "RECORDING") {
+            throw "workflow RECORD_AGAIN requires STOPPED or RECORD_READY; current step is '$step'."
+        }
+        if ((Get-Date) -lt $deadline) { Start-Sleep -Milliseconds $PollMs }
+    } while ((Get-Date) -lt $deadline)
+
+    throw "workflow did not become STOPPED or RECORD_READY within ${TimeoutSec}s after recording stop."
+}
+
+
 function Stop-RecordingBestEffort {
     param([string]$RootUrl)
 
@@ -239,6 +286,7 @@ try {
     }
     Add-Check $checks "Acquisition prerequisite" "PASS" ("AD7606 reports {0} Hz." -f $reportedSampleRateHz)
 
+    Assert-MeasurementStartWorkflowReady -Base $rootUrl -Action "recording_start"
     $startBody = @{ action = "recording_start"; object_id = $ObjectId } | ConvertTo-Json -Compress
     $start = Invoke-JsonRequest ("{0}/api/control" -f $rootUrl) "POST" $startBody
     if ($start.ok -ne $true) {
@@ -297,6 +345,7 @@ try {
     # just-stopped session's cache fast path. With the exact aligned range below,
     # every 64-frame LOD block maps to one output bucket, so source=lod64 proves
     # actual sidecar payload use rather than merely sidecar availability.
+    Invoke-WorkflowRecordAgain -Base $rootUrl -TimeoutSec $TimeoutSeconds -PollMs $PollIntervalMs
     $evictStart = Invoke-JsonRequest ("{0}/api/control" -f $rootUrl) "POST" $startBody
     if ($evictStart.ok -ne $true) {
         throw "recording_start for the cache-eviction session was rejected."

@@ -310,6 +310,20 @@ function Invoke-JsonRequest {
 }
 
 
+function Assert-MeasurementStartWorkflowReady {
+    param(
+        [string]$Base,
+        [string]$Action
+    )
+
+    $status = Invoke-JsonRequest ("{0}/api/status" -f $Base)
+    $step = [string]$status.workflow.step
+    if ($step -notin @("RECORD_READY", "RECORDING")) {
+        throw "$Action requires workflow step RECORD_READY or RECORDING; current step is '$step'. Complete the guided workflow before this HIL run."
+    }
+}
+
+
 function Test-MonotonicSeismicResponse {
     param(
         [object]$Response,
@@ -622,6 +636,7 @@ function Invoke-HttpPipelineChecks {
 
     $started = $false
     try {
+        Assert-MeasurementStartWorkflowReady -Base $base -Action "recording_start"
         $body = @{ action = "recording_start"; object_id = $RecordObjectId } | ConvertTo-Json -Compress
         $start = Invoke-JsonRequest ("{0}/api/control" -f $base) "POST" $body
         if ($start.ok -ne $true) {

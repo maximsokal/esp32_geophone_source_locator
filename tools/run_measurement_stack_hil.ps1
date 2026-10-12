@@ -244,6 +244,55 @@ function Wait-RecordingStart {
 }
 
 
+function Assert-MeasurementStartWorkflowReady {
+    param(
+        [string]$Base,
+        [int]$RequestTimeoutSec,
+        [string]$Action
+    )
+
+    $status = Invoke-JsonRequest ("{0}/api/status" -f $Base) "GET" $null $RequestTimeoutSec
+    $step = [string]$status.workflow.step
+    if ($step -notin @("RECORD_READY", "RECORDING")) {
+        throw "$Action requires workflow step RECORD_READY or RECORDING; current step is '$step'. Complete the guided workflow before this HIL run."
+    }
+}
+
+
+function Invoke-WorkflowRecordAgain {
+    param(
+        [string]$Base,
+        [int]$TimeoutSec,
+        [int]$PollMs
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    do {
+        $status = Invoke-JsonRequest ("{0}/api/status" -f $Base) "GET" $null $TimeoutSec
+        $workflow = $status.workflow
+        $step = [string]$workflow.step
+        if ($step -eq "RECORD_READY") { return }
+        if ($step -eq "STOPPED") {
+            $body = @{
+                action = "workflow_command"
+                command = "RECORD_AGAIN"
+                generation = $workflow.generation
+            } | ConvertTo-Json -Compress
+            $result = Invoke-JsonRequest ("{0}/api/control" -f $Base) "POST" $body $TimeoutSec
+            if ($result.ok -eq $true) { return }
+            if ($result.reason -ne "stale") {
+                throw "workflow RECORD_AGAIN rejected: $($result.reason)"
+            }
+        } elseif ($step -ne "RECORDING") {
+            throw "workflow RECORD_AGAIN requires STOPPED or RECORD_READY; current step is '$step'."
+        }
+        if ((Get-Date) -lt $deadline) { Start-Sleep -Milliseconds $PollMs }
+    } while ((Get-Date) -lt $deadline)
+
+    throw "workflow did not become STOPPED or RECORD_READY within ${TimeoutSec}s after recording stop."
+}
+
+
 function Wait-RecordingStop {
     param(
         [string]$Base,
@@ -404,6 +453,7 @@ try {
             $beforeCycles.before = Count-Pattern $contentBeforeStart "(?im)STACK_HWM\s+task=measurement_service\s+stage=before-start\s+free=\d+"
             $beforeCycles.review = Count-Pattern $contentBeforeStart "(?im)MEASUREMENT_SERVICE:\s+Recording stopped state=REVIEW"
 
+            Assert-MeasurementStartWorkflowReady $base $TimeoutSeconds "measurement_start"
             $startBody = @{ action = "measurement_start"; object_id = $ObjectId } | ConvertTo-Json -Compress
             $start = Invoke-JsonRequest ("{0}/api/control" -f $base) "POST" $startBody
             if ($start.ok -ne $true) {
@@ -423,6 +473,9 @@ try {
             [void](Wait-RecordingStop $base $ObjectId $sessionId 500 $TimeoutSeconds $PollIntervalMs)
             if (-not (Wait-ForLogCount $logFile "(?im)MEASUREMENT_SERVICE:\s+Recording stopped state=REVIEW" ($beforeCycles.review + 1) $TimeoutSeconds $PollIntervalMs)) {
                 throw "cycle $cycle did not produce the measurement_service REVIEW marker."
+            }
+            if ($cycle -lt $Cycles) {
+                Invoke-WorkflowRecordAgain $base $TimeoutSeconds $PollIntervalMs
             }
             $contentAfterStop = Read-TargetLog $logFile
             $afterStartCount = Count-Pattern $contentAfterStop "(?im)STACK_HWM\s+task=measurement_service\s+stage=after-recorder-start\s+free=\d+"

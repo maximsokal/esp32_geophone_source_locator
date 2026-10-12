@@ -98,6 +98,19 @@ function Get-StatusRate {
 }
 
 
+function Assert-MeasurementStartWorkflowReady {
+    param(
+        [object]$Status,
+        [string]$Action
+    )
+
+    $step = [string](Get-Field (Get-Field $Status "workflow") "step")
+    if ($step -notin @("RECORD_READY", "RECORDING")) {
+        throw "$Action requires workflow step RECORD_READY or RECORDING; current step is '$step'. Complete the guided workflow before this HIL capture."
+    }
+}
+
+
 function Stop-RecordingBestEffort {
     param([string]$RootUrl)
     try {
@@ -190,6 +203,7 @@ try {
     if ($null -ne $status.recording -and $status.recording.running -eq $true) {
         throw "A recording is already active. Stop it before starting this capture."
     }
+    Assert-MeasurementStartWorkflowReady -Status $status -Action "recording_start"
     $startBody = @{ action = "recording_start"; object_id = $ObjectId } | ConvertTo-Json -Compress
     $start = Invoke-JsonRequest ("{0}/api/control" -f $rootUrl) "POST" $startBody
     if ($start.ok -ne $true) { throw "recording_start was rejected." }
