@@ -18,11 +18,11 @@ def test_runtime_start_queues_before_bluetooth_enable():
     )[0]
     assert start.index("start_cs_workqueue();") < start.index("bt_enable(NULL)")
     assert "if (err != 0) {\n        return err;\n    }" in start
-    queue = (ROOT / "nRF54L15/src/nrf_cs_pair_runtime_zephyr_workqueue.inc").read_text(
+    queue = (ROOT / "nRF54L15/src/nrf_hci_workqueue.c").read_text(
         encoding="utf-8"
     )
-    assert "if (s_cs_workqueue_started)" in queue
-    assert "k_work_queue_init(&s_cs_workqueue);" in queue
+    assert "if (s_hci_workqueue_started)" in queue
+    assert "k_work_queue_init(&s_hci_workqueue);" in queue
     assert "k_work_queue_start(" in queue
 
 
@@ -45,14 +45,14 @@ def test_watchdog_and_twis_work_remain_on_system_queue():
     runtime = CS_IMPL[2].read_text(encoding="utf-8")
     assert "k_work_submit(&s_workqueue_probe)" in watchdog
     assert "k_work_submit(&s_cs_execute_work)" in bootstrap
-    assert "k_work_submit(&s_assign_work)" in bootstrap
+    assert "nrf_hci_workqueue_submit(&s_assign_work)" in bootstrap
     assert "NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS" in runtime
     assert "atomic_get(&s_execute_pending) != 0 || nrf_cs_pair_adapter_is_active(&s_adapter)" in runtime
 
 
 # characterization: keep the dedicated HCI worker within the existing inventory and sensor priority.
 def test_queue_stack_priority_and_inventory_match():
-    queue = (ROOT / "nRF54L15/src/nrf_cs_pair_runtime_zephyr_workqueue.inc").read_text(
+    queue = (ROOT / "nRF54L15/src/nrf_hci_workqueue.c").read_text(
         encoding="utf-8"
     )
     inventory = (ROOT / "nRF54L15/src/nrf_thread_stack_inventory.c").read_text(
@@ -61,7 +61,7 @@ def test_queue_stack_priority_and_inventory_match():
     sensor = (ROOT / "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c").read_text(
         encoding="utf-8"
     )
-    assert "#define NRF_CS_WORKQUEUE_STACK_SIZE 2048U" in queue
-    assert "#define NRF_CS_WORKQUEUE_PRIORITY K_PRIO_PREEMPT(10)" in queue
+    assert "#define NRF_HCI_WORKQUEUE_STACK_SIZE 2048U" in queue
+    assert "#define NRF_HCI_WORKQUEUE_PRIORITY K_PRIO_PREEMPT(10)" in queue
     assert "#define NRF_SENSOR_WORKER_PRIORITY K_PRIO_PREEMPT(10)" in sensor
     assert '{"cs_hci_workqueue", 2048U}' in inventory

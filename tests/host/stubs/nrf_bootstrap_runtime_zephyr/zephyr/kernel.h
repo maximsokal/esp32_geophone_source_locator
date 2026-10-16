@@ -2,12 +2,16 @@
 #define ZEPHYR_KERNEL_H
 
 #include <errno.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
-typedef int k_timeout_t;
+typedef int32_t k_timeout_t;
 #define K_NO_WAIT 0
+#define K_THREAD_STACK_DEFINE(name, size) static unsigned char name[(size)]
+#define K_THREAD_STACK_SIZEOF(name) sizeof(name)
+#define K_PRIO_PREEMPT(priority) (priority)
 
 struct k_msgq {
     size_t msg_size;
@@ -53,17 +57,34 @@ static inline int k_msgq_get(struct k_msgq *q, void *data, k_timeout_t timeout)
 }
 
 struct k_work;
+struct k_work_q {
+    bool started;
+    int priority;
+    const char *name;
+    size_t stack_size;
+};
+struct k_work_queue_config { const char *name; };
 typedef void (*k_work_handler_t)(struct k_work *work);
 struct k_work {
     k_work_handler_t handler;
+    struct k_work_q *queue;
+    bool queued;
 };
+struct k_work_delayable { struct k_work work; };
 
 static inline void k_work_init(struct k_work *work, k_work_handler_t handler)
 {
     work->handler = handler;
+    work->queue = NULL;
+    work->queued = false;
 }
 
+extern struct k_work_q k_sys_work_q;
+void k_work_queue_init(struct k_work_q *queue);
+void k_work_queue_start(struct k_work_q *queue, unsigned char *stack, size_t stack_size, int priority, const struct k_work_queue_config *config);
+int k_work_submit_to_queue(struct k_work_q *queue, struct k_work *work);
 int k_work_submit(struct k_work *work);
+int k_work_reschedule_for_queue(struct k_work_q *queue, struct k_work_delayable *work, k_timeout_t delay);
 
 int64_t k_uptime_get(void);
 uint32_t k_cycle_get_32(void);

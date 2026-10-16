@@ -9,11 +9,17 @@
 static unsigned int s_hci_handler_calls;
 static unsigned int s_system_handler_calls;
 
+static int bt_le_adv_start_standin(void)
+{
+    host_kernel_block_current_queue();
+    return 0;
+}
+
 static void blocking_hci_work_handler(struct k_work *work)
 {
     (void)work;
     s_hci_handler_calls++;
-    host_kernel_block_current_queue();
+    assert(bt_le_adv_start_standin() == 0);
 }
 
 static void system_work_handler(struct k_work *work)
@@ -35,20 +41,19 @@ static void test_cs_work_items_submit_and_reschedule_to_dedicated_queue(void)
     start_cs_workqueue();
     assert(host_k_work_queue_init_count == 1U);
     assert(host_k_work_queue_start_count == 1U);
-    assert(s_cs_workqueue.name != NULL);
-    assert(strcmp(s_cs_workqueue.name, "cs_hci_workqueue") == 0);
-    assert(s_cs_workqueue.stack_size == 2048U);
-    assert(s_cs_workqueue.priority == 10);
 
     assert(submit_cs_work(&work) == 1);
-    assert(work.queue == &s_cs_workqueue);
+    assert(work.queue != NULL && work.queue->started);
+    assert(strcmp(work.queue->name, "cs_hci_workqueue") == 0);
+    assert(work.queue->stack_size == 2048U);
+    assert(work.queue->priority == 10);
     assert(host_first_submit_order > host_k_work_queue_start_order);
 
     assert(reschedule_cs_work(&timeout_work, K_MSEC(17)) == 1);
-    assert(timeout_work.work.queue == &s_cs_workqueue);
+    assert(timeout_work.work.queue == work.queue);
     assert(timeout_work.delay == 17);
     assert(host_k_work_reschedule_count == 1U);
-    assert(host_workqueue_run_one(&s_cs_workqueue));
+    assert(host_workqueue_run_one(work.queue));
 }
 
 /* fail-before(real): reject a CS submit when the runtime has not started its queue. */
@@ -62,7 +67,7 @@ static void test_unstarted_queue_rejects_submit(void)
     assert(host_k_work_submit_count == 0U);
 }
 
-/* mutation-only: this queue stub models a non-returning CS handler by blocking its queue. */
+/* mutation-only: a blocking bt_le_adv_start stand-in holds HCI while system work still runs. */
 static void test_blocked_cs_queue_does_not_delay_system_items(void)
 {
     struct k_work cs_work;
@@ -80,8 +85,8 @@ static void test_blocked_cs_queue_does_not_delay_system_items(void)
     k_work_init(&bootstrap_cs_execute_work, system_work_handler);
 
     assert(submit_cs_work(&cs_work) == 1);
-    assert(host_workqueue_run_one(&s_cs_workqueue));
-    assert(s_cs_workqueue.blocked);
+    assert(host_workqueue_run_one(cs_work.queue));
+    assert(cs_work.queue->blocked);
     assert(s_hci_handler_calls == 1U);
 
     assert(k_work_submit(&wdt_probe_work) == 1);
@@ -94,7 +99,7 @@ static void test_blocked_cs_queue_does_not_delay_system_items(void)
     assert(host_workqueue_run_one(&k_sys_work_q));
     assert(host_workqueue_run_one(&k_sys_work_q));
     assert(host_workqueue_run_one(&k_sys_work_q));
-    assert(!host_workqueue_run_one(&s_cs_workqueue));
+    assert(!host_workqueue_run_one(cs_work.queue));
     assert(s_system_handler_calls == 3U);
 }
 

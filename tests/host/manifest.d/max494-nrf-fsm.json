@@ -25,6 +25,7 @@
         "nRF54L15/src/nrf_log_protocol.c",
         "nRF54L15/src/nrf_log_ring.c",
         "nRF54L15/src/nrf_log_runtime_zephyr.c",
+        "nRF54L15/src/nrf_hci_workqueue.c",
         "nRF54L15/src/nrf_bootstrap_runtime_zephyr.c",
         "tests/host/stubs/nrf_bootstrap_runtime_zephyr/nrf_cs_pair_runtime_zephyr_stub.c",
         "tests/host/nrf_fsm_runtime_model_test.c"
@@ -34,7 +35,7 @@
         "tests/host/stubs/nrf_upstream_target_zephyr",
         "nRF54L15/include"
       ],
-      "defines": ["NRF_LOG_RING_TEST_HOOKS", "NRF_BOOTSTRAP_RUNTIME_TEST_HOOKS"]
+      "defines": ["NRF_LOG_RING_TEST_HOOKS", "NRF_BOOTSTRAP_RUNTIME_TEST_HOOKS", "NRF_HCI_WORKQUEUE_TEST_HOOKS"]
     },
     {
       "name": "max494_cs_pair_runtime_model",

@@ -17,6 +17,7 @@
 #include "nrf_cs_pair_runtime_zephyr.h"
 #include "nrf_log_events.h"
 #include "nrf_log_runtime_zephyr.h"
+#include "nrf_hci_workqueue.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
 #include "nrf_upstream_protocol.h"
 #include "nrf_upstream_target_zephyr.h"
@@ -506,7 +507,7 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
             transaction_result=(int32_t)NRF_UPSTREAM_RESULT_BUSY;
             goto record_transaction;
         }
-        submit_result=k_work_submit(&s_assign_work);
+        submit_result=nrf_hci_workqueue_submit(&s_assign_work);
         if(submit_result<0){
             (void)remove_assign_work_item(item.sequence);
         }
@@ -575,6 +576,7 @@ int nrf_bootstrap_runtime_zephyr_start(nrf_node_state_t *node_state)
     int result;
     if(node_state==NULL)return -EINVAL;
     if(s_started)return -EBUSY;
+    nrf_hci_workqueue_start();
     result=nrf_log_runtime_zephyr_init();if(result!=0)return result;
     result=nrf_upstream_target_zephyr_read_device_id(hardware_id,sizeof(hardware_id),&hardware_id_length);if(result!=0)return result;
     if(nrf_bootstrap_init(&s_bootstrap,node_state,hardware_id,hardware_id_length,&ops)!=NRF_UPSTREAM_RESULT_OK)return -EINVAL;

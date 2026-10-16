@@ -1,0 +1,30 @@
+[
+  {
+    "id": "max493c_assign_to_system_queue",
+    "description": "Route ASSIGN work back to the system workqueue.",
+    "file": "nRF54L15/src/nrf_hci_workqueue.c",
+    "find": "return k_work_submit_to_queue(&s_hci_workqueue, work);",
+    "replace": "return k_work_submit(work);",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max493c-assign-workqueue.json",
+        "only": "max493c_assign_workqueue"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_bootstrap_runtime_zephyr_test.c::main"
+  },
+  {
+    "id": "max493c_skip_hci_queue_start",
+    "description": "Skip starting the shared HCI workqueue before bootstrap can accept ASSIGN.",
+    "file": "nRF54L15/src/nrf_hci_workqueue.c",
+    "find": "    k_work_queue_start(\n        &s_hci_workqueue,\n        s_hci_workqueue_stack,\n        K_THREAD_STACK_SIZEOF(s_hci_workqueue_stack),\n        NRF_HCI_WORKQUEUE_PRIORITY,\n        &s_hci_workqueue_config);",
+    "replace": "    /* queue start skipped */",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max493c-assign-workqueue.json",
+        "only": "max493c_hci_queue_isolation"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_cs_pair_runtime_workqueue_test.c::test_cs_work_items_submit_and_reschedule_to_dedicated_queue"
+  }
+]

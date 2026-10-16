@@ -53,6 +53,7 @@ target_sources(app PRIVATE
     ../src/nrf_sensor_upstream_runtime_zephyr.c
     ../src/nrf_bootstrap.c
     ../src/nrf_upstream_target_zephyr.c
+    ../src/nrf_hci_workqueue.c
     ../src/nrf_bootstrap_runtime_zephyr.c
     ../src/nrf_cs_scheduler.c
     ../src/nrf_cs_pair_adapter.c

@@ -19,6 +19,7 @@
 #include "nrf_upstream_protocol.h"
 #include "nrf_upstream_target_zephyr.h"
 #include "nrf_watchdog_zephyr.h"
+#include "nrf_hci_workqueue.h"
 
 void nrf_cs_pair_runtime_zephyr_stub_configure(int execute_result, nrf_cs_outcome_t outcome);
 
@@ -30,6 +31,8 @@ static int s_next_submit_failure;
 static unsigned s_readdress_calls;
 static unsigned s_reboot_calls;
 static unsigned s_sensor_assignment_calls;
+static uint32_t s_sensor_assignment_request_ids[32];
+static unsigned s_work_queue_start_calls;
 static unsigned s_sensor_refresh_calls;
 static unsigned s_height_reference_calls;
 static unsigned s_imu_calibration_calls;
@@ -87,15 +90,63 @@ uint32_t nrf_watchdog_zephyr_boot_reset_cause(void)
     return 0x20U;
 }
 
-int k_work_submit(struct k_work *work)
+struct k_work_q k_sys_work_q = { .started = true, .name = "system_workqueue" };
+
+void k_work_queue_init(struct k_work_q *queue)
+{
+    memset(queue, 0, sizeof(*queue));
+}
+
+void k_work_queue_start(
+    struct k_work_q *queue,
+    unsigned char *stack,
+    size_t stack_size,
+    int priority,
+    const struct k_work_queue_config *config)
+{
+    (void)stack;
+    queue->started = true;
+    queue->stack_size = stack_size;
+    queue->priority = priority;
+    queue->name = config != NULL ? config->name : NULL;
+    ++s_work_queue_start_calls;
+}
+
+int k_work_submit_to_queue(struct k_work_q *queue, struct k_work *work)
 {
     if (s_fail_next_submit) {
         s_fail_next_submit = false;
         ++s_submit_calls;
         return s_next_submit_failure;
     }
-    s_submitted_work = work;
     ++s_submit_calls;
+    if (queue == NULL || !queue->started || work == NULL) {
+        return -EAGAIN;
+    }
+    if (work->queued) {
+        return 0;
+    }
+    work->queue = queue;
+    work->queued = true;
+    s_submitted_work = work;
+    return 1;
+}
+
+int k_work_submit(struct k_work *work)
+{
+    return k_work_submit_to_queue(&k_sys_work_q, work);
+}
+
+int k_work_reschedule_for_queue(
+    struct k_work_q *queue,
+    struct k_work_delayable *work,
+    k_timeout_t delay)
+{
+    (void)delay;
+    if (queue == NULL || !queue->started || work == NULL) {
+        return -EAGAIN;
+    }
+    work->work.queue = queue;
     return 1;
 }
 
@@ -124,6 +175,8 @@ int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
                &status) == NRF_UPSTREAM_RESULT_OK);
     assert(status.request_id == assign->request_id);
     assert(status.result == NRF_UPSTREAM_RESULT_PENDING);
+    assert(s_sensor_assignment_calls < sizeof(s_sensor_assignment_request_ids) / sizeof(s_sensor_assignment_request_ids[0]));
+    s_sensor_assignment_request_ids[s_sensor_assignment_calls] = assign->request_id;
     ++s_sensor_assignment_calls;
     return s_sensor_assignment_result;
 }
@@ -586,6 +639,7 @@ static void run_submitted_work(void)
     struct k_work *work = s_submitted_work;
     assert(work != NULL && work->handler != NULL);
     s_submitted_work = NULL;
+    work->queued = false;
     work->handler(work);
 }
 
@@ -661,6 +715,7 @@ int main(void)
     s_sensor_assignment_result = 0;
     s_readdress_rollback_discovery = true;
     assert(nrf_bootstrap_runtime_zephyr_start(&node_state) == 0);
+    assert(s_work_queue_start_calls == 1U);
     assert(s_address == NRF_UPSTREAM_ADDRESS_DISCOVERY);
 
     initial_frame = read_frame(&read_length);
@@ -746,6 +801,9 @@ int main(void)
     assign = make_assign(10U);
     s_readdress_result = -5;
     send_assign(&assign);
+    assert(s_submitted_work != NULL && s_submitted_work->queue != &k_sys_work_q);
+    assert(s_submitted_work->queue->started);
+    assert(strcmp(s_submitted_work->queue->name, "cs_hci_workqueue") == 0);
     assert(s_readdress_calls == 0U);
     assert(s_submit_calls == 1U);
     status = read_status(NULL);
@@ -872,6 +930,31 @@ int main(void)
     assert(status.request_id == 12U && status.result == NRF_UPSTREAM_RESULT_OK);
     assert(read_log_status().next_seq == 2U);
 
+    /* fail-before(real): a stopped shared queue reports INTERNAL_ERROR and drops that ASSIGN item. */
+    {
+        const unsigned before_sensor = s_sensor_assignment_calls;
+        const unsigned before_submit = s_submit_calls;
+        assign.request_id = 13U;
+        nrf_hci_workqueue_test_forget_started();
+        send_assign(&assign);
+        status = read_status(NULL);
+        assert(status.request_id == 13U && status.result == NRF_UPSTREAM_RESULT_INTERNAL_ERROR);
+        assert(s_submit_calls == before_submit);
+        assert(s_submitted_work == NULL);
+
+        nrf_hci_workqueue_start();
+        assign.request_id = 14U;
+        send_assign(&assign);
+        assert(s_submitted_work != NULL && s_submitted_work->queue != &k_sys_work_q);
+        assert(strcmp(s_submitted_work->queue->name, "cs_hci_workqueue") == 0);
+        run_submitted_work();
+        assert(s_sensor_assignment_calls == before_sensor + 1U);
+        assert(s_sensor_assignment_request_ids[before_sensor] == 14U);
+        status = read_status(NULL);
+        assert(status.request_id == 14U && status.result == NRF_UPSTREAM_RESULT_OK);
+    }
+
+
     {
         uint8_t invalid_frame[1] = {0U};
         s_callbacks->buf_write_received(NULL, invalid_frame, sizeof(invalid_frame));
@@ -894,6 +977,9 @@ int main(void)
         assert(status.request_id == 23U && status.result == NRF_UPSTREAM_RESULT_OK);
         assert(s_readdress_calls == 2U);
         assert(s_sensor_assignment_calls == before_sensor_assignment_calls + 4U);
+        for (i = 0U; i < 4U; ++i) {
+            assert(s_sensor_assignment_request_ids[before_sensor_assignment_calls + i] == 20U + i);
+        }
     }
 
     {
@@ -1013,6 +1099,7 @@ int main(void)
         request.step.timeout_ms = 500U;
         assert(nrf_cs_control_encode_execute(&request, frame) == 0);
         s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+        assert(s_submitted_work != NULL && s_submitted_work->queue == &k_sys_work_q);
         run_submitted_work();
 
         assert(nrf_cs_control_encode_status_request(&request, frame) == 0);

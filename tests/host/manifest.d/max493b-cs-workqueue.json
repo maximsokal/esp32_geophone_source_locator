@@ -4,12 +4,15 @@
     {
       "name": "max493b_cs_workqueue",
       "sources": [
+        "nRF54L15/src/nrf_hci_workqueue.c",
         "tests/host/nrf_cs_pair_runtime_workqueue_test.c",
         "tests/host/stubs/nrf_cs_pair_runtime_zephyr/zephyr_kernel_stub.c"
       ],
       "include_dirs": [
         "tests/host/stubs/nrf_cs_pair_runtime_zephyr",
-        "nRF54L15/src"
+        "nRF54L15/src",
+        "nRF54L15/include",
+        "nRF54L15/include"
       ]
     },
     {
@@ -18,7 +21,9 @@
         "nRF54L15/src/nrf_thread_stack_inventory.c",
         "tests/host/nrf_thread_stack_inventory_test.c"
       ],
-      "include_dirs": ["nRF54L15/include"]
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
     }
   ]
 }
