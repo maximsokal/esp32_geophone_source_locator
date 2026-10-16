@@ -228,15 +228,109 @@ static void seismic_recorder_record_stop_error(
 static void seismic_recorder_observe(void)
 {
     uint64_t samples_written;
+    bool running;
+    seismic_recorder_state_t state;
+    seismic_recorder_stop_stage_t stop_stage;
 
     seismic_recorder_lock();
     samples_written = s_snapshot.samples_written;
+    running = s_snapshot.running;
+    state = s_snapshot.state;
+    stop_stage = s_snapshot.stop_stage;
     seismic_recorder_unlock();
+
+    runtime_health_phase_t phase = RUNTIME_HEALTH_PHASE_IDLE;
+    if (running && state == SEISMIC_RECORDER_STOPPING) {
+        switch (stop_stage) {
+            case SEISMIC_RECORDER_STOP_STAGE_DRAIN:
+                phase = RUNTIME_HEALTH_PHASE_STOP_DRAIN;
+                break;
+            case SEISMIC_RECORDER_STOP_STAGE_FLUSH:
+                phase = RUNTIME_HEALTH_PHASE_STOP_FLUSH;
+                break;
+            case SEISMIC_RECORDER_STOP_STAGE_SYNC:
+                phase = RUNTIME_HEALTH_PHASE_STOP_SYNC;
+                break;
+            case SEISMIC_RECORDER_STOP_STAGE_CLOSE:
+                phase = RUNTIME_HEALTH_PHASE_STOP_CLOSE;
+                break;
+            case SEISMIC_RECORDER_STOP_STAGE_METADATA:
+                phase = RUNTIME_HEALTH_PHASE_STOP_METADATA;
+                break;
+            case SEISMIC_RECORDER_STOP_STAGE_NONE:
+            case SEISMIC_RECORDER_STOP_STAGE_COMPLETE:
+            case SEISMIC_RECORDER_STOP_STAGE_ERROR:
+            default:
+                phase = RUNTIME_HEALTH_PHASE_IDLE;
+                break;
+        }
+    }
+    else if (running) {
+        phase = RUNTIME_HEALTH_PHASE_ACTIVE;
+    }
+
+    runtime_observability_set_health_phase(RUNTIME_TASK_RECORDER, phase);
 
     runtime_observability_beat(
         RUNTIME_TASK_RECORDER,
         samples_written
     );
+}
+
+
+static seismic_recorder_stop_stage_t seismic_recorder_next_health_stage(
+    seismic_recorder_stop_stage_t stage
+)
+{
+    switch (stage) {
+        case SEISMIC_RECORDER_STOP_STAGE_FLUSH:
+            return SEISMIC_RECORDER_STOP_STAGE_SYNC;
+        case SEISMIC_RECORDER_STOP_STAGE_SYNC:
+            return SEISMIC_RECORDER_STOP_STAGE_CLOSE;
+        case SEISMIC_RECORDER_STOP_STAGE_CLOSE:
+            return SEISMIC_RECORDER_STOP_STAGE_METADATA;
+        case SEISMIC_RECORDER_STOP_STAGE_METADATA:
+            return SEISMIC_RECORDER_STOP_STAGE_METADATA;
+        case SEISMIC_RECORDER_STOP_STAGE_NONE:
+        case SEISMIC_RECORDER_STOP_STAGE_DRAIN:
+        case SEISMIC_RECORDER_STOP_STAGE_COMPLETE:
+        case SEISMIC_RECORDER_STOP_STAGE_ERROR:
+        default:
+            return SEISMIC_RECORDER_STOP_STAGE_FLUSH;
+    }
+}
+
+
+static bool seismic_recorder_apply_progress_health(
+    seismic_recorder_stop_stage_t stage
+)
+{
+    seismic_recorder_lock();
+    const bool recording_incomplete = s_snapshot.last_error != ESP_OK;
+    seismic_recorder_unlock();
+
+    for (runtime_observability_task_t task = RUNTIME_TASK_ACQUISITION;
+         task <= RUNTIME_TASK_RECORDER;
+         task = (runtime_observability_task_t)(task + 1)) {
+        if (runtime_observability_get_health_result(task) !=
+            RUNTIME_HEALTH_DEADLINE_EXCEEDED || recording_incomplete) {
+            continue;
+        }
+
+        ESP_LOGE(
+            TAG,
+            "RUNTIME_TASK_HEALTH task=%s result=DEADLINE_EXCEEDED action=MARK_INCOMPLETE",
+            task == RUNTIME_TASK_ACQUISITION ? "acquisition" : "recorder"
+        );
+        seismic_recorder_record_stop_error(
+            stage,
+            ESP_ERR_TIMEOUT,
+            seismic_recorder_next_health_stage(stage)
+        );
+        ESP_LOGW(TAG, "RUNTIME_TASK_HEALTH action=SAFE_STOP");
+        return true;
+    }
+    return false;
 }
 
 
@@ -644,6 +738,11 @@ static void seismic_recorder_task(void *argument)
         const esp_err_t cache_info_err =
             seismic_recorder_cache_info_locked(&cache_info);
         seismic_recorder_unlock();
+
+        if (running && seismic_recorder_apply_progress_health(stop_stage)) {
+            seismic_recorder_observe();
+            continue;
+        }
 
         if (!running) {
             vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_IDLE_DELAY_MS));

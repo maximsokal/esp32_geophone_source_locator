@@ -161,9 +161,9 @@ def test_shutdown_drains_recovery_and_network_before_dependent_services():
         "keypad_stop_event_monitor();",
         "object_recovery_stop_background();",
         "app_shutdown_stop_network();",
+        "measurement_service_shutdown();",
         "nrf_topology_service_stop();",
         "sensor_bus_deinit();",
-        "measurement_service_shutdown();",
         "seismic_recorder_stop();",
         "seismic_recorder_wait_for_stop();",
         "ui_shutdown();",
@@ -174,6 +174,24 @@ def test_shutdown_drains_recovery_and_network_before_dependent_services():
     positions = [body.index(token) for token in order]
     assert positions == sorted(positions)
     assert body.count("app_shutdown_stop_network();") == 1
+
+
+def test_measurement_shutdown_failure_retains_task_dependencies_and_defers_poweroff():
+    source = _read("main/app_shutdown.c")
+    body = source[source.index("void app_shutdown_wait_and_run(void)"):]
+    failure = body.split("if (measurement_err != ESP_OK)", 1)[1].split(
+        "nrf_topology_service_stop();", 1
+    )[0] if "if (measurement_err != ESP_OK)" in body else ""
+
+    assert "esp_err_t measurement_err = measurement_service_shutdown();" in body
+    assert "runtime_observability_beat(RUNTIME_TASK_CONTROL, 0U);" in body
+    assert "retaining its dependencies and deferring poweroff" in failure
+    assert 'runtime_observability_log_snapshot("measurement-shutdown-failed");' in failure
+    assert "return;" in failure
+    assert "sensor_bus_deinit();" not in failure
+    assert "seismic_recorder_stop();" not in failure
+    assert "app_shutdown_stop_storage();" not in failure
+    assert "power_control_shutdown();" not in failure
 
 
 def test_insights_shutdown_precedes_web_and_wifi_teardown():

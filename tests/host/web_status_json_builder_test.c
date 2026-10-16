@@ -290,6 +290,9 @@ const char *runtime_observability_task_name(runtime_observability_task_t task)
     switch (task) {
         case RUNTIME_TASK_ACQUISITION: return "acquisition";
         case RUNTIME_TASK_RECORDER: return "recorder";
+        case RUNTIME_TASK_STORAGE: return "storage";
+        case RUNTIME_TASK_CONTROL: return "control";
+        case RUNTIME_TASK_TOPOLOGY: return "topology";
         case RUNTIME_TASK_UI: return "ui";
         case RUNTIME_TASK_COUNT: default: return "unknown";
     }

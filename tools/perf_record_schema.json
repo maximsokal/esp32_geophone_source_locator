@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:esp32-geophone:performance-record:1",
-  "title": "ESP32 geophone performance acceptance record",
+  "$id": "urn:esp32-geophone:performance-record:2",
+  "title": "ESP32 geophone performance acceptance record v2",
   "description": "One record per reproducible workload scenario. not_applicable is explicit and is never inferred by the validator.",
   "type": "object",
   "additionalProperties": false,
@@ -15,7 +15,7 @@
     "ring_high_water_frames", "cache_high_water_frames", "queue_high_water",
     "cpu_runtime_us", "task_runtime_us", "core_runtime_us",
     "internal_heap_free_bytes", "internal_heap_largest_block_bytes", "psram_free_bytes",
-    "psram_largest_block_bytes", "stack_hwm_words", "web_stop_latency_ms",
+    "psram_largest_block_bytes", "stack_hwm_bytes", "web_stop_latency_ms",
     "web_status_latency_ms", "live_latency_ms", "reset_markers",
     "project_hot_path_allocation_violations", "active_allocation_count",
     "diagnostic_reports_suppressed", "diagnostic_reports_coalesced", "v2_quantizer_calls",
@@ -48,7 +48,7 @@
     }
   },
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "firmware_sha256": { "oneOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "$ref": "#/$defs/notApplicable" }] },
     "build_profile": { "enum": ["DEBUG", "PERFORMANCE", "not_applicable"] },
     "optimization_mode": { "enum": ["debug", "performance", "not_applicable"] },
@@ -88,7 +88,7 @@
     "internal_heap_largest_block_bytes": { "$ref": "#/$defs/countOrNA", "x-host-virtual-must-be-na": true },
     "psram_free_bytes": { "$ref": "#/$defs/countOrNA", "x-host-virtual-must-be-na": true },
     "psram_largest_block_bytes": { "$ref": "#/$defs/countOrNA", "x-host-virtual-must-be-na": true },
-    "stack_hwm_words": { "$ref": "#/$defs/countOrNA", "x-host-virtual-must-be-na": true },
+    "stack_hwm_bytes": { "$ref": "#/$defs/countOrNA", "x-host-virtual-must-be-na": true },
     "web_stop_latency_ms": { "$ref": "#/$defs/numberOrNA", "x-host-virtual-must-be-na": true },
     "web_status_latency_ms": { "$ref": "#/$defs/numberOrNA", "x-host-virtual-must-be-na": true },
     "live_latency_ms": { "$ref": "#/$defs/numberOrNA", "x-host-virtual-must-be-na": true },

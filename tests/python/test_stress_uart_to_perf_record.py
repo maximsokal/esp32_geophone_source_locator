@@ -64,7 +64,8 @@ def test_synthetic_fixture_yields_schema_valid_record_per_scenario_and_rate(tmp_
     assert healthy["internal_heap_largest_block_bytes"] == 59000
     assert healthy["psram_free_bytes"] == 2999000
     assert healthy["psram_largest_block_bytes"] == 1999000
-    assert healthy["stack_hwm_words"] == 768
+    assert healthy["schema_version"] == 2
+    assert healthy["stack_hwm_bytes"] == 768
     assert healthy["sample_format"] == NOT_APPLICABLE
     assert healthy["channel_count"] == NOT_APPLICABLE
 
@@ -78,6 +79,18 @@ def test_synthetic_fixture_yields_schema_valid_record_per_scenario_and_rate(tmp_
     # ordinary rate-sweep negative control below still rejects unexpected loss.
     boundary = next(row for row in records if row["workload_id"] == "binary_search_4375hz")
     assert boundary["classification"] == "SATURATED"
+
+
+def test_byte_named_hwm_is_read_without_unit_conversion(tmp_path):
+    evidence = _evidence(tmp_path, "performance", "c" * 64)
+    text = FIXTURE.read_text(encoding="utf-8").replace("free_words=", "free_bytes=")
+
+    healthy = next(
+        row for row in _records(text, evidence=evidence)
+        if row["workload_id"] == "rate_sweep_100hz"
+    )
+
+    assert healthy["stack_hwm_bytes"] == 768
 
 
 def test_unexpected_lost_frame_is_rejected(tmp_path):

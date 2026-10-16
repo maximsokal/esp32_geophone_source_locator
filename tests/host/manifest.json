@@ -29,21 +29,36 @@
       "name": "runtime_observability",
       "sources": [
         "components/runtime_observability/runtime_observability.c",
+        "components/runtime_observability/runtime_health_policy.c",
         "tests/host/runtime_observability_contract_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/runtime_observability",
-        "components/runtime_observability/include"
+        "components/runtime_observability/include",
+        "components/app_config/include"
+      ]
+    },
+    {
+      "name": "runtime_health_policy",
+      "sources": [
+        "components/runtime_observability/runtime_health_policy.c",
+        "tests/host/runtime_health_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/runtime_observability/include",
+        "components/app_config/include"
       ]
     },
     {
       "name": "runtime_observability_policy",
       "sources": [
+        "components/runtime_observability/runtime_health_policy.c",
         "tests/host/runtime_observability_policy_test.c"
       ],
       "include_dirs": [
         "tests/host/stubs/runtime_observability",
-        "components/runtime_observability/include"
+        "components/runtime_observability/include",
+        "components/app_config/include"
       ]
     },
     {

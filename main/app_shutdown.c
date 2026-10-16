@@ -145,6 +145,27 @@ void app_shutdown_wait_and_run(void)
      */
     app_shutdown_stop_network();
 
+    runtime_observability_set_health_phase(
+        RUNTIME_TASK_CONTROL,
+        RUNTIME_HEALTH_PHASE_WAITING
+    );
+    runtime_observability_beat(RUNTIME_TASK_CONTROL, 0U);
+    const esp_err_t measurement_err = measurement_service_shutdown();
+    if (measurement_err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Measurement service shutdown failed: %s; retaining its dependencies and deferring poweroff",
+            esp_err_to_name(measurement_err)
+        );
+        runtime_observability_log_snapshot("measurement-shutdown-failed");
+        return;
+    }
+    runtime_observability_set_health_phase(
+        RUNTIME_TASK_CONTROL,
+        RUNTIME_HEALTH_PHASE_IDLE
+    );
+    runtime_observability_beat(RUNTIME_TASK_CONTROL, 1U);
+
     /*
      * The topology worker owns the multi-step TCA select/use/close sequence
      * and its 0x30/0x31/0x32 device handles. Stop it before the shared I2C0
@@ -170,8 +191,6 @@ void app_shutdown_wait_and_run(void)
      * the SD card; tearing LVGL down first can otherwise leave shutdown waiting
      * on the same display/storage arbitration that an active recording needs.
      */
-    measurement_service_shutdown();
-
     esp_err_t recorder_err =
         seismic_recorder_stop();
 

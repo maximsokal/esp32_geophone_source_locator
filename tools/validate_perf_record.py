@@ -35,6 +35,21 @@ class PerfRecordError(ValueError):
     """A record, comparison, or baseline update violates the acceptance contract."""
 
 
+def migrate_legacy_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Read v1 records without changing the byte-valued HWM during its rename."""
+
+    migrated = dict(record)
+    if (
+        type(migrated.get("schema_version")) is int
+        and migrated.get("schema_version") == 1
+        and "stack_hwm_words" in migrated
+        and "stack_hwm_bytes" not in migrated
+    ):
+        migrated["stack_hwm_bytes"] = migrated.pop("stack_hwm_words")
+        migrated["schema_version"] = 2
+    return migrated
+
+
 def _is_count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
@@ -61,6 +76,8 @@ def record_errors(record: object) -> list[str]:
     if not isinstance(record, Mapping):
         return ["record must be a JSON object"]
 
+    record = migrate_legacy_record(record)
+
     errors: list[str] = []
     missing = REQUIRED_FIELDS - set(record)
     extra = set(record) - REQUIRED_FIELDS
@@ -71,8 +88,8 @@ def record_errors(record: object) -> list[str]:
     if missing or extra:
         return errors
 
-    if type(record["schema_version"]) is not int or record["schema_version"] != 1:
-        errors.append("schema_version must be integer 1")
+    if type(record["schema_version"]) is not int or record["schema_version"] != 2:
+        errors.append("schema_version must be integer 2")
 
     sha = record["firmware_sha256"]
     if sha != NOT_APPLICABLE and (not isinstance(sha, str) or not SHA256.fullmatch(sha)):
@@ -177,7 +194,7 @@ def record_errors(record: object) -> list[str]:
         "ring_high_water_frames", "cache_high_water_frames", "queue_high_water",
         "cpu_runtime_us", "task_runtime_us", "core_runtime_us", "internal_heap_free_bytes",
         "internal_heap_largest_block_bytes", "psram_free_bytes", "psram_largest_block_bytes",
-        "stack_hwm_words", "project_hot_path_allocation_violations", "active_allocation_count",
+        "stack_hwm_bytes", "project_hot_path_allocation_violations", "active_allocation_count",
         "diagnostic_reports_suppressed", "diagnostic_reports_coalesced", "v2_quantizer_calls",
         "seismic_buffer_atomic_operations", "seismic_buffer_critical_section_entries",
         "seismic_buffer_retries", "ad7606_status_critical_section_entries",

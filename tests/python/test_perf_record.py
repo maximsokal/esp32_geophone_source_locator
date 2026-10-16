@@ -19,6 +19,7 @@ from tools.validate_perf_record import (
     PerfRecordError,
     attach_build_evidence,
     compare_records,
+    migrate_legacy_record,
     prepare_baseline_update,
     record_errors,
     validate_record,
@@ -33,7 +34,7 @@ PERF_PREFIX = "PERF_RECORD_JSON: "
 
 def valid_record() -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "firmware_sha256": NOT_APPLICABLE,
         "build_profile": NOT_APPLICABLE,
         "optimization_mode": NOT_APPLICABLE,
@@ -68,7 +69,7 @@ def valid_record() -> dict[str, object]:
         "internal_heap_largest_block_bytes": NOT_APPLICABLE,
         "psram_free_bytes": NOT_APPLICABLE,
         "psram_largest_block_bytes": NOT_APPLICABLE,
-        "stack_hwm_words": NOT_APPLICABLE,
+        "stack_hwm_bytes": NOT_APPLICABLE,
         "web_stop_latency_ms": NOT_APPLICABLE,
         "web_status_latency_ms": NOT_APPLICABLE,
         "live_latency_ms": NOT_APPLICABLE,
@@ -153,6 +154,28 @@ def test_unaccounted_frame_loss_is_rejected():
     record["persisted_frames"] -= 1
     with pytest.raises(PerfRecordError, match="unaccounted frame loss"):
         validate_record(record)
+
+
+def test_v1_stack_hwm_migration_preserves_the_byte_value():
+    legacy = valid_record()
+    legacy.update(
+        test_surface="TARGET_STRESS",
+        firmware_sha256="d" * 64,
+        build_profile="PERFORMANCE",
+        optimization_mode="performance",
+        sd_card_identity="measured-card",
+        sd_card_frequency_hz=20_000_000,
+    )
+    legacy["schema_version"] = 1
+    legacy["stack_hwm_words"] = 1536
+    legacy.pop("stack_hwm_bytes")
+
+    migrated = migrate_legacy_record(legacy)
+
+    assert migrated["schema_version"] == 2
+    assert migrated["stack_hwm_bytes"] == 1536
+    assert "stack_hwm_words" not in migrated
+    validate_record(legacy)
 
 
 def test_swapped_channel_sentinels_are_rejected():

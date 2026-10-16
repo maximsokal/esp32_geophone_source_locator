@@ -4,11 +4,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "runtime_health_policy.h"
+
 
 typedef enum
 {
     RUNTIME_TASK_ACQUISITION = 0,
     RUNTIME_TASK_RECORDER,
+    RUNTIME_TASK_STORAGE,
+    RUNTIME_TASK_CONTROL,
+    RUNTIME_TASK_TOPOLOGY,
     RUNTIME_TASK_UI,
     RUNTIME_TASK_COUNT
 
@@ -21,6 +26,9 @@ typedef struct
     uint64_t heartbeat;
     uint64_t progress;
     uint64_t last_heartbeat_ms;
+    uint64_t last_progress_ms;
+    runtime_health_phase_t health_phase;
+    uint64_t phase_started_ms;
 
 } runtime_observability_task_status_t;
 
@@ -54,6 +62,15 @@ typedef struct
 void runtime_observability_beat(
     runtime_observability_task_t task,
     uint64_t progress
+);
+
+void runtime_observability_set_health_phase(
+    runtime_observability_task_t task,
+    runtime_health_phase_t phase
+);
+
+runtime_health_result_t runtime_observability_get_health_result(
+    runtime_observability_task_t task
 );
 
 

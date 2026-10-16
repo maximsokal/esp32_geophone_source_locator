@@ -1,4 +1,5 @@
 #include "runtime_observability.h"
+#include "runtime_health_policy.h"
 
 #include "esp_timer.h"
 
@@ -22,6 +23,7 @@
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static runtime_observability_task_status_t s_tasks[RUNTIME_TASK_COUNT];
+static runtime_health_result_t s_last_health_result[RUNTIME_TASK_COUNT];
 
 
 void runtime_observability_beat(
@@ -38,14 +40,95 @@ void runtime_observability_beat(
     portENTER_CRITICAL(&s_lock);
 
     runtime_observability_task_status_t *status = &s_tasks[task];
+    const uint64_t now_ms = now_us > 0
+        ? (uint64_t)(now_us / 1000LL)
+        : 0U;
+    if (!status->observed || status->progress != progress) {
+        status->last_progress_ms = now_ms;
+    }
     status->observed = true;
     status->heartbeat++;
     status->progress = progress;
-    status->last_heartbeat_ms = now_us > 0
-        ? (uint64_t)(now_us / 1000LL)
-        : 0U;
+    status->last_heartbeat_ms = now_ms;
 
     portEXIT_CRITICAL(&s_lock);
+}
+
+
+void runtime_observability_set_health_phase(
+    runtime_observability_task_t task,
+    runtime_health_phase_t phase
+)
+{
+    if (task < 0 || task >= RUNTIME_TASK_COUNT ||
+        (unsigned)phase >= RUNTIME_HEALTH_PHASE_COUNT) {
+        return;
+    }
+
+    const int64_t now_us = esp_timer_get_time();
+    const uint64_t now_ms = now_us > 0
+        ? (uint64_t)(now_us / 1000LL)
+        : 0U;
+    portENTER_CRITICAL(&s_lock);
+    runtime_observability_task_status_t *status = &s_tasks[task];
+    if (!status->observed || status->health_phase != phase) {
+        status->health_phase = phase;
+        status->phase_started_ms = now_ms;
+        status->last_progress_ms = now_ms;
+    }
+    portEXIT_CRITICAL(&s_lock);
+}
+
+
+static runtime_health_task_t runtime_observability_health_task(
+    runtime_observability_task_t task
+)
+{
+    switch (task) {
+        case RUNTIME_TASK_ACQUISITION:
+            return RUNTIME_HEALTH_TASK_ACQUISITION;
+        case RUNTIME_TASK_RECORDER:
+            return RUNTIME_HEALTH_TASK_RECORDER;
+        case RUNTIME_TASK_STORAGE:
+            return RUNTIME_HEALTH_TASK_STORAGE;
+        case RUNTIME_TASK_CONTROL:
+            return RUNTIME_HEALTH_TASK_CONTROL;
+        case RUNTIME_TASK_TOPOLOGY:
+            return RUNTIME_HEALTH_TASK_TOPOLOGY;
+        case RUNTIME_TASK_UI:
+        case RUNTIME_TASK_COUNT:
+        default:
+            return RUNTIME_HEALTH_TASK_COUNT;
+    }
+}
+
+
+runtime_health_result_t runtime_observability_get_health_result(
+    runtime_observability_task_t task
+)
+{
+    const runtime_health_task_t health_task =
+        runtime_observability_health_task(task);
+    if (health_task == RUNTIME_HEALTH_TASK_COUNT) {
+        return RUNTIME_HEALTH_OK;
+    }
+
+    runtime_observability_snapshot_t snapshot;
+    runtime_observability_get_snapshot(&snapshot);
+    const runtime_observability_task_status_t *status = &snapshot.tasks[task];
+    const runtime_health_observation_t observation = {
+        .observed = status->observed,
+        .heartbeat = status->heartbeat,
+        .progress = status->progress,
+        .last_progress_ms = status->last_progress_ms,
+        .phase_started_ms = status->phase_started_ms,
+    };
+    return runtime_health_policy_evaluate(
+        health_task,
+        status->health_phase,
+        &observation,
+        snapshot.now_ms
+    );
 }
 
 
@@ -105,6 +188,12 @@ const char *runtime_observability_task_name(
             return "acquisition";
         case RUNTIME_TASK_RECORDER:
             return "recorder";
+        case RUNTIME_TASK_STORAGE:
+            return "storage";
+        case RUNTIME_TASK_CONTROL:
+            return "control";
+        case RUNTIME_TASK_TOPOLOGY:
+            return "topology";
         case RUNTIME_TASK_UI:
             return "ui";
         case RUNTIME_TASK_COUNT:
@@ -130,6 +219,7 @@ static bool runtime_observability_stack_is_low(uint32_t stack_free_bytes)
 static const char *TAG = "RUNTIME_OBSERVABILITY";
 
 #define RUNTIME_OBSERVABILITY_SAMPLE_PERIOD_MS 10000U
+#define RUNTIME_HEALTH_MONITOR_INTERVAL_MS 1000U
 #define RUNTIME_OBSERVABILITY_CPU_COUNT 2U
 #define RUNTIME_OBSERVABILITY_STAGE_SIZE 32U
 #define RUNTIME_OBSERVABILITY_TOP_TASKS RUNTIME_OBSERVABILITY_DUMP_TRACKED_TASKS
@@ -463,8 +553,68 @@ void runtime_observability_log_memory(const char *stage)
 }
 
 
+static const char *runtime_health_result_name(runtime_health_result_t result)
+{
+    switch (result) {
+        case RUNTIME_HEALTH_STALE_PROGRESS:
+            return "STALE_PROGRESS";
+        case RUNTIME_HEALTH_DEADLINE_EXCEEDED:
+            return "DEADLINE_EXCEEDED";
+        case RUNTIME_HEALTH_OK:
+        default:
+            return "OK";
+    }
+}
+
+
+static void runtime_observability_log_progress_health(const char *stage)
+{
+    runtime_observability_snapshot_t snapshot;
+    runtime_observability_get_snapshot(&snapshot);
+    for (runtime_observability_task_t task = RUNTIME_TASK_ACQUISITION;
+         task <= RUNTIME_TASK_TOPOLOGY;
+         task = (runtime_observability_task_t)(task + 1)) {
+        const runtime_observability_task_status_t *status =
+            &snapshot.tasks[task];
+        const runtime_health_task_t health_task =
+            runtime_observability_health_task(task);
+        const runtime_health_observation_t observation = {
+            .observed = status->observed,
+            .heartbeat = status->heartbeat,
+            .progress = status->progress,
+            .last_progress_ms = status->last_progress_ms,
+            .phase_started_ms = status->phase_started_ms,
+        };
+        const runtime_health_result_t result = runtime_health_policy_evaluate(
+            health_task,
+            status->health_phase,
+            &observation,
+            snapshot.now_ms
+        );
+
+        portENTER_CRITICAL(&s_lock);
+        const bool changed = s_last_health_result[task] != result;
+        s_last_health_result[task] = result;
+        portEXIT_CRITICAL(&s_lock);
+        if (!changed || result == RUNTIME_HEALTH_OK) {
+            continue;
+        }
+        ESP_LOGW(
+            TAG,
+            "RUNTIME_TASK_HEALTH stage=%s task=%s result=%s heartbeat=%llu progress=%llu",
+            runtime_stage_or_unknown(stage),
+            runtime_observability_task_name(task),
+            runtime_health_result_name(result),
+            (unsigned long long)status->heartbeat,
+            (unsigned long long)status->progress
+        );
+    }
+}
+
+
 void runtime_observability_log_snapshot(const char *stage)
 {
+    runtime_observability_log_progress_health(stage);
     const bool periodic = stage != NULL && strcmp(stage, "periodic") == 0;
     const uint32_t internal_caps =
         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -710,17 +860,24 @@ void runtime_observability_log_snapshot(const char *stage)
 static void runtime_observability_task(void *argument)
 {
     (void)argument;
+    uint32_t elapsed_ms = 0U;
 
     for (;;) {
         const uint32_t notified = ulTaskNotifyTake(
             pdTRUE,
-            pdMS_TO_TICKS(RUNTIME_OBSERVABILITY_SAMPLE_PERIOD_MS)
+            pdMS_TO_TICKS(RUNTIME_HEALTH_MONITOR_INTERVAL_MS)
         );
         char requested_stage[RUNTIME_OBSERVABILITY_STAGE_SIZE];
         if (runtime_take_requested_stage(requested_stage, sizeof(requested_stage))) {
             runtime_observability_log_snapshot(requested_stage);
+            elapsed_ms = 0U;
         } else if (notified == 0U) {
-            runtime_observability_log_snapshot("periodic");
+            runtime_observability_log_progress_health("periodic");
+            elapsed_ms += RUNTIME_HEALTH_MONITOR_INTERVAL_MS;
+            if (elapsed_ms >= RUNTIME_OBSERVABILITY_SAMPLE_PERIOD_MS) {
+                runtime_observability_log_snapshot("periodic");
+                elapsed_ms = 0U;
+            }
         }
     }
 }

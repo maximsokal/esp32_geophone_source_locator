@@ -18,7 +18,9 @@
 #define vTaskDelay max435_recorder_vTaskDelay
 #define runtime_observability_beat max435_recorder_runtime_observability_beat
 #define esp_timer_get_time max435_recorder_esp_timer_get_time
+#define SEISMIC_RECORDER_HEALTH_PHASE_STUB_EXTERNAL 1
 #include "seismic_recorder_start_integration_test.c"
+#undef SEISMIC_RECORDER_HEALTH_PHASE_STUB_EXTERNAL
 #undef main
 
 #define xSemaphoreCreateMutex max435_recorder_xSemaphoreCreateMutex

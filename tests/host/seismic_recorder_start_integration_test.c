@@ -40,6 +40,8 @@ static unsigned metadata_write_calls;
 static char last_metadata_status[24];
 static TaskFunction_t fake_recorder_task;
 static bool final_metadata_written;
+static bool fake_health_deadline_armed;
+static unsigned complete_metadata_writes_after_deadline;
 static seismic_frame_t fake_ring_frames[4];
 static uint64_t fake_ring_source_indices[4];
 static size_t fake_ring_frame_count;
@@ -87,6 +89,10 @@ void vEventGroupDelete(EventGroupHandle_t group) { free(group); }
 BaseType_t xTaskCreatePinnedToCore(TaskFunction_t task, const char *name, unsigned stack_size, void *argument, unsigned priority, TaskHandle_t *task_handle, int core_id) { (void)name; (void)stack_size; (void)argument; (void)priority; (void)core_id; fake_recorder_task = task; *task_handle = (TaskHandle_t)1; return pdPASS; }
 void vTaskDelay(TickType_t ticks) { (void)ticks; if (final_metadata_written) longjmp(worker_finished, 1); }
 void runtime_observability_beat(runtime_observability_task_t task, uint64_t progress) { (void)task; (void)progress; }
+#if !defined(SEISMIC_RECORDER_HEALTH_PHASE_STUB_EXTERNAL)
+void runtime_observability_set_health_phase(runtime_observability_task_t task, runtime_health_phase_t phase) { (void)task; (void)phase; }
+#endif
+runtime_health_result_t runtime_observability_get_health_result(runtime_observability_task_t task) { (void)task; return fake_health_deadline_armed ? RUNTIME_HEALTH_DEADLINE_EXCEEDED : RUNTIME_HEALTH_OK; }
 int64_t esp_timer_get_time(void) { return 1000000; }
 
 bool storage_manager_is_ready(void) { return true; }
@@ -115,6 +121,9 @@ esp_err_t storage_manager_atomic_write_text(const char *path, const char *text) 
     assert(status_length < sizeof(last_metadata_status));
     memcpy(last_metadata_status, status, status_length);
     last_metadata_status[status_length] = '\0';
+    if (fake_health_deadline_armed && strcmp(last_metadata_status, "complete") == 0) {
+        ++complete_metadata_writes_after_deadline;
+    }
     if (strcmp(last_metadata_status, "complete") == 0 || strcmp(last_metadata_status, "error") == 0) {
         final_metadata_written = true;
     }
@@ -579,6 +588,23 @@ int main(void)
     assert(final_metadata_written && strcmp(last_metadata_status, "complete") == 0);
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
     assert(!snapshot.running && snapshot.stop_stage == SEISMIC_RECORDER_STOP_STAGE_COMPLETE);
+
+    fake_health_deadline_armed = false;
+    assert(seismic_recorder_start("OBJ_0007") == ESP_OK);
+    assert(strcmp(last_metadata_status, "recording") == 0);
+    assert(seismic_recorder_stop() == ESP_OK);
+    fake_health_deadline_armed = true;
+    complete_metadata_writes_after_deadline = 0U;
+    final_metadata_written = false;
+    if (setjmp(worker_finished) == 0) {
+        fake_recorder_task(NULL);
+        assert(false && "health timeout should mark the session incomplete and finish safe-stop");
+    }
+    assert(final_metadata_written && strcmp(last_metadata_status, "error") == 0);
+    assert(complete_metadata_writes_after_deadline == 0U);
+    assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
+    assert(!snapshot.running && snapshot.stop_stage == SEISMIC_RECORDER_STOP_STAGE_ERROR);
+    fake_health_deadline_armed = false;
     return 0;
 #endif
 }

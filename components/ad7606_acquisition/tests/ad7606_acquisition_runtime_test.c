@@ -1108,6 +1108,15 @@ void runtime_observability_beat(runtime_observability_task_t task, uint64_t prog
     ++s_beats;
 }
 
+void runtime_observability_set_health_phase(
+    runtime_observability_task_t task,
+    runtime_health_phase_t phase
+)
+{
+    assert(task == RUNTIME_TASK_ACQUISITION || task == RUNTIME_TASK_RECORDER);
+    (void)phase;
+}
+
 /* ---- helpers ---- */
 
 static ad7606_acquisition_status_t status_now(void)

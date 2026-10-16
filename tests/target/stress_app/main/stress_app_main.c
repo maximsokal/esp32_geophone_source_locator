@@ -89,12 +89,12 @@ typedef struct
     TaskHandle_t network_task;
     TaskHandle_t scheduler_task;
     esp_timer_handle_t isr_timer;
-    uint32_t producer_stack_free_words;
-    uint32_t recorder_stack_free_words;
-    uint32_t ui_stack_free_words;
-    uint32_t sensor_stack_free_words;
-    uint32_t network_stack_free_words;
-    uint32_t scheduler_stack_free_words;
+    uint32_t producer_stack_free_bytes;
+    uint32_t recorder_stack_free_bytes;
+    uint32_t ui_stack_free_bytes;
+    uint32_t sensor_stack_free_bytes;
+    uint32_t network_stack_free_bytes;
+    uint32_t scheduler_stack_free_bytes;
     size_t internal_free_start;
     size_t internal_free_end;
     size_t dma_free_start;
@@ -255,13 +255,13 @@ static void log_stack_hwm(
     uint32_t *destination
 )
 {
-    const UBaseType_t free_words = uxTaskGetStackHighWaterMark(task);
-    *destination = (uint32_t)free_words;
+    const UBaseType_t free_bytes = uxTaskGetStackHighWaterMark(task);
+    *destination = (uint32_t)free_bytes;
     printf(
-        "TARGET_STRESS_STACK task=%s core=%d free_words=%u\n",
+        "TARGET_STRESS_STACK task=%s core=%d free_bytes=%u\n",
         task_name,
         xPortGetCoreID(),
-        (unsigned)free_words
+        (unsigned)free_bytes
     );
 }
 
@@ -303,7 +303,7 @@ static void producer_task(void *argument)
         }
     }
 
-    log_stack_hwm("producer", NULL, &phase->producer_stack_free_words);
+    log_stack_hwm("producer", NULL, &phase->producer_stack_free_bytes);
     phase->producer_task = NULL;
     vTaskDelete(NULL);
 }
@@ -316,7 +316,7 @@ static void recorder_task(void *argument)
 
     if (phase->recorder_batch == NULL) {
         phase->recorder_errors++;
-        log_stack_hwm("recorder", NULL, &phase->recorder_stack_free_words);
+        log_stack_hwm("recorder", NULL, &phase->recorder_stack_free_bytes);
         phase->recorder_task = NULL;
         vTaskDelete(NULL);
         return;
@@ -387,7 +387,7 @@ static void recorder_task(void *argument)
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(STRESS_RECORDER_PERIOD_MS));
     }
 
-    log_stack_hwm("recorder", NULL, &phase->recorder_stack_free_words);
+    log_stack_hwm("recorder", NULL, &phase->recorder_stack_free_bytes);
     phase->recorder_task = NULL;
     vTaskDelete(NULL);
 }
@@ -402,7 +402,7 @@ static void ui_task(void *argument)
         stress_trace(phase, 1U, 0U);
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(16U));
     }
-    log_stack_hwm("ui", NULL, &phase->ui_stack_free_words);
+    log_stack_hwm("ui", NULL, &phase->ui_stack_free_bytes);
     phase->ui_task = NULL;
     vTaskDelete(NULL);
 }
@@ -427,7 +427,7 @@ static void sensor_task(void *argument)
         heap_caps_free(psram);
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(10U));
     }
-    log_stack_hwm("sensor", NULL, &phase->sensor_stack_free_words);
+    log_stack_hwm("sensor", NULL, &phase->sensor_stack_free_bytes);
     phase->sensor_task = NULL;
     vTaskDelete(NULL);
 }
@@ -452,7 +452,7 @@ static void network_task(void *argument)
         heap_caps_free(psram);
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(25U));
     }
-    log_stack_hwm("network", NULL, &phase->network_stack_free_words);
+    log_stack_hwm("network", NULL, &phase->network_stack_free_bytes);
     phase->network_task = NULL;
     vTaskDelete(NULL);
 }
@@ -473,7 +473,7 @@ static void scheduler_noise_task(void *argument)
         esp_rom_delay_us(jitter_us);
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(1U));
     }
-    log_stack_hwm("scheduler", NULL, &phase->scheduler_stack_free_words);
+    log_stack_hwm("scheduler", NULL, &phase->scheduler_stack_free_bytes);
     phase->scheduler_task = NULL;
     vTaskDelete(NULL);
 }
@@ -710,12 +710,12 @@ static bool run_phase(
         (unsigned long long)phase->recorder_errors,
         (unsigned long long)phase->isr_ticks,
         (unsigned)phase->trace_write_index,
-        (unsigned)phase->producer_stack_free_words,
-        (unsigned)phase->recorder_stack_free_words,
-        (unsigned)phase->ui_stack_free_words,
-        (unsigned)phase->sensor_stack_free_words,
-        (unsigned)phase->network_stack_free_words,
-        (unsigned)phase->scheduler_stack_free_words,
+        (unsigned)phase->producer_stack_free_bytes,
+        (unsigned)phase->recorder_stack_free_bytes,
+        (unsigned)phase->ui_stack_free_bytes,
+        (unsigned)phase->sensor_stack_free_bytes,
+        (unsigned)phase->network_stack_free_bytes,
+        (unsigned)phase->scheduler_stack_free_bytes,
         (unsigned)phase->internal_free_start,
         (unsigned)phase->internal_free_end,
         (unsigned)phase->dma_free_start,

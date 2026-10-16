@@ -1788,6 +1788,10 @@ static void ad7606_worker(
     start_context = NULL;
 
     uint64_t successful_samples = 0U;
+    runtime_observability_set_health_phase(
+        RUNTIME_TASK_ACQUISITION,
+        RUNTIME_HEALTH_PHASE_ACTIVE
+    );
     while (ad7606_lifecycle_running()) {
         const uint32_t notification_count = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         if (!ad7606_lifecycle_running()) {
@@ -1909,6 +1913,10 @@ static void ad7606_worker(
 
     ad7606_worker_cleanup(
         ad7606_lifecycle_stop_requested(), &successful_samples);
+    runtime_observability_set_health_phase(
+        RUNTIME_TASK_ACQUISITION,
+        RUNTIME_HEALTH_PHASE_IDLE
+    );
     ad7606_lifecycle_finish_worker();
     ESP_LOGI(TAG, "Stopped");
     vTaskDelete(NULL);

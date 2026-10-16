@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert complete ESP32-S3 stress-app UART captures to v1 TARGET_STRESS records."""
+"""Convert complete ESP32-S3 stress-app UART captures to v2 TARGET_STRESS records."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ SCHEDULE_FIELDS = {"seed", "events", "inversions", "trace_hash", "replay"}
 NOT_APPLICABLE_LOG_FIELDS = (
     "DMA heap values, individual stack values beyond their minimum, ISR tick totals, "
     "trace event/jitter samples, and per-scenario deadline/error totals have no "
-    "matching fields in performance-record schema v1; the raw UART log retains them."
+    "matching fields in performance-record schema v2; the raw UART log retains them."
 )
 
 
@@ -118,7 +118,7 @@ def _reject_hard_markers(text: str) -> None:
 
 def _empty_record() -> dict[str, Any]:
     record = {name: NOT_APPLICABLE for name in PROPERTIES}
-    record["schema_version"] = 1
+    record["schema_version"] = 2
     record["test_surface"] = "TARGET_STRESS"
     record["reset_markers"] = {
         "unexpected_reset": False,
@@ -209,7 +209,7 @@ def _build_record(
     if set(stack) != set(STACK_TASKS):
         raise StressUARTParseError(f"{name}/{rate}Hz is missing a task stack HWM line")
     for task, summary_value in expected_stack.items():
-        if _uint(stack[task], "free_words", "TARGET_STRESS_STACK") != summary_value:
+        if _uint(stack[task], "free_bytes", "TARGET_STRESS_STACK") != summary_value:
             raise StressUARTParseError(f"{name}/{rate}Hz {task} stack summary disagrees with stack marker")
 
     expected_heap_values = {
@@ -262,7 +262,7 @@ def _build_record(
         "internal_heap_largest_block_bytes": _uint(heap_end, "internal_largest", "TARGET_STRESS_HEAP"),
         "psram_free_bytes": _uint(heap_end, "psram_free", "TARGET_STRESS_HEAP"),
         "psram_largest_block_bytes": _uint(heap_end, "psram_largest", "TARGET_STRESS_HEAP"),
-        "stack_hwm_words": min(expected_stack.values()),
+        "stack_hwm_bytes": min(expected_stack.values()),
         "reset_markers": {"unexpected_reset": False, "watchdog": False, "brownout": False},
         "deadlock_detected": False,
     })
@@ -363,11 +363,18 @@ def parse_uart_log(
                 _uint(heap, key, "TARGET_STRESS_HEAP")
             pending_heap[heap["stage"]] = heap
         elif line.startswith("TARGET_STRESS_STACK "):
-            stack = _key_values(line, "TARGET_STRESS_STACK", {"task", "core", "free_words"})
+            stack = _key_values(line, "TARGET_STRESS_STACK")
+            if set(stack) not in (
+                {"task", "core", "free_bytes"},
+                {"task", "core", "free_words"},
+            ):
+                raise StressUARTParseError("TARGET_STRESS_STACK needs task, core, and one HWM field")
             if stack["task"] not in STACK_TASKS or stack["task"] in pending_stack:
                 raise StressUARTParseError("duplicate or unknown stack task marker")
             _uint(stack, "core", "TARGET_STRESS_STACK")
-            _uint(stack, "free_words", "TARGET_STRESS_STACK")
+            hwm_field = "free_bytes" if "free_bytes" in stack else "free_words"
+            stack["free_bytes"] = stack.pop(hwm_field)
+            _uint(stack, "free_bytes", "TARGET_STRESS_STACK")
             pending_stack[stack["task"]] = stack
         elif line.startswith("TARGET_STRESS_TRACE "):
             trace = _key_values(line, "TARGET_STRESS_TRACE", TRACE_FIELDS)
