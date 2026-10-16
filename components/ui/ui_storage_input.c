@@ -1,5 +1,7 @@
 #include "ui_internal.h"
 
+#include "esp_lvgl_port.h"
+#include "freertos/task.h"
 #include "storage_manager.h"
 
 
@@ -70,7 +72,27 @@ void ui_handle_storage_key_locked(
                 );
             }
         } else {
-            if (!storage_manager_is_ready()) {
+            const size_t selected_action = context->storage_action;
+            if (!ui_storage_query_begin()) {
+                return;
+            }
+
+            /* Readiness takes storage_manager's mutex, so do not wait with LVGL held. */
+            lvgl_port_unlock();
+            const bool storage_ready = storage_manager_is_ready();
+            while (!lvgl_port_lock(0)) {
+                vTaskDelay(1U);
+            }
+            ui_storage_query_end();
+
+            if (
+                context->screen != UI_SCREEN_STORAGE ||
+                context->storage_action != selected_action
+            ) {
+                return;
+            }
+
+            if (!storage_ready) {
                 context->storage_erase_confirm =
                     false;
                 return;

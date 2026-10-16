@@ -4,7 +4,6 @@
 
 #include "esp_lvgl_port.h"
 
-#include "storage_manager.h"
 #include "ui_fonts.h"
 #include "ui_utf8_format.h"
 
@@ -81,14 +80,6 @@ void ui_render_storage_locked(void)
     ui_context_t *context =
         ui_context();
 
-    const bool storage_ready =
-        storage_manager_is_ready();
-
-    if (!storage_ready) {
-        context->storage_erase_confirm =
-            false;
-    }
-
     lv_obj_t *screen =
         ui_create_screen_base_locked(
             ui_tr(UI_I18N_KEY_STORAGE_TITLE),
@@ -97,6 +88,16 @@ void ui_render_storage_locked(void)
 
     if (screen == NULL) {
         return;
+    }
+
+    /* Cached readiness only: querying storage_manager here would take its mutex
+     * while LVGL is held, which is the reverse of the storage -> SPI -> LVGL
+     * quiesce order (MAX-478). Live readiness is rechecked on the erase key. */
+    const bool storage_ready = context->storage_info_valid;
+
+    if (!storage_ready) {
+        context->storage_erase_confirm =
+            false;
     }
 
     lv_obj_t *card =

@@ -321,6 +321,11 @@ void ui_handle_objects_key_locked(
     keypad_key_t key
 );
 
+void ui_storage_query_gate_open(void);
+void ui_storage_query_gate_close_and_wait(void);
+bool ui_storage_query_begin(void);
+void ui_storage_query_end(void);
+
 void ui_handle_storage_key_locked(
     keypad_key_t key
 );

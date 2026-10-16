@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "max478b_lock_interleaving",
+      "sources": [
+        "tests/host/max478b_lock_interleaving_test.c"
+      ],
+      "include_dirs": [],
+      "libraries": ["pthread"]
+    },
+    {
+      "name": "spi_bus_arbitration_error_paths",
+      "sources": [
+        "components/spi_bus/spi_bus.c",
+        "components/spi_bus/tests/spi_bus_arbitration_test.c"
+      ],
+      "include_dirs": [
+        "components/spi_bus/tests/stubs",
+        "components/spi_bus/include"
+      ]
+    },
+    {
+      "name": "storage_manager_operation_error_paths",
+      "sources": [
+        "components/storage_manager/storage_bulk_admission.c",
+        "components/storage_manager/tests/storage_manager_dma_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/storage_manager/tests/stubs",
+        "components/storage_manager",
+        "components/storage_manager/include"
+      ]
+    }
+  ]
+}

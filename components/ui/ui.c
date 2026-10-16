@@ -426,6 +426,8 @@ esp_err_t ui_init(void)
         return err;
     }
 
+    ui_storage_query_gate_open();
+
     /*
      * This release store is the interactive-runtime publication boundary.
      * Service callbacks, the LVGL timer and keypad ingress may only mutate UI
@@ -447,6 +449,8 @@ void ui_shutdown(void)
     if (!s_context.port_ready) {
         return;
     }
+
+    ui_storage_query_gate_close_and_wait();
 
     /*
      * Stop new APP_EVENT ingress first. Then close service callback slots and

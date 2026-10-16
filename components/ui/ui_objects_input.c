@@ -1,6 +1,60 @@
 #include "ui_internal.h"
 
+#include "esp_lvgl_port.h"
+#include "freertos/task.h"
 #include "object_store.h"
+
+#include <string.h>
+
+
+static atomic_bool s_storage_query_gate_open = false;
+static atomic_uint s_storage_queries_active = 0U;
+
+
+void ui_storage_query_gate_open(void)
+{
+    atomic_store_explicit(
+        &s_storage_query_gate_open,
+        true,
+        memory_order_release
+    );
+}
+
+
+void ui_storage_query_gate_close_and_wait(void)
+{
+    atomic_store_explicit(&s_storage_query_gate_open, false, memory_order_release);
+
+    while (atomic_load_explicit(&s_storage_queries_active, memory_order_acquire) != 0U) {
+        vTaskDelay(1U);
+    }
+}
+
+
+bool ui_storage_query_begin(void)
+{
+    if (!atomic_load_explicit(&s_storage_query_gate_open, memory_order_acquire)) {
+        return false;
+    }
+
+    atomic_fetch_add_explicit(&s_storage_queries_active, 1U, memory_order_acq_rel);
+    if (atomic_load_explicit(&s_storage_query_gate_open, memory_order_acquire)) {
+        return true;
+    }
+
+    atomic_fetch_sub_explicit(&s_storage_queries_active, 1U, memory_order_release);
+    return false;
+}
+
+
+void ui_storage_query_end(void)
+{
+    (void)atomic_fetch_sub_explicit(
+        &s_storage_queries_active,
+        1U,
+        memory_order_release
+    );
+}
 
 
 static bool ui_objects_measurement_mutation_allowed_locked(void)
@@ -239,12 +293,35 @@ void ui_handle_objects_key_locked(
 
             ui_render_objects_locked();
         } else {
+            object_store_delete_scope_t delete_scope = {0};
+            const size_t selected_index = context->object_index;
+            const object_service_summary_t selected = context->objects[selected_index];
+
+            if (!ui_storage_query_begin()) {
+                return;
+            }
+
+            /* This storage query can enter SPI arbitration, whose callback locks LVGL. */
+            lvgl_port_unlock();
+            const bool scope_available =
+                object_store_get_delete_scope(selected.id, &delete_scope) == ESP_OK;
+            while (!lvgl_port_lock(0)) {
+                vTaskDelay(1U);
+            }
+            ui_storage_query_end();
+
+            if (
+                context->screen != UI_SCREEN_OBJECTS ||
+                context->objects_mode != UI_OBJECTS_MENU ||
+                context->object_index != selected_index ||
+                context->object_index >= context->object_count ||
+                strcmp(context->objects[context->object_index].id, selected.id) != 0
+            ) {
+                return;
+            }
+
             context->objects_mode =
                 UI_OBJECTS_DELETE_CONFIRM;
-
-            object_store_delete_scope_t delete_scope = {0};
-            const object_service_summary_t *selected = &context->objects[context->object_index];
-            const bool scope_available = object_store_get_delete_scope(selected->id, &delete_scope) == ESP_OK;
             ui_objects_delete_model_build(scope_available, &delete_scope, &context->object_delete_model);
 
             ui_set_notice_locked(

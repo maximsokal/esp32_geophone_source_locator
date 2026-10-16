@@ -1,0 +1,42 @@
+[
+  {
+    "id": "max478b_invert_ui_storage_order",
+    "description": "Run the delete-scope storage query before releasing the LVGL lock.",
+    "file": "components/ui/ui_objects_input.c",
+    "find": "/* This storage query can enter SPI arbitration, whose callback locks LVGL. */\n            lvgl_port_unlock();\n            const bool scope_available =\n                object_store_get_delete_scope(selected.id, &delete_scope) == ESP_OK;\n            while (!lvgl_port_lock(0)) {\n                vTaskDelay(1U);\n            }\n            ui_storage_query_end();",
+    "replace": "/* This storage query can enter SPI arbitration, whose callback locks LVGL. */\n            const bool scope_available =\n                object_store_get_delete_scope(selected.id, &delete_scope) == ESP_OK;\n            lvgl_port_unlock();\n            while (!lvgl_port_lock(0)) {\n                vTaskDelay(1U);\n            }\n            ui_storage_query_end();",
+    "tests": [
+      {
+        "pytest": "tests/python/test_max478b_lock_graph.py"
+      }
+    ],
+    "expected_killer": "tests/python/test_max478b_lock_graph.py::test_storage_spi_lvgl_graph_is_acyclic"
+  },
+  {
+    "id": "max478b_remove_command_gate_timeout",
+    "description": "Make storage command admission wait forever for the binary gate.",
+    "file": "components/storage_service/storage_service.c",
+    "find": "xSemaphoreTake(\n            s_command_gate,\n            0\n        )",
+    "replace": "xSemaphoreTake(\n            s_command_gate,\n            portMAX_DELAY\n        )",
+    "tests": [
+      {
+        "pytest": "tests/python/test_max478b_lock_graph.py"
+      }
+    ],
+    "expected_killer": "tests/python/test_max478b_lock_graph.py::test_storage_service_command_gate_is_nonblocking"
+  },
+  {
+    "id": "max478b_skip_gate_release_on_queue_failure",
+    "description": "Leak the storage command gate when queuing a command fails.",
+    "file": "components/storage_service/storage_service.c",
+    "find": "if (\n        xQueueSend(\n            s_queue,\n            &command,\n            0\n        ) != pdTRUE\n    ) {\n        storage_service_release_command_gate();\n\n        return ESP_ERR_TIMEOUT;\n    }",
+    "replace": "if (\n        xQueueSend(\n            s_queue,\n            &command,\n            0\n        ) != pdTRUE\n    ) {\n        return ESP_ERR_TIMEOUT;\n    }",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-services.json",
+        "only": "storage_service_lifecycle"
+      }
+    ],
+    "expected_killer": "tests/host/storage_service_lifecycle_test.c::test_submit_failure_returns_timeout_and_releases_gate"
+  }
+]
