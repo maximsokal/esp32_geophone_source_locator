@@ -11,6 +11,7 @@ idf_component_register(
         "${NRF54L15_ROOT}/include"
 
     REQUIRES
+        app_config
         freertos
         i2c_bus
         sensor_bus

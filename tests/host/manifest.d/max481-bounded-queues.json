@@ -31,9 +31,12 @@
         "components/seismic_buffer/tests/seismic_buffer_test.c"
       ],
       "include_dirs": [
+        "tests/host",
         "components/seismic_buffer/tests/stubs",
         "components/seismic_buffer/include"
-      ]
+      ],
+      "defines": ["SEISMIC_BUFFER_TEST_HOOKS=1"],
+      "libraries": ["pthread"]
     },
     {
       "name": "max481_seismic_recorder_cache",

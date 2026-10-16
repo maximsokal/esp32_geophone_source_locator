@@ -771,7 +771,7 @@ esp_err_t seismic_recorder_recover_object_sessions(
         }
 
 #ifdef ESP_PLATFORM
-        vTaskDelay(pdMS_TO_TICKS(1));
+        taskYIELD();
 #endif
     }
 

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "app_tick_conversion",
+      "sources": ["tests/host/app_tick_test.c"],
+      "include_dirs": ["components/app_config/include"]
+    }
+  ]
+}

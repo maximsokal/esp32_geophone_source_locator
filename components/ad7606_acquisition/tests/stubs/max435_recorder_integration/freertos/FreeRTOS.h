@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "host_threads.h"
+
 typedef int BaseType_t;
 typedef uint32_t TickType_t;
 typedef uint32_t UBaseType_t;
@@ -10,7 +12,7 @@ typedef void *EventGroupHandle_t;
 typedef void *TaskHandle_t;
 typedef unsigned EventBits_t;
 
-typedef struct { int unused; } portMUX_TYPE;
+typedef host_mutex_t portMUX_TYPE;
 
 #define pdTRUE 1
 #define pdFALSE 0
@@ -20,10 +22,13 @@ typedef struct { int unused; } portMUX_TYPE;
 #define pdMS_TO_TICKS(milliseconds) ((TickType_t)(milliseconds))
 #define BIT0 (1U << 0)
 #define taskYIELD() ((void)0)
-#define portMUX_INITIALIZER_UNLOCKED { 0 }
+#define portMUX_INITIALIZER_UNLOCKED HOST_MUTEX_INITIALIZER
 #define portENTER_CRITICAL(mux) test_port_enter_critical(mux)
 #define portEXIT_CRITICAL(mux) test_port_exit_critical(mux)
-#define portYIELD_FROM_ISR() ((void)0)
+#define portENTER_CRITICAL_ISR(mux) test_port_enter_critical(mux)
+#define portEXIT_CRITICAL_ISR(mux) test_port_exit_critical(mux)
+#define portYIELD_FROM_ISR() test_port_yield_from_isr()
 
 void test_port_enter_critical(portMUX_TYPE *mux);
 void test_port_exit_critical(portMUX_TYPE *mux);
+void test_port_yield_from_isr(void);

@@ -361,7 +361,7 @@ static esp_err_t object_recovery_run_cooperative_policy(
 
 #ifdef ESP_PLATFORM
         if (yield_between_objects && index + 1U < count) {
-            vTaskDelay(pdMS_TO_TICKS(1));
+            taskYIELD();
         }
 #else
         (void)yield_between_objects;

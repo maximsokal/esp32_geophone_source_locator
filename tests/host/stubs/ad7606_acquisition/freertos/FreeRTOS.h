@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "host_threads.h"
+
 typedef uint32_t TickType_t;
 typedef int BaseType_t;
 typedef uint32_t UBaseType_t;
@@ -15,12 +17,15 @@ typedef void (*TaskFunction_t)(void *);
 #define portMAX_DELAY 0xFFFFFFFFU
 #define configTICK_RATE_HZ 100U
 #define pdMS_TO_TICKS(ms) ((TickType_t)(((uint64_t)(ms) * configTICK_RATE_HZ) / 1000U))
-#define portYIELD_FROM_ISR() ((void)0)
+void test_port_yield_from_isr(void);
+#define portYIELD_FROM_ISR() test_port_yield_from_isr()
 
-typedef struct { int unused; } portMUX_TYPE;
-#define portMUX_INITIALIZER_UNLOCKED { 0 }
+typedef host_mutex_t portMUX_TYPE;
+#define portMUX_INITIALIZER_UNLOCKED HOST_MUTEX_INITIALIZER
 
 void test_port_enter_critical(portMUX_TYPE *mux);
 void test_port_exit_critical(portMUX_TYPE *mux);
 #define portENTER_CRITICAL(mux) test_port_enter_critical(mux)
 #define portEXIT_CRITICAL(mux) test_port_exit_critical(mux)
+#define portENTER_CRITICAL_ISR(mux) test_port_enter_critical(mux)
+#define portEXIT_CRITICAL_ISR(mux) test_port_exit_critical(mux)

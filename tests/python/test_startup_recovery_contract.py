@@ -203,7 +203,7 @@ def test_archive_recovery_releases_storage_between_objects():
     assert "object_recovery_collect_ids(" in cooperative
     assert "object_recovery_check_guarded(" in cooperative
     assert "OBJECT_RECOVERY_PROGRESS" in cooperative
-    assert "vTaskDelay(pdMS_TO_TICKS(1))" in cooperative
+    assert "taskYIELD()" in cooperative
 
 
 def test_directory_census_does_not_hold_guard_during_metadata_loop():

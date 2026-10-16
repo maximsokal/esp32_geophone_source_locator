@@ -3,6 +3,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#if defined(SEISMIC_BUFFER_TEST_HOOKS)
+#include "host_threads.h"
+#endif
 
 #include "esp_err.h"
 #include "esp_heap_caps.h"
@@ -41,6 +44,12 @@ static void assert_no_allocation_or_free_since(allocation_counts_t before)
 }
 #endif
 #if defined(SEISMIC_BUFFER_TEST_HOOKS)
+static host_mutex_t s_producer_pause_lock = HOST_MUTEX_INITIALIZER;
+static host_cond_t s_producer_pause_changed = HOST_COND_INITIALIZER;
+static bool s_pause_producer_after_odd;
+static bool s_producer_paused;
+static bool s_release_producer;
+static esp_err_t s_paused_producer_result;
 static bool s_reconfigure_on_enter;
 static bool s_reconfigure_attempted;
 static esp_err_t s_reconfigure_result;
@@ -135,6 +144,17 @@ static void seismic_buffer_test_probe_reader(void)
 void seismic_buffer_test_after_odd_sequence(size_t slot_index)
 {
     (void)slot_index;
+    if (s_pause_producer_after_odd) {
+        s_pause_producer_after_odd = false;
+        assert(host_mutex_lock(&s_producer_pause_lock) == 0);
+        s_producer_paused = true;
+        assert(host_cond_broadcast(&s_producer_pause_changed) == 0);
+        while (!s_release_producer) {
+            assert(host_cond_wait_for(
+                &s_producer_pause_changed, &s_producer_pause_lock, 5000U) == 0);
+        }
+        assert(host_mutex_unlock(&s_producer_pause_lock) == 0);
+    }
     if (s_probe_after_odd_sequence) {
         s_probe_after_odd_sequence = false;
         seismic_buffer_test_probe_reader();
@@ -418,6 +438,89 @@ static void test_wrap_boundary_counts(void)
     assert_no_allocation_or_free_since(before);
 #endif
 }
+
+
+#if defined(SEISMIC_BUFFER_TEST_HOOKS)
+static void *paused_producer_thread(void *argument)
+{
+    (void)argument;
+    float channels[SEISMIC_CHANNEL_COUNT] = { 11.0f, 12.0f, 13.0f, 14.0f };
+    s_paused_producer_result = seismic_buffer_push(110, channels);
+    return NULL;
+}
+
+static void test_overlapping_producers_are_rejected(void)
+{
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_TEST, 500U) == ESP_OK);
+    s_pause_producer_after_odd = true;
+    s_producer_paused = false;
+    s_release_producer = false;
+    host_thread_t producer;
+    assert(host_thread_create(&producer, paused_producer_thread, NULL) == 0);
+
+    assert(host_mutex_lock(&s_producer_pause_lock) == 0);
+    while (!s_producer_paused) {
+        assert(host_cond_wait_for(
+            &s_producer_pause_changed, &s_producer_pause_lock, 5000U) == 0);
+    }
+    assert(host_mutex_unlock(&s_producer_pause_lock) == 0);
+
+    float competing_channels[SEISMIC_CHANNEL_COUNT] = { 21.0f, 22.0f, 23.0f, 24.0f };
+    assert(seismic_buffer_push(210, competing_channels) == ESP_ERR_INVALID_STATE);
+
+    assert(host_mutex_lock(&s_producer_pause_lock) == 0);
+    s_release_producer = true;
+    assert(host_cond_broadcast(&s_producer_pause_changed) == 0);
+    assert(host_mutex_unlock(&s_producer_pause_lock) == 0);
+    assert(host_thread_join(producer) == 0);
+    assert(s_paused_producer_result == ESP_OK);
+
+    seismic_frame_t frame;
+    size_t count = 0U;
+    seismic_buffer_info_t info = { 0 };
+    assert(seismic_buffer_copy_latest(&frame, 1U, &count, &info) == ESP_OK);
+    assert(count == 1U && info.total_frames == 1U);
+    assert(frame.timestamp_us == 110);
+    assert(frame.channel_uv[0] == 11.0f);
+}
+
+static void test_slot_sequence_rollover_fails_closed(void)
+{
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_TEST, 500U) == ESP_OK);
+    seismic_buffer_test_seed_slot_sequence(0U, UINT32_MAX - 1U);
+    float channels[SEISMIC_CHANNEL_COUNT] = { 1.0f, 2.0f, 3.0f, 4.0f };
+    assert(seismic_buffer_push(10, channels) == ESP_ERR_INVALID_STATE);
+    seismic_frame_t frame;
+    size_t count = 0U;
+    seismic_buffer_info_t info = { 0 };
+    assert(seismic_buffer_copy_latest(&frame, 1U, &count, &info) == ESP_OK);
+    assert(count == 0U && info.total_frames == 0U);
+    seismic_buffer_test_seed_slot_sequence(0U, 0U);
+}
+
+static void test_64_bit_frame_and_cursor_exhaustion_fails_closed(void)
+{
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_TEST, 500U) == ESP_OK);
+    seismic_buffer_test_seed_total_frames(UINT64_MAX - 1U);
+    float channels[SEISMIC_CHANNEL_COUNT] = { 1.0f, 2.0f, 3.0f, 4.0f };
+    seismic_frame_t frame;
+    size_t count = 0U;
+    seismic_buffer_info_t info = { 0 };
+    assert(seismic_buffer_push(20, channels) == ESP_OK);
+    uint64_t cursor = UINT64_MAX - 1U;
+    uint64_t dropped = 0U;
+    assert(seismic_buffer_copy_since(
+        &cursor, &frame, 1U, &count, &dropped, &info) == ESP_OK);
+    assert(count == 1U && dropped == 0U);
+    assert(cursor == UINT64_MAX && info.total_frames == UINT64_MAX);
+    assert(seismic_buffer_copy_since(
+        &cursor, &frame, 1U, &count, &dropped, &info) == ESP_OK);
+    assert(count == 0U && cursor == UINT64_MAX);
+    assert(seismic_buffer_push(30, channels) == ESP_ERR_INVALID_STATE);
+    assert(seismic_buffer_copy_latest(&frame, 1U, &count, &info) == ESP_OK);
+    assert(count == 1U && info.total_frames == UINT64_MAX);
+}
+#endif
 
 
 static void test_queue_stats_track_n_boundaries_and_reader_drops(void)
@@ -785,6 +888,9 @@ int main(void)
     test_indexed_source_gaps_through_wrap();
     test_high_rate_capacities_wrap();
     test_reconfigure_rejected_during_producer_and_consumer();
+    test_overlapping_producers_are_rejected();
+    test_slot_sequence_rollover_fails_closed();
+    test_64_bit_frame_and_cursor_exhaustion_fails_closed();
 #endif
     test_configured_rate_timestamp_cadence();
 #if defined(SEISMIC_BUFFER_TEST_HOOKS)

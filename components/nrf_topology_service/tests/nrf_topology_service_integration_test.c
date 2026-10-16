@@ -151,6 +151,10 @@ static bool s_long_error_was_logged;
 static unsigned s_tca_fault_set_logs;
 static unsigned s_tca_bus_stuck_logs;
 static bool s_in_height_calibration_handler;
+static bool s_attempt_height_request_during_capture;
+static bool s_height_request_during_capture_attempted;
+static esp_err_t s_height_request_during_capture_result;
+static uint16_t s_height_request_during_capture_generation;
 static unsigned s_height_reference_writes;
 static nrf_upstream_height_reference_t s_height_reference_requests[32];
 static bool s_in_imu_calibration_handler;
@@ -644,6 +648,16 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
         assert(node->node_state.role == NRF_NODE_ROLE_REMOTE);
         assert(nrf_upstream_protocol_decode_height_reference(data, data_len, &request) == NRF_UPSTREAM_RESULT_OK);
         assert(request.action == NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE);
+        if (s_attempt_height_request_during_capture &&
+            !s_height_request_during_capture_attempted) {
+            uint8_t requested_mask = 0U;
+            uint16_t requested_generation = 0U;
+            s_height_request_during_capture_attempted = true;
+            s_height_request_during_capture_result =
+                nrf_topology_service_request_height_reference_capture(
+                    &requested_mask, &requested_generation);
+            s_height_request_during_capture_generation = requested_generation;
+        }
         assert(node->height_reference_captures <
                sizeof(node->captured_generation) / sizeof(node->captured_generation[0]));
         node->captured_generation[node->height_reference_captures++] = request.generation;
@@ -1097,6 +1111,9 @@ static void assert_height_capture_counts_and_generation_65535(void)
     assert(s_nodes[2].height_reference_captures == 1U);
     assert(s_nodes[1].captured_generation[0] == UINT16_MAX);
     assert(s_nodes[2].captured_generation[0] == UINT16_MAX);
+    assert(s_height_request_during_capture_attempted);
+    assert(s_height_request_during_capture_result == ESP_ERR_INVALID_STATE);
+    assert(s_height_request_during_capture_generation == 0U);
 }
 
 static void assert_height_capture_generation_1(void)
@@ -1131,6 +1148,7 @@ static void test_height_calibration_worker_queue_and_generation_wrap(void)
     node_boot(&s_nodes[1], 2U, 0x22U);
     node_boot(&s_nodes[2], 5U, 0x33U);
     nrf_topology_service_test_set_height_reference_generation((uint16_t)(UINT16_MAX - 1U));
+    s_attempt_height_request_during_capture = true;
 
     script(EV_WAIT_MS, 10U, NULL);
     script(EV_ACTION, 0U, request_height_calibration_from_handler);
@@ -1909,6 +1927,10 @@ static void reset_world(void)
     s_delayed_assignment_confirmations = 0U;
     s_cs_execute_count = 0U;
     s_in_height_calibration_handler = false;
+    s_attempt_height_request_during_capture = false;
+    s_height_request_during_capture_attempted = false;
+    s_height_request_during_capture_result = ESP_ERR_INVALID_STATE;
+    s_height_request_during_capture_generation = 0U;
     s_height_reference_writes = 0U;
     s_in_imu_calibration_handler = false;
     s_imu_calibration_writes = 0U;

@@ -4,7 +4,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = "tests/host/manifest.d/max481-bounded-queues.json"
+MANIFESTS = (
+    ROOT / "tests/host/manifest.json",
+    *sorted((ROOT / "tests/host/manifest.d").glob("*.json")),
+)
+SMALL_TICK_ALLOWLIST = {
+    # This component is config-disabled; its waits are outside MAX-483 scope.
+    "components/insights_bridge/insights_bridge.c": 2,
+}
 
 
 def _body_end(source: str, open_brace: int) -> int:
@@ -71,10 +78,17 @@ def _reachable(source: str) -> set[str]:
     return reached
 
 
-def _manifest_entry(name: str) -> dict:
-    document = json.loads((ROOT / MANIFEST).read_text(encoding="utf-8"))
-    entries = [entry for entry in document["tests"] if entry.get("name") == name]
-    assert len(entries) == 1, f"expected one {name} target in {MANIFEST}"
+def _manifest_entry(name: str, source_path: str) -> dict:
+    entries = []
+    for manifest in MANIFESTS:
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        entries.extend(
+            entry
+            for entry in document["tests"]
+            if entry.get("name") == name
+            and source_path in {str(path).replace("\\", "/") for path in entry.get("sources", [])}
+        )
+    assert entries, f"expected {source_path} in registered target {name}"
     return entries[0]
 
 
@@ -88,7 +102,12 @@ def test_max481_cases_are_reachable_from_main_and_registered():
         (
             "max481_seismic_buffer",
             "components/seismic_buffer/tests/seismic_buffer_test.c",
-            ("queue_stats_track_n_boundaries_and_reader_drops",),
+            (
+                "queue_stats_track_n_boundaries_and_reader_drops",
+                "overlapping_producers_are_rejected",
+                "slot_sequence_rollover_fails_closed",
+                "64_bit_frame_and_cursor_exhaustion_fails_closed",
+            ),
         ),
         (
             "max481_seismic_recorder_cache",
@@ -123,9 +142,29 @@ def test_max481_cases_are_reachable_from_main_and_registered():
             "components/seismic_recorder/tests/seismic_recorder_session_geometry_test.c",
             ("summary_gap_classes_round_trip",),
         ),
+        (
+            "main_barometer",
+            "tests/host/main_barometer_test.c",
+            ("aht20_monotonic_deadline_boundaries_and_minimum_tick",),
+        ),
+        (
+            "app_tick_conversion",
+            "tests/host/app_tick_test.c",
+            ("subtick_conversion_is_never_zero_for_positive_waits",),
+        ),
+        (
+            "max479_ad7606_lifecycle",
+            "components/ad7606_acquisition/tests/ad7606_acquisition_runtime_test.c",
+            ("stop_isr_worker_lifecycle_interleaving",),
+        ),
+        (
+            "nrf_topology_service_ranging_integration",
+            "components/nrf_topology_service/tests/nrf_topology_service_integration_test.c",
+            ("height_calibration_worker_queue_and_generation_wrap",),
+        ),
     )
     for target, source_path, names in cases:
-        entry = _manifest_entry(target)
+        entry = _manifest_entry(target, source_path)
         sources = {str(path).replace("\\", "/") for path in entry.get("sources", [])}
         assert source_path in sources, f"{source_path} is not in target {target}"
         source = (ROOT / source_path).read_text(encoding="utf-8")
@@ -135,3 +174,24 @@ def test_max481_cases_are_reachable_from_main_and_registered():
             function = f"test_{name}"
             assert function in declared, f"missing {function} in {source_path}"
             assert function in reached, f"{function} is not called by main() in {source_path}"
+
+
+def test_project_small_literal_tick_delays_are_explicit():
+    pattern = re.compile(r"pdMS_TO_TICKS\s*\(\s*(\d+)\s*(?:U|UL|u|ul)?\s*\)")
+    observed: dict[str, int] = {}
+    for source_root in (ROOT / "main", ROOT / "components"):
+        for path in source_root.rglob("*"):
+            if not path.is_file() or path.suffix not in {".c", ".h"} or "tests" in path.parts:
+                continue
+            relative = path.relative_to(ROOT).as_posix()
+            count = sum(
+                1
+                for value in pattern.findall(path.read_text(encoding="utf-8"))
+                if int(value) < 10
+            )
+            if count:
+                observed[relative] = count
+    assert observed == SMALL_TICK_ALLOWLIST, (
+        "small literal pdMS_TO_TICKS calls need an explicit fix or reviewed allowlist: "
+        f"{observed}"
+    )

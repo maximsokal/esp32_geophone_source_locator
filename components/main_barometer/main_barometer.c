@@ -6,6 +6,8 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "app_tick.h"
+#include "esp_timer.h"
 #include "nrf_baro_altitude.h"
 
 #ifndef CONFIG_MAIN_BAROMETER_BMP280_ADDRESS
@@ -351,10 +353,16 @@ static esp_err_t main_barometer_read_aht20(main_barometer_t *barometer)
     }
 
     uint8_t data[7] = {0};
-    uint32_t waited_ms = 0U;
-    do {
-        vTaskDelay(pdMS_TO_TICKS(AHT20_BUSY_POLL_MS));
-        waited_ms += AHT20_BUSY_POLL_MS;
+    const int64_t deadline_us = esp_timer_get_time() +
+        (int64_t)AHT20_TIMEOUT_MS * INT64_C(1000);
+    bool ready = false;
+    while (esp_timer_get_time() < deadline_us) {
+        /* A 2 ms poll is one 10 ms tick at HZ=100; the deadline remains wall time. */
+        vTaskDelay((TickType_t)app_ms_to_ticks_min_one(
+            AHT20_BUSY_POLL_MS, configTICK_RATE_HZ));
+        if (esp_timer_get_time() >= deadline_us) {
+            break;
+        }
         err = main_barometer_classify_error(
             AHT20_ADDRESS,
             sensor_bus_read_bytes(
@@ -364,12 +372,16 @@ static esp_err_t main_barometer_read_aht20(main_barometer_t *barometer)
             barometer->reading.aht20_valid = false;
             return err;
         }
-        if ((data[0] & AHT20_STATUS_BUSY) == 0U) {
+        if (esp_timer_get_time() >= deadline_us) {
             break;
         }
-    } while (waited_ms < AHT20_TIMEOUT_MS);
+        if ((data[0] & AHT20_STATUS_BUSY) == 0U) {
+            ready = true;
+            break;
+        }
+    }
 
-    if ((data[0] & AHT20_STATUS_BUSY) != 0U) {
+    if (!ready) {
         barometer->reading.aht20_valid = false;
         return ESP_ERR_TIMEOUT;
     }

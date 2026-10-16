@@ -22,6 +22,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "host_threads.h"
 #include "ina3221_monitor.h"
 #include "runtime_observability.h"
 #include "seismic_buffer.h"
@@ -57,6 +58,11 @@ _Static_assert(
 #define TEST_LOG_RECORD_CAPACITY 32U
 
 static uint64_t worker_iteration_us(uint64_t sample_index);
+extern void ad7606_acquisition_test_seed_lifecycle(TaskHandle_t task, bool running);
+extern void ad7606_acquisition_test_busy_isr(void);
+extern void ad7606_acquisition_test_request_stop(void);
+extern bool ad7606_acquisition_test_task_published(void);
+extern void ad7606_acquisition_test_worker_finish(void);
 
 typedef enum { EV_TICK, EV_STOP } event_type_t;
 typedef struct {
@@ -71,7 +77,8 @@ static size_t s_script_pos;
 
 static int64_t s_now_us;
 static unsigned s_esp_timer_get_time_calls;
-static int s_critical_depth;
+static _Thread_local int s_critical_depth;
+static _Thread_local bool s_test_worker_thread;
 static bool s_in_worker;
 static bool s_stop_waiting;
 static jmp_buf s_stop_return;
@@ -117,6 +124,7 @@ static bool s_running_seen_during_push;
 static unsigned s_beats;
 static unsigned s_notify_gives;
 static unsigned s_notify_from_isr;
+static unsigned s_isr_yields;
 static unsigned s_busy_isr_calls;
 static unsigned s_stop_isr_suppressions;
 static unsigned s_task_blocking_calls;
@@ -137,6 +145,16 @@ static uint32_t s_last_ledc_duty;
 static uint32_t s_last_ledc_resolution;
 static int s_fake_gpio_install_flags;
 static unsigned s_fake_watch_points;
+static host_mutex_t s_lifecycle_gate_lock = HOST_MUTEX_INITIALIZER;
+static host_cond_t s_lifecycle_gate_changed = HOST_COND_INITIALIZER;
+static bool s_lifecycle_test_mode;
+static bool s_isr_notification_entered;
+static bool s_release_isr_notification;
+static bool s_stop_notification_entered;
+static bool s_lifecycle_stop_done;
+static bool s_lifecycle_worker_done;
+static unsigned s_lifecycle_worker_waits;
+static bool s_release_worker_wait;
 
 /* Injected behaviour. */
 static esp_err_t s_driver_init_result;
@@ -195,6 +213,7 @@ static void reset_world(void)
     s_now_us = 50000000LL;
     s_esp_timer_get_time_calls = 0U;
     s_critical_depth = 0;
+    s_test_worker_thread = false;
     s_in_worker = false;
     s_stop_waiting = false;
     s_task_creates = 0U;
@@ -214,6 +233,7 @@ static void reset_world(void)
     s_beats = 0U;
     s_notify_gives = 0U;
     s_notify_from_isr = 0U;
+    s_isr_yields = 0U;
     s_busy_isr_calls = 0U;
     s_stop_isr_suppressions = 0U;
     s_task_blocking_calls = 0U;
@@ -245,6 +265,17 @@ static void reset_world(void)
     s_last_ledc_duty = 0U;
     s_last_ledc_resolution = 0U;
     s_fake_watch_points = 0U;
+    assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+    s_lifecycle_test_mode = false;
+    s_isr_notification_entered = false;
+    s_release_isr_notification = false;
+    s_stop_notification_entered = false;
+    s_lifecycle_stop_done = false;
+    s_lifecycle_worker_done = false;
+    s_lifecycle_worker_waits = 0U;
+    s_release_worker_wait = false;
+    assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+    ad7606_acquisition_test_seed_lifecycle(NULL, false);
     memset(s_push_timestamps, 0, sizeof(s_push_timestamps));
     memset(s_push_sample_indices, 0, sizeof(s_push_sample_indices));
     memset(s_worker_iteration_duration_us, 0, sizeof(s_worker_iteration_duration_us));
@@ -457,16 +488,21 @@ static bool fake_log_sink(
 
 void test_port_enter_critical(portMUX_TYPE *mux)
 {
-    (void)mux;
     assert(s_critical_depth == 0);
+    assert(host_mutex_lock(mux) == 0);
     ++s_critical_depth;
 }
 
 void test_port_exit_critical(portMUX_TYPE *mux)
 {
-    (void)mux;
     assert(s_critical_depth == 1);
     --s_critical_depth;
+    assert(host_mutex_unlock(mux) == 0);
+}
+
+void test_port_yield_from_isr(void)
+{
+    ++s_isr_yields;
 }
 
 struct test_semaphore { int given; };
@@ -537,12 +573,11 @@ BaseType_t xTaskNotifyGive(TaskHandle_t task)
 {
     assert(task == &s_task_token);
     ++s_notify_gives;
-    if (s_stop_waiting) {
-        /* The worker (priority 7) outranks every caller of stop(): the
-         * notification preempts the caller and the worker runs at once,
-         * seeing whatever s_running holds at this instant. */
-        s_stop_waiting = false;
-        longjmp(s_stop_return, 1);
+    if (s_lifecycle_test_mode) {
+        assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+        s_stop_notification_entered = true;
+        assert(host_cond_broadcast(&s_lifecycle_gate_changed) == 0);
+        assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
     }
     return pdPASS;
 }
@@ -554,15 +589,41 @@ void vTaskNotifyGiveFromISR(TaskHandle_t task, BaseType_t *higher_priority_task_
     if (s_synthetic_log_delay) {
         ++s_pending_notifications;
     }
+    if (s_lifecycle_test_mode) {
+        assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+        s_isr_notification_entered = true;
+        assert(host_cond_broadcast(&s_lifecycle_gate_changed) == 0);
+        while (!s_release_isr_notification) {
+            assert(host_cond_wait_for(
+                &s_lifecycle_gate_changed, &s_lifecycle_gate_lock, 5000U) == 0);
+        }
+        assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+    }
     if (higher_priority_task_woken != NULL) {
-        *higher_priority_task_woken = pdFALSE;
+        *higher_priority_task_woken = pdTRUE;
     }
 }
 
 void vTaskDelay(TickType_t ticks)
 {
-    ++s_task_blocking_calls;
     assert(s_critical_depth == 0);
+    if (s_lifecycle_test_mode) {
+        assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+        ++s_task_blocking_calls;
+        if (s_test_worker_thread) {
+            ++s_lifecycle_worker_waits;
+            assert(host_cond_broadcast(&s_lifecycle_gate_changed) == 0);
+            while (!s_release_worker_wait) {
+                assert(host_cond_wait_for(
+                    &s_lifecycle_gate_changed, &s_lifecycle_gate_lock, 5000U) == 0);
+            }
+        }
+        assert(host_cond_broadcast(&s_lifecycle_gate_changed) == 0);
+        assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+        host_thread_yield();
+        return;
+    }
+    ++s_task_blocking_calls;
     (void)ticks;
     if (s_stop_waiting) {
         /* stop() is waiting for the worker: let the worker run. */
@@ -1072,6 +1133,96 @@ static void assert_fully_released(void)
 #if !defined(AD7606_ACQUISITION_RUNTIME_TEST_SUPPORT_ONLY)
 /* ---- tests ---- */
 
+static void *run_lifecycle_busy_isr(void *argument)
+{
+    (void)argument;
+    ad7606_acquisition_test_busy_isr();
+    return NULL;
+}
+
+static void *run_lifecycle_stop(void *argument)
+{
+    (void)argument;
+    ad7606_acquisition_test_request_stop();
+    assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+    s_lifecycle_stop_done = true;
+    assert(host_cond_broadcast(&s_lifecycle_gate_changed) == 0);
+    assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+    return NULL;
+}
+
+static void *run_lifecycle_worker_finish(void *argument)
+{
+    (void)argument;
+    s_test_worker_thread = true;
+    ad7606_acquisition_test_worker_finish();
+    s_test_worker_thread = false;
+    assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+    s_lifecycle_worker_done = true;
+    assert(host_cond_broadcast(&s_lifecycle_gate_changed) == 0);
+    assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+    return NULL;
+}
+
+static void test_stop_isr_worker_lifecycle_interleaving(void)
+{
+    reset_world();
+    s_lifecycle_test_mode = true;
+    ad7606_acquisition_test_seed_lifecycle(&s_task_token, true);
+
+    host_thread_t isr_thread;
+    host_thread_t stop_thread;
+    host_thread_t worker_thread;
+    assert(host_thread_create(&isr_thread, run_lifecycle_busy_isr, NULL) == 0);
+    assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+    while (!s_isr_notification_entered) {
+        assert(host_cond_wait_for(
+            &s_lifecycle_gate_changed, &s_lifecycle_gate_lock, 5000U) == 0);
+    }
+    assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+
+    assert(host_thread_create(&stop_thread, run_lifecycle_stop, NULL) == 0);
+    assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+    while (!s_stop_notification_entered) {
+        assert(host_cond_wait_for(
+            &s_lifecycle_gate_changed, &s_lifecycle_gate_lock, 5000U) == 0);
+    }
+    while (!s_lifecycle_stop_done) {
+        assert(host_cond_wait_for(
+            &s_lifecycle_gate_changed, &s_lifecycle_gate_lock, 5000U) == 0);
+    }
+    assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+
+    assert(host_thread_create(
+        &worker_thread, run_lifecycle_worker_finish, NULL) == 0);
+    assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+    while (s_lifecycle_worker_waits == 0U && !s_lifecycle_worker_done) {
+        assert(host_cond_wait_for(
+            &s_lifecycle_gate_changed, &s_lifecycle_gate_lock, 5000U) == 0);
+    }
+    const bool worker_waited = s_lifecycle_worker_waits > 0U;
+    const bool task_published_while_isr_paused =
+        ad7606_acquisition_test_task_published();
+    s_release_isr_notification = true;
+    s_release_worker_wait = true;
+    assert(host_cond_broadcast(&s_lifecycle_gate_changed) == 0);
+    assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+
+    assert(host_thread_join(isr_thread) == 0);
+    assert(host_thread_join(stop_thread) == 0);
+    assert(host_thread_join(worker_thread) == 0);
+    assert(s_lifecycle_worker_done);
+    assert(worker_waited);
+    assert(task_published_while_isr_paused);
+    assert(!ad7606_acquisition_test_task_published());
+    assert(s_notify_from_isr == 1U && s_notify_gives == 1U);
+    assert(s_isr_yields == 1U);
+
+    ad7606_acquisition_test_busy_isr();
+    assert(s_notify_from_isr == 1U && s_isr_yields == 1U);
+    s_lifecycle_test_mode = false;
+}
+
 static void test_repeated_start_stop_and_error_cycles_release_everything(void)
 {
     for (unsigned iteration = 0U; iteration < 40U; ++iteration) {
@@ -1115,6 +1266,7 @@ static void test_run_samples_then_stop_releases_everything(void)
     assert(s_fake_gpio_install_flags == ESP_INTR_FLAG_IRAM);
     assert(s_fake_watch_points == 2U);
     assert(s_notify_from_isr == 3U);
+    assert(s_isr_yields == s_notify_from_isr);
     assert(s_busy_isr_calls == 4U); /* three edges plus a STOP-time probe */
     assert(s_stop_isr_suppressions == 1U);
     assert(s_esp_timer_get_time_calls == 2U); /* start gate + LEDC t0, never per sample */
@@ -2293,6 +2445,7 @@ int main(void)
     test_combined_diagnostic_boundary_and_slow_sink_completion();
     test_unavailable_log_sink_does_not_block_stop();
     test_run_samples_then_stop_releases_everything();
+    test_stop_isr_worker_lifecycle_interleaving();
     test_safe_os_mismatch_runs_and_is_reported();
     test_unknown_os_measurement_refuses_start();
     test_collapsed_periods_are_one_conversion();

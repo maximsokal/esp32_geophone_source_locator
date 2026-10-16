@@ -42,7 +42,7 @@ def test_census_guard_is_closed_before_per_object_profile_reads():
 
 
 def test_profile_walk_yields_between_bounded_metadata_windows():
-    assert "vTaskDelay(pdMS_TO_TICKS(1))" in RESPONSIVE
+    assert "taskYIELD()" in RESPONSIVE
     assert "PROFILE_SCAN mode=cooperative" in RESPONSIVE
 
 

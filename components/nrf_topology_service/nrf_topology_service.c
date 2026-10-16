@@ -131,6 +131,8 @@ static uint8_t s_sensor_inflight_mask = 0U;
 static bool s_height_reference_pending = false;
 static uint8_t s_height_reference_pending_mask = 0U;
 static uint16_t s_height_reference_pending_generation = 0U;
+static bool s_height_reference_in_flight = false;
+static uint16_t s_height_reference_in_flight_generation = 0U;
 static uint16_t s_height_reference_generation = 0U;
 static bool s_imu_calibration_pending = false;
 static uint8_t s_imu_calibration_pending_mask = 0U;
@@ -228,6 +230,8 @@ static void service_clear_current_task(void)
     s_height_reference_pending = false;
     s_height_reference_pending_mask = 0U;
     s_height_reference_pending_generation = 0U;
+    s_height_reference_in_flight = false;
+    s_height_reference_in_flight_generation = 0U;
     s_imu_calibration_pending = false;
     s_imu_calibration_pending_mask = 0U;
     s_imu_calibration_pending_generation = 0U;
@@ -2631,6 +2635,8 @@ esp_err_t nrf_topology_service_start(void)
     s_height_reference_pending = false;
     s_height_reference_pending_mask = 0U;
     s_height_reference_pending_generation = 0U;
+    s_height_reference_in_flight = false;
+    s_height_reference_in_flight_generation = 0U;
     s_imu_calibration_pending = false;
     s_imu_calibration_pending_mask = 0U;
     s_imu_calibration_pending_generation = 0U;
@@ -2731,6 +2737,8 @@ void nrf_topology_service_stop(void)
     s_height_reference_pending = false;
     s_height_reference_pending_mask = 0U;
     s_height_reference_pending_generation = 0U;
+    s_height_reference_in_flight = false;
+    s_height_reference_in_flight_generation = 0U;
     s_imu_calibration_pending = false;
     s_imu_calibration_pending_mask = 0U;
     s_imu_calibration_pending_generation = 0U;
@@ -2857,7 +2865,8 @@ esp_err_t nrf_topology_service_request_height_reference_capture(
 
     portENTER_CRITICAL(&s_state_lock);
     task = s_task;
-    if (task == NULL || !s_snapshot_valid || s_height_reference_pending) {
+    if (task == NULL || !s_snapshot_valid || s_height_reference_pending ||
+        s_height_reference_in_flight) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -2871,7 +2880,7 @@ esp_err_t nrf_topology_service_request_height_reference_capture(
         return ESP_ERR_NOT_FOUND;
     }
 
-    /* Allocated generations use 1..65535 and wrap to 1; zero is never allocated. */
+    /* A wrapped token is reused only after the previous request has drained. */
     ++s_height_reference_generation;
     if (s_height_reference_generation == 0U) {
         ++s_height_reference_generation;
@@ -3315,6 +3324,8 @@ static bool service_take_height_reference_request(uint8_t *mask, uint16_t *gener
         s_height_reference_pending = false;
         s_height_reference_pending_mask = 0U;
         s_height_reference_pending_generation = 0U;
+        s_height_reference_in_flight = true;
+        s_height_reference_in_flight_generation = *generation;
     }
     portEXIT_CRITICAL(&s_state_lock);
     return pending;
@@ -3377,6 +3388,14 @@ static void service_process_height_reference_mask(
             service_request_topology_refresh_from_worker();
         }
     }
+
+    portENTER_CRITICAL(&s_state_lock);
+    if (s_height_reference_in_flight &&
+        s_height_reference_in_flight_generation == generation) {
+        s_height_reference_in_flight = false;
+        s_height_reference_in_flight_generation = 0U;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
 }
 
 static void service_process_imu_calibration_mask(

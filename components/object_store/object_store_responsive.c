@@ -106,7 +106,7 @@ esp_err_t object_store_list_profiles_responsive(
          * metadata windows. The task itself is low priority, but FATFS/newlib
          * mutexes can temporarily raise its current priority via inheritance. */
         if (i + 1U < census_count) {
-            vTaskDelay(pdMS_TO_TICKS(1));
+            taskYIELD();
         }
 #endif
     }

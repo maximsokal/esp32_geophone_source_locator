@@ -69,6 +69,7 @@ esp_err_t seismic_buffer_configure(
 );
 
 
+/* One producer may call either push API at a time; debug builds reject overlap. */
 esp_err_t seismic_buffer_push(
     int64_t timestamp_us,
     const float channel_uv[SEISMIC_CHANNEL_COUNT]
@@ -150,4 +151,6 @@ typedef struct
 
 void seismic_buffer_test_counters_reset(void);
 void seismic_buffer_test_counters_get(seismic_buffer_test_counters_t *out);
+void seismic_buffer_test_seed_total_frames(uint64_t total_frames);
+void seismic_buffer_test_seed_slot_sequence(size_t slot_index, uint32_t sequence);
 #endif

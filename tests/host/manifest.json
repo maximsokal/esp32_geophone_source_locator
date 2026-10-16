@@ -297,6 +297,7 @@
         "components/ad7606_acquisition/tests/ad7606_acquisition_runtime_test.c"
       ],
       "include_dirs": [
+        "tests/host",
         "tests/host/stubs/ad7606_acquisition",
         "components/ad7606_acquisition/include",
         "components/ad7606_driver/include",
@@ -305,7 +306,7 @@
         "components/app_config/include",
         "components/ina3221_monitor/include"
       ],
-      "libraries": ["m"],
+      "libraries": ["m", "pthread"],
       "defines": ["AD7606_ACQUISITION_HOST_TEST=1"]
     },
     {
@@ -319,6 +320,7 @@
         "tests/host/ad7606_acquisition_unsafe_measured_timing_test.c"
       ],
       "include_dirs": [
+        "tests/host",
         "tests/host/stubs/ad7606_acquisition_unsafe_os8",
         "tests/host/stubs/ad7606_acquisition",
         "components/ad7606_acquisition/include",
@@ -328,7 +330,7 @@
         "components/app_config/include",
         "components/ina3221_monitor/include"
       ],
-      "libraries": ["m"],
+      "libraries": ["m", "pthread"],
       "defines": [
         "AD7606_ACQUISITION_HOST_TEST=1",
         "AD7606_ACQUISITION_RUNTIME_TEST_SUPPORT_ONLY=1"
@@ -352,6 +354,7 @@
         "tests/host/ad7606_recorder_start_integration_test.c"
       ],
       "include_dirs": [
+        "tests/host",
         "components/ad7606_acquisition/tests/stubs/max435_recorder_integration",
         "tests/host/stubs/seismic_recorder_start",
         "tests/host/stubs/ad7606_acquisition",
@@ -384,7 +387,7 @@
         "CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1",
         "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"
       ],
-      "libraries": ["m"]
+      "libraries": ["m", "pthread"]
     },
     {
       "name": "nrf_topology_service_integration",
@@ -637,6 +640,7 @@
       ],
       "include_dirs": [
         "tests/host/stubs/sensor_bus",
+        "components/app_config/include",
         "components/main_barometer/include",
         "components/sensor_bus/include",
         "nRF54L15/include"
@@ -1553,9 +1557,11 @@
         "components/seismic_buffer/tests/seismic_buffer_test.c"
       ],
       "include_dirs": [
+        "tests/host",
         "components/seismic_buffer/tests/stubs",
         "components/seismic_buffer/include"
-      ]
+      ],
+      "libraries": ["pthread"]
     },
     {
       "name": "seismic_recorder_cache",
@@ -1593,6 +1599,7 @@
         "tests/host/seismic_pipeline_scheduling_contract_test.c"
       ],
       "include_dirs": [
+        "tests/host",
         "components/seismic_buffer/tests/stubs",
         "components/seismic_buffer/include",
         "components/ui",
@@ -2344,13 +2351,15 @@
         "components/seismic_buffer/tests/seismic_buffer_test.c"
       ],
       "include_dirs": [
+        "tests/host",
         "components/seismic_buffer/tests/stubs",
         "components/seismic_buffer/include"
       ],
       "defines": [
         "SEISMIC_BUFFER_TEST_ALLOCATOR=1",
         "SEISMIC_BUFFER_TEST_HOOKS=1"
-      ]
+      ],
+      "libraries": ["pthread"]
     },
     {
       "name": "seismic_recorder_allocation_contract",

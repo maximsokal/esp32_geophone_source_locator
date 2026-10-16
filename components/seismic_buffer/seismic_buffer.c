@@ -192,6 +192,9 @@ static size_t s_peak_frame_count = 0;
 static uint64_t s_total_frames = 0;
 static uint64_t s_dropped_frames_total = 0;
 static uint32_t s_sample_rate_hz = 0;
+#ifndef NDEBUG
+static volatile uint32_t s_producer_active = 0U;
+#endif
 
 static seismic_source_t s_source =
     SEISMIC_SOURCE_NONE;
@@ -203,6 +206,37 @@ static uint64_t seismic_buffer_saturating_add_u64(uint64_t value, uint64_t amoun
 {
     return amount > UINT64_MAX - value ? UINT64_MAX : value + amount;
 }
+
+#ifndef NDEBUG
+static bool seismic_buffer_enter_producer(void)
+{
+    uint32_t expected = 0U;
+    return seismic_state_compare_exchange(&s_producer_active, &expected, 1U);
+}
+
+static void seismic_buffer_leave_producer(void)
+{
+    seismic_state_store(&s_producer_active, 0U);
+}
+#endif
+
+#if defined(SEISMIC_BUFFER_TEST_HOOKS)
+void seismic_buffer_test_seed_total_frames(uint64_t total_frames)
+{
+    portENTER_CRITICAL(&s_metadata_lock);
+    s_total_frames = total_frames;
+    s_write_index = (size_t)(total_frames % seismic_buffer_capacity());
+    s_frame_count = 0U;
+    portEXIT_CRITICAL(&s_metadata_lock);
+}
+
+void seismic_buffer_test_seed_slot_sequence(size_t slot_index, uint32_t sequence)
+{
+    if (s_sequences != NULL && slot_index < seismic_buffer_capacity()) {
+        seismic_sequence_store(&s_sequences[slot_index], sequence);
+    }
+}
+#endif
 
 
 static bool seismic_buffer_enter_operation(void)
@@ -391,7 +425,7 @@ static void seismic_buffer_publish_info(
 }
 
 
-static void seismic_buffer_write_slot(
+static bool seismic_buffer_write_slot(
     size_t slot_index,
     uint64_t frame_number,
     uint64_t source_sample_index,
@@ -405,8 +439,9 @@ static void seismic_buffer_write_slot(
             &s_sequences[slot_index]
         );
 
-    if ((sequence & 1U) != 0U) {
-        sequence++;
+    /* Never reuse a slot generation: fail closed before uint32 rollover. */
+    if ((sequence & 1U) != 0U || sequence > UINT32_MAX - 2U) {
+        return false;
     }
 
     /*
@@ -435,7 +470,7 @@ static void seismic_buffer_write_slot(
     for (size_t channel = 1U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
         s_frames[slot_index].channel_uv[channel] = channel_uv[channel];
     }
-    return;
+    return true;
 #else
 
     s_frame_numbers[slot_index] =
@@ -465,6 +500,7 @@ static void seismic_buffer_write_slot(
 #if defined(SEISMIC_BUFFER_TEST_HOOKS)
     seismic_buffer_test_after_slot_publish(slot_index);
 #endif
+    return true;
 #endif
 }
 
@@ -732,6 +768,12 @@ static esp_err_t seismic_buffer_push_impl(
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (s_total_frames == UINT64_MAX) {
+        portEXIT_CRITICAL(&s_metadata_lock);
+        seismic_buffer_leave_operation();
+        return ESP_ERR_INVALID_STATE;
+    }
+
     write_index =
         s_write_index;
 
@@ -745,13 +787,16 @@ static esp_err_t seismic_buffer_push_impl(
         &s_metadata_lock
     );
 
-    seismic_buffer_write_slot(
+    if (!seismic_buffer_write_slot(
         write_index,
         frame_number,
         source_sample_index,
         timestamp_us,
         channel_uv
-    );
+    )) {
+        seismic_buffer_leave_operation();
+        return ESP_ERR_INVALID_STATE;
+    }
 
     /*
      * Publish ring metadata only after the slot is complete.
@@ -797,7 +842,17 @@ esp_err_t seismic_buffer_push(
     const float channel_uv[SEISMIC_CHANNEL_COUNT]
 )
 {
-    return seismic_buffer_push_impl(timestamp_us, 0U, false, channel_uv);
+#ifndef NDEBUG
+    if (!seismic_buffer_enter_producer()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+#endif
+    const esp_err_t result =
+        seismic_buffer_push_impl(timestamp_us, 0U, false, channel_uv);
+#ifndef NDEBUG
+    seismic_buffer_leave_producer();
+#endif
+    return result;
 }
 
 
@@ -807,12 +862,21 @@ esp_err_t seismic_buffer_push_indexed(
     const float channel_uv[SEISMIC_CHANNEL_COUNT]
 )
 {
-    return seismic_buffer_push_impl(
+#ifndef NDEBUG
+    if (!seismic_buffer_enter_producer()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+#endif
+    const esp_err_t result = seismic_buffer_push_impl(
         timestamp_us,
         source_sample_index,
         true,
         channel_uv
     );
+#ifndef NDEBUG
+    seismic_buffer_leave_producer();
+#endif
+    return result;
 }
 
 

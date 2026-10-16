@@ -66,8 +66,12 @@ static const char *DIAG_TAG =
 static TaskHandle_t s_task =
     NULL;
 
-static volatile bool s_running =
-    false;
+/* Keep task handles alive until every ISR/task notification drops its ref. */
+static portMUX_TYPE s_lifecycle_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_running = false;
+static bool s_stop_requested = false;
+static bool s_starting = false;
+static uint32_t s_task_users = 0U;
 
 static int64_t s_sample_t0_us;
 static uint64_t s_jitter_period_us;
@@ -124,13 +128,215 @@ static bool s_busy_intr_enabled;
 static bool s_ledc_timer_configured;
 static bool s_ledc_channel_configured;
 static bool s_driver_initialized;
-static bool s_stop_requested;
 static uint32_t s_ledc_duty_resolution;
 static uint32_t s_ledc_duty_count;
 static uint32_t s_convst_high_ns;
 static ad7606_read_mode_t s_read_mode = AD7606_READ_MODE_AUTO;
 static ad7606_count_extension_t s_pcnt_extension;
 static ad7606_sample_accounting_t s_sample_accounting;
+
+
+static bool ad7606_lifecycle_running(void)
+{
+    bool running;
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    running = s_running;
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+    return running;
+}
+
+
+static bool ad7606_lifecycle_stop_requested(void)
+{
+    bool stop_requested;
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    stop_requested = s_stop_requested;
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+    return stop_requested;
+}
+
+
+static TaskHandle_t ad7606_lifecycle_task(void)
+{
+    TaskHandle_t task;
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    task = s_task;
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+    return task;
+}
+
+
+static bool ad7606_lifecycle_starting(void)
+{
+    bool starting;
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    starting = s_starting;
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+    return starting;
+}
+
+
+static bool ad7606_lifecycle_begin_start(void)
+{
+    bool started = false;
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    if (s_task == NULL && !s_starting) {
+        s_starting = true;
+        s_stop_requested = false;
+        s_running = false;
+        started = true;
+    }
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+    return started;
+}
+
+
+static void ad7606_lifecycle_finish_start(void)
+{
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    s_starting = false;
+    if (s_task == NULL) {
+        s_running = false;
+        s_stop_requested = false;
+    }
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+}
+
+
+static void ad7606_lifecycle_set_task(TaskHandle_t task)
+{
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    s_task = task;
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+}
+
+
+static void ad7606_lifecycle_set_running(bool running)
+{
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    s_running = running;
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+}
+
+
+static bool ad7606_lifecycle_start_running(void)
+{
+    bool started;
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    started = !s_stop_requested;
+    s_running = started;
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+    return started;
+}
+
+
+static TaskHandle_t IRAM_ATTR ad7606_lifecycle_acquire_busy_isr(void)
+{
+    TaskHandle_t task;
+    portENTER_CRITICAL_ISR(&s_lifecycle_lock);
+    task = s_task;
+    if (task != NULL && s_running) {
+        ++s_task_users;
+    } else {
+        task = NULL;
+    }
+    portEXIT_CRITICAL_ISR(&s_lifecycle_lock);
+    return task;
+}
+
+
+static void ad7606_lifecycle_release_task(void)
+{
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    --s_task_users;
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+}
+
+
+static void IRAM_ATTR ad7606_lifecycle_release_busy_isr(void)
+{
+    portENTER_CRITICAL_ISR(&s_lifecycle_lock);
+    --s_task_users;
+    portEXIT_CRITICAL_ISR(&s_lifecycle_lock);
+}
+
+
+static void ad7606_lifecycle_request_stop(void)
+{
+    TaskHandle_t task;
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    s_running = false;
+    task = s_task;
+    if (task != NULL || s_starting) {
+        s_stop_requested = true;
+    }
+    if (task != NULL) {
+        ++s_task_users;
+    }
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+
+    if (task != NULL) {
+        (void)xTaskNotifyGive(task);
+        ad7606_lifecycle_release_task();
+    }
+}
+
+
+static void ad7606_lifecycle_finish_worker(void)
+{
+    ad7606_lifecycle_set_running(false);
+    for (;;) {
+        uint32_t users;
+        portENTER_CRITICAL(&s_lifecycle_lock);
+        users = s_task_users;
+        portEXIT_CRITICAL(&s_lifecycle_lock);
+        if (users == 0U) {
+            break;
+        }
+        vTaskDelay(1U);
+    }
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    s_task = NULL;
+    s_stop_requested = false;
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+}
+
+
+static void ad7606_busy_isr(void *argument);
+
+
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+void ad7606_acquisition_test_seed_lifecycle(TaskHandle_t task, bool running)
+{
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    s_task = task;
+    s_running = running;
+    s_stop_requested = false;
+    s_starting = false;
+    s_task_users = 0U;
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+}
+
+void ad7606_acquisition_test_busy_isr(void)
+{
+    ad7606_busy_isr(NULL);
+}
+
+void ad7606_acquisition_test_request_stop(void)
+{
+    ad7606_lifecycle_request_stop();
+}
+
+bool ad7606_acquisition_test_task_published(void)
+{
+    return ad7606_lifecycle_task() != NULL;
+}
+
+void ad7606_acquisition_test_worker_finish(void)
+{
+    ad7606_lifecycle_finish_worker();
+}
+#endif
 
 
 typedef struct
@@ -968,9 +1174,11 @@ static void ad7606_serial_diag_log_frame(
 static void IRAM_ATTR ad7606_busy_isr(void *argument)
 {
     (void)argument;
-    if (s_running && s_task != NULL) {
+    TaskHandle_t task = ad7606_lifecycle_acquire_busy_isr();
+    if (task != NULL) {
         BaseType_t higher_priority_woken = pdFALSE;
-        vTaskNotifyGiveFromISR(s_task, &higher_priority_woken);
+        vTaskNotifyGiveFromISR(task, &higher_priority_woken);
+        ad7606_lifecycle_release_busy_isr();
         if (higher_priority_woken == pdTRUE) {
             portYIELD_FROM_ISR();
         }
@@ -1281,16 +1489,18 @@ static esp_err_t ad7606_ledc_start(void)
         .hpoint = 0,
     };
     s_sample_t0_us = esp_timer_get_time();
-    s_running = true;
+    if (!ad7606_lifecycle_start_running()) {
+        return ESP_ERR_INVALID_STATE;
+    }
     err = ledc_channel_config(&channel_config);
     if (err != ESP_OK) {
-        s_running = false;
+        ad7606_lifecycle_set_running(false);
         return err;
     }
     s_ledc_channel_configured = true;
     if (ledc_get_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0) !=
         CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) {
-        s_running = false;
+        ad7606_lifecycle_set_running(false);
         ESP_LOGE(TAG, "LEDC XTAL output is not exactly %u Hz",
             (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ);
         return ESP_ERR_INVALID_RESPONSE;
@@ -1343,7 +1553,7 @@ static void ad7606_wait_busy_idle(void)
 
 static void ad7606_hardware_stop(void)
 {
-    s_running = false;
+    ad7606_lifecycle_set_running(false);
     if (s_ledc_channel_configured) {
         const uint32_t pulse_wait_limit_us =
             (1000000U / CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + 5U;
@@ -1551,14 +1761,22 @@ static void ad7606_worker(
 )
 {
     ad7606_start_context_t *start_context = (ad7606_start_context_t *)argument;
-    s_task = xTaskGetCurrentTaskHandle();
+    ad7606_lifecycle_set_task(xTaskGetCurrentTaskHandle());
+
+    if (ad7606_lifecycle_stop_requested()) {
+        ad7606_lifecycle_finish_worker();
+        start_context->result = ESP_ERR_INVALID_STATE;
+        xSemaphoreGive(start_context->ready);
+        vTaskDelete(NULL);
+        return;
+    }
 
     const esp_err_t startup_err = ad7606_worker_initialize();
     if (startup_err != ESP_OK) {
         ESP_LOGE(TAG, "Core 1 acquisition initialization failed: %s",
             esp_err_to_name(startup_err));
         ad7606_worker_cleanup(false, NULL);
-        s_task = NULL;
+        ad7606_lifecycle_finish_worker();
         start_context->result = startup_err;
         xSemaphoreGive(start_context->ready);
         vTaskDelete(NULL);
@@ -1570,9 +1788,9 @@ static void ad7606_worker(
     start_context = NULL;
 
     uint64_t successful_samples = 0U;
-    while (s_running) {
+    while (ad7606_lifecycle_running()) {
         const uint32_t notification_count = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (!s_running) {
+        if (!ad7606_lifecycle_running()) {
             break;
         }
         if (notification_count == 0U) {
@@ -1583,7 +1801,7 @@ static void ad7606_worker(
         esp_err_t err = ad7606_read_conversion_count(&conversion_count);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "PCNT read failed: %s", esp_err_to_name(err));
-            s_running = false;
+            ad7606_lifecycle_set_running(false);
             break;
         }
 
@@ -1601,7 +1819,7 @@ static void ad7606_worker(
                     (double)rail.overcurrent_latched_current_a);
                 ad7606_status_set_overcurrent(
                     rail.bus_voltage_v, rail.overcurrent_latched_current_a);
-                s_running = false;
+                ad7606_lifecycle_set_running(false);
                 break;
             }
             if (ad7606_rail_watch_update(
@@ -1613,7 +1831,7 @@ static void ad7606_worker(
                     (double)rail.bus_voltage_v, (double)AD7606_RAIL_LOSS_V);
                 ad7606_status_set_power(
                     AD7606_POWER_GATE_RAIL_LOW, true, rail.bus_voltage_v);
-                s_running = false;
+                ad7606_lifecycle_set_running(false);
                 break;
             }
         }
@@ -1689,9 +1907,9 @@ static void ad7606_worker(
         runtime_observability_beat(RUNTIME_TASK_ACQUISITION, successful_samples);
     }
 
-    ad7606_worker_cleanup(s_stop_requested, &successful_samples);
-    s_stop_requested = false;
-    s_task = NULL;
+    ad7606_worker_cleanup(
+        ad7606_lifecycle_stop_requested(), &successful_samples);
+    ad7606_lifecycle_finish_worker();
     ESP_LOGI(TAG, "Stopped");
     vTaskDelete(NULL);
 }
@@ -1699,15 +1917,13 @@ static void ad7606_worker(
 
 esp_err_t ad7606_acquisition_start(void)
 {
-    if (s_task != NULL) {
-        return ESP_OK;
+    if (!ad7606_lifecycle_begin_start()) {
+        return ad7606_lifecycle_task() != NULL ? ESP_OK : ESP_ERR_INVALID_STATE;
     }
 
     ad7606_status_reset();
     ad7606_rail_watch_reset(&s_rail_watch);
     s_rail_last_check_conversion = 0U;
-    s_stop_requested = false;
-
 #if defined(CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK)
     {
         /* MAX-245: an explicit start clears a latched over-current; if
@@ -1733,6 +1949,7 @@ esp_err_t ad7606_acquisition_start(void)
                 (double)AD7606_RAIL_START_MIN_V
             );
             ad7606_status_set_power(gate, true, rail.bus_voltage_v);
+            ad7606_lifecycle_finish_start();
             return ESP_ERR_INVALID_STATE;
         }
         if (gate == AD7606_POWER_GATE_UNVERIFIED) {
@@ -1755,9 +1972,11 @@ esp_err_t ad7606_acquisition_start(void)
     };
 
     if (start_context.ready == NULL) {
+        ad7606_lifecycle_finish_start();
         return ESP_ERR_NO_MEM;
     }
 
+    TaskHandle_t created_task = NULL;
     BaseType_t task_result =
         xTaskCreatePinnedToCore(
             ad7606_worker,
@@ -1765,7 +1984,7 @@ esp_err_t ad7606_acquisition_start(void)
             APP_TASK_STACK_AD7606,
             &start_context,
             APP_TASK_PRIORITY_AD7606,
-            &s_task,
+            &created_task,
             APP_TASK_CORE_REALTIME
         );
 
@@ -1774,12 +1993,11 @@ esp_err_t ad7606_acquisition_start(void)
             start_context.ready
         );
 
-        s_task =
-            NULL;
-        s_stop_requested = false;
+        ad7606_lifecycle_finish_start();
 
         return ESP_ERR_NO_MEM;
     }
+    (void)created_task;
 
     /*
      * Keep start() synchronous: success means SPI3, the ADC self-test
@@ -1796,6 +2014,7 @@ esp_err_t ad7606_acquisition_start(void)
     vSemaphoreDelete(
         start_context.ready
     );
+    ad7606_lifecycle_finish_start();
 
     return result;
 }
@@ -1803,30 +2022,13 @@ esp_err_t ad7606_acquisition_start(void)
 
 void ad7606_acquisition_stop(void)
 {
-    TaskHandle_t task =
-        s_task;
-
-    if (task == NULL) {
-        ad7606_status_set_running(
-            false
-        );
-
-        return;
-    }
-
-    s_running =
-        false;
-    s_stop_requested = true;
-
-    xTaskNotifyGive(
-        task
-    );
-
-    while (s_task != NULL) {
+    ad7606_lifecycle_request_stop();
+    while (ad7606_lifecycle_task() != NULL || ad7606_lifecycle_starting()) {
         vTaskDelay(
             pdMS_TO_TICKS(10)
         );
     }
+    ad7606_status_set_running(false);
 }
 
 

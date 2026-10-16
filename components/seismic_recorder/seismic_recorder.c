@@ -667,7 +667,7 @@ static void seismic_recorder_task(void *argument)
         if (stop_requested && stop_stage != SEISMIC_RECORDER_STOP_STAGE_DRAIN) {
             seismic_recorder_stop_step();
             seismic_recorder_observe();
-            vTaskDelay(pdMS_TO_TICKS(1));
+            taskYIELD();
             continue;
         }
 
@@ -680,7 +680,7 @@ static void seismic_recorder_task(void *argument)
                 SEISMIC_RECORDER_STOP_STAGE_FLUSH
             );
             seismic_recorder_observe();
-            vTaskDelay(pdMS_TO_TICKS(1));
+            taskYIELD();
             continue;
         }
 
