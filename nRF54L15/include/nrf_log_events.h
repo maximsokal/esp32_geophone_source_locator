@@ -27,6 +27,11 @@ typedef enum {
  * CS_TIMEOUT                attempt id                               timeout in milliseconds
  * WATCHDOG_PARTICIPANT_STALE participant enum                        allowed silence in milliseconds
  * LOG_TEST_EVENT            monotonically increasing test index      uptime in milliseconds
+ * FAULT_RECORD_WORD         fault-record word index                  little-endian word value
+ * BOOT_FAILED               stable boot-failure reason               raw errno
+ * CS_EVENT_QUEUE_OVERFLOW   saturating queue-overflow total           event queue capacity
+ * WATCHDOG_DEGRADED         watchdog arm-failure stage                raw errno
+ * WATCHDOG_FEED_FAILED      watchdog channel id                       raw feed error
  */
 
 #endif

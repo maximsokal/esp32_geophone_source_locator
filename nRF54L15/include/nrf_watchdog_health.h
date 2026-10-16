@@ -14,6 +14,7 @@
 typedef enum {
     NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER = 0,
     NRF_WATCHDOG_PARTICIPANT_SYSTEM_WORKQUEUE,
+    NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS,
     NRF_WATCHDOG_PARTICIPANT_COUNT
 } nrf_watchdog_participant_t;
 
@@ -26,6 +27,7 @@ typedef enum {
 
 typedef struct {
     uint64_t last_checkin_ms[NRF_WATCHDOG_PARTICIPANT_COUNT];
+    bool active[NRF_WATCHDOG_PARTICIPANT_COUNT];
     uint32_t max_silence_ms;
     bool initialized;
 } nrf_watchdog_health_t;
@@ -38,6 +40,12 @@ void nrf_watchdog_health_init(
 void nrf_watchdog_health_checkin(
     nrf_watchdog_health_t *health,
     nrf_watchdog_participant_t participant,
+    uint64_t now_ms);
+
+void nrf_watchdog_health_set_active(
+    nrf_watchdog_health_t *health,
+    nrf_watchdog_participant_t participant,
+    bool active,
     uint64_t now_ms);
 
 /* True when every participant checked in within max_silence_ms. Otherwise

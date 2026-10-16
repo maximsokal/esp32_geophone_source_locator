@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EVENTS_DEF = ROOT / "nRF54L15" / "include" / "nrf_log_events.def"
 OUTPUT = ROOT / "webui" / "src" / "features" / "nrflog" / "nrfLogEvents.gen.ts"
 ROW = re.compile(r"X\(\s*(\d+)\s*,\s*([A-Z][A-Z0-9_]*)\s*,\s*([A-Z][A-Z0-9_]*)\s*,\s*(DEBUG|INFO|WARN|ERROR|FATAL)\s*\)")
-SUBSYSTEMS = {"BOOT", "LOG", "TWIS", "TOPOLOGY", "SENSOR", "CALIBRATION", "CS", "WATCHDOG", "POWER"}
+SUBSYSTEMS = {"BOOT", "LOG", "TWIS", "TOPOLOGY", "SENSOR", "CALIBRATION", "CS", "WATCHDOG", "POWER", "FAULT"}
 
 
 class EventDefinitionError(ValueError):

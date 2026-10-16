@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "nrf_log_events.h"
 #include "nrf_log_protocol.h"
 #include "nrf_log_ring.h"
 #include "nrf_topology_periods.h"
@@ -1089,6 +1090,37 @@ static void test_rejected_frames_preserve_collector_state(void)
     }
 }
 
+static void test_fault_record_words_are_collected_without_decoding(void)
+{
+    const nrf_log_event_definition_t *event = nrf_log_event_find(NRF_LOG_EVENT_FAULT_RECORD_WORD);
+    const uint32_t field_index = 7U;
+    const uint32_t field_value = 0xA5C35A3CU;
+
+    fake_start(1U);
+    CHECK(event != NULL);
+    CHECK(nrf_log_ring_append(
+        &s_fake.rings[0],
+        event->subsystem,
+        event->default_severity,
+        NRF_LOG_EVENT_FAULT_RECORD_WORD,
+        field_index,
+        field_value,
+        s_fake.next_uptime[0]++) == NRF_LOG_ERROR_OK);
+    CHECK(run_round(&s_fake).nodes_succeeded == 1U);
+
+    const nrf_log_node_page_t page = node_page(&s_fake, 0U, false, 0U, 0U, 8U);
+    bool stored = false;
+    for (uint16_t index = 0U; index < page.count; ++index) {
+        if (page.records[index].event_id == NRF_LOG_EVENT_FAULT_RECORD_WORD) {
+            CHECK(page.records[index].arg0 == field_index);
+            CHECK(page.records[index].arg1 == field_value);
+            stored = true;
+        }
+    }
+    CHECK(stored);
+    fake_stop();
+}
+
 static void test_capability_boot_and_paging(void)
 {
     fake_start(1U);
@@ -1883,6 +1915,7 @@ int main(void)
         const char *name;
         void (*run)(void);
     } sections[] = {
+        { "fault record event collection", test_fault_record_words_are_collected_without_decoding },
         { "section 4 framing/budget/order", test_framing_budget_and_order },
         { "sections 5-7 corruption/fault/reboot", test_framing_faults_and_retries },
         { "section 12.3 rejected frames preserve state", test_rejected_frames_preserve_collector_state },

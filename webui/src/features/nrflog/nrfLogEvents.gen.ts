@@ -17,4 +17,9 @@ export const NRF_LOG_EVENTS = {
   15: { name: "CS_TIMEOUT", subsystem: "CS", defaultSeverity: "ERROR" },
   16: { name: "WATCHDOG_PARTICIPANT_STALE", subsystem: "WATCHDOG", defaultSeverity: "ERROR" },
   17: { name: "LOG_TEST_EVENT", subsystem: "LOG", defaultSeverity: "INFO" },
+  18: { name: "FAULT_RECORD_WORD", subsystem: "FAULT", defaultSeverity: "ERROR" },
+  19: { name: "BOOT_FAILED", subsystem: "BOOT", defaultSeverity: "ERROR" },
+  20: { name: "CS_EVENT_QUEUE_OVERFLOW", subsystem: "CS", defaultSeverity: "ERROR" },
+  21: { name: "WATCHDOG_DEGRADED", subsystem: "WATCHDOG", defaultSeverity: "ERROR" },
+  22: { name: "WATCHDOG_FEED_FAILED", subsystem: "WATCHDOG", defaultSeverity: "ERROR" },
 } as const;

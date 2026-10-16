@@ -156,6 +156,11 @@ int nrf_log_runtime_zephyr_init(void)
     return 0;
 }
 
+uint32_t nrf_log_runtime_zephyr_boot_id(void)
+{
+    return s_initialized ? s_log_ring.boot_id : 0U;
+}
+
 void nrf_log_runtime_zephyr_append_event(uint16_t event_id, uint32_t arg0, uint32_t arg1)
 {
     const nrf_log_event_definition_t *event;

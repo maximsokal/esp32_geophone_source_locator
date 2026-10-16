@@ -17,6 +17,7 @@ typedef struct {
 } nrf_log_runtime_zephyr_led_counters_t;
 
 int nrf_log_runtime_zephyr_init(void);
+uint32_t nrf_log_runtime_zephyr_boot_id(void);
 void nrf_log_runtime_zephyr_append_event(uint16_t event_id, uint32_t arg0, uint32_t arg1);
 nrf_log_error_t nrf_log_runtime_zephyr_get_led_counters(
     nrf_log_runtime_zephyr_led_counters_t *counters);

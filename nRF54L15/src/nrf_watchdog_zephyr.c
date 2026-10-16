@@ -19,7 +19,9 @@ static bool s_armed;
 static bool s_stale_reported;
 static nrf_watchdog_participant_t s_stale_reported_participant;
 static uint32_t s_boot_reset_cause;
+static uint32_t s_feed_error_total;
 static bool s_reset_cause_captured;
+static bool s_degraded;
 
 static uint64_t uptime_ms(void)
 {
@@ -47,6 +49,19 @@ static void capture_reset_cause(void)
     (void)hwinfo_clear_reset_cause();
 }
 
+static int report_arm_failure(uint32_t stage, int error)
+{
+    const k_spinlock_key_t key = k_spin_lock(&s_lock);
+
+    s_degraded = true;
+    k_spin_unlock(&s_lock, key);
+    nrf_log_runtime_zephyr_append_event(
+        NRF_LOG_EVENT_WATCHDOG_DEGRADED,
+        stage,
+        (uint32_t)error);
+    return error;
+}
+
 int nrf_watchdog_zephyr_start(void)
 {
     const struct wdt_timeout_cfg timeout = {
@@ -70,25 +85,28 @@ int nrf_watchdog_zephyr_start(void)
     }
 
     key = k_spin_lock(&s_lock);
+    s_armed = false;
+    s_channel = -1;
     nrf_watchdog_health_init(&s_health, uptime_ms(), NRF_WATCHDOG_MAX_SILENCE_MS);
     k_spin_unlock(&s_lock, key);
     k_work_init(&s_workqueue_probe, workqueue_probe_handler);
 
     if (!device_is_ready(s_wdt)) {
-        return -ENODEV;
+        return report_arm_failure(NRF_WATCHDOG_ARM_STAGE_DEVICE_READY, -ENODEV);
     }
     result = wdt_install_timeout(s_wdt, &timeout);
     if (result < 0) {
-        return result;
+        return report_arm_failure(NRF_WATCHDOG_ARM_STAGE_INSTALL, result);
     }
     s_channel = result;
     /* Keep counting while the CPU sleeps (a sleep deadlock is a hang too);
      * pause only while a debugger halts the core. */
     result = wdt_setup(s_wdt, WDT_OPT_PAUSE_HALTED_BY_DBG);
     if (result < 0) {
-        return result;
+        return report_arm_failure(NRF_WATCHDOG_ARM_STAGE_SETUP, result);
     }
     s_armed = true;
+    s_degraded = false;
     return 0;
 }
 
@@ -97,6 +115,16 @@ void nrf_watchdog_zephyr_checkin(nrf_watchdog_participant_t participant)
     k_spinlock_key_t key = k_spin_lock(&s_lock);
 
     nrf_watchdog_health_checkin(&s_health, participant, uptime_ms());
+    k_spin_unlock(&s_lock, key);
+}
+
+void nrf_watchdog_zephyr_set_participant_active(
+    nrf_watchdog_participant_t participant,
+    bool active)
+{
+    const k_spinlock_key_t key = k_spin_lock(&s_lock);
+
+    nrf_watchdog_health_set_active(&s_health, participant, active, uptime_ms());
     k_spin_unlock(&s_lock, key);
 }
 
@@ -132,7 +160,19 @@ void nrf_watchdog_zephyr_service(void)
     s_stale_reported = false;
     s_stale_reported_participant = NRF_WATCHDOG_PARTICIPANT_NONE;
     if (s_armed) {
-        (void)wdt_feed(s_wdt, s_channel);
+        const int result = wdt_feed(s_wdt, s_channel);
+        if (result != 0) {
+            key = k_spin_lock(&s_lock);
+            if (s_feed_error_total != UINT32_MAX) {
+                ++s_feed_error_total;
+            }
+            s_degraded = true;
+            k_spin_unlock(&s_lock, key);
+            nrf_log_runtime_zephyr_append_event(
+                NRF_LOG_EVENT_WATCHDOG_FEED_FAILED,
+                (uint32_t)s_channel,
+                (uint32_t)result);
+        }
     }
 }
 
@@ -140,4 +180,22 @@ uint32_t nrf_watchdog_zephyr_boot_reset_cause(void)
 {
     capture_reset_cause();
     return s_boot_reset_cause;
+}
+
+bool nrf_watchdog_zephyr_is_degraded(void)
+{
+    const k_spinlock_key_t key = k_spin_lock(&s_lock);
+    const bool degraded = s_degraded;
+
+    k_spin_unlock(&s_lock, key);
+    return degraded;
+}
+
+uint32_t nrf_watchdog_zephyr_feed_error_total(void)
+{
+    const k_spinlock_key_t key = k_spin_lock(&s_lock);
+    const uint32_t total = s_feed_error_total;
+
+    k_spin_unlock(&s_lock, key);
+    return total;
 }

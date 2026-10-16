@@ -27,6 +27,7 @@ int nrf_cs_pair_runtime_zephyr_execute(
     nrf_cs_pair_runtime_complete_cb_t complete_cb,
     void *context);
 bool nrf_cs_pair_runtime_zephyr_is_busy(void);
+bool nrf_cs_pair_runtime_zephyr_is_progress_required(void);
 
 #ifdef __cplusplus
 }

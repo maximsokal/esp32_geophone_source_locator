@@ -28,6 +28,7 @@ static void configure_reflector_procedure(struct bt_conn *conn, uint8_t config_i
     }
 }
 
+/* Synchronous HCI calls here can block the shared system workqueue and delay its CS timeout. */
 static void event_work_handler(struct k_work *work)
 {
     runtime_event_t event;
@@ -124,6 +125,10 @@ static void event_work_handler(struct k_work *work)
         if (event.conn != NULL) {
             bt_conn_unref(event.conn);
         }
+        if (event.type != RUNTIME_EVENT_DISCONNECTED &&
+            event.type != RUNTIME_EVENT_INCOMING_DISCONNECTED) {
+            nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
+        }
     }
 }
 
@@ -183,6 +188,7 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
     if (conn == s_incoming_conn) {
         bt_conn_unref(s_incoming_conn);
         s_incoming_conn = NULL;
+        atomic_set(&s_reflector_procedure_active, 0);
         runtime_post_event(RUNTIME_EVENT_INCOMING_DISCONNECTED, NULL, 0U, 0, NULL);
     }
 }
@@ -286,6 +292,13 @@ static void procedure_enable_complete_cb(
 {
     nrf_cs_step_t step;
 
+    if (conn == s_incoming_conn) {
+        if (status == BT_HCI_ERR_SUCCESS) {
+            atomic_set(&s_reflector_procedure_active, 1);
+            nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
+        }
+        return;
+    }
     if (!runtime_active_step_for_conn(conn, &step)) {
         return;
     }
@@ -305,9 +318,21 @@ static void subevent_data_cb(
     uint16_t ranging_counter;
     size_t len;
 
-    if (!runtime_active_step_for_conn(conn, &step) || result == NULL) {
+    if (result == NULL) {
         return;
     }
+    if (conn == s_incoming_conn) {
+        nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
+        if (result->header.procedure_done_status == BT_CONN_LE_CS_PROCEDURE_COMPLETE ||
+            result->header.procedure_done_status == BT_CONN_LE_CS_PROCEDURE_ABORTED) {
+            atomic_set(&s_reflector_procedure_active, 0);
+        }
+        return;
+    }
+    if (!runtime_active_step_for_conn(conn, &step)) {
+        return;
+    }
+    nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
 
     ranging_counter =
         bt_ras_rreq_get_ranging_counter(result->header.procedure_counter);
@@ -375,6 +400,7 @@ int nrf_cs_pair_runtime_zephyr_start(void)
     k_work_init(&s_cleanup_work, cleanup_work_handler);
     k_work_init_delayable(&s_timeout_work, timeout_work_handler);
     runtime_reset_ranging();
+    s_event_queue_overflow_total = 0U;
 
     if (nrf_cs_pair_adapter_init(&s_adapter, &s_adapter_ops) !=
         NRF_CS_PAIR_ADAPTER_OK) {
@@ -445,4 +471,10 @@ int nrf_cs_pair_runtime_zephyr_execute(
 bool nrf_cs_pair_runtime_zephyr_is_busy(void)
 {
     return nrf_cs_pair_adapter_is_active(&s_adapter) || s_incoming_conn != NULL;
+}
+
+bool nrf_cs_pair_runtime_zephyr_is_progress_required(void)
+{
+    return nrf_cs_pair_adapter_is_active(&s_adapter) ||
+        atomic_get(&s_reflector_procedure_active) != 0;
 }

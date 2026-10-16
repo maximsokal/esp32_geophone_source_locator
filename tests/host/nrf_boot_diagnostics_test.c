@@ -7,6 +7,24 @@
 
 #include "nrf_boot_diagnostics.h"
 
+#if defined(NRF_BOOT_DIAGNOSTICS_TEST_HOOKS)
+static bool s_twis_spsc_hook_called;
+static bool s_twis_spsc_published_early;
+static bool s_twis_spsc_hook_armed;
+static nrf_boot_twis_record_t s_twis_spsc_interleaved_output;
+
+void nrf_boot_twis_record_ring_test_after_first_field(nrf_boot_twis_record_ring_t *ring)
+{
+    if (s_twis_spsc_hook_armed) {
+        s_twis_spsc_hook_called = true;
+        s_twis_spsc_published_early = nrf_boot_twis_record_ring_pop(
+            ring,
+            &s_twis_spsc_interleaved_output);
+        s_twis_spsc_hook_armed = false;
+    }
+}
+#endif
+
 typedef struct {
     nrf_boot_lamp_t set_lamp[8];
     bool set_on[8];
@@ -226,6 +244,37 @@ static void test_transaction_ring_preserves_records_and_counts_overflow(void)
     assert(ring.dropped_total == UINT32_MAX);
 }
 
+static void test_twis_spsc_commit_interleave(void)
+{
+#if defined(NRF_BOOT_DIAGNOSTICS_TEST_HOOKS)
+    nrf_boot_twis_record_ring_t ring = {0};
+    nrf_boot_twis_record_t input = {
+        .index = 0x10203040U,
+        .length = 0x50607080U,
+        .direction = NRF_BOOT_TWIS_DIRECTION_WRITE_RECEIVED,
+        .prefix_length = 3U,
+        .prefix = {0xA1U, 0xB2U, 0xC3U},
+        .result = -EIO,
+    };
+    nrf_boot_twis_record_t output;
+
+    s_twis_spsc_hook_called = false;
+    s_twis_spsc_published_early = false;
+    s_twis_spsc_hook_armed = true;
+    assert(nrf_boot_twis_record_ring_push(&ring, &input));
+    assert(s_twis_spsc_hook_called);
+    assert(!s_twis_spsc_published_early);
+    assert(nrf_boot_twis_record_ring_pop(&ring, &output));
+    assert(output.index == input.index);
+    assert(output.length == input.length);
+    assert(output.direction == input.direction);
+    assert(output.prefix_length == input.prefix_length);
+    assert(memcmp(output.prefix, input.prefix, sizeof(input.prefix)) == 0);
+    assert(output.result == input.result);
+    assert(!nrf_boot_twis_record_ring_pop(&ring, &output));
+#endif
+}
+
 static void test_transaction_rate_limit_details_summaries_and_errors(void)
 {
     nrf_boot_twis_log_state_t state = {0};
@@ -363,6 +412,7 @@ int main(void)
     test_lamp_test_skips_unavailable_and_reports_gpio_errors();
     test_status_format_is_deterministic_and_bounded();
     test_transaction_ring_preserves_records_and_counts_overflow();
+    test_twis_spsc_commit_interleave();
     test_transaction_rate_limit_details_summaries_and_errors();
     test_transaction_format_is_bounded_with_maximum_values();
     test_change_detector_reports_each_state_family_once();

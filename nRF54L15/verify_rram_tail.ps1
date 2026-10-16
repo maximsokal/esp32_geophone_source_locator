@@ -9,6 +9,9 @@ param(
     [string]$BuildAppDir,
 
     [ValidateNotNullOrEmpty()]
+    [string]$ImageManifest,
+
+    [ValidateNotNullOrEmpty()]
     [string]$OpenOcd,
 
     [ValidateNotNullOrEmpty()]
@@ -290,6 +293,9 @@ function Stop-WithOpenOcdFailure([string]$Reason, [string[]]$OutputLines) {
     [Console]::Error.WriteLine("rram tail check: OpenOCD failure: $Reason")
     if ($script:OpenOcdCommandLine) { [Console]::Error.WriteLine("rram tail check: command: $script:OpenOcdCommandLine") }
     foreach ($line in @($OutputLines | Select-Object -Last 30)) { [Console]::Error.WriteLine($line) }
+    if ($script:FullImageReadbackPath -and (Test-Path -LiteralPath $script:FullImageReadbackPath)) {
+        Remove-Item -LiteralPath $script:FullImageReadbackPath -Force -ErrorAction SilentlyContinue
+    }
     exit 1
 }
 
@@ -297,6 +303,20 @@ try {
     if (($Bytes % 4) -ne 0) { throw "-Bytes must be a multiple of 4." }
     if (-not (Test-Path -LiteralPath $BuildAppDir -PathType Container)) {
         throw "Build app directory not found: $BuildAppDir"
+    }
+    $integrityMetadata = $null
+    if ($ImageManifest) {
+        if (-not (Test-Path -LiteralPath $ImageManifest -PathType Leaf)) {
+            throw "Image integrity manifest not found: $ImageManifest"
+        }
+        $integrityMetadata = Get-Content -LiteralPath $ImageManifest -Raw | ConvertFrom-Json
+        if ($integrityMetadata.schema_version -ne 1 -or
+            [long]$integrityMetadata.region_length -le 0 -or
+            [long]$integrityMetadata.region_length -gt 67108864) {
+            throw "Image integrity manifest has an invalid schema or region length."
+        }
+        $script:FullImageReadbackPath = Join-Path ([System.IO.Path]::GetTempPath()) (
+            "nrf54l15-readback-{0}.bin" -f [guid]::NewGuid().ToString("N"))
     }
 
     $hexFullPath = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Hex).Path)
@@ -359,6 +379,14 @@ try {
     $openOcdScriptsArg = $resolvedScriptsDir.Replace([string][char]92, "/")
     $openOcdBoardCfgArg = $resolvedBoardCfg.Replace([string][char]92, "/")
     $openOcdArguments = @("-s", $openOcdScriptsArg, "-f", $openOcdBoardCfgArg, "-c", "init", "-c", "targets nrf54l.cpu")
+    if ($integrityMetadata) {
+        $readbackTclPath = $script:FullImageReadbackPath.Replace([string][char]92, "/")
+        if ($readbackTclPath.Contains("{") -or $readbackTclPath.Contains("}")) {
+            throw "Temporary readback path contains unsupported Tcl brace characters."
+        }
+        $dumpCommand = "dump_image {$readbackTclPath} 0x$('{0:x}' -f [long]$integrityMetadata.image_start) $([long]$integrityMetadata.region_length)"
+        $openOcdArguments += @("-c", $dumpCommand)
+    }
     foreach ($span in $readSpans) {
         $mdwCommand = "mdw 0x$('{0:x}' -f $span.Start) $($span.Count)"
         $openOcdArguments += @("-c", $mdwCommand)
@@ -450,6 +478,21 @@ try {
         Stop-WithOpenOcdFailure $reason $outputLines.ToArray()
     }
 
+    if ($integrityMetadata) {
+        $integrityScript = Join-Path $PSScriptRoot "scripts\nrf_image_integrity.py"
+        & python $integrityScript verify --manifest $ImageManifest --readback $script:FullImageReadbackPath
+        $integrityExitCode = $LASTEXITCODE
+        if ($integrityExitCode -ne 0) {
+            [Console]::Error.WriteLine("rram tail check: full image integrity failed with exit $integrityExitCode")
+            if (Test-Path -LiteralPath $script:FullImageReadbackPath) {
+                Remove-Item -LiteralPath $script:FullImageReadbackPath -Force -ErrorAction SilentlyContinue
+            }
+            exit 1
+        }
+        Remove-Item -LiteralPath $script:FullImageReadbackPath -Force -ErrorAction SilentlyContinue
+        $script:FullImageReadbackPath = $null
+    }
+
     $warningLines = @($outputLines | Where-Object { $_ -match '(?i)^\s*(?:error|fatal)\s*:' })
     foreach ($line in $warningLines) {
         [Console]::Out.WriteLine("rram tail check: WARNING OpenOCD: $line")
@@ -487,6 +530,9 @@ try {
     if ($isLockup) { exit 3 }
     exit 0
 } catch {
+    if ($script:FullImageReadbackPath -and (Test-Path -LiteralPath $script:FullImageReadbackPath)) {
+        Remove-Item -LiteralPath $script:FullImageReadbackPath -Force -ErrorAction SilentlyContinue
+    }
     [Console]::Error.WriteLine("rram tail check: FAIL $($_.Exception.Message)")
     exit 1
 }

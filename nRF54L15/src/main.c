@@ -16,8 +16,10 @@
 
 #include "nrf_bootstrap_runtime_zephyr.h"
 #include "nrf_boot_diagnostics.h"
+#include "nrf_boot_failure_reason.h"
 #include "nrf_blue_led.h"
 #include "nrf_cs_pair_runtime_zephyr.h"
+#include "nrf_fault_record_zephyr.h"
 #include "nrf_logger_led_zephyr.h"
 #include "nrf_node_state.h"
 #include "nrf_log_events.h"
@@ -381,6 +383,7 @@ int main(void)
     if (ret != 0) {
         return ret;
     }
+    nrf_fault_record_zephyr_report_pending();
 
     {
         const nrf_logger_led_zephyr_result_t logger_result =
@@ -442,7 +445,10 @@ int main(void)
     ret = nrf_cs_pair_runtime_zephyr_start();
     printk("boot: nrf_cs_pair_runtime_zephyr_start ret=%d\n", ret);
     if (ret != 0) {
-        return ret;
+        nrf_log_runtime_zephyr_append_event(
+            NRF_LOG_EVENT_BOOT_FAILED,
+            (uint32_t)nrf_boot_failure_reason_from_errno(ret),
+            (uint32_t)ret);
     }
 
     ret = nrf_bootstrap_runtime_zephyr_start(&node_state);
@@ -476,6 +482,9 @@ int main(void)
                     (uint32_t)now_ms);
             }
 #endif
+            nrf_watchdog_zephyr_set_participant_active(
+                NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS,
+                nrf_cs_pair_runtime_zephyr_is_progress_required());
             nrf_watchdog_zephyr_service();
 
             ret = gpio_pin_set_dt(&led, (int)led_is_on);

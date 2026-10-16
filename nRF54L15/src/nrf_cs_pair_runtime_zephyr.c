@@ -26,9 +26,14 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/net_buf.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
 
 #include "nrf_cs_pair_adapter.h"
+#include "nrf_cs_event_overflow.h"
+#include "nrf_log_events.h"
+#include "nrf_log_runtime_zephyr.h"
+#include "nrf_watchdog_zephyr.h"
 
 #include "nrf_cs_pair_runtime_zephyr_impl_1.inc"
 #include "nrf_cs_pair_runtime_zephyr_impl_2.inc"
@@ -58,6 +63,11 @@ int nrf_cs_pair_runtime_zephyr_execute(
 }
 
 bool nrf_cs_pair_runtime_zephyr_is_busy(void)
+{
+    return false;
+}
+
+bool nrf_cs_pair_runtime_zephyr_is_progress_required(void)
 {
     return false;
 }

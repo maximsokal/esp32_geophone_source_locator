@@ -47,6 +47,7 @@ K_MSGQ_DEFINE(
 static struct k_work s_event_work;
 static struct k_work s_cleanup_work;
 static struct k_work_delayable s_timeout_work;
+static struct k_spinlock s_event_queue_overflow_lock;
 
 static nrf_cs_pair_adapter_t s_adapter;
 static bool s_started;
@@ -92,6 +93,8 @@ static bool s_local_complete;
 static bool s_peer_complete;
 static bool s_realtime_ras;
 static bool s_on_demand_request_started;
+static atomic_t s_reflector_procedure_active;
+static uint32_t s_event_queue_overflow_total;
 static struct bt_conn_le_cs_config s_cs_config;
 
 static uint16_t s_iq_counts[CS_DE_NUM_CHANNELS];
@@ -117,9 +120,20 @@ static void runtime_post_event(
     }
 
     if (k_msgq_put(&s_event_queue, &event, K_NO_WAIT) != 0) {
+        uint32_t overflow_total;
+        k_spinlock_key_t key;
+
         if (event.conn != NULL) {
             bt_conn_unref(event.conn);
         }
+        key = k_spin_lock(&s_event_queue_overflow_lock);
+        nrf_cs_event_overflow_increment(&s_event_queue_overflow_total);
+        overflow_total = s_event_queue_overflow_total;
+        k_spin_unlock(&s_event_queue_overflow_lock, key);
+        nrf_log_runtime_zephyr_append_event(
+            NRF_LOG_EVENT_CS_EVENT_QUEUE_OVERFLOW,
+            overflow_total,
+            NRF_CS_EVENT_QUEUE_DEPTH);
         LOG_ERR("Channel Sounding event queue overflow");
         return;
     }
@@ -221,6 +235,7 @@ static void runtime_reset_ranging(void)
     s_peer_complete = false;
     s_realtime_ras = false;
     s_on_demand_request_started = false;
+    atomic_set(&s_reflector_procedure_active, 0);
     memset(&s_cs_config, 0, sizeof(s_cs_config));
 }
 

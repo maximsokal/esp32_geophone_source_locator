@@ -327,6 +327,12 @@ function Invoke-WestFlash([string]$BuildDir) {
         throw "Intel HEX RRAM padding script not found: $padScript"
     }
     $paddedHex = Join-Path (Split-Path -Parent $hexPath) "zephyr.padded.hex"
+    $integrityScript = Join-Path $project "scripts\nrf_image_integrity.py"
+    if (-not (Test-Path -LiteralPath $integrityScript -PathType Leaf)) {
+        throw "Image integrity script not found: $integrityScript"
+    }
+    $integrityManifest = Join-Path (Split-Path -Parent $hexPath) "zephyr.padded.integrity.json"
+    $expectedBin = Join-Path $appArtifactDir "zephyr.bin"
     $verifyScript = Join-Path $project "verify_rram_tail.ps1"
     if (-not (Test-Path -LiteralPath $verifyScript -PathType Leaf)) {
         throw "RRAM tail readback verification script not found: $verifyScript"
@@ -339,13 +345,24 @@ function Invoke-WestFlash([string]$BuildDir) {
         throw "Intel HEX RRAM padding failed: $padExitCode"
     }
 
+    Require-Command "python" "Python 3 is required to verify the padded image digest."
+    & python $integrityScript prepare --input-hex $hexPath --padded-hex $paddedHex --expected-bin $expectedBin --manifest $integrityManifest
+    $integrityExitCode = $LASTEXITCODE
+    if ($integrityExitCode -eq 4) {
+        [Console]::Error.WriteLine("nRF54L15 flash blocked: input Intel HEX is shorter than the ELF image (exit 4).")
+        exit 4
+    }
+    if ($integrityExitCode -ne 0) {
+        throw "Padded image integrity preparation failed: $integrityExitCode"
+    }
+
     Write-Host "west flash -d $BuildDir --skip-rebuild -f $paddedHex" -ForegroundColor Cyan
     & west flash -d $BuildDir --skip-rebuild -f $paddedHex
     if ($LASTEXITCODE -ne 0) {
         throw "west flash failed: $LASTEXITCODE"
     }
 
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifyScript -Hex $paddedHex -BuildAppDir $appArtifactDir
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifyScript -Hex $paddedHex -BuildAppDir $appArtifactDir -ImageManifest $integrityManifest
     $verifyExitCode = $LASTEXITCODE
     if ($verifyExitCode -eq 1) {
         throw "RRAM readback mismatch (exit 1); flash content does not match the padded HEX."

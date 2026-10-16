@@ -178,6 +178,10 @@ static inline void nrf_boot_saturating_increment(uint32_t *value)
     }
 }
 
+#if defined(NRF_BOOT_DIAGNOSTICS_TEST_HOOKS)
+void nrf_boot_twis_record_ring_test_after_first_field(nrf_boot_twis_record_ring_t *ring);
+#endif
+
 static inline bool nrf_boot_twis_record_ring_push(
     nrf_boot_twis_record_ring_t *ring,
     const nrf_boot_twis_record_t *record)
@@ -206,6 +210,9 @@ static inline bool nrf_boot_twis_record_ring_push(
         prefix_length = NRF_BOOT_TRANSACTION_PREFIX_CAPACITY;
     }
     slot->index = record->index;
+#if defined(NRF_BOOT_DIAGNOSTICS_TEST_HOOKS)
+    nrf_boot_twis_record_ring_test_after_first_field(ring);
+#endif
     slot->length = record->length;
     slot->direction = record->direction;
     slot->prefix_length = prefix_length;

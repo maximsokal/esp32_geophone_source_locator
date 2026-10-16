@@ -44,6 +44,11 @@ target_sources(app PRIVATE
     ../src/nrf_log_protocol.c
     ../src/nrf_log_ring.c
     ../src/nrf_log_runtime_zephyr.c
+    ../src/nrf_fault_record.c
+    ../src/nrf_fault_record_zephyr.c
+    ../src/nrf_thread_stack_inventory.c
+    ../src/nrf_boot_failure_reason.c
+    ../src/nrf_cs_event_overflow.c
     ../src/nrf_sensor_session.c
     ../src/nrf_sensor_upstream_runtime_zephyr.c
     ../src/nrf_bootstrap.c

@@ -9,6 +9,27 @@
     {
       "name": "nrf_boot_diagnostics",
       "sources": ["tests/host/nrf_boot_diagnostics_test.c"],
+      "include_dirs": ["nRF54L15/include"],
+      "defines": ["NRF_BOOT_DIAGNOSTICS_TEST_HOOKS"]
+    },
+    {
+      "name": "nrf_fault_record",
+      "sources": ["nRF54L15/src/nrf_fault_record.c", "tests/host/nrf_fault_record_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "nrf_thread_stack_inventory",
+      "sources": ["nRF54L15/src/nrf_thread_stack_inventory.c", "tests/host/nrf_thread_stack_inventory_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "nrf_boot_failure_reason",
+      "sources": ["nRF54L15/src/nrf_boot_failure_reason.c", "tests/host/nrf_boot_failure_reason_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "nrf_cs_event_overflow",
+      "sources": ["nRF54L15/src/nrf_cs_event_overflow.c", "tests/host/nrf_cs_event_overflow_test.c"],
       "include_dirs": ["nRF54L15/include"]
     },
     {

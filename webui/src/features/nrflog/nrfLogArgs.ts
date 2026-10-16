@@ -129,6 +129,7 @@ const csOutcomes = {
 const watchdogParticipants = {
   0: key('participant.sensor_worker'),
   1: key('participant.system_workqueue'),
+  2: key('participant.bt_cs_progress'),
 } as const;
 
 export const NRF_LOG_ARG_FORMATS = {
@@ -149,6 +150,11 @@ export const NRF_LOG_ARG_FORMATS = {
   CS_TIMEOUT: [hex(key('attempt_id')), number(key('timeout_ms'))],
   WATCHDOG_PARTICIPANT_STALE: [enumeration(key('participant'), watchdogParticipants), number(key('allowed_silence_ms'))],
   LOG_TEST_EVENT: [number(key('test_index')), number(key('uptime_ms'))],
+  FAULT_RECORD_WORD: [number(key('arg0')), hex(key('arg1'))],
+  BOOT_FAILED: [number(key('arg0')), number(key('arg1'))],
+  CS_EVENT_QUEUE_OVERFLOW: [number(key('arg0')), number(key('arg1'))],
+  WATCHDOG_DEGRADED: [number(key('arg0')), number(key('arg1'))],
+  WATCHDOG_FEED_FAILED: [number(key('arg0')), number(key('arg1'))],
 } as const satisfies Record<EventName, readonly [ArgumentSpec, ArgumentSpec]>;
 
 export const NRF_LOG_ARG_I18N_KEYS: readonly I18nKey[] = (() => {

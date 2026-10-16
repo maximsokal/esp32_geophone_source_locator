@@ -46,6 +46,7 @@ typedef enum {
     NRF_LOG_SUBSYSTEM_CS = 7,
     NRF_LOG_SUBSYSTEM_WATCHDOG = 8,
     NRF_LOG_SUBSYSTEM_POWER = 9,
+    NRF_LOG_SUBSYSTEM_FAULT = 10,
 } nrf_log_subsystem_t;
 
 typedef enum {
