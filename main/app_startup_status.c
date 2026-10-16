@@ -1,18 +1,63 @@
 #include "app_startup_status.h"
 
+#include <stdio.h>
+
 #include "hw_inventory.h"
+#include "object_recovery.h"
 #include "seismic_acquisition.h"
 #include "wifi_manager.h"
+#include "web_server.h"
 
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 
 
 static const char *TAG =
     "APP";
 
+static app_startup_reset_diagnostics_t s_reset_diagnostics;
+
+
+const app_startup_reset_diagnostics_t *app_startup_get_reset_diagnostics(void)
+{
+    return s_reset_diagnostics.valid ? &s_reset_diagnostics : NULL;
+}
+
+
+static void app_startup_log_reset_reason(void)
+{
+    s_reset_diagnostics.reason = esp_reset_reason();
+    (void)snprintf(
+        s_reset_diagnostics.reason_name,
+        sizeof(s_reset_diagnostics.reason_name),
+        "%s",
+        app_startup_reset_reason_name(s_reset_diagnostics.reason)
+    );
+    s_reset_diagnostics.uptime_ms = (uint64_t)(esp_timer_get_time() / 1000LL);
+    s_reset_diagnostics.boot_id = object_recovery_boot_id();
+    s_reset_diagnostics.valid = true;
+
+    web_status_json_set_reset_diagnostics(
+        s_reset_diagnostics.reason_name,
+        (int)s_reset_diagnostics.reason,
+        s_reset_diagnostics.boot_id,
+        s_reset_diagnostics.uptime_ms
+    );
+    ESP_LOGI(
+        TAG,
+        "RESET_REASON reason=%s enum=%d uptime_ms=%llu boot_id=%u",
+        s_reset_diagnostics.reason_name,
+        (int)s_reset_diagnostics.reason,
+        (unsigned long long)s_reset_diagnostics.uptime_ms,
+        (unsigned)s_reset_diagnostics.boot_id
+    );
+}
+
 
 void app_startup_log_success(void)
 {
+    app_startup_log_reset_reason();
     ESP_LOGI(TAG, "Display: OK");
 
     hw_module_info_t sd_card = {0};

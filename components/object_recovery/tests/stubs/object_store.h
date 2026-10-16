@@ -54,16 +54,30 @@ typedef struct
 
 typedef struct
 {
+    uint32_t sessions;
+    uint32_t artifacts;
+    uint32_t localization_runs;
+    uint64_t bytes;
+
+} object_store_delete_scope_t;
+
+typedef struct
+{
     object_summary_t summary;
     object_store_cs_pairs_t cs_pairs;
 
 } object_store_profile_t;
 
-static bool object_recovery_test_object_leased = false;
+extern bool object_recovery_test_object_leased;
 
 esp_err_t object_store_get_profile(
     const char *object_id,
     object_store_profile_t *profile
+);
+
+esp_err_t object_store_get_delete_scope(
+    const char *object_id,
+    object_store_delete_scope_t *scope
 );
 
 static inline esp_err_t object_store_object_is_leased(

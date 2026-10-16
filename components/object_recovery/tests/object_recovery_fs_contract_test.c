@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -13,26 +14,81 @@
 #define rmdir _rmdir
 #endif
 
+#include "object_recovery.h"
 #include "object_recovery_fs.h"
 #include "object_recovery_internal.h"
+#include "object_store.h"
 #include "storage_manager.h"
 
 static const char *TEST_ROOT = "object_recovery_contract_tmp";
 
 static esp_err_t s_active_read_result = ESP_ERR_NOT_FOUND;
 static const char *s_active_marker = NULL;
+bool object_recovery_test_object_leased;
+static esp_err_t s_remove_result = ESP_OK;
+static unsigned s_remove_tree_calls;
+static char s_removed_path[256];
+static object_store_delete_scope_t s_delete_scope = {
+    .sessions = 2U,
+    .artifacts = 3U,
+    .localization_runs = 1U,
+    .bytes = 12345U,
+};
+static esp_err_t s_delete_scope_result = ESP_OK;
+static char s_log_buffer[8192];
+static unsigned s_removal_log_count;
 
 unsigned esp_log_timestamp(void)
 {
     return 0U;
 }
 
-esp_err_t storage_manager_remove_tree(const char *path)
+int64_t esp_timer_get_time(void)
 {
-    (void)path;
-    return ESP_OK;
+    return 123456789LL;
 }
 
+uint32_t esp_random(void)
+{
+    return 0x484U;
+}
+
+void object_recovery_test_log(const char *format, ...)
+{
+    char line[1024];
+    va_list args;
+    va_start(args, format);
+    const int written = vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+    if (written < 0) return;
+    const size_t current = strlen(s_log_buffer);
+    if ((size_t)written + current + 2U < sizeof(s_log_buffer)) {
+        memcpy(s_log_buffer + current, line, (size_t)written);
+        s_log_buffer[current + (size_t)written] = '\n';
+        s_log_buffer[current + (size_t)written + 1U] = '\0';
+    }
+    if (strstr(line, "OBJECT_RECOVERY_REMOVED") != NULL) {
+        ++s_removal_log_count;
+    }
+}
+
+esp_err_t storage_manager_remove_tree(const char *path)
+{
+    ++s_remove_tree_calls;
+    snprintf(s_removed_path, sizeof(s_removed_path), "%s", path != NULL ? path : "");
+    return s_remove_result;
+}
+
+esp_err_t object_store_get_delete_scope(
+    const char *object_id,
+    object_store_delete_scope_t *scope
+)
+{
+    if (object_id == NULL || scope == NULL) return ESP_ERR_INVALID_ARG;
+    if (s_delete_scope_result != ESP_OK) return s_delete_scope_result;
+    *scope = s_delete_scope;
+    return ESP_OK;
+}
 esp_err_t storage_manager_read_text(
     const char *path,
     char *buffer,
@@ -136,12 +192,13 @@ static void test_metadata_recovery_priority(void)
 {
     bool valid = false;
     bool recovered = false;
+    object_recovery_metadata_attempts_t attempts = {0};
 
     remove_test_files();
     assert(mkdir(TEST_ROOT, 0775) == 0);
     write_metadata("object.json", "{\"schema_version\":1,\"id\":\"OBJ_0001\"}");
     write_metadata("object.json.tmp", "stale");
-    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered) == ESP_OK);
+    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered, &attempts) == ESP_OK);
     assert(valid);
     assert(!recovered);
     /* A valid primary is authoritative. The stale sidecar is deliberately
@@ -154,7 +211,7 @@ static void test_metadata_recovery_priority(void)
     write_metadata("object.json.bak", "{\"schema_version\":1,\"id\":\"OBJ_0001\"}");
     valid = false;
     recovered = false;
-    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered) == ESP_OK);
+    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered, &attempts) == ESP_OK);
     assert(valid);
     assert(recovered);
     assert(metadata_exists("object.json"));
@@ -165,7 +222,7 @@ static void test_metadata_recovery_priority(void)
     write_metadata("object.json.tmp", "{\"schema_version\":1,\"id\":\"OBJ_0001\"}");
     valid = false;
     recovered = false;
-    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered) == ESP_OK);
+    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered, &attempts) == ESP_OK);
     assert(valid);
     assert(recovered);
     assert(metadata_exists("object.json"));
@@ -176,9 +233,13 @@ static void test_metadata_recovery_priority(void)
     write_metadata("object.json", "not-json");
     valid = true;
     recovered = true;
-    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered) == ESP_OK);
+    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered, &attempts) == ESP_OK);
     assert(!valid);
     assert(!recovered);
+    assert(strcmp(attempts.primary, "invalid_json") == 0);
+    assert(strcmp(attempts.backup, "not_found") == 0);
+    assert(strcmp(attempts.temporary, "not_found") == 0);
+
     remove_test_files();
 }
 
@@ -242,30 +303,249 @@ static void test_metadata_json_contract(void)
     assert(file != NULL);
     assert(fputs("{\"schema_version\":1,\"id\":\"OBJ_0001\"}", file) >= 0);
     assert(fclose(file) == 0);
-    assert(object_recovery_fs_metadata_valid(metadata, "OBJ_0001"));
-    assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0002"));
-    assert(!object_recovery_fs_metadata_valid(metadata, NULL));
-    assert(!object_recovery_fs_metadata_valid(NULL, "OBJ_0001"));
+    const char *reason = NULL;
+    assert(object_recovery_fs_metadata_valid(metadata, "OBJ_0001", &reason));
+    assert(strcmp(reason, "valid") == 0);
+    assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0002", &reason));
+    assert(strcmp(reason, "wrong_identity") == 0);
+    assert(!object_recovery_fs_metadata_valid(metadata, NULL, &reason));
+    assert(strcmp(reason, "invalid_argument") == 0);
+    assert(!object_recovery_fs_metadata_valid(NULL, "OBJ_0001", &reason));
+    assert(strcmp(reason, "invalid_argument") == 0);
+
+    file = fopen(metadata, "wb");
+    assert(file != NULL);
+    assert(fputs("{\"schema_version\":\"one\",\"id\":\"OBJ_0001\"}", file) >= 0);
+    assert(fclose(file) == 0);
+    assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0001", &reason));
+    assert(strcmp(reason, "invalid_schema") == 0);
 
     file = fopen(metadata, "wb");
     assert(file != NULL);
     assert(fputs("{\"schema_version\":0,\"id\":\"OBJ_0001\"}", file) >= 0);
     assert(fclose(file) == 0);
-    assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0001"));
+    assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0001", &reason));
+    assert(strcmp(reason, "unsupported_schema") == 0);
+
+    file = fopen(metadata, "wb");
+    assert(file != NULL);
+    assert(fputs("{\"schema_version\":1,\"id\":\"bad\"}", file) >= 0);
+    assert(fclose(file) == 0);
+    assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0001", &reason));
+    assert(strcmp(reason, "invalid_identity") == 0);
 
     file = fopen(metadata, "wb");
     assert(file != NULL);
     assert(fputs("{\"schema_version\":1,\"id\":\"OBJ_0002\"}", file) >= 0);
     assert(fclose(file) == 0);
-    assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0001"));
+    assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0001", &reason));
+    assert(strcmp(reason, "wrong_identity") == 0);
 
     file = fopen(metadata, "wb");
     assert(file != NULL);
     assert(fputs("not-json", file) >= 0);
     assert(fclose(file) == 0);
-    assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0001"));
+    assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0001", &reason));
+    assert(strcmp(reason, "invalid_json") == 0);
+
+    file = fopen(metadata, "wb");
+    assert(file != NULL);
+    assert(fclose(file) == 0);
+    assert(!object_recovery_fs_metadata_valid(metadata, "OBJ_0001", &reason));
+    assert(strcmp(reason, "invalid_size") == 0);
 
     remove_test_files();
+}
+
+static void scan_path(char *path, size_t path_size, const char *object_id)
+{
+    const int written = snprintf(path, path_size, "%s/%s", STORAGE_MANAGER_OBJECTS_PATH, object_id);
+    assert(written >= 0 && (size_t)written < path_size);
+}
+
+static void make_directory(const char *path)
+{
+    errno = 0;
+    if (mkdir(path, 0775) != 0) assert(errno == EEXIST);
+}
+
+static void prepare_scan_object(
+    const char *object_id,
+    const char *primary,
+    const char *backup,
+    const char *temporary
+)
+{
+    make_directory(TEST_ROOT);
+    make_directory(STORAGE_MANAGER_ROOT_PATH);
+    make_directory(STORAGE_MANAGER_OBJECTS_PATH);
+    char object_path[256];
+    scan_path(object_path, sizeof(object_path), object_id);
+    make_directory(object_path);
+    if (primary != NULL) {
+        char path[320];
+        (void)snprintf(path, sizeof(path), "%s/object.json", object_path);
+        FILE *file = fopen(path, "wb");
+        assert(file != NULL);
+        assert(fputs(primary, file) >= 0);
+        assert(fclose(file) == 0);
+    }
+    if (backup != NULL) {
+        char path[320];
+        (void)snprintf(path, sizeof(path), "%s/object.json.bak", object_path);
+        FILE *file = fopen(path, "wb");
+        assert(file != NULL);
+        assert(fputs(backup, file) >= 0);
+        assert(fclose(file) == 0);
+    }
+    if (temporary != NULL) {
+        char path[320];
+        (void)snprintf(path, sizeof(path), "%s/object.json.tmp", object_path);
+        FILE *file = fopen(path, "wb");
+        assert(file != NULL);
+        assert(fputs(temporary, file) >= 0);
+        assert(fclose(file) == 0);
+    }
+}
+
+static void remove_scan_object(const char *object_id)
+{
+    char object_path[256];
+    char path[320];
+    scan_path(object_path, sizeof(object_path), object_id);
+    (void)snprintf(path, sizeof(path), "%s/object.json", object_path);
+    (void)remove(path);
+    (void)snprintf(path, sizeof(path), "%s/object.json.bak", object_path);
+    (void)remove(path);
+    (void)snprintf(path, sizeof(path), "%s/object.json.tmp", object_path);
+    (void)remove(path);
+    (void)rmdir(object_path);
+    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH);
+    (void)rmdir(STORAGE_MANAGER_ROOT_PATH);
+    (void)rmdir(TEST_ROOT);
+}
+
+static void reset_scan_fakes(void)
+{
+    s_active_read_result = ESP_ERR_NOT_FOUND;
+    s_active_marker = NULL;
+    object_recovery_test_object_leased = false;
+    s_remove_result = ESP_OK;
+    s_remove_tree_calls = 0U;
+    s_removed_path[0] = '\0';
+    s_delete_scope_result = ESP_OK;
+    s_log_buffer[0] = '\0';
+    s_removal_log_count = 0U;
+}
+
+static void test_scan_deletes_only_after_all_metadata_candidates_fail(void)
+{
+    const char *valid = "{\"schema_version\":1,\"id\":\"OBJ_0001\"}";
+    bool removed = false;
+
+    reset_scan_fakes();
+    remove_scan_object("OBJ_0001");
+    prepare_scan_object("OBJ_0001", "broken", valid, NULL);
+    assert(object_recovery_check_one("OBJ_0001", &removed) == ESP_OK);
+    assert(!removed && s_remove_tree_calls == 0U);
+    remove_scan_object("OBJ_0001");
+
+    reset_scan_fakes();
+    prepare_scan_object("OBJ_0001", "broken", NULL, valid);
+    assert(object_recovery_check_one("OBJ_0001", &removed) == ESP_OK);
+    assert(!removed && s_remove_tree_calls == 0U);
+    remove_scan_object("OBJ_0001");
+}
+
+static void test_active_and_leased_objects_are_never_removed(void)
+{
+    bool removed = false;
+
+    reset_scan_fakes();
+    prepare_scan_object("OBJ_0001", "broken", NULL, NULL);
+    s_active_read_result = ESP_OK;
+    s_active_marker = "OBJ_0001";
+    assert(object_recovery_check_one_boot("OBJ_0001", &removed) == ESP_ERR_INVALID_STATE);
+    assert(!removed && s_remove_tree_calls == 0U);
+
+    reset_scan_fakes();
+    s_active_read_result = ESP_ERR_NOT_FOUND;
+    object_recovery_test_object_leased = true;
+    assert(object_recovery_check_one_background("OBJ_0001", &removed) == ESP_ERR_INVALID_STATE);
+    assert(!removed && s_remove_tree_calls == 0U);
+    remove_scan_object("OBJ_0001");
+}
+
+static void test_unrecoverable_delete_emits_one_complete_record(void)
+{
+    bool removed = false;
+    reset_scan_fakes();
+    remove_scan_object("OBJ_0001");
+    prepare_scan_object(
+        "OBJ_0001",
+        "not-json",
+        "{\"schema_version\":0,\"id\":\"OBJ_0001\"}",
+        "{\"schema_version\":1,\"id\":\"OBJ_0002\"}"
+    );
+
+    assert(object_recovery_check_one("OBJ_0001", &removed) == ESP_OK);
+    assert(removed && s_remove_tree_calls == 1U);
+    assert(strcmp(s_removed_path, STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001") == 0);
+    assert(s_removal_log_count == 1U);
+    assert(strstr(s_log_buffer, "OBJECT_RECOVERY_REMOVED") != NULL);
+    assert(strstr(s_log_buffer, "reason=unrecoverable_metadata") != NULL);
+    assert(strstr(s_log_buffer, "when=runtime") != NULL);
+    assert(strstr(s_log_buffer, "uptime_ms=123456") != NULL);
+    assert(strstr(s_log_buffer, "boot_id=1156") != NULL);
+    assert(strstr(s_log_buffer, "object=OBJ_0001") != NULL);
+    assert(strstr(s_log_buffer, "sessions=2") != NULL);
+    assert(strstr(s_log_buffer, "artifacts=3") != NULL);
+    assert(strstr(s_log_buffer, "localization_runs=1") != NULL);
+    assert(strstr(s_log_buffer, "bytes=12345") != NULL);
+    assert(strstr(s_log_buffer, "primary(object.json)=invalid_json") != NULL);
+    assert(strstr(s_log_buffer, "backup(object.json.bak)=unsupported_schema") != NULL);
+    assert(strstr(s_log_buffer, "temporary(object.json.tmp)=wrong_identity") != NULL);
+
+    object_recovery_deletion_record_t record = {0};
+    assert(object_recovery_get_last_deletion_record(&record));
+    assert(record.valid);
+    assert(strcmp(record.object_id, "OBJ_0001") == 0);
+    assert(strcmp(record.reason, "unrecoverable_metadata") == 0);
+    assert(strcmp(record.when, "runtime") == 0);
+    assert(record.uptime_ms == 123456U && record.boot_id == 1156U);
+    assert(record.sessions == 2U && record.artifacts == 3U);
+    assert(record.localization_runs == 1U && record.bytes == 12345U);
+    assert(strstr(record.attempts, "primary(object.json)=invalid_json") != NULL);
+    remove_scan_object("OBJ_0001");
+}
+
+static void test_boot_delete_records_boot_timing(void)
+{
+    bool removed = false;
+    reset_scan_fakes();
+    remove_scan_object("OBJ_0001");
+    prepare_scan_object("OBJ_0001", "not-json", NULL, NULL);
+
+    assert(object_recovery_check_one_boot("OBJ_0001", &removed) == ESP_OK);
+    assert(removed && s_remove_tree_calls == 1U && s_removal_log_count == 1U);
+    assert(strstr(s_log_buffer, "when=boot") != NULL);
+    assert(strstr(s_log_buffer, "uptime_ms=123456") != NULL);
+    assert(strstr(s_log_buffer, "boot_id=1156") != NULL);
+    object_recovery_deletion_record_t record = {0};
+    assert(object_recovery_get_last_deletion_record(&record));
+    assert(strcmp(record.when, "boot") == 0);
+    remove_scan_object("OBJ_0001");
+}
+
+static void test_delete_is_skipped_when_scope_count_fails(void)
+{
+    bool removed = false;
+    reset_scan_fakes();
+    prepare_scan_object("OBJ_0001", "not-json", NULL, NULL);
+    s_delete_scope_result = ESP_FAIL;
+    assert(object_recovery_check_one("OBJ_0001", &removed) == ESP_FAIL);
+    assert(!removed && s_remove_tree_calls == 0U && s_removal_log_count == 0U);
+    remove_scan_object("OBJ_0001");
 }
 
 int main(void)
@@ -276,5 +556,10 @@ int main(void)
     test_unlink_and_restore();
     test_metadata_json_contract();
     test_metadata_recovery_priority();
+    test_scan_deletes_only_after_all_metadata_candidates_fail();
+    test_active_and_leased_objects_are_never_removed();
+    test_unrecoverable_delete_emits_one_complete_record();
+    test_boot_delete_records_boot_timing();
+    test_delete_is_skipped_when_scope_count_fails();
     return 0;
 }

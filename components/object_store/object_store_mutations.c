@@ -120,6 +120,11 @@ esp_err_t object_store_get_delete_scope(
 {
     if (object_id == NULL || scope == NULL) return ESP_ERR_INVALID_ARG;
 
+    /* Boot recovery counts before object_store_init while holding the storage operation. */
+    if (!object_store_internal_is_initialized()) {
+        return object_store_fs_get_delete_scope(object_id, scope);
+    }
+
     const esp_err_t err = object_store_internal_begin_file_operation();
     if (err != ESP_OK) return err;
     const esp_err_t count_err = object_store_fs_get_delete_scope(object_id, scope);

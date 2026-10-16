@@ -4,6 +4,7 @@
 
 #include "object_recovery_fs.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,13 +78,16 @@ static int object_recovery_open_file_stat(
 
 bool object_recovery_fs_metadata_valid(
     const char *path,
-    const char *expected_id
+    const char *expected_id,
+    const char **reason_out
 )
 {
+    if (reason_out != NULL) *reason_out = "not_checked";
     if (
         path == NULL ||
         !object_format_id_is_valid(expected_id)
     ) {
+        if (reason_out != NULL) *reason_out = "invalid_argument";
         return false;
     }
 
@@ -111,6 +115,9 @@ bool object_recovery_fs_metadata_valid(
     );
 
     if (file == NULL) {
+        if (reason_out != NULL) {
+            *reason_out = errno == ENOENT ? "not_found" : "open_error";
+        }
         return false;
     }
 
@@ -134,13 +141,17 @@ bool object_recovery_fs_metadata_valid(
 
     if (
         stat_result != 0 ||
-        !S_ISREG(
-            info.st_mode
-        ) ||
+        !S_ISREG(info.st_mode) ||
         info.st_size <= 0 ||
-        info.st_size >
-            OBJECT_RECOVERY_METADATA_MAX_SIZE
+        info.st_size > OBJECT_RECOVERY_METADATA_MAX_SIZE
     ) {
+        if (reason_out != NULL) {
+            *reason_out = stat_result != 0
+                ? "stat_error"
+                : !S_ISREG(info.st_mode)
+                    ? "not_regular"
+                    : "invalid_size";
+        }
         started_us =
             esp_timer_get_time();
 
@@ -169,6 +180,7 @@ bool object_recovery_fs_metadata_valid(
         );
 
     if (buffer == NULL) {
+        if (reason_out != NULL) *reason_out = "no_memory";
         started_us =
             esp_timer_get_time();
 
@@ -204,6 +216,7 @@ bool object_recovery_fs_metadata_valid(
         (int)read_count,
         started_us
     );
+    const bool read_error = ferror(file) != 0;
 
     started_us =
         esp_timer_get_time();
@@ -220,11 +233,12 @@ bool object_recovery_fs_metadata_valid(
         started_us
     );
 
-    if (read_count != size) {
+    if (read_count != size || read_error) {
         free(
             buffer
         );
 
+        if (reason_out != NULL) *reason_out = "short_read";
         return false;
     }
 
@@ -251,6 +265,7 @@ bool object_recovery_fs_metadata_valid(
     );
 
     if (root == NULL) {
+        if (reason_out != NULL) *reason_out = "invalid_json";
         return false;
     }
 
@@ -266,15 +281,31 @@ bool object_recovery_fs_metadata_valid(
             "id"
         );
 
-    const bool valid =
-        cJSON_IsNumber(schema_version) &&
-        cJSON_IsString(id) &&
-        id->valuestring != NULL &&
-        object_format_metadata_identity_is_valid(
-            schema_version->valueint,
-            id->valuestring,
-            expected_id
-        );
+    const char *reason = "valid";
+    bool valid = cJSON_IsNumber(schema_version);
+    if (!valid) {
+        reason = "invalid_schema";
+    }
+    else if (!object_format_schema_is_supported(schema_version->valueint)) {
+        valid = false;
+        reason = "unsupported_schema";
+    }
+    else if (
+        !cJSON_IsString(id) ||
+        id->valuestring == NULL ||
+        !object_format_id_is_valid(id->valuestring)
+    ) {
+        valid = false;
+        reason = "invalid_identity";
+    }
+    else if (!object_format_metadata_identity_is_valid(
+                 schema_version->valueint,
+                 id->valuestring,
+                 expected_id
+             )) {
+        valid = false;
+        reason = "wrong_identity";
+    }
 
     cJSON_Delete(
         root
@@ -284,5 +315,6 @@ bool object_recovery_fs_metadata_valid(
      * fclose result is logged above but intentionally does not
      * change the legacy metadata-validity semantics.
      */
+    if (reason_out != NULL) *reason_out = reason;
     return valid;
 }

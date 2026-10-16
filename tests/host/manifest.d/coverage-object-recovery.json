@@ -29,9 +29,13 @@
       ],
       "include_dirs": [
         "components/object_recovery/tests/stubs",
+        "components/object_recovery/include",
         "components/object_recovery",
         "components/object_format/include",
         "components/storage_manager/include"
+      ],
+      "defines": [
+        "OBJECT_RECOVERY_CAPTURE_LOGS=1"
       ]
     },
     {

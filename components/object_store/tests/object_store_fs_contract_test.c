@@ -25,6 +25,7 @@ static esp_err_t metadata_validation_result = ESP_OK;
 static esp_err_t active_save_result = ESP_OK;
 static char activation_trace[32];
 static size_t activation_trace_length;
+static bool object_store_initialized = true;
 
 static void activation_trace_push(char event)
 {
@@ -69,12 +70,17 @@ esp_err_t storage_manager_remove_tree(const char *path)
 esp_err_t object_store_internal_begin_file_operation(void)
 {
     activation_trace_push('B');
-    return ESP_OK;
+    return object_store_initialized ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 void object_store_internal_end_file_operation(void)
 {
     activation_trace_push('E');
+}
+
+bool object_store_internal_is_initialized(void)
+{
+    return object_store_initialized;
 }
 
 esp_err_t object_store_internal_begin_state_operation(void)
@@ -298,9 +304,21 @@ static void test_delete_scope_counts_zero_one_and_many(void)
     write_metadata("OBJ_0001");
     assert(object_store_get_delete_scope("OBJ_0001", &scope) == ESP_OK);
     assert(scope.sessions == 0U && scope.artifacts == 0U && scope.localization_runs == 0U);
+    char path[OBJECT_STORE_FS_PATH_SIZE];
+    (void)snprintf(path, sizeof(path), "%s/OBJ_0001/object.json", STORAGE_MANAGER_OBJECTS_PATH);
+    struct stat info;
+    assert(stat(path, &info) == 0);
+    const uint64_t metadata_bytes = (uint64_t)info.st_size;
+    assert(scope.bytes == metadata_bytes);
+
+    activation_trace_length = 0U;
+    activation_trace[0] = '\0';
+    object_store_initialized = false;
+    assert(object_store_get_delete_scope("OBJ_0001", &scope) == ESP_OK);
+    assert(activation_trace_length == 0U);
+    object_store_initialized = true;
 
     make_object_session("OBJ_0001", "S000001");
-    char path[OBJECT_STORE_FS_PATH_SIZE];
     (void)snprintf(path, sizeof(path), "%s/OBJ_0001/sessions/S000001/scan-v1.bin", STORAGE_MANAGER_OBJECTS_PATH);
     write_file(path, "scan");
     (void)snprintf(path, sizeof(path), "%s/OBJ_0001/sessions/S000001/localization_run_tdoa_1.json", STORAGE_MANAGER_OBJECTS_PATH);
@@ -320,6 +338,7 @@ static void test_delete_scope_counts_zero_one_and_many(void)
     write_file(path, "picks");
     assert(object_store_get_delete_scope("OBJ_0001", &scope) == ESP_OK);
     assert(scope.sessions == 3U && scope.artifacts == 4U && scope.localization_runs == 2U);
+    assert(scope.bytes == metadata_bytes + 29U);
 
     assert(object_store_get_delete_scope(NULL, &scope) == ESP_ERR_INVALID_ARG);
     assert(object_store_get_delete_scope("OBJ_9999", &scope) == ESP_ERR_NOT_FOUND);

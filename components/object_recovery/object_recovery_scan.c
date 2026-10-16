@@ -7,8 +7,11 @@
 #include <sys/stat.h>
 
 #include "esp_log.h"
+#include "esp_random.h"
+#include "esp_timer.h"
 
 #include "object_format.h"
+#include "object_recovery.h"
 #include "object_recovery_fs.h"
 #include "object_store.h"
 #include "storage_manager.h"
@@ -22,8 +25,29 @@
 static const char *TAG =
     "OBJECT_RECOVERY";
 
+static uint32_t s_boot_id;
+static object_recovery_deletion_record_t s_last_deletion_record;
+
 #define ACTIVE_OBJECT_PATH \
     STORAGE_MANAGER_ROOT_PATH "/active_object.txt"
+
+uint32_t object_recovery_boot_id(void)
+{
+    if (s_boot_id == 0U) {
+        s_boot_id = esp_random();
+        if (s_boot_id == 0U) s_boot_id = 1U;
+    }
+    return s_boot_id;
+}
+
+bool object_recovery_get_last_deletion_record(
+    object_recovery_deletion_record_t *record_out
+)
+{
+    if (record_out == NULL) return false;
+    *record_out = s_last_deletion_record;
+    return record_out->valid;
+}
 
 
 static void object_recovery_log_boot_timing(
@@ -130,7 +154,7 @@ static esp_err_t object_recovery_background_lease_guard(
 static esp_err_t object_recovery_check_one_with_policy(
     const char *object_id,
     bool *removed,
-    bool protect_persisted_active
+    bool boot_recovery
 )
 {
     if (
@@ -205,6 +229,7 @@ static esp_err_t object_recovery_check_one_with_policy(
 
     bool recovered =
         false;
+    object_recovery_metadata_attempts_t attempts = {0};
 
     stage_started_ms =
         esp_log_timestamp();
@@ -214,7 +239,8 @@ static esp_err_t object_recovery_check_one_with_policy(
             object_directory,
             object_id,
             &valid,
-            &recovered
+            &recovered,
+            &attempts
         );
 
     object_recovery_log_boot_timing(
@@ -254,26 +280,54 @@ static esp_err_t object_recovery_check_one_with_policy(
     );
 
     /*
-     * Runtime background recovery must re-check both persisted ACTIVE authority
-     * and process-lifetime object leases at the final destructive boundary.
-     * The caller holds the same storage operation used by object_store lease
-     * acquisition/DELETE, so neither ACTIVE nor a new lease can commit between
-     * these guards and remove_tree(). Boot-time recovery uses the destructive
-     * policy before object_store publishes runtime authority or leases.
+     * Check persisted ACTIVE authority at every destructive boundary. Runtime
+     * background recovery also checks process-lifetime leases while holding
+     * the storage operation used by lease acquisition and DELETE; boot has no
+     * runtime leases before object_store_init().
      */
-    if (protect_persisted_active) {
-        err = object_recovery_background_delete_guard(object_id);
-        if (err != ESP_OK) {
-            free(object_directory);
-            return err;
-        }
-
+    err = object_recovery_background_delete_guard(object_id);
+    if (err != ESP_OK) {
+        free(object_directory);
+        return err;
+    }
+    if (!boot_recovery) {
         err = object_recovery_background_lease_guard(object_id);
         if (err != ESP_OK) {
             free(object_directory);
             return err;
         }
     }
+
+    object_store_delete_scope_t scope = {0};
+    err = object_store_get_delete_scope(object_id, &scope);
+    if (err != ESP_OK) {
+        free(object_directory);
+        return err;
+    }
+
+    object_recovery_deletion_record_t record = {0};
+    (void)snprintf(record.object_id, sizeof(record.object_id), "%s", object_id);
+    (void)snprintf(record.reason, sizeof(record.reason), "%s", "unrecoverable_metadata");
+    (void)snprintf(
+        record.when,
+        sizeof(record.when),
+        "%s",
+        boot_recovery ? "boot" : "runtime"
+    );
+    record.uptime_ms = (uint64_t)(esp_timer_get_time() / 1000LL);
+    record.boot_id = object_recovery_boot_id();
+    record.sessions = scope.sessions;
+    record.artifacts = scope.artifacts;
+    record.localization_runs = scope.localization_runs;
+    record.bytes = scope.bytes;
+    (void)snprintf(
+        record.attempts,
+        sizeof(record.attempts),
+        "primary(object.json)=%s;backup(object.json.bak)=%s;temporary(object.json.tmp)=%s",
+        attempts.primary != NULL ? attempts.primary : "unknown",
+        attempts.backup != NULL ? attempts.backup : "unknown",
+        attempts.temporary != NULL ? attempts.temporary : "unknown"
+    );
 
     stage_started_ms =
         esp_log_timestamp();
@@ -294,14 +348,24 @@ static esp_err_t object_recovery_check_one_with_policy(
         return err;
     }
 
-    ESP_LOGI(
-        TAG,
-        "Removed incomplete object: %s",
-        object_id
-    );
+    record.valid = true;
+    s_last_deletion_record = record;
+    *removed = true;
 
-    *removed =
-        true;
+    ESP_LOGW(
+        TAG,
+        "OBJECT_RECOVERY_REMOVED reason=%s when=%s uptime_ms=%llu boot_id=%u object=%s sessions=%u artifacts=%u localization_runs=%u bytes=%llu attempts=%s",
+        record.reason,
+        record.when,
+        (unsigned long long)record.uptime_ms,
+        (unsigned)record.boot_id,
+        record.object_id,
+        (unsigned)record.sessions,
+        (unsigned)record.artifacts,
+        (unsigned)record.localization_runs,
+        (unsigned long long)record.bytes,
+        record.attempts
+    );
 
     free(object_directory);
     return ESP_OK;
@@ -322,6 +386,19 @@ esp_err_t object_recovery_check_one(
 
 
 esp_err_t object_recovery_check_one_background(
+    const char *object_id,
+    bool *removed
+)
+{
+    return object_recovery_check_one_with_policy(
+        object_id,
+        removed,
+        false
+    );
+}
+
+
+esp_err_t object_recovery_check_one_boot(
     const char *object_id,
     bool *removed
 )

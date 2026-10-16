@@ -198,6 +198,15 @@ static esp_err_t object_store_fs_count_delete_scope_directory(
             continue;
         }
 
+        if (info.st_size < 0) {
+            result = ESP_FAIL;
+            break;
+        }
+        const uint64_t file_bytes = (uint64_t)info.st_size;
+        scope->bytes = file_bytes > UINT64_MAX - scope->bytes
+            ? UINT64_MAX
+            : scope->bytes + file_bytes;
+
         if (object_root && strcmp(entry->d_name, "object.json") == 0) continue;
         if (object_store_fs_is_localization_run_file(entry->d_name)) {
             object_store_fs_delete_scope_increment(&scope->localization_runs);

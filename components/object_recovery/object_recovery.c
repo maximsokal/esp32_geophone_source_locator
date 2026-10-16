@@ -217,7 +217,8 @@ static bool object_recovery_session_checkpoint(
 static esp_err_t object_recovery_check_guarded(
     const char *object_id,
     bool *removed,
-    bool protect_persisted_active
+    bool protect_persisted_active,
+    bool boot_recovery
 )
 {
     esp_err_t err =
@@ -226,15 +227,15 @@ static esp_err_t object_recovery_check_guarded(
         return err;
     }
 
-    err = protect_persisted_active
-        ? object_recovery_check_one_background(
-            object_id,
-            removed
-        )
-        : object_recovery_check_one(
-            object_id,
-            removed
-        );
+    if (boot_recovery) {
+        err = object_recovery_check_one_boot(object_id, removed);
+    }
+    else if (protect_persisted_active) {
+        err = object_recovery_check_one_background(object_id, removed);
+    }
+    else {
+        err = object_recovery_check_one(object_id, removed);
+    }
 
     storage_manager_operation_end();
     return err;
@@ -291,7 +292,8 @@ static esp_err_t object_recovery_run_cooperative_policy(
         err = object_recovery_check_guarded(
             ids[index],
             &removed,
-            protect_persisted_active
+            protect_persisted_active,
+            false
         );
         if (err != ESP_OK) {
             ESP_LOGE(
@@ -449,7 +451,8 @@ esp_err_t object_recovery_run_active(void)
     err = object_recovery_check_guarded(
         active_id,
         &removed,
-        false
+        false,
+        true
     );
 
     ESP_LOGI(

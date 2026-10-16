@@ -1,6 +1,16 @@
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+
+#ifdef _WIN32
+#include <direct.h>
+#define mkdir(path, mode) _mkdir(path)
+#define rmdir _rmdir
+#else
+#include <unistd.h>
+#endif
 
 #include "seismic_recorder_internal.h"
 #include "storage_manager.h"
@@ -511,6 +521,8 @@ static void write_complete_metadata_fixture(void)
     snprintf(snapshot.source_name, sizeof(snapshot.source_name), "AD7606");
     snapshot.sample_rate_hz = 500U;
     snapshot.channel_count = SEISMIC_CHANNEL_COUNT;
+    snapshot.samples_written = 2U;
+    snapshot.format_version = SEISMIC_RECORDER_BINARY_VERSION_V1;
 
     assert(seismic_recorder_json_write_metadata(
         &profile,
@@ -518,6 +530,80 @@ static void write_complete_metadata_fixture(void)
         "complete",
         &participation
     ) == ESP_OK);
+}
+
+
+static void make_directory(const char *path)
+{
+    errno = 0;
+    if (mkdir(path, 0775) != 0) {
+        assert(errno == EEXIST);
+    }
+}
+
+
+static void samples_fixture_path(char *path, size_t path_size)
+{
+    char session_path[SEISMIC_RECORDER_PATH_SIZE];
+    assert(seismic_recorder_fs_build_session_path(
+        "OBJ_0001",
+        "S000001",
+        session_path,
+        sizeof(session_path)
+    ) == ESP_OK);
+    const int written = snprintf(path, path_size, "%s/samples.bin", session_path);
+    assert(written >= 0 && (size_t)written < path_size);
+}
+
+
+static void write_samples_fixture(uint64_t frames_written, uint64_t extra_frames)
+{
+    char object_directory[SEISMIC_RECORDER_PATH_SIZE];
+    char sessions_directory[SEISMIC_RECORDER_PATH_SIZE];
+    char directory[SEISMIC_RECORDER_PATH_SIZE];
+    make_directory(STORAGE_MANAGER_MOUNT_POINT);
+    make_directory(STORAGE_MANAGER_ROOT_PATH);
+    make_directory(STORAGE_MANAGER_OBJECTS_PATH);
+    (void)snprintf(object_directory, sizeof(object_directory), "%s/OBJ_0001", STORAGE_MANAGER_OBJECTS_PATH);
+    make_directory(object_directory);
+    (void)snprintf(sessions_directory, sizeof(sessions_directory), "%s/sessions", object_directory);
+    make_directory(sessions_directory);
+    (void)snprintf(directory, sizeof(directory), "%s/S000001", sessions_directory);
+    make_directory(directory);
+
+    char path[SEISMIC_RECORDER_PATH_SIZE];
+    samples_fixture_path(path, sizeof(path));
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    seismic_recorder_binary_header_t header = {0};
+    memcpy(header.magic, "GEOSEIS1", sizeof(header.magic));
+    header.version = SEISMIC_RECORDER_BINARY_VERSION_V1;
+    header.channel_count = SEISMIC_CHANNEL_COUNT;
+    header.sample_rate_hz = 500U;
+    header.frame_size_bytes = sizeof(seismic_frame_t);
+    assert(fwrite(&header, 1U, sizeof(header), file) == sizeof(header));
+    const seismic_frame_t frame = {0};
+    for (uint64_t index = 0U; index < frames_written + extra_frames; ++index) {
+        assert(fwrite(&frame, 1U, sizeof(frame), file) == sizeof(frame));
+    }
+    assert(fclose(file) == 0);
+}
+
+
+static void remove_samples_fixture(void)
+{
+    char path[SEISMIC_RECORDER_PATH_SIZE];
+    samples_fixture_path(path, sizeof(path));
+    (void)remove(path);
+    (void)snprintf(path, sizeof(path), "%s/OBJ_0001/sessions/S000001", STORAGE_MANAGER_OBJECTS_PATH);
+    (void)rmdir(path);
+    (void)snprintf(path, sizeof(path), "%s/OBJ_0001/sessions", STORAGE_MANAGER_OBJECTS_PATH);
+    (void)rmdir(path);
+    (void)snprintf(path, sizeof(path), "%s/OBJ_0001", STORAGE_MANAGER_OBJECTS_PATH);
+    (void)rmdir(path);
+    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH);
+    (void)rmdir(STORAGE_MANAGER_ROOT_PATH);
+    (void)rmdir(STORAGE_MANAGER_MOUNT_POINT);
 }
 
 
@@ -562,6 +648,7 @@ static void replace_schema_version(
 static void test_summary_reader_accepts_v1_v2_and_rejects_unsupported_versions(void)
 {
     write_complete_metadata_fixture();
+    write_samples_fixture(2U, 0U);
     char v2_json[sizeof(s_persisted_json)];
     snprintf(v2_json, sizeof(v2_json), "%s", s_persisted_json);
 
@@ -570,6 +657,19 @@ static void test_summary_reader_accepts_v1_v2_and_rejects_unsupported_versions(v
     assert(summary.readable && summary.complete && !summary.recovered);
     assert(summary.status == SEISMIC_RECORDER_SESSION_COMPLETE);
     assert(summary.sample_rate_hz == 500U && summary.channel_count == SEISMIC_CHANNEL_COUNT);
+
+    write_samples_fixture(1U, 0U);
+    assert(seismic_recorder_json_read_summary("OBJ_0001", "S000001", &summary) == ESP_OK);
+    assert(!summary.complete && !summary.readable && summary.has_gaps);
+    assert(summary.status == SEISMIC_RECORDER_SESSION_UNKNOWN);
+
+    remove_samples_fixture();
+    assert(seismic_recorder_json_read_summary("OBJ_0001", "S000001", &summary) == ESP_OK);
+    assert(!summary.complete && !summary.readable && summary.has_gaps);
+
+    write_samples_fixture(2U, 1U);
+    assert(seismic_recorder_json_read_summary("OBJ_0001", "S000001", &summary) == ESP_OK);
+    assert(summary.complete && summary.readable && !summary.has_gaps);
 
     char versioned_json[sizeof(s_persisted_json)];
     replace_schema_version(v2_json, "1", versioned_json, sizeof(versioned_json));
@@ -591,6 +691,7 @@ static void test_summary_reader_accepts_v1_v2_and_rejects_unsupported_versions(v
             ESP_ERR_INVALID_RESPONSE
         );
     }
+    remove_samples_fixture();
 }
 
 

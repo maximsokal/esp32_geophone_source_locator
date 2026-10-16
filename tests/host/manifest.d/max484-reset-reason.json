@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "app_startup_reset_reason",
+      "sources": [
+        "main/app_startup_status.c",
+        "tests/host/app_startup_reset_reason_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/max484_reset",
+        "main"
+      ]
+    }
+  ]
+}

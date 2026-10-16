@@ -129,6 +129,12 @@ esp_err_t web_status_json_build_extended(
     bool include_objects,
     const char *sessions_object_id
 );
+void web_status_json_set_reset_diagnostics(
+    const char *reason_name,
+    int reason_code,
+    uint32_t boot_id,
+    uint64_t uptime_ms
+);
 void web_status_json_free(char *json);
 
 bool web_status_json_add_pods(

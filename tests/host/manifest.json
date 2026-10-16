@@ -1488,9 +1488,24 @@
       ],
       "include_dirs": [
         "components/object_recovery/tests/stubs",
+        "components/object_recovery/include",
         "components/object_recovery",
         "components/object_format/include",
         "components/storage_manager/include"
+      ],
+      "defines": [
+        "OBJECT_RECOVERY_CAPTURE_LOGS=1"
+      ]
+    },
+    {
+      "name": "app_startup_reset_reason",
+      "sources": [
+        "main/app_startup_status.c",
+        "tests/host/app_startup_reset_reason_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/max484_reset",
+        "main"
       ]
     },
     {

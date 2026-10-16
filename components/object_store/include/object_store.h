@@ -126,6 +126,7 @@ typedef struct
     uint32_t sessions;
     uint32_t artifacts;
     uint32_t localization_runs;
+    uint64_t bytes;
 } object_store_delete_scope_t;
 
 /*

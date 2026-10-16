@@ -7,18 +7,23 @@ esp_err_t object_recovery_fs_prepare_metadata(
     const char *object_directory,
     const char *object_id,
     bool *valid,
-    bool *recovered
+    bool *recovered,
+    object_recovery_metadata_attempts_t *attempts
 )
 {
     if (
         object_directory == NULL ||
         object_id == NULL ||
         valid == NULL ||
-        recovered == NULL
+        recovered == NULL ||
+        attempts == NULL
     ) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    attempts->primary = "not_attempted";
+    attempts->backup = "not_attempted";
+    attempts->temporary = "not_attempted";
     *valid =
         false;
 
@@ -58,7 +63,8 @@ esp_err_t object_recovery_fs_prepare_metadata(
     if (
         object_recovery_fs_metadata_valid(
             primary,
-            object_id
+            object_id,
+            &attempts->primary
         )
     ) {
         /*
@@ -92,7 +98,8 @@ esp_err_t object_recovery_fs_prepare_metadata(
     if (
         object_recovery_fs_metadata_valid(
             sidecar,
-            object_id
+            object_id,
+            &attempts->backup
         )
     ) {
         err =
@@ -149,7 +156,8 @@ esp_err_t object_recovery_fs_prepare_metadata(
     if (
         object_recovery_fs_metadata_valid(
             sidecar,
-            object_id
+            object_id,
+            &attempts->temporary
         )
     ) {
         err =

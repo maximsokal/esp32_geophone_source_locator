@@ -19,6 +19,34 @@ bool web_status_json_add_workflow(cJSON *root);
 bool web_status_json_add_ranging(cJSON *root);
 #endif
 
+static struct
+{
+    char reason_name[24];
+    int reason_code;
+    uint32_t boot_id;
+    uint64_t uptime_ms;
+} s_reset_diagnostics = {
+    .reason_name = "UNKNOWN",
+};
+
+void web_status_json_set_reset_diagnostics(
+    const char *reason_name,
+    int reason_code,
+    uint32_t boot_id,
+    uint64_t uptime_ms
+)
+{
+    (void)snprintf(
+        s_reset_diagnostics.reason_name,
+        sizeof(s_reset_diagnostics.reason_name),
+        "%s",
+        reason_name != NULL ? reason_name : "UNKNOWN"
+    );
+    s_reset_diagnostics.reason_code = reason_code;
+    s_reset_diagnostics.boot_id = boot_id;
+    s_reset_diagnostics.uptime_ms = uptime_ms;
+}
+
 void web_server_https_runtime_status(
     uint32_t *clients_out,
     uint32_t *max_clients_out,
@@ -129,6 +157,7 @@ static bool web_status_json_add_system(
         cJSON_AddStringToObject(system, "state", web_status_policy_name(state)) != NULL &&
         cJSON_AddStringToObject(system, "mode", device_status_mode_name(status->mode)) != NULL &&
         cJSON_AddNumberToObject(system, "uptime_ms", (double)uptime_ms) != NULL &&
+        cJSON_AddStringToObject(system, "reset_reason", s_reset_diagnostics.reason_name) != NULL &&
         cJSON_AddBoolToObject(system, "acquisition_ready", acquisition_healthy) != NULL &&
         cJSON_AddNumberToObject(system, "ready_pods", (double)ready_pods) != NULL &&
         cJSON_AddNumberToObject(system, "required_pods", DEVICE_STATUS_POD_COUNT) != NULL;

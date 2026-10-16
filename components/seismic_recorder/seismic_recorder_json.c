@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "cJSON.h"
 #include "esp_log.h"
@@ -172,6 +173,88 @@ static esp_err_t seismic_recorder_json_read_root(
         *version_out = version;
     }
     return ESP_OK;
+}
+
+static bool seismic_recorder_json_samples_consistent(
+    const char *object_id,
+    const char *session_id,
+    uint16_t format_version,
+    uint32_t sample_rate_hz,
+    uint32_t channel_count,
+    uint64_t samples_written
+)
+{
+    char session_path[SEISMIC_RECORDER_PATH_SIZE];
+    if (seismic_recorder_fs_build_session_path(
+            object_id,
+            session_id,
+            session_path,
+            sizeof(session_path)
+        ) != ESP_OK) {
+        return false;
+    }
+
+    char samples_path[SEISMIC_RECORDER_PATH_SIZE];
+    const int written = snprintf(
+        samples_path,
+        sizeof(samples_path),
+        "%s/samples.bin",
+        session_path
+    );
+    if (written < 0 || written >= (int)sizeof(samples_path)) return false;
+
+    FILE *file = fopen(samples_path, "rb");
+    if (file == NULL) return false;
+
+    struct stat info;
+    seismic_recorder_binary_header_t header;
+    const bool readable =
+        stat(samples_path, &info) == 0 &&
+        info.st_size >= 0 &&
+        fread(&header, 1U, sizeof(header), file) == sizeof(header);
+    const int close_result = fclose(file);
+    if (!readable || close_result != 0) return false;
+
+    const uint32_t expected_frame_size =
+        format_version == SEISMIC_RECORDER_BINARY_VERSION_V1
+            ? (uint32_t)sizeof(seismic_frame_t)
+            : SEISMIC_RECORDER_BINARY_I16_FRAME_BYTES;
+    if (
+        memcmp(header.magic, "GEOSEIS1", sizeof(header.magic)) != 0 ||
+        header.version != format_version ||
+        header.sample_rate_hz != sample_rate_hz ||
+        header.channel_count != channel_count ||
+        header.channel_count != SEISMIC_CHANNEL_COUNT ||
+        header.frame_size_bytes != expected_frame_size ||
+        header.reserved != 0U
+    ) {
+        return false;
+    }
+
+    const uint64_t record_size = header.frame_size_bytes;
+    const uint64_t base_size = sizeof(header) +
+        (format_version == SEISMIC_RECORDER_BINARY_VERSION_V2
+            ? sizeof(seismic_recorder_binary_v2_metadata_t)
+            : 0U);
+    const uint64_t block_count = format_version == SEISMIC_RECORDER_BINARY_VERSION_V2
+        ? samples_written / SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES +
+            (samples_written % SEISMIC_RECORDER_V2_BLOCK_MAX_FRAMES != 0U ? 1U : 0U)
+        : 0U;
+    if (
+        block_count >
+            (UINT64_MAX - base_size) / sizeof(seismic_recorder_binary_v2_block_header_t)
+    ) {
+        return false;
+    }
+    const uint64_t minimum_size =
+        base_size + block_count * sizeof(seismic_recorder_binary_v2_block_header_t);
+    if (samples_written > (UINT64_MAX - minimum_size) / record_size) return false;
+
+    const uint64_t required_size = minimum_size + samples_written * record_size;
+    const uint64_t actual_size = (uint64_t)info.st_size;
+    if (actual_size < required_size) return false;
+    return format_version != SEISMIC_RECORDER_BINARY_VERSION_V1 ||
+        (actual_size - base_size) % record_size == 0U;
 }
 
 
@@ -1606,6 +1689,15 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
         return ESP_ERR_INVALID_RESPONSE;
     }
 
+    const bool samples_consistent = seismic_recorder_json_samples_consistent(
+        object_id,
+        session_id,
+        format_version,
+        sample_rate_hz,
+        channel_count,
+        samples_written
+    );
+
     snprintf(
         summary->session_id,
         sizeof(summary->session_id),
@@ -1618,13 +1710,15 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
         "%s",
         source->valuestring
     );
-    summary->status = complete
-        ? SEISMIC_RECORDER_SESSION_COMPLETE
-        : recovered
-            ? SEISMIC_RECORDER_SESSION_RECOVERED_ERROR
-            : SEISMIC_RECORDER_SESSION_ERROR;
-    summary->complete = complete;
-    summary->readable = true;
+    summary->status = !samples_consistent
+        ? SEISMIC_RECORDER_SESSION_UNKNOWN
+        : complete
+            ? SEISMIC_RECORDER_SESSION_COMPLETE
+            : recovered
+                ? SEISMIC_RECORDER_SESSION_RECOVERED_ERROR
+                : SEISMIC_RECORDER_SESSION_ERROR;
+    summary->complete = complete && samples_consistent;
+    summary->readable = samples_consistent;
     summary->recovered = recovered;
     summary->dropped_frames_available = dropped_frames_available;
     summary->recording_ms_available = recording_ms_available;
@@ -1635,7 +1729,7 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
     summary->recording_ms = recording_ms;
     summary->cadence = cadence;
     summary->format_version = format_version;
-    summary->has_gaps = dropped_frames > 0U;
+    summary->has_gaps = dropped_frames > 0U || !samples_consistent;
     summary->missing_samples = dropped_frames;
 
     cJSON_Delete(root);

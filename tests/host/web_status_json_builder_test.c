@@ -1034,6 +1034,18 @@ static void test_jitter_p99_nearest_rank_from_histogram(void)
     cJSON_Delete(root);
 }
 
+static void test_reset_reason_is_serialized(void)
+{
+    reset_fakes();
+    fill_status();
+    web_status_json_set_reset_diagnostics("PANIC", 4, 1156U, 12345U);
+
+    cJSON *root = build_json(false, NULL);
+    cJSON *system = object_item(root, "system");
+    assert(strcmp(string_item(system, "reset_reason"), "PANIC") == 0);
+    cJSON_Delete(root);
+}
+
 
 int main(void)
 {
@@ -1047,6 +1059,7 @@ int main(void)
     test_extended_cache_and_errors();
     test_storage_unavailable_is_not_reported_as_busy();
     test_jitter_p99_nearest_rank_from_histogram();
+    test_reset_reason_is_serialized();
     puts("web_status_json_builder_test: PASS");
     return 0;
 }

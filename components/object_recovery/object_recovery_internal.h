@@ -22,6 +22,12 @@ esp_err_t object_recovery_check_one_background(
     bool *removed
 );
 
+/* Boot-only variant: runtime leases cannot survive a reboot, but persisted ACTIVE still protects the tree. */
+esp_err_t object_recovery_check_one_boot(
+    const char *object_id,
+    bool *removed
+);
+
 
 /* Exposed for deterministic host coverage of the destructive runtime guard. */
 esp_err_t object_recovery_background_delete_guard(
