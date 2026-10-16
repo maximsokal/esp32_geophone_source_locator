@@ -6,7 +6,7 @@
 static void test_stack_inventory_is_named_and_sizes_are_bytes(void)
 {
     static const uint32_t expected_bytes[] = {
-        320U, 3584U, 3072U, 2048U, 3200U, 900U, 2100U, 1300U, 1024U, 2048U,
+        320U, 3584U, 3072U, 2048U, 2048U, 3200U, 900U, 2100U, 1300U, 1024U, 2048U,
     };
 
     assert(nrf_thread_stack_inventory_count == sizeof(expected_bytes) / sizeof(expected_bytes[0]));

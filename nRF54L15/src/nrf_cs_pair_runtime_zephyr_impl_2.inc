@@ -157,7 +157,7 @@ static int op_cleanup(void *context)
     runtime_stop_scan();
 
     if (s_outgoing_conn == NULL) {
-        (void)k_work_submit(&s_cleanup_work);
+        (void)submit_cs_work(&s_cleanup_work);
         return 0;
     }
 
@@ -169,7 +169,7 @@ static int op_cleanup(void *context)
     bt_conn_unref(s_outgoing_conn);
     s_outgoing_conn = NULL;
     s_outgoing_connected = false;
-    (void)k_work_submit(&s_cleanup_work);
+    (void)submit_cs_work(&s_cleanup_work);
     return 0;
 }
 

@@ -9,6 +9,8 @@ LOG_MODULE_REGISTER(nrf_cs_pair_runtime, LOG_LEVEL_INF);
 #define NRF_CS_EVENT_QUEUE_DEPTH 24U
 #define NRF_CS_RANGING_COUNTER_NONE 0xFFFFU
 
+#include "nrf_cs_pair_runtime_zephyr_workqueue.inc"
+
 typedef enum {
     RUNTIME_EVENT_CONNECTED = 0,
     RUNTIME_EVENT_SECURITY_READY,
@@ -46,11 +48,13 @@ K_MSGQ_DEFINE(
 
 static struct k_work s_event_work;
 static struct k_work s_cleanup_work;
+static struct k_work s_execute_work;
 static struct k_work_delayable s_timeout_work;
 static struct k_spinlock s_event_queue_overflow_lock;
 
 static nrf_cs_pair_adapter_t s_adapter;
 static bool s_started;
+static atomic_t s_execute_pending;
 static bool s_advertising;
 static bool s_scanning;
 static nrf_cs_node_id_t s_node_id = 0xFFU;
@@ -137,7 +141,7 @@ static void runtime_post_event(
         LOG_ERR("Channel Sounding event queue overflow");
         return;
     }
-    (void)k_work_submit(&s_event_work);
+    (void)submit_cs_work(&s_event_work);
 }
 
 static bool runtime_active_step(nrf_cs_step_t *step_out)

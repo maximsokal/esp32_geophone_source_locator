@@ -28,7 +28,7 @@ static void configure_reflector_procedure(struct bt_conn *conn, uint8_t config_i
     }
 }
 
-/* Synchronous HCI calls here can block the shared system workqueue and delay its CS timeout. */
+/* Synchronous HCI calls here can delay the CS timeout, so this handler uses the dedicated queue. */
 static void event_work_handler(struct k_work *work)
 {
     runtime_event_t event;
@@ -392,6 +392,29 @@ BT_CONN_CB_DEFINE(s_conn_callbacks) = {
     .le_cs_subevent_data_available = subevent_data_cb,
 };
 
+static void execute_work_handler(struct k_work *work)
+{
+    nrf_cs_pair_adapter_result_t result;
+    nrf_cs_measurement_t failure = {
+        .outcome = NRF_CS_OUTCOME_TRANSPORT_ERROR,
+    };
+
+    ARG_UNUSED(work);
+    result = nrf_cs_pair_adapter_execute(
+        &s_adapter,
+        s_node_id,
+        &s_timeout_step,
+        runtime_adapter_complete,
+        NULL);
+    atomic_set(&s_execute_pending, 0);
+    if (result != NRF_CS_PAIR_ADAPTER_OK) {
+        runtime_adapter_complete(&s_timeout_step, &failure, NULL);
+        return;
+    }
+
+    (void)reschedule_cs_work(&s_timeout_work, K_MSEC(s_timeout_step.timeout_ms));
+}
+
 int nrf_cs_pair_runtime_zephyr_start(void)
 {
     int err;
@@ -403,8 +426,11 @@ int nrf_cs_pair_runtime_zephyr_start(void)
     k_msgq_purge(&s_event_queue);
     k_work_init(&s_event_work, event_work_handler);
     k_work_init(&s_cleanup_work, cleanup_work_handler);
+    k_work_init(&s_execute_work, execute_work_handler);
     k_work_init_delayable(&s_timeout_work, timeout_work_handler);
+    start_cs_workqueue();
     runtime_reset_ranging();
+    atomic_set(&s_execute_pending, 0);
     s_event_queue_overflow_total = 0U;
 
     if (nrf_cs_pair_adapter_init(&s_adapter, &s_adapter_ops) !=
@@ -440,13 +466,14 @@ int nrf_cs_pair_runtime_zephyr_execute(
     nrf_cs_pair_runtime_complete_cb_t complete_cb,
     void *context)
 {
-    nrf_cs_pair_adapter_result_t result;
+    int submit_result;
 
     if (!s_started || step == NULL || complete_cb == NULL ||
         s_node_id == 0xFFU) {
         return -EINVAL;
     }
-    if (s_incoming_conn != NULL || nrf_cs_pair_adapter_is_active(&s_adapter)) {
+    if (atomic_get(&s_execute_pending) != 0 || s_incoming_conn != NULL ||
+        nrf_cs_pair_adapter_is_active(&s_adapter)) {
         return -EBUSY;
     }
     if (step->initiator != s_node_id) {
@@ -456,30 +483,26 @@ int nrf_cs_pair_runtime_zephyr_execute(
     s_user_complete_cb = complete_cb;
     s_user_complete_context = context;
     s_timeout_step = *step;
-
-    result = nrf_cs_pair_adapter_execute(
-        &s_adapter,
-        s_node_id,
-        step,
-        runtime_adapter_complete,
-        NULL);
-    if (result != NRF_CS_PAIR_ADAPTER_OK) {
+    atomic_set(&s_execute_pending, 1);
+    submit_result = submit_cs_work(&s_execute_work);
+    if (submit_result < 0) {
+        atomic_set(&s_execute_pending, 0);
         s_user_complete_cb = NULL;
         s_user_complete_context = NULL;
-        return result == NRF_CS_PAIR_ADAPTER_ERR_BUSY ? -EBUSY : -EINVAL;
+        return submit_result;
     }
 
-    (void)k_work_reschedule(&s_timeout_work, K_MSEC(step->timeout_ms));
     return 0;
 }
 
 bool nrf_cs_pair_runtime_zephyr_is_busy(void)
 {
-    return nrf_cs_pair_adapter_is_active(&s_adapter) || s_incoming_conn != NULL;
+    return atomic_get(&s_execute_pending) != 0 || nrf_cs_pair_adapter_is_active(&s_adapter) ||
+        s_incoming_conn != NULL;
 }
 
 bool nrf_cs_pair_runtime_zephyr_is_progress_required(void)
 {
-    return nrf_cs_pair_adapter_is_active(&s_adapter) ||
+    return atomic_get(&s_execute_pending) != 0 || nrf_cs_pair_adapter_is_active(&s_adapter) ||
         atomic_get(&s_reflector_procedure_active) != 0;
 }
