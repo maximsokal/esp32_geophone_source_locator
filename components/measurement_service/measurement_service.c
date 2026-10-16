@@ -64,6 +64,7 @@ static SemaphoreHandle_t s_gate = NULL;
 static SemaphoreHandle_t s_mutex = NULL;
 static TaskHandle_t s_task = NULL;
 static measurement_service_snapshot_t s_snapshot;
+static measurement_service_queue_stats_t s_queue_stats;
 static bool s_initialized = false;
 static bool s_bulk_admission_held = false;
 
@@ -120,6 +121,14 @@ static void measurement_service_lock(void)
 static void measurement_service_unlock(void)
 {
     xSemaphoreGive(s_mutex);
+}
+
+
+static void measurement_service_count_queue_overflow_locked(void)
+{
+    if (s_queue_stats.overflow_count < UINT32_MAX) {
+        ++s_queue_stats.overflow_count;
+    }
 }
 
 
@@ -982,7 +991,16 @@ static esp_err_t measurement_service_submit(
         reservation_release_hook_owned = false;
     }
 
-    if (xQueueSend(s_queue, &command, 0) != pdTRUE) {
+    const BaseType_t queue_send_result = xQueueSend(s_queue, &command, 0);
+    measurement_service_lock();
+    if (s_queue_stats.peak_occupancy < MEASUREMENT_SERVICE_QUEUE_LENGTH) {
+        s_queue_stats.peak_occupancy = MEASUREMENT_SERVICE_QUEUE_LENGTH;
+    }
+    if (queue_send_result != pdTRUE) {
+        measurement_service_count_queue_overflow_locked();
+    }
+    measurement_service_unlock();
+    if (queue_send_result != pdTRUE) {
         measurement_service_release_start_object_command(&command);
         if (start_guard_hook_owned) {
             measurement_service_hook_release(MEASUREMENT_HOOK_START_GUARD);
@@ -1052,6 +1070,7 @@ esp_err_t measurement_service_init(void)
     }
 
     memset(&s_snapshot, 0, sizeof(s_snapshot));
+    memset(&s_queue_stats, 0, sizeof(s_queue_stats));
     measurement_service_reset_hooks();
     s_start_reservation_held = false;
     s_start_reservation_callback = NULL;
@@ -1396,6 +1415,23 @@ esp_err_t measurement_service_get_snapshot(
         }
     }
 
+    return ESP_OK;
+}
+
+
+esp_err_t measurement_service_get_queue_stats(
+    measurement_service_queue_stats_t *stats
+)
+{
+    if (stats == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_initialized || s_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    measurement_service_lock();
+    *stats = s_queue_stats;
+    measurement_service_unlock();
     return ESP_OK;
 }
 

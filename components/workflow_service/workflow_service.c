@@ -133,6 +133,8 @@ static uint8_t s_assigned_remotes;
 static char s_active_object_id[OBJECT_STORE_ID_SIZE];
 static char s_session_id[SEISMIC_RECORDER_SESSION_ID_SIZE];
 static uint32_t s_async_next_seq;
+static size_t s_async_queue_occupancy;
+static workflow_service_queue_stats_t s_async_queue_stats;
 static workflow_last_async_t s_last_async;
 static workflow_last_material_save_t s_last_material_save;
 static bool s_placement_ready;
@@ -170,6 +172,36 @@ static void workflow_service_refresh_calc_settings_locked(uint64_t now_ms);
 static void workflow_service_mark_calculation_orphaned_locked(void);
 static BaseType_t workflow_service_create_poll_task(TaskHandle_t *task_out);
 static void workflow_service_poll_task(void *argument);
+
+
+static void workflow_service_record_async_enqueue(bool accepted)
+{
+    if (accepted) {
+        ++s_async_queue_occupancy;
+        if (s_async_queue_stats.peak_occupancy < s_async_queue_occupancy) {
+            s_async_queue_stats.peak_occupancy = (uint32_t)s_async_queue_occupancy;
+        }
+    } else if (s_async_queue_stats.overflow_count < UINT32_MAX) {
+        ++s_async_queue_stats.overflow_count;
+    }
+}
+
+
+static BaseType_t workflow_service_receive_async(workflow_async_command_t *item)
+{
+    if (
+        item == NULL || s_async_enqueue_mutex == NULL ||
+        xSemaphoreTake(s_async_enqueue_mutex, 0U) != pdTRUE
+    ) {
+        return pdFALSE;
+    }
+    const BaseType_t received = xQueueReceive(s_async_queue, item, 0U);
+    if (received == pdTRUE && s_async_queue_occupancy > 0U) {
+        --s_async_queue_occupancy;
+    }
+    xSemaphoreGive(s_async_enqueue_mutex);
+    return received;
+}
 
 static const nrf_cs_policy_t s_workflow_ranging_policy = {
     .pair_timeout_ms = 500U,
@@ -1393,6 +1425,8 @@ esp_err_t workflow_service_init(void)
     atomic_store_explicit(&s_poll_hwm_after_first_calculation, false, memory_order_relaxed);
     s_poll_first_calculation_seen = false;
     s_poll_task = NULL;
+    s_async_queue_occupancy = 0U;
+    memset(&s_async_queue_stats, 0, sizeof(s_async_queue_stats));
     memset(&s_calibration, 0, sizeof(s_calibration));
     memset(&s_placement, 0, sizeof(s_placement));
     memset(&s_ranging, 0, sizeof(s_ranging));
@@ -1525,6 +1559,19 @@ esp_err_t workflow_service_try_get_snapshot(workflow_snapshot_t *out)
     return ESP_OK;
 }
 
+
+esp_err_t workflow_service_get_queue_stats(workflow_service_queue_stats_t *stats)
+{
+    if (stats == NULL) return ESP_ERR_INVALID_ARG;
+    if (!s_initialized || s_async_enqueue_mutex == NULL) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTake(s_async_enqueue_mutex, 0U) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    *stats = s_async_queue_stats;
+    xSemaphoreGive(s_async_enqueue_mutex);
+    return ESP_OK;
+}
+
 static workflow_command_result_t workflow_service_command_locked(
     workflow_command_t command,
     const workflow_command_params_t *params
@@ -1627,7 +1674,7 @@ static workflow_command_result_t workflow_service_command_locked(
 static void workflow_service_process_async_locked(void)
 {
     workflow_async_command_t item;
-    while (xQueueReceive(s_async_queue, &item, 0U) == pdTRUE) {
+    while (workflow_service_receive_async(&item) == pdTRUE) {
         if (item.kind == WORKFLOW_ASYNC_MATERIAL_SAVE) {
             workflow_service_reconcile_locked();
             esp_err_t result = ESP_ERR_NOT_FOUND;
@@ -1748,9 +1795,11 @@ esp_err_t workflow_service_command_async(
         .expected_generation = expected_generation,
     };
     if (xQueueSend(s_async_queue, &item, 0U) != pdTRUE) {
+        workflow_service_record_async_enqueue(false);
         xSemaphoreGive(s_async_enqueue_mutex);
         return ESP_ERR_NO_MEM;
     }
+    workflow_service_record_async_enqueue(true);
     s_async_next_seq = seq;
     *out_seq = seq;
     xSemaphoreGive(s_async_enqueue_mutex);
@@ -1796,9 +1845,11 @@ esp_err_t workflow_service_save_calc_material_range_async(
     };
     (void)snprintf(item.material_id, sizeof(item.material_id), "%s", material_id);
     if (xQueueSend(s_async_queue, &item, 0U) != pdTRUE) {
+        workflow_service_record_async_enqueue(false);
         xSemaphoreGive(s_async_enqueue_mutex);
         return ESP_ERR_NO_MEM;
     }
+    workflow_service_record_async_enqueue(true);
     s_async_next_seq = seq;
     xSemaphoreGive(s_async_enqueue_mutex);
     return ESP_OK;

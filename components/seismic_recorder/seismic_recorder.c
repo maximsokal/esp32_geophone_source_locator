@@ -775,12 +775,14 @@ static void seismic_recorder_task(void *argument)
                     first_frame,
                     s_batch,
                     s_batch_sample_indices,
-                    allowed_count
+                    allowed_count,
+                    effective_dropped
                 );
                 if (append_err == ESP_OK && s_snapshot.running) {
                     s_ingest_cursor =
                         first_frame + (uint64_t)allowed_count - 1U;
                     s_snapshot.dropped_frames += effective_dropped;
+                    s_snapshot.source_gap_samples = s_cache.source_gap_samples;
                     did_ingest = true;
                 }
                 seismic_recorder_unlock();

@@ -695,6 +695,63 @@ static void test_summary_reader_accepts_v1_v2_and_rejects_unsupported_versions(v
 }
 
 
+static void test_summary_gap_classes_round_trip(void)
+{
+    static const struct {
+        uint64_t ring_dropped_frames;
+        uint64_t source_gap_samples;
+        bool has_gaps;
+    } cases[] = {
+        {0U, 0U, false},
+        {3U, 0U, true},
+        {0U, 2U, true},
+        {3U, 2U, true},
+    };
+    write_samples_fixture(2U, 0U);
+
+    for (size_t index = 0U; index < sizeof(cases) / sizeof(cases[0]); ++index) {
+        object_store_profile_t profile = {0};
+        seismic_recorder_snapshot_t snapshot = {0};
+        seismic_recorder_session_participation_t participation = {0};
+        snprintf(snapshot.object_id, sizeof(snapshot.object_id), "OBJ_0001");
+        snprintf(snapshot.session_id, sizeof(snapshot.session_id), "S000001");
+        snprintf(snapshot.source_name, sizeof(snapshot.source_name), "AD7606");
+        snapshot.sample_rate_hz = 500U;
+        snapshot.channel_count = SEISMIC_CHANNEL_COUNT;
+        snapshot.samples_written = 2U;
+        snapshot.dropped_frames = cases[index].ring_dropped_frames;
+        snapshot.source_gap_samples = cases[index].source_gap_samples;
+        snapshot.format_version = SEISMIC_RECORDER_BINARY_VERSION_V1;
+
+        assert(seismic_recorder_json_write_metadata(
+            &profile, &snapshot, "complete", &participation
+        ) == ESP_OK);
+        assert(strstr(s_persisted_json, cases[index].has_gaps
+            ? "\"has_gaps\":true" : "\"has_gaps\":false") != NULL);
+        char counter[64];
+        snprintf(counter, sizeof(counter), "\"ring_dropped_frames\":%llu",
+            (unsigned long long)cases[index].ring_dropped_frames);
+        assert(strstr(s_persisted_json, counter) != NULL);
+        snprintf(counter, sizeof(counter), "\"source_gap_samples\":%llu",
+            (unsigned long long)cases[index].source_gap_samples);
+        assert(strstr(s_persisted_json, counter) != NULL);
+
+        seismic_recorder_session_summary_t summary;
+        assert(seismic_recorder_json_read_summary(
+            "OBJ_0001", "S000001", &summary
+        ) == ESP_OK);
+        assert(summary.complete && summary.readable);
+        assert(summary.ring_dropped_frames == cases[index].ring_dropped_frames);
+        assert(summary.source_gap_samples == cases[index].source_gap_samples);
+        assert(summary.has_gaps == cases[index].has_gaps);
+        assert(summary.missing_samples ==
+            cases[index].ring_dropped_frames + cases[index].source_gap_samples);
+    }
+
+    remove_samples_fixture();
+}
+
+
 static void test_recording_gate_metadata_round_trips(void)
 {
     object_store_profile_t profile = {0};
@@ -736,6 +793,7 @@ static void test_recording_gate_metadata_round_trips(void)
 int main(void)
 {
     test_valid_geometry_round_trips();
+    test_summary_gap_classes_round_trip();
     test_missing_geometry_key_defaults_to_zeroed();
     test_malformed_pod_entry_is_skipped_not_fatal();
     test_missing_file_is_a_real_error();

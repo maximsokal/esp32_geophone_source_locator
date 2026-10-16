@@ -161,7 +161,8 @@ def test_boot_key_callback_uses_adapter_release_gate_without_global_keypad_gate(
 def test_recovery_prompt_routes_shutdown_hook_to_decision_queue_and_cleans_up():
     assert "power_control_set_shutdown_notification_hook(\n        app_storage_boot_ui_shutdown_callback,\n        s_key_queue\n    )" in RECOVERY_UI
     assert "item.shutdown_notification = true;" in RECOVERY_UI
-    assert "xQueueSend(queue, &item, 0U)" in RECOVERY_UI
+    assert "app_storage_boot_ui_send_event(queue, &item) != pdTRUE" in RECOVERY_UI
+    assert "xQueueSend(queue, item, 0U)" in RECOVERY_UI
     assert "power_control_set_shutdown_notification_hook(NULL, NULL);" in RECOVERY_UI
     assert "keypad_stop_boot_event_monitor();" in RECOVERY_UI
     assert "if (item.shutdown_notification)" in RECOVERY_UI

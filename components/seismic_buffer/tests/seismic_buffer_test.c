@@ -420,6 +420,40 @@ static void test_wrap_boundary_counts(void)
 }
 
 
+static void test_queue_stats_track_n_boundaries_and_reader_drops(void)
+{
+    assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 500U) == ESP_OK);
+    const uint64_t capacity = seismic_buffer_capacity();
+    seismic_buffer_stats_t stats = {0};
+    assert(seismic_buffer_get_stats(&stats) == ESP_OK);
+    assert(stats.peak_occupancy == 0U && stats.dropped_frames_total == 0U);
+
+    for (uint64_t number = 1U; number < capacity; ++number) {
+        push_number(number);
+    }
+    assert(seismic_buffer_get_stats(&stats) == ESP_OK);
+    assert(stats.peak_occupancy == capacity - 1U);
+
+    push_number(capacity);
+    assert(seismic_buffer_get_stats(&stats) == ESP_OK);
+    assert(stats.peak_occupancy == capacity);
+    push_number(capacity + 1U);
+
+    seismic_frame_t frame;
+    size_t count = 0U;
+    uint64_t cursor = 0U;
+    uint64_t dropped = 0U;
+    seismic_buffer_info_t info = {0};
+    assert(seismic_buffer_copy_since(
+        &cursor, &frame, 1U, &count, &dropped, &info
+    ) == ESP_OK);
+    assert(count == 1U && dropped == 1U);
+    assert(seismic_buffer_get_stats(&stats) == ESP_OK);
+    assert(stats.peak_occupancy == capacity);
+    assert(stats.dropped_frames_total == 1U);
+}
+
+
 static void test_indexed_source_gaps_are_preserved(void)
 {
     assert(seismic_buffer_configure(SEISMIC_SOURCE_AD7606, 500U) == ESP_OK);
@@ -742,6 +776,7 @@ int main(void)
     test_latest_and_cursor_batches();
     test_runtime_wrap_and_skipped_frames();
     test_wrap_boundary_counts();
+    test_queue_stats_track_n_boundaries_and_reader_drops();
     test_indexed_source_gaps_are_preserved();
 #if defined(SEISMIC_BUFFER_TEST_HOOKS)
     test_sync_operation_baseline();

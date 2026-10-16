@@ -113,6 +113,7 @@ typedef struct
 
     uint64_t samples_written;
     uint64_t dropped_frames;
+    uint64_t source_gap_samples;
     uint64_t recording_ms;
     seismic_recorder_cadence_t cadence;
     uint16_t format_version;
@@ -139,6 +140,8 @@ typedef struct
 
     uint64_t samples_written;
     uint64_t dropped_frames;
+    uint64_t ring_dropped_frames;
+    uint64_t source_gap_samples;
     uint64_t recording_ms;
     seismic_recorder_cadence_t cadence;
     uint16_t format_version;

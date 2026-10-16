@@ -991,6 +991,9 @@ static void test_underlying_errors_and_queue_full(void)
     assert(xSemaphoreGive(gate) == pdTRUE);
     assert(measurement_service_start_async() == ESP_ERR_TIMEOUT);
     assert(last_queue->occupied);
+    measurement_service_queue_stats_t queue_stats;
+    assert(measurement_service_get_queue_stats(&queue_stats) == ESP_OK);
+    assert(queue_stats.peak_occupancy == 1U && queue_stats.overflow_count == 1U);
     stop_service();
 
     start_service();
@@ -1002,6 +1005,39 @@ static void test_underlying_errors_and_queue_full(void)
     current = snapshot();
     assert(current.state == MEASUREMENT_SERVICE_ERROR);
     assert(current.last_error == ESP_FAIL);
+    stop_service();
+}
+
+
+static void test_full_queue_stop_then_recorder_fault_never_reports_stopped_ok(void)
+{
+    start_service();
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+    assert(snapshot().state == MEASUREMENT_SERVICE_RECORDING);
+
+    const measurement_command_t queued_stop = {
+        .type = MEASUREMENT_COMMAND_STOP,
+    };
+    assert(xQueueSend(last_queue, &queued_stop, 0U) == pdTRUE);
+    assert(xSemaphoreGive(s_gate) == pdTRUE);
+    assert(measurement_service_stop_async() == ESP_ERR_TIMEOUT);
+
+    fake_recorder.running = false;
+    fake_recorder.state = SEISMIC_RECORDER_ERROR;
+    fake_recorder.last_error = ESP_FAIL;
+    fake_recorder.stop_stage_error = ESP_FAIL;
+    fake_recorder.stop_error_stage = SEISMIC_RECORDER_STOP_STAGE_DRAIN;
+    measurement_service_process_stop_poll();
+
+    const measurement_service_snapshot_t current = snapshot();
+    assert(current.state == MEASUREMENT_SERVICE_ERROR);
+    assert(current.last_error == ESP_FAIL);
+    assert(current.stop_stage != SEISMIC_RECORDER_STOP_STAGE_COMPLETE);
+    assert(current.state != MEASUREMENT_SERVICE_REVIEW);
+    measurement_service_queue_stats_t queue_stats;
+    assert(measurement_service_get_queue_stats(&queue_stats) == ESP_OK);
+    assert(queue_stats.peak_occupancy == 1U && queue_stats.overflow_count == 1U);
     stop_service();
 }
 
@@ -1082,6 +1118,7 @@ int main(void)
     test_admission_enter_failure_does_not_leak();
     test_invalid_worker_start_releases_admission_once();
     test_snapshot_state_and_busy_share_one_critical_section();
+    test_full_queue_stop_then_recorder_fault_never_reports_stopped_ok();
     test_underlying_errors_and_queue_full();
     test_snapshot_and_delete_errors_preserve_safe_states();
     test_delayed_stop_error_blocks_restart_until_cleanup();

@@ -1251,14 +1251,29 @@ static void test_async_fifo_stale_generation_full_queue_and_monotonic_sequence(v
         assert(workflow_service_command_async(WORKFLOW_COMMAND_BACK,
             false, 0U, &accepted[i]) == ESP_OK);
         if (i > 0U) assert(accepted[i] > accepted[i - 1U]);
+        if (i == 2U) {
+            workflow_service_queue_stats_t queue_stats;
+            assert(workflow_service_get_queue_stats(&queue_stats) == ESP_OK);
+            assert(queue_stats.peak_occupancy == 3U && queue_stats.overflow_count == 0U);
+        }
     }
     uint32_t unchanged = UINT32_C(0x12345678);
     assert(workflow_service_command_async(WORKFLOW_COMMAND_BACK,
         false, 0U, &unchanged) == ESP_ERR_NO_MEM);
     assert(unchanged == UINT32_C(0x12345678));
+    workflow_service_queue_stats_t queue_stats;
+    assert(workflow_service_get_queue_stats(&queue_stats) == ESP_OK);
+    assert(queue_stats.peak_occupancy == 4U && queue_stats.overflow_count == 1U);
     assert(workflow_service_poll() == ESP_OK);
     snapshot = try_snapshot();
     assert(snapshot.last_async.seq == accepted[3]);
+    uint32_t next_accepted = 0U;
+    assert(workflow_service_command_async(
+        WORKFLOW_COMMAND_BACK, false, 0U, &next_accepted
+    ) == ESP_OK);
+    uint32_t expected_next = accepted[3] + 1U;
+    if (expected_next == 0U) expected_next = 1U;
+    assert(next_accepted == expected_next);
     workflow_service_shutdown();
 }
 

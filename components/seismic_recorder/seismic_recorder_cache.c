@@ -34,6 +34,15 @@ static bool seismic_recorder_cache_add_overflows_u64(
 }
 
 
+static uint64_t seismic_recorder_cache_saturating_add_u64(
+    uint64_t value,
+    uint64_t amount
+)
+{
+    return amount > UINT64_MAX - value ? UINT64_MAX : value + amount;
+}
+
+
 static const seismic_recorder_cache_slot_t *seismic_recorder_cache_slot_for_session_frame(
     const seismic_recorder_cache_t *cache,
     uint64_t session_frame
@@ -93,6 +102,9 @@ void seismic_recorder_cache_reset(
     cache->first_session_frame = 0U;
     cache->next_session_frame = 0U;
     cache->persisted_session_frame = 0U;
+    cache->last_source_sample_index = 0U;
+    cache->source_gap_samples = 0U;
+    cache->has_source_sample_index = false;
 }
 
 
@@ -101,7 +113,8 @@ esp_err_t seismic_recorder_cache_append_with_source_indices(
     uint64_t first_source_frame_number,
     const seismic_frame_t *frames,
     const uint64_t *source_sample_indices,
-    size_t frame_count
+    size_t frame_count,
+    uint64_t ring_dropped_frames_before
 )
 {
     if (
@@ -156,6 +169,34 @@ esp_err_t seismic_recorder_cache_append_with_source_indices(
         return ESP_ERR_NO_MEM;
     }
 
+    uint64_t source_gap_samples = cache->source_gap_samples;
+    uint64_t previous_sample_index = cache->last_source_sample_index;
+    uint64_t unaccounted_ring_drops = ring_dropped_frames_before;
+    bool has_previous_sample_index = cache->has_source_sample_index;
+    for (size_t index = 0U; index < frame_count; ++index) {
+        const uint64_t sample_index = source_sample_indices != NULL
+            ? source_sample_indices[index]
+            : first_source_frame_number + (uint64_t)index;
+        if (has_previous_sample_index) {
+            if (sample_index <= previous_sample_index) {
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+            const uint64_t missing = sample_index - previous_sample_index - 1U;
+            const uint64_t ring_explained = index == 0U
+                ? (missing < unaccounted_ring_drops
+                    ? missing
+                    : unaccounted_ring_drops)
+                : 0U;
+            unaccounted_ring_drops -= ring_explained;
+            source_gap_samples = seismic_recorder_cache_saturating_add_u64(
+                source_gap_samples,
+                missing - ring_explained
+            );
+        }
+        previous_sample_index = sample_index;
+        has_previous_sample_index = true;
+    }
+
     cache->first_session_frame += (uint64_t)required_evict;
     cache->count -= required_evict;
 
@@ -176,6 +217,10 @@ esp_err_t seismic_recorder_cache_append_with_source_indices(
         cache->count++;
         cache->next_session_frame++;
     }
+
+    cache->last_source_sample_index = previous_sample_index;
+    cache->has_source_sample_index = has_previous_sample_index;
+    cache->source_gap_samples = source_gap_samples;
 
     return ESP_OK;
 }
@@ -330,7 +375,8 @@ esp_err_t seismic_recorder_cache_append(
         first_source_frame_number,
         frames,
         NULL,
-        frame_count
+        frame_count,
+        0U
     );
 }
 
@@ -429,5 +475,6 @@ esp_err_t seismic_recorder_cache_get_info(
     info->first_session_frame = cache->first_session_frame;
     info->next_session_frame = cache->next_session_frame;
     info->persisted_session_frame = cache->persisted_session_frame;
+    info->source_gap_samples = cache->source_gap_samples;
     return ESP_OK;
 }

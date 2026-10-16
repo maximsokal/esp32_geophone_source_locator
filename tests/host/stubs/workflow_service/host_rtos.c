@@ -29,7 +29,7 @@ QueueHandle_t xQueueCreate(unsigned length, unsigned item_size)
 
 BaseType_t xQueueSend(QueueHandle_t handle, const void *item, TickType_t timeout)
 {
-    (void)timeout;
+    assert(timeout == 0U);
     host_queue_t *queue = handle;
     if (queue == NULL || item == NULL || queue->count == queue->length) return pdFALSE;
     const unsigned tail = (queue->head + queue->count) % queue->length;
@@ -40,7 +40,7 @@ BaseType_t xQueueSend(QueueHandle_t handle, const void *item, TickType_t timeout
 
 BaseType_t xQueueReceive(QueueHandle_t handle, void *item, TickType_t timeout)
 {
-    (void)timeout;
+    assert(timeout == 0U);
     host_queue_t *queue = handle;
     if (queue == NULL || item == NULL || queue->count == 0U) return pdFALSE;
     memcpy(item, queue->items + (size_t)queue->head * queue->item_size, queue->item_size);

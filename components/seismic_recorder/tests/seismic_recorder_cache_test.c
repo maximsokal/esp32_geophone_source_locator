@@ -346,7 +346,8 @@ static void test_source_gaps_survive_cache_slot_wrap(void)
         100U,
         first,
         (const uint64_t[]){100U, 101U, 110U, 111U},
-        4U
+        4U,
+        0U
     ) == ESP_OK);
     uint64_t last_source = 0U;
     assert(seismic_recorder_cache_mark_persisted(&cache, 0U, 3U, &last_source) == ESP_OK);
@@ -359,7 +360,8 @@ static void test_source_gaps_survive_cache_slot_wrap(void)
         150U,
         wrapped,
         (const uint64_t[]){150U, 151U},
-        2U
+        2U,
+        0U
     ) == ESP_OK);
 
     seismic_frame_t dirty[3] = {0};
@@ -379,6 +381,48 @@ static void test_source_gaps_survive_cache_slot_wrap(void)
         &cache, dirty_first, dirty_count, &last_source
     ) == ESP_OK);
     assert(last_source == 151U);
+
+    seismic_recorder_cache_info_t info;
+    assert(seismic_recorder_cache_get_info(&cache, &info) == ESP_OK);
+    assert(info.source_gap_samples == 46U);
+}
+
+
+static void test_source_and_ring_gap_accounting(void)
+{
+    seismic_recorder_cache_slot_t storage[8];
+    seismic_recorder_cache_t cache;
+    assert(seismic_recorder_cache_init(&cache, storage, 8U) == ESP_OK);
+    seismic_frame_t frames[2] = {0};
+    seismic_recorder_cache_info_t info;
+
+    fill_frames(frames, 100U, 2U);
+    assert(seismic_recorder_cache_append_with_source_indices(
+        &cache, 1U, frames, (const uint64_t[]){100U, 101U}, 2U, 0U
+    ) == ESP_OK);
+    assert(seismic_recorder_cache_get_info(&cache, &info) == ESP_OK);
+    assert(info.source_gap_samples == 0U);
+
+    fill_frames(frames, 104U, 2U);
+    assert(seismic_recorder_cache_append_with_source_indices(
+        &cache, 3U, frames, (const uint64_t[]){104U, 105U}, 2U, 0U
+    ) == ESP_OK);
+    assert(seismic_recorder_cache_get_info(&cache, &info) == ESP_OK);
+    assert(info.source_gap_samples == 2U); /* source-index-only gap */
+
+    fill_frames(frames, 108U, 2U);
+    assert(seismic_recorder_cache_append_with_source_indices(
+        &cache, 5U, frames, (const uint64_t[]){108U, 109U}, 2U, 2U
+    ) == ESP_OK);
+    assert(seismic_recorder_cache_get_info(&cache, &info) == ESP_OK);
+    assert(info.source_gap_samples == 2U); /* ring drops explain this gap */
+
+    fill_frames(frames, 112U, 2U);
+    assert(seismic_recorder_cache_append_with_source_indices(
+        &cache, 7U, frames, (const uint64_t[]){112U, 113U}, 2U, 1U
+    ) == ESP_OK);
+    assert(seismic_recorder_cache_get_info(&cache, &info) == ESP_OK);
+    assert(info.source_gap_samples == 3U); /* one ring and one source gap */
 }
 
 
@@ -425,6 +469,7 @@ int main(void)
     test_dense_session_frames_preserve_source_gaps();
     test_repeated_fill_persist_wrap_cycles();
     test_source_gaps_survive_cache_slot_wrap();
+    test_source_and_ring_gap_accounting();
     test_stop_drains_partially_dirty_cache_tail();
     puts("seismic recorder cache tests passed");
     return 0;

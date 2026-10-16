@@ -45,6 +45,12 @@ typedef struct
 
 } measurement_service_snapshot_t;
 
+typedef struct
+{
+    uint32_t peak_occupancy;
+    uint32_t overflow_count;
+} measurement_service_queue_stats_t;
+
 
 typedef esp_err_t (*measurement_service_start_guard_callback_t)(
     void *user_context
@@ -116,6 +122,10 @@ esp_err_t measurement_service_delete_async(void);
 
 esp_err_t measurement_service_get_snapshot(
     measurement_service_snapshot_t *snapshot
+);
+
+esp_err_t measurement_service_get_queue_stats(
+    measurement_service_queue_stats_t *stats
 );
 
 /*

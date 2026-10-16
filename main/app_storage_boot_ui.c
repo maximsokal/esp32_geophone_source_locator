@@ -1,5 +1,7 @@
 #include "app_storage_boot_ui.h"
 
+#include <stdatomic.h>
+
 #include "display.h"
 #include "power_control.h"
 #include "ui.h"
@@ -32,6 +34,87 @@ static esp_err_t s_format_failure_err;
 static unsigned s_progress_percent;
 static app_storage_boot_action_t s_prompt_action = APP_STORAGE_BOOT_ACTION_NONE;
 static QueueHandle_t s_key_queue;
+static atomic_uint_least32_t s_queue_peak_occupancy;
+static atomic_uint_least32_t s_queue_occupancy;
+static atomic_uint_least32_t s_key_overflow_count;
+static atomic_uint_least32_t s_shutdown_overflow_count;
+
+
+static uint32_t app_storage_boot_ui_saturating_increment(
+    atomic_uint_least32_t *counter
+)
+{
+    uint_least32_t current = atomic_load_explicit(counter, memory_order_relaxed);
+    while (current < UINT32_MAX && !atomic_compare_exchange_weak_explicit(
+        counter,
+        &current,
+        current + 1U,
+        memory_order_relaxed,
+        memory_order_relaxed
+    )) {
+    }
+    return (uint32_t)(current < UINT32_MAX ? current + 1U : UINT32_MAX);
+}
+
+
+static void app_storage_boot_ui_record_occupancy(uint32_t occupancy)
+{
+    if (occupancy > APP_STORAGE_BOOT_UI_KEY_QUEUE_LENGTH) {
+        occupancy = APP_STORAGE_BOOT_UI_KEY_QUEUE_LENGTH;
+    }
+    uint_least32_t current = atomic_load_explicit(
+        &s_queue_peak_occupancy, memory_order_relaxed
+    );
+    while (current < occupancy && !atomic_compare_exchange_weak_explicit(
+        &s_queue_peak_occupancy,
+        &current,
+        occupancy,
+        memory_order_relaxed,
+        memory_order_relaxed
+    )) {
+    }
+}
+
+
+static void app_storage_boot_ui_release_occupancy(void)
+{
+    uint_least32_t current = atomic_load_explicit(
+        &s_queue_occupancy, memory_order_relaxed
+    );
+    while (
+        current > 0U && !atomic_compare_exchange_weak_explicit(
+            &s_queue_occupancy,
+            &current,
+            current - 1U,
+            memory_order_relaxed,
+            memory_order_relaxed
+        )
+    ) {
+    }
+}
+
+
+static bool app_storage_boot_ui_should_log_count(uint32_t count)
+{
+    return count <= 3U || (count & (count - 1U)) == 0U;
+}
+
+
+static BaseType_t app_storage_boot_ui_send_event(
+    QueueHandle_t queue,
+    const app_storage_boot_ui_queue_item_t *item
+)
+{
+    const uint32_t occupancy = (uint32_t)atomic_fetch_add_explicit(
+        &s_queue_occupancy, 1U, memory_order_relaxed
+    ) + 1U;
+    app_storage_boot_ui_record_occupancy(occupancy);
+    const BaseType_t result = xQueueSend(queue, item, 0U);
+    if (result != pdTRUE) {
+        app_storage_boot_ui_release_occupancy();
+    }
+    return result;
+}
 
 
 static void app_storage_boot_ui_show_reason(
@@ -63,6 +146,7 @@ static void app_storage_boot_ui_finish_prompt(void)
     keypad_stop_boot_event_monitor();
     if (s_key_queue != NULL) {
         (void)xQueueReset(s_key_queue);
+        atomic_store_explicit(&s_queue_occupancy, 0U, memory_order_relaxed);
     }
     s_prompt_ready = false;
     s_prompt_action = APP_STORAGE_BOOT_ACTION_NONE;
@@ -258,6 +342,26 @@ bool app_storage_boot_ui_has_recovery_view(void)
 }
 
 
+esp_err_t app_storage_boot_ui_get_queue_stats(
+    app_storage_boot_ui_queue_stats_t *stats
+)
+{
+    if (stats == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    stats->peak_occupancy = (uint32_t)atomic_load_explicit(
+        &s_queue_peak_occupancy, memory_order_relaxed
+    );
+    stats->key_overflow_count = (uint32_t)atomic_load_explicit(
+        &s_key_overflow_count, memory_order_relaxed
+    );
+    stats->shutdown_overflow_count = (uint32_t)atomic_load_explicit(
+        &s_shutdown_overflow_count, memory_order_relaxed
+    );
+    return ESP_OK;
+}
+
+
 static void app_storage_boot_ui_key_callback(keypad_key_t key, void *context)
 {
     (void)context;
@@ -265,7 +369,14 @@ static void app_storage_boot_ui_key_callback(keypad_key_t key, void *context)
         app_storage_boot_ui_queue_item_t item;
         item.key = key;
         item.shutdown_notification = false;
-        (void)xQueueSend(s_key_queue, &item, 0U);
+        if (app_storage_boot_ui_send_event(s_key_queue, &item) != pdTRUE) {
+            const uint32_t count = app_storage_boot_ui_saturating_increment(
+                &s_key_overflow_count
+            );
+            if (app_storage_boot_ui_should_log_count(count)) {
+                ESP_LOGW(TAG, "key event dropped queue_full count=%u", (unsigned)count);
+            }
+        }
     }
 }
 
@@ -277,7 +388,33 @@ static void app_storage_boot_ui_shutdown_callback(void *context)
         app_storage_boot_ui_queue_item_t item;
         item.key = KEYPAD_KEY_NONE;
         item.shutdown_notification = true;
-        (void)xQueueSend(queue, &item, 0U);
+        if (app_storage_boot_ui_send_event(queue, &item) != pdTRUE) {
+            const uint32_t count = app_storage_boot_ui_saturating_increment(
+                &s_shutdown_overflow_count
+            );
+            app_storage_boot_ui_queue_item_t displaced;
+            /* Callbacks must stay nonblocking; free one slot for shutdown priority. */
+            const bool freed_slot = xQueueReceive(queue, &displaced, 0U) == pdTRUE;
+            if (freed_slot) {
+                if (!displaced.shutdown_notification) {
+                    const uint32_t key_count =
+                        app_storage_boot_ui_saturating_increment(&s_key_overflow_count);
+                    if (app_storage_boot_ui_should_log_count(key_count)) {
+                        ESP_LOGW(TAG, "key event displaced by shutdown count=%u", (unsigned)key_count);
+                    }
+                }
+            }
+            if (
+                freed_slot &&
+                app_storage_boot_ui_send_event(queue, &item) == pdTRUE
+            ) {
+                if (app_storage_boot_ui_should_log_count(count)) {
+                    ESP_LOGW(TAG, "shutdown admitted with priority count=%u", (unsigned)count);
+                }
+            } else if (app_storage_boot_ui_should_log_count(count)) {
+                ESP_LOGE(TAG, "shutdown event lost queue_full count=%u", (unsigned)count);
+            }
+        }
     }
 }
 
@@ -317,6 +454,7 @@ static void app_storage_boot_ui_show_reason(
     }
 
     (void)xQueueReset(s_key_queue);
+    atomic_store_explicit(&s_queue_occupancy, 0U, memory_order_relaxed);
     const bool retrying_failed_format =
         s_format_retry_pending &&
         reason->action == APP_STORAGE_BOOT_ACTION_OFFER_FORMAT;
@@ -399,6 +537,7 @@ static app_storage_recovery_decision_t app_storage_boot_ui_wait_decision(
             app_storage_boot_ui_finish_prompt();
             return APP_STORAGE_RECOVERY_DECISION_SHUTDOWN;
         }
+        app_storage_boot_ui_release_occupancy();
 
         if (item.shutdown_notification) {
             app_storage_boot_ui_finish_prompt();

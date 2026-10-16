@@ -35,11 +35,17 @@ static bool last_geometry_set;
 static object_store_cs_pairs_t last_cs_pairs;
 static bool last_cs_pairs_set;
 static bool fail_cs_pairs_write;
-static char persisted_session_json[4096];
+static char persisted_session_json[8192];
 static unsigned metadata_write_calls;
 static char last_metadata_status[24];
 static TaskFunction_t fake_recorder_task;
 static bool final_metadata_written;
+static seismic_frame_t fake_ring_frames[4];
+static uint64_t fake_ring_source_indices[4];
+static size_t fake_ring_frame_count;
+static uint64_t fake_ring_total_frames;
+static uint64_t fake_ring_dropped_frames;
+static bool fake_ring_batch_pending;
 #if defined(SEISMIC_RECORDER_GATE_BYPASS_TEST)
 static unsigned recording_gate_bypass_log_count;
 static char recording_gate_bypass_log_line[192];
@@ -154,9 +160,23 @@ esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_s
 esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot) { if (snapshot == NULL) return ESP_ERR_INVALID_ARG; *snapshot = fake_device_status; return ESP_OK; }
 
 esp_err_t seismic_recorder_fs_create_session(const char *object_id, const seismic_acquisition_snapshot_t *acquisition, uint8_t channels, char session_id[SEISMIC_RECORDER_SESSION_ID_SIZE], FILE **file, uint16_t *format_version) { (void)object_id; (void)channels; if (acquisition == NULL || format_version == NULL) return ESP_ERR_INVALID_ARG; *format_version = acquisition->source_name != NULL && strcmp(acquisition->source_name, "AD7606") == 0 ? SEISMIC_RECORDER_BINARY_VERSION_V2 : SEISMIC_RECORDER_BINARY_VERSION_V1; snprintf(session_id, SEISMIC_RECORDER_SESSION_ID_SIZE, "S000001"); fake_file = tmpfile(); *file = fake_file; return fake_file != NULL ? ESP_OK : ESP_FAIL; }
-esp_err_t seismic_buffer_copy_latest(seismic_frame_t *frames, size_t max_frames, size_t *count, seismic_buffer_info_t *info) { (void)frames; (void)max_frames; *count = 0U; memset(info, 0, sizeof(*info)); info->total_frames = 0U; return ESP_OK; }
+esp_err_t seismic_buffer_copy_latest(seismic_frame_t *frames, size_t max_frames, size_t *count, seismic_buffer_info_t *info) { (void)frames; (void)max_frames; *count = 0U; memset(info, 0, sizeof(*info)); info->total_frames = fake_ring_total_frames; info->buffered_frames = fake_ring_frame_count; return ESP_OK; }
 esp_err_t seismic_buffer_copy_since(uint64_t *cursor, seismic_frame_t *frames, size_t max_frames, size_t *count, uint64_t *dropped, seismic_buffer_info_t *info) { (void)cursor; (void)frames; (void)max_frames; (void)count; (void)dropped; (void)info; return ESP_ERR_TIMEOUT; }
-esp_err_t seismic_buffer_copy_since_with_source_indices(uint64_t *cursor, seismic_frame_t *frames, uint64_t *source_sample_indices, size_t max_frames, size_t *count, uint64_t *dropped, seismic_buffer_info_t *info) { (void)source_sample_indices; return seismic_buffer_copy_since(cursor, frames, max_frames, count, dropped, info); }
+esp_err_t seismic_buffer_copy_since_with_source_indices(uint64_t *cursor, seismic_frame_t *frames, uint64_t *source_sample_indices, size_t max_frames, size_t *count, uint64_t *dropped, seismic_buffer_info_t *info) {
+    if (cursor == NULL || frames == NULL || source_sample_indices == NULL || count == NULL || dropped == NULL || info == NULL) return ESP_ERR_INVALID_ARG;
+    memset(info, 0, sizeof(*info));
+    info->total_frames = fake_ring_total_frames;
+    info->buffered_frames = fake_ring_frame_count;
+    if (!fake_ring_batch_pending) return ESP_ERR_TIMEOUT;
+    const size_t copied = fake_ring_frame_count < max_frames ? fake_ring_frame_count : max_frames;
+    memcpy(frames, fake_ring_frames, copied * sizeof(frames[0]));
+    memcpy(source_sample_indices, fake_ring_source_indices, copied * sizeof(source_sample_indices[0]));
+    *count = copied;
+    *dropped = fake_ring_dropped_frames;
+    *cursor = fake_ring_total_frames;
+    fake_ring_batch_pending = false;
+    return ESP_OK;
+}
 esp_err_t seismic_recorder_fs_close(FILE *file) { if (file != NULL) fclose(file); return ESP_OK; }
 esp_err_t seismic_recorder_fs_delete_session(const char *object_id, const char *session_id) { (void)object_id; (void)session_id; return ESP_OK; }
 esp_err_t seismic_recorder_fs_write_frames(FILE *file, const seismic_frame_t *frames, const uint64_t *sample_indices, size_t count, size_t *written) { (void)file; (void)frames; (void)sample_indices; *written = count; return ESP_OK; }
@@ -168,6 +188,13 @@ esp_err_t seismic_recorder_fs_build_session_path(const char *object_id, const ch
     return written < 0 || written >= (int)path_size ? ESP_ERR_INVALID_SIZE : ESP_OK;
 }
 esp_err_t seismic_recorder_waveform_read_file(FILE *file, uint64_t size, const seismic_recorder_session_summary_t *summary, uint64_t start, uint64_t count, size_t max_points, seismic_recorder_waveform_point_t *points, size_t capacity, seismic_recorder_waveform_info_t *info) { (void)file; (void)size; (void)summary; (void)start; (void)count; (void)max_points; (void)points; (void)capacity; (void)info; return ESP_ERR_NOT_FOUND; }
+
+static void test_source_gap_summary_is_written(void)
+{
+    assert(strstr(persisted_session_json, "\"has_gaps\":true") != NULL);
+    assert(strstr(persisted_session_json, "\"ring_dropped_frames\":0") != NULL);
+    assert(strstr(persisted_session_json, "\"source_gap_samples\":2") != NULL);
+}
 
 int main(void)
 {
@@ -465,6 +492,15 @@ int main(void)
     fake_device_status.main.height_reference.generation = 703U;
     fake_sensor_cache[0].sensor.reference_generation = 704U;
 
+    fake_ring_frame_count = 4U;
+    fake_ring_total_frames = 4U;
+    fake_ring_dropped_frames = 0U;
+    fake_ring_batch_pending = true;
+    fake_ring_source_indices[0] = 100U;
+    fake_ring_source_indices[1] = 101U;
+    fake_ring_source_indices[2] = 104U;
+    fake_ring_source_indices[3] = 105U;
+
     assert(seismic_recorder_stop() == ESP_OK);
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
     assert(snapshot.running);
@@ -482,6 +518,7 @@ int main(void)
     }
     assert(final_metadata_written);
     assert(metadata_write_calls == 2U && strcmp(last_metadata_status, "complete") == 0);
+    test_source_gap_summary_is_written();
     seismic_recorder_session_participation_t final_participation;
     assert(seismic_recorder_read_session_participation("OBJ_0005", "S000001", &final_participation) == ESP_OK);
     for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) {
@@ -506,7 +543,12 @@ int main(void)
     assert(final_cs_pairs.pairs[0].distance_mm == 300);
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
     assert(!snapshot.running && snapshot.stop_stage == SEISMIC_RECORDER_STOP_STAGE_COMPLETE);
+    assert(snapshot.source_gap_samples == 2U);
 
+    fake_ring_frame_count = 0U;
+    fake_ring_total_frames = 0U;
+    fake_ring_dropped_frames = 0U;
+    fake_ring_batch_pending = false;
     fake_frozen_ranging.available = true;
     fake_frozen_ranging.pair_count = fake_cycle.pair_count;
     memcpy(fake_frozen_ranging.pairs, fake_cycle.pairs, sizeof(fake_cycle.pairs));

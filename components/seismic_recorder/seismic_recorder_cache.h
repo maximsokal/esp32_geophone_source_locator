@@ -26,6 +26,9 @@ typedef struct
     uint64_t first_session_frame;
     uint64_t next_session_frame;
     uint64_t persisted_session_frame;
+    uint64_t last_source_sample_index;
+    uint64_t source_gap_samples;
+    bool has_source_sample_index;
     bool initialized;
 
 } seismic_recorder_cache_t;
@@ -40,6 +43,7 @@ typedef struct
     uint64_t first_session_frame;
     uint64_t next_session_frame;
     uint64_t persisted_session_frame;
+    uint64_t source_gap_samples;
 
 } seismic_recorder_cache_info_t;
 
@@ -69,7 +73,8 @@ esp_err_t seismic_recorder_cache_append_with_source_indices(
     uint64_t first_source_frame_number,
     const seismic_frame_t *frames,
     const uint64_t *source_sample_indices,
-    size_t frame_count
+    size_t frame_count,
+    uint64_t ring_dropped_frames_before
 );
 
 

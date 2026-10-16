@@ -7,11 +7,17 @@
 
 typedef bool (*workflow_service_placement_ready_fn)(void *context);
 
+typedef struct {
+    uint32_t peak_occupancy;
+    uint32_t overflow_count;
+} workflow_service_queue_stats_t;
+
 esp_err_t workflow_service_init(void);
 void workflow_service_shutdown(void);
 esp_err_t workflow_service_poll(void);
 esp_err_t workflow_service_get_snapshot(workflow_snapshot_t *snapshot);
 esp_err_t workflow_service_try_get_snapshot(workflow_snapshot_t *out);
+esp_err_t workflow_service_get_queue_stats(workflow_service_queue_stats_t *stats);
 esp_err_t workflow_service_command_async(
     workflow_command_t command,
     bool has_generation,

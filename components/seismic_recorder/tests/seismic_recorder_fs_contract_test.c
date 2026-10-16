@@ -1265,7 +1265,8 @@ static size_t copy_ring_into_cache(
             first_ring_frame,
             frames,
             sample_indices,
-            frame_count
+            frame_count,
+            dropped
         ) == ESP_OK);
     }
     if (dropped_out != NULL) {

@@ -18,7 +18,7 @@ typedef struct {
 
 
 typedef struct fake_queue {
-    fake_queue_item_t items[8];
+    fake_queue_item_t items[5];
     size_t head;
     size_t count;
 } fake_queue_t;
@@ -114,6 +114,22 @@ BaseType_t xQueueReceive(QueueHandle_t queue, void *item, TickType_t wait_ticks)
         (sizeof(queue->items) / sizeof(queue->items[0]));
     --queue->count;
     return pdTRUE;
+}
+
+
+static unsigned s_error_log_count;
+static unsigned s_warning_log_count;
+
+void app_storage_boot_ui_test_log(
+    const char *level,
+    const char *tag,
+    const char *format,
+    ...
+)
+{
+    assert(tag != NULL && format != NULL);
+    if (strcmp(level, "E") == 0) ++s_error_log_count;
+    if (strcmp(level, "W") == 0) ++s_warning_log_count;
 }
 
 
@@ -492,11 +508,62 @@ static void test_registered_prompt_uses_blocking_queue_and_progress_is_monotonic
 }
 
 
+static void test_full_event_queue_counts_loss_and_prioritizes_shutdown(void)
+{
+    app_storage_boot_policy_result_t reason = {
+        .reason = APP_STORAGE_BOOT_REASON_CARD_UNAVAILABLE,
+        .action = APP_STORAGE_BOOT_ACTION_SHOW_NO_CARD_RETRY,
+    };
+    s_installed_ui.show_reason(NULL, &reason);
+    assert(s_key_callback != NULL && s_shutdown_hook != NULL);
+    for (size_t index = 0U; index < 5U; ++index) {
+        s_key_callback(KEYPAD_KEY_RIGHT, s_key_context);
+        if (index == 3U) {
+            app_storage_boot_ui_queue_stats_t stats;
+            assert(app_storage_boot_ui_get_queue_stats(&stats) == ESP_OK);
+            assert(stats.peak_occupancy == 4U);
+        }
+    }
+
+    s_blocking_receive_seen = false;
+    s_key_callback(KEYPAD_KEY_LEFT, s_key_context);
+    s_shutdown_hook(s_shutdown_hook_context);
+
+    app_storage_boot_ui_queue_stats_t stats;
+    assert(app_storage_boot_ui_get_queue_stats(&stats) == ESP_OK);
+    assert(stats.peak_occupancy == 5U);
+    assert(stats.key_overflow_count == 2U); /* one dropped and one displaced */
+    assert(stats.shutdown_overflow_count == 1U);
+    assert(s_error_log_count == 0U);
+    assert(s_warning_log_count >= 3U);
+    assert(!s_blocking_receive_seen);
+    assert(s_queue.count == 5U);
+    const size_t shutdown_offset = (s_queue.head + s_queue.count - 1U) %
+        (sizeof(s_queue.items) / sizeof(s_queue.items[0]));
+    assert(s_queue.items[shutdown_offset].shutdown_notification);
+
+    s_installed_ui.show_reason(NULL, &reason);
+    for (size_t index = 0U; index < 5U; ++index) {
+        s_key_callback(KEYPAD_KEY_RIGHT, s_key_context);
+    }
+    s_receive_fail_next = true;
+    s_blocking_receive_seen = false;
+    s_shutdown_hook(s_shutdown_hook_context);
+    assert(app_storage_boot_ui_get_queue_stats(&stats) == ESP_OK);
+    assert(stats.peak_occupancy == 5U);
+    assert(stats.shutdown_overflow_count == 2U);
+    assert(s_error_log_count == 1U);
+    assert(!s_blocking_receive_seen);
+    assert(s_queue.count == 5U);
+}
+
+
 int main(void)
 {
     test_key_mapping_requires_release_and_respects_action();
     test_action_copy_does_not_offer_format_for_no_card();
     test_boot_display_and_ui_init_are_idempotent();
     test_registered_prompt_uses_blocking_queue_and_progress_is_monotonic();
+    test_full_event_queue_counts_loss_and_prioritizes_shutdown();
     return 0;
 }

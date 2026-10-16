@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "app_storage_boot.h"
 #include "esp_err.h"
@@ -16,6 +17,12 @@ typedef struct {
     ui_i18n_key_t cancel_hint_key;
     bool show_format_warning;
 } app_storage_boot_ui_copy_t;
+
+typedef struct {
+    uint32_t peak_occupancy;
+    uint32_t key_overflow_count;
+    uint32_t shutdown_overflow_count;
+} app_storage_boot_ui_queue_stats_t;
 
 
 /* Install the recovery callbacks before the first SD boot diagnostic. */
@@ -47,3 +54,7 @@ unsigned app_storage_boot_ui_progress_value(
 
 /* True while a recovery prompt/result is the visible boot screen. */
 bool app_storage_boot_ui_has_recovery_view(void);
+
+esp_err_t app_storage_boot_ui_get_queue_stats(
+    app_storage_boot_ui_queue_stats_t *stats
+);

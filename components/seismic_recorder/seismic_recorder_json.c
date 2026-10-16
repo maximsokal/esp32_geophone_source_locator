@@ -743,6 +743,17 @@ esp_err_t seismic_recorder_json_write_metadata(
             recovered_metrics_available
         ) != NULL &&
         cJSON_AddNumberToObject(root, "dropped_frames", (double)snapshot->dropped_frames) != NULL &&
+        cJSON_AddNumberToObject(
+            root, "ring_dropped_frames", (double)snapshot->dropped_frames
+        ) != NULL &&
+        cJSON_AddNumberToObject(
+            root, "source_gap_samples", (double)snapshot->source_gap_samples
+        ) != NULL &&
+        cJSON_AddBoolToObject(
+            root,
+            "has_gaps",
+            snapshot->dropped_frames > 0U || snapshot->source_gap_samples > 0U
+        ) != NULL &&
         cJSON_AddBoolToObject(
             root,
             "recording_ms_available",
@@ -1654,13 +1665,25 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
 
     uint64_t samples_written = 0U;
     uint64_t dropped_frames = 0U;
+    uint64_t ring_dropped_frames = 0U;
+    uint64_t source_gap_samples = 0U;
     uint64_t recording_ms = 0U;
     bool dropped_frames_available = true;
     bool recording_ms_available = true;
+    bool has_gaps = false;
+    const cJSON *ring_dropped_frames_item =
+        cJSON_GetObjectItemCaseSensitive(root, "ring_dropped_frames");
     seismic_recorder_cadence_t cadence = {0};
     valid = valid &&
         seismic_recorder_json_uint64(root, "samples_written", &samples_written) &&
         seismic_recorder_json_uint64(root, "dropped_frames", &dropped_frames) &&
+        (ring_dropped_frames_item == NULL || seismic_recorder_json_uint64(
+            root, "ring_dropped_frames", &ring_dropped_frames
+        )) &&
+        seismic_recorder_json_optional_uint64(
+            root, "source_gap_samples", &source_gap_samples
+        ) &&
+        seismic_recorder_json_optional_bool(root, "has_gaps", false, &has_gaps) &&
         seismic_recorder_json_uint64(root, "recording_ms", &recording_ms) &&
         seismic_recorder_json_optional_bool(
             root,
@@ -1676,10 +1699,17 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
         ) &&
         seismic_recorder_json_read_cadence(root, &cadence);
 
+    if (ring_dropped_frames_item == NULL) {
+        ring_dropped_frames = dropped_frames;
+    }
+
     if (
         recovered &&
         (dropped_frames_available || recording_ms_available || cadence.available)
     ) {
+        valid = false;
+    }
+    if (ring_dropped_frames_item != NULL && ring_dropped_frames != dropped_frames) {
         valid = false;
     }
 
@@ -1726,11 +1756,16 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
     summary->channel_count = (uint8_t)channel_count;
     summary->samples_written = samples_written;
     summary->dropped_frames = dropped_frames;
+    summary->ring_dropped_frames = ring_dropped_frames;
+    summary->source_gap_samples = source_gap_samples;
     summary->recording_ms = recording_ms;
     summary->cadence = cadence;
     summary->format_version = format_version;
-    summary->has_gaps = dropped_frames > 0U || !samples_consistent;
-    summary->missing_samples = dropped_frames;
+    summary->has_gaps = has_gaps || dropped_frames > 0U ||
+        source_gap_samples > 0U || !samples_consistent;
+    summary->missing_samples = source_gap_samples > UINT64_MAX - dropped_frames
+        ? UINT64_MAX
+        : dropped_frames + source_gap_samples;
 
     cJSON_Delete(root);
     free(path);

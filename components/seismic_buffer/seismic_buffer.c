@@ -188,13 +188,21 @@ static volatile uint32_t s_operation_state = 0;
 
 static size_t s_write_index = 0;
 static size_t s_frame_count = 0;
+static size_t s_peak_frame_count = 0;
 static uint64_t s_total_frames = 0;
+static uint64_t s_dropped_frames_total = 0;
 static uint32_t s_sample_rate_hz = 0;
 
 static seismic_source_t s_source =
     SEISMIC_SOURCE_NONE;
 
 static bool s_initialized = false;
+
+
+static uint64_t seismic_buffer_saturating_add_u64(uint64_t value, uint64_t amount)
+{
+    return amount > UINT64_MAX - value ? UINT64_MAX : value + amount;
+}
 
 
 static bool seismic_buffer_enter_operation(void)
@@ -330,7 +338,9 @@ static void seismic_buffer_reset_metadata(
     s_sample_rate_hz = sample_rate_hz;
     s_write_index = 0U;
     s_frame_count = 0U;
+    s_peak_frame_count = 0U;
     s_total_frames = 0U;
+    s_dropped_frames_total = 0U;
     portEXIT_CRITICAL(&s_metadata_lock);
 }
 
@@ -584,6 +594,23 @@ size_t seismic_buffer_capacity(void)
 }
 
 
+esp_err_t seismic_buffer_get_stats(seismic_buffer_stats_t *stats)
+{
+    if (stats == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    portENTER_CRITICAL(&s_metadata_lock);
+    stats->peak_occupancy = s_peak_frame_count;
+    stats->dropped_frames_total = s_dropped_frames_total;
+    portEXIT_CRITICAL(&s_metadata_lock);
+    return ESP_OK;
+}
+
+
 esp_err_t seismic_buffer_configure(
     seismic_source_t source,
     uint32_t sample_rate_hz
@@ -744,6 +771,13 @@ static esp_err_t seismic_buffer_push_impl(
 
     if (s_frame_count < capacity) {
         s_frame_count++;
+    } else {
+        s_dropped_frames_total = seismic_buffer_saturating_add_u64(
+            s_dropped_frames_total, 1U
+        );
+    }
+    if (s_frame_count > s_peak_frame_count) {
+        s_peak_frame_count = s_frame_count;
     }
 
     s_total_frames =

@@ -43,12 +43,20 @@ typedef struct
 
 } seismic_buffer_info_t;
 
+typedef struct
+{
+    size_t peak_occupancy;
+    uint64_t dropped_frames_total;
+} seismic_buffer_stats_t;
+
 
 esp_err_t seismic_buffer_init(void);
 
 
 /* Runtime capacity in frames; zero if initialization/allocation failed. */
 size_t seismic_buffer_capacity(void);
+
+esp_err_t seismic_buffer_get_stats(seismic_buffer_stats_t *stats);
 
 
 /*
