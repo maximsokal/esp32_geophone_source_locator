@@ -1,16 +1,16 @@
 [
   {
-    "id": "max483b_reject_stale_reconnect_timer_generation",
-    "description": "Accept a reconnect timer callback even when stop/restart changed its generation.",
-    "file": "components/wifi_manager/wifi_manager_sta_events.c",
-    "find": "started.generation == s_state.generation;",
-    "replace": "true;",
+    "id": "max483b_accept_stale_event_epoch_generation",
+    "description": "Accept Wi-Fi STA/timer events whose generation no longer matches (stale after stop/restart). The former find in wifi_manager_sta_events.c was an equivalent mutant: wifi_manager_sta_admission_still_matches re-checks the same epoch immediately after.",
+    "file": "components/wifi_manager/wifi_manager_event_policy.c",
+    "find": "        started_generation == current_generation;",
+    "replace": "        true;",
     "tests": [
       {
         "manifest": "tests/host/manifest.json",
         "only": "wifi_manager_events_runtime"
       }
     ],
-    "expected_killer": "tests/host/wifi_manager_events_runtime_test.c::test_sta_start_ip_disconnect_reconnect"
+    "expected_killer": "tests/host/wifi_manager_events_runtime_test.c::test_sta_rejects_stale_or_invalid_observations"
   }
 ]
