@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "app_task_config.h"
+#include "app_stop_timeout_config.h"
 #include "device_status.h"
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
@@ -125,6 +126,9 @@ static SemaphoreHandle_t s_mutex;
 static SemaphoreHandle_t s_async_enqueue_mutex;
 static QueueHandle_t s_async_queue;
 static TaskHandle_t s_poll_task;
+static SemaphoreHandle_t s_poll_stop_ack;
+static atomic_bool s_poll_stop_requested;
+static bool s_poll_join_pending;
 static atomic_bool s_poll_hwm_after_first_calculation;
 static bool s_poll_first_calculation_seen;
 static bool s_initialized;
@@ -1376,16 +1380,20 @@ static void workflow_service_calculation_poll_locked(void)
 esp_err_t workflow_service_init(void)
 {
     if (s_initialized) return ESP_OK;
+    if (s_poll_task != NULL || s_poll_join_pending) return ESP_ERR_INVALID_STATE;
     s_mutex = xSemaphoreCreateMutex();
     if (s_mutex == NULL) return ESP_ERR_NO_MEM;
     s_async_enqueue_mutex = xSemaphoreCreateMutex();
+    s_poll_stop_ack = xSemaphoreCreateBinary();
     s_async_queue = xQueueCreate(WORKFLOW_ASYNC_QUEUE_DEPTH, sizeof(workflow_async_command_t));
-    if (s_async_enqueue_mutex == NULL || s_async_queue == NULL) {
+    if (s_async_enqueue_mutex == NULL || s_poll_stop_ack == NULL || s_async_queue == NULL) {
         if (s_async_queue != NULL) vQueueDelete(s_async_queue);
         if (s_async_enqueue_mutex != NULL) vSemaphoreDelete(s_async_enqueue_mutex);
+        if (s_poll_stop_ack != NULL) vSemaphoreDelete(s_poll_stop_ack);
         vSemaphoreDelete(s_mutex);
         s_mutex = NULL;
         s_async_enqueue_mutex = NULL;
+        s_poll_stop_ack = NULL;
         s_async_queue = NULL;
         return ESP_ERR_NO_MEM;
     }
@@ -1425,6 +1433,8 @@ esp_err_t workflow_service_init(void)
     atomic_store_explicit(&s_poll_hwm_after_first_calculation, false, memory_order_relaxed);
     s_poll_first_calculation_seen = false;
     s_poll_task = NULL;
+    atomic_store_explicit(&s_poll_stop_requested, false, memory_order_release);
+    s_poll_join_pending = false;
     s_async_queue_occupancy = 0U;
     memset(&s_async_queue_stats, 0, sizeof(s_async_queue_stats));
     memset(&s_calibration, 0, sizeof(s_calibration));
@@ -1446,18 +1456,29 @@ esp_err_t workflow_service_init(void)
     s_initialized = true;
     const BaseType_t task_created = workflow_service_create_poll_task(&s_poll_task);
     if (task_created != pdPASS) {
+        s_poll_task = NULL;
         workflow_service_shutdown();
         return ESP_ERR_NO_MEM;
     }
+    s_poll_join_pending = true;
     return ESP_OK;
 }
 
-void workflow_service_shutdown(void)
+esp_err_t workflow_service_shutdown(void)
 {
     s_initialized = false;
-    if (s_poll_task != NULL) {
-        vTaskDelete(s_poll_task);
-        s_poll_task = NULL;
+    if (s_poll_join_pending) {
+        atomic_store_explicit(&s_poll_stop_requested, true, memory_order_release);
+        if (
+            s_poll_stop_ack == NULL ||
+            xSemaphoreTake(
+                s_poll_stop_ack,
+                pdMS_TO_TICKS(APP_STOP_TIMEOUT_WORKER_MS)
+            ) != pdTRUE
+        ) {
+            return ESP_ERR_TIMEOUT;
+        }
+        s_poll_join_pending = false;
     }
     if (s_async_queue != NULL) {
         vQueueDelete(s_async_queue);
@@ -1466,6 +1487,10 @@ void workflow_service_shutdown(void)
     if (s_async_enqueue_mutex != NULL) {
         vSemaphoreDelete(s_async_enqueue_mutex);
         s_async_enqueue_mutex = NULL;
+    }
+    if (s_poll_stop_ack != NULL) {
+        vSemaphoreDelete(s_poll_stop_ack);
+        s_poll_stop_ack = NULL;
     }
     if (s_mutex != NULL) {
         vSemaphoreDelete(s_mutex);
@@ -1492,6 +1517,7 @@ void workflow_service_shutdown(void)
     memset(&s_placement, 0, sizeof(s_placement));
     memset(&s_ranging, 0, sizeof(s_ranging));
     memset(&s_core, 0, sizeof(s_core));
+    return ESP_OK;
 }
 
 static void workflow_service_snapshot_locked(workflow_snapshot_t *snapshot)
@@ -1943,7 +1969,7 @@ static void workflow_service_poll_task(void *argument)
     uint32_t poll_count = 0U;
     TickType_t last_wake = xTaskGetTickCount();
     for (;;) {
-        if (!s_initialized) vTaskDelete(NULL);
+        if (atomic_load_explicit(&s_poll_stop_requested, memory_order_acquire)) break;
         (void)workflow_service_poll();
         ++poll_count;
         if (poll_count == 100U) workflow_service_log_poll_stack_hwm("after-100-polls", poll_count);
@@ -1951,8 +1977,12 @@ static void workflow_service_poll_task(void *argument)
                 &s_poll_hwm_after_first_calculation, false, memory_order_acq_rel)) {
             workflow_service_log_poll_stack_hwm("after-first-calculation", poll_count);
         }
+        if (atomic_load_explicit(&s_poll_stop_requested, memory_order_acquire)) break;
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(WORKFLOW_SERVICE_POLL_PERIOD_MS));
     }
+    s_poll_task = NULL;
+    (void)xSemaphoreGive(s_poll_stop_ack);
+    vTaskDelete(NULL);
 }
 
 #if defined(WORKFLOW_SERVICE_TEST_HARNESS)

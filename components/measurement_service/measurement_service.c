@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "app_task_config.h"
+#include "app_stop_timeout_config.h"
 #include "object_format.h"
 #include "storage_bulk_admission.h"
 
@@ -158,13 +159,18 @@ static void measurement_service_hook_release(
 }
 
 
-static void measurement_service_wait_for_hook(
+static esp_err_t measurement_service_wait_for_hook(
     measurement_hook_type_t hook
 )
 {
-    while (measurement_service_hook_in_flight(hook) != 0U) {
+    const TickType_t timeout_ticks = pdMS_TO_TICKS(APP_STOP_TIMEOUT_WORKER_MS);
+    TickType_t waited_ticks = 0U;
+    for (;;) {
+        if (measurement_service_hook_in_flight(hook) == 0U) return ESP_OK;
+        if (waited_ticks >= timeout_ticks) return ESP_ERR_TIMEOUT;
         /* Never block or yield while holding the SMP spinlock. */
         vTaskDelay(1);
+        ++waited_ticks;
     }
 }
 
@@ -1116,10 +1122,10 @@ esp_err_t measurement_service_init(void)
 }
 
 
-void measurement_service_shutdown(void)
+esp_err_t measurement_service_shutdown(void)
 {
     if (!s_initialized) {
-        return;
+        return ESP_OK;
     }
 
     /*
@@ -1127,25 +1133,35 @@ void measurement_service_shutdown(void)
      * Setters are lifetime barriers, so queued/snapshotted callbacks finish
      * before their owner can tear down Web/cache state.
      */
-    (void)measurement_service_set_start_guard(NULL, NULL);
-    (void)measurement_service_set_start_object_callback(NULL, NULL);
-    (void)measurement_service_set_storage_refresh_callback(NULL, NULL);
-    (void)measurement_service_set_start_reservation_release_callback(NULL, NULL);
+    esp_err_t err = measurement_service_set_start_guard(NULL, NULL);
+    if (err != ESP_OK) return err;
+    err = measurement_service_set_start_object_callback(NULL, NULL);
+    if (err != ESP_OK) return err;
+    err = measurement_service_set_storage_refresh_callback(NULL, NULL);
+    if (err != ESP_OK) return err;
+    err = measurement_service_set_start_reservation_release_callback(NULL, NULL);
+    if (err != ESP_OK) return err;
 
     const measurement_command_t command = {
         .type = MEASUREMENT_COMMAND_SHUTDOWN,
     };
 
     if (s_queue != NULL) {
-        (void)xQueueSend(
+        if (xQueueSend(
             s_queue,
             &command,
-            portMAX_DELAY
-        );
+            pdMS_TO_TICKS(APP_STOP_TIMEOUT_WORKER_MS)
+        ) != pdTRUE) {
+            return ESP_ERR_TIMEOUT;
+        }
     }
 
-    while (s_task != NULL) {
-        vTaskDelay(pdMS_TO_TICKS(10));
+    const TickType_t timeout_ticks = pdMS_TO_TICKS(APP_STOP_TIMEOUT_WORKER_MS);
+    for (TickType_t waited_ticks = 0U; s_task != NULL && waited_ticks < timeout_ticks; ++waited_ticks) {
+        vTaskDelay(1U);
+    }
+    if (s_task != NULL) {
+        return ESP_ERR_TIMEOUT;
     }
 
     measurement_service_release_start_reservation();
@@ -1176,6 +1192,7 @@ void measurement_service_shutdown(void)
     s_initialized = false;
 
     ESP_LOGI(TAG, "Shutdown complete");
+    return ESP_OK;
 }
 
 
@@ -1193,7 +1210,8 @@ esp_err_t measurement_service_set_start_guard(
     s_start_guard_context = NULL;
     taskEXIT_CRITICAL(&s_hook_lock);
 
-    measurement_service_wait_for_hook(MEASUREMENT_HOOK_START_GUARD);
+    const esp_err_t wait_err = measurement_service_wait_for_hook(MEASUREMENT_HOOK_START_GUARD);
+    if (wait_err != ESP_OK) return wait_err;
 
     if (callback != NULL) {
         taskENTER_CRITICAL(&s_hook_lock);
@@ -1220,7 +1238,8 @@ esp_err_t measurement_service_set_start_object_callback(
     s_start_object_context = NULL;
     taskEXIT_CRITICAL(&s_hook_lock);
 
-    measurement_service_wait_for_hook(MEASUREMENT_HOOK_START_OBJECT);
+    const esp_err_t wait_err = measurement_service_wait_for_hook(MEASUREMENT_HOOK_START_OBJECT);
+    if (wait_err != ESP_OK) return wait_err;
 
     if (callback != NULL) {
         taskENTER_CRITICAL(&s_hook_lock);
@@ -1247,9 +1266,10 @@ esp_err_t measurement_service_set_start_reservation_release_callback(
     s_start_reservation_release_context = NULL;
     taskEXIT_CRITICAL(&s_hook_lock);
 
-    measurement_service_wait_for_hook(
+    const esp_err_t wait_err = measurement_service_wait_for_hook(
         MEASUREMENT_HOOK_START_RESERVATION_RELEASE
     );
+    if (wait_err != ESP_OK) return wait_err;
 
     if (callback != NULL) {
         taskENTER_CRITICAL(&s_hook_lock);
@@ -1276,7 +1296,8 @@ esp_err_t measurement_service_set_storage_refresh_callback(
     s_storage_refresh_context = NULL;
     taskEXIT_CRITICAL(&s_hook_lock);
 
-    measurement_service_wait_for_hook(MEASUREMENT_HOOK_STORAGE_REFRESH);
+    const esp_err_t wait_err = measurement_service_wait_for_hook(MEASUREMENT_HOOK_STORAGE_REFRESH);
+    if (wait_err != ESP_OK) return wait_err;
 
     if (callback != NULL) {
         taskENTER_CRITICAL(&s_hook_lock);

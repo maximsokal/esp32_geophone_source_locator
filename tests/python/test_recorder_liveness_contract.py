@@ -15,6 +15,7 @@ WEBUI_CONSOLE = REPO_ROOT / "webui" / "src" / "DeviceConsoleApp.tsx"
 WEBUI_MEASUREMENT_TRANSITION = REPO_ROOT / "webui" / "src" / "features" / "objects" / "measurementTransition.ts"
 WEB_STATUS_JSON = REPO_ROOT / "components" / "web_server" / "web_status_json.c"
 WEB_STATUS_RECORDING = REPO_ROOT / "components" / "web_server" / "web_status_json_recording.c"
+STOP_LIMITS = REPO_ROOT / "components" / "app_config" / "include" / "app_stop_timeout_config.h"
 
 
 def _function_body(source: str, signature: str) -> str:
@@ -146,7 +147,7 @@ def test_recorder_heartbeat_is_post_operation_and_progress_is_snapshot_based():
     assert observe.index("seismic_recorder_unlock();") < observe.index("runtime_observability_beat(")
 
 
-def test_stop_is_async_and_wait_helper_has_no_soft_timeout():
+def test_stop_is_async_and_wait_helper_has_a_bounded_incomplete_result():
     source = RECORDER.read_text(encoding="utf-8")
     stop = _function_body(source, "esp_err_t seismic_recorder_stop")
     wait = _function_body(source, "esp_err_t seismic_recorder_wait_for_stop")
@@ -154,12 +155,15 @@ def test_stop_is_async_and_wait_helper_has_no_soft_timeout():
     step = _function_body(source, "static void seismic_recorder_stop_step")
     header = RECORDER_HEADER.read_text(encoding="utf-8")
 
-    assert "SEISMIC_RECORDER_STOP_TIMEOUT_MS" not in source
-    assert "SEISMIC_RECORDER_STOP_STALL_TIMEOUT_MS" not in source
-    assert "STOP_STALL watchdog" not in source
+    limits = STOP_LIMITS.read_text(encoding="utf-8")
+    assert _define_int(limits, "APP_STOP_TIMEOUT_RECORDING_MS", "U") > 0
     assert "xEventGroupWaitBits(" not in stop
     assert "STOP_REQUEST" in stop
-    assert "portMAX_DELAY" in wait
+    assert "portMAX_DELAY" not in wait
+    assert "pdMS_TO_TICKS(APP_STOP_TIMEOUT_RECORDING_MS)" in wait
+    assert "if ((stopped_bits & SEISMIC_RECORDER_EVENT_STOPPED) == 0U)" in wait
+    assert "seismic_recorder_record_stop_error(" in wait
+    assert "return ESP_ERR_TIMEOUT;" in wait
     assert "seismic_recorder_wait_for_stop" in header
     assert "seismic_recorder_stop_step();" in task
     assert "SEISMIC_RECORDER_STOP_STAGE_DRAIN" in task

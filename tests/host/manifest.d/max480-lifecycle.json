@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "max480_localization_job_init",
+      "sources": [
+        "components/localization_job/localization_job.c",
+        "components/localization_job/tests/localization_job_init_fault_test.c"
+      ],
+      "include_dirs": [
+        "components/app_config/include",
+        "tests/host/stubs/workflow_service",
+        "components/localization_job/include",
+        "components/localization_calculate/include",
+        "components/geophone_events/include",
+        "components/localization/include",
+        "components/localization_velocity_free/include"
+      ]
+    }
+  ]
+}

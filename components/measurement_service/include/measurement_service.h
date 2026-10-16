@@ -76,7 +76,7 @@ typedef void (*measurement_service_storage_refresh_callback_t)(
 esp_err_t measurement_service_init(void);
 
 
-void measurement_service_shutdown(void);
+esp_err_t measurement_service_shutdown(void);
 
 
 esp_err_t measurement_service_set_start_guard(

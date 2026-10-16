@@ -36,5 +36,5 @@ esp_err_t sd_card_format_fat32_task_get_status(
     sd_card_format_status_t *out_status
 );
 
-/* Request cooperative cancellation at the next bounded disk-I/O checkpoint. */
+/* Request cancellation and join; timeout leaves the worker-owned state intact. */
 esp_err_t sd_card_format_fat32_task_stop(void);

@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "app_task_config.h"
+#include "app_stop_timeout_config.h"
 #include "device_status.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -1775,13 +1776,21 @@ esp_err_t seismic_recorder_wait_for_stop(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    (void)xEventGroupWaitBits(
+    const EventBits_t stopped_bits = xEventGroupWaitBits(
         s_events,
         SEISMIC_RECORDER_EVENT_STOPPED,
         pdFALSE,
         pdTRUE,
-        portMAX_DELAY
+        pdMS_TO_TICKS(APP_STOP_TIMEOUT_RECORDING_MS)
     );
+    if ((stopped_bits & SEISMIC_RECORDER_EVENT_STOPPED) == 0U) {
+        seismic_recorder_record_stop_error(
+            SEISMIC_RECORDER_STOP_STAGE_DRAIN,
+            ESP_ERR_TIMEOUT,
+            SEISMIC_RECORDER_STOP_STAGE_FLUSH
+        );
+        return ESP_ERR_TIMEOUT;
+    }
 
     seismic_recorder_snapshot_t snapshot;
     const esp_err_t err = seismic_recorder_get_snapshot(&snapshot);

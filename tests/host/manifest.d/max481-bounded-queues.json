@@ -10,6 +10,7 @@
         "tests/host/stubs/runtime_observability/noop.c"
       ],
       "include_dirs": [
+        "components/app_config/include",
         "components/measurement_service/tests/stubs",
         "components/measurement_service/include",
         "components/object_service/include",
@@ -176,6 +177,7 @@
         "tests/host/workflow_service_test.c"
       ],
       "include_dirs": [
+        "components/app_config/include",
         "components/measurement_service/include",
         "components/seismic_recorder/include",
         "components/seismic_buffer/include",

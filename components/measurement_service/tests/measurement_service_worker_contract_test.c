@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "measurement_service.h"
+#include "app_stop_timeout_config.h"
 #include "storage_bulk_admission.h"
 #include "storage_manager_internal.h"
 #include "freertos/queue.h"
@@ -29,6 +30,10 @@ static measurement_service_snapshot_t s_snapshot;
 static bool s_measurement_mutex_held;
 
 static fake_queue_t *last_queue;
+static TickType_t s_last_queue_send_timeout;
+static unsigned s_task_delay_calls;
+static unsigned s_queue_delete_calls;
+static unsigned s_semaphore_delete_calls;
 static esp_err_t fake_object_error;
 static bool fake_active_object;
 static esp_err_t fake_recorder_start_error;
@@ -75,7 +80,7 @@ QueueHandle_t xQueueCreate(size_t length, size_t item_size)
 
 BaseType_t xQueueSend(QueueHandle_t handle, const void *item, TickType_t timeout)
 {
-    (void)timeout;
+    s_last_queue_send_timeout = timeout;
     fake_queue_t *queue = handle;
     if (queue == NULL || queue->occupied) {
         return pdFALSE;
@@ -99,6 +104,7 @@ BaseType_t xQueueReceive(QueueHandle_t handle, void *item, TickType_t timeout)
 
 void vQueueDelete(QueueHandle_t handle)
 {
+    if (handle != NULL) ++s_queue_delete_calls;
     free(handle);
 }
 
@@ -160,6 +166,7 @@ UBaseType_t uxSemaphoreGetCount(SemaphoreHandle_t handle)
 
 void vSemaphoreDelete(SemaphoreHandle_t handle)
 {
+    if (handle != NULL) ++s_semaphore_delete_calls;
     free(handle);
 }
 
@@ -219,6 +226,7 @@ void vTaskDeleteWithCaps(TaskHandle_t task)
 void vTaskDelay(TickType_t ticks)
 {
     (void)ticks;
+    ++s_task_delay_calls;
 }
 
 esp_err_t object_service_get_active(object_service_summary_t *summary)
@@ -386,6 +394,8 @@ static void reset_fakes(void)
     s_bulk_admission_enter_calls = 0U;
     s_bulk_admission_exit_calls = 0U;
     s_measurement_mutex_held = false;
+    s_last_queue_send_timeout = 0U;
+    s_task_delay_calls = 0U;
     s_starting_state_observed = false;
     s_starting_observed_without_admission = false;
 }
@@ -450,7 +460,9 @@ static void start_service(void)
 
 static void stop_service(void)
 {
-    measurement_service_shutdown();
+    if (last_queue != NULL) last_queue->occupied = false;
+    s_task = NULL;
+    assert(measurement_service_shutdown() == ESP_OK);
     assert(!storage_bulk_admission_is_protected());
     last_queue = NULL;
 }
@@ -1101,6 +1113,29 @@ static void test_delayed_stop_error_blocks_restart_until_cleanup(void)
     stop_service();
 }
 
+static void test_shutdown_timeout_retains_worker_owned_resources(void)
+{
+    start_service();
+    s_task = (TaskHandle_t)(uintptr_t)1U;
+    const unsigned queues_deleted_before = s_queue_delete_calls;
+    const unsigned semaphores_deleted_before = s_semaphore_delete_calls;
+    const TickType_t timeout_ticks = pdMS_TO_TICKS(APP_STOP_TIMEOUT_WORKER_MS);
+
+    assert(measurement_service_shutdown() == ESP_ERR_TIMEOUT);
+    assert(s_last_queue_send_timeout == timeout_ticks);
+    assert(s_task_delay_calls == timeout_ticks);
+    assert(s_task != NULL);
+    assert(s_queue != NULL && s_mutex != NULL && s_gate != NULL);
+    assert(s_queue_delete_calls == queues_deleted_before);
+    assert(s_semaphore_delete_calls == semaphores_deleted_before);
+
+    last_queue->occupied = false;
+    s_task = NULL;
+    assert(measurement_service_shutdown() == ESP_OK);
+    assert(s_queue_delete_calls == queues_deleted_before + 1U);
+    assert(s_semaphore_delete_calls == semaphores_deleted_before + 2U);
+}
+
 int main(void)
 {
     assert(storage_bulk_admission_initialize() == ESP_OK);
@@ -1122,5 +1157,6 @@ int main(void)
     test_underlying_errors_and_queue_full();
     test_snapshot_and_delete_errors_preserve_safe_states();
     test_delayed_stop_error_blocks_restart_until_cleanup();
+    test_shutdown_timeout_retains_worker_owned_resources();
     return 0;
 }

@@ -104,6 +104,10 @@ esp_err_t localization_job_init(void)
     s_mutex = xSemaphoreCreateMutex();
     s_wake = xSemaphoreCreateBinary();
     if (s_mutex == NULL || s_wake == NULL) {
+        if (s_wake != NULL) vSemaphoreDelete(s_wake);
+        if (s_mutex != NULL) vSemaphoreDelete(s_mutex);
+        s_wake = NULL;
+        s_mutex = NULL;
         return ESP_ERR_NO_MEM;
     }
     /*
@@ -124,6 +128,10 @@ esp_err_t localization_job_init(void)
     );
     if (created != pdPASS) {
         s_task = NULL;
+        vSemaphoreDelete(s_wake);
+        vSemaphoreDelete(s_mutex);
+        s_wake = NULL;
+        s_mutex = NULL;
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(TAG, "worker core=%d stack=%u (spiram)", APP_TASK_CORE_REALTIME, (unsigned)LOCALIZATION_JOB_STACK_BYTES);

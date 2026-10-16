@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "app_task_config.h"
+#include "app_stop_timeout_config.h"
 #include "diskio_impl.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -47,7 +48,9 @@ static uint64_t s_written_sectors;
 static uint64_t s_expected_sectors;
 static esp_err_t s_io_error = ESP_OK;
 static bool s_stop_requested;
+static bool s_stop_timed_out;
 static bool s_watchdog_subscribed;
+static bool s_format_worker_done = true;
 
 
 static void sd_card_format_set_failure(esp_err_t err, int fresult)
@@ -380,6 +383,14 @@ finish:
     if (err != ESP_OK) {
         sd_card_format_set_failure(err, fresult);
     }
+    taskENTER_CRITICAL(&s_status_lock);
+    if (s_stop_timed_out) {
+        s_status.state = SD_CARD_FORMAT_STATE_FAILED;
+        s_status.err = ESP_ERR_TIMEOUT;
+        s_status.fresult = -1;
+    }
+    s_format_worker_done = true;
+    taskEXIT_CRITICAL(&s_status_lock);
     vTaskDelete(NULL);
 }
 
@@ -397,7 +408,7 @@ esp_err_t sd_card_format_fat32_task_start(
     }
 
     taskENTER_CRITICAL(&s_status_lock);
-    if (s_status.state == SD_CARD_FORMAT_STATE_RUNNING) {
+    if (s_status.state == SD_CARD_FORMAT_STATE_RUNNING || !s_format_worker_done) {
         taskEXIT_CRITICAL(&s_status_lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -406,6 +417,8 @@ esp_err_t sd_card_format_fat32_task_start(
     s_status.err = ESP_OK;
     s_status.fresult = -1;
     s_stop_requested = false;
+    s_stop_timed_out = false;
+    s_format_worker_done = false;
     taskEXIT_CRITICAL(&s_status_lock);
 
     BaseType_t task_result = xTaskCreatePinnedToCoreWithCaps(
@@ -431,6 +444,9 @@ esp_err_t sd_card_format_fat32_task_start(
         );
     }
     if (task_result != pdPASS) {
+        taskENTER_CRITICAL(&s_status_lock);
+        s_format_worker_done = true;
+        taskEXIT_CRITICAL(&s_status_lock);
         sd_card_format_set_failure(ESP_ERR_NO_MEM, -1);
         return ESP_ERR_NO_MEM;
     }
@@ -455,11 +471,31 @@ esp_err_t sd_card_format_fat32_task_get_status(
 esp_err_t sd_card_format_fat32_task_stop(void)
 {
     taskENTER_CRITICAL(&s_status_lock);
-    if (s_status.state != SD_CARD_FORMAT_STATE_RUNNING) {
+    if (s_format_worker_done) {
         taskEXIT_CRITICAL(&s_status_lock);
         return ESP_ERR_INVALID_STATE;
     }
     s_stop_requested = true;
     taskEXIT_CRITICAL(&s_status_lock);
+
+    const TickType_t timeout_ticks = pdMS_TO_TICKS(APP_STOP_TIMEOUT_FORMAT_MS);
+    for (TickType_t waited_ticks = 0U; waited_ticks < timeout_ticks; ++waited_ticks) {
+        taskENTER_CRITICAL(&s_status_lock);
+        const bool running = !s_format_worker_done;
+        taskEXIT_CRITICAL(&s_status_lock);
+        if (!running) return ESP_OK;
+        vTaskDelay(1U);
+    }
+
+    taskENTER_CRITICAL(&s_status_lock);
+    const bool still_running = !s_format_worker_done;
+    if (still_running) {
+        s_stop_timed_out = true;
+        s_status.state = SD_CARD_FORMAT_STATE_FAILED;
+        s_status.err = ESP_ERR_TIMEOUT;
+        s_status.fresult = -1;
+    }
+    taskEXIT_CRITICAL(&s_status_lock);
+    if (still_running) return ESP_ERR_TIMEOUT;
     return ESP_OK;
 }

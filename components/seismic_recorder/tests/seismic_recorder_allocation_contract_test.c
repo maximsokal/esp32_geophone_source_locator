@@ -35,6 +35,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "app_stop_timeout_config.h"
+
 static size_t s_allocation_calls;
 static size_t s_free_calls;
 static size_t s_allocation_attempts;
@@ -491,6 +493,33 @@ static void test_active_recording_contract(void)
     assert(s_last_write_frames[6].channel_uv[0] == 757.0f);
 }
 
+static void test_stop_timeout_marks_recording_incomplete(void)
+{
+    reset_allocation_failure(0U);
+    final_metadata_written = false;
+    assert(seismic_recorder_start("OBJ_0005") == ESP_OK);
+    assert(seismic_recorder_stop() == ESP_OK);
+
+    s_force_event_wait_timeout = true;
+    assert(seismic_recorder_wait_for_stop() == ESP_ERR_TIMEOUT);
+    assert(s_last_event_wait_timeout == pdMS_TO_TICKS(APP_STOP_TIMEOUT_RECORDING_MS));
+    s_force_event_wait_timeout = false;
+
+    seismic_recorder_snapshot_t snapshot;
+    assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
+    assert(snapshot.running);
+    assert(snapshot.state == SEISMIC_RECORDER_STOPPING);
+    assert(snapshot.last_error == ESP_ERR_TIMEOUT);
+    assert(snapshot.stop_stage_error == ESP_ERR_TIMEOUT);
+
+    if (setjmp(worker_finished) == 0) fake_recorder_task(NULL);
+    assert(seismic_recorder_wait_for_stop() == ESP_ERR_TIMEOUT);
+    assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
+    assert(!snapshot.running);
+    assert(snapshot.state == SEISMIC_RECORDER_ERROR);
+    assert(snapshot.last_error == ESP_ERR_TIMEOUT);
+}
+
 static void assert_cache_conservation(
     const seismic_recorder_cache_t *cache,
     uint64_t produced,
@@ -578,6 +607,9 @@ int main(void)
 
     test_recorder_init_failures();
     test_active_recording_contract();
+#if !defined(SEISMIC_RECORDER_ALLOCATION_NEGATIVE_CONTROL)
+    test_stop_timeout_marks_recording_incomplete();
+#endif
     test_cache_exhaustion_accounting();
 #if defined(SEISMIC_RECORDER_ALLOCATION_NEGATIVE_CONTROL)
     assert(s_active_violations == 1U);

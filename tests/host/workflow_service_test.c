@@ -24,7 +24,9 @@
 #include "object_service.h"
 #include "object_store.h"
 #include "workflow_service.h"
+#include "app_stop_timeout_config.h"
 #include "workflow_service_host_fakes.h"
+#include "host_rtos.h"
 #include "cJSON.h"
 
 #ifndef CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
@@ -98,7 +100,27 @@ typedef struct {
 #else
     pthread_mutex_t lock;
 #endif
+    volatile long held;
 } fake_mutex_t;
+
+typedef struct {
+    unsigned count;
+} fake_binary_semaphore_t;
+
+static fake_binary_semaphore_t *s_poll_stop_ack;
+static unsigned s_host_semaphore_delete_calls;
+static unsigned s_poll_ack_give_calls;
+static TickType_t s_poll_ack_last_timeout;
+#ifdef _WIN32
+static SRWLOCK s_poll_barrier_lock = SRWLOCK_INIT;
+static CONDITION_VARIABLE s_poll_barrier_changed = CONDITION_VARIABLE_INIT;
+#else
+static pthread_mutex_t s_poll_barrier_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t s_poll_barrier_changed = PTHREAD_COND_INITIALIZER;
+#endif
+static bool s_poll_barrier_enabled;
+static bool s_poll_barrier_entered;
+static bool s_poll_barrier_released;
 
 static measurement_service_snapshot_t s_measurement;
 static esp_err_t s_measurement_snapshot_result;
@@ -142,37 +164,82 @@ SemaphoreHandle_t xSemaphoreCreateMutex(void)
     return mutex;
 }
 
+SemaphoreHandle_t xSemaphoreCreateBinary(void)
+{
+    s_poll_stop_ack = calloc(1U, sizeof(*s_poll_stop_ack));
+    assert(s_poll_stop_ack != NULL);
+    return s_poll_stop_ack;
+}
+
 BaseType_t xSemaphoreTake(SemaphoreHandle_t semaphore, TickType_t timeout)
 {
+    if (semaphore == s_poll_stop_ack) {
+        fake_binary_semaphore_t *binary = semaphore;
+        s_poll_ack_last_timeout = timeout;
+        if (
+            binary != NULL && binary->count == 0U &&
+            !workflow_host_rtos_task_thread_running()
+        ) {
+            workflow_host_rtos_run_created_task_sync();
+        }
+        if (binary == NULL || binary->count == 0U) return pdFALSE;
+        --binary->count;
+        return pdTRUE;
+    }
     (void)timeout;
     fake_mutex_t *mutex = semaphore;
-    assert(mutex != NULL);
+    if (mutex == NULL) return pdFALSE;
 #ifdef _WIN32
-    if (timeout == 0U) return TryAcquireSRWLockExclusive(&mutex->lock) ? pdTRUE : pdFALSE;
+    if (timeout == 0U) {
+        if (!TryAcquireSRWLockExclusive(&mutex->lock)) return pdFALSE;
+        (void)InterlockedExchange(&mutex->held, 1L);
+        return pdTRUE;
+    }
     AcquireSRWLockExclusive(&mutex->lock);
+    (void)InterlockedExchange(&mutex->held, 1L);
     return pdTRUE;
 #else
-    if (timeout == 0U) return pthread_mutex_trylock(&mutex->lock) == 0 ? pdTRUE : pdFALSE;
-    return pthread_mutex_lock(&mutex->lock) == 0 ? pdTRUE : pdFALSE;
+    const int locked = timeout == 0U
+        ? pthread_mutex_trylock(&mutex->lock)
+        : pthread_mutex_lock(&mutex->lock);
+    if (locked != 0) return pdFALSE;
+    mutex->held = 1L;
+    return pdTRUE;
 #endif
 }
 
 BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore)
 {
+    if (semaphore == s_poll_stop_ack) {
+        fake_binary_semaphore_t *binary = semaphore;
+        if (binary == NULL) return pdFALSE;
+        ++binary->count;
+        ++s_poll_ack_give_calls;
+        return pdTRUE;
+    }
     fake_mutex_t *mutex = semaphore;
-    assert(mutex != NULL);
+    if (mutex == NULL) return pdFALSE;
 #ifdef _WIN32
+    (void)InterlockedExchange(&mutex->held, 0L);
     ReleaseSRWLockExclusive(&mutex->lock);
     return pdTRUE;
 #else
+    mutex->held = 0L;
     return pthread_mutex_unlock(&mutex->lock) == 0 ? pdTRUE : pdFALSE;
 #endif
 }
 
 void vSemaphoreDelete(SemaphoreHandle_t semaphore)
 {
+    ++s_host_semaphore_delete_calls;
+    if (semaphore == s_poll_stop_ack) {
+        free(semaphore);
+        s_poll_stop_ack = NULL;
+        return;
+    }
     fake_mutex_t *mutex = semaphore;
     if (mutex == NULL) return;
+    if (mutex->held != 0L) return;
 #ifdef _WIN32
     (void)mutex;
 #else
@@ -184,6 +251,31 @@ void vSemaphoreDelete(SemaphoreHandle_t semaphore)
 esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snapshot)
 {
     if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&s_poll_barrier_lock);
+#else
+    assert(pthread_mutex_lock(&s_poll_barrier_lock) == 0);
+#endif
+    if (s_poll_barrier_enabled) {
+        s_poll_barrier_entered = true;
+#ifdef _WIN32
+        WakeAllConditionVariable(&s_poll_barrier_changed);
+        while (!s_poll_barrier_released) {
+            assert(SleepConditionVariableSRW(
+                &s_poll_barrier_changed, &s_poll_barrier_lock, INFINITE, 0U));
+        }
+#else
+        assert(pthread_cond_broadcast(&s_poll_barrier_changed) == 0);
+        while (!s_poll_barrier_released) {
+            assert(pthread_cond_wait(&s_poll_barrier_changed, &s_poll_barrier_lock) == 0);
+        }
+#endif
+    }
+#ifdef _WIN32
+    ReleaseSRWLockExclusive(&s_poll_barrier_lock);
+#else
+    assert(pthread_mutex_unlock(&s_poll_barrier_lock) == 0);
+#endif
     if (s_measurement_snapshot_result != ESP_OK) return s_measurement_snapshot_result;
     *snapshot = s_measurement;
     return ESP_OK;
@@ -1698,6 +1790,76 @@ static void test_material_is_carried_into_run_provenance(void)
     workflow_service_shutdown();
 }
 
+static void test_poll_shutdown_ack_precedes_resource_destroy(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&s_poll_barrier_lock);
+#else
+    assert(pthread_mutex_lock(&s_poll_barrier_lock) == 0);
+#endif
+    s_poll_barrier_enabled = true;
+    s_poll_barrier_entered = false;
+    s_poll_barrier_released = false;
+#ifdef _WIN32
+    ReleaseSRWLockExclusive(&s_poll_barrier_lock);
+#else
+    assert(pthread_mutex_unlock(&s_poll_barrier_lock) == 0);
+#endif
+
+    const unsigned queue_deletes_before = workflow_host_rtos_queue_delete_count();
+    const unsigned semaphore_deletes_before = s_host_semaphore_delete_calls;
+    const unsigned external_deletes_before = workflow_host_rtos_external_delete_count();
+    const unsigned ack_gives_before = s_poll_ack_give_calls;
+    workflow_host_rtos_start_created_task();
+
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&s_poll_barrier_lock);
+    while (!s_poll_barrier_entered) {
+        assert(SleepConditionVariableSRW(
+            &s_poll_barrier_changed, &s_poll_barrier_lock, INFINITE, 0U));
+    }
+    ReleaseSRWLockExclusive(&s_poll_barrier_lock);
+#else
+    assert(pthread_mutex_lock(&s_poll_barrier_lock) == 0);
+    while (!s_poll_barrier_entered) {
+        assert(pthread_cond_wait(&s_poll_barrier_changed, &s_poll_barrier_lock) == 0);
+    }
+    assert(pthread_mutex_unlock(&s_poll_barrier_lock) == 0);
+#endif
+
+    assert(workflow_service_shutdown() == ESP_ERR_TIMEOUT);
+    const unsigned queue_deletes_before_ack = workflow_host_rtos_queue_delete_count();
+    const unsigned semaphore_deletes_before_ack = s_host_semaphore_delete_calls;
+    const unsigned external_deletes_before_ack = workflow_host_rtos_external_delete_count();
+
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&s_poll_barrier_lock);
+    s_poll_barrier_released = true;
+    WakeAllConditionVariable(&s_poll_barrier_changed);
+    ReleaseSRWLockExclusive(&s_poll_barrier_lock);
+#else
+    assert(pthread_mutex_lock(&s_poll_barrier_lock) == 0);
+    s_poll_barrier_released = true;
+    assert(pthread_cond_broadcast(&s_poll_barrier_changed) == 0);
+    assert(pthread_mutex_unlock(&s_poll_barrier_lock) == 0);
+#endif
+    workflow_host_rtos_join_created_task();
+
+    assert(s_poll_ack_give_calls == ack_gives_before + 1U);
+    assert(s_poll_ack_last_timeout == pdMS_TO_TICKS(APP_STOP_TIMEOUT_WORKER_MS));
+    (void)workflow_service_shutdown();
+    assert(queue_deletes_before_ack == queue_deletes_before);
+    assert(semaphore_deletes_before_ack == semaphore_deletes_before);
+    assert(external_deletes_before_ack == external_deletes_before);
+    assert(workflow_host_rtos_queue_delete_count() == queue_deletes_before + 1U);
+    assert(s_host_semaphore_delete_calls == semaphore_deletes_before + 3U);
+    assert(workflow_host_rtos_external_delete_count() == external_deletes_before);
+    assert(workflow_service_init() == ESP_OK);
+    (void)workflow_service_shutdown();
+    s_poll_barrier_enabled = false;
+}
+
 int main(void)
 {
 #ifdef MAX449_CASE
@@ -1734,6 +1896,7 @@ int main(void)
     test_material_save_reports_sd_error_and_missing_active_object();
     test_material_save_queue_full_is_rejected_without_sd_write();
     test_material_is_carried_into_run_provenance();
+    test_poll_shutdown_ack_precedes_resource_destroy();
     return 0;
 #endif
 }

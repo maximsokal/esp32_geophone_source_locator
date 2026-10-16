@@ -72,6 +72,8 @@ static jmp_buf worker_finished;
 
 typedef struct { unsigned held; } fake_mutex_t;
 typedef struct { EventBits_t bits; } fake_event_group_t;
+static bool s_force_event_wait_timeout;
+static TickType_t s_last_event_wait_timeout;
 
 SemaphoreHandle_t xSemaphoreCreateMutex(void) { return calloc(1, sizeof(fake_mutex_t)); }
 BaseType_t xSemaphoreTake(SemaphoreHandle_t semaphore, TickType_t timeout) { (void)timeout; return semaphore != NULL ? pdTRUE : pdFALSE; }
@@ -80,7 +82,7 @@ void vSemaphoreDelete(SemaphoreHandle_t semaphore) { free(semaphore); }
 EventGroupHandle_t xEventGroupCreate(void) { return calloc(1, sizeof(fake_event_group_t)); }
 EventBits_t xEventGroupSetBits(EventGroupHandle_t group, EventBits_t bits) { ((fake_event_group_t *)group)->bits |= bits; return ((fake_event_group_t *)group)->bits; }
 EventBits_t xEventGroupClearBits(EventGroupHandle_t group, EventBits_t bits) { ((fake_event_group_t *)group)->bits &= ~bits; return ((fake_event_group_t *)group)->bits; }
-EventBits_t xEventGroupWaitBits(EventGroupHandle_t group, EventBits_t bits, BaseType_t clear_on_exit, BaseType_t wait_for_all, TickType_t timeout) { (void)clear_on_exit; (void)wait_for_all; (void)timeout; return ((fake_event_group_t *)group)->bits & bits; }
+EventBits_t xEventGroupWaitBits(EventGroupHandle_t group, EventBits_t bits, BaseType_t clear_on_exit, BaseType_t wait_for_all, TickType_t timeout) { (void)clear_on_exit; (void)wait_for_all; s_last_event_wait_timeout = timeout; return s_force_event_wait_timeout ? 0U : ((fake_event_group_t *)group)->bits & bits; }
 void vEventGroupDelete(EventGroupHandle_t group) { free(group); }
 BaseType_t xTaskCreatePinnedToCore(TaskFunction_t task, const char *name, unsigned stack_size, void *argument, unsigned priority, TaskHandle_t *task_handle, int core_id) { (void)name; (void)stack_size; (void)argument; (void)priority; (void)core_id; fake_recorder_task = task; *task_handle = (TaskHandle_t)1; return pdPASS; }
 void vTaskDelay(TickType_t ticks) { (void)ticks; if (final_metadata_written) longjmp(worker_finished, 1); }

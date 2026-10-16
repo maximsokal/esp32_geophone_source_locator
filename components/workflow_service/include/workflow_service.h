@@ -13,7 +13,7 @@ typedef struct {
 } workflow_service_queue_stats_t;
 
 esp_err_t workflow_service_init(void);
-void workflow_service_shutdown(void);
+esp_err_t workflow_service_shutdown(void);
 esp_err_t workflow_service_poll(void);
 esp_err_t workflow_service_get_snapshot(workflow_snapshot_t *snapshot);
 esp_err_t workflow_service_try_get_snapshot(workflow_snapshot_t *out);

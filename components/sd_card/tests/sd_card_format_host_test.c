@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "diskio_impl.h"
+#include "app_stop_timeout_config.h"
 #include "esp_heap_caps.h"
 #include "esp_task_wdt.h"
 #include "ff.h"
@@ -35,6 +36,7 @@ static unsigned s_watchdog_add_calls;
 static unsigned s_watchdog_reset_calls;
 static unsigned s_watchdog_delete_calls;
 static unsigned s_task_delete_calls;
+static bool s_run_scheduled_task_on_delay;
 static unsigned s_progress_samples[8];
 static unsigned s_progress_sample_count;
 static unsigned s_fail_write_on_call;
@@ -45,6 +47,8 @@ static esp_err_t s_mount_error;
 static int s_mount_fresult;
 static sd_card_probe_result_t s_probe_result;
 static bool s_fake_mounted;
+
+static void run_scheduled_task(void);
 
 
 static void reset_fakes(void)
@@ -69,6 +73,7 @@ static void reset_fakes(void)
     s_watchdog_reset_calls = 0U;
     s_watchdog_delete_calls = 0U;
     s_task_delete_calls = 0U;
+    s_run_scheduled_task_on_delay = false;
     memset(s_progress_samples, 0, sizeof(s_progress_samples));
     s_progress_sample_count = 0U;
     s_fail_write_on_call = 0U;
@@ -125,7 +130,6 @@ BaseType_t xTaskCreatePinnedToCoreWithCaps(
 )
 {
     (void)parameters;
-    (void)created_task;
     ++s_task_create_calls;
     assert(task != NULL);
     assert(strcmp(name, "sd_format") == 0);
@@ -134,6 +138,7 @@ BaseType_t xTaskCreatePinnedToCoreWithCaps(
     assert(core_id == 0);
     if (s_task_create_result == pdPASS) {
         s_scheduled_task = task;
+        if (created_task != NULL) *created_task = (TaskHandle_t)(uintptr_t)1U;
     }
     s_alloc_caps = memory_caps;
     return s_task_create_result;
@@ -144,6 +149,10 @@ void vTaskDelay(TickType_t ticks)
 {
     assert(ticks == 1U);
     ++s_yield_calls;
+    if (s_run_scheduled_task_on_delay) {
+        s_run_scheduled_task_on_delay = false;
+        run_scheduled_task();
+    }
 }
 
 
@@ -418,6 +427,43 @@ static void test_lost_card_error_is_preserved(void)
     assert(s_yield_calls == 1U);
 }
 
+static void test_stop_joins_cooperative_worker_before_return(void)
+{
+    reset_fakes();
+    assert(sd_card_format_fat32_task_start(&s_card, true) == ESP_OK);
+    s_run_scheduled_task_on_delay = true;
+
+    assert(sd_card_format_fat32_task_stop() == ESP_OK);
+
+    sd_card_format_status_t status;
+    assert(sd_card_format_fat32_task_get_status(&status) == ESP_OK);
+    assert(status.state == SD_CARD_FORMAT_STATE_FAILED);
+    assert(status.err == ESP_ERR_INVALID_STATE);
+    assert(s_task_delete_calls == 1U);
+}
+
+static void test_stop_timeout_marks_incomplete_and_retains_worker(void)
+{
+    reset_fakes();
+    assert(sd_card_format_fat32_task_start(&s_card, true) == ESP_OK);
+
+    assert(sd_card_format_fat32_task_stop() == ESP_ERR_TIMEOUT);
+    assert(s_yield_calls == pdMS_TO_TICKS(APP_STOP_TIMEOUT_FORMAT_MS));
+    assert(s_task_delete_calls == 0U);
+
+    sd_card_format_status_t status;
+    assert(sd_card_format_fat32_task_get_status(&status) == ESP_OK);
+    assert(status.state == SD_CARD_FORMAT_STATE_FAILED);
+    assert(status.err == ESP_ERR_TIMEOUT);
+    assert(sd_card_format_fat32_task_start(&s_card, true) == ESP_ERR_INVALID_STATE);
+
+    run_scheduled_task();
+    assert(sd_card_format_fat32_task_get_status(&status) == ESP_OK);
+    assert(status.state == SD_CARD_FORMAT_STATE_FAILED);
+    assert(status.err == ESP_ERR_TIMEOUT);
+    assert(s_task_delete_calls == 1U);
+}
+
 
 int main(void)
 {
@@ -425,6 +471,8 @@ int main(void)
     test_format_success_progress_and_yields();
     test_mkfs_failure_is_failed_and_never_mounts();
     test_lost_card_error_is_preserved();
+    test_stop_joins_cooperative_worker_before_return();
+    test_stop_timeout_marks_incomplete_and_retains_worker();
     puts("SD_CARD_FORMAT_HOST_PASS");
     return 0;
 }

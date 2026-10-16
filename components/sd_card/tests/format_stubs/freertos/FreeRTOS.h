@@ -11,3 +11,4 @@ typedef struct { int unused; } portMUX_TYPE;
 #define taskENTER_CRITICAL(lock) ((void)(lock))
 #define taskEXIT_CRITICAL(lock) ((void)(lock))
 #define pdPASS 1
+#define pdMS_TO_TICKS(milliseconds) ((TickType_t)(milliseconds))
