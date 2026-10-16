@@ -17,6 +17,9 @@
 #include "nrf_log_runtime_zephyr.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
 #include "nrf_upstream_protocol.h"
+
+extern struct k_msgq s_cs_execute_queue;
+extern unsigned nrf_cs_pair_zephyr_stub_execute_calls;
 #include "nrf_upstream_target_zephyr.h"
 #include "nrf_watchdog_zephyr.h"
 #include "nrf_hci_workqueue.h"
@@ -31,7 +34,8 @@ static int s_next_submit_failure;
 static unsigned s_readdress_calls;
 static unsigned s_reboot_calls;
 static unsigned s_sensor_assignment_calls;
-static uint32_t s_sensor_assignment_request_ids[32];
+static uint32_t s_sensor_assignment_request_ids[128];
+static nrf_upstream_assign_t s_sensor_assignments[128];
 static unsigned s_work_queue_start_calls;
 static unsigned s_sensor_refresh_calls;
 static unsigned s_height_reference_calls;
@@ -177,6 +181,7 @@ int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
     assert(status.result == NRF_UPSTREAM_RESULT_PENDING);
     assert(s_sensor_assignment_calls < sizeof(s_sensor_assignment_request_ids) / sizeof(s_sensor_assignment_request_ids[0]));
     s_sensor_assignment_request_ids[s_sensor_assignment_calls] = assign->request_id;
+    s_sensor_assignments[s_sensor_assignment_calls] = *assign;
     ++s_sensor_assignment_calls;
     return s_sensor_assignment_result;
 }
@@ -596,6 +601,46 @@ static void send_assign(const nrf_upstream_assign_t *assign)
     s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
 }
 
+static nrf_cs_control_request_t make_cs_request(uint32_t request_id, uint32_t attempt_id)
+{
+    nrf_cs_control_request_t request = {0};
+
+    request.request_id = request_id;
+    request.step.cycle_id = 1U;
+    request.step.membership_generation = 1U;
+    request.step.attempt_id = attempt_id;
+    request.step.pair_index = 0U;
+    request.step.attempt_number = 1U;
+    request.step.initiator = 2U;
+    request.step.reflector = 3U;
+    request.step.timeout_ms = 500U;
+    return request;
+}
+
+static void send_cs_execute(const nrf_cs_control_request_t *request)
+{
+    uint8_t frame[NRF_CS_CONTROL_EXECUTE_LENGTH];
+
+    assert(nrf_cs_control_encode_execute(request, frame) == 0);
+    s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+}
+
+static nrf_cs_control_result_t read_cs_result_for_request(
+    const nrf_cs_control_request_t *request)
+{
+    nrf_cs_control_result_t result;
+    uint8_t frame[NRF_CS_CONTROL_STATUS_REQUEST_LENGTH];
+    uint8_t *response;
+    uint32_t length;
+
+    assert(nrf_cs_control_encode_status_request(request, frame) == 0);
+    s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+    response = read_frame(&length);
+    assert(length == NRF_CS_CONTROL_RESULT_LENGTH);
+    assert(nrf_cs_control_decode_result(response, length, &result) == 0);
+    return result;
+}
+
 static void send_sensor_refresh(uint32_t request_id)
 {
     nrf_upstream_sensor_refresh_t request = {.request_id = request_id};
@@ -965,10 +1010,14 @@ int main(void)
     {
         const unsigned before_sensor_assignment_calls = s_sensor_assignment_calls;
         for (i = 0U; i < 4U; ++i) {
-            assign.request_id = 20U + i;
+            assign = make_assign(20U + i);
             send_assign(&assign);
+            assign.request_id = 0xBADU;
+            assign.node_id = 0x77U;
+            assign.mux_channel = 0x66U;
+            assign.role = NRF_UPSTREAM_ROLE_MAIN;
         }
-        assign.request_id = 24U;
+        assign = make_assign(24U);
         send_assign(&assign);
         status = read_status(NULL);
         assert(status.request_id == 24U && status.result == NRF_UPSTREAM_RESULT_BUSY);
@@ -979,6 +1028,21 @@ int main(void)
         assert(s_sensor_assignment_calls == before_sensor_assignment_calls + 4U);
         for (i = 0U; i < 4U; ++i) {
             assert(s_sensor_assignment_request_ids[before_sensor_assignment_calls + i] == 20U + i);
+            assert(s_sensor_assignments[before_sensor_assignment_calls + i].node_id == 2U);
+            assert(s_sensor_assignments[before_sensor_assignment_calls + i].mux_channel == 1U);
+            assert(s_sensor_assignments[before_sensor_assignment_calls + i].role == NRF_UPSTREAM_ROLE_REMOTE);
+        }
+    }
+
+    /* Repeated queued ASSIGNs reuse one static worker and leave no pending work. */
+    {
+        const unsigned work_queue_start_calls = s_work_queue_start_calls;
+        for (i = 0U; i < 32U; ++i) {
+            assign = make_assign(100U + i);
+            send_assign(&assign);
+            run_submitted_work();
+            assert(s_submitted_work == NULL);
+            assert(s_work_queue_start_calls == work_queue_start_calls);
         }
     }
 
@@ -1131,6 +1195,36 @@ int main(void)
         status = read_status(&read_length);
         assert(read_length == NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH);
         assert(status.role == NRF_UPSTREAM_ROLE_REMOTE);
+    }
+
+    {
+        const nrf_cs_control_request_t duplicate = make_cs_request(0x521U, 0x522U);
+        const nrf_cs_control_request_t busy = make_cs_request(0x523U, 0x524U);
+        const nrf_cs_control_request_t stale = make_cs_request(0x525U, 0x526U);
+        const unsigned execute_calls_before = nrf_cs_pair_zephyr_stub_execute_calls;
+        nrf_cs_control_result_t result;
+
+        assert(s_cs_execute_queue.max_msgs == 2U && s_cs_execute_queue.count == 0U);
+        send_cs_execute(&duplicate);
+        assert(s_cs_execute_queue.count == 1U);
+        send_cs_execute(&duplicate);
+        assert(s_cs_execute_queue.count == 2U);
+        send_cs_execute(&busy);
+        assert(s_cs_execute_queue.count == 2U);
+
+        result = read_cs_result_for_request(&busy);
+        assert(result.request_id == busy.request_id);
+        assert(result.command_result == NRF_CS_CONTROL_RESULT_BUSY);
+        run_submitted_work();
+        assert(s_cs_execute_queue.count == 0U);
+        assert(nrf_cs_pair_zephyr_stub_execute_calls == execute_calls_before + 1U);
+
+        result = read_cs_result_for_request(&duplicate);
+        assert(result.request_id == duplicate.request_id);
+        assert(result.state == NRF_CS_CONTROL_STATE_COMPLETE);
+        result = read_cs_result_for_request(&stale);
+        assert(result.request_id == stale.request_id);
+        assert(result.command_result == NRF_CS_CONTROL_RESULT_STALE);
     }
 
     check_cs_failure_event(

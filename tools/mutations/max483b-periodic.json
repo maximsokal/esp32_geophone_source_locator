@@ -1,0 +1,30 @@
+[
+  {
+    "id": "max483b_skip_all_missed_slots",
+    "description": "Count and skip every expired periodic slot before scheduling the next future deadline.",
+    "file": "components/app_config/include/app_tick.h",
+    "find": "const uint32_t missed_periods = (elapsed_after_deadline - 1U) / period_ticks + 1U;",
+    "replace": "const uint32_t missed_periods = 1U;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max483b-periodic.json",
+        "only": "max483b_tick_periodic"
+      }
+    ],
+    "expected_killer": "tests/host/max483b_periodic_timing_test.c::test_mutation_only_deadline_boundaries_and_tick_wrap"
+  },
+  {
+    "id": "max483b_record_missed_deadlines",
+    "description": "Increment the workflow poll missed-deadline counter when the task skips expired slots.",
+    "file": "components/workflow_service/workflow_service.c",
+    "find": "if (missed_deadlines > 0U) {",
+    "replace": "if (false) {",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max483b-periodic.json",
+        "only": "max483b_workflow_periodic"
+      }
+    ],
+    "expected_killer": "tests/host/workflow_service_test.c::test_workflow_poll_overrun_skips_expired_slots"
+  }
+]

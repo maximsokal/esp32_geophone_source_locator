@@ -39,9 +39,12 @@ void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
     struct k_thread *thread = k_current_get();
     const char *thread_name = NULL;
 
-    (void)reason;
     (void)hwinfo_get_reset_cause(&reset_cause);
     record.reset_cause = reset_cause;
+    record.fault_flags = NRF_FAULT_RECORD_FLAG_TERMINAL;
+    record.fault_class = (uint8_t)nrf_fault_record_classify(
+        k_is_in_isr(),
+        reason == K_ERR_STACK_CHK_FAIL);
     const uint32_t mmfar = SCB->MMFAR;
 
     record.cfsr = SCB->CFSR;

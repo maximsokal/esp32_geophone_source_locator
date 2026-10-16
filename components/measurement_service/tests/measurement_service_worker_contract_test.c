@@ -13,6 +13,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "../../../tests/host/host_threads.h"
 
 typedef struct {
     size_t length;
@@ -28,6 +29,17 @@ typedef struct {
 static SemaphoreHandle_t s_mutex;
 static measurement_service_snapshot_t s_snapshot;
 static bool s_measurement_mutex_held;
+static host_mutex_t s_queue_race_lock = HOST_MUTEX_INITIALIZER;
+static host_cond_t s_queue_race_changed = HOST_COND_INITIALIZER;
+static bool s_fail_queue_create;
+static bool s_pause_next_queue_send;
+static bool s_queue_send_paused;
+static bool s_release_queue_send;
+static bool s_hold_shutdown_wait;
+static bool s_shutdown_waiting;
+static bool s_release_shutdown_wait;
+static esp_err_t s_race_submit_result;
+static esp_err_t s_race_shutdown_result;
 
 static fake_queue_t *last_queue;
 static TickType_t s_last_queue_send_timeout;
@@ -65,6 +77,7 @@ static bool s_starting_observed_without_admission;
 
 QueueHandle_t xQueueCreate(size_t length, size_t item_size)
 {
+    if (s_fail_queue_create) return NULL;
     fake_queue_t *queue = calloc(1, sizeof(*queue));
     if (queue != NULL && item_size <= sizeof(queue->item)) {
         queue->length = length;
@@ -82,23 +95,50 @@ BaseType_t xQueueSend(QueueHandle_t handle, const void *item, TickType_t timeout
 {
     s_last_queue_send_timeout = timeout;
     fake_queue_t *queue = handle;
-    if (queue == NULL || queue->occupied) {
+    if (queue == NULL) return pdFALSE;
+    assert(host_mutex_lock(&s_queue_race_lock) == 0);
+    if (s_pause_next_queue_send) {
+        s_pause_next_queue_send = false;
+        s_queue_send_paused = true;
+        assert(host_cond_broadcast(&s_queue_race_changed) == 0);
+        while (!s_release_queue_send) {
+            assert(host_cond_wait_for(
+                &s_queue_race_changed, &s_queue_race_lock, 5000U) == 0);
+        }
+    }
+    while (queue->occupied && timeout != 0U) {
+        if (host_cond_wait_for(
+                &s_queue_race_changed,
+                &s_queue_race_lock,
+                (uint32_t)timeout) != 0) {
+            assert(host_mutex_unlock(&s_queue_race_lock) == 0);
+            return pdFALSE;
+        }
+    }
+    if (queue->occupied) {
+        assert(host_mutex_unlock(&s_queue_race_lock) == 0);
         return pdFALSE;
     }
     memcpy(queue->item, item, queue->item_size);
     queue->occupied = true;
+    assert(host_cond_broadcast(&s_queue_race_changed) == 0);
+    assert(host_mutex_unlock(&s_queue_race_lock) == 0);
     return pdTRUE;
 }
 
 BaseType_t xQueueReceive(QueueHandle_t handle, void *item, TickType_t timeout)
 {
-    (void)timeout;
     fake_queue_t *queue = handle;
+    assert(host_mutex_lock(&s_queue_race_lock) == 0);
     if (queue == NULL || !queue->occupied) {
+        assert(host_mutex_unlock(&s_queue_race_lock) == 0);
         return pdFALSE;
     }
+    (void)timeout;
     memcpy(item, queue->item, queue->item_size);
     queue->occupied = false;
+    assert(host_cond_broadcast(&s_queue_race_changed) == 0);
+    assert(host_mutex_unlock(&s_queue_race_lock) == 0);
     return pdTRUE;
 }
 
@@ -225,7 +265,19 @@ void vTaskDeleteWithCaps(TaskHandle_t task)
 
 void vTaskDelay(TickType_t ticks)
 {
-    (void)ticks;
+    if (ticks == 1U) {
+        assert(host_mutex_lock(&s_queue_race_lock) == 0);
+        if (s_hold_shutdown_wait) {
+            s_shutdown_waiting = true;
+            assert(host_cond_broadcast(&s_queue_race_changed) == 0);
+            while (!s_release_shutdown_wait) {
+                assert(host_cond_wait_for(
+                    &s_queue_race_changed, &s_queue_race_lock, 5000U) == 0);
+            }
+            s_hold_shutdown_wait = false;
+        }
+        assert(host_mutex_unlock(&s_queue_race_lock) == 0);
+    }
     ++s_task_delay_calls;
 }
 
@@ -676,7 +728,9 @@ static void test_object_specific_start_is_transactional(void)
 
     /* An accepted object-specific START commits B only when the worker owns
      * the command, then starts the recorder for that committed object. */
-    assert(measurement_service_start_object_async("OBJ_0002") == ESP_OK);
+    char caller_object_id[OBJECT_SERVICE_OBJECT_ID_SIZE] = "OBJ_0002";
+    assert(measurement_service_start_object_async(caller_object_id) == ESP_OK);
+    snprintf(caller_object_id, sizeof(caller_object_id), "OBJ_0003");
     assert(strcmp(fake_object.id, "OBJ_0001") == 0);
     run_pending_command();
     assert(fake_start_object_calls == 1U);
@@ -1136,9 +1190,107 @@ static void test_shutdown_timeout_retains_worker_owned_resources(void)
     assert(s_semaphore_delete_calls == semaphores_deleted_before + 2U);
 }
 
+
+static void *race_submit_start(void *unused)
+{
+    (void)unused;
+    s_race_submit_result = measurement_service_start_async();
+    return NULL;
+}
+
+
+static void *race_shutdown(void *unused)
+{
+    (void)unused;
+    s_race_shutdown_result = measurement_service_shutdown();
+    return NULL;
+}
+
+
+static void test_submit_finishes_before_queue_teardown(void)
+{
+    start_service();
+    assert(last_queue->length == 1U);
+    assert(last_queue->item_size == sizeof(measurement_command_t));
+
+    measurement_command_t untouched = {
+        .type = MEASUREMENT_COMMAND_STOP,
+        .object_id = "unchanged",
+    };
+    assert(xQueueReceive(last_queue, &untouched, 0U) == pdFALSE);
+    assert(untouched.type == MEASUREMENT_COMMAND_STOP);
+    assert(strcmp(untouched.object_id, "unchanged") == 0);
+
+    assert(host_mutex_lock(&s_queue_race_lock) == 0);
+    s_pause_next_queue_send = true;
+    s_queue_send_paused = false;
+    s_release_queue_send = false;
+    s_hold_shutdown_wait = true;
+    s_shutdown_waiting = false;
+    s_release_shutdown_wait = false;
+    assert(host_mutex_unlock(&s_queue_race_lock) == 0);
+
+    host_thread_t producer;
+    host_thread_t shutdown;
+    assert(host_thread_create(&producer, race_submit_start, NULL) == 0);
+    assert(host_mutex_lock(&s_queue_race_lock) == 0);
+    while (!s_queue_send_paused) {
+        assert(host_cond_wait_for(
+            &s_queue_race_changed, &s_queue_race_lock, 5000U) == 0);
+    }
+    assert(host_mutex_unlock(&s_queue_race_lock) == 0);
+
+    const unsigned deletes_before = s_queue_delete_calls;
+    assert(host_thread_create(&shutdown, race_shutdown, NULL) == 0);
+    assert(host_mutex_lock(&s_queue_race_lock) == 0);
+    while (!s_shutdown_waiting) {
+        assert(host_cond_wait_for(
+            &s_queue_race_changed, &s_queue_race_lock, 5000U) == 0);
+    }
+    assert(host_mutex_unlock(&s_queue_race_lock) == 0);
+    assert(s_queue_delete_calls == deletes_before);
+
+    assert(host_mutex_lock(&s_queue_race_lock) == 0);
+    s_release_queue_send = true;
+    assert(host_cond_broadcast(&s_queue_race_changed) == 0);
+    assert(host_mutex_unlock(&s_queue_race_lock) == 0);
+    assert(host_thread_join(producer) == 0);
+    assert(s_race_submit_result == ESP_OK);
+    assert(last_queue->occupied);
+    run_pending_command();
+    assert(fake_recorder_start_calls == 1U && fake_recorder.running);
+
+    assert(host_mutex_lock(&s_queue_race_lock) == 0);
+    s_release_shutdown_wait = true;
+    assert(host_cond_broadcast(&s_queue_race_changed) == 0);
+    assert(host_mutex_unlock(&s_queue_race_lock) == 0);
+    assert(host_thread_join(shutdown) == 0);
+
+    assert(s_race_shutdown_result == ESP_OK);
+    assert(s_queue_delete_calls == deletes_before + 1U);
+    assert(measurement_service_start_async() == ESP_ERR_INVALID_STATE);
+    last_queue = NULL;
+}
+
+
+static void test_queue_creation_failure_has_no_partial_service(void)
+{
+    const unsigned queues_deleted_before = s_queue_delete_calls;
+    const unsigned semaphores_deleted_before = s_semaphore_delete_calls;
+    last_queue = NULL;
+    s_fail_queue_create = true;
+    assert(measurement_service_init() == ESP_ERR_NO_MEM);
+    s_fail_queue_create = false;
+    assert(last_queue == NULL);
+    assert(s_queue_delete_calls == queues_deleted_before);
+    assert(s_semaphore_delete_calls == semaphores_deleted_before);
+    assert(!measurement_service_is_busy());
+}
+
 int main(void)
 {
     assert(storage_bulk_admission_initialize() == ESP_OK);
+    test_queue_creation_failure_has_no_partial_service();
     test_initial_and_no_active_object();
     test_start_stop_keep_delete_and_repeated_start();
     test_retry_start_after_error_keeps_gate_until_worker_runs();
@@ -1158,5 +1310,6 @@ int main(void)
     test_snapshot_and_delete_errors_preserve_safe_states();
     test_delayed_stop_error_blocks_restart_until_cleanup();
     test_shutdown_timeout_retains_worker_owned_resources();
+    test_submit_finishes_before_queue_teardown();
     return 0;
 }

@@ -10,6 +10,8 @@ static void test_fault_record_round_trip_and_checksum(void)
         .reset_cause = 0x12345678U,
         .cfsr = 0xA1B2C3D4U,
         .mmfsr = NRF_FAULT_RECORD_MMARVALID,
+        .fault_flags = NRF_FAULT_RECORD_FLAG_TERMINAL,
+        .fault_class = NRF_FAULT_CLASS_STACK_EXHAUSTION,
         .mmfar = 0x20001234U,
         .stacked_pc = 0x00012345U,
         .stacked_lr = 0x0006789AU,
@@ -26,6 +28,8 @@ static void test_fault_record_round_trip_and_checksum(void)
     assert(decoded.reset_cause == input.reset_cause);
     assert(decoded.cfsr == input.cfsr);
     assert(decoded.mmfsr == input.mmfsr);
+    assert(decoded.fault_flags == input.fault_flags);
+    assert(decoded.fault_class == input.fault_class);
     assert(decoded.mmfar == input.mmfar);
     assert(decoded.stacked_pc == input.stacked_pc);
     assert(decoded.stacked_lr == input.stacked_lr);
@@ -36,6 +40,14 @@ static void test_fault_record_round_trip_and_checksum(void)
 
     bytes[NRF_FAULT_RECORD_ENCODED_SIZE - 1U] ^= 1U;
     assert(nrf_fault_record_decode(bytes, sizeof(bytes), &decoded) == NRF_FAULT_RECORD_BAD_CHECKSUM);
+}
+
+static void test_fault_class_prioritizes_stack_over_interrupt_context(void)
+{
+    assert(nrf_fault_record_classify(false, true) == NRF_FAULT_CLASS_STACK_EXHAUSTION);
+    assert(nrf_fault_record_classify(true, true) == NRF_FAULT_CLASS_STACK_EXHAUSTION);
+    assert(nrf_fault_record_classify(true, false) == NRF_FAULT_CLASS_INTERRUPT_CONTEXT);
+    assert(nrf_fault_record_classify(false, false) == NRF_FAULT_CLASS_THREAD_CONTEXT);
 }
 
 static void test_mmfar_is_zero_without_mmarvalid(void)
@@ -72,6 +84,7 @@ static void test_fault_record_rejects_bad_arguments_and_header(void)
 int main(void)
 {
     test_fault_record_round_trip_and_checksum();
+    test_fault_class_prioritizes_stack_over_interrupt_context();
     test_mmfar_is_zero_without_mmarvalid();
     test_fault_record_rejects_bad_arguments_and_header();
     return 0;

@@ -1,0 +1,44 @@
+[
+  {
+    "id": "max487b_feed_while_participant_stale",
+    "description": "Continue feeding after a required progress participant becomes stale.",
+    "file": "nRF54L15/src/nrf_watchdog_zephyr.c",
+    "find": "if (!feed) {",
+    "replace": "if (false) {",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+        "only": "max486_489b_watchdog_runtime"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_watchdog_runtime_zephyr_test.c::main"
+  },
+  {
+    "id": "max487b_probe_auto_checkin",
+    "description": "Check in the system-workqueue participant directly from the watchdog service call.",
+    "file": "nRF54L15/src/nrf_watchdog_zephyr.c",
+    "find": "(void)k_work_submit(&s_workqueue_probe);",
+    "replace": "nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SYSTEM_WORKQUEUE);",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+        "only": "max486_489b_watchdog_runtime"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_watchdog_runtime_zephyr_test.c::main"
+  },
+  {
+    "id": "max487b_ignore_stale_cs_progress",
+    "description": "Ignore an active but stale Bluetooth Channel Sounding progress participant.",
+    "file": "nRF54L15/src/nrf_watchdog_health.c",
+    "find": "if (!health->active[i]) {",
+    "replace": "if (!health->active[i] || i == NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS) {",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+        "only": "max486_489b_watchdog_health"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_watchdog_health_test.c::test_active_bt_cs_progress_participant_stops_and_resumes_feed"
+  }
+]

@@ -7,6 +7,8 @@
 #define NRF_FAULT_RECORD_RESET_CAUSE_OFFSET 8U
 #define NRF_FAULT_RECORD_CFSR_OFFSET 12U
 #define NRF_FAULT_RECORD_MMFSR_OFFSET 16U
+#define NRF_FAULT_RECORD_FLAGS_OFFSET 17U
+#define NRF_FAULT_RECORD_CLASS_OFFSET 18U
 #define NRF_FAULT_RECORD_MMFAR_OFFSET 20U
 #define NRF_FAULT_RECORD_PC_OFFSET 24U
 #define NRF_FAULT_RECORD_LR_OFFSET 28U
@@ -57,6 +59,16 @@ static uint32_t checksum(const uint8_t *buffer, size_t length)
     return ~crc;
 }
 
+nrf_fault_class_t nrf_fault_record_classify(bool in_interrupt, bool stack_exhaustion)
+{
+    if (stack_exhaustion) {
+        return NRF_FAULT_CLASS_STACK_EXHAUSTION;
+    }
+    return in_interrupt
+        ? NRF_FAULT_CLASS_INTERRUPT_CONTEXT
+        : NRF_FAULT_CLASS_THREAD_CONTEXT;
+}
+
 static void write_text(uint8_t *destination, size_t capacity, const char *text)
 {
     if (text == NULL || capacity == 0U) {
@@ -86,6 +98,8 @@ nrf_fault_record_result_t nrf_fault_record_encode(
     write_u32(&buffer[NRF_FAULT_RECORD_RESET_CAUSE_OFFSET], record->reset_cause);
     write_u32(&buffer[NRF_FAULT_RECORD_CFSR_OFFSET], record->cfsr);
     buffer[NRF_FAULT_RECORD_MMFSR_OFFSET] = record->mmfsr;
+    buffer[NRF_FAULT_RECORD_FLAGS_OFFSET] = record->fault_flags;
+    buffer[NRF_FAULT_RECORD_CLASS_OFFSET] = record->fault_class;
     if ((record->mmfsr & NRF_FAULT_RECORD_MMARVALID) != 0U) {
         write_u32(&buffer[NRF_FAULT_RECORD_MMFAR_OFFSET], record->mmfar);
     }
@@ -134,6 +148,8 @@ nrf_fault_record_result_t nrf_fault_record_decode(
     record->reset_cause = read_u32(&buffer[NRF_FAULT_RECORD_RESET_CAUSE_OFFSET]);
     record->cfsr = read_u32(&buffer[NRF_FAULT_RECORD_CFSR_OFFSET]);
     record->mmfsr = buffer[NRF_FAULT_RECORD_MMFSR_OFFSET];
+    record->fault_flags = buffer[NRF_FAULT_RECORD_FLAGS_OFFSET];
+    record->fault_class = buffer[NRF_FAULT_RECORD_CLASS_OFFSET];
     if ((record->mmfsr & NRF_FAULT_RECORD_MMARVALID) != 0U) {
         record->mmfar = read_u32(&buffer[NRF_FAULT_RECORD_MMFAR_OFFSET]);
     }

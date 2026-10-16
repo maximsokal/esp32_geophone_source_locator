@@ -1,0 +1,114 @@
+[
+  {
+    "id": "max481b_remove_submit_result_check",
+    "description": "Ignore a failed nonblocking storage command enqueue.",
+    "file": "components/storage_service/storage_service.c",
+    "find": "if (\n        xQueueSend(\n            s_queue,\n            &command,\n            0\n        ) != pdTRUE\n    ) {\n        storage_service_release_command_gate();\n\n        return ESP_ERR_TIMEOUT;\n    }",
+    "replace": "(void)xQueueSend(s_queue, &command, 0);",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max481b-queue-semantics.json",
+        "only": "max481b_storage_queue_contract"
+      }
+    ],
+    "expected_killer": "tests/host/storage_service_lifecycle_test.c::test_submit_failure_returns_timeout_and_releases_gate"
+  },
+  {
+    "id": "max481b_ignore_submit_overflow",
+    "description": "Report success after the storage command queue rejects an item.",
+    "file": "components/storage_service/storage_service.c",
+    "find": "return ESP_ERR_TIMEOUT;",
+    "replace": "return ESP_OK;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max481b-queue-semantics.json",
+        "only": "max481b_storage_queue_contract"
+      }
+    ],
+    "expected_killer": "tests/host/storage_service_lifecycle_test.c::test_submit_failure_returns_timeout_and_releases_gate"
+  },
+  {
+    "id": "max481b_skip_shutdown_queue_result_check",
+    "description": "Delete storage queue resources after the STOP item fails to enqueue.",
+    "file": "components/storage_service/storage_service.c",
+    "find": "if (xQueueSend(\n            s_queue,\n            &command,\n            portMAX_DELAY\n        ) != pdTRUE) {\n            storage_service_shutdown_release_owner(false);\n            return;\n        }",
+    "replace": "(void)xQueueSend(s_queue, &command, portMAX_DELAY);",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max481b-queue-semantics.json",
+        "only": "max481b_storage_queue_contract"
+      }
+    ],
+    "expected_killer": "tests/host/storage_service_lifecycle_test.c::test_shutdown_send_failure_retains_queue"
+  },
+  {
+    "id": "max481b_skip_inflight_submit_drain",
+    "description": "Allow shutdown to tear down the queue while a producer still holds its handle.",
+    "file": "components/storage_service/storage_service.c",
+    "find": "    storage_service_wait_for_submitters();",
+    "replace": "    (void)0;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max481b-queue-semantics.json",
+        "only": "max481b_storage_queue_contract"
+      }
+    ],
+    "expected_killer": "tests/host/storage_service_lifecycle_test.c::test_submit_finishes_before_storage_queue_teardown"
+  },
+  {
+    "id": "max481b_queue_wrong_item_size",
+    "description": "Create the storage queue with pointer size instead of the command value size.",
+    "file": "components/storage_service/storage_service.c",
+    "find": "sizeof(storage_command_t)",
+    "replace": "sizeof(storage_command_t *)",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max481b-queue-semantics.json",
+        "only": "max481b_storage_queue_contract"
+      }
+    ],
+    "expected_killer": "tests/host/storage_service_lifecycle_test.c::test_submit_finishes_before_storage_queue_teardown"
+  },
+  {
+    "id": "max481b_queue_creation_ignores_null",
+    "description": "Continue storage initialization when xQueueCreate returns NULL.",
+    "file": "components/storage_service/storage_service.c",
+    "find": "if (s_queue == NULL) {\n        return ESP_ERR_NO_MEM;\n    }",
+    "replace": "",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max481b-queue-semantics.json",
+        "only": "max481b_storage_queue_contract"
+      }
+    ],
+    "expected_killer": "tests/host/storage_service_lifecycle_test.c::test_queue_creation_failure_returns_no_memory"
+  },
+  {
+    "id": "max481b_ignore_ring_overflow_accounting",
+    "description": "Stop counting dropped seismic frames after the bounded ring fills.",
+    "file": "components/seismic_buffer/seismic_buffer.c",
+    "find": "s_dropped_frames_total = seismic_buffer_saturating_add_u64(\n            s_dropped_frames_total, 1U\n        );",
+    "replace": "s_dropped_frames_total = s_dropped_frames_total;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max481b-queue-semantics.json",
+        "only": "max481b_seismic_buffer_queue_contract"
+      }
+    ],
+    "expected_killer": "components/seismic_buffer/tests/seismic_buffer_test.c::test_queue_stats_track_n_boundaries_and_reader_drops"
+  },
+  {
+    "id": "max481b_ignore_empty_receive_result",
+    "description": "Process the receive buffer after xQueueReceive reports an empty queue.",
+    "file": "components/storage_service/storage_service.c",
+    "find": "if (\n            xQueueReceive(\n                s_queue,\n                &command,\n                portMAX_DELAY\n            ) != pdTRUE\n        ) {\n            continue;\n        }",
+    "replace": "(void)xQueueReceive(s_queue, &command, portMAX_DELAY);",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max481b-queue-semantics.json",
+        "only": "max481b_storage_queue_contract"
+      }
+    ],
+    "expected_killer": "tests/host/storage_service_lifecycle_test.c::test_receive_timeout_ignores_stale_output"
+  }
+]

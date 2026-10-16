@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,6 +11,7 @@
 
 #include "freertos/queue.h"
 #include "freertos/idf_additions.h"
+#include "host_rtos.h"
 
 typedef struct {
     unsigned length;
@@ -23,15 +25,108 @@ static void (*s_created_task)(void *);
 static void *s_created_argument;
 static unsigned s_external_delete_calls;
 static unsigned s_queue_delete_calls;
+static TickType_t s_tick_count;
+static TickType_t s_last_delay_wait;
+static TickType_t s_last_delay_period;
+static bool s_delay_barrier_enabled;
+static bool s_delay_barrier_entered;
+static bool s_delay_barrier_released;
 #ifdef _WIN32
 static HANDLE s_task_thread;
+static SRWLOCK s_delay_barrier_lock = SRWLOCK_INIT;
+static CONDITION_VARIABLE s_delay_barrier_changed = CONDITION_VARIABLE_INIT;
 #else
 static pthread_t s_task_thread;
 static int s_task_thread_started;
+static pthread_mutex_t s_delay_barrier_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t s_delay_barrier_changed = PTHREAD_COND_INITIALIZER;
 #endif
 
 unsigned workflow_host_rtos_external_delete_count(void) { return s_external_delete_calls; }
 unsigned workflow_host_rtos_queue_delete_count(void) { return s_queue_delete_calls; }
+
+void workflow_host_rtos_reset_ticks(void)
+{
+    s_tick_count = 0U;
+    s_last_delay_wait = 0U;
+    s_last_delay_period = 0U;
+    s_delay_barrier_enabled = false;
+    s_delay_barrier_entered = false;
+    s_delay_barrier_released = false;
+}
+
+void workflow_host_rtos_advance_ticks(TickType_t ticks)
+{
+    s_tick_count += ticks;
+}
+
+TickType_t workflow_host_rtos_last_delay_wait(void) { return s_last_delay_wait; }
+TickType_t workflow_host_rtos_last_delay_period(void) { return s_last_delay_period; }
+
+void workflow_host_rtos_delay_barrier_enable(void)
+{
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&s_delay_barrier_lock);
+#else
+    assert(pthread_mutex_lock(&s_delay_barrier_lock) == 0);
+#endif
+    s_delay_barrier_enabled = true;
+    s_delay_barrier_entered = false;
+    s_delay_barrier_released = false;
+#ifdef _WIN32
+    ReleaseSRWLockExclusive(&s_delay_barrier_lock);
+#else
+    assert(pthread_mutex_unlock(&s_delay_barrier_lock) == 0);
+#endif
+}
+
+void workflow_host_rtos_delay_barrier_wait(void)
+{
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&s_delay_barrier_lock);
+    while (!s_delay_barrier_entered) {
+        assert(SleepConditionVariableSRW(
+            &s_delay_barrier_changed, &s_delay_barrier_lock, INFINITE, 0U));
+    }
+    ReleaseSRWLockExclusive(&s_delay_barrier_lock);
+#else
+    assert(pthread_mutex_lock(&s_delay_barrier_lock) == 0);
+    while (!s_delay_barrier_entered) {
+        assert(pthread_cond_wait(&s_delay_barrier_changed, &s_delay_barrier_lock) == 0);
+    }
+    assert(pthread_mutex_unlock(&s_delay_barrier_lock) == 0);
+#endif
+}
+
+void workflow_host_rtos_delay_barrier_release(void)
+{
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&s_delay_barrier_lock);
+    s_delay_barrier_released = true;
+    WakeAllConditionVariable(&s_delay_barrier_changed);
+    ReleaseSRWLockExclusive(&s_delay_barrier_lock);
+#else
+    assert(pthread_mutex_lock(&s_delay_barrier_lock) == 0);
+    s_delay_barrier_released = true;
+    assert(pthread_cond_broadcast(&s_delay_barrier_changed) == 0);
+    assert(pthread_mutex_unlock(&s_delay_barrier_lock) == 0);
+#endif
+}
+
+void workflow_host_rtos_delay_barrier_disable(void)
+{
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&s_delay_barrier_lock);
+#else
+    assert(pthread_mutex_lock(&s_delay_barrier_lock) == 0);
+#endif
+    s_delay_barrier_enabled = false;
+#ifdef _WIN32
+    ReleaseSRWLockExclusive(&s_delay_barrier_lock);
+#else
+    assert(pthread_mutex_unlock(&s_delay_barrier_lock) == 0);
+#endif
+}
 
 static void workflow_host_rtos_run_task(void)
 {
@@ -145,10 +240,37 @@ void vQueueDelete(QueueHandle_t handle)
     free(queue);
 }
 
-TickType_t xTaskGetTickCount(void) { return 0U; }
+TickType_t xTaskGetTickCount(void) { return s_tick_count; }
 void vTaskDelayUntil(TickType_t *last_wake, TickType_t period)
 {
-    if (last_wake != NULL) *last_wake += period;
+    if (last_wake == NULL) return;
+    *last_wake += period;
+    s_last_delay_period = period;
+    const TickType_t until_deadline = *last_wake - s_tick_count;
+    s_last_delay_wait = until_deadline < UINT32_C(0x80000000) ? until_deadline : 0U;
+    s_tick_count += s_last_delay_wait;
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&s_delay_barrier_lock);
+    if (s_delay_barrier_enabled) {
+        s_delay_barrier_entered = true;
+        WakeAllConditionVariable(&s_delay_barrier_changed);
+        while (!s_delay_barrier_released) {
+            assert(SleepConditionVariableSRW(
+                &s_delay_barrier_changed, &s_delay_barrier_lock, INFINITE, 0U));
+        }
+    }
+    ReleaseSRWLockExclusive(&s_delay_barrier_lock);
+#else
+    assert(pthread_mutex_lock(&s_delay_barrier_lock) == 0);
+    if (s_delay_barrier_enabled) {
+        s_delay_barrier_entered = true;
+        assert(pthread_cond_broadcast(&s_delay_barrier_changed) == 0);
+        while (!s_delay_barrier_released) {
+            assert(pthread_cond_wait(&s_delay_barrier_changed, &s_delay_barrier_lock) == 0);
+        }
+    }
+    assert(pthread_mutex_unlock(&s_delay_barrier_lock) == 0);
+#endif
 }
 void vTaskDelete(TaskHandle_t task)
 {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdatomic.h>
 
 typedef int BaseType_t;
 typedef unsigned long TickType_t;
@@ -8,23 +9,28 @@ typedef unsigned UBaseType_t;
 typedef void *QueueHandle_t;
 typedef void *SemaphoreHandle_t;
 typedef void *TaskHandle_t;
-typedef int portMUX_TYPE;
+typedef atomic_flag portMUX_TYPE;
 
 #define pdTRUE 1
 #define pdFALSE 0
 #define pdPASS 1
 #define portMAX_DELAY ((TickType_t)-1L)
 #define pdMS_TO_TICKS(milliseconds) (milliseconds)
-#define portMUX_INITIALIZER_UNLOCKED 0
+#define portMUX_INITIALIZER_UNLOCKED ATOMIC_FLAG_INIT
 
-static inline unsigned *fake_critical_depth_storage(void)
+static _Thread_local unsigned fake_critical_depth;
+
+static inline void test_task_enter_critical(portMUX_TYPE *mux)
 {
-    static unsigned depth;
-    return &depth;
+    while (atomic_flag_test_and_set_explicit(mux, memory_order_acquire)) { }
+    ++fake_critical_depth;
 }
 
-#define fake_critical_depth (*fake_critical_depth_storage())
-#define taskENTER_CRITICAL(mux) \
-    do { (void)(mux); ++fake_critical_depth; } while (0)
-#define taskEXIT_CRITICAL(mux) \
-    do { (void)(mux); --fake_critical_depth; } while (0)
+static inline void test_task_exit_critical(portMUX_TYPE *mux)
+{
+    --fake_critical_depth;
+    atomic_flag_clear_explicit(mux, memory_order_release);
+}
+
+#define taskENTER_CRITICAL(mux) test_task_enter_critical(mux)
+#define taskEXIT_CRITICAL(mux) test_task_exit_critical(mux)

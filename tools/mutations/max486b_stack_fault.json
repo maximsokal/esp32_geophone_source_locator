@@ -1,0 +1,44 @@
+[
+  {
+    "id": "max486b_stack_cap_inclusive",
+    "description": "Treat a high-water value equal to the registered stack cap as invalid.",
+    "file": "nRF54L15/src/nrf_thread_stack_inventory.c",
+    "find": "unused_bytes > entry->stack_size_bytes",
+    "replace": "unused_bytes >= entry->stack_size_bytes",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+        "only": "max486b_thread_stack_inventory"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_thread_stack_inventory_test.c::main"
+  },
+  {
+    "id": "max486b_zero_hwm_not_exhausted",
+    "description": "Stop classifying zero unused bytes as exhausted stack capacity.",
+    "file": "nRF54L15/src/nrf_thread_stack_inventory.c",
+    "find": "unused_bytes == 0U",
+    "replace": "unused_bytes != 0U",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+        "only": "max486b_thread_stack_inventory"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_thread_stack_inventory_test.c::main"
+  },
+  {
+    "id": "max486b_drop_terminal_fault_flag",
+    "description": "Drop the terminal marker from a captured Zephyr fatal record.",
+    "file": "nRF54L15/src/nrf_fault_record_zephyr.c",
+    "find": "record.fault_flags = NRF_FAULT_RECORD_FLAG_TERMINAL;",
+    "replace": "record.fault_flags = 0U;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+        "only": "max486b_fault_record_zephyr"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_fault_record_zephyr_test.c::main"
+  }
+]

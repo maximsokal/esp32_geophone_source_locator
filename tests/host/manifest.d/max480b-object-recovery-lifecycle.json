@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "max480b_object_recovery_lifecycle",
+      "sources": [
+        "components/object_recovery/object_recovery_worker.c",
+        "tests/host/max480b_object_recovery_lifecycle_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/max480b_object_recovery",
+        "components/app_config/include",
+        "components/object_recovery/include",
+        "components/object_recovery"
+      ],
+      "defines": ["CONFIG_FREERTOS_HZ=100"]
+    }
+  ]
+}

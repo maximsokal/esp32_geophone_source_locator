@@ -1,0 +1,44 @@
+[
+  {
+    "id": "max489b_report_refresh_enqueue_success_when_full",
+    "description": "Skip the refresh queue insertion failure branch and falsely report success.",
+    "file": "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c",
+    "find": "event.type = NRF_SENSOR_EVENT_REFRESH;\n    event.request_id = request->request_id;\n    if (k_msgq_put(&s_sensor_queue, &event, K_NO_WAIT) != 0) {",
+    "replace": "event.type = NRF_SENSOR_EVENT_REFRESH;\n    event.request_id = request->request_id;\n    if (false) {",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+        "only": "max486_489b_sensor_queue"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c::main"
+  },
+  {
+    "id": "max489b_wrong_sensor_queue_item_size",
+    "description": "Allocate each sensor queue slot using only the smaller refresh request size.",
+    "file": "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c",
+    "find": "sizeof(nrf_sensor_event_t)",
+    "replace": "sizeof(nrf_upstream_sensor_refresh_t)",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+        "only": "max486_489b_sensor_queue"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c::main"
+  },
+  {
+    "id": "max489b_accept_unmatched_cs_result",
+    "description": "Stop marking an unmatched CS STATUS selector as stale.",
+    "file": "nRF54L15/src/nrf_cs_control_runtime.c",
+    "find": "runtime->selector_stale = true;\n    return -2;",
+    "replace": "runtime->selector_stale = false;\n    return -2;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+        "only": "max486_489b_cs_control_runtime"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_cs_control_runtime_test.c::main"
+  }
+]

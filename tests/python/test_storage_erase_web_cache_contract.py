@@ -54,7 +54,7 @@ def test_storage_shutdown_drains_content_observer() -> None:
         "esp_err_t storage_service_set_event_callback(",
     )
     assert "storage_service_internal_clear_content_observer();" in shutdown
-    assert shutdown.index("storage_service_internal_clear_content_observer();") < shutdown.index("if (!s_initialized)")
+    assert shutdown.index("storage_service_internal_clear_content_observer();") < shutdown.index("if (!s_initialized || s_shutdown_active)")
 
 
 def test_web_cache_registers_and_unregisters_observer_before_free() -> None:

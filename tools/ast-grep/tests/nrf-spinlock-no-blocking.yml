@@ -1,0 +1,30 @@
+id: nrf-spinlock-no-blocking
+valid:
+  - |
+    void update(void) {
+      const k_spinlock_key_t key = k_spin_lock(&lock);
+      update_snapshot();
+      k_spin_unlock(&lock, key);
+      k_sem_take(&sem, K_FOREVER);
+    }
+  - '/* k_sem_take(&sem, K_FOREVER); while k_spin_lock(&lock) */'
+  - 'const char *s = "k_spin_lock(&lock); k_sleep(1); k_spin_unlock(&lock, key);";'
+invalid:
+  - |
+    void update(void) {
+      const k_spinlock_key_t key = k_spin_lock(&lock);
+      k_sem_take(&sem, K_FOREVER);
+      k_spin_unlock(&lock, key);
+    }
+  - |
+    void update(void) {
+      const k_spinlock_key_t key = k_spin_lock(&lock);
+      k_msleep(5);
+      k_spin_unlock(&lock, key);
+    }
+  - |
+    void update(void) {
+      const k_spinlock_key_t key = k_spin_lock(&lock);
+      k_msgq_put(&queue, &item, K_MSEC(5));
+      k_spin_unlock(&lock, key);
+    }

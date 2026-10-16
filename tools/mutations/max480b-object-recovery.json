@@ -1,0 +1,30 @@
+[
+  {
+    "id": "max480b_drop_queued_rescan",
+    "description": "Preserve a rescan request that arrives while the background pass is active.",
+    "file": "components/object_recovery/object_recovery_worker.c",
+    "find": "s_rescan_requested = true;",
+    "replace": "s_rescan_requested = false;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max480b-object-recovery-lifecycle.json",
+        "only": "max480b_object_recovery_lifecycle"
+      }
+    ],
+    "expected_killer": "tests/host/max480b_object_recovery_lifecycle_test.c::test_mutation_only_background_worker_lifecycle"
+  },
+  {
+    "id": "max480b_retire_background_worker",
+    "description": "Retire the completed recovery worker through the FreeRTOS task-delete path.",
+    "file": "components/object_recovery/object_recovery_worker.c",
+    "find": "vTaskDeleteWithCaps(NULL);",
+    "replace": "(void)0;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max480b-object-recovery-lifecycle.json",
+        "only": "max480b_object_recovery_lifecycle"
+      }
+    ],
+    "expected_killer": "tests/host/max480b_object_recovery_lifecycle_test.c::test_mutation_only_background_worker_lifecycle"
+  }
+]

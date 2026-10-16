@@ -1,0 +1,81 @@
+id: nrf-spinlock-no-blocking
+language: C
+severity: error
+message: Do not call a potentially blocking Zephyr API while holding a spinlock.
+files:
+  - nRF54L15/src/**/*.c
+rule:
+  kind: expression_statement
+  has:
+    any:
+      - pattern:
+          context: k_sem_take($$$ARGS);
+          selector: call_expression
+      - pattern:
+          context: k_mutex_lock($$$ARGS);
+          selector: call_expression
+      - pattern:
+          context: k_sleep($$$ARGS);
+          selector: call_expression
+      - pattern:
+          context: k_msleep($$$ARGS);
+          selector: call_expression
+      - pattern:
+          context: k_usleep($$$ARGS);
+          selector: call_expression
+      - pattern:
+          context: k_poll($$$ARGS);
+          selector: call_expression
+      - pattern:
+          context: k_condvar_wait($$$ARGS);
+          selector: call_expression
+      - pattern:
+          context: k_thread_join($$$ARGS);
+          selector: call_expression
+      - pattern:
+          context: k_work_flush($$$ARGS);
+          selector: call_expression
+      - pattern:
+          context: k_work_queue_drain($$$ARGS);
+          selector: call_expression
+      - pattern:
+          context: k_msgq_get($QUEUE, $DATA, K_FOREVER);
+          selector: call_expression
+      - pattern:
+          context: k_msgq_get($QUEUE, $DATA, K_MSEC($TIMEOUT));
+          selector: call_expression
+      - pattern:
+          context: k_msgq_put($QUEUE, $DATA, K_FOREVER);
+          selector: call_expression
+      - pattern:
+          context: k_msgq_put($QUEUE, $DATA, K_MSEC($TIMEOUT));
+          selector: call_expression
+  follows:
+    any:
+      - kind: declaration
+        has:
+          kind: call_expression
+          has:
+            kind: identifier
+            regex: '^k_spin_lock$'
+            stopBy: end
+          stopBy: end
+      - kind: expression_statement
+        has:
+          kind: call_expression
+          has:
+            kind: identifier
+            regex: '^k_spin_lock$'
+            stopBy: end
+          stopBy: end
+    stopBy: end
+  precedes:
+    kind: expression_statement
+    has:
+      kind: call_expression
+      has:
+        kind: identifier
+        regex: '^k_spin_unlock$'
+        stopBy: end
+      stopBy: end
+    stopBy: end

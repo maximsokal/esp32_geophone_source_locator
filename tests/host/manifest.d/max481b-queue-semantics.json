@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "max481b_measurement_queue_contract",
+      "sources": [
+        "components/measurement_service/tests/measurement_service_worker_contract_test.c",
+        "components/object_format/object_format.c",
+        "components/storage_manager/storage_bulk_admission.c",
+        "tests/host/stubs/runtime_observability/noop.c"
+      ],
+      "include_dirs": [
+        "components/app_config/include",
+        "components/measurement_service/tests/stubs",
+        "components/measurement_service/include",
+        "components/object_service/include",
+        "components/object_format/include",
+        "components/seismic_recorder/include",
+        "components/object_store/include",
+        "components/seismic_buffer/include",
+        "tests/host/stubs/runtime_observability",
+        "components/runtime_observability/include",
+        "components/storage_manager",
+        "components/storage_manager/include"
+      ],
+      "libraries": ["pthread"]
+    },
+    {
+      "name": "max481b_storage_queue_contract",
+      "sources": [
+        "components/storage_service/storage_service.c",
+        "components/storage_service/storage_service_content_observer.c",
+        "tests/host/storage_service_lifecycle_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/storage_service",
+        "components/storage_service/include",
+        "components/storage_service",
+        "components/sd_card/include",
+        "tests/host"
+      ],
+      "libraries": ["pthread"]
+    },
+    {
+      "name": "max481b_seismic_buffer_queue_contract",
+      "sources": [
+        "components/seismic_buffer/seismic_buffer.c",
+        "components/seismic_buffer/tests/seismic_buffer_test.c"
+      ],
+      "include_dirs": [
+        "tests/host",
+        "components/seismic_buffer/tests/stubs",
+        "components/seismic_buffer/include"
+      ],
+      "defines": ["SEISMIC_BUFFER_TEST_HOOKS=1"],
+      "libraries": ["pthread"]
+    }
+  ]
+}

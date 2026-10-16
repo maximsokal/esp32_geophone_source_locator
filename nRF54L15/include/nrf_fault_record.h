@@ -2,6 +2,7 @@
 #define NRF_FAULT_RECORD_H
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #define NRF_FAULT_RECORD_SCHEMA_VERSION 1U
@@ -9,11 +10,21 @@
 #define NRF_FAULT_RECORD_FIRMWARE_VERSION_BYTES 24U
 #define NRF_FAULT_RECORD_ENCODED_SIZE 84U
 #define NRF_FAULT_RECORD_MMARVALID 0x80U
+#define NRF_FAULT_RECORD_FLAG_TERMINAL 0x01U
+
+typedef enum {
+    NRF_FAULT_CLASS_UNKNOWN = 0,
+    NRF_FAULT_CLASS_THREAD_CONTEXT,
+    NRF_FAULT_CLASS_INTERRUPT_CONTEXT,
+    NRF_FAULT_CLASS_STACK_EXHAUSTION,
+} nrf_fault_class_t;
 
 typedef struct {
     uint32_t reset_cause;
     uint32_t cfsr;
     uint8_t mmfsr;
+    uint8_t fault_flags;
+    uint8_t fault_class;
     uint32_t mmfar;
     uint32_t stacked_pc;
     uint32_t stacked_lr;
@@ -31,6 +42,8 @@ typedef enum {
     NRF_FAULT_RECORD_BAD_VERSION,
     NRF_FAULT_RECORD_BAD_CHECKSUM,
 } nrf_fault_record_result_t;
+
+nrf_fault_class_t nrf_fault_record_classify(bool in_interrupt, bool stack_exhaustion);
 
 nrf_fault_record_result_t nrf_fault_record_encode(
     const nrf_fault_record_t *record,

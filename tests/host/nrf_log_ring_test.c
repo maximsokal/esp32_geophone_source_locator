@@ -163,6 +163,7 @@ static void test_capacity_overflow_and_wrap(void)
     CHECK((block.flags & NRF_LOG_BLOCK_FLAG_GAP) != 0U);
     CHECK((block.flags & NRF_LOG_BLOCK_FLAG_MORE) != 0U);
     CHECK(block.first_seq == status.oldest_seq && block.next_cursor == status.oldest_seq + 5U);
+    CHECK(block.overwritten_total == status.overwritten_total);
     CHECK(block.records[0].seq == status.oldest_seq);
     CHECK(fixture.lock_state.depth == 0U);
     CHECK(fixture.lock_state.lock_calls == fixture.lock_state.unlock_calls);

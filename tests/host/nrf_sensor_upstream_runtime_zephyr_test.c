@@ -24,6 +24,8 @@
 #include "nrf_verticality_state.h"
 #include "nrf_watchdog_zephyr.h"
 
+extern struct k_msgq s_sensor_queue;
+
 static unsigned s_thread_create_calls;
 static int s_sensor_worker_priority;
 static unsigned s_queue_put_calls;
@@ -31,7 +33,6 @@ static unsigned s_prepare_calls;
 static unsigned s_refresh_calls;
 static unsigned s_imu_read_calls;
 static unsigned s_runtime_init_calls;
-static bool s_fail_next_queue_put;
 /* MAX-244 */
 static unsigned s_sensor_worker_checkins;
 static k_timeout_t s_max_worker_wait = K_NO_WAIT;
@@ -177,6 +178,22 @@ static void assert_last_log_event(uint16_t event_id, uint32_t arg0, uint32_t arg
     assert(s_log_events[s_log_event_count - 1U].arg1 == arg1);
 }
 
+static void fill_sensor_queue_and_check_capacity(void)
+{
+    uint8_t item[64] = {0U};
+
+    assert(s_sensor_queue.msg_size <= sizeof(item));
+    assert(s_sensor_queue.max_msgs == 4U);
+    assert(s_sensor_queue.count == 0U);
+    for (unsigned index = 0U; index + 1U < s_sensor_queue.max_msgs; ++index) {
+        assert(k_msgq_put(&s_sensor_queue, item, K_NO_WAIT) == 0);
+    }
+    assert(s_sensor_queue.count == s_sensor_queue.max_msgs - 1U);
+    assert(k_msgq_put(&s_sensor_queue, item, K_NO_WAIT) == 0);
+    assert(s_sensor_queue.count == s_sensor_queue.max_msgs);
+    assert(k_msgq_put(&s_sensor_queue, item, K_NO_WAIT) == -ENOMSG);
+}
+
 void k_msgq_purge(struct k_msgq *q)
 {
     q->head = q->tail = q->count = 0U;
@@ -186,10 +203,6 @@ int k_msgq_put(struct k_msgq *q, const void *data, k_timeout_t timeout)
 {
     (void)timeout;
     ++s_queue_put_calls;
-    if (s_fail_next_queue_put) {
-        s_fail_next_queue_put = false;
-        return -ENOMSG;
-    }
     if (q->count >= q->max_msgs) {
         return -ENOMSG;
     }
@@ -756,6 +769,7 @@ int main(void)
     nrf_upstream_assign_t conflicting = assign;
     nrf_upstream_sensor_refresh_t request = {.request_id = 20U};
     nrf_upstream_sensor_snapshot_t snapshot;
+    const unsigned queue_calls_base = s_queue_put_calls;
 
     nrf_orientation_default_config(&orientation_config);
     orientation_config.reference_axis = NRF_ORIENTATION_AXIS_POS_Z;
@@ -783,14 +797,16 @@ int main(void)
     assert(s_queue_put_calls == 0U);
     assert(s_prepare_calls == 0U && s_refresh_calls == 0U && s_imu_read_calls == 0U);
 
-    /* Failed ACTIVATE enqueue rolls the lightweight session activation back. */
-    s_fail_next_queue_put = true;
+    /* A full queue returns the real put failure and rolls activation back. */
+    fill_sensor_queue_and_check_capacity();
+    assert(s_queue_put_calls == queue_calls_base + 5U);
     assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == -ENOSPC);
-    assert(s_queue_put_calls == 1U);
+    assert(s_queue_put_calls == queue_calls_base + 6U);
+    k_msgq_purge(&s_sensor_queue);
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
     assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_NOT_READY);
     assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == -EAGAIN);
-    assert(s_queue_put_calls == 1U);
+    assert(s_queue_put_calls == queue_calls_base + 6U);
 
     /*
      * Successful notification commits logical REMOTE activation synchronously,
@@ -798,12 +814,34 @@ int main(void)
      * refresh therefore observes request_id=0 PENDING/BUSY, never NOT_REMOTE.
      */
     assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
-    assert(s_queue_put_calls == 2U);
+    /* The worker must use the queue's copy after this caller-owned value changes. */
+    assign.request_id = 0xBADU;
+    assign.node_id = 0x77U;
+    assign.mux_channel = 0x66U;
+    assign.role = NRF_UPSTREAM_ROLE_MAIN;
+    assert(s_queue_put_calls == queue_calls_base + 7U);
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
     assert(snapshot.request_id == 0U);
     assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PENDING);
     assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == -EBUSY);
-    assert(s_queue_put_calls == 2U);
+    assert(s_queue_put_calls == queue_calls_base + 7U);
+    {
+        const unsigned queue_calls_before = s_queue_put_calls;
+        const nrf_upstream_height_reference_t height = {
+            .action = NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE,
+            .request_id = 18U,
+            .generation = 18U,
+        };
+        const nrf_upstream_imu_calibrate_t calibration = {
+            .action = NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE,
+            .request_id = 19U,
+            .generation = 19U,
+        };
+
+        assert(nrf_sensor_upstream_runtime_zephyr_request_height_reference(&height) == -EBUSY);
+        assert(nrf_sensor_upstream_runtime_zephyr_request_imu_calibration(&calibration) == -EBUSY);
+        assert(s_queue_put_calls == queue_calls_before);
+    }
     assert(s_prepare_calls == 0U && s_refresh_calls == 0U && s_imu_read_calls == 0U);
 
     /* Execute exactly the queued ACTIVATE event, then escape the worker loop. */
@@ -845,6 +883,48 @@ int main(void)
     assert(s_blue_led_action == NRF_BLUE_LED_BLINK_2HZ);
     assert(snapshot.orientation_blink_class == (uint8_t)orientation.blink_class);
     assert(snapshot.orientation_tilt_sin2_ppm == orientation.tilt_sin2_ppm);
+    assign = make_assign();
+
+    /* A live system probe cannot make queue rejection look like sensor success. */
+    {
+        const unsigned prepare_calls_before = s_prepare_calls;
+        const unsigned refresh_calls_before = s_refresh_calls;
+        const unsigned imu_reads_before = s_imu_read_calls;
+        nrf_upstream_height_reference_t height = {
+            .action = NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE,
+            .request_id = 101U,
+            .generation = 101U,
+        };
+        nrf_upstream_imu_calibrate_t calibration = {
+            .action = NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE,
+            .request_id = 102U,
+            .generation = 102U,
+        };
+
+        fill_sensor_queue_and_check_capacity();
+        assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(
+                   &(nrf_upstream_sensor_refresh_t){.request_id = 100U}) == -ENOSPC);
+        k_msgq_purge(&s_sensor_queue);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.request_id == 100U && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_BUSY);
+
+        fill_sensor_queue_and_check_capacity();
+        assert(nrf_sensor_upstream_runtime_zephyr_request_height_reference(&height) == -ENOSPC);
+        k_msgq_purge(&s_sensor_queue);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.request_id == height.request_id &&
+               snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_BUSY);
+
+        fill_sensor_queue_and_check_capacity();
+        assert(nrf_sensor_upstream_runtime_zephyr_request_imu_calibration(&calibration) == -ENOSPC);
+        k_msgq_purge(&s_sensor_queue);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.request_id == calibration.request_id &&
+               snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_BUSY);
+        assert(s_prepare_calls == prepare_calls_before);
+        assert(s_refresh_calls == refresh_calls_before);
+        assert(s_imu_read_calls == imu_reads_before);
+    }
 
 #if !defined(CONFIG_APP_NRF_STAGE_SIGNALS) || !CONFIG_APP_NRF_STAGE_SIGNALS
     assert_last_applied_matches_policy();
@@ -852,7 +932,7 @@ int main(void)
 
     /* The explicit request is accepted after the activation sample completes. */
     assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == 0);
-    assert(s_queue_put_calls == 3U);
+    assert(s_queue_put_calls == queue_calls_base + 26U);
 
     /* A later aggregate refresh with a valid ENV sample must carry the
      * nRF-computed altitude alongside the legacy pressure/humidity fields. */

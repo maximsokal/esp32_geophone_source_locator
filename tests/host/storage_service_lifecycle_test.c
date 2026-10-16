@@ -12,6 +12,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "freertos/idf_additions.h"
+#include "host_threads.h"
 
 #define FAKE_QUEUE_BYTES 128U
 
@@ -23,7 +24,7 @@ typedef struct {
 
 typedef struct { UBaseType_t count; } fake_sem_t;
 
-unsigned fake_critical_depth;
+_Thread_local unsigned fake_critical_depth;
 
 static fake_queue_t s_queue;
 static fake_sem_t s_sem;
@@ -32,6 +33,16 @@ static bool s_fail_queue_create;
 static bool s_fail_sem_create;
 static bool s_fail_task_create;
 static bool s_fail_queue_send;
+static bool s_fail_queue_receive_once;
+static bool s_queue_live;
+static bool s_pause_next_queue_send;
+static bool s_queue_send_paused;
+static bool s_release_queue_send;
+static bool s_hold_submit_wait;
+static bool s_shutdown_waiting;
+static bool s_shutdown_done;
+static bool s_release_submit_wait;
+static bool s_stale_queue_send;
 static bool s_inject_stop_when_empty;
 static bool s_release_callback_inflight_on_delay;
 static bool s_release_content_inflight_on_delay;
@@ -52,6 +63,10 @@ static UBaseType_t s_task_priority;
 static uint32_t s_task_stack;
 static BaseType_t s_task_core;
 static uint32_t s_task_caps;
+static TickType_t s_last_queue_send_ticks;
+static host_mutex_t s_race_lock = HOST_MUTEX_INITIALIZER;
+static host_cond_t s_race_changed = HOST_COND_INITIALIZER;
+static esp_err_t s_race_submit_result;
 
 QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t item_size)
 {
@@ -60,16 +75,52 @@ QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t item_size)
     if (s_fail_queue_create) return NULL;
     memset(&s_queue, 0, sizeof(s_queue));
     s_queue.item_size = item_size;
+    s_queue_live = true;
     return &s_queue;
 }
 
 BaseType_t xQueueSend(QueueHandle_t queue, const void *item, TickType_t ticks)
 {
-    (void)ticks;
+    s_last_queue_send_ticks = ticks;
     assert(queue == &s_queue);
-    if (s_fail_queue_send || s_queue.has_item) return pdFALSE;
+    assert(host_mutex_lock(&s_race_lock) == 0);
+    if (s_pause_next_queue_send) {
+        s_pause_next_queue_send = false;
+        s_queue_send_paused = true;
+        assert(host_cond_broadcast(&s_race_changed) == 0);
+        while (!s_release_queue_send) {
+            assert(host_cond_wait_for(&s_race_changed, &s_race_lock, 5000U) == 0);
+        }
+    }
+    if (!s_queue_live) {
+        s_stale_queue_send = true;
+        assert(host_mutex_unlock(&s_race_lock) == 0);
+        return pdFALSE;
+    }
+    if (s_fail_queue_send) {
+        assert(host_mutex_unlock(&s_race_lock) == 0);
+        return pdFALSE;
+    }
+    while (s_queue.has_item && ticks != 0U) {
+        const uint32_t wait_ms = ticks == portMAX_DELAY ? 5000U : (uint32_t)ticks;
+        const int wait_result = host_cond_wait_for(
+            &s_race_changed,
+            &s_race_lock,
+            wait_ms
+        );
+        if (ticks != portMAX_DELAY && wait_result != 0) {
+            assert(host_mutex_unlock(&s_race_lock) == 0);
+            return pdFALSE;
+        }
+    }
+    if (s_queue.has_item) {
+        assert(host_mutex_unlock(&s_race_lock) == 0);
+        return pdFALSE;
+    }
     memcpy(s_queue.item, item, s_queue.item_size);
     s_queue.has_item = true;
+    assert(host_cond_broadcast(&s_race_changed) == 0);
+    assert(host_mutex_unlock(&s_race_lock) == 0);
     return pdTRUE;
 }
 
@@ -77,25 +128,41 @@ BaseType_t xQueueReceive(QueueHandle_t queue, void *item, TickType_t ticks)
 {
     assert(queue == &s_queue);
     assert(ticks == portMAX_DELAY);
+    assert(host_mutex_lock(&s_race_lock) == 0);
+    if (s_fail_queue_receive_once) {
+        const storage_command_t stale = STORAGE_COMMAND_INFO;
+        memcpy(item, &stale, sizeof(stale));
+        s_fail_queue_receive_once = false;
+        assert(host_mutex_unlock(&s_race_lock) == 0);
+        return pdFALSE;
+    }
     if (s_queue.has_item) {
         memcpy(item, s_queue.item, s_queue.item_size);
         s_queue.has_item = false;
+        assert(host_cond_broadcast(&s_race_changed) == 0);
+        assert(host_mutex_unlock(&s_race_lock) == 0);
         return pdTRUE;
     }
     if (s_inject_stop_when_empty) {
         storage_command_t stop = STORAGE_COMMAND_STOP;
         memcpy(item, &stop, sizeof(stop));
         s_inject_stop_when_empty = false;
+        assert(host_mutex_unlock(&s_race_lock) == 0);
         return pdTRUE;
     }
+    assert(host_mutex_unlock(&s_race_lock) == 0);
     return pdFALSE;
 }
 
 void vQueueDelete(QueueHandle_t queue)
 {
     assert(queue == &s_queue);
+    assert(host_mutex_lock(&s_race_lock) == 0);
     ++s_queue_delete_calls;
+    s_queue_live = false;
     s_queue.has_item = false;
+    assert(host_cond_broadcast(&s_race_changed) == 0);
+    assert(host_mutex_unlock(&s_race_lock) == 0);
 }
 
 SemaphoreHandle_t xSemaphoreCreateBinary(void)
@@ -155,6 +222,16 @@ void vTaskDelay(TickType_t ticks)
     assert(fake_critical_depth == 0U);
 
     if (ticks == 1U) {
+        assert(host_mutex_lock(&s_race_lock) == 0);
+        if (s_hold_submit_wait) {
+            s_shutdown_waiting = true;
+            assert(host_cond_broadcast(&s_race_changed) == 0);
+            while (!s_release_submit_wait) {
+                assert(host_cond_wait_for(&s_race_changed, &s_race_lock, 5000U) == 0);
+            }
+            s_hold_submit_wait = false;
+        }
+        assert(host_mutex_unlock(&s_race_lock) == 0);
         if (s_release_callback_inflight_on_delay) {
             storage_service_callback_slot_t *slot =
                 storage_service_internal_callback_slot();
@@ -173,7 +250,7 @@ void vTaskDelay(TickType_t ticks)
             ++s_barrier_delay_calls;
             return;
         }
-        assert(false);
+        return;
     }
 
     assert(ticks == pdMS_TO_TICKS(10));
@@ -237,10 +314,173 @@ static void reset_failures(void)
     s_fail_sem_create = false;
     s_fail_task_create = false;
     s_fail_queue_send = false;
+    s_fail_queue_receive_once = false;
     s_inject_stop_when_empty = false;
     s_release_callback_inflight_on_delay = false;
     s_release_content_inflight_on_delay = false;
     s_task_entry = NULL;
+}
+
+
+static void *race_submit_info(void *unused)
+{
+    (void)unused;
+    s_race_submit_result = storage_service_info_async();
+    return NULL;
+}
+
+
+static void *race_shutdown_service(void *unused)
+{
+    (void)unused;
+    storage_service_shutdown();
+    assert(host_mutex_lock(&s_race_lock) == 0);
+    s_shutdown_done = true;
+    assert(host_cond_broadcast(&s_race_changed) == 0);
+    assert(host_mutex_unlock(&s_race_lock) == 0);
+    return NULL;
+}
+
+
+static void test_submit_finishes_before_storage_queue_teardown(void)
+{
+    assert(storage_service_init() == ESP_OK);
+    assert(s_queue.item_size == sizeof(storage_command_t));
+    storage_command_t untouched = STORAGE_COMMAND_ERASE_DATA;
+    assert(xQueueReceive(&s_queue, &untouched, portMAX_DELAY) == pdFALSE);
+    assert(untouched == STORAGE_COMMAND_ERASE_DATA);
+
+    assert(host_mutex_lock(&s_race_lock) == 0);
+    s_pause_next_queue_send = true;
+    s_queue_send_paused = false;
+    s_release_queue_send = false;
+    s_hold_submit_wait = true;
+    s_shutdown_waiting = false;
+    s_shutdown_done = false;
+    s_release_submit_wait = false;
+    assert(host_mutex_unlock(&s_race_lock) == 0);
+
+    host_thread_t producer;
+    host_thread_t shutdown;
+    assert(host_thread_create(&producer, race_submit_info, NULL) == 0);
+    assert(host_mutex_lock(&s_race_lock) == 0);
+    while (!s_queue_send_paused) {
+        assert(host_cond_wait_for(&s_race_changed, &s_race_lock, 5000U) == 0);
+    }
+    assert(host_mutex_unlock(&s_race_lock) == 0);
+
+    const unsigned deletes_before = s_queue_delete_calls;
+    const unsigned sem_deletes_before = s_sem_delete_calls;
+    s_inject_stop_when_empty = true;
+    assert(host_thread_create(&shutdown, race_shutdown_service, NULL) == 0);
+    assert(host_mutex_lock(&s_race_lock) == 0);
+    while (!s_shutdown_waiting && !s_shutdown_done) {
+        assert(host_cond_wait_for(&s_race_changed, &s_race_lock, 5000U) == 0);
+    }
+    const bool shutdown_before_submit_end = s_shutdown_done;
+    assert(host_mutex_unlock(&s_race_lock) == 0);
+    assert(!shutdown_before_submit_end);
+    assert(s_queue_delete_calls == deletes_before);
+
+    assert(host_mutex_lock(&s_race_lock) == 0);
+    s_release_queue_send = true;
+    assert(host_cond_broadcast(&s_race_changed) == 0);
+    assert(host_mutex_unlock(&s_race_lock) == 0);
+    assert(host_thread_join(producer) == 0);
+
+    assert(s_race_submit_result == ESP_OK);
+    assert(s_queue_live && s_queue.has_item);
+    storage_command_t queued;
+    memcpy(&queued, s_queue.item, sizeof(queued));
+    assert(queued == STORAGE_COMMAND_INFO);
+    TaskFunction_t worker = s_task_entry;
+    s_task_entry = NULL;
+    worker(NULL);
+    assert(s_sem.count == 1U);
+
+    assert(host_mutex_lock(&s_race_lock) == 0);
+    s_release_submit_wait = true;
+    assert(host_cond_broadcast(&s_race_changed) == 0);
+    assert(host_mutex_unlock(&s_race_lock) == 0);
+    assert(host_thread_join(shutdown) == 0);
+
+    assert(!s_stale_queue_send);
+    assert(s_last_queue_send_ticks == portMAX_DELAY);
+    assert(!s_queue_live);
+    assert(s_queue_delete_calls == deletes_before + 1U);
+    assert(s_sem_delete_calls == sem_deletes_before + 1U);
+    assert(!s_stale_queue_send);
+    assert(storage_service_info_async() == ESP_ERR_INVALID_STATE);
+
+    assert(storage_service_init() == ESP_OK);
+    storage_service_shutdown();
+    assert(!s_queue_live);
+    assert(s_queue_delete_calls == deletes_before + 2U);
+    assert(s_sem_delete_calls == sem_deletes_before + 2U);
+    assert(!s_stale_queue_send);
+}
+
+
+static void test_shutdown_send_failure_retains_queue(void)
+{
+    const unsigned deletes_before = s_queue_delete_calls;
+    const unsigned sem_deletes_before = s_sem_delete_calls;
+    assert(storage_service_init() == ESP_OK);
+    s_fail_queue_send = true;
+    s_inject_stop_when_empty = true;
+    storage_service_shutdown();
+    assert(s_last_queue_send_ticks == portMAX_DELAY);
+    assert(s_queue_live);
+    assert(s_queue_delete_calls == deletes_before);
+    assert(s_sem_delete_calls == sem_deletes_before);
+
+    s_fail_queue_send = false;
+    storage_service_shutdown();
+    assert(!s_queue_live);
+    assert(s_queue_delete_calls == deletes_before + 1U);
+    assert(s_sem_delete_calls == sem_deletes_before + 1U);
+    s_inject_stop_when_empty = false;
+}
+
+
+static void test_submit_failure_returns_timeout_and_releases_gate(void)
+{
+    s_fail_queue_send = true;
+    assert(storage_service_info_async() == ESP_ERR_TIMEOUT);
+    assert(s_last_queue_send_ticks == 0U);
+    assert(!storage_service_is_busy());
+    assert(s_sem.count == 1U);
+    s_fail_queue_send = false;
+}
+
+
+static void test_queue_creation_failure_returns_no_memory(void)
+{
+    const unsigned queues_deleted_before = s_queue_delete_calls;
+    const unsigned semaphores_deleted_before = s_sem_delete_calls;
+    s_fail_queue_create = true;
+    assert(storage_service_init() == ESP_ERR_NO_MEM);
+    reset_failures();
+    assert(s_queue_delete_calls == queues_deleted_before);
+    assert(s_sem_delete_calls == semaphores_deleted_before);
+    assert(!storage_service_is_busy());
+}
+
+
+static void test_receive_timeout_ignores_stale_output(void)
+{
+    const unsigned info_before = s_process_info_calls;
+    const unsigned erase_before = s_process_erase_calls;
+    assert(storage_service_init() == ESP_OK);
+    s_fail_queue_receive_once = true;
+    s_inject_stop_when_empty = true;
+    TaskFunction_t worker = s_task_entry;
+    s_task_entry = NULL;
+    worker(NULL);
+    assert(s_process_info_calls == info_before);
+    assert(s_process_erase_calls == erase_before);
+    storage_service_shutdown();
+    assert(!s_queue_live);
 }
 
 int main(void)
@@ -264,9 +504,7 @@ int main(void)
     assert(content_slot->context == NULL);
     assert(content_slot->in_flight == 0U);
 
-    s_fail_queue_create = true;
-    assert(storage_service_init() == ESP_ERR_NO_MEM);
-    reset_failures();
+    test_queue_creation_failure_returns_no_memory();
 
     s_fail_sem_create = true;
     assert(storage_service_init() == ESP_ERR_NO_MEM);
@@ -315,11 +553,7 @@ int main(void)
         &s_content_changed_calls
     ) == ESP_OK);
 
-    s_fail_queue_send = true;
-    assert(storage_service_info_async() == ESP_ERR_TIMEOUT);
-    assert(!storage_service_is_busy());
-    assert(s_sem.count == 1U);
-    s_fail_queue_send = false;
+    test_submit_failure_returns_timeout_and_releases_gate();
 
     assert(storage_service_info_async() == ESP_OK);
     assert(storage_service_is_busy());
@@ -337,6 +571,7 @@ int main(void)
     assert(s_sem.count == 1U);
 
     storage_service_shutdown();
+    assert(s_last_queue_send_ticks == portMAX_DELAY);
     assert(slot->callback == NULL);
     assert(slot->context == NULL);
     assert(slot->in_flight == 0U);
@@ -384,6 +619,9 @@ int main(void)
 
     assert(storage_service_init() == ESP_OK);
     storage_service_shutdown();
+    test_submit_finishes_before_storage_queue_teardown();
+    test_shutdown_send_failure_retains_queue();
+    test_receive_timeout_ignores_stale_output();
     assert(!storage_service_is_busy());
     assert(fake_critical_depth == 0U);
 

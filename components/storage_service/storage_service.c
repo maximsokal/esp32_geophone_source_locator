@@ -45,7 +45,13 @@ static storage_service_callback_slot_t s_callback_slot = {
 static bool s_initialized =
     false;
 
+static portMUX_TYPE s_submit_lifecycle_lock = portMUX_INITIALIZER_UNLOCKED;
+static unsigned s_submit_in_flight;
+static bool s_shutdown_requested;
+static bool s_shutdown_active;
+
 static storage_service_event_t s_event;
+static bool storage_service_gate_is_busy(void);
 
 
 storage_service_callback_slot_t *storage_service_internal_callback_slot(void)
@@ -80,6 +86,43 @@ static void storage_service_wait_for_callback(void)
     }
 }
 
+
+static bool storage_service_submit_begin(void)
+{
+    bool accepted;
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+    accepted = s_initialized && !s_shutdown_requested && s_queue != NULL &&
+        s_command_gate != NULL;
+    if (accepted) ++s_submit_in_flight;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
+    return accepted;
+}
+
+static void storage_service_submit_end(void)
+{
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+    --s_submit_in_flight;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
+}
+
+static void storage_service_shutdown_release_owner(bool completed)
+{
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+    s_shutdown_active = false;
+    if (completed) s_shutdown_requested = false;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
+}
+
+static void storage_service_wait_for_submitters(void)
+{
+    for (;;) {
+        taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+        const bool empty = s_submit_in_flight == 0U;
+        taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
+        if (empty) return;
+        vTaskDelay(1U);
+    }
+}
 
 static void storage_service_notify(void)
 {
@@ -282,7 +325,7 @@ static void storage_service_task(
 }
 
 
-static esp_err_t storage_service_submit(
+static esp_err_t storage_service_submit_active(
     storage_command_t command
 )
 {
@@ -322,12 +365,23 @@ static esp_err_t storage_service_submit(
     return ESP_OK;
 }
 
+static esp_err_t storage_service_submit(storage_command_t command)
+{
+    if (!storage_service_submit_begin()) return ESP_ERR_INVALID_STATE;
+    const esp_err_t err = storage_service_submit_active(command);
+    storage_service_submit_end();
+    return err;
+}
+
 
 esp_err_t storage_service_init(void)
 {
-    if (s_initialized) {
-        return ESP_OK;
-    }
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+    const bool already_initialized = s_initialized;
+    const bool shutting_down = s_shutdown_requested || s_shutdown_active;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
+    if (shutting_down) return ESP_ERR_INVALID_STATE;
+    if (already_initialized) return ESP_OK;
 
     s_queue =
         xQueueCreate(
@@ -397,8 +451,11 @@ esp_err_t storage_service_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    s_initialized =
-        true;
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+    s_initialized = true;
+    s_shutdown_requested = false;
+    s_shutdown_active = false;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
 
     ESP_LOGI(
         TAG,
@@ -418,9 +475,14 @@ void storage_service_shutdown(void)
      * and wait for any snapped callback before tearing down worker state. */
     storage_service_internal_clear_content_observer();
 
-    if (!s_initialized) {
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+    if (!s_initialized || s_shutdown_active) {
+        taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
         return;
     }
+    s_shutdown_active = true;
+    s_shutdown_requested = true;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
 
     ESP_LOGI(
         TAG,
@@ -433,7 +495,9 @@ void storage_service_shutdown(void)
         NULL
     );
 
-    if (storage_service_is_busy()) {
+    storage_service_wait_for_submitters();
+
+    if (storage_service_gate_is_busy()) {
         ESP_LOGI(
             TAG,
             "Waiting for active storage operation"
@@ -444,11 +508,14 @@ void storage_service_shutdown(void)
         STORAGE_COMMAND_STOP;
 
     if (s_queue != NULL) {
-        (void)xQueueSend(
+        if (xQueueSend(
             s_queue,
             &command,
             portMAX_DELAY
-        );
+        ) != pdTRUE) {
+            storage_service_shutdown_release_owner(false);
+            return;
+        }
     }
 
     while (s_task != NULL) {
@@ -485,8 +552,11 @@ void storage_service_shutdown(void)
         &s_callback_slot.lock
     );
 
-    s_initialized =
-        false;
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+    s_initialized = false;
+    s_shutdown_requested = false;
+    s_shutdown_active = false;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
 
     ESP_LOGI(
         TAG,
@@ -551,17 +621,15 @@ esp_err_t storage_service_erase_data_async(void)
 }
 
 
+static bool storage_service_gate_is_busy(void)
+{
+    return s_command_gate != NULL && uxSemaphoreGetCount(s_command_gate) == 0;
+}
+
 bool storage_service_is_busy(void)
 {
-    if (
-        !s_initialized ||
-        s_command_gate == NULL
-    ) {
-        return false;
-    }
-
-    return
-        uxSemaphoreGetCount(
-            s_command_gate
-        ) == 0;
+    if (!storage_service_submit_begin()) return false;
+    const bool busy = storage_service_gate_is_busy();
+    storage_service_submit_end();
+    return busy;
 }

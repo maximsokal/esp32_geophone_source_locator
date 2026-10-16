@@ -5,6 +5,7 @@
 #include <stdatomic.h>
 #include <string.h>
 
+#include "app_tick.h"
 #include "app_task_config.h"
 #include "app_stop_timeout_config.h"
 #include "device_status.h"
@@ -128,6 +129,7 @@ static QueueHandle_t s_async_queue;
 static TaskHandle_t s_poll_task;
 static SemaphoreHandle_t s_poll_stop_ack;
 static atomic_bool s_poll_stop_requested;
+static atomic_uint_least32_t s_poll_missed_deadlines;
 static bool s_poll_join_pending;
 static atomic_bool s_poll_hwm_after_first_calculation;
 static bool s_poll_first_calculation_seen;
@@ -1431,6 +1433,7 @@ esp_err_t workflow_service_init(void)
     s_calculation_job_id = 0U;
     s_orphaned_job_id = 0U;
     atomic_store_explicit(&s_poll_hwm_after_first_calculation, false, memory_order_relaxed);
+    atomic_store_explicit(&s_poll_missed_deadlines, 0U, memory_order_relaxed);
     s_poll_first_calculation_seen = false;
     s_poll_task = NULL;
     atomic_store_explicit(&s_poll_stop_requested, false, memory_order_release);
@@ -1968,6 +1971,7 @@ static void workflow_service_poll_task(void *argument)
     (void)argument;
     uint32_t poll_count = 0U;
     TickType_t last_wake = xTaskGetTickCount();
+    const TickType_t poll_period_ticks = pdMS_TO_TICKS(WORKFLOW_SERVICE_POLL_PERIOD_MS);
     for (;;) {
         if (atomic_load_explicit(&s_poll_stop_requested, memory_order_acquire)) break;
         (void)workflow_service_poll();
@@ -1978,7 +1982,21 @@ static void workflow_service_poll_task(void *argument)
             workflow_service_log_poll_stack_hwm("after-first-calculation", poll_count);
         }
         if (atomic_load_explicit(&s_poll_stop_requested, memory_order_acquire)) break;
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(WORKFLOW_SERVICE_POLL_PERIOD_MS));
+        uint32_t last_wake_tick = (uint32_t)last_wake;
+        const uint32_t missed_deadlines = app_tick_skip_missed_periods(
+            &last_wake_tick,
+            (uint32_t)xTaskGetTickCount(),
+            (uint32_t)poll_period_ticks);
+        last_wake = (TickType_t)last_wake_tick;
+        if (missed_deadlines > 0U) {
+            const uint32_t total_missed = (uint32_t)atomic_fetch_add_explicit(
+                &s_poll_missed_deadlines,
+                missed_deadlines,
+                memory_order_relaxed) + missed_deadlines;
+            ESP_LOGW(TAG, "poll missed_deadlines=%u total_missed_deadlines=%u",
+                (unsigned)missed_deadlines, (unsigned)total_missed);
+        }
+        vTaskDelayUntil(&last_wake, poll_period_ticks);
     }
     s_poll_task = NULL;
     (void)xSemaphoreGive(s_poll_stop_ack);
@@ -1994,5 +2012,10 @@ void workflow_service_test_lock_mutex(void)
 void workflow_service_test_unlock_mutex(void)
 {
     if (s_mutex != NULL) (void)xSemaphoreGive(s_mutex);
+}
+
+uint32_t workflow_service_test_poll_missed_deadline_count(void)
+{
+    return (uint32_t)atomic_load_explicit(&s_poll_missed_deadlines, memory_order_relaxed);
 }
 #endif

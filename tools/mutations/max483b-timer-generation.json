@@ -1,0 +1,16 @@
+[
+  {
+    "id": "max483b_reject_stale_reconnect_timer_generation",
+    "description": "Accept a reconnect timer callback even when stop/restart changed its generation.",
+    "file": "components/wifi_manager/wifi_manager_sta_events.c",
+    "find": "started.generation == s_state.generation;",
+    "replace": "true;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.json",
+        "only": "wifi_manager_events_runtime"
+      }
+    ],
+    "expected_killer": "tests/host/wifi_manager_events_runtime_test.c::test_sta_start_ip_disconnect_reconnect"
+  }
+]

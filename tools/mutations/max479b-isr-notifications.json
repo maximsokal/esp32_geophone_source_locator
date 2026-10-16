@@ -1,0 +1,44 @@
+[
+  {
+    "id": "max479b_drop_isr_yield",
+    "description": "Do not yield after an ISR notification wakes the higher priority worker.",
+    "file": "components/ad7606_acquisition/ad7606_acquisition.c",
+    "find": "if (higher_priority_woken == pdTRUE) {\n            portYIELD_FROM_ISR();\n        }",
+    "replace": "if (higher_priority_woken == pdTRUE) {\n            (void)higher_priority_woken;\n        }",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max479b-isr-notifications.json",
+        "only": "max479b_ad7606_notifications"
+      }
+    ],
+    "expected_killer": "components/ad7606_acquisition/tests/ad7606_acquisition_runtime_test.c::test_two_busy_signals_before_wake_use_pcnt_index"
+  },
+  {
+    "id": "max479b_overwrite_notification_count",
+    "description": "Overwrite the task notification count for rapid AD7606 BUSY edges.",
+    "file": "components/ad7606_acquisition/ad7606_acquisition.c",
+    "find": "vTaskNotifyGiveFromISR(task, &higher_priority_woken);",
+    "replace": "xTaskNotifyFromISR(task, 1U, eSetValueWithOverwrite, &higher_priority_woken);",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max479b-isr-notifications.json",
+        "only": "max479b_ad7606_notifications"
+      }
+    ],
+    "expected_killer": "components/ad7606_acquisition/tests/ad7606_acquisition_runtime_test.c::test_two_busy_signals_before_wake_use_pcnt_index"
+  },
+  {
+    "id": "max479b_read_status_without_lock",
+    "description": "Read the shared AD7606 status snapshot without its SMP lock.",
+    "file": "components/ad7606_acquisition/ad7606_acquisition.c",
+    "find": "portENTER_CRITICAL(\n        &s_status_lock\n    );\n\n    *status =\n        s_status;\n\n    portEXIT_CRITICAL(\n        &s_status_lock\n    );",
+    "replace": "*status =\n        s_status;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max479b-isr-notifications.json",
+        "only": "max479b_ad7606_notifications"
+      }
+    ],
+    "expected_killer": "components/ad7606_acquisition/tests/ad7606_acquisition_runtime_test.c::test_status_writer_lock_blocks_snapshot_reader"
+  }
+]

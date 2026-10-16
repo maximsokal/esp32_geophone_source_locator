@@ -121,6 +121,7 @@ static pthread_cond_t s_poll_barrier_changed = PTHREAD_COND_INITIALIZER;
 static bool s_poll_barrier_enabled;
 static bool s_poll_barrier_entered;
 static bool s_poll_barrier_released;
+static TickType_t s_next_poll_work_ticks;
 
 static measurement_service_snapshot_t s_measurement;
 static esp_err_t s_measurement_snapshot_result;
@@ -276,6 +277,10 @@ esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snaps
 #else
     assert(pthread_mutex_unlock(&s_poll_barrier_lock) == 0);
 #endif
+    if (s_next_poll_work_ticks > 0U) {
+        workflow_host_rtos_advance_ticks(s_next_poll_work_ticks);
+        s_next_poll_work_ticks = 0U;
+    }
     if (s_measurement_snapshot_result != ESP_OK) return s_measurement_snapshot_result;
     *snapshot = s_measurement;
     return ESP_OK;
@@ -457,7 +462,9 @@ static bool placement_ready(void *context)
 static void reset_fakes(bool active_object, measurement_service_state_t state, size_t assigned)
 {
     workflow_service_shutdown();
+    workflow_host_rtos_reset_ticks();
     workflow_service_host_fakes_reset();
+    s_next_poll_work_ticks = 0U;
     memset(&s_measurement, 0, sizeof(s_measurement));
     s_measurement.state = state;
     s_measurement_snapshot_result = ESP_OK;
@@ -1179,6 +1186,7 @@ static void test_concurrent_commands_use_generation_as_a_single_winner_gate(void
 
 extern void workflow_service_test_lock_mutex(void);
 extern void workflow_service_test_unlock_mutex(void);
+extern uint32_t workflow_service_test_poll_missed_deadline_count(void);
 
 static workflow_snapshot_t try_snapshot(void)
 {
@@ -1898,6 +1906,32 @@ static void test_poll_shutdown_ack_precedes_resource_destroy(void)
     s_poll_barrier_enabled = false;
 }
 
+#if defined(MAX483B_CHECK_COUNTER)
+/* fail-before(real): synthetic poll work overruns the configured period by 2.5x. */
+static void test_workflow_poll_overrun_skips_expired_slots(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    const TickType_t poll_period_ticks = pdMS_TO_TICKS(WORKFLOW_SERVICE_POLL_PERIOD_MS);
+    s_next_poll_work_ticks = (poll_period_ticks * 5U) / 2U;
+    workflow_host_rtos_delay_barrier_enable();
+
+    const unsigned ack_gives_before = s_poll_ack_give_calls;
+    workflow_host_rtos_start_created_task();
+    workflow_host_rtos_delay_barrier_wait();
+
+    assert(workflow_host_rtos_last_delay_period() == poll_period_ticks);
+    assert(workflow_host_rtos_last_delay_wait() == poll_period_ticks / 2U);
+    assert(workflow_service_test_poll_missed_deadline_count() == 2U);
+    assert(workflow_service_shutdown() == ESP_ERR_TIMEOUT);
+
+    workflow_host_rtos_delay_barrier_release();
+    workflow_host_rtos_join_created_task();
+    assert(s_poll_ack_give_calls == ack_gives_before + 1U);
+    assert(workflow_service_shutdown() == ESP_OK);
+    workflow_host_rtos_delay_barrier_disable();
+}
+#endif
+
 int main(void)
 {
 #ifdef MAX449_CASE
@@ -1936,6 +1970,9 @@ int main(void)
     test_material_save_queue_full_is_rejected_without_sd_write();
     test_material_is_carried_into_run_provenance();
     test_poll_shutdown_ack_precedes_resource_destroy();
+#if defined(MAX483B_CHECK_COUNTER)
+    test_workflow_poll_overrun_skips_expired_slots();
+#endif
     return 0;
 #endif
 }

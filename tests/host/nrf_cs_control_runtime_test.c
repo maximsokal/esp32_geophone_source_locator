@@ -53,6 +53,9 @@ int main(void)
     assert(nrf_cs_control_runtime_select_result(&runtime, &other) == 0);
     assert(nrf_cs_control_runtime_take_selected(&runtime, &selected));
     assert(selected.command_result == NRF_CS_CONTROL_RESULT_BUSY);
+    assert(nrf_cs_control_runtime_select_result(&runtime, &other) != 0);
+    assert(nrf_cs_control_runtime_take_selected(&runtime, &selected));
+    assert(selected.command_result == NRF_CS_CONTROL_RESULT_STALE);
 
     memset(&measurement, 0, sizeof(measurement));
     measurement.outcome = NRF_CS_OUTCOME_SUCCESS;

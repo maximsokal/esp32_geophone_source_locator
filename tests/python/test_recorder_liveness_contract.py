@@ -216,7 +216,7 @@ def test_measurement_snapshot_captures_state_and_busy_under_one_lock():
 
     lock = snapshot.index("measurement_service_lock();")
     state_copy = snapshot.index("*snapshot = s_snapshot;")
-    busy = snapshot.index("snapshot->busy = measurement_service_is_busy();")
+    busy = snapshot.index("snapshot->busy = measurement_service_gate_is_busy();")
     unlock = snapshot.index("measurement_service_unlock();")
 
     assert lock < state_copy < busy < unlock

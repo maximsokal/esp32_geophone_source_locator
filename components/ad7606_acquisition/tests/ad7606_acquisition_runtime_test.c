@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "ad7606_acquisition.h"
@@ -104,7 +105,10 @@ static uint32_t s_fake_serial_valid_after_conversion;
 static uint32_t s_fake_serial_clocklike_from_conversion;
 static uint32_t s_fake_serial_fixed_from_conversion;
 static uint32_t s_pending_notifications;
+static bool s_notification_pending;
 static bool s_synthetic_log_delay;
+static atomic_bool s_worker_waiting;
+static bool s_inject_busy_before_first_wait;
 static int64_t s_worker_iteration_start_us;
 static bool s_worker_iteration_active;
 static bool s_worker_iteration_published;
@@ -155,6 +159,14 @@ static bool s_lifecycle_stop_done;
 static bool s_lifecycle_worker_done;
 static unsigned s_lifecycle_worker_waits;
 static bool s_release_worker_wait;
+static bool s_status_lock_interleave_test_mode;
+static bool s_status_writer_in_delay;
+static bool s_status_reader_started;
+static bool s_status_reader_done;
+static bool s_release_status_writer;
+static esp_err_t s_status_writer_result;
+static esp_err_t s_status_reader_result;
+static ad7606_acquisition_status_t s_status_reader_snapshot;
 
 /* Injected behaviour. */
 static esp_err_t s_driver_init_result;
@@ -241,7 +253,10 @@ static void reset_world(void)
     s_fake_serial_clocklike_from_conversion = 0U;
     s_fake_serial_fixed_from_conversion = 0U;
     s_pending_notifications = 0U;
+    s_notification_pending = false;
     s_synthetic_log_delay = false;
+    s_worker_waiting = false;
+    s_inject_busy_before_first_wait = false;
     s_worker_iteration_start_us = 0;
     s_worker_iteration_active = false;
     s_worker_iteration_published = false;
@@ -274,6 +289,11 @@ static void reset_world(void)
     s_lifecycle_worker_done = false;
     s_lifecycle_worker_waits = 0U;
     s_release_worker_wait = false;
+    s_status_lock_interleave_test_mode = false;
+    s_status_writer_in_delay = false;
+    s_status_reader_started = false;
+    s_status_reader_done = false;
+    s_release_status_writer = false;
     assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
     ad7606_acquisition_test_seed_lifecycle(NULL, false);
     memset(s_push_timestamps, 0, sizeof(s_push_timestamps));
@@ -573,6 +593,9 @@ BaseType_t xTaskNotifyGive(TaskHandle_t task)
 {
     assert(task == &s_task_token);
     ++s_notify_gives;
+    ++s_pending_notifications;
+    s_notification_pending = true;
+    s_worker_waiting = false;
     if (s_lifecycle_test_mode) {
         assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
         s_stop_notification_entered = true;
@@ -586,8 +609,11 @@ void vTaskNotifyGiveFromISR(TaskHandle_t task, BaseType_t *higher_priority_task_
 {
     assert(task == &s_task_token);
     ++s_notify_from_isr;
-    if (s_synthetic_log_delay) {
-        ++s_pending_notifications;
+    ++s_pending_notifications;
+    s_notification_pending = true;
+    if (s_worker_waiting) {
+        s_worker_waiting = false;
+        if (higher_priority_task_woken != NULL) *higher_priority_task_woken = pdTRUE;
     }
     if (s_lifecycle_test_mode) {
         assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
@@ -599,9 +625,36 @@ void vTaskNotifyGiveFromISR(TaskHandle_t task, BaseType_t *higher_priority_task_
         }
         assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
     }
-    if (higher_priority_task_woken != NULL) {
-        *higher_priority_task_woken = pdTRUE;
+}
+
+BaseType_t xTaskNotifyFromISR(
+    TaskHandle_t task, uint32_t value, eNotifyAction action,
+    BaseType_t *higher_priority_task_woken)
+{
+    assert(task == &s_task_token);
+    BaseType_t result = pdPASS;
+    if (action == eIncrement) {
+        ++s_pending_notifications;
+        s_notification_pending = true;
+    } else if (action == eSetBits) {
+        s_pending_notifications |= value;
+        s_notification_pending = true;
+    } else if (action == eSetValueWithOverwrite) {
+        s_pending_notifications = value;
+        s_notification_pending = true;
+    } else if (action == eSetValueWithoutOverwrite) {
+        if (s_notification_pending) {
+            result = pdFAIL;
+        } else {
+            s_pending_notifications = value;
+            s_notification_pending = true;
+        }
     }
+    if (result == pdPASS && s_worker_waiting) {
+        s_worker_waiting = false;
+        if (higher_priority_task_woken != NULL) *higher_priority_task_woken = pdTRUE;
+    }
+    return result;
 }
 
 void vTaskDelay(TickType_t ticks)
@@ -639,16 +692,19 @@ uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
     assert(ticks_to_wait == portMAX_DELAY);
     assert(s_in_worker);
     finish_fake_worker_iteration();
-    if (s_pending_notifications != 0U) {
+    if (s_notification_pending) {
         const uint32_t notifications = s_pending_notifications;
         s_pending_notifications = 0U;
+        s_notification_pending = false;
         s_last_synthetic_notification_batch = notifications;
         if (notifications > s_max_synthetic_notification_batch) {
             s_max_synthetic_notification_batch = notifications;
         }
+        s_worker_waiting = false;
         begin_fake_worker_iteration();
         return notifications;
     }
+    s_worker_waiting = true;
     assert(s_script_pos < s_script_len); /* every test ends with STOP or self-stop */
     const event_t event = s_script[s_script_pos++];
     if (event.type == EV_TICK) {
@@ -656,15 +712,28 @@ uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
             fake_busy_conversion();
         }
         s_now_us += PERIOD_US * (int64_t)event.count + event.timestamp_adjustment_us;
+        assert(s_notification_pending);
+        const uint32_t notifications = s_pending_notifications;
+        s_pending_notifications = 0U;
+        s_notification_pending = false;
+        s_last_synthetic_notification_batch = notifications;
+        if (notifications > s_max_synthetic_notification_batch) {
+            s_max_synthetic_notification_batch = notifications;
+        }
+        s_worker_waiting = false;
         begin_fake_worker_iteration();
-        return event.count;
+        return notifications;
     }
     if (setjmp(s_stop_return) == 0) {
         s_stop_waiting = true;
         ad7606_acquisition_stop();
         assert(false); /* stop() must wait for the worker, not return */
     }
-    return 1U;
+    s_worker_waiting = false;
+    const uint32_t notifications = s_pending_notifications;
+    s_pending_notifications = 0U;
+    s_notification_pending = false;
+    return notifications;
 }
 
 /* ---- ESP timer / LEDC / PCNT / GPIO ---- */
@@ -675,7 +744,20 @@ int64_t esp_timer_get_time(void)
     return s_now_us;
 }
 
-void esp_rom_delay_us(uint32_t us) { s_now_us += us; }
+void esp_rom_delay_us(uint32_t us)
+{
+    s_now_us += us;
+    if (s_status_lock_interleave_test_mode && s_test_worker_thread) {
+        assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+        s_status_writer_in_delay = true;
+        assert(host_cond_broadcast(&s_lifecycle_gate_changed) == 0);
+        while (!s_release_status_writer) {
+            assert(host_cond_wait_for(
+                &s_lifecycle_gate_changed, &s_lifecycle_gate_lock, 5000U) == 0);
+        }
+        assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+    }
+}
 
 int gpio_get_level(gpio_num_t gpio_num)
 {
@@ -782,6 +864,10 @@ esp_err_t ledc_channel_config(const ledc_channel_config_t *config)
     assert(config->gpio_num == 42);
     s_fake_ledc_channel_configured = true;
     s_last_ledc_duty = config->duty;
+    if (s_inject_busy_before_first_wait) {
+        s_inject_busy_before_first_wait = false;
+        fake_busy_conversion();
+    }
     return ESP_OK;
 }
 
@@ -1178,6 +1264,7 @@ static void test_stop_isr_worker_lifecycle_interleaving(void)
     reset_world();
     s_lifecycle_test_mode = true;
     ad7606_acquisition_test_seed_lifecycle(&s_task_token, true);
+    s_worker_waiting = true;
 
     host_thread_t isr_thread;
     host_thread_t stop_thread;
@@ -1508,6 +1595,8 @@ static void test_collapsed_periods_are_one_conversion(void)
     assert(ad7606_acquisition_start() == ESP_OK);
     assert(s_notify_from_isr == 4U);
     assert(s_busy_isr_calls == 4U);
+    assert(s_last_synthetic_notification_batch == 4U);
+    assert(s_isr_yields == 1U);
     assert(s_reads == 1U);
     const ad7606_acquisition_status_t status = status_now();
     assert(status.timer_ticks == 4U);
@@ -1519,6 +1608,38 @@ static void test_collapsed_periods_are_one_conversion(void)
     /* Collapsed periods are PCNT-observed conversions without a pushed frame. */
     assert(status.read_errors == 0U);
     assert(status.consecutive_failures == 0U);
+}
+
+static void test_busy_signal_before_first_wait_is_retained(void)
+{
+    reset_world();
+    s_inject_busy_before_first_wait = true;
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(s_notify_from_isr == 1U);
+    assert(s_last_synthetic_notification_batch == 1U);
+    assert(s_reads == 1U && s_pushes == 1U);
+    assert(s_push_sample_indices[0] == 0U);
+    const ad7606_acquisition_status_t status = status_now();
+    assert(status.timer_ticks == 1U);
+    assert(status.conversion_attempts == 1U);
+}
+
+static void test_two_busy_signals_before_wake_use_pcnt_index(void)
+{
+    reset_world();
+    script(EV_TICK, 2U);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(s_notify_from_isr == 2U);
+    assert(s_last_synthetic_notification_batch == 2U);
+    assert(s_reads == 1U && s_pushes == 1U);
+    assert(s_push_sample_indices[0] == 1U);
+    const ad7606_acquisition_status_t status = status_now();
+    assert(status.timer_ticks == 2U);
+    assert(status.conversion_attempts == 1U);
+    assert(status.collapsed_periods == 1U);
+    assert(s_isr_yields == 1U);
 }
 
 static void test_successful_read_jitter_statistics(void)
@@ -1778,6 +1899,69 @@ static uint64_t run_one_sample_with_status_delay(uint32_t delay_us)
     return worker_iteration_us(0U);
 }
 
+
+static void *run_status_locked_acquisition(void *unused)
+{
+    (void)unused;
+    s_test_worker_thread = true;
+    s_status_writer_result = ad7606_acquisition_start();
+    s_test_worker_thread = false;
+    return NULL;
+}
+
+static void *run_status_snapshot_reader(void *unused)
+{
+    (void)unused;
+    assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+    s_status_reader_started = true;
+    assert(host_cond_broadcast(&s_lifecycle_gate_changed) == 0);
+    assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+    s_status_reader_result = ad7606_acquisition_get_status(
+        &s_status_reader_snapshot);
+    assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+    s_status_reader_done = true;
+    assert(host_cond_broadcast(&s_lifecycle_gate_changed) == 0);
+    assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+    return NULL;
+}
+
+static void test_status_writer_lock_blocks_snapshot_reader(void)
+{
+    reset_world();
+    s_status_lock_interleave_test_mode = true;
+    ad7606_acquisition_test_status_delay_set(1U);
+    script(EV_TICK, 1U);
+    script(EV_STOP, 0U);
+    host_thread_t writer;
+    host_thread_t reader;
+    assert(host_thread_create(&writer, run_status_locked_acquisition, NULL) == 0);
+    assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+    while (!s_status_writer_in_delay) {
+        assert(host_cond_wait_for(
+            &s_lifecycle_gate_changed, &s_lifecycle_gate_lock, 5000U) == 0);
+    }
+    assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+    assert(host_thread_create(&reader, run_status_snapshot_reader, NULL) == 0);
+    assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+    while (!s_status_reader_started) {
+        assert(host_cond_wait_for(
+            &s_lifecycle_gate_changed, &s_lifecycle_gate_lock, 5000U) == 0);
+    }
+    const int reader_finished_while_writer_locked = host_cond_wait_for(
+        &s_lifecycle_gate_changed, &s_lifecycle_gate_lock, 200U);
+    assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+    assert(reader_finished_while_writer_locked == 1);
+    assert(host_mutex_lock(&s_lifecycle_gate_lock) == 0);
+    s_release_status_writer = true;
+    assert(host_cond_broadcast(&s_lifecycle_gate_changed) == 0);
+    assert(host_mutex_unlock(&s_lifecycle_gate_lock) == 0);
+    assert(host_thread_join(reader) == 0);
+    assert(host_thread_join(writer) == 0);
+    assert(s_status_writer_result == ESP_OK);
+    assert(s_status_reader_result == ESP_OK);
+    assert(s_status_reader_snapshot.samples == 1U);
+    s_status_lock_interleave_test_mode = false;
+}
 
 static void test_status_delay_negative_control_and_snapshot(void)
 {
@@ -2458,6 +2642,8 @@ int main(void)
     test_safe_os_mismatch_runs_and_is_reported();
     test_unknown_os_measurement_refuses_start();
     test_collapsed_periods_are_one_conversion();
+    test_busy_signal_before_first_wait_is_retained();
+    test_two_busy_signals_before_wake_use_pcnt_index();
     test_successful_read_jitter_statistics();
     test_jitter_bucket_boundaries_and_open_ended_bucket();
     test_negative_jitter_is_clamped_and_counted_early();
@@ -2471,6 +2657,7 @@ int main(void)
     test_restart_resets_cadence_counters();
     test_restart_clears_a_latched_fault();
     test_overcurrent_stops_and_latches();
+    test_status_writer_lock_blocks_snapshot_reader();
     test_status_delay_negative_control_and_snapshot();
     return s_max435_failures == 0U ? 0 : 1;
 #endif

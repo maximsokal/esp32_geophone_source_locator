@@ -68,6 +68,10 @@ static measurement_service_snapshot_t s_snapshot;
 static measurement_service_queue_stats_t s_queue_stats;
 static bool s_initialized = false;
 static bool s_bulk_admission_held = false;
+static portMUX_TYPE s_submit_lifecycle_lock = portMUX_INITIALIZER_UNLOCKED;
+static unsigned s_submit_in_flight;
+static bool s_shutdown_requested;
+static bool s_shutdown_active;
 
 /*
  * Hook pointers are shared by lifecycle/Web tasks and the measurement worker.
@@ -97,7 +101,49 @@ static measurement_service_start_reservation_release_callback_t
     s_start_reservation_callback = NULL;
 static void *s_start_reservation_context = NULL;
 static bool s_start_reservation_hook_owned = false;
+static bool measurement_service_gate_is_busy(void);
 
+
+static bool measurement_service_submit_begin(void)
+{
+    bool accepted;
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+    accepted = s_initialized && !s_shutdown_requested && s_queue != NULL &&
+        s_gate != NULL && s_mutex != NULL;
+    if (accepted) ++s_submit_in_flight;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
+    return accepted;
+}
+
+static void measurement_service_submit_end(void)
+{
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+    --s_submit_in_flight;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
+}
+
+static bool measurement_service_wait_for_submitters(TickType_t timeout_ticks)
+{
+    for (TickType_t waited = 0U; waited < timeout_ticks; ++waited) {
+        taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+        const bool empty = s_submit_in_flight == 0U;
+        taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
+        if (empty) return true;
+        vTaskDelay(1U);
+    }
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+    const bool empty = s_submit_in_flight == 0U;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
+    return empty;
+}
+
+static void measurement_service_shutdown_release_owner(bool completed)
+{
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+    s_shutdown_active = false;
+    if (completed) s_shutdown_requested = false;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
+}
 
 static void measurement_service_log_stack_hwm(
     const char *stage
@@ -859,7 +905,7 @@ static bool measurement_service_command_allowed_locked(
 }
 
 
-static esp_err_t measurement_service_submit(
+static esp_err_t measurement_service_submit_active(
     measurement_command_type_t command_type,
     const char *start_object_id
 )
@@ -1027,6 +1073,18 @@ static esp_err_t measurement_service_submit(
 }
 
 
+static esp_err_t measurement_service_submit(
+    measurement_command_type_t command_type,
+    const char *start_object_id
+)
+{
+    if (!measurement_service_submit_begin()) return ESP_ERR_INVALID_STATE;
+    const esp_err_t err = measurement_service_submit_active(
+        command_type, start_object_id);
+    measurement_service_submit_end();
+    return err;
+}
+
 static void measurement_service_reset_hooks(void)
 {
     taskENTER_CRITICAL(&s_hook_lock);
@@ -1047,9 +1105,12 @@ static void measurement_service_reset_hooks(void)
 
 esp_err_t measurement_service_init(void)
 {
-    if (s_initialized) {
-        return ESP_OK;
-    }
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
+    const bool already_initialized = s_initialized;
+    const bool shutting_down = s_shutdown_requested || s_shutdown_active;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
+    if (shutting_down) return ESP_ERR_INVALID_STATE;
+    if (already_initialized) return ESP_OK;
 
     s_queue = xQueueCreate(
         MEASUREMENT_SERVICE_QUEUE_LENGTH,
@@ -1110,7 +1171,11 @@ esp_err_t measurement_service_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
     s_initialized = true;
+    s_shutdown_requested = false;
+    s_shutdown_active = false;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
 
     ESP_LOGI(
         TAG,
@@ -1124,9 +1189,18 @@ esp_err_t measurement_service_init(void)
 
 esp_err_t measurement_service_shutdown(void)
 {
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
     if (!s_initialized) {
+        taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
         return ESP_OK;
     }
+    if (s_shutdown_active) {
+        taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_shutdown_active = true;
+    s_shutdown_requested = true;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
 
     /*
      * Close every externally owned hook while the worker is still alive.
@@ -1134,13 +1208,19 @@ esp_err_t measurement_service_shutdown(void)
      * before their owner can tear down Web/cache state.
      */
     esp_err_t err = measurement_service_set_start_guard(NULL, NULL);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) { measurement_service_shutdown_release_owner(false); return err; }
     err = measurement_service_set_start_object_callback(NULL, NULL);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) { measurement_service_shutdown_release_owner(false); return err; }
     err = measurement_service_set_storage_refresh_callback(NULL, NULL);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) { measurement_service_shutdown_release_owner(false); return err; }
     err = measurement_service_set_start_reservation_release_callback(NULL, NULL);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) { measurement_service_shutdown_release_owner(false); return err; }
+
+    if (!measurement_service_wait_for_submitters(
+            pdMS_TO_TICKS(APP_STOP_TIMEOUT_WORKER_MS))) {
+        measurement_service_shutdown_release_owner(false);
+        return ESP_ERR_TIMEOUT;
+    }
 
     const measurement_command_t command = {
         .type = MEASUREMENT_COMMAND_SHUTDOWN,
@@ -1152,6 +1232,7 @@ esp_err_t measurement_service_shutdown(void)
             &command,
             pdMS_TO_TICKS(APP_STOP_TIMEOUT_WORKER_MS)
         ) != pdTRUE) {
+            measurement_service_shutdown_release_owner(false);
             return ESP_ERR_TIMEOUT;
         }
     }
@@ -1161,6 +1242,7 @@ esp_err_t measurement_service_shutdown(void)
         vTaskDelay(1U);
     }
     if (s_task != NULL) {
+        measurement_service_shutdown_release_owner(false);
         return ESP_ERR_TIMEOUT;
     }
 
@@ -1189,7 +1271,11 @@ esp_err_t measurement_service_shutdown(void)
     s_start_reservation_context = NULL;
     s_start_reservation_hook_owned = false;
     s_bulk_admission_held = false;
+    taskENTER_CRITICAL(&s_submit_lifecycle_lock);
     s_initialized = false;
+    s_shutdown_requested = false;
+    s_shutdown_active = false;
+    taskEXIT_CRITICAL(&s_submit_lifecycle_lock);
 
     ESP_LOGI(TAG, "Shutdown complete");
     return ESP_OK;
@@ -1353,8 +1439,13 @@ esp_err_t measurement_service_get_snapshot(
         return ESP_ERR_INVALID_ARG;
     }
 
+    if (!measurement_service_submit_begin()) {
+        memset(snapshot, 0, sizeof(*snapshot));
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!s_initialized || s_mutex == NULL) {
         memset(snapshot, 0, sizeof(*snapshot));
+        measurement_service_submit_end();
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -1366,7 +1457,7 @@ esp_err_t measurement_service_get_snapshot(
      */
     measurement_service_lock();
     *snapshot = s_snapshot;
-    snapshot->busy = measurement_service_is_busy();
+    snapshot->busy = measurement_service_gate_is_busy();
     measurement_service_unlock();
 
     const bool session_owner_present = snapshot->object_id[0] != '\0';
@@ -1436,6 +1527,7 @@ esp_err_t measurement_service_get_snapshot(
         }
     }
 
+    measurement_service_submit_end();
     return ESP_OK;
 }
 
@@ -1447,12 +1539,15 @@ esp_err_t measurement_service_get_queue_stats(
     if (stats == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!measurement_service_submit_begin()) return ESP_ERR_INVALID_STATE;
     if (!s_initialized || s_mutex == NULL) {
+        measurement_service_submit_end();
         return ESP_ERR_INVALID_STATE;
     }
     measurement_service_lock();
     *stats = s_queue_stats;
     measurement_service_unlock();
+    measurement_service_submit_end();
     return ESP_OK;
 }
 
@@ -1487,11 +1582,15 @@ bool measurement_service_snapshot_blocks_acquisition_stop(
 }
 
 
+static bool measurement_service_gate_is_busy(void)
+{
+    return s_gate != NULL && uxSemaphoreGetCount(s_gate) == 0U;
+}
+
 bool measurement_service_is_busy(void)
 {
-    if (!s_initialized || s_gate == NULL) {
-        return false;
-    }
-
-    return uxSemaphoreGetCount(s_gate) == 0U;
+    if (!measurement_service_submit_begin()) return false;
+    const bool busy = measurement_service_gate_is_busy();
+    measurement_service_submit_end();
+    return busy;
 }
