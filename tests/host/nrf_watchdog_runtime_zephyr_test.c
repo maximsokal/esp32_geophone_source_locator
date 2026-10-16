@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <stdarg.h>
 #include <stdint.h>
 
@@ -20,6 +21,9 @@ static unsigned s_reset_cause_clears;
 static unsigned s_watchdog_installs;
 static unsigned s_watchdog_setups;
 static unsigned s_work_submits;
+static unsigned s_coalesced_submits;
+static bool s_work_pending;
+static struct k_work *s_pending_work;
 static int s_watchdog_install_result;
 static int s_installed_channel = 7;
 static int s_feed_result;
@@ -39,7 +43,25 @@ int k_work_submit(struct k_work *work)
 {
     assert(work != NULL);
     ++s_work_submits;
+    if (s_work_pending) {
+        ++s_coalesced_submits;
+        return 0;
+    }
+    s_work_pending = true;
+    s_pending_work = work;
     return 1;
+}
+
+static void run_pending_work(void)
+{
+    struct k_work *work;
+
+    assert(s_work_pending);
+    assert(s_pending_work != NULL);
+    work = s_pending_work;
+    s_work_pending = false;
+    s_pending_work = NULL;
+    work->handler(work);
 }
 
 int hwinfo_get_reset_cause(uint32_t *cause)
@@ -122,41 +144,62 @@ int main(void)
     nrf_watchdog_zephyr_service();
     assert(s_watchdog_feeds == 1U && s_last_feed_channel == s_installed_channel);
 
-    ++s_now_ms;
-    nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER);
-    assert(s_watchdog_feeds == 1U); /* Check-in is progress, never a timer feed. */
+    /* A blocked system workqueue leaves the probe pending despite coalesced submissions. */
+    for (s_now_ms = 1000U; s_now_ms <= 6000U; s_now_ms += 1000U) {
+        nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER);
+        nrf_watchdog_zephyr_service();
+        assert(s_watchdog_feeds == 1U + (s_now_ms <= NRF_WATCHDOG_MAX_SILENCE_MS
+            ? (unsigned)(s_now_ms / 1000U)
+            : 5U));
+    }
+    s_now_ms = 6000U;
+    assert(s_coalesced_submits == 6U);
+    assert(s_work_pending && s_pending_work != NULL);
+    assert(s_event_count == 2U);
+    assert(s_events[1] == NRF_LOG_EVENT_WATCHDOG_PARTICIPANT_STALE);
+    assert(s_event_arg0[1] == NRF_WATCHDOG_PARTICIPANT_SYSTEM_WORKQUEUE);
+
+    run_pending_work();
     nrf_watchdog_zephyr_set_participant_active(
         NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS,
         true);
-
-    s_now_ms = NRF_WATCHDOG_MAX_SILENCE_MS + 2U;
     nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER);
-    nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SYSTEM_WORKQUEUE);
     nrf_watchdog_zephyr_service();
-    assert(s_watchdog_feeds == 1U);
-    assert(s_event_count == 2U);
-    assert(s_events[1] == NRF_LOG_EVENT_WATCHDOG_PARTICIPANT_STALE);
-    assert(s_event_arg0[1] == NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
+    assert(s_watchdog_feeds == 7U);
+    run_pending_work();
 
-    ++s_now_ms;
-    nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER);
-    nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SYSTEM_WORKQUEUE);
+    /* Repeated active=true calls must not renew the CS check-in grace. */
+    for (s_now_ms = 7000U; s_now_ms <= 12000U; s_now_ms += 1000U) {
+        nrf_watchdog_zephyr_set_participant_active(
+            NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS,
+            true);
+        nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER);
+        nrf_watchdog_zephyr_service();
+        run_pending_work();
+    }
+    assert(s_watchdog_feeds == 12U);
+    assert(s_event_count == 3U);
+    assert(s_events[2] == NRF_LOG_EVENT_WATCHDOG_PARTICIPANT_STALE);
+    assert(s_event_arg0[2] == NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
+
     nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
+    nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER);
     nrf_watchdog_zephyr_service();
-    assert(s_watchdog_feeds == 2U);
+    assert(s_watchdog_feeds == 13U);
+    run_pending_work();
 
     s_feed_result = -EIO;
-    ++s_now_ms;
+    s_now_ms = 12001U;
     nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER);
     nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_SYSTEM_WORKQUEUE);
     nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
     nrf_watchdog_zephyr_service();
-    assert(s_watchdog_feeds == 3U);
+    assert(s_watchdog_feeds == 14U);
     assert(nrf_watchdog_zephyr_feed_error_total() == 1U);
     assert(nrf_watchdog_zephyr_is_degraded());
-    assert(s_event_count == 3U);
-    assert(s_events[2] == NRF_LOG_EVENT_WATCHDOG_FEED_FAILED);
-    assert((int32_t)s_event_arg1[2] == -EIO);
-    assert(s_work_submits == 4U);
+    assert(s_event_count == 4U);
+    assert(s_events[3] == NRF_LOG_EVENT_WATCHDOG_FEED_FAILED);
+    assert((int32_t)s_event_arg1[3] == -EIO);
+    assert(s_work_submits == 16U);
     return 0;
 }

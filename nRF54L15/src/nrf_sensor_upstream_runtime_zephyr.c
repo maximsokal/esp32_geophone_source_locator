@@ -26,6 +26,7 @@
 #include "nrf_node_state.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
 #include "nrf_sensor_session.h"
+#include "nrf_timing.h"
 #include "nrf_watchdog_zephyr.h"
 #if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
 #include "nrf_stage_signal.h"
@@ -704,25 +705,38 @@ static void publish_diagnostics(void)
  * (non-REMOTE) worker still checks in with the watchdog. */
 static k_timeout_t sensor_worker_wait_timeout(void)
 {
-    uint64_t now;
-    uint64_t remaining;
+    const uint64_t now = runtime_uptime_ms();
+    uint64_t wait_ms = NRF_SENSOR_WORKER_HEARTBEAT_MS;
 
-    if (!orientation_periodic_enabled()) {
-        return K_MSEC(NRF_SENSOR_WORKER_HEARTBEAT_MS);
-    }
+    if (orientation_periodic_enabled()) {
+        uint64_t remaining;
 
-    now = runtime_uptime_ms();
-    if (s_next_orientation_due_ms == 0U) {
-        s_next_orientation_due_ms = now + s_orientation_config.sample_period_ms;
+        if (s_next_orientation_due_ms == 0U) {
+            s_next_orientation_due_ms = now + s_orientation_config.sample_period_ms;
+        }
+        remaining = now >= s_next_orientation_due_ms
+            ? 0U
+            : s_next_orientation_due_ms - now;
+        if (remaining < wait_ms) {
+            wait_ms = remaining;
+        }
     }
-    if (now >= s_next_orientation_due_ms) {
-        return K_NO_WAIT;
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
+    if (!s_stage_signal.suppressed) {
+        if (s_stage_signal.event_active) {
+            const uint64_t stage_remaining = nrf_timing_ms_until_u32(
+                now,
+                s_stage_signal.event_last_ms,
+                s_stage_signal.phase_remaining_ms);
+            if (stage_remaining < wait_ms) {
+                wait_ms = stage_remaining;
+            }
+        } else if (s_stage_signal.queue_count != 0U) {
+            wait_ms = 0U;
+        }
     }
-    remaining = s_next_orientation_due_ms - now;
-    if (remaining > NRF_SENSOR_WORKER_HEARTBEAT_MS) {
-        remaining = NRF_SENSOR_WORKER_HEARTBEAT_MS;
-    }
-    return K_MSEC(remaining);
+#endif
+    return K_MSEC(wait_ms);
 }
 
 static bool orientation_due(uint64_t now)

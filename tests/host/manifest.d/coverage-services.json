@@ -84,6 +84,7 @@
       ],
       "include_dirs": [
         "components/measurement_service/tests/stubs",
+        "components/app_config/include",
         "components/measurement_service/include",
         "components/object_service/include",
         "components/object_format/include",

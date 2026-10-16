@@ -25,6 +25,7 @@
 #include "nrf_log_events.h"
 #include "nrf_log_runtime_zephyr.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
+#include "nrf_timing.h"
 #include "nrf_watchdog_zephyr.h"
 
 #include <zephyr/sys/printk.h>
@@ -494,7 +495,10 @@ int main(void)
             }
 
             led_is_on = !led_is_on;
-            next_main_tick_ms = now_ms + MAIN_TICK_PERIOD_MS;
+            next_main_tick_ms = nrf_timing_next_periodic_deadline_ms(
+                next_main_tick_ms,
+                now_ms,
+                MAIN_TICK_PERIOD_MS);
         }
 
         drain_twis_transaction_records();

@@ -1,0 +1,85 @@
+[
+  {
+    "id": "max493_watchdog_reactivate_each_call",
+    "description": "Refresh the BT CS grace timestamp on every active=true call.",
+    "file": "nRF54L15/src/nrf_watchdog_health.c",
+    "find": "if (active && !health->active[participant]) {",
+    "replace": "if (active) {",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max493-nrf-timing.json",
+        "only": "nrf_watchdog_health"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_watchdog_health_test.c::test_repeated_activation_does_not_hide_silence"
+  },
+  {
+    "id": "max493_stage_wait_wrong_comparison",
+    "description": "Fail to cap the sensor worker wait to the next stage signal phase.",
+    "file": "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c",
+    "find": "if (stage_remaining < wait_ms) {",
+    "replace": "if (wait_ms < stage_remaining) {",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max493-nrf-timing.json",
+        "only": "nrf_sensor_upstream_runtime_zephyr_stage_success"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c::test_first_transaction_signal"
+  },
+  {
+    "id": "max493_sensor_worker_cooperative_priority",
+    "description": "Move the sensor worker away from preemptive priority 10.",
+    "file": "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c",
+    "find": "#define NRF_SENSOR_WORKER_PRIORITY K_PRIO_PREEMPT(10)",
+    "replace": "#define NRF_SENSOR_WORKER_PRIORITY K_PRIO_PREEMPT(-10)",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max493-nrf-timing.json",
+        "only": "nrf_sensor_upstream_runtime_zephyr"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c::main priority assertion"
+  },
+  {
+    "id": "max493_main_tick_now_relative",
+    "description": "Reintroduce main tick drift by scheduling from the current time.",
+    "file": "nRF54L15/src/main.c",
+    "find": "next_main_tick_ms = nrf_timing_next_periodic_deadline_ms(\n                next_main_tick_ms,\n                now_ms,\n                MAIN_TICK_PERIOD_MS);",
+    "replace": "next_main_tick_ms = now_ms + MAIN_TICK_PERIOD_MS;",
+    "tests": [
+      {
+        "pytest": "tests/python/test_max493_wiring_contract.py::test_main_tick_uses_phase_locked_deadline"
+      }
+    ],
+    "expected_killer": "tests/python/test_max493_wiring_contract.py::test_main_tick_uses_phase_locked_deadline"
+  },
+  {
+    "id": "max493_u32_deadline_addition",
+    "description": "Use addition instead of wrap-safe elapsed subtraction for stage deadlines.",
+    "file": "nRF54L15/include/nrf_timing.h",
+    "find": "const uint32_t elapsed_ms = (uint32_t)now_ms - started_ms;",
+    "replace": "const uint32_t elapsed_ms = (uint32_t)now_ms + started_ms;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max493-nrf-timing.json",
+        "only": "nrf_timing_deadline"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_timing_deadline_test.c::test_u32_elapsed_with_a_u64_clock"
+  },
+  {
+    "id": "max493_periodic_deadline_now_relative",
+    "description": "Schedule the next periodic deadline from now instead of its prior phase.",
+    "file": "nRF54L15/include/nrf_timing.h",
+    "find": "return scheduled_ms + periods * period_ms;",
+    "replace": "return now_ms + period_ms;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max493-nrf-timing.json",
+        "only": "nrf_timing_deadline"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_timing_deadline_test.c::test_phase_locked_64_bit_deadlines"
+  }
+]

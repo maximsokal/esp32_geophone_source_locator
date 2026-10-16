@@ -1,0 +1,72 @@
+[
+  {
+    "id": "max494_drop_cs_membership_generation_match",
+    "description": "Accept CS adapter events from an obsolete membership generation.",
+    "file": "nRF54L15/src/nrf_cs_pair_adapter.c",
+    "find": "           a->membership_generation == b->membership_generation &&",
+    "replace": "           true &&",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max494-nrf-fsm.json",
+        "only": "max494_cs_pair_runtime_model"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_cs_pair_runtime_model_test.c::test_duplicate_late_partial_and_stale_step"
+  },
+  {
+    "id": "max494_accept_duplicate_cs_finish",
+    "description": "Allow duplicate completion after the active CS request has already finished.",
+    "file": "nRF54L15/src/nrf_cs_control_runtime.c",
+    "find": "if (!runtime->active || !nrf_cs_control_step_equal(step, &runtime->active_request.step)) return -2;",
+    "replace": "if (runtime->active && !nrf_cs_control_step_equal(step, &runtime->active_request.step)) return -2;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max494-nrf-fsm.json",
+        "only": "max494_nrf_fsm_reference_model"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_fsm_reference_model_test.c::test_seeded_cs_reference_replay"
+  },
+  {
+    "id": "max494_weaken_cs_request_step_match",
+    "description": "Match CS STATUS results by request id while ignoring the step identity.",
+    "file": "nRF54L15/src/nrf_cs_control_runtime.c",
+    "find": "return request->request_id == result->request_id && nrf_cs_control_step_equal(&request->step, &result->step);",
+    "replace": "return request->request_id == result->request_id;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max494-nrf-fsm.json",
+        "only": "max494_nrf_fsm_reference_model"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_fsm_reference_model_test.c::test_seeded_cs_reference_replay"
+  },
+  {
+    "id": "max494_drop_sensor_assignment_node_channel_match",
+    "description": "Accept a remote sensor session without matching its assigned node and mux channel.",
+    "file": "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c",
+    "find": "    return session->remote_active &&\n           session->node_id == assign->node_id &&\n           session->mux_channel == assign->mux_channel;",
+    "replace": "    return session->remote_active;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/coverage-nrf.json",
+        "only": "nrf_sensor_upstream_runtime_zephyr"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c::test_assignment_and_sensor_ready_signals"
+  },
+  {
+    "id": "max494_swap_main_role_address",
+    "description": "Return the remote target address for a MAIN role assignment.",
+    "file": "nRF54L15/src/nrf_upstream_protocol.c",
+    "find": "        return NRF_UPSTREAM_ADDRESS_MAIN;",
+    "replace": "        return NRF_UPSTREAM_ADDRESS_REMOTE;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max494-nrf-fsm.json",
+        "only": "max494_nrf_upstream_protocol"
+      }
+    ],
+    "expected_killer": "tests/host/nrf_upstream_protocol_test.c::test_role_address_contract"
+  }
+]

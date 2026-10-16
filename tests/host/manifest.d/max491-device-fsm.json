@@ -1,0 +1,209 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "workflow_fsm_model",
+      "sources": [
+        "components/workflow_service/workflow_core.c",
+        "tests/host/workflow_fsm_model_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/workflow_service",
+        "components/workflow_service/include"
+      ],
+      "defines": [
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
+      ]
+    },
+    {
+      "name": "workflow_fsm_model_strict",
+      "sources": [
+        "components/workflow_service/workflow_core.c",
+        "tests/host/workflow_fsm_model_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/workflow_service",
+        "components/workflow_service/include"
+      ],
+      "defines": [
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"
+      ]
+    },
+    {
+      "name": "workflow_service_max491",
+      "sources": [
+        "components/workflow_service/workflow_core.c",
+        "components/workflow_service/workflow_service.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "components/localization_job/localization_config.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/stubs/workflow_service/host_rtos.c",
+        "tests/host/workflow_service_host_fakes.c",
+        "tests/host/workflow_service_test.c"
+      ],
+      "include_dirs": [
+        "components/measurement_service/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "components/object_service/include",
+        "components/object_format/include",
+        "components/object_store/include",
+        "tests/host/stubs/workflow_service",
+        "tests/host/stubs/object_store_profile",
+        "components/workflow_service/include",
+        "components/recording_gate/include",
+        "components/localization/include",
+        "components/app_config/include",
+        "components/web_server/tests/stubs",
+        "components/web_server",
+        "components/localization_job/include",
+        "components/localization_calculate/include",
+        "components/localization_velocity_free/include",
+        "components/geophone_events/include"
+      ],
+      "defines": [
+        "WORKFLOW_SERVICE_TEST_HARNESS",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
+      ],
+      "libraries": [
+        "pthread"
+      ]
+    },
+    {
+      "name": "ui_workflow_model_max491",
+      "sources": [
+        "components/result_view/result_view.c",
+        "components/workflow_service/workflow_core.c",
+        "components/ui/ui_workflow_model.c",
+        "components/ui_i18n/ui_utf8_format.c",
+        "components/ui/tests/ui_workflow_model_test.c"
+      ],
+      "include_dirs": [
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_recorder/include",
+        "components/seismic_buffer/include",
+        "tests/host/stubs/workflow_service",
+        "components/workflow_service/include",
+        "components/geophone_events/include",
+        "components/ui_i18n/include",
+        "components/result_view/include",
+        "components/ui"
+      ],
+      "defines": [
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "localization_job_state_max491",
+      "sources": [
+        "components/localization_job/localization_job_state.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/localization_job/tests/localization_job_state_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/object_store_profile",
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_calculate/include",
+        "components/localization_job/include",
+        "components/localization_velocity_free/include",
+        "components/geophone_events/include"
+      ]
+    },
+    {
+      "name": "seismic_recorder_fault_fsm_strict",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder.c",
+        "components/seismic_recorder/seismic_recorder_cache.c",
+        "components/seismic_recorder/seismic_recorder_start_policy.c",
+        "components/seismic_recorder/seismic_recorder_geometry_policy.c",
+        "components/seismic_recorder/seismic_recorder_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "tests/host/seismic_recorder_fault_fsm_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_start",
+        "components/seismic_recorder/tests/stubs/session_geometry",
+        "tests/host/stubs/object_store_profile",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/seismic_acquisition/include",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/app_config/include",
+        "components/seismic_buffer/include",
+        "components/device_status/include",
+        "components/nrf_geometry_solver/include",
+        "components/nrf_topology_service/include",
+        "components/nrf_cs_authority/include",
+        "components/recording_gate/include",
+        "components/localization/include",
+        "nRF54L15/include"
+      ],
+      "defines": [
+        "CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1",
+        "malloc=seismic_recorder_fault_malloc"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "seismic_recorder_fault_fsm_bypass",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder.c",
+        "components/seismic_recorder/seismic_recorder_cache.c",
+        "components/seismic_recorder/seismic_recorder_start_policy.c",
+        "components/seismic_recorder/seismic_recorder_geometry_policy.c",
+        "components/seismic_recorder/seismic_recorder_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/recording_gate/recording_gate_policy.c",
+        "components/localization/localization_dimensionality_policy.c",
+        "tests/host/seismic_recorder_fault_fsm_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_start",
+        "components/seismic_recorder/tests/stubs/session_geometry",
+        "tests/host/stubs/object_store_profile",
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/seismic_acquisition/include",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/storage_manager/include",
+        "components/app_config/include",
+        "components/seismic_buffer/include",
+        "components/device_status/include",
+        "components/nrf_geometry_solver/include",
+        "components/nrf_topology_service/include",
+        "components/nrf_cs_authority/include",
+        "components/recording_gate/include",
+        "components/localization/include",
+        "nRF54L15/include"
+      ],
+      "defines": [
+        "CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1",
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0",
+        "malloc=seismic_recorder_fault_malloc"
+      ],
+      "libraries": [
+        "m"
+      ]
+    }
+  ]
+}

@@ -751,6 +751,44 @@ static void test_scan_choice_requires_explicit_skip_before_recording(void)
     workflow_service_shutdown();
 }
 
+static void enter_record_ready(void);
+
+/* MAX-491 mutation-only: illegal and repeated recording commands have one side effect each. */
+static void test_service_fsm_illegal_events_and_single_recording_lifecycle(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    assert(workflow_service_poll() == ESP_OK);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_OBJECT);
+    assert(command(WORKFLOW_COMMAND_STOP_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    workflow_snapshot_t after = try_snapshot();
+    assert(memcmp(&after, &snapshot, sizeof(snapshot)) == 0);
+    assert(s_start_calls == 0U && s_stop_calls == 0U);
+
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    enter_record_ready();
+    assert(try_snapshot().step == WORKFLOW_STEP_RECORD_READY);
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_start_calls == 1U);
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(s_start_calls == 1U);
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RECORDING);
+    assert(strcmp(snapshot.session_id, "session-1") == 0);
+
+    assert(command(WORKFLOW_COMMAND_STOP_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_stop_calls == 1U);
+    s_measurement.state = MEASUREMENT_SERVICE_REVIEW;
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_STOPPED);
+    assert(strcmp(snapshot.session_id, "session-1") == 0);
+    assert(command(WORKFLOW_COMMAND_STOP_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(s_stop_calls == 1U);
+    workflow_service_shutdown();
+}
+
 static void wait_workflow_without_command(workflow_step_t expected)
 {
     workflow_snapshot_t before = try_snapshot();
@@ -1884,6 +1922,7 @@ int main(void)
     test_gps_failure_back_skip_and_late_callback_generation();
     test_gps_skip_keeps_existing_location_and_marks_run_skipped();
     test_scan_choice_requires_explicit_skip_before_recording();
+    test_service_fsm_illegal_events_and_single_recording_lifecycle();
     test_new_workflow_steps_wait_for_explicit_commands();
     test_no_step_advances_without_a_command_fake_clock();
     test_staged_scan_remains_visible_across_session_creation();

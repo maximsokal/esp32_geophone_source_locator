@@ -8,6 +8,7 @@
         "components/seismic_buffer/tests/seismic_buffer_test.c"
       ],
       "include_dirs": [
+        "tests/host",
         "components/seismic_buffer/tests/stubs",
         "components/seismic_buffer/include"
       ],

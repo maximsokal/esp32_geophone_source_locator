@@ -25,6 +25,7 @@
 #include "nrf_watchdog_zephyr.h"
 
 static unsigned s_thread_create_calls;
+static int s_sensor_worker_priority;
 static unsigned s_queue_put_calls;
 static unsigned s_prepare_calls;
 static unsigned s_refresh_calls;
@@ -88,7 +89,11 @@ static bool s_fail_imu_init;
 
 #define NRF_TEST_LED_SAMPLE_CAPACITY 2048U
 static nrf_logger_led_output_t s_led_samples[NRF_TEST_LED_SAMPLE_CAPACITY];
+static uint64_t s_led_sample_times[NRF_TEST_LED_SAMPLE_CAPACITY];
 static unsigned s_led_sample_count;
+#define NRF_TEST_WORKER_WAIT_CAPACITY 4096U
+static k_timeout_t s_worker_waits[NRF_TEST_WORKER_WAIT_CAPACITY];
+static unsigned s_worker_wait_count;
 
 #if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS && \
     defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
@@ -142,7 +147,9 @@ nrf_logger_led_zephyr_result_t nrf_logger_led_zephyr_apply(
 {
     assert(output != NULL);
     assert(s_led_sample_count < NRF_TEST_LED_SAMPLE_CAPACITY);
-    s_led_samples[s_led_sample_count++] = *output;
+    s_led_samples[s_led_sample_count] = *output;
+    s_led_sample_times[s_led_sample_count] = (uint64_t)s_test_uptime_ms;
+    ++s_led_sample_count;
     return NRF_LOGGER_LED_ZEPHYR_OK;
 }
 
@@ -198,6 +205,8 @@ int k_msgq_get(struct k_msgq *q, void *data, k_timeout_t timeout)
      * the watchdog would reset a healthy idle node. */
     assert(timeout != K_FOREVER);
     assert(timeout <= K_MSEC(1000));
+    assert(s_worker_wait_count < NRF_TEST_WORKER_WAIT_CAPACITY);
+    s_worker_waits[s_worker_wait_count++] = timeout;
     if (timeout > s_max_worker_wait) {
         s_max_worker_wait = timeout;
     }
@@ -244,7 +253,7 @@ k_tid_t k_thread_create(
     (void)p1;
     (void)p2;
     (void)p3;
-    (void)prio;
+    s_sensor_worker_priority = prio;
     (void)options;
     (void)delay;
     ++s_thread_create_calls;
@@ -415,6 +424,23 @@ static void assert_last_applied_colors(bool green, bool yellow, bool red)
     assert(s_led_samples[s_led_sample_count - 1U].yellow == yellow);
     assert(s_led_samples[s_led_sample_count - 1U].red == red);
 }
+
+static bool led_colors_recorded_at(
+    uint64_t time_ms,
+    bool green,
+    bool yellow,
+    bool red)
+{
+    for (unsigned index = 0U; index < s_led_sample_count; ++index) {
+        if (s_led_sample_times[index] == time_ms &&
+            s_led_samples[index].green == green &&
+            s_led_samples[index].yellow == yellow &&
+            s_led_samples[index].red == red) {
+            return true;
+        }
+    }
+    return false;
+}
 #endif
 
 #if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS && \
@@ -464,9 +490,15 @@ static void assert_stage_pattern(
 #if defined(NRF_STAGE_SIGNAL_SUCCESS_TEST)
 static void test_first_transaction_signal(void)
 {
+    unsigned wait_start;
+    uint64_t signal_start_ms;
+
     assert_last_applied_colors(false, false, false);
     assert_last_applied_matches_policy();
 
+    s_test_uptime_ms = (int64_t)(UINT32_MAX - 100U);
+    signal_start_ms = (uint64_t)s_test_uptime_ms;
+    wait_start = s_worker_wait_count;
     nrf_sensor_upstream_runtime_zephyr_note_upstream(
         1U,
         0U,
@@ -474,8 +506,20 @@ static void test_first_transaction_signal(void)
     run_worker_ticks(1U);
     assert_last_applied_colors(false, false, false);
     assert(signal_log_count_containing("signal: stage=I2C_ALIVE ") == 1U);
+    assert(s_worker_wait_count > wait_start + 1U);
+    assert(s_worker_waits[wait_start + 1U] == K_MSEC(300U));
 
-    assert_stage_pattern(1U, true, false, false);
+    wait_start = s_worker_wait_count;
+    run_worker_advancing(900U);
+    assert(s_test_uptime_ms == (int64_t)(signal_start_ms + 900U));
+    assert(s_worker_wait_count >= wait_start + 4U);
+    assert(s_worker_waits[wait_start] == K_MSEC(300U));
+    assert(s_worker_waits[wait_start + 1U] == K_MSEC(150U));
+    assert(s_worker_waits[wait_start + 2U] == K_MSEC(150U));
+    assert(s_worker_waits[wait_start + 3U] == K_MSEC(300U));
+    assert(led_colors_recorded_at(signal_start_ms + 300U, true, false, false));
+    assert(led_colors_recorded_at(signal_start_ms + 450U, false, false, false));
+    assert_last_applied_colors(false, false, false);
     assert_last_applied_matches_policy();
     assert(signal_log_count_containing("signal: stage=I2C_ALIVE ") == 1U);
 }
@@ -577,6 +621,7 @@ static void test_successful_stage_signals(void)
     assert(nrf_sensor_upstream_runtime_zephyr_configure_orientation(
                &orientation_config) == 0);
     assert(nrf_sensor_upstream_runtime_zephyr_start() == 0);
+    assert(s_sensor_worker_priority == 10);
     run_worker_ticks(1U);
     assert_last_applied_colors(false, false, false);
     assert_last_applied_matches_policy();
@@ -610,6 +655,7 @@ static void test_failed_sensor_signal(void)
                &orientation_config) == 0);
     s_fail_imu_init = true;
     assert(nrf_sensor_upstream_runtime_zephyr_start() == 0);
+    assert(s_sensor_worker_priority == 10);
     run_worker_ticks(1U);
     assert_last_applied_colors(false, false, false);
 

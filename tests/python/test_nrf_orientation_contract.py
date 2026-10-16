@@ -27,7 +27,7 @@ def test_worker_remains_single_thread_and_uses_timed_msgq_wait():
     source = read("nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c")
     assert source.count("k_thread_create(") == 1
     assert "k_msgq_get(\n            &s_sensor_queue,\n            &event,\n            sensor_worker_wait_timeout())" in source
-    assert "K_MSEC(remaining)" in source
+    assert "K_MSEC(wait_ms)" in source
     # MAX-244: an idle worker must still wake up to check in with the
     # watchdog (behaviourally asserted in nrf_sensor_upstream_runtime_zephyr_test.c).
     assert "K_FOREVER" not in source

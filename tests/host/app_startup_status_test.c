@@ -8,8 +8,12 @@
 #include "app_startup_status.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_system.h"
 #include "hw_inventory.h"
+#include "object_recovery.h"
 #include "seismic_acquisition.h"
+#include "web_server.h"
 
 
 #define STARTUP_STATUS_LOG_CAPACITY 64U
@@ -30,6 +34,38 @@ static esp_err_t s_acquisition_error;
 static bool s_wifi_setup_mode;
 static bool s_inventory_available;
 static hw_module_state_t s_inventory_state;
+
+
+esp_reset_reason_t esp_reset_reason(void)
+{
+    return ESP_RST_UNKNOWN;
+}
+
+
+int64_t esp_timer_get_time(void)
+{
+    return 0;
+}
+
+
+uint32_t object_recovery_boot_id(void)
+{
+    return 0U;
+}
+
+
+void web_status_json_set_reset_diagnostics(
+    const char *reason_name,
+    int reason_code,
+    uint32_t boot_id,
+    uint64_t uptime_ms
+)
+{
+    (void)reason_name;
+    (void)reason_code;
+    (void)boot_id;
+    (void)uptime_ms;
+}
 
 
 void startup_status_test_log(

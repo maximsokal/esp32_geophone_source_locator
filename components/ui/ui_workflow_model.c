@@ -115,9 +115,15 @@ static size_t collect_actions(
     return count;
 }
 
+static bool sequence_reached(uint32_t completed, uint32_t pending)
+{
+    /* shortcut: ordering is ambiguous at 2^31 IDs; revisit if requests can stay pending that long. */
+    return (int32_t)(completed - pending) >= 0;
+}
+
 static void resolve_pending(ui_workflow_model_state_t *state, const workflow_snapshot_t *snapshot, uint64_t now_ms)
 {
-    if (state->has_pending && snapshot->last_async.seq >= state->pending_seq) {
+    if (state->has_pending && sequence_reached(snapshot->last_async.seq, state->pending_seq)) {
         state->has_pending = false;
         if (snapshot->last_async.result != WORKFLOW_COMMAND_RESULT_OK) {
             state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_NOTICE_STATE_CHANGED;
@@ -135,7 +141,7 @@ static void resolve_material_save(
     uint64_t now_ms)
 {
     if (!state->material_save_pending ||
-        snapshot->last_material_save.seq < state->material_save_seq) return;
+        !sequence_reached(snapshot->last_material_save.seq, state->material_save_seq)) return;
     state->material_save_pending = false;
     if (snapshot->last_material_save.result == ESP_OK) {
         state->material_stored_index = state->material_selection_index;

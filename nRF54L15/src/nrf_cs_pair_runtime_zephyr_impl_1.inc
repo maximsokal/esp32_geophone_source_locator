@@ -160,16 +160,7 @@ static bool runtime_active_step_for_conn(struct bt_conn *conn, nrf_cs_step_t *st
 
 static bool runtime_step_matches_active(const nrf_cs_step_t *step)
 {
-    const nrf_cs_step_t *active = nrf_cs_pair_adapter_active_step(&s_adapter);
-
-    return step != NULL && active != NULL &&
-           step->cycle_id == active->cycle_id &&
-           step->membership_generation == active->membership_generation &&
-           step->attempt_id == active->attempt_id &&
-           step->pair_index == active->pair_index &&
-           step->attempt_number == active->attempt_number &&
-           step->initiator == active->initiator &&
-           step->reflector == active->reflector;
+    return nrf_cs_pair_runtime_bridge_step_matches(&s_adapter, step);
 }
 
 static int runtime_start_advertising(void)

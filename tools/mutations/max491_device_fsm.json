@@ -1,0 +1,44 @@
+[
+  {
+    "id": "max491_remove_generation_guard",
+    "description": "Remove workflow core stale-generation rejection; the reference model must distinguish stale commands from disallowed commands.",
+    "file": "components/workflow_service/workflow_core.c",
+    "find": "if (params->has_generation && params->expected_generation != core->generation) {\n        return WORKFLOW_COMMAND_RESULT_STALE;\n    }",
+    "replace": "if (0) {\n        return WORKFLOW_COMMAND_RESULT_STALE;\n    }",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max491-device-fsm.json",
+        "only": "workflow_fsm_model"
+      }
+    ],
+    "expected_killer": "tests/host/workflow_fsm_model_test.c::test_guard_boundaries_and_generation"
+  },
+  {
+    "id": "max491_allow_duplicate_job_finish",
+    "description": "Allow finish callbacks after a job is terminal; duplicate finish must leave the published job unchanged.",
+    "file": "components/localization_job/localization_job_state.c",
+    "find": "    localization_job_status_t *status = &state->status;\n    if (status->state != LOCALIZATION_JOB_RUNNING) {\n        return;\n    }",
+    "replace": "    localization_job_status_t *status = &state->status;\n    if (status->state == LOCALIZATION_JOB_IDLE) {\n        return;\n    }",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max491-device-fsm.json",
+        "only": "localization_job_state_max491"
+      }
+    ],
+    "expected_killer": "components/localization_job/tests/localization_job_state_test.c::test_duplicate_finish_is_immutable"
+  },
+  {
+    "id": "max491_allow_count_transition",
+    "description": "Allow a transition to the workflow state sentinel; the model's 19 by 25 table must reject it.",
+    "file": "components/workflow_service/workflow_core.c",
+    "find": "    if (next == WORKFLOW_STEP_COUNT) return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;",
+    "replace": "    if (0) return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max491-device-fsm.json",
+        "only": "workflow_fsm_model"
+      }
+    ],
+    "expected_killer": "tests/host/workflow_fsm_model_test.c::test_all_state_command_pairs"
+  }
+]

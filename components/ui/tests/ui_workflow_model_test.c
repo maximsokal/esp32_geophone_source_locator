@@ -348,6 +348,50 @@ static void test_pending_notices(void)
     assert(model.notice_key == UI_I18N_KEY_COUNT);
 }
 
+/* MAX-491 fail-before(real): a pre-wrap async completion cannot clear seq 1. */
+static void test_async_sequence_wrap_keeps_new_request_pending(void)
+{
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_OBJECT);
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    state.has_pending = true;
+    state.pending_seq = 1U;
+    snapshot.last_async.seq = UINT32_MAX;
+    snapshot.last_async.result = WORKFLOW_COMMAND_RESULT_OK;
+    build(&snapshot, &state, &ranging, &model);
+    assert(state.has_pending);
+
+    snapshot.last_async.seq = 1U;
+    build(&snapshot, &state, &ranging, &model);
+    assert(!state.has_pending);
+}
+
+/* MAX-491 fail-before(real): a pre-wrap material result cannot resolve seq 1. */
+static void test_material_save_sequence_wrap_keeps_new_save_pending(void)
+{
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_STOPPED);
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    state.material_save_pending = true;
+    state.material_save_seq = 1U;
+    state.material_selection_index = 2U;
+    state.material_view = UI_WORKFLOW_MATERIAL_SAVING;
+    snapshot.last_material_save.seq = UINT32_MAX;
+    snapshot.last_material_save.result = ESP_OK;
+    build(&snapshot, &state, &ranging, &model);
+    assert(state.material_save_pending);
+    assert(state.material_view == UI_WORKFLOW_MATERIAL_SAVING);
+    assert(state.material_stored_index == 0U);
+
+    snapshot.last_material_save.seq = 1U;
+    build(&snapshot, &state, &ranging, &model);
+    assert(!state.material_save_pending);
+    assert(state.material_view == UI_WORKFLOW_MATERIAL_CLOSED);
+    assert(state.material_stored_index == 2U);
+}
+
 static void test_unknown_values_and_ranging_sigma(void)
 {
     ui_workflow_model_state_t state = {0};
@@ -604,6 +648,8 @@ int main(void)
 #else
     test_all_steps();
     test_actions_follow_allowed_mask();
+    test_async_sequence_wrap_keeps_new_request_pending();
+    test_material_save_sequence_wrap_keeps_new_save_pending();
     test_max460_guided_step_content_and_placement_gate();
     test_max460_tft_action_set_matches_core_for_guided_steps();
     test_sensor_counts();

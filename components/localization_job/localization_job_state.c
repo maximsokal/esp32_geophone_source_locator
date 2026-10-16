@@ -85,7 +85,8 @@ esp_err_t localization_job_state_submit(
     const uint32_t stack_size = status->stack_size_bytes;
     const uint32_t stack_free = status->stack_free_min_bytes;
     const bool margin_ok = status->stack_margin_ok;
-    const uint32_t next_id = status->job_id + 1U;
+    uint32_t next_id = status->job_id + 1U;
+    if (next_id == 0U) next_id = 1U;
     memset(status, 0, sizeof(*status));
     status->state = LOCALIZATION_JOB_QUEUED;
     status->job_id = next_id;

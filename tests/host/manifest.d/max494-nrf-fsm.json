@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "max494_nrf_fsm_reference_model",
+      "sources": [
+        "nRF54L15/src/nrf_node_state.c",
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_bootstrap.c",
+        "nRF54L15/src/nrf_sensor_session.c",
+        "nRF54L15/src/nrf_cs_control_protocol.c",
+        "nRF54L15/src/nrf_cs_control_runtime.c",
+        "tests/host/nrf_fsm_reference_model_test.c"
+      ],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "max494_nrf_fsm_runtime_model",
+      "sources": [
+        "nRF54L15/src/nrf_node_state.c",
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_bootstrap.c",
+        "nRF54L15/src/nrf_cs_control_protocol.c",
+        "nRF54L15/src/nrf_cs_control_runtime.c",
+        "nRF54L15/src/nrf_log_protocol.c",
+        "nRF54L15/src/nrf_log_ring.c",
+        "nRF54L15/src/nrf_log_runtime_zephyr.c",
+        "nRF54L15/src/nrf_bootstrap_runtime_zephyr.c",
+        "tests/host/stubs/nrf_bootstrap_runtime_zephyr/nrf_cs_pair_runtime_zephyr_stub.c",
+        "tests/host/nrf_fsm_runtime_model_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_bootstrap_runtime_zephyr",
+        "tests/host/stubs/nrf_upstream_target_zephyr",
+        "nRF54L15/include"
+      ],
+      "defines": ["NRF_LOG_RING_TEST_HOOKS", "NRF_BOOTSTRAP_RUNTIME_TEST_HOOKS"]
+    },
+    {
+      "name": "max494_cs_pair_runtime_model",
+      "sources": [
+        "nRF54L15/src/nrf_cs_pair_runtime_zephyr.c",
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_cs_control_protocol.c",
+        "nRF54L15/src/nrf_cs_control_runtime.c",
+        "nRF54L15/src/nrf_cs_pair_adapter.c",
+        "tests/host/nrf_cs_pair_runtime_model_test.c"
+      ],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "max494_nrf_bootstrap",
+      "sources": [
+        "nRF54L15/src/nrf_node_state.c",
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_bootstrap.c",
+        "tests/host/nrf_bootstrap_test.c"
+      ],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "max494_nrf_node_state",
+      "sources": ["nRF54L15/src/nrf_node_state.c", "tests/host/nrf_node_state_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "max494_nrf_upstream_protocol",
+      "sources": ["nRF54L15/src/nrf_upstream_protocol.c", "tests/host/nrf_upstream_protocol_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "max494_nrf_sensor_session",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_sensor_session.c",
+        "tests/host/nrf_sensor_session_test.c"
+      ],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "max494_nrf_cs_control_runtime",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_cs_control_protocol.c",
+        "nRF54L15/src/nrf_cs_control_runtime.c",
+        "tests/host/nrf_cs_control_runtime_test.c"
+      ],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "max494_nrf_cs_pair_adapter",
+      "sources": ["nRF54L15/src/nrf_cs_pair_adapter.c", "tests/host/nrf_cs_pair_adapter_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    }
+  ]
+}

@@ -104,6 +104,63 @@ static void test_active_bt_cs_progress_participant_stops_and_resumes_feed(void)
     assert(nrf_watchdog_health_should_feed(&h, 20000U, &stale));
 }
 
+static void test_repeated_activation_does_not_hide_silence(void)
+{
+    nrf_watchdog_health_t h;
+    nrf_watchdog_participant_t stale = NRF_WATCHDOG_PARTICIPANT_NONE;
+
+    nrf_watchdog_health_init(&h, 0U, 5000U);
+    nrf_watchdog_health_set_active(
+        &h,
+        NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS,
+        true,
+        0U);
+
+    for (uint64_t t = 1000U; t <= 6000U; t += 1000U) {
+        nrf_watchdog_health_set_active(
+            &h,
+            NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS,
+            true,
+            t);
+        nrf_watchdog_health_checkin(
+            &h,
+            NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER,
+            t);
+        nrf_watchdog_health_checkin(
+            &h,
+            NRF_WATCHDOG_PARTICIPANT_SYSTEM_WORKQUEUE,
+            t);
+        const bool feed = nrf_watchdog_health_should_feed(&h, t, &stale);
+        assert(feed == (t <= 5000U));
+        if (!feed) {
+            assert(stale == NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
+        }
+    }
+}
+
+static void test_activation_gets_a_fresh_cs_grace_period(void)
+{
+    nrf_watchdog_health_t h;
+    nrf_watchdog_health_init(&h, 0U, 5000U);
+
+    /* A CS request can start after a long idle interval. */
+    nrf_watchdog_health_set_active(
+        &h,
+        NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS,
+        true,
+        100000U);
+    nrf_watchdog_health_checkin(
+        &h,
+        NRF_WATCHDOG_PARTICIPANT_SENSOR_WORKER,
+        105000U);
+    nrf_watchdog_health_checkin(
+        &h,
+        NRF_WATCHDOG_PARTICIPANT_SYSTEM_WORKQUEUE,
+        105000U);
+    assert(nrf_watchdog_health_should_feed(&h, 105000U, NULL));
+    assert(!nrf_watchdog_health_should_feed(&h, 105001U, NULL));
+}
+
 static void test_guards(void)
 {
     nrf_watchdog_health_t h;
@@ -130,6 +187,8 @@ int main(void)
     test_all_alive_feeds_forever();
     test_recovery_and_races();
     test_active_bt_cs_progress_participant_stops_and_resumes_feed();
+    test_repeated_activation_does_not_hide_silence();
+    test_activation_gets_a_fresh_cs_grace_period();
     test_guards();
     return 0;
 }

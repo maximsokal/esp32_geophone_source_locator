@@ -211,7 +211,8 @@ static void runtime_adapter_complete(
 static void timeout_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
-    (void)nrf_cs_pair_adapter_timeout(&s_adapter, &s_timeout_step);
+    (void)nrf_cs_pair_runtime_bridge_dispatch(
+        &s_adapter, NRF_CS_PAIR_BRIDGE_TIMEOUT, &s_timeout_step, false, NULL);
 }
 
 static void cleanup_work_handler(struct k_work *work)
@@ -221,7 +222,8 @@ static void cleanup_work_handler(struct k_work *work)
     ARG_UNUSED(work);
     if (runtime_active_step(&step) &&
         nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_CLEANUP) {
-        (void)nrf_cs_pair_adapter_cleanup_complete(&s_adapter, &step);
+        (void)nrf_cs_pair_runtime_bridge_dispatch(
+            &s_adapter, NRF_CS_PAIR_BRIDGE_CLEANUP_COMPLETE, &step, false, NULL);
     }
 }
 

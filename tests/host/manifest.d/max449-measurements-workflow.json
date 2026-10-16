@@ -137,6 +137,7 @@
         "components/object_store/include",
         "tests/host/stubs/workflow_service",
         "tests/host/stubs/object_store_profile",
+        "components/app_config/include",
         "components/workflow_service/include",
         "components/recording_gate/include",
         "components/localization/include",

@@ -25,6 +25,8 @@ void nrf_cs_pair_runtime_zephyr_stub_configure(int execute_result, nrf_cs_outcom
 static const struct i2c_target_callbacks *s_callbacks;
 static struct k_work *s_submitted_work;
 static unsigned s_submit_calls;
+static bool s_fail_next_submit;
+static int s_next_submit_failure;
 static unsigned s_readdress_calls;
 static unsigned s_reboot_calls;
 static unsigned s_sensor_assignment_calls;
@@ -87,6 +89,11 @@ uint32_t nrf_watchdog_zephyr_boot_reset_cause(void)
 
 int k_work_submit(struct k_work *work)
 {
+    if (s_fail_next_submit) {
+        s_fail_next_submit = false;
+        ++s_submit_calls;
+        return s_next_submit_failure;
+    }
     s_submitted_work = work;
     ++s_submit_calls;
     return 1;
@@ -631,9 +638,11 @@ static void check_cs_failure_event(
     }
 }
 
+/* characterization: host integration baseline for the real TWIS callbacks and work handlers. */
 int main(void)
 {
-    nrf_node_state_t node_state;
+    /* The MAX-494 wrapper keeps using the runtime after this main returns. */
+    static nrf_node_state_t node_state;
     nrf_upstream_status_t status;
     nrf_bootstrap_twis_diagnostics_t twis_diagnostics;
     nrf_upstream_assign_t assign;

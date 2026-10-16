@@ -24,11 +24,23 @@
 #define NRF_BOOTSTRAP_QUEUE_DEPTH 4U
 #define NRF_CS_EXECUTE_QUEUE_DEPTH 2U
 
-K_MSGQ_DEFINE(s_assign_queue, sizeof(nrf_upstream_assign_t), NRF_BOOTSTRAP_QUEUE_DEPTH, 4);
-K_MSGQ_DEFINE(s_cs_execute_queue, sizeof(nrf_cs_control_request_t), NRF_CS_EXECUTE_QUEUE_DEPTH, 4);
+typedef struct {
+    uint32_t sequence;
+    nrf_upstream_assign_t assign;
+} assign_work_item_t;
+
+typedef struct {
+    uint32_t sequence;
+    nrf_cs_control_request_t request;
+} cs_execute_work_item_t;
+
+K_MSGQ_DEFINE(s_assign_queue, sizeof(assign_work_item_t), NRF_BOOTSTRAP_QUEUE_DEPTH, 4);
+K_MSGQ_DEFINE(s_cs_execute_queue, sizeof(cs_execute_work_item_t), NRF_CS_EXECUTE_QUEUE_DEPTH, 4);
 
 static struct k_work s_assign_work;
 static struct k_work s_cs_execute_work;
+static struct k_spinlock s_assign_queue_lock;
+static struct k_spinlock s_cs_execute_queue_lock;
 static struct k_spinlock s_status_lock;
 static struct k_spinlock s_cs_lock;
 static nrf_bootstrap_t s_bootstrap;
@@ -39,6 +51,8 @@ static uint8_t s_log_response_frame[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
 static uint32_t s_log_response_length;
 static bool s_log_response_selected;
 static bool s_started;
+static uint32_t s_assign_sequence;
+static uint32_t s_cs_execute_sequence;
 /* Advisory callback snapshots: volatile saturating counters avoid taking a
  * lock in the target callback; readers may observe neighboring fields mid-update. */
 static volatile uint32_t s_twis_write_received_count;
@@ -182,6 +196,55 @@ static void publish_core_status_with_result(nrf_upstream_result_t result){nrf_up
 static void publish_result_context(uint32_t request_id,nrf_upstream_result_t result){k_spinlock_key_t key=k_spin_lock(&s_status_lock);s_published_status.request_id=request_id;s_published_status.result=(uint8_t)result;k_spin_unlock(&s_status_lock,key);}
 static void assignment_runtime_failure(void){publish_core_status_with_result(NRF_UPSTREAM_RESULT_INTERNAL_ERROR);runtime_cold_reboot(NULL);}
 
+static uint32_t next_sequence(uint32_t *sequence)
+{
+    ++*sequence;
+    if (*sequence == 0U) {
+        ++*sequence;
+    }
+    return *sequence;
+}
+
+static bool remove_assign_work_item(uint32_t sequence)
+{
+    assign_work_item_t kept[NRF_BOOTSTRAP_QUEUE_DEPTH];
+    assign_work_item_t item;
+    size_t kept_count = 0U;
+    bool removed = false;
+
+    while (k_msgq_get(&s_assign_queue, &item, K_NO_WAIT) == 0) {
+        if (!removed && item.sequence == sequence) {
+            removed = true;
+        } else {
+            kept[kept_count++] = item;
+        }
+    }
+    for (size_t index = 0U; index < kept_count; ++index) {
+        (void)k_msgq_put(&s_assign_queue, &kept[index], K_NO_WAIT);
+    }
+    return removed;
+}
+
+static bool remove_cs_execute_work_item(uint32_t sequence)
+{
+    cs_execute_work_item_t kept[NRF_CS_EXECUTE_QUEUE_DEPTH];
+    cs_execute_work_item_t item;
+    size_t kept_count = 0U;
+    bool removed = false;
+
+    while (k_msgq_get(&s_cs_execute_queue, &item, K_NO_WAIT) == 0) {
+        if (!removed && item.sequence == sequence) {
+            removed = true;
+        } else {
+            kept[kept_count++] = item;
+        }
+    }
+    for (size_t index = 0U; index < kept_count; ++index) {
+        (void)k_msgq_put(&s_cs_execute_queue, &kept[index], K_NO_WAIT);
+    }
+    return removed;
+}
+
 static void cs_runtime_complete(const nrf_cs_step_t *step,const nrf_cs_measurement_t *measurement,void *context)
 {
     k_spinlock_key_t key;
@@ -206,9 +269,16 @@ static void cs_runtime_complete(const nrf_cs_step_t *step,const nrf_cs_measureme
 
 static void cs_execute_work_handler(struct k_work *work)
 {
-    nrf_cs_control_request_t request;
+    cs_execute_work_item_t item;
     (void)work;
-    while(k_msgq_get(&s_cs_execute_queue,&request,K_NO_WAIT)==0){
+    for (;;) {
+        k_spinlock_key_t queue_key = k_spin_lock(&s_cs_execute_queue_lock);
+        const int got = k_msgq_get(&s_cs_execute_queue, &item, K_NO_WAIT);
+        k_spin_unlock(&s_cs_execute_queue_lock, queue_key);
+        if (got != 0) {
+            break;
+        }
+        nrf_cs_control_request_t request = item.request;
         nrf_cs_control_result_t status;
         nrf_cs_measurement_t failure={.outcome=NRF_CS_OUTCOME_TRANSPORT_ERROR};
         bool start_required=false;
@@ -231,11 +301,18 @@ static void cs_execute_work_handler(struct k_work *work)
 
 static void assign_work_handler(struct k_work *work)
 {
-    nrf_upstream_assign_t assign;
+    assign_work_item_t item;
     nrf_upstream_status_t previous_status;
     nrf_upstream_status_t current_status;
     (void)work;
-    while(k_msgq_get(&s_assign_queue,&assign,K_NO_WAIT)==0){
+    for (;;) {
+        k_spinlock_key_t queue_key = k_spin_lock(&s_assign_queue_lock);
+        const int got = k_msgq_get(&s_assign_queue, &item, K_NO_WAIT);
+        k_spin_unlock(&s_assign_queue_lock, queue_key);
+        if (got != 0) {
+            break;
+        }
+        nrf_upstream_assign_t assign = item.assign;
         nrf_upstream_result_t result;
         k_spinlock_key_t status_key=k_spin_lock(&s_status_lock);
         previous_status=s_published_status;
@@ -330,6 +407,7 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
     nrf_upstream_result_t result;
     uint32_t transaction_index;
     uint32_t request_id;
+    k_spinlock_key_t key;
     int submit_result;
     int32_t transaction_result = 0;
     (void)config;
@@ -348,18 +426,42 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
     if(handle_log_write(ptr,(size_t)len,&transaction_result))goto record_transaction;
 
     if((size_t)len==NRF_CS_CONTROL_EXECUTE_LENGTH&&ptr!=NULL&&ptr[3]==NRF_CS_CONTROL_MESSAGE_EXECUTE){
+        cs_execute_work_item_t item;
+        k_spinlock_key_t queue_key;
         transaction_result = nrf_cs_control_decode_execute(
             ptr, (size_t)len, &cs_request);
         if(transaction_result!=0){nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME,ptr[3],1U);goto record_transaction;}
-        if(k_msgq_put(&s_cs_execute_queue,&cs_request,K_NO_WAIT)!=0){nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_BUSY,ptr[3],NRF_CS_EXECUTE_QUEUE_DEPTH);transaction_result=-EBUSY;goto record_transaction;}
+        queue_key = k_spin_lock(&s_cs_execute_queue_lock);
+        item.sequence = next_sequence(&s_cs_execute_sequence);
+        item.request = cs_request;
+        if(k_msgq_put(&s_cs_execute_queue,&item,K_NO_WAIT)!=0){
+            k_spin_unlock(&s_cs_execute_queue_lock,queue_key);
+            nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_BUSY,ptr[3],NRF_CS_EXECUTE_QUEUE_DEPTH);
+            key=k_spin_lock(&s_cs_lock);
+            (void)nrf_cs_control_runtime_record_enqueue_result(
+                &s_cs_control,&cs_request,NRF_CS_CONTROL_RESULT_BUSY);
+            k_spin_unlock(&s_cs_lock,key);
+            transaction_result=-EBUSY;
+            goto record_transaction;
+        }
         submit_result = k_work_submit(&s_cs_execute_work);
+        if(submit_result<0){
+            (void)remove_cs_execute_work_item(item.sequence);
+        }
+        k_spin_unlock(&s_cs_execute_queue_lock,queue_key);
+        if(submit_result<0){
+            key=k_spin_lock(&s_cs_lock);
+            (void)nrf_cs_control_runtime_record_enqueue_result(
+                &s_cs_control,&cs_request,NRF_CS_CONTROL_RESULT_INTERNAL_ERROR);
+            k_spin_unlock(&s_cs_lock,key);
+        }
         transaction_result = submit_result < 0 ? submit_result : 0;
         goto record_transaction;
     }
     if((size_t)len==NRF_CS_CONTROL_STATUS_REQUEST_LENGTH&&ptr!=NULL&&ptr[3]==NRF_CS_CONTROL_MESSAGE_STATUS_REQUEST){
         transaction_result = nrf_cs_control_decode_status_request(
             ptr, (size_t)len, &cs_request);
-        if(transaction_result==0){k_spinlock_key_t key=k_spin_lock(&s_cs_lock);transaction_result=nrf_cs_control_runtime_select_result(&s_cs_control,&cs_request);k_spin_unlock(&s_cs_lock,key);}else{nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME,ptr[3],1U);}
+        if(transaction_result==0){key=k_spin_lock(&s_cs_lock);transaction_result=nrf_cs_control_runtime_select_result(&s_cs_control,&cs_request);k_spin_unlock(&s_cs_lock,key);}else{nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME,ptr[3],1U);}
         goto record_transaction;
     }
     if((size_t)len==NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH){
@@ -392,8 +494,24 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
         transaction_result=(int32_t)result;
         goto record_transaction;
     }
-    if(k_msgq_put(&s_assign_queue,&assign,K_NO_WAIT)!=0){nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_BUSY,ptr[3],NRF_BOOTSTRAP_QUEUE_DEPTH);publish_result_context(assign.request_id,NRF_UPSTREAM_RESULT_BUSY);transaction_result=(int32_t)NRF_UPSTREAM_RESULT_BUSY;goto record_transaction;}
-    submit_result=k_work_submit(&s_assign_work);
+    {
+        assign_work_item_t item;
+        k_spinlock_key_t queue_key = k_spin_lock(&s_assign_queue_lock);
+        item.sequence = next_sequence(&s_assign_sequence);
+        item.assign = assign;
+        if(k_msgq_put(&s_assign_queue,&item,K_NO_WAIT)!=0){
+            k_spin_unlock(&s_assign_queue_lock,queue_key);
+            nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_BUSY,ptr[3],NRF_BOOTSTRAP_QUEUE_DEPTH);
+            publish_result_context(assign.request_id,NRF_UPSTREAM_RESULT_BUSY);
+            transaction_result=(int32_t)NRF_UPSTREAM_RESULT_BUSY;
+            goto record_transaction;
+        }
+        submit_result=k_work_submit(&s_assign_work);
+        if(submit_result<0){
+            (void)remove_assign_work_item(item.sequence);
+        }
+        k_spin_unlock(&s_assign_queue_lock,queue_key);
+    }
     if(submit_result<0){nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_BUSY,ptr[3],NRF_BOOTSTRAP_QUEUE_DEPTH);publish_result_context(assign.request_id,NRF_UPSTREAM_RESULT_INTERNAL_ERROR);transaction_result=submit_result;}
 
 record_transaction:
@@ -461,10 +579,17 @@ int nrf_bootstrap_runtime_zephyr_start(nrf_node_state_t *node_state)
     result=nrf_upstream_target_zephyr_read_device_id(hardware_id,sizeof(hardware_id),&hardware_id_length);if(result!=0)return result;
     if(nrf_bootstrap_init(&s_bootstrap,node_state,hardware_id,hardware_id_length,&ops)!=NRF_UPSTREAM_RESULT_OK)return -EINVAL;
     if(nrf_cs_control_runtime_init(&s_cs_control)!=0)return -EINVAL;
-    k_msgq_purge(&s_assign_queue);k_msgq_purge(&s_cs_execute_queue);k_work_init(&s_assign_work,assign_work_handler);k_work_init(&s_cs_execute_work,cs_execute_work_handler);
+    k_msgq_purge(&s_assign_queue);k_msgq_purge(&s_cs_execute_queue);s_assign_sequence=0U;s_cs_execute_sequence=0U;k_work_init(&s_assign_work,assign_work_handler);k_work_init(&s_cs_execute_work,cs_execute_work_handler);
     if(nrf_bootstrap_make_status(&s_bootstrap,&initial_status)!=NRF_UPSTREAM_RESULT_OK)return -EIO;
     initial_status.target_address=NRF_UPSTREAM_ADDRESS_DISCOVERY;publish_status(&initial_status);
     result=nrf_upstream_target_zephyr_init(&s_target_callbacks);if(result!=0)return result;
     s_started=true;result=nrf_upstream_target_zephyr_register(NRF_UPSTREAM_ADDRESS_DISCOVERY);if(result!=0){s_started=false;return result;}
     publish_core_status();return 0;
 }
+
+#if defined(NRF_BOOTSTRAP_RUNTIME_TEST_HOOKS)
+void nrf_bootstrap_runtime_zephyr_test_forget_started(void)
+{
+    s_started = false;
+}
+#endif

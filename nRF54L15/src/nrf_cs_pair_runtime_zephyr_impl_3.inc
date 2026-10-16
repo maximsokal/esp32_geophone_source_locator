@@ -44,51 +44,57 @@ static void event_work_handler(struct k_work *work)
 
         switch (event.type) {
         case RUNTIME_EVENT_CONNECTED:
-            (void)nrf_cs_pair_adapter_connected(&s_adapter, &event.step);
+            (void)nrf_cs_pair_runtime_bridge_dispatch(
+                &s_adapter, NRF_CS_PAIR_BRIDGE_CONNECTED, &event.step, false, NULL);
             break;
         case RUNTIME_EVENT_SECURITY_READY:
-            (void)nrf_cs_pair_adapter_security_ready(&s_adapter, &event.step);
+            (void)nrf_cs_pair_runtime_bridge_dispatch(
+                &s_adapter, NRF_CS_PAIR_BRIDGE_SECURITY_READY, &event.step, false, NULL);
             break;
         case RUNTIME_EVENT_MTU_READY:
-            (void)nrf_cs_pair_adapter_mtu_ready(&s_adapter, &event.step);
+            (void)nrf_cs_pair_runtime_bridge_dispatch(
+                &s_adapter, NRF_CS_PAIR_BRIDGE_MTU_READY, &event.step, false, NULL);
             break;
         case RUNTIME_EVENT_DISCOVERY_READY:
-            (void)nrf_cs_pair_adapter_discovery_ready(&s_adapter, &event.step);
+            (void)nrf_cs_pair_runtime_bridge_dispatch(
+                &s_adapter, NRF_CS_PAIR_BRIDGE_DISCOVERY_READY, &event.step, false, NULL);
             break;
         case RUNTIME_EVENT_FEATURES_READY:
-            (void)nrf_cs_pair_adapter_features_ready(
-                &s_adapter,
-                &event.step,
-                (event.value & RAS_FEAT_REALTIME_RD) != 0U);
+            (void)nrf_cs_pair_runtime_bridge_dispatch(
+                &s_adapter, NRF_CS_PAIR_BRIDGE_FEATURES_READY, &event.step,
+                (event.value & RAS_FEAT_REALTIME_RD) != 0U, NULL);
             break;
         case RUNTIME_EVENT_CAPABILITIES_READY:
-            (void)nrf_cs_pair_adapter_capabilities_ready(&s_adapter, &event.step);
+            (void)nrf_cs_pair_runtime_bridge_dispatch(
+                &s_adapter, NRF_CS_PAIR_BRIDGE_CAPABILITIES_READY, &event.step, false, NULL);
             break;
         case RUNTIME_EVENT_CONFIG_READY:
-            (void)nrf_cs_pair_adapter_config_ready(&s_adapter, &event.step);
+            (void)nrf_cs_pair_runtime_bridge_dispatch(
+                &s_adapter, NRF_CS_PAIR_BRIDGE_CONFIG_READY, &event.step, false, NULL);
             break;
         case RUNTIME_EVENT_CS_SECURITY_READY:
-            (void)nrf_cs_pair_adapter_cs_security_ready(&s_adapter, &event.step);
+            (void)nrf_cs_pair_runtime_bridge_dispatch(
+                &s_adapter, NRF_CS_PAIR_BRIDGE_CS_SECURITY_READY, &event.step, false, NULL);
             break;
         case RUNTIME_EVENT_TRANSPORT_ERROR:
-            (void)nrf_cs_pair_adapter_transport_error(&s_adapter, &event.step);
+            (void)nrf_cs_pair_runtime_bridge_dispatch(
+                &s_adapter, NRF_CS_PAIR_BRIDGE_TRANSPORT_ERROR, &event.step, false, NULL);
             break;
         case RUNTIME_EVENT_DISCONNECTED:
-            if (nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_CLEANUP) {
-                (void)nrf_cs_pair_adapter_cleanup_complete(&s_adapter, &event.step);
-            } else {
-                (void)nrf_cs_pair_adapter_transport_error(&s_adapter, &event.step);
-            }
+            (void)nrf_cs_pair_runtime_bridge_dispatch(
+                &s_adapter, NRF_CS_PAIR_BRIDGE_DISCONNECTED, &event.step, false, NULL);
             break;
         case RUNTIME_EVENT_LOCAL_COMPLETE:
             s_local_counter = (uint16_t)event.value;
-            s_local_complete = true;
+            (void)nrf_cs_pair_runtime_bridge_record_completion(
+                &s_local_complete, &s_peer_complete, true);
             maybe_request_on_demand_data();
             maybe_complete_measurement(&event.step);
             break;
         case RUNTIME_EVENT_PEER_COMPLETE:
             s_peer_counter = (uint16_t)event.value;
-            s_peer_complete = true;
+            (void)nrf_cs_pair_runtime_bridge_record_completion(
+                &s_local_complete, &s_peer_complete, false);
             maybe_complete_measurement(&event.step);
             break;
         case RUNTIME_EVENT_RANGING_READY:
@@ -103,10 +109,9 @@ static void event_work_handler(struct k_work *work)
                 .provider_quality_flags =
                     s_realtime_ras ? NRF_CS_PROVIDER_QUALITY_REALTIME_RAS : 0U,
             };
-            (void)nrf_cs_pair_adapter_measurement_ready(
-                &s_adapter,
-                &event.step,
-                &measurement);
+            (void)nrf_cs_pair_runtime_bridge_dispatch(
+                &s_adapter, NRF_CS_PAIR_BRIDGE_MEASUREMENT_READY,
+                &event.step, false, &measurement);
             break;
         }
         case RUNTIME_EVENT_INCOMING_CONNECTED:

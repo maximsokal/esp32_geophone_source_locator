@@ -10,6 +10,7 @@
         "tests/host/stubs/runtime_observability/noop.c"
       ],
       "include_dirs": [
+        "components/app_config/include",
         "components/measurement_service/tests/stubs",
         "components/measurement_service/tests",
         "components/measurement_service/include",

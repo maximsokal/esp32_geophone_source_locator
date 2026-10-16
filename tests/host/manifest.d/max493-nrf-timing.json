@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "nrf_watchdog_health",
+      "sources": [
+        "nRF54L15/src/nrf_watchdog_health.c",
+        "tests/host/nrf_watchdog_health_test.c"
+      ],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "nrf_watchdog_runtime_zephyr",
+      "sources": [
+        "nRF54L15/src/nrf_watchdog_health.c",
+        "nRF54L15/src/nrf_watchdog_zephyr.c",
+        "tests/host/nrf_watchdog_runtime_zephyr_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_watchdog_runtime_zephyr",
+        "tests/host/stubs/nrf_bootstrap_runtime_zephyr",
+        "tests/host/stubs/nrf_upstream_target_zephyr",
+        "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "nrf_sensor_upstream_runtime_zephyr",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_sensor_session.c",
+        "nRF54L15/src/nrf_orientation.c",
+        "nRF54L15/src/nrf_verticality_state.c",
+        "nRF54L15/src/nrf_blue_led.c",
+        "nRF54L15/src/nrf_logger_led.c",
+        "nRF54L15/src/nrf_ema_filter.c",
+        "nRF54L15/src/nrf_height_reference.c",
+        "nRF54L15/src/nrf_imu_calibration.c",
+        "nRF54L15/src/nrf_baro_altitude.c",
+        "nRF54L15/src/nrf_stage_signal.c",
+        "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c",
+        "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_sensor_upstream_runtime_zephyr",
+        "tests/host/stubs/nrf_watchdog_runtime_zephyr",
+        "nRF54L15/include"
+      ],
+      "defines": ["CONFIG_APP_NRF_STAGE_SIGNALS=0"]
+    },
+    {
+      "name": "nrf_sensor_upstream_runtime_zephyr_stage_success",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_sensor_session.c",
+        "nRF54L15/src/nrf_orientation.c",
+        "nRF54L15/src/nrf_verticality_state.c",
+        "nRF54L15/src/nrf_blue_led.c",
+        "nRF54L15/src/nrf_logger_led.c",
+        "nRF54L15/src/nrf_ema_filter.c",
+        "nRF54L15/src/nrf_height_reference.c",
+        "nRF54L15/src/nrf_imu_calibration.c",
+        "nRF54L15/src/nrf_baro_altitude.c",
+        "nRF54L15/src/nrf_stage_signal.c",
+        "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c",
+        "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_sensor_upstream_runtime_zephyr",
+        "tests/host/stubs/nrf_watchdog_runtime_zephyr",
+        "nRF54L15/include"
+      ],
+      "defines": [
+        "CONFIG_APP_NRF_STAGE_SIGNALS=1",
+        "CONFIG_APP_NRF_UPSTREAM_LOSS_TIMEOUT_MS=15000",
+        "CONFIG_APP_NRF_VERBOSE_LOG=1",
+        "NRF_STAGE_SIGNAL_SUCCESS_TEST=1"
+      ]
+    },
+    {
+      "name": "nrf_sensor_upstream_runtime_zephyr_sensor_failed",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_sensor_session.c",
+        "nRF54L15/src/nrf_orientation.c",
+        "nRF54L15/src/nrf_verticality_state.c",
+        "nRF54L15/src/nrf_blue_led.c",
+        "nRF54L15/src/nrf_logger_led.c",
+        "nRF54L15/src/nrf_ema_filter.c",
+        "nRF54L15/src/nrf_height_reference.c",
+        "nRF54L15/src/nrf_imu_calibration.c",
+        "nRF54L15/src/nrf_baro_altitude.c",
+        "nRF54L15/src/nrf_stage_signal.c",
+        "nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c",
+        "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_sensor_upstream_runtime_zephyr",
+        "tests/host/stubs/nrf_watchdog_runtime_zephyr",
+        "nRF54L15/include"
+      ],
+      "defines": [
+        "CONFIG_APP_NRF_STAGE_SIGNALS=1",
+        "CONFIG_APP_NRF_UPSTREAM_LOSS_TIMEOUT_MS=15000",
+        "CONFIG_APP_NRF_VERBOSE_LOG=1",
+        "NRF_STAGE_SIGNAL_FAILED_TEST=1"
+      ]
+    },
+    {
+      "name": "nrf_timing_deadline",
+      "sources": ["tests/host/nrf_timing_deadline_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    }
+  ]
+}

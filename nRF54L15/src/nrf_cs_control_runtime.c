@@ -82,6 +82,22 @@ int nrf_cs_control_runtime_accept_execute(nrf_cs_control_runtime_t *runtime, con
     return 0;
 }
 
+int nrf_cs_control_runtime_record_enqueue_result(
+    nrf_cs_control_runtime_t *runtime,
+    const nrf_cs_control_request_t *request,
+    uint8_t command_result)
+{
+    if (runtime == NULL || request == NULL ||
+        nrf_cs_control_validate_request(request) != 0 ||
+        (command_result != NRF_CS_CONTROL_RESULT_BUSY &&
+         command_result != NRF_CS_CONTROL_RESULT_INTERNAL_ERROR)) {
+        return -1;
+    }
+    make_rejected(request, command_result, &runtime->enqueue_result);
+    runtime->enqueue_result_valid = true;
+    return 0;
+}
+
 int nrf_cs_control_runtime_complete(nrf_cs_control_runtime_t *runtime, const nrf_cs_step_t *step, const nrf_cs_measurement_t *measurement)
 {
     if (runtime == NULL || step == NULL || measurement == NULL) return -1;
@@ -106,6 +122,7 @@ int nrf_cs_control_runtime_select_result(nrf_cs_control_runtime_t *runtime, cons
     if (runtime->active && same_request(request, &runtime->active_request)) { runtime->selector_stale = false; return 0; }
     if (runtime->terminal_valid && result_matches(request, &runtime->terminal_result)) { runtime->selector_stale = false; return 0; }
     if (runtime->immediate_valid && result_matches(request, &runtime->immediate_result)) { runtime->selector_stale = false; return 0; }
+    if (runtime->enqueue_result_valid && result_matches(request, &runtime->enqueue_result)) { runtime->selector_stale = false; return 0; }
     runtime->selector_stale = true;
     return -2;
 }
@@ -130,6 +147,11 @@ bool nrf_cs_control_runtime_take_selected(nrf_cs_control_runtime_t *runtime, nrf
     if (runtime->immediate_valid && result_matches(&runtime->selector, &runtime->immediate_result)) {
         *result_out = runtime->immediate_result;
         runtime->immediate_valid = false;
+        return true;
+    }
+    if (runtime->enqueue_result_valid && result_matches(&runtime->selector, &runtime->enqueue_result)) {
+        *result_out = runtime->enqueue_result;
+        runtime->enqueue_result_valid = false;
         return true;
     }
     return false;

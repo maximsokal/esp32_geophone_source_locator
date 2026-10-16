@@ -127,6 +127,37 @@ static void test_submit_validation(void)
     assert(state.status.state == LOCALIZATION_JOB_IDLE && state.status.job_id == 0U);
 }
 
+/* MAX-491 fail-before(real): job IDs wrap past the reserved zero sentinel. */
+static void test_job_id_wrap_skips_zero(void)
+{
+    localization_job_state_t state;
+    localization_job_state_init(&state, LOCALIZATION_JOB_STACK_BYTES);
+    state.status.state = LOCALIZATION_JOB_SUCCEEDED;
+    state.status.job_id = UINT32_MAX;
+    const localization_calculate_config_t c = config();
+    assert(localization_job_state_submit(&state, "OBJ_0001", "S000001", &c, 0U, 1U) == ESP_OK);
+    assert(state.status.state == LOCALIZATION_JOB_QUEUED);
+    assert(state.status.job_id == 1U);
+}
+
+/* MAX-491 mutation-only: terminal jobs ignore duplicate finish callbacks. */
+static void test_duplicate_finish_is_immutable(void)
+{
+    localization_job_state_t state;
+    localization_job_state_init(&state, LOCALIZATION_JOB_STACK_BYTES);
+    const localization_calculate_config_t c = config();
+    assert(localization_job_state_submit(&state, "OBJ_0001", "S000001", &c, 0U, 1U) == ESP_OK);
+    localization_calculate_config_t run;
+    assert(localization_job_state_start(&state, 1000, &run));
+    localization_calculate_summary_t summary = {0};
+    summary.methods_total = 2U;
+    summary.methods_completed = 2U;
+    localization_job_state_finish(&state, ESP_OK, &summary, 9000U, 3000);
+    const localization_job_status_t finished = state.status;
+    localization_job_state_finish(&state, ESP_ERR_NO_MEM, NULL, 1000U, 9000);
+    assert(memcmp(&state.status, &finished, sizeof(finished)) == 0);
+}
+
 
 static void test_status_json(void)
 {
@@ -177,6 +208,8 @@ int main(void)
 {
     test_one_job_at_a_time_with_its_deadline();
     test_submit_validation();
+    test_job_id_wrap_skips_zero();
+    test_duplicate_finish_is_immutable();
     test_status_json();
     printf("localization job state tests passed\n");
     return 0;

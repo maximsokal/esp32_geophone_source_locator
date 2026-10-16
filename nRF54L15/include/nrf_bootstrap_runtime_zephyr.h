@@ -43,6 +43,10 @@ void nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(
 bool nrf_bootstrap_runtime_zephyr_drain_twis_record(
     struct nrf_boot_twis_record *record);
 
+#if defined(NRF_BOOTSTRAP_RUNTIME_TEST_HOOKS)
+void nrf_bootstrap_runtime_zephyr_test_forget_started(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

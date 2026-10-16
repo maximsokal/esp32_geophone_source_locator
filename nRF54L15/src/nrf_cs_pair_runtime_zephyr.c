@@ -1,4 +1,5 @@
 #include "nrf_cs_pair_runtime_zephyr.h"
+#include "nrf_cs_pair_runtime_zephyr_bridge.h"
 #include "nrf_cs_measurement_quality.h"
 
 #include <errno.h>

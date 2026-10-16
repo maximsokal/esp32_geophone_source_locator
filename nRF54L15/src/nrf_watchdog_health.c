@@ -43,10 +43,10 @@ void nrf_watchdog_health_set_active(
         (unsigned)participant >= (unsigned)NRF_WATCHDOG_PARTICIPANT_COUNT) {
         return;
     }
-    health->active[participant] = active;
-    if (active) {
+    if (active && !health->active[participant]) {
         health->last_checkin_ms[participant] = now_ms;
     }
+    health->active[participant] = active;
 }
 
 bool nrf_watchdog_health_should_feed(
