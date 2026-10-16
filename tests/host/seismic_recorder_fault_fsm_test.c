@@ -1,4 +1,6 @@
 #undef malloc
+#undef calloc
+#undef realloc
 #include <assert.h>
 #include <setjmp.h>
 #include <stdbool.h>
@@ -30,6 +32,14 @@ typedef enum {
 } fault_point_t;
 
 static bool s_fail_next_malloc;
+static size_t s_allocation_attempts;
+static size_t s_fail_allocation_nth;
+static size_t s_failed_allocations;
+static bool s_shutdown_worker_capture;
+static size_t s_task_create_calls;
+static size_t s_session_create_calls;
+static size_t s_session_close_calls;
+static FILE *s_open_session_file;
 static bool s_fail_acquisition_snapshot;
 static bool s_fail_topology_snapshot;
 static bool s_fail_sensor_snapshot;
@@ -38,16 +48,37 @@ static unsigned s_sensor_snapshot_calls;
 static unsigned s_injected_storage_errors;
 static fault_point_t s_fault;
 
+static bool seismic_recorder_fault_should_fail(void)
+{
+    ++s_allocation_attempts;
+    if (s_fail_next_malloc ||
+        (s_fail_allocation_nth != 0U &&
+         s_allocation_attempts == s_fail_allocation_nth)) {
+        s_fail_next_malloc = false;
+        ++s_failed_allocations;
+        return true;
+    }
+    return false;
+}
+
 void *seismic_recorder_fault_malloc(size_t size)
 {
-    if (s_fail_next_malloc) {
-        s_fail_next_malloc = false;
-        return NULL;
-    }
-    return malloc(size);
+    return seismic_recorder_fault_should_fail() ? NULL : malloc(size);
+}
+
+void *seismic_recorder_fault_calloc(size_t count, size_t size)
+{
+    return seismic_recorder_fault_should_fail() ? NULL : calloc(count, size);
+}
+
+void *seismic_recorder_fault_realloc(void *memory, size_t size)
+{
+    return seismic_recorder_fault_should_fail() ? NULL : realloc(memory, size);
 }
 
 #define malloc seismic_recorder_fault_malloc
+#define calloc seismic_recorder_fault_calloc
+#define realloc seismic_recorder_fault_realloc
 #define main(...) max444_recording_gate_fixture_main(__VA_ARGS__)
 #define seismic_acquisition_get_snapshot max444_acquisition_get_snapshot
 #define nrf_topology_service_get_snapshot max444_topology_get_snapshot
@@ -57,6 +88,8 @@ void *seismic_recorder_fault_malloc(size_t size)
 #define seismic_recorder_fs_flush max444_fs_flush
 #define seismic_recorder_fs_sync max444_fs_sync
 #define storage_manager_atomic_write_text max444_storage_atomic_write_text
+#define vTaskDelay max482b_original_vTaskDelay
+#define xTaskCreatePinnedToCore max482b_original_xTaskCreatePinnedToCore
 #include "seismic_recorder_start_integration_test.c"
 #undef storage_manager_atomic_write_text
 #undef seismic_recorder_fs_sync
@@ -67,7 +100,40 @@ void *seismic_recorder_fault_malloc(size_t size)
 #undef nrf_topology_service_get_snapshot
 #undef seismic_acquisition_get_snapshot
 #undef main
+#undef vTaskDelay
+#undef xTaskCreatePinnedToCore
+#undef realloc
+#undef calloc
 #undef malloc
+
+void vTaskDelay(TickType_t ticks)
+{
+    max482b_original_vTaskDelay(ticks);
+    if (!s_shutdown_worker_capture) return;
+
+    seismic_recorder_snapshot_t snapshot;
+    if (seismic_recorder_get_snapshot(&snapshot) == ESP_OK &&
+        !snapshot.running && snapshot.state == SEISMIC_RECORDER_ERROR &&
+        snapshot.stop_stage == SEISMIC_RECORDER_STOP_STAGE_ERROR) {
+        longjmp(worker_finished, 1);
+    }
+}
+
+BaseType_t xTaskCreatePinnedToCore(
+    TaskFunction_t task,
+    const char *name,
+    unsigned stack_size,
+    void *argument,
+    unsigned priority,
+    TaskHandle_t *task_handle,
+    int core_id
+)
+{
+    ++s_task_create_calls;
+    return max482b_original_xTaskCreatePinnedToCore(
+        task, name, stack_size, argument, priority, task_handle, core_id
+    );
+}
 
 esp_err_t seismic_acquisition_get_snapshot(seismic_acquisition_snapshot_t *snapshot)
 {
@@ -101,7 +167,15 @@ esp_err_t seismic_recorder_fs_create_session(
         ++s_injected_storage_errors;
         return ESP_FAIL;
     }
-    return max444_fs_create_session(object_id, acquisition, channels, session_id, file, format_version);
+    const esp_err_t err = max444_fs_create_session(
+        object_id, acquisition, channels, session_id, file, format_version
+    );
+    if (err == ESP_OK) {
+        assert(file != NULL && *file != NULL && s_open_session_file == NULL);
+        s_open_session_file = *file;
+        ++s_session_create_calls;
+    }
+    return err;
 }
 
 esp_err_t storage_manager_atomic_write_text(const char *path, const char *text)
@@ -132,7 +206,10 @@ esp_err_t seismic_recorder_fs_sync(FILE *file)
 
 esp_err_t seismic_recorder_fs_close(FILE *file)
 {
+    assert(file != NULL && file == s_open_session_file);
     const esp_err_t close_result = max444_fs_close(file);
+    s_open_session_file = NULL;
+    ++s_session_close_calls;
     return s_fault == FAULT_STOP_CLOSE ? ESP_FAIL : close_result;
 }
 
@@ -209,6 +286,10 @@ static void configure_valid_start(void)
     s_topology_snapshot_calls = 0U;
     s_sensor_snapshot_calls = 0U;
     s_fault = FAULT_NONE;
+    s_allocation_attempts = 0U;
+    s_fail_allocation_nth = 0U;
+    s_failed_allocations = 0U;
+    s_fail_next_malloc = false;
 }
 
 static seismic_recorder_snapshot_t current_snapshot(void)
@@ -230,11 +311,83 @@ static void run_worker_to_final_metadata(void)
 {
     final_metadata_written = false;
     assert(fake_recorder_task != NULL);
+    s_shutdown_worker_capture = true;
     if (setjmp(worker_finished) == 0) {
         fake_recorder_task(NULL);
         assert(false && "recorder worker did not reach final metadata");
     }
+    s_shutdown_worker_capture = false;
     assert(final_metadata_written);
+}
+
+static void run_worker_to_shutdown_result(void)
+{
+    final_metadata_written = false;
+    assert(fake_recorder_task != NULL);
+    s_shutdown_worker_capture = true;
+    if (setjmp(worker_finished) == 0) {
+        fake_recorder_task(NULL);
+        assert(false && "recorder worker did not reach a shutdown result");
+    }
+    s_shutdown_worker_capture = false;
+}
+
+static void vary_host_allocation_order(size_t seed)
+{
+    void *blocks[4] = {0};
+    const size_t count = 1U + seed % 4U;
+    for (size_t index = 0U; index < count; ++index) {
+        blocks[index] = malloc(37U + seed * 3U + index * 19U);
+        assert(blocks[index] != NULL);
+    }
+    for (size_t index = count; index > 0U; --index) {
+        free(blocks[index - 1U]);
+    }
+}
+
+static void test_repeated_start_stop_cycles(void)
+{
+    const size_t task_creates = s_task_create_calls;
+    assert(s_open_session_file == NULL);
+    assert(s_session_create_calls == s_session_close_calls);
+
+    for (size_t cycle = 0U; cycle < 8U; ++cycle) {
+        configure_valid_start();
+        vary_host_allocation_order(cycle + 1U);
+
+        if (cycle % 3U == 1U) {
+            s_fail_next_malloc = true;
+            assert(seismic_recorder_start("OBJ_0491") == ESP_ERR_NO_MEM);
+            assert_failure_not_accepted();
+            assert(s_open_session_file == NULL);
+            assert(s_session_create_calls == s_session_close_calls);
+            configure_valid_start();
+        } else if (cycle % 3U == 2U) {
+            s_fault = FAULT_START_METADATA;
+            assert(seismic_recorder_start("OBJ_0491") == ESP_FAIL);
+            assert_failure_not_accepted();
+            assert(s_open_session_file == NULL);
+            assert(s_session_create_calls == s_session_close_calls);
+            configure_valid_start();
+        }
+
+        const size_t created_before = s_session_create_calls;
+        assert(seismic_recorder_start("OBJ_0491") == ESP_OK);
+        assert(s_session_create_calls == created_before + 1U);
+        assert(s_open_session_file != NULL);
+        assert(s_task_create_calls == task_creates);
+        assert(seismic_recorder_stop() == ESP_OK);
+        run_worker_to_final_metadata();
+
+        const seismic_recorder_snapshot_t snapshot = current_snapshot();
+        assert(!snapshot.running);
+        assert(snapshot.state == SEISMIC_RECORDER_IDLE);
+        assert(snapshot.stop_stage == SEISMIC_RECORDER_STOP_STAGE_COMPLETE);
+        assert(strcmp(last_metadata_status, "complete") == 0);
+        assert(s_open_session_file == NULL);
+        assert(s_session_create_calls == s_session_close_calls);
+        assert(s_task_create_calls == task_creates);
+    }
 }
 
 static void stop_successfully(void)
@@ -363,6 +516,43 @@ static void test_stop_stage_faults_never_mark_partial_data_complete(void)
     }
 }
 
+static size_t measure_successful_shutdown_allocations(void)
+{
+    configure_valid_start();
+    assert(seismic_recorder_start("OBJ_0491") == ESP_OK);
+    assert(seismic_recorder_stop() == ESP_OK);
+    s_allocation_attempts = 0U;
+    s_fail_allocation_nth = 0U;
+    s_failed_allocations = 0U;
+    run_worker_to_final_metadata();
+    assert(strcmp(last_metadata_status, "complete") == 0);
+    const size_t allocations = s_allocation_attempts;
+    assert(allocations > 0U);
+    return allocations;
+}
+
+static void test_shutdown_allocation_failures_never_complete(void)
+{
+    const size_t allocation_points = measure_successful_shutdown_allocations();
+    for (size_t nth = 1U; nth <= allocation_points; ++nth) {
+        configure_valid_start();
+        assert(seismic_recorder_start("OBJ_0491") == ESP_OK);
+        assert(seismic_recorder_stop() == ESP_OK);
+        s_allocation_attempts = 0U;
+        s_fail_allocation_nth = nth;
+        s_failed_allocations = 0U;
+        run_worker_to_shutdown_result();
+
+        assert(s_failed_allocations == 1U);
+        assert_failure_not_accepted();
+        const seismic_recorder_snapshot_t snapshot = current_snapshot();
+        assert(snapshot.state == SEISMIC_RECORDER_ERROR);
+        assert(snapshot.stop_stage == SEISMIC_RECORDER_STOP_STAGE_ERROR);
+        assert(snapshot.stop_error_stage == SEISMIC_RECORDER_STOP_STAGE_METADATA);
+        assert(snapshot.stop_stage_error == ESP_ERR_NO_MEM);
+    }
+}
+
 int main(void)
 {
     configure_valid_start();
@@ -370,6 +560,8 @@ int main(void)
     test_early_failures_preserve_public_state();
     test_session_creation_and_start_metadata_failures();
     test_stop_stage_faults_never_mark_partial_data_complete();
+    test_shutdown_allocation_failures_never_complete();
+    test_repeated_start_stop_cycles();
     puts("seismic recorder fault FSM tests passed");
     return 0;
 }

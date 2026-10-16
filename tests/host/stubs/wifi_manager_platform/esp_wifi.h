@@ -10,4 +10,5 @@ typedef struct {
 #define WIFI_STORAGE_FLASH 1
 
 esp_err_t esp_wifi_init(const wifi_init_config_t *config);
+esp_err_t esp_wifi_deinit(void);
 esp_err_t esp_wifi_set_storage(int storage);

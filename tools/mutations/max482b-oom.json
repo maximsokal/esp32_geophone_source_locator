@@ -1,0 +1,58 @@
+[
+  {
+    "id": "max482b_skip_ap_netif_null_check",
+    "description": "Continue Wi-Fi initialization after the AP netif allocation fails.",
+    "file": "components/wifi_manager/wifi_manager_platform.c",
+    "find": "if (s_ap_netif == NULL) {\n        wifi_manager_platform_destroy_default_netifs();\n        return ESP_ERR_NO_MEM;\n    }",
+    "replace": "",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max482b-failure-paths.json",
+        "only": "max482b_wifi_platform_oom"
+      }
+    ],
+    "expected_killer": "tests/host/max482b_wifi_platform_oom_test.c::test_setup_failures_roll_back_and_retry"
+  },
+  {
+    "id": "max482b_leak_sta_netif_after_setup_error",
+    "description": "Skip freeing the STA netif when Wi-Fi initialization rolls back.",
+    "file": "components/wifi_manager/wifi_manager_platform.c",
+    "find": "esp_netif_destroy_default_wifi(s_sta_netif);",
+    "replace": "(void)s_sta_netif;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max482b-failure-paths.json",
+        "only": "max482b_wifi_platform_oom"
+      }
+    ],
+    "expected_killer": "tests/host/max482b_wifi_platform_oom_test.c::test_setup_failures_roll_back_and_retry"
+  },
+  {
+    "id": "max482b_allocate_sd_dma_buffer_in_wrong_heap",
+    "description": "Drop the internal DMA capability from the SD formatting work buffer.",
+    "file": "components/sd_card/sd_card_format.c",
+    "find": "MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT",
+    "replace": "MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max482b-failure-paths.json",
+        "only": "max482b_sd_dma_oom"
+      }
+    ],
+    "expected_killer": "tests/host/max482b_sd_dma_oom_test.c::test_dma_buffer_oom_fails_without_mount_or_leak"
+  },
+  {
+    "id": "max482b_corrupt_sd_dma_allocation_guard",
+    "description": "Write one byte beyond the SD formatting work buffer and corrupt the host allocator canary.",
+    "file": "components/sd_card/sd_card_format.c",
+    "find": "if (workbuf == NULL) {\n        err = ESP_ERR_NO_MEM;\n        goto finish;\n    }",
+    "replace": "if (workbuf == NULL) {\n        err = ESP_ERR_NO_MEM;\n        goto finish;\n    }\n    ((unsigned char *)workbuf)[SD_CARD_FORMAT_WORKBUF_SIZE] = 0U;",
+    "tests": [
+      {
+        "manifest": "tests/host/manifest.d/max482b-failure-paths.json",
+        "only": "max482b_sd_dma_oom"
+      }
+    ],
+    "expected_killer": "tests/host/max482b_sd_dma_oom_test.c::test_format_success_progress_and_yields"
+  }
+]

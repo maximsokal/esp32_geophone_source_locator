@@ -106,12 +106,22 @@ esp_netif_t *esp_netif_create_default_wifi_ap(void)
     return s_ap_create_ok ? &s_ap_netif : NULL;
 }
 
+void esp_netif_destroy_default_wifi(void *netif)
+{
+    assert(netif == &s_sta_netif || netif == &s_ap_netif);
+}
+
 esp_err_t esp_wifi_init(const wifi_init_config_t *config)
 {
     assert(config != NULL);
     ++s_wifi_init_calls;
     s_last_rx_buffers = config->static_rx_buf_num;
     return s_wifi_init_result;
+}
+
+esp_err_t esp_wifi_deinit(void)
+{
+    return ESP_OK;
 }
 
 esp_err_t esp_wifi_set_storage(int storage)
@@ -196,11 +206,11 @@ static void test_platform_recovery_and_dependency_failures(void)
     reset_fakes();
     s_event_loop_result = ESP_ERR_INVALID_STATE;
     s_sta_create_ok = false;
-    assert(wifi_manager_platform_init() == ESP_FAIL);
+    assert(wifi_manager_platform_init() == ESP_ERR_NO_MEM);
 
     reset_fakes();
     s_ap_create_ok = false;
-    assert(wifi_manager_platform_init() == ESP_FAIL);
+    assert(wifi_manager_platform_init() == ESP_ERR_NO_MEM);
 
     reset_fakes();
     s_wifi_init_result = ESP_FAIL;

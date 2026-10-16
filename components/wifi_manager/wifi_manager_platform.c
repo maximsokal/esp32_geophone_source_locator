@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "esp_wifi_default.h"
 #include "nvs_flash.h"
 
 
@@ -25,6 +26,19 @@ static esp_netif_t *s_sta_netif =
 
 static esp_netif_t *s_ap_netif =
     NULL;
+
+
+static void wifi_manager_platform_destroy_default_netifs(void)
+{
+    if (s_ap_netif != NULL) {
+        esp_netif_destroy_default_wifi(s_ap_netif);
+        s_ap_netif = NULL;
+    }
+    if (s_sta_netif != NULL) {
+        esp_netif_destroy_default_wifi(s_sta_netif);
+        s_sta_netif = NULL;
+    }
+}
 
 
 static esp_err_t wifi_manager_platform_init_nvs(void)
@@ -78,14 +92,15 @@ esp_err_t wifi_manager_platform_init(void)
         esp_netif_create_default_wifi_sta();
 
     if (s_sta_netif == NULL) {
-        return ESP_FAIL;
+        return ESP_ERR_NO_MEM;
     }
 
     s_ap_netif =
         esp_netif_create_default_wifi_ap();
 
     if (s_ap_netif == NULL) {
-        return ESP_FAIL;
+        wifi_manager_platform_destroy_default_netifs();
+        return ESP_ERR_NO_MEM;
     }
 
     wifi_init_config_t config =
@@ -106,13 +121,16 @@ esp_err_t wifi_manager_platform_init(void)
         );
 
     if (err != ESP_OK) {
+        wifi_manager_platform_destroy_default_netifs();
         return err;
     }
 
-    return
-        esp_wifi_set_storage(
-            WIFI_STORAGE_FLASH
-        );
+    err = esp_wifi_set_storage(WIFI_STORAGE_FLASH);
+    if (err != ESP_OK) {
+        (void)esp_wifi_deinit();
+        wifi_manager_platform_destroy_default_netifs();
+    }
+    return err;
 }
 
 
