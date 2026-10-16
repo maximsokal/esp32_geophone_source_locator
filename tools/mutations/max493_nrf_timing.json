@@ -36,7 +36,7 @@
     "tests": [
       {
         "manifest": "tests/host/manifest.d/max493-nrf-timing.json",
-        "only": "nrf_sensor_upstream_runtime_zephyr"
+        "only": "nrf_sensor_upstream_runtime_zephyr_stage_success"
       }
     ],
     "expected_killer": "tests/host/nrf_sensor_upstream_runtime_zephyr_test.c::main priority assertion"
