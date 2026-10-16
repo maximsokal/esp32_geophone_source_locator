@@ -15,7 +15,7 @@ import sys
 from typing import Iterable, Sequence
 
 
-SCOPES = ("software", "ast", "host", "python", "web", "nrf", "firmware", "all")
+SCOPES = ("software", "ast", "rtos-evidence", "host", "python", "web", "nrf", "firmware", "all")
 
 
 class VerificationError(RuntimeError):
@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
         "--scope",
         choices=SCOPES,
         default="software",
-        help="verification surface; software = host + python + web + ast; ast = structural rule tests + scan; nrf = isolated nRF54L15 host policy + canonical NCS build/test-build boundary",
+        help="verification surface; software = host + python + web + ast; ast = structural rule tests + scan; nrf = isolated nRF54L15 host policy + canonical NCS build/test-build boundary; rtos-evidence = fast evidence-matrix check (included by all, not software/default)",
     )
     parser.add_argument(
         "--project-path",
@@ -161,6 +161,11 @@ def ast_steps(root: Path) -> list[Step]:
              "main", "components", "nRF54L15/src", "webui/src"),
         ),
     ]
+
+
+def rtos_evidence_steps(root: Path, python_executable: str) -> list[Step]:
+    runner = root / "tools" / "rtos_evidence" / "check_rtos_evidence.py"
+    return [Step("rtos-evidence", root, (python_executable, str(runner)))]
 
 
 def web_steps(
@@ -375,6 +380,8 @@ def build_plan(
         steps.extend(host_steps(root, python_executable))
     if scope_includes(scope, "ast"):
         steps.extend(ast_steps(root))
+    if scope_includes(scope, "rtos-evidence"):
+        steps.extend(rtos_evidence_steps(root, python_executable))
     if scope_includes(scope, "python"):
         steps.extend(python_steps(root, python_executable))
     if scope_includes(scope, "web"):

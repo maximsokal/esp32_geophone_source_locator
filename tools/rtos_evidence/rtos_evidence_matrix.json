@@ -1,0 +1,1023 @@
+{
+  "schema_version": 1,
+  "native_sim_evaluation": {
+    "status": "NOT RUNNABLE",
+    "reason": "On this Windows host, west and twister are absent from PATH. nRF54L15/ncs.ps1 pins NCS v3.4.0 and exposes a ztest native-test action using west build -b native_sim, but the available nrfutil launcher failed to start; no install or build was attempted. Whether this pinned native_sim path needs Linux/WSL remains undetermined until the NCS launcher is runnable.",
+    "host": "Windows",
+    "ncs_version": "v3.4.0",
+    "west": "not found",
+    "native_test_action": "present in nRF54L15/ncs.ps1; not executed",
+    "linux_wsl_requirement": "undetermined from this host check",
+    "ztest_config": "CONFIG_ZTEST=y in nRF54L15/tests/ncs_native/prj.conf; not executed",
+    "twister": "not found in active PATH; pinned NCS launcher unavailable",
+    "runner": "ncs.ps1 native-test uses west build/run; Twister is not invoked by that wrapper action"
+  },
+  "semantics_boundary": "ESP32-S3 rows use FreeRTOS APIs/semantics; nRF54L15 rows use Zephyr APIs/semantics. Never transfer FreeRTOS Task/Queue/PM APIs or priority meanings to Zephyr.",
+  "status_semantics": "HOST_COVERED means a manifest-backed behavioral host test and referenced mutation exist; it is coverage inventory, not a PASS or proof that this turn ran the test. HOST_PARTIAL records incomplete host evidence. TARGET/HIL rows stay BLOCKED_NO_BOARD until an activated fault and oracle are captured. Optional reports attach execution results only to a local run manifest.",
+  "scenarios": [
+    {
+      "case_id": "ESP-STACK-OVERFLOW",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "measurement/worker task stack exhaustion",
+      "seeded_schedule": "fixed stress seed 0x485; overflow only in isolated stress image",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "TARGET",
+      "expected_detection": "FreeRTOS stack guard/watchpoint/panic identifies the overflowing task; record reset cause",
+      "recovery_invariant": "The intentional panic is isolated; a reboot leaves any open recording incomplete",
+      "fail_safe_policy": "Stop the isolated fault image; never fold an expected fatal panic into a normal production PASS",
+      "oracle": "Target UART/core-dump evidence names the task and stack failure; production image never runs deliberate overflow",
+      "fault_activated_proof": "Inject stack exhaustion in the isolated target stress image and retain the raw panic/reset log; no trigger was made here.",
+      "host_tests": [],
+      "contract_tests": [
+        "tests/python/test_stress_hil_contract.py"
+      ],
+      "mutations": [],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "tools/run_stress_hil.ps1"
+    },
+    {
+      "case_id": "ESP-LOST-PROGRESS",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "workflow periodic deadline advancement",
+      "seeded_schedule": "seeded tick-wrap and three-period overrun vectors",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HOST",
+      "expected_detection": "missed deadlines are counted and expired slots are skipped without a false on-time result",
+      "recovery_invariant": "the next deadline remains phase-locked and service continues",
+      "fail_safe_policy": "report lateness/missed-deadline count; a missed deadline is a hard failure",
+      "oracle": "max483b_workflow_periodic observes the missed-period schedule and max483b_record_missed_deadlines kills suppressed accounting",
+      "fault_activated_proof": "Host test injects tick-wrap/overrun vectors; mutation report records max483b_record_missed_deadlines.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max483b-periodic.json",
+          "test_name": "max483b_workflow_periodic"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "max483b_record_missed_deadlines"
+      ],
+      "critical": true,
+      "status": "HOST_COVERED",
+      "blocked_reason": null,
+      "hil_procedure_ref": "tools/run_stress_hil.ps1"
+    },
+    {
+      "case_id": "ESP-TWDT-IWDT",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "task watchdog and interrupt watchdog expiry",
+      "seeded_schedule": "controlled task stall and interrupt-masked interval in isolated image",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "TARGET",
+      "expected_detection": "TWDT/IWDT identifies the stalled task/core and reset cause",
+      "recovery_invariant": "No false heartbeat/feed; session remains incomplete after reset",
+      "fail_safe_policy": "Expected watchdog reset is isolated and never counted as production success",
+      "oracle": "Target log must show injected stall, watchdog event/reset cause, and bounded recovery; no host policy is promoted",
+      "fault_activated_proof": "Requires a real target stall and fresh reset-cause/UART evidence; neither was activated.",
+      "host_tests": [],
+      "contract_tests": [
+        "tests/python/test_task_watchdog_contract.py",
+        "tests/python/test_task_liveness_contract.py"
+      ],
+      "mutations": [],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "docs/firmware-test-plan.md#4-live-board-hil"
+    },
+    {
+      "case_id": "ESP-LOCK-ABBA",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "opposed storage/UI lock acquisition order",
+      "seeded_schedule": "two-task schedule forces A->B and B->A overlap",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HIL",
+      "expected_detection": "deadlock watchdog/oracle fires before deadline; trace identifies both owners and lock order",
+      "recovery_invariant": "No lock remains held after timeout and no recorder state is published as complete",
+      "fail_safe_policy": "Deadlock is a hard failure; abort the isolated run and preserve trace",
+      "oracle": "A bounded target run with both acquisition orders and timeout/heartbeat telemetry; graph contract alone is not runtime proof",
+      "fault_activated_proof": "Existing lock graph and interleaving evidence do not activate the full ABBA target schedule; board trace required.",
+      "host_tests": [],
+      "contract_tests": [
+        "tests/python/test_max478b_lock_graph.py"
+      ],
+      "mutations": [
+        "max478b_invert_ui_storage_order"
+      ],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "tools/run_stress_hil.ps1",
+      "configuration_note": "Host lock-order contract/mutation references exist; the requested two-task ABBA activation remains HIL-blocked."
+    },
+    {
+      "case_id": "ESP-PRIORITY-INVERSION",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "bounded mutex hold under a higher-priority waiter",
+      "seeded_schedule": "seeded low/medium/high-priority contention sequence",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HIL",
+      "expected_detection": "high-priority waiter completes within the configured deadline and inversion duration is measured",
+      "recovery_invariant": "storage and acquisition tasks continue; no deadline or frame accounting violation",
+      "fail_safe_policy": "Any missed deadline or unaccounted frame is a hard failure",
+      "oracle": "Target trace timestamps prove inheritance/bounded blocking; host priority contracts alone do not prove scheduler timing",
+      "fault_activated_proof": "Requires target scheduler timing under controlled contention; no board run was possible.",
+      "host_tests": [],
+      "contract_tests": [
+        "tests/python/test_runtime_priority_contract.py",
+        "tests/python/test_storage_priority_trace_contract.py"
+      ],
+      "mutations": [],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "tools/run_stress_hil.ps1"
+    },
+    {
+      "case_id": "ESP-SMP-TORN-PUBLICATION",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "ISR/task status snapshot publication on dual core",
+      "seeded_schedule": "seeded two-BUSY edges before consumer wake plus concurrent snapshot reader",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HOST",
+      "expected_detection": "snapshot contains a coherent generation and writer lock excludes mixed fields",
+      "recovery_invariant": "each snapshot is internally consistent and acquisition continues",
+      "fail_safe_policy": "incoherent snapshot or missed deadline fails; no guessed repair state is published",
+      "oracle": "max479b_ad7606_notifications exercises concurrent publication; max479b_read_status_without_lock is the semantic mutation",
+      "fault_activated_proof": "Host test interleaves writer/reader state; mutation max479b_read_status_without_lock must make it fail.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max479b-isr-notifications.json",
+          "test_name": "max479b_ad7606_notifications"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "max479b_read_status_without_lock"
+      ],
+      "critical": true,
+      "status": "HOST_COVERED",
+      "blocked_reason": null,
+      "hil_procedure_ref": "tools/run_stress_hil.ps1"
+    },
+    {
+      "case_id": "ESP-LOST-NOTIFICATION",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "ISR-to-task notification count/yield",
+      "seeded_schedule": "two BUSY edges arrive before the waiting task resumes",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HOST",
+      "expected_detection": "both edges are consumed with monotonic conversion index and no lost wakeup",
+      "recovery_invariant": "consumer resumes for every accepted edge or exposes a counted rejection",
+      "fail_safe_policy": "lost acquisition progress or unaccounted frame is a hard failure",
+      "oracle": "max479b_ad7606_notifications plus max479b_overwrite_notification_count injects the count-loss semantic mutation",
+      "fault_activated_proof": "Host test supplies two pending ISR signals; mutation max479b_overwrite_notification_count must be killed.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max479b-isr-notifications.json",
+          "test_name": "max479b_ad7606_notifications"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "max479b_overwrite_notification_count"
+      ],
+      "critical": true,
+      "status": "HOST_COVERED",
+      "blocked_reason": null,
+      "hil_procedure_ref": "tools/run_stress_hil.ps1"
+    },
+    {
+      "case_id": "ESP-CPU-HOG",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "runaway task consumes a core",
+      "seeded_schedule": "isolated CPU-bound task; fixed seed workload",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "TARGET",
+      "expected_detection": "per-task heartbeat stalls while watchdog/latency telemetry identifies the hog",
+      "recovery_invariant": "other core and watchdog remain responsive or trigger bounded reset",
+      "fail_safe_policy": "missed deadline, deadlock or unexpected reset is a hard failure",
+      "oracle": "Target stress log correlates task/core identity, progress age and deadline; virtual scheduler is not target scheduling",
+      "fault_activated_proof": "Requires target CPU hog activation and captured stress UART; not run without a board.",
+      "host_tests": [],
+      "contract_tests": [
+        "tests/python/test_stress_hil_contract.py"
+      ],
+      "mutations": [],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "tools/run_stress_hil.ps1"
+    },
+    {
+      "case_id": "ESP-QUEUE-FULL",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "bounded storage command and seismic ring saturation",
+      "seeded_schedule": "fill each queue to capacity, then submit one additional item",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HOST",
+      "expected_detection": "enqueue returns failure and every dropped seismic frame is accounted exactly once",
+      "recovery_invariant": "queue drains and later submissions recover without stale payloads",
+      "fail_safe_policy": "unaccounted dropped frame, false success, or session corruption is a hard failure",
+      "oracle": "max481b_storage_queue_contract/max481b_seismic_buffer_queue_contract are killed by max481b_ignore_submit_overflow/max481b_ignore_ring_overflow_accounting",
+      "fault_activated_proof": "Host tests fill bounded queues/ring and assert errors/counters; referenced mutations target those exact manifest tests.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max481b-queue-semantics.json",
+          "test_name": "max481b_storage_queue_contract"
+        },
+        {
+          "manifest": "tests/host/manifest.d/max481b-queue-semantics.json",
+          "test_name": "max481b_seismic_buffer_queue_contract"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "max481b_ignore_submit_overflow",
+        "max481b_ignore_ring_overflow_accounting"
+      ],
+      "critical": true,
+      "status": "HOST_COVERED",
+      "blocked_reason": null,
+      "hil_procedure_ref": "tools/run_stress_hil.ps1"
+    },
+    {
+      "case_id": "ESP-OOM",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "Wi-Fi setup and SD DMA allocation failure paths",
+      "seeded_schedule": "fail each allocation site deterministically, then retry",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HOST",
+      "expected_detection": "setup returns no-memory and rolls back; DMA allocation failure does not mount or leak",
+      "recovery_invariant": "retry succeeds after fault removal; no partial ownership or false session state remains",
+      "fail_safe_policy": "no false success, leaked resource, or data/session corruption",
+      "oracle": "max482b_wifi_platform_oom/max482b_sd_dma_oom each have direct semantic killer mutations",
+      "fault_activated_proof": "Host allocator stubs inject allocation failures; max482b mutations exercise rollback and DMA-heap selection.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max482b-failure-paths.json",
+          "test_name": "max482b_wifi_platform_oom"
+        },
+        {
+          "manifest": "tests/host/manifest.d/max482b-failure-paths.json",
+          "test_name": "max482b_sd_dma_oom"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "max482b_skip_ap_netif_null_check",
+        "max482b_allocate_sd_dma_buffer_in_wrong_heap"
+      ],
+      "critical": true,
+      "status": "HOST_COVERED",
+      "blocked_reason": null,
+      "hil_procedure_ref": "tools/run_stress_hil.ps1"
+    },
+    {
+      "case_id": "ESP-CORRUPT-HEAP",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "heap poisoning detects an injected guard/canary overwrite",
+      "seeded_schedule": "isolated one-shot overwrite in disposable stress image",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "TARGET",
+      "expected_detection": "heap integrity check identifies corruption before an invalid object is used",
+      "recovery_invariant": "fatal corruption stays isolated and any open session stays incomplete",
+      "fail_safe_policy": "never run the corruption fault against user recordings or a production image",
+      "oracle": "Target panic/heap-integrity record must show the deliberate overwrite; allocator OOM tests are not heap-corruption proof",
+      "fault_activated_proof": "No semantic heap-poisoning test or disposable board is available; actual corruption remains unactivated.",
+      "host_tests": [],
+      "contract_tests": [
+        "tests/python/test_stress_hil_contract.py"
+      ],
+      "mutations": [],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "tools/run_stress_hil.ps1"
+    },
+    {
+      "case_id": "ESP-STALE-TASK-TIMER",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "retired worker callback and stale event generation",
+      "seeded_schedule": "queue callback, advance owner generation, then deliver the old callback",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HOST",
+      "expected_detection": "old generation is rejected; only the live owner can enqueue follow-up work",
+      "recovery_invariant": "retired worker is not revived and current owner state remains unchanged",
+      "fail_safe_policy": "stale callback is observable and cannot corrupt or complete a session",
+      "oracle": "max480b_object_recovery_lifecycle/max480b_drop_queued_rescan and wifi_manager_events_runtime/max483b_accept_stale_event_epoch_generation directly exercise both paths",
+      "fault_activated_proof": "Host lifecycle/event tests deliver stale generation work; max480b_drop_queued_rescan, max483b_accept_stale_event_epoch_generation and max491_remove_generation_guard target the named tests.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max480b-object-recovery-lifecycle.json",
+          "test_name": "max480b_object_recovery_lifecycle"
+        },
+        {
+          "manifest": "tests/host/manifest.json",
+          "test_name": "wifi_manager_events_runtime"
+        },
+        {
+          "manifest": "tests/host/manifest.d/max491-device-fsm.json",
+          "test_name": "workflow_fsm_model"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "max480b_drop_queued_rescan",
+        "max483b_accept_stale_event_epoch_generation",
+        "max491_remove_generation_guard"
+      ],
+      "critical": true,
+      "status": "HOST_COVERED",
+      "blocked_reason": null,
+      "hil_procedure_ref": "tools/run_stress_hil.ps1"
+    },
+    {
+      "case_id": "ESP-SD-STALL",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "SD block operation exceeds the bounded storage deadline",
+      "seeded_schedule": "hold the disposable SD transaction past the configured deadline",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HIL",
+      "expected_detection": "timeout and storage health marker are observed before acquisition deadline",
+      "recovery_invariant": "acquisition remains responsive and session is marked incomplete on write failure",
+      "fail_safe_policy": "any unaccounted frame, deadlock, false COMPLETE or session corruption is a hard failure",
+      "oracle": "Live SD/SPI log plus recorder counters; queue-send error tests do not activate physical card stall",
+      "fault_activated_proof": "Requires a physical disposable card and controlled stall; neither is available.",
+      "host_tests": [],
+      "contract_tests": [
+        "tests/python/test_stress_hil_contract.py",
+        "tests/python/test_recorder_liveness_contract.py"
+      ],
+      "mutations": [],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "tools/run_stress_hil.ps1"
+    },
+    {
+      "case_id": "ESP-WIFI-DISCONNECT",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "station link loss during connected operation",
+      "seeded_schedule": "disconnect after association; reconnect delay is bounded",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HOST",
+      "expected_detection": "disconnect is surfaced and reconnect policy backs off without stale-ready state",
+      "recovery_invariant": "local recording remains safe; network state recovers on link return",
+      "fail_safe_policy": "do not report connected/ready while link is absent",
+      "oracle": "wifi_manager_reconnect_policy injects disconnected events; no mutation reference is registered for this path",
+      "fault_activated_proof": "Host policy test drives disconnect/reconnect events; physical RF/link-loss behavior remains unobserved.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.json",
+          "test_name": "wifi_manager_reconnect_policy"
+        }
+      ],
+      "contract_tests": [
+        "tests/python/test_wifi_event_authority_contract.py"
+      ],
+      "mutations": [],
+      "critical": false,
+      "status": "HOST_PARTIAL",
+      "blocked_reason": null,
+      "hil_procedure_ref": "docs/firmware-test-plan.md#4-live-board-hil"
+    },
+    {
+      "case_id": "ESP-RESET-INCOMPLETE-SESSION",
+      "device": "ESP32-S3",
+      "kind": "fault-injection",
+      "fault_point": "controlled reset during recording before commit/complete marker",
+      "seeded_schedule": "reset at each START/write/STOP boundary with an open session",
+      "src_sha": null,
+      "config_reference": "sdkconfig (CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + sdkconfig.defaults",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HIL",
+      "expected_detection": "boot reports reset cause and session remains incomplete; no false COMPLETE metadata",
+      "recovery_invariant": "recovery preserves or quarantines partial data without silently finalizing it",
+      "fail_safe_policy": "session corruption or false COMPLETE is a hard failure",
+      "oracle": "Physical reset plus subsequent storage/API inspection; host reset-reason policy alone is insufficient",
+      "fault_activated_proof": "Requires controlled target reset and disposable SD/session data; no board or media was available.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max484-reset-reason.json",
+          "test_name": "app_startup_reset_reason"
+        }
+      ],
+      "contract_tests": [
+        "tests/python/test_startup_recovery_contract.py",
+        "tests/python/test_max491_wiring_contract.py"
+      ],
+      "mutations": [],
+      "critical": false,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "docs/firmware-test-plan.md#4-live-board-hil"
+    },
+    {
+      "case_id": "NRF-STACK-OVERFLOW-THREAD",
+      "device": "nRF54L15",
+      "kind": "fault-injection",
+      "fault_point": "Zephyr thread stack high-water exhaustion and terminal fault record",
+      "seeded_schedule": "zero-unused-byte synthetic HWM vector; target overflow only in isolated test image",
+      "src_sha": null,
+      "config_reference": "nRF54L15/zephyr/prj.conf + pinned NCS final build/zephyr/.config (NCS sysbuild app .config is under zephyr/zephyr/.config)",
+      "config_sha256": null,
+      "sample_rate_hz": null,
+      "channel_count": null,
+      "evidence_layer": "HOST",
+      "expected_detection": "stack inventory classifies exhausted and terminal fault record survives reboot",
+      "recovery_invariant": "fault record is retained/reported once; no FreeRTOS stack API or priority semantics are assumed",
+      "fail_safe_policy": "expected fatal test fault is isolated from production run",
+      "oracle": "max486b_thread_stack_inventory injects zero HWM and max486b_zero_hwm_not_exhausted is its semantic mutation; hardware stack guard remains HIL",
+      "fault_activated_proof": "Host classifier test injects zero remaining bytes; actual Zephyr thread overflow still requires target proof.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+          "test_name": "max486b_thread_stack_inventory"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "max486b_zero_hwm_not_exhausted"
+      ],
+      "critical": true,
+      "status": "HOST_COVERED",
+      "blocked_reason": null,
+      "hil_procedure_ref": "nRF54L15/ncs.ps1",
+      "configuration_note": "Host HWM classification is covered; physical Zephyr stack guard/panic activation is not."
+    },
+    {
+      "case_id": "NRF-MPU-NULL-FAULT",
+      "device": "nRF54L15",
+      "kind": "fault-injection",
+      "fault_point": "MPU/NULL exception capture and retained terminal record",
+      "seeded_schedule": "one isolated invalid access; target test image only",
+      "src_sha": null,
+      "config_reference": "nRF54L15/zephyr/prj.conf + pinned NCS final build/zephyr/.config (NCS sysbuild app .config is under zephyr/zephyr/.config)",
+      "config_sha256": null,
+      "sample_rate_hz": null,
+      "channel_count": null,
+      "evidence_layer": "HIL",
+      "expected_detection": "fault class, stacked PC/LR and reset cause are retained and emitted after reboot",
+      "recovery_invariant": "record is reported once and then cleared; production image never deliberately faults",
+      "fail_safe_policy": "expected panic is an isolated test result, never a normal production PASS",
+      "oracle": "max486b_fault_record_zephyr/max486b_drop_terminal_fault_flag cover the record flag only; physical exception is required",
+      "fault_activated_proof": "Requires a physical exception/reset and retained-record UART; no target fault was triggered.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+          "test_name": "max486b_fault_record_zephyr"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "max486b_drop_terminal_fault_flag"
+      ],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md#C-one-board-hil"
+    },
+    {
+      "case_id": "NRF-WATCHDOG",
+      "device": "nRF54L15",
+      "kind": "fault-injection",
+      "fault_point": "Zephyr health supervisor stops WDT feed for a stale participant",
+      "seeded_schedule": "freeze one active participant beyond max silence; fixed uptime vector",
+      "src_sha": null,
+      "config_reference": "nRF54L15/zephyr/prj.conf + pinned NCS final build/zephyr/.config (NCS sysbuild app .config is under zephyr/zephyr/.config)",
+      "config_sha256": null,
+      "sample_rate_hz": null,
+      "channel_count": null,
+      "evidence_layer": "HOST",
+      "expected_detection": "stale participant is named, feed is withheld, then real watchdog reset cause is visible on target",
+      "recovery_invariant": "healthy participants resume after restart; reset does not mark incomplete work successful",
+      "fail_safe_policy": "watchdog reset is isolated and any active session remains recoverable/incomplete",
+      "oracle": "max486_489b_watchdog_runtime/max487b_feed_while_participant_stale plus max486_489b_watchdog_health/max487b_ignore_stale_cs_progress",
+      "fault_activated_proof": "Host health test injects stale participant time; hardware WDT reset remains a separate HIL procedure.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+          "test_name": "max486_489b_watchdog_runtime"
+        },
+        {
+          "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+          "test_name": "max486_489b_watchdog_health"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "max487b_feed_while_participant_stale",
+        "max487b_ignore_stale_cs_progress"
+      ],
+      "critical": true,
+      "status": "HOST_COVERED",
+      "blocked_reason": null,
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md#C-one-board-hil"
+    },
+    {
+      "case_id": "NRF-ISR-LONG",
+      "device": "nRF54L15",
+      "kind": "fault-injection",
+      "fault_point": "ISR exceeds bounded execution budget",
+      "seeded_schedule": "hold target ISR active across configured timing guard",
+      "src_sha": null,
+      "config_reference": "nRF54L15/zephyr/prj.conf + pinned NCS final build/zephyr/.config (NCS sysbuild app .config is under zephyr/zephyr/.config)",
+      "config_sha256": null,
+      "sample_rate_hz": null,
+      "channel_count": null,
+      "evidence_layer": "TARGET",
+      "expected_detection": "trace timestamp/overrun counter identifies ISR duration and deferred work",
+      "recovery_invariant": "ISR exits and thread/workqueue progress resumes without missed STATUS/deadline",
+      "fail_safe_policy": "missed deadline or unaccounted frame is a hard failure",
+      "oracle": "Only target trace/analyzer timing can prove ISR runtime; host C policy cannot model interrupt latency",
+      "fault_activated_proof": "Requires target ISR timing instrumentation and a physical analyzer/board; not available.",
+      "host_tests": [],
+      "contract_tests": [
+        "tests/python/test_nrf_platform_contract.py"
+      ],
+      "mutations": [],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md#C-one-board-hil"
+    },
+    {
+      "case_id": "NRF-TWIS-CLOCK-STRETCH",
+      "device": "nRF54L15",
+      "kind": "fault-injection",
+      "fault_point": "upstream TWIS clock stretching under a stalled master",
+      "seeded_schedule": "hold SCL low through the bounded upstream transaction deadline",
+      "src_sha": null,
+      "config_reference": "nRF54L15/zephyr/prj.conf + pinned NCS final build/zephyr/.config (NCS sysbuild app .config is under zephyr/zephyr/.config)",
+      "config_sha256": null,
+      "sample_rate_hz": null,
+      "channel_count": null,
+      "evidence_layer": "HIL",
+      "expected_detection": "ESP observes bounded timeout and nRF/ESP logs identify the stalled transaction",
+      "recovery_invariant": "TWIS returns to idle after STOP/reset and next STATUS frame is valid",
+      "fail_safe_policy": "missed deadline or unaccounted frame is a hard failure",
+      "oracle": "tests/python/test_nrf_upstream_twis_contract.py checks source contract; physical SCL timing requires XIAO+ESP+analyzer",
+      "fault_activated_proof": "No board, TCA topology or logic analyzer is available to activate clock stretching.",
+      "host_tests": [],
+      "contract_tests": [
+        "tests/python/test_nrf_upstream_twis_contract.py"
+      ],
+      "mutations": [],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md#E-full-topology-hil"
+    },
+    {
+      "case_id": "NRF-LOG-RING-OVERFLOW",
+      "device": "nRF54L15",
+      "kind": "fault-injection",
+      "fault_point": "Zephyr log event ring reaches capacity",
+      "seeded_schedule": "write capacity plus two entries using fixed sequence",
+      "src_sha": null,
+      "config_reference": "nRF54L15/zephyr/prj.conf + pinned NCS final build/zephyr/.config (NCS sysbuild app .config is under zephyr/zephyr/.config)",
+      "config_sha256": null,
+      "sample_rate_hz": null,
+      "channel_count": null,
+      "evidence_layer": "HOST",
+      "expected_detection": "overwrite/drop count increments exactly and retained sequence remains valid",
+      "recovery_invariant": "consumer resumes from a valid sequence; loss is visible and bounded",
+      "fail_safe_policy": "unaccounted log loss is a hard failure",
+      "oracle": "nrf_log_ring tests t0_ring_drop_newest/t0_ring_overwrite_counter mutations in coverage-308",
+      "fault_activated_proof": "Host ring test fills the ring and mutation report references both drop/accounting semantics.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/coverage-308.json",
+          "test_name": "nrf_log_ring"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "t0_ring_drop_newest",
+        "t0_ring_overwrite_counter"
+      ],
+      "critical": true,
+      "status": "HOST_COVERED",
+      "blocked_reason": null,
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md"
+    },
+    {
+      "case_id": "NRF-POOL-EXHAUSTION",
+      "device": "nRF54L15",
+      "kind": "fault-injection",
+      "fault_point": "Zephyr net_buf/log pool exhausted under concurrent upstream work",
+      "seeded_schedule": "fill configured pool then submit one more frame",
+      "src_sha": null,
+      "config_reference": "nRF54L15/zephyr/prj.conf + pinned NCS final build/zephyr/.config (NCS sysbuild app .config is under zephyr/zephyr/.config)",
+      "config_sha256": null,
+      "sample_rate_hz": null,
+      "channel_count": null,
+      "evidence_layer": "TARGET",
+      "expected_detection": "allocation failure is counted and upstream reports bounded rejection",
+      "recovery_invariant": "no stale buffer ownership or false sensor-ready/STATUS result",
+      "fail_safe_policy": "unaccounted frame or deadlock is a hard failure",
+      "oracle": "Queue-full tests are not a net_buf pool exhaustion oracle; target pool counters/trace required",
+      "fault_activated_proof": "Host sensor-queue tests inject a full bounded queue and named MAX-488/489 mutations target them; a Zephyr net_buf pool exhaustion is not activated and remains blocked.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+          "test_name": "max486_489b_sensor_queue"
+        }
+      ],
+      "contract_tests": [
+        "tests/python/test_nrf_bootstrap_contract.py"
+      ],
+      "mutations": [
+        "max488b_zero_queued_sensor_assignment",
+        "max489b_report_refresh_enqueue_success_when_full",
+        "max489b_wrong_sensor_queue_item_size"
+      ],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board or Zephyr net_buf pool fault-injection test/telemetry is available; existing host tests cover app queue-full semantics only.",
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md#E-full-topology-hil"
+    },
+    {
+      "case_id": "NRF-TRUNCATED-IMAGE-TAIL",
+      "device": "nRF54L15",
+      "kind": "fault-injection",
+      "fault_point": "Intel HEX image ends before the expected RRAM image tail",
+      "seeded_schedule": "remove final data block from a disposable HEX fixture",
+      "src_sha": null,
+      "config_reference": "nRF54L15/zephyr/prj.conf + pinned NCS final build/zephyr/.config (NCS sysbuild app .config is under zephyr/zephyr/.config)",
+      "config_sha256": null,
+      "sample_rate_hz": null,
+      "channel_count": null,
+      "evidence_layer": "HOST",
+      "expected_detection": "integrity guard returns blocked/truncated result before flash is invoked",
+      "recovery_invariant": "input HEX remains unchanged and no flash write starts",
+      "fail_safe_policy": "truncated image is a hard pre-flash block; never pad away a missing ELF tail",
+      "oracle": "test_nrf_flash_rram_tail_check exercises verify/pad path; no mutation reference currently covers this image-integrity decision",
+      "fault_activated_proof": "Python fixture removes required tail bytes and checks rejection; no target flash was attempted.",
+      "host_tests": [],
+      "contract_tests": [
+        "tests/python/test_nrf_flash_rram_tail_check.py"
+      ],
+      "mutations": [],
+      "critical": false,
+      "status": "HOST_PARTIAL",
+      "blocked_reason": null,
+      "hil_procedure_ref": "nRF54L15/verify_rram_tail.ps1",
+      "configuration_note": "Offline image-integrity guard only; ncs.ps1 production action resolves final app .config under zephyr/zephyr/."
+    },
+    {
+      "case_id": "NRF-LOST-STATUS-LOG-FRAME",
+      "device": "nRF54L15",
+      "kind": "fault-injection",
+      "fault_point": "STATUS/log block sequence gap and ring drop accounting",
+      "seeded_schedule": "omit one numbered block, then deliver the next sequence",
+      "src_sha": null,
+      "config_reference": "nRF54L15/zephyr/prj.conf + pinned NCS final build/zephyr/.config (NCS sysbuild app .config is under zephyr/zephyr/.config)",
+      "config_sha256": null,
+      "sample_rate_hz": null,
+      "channel_count": null,
+      "evidence_layer": "HOST",
+      "expected_detection": "sequence gap/drop is observable; malformed or stale block cannot move cursor as valid",
+      "recovery_invariant": "cursor and retained history remain monotonic and recover on the next valid block",
+      "fail_safe_policy": "unaccounted dropped frame or false-valid STATUS is a hard failure",
+      "oracle": "nrf_log_protocol/t0_block_sequence_validation and nrf_log_ring/t0_ring_drop_newest cover distinct protocol/ring oracles",
+      "fault_activated_proof": "Host protocol/ring vectors create a missing sequence and verify bounded recovery; named mutants target both tests.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/coverage-308.json",
+          "test_name": "nrf_log_protocol"
+        },
+        {
+          "manifest": "tests/host/manifest.d/coverage-308.json",
+          "test_name": "nrf_log_ring"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "t0_block_sequence_validation",
+        "t0_ring_drop_newest"
+      ],
+      "critical": true,
+      "status": "HOST_COVERED",
+      "blocked_reason": null,
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md"
+    },
+    {
+      "case_id": "NRF-RESET-DURING-CS",
+      "device": "nRF54L15",
+      "kind": "fault-injection",
+      "fault_point": "CS membership generation changes while a result is in flight",
+      "seeded_schedule": "seeded CS callback/result arrives after the active membership generation advances",
+      "src_sha": null,
+      "config_reference": "nRF54L15/zephyr/prj.conf + pinned NCS final build/zephyr/.config (NCS sysbuild app .config is under zephyr/zephyr/.config)",
+      "config_sha256": null,
+      "sample_rate_hz": null,
+      "channel_count": null,
+      "evidence_layer": "HOST",
+      "expected_detection": "late CS result is rejected and current session remains inactive/unchanged",
+      "recovery_invariant": "new session can start with a fresh generation and no stale completion leaks through",
+      "fail_safe_policy": "false COMPLETE or stale range result is a hard failure",
+      "oracle": "max494_cs_pair_runtime_model injects late/stale step and max494_drop_cs_membership_generation_match kills acceptance",
+      "fault_activated_proof": "Host model injects stale completion after generation change; physical node reset during radio CS remains unobserved.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max494-nrf-fsm.json",
+          "test_name": "max494_cs_pair_runtime_model"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "max494_drop_cs_membership_generation_match"
+      ],
+      "critical": true,
+      "status": "HOST_COVERED",
+      "blocked_reason": null,
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md#D-multi-node-hil"
+    },
+    {
+      "case_id": "NRF-LINK-LOST",
+      "device": "nRF54L15",
+      "kind": "fault-injection",
+      "fault_point": "upstream sensor/link loss while REMOTE stage is active",
+      "seeded_schedule": "drop upstream readiness and sensor refresh for longer than configured timeout",
+      "src_sha": null,
+      "config_reference": "nRF54L15/zephyr/prj.conf + pinned NCS final build/zephyr/.config (NCS sysbuild app .config is under zephyr/zephyr/.config)",
+      "config_sha256": null,
+      "sample_rate_hz": null,
+      "channel_count": null,
+      "evidence_layer": "HOST",
+      "expected_detection": "stage becomes failed/link-lost and watchdog does not accept stale worker progress",
+      "recovery_invariant": "recovery requires a fresh assignment/readiness edge and reinitialized session",
+      "fail_safe_policy": "no stale sensor sample is reported ready",
+      "oracle": "max493 sensor-failed scenario exercises bounded failure; no dedicated semantic mutation targets link-lost transition",
+      "fault_activated_proof": "Host sensor-failure and stage-signal cases provide partial software evidence; no mutation targets link-lost recovery and paired-node HIL is unobserved.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max493-nrf-timing.json",
+          "test_name": "nrf_sensor_upstream_runtime_zephyr_sensor_failed"
+        },
+        {
+          "manifest": "tests/host/manifest.d/coverage-nrf.json",
+          "test_name": "nrf_stage_signal"
+        }
+      ],
+      "contract_tests": [
+        "tests/python/test_nrf_bootstrap_contract.py"
+      ],
+      "mutations": [],
+      "critical": false,
+      "status": "HOST_PARTIAL",
+      "blocked_reason": null,
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md#E-full-topology-hil"
+    },
+    {
+      "case_id": "CROSS-ROLE-CONFLICT",
+      "device": "CROSS_DEVICE",
+      "kind": "cross-device-chaos",
+      "fault_point": "ESP recording overlaps nRF role reassignment",
+      "seeded_schedule": "start ESP recording; submit a reassignment that conflicts with the active MAIN/REMOTE identity",
+      "src_sha": null,
+      "config_reference": "ESP32-S3 sdkconfig + nRF54L15/zephyr/prj.conf + final build configs when present",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HOST",
+      "expected_detection": "nRF returns ROLE_CONFLICT and ESP recording state is unchanged",
+      "recovery_invariant": "nRF keeps the prior role; ESP keeps its session owner/generation",
+      "fail_safe_policy": "role conflict cannot mutate or complete the ESP recording",
+      "oracle": "max494_nrf_fsm_runtime_model has a ROLE_CONFLICT assertion; no dedicated mutation currently targets this cross-device result",
+      "fault_activated_proof": "Host FSM injects conflicting assignment; full ESP recording + nRF reassignment transaction needs multi-node HIL.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max494-nrf-fsm.json",
+          "test_name": "max494_nrf_fsm_runtime_model"
+        }
+      ],
+      "contract_tests": [
+        "tests/python/test_max494_wiring_contract.py"
+      ],
+      "mutations": [],
+      "critical": false,
+      "status": "HOST_PARTIAL",
+      "blocked_reason": null,
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md#E-full-topology-hil"
+    },
+    {
+      "case_id": "CROSS-TWIS-STALL",
+      "device": "CROSS_DEVICE",
+      "kind": "cross-device-chaos",
+      "fault_point": "ESP recording remains active while nRF TWIS stretches/stalls",
+      "seeded_schedule": "recording active; hold upstream TWIS clock through timeout boundary",
+      "src_sha": null,
+      "config_reference": "ESP32-S3 sdkconfig + nRF54L15/zephyr/prj.conf + final build configs when present",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HIL",
+      "expected_detection": "ESP emits bounded TWIS timeout; nRF/ESP logs identify the same transaction",
+      "recovery_invariant": "recording accounts any rejected frame; bus recovers on next transaction",
+      "fail_safe_policy": "unaccounted dropped frame, deadlock or missed deadline is a hard failure",
+      "oracle": "requires synchronized ESP UART, nRF UART and analyzer SCL/SDA trace",
+      "fault_activated_proof": "Requires both boards and analyzer; none is available.",
+      "host_tests": [],
+      "contract_tests": [
+        "tests/python/test_nrf_upstream_twis_contract.py"
+      ],
+      "mutations": [],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md#E-full-topology-hil"
+    },
+    {
+      "case_id": "CROSS-CS-TIMEOUT",
+      "device": "CROSS_DEVICE",
+      "kind": "cross-device-chaos",
+      "fault_point": "Channel Sounding step does not complete before deadline",
+      "seeded_schedule": "fixed CS step/request id with deadline boundary and missing completion",
+      "src_sha": null,
+      "config_reference": "ESP32-S3 sdkconfig + nRF54L15/zephyr/prj.conf + final build configs when present",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HIL",
+      "expected_detection": "timeout is logged once; stale/late result is discarded and retry policy is bounded",
+      "recovery_invariant": "fresh request id/generation required for retry; no stale range is published",
+      "fail_safe_policy": "missed deadline or false COMPLETE is a hard failure",
+      "oracle": "max493 timing deadline tests are host support only; end-to-end deadline requires paired XIAOs and RF logs",
+      "fault_activated_proof": "Host deadline and dedicated-workqueue tests target max493_u32_deadline_addition, max493b_cs_submit_to_system_queue and max493c_assign_to_system_queue; paired-radio timeout remains unactivated.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max493-nrf-timing.json",
+          "test_name": "nrf_timing_deadline"
+        },
+        {
+          "manifest": "tests/host/manifest.d/max493b-cs-workqueue.json",
+          "test_name": "max493b_cs_workqueue"
+        },
+        {
+          "manifest": "tests/host/manifest.d/max493c-assign-workqueue.json",
+          "test_name": "max493c_assign_workqueue"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "max493_u32_deadline_addition",
+        "max493b_cs_submit_to_system_queue",
+        "max493c_assign_to_system_queue"
+      ],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md#D-multi-node-hil"
+    },
+    {
+      "case_id": "CROSS-NODE-WDT-RESET",
+      "device": "CROSS_DEVICE",
+      "kind": "cross-device-chaos",
+      "fault_point": "REMOTE node watchdog resets during ESP recording",
+      "seeded_schedule": "freeze active REMOTE watchdog participant during an ESP session",
+      "src_sha": null,
+      "config_reference": "ESP32-S3 sdkconfig + nRF54L15/zephyr/prj.conf + final build configs when present",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "HIL",
+      "expected_detection": "nRF reboot cause is WATCHDOG; ESP reports link loss without false completion",
+      "recovery_invariant": "ESP session remains incomplete/recoverable; rejoined node needs fresh role/session",
+      "fail_safe_policy": "unexpected reset outside the injected WDT is a hard failure",
+      "oracle": "watchdog host mutant max487b_feed_while_participant_stale is policy support; synchronized physical logs required",
+      "fault_activated_proof": "Needs ESP plus nRF boards and synchronized UART logs; neither board is available.",
+      "host_tests": [
+        {
+          "manifest": "tests/host/manifest.d/max486-489b-nrf.json",
+          "test_name": "max486_489b_watchdog_runtime"
+        }
+      ],
+      "contract_tests": [],
+      "mutations": [
+        "max487b_feed_while_participant_stale"
+      ],
+      "critical": true,
+      "status": "BLOCKED_NO_BOARD",
+      "blocked_reason": "No board/analyzer/disposable hardware is available for this task; no TARGET/HIL activation evidence exists.",
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md#E-full-topology-hil"
+    },
+    {
+      "case_id": "CROSS-NRF-IDLE-WAKE",
+      "device": "CROSS_DEVICE",
+      "kind": "cross-device-chaos",
+      "fault_point": "optional nRF idle/wake during ESP recording",
+      "seeded_schedule": "N/A: CONFIG_PM is disabled in the pinned production configuration",
+      "src_sha": null,
+      "config_reference": "ESP32-S3 sdkconfig + nRF54L15/zephyr/prj.conf + final build configs when present",
+      "config_sha256": null,
+      "sample_rate_hz": 20000,
+      "channel_count": 4,
+      "evidence_layer": "N/A",
+      "expected_detection": "N/A; no PM transition can be accepted under this profile",
+      "recovery_invariant": "recording policy is unaffected because this scenario is not enabled",
+      "fail_safe_policy": "do not claim PM/wake acceptance",
+      "oracle": "MAX-495 records PM as N/A with CONFIG_PM disabled",
+      "fault_activated_proof": "N/A per MAX-495; CONFIG_PM is disabled and no wake event is expected.",
+      "host_tests": [],
+      "contract_tests": [],
+      "mutations": [],
+      "critical": false,
+      "status": "N/A",
+      "blocked_reason": null,
+      "hil_procedure_ref": "docs/nrf54l15-test-task.md",
+      "configuration_note": "PM is explicitly N/A per MAX-495; no FreeRTOS PM/idle semantics are projected onto Zephyr."
+    }
+  ],
+  "linear_issues": [
+    "MAX-485",
+    "MAX-490",
+    "MAX-494",
+    "MAX-495"
+  ],
+  "numeric_hard_failures": [
+    "unaccounted dropped frame",
+    "deadlock",
+    "unexpected reset",
+    "session corruption",
+    "false COMPLETE",
+    "missed deadline"
+  ],
+  "fatal_fault_policy": "Expected fatal panics run only in isolated fault images; never count them as a normal production PASS."
+}
