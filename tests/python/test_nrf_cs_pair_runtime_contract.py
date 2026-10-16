@@ -118,7 +118,7 @@ def test_runtime_uses_exact_ncs_ras_cs_sequence_without_unbounded_or_reboot_orch
     assert "sys_reboot" not in source
     assert ".max_procedure_count = 1U" not in source
     assert "params->max_procedure_count = 1U;" in source
-    assert "k_work_reschedule(&s_timeout_work" in source
+    assert "reschedule_cs_work(&s_timeout_work" in source
 
 
 def test_runtime_maps_node_assignment_to_advertised_identity_and_keeps_wired_role_separate():
