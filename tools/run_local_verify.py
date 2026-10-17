@@ -134,6 +134,11 @@ def host_steps(root: Path, python_executable: str) -> list[Step]:
 def python_steps(root: Path, python_executable: str) -> list[Step]:
     return [
         Step(
+            "python/apriltag-sheet",
+            root,
+            (python_executable, str(root / "tools" / "apriltag_sheet" / "apriltag_sheet.py"), "check"),
+        ),
+        Step(
             "python/deterministic",
             root,
             (

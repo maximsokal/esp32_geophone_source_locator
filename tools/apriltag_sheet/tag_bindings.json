@@ -1,0 +1,11 @@
+{
+  "family": "tag36h11",
+  "tags": [
+    { "tag_id": 0, "node": "MAIN", "size_mm": 32 },
+    { "tag_id": 1, "node": "G1", "size_mm": 32 },
+    { "tag_id": 2, "node": "G2", "size_mm": 32 },
+    { "tag_id": 3, "node": "G3", "size_mm": 32 },
+    { "tag_id": 4, "node": "G4", "size_mm": 32 }
+  ],
+  "sheet": { "paper": "A4", "copies_per_tag": 1 }
+}

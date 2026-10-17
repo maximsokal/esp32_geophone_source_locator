@@ -1,0 +1,56 @@
+[
+  {
+    "id": "apriltag_skip_id_bijection",
+    "description": "Skip the exact detector id-set validation.",
+    "file": "tools/apriltag_sheet/model.py",
+    "find": "if ids != set(TAG_IDS):",
+    "replace": "if False and ids != set(TAG_IDS):",
+    "tests": [{"pytest": "tests/python/test_apriltag_sheet.py::test_binding_validation_rejects_invalid_matrix_cases"}],
+    "expected_killer": "tests/python/test_apriltag_sheet.py::test_binding_validation_rejects_invalid_matrix_cases"
+  },
+  {
+    "id": "apriltag_allow_zero_size",
+    "description": "Allow tag sizes below the 15 mm minimum.",
+    "file": "tools/apriltag_sheet/model.py",
+    "find": "if not 15 <= size <= 150:",
+    "replace": "if not 0 <= size <= 150:",
+    "tests": [{"pytest": "tests/python/test_apriltag_sheet.py::test_binding_validation_rejects_invalid_matrix_cases"}],
+    "expected_killer": "tests/python/test_apriltag_sheet.py::test_binding_validation_rejects_invalid_matrix_cases"
+  },
+  {
+    "id": "apriltag_accept_foreign_host",
+    "description": "Accept a POST with a foreign Host header.",
+    "file": "tools/apriltag_sheet/apriltag_sheet.py",
+    "find": "if re.fullmatch(r\"(?:127\\.0\\.0\\.1|localhost)(?::([0-9]{1,5}))?\", host, re.IGNORECASE) is None:",
+    "replace": "if False:",
+    "tests": [{"pytest": "tests/python/test_apriltag_sheet.py::test_loopback_server_reads_state_rejects_unsafe_posts_and_writes_only_bindings"}],
+    "expected_killer": "tests/python/test_apriltag_sheet.py::test_loopback_server_reads_state_rejects_unsafe_posts_and_writes_only_bindings"
+  },
+  {
+    "id": "apriltag_misscale_mm_to_points",
+    "description": "Treat module millimetres as PDF points without conversion.",
+    "file": "tools/apriltag_sheet/apriltag_sheet.py",
+    "find": "size = size_mm * PT_PER_MM",
+    "replace": "size = size_mm",
+    "tests": [{"pytest": "tests/python/test_apriltag_sheet.py::test_pdf_has_exact_a4_geometry_black_module_squares_captions_bar_and_stable_bytes"}],
+    "expected_killer": "tests/python/test_apriltag_sheet.py::test_pdf_has_exact_a4_geometry_black_module_squares_captions_bar_and_stable_bytes"
+  },
+  {
+    "id": "apriltag_drop_pdf_quiet_zone",
+    "description": "Remove the one-module quiet zone around printed tags.",
+    "file": "tools/apriltag_sheet/apriltag_sheet.py",
+    "find": "quiet = size / 8.0\n            tag_x = frame_x + 3.0 + quiet",
+    "replace": "quiet = 0.0\n            tag_x = frame_x + 3.0 + quiet",
+    "tests": [{"pytest": "tests/python/test_apriltag_sheet.py::test_pdf_has_exact_a4_geometry_black_module_squares_captions_bar_and_stable_bytes"}],
+    "expected_killer": "tests/python/test_apriltag_sheet.py::test_pdf_has_exact_a4_geometry_black_module_squares_captions_bar_and_stable_bytes"
+  },
+  {
+    "id": "apriltag_reverse_code_bit_order",
+    "description": "Reverse the dictionary bit order when generating printable patterns.",
+    "file": "tools/apriltag_sheet/model.py",
+    "find": "data_bits = format(code, \"036b\")",
+    "replace": "data_bits = format(code, \"036b\")[::-1]",
+    "tests": [{"pytest": "tests/python/test_apriltag_sheet.py::test_generated_patterns_match_the_pinned_js_aruco_dictionary"}],
+    "expected_killer": "tests/python/test_apriltag_sheet.py::test_generated_patterns_match_the_pinned_js_aruco_dictionary"
+  }
+]

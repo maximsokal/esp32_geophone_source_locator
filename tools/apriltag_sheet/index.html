@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AprilTag sheet generator</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.45 system-ui, sans-serif; color: #18212b; background: #f3f6f8; }
+    * { box-sizing: border-box; }
+    body { max-width: 1180px; margin: 0 auto; padding: 24px; }
+    header, .toolbar, .calibration, .binding-panel, .instructions { background: white; border: 1px solid #d6dee5; border-radius: 10px; padding: 16px 20px; margin-bottom: 16px; }
+    header { display: flex; align-items: start; justify-content: space-between; gap: 20px; }
+    h1, h2 { margin: 0 0 8px; }
+    h1 { font-size: 1.55rem; }
+    h2 { font-size: 1.12rem; }
+    p { margin: 6px 0; }
+    label { display: inline-flex; align-items: center; gap: 8px; }
+    input, select, button { font: inherit; }
+    input[type=number] { width: 92px; padding: 5px 7px; }
+    select { min-width: 110px; padding: 5px 7px; }
+    button, .button-link { display: inline-block; border: 1px solid #315f86; border-radius: 6px; background: #1769aa; color: white; padding: 8px 12px; text-decoration: none; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    .language-control { margin-left: auto; }
+    .tag-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(225px, 1fr)); gap: 14px; margin-bottom: 16px; }
+    .tag-card { background: white; border: 1px solid #d6dee5; border-radius: 10px; padding: 14px; break-inside: avoid; }
+    .tag-card h2 { margin-bottom: 10px; }
+    .tag-frame { display: inline-block; background: white; padding: var(--quiet-size); outline: 1px dashed #96a7b5; line-height: 0; }
+    .tag-frame svg { display: block; width: var(--tag-size); height: var(--tag-size); shape-rendering: crispEdges; }
+    .tag-meta { display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+    .status-chip { display: inline-block; border-radius: 999px; background: #e5f1fa; color: #174c72; padding: 3px 9px; font-size: .88rem; }
+    .status-chip.unsaved { background: #fff0d8; color: #754600; }
+    .binding-table { width: 100%; border-collapse: collapse; }
+    .binding-table th, .binding-table td { text-align: left; border-bottom: 1px solid #e0e6eb; padding: 8px 6px; }
+    .binding-table th { font-weight: 650; }
+    .validation-errors { color: #9b1c1c; margin-top: 10px; }
+    .validation-errors:empty { display: none; }
+    .calibration-bar { width: 50mm; max-width: 100%; height: 3px; background: #111; margin: 12px 0 6px; position: relative; }
+    .calibration-bar::before, .calibration-bar::after { content: ""; position: absolute; top: -4px; height: 11px; border-left: 1px solid #111; }
+    .calibration-bar::before { left: 0; }
+    .calibration-bar::after { right: 0; }
+    .hint { color: #4b5965; }
+    .error-text { white-space: pre-wrap; }
+    @page { size: A4 portrait; margin: 0; }
+    @media print {
+      :root, body { background: white; color: black; }
+      body { width: 210mm; max-width: none; margin: 0; padding: 0; }
+      header, .toolbar, .binding-panel, .calibration, .instructions, .tag-card h2, .tag-meta, .tag-size-control { display: none !important; }
+      .tag-cards { display: block; margin: 0; padding: 0; }
+      .tag-card { display: inline-block; vertical-align: top; margin: 4mm; padding: 0; border: 0; border-radius: 0; background: white; width: max-content; }
+      .tag-frame { outline: none; padding: var(--quiet-size); }
+      .tag-frame svg { width: var(--tag-size); height: var(--tag-size); }
+      .tag-caption { display: block; margin: 2mm 0 0; font: 8pt/1.2 Arial, sans-serif; }
+      .tag-card { break-inside: avoid; page-break-inside: avoid; }
+      #print-footer { display: block !important; position: fixed; bottom: 7mm; left: 5mm; right: 5mm; font: 8pt Arial, sans-serif; }
+      #print-calibration { width: 50mm; height: 0; border-top: 0.7pt solid black; margin-bottom: 2mm; position: relative; }
+      #print-calibration::before, #print-calibration::after { content: ""; position: absolute; top: -1.5mm; height: 3mm; border-left: 0.7pt solid black; }
+      #print-calibration::after { right: 0; }
+    }
+    @media (max-width: 600px) { body { padding: 12px; } header { display: block; } .language-control { margin-left: 0; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1 data-i18n="title">AprilTag sheet generator</h1>
+      <p data-i18n="intro">Print tag36h11 labels and bind each tag ID to a sensor node.</p>
+    </div>
+    <label class="language-control" for="language-select"><span data-i18n="language">Language</span>
+      <select id="language-select" aria-label="Language">
+        <option value="en">English</option>
+        <option value="uk">Українська</option>
+      </select>
+    </label>
+  </header>
+
+  <section class="toolbar" aria-label="Tag sheet actions">
+    <label for="all-size-mm"><span data-i18n="all_size">Set every tag size (mm)</span>
+      <input id="all-size-mm" type="number" min="15" max="150" step="any" value="32">
+    </label>
+    <button id="bind-button" type="button" data-i18n="bind">Bind</button>
+    <button id="print-button" type="button" data-i18n="print">Print sheet</button>
+    <a id="download-pdf" class="button-link" href="/sheet.pdf" data-i18n="download">Download PDF</a>
+  </section>
+
+  <div id="tag-cards" class="tag-cards" aria-live="polite"></div>
+
+  <section class="binding-panel">
+    <h2 data-i18n="binding_heading">Tag bindings</h2>
+    <p class="hint" data-i18n="binding_hint">Each ID maps to one unique node. Choosing an occupied node swaps the two bindings.</p>
+    <table id="binding-table" class="binding-table">
+      <thead><tr><th data-i18n="tag_id">Tag ID</th><th data-i18n="node">Sensor node</th><th data-i18n="size">Physical size (mm)</th><th data-i18n="status">Binding status</th></tr></thead>
+      <tbody id="bindings-body"></tbody>
+    </table>
+    <p id="validation-errors" class="validation-errors error-text" role="alert"></p>
+  </section>
+
+  <section class="calibration">
+    <h2 data-i18n="calibration_title">Print calibration</h2>
+    <p data-i18n="calibration_text">Measure the 50 mm bar after printing. If it is not 50 mm, disable Fit to page and set scale to 100%.</p>
+    <div id="calibration-bar" class="calibration-bar" aria-hidden="true"></div>
+    <p><strong data-i18n="calibration_measure">50 mm</strong></p>
+    <p class="hint" data-i18n="quiet_zone">Keep a white quiet zone of at least tag edge / 8 (one module).</p>
+  </section>
+
+  <section class="instructions">
+    <h2 data-i18n="what">Where to stick tags</h2>
+    <ul>
+      <li data-i18n="main_housing">MAIN = main housing</li>
+      <li data-i18n="remote_housings">G1-G4 = remote housings in connection order</li>
+    </ul>
+    <p data-i18n="connection_order">ADC channels: CH1 = MAIN, CH2 = G1, CH3 = G2, CH4 = G3. G4 has no ADC channel.</p>
+    <p class="hint" data-i18n="pdf_note">Paper: A4 portrait. Print at 100% scale / no fit-to-page.</p>
+  </section>
+  <footer id="print-footer" hidden>
+    <div id="print-calibration"></div>
+    <div data-i18n="print_footer">Calibration bar: 50 mm. Measure after printing. Print at 100% scale / no fit-to-page.</div>
+  </footer>
+
+  <script id="i18n-table" type="application/json">
+    {
+      "en": {
+        "title": "AprilTag sheet generator",
+        "intro": "Print tag36h11 labels and bind each tag ID to a sensor node.",
+        "language": "Language",
+        "all_size": "Set every tag size (mm)",
+        "bind": "Bind",
+        "print": "Print sheet",
+        "download": "Download PDF",
+        "binding_heading": "Tag bindings",
+        "binding_hint": "Each ID maps to one unique node. Choosing an occupied node swaps the two bindings.",
+        "tag_id": "Tag ID",
+        "node": "Sensor node",
+        "size": "Physical size (mm)",
+        "status": "Binding status",
+        "calibration_title": "Print calibration",
+        "calibration_text": "Measure the 50 mm bar after printing. If it is not 50 mm, disable Fit to page and set scale to 100%.",
+        "calibration_measure": "50 mm",
+        "quiet_zone": "Keep a white quiet zone of at least tag edge / 8 (one module).",
+        "what": "Where to stick tags",
+        "main_housing": "MAIN = main housing",
+        "remote_housings": "G1-G4 = remote housings in connection order",
+        "connection_order": "ADC channels: CH1 = MAIN, CH2 = G1, CH3 = G2, CH4 = G3. G4 has no ADC channel.",
+        "pdf_note": "Paper: A4 portrait. Print at 100% scale / no fit-to-page.",
+        "print_footer": "Calibration bar: 50 mm. Measure after printing. Print at 100% scale / no fit-to-page.",
+        "size_label": "Size (mm)",
+        "bound_to": "Bound to {node}",
+        "unsaved_change": "Unsaved change: {node}",
+        "loading": "Loading tag sheet...",
+        "saving": "Saving bindings...",
+        "saved": "Bindings saved to code.",
+        "save_failed": "Could not save binding: {reason}",
+        "validation_failed": "The server rejected this binding:",
+        "validation_ok": "Binding is valid.",
+        "invalid_size": "Enter a size from 15 to 150 mm.",
+        "status_saved": "Saved",
+        "status_changed": "Changed",
+        "server_unavailable": "Could not load the local AprilTag server.",
+        "tag_caption": "{node} | tag36h11 id {id} | {size} mm"
+      },
+      "uk": {
+        "title": "Генератор аркуша AprilTag",
+        "intro": "Надрукуйте мітки tag36h11 і прив’яжіть кожен ID до вузла датчика.",
+        "language": "Мова",
+        "all_size": "Задати розмір усіх міток (мм)",
+        "bind": "Прив’язати",
+        "print": "Друкувати аркуш",
+        "download": "Завантажити PDF",
+        "binding_heading": "Прив’язки міток",
+        "binding_hint": "Кожен ID відповідає унікальному вузлу. Вибір зайнятого вузла міняє прив’язки місцями.",
+        "tag_id": "ID мітки",
+        "node": "Вузол датчика",
+        "size": "Фізичний розмір (мм)",
+        "status": "Стан прив’язки",
+        "calibration_title": "Перевірка друку",
+        "calibration_text": "Виміряйте лінійку 50 мм після друку. Якщо довжина не 50 мм, вимкніть Fit to page і встановіть масштаб 100%.",
+        "calibration_measure": "50 мм",
+        "quiet_zone": "Залиште білу тиху зону не менше ніж 1/8 сторони мітки (один модуль).",
+        "what": "Куди наклеїти мітки",
+        "main_housing": "MAIN = основний корпус",
+        "remote_housings": "G1-G4 = віддалені корпуси в порядку підключення",
+        "connection_order": "Канали АЦП: CH1 = MAIN, CH2 = G1, CH3 = G2, CH4 = G3. G4 не має каналу АЦП.",
+        "pdf_note": "Папір: A4, книжкова орієнтація. Друкуйте зі 100% масштабом без Fit to page.",
+        "print_footer": "Лінійка 50 мм. Виміряйте після друку. Масштаб 100%, без Fit to page.",
+        "size_label": "Розмір (мм)",
+        "bound_to": "Прив’язано до {node}",
+        "unsaved_change": "Не збережено: {node}",
+        "loading": "Завантаження аркуша міток...",
+        "saving": "Збереження прив’язок...",
+        "saved": "Прив’язки записано в код.",
+        "save_failed": "Не вдалося зберегти прив’язку: {reason}",
+        "validation_failed": "Сервер відхилив цю прив’язку:",
+        "validation_ok": "Прив’язка коректна.",
+        "invalid_size": "Введіть розмір від 15 до 150 мм.",
+        "status_saved": "Збережено",
+        "status_changed": "Змінено",
+        "server_unavailable": "Не вдалося завантажити локальний сервер AprilTag.",
+        "tag_caption": "{node} | tag36h11 ID {id} | {size} мм"
+      }
+    }
+  </script>
+  <script>
+    (() => {
+      const messages = JSON.parse(document.getElementById('i18n-table').textContent);
+      const nodes = ['MAIN', 'G1', 'G2', 'G3', 'G4'];
+      let locale = 'en';
+      let saved = null;
+      let pending = null;
+      let patterns = [];
+      const t = (key, values = {}) => Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), messages[locale][key]);
+      const copy = (value) => JSON.parse(JSON.stringify(value));
+      const escapeText = (value) => String(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+      const api = async (path, options = {}) => {
+        const response = await fetch(path, options);
+        const type = response.headers.get('content-type') || '';
+        if (!response.ok) {
+          const detail = type.includes('json') ? await response.json() : { errors: [response.statusText] };
+          throw new Error((detail.errors || []).join('\n') || response.statusText);
+        }
+        return type.includes('json') ? response.json() : response;
+      };
+      const bindingFor = (document, tagId) => document.tags.find((tag) => tag.tag_id === tagId);
+      const formatSize = (size) => Number(size).toFixed(1);
+
+      function renderCards() {
+        const host = document.getElementById('tag-cards');
+        const cards = pending.tags.flatMap((binding) => Array.from(
+          { length: pending.sheet.copies_per_tag },
+          (_, copyIndex) => ({ binding, copyIndex }),
+        ));
+        host.innerHTML = cards.map(({ binding, copyIndex }) => {
+          const suffix = copyIndex === 0 ? '' : `-copy-${copyIndex}`;
+          const pattern = patterns.find((entry) => entry.tag_id === binding.tag_id);
+          const cells = (pattern?.modules || []).flatMap((row, y) => row.map((black, x) => black ? `<rect x="${x}" y="${y}" width="1" height="1"/>` : '')).join('');
+          const isSaved = saved !== null && binding.node === bindingFor(saved, binding.tag_id).node && Number(binding.size_mm) === Number(bindingFor(saved, binding.tag_id).size_mm);
+          const statusKey = isSaved ? 'bound_to' : 'unsaved_change';
+          const statusClass = isSaved ? '' : ' unsaved';
+          return `<article class="tag-card" id="tag-card-${binding.tag_id}${suffix}" data-tag-id="${binding.tag_id}">
+            <h2>${escapeText(binding.node)} | tag36h11 id ${binding.tag_id}</h2>
+            <div class="tag-frame" id="tag-frame-${binding.tag_id}${suffix}" style="--tag-size:${Number(binding.size_mm)}mm;--quiet-size:${Number(binding.size_mm) / 8}mm">
+              <svg id="tag-image-${binding.tag_id}${suffix}" viewBox="0 0 8 8" role="img" aria-label="${escapeText(binding.node)} | tag36h11 id ${binding.tag_id}">${cells}</svg>
+            </div>
+            <p class="tag-caption">${escapeText(t('tag_caption', { node: binding.node, id: binding.tag_id, size: formatSize(binding.size_mm) }))}</p>
+            <div class="tag-meta">
+              ${copyIndex === 0 ? `<label class="tag-size-control" for="tag-size-${binding.tag_id}"><span data-i18n="size_label">${escapeText(t('size_label'))}</span>
+                <input id="tag-size-${binding.tag_id}" type="number" min="15" max="150" step="any" value="${Number(binding.size_mm)}" data-size-tag="${binding.tag_id}">
+              </label>` : ''}
+              <span id="status-chip-${binding.tag_id}${suffix}" class="status-chip${statusClass}">${escapeText(t(statusKey, { node: binding.node }))}</span>
+            </div>
+          </article>`;
+        }).join('');
+        host.querySelectorAll('[data-size-tag]').forEach((input) => input.addEventListener('change', (event) => {
+          const field = event.currentTarget;
+          const tagId = Number(field.dataset.sizeTag);
+          const value = Number(field.value);
+          if (!Number.isFinite(value) || value < 15 || value > 150) {
+            document.getElementById('validation-errors').textContent = t('invalid_size');
+            return;
+          }
+          bindingFor(pending, tagId).size_mm = value;
+          renderAll();
+        }));
+      }
+
+      function renderBindings() {
+        const body = document.getElementById('bindings-body');
+        body.innerHTML = pending.tags.map((binding) => {
+          const original = saved === null ? binding : bindingFor(saved, binding.tag_id);
+          const same = Number(binding.size_mm) === Number(original.size_mm) && binding.node === original.node;
+          const options = nodes.map((node) => `<option value="${node}"${node === binding.node ? ' selected' : ''}>${node}</option>`).join('');
+          return `<tr id="binding-row-${binding.tag_id}"><td>${binding.tag_id}</td>
+            <td><select id="node-select-${binding.tag_id}" data-node-tag="${binding.tag_id}" aria-label="${escapeText(t('node'))} ${binding.tag_id}">${options}</select></td>
+            <td>${formatSize(binding.size_mm)}</td>
+            <td><span id="table-status-${binding.tag_id}" class="status-chip${same ? '' : ' unsaved'}">${escapeText(t(same ? 'status_saved' : 'status_changed'))}</span></td></tr>`;
+        }).join('');
+        body.querySelectorAll('[data-node-tag]').forEach((select) => select.addEventListener('change', (event) => {
+          const tagId = Number(event.currentTarget.dataset.nodeTag);
+          const chosen = event.currentTarget.value;
+          const target = bindingFor(pending, tagId);
+          const occupied = pending.tags.find((entry) => entry.node === chosen);
+          const previous = target.node;
+          target.node = chosen;
+          if (occupied !== undefined && occupied !== target) occupied.node = previous;
+          document.getElementById('validation-errors').textContent = '';
+          renderAll();
+        }));
+      }
+
+      function renderAll() {
+        renderCards();
+        renderBindings();
+        const allSameSize = pending.tags.every((tag) => Number(tag.size_mm) === Number(pending.tags[0].size_mm));
+        document.getElementById('all-size-mm').value = allSameSize ? pending.tags[0].size_mm : '';
+      }
+
+      document.querySelectorAll('[data-i18n]').forEach((element) => { element.textContent = t(element.dataset.i18n); });
+      document.getElementById('language-select').addEventListener('change', (event) => {
+        locale = event.currentTarget.value;
+        document.documentElement.lang = locale;
+        event.currentTarget.setAttribute('aria-label', t('language'));
+        document.querySelectorAll('[data-i18n]').forEach((element) => { element.textContent = t(element.dataset.i18n); });
+        const bindButton = document.getElementById('bind-button');
+        bindButton.textContent = t(bindButton.dataset.state === 'saved' ? 'saved' : 'bind');
+        if (pending !== null) renderAll();
+      });
+      document.getElementById('all-size-mm').addEventListener('change', (event) => {
+        const value = Number(event.currentTarget.value);
+        if (!Number.isFinite(value) || value < 15 || value > 150) {
+          document.getElementById('validation-errors').textContent = t('invalid_size');
+          return;
+        }
+        pending.tags.forEach((tag) => { tag.size_mm = value; });
+        document.getElementById('validation-errors').textContent = '';
+        renderAll();
+      });
+      document.getElementById('print-button').addEventListener('click', () => window.print());
+      document.getElementById('bind-button').addEventListener('click', async () => {
+        const button = document.getElementById('bind-button');
+        const errorBox = document.getElementById('validation-errors');
+        if ([...document.querySelectorAll('[data-size-tag]')].some((input) => !input.checkValidity())) {
+          errorBox.textContent = t('invalid_size');
+          return;
+        }
+        button.disabled = true;
+        button.dataset.state = 'saving';
+        button.textContent = t('saving');
+        errorBox.textContent = '';
+        try {
+          const state = await api('/api/bind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Apriltag-Sheet': '1' },
+            body: JSON.stringify(pending),
+          });
+          saved = copy(state.bindings);
+          pending = copy(state.bindings);
+          patterns = state.patterns.tags;
+          renderAll();
+          button.dataset.state = 'saved';
+          button.textContent = t('saved');
+        } catch (error) {
+          errorBox.textContent = `${t('validation_failed')}\n${error.message}`;
+          button.dataset.state = 'ready';
+          button.textContent = t('bind');
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      api('/api/state').then((state) => {
+        if (!state.valid || state.bindings === null) throw new Error((state.errors || []).join('\n'));
+        saved = copy(state.bindings);
+        pending = copy(state.bindings);
+        patterns = state.patterns.tags;
+        renderAll();
+      }).catch((error) => {
+        document.getElementById('validation-errors').textContent = `${t('server_unavailable')}\n${error.message}`;
+      });
+    })();
+  </script>
+</body>
+</html>

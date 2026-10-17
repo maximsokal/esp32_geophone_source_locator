@@ -1,4 +1,5 @@
 import { symmetricEigen3 } from '../robustPlaneGeometry';
+import { TAG_BINDINGS, tagIdForNode, tagNodeForId, type TagBinding } from './tagBindings.gen';
 
 export type RegistrationNode = 'MAIN' | 'G1' | 'G2' | 'G3' | 'G4';
 export type RegistrationTier = 'full' | 'minimum';
@@ -99,7 +100,7 @@ export interface SensorToScanRegistration {
 }
 
 type Correspondence = { tagId: number; node: RegistrationNode; sensor: Vector3; scan: Vector3; uncertaintyMm?: number };
-const NODE_BY_TAG: readonly RegistrationNode[] = ['MAIN', 'G1', 'G2', 'G3', 'G4'];
+const REMOTE_NODES: readonly RegistrationNode[] = ['G1', 'G2', 'G3', 'G4'];
 
 function multiply3(a: readonly number[], b: readonly number[]): number[] {
   return [0, 1, 2].flatMap((row) => [0, 1, 2].map((column) =>
@@ -173,18 +174,23 @@ export function registerSensorToScan(input: {
   thresholdFloorM?: number;
   /** Maximum angle between sensor +Z and scan +Y; defaults to 30 degrees. */
   maxTiltDeg?: number;
+  bindings?: readonly TagBinding[];
 }): SensorToScanRegistration {
+  const bindings = input.bindings ?? TAG_BINDINGS;
   const tags = tagMap(input.tags);
   const pods = new Map(input.geometry.pods.map((pod) => [pod.pod, pod]));
   const computedPods = [...pods.values()].filter((pod) => pod.computed && [pod.x_mm, pod.y_mm, pod.z_mm].every((value) => Number.isFinite(value)));
   const correspondences: Correspondence[] = [];
-  const mainTag = tags.get(0);
-  if (mainTag !== undefined) correspondences.push({ tagId: 0, node: 'MAIN', sensor: [0, 0, 0], scan: mainTag.positionScan });
-  for (let tagId = 1; tagId <= 4; tagId += 1) {
-    const tag = tags.get(tagId); const pod = pods.get(tagId - 1);
-    if (tag !== undefined && pod?.computed === true && [pod.x_mm, pod.y_mm, pod.z_mm].every((value) => Number.isFinite(value))) {
+  const mainTagId = tagIdForNode('MAIN', bindings);
+  const mainTag = tags.get(mainTagId);
+  if (mainTag !== undefined) correspondences.push({ tagId: mainTagId, node: 'MAIN', sensor: [0, 0, 0], scan: mainTag.positionScan });
+  for (const [tagId, tag] of tags) {
+    const node = tagNodeForId(tagId, bindings);
+    if (node === 'MAIN') continue;
+    const pod = pods.get(REMOTE_NODES.indexOf(node));
+    if (pod?.computed === true && [pod.x_mm, pod.y_mm, pod.z_mm].every((value) => Number.isFinite(value))) {
       correspondences.push({
-        tagId, node: NODE_BY_TAG[tagId],
+        tagId, node,
         sensor: [pod.x_mm! / 1000, pod.y_mm! / 1000, pod.z_mm! / 1000],
         scan: tag.positionScan,
         ...(Number.isFinite(pod.uncertainty_mm) && (pod.uncertainty_mm ?? 0) > 0 && (pod.uncertainty_mm ?? 0) < 2147483647 ? { uncertaintyMm: pod.uncertainty_mm } : {}),
@@ -195,13 +201,13 @@ export function registerSensorToScan(input: {
   const uncertaintyRmsM = uncertainties.length === 0 ? 0 : Math.sqrt(uncertainties.reduce((sum, value) => sum + value * value, 0) / uncertainties.length) / 1000;
   const thresholdM = Math.max(input.thresholdFloorM ?? 0.05, 3 * uncertaintyRmsM);
   const perNode: RegistrationPerNode[] = [...tags.keys()].sort((a, b) => a - b).map((tagId) => ({
-    node: NODE_BY_TAG[tagId], tagId, residualM: null, status: 'visual_only',
+    node: tagNodeForId(tagId, bindings), tagId, residualM: null, status: 'visual_only',
   }));
   const noTransform = (reason: string): SensorToScanRegistration => ({ valid: false, reason, tier: null, sensorToScan: null, mirrored: false, rmsResidualM: 0, thresholdM, perNode });
 
   if (input.geometry.available === false || computedPods.length === 0) return noTransform('no_geometry');
   if (mainTag === undefined) return noTransform('missing_main');
-  const remoteCount = correspondences.filter((point) => point.tagId > 0).length;
+  const remoteCount = correspondences.filter((point) => point.node !== 'MAIN').length;
   if (remoteCount < 3) return noTransform('too_few_remotes');
 
   const spread = svd3(centeredCovariance(correspondences.map((point) => point.sensor))).singularValues;
@@ -226,7 +232,10 @@ export function registerSensorToScan(input: {
   ];
   const valid = best.rms <= thresholdM;
   const expectedPods = [...pods.values()].filter((pod) => pod.assigned === true || (pod.assigned === undefined && pod.computed));
-  const full = tags.has(0) && expectedPods.every((pod) => tags.has(pod.pod + 1));
+  const full = tags.has(mainTagId) && expectedPods.every((pod) => {
+    const node = REMOTE_NODES[pod.pod];
+    return node !== undefined && tags.has(tagIdForNode(node, bindings));
+  });
   const fittedByTag = new Map<number, number>();
   correspondences.forEach((point) => {
     const dx = best.rotation[0] * point.sensor[0] + best.rotation[1] * point.sensor[1] + best.rotation[2] * point.sensor[2] + best.translation[0] - point.scan[0];

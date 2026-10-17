@@ -7,13 +7,21 @@ import {
   type RegistrationExpectation,
 } from '../registrationApplicability';
 import type { RegistrationNode, RegistrationNodeStatus, RegistrationTier } from './rigidRegistration';
+import { TAG_BINDINGS, tagIdForNode, tagNodeForId, tagSizeMmForId } from './tagBindings.gen';
 
-export const DEFAULT_REMOTE_TAG_SIZE_M = 0.032;
-export const DEFAULT_MAIN_TAG_SIZE_M = 0.032;
+export const DEFAULT_REMOTE_TAG_SIZE_M = tagSizeMmForId(tagIdForNode('G1')) / 1000;
+export const DEFAULT_MAIN_TAG_SIZE_M = tagSizeMmForId(tagIdForNode('MAIN')) / 1000;
 export type RegistrationTagSizes = Record<'0' | '1' | '2' | '3' | '4', number>;
 
 export function defaultRegistrationTagSizes(mainTagSizeM = DEFAULT_MAIN_TAG_SIZE_M, remoteTagSizeM = DEFAULT_REMOTE_TAG_SIZE_M): RegistrationTagSizes {
-  return { '0': mainTagSizeM, '1': remoteTagSizeM, '2': remoteTagSizeM, '3': remoteTagSizeM, '4': remoteTagSizeM };
+  const sizes = {} as RegistrationTagSizes;
+  for (const binding of TAG_BINDINGS) {
+    const id = String(binding.tag_id) as keyof RegistrationTagSizes;
+    sizes[id] = arguments.length === 0
+      ? binding.size_mm / 1000
+      : binding.node === 'MAIN' ? mainTagSizeM : remoteTagSizeM;
+  }
+  return sizes;
 }
 
 export interface RegistrationBinding {
@@ -57,7 +65,6 @@ export interface RegistrationArtifact {
   reason: string | null;
 }
 
-const NODES: readonly RegistrationNode[] = ['MAIN', 'G1', 'G2', 'G3', 'G4'];
 const ROOT_KEYS = ['schema', 'frame', 'scan_frame_id', 'source', 'family', 'geometry_computed_at_ms', 'created_at_ms', 'tag_size_m', 'bindings', 'sensor_to_scan', 'mirrored', 'residual_rms_m', 'threshold_m', 'per_node', 'tier', 'valid', 'reason'];
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -83,7 +90,7 @@ function integer(value: unknown, label: string): number {
 
 function nodeForTagId(tagId: number): RegistrationNode {
   if (!Number.isInteger(tagId) || tagId < 0 || tagId > 4) throw new Error('Tag id must be between 0 and 4.');
-  return NODES[tagId];
+  return tagNodeForId(tagId);
 }
 
 function validateMatrix(value: unknown): number[] | null {

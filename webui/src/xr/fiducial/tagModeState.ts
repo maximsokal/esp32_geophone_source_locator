@@ -3,6 +3,7 @@ import type { RegistrationArtifact } from './registrationArtifact';
 import type { SensorToScanRegistration } from './rigidRegistration';
 import { formatErrorText, translate, type I18nKey, type I18nLocale } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
+import { TAG_BINDINGS, tagNodeForId, type TagBinding } from './tagBindings.gen';
 
 /**
  * MAX-403: upper bound for tag finalization after an explicit Finish. A pending detector task gets
@@ -12,7 +13,6 @@ import { formatNumber } from '../../i18n/format';
 export const TAG_FINALIZE_WINDOW_MS = 3000;
 
 export type TagChipStatus = { tagId: 0 | 1 | 2 | 3 | 4; node: string; text: string; status: 'not-seen' | 'seen' | 'confirmed' };
-const TAG_NAMES = ['MAIN', 'G1', 'G2', 'G3', 'G4'] as const;
 const REGISTRATION_REASON_KEYS: Readonly<Record<string, I18nKey>> = {
   no_geometry: 'xr.tag.reason.no_geometry',
   missing_main: 'xr.tag.reason.missing_main',
@@ -22,9 +22,9 @@ const REGISTRATION_REASON_KEYS: Readonly<Record<string, I18nKey>> = {
   residual_too_high: 'xr.tag.reason.residual_too_high',
 };
 
-export function tagChipStatuses(fusion: TagObservationFusion, locale: I18nLocale = 'en'): TagChipStatus[] {
-  return TAG_NAMES.map((label, tagId) => {
-    const tag = fusion.byTagId[tagId as 0 | 1 | 2 | 3 | 4];
+export function tagChipStatuses(fusion: TagObservationFusion, locale: I18nLocale = 'en', bindings: readonly TagBinding[] = TAG_BINDINGS): TagChipStatus[] {
+  return bindings.map(({ tag_id: tagId, node: label }) => {
+    const tag = fusion.byTagId[tagId];
     if (tag === undefined) return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, text: translate(locale, 'xr.tag.chip.not_seen', { node: label }), status: 'not-seen' };
     if (tag.confirmed) return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, status: 'confirmed', text: translate(locale, 'xr.tag.chip.confirmed', { node: label }) };
     return { tagId: tagId as 0 | 1 | 2 | 3 | 4, node: label, status: 'seen', text: translate(locale, 'xr.tag.chip.views_seen', { node: label, views: formatNumber(locale, tag.independentViewCount), minimum: formatNumber(locale, 3) }) };
@@ -73,10 +73,11 @@ export function registrationArtifactFromResult(
   geometryComputedAtMs: number,
   createdAtMs: number,
   scanFrameId: string | null = null,
+  tagBindings: readonly TagBinding[] = TAG_BINDINGS,
 ): RegistrationArtifact {
   const bindings = Object.values(fusion.byTagId).filter((tag) => tag !== undefined).map((tag) => ({
     tag_id: tag.tagId,
-    node: TAG_NAMES[tag.tagId],
+    node: tagNodeForId(tag.tagId, tagBindings),
     observation_count: tag.observationCount,
     inlier_count: tag.inlierCount,
     position_scan_m: [...tag.positionScan] as [number, number, number],
