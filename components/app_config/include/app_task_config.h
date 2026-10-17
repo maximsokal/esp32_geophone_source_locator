@@ -11,6 +11,23 @@
 #define APP_TASK_CORE_SERVICES      0
 #define APP_TASK_CORE_REALTIME      1
 
+/*
+ * HTTP/HTTPS server task (esp_http_server). Core 0 is saturated by Wi-Fi, LVGL,
+ * SD/storage, topology and INA work, while Core 1 only carries acquisition
+ * (about 40 percent while recording). The server task is therefore pinned to
+ * Core 1 below both acquisition priorities: it can never outrank AD7606 or the
+ * geophone ADC there, and on Core 0 it would outrank the seismic recorder
+ * (priority 3), the only consumer that protects the finite ring from overflow.
+ * Revert by pointing APP_TASK_CORE_WEB_SERVER back at APP_TASK_CORE_SERVICES
+ * only after an A/B measurement of AD7606 jitter and UI frame time.
+ */
+#define APP_TASK_CORE_WEB_SERVER    APP_TASK_CORE_REALTIME
+#define APP_TASK_PRIORITY_WEB_SERVER 5
+_Static_assert(
+    APP_TASK_PRIORITY_WEB_SERVER < 6,
+    "web server must stay below the geophone ADC (6) and AD7606 (7) tasks"
+);
+
 
 /*
  * Core 1 acquisition tasks.

@@ -674,6 +674,8 @@ static esp_err_t web_server_https_start_internal(void)
     if (s_https_server != NULL) return ESP_OK;
 
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
+    config.httpd.core_id = APP_TASK_CORE_WEB_SERVER;
+    config.httpd.task_priority = APP_TASK_PRIORITY_WEB_SERVER;
     config.httpd.max_uri_handlers = WEB_HTTPS_URI_HANDLERS_CAPACITY;
     config.httpd.uri_match_fn = httpd_uri_match_wildcard;
 
@@ -723,11 +725,13 @@ static esp_err_t web_server_https_start_internal(void)
     );
     ESP_LOGI(
         TAG,
-        "Starting HTTPS server on port %u (max clients=%u, stack=%u, LRU=on, session tickets=on, handshake timeout=%u ms)",
+        "Starting HTTPS server on port %u (max clients=%u, stack=%u, LRU=on, session tickets=on, handshake timeout=%u ms, core=%d, priority=%u)",
         (unsigned)config.port_secure,
         (unsigned)config.httpd.max_open_sockets,
         (unsigned)config.httpd.stack_size,
-        (unsigned)config.tls_handshake_timeout_ms
+        (unsigned)config.tls_handshake_timeout_ms,
+        (int)config.httpd.core_id,
+        (unsigned)config.httpd.task_priority
     );
 
     esp_err_t err = httpd_ssl_start(&s_https_server, &config);
@@ -799,13 +803,16 @@ static esp_err_t web_server_http_start_internal(void)
     if (s_http_server != NULL) return ESP_OK;
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.core_id = APP_TASK_CORE_WEB_SERVER;
+    config.task_priority = APP_TASK_PRIORITY_WEB_SERVER;
     config.server_port = APP_WEB_HTTP_PORT;
     config.max_uri_handlers = WEB_HTTP_URI_HANDLERS_CAPACITY;
     config.lru_purge_enable = true;
 
     ESP_LOGI(TAG, "URI handlers required=%u capacity=%u",
              (unsigned)WEB_HTTP_URI_HANDLERS_REQUIRED, (unsigned)config.max_uri_handlers);
-    ESP_LOGI(TAG, "Starting HTTP bootstrap server on port %u", (unsigned)config.server_port);
+    ESP_LOGI(TAG, "Starting HTTP bootstrap server on port %u core=%d priority=%u",
+             (unsigned)config.server_port, (int)config.core_id, (unsigned)config.task_priority);
     esp_err_t err = httpd_start(&s_http_server, &config);
     if (err != ESP_OK) {
         s_http_server = NULL;
