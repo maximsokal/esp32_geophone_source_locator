@@ -462,6 +462,8 @@ def test_evaluate_s9_accepts_interrupt_watchdog_panic_and_recovery():
         ("s9_second_boot_poweron.log", "expected INT_WDT or PANIC"),
         ("s9_no_recovery.log", "Hardware bring-up completed"),
         ("s9_missing_skipped.log", "missing TEST_WDT: skipped"),
+        ("s9_skipped_before_panic.log", "appeared before the interrupt-WDT panic"),
+        ("s9_skipped_poweron.log", "reported POWERON"),
     ],
 )
 def test_evaluate_s9_rejects_incomplete_or_invalid_watchdog_recovery(

@@ -1,10 +1,9 @@
-I (700) APP: RESET_REASON reason=POWERON enum=1 uptime_ms=650 boot_id=101
-I (720) APP: TEST_WDT: arming interrupt-watchdog test in 25 s
-I (900) APP: Hardware bring-up completed
-I (25720) APP: TEST_WDT: triggering interrupt watchdog now
+I (779) APP: RESET_REASON reason=POWERON enum=1 uptime_ms=767 boot_id=3861709763
+I (779) APP: Hardware bring-up completed
+I (779) TEST_WDT: TEST_WDT: arming interrupt-watchdog test in 25 s
+I (25779) TEST_WDT: TEST_WDT: triggering interrupt watchdog now
 Guru Meditation Error: Core  0 panic'ed (Interrupt wdt timeout on CPU0).
-Backtrace: 0x42156efd:0x3fccc210 0x42157027:0x3fccc230
-I (100) APP: RESET_REASON reason=INT_WDT enum=6 uptime_ms=85 boot_id=102
-I (110) APP: TEST_WDT: skipped, reset reason is not POWERON (INT_WDT)
-I (700) APP: Hardware bring-up completed
-I (1000) APP: periodic runtime status
+I (729) APP: RESET_REASON reason=INT_WDT enum=5 uptime_ms=712 boot_id=4040186871
+I (729) APP: Hardware bring-up completed
+I (739) TEST_WDT: TEST_WDT: skipped, reset reason is not POWERON (INT_WDT)
+I (739) I2C_PROBE: I2C_BUS idle lvl=SDA1/SCL1

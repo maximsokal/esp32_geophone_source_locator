@@ -495,12 +495,47 @@ def evaluate_s9(log_text: str, extra: dict[str, Any] | None = None) -> tuple[boo
         skipped_indices = [
             index
             for index, line in enumerate(lines)
-            if "TEST_WDT: skipped" in line and index > second_reset_index
+            if "TEST_WDT: skipped" in line
         ]
         if not skipped_indices:
             reasons.append("missing TEST_WDT: skipped marker after the recovery reset")
-        elif len(bringup_indices) >= 2 and skipped_indices[0] > bringup_indices[1]:
-            reasons.append("TEST_WDT: skipped appeared after recovery bring-up")
+        else:
+            if any(index <= second_reset_index for index in skipped_indices):
+                reasons.append("TEST_WDT: skipped appeared before the recovery RESET_REASON")
+            if panic_indices:
+                panic_index = panic_indices[0]
+                if any(index <= panic_index for index in skipped_indices):
+                    reasons.append("TEST_WDT: skipped appeared before the interrupt-WDT panic")
+                if not any(
+                    index > panic_index and index > second_reset_index
+                    for index in skipped_indices
+                ):
+                    reasons.append(
+                        "missing TEST_WDT: skipped marker after the interrupt-WDT panic and recovery reset"
+                    )
+            elif not any(index > second_reset_index for index in skipped_indices):
+                reasons.append("missing TEST_WDT: skipped marker after the recovery reset")
+
+            if len(reset_reasons) == 2:
+                for index in skipped_indices:
+                    match = re.search(
+                        r"reset reason is not POWERON\s*\(([^)]+)\)",
+                        lines[index],
+                        re.IGNORECASE,
+                    )
+                    if not match:
+                        reasons.append("could not read reset reason from TEST_WDT: skipped marker")
+                        continue
+                    skipped_reason = match.group(1).upper()
+                    if skipped_reason == "POWERON":
+                        reasons.append(
+                            "TEST_WDT: skipped reported POWERON; expected the non-POWERON recovery reason"
+                        )
+                    elif skipped_reason != reset_reasons[1]:
+                        reasons.append(
+                            "TEST_WDT: skipped reported "
+                            f"{skipped_reason!r}; expected recovery reason {reset_reasons[1]!r}"
+                        )
         if len(bringup_indices) >= 2 and second_reset_index >= bringup_indices[1]:
             reasons.append("recovery RESET_REASON appeared after recovery bring-up")
 
