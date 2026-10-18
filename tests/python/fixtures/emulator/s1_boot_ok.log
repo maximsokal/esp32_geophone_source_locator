@@ -1,0 +1,5 @@
+I (684) APP: BOOT_NO_STORAGE SD absent, continuing without storage
+W (735) APP: Display: SKIPPED
+W (735) APP: Keypad: SKIPPED
+I (735) APP: Hardware bring-up completed
+[INFO  machine] Panic intercept: 'abort' at 0x40387F1C

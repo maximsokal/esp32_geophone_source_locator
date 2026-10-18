@@ -1,0 +1,4 @@
+I (779) APP: RESET_REASON reason=POWERON enum=1 uptime_ms=767 boot_id=3960460078
+I (779) APP: Hardware bring-up completed
+I (729) APP: RESET_REASON reason=POWERON enum=1 uptime_ms=712 boot_id=2165402142
+I (729) APP: Hardware bring-up completed

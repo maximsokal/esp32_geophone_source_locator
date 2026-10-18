@@ -1,0 +1,2 @@
+Guru Meditation Error: Core  0 panic'ed (Interrupt wdt timeout on CPU0).
+Backtrace: 0x42156efd:0x3fccc210 0x42157027:0x3fccc230 0x4211385a:0x3fccc260

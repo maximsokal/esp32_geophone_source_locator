@@ -1,0 +1,5 @@
+{
+  "/setup": {"status": 200, "body": "Install and confirm the GeoLocator Root CA"},
+  "/": {"status": 302, "body": "Install and confirm the GeoLocator Root CA"},
+  "/api/status": {"status": 404, "body": "Not Found"}
+}
