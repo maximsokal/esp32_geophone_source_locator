@@ -14,6 +14,8 @@ Structural code search and linting use [ast-grep](docs/ast-grep.md).
 
 The controller is an ESP32-S3 with 16 MB flash and 8 MB octal PSRAM.
 
+PSRAM runs at 80 MHz. If the board is unstable (random crashes after a ~20 °C temperature change or boot failures), revert to `CONFIG_SPIRAM_SPEED_40M`; HIL validation is required.
+
 GPIO33-GPIO37 are occupied by octal PSRAM internally and are intentionally not assigned to application peripherals.
 
 ### SPI2: UI and storage
