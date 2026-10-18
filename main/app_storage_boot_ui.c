@@ -24,7 +24,9 @@ typedef struct {
 
 static const char *TAG = "APP_STORAGE_BOOT_UI";
 
+#if APP_DISPLAY_ENABLED
 static bool s_display_initialized;
+#endif
 static bool s_boot_ui_initialized;
 static bool s_locale_loaded;
 static bool s_recovery_view_active;
@@ -137,7 +139,9 @@ static void app_storage_boot_ui_show_result(
 );
 static void app_storage_boot_ui_show_continue_without_storage(void *context);
 
+#if APP_KEYPAD_ENABLED
 static void app_storage_boot_ui_key_callback(keypad_key_t key, void *context);
+#endif
 static void app_storage_boot_ui_shutdown_callback(void *context);
 
 
@@ -379,6 +383,7 @@ esp_err_t app_storage_boot_ui_get_queue_stats(
 }
 
 
+#if APP_KEYPAD_ENABLED
 static void app_storage_boot_ui_key_callback(keypad_key_t key, void *context)
 {
     (void)context;
@@ -396,6 +401,7 @@ static void app_storage_boot_ui_key_callback(keypad_key_t key, void *context)
         }
     }
 }
+#endif
 
 
 static void app_storage_boot_ui_shutdown_callback(void *context)

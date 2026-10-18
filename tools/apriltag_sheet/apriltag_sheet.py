@@ -153,12 +153,22 @@ def render_pdf(root: Path) -> bytes:
     return bytes(output)
 
 
-def _send_json(handler: BaseHTTPRequestHandler, status: int, value: object) -> None:
+def _send_json(
+    handler: BaseHTTPRequestHandler,
+    status: int,
+    value: object,
+    *,
+    close_connection: bool = False,
+) -> None:
     body = (json.dumps(value, ensure_ascii=True, separators=(",", ":")) + "\n").encode("utf-8")
+    if close_connection:
+        handler.close_connection = True
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Cache-Control", "no-store")
+    if close_connection:
+        handler.send_header("Connection", "close")
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -183,6 +193,35 @@ def make_handler(root: Path):
 
     class SheetHandler(BaseHTTPRequestHandler):
         server_version = "AprilTagSheet/1"
+
+        def _reject_post(self, status: int, message: str) -> None:
+            # Consume a framed request body before replying. Closing a socket
+            # with unread body bytes can reset the response on Windows.
+            body_drained = False
+            if self.headers.get("Transfer-Encoding") is None:
+                raw_length = self.headers.get("Content-Length")
+                if raw_length is not None:
+                    try:
+                        remaining = int(raw_length)
+                    except ValueError:
+                        remaining = -1
+                    if remaining >= 0:
+                        while remaining:
+                            try:
+                                chunk = self.rfile.read(min(remaining, 8192))
+                            except OSError:
+                                break
+                            if not chunk:
+                                break
+                            remaining -= len(chunk)
+                        body_drained = remaining == 0
+
+            _send_json(
+                self,
+                status,
+                {"errors": [message]},
+                close_connection=not body_drained,
+            )
 
         def do_GET(self) -> None:
             path = self.path.split("?", 1)[0]
@@ -218,36 +257,41 @@ def make_handler(root: Path):
 
         def do_POST(self) -> None:
             if self.path.split("?", 1)[0] != "/api/bind":
-                _send_json(self, 404, {"errors": ["not found"]})
+                self._reject_post(404, "not found")
                 return
             host = self.headers.get("Host", "")
             if re.fullmatch(r"(?:127\.0\.0\.1|localhost)(?::([0-9]{1,5}))?", host, re.IGNORECASE) is None:
-                _send_json(self, 403, {"errors": ["Host must be 127.0.0.1 or localhost"]})
+                self._reject_post(403, "Host must be 127.0.0.1 or localhost")
                 return
             port_match = re.search(r":([0-9]+)$", host)
             if port_match and not 1 <= int(port_match.group(1)) <= 65535:
-                _send_json(self, 403, {"errors": ["Host port is invalid"]})
+                self._reject_post(403, "Host port is invalid")
                 return
             if self.headers.get("X-Apriltag-Sheet") != "1":
-                _send_json(self, 403, {"errors": ["X-Apriltag-Sheet: 1 is required"]})
+                self._reject_post(403, "X-Apriltag-Sheet: 1 is required")
                 return
             if self.headers.get_content_type() != "application/json":
-                _send_json(self, 415, {"errors": ["Content-Type must be application/json"]})
+                self._reject_post(415, "Content-Type must be application/json")
                 return
             try:
                 length = int(self.headers.get("Content-Length", ""))
             except ValueError:
-                _send_json(self, 411, {"errors": ["Content-Length is required"]})
+                self._reject_post(411, "Content-Length is required")
                 return
             if length < 0:
-                _send_json(self, 400, {"errors": ["Content-Length is invalid"]})
+                self._reject_post(400, "Content-Length is invalid")
                 return
             if length > MAX_BODY_BYTES:
-                _send_json(self, 413, {"errors": ["request body exceeds 16 KiB"]})
+                self._reject_post(413, "request body exceeds 16 KiB")
                 return
             body = self.rfile.read(length)
             if len(body) != length:
-                _send_json(self, 400, {"errors": ["request body is incomplete"]})
+                _send_json(
+                    self,
+                    400,
+                    {"errors": ["request body is incomplete"]},
+                    close_connection=True,
+                )
                 return
             try:
                 value = json.loads(body.decode("utf-8"), object_pairs_hook=model._object_pairs)

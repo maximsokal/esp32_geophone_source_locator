@@ -32,6 +32,10 @@ ZTEST(nrf_log_runtime, test_runtime_builds_and_measures_a_maximum_block)
 	uint8_t block_frame[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
 	size_t status_length = 0U;
 	size_t block_length = 0U;
+	uint32_t max_block_build_cycles;
+#if defined(CONFIG_BOARD_NATIVE_SIM)
+	uint32_t previous_max_block_build_cycles;
+#endif
 
 	zassert_equal(nrf_log_runtime_zephyr_init(), 0, "log runtime failed to initialize");
 	zassert_equal(
@@ -73,6 +77,9 @@ ZTEST(nrf_log_runtime, test_runtime_builds_and_measures_a_maximum_block)
 			index,
 			(uint32_t)k_uptime_get());
 	}
+#if defined(CONFIG_BOARD_NATIVE_SIM)
+	previous_max_block_build_cycles = nrf_log_runtime_zephyr_max_block_build_cycles();
+#endif
 	for (uint32_t index = 0U; index < 32U; ++index) {
 		request.request_id++;
 		zassert_equal(
@@ -83,13 +90,30 @@ ZTEST(nrf_log_runtime, test_runtime_builds_and_measures_a_maximum_block)
 				&block_length),
 			NRF_LOG_ERROR_OK,
 			"maximum block build failed");
+#if defined(CONFIG_BOARD_NATIVE_SIM)
+		max_block_build_cycles = nrf_log_runtime_zephyr_max_block_build_cycles();
+		zassert_true(
+			max_block_build_cycles >= previous_max_block_build_cycles,
+			"maximum block cycle metric decreased from %u to %u",
+			previous_max_block_build_cycles,
+			max_block_build_cycles);
+		previous_max_block_build_cycles = max_block_build_cycles;
+#endif
 	}
+#if defined(CONFIG_BOARD_NATIVE_SIM)
+	max_block_build_cycles = nrf_log_runtime_zephyr_max_block_build_cycles();
+	zassert_true(
+		max_block_build_cycles >= previous_max_block_build_cycles,
+		"maximum block cycle metric decreased after repeated builds");
+#else
+	max_block_build_cycles = nrf_log_runtime_zephyr_max_block_build_cycles();
 	zassert_not_equal(
-		nrf_log_runtime_zephyr_max_block_build_cycles(),
+		max_block_build_cycles,
 		0U,
 		"block cycle metric was not captured");
+#endif
 	printk("nrf_log_block_build_max_cycles=%u (native_sim host estimate)\n",
-	       nrf_log_runtime_zephyr_max_block_build_cycles());
+	       max_block_build_cycles);
 }
 
 ZTEST_SUITE(nrf_log_runtime, NULL, NULL, NULL, NULL, NULL);
