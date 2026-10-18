@@ -1,0 +1,26 @@
+{
+  "http": {
+    "/setup/ca-guide": {"status": "200"},
+    "/setup/ca-download": {"status": "200", "pem": true, "bytes": 1948},
+    "/setup/ca?installed=1": {"status": "200"},
+    "/setup": {"status": "200"},
+    "POST /api/wifi/setup": {"status": "200"}
+  },
+  "status_before_reset": {
+    "status": "200",
+    "attempts": 2,
+    "elapsed_seconds": 6,
+    "json": {
+      "measurement": {"state": "LIVE"},
+      "system": {"uptime_ms": 48398},
+      "runtime": {
+        "heap": {"free_internal": 73003},
+        "tasks": {"acquisition": {"observed": false}}
+      }
+    }
+  },
+  "acquisition_start": {
+    "status": "200",
+    "json": {"ok": true, "action": "acquisition_start"}
+  }
+}

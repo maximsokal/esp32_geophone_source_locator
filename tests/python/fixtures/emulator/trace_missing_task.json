@@ -1,0 +1,9 @@
+[
+  {"ph":"X","pid":1,"tid":8,"name":"runtime_observa","ts":300746.415,"dur":7.969,"args":{"cpu":0}},
+  {"ph":"X","pid":1,"tid":12,"name":"workflow_poll","ts":662170.852,"dur":70.337,"args":{"cpu":0}},
+  {"ph":"X","pid":1,"tid":14,"name":"localization_jo","ts":667213.915,"dur":9.55,"args":{"cpu":1}},
+  {"ph":"X","pid":1,"tid":17,"name":"wifi","ts":680229.321,"dur":11.162,"args":{"cpu":0}},
+  {"ph":"X","pid":1,"tid":20,"name":"httpd","ts":760368.927,"dur":359.431,"args":{"cpu":1}},
+  {"ph":"X","pid":1,"tid":22,"name":"nrf_topology","ts":776727.015,"dur":3144.562,"args":{"cpu":0}},
+  {"ph":"X","pid":1,"tid":28,"name":"seismic_test","ts":48077390.706,"dur":16.394,"args":{"cpu":1}}
+]

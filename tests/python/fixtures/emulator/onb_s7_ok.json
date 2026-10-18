@@ -1,0 +1,7 @@
+{
+  "reset_sent": true,
+  "reset_log_line": 3,
+  "reset_reply": "ok",
+  "status_after_reset": {"status": "200", "attempts": 2, "elapsed_seconds": 6},
+  "port80_after_reset": {"status": null, "error": "[Errno 111] Connection refused"}
+}

@@ -1,0 +1,6 @@
+I (769) WIFI_SETUP_AP: Setup AP started: GEOLOCATOR_SETUP
+I (779) APP: RESET_REASON reason=POWERON enum=1 uptime_ms=767 boot_id=3171507470
+I (46739) WEB_SERVER: Starting HTTPS server on port 443
+I (100) APP: RESET_REASON reason=SW_RESET enum=3 uptime_ms=91 boot_id=3171507470
+I (120) WIFI_MANAGER: Normal mode: Wi-Fi STA
+I (160) APP_STARTUP_STATUS: Wi-Fi mode: STA

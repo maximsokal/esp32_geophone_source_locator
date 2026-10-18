@@ -219,7 +219,7 @@ def test_all_scenario_scripts_use_lf_line_endings():
         "/mnt/e/out/smoke.log",
         "/mnt/e/out",
     )
-    for scenario in smoke.SCENARIOS:
+    for scenario in ("S1", "S2", "S3", "S4"):
         script = smoke.build_scenario_script(scenario, *paths)
         assert "\r\n" not in script
         assert script.endswith("\n")
@@ -243,3 +243,206 @@ def test_scenario_argv_includes_measured_flags():
         "root",
         "--",
     ]
+
+
+def onb_extra(name: str) -> dict:
+    return {"onb": read_json(name)}
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ({"status": None, "error": "ConnectionResetError: connection reset by peer"}, True),
+        ({"status": None, "error": "ConnectionRefusedError: connection refused"}, True),
+        (
+            {
+                "status": None,
+                "error": "RemoteDisconnected: Remote end closed connection without response",
+            },
+            True,
+        ),
+        ({"status": None, "error": "TimeoutError: timed out"}, False),
+        ({"status": None, "error": "unexpected TLS protocol error"}, False),
+        (
+            read_json("onb_s7_port80_setup.json")["port80_after_reset"],
+            False,
+        ),
+        ({"status": 200, "body": "", "location": ""}, False),
+    ],
+)
+def test_port80_is_not_setup_classifies_no_listener_and_setup_results(
+    result: dict, expected: bool
+):
+    assert smoke._port80_is_not_setup(result) is expected
+
+
+def test_scenario_selection_includes_s5_through_s8_and_all():
+    assert smoke.parse_scenarios("S5,S6,S7,S8") == ["S5", "S6", "S7", "S8"]
+    assert smoke.parse_scenarios("all") == list(smoke.SCENARIOS)
+
+
+def test_evaluate_s5_accepts_measured_onboarding_status_and_control():
+    ok, reasons = smoke.evaluate_s5(
+        read_log("onb_measured.log"), onb_extra("onb_s5_ok.json")
+    )
+    assert ok, reasons
+
+
+def test_evaluate_s5_rejects_unacknowledged_wifi_setup_and_status_000():
+    ok, reasons = smoke.evaluate_s5(
+        read_log("onb_measured.log"), onb_extra("onb_s5_fail.json")
+    )
+    assert not ok
+    assert any("returned '403'" in reason for reason in reasons)
+    assert any("returned '000'" in reason for reason in reasons)
+
+
+def _expected_trace_cores(fixture: str = "trace_onb_ok.json") -> dict[str, int]:
+    config = (REPO_ROOT / "components" / "app_config" / "include" / "app_task_config.h").read_text(encoding="utf-8")
+    events = read_json(fixture)
+    observed = {event.get("name") for event in events if event.get("ph") == "X"}
+    return smoke.expected_trace_task_cores(config, observed)
+
+
+def test_task_core_map_resolves_policy_macros_and_trace_name_truncation():
+    expected = _expected_trace_cores()
+    config = (REPO_ROOT / "components" / "app_config" / "include" / "app_task_config.h").read_text(encoding="utf-8")
+    assert smoke.trace_task_name("runtime_observability") == "runtime_observa"
+    assert smoke.trace_task_name("localization_job") == "localization_jo"
+    assert expected["seismic_test"] == 1
+    assert expected["httpd"] == 1
+    assert expected["wifi"] == 0
+    assert expected["workflow_poll"] == 0
+    assert expected["nrf_topology"] == 0
+    assert expected["runtime_observa"] == 0
+    assert expected["ina3221"] == 0
+    assert expected["localization_jo"] == 1
+    assert "localization_jo" not in smoke.expected_trace_task_cores(config)
+
+
+def test_evaluate_s6_accepts_measured_trace_excerpt():
+    ok, reasons = smoke.evaluate_s6(
+        read_log("onb_measured.log"),
+        {
+            "_trace_events": read_json("trace_onb_ok.json"),
+            "expected_task_cores": _expected_trace_cores(),
+        },
+    )
+    assert ok, reasons
+
+
+def test_evaluate_s6_rejects_httpd_wrong_core_and_missing_task():
+    expected = _expected_trace_cores()
+    wrong_ok, wrong_reasons = smoke.evaluate_s6(
+        read_log("onb_measured.log"),
+        {
+            "_trace_events": read_json("trace_httpd_wrong_core.json"),
+            "expected_task_cores": expected,
+        },
+    )
+    assert not wrong_ok
+    assert any("task httpd" in reason and "wrong core" in reason for reason in wrong_reasons)
+
+    missing_ok, missing_reasons = smoke.evaluate_s6(
+        read_log("onb_measured.log"),
+        {
+            "_trace_events": read_json("trace_missing_task.json"),
+            "expected_task_cores": expected,
+        },
+    )
+    assert not missing_ok
+    assert any("ina3221 never appeared" in reason for reason in missing_reasons)
+
+
+def test_evaluate_s7_accepts_saved_sta_boot_and_port80_shutdown():
+    ok, reasons = smoke.evaluate_s7(
+        read_log("onb_reset_ok.log"), onb_extra("onb_s7_ok.json")
+    )
+    assert ok, reasons
+
+
+def test_evaluate_s7_accepts_port80_connection_reset_but_rejects_timeout():
+    reset_extra = onb_extra("onb_s7_ok.json")
+    reset_extra["onb"]["port80_after_reset"] = {
+        "status": None,
+        "error": "ConnectionResetError: [Errno 104] Connection reset by peer",
+    }
+    reset_ok, reset_reasons = smoke.evaluate_s7(
+        read_log("onb_reset_ok.log"), reset_extra
+    )
+    assert reset_ok, reset_reasons
+
+    timeout_extra = onb_extra("onb_s7_ok.json")
+    timeout_extra["onb"]["port80_after_reset"] = {
+        "status": None,
+        "error": "TimeoutError: timed out",
+    }
+    timeout_ok, timeout_reasons = smoke.evaluate_s7(
+        read_log("onb_reset_ok.log"), timeout_extra
+    )
+    assert not timeout_ok
+    assert any("port 80 served /setup" in reason for reason in timeout_reasons)
+
+
+def test_evaluate_s7_rejects_setup_ap_after_reset_and_same_boot_id():
+    extra = onb_extra("onb_s7_ok.json")
+    setup_ok, setup_reasons = smoke.evaluate_s7(
+        read_log("onb_reset_setup_ap.log"), extra
+    )
+    assert not setup_ok
+    assert any("Setup AP started again" in reason for reason in setup_reasons)
+
+    same_boot_ok, same_boot_reasons = smoke.evaluate_s7(
+        read_log("onb_reset_same_boot.log"), extra
+    )
+    assert not same_boot_ok
+    assert any("boot_id" in reason for reason in same_boot_reasons)
+
+    port80_extra = onb_extra("onb_s7_port80_setup.json")
+    port80_ok, port80_reasons = smoke.evaluate_s7(
+        read_log("onb_reset_ok.log"), port80_extra
+    )
+    assert not port80_ok
+    assert any("port 80 served /setup" in reason for reason in port80_reasons)
+
+
+def test_evaluate_s8_accepts_stable_120_second_post_reset_log():
+    ok, reasons = smoke.evaluate_s8(read_log("onb_reset_ok.log"))
+    assert ok, reasons
+
+
+def test_evaluate_s8_rejects_watchdog_marker():
+    ok, reasons = smoke.evaluate_s8(read_log("onb_watchdog.log"))
+    assert not ok
+    assert any("watchdog/stability marker" in reason for reason in reasons)
+
+
+def test_onb_script_uses_quoted_repo_path_lf_and_timed_control_client():
+    argv, timeout, outer_timeout = smoke.build_onb_emulator_argv(
+        smoke.DEFAULT_EMU,
+        "/mnt/e/out/merged image.bin",
+        "/mnt/e/out/app.elf",
+        "/mnt/e/out/onb/trace.json",
+    )
+    assert timeout == 240
+    assert outer_timeout > timeout
+    assert argv[argv.index("--wifi-fw-ap-password") + 1] == "GEOLOCATOR"
+    assert argv[argv.index("--net") + 1] == "user,hostfwd=tcp::18080-:80,hostfwd=tcp::18443-:443"
+    assert argv[argv.index("--control-tcp") + 1] == "127.0.0.1:5556"
+    assert argv[argv.index("--trace") + 1] == "/mnt/e/out/onb/trace.json"
+    script = smoke.build_onb_script(
+        "/mnt/e/Beetroot Academy/Embedded/repo",
+        smoke.DEFAULT_EMU,
+        "/mnt/e/out/merged image.bin",
+        "/mnt/e/out/app.elf",
+        "/mnt/e/out/onb/emu.log",
+        "/mnt/e/out/onb/trace.json",
+        "/mnt/e/out/onb",
+    )
+    assert "\r\n" not in script
+    assert script.endswith("\n")
+    assert "cd -- '/mnt/e/Beetroot Academy/Embedded/repo'" in script
+    assert "'user,hostfwd=tcp::18080-:80,hostfwd=tcp::18443-:443'" in script
+    assert "--timeout 240s" in script
+    assert "control.settimeout(5)" in script
+    assert "wsl.exe" not in script
