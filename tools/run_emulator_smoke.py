@@ -18,6 +18,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_EMU = "/opt/esp-emu-dl/esp-emu-0.49.0-x86_64-unknown-linux-gnu/esp-emu"
 DEFAULT_IMAGE = ".test-build/emu/merged_emu.bin"
 DEFAULT_ELF = ".test-build/idf-emulator/esp32_geophone_source_locator.elf"
+DEFAULT_WDT_IMAGE = ".test-build/emu/merged_emu_wdt.bin"
+DEFAULT_WDT_ELF = ".test-build/idf-emulator-wdt/esp32_geophone_source_locator.elf"
+DEFAULT_WDT_BUILD_DIR = ".test-build/idf-emulator-wdt"
 DEFAULT_OUT_DIR = ".test-build/emu-smoke"
 FLASH_SIZE = 16 * 1024 * 1024
 FLASH_OFFSETS = {"bootloader": 0x0, "partition_table": 0x8000, "app": 0x10000}
@@ -28,7 +31,9 @@ ONB_OUTER_TIMEOUT_SECONDS = 300
 LIMITATIONS = (
     "ESP-EMU cannot prove SD, AD7606 BUSY, TCA9548A, INA3221, or hardware timing. "
     "TFT/LVGL and ADC are not modelled and remain unverified. "
-    "S8 checks watchdog stability only; deterministic watchdog recovery needs a test-only trigger (for example tests/target/stress_app)."
+    "S8 checks watchdog stability only. S9 proves the firmware's recovery path from an interrupt-WDT panic under emulation; "
+    "it does not prove silicon watchdog timing, and production task-WDT behavior is not covered because "
+    "CONFIG_ESP_TASK_WDT_PANIC is unset."
 )
 
 _FATAL_LINE = re.compile(
@@ -413,6 +418,100 @@ def evaluate_s8(log_text: str, extra: dict[str, Any] | None = None) -> tuple[boo
     return not reasons, reasons
 
 
+def evaluate_s9(log_text: str, extra: dict[str, Any] | None = None) -> tuple[bool, list[str]]:
+    """Check one interrupt-WDT panic, firmware reboot, and successful recovery boot."""
+    reasons: list[str] = []
+    if extra:
+        if extra.get("run_error"):
+            reasons.append(f"runner error: {extra['run_error']}")
+        return_code = extra.get("wsl_returncode")
+        if return_code is not None and return_code != 0:
+            reasons.append(f"WSL scenario command exited with {return_code}")
+
+    lines = log_text.splitlines()
+    trigger = "TEST_WDT: triggering interrupt watchdog now"
+    trigger_indices = [index for index, line in enumerate(lines) if trigger in line]
+    if len(trigger_indices) != 1:
+        reasons.append(
+            f"expected exactly one interrupt-WDT trigger marker, found {len(trigger_indices)}"
+        )
+
+    panic_indices = [
+        index
+        for index, line in enumerate(lines)
+        if re.search(r"Guru Meditation Error:", line, re.IGNORECASE)
+    ]
+    if len(panic_indices) != 1:
+        reasons.append(f"expected exactly one panic, found {len(panic_indices)}")
+    if trigger_indices and not any(
+        index > trigger_indices[0]
+        and re.search(r"Guru Meditation Error:.*Interrupt wdt timeout", lines[index], re.IGNORECASE)
+        for index in panic_indices
+    ):
+        reasons.append("missing Interrupt wdt timeout panic after the trigger")
+    if trigger_indices and len(panic_indices) == 1 and panic_indices[0] <= trigger_indices[0]:
+        reasons.append("interrupt-WDT panic occurred before its trigger marker")
+
+    reset_entries = [
+        (index, line)
+        for index, line in enumerate(lines)
+        if _RESET_REASON_LINE.search(line)
+    ]
+    reset_reasons = [
+        match.group(1)
+        for _, line in reset_entries
+        if (match := re.search(r"\breason=([A-Z_]+)", line))
+    ]
+    boot_ids = _RESET_BOOT_ID.findall(log_text)
+    if len(reset_entries) != 2:
+        reasons.append(f"expected exactly two RESET_REASON lines, found {len(reset_entries)}")
+    if reset_entries and trigger_indices and reset_entries[0][0] >= trigger_indices[0]:
+        reasons.append("initial POWERON RESET_REASON appeared after the interrupt-WDT trigger")
+    if len(reset_reasons) != 2:
+        reasons.append("could not read reset reasons from both RESET_REASON lines")
+    elif reset_reasons[0] != "POWERON":
+        reasons.append(f"first reset reason is {reset_reasons[0]!r}; expected POWERON")
+    elif reset_reasons[1] not in {"INT_WDT", "PANIC"}:
+        reasons.append(
+            f"second reset reason is {reset_reasons[1]!r}; expected INT_WDT or PANIC"
+        )
+    if len(boot_ids) != 2:
+        reasons.append(f"expected two RESET_REASON boot_ids, found {len(boot_ids)}")
+    elif boot_ids[0] == boot_ids[1]:
+        reasons.append("recovery boot reused the first boot_id")
+
+    bringup_indices = [
+        index for index, line in enumerate(lines) if "Hardware bring-up completed" in line
+    ]
+    if len(bringup_indices) != 2:
+        reasons.append(
+            f"expected exactly two Hardware bring-up completed markers, found {len(bringup_indices)}"
+        )
+
+    if len(reset_entries) == 2:
+        second_reset_index = reset_entries[1][0]
+        if panic_indices and second_reset_index <= panic_indices[0]:
+            reasons.append("recovery RESET_REASON appeared before the interrupt-WDT panic")
+        skipped_indices = [
+            index
+            for index, line in enumerate(lines)
+            if "TEST_WDT: skipped" in line and index > second_reset_index
+        ]
+        if not skipped_indices:
+            reasons.append("missing TEST_WDT: skipped marker after the recovery reset")
+        elif len(bringup_indices) >= 2 and skipped_indices[0] > bringup_indices[1]:
+            reasons.append("TEST_WDT: skipped appeared after recovery bring-up")
+        if len(bringup_indices) >= 2 and second_reset_index >= bringup_indices[1]:
+            reasons.append("recovery RESET_REASON appeared after recovery bring-up")
+
+    if len(bringup_indices) >= 2:
+        tail_fatal = _panic_lines("\n".join(lines[bringup_indices[1] + 1 :]))
+        if tail_fatal:
+            reasons.append(f"panic/fatal marker after recovery bring-up: {tail_fatal[0].strip()}")
+
+    return not reasons, reasons
+
+
 def parse_task_core_macros(source_text: str) -> dict[str, int]:
     """Resolve integer APP_TASK_CORE_* definitions and aliases from the policy header."""
     raw = {name: value.strip() for name, value in _CORE_DEFINE.findall(source_text)}
@@ -471,6 +570,7 @@ EVALUATORS = {
     "S6": evaluate_s6,
     "S7": evaluate_s7,
     "S8": evaluate_s8,
+    "S9": evaluate_s9,
 }
 
 
@@ -563,7 +663,7 @@ def build_emulator_argv(
     elf: str,
 ) -> tuple[list[str], int, int]:
     """Return emulator argv, scenario timeout, and outer timeout in seconds."""
-    timeout = {"S1": 70, "S2": 70, "S3": 40, "S4": 100}[scenario]
+    timeout = {"S1": 70, "S2": 70, "S3": 40, "S4": 100, "S9": 100}[scenario]
     outer_timeout = timeout + (10 if scenario != "S4" else 15)
     argv = [
         emu,
@@ -576,7 +676,9 @@ def build_emulator_argv(
         "--timeout",
         f"{timeout}s",
     ]
-    if scenario == "S2":
+    if scenario == "S9":
+        argv.append("--no-panic-intercept")
+    elif scenario == "S2":
         argv.extend(("--control-tcp", "127.0.0.1:5556"))
     elif scenario == "S3":
         argv.extend(("--psram-size", "4M"))
@@ -1201,11 +1303,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--emu", default=DEFAULT_EMU, help="esp-emu path inside WSL")
     parser.add_argument("--image", default=DEFAULT_IMAGE, help="merged firmware image")
     parser.add_argument("--elf", default=DEFAULT_ELF, help="emulator-profile ELF")
+    parser.add_argument("--wdt-image", default=DEFAULT_WDT_IMAGE, help="merged emulator-wdt firmware image")
+    parser.add_argument("--wdt-elf", default=DEFAULT_WDT_ELF, help="emulator-wdt firmware ELF")
     parser.add_argument("--out-dir", default=DEFAULT_OUT_DIR, help="logs and JSON report directory")
     parser.add_argument(
         "--build-image",
         action="store_true",
         help="merge the 16 MB flash image from .test-build/idf-emulator",
+    )
+    parser.add_argument(
+        "--build-wdt-image",
+        action="store_true",
+        help="merge the 16 MB flash image from .test-build/idf-emulator-wdt",
     )
     return parser.parse_args(argv)
 
@@ -1218,25 +1327,53 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL: {error}", file=sys.stderr)
         return 2
 
+    all_requested = args.scenario.strip().lower() == "all"
     image = _resolve_path(args.image).resolve()
     elf = _resolve_path(args.elf).resolve()
+    wdt_image = _resolve_path(args.wdt_image).resolve()
+    wdt_elf = _resolve_path(args.wdt_elf).resolve()
     out_dir = _resolve_path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    setup_error = None
-    if args.build_image:
+    normal_setup_error = None
+    if any(scenario != "S9" for scenario in scenarios) and args.build_image:
         try:
             build_merged_image(REPO_ROOT / ".test-build" / "idf-emulator", image)
         except (OSError, ValueError, json.JSONDecodeError) as error:
-            setup_error = f"could not build merged image: {error}"
-    elif not image.is_file():
-        setup_error = f"firmware image does not exist: {image}"
-    if not elf.is_file():
-        setup_error = setup_error or f"firmware ELF does not exist: {elf}"
+            normal_setup_error = f"could not build merged image: {error}"
+    if any(scenario != "S9" for scenario in scenarios):
+        if not args.build_image and not image.is_file():
+            normal_setup_error = f"firmware image does not exist: {image}"
+        if not elf.is_file():
+            normal_setup_error = normal_setup_error or f"firmware ELF does not exist: {elf}"
+
+    wdt_build_error = None
+    if args.build_wdt_image:
+        try:
+            build_merged_image(REPO_ROOT / DEFAULT_WDT_BUILD_DIR, wdt_image)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            wdt_build_error = f"could not build watchdog image: {error}"
+    wdt_image_available = wdt_image.is_file() and not wdt_build_error
+    s9_skip_reason = None
+    if all_requested and wdt_image_available:
+        scenarios.append("S9")
+    elif all_requested:
+        s9_skip_reason = f"watchdog image missing: {wdt_image}"
+        if wdt_build_error:
+            s9_skip_reason += f" ({wdt_build_error})"
+
+    wdt_setup_error = wdt_build_error
+    if "S9" in scenarios:
+        if not wdt_image.is_file():
+            wdt_setup_error = wdt_setup_error or f"watchdog image missing: {wdt_image}"
+        if not wdt_elf.is_file():
+            wdt_setup_error = wdt_setup_error or f"watchdog firmware ELF does not exist: {wdt_elf}"
 
     report: dict[str, Any] = {
         "scenarios": {},
         "image": str(image),
         "elf": str(elf),
+        "wdt_image": str(wdt_image),
+        "wdt_elf": str(wdt_elf),
         "limitations": LIMITATIONS,
     }
     all_passed = True
@@ -1244,11 +1381,11 @@ def main(argv: list[str] | None = None) -> int:
     for scenario in scenarios:
         if scenario in ONB_SCENARIOS:
             if onb_run is None:
-                if setup_error:
+                if normal_setup_error:
                     onb_run = (
                         "",
                         {
-                            "run_error": setup_error,
+                            "run_error": normal_setup_error,
                             "onb": {"client_error": "firmware image or ELF is unavailable"},
                             "_trace_events": None,
                         },
@@ -1258,8 +1395,15 @@ def main(argv: list[str] | None = None) -> int:
                         emu=args.emu, image=image, elf=elf, out_dir=out_dir
                     )
             log_text, extra = onb_run
-        elif setup_error:
-            log_text, extra = "", {"run_error": setup_error}
+        elif scenario == "S9":
+            if wdt_setup_error:
+                log_text, extra = "", {"run_error": wdt_setup_error}
+            else:
+                log_text, extra = _run_scenario(
+                    scenario, emu=args.emu, image=wdt_image, elf=wdt_elf, out_dir=out_dir
+                )
+        elif normal_setup_error:
+            log_text, extra = "", {"run_error": normal_setup_error}
         else:
             log_text, extra = _run_scenario(
                 scenario, emu=args.emu, image=image, elf=elf, out_dir=out_dir
@@ -1281,6 +1425,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{scenario}: {'PASS' if ok else 'FAIL'}")
         for reason in reasons:
             print(f"  - {reason}")
+
+    if s9_skip_reason:
+        report["scenarios"]["S9"] = {
+            "result": "NOT RUN",
+            "reasons": [s9_skip_reason],
+            "log": str(out_dir / "s9.log"),
+        }
+        print("S9: NOT RUN (image missing)")
+        if wdt_build_error:
+            print(f"  - {wdt_build_error}")
 
     report_path = out_dir / "report.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

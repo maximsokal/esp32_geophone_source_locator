@@ -279,6 +279,7 @@ def test_port80_is_not_setup_classifies_no_listener_and_setup_results(
 def test_scenario_selection_includes_s5_through_s8_and_all():
     assert smoke.parse_scenarios("S5,S6,S7,S8") == ["S5", "S6", "S7", "S8"]
     assert smoke.parse_scenarios("all") == list(smoke.SCENARIOS)
+    assert smoke.parse_scenarios("S9") == ["S9"]
 
 
 def test_evaluate_s5_accepts_measured_onboarding_status_and_control():
@@ -446,3 +447,182 @@ def test_onb_script_uses_quoted_repo_path_lf_and_timed_control_client():
     assert "--timeout 240s" in script
     assert "control.settimeout(5)" in script
     assert "wsl.exe" not in script
+
+
+def test_evaluate_s9_accepts_interrupt_watchdog_panic_and_recovery():
+    ok, reasons = smoke.evaluate_s9(read_log("s9_wdt_recovery_ok.log"), {"wsl_returncode": 0})
+    assert ok, reasons
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected_reason"),
+    [
+        ("s9_no_panic.log", "exactly one panic"),
+        ("s9_reboot_loop.log", "exactly one interrupt-WDT trigger"),
+        ("s9_second_boot_poweron.log", "expected INT_WDT or PANIC"),
+        ("s9_no_recovery.log", "Hardware bring-up completed"),
+        ("s9_missing_skipped.log", "missing TEST_WDT: skipped"),
+    ],
+)
+def test_evaluate_s9_rejects_incomplete_or_invalid_watchdog_recovery(
+    fixture: str, expected_reason: str
+):
+    ok, reasons = smoke.evaluate_s9(read_log(fixture))
+    assert not ok
+    assert any(expected_reason in reason for reason in reasons)
+
+
+def test_s9_emulator_argv_runs_100_seconds_with_firmware_panic_handler():
+    argv, timeout, outer_timeout = smoke.build_emulator_argv(
+        "S9", smoke.DEFAULT_EMU, "/mnt/e/wdt.bin", "/mnt/e/wdt.elf"
+    )
+    assert timeout == 100
+    assert outer_timeout > timeout
+    assert argv[argv.index("--firmware") + 1] == "/mnt/e/wdt.bin"
+    assert argv[argv.index("--elf") + 1] == "/mnt/e/wdt.elf"
+    assert "--no-panic-intercept" in argv
+    s1_argv, _, _ = smoke.build_emulator_argv(
+        "S1", smoke.DEFAULT_EMU, "/mnt/e/normal.bin", "/mnt/e/normal.elf"
+    )
+    assert "--no-panic-intercept" not in s1_argv
+
+
+def test_evaluate_s9_rejects_panic_after_recovery_bringup():
+    log_text = read_log("s9_wdt_recovery_ok.log") + (
+        "Guru Meditation Error: Core 0 panic'ed (after recovery).\n"
+    )
+    ok, reasons = smoke.evaluate_s9(log_text)
+    assert not ok
+    assert any("after recovery bring-up" in reason for reason in reasons)
+
+
+def test_all_marks_s9_not_run_when_watchdog_image_is_missing(tmp_path, monkeypatch, capsys):
+    normal_image = tmp_path / "normal.bin"
+    normal_elf = tmp_path / "normal.elf"
+    normal_image.touch()
+    normal_elf.touch()
+    output_dir = tmp_path / "out"
+    monkeypatch.setattr(smoke, "SCENARIOS", ("S1",))
+    monkeypatch.setitem(smoke.EVALUATORS, "S1", lambda _log, _extra: (True, []))
+    monkeypatch.setattr(smoke, "_run_scenario", lambda *_args, **_kwargs: ("", {}))
+
+    return_code = smoke.main(
+        [
+            "--scenario",
+            "all",
+            "--image",
+            str(normal_image),
+            "--elf",
+            str(normal_elf),
+            "--wdt-image",
+            str(tmp_path / "missing-wdt.bin"),
+            "--wdt-elf",
+            str(tmp_path / "missing-wdt.elf"),
+            "--out-dir",
+            str(output_dir),
+        ]
+    )
+
+    report = json.loads((output_dir / "report.json").read_text(encoding="utf-8"))
+    assert return_code == 0
+    assert "S9: NOT RUN (image missing)" in capsys.readouterr().out
+    assert report["scenarios"]["S9"]["result"] == "NOT RUN"
+    assert "image missing" in report["scenarios"]["S9"]["reasons"][0]
+
+
+def test_all_runs_s9_with_its_own_watchdog_image_and_elf(tmp_path, monkeypatch):
+    normal_image = tmp_path / "normal.bin"
+    normal_elf = tmp_path / "normal.elf"
+    wdt_image = tmp_path / "wdt.bin"
+    wdt_elf = tmp_path / "wdt.elf"
+    for path in (normal_image, normal_elf, wdt_image, wdt_elf):
+        path.touch()
+    calls = []
+    monkeypatch.setattr(smoke, "SCENARIOS", ("S1",))
+    monkeypatch.setitem(smoke.EVALUATORS, "S1", lambda _log, _extra: (True, []))
+
+    def fake_run(scenario, *, emu, image, elf, out_dir):
+        calls.append((scenario, image, elf))
+        if scenario == "S9":
+            return read_log("s9_wdt_recovery_ok.log"), {"wsl_returncode": 0}
+        return "", {}
+
+    monkeypatch.setattr(smoke, "_run_scenario", fake_run)
+    return_code = smoke.main(
+        [
+            "--scenario",
+            "all",
+            "--image",
+            str(normal_image),
+            "--elf",
+            str(normal_elf),
+            "--wdt-image",
+            str(wdt_image),
+            "--wdt-elf",
+            str(wdt_elf),
+            "--out-dir",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    assert return_code == 0
+    assert [call[0] for call in calls] == ["S1", "S9"]
+    assert calls[1][1:] == (wdt_image.resolve(), wdt_elf.resolve())
+
+
+def test_explicit_s9_fails_clearly_when_watchdog_image_is_missing(tmp_path, capsys):
+    output_dir = tmp_path / "out"
+    return_code = smoke.main(
+        [
+            "--scenario",
+            "S9",
+            "--wdt-image",
+            str(tmp_path / "missing-wdt.bin"),
+            "--wdt-elf",
+            str(tmp_path / "missing-wdt.elf"),
+            "--out-dir",
+            str(output_dir),
+        ]
+    )
+
+    report = json.loads((output_dir / "report.json").read_text(encoding="utf-8"))
+    output = capsys.readouterr().out
+    assert return_code == 1
+    assert "watchdog image missing" in output
+    assert report["scenarios"]["S9"]["result"] == "FAIL"
+    assert any("watchdog image missing" in reason for reason in report["scenarios"]["S9"]["reasons"])
+
+
+def test_build_wdt_image_uses_emulator_wdt_profile(tmp_path, monkeypatch):
+    wdt_elf = tmp_path / "wdt.elf"
+    wdt_elf.touch()
+    wdt_image = tmp_path / "merged-wdt.bin"
+    build_calls = []
+    monkeypatch.setattr(smoke, "REPO_ROOT", tmp_path)
+
+    def fake_build(build_dir, image_path):
+        build_calls.append((build_dir, image_path))
+        image_path.touch()
+
+    monkeypatch.setattr(smoke, "build_merged_image", fake_build)
+    monkeypatch.setattr(
+        smoke,
+        "_run_scenario",
+        lambda *_args, **_kwargs: (read_log("s9_wdt_recovery_ok.log"), {"wsl_returncode": 0}),
+    )
+    return_code = smoke.main(
+        [
+            "--scenario",
+            "S9",
+            "--build-wdt-image",
+            "--wdt-image",
+            str(wdt_image),
+            "--wdt-elf",
+            str(wdt_elf),
+            "--out-dir",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    assert return_code == 0
+    assert build_calls == [(tmp_path / smoke.DEFAULT_WDT_BUILD_DIR, wdt_image.resolve())]
