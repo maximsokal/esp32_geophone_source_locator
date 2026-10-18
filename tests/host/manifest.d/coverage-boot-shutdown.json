@@ -16,7 +16,8 @@
         "components/keypad/include",
         "components/ui_i18n/include",
         "components/sd_card/include",
-        "components/hw_inventory/include"
+        "components/hw_inventory/include",
+        "components/display/include"
       ]
     },
     {
@@ -50,7 +51,8 @@
         "components/keypad/include",
         "components/ui_i18n/include",
         "components/sd_card/include",
-        "components/hw_inventory/include"
+        "components/hw_inventory/include",
+        "components/display/include"
       ]
     },
     {
@@ -77,7 +79,8 @@
         "tests/host/stubs/app_storage_boot",
         "main",
         "components/keypad/include",
-        "components/ui_i18n/include"
+        "components/ui_i18n/include",
+        "components/display/include"
       ]
     }
   ]

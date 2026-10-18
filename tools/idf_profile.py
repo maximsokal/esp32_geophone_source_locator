@@ -20,6 +20,15 @@ PROFILE_KEYS = {
     "debug": "CONFIG_COMPILER_OPTIMIZATION_DEBUG",
     "performance": "CONFIG_COMPILER_OPTIMIZATION_PERF",
 }
+PROFILE_DEFAULTS = {
+    "emulator": "sdkconfig.emulator.defaults",
+}
+PROFILE_NAMES = tuple(PROFILE_KEYS) + tuple(PROFILE_DEFAULTS)
+EMULATOR_SETTINGS = {
+    "CONFIG_APP_DISPLAY_ENABLED": False,
+    "CONFIG_APP_KEYPAD_ENABLED": False,
+    "CONFIG_SEISMIC_SOURCE_TEST": True,
+}
 _ASSIGNMENT = re.compile(r"^CONFIG_([A-Z0-9_]+)=(.*)$")
 _UNSET = re.compile(r"^#\s+CONFIG_([A-Z0-9_]+)\s+is not set$")
 _CMAKE_DEFAULTS = re.compile(
@@ -28,6 +37,7 @@ _CMAKE_DEFAULTS = re.compile(
 _CONDITIONAL_DEFAULTS = (
     ("GEOLOCATOR_INSIGHTS_PROFILE", "sdkconfig.insights.defaults"),
     ("GEOLOCATOR_KEYPAD_TIMING_PROFILE", "sdkconfig.keypad-timing.defaults"),
+    ("GEOLOCATOR_EMULATOR_PROFILE", "sdkconfig.emulator.defaults"),
 )
 
 
@@ -88,7 +98,7 @@ def resolve_profile(
     """Return deterministic config/build paths after validating a profile."""
 
     profile = profile.lower()
-    if profile not in PROFILE_KEYS:
+    if profile not in PROFILE_NAMES:
         raise ValueError(f"unsupported ESP-IDF build profile: {profile}")
 
     root = Path(project_root).resolve()
@@ -98,12 +108,14 @@ def resolve_profile(
         for path in _split_defaults(inherited_defaults)
     ]
     if profile_defaults is None:
-        profile_defaults = root / f"sdkconfig.profile-{profile}.defaults"
+        default_name = PROFILE_DEFAULTS.get(
+            profile,
+            f"sdkconfig.profile-{profile}.defaults",
+        )
+        profile_defaults = root / default_name
         if not Path(profile_defaults).exists():
             repository_root = Path(__file__).resolve().parent.parent
-            profile_defaults = (
-                repository_root / f"sdkconfig.profile-{profile}.defaults"
-            )
+            profile_defaults = repository_root / default_name
     profile_path = Path(profile_defaults)
     if not profile_path.is_absolute():
         profile_path = root / profile_path
@@ -111,26 +123,42 @@ def resolve_profile(
     resolved_defaults = project_defaults + [
         path for path in inherited if path not in project_defaults and path != profile_path
     ]
-    resolved_defaults.append(profile_path)
+    if profile_path not in resolved_defaults:
+        resolved_defaults.append(profile_path)
 
     values = parse_config_fragments(resolved_defaults)
-    selected = PROFILE_KEYS[profile]
-    other = next(key for key in OPTIMIZATION_KEYS if key != selected)
-    if values.get(selected) is not True or values.get(other) is not False:
-        raise ValueError(
-            f"resolved defaults do not resolve to {profile}: "
-            f"{selected}={values.get(selected)!r}, {other}={values.get(other)!r}"
-        )
+    if profile in PROFILE_KEYS:
+        selected = PROFILE_KEYS[profile]
+        other = next(key for key in OPTIMIZATION_KEYS if key != selected)
+        if values.get(selected) is not True or values.get(other) is not False:
+            raise ValueError(
+                f"resolved defaults do not resolve to {profile}: "
+                f"{selected}={values.get(selected)!r}, {other}={values.get(other)!r}"
+            )
+        optimization = selected.removeprefix("CONFIG_COMPILER_OPTIMIZATION_").lower()
+        settings = {key: values.get(key) for key in OPTIMIZATION_KEYS}
+        build_dir = (root / f"build-profile-{profile}").resolve()
+    else:
+        mismatches = {
+            key: values.get(key)
+            for key, expected in EMULATOR_SETTINGS.items()
+            if values.get(key) is not expected
+        }
+        if mismatches:
+            raise ValueError(
+                f"resolved defaults do not resolve to emulator: {mismatches}"
+            )
+        optimization = None
+        settings = dict(EMULATOR_SETTINGS)
+        build_dir = (root / ".test-build" / "idf-emulator").resolve()
 
-    build_dir = (root / f"build-profile-{profile}").resolve()
     standard_build = (root / "build").resolve()
     if build_dir == standard_build or standard_build in build_dir.parents:
         raise ValueError("profile build directory must stay outside build/")
-    settings = {key: values.get(key) for key in OPTIMIZATION_KEYS}
     return {
         "project_root": str(root),
         "profile": profile,
-        "optimization": selected.removeprefix("CONFIG_COMPILER_OPTIMIZATION_").lower(),
+        "optimization": optimization,
         "settings": settings,
         "sdkconfig_defaults": [str(path) for path in resolved_defaults],
         "cmake_profile_defaults": [
@@ -229,7 +257,7 @@ def _cli() -> int:
     commands.add_parser("prepare-cmake")
     record_parser = commands.add_parser("record-evidence")
     for command in commands.choices.values():
-        command.add_argument("--profile", choices=tuple(PROFILE_KEYS), required=True)
+        command.add_argument("--profile", choices=PROFILE_NAMES, required=True)
         command.add_argument("--project", type=Path, required=True)
         command.add_argument("--inherited-defaults")
     record_parser.add_argument("--firmware", type=Path)

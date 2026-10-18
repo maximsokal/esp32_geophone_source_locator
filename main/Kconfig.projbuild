@@ -47,6 +47,7 @@ menu "Seismic Acquisition"
         default 10000 if SEISMIC_AD7606_RATE_10000
         default 20000 if SEISMIC_AD7606_RATE_20000
         default 40000 if SEISMIC_AD7606_RATE_40000
+        default 20000
 
     choice AD7606_OS_RATIO
         prompt "AD7606 oversampling jumper setting (must match OS0-2 jumpers)" if SEISMIC_SOURCE_AD7606
@@ -77,6 +78,7 @@ menu "Seismic Acquisition"
         default 2 if AD7606_OS_RATIO_2
         default 4 if AD7606_OS_RATIO_4
         default 8 if AD7606_OS_RATIO_8
+        default 1
 
     config AD7606_SPI_CLOCK_HZ
         int
@@ -191,6 +193,28 @@ config APP_STATUS_INDICATOR_ENABLED
         Keep disabled for the current diploma board: its three status LED
         outputs are not connected. Enable only after a board revision supplies
         explicit green/yellow/red GPIO assignments and a separate HIL check.
+
+endmenu
+
+menu "Application display"
+
+config APP_DISPLAY_ENABLED
+    bool "Enable TFT/LVGL display"
+    default y
+    help
+        Keep enabled for normal hardware operation. The TFT/LVGL path is not
+        modelled and remains unverified in the emulator.
+
+endmenu
+
+menu "Application input"
+
+config APP_KEYPAD_ENABLED
+    bool "Enable analog keypad input"
+    default y
+    help
+        Keep enabled for normal hardware operation. Disable only in emulator
+        profiles that do not model ADC1 conversion completion.
 
 endmenu
 

@@ -9,7 +9,8 @@
       ],
       "include_dirs": [
         "tests/host/stubs/max484_reset",
-        "main"
+        "main",
+        "components/display/include"
       ]
     }
   ]

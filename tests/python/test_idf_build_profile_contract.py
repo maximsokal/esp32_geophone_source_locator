@@ -1,5 +1,8 @@
 import hashlib
+import importlib
 import json
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -8,6 +11,7 @@ from shutil import copyfile, which
 import pytest
 
 from tools.idf_profile import (
+    parse_config_fragments,
     resolve_profile,
     write_build_evidence,
     write_profile_cmake_include,
@@ -57,6 +61,337 @@ def test_clean_profile_resolution_metadata_is_deterministic():
     assert first["size_components_report"] == str(
         REPO_ROOT / "build-profile-performance" / "idf-size-components.txt"
     )
+
+
+def test_emulator_profile_uses_only_emulator_settings_and_isolated_paths(monkeypatch):
+    for variable in (
+        "GEOLOCATOR_INSIGHTS_PROFILE",
+        "GEOLOCATOR_KEYPAD_TIMING_PROFILE",
+        "GEOLOCATOR_EMULATOR_PROFILE",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+
+    resolved = resolve_profile("emulator", REPO_ROOT)
+    overlay = REPO_ROOT / "sdkconfig.emulator.defaults"
+
+    assert resolved["profile"] == "emulator"
+    assert resolved["optimization"] is None
+    assert resolved["settings"]["CONFIG_APP_DISPLAY_ENABLED"] is False
+    assert resolved["settings"]["CONFIG_APP_KEYPAD_ENABLED"] is False
+    assert resolved["settings"]["CONFIG_SEISMIC_SOURCE_TEST"] is True
+    assert resolved["cmake_profile_defaults"] == [str(overlay)]
+    assert resolved["build_dir"] == str(REPO_ROOT / ".test-build" / "idf-emulator")
+    assert resolved["sdkconfig"] == str(
+        REPO_ROOT / ".test-build" / "idf-emulator" / "sdkconfig"
+    )
+    assert parse_config_fragments([overlay]) == {
+        "CONFIG_APP_DISPLAY_ENABLED": False,
+        "CONFIG_APP_KEYPAD_ENABLED": False,
+        "CONFIG_SEISMIC_SOURCE_TEST": True,
+    }
+    cli_result = subprocess.run(
+        [
+            sys.executable,
+            str(PROFILE_RESOLVER),
+            "resolve",
+            "--profile",
+            "emulator",
+            "--project",
+            str(REPO_ROOT),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(cli_result.stdout) == resolved
+
+
+def test_emulator_profile_rejects_defaults_that_enable_display_keypad_or_ad7606(tmp_path):
+    wrong_defaults = tmp_path / "sdkconfig.wrong-emulator.defaults"
+    wrong_defaults.write_text(
+        "CONFIG_APP_DISPLAY_ENABLED=y\n"
+        "CONFIG_APP_KEYPAD_ENABLED=y\n"
+        "# CONFIG_SEISMIC_SOURCE_TEST is not set\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="resolved defaults do not resolve to emulator"):
+        resolve_profile("emulator", REPO_ROOT, profile_defaults=wrong_defaults)
+
+
+def _guarded_keypad_blocks(source: str) -> list[str]:
+    return re.findall(r"(?ms)^#if APP_KEYPAD_ENABLED\s*$\n(.*?)^#endif\s*$", source)
+
+
+def test_keypad_default_and_startup_source_gate_cover_runtime_consumers():
+    kconfig = (REPO_ROOT / "main" / "Kconfig.projbuild").read_text(encoding="utf-8")
+    display_config = (REPO_ROOT / "components" / "display" / "include" / "app_display_config.h").read_text(encoding="utf-8")
+    display_source = (REPO_ROOT / "components" / "display" / "display.c").read_text(encoding="utf-8")
+    keypad_config = (REPO_ROOT / "main" / "app_keypad_config.h").read_text(encoding="utf-8")
+    startup = (REPO_ROOT / "main" / "app_startup.c").read_text(encoding="utf-8")
+    shutdown = (REPO_ROOT / "main" / "app_shutdown.c").read_text(encoding="utf-8")
+    boot_ui = (REPO_ROOT / "main" / "app_storage_boot_ui.c").read_text(encoding="utf-8")
+    storage_boot = (REPO_ROOT / "main" / "app_storage_boot.c").read_text(encoding="utf-8")
+    status = (REPO_ROOT / "main" / "app_startup_status.c").read_text(encoding="utf-8")
+
+    assert re.search(
+        r"(?m)^config APP_DISPLAY_ENABLED\s*\n\s*bool[^\n]*\n\s*default y\s*$",
+        kconfig,
+    )
+    normalized_kconfig = re.sub(r"\s+", " ", kconfig)
+    assert "not modelled and remains unverified in the emulator" in normalized_kconfig
+    assert "CONFIG_APP_DISPLAY_ENABLED" in display_config
+    assert "#define APP_DISPLAY_ENABLED 1" in display_config
+    assert "#define APP_DISPLAY_ENABLED 0" in display_config
+    assert "#if APP_DISPLAY_ENABLED" in display_source
+    assert "return ESP_ERR_NOT_SUPPORTED;" in display_source
+
+    assert re.search(
+        r"(?m)^config APP_KEYPAD_ENABLED\s*\n\s*bool[^\n]*\n\s*default y\s*$",
+        kconfig,
+    )
+    assert "CONFIG_APP_KEYPAD_ENABLED" in keypad_config
+    assert "app_display_config.h" in keypad_config
+    assert "&& APP_DISPLAY_ENABLED" in keypad_config
+    assert "#define APP_KEYPAD_ENABLED 1" in keypad_config
+    assert "#define APP_KEYPAD_ENABLED 0" in keypad_config
+
+    startup_blocks = _guarded_keypad_blocks(startup)
+    assert any(
+        "adc_service_init()" in block and "keypad_init()" in block
+        for block in startup_blocks
+    )
+    assert any("keypad_start_event_monitor(" in block for block in startup_blocks)
+    display_blocks = re.findall(r"(?ms)^#if APP_DISPLAY_ENABLED\s*$\n(.*?)^#endif\s*$", startup)
+    assert any("app_storage_boot_ui_ensure_display_initialized()" in block for block in display_blocks)
+    assert any("app_storage_boot_ui_ensure_initialized()" in block for block in display_blocks)
+    assert any("ui_init()" in block for block in display_blocks)
+    assert sum(block.count("ui_boot_set_stage(") for block in display_blocks) == 4
+    assert any(
+        "keypad_stop_event_monitor()" in block
+        for block in _guarded_keypad_blocks(shutdown)
+    )
+    boot_ui_blocks = _guarded_keypad_blocks(boot_ui)
+    assert any("keypad_start_boot_event_monitor(" in block for block in boot_ui_blocks)
+    assert any("keypad_stop_boot_event_monitor()" in block for block in boot_ui_blocks)
+    assert any(
+        "app_storage_boot_set_recovery_ui(&s_recovery_ui);" in block
+        and ".show_continue_without_storage" in block.split("#else", 1)[1]
+        and "show_reason" not in block.split("#else", 1)[1]
+        for block in boot_ui_blocks
+    )
+    status_blocks = _guarded_keypad_blocks(status)
+    assert any("Keypad: OK" in block and "Keypad: SKIPPED" in block for block in status_blocks)
+    status_display_blocks = re.findall(r"(?ms)^#if APP_DISPLAY_ENABLED\s*$\n(.*?)^#endif\s*$", status)
+    assert any("Display: OK" in block and "Display: SKIPPED" in block for block in status_display_blocks)
+    display_ui_blocks = re.findall(r"(?ms)^#if APP_DISPLAY_ENABLED\s*$\n(.*?)^#endif\s*$", boot_ui)
+    assert any("display_init()" in block for block in display_ui_blocks)
+    assert "return ESP_ERR_NOT_SUPPORTED;" in boot_ui.split(
+        "esp_err_t app_storage_boot_ui_ensure_display_initialized(void)", 1
+    )[1].split("esp_err_t app_storage_boot_ui_ensure_initialized(void)", 1)[0]
+    shutdown_display_blocks = re.findall(r"(?ms)^#if APP_DISPLAY_ENABLED\s*$\n(.*?)^#endif\s*$", shutdown)
+    assert any("display_set_enabled(" in block and "display_deinit()" in block for block in shutdown_display_blocks)
+    assert any("ui_shutdown();" in block for block in shutdown_display_blocks)
+    storage_boot_display_blocks = re.findall(r"(?ms)^#if APP_DISPLAY_ENABLED\s*$\n(.*?)^#endif\s*$", storage_boot)
+    assert any("app_storage_boot_ui_ensure_initialized()" in block for block in storage_boot_display_blocks)
+    assert any("ui_boot_show_error(message);" in block for block in storage_boot_display_blocks)
+    diagnostic = storage_boot.split("void app_storage_boot_run_diagnostic(void)", 1)[1]
+    assert diagnostic.index("app_storage_boot_continue_if_no_card(&input)") < diagnostic.index(
+        "app_storage_boot_recover(input)"
+    )
+
+
+def test_emulator_profile_wiring_is_opt_in_and_forces_a_separate_test_build():
+    cmake = (REPO_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    wrapper = (REPO_ROOT / "tools" / "run_idf.ps1").read_text(encoding="utf-8")
+    profile_source = (REPO_ROOT / "tools" / "idf_profile.py").read_text(encoding="utf-8")
+    defaults = (REPO_ROOT / "sdkconfig.emulator.defaults").read_text(encoding="utf-8")
+    docs = (REPO_ROOT / "docs" / "firmware-test-plan.md").read_text(encoding="utf-8")
+
+    assert "GEOLOCATOR_EMULATOR_PROFILE" in cmake
+    assert "sdkconfig.emulator.defaults" in cmake
+    assert ".test-build" in cmake and "message(FATAL_ERROR" in cmake
+    assert '"emulator"' in wrapper
+    assert ".test-build/idf-emulator" in wrapper
+    assert '"emulator": "sdkconfig.emulator.defaults"' in profile_source
+    assert "Never flash this configuration to hardware" in defaults
+    assert "CONFIG_APP_DISPLAY_ENABLED=n" in defaults
+    assert "not modelled" in docs and "unverified in the emulator" in docs
+
+
+def _backend_config_symbols() -> set[str]:
+    symbols = set()
+    source_extensions = {".c", ".h", ".cc", ".cpp", ".hpp"}
+    components_root = REPO_ROOT / "components"
+    for source in components_root.rglob("*"):
+        if source.suffix.lower() not in source_extensions:
+            continue
+        if "tests" in source.relative_to(components_root).parts:
+            continue
+        text = source.read_text(encoding="utf-8", errors="replace")
+        symbols.update(re.findall(r"CONFIG_(?:AD7606|SEISMIC)_[A-Z0-9_]+", text))
+    return symbols
+
+
+def _load_kconfiglib():
+    try:
+        return importlib.import_module("kconfiglib")
+    except ModuleNotFoundError:
+        pass
+
+    idf_python_env = os.environ.get("IDF_PYTHON_ENV_PATH")
+    if not idf_python_env:
+        return None
+
+    env_root = Path(idf_python_env)
+    site_packages = [env_root / "Lib" / "site-packages"]
+    site_packages.extend(env_root.glob("lib/python*/site-packages"))
+    for candidate in site_packages:
+        if candidate.is_dir():
+            sys.path.insert(0, str(candidate))
+            try:
+                return importlib.import_module("kconfiglib")
+            except ModuleNotFoundError:
+                sys.path.pop(0)
+    return None
+
+
+def _backend_kconfig_sources(main_kconfig: Path, config_symbols: set[str]) -> list[Path]:
+    config_names = {symbol.removeprefix("CONFIG_") for symbol in config_symbols}
+    component_kconfigs = sorted(
+        path
+        for path in (REPO_ROOT / "components").rglob("Kconfig*")
+        if path.is_file()
+    )
+    sources = [main_kconfig]
+    for source in component_kconfigs:
+        declarations = set(
+            re.findall(
+                r"(?m)^\s*config\s+([A-Za-z0-9_]+)\b",
+                source.read_text(encoding="utf-8", errors="replace"),
+            )
+        )
+        if declarations.intersection(config_names):
+            sources.append(source)
+    return sources
+
+
+def _check_backend_kconfig_structure(main_kconfig: Path, config_symbols: set[str]):
+    kconfig_sources = _backend_kconfig_sources(main_kconfig, config_symbols)
+    declared = set()
+    source_text = []
+    for source in kconfig_sources:
+        text = source.read_text(encoding="utf-8", errors="replace")
+        source_text.append(text)
+        declared.update(
+            re.findall(r"(?m)^\s*config\s+([A-Za-z0-9_]+)\b", text)
+        )
+
+    declared_config_symbols = {f"CONFIG_{name}" for name in declared}
+    missing = sorted(config_symbols - declared_config_symbols)
+    assert not missing, f"backend CONFIG symbols lack Kconfig definitions: {missing}"
+
+    combined = "\n".join(source_text)
+    for name, expected in (
+        ("SEISMIC_AD7606_SAMPLE_RATE_HZ", "20000"),
+        ("AD7606_OVERSAMPLING_RATIO", "1"),
+    ):
+        block = re.search(
+            rf"(?ms)^\s*config\s+{name}\s*\n(.*?)(?=^\s*(?:config|choice|menu|endmenu|endchoice)\b|\Z)",
+            combined,
+        )
+        assert block, f"missing Kconfig block for {name}"
+        defaults = re.findall(r"(?m)^\s*default\s+([^\n]+)", block.group(1))
+        assert defaults and defaults[-1].strip() == expected, (
+            f"{name} must end with unconditional fallback default {expected}"
+        )
+
+
+def _resolve_backend_kconfig(
+    kconfiglib,
+    main_kconfig: Path,
+    selected_source: str,
+    config_symbols: set[str],
+    scratch: Path,
+) -> dict[str, str]:
+    kconfig_sources = _backend_kconfig_sources(main_kconfig, config_symbols)
+    scratch.mkdir(parents=True, exist_ok=True)
+    top_level = scratch / "Kconfig"
+    top_level.write_text(
+        'mainmenu "Backend CONFIG resolution contract"\n'
+        + "".join(f'source "{source.resolve().as_posix()}"\n' for source in kconfig_sources),
+        encoding="utf-8",
+    )
+
+    previous_srctree = os.environ.get("srctree")
+    os.environ["srctree"] = str(REPO_ROOT)
+    try:
+        kconfig = kconfiglib.Kconfig(str(top_level), warn=False)
+    finally:
+        if previous_srctree is None:
+            os.environ.pop("srctree", None)
+        else:
+            os.environ["srctree"] = previous_srctree
+
+    kconfig.syms[selected_source].set_value(2)
+    values = {}
+    unresolved = {}
+    for config_symbol in sorted(config_symbols):
+        name = config_symbol.removeprefix("CONFIG_")
+        symbol = kconfig.syms.get(name)
+        if symbol is None or not symbol.nodes or not symbol.str_value:
+            unresolved[config_symbol] = {
+                "defined": bool(symbol and symbol.nodes),
+                "value": symbol.str_value if symbol else "",
+            }
+        else:
+            values[name] = symbol.str_value
+    assert not unresolved, (
+        f"backend CONFIG symbols do not resolve for {selected_source}: {unresolved}"
+    )
+    return values
+
+
+def test_backend_config_symbols_resolve_for_test_and_ad7606_sources(tmp_path):
+    config_symbols = _backend_config_symbols()
+    assert config_symbols
+    configured_main = Path(
+        os.environ.get(
+            "GEOLOCATOR_TEST_MAIN_KCONFIG",
+            REPO_ROOT / "main" / "Kconfig.projbuild",
+        )
+    )
+    kconfiglib = _load_kconfiglib()
+
+    if kconfiglib is None:
+        # Static fallback for test environments without the ESP-IDF Kconfiglib.
+        # It checks declarations and the two previously empty numeric defaults;
+        # real expression evaluation runs whenever Kconfiglib is available.
+        _check_backend_kconfig_structure(configured_main, config_symbols)
+        return
+
+    ad7606_values = None
+    for selected_source in ("SEISMIC_SOURCE_TEST", "SEISMIC_SOURCE_AD7606"):
+        values = _resolve_backend_kconfig(
+            kconfiglib,
+            configured_main,
+            selected_source,
+            config_symbols,
+            tmp_path / selected_source,
+        )
+        assert values[selected_source] == "y"
+        if selected_source == "SEISMIC_SOURCE_TEST":
+            assert values["SEISMIC_AD7606_SAMPLE_RATE_HZ"] == "20000"
+            assert values["AD7606_OVERSAMPLING_RATIO"] == "1"
+        else:
+            ad7606_values = values
+
+    assert ad7606_values is not None
+    assert ad7606_values["SEISMIC_AD7606_SAMPLE_RATE_HZ"] == "20000"
+    assert ad7606_values["AD7606_OVERSAMPLING_RATIO"] == "1"
+    assert ad7606_values["AD7606_SPI_CLOCK_HZ"] == "10000000"
+    assert ad7606_values["AD7606_READ_MODE_AFTER_CONVERSION"] == "n"
+    assert ad7606_values["AD7606_READ_MODE_DURING_CONVERSION"] == "n"
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,5 @@
+# Emulator-only profile. Never flash this configuration to hardware.
+# TFT/LVGL is not modelled and remains unverified in the emulator.
+CONFIG_APP_DISPLAY_ENABLED=n
+CONFIG_APP_KEYPAD_ENABLED=n
+CONFIG_SEISMIC_SOURCE_TEST=y

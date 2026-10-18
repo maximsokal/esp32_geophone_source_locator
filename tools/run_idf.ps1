@@ -9,7 +9,7 @@ param(
     [string]$Sdkconfig,
     [string]$Port,
     [string]$Target,
-    [ValidateSet("default", "debug", "performance")]
+    [ValidateSet("default", "debug", "performance", "emulator")]
     [string]$Profile = "default",
 
     [ValidateRange(1, 32)]
@@ -114,7 +114,13 @@ $profileHelperPath = Join-Path $PSScriptRoot "idf_profile.py"
 $profileInheritedDefaults = $env:SDKCONFIG_DEFAULTS
 $profileCmakeInclude = $null
 if ([string]::IsNullOrWhiteSpace($BuildDir)) {
-    $BuildDir = if ($Profile -eq "default") { "build" } else { "build-profile-$Profile" }
+    $BuildDir = if ($Profile -eq "default") {
+        "build"
+    } elseif ($Profile -eq "emulator") {
+        ".test-build/idf-emulator"
+    } else {
+        "build-profile-$Profile"
+    }
 }
 $build = if ([IO.Path]::IsPathRooted($BuildDir)) {
     (Resolve-Path -LiteralPath $BuildDir -ErrorAction SilentlyContinue).Path

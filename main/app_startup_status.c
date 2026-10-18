@@ -1,4 +1,5 @@
 #include "app_startup_status.h"
+#include "app_keypad_config.h"
 
 #include <stdio.h>
 
@@ -58,7 +59,11 @@ static void app_startup_log_reset_reason(void)
 void app_startup_log_success(void)
 {
     app_startup_log_reset_reason();
+#if APP_DISPLAY_ENABLED
     ESP_LOGI(TAG, "Display: OK");
+#else
+    ESP_LOGW(TAG, "Display: SKIPPED");
+#endif
 
     hw_module_info_t sd_card = {0};
     const bool storage_ready =
@@ -79,7 +84,11 @@ void app_startup_log_success(void)
     }
 
     ESP_LOGI(TAG, "Object service: OK");
+#if APP_KEYPAD_ENABLED
     ESP_LOGI(TAG, "Keypad: OK");
+#else
+    ESP_LOGW(TAG, "Keypad: SKIPPED");
+#endif
 
     if (
         wifi_manager_is_setup_mode()

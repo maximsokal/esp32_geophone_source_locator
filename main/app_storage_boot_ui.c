@@ -1,4 +1,5 @@
 #include "app_storage_boot_ui.h"
+#include "app_keypad_config.h"
 
 #include <stdatomic.h>
 
@@ -143,7 +144,9 @@ static void app_storage_boot_ui_shutdown_callback(void *context);
 static void app_storage_boot_ui_finish_prompt(void)
 {
     (void)power_control_set_shutdown_notification_hook(NULL, NULL);
+#if APP_KEYPAD_ENABLED
     keypad_stop_boot_event_monitor();
+#endif
     if (s_key_queue != NULL) {
         (void)xQueueReset(s_key_queue);
         atomic_store_explicit(&s_queue_occupancy, 0U, memory_order_relaxed);
@@ -167,12 +170,23 @@ void app_storage_boot_ui_register(void)
 {
     s_format_retry_pending = false;
     s_format_failure_err = ESP_OK;
+#if APP_KEYPAD_ENABLED
     app_storage_boot_set_recovery_ui(&s_recovery_ui);
+#else
+    /* Missing-card continuation remains available without interactive recovery input. */
+    (void)s_recovery_ui;
+    const app_storage_recovery_ui_t recovery_ui = {
+        .context = NULL,
+        .show_continue_without_storage = app_storage_boot_ui_show_continue_without_storage,
+    };
+    app_storage_boot_set_recovery_ui(&recovery_ui);
+#endif
 }
 
 
 esp_err_t app_storage_boot_ui_ensure_display_initialized(void)
 {
+#if APP_DISPLAY_ENABLED
     if (!s_display_initialized && display_is_ready()) {
         s_display_initialized = true;
     }
@@ -186,6 +200,9 @@ esp_err_t app_storage_boot_ui_ensure_display_initialized(void)
     }
 
     return ESP_OK;
+#else
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
 }
 
 
@@ -480,6 +497,7 @@ static void app_storage_boot_ui_show_reason(
     );
     s_recovery_view_active = true;
 
+#if APP_KEYPAD_ENABLED
     if (keypad_start_boot_event_monitor(
             app_storage_boot_ui_key_callback,
             NULL
@@ -487,6 +505,10 @@ static void app_storage_boot_ui_show_reason(
         app_storage_boot_ui_finish_prompt();
         return;
     }
+#else
+    app_storage_boot_ui_finish_prompt();
+    return;
+#endif
 
     s_prompt_action = reason->action;
     s_prompt_ready = true;

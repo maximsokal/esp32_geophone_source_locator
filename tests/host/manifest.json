@@ -693,7 +693,8 @@
         "components/keypad/include",
         "components/ui_i18n/include",
         "components/sd_card/include",
-        "components/hw_inventory/include"
+        "components/hw_inventory/include",
+        "components/display/include"
       ]
     },
     {
@@ -1525,7 +1526,8 @@
       ],
       "include_dirs": [
         "tests/host/stubs/max484_reset",
-        "main"
+        "main",
+        "components/display/include"
       ]
     },
     {

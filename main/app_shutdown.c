@@ -1,4 +1,5 @@
 #include "app_shutdown.h"
+#include "app_keypad_config.h"
 
 #include "app_poweroff.h"
 
@@ -91,6 +92,7 @@ static void app_shutdown_stop_storage(void)
 
 static void app_shutdown_stop_display(void)
 {
+#if APP_DISPLAY_ENABLED
     esp_err_t err =
         display_set_enabled(
             false
@@ -110,6 +112,7 @@ static void app_shutdown_stop_display(void)
         TAG,
         "Display off"
     );
+#endif
 }
 
 
@@ -125,7 +128,9 @@ void app_shutdown_wait_and_run(void)
         )
     );
 
+#if APP_KEYPAD_ENABLED
     keypad_stop_event_monitor();
+#endif
 
     /*
      * Recovery completion can invalidate/refresh the Web object cache. Drain
@@ -211,8 +216,10 @@ void app_shutdown_wait_and_run(void)
 
     runtime_observability_log_snapshot("after-recorder-finalization");
 
-    /* No recorder/recovery SD traffic remains after this point, so LVGL can exit. */
+    /* No recorder/recovery SD traffic remains after this point, so LVGL can exit when enabled. */
+#if APP_DISPLAY_ENABLED
     ui_shutdown();
+#endif
 
     storage_service_shutdown();
 

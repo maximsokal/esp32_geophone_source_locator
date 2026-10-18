@@ -35,6 +35,7 @@
 #include "web_server.h"
 #include "wifi_manager.h"
 #include "runtime_observability.h"
+#include "app_keypad_config.h"
 
 #include "esp_err.h"
 #include "esp_log.h"
@@ -272,6 +273,7 @@ static void app_startup_initialize_core(void)
      * not a safe idle state, until AD7606 presence/power can be confirmed
      * first. Do not reintroduce this without gating it on that.
      */
+#if APP_KEYPAD_ENABLED
     ESP_ERROR_CHECK(
         adc_service_init()
     );
@@ -279,6 +281,7 @@ static void app_startup_initialize_core(void)
     ESP_ERROR_CHECK(
         keypad_init()
     );
+#endif
 
     const uint32_t spi_started_ms =
         esp_log_timestamp();
@@ -302,9 +305,11 @@ static void app_startup_initialize_services(
     uint32_t stage_started_ms =
         esp_log_timestamp();
 
+#if APP_DISPLAY_ENABLED
     ESP_ERROR_CHECK(
         app_storage_boot_ui_ensure_display_initialized()
     );
+#endif
 
     app_startup_log_elapsed(
         "display_init",
@@ -314,22 +319,26 @@ static void app_startup_initialize_services(
     stage_started_ms =
         esp_log_timestamp();
 
+#if APP_DISPLAY_ENABLED
     ESP_ERROR_CHECK(
         app_storage_boot_ui_ensure_initialized()
     );
 
     runtime_observability_log_snapshot("after-lvgl");
+#endif
 
     app_startup_log_elapsed(
         "boot_screen",
         stage_started_ms
     );
 
+#if APP_DISPLAY_ENABLED
     ui_boot_set_stage(
         module_policy->storage_allowed
             ? "STORAGE..."
             : "STORAGE UNAVAILABLE"
     );
+#endif
 
     stage_started_ms =
         esp_log_timestamp();
@@ -355,9 +364,11 @@ static void app_startup_initialize_services(
      * boot screen and keypad gate blocked for tens of seconds.
      */
     if (module_policy->storage_allowed) {
+#if APP_DISPLAY_ENABLED
         ui_boot_set_stage(
             "ACTIVE OBJECT..."
         );
+#endif
 
         stage_started_ms =
             esp_log_timestamp();
@@ -371,9 +382,11 @@ static void app_startup_initialize_services(
             stage_started_ms
         );
 
+#if APP_DISPLAY_ENABLED
         ui_boot_set_stage(
             "OBJECT STORE..."
         );
+#endif
 
         stage_started_ms =
             esp_log_timestamp();
@@ -408,9 +421,11 @@ static void app_startup_initialize_services(
         ESP_LOGW(TAG, "Skipping SD-backed active-object recovery, object store, and recorder startup");
     }
 
+#if APP_DISPLAY_ENABLED
     ui_boot_set_stage(
         "NETWORK + UI..."
     );
+#endif
 
     stage_started_ms =
         esp_log_timestamp();
@@ -487,8 +502,9 @@ static void app_startup_initialize_services(
 
     /*
      * Keep the dynamic LVGL timer and UI event ingress out of
-     * esp_wifi_start()/phy_init(). The boot screen is already visible, while
-     * ui_init() starts the 42 ms render timer and allows TFT DMA activity.
+     * esp_wifi_start()/phy_init(). With the display enabled, the boot screen
+     * is already visible while ui_init() starts the 42 ms render timer and
+     * allows TFT DMA activity.
      * Starting that runtime work before the radio transition creates an
      * avoidable shared-rail load peak exactly at the brownout boundary.
      * web_server_start() is also deliberately after Wi-Fi: it creates the
@@ -496,16 +512,20 @@ static void app_startup_initialize_services(
      * registered before those asynchronous transitions complete and it
      * performs an immediate state check for an already-running interface.
      */
+#if APP_DISPLAY_ENABLED
     ESP_ERROR_CHECK(
         ui_init()
     );
+#endif
 
+#if APP_KEYPAD_ENABLED
     ESP_ERROR_CHECK(
         keypad_start_event_monitor(
             ui_handle_keypad_event,
             NULL
         )
     );
+#endif
 
     app_startup_log_elapsed(
         "interactive_ready",

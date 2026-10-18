@@ -1,5 +1,6 @@
 #include "display.h"
 
+#include "app_display_config.h"
 #include "display_internal.h"
 
 #include "esp_log.h"
@@ -11,12 +12,16 @@ static const char *TAG =
 
 esp_err_t display_init(void)
 {
+#if APP_DISPLAY_ENABLED
     if (display_is_ready()) {
         return ESP_OK;
     }
 
     return
         display_driver_init();
+#else
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
 }
 
 

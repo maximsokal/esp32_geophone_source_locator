@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "app_poweroff.h"
+#include "app_display_config.h"
 #include "app_storage_boot_ui.h"
 
 #include "app_config.h"
@@ -173,6 +174,7 @@ static void app_storage_boot_failure(
         message
     );
 
+#if APP_DISPLAY_ENABLED
     const esp_err_t ui_err = app_storage_boot_ui_ensure_initialized();
     const bool ui_started = ui_err == ESP_OK;
 
@@ -185,6 +187,7 @@ static void app_storage_boot_failure(
             esp_err_to_name(ui_err)
         );
     }
+#endif
 
     const esp_err_t arm_err =
         power_control_arm_shutdown_button();
@@ -201,6 +204,7 @@ static void app_storage_boot_failure(
 
     (void)sd_card_unmount();
 
+#if APP_DISPLAY_ENABLED
     if (ui_started) {
         ui_shutdown();
     }
@@ -212,6 +216,7 @@ static void app_storage_boot_failure(
 
         display_deinit();
     }
+#endif
 
     power_control_shutdown();
 

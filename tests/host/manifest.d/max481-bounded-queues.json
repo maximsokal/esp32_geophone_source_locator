@@ -163,7 +163,8 @@
         "tests/host/stubs/app_storage_boot",
         "main",
         "components/keypad/include",
-        "components/ui_i18n/include"
+        "components/ui_i18n/include",
+        "components/display/include"
       ]
     },
     {
