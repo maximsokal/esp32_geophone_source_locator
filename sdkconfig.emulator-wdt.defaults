@@ -1,0 +1,3 @@
+# Emulator-only watchdog recovery test profile. Never flash this configuration to hardware.
+CONFIG_APP_TEST_WDT_TRIGGER=y
+CONFIG_APP_TEST_WDT_DELAY_S=25

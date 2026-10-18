@@ -37,6 +37,10 @@
 #include "runtime_observability.h"
 #include "app_keypad_config.h"
 
+#if CONFIG_APP_TEST_WDT_TRIGGER
+#include "app_test_wdt.h"
+#endif
+
 #include "esp_err.h"
 #include "esp_log.h"
 
@@ -657,6 +661,10 @@ void app_startup_run(void)
     );
 
     app_startup_log_success();
+
+#if CONFIG_APP_TEST_WDT_TRIGGER
+    app_test_wdt_start();
+#endif
 
     (void)insights_bridge_publish_runtime();
 

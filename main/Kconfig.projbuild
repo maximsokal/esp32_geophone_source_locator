@@ -388,3 +388,21 @@ menu "INA3221 over-current limits"
             cleared by the next explicit acquisition start.
 
 endmenu
+
+menu "Test-only emulator watchdog"
+
+    config APP_TEST_WDT_TRIGGER
+        bool "Trigger interrupt watchdog once (TEST ONLY)"
+        default n
+        help
+            TEST ONLY. Deliberately hangs the CPU once to exercise
+            interrupt-watchdog recovery in the emulator. NEVER enable for
+            hardware.
+
+    config APP_TEST_WDT_DELAY_S
+        int "Delay before triggering the interrupt watchdog (seconds)"
+        range 5 600
+        default 25
+        depends on APP_TEST_WDT_TRIGGER
+
+endmenu

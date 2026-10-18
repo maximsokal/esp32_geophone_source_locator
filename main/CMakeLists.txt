@@ -1,3 +1,11 @@
+set(APP_TEST_WDT_SOURCES)
+if(CONFIG_APP_TEST_WDT_TRIGGER)
+    list(APPEND APP_TEST_WDT_SOURCES
+        app_test_wdt.c
+        app_test_wdt_policy.c
+    )
+endif()
+
 idf_component_register(
     SRCS
         main.c
@@ -10,6 +18,7 @@ idf_component_register(
         app_storage_boot_policy.c
         app_shutdown.c
         app_poweroff.c
+        ${APP_TEST_WDT_SOURCES}
 
     INCLUDE_DIRS
         "."

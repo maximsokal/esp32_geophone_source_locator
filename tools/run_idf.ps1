@@ -9,7 +9,7 @@ param(
     [string]$Sdkconfig,
     [string]$Port,
     [string]$Target,
-    [ValidateSet("default", "debug", "performance", "emulator")]
+    [ValidateSet("default", "debug", "performance", "emulator", "emulator-wdt")]
     [string]$Profile = "default",
 
     [ValidateRange(1, 32)]
@@ -118,6 +118,8 @@ if ([string]::IsNullOrWhiteSpace($BuildDir)) {
         "build"
     } elseif ($Profile -eq "emulator") {
         ".test-build/idf-emulator"
+    } elseif ($Profile -eq "emulator-wdt") {
+        ".test-build/idf-emulator-wdt"
     } else {
         "build-profile-$Profile"
     }

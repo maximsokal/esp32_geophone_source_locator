@@ -21,13 +21,22 @@ PROFILE_KEYS = {
     "performance": "CONFIG_COMPILER_OPTIMIZATION_PERF",
 }
 PROFILE_DEFAULTS = {
-    "emulator": "sdkconfig.emulator.defaults",
+    "emulator": ("sdkconfig.emulator.defaults",),
+    "emulator-wdt": (
+        "sdkconfig.emulator.defaults",
+        "sdkconfig.emulator-wdt.defaults",
+    ),
 }
 PROFILE_NAMES = tuple(PROFILE_KEYS) + tuple(PROFILE_DEFAULTS)
 EMULATOR_SETTINGS = {
     "CONFIG_APP_DISPLAY_ENABLED": False,
     "CONFIG_APP_KEYPAD_ENABLED": False,
     "CONFIG_SEISMIC_SOURCE_TEST": True,
+}
+EMULATOR_WDT_SETTINGS = {
+    **EMULATOR_SETTINGS,
+    "CONFIG_APP_TEST_WDT_TRIGGER": True,
+    "CONFIG_APP_TEST_WDT_DELAY_S": "25",
 }
 _ASSIGNMENT = re.compile(r"^CONFIG_([A-Z0-9_]+)=(.*)$")
 _UNSET = re.compile(r"^#\s+CONFIG_([A-Z0-9_]+)\s+is not set$")
@@ -38,6 +47,8 @@ _CONDITIONAL_DEFAULTS = (
     ("GEOLOCATOR_INSIGHTS_PROFILE", "sdkconfig.insights.defaults"),
     ("GEOLOCATOR_KEYPAD_TIMING_PROFILE", "sdkconfig.keypad-timing.defaults"),
     ("GEOLOCATOR_EMULATOR_PROFILE", "sdkconfig.emulator.defaults"),
+    ("GEOLOCATOR_EMULATOR_WDT_PROFILE", "sdkconfig.emulator.defaults"),
+    ("GEOLOCATOR_EMULATOR_WDT_PROFILE", "sdkconfig.emulator-wdt.defaults"),
 )
 
 
@@ -108,23 +119,30 @@ def resolve_profile(
         for path in _split_defaults(inherited_defaults)
     ]
     if profile_defaults is None:
-        default_name = PROFILE_DEFAULTS.get(
+        default_names = PROFILE_DEFAULTS.get(
             profile,
-            f"sdkconfig.profile-{profile}.defaults",
+            (f"sdkconfig.profile-{profile}.defaults",),
         )
-        profile_defaults = root / default_name
-        if not Path(profile_defaults).exists():
-            repository_root = Path(__file__).resolve().parent.parent
-            profile_defaults = repository_root / default_name
-    profile_path = Path(profile_defaults)
-    if not profile_path.is_absolute():
-        profile_path = root / profile_path
-    profile_path = profile_path.resolve()
+        profile_paths = []
+        repository_root = Path(__file__).resolve().parent.parent
+        for default_name in default_names:
+            profile_path = root / default_name
+            if not profile_path.exists():
+                profile_path = repository_root / default_name
+            profile_paths.append(profile_path.resolve())
+    else:
+        profile_path = Path(profile_defaults)
+        if not profile_path.is_absolute():
+            profile_path = root / profile_path
+        profile_paths = [profile_path.resolve()]
     resolved_defaults = project_defaults + [
-        path for path in inherited if path not in project_defaults and path != profile_path
+        path
+        for path in inherited
+        if path not in project_defaults and path not in profile_paths
     ]
-    if profile_path not in resolved_defaults:
-        resolved_defaults.append(profile_path)
+    resolved_defaults.extend(
+        path for path in profile_paths if path not in resolved_defaults
+    )
 
     values = parse_config_fragments(resolved_defaults)
     if profile in PROFILE_KEYS:
@@ -139,18 +157,19 @@ def resolve_profile(
         settings = {key: values.get(key) for key in OPTIMIZATION_KEYS}
         build_dir = (root / f"build-profile-{profile}").resolve()
     else:
+        expected_settings = (
+            EMULATOR_WDT_SETTINGS if profile == "emulator-wdt" else EMULATOR_SETTINGS
+        )
         mismatches = {
             key: values.get(key)
-            for key, expected in EMULATOR_SETTINGS.items()
-            if values.get(key) is not expected
+            for key, expected in expected_settings.items()
+            if values.get(key) != expected
         }
         if mismatches:
-            raise ValueError(
-                f"resolved defaults do not resolve to emulator: {mismatches}"
-            )
+            raise ValueError(f"resolved defaults do not resolve to {profile}: {mismatches}")
         optimization = None
-        settings = dict(EMULATOR_SETTINGS)
-        build_dir = (root / ".test-build" / "idf-emulator").resolve()
+        settings = dict(expected_settings)
+        build_dir = (root / ".test-build" / f"idf-{profile}").resolve()
 
     standard_build = (root / "build").resolve()
     if build_dir == standard_build or standard_build in build_dir.parents:

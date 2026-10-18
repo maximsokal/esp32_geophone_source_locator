@@ -68,6 +68,7 @@ def test_emulator_profile_uses_only_emulator_settings_and_isolated_paths(monkeyp
         "GEOLOCATOR_INSIGHTS_PROFILE",
         "GEOLOCATOR_KEYPAD_TIMING_PROFILE",
         "GEOLOCATOR_EMULATOR_PROFILE",
+        "GEOLOCATOR_EMULATOR_WDT_PROFILE",
     ):
         monkeypatch.delenv(variable, raising=False)
 
@@ -104,6 +105,74 @@ def test_emulator_profile_uses_only_emulator_settings_and_isolated_paths(monkeyp
         text=True,
     )
     assert json.loads(cli_result.stdout) == resolved
+
+
+def test_emulator_wdt_profile_layers_emulator_then_wdt_and_isolates_build(monkeypatch):
+    for variable in (
+        "GEOLOCATOR_INSIGHTS_PROFILE",
+        "GEOLOCATOR_KEYPAD_TIMING_PROFILE",
+        "GEOLOCATOR_EMULATOR_PROFILE",
+        "GEOLOCATOR_EMULATOR_WDT_PROFILE",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+
+    resolved = resolve_profile("emulator-wdt", REPO_ROOT)
+    emulator_overlay = REPO_ROOT / "sdkconfig.emulator.defaults"
+    wdt_overlay = REPO_ROOT / "sdkconfig.emulator-wdt.defaults"
+
+    assert resolved["profile"] == "emulator-wdt"
+    assert resolved["optimization"] is None
+    assert resolved["settings"] == {
+        "CONFIG_APP_DISPLAY_ENABLED": False,
+        "CONFIG_APP_KEYPAD_ENABLED": False,
+        "CONFIG_SEISMIC_SOURCE_TEST": True,
+        "CONFIG_APP_TEST_WDT_TRIGGER": True,
+        "CONFIG_APP_TEST_WDT_DELAY_S": "25",
+    }
+    assert resolved["cmake_profile_defaults"] == [
+        str(emulator_overlay),
+        str(wdt_overlay),
+    ]
+    assert resolved["sdkconfig_defaults"][-2:] == [
+        str(emulator_overlay),
+        str(wdt_overlay),
+    ]
+    assert resolved["build_dir"] == str(REPO_ROOT / ".test-build" / "idf-emulator-wdt")
+    assert resolved["sdkconfig"] == str(
+        REPO_ROOT / ".test-build" / "idf-emulator-wdt" / "sdkconfig"
+    )
+    assert parse_config_fragments([wdt_overlay]) == {
+        "CONFIG_APP_TEST_WDT_TRIGGER": True,
+        "CONFIG_APP_TEST_WDT_DELAY_S": "25",
+    }
+
+    cli_result = subprocess.run(
+        [
+            sys.executable,
+            str(PROFILE_RESOLVER),
+            "resolve",
+            "--profile",
+            "emulator-wdt",
+            "--project",
+            str(REPO_ROOT),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(cli_result.stdout) == resolved
+
+
+def test_emulator_wdt_profile_rejects_an_overlay_without_the_trigger(tmp_path):
+    wrong_defaults = tmp_path / "sdkconfig.wrong-emulator-wdt.defaults"
+    wrong_defaults.write_text(
+        "CONFIG_APP_TEST_WDT_TRIGGER=n\n"
+        "CONFIG_APP_TEST_WDT_DELAY_S=25\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="resolved defaults do not resolve to emulator-wdt"):
+        resolve_profile("emulator-wdt", REPO_ROOT, profile_defaults=wrong_defaults)
 
 
 def test_emulator_profile_rejects_defaults_that_enable_display_keypad_or_ad7606(tmp_path):
@@ -213,10 +282,115 @@ def test_emulator_profile_wiring_is_opt_in_and_forces_a_separate_test_build():
     assert ".test-build" in cmake and "message(FATAL_ERROR" in cmake
     assert '"emulator"' in wrapper
     assert ".test-build/idf-emulator" in wrapper
-    assert '"emulator": "sdkconfig.emulator.defaults"' in profile_source
+    assert '"emulator": ("sdkconfig.emulator.defaults",)' in profile_source
     assert "Never flash this configuration to hardware" in defaults
     assert "CONFIG_APP_DISPLAY_ENABLED=n" in defaults
     assert "not modelled" in docs and "unverified in the emulator" in docs
+    assert "GEOLOCATOR_EMULATOR_WDT_PROFILE" in cmake
+    assert "sdkconfig.emulator-wdt.defaults" in cmake
+    assert '"emulator-wdt"' in wrapper
+    assert ".test-build/idf-emulator-wdt" in wrapper
+    assert "CONFIG_APP_TEST_WDT_TRIGGER=y" not in defaults
+    assert "-Action build -Profile emulator-wdt" in docs
+    assert "TEST_WDT: arming interrupt-watchdog test in <N> s" in docs
+    assert "TEST_WDT: triggering interrupt watchdog now" in docs
+    assert "TEST_WDT: skipped, reset reason is not POWERON (<name>)" in docs
+
+
+def _resolve_app_test_wdt_kconfig(kconfiglib, scratch: Path):
+    scratch.mkdir(parents=True, exist_ok=True)
+    top_level = scratch / "Kconfig"
+    main_kconfig = (REPO_ROOT / "main" / "Kconfig.projbuild").resolve()
+    top_level.write_text(
+        'mainmenu "App test watchdog contract"\n'
+        f'source "{main_kconfig.as_posix()}"\n',
+        encoding="utf-8",
+    )
+
+    previous_srctree = os.environ.get("srctree")
+    os.environ["srctree"] = str(REPO_ROOT)
+    try:
+        return kconfiglib.Kconfig(str(top_level), warn=False)
+    finally:
+        if previous_srctree is None:
+            os.environ.pop("srctree", None)
+        else:
+            os.environ["srctree"] = previous_srctree
+
+
+def test_test_wdt_is_off_by_default_and_only_present_in_the_wdt_overlay(tmp_path):
+    kconfig_text = (REPO_ROOT / "main" / "Kconfig.projbuild").read_text(encoding="utf-8")
+    trigger_block = re.search(
+        r"(?ms)^[ \t]*config APP_TEST_WDT_TRIGGER\s*\n(.*?)(?=^[ \t]*(?:config|endmenu)\b|\Z)",
+        kconfig_text,
+    )
+    delay_block = re.search(
+        r"(?ms)^[ \t]*config APP_TEST_WDT_DELAY_S\s*\n(.*?)(?=^[ \t]*(?:config|endmenu)\b|\Z)",
+        kconfig_text,
+    )
+    assert trigger_block
+    assert re.search(r"(?m)^[ \t]*bool\b", trigger_block.group(1))
+    assert re.search(r"(?m)^[ \t]*default n\s*$", trigger_block.group(1))
+    assert delay_block
+    assert re.search(r"(?m)^[ \t]*range 5 600\s*$", delay_block.group(1))
+    assert re.search(r"(?m)^[ \t]*default 25\s*$", delay_block.group(1))
+    assert re.search(r"(?m)^[ \t]*depends on APP_TEST_WDT_TRIGGER\s*$", delay_block.group(1))
+
+    for defaults in (
+        REPO_ROOT / "sdkconfig.defaults",
+        REPO_ROOT / "sdkconfig",
+        REPO_ROOT / "sdkconfig.emulator.defaults",
+    ):
+        assert parse_config_fragments([defaults]).get("CONFIG_APP_TEST_WDT_TRIGGER") is not True
+
+    kconfiglib = _load_kconfiglib()
+    if kconfiglib is None:
+        return
+
+    kconfig = _resolve_app_test_wdt_kconfig(kconfiglib, tmp_path / "kconfig")
+    trigger = kconfig.syms["APP_TEST_WDT_TRIGGER"]
+    delay = kconfig.syms["APP_TEST_WDT_DELAY_S"]
+    assert trigger.str_value == "n"
+    trigger.set_value(2)
+    assert trigger.str_value == "y"
+    assert delay.str_value == "25"
+
+
+def test_app_test_wdt_source_and_startup_hook_are_compile_time_gated():
+    wdt_source = (REPO_ROOT / "main" / "app_test_wdt.c").read_text(encoding="utf-8")
+    startup = (REPO_ROOT / "main" / "app_startup.c").read_text(encoding="utf-8")
+    main_cmake = (REPO_ROOT / "main" / "CMakeLists.txt").read_text(encoding="utf-8")
+
+    assert re.match(
+        r'\s*#include "sdkconfig\.h"\s*\n\s*#if CONFIG_APP_TEST_WDT_TRIGGER\s*\n',
+        wdt_source,
+    )
+    assert re.search(r"(?m)^#endif\s*$", wdt_source.rstrip())
+    startup_blocks = re.findall(
+        r"(?ms)^#if CONFIG_APP_TEST_WDT_TRIGGER\s*$\n(.*?)^#endif\s*$",
+        startup,
+    )
+    assert any(re.search(r"(?m)^\s*app_test_wdt_start\(\);\s*$", block) for block in startup_blocks)
+    assert startup.index("app_startup_log_success();") < startup.index("app_test_wdt_start();")
+    cmake_gate = re.search(
+        r"(?ms)if\(CONFIG_APP_TEST_WDT_TRIGGER\)(.*?)endif\(\)",
+        main_cmake,
+    )
+    assert cmake_gate
+    assert "app_test_wdt.c" in cmake_gate.group(1)
+    assert "app_test_wdt_policy.c" in cmake_gate.group(1)
+
+    start_references = []
+    for source in (REPO_ROOT / "main").rglob("*"):
+        if source.suffix.lower() not in {".c", ".h"}:
+            continue
+        if "app_test_wdt_start" in source.read_text(encoding="utf-8", errors="replace"):
+            start_references.append(source.relative_to(REPO_ROOT).as_posix())
+    assert set(start_references) == {
+        "main/app_startup.c",
+        "main/app_test_wdt.c",
+        "main/app_test_wdt.h",
+    }
 
 
 def _backend_config_symbols() -> set[str]:

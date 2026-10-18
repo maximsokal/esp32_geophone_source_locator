@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "app_test_wdt_policy",
+      "sources": [
+        "main/app_test_wdt_policy.c",
+        "tests/host/app_test_wdt_policy_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/max484_reset",
+        "main"
+      ]
+    }
+  ]
+}

@@ -35,6 +35,29 @@ if(GEOLOCATOR_EMULATOR_PROFILE OR "$ENV{GEOLOCATOR_EMULATOR_PROFILE}" STREQUAL "
     list(APPEND SDKCONFIG_DEFAULTS "sdkconfig.emulator.defaults")
 endif()
 
+# The watchdog-trigger profile is emulator-only and extends the emulator
+# defaults in order. Keep direct CMake selection isolated from build/ as well.
+if(GEOLOCATOR_EMULATOR_WDT_PROFILE OR "$ENV{GEOLOCATOR_EMULATOR_WDT_PROFILE}" STREQUAL "1")
+    get_filename_component(_geolocator_emulator_wdt_build_dir "${CMAKE_BINARY_DIR}" ABSOLUTE)
+    get_filename_component(_geolocator_emulator_wdt_test_root "${CMAKE_SOURCE_DIR}/.test-build" ABSOLUTE)
+    file(TO_CMAKE_PATH "${_geolocator_emulator_wdt_build_dir}" _geolocator_emulator_wdt_build_dir)
+    file(TO_CMAKE_PATH "${_geolocator_emulator_wdt_test_root}" _geolocator_emulator_wdt_test_root)
+    string(FIND
+        "${_geolocator_emulator_wdt_build_dir}/"
+        "${_geolocator_emulator_wdt_test_root}/"
+        _geolocator_emulator_wdt_build_prefix_index
+    )
+    if(NOT _geolocator_emulator_wdt_build_prefix_index EQUAL 0 OR
+        "${_geolocator_emulator_wdt_build_dir}" STREQUAL "${_geolocator_emulator_wdt_test_root}")
+        message(FATAL_ERROR "The emulator-wdt profile requires a separate build directory under .test-build/.")
+    endif()
+    list(FIND SDKCONFIG_DEFAULTS "sdkconfig.emulator.defaults" _geolocator_emulator_defaults_index)
+    if(_geolocator_emulator_defaults_index EQUAL -1)
+        list(APPEND SDKCONFIG_DEFAULTS "sdkconfig.emulator.defaults")
+    endif()
+    list(APPEND SDKCONFIG_DEFAULTS "sdkconfig.emulator-wdt.defaults")
+endif()
+
 # The production project is pinned to ESP32-S3. ESP-TEE is an optional IDF
 # component, but IDF 5.5 only supports it on C6/H2/C5 and otherwise prints a
 # misleading configure-time notice while scanning every component.
