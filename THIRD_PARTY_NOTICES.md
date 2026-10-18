@@ -10,7 +10,7 @@ This project includes third-party components and assets listed below. They remai
 | espressif/button | 4.2.0 | Apache-2.0 | [esp-iot-solution/button](https://github.com/espressif/esp-iot-solution/tree/master/components/button) | Direct dependency; keypad and power-control firmware |
 | espressif/cbor | 0.6.1~4 | MIT | [idf-extra-components/cbor](https://github.com/espressif/idf-extra-components/tree/master/cbor) | Transitive ESP Insights dependency; Insights is disabled in the current configuration |
 | espressif/cmake_utilities | 0.5.3 | Apache-2.0 | [esp-iot-solution/cmake_utilities](https://github.com/espressif/esp-iot-solution/tree/master/tools/cmake_utilities) | Transitive build helper |
-| espressif/esp-dsp | 1.8.2 | Apache-2.0 | [espressif/esp-dsp](https://github.com/espressif/esp-dsp) | Declared in `components/seismic_dsp/CMakeLists.txt` and `idf_component.yml`; no ESP-DSP API calls or `esp_dsp.h` includes were found, so it is unused and a candidate for removal |
+| espressif/esp-dsp | 1.8.2 | Apache-2.0 | [espressif/esp-dsp](https://github.com/espressif/esp-dsp) | Declared but unused; kept intentionally: pinned by the architecture contract test (`tests/python/test_architecture_refactor_contract.py`). No ESP-DSP API calls or `esp_dsp.h` includes were found |
 | espressif/esp_diag_data_store | 1.1.1 | Apache-2.0 | [esp-insights/esp_diag_data_store](https://github.com/espressif/esp-insights/tree/main/components/esp_diag_data_store) | Transitive ESP Insights dependency; Insights is disabled in the current configuration |
 | espressif/esp_diagnostics | 1.3.4 | Apache-2.0 | [esp-insights/esp_diagnostics](https://github.com/espressif/esp-insights/tree/main/components/esp_diagnostics) | Transitive ESP Insights dependency; Insights is disabled in the current configuration |
 | espressif/esp_insights | 1.3.4 | Apache-2.0 | [esp-insights/esp_insights](https://github.com/espressif/esp-insights/tree/main/components/esp_insights) | Optional; disabled in `sdkconfig` (lines 631 and 2507); integration is guarded by `CONFIG_APP_ESP_INSIGHTS` |
@@ -74,6 +74,8 @@ The Nordic license files are provided with the matching nRF Connect SDK release.
 | Segno | 1.6.6 in generator instructions; not installed in the audit environment | BSD-3-Clause | [heuer/segno](https://github.com/heuer/segno) | Build-only QR golden-fixture generator |
 | pytest | 9.0.1 in the audit environment; not pinned by the project | MIT | [pytest-dev/pytest](https://github.com/pytest-dev/pytest) | Test-only Python runner |
 | Seeed PlatformIO platform | Commit 1ec1287f8e4bc4067a6fd593991e36875aef989f | Apache-2.0 | [Seeed-Studio/platform-seeedboards](https://github.com/Seeed-Studio/platform-seeedboards) | Build-only; optional legacy smoke build |
+| Espressif esp-emu (esp-emulator) | v0.49.0 | Apache-2.0 | [espressif/esp-emulator](https://github.com/espressif/esp-emulator); [LICENSE](https://raw.githubusercontent.com/espressif/esp-emulator/main/LICENSE) | Dev/test-only tool used by `tools/run_emulator_smoke.py` inside WSL. The prebuilt Linux x86_64 binary is downloaded from the project's GitHub release with SHA-256 verification; it is not bundled in firmware, stored in the repository, or modified |
+| WSL2 Ubuntu 26.04 and west | Ubuntu 26.04; west version not specified | Not individually listed | [Ubuntu](https://ubuntu.com/), [west](https://github.com/zephyrproject-rtos/west) | Dev-only host tooling for `native_sim`: WSL2 Ubuntu 26.04 with apt packages `gcc`, `cmake`, `ninja`, `dtc`, `python3-venv`, and west |
 | RBJ Audio EQ Cookbook formulas | Not applicable | N/A (reference only; no imported implementation found) | [W3C Audio EQ Cookbook](https://www.w3.org/TR/audio-eq-cookbook/) | Formula reference only; no third-party implementation code identified |
 
 ## KiCad design files
@@ -174,4 +176,5 @@ Original project work includes the firmware in `components/`, `main/`, and `nRF5
 - The embedded Montserrat TTF reports version 9.000; the WebUI `@fontsource/montserrat` package is separately identified as version 5.3.0.
 - The SPIFFS revision is reported by Espressif's ESP-IDF v5.5.4 `.gitmodules` and was not verified locally.
 - Dev-only transitive npm dependencies were not individually license-audited. The production lockfile set contains 19 packages (18 MIT, one BSD-3-Clause `ieee754`) with no GPL, LGPL, AGPL, or unknown licenses. The complete transitive ESP-IDF managed-component dependency tree was also outside the audit scope.
+- The license of the esp-emu release binary is assumed to match the repository license; this was not separately verified.
 - `lv_font_conv` is identified as MIT by upstream package metadata, but its source/license was not present locally in the firmware audit.
