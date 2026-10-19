@@ -411,11 +411,14 @@ function Invoke-WestTargetTestBuild([bool]$WithChannelSounding) {
     )
     if ($WithChannelSounding) {
         $productionConfCmake = $productionConf.Replace('\', '/')
+        $productionOverlay = Join-Path (Split-Path -Parent $productionConf) "app.overlay"
+        $productionOverlayCmake = $productionOverlay.Replace('\', '/')
         $csTestConfCmake = $csTestConf.Replace('\', '/')
         $args += @(
             "--",
             "-DCONF_FILE=$productionConfCmake",
-            "-DEXTRA_CONF_FILE=$csTestConfCmake"
+            "-DEXTRA_CONF_FILE=$csTestConfCmake",
+            "-DEXTRA_DTC_OVERLAY_FILE=$productionOverlayCmake"
         )
     }
 

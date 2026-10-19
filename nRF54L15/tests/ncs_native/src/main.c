@@ -14,10 +14,12 @@
 #include "nrf_sensor_bus_zephyr.h"
 #include "nrf_watchdog_zephyr.h"
 
+#if !defined(CONFIG_WATCHDOG)
 uint32_t nrf_watchdog_zephyr_boot_reset_cause(void)
 {
 	return 0U;
 }
+#endif
 
 ZTEST(nrf_log_runtime, test_runtime_builds_and_measures_a_maximum_block)
 {

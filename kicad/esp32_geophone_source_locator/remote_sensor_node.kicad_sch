@@ -2950,12 +2950,6 @@
 		(uuid "cbdeeea1-c506-41ac-ae92-919a775d70b9")
 	)
 	(junction
-		(at 74.93 148.59)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "ce186636-8713-45dc-83e5-23f12525ebeb")
-	)
-	(junction
 		(at 139.7 60.96)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -3205,7 +3199,7 @@
 	)
 	(wire
 		(pts
-			(xy 82.55 153.67) (xy 115.57 153.67)
+			(xy 114.3 144.78) (xy 115.57 144.78)
 		)
 		(stroke
 			(width 0)
@@ -3222,6 +3216,16 @@
 			(type default)
 		)
 		(uuid "1e1c00be-0e6c-4089-a658-b8051511947d")
+	)
+	(wire
+		(pts
+			(xy 60.96 148.59) (xy 83.82 148.59)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1e4814e5-33e8-471d-868c-02d1a65fcb19")
 	)
 	(wire
 		(pts
@@ -3322,6 +3326,16 @@
 			(type default)
 		)
 		(uuid "424ac6e3-4c3a-4313-ba99-4e564bb75eb2")
+	)
+	(wire
+		(pts
+			(xy 115.57 144.78) (xy 115.57 153.67)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "45806985-4013-4152-b6b8-082286c4992a")
 	)
 	(wire
 		(pts
@@ -3552,26 +3566,6 @@
 			(type default)
 		)
 		(uuid "7611cfbb-98a7-4b33-824a-df7bfc3eb2d4")
-	)
-	(wire
-		(pts
-			(xy 74.93 148.59) (xy 74.93 153.67)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7790e6c2-0def-437c-8c37-a669f9352932")
-	)
-	(wire
-		(pts
-			(xy 74.93 148.59) (xy 83.82 148.59)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7dcdecdc-2364-4fad-bf54-e1f9d0266f52")
 	)
 	(wire
 		(pts
@@ -3875,16 +3869,6 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 148.59) (xy 74.93 148.59)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e0ec7906-1b2e-40f6-9fd8-91c651073c7c")
-	)
-	(wire
-		(pts
 			(xy 22.86 109.22) (xy 34.29 109.22)
 		)
 		(stroke
@@ -3892,6 +3876,16 @@
 			(type default)
 		)
 		(uuid "e45ef34d-52af-477e-be1b-b6d6e0b7b04d")
+	)
+	(wire
+		(pts
+			(xy 102.87 144.78) (xy 106.68 144.78)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e8ee6bdf-1a7a-489c-a6de-4b6e2f4c23a7")
 	)
 	(wire
 		(pts
@@ -3955,6 +3949,29 @@
 		(uuid "0661c299-73dd-4624-8626-3af2583e290d")
 		(property "RJ45 GND" ""
 			(at 140.97 73.66 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+					(italic yes)
+				)
+				(justify right)
+			)
+		)
+	)
+	(label "RJ45 GND"
+		(at 102.87 144.78 180)
+		(fields_autoplaced yes)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "0cc7a86a-0cfa-4cb7-9c21-52b6a5ebb1c6")
+		(property "RJ45 GND" ""
+			(at 102.87 146.05 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6738,7 +6755,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 78.74 153.67 90)
+		(at 110.49 144.78 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -6749,7 +6766,7 @@
 		(fields_autoplaced yes)
 		(uuid "9fdc0751-74b9-471d-bfdb-7817ddfa7f46")
 		(property "Reference" "R27"
-			(at 78.74 147.32 90)
+			(at 110.49 138.43 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6759,7 +6776,7 @@
 			)
 		)
 		(property "Value" "3.9 k"
-			(at 78.74 149.86 90)
+			(at 110.49 140.97 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6769,7 +6786,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0805_2012Metric"
-			(at 78.74 155.448 90)
+			(at 110.49 146.558 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6780,7 +6797,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 78.74 153.67 0)
+			(at 110.49 144.78 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6791,7 +6808,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 78.74 153.67 0)
+			(at 110.49 144.78 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -7998,4 +8015,5 @@
 			(page "1")
 		)
 	)
+	(embedded_fonts no)
 )

@@ -35,6 +35,15 @@ target_sources(app PRIVATE
     ../../src/nrf_cs_pair_runtime_zephyr.c
 )
 
+if(CONFIG_BT_CHANNEL_SOUNDING)
+    target_sources(app PRIVATE
+        ../../src/nrf_cs_event_overflow.c
+        ../../src/nrf_hci_workqueue.c
+        ../../src/nrf_watchdog_health.c
+        ../../src/nrf_watchdog_zephyr.c
+    )
+endif()
+
 if(CONFIG_BOARD_NATIVE_SIM)
     target_sources(app PRIVATE src/fake_i2c.c)
 endif()
