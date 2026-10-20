@@ -79,6 +79,9 @@ typedef struct {
     bool last_good_snapshot_valid;
     uint64_t last_good_snapshot_ms;
     nrf_topology_snapshot_t last_good_snapshot;
+    nrf_topology_snapshot_t *active_snapshot;
+    bool direct_conflict_snapshot_valid;
+    nrf_topology_snapshot_t direct_conflict_snapshot;
     bool expected_main_identity_valid;
     nrf_topology_node_snapshot_t expected_main_identity;
     nrf_upstream_status_cache_t main_status_cache;
@@ -154,6 +157,9 @@ static bool s_frozen_ranging_result_valid = false;
 static EXT_RAM_BSS_ATTR nrf_topology_ranging_result_t s_frozen_ranging_result;
 static nrf_topology_worker_state_t s_worker_state;
 static nrf_topology_log_state_t s_topology_log_state;
+static bool s_direct_block_log_valid;
+static uint32_t s_direct_block_log_ms;
+static unsigned s_direct_block_log_conflicts;
 static nrf_topology_service_stack_stats_t s_stack_stats;
 #if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
 static nrf_log_collector_t *s_nrf_log_collector;
@@ -423,6 +429,106 @@ static int platform_selected_channel(const nrf_topology_platform_t *platform)
         ? (int)platform->requested_mux_channel : -1;
 }
 
+static unsigned platform_snapshot_conflict_count(
+    const nrf_topology_snapshot_t *snapshot)
+{
+    unsigned conflicts = 0U;
+    if (snapshot == NULL) {
+        return 0U;
+    }
+    conflicts += snapshot->main.state == NRF_TOPOLOGY_NODE_CONFLICT ? 1U : 0U;
+    for (size_t index = 0U; index < NRF_TOPOLOGY_REMOTE_COUNT; ++index) {
+        conflicts += snapshot->remotes[index].state == NRF_TOPOLOGY_NODE_CONFLICT
+            ? 1U : 0U;
+    }
+    return conflicts;
+}
+
+static unsigned platform_conflict_count(const nrf_topology_platform_t *platform)
+{
+    unsigned conflicts = platform_snapshot_conflict_count(
+        platform != NULL ? platform->active_snapshot : NULL);
+    const unsigned last_good_conflicts = platform != NULL &&
+        platform->last_good_snapshot_valid
+        ? platform_snapshot_conflict_count(&platform->last_good_snapshot) : 0U;
+    if (last_good_conflicts > conflicts) {
+        conflicts = last_good_conflicts;
+    }
+    const unsigned blocked_conflicts = platform != NULL &&
+        platform->direct_conflict_snapshot_valid
+        ? platform_snapshot_conflict_count(&platform->direct_conflict_snapshot) : 0U;
+    if (blocked_conflicts > conflicts) {
+        conflicts = blocked_conflicts;
+    }
+    return conflicts;
+}
+
+static void platform_capture_direct_conflict_snapshot(
+    nrf_topology_platform_t *platform)
+{
+    if (platform == NULL) {
+        return;
+    }
+    const nrf_topology_snapshot_t *source = platform->active_snapshot;
+    if (source == NULL || platform_snapshot_conflict_count(source) == 0U) {
+        source = platform->last_good_snapshot_valid
+            ? &platform->last_good_snapshot : NULL;
+    }
+    if ((source == NULL || platform_snapshot_conflict_count(source) == 0U) &&
+        platform->direct_conflict_snapshot_valid) {
+        source = &platform->direct_conflict_snapshot;
+    }
+    if (source != NULL && platform_snapshot_conflict_count(source) > 0U) {
+        platform->direct_conflict_snapshot = *source;
+        platform->direct_conflict_snapshot_valid = true;
+    }
+}
+
+static bool platform_address_is_nrf(uint8_t address)
+{
+    return address == NRF_UPSTREAM_ADDRESS_DISCOVERY ||
+        address == NRF_UPSTREAM_ADDRESS_MAIN ||
+        address == NRF_UPSTREAM_ADDRESS_REMOTE;
+}
+
+static bool platform_transfer_is_direct(
+    const nrf_topology_platform_t *platform,
+    uint8_t address)
+{
+    if (platform == NULL || platform->selected_mux_channel_valid) {
+        return false;
+    }
+    if (address != NRF_UPSTREAM_ADDRESS_MAIN && platform->mux_bound &&
+        platform->requested_mux_channel_valid) {
+        return false;
+    }
+    return true;
+}
+
+static void platform_log_direct_nrf_block(
+    uint8_t address,
+    unsigned conflicts)
+{
+    const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+    bool emit = false;
+    portENTER_CRITICAL(&s_state_lock);
+    if (!s_direct_block_log_valid ||
+        conflicts != s_direct_block_log_conflicts ||
+        (uint32_t)(now_ms - s_direct_block_log_ms) >= 5000U) {
+        s_direct_block_log_valid = true;
+        s_direct_block_log_ms = now_ms;
+        s_direct_block_log_conflicts = conflicts;
+        emit = true;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    if (emit) {
+        ESP_LOGW(TAG,
+                 "DIRECT_NRF_IO_BLOCKED address=0x%02X conflicts=%u",
+                 (unsigned)address,
+                 conflicts);
+    }
+}
+
 static esp_err_t platform_mux_select(void *context, uint8_t channel);
 static esp_err_t platform_close_selected_mux(
     nrf_topology_platform_t *platform,
@@ -432,6 +538,13 @@ static esp_err_t platform_begin_remote_transfer(
     nrf_topology_platform_t *platform,
     uint8_t address)
 {
+    const unsigned conflicts = platform_conflict_count(platform);
+    if (platform != NULL && platform_address_is_nrf(address) &&
+        platform_transfer_is_direct(platform, address) && conflicts > 0U) {
+        platform_capture_direct_conflict_snapshot(platform);
+        platform_log_direct_nrf_block(address, conflicts);
+        return SENSOR_BUS_ERR_OWNER_HOLD_BUDGET;
+    }
     const bool channel_routed_address = address == NRF_UPSTREAM_ADDRESS_REMOTE ||
         address == NRF_UPSTREAM_ADDRESS_DISCOVERY;
     if (!channel_routed_address || platform == NULL || !platform->mux_bound ||
@@ -744,6 +857,12 @@ static esp_err_t platform_normalize_transfer_error(
     }
     if (err == ESP_ERR_NOT_FOUND) {
         return ESP_ERR_NOT_FOUND;
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        /* The IDF 5.5 master uses INVALID_STATE for a timed out transfer.
+         * The classifier has already probed and confirmed that the target
+         * ACKs, so retain MAX-243 timeout escalation for this bus fault. */
+        err = ESP_ERR_TIMEOUT;
     }
 
     return platform_recover_classified_error(platform, address, err);
@@ -1559,6 +1678,30 @@ static void service_apply_snapshot_freshness(
     }
 }
 
+static void service_preserve_direct_conflicts(
+    const nrf_topology_platform_t *platform,
+    nrf_topology_snapshot_t *snapshot)
+{
+    if (platform == NULL || snapshot == NULL ||
+        !platform->direct_conflict_snapshot_valid) {
+        return;
+    }
+    if (platform->direct_conflict_snapshot.main.state == NRF_TOPOLOGY_NODE_CONFLICT) {
+        snapshot->main = platform->direct_conflict_snapshot.main;
+    } else if (!platform->last_good_snapshot_valid &&
+               snapshot->main.state == NRF_TOPOLOGY_NODE_UNKNOWN &&
+               platform->direct_conflict_snapshot.main.state ==
+                   NRF_TOPOLOGY_NODE_ASSIGNED) {
+        snapshot->main = platform->direct_conflict_snapshot.main;
+    }
+    for (size_t index = 0U; index < NRF_TOPOLOGY_REMOTE_COUNT; ++index) {
+        if (platform->direct_conflict_snapshot.remotes[index].state ==
+            NRF_TOPOLOGY_NODE_CONFLICT) {
+            snapshot->remotes[index] = platform->direct_conflict_snapshot.remotes[index];
+        }
+    }
+}
+
 static bool tick_period_due(TickType_t now, TickType_t last, TickType_t period)
 {
     return (TickType_t)(now - last) >= period;
@@ -1582,6 +1725,7 @@ static bool service_run_topology_reconcile(
     sensor_bus_probe_diag_begin_pass(platform->reconcile_pass_count);
     platform->reconcile_pass_active = true;
     platform->reconcile_idle_logged = false;
+    platform->active_snapshot = snapshot;
 
     const esp_err_t open_err = platform_open_address_handles(platform);
     esp_err_t reconcile_err;
@@ -1637,10 +1781,13 @@ static bool service_run_topology_reconcile(
     platform->reconcile_pass_active = false;
 
     if (reconcile_err != ESP_OK) {
+        platform->active_snapshot = NULL;
         return false;
     }
 
     service_apply_snapshot_freshness(platform, snapshot);
+    service_preserve_direct_conflicts(platform, snapshot);
+    platform->active_snapshot = NULL;
     const uint8_t initial_mask = nrf_sensor_cache_reconcile_topology(snapshot, cache);
     service_publish_state(snapshot, cache, &platform->main_status_cache);
     service_queue_sensor_mask(initial_mask, false);
@@ -3068,6 +3215,59 @@ esp_err_t nrf_topology_service_test_read_status_cached_probe(
     platform.read_probe_valid[route_index][address_index] = true;
     err = platform_read_status(&platform, address, status);
     platform_close(&platform);
+    return err;
+}
+
+esp_err_t nrf_topology_service_test_direct_nrf_io(
+    uint8_t address,
+    bool write)
+{
+    nrf_topology_platform_t platform = {0};
+    uint8_t rx[NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH];
+    static const uint8_t status_request[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH] = {
+        0x47U, 0x53U, NRF_LOG_PROTOCOL_VERSION, NRF_LOG_MESSAGE_STATUS_REQUEST,
+    };
+    esp_err_t err;
+
+    if (!platform_address_is_nrf(address)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_state_lock);
+    if (s_snapshot_valid) {
+        platform.last_good_snapshot = s_snapshot;
+        platform.last_good_snapshot_valid = true;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    if (platform_conflict_count(&platform) == 0U) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    err = platform_open_address_handles(&platform);
+    if (err != ESP_OK) {
+        platform_close(&platform);
+        (void)sensor_bus_deinit();
+        return err;
+    }
+    if (write) {
+        err = platform_i2c_write_bytes(
+            &platform,
+            platform_device_for_address(&platform, address),
+            address,
+            sizeof(status_request),
+            status_request);
+    } else {
+        err = platform_i2c_read_bytes(
+            &platform,
+            platform_device_for_address(&platform, address),
+            address,
+            sizeof(rx),
+            rx);
+    }
+    platform_close(&platform);
+    const esp_err_t cleanup_err = sensor_bus_deinit();
+    if (err == ESP_OK) {
+        err = cleanup_err;
+    }
     return err;
 }
 

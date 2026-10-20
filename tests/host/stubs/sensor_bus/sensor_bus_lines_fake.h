@@ -13,6 +13,7 @@ typedef struct
     int sda_hold_clocks;
     bool scl_held;
     bool controller_reset_clears_sda;
+    bool controller_reset_fails;
 
     /* Observations. */
     int bitbang_prepare_calls;

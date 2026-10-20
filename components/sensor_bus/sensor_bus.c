@@ -70,6 +70,8 @@ static SemaphoreHandle_t s_lock = NULL;
 
 /* MAX-243: guarded by s_lock. */
 static sensor_bus_recovery_status_t s_recovery;
+/* A failed controller reset fences every later transfer until reset succeeds. */
+static bool s_controller_reset_required;
 
 /* A live bus is judged stuck only if a line reads low on every sample over
  * ~1 ms: at 100 kHz a transfer of another task toggles SCL every 5 us, so a
@@ -130,8 +132,38 @@ static esp_err_t sensor_bus_write_byte_transfer(
 }
 #endif
 
+static esp_err_t sensor_bus_ensure_controller_clean_locked(void)
+{
+    if (!s_controller_reset_required) {
+        return ESP_OK;
+    }
+    if (s_bus == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const esp_err_t err = sensor_bus_lines_controller_reset(s_bus);
+    if (err != ESP_OK) {
+        return ESP_ERR_TIMEOUT;
+    }
+    s_controller_reset_required = false;
+    return ESP_OK;
+}
+
+static esp_err_t sensor_bus_reset_after_transfer_error_locked(esp_err_t transfer_err)
+{
+    if (transfer_err != ESP_ERR_TIMEOUT && transfer_err != ESP_ERR_INVALID_STATE) {
+        return transfer_err;
+    }
+    s_controller_reset_required = true;
+    return sensor_bus_ensure_controller_clean_locked() == ESP_OK
+        ? transfer_err : ESP_ERR_TIMEOUT;
+}
+
 static esp_err_t sensor_bus_probe_address_raw(uint8_t address, int channel)
 {
+    const esp_err_t reset_err = sensor_bus_ensure_controller_clean_locked();
+    if (reset_err != ESP_OK) {
+        return reset_err;
+    }
 #if CONFIG_APP_I2C_PROBE_DIAGNOSTICS
     return sensor_bus_probe_diag_transaction(
         SENSOR_BUS_PROBE_PHASE_PROBE, address, channel,
@@ -857,6 +889,7 @@ static esp_err_t sensor_bus_init_locked(void)
     if (s_bus == NULL) {
         return ESP_ERR_NO_MEM;
     }
+    s_controller_reset_required = false;
 
     ESP_LOGI(TAG,
              "I2C_TIMEOUT_CONFIG mutex_wait_ms=%u transaction_timeout_ms=%u owner_max_hold_ms=%u",
@@ -1164,26 +1197,30 @@ esp_err_t sensor_bus_read_bytes(
         if (sensor_bus_owner_budget_blocks(entry, false, &close_read)) {
             err = SENSOR_BUS_ERR_OWNER_HOLD_BUDGET;
         } else {
-        const int64_t transfer_started_us = sensor_bus_lines_now_us();
-        if (mem_address == NULL_I2C_MEM_ADDR) {
-            err = i2c_master_receive(
-                entry->master_device, data, data_len,
-                SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
-        } else {
-            err = i2c_master_transmit_receive(
-                entry->master_device, &mem_address, 1U, data, data_len,
-                SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
-        }
-        const int64_t transfer_finished_us = sensor_bus_lines_now_us();
-        if (err == ESP_ERR_TIMEOUT) {
-            sensor_bus_log_timeout_diag(
-                entry, waited_us,
-                transfer_finished_us >= transfer_started_us
-                    ? (uint64_t)(transfer_finished_us - transfer_started_us) : 0U,
-                false);
-        }
-        err = sensor_bus_owner_budget_after_transaction(
-            entry, false, close_read, err);
+            err = sensor_bus_ensure_controller_clean_locked();
+            if (err == ESP_OK) {
+                const int64_t transfer_started_us = sensor_bus_lines_now_us();
+                if (mem_address == NULL_I2C_MEM_ADDR) {
+                    err = i2c_master_receive(
+                        entry->master_device, data, data_len,
+                        SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
+                } else {
+                    err = i2c_master_transmit_receive(
+                        entry->master_device, &mem_address, 1U, data, data_len,
+                        SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
+                }
+                const int64_t transfer_finished_us = sensor_bus_lines_now_us();
+                if (err == ESP_ERR_TIMEOUT) {
+                    sensor_bus_log_timeout_diag(
+                        entry, waited_us,
+                        transfer_finished_us >= transfer_started_us
+                            ? (uint64_t)(transfer_finished_us - transfer_started_us) : 0U,
+                        false);
+                }
+                err = sensor_bus_reset_after_transfer_error_locked(err);
+                err = sensor_bus_owner_budget_after_transaction(
+                    entry, false, close_read, err);
+            }
         }
     }
     sensor_bus_unlock();
@@ -1250,20 +1287,24 @@ esp_err_t sensor_bus_write_bytes(
         if (sensor_bus_owner_budget_blocks(entry, close_write, &close_read)) {
             err = SENSOR_BUS_ERR_OWNER_HOLD_BUDGET;
         } else {
-        const int64_t transfer_started_us = sensor_bus_lines_now_us();
-        err = i2c_master_transmit(
-            entry->master_device, tx, tx_len,
-            SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
-        const int64_t transfer_finished_us = sensor_bus_lines_now_us();
-        if (err == ESP_ERR_TIMEOUT) {
-            sensor_bus_log_timeout_diag(
-                entry, waited_us,
-                transfer_finished_us >= transfer_started_us
-                    ? (uint64_t)(transfer_finished_us - transfer_started_us) : 0U,
-                false);
-        }
-        err = sensor_bus_owner_budget_after_transaction(
-            entry, close_write, close_read, err);
+            err = sensor_bus_ensure_controller_clean_locked();
+            if (err == ESP_OK) {
+                const int64_t transfer_started_us = sensor_bus_lines_now_us();
+                err = i2c_master_transmit(
+                    entry->master_device, tx, tx_len,
+                    SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
+                const int64_t transfer_finished_us = sensor_bus_lines_now_us();
+                if (err == ESP_ERR_TIMEOUT) {
+                    sensor_bus_log_timeout_diag(
+                        entry, waited_us,
+                        transfer_finished_us >= transfer_started_us
+                            ? (uint64_t)(transfer_finished_us - transfer_started_us) : 0U,
+                        false);
+                }
+                err = sensor_bus_reset_after_transfer_error_locked(err);
+                err = sensor_bus_owner_budget_after_transaction(
+                    entry, close_write, close_read, err);
+            }
         }
     }
     sensor_bus_unlock();
@@ -1454,6 +1495,9 @@ esp_err_t sensor_bus_deinit(void)
         if (err == ESP_OK) {
             err = bus_err;
         }
+    }
+    if (s_bus == NULL) {
+        s_controller_reset_required = false;
     }
 
     sensor_bus_unlock();

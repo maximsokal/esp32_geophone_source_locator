@@ -95,6 +95,9 @@ esp_err_t sensor_bus_lines_controller_reset(i2c_bus_handle_t bus)
     assert(bus != NULL);
     assert(!g_fake_lines.scl_held);
     ++g_fake_lines.controller_reset_calls;
+    if (g_fake_lines.controller_reset_fails) {
+        return ESP_FAIL;
+    }
     if (g_fake_lines.controller_reset_clears_sda) {
         g_fake_lines.sda_hold_clocks = 0;
     }

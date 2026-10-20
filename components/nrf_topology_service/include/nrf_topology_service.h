@@ -166,6 +166,9 @@ void nrf_topology_service_test_set_height_reference_generation(uint16_t generati
 esp_err_t nrf_topology_service_test_read_status_cached_probe(
     uint8_t address,
     nrf_upstream_status_t *status);
+esp_err_t nrf_topology_service_test_direct_nrf_io(
+    uint8_t address,
+    bool write);
 /* Test-only state injection; never enabled by production builds. */
 esp_err_t nrf_topology_service_test_publish_state(
     bool topology_valid,

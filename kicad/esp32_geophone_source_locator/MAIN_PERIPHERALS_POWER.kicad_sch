@@ -5164,6 +5164,12 @@
 					(unit 1)
 				)
 			)
+			(project "ESP32-S3 MAIN"
+				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
+					(reference "R23")
+					(unit 1)
+				)
+			)
 		)
 	)
 	(symbol
@@ -6411,6 +6417,12 @@
 					(unit 1)
 				)
 			)
+			(project "ESP32-S3 MAIN"
+				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
+					(reference "R20")
+					(unit 1)
+				)
+			)
 		)
 	)
 	(symbol
@@ -7585,6 +7597,12 @@
 					(unit 1)
 				)
 			)
+			(project "ESP32-S3 MAIN"
+				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
+					(reference "C_BME1")
+					(unit 1)
+				)
+			)
 		)
 	)
 	(symbol
@@ -7800,6 +7818,12 @@
 					(unit 1)
 				)
 			)
+			(project "ESP32-S3 MAIN"
+				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
+					(reference "R21")
+					(unit 1)
+				)
+			)
 		)
 	)
 	(symbol
@@ -7961,6 +7985,12 @@
 		(instances
 			(project "MAIN_PERIPHERALS_POWER"
 				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
+					(reference "C_BME2")
+					(unit 1)
+				)
+			)
+			(project "ESP32-S3 MAIN"
+				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "C_BME2")
 					(unit 1)
 				)
@@ -8152,6 +8182,12 @@
 					(unit 1)
 				)
 			)
+			(project "ESP32-S3 MAIN"
+				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
+					(reference "U20")
+					(unit 1)
+				)
+			)
 		)
 	)
 	(symbol
@@ -8317,6 +8353,12 @@
 		(instances
 			(project "MAIN_PERIPHERALS_POWER"
 				(path "/85b60e0d-1541-4d16-9455-88965704f4ab"
+					(reference "R22")
+					(unit 1)
+				)
+			)
+			(project "ESP32-S3 MAIN"
+				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/7976f358-e235-4f57-8af7-c56dc08eb658"
 					(reference "R22")
 					(unit 1)
 				)
@@ -8580,5 +8622,4 @@
 			(page "1")
 		)
 	)
-	(embedded_fonts no)
 )

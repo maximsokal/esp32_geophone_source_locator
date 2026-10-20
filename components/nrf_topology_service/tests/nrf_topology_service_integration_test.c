@@ -99,6 +99,7 @@ static sim_node_t s_nodes[MAX_NODES];
 static bool s_tca_present;
 static uint8_t s_tca_control;
 static unsigned s_tca_writes;
+static bool s_allow_address_collisions;
 static sim_device_t s_devices[64];
 static int s_bus_token;
 static int s_master_bus_token;
@@ -111,6 +112,10 @@ static uint32_t s_last_notify_wait_ms;
 static uint32_t s_max_bus_owner_hold_ms;
 static unsigned s_bus_owner_log_count;
 static unsigned s_collisions;
+static unsigned s_direct_nrf_read_calls;
+static unsigned s_direct_nrf_write_calls;
+static unsigned s_direct_nrf_probe_calls;
+static unsigned s_controller_reset_calls;
 static bool s_fail_i2c_bus_create;
 static bool s_fail_mutex_create;
 static bool s_fail_task_create;
@@ -285,12 +290,14 @@ static sim_node_t *node_at(uint8_t address)
         if (node_visible(&s_nodes[i]) && s_nodes[i].address == address) {
             if (found != NULL) {
                 ++s_collisions;
+                assert(s_allow_address_collisions);
+                continue;
             }
             found = &s_nodes[i];
         }
     }
     /* Two XIAOs driving one address corrupt every frame on real wires. */
-    assert(s_collisions == 0U);
+    assert(s_collisions == 0U || s_allow_address_collisions);
     return found;
 }
 
@@ -488,6 +495,10 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
 {
     sim_device_t *d = device_of(device);
     assert(mem_address == NULL_I2C_MEM_ADDR);
+    if (s_tca_control == 0U && d->address >= NRF_UPSTREAM_ADDRESS_DISCOVERY &&
+        d->address <= NRF_UPSTREAM_ADDRESS_REMOTE) {
+        ++s_direct_nrf_read_calls;
+    }
     sim_node_t *node = node_at(d->address);
     if (node == NULL) {
         ++s_nack_read_calls;
@@ -551,7 +562,7 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
             if (s_timeout_failures_until_stuck == 0U) {
                 s_scl_stuck = true;
             }
-            return ESP_ERR_TIMEOUT;
+            return ESP_ERR_INVALID_STATE; /* IDF 5.5 timeout/NACK ambiguity */
         }
         if (s_status_response_frame_index < s_status_response_frame_count) {
             assert(s_status_response_frame_index < STATUS_RESPONSE_FRAME_CAPACITY);
@@ -619,9 +630,18 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
 {
     sim_device_t *d = device_of(device);
     assert(mem_address == NULL_I2C_MEM_ADDR);
+    if (s_tca_control == 0U && d->address >= NRF_UPSTREAM_ADDRESS_DISCOVERY &&
+        d->address <= NRF_UPSTREAM_ADDRESS_REMOTE) {
+        ++s_direct_nrf_write_calls;
+    }
     sim_node_t *node = node_at(d->address);
     if (node == NULL) {
         return ESP_ERR_INVALID_STATE;
+    }
+    if (data_len == NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH &&
+        data[0] == 'G' && data[1] == 'S' &&
+        data[3] == NRF_LOG_MESSAGE_STATUS_REQUEST) {
+        return ESP_OK;
     }
     if (data_len == NRF_UPSTREAM_PROTOCOL_ASSIGN_LENGTH) {
         nrf_upstream_assign_t assign;
@@ -732,14 +752,21 @@ void sensor_bus_lines_read(bool *sda_high, bool *scl_high)
 esp_err_t sensor_bus_lines_controller_reset(i2c_bus_handle_t bus)
 {
     (void)bus;
-    assert(false); /* lines are never stuck in these scenarios */
-    return ESP_FAIL;
+    ++s_controller_reset_calls;
+    return ESP_OK;
 }
 
 esp_err_t sensor_bus_lines_probe(i2c_bus_handle_t bus, uint8_t address)
 {
     assert(bus == &s_bus_token);
     ++s_probe_calls;
+    if (s_tca_control == 0U && address >= NRF_UPSTREAM_ADDRESS_DISCOVERY &&
+        address <= NRF_UPSTREAM_ADDRESS_REMOTE) {
+        ++s_direct_nrf_probe_calls;
+    }
+    if (s_scl_stuck) {
+        return ESP_ERR_TIMEOUT;
+    }
     if (s_reselection_probe_armed && address == NRF_UPSTREAM_ADDRESS_DISCOVERY) {
         s_reselection_probe_armed = false;
         if (s_fail_reselection_probe) {
@@ -1901,7 +1928,12 @@ static void reset_world(void)
     s_tca_present = false;
     s_tca_control = 0U;
     s_tca_writes = 0U;
+    s_allow_address_collisions = false;
     s_collisions = 0U;
+    s_direct_nrf_read_calls = 0U;
+    s_direct_nrf_write_calls = 0U;
+    s_direct_nrf_probe_calls = 0U;
+    s_controller_reset_calls = 0U;
     s_fail_i2c_bus_create = false;
     s_fail_mutex_create = false;
     s_fail_task_create = false;
@@ -2169,6 +2201,48 @@ static void test_full_topology_is_assigned_one_hot(void)
     assert(s_tca_control == 0x00U);
     /* The mux was really driven (select + close per channel). */
     assert(s_tca_writes >= 2U * NRF_TOPOLOGY_REMOTE_COUNT);
+}
+
+static void test_mux_main_address_conflict_blocks_direct_nrf_io(void)
+{
+    static const uint8_t addresses[] = {
+        NRF_UPSTREAM_ADDRESS_MAIN,
+        NRF_UPSTREAM_ADDRESS_DISCOVERY,
+        NRF_UPSTREAM_ADDRESS_REMOTE,
+    };
+    reset_world();
+    s_tca_present = true;
+    s_allow_address_collisions = true;
+    /* A pod on ch0 answers at MAIN's direct address with a different identity. */
+    node_boot(&s_nodes[0], 0U, 0x22U);
+    s_nodes[0].address = NRF_UPSTREAM_ADDRESS_MAIN;
+    node_boot(&s_nodes[1], UPSTREAM_CHANNEL, 0x11U);
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    assert(s_seen.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_seen.remotes[0].state == NRF_TOPOLOGY_NODE_CONFLICT);
+    assert(s_collisions > 0U);
+    /* Discovery status plus assignment confirmation ran directly before the
+     * channel exposed the conflict; there is no follow-up direct MAIN read. */
+    assert(s_direct_nrf_read_calls == 2U);
+    assert(s_direct_nrf_write_calls == 1U);
+
+    s_direct_nrf_read_calls = 0U;
+    s_direct_nrf_write_calls = 0U;
+    s_direct_nrf_probe_calls = 0U;
+    for (size_t index = 0U; index < sizeof(addresses); ++index) {
+        assert(nrf_topology_service_test_direct_nrf_io(
+            addresses[index], false) == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET);
+        assert(nrf_topology_service_test_direct_nrf_io(
+            addresses[index], true) == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET);
+    }
+    assert(s_direct_nrf_read_calls == 0U);
+    assert(s_direct_nrf_write_calls == 0U);
+    assert(s_direct_nrf_probe_calls == 0U);
 }
 
 static void test_assignment_confirmation_race_preserves_node_mapping(void)
@@ -2581,6 +2655,7 @@ int main(void)
     test_malformed_snapshot_marks_cached_sample_stale();
     test_unplug_and_replug_between_reconciles();
     test_full_topology_is_assigned_one_hot();
+    test_mux_main_address_conflict_blocks_direct_nrf_io();
     test_remote_snapshot_v1_and_v2_cache_read_path();
     test_height_calibration_worker_queue_and_generation_wrap();
     test_height_calibration_without_remotes();

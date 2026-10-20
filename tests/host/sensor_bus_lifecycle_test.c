@@ -76,6 +76,8 @@ static int s_master_bus_token;
 static int s_master_device_token;
 static int s_master_timeout_ms;
 static unsigned s_master_transaction_calls;
+static unsigned s_master_receive_calls;
+static esp_err_t s_master_read_result = ESP_OK;
 static bool s_fail_master_add;
 static unsigned s_master_device_create_calls;
 static unsigned s_master_device_delete_calls;
@@ -150,6 +152,10 @@ esp_err_t i2c_master_receive(
     assert(data != NULL && data_len > 0U);
     s_master_timeout_ms = timeout_ms;
     ++s_master_transaction_calls;
+    ++s_master_receive_calls;
+    if (s_master_read_result != ESP_OK) {
+        return s_master_read_result;
+    }
     memset(data, 0xA5, data_len);
     return ESP_OK;
 }
@@ -171,6 +177,9 @@ esp_err_t i2c_master_transmit_receive(
     assert(read_buffer != NULL && read_size > 0U);
     s_master_timeout_ms = timeout_ms;
     ++s_master_transaction_calls;
+    if (s_master_read_result != ESP_OK) {
+        return s_master_read_result;
+    }
     memset(read_buffer, 0x5A, read_size);
     return ESP_OK;
 }
@@ -351,6 +360,56 @@ static void test_wrapper_uses_millisecond_transaction_timeout(void)
     assert(sensor_bus_deinit() == ESP_OK);
 }
 
+static void test_invalid_state_read_resets_before_reuse(void)
+{
+    fake_lines_reset();
+    assert(sensor_bus_init() == ESP_OK);
+    sensor_bus_handles_t handles = {0};
+    assert(sensor_bus_get_handles(&handles) == ESP_OK);
+    uint8_t byte = 0U;
+    g_fake_lines.probe_configured = true;
+    g_fake_lines.probe_result[0x31U] = ESP_OK;
+
+    /* IDF 5.5 can report a timed out read as INVALID_STATE. */
+    s_master_read_result = ESP_ERR_INVALID_STATE;
+    const unsigned reads_before = s_master_receive_calls;
+    assert(sensor_bus_read_bytes(
+        handles.ina3221, NULL_I2C_MEM_ADDR, 1U, &byte) == ESP_ERR_INVALID_STATE);
+    assert(s_master_receive_calls == reads_before + 1U);
+    assert(g_fake_lines.controller_reset_calls == 1);
+    /* An ACK after INVALID_STATE keeps the transfer failure classified as a fault. */
+    assert(sensor_bus_classify_transfer_error(
+        0x31U, ESP_ERR_INVALID_STATE) == ESP_ERR_INVALID_STATE);
+    assert(g_fake_lines.probe_calls == 1);
+
+    s_master_read_result = ESP_OK;
+    assert(sensor_bus_read_bytes(
+        handles.ina3221, NULL_I2C_MEM_ADDR, 1U, &byte) == ESP_OK);
+    assert(s_master_receive_calls == reads_before + 2U);
+    assert(g_fake_lines.controller_reset_calls == 1);
+
+    /* A failed reset fences future reads until a later reset succeeds. */
+    s_master_read_result = ESP_ERR_INVALID_STATE;
+    g_fake_lines.controller_reset_fails = true;
+    assert(sensor_bus_read_bytes(
+        handles.ina3221, NULL_I2C_MEM_ADDR, 1U, &byte) == ESP_ERR_TIMEOUT);
+    const unsigned reads_after_failed_reset = s_master_receive_calls;
+    assert(g_fake_lines.controller_reset_calls == 2);
+    assert(sensor_bus_read_bytes(
+        handles.ina3221, NULL_I2C_MEM_ADDR, 1U, &byte) == ESP_ERR_TIMEOUT);
+    assert(s_master_receive_calls == reads_after_failed_reset);
+    assert(g_fake_lines.controller_reset_calls == 3);
+
+    g_fake_lines.controller_reset_fails = false;
+    s_master_read_result = ESP_OK;
+    assert(sensor_bus_read_bytes(
+        handles.ina3221, NULL_I2C_MEM_ADDR, 1U, &byte) == ESP_OK);
+    assert(s_master_receive_calls == reads_after_failed_reset + 1U);
+    assert(g_fake_lines.controller_reset_calls == 4);
+    assert(sensor_bus_deinit() == ESP_OK);
+    s_master_read_result = ESP_OK;
+}
+
 int main(void)
 {
     sensor_bus_handles_t handles = {0};
@@ -409,6 +468,7 @@ int main(void)
     test_runtime_sda_stuck_uses_controller_reset();
     test_runtime_scl_stuck_is_a_fault_with_backoff();
     test_wrapper_uses_millisecond_transaction_timeout();
+    test_invalid_state_read_resets_before_reuse();
 
     return 0;
 }
