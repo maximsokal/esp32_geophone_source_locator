@@ -53,6 +53,7 @@ typedef struct {
 typedef struct {
     bool present;
     bool route_available;
+    bool link_ready;
     bool cs_busy;
     uint8_t node_id;
     uint8_t mux_channel;
@@ -79,6 +80,8 @@ typedef struct {
         size_t *received_length);
     uint64_t (*now_ms)(void *context);
     bool (*yield_requested)(void *context);
+    bool (*node_link_ready)(void *context, uint8_t node_index);
+    void (*report_link_failure)(void *context, uint8_t node_index);
 } nrf_log_collector_io_t;
 
 typedef struct {

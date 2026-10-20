@@ -711,6 +711,16 @@ static void test_transaction_timeout_is_20ms_and_recovery_is_unlocked(void)
     sensor_bus_lines_delay_us(60000000U);
     assert(sensor_bus_recover(&recovery) == ESP_OK);
     assert(recovery == I2C_LINES_IDLE);
+
+    assert(sensor_bus_read_bytes_with_timeout(
+        handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes, 100U) == ESP_OK);
+    assert(atomic_load(&s_last_transaction_timeout_ms) == 100);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    assert(sensor_bus_read_bytes_with_timeout(
+        handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes, 120U) ==
+        SENSOR_BUS_ERR_OWNER_HOLD_BUDGET);
+    assert(atomic_load(&s_last_transaction_timeout_ms) == 100);
+    sensor_bus_owner_release();
 }
 
 static void prepare_mux_fixture(

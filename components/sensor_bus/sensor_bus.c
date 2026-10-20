@@ -5,6 +5,7 @@
 #include "board_config.h"
 
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 
 #include "driver/i2c_master.h"
@@ -413,7 +414,8 @@ static void sensor_bus_unlock(void)
 static bool sensor_bus_owner_budget_blocks(
     const sensor_bus_device_entry_t *entry,
     bool close_write,
-    bool *close_read)
+    bool *close_read,
+    uint32_t transaction_timeout_ms)
 {
     const TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
     const bool tca_device = entry != NULL && entry->address == s_tca9548a_address;
@@ -447,7 +449,8 @@ static bool sensor_bus_owner_budget_blocks(
             const uint64_t elapsed_us = now_us >= s_owner_session_started_us
                 ? (uint64_t)(now_us - s_owner_session_started_us) : 0U;
             const uint64_t next_step_us =
-                (uint64_t)(SENSOR_BUS_TRANSACTION_TIMEOUT_MS + SENSOR_BUS_MUX_CLOSE_RESERVE_MS) * 1000U;
+                ((uint64_t)transaction_timeout_ms +
+                 (uint64_t)SENSOR_BUS_MUX_CLOSE_RESERVE_MS) * 1000U;
             if (elapsed_us + next_step_us >
                 (uint64_t)SENSOR_BUS_OWNER_MAX_HOLD_MS * 1000U) {
                 s_owner_hold_budget_exceeded = true;
@@ -1172,13 +1175,16 @@ static esp_err_t sensor_bus_find_native_device(
         ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
-esp_err_t sensor_bus_read_bytes(
+static esp_err_t sensor_bus_read_bytes_internal(
     i2c_bus_device_handle_t device,
     uint8_t mem_address,
     size_t data_len,
-    uint8_t *data)
+    uint8_t *data,
+    uint32_t timeout_ms,
+    bool log_timeout)
 {
-    if (data == NULL || data_len == 0U) {
+    if (data == NULL || data_len == 0U || timeout_ms == 0U ||
+        timeout_ms > (uint32_t)INT_MAX) {
         return ESP_ERR_INVALID_ARG;
     }
     uint64_t waited_us = 0U;
@@ -1194,7 +1200,8 @@ esp_err_t sensor_bus_read_bytes(
     esp_err_t err = sensor_bus_find_native_device(device, &entry);
     if (err == ESP_OK) {
         bool close_read = false;
-        if (sensor_bus_owner_budget_blocks(entry, false, &close_read)) {
+        if (sensor_bus_owner_budget_blocks(
+                entry, false, &close_read, timeout_ms)) {
             err = SENSOR_BUS_ERR_OWNER_HOLD_BUDGET;
         } else {
             err = sensor_bus_ensure_controller_clean_locked();
@@ -1203,14 +1210,14 @@ esp_err_t sensor_bus_read_bytes(
                 if (mem_address == NULL_I2C_MEM_ADDR) {
                     err = i2c_master_receive(
                         entry->master_device, data, data_len,
-                        SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
+                        (int)timeout_ms);
                 } else {
                     err = i2c_master_transmit_receive(
                         entry->master_device, &mem_address, 1U, data, data_len,
-                        SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
+                        (int)timeout_ms);
                 }
                 const int64_t transfer_finished_us = sensor_bus_lines_now_us();
-                if (err == ESP_ERR_TIMEOUT) {
+                if (err == ESP_ERR_TIMEOUT && log_timeout) {
                     sensor_bus_log_timeout_diag(
                         entry, waited_us,
                         transfer_finished_us >= transfer_started_us
@@ -1225,6 +1232,28 @@ esp_err_t sensor_bus_read_bytes(
     }
     sensor_bus_unlock();
     return err;
+}
+
+esp_err_t sensor_bus_read_bytes(
+    i2c_bus_device_handle_t device,
+    uint8_t mem_address,
+    size_t data_len,
+    uint8_t *data)
+{
+    return sensor_bus_read_bytes_internal(
+        device, mem_address, data_len, data,
+        SENSOR_BUS_TRANSACTION_TIMEOUT_MS, true);
+}
+
+esp_err_t sensor_bus_read_bytes_with_timeout(
+    i2c_bus_device_handle_t device,
+    uint8_t mem_address,
+    size_t data_len,
+    uint8_t *data,
+    uint32_t timeout_ms)
+{
+    return sensor_bus_read_bytes_internal(
+        device, mem_address, data_len, data, timeout_ms, false);
 }
 
 esp_err_t sensor_bus_read_byte(
@@ -1284,7 +1313,9 @@ esp_err_t sensor_bus_write_bytes(
         const bool close_write = entry->address == s_tca9548a_address &&
             !has_mem_address && data_len == 1U && data[0] == 0U;
         bool close_read = false;
-        if (sensor_bus_owner_budget_blocks(entry, close_write, &close_read)) {
+        if (sensor_bus_owner_budget_blocks(
+                entry, close_write, &close_read,
+                SENSOR_BUS_TRANSACTION_TIMEOUT_MS)) {
             err = SENSOR_BUS_ERR_OWNER_HOLD_BUDGET;
         } else {
             err = sensor_bus_ensure_controller_clean_locked();

@@ -1,0 +1,6 @@
+*.c text eol=lf
+*.h text eol=lf
+CMakeLists.txt text eol=lf
+Kconfig text eol=lf
+linker.lf text eol=lf
+*.md text eol=lf

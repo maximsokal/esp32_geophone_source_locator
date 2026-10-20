@@ -2,6 +2,14 @@
   "version": 1,
   "tests": [
     {
+      "name": "nrf_link_readiness_policy",
+      "sources": [
+        "components/nrf_topology_service/nrf_link_readiness_policy.c",
+        "tests/host/nrf_link_readiness_policy_test.c"
+      ],
+      "include_dirs": ["components/nrf_topology_service/include"]
+    },
+    {
       "name": "nrf_node_state",
       "sources": ["nRF54L15/src/nrf_node_state.c", "tests/host/nrf_node_state_test.c"],
       "include_dirs": ["nRF54L15/include"]
@@ -177,6 +185,7 @@
       "name": "nrf_topology_service_ranging_integration",
       "sources": [
         "components/nrf_topology_service/nrf_topology_service.c",
+        "components/nrf_topology_service/nrf_link_readiness_policy.c",
         "components/nrf_topology_service/nrf_topology.c",
         "components/nrf_topology_service/nrf_sensor_transport.c",
         "components/nrf_topology_service/nrf_topology_leveling_policy.c",

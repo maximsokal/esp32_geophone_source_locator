@@ -102,6 +102,15 @@ esp_err_t sensor_bus_read_bytes(
     uint8_t mem_address,
     size_t data_len,
     uint8_t *data);
+/* Per-call timeout for slow responders. This path does not emit a timeout
+ * diagnostic for each failed poll; callers should classify only after their
+ * protocol-level readiness policy allows it. */
+esp_err_t sensor_bus_read_bytes_with_timeout(
+    i2c_bus_device_handle_t device,
+    uint8_t mem_address,
+    size_t data_len,
+    uint8_t *data,
+    uint32_t timeout_ms);
 esp_err_t sensor_bus_write_bytes(
     i2c_bus_device_handle_t device,
     uint8_t mem_address,

@@ -22,6 +22,7 @@ _Static_assert(sizeof(nrf_log_stored_record_t) == 28U, "nRF stored log record mu
 
 typedef struct {
     bool present;
+    bool link_ready;
     bool identity_valid;
     bool logs_unsupported;
     bool boot_id_valid;
@@ -110,6 +111,19 @@ static uint32_t elapsed_ms(const nrf_log_collector_io_t *io, uint64_t started_ms
 static bool should_yield(const nrf_log_collector_io_t *io)
 {
     return io->yield_requested != NULL && io->yield_requested(io->context);
+}
+
+static void report_link_failure(const nrf_log_collector_io_t *io, uint8_t node_index)
+{
+    if (io->report_link_failure != NULL) {
+        io->report_link_failure(io->context, node_index);
+    }
+}
+
+static bool should_stop_link_retry(const nrf_log_collector_io_t *io, uint8_t node_index)
+{
+    return io->node_link_ready != NULL &&
+        !io->node_link_ready(io->context, node_index);
 }
 
 static bool budget_expired(
@@ -235,6 +249,7 @@ static esp_err_t exchange_status(
                 io->context, node_index, response_frame, sizeof(response_frame), &received_length);
         }
         if (err == ESP_OK && legacy_status_reply(response_frame, received_length)) {
+            report_link_failure(io, node_index);
             return ESP_ERR_NOT_SUPPORTED;
         }
         if (err == ESP_OK && received_length < sizeof(response_frame)) err = ESP_ERR_INVALID_RESPONSE;
@@ -246,6 +261,10 @@ static esp_err_t exchange_status(
         }
         if (err == ESP_OK && status->request_id != request->request_id) err = ESP_ERR_INVALID_RESPONSE;
         if (err == ESP_OK) return ESP_OK;
+        if (err == ESP_ERR_INVALID_RESPONSE) {
+            report_link_failure(io, node_index);
+        }
+        if (should_stop_link_retry(io, node_index)) return err;
         if (err == ESP_ERR_NOT_SUPPORTED || attempt == NRF_LOG_REQUEST_RETRIES) return err;
         if (should_yield(io)) return err;
     }
@@ -341,6 +360,10 @@ static esp_err_t exchange_block(
             }
         }
         if (err == ESP_OK) return ESP_OK;
+        if (err == ESP_ERR_INVALID_RESPONSE) {
+            report_link_failure(io, node_index);
+        }
+        if (should_stop_link_retry(io, node_index)) return err;
         if (attempt == NRF_LOG_REQUEST_RETRIES) return err;
         if (should_yield(io)) return err;
     }
@@ -598,8 +621,16 @@ esp_err_t nrf_log_collector_sync_targets(
             memset(state, 0, sizeof(*state));
             memset(collector->records[i], 0, sizeof(collector->records[i]));
         }
-        if (target->present) state_set_identity(state, target);
+        if (target->present) {
+            if (target->link_ready && !state->link_ready) {
+                state->logs_unsupported = false;
+                state->backoff_rounds = 0U;
+                state->backoff_remaining = 0U;
+            }
+            state_set_identity(state, target);
+        }
         state->present = target->present;
+        state->link_ready = target->present && target->link_ready;
     }
     collector_unlock(collector);
     return ESP_OK;
@@ -611,7 +642,8 @@ static uint8_t next_routable_node(
 {
     for (uint8_t offset = 0U; offset < NRF_LOG_COLLECTOR_NODE_COUNT; ++offset) {
         const uint8_t node = (uint8_t)((start + offset) % NRF_LOG_COLLECTOR_NODE_COUNT);
-        if (targets[node].present && targets[node].route_available) return node;
+        if (targets[node].present && targets[node].route_available &&
+            targets[node].link_ready) return node;
     }
     return NRF_LOG_COLLECTOR_NODE_COUNT;
 }
@@ -661,7 +693,8 @@ esp_err_t nrf_log_collector_poll_iteration(
         uint8_t backoff_remaining;
         esp_err_t err;
         if (elapsed_ms(io, iteration_started_ms) >= total_budget_ms || should_yield(io)) break;
-        if (!targets[node_index].present || !targets[node_index].route_available) continue;
+        if (!targets[node_index].present || !targets[node_index].route_available ||
+            !targets[node_index].link_ready) continue;
         if (!collector_lock(collector)) return ESP_ERR_TIMEOUT;
         unsupported = collector->nodes[node_index].logs_unsupported;
         backoff_remaining = collector->nodes[node_index].backoff_remaining;

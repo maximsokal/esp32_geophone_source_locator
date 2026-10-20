@@ -408,6 +408,7 @@
       "name": "nrf_topology_service_integration",
       "sources": [
         "components/nrf_topology_service/nrf_topology_service.c",
+        "components/nrf_topology_service/nrf_link_readiness_policy.c",
         "components/nrf_topology_service/nrf_topology.c",
         "components/nrf_topology_service/nrf_sensor_transport.c",
         "components/nrf_topology_service/nrf_topology_leveling_policy.c",

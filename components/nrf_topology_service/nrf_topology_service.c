@@ -3,6 +3,7 @@
 #include "nrf_cs_authority.h"
 #include "nrf_cs_control_protocol.h"
 #include "nrf_log_protocol.h"
+#include "nrf_link_readiness_policy.h"
 #include "nrf_topology_periods.h"
 
 #if defined(ESP_PLATFORM) || defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
@@ -97,6 +98,7 @@ typedef struct {
 #if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
 typedef struct {
     nrf_topology_platform_t *platform;
+    nrf_link_readiness_t *links;
     TickType_t last_reconcile_tick;
     TickType_t reconcile_period_ticks;
 } nrf_log_platform_context_t;
@@ -104,6 +106,7 @@ typedef struct {
 
 typedef struct {
     nrf_topology_platform_t platform;
+    nrf_link_readiness_t links[NRF_LOG_COLLECTOR_NODE_COUNT];
     nrf_topology_controller_t controller;
     nrf_sensor_transport_controller_t sensor_controller;
     nrf_topology_snapshot_t snapshot;
@@ -1222,6 +1225,33 @@ static esp_err_t platform_log_end_node(void *context, uint8_t node_index)
     return err;
 }
 
+static uint64_t platform_log_now_ms(void *context);
+
+static esp_err_t platform_log_handle_transfer_error(
+    const nrf_log_platform_context_t *log_context,
+    uint8_t node_index,
+    uint8_t address,
+    esp_err_t err)
+{
+    if (err == ESP_OK) return ESP_OK;
+    if (err == SENSOR_BUS_ERR_MUTEX_BUSY ||
+        err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) {
+        return err;
+    }
+    if (log_context == NULL) return ESP_ERR_INVALID_ARG;
+    if (log_context->links == NULL || node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) {
+        return platform_normalize_transfer_error(log_context->platform, address, err);
+    }
+    nrf_link_readiness_t *link = &log_context->links[node_index];
+    const uint64_t now_ms = platform_log_now_ms((void *)log_context);
+    nrf_link_readiness_record_failure(link, now_ms);
+    if (nrf_link_readiness_classification_due(link, now_ms)) {
+        nrf_link_readiness_classification_done(link);
+        return platform_normalize_transfer_error(log_context->platform, address, err);
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
 static esp_err_t platform_log_write_frame(
     void *context,
     uint8_t node_index,
@@ -1240,7 +1270,7 @@ static esp_err_t platform_log_write_frame(
     if (device == NULL) return ESP_ERR_INVALID_STATE;
     err = platform_i2c_write_bytes(
         log_context->platform, device, address, frame_length, frame);
-    err = platform_normalize_transfer_error(log_context->platform, address, err);
+    err = platform_log_handle_transfer_error(log_context, node_index, address, err);
     if (err == ESP_ERR_NOT_FOUND) service_request_topology_refresh_from_worker();
     return err;
 }
@@ -1277,7 +1307,7 @@ static esp_err_t platform_log_read_frame(
     } else {
         platform_record_read_result(log_context->platform, address, route_index, true);
     }
-    err = platform_normalize_transfer_error(log_context->platform, address, err);
+    err = platform_log_handle_transfer_error(log_context, node_index, address, err);
     if (err != ESP_OK) {
         if (err == ESP_ERR_NOT_FOUND) service_request_topology_refresh_from_worker();
         return err;
@@ -1303,14 +1333,37 @@ static bool platform_log_yield_requested(void *context)
                log_context->reconcile_period_ticks);
 }
 
+static bool platform_log_node_link_ready(void *context, uint8_t node_index)
+{
+    const nrf_log_platform_context_t *log_context = context;
+    if (log_context == NULL || log_context->links == NULL ||
+        node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) {
+        return false;
+    }
+    return nrf_link_readiness_is_ready(&log_context->links[node_index]);
+}
+
+static void platform_log_report_link_failure(void *context, uint8_t node_index)
+{
+    const nrf_log_platform_context_t *log_context = context;
+    if (log_context == NULL || log_context->links == NULL ||
+        node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) {
+        return;
+    }
+    nrf_link_readiness_record_failure(
+        &log_context->links[node_index], platform_log_now_ms(context));
+}
+
 static void service_log_fill_target(
     nrf_log_poll_target_t *target,
     const nrf_topology_node_snapshot_t *node,
-    bool route_available)
+    bool route_available,
+    bool link_ready)
 {
     memset(target, 0, sizeof(*target));
     target->present = node->state == NRF_TOPOLOGY_NODE_ASSIGNED;
     target->route_available = target->present && route_available;
+    target->link_ready = target->present && link_ready;
     target->node_id = node->node_id;
     target->mux_channel = node->mux_channel;
     target->current_address = node->current_address;
@@ -1326,12 +1379,17 @@ static void service_log_build_targets(
     nrf_topology_worker_state_t *worker,
     nrf_log_poll_target_t targets[NRF_LOG_COLLECTOR_NODE_COUNT])
 {
-    service_log_fill_target(&targets[0], &worker->snapshot.main, true);
+    service_log_fill_target(
+        &targets[0],
+        &worker->snapshot.main,
+        true,
+        nrf_link_readiness_is_ready(&worker->links[0]));
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         service_log_fill_target(
             &targets[channel + 1U],
             &worker->snapshot.remotes[channel],
-            worker->snapshot.tca_available && !worker->snapshot.tca_fault);
+            worker->snapshot.tca_available && !worker->snapshot.tca_fault,
+            nrf_link_readiness_is_ready(&worker->links[channel + 1U]));
     }
     if (worker->authority.command_active) {
         const uint8_t initiator = worker->authority.request.step.initiator;
@@ -1361,6 +1419,7 @@ static void service_log_collect_iteration(
     nrf_log_collector_iteration_t iteration;
     nrf_log_platform_context_t context = {
         .platform = &worker->platform,
+        .links = worker->links,
         .last_reconcile_tick = last_reconcile_tick,
         .reconcile_period_ticks = reconcile_period_ticks,
     };
@@ -1372,6 +1431,8 @@ static void service_log_collect_iteration(
         .read_frame = platform_log_read_frame,
         .now_ms = platform_log_now_ms,
         .yield_requested = platform_log_yield_requested,
+        .node_link_ready = platform_log_node_link_ready,
+        .report_link_failure = platform_log_report_link_failure,
     };
     if (s_nrf_log_collector == NULL) return;
     service_log_build_targets(worker, targets);
@@ -2468,6 +2529,31 @@ static void service_ranging_fail_start(nrf_topology_worker_state_t *worker)
     service_ranging_publish_progress(worker);
 }
 
+static void service_update_link_readiness(
+    nrf_topology_worker_state_t *worker,
+    uint64_t now_ms)
+{
+    nrf_link_readiness_t *main_link = &worker->links[0];
+    if (worker->snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+        if (!nrf_link_readiness_is_ready(main_link)) {
+            nrf_link_readiness_record_ready(main_link, now_ms);
+        }
+    } else if (nrf_link_readiness_is_ready(main_link)) {
+        nrf_link_readiness_record_not_ready(main_link, now_ms);
+    }
+
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        nrf_link_readiness_t *link = &worker->links[channel + 1U];
+        if (worker->snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+            if (!nrf_link_readiness_is_ready(link)) {
+                nrf_link_readiness_record_ready(link, now_ms);
+            }
+        } else if (nrf_link_readiness_is_ready(link)) {
+            nrf_link_readiness_record_not_ready(link, now_ms);
+        }
+    }
+}
+
 static void service_worker(void *context)
 {
     (void)context;
@@ -2495,6 +2581,10 @@ static void service_worker(void *context)
     bool stop_before_start = service_register_current_task();
 
     memset(worker, 0, sizeof(*worker));
+    const uint64_t links_started_ms = platform_now_ms(NULL);
+    for (uint8_t i = 0U; i < NRF_LOG_COLLECTOR_NODE_COUNT; ++i) {
+        nrf_link_readiness_init(&worker->links[i], links_started_ms);
+    }
     worker->cs_context.platform = &worker->platform;
     worker->cs_context.snapshot = &worker->snapshot;
     worker->cs_ops = (nrf_cs_authority_ops_t) {
@@ -2535,6 +2625,9 @@ static void service_worker(void *context)
                 worker->cache);
             last_reconcile_tick = xTaskGetTickCount();
             first_reconcile = false;
+            if (reconciled) {
+                service_update_link_readiness(worker, platform_now_ms(NULL));
+            }
             const uint32_t free_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
             if (was_first_reconcile) {
                 service_record_stack_hwm(

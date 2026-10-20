@@ -10,6 +10,17 @@ esp_err_t sensor_bus_read_bytes(
     return i2c_bus_read_bytes(device, mem_address, data_len, data);
 }
 
+esp_err_t sensor_bus_read_bytes_with_timeout(
+    i2c_bus_device_handle_t device,
+    uint8_t mem_address,
+    size_t data_len,
+    uint8_t *data,
+    uint32_t timeout_ms)
+{
+    (void)timeout_ms;
+    return sensor_bus_read_bytes(device, mem_address, data_len, data);
+}
+
 esp_err_t sensor_bus_write_bytes(
     i2c_bus_device_handle_t device,
     uint8_t mem_address,
