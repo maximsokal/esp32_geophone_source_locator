@@ -14,6 +14,12 @@
 #define UI_WORKFLOW_MODEL_MAX_LINES 40U
 #define UI_WORKFLOW_MODEL_ARGS 6U
 #define UI_WORKFLOW_MODEL_ARG_SIZE 80U
+#define UI_WORKFLOW_REMOTE_SLOT_COUNT 4U
+
+typedef struct {
+    bool visible;
+    bool connected;
+} ui_workflow_remote_slot_t;
 
 typedef struct {
     bool available;
@@ -135,6 +141,11 @@ void ui_workflow_model_build(
     ui_workflow_model_state_t *state,
     uint64_t now_ms,
     ui_workflow_model_t *model);
+
+/* Sensor status changes visibility, never the fixed four-slot layout. */
+void ui_workflow_remote_slot_layout(
+    uint8_t connected_mask,
+    ui_workflow_remote_slot_t slots[UI_WORKFLOW_REMOTE_SLOT_COUNT]);
 
 ui_workflow_event_t ui_workflow_model_handle_key(
     const workflow_snapshot_t *snapshot,

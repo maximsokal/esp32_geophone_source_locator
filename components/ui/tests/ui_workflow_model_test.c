@@ -238,6 +238,26 @@ static void test_sensor_counts(void)
     }
 }
 
+static void test_remote_slot_layout_is_fixed(void)
+{
+    static const uint8_t connected_masks[] = {
+        0x00U,
+        0x01U,
+        0x07U,
+        0x0FU,
+        0x05U,
+    };
+    ui_workflow_remote_slot_t slots[UI_WORKFLOW_REMOTE_SLOT_COUNT];
+    for (size_t sample = 0U; sample < sizeof(connected_masks) / sizeof(connected_masks[0]); ++sample) {
+        ui_workflow_remote_slot_layout(connected_masks[sample], slots);
+        for (size_t slot = 0U; slot < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++slot) {
+            assert(slots[slot].visible);
+            assert(slots[slot].connected ==
+                ((connected_masks[sample] & (uint8_t)(1U << slot)) != 0U));
+        }
+    }
+}
+
 static void test_left_behavior_each_step(void)
 {
     ui_workflow_model_state_t state = {0};
@@ -638,6 +658,7 @@ int main(void)
 #ifdef MAX449_CASE
 #if MAX449_CASE == 6
     test_sensor_check_action_and_warning_for_low_remote_counts();
+    test_remote_slot_layout_is_fixed();
 #elif MAX449_CASE == 7
     test_workflow_start_and_preview_regressions();
 #elif MAX449_CASE == 8
@@ -653,6 +674,7 @@ int main(void)
     test_max460_guided_step_content_and_placement_gate();
     test_max460_tft_action_set_matches_core_for_guided_steps();
     test_sensor_counts();
+    test_remote_slot_layout_is_fixed();
     test_left_behavior_each_step();
     test_right_preview_matrix();
     test_delete_confirmation();

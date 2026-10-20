@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "app_task_config.h"
+#include "device_status.h"
 #include "esp_heap_caps.h"
 #include "esp_lvgl_port.h"
 #include "esp_timer.h"
@@ -45,14 +46,24 @@ typedef struct {
     workflow_snapshot_t snapshot;
     nrf_topology_ranging_progress_t ranging_snapshot;
     ui_workflow_ranging_t ranging;
+    device_status_snapshot_t remote_status_snapshot;
+    pod_state_t remote_pod_states[UI_WORKFLOW_REMOTE_SLOT_COUNT];
+    ui_workflow_remote_slot_t remote_slots[UI_WORKFLOW_REMOTE_SLOT_COUNT];
     ui_workflow_model_state_t model_state;
     ui_workflow_model_t model;
 
     lv_obj_t *screen;
     lv_obj_t *line_labels[UI_WORKFLOW_MODEL_MAX_LINES];
     size_t line_slots;
+    lv_obj_t *remote_slot_cards[UI_WORKFLOW_REMOTE_SLOT_COUNT];
+    lv_obj_t *remote_slot_labels[UI_WORKFLOW_REMOTE_SLOT_COUNT];
+    bool remote_slot_styles_dirty;
     lv_obj_t *action_rows[UI_WORKFLOW_VISIBLE_ACTIONS];
     lv_obj_t *action_labels[UI_WORKFLOW_VISIBLE_ACTIONS];
+    bool action_row_cache_valid[UI_WORKFLOW_VISIBLE_ACTIONS];
+    bool action_row_cache_visible[UI_WORKFLOW_VISIBLE_ACTIONS];
+    bool action_row_cache_selected[UI_WORKFLOW_VISIBLE_ACTIONS];
+    int action_row_cache_y[UI_WORKFLOW_VISIBLE_ACTIONS];
     lv_obj_t *progress_bar;
     lv_obj_t *progress_spinner;
     lv_obj_t *arrival_markers[SEISMIC_RECORDER_WAVEFORM_CHANNEL_COUNT];
@@ -71,6 +82,10 @@ typedef struct {
     lv_coord_t result_min[SEISMIC_RECORDER_WAVEFORM_CHANNEL_COUNT][UI_WORKFLOW_RESULT_POINTS];
     lv_coord_t result_max[SEISMIC_RECORDER_WAVEFORM_CHANNEL_COUNT][UI_WORKFLOW_RESULT_POINTS];
 } ui_workflow_screen_state_t;
+
+_Static_assert(
+    UI_WORKFLOW_REMOTE_SLOT_COUNT == DEVICE_STATUS_POD_COUNT,
+    "Workflow remote slots must match device status pod slots");
 
 typedef struct {
     uint32_t generation;
@@ -526,6 +541,98 @@ static void ui_workflow_create_action_slots(ui_workflow_screen_state_t *state)
     }
 }
 
+static uint32_t ui_workflow_remote_pod_color(pod_state_t state)
+{
+    switch (state) {
+        case POD_STATE_READY:
+            return UI_COLOR_GOOD;
+        case POD_STATE_WARNING:
+            return UI_COLOR_WARNING;
+        case POD_STATE_ERROR:
+            return UI_COLOR_ERROR;
+        case POD_STATE_DISCONNECTED:
+        default:
+            return UI_COLOR_MUTED;
+    }
+}
+
+static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
+{
+    const bool status_available =
+        device_status_try_get_snapshot(&state->remote_status_snapshot) == ESP_OK;
+    bool changed = false;
+    uint8_t connected_mask = 0U;
+    for (size_t i = 0U; i < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++i) {
+        if (status_available) {
+            const pod_state_t pod_state = state->remote_status_snapshot.pods[i].state;
+            if (state->remote_pod_states[i] != pod_state) changed = true;
+            state->remote_pod_states[i] = pod_state;
+        }
+        const pod_state_t pod_state = state->remote_pod_states[i];
+        if (pod_state == POD_STATE_READY || pod_state == POD_STATE_WARNING ||
+            pod_state == POD_STATE_ERROR) {
+            connected_mask |= (uint8_t)(1U << i);
+        }
+    }
+    ui_workflow_remote_slot_layout(connected_mask, state->remote_slots);
+    state->remote_slot_styles_dirty |= changed;
+}
+
+static bool ui_workflow_remote_slots_visible(const ui_workflow_screen_state_t *state)
+{
+    if (state->model.line_count > 4U) return false;
+    switch (state->snapshot.step) {
+        case WORKFLOW_STEP_OBJECT:
+        case WORKFLOW_STEP_SENSOR_CHECK:
+        case WORKFLOW_STEP_CALIB_PREP:
+        case WORKFLOW_STEP_CALIBRATING:
+        case WORKFLOW_STEP_CALIB_RESULT:
+        case WORKFLOW_STEP_PLACEMENT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void ui_workflow_create_remote_slots(ui_workflow_screen_state_t *state)
+{
+    static const ui_i18n_key_t slot_name_keys[UI_WORKFLOW_REMOTE_SLOT_COUNT] = {
+        UI_I18N_KEY_MEASUREMENT_NODE_G1,
+        UI_I18N_KEY_MEASUREMENT_NODE_G2,
+        UI_I18N_KEY_MEASUREMENT_NODE_G3,
+        UI_I18N_KEY_MEASUREMENT_NODE_G4,
+    };
+    if (!ui_workflow_remote_slots_visible(state)) return;
+
+    const int top = UI_WORKFLOW_LINE_TOP +
+        (int)(state->model.line_count * UI_WORKFLOW_LINE_HEIGHT) + 8;
+    for (size_t i = 0U; i < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++i) {
+        const int x = 10 + (int)(i * 74U);
+        lv_obj_t *card = ui_create_card_locked(state->screen, x, top, 70, 24);
+        if (card == NULL) continue;
+        state->remote_slot_cards[i] = card;
+        state->remote_slot_labels[i] = ui_create_label_locked(
+            card, 8, 4, 54, ui_tr(slot_name_keys[i]), UI_COLOR_MUTED);
+    }
+    state->remote_slot_styles_dirty = true;
+}
+
+static void ui_workflow_update_remote_slots(ui_workflow_screen_state_t *state)
+{
+    if (!state->remote_slot_styles_dirty) return;
+    for (size_t i = 0U; i < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++i) {
+        lv_obj_t *card = state->remote_slot_cards[i];
+        lv_obj_t *label = state->remote_slot_labels[i];
+        if (card == NULL || label == NULL) continue;
+        const uint32_t color = ui_workflow_remote_pod_color(state->remote_pod_states[i]);
+        lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(color), 0);
+        lv_obj_set_style_border_width(card,
+            state->remote_slots[i].connected ? 2 : 1, 0);
+    }
+    state->remote_slot_styles_dirty = false;
+}
+
 static void ui_workflow_render_step_locked(ui_workflow_screen_state_t *state)
 {
     const char *footer = state->model.hint_key < UI_I18N_KEY_COUNT
@@ -536,8 +643,14 @@ static void ui_workflow_render_step_locked(ui_workflow_screen_state_t *state)
     state->rendered_material_picker = state->model.material_picker_visible;
     state->line_slots = ui_workflow_line_slots(&state->snapshot, &state->model);
     memset(state->line_labels, 0, sizeof(state->line_labels));
+    memset(state->remote_slot_cards, 0, sizeof(state->remote_slot_cards));
+    memset(state->remote_slot_labels, 0, sizeof(state->remote_slot_labels));
     memset(state->action_rows, 0, sizeof(state->action_rows));
     memset(state->action_labels, 0, sizeof(state->action_labels));
+    memset(state->action_row_cache_valid, 0, sizeof(state->action_row_cache_valid));
+    memset(state->action_row_cache_visible, 0, sizeof(state->action_row_cache_visible));
+    memset(state->action_row_cache_selected, 0, sizeof(state->action_row_cache_selected));
+    memset(state->action_row_cache_y, 0, sizeof(state->action_row_cache_y));
     memset(state->arrival_markers, 0, sizeof(state->arrival_markers));
     state->progress_bar = NULL;
     state->progress_spinner = NULL;
@@ -567,6 +680,7 @@ static void ui_workflow_render_step_locked(ui_workflow_screen_state_t *state)
                 (state->snapshot.step == WORKFLOW_STEP_RANGING && i > 0U ? UI_WORKFLOW_LINE_HEIGHT : 0),
             300, "", UI_COLOR_TEXT);
     }
+    ui_workflow_create_remote_slots(state);
     if (state->snapshot.step == WORKFLOW_STEP_CALCULATING) {
         if (state->model.progress_indeterminate) {
             state->progress_spinner = lv_spinner_create(state->screen);
@@ -627,7 +741,11 @@ static void ui_workflow_update_actions(ui_workflow_screen_state_t *state)
         lv_obj_t *label = state->action_labels[slot];
         if (row == NULL || label == NULL) continue;
         if (slot >= visible) {
-            lv_obj_set_hidden(row, true);
+            if (!state->action_row_cache_valid[slot] || state->action_row_cache_visible[slot]) {
+                lv_obj_set_hidden(row, true);
+            }
+            state->action_row_cache_valid[slot] = true;
+            state->action_row_cache_visible[slot] = false;
             continue;
         }
         const size_t index = first + slot;
@@ -644,11 +762,22 @@ static void ui_workflow_update_actions(ui_workflow_screen_state_t *state)
             (void)ui_utf8_format(text + length, sizeof(text) - length, "%s", ui_tr(UI_I18N_KEY_TFT_WORKFLOW_VALUE_PENDING));
         }
         ui_workflow_set_label(label, text);
-        lv_obj_set_pos(row, 10, start_y + (int)(slot * UI_WORKFLOW_ACTION_ROW_STEP));
-        lv_obj_set_style_bg_color(row, lv_color_hex(selected ? UI_COLOR_PANEL_ALT : UI_COLOR_PANEL), 0);
-        lv_obj_set_style_border_color(row, lv_color_hex(selected ? UI_COLOR_ACCENT : UI_COLOR_PANEL_ALT), 0);
-        lv_obj_set_style_border_width(row, selected ? 2 : 1, 0);
-        lv_obj_set_hidden(row, false);
+        const int row_y = start_y + (int)(slot * UI_WORKFLOW_ACTION_ROW_STEP);
+        if (!state->action_row_cache_valid[slot] || state->action_row_cache_y[slot] != row_y) {
+            lv_obj_set_pos(row, 10, row_y);
+        }
+        if (!state->action_row_cache_valid[slot] || state->action_row_cache_selected[slot] != selected) {
+            lv_obj_set_style_bg_color(row, lv_color_hex(selected ? UI_COLOR_PANEL_ALT : UI_COLOR_PANEL), 0);
+            lv_obj_set_style_border_color(row, lv_color_hex(selected ? UI_COLOR_ACCENT : UI_COLOR_PANEL_ALT), 0);
+            lv_obj_set_style_border_width(row, selected ? 2 : 1, 0);
+        }
+        if (!state->action_row_cache_valid[slot] || !state->action_row_cache_visible[slot]) {
+            lv_obj_set_hidden(row, false);
+        }
+        state->action_row_cache_valid[slot] = true;
+        state->action_row_cache_visible[slot] = true;
+        state->action_row_cache_selected[slot] = selected;
+        state->action_row_cache_y[slot] = row_y;
     }
 }
 
@@ -691,6 +820,7 @@ static void ui_workflow_update_lines(ui_workflow_screen_state_t *state)
         lv_bar_set_value(state->progress_bar, state->snapshot.progress, LV_ANIM_OFF);
     }
     ui_workflow_update_actions(state);
+    ui_workflow_update_remote_slots(state);
     ui_context_t *context = ui_context();
     const ui_i18n_key_t footer_key = state->model.notice_key != UI_I18N_KEY_COUNT
         ? state->model.notice_key : state->model.hint_key;
@@ -779,6 +909,7 @@ static void ui_workflow_save_material(
 
 static void ui_workflow_update(ui_workflow_screen_state_t *state, uint64_t now_ms)
 {
+    ui_workflow_refresh_remote_slots(state);
     ui_workflow_prepare_material_model(state);
     ui_workflow_model_build(&state->snapshot, &state->ranging, &state->model_state, now_ms, &state->model);
     if (state->screen == NULL || state->rendered_step != state->snapshot.step ||

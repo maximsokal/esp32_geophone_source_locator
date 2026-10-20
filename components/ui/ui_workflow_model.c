@@ -31,6 +31,18 @@ static const workflow_command_t s_action_order[] = {
     WORKFLOW_COMMAND_BACK,
 };
 
+
+void ui_workflow_remote_slot_layout(
+    uint8_t connected_mask,
+    ui_workflow_remote_slot_t slots[UI_WORKFLOW_REMOTE_SLOT_COUNT])
+{
+    if (slots == NULL) return;
+    for (size_t i = 0U; i < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++i) {
+        slots[i].visible = true;
+        slots[i].connected = (connected_mask & (uint8_t)(1U << i)) != 0U;
+    }
+}
+
 static void copy_arg(char *destination, size_t capacity, const char *source)
 {
     if (capacity == 0U) return;
