@@ -22,6 +22,7 @@
 #define BMP280_REG_CTRL_MEAS 0xF4U
 #define BMP280_REG_DATA 0xF7U
 #define BMP280_CHIP_ID 0x58U
+#define BME280_CHIP_ID 0x60U
 #define BMP280_CONFIG_FILTER_X16_STANDBY_62_5_MS 0x30U
 #define BMP280_CTRL_TEMP_X2_PRESS_X16_NORMAL 0x57U
 #define BMP280_PRESSURE_MIN_PA 30000U
@@ -173,6 +174,7 @@ bool main_barometer_bmp280_compensate(
 
 static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
 {
+    barometer->bme280 = false;
 #if CONFIG_MAIN_BAROMETER_BMP280_ADDRESS == 0x76
     const uint8_t addresses[2] = {BMP280_ADDRESS_76, BMP280_ADDRESS_77};
 #elif CONFIG_MAIN_BAROMETER_BMP280_ADDRESS == 0x77
@@ -196,13 +198,16 @@ static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
             barometer->handles.bus, addresses[i], SENSOR_BUS_I2C_SPEED_HZ,
             &candidate);
         if (create_err != ESP_OK) {
+            barometer->bme280 = false;
             return create_err;
         }
 
         uint8_t chip_id = 0U;
         esp_err_t err = main_barometer_read_regs(
             candidate, addresses[i], BMP280_REG_CHIP_ID, &chip_id, 1U);
-        if (err == ESP_OK && chip_id == BMP280_CHIP_ID) {
+        if (err == ESP_OK &&
+            (chip_id == BMP280_CHIP_ID || chip_id == BME280_CHIP_ID)) {
+            barometer->bme280 = (chip_id == BME280_CHIP_ID);
             uint8_t calibration_bytes[24] = {0};
             err = main_barometer_read_regs(
                 candidate, addresses[i], BMP280_REG_CALIB,
@@ -245,6 +250,7 @@ static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
 
     barometer->reading.bmp280_present = false;
     barometer->reading.bmp280_valid = false;
+    barometer->bme280 = false;
     barometer->bmp280_probe_required = true;
     return last_error;
 }
@@ -623,9 +629,10 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
         }
     }
 
-    if (!barometer->aht20_attempted ||
-        (now_ms >= barometer->last_aht20_attempt_ms &&
-         now_ms - barometer->last_aht20_attempt_ms >= AHT20_POLL_PERIOD_MS)) {
+    if (!barometer->bme280 &&
+        (!barometer->aht20_attempted ||
+         (now_ms >= barometer->last_aht20_attempt_ms &&
+          now_ms - barometer->last_aht20_attempt_ms >= AHT20_POLL_PERIOD_MS))) {
         barometer->aht20_attempted = true;
         barometer->last_aht20_attempt_ms = now_ms;
         esp_err_t aht_err;

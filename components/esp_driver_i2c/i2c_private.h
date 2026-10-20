@@ -103,7 +103,6 @@ typedef struct {
     uint32_t device_address; // Address of I2C device
     i2c_operation_t *ops; // Pointer to I2C operation structure
     size_t cmd_count; // Record how many I2C hardware commands in one transaction
-    size_t op_count; /* LOCAL PATCH (geolocator-i2c-1): preserve the full ops bound while cmd_count is decremented. */
 } i2c_transaction_t;
 
 struct i2c_bus_t {

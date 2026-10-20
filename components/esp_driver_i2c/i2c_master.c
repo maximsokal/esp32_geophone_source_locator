@@ -164,19 +164,13 @@ static void s_i2c_err_log_print(i2c_master_event_t event, bool bypass_nack_log)
     }
 }
 
-/* LOCAL PATCH (geolocator-i2c-1): serialize read-cursor cleanup with the ISR on both task and ISR callers. */
-I2C_MASTER_ISR_ATTR static void s_i2c_master_reset_read_state(i2c_master_bus_handle_t i2c_master)
+/* LOCAL PATCH (geolocator-i2c-2): clear stale read metadata under the bus spinlock. */
+static void s_i2c_master_clear_stale_read(i2c_master_bus_handle_t i2c_master)
 {
-    i2c_bus_handle_t handle = i2c_master->base;
-    portENTER_CRITICAL_SAFE(&handle->spinlock);
+    portENTER_CRITICAL_SAFE(&i2c_master->base->spinlock);
     i2c_master->contains_read = false;
     i2c_master->read_len_static = 0;
-    i2c_master->read_buf_pos = 0;
-    i2c_master->rx_cnt = 0;
-    i2c_master->w_r_size = 0;
-    i2c_master->cmd_idx = 0;
-    atomic_store(&i2c_master->trans_idx, 0);
-    portEXIT_CRITICAL_SAFE(&handle->spinlock);
+    portEXIT_CRITICAL_SAFE(&i2c_master->base->spinlock);
 }
 
 //////////////////////////////////////I2C operation functions////////////////////////////////////////////
@@ -557,8 +551,8 @@ static void s_i2c_send_commands(i2c_master_bus_handle_t i2c_master, TickType_t t
         if (xSemaphoreTake(i2c_master->cmd_semphr, ticks_to_wait) != pdTRUE) {
             // Software timeout, clear the command link and finish this transaction.
             atomic_store(&i2c_master->status, I2C_STATUS_TIMEOUT);
-            /* LOCAL PATCH (geolocator-i2c-1): timeout abort also clears the read cursor before releasing the waiter. */
-            s_i2c_master_reset_read_state(i2c_master);
+            i2c_master->cmd_idx = 0;
+            i2c_master->trans_idx = 0;
             ESP_LOGE(TAG, "I2C software timeout");
             xSemaphoreGive(i2c_master->cmd_semphr);
             return;
@@ -566,8 +560,8 @@ static void s_i2c_send_commands(i2c_master_bus_handle_t i2c_master, TickType_t t
 
         if (atomic_load(&i2c_master->status) == I2C_STATUS_TIMEOUT) {
             s_i2c_hw_fsm_reset(i2c_master, true);
-            /* LOCAL PATCH (geolocator-i2c-1): hardware timeout abort cannot retain a prior RX destination. */
-            s_i2c_master_reset_read_state(i2c_master);
+            i2c_master->cmd_idx = 0;
+            i2c_master->trans_idx = 0;
             ESP_LOGE(TAG, "I2C hardware timeout detected");
             xSemaphoreGive(i2c_master->cmd_semphr);
             return;
@@ -614,17 +608,15 @@ static void s_i2c_send_commands(i2c_master_bus_handle_t i2c_master, TickType_t t
                     ESP_LOGE(TAG, "I2C bus is still busy but software timeout detected");
                     atomic_store(&i2c_master->status, I2C_STATUS_TIMEOUT);
                     s_i2c_hw_fsm_reset(i2c_master, true);
-                    /* LOCAL PATCH (geolocator-i2c-1): clear cursor state when this timeout resets the FSM. */
-                    s_i2c_master_reset_read_state(i2c_master);
                     break;
                 }
             }
         }
         s_i2c_err_log_print(event, i2c_master->bypass_nack_log);
     } else {
+        i2c_master->cmd_idx = 0;
+        i2c_master->trans_idx = 0;
         atomic_store(&i2c_master->status, I2C_STATUS_TIMEOUT);
-        /* LOCAL PATCH (geolocator-i2c-1): a missing completion event aborts any outstanding read cursor. */
-        s_i2c_master_reset_read_state(i2c_master);
     }
     xSemaphoreGive(i2c_master->cmd_semphr);
 }
@@ -695,12 +687,12 @@ static inline bool s_i2c_timeout_range_check(uint32_t *timeout_us, uint32_t sclk
 static esp_err_t s_i2c_transaction_start(i2c_master_dev_handle_t i2c_dev, int xfer_timeout_ms)
 {
     i2c_master_bus_handle_t i2c_master = i2c_dev->master_bus;
+    /* LOCAL PATCH (geolocator-i2c-2): clear stale read metadata before starting a transaction. */
+    s_i2c_master_clear_stale_read(i2c_master);
     i2c_hal_context_t *hal = &i2c_master->base->hal;
     TickType_t ticks_to_wait = (xfer_timeout_ms == -1) ? portMAX_DELAY : pdMS_TO_TICKS(xfer_timeout_ms);
     // Sometimes when the FSM get stuck, the ACK_ERR interrupt will occur endlessly until we reset the FSM and clear bus.
     esp_err_t ret = ESP_OK;
-    /* LOCAL PATCH (geolocator-i2c-1): every sync or async restart begins with an empty read cursor. */
-    s_i2c_master_reset_read_state(i2c_master);
     if (atomic_load(&i2c_master->status) == I2C_STATUS_TIMEOUT || i2c_ll_is_bus_busy(hal->dev)) {
         ESP_RETURN_ON_ERROR(s_i2c_hw_fsm_reset(i2c_master, true), TAG, "reset hardware failed");
     }
@@ -710,7 +702,12 @@ static esp_err_t s_i2c_transaction_start(i2c_master_dev_handle_t i2c_dev, int xf
     }
 
     portENTER_CRITICAL(&i2c_master->base->spinlock);
+    atomic_init(&i2c_master->trans_idx, 0);
     atomic_store(&i2c_master->status, I2C_STATUS_IDLE);
+    i2c_master->cmd_idx = 0;
+    i2c_master->rx_cnt = 0;
+    i2c_master->read_len_static = 0;
+    i2c_master->read_buf_pos = 0;
 
     I2C_CLOCK_SRC_ATOMIC() {
         i2c_hal_set_bus_timing(hal, i2c_dev->scl_speed_hz, i2c_master->base->clk_src, i2c_master->base->clk_src_freq_hz);
@@ -753,40 +750,17 @@ static esp_err_t s_i2c_transaction_start(i2c_master_dev_handle_t i2c_dev, int xf
 
 ///////////////////////////////I2C DRIVERS//////////////////////////////////////////////////////////////
 
-I2C_MASTER_ISR_ATTR static void i2c_isr_receive_handler(i2c_master_bus_t *i2c_master, uint32_t int_mask)
+I2C_MASTER_ISR_ATTR static void i2c_isr_receive_handler(i2c_master_bus_t *i2c_master)
 {
     i2c_hal_context_t *hal = &i2c_master->base->hal;
-    i2c_master_status_t status;
-    i2c_operation_t *i2c_operation;
-    size_t read_buf_pos;
 
-    /* LOCAL PATCH (geolocator-i2c-1): errored IRQs abort RX and never carry a valid success payload. */
-    if (int_mask & (I2C_LL_INTR_NACK | I2C_LL_INTR_TIMEOUT | I2C_LL_INTR_ARBITRATION)) {
-        return;
-    }
-
-    portENTER_CRITICAL_ISR(&i2c_master->base->spinlock);
-    status = atomic_load(&i2c_master->status);
-    /* LOCAL PATCH (geolocator-i2c-1): ACK_ERROR and TIMEOUT are this driver's error states; do not drain RX. */
-    if (status == I2C_STATUS_ACK_ERROR || status == I2C_STATUS_TIMEOUT) {
-        portEXIT_CRITICAL_ISR(&i2c_master->base->spinlock);
-        return;
-    }
-
-    read_buf_pos = i2c_master->read_buf_pos;
-    /* LOCAL PATCH (geolocator-i2c-1): reject stale/out-of-range cursors before indexing the active ops array. */
-    if (i2c_master->i2c_trans.ops == NULL || read_buf_pos >= i2c_master->i2c_trans.op_count) {
-        portEXIT_CRITICAL_ISR(&i2c_master->base->spinlock);
-        return;
-    }
-    i2c_operation = &i2c_master->i2c_trans.ops[read_buf_pos];
-    /* LOCAL PATCH (geolocator-i2c-1): valid RX payload ops provide a buffer; zero-byte or stale ops must not reach FIFO writes. */
-    if (i2c_operation->data == NULL) {
-        portEXIT_CRITICAL_ISR(&i2c_master->base->spinlock);
-        return;
-    }
-
-    if (status == I2C_STATUS_READ) {
+    if (atomic_load(&i2c_master->status) == I2C_STATUS_READ) {
+        i2c_operation_t *i2c_operation = &i2c_master->i2c_trans.ops[i2c_master->read_buf_pos];
+        /* LOCAL PATCH (geolocator-i2c-2): skip a stale read operation without a destination buffer. */
+        if (i2c_operation->data == NULL) {
+            return;
+        }
+        portENTER_CRITICAL_ISR(&i2c_master->base->spinlock);
         i2c_ll_read_rxfifo(hal->dev, i2c_operation->data + i2c_operation->bytes_used, i2c_master->rx_cnt);
         /* rx_cnt bytes have just been read, increment the number of bytes used from the buffer */
         i2c_master->w_r_size = i2c_master->rx_cnt;
@@ -801,23 +775,27 @@ I2C_MASTER_ISR_ATTR static void i2c_isr_receive_handler(i2c_master_bus_t *i2c_ma
             i2c_operation->bytes_used = 0;
             i2c_master->read_len_static = 0;
         }
+        portEXIT_CRITICAL_ISR(&i2c_master->base->spinlock);
     }
 #if !SOC_I2C_STOP_INDEPENDENT
     else {
+        i2c_operation_t *i2c_operation = &i2c_master->i2c_trans.ops[i2c_master->read_buf_pos];
+        /* LOCAL PATCH (geolocator-i2c-2): skip a stale read operation without a destination buffer. */
+        if (i2c_operation->data == NULL) {
+            return;
+        }
+        portENTER_CRITICAL_ISR(&i2c_master->base->spinlock);
         i2c_ll_read_rxfifo(hal->dev, i2c_operation->data + i2c_operation->bytes_used, i2c_master->read_len_static);
         // If the read command only contain nack marker, no read it for the second time.
-        /* LOCAL PATCH (geolocator-i2c-1): only inspect the optional trailing NACK op when it is in bounds. */
-        if (read_buf_pos + 1 < i2c_master->i2c_trans.op_count &&
-            i2c_master->i2c_trans.ops[read_buf_pos + 1].data &&
-            i2c_master->i2c_trans.ops[read_buf_pos + 1].hw_cmd.ack_val == I2C_NACK_VAL) {
-            i2c_ll_read_rxfifo(hal->dev, i2c_master->i2c_trans.ops[read_buf_pos + 1].data, 1);
+        if (i2c_master->i2c_trans.ops[i2c_master->read_buf_pos + 1].data && i2c_master->i2c_trans.ops[i2c_master->read_buf_pos + 1].hw_cmd.ack_val == I2C_NACK_VAL) {
+            i2c_ll_read_rxfifo(hal->dev, i2c_master->i2c_trans.ops[i2c_master->read_buf_pos + 1].data, 1);
         }
         i2c_master->w_r_size = i2c_master->read_len_static + 1;
         i2c_master->read_len_static = 0;
         i2c_master->contains_read = false;
+        portEXIT_CRITICAL_ISR(&i2c_master->base->spinlock);
     }
 #endif
-    portEXIT_CRITICAL_ISR(&i2c_master->base->spinlock);
 }
 
 static void i2c_master_isr_handler_default(void *arg)
@@ -828,14 +806,12 @@ static void i2c_master_isr_handler_default(void *arg)
     portBASE_TYPE HPTaskAwoken = pdFALSE;
     uint32_t int_mask;
     BaseType_t ret = pdTRUE;
-    bool is_error_intr;
     i2c_master->trans_done = false;
     i2c_ll_get_intr_mask(hal->dev, &int_mask);
     i2c_ll_clear_intr_mask(hal->dev, int_mask);
     if (int_mask == 0) {
         return;
     }
-    is_error_intr = (int_mask & (I2C_LL_INTR_NACK | I2C_LL_INTR_TIMEOUT | I2C_LL_INTR_ARBITRATION)) != 0;
 
     if (int_mask & I2C_LL_INTR_NACK) {
         atomic_store(&i2c_master->status, I2C_STATUS_ACK_ERROR);
@@ -851,14 +827,9 @@ static void i2c_master_isr_handler_default(void *arg)
         xQueueSendFromISR(i2c_master->event_queue, (void *)&i2c_master->event, &HPTaskAwoken);
     }
     if (i2c_master->contains_read == true) {
-        /* LOCAL PATCH (geolocator-i2c-1): only success/completion IRQs may consume a prepared RX buffer. */
-        if ((int_mask & (I2C_LL_INTR_MST_COMPLETE | I2C_LL_INTR_END_DETECT)) && !is_error_intr) {
-            i2c_isr_receive_handler(i2c_master, int_mask);
+        if (int_mask & I2C_LL_INTR_MST_COMPLETE || int_mask & I2C_LL_INTR_END_DETECT) {
+            i2c_isr_receive_handler(i2c_master);
         }
-    }
-    if (is_error_intr) {
-        /* LOCAL PATCH (geolocator-i2c-1): async aborts have no task waiter to clear stale read state. */
-        s_i2c_master_reset_read_state(i2c_master);
     }
 
     if (i2c_master->async_trans) {
@@ -894,9 +865,11 @@ static void i2c_master_isr_handler_default(void *arg)
                 ret = xQueueReceiveFromISR(i2c_master->trans_queues[I2C_TRANS_QUEUE_PROGRESS], &t, &HPTaskAwoken);
                 if (ret == pdTRUE) {
                     i2c_master->queue_trans = true;
-                    /* LOCAL PATCH (geolocator-i2c-1): clear cursor state before installing the next queued ops array. */
-                    s_i2c_master_reset_read_state(i2c_master);
+                    atomic_init(&i2c_master->trans_idx, 0);
                     atomic_store(&i2c_master->status, I2C_STATUS_IDLE);
+                    i2c_master->cmd_idx = 0;
+                    i2c_master->rx_cnt = 0;
+                    i2c_master->read_len_static = 0;
                     i2c_ll_txfifo_rst(hal->dev);
                     i2c_ll_rxfifo_rst(hal->dev);
                     i2c_master->i2c_trans = t;
@@ -983,7 +956,6 @@ static esp_err_t s_i2c_asynchronous_transaction(i2c_master_dev_handle_t i2c_dev,
             .device_address = i2c_dev->device_address,
             .ops = i2c_master->i2c_ops,
             .cmd_count = ops_dim,
-            .op_count = ops_dim, /* LOCAL PATCH (geolocator-i2c-1): bound ISR cursor checks by this transaction's full ops array. */
         };
 
         i2c_master->sent_all = false;
@@ -1023,7 +995,6 @@ static esp_err_t s_i2c_asynchronous_transaction(i2c_master_dev_handle_t i2c_dev,
             .device_address = i2c_dev->device_address,
             .ops = ops_current,
             .cmd_count = ops_dim,
-            .op_count = ops_dim, /* LOCAL PATCH (geolocator-i2c-1): retain the queued ops bound after cmd_count shrinks. */
         };
         if (xQueueSend(i2c_master->trans_queues[I2C_TRANS_QUEUE_PROGRESS], &i2c_queue_pre, portMAX_DELAY) == pdTRUE) {
             i2c_master->num_trans_inflight++;
@@ -1061,7 +1032,6 @@ static esp_err_t s_i2c_synchronous_transaction(i2c_master_dev_handle_t i2c_dev, 
         .device_address = i2c_dev->device_address,
         .ops = i2c_dev->master_bus->i2c_ops,
         .cmd_count = ops_dim,
-        .op_count = ops_dim, /* LOCAL PATCH (geolocator-i2c-1): retain the synchronous ops bound for ISR checks. */
     };
 
     i2c_dev->master_bus->sent_all = false;
@@ -1076,9 +1046,9 @@ static esp_err_t s_i2c_synchronous_transaction(i2c_master_dev_handle_t i2c_dev, 
     return ret;
 
 err:
+    /* LOCAL PATCH (geolocator-i2c-2): clear stale read metadata before error recovery. */
+    s_i2c_master_clear_stale_read(i2c_dev->master_bus);
     // When error occurs, reset hardware fsm in case not influence following transactions.
-    /* LOCAL PATCH (geolocator-i2c-1): synchronous failure cleanup clears any read cursor before FSM reset. */
-    s_i2c_master_reset_read_state(i2c_dev->master_bus);
     s_i2c_hw_fsm_reset(i2c_dev->master_bus, false);
     xSemaphoreGive(i2c_dev->master_bus->bus_lock_mux);
     return ret;
@@ -1203,8 +1173,6 @@ esp_err_t i2c_new_master_bus(const i2c_master_bus_config_t *bus_config, i2c_mast
     }
     ret = esp_intr_alloc_intrstatus(i2c_periph_signal[i2c_port_num].irq, isr_flags, (uint32_t)i2c_ll_get_interrupt_status_reg(hal->dev), I2C_LL_MASTER_EVENT_INTR, i2c_master_isr_handler_default, i2c_master, &i2c_master->base->intr_handle);
     ESP_GOTO_ON_ERROR(ret, err, TAG, "install i2c master interrupt failed");
-    /* LOCAL PATCH (geolocator-i2c-1): initialize the atomic cursor before task or ISR reset helpers use it. */
-    atomic_init(&i2c_master->trans_idx, 0);
     atomic_init(&i2c_master->status, I2C_STATUS_IDLE);
 
     i2c_ll_master_set_filter(hal->dev, bus_config->glitch_ignore_cnt);
@@ -1300,8 +1268,8 @@ esp_err_t i2c_master_bus_reset(i2c_master_bus_handle_t bus_handle)
 {
     ESP_RETURN_ON_FALSE((bus_handle != NULL), ESP_ERR_INVALID_ARG, TAG, "This bus is not initialized");
     // Reset I2C master bus
-    /* LOCAL PATCH (geolocator-i2c-1): discard stale RX cursor state even if hardware reset later fails. */
-    s_i2c_master_reset_read_state(bus_handle);
+    /* LOCAL PATCH (geolocator-i2c-2): clear stale read metadata before bus recovery. */
+    s_i2c_master_clear_stale_read(bus_handle);
     ESP_RETURN_ON_ERROR(s_i2c_hw_fsm_reset(bus_handle, true), TAG, "I2C master bus reset failed");
     // Reset I2C status state
     atomic_store(&bus_handle->status, I2C_STATUS_IDLE);
@@ -1414,10 +1382,12 @@ esp_err_t i2c_master_probe(i2c_master_bus_handle_t bus_handle, uint16_t address,
     if (xSemaphoreTake(bus_handle->bus_lock_mux, ticks_to_wait) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
+    /* LOCAL PATCH (geolocator-i2c-2): clear stale read metadata before probe enables interrupts. */
+    s_i2c_master_clear_stale_read(bus_handle);
     esp_err_t ret = ESP_OK;
 
-    /* LOCAL PATCH (geolocator-i2c-1): probes use a different ops array and must start with no read cursor. */
-    s_i2c_master_reset_read_state(bus_handle);
+    bus_handle->cmd_idx = 0;
+    bus_handle->trans_idx = 0;
     bus_handle->trans_done = false;
     bus_handle->status = I2C_STATUS_IDLE;
     bus_handle->bypass_nack_log = true;
@@ -1431,7 +1401,6 @@ esp_err_t i2c_master_probe(i2c_master_bus_handle_t bus_handle, uint16_t address,
         .device_address = address,
         .ops = i2c_ops,
         .cmd_count = DIM(i2c_ops),
-        .op_count = DIM(i2c_ops), /* LOCAL PATCH (geolocator-i2c-1): make the probe ops array's exact bound explicit. */
     };
 
     // I2C probe does not have i2c device module. So set the clock parameter independently
@@ -1456,12 +1425,12 @@ esp_err_t i2c_master_probe(i2c_master_bus_handle_t bus_handle, uint16_t address,
         ret = ESP_ERR_TIMEOUT;
     }
 
-    /* LOCAL PATCH (geolocator-i2c-1): clear probe state on success, NACK, timeout, and abort before unlock. */
-    s_i2c_master_reset_read_state(bus_handle);
     // Reset the status to done, in order not influence next time transaction.
     bus_handle->status = I2C_STATUS_DONE;
     bus_handle->bypass_nack_log = false;
     i2c_ll_disable_intr_mask(hal->dev, I2C_LL_MASTER_EVENT_INTR);
+    /* LOCAL PATCH (geolocator-i2c-2): clear stale read metadata before releasing the probe bus lock. */
+    s_i2c_master_clear_stale_read(bus_handle);
     xSemaphoreGive(bus_handle->bus_lock_mux);
     return ret;
 }

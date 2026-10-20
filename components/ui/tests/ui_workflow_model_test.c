@@ -266,8 +266,12 @@ static void test_left_behavior_each_step(void)
         ui_workflow_event_t event;
         snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
         event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_LEFT, 100U);
-        assert(event.type == UI_WORKFLOW_EVENT_SEND_COMMAND);
-        assert(event.command == WORKFLOW_COMMAND_BACK);
+        if (step == WORKFLOW_STEP_OBJECT) {
+            assert(event.type == UI_WORKFLOW_EVENT_LEAVE_OBJECTS);
+        } else {
+            assert(event.type == UI_WORKFLOW_EVENT_SEND_COMMAND);
+            assert(event.command == WORKFLOW_COMMAND_BACK);
+        }
 
         snapshot.allowed_actions = 0U;
         event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_LEFT, 100U);

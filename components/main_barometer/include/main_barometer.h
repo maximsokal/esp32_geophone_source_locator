@@ -64,6 +64,7 @@ typedef struct {
     bool bmp280_initialized;
     bool aht20_initialized;
     bool bmp280_probe_required;
+    bool bme280;
     bool aht20_probe_required;
     bool aht20_attempted;
     bool height_reference_capture_active;
