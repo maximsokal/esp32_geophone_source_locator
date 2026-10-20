@@ -64,10 +64,11 @@ _Static_assert(
 /*
  * esp_lvgl_port owns the LVGL handler task. It stays on Core 0 so
  * rendering and the shared TFT/SD SPI2 side never migrate onto the
- * real-time acquisition core.
+ * real-time acquisition core. Keep 10 KiB for synchronous screen builds and
+ * their nested LVGL object construction and formatting calls.
  */
 #define APP_TASK_PRIORITY_LVGL            4
-#define APP_TASK_STACK_LVGL            7168
+#define APP_TASK_STACK_LVGL           10240
 
 #define APP_TASK_PRIORITY_STORAGE_SERVICE 3
 #define APP_TASK_STACK_STORAGE_SERVICE 8192

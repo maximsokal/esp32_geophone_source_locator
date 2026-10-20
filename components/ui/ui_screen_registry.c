@@ -1,5 +1,10 @@
 #include "ui_internal.h"
 
+#include <string.h>
+
+#if !defined(_MSC_VER)
+#include "esp_attr.h"
+#endif
 #include "esp_err.h"
 #include "esp_log.h"
 #include "ui_measurements_route.h"
@@ -7,6 +12,13 @@
 
 
 static const char *TAG = "UI_SCREEN";
+
+/* Navigation is serialized by the LVGL task lock; keep this route snapshot in PSRAM. */
+#if defined(_MSC_VER)
+static workflow_snapshot_t s_measurements_route_snapshot;
+#else
+static EXT_RAM_BSS_ATTR workflow_snapshot_t s_measurements_route_snapshot;
+#endif
 
 #if defined(_MSC_VER)
 /* The standalone MSVC navigation fixture intentionally omits these full UI screens. */
@@ -323,10 +335,11 @@ void ui_screen_open_locked(
 )
 {
     if (screen == UI_SCREEN_MEASUREMENTS) {
-        workflow_snapshot_t workflow = {0};
+        memset(&s_measurements_route_snapshot, 0, sizeof(s_measurements_route_snapshot));
         const bool workflow_available =
-            workflow_service_try_get_snapshot(&workflow) == ESP_OK;
-        bool has_active_object = workflow_available && workflow.object_id[0] != '\0';
+            workflow_service_try_get_snapshot(&s_measurements_route_snapshot) == ESP_OK;
+        bool has_active_object = workflow_available &&
+            s_measurements_route_snapshot.object_id[0] != '\0';
         if (!has_active_object) {
             object_service_summary_t active_object;
             has_active_object = object_service_get_active(&active_object) == ESP_OK &&
@@ -334,7 +347,7 @@ void ui_screen_open_locked(
         }
 
         const ui_measurements_route_t route = ui_measurements_route_decide(
-            workflow_available ? workflow.step : WORKFLOW_STEP_IDLE,
+            workflow_available ? s_measurements_route_snapshot.step : WORKFLOW_STEP_IDLE,
             has_active_object);
         if (route == UI_MEASUREMENTS_ROUTE_WORKFLOW) {
             screen = UI_SCREEN_WORKFLOW;

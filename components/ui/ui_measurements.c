@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "esp_heap_caps.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "device_status.h"
@@ -28,6 +29,9 @@
 
 
 static const char *TAG = "UI_MEASUREMENTS";
+
+/* Measurements refresh runs on taskLVGL under the port lock. */
+static EXT_RAM_BSS_ATTR device_status_snapshot_t s_measurements_status;
 
 #if defined(CONFIG_UI_MEASUREMENTS_GRAPHS_ENABLED)
 #define UI_MEASUREMENTS_GRAPHS_ENABLED CONFIG_UI_MEASUREMENTS_GRAPHS_ENABLED
@@ -837,9 +841,8 @@ static void ui_measurements_refresh_nodes_locked(void)
     };
 
     ui_context_t *context = ui_context();
-    device_status_snapshot_t status;
     const bool status_available =
-        device_status_try_get_snapshot(&status) == ESP_OK;
+        device_status_try_get_snapshot(&s_measurements_status) == ESP_OK;
     const ui_measurements_node_text_t text = {
         .unknown = ui_tr(UI_I18N_KEY_SHARED_EMPTY),
         .no_data = ui_tr(UI_I18N_KEY_MEASUREMENT_NODE_NO_DATA),
@@ -856,14 +859,14 @@ static void ui_measurements_refresh_nodes_locked(void)
         const bool computed = main_node || (
             status_available &&
             pod_index < DEVICE_STATUS_POD_COUNT &&
-            status.pods[pod_index].position.local_valid
+            s_measurements_status.pods[pod_index].position.local_valid
         );
         const float x_m = main_node
             ? 0.0f
-            : computed ? status.pods[pod_index].position.local_x_m : 0.0f;
+            : computed ? s_measurements_status.pods[pod_index].position.local_x_m : 0.0f;
         const float y_m = main_node
             ? 0.0f
-            : computed ? status.pods[pod_index].position.local_y_m : 0.0f;
+            : computed ? s_measurements_status.pods[pod_index].position.local_y_m : 0.0f;
         const ui_measurements_node_level_t level = main_node
             ? UI_MEASUREMENTS_NODE_LEVEL_NO_DATA
             : ui_measurements_node_level_get((uint8_t)pod_index);

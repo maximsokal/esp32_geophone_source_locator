@@ -702,28 +702,27 @@ static void ui_workflow_update_lines(ui_workflow_screen_state_t *state)
 
 static void ui_workflow_refresh_snapshot(ui_workflow_screen_state_t *state, uint64_t now_ms)
 {
-    workflow_snapshot_t snapshot;
-    if (workflow_service_try_get_snapshot(&snapshot) != ESP_OK) return;
+    workflow_snapshot_t *snapshot = &state->snapshot;
     const bool first = !state->snapshot_valid;
-    const workflow_step_t old_step = state->snapshot.step;
-    state->snapshot = snapshot;
+    const workflow_step_t old_step = snapshot->step;
+    if (workflow_service_try_get_snapshot(snapshot) != ESP_OK) return;
     state->snapshot_valid = true;
     state->workflow_service_ready = true;
 
-    if (snapshot.step == WORKFLOW_STEP_RECORDING && old_step != WORKFLOW_STEP_RECORDING) {
+    if (snapshot->step == WORKFLOW_STEP_RECORDING && old_step != WORKFLOW_STEP_RECORDING) {
         const bool started_here = !first && old_step == WORKFLOW_STEP_RECORD_READY &&
-            snapshot.last_async.command == WORKFLOW_COMMAND_START_RECORDING &&
-            snapshot.last_async.result == WORKFLOW_COMMAND_RESULT_OK;
+            snapshot->last_async.command == WORKFLOW_COMMAND_START_RECORDING &&
+            snapshot->last_async.result == WORKFLOW_COMMAND_RESULT_OK;
         state->model_state.recording_elapsed_valid = started_here;
         state->recording_started_ms = now_ms;
     }
-    if (snapshot.step == WORKFLOW_STEP_RECORDING && state->model_state.recording_elapsed_valid) {
+    if (snapshot->step == WORKFLOW_STEP_RECORDING && state->model_state.recording_elapsed_valid) {
         state->model_state.recording_elapsed_ms = now_ms - state->recording_started_ms;
     }
 
-    if (first || snapshot.step != old_step) {
-        if (snapshot.step == WORKFLOW_STEP_RESULT &&
-            snapshot.calculation_class == WORKFLOW_CALCULATION_CLASS_NONE) {
+    if (first || snapshot->step != old_step) {
+        if (snapshot->step == WORKFLOW_STEP_RESULT &&
+            snapshot->calculation_class == WORKFLOW_CALCULATION_CLASS_NONE) {
             state->model_state.result_data_ready = false;
             state->model_state.result_load_failed = false;
             state->model_state.result_waveform_available = false;
@@ -735,7 +734,7 @@ static void ui_workflow_refresh_snapshot(ui_workflow_screen_state_t *state, uint
         }
         state->rendered_step = WORKFLOW_STEP_COUNT;
     }
-    state->previous_step = snapshot.step;
+    state->previous_step = snapshot->step;
 }
 
 static void ui_workflow_send_command(ui_workflow_screen_state_t *state, workflow_command_t command, uint64_t now_ms)
