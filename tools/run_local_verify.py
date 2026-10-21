@@ -194,7 +194,10 @@ def web_steps(
 
     for name, script in (
         ("web/typecheck", "typecheck"),
+        ("web/test-types", "typecheck:tests"),
         ("web/console", "test:console"),
+        ("web/domain", "test:domain"),
+        ("web/components", "test:components"),
         ("web/xr", "test:xr"),
         ("web/build", "build"),
         ("web/bundle", "verify:bundle"),
@@ -280,14 +283,17 @@ def ui_steps(root: Path, python_executable: str, npm_executable: str,
     webui = root / 'webui'
     if not skip_npm_ci:
         steps.append(Step('ui-web/npm-ci', webui, (npm_executable, 'ci', '--no-audit', '--no-fund')))
-    for name, script in (('typecheck', 'typecheck'), ('console', 'test:console'),
-                         ('e2e-types', 'typecheck:e2e'), ('smoke', 'test:ui:smoke'),
+    for name, script in (('typecheck', 'typecheck'), ('test-types', 'typecheck:tests'),
+                         ('console', 'test:console'), ('domain', 'test:domain'),
+                         ('components', 'test:components'), ('e2e-types', 'typecheck:e2e'), ('smoke', 'test:ui:smoke'),
                          ('bundle', 'verify:bundle')):
         env = {'PLAYWRIGHT_JSON_OUTPUT_FILE': str(output / 'web/playwright.json'),
                'PLAYWRIGHT_HTML_OUTPUT_DIR': str(output / 'web/html')}
         command = (npm_executable, 'run', script)
         if name == 'smoke':
             command += ('--', '--output', str(output / 'web/results'))
+        if name in ('components', 'domain'):
+            command += ('--', '--reporter=default', '--reporter=junit', '--outputFile', str(output / f'{name}.xml'))
         steps.append(Step(f'ui-web/{name}', webui, command, environment=env if name == 'smoke' else None))
     return steps
 
@@ -326,6 +332,7 @@ def run_ui_verification(root: Path, python_executable: str, npm_executable: str,
         '--web', str(output / 'web/playwright.json'), '--web-exit-code', '1' if 'ui-web' in failed_groups else '0',
         '--native-junit', str(output / 'native.xml'), '--native-root', str(output / 'native'),
         '--native-exit-code', '1' if 'ui-native' in failed_groups else '0',
+        '--components-junit', str(output / 'components.xml'), '--domain-junit', str(output / 'domain.xml'),
     ])
     result = 1 if failed_groups or report_exit else 0
     print(f"LOCAL_VERIFY_RESULT: {'FAIL' if result else 'PASS'} (UI artifacts: {output})", flush=True)

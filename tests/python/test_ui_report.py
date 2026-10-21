@@ -190,3 +190,58 @@ def test_inconsistent_native_pass_counts_are_blocked(tmp_path):
     result = reporter.summarize(web=None, native_junit=junit, native_root=tmp_path, only='native')
     assert result['status'] == 'BLOCKED'
     assert 'contradicts' in result['tests'][0]['actual']
+
+
+def test_component_and_domain_junit_join_selected_browser_evidence(tmp_path):
+    web, _ = web_report(tmp_path)
+    components = tmp_path / 'components.xml'
+    components.write_text('<testsuites tests="1" failures="0"><testsuite>'
+        '<testcase classname="tests/components/workflow.dom.test.tsx" name="pending"/>'
+        '</testsuite></testsuites>')
+    domain = tmp_path / 'domain.xml'
+    domain.write_text('<testsuite tests="1"><testcase classname="resultSegment.test.ts" name="window"/></testsuite>')
+    result = reporter.summarize(web=web, native_junit=None, native_root=None, only='web',
+                                components_junit=components, domain_junit=domain)
+    assert result['status'] == 'PASS'
+    assert result['selected'] == ['web', 'components', 'domain']
+    assert result['counts'] == {'PASS': 3}
+    row = result['tests'][1]
+    assert row['viewport'] is None
+    assert row['environment'] == {'runtime': 'jsdom'}
+    assert row['source']['file'] == 'tests/components/workflow.dom.test.tsx'
+
+
+def test_component_assertion_failure_is_not_hidden_by_passing_web(tmp_path):
+    web, _ = web_report(tmp_path)
+    components = tmp_path / 'components.xml'
+    components.write_text('<testsuites tests="1" failures="1"><testsuite>'
+        '<testcase classname="workflow.dom.test.tsx" name="pending"><failure>expected 1 command; got 2</failure>'
+        '</testcase></testsuite></testsuites>')
+    result = reporter.summarize(web=web, native_junit=None, native_root=None, only='web', components_junit=components)
+    assert result['status'] == 'FAIL'
+    assert result['counts'] == {'PASS': 1, 'FAIL': 1}
+    assert 'got 2' in result['tests'][-1]['actual']
+
+
+@pytest.mark.parametrize('xml', ['<', '<testsuites/>', '<testsuite tests="2"><testcase name="only one"/></testsuite>',
+    '<testsuite tests="1" failures="1"><testcase name="contradiction"/></testsuite>'])
+def test_invalid_component_junit_cannot_pass(tmp_path, xml):
+    path = tmp_path / 'components.xml'
+    path.write_text(xml)
+    result = reporter.summarize(web=None, native_junit=None, native_root=None, only='components', components_junit=path)
+    assert result['status'] == 'BLOCKED'
+
+
+def test_missing_domain_prerequisite_remains_blocked(tmp_path):
+    result = reporter.summarize(web=None, native_junit=None, native_root=None, only='domain',
+                                domain_junit=tmp_path / 'missing.xml')
+    assert result['status'] == 'BLOCKED'
+
+
+def test_compact_summary_prioritizes_failures_over_unselected_skips(tmp_path, capsys):
+    rows = [reporter.record('components', f'skip-{n}', 'SKIPPED', '') for n in range(5)]
+    rows.append(reporter.record('components', 'duplicate-command', 'FAIL', 'expected 1 command; got 2'))
+    result = {'status': 'FAIL', 'counts': {'SKIPPED': 5, 'FAIL': 1}, 'selected': ['components'],
+              'identity': None, 'generated_at': 'now', 'tests': rows, 'not_run': []}
+    reporter.write_report(tmp_path / 'report', result)
+    assert 'duplicate-command: FAIL expected 1 command; got 2' in capsys.readouterr().out

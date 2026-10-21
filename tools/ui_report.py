@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize existing Playwright JSON and native pytest/JUnit + run.json. Never runs tests."""
+"""Summarize existing Playwright/JUnit results and native run.json. Never runs tests."""
 from __future__ import annotations
 
 import argparse
@@ -35,7 +35,7 @@ def source_identity(root: Path) -> dict:
     paths.extend(root / p for p in ('dependencies.lock', 'sdkconfig', 'sdkconfig.defaults',
                  'webui/package.json', 'webui/package-lock.json', 'webui/index.html',
                  'webui/playwright.config.ts', 'webui/tsconfig.e2e.json', 'webui/vite.config.ts',
-                 'webui/tsconfig.json', 'sgconfig.yml'))
+                 'webui/tsconfig.json', 'webui/vitest.dom.config.ts', 'webui/tsconfig.test.json', 'sgconfig.yml'))
     digest = hashlib.sha256()
     paths = sorted({p for p in paths if p.is_file()})
     for path in paths:
@@ -128,7 +128,7 @@ def web_records(path: Path, identity: dict | None = None) -> list[dict]:
     return rows
 
 
-def native_records(junit: Path, native_root: Path, identity: dict | None = None) -> list[dict]:
+def junit_records(junit: Path, subsystem: str, identity: dict | None = None) -> list[dict]:
     check_fresh(junit, identity)
     tree = ET.parse(junit)
     rows = []
@@ -136,13 +136,26 @@ def native_records(junit: Path, native_root: Path, identity: dict | None = None)
         failure, error, skipped = case.find('failure'), case.find('error'), case.find('skipped')
         status, detail = ('FAIL', failure) if failure is not None else (
             ('BLOCKED', error) if error is not None else (('SKIPPED', skipped) if skipped is not None else ('PASS', None)))
-        rows.append(record('native', f"{case.get('classname')}.{case.get('name')}", status,
+        rows.append(record(subsystem, f"{case.get('classname')}.{case.get('name')}", status,
             ''.join(detail.itertext()) if detail is not None else 'passed',
-            source={'file': case.get('file'), 'line': case.get('line')},
+            source={'file': case.get('file') or case.get('classname'), 'line': case.get('line')},
             artifacts={'junit': str(junit)},
-            reproduce='python -m pytest tests/python/test_ui_render_runner.py tests/python/test_ui_render.py -q'))
+            viewport='320x240' if subsystem == 'native' else None,
+            environment={'runtime': {'native': 'Native LVGL/runner', 'components': 'jsdom', 'domain': 'Node'}[subsystem]},
+            reproduce=('python -m pytest tests/python/test_ui_render_runner.py tests/python/test_ui_render.py -q'
+                       if subsystem == 'native' else f'cd webui; npm run test:{subsystem}')))
     if not rows:
-        raise ValueError('Native JUnit contains no tests')
+        raise ValueError(f'{subsystem} JUnit contains no tests')
+    for attribute, actual in (('tests', len(rows)), ('failures', sum(row['status'] == 'FAIL' for row in rows)),
+                              ('errors', sum(row['status'] == 'BLOCKED' for row in rows))):
+        declared = tree.getroot().get(attribute)
+        if declared is not None and int(declared) != actual:
+            raise ValueError(f'{subsystem} JUnit {attribute} count contradicts its cases')
+    return rows
+
+
+def native_records(junit: Path, native_root: Path, identity: dict | None = None) -> list[dict]:
+    rows = junit_records(junit, 'native', identity)
     records = list(native_root.glob('real-lvgl*/run.json'))
     if len(records) != 1:
         rows.append(record('native', 'native/capture', 'BLOCKED',
@@ -171,19 +184,27 @@ def native_records(junit: Path, native_root: Path, identity: dict | None = None)
 
 def summarize(*, web: Path | None, native_junit: Path | None, native_root: Path | None,
               only: str = 'both', identity: dict | None = None,
-              exit_codes: dict | None = None) -> dict:
+              exit_codes: dict | None = None, components_junit: Path | None = None,
+              domain_junit: Path | None = None) -> dict:
     rows = []
     selected = ['web', 'native'] if only == 'both' else [only]
+    extra_junit = {'components': components_junit, 'domain': domain_junit}
+    selected.extend(name for name, path in extra_junit.items() if path is not None and name not in selected)
     for subsystem in selected:
         try:
             if subsystem == 'web':
                 if web is None:
                     raise ValueError('Playwright JSON was not supplied')
                 found = web_records(web, identity)
-            else:
+            elif subsystem == 'native':
                 if native_junit is None or native_root is None:
                     raise ValueError('Native JUnit/root were not supplied')
                 found = native_records(native_junit, native_root, identity)
+            else:
+                path = extra_junit[subsystem]
+                if path is None:
+                    raise ValueError(f'{subsystem} JUnit was not supplied')
+                found = junit_records(path, subsystem, identity)
             rows.extend(found)
             code = (exit_codes or {}).get(subsystem)
             if code not in (None, 0) and not any(row['status'] in ('FAIL', 'BLOCKED') for row in found):
@@ -203,6 +224,8 @@ def write_report(output: Path, report: dict) -> None:
     output.mkdir(parents=True, exist_ok=True)
     (output / 'summary.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     failures = [row for row in report['tests'] if row['status'] != 'PASS']
+    priority = {'FAIL': 0, 'BLOCKED': 1, 'FLAKY/UNSTABLE': 2, 'SKIPPED': 3}
+    failures.sort(key=lambda row: priority.get(row['status'], 4))
     lines = [f"UI_RESULT: {report['status']} | " + ', '.join(f'{s}={n}' for s, n in report['counts'].items())]
     for row in failures[:3]:
         lines.append(f"{row['id']}: {row['status']} {row['actual'][:300]}")
@@ -241,7 +264,9 @@ def main(argv=None) -> int:
     parser.add_argument('--web', type=Path)
     parser.add_argument('--native-junit', type=Path)
     parser.add_argument('--native-root', type=Path)
-    parser.add_argument('--only', choices=('web', 'native', 'both'), default='both')
+    parser.add_argument('--only', choices=('web', 'native', 'both', 'components', 'domain'), default='both')
+    parser.add_argument('--components-junit', type=Path)
+    parser.add_argument('--domain-junit', type=Path)
     parser.add_argument('--identity', type=Path, help='Pre-run identity; rejects stale reports or changed source')
     parser.add_argument('--web-exit-code', type=int)
     parser.add_argument('--native-exit-code', type=int)
@@ -259,6 +284,7 @@ def main(argv=None) -> int:
                     raise ValueError(f'Invalid run identity: {key}')
         report = summarize(web=args.web, native_junit=args.native_junit, native_root=args.native_root,
                            only=args.only, identity=identity,
+                           components_junit=args.components_junit, domain_junit=args.domain_junit,
                            exit_codes={'web': args.web_exit_code, 'native': args.native_exit_code})
         if identity is not None and source_identity(ROOT) != {key: identity[key] for key in ('head', 'source_sha256', 'files')}:
             report['status'] = 'BLOCKED'

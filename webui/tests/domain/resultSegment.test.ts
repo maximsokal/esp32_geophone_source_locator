@@ -14,7 +14,10 @@ import type {
 import type { SavedSeismicSnapshot } from '../../src/domain/device';
 import fixtureJson from '../../../tests/fixtures/result_view_vectors.json';
 
-vi.mock('../../src/api/deviceApi', () => ({ fetchSavedSeismicSession: vi.fn() }));
+vi.mock('../../src/api/deviceApi', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/api/deviceApi')>(),
+  fetchSavedSeismicSession: vi.fn(),
+}));
 
 const fixture = fixtureJson as { windows: number[][]; distances: number[][] };
 const windowNames = ['middle', 'start edge', 'end edge', 'record-spanning', 'single accepted pick', 'no accepted picks', 'rejected pick ignored', 'record shorter than minimum', 'sample-rate conversion', 'fractional sample conversion'];

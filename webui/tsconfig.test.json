@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["vite/client"] },
+  "include": ["vitest.dom.config.ts", "tests/components/**/*.ts", "tests/components/**/*.tsx", "tests/domain/**/*.ts"]
+}

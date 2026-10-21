@@ -86,7 +86,10 @@ def test_software_plan_is_local_and_never_contains_firmware_or_github(tmp_path: 
     assert "ast/scan" in names
     assert "web/npm-ci" in names
     assert "web/typecheck" in names
+    assert "web/test-types" in names
     assert "web/console" in names
+    assert "web/domain" in names
+    assert "web/components" in names
     assert "web/xr" in names
     assert "web/build" in names
     assert "web/bundle" in names
@@ -108,7 +111,10 @@ def test_skip_npm_ci_keeps_other_web_checks(tmp_path: Path):
     assert "web/npm-ci" not in names
     assert names == [
         "web/typecheck",
+        "web/test-types",
         "web/console",
+        "web/domain",
+        "web/components",
         "web/xr",
         "web/build",
         "web/bundle",
@@ -261,12 +267,17 @@ def test_ui_plan_owns_fresh_reports_and_keeps_existing_default_scopes(tmp_path):
     output = root / '.test-build/ui-regression/run'
     steps = runner.ui_steps(root, 'python-test', 'npm-test', skip_npm_ci=True, output=output)
     assert [s.name for s in steps] == ['ui-native/bootstrap', 'ui-native/tests',
-        'ui-web/typecheck', 'ui-web/console', 'ui-web/e2e-types', 'ui-web/smoke', 'ui-web/bundle']
+        'ui-web/typecheck', 'ui-web/test-types', 'ui-web/console', 'ui-web/domain',
+        'ui-web/components', 'ui-web/e2e-types', 'ui-web/smoke', 'ui-web/bundle']
     assert '--junitxml' in steps[1].command
     assert str(output / 'native') in steps[1].command
     smoke = steps[-2]
     assert smoke.command[-3:] == ('--', '--output', str(output / 'web/results'))
     assert smoke.environment['PLAYWRIGHT_JSON_OUTPUT_FILE'] == str(output / 'web/playwright.json')
+    for name in ('components', 'domain'):
+        step = next(s for s in steps if s.name == f'ui-web/{name}')
+        assert step.command[-2:] == ('--outputFile', str(output / f'{name}.xml'))
+        assert '--reporter=junit' in step.command
     assert not runner.scope_includes('software', 'ui')
     assert not any('ui-' in s.name for s in runner.web_steps(root, 'npm-test', skip_npm_ci=True))
 
