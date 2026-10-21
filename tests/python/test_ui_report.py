@@ -64,6 +64,36 @@ def test_pass_has_actual_source_selection_and_evidence(tmp_path):
     assert 'Physical' in result['not_run'][0]
 
 
+@pytest.mark.parametrize('mode,outcome', [('capture', 'CAPTURED_NOT_APPROVED'), ('compare', 'PASS'), ('invalid', 'BLOCKED')])
+def test_visual_capture_is_never_reported_as_an_approved_comparison(tmp_path, mode, outcome):
+    path, data = web_report(tmp_path)
+    data['config']['metadata']['visualMode'] = mode
+    actual = tmp_path / 'actual.png'
+    actual.write_bytes(b'isolated reporter image fixture')
+    data['suites'][0]['specs'][0]['tests'][0]['results'][0]['attachments'].append(
+        {'name': 'visual-actual', 'path': str(actual), 'contentType': 'image/png'})
+    (tmp_path / 'candidate.json').write_text('{}', encoding='utf-8')
+    path.write_text(json.dumps(data), encoding='utf-8')
+    result = reporter.summarize(web=None, native_junit=None, native_root=None, visual=path, only='visual')
+    assert result['status'] == outcome
+    assert result['tests'][0]['status'] == outcome
+    code = reporter.main(['--only', 'visual', '--visual', str(path), '--output', str(tmp_path / 'summary')])
+    assert code == (0 if outcome == 'PASS' else 1)
+    rendered = (tmp_path / 'summary/index.html').read_text(encoding='utf-8')
+    if mode != 'invalid':
+        assert '<img loading="lazy" src="../actual.png" alt="actual.png">' in rendered
+        assert 'href="../candidate.json"' in rendered
+
+
+def test_failed_visual_capture_and_missing_visual_input_remain_failures(tmp_path):
+    path, data = web_report(tmp_path, status='failed', overall='unexpected', errors=[{'message': 'visible text changed'}])
+    data['config']['metadata']['visualMode'] = 'capture'
+    path.write_text(json.dumps(data), encoding='utf-8')
+    assert reporter.summarize(web=None, native_junit=None, native_root=None, visual=path, only='visual')['status'] == 'FAIL'
+    path.unlink()
+    assert reporter.summarize(web=None, native_junit=None, native_root=None, visual=path, only='visual')['status'] == 'BLOCKED'
+
+
 @pytest.mark.parametrize('width', [360, -1])
 def test_browser_records_use_measured_runtime_viewport_or_block_invalid_evidence(tmp_path, width):
     path, data = web_report(tmp_path)

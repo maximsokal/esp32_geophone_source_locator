@@ -9,6 +9,8 @@ export class DeviceApi {
   readonly problems: string[] = [];
   readonly expectedHttpErrors = new Set<string>();
   statusFailure: 'http' | 'schema' | null = null;
+  private statusPause: Promise<void> | null = null;
+  private finishStatus: (() => void) | null = null;
   readonly logPage: NrfLogPage = {
     ok: true, node: 'main', channel: null, records: [], next_token: null, reset: false,
     counters: { overwritten_total: 0, lost_internal_total: 0, wire_gap_total: 0, local_drop_total: 0 },
@@ -28,6 +30,16 @@ export class DeviceApi {
     for (const pod of this.status.pods) pod.state = 'READY';
   }
 
+  holdStatus(): void {
+    this.statusPause = new Promise((resolve) => { this.finishStatus = resolve; });
+  }
+
+  resumeStatus(): void {
+    this.finishStatus?.();
+    this.statusPause = null;
+    this.finishStatus = null;
+  }
+
   async install(context: BrowserContext, origin: string): Promise<void> {
     await context.routeWebSocket('**/*', (socket) => {
       this.problems.push(`Unexpected WebSocket: ${socket.url()}`);
@@ -40,6 +52,7 @@ export class DeviceApi {
       this.requests.push(id);
       if (url.origin === origin) {
         if (request.method() === 'GET' && url.pathname === '/api/status') {
+          await this.statusPause;
           if (this.statusFailure === 'http') {
             this.expectedHttpErrors.add(url.pathname);
             await route.fulfill({ status: 503, json: { error: 'fixture_status_unavailable' } });

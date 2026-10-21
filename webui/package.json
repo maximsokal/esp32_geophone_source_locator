@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:ui:visual": "node scripts/run-ui-visual.mjs compare",
+    "test:ui:visual:capture": "node scripts/run-ui-visual.mjs capture",
+    "test:ui:visual:tools": "node --test tests/visual-tools.test.mjs",
     "test:ui:layout": "node ./node_modules/@playwright/test/cli.js test --config playwright.layout.config.ts",
     "typecheck:tests": "node ./node_modules/typescript/bin/tsc --noEmit --project tsconfig.test.json",
     "test:components": "node ./node_modules/vitest/vitest.mjs run --config vitest.dom.config.ts",

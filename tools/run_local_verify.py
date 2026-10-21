@@ -285,7 +285,8 @@ def ui_steps(root: Path, python_executable: str, npm_executable: str,
         steps.append(Step('ui-web/npm-ci', webui, (npm_executable, 'ci', '--no-audit', '--no-fund')))
     for name, script in (('typecheck', 'typecheck'), ('test-types', 'typecheck:tests'),
                          ('console', 'test:console'), ('domain', 'test:domain'),
-                         ('components', 'test:components'), ('e2e-types', 'typecheck:e2e'), ('smoke', 'test:ui:smoke'),
+                         ('components', 'test:components'), ('visual-tools', 'test:ui:visual:tools'),
+                         ('e2e-types', 'typecheck:e2e'), ('smoke', 'test:ui:smoke'),
                          ('layout', 'test:ui:layout'),
                          ('bundle', 'verify:bundle')):
         browser_output = output / ('layout' if name == 'layout' else 'web')

@@ -3,7 +3,7 @@ import { assertLayout, assertReachable, capture, contract, layoutIssues, openSec
 import { assertSemanticStyles } from './helpers/theme';
 import { workflowViewModel } from '../../src/features/workflow/workflowViewModel';
 import type { WorkflowStep } from '../../src/domain/device';
-import actions from '../fixtures/max460_workflow_allowed_actions.json' with { type: 'json' };
+import { workflowActions } from './fixtures/visual-states';
 
 for (const locale of ['en', 'uk'] as const) {
   test.describe(locale, () => {
@@ -61,19 +61,10 @@ for (const locale of ['en', 'uk'] as const) {
         await assertReachable(page);
       }
     });
-    const actionByStep: Record<WorkflowStep, string[]> = {
-      IDLE: [], OBJECT: ['START_MEASUREMENT', 'BACK'], SENSOR_CHECK: ['GO_CALIBRATION', 'BACK'],
-      CALIB_PREP: ['SENSORS_PLACED', 'BACK'], CALIBRATING: ['BACK'], CALIB_RESULT: ['RETRY', 'BACK'],
-      PLACEMENT: actions.PLACEMENT, GPS_CHOICE: actions.GPS_CHOICE, GPS_PENDING: actions.GPS_PENDING,
-      LAYOUT_READY: actions.LAYOUT_READY, RANGING: ['BACK'], RANGING_RESULT: ['RETRY', 'BACK'],
-      SCAN_CHOICE: actions.SCAN_CHOICE, SCANNING: actions.SCANNING,
-      RECORD_READY: ['START_RECORDING', 'MOVE_SENSORS', 'BACK'], RECORDING: ['STOP_RECORDING'],
-      STOPPED: ['DELETE_RECORDING', 'RECORD_AGAIN', 'MOVE_SENSORS', 'BACK'], CALCULATING: ['BACK'], RESULT: ['MOVE_SENSORS', 'BACK'],
-    };
-    for (const step of Object.keys(actionByStep) as WorkflowStep[]) {
+    for (const step of Object.keys(workflowActions) as WorkflowStep[]) {
       test(`workflow ${step}`, async ({ page, api }) => {
         await page.setViewportSize({ width: 360, height: 800 });
-        Object.assign(api.status.workflow!, { step, allowed_actions: actionByStep[step] });
+        Object.assign(api.status.workflow!, { step, allowed_actions: workflowActions[step] });
         await page.goto('/');
         const title = workflowViewModel(api.status).titleKey;
         if (step === 'SCANNING') {

@@ -28,14 +28,14 @@ def utc_now() -> str:
 def source_identity(root: Path) -> dict:
     """Include dirty and new UI/test/config inputs; exclude output and dependencies."""
     paths = []
-    for directory in ('components', 'main', 'webui/src', 'webui/tests', 'tests/ui_render',
+    for directory in ('components', 'main', 'webui/src', 'webui/tests', 'webui/scripts', 'tests/ui_render',
                       'tests/python', 'tools', '.github/workflows'):
         paths.extend(p for p in (root / directory).rglob('*') if p.is_file() and
                      '__pycache__' not in p.parts and p.suffix in {
                          '.c', '.h', '.cpp', '.py', '.ts', '.tsx', '.json', '.yml', '.css', '.png', '.txt', '.js', '.mjs', '.html', '.cmake'})
     paths.extend(root / p for p in ('dependencies.lock', 'sdkconfig', 'sdkconfig.defaults',
                  'webui/package.json', 'webui/package-lock.json', 'webui/index.html',
-                 'webui/playwright.config.ts', 'webui/playwright.layout.config.ts', 'tests/ui_contract.json',
+                 'webui/playwright.config.ts', 'webui/playwright.layout.config.ts', 'webui/playwright.visual.config.mjs', 'tests/ui_contract.json',
                  'webui/tsconfig.e2e.json', 'webui/vite.config.ts',
                  'webui/tsconfig.json', 'webui/vitest.dom.config.ts', 'webui/tsconfig.test.json', 'sgconfig.yml'))
     digest = hashlib.sha256()
@@ -111,6 +111,17 @@ def web_records(path: Path, identity: dict | None = None, subsystem: str = 'web'
                         status = 'BLOCKED'
                     attachments = [a for result in results for a in result.get('attachments', [])]
                     metadata = report['config'].get('metadata', {})
+                    visual_mode = metadata.get('visualMode')
+                    if subsystem == 'visual' and visual_mode not in ('capture', 'compare'):
+                        raise ValueError('Visual report has no valid capture/compare mode')
+                    if visual_mode == 'capture' and status == 'PASS':
+                        status = 'CAPTURED_NOT_APPROVED'
+                        actual = 'Actual PNG captured; no approved reference comparison'
+                    visual_artifacts = {}
+                    if visual_mode in ('capture', 'compare'):
+                        for name in ('candidate.json', 'environment.json', 'stability.json', 'execution.json'):
+                            if (path.parent / name).is_file():
+                                visual_artifacts[name] = str(path.parent / name)
                     environment = dict(metadata)
                     viewport = metadata.get('viewport')
                     for attachment in attachments:
@@ -127,7 +138,7 @@ def web_records(path: Path, identity: dict | None = None, subsystem: str = 'web'
                         state=' / '.join(names), source={'file': spec['file'], 'line': spec['line']},
                         viewport=viewport, environment=environment,
                         artifacts={'attachments': attachments, 'playwright_json': str(path),
-                                   'html': str(path.parent / 'html/index.html')},
+                                   'html': str(path.parent / 'html/index.html'), **visual_artifacts},
                         reproduce=metadata.get('reproduce', 'cd webui; npm run test:ui:smoke')))
             visit(suite.get('suites', []), names)
     visit(report['suites'], [])
@@ -200,17 +211,19 @@ def native_records(junit: Path, native_root: Path, identity: dict | None = None)
 def summarize(*, web: Path | None, native_junit: Path | None, native_root: Path | None,
               only: str = 'both', identity: dict | None = None,
               exit_codes: dict | None = None, components_junit: Path | None = None,
-              domain_junit: Path | None = None, layout: Path | None = None) -> dict:
+              domain_junit: Path | None = None, layout: Path | None = None, visual: Path | None = None) -> dict:
     rows = []
     selected = ['web', 'native'] if only == 'both' else [only]
     extra_junit = {'components': components_junit, 'domain': domain_junit}
     selected.extend(name for name, path in extra_junit.items() if path is not None and name not in selected)
     if layout is not None and 'layout' not in selected:
         selected.append('layout')
+    if visual is not None and 'visual' not in selected:
+        selected.append('visual')
     for subsystem in selected:
         try:
-            if subsystem in ('web', 'layout'):
-                path = layout if subsystem == 'layout' else web
+            if subsystem in ('web', 'layout', 'visual'):
+                path = visual if subsystem == 'visual' else layout if subsystem == 'layout' else web
                 if path is None:
                     raise ValueError('Playwright JSON was not supplied')
                 found = web_records(path, identity, subsystem)
@@ -231,11 +244,12 @@ def summarize(*, web: Path | None, native_junit: Path | None, native_root: Path 
         except (OSError, ValueError, KeyError, TypeError, AttributeError, ET.ParseError) as exc:
             rows.append(record(subsystem, f'{subsystem}/report-input', 'BLOCKED', str(exc), category='infrastructure'))
     counts = dict(Counter(row['status'] for row in rows))
-    status = next((s for s in ('FAIL', 'BLOCKED', 'FLAKY/UNSTABLE', 'SKIPPED') if counts.get(s)), 'PASS')
+    status = next((s for s in ('FAIL', 'BLOCKED', 'FLAKY/UNSTABLE', 'SKIPPED', 'CAPTURED_NOT_APPROVED') if counts.get(s)), 'PASS')
     return {'status': status, 'counts': counts, 'selected': selected, 'identity': identity,
             'generated_at': utc_now(), 'tests': rows,
             'not_run': ['Physical TFT/Android Chrome/immersive XR/HIL',
-                        'Approved browser PNG references, non-React phone pages and graphics lifecycle (later slices)',
+                        'Non-React phone pages and graphics lifecycle (later slices)',
+                        *([] if 'visual' in selected else ['Approved visual comparison not selected; separate reference approval required']),
                         *([] if 'layout' in selected else ['Mobile geometry/accessibility not selected'])]}
 
 
@@ -243,7 +257,7 @@ def write_report(output: Path, report: dict) -> None:
     output.mkdir(parents=True, exist_ok=True)
     (output / 'summary.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     failures = [row for row in report['tests'] if row['status'] != 'PASS']
-    priority = {'FAIL': 0, 'BLOCKED': 1, 'FLAKY/UNSTABLE': 2, 'SKIPPED': 3}
+    priority = {'FAIL': 0, 'BLOCKED': 1, 'FLAKY/UNSTABLE': 2, 'SKIPPED': 3, 'CAPTURED_NOT_APPROVED': 4}
     failures.sort(key=lambda row: priority.get(row['status'], 4))
     lines = [f"UI_RESULT: {report['status']} | " + ', '.join(f'{s}={n}' for s, n in report['counts'].items())]
     for row in failures[:3]:
@@ -252,21 +266,24 @@ def write_report(output: Path, report: dict) -> None:
     (output / 'summary.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
     def escape(value):
         return html.escape(str(value))
-    def link(path):
+    def link(path, preview=False):
         target = os.path.relpath(Path(path).resolve(), output.resolve()).replace('\\', '/')
-        return f'<a href="{escape(target)}">{escape(Path(path).name)}</a>'
+        label = (f'<img loading="lazy" src="{escape(target)}" alt="{escape(Path(path).name)}">'
+                 if preview else escape(Path(path).name))
+        return f'<a href="{escape(target)}">{label}</a>'
     table = []
     for row in report['tests']:
         links = [link(value) for value in row['artifacts'].values() if isinstance(value, str)]
         for attachment in row['artifacts'].get('attachments', []):
             if attachment.get('path'):
-                links.append(link(attachment['path']))
+                links.append(link(attachment['path'], preview=attachment.get('name') == 'visual-actual'))
         table.append(f"<tr><td>{escape(row['status'])}</td><td>{escape(row['id'])}</td>"
                      f"<td><details><summary>Actual / source</summary><pre>{escape(row['actual'])}</pre>"
                      f"<pre>{escape(row['source'])}</pre></details></td><td>{' | '.join(links)}</td></tr>")
     (output / 'index.html').write_text('<!doctype html><meta charset="utf-8"><title>UI regression</title>'
         '<style>body{font:16px system-ui;margin:24px;background:#fafafa}td,th{border:1px solid #ccc;padding:8px;vertical-align:top}'
-        'table{border-collapse:collapse;width:100%}pre{white-space:pre-wrap;overflow-wrap:anywhere}td:nth-child(2){overflow-wrap:anywhere}</style>'
+        'table{border-collapse:collapse;width:100%}pre{white-space:pre-wrap;overflow-wrap:anywhere}td:nth-child(2){overflow-wrap:anywhere}'
+        'img{display:block;width:100%;max-width:320px;max-height:420px;object-fit:contain;object-position:top;background:#111}</style>'
         f'<h1>{escape(lines[0])}</h1><p>{escape(report["generated_at"])}</p><p>Selected: {escape(report["selected"])}</p>'
         f'<details><summary>Run identity / evidence</summary><pre>{escape(json.dumps(report["identity"], indent=2))}</pre></details>'
         '<p>Not run: ' + escape('; '.join(report['not_run'])) + '</p><p>' + link(output / 'summary.json') +
@@ -282,14 +299,16 @@ def main(argv=None) -> int:
     parser.add_argument('--init', action='store_true', help='Create a fresh run directory/identity before execution')
     parser.add_argument('--web', type=Path)
     parser.add_argument('--layout', type=Path)
+    parser.add_argument('--visual', type=Path)
     parser.add_argument('--native-junit', type=Path)
     parser.add_argument('--native-root', type=Path)
-    parser.add_argument('--only', choices=('web', 'native', 'both', 'components', 'domain', 'layout'), default='both')
+    parser.add_argument('--only', choices=('web', 'native', 'both', 'components', 'domain', 'layout', 'visual'), default='both')
     parser.add_argument('--components-junit', type=Path)
     parser.add_argument('--domain-junit', type=Path)
     parser.add_argument('--identity', type=Path, help='Pre-run identity; rejects stale reports or changed source')
     parser.add_argument('--web-exit-code', type=int)
     parser.add_argument('--layout-exit-code', type=int)
+    parser.add_argument('--visual-exit-code', type=int)
     parser.add_argument('--native-exit-code', type=int)
     args = parser.parse_args(argv)
     if args.init:
@@ -305,8 +324,8 @@ def main(argv=None) -> int:
                     raise ValueError(f'Invalid run identity: {key}')
         report = summarize(web=args.web, native_junit=args.native_junit, native_root=args.native_root,
                            only=args.only, identity=identity,
-                           components_junit=args.components_junit, domain_junit=args.domain_junit, layout=args.layout,
-                           exit_codes={'web': args.web_exit_code, 'native': args.native_exit_code, 'layout': args.layout_exit_code})
+                           components_junit=args.components_junit, domain_junit=args.domain_junit, layout=args.layout, visual=args.visual,
+                           exit_codes={'web': args.web_exit_code, 'native': args.native_exit_code, 'layout': args.layout_exit_code, 'visual': args.visual_exit_code})
         if identity is not None and source_identity(ROOT) != {key: identity[key] for key in ('head', 'source_sha256', 'files')}:
             report['status'] = 'BLOCKED'
             report['tests'].append(record('run', 'run/source-identity', 'BLOCKED', 'Source changed during execution', category='infrastructure'))

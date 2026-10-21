@@ -268,7 +268,7 @@ def test_ui_plan_owns_fresh_reports_and_keeps_existing_default_scopes(tmp_path):
     steps = runner.ui_steps(root, 'python-test', 'npm-test', skip_npm_ci=True, output=output)
     assert [s.name for s in steps] == ['ui-native/bootstrap', 'ui-native/tests',
         'ui-web/typecheck', 'ui-web/test-types', 'ui-web/console', 'ui-web/domain',
-        'ui-web/components', 'ui-web/e2e-types', 'ui-web/smoke', 'ui-web/layout', 'ui-web/bundle']
+        'ui-web/components', 'ui-web/visual-tools', 'ui-web/e2e-types', 'ui-web/smoke', 'ui-web/layout', 'ui-web/bundle']
     assert '--junitxml' in steps[1].command
     assert str(output / 'native') in steps[1].command
     smoke = next(s for s in steps if s.name == 'ui-web/smoke')
