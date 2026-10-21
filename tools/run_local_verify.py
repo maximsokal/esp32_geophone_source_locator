@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import platform
@@ -15,7 +16,7 @@ import sys
 from typing import Iterable, Sequence
 
 
-SCOPES = ("software", "ast", "rtos-evidence", "host", "python", "web", "nrf", "firmware", "all")
+SCOPES = ("software", "ast", "rtos-evidence", "host", "python", "web", "ui", "nrf", "firmware", "all")
 
 
 class VerificationError(RuntimeError):
@@ -28,6 +29,7 @@ class Step:
     cwd: Path
     command: tuple[str, ...]
     skip_reason: str | None = None
+    environment: dict[str, str] | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,7 +38,7 @@ def parse_args() -> argparse.Namespace:
         "--scope",
         choices=SCOPES,
         default="software",
-        help="verification surface; software = host + python + web + ast; ast = structural rule tests + scan; nrf = isolated nRF54L15 host policy + canonical NCS build/test-build boundary; rtos-evidence = fast evidence-matrix check (included by all, not software/default)",
+        help="verification surface; ui = opt-in native UI + production browser smoke and report (not added to software/all); software = host + python + web + ast; ast = structural rule tests + scan; nrf = isolated nRF54L15 host policy + canonical NCS build/test-build boundary; rtos-evidence = fast evidence-matrix check (included by all, not software/default)",
     )
     parser.add_argument(
         "--project-path",
@@ -267,6 +269,69 @@ def firmware_steps(
     ]
 
 
+def ui_steps(root: Path, python_executable: str, npm_executable: str,
+             *, skip_npm_ci: bool, output: Path) -> list[Step]:
+    steps = [
+        Step('ui-native/bootstrap', root, (python_executable, str(root / 'tools/prepare_ui_render.py'))),
+        Step('ui-native/tests', root, (python_executable, '-m', 'pytest', '-q',
+             'tests/python/test_ui_render_runner.py', 'tests/python/test_ui_render.py',
+             '--basetemp', str(output / 'native'), '--junitxml', str(output / 'native.xml'))),
+    ]
+    webui = root / 'webui'
+    if not skip_npm_ci:
+        steps.append(Step('ui-web/npm-ci', webui, (npm_executable, 'ci', '--no-audit', '--no-fund')))
+    for name, script in (('typecheck', 'typecheck'), ('console', 'test:console'),
+                         ('e2e-types', 'typecheck:e2e'), ('smoke', 'test:ui:smoke'),
+                         ('bundle', 'verify:bundle')):
+        env = {'PLAYWRIGHT_JSON_OUTPUT_FILE': str(output / 'web/playwright.json'),
+               'PLAYWRIGHT_HTML_OUTPUT_DIR': str(output / 'web/html')}
+        command = (npm_executable, 'run', script)
+        if name == 'smoke':
+            command += ('--', '--output', str(output / 'web/results'))
+        steps.append(Step(f'ui-web/{name}', webui, command, environment=env if name == 'smoke' else None))
+    return steps
+
+
+def run_ui_verification(root: Path, python_executable: str, npm_executable: str,
+                        *, skip_npm_ci: bool) -> int:
+    import ui_report
+
+    run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    output = root / '.test-build/ui-regression' / run_id
+    started = datetime.now(timezone.utc).timestamp()
+    ui_report.initialize(output)
+    failed_groups: set[str] = set()
+    execution = []
+    for step in ui_steps(root, python_executable, npm_executable, skip_npm_ci=skip_npm_ci, output=output):
+        group = step.name.split('/')[0]
+        if group in failed_groups:
+            execution.append({'step': step.name, 'status': 'NOT RUN', 'reason': 'Earlier prerequisite failed'})
+            continue
+        try:
+            status = run_step(step)
+            execution.append({'step': step.name, 'status': status})
+        except (OSError, VerificationError) as exc:
+            failed_groups.add(group)
+            execution.append({'step': step.name, 'status': 'FAIL', 'reason': str(exc)})
+    build_dir = root / '.test-build/ui-render/native'
+    for name in ('configure.log', 'build.log', 'build.json'):
+        source = build_dir / name
+        if source.is_file() and source.stat().st_mtime >= started:
+            (output / 'native-build').mkdir(exist_ok=True)
+            shutil.copy2(source, output / 'native-build' / name)
+    import json
+    (output / 'execution.json').write_text(json.dumps(execution, indent=2), encoding='utf-8')
+    report_exit = ui_report.main([
+        '--output', str(output), '--identity', str(output / 'identity.json'),
+        '--web', str(output / 'web/playwright.json'), '--web-exit-code', '1' if 'ui-web' in failed_groups else '0',
+        '--native-junit', str(output / 'native.xml'), '--native-root', str(output / 'native'),
+        '--native-exit-code', '1' if 'ui-native' in failed_groups else '0',
+    ])
+    result = 1 if failed_groups or report_exit else 0
+    print(f"LOCAL_VERIFY_RESULT: {'FAIL' if result else 'PASS'} (UI artifacts: {output})", flush=True)
+    return result
+
+
 def nrf_host_policy_step(root: Path, python_executable: str) -> Step:
     runner = root / "tools" / "run_host_tests.py"
     manifest = root / "tests" / "host" / "manifest.d" / "coverage-nrf.json"
@@ -380,6 +445,11 @@ def build_plan(
     powershell_executable: str | None,
     idf_executable: str | None,
 ) -> list[Step]:
+    if scope == 'ui':
+        if npm_executable is None:
+            raise VerificationError('UI verification requires npm')
+        return ui_steps(root, python_executable, npm_executable, skip_npm_ci=skip_npm_ci,
+                        output=root / '.test-build/ui-regression/RUN_ID')
     steps: list[Step] = []
     if scope_includes(scope, "host"):
         steps.extend(host_steps(root, python_executable))
@@ -431,7 +501,8 @@ def run_step(step: Step) -> str:
 
     print(f"cwd: {step.cwd}", flush=True)
     print(f"> {quote_command(step.command)}", flush=True)
-    result = subprocess.run(step.command, cwd=step.cwd, check=False)
+    env = {**os.environ, **step.environment} if step.environment is not None else None
+    result = subprocess.run(step.command, cwd=step.cwd, check=False, env=env)
     if result.returncode != 0:
         raise VerificationError(
             f"step failed with exit code {result.returncode}: {step.name}"
@@ -447,11 +518,15 @@ def main() -> int:
         system_name = platform.system()
 
         npm_executable = None
-        if scope_includes(args.scope, "web"):
+        if scope_includes(args.scope, "web") or args.scope == 'ui':
             npm_executable = find_required_executable(
                 ("npm.cmd", "npm") if system_name == "Windows" else ("npm",),
                 "WebUI verification",
             )
+
+        if args.scope == 'ui' and not args.dry_run:
+            assert npm_executable is not None
+            return run_ui_verification(root, sys.executable, npm_executable, skip_npm_ci=args.skip_npm_ci)
 
         powershell_executable = None
         idf_executable = None

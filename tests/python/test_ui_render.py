@@ -12,6 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from run_ui_render_tests import build, render  # noqa: E402
+import run_ui_render_tests as runner  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -312,3 +313,33 @@ def test_screenshot_comparison_rejects_changed_and_missing_reference(screens, tm
         assert not reference.exists(), "LVGL silently accepted a missing reference"
     finally:
         reference.write_bytes(original)
+
+
+def test_reused_report_rejects_removed_source_reference(screens, tmp_path, monkeypatch):
+    """Run the actual LVGL binary twice through the runner, using isolated goldens."""
+    import hashlib
+
+    source = tmp_path / "golden"
+    shutil.copytree(runner.GOLDENS, source)
+    monkeypatch.setattr(runner, "GOLDENS", source)
+    output = tmp_path / "report"
+    first = runner.render(screens[2], output)
+    assert all(frame["comparison"] == 1 for frame in first if frame["golden"])
+    identity = json.loads((output / "run.json").read_text(encoding="utf-8"))
+    assert identity["status"] == "PASS"
+    assert identity["build"]["lvgl"]["version"] == "9.6.0"
+    assert identity["build"]["font_sha256"] == hashlib.sha256(
+        (ROOT / "components/ui/fonts/ui_font_montserrat_14.c").read_bytes()).hexdigest()
+    assert identity["build"]["binary_sha256"] == hashlib.sha256(screens[2].read_bytes()).hexdigest()
+    assert identity["build"]["compiler"]["sha256"]
+    assert identity["build"]["source"]["files"] > 0
+    assert identity["build"]["configuration"]["tests/ui_render/lv_conf.h"] == hashlib.sha256(
+        (ROOT / "tests/ui_render/lv_conf.h").read_bytes()).hexdigest()
+    (source / "en_home.png").unlink()
+
+    second = runner.render(screens[2], output)
+    assert next(frame for frame in second if frame["name"] == "en_home")["comparison"] == 2
+    assert not (output / "references/en_home.png").exists()
+    assert (ROOT / "tests/ui_render/golden/en_home.png").is_file()
+    identity = json.loads((output / "run.json").read_text(encoding="utf-8"))
+    assert identity["status"] == "FAIL" and identity["comparisons"]["missing"] == 1

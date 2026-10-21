@@ -254,3 +254,72 @@ def test_invalid_jobs_are_rejected_before_build(tmp_path: Path):
             powershell_executable="powershell-test",
             idf_executable=None,
         )
+
+
+def test_ui_plan_owns_fresh_reports_and_keeps_existing_default_scopes(tmp_path):
+    root = make_repo(tmp_path)
+    output = root / '.test-build/ui-regression/run'
+    steps = runner.ui_steps(root, 'python-test', 'npm-test', skip_npm_ci=True, output=output)
+    assert [s.name for s in steps] == ['ui-native/bootstrap', 'ui-native/tests',
+        'ui-web/typecheck', 'ui-web/console', 'ui-web/e2e-types', 'ui-web/smoke', 'ui-web/bundle']
+    assert '--junitxml' in steps[1].command
+    assert str(output / 'native') in steps[1].command
+    smoke = steps[-2]
+    assert smoke.command[-3:] == ('--', '--output', str(output / 'web/results'))
+    assert smoke.environment['PLAYWRIGHT_JSON_OUTPUT_FILE'] == str(output / 'web/playwright.json')
+    assert not runner.scope_includes('software', 'ui')
+    assert not any('ui-' in s.name for s in runner.web_steps(root, 'npm-test', skip_npm_ci=True))
+
+
+def test_ui_failure_still_runs_independent_group_and_report_and_preserves_exit(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    root = make_repo(tmp_path)
+    called = []
+    reports = []
+    stale_log = root / '.test-build/ui-render/native/build.log'
+    stale_log.parent.mkdir(parents=True)
+    stale_log.write_text('older run')
+    import os
+    os.utime(stale_log, (1, 1))
+
+    def initialize(output):
+        output.mkdir(parents=True, exist_ok=False)
+
+    monkeypatch.setitem(sys.modules, 'ui_report', SimpleNamespace(
+        initialize=initialize, main=lambda args: reports.append(args) or 0))
+
+    def run(step):
+        called.append(step.name)
+        if step.name == 'ui-native/bootstrap':
+            raise runner.VerificationError('Missing compiler/dependency')
+        return 'PASS'
+    monkeypatch.setattr(runner, 'run_step', run)
+    assert runner.run_ui_verification(root, 'python-test', 'npm-test', skip_npm_ci=True) == 1
+    assert 'ui-native/tests' not in called
+    assert 'ui-web/smoke' in called
+    assert len(reports) == 1
+    assert reports[0][reports[0].index('--native-exit-code') + 1] == '1'
+    import json
+    execution_path, = (root / '.test-build/ui-regression').glob('*/execution.json')
+    assert json.loads(execution_path.read_text())[1]['status'] == 'NOT RUN'
+    assert not (execution_path.parent / 'native-build').exists()
+
+
+def test_ui_preserves_current_build_logs_inside_each_run(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    root = make_repo(tmp_path)
+    monkeypatch.setitem(sys.modules, 'ui_report', SimpleNamespace(
+        initialize=lambda output: output.mkdir(parents=True, exist_ok=False), main=lambda args: 0))
+    build_dir = root / '.test-build/ui-render/native'
+
+    def run(step):
+        if step.name == 'ui-native/tests':
+            build_dir.mkdir(parents=True)
+            for name in ('configure.log', 'build.log', 'build.json'):
+                (build_dir / name).write_text(f'current {name}')
+        return 'PASS'
+    monkeypatch.setattr(runner, 'run_step', run)
+    assert runner.run_ui_verification(root, 'python-test', 'npm-test', skip_npm_ci=True) == 0
+    copied, = (root / '.test-build/ui-regression').glob('*/native-build')
+    assert {p.name: p.read_text() for p in copied.iterdir()} == {
+        name: f'current {name}' for name in ('configure.log', 'build.log', 'build.json')}

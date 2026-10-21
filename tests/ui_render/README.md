@@ -42,6 +42,46 @@ python tools/run_ui_render_tests.py
 That command checks PNG comparisons; run pytest for the geometry/style/input
 assertions as well. `--render-only` writes candidates without changing references.
 
+## Reference integrity and run identity
+
+Each run replaces its local reference copies from the authoritative `golden/`
+directory. Reusing an output directory cannot retain a deleted source reference.
+Old LVGL `_err.png` diagnostics are saved under `previous-errors/` before the
+reference copies are replaced; current mismatch images still appear beside
+the current reference. Actual/diff images are not cleared by failure handling.
+
+`run.json`, linked from the gallery, records the comparison status/counts,
+UTC start/end time, platform/Python, reference-set hash and the native build
+identity. `build.json` beside the executable records HEAD, application/harness
+source fingerprint, native configuration/lock hashes, actual font hash, LVGL
+version/source hash, compiler command/binary hash and executable hash. Source
+fingerprints cover the current file contents, including uncommitted C/header
+changes; HEAD alone is not treated as proof of a clean source tree.
+
+The runner requires a matching successful build identity for the executable.
+Its build and render entry points invalidate the active report before work
+starts. Compiler/render failure, timeout, missing frames or an empty capture
+leaves `FAIL` metadata and a failure page, not the previous successful gallery.
+Partial native output is retained in `render.log`. Normal CLI comparison still
+exits nonzero on a missing or different reference.
+
+The metadata's `checks` describe native rendering/PNG comparison only. Geometry,
+style, input and reachability assertions are executed by pytest; this file does
+not claim those assertions or physical LCD/hardware checks passed.
+
+Run the boundary checks and the real renderer together:
+
+```powershell
+python -m pytest tests/python/test_ui_render_runner.py tests/python/test_ui_render.py --basetemp .test-build/ui-render/check-03 -q
+```
+
+Use a new basetemp name. The real renderer test copies the reference source into
+an isolated directory, runs a successful comparison, removes only that isolated
+source reference and reruns into the same report directory. The second run must
+report a missing reference. Unit tests also cover strict CLI failure, build and
+render failure after success, timeout output, empty capture, executable identity
+and protection against writing output over authoritative goldens.
+
 ## Coverage and references
 
 The fixture renders 774 states, including all eight registered screens and
@@ -87,8 +127,9 @@ LVGL's `_err.png`, and a Python `_diff.png` in the artifact directory. Tests als
 deliberately alter a reference pixel and remove a reference in an isolated
 directory to prove that both failure paths work.
 
-For an intentional UI change, first inspect the candidate images and layout
-failures. Then explicitly regenerate and review the PNG diff:
+For an intentional UI change, first render candidates with `--render-only` and
+inspect the images/layout failures. Obtain explicit approval of the intended
+reference changes before updating the baseline. Only after that approval:
 
 ```powershell
 python tools/run_ui_render_tests.py --update-goldens
