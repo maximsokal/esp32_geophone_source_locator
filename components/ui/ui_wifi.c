@@ -32,7 +32,7 @@ static void ui_wifi_render_qr(
     lv_qrcode_set_size(qr, 70);
     lv_qrcode_set_dark_color(qr, lv_color_hex(0x000000));
     lv_qrcode_set_light_color(qr, lv_color_hex(0xFFFFFF));
-    (void)lv_qrcode_update(qr, payload, strlen(payload));
+    (void)lv_qrcode_update(qr, payload, (uint32_t)strlen(payload));
 
     lv_obj_set_pos(qr, 238, 42);
     lv_obj_set_style_border_color(qr, lv_color_hex(0xFFFFFF), 0);
@@ -75,15 +75,13 @@ static void ui_wifi_render_setup_card(
     const bool client_ready =
         wifi_manager_setup_client_connected();
 
-    const bool show_qr =
-        client_ready &&
-        !context->wifi_credentials_saved;
+    const bool show_qr = !context->wifi_credentials_saved;
 
     lv_obj_t *card = ui_create_card_locked(
         screen,
         10,
         42,
-        show_qr || !client_ready ? 220 : 300,
+        show_qr ? 220 : 300,
         70
     );
 

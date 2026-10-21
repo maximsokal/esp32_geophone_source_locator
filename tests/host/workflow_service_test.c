@@ -138,6 +138,12 @@ static esp_err_t s_topology_result;
 static nrf_remote_sensor_cache_t s_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static device_status_snapshot_t s_device;
 static uint16_t s_height_generation;
+static unsigned s_height_request_calls;
+static unsigned s_imu_request_calls;
+static unsigned s_cs_request_calls;
+static uint8_t s_imu_request_mask;
+static bool s_cs_cycle_valid;
+static nrf_cs_cycle_snapshot_t s_cs_cycle;
 static uint64_t s_now_ms;
 static const char *s_fake_object_id = "object-a";
 static bool s_placement_ready;
@@ -341,6 +347,7 @@ esp_err_t nrf_topology_service_request_height_reference_capture(
         }
     }
     if (mask == 0U) return ESP_ERR_NOT_FOUND;
+    ++s_height_request_calls;
     ++s_height_generation;
     if (s_height_generation == 0U) ++s_height_generation;
     *requested_channel_mask = mask;
@@ -350,7 +357,10 @@ esp_err_t nrf_topology_service_request_height_reference_capture(
 
 esp_err_t nrf_topology_service_request_imu_calibration(uint16_t generation, uint8_t channel_mask)
 {
-    return generation != 0U && channel_mask != 0U ? ESP_OK : ESP_ERR_INVALID_ARG;
+    if (generation == 0U || channel_mask == 0U) return ESP_ERR_INVALID_ARG;
+    ++s_imu_request_calls;
+    s_imu_request_mask = channel_mask;
+    return ESP_OK;
 }
 
 esp_err_t nrf_topology_service_get_sensor_snapshot(
@@ -366,13 +376,16 @@ esp_err_t nrf_topology_service_get_sensor_snapshot(
 
 esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
 {
-    return policy != NULL ? ESP_OK : ESP_ERR_INVALID_ARG;
+    if (policy == NULL) return ESP_ERR_INVALID_ARG;
+    ++s_cs_request_calls;
+    return ESP_OK;
 }
 
 esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
 {
-    (void)snapshot;
-    return ESP_ERR_INVALID_STATE;
+    if (!s_cs_cycle_valid) return ESP_ERR_INVALID_STATE;
+    *snapshot = s_cs_cycle;
+    return ESP_OK;
 }
 
 esp_err_t nrf_topology_service_ranging_start(const nrf_cs_policy_t *policy, uint32_t timeout_ms)
@@ -487,6 +500,12 @@ static void reset_fakes(bool active_object, measurement_service_state_t state, s
     memset(s_cache, 0, sizeof(s_cache));
     memset(&s_device, 0, sizeof(s_device));
     s_height_generation = 0U;
+    s_height_request_calls = 0U;
+    s_imu_request_calls = 0U;
+    s_cs_request_calls = 0U;
+    s_imu_request_mask = 0U;
+    s_cs_cycle_valid = false;
+    memset(&s_cs_cycle, 0, sizeof(s_cs_cycle));
     s_now_ms = 1000U;
     s_placement_ready = false;
     memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
@@ -1511,6 +1530,61 @@ static void test_low_remote_calibration_timeout_and_pair_counts(void)
 }
 
 
+static void test_one_and_two_connected_remotes_complete_initialization(void)
+{
+    const uint8_t channels[] = {3U, 1U};
+    for (size_t remotes = 1U; remotes <= 2U; ++remotes) {
+        reset_fakes(true, MEASUREMENT_SERVICE_LIVE, remotes);
+        memset(&s_topology, 0, sizeof(s_topology));
+        uint8_t expected_mask = 0U;
+        for (size_t i = 0U; i < remotes; ++i) {
+            const uint8_t channel = channels[i];
+            s_topology.remotes[channel].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+            s_topology.remotes[channel].node_id = (uint8_t)(channel + 1U);
+            expected_mask |= (uint8_t)(1U << channel);
+        }
+        assert(command(WORKFLOW_COMMAND_START_MEASUREMENT, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        assert(command(WORKFLOW_COMMAND_GO_CALIBRATION, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        assert(command(WORKFLOW_COMMAND_SENSORS_PLACED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        assert(s_height_request_calls == 1U && s_imu_request_calls == 1U && s_cs_request_calls == 1U);
+        assert(s_imu_request_mask == expected_mask);
+        workflow_snapshot_t snapshot = try_snapshot();
+        assert(snapshot.step == WORKFLOW_STEP_CALIBRATING);
+        assert(snapshot.calibration.per_node_count == remotes + 1U);
+        assert(snapshot.calibration.pairs_total == remotes);
+
+        s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
+        s_device.main.height_reference.generation = s_height_generation;
+        s_cs_cycle_valid = true;
+        s_cs_cycle.cycle_id = 1U;
+        s_cs_cycle.complete = true;
+        s_cs_cycle.pair_count = remotes;
+        for (size_t i = 0U; i < remotes; ++i) {
+            const uint8_t channel = channels[i];
+            nrf_remote_sensor_cache_t *cache = &s_cache[channel];
+            cache->identity_valid = true;
+            cache->topology_current = true;
+            cache->response_valid = true;
+            cache->identity.node_id = (uint8_t)(channel + 1U);
+            cache->sensor.reference_generation = s_height_generation;
+            cache->sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+            cache->sensor.imu_cal_generation = s_height_generation;
+            cache->sensor.imu_cal_state = NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED;
+            s_cs_cycle.pairs[i].node_a = NRF_TOPOLOGY_MAIN_NODE_ID;
+            s_cs_cycle.pairs[i].node_b = cache->identity.node_id;
+            s_cs_cycle.pairs[i].state = NRF_CS_PAIR_VALID;
+            s_cs_cycle.pairs[i].spread_mm = 25;
+        }
+        s_now_ms += 250U;
+        assert(workflow_service_poll() == ESP_OK);
+        snapshot = try_snapshot();
+        assert(snapshot.step == WORKFLOW_STEP_CALIB_RESULT);
+        assert(snapshot.calibration.result_valid && snapshot.calibration.result_ok);
+        assert(snapshot.calibration.pairs_done == remotes && snapshot.calibration.reasons_count == 0U);
+        workflow_service_shutdown();
+    }
+}
+
 static void test_low_remote_placement_and_ranging_finish(void)
 {
     for (size_t remotes = 1U; remotes <= 2U; ++remotes) {
@@ -1937,6 +2011,7 @@ int main(void)
 #ifdef MAX449_CASE
 #if MAX449_CASE == 4
     test_low_remote_calibration_timeout_and_pair_counts();
+    test_one_and_two_connected_remotes_complete_initialization();
     test_low_remote_placement_and_ranging_finish();
 #else
 #error "unknown MAX449_CASE for workflow_service_test"
@@ -1958,6 +2033,7 @@ int main(void)
     test_scan_choice_requires_explicit_skip_before_recording();
     test_service_fsm_illegal_events_and_single_recording_lifecycle();
     test_new_workflow_steps_wait_for_explicit_commands();
+    test_one_and_two_connected_remotes_complete_initialization();
     test_no_step_advances_without_a_command_fake_clock();
     test_staged_scan_remains_visible_across_session_creation();
     test_scan_presence_and_settings_refresh_are_cached_for_two_seconds();

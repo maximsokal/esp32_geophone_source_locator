@@ -110,8 +110,8 @@ void ui_render_boot_recovery_locked(
         technical_head[copy_length] = '\0';
         technical_tail = split + 1;
         (void)ui_create_label_locked(card, 14, 31, 268, technical_head, UI_COLOR_MUTED);
-        (void)ui_create_label_locked(card, 14, 49, 268, technical_tail, UI_COLOR_MUTED);
-        warning_y = 69;
+        (void)ui_create_label_locked(card, 14, 51, 268, technical_tail, UI_COLOR_MUTED);
+        warning_y = 73;
     } else {
         (void)ui_create_label_locked(card, 14, 31, 268, technical_code, UI_COLOR_MUTED);
     }

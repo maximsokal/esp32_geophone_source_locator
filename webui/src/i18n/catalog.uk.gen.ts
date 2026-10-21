@@ -336,7 +336,7 @@ export const uk: Record<I18nKey, string> = {
   "measurement.deleting_session": "ВИДАЛЕННЯ СЕАНСУ...",
   "measurement.digital_fault": "ADC ЦИФР. ЗАВАДА  %s",
   "measurement.error_retry": "ПОМИЛКА %s   OK ПОВТОРИТИ",
-  "measurement.footer": "LEFT НАЗАД   OK ДІЯ   UP/DOWN ВИБІР",
+  "measurement.footer": "UP/DOWN ОГЛЯД/ВИБІР OK ДІЯ LEFT НАЗАД",
   "measurement.graphs_off": "ГРАФІКИ TFT ВИМК.  ADC+SD УВІМК.",
   "measurement.graphs_status": "ГРАФІКИ TFT ВИМК.  %s",
   "measurement.health_start": "OK ПОЧАТИ",

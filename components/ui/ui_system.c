@@ -137,7 +137,7 @@ void ui_render_system_locked(void)
 
     (void)ui_create_row_locked(
         card,
-        140,
+        142,
         ui_tr(selected_key),
         true,
         true

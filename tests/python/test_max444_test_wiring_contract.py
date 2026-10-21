@@ -116,7 +116,14 @@ def test_max449_navigation_and_low_remote_tests_are_registered():
     ]["defines"]
 
     core = (ROOT / "tests/host/workflow_core_test.c").read_text(encoding="utf-8")
-    assert "test_go_calibration_respects_recording_gate_config();" in core
+    assert "test_go_calibration_initializes_any_connected_count();" in core
+    strict_init = _tests(ROOT / "tests/host/manifest.d/workflow-low-count-initialization.json")[
+        "workflow_low_count_initialization_strict"
+    ]
+    assert "MAX449_CASE=4" in strict_init["defines"]
+    assert "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1" in strict_init["defines"]
+    assert "components/workflow_service/workflow_service.c" in strict_init["sources"]
+    assert "test_one_and_two_connected_remotes_complete_initialization();" in service
     assert "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1" in targets[
         "max449_n5_workflow_gate_strict"
     ]["defines"]

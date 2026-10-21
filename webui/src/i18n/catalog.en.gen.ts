@@ -336,7 +336,7 @@ export const en: Record<I18nKey, string> = {
   "measurement.deleting_session": "DELETING SESSION...",
   "measurement.digital_fault": "ADC DATA? DIGITAL  %s",
   "measurement.error_retry": "ERROR %s   OK RETRY",
-  "measurement.footer": "LEFT BACK   OK ACTION   UP/DOWN SELECT",
+  "measurement.footer": "UP/DOWN SCROLL/SELECT OK ACT LEFT BACK",
   "measurement.graphs_off": "TFT GRAPHS OFF  ADC+SD ON",
   "measurement.graphs_status": "TFT GRAPHS OFF  %s",
   "measurement.health_start": "OK START",

@@ -21,3 +21,7 @@
 
 #define UI_COLOR_TEXT        0xF3F7FB
 #define UI_COLOR_MUTED       0x94A7BC
+
+#define UI_MENU_ROW_HEIGHT   31
+#define UI_MENU_ROW_STEP     34
+#define UI_MENU_LABEL_Y      8

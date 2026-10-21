@@ -26,6 +26,9 @@
 
 
 #define UI_MEASUREMENT_MIN_SCALE_UV   1000.0f
+#define UI_MEASUREMENT_CHART_HEIGHT 42
+#define UI_MEASUREMENT_CHART_ROW_STEP 44
+#define UI_MEASUREMENT_CHART_LINK_TOP 21
 
 
 static const char *TAG = "UI_MEASUREMENTS";
@@ -329,7 +332,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
         x,
         y,
         148,
-        30
+        UI_MEASUREMENT_CHART_HEIGHT
     );
 
     if (card == NULL) {
@@ -356,7 +359,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
     context->measurement_link_labels[channel] = ui_create_label_locked(
         card,
         65,
-        15,
+        UI_MEASUREMENT_CHART_LINK_TOP,
         78,
         ui_tr(UI_I18N_KEY_MEASUREMENT_LINK_NOT_CONNECTED),
         UI_COLOR_MUTED
@@ -372,7 +375,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
         return card;
     }
 
-    lv_obj_set_pos(chart, 4, 15);
+    lv_obj_set_pos(chart, 4, UI_MEASUREMENT_CHART_LINK_TOP);
     lv_obj_set_size(chart, 58, 14);
     lv_obj_set_style_bg_opa(chart, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(chart, 0, 0);
@@ -434,7 +437,7 @@ static lv_obj_t *ui_measurements_create_graph_container_locked(
     }
 
     lv_obj_set_pos(container, 10, y);
-    lv_obj_set_size(container, 300, 63);
+    lv_obj_set_size(container, 300, UI_MEASUREMENT_CHART_ROW_STEP + UI_MEASUREMENT_CHART_HEIGHT);
     lv_obj_set_style_bg_opa(container, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(container, 0, 0);
     lv_obj_set_style_pad_all(container, 0, 0);
@@ -703,7 +706,8 @@ static lv_obj_t *ui_measurements_create_chart_locked(
 )
 {
     ui_context_t *context = ui_context();
-    lv_obj_t *card = ui_create_card_locked(screen, x, y, 148, 30);
+    lv_obj_t *card = ui_create_card_locked(screen, x, y, 148,
+        UI_MEASUREMENT_CHART_HEIGHT);
     if (card == NULL) return NULL;
 
     char label[24];
@@ -719,7 +723,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
     context->measurement_link_labels[channel] = ui_create_label_locked(
         card,
         65,
-        15,
+        UI_MEASUREMENT_CHART_LINK_TOP,
         78,
         ui_tr(UI_I18N_KEY_MEASUREMENT_LINK_NOT_CONNECTED),
         UI_COLOR_MUTED
@@ -761,7 +765,8 @@ void ui_measurements_create_charts_locked(lv_obj_t *screen, int y)
     int chart_x_left = 10;
     int chart_x_right = 162;
     int chart_y_top = y;
-    int chart_y_bottom = y + 32;
+    const int row_step = UI_MEASUREMENT_CHART_ROW_STEP;
+    int chart_y_bottom = y + row_step;
 #if UI_MEASUREMENTS_GRAPHS_ENABLED
     context->measurement_graphs = ui_measurements_create_graph_container_locked(screen, y);
     if (context->measurement_graphs != NULL) {
@@ -769,7 +774,7 @@ void ui_measurements_create_charts_locked(lv_obj_t *screen, int y)
         chart_x_left = 0;
         chart_x_right = 152;
         chart_y_top = 0;
-        chart_y_bottom = 32;
+        chart_y_bottom = row_step;
     }
 #endif
     (void)ui_measurements_create_chart_locked(graph_parent, 0U, chart_x_left, chart_y_top);
@@ -947,12 +952,25 @@ void ui_render_measurements_locked(void)
     }
     context->measurement_screen = screen;
 
+    /* Keep all diagnostics readable; the fixed status and footer remain visible. */
+    lv_obj_t *content = lv_obj_create(screen);
+    if (content == NULL) return;
+    context->measurement_content = content;
+    lv_obj_set_pos(content, 0, 34);
+    lv_obj_set_size(content, 320, 160);
+    lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(content, 0, 0);
+    lv_obj_set_style_pad_all(content, 0, 0);
+    lv_obj_set_scroll_dir(content, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scrollable(content, true);
+
     lv_obj_t *summary_card = ui_create_card_locked(
-        screen,
+        content,
         10,
-        35,
+        2,
         300,
-        29
+        44
     );
 
     if (summary_card == NULL) {
@@ -980,20 +998,20 @@ void ui_render_measurements_locked(void)
     context->measurement_transport = ui_create_label_locked(
         summary_card,
         8,
-        15,
+        22,
         284,
         ui_tr(UI_I18N_KEY_MEASUREMENT_SUMMARY_OBJECT),
         UI_COLOR_MUTED
     );
 
-    ui_measurements_create_charts_locked(screen, 66);
+    ui_measurements_create_charts_locked(content, 50);
 
     static const int node_row_y[UI_MEASUREMENTS_NODE_COUNT] = {
-        130, 144, 158, 172, 186,
+        140, 160, 180, 200, 220,
     };
     for (size_t row = 0U; row < UI_MEASUREMENTS_NODE_COUNT; ++row) {
         context->measurement_node_labels[row] = ui_create_label_locked(
-            screen,
+            content,
             10,
             node_row_y[row],
             300,
@@ -1004,7 +1022,7 @@ void ui_render_measurements_locked(void)
     context->measurement_health = ui_create_label_locked(
         screen,
         12,
-        202,
+        195,
         296,
 #if UI_MEASUREMENTS_GRAPHS_ENABLED
         ui_tr(UI_I18N_KEY_MEASUREMENT_HEALTH_START),
@@ -1335,6 +1353,12 @@ void ui_handle_measurements_key_locked(
 )
 {
     ui_context_t *context = ui_context();
+
+    if (context->measurement_content != NULL &&
+        (key == KEYPAD_KEY_UP || key == KEYPAD_KEY_DOWN)) {
+        lv_obj_scroll_by_bounded(context->measurement_content, 0,
+            key == KEYPAD_KEY_DOWN ? -20 : 20, LV_ANIM_OFF);
+    }
 
     measurement_service_snapshot_t snapshot;
     if (measurement_service_get_snapshot(&snapshot) != ESP_OK) {

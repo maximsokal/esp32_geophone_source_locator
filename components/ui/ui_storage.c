@@ -23,36 +23,7 @@ static lv_obj_t *ui_storage_label(
     uint32_t color
 )
 {
-    lv_obj_t *label =
-        lv_label_create(
-            parent
-        );
-    if (label == NULL) return NULL;
-
-    lv_obj_set_pos(
-        label,
-        x,
-        y
-    );
-
-    lv_obj_set_width(
-        label,
-        width
-    );
-
-    lv_label_set_text(
-        label,
-        text
-    );
-    lv_obj_set_style_text_font(label, &ui_font_montserrat_14, 0);
-
-    lv_obj_set_style_text_color(
-        label,
-        lv_color_hex(color),
-        0
-    );
-
-    return label;
+    return ui_create_label_locked(parent, x, y, width, text, color);
 }
 
 
@@ -64,14 +35,12 @@ static void ui_storage_render_notice(
         return;
     }
 
-    ui_storage_label(
-        screen,
-        12,
-        199,
-        296,
-        ui_context()->notice,
-        UI_STORAGE_COLOR_WARNING
-    );
+    (void)screen;
+    lv_obj_t *footer = ui_context()->footer_label;
+    if (footer != NULL) {
+        lv_label_set_text(footer, ui_context()->notice);
+        lv_obj_set_style_text_color(footer, lv_color_hex(UI_STORAGE_COLOR_WARNING), 0);
+    }
 }
 
 

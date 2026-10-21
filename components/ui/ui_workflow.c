@@ -27,16 +27,17 @@
 #include "workflow_service.h"
 
 #define UI_WORKFLOW_REFRESH_PERIOD_MS 250U
-#define UI_WORKFLOW_VISIBLE_ACTIONS 6U
-#define UI_WORKFLOW_ACTION_ROW_HEIGHT 18
-#define UI_WORKFLOW_ACTION_ROW_STEP 19
-#define UI_WORKFLOW_LINE_HEIGHT 14
+#define UI_WORKFLOW_VISIBLE_ACTIONS 2U
+#define UI_WORKFLOW_ACTION_ROW_HEIGHT UI_MENU_ROW_HEIGHT
+#define UI_WORKFLOW_ACTION_ROW_STEP UI_MENU_ROW_STEP
+#define UI_WORKFLOW_LINE_HEIGHT 20
 #define UI_WORKFLOW_LINE_TOP 36
 #define UI_WORKFLOW_RESULT_POINTS UI_MEASUREMENT_TRACE_POINTS
 
 typedef struct {
     workflow_step_t rendered_step;
     bool rendered_material_picker;
+    size_t rendered_action_count;
     char material_object_id[OBJECT_STORE_ID_SIZE];
     bool snapshot_valid;
     bool workflow_service_ready;
@@ -201,24 +202,44 @@ static void ui_workflow_format_line(
         args[0], args[1], args[2], args[3], args[4], args[5]);
 }
 
+static size_t ui_workflow_visible_actions(const workflow_snapshot_t *snapshot, const ui_workflow_model_t *model)
+{
+    /* The result needs two readable chart rows above a full-size action. */
+    const size_t capacity = snapshot->step == WORKFLOW_STEP_RESULT &&
+        snapshot->calculation_class == WORKFLOW_CALCULATION_CLASS_NONE ? 1U : UI_WORKFLOW_VISIBLE_ACTIONS;
+    return model->action_count < capacity ? model->action_count : capacity;
+}
+
 static size_t ui_workflow_line_slots(const workflow_snapshot_t *snapshot, const ui_workflow_model_t *model)
 {
+    size_t slots;
     switch (snapshot->step) {
         case WORKFLOW_STEP_CALIBRATING:
         case WORKFLOW_STEP_PLACEMENT:
         case WORKFLOW_STEP_RANGING:
         case WORKFLOW_STEP_RANGING_RESULT:
-            return 10U;
+            slots = 10U;
+            break;
         case WORKFLOW_STEP_CALIB_RESULT:
-            return model->line_count < 10U ? model->line_count : 10U;
+            slots = 10U;
+            break;
         case WORKFLOW_STEP_RESULT:
-            return snapshot->calculation_class == WORKFLOW_CALCULATION_CLASS_NONE ? 2U
-                : model->line_count < 4U ? model->line_count : 4U;
+            slots = snapshot->calculation_class == WORKFLOW_CALCULATION_CLASS_NONE ? 2U : 4U;
+            break;
         case WORKFLOW_STEP_CALCULATING:
-            return model->progress_indeterminate ? 0U : 1U;
+            slots = model->progress_indeterminate ? 0U : 1U;
+            break;
         default:
-            return model->line_count < 4U ? model->line_count : 4U;
+            slots = 4U;
+            break;
     }
+    const size_t actions = ui_workflow_visible_actions(snapshot, model);
+    const int extra_line = snapshot->step == WORKFLOW_STEP_RANGING ? UI_WORKFLOW_LINE_HEIGHT : 0;
+    const int available = 214 - (int)actions * UI_WORKFLOW_ACTION_ROW_STEP -
+        UI_WORKFLOW_LINE_TOP - extra_line - 4;
+    const size_t fitting = available > 0 ? (size_t)(available / UI_WORKFLOW_LINE_HEIGHT) : 0U;
+    if (slots > model->line_count) slots = model->line_count;
+    return slots < fitting ? slots : fitting;
 }
 
 static ui_workflow_load_result_t *ui_workflow_load_result_alloc(void)
@@ -445,7 +466,7 @@ static void ui_workflow_create_result_markers(ui_workflow_screen_state_t *state)
         lv_obj_t *marker = lv_obj_create(card);
         if (marker == NULL) continue;
         lv_obj_set_size(marker, 2, 14);
-        lv_obj_set_pos(marker, 4, 15);
+        lv_obj_set_pos(marker, 4, 21);
         lv_obj_set_style_bg_color(marker, lv_color_hex(UI_COLOR_WARNING), 0);
         lv_obj_set_style_bg_opa(marker, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(marker, 0, 0);
@@ -493,7 +514,7 @@ static void ui_workflow_apply_result_waveform(ui_workflow_screen_state_t *state)
         if (state->arrival_markers[channel] != NULL) {
             if (state->result_arrival_valid[channel] && state->result_point_count > 1U) {
                 const size_t x = state->result_arrival_point[channel] * 140U / (state->result_point_count - 1U);
-                lv_obj_set_pos(state->arrival_markers[channel], 4 + (int)x, 15);
+                lv_obj_set_pos(state->arrival_markers[channel], 4 + (int)x, 21);
                 lv_obj_set_hidden(state->arrival_markers[channel], false);
             } else {
                 lv_obj_set_hidden(state->arrival_markers[channel], true);
@@ -536,7 +557,7 @@ static void ui_workflow_create_action_slots(ui_workflow_screen_state_t *state)
         state->action_rows[i] = ui_create_card_locked(state->screen, 10, 214, 300, UI_WORKFLOW_ACTION_ROW_HEIGHT);
         if (state->action_rows[i] == NULL) continue;
         state->action_labels[i] = ui_create_label_locked(
-            state->action_rows[i], 8, 1, 284, "", UI_COLOR_TEXT);
+            state->action_rows[i], 10, UI_MENU_LABEL_Y, 280, "", UI_COLOR_TEXT);
         lv_obj_set_hidden(state->action_rows[i], true);
     }
 }
@@ -581,6 +602,11 @@ static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
 static bool ui_workflow_remote_slots_visible(const ui_workflow_screen_state_t *state)
 {
     if (state->model.line_count > 4U) return false;
+    const size_t actions = ui_workflow_visible_actions(&state->snapshot, &state->model);
+    const int grid_bottom = UI_WORKFLOW_LINE_TOP +
+        (int)state->line_slots * UI_WORKFLOW_LINE_HEIGHT + 2 +
+        UI_MENU_ROW_STEP + UI_MENU_ROW_HEIGHT;
+    if (grid_bottom >= 214 - (int)actions * UI_WORKFLOW_ACTION_ROW_STEP) return false;
     switch (state->snapshot.step) {
         case WORKFLOW_STEP_OBJECT:
         case WORKFLOW_STEP_SENSOR_CHECK:
@@ -605,14 +631,15 @@ static void ui_workflow_create_remote_slots(ui_workflow_screen_state_t *state)
     if (!ui_workflow_remote_slots_visible(state)) return;
 
     const int top = UI_WORKFLOW_LINE_TOP +
-        (int)(state->model.line_count * UI_WORKFLOW_LINE_HEIGHT) + 8;
+        (int)(state->line_slots * UI_WORKFLOW_LINE_HEIGHT) + 2;
     for (size_t i = 0U; i < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++i) {
-        const int x = 10 + (int)(i * 74U);
-        lv_obj_t *card = ui_create_card_locked(state->screen, x, top, 70, 24);
+        const int x = 10 + (int)(i % 2U) * 154;
+        const int y = top + (int)(i / 2U) * UI_MENU_ROW_STEP;
+        lv_obj_t *card = ui_create_card_locked(state->screen, x, y, 146, UI_MENU_ROW_HEIGHT);
         if (card == NULL) continue;
         state->remote_slot_cards[i] = card;
         state->remote_slot_labels[i] = ui_create_label_locked(
-            card, 8, 4, 54, ui_tr(slot_name_keys[i]), UI_COLOR_MUTED);
+            card, 8, UI_MENU_LABEL_Y, 130, ui_tr(slot_name_keys[i]), UI_COLOR_MUTED);
     }
     state->remote_slot_styles_dirty = true;
 }
@@ -641,6 +668,7 @@ static void ui_workflow_render_step_locked(ui_workflow_screen_state_t *state)
     if (state->screen == NULL) return;
     state->rendered_step = state->snapshot.step;
     state->rendered_material_picker = state->model.material_picker_visible;
+    state->rendered_action_count = state->model.action_count;
     state->line_slots = ui_workflow_line_slots(&state->snapshot, &state->model);
     memset(state->line_labels, 0, sizeof(state->line_labels));
     memset(state->remote_slot_cards, 0, sizeof(state->remote_slot_cards));
@@ -661,13 +689,13 @@ static void ui_workflow_render_step_locked(ui_workflow_screen_state_t *state)
         ui_measurements_create_charts_locked(state->screen, 68);
     } else if (state->snapshot.step == WORKFLOW_STEP_RESULT &&
         state->snapshot.calculation_class == WORKFLOW_CALCULATION_CLASS_NONE) {
-        ui_measurements_create_charts_locked(state->screen, 72);
+        ui_measurements_create_charts_locked(state->screen, 78);
         ui_workflow_create_result_markers(state);
         state->result_widgets_created = true;
     } else if (state->snapshot.step == WORKFLOW_STEP_RANGING) {
         state->progress_bar = lv_bar_create(state->screen);
         if (state->progress_bar != NULL) {
-            lv_obj_set_pos(state->progress_bar, 20, 52);
+            lv_obj_set_pos(state->progress_bar, 20, UI_WORKFLOW_LINE_TOP + UI_WORKFLOW_LINE_HEIGHT);
             lv_obj_set_size(state->progress_bar, 280, 8);
             lv_bar_set_range(state->progress_bar, 0, 100);
             lv_obj_set_hidden(state->progress_bar, true);
@@ -730,8 +758,7 @@ static void ui_workflow_update_chart_labels(ui_workflow_screen_state_t *state)
 
 static void ui_workflow_update_actions(ui_workflow_screen_state_t *state)
 {
-    const size_t visible = state->model.action_count < UI_WORKFLOW_VISIBLE_ACTIONS
-        ? state->model.action_count : UI_WORKFLOW_VISIBLE_ACTIONS;
+    const size_t visible = ui_workflow_visible_actions(&state->snapshot, &state->model);
     size_t first = state->model.selected_action > visible / 2U
         ? state->model.selected_action - visible / 2U : 0U;
     if (first + visible > state->model.action_count) first = state->model.action_count - visible;
@@ -913,7 +940,9 @@ static void ui_workflow_update(ui_workflow_screen_state_t *state, uint64_t now_m
     ui_workflow_prepare_material_model(state);
     ui_workflow_model_build(&state->snapshot, &state->ranging, &state->model_state, now_ms, &state->model);
     if (state->screen == NULL || state->rendered_step != state->snapshot.step ||
-        state->rendered_material_picker != state->model.material_picker_visible) {
+        state->rendered_material_picker != state->model.material_picker_visible ||
+        state->rendered_action_count != state->model.action_count ||
+        state->line_slots != ui_workflow_line_slots(&state->snapshot, &state->model)) {
         ui_workflow_render_step_locked(state);
         if (state->snapshot.step == WORKFLOW_STEP_RESULT &&
             state->snapshot.calculation_class == WORKFLOW_CALCULATION_CLASS_NONE &&

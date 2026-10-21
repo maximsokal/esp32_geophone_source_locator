@@ -312,7 +312,7 @@ void ui_handle_objects_key_locked(
 
             if (
                 context->screen != UI_SCREEN_OBJECTS ||
-                context->objects_mode != UI_OBJECTS_MENU ||
+                context->objects_mode != UI_OBJECTS_SELECT_DELETE ||
                 context->object_index != selected_index ||
                 context->object_index >= context->object_count ||
                 strcmp(context->objects[context->object_index].id, selected.id) != 0

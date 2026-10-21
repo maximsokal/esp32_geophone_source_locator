@@ -234,7 +234,7 @@ static void test_back_from_result_returns_to_stopped(void)
 }
 
 
-static void test_go_calibration_respects_recording_gate_config(void)
+static void test_go_calibration_initializes_any_connected_count(void)
 {
     for (size_t remotes = 0U; remotes <= 3U; ++remotes) {
         workflow_core_t core;
@@ -244,13 +244,6 @@ static void test_go_calibration_respects_recording_gate_config(void)
         const workflow_command_result_t result = workflow_core_apply(
             &core, WORKFLOW_COMMAND_GO_CALIBRATION, &params, remotes, false);
 
-#if CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
-        if (remotes < 3U) {
-            assert(result == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
-            assert(core.step == WORKFLOW_STEP_SENSOR_CHECK);
-            continue;
-        }
-#endif
         assert(result == WORKFLOW_COMMAND_RESULT_OK);
         assert(core.step == WORKFLOW_STEP_CALIB_PREP);
     }
@@ -325,27 +318,15 @@ static void test_sensor_count_guards_zero_through_five(void)
                 : WORKFLOW_SENSOR_CAPABLE_3D;
             assert(snapshot.sensor_sufficiency == expected);
         }
-#if CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
-        const bool should_allow_calibration = remotes >= 3U;
-#else
-        const bool should_allow_calibration = true;
-#endif
-        assert(((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION)) != 0U) ==
-            should_allow_calibration);
+        assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION)) != 0U);
         const workflow_command_result_t result = workflow_core_apply(
             &core,
             WORKFLOW_COMMAND_GO_CALIBRATION,
             &params,
             remotes,
             false);
-        if (should_allow_calibration) {
-            assert(result == WORKFLOW_COMMAND_RESULT_OK);
-            assert(core.step == WORKFLOW_STEP_CALIB_PREP);
-        } else {
-            assert(result == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
-            assert(core.step == WORKFLOW_STEP_SENSOR_CHECK);
-            assert(strcmp(core.reason, "insufficient_remotes") == 0);
-        }
+        assert(result == WORKFLOW_COMMAND_RESULT_OK);
+        assert(core.step == WORKFLOW_STEP_CALIB_PREP);
         assert(snapshot.assigned_remotes == remotes);
     }
 }
@@ -474,7 +455,7 @@ int main(void)
 {
 #ifdef MAX449_CASE
 #if MAX449_CASE == 5
-    test_go_calibration_respects_recording_gate_config();
+    test_go_calibration_initializes_any_connected_count();
 #else
 #error "unknown MAX449_CASE for workflow_core_test"
 #endif
@@ -486,7 +467,7 @@ int main(void)
     test_back_from_ranging_result_returns_to_layout_ready();
     test_back_clears_downstream_workflow_choices();
     test_back_from_result_returns_to_stopped();
-    test_go_calibration_respects_recording_gate_config();
+    test_go_calibration_initializes_any_connected_count();
     test_retry_after_failed_calibration_restarts_calibration();
     test_delete_recording_returns_to_record_ready_preserving_setup();
     test_back_from_running_steps_records_cancellation_reason();

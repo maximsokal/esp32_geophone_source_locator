@@ -275,7 +275,9 @@ static void test_left_behavior_each_step(void)
 
         snapshot.allowed_actions = 0U;
         event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_LEFT, 100U);
-        if (step == WORKFLOW_STEP_IDLE || step == WORKFLOW_STEP_OBJECT || step == WORKFLOW_STEP_SENSOR_CHECK) {
+        if (step == WORKFLOW_STEP_OBJECT) {
+            assert(event.type == UI_WORKFLOW_EVENT_LEAVE_HOME);
+        } else if (step == WORKFLOW_STEP_IDLE || step == WORKFLOW_STEP_SENSOR_CHECK) {
             assert(event.type == UI_WORKFLOW_EVENT_LEAVE_OBJECTS);
         } else {
             assert(event.type == UI_WORKFLOW_EVENT_NONE);
@@ -595,11 +597,7 @@ static void test_sensor_check_action_and_warning_for_low_remote_counts(void)
 
         const bool has_calibration_action =
             (model.actions_mask & WORKFLOW_ACTION(WORKFLOW_COMMAND_GO_CALIBRATION)) != 0U;
-#if CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
-        assert(!has_calibration_action);
-#else
         assert(has_calibration_action);
-#endif
         bool has_insufficient_warning = false;
         for (size_t i = 0U; i < model.line_count; ++i) {
             has_insufficient_warning = has_insufficient_warning ||

@@ -60,6 +60,7 @@ static void ui_style_screen(lv_obj_t *screen)
     lv_obj_set_style_border_width(screen, 0, 0);
     lv_obj_set_style_pad_all(screen, 0, 0);
     lv_obj_set_style_text_color(screen, lv_color_hex(UI_COLOR_TEXT), 0);
+    lv_obj_set_scrollable(screen, false);
 }
 
 
@@ -87,7 +88,7 @@ lv_obj_t *ui_create_label_locked(
 
     if (width > 0) {
         lv_obj_set_width(label, width);
-        lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR);
     }
 
     lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
@@ -137,6 +138,7 @@ lv_obj_t *ui_create_screen_base_locked(
     context->measurement_transport = NULL;
     context->measurement_health = NULL;
     context->measurement_screen = NULL;
+    context->measurement_content = NULL;
     context->measurement_graphs = NULL;
     context->system_heap = NULL;
     context->system_psram = NULL;
@@ -207,7 +209,7 @@ lv_obj_t *ui_create_screen_base_locked(
         context->footer_label = ui_create_label_locked(
             footer_bar,
             8,
-            6,
+            (24 - (int)ui_font_montserrat_14.line_height) / 2,
             304,
             footer,
             UI_COLOR_MUTED
@@ -272,7 +274,11 @@ lv_obj_t *ui_create_row_locked(
     bool enabled
 )
 {
-    lv_obj_t *row = ui_create_card_locked(parent, 10, y, 300, 31);
+    if (parent == NULL) return NULL;
+    lv_obj_update_layout(parent);
+    const int width = lv_obj_get_content_width(parent) - 20;
+    if (width <= 42) return NULL;
+    lv_obj_t *row = ui_create_card_locked(parent, 10, y, width, UI_MENU_ROW_HEIGHT);
     if (row == NULL) {
         return NULL;
     }
@@ -298,8 +304,8 @@ lv_obj_t *ui_create_row_locked(
     (void)ui_create_label_locked(
         row,
         10,
-        8,
-        258,
+        UI_MENU_LABEL_Y,
+        width - 42,
         text,
         enabled && selected
             ? UI_COLOR_TEXT
@@ -308,7 +314,7 @@ lv_obj_t *ui_create_row_locked(
 
     if (selected && enabled) {
         (void)ui_create_label_locked(
-            row, 278, 8, 12, ">", UI_COLOR_ACCENT
+            row, width - 22, UI_MENU_LABEL_Y, 12, ">", UI_COLOR_ACCENT
         );
     }
 

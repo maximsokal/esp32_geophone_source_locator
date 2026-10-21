@@ -853,8 +853,8 @@
       "max_len": 12
     },
     "measurement.footer": {
-      "en": "LEFT BACK   OK ACTION   UP/DOWN SELECT",
-      "uk": "LEFT НАЗАД   OK ДІЯ   UP/DOWN ВИБІР",
+      "en": "UP/DOWN SCROLL/SELECT OK ACT LEFT BACK",
+      "uk": "UP/DOWN ОГЛЯД/ВИБІР OK ДІЯ LEFT НАЗАД",
       "max_len": 38
     },
     "measurement.channel_empty": {

@@ -62,7 +62,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "DELETING SESSION...", /* measurement.deleting_session */
     "ADC DATA? DIGITAL  %s", /* measurement.digital_fault */
     "ERROR %s   OK RETRY", /* measurement.error_retry */
-    "LEFT BACK   OK ACTION   UP/DOWN SELECT", /* measurement.footer */
+    "UP/DOWN SCROLL/SELECT OK ACT LEFT BACK", /* measurement.footer */
     "TFT GRAPHS OFF  ADC+SD ON", /* measurement.graphs_off */
     "TFT GRAPHS OFF  %s", /* measurement.graphs_status */
     "OK START", /* measurement.health_start */
@@ -482,7 +482,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "ВИДАЛЕННЯ СЕАНСУ...", /* measurement.deleting_session */
     "ADC ЦИФР. ЗАВАДА  %s", /* measurement.digital_fault */
     "ПОМИЛКА %s   OK ПОВТОРИТИ", /* measurement.error_retry */
-    "LEFT НАЗАД   OK ДІЯ   UP/DOWN ВИБІР", /* measurement.footer */
+    "UP/DOWN ОГЛЯД/ВИБІР OK ДІЯ LEFT НАЗАД", /* measurement.footer */
     "ГРАФІКИ TFT ВИМК.  ADC+SD УВІМК.", /* measurement.graphs_off */
     "ГРАФІКИ TFT ВИМК.  %s", /* measurement.graphs_status */
     "OK ПОЧАТИ", /* measurement.health_start */

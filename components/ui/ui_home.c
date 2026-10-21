@@ -53,7 +53,7 @@ void ui_render_home_locked(void)
     for (size_t i = 0; i < count; ++i) {
         context->home_rows[i] = ui_create_row_locked(
             screen,
-            40 + (int)(i * 34U),
+            40 + (int)i * UI_MENU_ROW_STEP,
             ui_screen_home_label(i),
             i == context->selected,
             true

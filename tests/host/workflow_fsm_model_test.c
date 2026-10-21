@@ -146,11 +146,6 @@ static workflow_command_result_t model_apply(
     }
 
     workflow_step_t next = model_transition(state->step, command);
-    if (command == WORKFLOW_COMMAND_GO_CALIBRATION &&
-        state->step == WORKFLOW_STEP_SENSOR_CHECK &&
-        CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING && assigned_remotes < 3U) {
-        return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
-    }
     if ((command == WORKFLOW_COMMAND_PLACEMENT_CONFIRMED && state->step == WORKFLOW_STEP_PLACEMENT) ||
         (command == WORKFLOW_COMMAND_CALCULATE_POSITIONS && state->step == WORKFLOW_STEP_LAYOUT_READY)) {
         if (!placement_ready) return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
@@ -561,10 +556,7 @@ static void test_guard_boundaries_and_generation(void)
 {
     workflow_command_params_t params = permissive_params();
     apply_case(WORKFLOW_STEP_SENSOR_CHECK, WORKFLOW_COMMAND_GO_CALIBRATION, params, 2U, false,
-        CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
-            ? WORKFLOW_COMMAND_RESULT_NOT_ALLOWED : WORKFLOW_COMMAND_RESULT_OK,
-        CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
-            ? WORKFLOW_STEP_SENSOR_CHECK : WORKFLOW_STEP_CALIB_PREP);
+        WORKFLOW_COMMAND_RESULT_OK, WORKFLOW_STEP_CALIB_PREP);
     apply_case(WORKFLOW_STEP_SENSOR_CHECK, WORKFLOW_COMMAND_GO_CALIBRATION, params, 3U, false,
         WORKFLOW_COMMAND_RESULT_OK, WORKFLOW_STEP_CALIB_PREP);
     apply_case(WORKFLOW_STEP_PLACEMENT, WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, params, 4U, false,

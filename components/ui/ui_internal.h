@@ -110,6 +110,7 @@ typedef struct
         SEISMIC_CHANNEL_COUNT
     ];
     lv_obj_t *measurement_screen;
+    lv_obj_t *measurement_content;
     lv_obj_t *measurement_graphs;
     lv_chart_series_t *measurement_min_series[
         SEISMIC_CHANNEL_COUNT
