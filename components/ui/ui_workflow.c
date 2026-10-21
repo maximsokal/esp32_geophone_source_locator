@@ -1017,6 +1017,9 @@ void ui_workflow_screen_handle_key_locked(keypad_key_t key)
         case UI_WORKFLOW_EVENT_LEAVE_OBJECTS:
             ui_screen_open_locked(UI_SCREEN_OBJECTS);
             return;
+        case UI_WORKFLOW_EVENT_LEAVE_HOME:
+            ui_screen_open_locked(UI_SCREEN_HOME);
+            return;
         case UI_WORKFLOW_EVENT_OPEN_PREVIEW:
             ui_scan_preview_open_from_workflow_locked(
                 s_workflow->snapshot.object_id, s_workflow->snapshot.session_id);

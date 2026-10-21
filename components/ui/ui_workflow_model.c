@@ -948,7 +948,7 @@ ui_workflow_event_t ui_workflow_model_handle_key(
                 state->delete_confirm = false;
                 event.type = UI_WORKFLOW_EVENT_DELETE_CONFIRM_CHANGED;
             } else if (snapshot->step == WORKFLOW_STEP_OBJECT) {
-                event.type = UI_WORKFLOW_EVENT_LEAVE_OBJECTS;
+                event.type = UI_WORKFLOW_EVENT_LEAVE_HOME;
             } else if ((snapshot->allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK)) != 0U) {
                 event.type = UI_WORKFLOW_EVENT_SEND_COMMAND;
                 event.command = WORKFLOW_COMMAND_BACK;

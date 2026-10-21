@@ -267,7 +267,7 @@ static void test_left_behavior_each_step(void)
         snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
         event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_LEFT, 100U);
         if (step == WORKFLOW_STEP_OBJECT) {
-            assert(event.type == UI_WORKFLOW_EVENT_LEAVE_OBJECTS);
+            assert(event.type == UI_WORKFLOW_EVENT_LEAVE_HOME);
         } else {
             assert(event.type == UI_WORKFLOW_EVENT_SEND_COMMAND);
             assert(event.command == WORKFLOW_COMMAND_BACK);

@@ -122,6 +122,7 @@ typedef enum {
     UI_WORKFLOW_EVENT_OPEN_PREVIEW,
     UI_WORKFLOW_EVENT_DELETE_CONFIRM_CHANGED,
     UI_WORKFLOW_EVENT_SAVE_MATERIAL,
+    UI_WORKFLOW_EVENT_LEAVE_HOME,
 } ui_workflow_event_type_t;
 
 typedef struct {
