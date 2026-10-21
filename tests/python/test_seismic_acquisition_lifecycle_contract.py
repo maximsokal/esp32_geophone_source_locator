@@ -72,17 +72,18 @@ def test_boot_initializes_lifecycle_but_does_not_auto_start_acquisition():
     assert wifi_start < web_start < interactive
 
 
-def test_measurements_screen_entry_starts_acquisition():
+def test_measurement_workflow_entry_starts_acquisition():
     registry = UI_SCREEN_REGISTRY.read_text(encoding="utf-8")
     open_measurements = _between(
         registry,
-        "static void ui_screen_open_measurements(void)",
-        "static void ui_screen_open_storage(void)",
+        "void ui_screen_open_locked(",
+        "void ui_screen_render_locked(",
     )
     assert "seismic_acquisition_start()" in open_measurements
-    assert "ui_render_measurements_locked();" in open_measurements
+    assert "screen == UI_SCREEN_MEASUREMENTS || screen == UI_SCREEN_WORKFLOW" in open_measurements
+    assert "driver->open();" in open_measurements
     assert open_measurements.index("seismic_acquisition_start()") < open_measurements.index(
-        "ui_render_measurements_locked();"
+        "driver->open();"
     )
 
 

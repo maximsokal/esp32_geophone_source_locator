@@ -23,6 +23,7 @@ static unsigned s_system_renders;
 static unsigned s_object_list_requests;
 static unsigned s_storage_info_requests;
 static unsigned s_acquisition_start_calls;
+static esp_err_t s_acquisition_start_result;
 static bool s_active_object_present;
 static workflow_snapshot_t s_workflow_snapshot;
 static unsigned char s_fake_lvgl_object;
@@ -191,7 +192,7 @@ esp_err_t workflow_service_try_get_snapshot(workflow_snapshot_t *snapshot)
 esp_err_t seismic_acquisition_start(void)
 {
     ++s_acquisition_start_calls;
-    return ESP_OK;
+    return s_acquisition_start_result;
 }
 
 
@@ -350,6 +351,7 @@ static void reset_state(void)
     s_object_list_requests = 0U;
     s_storage_info_requests = 0U;
     s_acquisition_start_calls = 0U;
+    s_acquisition_start_result = ESP_OK;
     s_active_object_present = false;
     memset(&s_workflow_snapshot, 0, sizeof(s_workflow_snapshot));
     s_workflow_snapshot.step = WORKFLOW_STEP_IDLE;
@@ -498,7 +500,7 @@ static void test_home_measurements_redirects_active_object_for_ok_and_right(void
         assert(s_context.screen == UI_SCREEN_WORKFLOW);
         assert(s_workflow_snapshot.step == WORKFLOW_STEP_OBJECT);
         assert((s_workflow_snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_START_MEASUREMENT)) != 0U);
-        assert(s_acquisition_start_calls == 0U);
+        assert(s_acquisition_start_calls == 1U);
         assert(s_measurement_renders == 0U);
     }
 }
@@ -522,11 +524,11 @@ static void test_home_measurements_without_active_object_opens_workflow_picker(v
     (void)snprintf(s_context.objects[0].id, sizeof(s_context.objects[0].id), "%s", "picked-object");
     ui_handle_objects_key_locked(KEYPAD_KEY_OK);
     assert(s_context.screen == UI_SCREEN_WORKFLOW);
-    assert(s_acquisition_start_calls == 0U);
+    assert(s_acquisition_start_calls == 1U);
 }
 
 
-static void test_objects_start_measurement_opens_workflow_without_acquisition(void)
+static void test_objects_start_measurement_initializes_acquisition(void)
 {
     reset_state();
     s_active_object_present = true;
@@ -543,8 +545,38 @@ static void test_objects_start_measurement_opens_workflow_without_acquisition(vo
     ui_handle_objects_key_locked(KEYPAD_KEY_OK);
 
     assert(s_context.screen == UI_SCREEN_WORKFLOW);
-    assert(s_acquisition_start_calls == 0U);
+    assert(s_acquisition_start_calls == 1U);
     assert(s_measurement_renders == 0U);
+}
+
+
+static void test_workflow_initializes_before_readiness_and_retries_failures(void)
+{
+    for (uint8_t remotes = 0U; remotes <= 1U; ++remotes) {
+        reset_state();
+        s_active_object_present = true;
+        s_workflow_snapshot.step = WORKFLOW_STEP_SENSOR_CHECK;
+        s_workflow_snapshot.assigned_remotes = remotes;
+        s_workflow_snapshot.allowed_actions = 0U;
+
+        ui_screen_open_locked(UI_SCREEN_MEASUREMENTS);
+
+        assert(s_context.screen == UI_SCREEN_WORKFLOW);
+        assert(s_acquisition_start_calls == 1U);
+        assert(s_workflow_snapshot.step == WORKFLOW_STEP_SENSOR_CHECK);
+        assert(s_workflow_snapshot.allowed_actions == 0U);
+    }
+
+    reset_state();
+    s_acquisition_start_result = ESP_ERR_INVALID_STATE;
+    ui_screen_open_locked(UI_SCREEN_WORKFLOW);
+    assert(s_context.screen == UI_SCREEN_WORKFLOW);
+    assert(s_acquisition_start_calls == 1U);
+
+    s_acquisition_start_result = ESP_OK;
+    ui_screen_open_locked(UI_SCREEN_WORKFLOW);
+    assert(s_context.screen == UI_SCREEN_WORKFLOW);
+    assert(s_acquisition_start_calls == 2U);
 }
 
 
@@ -639,12 +671,13 @@ int main(void)
 #ifdef MAX449_CASE
 #if MAX449_CASE == 1
     test_home_measurements_redirects_active_object_for_ok_and_right();
+    test_workflow_initializes_before_readiness_and_retries_failures();
 #elif MAX449_CASE == 2
     test_home_measurements_without_active_object_opens_workflow_picker();
 #elif MAX449_CASE == 3
     test_measurements_route_decision_all_workflow_states();
 #elif MAX449_CASE == 4
-    test_objects_start_measurement_opens_workflow_without_acquisition();
+    test_objects_start_measurement_initializes_acquisition();
 #else
 #error "unknown MAX449_CASE for ui_home_navigation_test"
 #endif
@@ -658,8 +691,9 @@ int main(void)
     test_dispatch_uses_current_screen_driver();
     test_measurements_route_decision_all_workflow_states();
     test_home_measurements_redirects_active_object_for_ok_and_right();
+    test_workflow_initializes_before_readiness_and_retries_failures();
     test_home_measurements_without_active_object_opens_workflow_picker();
-    test_objects_start_measurement_opens_workflow_without_acquisition();
+    test_objects_start_measurement_initializes_acquisition();
     test_recovery_events_update_home_state();
     test_recovery_failure_is_sticky_until_next_start();
     test_recovery_event_does_not_force_other_screen_redraw();

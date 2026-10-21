@@ -85,21 +85,6 @@ static void ui_screen_open_measurements(void)
     context->measurement_action = 0;
     ui_set_notice_locked(NULL);
 
-    /*
-     * The AD7606 does not sample at boot; entering the Measurements screen is
-     * the local trigger that brings acquisition up so the ADC only runs
-     * while someone is actually looking at live channel data. Idempotent:
-     * a Web client may have already started it via acquisition_start.
-     */
-    const esp_err_t acquisition_err = seismic_acquisition_start();
-    if (acquisition_err != ESP_OK) {
-        ESP_LOGW(
-            TAG,
-            "Seismic acquisition unavailable on Measurements entry: %s",
-            esp_err_to_name(acquisition_err)
-        );
-    }
-
     ui_render_measurements_locked();
 }
 
@@ -364,6 +349,16 @@ void ui_screen_open_locked(
         driver->open == NULL
     ) {
         return;
+    }
+
+    /* Initialize before the guided workflow checks readiness; its route may
+     * keep the live Measurements screen unreachable until calibration ends. */
+    if (screen == UI_SCREEN_MEASUREMENTS || screen == UI_SCREEN_WORKFLOW) {
+        const esp_err_t acquisition_err = seismic_acquisition_start();
+        if (acquisition_err != ESP_OK) {
+            ESP_LOGW(TAG, "Seismic acquisition unavailable on measurement workflow entry: %s",
+                esp_err_to_name(acquisition_err));
+        }
     }
 
     const bool leaving_preview = ui_context()->screen == UI_SCREEN_SCAN_PREVIEW && screen != UI_SCREEN_SCAN_PREVIEW;
