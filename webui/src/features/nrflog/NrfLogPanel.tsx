@@ -275,7 +275,7 @@ export default function NrfLogPanel({ status }: { status: DeviceStatus | null })
         {requestFailed && <p className="console-error" role="alert">{t('nrf_log.panel.request_failed')}</p>}
         {!unsupported && loading && records.length === 0 && <p>{t('nrf_log.panel.loading')}</p>}
 
-        <div className="nrf-log-table-wrap">
+        <div className="nrf-log-table-wrap" role="region" aria-label={t('nrf_log.panel.title')} tabIndex={0}>
           <table className="leveling-table nrf-log-table" aria-label={t('nrf_log.panel.table_aria')}>
             <thead><tr>
               <th>{t('nrf_log.panel.esp_rx_uptime')}</th>

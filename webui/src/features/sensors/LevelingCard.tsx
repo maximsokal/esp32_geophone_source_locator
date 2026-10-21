@@ -49,7 +49,7 @@ export default function LevelingCard({ gate, pods, main, onCalibrateHeights }: P
     <article className="console-card wide-card">
       <div className="card-heading">
         <div><span className="eyebrow">{t('leveling.recording_gate')}</span><h2>{t('leveling.title')}</h2></div>
-        <div>
+        <div className="card-actions">
           {gate !== undefined && <span className={`state-pill ${gate.allowed ? 'ready' : 'offline'}`}>
             {gate.available ? t('leveling.count_level', {
               accepted: formatNumber(locale, gate.accepted_count ?? 0),

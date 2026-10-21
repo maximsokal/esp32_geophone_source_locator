@@ -286,15 +286,17 @@ def ui_steps(root: Path, python_executable: str, npm_executable: str,
     for name, script in (('typecheck', 'typecheck'), ('test-types', 'typecheck:tests'),
                          ('console', 'test:console'), ('domain', 'test:domain'),
                          ('components', 'test:components'), ('e2e-types', 'typecheck:e2e'), ('smoke', 'test:ui:smoke'),
+                         ('layout', 'test:ui:layout'),
                          ('bundle', 'verify:bundle')):
-        env = {'PLAYWRIGHT_JSON_OUTPUT_FILE': str(output / 'web/playwright.json'),
-               'PLAYWRIGHT_HTML_OUTPUT_DIR': str(output / 'web/html')}
+        browser_output = output / ('layout' if name == 'layout' else 'web')
+        env = {'PLAYWRIGHT_JSON_OUTPUT_FILE': str(browser_output / 'playwright.json'),
+               'PLAYWRIGHT_HTML_OUTPUT_DIR': str(browser_output / 'html')}
         command = (npm_executable, 'run', script)
-        if name == 'smoke':
-            command += ('--', '--output', str(output / 'web/results'))
+        if name in ('smoke', 'layout'):
+            command += ('--', '--output', str(browser_output / 'results'))
         if name in ('components', 'domain'):
             command += ('--', '--reporter=default', '--reporter=junit', '--outputFile', str(output / f'{name}.xml'))
-        steps.append(Step(f'ui-web/{name}', webui, command, environment=env if name == 'smoke' else None))
+        steps.append(Step(f'ui-web/{name}', webui, command, environment=env if name in ('smoke', 'layout') else None))
     return steps
 
 
@@ -333,6 +335,7 @@ def run_ui_verification(root: Path, python_executable: str, npm_executable: str,
         '--native-junit', str(output / 'native.xml'), '--native-root', str(output / 'native'),
         '--native-exit-code', '1' if 'ui-native' in failed_groups else '0',
         '--components-junit', str(output / 'components.xml'), '--domain-junit', str(output / 'domain.xml'),
+        '--layout', str(output / 'layout/playwright.json'), '--layout-exit-code', '1' if 'ui-web' in failed_groups else '0',
     ])
     result = 1 if failed_groups or report_exit else 0
     print(f"LOCAL_VERIFY_RESULT: {'FAIL' if result else 'PASS'} (UI artifacts: {output})", flush=True)

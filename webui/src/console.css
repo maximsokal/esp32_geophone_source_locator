@@ -5,4 +5,82 @@
 
 .console-topbar-actions{display:flex;align-items:center;justify-self:end;gap:.75rem}.locale-picker select{min-height:2.4rem;background:#07141d;color:#e8f0f7;border:1px solid #31546a;border-radius:.5rem;padding:.4rem .55rem}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:900px){.console-topbar{grid-template-columns:1fr auto}.console-topbar-actions{grid-column:2;grid-row:1}.console-topbar nav{order:3;grid-column:1/-1;justify-content:space-around;border-top:1px solid #1f3544;padding-top:.45rem}}
 /* MAX-383: fixed hardware inventory shown with the dashboard status. */
+:root {
+  --ui-section-gap: 1rem;
+  --ui-action-gap: .5rem;
+  --ui-control-min: 44px;
+  --ui-action-bg: #19648a;
+  --ui-secondary-bg: #172e3d;
+  --ui-danger-bg: #6d2830;
+}
+
+button {
+  min-width: var(--ui-control-min);
+  min-height: var(--ui-control-min);
+  max-width: 100%;
+  background-color: var(--ui-action-bg);
+  overflow-wrap: anywhere;
+}
+input:not([type="checkbox"]):not([type="radio"]), select {
+  min-height: var(--ui-control-min);
+  max-width: 100%;
+  font: inherit;
+}
+select {
+  color: #e8f0f7;
+  background: #07141d;
+  border: 1px solid #31546a;
+  border-radius: .5rem;
+  padding: .55rem .65rem;
+}
+button.secondary { background-color: var(--ui-secondary-bg); }
+button.danger { background-color: var(--ui-danger-bg); }
+button:focus-visible, input:focus-visible, select:focus-visible,
+summary:focus-visible, [tabindex="0"]:focus-visible {
+  outline: 2px solid #6dd1ff;
+  outline-offset: 2px;
+}
+.console-page { width: 100%; }
+.dashboard-grid, .object-layout, .object-workspace, .pod-grid,
+.card-heading, .section-heading { gap: var(--ui-section-gap); }
+.console-actions { gap: var(--ui-action-gap); }
+.console-card, .console-page > *, .card-heading > *, .section-heading > *,
+.object-layout > *, .console-dl div, .console-dl dt, .console-dl dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.console-dl div { flex-wrap: wrap; }
+.console-dl dd { margin-inline-start: auto; }
+.card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-action-gap); }
+.sensors-page { display: flex; flex-direction: column; gap: var(--ui-section-gap); }
+.sensors-page > .pod-grid, .sensors-page > .nrf-log-card { margin-top: 0; }
+.console-topbar { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+.console-topbar nav { flex-wrap: wrap; }
+.console-topbar nav button { flex: 1 1 auto; }
+.brand-button { min-width: 0; overflow-wrap: anywhere; }
+.console-topbar-actions { min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
+.locale-picker select {
+  min-height: var(--ui-control-min);
+  appearance: none;
+  padding: .55rem 2rem .55rem .75rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='m1 1 5 5 5-5' fill='none' stroke='%23e8f0f7' stroke-width='2'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right .65rem center;
+  background-size: 12px 8px;
+}
+/* Keep Back in document flow so loading, headings and enlarged text retain their space. */
+.console-floating-back { position: static; display: block; margin: var(--ui-section-gap); }
+.leveling-table { table-layout: fixed; overflow-wrap: anywhere; }
+.cable-grid label { grid-template-columns: minmax(0, 1fr) minmax(0, 6rem) auto; }
+.workflow-material-settings > label { display: grid; gap: var(--ui-action-gap); }
+@media (max-width: 900px) {
+  .console-topbar { grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr)); }
+  .console-topbar-actions { grid-column: auto; grid-row: auto; order: 2; }
+  .console-topbar nav { justify-content: flex-start; }
+}
+@media (max-width: 560px) {
+  /* A wrapped header must not cover the small viewport when text is enlarged. */
+  .console-topbar { position: static; }
+  .cable-grid label { grid-template-columns: minmax(0, 1fr) minmax(0, 5.5rem); }
+}
 .hardware-inventory-card{display:grid;gap:.75rem}.hardware-inventory-card .card-heading h2{margin:.15rem 0}.hardware-required-banner{grid-column:auto}.hardware-module-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.65rem;list-style:none;padding:0;margin:0}.hardware-module-item{min-width:0;background:#091923;border:1px solid #203b4d;border-radius:.65rem;padding:.7rem}.hardware-module-heading{display:flex;justify-content:space-between;align-items:center;gap:.5rem}.hardware-module-heading strong{overflow-wrap:anywhere}.hardware-module-item>small{display:block;color:#8ca5b7;margin-top:.35rem}.hardware-module-reason{margin:.45rem 0 0;font-size:.8rem;overflow-wrap:anywhere}.hardware-state-badge{font-size:.65rem;font-weight:800;letter-spacing:.05em;text-transform:uppercase;border-radius:999px;padding:.25rem .5rem;background:#263640;color:#c3d0d7}.hardware-state-present{background:#143a2b;color:#72eeb0}.hardware-state-absent,.hardware-state-fault{background:#4c2428;color:#ffd5d8}.hardware-state-degraded{background:#4a3a12;color:#fde047}@media(max-width:900px){.hardware-module-list{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){.hardware-module-list{grid-template-columns:1fr}}

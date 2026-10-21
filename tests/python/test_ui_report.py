@@ -1,4 +1,5 @@
 import importlib.util
+import base64
 import json
 from pathlib import Path
 
@@ -32,6 +33,26 @@ def web_summary(path, **kwargs):
     return reporter.summarize(web=path, native_junit=None, native_root=None, only='web', **kwargs)
 
 
+@pytest.mark.parametrize('fault', ['none', 'assertion', 'process', 'missing'])
+def test_layout_evidence_is_required_and_cannot_be_hidden_by_smoke(tmp_path, fault):
+    smoke, _ = web_report(tmp_path)
+    layout_dir = tmp_path / 'layout'
+    layout_dir.mkdir()
+    layout, data = web_report(layout_dir, status='failed' if fault == 'assertion' else 'passed',
+                              overall='unexpected' if fault == 'assertion' else 'expected')
+    data['config']['metadata'].update(viewport='320x568,393x852', reproduce='cd webui; npm run test:ui:layout')
+    layout.write_text(json.dumps(data), encoding='utf-8')
+    if fault == 'missing':
+        layout.unlink()
+    result = web_summary(smoke, layout=layout, exit_codes={'layout': 1 if fault == 'process' else 0})
+    assert result['selected'] == ['web', 'layout']
+    assert result['status'] == {'none': 'PASS', 'assertion': 'FAIL', 'process': 'BLOCKED', 'missing': 'BLOCKED'}[fault]
+    row = next(row for row in result['tests'] if row['subsystem'] == 'layout')
+    if fault != 'missing':
+        assert row['reproduce'] == 'cd webui; npm run test:ui:layout'
+        assert row['viewport'] == '320x568,393x852'
+
+
 def test_pass_has_actual_source_selection_and_evidence(tmp_path):
     path, _ = web_report(tmp_path)
     result = web_summary(path)
@@ -41,6 +62,23 @@ def test_pass_has_actual_source_selection_and_evidence(tmp_path):
     assert result['tests'][0]['environment']['evidence'] == 'isolated reporter fixture'
     assert result['tests'][0]['root_cause'] is None
     assert 'Physical' in result['not_run'][0]
+
+
+@pytest.mark.parametrize('width', [360, -1])
+def test_browser_records_use_measured_runtime_viewport_or_block_invalid_evidence(tmp_path, width):
+    path, data = web_report(tmp_path)
+    runtime = {'browser': 'pinned-chromium', 'locale': 'uk', 'viewport': {'width': width, 'height': 800}}
+    attachment = {'name': 'runtime', 'body': base64.b64encode(json.dumps(runtime).encode()).decode()}
+    data['suites'][0]['specs'][0]['tests'][0]['results'][0]['attachments'].append(attachment)
+    path.write_text(json.dumps(data), encoding='utf-8')
+    result = web_summary(path)
+    if width < 0:
+        assert result['status'] == 'BLOCKED'
+        assert 'runtime viewport' in result['tests'][0]['actual']
+    else:
+        assert result['status'] == 'PASS'
+        assert result['tests'][0]['viewport'] == '360x800'
+        assert result['tests'][0]['environment']['locale'] == 'uk'
 
 
 def test_deliberate_assertion_stays_failed_even_if_report_writes_successfully(tmp_path, capsys):

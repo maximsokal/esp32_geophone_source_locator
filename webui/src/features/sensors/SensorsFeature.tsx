@@ -96,7 +96,7 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
         : serial.pattern;
 
   return (
-    <section className="console-page">
+    <section className="console-page sensors-page">
       {error !== null && <div className="console-alert" role="alert">{t('api.error_prefix', { error })}</div>}
       {powerFault && !overcurrentFault && (
         <div className="console-alert" role="alert">

@@ -25,6 +25,7 @@ export class DeviceApi {
     };
     this.status.workflow!.step = 'SCAN_CHOICE';
     this.status.workflow!.allowed_actions = ['SCAN_START'];
+    for (const pod of this.status.pods) pod.state = 'READY';
   }
 
   async install(context: BrowserContext, origin: string): Promise<void> {
@@ -49,6 +50,17 @@ export class DeviceApi {
         }
         if (request.method() === 'POST' && url.pathname === '/api/client-log') {
           await route.fulfill({ status: 204 });
+          return;
+        }
+        if (request.method() === 'GET' && url.pathname === '/api/localization/runs' &&
+            url.searchParams.get('job') === 'settings' && url.searchParams.get('object_id') === this.status.workflow?.object_id) {
+          await route.fulfill({ json: { ok: true, settings: null, presets: [], standard_processing: {} } });
+          return;
+        }
+        if (request.method() === 'GET' && url.pathname === '/api/localization/runs' &&
+            url.searchParams.get('object_id') === this.status.workflow?.object_id &&
+            url.searchParams.get('session_id') === this.status.workflow?.session_id) {
+          await route.fulfill({ json: { geometry: { available: false, pods: [] }, cs_pairs: { available: false, pairs: [] }, picks: [], runs: [] } });
           return;
         }
         if (request.method() === 'GET' && url.pathname === '/api/nrf/logs' &&

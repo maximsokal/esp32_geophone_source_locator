@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from collections import Counter
 from datetime import datetime, timezone
 import hashlib
@@ -34,7 +35,8 @@ def source_identity(root: Path) -> dict:
                          '.c', '.h', '.cpp', '.py', '.ts', '.tsx', '.json', '.yml', '.css', '.png', '.txt', '.js', '.mjs', '.html', '.cmake'})
     paths.extend(root / p for p in ('dependencies.lock', 'sdkconfig', 'sdkconfig.defaults',
                  'webui/package.json', 'webui/package-lock.json', 'webui/index.html',
-                 'webui/playwright.config.ts', 'webui/tsconfig.e2e.json', 'webui/vite.config.ts',
+                 'webui/playwright.config.ts', 'webui/playwright.layout.config.ts', 'tests/ui_contract.json',
+                 'webui/tsconfig.e2e.json', 'webui/vite.config.ts',
                  'webui/tsconfig.json', 'webui/vitest.dom.config.ts', 'webui/tsconfig.test.json', 'sgconfig.yml'))
     digest = hashlib.sha256()
     paths = sorted({p for p in paths if p.is_file()})
@@ -75,7 +77,7 @@ def check_fresh(path: Path, identity: dict | None) -> None:
         raise ValueError(f'Stale report predates this run: {path}')
 
 
-def web_records(path: Path, identity: dict | None = None) -> list[dict]:
+def web_records(path: Path, identity: dict | None = None, subsystem: str = 'web') -> list[dict]:
     check_fresh(path, identity)
     report = read_json(path)
     # stats/errors/suites are required: a partial or empty JSON file is not a pass.
@@ -84,7 +86,7 @@ def web_records(path: Path, identity: dict | None = None) -> list[dict]:
         raise ValueError('Playwright report belongs to an earlier run')
     rows = []
     for error in report['errors']:
-        rows.append(record('web', 'playwright/startup', 'BLOCKED', error.get('message', str(error)), category='infrastructure'))
+        rows.append(record(subsystem, 'playwright/startup', 'BLOCKED', error.get('message', str(error)), category='infrastructure'))
 
     def visit(suites, parents):
         for suite in suites:
@@ -108,12 +110,25 @@ def web_records(path: Path, identity: dict | None = None) -> list[dict]:
                     if any(token in actual for token in ('Executable doesn\'t exist', 'browserType.launch:', 'browser has been closed')):
                         status = 'BLOCKED'
                     attachments = [a for result in results for a in result.get('attachments', [])]
-                    rows.append(record('web', ' / '.join([*names, spec['title'], test['projectName']]), status, actual,
+                    metadata = report['config'].get('metadata', {})
+                    environment = dict(metadata)
+                    viewport = metadata.get('viewport')
+                    for attachment in attachments:
+                        if attachment.get('name') != 'runtime':
+                            continue
+                        runtime = (json.loads(base64.b64decode(attachment['body'], validate=True))
+                                   if 'body' in attachment else read_json(Path(attachment['path'])))
+                        size = runtime.get('viewport')
+                        if not isinstance(size, dict) or any(type(size.get(k)) is not int or size[k] <= 0 for k in ('width', 'height')):
+                            raise ValueError('Invalid browser runtime viewport')
+                        viewport = f"{size['width']}x{size['height']}"
+                        environment.update(browser=runtime.get('browser'), locale=runtime.get('locale'))
+                    rows.append(record(subsystem, ' / '.join([*names, spec['title'], test['projectName']]), status, actual,
                         state=' / '.join(names), source={'file': spec['file'], 'line': spec['line']},
-                        environment=report['config'].get('metadata', {}),
+                        viewport=viewport, environment=environment,
                         artifacts={'attachments': attachments, 'playwright_json': str(path),
                                    'html': str(path.parent / 'html/index.html')},
-                        reproduce='cd webui; npm run test:ui:smoke'))
+                        reproduce=metadata.get('reproduce', 'cd webui; npm run test:ui:smoke')))
             visit(suite.get('suites', []), names)
     visit(report['suites'], [])
     if not rows:
@@ -123,7 +138,7 @@ def web_records(path: Path, identity: dict | None = None) -> list[dict]:
         raise ValueError('Playwright test count does not match its summary')
     expected_count = report['config'].get('metadata', {}).get('expectedTests')
     if expected_count is not None and stats_count != expected_count:
-        rows.append(record('web', 'web/selection', 'BLOCKED',
+        rows.append(record(subsystem, f'{subsystem}/selection', 'BLOCKED',
             f'Expected {expected_count} selected tests, found {stats_count}', category='coverage'))
     return rows
 
@@ -185,17 +200,20 @@ def native_records(junit: Path, native_root: Path, identity: dict | None = None)
 def summarize(*, web: Path | None, native_junit: Path | None, native_root: Path | None,
               only: str = 'both', identity: dict | None = None,
               exit_codes: dict | None = None, components_junit: Path | None = None,
-              domain_junit: Path | None = None) -> dict:
+              domain_junit: Path | None = None, layout: Path | None = None) -> dict:
     rows = []
     selected = ['web', 'native'] if only == 'both' else [only]
     extra_junit = {'components': components_junit, 'domain': domain_junit}
     selected.extend(name for name, path in extra_junit.items() if path is not None and name not in selected)
+    if layout is not None and 'layout' not in selected:
+        selected.append('layout')
     for subsystem in selected:
         try:
-            if subsystem == 'web':
-                if web is None:
+            if subsystem in ('web', 'layout'):
+                path = layout if subsystem == 'layout' else web
+                if path is None:
                     raise ValueError('Playwright JSON was not supplied')
-                found = web_records(web, identity)
+                found = web_records(path, identity, subsystem)
             elif subsystem == 'native':
                 if native_junit is None or native_root is None:
                     raise ValueError('Native JUnit/root were not supplied')
@@ -217,7 +235,8 @@ def summarize(*, web: Path | None, native_junit: Path | None, native_root: Path 
     return {'status': status, 'counts': counts, 'selected': selected, 'identity': identity,
             'generated_at': utc_now(), 'tests': rows,
             'not_run': ['Physical TFT/Android Chrome/immersive XR/HIL',
-                        'Full mobile geometry, accessibility and browser visual matrix (later slices)']}
+                        'Approved browser PNG references, non-React phone pages and graphics lifecycle (later slices)',
+                        *([] if 'layout' in selected else ['Mobile geometry/accessibility not selected'])]}
 
 
 def write_report(output: Path, report: dict) -> None:
@@ -262,13 +281,15 @@ def main(argv=None) -> int:
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--init', action='store_true', help='Create a fresh run directory/identity before execution')
     parser.add_argument('--web', type=Path)
+    parser.add_argument('--layout', type=Path)
     parser.add_argument('--native-junit', type=Path)
     parser.add_argument('--native-root', type=Path)
-    parser.add_argument('--only', choices=('web', 'native', 'both', 'components', 'domain'), default='both')
+    parser.add_argument('--only', choices=('web', 'native', 'both', 'components', 'domain', 'layout'), default='both')
     parser.add_argument('--components-junit', type=Path)
     parser.add_argument('--domain-junit', type=Path)
     parser.add_argument('--identity', type=Path, help='Pre-run identity; rejects stale reports or changed source')
     parser.add_argument('--web-exit-code', type=int)
+    parser.add_argument('--layout-exit-code', type=int)
     parser.add_argument('--native-exit-code', type=int)
     args = parser.parse_args(argv)
     if args.init:
@@ -284,8 +305,8 @@ def main(argv=None) -> int:
                     raise ValueError(f'Invalid run identity: {key}')
         report = summarize(web=args.web, native_junit=args.native_junit, native_root=args.native_root,
                            only=args.only, identity=identity,
-                           components_junit=args.components_junit, domain_junit=args.domain_junit,
-                           exit_codes={'web': args.web_exit_code, 'native': args.native_exit_code})
+                           components_junit=args.components_junit, domain_junit=args.domain_junit, layout=args.layout,
+                           exit_codes={'web': args.web_exit_code, 'native': args.native_exit_code, 'layout': args.layout_exit_code})
         if identity is not None and source_identity(ROOT) != {key: identity[key] for key in ('head', 'source_sha256', 'files')}:
             report['status'] = 'BLOCKED'
             report['tests'].append(record('run', 'run/source-identity', 'BLOCKED', 'Source changed during execution', category='infrastructure'))

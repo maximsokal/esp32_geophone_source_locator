@@ -43,6 +43,8 @@ button {
   margin-bottom: 14px;
 }
 
+.app-header > * { min-width: 0; }
+
 .eyebrow {
   margin-bottom: 5px;
   color: #38bdf8;
@@ -69,6 +71,7 @@ h1 {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
 }
 
 .badge {
@@ -79,7 +82,9 @@ h1 {
   font-size: 0.68rem;
   font-weight: 800;
   letter-spacing: 0.08em;
-  white-space: nowrap;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .badge.good {
@@ -445,6 +450,7 @@ h1 {
 .xr-runtime-values dt {
   color: #64748b;
   font-size: 0.65rem;
+  overflow-wrap: anywhere;
 }
 
 .xr-runtime-values dd {
@@ -580,6 +586,7 @@ html.xr-session-active .xr-immersive-overlay {
 
   .app-header {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .header-badges {

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "viewports": [[320, 568], [360, 800], [393, 852], [412, 915], [430, 932], [844, 390], [768, 1024]],
+  "locales": ["en", "uk"],
+  "geometry": { "roundingPx": 1, "controlMinPx": 44, "sectionGapPx": 16, "actionGapPx": 8 },
+  "theme": {
+    "primary": { "backgroundColor": "rgb(25, 100, 138)", "color": "rgb(255, 255, 255)" },
+    "secondary": { "backgroundColor": "rgb(23, 46, 61)" },
+    "danger": { "backgroundColor": "rgb(109, 40, 48)" },
+    "ready": { "backgroundColor": "rgb(20, 58, 43)", "color": "rgb(114, 238, 176)" },
+    "offline": { "backgroundColor": "rgb(28, 45, 55)", "color": "rgb(155, 176, 189)" },
+    "warning": { "backgroundColor": "rgb(74, 58, 18)", "color": "rgb(253, 224, 71)" },
+    "error": { "backgroundColor": "rgb(76, 36, 40)", "color": "rgb(255, 213, 216)" }
+  },
+  "exceptions": {
+    "nrfLogTable": "Only .nrf-log-table-wrap intentionally scrolls a wide log table; its wrapper must fit the page and expose the last column.",
+    "scannerCanvas": "Canvas, SVG plots and XR overlays may overlap their own scene. Ordinary headings, cards and actions remain checked.",
+    "verticalScroll": "Offscreen content is allowed when normal page scrolling exposes its controls; every enabled action must remain hit-testable.",
+    "nativeInput": "Single-line input text scrolls inside the native field; the field itself must fit. Native select popups are browser UI."
+  }
+}

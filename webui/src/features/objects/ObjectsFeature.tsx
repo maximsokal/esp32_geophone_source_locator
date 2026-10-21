@@ -166,7 +166,7 @@ export default function ObjectsFeature(props: Props) {
             void props.onCreate(name).then(() => setNewName(''));
           }}
         >
-          <input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder={t('objects.new_name')} maxLength={31} />
+          <input aria-label={t('objects.new_name')} value={newName} onChange={(event) => setNewName(event.target.value)} placeholder={t('objects.new_name')} maxLength={31} />
           <button disabled={busy}>{t('objects.create')}</button>
         </form>
 
@@ -224,7 +224,7 @@ export default function ObjectsFeature(props: Props) {
               </div>
               {recordingLockReason !== null && <p className="console-alert" role="status">{recordingLockReason}</p>}
               <div className="inline-form">
-                <input value={rename} maxLength={31} disabled={objectMutationDisabled} onChange={(event) => setRename(event.target.value)} />
+                <input aria-label={t('objects.rename')} value={rename} maxLength={31} disabled={objectMutationDisabled} onChange={(event) => setRename(event.target.value)} />
                 <button disabled={objectMutationDisabled || rename.trim().length === 0 || rename.trim() === selected.name} onClick={() => void props.onRename(selected.id, rename.trim())}>{t('objects.rename')}</button>
               </div>
               <div className="console-actions">
