@@ -32,7 +32,7 @@ function status(recordingObjectId: string | null): DeviceStatus {
 function props(value: DeviceStatus, selectedId = 'OBJ_B') {
   return {
     status: value, store, sessions: null, selectedId, busy: false, error: null,
-    onSelect: vi.fn(), onCreate: vi.fn(async () => undefined), onActivate: vi.fn(async () => undefined),
+    onSelect: vi.fn(), onCreate: vi.fn(async () => true), onActivate: vi.fn(async () => undefined),
     onRename: vi.fn(async () => undefined), onDelete: vi.fn(async () => undefined),
     onBindGps: vi.fn(async () => ({ latitude: 0, longitude: 0, accuracy_m: 1, captured_at_ms: 1, source: 'test' })),
     onCable: vi.fn(async () => undefined), onDefaultCable: vi.fn(async () => undefined),

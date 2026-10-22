@@ -7,6 +7,7 @@ body {
     font-family: Arial, sans-serif;
     background: #0d1117;
     color: #e6edf3;
+    overflow-wrap: anywhere;
 }
 
 .page {
@@ -17,10 +18,16 @@ body {
 
 .header {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: flex-start;
     gap: 16px;
     margin-bottom: 22px;
+}
+
+.header > div {
+    min-width: 0;
+    max-width: 100%;
 }
 
 .title {
@@ -69,6 +76,7 @@ body {
 
 .row {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     gap: 16px;
     padding: 8px 0;
@@ -81,12 +89,16 @@ body {
 
 .label {
     color: #8b949e;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .value {
     font-weight: 600;
     text-align: right;
     font-variant-numeric: tabular-nums;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .ok {
@@ -158,6 +170,7 @@ tr:last-child td {
 
 .pod-header {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
     gap: 12px;

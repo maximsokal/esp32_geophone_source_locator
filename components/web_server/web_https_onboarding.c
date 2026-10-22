@@ -43,38 +43,34 @@ extern const unsigned char root_ca_crt_end[]
 #endif
 
 
+#define ONBOARDING_PAGE_HEAD(title) \
+    "<!doctype html><html lang=en><head><meta charset=utf-8>" \
+    "<meta name=viewport content='width=device-width,initial-scale=1'><title>" title "</title>" \
+    "<style>*{box-sizing:border-box}" \
+    "body{font-family:sans-serif;max-width:620px;margin:32px auto;padding:0 18px;line-height:1.45;overflow-wrap:anywhere}" \
+    "a,button{display:inline-block;font:inherit;min-height:44px;max-width:100%;padding:12px 16px;margin:8px 0;background:#155eef;color:white;text-decoration:none;border:0;border-radius:8px}" \
+    "pre{white-space:pre-wrap;word-break:break-word;background:#f2f4f7;padding:12px;border-radius:8px}" \
+    ".note{padding:12px;background:#f2f4f7;border-radius:8px}</style></head><body>"
+
 static const char s_ca_page[] =
-    "<!doctype html>"
-    "<meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<title>GeoLocator Root CA</title>"
-    "<style>body{font-family:sans-serif;max-width:620px;margin:32px auto;padding:0 18px;line-height:1.45}"
-    "a,button{display:inline-block;padding:12px 16px;margin:8px 0;background:#155eef;color:white;text-decoration:none;border:0;border-radius:8px}"
-    ".note{padding:12px;background:#f2f4f7;border-radius:8px}</style>"
+    ONBOARDING_PAGE_HEAD("GeoLocator Root CA")
     "<h2>GeoLocator HTTPS certificate</h2>"
     "<p>Download the public GeoLocator Root CA certificate from this ESP32.</p>"
     "<p><a href='/setup/ca.crt'>Download GeoLocator Root CA</a></p>"
     "<div class=note><b>Important:</b> only the public CA certificate is downloaded. The Root CA private key never leaves the development computer.</div>"
     "<p>Install the downloaded CA certificate in the phone's certificate/security settings. The exact menu wording varies by Android version and vendor.</p>"
     "<p>After Android confirms the CA installation, return to this page and continue.</p>"
-    "<p><a href='/setup/ca?installed=1'>I installed the CA - continue</a></p>";
+    "<p><a href='/setup/ca?installed=1'>I installed the CA - continue</a></p></body></html>";
 
 
 static const char s_ca_confirmed_page[] =
-    "<!doctype html>"
-    "<meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<title>GeoLocator Root CA</title>"
-    "<style>body{font-family:sans-serif;max-width:620px;margin:32px auto;padding:0 18px;line-height:1.45}</style>"
+    ONBOARDING_PAGE_HEAD("GeoLocator Root CA")
     "<h2>CA installation confirmed</h2>"
-    "<p>Return to GeoLocator and scan the next QR code to configure the phone hotspot.</p>";
+    "<p>Return to GeoLocator and scan the next QR code to configure the phone hotspot.</p></body></html>";
 
 
 static const char s_verify_page[] =
-    "<!doctype html>"
-    "<meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<title>GeoLocator HTTPS Verify</title>"
-    "<style>body{font-family:sans-serif;max-width:620px;margin:32px auto;padding:0 18px;line-height:1.45}"
-    "button{padding:12px 16px;background:#155eef;color:white;border:0;border-radius:8px;font-size:16px}"
-    "pre{white-space:pre-wrap;background:#f2f4f7;padding:12px;border-radius:8px}</style>"
+    ONBOARDING_PAGE_HEAD("GeoLocator HTTPS Verify")
     "<h2>GeoLocator secure browser verification</h2>"
     "<p>This test checks trusted HTTPS, camera access and WebXR/immersive AR capability on this browser.</p>"
     "<button id=run>Verify phone</button>"
@@ -98,7 +94,7 @@ static const char s_verify_page[] =
       "btn.disabled=false;"
     "}"
     "btn.addEventListener('click',verify);"
-    "</script>";
+    "</script></body></html>";
 
 
 static esp_err_t web_onboarding_send_html(

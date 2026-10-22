@@ -719,7 +719,7 @@ export default function DeviceConsoleApp() {
           busy={busy}
           error={pageError}
           onSelect={setSelectedId}
-          onCreate={async (name) => { await runControl('create_object', name ? { name } : {}); }}
+          onCreate={(name) => runControl('create_object', name ? { name } : {})}
           onActivate={async (id) => { await runControl('activate_object', { object_id: id }); }}
           onRename={async (id, name) => { await runControl('rename_object', { object_id: id, name }); }}
           onDelete={async (id) => {

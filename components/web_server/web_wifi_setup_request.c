@@ -11,7 +11,7 @@ esp_err_t web_wifi_setup_request_read_body(
         request == NULL ||
         body == NULL ||
         request->content_len <= 0 ||
-        request->content_len >= (int)body_size
+        (size_t)request->content_len >= body_size
     ) {
         return ESP_ERR_INVALID_SIZE;
     }

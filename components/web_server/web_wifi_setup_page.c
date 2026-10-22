@@ -11,10 +11,18 @@ static const char *TAG =
     "WEB_WIFI_SETUP";
 
 
+#define WIFI_SETUP_PAGE_HEAD \
+    "<!doctype html><html lang=en><head><meta charset=utf-8>" \
+    "<meta name=viewport content='width=device-width,initial-scale=1'>" \
+    "<title>GeoLocator Wi-Fi Setup</title>" \
+    "<style>*{box-sizing:border-box}" \
+    "body{font-family:system-ui,sans-serif;max-width:680px;margin:28px auto;padding:0 18px;line-height:1.5;color:#111827;overflow-wrap:anywhere}" \
+    "label{display:block}input,button{font:inherit;min-width:44px;min-height:44px;max-width:100%;padding:10px 16px}" \
+    "input{display:block;width:100%}button{white-space:normal}h2{line-height:1.2}" \
+    "</style></head><body>"
+
 static const char s_setup_page[] =
-    "<!doctype html>"
-    "<meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<title>GeoLocator Wi-Fi Setup</title>"
+    WIFI_SETUP_PAGE_HEAD
     "<h2>GeoLocator Wi-Fi Setup</h2>"
     "<p>Enter this phone's hotspot name and password.</p>"
     "<form method=post action='/api/wifi/setup'>"
@@ -23,18 +31,17 @@ static const char s_setup_page[] =
     "<p><label>Hotspot password<br>"
     "<input name=password type=password maxlength=63></label></p>"
     "<button type=submit>Save hotspot</button>"
-    "</form>";
+    "</form></body></html>";
 
 
 static const char s_saved_page[] =
-    "<!doctype html>"
-    "<meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<title>GeoLocator Wi-Fi Setup</title>"
+    WIFI_SETUP_PAGE_HEAD
     "<h2>Saved</h2>"
     "<p>Hotspot settings were saved.</p>"
     "<p>GeoLocator will leave GEOLOCATOR_SETUP and switch to station mode automatically.</p>"
     "<p>When this page disconnects, enable this phone's hotspot and keep its name/password unchanged.</p>"
-    "<p>After GeoLocator connects, scan the HTTPS verification QR shown on its display.</p>";
+    "<p>After GeoLocator connects, scan the HTTPS verification QR shown on its display.</p>"
+    "</body></html>";
 
 
 static esp_err_t web_wifi_setup_page_send(

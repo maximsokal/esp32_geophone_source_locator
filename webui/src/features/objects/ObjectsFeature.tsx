@@ -33,7 +33,7 @@ interface Props {
   busy: boolean;
   error: string | null;
   onSelect: (id: string) => void;
-  onCreate: (name: string) => Promise<void>;
+  onCreate: (name: string) => Promise<boolean>;
   onActivate: (id: string) => Promise<void>;
   onRename: (id: string, name: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
@@ -163,7 +163,7 @@ export default function ObjectsFeature(props: Props) {
           onSubmit={(event) => {
             event.preventDefault();
             const name = newName.trim();
-            void props.onCreate(name).then(() => setNewName(''));
+            void props.onCreate(name).then((created) => { if (created) setNewName(''); });
           }}
         >
           <input aria-label={t('objects.new_name')} value={newName} onChange={(event) => setNewName(event.target.value)} placeholder={t('objects.new_name')} maxLength={31} />

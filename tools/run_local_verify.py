@@ -288,16 +288,28 @@ def ui_steps(root: Path, python_executable: str, npm_executable: str,
                          ('components', 'test:components'), ('visual-tools', 'test:ui:visual:tools'),
                          ('e2e-types', 'typecheck:e2e'), ('smoke', 'test:ui:smoke'),
                          ('layout', 'test:ui:layout'),
+                         ('network', 'test:ui:network'),
+                         ('firmware-pages', 'test:ui:firmware-pages'),
                          ('bundle', 'verify:bundle')):
-        browser_output = output / ('layout' if name == 'layout' else 'web')
+        browser_output = output / ({'layout': 'layout', 'network': 'network', 'firmware-pages': 'firmware'}.get(name, 'web'))
+        if name == 'firmware-pages':
+            steps.extend([
+                Step('ui-web/firmware-producer-tests', root, (python_executable, '-m', 'pytest', '-q',
+                     'tests/python/test_web_pages_render.py', '--basetemp', str(output / 'firmware-python'),
+                     '--junitxml', str(output / 'firmware-python.xml'))),
+                Step('ui-web/firmware-producer', root, (python_executable, str(root / 'tools/render_web_pages.py'),
+                     '--output', str(browser_output / 'producer'))),
+            ])
         env = {'PLAYWRIGHT_JSON_OUTPUT_FILE': str(browser_output / 'playwright.json'),
                'PLAYWRIGHT_HTML_OUTPUT_DIR': str(browser_output / 'html')}
+        if name == 'firmware-pages':
+            env['FIRMWARE_PAGES_DIR'] = str(browser_output / 'producer')
         command = (npm_executable, 'run', script)
-        if name in ('smoke', 'layout'):
+        if name in ('smoke', 'layout', 'network', 'firmware-pages'):
             command += ('--', '--output', str(browser_output / 'results'))
         if name in ('components', 'domain'):
             command += ('--', '--reporter=default', '--reporter=junit', '--outputFile', str(output / f'{name}.xml'))
-        steps.append(Step(f'ui-web/{name}', webui, command, environment=env if name in ('smoke', 'layout') else None))
+        steps.append(Step(f'ui-web/{name}', webui, command, environment=env if name in ('smoke', 'layout', 'network', 'firmware-pages') else None))
     return steps
 
 
@@ -337,6 +349,8 @@ def run_ui_verification(root: Path, python_executable: str, npm_executable: str,
         '--native-exit-code', '1' if 'ui-native' in failed_groups else '0',
         '--components-junit', str(output / 'components.xml'), '--domain-junit', str(output / 'domain.xml'),
         '--layout', str(output / 'layout/playwright.json'), '--layout-exit-code', '1' if 'ui-web' in failed_groups else '0',
+        '--network', str(output / 'network/playwright.json'), '--network-exit-code', '1' if 'ui-web' in failed_groups else '0',
+        '--firmware-pages', str(output / 'firmware/playwright.json'), '--firmware-pages-exit-code', '1' if 'ui-web' in failed_groups else '0',
     ])
     result = 1 if failed_groups or report_exit else 0
     print(f"LOCAL_VERIFY_RESULT: {'FAIL' if result else 'PASS'} (UI artifacts: {output})", flush=True)

@@ -13,7 +13,7 @@ function objectProps(): Props {
   status.object_store!.objects[0].delete_scope = { available: true, sessions: 3, artifacts: 4, localization_runs: 2 };
   return {
     status, store: status.object_store!, sessions: null, selectedId: 'OBJ_0001', busy: false, error: null,
-    onSelect: vi.fn(), onCreate: vi.fn(async () => {}), onActivate: vi.fn(async () => {}),
+    onSelect: vi.fn(), onCreate: vi.fn(async () => true), onActivate: vi.fn(async () => {}),
     onRename: vi.fn(async () => {}), onDelete: vi.fn(async () => {}),
     onBindGps: vi.fn(async () => ({ latitude: 0, longitude: 0, accuracy_m: 1, captured_at_ms: 1,
       altitude_m: null, altitude_accuracy_m: null })),
@@ -30,7 +30,7 @@ describe.each(['en', 'uk'] as const)('objects DOM %s', (locale) => {
     const user = userEvent.setup();
     const props = objectProps();
     let finish!: () => void;
-    vi.mocked(props.onCreate).mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    vi.mocked(props.onCreate).mockImplementation(() => new Promise<boolean>((resolve) => { finish = () => resolve(true); }));
     renderUi(<ObjectsFeature {...props} />, locale);
     const name = screen.getByPlaceholderText(t('objects.new_name')) as HTMLInputElement;
     await user.type(name, '  New survey  {Enter}');
@@ -55,6 +55,17 @@ describe.each(['en', 'uk'] as const)('objects DOM %s', (locale) => {
     await user.type(name, 'Renamed survey  ');
     await user.click(rename);
     expect(props.onRename).toHaveBeenCalledExactlyOnceWith('OBJ_0001', 'Renamed survey');
+  });
+
+  it('retains the entered name when the parent reports a rejected create', async () => {
+    const user = userEvent.setup();
+    const props = objectProps();
+    vi.mocked(props.onCreate).mockResolvedValue(false);
+    renderUi(<ObjectsFeature {...props} />, locale);
+    const name = screen.getByRole('textbox', { name: t('objects.new_name') });
+    await user.type(name, 'Retry survey{Enter}');
+    await waitFor(() => expect(props.onCreate).toHaveBeenCalledExactlyOnceWith('Retry survey'));
+    expect((name as HTMLInputElement).value).toBe('Retry survey');
   });
 
   it('respects native delete cancel/confirm and identifies the deletion scope', async () => {

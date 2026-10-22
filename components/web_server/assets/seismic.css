@@ -7,6 +7,7 @@ body {
     background: #0d1117;
     color: #e6edf3;
     font-family: Arial, sans-serif;
+    overflow-wrap: anywhere;
 }
 
 .page {
@@ -18,10 +19,15 @@ body {
 a {
     color: #58a6ff;
     text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    max-width: 100%;
 }
 
 .header {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
     gap: 16px;

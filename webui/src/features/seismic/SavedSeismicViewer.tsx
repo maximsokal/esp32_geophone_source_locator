@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { fetchSavedSeismicSession, isRequestCancellation, retryPreemptedRead } from '../../api/deviceApi';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createRequestOwner, fetchSavedSeismicSession, isRequestCancellation, retireRequestOwner, retryPreemptedRead, type ApiRequestOwner } from '../../api/deviceApi';
 import type {
   RecordingSessionSummary,
   SavedSeismicSnapshot,
@@ -43,27 +43,38 @@ export default function SavedSeismicViewer({ objectId, sessionId, summary, onClo
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [range, setRange] = useState({ start: 0, count: 0 });
+  const requestOwner = useRef<ApiRequestOwner | null>(null);
 
   const load = (start: number, count: number): void => {
+    const owner = requestOwner.current;
+    if (owner === null) return;
     setLoading(true);
     setError(null);
     void retryPreemptedRead(() => fetchSavedSeismicSession(objectId, sessionId, {
       startFrame: start,
       ...(count > 0 ? { frameCount: count } : {}),
       points: 240,
+      owner,
     })).then((next) => {
+      if (requestOwner.current !== owner) return;
       setSnapshot(next);
       setRange({ start: next.start_frame, count: next.frame_count });
     }).catch((reason: unknown) => {
-      if (!isRequestCancellation(reason)) setError(reason instanceof Error ? reason.message : String(reason));
-    }).finally(() => setLoading(false));
+      if (requestOwner.current === owner && !isRequestCancellation(reason)) setError(reason instanceof Error ? reason.message : String(reason));
+    }).finally(() => { if (requestOwner.current === owner) setLoading(false); });
   };
 
   useEffect(() => {
+    const owner = createRequestOwner();
+    requestOwner.current = owner;
     setSnapshot(null);
     setRange({ start: 0, count: 0 });
     load(0, 0);
-    // The viewer is keyed by session identity from the parent.
+    // Retire this session's reads before another viewer needs the shared transport.
+    return () => {
+      requestOwner.current = null;
+      retireRequestOwner(owner);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [objectId, sessionId]);
 

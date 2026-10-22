@@ -84,7 +84,7 @@ function render(locale: I18nLocale, child: ReactNode): string {
 function objectProps(status: DeviceStatus) {
   return {
     status, store, sessions: null, selectedId: 'OBJ_0001', busy: false, error: null,
-    onSelect: () => undefined, onCreate: async () => undefined, onActivate: async () => undefined,
+    onSelect: () => undefined, onCreate: async () => true, onActivate: async () => undefined,
     onRename: async () => undefined, onDelete: async () => undefined,
     onBindGps: async () => ({ latitude: 0, longitude: 0, accuracy_m: 1, captured_at_ms: 1, source: 'test' }),
     onCable: async () => undefined, onDefaultCable: async () => undefined,

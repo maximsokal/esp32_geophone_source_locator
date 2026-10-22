@@ -8,6 +8,10 @@ export class DeviceApi {
   readonly requests: string[] = [];
   readonly problems: string[] = [];
   readonly expectedHttpErrors = new Set<string>();
+  readonly controls: Record<string, unknown>[] = [];
+  readonly overrides = new Map<string, (route: Route) => Promise<void>>();
+  readonly expectedConsoleErrors: string[] = [];
+  readonly observedConsoleErrors: string[] = [];
   statusFailure: 'http' | 'schema' | null = null;
   private statusPause: Promise<void> | null = null;
   private finishStatus: (() => void) | null = null;
@@ -40,6 +44,15 @@ export class DeviceApi {
     this.finishStatus = null;
   }
 
+  once(id: string, handler: (route: Route) => Promise<void>): void {
+    const previous = this.overrides.get(id);
+    this.overrides.set(id, async (route) => {
+      if (previous) this.overrides.set(id, previous);
+      else this.overrides.delete(id);
+      await handler(route);
+    });
+  }
+
   async install(context: BrowserContext, origin: string): Promise<void> {
     await context.routeWebSocket('**/*', (socket) => {
       this.problems.push(`Unexpected WebSocket: ${socket.url()}`);
@@ -51,6 +64,9 @@ export class DeviceApi {
       const id = `${request.method()} ${url.pathname}${url.search}`;
       this.requests.push(id);
       if (url.origin === origin) {
+        if (request.method() === 'POST' && url.pathname === '/api/control' && !url.searchParams.has('scan')) this.controls.push(request.postDataJSON());
+        const override = this.overrides.get(id) ?? this.overrides.get(`${request.method()} ${url.pathname}`);
+        if (override) { await override(route); return; }
         if (request.method() === 'GET' && url.pathname === '/api/status') {
           await this.statusPause;
           if (this.statusFailure === 'http') {

@@ -268,7 +268,8 @@ def test_ui_plan_owns_fresh_reports_and_keeps_existing_default_scopes(tmp_path):
     steps = runner.ui_steps(root, 'python-test', 'npm-test', skip_npm_ci=True, output=output)
     assert [s.name for s in steps] == ['ui-native/bootstrap', 'ui-native/tests',
         'ui-web/typecheck', 'ui-web/test-types', 'ui-web/console', 'ui-web/domain',
-        'ui-web/components', 'ui-web/visual-tools', 'ui-web/e2e-types', 'ui-web/smoke', 'ui-web/layout', 'ui-web/bundle']
+        'ui-web/components', 'ui-web/visual-tools', 'ui-web/e2e-types', 'ui-web/smoke', 'ui-web/layout', 'ui-web/network',
+        'ui-web/firmware-producer-tests', 'ui-web/firmware-producer', 'ui-web/firmware-pages', 'ui-web/bundle']
     assert '--junitxml' in steps[1].command
     assert str(output / 'native') in steps[1].command
     smoke = next(s for s in steps if s.name == 'ui-web/smoke')
@@ -277,6 +278,15 @@ def test_ui_plan_owns_fresh_reports_and_keeps_existing_default_scopes(tmp_path):
     layout = next(s for s in steps if s.name == 'ui-web/layout')
     assert layout.command[-3:] == ('--', '--output', str(output / 'layout/results'))
     assert layout.environment['PLAYWRIGHT_JSON_OUTPUT_FILE'] == str(output / 'layout/playwright.json')
+    network = next(s for s in steps if s.name == 'ui-web/network')
+    assert network.command[-3:] == ('--', '--output', str(output / 'network/results'))
+    assert network.environment['PLAYWRIGHT_JSON_OUTPUT_FILE'] == str(output / 'network/playwright.json')
+    firmware = next(s for s in steps if s.name == 'ui-web/firmware-pages')
+    assert firmware.command[-3:] == ('--', '--output', str(output / 'firmware/results'))
+    assert firmware.environment['PLAYWRIGHT_JSON_OUTPUT_FILE'] == str(output / 'firmware/playwright.json')
+    assert firmware.environment['FIRMWARE_PAGES_DIR'] == str(output / 'firmware/producer')
+    producer = next(s for s in steps if s.name == 'ui-web/firmware-producer')
+    assert producer.command[-2:] == ('--output', str(output / 'firmware/producer'))
     for name in ('components', 'domain'):
         step = next(s for s in steps if s.name == f'ui-web/{name}')
         assert step.command[-2:] == ('--outputFile', str(output / f'{name}.xml'))

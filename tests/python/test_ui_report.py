@@ -33,8 +33,9 @@ def web_summary(path, **kwargs):
     return reporter.summarize(web=path, native_junit=None, native_root=None, only='web', **kwargs)
 
 
+@pytest.mark.parametrize('subsystem', ['layout', 'network', 'firmware'])
 @pytest.mark.parametrize('fault', ['none', 'assertion', 'process', 'missing'])
-def test_layout_evidence_is_required_and_cannot_be_hidden_by_smoke(tmp_path, fault):
+def test_browser_suite_evidence_is_required_and_cannot_be_hidden_by_smoke(tmp_path, fault, subsystem):
     smoke, _ = web_report(tmp_path)
     layout_dir = tmp_path / 'layout'
     layout_dir.mkdir()
@@ -44,10 +45,11 @@ def test_layout_evidence_is_required_and_cannot_be_hidden_by_smoke(tmp_path, fau
     layout.write_text(json.dumps(data), encoding='utf-8')
     if fault == 'missing':
         layout.unlink()
-    result = web_summary(smoke, layout=layout, exit_codes={'layout': 1 if fault == 'process' else 0})
-    assert result['selected'] == ['web', 'layout']
+    result = web_summary(smoke, **{'firmware_pages' if subsystem == 'firmware' else subsystem: layout},
+                         exit_codes={subsystem: 1 if fault == 'process' else 0})
+    assert result['selected'] == ['web', subsystem]
     assert result['status'] == {'none': 'PASS', 'assertion': 'FAIL', 'process': 'BLOCKED', 'missing': 'BLOCKED'}[fault]
-    row = next(row for row in result['tests'] if row['subsystem'] == 'layout')
+    row = next(row for row in result['tests'] if row['subsystem'] == subsystem)
     if fault != 'missing':
         assert row['reproduce'] == 'cd webui; npm run test:ui:layout'
         assert row['viewport'] == '320x568,393x852'
@@ -62,6 +64,20 @@ def test_pass_has_actual_source_selection_and_evidence(tmp_path):
     assert result['tests'][0]['environment']['evidence'] == 'isolated reporter fixture'
     assert result['tests'][0]['root_cause'] is None
     assert 'Physical' in result['not_run'][0]
+
+
+@pytest.mark.parametrize('subsystem', ['network', 'firmware'])
+def test_browser_success_screenshot_is_visible_in_the_gallery(tmp_path, subsystem):
+    path, data = web_report(tmp_path)
+    image = tmp_path / 'scenario.png'
+    image.write_bytes(b'isolated reporter image fixture')
+    data['suites'][0]['specs'][0]['tests'][0]['results'][0]['attachments'].append(
+        {'name': 'screenshot', 'path': str(image), 'contentType': 'image/png'})
+    path.write_text(json.dumps(data), encoding='utf-8')
+    result = reporter.summarize(web=None, native_junit=None, native_root=None, only=subsystem,
+                                **{'firmware_pages' if subsystem == 'firmware' else subsystem: path})
+    reporter.write_report(tmp_path / 'summary', result)
+    assert '<img loading="lazy" src="../scenario.png" alt="scenario.png">' in (tmp_path / 'summary/index.html').read_text(encoding='utf-8')
 
 
 @pytest.mark.parametrize('mode,outcome', [('capture', 'CAPTURED_NOT_APPROVED'), ('compare', 'PASS'), ('invalid', 'BLOCKED')])

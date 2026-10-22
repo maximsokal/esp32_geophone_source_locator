@@ -192,7 +192,7 @@ const objectFeatureProps = {
   busy: false,
   error: null,
   onSelect: vi.fn(),
-  onCreate: vi.fn(async () => undefined),
+  onCreate: vi.fn(async () => true),
   onActivate: vi.fn(async () => undefined),
   onRename: vi.fn(async () => undefined),
   onDelete: vi.fn(async () => undefined),

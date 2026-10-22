@@ -103,7 +103,7 @@ describe('i18n catalog translation', () => {
     const noop = async () => undefined;
     const objects = renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale }, createElement(ObjectsFeature, {
       status: null, store: null, sessions: null, selectedId: null, busy: false, error: null,
-      onSelect: () => undefined, onCreate: noop, onActivate: noop, onRename: noop, onDelete: noop,
+      onSelect: () => undefined, onCreate: async () => true, onActivate: noop, onRename: noop, onDelete: noop,
       onBindGps: async () => ({ latitude: 0, longitude: 0, accuracy_m: 0 }),
       onCable: noop, onDefaultCable: noop, onAcquisition: noop, onRecording: noop, onOpenScanner: () => undefined,
     })));

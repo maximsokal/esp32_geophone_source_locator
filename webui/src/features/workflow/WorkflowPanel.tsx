@@ -402,6 +402,8 @@ export default function WorkflowPanel({
     const gpsFix = requestsGps
       ? capturePhoneLocation()
       : undefined;
+    // Observe early denial while the command is pending; the original rejection still reaches the GPS failure path.
+    if (gpsFix !== undefined) void gpsFix.catch(() => undefined);
     try {
       const result = await sendCommand(action.command, workflow.generation);
       if (requestsGps && result.ok && result.workflow.step === 'GPS_PENDING') {

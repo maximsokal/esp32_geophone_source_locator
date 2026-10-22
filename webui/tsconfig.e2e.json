@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "types": [] },
-  "include": ["playwright.config.ts", "playwright.layout.config.ts", "tests/e2e/**/*.ts"]
+  "include": ["playwright.config.ts", "playwright.layout.config.ts", "playwright.network.config.ts", "playwright.firmware-pages.config.ts", "tests/e2e/**/*.ts"]
 }

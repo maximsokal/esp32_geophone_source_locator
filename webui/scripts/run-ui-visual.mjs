@@ -28,7 +28,7 @@ export async function sourceInputs(root) {
     ...await files(join(root, 'tests/console/fixtures')), ...await files(join(root, 'tests/fixtures')),
     ...await files(join(root, 'scripts'))];
   for (const name of ['index.html', 'package.json', 'package-lock.json', 'vite.config.ts', 'tsconfig.json', 'tsconfig.e2e.json',
-    'playwright.config.ts', 'playwright.layout.config.ts', 'playwright.visual.config.mjs', '../tests/ui_contract.json']) {
+    'playwright.config.ts', 'playwright.layout.config.ts', 'playwright.network.config.ts', 'playwright.firmware-pages.config.ts', 'playwright.visual.config.mjs', '../tests/ui_contract.json']) {
     paths.push(resolve(root, name));
   }
   const result = {};
@@ -37,7 +37,7 @@ export async function sourceInputs(root) {
     if (key.startsWith('tests/e2e/snapshots/')) continue;
     try {
       const bytes = await readFile(path);
-      const text = ['.ts', '.tsx', '.js', '.mjs', '.css', '.html', '.json', '.svg', '.txt', '.glsl'].includes(extname(path));
+      const text = ['.ts', '.tsx', '.mts', '.js', '.mjs', '.css', '.html', '.json', '.svg', '.txt', '.glsl'].includes(extname(path));
       result[key] = sha(text ? bytes.toString('utf8').replaceAll('\r\n', '\n') : bytes);
     } catch (e) { if (e.code !== 'ENOENT') throw e; }
   }
