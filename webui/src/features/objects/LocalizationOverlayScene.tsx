@@ -1,7 +1,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useMemo } from 'react';
+import { useEffect } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { useOrbitControlsOwner, useOwnedOrbitControls, type OrbitControlsRef } from '../../components/useOrbitControls';
 
 import { isPlanarSector, type LocalizationOverlayModel } from '../../domain/localizationOverlay';
 
@@ -30,15 +30,14 @@ function sceneExtent(model: LocalizationOverlayModel): number {
   return extent;
 }
 
-function Controls({ extent }: { extent: number }) {
-  const { camera, gl } = useThree();
-  const controls = useMemo(() => new OrbitControls(camera, gl.domElement), [camera, gl.domElement]);
+function Controls({ extent, controlsRef }: { extent: number; controlsRef: OrbitControlsRef }) {
+  const { camera } = useThree();
+  const controls = useOwnedOrbitControls(controlsRef);
   useEffect(() => {
     controls.enableDamping = true;
     camera.position.set(extent * 1.4, extent * 1.2, extent * 1.4);
     controls.target.set(0, 0, 0);
     controls.update();
-    return () => controls.dispose();
   }, [camera, controls, extent]);
   useFrame(() => controls.update());
   return null;
@@ -46,12 +45,13 @@ function Controls({ extent }: { extent: number }) {
 
 export default function LocalizationOverlayScene({ model }: Props) {
   const extent = sceneExtent(model);
+  const controlsOwner = useOrbitControlsOwner();
   return (
     <Canvas className="localization-overlay-canvas" camera={{ fov: 45, near: 0.05, far: extent * 20 }}>
       <ambientLight intensity={0.7} />
       <directionalLight position={[5, 10, 5]} intensity={0.8} />
       <gridHelper args={[Math.ceil(extent * 2.5), Math.ceil(extent * 2.5), '#35546a', '#1c3444']} />
-      <Controls extent={extent} />
+      <Controls extent={extent} controlsRef={controlsOwner} />
 
       {model.sensors.map((sensor) => (
         <mesh key={`sensor-${sensor.pod}`} position={toThree(sensor.position.x_m, sensor.position.y_m, sensor.position.z_m)}>

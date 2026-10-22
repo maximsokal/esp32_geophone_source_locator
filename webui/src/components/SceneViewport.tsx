@@ -2,7 +2,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import type { ThreeEvent } from '@react-three/fiber';
 import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { useOrbitControlsOwner, useOwnedOrbitControls, type OrbitControlsRef } from './useOrbitControls';
 
 import type { SceneModel, SensorPlacement, TriangleMesh, Vec3 } from '../domain/scene';
 import { useT } from '../i18n';
@@ -52,12 +52,9 @@ function makeLabelTexture(label: string): THREE.CanvasTexture {
   return texture;
 }
 
-function CameraControls({ command }: { command: ViewCommand }) {
-  const { camera, gl } = useThree();
-  const controls = useMemo(
-    () => new OrbitControls(camera, gl.domElement),
-    [camera, gl.domElement],
-  );
+function CameraControls({ command, controlsRef }: { command: ViewCommand; controlsRef: OrbitControlsRef }) {
+  const { camera } = useThree();
+  const controls = useOwnedOrbitControls(controlsRef);
 
   useEffect(() => {
     controls.enableDamping = true;
@@ -67,7 +64,6 @@ function CameraControls({ command }: { command: ViewCommand }) {
     controls.target.set(0, 0.55, 0);
     controls.update();
 
-    return () => controls.dispose();
   }, [controls]);
 
   useEffect(() => {
@@ -194,7 +190,8 @@ function SceneContents({
   selectedId,
   viewCommand,
   onSelect,
-}: SceneViewportProps) {
+  controlsRef,
+}: SceneViewportProps & { controlsRef: OrbitControlsRef }) {
   return (
     <>
       <color attach="background" args={['#08101d']} />
@@ -216,13 +213,14 @@ function SceneContents({
         />
       ))}
 
-      <CameraControls command={viewCommand} />
+      <CameraControls command={viewCommand} controlsRef={controlsRef} />
     </>
   );
 }
 
 export function SceneViewport(props: SceneViewportProps) {
   const t = useT();
+  const controlsOwner = useOrbitControlsOwner();
   return (
     <div className="viewport-shell" aria-label={t('scene.aria_label')}>
       <Canvas
@@ -230,7 +228,7 @@ export function SceneViewport(props: SceneViewportProps) {
         dpr={[1, 1.75]}
         shadows
       >
-        <SceneContents {...props} />
+        <SceneContents {...props} controlsRef={controlsOwner} />
       </Canvas>
       <div className="axis-note">{t('scene.axis_note')}</div>
     </div>

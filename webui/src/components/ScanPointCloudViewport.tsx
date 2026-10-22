@@ -1,7 +1,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { useOrbitControlsOwner, useOwnedOrbitControls, type OrbitControlsRef } from './useOrbitControls';
 
 import type { LocalizationRun, LocalizationSessionGeometry } from '../api/deviceApi';
 import { buildLocalizationOverlay } from '../domain/localizationOverlay';
@@ -248,16 +248,16 @@ function SensorMarker({ marker, position, extent, selected, onSelect }: {
   </group>;
 }
 
-function CameraController({ command, extent, onInteractionEnd }: { command: ViewCommand; extent: number; onInteractionEnd: (distance: number) => void }) {
-  const { camera, gl } = useThree();
-  const controls = useMemo(() => new OrbitControls(camera, gl.domElement), [camera, gl.domElement]);
+function CameraController({ command, extent, onInteractionEnd, controlsRef }: { command: ViewCommand; extent: number; onInteractionEnd: (distance: number) => void; controlsRef: OrbitControlsRef }) {
+  const { camera } = useThree();
+  const controls = useOwnedOrbitControls(controlsRef);
   useEffect(() => {
     const limits = orbitDistanceLimits(extent);
     controls.enableDamping = true; controls.dampingFactor = 0.08; controls.enableRotate = true; controls.enableZoom = true; controls.enablePan = true; controls.screenSpacePanning = true; controls.rotateSpeed = 0.72; controls.zoomSpeed = 0.92; controls.panSpeed = 0.72; controls.minDistance = limits.minDistance; controls.maxDistance = limits.maxDistance; controls.touches.ONE = THREE.TOUCH.ROTATE; controls.touches.TWO = THREE.TOUCH.DOLLY_PAN; controls.target.set(0,0,0); controls.update();
     const handleStart = (): void => clientDiagnostics.info('SCAN_VIEW_GESTURE_START');
     const handleEnd = (): void => { const distance = controls.getDistance(); onInteractionEnd(distance); clientDiagnostics.info('SCAN_VIEW_GESTURE_END', { distance: Number(distance.toFixed(3)), x: Number(camera.position.x.toFixed(3)), y: Number(camera.position.y.toFixed(3)), z: Number(camera.position.z.toFixed(3)) }); };
     controls.addEventListener('start', handleStart); controls.addEventListener('end', handleEnd);
-    return () => { controls.removeEventListener('start', handleStart); controls.removeEventListener('end', handleEnd); controls.dispose(); };
+    return () => { controls.removeEventListener('start', handleStart); controls.removeEventListener('end', handleEnd); };
   }, [camera, controls, extent, onInteractionEnd]);
   useEffect(() => {
     const pose = cameraPoseForPreset(command.preset, extent);
@@ -340,6 +340,7 @@ export function ScanPointCloudViewport({
 }: ScanPointCloudViewportProps) {
   const { locale } = useLocale();
   const t = useT();
+  const controlsOwner = useOrbitControlsOwner();
   const requestedMaterialization: ScanSceneMaterializationNeeds = {
     good: display.goodPoints,
     bad: display.badPoints,
@@ -576,7 +577,7 @@ export function ScanPointCloudViewport({
   const sourceReasonLabel = sourceReasonText(sourceHighlights.reason, t);
 
   return <div className="viewport-shell scan-viewport" aria-label={t('scan.aria_label')} data-scan-mode={mode ?? 'custom'} data-layer-fingerprint={fingerprint} data-camera-revision={interactionRevision} data-camera-distance={cameraDistance.toFixed(4)} data-source-highlight-reason={sourceHighlights.reason ?? undefined}>
-    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} identityKey={viewportIdentityKey} overlayResetKeys={overlayResetKeys} onOverlayFailure={handleOverlayFailure} onOverlayRecovered={handleOverlayRecovered} /><CameraController command={viewCommand} extent={cameraFitExtent} onInteractionEnd={handleInteractionEnd} /></Canvas>
+    <Canvas className="scan-webgl-canvas" camera={{ position:[3.2,2.5,3.6], fov:50, near:0.01, far:120 }} dpr={[1,1.5]} gl={{ antialias:true, alpha:false, powerPreference:'high-performance' }} onContextMenu={(event) => event.preventDefault()}><SceneLayers prepared={prepared} display={display} meshPositions={meshPositions} wireframe={mode === 'mesh'} sensorMarkers={sensorMarkers} sourceHighlights={sourceHighlights} selectedNode={selectedNode} onSensorSelect={selectSensorNode} identityKey={viewportIdentityKey} overlayResetKeys={overlayResetKeys} onOverlayFailure={handleOverlayFailure} onOverlayRecovered={handleOverlayRecovered} /><CameraController command={viewCommand} extent={cameraFitExtent} onInteractionEnd={handleInteractionEnd} controlsRef={controlsOwner} /></Canvas>
     {overlayFailure !== null && <div className="xr-runtime-warning scan-overlay-failure" role="alert">
       <div>{t('scan.overlay.failed')}</div>
       <div>{overlayFailure.message}</div>

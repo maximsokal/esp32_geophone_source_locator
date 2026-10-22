@@ -29,7 +29,7 @@ def utc_now() -> str:
 def source_identity(root: Path) -> dict:
     """Include dirty and new UI/test/config inputs; exclude output and dependencies."""
     paths = []
-    for directory in ('components', 'main', 'webui/src', 'webui/tests', 'webui/scripts', 'tests/ui_render',
+    for directory in ('components', 'main', 'webui/src', 'webui/tests', 'webui/scripts', 'webui/stress', 'tests/ui_render',
                       'tests/host/stubs/ui_navigation',
                       'tests/python', 'tools', '.github/workflows'):
         paths.extend(p for p in (root / directory).rglob('*') if p.is_file() and
@@ -40,7 +40,7 @@ def source_identity(root: Path) -> dict:
                  'webui/playwright.config.ts', 'webui/playwright.layout.config.ts', 'webui/playwright.network.config.ts', 'webui/playwright.firmware-pages.config.ts', 'webui/playwright.visual.config.mjs', 'tests/ui_contract.json',
                  'tests/host/ui_home_navigation_test.c', 'tests/host/manifest.d/coverage-core.json',
                  'tests/host/manifest.d/max449-measurements-workflow.json',
-                 'webui/tsconfig.e2e.json', 'webui/vite.config.ts',
+                 'webui/tsconfig.e2e.json', 'webui/vite.config.ts', 'webui/vite.graphics.config.ts', 'webui/playwright.graphics.config.ts',
                  'webui/tsconfig.json', 'webui/vitest.dom.config.ts', 'webui/tsconfig.test.json', 'sgconfig.yml'))
     digest = hashlib.sha256()
     paths = sorted({p for p in paths if p.is_file()})
@@ -249,7 +249,7 @@ def summarize(*, web: Path | None, native_junit: Path | None, native_root: Path 
               only: str = 'both', identity: dict | None = None,
               exit_codes: dict | None = None, components_junit: Path | None = None,
               domain_junit: Path | None = None, layout: Path | None = None, visual: Path | None = None,
-              network: Path | None = None, firmware_pages: Path | None = None) -> dict:
+              network: Path | None = None, firmware_pages: Path | None = None, graphics: Path | None = None) -> dict:
     rows = []
     selected = ['web', 'native'] if only == 'both' else [only]
     extra_junit = {'components': components_junit, 'domain': domain_junit}
@@ -262,10 +262,12 @@ def summarize(*, web: Path | None, native_junit: Path | None, native_root: Path 
         selected.append('network')
     if firmware_pages is not None and 'firmware' not in selected:
         selected.append('firmware')
+    if graphics is not None and 'graphics' not in selected:
+        selected.append('graphics')
     for subsystem in selected:
         try:
-            if subsystem in ('web', 'layout', 'visual', 'network', 'firmware'):
-                path = {'web': web, 'layout': layout, 'visual': visual, 'network': network, 'firmware': firmware_pages}[subsystem]
+            if subsystem in ('web', 'layout', 'visual', 'network', 'firmware', 'graphics'):
+                path = {'web': web, 'layout': layout, 'visual': visual, 'network': network, 'firmware': firmware_pages, 'graphics': graphics}[subsystem]
                 if path is None:
                     raise ValueError('Playwright JSON was not supplied')
                 found = web_records(path, identity, subsystem)
@@ -290,7 +292,7 @@ def summarize(*, web: Path | None, native_junit: Path | None, native_root: Path 
     return {'status': status, 'counts': counts, 'selected': selected, 'identity': identity,
             'generated_at': utc_now(), 'tests': rows,
             'not_run': ['Physical TFT/Android Chrome/immersive XR/HIL',
-                        'Graphics lifecycle (later slice)',
+                        *([] if 'graphics' in selected else ['Graphics lifecycle not selected']),
                         *([] if 'firmware' in selected else ['Non-React firmware phone pages not selected']),
                         *([] if 'visual' in selected else ['Approved visual comparison not selected; canonical rendering environment required']),
                         *([] if 'network' in selected else ['HTTP/workflow recovery not selected']),
@@ -321,7 +323,7 @@ def write_report(output: Path, report: dict) -> None:
         for attachment in row['artifacts'].get('attachments', []):
             if attachment.get('path'):
                 preview = attachment.get('name') == 'visual-actual' or (
-                    row['subsystem'] in ('network', 'firmware') and attachment.get('name') == 'screenshot')
+                    row['subsystem'] in ('network', 'firmware', 'graphics') and attachment.get('name') == 'screenshot')
                 links.append(link(attachment['path'], preview=preview))
         table.append(f"<tr><td>{escape(row['status'])}</td><td>{escape(row['id'])}</td>"
                      f"<td><details><summary>Actual / source</summary><pre>{escape(row['actual'])}</pre>"
@@ -348,9 +350,10 @@ def main(argv=None) -> int:
     parser.add_argument('--visual', type=Path)
     parser.add_argument('--network', type=Path)
     parser.add_argument('--firmware-pages', type=Path)
+    parser.add_argument('--graphics', type=Path)
     parser.add_argument('--native-junit', type=Path)
     parser.add_argument('--native-root', type=Path)
-    parser.add_argument('--only', choices=('web', 'native', 'both', 'components', 'domain', 'layout', 'visual', 'network', 'firmware'), default='both')
+    parser.add_argument('--only', choices=('web', 'native', 'both', 'components', 'domain', 'layout', 'visual', 'network', 'firmware', 'graphics'), default='both')
     parser.add_argument('--components-junit', type=Path)
     parser.add_argument('--domain-junit', type=Path)
     parser.add_argument('--identity', type=Path, help='Pre-run identity; rejects stale reports or changed source')
@@ -359,6 +362,7 @@ def main(argv=None) -> int:
     parser.add_argument('--visual-exit-code', type=int)
     parser.add_argument('--network-exit-code', type=int)
     parser.add_argument('--firmware-pages-exit-code', type=int)
+    parser.add_argument('--graphics-exit-code', type=int)
     parser.add_argument('--native-exit-code', type=int)
     args = parser.parse_args(argv)
     if args.init:
@@ -375,9 +379,9 @@ def main(argv=None) -> int:
         report = summarize(web=args.web, native_junit=args.native_junit, native_root=args.native_root,
                            only=args.only, identity=identity,
                            components_junit=args.components_junit, domain_junit=args.domain_junit, layout=args.layout, visual=args.visual,
-                           network=args.network, firmware_pages=args.firmware_pages,
+                           network=args.network, firmware_pages=args.firmware_pages, graphics=args.graphics,
                            exit_codes={'web': args.web_exit_code, 'native': args.native_exit_code, 'layout': args.layout_exit_code, 'visual': args.visual_exit_code,
-                                       'network': args.network_exit_code, 'firmware': args.firmware_pages_exit_code})
+                                       'network': args.network_exit_code, 'firmware': args.firmware_pages_exit_code, 'graphics': args.graphics_exit_code})
         if identity is not None and source_identity(ROOT) != {key: identity[key] for key in ('head', 'source_sha256', 'files')}:
             report['status'] = 'BLOCKED'
             report['tests'].append(record('run', 'run/source-identity', 'BLOCKED', 'Source changed during execution', category='infrastructure'))

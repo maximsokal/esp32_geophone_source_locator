@@ -35,7 +35,7 @@ def web_summary(path, **kwargs):
     return reporter.summarize(web=path, native_junit=None, native_root=None, only='web', **kwargs)
 
 
-@pytest.mark.parametrize('subsystem', ['layout', 'network', 'firmware'])
+@pytest.mark.parametrize('subsystem', ['layout', 'network', 'firmware', 'graphics'])
 @pytest.mark.parametrize('fault', ['none', 'assertion', 'process', 'missing'])
 def test_browser_suite_evidence_is_required_and_cannot_be_hidden_by_smoke(tmp_path, fault, subsystem):
     smoke, _ = web_report(tmp_path)
@@ -68,7 +68,7 @@ def test_pass_has_actual_source_selection_and_evidence(tmp_path):
     assert 'Physical' in result['not_run'][0]
 
 
-@pytest.mark.parametrize('subsystem', ['network', 'firmware'])
+@pytest.mark.parametrize('subsystem', ['network', 'firmware', 'graphics'])
 def test_browser_success_screenshot_is_visible_in_the_gallery(tmp_path, subsystem):
     path, data = web_report(tmp_path)
     image = tmp_path / 'scenario.png'
@@ -284,6 +284,21 @@ def test_init_requires_fresh_output_and_never_relabels_old_run(tmp_path, monkeyp
     assert json.loads((output / 'identity.json').read_text()) == identity
     with pytest.raises(FileExistsError):
         reporter.initialize(output)
+
+
+@pytest.mark.parametrize('relative', ['webui/stress/scan-result-ui.tsx',
+    'webui/tests/e2e/fixtures/graphics-scan.json', 'webui/playwright.graphics.config.ts',
+    'webui/vite.graphics.config.ts'])
+def test_graphics_fixture_and_build_inputs_participate_in_source_identity(tmp_path, monkeypatch, relative):
+    monkeypatch.setattr(reporter.subprocess, 'check_output', lambda *args, **kwargs: 'test-head\n')
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    path.write_text('original fixture')
+    before = reporter.source_identity(tmp_path)
+    path.write_text('changed fixture')
+    after = reporter.source_identity(tmp_path)
+    assert before['files'] == after['files'] == 1
+    assert before['source_sha256'] != after['source_sha256']
 
 
 def test_selection_manifest_catches_removed_test(tmp_path):

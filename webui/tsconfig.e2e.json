@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "types": [] },
-  "include": ["playwright.config.ts", "playwright.layout.config.ts", "playwright.network.config.ts", "playwright.firmware-pages.config.ts", "tests/e2e/**/*.ts"]
+  "compilerOptions": { "types": ["vite/client"] },
+  "include": ["playwright.config.ts", "playwright.layout.config.ts", "playwright.network.config.ts", "playwright.firmware-pages.config.ts", "playwright.graphics.config.ts", "vite.graphics.config.ts", "stress/scan-result-ui.tsx", "tests/e2e/**/*.ts"]
 }

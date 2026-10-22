@@ -1,98 +1,127 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import '../src/styles.css';
 import '../src/scan.css';
+import '../src/console.css';
 import { ScanPointCloudViewport } from '../src/components/ScanPointCloudViewport';
-import type { ViewCommand, ViewPreset } from '../src/components/SceneViewport';
+import { SceneViewport, type ViewCommand, type ViewPreset } from '../src/components/SceneViewport';
+import { XrRuntimePanel } from '../src/components/XrRuntimePanel';
+import LocalizationOverlayScene from '../src/features/objects/LocalizationOverlayScene';
+import type { LocalizationOverlayModel } from '../src/domain/localizationOverlay';
+import { demoScene } from '../src/data/demoScene';
+import { LocaleProvider } from '../src/i18n';
+import { encodeScanArtifact } from '../src/xr/scanArtifact';
+import { ScanDecodeClient } from '../src/xr/scanDecodeClient';
+import { makeValidScanSnapshot } from '../tests/xr/support/validScanSnapshot';
+import record from '../tests/e2e/fixtures/graphics-scan.json';
+import { FakeXrLayer, FakeXrSession, FakeXrSystem } from '../tests/xr/support/xrFakes';
+
+// Only the unavailable immersive-session protocol is simulated; GL stays native.
+if (new URLSearchParams(location.search).has('syntheticXR')) {
+  const xr = new FakeXrSystem();
+  const sessions: FakeXrSession[] = [];
+  const requestSession = xr.requestSession.bind(xr);
+  xr.requestSession = () => { const session = new FakeXrSession(); sessions.push(session); xr.queue(session); return requestSession(); };
+  Object.defineProperty(navigator, 'xr', { configurable: true, value: xr });
+  Object.assign(window, { XRWebGLLayer: FakeXrLayer, XRWebGLBinding: undefined,
+    __syntheticXR: { end: () => sessions.at(-1)?.interrupt(),
+      state: () => ({ liveSessions: xr.liveSessions,
+        pendingFrames: sessions.reduce((sum, session) => sum + session.liveFrameCallbacks, 0),
+        listeners: sessions.reduce((sum, session) => sum + [...session.listeners.values()].reduce((n, set) => n + set.size, 0), 0) }) } });
+  for (const prototype of [WebGLRenderingContext.prototype, WebGL2RenderingContext.prototype]) {
+    Object.defineProperty(prototype, 'makeXRCompatible', { configurable: true, value: async () => {} });
+  }
+}
 import {
   displayForScanMode,
-  type ScanDisplayOptions,
   type ScanMode,
 } from '../src/xr/scanDisplayModes';
 import type { ScanPointCloudSnapshot } from '../src/xr/webxrRuntime';
 
-const stablePositions = new Float32Array([
-  -1.0, -0.8, 0.0,  -0.2, -0.8, 0.0,  0.6, -0.8, 0.0,
-  -1.0,  0.0, 0.2,  -0.2,  0.0, 0.4,  0.6,  0.0, 0.2,
-  -1.0,  0.8, 0.0,  -0.2,  0.8, 0.2,  0.6,  0.8, 0.0,
-]);
-const normals = new Float32Array(stablePositions.length);
-for (let i = 2; i < normals.length; i += 3) normals[i] = 1;
-
-const snapshot = {
-  positions: stablePositions,
-  normals,
-  confidence: new Float32Array([0.25, 0.52, 0.92, 0.36, 0.66, 0.95, 0.40, 0.71, 0.98]),
-  tentativePositions: new Float32Array([
-    -1.1, -0.9, 0.1,
-     0.7, -0.7, 0.1,
-     0.8,  0.7, 0.1,
-  ]),
-  tentativeConfidence: new Float32Array([0.20, 0.50, 0.68]),
-  freeAirPositions: new Float32Array([
-    -0.6, -0.3, 0.55,
-     0.0,  0.0, 0.62,
-     0.5,  0.3, 0.58,
-  ]),
-  unknownCandidatePositions: new Float32Array([
-    -0.4, -0.2, -0.35,
-     0.1,  0.1, -0.42,
-     0.5,  0.2, -0.30,
-  ]),
-  manualControlPoints: [
-    { id: 1, position: [0.55, 0.55, 0.35] as const },
-  ],
-  bounds: {
-    min: [-1.2, -1.0, -0.5] as const,
-    max: [0.9, 1.0, 0.8] as const,
-  },
-  voxelSizeMeters: 0.04,
-  pointCount: 9,
-  tentativePointCount: 3,
-  knownFreeVoxelCount: 3,
-  unknownCandidateVoxelCount: 3,
-} as unknown as ScanPointCloudSnapshot;
+const positions = Float32Array.from(record.positions);
+const normals = Float32Array.from(record.normals);
+const confidence = new Float32Array(positions.length / 3).fill(0.92);
+const recordedSnapshot: ScanPointCloudSnapshot = {
+  ...makeValidScanSnapshot(), positions, normals, confidence,
+  normalConfidence: confidence.slice(), pointCount: confidence.length, rawPointCount: confidence.length,
+  bounds: { min: [-0.32, -0.32, -0.05], max: [0.32, 0.32, 0.15] },
+  fullBounds: { min: [-0.32, -0.32, -0.05], max: [0.32, 0.32, 0.15] },
+  tsdfPositions: positions.slice(), tsdfNormals: normals.slice(), tsdfConfidence: confidence.slice(),
+  tsdfResidualMeters: new Float32Array(confidence.length).fill(0.005),
+  tsdfNormalConfidence: confidence.slice(), tsdfCoverageConfidence: confidence.slice(),
+  tsdfCoverageReady: new Uint8Array(confidence.length).fill(1), tsdfPointCount: confidence.length,
+  occupiedSurfacePositions: positions.slice(), occupiedSurfaceVoxelCount: confidence.length,
+  manualControlPoints: [{ id: 1, position: [0.2, 0.2, 0.1] }],
+};
 
 function Harness() {
-  const [mode, setMode] = useState<ScanMode | null>('quality');
-  const [display, setDisplay] = useState<ScanDisplayOptions>(() => displayForScanMode('quality'));
+  const [mode, setMode] = useState<ScanMode>('quality');
   const [command, setCommand] = useState<ViewCommand>({ preset: 'perspective', sequence: 0 });
+  const [snapshot, setSnapshot] = useState<ScanPointCloudSnapshot | null>(null);
+  const [renderer, setRenderer] = useState('scan');
+  const [mounted, setMounted] = useState(true);
+  const [expanded, setExpanded] = useState(false);
+  const [tableOnly, setTableOnly] = useState(false);
+  const [active, setActive] = useState(false);
+  const [error, setError] = useState('');
 
-  const choose = (next: ScanMode): void => {
-    setMode(next);
-    setDisplay(displayForScanMode(next));
-  };
+  useEffect(() => {
+    const client = new ScanDecodeClient();
+    void client.decode(encodeScanArtifact(recordedSnapshot), {
+      transferInput: true, onFallback: () => setError('Unexpected decode fallback'),
+    }).then(result => setSnapshot(result.snapshot)).catch(reason => {
+      if (!(reason instanceof Error && reason.name === 'ScanDecodeCancelledError')) setError(String(reason));
+    });
+    return () => client.dispose();
+  }, []);
   const preset = (next: ViewPreset): void => {
     setCommand((current) => ({ preset: next, sequence: current.sequence + 1 }));
+  };
+  const overlay: LocalizationOverlayModel = {
+    sensors: [{ pod: 0, label: 'MAIN', position: { x_m: 0, y_m: 0, z_m: 0 } },
+      { pod: 1, label: 'G1', position: { x_m: expanded ? 5 : 1, y_m: 1, z_m: 0 } }],
+    sectors: [], unavailable: [], selectedMethod: null,
+  };
+  const visibleSnapshot = snapshot === null || !expanded ? snapshot : {
+    ...snapshot, bounds: { min: [-1, -1, -1] as const, max: [1, 1, 1] as const },
   };
 
   return (
     <main className="app-shell">
+      <p>Recorded synthetic scan · actual production renderers · no camera/device input</p>
       <section className="toolbar scan-toolbar">
         <div className="scan-mode-controls">
-          <button id="mode-quality" onClick={() => choose('quality')}>Quality map</button>
-          <button id="mode-surface" onClick={() => choose('surface')}>Stable surface</button>
-          <button id="mode-volume" onClick={() => choose('search-volume')}>Search volume</button>
-          <button id="mode-mesh" onClick={() => choose('mesh')}>Surface mesh</button>
+          {(['quality', 'surface', 'search-volume', 'mesh'] as const).map(next =>
+            <button key={next} id={`mode-${next === 'search-volume' ? 'volume' : next}`} onClick={() => setMode(next)}>{next}</button>)}
         </div>
-        <div className="scan-toolbar-group">
+        <div className="scan-mode-controls">
           <button id="view-3d" onClick={() => preset('perspective')}>3D</button>
           <button id="view-top" onClick={() => preset('top')}>Top</button>
           <button id="view-front" onClick={() => preset('front')}>Front</button>
+          <button id="mount" onClick={() => setMounted(value => !value)}>{mounted ? 'Close' : 'Open'}</button>
+          <button id="extent" onClick={() => setExpanded(value => !value)}>Change extent</button>
+          <button id="table" onClick={() => setTableOnly(value => !value)}>2D / 3D</button>
+          <select id="renderer" aria-label="Production renderer" value={renderer} onChange={event => setRenderer(event.target.value)}>
+            {['scan', 'sensors', 'localization', 'runtime'].map(value => <option key={value}>{value}</option>)}
+          </select>
         </div>
       </section>
+      <output id="fixture-state" data-loaded={snapshot !== null} data-active={active}>{error || (snapshot ? `${snapshot.pointCount} recorded points` : 'Loading emitted decode Worker')}</output>
+      {mounted && snapshot && renderer === 'runtime' && !tableOnly && <XrRuntimePanel onSessionActiveChange={setActive} />}
       <section className="workspace" style={{ gridTemplateColumns: '1fr' }}>
-        <ScanPointCloudViewport
-          snapshot={snapshot}
-          viewCommand={command}
-          display={display}
-          mode={mode}
-        />
+        {mounted && visibleSnapshot && renderer !== 'runtime' && (tableOnly
+          ? <table><caption>Recorded scan summary (2D)</caption><tbody><tr><th>Points</th><td>{visibleSnapshot.pointCount}</td></tr></tbody></table>
+          : renderer === 'scan'
+            ? <ScanPointCloudViewport snapshot={visibleSnapshot} viewCommand={command} display={displayForScanMode(mode)} mode={mode} />
+            : renderer === 'sensors'
+              ? <SceneViewport scene={demoScene} selectedId="MAIN" viewCommand={command} onSelect={() => {}} />
+              : renderer === 'localization'
+                ? <LocalizationOverlayScene model={overlay} />
+                : null)}
       </section>
     </main>
   );
 }
 
-createRoot(document.getElementById('root')!).render(<Harness />);
-(window as unknown as { __SCAN_RESULT_FIXTURE_READY__?: boolean }).__SCAN_RESULT_FIXTURE_READY__ = true;
+createRoot(document.getElementById('root')!).render(<LocaleProvider><Harness /></LocaleProvider>);
