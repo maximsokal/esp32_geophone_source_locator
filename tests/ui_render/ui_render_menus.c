@@ -41,6 +41,24 @@ const char *render_menus_widget_role(lv_obj_t *object)
 
 int render_preview_status(void) { return (int)s_state.status; }
 
+#ifdef UI_NATIVE_FULL_SCREENS
+#include "ui_navigation_fixture.h"
+bool render_preview_open(void) { return s_state_initialized && s_state.open; }
+void render_preview_complete(bool stale)
+{
+    const uint32_t generation = s_state.generation;
+    preview_request_t request = {.generation = stale ? generation - 1U : generation};
+    preview_result_t result = {.status = SCAN_PREVIEW_SCREEN_NO_PREVIEW};
+    (void)snprintf(result.fallback_reason, sizeof(result.fallback_reason), "fixture completion");
+    result.draw_order = heap_caps_malloc(sizeof(*result.draw_order), MALLOC_CAP_8BIT);
+    assert(result.draw_order != NULL);
+    accept_result_locked(&request, &result);
+    release_result(&result);
+    assert(s_state.generation == generation);
+    if (!stale && s_state.open) assert(strcmp(s_state.fallback_reason, "fixture completion") == 0);
+}
+#endif
+
 static void reset_menu(ui_screen_t screen)
 {
     ui_scan_preview_close_locked();

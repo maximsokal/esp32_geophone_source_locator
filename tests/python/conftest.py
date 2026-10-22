@@ -1,8 +1,18 @@
 """Pytest policy shared by deterministic tests and future HIL tests."""
 
 import os
+from pathlib import Path
+import sys
 
 import pytest
+
+
+@pytest.fixture(scope="session")
+def ui_render_binary():
+    root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(root / "tools"))
+    from run_ui_render_tests import build
+    return build(root / ".test-build/ui-render/native")
 
 
 def pytest_addoption(parser):

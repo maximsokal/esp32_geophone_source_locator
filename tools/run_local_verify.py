@@ -278,6 +278,7 @@ def ui_steps(root: Path, python_executable: str, npm_executable: str,
         Step('ui-native/bootstrap', root, (python_executable, str(root / 'tools/prepare_ui_render.py'))),
         Step('ui-native/tests', root, (python_executable, '-m', 'pytest', '-q',
              'tests/python/test_ui_render_runner.py', 'tests/python/test_ui_render.py',
+             'tests/python/test_ui_navigation_render.py',
              '--basetemp', str(output / 'native'), '--junitxml', str(output / 'native.xml'))),
     ]
     webui = root / 'webui'

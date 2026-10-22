@@ -11,14 +11,14 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
-from run_ui_render_tests import build, render  # noqa: E402
+from run_ui_render_tests import render  # noqa: E402
 import run_ui_render_tests as runner  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def screens(tmp_path_factory):
+def screens(tmp_path_factory, ui_render_binary):
     output = tmp_path_factory.mktemp("real-lvgl")
-    binary = build(ROOT / ".test-build/ui-render/native")
+    binary = ui_render_binary
     frames = render(binary, output)
     assert len(frames) >= 190
     return frames, output, binary

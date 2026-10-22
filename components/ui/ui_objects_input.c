@@ -204,6 +204,7 @@ void ui_handle_objects_key_locked(
     }
 
     if (key == KEYPAD_KEY_LEFT) {
+        context->workflow_activation_pending = false;
         context->objects_mode =
             UI_OBJECTS_MENU;
 

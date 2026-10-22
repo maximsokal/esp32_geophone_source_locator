@@ -84,6 +84,7 @@ void ui_workflow_screen_refresh_locked(void) {}
 void ui_workflow_screen_handle_key_locked(keypad_key_t key) { (void)key; }
 void ui_scan_preview_refresh_locked(void) {}
 void ui_home_refresh_locked(void) {}
+void ui_render_hardware_locked(void) {}
 #endif
 
 
@@ -666,22 +667,33 @@ static void test_invalid_screen_is_noop(void)
 }
 
 
-int main(void)
-{
-#ifdef MAX449_CASE
-#if MAX449_CASE == 1
-    test_home_measurements_redirects_active_object_for_ok_and_right();
-    test_workflow_initializes_before_readiness_and_retries_failures();
-#elif MAX449_CASE == 2
-    test_home_measurements_without_active_object_opens_workflow_picker();
-#elif MAX449_CASE == 3
-    test_measurements_route_decision_all_workflow_states();
-#elif MAX449_CASE == 4
-    test_objects_start_measurement_initializes_acquisition();
-#else
+#if defined(MAX449_CASE) && (MAX449_CASE < 1 || MAX449_CASE > 4)
 #error "unknown MAX449_CASE for ui_home_navigation_test"
 #endif
-#else
+#ifndef MAX449_CASE
+#define MAX449_CASE 0
+#endif
+
+int main(void)
+{
+    /* Keep every test referenced when compiling one selected case with -Werror. */
+    switch (MAX449_CASE) {
+        case 1:
+            test_home_measurements_redirects_active_object_for_ok_and_right();
+            test_workflow_initializes_before_readiness_and_retries_failures();
+            return 0;
+        case 2:
+            test_home_measurements_without_active_object_opens_workflow_picker();
+            return 0;
+        case 3:
+            test_measurements_route_decision_all_workflow_states();
+            return 0;
+        case 4:
+            test_objects_start_measurement_initializes_acquisition();
+            return 0;
+        default:
+            break;
+    }
     test_home_registry_mapping();
     test_home_up_down_wrap_and_render();
     test_right_and_ok_open_selected_screen();
@@ -702,5 +714,4 @@ int main(void)
 
     puts("ui_home_navigation_test: PASS");
     return 0;
-#endif
 }

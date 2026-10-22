@@ -1197,10 +1197,10 @@ void ui_measurements_refresh_locked(void)
         );
     }
     else if (measurement.state == MEASUREMENT_SERVICE_STARTING) {
-        ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_MEASUREMENT_OBJECT_RESOLVING));
+        ui_utf8_format(text, sizeof(text), "%s", ui_tr(UI_I18N_KEY_MEASUREMENT_OBJECT_RESOLVING));
     }
     else {
-        ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_MEASUREMENT_OBJECT_NONE));
+        ui_utf8_format(text, sizeof(text), "%s", ui_tr(UI_I18N_KEY_MEASUREMENT_OBJECT_NONE));
     }
 
     (void)ui_measurements_label_set_if_changed(context->measurement_transport, text);

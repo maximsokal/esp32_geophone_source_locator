@@ -101,8 +101,8 @@ def test_max449_navigation_and_low_remote_tests_are_registered():
         (2, "test_home_measurements_without_active_object_opens_workflow_picker"),
         (3, "test_measurements_route_decision_all_workflow_states"),
     ):
-        assert function in navigation
-        assert f"#if MAX449_CASE == {case}" in navigation or f"#elif MAX449_CASE == {case}" in navigation
+        selected = navigation.split(f"case {case}:", 1)[1].split("return 0;", 1)[0]
+        assert f"{function}();" in selected
         assert "tests/host/ui_home_navigation_test.c" in targets[
             next(name for name in expected if name.startswith(f"max449_n{case}_"))
         ]["sources"]

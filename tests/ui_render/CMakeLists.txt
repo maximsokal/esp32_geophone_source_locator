@@ -9,7 +9,7 @@ set(CONFIG_LV_USE_THORVG OFF CACHE BOOL "" FORCE)
 set(LV_BUILD_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory("${REPO_ROOT}/managed_components/lvgl__lvgl" lvgl)
 
-add_executable(ui_render
+set(UI_RENDER_SOURCES
     ui_render_harness.c
     ui_render_fakes.c
     ui_render_menus.c
@@ -52,18 +52,26 @@ add_executable(ui_render
     "${REPO_ROOT}/components/result_view/result_view.c"
     "${REPO_ROOT}/components/seismic_buffer/seismic_envelope.c"
     "${REPO_ROOT}/components/localization_job/localization_material_presets.c")
+add_executable(ui_render ${UI_RENDER_SOURCES})
+add_executable(ui_navigation_render ${UI_RENDER_SOURCES} ui_navigation_harness.c
+    "${REPO_ROOT}/components/ui/ui_screen_registry.c")
+target_compile_definitions(ui_navigation_render PRIVATE UI_NATIVE_FULL_SCREENS=1)
 file(GLOB COMPONENT_INCLUDES "${REPO_ROOT}/components/*/include")
-target_include_directories(ui_render PRIVATE stubs ${COMPONENT_INCLUDES} "${REPO_ROOT}/components/ui"
-    "${REPO_ROOT}/nRF54L15/include" "${REPO_ROOT}/tests/host/stubs/object_store_profile")
-target_link_libraries(ui_render PRIVATE lvgl::lvgl)
-target_compile_definitions(ui_render PRIVATE CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1)
 if(MSVC)
     target_compile_options(lvgl PRIVATE /W0)
-    target_compile_options(ui_render PRIVATE /W4 /WX /utf-8 /UNDEBUG /Gy /experimental:c11atomics)
-    target_compile_definitions(ui_render PRIVATE _CRT_SECURE_NO_WARNINGS)
-    target_link_options(ui_render PRIVATE /OPT:REF)
-else()
-    target_compile_options(ui_render PRIVATE -Wall -Wextra -Werror -UNDEBUG -ffunction-sections -fdata-sections)
-    target_link_options(ui_render PRIVATE -Wl,--gc-sections)
-    target_link_libraries(ui_render PRIVATE m)
 endif()
+foreach(UI_TARGET IN ITEMS ui_render ui_navigation_render)
+    target_include_directories(${UI_TARGET} PRIVATE stubs ${COMPONENT_INCLUDES} "${REPO_ROOT}/components/ui"
+        "${REPO_ROOT}/nRF54L15/include" "${REPO_ROOT}/tests/host/stubs/object_store_profile")
+    target_link_libraries(${UI_TARGET} PRIVATE lvgl::lvgl)
+    target_compile_definitions(${UI_TARGET} PRIVATE CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1)
+    if(MSVC)
+        target_compile_options(${UI_TARGET} PRIVATE /W4 /WX /utf-8 /UNDEBUG /Gy /experimental:c11atomics)
+        target_compile_definitions(${UI_TARGET} PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_link_options(${UI_TARGET} PRIVATE /OPT:REF)
+    else()
+        target_compile_options(${UI_TARGET} PRIVATE -Wall -Wextra -Werror -UNDEBUG -ffunction-sections -fdata-sections)
+        target_link_options(${UI_TARGET} PRIVATE -Wl,--gc-sections)
+        target_link_libraries(${UI_TARGET} PRIVATE m)
+    endif()
+endforeach()

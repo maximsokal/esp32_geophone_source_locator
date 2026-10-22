@@ -81,6 +81,9 @@ def build(build_dir: Path) -> Path:
     try:
         binary = build_native(build_dir, record)
         record.update(status="PASS", binary_sha256=file_hash(binary))
+        navigation = binary.with_name("ui_navigation_render" + binary.suffix)
+        if navigation.is_file():
+            record["navigation_binary_sha256"] = file_hash(navigation)
         write_record(build_dir / "build.json", record)
         return binary
     except Exception as error:
@@ -122,9 +125,9 @@ def build_native(build_dir: Path, record: dict) -> Path:
     commands = [
         [cmake, "-S", str(ROOT / "tests/ui_render"), "-B", str(build_dir), "-G", "Ninja",
          f"-DCMAKE_MAKE_PROGRAM={ninja}", f"-DCMAKE_C_COMPILER={compiler[0]}", "-DCMAKE_BUILD_TYPE=Release"],
-        # A fresh native build also avoids stale header dependencies from
+        # A fresh MSVC build also avoids stale header dependencies from
         # localized MSVC /showIncludes output on Windows.
-        [cmake, "--build", str(build_dir), "--clean-first", "--parallel", "4"],
+        [cmake, "--build", str(build_dir), *(["--clean-first"] if is_msvc(compiler) else []), "--parallel", "4"],
     ]
     for index, command in enumerate(commands):
         result = subprocess.run(command, env=environment, cwd=ROOT, capture_output=True, text=True,
@@ -240,6 +243,75 @@ def render_frames(binary: Path, output: Path, record: dict) -> list[dict]:
     return frames
 
 
+NAVIGATION_CASES = ("entry", "picker", "activation", "preview", "result", "confirm", "lifecycle", "replay")
+NAVIGATION_RUNS = tuple((case, 1) for case in NAVIGATION_CASES if case != "replay") + tuple(
+    ("replay", seed) for seed in (1, 42, 0xC0FFEE))
+
+
+def navigate(binary: Path, output: Path, case: str, seed: int = 1, actions: int = 512) -> list[dict]:
+    """Run actual registry/key dispatch; never reads or writes reference PNGs."""
+    if case not in NAVIGATION_CASES or not 0 < seed <= 0xffffffff or not 0 < actions <= 2048:
+        raise ValueError("Invalid bounded navigation case/seed/action count")
+    output = output.resolve()
+    record = start_run(output, "navigation")
+    record.update(checks=["real_screen_registry", "application_key_dispatch", "lifecycle"] +
+                  (["async_ownership"] if case in ("activation", "preview", "result") else []),
+                  case=case, seed=seed, action_limit=actions,
+                  reproduce=f"python tools/run_ui_render_tests.py --navigation {case} --seed {seed} --actions {actions}")
+    try:
+        record["build"] = json.loads((binary.parent / "build.json").read_text(encoding="utf-8"))
+        if (record["build"]["status"] != "PASS" or
+                record["build"].get("navigation_binary_sha256") != file_hash(binary)):
+            raise RuntimeError("Navigation executable has no matching successful build identity")
+        for name in ("frames.jsonl", "actions.jsonl"):
+            (output / name).unlink(missing_ok=True)
+        write_record(output / "run.json", record)
+        try:
+            result = subprocess.run([str(binary.resolve()), ".", case, str(seed), str(actions)], cwd=output,
+                                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90)
+        except subprocess.TimeoutExpired as error:
+            parts = [part.decode("utf-8", errors="replace") if isinstance(part, bytes) else part
+                     for part in (error.stdout, error.stderr) if part]
+            (output / "render.log").write_text(''.join(parts) + str(error), encoding="utf-8")
+            raise
+        (output / "render.log").write_text(result.stdout + result.stderr, encoding="utf-8")
+        if result.returncode:
+            raise RuntimeError(f"Native navigation failed ({result.returncode}); {output / 'render.log'}\n"
+                               + result.stdout[-1000:] + result.stderr[-2000:])
+        frames = [json.loads(line) for line in (output / "frames.jsonl").read_text(encoding="utf-8").splitlines()]
+        events = [json.loads(line) for line in (output / "actions.jsonl").read_text(encoding="utf-8").splitlines()]
+        before = [event for event in events if event["phase"] == "before"]
+        after = [event for event in events if event["phase"] == "after"]
+        if (not frames or not before or [event["index"] for event in before] !=
+                [event["index"] for event in after] or
+                [event["index"] for event in before] != list(range(len(before))) or
+                (case == "replay" and len(before) != 2 * actions) or
+                {event["locale"] for event in before} != {0, 1} or
+                any(not (output / f"{frame['name']}.png").is_file() or
+                    (output / f"{frame['name']}.png").stat().st_mtime <
+                    datetime.fromisoformat(record["started_at_utc"]).timestamp() for frame in frames)):
+            raise RuntimeError("Navigation capture/journal is empty, incomplete or missing a locale/PNG")
+        record.update(status="PASS", frames=len(frames), actions=len(before),
+                      finished_at_utc=datetime.now(timezone.utc).isoformat())
+        write_record(output / "run.json", record)
+        cards = ''.join(f'<figure><figcaption>{html.escape(frame["name"])}</figcaption>'
+                        f'<a href="{frame["name"]}.png"><img src="{frame["name"]}.png" width="320" height="240"></a></figure>'
+                        for frame in frames)
+        (output / "index.html").write_text(
+            '<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>LVGL navigation</title><style>body{font:14px system-ui;background:#e8edf2;padding:16px}'
+            'main{display:grid;grid-template-columns:repeat(auto-fit,320px);gap:16px}figure{margin:0}img{display:block}'
+            'figcaption{overflow-wrap:anywhere;margin:8px 0}</style>'
+            f'<h1>LVGL: {html.escape(case)}, seed {seed}</h1><p>{len(before)} действий, {len(frames)} снимков. '
+            '<a href="run.json">Версия и проверки</a> · <a href="actions.jsonl">Последовательность кнопок</a> · '
+            '<a href="render.log">Лог</a>. Диагностические снимки; эталоны не изменены.</p><main>' + cards + '</main></html>',
+            encoding="utf-8")
+        return frames
+    except Exception as error:
+        fail_run(output, record, error)
+        raise
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path, default=ROOT / ".test-build/ui-render/native")
@@ -247,7 +319,12 @@ def main() -> None:
     parser.add_argument("--update-goldens", action="store_true",
                         help="Explicitly replace reference PNGs with this run; inspect their diff before committing")
     parser.add_argument("--render-only", action="store_true", help="Write candidate images/layout without accepting references")
+    parser.add_argument("--navigation", choices=NAVIGATION_CASES, help="Exercise real routing and application-key input")
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--actions", type=int, default=512)
     args = parser.parse_args()
+    if args.navigation and (args.update_goldens or args.render_only):
+        parser.error("Navigation captures do not use reference updates/render-only")
     output = args.output_dir.resolve()
     record = start_run(output, "build")
     record["build_metadata"] = str(args.build_dir.resolve() / "build.json")
@@ -256,6 +333,11 @@ def main() -> None:
     except Exception as error:
         fail_run(output, record, error)
         raise
+    if args.navigation:
+        navigation = binary.with_name("ui_navigation_render" + binary.suffix)
+        frames = navigate(navigation, output, args.navigation, args.seed, args.actions)
+        print(f"Native navigation PASS: {len(frames)} frames; artifacts: {output}")
+        return
     frames = render(binary, output)
     golden_frames = [frame for frame in frames if frame["golden"]]
     print(f"Real LVGL: {len(frames)} frames, {len(golden_frames)} reference views. Artifacts: {output}")

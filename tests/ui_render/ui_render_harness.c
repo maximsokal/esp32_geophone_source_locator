@@ -4,6 +4,9 @@
 #include <string.h>
 #include "src/libs/lodepng/lodepng.h"
 #include "ui_fonts.h"
+#ifdef UI_NATIVE_FULL_SCREENS
+#include "ui_navigation_fixture.h"
+#endif
 
 /* Include the complete production screen, so assertions can inspect its widgets.
  * No extracted/reimplemented builders, LVGL stubs or test-only production hooks. */
@@ -157,7 +160,11 @@ static void capture(const char *name, bool golden)
     fprintf(frames, "{\"name\":");
     json_text(name);
     fputs(",\"family\":", frames);
+#ifdef UI_NATIVE_FULL_SCREENS
+    json_text(menu_family);
+#else
     json_text(s_workflow != NULL ? "workflow" : menu_family);
+#endif
     fprintf(frames, ",\"screen\":%d", (int)render_context.screen);
     fprintf(frames, ",\"objects_mode\":%d,\"delete_calls\":%u", (int)render_context.objects_mode, render_delete_calls);
     fprintf(frames, ",\"wifi_confirm\":%d,\"measurement_state\":%d,\"preview_status\":%d",
@@ -182,6 +189,33 @@ void render_capture_menu(const char *family, const char *variant)
     capture(name, true);
 }
 
+#ifdef UI_NATIVE_FULL_SCREENS
+void render_navigation_start(const char *directory)
+{
+    output_dir = directory;
+    char path[512];
+    (void)snprintf(path, sizeof(path), "%s/frames.jsonl", directory);
+    frames = fopen(path, "wb");
+    assert(frames != NULL);
+    lv_init();
+    render_context.display = lv_test_display_create(320, 240);
+    lv_display_set_color_format(render_context.display, LV_COLOR_FORMAT_RGB565);
+}
+
+void render_navigation_capture(const char *name)
+{
+    static const char *families[] = {"home", "objects", "measurements", "storage", "wifi", "system", "preview", "workflow"};
+    menu_family = families[render_context.screen];
+    capture(name, false);
+}
+
+void render_navigation_finish(void) { fclose(frames); lv_deinit(); }
+bool render_workflow_exists(void) { return s_workflow != NULL; }
+bool render_workflow_result_pending(void) { return s_workflow != NULL && s_workflow->result_load_pending; }
+bool render_workflow_result_ready(void) { return s_workflow != NULL && s_workflow->model_state.result_data_ready; }
+uint32_t render_workflow_result_generation(void) { return s_workflow != NULL ? s_workflow->result_generation : 0U; }
+size_t render_workflow_action_count(void) { return s_workflow != NULL ? s_workflow->model.action_count : 0U; }
+#else
 static void prepare(workflow_step_t step, unsigned remotes)
 {
     ui_workflow_screen_close_locked();
@@ -350,3 +384,4 @@ int main(int argc, char **argv)
     lv_deinit();
     return 0;
 }
+#endif

@@ -271,6 +271,7 @@ def test_ui_plan_owns_fresh_reports_and_keeps_existing_default_scopes(tmp_path):
         'ui-web/components', 'ui-web/visual-tools', 'ui-web/e2e-types', 'ui-web/smoke', 'ui-web/layout', 'ui-web/network',
         'ui-web/firmware-producer-tests', 'ui-web/firmware-producer', 'ui-web/firmware-pages', 'ui-web/bundle']
     assert '--junitxml' in steps[1].command
+    assert 'tests/python/test_ui_navigation_render.py' in steps[1].command
     assert str(output / 'native') in steps[1].command
     smoke = next(s for s in steps if s.name == 'ui-web/smoke')
     assert smoke.command[-3:] == ('--', '--output', str(output / 'web/results'))

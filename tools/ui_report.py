@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from run_ui_render_tests import NAVIGATION_RUNS
 
 ROOT = Path(__file__).resolve().parents[1]
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
@@ -29,6 +30,7 @@ def source_identity(root: Path) -> dict:
     """Include dirty and new UI/test/config inputs; exclude output and dependencies."""
     paths = []
     for directory in ('components', 'main', 'webui/src', 'webui/tests', 'webui/scripts', 'tests/ui_render',
+                      'tests/host/stubs/ui_navigation',
                       'tests/python', 'tools', '.github/workflows'):
         paths.extend(p for p in (root / directory).rglob('*') if p.is_file() and
                      '__pycache__' not in p.parts and p.suffix in {
@@ -36,6 +38,8 @@ def source_identity(root: Path) -> dict:
     paths.extend(root / p for p in ('dependencies.lock', 'sdkconfig', 'sdkconfig.defaults',
                  'webui/package.json', 'webui/package-lock.json', 'webui/index.html',
                  'webui/playwright.config.ts', 'webui/playwright.layout.config.ts', 'webui/playwright.network.config.ts', 'webui/playwright.firmware-pages.config.ts', 'webui/playwright.visual.config.mjs', 'tests/ui_contract.json',
+                 'tests/host/ui_home_navigation_test.c', 'tests/host/manifest.d/coverage-core.json',
+                 'tests/host/manifest.d/max449-measurements-workflow.json',
                  'webui/tsconfig.e2e.json', 'webui/vite.config.ts',
                  'webui/tsconfig.json', 'webui/vitest.dom.config.ts', 'webui/tsconfig.test.json', 'sgconfig.yml'))
     digest = hashlib.sha256()
@@ -168,7 +172,8 @@ def junit_records(junit: Path, subsystem: str, identity: dict | None = None) -> 
             artifacts={'junit': str(junit)},
             viewport='320x240' if subsystem == 'native' else None,
             environment={'runtime': {'native': 'Native LVGL/runner', 'components': 'jsdom', 'domain': 'Node'}[subsystem]},
-            reproduce=('python -m pytest tests/python/test_ui_render_runner.py tests/python/test_ui_render.py -q'
+            reproduce=('python -m pytest tests/python/test_ui_render_runner.py tests/python/test_ui_render.py '
+                       'tests/python/test_ui_navigation_render.py -q'
                        if subsystem == 'native' else f'cd webui; npm run test:{subsystem}')))
     if not rows:
         raise ValueError(f'{subsystem} JUnit contains no tests')
@@ -205,6 +210,38 @@ def native_records(junit: Path, native_root: Path, identity: dict | None = None)
         'frames': run.get('frames'), 'comparisons': run.get('comparisons'), 'error': run.get('error')}),
         category='render/reference', environment=run,
         artifacts={'metadata': str(run_path), 'gallery': str(run_path.parent / 'index.html')}))
+    rows.extend(navigation_records(native_root, identity))
+    return rows
+
+
+def navigation_records(native_root: Path, identity: dict | None = None) -> list[dict]:
+    rows, found = [], set()
+    expected = set(NAVIGATION_RUNS)
+    for path in sorted(native_root.glob('navigation-lvgl*/*/run.json')):
+        try:
+            check_fresh(path, identity)
+            run = read_json(path)
+            key = run['case'], run['seed']
+            if key not in expected or key in found:
+                raise ValueError('Unexpected/duplicate native navigation case/seed')
+            found.add(key)
+            if run['status'] not in ('PASS', 'FAIL'):
+                raise ValueError('Native navigation did not finish')
+            if run['status'] == 'PASS' and (not isinstance(run.get('frames'), int) or run['frames'] <= 0 or
+                    not isinstance(run.get('actions'), int) or run['actions'] <= 0 or
+                    not (path.parent / 'actions.jsonl').is_file() or not (path.parent / 'index.html').is_file()):
+                raise ValueError('Native navigation PASS has no frames/actions/gallery')
+            rows.append(record('native', f'native/navigation/{key[0]}-{key[1]}', run['status'],
+                json.dumps({name: run.get(name) for name in ('frames', 'actions', 'seed', 'error')}),
+                category='navigation/lifecycle', environment=run,
+                artifacts={'metadata': str(path), 'gallery': str(path.parent / 'index.html'),
+                           'all_routes': str(path.parent.parent / 'index.html'),
+                           'actions': str(path.parent / 'actions.jsonl')}, reproduce=run.get('reproduce')))
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            rows.append(record('native', 'native/navigation-input', 'BLOCKED', str(error), category='infrastructure'))
+    if found != expected:
+        rows.append(record('native', 'native/navigation-selection', 'BLOCKED',
+            f'Missing native navigation cases/seeds: {sorted(expected - found)}', category='coverage'))
     return rows
 
 

@@ -157,17 +157,23 @@ def test_output_cannot_overwrite_authoritative_references(tmp_path, monkeypatch,
     assert source.read_bytes() == b"approved reference"
 
 
-def test_compiler_named_on_path_keeps_supported_cc_override(tmp_path, monkeypatch):
+@pytest.mark.parametrize("msvc", [False, True])
+def test_compiler_named_on_path_keeps_supported_cc_override(tmp_path, monkeypatch, msvc):
     compiler = tmp_path / "compiler.exe"
     compiler.write_bytes(b"native compiler on PATH")
     monkeypatch.setattr(runner, "compiler_from_args", lambda _: ["native-cc"])
+    monkeypatch.setattr(runner, "is_msvc", lambda _: msvc)
+    monkeypatch.setattr(runner, "load_msvc_environment", lambda _: {})
     monkeypatch.setattr(runner, "compiler_description", lambda _: "native compiler")
     monkeypatch.setattr(runner, "ensure_native_compiler", lambda *_: None)
     monkeypatch.setattr(runner.shutil, "which", lambda name: str(compiler) if name == "native-cc" else name)
     monkeypatch.setattr(runner, "find_tool", lambda name: name)
     monkeypatch.setattr(runner.subprocess, "check_output", lambda *_, **__: "build-revision")
 
+    commands = []
+
     def execute(command, **_):
+        commands.append(command)
         if "--build" in command:
             binary = tmp_path / ("ui_render.exe" if runner.os.name == "nt" else "ui_render")
             binary.write_bytes(b"compiled output")
@@ -179,3 +185,63 @@ def test_compiler_named_on_path_keeps_supported_cc_override(tmp_path, monkeypatc
     assert metadata["status"] == "PASS"
     assert metadata["compiler"]["command"] == ["native-cc"]
     assert metadata["compiler"]["sha256"] == hashlib.sha256(compiler.read_bytes()).hexdigest()
+    assert any("--clean-first" in command for command in commands) == msvc
+
+
+@pytest.fixture
+def navigation_run(tmp_path, monkeypatch):
+    binary = tmp_path / 'ui_navigation_render.exe'
+    binary.write_bytes(b'native navigation executable')
+    (tmp_path / 'build.json').write_text(json.dumps({'status': 'PASS',
+        'navigation_binary_sha256': runner.file_hash(binary)}))
+    output = tmp_path / 'output'
+    state = {'mode': 'pass'}
+
+    def execute(command, *, cwd, **kwargs):
+        assert command == [str(binary.resolve()), '.', 'entry', '42', '64']
+        if state['mode'] == 'timeout':
+            raise subprocess.TimeoutExpired(command, 90, output=b'partial navigation', stderr=b'fixture timeout')
+        if state['mode'] == 'error':
+            return subprocess.CompletedProcess(command, 3, 'partial navigation', 'fixture assertion')
+        if state['mode'] == 'empty':
+            return subprocess.CompletedProcess(command, 0, '', '')
+        frames = [{'name': f'{locale}_entry', 'golden': False, 'comparison': -1} for locale in ('en', 'uk')]
+        events = [{'phase': phase, 'index': index, 'locale': index} for index in (0, 1) for phase in ('before', 'after')]
+        if state['mode'] == 'partial':
+            events.pop()
+        Path(cwd, 'frames.jsonl').write_text(''.join(json.dumps(frame) + '\n' for frame in frames))
+        Path(cwd, 'actions.jsonl').write_text(''.join(json.dumps(event) + '\n' for event in events))
+        if state['mode'] != 'stale-png':
+            for frame in frames:
+                Path(cwd, frame['name'] + '.png').write_bytes(b'fixture PNG')
+        return subprocess.CompletedProcess(command, 0, 'navigation complete', '')
+
+    monkeypatch.setattr(runner.subprocess, 'run', execute)
+    return binary, output, state
+
+
+@pytest.mark.parametrize('fault', ['error', 'timeout', 'empty', 'partial', 'stale-png', 'binary'])
+def test_navigation_failure_invalidates_old_pass_and_keeps_diagnostics(navigation_run, fault):
+    binary, output, state = navigation_run
+    runner.navigate(binary, output, 'entry', 42, 64)
+    assert json.loads((output / 'run.json').read_text())['status'] == 'PASS'
+    state['mode'] = fault
+    if fault == 'binary':
+        binary.write_bytes(b'changed executable')
+    if fault == 'stale-png':
+        import os
+        for png in output.glob('*.png'):
+            os.utime(png, (1, 1))
+    with pytest.raises((RuntimeError, OSError, subprocess.TimeoutExpired)):
+        runner.navigate(binary, output, 'entry', 42, 64)
+    assert json.loads((output / 'run.json').read_text())['status'] == 'FAIL'
+    assert 'failed' in (output / 'index.html').read_text().lower()
+    if fault in ('error', 'timeout'):
+        assert 'partial navigation' in (output / 'render.log').read_text()
+
+
+@pytest.mark.parametrize('case,seed,actions', [('unknown', 1, 1), ('entry', 0, 1), ('entry', 1, 2049)])
+def test_navigation_rejects_unbounded_or_unknown_selection(tmp_path, case, seed, actions):
+    with pytest.raises(ValueError, match='bounded navigation'):
+        runner.navigate(tmp_path / 'binary', tmp_path / 'output', case, seed, actions)
+    assert not (tmp_path / 'output').exists()

@@ -15,6 +15,77 @@
 #include "display.h"
 #include "storage_manager.h"
 #include "storage_bulk_admission.h"
+#ifdef UI_NATIVE_FULL_SCREENS
+#include <setjmp.h>
+#include "ui_navigation_fixture.h"
+
+static struct {
+    void (*run)(void *);
+    void *argument;
+    const char *name;
+} render_tasks[2];
+static size_t render_task_count, render_selected_task;
+static jmp_buf render_task_return;
+static bool render_task_running, render_task_notified;
+static void (*render_completion_interleave)(void);
+unsigned render_heap_allocations;
+size_t render_heap_bytes;
+static struct { void *memory; size_t size; } render_allocations[64];
+
+void *render_heap_malloc(size_t size)
+{
+    void *memory = malloc(size);
+    assert(memory != NULL);
+    for (size_t i = 0U; i < 64U; ++i) {
+        if (render_allocations[i].memory != NULL) continue;
+        render_allocations[i].memory = memory;
+        render_allocations[i].size = size;
+        ++render_heap_allocations;
+        render_heap_bytes += size;
+        return memory;
+    }
+    assert(false);
+    return NULL;
+}
+void *render_heap_calloc(size_t count, size_t size)
+{
+    assert(size == 0U || count <= SIZE_MAX / size);
+    void *memory = render_heap_malloc(count * size);
+    memset(memory, 0, count * size);
+    return memory;
+}
+void render_heap_free(void *memory)
+{
+    if (memory == NULL) return;
+    for (size_t i = 0U; i < 64U; ++i) {
+        if (render_allocations[i].memory != memory) continue;
+        assert(render_heap_allocations > 0U && render_heap_bytes >= render_allocations[i].size);
+        --render_heap_allocations;
+        render_heap_bytes -= render_allocations[i].size;
+        render_allocations[i].memory = NULL;
+        free(memory);
+        return;
+    }
+    assert(false);
+}
+void render_run_task(const char *name, void (*before_completion)(void))
+{
+    render_selected_task = render_task_count;
+    for (size_t i = 0U; i < render_task_count; ++i) {
+        if (strcmp(render_tasks[i].name, name) != 0) continue;
+        render_selected_task = i;
+        break;
+    }
+    assert(render_selected_task < render_task_count && !render_task_running);
+    render_task_running = true;
+    render_task_notified = true;
+    render_completion_interleave = before_completion;
+    /* Stop only at the worker's next notification wait, after its frees. */
+    if (setjmp(render_task_return) == 0) render_tasks[render_selected_task].run(render_tasks[render_selected_task].argument);
+    render_task_running = false;
+    render_completion_interleave = NULL;
+}
+#endif
 
 ui_context_t render_context;
 workflow_snapshot_t render_snapshot;
@@ -23,6 +94,9 @@ uint64_t render_now_ms = 1000U;
 workflow_command_t render_last_command = WORKFLOW_COMMAND_COUNT;
 unsigned render_command_count;
 unsigned render_delete_calls;
+unsigned render_list_calls, render_active_calls, render_erase_calls, render_info_calls;
+unsigned render_wifi_setup_calls, render_wifi_forget_calls, render_acquisition_starts;
+esp_err_t render_acquisition_result = ESP_OK;
 bool render_wifi_setup;
 bool render_wifi_client;
 bool render_wifi_saved;
@@ -70,6 +144,7 @@ esp_err_t seismic_acquisition_get_snapshot(seismic_acquisition_snapshot_t *out)
     if (render_acquisition_mode == 4U) out->running = false;
     return ESP_OK;
 }
+#ifndef UI_NATIVE_FULL_SCREENS
 size_t ui_screen_home_count(void) { return UI_HOME_SCREEN_COUNT; }
 const char *ui_screen_home_label(size_t index)
 {
@@ -84,19 +159,58 @@ void ui_screen_render_locked(ui_screen_t screen) { (void)screen; }
 void ui_screen_refresh_locked(ui_screen_t screen) { (void)screen; }
 void ui_screen_handle_key_locked(ui_screen_t screen, keypad_key_t key)
 { (void)screen; (void)key; assert(false); }
+#endif
+esp_err_t seismic_acquisition_start(void) { ++render_acquisition_starts; return render_acquisition_result; }
 
 /* Native tests inject completed file results explicitly; never run an RTOS task. */
 BaseType_t xTaskCreatePinnedToCore(void (*task)(void *), const char *name, uint32_t stack,
     void *arg, unsigned priority, TaskHandle_t *handle, BaseType_t core)
 {
-    (void)task; (void)name; (void)stack; (void)arg; (void)priority; (void)handle; (void)core;
+    (void)stack; (void)priority; (void)core;
+#ifdef UI_NATIVE_FULL_SCREENS
+    assert(render_task_count < 2U);
+    render_tasks[render_task_count].run = task;
+    render_tasks[render_task_count].argument = arg;
+    render_tasks[render_task_count].name = name;
+    *handle = &render_tasks[render_task_count++];
+    return pdPASS;
+#else
+    (void)task; (void)name; (void)arg; (void)handle;
     return 0;
+#endif
 }
 uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t timeout)
-{ (void)clear; (void)timeout; assert(false); return 0U; }
-void xTaskNotifyGive(TaskHandle_t task) { (void)task; assert(false); }
+{
+    (void)clear; (void)timeout;
+#ifdef UI_NATIVE_FULL_SCREENS
+    assert(render_task_running);
+    if (!render_task_notified) longjmp(render_task_return, 1);
+    render_task_notified = false;
+    return 1U;
+#else
+    assert(false); return 0U;
+#endif
+}
+void xTaskNotifyGive(TaskHandle_t task)
+{
+    (void)task;
+#ifndef UI_NATIVE_FULL_SCREENS
+    assert(false);
+#endif
+}
 void vTaskDelay(TickType_t ticks) { (void)ticks; assert(false); }
-bool lvgl_port_lock(uint32_t timeout) { (void)timeout; return true; }
+bool lvgl_port_lock(uint32_t timeout)
+{
+    (void)timeout;
+#ifdef UI_NATIVE_FULL_SCREENS
+    if (render_task_running && render_completion_interleave != NULL) {
+        void (*interleave)(void) = render_completion_interleave;
+        render_completion_interleave = NULL;
+        interleave();
+    }
+#endif
+    return true;
+}
 void lvgl_port_unlock(void) {}
 
 esp_err_t workflow_service_command_async(workflow_command_t command, bool has_generation,
@@ -167,8 +281,8 @@ esp_err_t object_service_get_active(object_service_summary_t *out)
 }
 bool object_service_is_busy(void) { return render_service_busy; }
 esp_err_t object_service_create_async(void) { return render_service_result; }
-esp_err_t object_service_list_async(void) { return render_service_result; }
-esp_err_t object_service_set_active_async(const char *id) { (void)id; return render_service_result; }
+esp_err_t object_service_list_async(void) { ++render_list_calls; return render_service_result; }
+esp_err_t object_service_set_active_async(const char *id) { (void)id; ++render_active_calls; return render_service_result; }
 esp_err_t object_service_delete_async(const char *id) { (void)id; ++render_delete_calls; return render_service_result; }
 esp_err_t object_store_get_delete_scope(const char *id, object_store_delete_scope_t *scope)
 {
@@ -178,8 +292,8 @@ esp_err_t object_store_get_delete_scope(const char *id, object_store_delete_scop
 }
 bool measurement_service_snapshot_allows_object_mutation(const measurement_service_snapshot_t *snapshot)
 { return !snapshot->busy && (snapshot->state == MEASUREMENT_SERVICE_LIVE || snapshot->state == MEASUREMENT_SERVICE_ERROR); }
-esp_err_t storage_service_info_async(void) { return render_service_result; }
-esp_err_t storage_service_erase_data_async(void) { return render_service_result; }
+esp_err_t storage_service_info_async(void) { ++render_info_calls; return render_service_result; }
+esp_err_t storage_service_erase_data_async(void) { ++render_erase_calls; return render_service_result; }
 bool storage_service_is_busy(void) { return render_service_busy; }
 bool storage_manager_is_ready(void) { return render_storage_ready; }
 bool wifi_manager_setup_client_connected(void) { return render_wifi_client; }
@@ -192,9 +306,9 @@ bool wifi_manager_is_running(void) { return true; }
 bool wifi_manager_is_radio_state_uncertain(void) { return false; }
 bool wifi_manager_network_events_suppressed(void) { return false; }
 bool wifi_manager_sta_has_ip(void) { return render_wifi_ip; }
-esp_err_t wifi_manager_enter_setup_mode(void) { return render_service_result; }
+esp_err_t wifi_manager_enter_setup_mode(void) { ++render_wifi_setup_calls; return render_service_result; }
 esp_err_t wifi_manager_connect_saved(void) { return render_service_result; }
-esp_err_t wifi_manager_forget_sta_credentials(void) { return render_service_result; }
+esp_err_t wifi_manager_forget_sta_credentials(void) { ++render_wifi_forget_calls; return render_service_result; }
 esp_err_t ui_event_dispatcher_queue_locale_save(ui_locale_t locale) { (void)locale; return render_service_result; }
 size_t hw_inventory_snapshot(hw_module_info_t *out, size_t capacity)
 {

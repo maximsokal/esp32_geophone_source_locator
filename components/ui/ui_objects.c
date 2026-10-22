@@ -430,7 +430,9 @@ void ui_object_service_event(
                 context->object_index = 0;
             }
 
-            context->objects_mode = UI_OBJECTS_MENU;
+            if (context->objects_mode != UI_OBJECTS_SELECT_WORKFLOW) {
+                context->objects_mode = UI_OBJECTS_MENU;
+            }
 
             ui_set_notice_locked(
                 context->object_count > 0

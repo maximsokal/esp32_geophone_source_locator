@@ -2,10 +2,12 @@ import importlib.util
 import base64
 import json
 from pathlib import Path
+import sys
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'tools'))
 spec = importlib.util.spec_from_file_location('ui_report', ROOT / 'tools/ui_report.py')
 assert spec and spec.loader
 reporter = importlib.util.module_from_spec(spec)
@@ -214,6 +216,7 @@ def test_native_assertion_and_capture_results_both_required(tmp_path):
     junit = tmp_path / 'junit.xml'
     junit.write_text('<testsuites><testsuite><testcase classname="native" name="bounds"/></testsuite></testsuites>')
     kwargs = dict(web=None, native_junit=junit, native_root=tmp_path, only='native')
+    navigation_reports(tmp_path)
     assert reporter.summarize(**kwargs)['status'] == 'PASS'
     junit.write_text('<testsuites><testsuite><testcase classname="native" name="bounds">'
                      '<failure>actual bottom=245, expected &lt;240</failure></testcase></testsuite></testsuites>')
@@ -224,6 +227,39 @@ def test_native_assertion_and_capture_results_both_required(tmp_path):
     missing = reporter.summarize(**kwargs)
     assert missing['status'] == 'FAIL'
     assert missing['counts'] == {'FAIL': 1, 'BLOCKED': 1}
+
+
+def navigation_reports(root):
+    paths = []
+    for case, seed in reporter.NAVIGATION_RUNS:
+        path = root / 'navigation-lvgl0' / f'{case}-{seed}' / 'run.json'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({'status': 'PASS', 'case': case, 'seed': seed, 'frames': 2, 'actions': 10}))
+        (path.parent / 'actions.jsonl').write_text('fixture journal')
+        (path.parent / 'index.html').write_text('fixture gallery')
+        paths.append(path)
+    return paths
+
+
+@pytest.mark.parametrize('fault', ['missing', 'duplicate', 'failed', 'unfinished', 'no-actions', 'no-journal', 'no-gallery'])
+def test_navigation_capture_cannot_hide_missing_failed_or_incomplete_runs(tmp_path, fault):
+    paths = navigation_reports(tmp_path)
+    assert {row['status'] for row in reporter.navigation_records(tmp_path)} == {'PASS'}
+    path = paths[0]
+    data = json.loads(path.read_text())
+    if fault == 'missing':
+        path.unlink()
+    elif fault == 'duplicate':
+        duplicate = path.parent.parent / 'duplicate' / 'run.json'
+        duplicate.parent.mkdir()
+        duplicate.write_text(json.dumps(data))
+    elif fault in ('failed', 'unfinished', 'no-actions'):
+        data.update({'failed': {'status': 'FAIL'}, 'unfinished': {'status': 'RUNNING'}, 'no-actions': {'actions': 0}}[fault])
+        path.write_text(json.dumps(data))
+    else:
+        (path.parent / ('actions.jsonl' if fault == 'no-journal' else 'index.html')).unlink()
+    rows = reporter.navigation_records(tmp_path)
+    assert any(row['status'] in ('FAIL', 'BLOCKED') for row in rows)
 
 
 def test_source_drift_and_invalid_identity_are_reported(tmp_path, monkeypatch):

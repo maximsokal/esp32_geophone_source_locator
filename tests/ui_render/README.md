@@ -20,8 +20,9 @@ reference QR images never include real access credentials.
 Requirements: the project's managed LVGL sources (normally fetched by the
 ESP-IDF build), Python/pytest, CMake, Ninja and a native MSVC/GCC/Clang compiler.
 The runner reuses native compiler discovery from `run_host_tests.py`; Windows
-CMake/Ninja can also be found under `C:/Espressif/tools`. It does a fresh native
-build, avoiding stale dependencies from localized MSVC include output.
+CMake/Ninja can also be found under `C:/Espressif/tools`. MSVC builds start fresh,
+avoiding stale dependencies from localized include output. GCC/Clang use Ninja's
+ordinary dependency tracking.
 
 ```powershell
 python -m pip install -r tests/ui_render/requirements.txt
@@ -65,7 +66,7 @@ leaves `FAIL` metadata and a failure page, not the previous successful gallery.
 Partial native output is retained in `render.log`. Normal CLI comparison still
 exits nonzero on a missing or different reference.
 
-The metadata's `checks` describe native rendering/PNG comparison only. Geometry,
+The pixel capture metadata's `checks` describe native rendering/PNG comparison only. Geometry,
 style, input and reachability assertions are executed by pytest; this file does
 not claim those assertions or physical LCD/hardware checks passed.
 
@@ -74,6 +75,16 @@ Run the boundary checks and the real renderer together:
 ```powershell
 python -m pytest tests/python/test_ui_render_runner.py tests/python/test_ui_render.py --basetemp .test-build/ui-render/check-03 -q
 ```
+
+For actual screen-registry transitions, result ownership, repeated lifecycles
+and reproducible application-key stress, include
+`tests/python/test_ui_navigation_render.py` in that command. The separate
+`ui_navigation_render` binary links the full registry with real renderers;
+the pixel executable above keeps its original direct-render fixture.
+`navigation-lvgl*/index.html` links the ten EN/UK diagnostic galleries, key
+journals, seeds and identities. See [G details](../../docs/ui-regression.md#native-routing-lifecycle-and-seeded-application-keys-g).
+There is no baseline update. Only service/RTOS boundaries are controlled; actual
+debounce, RTOS timing and physical TFT/SPI remain hardware acceptance.
 
 Use a new basetemp name. The real renderer test copies the reference source into
 an isolated directory, runs a successful comparison, removes only that isolated

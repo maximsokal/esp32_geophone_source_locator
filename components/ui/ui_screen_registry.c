@@ -20,7 +20,7 @@ static workflow_snapshot_t s_measurements_route_snapshot;
 static EXT_RAM_BSS_ATTR workflow_snapshot_t s_measurements_route_snapshot;
 #endif
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(UI_NATIVE_FULL_SCREENS)
 /* The standalone MSVC navigation fixture intentionally omits these full UI screens. */
 void ui_workflow_screen_open_locked(void) {}
 void ui_workflow_screen_close_locked(void) {}
@@ -362,10 +362,12 @@ void ui_screen_open_locked(
     }
 
     const bool leaving_preview = ui_context()->screen == UI_SCREEN_SCAN_PREVIEW && screen != UI_SCREEN_SCAN_PREVIEW;
-    const bool leaving_workflow = ui_context()->screen == UI_SCREEN_WORKFLOW &&
+    const bool leaving_workflow =
+        (ui_context()->screen == UI_SCREEN_WORKFLOW || ui_context()->screen == UI_SCREEN_SCAN_PREVIEW) &&
         screen != UI_SCREEN_WORKFLOW && screen != UI_SCREEN_SCAN_PREVIEW;
     if (leaving_preview) ui_scan_preview_close_locked();
     if (leaving_workflow) ui_workflow_screen_close_locked();
+    ui_context()->workflow_activation_pending = false;
     ui_context()->screen = screen;
     driver->open();
     if (leaving_preview) ui_scan_preview_release_locked();
