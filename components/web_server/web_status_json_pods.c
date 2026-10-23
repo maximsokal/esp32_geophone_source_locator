@@ -120,6 +120,19 @@ static bool web_status_json_add_imu(
         cJSON_AddNumberToObject(object, "yaw_relative_deg", imu->yaw_relative_deg) != NULL;
 }
 
+static bool web_status_json_add_sensor_health(
+    cJSON *pod_object, const device_sensor_health_t *health)
+{
+    cJSON *object = cJSON_AddObjectToObject(pod_object, "sensor_health");
+    return object != NULL &&
+        cJSON_AddBoolToObject(object, "current", health->current) != NULL &&
+        cJSON_AddBoolToObject(object, "imu_valid", health->imu_valid) != NULL &&
+        cJSON_AddBoolToObject(object, "barometer_valid", health->barometer_valid) != NULL &&
+        cJSON_AddBoolToObject(object, "imu_fault", health->imu_fault) != NULL &&
+        cJSON_AddBoolToObject(object, "barometer_fault", health->barometer_fault) != NULL &&
+        cJSON_AddBoolToObject(object, "imu_calibrated", health->imu_calibrated) != NULL;
+}
+
 
 static bool web_status_json_add_geophone(
     cJSON *pod_object,
@@ -271,6 +284,7 @@ bool web_status_json_add_pods(
         ) {
             return false;
         }
+        if (!web_status_json_add_sensor_health(pod_object, &pod->sensor_health)) return false;
 
         if (
             !web_status_json_add_barometer(

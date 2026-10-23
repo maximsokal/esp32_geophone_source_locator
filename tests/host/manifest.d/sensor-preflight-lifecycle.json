@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "app_pod_status_sensor_health",
+      "sources": [
+        "components/device_status_pod_bridge/app_pod_status_sensor_health_policy.c",
+        "tests/host/app_pod_status_sensor_health_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_start",
+        "components/device_status/include",
+        "components/device_status_pod_bridge/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "seismic_shutdown_buffer",
+      "sources": [
+        "components/seismic_acquisition/seismic_acquisition.c",
+        "components/seismic_buffer/seismic_buffer.c",
+        "tests/host/seismic_shutdown_buffer_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_buffer/include",
+        "tests/host/stubs/seismic_acquisition_lifecycle",
+        "components/seismic_acquisition/include",
+        "components/seismic_acquisition",
+        "components/seismic_buffer/tests/stubs"
+      ]
+    }
+  ]
+}

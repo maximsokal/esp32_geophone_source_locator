@@ -1220,13 +1220,55 @@ static void assert_fully_released(void)
     assert(!s_fake_ledc_timer_configured);
     assert(!s_fake_ledc_channel_configured);
     assert(!s_fake_gpio_intr_enabled);
-    assert(s_buffer_source == SEISMIC_SOURCE_NONE);
+    /* The facade resets the buffer only after the recorder has drained it. */
     assert(!status_now().running);
     assert(!s_sem_live);
 }
 
 #if !defined(AD7606_ACQUISITION_RUNTIME_TEST_SUPPORT_ONLY)
 /* ---- tests ---- */
+
+static void test_bounded_preflight_and_power_deferral(void)
+{
+    reset_world();
+    s_rail_v = 4.60f;
+    assert(ad7606_acquisition_probe() == ESP_ERR_INVALID_STATE);
+    assert(s_driver_inits == 0U && s_driver_deinits == 0U);
+    assert(s_task_creates == 0U);
+    assert(s_oc_clear_calls == 0U);
+
+    reset_world();
+    s_rail_available = false;
+    assert(ad7606_acquisition_probe() == ESP_ERR_INVALID_STATE);
+    assert(s_driver_inits == 0U && s_driver_deinits == 0U);
+    assert(s_task_creates == 0U);
+
+    reset_world();
+    s_rail_oc_from_us = 0;
+    assert(ad7606_acquisition_probe() == ESP_ERR_INVALID_STATE);
+    assert(s_oc_clear_calls == 0U && s_driver_inits == 0U);
+    assert(status_now().power_gate == AD7606_POWER_GATE_OVERCURRENT);
+
+    reset_world();
+    assert(ad7606_acquisition_probe() == ESP_OK);
+    assert(s_driver_inits == 1U && s_driver_deinits == 1U);
+    assert(s_task_creates == 0U);
+    assert(s_buffer_source == SEISMIC_SOURCE_TEST && s_buffer_rate == 12345U);
+    assert_fully_released();
+    script(EV_TICK, 1U);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(s_buffer_source == SEISMIC_SOURCE_AD7606);
+    assert(s_pushes == 1U);
+    assert_fully_released();
+
+    reset_world();
+    s_driver_init_result = ESP_FAIL;
+    assert(ad7606_acquisition_probe() == ESP_FAIL);
+    assert(s_driver_inits == 1U && s_driver_deinits == 1U);
+    assert(s_task_creates == 0U);
+    assert_fully_released();
+}
 
 static void *run_lifecycle_busy_isr(void *argument)
 {
@@ -1367,7 +1409,8 @@ static void test_run_samples_then_stop_releases_everything(void)
     assert(s_stop_isr_suppressions == 1U);
     assert(s_esp_timer_get_time_calls == 2U); /* start gate + LEDC t0, never per sample */
     assert(s_ad7606_rate == 500U);
-    assert(s_buffer_rate == 0U); /* detached again on stop */
+    assert(s_buffer_source == SEISMIC_SOURCE_AD7606);
+    assert(s_buffer_rate == 500U); /* retained for recorder drain by the facade */
 
     /* Three periods -> three conversions -> three pushes of channels 1..4. */
     assert(s_reads == 3U);
@@ -2648,6 +2691,7 @@ int main(void)
     test_jitter_bucket_boundaries_and_open_ended_bucket();
     test_negative_jitter_is_clamped_and_counted_early();
     test_jitter_counter_saturation();
+    test_bounded_preflight_and_power_deferral();
     test_low_rail_refuses_start_without_touching_the_adc();
     test_unverified_rail_starts_with_warning();
     test_confirmed_rail_loss_stops_and_releases_the_adc();

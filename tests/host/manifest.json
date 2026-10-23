@@ -1411,7 +1411,9 @@
         "components/measurement_service/tests/measurement_service_worker_contract_test.c",
         "components/object_format/object_format.c",
         "components/storage_manager/storage_bulk_admission.c",
-        "tests/host/stubs/runtime_observability/noop.c"
+        "tests/host/stubs/runtime_observability/noop.c",
+        "components/measurement_service/tests/stubs/acquisition_fake.c",
+        "components/seismic_recorder/seismic_recorder_start_policy.c"
       ],
       "include_dirs": [
         "components/app_config/include",
@@ -1420,6 +1422,7 @@
         "components/object_service/include",
         "components/object_format/include",
         "components/seismic_recorder/include",
+        "components/seismic_acquisition/include",
         "components/object_store/include",
         "components/seismic_buffer/include",
         "tests/host/stubs/runtime_observability",

@@ -279,9 +279,20 @@ typedef struct
 } device_geophone_status_t;
 
 
+/* Raw sensor availability is independent from orientation/calibration. */
+typedef struct {
+    bool current;
+    bool imu_valid;
+    bool barometer_valid;
+    bool imu_fault;
+    bool barometer_fault;
+    bool imu_calibrated;
+} device_sensor_health_t;
+
 typedef struct
 {
     pod_state_t state;
+    device_sensor_health_t sensor_health;
 
     device_pod_capabilities_t capabilities;
     device_barometer_status_t barometer;
@@ -465,6 +476,9 @@ esp_err_t device_status_set_pod_height_reference(
  * yaw_relative_deg is relative only.
  * BMI160 has no magnetometer.
  */
+esp_err_t device_status_set_pod_sensor_health(
+    size_t pod_index, const device_sensor_health_t *health);
+
 esp_err_t device_status_set_pod_imu(
     size_t pod_index,
     float roll_deg,

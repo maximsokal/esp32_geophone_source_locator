@@ -8,6 +8,7 @@
 #include "seismic_source_driver.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -18,6 +19,11 @@ static const char *TAG = "SEISMIC_ACQ";
 static SemaphoreHandle_t s_lifecycle_mutex = NULL;
 static atomic_bool s_running = false;
 static atomic_int s_last_error = ESP_OK;
+/* Protected by s_lifecycle_mutex; no consumer reference counts. */
+static bool s_tft_preview;
+static int64_t s_web_preview_until_us;
+static bool s_shutdown;
+static bool s_probe_waiting_for_power;
 
 
 static const seismic_source_driver_t *seismic_driver(void)
@@ -132,18 +138,14 @@ esp_err_t seismic_acquisition_init(void)
 }
 
 
-esp_err_t seismic_acquisition_start(void)
+static esp_err_t seismic_acquisition_start_locked(void)
 {
-    esp_err_t err =
-        seismic_acquisition_lifecycle_lock();
-
-    if (err != ESP_OK) {
-        return err;
+    if (s_shutdown) {
+        return ESP_ERR_INVALID_STATE;
     }
 
     if (atomic_load_explicit(&s_running, memory_order_acquire)) {
         /* A stale physical-health observation must not restart this task. */
-        seismic_acquisition_lifecycle_unlock();
         return ESP_OK;
     }
 
@@ -151,7 +153,7 @@ esp_err_t seismic_acquisition_start(void)
 
     ESP_LOGI(TAG, "Source: %s", driver->name);
 
-    err = driver->start();
+    esp_err_t err = driver->start();
     if (err != ESP_OK) {
         atomic_store_explicit(
             &s_last_error,
@@ -168,7 +170,6 @@ esp_err_t seismic_acquisition_start(void)
             esp_err_to_name(err)
         );
 
-        seismic_acquisition_lifecycle_unlock();
         return err;
     }
 
@@ -187,7 +188,6 @@ esp_err_t seismic_acquisition_start(void)
         );
 
         seismic_acquisition_reset_failed_start_locked();
-        seismic_acquisition_lifecycle_unlock();
         return err;
     }
 
@@ -202,23 +202,46 @@ esp_err_t seismic_acquisition_start(void)
         true,
         memory_order_release
     );
+    s_probe_waiting_for_power = false;
 
-    seismic_acquisition_lifecycle_unlock();
     return ESP_OK;
 }
 
 
-void seismic_acquisition_stop(void)
+esp_err_t seismic_acquisition_start(void)
 {
-    if (seismic_acquisition_lifecycle_lock() != ESP_OK) {
-        atomic_store_explicit(
-            &s_running,
-            false,
-            memory_order_release
-        );
-        return;
-    }
+    esp_err_t err = seismic_acquisition_lifecycle_lock();
+    if (err != ESP_OK) return err;
+    err = seismic_acquisition_start_locked();
+    seismic_acquisition_lifecycle_unlock();
+    return err;
+}
 
+
+static esp_err_t seismic_acquisition_probe_locked(void)
+{
+    if (s_shutdown) return ESP_ERR_INVALID_STATE;
+    if (atomic_load_explicit(&s_running, memory_order_acquire)) return ESP_OK;
+    const seismic_source_driver_t *driver = seismic_driver();
+    const esp_err_t err = driver->probe != NULL ? driver->probe() : ESP_OK;
+    s_probe_waiting_for_power = err == ESP_ERR_INVALID_STATE;
+    atomic_store_explicit(&s_last_error, err, memory_order_release);
+    return err;
+}
+
+
+esp_err_t seismic_acquisition_probe(void)
+{
+    esp_err_t err = seismic_acquisition_lifecycle_lock();
+    if (err != ESP_OK) return err;
+    err = seismic_acquisition_probe_locked();
+    seismic_acquisition_lifecycle_unlock();
+    return err;
+}
+
+
+static void seismic_acquisition_stop_locked(bool preserve_buffer)
+{
     const seismic_source_driver_t *driver = seismic_driver();
 
     const bool was_running =
@@ -232,10 +255,9 @@ void seismic_acquisition_stop(void)
         driver->stop();
     }
 
-    (void)seismic_buffer_configure(
-        SEISMIC_SOURCE_NONE,
-        0
-    );
+    if (!preserve_buffer) {
+        (void)seismic_buffer_configure(SEISMIC_SOURCE_NONE, 0);
+    }
 
     esp_err_t err = seismic_acquisition_publish_status(false);
     if (err != ESP_OK) {
@@ -245,7 +267,63 @@ void seismic_acquisition_stop(void)
             esp_err_to_name(err)
         );
     }
+}
 
+
+void seismic_acquisition_stop(void)
+{
+    if (seismic_acquisition_lifecycle_lock() != ESP_OK) return;
+    s_tft_preview = false;
+    s_web_preview_until_us = 0;
+    seismic_acquisition_stop_locked(false);
+    seismic_acquisition_lifecycle_unlock();
+}
+
+
+esp_err_t seismic_acquisition_set_preview(seismic_preview_t preview, bool active)
+{
+    if (preview != SEISMIC_PREVIEW_TFT && preview != SEISMIC_PREVIEW_WEB) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = seismic_acquisition_lifecycle_lock();
+    if (err != ESP_OK) return err;
+    if (active) err = seismic_acquisition_start_locked();
+    if (!active || err == ESP_OK) {
+        if (preview == SEISMIC_PREVIEW_TFT) s_tft_preview = active;
+        else s_web_preview_until_us = active
+            ? esp_timer_get_time() + (int64_t)SEISMIC_WEB_PREVIEW_LEASE_MS * 1000
+            : 0;
+    }
+    /* The measurement worker releases the producer after checking recorder ownership. */
+    seismic_acquisition_lifecycle_unlock();
+    return err;
+}
+
+
+void seismic_acquisition_poll(bool measurement_owns_source)
+{
+    if (seismic_acquisition_lifecycle_lock() != ESP_OK) return;
+    if (!s_shutdown) {
+        if (s_probe_waiting_for_power && !atomic_load(&s_running)) {
+            (void)seismic_acquisition_probe_locked();
+        }
+        const bool web_preview = esp_timer_get_time() < s_web_preview_until_us;
+        if (!measurement_owns_source && !s_tft_preview && !web_preview &&
+            atomic_load(&s_running)) {
+            seismic_acquisition_stop_locked(false);
+        }
+    }
+    seismic_acquisition_lifecycle_unlock();
+}
+
+
+void seismic_acquisition_prepare_shutdown(void)
+{
+    if (seismic_acquisition_lifecycle_lock() != ESP_OK) return;
+    s_shutdown = true;
+    s_tft_preview = false;
+    s_web_preview_until_us = 0;
+    seismic_acquisition_stop_locked(true);
     seismic_acquisition_lifecycle_unlock();
 }
 

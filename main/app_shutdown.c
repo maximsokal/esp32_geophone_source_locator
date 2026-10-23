@@ -132,6 +132,9 @@ void app_shutdown_wait_and_run(void)
     keypad_stop_event_monitor();
 #endif
 
+    /* Free CPU1 before draining HTTP; keep the final samples for the recorder. */
+    seismic_acquisition_prepare_shutdown();
+
     /*
      * Recovery completion can invalidate/refresh the Web object cache. Drain
      * that worker before Web lifecycle/cache teardown so no callback can land
@@ -226,8 +229,8 @@ void app_shutdown_wait_and_run(void)
     object_service_shutdown();
 
     /*
-     * Acquisition remains alive until the recording stop cursor has been
-     * drained above. Only now is it safe to reset the seismic buffer.
+     * The producer was quiesced before the HTTP barrier. Only now is it safe
+     * to reset the buffer retained for the recording stop cursor.
      */
     seismic_acquisition_stop();
 

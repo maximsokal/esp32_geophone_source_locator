@@ -40,6 +40,23 @@ seismic_source_ad7606_start_failure_stage(esp_err_t err)
 }
 
 
+static esp_err_t seismic_source_ad7606_probe(void)
+{
+    const esp_err_t err = ad7606_acquisition_probe();
+    if (err == ESP_OK) {
+        hw_inventory_report(HW_MODULE_AD7606, HW_STATE_PRESENT, "self-test passed; sampling idle");
+    } else if (err == ESP_ERR_INVALID_STATE) {
+        hw_inventory_report(HW_MODULE_AD7606, HW_STATE_UNKNOWN, "waiting for verified ADC power");
+    } else {
+        const seismic_source_ad7606_start_failure_t failure =
+            seismic_source_ad7606_classify_start_failure(
+                err, seismic_source_ad7606_start_failure_stage(err));
+        hw_inventory_report(HW_MODULE_AD7606, failure.state, failure.reason);
+    }
+    return err;
+}
+
+
 static esp_err_t seismic_source_ad7606_start(void)
 {
     esp_err_t err = ad7606_acquisition_start();
@@ -195,6 +212,7 @@ const seismic_source_driver_t g_seismic_source_ad7606 = {
     .sample_rate_hz = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
     .channel_count = AD7606_CHANNEL_COUNT,
     .core_id = APP_TASK_CORE_REALTIME,
+    .probe = seismic_source_ad7606_probe,
     .start = seismic_source_ad7606_start,
     .stop = seismic_source_ad7606_stop,
     .is_healthy = seismic_source_ad7606_is_healthy,

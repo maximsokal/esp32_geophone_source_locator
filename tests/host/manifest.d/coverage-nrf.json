@@ -292,6 +292,7 @@
         "components/device_status_pod_bridge/app_pod_status_local_position_policy.c",
         "components/device_status_pod_bridge/app_pod_status_state_policy.c",
         "components/device_status_pod_bridge/app_pod_status_bridge.c",
+        "components/device_status_pod_bridge/app_pod_status_sensor_health_policy.c",
         "components/hw_inventory/hw_inventory.c",
         "components/hw_inventory/hw_inventory_reason.c",
         "tests/host/app_pod_status_bridge_runtime_test.c"

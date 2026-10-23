@@ -125,6 +125,13 @@ esp_err_t device_status_try_get_snapshot(device_status_snapshot_t *out)
     return ESP_OK;
 }
 bool hw_inventory_required_missing(hw_module_id_t *missing) { (void)missing; return render_required_missing; }
+bool hw_inventory_get(hw_module_id_t id, hw_module_info_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->id = id;
+    out->state = render_required_missing ? HW_STATE_FAULT : HW_STATE_PRESENT;
+    return true;
+}
 bool wifi_manager_is_setup_mode(void) { return render_wifi_setup; }
 esp_err_t wifi_manager_sta_ip_string(char *dst, size_t capacity)
 {
@@ -161,6 +168,12 @@ void ui_screen_handle_key_locked(ui_screen_t screen, keypad_key_t key)
 { (void)screen; (void)key; assert(false); }
 #endif
 esp_err_t seismic_acquisition_start(void) { ++render_acquisition_starts; return render_acquisition_result; }
+esp_err_t seismic_acquisition_probe(void) { return render_acquisition_result; }
+esp_err_t seismic_acquisition_set_preview(seismic_preview_t preview, bool active)
+{
+    assert(preview == SEISMIC_PREVIEW_TFT);
+    return active ? seismic_acquisition_start() : ESP_OK;
+}
 
 /* Native tests inject completed file results explicitly; never run an RTOS task. */
 BaseType_t xTaskCreatePinnedToCore(void (*task)(void *), const char *name, uint32_t stack,

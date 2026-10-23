@@ -391,6 +391,14 @@ export interface DevicePod {
   geophone: PodGeophone;
   position: PodPosition;
   height_reference?: PodHeightReference;
+  sensor_health?: {
+    current: boolean;
+    imu_valid: boolean;
+    barometer_valid: boolean;
+    imu_fault: boolean;
+    barometer_fault: boolean;
+    imu_calibrated: boolean;
+  };
 }
 
 export interface DeviceSystemStatus {

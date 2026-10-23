@@ -414,6 +414,30 @@ describe('DeviceConsoleApp status polling', () => {
     expect(browser.timers.size).toBe(1);
   });
 
+  it('renews only its own Web preview and stops renewing when hidden or released', async () => {
+    const browser = stubBrowser();
+    api.fetchDeviceStatus.mockResolvedValue(deviceStatus());
+    api.sendControl.mockImplementation((action: string) => Promise.resolve({ ok: true, action }));
+    const renderer = await mountApp();
+    const objectsTab = renderer.root.findAllByType('button').find((button) => textOf(button) === translate('en', 'nav.objects'));
+    await act(async () => { objectsTab?.props.onClick(); await settleReact(); });
+    const previousIntervals = new Set(browser.intervals.keys());
+    const objects = renderer.root.findByType(ObjectsFeature);
+    await act(async () => { await objects.props.onAcquisition(true); await settleReact(); });
+    const lease = [...browser.intervals.entries()].filter(([id]) => !previousIntervals.has(id));
+    expect(lease).toHaveLength(1);
+    const [leaseId, renew] = lease[0];
+    await act(async () => { renew(); await settleReact(); });
+    expect(api.sendControl.mock.calls.map(([action]) => action)).toEqual(['acquisition_start', 'acquisition_start']);
+    await setHidden(browser, true);
+    await act(async () => { renew(); await settleReact(); });
+    expect(api.sendControl).toHaveBeenCalledTimes(2);
+    await setHidden(browser, false);
+    await act(async () => { await objects.props.onAcquisition(false); await settleReact(); });
+    expect(api.sendControl.mock.calls[2][0]).toBe('acquisition_stop');
+    expect(browser.intervals.has(leaseId)).toBe(false);
+  });
+
   // Expected RED on old code: a tick during measurement_start reads again beside its transition poll.
   it('uses the measurement transition read to satisfy a suppressed poll without an extra fast refresh', async () => {
     const browser = stubBrowser();

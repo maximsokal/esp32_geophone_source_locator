@@ -14,12 +14,14 @@
 #include "app_pod_status_inventory_policy.h"
 #include "app_pod_status_local_position_policy.h"
 #include "app_pod_status_state_policy.h"
+#include "app_pod_status_sensor_health_policy.h"
 #include "app_task_config.h"
 #include "device_status.h"
 #include "nrf_topology_service.h"
 #include "object_store.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -206,12 +208,16 @@ static void publish_channel_barometer(uint8_t channel)
         app_pod_status_bridge_compute_barometer_reading(
             err == ESP_OK ? cache : NULL);
 
+    const device_sensor_health_t health = app_pod_status_sensor_health(
+        err == ESP_OK ? cache : NULL, (uint64_t)(esp_timer_get_time() / 1000));
+    (void)device_status_set_pod_sensor_health(channel, &health);
+
     (void)device_status_set_pod_barometer(
         channel,
         reading.pressure_pa,
         reading.relative_altitude_cm,
         APP_POD_STATUS_BRIDGE_REFERENCE_PRESSURE_PA,
-        reading.valid);
+        reading.valid && health.current);
 }
 
 

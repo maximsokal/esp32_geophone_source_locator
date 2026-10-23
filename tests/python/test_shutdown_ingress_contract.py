@@ -159,6 +159,7 @@ def test_shutdown_drains_recovery_and_network_before_dependent_services():
 
     order = [
         "keypad_stop_event_monitor();",
+        "seismic_acquisition_prepare_shutdown();",
         "object_recovery_stop_background();",
         "app_shutdown_stop_network();",
         "measurement_service_shutdown();",

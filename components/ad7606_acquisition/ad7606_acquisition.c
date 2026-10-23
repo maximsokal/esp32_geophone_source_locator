@@ -1649,7 +1649,7 @@ static void ad7606_worker_cleanup(bool drain_latest, uint64_t *successful_sample
         heap_caps_free(s_serial_quality_window_flags);
         s_serial_quality_window_flags = NULL;
     }
-    (void)seismic_buffer_configure(SEISMIC_SOURCE_NONE, 0U);
+    /* Buffer lifetime belongs to the facade, after recorder drain. */
     ad7606_status_set_running(false);
 }
 
@@ -1923,6 +1923,86 @@ static void ad7606_worker(
 }
 
 
+static esp_err_t ad7606_check_start_power(bool probe)
+{
+#if defined(CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK)
+    {
+        /* MAX-245: an explicit start clears a latched over-current; if
+         * the fault persists the monitor re-confirms it within ~2 s and
+         * the worker stops again. */
+        if (!probe) {
+            (void)ina3221_monitor_clear_overcurrent(INA3221_MONITOR_RAIL_AD7606_5V);
+        }
+
+        /* MAX-242: decide BEFORE the Core 1 worker exists, so a refused
+         * start never configures or drives a single AD7606 pin. */
+        ina3221_monitor_rail_t rail;
+        ad7606_read_rail(&rail);
+        if (probe && (rail.overcurrent_latched || rail.overcurrent_level >= 2)) {
+            ad7606_status_set_overcurrent(rail.bus_voltage_v, rail.current_a);
+            return ESP_ERR_INVALID_STATE;
+        }
+        const ad7606_power_gate_t gate = ad7606_power_gate(
+            rail.available, rail.valid, rail.bus_voltage_v,
+            rail.sampled_at_us, esp_timer_get_time()
+        );
+        if (gate == AD7606_POWER_GATE_RAIL_LOW) {
+            ad7606_status_set_power(gate, true, rail.bus_voltage_v);
+            if (probe) return ESP_ERR_INVALID_STATE;
+            ESP_LOGE(
+                TAG,
+                "START refused: AD7606 +5 V rail %.2f V < %.2f V (INA3221 CH3); "
+                "no AD7606 pin was driven. If the AD7606 supply is not routed "
+                "through INA3221 CH3, disable CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK.",
+                (double)rail.bus_voltage_v,
+                (double)AD7606_RAIL_START_MIN_V
+            );
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (gate == AD7606_POWER_GATE_UNVERIFIED) {
+            if (probe) {
+                ad7606_status_set_power(gate, false, rail.bus_voltage_v);
+                return ESP_ERR_INVALID_STATE;
+            }
+            ESP_LOGW(
+                TAG,
+                "AD7606 +5 V rail not verified (no fresh INA3221 CH3 reading); "
+                "starting on the hardware VIO interlock alone"
+            );
+        }
+        ad7606_status_set_power(gate, false, rail.bus_voltage_v);
+    }
+#else
+    (void)probe;
+#endif
+    return ESP_OK;
+}
+
+
+esp_err_t ad7606_acquisition_probe(void)
+{
+    if (!ad7606_lifecycle_begin_start()) return ESP_ERR_INVALID_STATE;
+    ad7606_status_reset();
+    esp_err_t err = ad7606_check_start_power(true);
+    if (err == ESP_OK) {
+        err = ad7606_prepare_timing();
+        if (err == ESP_OK) err = ad7606_driver_init();
+        if (err == ESP_OK) {
+            uint32_t tconv_ns = 0U;
+            err = ad7606_driver_get_measured_tconv_ns(&tconv_ns);
+            if (err == ESP_OK) {
+                err = ad7606_resolve_measured_timing(
+                    ad7606_acquisition_classify_tconv_ns(tconv_ns), tconv_ns);
+            }
+        }
+        /* Existing power-safe Hi-Z state; no LEDC, BUSY ISR or worker was started. */
+        ad7606_driver_deinit();
+    }
+    ad7606_lifecycle_finish_start();
+    return err;
+}
+
+
 esp_err_t ad7606_acquisition_start(void)
 {
     if (!ad7606_lifecycle_begin_start()) {
@@ -1932,44 +2012,11 @@ esp_err_t ad7606_acquisition_start(void)
     ad7606_status_reset();
     ad7606_rail_watch_reset(&s_rail_watch);
     s_rail_last_check_conversion = 0U;
-#if defined(CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK)
-    {
-        /* MAX-245: an explicit start clears a latched over-current; if
-         * the fault persists the monitor re-confirms it within ~2 s and
-         * the worker stops again. */
-        (void)ina3221_monitor_clear_overcurrent(INA3221_MONITOR_RAIL_AD7606_5V);
-
-        /* MAX-242: decide BEFORE the Core 1 worker exists, so a refused
-         * start never configures or drives a single AD7606 pin. */
-        ina3221_monitor_rail_t rail;
-        ad7606_read_rail(&rail);
-        const ad7606_power_gate_t gate = ad7606_power_gate(
-            rail.available, rail.valid, rail.bus_voltage_v,
-            rail.sampled_at_us, esp_timer_get_time()
-        );
-        if (gate == AD7606_POWER_GATE_RAIL_LOW) {
-            ESP_LOGE(
-                TAG,
-                "START refused: AD7606 +5 V rail %.2f V < %.2f V (INA3221 CH3); "
-                "no AD7606 pin was driven. If the AD7606 supply is not routed "
-                "through INA3221 CH3, disable CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK.",
-                (double)rail.bus_voltage_v,
-                (double)AD7606_RAIL_START_MIN_V
-            );
-            ad7606_status_set_power(gate, true, rail.bus_voltage_v);
-            ad7606_lifecycle_finish_start();
-            return ESP_ERR_INVALID_STATE;
-        }
-        if (gate == AD7606_POWER_GATE_UNVERIFIED) {
-            ESP_LOGW(
-                TAG,
-                "AD7606 +5 V rail not verified (no fresh INA3221 CH3 reading); "
-                "starting on the hardware VIO interlock alone"
-            );
-        }
-        ad7606_status_set_power(gate, false, rail.bus_voltage_v);
+    const esp_err_t power_err = ad7606_check_start_power(false);
+    if (power_err != ESP_OK) {
+        ad7606_lifecycle_finish_start();
+        return power_err;
     }
-#endif
 
     ad7606_start_context_t start_context = {
         .ready =

@@ -29,6 +29,7 @@ idf_component_register(
         app_config
         device_status
         freertos
+        esp_timer
         seismic_buffer
         seismic_test_generator
         log

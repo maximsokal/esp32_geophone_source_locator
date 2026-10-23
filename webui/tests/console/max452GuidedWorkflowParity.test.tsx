@@ -253,6 +253,31 @@ describe('MAX-452 recording bypass and sensor status display', () => {
 });
 
 describe('MAX-452 sensor guidance and freshness schema', () => {
+  it.each(['en', 'uk'] as const)('shows raw sensor health before calibration in %s', (locale) => {
+    const status = statusFor('SENSOR_CHECK', ['GO_CALIBRATION'], 1);
+    status.acquisition.running = false;
+    status.pods[0].node_link_status = 'CONNECTED';
+    status.pods[0].sensor_health = {
+      current: true, imu_valid: true, barometer_valid: true,
+      imu_fault: false, barometer_fault: false, imu_calibrated: false,
+    };
+    const ready = translate(locale, 'workflow.preflight.ready');
+    const unavailable = translate(locale, 'workflow.preflight.unavailable');
+    const uncalibrated = translate(locale, 'workflow.preflight.uncalibrated');
+    const row = (imu: string, barometer: string) => translate(locale, 'workflow.preflight.node', {
+      node: 1, link: ready, imu, barometer, calibration: uncalibrated,
+    });
+    expect(workflowHtml(status, locale)).toContain(row(ready, ready));
+    status.pods[0].sensor_health.imu_valid = false;
+    status.pods[0].sensor_health.imu_fault = true;
+    expect(workflowHtml(status, locale)).toContain(row(translate(locale, 'workflow.preflight.error'), ready));
+    status.pods[0].sensor_health.current = false;
+    expect(workflowHtml(status, locale)).toContain(row(unavailable, unavailable));
+    const malformed = clone(status);
+    (malformed.pods[0].sensor_health as unknown as Record<string, unknown>).current = 'true';
+    expect(() => normalizeDeviceStatus(malformed)).toThrow();
+  });
+
   it.each(['en', 'uk'] as const)('keeps GO_CALIBRATION available with limited-solution guidance in %s', (locale) => {
     for (const remotes of [0, 1, 2]) {
       const html = workflowHtml(statusFor('SENSOR_CHECK', ['GO_CALIBRATION'], remotes), locale);

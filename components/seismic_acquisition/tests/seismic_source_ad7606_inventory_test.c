@@ -26,6 +26,11 @@ esp_err_t ad7606_acquisition_start(void)
     return s_acquisition_start_result;
 }
 
+esp_err_t ad7606_acquisition_probe(void)
+{
+    return s_acquisition_start_result;
+}
+
 
 void ad7606_acquisition_stop(void)
 {
@@ -359,6 +364,23 @@ static void test_start_failure_results_reach_inventory(void)
 }
 
 
+static void test_bounded_probe_reports_idle_hardware_without_starting(void)
+{
+    const esp_err_t results[] = {ESP_OK, ESP_ERR_INVALID_STATE, ESP_ERR_TIMEOUT, ESP_FAIL};
+    const hw_module_state_t states[] = {HW_STATE_PRESENT, HW_STATE_UNKNOWN, HW_STATE_ABSENT, HW_STATE_FAULT};
+    const unsigned starts = s_acquisition_start_calls;
+    const unsigned monitors = s_presence_start_calls;
+    for (size_t i = 0U; i < sizeof(results) / sizeof(results[0]); ++i) {
+        hw_inventory_init();
+        s_last_observation = (ad7606_serial_observation_t){0};
+        s_acquisition_gate_refused = false;
+        s_acquisition_start_result = results[i];
+        assert(g_seismic_source_ad7606.probe() == results[i]);
+        assert(get_ad7606_inventory().state == states[i]);
+        assert(s_acquisition_start_calls == starts && s_presence_start_calls == monitors);
+    }
+}
+
 int main(void)
 {
     test_acquisition_start_failure_does_not_claim_presence();
@@ -375,6 +397,7 @@ int main(void)
         HW_STATE_FAULT,
         "presence probe failed"
     );
+    test_bounded_probe_reports_idle_hardware_without_starting();
 
     puts("AD7606 inventory integration tests passed");
     return 0;

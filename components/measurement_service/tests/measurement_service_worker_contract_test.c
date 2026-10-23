@@ -74,6 +74,10 @@ static unsigned s_bulk_admission_enter_calls;
 static unsigned s_bulk_admission_exit_calls;
 static bool s_starting_state_observed;
 static bool s_starting_observed_without_admission;
+extern esp_err_t measurement_source_start_result;
+extern unsigned measurement_source_ready_after;
+extern unsigned measurement_source_snapshot_calls;
+extern unsigned measurement_source_start_calls;
 
 QueueHandle_t xQueueCreate(size_t length, size_t item_size)
 {
@@ -417,6 +421,10 @@ static void fake_try_worker_transition_during_busy_read(void)
 
 static void reset_fakes(void)
 {
+    measurement_source_start_result = ESP_OK;
+    measurement_source_ready_after = 0U;
+    measurement_source_snapshot_calls = 0U;
+    measurement_source_start_calls = 0U;
     fake_object_error = ESP_OK;
     fake_active_object = true;
     memset(&fake_object, 0, sizeof(fake_object));
@@ -1287,11 +1295,46 @@ static void test_queue_creation_failure_has_no_partial_service(void)
     assert(!measurement_service_is_busy());
 }
 
+static void test_source_warmup_is_bounded_and_precedes_recorder_start(void)
+{
+    start_service();
+    measurement_source_ready_after = 3U;
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+    assert(snapshot().state == MEASUREMENT_SERVICE_RECORDING);
+    assert(measurement_source_start_calls == 1U);
+    assert(measurement_source_snapshot_calls == 4U);
+    assert(s_task_delay_calls == 3U);
+    assert(fake_recorder_start_calls == 1U);
+    stop_service();
+
+    start_service();
+    measurement_source_ready_after = UINT32_MAX;
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+    assert(snapshot().state == MEASUREMENT_SERVICE_ERROR);
+    assert(snapshot().last_error == ESP_ERR_TIMEOUT);
+    assert(fake_recorder_start_calls == 0U);
+    assert(s_task_delay_calls == pdMS_TO_TICKS(1000U));
+    assert(!storage_bulk_admission_is_protected());
+    stop_service();
+
+    start_service();
+    measurement_source_start_result = ESP_FAIL;
+    assert(measurement_service_start_async() == ESP_OK);
+    run_pending_command();
+    assert(snapshot().last_error == ESP_FAIL);
+    assert(fake_recorder_start_calls == 0U);
+    assert(measurement_source_snapshot_calls == 0U);
+    stop_service();
+}
+
 int main(void)
 {
     assert(storage_bulk_admission_initialize() == ESP_OK);
     test_queue_creation_failure_has_no_partial_service();
     test_initial_and_no_active_object();
+    test_source_warmup_is_bounded_and_precedes_recorder_start();
     test_start_stop_keep_delete_and_repeated_start();
     test_retry_start_after_error_keeps_gate_until_worker_runs();
     test_start_reservation_release_waits_for_starting_state();

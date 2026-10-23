@@ -154,7 +154,7 @@ static void entry_routes(void)
         const unsigned starts = render_acquisition_starts;
         enter(UI_SCREEN_MEASUREMENTS);
         assert(render_context.screen == UI_SCREEN_WORKFLOW);
-        assert(render_acquisition_starts == starts + 1U && render_command_count == commands);
+        assert(render_acquisition_starts == starts && render_command_count == commands);
         key(KEYPAD_KEY_OK);
         assert(render_command_count == commands + 1U && render_last_command == WORKFLOW_COMMAND_GO_CALIBRATION);
         checkpoint("initialize_fewer_than_three");
@@ -163,7 +163,7 @@ static void entry_routes(void)
     render_acquisition_result = ESP_ERR_INVALID_STATE;
     const unsigned before = render_acquisition_starts;
     enter(UI_SCREEN_MEASUREMENTS);
-    assert(render_context.screen == UI_SCREEN_WORKFLOW && render_acquisition_starts == before + 1U);
+    assert(render_context.screen == UI_SCREEN_WORKFLOW && render_acquisition_starts == before);
     checkpoint("acquisition_unavailable");
     home();
 }

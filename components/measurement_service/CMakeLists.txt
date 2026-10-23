@@ -10,6 +10,7 @@ idf_component_register(
         object_format
         object_service
         seismic_recorder
+        seismic_acquisition
         runtime_observability
         storage_manager
         freertos

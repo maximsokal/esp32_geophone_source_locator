@@ -197,6 +197,15 @@ BaseType_t xSemaphoreGive(
 
 
 static unsigned backend_start_calls;
+static unsigned backend_probe_calls;
+static esp_err_t backend_probe_result;
+static int64_t now_us;
+int64_t esp_timer_get_time(void) { return now_us; }
+static esp_err_t fake_backend_probe(void)
+{
+    ++backend_probe_calls;
+    return backend_probe_result;
+}
 static unsigned backend_stop_calls;
 static bool backend_running;
 static esp_err_t backend_start_result;
@@ -275,6 +284,7 @@ static const seismic_source_driver_t fake_driver = {
     .sample_rate_hz = 500U,
     .channel_count = 4U,
     .core_id = 1,
+    .probe = fake_backend_probe,
     .start = fake_backend_start,
     .stop = fake_backend_stop,
     .is_healthy = fake_backend_healthy,
@@ -345,6 +355,9 @@ static void reset_observation(void)
 
     sync_enter();
     backend_start_calls = 0U;
+    backend_probe_calls = 0U;
+    backend_probe_result = ESP_OK;
+    now_us = 1000000;
     backend_stop_calls = 0U;
     backend_running = false;
     backend_start_result = ESP_OK;
@@ -642,6 +655,71 @@ static void test_failed_start_cleans_once_and_records_error(void)
 }
 
 
+static void test_probe_retries_power_without_starting_stream(void)
+{
+    reset_observation();
+    backend_probe_result = ESP_ERR_INVALID_STATE;
+    assert(seismic_acquisition_probe() == ESP_ERR_INVALID_STATE);
+    assert(!seismic_acquisition_is_running());
+    assert(backend_start_calls == 0U);
+    backend_probe_result = ESP_OK;
+    seismic_acquisition_poll(false);
+    assert(backend_probe_calls == 2U);
+    seismic_acquisition_poll(false);
+    assert(backend_probe_calls == 2U);
+    assert(buffer_configure_calls == 0U);
+    assert(seismic_acquisition_last_error() == ESP_OK);
+}
+
+static void test_preview_owners_and_web_lease(void)
+{
+    reset_observation();
+    assert(seismic_acquisition_set_preview(SEISMIC_PREVIEW_TFT, true) == ESP_OK);
+    assert(seismic_acquisition_set_preview(SEISMIC_PREVIEW_WEB, true) == ESP_OK);
+    assert(backend_start_calls == 1U);
+    assert(seismic_acquisition_set_preview(SEISMIC_PREVIEW_WEB, false) == ESP_OK);
+    seismic_acquisition_poll(false);
+    assert(seismic_acquisition_is_running());
+    assert(seismic_acquisition_set_preview(SEISMIC_PREVIEW_WEB, true) == ESP_OK);
+    assert(seismic_acquisition_set_preview(SEISMIC_PREVIEW_TFT, false) == ESP_OK);
+    seismic_acquisition_poll(false);
+    assert(seismic_acquisition_is_running());
+    now_us += (int64_t)SEISMIC_WEB_PREVIEW_LEASE_MS * 1000;
+    seismic_acquisition_poll(true);
+    assert(seismic_acquisition_is_running());
+    assert(buffer_configure_calls == 0U);
+    seismic_acquisition_poll(false);
+    assert(!seismic_acquisition_is_running());
+    assert(backend_stop_calls == 1U);
+    assert(buffer_configure_calls == 1U);
+
+    reset_observation();
+    backend_start_result = ESP_FAIL;
+    assert(seismic_acquisition_set_preview(SEISMIC_PREVIEW_TFT, true) == ESP_FAIL);
+    backend_start_result = ESP_OK;
+    assert(seismic_acquisition_start() == ESP_OK);
+    seismic_acquisition_poll(false);
+    assert(!seismic_acquisition_is_running());
+}
+
+static void test_shutdown_quiesces_before_reset_and_rejects_restart(void)
+{
+    reset_observation();
+    assert(seismic_acquisition_set_preview(SEISMIC_PREVIEW_WEB, true) == ESP_OK);
+    seismic_acquisition_prepare_shutdown();
+    assert(!seismic_acquisition_is_running());
+    assert(backend_stop_calls == 1U);
+    assert(buffer_configure_calls == 0U);
+    seismic_acquisition_poll(false);
+    assert(buffer_configure_calls == 0U);
+    assert(seismic_acquisition_start() == ESP_ERR_INVALID_STATE);
+    assert(seismic_acquisition_probe() == ESP_ERR_INVALID_STATE);
+    assert(seismic_acquisition_set_preview(SEISMIC_PREVIEW_TFT, true) == ESP_ERR_INVALID_STATE);
+    assert(backend_start_calls == 1U);
+    seismic_acquisition_stop();
+    assert(buffer_configure_calls == 1U);
+}
+
 int main(void)
 {
     sync_init();
@@ -655,8 +733,10 @@ int main(void)
     test_concurrent_starts_share_one_backend_transition();
     test_idempotent_running_start_and_stopped_stop();
     test_failed_start_cleans_once_and_records_error();
+    test_probe_retries_power_without_starting_stream();
+    test_preview_owners_and_web_lease();
+    test_shutdown_quiesces_before_reset_and_rejects_restart();
 
-    reset_observation();
     sync_destroy();
 
     puts("seismic acquisition lifecycle tests passed");

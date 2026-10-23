@@ -362,6 +362,31 @@ int main(int argc, char **argv)
         prepare(WORKFLOW_STEP_OBJECT, 1U);
         ui_workflow_screen_handle_key_locked(KEYPAD_KEY_LEFT);
         assert(render_context.screen == UI_SCREEN_HOME);
+        prepare(WORKFLOW_STEP_SENSOR_CHECK, 1U);
+        render_device_status.main.bmp280_present = true;
+        render_device_status.main.bmp280_valid = true;
+        render_device_status.power.valid = true;
+        render_device_status.power.channels[2].valid = true;
+        render_device_status.power.channels[2].voltage_v = 5.02f;
+        render_device_status.pods[0].sensor_health = (device_sensor_health_t){
+            .current = true, .imu_valid = true, .barometer_valid = true,
+        };
+        ui_workflow_update(s_workflow, render_now_ms);
+        assert(s_workflow->remote_slot_cards[0] != NULL);
+        assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "I+ B+ C-") != NULL);
+        (void)snprintf(name, sizeof(name), "%s_preflight_uncalibrated", language);
+        capture(name, false);
+        render_device_status.pods[0].sensor_health.imu_valid = false;
+        render_device_status.pods[0].sensor_health.imu_fault = true;
+        ui_workflow_update(s_workflow, render_now_ms);
+        assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "I! B+ C-") != NULL);
+        (void)snprintf(name, sizeof(name), "%s_preflight_imu_fault", language);
+        capture(name, false);
+        render_device_status.pods[0].sensor_health.current = false;
+        ui_workflow_update(s_workflow, render_now_ms);
+        assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "I? B? C-") != NULL);
+        (void)snprintf(name, sizeof(name), "%s_preflight_stale", language);
+        capture(name, false);
         prepare(WORKFLOW_STEP_SENSOR_CHECK, 3U);
         render_device_status.pods[1].state = POD_STATE_WARNING;
         render_device_status.pods[2].state = POD_STATE_ERROR;

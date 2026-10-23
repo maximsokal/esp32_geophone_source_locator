@@ -92,6 +92,7 @@ export default function DeviceConsoleApp() {
   const [linkError, setLinkError] = useState<unknown | null>(null);
   const [workspaceError, setWorkspaceError] = useState<unknown | null>(null);
   const [busy, setBusy] = useState(false);
+  const [webPreview, setWebPreview] = useState(false);
   const storageUnavailable = status?.storage_available === false;
   const storageUnavailableRef = useRef(storageUnavailable);
   storageUnavailableRef.current = storageUnavailable;
@@ -585,6 +586,16 @@ export default function DeviceConsoleApp() {
     }
   }, [refreshSessions, refreshStatus, scheduleObjectReconcile, selectedId]);
 
+  useEffect(() => {
+    if (!webPreview) return undefined;
+    const renewal = window.setInterval(() => {
+      if (pollingAllowed() && controlsInFlightRef.current === 0) {
+        void runControl('acquisition_start');
+      }
+    }, 10000);
+    return () => window.clearInterval(renewal);
+  }, [webPreview, runControl]);
+
   const selectedObject = useMemo(
     () => objects?.objects.find((object) => object.id === selectedId)
       ?? objects?.objects.find((object) => object.active)
@@ -738,7 +749,9 @@ export default function DeviceConsoleApp() {
             await runControl('set_default_cable_length', { pod_id: podId, length_m: length });
           }}
           onAcquisition={async (running) => {
-            await runControl(running ? 'acquisition_start' : 'acquisition_stop');
+            if (await runControl(running ? 'acquisition_start' : 'acquisition_stop')) {
+              setWebPreview(running);
+            }
           }}
           onRecording={async (id, running) => {
             await runControl(running ? 'measurement_start' : 'measurement_stop', running ? { object_id: id } : {});

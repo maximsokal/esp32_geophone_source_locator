@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "seismic_acquisition.h"
 
 #include "cJSON.h"
 #include "esp_http_server.h"
@@ -226,6 +227,13 @@ esp_err_t seismic_acquisition_start(void)
 {
     s_acquisition_start_calls++;
     return s_acquisition_start_result;
+}
+
+esp_err_t seismic_acquisition_set_preview(seismic_preview_t preview, bool active)
+{
+    assert(preview == SEISMIC_PREVIEW_WEB);
+    if (!active) return ESP_OK;
+    return seismic_acquisition_start();
 }
 
 void seismic_acquisition_stop(void)

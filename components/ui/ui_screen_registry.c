@@ -351,14 +351,18 @@ void ui_screen_open_locked(
         return;
     }
 
-    /* Initialize before the guided workflow checks readiness; its route may
-     * keep the live Measurements screen unreachable until calibration ends. */
-    if (screen == UI_SCREEN_MEASUREMENTS || screen == UI_SCREEN_WORKFLOW) {
-        const esp_err_t acquisition_err = seismic_acquisition_start();
+    if (ui_context()->screen == UI_SCREEN_MEASUREMENTS && screen != UI_SCREEN_MEASUREMENTS) {
+        (void)seismic_acquisition_set_preview(SEISMIC_PREVIEW_TFT, false);
+    }
+    if (screen == UI_SCREEN_MEASUREMENTS) {
+        const esp_err_t acquisition_err =
+            seismic_acquisition_set_preview(SEISMIC_PREVIEW_TFT, true);
         if (acquisition_err != ESP_OK) {
-            ESP_LOGW(TAG, "Seismic acquisition unavailable on measurement workflow entry: %s",
+            ESP_LOGW(TAG, "Seismic acquisition unavailable for live preview: %s",
                 esp_err_to_name(acquisition_err));
         }
+    } else if (screen == UI_SCREEN_WORKFLOW && ui_context()->screen != UI_SCREEN_WORKFLOW) {
+        (void)seismic_acquisition_probe();
     }
 
     const bool leaving_preview = ui_context()->screen == UI_SCREEN_SCAN_PREVIEW && screen != UI_SCREEN_SCAN_PREVIEW;

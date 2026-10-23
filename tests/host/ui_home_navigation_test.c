@@ -23,6 +23,8 @@ static unsigned s_system_renders;
 static unsigned s_object_list_requests;
 static unsigned s_storage_info_requests;
 static unsigned s_acquisition_start_calls;
+static unsigned s_acquisition_probe_calls;
+static unsigned s_preview_release_calls;
 static esp_err_t s_acquisition_start_result;
 static bool s_active_object_present;
 static workflow_snapshot_t s_workflow_snapshot;
@@ -190,6 +192,20 @@ esp_err_t workflow_service_try_get_snapshot(workflow_snapshot_t *snapshot)
 }
 
 
+esp_err_t seismic_acquisition_probe(void)
+{
+    ++s_acquisition_probe_calls;
+    return s_acquisition_start_result;
+}
+
+esp_err_t seismic_acquisition_set_preview(seismic_preview_t preview, bool active)
+{
+    assert(preview == SEISMIC_PREVIEW_TFT);
+    if (!active) { ++s_preview_release_calls; return ESP_OK; }
+    ++s_acquisition_start_calls;
+    return s_acquisition_start_result;
+}
+
 esp_err_t seismic_acquisition_start(void)
 {
     ++s_acquisition_start_calls;
@@ -352,6 +368,8 @@ static void reset_state(void)
     s_object_list_requests = 0U;
     s_storage_info_requests = 0U;
     s_acquisition_start_calls = 0U;
+    s_acquisition_probe_calls = 0U;
+    s_preview_release_calls = 0U;
     s_acquisition_start_result = ESP_OK;
     s_active_object_present = false;
     memset(&s_workflow_snapshot, 0, sizeof(s_workflow_snapshot));
@@ -467,6 +485,10 @@ static void test_dispatch_uses_current_screen_driver(void)
     assert(s_context.screen == UI_SCREEN_MEASUREMENTS);
     assert(s_measurement_renders == 1U);
     assert(s_acquisition_start_calls == 1U);
+    ui_screen_open_locked(UI_SCREEN_HOME);
+    assert(s_preview_release_calls == 1U);
+    ui_screen_open_locked(UI_SCREEN_SYSTEM);
+    assert(s_preview_release_calls == 1U);
 }
 
 
@@ -501,7 +523,8 @@ static void test_home_measurements_redirects_active_object_for_ok_and_right(void
         assert(s_context.screen == UI_SCREEN_WORKFLOW);
         assert(s_workflow_snapshot.step == WORKFLOW_STEP_OBJECT);
         assert((s_workflow_snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_START_MEASUREMENT)) != 0U);
-        assert(s_acquisition_start_calls == 1U);
+        assert(s_acquisition_start_calls == 0U);
+    assert(s_acquisition_probe_calls == 1U);
         assert(s_measurement_renders == 0U);
     }
 }
@@ -525,11 +548,12 @@ static void test_home_measurements_without_active_object_opens_workflow_picker(v
     (void)snprintf(s_context.objects[0].id, sizeof(s_context.objects[0].id), "%s", "picked-object");
     ui_handle_objects_key_locked(KEYPAD_KEY_OK);
     assert(s_context.screen == UI_SCREEN_WORKFLOW);
-    assert(s_acquisition_start_calls == 1U);
+    assert(s_acquisition_start_calls == 0U);
+    assert(s_acquisition_probe_calls == 1U);
 }
 
 
-static void test_objects_start_measurement_initializes_acquisition(void)
+static void test_objects_start_measurement_probes_without_sampling(void)
 {
     reset_state();
     s_active_object_present = true;
@@ -546,12 +570,13 @@ static void test_objects_start_measurement_initializes_acquisition(void)
     ui_handle_objects_key_locked(KEYPAD_KEY_OK);
 
     assert(s_context.screen == UI_SCREEN_WORKFLOW);
-    assert(s_acquisition_start_calls == 1U);
+    assert(s_acquisition_start_calls == 0U);
+    assert(s_acquisition_probe_calls == 1U);
     assert(s_measurement_renders == 0U);
 }
 
 
-static void test_workflow_initializes_before_readiness_and_retries_failures(void)
+static void test_workflow_probes_without_sampling_or_duplicate_entry_probe(void)
 {
     for (uint8_t remotes = 0U; remotes <= 1U; ++remotes) {
         reset_state();
@@ -563,7 +588,7 @@ static void test_workflow_initializes_before_readiness_and_retries_failures(void
         ui_screen_open_locked(UI_SCREEN_MEASUREMENTS);
 
         assert(s_context.screen == UI_SCREEN_WORKFLOW);
-        assert(s_acquisition_start_calls == 1U);
+        assert(s_acquisition_start_calls == 0U);
         assert(s_workflow_snapshot.step == WORKFLOW_STEP_SENSOR_CHECK);
         assert(s_workflow_snapshot.allowed_actions == 0U);
     }
@@ -572,12 +597,14 @@ static void test_workflow_initializes_before_readiness_and_retries_failures(void
     s_acquisition_start_result = ESP_ERR_INVALID_STATE;
     ui_screen_open_locked(UI_SCREEN_WORKFLOW);
     assert(s_context.screen == UI_SCREEN_WORKFLOW);
-    assert(s_acquisition_start_calls == 1U);
+    assert(s_acquisition_start_calls == 0U);
+    assert(s_acquisition_probe_calls == 1U);
 
     s_acquisition_start_result = ESP_OK;
     ui_screen_open_locked(UI_SCREEN_WORKFLOW);
     assert(s_context.screen == UI_SCREEN_WORKFLOW);
-    assert(s_acquisition_start_calls == 2U);
+    assert(s_acquisition_start_calls == 0U);
+    assert(s_acquisition_probe_calls == 1U);
 }
 
 
@@ -680,7 +707,7 @@ int main(void)
     switch (MAX449_CASE) {
         case 1:
             test_home_measurements_redirects_active_object_for_ok_and_right();
-            test_workflow_initializes_before_readiness_and_retries_failures();
+            test_workflow_probes_without_sampling_or_duplicate_entry_probe();
             return 0;
         case 2:
             test_home_measurements_without_active_object_opens_workflow_picker();
@@ -689,7 +716,7 @@ int main(void)
             test_measurements_route_decision_all_workflow_states();
             return 0;
         case 4:
-            test_objects_start_measurement_initializes_acquisition();
+            test_objects_start_measurement_probes_without_sampling();
             return 0;
         default:
             break;
@@ -703,9 +730,9 @@ int main(void)
     test_dispatch_uses_current_screen_driver();
     test_measurements_route_decision_all_workflow_states();
     test_home_measurements_redirects_active_object_for_ok_and_right();
-    test_workflow_initializes_before_readiness_and_retries_failures();
+    test_workflow_probes_without_sampling_or_duplicate_entry_probe();
     test_home_measurements_without_active_object_opens_workflow_picker();
-    test_objects_start_measurement_initializes_acquisition();
+    test_objects_start_measurement_probes_without_sampling();
     test_recovery_events_update_home_state();
     test_recovery_failure_is_sticky_until_next_start();
     test_recovery_event_does_not_force_other_screen_redraw();

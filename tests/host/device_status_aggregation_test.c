@@ -80,6 +80,12 @@ int main(void)
     assert(device_status_set_pod_state(DEVICE_STATUS_POD_COUNT, POD_STATE_READY) == ESP_ERR_INVALID_ARG);
     assert(device_status_set_pod_barometer(0, 100000.0f, 12.5f, 101325.0f, true) == ESP_OK);
     assert(device_status_set_pod_imu(0, 1.0f, 2.0f, 3.0f, true) == ESP_OK);
+    const device_sensor_health_t health = {
+        .current = true, .imu_valid = true, .barometer_fault = true,
+    };
+    assert(device_status_set_pod_sensor_health(0, &health) == ESP_OK);
+    assert(device_status_set_pod_sensor_health(0, NULL) == ESP_ERR_INVALID_ARG);
+    assert(device_status_set_pod_sensor_health(DEVICE_STATUS_POD_COUNT, &health) == ESP_ERR_INVALID_ARG);
     assert(device_status_set_pod_environment(0, 21.0f, true, 55.0f, true) == ESP_OK);
     assert(device_status_set_pod_environment(0, 21.0f, true, 101.0f, true) == ESP_ERR_INVALID_ARG);
     assert(device_status_set_pod_environment(0, NAN, true, 55.0f, true) == ESP_ERR_INVALID_ARG);
@@ -93,6 +99,8 @@ int main(void)
 
     assert(device_status_get_snapshot(&snapshot) == ESP_OK);
     assert(snapshot.power.valid && fabsf(snapshot.power.power_w - 10.0f) < 0.001f);
+    assert(snapshot.pods[0].sensor_health.current && snapshot.pods[0].sensor_health.imu_valid);
+    assert(snapshot.pods[0].sensor_health.barometer_fault && !snapshot.pods[0].sensor_health.imu_calibrated);
     assert(snapshot.power.channels[1].valid && fabsf(snapshot.power.channels[1].power_w - 2.45f) < 0.001f);
     assert(snapshot.power.source == DEVICE_POWER_SOURCE_BATTERY && snapshot.power.battery_percent_valid);
     assert(snapshot.environment.valid && snapshot.environment.temperature_c == 22.5f);

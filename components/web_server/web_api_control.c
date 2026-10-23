@@ -694,19 +694,13 @@ static esp_err_t web_control_measurement_start(
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Acquisition must be ready before the asynchronous measurement start is
-     * queued; otherwise that queue can create a recording with no source. */
+    /* Preserve synchronous source-error feedback; the shared worker also
+     * starts the source for TFT requests and waits for its first fresh sample. */
     const esp_err_t acquisition_err = seismic_acquisition_start();
     if (acquisition_err != ESP_OK) {
         if (error_class_out != NULL) *error_class_out = "acquisition_unavailable";
-        ESP_LOGW(
-            TAG,
-            "Seismic acquisition unavailable for Web measurement start: %s",
-            esp_err_to_name(acquisition_err)
-        );
         return acquisition_err;
     }
-
     return measurement_service_start_object_async(object_id);
 }
 
@@ -728,8 +722,7 @@ static esp_err_t web_control_acquisition_stop(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    seismic_acquisition_stop();
-    return ESP_OK;
+    return seismic_acquisition_set_preview(SEISMIC_PREVIEW_WEB, false);
 }
 
 static esp_err_t web_control_process(
@@ -862,7 +855,7 @@ static esp_err_t web_control_process(
         return measurement_service_stop_async();
     }
     if (strcmp(action, "acquisition_start") == 0) {
-        return seismic_acquisition_start();
+        return seismic_acquisition_set_preview(SEISMIC_PREVIEW_WEB, true);
     }
     if (strcmp(action, "acquisition_stop") == 0) {
         return web_control_acquisition_stop();

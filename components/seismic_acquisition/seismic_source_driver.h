@@ -17,6 +17,8 @@ typedef struct
     uint8_t channel_count;
     int core_id;
 
+    /* ESP_ERR_INVALID_STATE means power is not ready; retry from the idle poll. */
+    esp_err_t (*probe)(void);
     esp_err_t (*start)(void);
     void (*stop)(void);
     bool (*is_healthy)(void);

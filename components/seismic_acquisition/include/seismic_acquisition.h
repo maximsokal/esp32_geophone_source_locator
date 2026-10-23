@@ -109,6 +109,24 @@ typedef struct
 /* Create process-lifetime synchronization before runtime control is exposed. */
 esp_err_t seismic_acquisition_init(void);
 
+/* Bounded hardware self-test; leaves periodic conversion stopped. */
+esp_err_t seismic_acquisition_probe(void);
+
+typedef enum {
+    SEISMIC_PREVIEW_TFT = 0,
+    SEISMIC_PREVIEW_WEB,
+} seismic_preview_t;
+
+/* Web preview must be renewed before this lease expires. */
+#define SEISMIC_WEB_PREVIEW_LEASE_MS 30000U
+esp_err_t seismic_acquisition_set_preview(seismic_preview_t preview, bool active);
+
+/* Called by the measurement worker with its existing stop-ownership guard. */
+void seismic_acquisition_poll(bool measurement_owns_source);
+
+/* Reject new starts and stop the producer, retaining samples for recorder drain. */
+void seismic_acquisition_prepare_shutdown(void);
+
 esp_err_t seismic_acquisition_start(void);
 
 void seismic_acquisition_stop(void);

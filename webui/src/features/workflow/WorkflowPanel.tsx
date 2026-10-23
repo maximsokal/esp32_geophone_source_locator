@@ -227,6 +227,50 @@ function RecordingSection({ value }: { value: Extract<WorkflowBodySection, { kin
   );
 }
 
+function SensorPreflight({ status }: { status: DeviceStatus | null }) {
+  const t = useT();
+  const { locale } = useLocale();
+  const healthText = (current: boolean, valid: boolean, fault = false): string => t(
+    !current ? 'workflow.preflight.unavailable'
+      : fault ? 'workflow.preflight.error'
+        : valid ? 'workflow.preflight.ready' : 'workflow.preflight.unavailable',
+  );
+  const rail = status?.power?.channels?.find((channel) => channel.id === 3);
+  const adc = status?.hardware?.modules.find((module) => module.id === 'ad7606');
+  return (
+    <div className="workflow-node-list">
+      <p>{t('workflow.preflight.main', {
+        barometer: healthText(status?.main !== undefined,
+          status?.main?.sensor_valid?.bmp280 === true,
+          status?.main?.sensor_present?.bmp280 === true && status?.main?.sensor_valid?.bmp280 === false),
+        power: healthText(status?.power?.stale !== true, status?.power?.valid === true),
+        rail: rail?.valid === true && rail.stale !== true
+          ? `${formatNumber(locale, rail.voltage_v, { maximumFractionDigits: 2 })} V${
+            rail.overcurrent_latched === true || rail.overcurrent === 'critical'
+              ? ` (${t('workflow.preflight.error')})` : ''}`
+          : t('workflow.preflight.unavailable'),
+        adc: healthText(adc !== undefined && adc.state !== 'unknown', adc?.state === 'present',
+          adc?.state === 'fault' || adc?.state === 'absent'),
+      })}</p>
+      {(status?.pods ?? []).map((pod) => {
+        const health = pod.sensor_health;
+        const connected = pod.node_link_status !== undefined
+          ? ['CONNECTED', 'READY', 'MEASURING'].includes(pod.node_link_status)
+          : ['READY', 'WARNING', 'ERROR'].includes(pod.state.toUpperCase());
+        const current = connected && health?.current === true;
+        return <p key={pod.id}>{t('workflow.preflight.node', {
+          node: pod.id,
+          link: healthText(connected, connected, pod.state === 'ERROR'),
+          imu: healthText(current, health?.imu_valid === true, health?.imu_fault === true),
+          barometer: healthText(current, health?.barometer_valid === true, health?.barometer_fault === true),
+          calibration: t(current && health?.imu_calibrated === true && pod.height_reference?.state === 'valid'
+            ? 'workflow.state.calibrated' : 'workflow.preflight.uncalibrated'),
+        })}</p>;
+      })}
+    </div>
+  );
+}
+
 function WorkflowSection({ section, status }: {
   section: WorkflowBodySection;
   status: DeviceStatus | null;
@@ -239,6 +283,7 @@ function WorkflowSection({ section, status }: {
       <div>
         <p>{t('workflow.sensor_check.connected')}: {workflowNumberText(section.connectedRemotes, locale)}</p>
         <p>{section.messageKey === null ? WORKFLOW_UNKNOWN : t(section.messageKey)}</p>
+        <SensorPreflight status={status} />
       </div>
     );
     case 'calib_prep': return <p>{t('workflow.calib_prep.instruction')}</p>;

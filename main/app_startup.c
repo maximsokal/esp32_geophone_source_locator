@@ -269,7 +269,7 @@ static void app_startup_initialize_core(void)
 
     /*
      * RESET/CONVST are intentionally left floating (not driven) from boot
-     * until the user opens the measurement workflow or issues a Web start. Driving
+     * until power permits a bounded preflight or an explicit capture start. Driving
      * them low unconditionally was tried and reverted: the AD7606 is
      * physically powered independent of the driver, and a measured VIO
      * back-feed path exists when its own 5V is disconnected -- actively
@@ -469,17 +469,8 @@ static void app_startup_initialize_services(
             esp_err_to_name(insights_err));
     }
 
-    /*
-     * The AD7606 no longer auto-starts sampling at boot. Its driver
-     * (GPIO configuration, SPI3, hardware reset pulse and self-test, all
-     * via ad7606_driver_init()) has not run at all yet; RESET/CONVST/CS
-     * remain in whatever state they came up in, and are only touched once
-     * active acquisition starts -- when the local UI opens the
-     * measurement workflow or live screen (ui_screen_registry.c), or a
-     * Web client explicitly requests it (web_api_control.c), so the ADC is
-     * not running with nobody consuming its samples. That start call is
-     * idempotent, so both triggers may fire in either order.
-     */
+    /* Probe after power telemetry starts below; continuous acquisition still
+     * requires a live preview or recording request. */
 
     ESP_ERROR_CHECK(
         wifi_manager_start()
@@ -563,6 +554,13 @@ static void app_startup_initialize_services(
                 power_monitor_err
             )
         );
+    }
+
+    /* Power telemetry may arrive later; the measurement worker retries a
+     * power-deferred probe without starting the continuous source. */
+    const esp_err_t probe_err = seismic_acquisition_probe();
+    if (probe_err != ESP_OK && probe_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Seismic preflight unavailable: %s", esp_err_to_name(probe_err));
     }
 
     app_startup_log_elapsed(

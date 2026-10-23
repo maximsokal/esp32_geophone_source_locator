@@ -281,6 +281,13 @@ function checkPod(podValue: unknown, path: string): void {
   requiredFloatNumber(imu, 'pitch_deg', `${path}.imu`);
   requiredFloatNumber(imu, 'yaw_relative_deg', `${path}.imu`);
 
+  if (pod.sensor_health !== undefined) {
+    const health = objectValue(pod.sensor_health, `${path}.sensor_health`);
+    for (const key of ['current', 'imu_valid', 'barometer_valid', 'imu_fault', 'barometer_fault', 'imu_calibrated']) {
+      requiredBoolean(health, key, `${path}.sensor_health`);
+    }
+  }
+
   const geophone = requiredObject(pod, 'geophone', path);
   requiredBoolean(geophone, 'valid', `${path}.geophone`);
   requiredFloatNumber(geophone, 'instant_uv', `${path}.geophone`);

@@ -28,15 +28,15 @@ static void test_recording_poll_wait_policy(void)
     );
     assert(
         measurement_service_worker_wait_ticks(MEASUREMENT_SERVICE_LIVE) ==
-        portMAX_DELAY
+        pdMS_TO_TICKS(1000U)
     );
     assert(
         measurement_service_worker_wait_ticks(MEASUREMENT_SERVICE_REVIEW) ==
-        portMAX_DELAY
+        pdMS_TO_TICKS(1000U)
     );
     assert(
         measurement_service_worker_wait_ticks(MEASUREMENT_SERVICE_ERROR) ==
-        portMAX_DELAY
+        pdMS_TO_TICKS(1000U)
     );
 }
 

@@ -139,6 +139,20 @@ esp_err_t device_status_set_pod_height_reference(
 }
 
 
+esp_err_t device_status_set_pod_sensor_health(
+    size_t pod_index, const device_sensor_health_t *health)
+{
+    esp_err_t err = device_status_validate_pod(pod_index);
+    if (err != ESP_OK || health == NULL) return ESP_ERR_INVALID_ARG;
+    device_status_snapshot_t *status;
+    err = device_status_internal_lock(&status);
+    if (err != ESP_OK) return err;
+    status->pods[pod_index].sensor_health = *health;
+    device_status_internal_unlock();
+    return ESP_OK;
+}
+
+
 esp_err_t device_status_set_pod_imu(
     size_t pod_index,
     float roll_deg,

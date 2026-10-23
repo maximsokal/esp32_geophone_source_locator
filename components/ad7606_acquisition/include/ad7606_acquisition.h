@@ -98,6 +98,8 @@ typedef struct
 } ad7606_acquisition_status_t;
 
 
+esp_err_t ad7606_acquisition_probe(void);
+
 esp_err_t ad7606_acquisition_start(void);
 
 void ad7606_acquisition_stop(void);

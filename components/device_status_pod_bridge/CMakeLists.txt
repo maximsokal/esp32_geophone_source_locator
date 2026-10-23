@@ -4,6 +4,7 @@ idf_component_register(
         "app_pod_status_inventory_policy.c"
         "app_pod_status_local_position_policy.c"
         "app_pod_status_state_policy.c"
+        "app_pod_status_sensor_health_policy.c"
         "app_pod_status_bridge.c"
 
     INCLUDE_DIRS
@@ -20,4 +21,5 @@ idf_component_register(
 
     PRIV_REQUIRES
         heap
+        esp_timer
 )

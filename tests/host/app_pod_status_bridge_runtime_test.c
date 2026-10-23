@@ -7,6 +7,7 @@
 #include "app_pod_status_bridge.h"
 #include "app_pod_status_bridge_internal.h"
 #include "device_status.h"
+#include "esp_timer.h"
 #include "hw_inventory.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -82,13 +83,14 @@ esp_err_t object_store_fs_list(
     return ESP_OK;
 }
 
+#endif
+
 int64_t esp_timer_get_time(void)
 {
     static int64_t now_us;
     now_us += 1000;
     return now_us;
 }
-#endif
 
 typedef struct {
     float pressure_pa;
@@ -218,6 +220,14 @@ esp_err_t device_status_set_pod_state(size_t pod_index, pod_state_t state)
     return ESP_OK;
 }
 
+static device_sensor_health_t s_sensor_health[DEVICE_STATUS_POD_COUNT];
+esp_err_t device_status_set_pod_sensor_health(size_t pod_index, const device_sensor_health_t *health)
+{
+    assert(pod_index < DEVICE_STATUS_POD_COUNT && health != NULL);
+    s_sensor_health[pod_index] = *health;
+    return ESP_OK;
+}
+
 esp_err_t device_status_set_pod_barometer(
     size_t pod_index,
     float pressure_pa,
@@ -309,6 +319,8 @@ static void configure_sensor(
 )
 {
     s_sensor_cache[channel].response_valid = response_valid;
+    s_sensor_cache[channel].identity_valid = true;
+    s_sensor_cache[channel].esp_receipt_uptime_ms = (uint64_t)esp_timer_get_time() / 1000U;
     s_sensor_cache[channel].topology_current = topology_current;
     s_sensor_cache[channel].sensor.valid_mask = environment_valid
         ? NRF_UPSTREAM_SENSOR_VALID_ENV

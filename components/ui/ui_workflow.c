@@ -7,6 +7,7 @@
 
 #include "app_task_config.h"
 #include "device_status.h"
+#include "hw_inventory.h"
 #include "esp_heap_caps.h"
 #include "esp_lvgl_port.h"
 #include "esp_timer.h"
@@ -52,6 +53,10 @@ typedef struct {
     ui_workflow_remote_slot_t remote_slots[UI_WORKFLOW_REMOTE_SLOT_COUNT];
     ui_workflow_model_state_t model_state;
     ui_workflow_model_t model;
+    ui_i18n_key_t preflight_adc;
+    ui_i18n_key_t preflight_barometer;
+    ui_i18n_key_t preflight_power;
+    char preflight_rail_v[12];
 
     lv_obj_t *screen;
     lv_obj_t *line_labels[UI_WORKFLOW_MODEL_MAX_LINES];
@@ -581,11 +586,32 @@ static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
 {
     const bool status_available =
         device_status_try_get_snapshot(&state->remote_status_snapshot) == ESP_OK;
+    /* A failed snapshot read must not keep the previous sensor health green. */
+    if (!status_available) memset(&state->remote_status_snapshot, 0, sizeof(state->remote_status_snapshot));
+    hw_module_info_t adc = {0};
+    (void)hw_inventory_get(HW_MODULE_AD7606, &adc);
+    state->preflight_adc = adc.state == HW_STATE_PRESENT ? UI_I18N_KEY_TFT_WORKFLOW_SENSOR_OK
+        : adc.state == HW_STATE_UNKNOWN ? UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN
+        : UI_I18N_KEY_TFT_WORKFLOW_STATE_SENSOR_INVALID;
+    const device_status_snapshot_t *device = &state->remote_status_snapshot;
+    state->preflight_barometer = device->main.bmp280_valid ? UI_I18N_KEY_TFT_WORKFLOW_SENSOR_OK
+        : device->main.bmp280_present ? UI_I18N_KEY_TFT_WORKFLOW_STATE_SENSOR_INVALID
+        : UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN;
+    state->preflight_power = device->power.valid ? UI_I18N_KEY_TFT_WORKFLOW_SENSOR_OK
+        : UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN;
+    if (device->power.channels[2].valid) {
+        (void)snprintf(state->preflight_rail_v, sizeof(state->preflight_rail_v),
+            "%.1f%s", (double)device->power.channels[2].voltage_v,
+            device->power.channels[2].overcurrent_latched ||
+                device->power.channels[2].overcurrent == DEVICE_POWER_OVERCURRENT_CRITICAL ? "!" : "");
+    } else {
+        (void)snprintf(state->preflight_rail_v, sizeof(state->preflight_rail_v), "--");
+    }
     bool changed = false;
     uint8_t connected_mask = 0U;
     for (size_t i = 0U; i < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++i) {
-        if (status_available) {
-            const pod_state_t pod_state = state->remote_status_snapshot.pods[i].state;
+        {
+            const pod_state_t pod_state = device->pods[i].state;
             if (state->remote_pod_states[i] != pod_state) changed = true;
             state->remote_pod_states[i] = pod_state;
         }
@@ -596,7 +622,7 @@ static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
         }
     }
     ui_workflow_remote_slot_layout(connected_mask, state->remote_slots);
-    state->remote_slot_styles_dirty |= changed;
+    state->remote_slot_styles_dirty |= changed || state->snapshot.step == WORKFLOW_STEP_SENSOR_CHECK;
 }
 
 static bool ui_workflow_remote_slots_visible(const ui_workflow_screen_state_t *state)
@@ -651,6 +677,20 @@ static void ui_workflow_update_remote_slots(ui_workflow_screen_state_t *state)
         lv_obj_t *card = state->remote_slot_cards[i];
         lv_obj_t *label = state->remote_slot_labels[i];
         if (card == NULL || label == NULL) continue;
+        if (state->snapshot.step == WORKFLOW_STEP_SENSOR_CHECK) {
+            const device_pod_status_t *pod = &state->remote_status_snapshot.pods[i];
+            const device_sensor_health_t *health = &pod->sensor_health;
+            const bool current = health->current && state->remote_slots[i].connected;
+            const char *imu = !current ? "?" : health->imu_valid ? "+" : health->imu_fault ? "!" : "?";
+            const char *baro = !current ? "?" : health->barometer_valid ? "+" : health->barometer_fault ? "!" : "?";
+            const char *calibration = current && health->imu_calibrated &&
+                pod->height_reference.state == DEVICE_HEIGHT_REFERENCE_VALID ? "+" : "-";
+            char node[8], text[64];
+            (void)snprintf(node, sizeof(node), "G%u", (unsigned)i + 1U);
+            (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_SENSOR_NODE),
+                node, imu, baro, calibration);
+            ui_workflow_set_label(label, text);
+        }
         const uint32_t color = ui_workflow_remote_pod_color(state->remote_pod_states[i]);
         lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
         lv_obj_set_style_border_color(card, lv_color_hex(color), 0);
@@ -851,7 +891,14 @@ static void ui_workflow_update_lines(ui_workflow_screen_state_t *state)
     ui_context_t *context = ui_context();
     const ui_i18n_key_t footer_key = state->model.notice_key != UI_I18N_KEY_COUNT
         ? state->model.notice_key : state->model.hint_key;
-    if (context->footer_label != NULL && footer_key < UI_I18N_KEY_COUNT) {
+    if (context->footer_label != NULL && state->snapshot.step == WORKFLOW_STEP_SENSOR_CHECK &&
+        state->model.notice_key == UI_I18N_KEY_COUNT) {
+        char text[96];
+        (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_SENSOR_MAIN),
+            ui_tr(state->preflight_adc), ui_tr(state->preflight_barometer),
+            ui_tr(state->preflight_power), state->preflight_rail_v);
+        ui_workflow_set_label(context->footer_label, text);
+    } else if (context->footer_label != NULL && footer_key < UI_I18N_KEY_COUNT) {
         ui_workflow_set_label(context->footer_label, ui_tr(footer_key));
     }
     ui_workflow_apply_result_waveform(state);

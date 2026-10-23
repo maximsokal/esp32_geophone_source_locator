@@ -7,6 +7,8 @@
 #include "app_stop_timeout_config.h"
 #include "object_format.h"
 #include "storage_bulk_admission.h"
+#include "seismic_acquisition.h"
+#include "seismic_recorder_start_policy.h"
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -446,7 +448,26 @@ static void measurement_service_process_start(
     );
 
     measurement_service_log_stack_hwm("before-start");
-    err = seismic_recorder_start(object.id);
+    err = seismic_acquisition_start();
+    if (err == ESP_OK) {
+        /* Starting the task does not guarantee that its first sample exists. */
+        err = ESP_ERR_TIMEOUT;
+        const TickType_t timeout = pdMS_TO_TICKS(1000U);
+        for (TickType_t waited = 0U; waited <= timeout; ++waited) {
+            seismic_acquisition_snapshot_t source;
+            if (seismic_acquisition_get_snapshot(&source) == ESP_OK &&
+                seismic_recorder_start_validate_acquisition(&source) == ESP_OK) {
+                err = ESP_OK;
+                break;
+            }
+            if (!seismic_acquisition_is_running()) {
+                err = ESP_ERR_INVALID_STATE;
+                break;
+            }
+            if (waited < timeout) vTaskDelay(1U);
+        }
+    }
+    if (err == ESP_OK) err = seismic_recorder_start(object.id);
     measurement_service_log_stack_hwm("after-recorder-start");
     if (err != ESP_OK) {
         ESP_LOGE(
@@ -804,7 +825,7 @@ static TickType_t measurement_service_worker_wait_ticks(
         case MEASUREMENT_SERVICE_DELETING:
         case MEASUREMENT_SERVICE_ERROR:
         default:
-            return portMAX_DELAY;
+            return pdMS_TO_TICKS(1000U);
     }
 }
 
@@ -824,7 +845,11 @@ static void measurement_service_task(void *argument)
         measurement_command_t command;
         measurement_service_lock();
         const measurement_service_state_t state = s_snapshot.state;
+        measurement_service_snapshot_t acquisition_owner = s_snapshot;
+        acquisition_owner.busy = measurement_service_gate_is_busy();
         measurement_service_unlock();
+        seismic_acquisition_poll(
+            measurement_service_snapshot_blocks_acquisition_stop(&acquisition_owner));
 
         if (
             xQueueReceive(
