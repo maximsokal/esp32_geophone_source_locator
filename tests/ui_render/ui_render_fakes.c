@@ -109,6 +109,7 @@ bool render_scope_available = true;
 bool render_storage_ready;
 bool render_service_busy;
 esp_err_t render_service_result = ESP_OK;
+esp_err_t render_workflow_snapshot_result = ESP_OK;
 esp_err_t render_measurement_result = ESP_OK;
 unsigned render_acquisition_mode;
 measurement_service_snapshot_t render_measurement;
@@ -118,6 +119,7 @@ ui_context_t *ui_context(void) { return &render_context; }
 int64_t esp_timer_get_time(void) { return (int64_t)(render_now_ms * 1000U); }
 esp_err_t workflow_service_try_get_snapshot(workflow_snapshot_t *out)
 {
+    if (render_workflow_snapshot_result != ESP_OK) return render_workflow_snapshot_result;
     *out = render_snapshot;
     return ESP_OK;
 }

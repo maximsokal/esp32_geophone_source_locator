@@ -108,6 +108,7 @@ static uint32_t s_tick;
 static uint64_t s_fake_subtick_us;
 static uint32_t s_fake_transaction_duration_us;
 static unsigned s_fail_recursive_lock_attempts;
+static bool s_block_remote_scan_after_main_status;
 static uint32_t s_last_notify_wait_ms;
 static uint32_t s_max_bus_owner_hold_ms;
 static unsigned s_bus_owner_log_count;
@@ -578,6 +579,10 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
         }
         ++node->status_reads;
         assert(nrf_upstream_protocol_encode_status(&status, data) == NRF_UPSTREAM_RESULT_OK);
+        if (s_block_remote_scan_after_main_status && s_tca_control == 0U &&
+            d->address == NRF_UPSTREAM_ADDRESS_MAIN) {
+            s_fail_recursive_lock_attempts = 1000U;
+        }
         if (node->delayed_assign_pending) {
             assert(nrf_bootstrap_process_assign(&node->bootstrap, &node->delayed_assign) ==
                    NRF_UPSTREAM_RESULT_OK);
@@ -983,6 +988,7 @@ static void request_refresh_while_bus_busy(void)
 static void clear_bus_busy_injection(void)
 {
     s_fail_recursive_lock_attempts = 0U;
+    s_block_remote_scan_after_main_status = false;
 }
 
 static nrf_topology_snapshot_t s_busy_window_snapshot;
@@ -1997,6 +2003,7 @@ static void reset_world(void)
     s_fake_subtick_us = 0U;
     s_fake_transaction_duration_us = 0U;
     s_fail_recursive_lock_attempts = 0U;
+    s_block_remote_scan_after_main_status = false;
     s_last_notify_wait_ms = 0U;
     s_max_bus_owner_hold_ms = 0U;
     s_bus_owner_log_count = 0U;
@@ -2392,6 +2399,47 @@ static void test_sensor_refresh_requests_survive_busy_reconcile(void)
     assert(s_tca_control == 0U && s_collisions == 0U);
 }
 
+static void block_remote_scan_after_main_status(void)
+{
+    s_block_remote_scan_after_main_status = true;
+    assert(nrf_topology_service_request_refresh() == ESP_OK);
+}
+
+static void assert_fresh_main_despite_incomplete_remote_scan(void)
+{
+    s_block_remote_scan_after_main_status = false;
+    clear_bus_busy_injection();
+    nrf_topology_snapshot_t topology;
+    nrf_node_link_status_input_t main_status;
+    nrf_node_link_status_input_t remote_status;
+    const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
+    assert(nrf_topology_service_get_snapshot(&topology) == ESP_OK);
+    assert(topology.bus_busy && topology.stale);
+    assert(nrf_topology_service_get_node_status_snapshot(0U, &main_status) == ESP_OK);
+    assert(main_status.assigned && main_status.status_valid && main_status.status_identity_matches);
+    assert(main_status.lifecycle == NRF_UPSTREAM_LIFECYCLE_READY);
+    assert(now_ms - main_status.status_receipt_uptime_ms < NRF_NODE_LINK_STATUS_STALE_LIMIT_MS);
+    assert(nrf_topology_service_get_node_status_snapshot(3U, &remote_status) == ESP_OK);
+    assert(!remote_status.status_valid ||
+        now_ms - remote_status.status_receipt_uptime_ms >= NRF_NODE_LINK_STATUS_STALE_LIMIT_MS);
+}
+
+static void test_main_status_survives_incomplete_remote_scan(void)
+{
+    reset_world();
+    s_tca_present = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    node_boot(&s_nodes[1], 2U, 0x22U);
+    script(EV_WAIT_MS, 10U, NULL);
+    for (unsigned period = 0U; period < 6U; ++period) {
+        script(EV_ACTION, 0U, block_remote_scan_after_main_status);
+        script(EV_WAIT_MS, NRF_NODE_LINK_STATUS_STALE_LIMIT_MS, NULL);
+        script(EV_ACTION, 0U, assert_fresh_main_despite_incomplete_remote_scan);
+    }
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
 static void test_busy_window_preserves_last_good_snapshot(void)
 {
     reset_world();
@@ -2668,6 +2716,7 @@ int main(void)
     test_topology_and_sensor_refresh_holds_stay_within_budget();
     test_sensor_refresh_requests_survive_busy_reconcile();
     test_busy_window_preserves_last_good_snapshot();
+    test_main_status_survives_incomplete_remote_scan();
     test_snapshot_becomes_unknown_after_stale_limit();
     test_named_reconcile_and_sensor_periods_on_fake_clock();
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)

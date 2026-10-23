@@ -28,6 +28,7 @@ extern nrf_node_link_status_input_t render_node_status[UI_WORKFLOW_REMOTE_SLOT_C
 extern uint64_t render_now_ms;
 extern workflow_command_t render_last_command;
 extern unsigned render_command_count;
+extern esp_err_t render_workflow_snapshot_result;
 extern unsigned render_delete_calls;
 extern measurement_service_snapshot_t render_measurement;
 
@@ -368,6 +369,34 @@ int main(int argc, char **argv)
             assert(render_command_count == before + 1U && render_last_command == WORKFLOW_COMMAND_GO_CALIBRATION);
             (void)snprintf(name, sizeof(name), "%s_init_pending_r%u", language, remotes);
             capture(name, true);
+            workflow_core_t completed;
+            workflow_core_init(&completed, true);
+            completed.step = WORKFLOW_STEP_SENSOR_CHECK;
+            completed.generation = render_snapshot.generation;
+            const workflow_command_params_t params = {
+                .has_generation = true, .expected_generation = render_snapshot.generation,
+            };
+            assert(workflow_core_apply(&completed, WORKFLOW_COMMAND_GO_CALIBRATION,
+                &params, remotes, false) == WORKFLOW_COMMAND_RESULT_OK);
+            workflow_core_snapshot(&completed, remotes, false, &render_snapshot);
+            render_snapshot.last_async = (workflow_last_async_t){
+                .seq = s_workflow->model_state.pending_seq,
+                .command = WORKFLOW_COMMAND_GO_CALIBRATION,
+                .result = WORKFLOW_COMMAND_RESULT_OK,
+            };
+            const uint64_t before_snapshot_retry_ms = render_now_ms;
+            render_now_ms += UI_WORKFLOW_REFRESH_PERIOD_MS;
+            render_workflow_snapshot_result = ESP_ERR_TIMEOUT;
+            ui_workflow_screen_refresh_locked();
+            assert(s_workflow->snapshot.step == WORKFLOW_STEP_SENSOR_CHECK);
+            render_workflow_snapshot_result = ESP_OK;
+            ++render_now_ms;
+            ui_workflow_screen_refresh_locked();
+            assert(s_workflow->snapshot.step == WORKFLOW_STEP_CALIB_PREP);
+            assert(!s_workflow->model_state.has_pending);
+            (void)snprintf(name, sizeof(name), "%s_calib_prep_after_busy_r%u", language, remotes);
+            capture(name, false);
+            render_now_ms = before_snapshot_retry_ms;
         }
         prepare(WORKFLOW_STEP_OBJECT, 1U);
         ui_workflow_screen_handle_key_locked(KEYPAD_KEY_LEFT);

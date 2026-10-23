@@ -255,13 +255,12 @@ static void service_publish_state(
     portENTER_CRITICAL(&s_state_lock);
     s_snapshot = *snapshot;
     memcpy(s_sensor_cache, cache, sizeof(s_sensor_cache));
-    if (snapshot->bus_busy || snapshot->stale) {
-        /* Preserve the receipt time of the last good MAIN STATUS. */
-    }
-    else if (snapshot->main.state == NRF_TOPOLOGY_NODE_ABSENT) {
+    if (!snapshot->bus_busy && !snapshot->stale &&
+        snapshot->main.state == NRF_TOPOLOGY_NODE_ABSENT) {
         memset(&s_main_status_cache, 0, sizeof(s_main_status_cache));
     }
     else if (main_status_cache != NULL) {
+        /* Remote enumeration can yield after a valid direct MAIN STATUS. */
         s_main_status_cache = *main_status_cache;
     }
     s_snapshot_valid = true;
@@ -973,7 +972,11 @@ static void platform_store_main_status(
             status->target_address == expected->current_address;
     }
     else {
-        cache->identity_matches = wire_identity_valid;
+        cache->identity_matches = wire_identity_valid &&
+            status->role == NRF_UPSTREAM_ROLE_MAIN &&
+            status->node_id == NRF_TOPOLOGY_MAIN_NODE_ID &&
+            status->mux_channel == NRF_UPSTREAM_MUX_CHANNEL_NONE &&
+            status->target_address == NRF_UPSTREAM_ADDRESS_MAIN;
         cache->identity.state = NRF_TOPOLOGY_NODE_ASSIGNED;
         cache->identity.hardware_id_length = status->hardware_id_length;
         if (wire_identity_valid) {
@@ -3225,6 +3228,10 @@ esp_err_t nrf_topology_service_get_node_status_snapshot(
     const nrf_upstream_status_cache_t *status_cache = node_slot == 0U
         ? &s_main_status_cache
         : &s_sensor_cache[node_slot - 1U].upstream_status;
+    if (node_slot == 0U && node->state == NRF_TOPOLOGY_NODE_UNKNOWN &&
+        (s_snapshot.bus_busy || s_snapshot.stale)) {
+        node = &status_cache->identity;
+    }
     memset(snapshot, 0, sizeof(*snapshot));
     snapshot->status_valid = status_cache->valid;
     snapshot->status_identity_matches = status_cache->identity_matches &&

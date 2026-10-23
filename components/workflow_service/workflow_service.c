@@ -1780,6 +1780,11 @@ static void workflow_service_process_async_locked(void)
             .command = item.command,
             .result = workflow_service_command_locked(item.command, &params),
         };
+        ESP_LOGI(TAG, "WORKFLOW_COMMAND_DONE seq=%lu name=%s result=%d expected_gen=%lu gen=%lu step=%s remotes=%u",
+            (unsigned long)item.seq, workflow_core_command_name(item.command),
+            (int)s_last_async.result, (unsigned long)item.expected_generation,
+            (unsigned long)s_core.generation, workflow_core_step_name(s_core.step),
+            (unsigned)s_assigned_remotes);
     }
 }
 

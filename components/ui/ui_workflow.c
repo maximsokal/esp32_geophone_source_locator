@@ -9,6 +9,7 @@
 #include "device_status.h"
 #include "hw_inventory.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -936,6 +937,7 @@ static void ui_workflow_refresh_snapshot(ui_workflow_screen_state_t *state, uint
     const bool first = !state->snapshot_valid;
     const workflow_step_t old_step = snapshot->step;
     if (workflow_service_try_get_snapshot(snapshot) != ESP_OK) return;
+    state->last_snapshot_ms = now_ms;
     state->snapshot_valid = true;
     state->workflow_service_ready = true;
 
@@ -973,6 +975,9 @@ static void ui_workflow_send_command(ui_workflow_screen_state_t *state, workflow
     uint32_t sequence = 0U;
     const esp_err_t err = workflow_service_command_async(
         command, true, state->snapshot.generation, &sequence);
+    ESP_LOGI("UI_WORKFLOW", "WORKFLOW_UI_COMMAND seq=%lu name=%s gen=%lu enqueue=%s",
+        (unsigned long)sequence, workflow_core_command_name(command),
+        (unsigned long)state->snapshot.generation, esp_err_to_name(err));
     ui_workflow_model_command_sent(&state->model_state, command, err, sequence, now_ms);
 }
 
@@ -1055,7 +1060,6 @@ void ui_workflow_screen_open_locked(void)
     ui_workflow_refresh_snapshot(s_workflow, now_ms);
     /* Opening the screen only renders the OBJECT-step action; the operator
      * explicitly sends START_MEASUREMENT by pressing OK. */
-    s_workflow->last_snapshot_ms = now_ms;
     ui_workflow_build_ranging_view(s_workflow);
     ui_workflow_update(s_workflow, now_ms);
 }
@@ -1085,7 +1089,6 @@ void ui_workflow_screen_refresh_locked(void)
         now_ms - s_workflow->last_snapshot_ms >= UI_WORKFLOW_REFRESH_PERIOD_MS;
     if (refresh_due) {
         ui_workflow_refresh_snapshot(s_workflow, now_ms);
-        s_workflow->last_snapshot_ms = now_ms;
         ui_workflow_build_ranging_view(s_workflow);
         ui_workflow_update(s_workflow, now_ms);
     }
@@ -1109,6 +1112,11 @@ void ui_workflow_screen_handle_key_locked(keypad_key_t key)
         default: return;
     }
     const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
+    ESP_LOGI("UI_WORKFLOW", "WORKFLOW_UI_KEY key=%d step=%s gen=%lu pending=%lu completed=%lu",
+        (int)key, workflow_core_step_name(s_workflow->snapshot.step),
+        (unsigned long)s_workflow->snapshot.generation,
+        (unsigned long)(s_workflow->model_state.has_pending ? s_workflow->model_state.pending_seq : 0U),
+        (unsigned long)s_workflow->snapshot.last_async.seq);
     ui_workflow_prepare_material_model(s_workflow);
     const ui_workflow_event_t event = ui_workflow_model_handle_key(
         &s_workflow->snapshot, &s_workflow->model_state, workflow_key, now_ms);
