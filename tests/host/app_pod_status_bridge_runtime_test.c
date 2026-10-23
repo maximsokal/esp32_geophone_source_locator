@@ -533,7 +533,7 @@ static void test_cycle_publishes_topology_pod_connection_states(void)
     assert(s_topology_snapshot_calls == 1U);
     assert(s_pod_state_calls == DEVICE_STATUS_POD_COUNT);
     assert(s_pod_states[0] == POD_STATE_READY);
-    assert(s_pod_states[1] == POD_STATE_WARNING);
+    assert(s_pod_states[1] == POD_STATE_DISCONNECTED);
     assert(s_pod_states[2] == POD_STATE_ERROR);
     assert(s_pod_states[3] == POD_STATE_DISCONNECTED);
 
@@ -567,6 +567,30 @@ static void test_cycle_publishes_topology_pod_connection_states(void)
     assert(s_barometer_calls == previous_barometer_calls + DEVICE_STATUS_POD_COUNT);
     assert(s_height_reference_calls == previous_height_reference_calls + DEVICE_STATUS_POD_COUNT);
     assert(s_position_calls == previous_position_calls + DEVICE_STATUS_POD_COUNT);
+}
+
+static void test_bus_fault_does_not_publish_four_connected_pods(void)
+{
+    reset_fakes();
+    s_topology.generation = 1U;
+    s_topology.tca_fault = true;
+    for (size_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        s_topology.remotes[channel].state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
+    }
+    app_pod_status_bridge_publish_cycle();
+    for (size_t channel = 0U; channel < DEVICE_STATUS_POD_COUNT; ++channel) {
+        assert(s_pod_states[channel] == POD_STATE_DISCONNECTED);
+    }
+    assert_inventory_state(HW_MODULE_SENSOR_MUX, HW_STATE_FAULT, "topology probe fault");
+
+    s_topology.tca_fault = false;
+    s_topology.tca_available = true;
+    s_topology.remotes[0].state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    app_pod_status_bridge_publish_cycle();
+    assert(s_pod_states[0] == POD_STATE_READY);
+    for (size_t channel = 1U; channel < DEVICE_STATUS_POD_COUNT; ++channel) {
+        assert(s_pod_states[channel] == POD_STATE_DISCONNECTED);
+    }
 }
 
 static void test_cycle_updates_topology_inventory_from_existing_snapshot(void)
@@ -646,6 +670,7 @@ static void (*const s_bridge_fallback_tests[])(void) = {
     test_cycle_publishes_fresh_sensor_and_frozen_geometry,
     test_cycle_invalidates_local_position_when_active_profile_disappears,
     test_cycle_publishes_topology_pod_connection_states,
+    test_bus_fault_does_not_publish_four_connected_pods,
     test_cycle_updates_topology_inventory_from_existing_snapshot,
     test_stop_releases_scratch_for_reallocation,
 };
@@ -661,6 +686,7 @@ int main(void)
     test_cycle_publishes_fresh_sensor_and_frozen_geometry();
     test_cycle_invalidates_local_position_when_active_profile_disappears();
     test_cycle_publishes_topology_pod_connection_states();
+    test_bus_fault_does_not_publish_four_connected_pods();
     test_cycle_updates_topology_inventory_from_existing_snapshot();
     test_stop_releases_scratch_for_reallocation();
 #endif

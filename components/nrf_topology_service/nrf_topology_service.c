@@ -1638,6 +1638,10 @@ static void platform_prepare_tca(
     }
     if (err != ESP_OK) {
         *fault = true;
+        if (err == ESP_ERR_TIMEOUT) {
+            /* Mux discovery must participate in the same bounded recovery as node reads. */
+            (void)platform_recover_classified_error(platform, address, err);
+        }
         return;
     }
 

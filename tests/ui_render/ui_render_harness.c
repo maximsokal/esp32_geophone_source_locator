@@ -401,6 +401,25 @@ int main(int argc, char **argv)
         prepare(WORKFLOW_STEP_OBJECT, 1U);
         ui_workflow_screen_handle_key_locked(KEYPAD_KEY_LEFT);
         assert(render_context.screen == UI_SCREEN_HOME);
+        const workflow_step_t connection_steps[] = {
+            WORKFLOW_STEP_OBJECT, WORKFLOW_STEP_SENSOR_CHECK, WORKFLOW_STEP_CALIB_PREP,
+        };
+        for (size_t step_index = 0U; step_index < sizeof(connection_steps) / sizeof(connection_steps[0]); ++step_index) {
+            for (unsigned remotes = 0U; remotes <= 1U; ++remotes) {
+                prepare(connection_steps[step_index], remotes);
+                for (size_t i = 0U; i < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++i) {
+                    render_device_status.pods[i].state = POD_STATE_WARNING;
+                }
+                ui_workflow_update(s_workflow, render_now_ms);
+                for (size_t i = 0U; i < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++i) {
+                    assert(s_workflow->remote_pod_states[i] ==
+                        (i < remotes ? POD_STATE_WARNING : POD_STATE_DISCONNECTED));
+                }
+                (void)snprintf(name, sizeof(name), "%s_confirmed_links_step%u_r%u", language,
+                    (unsigned)connection_steps[step_index], remotes);
+                capture(name, false);
+            }
+        }
         prepare(WORKFLOW_STEP_SENSOR_CHECK, 0U);
         assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN N+") != NULL);
         for (size_t i = 0U; i < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++i) {

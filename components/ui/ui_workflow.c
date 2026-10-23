@@ -590,15 +590,13 @@ static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
         device_status_try_get_snapshot(&state->remote_status_snapshot) == ESP_OK;
     /* A failed snapshot read must not keep the previous sensor health green. */
     if (!status_available) memset(&state->remote_status_snapshot, 0, sizeof(state->remote_status_snapshot));
-    if (state->snapshot.step == WORKFLOW_STEP_SENSOR_CHECK) {
-        const uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
-        for (uint8_t slot = 0U; slot <= UI_WORKFLOW_REMOTE_SLOT_COUNT; ++slot) {
-            nrf_node_link_status_input_t input = {0};
-            const esp_err_t err = nrf_topology_service_get_node_status_snapshot(slot, &input);
-            state->preflight_links[slot] = err == ESP_OK
-                ? nrf_node_link_status_evaluate(&input, now_ms, false)
-                : NRF_NODE_LINK_STATUS_NOT_CONNECTED;
-        }
+    const uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    for (uint8_t slot = 0U; slot <= UI_WORKFLOW_REMOTE_SLOT_COUNT; ++slot) {
+        nrf_node_link_status_input_t input = {0};
+        const esp_err_t err = nrf_topology_service_get_node_status_snapshot(slot, &input);
+        state->preflight_links[slot] = err == ESP_OK
+            ? nrf_node_link_status_evaluate(&input, now_ms, false)
+            : NRF_NODE_LINK_STATUS_NOT_CONNECTED;
     }
     hw_module_info_t adc = {0};
     (void)hw_inventory_get(HW_MODULE_AD7606, &adc);
@@ -624,12 +622,10 @@ static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
     for (size_t i = 0U; i < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++i) {
         {
             pod_state_t pod_state = device->pods[i].state;
-            if (state->snapshot.step == WORKFLOW_STEP_SENSOR_CHECK) {
-                const nrf_node_link_status_t link = state->preflight_links[i + 1U];
-                if (link == NRF_NODE_LINK_STATUS_NOT_CONNECTED) pod_state = POD_STATE_DISCONNECTED;
-                else if (link == NRF_NODE_LINK_STATUS_CONNECTED && pod_state != POD_STATE_ERROR)
-                    pod_state = POD_STATE_WARNING;
-            }
+            const nrf_node_link_status_t link = state->preflight_links[i + 1U];
+            if (link == NRF_NODE_LINK_STATUS_NOT_CONNECTED) pod_state = POD_STATE_DISCONNECTED;
+            else if (link == NRF_NODE_LINK_STATUS_CONNECTED && pod_state != POD_STATE_ERROR)
+                pod_state = POD_STATE_WARNING;
             if (state->remote_pod_states[i] != pod_state) changed = true;
             state->remote_pod_states[i] = pod_state;
         }

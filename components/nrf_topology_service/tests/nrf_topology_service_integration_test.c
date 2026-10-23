@@ -2694,6 +2694,47 @@ static void test_api_guards_when_stopped(void)
     nrf_topology_service_stop();
 }
 
+static void release_stuck_scl_and_refresh(void)
+{
+    assert(s_controller_reset_calls == 0U);
+    s_scl_stuck = false;
+    request_topology_refresh_for_test();
+}
+
+static void test_mux_discovery_timeouts_escalate_and_rejoin(void)
+{
+    reset_world();
+    s_tick = 500000U; /* Beyond recovery backoff from earlier scenarios. */
+    s_tca_present = true;
+    s_scl_stuck = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    node_boot(&s_nodes[1], 0U, 0x22U);
+    sensor_bus_recovery_status_t before;
+    assert(sensor_bus_get_recovery_status(&before) == ESP_OK);
+    s_timeout_recovery_start = before.attempts + 1U; /* Boot-time line check. */
+
+    script(EV_ACTION, 0U, assert_no_line_recovery_yet);
+    script(EV_ACTION, 0U, request_topology_refresh_for_test);
+    script(EV_WAIT_MS, 5000U, NULL);
+    script(EV_ACTION, 0U, assert_no_line_recovery_yet);
+    script(EV_ACTION, 0U, request_topology_refresh_for_test);
+    script(EV_WAIT_MS, 5000U, NULL);
+    script(EV_ACTION, 0U, assert_line_recovery_attempted);
+    script(EV_ACTION, 0U, release_stuck_scl_and_refresh);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    assert(s_seen.tca_available && !s_seen.tca_fault);
+    assert(s_seen.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_seen.remotes[0].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    for (size_t channel = 1U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        assert(s_seen.remotes[channel].state == NRF_TOPOLOGY_NODE_ABSENT);
+    }
+    assert(s_collisions == 0U);
+}
+
 int main(void)
 {
     test_api_guards_when_stopped();
@@ -2726,5 +2767,6 @@ int main(void)
     test_ranging_default_timeout_is_30_seconds();
     test_ranging_requires_assigned_main();
 #endif
+    test_mux_discovery_timeouts_escalate_and_rejoin();
     return 0;
 }
