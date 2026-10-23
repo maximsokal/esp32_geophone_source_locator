@@ -24,6 +24,7 @@
 extern ui_context_t render_context;
 extern workflow_snapshot_t render_snapshot;
 extern device_status_snapshot_t render_device_status;
+extern nrf_node_link_status_input_t render_node_status[UI_WORKFLOW_REMOTE_SLOT_COUNT + 1U];
 extern uint64_t render_now_ms;
 extern workflow_command_t render_last_command;
 extern unsigned render_command_count;
@@ -251,6 +252,15 @@ static void prepare(workflow_step_t step, unsigned remotes)
         placed->height_rel_main_mm = (int64_t)i * 12;
     }
     memset(&render_device_status, 0, sizeof(render_device_status));
+    memset(render_node_status, 0, sizeof(render_node_status));
+    for (size_t i = 0U; i <= remotes; ++i) {
+        render_node_status[i] = (nrf_node_link_status_input_t){
+            .assigned = true, .status_valid = true, .status_identity_matches = true,
+            .lifecycle = NRF_UPSTREAM_LIFECYCLE_READY, .result = NRF_UPSTREAM_RESULT_OK,
+            .flags = NRF_UPSTREAM_STATUS_FLAG_ASSIGNED | NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED,
+            .status_receipt_uptime_ms = render_now_ms,
+        };
+    }
     for (size_t i = 0U; i < 4U; ++i) render_device_status.pods[i].state =
         i < remotes ? POD_STATE_READY : POD_STATE_DISCONNECTED;
     render_context.object_count = 1U;
@@ -362,6 +372,13 @@ int main(int argc, char **argv)
         prepare(WORKFLOW_STEP_OBJECT, 1U);
         ui_workflow_screen_handle_key_locked(KEYPAD_KEY_LEFT);
         assert(render_context.screen == UI_SCREEN_HOME);
+        prepare(WORKFLOW_STEP_SENSOR_CHECK, 0U);
+        assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN N+") != NULL);
+        for (size_t i = 0U; i < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++i) {
+            assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[i]), "N- I? B? C-") != NULL);
+        }
+        (void)snprintf(name, sizeof(name), "%s_preflight_main_only", language);
+        capture(name, false);
         prepare(WORKFLOW_STEP_SENSOR_CHECK, 1U);
         render_device_status.main.bmp280_present = true;
         render_device_status.main.bmp280_valid = true;
@@ -373,7 +390,7 @@ int main(int argc, char **argv)
         };
         ui_workflow_update(s_workflow, render_now_ms);
         assert(s_workflow->remote_slot_cards[0] != NULL);
-        assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "I+ B+ C-") != NULL);
+        assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "N+ I+ B+ C-") != NULL);
         (void)snprintf(name, sizeof(name), "%s_preflight_uncalibrated", language);
         capture(name, false);
         render_device_status.pods[0].sensor_health.imu_valid = false;
@@ -387,6 +404,33 @@ int main(int argc, char **argv)
         assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "I? B? C-") != NULL);
         (void)snprintf(name, sizeof(name), "%s_preflight_stale", language);
         capture(name, false);
+        render_device_status.pods[0].sensor_health.current = true;
+        render_device_status.pods[0].sensor_health.imu_valid = true;
+        render_device_status.pods[0].sensor_health.imu_fault = false;
+        render_node_status[1].lifecycle = NRF_UPSTREAM_LIFECYCLE_BOOTING;
+        ui_workflow_update(s_workflow, render_now_ms);
+        assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "N! I? B? C-") != NULL);
+        (void)snprintf(name, sizeof(name), "%s_preflight_nrf_booting", language);
+        capture(name, false);
+        render_node_status[1].lifecycle = NRF_UPSTREAM_LIFECYCLE_READY;
+        const uint64_t before_stale_test_ms = render_now_ms;
+        render_now_ms += NRF_NODE_LINK_STATUS_STALE_LIMIT_MS;
+        ui_workflow_update(s_workflow, render_now_ms);
+        assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN N-") != NULL);
+        assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "N- I? B? C-") != NULL);
+        (void)snprintf(name, sizeof(name), "%s_preflight_nrf_stale", language);
+        capture(name, false);
+        render_node_status[0].status_receipt_uptime_ms = render_now_ms;
+        render_node_status[1].status_receipt_uptime_ms = render_now_ms;
+        ui_workflow_update(s_workflow, render_now_ms);
+        assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "N+ I+ B+ C-") != NULL);
+        render_node_status[1].status_identity_matches = false;
+        ui_workflow_update(s_workflow, render_now_ms);
+        assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN N+") != NULL);
+        assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "N- I? B? C-") != NULL);
+        (void)snprintf(name, sizeof(name), "%s_preflight_nrf_identity_mismatch", language);
+        capture(name, false);
+        render_now_ms = before_stale_test_ms;
         prepare(WORKFLOW_STEP_SENSOR_CHECK, 3U);
         render_device_status.pods[1].state = POD_STATE_WARNING;
         render_device_status.pods[2].state = POD_STATE_ERROR;
@@ -400,6 +444,7 @@ int main(int argc, char **argv)
         (void)snprintf(name, sizeof(name), "%s_long_text_scrolled", language);
         capture(name, true);
         ui_workflow_screen_close_locked();
+        memset(render_node_status, 0, sizeof(render_node_status));
         render_all_menus();
     }
     ui_workflow_screen_close_locked();

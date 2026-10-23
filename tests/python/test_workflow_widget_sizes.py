@@ -34,6 +34,8 @@ C_FIXTURE = r"""
 #include "ui_workflow_model.h"
 #include "ui_theme.h"
 #include "ui_utf8_format.h"
+#include "device_status.h"
+#include "ui_node_link_status.h"
 
 typedef struct lv_obj_t {
     struct lv_obj_t *parent;
@@ -44,12 +46,13 @@ typedef struct lv_obj_t {
 } lv_obj_t;
 static lv_obj_t objects[128];
 static size_t object_count;
-typedef enum { POD_STATE_DISCONNECTED, POD_STATE_READY, POD_STATE_WARNING, POD_STATE_ERROR } pod_state_t;
 typedef struct {
     workflow_snapshot_t snapshot;
     ui_workflow_model_t model;
     lv_obj_t *screen;
     size_t line_slots;
+    device_status_snapshot_t remote_status_snapshot;
+    nrf_node_link_status_t preflight_links[UI_WORKFLOW_REMOTE_SLOT_COUNT + 1U];
     pod_state_t remote_pod_states[UI_WORKFLOW_REMOTE_SLOT_COUNT];
     ui_workflow_remote_slot_t remote_slots[UI_WORKFLOW_REMOTE_SLOT_COUNT];
     lv_obj_t *remote_slot_cards[UI_WORKFLOW_REMOTE_SLOT_COUNT];
@@ -223,6 +226,7 @@ def layout_program():
         "static uint32_t ui_workflow_remote_pod_color",
         "static bool ui_workflow_remote_slots_visible",
         "static void ui_workflow_create_remote_slots",
+        "static const char *ui_workflow_nrf_indicator",
         "static void ui_workflow_update_remote_slots",
         "static void ui_workflow_update_actions",
     ]
@@ -232,6 +236,8 @@ def layout_program():
     source.write_text(defines + "\n" + C_FIXTURE.replace("/* PRODUCTION_FUNCTIONS */", functions), encoding="utf-8")
     entry = json.loads((ROOT / "tests/host/manifest.d/coverage-wfT.json").read_text())["tests"][0]
     entry["name"] = "workflow_widget_geometry"
+    entry["include_dirs"].insert(0, "components/device_status/include")
+    entry["include_dirs"].append("components/nrf_topology_service/include")
     entry["sources"] = [s for s in entry["sources"] if not s.endswith("/ui_workflow_model_test.c")] + [str(source)]
     manifest = work / "manifest.json"
     manifest.write_text(json.dumps({"version": 1, "tests": [entry]}), encoding="utf-8")

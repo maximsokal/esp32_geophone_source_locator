@@ -1,5 +1,6 @@
 /* Hardware/service boundary only. Widgets, font, model and renderers are real. */
 #include "ui_internal.h"
+#include "ui_workflow_model.h"
 #include "workflow_service.h"
 #include "device_status.h"
 #include "wifi_manager.h"
@@ -90,6 +91,7 @@ void render_run_task(const char *name, void (*before_completion)(void))
 ui_context_t render_context;
 workflow_snapshot_t render_snapshot;
 device_status_snapshot_t render_device_status;
+nrf_node_link_status_input_t render_node_status[UI_WORKFLOW_REMOTE_SLOT_COUNT + 1U];
 uint64_t render_now_ms = 1000U;
 workflow_command_t render_last_command = WORKFLOW_COMMAND_COUNT;
 unsigned render_command_count;
@@ -247,7 +249,11 @@ esp_err_t nrf_topology_service_ranging_get_progress(nrf_topology_ranging_progres
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *out)
 { (void)channel; memset(out, 0, sizeof(*out)); return ESP_ERR_NOT_FOUND; }
 esp_err_t nrf_topology_service_get_node_status_snapshot(uint8_t slot, nrf_node_link_status_input_t *out)
-{ (void)slot; memset(out, 0, sizeof(*out)); return ESP_OK; }
+{
+    if (slot > UI_WORKFLOW_REMOTE_SLOT_COUNT || out == NULL) return ESP_ERR_INVALID_ARG;
+    *out = render_node_status[slot];
+    return ESP_OK;
+}
 esp_err_t seismic_recorder_list_sessions(const char *object, seismic_recorder_session_summary_t *out,
     size_t maximum, size_t *count)
 { (void)object; (void)out; (void)maximum; *count = 0U; return ESP_ERR_NOT_FOUND; }

@@ -337,12 +337,12 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Waveform segment unavailable", /* tft.workflow.result.waveform_unavailable */
     "Scan on phone", /* tft.workflow.scan.phone */
     "Under 3: limited position; calibration can continue", /* tft.workflow.sensor.insufficient */
-    "ADC:%s MAIN B:%s INA:%s %sV", /* tft.workflow.sensor.main */
-    "%s I%s B%s C%s", /* tft.workflow.sensor.node */
+    "ADC:%s MAIN N%s B%s INA:%s %sV", /* tft.workflow.sensor.main */
+    "%s N%s I%s B%s C%s", /* tft.workflow.sensor.node */
     "OK", /* tft.workflow.sensor.ok */
     "2D possible; connect >=4 for 3D", /* tft.workflow.sensor.planar */
     "3D ready", /* tft.workflow.sensor.ready */
-    "REMOTE:%s  I:IMU B:baro C:cal", /* tft.workflow.sensor.remote_count */
+    "REMOTE:%s N:nRF I:IMU B:baro C:cal", /* tft.workflow.sensor.remote_count */
     "calibrated", /* tft.workflow.state.calibrated */
     "gravity", /* tft.workflow.state.gravity */
     "moving", /* tft.workflow.state.moving */
@@ -760,12 +760,12 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Фрагмент хвильової форми недоступний", /* tft.workflow.result.waveform_unavailable */
     "Скануйте на телефоні", /* tft.workflow.scan.phone */
     "Менше 3: позиція обмежена; калібрування триває", /* tft.workflow.sensor.insufficient */
-    "ADC:%s MAIN B:%s INA:%s %sV", /* tft.workflow.sensor.main */
-    "%s I%s B%s C%s", /* tft.workflow.sensor.node */
+    "ADC:%s MAIN N%s B%s INA:%s %sV", /* tft.workflow.sensor.main */
+    "%s N%s I%s B%s C%s", /* tft.workflow.sensor.node */
     "OK", /* tft.workflow.sensor.ok */
     "Можливе 2D; для 3D підключіть щонайменше 4", /* tft.workflow.sensor.planar */
     "3D готове", /* tft.workflow.sensor.ready */
-    "REMOTE:%s  I:IMU B:баро C:кал", /* tft.workflow.sensor.remote_count */
+    "REMOTE:%s N:nRF I:IMU B:баро C:кал", /* tft.workflow.sensor.remote_count */
     "Відкалібровано", /* tft.workflow.state.calibrated */
     "Гравітація", /* tft.workflow.state.gravity */
     "Рух", /* tft.workflow.state.moving */

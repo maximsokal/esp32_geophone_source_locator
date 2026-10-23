@@ -56,6 +56,7 @@ typedef struct {
     ui_i18n_key_t preflight_adc;
     ui_i18n_key_t preflight_barometer;
     ui_i18n_key_t preflight_power;
+    nrf_node_link_status_t preflight_links[UI_WORKFLOW_REMOTE_SLOT_COUNT + 1U];
     char preflight_rail_v[12];
 
     lv_obj_t *screen;
@@ -588,6 +589,16 @@ static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
         device_status_try_get_snapshot(&state->remote_status_snapshot) == ESP_OK;
     /* A failed snapshot read must not keep the previous sensor health green. */
     if (!status_available) memset(&state->remote_status_snapshot, 0, sizeof(state->remote_status_snapshot));
+    if (state->snapshot.step == WORKFLOW_STEP_SENSOR_CHECK) {
+        const uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+        for (uint8_t slot = 0U; slot <= UI_WORKFLOW_REMOTE_SLOT_COUNT; ++slot) {
+            nrf_node_link_status_input_t input = {0};
+            const esp_err_t err = nrf_topology_service_get_node_status_snapshot(slot, &input);
+            state->preflight_links[slot] = err == ESP_OK
+                ? nrf_node_link_status_evaluate(&input, now_ms, false)
+                : NRF_NODE_LINK_STATUS_NOT_CONNECTED;
+        }
+    }
     hw_module_info_t adc = {0};
     (void)hw_inventory_get(HW_MODULE_AD7606, &adc);
     state->preflight_adc = adc.state == HW_STATE_PRESENT ? UI_I18N_KEY_TFT_WORKFLOW_SENSOR_OK
@@ -611,7 +622,13 @@ static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
     uint8_t connected_mask = 0U;
     for (size_t i = 0U; i < UI_WORKFLOW_REMOTE_SLOT_COUNT; ++i) {
         {
-            const pod_state_t pod_state = device->pods[i].state;
+            pod_state_t pod_state = device->pods[i].state;
+            if (state->snapshot.step == WORKFLOW_STEP_SENSOR_CHECK) {
+                const nrf_node_link_status_t link = state->preflight_links[i + 1U];
+                if (link == NRF_NODE_LINK_STATUS_NOT_CONNECTED) pod_state = POD_STATE_DISCONNECTED;
+                else if (link == NRF_NODE_LINK_STATUS_CONNECTED && pod_state != POD_STATE_ERROR)
+                    pod_state = POD_STATE_WARNING;
+            }
             if (state->remote_pod_states[i] != pod_state) changed = true;
             state->remote_pod_states[i] = pod_state;
         }
@@ -670,6 +687,12 @@ static void ui_workflow_create_remote_slots(ui_workflow_screen_state_t *state)
     state->remote_slot_styles_dirty = true;
 }
 
+static const char *ui_workflow_nrf_indicator(nrf_node_link_status_t status)
+{
+    return status == NRF_NODE_LINK_STATUS_NOT_CONNECTED ? "-"
+        : status == NRF_NODE_LINK_STATUS_CONNECTED ? "!" : "+";
+}
+
 static void ui_workflow_update_remote_slots(ui_workflow_screen_state_t *state)
 {
     if (!state->remote_slot_styles_dirty) return;
@@ -680,7 +703,9 @@ static void ui_workflow_update_remote_slots(ui_workflow_screen_state_t *state)
         if (state->snapshot.step == WORKFLOW_STEP_SENSOR_CHECK) {
             const device_pod_status_t *pod = &state->remote_status_snapshot.pods[i];
             const device_sensor_health_t *health = &pod->sensor_health;
-            const bool current = health->current && state->remote_slots[i].connected;
+            const nrf_node_link_status_t link = state->preflight_links[i + 1U];
+            const bool current = health->current && state->remote_slots[i].connected &&
+                link == NRF_NODE_LINK_STATUS_READY;
             const char *imu = !current ? "?" : health->imu_valid ? "+" : health->imu_fault ? "!" : "?";
             const char *baro = !current ? "?" : health->barometer_valid ? "+" : health->barometer_fault ? "!" : "?";
             const char *calibration = current && health->imu_calibrated &&
@@ -688,7 +713,7 @@ static void ui_workflow_update_remote_slots(ui_workflow_screen_state_t *state)
             char node[8], text[64];
             (void)snprintf(node, sizeof(node), "G%u", (unsigned)i + 1U);
             (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_SENSOR_NODE),
-                node, imu, baro, calibration);
+                node, ui_workflow_nrf_indicator(link), imu, baro, calibration);
             ui_workflow_set_label(label, text);
         }
         const uint32_t color = ui_workflow_remote_pod_color(state->remote_pod_states[i]);
@@ -895,7 +920,8 @@ static void ui_workflow_update_lines(ui_workflow_screen_state_t *state)
         state->model.notice_key == UI_I18N_KEY_COUNT) {
         char text[96];
         (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_SENSOR_MAIN),
-            ui_tr(state->preflight_adc), ui_tr(state->preflight_barometer),
+            ui_tr(state->preflight_adc), ui_workflow_nrf_indicator(state->preflight_links[0]),
+            ui_tr(state->preflight_barometer),
             ui_tr(state->preflight_power), state->preflight_rail_v);
         ui_workflow_set_label(context->footer_label, text);
     } else if (context->footer_label != NULL && footer_key < UI_I18N_KEY_COUNT) {
