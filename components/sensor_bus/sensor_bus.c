@@ -32,6 +32,8 @@ static const char s_tca_diag_source[] = "tca9548a";
 static const char s_nrf_diag_source[] = "nrf_topology";
 
 static i2c_bus_handle_t s_bus = NULL;
+/* Only retained if wrapper adoption or its rollback fails, guarded by s_lock. */
+static i2c_master_bus_handle_t s_unwrapped_controller;
 static i2c_bus_device_handle_t s_ina3221 = NULL;
 static i2c_bus_device_handle_t s_tca9548a = NULL;
 static uint8_t s_tca9548a_address = NULL_I2C_DEV_ADDR;
@@ -873,11 +875,28 @@ static bool sensor_bus_verify_tca_candidate_locked(
     return valid;
 }
 
+static esp_err_t sensor_bus_delete_unwrapped_controller_locked(void)
+{
+    if (s_unwrapped_controller == NULL) {
+        return ESP_OK;
+    }
+    const esp_err_t err = i2c_del_master_bus(s_unwrapped_controller);
+    if (err == ESP_OK) {
+        s_unwrapped_controller = NULL;
+    }
+    return err;
+}
+
 /* Caller must already hold s_lock. */
 static esp_err_t sensor_bus_init_locked(void)
 {
     if (s_bus != NULL && s_ina3221 != NULL) {
         return ESP_OK;
+    }
+
+    const esp_err_t pending_err = sensor_bus_delete_unwrapped_controller_locked();
+    if (pending_err != ESP_OK) {
+        return pending_err;
     }
 
     (void)sensor_bus_cleanup_owned_devices();
@@ -906,10 +925,27 @@ static esp_err_t sensor_bus_init_locked(void)
         .master.clk_speed = SENSOR_BUS_I2C_SPEED_HZ,
     };
 
+    /* i2c_bus 1.5.2 logs a spurious missing-port error before creating a bus.
+     * Create it once here, then let the wrapper adopt and own its deletion. */
+    const i2c_master_bus_config_t controller_config = {
+        .i2c_port = SENSOR_BUS_I2C_PORT,
+        .sda_io_num = config.sda_io_num,
+        .scl_io_num = config.scl_io_num,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = SENSOR_BUS_I2C_GLITCH_IGNORE_COUNT,
+        .flags.enable_internal_pullup = true,
+    };
+    const esp_err_t controller_err =
+        i2c_new_master_bus(&controller_config, &s_unwrapped_controller);
+    if (controller_err != ESP_OK) {
+        return controller_err;
+    }
     s_bus = i2c_bus_create(SENSOR_BUS_I2C_PORT, &config);
     if (s_bus == NULL) {
-        return ESP_ERR_NO_MEM;
+        const esp_err_t cleanup_err = sensor_bus_delete_unwrapped_controller_locked();
+        return cleanup_err == ESP_OK ? ESP_ERR_NO_MEM : cleanup_err;
     }
+    s_unwrapped_controller = NULL;
     s_controller_reset_required = false;
 
     /* Tells an externally held bus (low before our driver touched it) from one
@@ -1562,6 +1598,10 @@ esp_err_t sensor_bus_deinit(void)
     }
     if (s_bus == NULL) {
         s_controller_reset_required = false;
+    }
+    const esp_err_t pending_err = sensor_bus_delete_unwrapped_controller_locked();
+    if (err == ESP_OK) {
+        err = pending_err;
     }
 
     sensor_bus_unlock();

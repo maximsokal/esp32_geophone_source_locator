@@ -74,3 +74,14 @@ def test_ina3221_monitor_remains_non_fatal_at_its_new_call_site():
     assert timing - call < 1200
     between = services[call:timing]
     assert "ESP_ERROR_CHECK(" not in between
+
+
+def test_wifi_completion_snapshot_and_marker_precede_i2c_worker_release():
+    startup = read("main/app_startup.c")
+    services = _function_body(startup, "static void app_startup_initialize_services(")
+    wifi = services.index("wifi_manager_start()")
+    snapshot = services.index('runtime_observability_log_snapshot("after-wifi")')
+    monitor = services.index("ina3221_monitor_start()")
+    assert wifi < snapshot < monitor
+    marker = services.index("BOOT_PHASE wifi_start=complete i2c_start=allowed")
+    assert snapshot < marker < monitor

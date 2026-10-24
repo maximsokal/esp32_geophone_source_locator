@@ -476,6 +476,8 @@ static void app_startup_initialize_services(
         wifi_manager_start()
     );
 
+    runtime_observability_log_snapshot("after-wifi");
+
     ESP_ERROR_CHECK(
         web_server_start()
     );
@@ -543,6 +545,7 @@ static void app_startup_initialize_services(
         app_startup_request_low_battery_shutdown
     );
 
+    ESP_LOGI(TAG, "BOOT_PHASE wifi_start=complete i2c_start=allowed");
     const esp_err_t power_monitor_err =
         ina3221_monitor_start();
 
@@ -567,8 +570,6 @@ static void app_startup_initialize_services(
         "sensor_bus_i2c_start_after_wifi",
         power_monitor_started_ms
     );
-
-    runtime_observability_log_snapshot("after-wifi");
 
     app_startup_log_elapsed(
         "runtime_services",

@@ -88,6 +88,7 @@ static unsigned s_bus_create_calls;
 static unsigned s_device_create_calls;
 static unsigned s_bus_delete_calls;
 static unsigned s_device_delete_calls;
+static unsigned s_empty_port_lookups;
 static i2c_port_t s_last_port;
 static i2c_config_t s_last_config;
 static uint8_t s_last_address;
@@ -97,6 +98,9 @@ static int s_bitbang_calls_at_bus_create = -1;
 
 i2c_bus_handle_t i2c_bus_create(i2c_port_t port, const i2c_config_t *config)
 {
+    if (g_fake_lines.controller_create_calls == 0U) {
+        ++s_empty_port_lookups;
+    }
     ++s_bus_create_calls;
     s_bitbang_calls_at_bus_create = g_fake_lines.bitbang_prepare_calls;
     s_last_port = port;
@@ -410,6 +414,56 @@ static void test_invalid_state_read_resets_before_reuse(void)
     s_master_read_result = ESP_OK;
 }
 
+static void test_controller_is_created_once_before_wrapper_adopts_it(void)
+{
+    fake_lines_reset();
+    assert(sensor_bus_init() == ESP_OK);
+    assert(g_fake_lines.controller_create_calls == 1U);
+    assert(s_empty_port_lookups == 0U);
+    assert(sensor_bus_init() == ESP_OK);
+    assert(g_fake_lines.controller_create_calls == 1U);
+    /* Successful adoption transfers deletion to i2c_bus_delete. */
+    assert(sensor_bus_deinit() == ESP_OK);
+    assert(g_fake_lines.controller_delete_calls == 0U);
+}
+
+static void test_controller_creation_and_adoption_failures_are_retryable(void)
+{
+    fake_lines_reset();
+    g_fake_lines.controller_create_result = ESP_ERR_TIMEOUT;
+    const unsigned wrapper_calls = s_bus_create_calls;
+    assert(sensor_bus_init() == ESP_ERR_TIMEOUT);
+    assert(s_bus_create_calls == wrapper_calls);
+    assert(g_fake_lines.controller_delete_calls == 0U);
+
+    g_fake_lines.controller_create_result = ESP_OK;
+    s_fail_bus_create = true;
+    g_fake_lines.controller_delete_result = ESP_FAIL;
+    assert(sensor_bus_init() == ESP_FAIL);
+    assert(g_fake_lines.controller_delete_calls == 1U);
+    const int clears_before_retry = g_fake_lines.bitbang_prepare_calls;
+    const unsigned creates_before_retry = g_fake_lines.controller_create_calls;
+    assert(sensor_bus_init() == ESP_FAIL);
+    assert(g_fake_lines.bitbang_prepare_calls == clears_before_retry);
+    assert(g_fake_lines.controller_create_calls == creates_before_retry);
+    g_fake_lines.controller_delete_result = ESP_OK;
+    s_fail_bus_create = false;
+    assert(sensor_bus_init() == ESP_OK);
+    assert(g_fake_lines.controller_create_calls == creates_before_retry + 1U);
+    assert(sensor_bus_deinit() == ESP_OK);
+
+    fake_lines_reset();
+    s_fail_bus_create = true;
+    g_fake_lines.controller_delete_result = ESP_FAIL;
+    assert(sensor_bus_init() == ESP_FAIL);
+    assert(sensor_bus_deinit() == ESP_FAIL);
+    g_fake_lines.controller_delete_result = ESP_OK;
+    assert(sensor_bus_deinit() == ESP_OK);
+    s_fail_bus_create = false;
+    assert(sensor_bus_init() == ESP_OK);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
 int main(void)
 {
     sensor_bus_handles_t handles = {0};
@@ -469,6 +523,8 @@ int main(void)
     test_runtime_scl_stuck_is_a_fault_with_backoff();
     test_wrapper_uses_millisecond_transaction_timeout();
     test_invalid_state_read_resets_before_reuse();
+    test_controller_is_created_once_before_wrapper_adopts_it();
+    test_controller_creation_and_adoption_failures_are_retryable();
 
     return 0;
 }

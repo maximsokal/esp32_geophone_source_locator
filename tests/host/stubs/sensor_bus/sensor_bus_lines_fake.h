@@ -18,6 +18,10 @@ typedef struct
     /* Observations. */
     int bitbang_prepare_calls;
     int controller_reset_calls;
+    unsigned controller_create_calls;
+    unsigned controller_delete_calls;
+    int controller_create_result;
+    int controller_delete_result;
     int scl_driven_low;
     int rising_edges;
     atomic_int_fast64_t now_us;

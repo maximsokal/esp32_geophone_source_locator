@@ -1,5 +1,7 @@
 #include "sensor_bus_lines_fake.h"
 #include "sensor_bus_lines.h"
+#include "driver/i2c_master.h"
+#include "board_config.h"
 
 #include <assert.h>
 #include <stdarg.h>
@@ -7,6 +9,31 @@
 #include <string.h>
 
 fake_lines_t g_fake_lines;
+
+esp_err_t i2c_new_master_bus(
+    const i2c_master_bus_config_t *config, i2c_master_bus_handle_t *bus)
+{
+    assert(config != NULL && bus != NULL);
+    assert(config->i2c_port == I2C_NUM_0);
+    assert(config->sda_io_num == BOARD_SENSOR_I2C_SDA_GPIO);
+    assert(config->scl_io_num == BOARD_SENSOR_I2C_SCL_GPIO);
+    assert(config->clk_source == I2C_CLK_SRC_DEFAULT);
+    assert(config->glitch_ignore_cnt == 7U);
+    assert(config->flags.enable_internal_pullup);
+    ++g_fake_lines.controller_create_calls;
+    if (g_fake_lines.controller_create_result != ESP_OK) {
+        return g_fake_lines.controller_create_result;
+    }
+    *bus = &g_fake_lines;
+    return ESP_OK;
+}
+
+esp_err_t i2c_del_master_bus(i2c_master_bus_handle_t bus)
+{
+    assert(bus == &g_fake_lines);
+    ++g_fake_lines.controller_delete_calls;
+    return g_fake_lines.controller_delete_result;
+}
 
 void fake_lines_reset(void)
 {
