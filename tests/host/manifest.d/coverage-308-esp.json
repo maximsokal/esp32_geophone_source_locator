@@ -2,6 +2,22 @@
   "version": 1,
   "tests": [
     {
+      "name": "nrf_log_fifo_probe",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_log_protocol.c",
+        "components/nrf_topology_service/nrf_log_collector.c",
+        "tests/host/nrf_log_collector_host_memory.c",
+        "tests/host/nrf_log_fifo_probe_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_log_collector",
+        "nRF54L15/include",
+        "components/nrf_topology_service/include",
+        "components/sensor_bus/include"
+      ]
+    },
+    {
       "name": "nrf_log_collector_t2",
       "sources": [
         "nRF54L15/src/nrf_upstream_protocol.c",

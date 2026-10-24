@@ -250,6 +250,14 @@ gets at most one summary per second; up to four error records per second print
 immediately, with excess errors counted in the next summary. The fixed event
 ring holds 64 records and reports any overflow in status.
 
+The ordinary NCS production image also records upstream TX preparation,
+READ_DONE, READ_ERROR and GENERAL_ERROR. Successful hardware records continue
+after the first 64 callbacks and include selected type/length, preparation result,
+preparation time and actual TXD.AMOUNT. They use the same IRQ-to-main-loop ring;
+printing stays outside IRQ. The ESP32 image rotates 28/31/32/33/38-byte status
+reads with bounded extra traffic. See [production I2C diagnostics](../docs/nrf-production-i2c-diagnostics.md)
+for fields, examples, budget behavior and the separate ESP32/nRF consoles.
+
 For example, startup reports the backend result and each logger LED pin state,
 then emits one `lamp_test` line per available LED. Main-loop change lines carry
 uptime; a status line carries the latest state and counters:

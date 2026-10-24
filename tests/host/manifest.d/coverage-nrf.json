@@ -21,6 +21,11 @@
       "defines": ["NRF_BOOT_DIAGNOSTICS_TEST_HOOKS"]
     },
     {
+      "name": "nrf_twis_trace_zephyr",
+      "sources": ["nRF54L15/src/nrf_twis_trace_zephyr.c", "tests/host/nrf_twis_trace_zephyr_test.c"],
+      "include_dirs": ["tests/host/stubs/nrf_twis_trace_zephyr", "nRF54L15/include"]
+    },
+    {
       "name": "nrf_fault_record",
       "sources": ["nRF54L15/src/nrf_fault_record.c", "tests/host/nrf_fault_record_test.c"],
       "include_dirs": ["nRF54L15/include"]

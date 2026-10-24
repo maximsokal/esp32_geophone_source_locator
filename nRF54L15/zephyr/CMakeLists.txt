@@ -67,6 +67,15 @@ target_sources(app PRIVATE
 
 target_include_directories(app PRIVATE ../include)
 
+# Production NCS uses NRFX 4.x; the historical PlatformIO smoke SDK has an older ABI.
+if(NOT DEFINED PIO_PACKAGES_DIR)
+    target_sources(app PRIVATE ../src/nrf_twis_trace_zephyr.c)
+    target_link_options(app PUBLIC
+        -Wl,--wrap=nrfx_twis_init
+        -Wl,--wrap=nrfx_twis_tx_prepare
+    )
+endif()
+
 # NCS production and cs-proof both use Nordic SoftDevice Controller. When that
 # controller is selected, fail configuration if the permanent MAX-51
 # RAS/Channel-Sounding runtime contract did not resolve as intended. The

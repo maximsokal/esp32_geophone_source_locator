@@ -19,7 +19,7 @@ extern "C" {
 
 #define NRF_BOOT_LAMP_TEST_DURATION_MS 300U
 #define NRF_BOOT_STATUS_LINE_CAPACITY 640U
-#define NRF_BOOT_TRANSACTION_LINE_CAPACITY 192U
+#define NRF_BOOT_TRANSACTION_LINE_CAPACITY 256U
 #define NRF_BOOT_TRANSACTION_RING_CAPACITY 64U
 #define NRF_BOOT_TRANSACTION_DETAIL_LIMIT 64U
 #define NRF_BOOT_TRANSACTION_SUMMARY_PERIOD_MS 1000U
@@ -84,6 +84,10 @@ typedef struct {
 typedef enum {
     NRF_BOOT_TWIS_DIRECTION_WRITE_RECEIVED = 0,
     NRF_BOOT_TWIS_DIRECTION_READ_REQUESTED,
+    NRF_BOOT_TWIS_DIRECTION_TX_PREPARED,
+    NRF_BOOT_TWIS_DIRECTION_READ_DONE,
+    NRF_BOOT_TWIS_DIRECTION_READ_ERROR,
+    NRF_BOOT_TWIS_DIRECTION_GENERAL_ERROR,
 } nrf_boot_twis_direction_t;
 
 /* Callback records contain no pointers and are copied through the SPSC ring. */
@@ -94,6 +98,11 @@ typedef struct nrf_boot_twis_record {
     uint8_t prefix_length;
     uint8_t prefix[NRF_BOOT_TRANSACTION_PREFIX_CAPACITY];
     int32_t result;
+    uint32_t tx_amount;
+    uint32_t hw_error;
+    uint32_t prepare_us;
+    int32_t prepare_result;
+    bool tx_prepared;
 } nrf_boot_twis_record_t;
 
 typedef struct {
@@ -103,6 +112,11 @@ typedef struct {
     volatile uint8_t prefix_length;
     volatile uint8_t prefix[NRF_BOOT_TRANSACTION_PREFIX_CAPACITY];
     volatile int32_t result;
+    volatile uint32_t tx_amount;
+    volatile uint32_t hw_error;
+    volatile uint32_t prepare_us;
+    volatile int32_t prepare_result;
+    volatile bool tx_prepared;
 } nrf_boot_twis_volatile_record_t;
 
 /* Single producer (serialized TWIS buffer callbacks), single main-loop reader. */
@@ -220,6 +234,11 @@ static inline bool nrf_boot_twis_record_ring_push(
         slot->prefix[index] = index < prefix_length ? record->prefix[index] : 0U;
     }
     slot->result = record->result;
+    slot->tx_amount = record->tx_amount;
+    slot->hw_error = record->hw_error;
+    slot->prepare_us = record->prepare_us;
+    slot->prepare_result = record->prepare_result;
+    slot->tx_prepared = record->tx_prepared;
     ring->write_index = write_index + 1U;
     return true;
 }
@@ -249,6 +268,11 @@ static inline bool nrf_boot_twis_record_ring_pop(
         record->prefix[index] = slot->prefix[index];
     }
     record->result = slot->result;
+    record->tx_amount = slot->tx_amount;
+    record->hw_error = slot->hw_error;
+    record->prepare_us = slot->prepare_us;
+    record->prepare_result = slot->prepare_result;
+    record->tx_prepared = slot->tx_prepared;
     ring->read_index = read_index + 1U;
     return true;
 }
@@ -266,13 +290,16 @@ static inline nrf_boot_twis_log_action_t nrf_boot_twis_log_decide(
     if (record->index <= NRF_BOOT_TRANSACTION_DETAIL_LIMIT) {
         return NRF_BOOT_TWIS_LOG_DETAIL;
     }
+    if (record->direction >= NRF_BOOT_TWIS_DIRECTION_TX_PREPARED && record->result == 0) {
+        return NRF_BOOT_TWIS_LOG_DETAIL;
+    }
 
     if (!state->summary_clock_started) {
         state->summary_clock_started = true;
         state->last_summary_ms = now_ms;
         state->error_window_second = error_second;
     }
-    if (record->direction == NRF_BOOT_TWIS_DIRECTION_READ_REQUESTED) {
+    if (record->direction != NRF_BOOT_TWIS_DIRECTION_WRITE_RECEIVED) {
         nrf_boot_saturating_increment(&state->post_detail_read_count);
     } else {
         nrf_boot_saturating_increment(&state->post_detail_write_count);
@@ -321,6 +348,31 @@ static inline int nrf_boot_twis_record_format(
 
     if (record == NULL || buffer == NULL || capacity == 0U) {
         return -EINVAL;
+    }
+    if (record->direction >= NRF_BOOT_TWIS_DIRECTION_TX_PREPARED) {
+        const char *event = "GENERAL_ERROR";
+        char type[5] = "n/a";
+        char amount[11] = "n/a";
+        if (record->direction == NRF_BOOT_TWIS_DIRECTION_TX_PREPARED) event = "TX_PREPARED";
+        else if (record->direction == NRF_BOOT_TWIS_DIRECTION_READ_DONE) event = "READ_DONE";
+        else if (record->direction == NRF_BOOT_TWIS_DIRECTION_READ_ERROR) event = "READ_ERROR";
+        if (record->prefix_length >= 4U) {
+            (void)snprintf(type, sizeof(type), "0x%02x", (unsigned)record->prefix[3]);
+        }
+        if (record->tx_prepared &&
+            (record->direction == NRF_BOOT_TWIS_DIRECTION_READ_DONE ||
+             record->direction == NRF_BOOT_TWIS_DIRECTION_READ_ERROR)) {
+            (void)snprintf(amount, sizeof(amount), "%" PRIu32, record->tx_amount);
+        }
+        written = snprintf(
+            buffer, capacity,
+            "twis_tx: tx=%" PRIu32 " event=%s type=%s selected_len=%" PRIu32
+            " prepared=%u prepare_ret=%" PRId32 " prepare_us=%" PRIu32
+            " tx_amount=%s hw_error=0x%08" PRIx32 " READ_ERROR=%u result=%" PRId32,
+            record->index, event, type, record->length, (unsigned)record->tx_prepared,
+            record->prepare_result, record->prepare_us, amount, record->hw_error,
+            (unsigned)(record->direction == NRF_BOOT_TWIS_DIRECTION_READ_ERROR), record->result);
+        return written < 0 || (size_t)written >= capacity ? -ENOSPC : written;
     }
     direction = record->direction == NRF_BOOT_TWIS_DIRECTION_READ_REQUESTED
         ? "read_requested"

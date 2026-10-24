@@ -12,6 +12,7 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "driver/i2c_master.h"
+#include "board_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -104,6 +105,7 @@ static sim_device_t s_devices[64];
 static int s_bus_token;
 static int s_master_bus_token;
 static bool s_bus_live;
+static bool s_native_bus_live;
 static uint32_t s_tick;
 static uint64_t s_fake_subtick_us;
 static uint32_t s_fake_transaction_duration_us;
@@ -313,6 +315,25 @@ static bool address_acks(uint8_t address)
     return node_at(address) != NULL;
 }
 
+esp_err_t i2c_new_master_bus(
+    const i2c_master_bus_config_t *config, i2c_master_bus_handle_t *bus)
+{
+    assert(config != NULL && bus != NULL && !s_native_bus_live && !s_bus_live);
+    assert(config->i2c_port == I2C_NUM_0);
+    assert(config->sda_io_num == BOARD_SENSOR_I2C_SDA_GPIO);
+    assert(config->scl_io_num == BOARD_SENSOR_I2C_SCL_GPIO);
+    s_native_bus_live = true;
+    *bus = &s_master_bus_token;
+    return ESP_OK;
+}
+
+esp_err_t i2c_del_master_bus(i2c_master_bus_handle_t bus)
+{
+    assert(bus == &s_master_bus_token && s_native_bus_live && !s_bus_live);
+    s_native_bus_live = false;
+    return ESP_OK;
+}
+
 i2c_bus_handle_t i2c_bus_create(i2c_port_t port, const i2c_config_t *config)
 {
     (void)port;
@@ -323,7 +344,7 @@ i2c_bus_handle_t i2c_bus_create(i2c_port_t port, const i2c_config_t *config)
     if (s_scl_stuck) {
         s_tick += pdMS_TO_TICKS(120000U); /* clear the bounded recovery backoff from earlier lifecycle cycles */
     }
-    assert(!s_bus_live);
+    assert(s_native_bus_live && !s_bus_live);
     s_bus_live = true;
     return &s_bus_token;
 }
@@ -338,6 +359,7 @@ esp_err_t i2c_bus_delete(i2c_bus_handle_t *bus)
 {
     assert(bus != NULL && *bus == &s_bus_token);
     s_bus_live = false;
+    s_native_bus_live = false;
     *bus = NULL;
     return ESP_OK;
 }

@@ -216,6 +216,43 @@ static bool legacy_status_reply(const uint8_t *frame, size_t received_length)
            nrf_upstream_protocol_decode_status(frame, frame_length, &status) == NRF_UPSTREAM_RESULT_OK;
 }
 
+esp_err_t nrf_log_collector_read_status_with_probe(
+    const nrf_log_collector_io_t *io,
+    uint8_t node_index,
+    uint8_t *next_probe,
+    bool probe_allowed,
+    uint8_t *frame,
+    size_t *received_length)
+{
+    static const uint8_t lengths[] = {28U, 31U, 32U, 33U, NRF_LOG_PROTOCOL_STATUS_LENGTH};
+    uint8_t prefix[33U];
+    size_t prefix_length = 0U;
+    esp_err_t err;
+    if (received_length != NULL) *received_length = 0U;
+    if (io == NULL || io->read_frame == NULL || next_probe == NULL || frame == NULL ||
+        received_length == NULL || node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const uint8_t step = (uint8_t)(*next_probe % sizeof(lengths));
+    const size_t length = lengths[step];
+    if (probe_allowed || length == NRF_LOG_PROTOCOL_STATUS_LENGTH) {
+        *next_probe = (uint8_t)((step + 1U) % sizeof(lengths));
+        if (length < NRF_LOG_PROTOCOL_STATUS_LENGTH) {
+            err = io->read_frame(io->context, node_index, prefix, length, &prefix_length);
+            if (err != ESP_OK) return err;
+            if (prefix_length != length) return ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+    err = io->read_frame(
+        io->context, node_index, frame, NRF_LOG_PROTOCOL_STATUS_LENGTH, received_length);
+    if (err != ESP_OK || *received_length != NRF_LOG_PROTOCOL_STATUS_LENGTH ||
+        (prefix_length != 0U && memcmp(prefix, frame, prefix_length) != 0)) {
+        *received_length = 0U;
+        return err != ESP_OK ? err : ESP_ERR_INVALID_RESPONSE;
+    }
+    return ESP_OK;
+}
+
 static esp_err_t exchange_status(
     const nrf_log_collector_io_t *io,
     uint8_t node_index,

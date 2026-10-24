@@ -15,6 +15,7 @@
 #endif
 
 #include <stdbool.h>
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -87,6 +88,7 @@ typedef struct {
     nrf_topology_node_snapshot_t expected_main_identity;
     nrf_upstream_status_cache_t main_status_cache;
     bool read_probe_valid[NRF_PLATFORM_READ_ROUTE_COUNT][NRF_PLATFORM_READ_ADDRESS_COUNT];
+    uint8_t log_fifo_probe[NRF_LOG_COLLECTOR_NODE_COUNT];
 } nrf_topology_platform_t;
 
 
@@ -101,6 +103,9 @@ typedef struct {
     nrf_link_readiness_t *links;
     TickType_t last_reconcile_tick;
     TickType_t reconcile_period_ticks;
+    uint64_t iteration_started_ms;
+    uint64_t node_started_ms;
+    uint8_t fifo_probe_done_mask;
 } nrf_log_platform_context_t;
 #endif
 
@@ -1210,6 +1215,7 @@ static esp_err_t platform_log_begin_node(void *context, uint8_t node_index)
     if (log_context == NULL || log_context->platform == NULL || node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) {
         return ESP_ERR_INVALID_ARG;
     }
+    log_context->node_started_ms = platform_now_ms(NULL);
     if (node_index == 0U) return ESP_OK;
     const esp_err_t err = platform_mux_select(log_context->platform, (uint8_t)(node_index - 1U));
     if (err != ESP_OK) service_request_topology_refresh_from_worker();
@@ -1278,7 +1284,7 @@ static esp_err_t platform_log_write_frame(
     return err;
 }
 
-static esp_err_t platform_log_read_frame(
+static esp_err_t platform_log_read_once(
     void *context,
     uint8_t node_index,
     uint8_t *frame,
@@ -1292,19 +1298,33 @@ static esp_err_t platform_log_read_frame(
     i2c_bus_device_handle_t device;
     esp_err_t err;
     size_t route_index = 0U;
+    if (received_length != NULL) *received_length = 0U;
     if (log_context == NULL || log_context->platform == NULL || frame == NULL ||
-        received_length == NULL || node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) {
+        received_length == NULL || node_index >= NRF_LOG_COLLECTOR_NODE_COUNT ||
+        frame_capacity == 0U || frame_capacity > NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH) {
         return ESP_ERR_INVALID_ARG;
     }
     device = platform_device_for_address(log_context->platform, address);
     if (device == NULL) return ESP_ERR_INVALID_STATE;
-    err = platform_probe_before_read(log_context->platform, address, &route_index);
-    if (err != ESP_OK) {
-        if (err == ESP_ERR_NOT_FOUND) service_request_topology_refresh_from_worker();
-        return err;
-    }
+    /* An address-only write probe would discard the selected log response. */
+    route_index = platform_read_route_index(log_context->platform);
+    const int64_t started_us = esp_timer_get_time();
     err = platform_i2c_read_bytes(
         log_context->platform, device, address, frame_capacity, frame);
+    const int64_t call_us = esp_timer_get_time() - started_us;
+    char response_type[5] = "n/a";
+    int declared_length = -1;
+    if (err == ESP_OK && frame_capacity >= 6U) {
+        (void)snprintf(response_type, sizeof(response_type), "0x%02x", (unsigned)frame[3]);
+        declared_length = (int)((unsigned)frame[4] | ((unsigned)frame[5] << 8U));
+    }
+    ESP_LOGI(TAG,
+             "NRF_LOG_RX node=%u addr=0x%02x ch=%d requested=%u received=%d "
+             "type=%s declared=%d call_us=%" PRId64 " err=0x%x(%s)",
+             (unsigned)node_index, (unsigned)address,
+             platform_selected_channel(log_context->platform), (unsigned)frame_capacity,
+             err == ESP_OK ? (int)frame_capacity : -1, response_type, declared_length,
+             call_us, (unsigned)err, esp_err_to_name(err));
     if (err != ESP_OK) {
         platform_record_read_result(log_context->platform, address, route_index, false);
     } else {
@@ -1317,6 +1337,47 @@ static esp_err_t platform_log_read_frame(
     }
     *received_length = frame_capacity;
     return ESP_OK;
+}
+
+static bool platform_log_yield_requested(void *context);
+
+static esp_err_t platform_log_read_frame(
+    void *context,
+    uint8_t node_index,
+    uint8_t *frame,
+    size_t frame_capacity,
+    size_t *received_length)
+{
+    nrf_log_platform_context_t *log_context = context;
+    if (frame_capacity != NRF_LOG_PROTOCOL_STATUS_LENGTH) {
+        return platform_log_read_once(context, node_index, frame, frame_capacity, received_length);
+    }
+    if (received_length != NULL) *received_length = 0U;
+    if (log_context == NULL || log_context->platform == NULL ||
+        node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) return ESP_ERR_INVALID_ARG;
+    const uint64_t now_ms = platform_now_ms(NULL);
+    const uint32_t read_reserve_ms = 2U * SENSOR_BUS_TRANSACTION_TIMEOUT_MS;
+    const uint8_t node_mask = (uint8_t)(1U << node_index);
+    const bool probe_allowed =
+        (log_context->fifo_probe_done_mask & node_mask) == 0U &&
+        now_ms - log_context->node_started_ms + read_reserve_ms <= CONFIG_NRF_LOG_POLL_NODE_BUDGET_MS &&
+        now_ms - log_context->iteration_started_ms + read_reserve_ms <= CONFIG_NRF_LOG_POLL_ITERATION_BUDGET_MS &&
+        !platform_log_yield_requested(context);
+    if (probe_allowed) log_context->fifo_probe_done_mask |= node_mask;
+    const nrf_log_collector_io_t io = {
+        .context = context,
+        .read_frame = platform_log_read_once,
+    };
+    const esp_err_t err = nrf_log_collector_read_status_with_probe(
+        &io, node_index, &log_context->platform->log_fifo_probe[node_index],
+        probe_allowed, frame, received_length);
+    if (!probe_allowed || err == ESP_ERR_INVALID_RESPONSE) {
+        ESP_LOGI(TAG, "NRF_FIFO_CHECK node=%u extra_allowed=%u next_step=%u err=0x%x(%s)",
+                 (unsigned)node_index, (unsigned)probe_allowed,
+                 (unsigned)log_context->platform->log_fifo_probe[node_index],
+                 (unsigned)err, esp_err_to_name(err));
+    }
+    return err;
 }
 
 static uint64_t platform_log_now_ms(void *context)
@@ -1425,6 +1486,7 @@ static void service_log_collect_iteration(
         .links = worker->links,
         .last_reconcile_tick = last_reconcile_tick,
         .reconcile_period_ticks = reconcile_period_ticks,
+        .iteration_started_ms = platform_now_ms(NULL),
     };
     const nrf_log_collector_io_t io = {
         .context = &context,

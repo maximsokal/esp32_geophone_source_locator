@@ -1,0 +1,87 @@
+#include <errno.h>
+#include <string.h>
+
+#include <nrfx_twis.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/kernel.h>
+
+#include "nrf_boot_diagnostics.h"
+#include "nrf_bootstrap_runtime_zephyr.h"
+
+/* The NCS buffer shim drops completion/error events; observe them without
+ * changing its handling or printing while the controller waits for the IRQ. */
+static nrfx_twis_t *s_upstream;
+static nrfx_twis_event_handler_t s_driver_handler;
+static nrf_boot_twis_record_t s_selected;
+static uint32_t s_read_started_cycles;
+
+int __real_nrfx_twis_init(nrfx_twis_t *instance, const nrfx_twis_config_t *config,
+                         nrfx_twis_event_handler_t handler);
+int __real_nrfx_twis_tx_prepare(nrfx_twis_t *instance, const void *buffer, size_t length);
+
+static void trace_event(const nrfx_twis_event_t *event)
+{
+    if (event->type == NRFX_TWIS_EVT_READ_REQ) {
+        memset(&s_selected, 0, sizeof(s_selected));
+        s_selected.direction = NRF_BOOT_TWIS_DIRECTION_TX_PREPARED;
+        s_selected.prepare_result = -ENOSYS;
+        s_selected.result = -ENOSYS;
+        s_read_started_cycles = k_cycle_get_32();
+        s_driver_handler(event);
+        nrf_bootstrap_runtime_zephyr_record_twis_hardware(&s_selected);
+        return;
+    }
+    if (event->type == NRFX_TWIS_EVT_READ_DONE || event->type == NRFX_TWIS_EVT_READ_ERROR) {
+        nrf_boot_twis_record_t completed = s_selected;
+        completed.direction = event->type == NRFX_TWIS_EVT_READ_DONE
+            ? NRF_BOOT_TWIS_DIRECTION_READ_DONE : NRF_BOOT_TWIS_DIRECTION_READ_ERROR;
+        completed.tx_amount = (uint32_t)nrfx_twis_tx_amount(s_upstream);
+        completed.hw_error = event->type == NRFX_TWIS_EVT_READ_ERROR ? event->data.error : 0U;
+        completed.result = event->type == NRFX_TWIS_EVT_READ_ERROR ? -EIO : 0;
+        nrf_bootstrap_runtime_zephyr_record_twis_hardware(&completed);
+    } else if (event->type == NRFX_TWIS_EVT_GENERAL_ERROR) {
+        nrf_boot_twis_record_t error = {0};
+        error.direction = NRF_BOOT_TWIS_DIRECTION_GENERAL_ERROR;
+        error.prepare_result = -ENOSYS;
+        error.hw_error = event->data.error;
+        error.result = -EIO;
+        nrf_bootstrap_runtime_zephyr_record_twis_hardware(&error);
+    }
+    s_driver_handler(event);
+}
+
+int __wrap_nrfx_twis_init(nrfx_twis_t *instance, const nrfx_twis_config_t *config,
+                         nrfx_twis_event_handler_t handler)
+{
+    if (instance->p_reg != (NRF_TWIS_Type *)DT_REG_ADDR(DT_NODELABEL(i2c22)) || handler == NULL) {
+        return __real_nrfx_twis_init(instance, config, handler);
+    }
+    nrfx_twis_t *previous_instance = s_upstream;
+    nrfx_twis_event_handler_t previous_handler = s_driver_handler;
+    s_upstream = instance;
+    s_driver_handler = handler;
+    const int result = __real_nrfx_twis_init(instance, config, trace_event);
+    if (result != 0) {
+        s_upstream = previous_instance;
+        s_driver_handler = previous_handler;
+    }
+    return result;
+}
+
+int __wrap_nrfx_twis_tx_prepare(nrfx_twis_t *instance, const void *buffer, size_t length)
+{
+    const int result = __real_nrfx_twis_tx_prepare(instance, buffer, length);
+    if (instance == s_upstream) {
+        s_selected.length = (uint32_t)length;
+        s_selected.prefix_length = buffer == NULL ? 0U :
+            (uint8_t)(length < sizeof(s_selected.prefix) ? length : sizeof(s_selected.prefix));
+        if (s_selected.prefix_length != 0U) {
+            memcpy(s_selected.prefix, buffer, s_selected.prefix_length);
+        }
+        s_selected.prepare_result = result;
+        s_selected.result = result;
+        s_selected.tx_prepared = result == 0;
+        s_selected.prepare_us = k_cyc_to_us_floor32(k_cycle_get_32() - s_read_started_cycles);
+    }
+    return result;
+}

@@ -217,6 +217,11 @@ static void test_transaction_ring_preserves_records_and_counts_overflow(void)
         input.prefix_length = NRF_BOOT_TRANSACTION_PREFIX_CAPACITY;
         input.prefix[0] = (uint8_t)index;
         input.result = -(int32_t)index;
+        input.tx_amount = index;
+        input.hw_error = index + 20U;
+        input.prepare_us = index + 30U;
+        input.prepare_result = -(int32_t)(index + 40U);
+        input.tx_prepared = (index & 1U) != 0U;
         assert(nrf_boot_twis_record_ring_push(&ring, &input));
     }
 
@@ -232,6 +237,11 @@ static void test_transaction_ring_preserves_records_and_counts_overflow(void)
         assert(output.prefix_length == NRF_BOOT_TRANSACTION_PREFIX_CAPACITY);
         assert(output.prefix[0] == (uint8_t)index);
         assert(output.result == -(int32_t)index);
+        assert(output.tx_amount == index);
+        assert(output.hw_error == index + 20U);
+        assert(output.prepare_us == index + 30U);
+        assert(output.prepare_result == -(int32_t)(index + 40U));
+        assert(output.tx_prepared == ((index & 1U) != 0U));
     }
     assert(!nrf_boot_twis_record_ring_pop(&ring, &output));
 
@@ -406,6 +416,53 @@ static void test_change_detector_reports_each_state_family_once(void)
     assert(nrf_boot_change_detector_update(&detector, &snapshot) == 0U);
 }
 
+static void test_hardware_trace_format_and_default_logging(void)
+{
+    nrf_boot_twis_record_t record = {
+        .index = 1000U,
+        .length = 38U,
+        .direction = NRF_BOOT_TWIS_DIRECTION_READ_DONE,
+        .prefix_length = 6U,
+        .prefix = {0x47U, 0x53U, 0x01U, 0x82U, 38U, 0U},
+        .tx_amount = 33U,
+        .prepare_us = 17U,
+        .tx_prepared = true,
+    };
+    nrf_boot_twis_log_state_t state = {0};
+    char line[NRF_BOOT_TRANSACTION_LINE_CAPACITY];
+    assert(nrf_boot_twis_record_format(&record, line, sizeof(line)) > 0);
+    assert(strstr(line, "event=READ_DONE type=0x82 selected_len=38 prepared=1") != NULL);
+    assert(strstr(line, "prepare_ret=0 prepare_us=17 tx_amount=33") != NULL);
+    assert(strstr(line, "hw_error=0x00000000 READ_ERROR=0") != NULL);
+    assert(nrf_boot_twis_log_decide(&state, &record, 0U) == NRF_BOOT_TWIS_LOG_DETAIL);
+    assert(nrf_boot_twis_log_decide(&state, &record, 1U) == NRF_BOOT_TWIS_LOG_DETAIL);
+    record.direction = NRF_BOOT_TWIS_DIRECTION_TX_PREPARED;
+    assert(nrf_boot_twis_record_format(&record, line, sizeof(line)) > 0);
+    assert(strstr(line, "tx_amount=n/a") != NULL);
+    assert(nrf_boot_twis_log_decide(&state, &record, 2U) == NRF_BOOT_TWIS_LOG_DETAIL);
+    record.direction = NRF_BOOT_TWIS_DIRECTION_READ_ERROR;
+    record.hw_error = 4U;
+    record.result = -EIO;
+    assert(nrf_boot_twis_record_format(&record, line, sizeof(line)) > 0);
+    assert(strstr(line, "event=READ_ERROR") != NULL);
+    assert(strstr(line, "hw_error=0x00000004 READ_ERROR=1") != NULL);
+    assert(nrf_boot_twis_log_decide(&state, &record, 3U) == NRF_BOOT_TWIS_LOG_ERROR);
+    record.tx_prepared = false;
+    assert(nrf_boot_twis_record_format(&record, line, sizeof(line)) > 0);
+    assert(strstr(line, "tx_amount=n/a") != NULL);
+    record.index = UINT32_MAX;
+    record.length = UINT32_MAX;
+    record.tx_amount = UINT32_MAX;
+    record.hw_error = UINT32_MAX;
+    record.prepare_us = UINT32_MAX;
+    record.prepare_result = INT32_MIN;
+    record.result = INT32_MIN;
+    record.tx_prepared = true;
+    assert(nrf_boot_twis_record_format(&record, line, sizeof(line)) > 0);
+    assert(strstr(line, "tx_amount=4294967295") != NULL);
+    assert(nrf_boot_twis_record_format(&record, line, 16U) == -ENOSPC);
+}
+
 int main(void)
 {
     test_lamp_test_order_timing_and_off_state();
@@ -415,6 +472,7 @@ int main(void)
     test_twis_spsc_commit_interleave();
     test_transaction_rate_limit_details_summaries_and_errors();
     test_transaction_format_is_bounded_with_maximum_values();
+    test_hardware_trace_format_and_default_logging();
     test_change_detector_reports_each_state_family_once();
     return 0;
 }

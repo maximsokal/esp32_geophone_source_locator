@@ -1290,5 +1290,30 @@ int main(void)
         assert(twis_diagnostics.last_request_type_count == 2U);
     }
     assert(s_reboot_calls == 1U);
+    {
+        nrf_boot_twis_record_t record;
+        while (nrf_bootstrap_runtime_zephyr_drain_twis_record(&record)) {}
+        const uint32_t callbacks_before = twis_diagnostics.transaction_count;
+        const nrf_boot_twis_record_t hardware = {
+            .direction = NRF_BOOT_TWIS_DIRECTION_READ_ERROR,
+            .length = 38U,
+            .prefix_length = 4U,
+            .prefix = {0x47U, 0x53U, 0x01U, 0x82U},
+            .tx_amount = 32U,
+            .hw_error = 4U,
+            .tx_prepared = true,
+            .result = -EIO,
+        };
+        nrf_bootstrap_runtime_zephyr_record_twis_hardware(NULL);
+        nrf_bootstrap_runtime_zephyr_record_twis_hardware(&hardware);
+        assert(nrf_bootstrap_runtime_zephyr_drain_twis_record(&record));
+        assert(record.index == callbacks_before);
+        assert(record.direction == NRF_BOOT_TWIS_DIRECTION_READ_ERROR);
+        assert(record.length == 38U && record.prefix[3] == 0x82U);
+        assert(record.tx_amount == 32U && record.hw_error == 4U && record.tx_prepared);
+        assert(!nrf_bootstrap_runtime_zephyr_drain_twis_record(&record));
+        nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&twis_diagnostics);
+        assert(twis_diagnostics.transaction_count == callbacks_before);
+    }
     return 0;
 }

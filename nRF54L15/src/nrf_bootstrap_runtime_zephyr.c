@@ -125,6 +125,16 @@ static void record_twis_transaction(
     }
 }
 
+void nrf_bootstrap_runtime_zephyr_record_twis_hardware(
+    const struct nrf_boot_twis_record *record)
+{
+    if (record != NULL) {
+        nrf_boot_twis_record_t snapshot = *record;
+        snapshot.index = s_twis_transaction_count;
+        (void)nrf_boot_twis_record_ring_push(&s_twis_record_ring, &snapshot);
+    }
+}
+
 static void record_first_twis_transaction(
     nrf_bootstrap_twis_transaction_kind_t kind)
 {

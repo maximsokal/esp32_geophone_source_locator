@@ -94,6 +94,15 @@ typedef struct {
 
 typedef struct nrf_log_collector nrf_log_collector_t;
 
+/* Short reads restart at byte zero of the same already-selected LOG_STATUS. */
+esp_err_t nrf_log_collector_read_status_with_probe(
+    const nrf_log_collector_io_t *io,
+    uint8_t node_index,
+    uint8_t *next_probe,
+    bool probe_allowed,
+    uint8_t *frame,
+    size_t *received_length);
+
 nrf_log_collector_t *nrf_log_collector_create(void);
 void nrf_log_collector_destroy(nrf_log_collector_t *collector);
 esp_err_t nrf_log_collector_reset(nrf_log_collector_t *collector);
