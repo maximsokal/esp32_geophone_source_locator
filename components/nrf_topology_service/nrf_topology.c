@@ -415,6 +415,39 @@ static main_reconcile_result_t reconcile_main(
     return result;
 }
 
+/*
+ * Used whenever the mux state is unknown (discovery fault, or a close that
+ * could not be confirmed). No channel is opened and 0x30 is neither read
+ * nor written (a remote's discovery node may be visible through an open
+ * channel). MAIN, however, sits directly on the ESP bus and only ever answers
+ * at 0x31: a read-only status there cannot collide with anything, so a mux
+ * fault does not hide a healthy MAIN. An absent or unreadable 0x31 keeps the
+ * conservative TRANSPORT_ERROR already stored in snapshot->main.
+ */
+static void report_main_status_only(
+    const nrf_topology_io_t *io,
+    nrf_topology_snapshot_t *snapshot)
+{
+    bool main_present = false;
+    nrf_upstream_status_t main_status;
+    nrf_topology_node_state_t read_error = NRF_TOPOLOGY_NODE_UNKNOWN;
+
+    if (probe_status(io, NRF_UPSTREAM_ADDRESS_MAIN, &main_present,
+                     &main_status, &read_error, &snapshot->bus_busy) != ESP_OK) {
+        snapshot->main.state = read_error;
+        return;
+    }
+    if (!main_present) {
+        return;
+    }
+    node_from_status(
+        &snapshot->main,
+        status_is_main(&main_status)
+            ? NRF_TOPOLOGY_NODE_ASSIGNED
+            : NRF_TOPOLOGY_NODE_CONFLICT,
+        &main_status);
+}
+
 static bool verify_known_main(
     const nrf_topology_io_t *io,
     const nrf_topology_node_snapshot_t *known_main,
@@ -620,18 +653,21 @@ esp_err_t nrf_topology_reconcile(
     snapshot->tca_fault = io->tca_fault;
 
     if (io->tca_fault) {
-        snapshot->main.state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
         for (channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
             snapshot->remotes[channel].state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
         }
+        snapshot->main.state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
+        report_main_status_only(io, snapshot);
         return ESP_OK;
     }
 
     if (io->tca_available && !close_mux_or_fault(io, snapshot)) {
+        /* The mux could not be forced closed, so it may still be open. */
         snapshot->main.state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
         for (channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
             snapshot->remotes[channel].state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
         }
+        report_main_status_only(io, snapshot);
         return ESP_OK;
     }
     if (snapshot->bus_busy) {

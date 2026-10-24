@@ -136,6 +136,11 @@ void fake_sensor_bus_log(const char *tag, const char *format, ...)
                       sizeof(g_fake_lines.timeout_config_log) - 1U);
         g_fake_lines.timeout_config_log[sizeof(g_fake_lines.timeout_config_log) - 1U] = '\0';
     }
+    if (strstr(g_fake_lines.last_log, "I2C_INIT_LINES") != NULL) {
+        (void)strncpy(g_fake_lines.init_lines_log, g_fake_lines.last_log,
+                      sizeof(g_fake_lines.init_lines_log) - 1U);
+        g_fake_lines.init_lines_log[sizeof(g_fake_lines.init_lines_log) - 1U] = '\0';
+    }
     if (strstr(g_fake_lines.last_log, "TCA_HOLD_BUDGET_EXCEEDED") != NULL) {
         g_fake_lines.hold_budget_exceeded_logged = true;
     }

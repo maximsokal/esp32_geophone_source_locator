@@ -521,8 +521,13 @@ static esp_err_t main_barometer_read_bmp280(
         ((uint32_t)bytes[5] >> 4U);
     uint32_t pressure_pa = 0U;
     int32_t temperature_mc = 0;
-    if (raw_pressure == 0x80000U || raw_temperature == 0x80000U ||
-        !main_barometer_bmp280_compensate(
+    if (raw_pressure == 0x80000U || raw_temperature == 0x80000U) {
+        /* Reset value of the data registers: no conversion has finished yet.
+         * Not a bus error; the next poll reads it again without backoff. */
+        barometer->reading.bmp280_valid = false;
+        return ESP_ERR_NOT_FINISHED;
+    }
+    if (!main_barometer_bmp280_compensate(
             raw_pressure, raw_temperature, &barometer->calibration,
             &pressure_pa, &temperature_mc)) {
         barometer->reading.bmp280_valid = false;
@@ -582,12 +587,16 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
         barometer->next_bmp280_poll_ms = now_ms + BMP280_POLL_PERIOD_MS;
         esp_err_t bmp_err = ESP_OK;
         bool bmp_retry_deferred = false;
+        bool bmp_just_initialized = false;
         if (!barometer->bmp280_initialized) {
             if (now_ms < barometer->bmp280_retry_after_ms) {
                 bmp_err = barometer->bmp280_retry_error;
                 bmp_retry_deferred = true;
             } else {
                 bmp_err = main_barometer_init_bmp280(barometer);
+                /* The mode write just started the first conversion; the data
+                 * registers are not valid until the next poll period. */
+                bmp_just_initialized = (bmp_err == ESP_OK);
             }
         }
         if (bmp_err == ESP_OK && barometer->bmp280_initialized &&
@@ -603,13 +612,16 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
                 }
             }
         }
-        if (bmp_err == ESP_OK && barometer->bmp280_initialized) {
+        if (bmp_err == ESP_OK && barometer->bmp280_initialized &&
+            !bmp_just_initialized) {
             bmp_err = main_barometer_read_bmp280(barometer, now_ms);
         }
         if (bmp_err == ESP_OK) {
             barometer->bmp280_retry_after_ms = 0U;
             barometer->bmp280_retry_error = ESP_OK;
-            main_barometer_height_reference_update(barometer, now_ms);
+            if (!bmp_just_initialized) {
+                main_barometer_height_reference_update(barometer, now_ms);
+            }
         } else {
             barometer->reading.bmp280_valid = false;
             barometer->bmp280_probe_required = true;

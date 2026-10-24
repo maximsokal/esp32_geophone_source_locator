@@ -24,6 +24,7 @@ typedef struct
     unsigned log_calls;
     char last_log[512];
     char timeout_config_log[512];
+    char init_lines_log[512];
     bool hold_budget_exceeded_logged;
 
     /* MAX-248 address probe: result per 7-bit address (default ESP_OK is

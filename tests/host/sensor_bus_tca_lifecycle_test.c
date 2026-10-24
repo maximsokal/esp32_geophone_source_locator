@@ -492,8 +492,34 @@ static void test_tca_with_bad_readback_is_logged_and_rejected(void)
     assert(sensor_bus_get_tca9548a(&tca, NULL) == ESP_ERR_NOT_FOUND);
     assert(tca == NULL);
     assert(s_tca_control[0x72U] == 0U);
-    assert(g_fake_lines.log_calls == 2U); /* timeout config + rejected candidate */
+    assert(g_fake_lines.log_calls == 3U); /* init lines + timeout config + rejected candidate */
     assert(strstr(g_fake_lines.last_log, "control readback mismatch") != NULL);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
+static void test_init_logs_line_levels_around_bus_clear(void)
+{
+    fake_reset();
+    assert(sensor_bus_init() == ESP_OK);
+    assert(strstr(g_fake_lines.init_lines_log,
+                  "before=SDA1/SCL1 clear=idle clocks=0 after=SDA1/SCL1") != NULL);
+    assert(sensor_bus_deinit() == ESP_OK);
+
+    /* A target mid-byte: SDA low before, released by 3 clocks + STOP. */
+    fake_reset();
+    g_fake_lines.sda_hold_clocks = 3;
+    assert(sensor_bus_init() == ESP_OK);
+    assert(strstr(g_fake_lines.init_lines_log,
+                  "before=SDA0/SCL1 clear=recovered clocks=3 after=SDA1/SCL1") != NULL);
+    assert(sensor_bus_deinit() == ESP_OK);
+
+    /* SCL held low by the outside world: no clocks, bus still created. */
+    fake_reset();
+    g_fake_lines.scl_held = true;
+    assert(sensor_bus_init() == ESP_OK);
+    assert(strstr(g_fake_lines.init_lines_log,
+                  "before=SDA1/SCL0 clear=scl_stuck clocks=0 after=SDA1/SCL0") != NULL);
+    assert(g_fake_lines.rising_edges == 0);
     assert(sensor_bus_deinit() == ESP_OK);
 }
 
@@ -501,6 +527,7 @@ int main(void)
 {
     assert(sensor_bus_lock_init() == ESP_OK);
 
+    test_init_logs_line_levels_around_bus_clear();
     test_absent_tca_is_nonfatal();
     test_single_tca_is_cached_and_owned();
     test_multiple_tca_candidates_are_rejected_and_cleaned();

@@ -56,6 +56,10 @@ typedef struct {
     fake_node_t extra_discovery_node[NRF_TOPOLOGY_REMOTE_COUNT];
     bool main_reboots_on_channel;
     uint8_t reboot_channel;
+    unsigned discovery_reads;
+    unsigned main_reads;
+    unsigned remote_reads;
+    esp_err_t main_read_error;
 } fake_bus_t;
 
 static void fake_set_hw(fake_node_t *node, uint8_t value)
@@ -216,6 +220,7 @@ static esp_err_t fake_read_status(void *context, uint8_t address, nrf_upstream_s
     fake_bus_t *bus = context;
     bus->status_reads++;
     if (address == NRF_UPSTREAM_ADDRESS_DISCOVERY) {
+        bus->discovery_reads++;
         unsigned count = 0U;
         fake_node_t *node = fake_visible_discovery(bus, &count);
         if (bus->selected_channel >= 0) {
@@ -232,6 +237,10 @@ static esp_err_t fake_read_status(void *context, uint8_t address, nrf_upstream_s
         return ESP_OK;
     }
     if (address == NRF_UPSTREAM_ADDRESS_MAIN) {
+        bus->main_reads++;
+        if (bus->main_read_error != ESP_OK) {
+            return bus->main_read_error;
+        }
         if (bus->main.mode != FAKE_MAIN) {
             return ESP_ERR_NOT_FOUND;
         }
@@ -239,6 +248,7 @@ static esp_err_t fake_read_status(void *context, uint8_t address, nrf_upstream_s
         return ESP_OK;
     }
     if (address == NRF_UPSTREAM_ADDRESS_REMOTE) {
+        bus->remote_reads++;
         if (bus->selected_channel < 0) {
             return ESP_ERR_NOT_FOUND;
         }
@@ -500,7 +510,7 @@ static void test_readdress_failed_retries_same_request_id_once(void)
     assert(bus.main.first_assign_request == bus.main.second_assign_request);
 }
 
-static void test_initial_mux_close_failure_blocks_all_nrf_reads(void)
+static void test_initial_mux_close_failure_blocks_all_nrf_reads(void) /* except read-only MAIN 0x31 */
 {
     fake_bus_t bus;
     nrf_topology_snapshot_t snapshot;
@@ -514,8 +524,107 @@ static void test_initial_mux_close_failure_blocks_all_nrf_reads(void)
     assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
     assert(snapshot.tca_fault);
     assert(snapshot.main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
-    assert(bus.status_reads == 0U);
+    /* Only the read-only MAIN status at 0x31 is allowed; 0x30/0x32 and every
+     * write stay blocked because a channel may still be open. */
+    assert(bus.status_reads == 1U);
+    assert(bus.main_reads == 1U);
+    assert(bus.discovery_reads == 0U);
+    assert(bus.remote_reads == 0U);
+    assert(bus.main.assign_writes == 0U);
     assert(bus.select_calls == 0U);
+    assert(bus.close_calls == 1U);
+    for (size_t i = 0; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        assert(snapshot.remotes[i].state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    }
+}
+
+static void test_initial_mux_close_failure_still_reports_assigned_main(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.fail_initial_close = true;
+    bus.main.mode = FAKE_MAIN;
+    fake_set_hw(&bus.main, 0xE8U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.tca_fault);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(snapshot.main.current_address == NRF_UPSTREAM_ADDRESS_MAIN);
+    assert(bus.main_reads == 1U);
+    assert(bus.discovery_reads == 0U);
+    assert(bus.remote_reads == 0U);
+    assert(bus.select_calls == 0U);
+    for (size_t i = 0; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        assert(snapshot.remotes[i].state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    }
+}
+
+static void test_initial_mux_close_failure_main_read_errors_stay_truthful(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+
+    init_bus(&bus, true);
+    bus.fail_initial_close = true;
+    bus.main.mode = FAKE_MAIN;
+    fake_set_hw(&bus.main, 0xF0U);
+    bus.main_read_error = ESP_ERR_TIMEOUT;
+    nrf_topology_io_t io = make_io(&bus);
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.tca_fault);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    assert(!snapshot.bus_busy);
+    assert(bus.discovery_reads == 0U);
+    assert(bus.remote_reads == 0U);
+
+    init_bus(&bus, true);
+    bus.fail_initial_close = true;
+    bus.main.mode = FAKE_MAIN;
+    fake_set_hw(&bus.main, 0xF8U);
+    bus.main_read_error = SENSOR_BUS_ERR_MUTEX_BUSY;
+    io = make_io(&bus);
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_UNKNOWN);
+    assert(snapshot.bus_busy);
+    assert(bus.discovery_reads == 0U);
+    assert(bus.remote_reads == 0U);
+}
+
+static void test_mux_stuck_open_after_remote_scan_keeps_main_visible(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_MAIN;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus.main, 0x67U);
+    bus.fail_close_after_select = true;
+    nrf_topology_io_t io = make_io(&bus);
+
+    /* Pass 1: the close after the first channel fails, leaving it open. */
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.tca_fault);
+    assert(bus.selected_channel == 0);
+    const unsigned discovery_before = bus.discovery_reads;
+    const unsigned remote_before = bus.remote_reads;
+    const unsigned selects_before = bus.select_calls;
+
+    /* Pass 2 with the channel still open: MAIN is read at 0x31 only. */
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.tca_fault);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(bus.discovery_reads == discovery_before);
+    assert(bus.remote_reads == remote_before);
+    assert(bus.select_calls == selects_before);
+    assert(bus.collision_reads == 0U);
+    for (size_t i = 0; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        assert(snapshot.remotes[i].state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    }
 }
 
 static void test_main_reboot_during_remote_scan_closes_before_discovery_reconcile(void)
@@ -687,6 +796,86 @@ static void test_single_transient_close_timeout_preserves_assigned_nodes(void)
     assert(snapshot.remotes[0].state == NRF_TOPOLOGY_NODE_ASSIGNED);
 }
 
+static void assert_mux_fault_leaves_mux_and_discovery_untouched(
+    const fake_bus_t *bus,
+    const nrf_topology_snapshot_t *snapshot)
+{
+    assert(snapshot->tca_fault);
+    assert(bus->select_calls == 0U);
+    assert(bus->close_calls == 0U);
+    assert(bus->discovery_reads == 0U);
+    assert(bus->remote_reads == 0U);
+    for (size_t i = 0; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        assert(snapshot->remotes[i].state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    }
+}
+
+static void test_mux_fault_still_reports_assigned_main_read_only(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_MAIN;
+    fake_set_hw(&bus.main, 0xA0U);
+    nrf_topology_io_t io = make_io(&bus);
+    io.tca_fault = true;
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(snapshot.main.current_address == NRF_UPSTREAM_ADDRESS_MAIN);
+    assert(bus.main_reads == 1U);
+    assert(bus.main.assign_writes == 0U);
+    assert_mux_fault_leaves_mux_and_discovery_untouched(&bus, &snapshot);
+}
+
+static void test_mux_fault_never_assigns_or_reads_unassigned_main(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_UNASSIGNED;
+    fake_set_hw(&bus.main, 0xA8U);
+    nrf_topology_io_t io = make_io(&bus);
+    io.tca_fault = true;
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    assert(bus.main_reads == 1U);
+    assert(bus.main.assign_writes == 0U);
+    assert_mux_fault_leaves_mux_and_discovery_untouched(&bus, &snapshot);
+}
+
+static void test_mux_fault_main_read_errors_keep_truthful_state(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_MAIN;
+    fake_set_hw(&bus.main, 0xB0U);
+    bus.main_read_error = ESP_ERR_TIMEOUT;
+    nrf_topology_io_t io = make_io(&bus);
+    io.tca_fault = true;
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    assert(!snapshot.bus_busy);
+    assert_mux_fault_leaves_mux_and_discovery_untouched(&bus, &snapshot);
+
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_MAIN;
+    fake_set_hw(&bus.main, 0xB8U);
+    bus.main_read_error = SENSOR_BUS_ERR_MUTEX_BUSY;
+    io = make_io(&bus);
+    io.tca_fault = true;
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_UNKNOWN);
+    assert(snapshot.bus_busy);
+    assert_mux_fault_leaves_mux_and_discovery_untouched(&bus, &snapshot);
+}
+
 int main(void)
 {
     test_main_only_without_tca_assigns_safely();
@@ -697,6 +886,9 @@ int main(void)
     test_stale_remote_assignment_is_conflict();
     test_readdress_failed_retries_same_request_id_once();
     test_initial_mux_close_failure_blocks_all_nrf_reads();
+    test_initial_mux_close_failure_still_reports_assigned_main();
+    test_initial_mux_close_failure_main_read_errors_stay_truthful();
+    test_mux_stuck_open_after_remote_scan_keeps_main_visible();
     test_main_reboot_during_remote_scan_closes_before_discovery_reconcile();
     test_remote_discovery_and_runtime_same_channel_is_conflict();
     test_pending_assignment_times_out_with_bounded_polls();
@@ -704,5 +896,8 @@ int main(void)
     test_absent_main_allows_diagnostic_remote_assignment();
     test_mutex_busy_does_not_fault_mux_and_retries_next_window();
     test_single_transient_close_timeout_preserves_assigned_nodes();
+    test_mux_fault_still_reports_assigned_main_read_only();
+    test_mux_fault_never_assigns_or_reads_unassigned_main();
+    test_mux_fault_main_read_errors_keep_truthful_state();
     return 0;
 }

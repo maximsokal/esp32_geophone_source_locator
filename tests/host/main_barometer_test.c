@@ -281,6 +281,8 @@ static void test_bmp280_probes_preferred_then_fallback_address(void)
     main_barometer_init(&barometer);
     (void)main_barometer_poll(&barometer, 0U);
     assert(barometer.reading.bmp280_present);
+    assert(!barometer.reading.bmp280_valid); /* first conversion still running */
+    (void)main_barometer_poll(&barometer, 200U);
     assert(barometer.reading.bmp280_valid);
     assert(barometer.reading.bmp280_address == 0x76U);
     assert(barometer.reading.pressure_pa >= 100652U &&
@@ -302,6 +304,7 @@ static void test_bme280_accepted_as_bmp280(void)
     main_barometer_t barometer;
     main_barometer_init(&barometer);
     (void)main_barometer_poll(&barometer, 0U);
+    (void)main_barometer_poll(&barometer, 200U);
     assert(barometer.reading.bmp280_present);
     assert(barometer.reading.bmp280_valid);
     assert(barometer.bme280);
@@ -386,7 +389,8 @@ static void test_aht20_busy_timeout_and_transfer_error_classification(void)
     setup_bmp280(0x77U, BMP_ID);
     s_fake.timeout_bmp_data = true;
     main_barometer_init(&barometer);
-    assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_TIMEOUT);
+    (void)main_barometer_poll(&barometer, 0U);
+    assert(main_barometer_poll(&barometer, 200U) == ESP_ERR_TIMEOUT);
     assert(!barometer.reading.bmp280_valid);
     main_barometer_close(&barometer);
 }
@@ -446,6 +450,7 @@ static void test_absent_bmp280_retries_probe_only_for_five_seconds_then_reads_af
 
     setup_bmp280(0x76U, BMP_ID);
     (void)main_barometer_poll(&barometer, 5000U);
+    (void)main_barometer_poll(&barometer, 5200U);
     assert(barometer.reading.bmp280_valid);
     assert(barometer.reading.bmp280_address == 0x76U);
     assert(s_fake.address_probe_count > 3U);
@@ -478,16 +483,17 @@ static void test_main_height_reference_stable_unstable_and_relative(void)
     main_barometer_t barometer;
     main_barometer_init(&barometer);
     assert(main_barometer_request_height_reference_capture(91U) == ESP_OK);
-    (void)main_barometer_poll(&barometer, 0U);
-    (void)main_barometer_poll(&barometer, 1000U);
+    (void)main_barometer_poll(&barometer, 0U);    /* init only, no sample yet */
+    (void)main_barometer_poll(&barometer, 1000U); /* capture window starts */
     (void)main_barometer_poll(&barometer, 2000U);
+    (void)main_barometer_poll(&barometer, 3000U);
     assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID);
     assert(barometer.reading.height_reference_generation == 91U);
     assert(barometer.reading.relative_z_mm == 0);
 
     const int32_t reference_altitude_mm = barometer.reading.filtered_altitude_mm;
     set_bmp_raw_pressure(0x77U, 414000U);
-    (void)main_barometer_poll(&barometer, 2200U);
+    (void)main_barometer_poll(&barometer, 3200U);
     assert(barometer.reading.relative_z_mm ==
            barometer.reading.filtered_altitude_mm - reference_altitude_mm);
     main_barometer_close(&barometer);
@@ -497,9 +503,10 @@ static void test_main_height_reference_stable_unstable_and_relative(void)
     main_barometer_init(&barometer);
     assert(main_barometer_request_height_reference_capture(92U) == ESP_OK);
     (void)main_barometer_poll(&barometer, 0U);
-    set_bmp_raw_pressure(0x77U, 418000U);
     (void)main_barometer_poll(&barometer, 1000U);
+    set_bmp_raw_pressure(0x77U, 418000U);
     (void)main_barometer_poll(&barometer, 2000U);
+    (void)main_barometer_poll(&barometer, 3000U);
     assert(barometer.reading.height_reference_state ==
            MAIN_BAROMETER_REFERENCE_REJECTED_UNSTABLE);
     assert(barometer.reading.height_reference_generation == 92U);
@@ -527,10 +534,46 @@ static void test_main_height_reference_sensor_invalid_and_generation_validation(
     main_barometer_init(&barometer);
     assert(main_barometer_request_height_reference_capture(94U) == ESP_OK);
     (void)main_barometer_poll(&barometer, 0U);
+    (void)main_barometer_poll(&barometer, 200U);
     assert(barometer.reading.height_reference_state ==
            MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
     assert(barometer.reading.bmp280_present);
     assert(!barometer.reading.bmp280_valid);
+    main_barometer_close(&barometer);
+}
+
+static void test_first_conversion_pending_is_not_a_bus_error(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    /* Data registers still hold the reset value until a conversion ends. */
+    set_bmp_raw_pressure(0x76U, 0x80000U);
+    s_fake.registers[0x76U][REG_DATA + 3U] = 0x80U;
+    s_fake.registers[0x76U][REG_DATA + 4U] = 0x00U;
+    s_fake.registers[0x76U][REG_DATA + 5U] = 0x00U;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+
+    /* The init poll must not read the data registers in the same call. */
+    assert(main_barometer_poll(&barometer, 0U) == ESP_OK);
+    assert(barometer.reading.bmp280_present);
+    assert(!barometer.reading.bmp280_valid);
+    const size_t reads_after_init = s_fake.read_count;
+
+    /* A still-pending conversion is "not finished", retried without backoff. */
+    assert(main_barometer_poll(&barometer, 200U) == ESP_ERR_NOT_FINISHED);
+    assert(!barometer.reading.bmp280_valid);
+    assert(barometer.bmp280_retry_after_ms == 200U);
+    assert(s_fake.read_count > reads_after_init);
+
+    /* Real data arrives: the very next poll period reads it. */
+    const uint32_t raw_temperature = 519888U;
+    set_bmp_raw_pressure(0x76U, 415148U);
+    s_fake.registers[0x76U][REG_DATA + 3U] = (uint8_t)(raw_temperature >> 12U);
+    s_fake.registers[0x76U][REG_DATA + 4U] = (uint8_t)(raw_temperature >> 4U);
+    s_fake.registers[0x76U][REG_DATA + 5U] = (uint8_t)(raw_temperature << 4U);
+    assert(main_barometer_poll(&barometer, 400U) == ESP_OK);
+    assert(barometer.reading.bmp280_valid);
     main_barometer_close(&barometer);
 }
 
@@ -548,5 +591,6 @@ int main(void)
     test_probe_timeout_skips_full_read_transaction();
     test_main_height_reference_stable_unstable_and_relative();
     test_main_height_reference_sensor_invalid_and_generation_validation();
+    test_first_conversion_pending_is_not_a_bus_error();
     return 0;
 }

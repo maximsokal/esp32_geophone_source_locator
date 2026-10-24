@@ -705,14 +705,28 @@ static void sensor_bus_record_recovery(i2c_line_result_t result, int64_t now_us)
     }
 }
 
+/* Caller holds s_lock and no I2C driver owns the pins. The levels are sampled
+ * with the pins already open-drain + pull-up, before any clock is generated. */
+static i2c_line_report_t sensor_bus_bitbang_clear_report_locked(
+    bool *sda_before, bool *scl_before, bool *levels_valid)
+{
+    i2c_line_report_t report = { .result = I2C_LINES_SCL_STUCK, .clocks = 0U };
+    i2c_line_io_t io;
+    if (sensor_bus_lines_bitbang_io(&io) != ESP_OK) {
+        return report;
+    }
+    if (sda_before != NULL && scl_before != NULL && levels_valid != NULL) {
+        *sda_before = io.read_sda(io.context);
+        *scl_before = io.read_scl(io.context);
+        *levels_valid = true;
+    }
+    return i2c_line_recover(&io);
+}
+
 /* Caller holds s_lock and no I2C driver owns the pins. */
 static i2c_line_result_t sensor_bus_bitbang_clear_locked(void)
 {
-    i2c_line_io_t io;
-    if (sensor_bus_lines_bitbang_io(&io) != ESP_OK) {
-        return I2C_LINES_SCL_STUCK;
-    }
-    return i2c_line_recover(&io).result;
+    return sensor_bus_bitbang_clear_report_locked(NULL, NULL, NULL).result;
 }
 
 /* Caller holds s_lock and I2C0 exists. */
@@ -875,9 +889,13 @@ static esp_err_t sensor_bus_init_locked(void)
      * reboot; clear it while the pins are still free. A stuck line is only
      * recorded -- the bus is still created, and its transfers fail and are
      * reported by their consumers. */
-    sensor_bus_record_recovery(
-        sensor_bus_bitbang_clear_locked(), sensor_bus_lines_now_us()
-    );
+    bool sda_before = false;
+    bool scl_before = false;
+    bool levels_valid = false;
+    const i2c_line_report_t clear_report =
+        sensor_bus_bitbang_clear_report_locked(
+            &sda_before, &scl_before, &levels_valid);
+    sensor_bus_record_recovery(clear_report.result, sensor_bus_lines_now_us());
 
     const i2c_config_t config = {
         .mode = I2C_MODE_MASTER,
@@ -893,6 +911,21 @@ static esp_err_t sensor_bus_init_locked(void)
         return ESP_ERR_NO_MEM;
     }
     s_controller_reset_required = false;
+
+    /* Tells an externally held bus (low before our driver touched it) from one
+     * left low by the driver (high before, low after). */
+    bool sda_after = false;
+    bool scl_after = false;
+    sensor_bus_lines_read(&sda_after, &scl_after);
+    ESP_LOGI(TAG,
+             "I2C_INIT_LINES before=SDA%d/SCL%d%s clear=%s clocks=%u after=SDA%d/SCL%d",
+             sda_before ? 1 : 0,
+             scl_before ? 1 : 0,
+             levels_valid ? "" : "(unread)",
+             i2c_line_result_name(clear_report.result),
+             (unsigned)clear_report.clocks,
+             sda_after ? 1 : 0,
+             scl_after ? 1 : 0);
 
     ESP_LOGI(TAG,
              "I2C_TIMEOUT_CONFIG mutex_wait_ms=%u transaction_timeout_ms=%u owner_max_hold_ms=%u",
