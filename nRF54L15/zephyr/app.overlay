@@ -1,6 +1,17 @@
 /* ASSUMED active-high, same as BLUE; NOT verified (MAX-43); verify with a current-limited test before trusting. */
 #include <zephyr/dt-bindings/gpio/gpio.h>
 
+/* Onboard ceramic antenna: P2.05 LOW, RF switch power P2.03 HIGH. */
+&rfsw_ctl {
+    enable-gpios = <&gpio2 5 GPIO_ACTIVE_LOW>;
+    regulator-boot-on;
+};
+
+&rfsw_pwr {
+    enable-gpios = <&gpio2 3 GPIO_ACTIVE_HIGH>;
+    regulator-boot-on;
+};
+
 /
 {
     aliases {

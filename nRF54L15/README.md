@@ -21,6 +21,11 @@ The canonical application sources remain under `nRF54L15/src`, `include` and
 `%USERPROFILE%\.ncs-workspaces\esp32_geophone_source_locator`, outside the
 repository.
 
+The common image explicitly selects the onboard ceramic antenna in
+`zephyr/app.overlay`: RF-switch power `P2.03` is HIGH and selector `P2.05` is
+LOW at boot. The board's fixed-regulator drivers apply these settings before
+application startup; the application does not toggle the RF switch.
+
 The wired topology has one main-enclosure node on the ESP32-S3 upstream I2C
 bus and one remote node per connected geophone behind the TCA9548A. With all
 downstream channels disabled, the main node remains visible; selecting one mux
