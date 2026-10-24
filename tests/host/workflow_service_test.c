@@ -139,6 +139,7 @@ static nrf_remote_sensor_cache_t s_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static device_status_snapshot_t s_device;
 static uint16_t s_height_generation;
 static unsigned s_height_request_calls;
+static unsigned s_barometer_polling_requests;
 static unsigned s_imu_request_calls;
 static unsigned s_cs_request_calls;
 static uint8_t s_imu_request_mask;
@@ -454,6 +455,11 @@ bool storage_manager_is_ready(void)
     return true;
 }
 
+void main_barometer_request_polling(void)
+{
+    ++s_barometer_polling_requests;
+}
+
 esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
 {
     return generation != 0U ? ESP_OK : ESP_ERR_INVALID_ARG;
@@ -501,6 +507,7 @@ static void reset_fakes(bool active_object, measurement_service_state_t state, s
     memset(&s_device, 0, sizeof(s_device));
     s_height_generation = 0U;
     s_height_request_calls = 0U;
+    s_barometer_polling_requests = 0U;
     s_imu_request_calls = 0U;
     s_cs_request_calls = 0U;
     s_imu_request_mask = 0U;
@@ -1114,6 +1121,49 @@ static void test_reboot_resumes_only_at_object_or_idle(void)
     reset_fakes(false, MEASUREMENT_SERVICE_REVIEW, 0U);
     assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
     assert(snapshot.step == WORKFLOW_STEP_IDLE);
+    workflow_service_shutdown();
+}
+
+static void test_sensor_check_requests_barometer_before_calibration(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 1U);
+    assert(workflow_service_poll() == ESP_OK);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_OBJECT);
+    assert(s_barometer_polling_requests == 0U);
+    assert(command(WORKFLOW_COMMAND_GO_CALIBRATION, false, false) ==
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(s_barometer_polling_requests == 0U);
+
+    assert(command(WORKFLOW_COMMAND_START_MEASUREMENT, false, false) ==
+        WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_barometer_polling_requests == 1U);
+    snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_SENSOR_CHECK);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(s_barometer_polling_requests == 1U);
+    assert(s_height_request_calls == 0U && s_imu_request_calls == 0U);
+    assert(s_start_calls == 0U);
+
+    assert(command(WORKFLOW_COMMAND_BACK, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_barometer_polling_requests == 1U);
+    uint32_t seq = 0U;
+    assert(workflow_service_command_async(WORKFLOW_COMMAND_START_MEASUREMENT,
+        false, 0U, &seq) == ESP_OK);
+    assert(s_barometer_polling_requests == 1U);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(s_barometer_polling_requests == 2U);
+    snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_SENSOR_CHECK);
+    assert(snapshot.last_async.seq == seq);
+    assert(snapshot.last_async.result == WORKFLOW_COMMAND_RESULT_OK);
+
+    assert(command(WORKFLOW_COMMAND_GO_CALIBRATION, false, false) ==
+        WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_barometer_polling_requests == 2U);
+    assert(command(WORKFLOW_COMMAND_BACK, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_barometer_polling_requests == 3U);
+    assert(s_height_request_calls == 0U && s_start_calls == 0U);
     workflow_service_shutdown();
 }
 
@@ -2017,6 +2067,7 @@ int main(void)
 #error "unknown MAX449_CASE for workflow_service_test"
 #endif
 #else
+    test_sensor_check_requests_barometer_before_calibration();
     test_phone_and_tft_workflow_views_share_step_and_generation();
     test_tft_custom_range_is_persisted_and_auto_omits_it();
     test_reconciliation_review_error_and_async_recording_commands();

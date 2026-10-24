@@ -43,6 +43,7 @@
 /* A 2 Pa filtered-pressure range is about 167 mm on the shared 12 Pa/m model. */
 #define MAIN_HEIGHT_REFERENCE_MAX_PRESSURE_RANGE_PA 2.0
 
+static atomic_bool s_polling_requested;
 static _Atomic uint16_t s_height_reference_request_generation;
 
 static esp_err_t main_barometer_classify_error(uint8_t address, esp_err_t err)
@@ -427,6 +428,11 @@ void main_barometer_init(main_barometer_t *barometer)
         BMP280_PRESSURE_MAX_PA);
 }
 
+void main_barometer_request_polling(void)
+{
+    atomic_store_explicit(&s_polling_requested, true, memory_order_release);
+}
+
 esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
 {
     if (generation == 0U) {
@@ -434,6 +440,7 @@ esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
     }
     atomic_store_explicit(
         &s_height_reference_request_generation, generation, memory_order_release);
+    main_barometer_request_polling();
     return ESP_OK;
 }
 
@@ -563,6 +570,9 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
 {
     if (barometer == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (!atomic_load_explicit(&s_polling_requested, memory_order_acquire)) {
+        return ESP_OK;
     }
     const uint16_t requested_generation = atomic_exchange_explicit(
         &s_height_reference_request_generation, 0U, memory_order_acq_rel);

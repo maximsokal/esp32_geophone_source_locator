@@ -26,6 +26,7 @@ typedef struct {
     size_t read_count;
     uint8_t probed_addresses[16];
     size_t address_probe_count;
+    unsigned get_handles_calls;
     bool probe_timeout_enabled;
     uint8_t probe_timeout_address;
     uint8_t aht_frame[7];
@@ -121,6 +122,7 @@ esp_err_t sensor_bus_probe_address(uint8_t address)
 
 esp_err_t sensor_bus_get_handles(sensor_bus_handles_t *handles)
 {
+    ++s_fake.get_handles_calls;
     if (handles == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -577,8 +579,43 @@ static void test_first_conversion_pending_is_not_a_bus_error(void)
     main_barometer_close(&barometer);
 }
 
+static void test_boot_polling_does_not_touch_i2c_before_preflight(void)
+{
+    reset_fake();
+    setup_bmp280(0x77U, BMP_ID);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_poll(NULL, 0U) == ESP_ERR_INVALID_ARG);
+    assert(main_barometer_request_height_reference_capture(0U) == ESP_ERR_INVALID_ARG);
+    for (uint64_t now_ms = 0U; now_ms <= 10000U; now_ms += 1000U) {
+        assert(main_barometer_poll(&barometer, now_ms) == ESP_OK);
+        assert(s_fake.get_handles_calls == 0U);
+        assert(s_fake.address_probe_count == 0U);
+        assert(s_fake.read_count == 0U);
+        assert(!barometer.reading.bmp280_present);
+        assert(!barometer.reading.aht20_present);
+    }
+    main_barometer_request_polling();
+    main_barometer_request_polling();
+    assert(s_fake.get_handles_calls == 0U);
+    assert(s_fake.address_probe_count == 0U);
+    assert(s_fake.read_count == 0U);
+    assert(main_barometer_poll(&barometer, 11000U) == ESP_OK);
+    assert(s_fake.get_handles_calls == 1U);
+    assert(barometer.reading.bmp280_present);
+    assert(!barometer.reading.bmp280_valid);
+    assert(barometer.reading.aht20_valid);
+    assert(main_barometer_poll(&barometer, 12000U) == ESP_OK);
+    assert(barometer.reading.bmp280_valid);
+    assert(barometer.reading.pressure_pa > 0U);
+    assert(barometer.reading.height_reference_state ==
+        MAIN_BAROMETER_REFERENCE_NOT_ESTABLISHED);
+    main_barometer_close(&barometer);
+}
+
 int main(void)
 {
+    test_boot_polling_does_not_touch_i2c_before_preflight();
     test_bmp280_compensation_datasheet_vector();
     test_bmp280_probes_preferred_then_fallback_address();
     test_bme280_accepted_as_bmp280();

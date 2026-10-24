@@ -915,6 +915,7 @@ static void workflow_service_ranging_start(void)
 static void workflow_service_step_changed(workflow_step_t previous, workflow_step_t next)
 {
     if (previous == next) return;
+    if (next == WORKFLOW_STEP_SENSOR_CHECK) main_barometer_request_polling();
     if (previous == WORKFLOW_STEP_RANGING && next != WORKFLOW_STEP_RANGING && s_ranging.active) {
         s_ranging.orphaned = true;
         (void)nrf_topology_service_invalidate_ranging();
