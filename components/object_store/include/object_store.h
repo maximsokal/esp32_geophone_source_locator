@@ -70,6 +70,20 @@ typedef struct
     object_store_pod_geometry_t pods[OBJECT_STORE_POD_COUNT];
 } object_store_geometry_t;
 
+struct cJSON;
+
+/*
+ * Reads root["geometry"] into *geometry (which the caller zero-initialises).
+ * A pod becomes `computed` only when its x/y/z are finite integers inside
+ * int32; optional fields that are out of range fall back to 0. Shared by the
+ * persisted object profile and the frozen recording-session metadata so both
+ * apply one numeric contract.
+ */
+void object_store_geometry_from_json(
+    const struct cJSON *root,
+    object_store_geometry_t *geometry
+);
+
 /*
  * MAX-148: the raw Channel Sounding pair evidence that produced `geometry`
  * above, for a WebUI placement-confidence view -- distinct from the solved

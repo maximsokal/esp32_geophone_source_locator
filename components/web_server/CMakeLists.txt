@@ -352,8 +352,10 @@ idf_component_register(
     REQUIRES
         app_config
         app_events
+        cjson_alloc_guard
         device_status
         hw_inventory
+        json_number
         ina3221_monitor
         localization_calculate
         localization_job

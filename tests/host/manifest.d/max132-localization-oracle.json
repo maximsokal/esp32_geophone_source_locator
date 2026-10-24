@@ -23,6 +23,7 @@
         "tests/host/scan_occupancy_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/scan_occupancy",
         "tests/host/stubs/object_store_profile",
         "components/scan_occupancy/include"
@@ -74,6 +75,7 @@
         "components/localization/tests/max132_calculate_validation_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/localization_calculate_run",
         "tests/host/stubs/object_store_profile",
         "components/localization_calculate/include",

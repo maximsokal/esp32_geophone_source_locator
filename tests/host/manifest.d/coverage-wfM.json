@@ -72,6 +72,7 @@
         "tests/host/web_api_control_http_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/web_api_control",
         "components/measurement_service/tests/stubs",
         "components/storage_manager",
@@ -98,6 +99,7 @@
         "tests/host/web_localization_runs_http_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "components/seismic_recorder/include",
         "components/localization_calculate/include",
         "components/localization_velocity_free/include",

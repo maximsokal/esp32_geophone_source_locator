@@ -68,4 +68,9 @@ def test_ina3221_monitor_remains_non_fatal_at_its_new_call_site():
     assert "ESP_ERROR_CHECK(" not in preceding
     assert "INA3221 monitor unavailable" in services[call : call + 400]
     assert services.index("wifi_manager_start()") < call
-    assert "sensor_bus_i2c_start_after_wifi" in services[call : call + 600]
+    # The preflight probe (non-fatal, never ESP_ERROR_CHECK) sits between the
+    # monitor start and its timing log, so the window covers both.
+    timing = services.index("sensor_bus_i2c_start_after_wifi", call)
+    assert timing - call < 1200
+    between = services[call:timing]
+    assert "ESP_ERROR_CHECK(" not in between

@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "json_number.h"
 
 
 #define FIXED_HEADER_BYTES 20U
@@ -120,11 +121,13 @@ static bool parse_registration(
     const cJSON *matrix = cJSON_GetObjectItemCaseSensitive(item, "sensor_to_scan");
     const cJSON *frame = cJSON_GetObjectItemCaseSensitive(item, "frame");
     double geometry_ms = 0.0;
+    uint64_t geometry_at_ms = 0U;
     double residual = 0.0;
     double threshold = 0.0;
     if (
         !cJSON_IsString(source) ||
-        !read_number(item, "geometry_computed_at_ms", &geometry_ms) || geometry_ms < 0.0 ||
+        !read_number(item, "geometry_computed_at_ms", &geometry_ms) ||
+        !json_number_to_uint64(geometry_ms, &geometry_at_ms) ||
         !read_number(item, "residual_m", &residual) ||
         !cJSON_IsArray(matrix) || cJSON_GetArraySize(matrix) != 16 ||
         (schema == SCAN_OCCUPANCY_SCHEMA &&
@@ -141,7 +144,7 @@ static bool parse_registration(
         out->sensor_to_scan[i] = value->valuedouble;
     }
     snprintf(out->source, sizeof(out->source), "%s", source->valuestring);
-    out->geometry_computed_at_ms = (uint64_t)geometry_ms;
+    out->geometry_computed_at_ms = geometry_at_ms;
     out->residual_m = residual;
     out->threshold_m = threshold;
     if (schema == SCAN_OCCUPANCY_SCHEMA) {
@@ -175,6 +178,9 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
     double frees = 0.0;
     double occupieds = 0.0;
     double created = 0.0;
+    size_t free_cells = 0U;
+    size_t occupied_cells = 0U;
+    uint64_t created_ms = 0U;
     const cJSON *frame_id = cJSON_GetObjectItemCaseSensitive(root, "frame_id");
     const cJSON *envelope = cJSON_GetObjectItemCaseSensitive(root, "envelope");
     const cJSON *saturated = cJSON_GetObjectItemCaseSensitive(root, "saturated");
@@ -189,9 +195,12 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
         !read_number(root, "voxel_size_m", &voxel) || !(voxel > 0.0) ||
         voxel > MAX_SUPPORTED_VOXEL_SIZE_M ||
         !read_number(root, "below_surface_m", &below) || below < 0.0 ||
-        !read_number(root, "free_count", &frees) || frees < 0.0 ||
-        !read_number(root, "occupied_count", &occupieds) || occupieds < 0.0 ||
-        !read_number(root, "created_at_ms", &created) || created < 0.0 ||
+        !read_number(root, "free_count", &frees) ||
+        !json_number_to_size(frees, &free_cells) ||
+        !read_number(root, "occupied_count", &occupieds) ||
+        !json_number_to_size(occupieds, &occupied_cells) ||
+        !read_number(root, "created_at_ms", &created) ||
+        !json_number_to_uint64(created, &created_ms) ||
         !parse_registration(
             cJSON_GetObjectItemCaseSensitive(root, "registration"),
             (uint32_t)schema_value,
@@ -203,7 +212,7 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
         out->voxel_size_m = voxel;
         out->below_surface_m = below;
         out->saturated = cJSON_IsTrue(saturated);
-        out->created_at_ms = (uint64_t)created;
+        out->created_at_ms = created_ms;
         out->has_envelope = false;
         if (cJSON_IsObject(envelope)) {
             if (
@@ -215,8 +224,8 @@ static esp_err_t parse_header(const char *json, size_t length, scan_occupancy_t 
                 out->has_envelope = true;
             }
         }
-        *free_count = (size_t)frees;
-        *occupied_count = (size_t)occupieds;
+        *free_count = free_cells;
+        *occupied_count = occupied_cells;
     }
 
     cJSON_Delete(root);

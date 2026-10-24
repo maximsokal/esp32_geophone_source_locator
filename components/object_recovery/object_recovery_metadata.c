@@ -1,6 +1,26 @@
 #include "object_recovery_fs.h"
 
 #include <stdlib.h>
+#include <string.h>
+
+
+/*
+ * A candidate that could not be judged (out of memory, including inside the
+ * JSON parser; open/stat/read failure) is not evidence of corruption. Stop the
+ * whole recovery for this object: restore nothing, replace nothing, and let
+ * the caller keep the tree. The state is unchanged, so the next pass simply
+ * judges it again.
+ */
+static esp_err_t object_recovery_fs_unjudged_error(
+    const char *reason
+)
+{
+    return
+        reason != NULL &&
+        strcmp(reason, "no_memory") == 0
+        ? ESP_ERR_NO_MEM
+        : ESP_FAIL;
+}
 
 
 esp_err_t object_recovery_fs_prepare_metadata(
@@ -60,13 +80,14 @@ esp_err_t object_recovery_fs_prepare_metadata(
         return err;
     }
 
-    if (
-        object_recovery_fs_metadata_valid(
+    object_recovery_metadata_status_t status =
+        object_recovery_fs_metadata_check(
             primary,
             object_id,
             &attempts->primary
-        )
-    ) {
+        );
+
+    if (status == OBJECT_RECOVERY_METADATA_VALID) {
         /*
          * A valid primary is authoritative. Do not spend another FAT pathname
          * operation deleting an uncommitted/stale .tmp while the display is
@@ -82,6 +103,13 @@ esp_err_t object_recovery_fs_prepare_metadata(
         return ESP_OK;
     }
 
+    if (status == OBJECT_RECOVERY_METADATA_UNREADABLE) {
+        free(paths);
+        return object_recovery_fs_unjudged_error(
+            attempts->primary
+        );
+    }
+
     err =
         object_recovery_fs_build_path(
             sidecar,
@@ -95,13 +123,21 @@ esp_err_t object_recovery_fs_prepare_metadata(
         return err;
     }
 
-    if (
-        object_recovery_fs_metadata_valid(
+    status =
+        object_recovery_fs_metadata_check(
             sidecar,
             object_id,
             &attempts->backup
-        )
-    ) {
+        );
+
+    if (status == OBJECT_RECOVERY_METADATA_UNREADABLE) {
+        free(paths);
+        return object_recovery_fs_unjudged_error(
+            attempts->backup
+        );
+    }
+
+    if (status == OBJECT_RECOVERY_METADATA_VALID) {
         err =
             object_recovery_fs_restore_file(
                 sidecar,
@@ -153,13 +189,21 @@ esp_err_t object_recovery_fs_prepare_metadata(
         return err;
     }
 
-    if (
-        object_recovery_fs_metadata_valid(
+    status =
+        object_recovery_fs_metadata_check(
             sidecar,
             object_id,
             &attempts->temporary
-        )
-    ) {
+        );
+
+    if (status == OBJECT_RECOVERY_METADATA_UNREADABLE) {
+        free(paths);
+        return object_recovery_fs_unjudged_error(
+            attempts->temporary
+        );
+    }
+
+    if (status == OBJECT_RECOVERY_METADATA_VALID) {
         err =
             object_recovery_fs_restore_file(
                 sidecar,
@@ -195,6 +239,8 @@ esp_err_t object_recovery_fs_prepare_metadata(
             true;
     }
 
+    /* Every candidate was either absent or read cleanly and found unusable:
+     * the only outcome in which the caller may treat the metadata as lost. */
     free(paths);
     return ESP_OK;
 }

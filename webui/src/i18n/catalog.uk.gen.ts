@@ -1251,6 +1251,7 @@ export const uk: Record<I18nKey, string> = {
   "tft.workflow.material.speed": "%s +/- %s м/с",
   "tft.workflow.material.title": "МАТЕРІАЛ",
   "tft.workflow.material.unset": "Матеріал: не задано",
+  "tft.workflow.memory_unavailable": "Недостатньо пам’яті. Спробуйте ще раз.",
   "tft.workflow.notice.busy": "Зайнято",
   "tft.workflow.notice.state_changed": "Стан змінився",
   "tft.workflow.object.name": "%s",

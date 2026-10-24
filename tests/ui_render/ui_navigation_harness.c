@@ -111,6 +111,43 @@ static void activation_done(void)
     ui_object_service_event(&event, NULL);
 }
 
+static void assert_workflow_memory_notice(void)
+{
+    const char *message = ui_tr(UI_I18N_KEY_TFT_WORKFLOW_MEMORY_UNAVAILABLE);
+    for (uint32_t i = 0U; i < lv_obj_get_child_count(render_context.root); ++i) {
+        lv_obj_t *child = lv_obj_get_child(render_context.root, (int32_t)i);
+        if (lv_obj_check_type(child, &lv_label_class) &&
+            !lv_obj_is_hidden(child) &&
+            strcmp(lv_label_get_text(child), message) == 0) return;
+    }
+    assert(false && "Workflow allocation failure must be visible to the operator");
+}
+
+static void workflow_memory_failure(void)
+{
+    snapshot(WORKFLOW_STEP_OBJECT, 1U, true);
+    home();
+    const unsigned starts = render_acquisition_starts;
+    const unsigned commands = render_command_count;
+    render_heap_failures_remaining = 1U;
+    enter(UI_SCREEN_MEASUREMENTS);
+    assert(render_heap_failures_remaining == 0U);
+    assert(render_context.screen == UI_SCREEN_OBJECTS && !render_workflow_exists());
+    assert(render_heap_allocations == 0U);
+    assert(render_acquisition_starts == starts && render_command_count == commands);
+    assert_workflow_memory_notice();
+    checkpoint("workflow_oom_loading");
+    list_done(true);
+    assert_workflow_memory_notice();
+    checkpoint("workflow_oom_loaded");
+    enter(UI_SCREEN_MEASUREMENTS);
+    assert(render_context.screen == UI_SCREEN_WORKFLOW && render_workflow_exists());
+    assert(render_acquisition_starts == starts && render_command_count == commands);
+    checkpoint("workflow_oom_retry");
+    home();
+    assert(render_heap_allocations == 0U);
+}
+
 static void entry_routes(void)
 {
     snapshot(WORKFLOW_STEP_RECORD_READY, 1U, true);
@@ -412,7 +449,7 @@ int main(int argc, char **argv)
         .id = (hw_module_id_t)i, .state = HW_STATE_PRESENT, .requirement = HW_REQ_OPTIONAL};
     for (unsigned locale = 0U; locale < 2U; ++locale) {
         ui_i18n_set_locale(locale == 0U ? UI_LOCALE_EN : UI_LOCALE_UK);
-        if (strcmp(scenario, "entry") == 0) entry_routes();
+        if (strcmp(scenario, "entry") == 0) { entry_routes(); workflow_memory_failure(); }
         else if (strcmp(scenario, "picker") == 0) picker_route();
         else if (strcmp(scenario, "activation") == 0) activation_route();
         else if (strcmp(scenario, "preview") == 0) preview_routes();

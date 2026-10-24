@@ -1,10 +1,30 @@
 #include "cJSON.h"
+#include "cjson_alloc_guard.h"
 
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Models the production hooks: a failed allocation inside the parser is
+ * counted by cjson_alloc_guard exactly as cjson_alloc_guard_alloc() would.
+ * cJSON_stub_fail_alloc_countdown: -1 = never fail, N >= 0 = fail the
+ * allocation after N more successful ones. */
+int cJSON_stub_fail_alloc_countdown = -1;
+
+static void *stub_alloc(size_t size)
+{
+    if (cJSON_stub_fail_alloc_countdown == 0) {
+        cJSON_stub_fail_alloc_countdown = -1;
+        cjson_alloc_guard_note_failure();
+        return NULL;
+    }
+    if (cJSON_stub_fail_alloc_countdown > 0) {
+        --cJSON_stub_fail_alloc_countdown;
+    }
+    return calloc(1U, size);
+}
 
 static const char *skip_space(const char *cursor)
 {
@@ -33,7 +53,7 @@ static char *parse_string(const char **cursor)
     if (*input != '"') {
         return NULL;
     }
-    char *value = malloc(length + 1U);
+    char *value = stub_alloc(length + 1U);
     if (value == NULL) {
         return NULL;
     }
@@ -85,7 +105,7 @@ cJSON *cJSON_Parse(const char *text)
         }
         cursor = skip_space(cursor);
 
-        cJSON *item = calloc(1U, sizeof(*item));
+        cJSON *item = stub_alloc(sizeof(*item));
         if (item == NULL) {
             free(key);
             cJSON_Delete(head);

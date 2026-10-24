@@ -298,6 +298,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "%s +/- %s m/s", /* tft.workflow.material.speed */
     "MATERIAL", /* tft.workflow.material.title */
     "Material: not set", /* tft.workflow.material.unset */
+    "Not enough memory. Try again.", /* tft.workflow.memory_unavailable */
     "Busy", /* tft.workflow.notice.busy */
     "State changed", /* tft.workflow.notice.state_changed */
     "%s", /* tft.workflow.object.name */
@@ -721,6 +722,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "%s +/- %s м/с", /* tft.workflow.material.speed */
     "МАТЕРІАЛ", /* tft.workflow.material.title */
     "Матеріал: не задано", /* tft.workflow.material.unset */
+    "Недостатньо пам’яті. Спробуйте ще раз.", /* tft.workflow.memory_unavailable */
     "Зайнято", /* tft.workflow.notice.busy */
     "Стан змінився", /* tft.workflow.notice.state_changed */
     "%s", /* tft.workflow.object.name */

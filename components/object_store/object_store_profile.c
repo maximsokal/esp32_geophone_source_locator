@@ -502,67 +502,6 @@ static void object_store_read_cables(
     }
 }
 
-static void object_store_read_geometry(
-    cJSON *root,
-    object_store_geometry_t *geometry
-)
-{
-    /* geometry defaults to zero/not-computed via the caller's memset;
-     * absent or malformed JSON leaves it exactly there -- old objects
-     * written before MAX-118 have no "geometry" key at all. */
-    cJSON *node = cJSON_GetObjectItemCaseSensitive(root, "geometry");
-    if (!cJSON_IsObject(node)) {
-        return;
-    }
-
-    cJSON *anchored = cJSON_GetObjectItemCaseSensitive(node, "anchored");
-    geometry->anchored = cJSON_IsTrue(anchored);
-
-    cJSON *pods = cJSON_GetObjectItemCaseSensitive(node, "pods");
-    if (!cJSON_IsArray(pods)) {
-        return;
-    }
-
-    for (size_t i = 0; i < OBJECT_STORE_POD_COUNT; ++i) {
-        cJSON *pod = cJSON_GetArrayItem(pods, (int)i);
-        if (!cJSON_IsObject(pod)) {
-            continue;
-        }
-        cJSON *computed = cJSON_GetObjectItemCaseSensitive(pod, "computed");
-        if (!cJSON_IsTrue(computed)) {
-            continue;
-        }
-        cJSON *leveled = cJSON_GetObjectItemCaseSensitive(pod, "leveled");
-        cJSON *x_mm = cJSON_GetObjectItemCaseSensitive(pod, "x_mm");
-        cJSON *y_mm = cJSON_GetObjectItemCaseSensitive(pod, "y_mm");
-        cJSON *z_mm = cJSON_GetObjectItemCaseSensitive(pod, "z_mm");
-        cJSON *residual_mm = cJSON_GetObjectItemCaseSensitive(pod, "residual_mm");
-        cJSON *uncertainty_mm = cJSON_GetObjectItemCaseSensitive(pod, "uncertainty_mm");
-        cJSON *computed_at = cJSON_GetObjectItemCaseSensitive(pod, "computed_at_ms");
-        if (!cJSON_IsNumber(x_mm) || !cJSON_IsNumber(y_mm) || !cJSON_IsNumber(z_mm)) {
-            continue;
-        }
-        geometry->pods[i].computed = true;
-        geometry->pods[i].leveled = cJSON_IsTrue(leveled);
-        geometry->pods[i].x_mm = (int32_t)x_mm->valuedouble;
-        geometry->pods[i].y_mm = (int32_t)y_mm->valuedouble;
-        geometry->pods[i].z_mm = (int32_t)z_mm->valuedouble;
-        geometry->pods[i].residual_mm =
-            cJSON_IsNumber(residual_mm) && residual_mm->valuedouble >= 0.0 &&
-            residual_mm->valuedouble <= (double)INT32_MAX
-            ? (int32_t)residual_mm->valuedouble
-            : 0;
-        geometry->pods[i].uncertainty_mm =
-            cJSON_IsNumber(uncertainty_mm) && uncertainty_mm->valuedouble >= 0.0 &&
-            uncertainty_mm->valuedouble <= (double)INT32_MAX
-            ? (int32_t)uncertainty_mm->valuedouble
-            : 0;
-        geometry->pods[i].computed_at_ms = cJSON_IsNumber(computed_at) && computed_at->valuedouble >= 0
-            ? (uint64_t)computed_at->valuedouble
-            : 0U;
-    }
-}
-
 static void object_store_read_cs_pairs(
     cJSON *root,
     object_store_cs_pairs_t *cs_pairs
@@ -643,7 +582,7 @@ static void object_store_profile_from_root_locked(
     profile->summary.active = active;
     object_store_read_location(root, &profile->location);
     object_store_read_cables(root, defaults, profile->cable_lengths_m);
-    object_store_read_geometry(root, &profile->geometry);
+    object_store_geometry_from_json(root, &profile->geometry);
     object_store_read_cs_pairs(root, &profile->cs_pairs);
 }
 

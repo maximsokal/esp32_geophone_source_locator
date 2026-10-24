@@ -55,6 +55,7 @@
                                       "components/object_format/object_format.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",
@@ -94,6 +95,7 @@
                                       "tests/host/web_localization_runs_http_test.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/seismic_recorder/include",
                                            "components/localization_calculate/include",
                                            "components/localization_velocity_free/include",
@@ -125,6 +127,7 @@
                                       "components/localization_calculate/tests/max132_failure_config_test.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/web_api_control",
                                            "components/measurement_service/tests/stubs",
@@ -202,6 +205,7 @@
                                       "components/object_format/object_format.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",
@@ -284,6 +288,7 @@
                                       "components/object_format/object_format.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",
@@ -366,6 +371,7 @@
                                       "components/object_format/object_format.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",
@@ -448,6 +454,7 @@
                                       "components/object_format/object_format.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",
@@ -530,6 +537,7 @@
                                       "components/object_format/object_format.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",
@@ -612,6 +620,7 @@
                                       "components/object_format/object_format.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",
@@ -694,6 +703,7 @@
                                       "components/object_format/object_format.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",
@@ -776,6 +786,7 @@
                                       "components/object_format/object_format.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",
@@ -858,6 +869,7 @@
                                       "components/object_format/object_format.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",
@@ -940,6 +952,7 @@
                                       "components/object_format/object_format.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",
@@ -1022,6 +1035,7 @@
                                       "components/object_format/object_format.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_calculate/tests/max132_d3_stubs",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",

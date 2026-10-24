@@ -5,9 +5,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* -1 = never fail; N >= 0 = the allocation after N more successful ones fails
+ * (once), modelling an out-of-memory inside cJSON_Add*ToObject() and friends. */
+int cJSON_stub_fail_alloc_countdown = -1;
+
+static bool stub_allocation_fails(void)
+{
+    if (cJSON_stub_fail_alloc_countdown == 0) {
+        cJSON_stub_fail_alloc_countdown = -1;
+        return true;
+    }
+    if (cJSON_stub_fail_alloc_countdown > 0) {
+        --cJSON_stub_fail_alloc_countdown;
+    }
+    return false;
+}
+
 static char *duplicate_text(const char *text)
 {
     if (text == NULL) return NULL;
+    if (stub_allocation_fails()) return NULL;
     const size_t length = strlen(text);
     char *copy = malloc(length + 1U);
     if (copy != NULL) memcpy(copy, text, length + 1U);
@@ -16,6 +33,7 @@ static char *duplicate_text(const char *text)
 
 static cJSON *new_item(int type)
 {
+    if (stub_allocation_fails()) return NULL;
     cJSON *item = calloc(1U, sizeof(*item));
     if (item != NULL) item->type = type;
     return item;

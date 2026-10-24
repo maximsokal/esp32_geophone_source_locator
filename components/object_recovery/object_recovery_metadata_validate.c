@@ -15,6 +15,7 @@
 #endif
 
 #include "cJSON.h"
+#include "cjson_alloc_guard.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -76,7 +77,7 @@ static int object_recovery_open_file_stat(
 }
 
 
-bool object_recovery_fs_metadata_valid(
+object_recovery_metadata_status_t object_recovery_fs_metadata_check(
     const char *path,
     const char *expected_id,
     const char **reason_out
@@ -88,7 +89,7 @@ bool object_recovery_fs_metadata_valid(
         !object_format_id_is_valid(expected_id)
     ) {
         if (reason_out != NULL) *reason_out = "invalid_argument";
-        return false;
+        return OBJECT_RECOVERY_METADATA_UNREADABLE;
     }
 
     /*
@@ -101,11 +102,13 @@ bool object_recovery_fs_metadata_valid(
     int64_t started_us =
         esp_timer_get_time();
 
+    errno = 0;
     FILE *file =
-        fopen(
+        OBJECT_RECOVERY_FOPEN(
             path,
             "rb"
         );
+    const int open_errno = errno;
 
     object_recovery_log_io(
         "metadata-fopen",
@@ -116,9 +119,11 @@ bool object_recovery_fs_metadata_valid(
 
     if (file == NULL) {
         if (reason_out != NULL) {
-            *reason_out = errno == ENOENT ? "not_found" : "open_error";
+            *reason_out = open_errno == ENOENT ? "not_found" : "open_error";
         }
-        return false;
+        return open_errno == ENOENT
+            ? OBJECT_RECOVERY_METADATA_MISSING
+            : OBJECT_RECOVERY_METADATA_UNREADABLE;
     }
 
     struct stat info;
@@ -167,7 +172,11 @@ bool object_recovery_fs_metadata_valid(
             started_us
         );
 
-        return false;
+        /* A failing fstat is an I/O fault; a non-regular or empty/oversized
+         * file was read cleanly and is genuinely unusable. */
+        return stat_result != 0
+            ? OBJECT_RECOVERY_METADATA_UNREADABLE
+            : OBJECT_RECOVERY_METADATA_CORRUPT;
     }
 
     size_t size =
@@ -175,7 +184,7 @@ bool object_recovery_fs_metadata_valid(
             info.st_size;
 
     char *buffer =
-        malloc(
+        OBJECT_RECOVERY_MALLOC(
             size + 1
         );
 
@@ -196,7 +205,7 @@ bool object_recovery_fs_metadata_valid(
             started_us
         );
 
-        return false;
+        return OBJECT_RECOVERY_METADATA_UNREADABLE;
     }
 
     started_us =
@@ -239,7 +248,7 @@ bool object_recovery_fs_metadata_valid(
         );
 
         if (reason_out != NULL) *reason_out = "short_read";
-        return false;
+        return OBJECT_RECOVERY_METADATA_UNREADABLE;
     }
 
     buffer[size] =
@@ -248,10 +257,16 @@ bool object_recovery_fs_metadata_valid(
     started_us =
         esp_timer_get_time();
 
+    /* cJSON_Parse() cannot say why it returned NULL; an allocation failure
+     * recorded by the guarded hooks during the call means "not judged". */
+    cjson_alloc_guard_install();
+    const uint32_t alloc_failures_before = cjson_alloc_guard_failures();
     cJSON *root =
         cJSON_Parse(
             buffer
         );
+    const bool parse_allocation_failed =
+        cjson_alloc_guard_failures() != alloc_failures_before;
 
     object_recovery_log_io(
         "metadata-json-parse",
@@ -264,9 +279,18 @@ bool object_recovery_fs_metadata_valid(
         buffer
     );
 
-    if (root == NULL) {
+    if (root == NULL || parse_allocation_failed) {
+        if (root != NULL) {
+            cJSON_Delete(
+                root
+            );
+        }
+        if (parse_allocation_failed) {
+            if (reason_out != NULL) *reason_out = "no_memory";
+            return OBJECT_RECOVERY_METADATA_UNREADABLE;
+        }
         if (reason_out != NULL) *reason_out = "invalid_json";
-        return false;
+        return OBJECT_RECOVERY_METADATA_CORRUPT;
     }
 
     const cJSON *schema_version =
@@ -316,5 +340,21 @@ bool object_recovery_fs_metadata_valid(
      * change the legacy metadata-validity semantics.
      */
     if (reason_out != NULL) *reason_out = reason;
-    return valid;
+    return valid
+        ? OBJECT_RECOVERY_METADATA_VALID
+        : OBJECT_RECOVERY_METADATA_CORRUPT;
+}
+
+
+bool object_recovery_fs_metadata_valid(
+    const char *path,
+    const char *expected_id,
+    const char **reason_out
+)
+{
+    return object_recovery_fs_metadata_check(
+        path,
+        expected_id,
+        reason_out
+    ) == OBJECT_RECOVERY_METADATA_VALID;
 }

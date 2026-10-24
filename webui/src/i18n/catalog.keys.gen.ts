@@ -1249,6 +1249,7 @@ export const i18nKeys = [
   "tft.workflow.material.speed",
   "tft.workflow.material.title",
   "tft.workflow.material.unset",
+  "tft.workflow.memory_unavailable",
   "tft.workflow.notice.busy",
   "tft.workflow.notice.state_changed",
   "tft.workflow.object.name",

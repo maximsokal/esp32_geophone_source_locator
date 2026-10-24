@@ -26,12 +26,16 @@ enum
 
 /* ---- Model ---------------------------------------------------------- */
 
-static size_t axis_nodes(double min, double max, double step)
+static size_t axis_nodes(double min, double max, double step, size_t limit)
 {
     if (max <= min) {
         return 1U;
     }
-    return (size_t)ceil((max - min) / step - 1.0e-9) + 1U;
+    const double intervals = ceil((max - min) / step - 1.0e-9);
+    if (!isfinite(intervals) || intervals < 0.0 || intervals >= (double)limit) {
+        return 0U;
+    }
+    return (size_t)intervals + 1U;
 }
 
 
@@ -59,12 +63,19 @@ esp_err_t localization_eikonal_model_init(
     if (max_nodes == 0U) {
         max_nodes = LOCALIZATION_EIKONAL_DEFAULT_MAX_NODES;
     }
+    if (max_nodes > SIZE_MAX / sizeof(float)) {
+        max_nodes = SIZE_MAX / sizeof(float);
+    }
     for (size_t factor = 1U; factor <= EIKONAL_MAX_FACTOR; ++factor) {
         const double step = cell_m * (double)factor;
-        const size_t nx = axis_nodes(min_corner->x_m, max_corner->x_m, step);
-        const size_t ny = axis_nodes(min_corner->y_m, max_corner->y_m, step);
-        const size_t nz = axis_nodes(min_corner->z_m, max_corner->z_m, step);
-        if ((double)nx * (double)ny * (double)nz > (double)max_nodes) {
+        if (!isfinite(step)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        const size_t nx = axis_nodes(min_corner->x_m, max_corner->x_m, step, max_nodes);
+        const size_t ny = axis_nodes(min_corner->y_m, max_corner->y_m, step, max_nodes);
+        const size_t nz = axis_nodes(min_corner->z_m, max_corner->z_m, step, max_nodes);
+        if (nx == 0U || ny == 0U || nz == 0U ||
+            nx > max_nodes / ny || nx * ny > max_nodes / nz) {
             continue;
         }
         const size_t count = nx * ny * nz;

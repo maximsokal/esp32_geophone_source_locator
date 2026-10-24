@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "eikonal_grid_allocation_contract",
+      "sources": [
+        "components/localization_extended/localization_ext_fit.c",
+        "components/localization_extended/localization_eikonal.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "tests/host/localization_grid_allocation_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include",
+        "components/localization_extended"
+      ],
+      "defines": ["GRID_CONTRACT_EIKONAL", "malloc=localization_grid_contract_malloc", "calloc=localization_grid_contract_calloc"],
+      "libraries": ["m"]
+    },
+    {
+      "name": "suea_grid_allocation_contract",
+      "sources": [
+        "components/localization/localization.c",
+        "components/localization_velocity_free/localization_vf_math.c",
+        "components/localization_velocity_free/localization_suea.c",
+        "tests/host/localization_grid_allocation_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/localization/tests/stubs",
+        "components/localization/include",
+        "components/localization_velocity_free/include",
+        "components/localization_extended/include"
+      ],
+      "defines": ["malloc=localization_grid_contract_malloc", "calloc=localization_grid_contract_calloc"],
+      "libraries": ["m"]
+    }
+  ]
+}

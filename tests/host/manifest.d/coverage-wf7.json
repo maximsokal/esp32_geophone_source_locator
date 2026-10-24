@@ -43,6 +43,7 @@
                                       "components/localization_results/tests/localization_run_record_json_test.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization/tests/stubs",
                                            "components/localization/include",
                                            "tests/host/stubs/object_store_profile",
@@ -62,6 +63,7 @@
                                       "components/localization_results/tests/localization_event_run_record_test.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization/tests/stubs",
                                            "components/localization/include",
                                            "components/geophone_events/include",
@@ -80,6 +82,7 @@
                                       "components/localization_results/tests/localization_pick_record_test.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization/tests/stubs",
                                            "components/localization/include",
                                            "components/geophone_events/include",
@@ -101,6 +104,7 @@
                                       "components/localization_run_store/tests/localization_run_store_list_test.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_run_store/tests/stubs/list",
                                            "components/seismic_recorder/tests/stubs",
                                            "components/localization/tests/stubs",
@@ -126,6 +130,7 @@
                                       "components/localization_run_store/tests/localization_run_store_picks_test.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/localization_run_store/tests/stubs/list",
                                            "components/seismic_recorder/tests/stubs",
                                            "components/localization/tests/stubs",
@@ -152,6 +157,7 @@
                                       "components/localization_calculate/tests/localization_calculate_policy_test.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/scan_occupancy/include",
                                            "tests/host/stubs/object_store_profile",
                                            "components/localization/tests/stubs",
@@ -209,6 +215,7 @@
                                       "components/localization_calculate/tests/localization_calculate_scan_methods_test.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/scan_occupancy/include",
                                            "tests/host/stubs/object_store_profile",
                                            "components/localization/tests/stubs",
@@ -269,6 +276,7 @@
                                       "components/localization_calculate/tests/localization_calculate_run_test.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "tests/host/stubs/localization_calculate_run",
                                            "tests/host/stubs/object_store_profile",
                                            "components/localization_calculate/include",
@@ -323,6 +331,7 @@
                                       "tests/host/web_localization_runs_http_test.c"
                                   ],
                       "include_dirs":  [
+                                           "components/json_number/include",
                                            "components/seismic_recorder/include",
                                            "components/localization_calculate/include",
                                            "components/localization_velocity_free/include",

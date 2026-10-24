@@ -476,6 +476,108 @@ static void test_corruption_and_bad_registration_fail_closed(void)
     free(data);
 }
 
+/*
+ * The header counts/timestamps come from a file, so they are data: a count that
+ * is fractional, negative, non-finite or beyond size_t must be rejected BEFORE
+ * any double -> integer conversion (which is undefined for such values), with
+ * nothing allocated and the output untouched. A fractional count in particular
+ * used to be truncated and then accepted when the payload happened to match.
+ */
+static uint8_t *make_count_artifact(
+    const char *free_literal,
+    const char *occupied_literal,
+    const char *created_literal,
+    size_t payload_cells,
+    size_t *length_out
+)
+{
+    char header[320];
+    const int header_length_signed = snprintf(
+        header,
+        sizeof(header),
+        "{\"schema\":1,\"frame_id\":\"count-test\",\"voxel_size_m\":0.5,"
+        "\"below_surface_m\":0,\"envelope\":null,\"free_count\":%s,"
+        "\"occupied_count\":%s,\"saturated\":false,\"created_at_ms\":%s,"
+        "\"registration\":null}",
+        free_literal,
+        occupied_literal,
+        created_literal
+    );
+    assert(header_length_signed > 0 && (size_t)header_length_signed < sizeof(header));
+
+    const size_t header_length = (size_t)header_length_signed;
+    const size_t payload_length = 6U * payload_cells;
+    const size_t length = 20U + header_length + payload_length;
+    uint8_t *data = calloc(length, sizeof(*data));
+    assert(data != NULL);
+    memcpy(data, "GOCCUPY1", 8U);
+    write_u32(data, 8U, (uint32_t)header_length);
+    write_u32(data, 12U, (uint32_t)payload_length);
+    memcpy(data + 20U, header, header_length);
+    for (size_t cell = 0U; cell < payload_cells; ++cell) {
+        /* Distinct keys so only the header numbers can cause a rejection. */
+        write_u16(data, 20U + header_length + cell * 6U, (uint16_t)cell);
+    }
+    write_u32(data, 16U, test_crc32(data + 20U, length - 20U));
+    *length_out = length;
+    return data;
+}
+
+
+static void assert_count_artifact_rejected(
+    const char *free_literal,
+    const char *occupied_literal,
+    const char *created_literal,
+    size_t payload_cells
+)
+{
+    size_t length = 0U;
+    uint8_t *data = make_count_artifact(
+        free_literal, occupied_literal, created_literal, payload_cells, &length
+    );
+    scan_occupancy_t occupancy;
+    memset(&occupancy, 0xA5, sizeof(occupancy));
+    assert(scan_occupancy_parse(data, length, &occupancy) == ESP_ERR_INVALID_ARG);
+    assert(occupancy.frame_id[0] == '\0');
+    assert(occupancy.free_keys == NULL && occupancy.free_count == 0U);
+    assert(occupancy.occupied_keys == NULL && occupancy.occupied_count == 0U);
+    free(data);
+}
+
+
+static void test_header_counts_and_timestamps_must_be_exact_integers_in_range(void)
+{
+    /* Control: well-formed integral values with a matching payload still parse. */
+    size_t length = 0U;
+    uint8_t *data = make_count_artifact("1", "1", "1", 2U, &length);
+    scan_occupancy_t occupancy;
+    assert(scan_occupancy_parse(data, length, &occupancy) == ESP_OK);
+    assert(occupancy.free_count == 1U && occupancy.occupied_count == 1U);
+    assert(occupancy.created_at_ms == 1U);
+    scan_occupancy_free(&occupancy);
+    free(data);
+
+    /* Fractional: accepted by the old truncating cast whenever the payload fit. */
+    assert_count_artifact_rejected("1.5", "1", "1", 2U);
+    assert_count_artifact_rejected("1", "1.5", "1", 2U);
+    assert_count_artifact_rejected("1", "1", "1.5", 2U);
+
+    /* Out of range for size_t / uint64, and non-finite. */
+    assert_count_artifact_rejected("1e30", "0", "1", 0U);
+    assert_count_artifact_rejected("0", "1e30", "1", 0U);
+    assert_count_artifact_rejected("1", "1", "1e30", 2U);
+    assert_count_artifact_rejected("18446744073709551615", "0", "1", 0U);
+    assert_count_artifact_rejected("18446744073709551616", "0", "1", 0U);
+    assert_count_artifact_rejected("1e999", "0", "1", 0U);
+    assert_count_artifact_rejected("0", "1e999", "1", 0U);
+    assert_count_artifact_rejected("1", "1", "1e999", 2U);
+
+    /* Negative. */
+    assert_count_artifact_rejected("-1", "0", "1", 0U);
+    assert_count_artifact_rejected("0", "-1", "1", 0U);
+    assert_count_artifact_rejected("1", "1", "-1", 2U);
+}
+
 
 int main(void)
 {
@@ -489,5 +591,6 @@ int main(void)
     test_scaled_and_sheared_transforms_are_rejected();
     test_schema2_registration_without_threshold_is_rejected();
     test_corruption_and_bad_registration_fail_closed();
+    test_header_counts_and_timestamps_must_be_exact_integers_in_range();
     return 0;
 }

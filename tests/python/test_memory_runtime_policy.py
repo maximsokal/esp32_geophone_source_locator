@@ -298,7 +298,10 @@ def test_acquisition_stop_cannot_bypass_measurement_service():
     assert "return ESP_ERR_INVALID_STATE;" in acquisition_stop
     assert "seismic_recorder_stop" not in acquisition_stop
     assert "seismic_recorder_wait_for_stop" not in acquisition_stop
-    assert "seismic_acquisition_stop();" in acquisition_stop
+    # Stopping goes through the Web preview lease, never a direct stop, so a
+    # TFT preview or a recording keeps the source running.
+    assert "seismic_acquisition_set_preview(SEISMIC_PREVIEW_WEB, false)" in acquisition_stop
+    assert "seismic_acquisition_stop()" not in acquisition_stop
 
 
 def test_webui_uses_measurement_state_to_lock_acquisition_controls():

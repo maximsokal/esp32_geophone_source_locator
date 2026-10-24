@@ -19,6 +19,66 @@
 #include "object_recovery_internal.h"
 #include "object_store.h"
 #include "storage_manager.h"
+#include "cjson_alloc_guard.h"
+
+/* Fault injection behind the OBJECT_RECOVERY_TEST_FAULTS seams. */
+extern int cJSON_stub_fail_alloc_countdown;
+
+static struct {
+    int malloc_fail_after;        /* -1 never; N = fail after N more mallocs */
+    const char *fopen_fail_suffix; /* fail fopen of paths ending with this */
+    int fopen_fail_errno;
+    unsigned rename_calls;
+    unsigned rename_fail_call;    /* 1-based; 0 never */
+} s_fault = { .malloc_fail_after = -1 };
+
+static void clear_faults(void)
+{
+    s_fault.malloc_fail_after = -1;
+    s_fault.fopen_fail_suffix = NULL;
+    s_fault.fopen_fail_errno = 0;
+    s_fault.rename_calls = 0U;
+    s_fault.rename_fail_call = 0U;
+    cJSON_stub_fail_alloc_countdown = -1;
+}
+
+void *object_recovery_test_malloc(size_t size)
+{
+    if (s_fault.malloc_fail_after == 0) {
+        s_fault.malloc_fail_after = -1;
+        return NULL;
+    }
+    if (s_fault.malloc_fail_after > 0) {
+        --s_fault.malloc_fail_after;
+    }
+    return malloc(size);
+}
+
+FILE *object_recovery_test_fopen(const char *path, const char *mode)
+{
+    if (s_fault.fopen_fail_suffix != NULL) {
+        const size_t path_length = strlen(path);
+        const size_t suffix_length = strlen(s_fault.fopen_fail_suffix);
+        if (
+            path_length >= suffix_length &&
+            strcmp(path + path_length - suffix_length, s_fault.fopen_fail_suffix) == 0
+        ) {
+            errno = s_fault.fopen_fail_errno;
+            return NULL;
+        }
+    }
+    return fopen(path, mode);
+}
+
+int object_recovery_test_rename(const char *source, const char *destination)
+{
+    ++s_fault.rename_calls;
+    if (s_fault.rename_fail_call != 0U && s_fault.rename_calls == s_fault.rename_fail_call) {
+        errno = EIO;
+        return -1;
+    }
+    return rename(source, destination);
+}
 
 static const char *TEST_ROOT = "object_recovery_contract_tmp";
 
@@ -165,6 +225,7 @@ static void remove_test_files(void)
     remove_metadata("object.json");
     remove_metadata("object.json.bak");
     remove_metadata("object.json.tmp");
+    remove_metadata("object.json.old");
     (void)remove(source);
     (void)remove(destination);
     (void)rmdir(TEST_ROOT);
@@ -548,6 +609,298 @@ static void test_delete_is_skipped_when_scope_count_fails(void)
     remove_scan_object("OBJ_0001");
 }
 
+static void read_whole_file(const char *path, char *buffer, size_t buffer_size)
+{
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    const size_t count = fread(buffer, 1U, buffer_size - 1U, file);
+    assert(fclose(file) == 0);
+    buffer[count] = '\0';
+}
+
+static void assert_file_equals(const char *path, const char *expected)
+{
+    char contents[512];
+    read_whole_file(path, contents, sizeof(contents));
+    assert(strcmp(contents, expected) == 0);
+}
+
+static void assert_metadata_equals(const char *name, const char *expected)
+{
+    char path[128];
+    metadata_path(path, sizeof(path), name);
+    assert_file_equals(path, expected);
+}
+
+#define NEW_PRIMARY "{\"schema_version\":1,\"id\":\"OBJ_0001\",\"revision\":2}"
+#define OLD_BACKUP  "{\"schema_version\":1,\"id\":\"OBJ_0001\",\"revision\":1}"
+
+static void prepare_metadata_dir(const char *primary, const char *backup, const char *temporary)
+{
+    clear_faults();
+    remove_test_files();
+    remove_metadata("object.json.old");
+    assert(mkdir(TEST_ROOT, 0775) == 0);
+    if (primary != NULL) write_metadata("object.json", primary);
+    if (backup != NULL) write_metadata("object.json.bak", backup);
+    if (temporary != NULL) write_metadata("object.json.tmp", temporary);
+}
+
+static void cleanup_metadata_dir(void)
+{
+    clear_faults();
+    remove_metadata("object.json.old");
+    remove_test_files();
+}
+
+static void test_metadata_check_separates_unreadable_from_corrupt(void)
+{
+    char path[128];
+    const char *reason = NULL;
+
+    prepare_metadata_dir(NEW_PRIMARY, NULL, NULL);
+    metadata_path(path, sizeof(path), "object.json");
+    assert(object_recovery_fs_metadata_check(path, "OBJ_0001", &reason) == OBJECT_RECOVERY_METADATA_VALID);
+
+    metadata_path(path, sizeof(path), "object.json.bak");
+    assert(object_recovery_fs_metadata_check(path, "OBJ_0001", &reason) == OBJECT_RECOVERY_METADATA_MISSING);
+    assert(strcmp(reason, "not_found") == 0);
+
+    write_metadata("object.json.bak", "not-json");
+    assert(object_recovery_fs_metadata_check(path, "OBJ_0001", &reason) == OBJECT_RECOVERY_METADATA_CORRUPT);
+    assert(strcmp(reason, "invalid_json") == 0);
+    write_metadata("object.json.bak", "{\"schema_version\":1,\"id\":\"OBJ_0002\"}");
+    assert(object_recovery_fs_metadata_check(path, "OBJ_0001", &reason) == OBJECT_RECOVERY_METADATA_CORRUPT);
+    assert(strcmp(reason, "wrong_identity") == 0);
+    write_metadata("object.json.bak", "");
+    assert(object_recovery_fs_metadata_check(path, "OBJ_0001", &reason) == OBJECT_RECOVERY_METADATA_CORRUPT);
+    assert(strcmp(reason, "invalid_size") == 0);
+
+    /* Inability to judge is never reported as corruption or absence. */
+    write_metadata("object.json.bak", OLD_BACKUP);
+    s_fault.malloc_fail_after = 0;
+    assert(object_recovery_fs_metadata_check(path, "OBJ_0001", &reason) == OBJECT_RECOVERY_METADATA_UNREADABLE);
+    assert(strcmp(reason, "no_memory") == 0);
+    clear_faults();
+
+    cJSON_stub_fail_alloc_countdown = 0;
+    assert(object_recovery_fs_metadata_check(path, "OBJ_0001", &reason) == OBJECT_RECOVERY_METADATA_UNREADABLE);
+    assert(strcmp(reason, "no_memory") == 0);
+    clear_faults();
+
+    s_fault.fopen_fail_suffix = "object.json.bak";
+    s_fault.fopen_fail_errno = EIO;
+    assert(object_recovery_fs_metadata_check(path, "OBJ_0001", &reason) == OBJECT_RECOVERY_METADATA_UNREADABLE);
+    assert(strcmp(reason, "open_error") == 0);
+    clear_faults();
+
+    assert(object_recovery_fs_metadata_check(path, NULL, &reason) == OBJECT_RECOVERY_METADATA_UNREADABLE);
+    assert(object_recovery_fs_metadata_check(NULL, "OBJ_0001", &reason) == OBJECT_RECOVERY_METADATA_UNREADABLE);
+    cleanup_metadata_dir();
+}
+
+static void test_unjudged_primary_never_falls_back_to_backup(void)
+{
+    bool valid = true;
+    bool recovered = true;
+    object_recovery_metadata_attempts_t attempts = {0};
+
+    /* Out of memory while reading the healthy, newer primary. */
+    prepare_metadata_dir(NEW_PRIMARY, OLD_BACKUP, NULL);
+    s_fault.malloc_fail_after = 0;
+    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered, &attempts) == ESP_ERR_NO_MEM);
+    assert(!valid && !recovered);
+    assert(strcmp(attempts.primary, "no_memory") == 0);
+    assert(strcmp(attempts.backup, "not_attempted") == 0);
+    assert_metadata_equals("object.json", NEW_PRIMARY);
+    assert_metadata_equals("object.json.bak", OLD_BACKUP);
+    assert(!metadata_exists("object.json.old"));
+    clear_faults();
+
+    /* Out of memory inside the JSON parser is not "invalid JSON". */
+    cJSON_stub_fail_alloc_countdown = 0;
+    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered, &attempts) == ESP_ERR_NO_MEM);
+    assert(!valid && !recovered);
+    assert(strcmp(attempts.primary, "no_memory") == 0);
+    assert_metadata_equals("object.json", NEW_PRIMARY);
+    assert_metadata_equals("object.json.bak", OLD_BACKUP);
+    clear_faults();
+
+    /* An SD read error on the primary is not corruption either. */
+    s_fault.fopen_fail_suffix = "/object.json";
+    s_fault.fopen_fail_errno = EIO;
+    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered, &attempts) == ESP_FAIL);
+    assert(!valid && !recovered);
+    assert(strcmp(attempts.primary, "open_error") == 0);
+    assert_metadata_equals("object.json", NEW_PRIMARY);
+    assert_metadata_equals("object.json.bak", OLD_BACKUP);
+    clear_faults();
+
+    /* Once the condition clears, the same call succeeds and changes nothing. */
+    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered, &attempts) == ESP_OK);
+    assert(valid && !recovered);
+    assert_metadata_equals("object.json", NEW_PRIMARY);
+    assert_metadata_equals("object.json.bak", OLD_BACKUP);
+    cleanup_metadata_dir();
+}
+
+static void test_unjudged_sidecar_stops_recovery_without_touching_files(void)
+{
+    bool valid = true;
+    bool recovered = true;
+    object_recovery_metadata_attempts_t attempts = {0};
+
+    /* Primary is provably corrupt, but the backup cannot be read: do not skip
+     * past it and promote the possibly older .tmp. */
+    prepare_metadata_dir("not-json", OLD_BACKUP, NEW_PRIMARY);
+    s_fault.fopen_fail_suffix = "object.json.bak";
+    s_fault.fopen_fail_errno = EIO;
+    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered, &attempts) == ESP_FAIL);
+    assert(!valid && !recovered);
+    assert(strcmp(attempts.primary, "invalid_json") == 0);
+    assert(strcmp(attempts.backup, "open_error") == 0);
+    assert(strcmp(attempts.temporary, "not_attempted") == 0);
+    assert_metadata_equals("object.json", "not-json");
+    assert_metadata_equals("object.json.bak", OLD_BACKUP);
+    assert_metadata_equals("object.json.tmp", NEW_PRIMARY);
+    clear_faults();
+
+    /* Same for an unreadable .tmp after a corrupt primary and missing .bak. */
+    remove_metadata("object.json.bak");
+    s_fault.fopen_fail_suffix = "object.json.tmp";
+    s_fault.fopen_fail_errno = EIO;
+    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered, &attempts) == ESP_FAIL);
+    assert(!valid && !recovered);
+    assert_metadata_equals("object.json", "not-json");
+    assert_metadata_equals("object.json.tmp", NEW_PRIMARY);
+    cleanup_metadata_dir();
+}
+
+static void test_restore_never_loses_destination_when_rename_fails(void)
+{
+    char source[128];
+    char destination[128];
+    (void)snprintf(source, sizeof(source), "%s/source.txt", TEST_ROOT);
+    (void)snprintf(destination, sizeof(destination), "%s/destination.txt", TEST_ROOT);
+
+    remove_test_files();
+    remove_metadata("destination.txt.old");
+    assert(mkdir(TEST_ROOT, 0775) == 0);
+    FILE *file = fopen(source, "wb");
+    assert(file != NULL && fputs("recovered", file) >= 0 && fclose(file) == 0);
+    file = fopen(destination, "wb");
+    assert(file != NULL && fputs("stale", file) >= 0 && fclose(file) == 0);
+
+    /* The move-aside itself fails: nothing has changed. */
+    s_fault.rename_calls = 0U;
+    s_fault.rename_fail_call = 1U;
+    assert(object_recovery_fs_restore_file(source, destination) == ESP_FAIL);
+    assert_file_equals(destination, "stale");
+    assert_file_equals(source, "recovered");
+    assert(!metadata_exists("destination.txt.old"));
+
+    /* The source rename fails after the destination moved aside: it is put back. */
+    s_fault.rename_calls = 0U;
+    s_fault.rename_fail_call = 2U;
+    assert(object_recovery_fs_restore_file(source, destination) == ESP_FAIL);
+    assert_file_equals(destination, "stale");
+    assert_file_equals(source, "recovered");
+    assert(!metadata_exists("destination.txt.old"));
+    clear_faults();
+
+    /* Success replaces the destination and leaves no side file behind. */
+    assert(object_recovery_fs_restore_file(source, destination) == ESP_OK);
+    assert_file_equals(destination, "recovered");
+    assert(!metadata_exists("destination.txt.old"));
+    assert(!metadata_exists("source.txt"));
+
+    /* A missing destination is a plain rename. */
+    file = fopen(source, "wb");
+    assert(file != NULL && fputs("again", file) >= 0 && fclose(file) == 0);
+    assert(remove(destination) == 0);
+    assert(object_recovery_fs_restore_file(source, destination) == ESP_OK);
+    assert_file_equals(destination, "again");
+
+    remove_metadata("destination.txt.old");
+    remove_test_files();
+}
+
+static void test_failed_restore_keeps_corrupt_primary_and_backup(void)
+{
+    bool valid = true;
+    bool recovered = true;
+    object_recovery_metadata_attempts_t attempts = {0};
+
+    prepare_metadata_dir("not-json", OLD_BACKUP, NULL);
+    s_fault.rename_fail_call = 2U;
+    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered, &attempts) == ESP_FAIL);
+    assert(!valid && !recovered);
+    assert_metadata_equals("object.json", "not-json");
+    assert_metadata_equals("object.json.bak", OLD_BACKUP);
+    assert(!metadata_exists("object.json.old"));
+    clear_faults();
+
+    /* Retrying on the next pass completes the restore. */
+    assert(object_recovery_fs_prepare_metadata(TEST_ROOT, "OBJ_0001", &valid, &recovered, &attempts) == ESP_OK);
+    assert(valid && recovered);
+    assert_metadata_equals("object.json", OLD_BACKUP);
+    assert(!metadata_exists("object.json.bak"));
+    assert(!metadata_exists("object.json.old"));
+    cleanup_metadata_dir();
+}
+
+static void test_scan_never_removes_object_when_metadata_cannot_be_judged(void)
+{
+    bool removed = false;
+
+    /* Healthy object.json, no sidecars, out of memory while reading it. */
+    reset_scan_fakes();
+    remove_scan_object("OBJ_0001");
+    prepare_scan_object("OBJ_0001", NEW_PRIMARY, NULL, NULL);
+    s_fault.malloc_fail_after = 0;
+    assert(object_recovery_check_one("OBJ_0001", &removed) == ESP_ERR_NO_MEM);
+    assert(!removed && s_remove_tree_calls == 0U && s_removal_log_count == 0U);
+    clear_faults();
+
+    /* Out of memory inside the JSON parser. */
+    cJSON_stub_fail_alloc_countdown = 0;
+    assert(object_recovery_check_one("OBJ_0001", &removed) == ESP_ERR_NO_MEM);
+    assert(!removed && s_remove_tree_calls == 0U);
+    clear_faults();
+
+    /* SD read error on the only candidate. */
+    s_fault.fopen_fail_suffix = "/object.json";
+    s_fault.fopen_fail_errno = EIO;
+    assert(object_recovery_check_one_boot("OBJ_0001", &removed) == ESP_FAIL);
+    assert(!removed && s_remove_tree_calls == 0U);
+    clear_faults();
+
+    /* A corrupt primary and an unreadable sidecar is still not "all failed". */
+    remove_scan_object("OBJ_0001");
+    prepare_scan_object("OBJ_0001", "not-json", OLD_BACKUP, NULL);
+    s_fault.fopen_fail_suffix = "object.json.bak";
+    s_fault.fopen_fail_errno = EIO;
+    assert(object_recovery_check_one("OBJ_0001", &removed) == ESP_FAIL);
+    assert(!removed && s_remove_tree_calls == 0U);
+    clear_faults();
+
+    /* The primary file survived every attempt byte-for-byte; the next pass
+     * judges it normally and still deletes only on proven corruption. */
+    char path[320];
+    char object_path[256];
+    scan_path(object_path, sizeof(object_path), "OBJ_0001");
+    (void)snprintf(path, sizeof(path), "%s/object.json", object_path);
+    assert_file_equals(path, "not-json");
+    remove_scan_object("OBJ_0001");
+
+    prepare_scan_object("OBJ_0001", NEW_PRIMARY, NULL, NULL);
+    (void)snprintf(path, sizeof(path), "%s/object.json", object_path);
+    assert(object_recovery_check_one("OBJ_0001", &removed) == ESP_OK);
+    assert(!removed && s_remove_tree_calls == 0U);
+    assert_file_equals(path, NEW_PRIMARY);
+    remove_scan_object("OBJ_0001");
+}
+
 int main(void)
 {
     test_scan_rejects_invalid_object_ids();
@@ -561,5 +914,11 @@ int main(void)
     test_unrecoverable_delete_emits_one_complete_record();
     test_boot_delete_records_boot_timing();
     test_delete_is_skipped_when_scope_count_fails();
+    test_metadata_check_separates_unreadable_from_corrupt();
+    test_unjudged_primary_never_falls_back_to_backup();
+    test_unjudged_sidecar_stops_recovery_without_touching_files();
+    test_restore_never_loses_destination_when_rename_fails();
+    test_failed_restore_keeps_corrupt_primary_and_backup();
+    test_scan_never_removes_object_when_metadata_cannot_be_judged();
     return 0;
 }

@@ -16,10 +16,10 @@
 #define WEB_STATUS_BUDGET_SUCCESS_WINDOW_ITERATIONS 500U
 #define WEB_STATUS_BUDGET_EXACT_LIMIT_ITERATIONS 50U
 #define WEB_STATUS_BUDGET_FAILURE_ITERATIONS 20U
-#define WEB_STATUS_BUDGET_ALLOCS_CEILING 1250U
+#define WEB_STATUS_BUDGET_ALLOCS_CEILING 1310U
 #define WEB_STATUS_BUDGET_PEAK_BYTES_CEILING 68000U
 #define WEB_STATUS_BUDGET_JSON_BYTES_CEILING 12288U
-#define WEB_STATUS_BUDGET_EXPECTED_NODE_COUNT 591U
+#define WEB_STATUS_BUDGET_EXPECTED_NODE_COUNT 619U
 
 typedef struct {
     const char *label;
@@ -455,8 +455,10 @@ static void budget_assert_regression_ceilings(
     const budget_result_t *result
 )
 {
-    /* Full-scenario measurement with one node_link_status field per pod:
-     * 1134 allocs, 61691 peak bytes, 9330 JSON bytes, and 548 cJSON nodes. */
+    /* Full-scenario measurement with the per-pod sensor_health object (object
+     * plus six booleans = 7 nodes x 4 pods = +28 nodes over the previous 591):
+     * 1281 allocs, 66401 peak bytes, 10467 JSON bytes, and 619 cJSON nodes.
+     * The allocation ceiling keeps ~2% headroom over that measurement. */
     if (result->allocs_per_build > WEB_STATUS_BUDGET_ALLOCS_CEILING) {
         fprintf(stderr, "%s allocation ceiling exceeded: %llu > %u\n",
                 scenario->label,

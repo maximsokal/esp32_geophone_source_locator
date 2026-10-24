@@ -138,6 +138,7 @@ typedef struct
     size_t object_index;
     size_t object_count;
     bool objects_loaded;
+    bool workflow_memory_error;
     bool workflow_activation_pending;
     size_t workflow_object_index;
     bool objects_workflow_picker_on_open;

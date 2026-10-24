@@ -11,6 +11,7 @@ idf_component_register(
         geophone_events
         localization
         json
+        json_number
 )
 
 target_link_libraries(${COMPONENT_LIB} PRIVATE m)

@@ -12,6 +12,7 @@
         "components/ui/tests/ui_preview3d_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/scan_occupancy",
         "tests/host/stubs/object_store_profile",
         "components/scan_occupancy/include",

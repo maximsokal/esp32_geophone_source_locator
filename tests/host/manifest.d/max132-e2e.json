@@ -49,6 +49,7 @@
         "components/localization_calculate/tests/max132_e2e_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "components/localization_calculate/tests/max132_d3_stubs",
         "tests/host/stubs/localization_calculate_run",
         "components/ad7606_driver/tests/stubs",

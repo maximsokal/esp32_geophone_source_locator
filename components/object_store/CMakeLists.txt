@@ -15,6 +15,7 @@ idf_component_register(
         "object_store_delete_fs.c"
         "object_store_json.c"
         "object_store_profile.c"
+        "object_store_geometry_json.c"
         "object_store_cache.c"
         "object_store_profile_cache_policy.c"
         "object_store_responsive.c"
@@ -35,4 +36,5 @@ idf_component_register(
 
     PRIV_REQUIRES
         heap
+        json_number
 )

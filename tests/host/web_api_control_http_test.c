@@ -819,6 +819,80 @@ static void test_phone_location_handler_rejects_negative_capture_time(void)
     assert(s_location_calls == 0U);
 }
 
+static void test_phone_location_handler_rejects_unrepresentable_capture_time(void)
+{
+    const char *const bad[] = { "1e30", "1.5", "1e999", "18446744073709551616" };
+    for (size_t index = 0U; index < sizeof(bad) / sizeof(bad[0]); ++index) {
+        reset_fakes();
+        char body[512];
+        (void)snprintf(
+            body, sizeof(body),
+            "{\"action\":\"set_object_location\",\"object_id\":\"OBJ_0001\","
+            "\"latitude\":50.4501,\"longitude\":30.5234,\"accuracy_m\":3.2,"
+            "\"captured_at_ms\":%s}",
+            bad[index]
+        );
+        char response[512] = {0};
+        httpd_req_t request = make_request(body, response, sizeof(response));
+
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(request.response_status != NULL);
+        assert(strcmp(request.response_status, "400 Bad Request") == 0);
+        assert(strstr(response, "\"ok\":false") != NULL);
+        assert(s_location_calls == 0U);
+    }
+}
+
+extern int cJSON_stub_fail_alloc_countdown;
+
+/*
+ * Every allocation inside the control handler is made to fail once, in turn.
+ * Whatever happens, a reply that is actually sent must be a complete contract
+ * object (ok + action, plus error when ok is false); otherwise nothing is sent.
+ */
+static void test_control_response_is_complete_or_not_sent_under_allocation_failure(void)
+{
+    const char *body =
+        "{\"action\":\"set_object_location\",\"object_id\":\"OBJ_0001\","
+        "\"latitude\":50.4501,\"longitude\":30.5234,\"accuracy_m\":3.2,"
+        "\"captured_at_ms\":-1}";
+    unsigned sent = 0U;
+    unsigned suppressed = 0U;
+    bool swept_every_allocation = false;
+
+    for (int failing_allocation = 0; failing_allocation < 200; ++failing_allocation) {
+        reset_fakes();
+        char response[512] = {0};
+        httpd_req_t request = make_request(body, response, sizeof(response));
+
+        cJSON_stub_fail_alloc_countdown = failing_allocation;
+        (void)web_api_control_handler(&request);
+        const bool failure_was_injected = cJSON_stub_fail_alloc_countdown == -1;
+        cJSON_stub_fail_alloc_countdown = -1;
+
+        if (response[0] != '\0') {
+            cJSON *parsed = cJSON_Parse(response);
+            assert(parsed != NULL);
+            assert(cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(parsed, "ok")));
+            assert(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(parsed, "action")));
+            if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(parsed, "ok"))) {
+                assert(cJSON_IsString(cJSON_GetObjectItemCaseSensitive(parsed, "error")));
+            }
+            cJSON_Delete(parsed);
+            ++sent;
+        } else {
+            ++suppressed;
+        }
+        if (!failure_was_injected) {
+            swept_every_allocation = true;
+            break;
+        }
+    }
+    assert(swept_every_allocation);
+    assert(sent > 0U);
+    assert(suppressed > 0U);
+}
+
 static const char *const CALCULATE_SOURCE_BODY =
     "{\"action\":\"calculate_source\",\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\","
     "\"propagation_speed_mps\":340.0,\"propagation_speed_uncertainty_mps\":5.0,"
@@ -1398,6 +1472,8 @@ int main(void)
     test_calibrate_heights_queues_channel_mask_without_bus_io();
     test_phone_location_handler_round_trip();
     test_phone_location_handler_rejects_negative_capture_time();
+    test_phone_location_handler_rejects_unrepresentable_capture_time();
+    test_control_response_is_complete_or_not_sent_under_allocation_failure();
     test_activate_object_clears_staging_for_previous_object();
     test_activate_object_does_not_clear_staging_when_activation_fails();
     test_calculate_source_action_submits_a_background_job();

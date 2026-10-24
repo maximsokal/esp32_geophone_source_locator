@@ -347,6 +347,7 @@ static void fake_set_targets(fake_bus_t *fake, uint8_t present_count)
         memset(target, 0, sizeof(*target));
         target->present = node < present_count;
         target->route_available = true;
+        target->link_ready = true;
         target->node_id = node == 0U ? NRF_TOPOLOGY_MAIN_NODE_ID : node;
         target->mux_channel = node == 0U ? 0U : (uint8_t)(node - 1U);
         target->current_address = node == 0U
@@ -1118,6 +1119,62 @@ static void test_fault_record_words_are_collected_without_decoding(void)
         }
     }
     CHECK(stored);
+    fake_stop();
+}
+
+static void test_link_not_ready_node_is_not_polled(void)
+{
+    /* Only node 1 is not ready: the ready node 0 must still be polled and the
+     * round must not touch node 1 (this exercises the per-node loop gate). */
+    fake_start(2U);
+    s_fake.targets[1].link_ready = false;
+    CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+    const uint32_t node1_writes_before = s_fake.status_writes[1];
+    const nrf_log_collector_iteration_t partial = run_round_at_current_time(&s_fake);
+    CHECK(partial.nodes_attempted == 1U);
+    CHECK(partial.nodes_succeeded == 1U);
+    CHECK(s_fake.status_writes[1] == node1_writes_before);
+    fake_stop();
+
+    /* No ready node at all: nothing is attempted (route selection gate). */
+    fake_start(1U);
+    s_fake.targets[0].link_ready = false;
+    CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+    const uint32_t writes_before = s_fake.status_writes[0];
+    const nrf_log_collector_iteration_t none = run_round_at_current_time(&s_fake);
+    CHECK(none.nodes_attempted == 0U);
+    CHECK(none.nodes_succeeded == 0U);
+    CHECK(none.nodes_failed == 0U);
+    CHECK(s_fake.status_writes[0] == writes_before);
+
+    /* Once the link is ready the same node is polled normally. */
+    s_fake.targets[0].link_ready = true;
+    CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+    fake_append(&s_fake, 0U, 2U);
+    CHECK(run_round(&s_fake).nodes_succeeded == 1U);
+    CHECK(s_fake.status_writes[0] > writes_before);
+    fake_stop();
+}
+
+static void test_link_becoming_ready_clears_unsupported_and_backoff(void)
+{
+    fake_start(1U);
+    s_fake.old_firmware[0] = true;
+    CHECK(run_round_at_current_time(&s_fake).nodes_failed == 1U);
+    CHECK(node_summary(&s_fake, 0U).logs_unsupported);
+
+    /* A link that is not ready keeps the verdict; it must not be re-polled. */
+    s_fake.targets[0].link_ready = false;
+    CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+    CHECK(node_summary(&s_fake, 0U).logs_unsupported);
+
+    /* The link turning ready again discards the stale "unsupported" verdict
+     * and backoff even though the assignment generation did not change. */
+    s_fake.old_firmware[0] = false;
+    s_fake.targets[0].link_ready = true;
+    CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+    CHECK(!node_summary(&s_fake, 0U).logs_unsupported);
+    CHECK(run_round(&s_fake).nodes_succeeded == 1U);
     fake_stop();
 }
 
@@ -1919,6 +1976,8 @@ int main(void)
         { "section 4 framing/budget/order", test_framing_budget_and_order },
         { "sections 5-7 corruption/fault/reboot", test_framing_faults_and_retries },
         { "section 12.3 rejected frames preserve state", test_rejected_frames_preserve_collector_state },
+        { "link readiness gating", test_link_not_ready_node_is_not_polled },
+        { "link readiness resets verdict", test_link_becoming_ready_clears_unsupported_and_backoff },
         { "capability/generation/paging/store", test_capability_boot_and_paging },
         { "round cadence/pending-work yield", test_round_cadence_and_yield },
         { "busy bus skips collector round without failure", test_log_collector_round_skipped_when_bus_busy },

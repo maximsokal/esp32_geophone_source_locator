@@ -93,6 +93,7 @@
         "components/seismic_recorder/seismic_recorder_start_policy.c",
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
         "components/seismic_recorder/seismic_recorder_json.c",
+        "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "components/recording_gate/recording_gate_policy.c",
@@ -100,6 +101,7 @@
         "tests/host/seismic_recorder_start_integration_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/seismic_recorder_start",
         "components/seismic_recorder/tests/stubs/session_geometry",
         "tests/host/stubs/object_store_profile",
@@ -133,10 +135,12 @@
       "name": "max481_seismic_recorder_session_geometry",
       "sources": [
         "components/seismic_recorder/seismic_recorder_json.c",
+        "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/seismic_recorder/tests/seismic_recorder_session_geometry_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "components/seismic_recorder/tests/stubs/session_geometry",
         "components/seismic_recorder/tests/stubs",
         "components/seismic_recorder",

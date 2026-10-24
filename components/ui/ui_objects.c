@@ -21,8 +21,10 @@
 static void ui_objects_render_notice(lv_obj_t *screen, int y)
 {
     ui_context_t *context = ui_context();
+    const char *notice = context->workflow_memory_error
+        ? ui_tr(UI_I18N_KEY_TFT_WORKFLOW_MEMORY_UNAVAILABLE) : context->notice;
 
-    if (context->notice[0] == '\0') {
+    if (notice[0] == '\0') {
         return;
     }
 
@@ -31,7 +33,7 @@ static void ui_objects_render_notice(lv_obj_t *screen, int y)
         12,
         y,
         296,
-        context->notice,
+        notice,
         UI_COLOR_WARNING
     );
 }

@@ -58,6 +58,7 @@ static void ui_screen_open_objects(void)
     context->object_index = 0;
     context->object_count = 0;
     context->objects_loaded = false;
+    context->workflow_memory_error = false;
 
     if (context->storage_recovery_active) {
         ui_set_notice_locked(ui_tr(UI_I18N_KEY_SHARED_CHECKING_STORAGE));

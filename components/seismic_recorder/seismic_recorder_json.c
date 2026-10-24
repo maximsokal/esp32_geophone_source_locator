@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 
 #include "cJSON.h"
+#include "json_number.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "storage_manager.h"
@@ -877,19 +878,8 @@ esp_err_t seismic_recorder_json_write_metadata(
 
 static bool seismic_recorder_json_number_uint64(const cJSON *item, uint64_t *value)
 {
-    if (
-        value == NULL ||
-        !cJSON_IsNumber(item) ||
-        !isfinite(item->valuedouble) ||
-        item->valuedouble < 0.0 ||
-        item->valuedouble >= 18446744073709551616.0 ||
-        floor(item->valuedouble) != item->valuedouble
-    ) {
-        return false;
-    }
-
-    *value = (uint64_t)item->valuedouble;
-    return true;
+    return cJSON_IsNumber(item) &&
+        json_number_to_uint64(item->valuedouble, value);
 }
 
 
@@ -1068,65 +1058,6 @@ static bool seismic_recorder_json_read_cadence(
     cadence->conversion_attempts = conversion_attempts;
     cadence->collapsed_periods = collapsed_periods;
     return true;
-}
-
-
-static void seismic_recorder_json_parse_geometry(
-    const cJSON *root,
-    object_store_geometry_t *geometry
-)
-{
-    const cJSON *node = cJSON_GetObjectItemCaseSensitive(root, "geometry");
-    if (!cJSON_IsObject(node)) {
-        return;
-    }
-
-    const cJSON *anchored = cJSON_GetObjectItemCaseSensitive(node, "anchored");
-    geometry->anchored = cJSON_IsTrue(anchored);
-
-    const cJSON *pods = cJSON_GetObjectItemCaseSensitive(node, "pods");
-    if (!cJSON_IsArray(pods)) {
-        return;
-    }
-
-    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
-        const cJSON *pod = cJSON_GetArrayItem(pods, (int)i);
-        if (!cJSON_IsObject(pod)) {
-            continue;
-        }
-        const cJSON *computed = cJSON_GetObjectItemCaseSensitive(pod, "computed");
-        if (!cJSON_IsTrue(computed)) {
-            continue;
-        }
-        const cJSON *leveled = cJSON_GetObjectItemCaseSensitive(pod, "leveled");
-        const cJSON *x_mm = cJSON_GetObjectItemCaseSensitive(pod, "x_mm");
-        const cJSON *y_mm = cJSON_GetObjectItemCaseSensitive(pod, "y_mm");
-        const cJSON *z_mm = cJSON_GetObjectItemCaseSensitive(pod, "z_mm");
-        const cJSON *residual_mm = cJSON_GetObjectItemCaseSensitive(pod, "residual_mm");
-        const cJSON *uncertainty_mm = cJSON_GetObjectItemCaseSensitive(pod, "uncertainty_mm");
-        const cJSON *computed_at = cJSON_GetObjectItemCaseSensitive(pod, "computed_at_ms");
-        if (!cJSON_IsNumber(x_mm) || !cJSON_IsNumber(y_mm) || !cJSON_IsNumber(z_mm)) {
-            continue;
-        }
-        geometry->pods[i].computed = true;
-        geometry->pods[i].leveled = cJSON_IsTrue(leveled);
-        geometry->pods[i].x_mm = (int32_t)x_mm->valuedouble;
-        geometry->pods[i].y_mm = (int32_t)y_mm->valuedouble;
-        geometry->pods[i].z_mm = (int32_t)z_mm->valuedouble;
-        geometry->pods[i].residual_mm =
-            cJSON_IsNumber(residual_mm) && residual_mm->valuedouble >= 0.0 &&
-            residual_mm->valuedouble <= (double)INT32_MAX
-            ? (int32_t)residual_mm->valuedouble
-            : 0;
-        geometry->pods[i].uncertainty_mm =
-            cJSON_IsNumber(uncertainty_mm) && uncertainty_mm->valuedouble >= 0.0 &&
-            uncertainty_mm->valuedouble <= (double)INT32_MAX
-            ? (int32_t)uncertainty_mm->valuedouble
-            : 0;
-        geometry->pods[i].computed_at_ms = cJSON_IsNumber(computed_at) && computed_at->valuedouble >= 0
-            ? (uint64_t)computed_at->valuedouble
-            : 0U;
-    }
 }
 
 
@@ -1427,7 +1358,7 @@ static void seismic_recorder_json_parse_participation(
     }
 
     object_store_geometry_t geometry = {0};
-    seismic_recorder_json_parse_geometry(root, &geometry);
+    object_store_geometry_from_json(root, &geometry);
     const cJSON *geometry_node = cJSON_GetObjectItemCaseSensitive(root, "geometry");
     const cJSON *pods = cJSON_IsObject(geometry_node)
         ? cJSON_GetObjectItemCaseSensitive(geometry_node, "pods")
@@ -1834,7 +1765,7 @@ esp_err_t seismic_recorder_read_session_geometry(
     if (err != ESP_OK) {
         return err;
     }
-    seismic_recorder_json_parse_geometry(root, geometry);
+    object_store_geometry_from_json(root, geometry);
     cJSON_Delete(root);
     return ESP_OK;
 }

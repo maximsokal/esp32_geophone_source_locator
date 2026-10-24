@@ -1033,10 +1033,14 @@ static void ui_workflow_update(ui_workflow_screen_state_t *state, uint64_t now_m
 
 void ui_workflow_screen_open_locked(void)
 {
+    ui_context()->workflow_memory_error = false;
     if (s_workflow == NULL) {
         s_workflow = heap_caps_calloc(1U, sizeof(*s_workflow), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_workflow == NULL) {
             ui_screen_open_locked(UI_SCREEN_OBJECTS);
+            ui_context()->workflow_memory_error = true;
+            ESP_LOGW("UI_WORKFLOW", "Workflow screen allocation failed: ESP_ERR_NO_MEM");
+            ui_screen_render_locked(UI_SCREEN_OBJECTS);
             return;
         }
         s_workflow->model_state.notice_key = UI_I18N_KEY_COUNT;

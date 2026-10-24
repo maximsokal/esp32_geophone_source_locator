@@ -219,6 +219,69 @@ static char *replace_json_once(const char *json, const char *old_text, const cha
 }
 
 
+
+/* Replaces the numeric token that follows "key": with `literal`. */
+static char *with_number(const char *json, const char *key, const char *literal)
+{
+    char needle[64];
+    (void)snprintf(needle, sizeof(needle), "\"%s\":", key);
+    const char *at = strstr(json, needle);
+    assert(at != NULL);
+    const char *value = at + strlen(needle);
+    const char *end = value;
+    while (*end != '\0' && *end != ',' && *end != '}' && *end != ']') {
+        ++end;
+    }
+    const size_t prefix = (size_t)(value - json);
+    const size_t literal_length = strlen(literal);
+    char *result = malloc(prefix + literal_length + strlen(end) + 1U);
+    assert(result != NULL);
+    memcpy(result, json, prefix);
+    memcpy(result + prefix, literal, literal_length);
+    memcpy(result + prefix + literal_length, end, strlen(end) + 1U);
+    return result;
+}
+
+static void assert_pick_number_rejected(const char *key, const char *literal)
+{
+    localization_pick_record_t record = sample_record();
+    char *json = NULL;
+    assert(localization_pick_record_to_json(&record, &json) == ESP_OK);
+    char *invalid = with_number(json, key, literal);
+    localization_pick_record_t parsed;
+    assert(localization_pick_record_from_json(invalid, &parsed) == ESP_ERR_INVALID_RESPONSE);
+    free(invalid);
+    free(json);
+}
+
+/*
+ * Numbers read from a stored record are data. A fractional, negative,
+ * non-finite or oversized value must be rejected before it is converted to an
+ * integer type (the bare cast is undefined behaviour), not truncated.
+ */
+static void test_integer_fields_reject_fractional_negative_and_oversized_numbers(void)
+{
+    const char *const bad[] = { "1e30", "1.5", "-1", "1e999", "18446744073709551616" };
+    const char *const keys[] = {
+        "computed_at_ms", "arrival_sample_index", "uncertainty_samples", "schema_version",
+    };
+    for (size_t key = 0U; key < sizeof(keys) / sizeof(keys[0]); ++key) {
+        for (size_t value = 0U; value < sizeof(bad) / sizeof(bad[0]); ++value) {
+            assert_pick_number_rejected(keys[key], bad[value]);
+        }
+    }
+
+    /* Control: the unmodified record still parses. */
+    localization_pick_record_t record = sample_record();
+    char *json = NULL;
+    localization_pick_record_t parsed;
+    assert(localization_pick_record_to_json(&record, &json) == ESP_OK);
+    assert(localization_pick_record_from_json(json, &parsed) == ESP_OK);
+    assert(parsed.channels[0].pick.arrival_sample_index == 1200U);
+    free(json);
+}
+
+
 static void test_bad_status_strings_and_values_are_rejected(void)
 {
     localization_pick_record_t record = sample_record();
@@ -317,6 +380,7 @@ static void test_rejects_missing_channel_entries(void)
 
 int main(void)
 {
+    test_integer_fields_reject_fractional_negative_and_oversized_numbers();
     test_round_trip();
     test_wave_a_statuses_reasons_and_s_picks_round_trip();
     test_old_v1_record_defaults_optional_fields();

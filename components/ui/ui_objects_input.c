@@ -83,6 +83,8 @@ void ui_handle_objects_key_locked(
     ui_context_t *context =
         ui_context();
 
+    if (key != KEYPAD_KEY_NONE) context->workflow_memory_error = false;
+
     if (context->storage_recovery_active) {
         if (key == KEYPAD_KEY_LEFT) {
             ui_open_home_locked();

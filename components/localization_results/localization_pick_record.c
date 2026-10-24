@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "json_number.h"
 #include "localization_results_json_int64.h"
 
 
@@ -389,31 +390,32 @@ esp_err_t localization_pick_record_from_json(
     }
 
     double schema_version = 0.0;
+    uint32_t schema_number = 0U;
     if (
         !read_number(root, "schema_version", &schema_version) ||
-        schema_version < 0.0 ||
-        floor(schema_version) != schema_version
+        !json_number_to_uint32(schema_version, &schema_number)
     ) {
         cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
     }
-    if ((uint32_t)schema_version != LOCALIZATION_PICK_RECORD_SCHEMA_VERSION) {
+    if (schema_number != LOCALIZATION_PICK_RECORD_SCHEMA_VERSION) {
         cJSON_Delete(root);
         return ESP_ERR_NOT_FOUND;
     }
-    record->schema_version = (uint32_t)schema_version;
+    record->schema_version = schema_number;
 
     double computed_at_ms = 0.0;
+    uint64_t computed_at = 0U;
     bool ok =
         read_string(root, "object_id", record->object_id, sizeof(record->object_id)) &&
         read_string(root, "session_id", record->session_id, sizeof(record->session_id)) &&
         read_number(root, "computed_at_ms", &computed_at_ms) &&
-        computed_at_ms >= 0.0;
+        json_number_to_uint64(computed_at_ms, &computed_at);
     if (!ok) {
         cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
     }
-    record->computed_at_ms = (uint64_t)computed_at_ms;
+    record->computed_at_ms = computed_at;
 
     const cJSON *epoch_known_item = cJSON_GetObjectItemCaseSensitive(
         root, "session_epoch_known"
@@ -469,6 +471,8 @@ esp_err_t localization_pick_record_from_json(
         double arrival_time_s = 0.0;
         double snr = 0.0;
         double uncertainty_samples = 0.0;
+        size_t arrival_index = 0U;
+        size_t uncertainty_count = 0U;
         bool participating = false;
 
         ok = cJSON_IsObject(entry) &&
@@ -478,11 +482,11 @@ esp_err_t localization_pick_record_from_json(
             read_string(entry, "method", method_buffer, sizeof(method_buffer)) &&
             pick_method_from_name(method_buffer, &record->channels[i].pick.method) &&
             read_number(entry, "arrival_sample_index", &arrival_sample_index) &&
-            arrival_sample_index >= 0.0 &&
+            json_number_to_size(arrival_sample_index, &arrival_index) &&
             read_number(entry, "arrival_time_s", &arrival_time_s) &&
             read_number(entry, "snr", &snr) &&
             read_number(entry, "uncertainty_samples", &uncertainty_samples) &&
-            uncertainty_samples >= 0.0;
+            json_number_to_size(uncertainty_samples, &uncertainty_count);
 
         if (!ok) {
             cJSON_Delete(root);
@@ -490,7 +494,7 @@ esp_err_t localization_pick_record_from_json(
         }
 
         record->channels[i].participating = participating;
-        record->channels[i].pick.arrival_sample_index = (size_t)arrival_sample_index;
+        record->channels[i].pick.arrival_sample_index = arrival_index;
         record->channels[i].pick.arrival_time_s = (float)arrival_time_s;
         /* Optional (MAX-209): absent in records written before the field. */
         double subsample_offset = 0.0;
@@ -503,7 +507,7 @@ esp_err_t localization_pick_record_from_json(
         }
         record->channels[i].pick.arrival_subsample_offset = (float)subsample_offset;
         record->channels[i].pick.snr = (float)snr;
-        record->channels[i].pick.uncertainty_samples = (size_t)uncertainty_samples;
+        record->channels[i].pick.uncertainty_samples = uncertainty_count;
 
         const cJSON *reason_item = cJSON_GetObjectItemCaseSensitive(entry, "reason");
         if (reason_item != NULL) {

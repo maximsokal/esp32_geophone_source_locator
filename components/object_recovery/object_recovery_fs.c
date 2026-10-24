@@ -2,6 +2,8 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
 #ifdef _MSC_VER
 #include <io.h>
 #define unlink _unlink
@@ -111,6 +113,33 @@ esp_err_t object_recovery_fs_unlink_if_exists(
 }
 
 
+static int object_recovery_fs_rename_logged(
+    const char *operation,
+    const char *source,
+    const char *destination
+)
+{
+    const int64_t started_us =
+        esp_timer_get_time();
+
+    const int rename_result =
+        OBJECT_RECOVERY_RENAME(
+            source,
+            destination
+        );
+
+    object_recovery_fs_log_io(
+        operation,
+        destination,
+        rename_result,
+        started_us
+    );
+    (void)source;
+
+    return rename_result;
+}
+
+
 esp_err_t object_recovery_fs_restore_file(
     const char *source,
     const char *destination
@@ -120,33 +149,84 @@ esp_err_t object_recovery_fs_restore_file(
         return ESP_ERR_INVALID_ARG;
     }
 
-    esp_err_t err =
-        object_recovery_fs_unlink_if_exists(
+    /*
+     * FATFS (vfs_fat_rename -> f_rename) refuses to rename over an existing
+     * file, so the destination has to move out of the way first. Never unlink
+     * it: if the second rename fails, the original must still be recoverable.
+     */
+    char aside[OBJECT_RECOVERY_PATH_SIZE + 8];
+    const int aside_length =
+        snprintf(
+            aside,
+            sizeof(aside),
+            "%s.old",
             destination
         );
-
-    if (err != ESP_OK) {
-        return err;
+    if (
+        aside_length < 0 ||
+        (size_t)aside_length >= sizeof(aside)
+    ) {
+        return ESP_ERR_INVALID_SIZE;
     }
 
-    const int64_t started_us =
-        esp_timer_get_time();
+    struct stat info;
+    errno = 0;
+    const bool destination_exists =
+        stat(
+            destination,
+            &info
+        ) == 0;
+    if (!destination_exists && errno != ENOENT) {
+        /* Cannot tell whether a file is there: change nothing. */
+        return ESP_FAIL;
+    }
 
-    const int rename_result =
-        rename(
+    if (destination_exists) {
+        /* A leftover from an interrupted earlier restore is stale by now. */
+        esp_err_t err =
+            object_recovery_fs_unlink_if_exists(
+                aside
+            );
+
+        if (err != ESP_OK) {
+            return err;
+        }
+
+        if (
+            object_recovery_fs_rename_logged(
+                "rename-aside",
+                destination,
+                aside
+            ) != 0
+        ) {
+            return ESP_FAIL;
+        }
+    }
+
+    if (
+        object_recovery_fs_rename_logged(
+            "rename",
             source,
             destination
+        ) != 0
+    ) {
+        if (destination_exists) {
+            (void)object_recovery_fs_rename_logged(
+                "rename-rollback",
+                aside,
+                destination
+            );
+        }
+
+        return ESP_FAIL;
+    }
+
+    if (destination_exists) {
+        /* Best effort; a left-over .old is harmless and cleaned next time. */
+        (void)object_recovery_fs_unlink_if_exists(
+            aside
         );
+    }
 
-    object_recovery_fs_log_io(
-        "rename",
-        destination,
-        rename_result,
-        started_us
-    );
-
-    return
-        rename_result == 0
-        ? ESP_OK
-        : ESP_FAIL;
+    return ESP_OK;
 }

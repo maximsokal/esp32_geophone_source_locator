@@ -13,6 +13,7 @@
         "tests/host/scan_occupancy_continuation_parity_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "components/scan_occupancy/include",
         "tests/host/stubs/object_store_profile",
         "components/localization/tests/stubs",

@@ -24,6 +24,7 @@
         "components/object_recovery/object_recovery_metadata_validate.c",
         "components/object_recovery/object_recovery_scan.c",
         "components/object_recovery/tests/stubs/cJSON.c",
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/object_format/object_format.c",
         "components/object_recovery/tests/object_recovery_fs_contract_test.c"
       ],
@@ -31,11 +32,23 @@
         "components/object_recovery/tests/stubs",
         "components/object_recovery/include",
         "components/object_recovery",
+        "components/cjson_alloc_guard/include",
         "components/object_format/include",
         "components/storage_manager/include"
       ],
       "defines": [
-        "OBJECT_RECOVERY_CAPTURE_LOGS=1"
+        "OBJECT_RECOVERY_CAPTURE_LOGS=1",
+        "OBJECT_RECOVERY_TEST_FAULTS=1"
+      ]
+    },
+    {
+      "name": "cjson_alloc_guard",
+      "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
+        "tests/host/cjson_alloc_guard_test.c"
+      ],
+      "include_dirs": [
+        "components/cjson_alloc_guard/include"
       ]
     },
     {
@@ -43,11 +56,13 @@
       "sources": [
         "components/object_format/object_format.c",
         "components/object_recovery/tests/stubs/cJSON.c",
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/seismic_recorder/tests/seismic_recorder_recovery_test.c"
       ],
       "include_dirs": [
         "components/seismic_recorder/tests/stubs",
         "components/object_recovery/tests/stubs",
+        "components/cjson_alloc_guard/include",
         "components/seismic_recorder",
         "components/seismic_recorder/include",
         "components/object_store/include",

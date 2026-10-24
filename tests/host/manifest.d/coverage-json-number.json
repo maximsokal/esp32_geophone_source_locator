@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "json_number",
+      "sources": [
+        "tests/host/json_number_test.c"
+      ],
+      "include_dirs": [
+        "components/json_number/include"
+      ]
+    },
+    {
+      "name": "object_store_geometry_json",
+      "sources": [
+        "components/object_store/object_store_geometry_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/object_store_geometry_json_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/object_store_profile",
+        "tests/host/stubs/sensor_bus",
+        "components/object_store/include",
+        "components/json_number/include",
+        "components/object_format/include",
+        "components/storage_manager/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    }
+  ]
+}

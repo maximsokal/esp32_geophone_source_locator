@@ -73,6 +73,84 @@ static localization_run_record_t rejected_record(void)
 }
 
 
+
+/* Replaces the numeric token that follows "key": with `literal`. */
+static char *with_number(const char *json, const char *key, const char *literal)
+{
+    char needle[64];
+    (void)snprintf(needle, sizeof(needle), "\"%s\":", key);
+    const char *at = strstr(json, needle);
+    assert(at != NULL);
+    const char *value = at + strlen(needle);
+    const char *end = value;
+    while (*end != '\0' && *end != ',' && *end != '}' && *end != ']') {
+        ++end;
+    }
+    const size_t prefix = (size_t)(value - json);
+    const size_t literal_length = strlen(literal);
+    char *result = malloc(prefix + literal_length + strlen(end) + 1U);
+    assert(result != NULL);
+    memcpy(result, json, prefix);
+    memcpy(result + prefix, literal, literal_length);
+    memcpy(result + prefix + literal_length, end, strlen(end) + 1U);
+    return result;
+}
+
+static void assert_run_number_rejected(const char *key, const char *literal)
+{
+    localization_run_record_t record = solved_record();
+    char *json = NULL;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    char *invalid = with_number(json, key, literal);
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(invalid, &parsed) == ESP_ERR_INVALID_RESPONSE);
+    free(invalid);
+    free(json);
+}
+
+static void test_integer_fields_reject_fractional_negative_and_oversized_numbers(void)
+{
+    const char *const bad_any[] = { "1e30", "1.5", "-1", "1e999", "18446744073709551616" };
+    const char *const bad_32bit[] = { "4294967296" };
+    const char *const keys[] = {
+        "computed_at_ms", "geometry_computed_at_ms", "method_version",
+        "channel_mask_used", "channel_mask_rejected", "iterations",
+    };
+    for (size_t key = 0U; key < sizeof(keys) / sizeof(keys[0]); ++key) {
+        for (size_t value = 0U; value < sizeof(bad_any) / sizeof(bad_any[0]); ++value) {
+            assert_run_number_rejected(keys[key], bad_any[value]);
+        }
+    }
+    assert_run_number_rejected("method_version", bad_32bit[0]);
+    assert_run_number_rejected("channel_mask_used", bad_32bit[0]);
+    assert_run_number_rejected("channel_mask_rejected", bad_32bit[0]);
+
+    /* Does not fit the uint8_t iteration counter. */
+    assert_run_number_rejected("iterations", "256");
+
+    /* int64 emission time: fractional and out-of-range are rejected. */
+    assert_run_number_rejected("emission_time_us", "1e30");
+    assert_run_number_rejected("emission_time_us", "-1e30");
+    assert_run_number_rejected("emission_time_us", "2.5");
+    assert_run_number_rejected("emission_time_us", "9223372036854775808");
+
+    /* Control: boundary values that do fit are still accepted. */
+    localization_run_record_t record = solved_record();
+    char *json = NULL;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK);
+    char *valid = with_number(json, "iterations", "255");
+    localization_run_record_t parsed;
+    assert(localization_run_record_from_json(valid, &parsed) == ESP_OK);
+    assert(parsed.iterations == 255U);
+    free(valid);
+    valid = with_number(json, "channel_mask_used", "4294967295");
+    assert(localization_run_record_from_json(valid, &parsed) == ESP_OK);
+    assert(parsed.channel_mask_used == UINT32_MAX);
+    free(valid);
+    free(json);
+}
+
+
 static void test_solved_record_round_trips(void)
 {
     const localization_run_record_t original = solved_record();
@@ -912,6 +990,7 @@ static void test_inconsistent_run_is_not_a_primary_candidate(void)
 
 int main(void)
 {
+    test_integer_fields_reject_fractional_negative_and_oversized_numbers();
     test_inconsistent_run_is_not_a_primary_candidate();
     test_velocity_range_and_status_round_trip_in_v7();
     test_scan_provenance_round_trips_in_v7();

@@ -79,9 +79,17 @@ def test_ina3221_borrows_handles_and_never_owns_the_shared_bus():
 def test_sensor_bus_transfer_api_serializes_native_i2c_access():
     source = read("components/sensor_bus/sensor_bus.c")
 
-    read_body = _function_body(source, "esp_err_t sensor_bus_read_bytes(")
+    # The public read entry points delegate to one internal implementation, so
+    # the lock/transfer contract lives there; both public variants must use it.
+    read_wrapper = _function_body(source, "esp_err_t sensor_bus_read_bytes(")
+    read_timeout_wrapper = _function_body(
+        source, "esp_err_t sensor_bus_read_bytes_with_timeout("
+    )
+    read_body = _function_body(source, "static esp_err_t sensor_bus_read_bytes_internal(")
     write_body = _function_body(source, "esp_err_t sensor_bus_write_bytes(")
 
+    assert "sensor_bus_read_bytes_internal(" in read_wrapper
+    assert "sensor_bus_read_bytes_internal(" in read_timeout_wrapper
     for body in (read_body, write_body):
         assert "sensor_bus_lock_with_wait(" in body
         assert "sensor_bus_unlock();" in body
@@ -103,6 +111,10 @@ def test_raw_i2c_bus_calls_are_confined_to_sensor_bus_owner():
             if "tests" in relative_parts:
                 continue
             if relative_parts[:2] == ("components", "sensor_bus"):
+                continue
+            # The vendored ESP-IDF I2C driver override is the driver itself,
+            # not a consumer of it (see components/esp_driver_i2c/NOTICE.md).
+            if relative_parts[:2] == ("components", "esp_driver_i2c"):
                 continue
             if RAW_I2C_BUS_CALL.search(source_path.read_text(encoding="utf-8")):
                 offenders.append(source_path.relative_to(REPO_ROOT).as_posix())

@@ -362,6 +362,7 @@
         "components/seismic_recorder/seismic_recorder_cache.c",
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
         "components/seismic_recorder/seismic_recorder_json.c",
+        "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "components/recording_gate/recording_gate_policy.c",
@@ -369,6 +370,7 @@
         "tests/host/ad7606_recorder_start_integration_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host",
         "components/ad7606_acquisition/tests/stubs/max435_recorder_integration",
         "tests/host/stubs/seismic_recorder_start",
@@ -528,6 +530,7 @@
         "components/ui/tests/ui_preview3d_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/scan_occupancy",
         "tests/host/stubs/object_store_profile",
         "components/scan_occupancy/include",
@@ -949,6 +952,7 @@
         "components/localization_results/tests/localization_run_record_json_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "components/localization/tests/stubs",
         "components/localization/include",
         "tests/host/stubs/object_store_profile",
@@ -966,6 +970,7 @@
         "components/localization_results/tests/localization_pick_record_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "components/localization/tests/stubs",
         "components/localization/include",
         "components/geophone_events/include",
@@ -986,6 +991,7 @@
         "components/localization_results/tests/localization_event_run_record_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "components/localization/tests/stubs",
         "components/localization/include",
         "components/geophone_events/include",
@@ -1007,6 +1013,7 @@
         "components/localization_run_store/tests/localization_run_store_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/localization_run_store",
         "components/seismic_recorder/tests/stubs",
         "components/localization/tests/stubs",
@@ -1032,6 +1039,7 @@
         "components/localization_run_store/tests/localization_run_store_picks_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/localization_run_store",
         "components/seismic_recorder/tests/stubs",
         "components/localization/tests/stubs",
@@ -1057,6 +1065,7 @@
         "components/localization_run_store/tests/localization_run_store_list_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "components/localization_run_store/tests/stubs/list",
         "components/seismic_recorder/tests/stubs",
         "components/localization/tests/stubs",
@@ -1079,6 +1088,7 @@
         "tests/host/scan_occupancy_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/scan_occupancy",
         "tests/host/stubs/object_store_profile",
         "components/scan_occupancy/include"
@@ -1248,6 +1258,7 @@
         "components/localization_calculate/tests/localization_calculate_policy_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "components/scan_occupancy/include",
         "tests/host/stubs/object_store_profile",
         "components/localization/tests/stubs",
@@ -1288,6 +1299,7 @@
         "components/localization_calculate/tests/localization_calculate_scan_methods_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "components/scan_occupancy/include",
         "tests/host/stubs/object_store_profile",
         "components/localization/tests/stubs",
@@ -1348,6 +1360,7 @@
         "components/localization_calculate/tests/localization_calculate_run_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/localization_calculate_run",
         "tests/host/stubs/object_store_profile",
         "components/localization_calculate/include",
@@ -1459,9 +1472,11 @@
         "components/object_format/object_format.c",
         "components/object_store/object_store_cache.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
-        "components/object_store/tests/object_store_profile_round_trip_test.c"
+        "components/object_store/tests/object_store_profile_round_trip_test.c",
+        "components/object_store/object_store_geometry_json.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/object_store_profile",
         "components/object_store/tests/stubs",
         "components/object_store",
@@ -1475,9 +1490,11 @@
         "components/object_format/object_format.c",
         "components/object_store/object_store_cache.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
-        "components/object_store/tests/object_store_cs_pairs_round_trip_test.c"
+        "components/object_store/tests/object_store_cs_pairs_round_trip_test.c",
+        "components/object_store/object_store_geometry_json.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/object_store_profile",
         "components/object_store/tests/stubs",
         "components/object_store",
@@ -1508,6 +1525,7 @@
         "components/object_recovery/object_recovery_metadata_validate.c",
         "components/object_recovery/object_recovery_scan.c",
         "components/object_recovery/tests/stubs/cJSON.c",
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/object_format/object_format.c",
         "components/object_recovery/tests/object_recovery_fs_contract_test.c"
       ],
@@ -1515,11 +1533,51 @@
         "components/object_recovery/tests/stubs",
         "components/object_recovery/include",
         "components/object_recovery",
+        "components/cjson_alloc_guard/include",
         "components/object_format/include",
         "components/storage_manager/include"
       ],
       "defines": [
-        "OBJECT_RECOVERY_CAPTURE_LOGS=1"
+        "OBJECT_RECOVERY_CAPTURE_LOGS=1",
+        "OBJECT_RECOVERY_TEST_FAULTS=1"
+      ]
+    },
+    {
+      "name": "json_number",
+      "sources": [
+        "tests/host/json_number_test.c"
+      ],
+      "include_dirs": [
+        "components/json_number/include"
+      ]
+    },
+    {
+      "name": "object_store_geometry_json",
+      "sources": [
+        "components/object_store/object_store_geometry_json.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/object_store_geometry_json_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/object_store_profile",
+        "tests/host/stubs/sensor_bus",
+        "components/object_store/include",
+        "components/json_number/include",
+        "components/object_format/include",
+        "components/storage_manager/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "cjson_alloc_guard",
+      "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
+        "tests/host/cjson_alloc_guard_test.c"
+      ],
+      "include_dirs": [
+        "components/cjson_alloc_guard/include"
       ]
     },
     {
@@ -1688,11 +1746,13 @@
       "sources": [
         "components/object_format/object_format.c",
         "components/object_recovery/tests/stubs/cJSON.c",
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/seismic_recorder/tests/seismic_recorder_recovery_test.c"
       ],
       "include_dirs": [
         "components/seismic_recorder/tests/stubs",
         "components/object_recovery/tests/stubs",
+        "components/cjson_alloc_guard/include",
         "components/seismic_recorder",
         "components/seismic_recorder/include",
         "components/object_store/include",
@@ -1729,6 +1789,7 @@
         "components/seismic_recorder/seismic_recorder_start_policy.c",
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
         "components/seismic_recorder/seismic_recorder_json.c",
+        "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "components/recording_gate/recording_gate_policy.c",
@@ -1736,6 +1797,7 @@
         "tests/host/seismic_recorder_start_integration_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/seismic_recorder_start",
         "components/seismic_recorder/tests/stubs/session_geometry",
         "tests/host/stubs/object_store_profile",
@@ -1773,6 +1835,7 @@
         "components/seismic_recorder/seismic_recorder_start_policy.c",
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
         "components/seismic_recorder/seismic_recorder_json.c",
+        "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "components/recording_gate/recording_gate_policy.c",
@@ -1780,6 +1843,7 @@
         "tests/host/seismic_recorder_start_integration_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/seismic_recorder_gate_bypass",
         "tests/host/stubs/seismic_recorder_start",
         "components/seismic_recorder/tests/stubs/session_geometry",
@@ -1817,6 +1881,7 @@
         "components/seismic_recorder/seismic_recorder_start_policy.c",
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
         "components/seismic_recorder/seismic_recorder_json.c",
+        "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "components/recording_gate/recording_gate_policy.c",
@@ -1824,6 +1889,7 @@
         "tests/host/seismic_recorder_start_integration_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/seismic_recorder_gate_bypass",
         "tests/host/stubs/seismic_recorder_start",
         "components/seismic_recorder/tests/stubs/session_geometry",
@@ -1861,6 +1927,7 @@
         "components/seismic_recorder/seismic_recorder_start_policy.c",
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
         "components/seismic_recorder/seismic_recorder_json.c",
+        "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "components/recording_gate/recording_gate_policy.c",
@@ -1868,6 +1935,7 @@
         "tests/host/seismic_recorder_start_integration_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/seismic_recorder_gate_bypass",
         "tests/host/stubs/seismic_recorder_start",
         "components/seismic_recorder/tests/stubs/session_geometry",
@@ -1916,10 +1984,12 @@
       "name": "seismic_recorder_session_geometry",
       "sources": [
         "components/seismic_recorder/seismic_recorder_json.c",
+        "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/seismic_recorder/tests/seismic_recorder_session_geometry_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "components/seismic_recorder/tests/stubs/session_geometry",
         "components/seismic_recorder/tests/stubs",
         "components/seismic_recorder",
@@ -1954,10 +2024,12 @@
       "name": "seismic_recorder_session_cs_pairs",
       "sources": [
         "components/seismic_recorder/seismic_recorder_json.c",
+        "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/seismic_recorder/tests/seismic_recorder_session_cs_pairs_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "components/seismic_recorder/tests/stubs/session_geometry",
         "components/seismic_recorder/tests/stubs",
         "components/seismic_recorder",
@@ -2144,6 +2216,7 @@
         "components/scan_preview/tests/scan_preview_state_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/scan_occupancy",
         "tests/host/stubs/object_store_profile",
         "components/scan_occupancy/include",
@@ -2390,6 +2463,7 @@
         "components/seismic_recorder/seismic_recorder_start_policy.c",
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
         "components/seismic_recorder/seismic_recorder_json.c",
+        "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "components/recording_gate/recording_gate_policy.c",
@@ -2398,6 +2472,7 @@
         "components/seismic_recorder/tests/seismic_recorder_allocation_contract_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/app_pod_status_bridge",
         "tests/host/stubs/seismic_recorder_start",
         "components/seismic_recorder/tests/stubs/session_geometry",
@@ -2444,6 +2519,7 @@
         "components/seismic_recorder/seismic_recorder_start_policy.c",
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
         "components/seismic_recorder/seismic_recorder_json.c",
+        "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "components/recording_gate/recording_gate_policy.c",
@@ -2452,6 +2528,7 @@
         "components/seismic_recorder/tests/seismic_recorder_allocation_contract_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/app_pod_status_bridge",
         "tests/host/stubs/seismic_recorder_start",
         "components/seismic_recorder/tests/stubs/session_geometry",

@@ -30,11 +30,16 @@ static jmp_buf render_task_return;
 static bool render_task_running, render_task_notified;
 static void (*render_completion_interleave)(void);
 unsigned render_heap_allocations;
+unsigned render_heap_failures_remaining;
 size_t render_heap_bytes;
 static struct { void *memory; size_t size; } render_allocations[64];
 
 void *render_heap_malloc(size_t size)
 {
+    if (render_heap_failures_remaining > 0U) {
+        --render_heap_failures_remaining;
+        return NULL;
+    }
     void *memory = malloc(size);
     assert(memory != NULL);
     for (size_t i = 0U; i < 64U; ++i) {
@@ -52,7 +57,7 @@ void *render_heap_calloc(size_t count, size_t size)
 {
     assert(size == 0U || count <= SIZE_MAX / size);
     void *memory = render_heap_malloc(count * size);
-    memset(memory, 0, count * size);
+    if (memory != NULL) memset(memory, 0, count * size);
     return memory;
 }
 void render_heap_free(void *memory)

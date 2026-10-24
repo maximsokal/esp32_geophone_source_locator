@@ -1342,6 +1342,7 @@
       "uk": "НИЗЬК.",
       "max_len": 6
     },
+    "tft.workflow.memory_unavailable": { "en": "Not enough memory. Try again.", "uk": "Недостатньо пам’яті. Спробуйте ще раз.", "max_len": 40 },
     "tft.workflow.title.idle": { "en": "IDLE", "uk": "Очікування", "max_len": 12 },
     "tft.workflow.title.object": { "en": "OBJECT", "uk": "Об’єкт", "max_len": 8 },
     "tft.workflow.title.sensor_check": { "en": "SENSOR CHECK", "uk": "Перевірка датчиків", "max_len": 20 },

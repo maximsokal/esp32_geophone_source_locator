@@ -110,6 +110,7 @@
         "tests/host/web_api_control_http_test.c"
       ],
       "include_dirs": [
+        "components/json_number/include",
         "tests/host/stubs/web_api_control",
         "components/measurement_service/tests/stubs",
         "components/storage_manager",

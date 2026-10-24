@@ -16,6 +16,7 @@ extern unsigned render_wifi_setup_calls, render_wifi_forget_calls;
 extern unsigned render_command_count;
 extern workflow_command_t render_last_command;
 extern unsigned render_heap_allocations;
+extern unsigned render_heap_failures_remaining;
 extern size_t render_heap_bytes;
 
 void render_navigation_start(const char *directory);

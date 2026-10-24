@@ -64,6 +64,7 @@ idf_component_register(
         storage_manager
         freertos
         json
+        json_number
         log
         esp_timer
 )

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "json_number.h"
 #include "localization_results_json_int64.h"
 
 
@@ -676,6 +677,11 @@ esp_err_t localization_run_record_from_json(
     double channel_mask_used = 0.0;
     double channel_mask_rejected = 0.0;
     double geometry_computed_at_ms = 0.0;
+    uint64_t computed_at = 0U;
+    uint32_t method_version_number = 0U;
+    uint32_t channel_mask_used_bits = 0U;
+    uint32_t channel_mask_rejected_bits = 0U;
+    uint64_t geometry_computed_at = 0U;
     double propagation_speed_mps = 0.0;
     double propagation_speed_uncertainty_mps = 0.0;
     double confidence_score = 0.0;
@@ -686,18 +692,18 @@ esp_err_t localization_run_record_from_json(
         read_string(root, "object_id", record->object_id, sizeof(record->object_id)) &&
         read_string(root, "session_id", record->session_id, sizeof(record->session_id)) &&
         read_number(root, "computed_at_ms", &computed_at_ms) &&
-        computed_at_ms >= 0.0 &&
+        json_number_to_uint64(computed_at_ms, &computed_at) &&
         read_string(root, "kind", kind_buffer, sizeof(kind_buffer)) &&
         kind_from_name(kind_buffer, &record->kind) &&
         read_string(
             root, "method_name", record->method_name, sizeof(record->method_name)
         ) &&
         read_number(root, "method_version", &method_version) &&
-        method_version >= 0.0 &&
+        json_number_to_uint32(method_version, &method_version_number) &&
         read_number(root, "channel_mask_used", &channel_mask_used) &&
-        channel_mask_used >= 0.0 &&
+        json_number_to_uint32(channel_mask_used, &channel_mask_used_bits) &&
         read_number(root, "channel_mask_rejected", &channel_mask_rejected) &&
-        channel_mask_rejected >= 0.0 &&
+        json_number_to_uint32(channel_mask_rejected, &channel_mask_rejected_bits) &&
         read_string(
             root,
             "dimensionality",
@@ -706,7 +712,7 @@ esp_err_t localization_run_record_from_json(
         ) &&
         dimensionality_from_name(dimensionality_buffer, &record->dimensionality) &&
         read_number(root, "geometry_computed_at_ms", &geometry_computed_at_ms) &&
-        geometry_computed_at_ms >= 0.0 &&
+        json_number_to_uint64(geometry_computed_at_ms, &geometry_computed_at) &&
         read_string(
             root,
             "propagation_model_name",
@@ -839,11 +845,11 @@ esp_err_t localization_run_record_from_json(
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    record->computed_at_ms = (uint64_t)computed_at_ms;
-    record->method_version = (uint32_t)method_version;
-    record->channel_mask_used = (uint32_t)channel_mask_used;
-    record->channel_mask_rejected = (uint32_t)channel_mask_rejected;
-    record->geometry_computed_at_ms = (uint64_t)geometry_computed_at_ms;
+    record->computed_at_ms = computed_at;
+    record->method_version = method_version_number;
+    record->channel_mask_used = channel_mask_used_bits;
+    record->channel_mask_rejected = channel_mask_rejected_bits;
+    record->geometry_computed_at_ms = geometry_computed_at;
     record->propagation_speed_mps = propagation_speed_mps;
     record->propagation_speed_uncertainty_mps = propagation_speed_uncertainty_mps;
     record->confidence_score = confidence_score;
@@ -876,6 +882,8 @@ esp_err_t localization_run_record_from_json(
         double emission_time_us = 0.0;
         double rms_residual_us = 0.0;
         double iterations = 0.0;
+        uint32_t iteration_count = 0U;
+        int64_t emission_time = 0;
         bool converged = false;
 
         ok = cJSON_IsObject(position) &&
@@ -883,10 +891,12 @@ esp_err_t localization_run_record_from_json(
             read_number(position, "y_m", &y_m) &&
             read_number(position, "z_m", &z_m) &&
             read_number(root, "emission_time_us", &emission_time_us) &&
+            json_number_to_int64(emission_time_us, &emission_time) &&
             read_number(root, "rms_residual_us", &rms_residual_us) &&
             rms_residual_us >= 0.0 &&
             read_number(root, "iterations", &iterations) &&
-            iterations >= 0.0 &&
+            json_number_to_uint32(iterations, &iteration_count) &&
+            iteration_count <= UINT8_MAX &&
             read_bool(root, "converged", &converged);
 
         if (!ok) {
@@ -897,9 +907,9 @@ esp_err_t localization_run_record_from_json(
         record->source_position.x_m = x_m;
         record->source_position.y_m = y_m;
         record->source_position.z_m = z_m;
-        record->emission_time_us = (int64_t)emission_time_us;
+        record->emission_time_us = emission_time;
         record->rms_residual_us = rms_residual_us;
-        record->iterations = (uint8_t)iterations;
+        record->iterations = (uint8_t)iteration_count;
         record->converged = converged;
 
         /* Optional: absent (0) for methods that use a given velocity and in

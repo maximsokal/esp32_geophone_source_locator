@@ -58,9 +58,13 @@ static localization_point3d_t index_center(const localization_suea_grid_t *grid,
 }
 
 
-static size_t axis_cells(double extent, double cell)
+static size_t axis_cells(double extent, double cell, size_t limit)
 {
-    return (size_t)floor(extent / cell) + 1U;
+    const double intervals = floor(extent / cell);
+    if (!isfinite(intervals) || intervals < 0.0 || intervals >= (double)limit) {
+        return 0U;
+    }
+    return (size_t)intervals + 1U;
 }
 
 
@@ -99,10 +103,14 @@ esp_err_t localization_suea_grid_init(
             return ESP_ERR_INVALID_SIZE;
         }
         cell = requested_cell_m * (double)factor;
-        for (size_t axis = 0U; axis < 3U; ++axis) {
-            n[axis] = axis_cells(extent[axis], cell);
+        if (!isfinite(cell)) {
+            return ESP_ERR_INVALID_SIZE;
         }
-        if ((double)n[0] * (double)n[1] * (double)n[2] <= (double)limit) {
+        for (size_t axis = 0U; axis < 3U; ++axis) {
+            n[axis] = axis_cells(extent[axis], cell, limit);
+        }
+        if (n[0] != 0U && n[1] != 0U && n[2] != 0U &&
+            n[0] <= limit / n[1] && n[0] * n[1] <= limit / n[2]) {
             break;
         }
     }

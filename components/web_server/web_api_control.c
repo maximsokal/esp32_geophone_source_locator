@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "json_number.h"
 #include "object_store.h"
 #include "storage_bulk_admission.h"
 #include "measurement_service.h"
@@ -122,18 +123,31 @@ static esp_err_t web_control_send_result_with_error_class(
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) return ESP_ERR_NO_MEM;
 
-    cJSON_AddBoolToObject(root, "ok", result == ESP_OK);
-    cJSON_AddStringToObject(root, "action", action == NULL ? "UNKNOWN" : action);
-    if (object_id != NULL) cJSON_AddStringToObject(root, "object_id", object_id);
-    if (result != ESP_OK) cJSON_AddStringToObject(root, "error", esp_err_to_name(result));
-    if (error_class != NULL) cJSON_AddStringToObject(root, "error_class", error_class);
-    if (error_class != NULL && strcmp(error_class, "workflow_step_not_allowed") == 0) {
-        cJSON_AddStringToObject(root, "error_code", "workflow_step_not_allowed");
-        cJSON_AddStringToObject(
-            root,
-            "message",
-            "measurement_start is only allowed in RECORD_READY or RECORDING"
-        );
+    /* Every field is part of the response contract: a failed add (out of
+     * memory) must not turn into a "successful" reply that lacks ok/action/
+     * error, so nothing is sent unless the object is complete. */
+    const bool workflow_step_error =
+        error_class != NULL &&
+        strcmp(error_class, "workflow_step_not_allowed") == 0;
+    const bool complete =
+        cJSON_AddBoolToObject(root, "ok", result == ESP_OK) != NULL &&
+        cJSON_AddStringToObject(root, "action", action == NULL ? "UNKNOWN" : action) != NULL &&
+        (object_id == NULL ||
+         cJSON_AddStringToObject(root, "object_id", object_id) != NULL) &&
+        (result == ESP_OK ||
+         cJSON_AddStringToObject(root, "error", esp_err_to_name(result)) != NULL) &&
+        (error_class == NULL ||
+         cJSON_AddStringToObject(root, "error_class", error_class) != NULL) &&
+        (!workflow_step_error ||
+         (cJSON_AddStringToObject(root, "error_code", "workflow_step_not_allowed") != NULL &&
+          cJSON_AddStringToObject(
+              root,
+              "message",
+              "measurement_start is only allowed in RECORD_READY or RECORDING"
+          ) != NULL));
+    if (!complete) {
+        cJSON_Delete(root);
+        return ESP_ERR_NO_MEM;
     }
 
     char *json = cJSON_PrintUnformatted(root);
@@ -812,6 +826,7 @@ static esp_err_t web_control_process(
         double longitude = 0.0;
         double accuracy = 0.0;
         double captured = 0.0;
+        uint64_t captured_at_ms = 0U;
         double altitude = 0.0;
         double altitude_accuracy = 0.0;
         if (object_id == NULL ||
@@ -819,7 +834,7 @@ static esp_err_t web_control_process(
             !web_control_number(root, "longitude", &longitude) ||
             !web_control_number(root, "accuracy_m", &accuracy) ||
             !web_control_number(root, "captured_at_ms", &captured) ||
-            captured < 0.0) {
+            !json_number_to_uint64(captured, &captured_at_ms)) {
             return ESP_ERR_INVALID_ARG;
         }
 
@@ -828,7 +843,7 @@ static esp_err_t web_control_process(
         location.latitude = latitude;
         location.longitude = longitude;
         location.accuracy_m = (float)accuracy;
-        location.captured_at_ms = (uint64_t)captured;
+        location.captured_at_ms = captured_at_ms;
         snprintf(location.source, sizeof(location.source), "PHONE_GPS");
 
         if (web_control_number(root, "altitude_m", &altitude)) {

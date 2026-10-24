@@ -16,6 +16,7 @@ idf_component_register(
 
     REQUIRES
         app_config
+        cjson_alloc_guard
         object_format
         object_store
         storage_manager

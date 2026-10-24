@@ -1251,6 +1251,7 @@ export const en: Record<I18nKey, string> = {
   "tft.workflow.material.speed": "%s +/- %s m/s",
   "tft.workflow.material.title": "MATERIAL",
   "tft.workflow.material.unset": "Material: not set",
+  "tft.workflow.memory_unavailable": "Not enough memory. Try again.",
   "tft.workflow.notice.busy": "Busy",
   "tft.workflow.notice.state_changed": "State changed",
   "tft.workflow.object.name": "%s",

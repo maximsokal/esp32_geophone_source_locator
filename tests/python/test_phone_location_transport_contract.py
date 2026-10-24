@@ -31,7 +31,9 @@ def test_phone_gps_request_is_validated_and_persisted_as_phone_source() -> None:
 
     for field in ("latitude", "longitude", "accuracy_m", "captured_at_ms"):
         assert f'web_control_number(root, "{field}"' in location
-    assert "captured < 0.0" in location
+    # captured_at_ms must be a finite, integral, in-range uint64 before the cast.
+    assert "json_number_to_uint64(captured, &captured_at_ms)" in location
+    assert "(uint64_t)captured)" not in location
     assert 'snprintf(location.source, sizeof(location.source), "PHONE_GPS")' in location
     assert "object_store_set_location(object_id, &location)" in location
     assert 'strcmp(action, "set_object_location") == 0' in source

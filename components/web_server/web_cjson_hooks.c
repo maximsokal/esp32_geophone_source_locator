@@ -14,15 +14,8 @@ void *web_cjson_alloc_with_fallback(
 }
 
 #if defined(ESP_PLATFORM)
-#include <stdbool.h>
-#include <stdlib.h>
-
-#include "cJSON.h"
+#include "cjson_alloc_guard.h"
 #include "esp_heap_caps.h"
-#include "freertos/FreeRTOS.h"
-
-static portMUX_TYPE s_cjson_hooks_lock = portMUX_INITIALIZER_UNLOCKED;
-static bool s_cjson_hooks_installed;
 
 static void *web_cjson_alloc_psram(size_t size)
 {
@@ -45,15 +38,9 @@ static void *web_cjson_malloc(size_t size)
 
 void web_cjson_install_psram_hooks(void)
 {
-    portENTER_CRITICAL(&s_cjson_hooks_lock);
-    if (!s_cjson_hooks_installed) {
-        cJSON_Hooks hooks = {
-            .malloc_fn = web_cjson_malloc,
-            .free_fn = free,
-        };
-        cJSON_InitHooks(&hooks);
-        s_cjson_hooks_installed = true;
-    }
-    portEXIT_CRITICAL(&s_cjson_hooks_lock);
+    /* The guard owns the hooks (and counts allocation failures); this only
+     * selects the PSRAM-preferred allocator behind them. */
+    cjson_alloc_guard_install();
+    cjson_alloc_guard_set_allocator(web_cjson_malloc);
 }
 #endif
