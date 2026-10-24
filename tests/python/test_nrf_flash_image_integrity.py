@@ -111,3 +111,54 @@ def test_prepare_rejects_skipped_padding_and_verify_rejects_last_byte_change(tmp
     altered = run_helper("verify", "--manifest", str(manifest), "--readback", str(readback))
     assert altered.returncode == 1
     assert "sha-256" in altered.stderr.lower() or "digest" in altered.stderr.lower()
+
+
+def test_verify_reports_absolute_byte_differences_against_bound_hex(tmp_path: Path) -> None:
+    source = tmp_path / "source.hex"
+    padded = tmp_path / "padded.hex"
+    expected_bin = tmp_path / "firmware.bin"
+    manifest = tmp_path / "integrity.json"
+    readback = tmp_path / "readback.bin"
+    raw = bytes(range(26))
+    payload = raw + b"\xff" * 6
+    write_hex(source, 0x3000, raw)
+    write_hex(padded, 0x3000, payload)
+    expected_bin.write_bytes(raw)
+    assert run_helper(*prepare_args(source, padded, expected_bin, manifest)).returncode == 0
+    changed = bytearray(payload)
+    changed[6] = 0xA5
+    changed[-1] = 0
+    readback.write_bytes(changed)
+
+    result = run_helper("verify", "--manifest", str(manifest), "--readback", str(readback),
+                        "--expected-hex", str(padded))
+
+    assert result.returncode == 1
+    assert "first_diff=0x3006" in result.stderr
+    assert "last_diff=0x301f" in result.stderr
+    assert "differences=2" in result.stderr
+    assert "expected=06 got=A5" in result.stderr
+    assert hashlib.sha256(payload).hexdigest() in result.stderr
+    assert hashlib.sha256(changed).hexdigest() in result.stderr
+
+
+def test_verify_distinguishes_changed_reference_from_bad_readback(tmp_path: Path) -> None:
+    source = tmp_path / "source.hex"
+    padded = tmp_path / "padded.hex"
+    expected_bin = tmp_path / "firmware.bin"
+    manifest = tmp_path / "integrity.json"
+    readback = tmp_path / "readback.bin"
+    raw = bytes(range(16))
+    write_hex(source, 0x1000, raw)
+    write_hex(padded, 0x1000, raw)
+    expected_bin.write_bytes(raw)
+    assert run_helper(*prepare_args(source, padded, expected_bin, manifest)).returncode == 0
+    readback.write_bytes(raw)
+    write_hex(padded, 0x1000, b"\xff" * 16)
+
+    result = run_helper("verify", "--manifest", str(manifest), "--readback", str(readback),
+                        "--expected-hex", str(padded))
+
+    assert result.returncode == 1
+    assert "reference HEX differs from integrity manifest" in result.stderr
+    assert "first_diff" not in result.stderr

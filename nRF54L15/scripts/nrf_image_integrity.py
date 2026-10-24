@@ -132,6 +132,12 @@ def prepare(args: argparse.Namespace) -> int:
 
 def verify(args: argparse.Namespace) -> int:
     metadata = json.loads(args.manifest.read_text(encoding="utf-8"))
+    expected = None
+    if args.expected_hex is not None:
+        start, expected = image_region(read_ihex(args.expected_hex))
+        if (start != metadata["image_start"] or len(expected) != metadata["region_length"] or
+                hashlib.sha256(expected).hexdigest() != metadata["sha256"]):
+            raise ValueError("reference HEX differs from integrity manifest; build artifacts changed")
     payload = args.readback.read_bytes()
     if len(payload) != metadata["region_length"]:
         raise ValueError(
@@ -140,7 +146,26 @@ def verify(args: argparse.Namespace) -> int:
         )
     digest = hashlib.sha256(payload).hexdigest()
     if digest != metadata["sha256"]:
-        raise ValueError("full image readback SHA-256 digest mismatch")
+        detail = ""
+        if expected is not None:
+            first = last = None
+            differences = 0
+            for offset, (wanted, actual) in enumerate(zip(expected, payload)):
+                if wanted != actual:
+                    if first is None:
+                        first = offset
+                    last = offset
+                    differences += 1
+            if first is not None:
+                detail = (
+                    f" first_diff=0x{metadata['image_start'] + first:x}"
+                    f" last_diff=0x{metadata['image_start'] + last:x}"
+                    f" differences={differences} expected={expected[first]:02X} got={payload[first]:02X}"
+                )
+        raise ValueError(
+            f"full image readback SHA-256 digest mismatch:{detail} "
+            f"expected_sha256={metadata['sha256']} actual_sha256={digest}"
+        )
     return 0
 
 
@@ -155,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     verify_parser = commands.add_parser("verify")
     verify_parser.add_argument("--manifest", type=Path, required=True)
     verify_parser.add_argument("--readback", type=Path, required=True)
+    verify_parser.add_argument("--expected-hex", type=Path)
     args = parser.parse_args(argv)
     try:
         return prepare(args) if args.command == "prepare" else verify(args)

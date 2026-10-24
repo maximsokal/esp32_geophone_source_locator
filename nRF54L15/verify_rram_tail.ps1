@@ -289,13 +289,17 @@ function ConvertTo-QuotedWindowsArgument([string]$Argument) {
     return $builder.ToString()
 }
 
+function Write-FailedReadbackPath {
+    if ($script:FullImageReadbackPath -and (Test-Path -LiteralPath $script:FullImageReadbackPath -PathType Leaf)) {
+        [Console]::Error.WriteLine("rram tail check: readback retained: $script:FullImageReadbackPath")
+    }
+}
+
 function Stop-WithOpenOcdFailure([string]$Reason, [string[]]$OutputLines) {
     [Console]::Error.WriteLine("rram tail check: OpenOCD failure: $Reason")
     if ($script:OpenOcdCommandLine) { [Console]::Error.WriteLine("rram tail check: command: $script:OpenOcdCommandLine") }
     foreach ($line in @($OutputLines | Select-Object -Last 30)) { [Console]::Error.WriteLine($line) }
-    if ($script:FullImageReadbackPath -and (Test-Path -LiteralPath $script:FullImageReadbackPath)) {
-        Remove-Item -LiteralPath $script:FullImageReadbackPath -Force -ErrorAction SilentlyContinue
-    }
+    Write-FailedReadbackPath
     exit 1
 }
 
@@ -378,7 +382,7 @@ try {
     # runners.yaml does.
     $openOcdScriptsArg = $resolvedScriptsDir.Replace([string][char]92, "/")
     $openOcdBoardCfgArg = $resolvedBoardCfg.Replace([string][char]92, "/")
-    $openOcdArguments = @("-s", $openOcdScriptsArg, "-f", $openOcdBoardCfgArg, "-c", "init", "-c", "targets nrf54l.cpu")
+    $openOcdArguments = @("-s", $openOcdScriptsArg, "-f", $openOcdBoardCfgArg, "-c", "init", "-c", "targets nrf54l.cpu", "-c", "halt")
     if ($integrityMetadata) {
         $readbackTclPath = $script:FullImageReadbackPath.Replace([string][char]92, "/")
         if ($readbackTclPath.Contains("{") -or $readbackTclPath.Contains("}")) {
@@ -480,17 +484,14 @@ try {
 
     if ($integrityMetadata) {
         $integrityScript = Join-Path $PSScriptRoot "scripts\nrf_image_integrity.py"
-        & python $integrityScript verify --manifest $ImageManifest --readback $script:FullImageReadbackPath
+        & python $integrityScript verify --manifest $ImageManifest --readback $script:FullImageReadbackPath --expected-hex $hexFullPath
         $integrityExitCode = $LASTEXITCODE
         if ($integrityExitCode -ne 0) {
             [Console]::Error.WriteLine("rram tail check: full image integrity failed with exit $integrityExitCode")
-            if (Test-Path -LiteralPath $script:FullImageReadbackPath) {
-                Remove-Item -LiteralPath $script:FullImageReadbackPath -Force -ErrorAction SilentlyContinue
-            }
+            Write-FailedReadbackPath
+            foreach ($line in @($outputLines | Select-Object -Last 30)) { [Console]::Error.WriteLine($line) }
             exit 1
         }
-        Remove-Item -LiteralPath $script:FullImageReadbackPath -Force -ErrorAction SilentlyContinue
-        $script:FullImageReadbackPath = $null
     }
 
     $warningLines = @($outputLines | Where-Object { $_ -match '(?i)^\s*(?:error|fatal)\s*:' })
@@ -526,13 +527,18 @@ try {
     if ($isLockup) {
         [Console]::Out.WriteLine("rram tail check: WARNING target is in LOCKUP after reset (firmware crashed at boot)")
     }
-    if ($null -ne $mismatch) { exit 1 }
-    if ($isLockup) { exit 3 }
+    if ($null -ne $mismatch -or $isLockup) {
+        Write-FailedReadbackPath
+        if ($null -ne $mismatch) { exit 1 }
+        exit 3
+    }
+    if ($script:FullImageReadbackPath) {
+        Remove-Item -LiteralPath $script:FullImageReadbackPath -Force -ErrorAction SilentlyContinue
+        $script:FullImageReadbackPath = $null
+    }
     exit 0
 } catch {
-    if ($script:FullImageReadbackPath -and (Test-Path -LiteralPath $script:FullImageReadbackPath)) {
-        Remove-Item -LiteralPath $script:FullImageReadbackPath -Force -ErrorAction SilentlyContinue
-    }
+    Write-FailedReadbackPath
     [Console]::Error.WriteLine("rram tail check: FAIL $($_.Exception.Message)")
     exit 1
 }

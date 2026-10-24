@@ -337,6 +337,15 @@ function Invoke-WestFlash([string]$BuildDir) {
     if (-not (Test-Path -LiteralPath $verifyScript -PathType Leaf)) {
         throw "RRAM tail readback verification script not found: $verifyScript"
     }
+    $rramScript = Join-Path $project "scripts\nrf54l_rram_commit.tcl"
+    if (-not (Test-Path -LiteralPath $rramScript -PathType Leaf)) {
+        throw "RRAM commit script not found: $rramScript"
+    }
+    $rramScriptTcl = $rramScript.Replace([string][char]92, "/")
+    if ($rramScriptTcl.Contains("{") -or $rramScriptTcl.Contains("}")) {
+        throw "RRAM commit script path contains unsupported Tcl brace characters."
+    }
+    $preLoadCommand = "source {$rramScriptTcl}"
 
     Write-Host ""
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $padScript -InputHex $hexPath -OutputHex $paddedHex
@@ -356,8 +365,8 @@ function Invoke-WestFlash([string]$BuildDir) {
         throw "Padded image integrity preparation failed: $integrityExitCode"
     }
 
-    Write-Host "west flash -d $BuildDir --skip-rebuild -f $paddedHex" -ForegroundColor Cyan
-    & west flash -d $BuildDir --skip-rebuild -f $paddedHex
+    Write-Host "west flash -d $BuildDir --skip-rebuild -f $paddedHex --runner openocd -- --verify --cmd-pre-load=`"$preLoadCommand`" --cmd-load=nrf54l-load-committed" -ForegroundColor Cyan
+    & west flash -d $BuildDir --skip-rebuild -f $paddedHex --runner openocd -- --verify "--cmd-pre-load=$preLoadCommand" --cmd-load=nrf54l-load-committed
     if ($LASTEXITCODE -ne 0) {
         throw "west flash failed: $LASTEXITCODE"
     }
@@ -365,7 +374,7 @@ function Invoke-WestFlash([string]$BuildDir) {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifyScript -Hex $paddedHex -BuildAppDir $appArtifactDir -ImageManifest $integrityManifest
     $verifyExitCode = $LASTEXITCODE
     if ($verifyExitCode -eq 1) {
-        throw "RRAM readback mismatch (exit 1); flash content does not match the padded HEX."
+        throw "RRAM readback verification failed (exit 1); see diagnostics above."
     }
     if ($verifyExitCode -eq 3) {
         throw "Firmware locked up after flashing (exit 3); flash content was verified by readback."

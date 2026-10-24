@@ -1,8 +1,11 @@
 from pathlib import Path
+import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -106,7 +109,7 @@ def powershell() -> str:
     return executable
 
 
-def runner_fixture(tmp_path: Path, stub_output: str, stub_exit: int = 0):
+def runner_fixture(tmp_path: Path, stub_output: str, stub_exit: int = 0, *, dump_payload: bytes | None = None):
     app_dir = tmp_path / "build" / "zephyr" / "zephyr"
     board_dir = tmp_path / "board with spaces"
     board_cfg = board_dir / "support" / "openocd.cfg"
@@ -122,6 +125,20 @@ def runner_fixture(tmp_path: Path, stub_output: str, stub_exit: int = 0):
         "@echo off",
         'if defined RRAM_STUB_ARGS_FILE echo %*>"%RRAM_STUB_ARGS_FILE%"',
     ]
+    if dump_payload is not None:
+        payload_file = tmp_path / "stub dump.bin"
+        payload_file.write_bytes(dump_payload)
+        dump_helper = tmp_path / "stub dump.py"
+        dump_helper.write_text(
+            "from pathlib import Path\nimport re, sys\n"
+            "command = next(arg for arg in sys.argv[2:] if arg.startswith('dump_image '))\n"
+            "match = re.fullmatch(r'dump_image \\{(.+)\\} 0x[0-9a-f]+ [0-9]+', command)\n"
+            "assert match is not None, command\n"
+            "Path(match[1]).write_bytes(Path(sys.argv[1]).read_bytes())\n",
+            encoding="utf-8",
+        )
+        lines.extend((f'"{sys.executable}" "{dump_helper}" "{payload_file}" %*',
+                      "if errorlevel 1 exit /b 1"))
     if stub_output:
         lines.extend(f"echo {line}" for line in stub_output.splitlines())
     lines.append(f"exit /b {stub_exit}")
@@ -148,6 +165,7 @@ def run_verifier(
     openocd: Path | None = None,
     scripts_dir: Path | None = None,
     board_cfg: Path | None = None,
+    image_manifest: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     command = [
         powershell,
@@ -166,11 +184,16 @@ def run_verifier(
         ("-OpenOcd", openocd),
         ("-ScriptsDir", scripts_dir),
         ("-BoardCfg", board_cfg),
+        ("-ImageManifest", image_manifest),
     ):
         if value is not None:
             command.extend((name, str(value)))
     env = os.environ.copy()
     env["RRAM_STUB_ARGS_FILE"] = str(args_file)
+    if image_manifest is not None:
+        dump_dir = image_manifest.parent / "readback-artifacts"
+        dump_dir.mkdir(exist_ok=True)
+        env["TEMP"] = env["TMP"] = str(dump_dir)
     return subprocess.run(
         command,
         capture_output=True,
@@ -196,6 +219,8 @@ def expected_openocd_arguments(
         "init",
         "-c",
         "targets nrf54l.cpu",
+        "-c",
+        "halt",
         "-c",
         f"mdw 0x{address:x} {word_count}",
         "-c",
@@ -550,3 +575,49 @@ def test_openocd_error_with_all_words_is_a_warning_and_passes(
     assert result.returncode == 0, result.stderr
     assert "rram tail check: WARNING OpenOCD: Error: [nrf54l.cpu] recoverable diagnostic" in result.stdout
     assert "rram tail check: PASS addr=0x28000 bytes=16 runs=1" in result.stdout
+
+
+@pytest.mark.parametrize("fault", ["none", "byte", "short", "mdw_byte"])
+def test_full_image_readback_is_halted_and_failure_evidence_is_retained(
+    powershell: str, tmp_path: Path, fault: str
+):
+    address = 0x1000
+    expected = bytes(range(16))
+    actual = bytearray(expected)
+    if fault == "byte":
+        actual[6] = 0xA5
+    elif fault == "short":
+        del actual[-4:]
+    image = tmp_path / "full.padded.hex"
+    data_hex(image, address, expected)
+    manifest = tmp_path / "integrity.json"
+    manifest.write_text(json.dumps({
+        "schema_version": 1, "image_start": address, "region_length": len(expected),
+        "sha256": hashlib.sha256(expected).hexdigest(),
+    }), encoding="utf-8")
+    mdw_data = bytearray(expected)
+    if fault == "mdw_byte":
+        mdw_data[6] = 0xA5
+    app_dir, _, _, _, args_file = runner_fixture(
+        tmp_path, mdw_line(address, mdw_data), dump_payload=bytes(actual)
+    )
+
+    result = run_verifier(powershell, image, app_dir, args_file, image_manifest=manifest)
+
+    args = args_file.read_text(encoding="ascii")
+    assert args.index('"halt"') < args.index('"dump_image ')
+    dumps = list((tmp_path / "readback-artifacts").glob("nrf54l15-readback-*.bin"))
+    if fault == "none":
+        assert result.returncode == 0, result.stderr
+        assert "rram tail check: PASS" in result.stdout
+        assert dumps == []
+    else:
+        assert result.returncode == 1
+        assert "rram tail check: readback retained:" in result.stderr
+        assert len(dumps) == 1
+        assert dumps[0].read_bytes() == bytes(actual)
+        if fault in {"byte", "mdw_byte"}:
+            assert "first_diff=0x1006" in result.stdout + result.stderr
+            assert "expected=06 got=A5" in result.stdout + result.stderr
+        else:
+            assert "readback length mismatch" in result.stderr

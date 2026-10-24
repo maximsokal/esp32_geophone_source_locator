@@ -290,6 +290,19 @@ line of each segment erased. After flashing, it independently checks the first
 bytes and tail of every segment in RRAM. The padded HEX is stored beside
 `zephyr.hex` in the external build dir.
 
+The OpenOCD load command also explicitly commits the RRAM write buffer, waits
+for `RRAMC.READY` with a bounded timeout, and restores read-only mode before the
+runner verifies the image and resets/runs it. This project-owned Tcl hook avoids
+modifying the pinned SDK's XIAO board configuration. Padding remains enabled.
+The required commit is documented in [Zephyr's XIAO fix](https://github.com/zephyrproject-rtos/zephyr/pull/117961).
+
+The independent post-reset check halts the CPU and compares a full-image SHA-256
+digest as well as segment boundaries. On mismatch it reports `first_diff`,
+`last_diff`, differing-byte count, expected/actual bytes and hashes. It retains
+the failed dump and prints `rram tail check: readback retained: <path>`;
+successful dumps are removed. A changed HEX/manifest reference is reported
+separately. A write/download byte count alone is not a successful verification.
+
 `ncs.ps1` is pinned to NCS v3.4.0. If `west` is not already available, the
 wrapper relaunches itself through:
 
