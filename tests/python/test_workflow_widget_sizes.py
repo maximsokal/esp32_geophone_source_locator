@@ -92,6 +92,11 @@ static void lv_obj_set_style_border_width(lv_obj_t *o, int width, int part) { (v
 static void lv_obj_set_style_text_color(lv_obj_t *o, uint32_t color, int part) { (void)part; o->color=color; }
 static const char *lv_label_get_text(const lv_obj_t *o) { return o->text; }
 static void lv_label_set_text(lv_obj_t *o, const char *text) { (void)snprintf(o->text,sizeof(o->text),"%s",text); }
+typedef uint32_t lv_color_t;
+static bool lv_color_eq(lv_color_t a, lv_color_t b) { return a == b; }
+static lv_color_t lv_obj_get_style_text_color(const lv_obj_t *o, int part) { (void)part; return o->color; }
+static lv_color_t lv_obj_get_style_border_color(const lv_obj_t *o, int part) { (void)part; return o->color; }
+static int lv_obj_get_style_border_width(const lv_obj_t *o, int part) { (void)part; return o->border; }
 
 /* PRODUCTION_FUNCTIONS */
 
