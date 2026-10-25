@@ -138,6 +138,7 @@ static size_t s_status_response_frame_index;
 static bool s_arm_reselection_probe_after_status_read;
 static bool s_reselection_probe_armed;
 static bool s_fail_reselection_probe;
+static bool s_log_reply_selected;
 static jmp_buf s_reconcile_stop_return;
 static unsigned s_malformed_cs_results_remaining;
 static unsigned s_malformed_cs_results_seen;
@@ -568,6 +569,14 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
     nrf_upstream_status_t status;
     assert(nrf_bootstrap_make_status(&node->bootstrap, &status) == NRF_UPSTREAM_RESULT_OK);
     if (data_len == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH) {
+        if (s_log_reply_selected) {
+            memset(data, 0, data_len);
+            data[0] = 'G';
+            data[1] = 'S';
+            data[3] = NRF_LOG_MESSAGE_STATUS;
+            ++node->status_reads;
+            return ESP_OK;
+        }
         if (s_stop_on_status_read) {
             s_stop_on_status_read = false;
             if (setjmp(s_reconcile_stop_return) == 0) {
@@ -668,6 +677,7 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
     if (data_len == NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH &&
         data[0] == 'G' && data[1] == 'S' &&
         data[3] == NRF_LOG_MESSAGE_STATUS_REQUEST) {
+        s_log_reply_selected = true;
         return ESP_OK;
     }
     if (data_len == NRF_UPSTREAM_PROTOCOL_ASSIGN_LENGTH) {
@@ -801,7 +811,12 @@ esp_err_t sensor_bus_lines_probe(i2c_bus_handle_t bus, uint8_t address)
             return ESP_ERR_NOT_FOUND;
         }
     }
-    return address_acks(address) ? ESP_OK : ESP_ERR_NOT_FOUND;
+    if (address_acks(address)) {
+        if (address >= NRF_UPSTREAM_ADDRESS_DISCOVERY && address <= NRF_UPSTREAM_ADDRESS_REMOTE)
+            s_log_reply_selected = false;
+        return ESP_OK;
+    }
+    return ESP_ERR_NOT_FOUND;
 }
 
 void sensor_bus_lines_delay_us(uint32_t us)
@@ -1973,6 +1988,7 @@ static void reset_world(void)
     s_arm_reselection_probe_after_status_read = false;
     s_reselection_probe_armed = false;
     s_fail_reselection_probe = false;
+    s_log_reply_selected = false;
     s_nack_read_calls = 0U;
     s_nack_byte_read_calls = 0U;
     s_probe_calls = 0U;
@@ -2131,7 +2147,7 @@ static esp_err_t read_cached_status(unsigned *read_count, unsigned *probe_count)
     const unsigned reads_before = s_nodes[0].status_reads;
     const unsigned probes_before = s_probe_calls;
     const esp_err_t err = nrf_topology_service_test_read_status_cached_probe(
-        NRF_UPSTREAM_ADDRESS_DISCOVERY, &status);
+        NRF_UPSTREAM_ADDRESS_DISCOVERY, &status, false);
     *read_count = s_nodes[0].status_reads - reads_before;
     *probe_count = s_probe_calls - probes_before;
     return err;
@@ -2183,6 +2199,20 @@ static void test_stale_log_response_reselects_status(void)
     assert(read_count == 1U);
     assert(probe_count == 1U);
     assert(s_status_response_frame_index == 1U);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
+static void test_status_reselects_before_reading_after_log(void)
+{
+    nrf_upstream_status_t status;
+    prepare_direct_status_read_case();
+    const unsigned reads_before = s_nodes[0].status_reads;
+    const unsigned probes_before = s_probe_calls;
+    assert(nrf_topology_service_test_read_status_cached_probe(
+        NRF_UPSTREAM_ADDRESS_DISCOVERY, &status, true) == ESP_OK);
+    assert(s_nodes[0].status_reads - reads_before == 1U);
+    assert(s_probe_calls - probes_before == 1U);
+    assert(!s_log_reply_selected);
     assert(sensor_bus_deinit() == ESP_OK);
 }
 
@@ -2762,6 +2792,7 @@ int main(void)
     test_api_guards_when_stopped();
     test_lifecycle_failures_mid_reconcile_and_repeated_restart();
     test_stale_log_response_reselects_status();
+    test_status_reselects_before_reading_after_log();
     test_assignment_confirmation_race_preserves_node_mapping();
     test_malformed_snapshot_marks_cached_sample_stale();
     test_unplug_and_replug_between_reconciles();

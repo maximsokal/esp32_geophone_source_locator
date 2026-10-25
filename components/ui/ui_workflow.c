@@ -714,10 +714,14 @@ static void ui_workflow_update_remote_slots(ui_workflow_screen_state_t *state)
             ui_workflow_set_label(label, text);
         }
         const uint32_t color = ui_workflow_remote_pod_color(state->remote_pod_states[i]);
-        lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
-        lv_obj_set_style_border_color(card, lv_color_hex(color), 0);
-        lv_obj_set_style_border_width(card,
-            state->remote_slots[i].connected ? 2 : 1, 0);
+        const lv_color_t desired_color = lv_color_hex(color);
+        if (!lv_color_eq(lv_obj_get_style_text_color(label, 0), desired_color))
+            lv_obj_set_style_text_color(label, desired_color, 0);
+        if (!lv_color_eq(lv_obj_get_style_border_color(card, 0), desired_color))
+            lv_obj_set_style_border_color(card, desired_color, 0);
+        const int32_t border_width = state->remote_slots[i].connected ? 2 : 1;
+        if (lv_obj_get_style_border_width(card, 0) != border_width)
+            lv_obj_set_style_border_width(card, border_width, 0);
     }
     state->remote_slot_styles_dirty = false;
 }

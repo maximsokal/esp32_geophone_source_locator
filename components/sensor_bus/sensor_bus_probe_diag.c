@@ -255,13 +255,44 @@ esp_err_t sensor_bus_probe_diag_transaction(
         ? (uint64_t)s_storage.finished_us : 0U;
     if (!sensor_bus_probe_diag_policy_record(
             &s_storage.policy, &s_storage.transaction, s_storage.completed_us,
-            &s_storage.changed, &s_storage.should_print)) {
-        emit_transaction(&s_storage.transaction);
-    } else if (s_storage.should_print) {
-        emit_transaction(&s_storage.transaction);
+            &s_storage.changed, &s_storage.should_print) || s_storage.should_print) {
+        if (!s_storage.output_deferred) {
+            emit_transaction(&s_storage.transaction);
+        } else if (s_storage.pending_count < SENSOR_BUS_PROBE_DIAG_PENDING_LIMIT) {
+            s_storage.pending[s_storage.pending_count++] = s_storage.transaction;
+        } else {
+            s_storage.pending_dropped = sensor_bus_probe_diag_saturating_add_u32(
+                s_storage.pending_dropped, 1U);
+        }
     }
-    emit_due_summaries(s_storage.completed_us);
+    if (!s_storage.output_deferred) {
+        emit_due_summaries(s_storage.completed_us);
+    }
     return err;
+#endif
+}
+
+void sensor_bus_probe_diag_defer_output(void)
+{
+#if CONFIG_APP_I2C_PROBE_DIAGNOSTICS
+    s_storage.output_deferred = true;
+#endif
+}
+
+void sensor_bus_probe_diag_flush(void)
+{
+#if CONFIG_APP_I2C_PROBE_DIAGNOSTICS
+    s_storage.output_deferred = false;
+    for (size_t i = 0U; i < s_storage.pending_count; ++i) {
+        emit_transaction(&s_storage.pending[i]);
+    }
+    s_storage.pending_count = 0U;
+    if (s_storage.pending_dropped != 0U) {
+        ESP_LOGW(TAG, "I2C_PROBE_SUMMARY transactions_dropped=%lu",
+                 (unsigned long)s_storage.pending_dropped);
+        s_storage.pending_dropped = 0U;
+    }
+    emit_due_summaries(now_us());
 #endif
 }
 

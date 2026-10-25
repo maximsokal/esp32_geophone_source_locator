@@ -491,7 +491,7 @@ static esp_err_t sensor_bus_owner_budget_after_transaction(
     }
     portEXIT_CRITICAL(&s_owner_stats_lock);
 
-    if (exceeded && !close_write && !close_read) {
+    if (err == ESP_OK && exceeded && !close_write && !close_read) {
         return SENSOR_BUS_ERR_OWNER_HOLD_BUDGET;
     }
     return err;

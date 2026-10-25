@@ -10,6 +10,25 @@
       "include_dirs": [
         "components/sensor_bus/include"
       ]
+    },
+    {
+      "name": "sensor_bus_probe_diag",
+      "sources": [
+        "components/sensor_bus/sensor_bus_probe_diag.c",
+        "components/sensor_bus/sensor_bus_probe_diag_policy.c",
+        "tests/host/sensor_bus_probe_diag_test.c"
+      ],
+      "include_dirs": ["tests/host/stubs/sensor_bus", "components/sensor_bus/include"],
+      "defines": ["CONFIG_APP_I2C_PROBE_DIAGNOSTICS=1"]
+    },
+    {
+      "name": "sensor_bus_probe_diag_disabled",
+      "sources": [
+        "components/sensor_bus/sensor_bus_probe_diag.c",
+        "tests/host/sensor_bus_probe_diag_test.c"
+      ],
+      "include_dirs": ["tests/host/stubs/sensor_bus", "components/sensor_bus/include"],
+      "defines": ["CONFIG_APP_I2C_PROBE_DIAGNOSTICS=0"]
     }
   ]
 }

@@ -112,6 +112,7 @@ typedef struct {
 typedef struct {
     nrf_topology_platform_t platform;
     nrf_link_readiness_t links[NRF_LOG_COLLECTOR_NODE_COUNT];
+    nrf_log_poll_target_t log_targets[NRF_LOG_COLLECTOR_NODE_COUNT];
     nrf_topology_controller_t controller;
     nrf_sensor_transport_controller_t sensor_controller;
     nrf_topology_snapshot_t snapshot;
@@ -540,6 +541,9 @@ static esp_err_t platform_mux_select(void *context, uint8_t channel);
 static esp_err_t platform_close_selected_mux(
     nrf_topology_platform_t *platform,
     bool preserve_requested_channel);
+static size_t platform_read_route_index(const nrf_topology_platform_t *platform);
+static void platform_record_read_result(
+    nrf_topology_platform_t *platform, uint8_t address, size_t route_index, bool success);
 
 static esp_err_t platform_begin_remote_transfer(
     nrf_topology_platform_t *platform,
@@ -608,6 +612,11 @@ static esp_err_t platform_i2c_write_bytes(
     esp_err_t err = platform_begin_remote_transfer(platform, address);
     if (err != ESP_OK) {
         return err;
+    }
+    /* Log replies persist across reads; the next ordinary read must reselect. */
+    if (platform != NULL && length > 3U && data != NULL &&
+        (data[3] == NRF_LOG_MESSAGE_STATUS_REQUEST || data[3] == NRF_LOG_MESSAGE_READ_REQUEST)) {
+        platform_record_read_result(platform, address, platform_read_route_index(platform), false);
     }
     err = sensor_bus_probe_diag_transaction(
         SENSOR_BUS_PROBE_PHASE_WRITE, address,
@@ -790,14 +799,16 @@ static esp_err_t platform_close_selected_mux(
             return owner_err;
         }
         platform->bus_owner_held = true;
+        sensor_bus_probe_diag_defer_output();
     }
 
     esp_err_t err = tca9548a_mux_close(&platform->mux);
     const bool hold_budget_exceeded = sensor_bus_owner_hold_budget_exceeded();
-    platform_log_tca_state(platform, false);
     platform->selected_mux_channel_valid = false;
     platform->bus_owner_held = false;
     sensor_bus_owner_release();
+    sensor_bus_probe_diag_flush();
+    platform_log_tca_state(platform, false);
     if (!preserve_requested_channel) {
         platform->requested_mux_channel_valid = false;
     }
@@ -1325,11 +1336,7 @@ static esp_err_t platform_log_read_once(
              platform_selected_channel(log_context->platform), (unsigned)frame_capacity,
              err == ESP_OK ? (int)frame_capacity : -1, response_type, declared_length,
              call_us, (unsigned)err, esp_err_to_name(err));
-    if (err != ESP_OK) {
-        platform_record_read_result(log_context->platform, address, route_index, false);
-    } else {
-        platform_record_read_result(log_context->platform, address, route_index, true);
-    }
+    platform_record_read_result(log_context->platform, address, route_index, false);
     err = platform_log_handle_transfer_error(log_context, node_index, address, err);
     if (err != ESP_OK) {
         if (err == ESP_ERR_NOT_FOUND) service_request_topology_refresh_from_worker();
@@ -1468,7 +1475,7 @@ static void service_log_build_targets(
 
 static void service_log_sync_targets(nrf_topology_worker_state_t *worker)
 {
-    nrf_log_poll_target_t targets[NRF_LOG_COLLECTOR_NODE_COUNT];
+    nrf_log_poll_target_t *targets = worker->log_targets;
     if (s_nrf_log_collector == NULL) return;
     service_log_build_targets(worker, targets);
     (void)nrf_log_collector_sync_targets(s_nrf_log_collector, targets);
@@ -1479,7 +1486,7 @@ static void service_log_collect_iteration(
     TickType_t last_reconcile_tick,
     TickType_t reconcile_period_ticks)
 {
-    nrf_log_poll_target_t targets[NRF_LOG_COLLECTOR_NODE_COUNT];
+    nrf_log_poll_target_t *targets = worker->log_targets;
     nrf_log_collector_iteration_t iteration;
     nrf_log_platform_context_t context = {
         .platform = &worker->platform,
@@ -1547,11 +1554,9 @@ static esp_err_t platform_mux_select(void *context, uint8_t channel)
             return owner_err;
         }
         platform->bus_owner_held = true;
+        sensor_bus_probe_diag_defer_output();
     }
     const esp_err_t err = tca9548a_mux_select(&platform->mux, channel);
-    platform_log_tca_state(platform, false);
-    sensor_bus_record_transfer_result_with_context(
-        platform->tca_address, err, "tca9548a", -1);
     if (err == ESP_OK) {
         platform->selected_mux_channel = channel;
         platform->selected_mux_channel_valid = true;
@@ -1560,7 +1565,11 @@ static esp_err_t platform_mux_select(void *context, uint8_t channel)
         platform->requested_mux_channel_valid = false;
         platform->bus_owner_held = false;
         sensor_bus_owner_release();
+        sensor_bus_probe_diag_flush();
+        platform_log_tca_state(platform, false);
     }
+    sensor_bus_record_transfer_result_with_context(
+        platform->tca_address, err, "tca9548a", -1);
     return err;
 }
 
@@ -3354,7 +3363,8 @@ esp_err_t nrf_topology_service_get_leveling_nodes(
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
 esp_err_t nrf_topology_service_test_read_status_cached_probe(
     uint8_t address,
-    nrf_upstream_status_t *status)
+    nrf_upstream_status_t *status,
+    bool after_log)
 {
     nrf_topology_platform_t platform = {0};
     size_t route_index;
@@ -3379,6 +3389,23 @@ esp_err_t nrf_topology_service_test_read_status_cached_probe(
 
     /* Model a prior successful address probe, as after a cached log exchange. */
     platform.read_probe_valid[route_index][address_index] = true;
+    if (after_log) {
+        uint8_t request[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH] = {
+            'G', 'S', NRF_LOG_PROTOCOL_VERSION, NRF_LOG_MESSAGE_STATUS_REQUEST,
+            NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH,
+        };
+        const size_t crc_index = sizeof(request) - NRF_LOG_PROTOCOL_CRC_LENGTH;
+        const uint16_t crc = nrf_upstream_protocol_crc16_ccitt_false(request, crc_index);
+        request[crc_index] = (uint8_t)crc;
+        request[crc_index + 1U] = (uint8_t)(crc >> 8U);
+        err = platform_i2c_write_bytes(
+            &platform, platform_device_for_address(&platform, address),
+            address, sizeof(request), request);
+        if (err != ESP_OK) {
+            platform_close(&platform);
+            return err;
+        }
+    }
     err = platform_read_status(&platform, address, status);
     platform_close(&platform);
     return err;

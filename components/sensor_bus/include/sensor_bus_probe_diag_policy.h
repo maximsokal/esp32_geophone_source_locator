@@ -6,6 +6,7 @@
 
 #define SENSOR_BUS_PROBE_DIAG_GROUP_LIMIT 32U
 #define SENSOR_BUS_PROBE_DIAG_BYTES 4U
+#define SENSOR_BUS_PROBE_DIAG_PENDING_LIMIT 16U
 #define SENSOR_BUS_PROBE_DIAG_STATIC_RAM_BUDGET_BYTES 6144U
 #define SENSOR_BUS_PROBE_DIAG_SUMMARY_INTERVAL_SECONDS 60U
 #define SENSOR_BUS_PROBE_DIAG_SUMMARY_INTERVAL_US UINT64_C(60000000)
@@ -79,6 +80,10 @@ typedef struct {
 typedef struct {
     sensor_bus_probe_diag_policy_t policy;
     sensor_bus_probe_diag_transaction_t transaction;
+    sensor_bus_probe_diag_transaction_t pending[SENSOR_BUS_PROBE_DIAG_PENDING_LIMIT];
+    size_t pending_count;
+    uint32_t pending_dropped;
+    bool output_deferred;
     sensor_bus_probe_diag_group_t summary;
     char tx_hex[SENSOR_BUS_PROBE_DIAG_BYTES * 2U + 1U];
     char rx_hex[SENSOR_BUS_PROBE_DIAG_BYTES * 2U + 1U];

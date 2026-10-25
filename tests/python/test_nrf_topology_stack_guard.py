@@ -19,6 +19,7 @@ KNOWN_STRUCT_SIZES = {
     "nrf_remote_sensor_cache_t": 136,
     "nrf_cs_authority_t": 1576,
     "nrf_cs_cycle_snapshot_t": 380,
+    "nrf_log_poll_target_t": 20,
 }
 SCALAR_SIZES = {
     "char": 1,
@@ -207,6 +208,7 @@ def test_parser_self_check_finds_reintroduced_large_automatic_locals():
     sample = """
     void worker(void) {
         nrf_cs_cycle_snapshot_t old_snapshot;
+        nrf_log_poll_target_t old_log_targets[9];
         uint8_t too_large[2 * LIMIT];
         static nrf_cs_authority_t retained;
         uint8_t small[128];
@@ -215,6 +217,7 @@ def test_parser_self_check_finds_reintroduced_large_automatic_locals():
     found = _large_automatic_locals(sample, {"LIMIT": 128})
     assert found == [
         "worker: nrf_cs_cycle_snapshot_t old_snapshot",
+        "worker: nrf_log_poll_target_t old_log_targets",
         "worker: uint8_t too_large[256] (256 bytes)",
     ]
 

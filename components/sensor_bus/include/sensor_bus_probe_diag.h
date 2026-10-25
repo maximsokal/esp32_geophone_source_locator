@@ -31,3 +31,7 @@ esp_err_t sensor_bus_probe_diag_transaction(
 void sensor_bus_probe_diag_begin_pass(uint32_t pass_index);
 void sensor_bus_probe_diag_end_pass(void);
 void sensor_bus_probe_diag_log_bus_idle(void);
+
+/* Paired on the serialized topology path; flush only after releasing the owner. */
+void sensor_bus_probe_diag_defer_output(void);
+void sensor_bus_probe_diag_flush(void);

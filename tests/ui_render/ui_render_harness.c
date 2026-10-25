@@ -296,6 +296,33 @@ static void inject_result(void)
     ui_workflow_update(s_workflow, render_now_ms);
 }
 
+static unsigned s_remote_invalidations;
+
+static void count_remote_invalidations(lv_event_t *event)
+{
+    (void)event;
+    ++s_remote_invalidations;
+}
+
+static void test_unchanged_sensor_cards_do_not_redraw(void)
+{
+    prepare(WORKFLOW_STEP_SENSOR_CHECK, 1U);
+    lv_display_t *display = lv_display_get_default();
+    lv_refr_now(display);
+    lv_event_dsc_t *listener = lv_display_add_event_cb(
+        display, count_remote_invalidations, LV_EVENT_INVALIDATE_AREA, NULL);
+    assert(listener != NULL);
+    s_remote_invalidations = 0U;
+    s_workflow->remote_slot_styles_dirty = true;
+    ui_workflow_update_remote_slots(s_workflow);
+    assert(s_remote_invalidations == 0U);
+    s_workflow->remote_pod_states[0] = POD_STATE_ERROR;
+    s_workflow->remote_slot_styles_dirty = true;
+    ui_workflow_update_remote_slots(s_workflow);
+    assert(s_remote_invalidations > 0U);
+    assert(lv_display_remove_event_cb_with_user_data(display, count_remote_invalidations, NULL) == 1U);
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -310,6 +337,7 @@ int main(int argc, char **argv)
     render_context.display = display;
     for (unsigned locale = 0U; locale < 2U; ++locale) {
         ui_i18n_set_locale(locale == 0U ? UI_LOCALE_EN : UI_LOCALE_UK);
+        test_unchanged_sensor_cards_do_not_redraw();
         menu_family = "home";
         const char *language = locale == 0U ? "en" : "uk";
         ui_workflow_screen_close_locked();

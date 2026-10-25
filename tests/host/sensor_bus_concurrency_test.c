@@ -274,6 +274,7 @@ static atomic_int s_channel_interleavings;
 static atomic_bool s_owner_hold_started;
 static atomic_uint s_fake_transaction_ms;
 static atomic_bool s_hang_next_receive;
+static atomic_uint s_receive_resume_delay_ms;
 static atomic_int s_last_transaction_timeout_ms;
 static atomic_uint s_master_transfer_calls;
 #define TCA_RESPONDING_ADDRESS 0x70U
@@ -373,6 +374,7 @@ esp_err_t i2c_master_receive(
     memset(data, fake->address == TCA_RESPONDING_ADDRESS ? s_tca_control : 0U, data_len);
     if (atomic_exchange(&s_hang_next_receive, false)) {
         sensor_bus_lines_delay_us((uint32_t)timeout_ms * 1000U);
+        sensor_bus_lines_delay_us(atomic_load(&s_receive_resume_delay_ms) * 1000U);
         canary_exit();
         return ESP_ERR_TIMEOUT;
     }
@@ -767,6 +769,27 @@ static void test_hold_budget_aborts_closes_mux_without_fault(void)
     atomic_store(&s_fake_transaction_ms, 0U);
 }
 
+static void test_hold_budget_preserves_driver_timeout(void)
+{
+    sensor_bus_handles_t handles = {0};
+    i2c_bus_device_handle_t remote = NULL;
+    tca9548a_mux_t mux = {0};
+    uint8_t value = 0U;
+    prepare_mux_fixture(&mux, &remote, &handles);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    assert(tca9548a_mux_select(&mux, 3U) == ESP_OK);
+    atomic_store(&s_receive_resume_delay_ms, 100U);
+    atomic_store(&s_hang_next_receive, true);
+    assert(sensor_bus_read_byte(remote, NULL_I2C_MEM_ADDR, &value) == ESP_ERR_TIMEOUT);
+    assert(sensor_bus_owner_hold_budget_exceeded());
+    atomic_store(&s_receive_resume_delay_ms, 0U);
+    assert(tca9548a_mux_close(&mux) == ESP_OK);
+    assert(tca9548a_mux_get_state(&mux) == TCA9548A_MUX_STATE_CLOSED);
+    assert(s_tca_control == 0U);
+    sensor_bus_owner_release();
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
 typedef struct {
     tca9548a_mux_t *mux;
     i2c_bus_device_handle_t remote;
@@ -928,6 +951,7 @@ int main(void)
     assert(sensor_bus_deinit() == ESP_OK);
     test_mutex_wait_and_transfer_timeouts_are_distinct_ms();
     test_hold_budget_aborts_closes_mux_without_fault();
+    test_hold_budget_preserves_driver_timeout();
     test_topology_waiter_gets_bus_between_channels();
     assert(sensor_bus_deinit() == ESP_OK);
 

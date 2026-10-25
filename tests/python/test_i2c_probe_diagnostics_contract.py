@@ -94,14 +94,17 @@ def test_probe_helper_has_fixed_bounds_and_no_heap_or_waits():
     assert "ESP_LOGI(TAG, \"I2C_BUS idle lvl=SDA%d/SCL%d\"" in diag
 
 
-def test_transaction_print_decision_is_immediate_without_pending_events():
+def test_transaction_prints_are_bounded_and_deferred_during_mux_ownership():
     policy_source = _read("components/sensor_bus/sensor_bus_probe_diag_policy.c")
     diag = _read("components/sensor_bus/sensor_bus_probe_diag.c")
 
     assert "bool *should_print" in policy_source
-    assert "else if (s_storage.should_print)" in diag
     assert "emit_transaction(&s_storage.transaction);" in diag
-    assert "s_storage.events" not in diag
-    assert "event_count" not in diag
-    assert "event_overflow_count" not in diag
+    assert "s_storage.pending_count < SENSOR_BUS_PROBE_DIAG_PENDING_LIMIT" in diag
+    assert "if (!s_storage.output_deferred)" in diag
+    assert "I2C_PROBE_SUMMARY transactions_dropped=%lu" in diag
+    service = _read("components/nrf_topology_service/nrf_topology_service.c")
+    assert service.count("sensor_bus_probe_diag_defer_output();") == 2
+    assert service.count("sensor_bus_owner_release();\n    sensor_bus_probe_diag_flush();") == 1
+    assert service.count("sensor_bus_owner_release();\n        sensor_bus_probe_diag_flush();") == 1
     assert "I2C_PROBE_SUMMARY groups_dropped=%lu" in diag
