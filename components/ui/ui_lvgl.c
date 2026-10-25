@@ -37,7 +37,6 @@ _Static_assert(
 );
 
 
-static bool s_measurement_load_active;
 static uint64_t s_render_started_us;
 static uint64_t s_render_flush_submit_us;
 static uint64_t s_render_flush_wait_us;
@@ -47,6 +46,7 @@ static uint64_t s_flush_submit_us;
 static uint64_t s_flush_wait_us;
 static bool s_flush_wait_yielded;
 
+static esp_err_t ui_lvgl_drain_panel_io_locked(void);
 
 static void ui_lvgl_perf_event(lv_event_t *event)
 {
@@ -86,10 +86,9 @@ static void ui_lvgl_perf_event(lv_event_t *event)
 
         case LV_EVENT_FLUSH_WAIT_START:
             s_flush_wait_started_us = now_us;
-            s_flush_wait_yielded = s_measurement_load_active;
-            if (s_flush_wait_yielded) {
-                /* LVGL's single-buffer wait spins after this event. Give the
-                 * acquisition and sensor tasks a tick between TFT chunks. */
+            /* Block on the existing SPI completion barrier instead of LVGL's spin. */
+            s_flush_wait_yielded = true;
+            if (ui_lvgl_drain_panel_io_locked() != ESP_OK) {
                 vTaskDelay(1U);
             }
             break;
@@ -310,12 +309,6 @@ esp_err_t ui_lvgl_init(void)
     );
 
     return ESP_OK;
-}
-
-
-void ui_lvgl_set_measurement_load_active(bool load_active)
-{
-    s_measurement_load_active = load_active;
 }
 
 

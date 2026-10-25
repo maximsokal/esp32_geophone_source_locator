@@ -56,11 +56,17 @@ add_executable(ui_render ${UI_RENDER_SOURCES})
 add_executable(ui_navigation_render ${UI_RENDER_SOURCES} ui_navigation_harness.c
     "${REPO_ROOT}/components/ui/ui_screen_registry.c")
 target_compile_definitions(ui_navigation_render PRIVATE UI_NATIVE_FULL_SCREENS=1)
+add_executable(ui_lvgl_wait ui_lvgl_wait_test.c
+    "${REPO_ROOT}/components/ui/ui_lvgl.c"
+    "${REPO_ROOT}/components/ui/ui_perf_policy.c")
+target_include_directories(ui_lvgl_wait BEFORE PRIVATE lvgl_driver_stubs)
+enable_testing()
+add_test(NAME ui_lvgl_wait COMMAND ui_lvgl_wait)
 file(GLOB COMPONENT_INCLUDES "${REPO_ROOT}/components/*/include")
 if(MSVC)
     target_compile_options(lvgl PRIVATE /W0)
 endif()
-foreach(UI_TARGET IN ITEMS ui_render ui_navigation_render)
+foreach(UI_TARGET IN ITEMS ui_render ui_navigation_render ui_lvgl_wait)
     target_include_directories(${UI_TARGET} PRIVATE stubs ${COMPONENT_INCLUDES} "${REPO_ROOT}/components/ui"
         "${REPO_ROOT}/nRF54L15/include" "${REPO_ROOT}/tests/host/stubs/object_store_profile")
     target_link_libraries(${UI_TARGET} PRIVATE lvgl::lvgl)

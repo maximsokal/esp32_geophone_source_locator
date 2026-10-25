@@ -35,6 +35,7 @@ idf_component_register(
         log
 
     PRIV_REQUIRES
+        cjson_alloc_guard
         heap
         json_number
 )

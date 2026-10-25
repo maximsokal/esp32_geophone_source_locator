@@ -21,6 +21,18 @@
       "defines": ["NRF_BOOT_DIAGNOSTICS_TEST_HOOKS"]
     },
     {
+      "name": "nrf_boot_diagnostics_console",
+      "sources": ["nRF54L15/src/nrf_boot_diagnostics_console_zephyr.c", "tests/host/nrf_boot_diagnostics_console_test.c"],
+      "include_dirs": ["tests/host/stubs/nrf_boot_diagnostics_console", "tests/host/stubs/nrf_bootstrap_runtime_zephyr", "nRF54L15/include"],
+      "defines": ["CONFIG_APP_NRF_VERBOSE_LOG=1"]
+    },
+    {
+      "name": "nrf_boot_diagnostics_console_quiet",
+      "sources": ["nRF54L15/src/nrf_boot_diagnostics_console_zephyr.c", "tests/host/nrf_boot_diagnostics_console_test.c"],
+      "include_dirs": ["tests/host/stubs/nrf_boot_diagnostics_console", "tests/host/stubs/nrf_bootstrap_runtime_zephyr", "nRF54L15/include"],
+      "defines": ["CONFIG_APP_NRF_VERBOSE_LOG=0"]
+    },
+    {
       "name": "nrf_twis_trace_zephyr",
       "sources": ["nRF54L15/src/nrf_twis_trace_zephyr.c", "tests/host/nrf_twis_trace_zephyr_test.c"],
       "include_dirs": ["tests/host/stubs/nrf_twis_trace_zephyr", "nRF54L15/include"]

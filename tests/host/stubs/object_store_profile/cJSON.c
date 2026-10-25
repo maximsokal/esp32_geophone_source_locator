@@ -9,10 +9,16 @@
  * (once), modelling an out-of-memory inside cJSON_Add*ToObject() and friends. */
 int cJSON_stub_fail_alloc_countdown = -1;
 
+/* Optional: tests that link cjson_alloc_guard point this at
+ * cjson_alloc_guard_note_failure() so a failed allocation is counted exactly
+ * as the production hooks would. */
+void (*cJSON_stub_on_alloc_failure)(void) = NULL;
+
 static bool stub_allocation_fails(void)
 {
     if (cJSON_stub_fail_alloc_countdown == 0) {
         cJSON_stub_fail_alloc_countdown = -1;
+        if (cJSON_stub_on_alloc_failure != NULL) cJSON_stub_on_alloc_failure();
         return true;
     }
     if (cJSON_stub_fail_alloc_countdown > 0) {

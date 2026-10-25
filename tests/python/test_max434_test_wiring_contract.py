@@ -182,11 +182,12 @@ def test_ui_perf_test_source_is_registered_in_host_manifests():
         )
 
 
-def test_recording_flush_wait_yields_one_scheduler_tick():
+def test_flush_wait_uses_completion_barrier_with_tick_fallback():
     source = (ROOT / UI_LVGL_SOURCE).read_text(encoding="utf-8")
     assert "vTaskDelay(1U);" in source
     assert "pdMS_TO_TICKS(1U)" not in source
-    assert "s_flush_wait_yielded = s_measurement_load_active;" in source
+    assert "if (ui_lvgl_drain_panel_io_locked() != ESP_OK)" in source
+    assert "s_flush_wait_yielded = s_measurement_load_active;" not in source
 
 
 def test_measurement_load_policy_uses_screen_and_acquisition_state():

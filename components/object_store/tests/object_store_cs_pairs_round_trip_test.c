@@ -26,6 +26,13 @@ bool storage_manager_path_exists(const char *path)
     return path != NULL && strstr(path, "/object.json") != NULL;
 }
 
+esp_err_t storage_manager_path_status(const char *path, bool *exists)
+{
+    if (path == NULL || exists == NULL) return ESP_ERR_INVALID_ARG;
+    *exists = storage_manager_path_exists(path);
+    return ESP_OK;
+}
+
 esp_err_t storage_manager_read_text(const char *path, char *buffer, size_t buffer_size)
 {
     if (path == NULL || buffer == NULL || buffer_size == 0U) return ESP_ERR_INVALID_ARG;

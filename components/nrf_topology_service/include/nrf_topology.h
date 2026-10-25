@@ -56,6 +56,7 @@ typedef struct {
     esp_err_t (*mux_select)(void *context, uint8_t channel);
     esp_err_t (*read_status)(void *context, uint8_t address, nrf_upstream_status_t *status);
     esp_err_t (*write_assign)(void *context, uint8_t address, const nrf_upstream_assign_t *assign);
+    uint64_t (*now_ms)(void *context);
     void (*sleep_ms)(void *context, uint32_t delay_ms);
     bool (*abort_requested)(void *context);
 } nrf_topology_io_t;

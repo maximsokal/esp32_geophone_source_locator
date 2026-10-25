@@ -62,6 +62,19 @@ esp_err_t storage_manager_create_directory_exclusive(
 );
 
 
+/*
+ * Tri-state existence probe. ESP_OK with *exists=false means the path is
+ * genuinely absent (ENOENT/ENOTDIR). Any other stat failure, or an unavailable
+ * storage lock, is returned as an error and *exists is left untouched, so
+ * callers can tell "absent" from "temporarily unreadable".
+ */
+esp_err_t storage_manager_path_status(
+    const char *path,
+    bool *exists
+);
+
+
+/* Convenience wrapper: false for "absent" AND for any probe error. */
 bool storage_manager_path_exists(
     const char *path
 );
@@ -87,9 +100,12 @@ esp_err_t storage_manager_erase_application_data(void);
 
 
 /*
- * Write a small metadata file using a temporary file
- * and backup replacement.
+ * Returned when atomic replacement and rollback both fail; the original
+ * remains in the reported .bak file.
  */
+#define STORAGE_MANAGER_ERR_BACKUP_ROLLBACK_FAILED ((esp_err_t)0x10E)
+
+/* Write a small metadata file using a temporary file and backup replacement. */
 esp_err_t storage_manager_atomic_write_text(
     const char *path,
     const char *text

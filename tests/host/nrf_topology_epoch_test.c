@@ -43,6 +43,7 @@ static esp_err_t read_status(void *context, uint8_t address, nrf_upstream_status
 }
 static esp_err_t write_assign(void *context, uint8_t address, const nrf_upstream_assign_t *assign) { (void)context; (void)address; (void)assign; return ESP_FAIL; }
 static void sleep_ms(void *context, uint32_t ms) { (void)context; (void)ms; }
+static uint64_t now_ms(void *context) { (void)context; return 0U; }
 
 int main(void)
 {
@@ -60,6 +61,7 @@ int main(void)
         .mux_select = select_mux,
         .read_status = read_status,
         .write_assign = write_assign,
+        .now_ms = now_ms,
         .sleep_ms = sleep_ms,
     };
     assert(nrf_topology_controller_init(&controller, &cfg) == ESP_OK);

@@ -278,12 +278,13 @@ esp_err_t storage_manager_create_directory_exclusive(
 }
 
 
-bool storage_manager_path_exists(
-    const char *path
+esp_err_t storage_manager_path_status(
+    const char *path,
+    bool *exists
 )
 {
-    if (path == NULL) {
-        return false;
+    if (path == NULL || exists == NULL) {
+        return ESP_ERR_INVALID_ARG;
     }
 
     int64_t started_us =
@@ -300,7 +301,7 @@ bool storage_manager_path_exists(
     );
 
     if (err != ESP_OK) {
-        return false;
+        return err;
     }
 
     struct stat info;
@@ -314,6 +315,11 @@ bool storage_manager_path_exists(
             &info
         );
 
+    const int stat_errno =
+        stat_result == 0
+            ? 0
+            : errno;
+
     storage_directory_log_io(
         "path-exists-stat",
         path,
@@ -321,10 +327,39 @@ bool storage_manager_path_exists(
         started_us
     );
 
-    const bool exists =
-        stat_result == 0;
-
     storage_manager_operation_end();
 
-    return exists;
+    if (stat_result == 0) {
+        *exists = true;
+        return ESP_OK;
+    }
+
+    if (stat_errno == ENOENT || stat_errno == ENOTDIR) {
+        *exists = false;
+        return ESP_OK;
+    }
+
+    ESP_LOGE(
+        TAG,
+        "Cannot determine whether %s exists: errno=%d",
+        path,
+        stat_errno
+    );
+
+    return stat_errno == ENOMEM
+        ? ESP_ERR_NO_MEM
+        : ESP_FAIL;
+}
+
+
+bool storage_manager_path_exists(
+    const char *path
+)
+{
+    bool exists = false;
+
+    return storage_manager_path_status(
+        path,
+        &exists
+    ) == ESP_OK && exists;
 }

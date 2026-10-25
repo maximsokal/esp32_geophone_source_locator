@@ -1277,10 +1277,10 @@ esp_err_t seismic_recorder_fs_list_sessions(
                 break;
             }
 
-            if (
-                metadata_state == SEISMIC_RECORDER_FS_METADATA_NONE ||
-                (
-                    metadata_state == SEISMIC_RECORDER_FS_METADATA_PRIMARY
+            const esp_err_t summary_err =
+                metadata_state == SEISMIC_RECORDER_FS_METADATA_NONE
+                    ? ESP_ERR_NOT_FOUND
+                    : metadata_state == SEISMIC_RECORDER_FS_METADATA_PRIMARY
                         ? seismic_recorder_json_read_summary_known_present(
                             object_id,
                             entry->d_name,
@@ -1290,9 +1290,16 @@ esp_err_t seismic_recorder_fs_list_sessions(
                             object_id,
                             entry->d_name,
                             &summary
-                        )
-                ) != ESP_OK
+                        );
+            if (
+                summary_err != ESP_OK &&
+                !seismic_recorder_summary_error_is_unreadable_metadata(summary_err)
             ) {
+                err = summary_err;
+                break;
+            }
+
+            if (summary_err != ESP_OK) {
                 const size_t session_id_length = strnlen(
                     entry->d_name,
                     sizeof(summary.session_id)

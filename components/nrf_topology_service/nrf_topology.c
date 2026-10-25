@@ -211,7 +211,6 @@ static assign_confirm_result_t assign_and_confirm(
     nrf_upstream_status_t *confirmed)
 {
     nrf_upstream_assign_t assign;
-    uint32_t elapsed_ms = 0U;
     bool retry_used = false;
     const uint8_t runtime_address = role == NRF_UPSTREAM_ROLE_MAIN
         ? NRF_UPSTREAM_ADDRESS_MAIN
@@ -233,9 +232,11 @@ static assign_confirm_result_t assign_and_confirm(
     if (assign_err != ESP_OK) {
         return assign_error_result(assign_err, bus_busy);
     }
+    const uint64_t started_ms = io->now_ms(io->context);
 
     for (;;) {
-        if (topology_abort_requested(io)) {
+        if (topology_abort_requested(io) ||
+            io->now_ms(io->context) - started_ms >= controller->config.confirm_timeout_ms) {
             return ASSIGN_CONFIRM_TRANSPORT_ERROR;
         }
         nrf_upstream_status_t runtime_status;
@@ -261,6 +262,9 @@ static assign_confirm_result_t assign_and_confirm(
             return assign_error_result(err, bus_busy);
         }
 
+        if (io->now_ms(io->context) - started_ms >= controller->config.confirm_timeout_ms) {
+            return ASSIGN_CONFIRM_TRANSPORT_ERROR;
+        }
         memset(&discovery_status, 0, sizeof(discovery_status));
         err = io->read_status(io->context, NRF_UPSTREAM_ADDRESS_DISCOVERY, &discovery_status);
         if (err == ESP_OK) {
@@ -303,18 +307,15 @@ static assign_confirm_result_t assign_and_confirm(
             return assign_error_result(err, bus_busy);
         }
 
+        const uint64_t elapsed_ms = io->now_ms(io->context) - started_ms;
         if (elapsed_ms >= controller->config.confirm_timeout_ms) {
             return ASSIGN_CONFIRM_TRANSPORT_ERROR;
         }
-        io->sleep_ms(io->context, controller->config.poll_interval_ms);
+        const uint32_t remaining_ms = controller->config.confirm_timeout_ms - (uint32_t)elapsed_ms;
+        io->sleep_ms(io->context, remaining_ms < controller->config.poll_interval_ms
+            ? remaining_ms : controller->config.poll_interval_ms);
         if (topology_abort_requested(io)) {
             return ASSIGN_CONFIRM_TRANSPORT_ERROR;
-        }
-        if (UINT32_MAX - elapsed_ms < controller->config.poll_interval_ms) {
-            elapsed_ms = controller->config.confirm_timeout_ms;
-        }
-        else {
-            elapsed_ms += controller->config.poll_interval_ms;
         }
     }
 }
@@ -640,6 +641,7 @@ esp_err_t nrf_topology_reconcile(
 
     if (controller == NULL || io == NULL || snapshot == NULL ||
         io->read_status == NULL || io->write_assign == NULL || io->sleep_ms == NULL ||
+        io->now_ms == NULL ||
         (io->tca_available && (io->mux_close == NULL || io->mux_select == NULL))) {
         return ESP_ERR_INVALID_ARG;
     }

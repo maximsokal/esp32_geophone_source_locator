@@ -1,5 +1,6 @@
 #include "storage_manager.h"
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -228,36 +229,74 @@ esp_err_t storage_manager_atomic_write_text(
         }
     }
 
-    if (
+    const int replace_result =
         rename(
             paths->temp_path,
             path
-        ) != 0
-    ) {
+        );
+    const int replace_errno =
+        replace_result == 0
+            ? 0
+            : errno;
+
+    if (replace_result != 0) {
         ESP_LOGE(
             TAG,
-            "Failed to replace file: %s",
-            path
+            "Failed to replace file %s, errno=%d",
+            path,
+            replace_errno
         );
 
         if (had_original) {
-            rename(
-                paths->backup_path,
-                path
-            );
+            const int rollback_result =
+                rename(
+                    paths->backup_path,
+                    path
+                );
+            const int rollback_errno =
+                rollback_result == 0
+                    ? 0
+                    : errno;
+
+            if (rollback_result != 0) {
+                ESP_LOGE(
+                    TAG,
+                    "Rollback failed for %s, errno=%d; recoverable original data remains in %s",
+                    path,
+                    rollback_errno,
+                    paths->backup_path
+                );
+                err = STORAGE_MANAGER_ERR_BACKUP_ROLLBACK_FAILED;
+            } else {
+                err = ESP_FAIL;
+            }
+        } else {
+            err = ESP_FAIL;
         }
 
         remove(
             paths->temp_path
         );
-        err = ESP_FAIL;
         goto done;
     }
 
     if (had_original) {
-        remove(
-            paths->backup_path
-        );
+        if (remove(paths->backup_path) != 0) {
+            const int backup_remove_errno = errno;
+
+            if (backup_remove_errno != ENOENT) {
+                /* The new file is installed and recovery ignores .bak while path
+                 * exists, so this is not a write failure; the next write removes
+                 * the stale backup before creating a fresh one. */
+                ESP_LOGW(
+                    TAG,
+                    "Failed to remove stale backup %s after installing %s, errno=%d",
+                    paths->backup_path,
+                    path,
+                    backup_remove_errno
+                );
+            }
+        }
     }
 
 done:

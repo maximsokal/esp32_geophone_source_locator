@@ -770,35 +770,34 @@ static i2c_line_result_t sensor_bus_live_clear_locked(void)
     return sda_stuck ? I2C_LINES_SDA_STUCK : I2C_LINES_RECOVERED;
 }
 
+typedef struct {
+    esp_err_t err;
+    bool hardware_timeout_mapping;
+    bool invalid_state_nack;
+} sensor_bus_classification_t;
+
 /* Caller holds s_lock and I2C0 exists. */
-static esp_err_t sensor_bus_classify_locked(
+static sensor_bus_classification_t sensor_bus_classify_locked(
     uint8_t address,
     esp_err_t transfer_err,
-    const char *source,
     int channel)
 {
-    if (transfer_err == ESP_FAIL) {
-        sensor_bus_record_result(
-            address, source, channel, ESP_ERR_NOT_FOUND, false, false);
-        return ESP_ERR_NOT_FOUND;  /* legacy driver NACK */
-    }
+    sensor_bus_classification_t result = {
+        .err = transfer_err == ESP_FAIL ? ESP_ERR_NOT_FOUND : transfer_err,
+    };
     if (transfer_err != ESP_ERR_INVALID_STATE) {
-        sensor_bus_record_result(
-            address, source, channel, transfer_err, false, false);
-        return transfer_err;
+        return result;
     }
     const esp_err_t probe_err = sensor_bus_probe_address_raw(address, channel);
     if (probe_err == ESP_ERR_NOT_FOUND) {
-        sensor_bus_record_result(
-            address, source, channel, transfer_err, false, true);
-        return ESP_ERR_NOT_FOUND;
+        result.err = ESP_ERR_NOT_FOUND;
+        result.invalid_state_nack = true;
+        return result;
     }
     /* ACK: the target is there and the transfer itself failed. */
-    const esp_err_t classified_err = probe_err == ESP_OK ? transfer_err : probe_err;
-    sensor_bus_record_result(
-        address, source, channel, classified_err,
-        probe_err == ESP_OK, false);
-    return classified_err;
+    result.err = probe_err == ESP_OK ? transfer_err : probe_err;
+    result.hardware_timeout_mapping = probe_err == ESP_OK;
+    return result;
 }
 
 /* Caller holds s_lock. Confirm the writable TCA control register and leave
@@ -1091,12 +1090,14 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
         /* MAX-248: a NACK is ESP_ERR_NOT_FOUND after classification,
          * whatever code the backend used for it. */
         uint8_t response = 0U;
-        const esp_err_t probe_err = sensor_bus_classify_locked(
-            candidate_address,
-            sensor_bus_read_byte_diagnostic(
-                candidate, candidate_address, -1, false, 0U, &response),
-            s_tca_diag_source,
-            -1);
+        const esp_err_t transfer_err = sensor_bus_read_byte_diagnostic(
+            candidate, candidate_address, -1, false, 0U, &response);
+        const sensor_bus_classification_t classified = sensor_bus_classify_locked(
+            candidate_address, transfer_err, -1);
+        sensor_bus_record_result(candidate_address, s_tca_diag_source, -1,
+            classified.invalid_state_nack ? transfer_err : classified.err,
+            classified.hardware_timeout_mapping, classified.invalid_state_nack);
+        const esp_err_t probe_err = classified.err;
 
         if (probe_err == ESP_OK &&
             sensor_bus_verify_tca_candidate_locked(candidate, candidate_address)) {
@@ -1200,14 +1201,13 @@ static sensor_bus_device_entry_t *sensor_bus_find_device_locked(
 }
 
 static void sensor_bus_log_timeout_diag(
-    const sensor_bus_device_entry_t *entry,
+    uint8_t address,
     uint64_t waited_for_mutex_us,
     uint64_t transfer_us,
     bool mutex_busy)
 {
     sensor_bus_owner_stats_t stats = {0};
     char holder_name[SENSOR_BUS_TASK_NAME_SIZE];
-    const uint8_t address = entry != NULL ? entry->address : 0U;
     const char *source = address != 0U
         ? sensor_bus_default_diag_source(address, false) : "bus_owner";
     (void)sensor_bus_get_owner_stats(&stats);
@@ -1260,12 +1260,15 @@ static esp_err_t sensor_bus_read_bytes_internal(
     const esp_err_t lock_err = sensor_bus_lock_with_wait(&waited_us);
     if (lock_err != ESP_OK) {
         if (lock_err == SENSOR_BUS_ERR_MUTEX_BUSY) {
-            sensor_bus_log_timeout_diag(NULL, waited_us, 0U, true);
+            sensor_bus_log_timeout_diag(0U, waited_us, 0U, true);
         }
         return lock_err;
     }
 
     sensor_bus_device_entry_t *entry = NULL;
+    uint8_t timeout_address = 0U;
+    uint64_t timeout_transfer_us = 0U;
+    bool report_timeout = false;
     esp_err_t err = sensor_bus_find_native_device(device, &entry);
     if (err == ESP_OK) {
         bool close_read = false;
@@ -1287,11 +1290,10 @@ static esp_err_t sensor_bus_read_bytes_internal(
                 }
                 const int64_t transfer_finished_us = sensor_bus_lines_now_us();
                 if (err == ESP_ERR_TIMEOUT && log_timeout) {
-                    sensor_bus_log_timeout_diag(
-                        entry, waited_us,
-                        transfer_finished_us >= transfer_started_us
-                            ? (uint64_t)(transfer_finished_us - transfer_started_us) : 0U,
-                        false);
+                    report_timeout = true;
+                    timeout_address = entry->address;
+                    timeout_transfer_us = transfer_finished_us >= transfer_started_us
+                        ? (uint64_t)(transfer_finished_us - transfer_started_us) : 0U;
                 }
                 err = sensor_bus_reset_after_transfer_error_locked(err);
                 err = sensor_bus_owner_budget_after_transaction(
@@ -1300,6 +1302,9 @@ static esp_err_t sensor_bus_read_bytes_internal(
         }
     }
     sensor_bus_unlock();
+    if (report_timeout) {
+        sensor_bus_log_timeout_diag(timeout_address, waited_us, timeout_transfer_us, false);
+    }
     return err;
 }
 
@@ -1371,12 +1376,15 @@ esp_err_t sensor_bus_write_bytes(
             free(tx);
         }
         if (lock_err == SENSOR_BUS_ERR_MUTEX_BUSY) {
-            sensor_bus_log_timeout_diag(NULL, waited_us, 0U, true);
+            sensor_bus_log_timeout_diag(0U, waited_us, 0U, true);
         }
         return lock_err;
     }
 
     sensor_bus_device_entry_t *entry = NULL;
+    uint8_t timeout_address = 0U;
+    uint64_t timeout_transfer_us = 0U;
+    bool report_timeout = false;
     esp_err_t err = sensor_bus_find_native_device(device, &entry);
     if (err == ESP_OK) {
         const bool close_write = entry->address == s_tca9548a_address &&
@@ -1395,11 +1403,10 @@ esp_err_t sensor_bus_write_bytes(
                     SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
                 const int64_t transfer_finished_us = sensor_bus_lines_now_us();
                 if (err == ESP_ERR_TIMEOUT) {
-                    sensor_bus_log_timeout_diag(
-                        entry, waited_us,
-                        transfer_finished_us >= transfer_started_us
-                            ? (uint64_t)(transfer_finished_us - transfer_started_us) : 0U,
-                        false);
+                    report_timeout = true;
+                    timeout_address = entry->address;
+                    timeout_transfer_us = transfer_finished_us >= transfer_started_us
+                        ? (uint64_t)(transfer_finished_us - transfer_started_us) : 0U;
                 }
                 err = sensor_bus_reset_after_transfer_error_locked(err);
                 err = sensor_bus_owner_budget_after_transaction(
@@ -1408,6 +1415,9 @@ esp_err_t sensor_bus_write_bytes(
         }
     }
     sensor_bus_unlock();
+    if (report_timeout) {
+        sensor_bus_log_timeout_diag(timeout_address, waited_us, timeout_transfer_us, false);
+    }
     if (tx != stack_buffer) {
         free(tx);
     }
@@ -1472,15 +1482,14 @@ esp_err_t sensor_bus_classify_transfer_error_with_context(
     if (lock_err != ESP_OK) {
         return transfer_err;
     }
-    const esp_err_t err = s_bus != NULL
-        ? sensor_bus_classify_locked(address, transfer_err, source, channel)
-        : transfer_err;
-    if (s_bus == NULL) {
-        sensor_bus_record_result(
-            address, source, channel, transfer_err, false, false);
-    }
+    const sensor_bus_classification_t classified = s_bus != NULL
+        ? sensor_bus_classify_locked(address, transfer_err, channel)
+        : (sensor_bus_classification_t){.err = transfer_err};
     sensor_bus_unlock();
-    return err;
+    sensor_bus_record_result(address, source, channel,
+        classified.invalid_state_nack ? transfer_err : classified.err,
+        classified.hardware_timeout_mapping, classified.invalid_state_nack);
+    return classified.err;
 }
 
 esp_err_t sensor_bus_classify_transfer_error(uint8_t address, esp_err_t transfer_err)

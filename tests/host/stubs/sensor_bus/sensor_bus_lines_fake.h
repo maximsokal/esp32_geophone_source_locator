@@ -30,6 +30,7 @@ typedef struct
     char timeout_config_log[512];
     char init_lines_log[512];
     bool hold_budget_exceeded_logged;
+    void (*log_observer)(const char *line);
 
     /* MAX-248 address probe: result per 7-bit address (default ESP_OK is
      * overridden by probe_default when probe_configured is false). */

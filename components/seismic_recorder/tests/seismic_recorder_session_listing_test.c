@@ -32,6 +32,7 @@ static unsigned s_storage_begin_calls;
 static unsigned s_storage_end_calls;
 static unsigned s_known_present_reads;
 static unsigned s_recovery_reads;
+static esp_err_t s_summary_error = ESP_OK;
 
 
 static int make_directory(const char *path)
@@ -109,6 +110,9 @@ static esp_err_t fake_summary(
     }
 
     memset(summary, 0, sizeof(*summary));
+    if (s_summary_error != ESP_OK) {
+        return s_summary_error;
+    }
     snprintf(summary->session_id, sizeof(summary->session_id), "%s", session_id);
     summary->complete = true;
     summary->readable = true;
@@ -323,10 +327,50 @@ static void test_responsive_reads_metadata_only_for_retained_n(void)
 }
 
 
+static void test_summary_errors_are_classified_in_both_listings(void)
+{
+    seismic_recorder_session_summary_t sessions[3] = {0};
+    size_t count = 0U;
+
+    /* Malformed/absent metadata: the session is listed as incomplete. */
+    s_summary_error = ESP_ERR_INVALID_RESPONSE;
+    reset_counters();
+    assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 3U, &count) == ESP_OK);
+    assert(count == 3U);
+    for (size_t i = 0U; i < count; ++i) {
+        assert(!sessions[i].complete);
+        assert(strcmp(sessions[i].session_id, i == 0U ? "S000040" : i == 1U ? "S000039" : "S000038") == 0);
+    }
+    count = 0U;
+    reset_counters();
+    assert(seismic_recorder_list_sessions_responsive("OBJ_0001", sessions, 3U, &count) == ESP_OK);
+    assert(count == 3U);
+    for (size_t i = 0U; i < count; ++i) {
+        assert(!sessions[i].complete);
+    }
+
+    /* Out-of-memory / I/O failures are operational and must be reported. */
+    const esp_err_t operational[] = {ESP_ERR_NO_MEM, ESP_FAIL};
+    for (size_t e = 0U; e < sizeof(operational) / sizeof(operational[0]); ++e) {
+        s_summary_error = operational[e];
+        count = 0U;
+        reset_counters();
+        assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 3U, &count) == operational[e]);
+        assert(s_storage_begin_calls == s_storage_end_calls);
+        count = 0U;
+        reset_counters();
+        assert(seismic_recorder_list_sessions_responsive("OBJ_0001", sessions, 3U, &count) == operational[e]);
+        assert(s_storage_begin_calls == s_storage_end_calls);
+    }
+    s_summary_error = ESP_OK;
+}
+
+
 int main(void)
 {
     remove_layout();
     make_layout();
+    test_summary_errors_are_classified_in_both_listings();
     test_ordinary_and_responsive_share_newest_membership();
     test_responsive_reads_metadata_only_for_retained_n();
     remove_layout();

@@ -354,6 +354,7 @@
     {
       "name": "ad7606_recorder_start_integration",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/ad7606_acquisition/ad7606_acquisition.c",
         "components/ad7606_acquisition/ad7606_acquisition_timing.c",
         "components/ad7606_acquisition/ad7606_power_policy.c",
@@ -370,6 +371,7 @@
         "tests/host/ad7606_recorder_start_integration_test.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "tests/host",
         "components/ad7606_acquisition/tests/stubs/max435_recorder_integration",
@@ -1469,6 +1471,7 @@
     {
       "name": "object_store_profile_round_trip",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/object_format/object_format.c",
         "components/object_store/object_store_cache.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
@@ -1476,6 +1479,7 @@
         "components/object_store/object_store_geometry_json.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "tests/host/stubs/object_store_profile",
         "components/object_store/tests/stubs",
@@ -1487,6 +1491,7 @@
     {
       "name": "object_store_cs_pairs_round_trip",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/object_format/object_format.c",
         "components/object_store/object_store_cache.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
@@ -1494,6 +1499,7 @@
         "components/object_store/object_store_geometry_json.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "tests/host/stubs/object_store_profile",
         "components/object_store/tests/stubs",
@@ -1784,6 +1790,7 @@
     {
       "name": "seismic_recorder_start_integration",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/seismic_recorder/seismic_recorder.c",
         "components/seismic_recorder/seismic_recorder_cache.c",
         "components/seismic_recorder/seismic_recorder_start_policy.c",
@@ -1797,6 +1804,7 @@
         "tests/host/seismic_recorder_start_integration_test.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "tests/host/stubs/seismic_recorder_start",
         "components/seismic_recorder/tests/stubs/session_geometry",
@@ -1830,6 +1838,7 @@
     {
       "name": "seismic_recorder_gate_bypass_start_0",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/seismic_recorder/seismic_recorder.c",
         "components/seismic_recorder/seismic_recorder_cache.c",
         "components/seismic_recorder/seismic_recorder_start_policy.c",
@@ -1843,6 +1852,7 @@
         "tests/host/seismic_recorder_start_integration_test.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "tests/host/stubs/seismic_recorder_gate_bypass",
         "tests/host/stubs/seismic_recorder_start",
@@ -1876,6 +1886,7 @@
     {
       "name": "seismic_recorder_gate_bypass_start_1",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/seismic_recorder/seismic_recorder.c",
         "components/seismic_recorder/seismic_recorder_cache.c",
         "components/seismic_recorder/seismic_recorder_start_policy.c",
@@ -1889,6 +1900,7 @@
         "tests/host/seismic_recorder_start_integration_test.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "tests/host/stubs/seismic_recorder_gate_bypass",
         "tests/host/stubs/seismic_recorder_start",
@@ -1922,6 +1934,7 @@
     {
       "name": "seismic_recorder_gate_bypass_start_2",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/seismic_recorder/seismic_recorder.c",
         "components/seismic_recorder/seismic_recorder_cache.c",
         "components/seismic_recorder/seismic_recorder_start_policy.c",
@@ -1935,6 +1948,7 @@
         "tests/host/seismic_recorder_start_integration_test.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "tests/host/stubs/seismic_recorder_gate_bypass",
         "tests/host/stubs/seismic_recorder_start",
@@ -1983,12 +1997,14 @@
     {
       "name": "seismic_recorder_session_geometry",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/seismic_recorder/seismic_recorder_json.c",
         "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/seismic_recorder/tests/seismic_recorder_session_geometry_test.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "components/seismic_recorder/tests/stubs/session_geometry",
         "components/seismic_recorder/tests/stubs",
@@ -2023,12 +2039,14 @@
     {
       "name": "seismic_recorder_session_cs_pairs",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/seismic_recorder/seismic_recorder_json.c",
         "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/seismic_recorder/tests/seismic_recorder_session_cs_pairs_test.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "components/seismic_recorder/tests/stubs/session_geometry",
         "components/seismic_recorder/tests/stubs",
@@ -2458,6 +2476,7 @@
     {
       "name": "seismic_recorder_allocation_contract",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/seismic_recorder/seismic_recorder.c",
         "components/seismic_recorder/seismic_recorder_cache.c",
         "components/seismic_recorder/seismic_recorder_start_policy.c",
@@ -2472,6 +2491,7 @@
         "components/seismic_recorder/tests/seismic_recorder_allocation_contract_test.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "tests/host/stubs/app_pod_status_bridge",
         "tests/host/stubs/seismic_recorder_start",
@@ -2514,6 +2534,7 @@
     {
       "name": "seismic_recorder_allocation_negative",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/seismic_recorder/seismic_recorder.c",
         "components/seismic_recorder/seismic_recorder_cache.c",
         "components/seismic_recorder/seismic_recorder_start_policy.c",
@@ -2528,6 +2549,7 @@
         "components/seismic_recorder/tests/seismic_recorder_allocation_contract_test.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "tests/host/stubs/app_pod_status_bridge",
         "tests/host/stubs/seismic_recorder_start",

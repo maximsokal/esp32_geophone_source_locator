@@ -41,7 +41,26 @@ void storage_manager_operation_end(void)
 }
 
 
+static int fake_stat_errno;
+
+
+static int storage_manager_test_stat(
+    const char *path,
+    struct stat *info
+)
+{
+    if (fake_stat_errno != 0) {
+        errno = fake_stat_errno;
+        return -1;
+    }
+
+    return stat(path, info);
+}
+
+
+#define stat(...) storage_manager_test_stat(__VA_ARGS__)
 #include "../storage_manager_directory.c"
+#undef stat
 
 
 static void reset_fake_state(void)
@@ -49,6 +68,7 @@ static void reset_fake_state(void)
     fake_operation_begin_result = ESP_OK;
     fake_operation_begin_calls = 0U;
     fake_operation_end_calls = 0U;
+    fake_stat_errno = 0;
 }
 
 
@@ -114,8 +134,56 @@ static void test_exclusive_create_rejects_invalid_arguments(void)
 }
 
 
+static void test_path_status_distinguishes_absent_from_unreadable(void)
+{
+    remove_test_tree();
+    reset_fake_state();
+    assert(storage_manager_create_directory_exclusive(STORAGE_DIRECTORY_TEST_ROOT) == ESP_OK);
+    FILE *file = fopen(STORAGE_DIRECTORY_TEST_FILE, "wb");
+    assert(file != NULL);
+    assert(fclose(file) == 0);
+    reset_fake_state();
+
+    bool exists = false;
+    assert(storage_manager_path_status(STORAGE_DIRECTORY_TEST_FILE, &exists) == ESP_OK);
+    assert(exists);
+    assert(storage_manager_path_exists(STORAGE_DIRECTORY_TEST_FILE));
+
+    exists = true;
+    assert(storage_manager_path_status(STORAGE_DIRECTORY_TEST_ROOT "/missing.txt", &exists) == ESP_OK);
+    assert(!exists);
+
+    /* A transient stat failure must not be reported as "absent". */
+    exists = true;
+    fake_stat_errno = EIO;
+    assert(storage_manager_path_status(STORAGE_DIRECTORY_TEST_FILE, &exists) == ESP_FAIL);
+    assert(exists);
+    assert(!storage_manager_path_exists(STORAGE_DIRECTORY_TEST_FILE));
+
+    fake_stat_errno = ENOMEM;
+    assert(storage_manager_path_status(STORAGE_DIRECTORY_TEST_FILE, &exists) == ESP_ERR_NO_MEM);
+
+    fake_stat_errno = 0;
+    unsigned begins = fake_operation_begin_calls;
+    unsigned ends = fake_operation_end_calls;
+    assert(begins == ends);
+
+    fake_operation_begin_result = ESP_ERR_INVALID_STATE;
+    exists = true;
+    assert(storage_manager_path_status(STORAGE_DIRECTORY_TEST_FILE, &exists) == ESP_ERR_INVALID_STATE);
+    assert(exists);
+    assert(fake_operation_end_calls == ends);
+
+    reset_fake_state();
+    assert(storage_manager_path_status(NULL, &exists) == ESP_ERR_INVALID_ARG);
+    assert(storage_manager_path_status(STORAGE_DIRECTORY_TEST_FILE, NULL) == ESP_ERR_INVALID_ARG);
+    remove_test_tree();
+}
+
+
 int main(void)
 {
+    test_path_status_distinguishes_absent_from_unreadable();
     test_exclusive_create_rejects_invalid_arguments();
     test_exclusive_create_rejects_existing_paths();
     test_exclusive_create_rejects_existing_file();

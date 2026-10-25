@@ -158,6 +158,9 @@ void fake_sensor_bus_log(const char *tag, const char *format, ...)
     va_start(args, format);
     (void)vsnprintf(g_fake_lines.last_log, sizeof(g_fake_lines.last_log), format, args);
     va_end(args);
+    if (g_fake_lines.log_observer != NULL) {
+        g_fake_lines.log_observer(g_fake_lines.last_log);
+    }
     if (strstr(g_fake_lines.last_log, "I2C_TIMEOUT_CONFIG") != NULL) {
         (void)strncpy(g_fake_lines.timeout_config_log, g_fake_lines.last_log,
                       sizeof(g_fake_lines.timeout_config_log) - 1U);

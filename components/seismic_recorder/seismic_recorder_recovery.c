@@ -16,6 +16,7 @@
 #endif
 
 #include "cJSON.h"
+#include "cjson_alloc_guard.h"
 #include "esp_log.h"
 #include "object_format.h"
 #include "object_store.h"
@@ -139,8 +140,14 @@ static esp_err_t seismic_recorder_recovery_read_text_exact(
     }
 
     const size_t count = fread(buffer, 1U, buffer_size - 1U, file);
-    const bool read_error = ferror(file) != 0;
-    const bool too_large = count == buffer_size - 1U && !feof(file);
+    bool read_error = ferror(file) != 0;
+    bool too_large = false;
+    if (!read_error && count == buffer_size - 1U) {
+        /* feof() is not set when the file ends exactly at the buffer limit, so
+         * probe one more byte; EOF there may also be an I/O error. */
+        too_large = fgetc(file) != EOF;
+        read_error = !too_large && ferror(file) != 0;
+    }
     const int close_result = fclose(file);
     storage_manager_operation_end();
 
@@ -215,9 +222,13 @@ static esp_err_t seismic_recorder_recovery_parse_candidate(
     }
 
     memset(candidate, 0, sizeof(*candidate));
+    cjson_alloc_guard_install();
+    const uint32_t alloc_failures_before = cjson_alloc_guard_failures();
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) {
-        return ESP_ERR_INVALID_RESPONSE;
+        return cjson_alloc_guard_failures() != alloc_failures_before
+            ? ESP_ERR_NO_MEM
+            : ESP_ERR_INVALID_RESPONSE;
     }
 
     const cJSON *schema = cJSON_GetObjectItemCaseSensitive(root, "schema_version");
@@ -260,14 +271,19 @@ static esp_err_t seismic_recorder_recovery_parse_candidate(
         ) &&
         channel_count == SEISMIC_CHANNEL_COUNT;
 
-    if (
-        valid &&
-        seismic_recorder_json_parse_participation_text(
-            json,
-            &candidate->participation
-        ) != ESP_OK
-    ) {
-        valid = false;
+    if (valid) {
+        const esp_err_t participation_err =
+            seismic_recorder_json_parse_participation_text(
+                json,
+                &candidate->participation
+            );
+        if (participation_err == ESP_ERR_NO_MEM) {
+            cJSON_Delete(root);
+            return participation_err;
+        }
+        if (participation_err != ESP_OK) {
+            valid = false;
+        }
     }
 
     if (valid) {
@@ -325,9 +341,16 @@ static esp_err_t seismic_recorder_recovery_find_candidate(
         if (err == ESP_ERR_NOT_FOUND) {
             continue;
         }
-        if (err != ESP_OK) {
+        if (err == ESP_ERR_INVALID_SIZE) {
+            /* The file itself is oversized, i.e. not usable metadata. */
             saw_candidate_file = true;
             continue;
+        }
+        if (err != ESP_OK) {
+            /* An unreadable file says nothing about its content. Do not fall
+             * through to an older .bak/.tmp or report corruption. */
+            free(buffer);
+            return err;
         }
 
         saw_candidate_file = true;
@@ -340,6 +363,10 @@ static esp_err_t seismic_recorder_recovery_find_candidate(
         if (err == ESP_OK) {
             free(buffer);
             return ESP_OK;
+        }
+        if (err != ESP_ERR_INVALID_RESPONSE) {
+            free(buffer);
+            return err;
         }
     }
 

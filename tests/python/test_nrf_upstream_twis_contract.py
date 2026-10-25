@@ -6,6 +6,15 @@ NRF = ROOT / "nRF54L15"
 PINNED_SEEED_COMMIT = "1ec1287f8e4bc4067a6fd593991e36875aef989f"
 
 
+def test_production_main_uses_bounded_console_module_before_sleep():
+    main = (NRF / "src/main.c").read_text(encoding="utf-8")
+    cmake = (NRF / "zephyr/CMakeLists.txt").read_text(encoding="utf-8")
+    assert "../src/nrf_boot_diagnostics_console_zephyr.c" in cmake
+    assert main.index("nrf_boot_diagnostics_console_drain();") < main.index(
+        "k_msleep((int32_t)DIAGNOSTIC_POLL_PERIOD_MS);")
+    assert "while (nrf_bootstrap_runtime_zephyr_drain_twis_record" not in main
+
+
 def test_upstream_twis_overlay_matches_pinned_xiao_wiring():
     overlay = (NRF / "zephyr" / "app.overlay").read_text(encoding="utf-8")
 

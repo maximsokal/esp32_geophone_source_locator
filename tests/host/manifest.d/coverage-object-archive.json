@@ -40,6 +40,7 @@
     {
       "name": "object_store_profile_round_trip",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/object_format/object_format.c",
         "components/object_store/object_store_cache.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
@@ -47,6 +48,7 @@
         "components/object_store/object_store_geometry_json.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "tests/host/stubs/object_store_profile",
         "components/object_store/tests/stubs",

@@ -25,6 +25,7 @@ idf_component_register(
 
     REQUIRES
         app_config
+        cjson_alloc_guard
         hw_inventory
         board_config
         runtime_observability

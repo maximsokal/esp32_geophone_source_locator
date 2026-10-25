@@ -394,6 +394,22 @@ esp_err_t seismic_recorder_json_read_summary_known_present(
 );
 
 
+/*
+ * Summary-read errors that describe the metadata itself (absent, malformed,
+ * oversized). A listing may show such a session as incomplete. Anything else
+ * (ESP_ERR_NO_MEM, I/O or lock failures) says nothing about the session, so the
+ * listing must report it instead of presenting a healthy session as unfinished.
+ */
+static inline bool seismic_recorder_summary_error_is_unreadable_metadata(
+    esp_err_t err
+)
+{
+    return err == ESP_ERR_NOT_FOUND ||
+        err == ESP_ERR_INVALID_RESPONSE ||
+        err == ESP_ERR_INVALID_SIZE;
+}
+
+
 esp_err_t seismic_recorder_json_parse_participation_text(
     const char *json,
     seismic_recorder_session_participation_t *participation

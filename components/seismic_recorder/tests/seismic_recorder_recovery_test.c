@@ -246,9 +246,26 @@ static void *recovery_test_malloc(size_t size)
 }
 
 
+extern int cJSON_stub_fail_alloc_countdown;
+
+/* When set, opening any session.json* candidate fails with this errno. */
+static int fail_candidate_open_errno;
+
+static FILE *recovery_test_fopen(const char *path, const char *mode)
+{
+    if (fail_candidate_open_errno != 0 && strstr(path, "session.json") != NULL) {
+        errno = fail_candidate_open_errno;
+        return NULL;
+    }
+    return fopen(path, mode);
+}
+
+
 #define malloc recovery_test_malloc
 #include "../seismic_recorder_samples.c"
+#define fopen recovery_test_fopen
 #include "../seismic_recorder_recovery.c"
+#undef fopen
 #undef malloc
 
 
@@ -722,6 +739,125 @@ static void test_candidate_allocation_failure_leaves_files_untouched(void)
     reset_layout();
 }
 
+static void snapshot_session_files(
+    unsigned char *metadata,
+    size_t *metadata_size,
+    unsigned char *samples,
+    size_t *samples_size
+)
+{
+    char path[256];
+    assert(snprintf(path, sizeof(path), "%s/OBJ_0001/sessions/S000001/session.json",
+        STORAGE_MANAGER_OBJECTS_PATH) < (int)sizeof(path));
+    *metadata_size = read_file_bytes(path, metadata, 512U);
+    assert(snprintf(path, sizeof(path), "%s/OBJ_0001/sessions/S000001/samples.bin",
+        STORAGE_MANAGER_OBJECTS_PATH) < (int)sizeof(path));
+    *samples_size = read_file_bytes(path, samples, 128U);
+}
+
+static void test_metadata_exactly_at_buffer_limit_is_accepted(void)
+{
+    static char padded[SEISMIC_RECORDER_METADATA_BUFFER_SIZE + 1U];
+    const char *json = valid_recording_metadata();
+    const size_t json_length = strlen(json);
+    assert(json_length < SEISMIC_RECORDER_METADATA_BUFFER_SIZE - 1U);
+    memcpy(padded, json, json_length);
+    memset(padded + json_length, ' ', SEISMIC_RECORDER_METADATA_BUFFER_SIZE - 1U - json_length);
+    padded[SEISMIC_RECORDER_METADATA_BUFFER_SIZE - 1U] = '\0';
+
+    make_layout();
+    reset_fakes();
+    write_candidate("session.json", padded);
+    write_raw(1U, 0U, RAW_HEADER_VALID);
+    assert_recovered(1U);
+    reset_layout();
+
+    /* One byte more is genuinely too large and stays fail-closed. */
+    padded[SEISMIC_RECORDER_METADATA_BUFFER_SIZE - 1U] = ' ';
+    padded[SEISMIC_RECORDER_METADATA_BUFFER_SIZE] = '\0';
+    make_layout();
+    reset_fakes();
+    write_candidate("session.json", padded);
+    write_raw(1U, 0U, RAW_HEADER_VALID);
+    size_t recovered = 99U;
+    assert(seismic_recorder_recover_object_sessions("OBJ_0001", NULL, NULL, &recovered) == ESP_OK);
+    assert(recovered == 0U);
+    assert(fake_metadata_write_calls == 0U);
+    reset_layout();
+}
+
+static void test_candidate_read_error_is_operational_not_corruption(void)
+{
+    unsigned char metadata_before[512];
+    unsigned char samples_before[128];
+    size_t metadata_size = 0U;
+    size_t samples_size = 0U;
+
+    /* Valid primary, no fallback: the I/O error must surface unchanged. */
+    make_layout();
+    reset_fakes();
+    write_candidate("session.json", valid_recording_metadata());
+    write_raw(2U, 0U, RAW_HEADER_VALID);
+    snapshot_session_files(metadata_before, &metadata_size, samples_before, &samples_size);
+    size_t recovered = 99U;
+    fail_candidate_open_errno = EIO;
+    const esp_err_t err = seismic_recorder_recover_object_sessions(
+        "OBJ_0001", NULL, NULL, &recovered);
+    fail_candidate_open_errno = 0;
+    assert(err == ESP_FAIL);
+    assert(recovered == 0U);
+    assert(fake_metadata_write_calls == 0U);
+    unsigned char metadata_after[512];
+    unsigned char samples_after[128];
+    size_t metadata_after_size = 0U;
+    size_t samples_after_size = 0U;
+    snapshot_session_files(metadata_after, &metadata_after_size, samples_after, &samples_after_size);
+    assert(metadata_after_size == metadata_size && samples_after_size == samples_size);
+    assert(memcmp(metadata_after, metadata_before, metadata_size) == 0);
+    assert(memcmp(samples_after, samples_before, samples_size) == 0);
+    assert(fake_storage_begin_calls == fake_storage_end_calls);
+    reset_layout();
+
+    /* An unreadable primary must not fall back to an older .bak snapshot. */
+    make_layout();
+    reset_fakes();
+    write_candidate("session.json", valid_recording_metadata());
+    write_candidate("session.json.bak", valid_recording_metadata());
+    write_raw(2U, 0U, RAW_HEADER_VALID);
+    recovered = 99U;
+    fail_candidate_open_errno = EIO;
+    assert(seismic_recorder_recover_object_sessions("OBJ_0001", NULL, NULL, &recovered) == ESP_FAIL);
+    fail_candidate_open_errno = 0;
+    assert(recovered == 0U);
+    assert(fake_metadata_write_calls == 0U);
+    reset_layout();
+}
+
+static void test_candidate_parse_oom_is_operational_not_corruption(void)
+{
+    make_layout();
+    reset_fakes();
+    write_candidate("session.json", valid_recording_metadata());
+    write_raw(2U, 0U, RAW_HEADER_VALID);
+    size_t recovered = 99U;
+    cJSON_stub_fail_alloc_countdown = 0;
+    const esp_err_t err = seismic_recorder_recover_object_sessions(
+        "OBJ_0001", NULL, NULL, &recovered);
+    cJSON_stub_fail_alloc_countdown = -1;
+    assert(err == ESP_ERR_NO_MEM);
+    assert(recovered == 0U);
+    assert(fake_metadata_write_calls == 0U);
+    reset_layout();
+
+    /* After memory returns, the very same session is recovered. */
+    make_layout();
+    reset_fakes();
+    write_candidate("session.json", valid_recording_metadata());
+    write_raw(2U, 0U, RAW_HEADER_VALID);
+    assert_recovered(2U);
+    reset_layout();
+}
+
 int main(void)
 {
     test_bounded_source_name_copy();
@@ -733,6 +869,9 @@ int main(void)
     test_live_and_existing_terminal_sessions_are_authoritative();
     test_cooperative_stop_does_not_touch_session();
     test_candidate_allocation_failure_leaves_files_untouched();
+    test_metadata_exactly_at_buffer_limit_is_accepted();
+    test_candidate_read_error_is_operational_not_corruption();
+    test_candidate_parse_oom_is_operational_not_corruption();
     puts("seismic_recorder_recovery_test: PASS");
     return 0;
 }

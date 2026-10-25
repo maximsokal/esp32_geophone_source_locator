@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "cjson_alloc_guard.h"
 #include "object_store_internal.h"
 #include "storage_manager.h"
 
@@ -15,11 +16,35 @@ static unsigned s_object_exists_calls;
 static unsigned s_path_exists_calls;
 static esp_err_t s_metadata_read_error;
 static bool s_storage_ready = true;
+static esp_err_t s_path_status_error;
+static bool s_settings_present;
+static char s_settings_json[256];
+static unsigned s_settings_writes;
 
+extern int cJSON_stub_fail_alloc_countdown;
+extern void (*cJSON_stub_on_alloc_failure)(void);
+
+static bool is_settings_path(const char *path)
+{
+    return path != NULL && strstr(path, "/settings.json") != NULL;
+}
+
+/* The legacy boolean probe cannot express a failed stat: it reports "absent". */
 bool storage_manager_path_exists(const char *path)
 {
     if (path != NULL && strstr(path, "/object.json") != NULL) ++s_path_exists_calls;
+    if (is_settings_path(path)) return s_settings_present && s_path_status_error == ESP_OK;
     return path != NULL && strstr(path, "/object.json") != NULL;
+}
+
+esp_err_t storage_manager_path_status(const char *path, bool *exists)
+{
+    if (path == NULL || exists == NULL) return ESP_ERR_INVALID_ARG;
+    if (s_path_status_error != ESP_OK) return s_path_status_error;
+    *exists = is_settings_path(path)
+        ? s_settings_present
+        : strstr(path, "/object.json") != NULL;
+    return ESP_OK;
 }
 
 bool storage_manager_is_ready(void)
@@ -34,6 +59,12 @@ void storage_manager_operation_end(void)
 esp_err_t storage_manager_read_text(const char *path, char *buffer, size_t buffer_size)
 {
     if (path == NULL || buffer == NULL || buffer_size == 0U) return ESP_ERR_INVALID_ARG;
+    if (is_settings_path(path)) {
+        if (!s_settings_present) return ESP_ERR_NOT_FOUND;
+        if (strlen(s_settings_json) + 1U > buffer_size) return ESP_ERR_INVALID_SIZE;
+        memcpy(buffer, s_settings_json, strlen(s_settings_json) + 1U);
+        return ESP_OK;
+    }
     if (strstr(path, "/object.json") != NULL) {
         ++s_metadata_read_calls;
         if (s_metadata_read_error != ESP_OK) return s_metadata_read_error;
@@ -47,6 +78,13 @@ esp_err_t storage_manager_read_text(const char *path, char *buffer, size_t buffe
 esp_err_t storage_manager_atomic_write_text(const char *path, const char *text)
 {
     if (path == NULL || text == NULL) return ESP_ERR_INVALID_ARG;
+    if (is_settings_path(path)) {
+        if (strlen(text) + 1U > sizeof(s_settings_json)) return ESP_ERR_INVALID_SIZE;
+        memcpy(s_settings_json, text, strlen(text) + 1U);
+        s_settings_present = true;
+        ++s_settings_writes;
+        return ESP_OK;
+    }
     if (!storage_manager_path_exists(path)) return ESP_ERR_NOT_FOUND;
     if (strlen(text) + 1U > sizeof(persisted_json)) return ESP_ERR_INVALID_SIZE;
     memcpy(persisted_json, text, strlen(text) + 1U);
@@ -162,6 +200,12 @@ static void set_metadata(const char *json)
     s_path_exists_calls = 0U;
     s_metadata_read_error = ESP_OK;
     s_storage_ready = true;
+    s_path_status_error = ESP_OK;
+    s_settings_present = false;
+    s_settings_json[0] = '\0';
+    s_settings_writes = 0U;
+    cJSON_stub_fail_alloc_countdown = -1;
+    cJSON_stub_on_alloc_failure = cjson_alloc_guard_note_failure;
     assert(strlen(json) + 1U < sizeof(persisted_json));
     memcpy(persisted_json, json, strlen(json) + 1U);
 }
@@ -380,6 +424,75 @@ static void test_interrupted_update_is_rejected(void)
     assert(object_store_get_profile("OBJ_0001", &profile) == ESP_ERR_INVALID_RESPONSE);
 }
 
+static void test_transient_settings_probe_failure_does_not_reset_cable_lengths(void)
+{
+    set_metadata("{\"schema_version\":1,\"id\":\"OBJ_0001\",\"name\":\"FIELD\"}");
+    s_settings_present = true;
+    (void)snprintf(
+        s_settings_json,
+        sizeof(s_settings_json),
+        "{\"cable_lengths_m\":[12.5,13.5,14.5,15.5]}"
+    );
+
+    /* settings.json exists, but the existence probe fails once. */
+    s_path_status_error = ESP_FAIL;
+    assert(object_store_set_cable_default(0U, 20.0f) == ESP_FAIL);
+    assert(!s_settings_cache_valid);
+    assert(s_settings_writes == 0U);
+
+    /* Access returns: the stored lengths of the other pods must survive. */
+    s_path_status_error = ESP_OK;
+    assert(object_store_set_cable_default(0U, 20.0f) == ESP_OK);
+    assert(s_settings_writes == 1U);
+    float lengths[OBJECT_STORE_POD_COUNT];
+    assert(object_store_settings_load_locked(lengths) == ESP_OK);
+    assert(fabsf(lengths[0] - 20.0f) < 1e-6f);
+    assert(fabsf(lengths[1] - 13.5f) < 1e-6f);
+    assert(fabsf(lengths[2] - 14.5f) < 1e-6f);
+    assert(fabsf(lengths[3] - 15.5f) < 1e-6f);
+    assert(strstr(s_settings_json, "13.5") != NULL);
+    assert(strstr(s_settings_json, "15.5") != NULL);
+}
+
+static void test_genuinely_absent_settings_still_mean_defaults(void)
+{
+    set_metadata("{\"schema_version\":1,\"id\":\"OBJ_0001\",\"name\":\"FIELD\"}");
+    float lengths[OBJECT_STORE_POD_COUNT];
+    assert(object_store_settings_load_locked(lengths) == ESP_OK);
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        assert(fabsf(lengths[i] - OBJECT_STORE_DEFAULT_CABLE_LENGTH_M) < 1e-6f);
+    }
+    assert(s_settings_cache_valid);
+}
+
+static void test_cjson_out_of_memory_is_not_reported_as_corruption(void)
+{
+    set_metadata("{\"schema_version\":1,\"id\":\"OBJ_0001\",\"name\":\"FIELD\"}");
+    object_store_profile_t profile;
+
+    cJSON_stub_fail_alloc_countdown = 0;
+    assert(object_store_get_profile("OBJ_0001", &profile) == ESP_ERR_NO_MEM);
+    assert(!object_store_profile_error_is_omittable(ESP_ERR_NO_MEM));
+    assert(object_store_profile_error_is_omittable(ESP_ERR_INVALID_RESPONSE));
+
+    /* Memory is back: the same object is readable again. */
+    assert(object_store_get_profile("OBJ_0001", &profile) == ESP_OK);
+
+    /* Truly malformed metadata remains INVALID_RESPONSE (skippable). */
+    test_interrupted_update_is_rejected();
+
+    /* Out-of-memory while parsing settings.json is not cached as defaults. */
+    set_metadata("{\"schema_version\":1,\"id\":\"OBJ_0001\",\"name\":\"FIELD\"}");
+    s_settings_present = true;
+    (void)snprintf(s_settings_json, sizeof(s_settings_json), "{\"cable_lengths_m\":[12.5,13.5,14.5,15.5]}");
+    float lengths[OBJECT_STORE_POD_COUNT];
+    cJSON_stub_fail_alloc_countdown = 0;
+    assert(object_store_settings_load_locked(lengths) == ESP_ERR_NO_MEM);
+    assert(!s_settings_cache_valid);
+    assert(object_store_settings_load_locked(lengths) == ESP_OK);
+    assert(fabsf(lengths[1] - 13.5f) < 1e-6f);
+}
+
 int main(void)
 {
     test_profile_cache_reads_once_and_reloads_after_mutation();
@@ -389,6 +502,9 @@ int main(void)
     test_phone_location_write_close_reopen_round_trip();
     test_phone_location_rejects_invalid_coordinates_and_accuracy();
     test_interrupted_update_is_rejected();
+    test_transient_settings_probe_failure_does_not_reset_cable_lengths();
+    test_genuinely_absent_settings_still_mean_defaults();
+    test_cjson_out_of_memory_is_not_reported_as_corruption();
     puts("OBJECT_STORE_PROFILE_ROUND_TRIP_HOST_PASS");
     return 0;
 }

@@ -271,12 +271,52 @@ static esp_err_t storage_manager_read_text_impl(
                 file
             );
 
+        /* EOF is also what fgetc() returns on an I/O error, so tell them apart. */
+        const bool probe_failed =
+            next_character == EOF &&
+            ferror(file) != 0;
+
+        const int probe_errno =
+            probe_failed
+                ? errno
+                : 0;
+
         storage_read_log_io(
             "fgetc-size-check",
             path,
-            next_character,
+            probe_failed ? -1 : next_character,
             started_us
         );
+
+        if (probe_failed) {
+            started_us =
+                esp_timer_get_time();
+
+            const int close_result =
+                fclose(
+                    file
+                );
+
+            storage_read_log_io(
+                "fclose-after-read-error",
+                path,
+                close_result,
+                started_us
+            );
+
+            storage_manager_operation_end();
+
+            ESP_LOGE(
+                TAG,
+                "Read failed for %s: errno=%d",
+                path,
+                probe_errno
+            );
+
+            return storage_read_errno_to_error(
+                probe_errno
+            );
+        }
 
         if (
             next_character !=

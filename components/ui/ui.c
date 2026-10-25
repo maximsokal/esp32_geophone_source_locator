@@ -63,7 +63,6 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
     const bool measurement_load_started =
         measurement_load_active && !s_measurement_load_active;
     s_measurement_load_active = measurement_load_active;
-    ui_lvgl_set_measurement_load_active(measurement_load_active);
 
     const uint64_t generation = acquisition_error == ESP_OK
         ? acquisition.samples

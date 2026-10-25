@@ -118,6 +118,7 @@
     {
       "name": "seismic_recorder_fault_fsm_strict",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/seismic_recorder/seismic_recorder.c",
         "components/seismic_recorder/seismic_recorder_cache.c",
         "components/seismic_recorder/seismic_recorder_start_policy.c",
@@ -131,6 +132,7 @@
         "tests/host/seismic_recorder_fault_fsm_test.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "tests/host/stubs/seismic_recorder_start",
         "components/seismic_recorder/tests/stubs/session_geometry",
@@ -165,6 +167,7 @@
     {
       "name": "seismic_recorder_fault_fsm_bypass",
       "sources": [
+        "components/cjson_alloc_guard/cjson_alloc_guard.c",
         "components/seismic_recorder/seismic_recorder.c",
         "components/seismic_recorder/seismic_recorder_cache.c",
         "components/seismic_recorder/seismic_recorder_start_policy.c",
@@ -178,6 +181,7 @@
         "tests/host/seismic_recorder_fault_fsm_test.c"
       ],
       "include_dirs": [
+        "components/cjson_alloc_guard/include",
         "components/json_number/include",
         "tests/host/stubs/seismic_recorder_start",
         "components/seismic_recorder/tests/stubs/session_geometry",

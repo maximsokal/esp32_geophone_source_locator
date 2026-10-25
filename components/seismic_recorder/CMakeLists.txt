@@ -52,6 +52,7 @@ idf_component_register(
 
     REQUIRES
         app_config
+        cjson_alloc_guard
         device_status
         nrf_geometry_solver
         nrf_topology_service

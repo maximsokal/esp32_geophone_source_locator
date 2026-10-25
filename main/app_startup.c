@@ -36,6 +36,7 @@
 #include "wifi_manager.h"
 #include "runtime_observability.h"
 #include "app_keypad_config.h"
+#include "cjson_alloc_guard.h"
 
 #if CONFIG_APP_TEST_WDT_TRIGGER
 #include "app_test_wdt.h"
@@ -580,6 +581,12 @@ static void app_startup_initialize_services(
 
 void app_startup_run(void)
 {
+    /* cJSON's allocator hooks are process-wide and must not change while another
+     * task may already be inside cJSON, so install them before any task that
+     * could use it exists. Later installs (object recovery, web server) are
+     * no-ops; only the allocator behind the hooks is switched, atomically. */
+    cjson_alloc_guard_install();
+
     hw_inventory_init();
 
     const uint32_t startup_started_ms =

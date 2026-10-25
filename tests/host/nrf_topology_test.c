@@ -47,6 +47,9 @@ typedef struct {
     unsigned discovery_reads_while_selected;
     unsigned collision_reads;
     unsigned sleeps;
+    uint64_t now_ms;
+    uint64_t assign_started_ms;
+    uint32_t read_cost_ms;
     unsigned main_assign_order;
     unsigned first_select_order;
     unsigned order_counter;
@@ -218,6 +221,7 @@ static fake_node_t *fake_visible_discovery(fake_bus_t *bus, unsigned *count)
 static esp_err_t fake_read_status(void *context, uint8_t address, nrf_upstream_status_t *status)
 {
     fake_bus_t *bus = context;
+    bus->now_ms += bus->read_cost_ms;
     bus->status_reads++;
     if (address == NRF_UPSTREAM_ADDRESS_DISCOVERY) {
         bus->discovery_reads++;
@@ -265,6 +269,7 @@ static esp_err_t fake_read_status(void *context, uint8_t address, nrf_upstream_s
 static esp_err_t fake_write_assign(void *context, uint8_t address, const nrf_upstream_assign_t *assign)
 {
     fake_bus_t *bus = context;
+    bus->assign_started_ms = bus->now_ms;
     unsigned count = 0U;
     fake_node_t *node;
     assert(address == NRF_UPSTREAM_ADDRESS_DISCOVERY);
@@ -316,9 +321,12 @@ static esp_err_t fake_write_assign(void *context, uint8_t address, const nrf_ups
 static void fake_sleep(void *context, uint32_t delay_ms)
 {
     fake_bus_t *bus = context;
-    assert(delay_ms == 10U);
+    assert(delay_ms > 0U && delay_ms <= 10U);
     bus->sleeps++;
+    bus->now_ms += delay_ms;
 }
+
+static uint64_t fake_now_ms(void *context) { return ((fake_bus_t *)context)->now_ms; }
 
 static nrf_topology_controller_t make_controller(void)
 {
@@ -342,6 +350,7 @@ static nrf_topology_io_t make_io(fake_bus_t *bus)
         .mux_select = fake_select,
         .read_status = fake_read_status,
         .write_assign = fake_write_assign,
+        .now_ms = fake_now_ms,
         .sleep_ms = fake_sleep,
     };
     return io;
@@ -876,6 +885,34 @@ static void test_mux_fault_main_read_errors_keep_truthful_state(void)
     assert_mux_fault_leaves_mux_and_discovery_untouched(&bus, &snapshot);
 }
 
+static void test_assignment_deadline_includes_io_and_late_completion_recovers(void)
+{
+    fake_bus_t bus;
+    init_bus(&bus, false);
+    bus.main.mode = FAKE_UNASSIGNED;
+    bus.main.stay_pending = true;
+    fake_set_hw(&bus.main, 0x42U);
+    bus.read_cost_ms = 120U;
+    nrf_topology_controller_t controller = make_controller();
+    nrf_topology_io_t io = make_io(&bus);
+    nrf_topology_snapshot_t snapshot;
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    assert(bus.main.assign_writes == 1U);
+    assert(bus.now_ms - bus.assign_started_ms <= 500U + bus.read_cost_ms);
+    /* The deferred node finishes after the host deadline; the next pass accepts
+     * its verified runtime identity without another ASSIGN or a reboot. */
+    bus.read_cost_ms = 0U;
+    bus.main.stay_pending = false;
+    bus.main.mode = FAKE_MAIN;
+    bus.main.node_id = NRF_TOPOLOGY_MAIN_NODE_ID;
+    bus.main.channel = NRF_UPSTREAM_MUX_CHANNEL_NONE;
+    bus.main.result = NRF_UPSTREAM_RESULT_OK;
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(bus.main.assign_writes == 1U);
+}
+
 int main(void)
 {
     test_main_only_without_tca_assigns_safely();
@@ -892,6 +929,7 @@ int main(void)
     test_main_reboot_during_remote_scan_closes_before_discovery_reconcile();
     test_remote_discovery_and_runtime_same_channel_is_conflict();
     test_pending_assignment_times_out_with_bounded_polls();
+    test_assignment_deadline_includes_io_and_late_completion_recovers();
     test_close_failure_after_remote_operation_sets_mux_fault();
     test_absent_main_allows_diagnostic_remote_assignment();
     test_mutex_busy_does_not_fault_mux_and_retries_next_window();

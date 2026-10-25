@@ -1890,6 +1890,7 @@ static bool service_run_topology_reconcile(
             .mux_select = platform_mux_select,
             .read_status = platform_read_status,
             .write_assign = platform_write_assign,
+            .now_ms = platform_now_ms,
             .sleep_ms = platform_sleep_ms,
             .abort_requested = platform_abort_requested,
         };
@@ -1910,6 +1911,7 @@ static bool service_run_topology_reconcile(
             .mux_select = platform_mux_select,
             .read_status = platform_read_status,
             .write_assign = platform_write_assign,
+            .now_ms = platform_now_ms,
             .sleep_ms = platform_sleep_ms,
             .abort_requested = platform_abort_requested,
         };

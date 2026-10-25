@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 
 #include "cJSON.h"
+#include "cjson_alloc_guard.h"
 #include "json_number.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -1427,9 +1428,15 @@ esp_err_t seismic_recorder_json_parse_participation_text(
     }
     memset(participation, 0, sizeof(*participation));
 
+    /* cJSON_Parse() cannot say why it returned NULL; an allocation failure
+     * recorded by the guarded hooks during the call is not malformed text. */
+    cjson_alloc_guard_install();
+    const uint32_t alloc_failures_before = cjson_alloc_guard_failures();
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) {
-        return ESP_ERR_INVALID_RESPONSE;
+        return cjson_alloc_guard_failures() != alloc_failures_before
+            ? ESP_ERR_NO_MEM
+            : ESP_ERR_INVALID_RESPONSE;
     }
     uint32_t version = 0U;
     if (!seismic_recorder_json_schema_version(root, &version)) {
@@ -1498,11 +1505,17 @@ static esp_err_t seismic_recorder_json_read_summary_impl(
         return err;
     }
 
+    cjson_alloc_guard_install();
+    const uint32_t alloc_failures_before = cjson_alloc_guard_failures();
     cJSON *root = cJSON_Parse(buffer);
+    const bool parse_allocation_failed =
+        cjson_alloc_guard_failures() != alloc_failures_before;
     free(buffer);
     if (root == NULL) {
         free(path);
-        return ESP_ERR_INVALID_RESPONSE;
+        return parse_allocation_failed
+            ? ESP_ERR_NO_MEM
+            : ESP_ERR_INVALID_RESPONSE;
     }
 
     bool valid =

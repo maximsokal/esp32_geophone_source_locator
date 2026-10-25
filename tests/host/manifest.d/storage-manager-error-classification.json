@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "storage_manager_text_write_contract",
+      "sources": [
+        "components/storage_manager/tests/storage_manager_text_write_contract_test.c"
+      ],
+      "include_dirs": [
+        "components/storage_manager/tests/stubs",
+        "components/storage_manager/include",
+        "components/storage_manager"
+      ]
+    }
+  ]
+}

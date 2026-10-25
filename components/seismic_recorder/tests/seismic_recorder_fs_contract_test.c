@@ -3009,6 +3009,13 @@ static void test_listing_missing_and_malformed_metadata_is_safe(void)
         assert(!sessions[index].complete);
     }
 
+    /* A transient failure says nothing about the session: report it instead of
+     * presenting healthy sessions as unfinished. */
+    fake_summary_error = ESP_ERR_NO_MEM;
+    count = 0U;
+    assert(seismic_recorder_fs_list_sessions("OBJ_0001", sessions, 4U, &count) == ESP_ERR_NO_MEM);
+    assert(storage_begin_calls == storage_end_calls);
+
     fake_summary_error = ESP_OK;
     fake_summary_read_calls = 0U;
     fake_known_present_summary_read_calls = 0U;

@@ -177,7 +177,6 @@ ui_context_t *ui_context(void);
 /* LVGL/esp_lcd bridge lifecycle. */
 esp_err_t ui_lvgl_init(void);
 void ui_lvgl_deinit(void);
-void ui_lvgl_set_measurement_load_active(bool load_active);
 
 
 /* Shared shell/layout primitives. Caller holds the LVGL port lock. */

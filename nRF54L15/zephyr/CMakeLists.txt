@@ -19,6 +19,7 @@ project(geophone_nrf54l15_node)
 
 target_sources(app PRIVATE
     ../src/main.c
+    ../src/nrf_boot_diagnostics_console_zephyr.c
     ../src/nrf_node_state.c
     ../src/nrf_sensor_bus.c
     ../src/nrf_sensor_bus_zephyr.c

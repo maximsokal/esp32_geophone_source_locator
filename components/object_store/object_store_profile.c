@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "cjson_alloc_guard.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "object_format.h"
@@ -169,6 +170,22 @@ void object_store_profile_cache_reset(void)
     object_store_cache_reset();
 }
 
+/* cJSON_Parse() returns NULL for malformed text and for an allocation failure
+ * alike. Callers decide whether a record is "corrupt" (and may be skipped or
+ * replaced) from this result, so out-of-memory must not look like corruption. */
+static cJSON *object_store_parse_json(const char *text, esp_err_t *error_out)
+{
+    cjson_alloc_guard_install();
+    const uint32_t alloc_failures_before = cjson_alloc_guard_failures();
+    cJSON *root = cJSON_Parse(text);
+    if (root == NULL) {
+        *error_out = cjson_alloc_guard_failures() != alloc_failures_before
+            ? ESP_ERR_NO_MEM
+            : ESP_ERR_INVALID_RESPONSE;
+    }
+    return root;
+}
+
 static esp_err_t object_store_load_metadata_locked(const char *object_id, cJSON **root_out)
 {
     if (!object_format_id_is_valid(object_id) || root_out == NULL) {
@@ -193,9 +210,13 @@ static esp_err_t object_store_load_metadata_locked(const char *object_id, cJSON 
         return err;
     }
 
-    cJSON *root = cJSON_Parse(buffer);
+    esp_err_t parse_err = ESP_ERR_INVALID_RESPONSE;
+    cJSON *root = object_store_parse_json(buffer, &parse_err);
     free(buffer);
-    if (root == NULL || !cJSON_IsObject(root)) {
+    if (root == NULL) {
+        return parse_err;
+    }
+    if (!cJSON_IsObject(root)) {
         cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
     }
@@ -267,7 +288,17 @@ esp_err_t object_store_settings_load_locked(float lengths_m[OBJECT_STORE_POD_COU
      * we do not spend ~100 ms on the same negative FAT stat for every profile
      * read and mutation.
      */
-    if (!storage_manager_path_exists(OBJECT_STORE_SETTINGS_PATH)) {
+    bool settings_present = false;
+    esp_err_t err = storage_manager_path_status(
+        OBJECT_STORE_SETTINGS_PATH,
+        &settings_present
+    );
+    if (err != ESP_OK) {
+        /* "Cannot tell" is not "absent": caching defaults here would let the
+         * next cable edit overwrite the real settings.json with them. */
+        return err;
+    }
+    if (!settings_present) {
         memcpy(s_settings_cache, loaded, sizeof(s_settings_cache));
         s_settings_cache_valid = true;
         memcpy(lengths_m, loaded, sizeof(loaded));
@@ -279,7 +310,7 @@ esp_err_t object_store_settings_load_locked(float lengths_m[OBJECT_STORE_POD_COU
         return ESP_ERR_NO_MEM;
     }
 
-    esp_err_t err = storage_manager_read_text(
+    err = storage_manager_read_text(
         OBJECT_STORE_SETTINGS_PATH,
         buffer,
         OBJECT_STORE_SETTINGS_BUFFER_SIZE
@@ -289,10 +320,11 @@ esp_err_t object_store_settings_load_locked(float lengths_m[OBJECT_STORE_POD_COU
         return err;
     }
 
-    cJSON *root = cJSON_Parse(buffer);
+    esp_err_t parse_err = ESP_ERR_INVALID_RESPONSE;
+    cJSON *root = object_store_parse_json(buffer, &parse_err);
     free(buffer);
     if (root == NULL) {
-        return ESP_ERR_INVALID_RESPONSE;
+        return parse_err;
     }
 
     cJSON *array = cJSON_GetObjectItemCaseSensitive(root, "cable_lengths_m");
@@ -317,14 +349,20 @@ static esp_err_t object_store_settings_load_uncached(float lengths_m[OBJECT_STOR
     if (lengths_m == NULL) return ESP_ERR_INVALID_ARG;
 
     object_store_default_cables(lengths_m);
-    if (!storage_manager_path_exists(OBJECT_STORE_SETTINGS_PATH)) {
+    bool settings_present = false;
+    esp_err_t err = storage_manager_path_status(
+        OBJECT_STORE_SETTINGS_PATH,
+        &settings_present
+    );
+    if (err != ESP_OK) return err;
+    if (!settings_present) {
         return ESP_OK;
     }
 
     char *buffer = malloc(OBJECT_STORE_SETTINGS_BUFFER_SIZE);
     if (buffer == NULL) return ESP_ERR_NO_MEM;
 
-    esp_err_t err = storage_manager_read_text(
+    err = storage_manager_read_text(
         OBJECT_STORE_SETTINGS_PATH,
         buffer,
         OBJECT_STORE_SETTINGS_BUFFER_SIZE
@@ -334,9 +372,10 @@ static esp_err_t object_store_settings_load_uncached(float lengths_m[OBJECT_STOR
         return err;
     }
 
-    cJSON *root = cJSON_Parse(buffer);
+    esp_err_t parse_err = ESP_ERR_INVALID_RESPONSE;
+    cJSON *root = object_store_parse_json(buffer, &parse_err);
     free(buffer);
-    if (root == NULL) return ESP_ERR_INVALID_RESPONSE;
+    if (root == NULL) return parse_err;
 
     cJSON *array = cJSON_GetObjectItemCaseSensitive(root, "cable_lengths_m");
     if (cJSON_IsArray(array)) {

@@ -22,6 +22,7 @@
 #endif
 
 bool storage_manager_path_exists(const char *path);
+esp_err_t storage_manager_path_status(const char *path, bool *exists);
 bool storage_manager_is_ready(void);
 void storage_manager_operation_end(void);
 esp_err_t storage_manager_create_directory(const char *path);

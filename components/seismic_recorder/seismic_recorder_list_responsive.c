@@ -251,6 +251,14 @@ esp_err_t seismic_recorder_list_sessions_responsive(
                         )
                         : ESP_ERR_NOT_FOUND;
 
+            if (
+                summary_err != ESP_OK &&
+                !seismic_recorder_summary_error_is_unreadable_metadata(summary_err)
+            ) {
+                storage_manager_operation_end();
+                return summary_err;
+            }
+
             if (summary_err != ESP_OK) {
                 static const size_t canonical_size = sizeof("S000000");
                 memcpy(summary.session_id, session_id, canonical_size);

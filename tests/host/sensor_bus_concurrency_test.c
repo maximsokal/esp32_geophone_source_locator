@@ -691,15 +691,47 @@ static void test_bounded_wait_reports_owner_and_priority_inheritance(void)
     assert(waited_us >= 190000U && waited_us <= 210000U);
 }
 
+static esp_err_t s_timeout_log_peer_result;
+static bool s_timeout_log_peer_checked;
+
+#ifdef _WIN32
+static DWORD WINAPI timeout_log_peer(void *context)
+#else
+static void *timeout_log_peer(void *context)
+#endif
+{
+    (void)context;
+    sensor_bus_handles_t handles = {0};
+    s_timeout_log_peer_result = sensor_bus_get_handles(&handles);
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+static void observe_timeout_log_unlocked(const char *line)
+{
+    if (strstr(line, "I2C_TIMEOUT_DIAG src=ina3221") == NULL ||
+        (strstr(line, "transfer_us=") == NULL &&
+         strstr(line, "err=ESP_ERR_INVALID_STATE") == NULL)) return;
+    g_fake_lines.log_observer = NULL;
+    test_thread_join(test_thread_start(timeout_log_peer, NULL));
+    assert(s_timeout_log_peer_result == ESP_OK);
+    s_timeout_log_peer_checked = true;
+}
+
 static void test_transaction_timeout_is_20ms_and_recovery_is_unlocked(void)
 {
     sensor_bus_handles_t handles = {0};
     uint8_t bytes[2] = {0U, 0U};
     assert(sensor_bus_get_handles(&handles) == ESP_OK);
+    g_fake_lines.log_observer = observe_timeout_log_unlocked;
     const int64_t started_us = sensor_bus_lines_now_us();
     atomic_store(&s_hang_next_receive, true);
     assert(sensor_bus_read_bytes(
         handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes) == ESP_ERR_TIMEOUT);
+    assert(s_timeout_log_peer_checked);
     const int64_t held_us = sensor_bus_lines_now_us() - started_us;
     assert(atomic_load(&s_last_transaction_timeout_ms) == SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
     assert(held_us >= 15000 && held_us <= 25000);
@@ -713,6 +745,18 @@ static void test_transaction_timeout_is_20ms_and_recovery_is_unlocked(void)
     sensor_bus_lines_delay_us(60000000U);
     assert(sensor_bus_recover(&recovery) == ESP_OK);
     assert(recovery == I2C_LINES_IDLE);
+
+    const bool probe_configured = g_fake_lines.probe_configured;
+    const int probe_result = g_fake_lines.probe_result[0x40U];
+    g_fake_lines.probe_configured = true;
+    g_fake_lines.probe_result[0x40U] = ESP_OK;
+    s_timeout_log_peer_checked = false;
+    g_fake_lines.log_observer = observe_timeout_log_unlocked;
+    assert(sensor_bus_classify_transfer_error_with_context(
+        0x40U, ESP_ERR_INVALID_STATE, "ina3221", -1) == ESP_ERR_INVALID_STATE);
+    assert(s_timeout_log_peer_checked);
+    g_fake_lines.probe_configured = probe_configured;
+    g_fake_lines.probe_result[0x40U] = probe_result;
 
     assert(sensor_bus_read_bytes_with_timeout(
         handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes, 100U) == ESP_OK);

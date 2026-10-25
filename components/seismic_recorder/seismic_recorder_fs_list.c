@@ -235,10 +235,10 @@ esp_err_t seismic_recorder_fs_list_sessions(
                 break;
             }
 
-            if (
-                metadata_state == SEISMIC_RECORDER_LIST_METADATA_NONE ||
-                (
-                    metadata_state == SEISMIC_RECORDER_LIST_METADATA_PRIMARY
+            const esp_err_t summary_err =
+                metadata_state == SEISMIC_RECORDER_LIST_METADATA_NONE
+                    ? ESP_ERR_NOT_FOUND
+                    : metadata_state == SEISMIC_RECORDER_LIST_METADATA_PRIMARY
                         ? seismic_recorder_json_read_summary_known_present(
                             object_id,
                             session_id,
@@ -248,9 +248,16 @@ esp_err_t seismic_recorder_fs_list_sessions(
                             object_id,
                             session_id,
                             &summary
-                        )
-                ) != ESP_OK
+                        );
+            if (
+                summary_err != ESP_OK &&
+                !seismic_recorder_summary_error_is_unreadable_metadata(summary_err)
             ) {
+                err = summary_err;
+                break;
+            }
+
+            if (summary_err != ESP_OK) {
                 static const size_t canonical_size = sizeof("S000000");
                 memcpy(summary.session_id, session_id, canonical_size);
                 summary.complete = false;
