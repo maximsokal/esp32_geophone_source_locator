@@ -45,6 +45,8 @@ describe('nRF log event arguments', () => {
     ['CS_TIMEOUT', 15, 36, 2500, 'Attempt ID: 0x00000024, Timeout (ms): 2500'],
     ['WATCHDOG_PARTICIPANT_STALE', 16, 1, 5000, 'Participant: System work queue (1), Allowed silence (ms): 5000'],
     ['LOG_TEST_EVENT', 17, 7, 100000, 'Test index: 7, Uptime (ms): 100000'],
+    ['SENSOR_INIT_FAILED', 23, 1, 0xFFFFFFFB, 'Sensor: BMI160 (1), Driver initialization result: -5'],
+    ['SENSOR_INIT_FAILED', 23, 2, 0xFFFFFFED, 'Sensor: BME280 (2), Driver initialization result: -19'],
   ] as const)('decodes %s (event %i)', (_name, eventId, arg0, arg1, expected) => {
     expect(formatEventArgsText(formatEventArgs(eventId, arg0, arg1), english)).toBe(expected);
   });

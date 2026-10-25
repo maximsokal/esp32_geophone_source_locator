@@ -22,4 +22,5 @@ export const NRF_LOG_EVENTS = {
   20: { name: "CS_EVENT_QUEUE_OVERFLOW", subsystem: "CS", defaultSeverity: "ERROR" },
   21: { name: "WATCHDOG_DEGRADED", subsystem: "WATCHDOG", defaultSeverity: "ERROR" },
   22: { name: "WATCHDOG_FEED_FAILED", subsystem: "WATCHDOG", defaultSeverity: "ERROR" },
+  23: { name: "SENSOR_INIT_FAILED", subsystem: "SENSOR", defaultSeverity: "ERROR" },
 } as const;

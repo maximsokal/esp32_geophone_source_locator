@@ -32,6 +32,7 @@ typedef enum {
  * CS_EVENT_QUEUE_OVERFLOW   saturating queue-overflow total           event queue capacity
  * WATCHDOG_DEGRADED         watchdog arm-failure stage                raw errno
  * WATCHDOG_FEED_FAILED      watchdog channel id                       raw feed error
+ * SENSOR_INIT_FAILED        sensor bit (1 BMI160, 2 BME280)           signed driver init result as uint32
  */
 
 #endif

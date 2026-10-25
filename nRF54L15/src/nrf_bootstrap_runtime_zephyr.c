@@ -436,7 +436,8 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
 
     if(handle_log_write(ptr,(size_t)len,&transaction_result))goto record_transaction;
 
-    if((size_t)len==NRF_CS_CONTROL_EXECUTE_LENGTH&&ptr!=NULL&&ptr[3]==NRF_CS_CONTROL_MESSAGE_EXECUTE){
+    /* Dispatch by type so a short control frame cannot overwrite ASSIGN status. */
+    if(ptr!=NULL&&len>3U&&ptr[3]==NRF_CS_CONTROL_MESSAGE_EXECUTE){
         cs_execute_work_item_t item;
         k_spinlock_key_t queue_key;
         transaction_result = nrf_cs_control_decode_execute(
@@ -469,27 +470,27 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
         transaction_result = submit_result < 0 ? submit_result : 0;
         goto record_transaction;
     }
-    if((size_t)len==NRF_CS_CONTROL_STATUS_REQUEST_LENGTH&&ptr!=NULL&&ptr[3]==NRF_CS_CONTROL_MESSAGE_STATUS_REQUEST){
+    if(ptr!=NULL&&len>3U&&ptr[3]==NRF_CS_CONTROL_MESSAGE_STATUS_REQUEST){
         transaction_result = nrf_cs_control_decode_status_request(
             ptr, (size_t)len, &cs_request);
         if(transaction_result==0){key=k_spin_lock(&s_cs_lock);transaction_result=nrf_cs_control_runtime_select_result(&s_cs_control,&cs_request);k_spin_unlock(&s_cs_lock,key);}else{nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME,ptr[3],1U);}
         goto record_transaction;
     }
-    if((size_t)len==NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH){
+    if(ptr!=NULL&&len>3U&&ptr[3]==NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH){
         result=nrf_upstream_protocol_decode_sensor_refresh(ptr,(size_t)len,&sensor_request);
         if(result==NRF_UPSTREAM_RESULT_OK)transaction_result=nrf_sensor_upstream_runtime_zephyr_request_refresh(&sensor_request);
         else nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME,ptr!=NULL&&len>3U?ptr[3]:0U,(uint32_t)result);
         if(result!=NRF_UPSTREAM_RESULT_OK)transaction_result=(int32_t)result;
         goto record_transaction;
     }
-    if((size_t)len==NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH&&ptr!=NULL&&ptr[3]==NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE){
+    if(ptr!=NULL&&len>3U&&ptr[3]==NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE){
         result=nrf_upstream_protocol_decode_height_reference(ptr,(size_t)len,&height_reference_request);
         if(result==NRF_UPSTREAM_RESULT_OK)transaction_result=nrf_sensor_upstream_runtime_zephyr_request_height_reference(&height_reference_request);
         else nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME,ptr[3],(uint32_t)result);
         if(result!=NRF_UPSTREAM_RESULT_OK)transaction_result=(int32_t)result;
         goto record_transaction;
     }
-    if((size_t)len==NRF_UPSTREAM_PROTOCOL_IMU_CALIBRATE_LENGTH&&ptr!=NULL&&ptr[3]==NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE){
+    if(ptr!=NULL&&len>3U&&ptr[3]==NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE){
         result=nrf_upstream_protocol_decode_imu_calibrate(ptr,(size_t)len,&imu_calibration_request);
         if(result==NRF_UPSTREAM_RESULT_OK)transaction_result=nrf_sensor_upstream_runtime_zephyr_request_imu_calibration(&imu_calibration_request);
         else nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME,ptr[3],(uint32_t)result);

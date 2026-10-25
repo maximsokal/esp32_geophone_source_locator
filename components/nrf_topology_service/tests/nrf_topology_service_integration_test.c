@@ -147,6 +147,10 @@ static unsigned s_malformed_sensor_snapshots_seen;
 static bool s_delay_next_assignment_confirmation;
 static unsigned s_delayed_assignment_confirmations;
 static unsigned s_cs_execute_count;
+static uint8_t s_fail_cs_write_type;
+static uint8_t s_fail_cs_write_channel;
+static unsigned s_failed_cs_writes;
+static uint32_t s_cs_recovery_attempts_before;
 static unsigned s_task_create_count;
 static unsigned s_task_delete_count;
 static unsigned s_active_tasks;
@@ -741,6 +745,12 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
     }
     if (data_len == NRF_CS_CONTROL_EXECUTE_LENGTH) {
         nrf_cs_control_request_t request;
+        if (s_fail_cs_write_type != 0U && data[3] == s_fail_cs_write_type &&
+            node->channel == s_fail_cs_write_channel) {
+            s_fail_cs_write_type = 0U;
+            ++s_failed_cs_writes;
+            return ESP_ERR_INVALID_STATE;
+        }
         if (nrf_cs_control_decode_execute(data, data_len, &request) == 0) {
             node->cs_request = request;
             node->cs_request_valid = true;
@@ -1298,6 +1308,31 @@ static void request_cs_cycle(void)
         .samples_per_pair = 1U,
     };
     assert(nrf_topology_service_request_cs_cycle(&policy) == ESP_OK);
+}
+
+static void request_cs_with_write_fault(void)
+{
+    sensor_bus_owner_stats_t stats;
+    assert(sensor_bus_get_owner_stats(&stats) == ESP_OK);
+    s_cs_recovery_attempts_before = stats.recover_attempts;
+    request_cs_cycle();
+}
+
+static void assert_cs_write_fault_was_classified(void)
+{
+    sensor_bus_owner_stats_t stats;
+    assert(sensor_bus_get_owner_stats(&stats) == ESP_OK);
+    assert(s_failed_cs_writes == 1U);
+    assert(stats.recover_attempts > s_cs_recovery_attempts_before);
+    capture();
+    capture_cs();
+    assert(s_seen.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_seen.remotes[0].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_seen.remotes[3].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_seen_cs.complete && s_seen_cs.pair_count == 3U);
+    for (size_t index = 0U; index < s_seen_cs.pair_count; ++index) {
+        assert(s_seen_cs.pairs[index].state == NRF_CS_PAIR_VALID);
+    }
 }
 
 static unsigned total_status_reads(void)
@@ -2002,6 +2037,10 @@ static void reset_world(void)
     s_delay_next_assignment_confirmation = false;
     s_delayed_assignment_confirmations = 0U;
     s_cs_execute_count = 0U;
+    s_fail_cs_write_type = 0U;
+    s_fail_cs_write_channel = UPSTREAM_CHANNEL;
+    s_failed_cs_writes = 0U;
+    s_cs_recovery_attempts_before = 0U;
     s_in_height_calibration_handler = false;
     s_attempt_height_request_during_capture = false;
     s_height_request_during_capture_attempted = false;
@@ -2302,6 +2341,37 @@ static void test_mux_main_address_conflict_blocks_direct_nrf_io(void)
     assert(s_direct_nrf_read_calls == 0U);
     assert(s_direct_nrf_write_calls == 0U);
     assert(s_direct_nrf_probe_calls == 0U);
+}
+
+static void test_cs_write_fault_preserves_two_remote_topology(void)
+{
+    static const struct {
+        uint8_t type;
+        uint8_t channel;
+    } faults[] = {
+        {NRF_CS_CONTROL_MESSAGE_EXECUTE, UPSTREAM_CHANNEL},
+        {NRF_CS_CONTROL_MESSAGE_STATUS_REQUEST, UPSTREAM_CHANNEL},
+        {NRF_CS_CONTROL_MESSAGE_EXECUTE, 0U},
+        {NRF_CS_CONTROL_MESSAGE_STATUS_REQUEST, 0U},
+    };
+    for (size_t index = 0U; index < sizeof(faults) / sizeof(faults[0]); ++index) {
+        reset_world();
+        s_tca_present = true;
+        node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+        node_boot(&s_nodes[1], 0U, 0x22U);
+        node_boot(&s_nodes[2], 3U, 0x33U);
+        s_fail_cs_write_type = faults[index].type;
+        s_fail_cs_write_channel = faults[index].channel;
+        /* The shared recovery policy also rate-limits after the startup clear. */
+        script(EV_WAIT_MS, 1010U, NULL);
+        script(EV_ACTION, 0U, request_cs_with_write_fault);
+        script_waits(32U, 10U);
+        script(EV_ACTION, 0U, assert_cs_write_fault_was_classified);
+        script(EV_STOP, 0U, NULL);
+        run_service();
+        assert(s_collisions == 0U);
+        assert(s_tca_control == 0U);
+    }
 }
 
 static void test_assignment_confirmation_race_preserves_node_mapping(void)
@@ -2798,6 +2868,7 @@ int main(void)
     test_unplug_and_replug_between_reconciles();
     test_full_topology_is_assigned_one_hot();
     test_mux_main_address_conflict_blocks_direct_nrf_io();
+    test_cs_write_fault_preserves_two_remote_topology();
     test_remote_snapshot_v1_and_v2_cache_read_path();
     test_height_calibration_worker_queue_and_generation_wrap();
     test_height_calibration_without_remotes();

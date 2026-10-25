@@ -2,7 +2,7 @@ import { NRF_LOG_EVENTS } from './nrfLogEvents.gen';
 import type { I18nKey } from '../../i18n';
 
 type ArgumentSpec =
-  | { kind: 'number' | 'hex'; labelKey: I18nKey }
+  | { kind: 'number' | 'hex' | 'signed'; labelKey: I18nKey }
   | { kind: 'enum'; labelKey: I18nKey; values: Readonly<Record<number, I18nKey>> };
 
 type EventName = (typeof NRF_LOG_EVENTS)[keyof typeof NRF_LOG_EVENTS]['name'];
@@ -155,6 +155,10 @@ export const NRF_LOG_ARG_FORMATS = {
   CS_EVENT_QUEUE_OVERFLOW: [number(key('arg0')), number(key('arg1'))],
   WATCHDOG_DEGRADED: [number(key('arg0')), number(key('arg1'))],
   WATCHDOG_FEED_FAILED: [number(key('arg0')), number(key('arg1'))],
+  SENSOR_INIT_FAILED: [
+    enumeration(key('sensor'), { 1: key('sensor.bmi160'), 2: key('sensor.bme280') }),
+    { kind: 'signed', labelKey: key('init_result') },
+  ],
 } as const satisfies Record<EventName, readonly [ArgumentSpec, ArgumentSpec]>;
 
 export const NRF_LOG_ARG_I18N_KEYS: readonly I18nKey[] = (() => {
@@ -185,7 +189,7 @@ function formatArgument(spec: ArgumentSpec, value: number): FormattedArgument {
   }
   return {
     labelKey: spec.labelKey,
-    valueText: spec.kind === 'hex' ? formatHex(rawValue) : String(rawValue),
+    valueText: spec.kind === 'hex' ? formatHex(rawValue) : String(spec.kind === 'signed' ? rawValue | 0 : rawValue),
     raw: rawValue,
   };
 }

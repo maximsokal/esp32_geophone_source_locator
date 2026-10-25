@@ -895,10 +895,27 @@ static void publish_refresh(
     bool did_refresh = false;
     uint64_t completion_uptime_ms = 0U;
     uint32_t previous_fault_mask;
+    const int previous_imu_init_result = s_runtime.core.imu_init_result;
+    const int previous_env_init_result = s_runtime.core.env_init_result;
 
     prepare_result = nrf_remote_sensor_runtime_zephyr_prepare(
         &s_worker_node_state,
         &s_runtime);
+
+    if (s_runtime.core.imu_init_result != 0 &&
+        s_runtime.core.imu_init_result != previous_imu_init_result) {
+        nrf_log_runtime_zephyr_append_event(
+            NRF_LOG_EVENT_SENSOR_INIT_FAILED,
+            NRF_SENSOR_VALID_IMU,
+            (uint32_t)s_runtime.core.imu_init_result);
+    }
+    if (s_runtime.core.env_init_result != 0 &&
+        s_runtime.core.env_init_result != previous_env_init_result) {
+        nrf_log_runtime_zephyr_append_event(
+            NRF_LOG_EVENT_SENSOR_INIT_FAILED,
+            NRF_SENSOR_VALID_ENV,
+            (uint32_t)s_runtime.core.env_init_result);
+    }
 
     if (prepare_result == NRF_REMOTE_SENSOR_PREPARE_ERR_ARGUMENT ||
         prepare_result == NRF_REMOTE_SENSOR_PREPARE_ERR_NOT_READY) {

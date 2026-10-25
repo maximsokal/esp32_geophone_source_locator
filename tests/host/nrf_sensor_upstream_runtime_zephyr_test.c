@@ -87,6 +87,7 @@ static struct {
 static unsigned s_log_event_count;
 static bool s_init_fatal;
 static bool s_fail_imu_init;
+static bool s_fail_env_init;
 
 #define NRF_TEST_LED_SAMPLE_CAPACITY 2048U
 static nrf_logger_led_output_t s_led_samples[NRF_TEST_LED_SAMPLE_CAPACITY];
@@ -348,8 +349,8 @@ nrf_remote_sensor_prepare_result_t nrf_remote_sensor_runtime_zephyr_prepare(
     ++s_prepare_calls;
     runtime->core.imu_ready = !s_fail_imu_init;
     runtime->core.imu_init_result = s_fail_imu_init ? -EIO : 0;
-    runtime->core.env_ready = s_include_env;
-    runtime->core.env_init_result = 0;
+    runtime->core.env_ready = s_include_env && !s_fail_env_init;
+    runtime->core.env_init_result = s_fail_env_init ? -ENODEV : 0;
     runtime->core.sources.read_imu = fake_read_imu;
     runtime->core.sources.imu_context = NULL;
     return NRF_REMOTE_SENSOR_PREPARE_PARTIAL;
@@ -667,6 +668,8 @@ static void test_failed_sensor_signal(void)
     assert(nrf_sensor_upstream_runtime_zephyr_configure_orientation(
                &orientation_config) == 0);
     s_fail_imu_init = true;
+    s_fail_env_init = true;
+    s_include_env = true;
     assert(nrf_sensor_upstream_runtime_zephyr_start() == 0);
     assert(s_sensor_worker_priority == 10);
     run_worker_ticks(1U);
@@ -677,6 +680,12 @@ static void test_failed_sensor_signal(void)
     assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
     assert(diagnostics.activation_complete_generation == 1U);
     assert(!diagnostics.imu_ready && diagnostics.imu_init_result == -EIO);
+    assert(!diagnostics.env_ready && diagnostics.env_init_result == -ENODEV);
+    assert(log_event_count(NRF_LOG_EVENT_SENSOR_INIT_FAILED) == 2U);
+    assert(s_log_events[0].event_id == NRF_LOG_EVENT_SENSOR_INIT_FAILED);
+    assert(s_log_events[0].arg0 == NRF_SENSOR_VALID_IMU);
+    assert(s_log_events[0].arg1 == (uint32_t)-EIO);
+    assert_last_log_event(NRF_LOG_EVENT_SENSOR_INIT_FAILED, NRF_SENSOR_VALID_ENV, (uint32_t)-ENODEV);
     assert(diagnostics.logger_led_output.red);
     assert_last_applied_colors(false, false, false);
     assert(signal_log_count_containing("signal: stage=SENSORS_FAILED ") == 1U);
@@ -685,6 +694,12 @@ static void test_failed_sensor_signal(void)
     assert_last_applied_colors(false, false, true);
     assert_last_applied_matches_policy();
     assert(signal_log_count_containing("signal: stage=SENSORS_FAILED ") == 1U);
+    for (uint32_t id = 1U; id <= 3U; ++id) {
+        const nrf_upstream_sensor_refresh_t request = {.request_id = id};
+        assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == 0);
+        run_worker_until_empty();
+    }
+    assert(log_event_count(NRF_LOG_EVENT_SENSOR_INIT_FAILED) == 2U);
 }
 #endif
 #endif

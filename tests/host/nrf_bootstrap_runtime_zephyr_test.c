@@ -545,11 +545,12 @@ static void test_twis_log_response_interleaves_application_append(void)
 
 static nrf_log_status_t read_log_status(void)
 {
+    static uint32_t request_id = 0xD0000000U;
     nrf_log_status_t status;
     uint8_t frame[NRF_LOG_PROTOCOL_STATUS_LENGTH];
     size_t length = 0U;
     assert(nrf_log_runtime_zephyr_build_status(
-               0U,
+               request_id++,
                frame,
                sizeof(frame),
                &length) == NRF_LOG_ERROR_OK);
@@ -623,6 +624,48 @@ static void send_cs_execute(const nrf_cs_control_request_t *request)
 
     assert(nrf_cs_control_encode_execute(request, frame) == 0);
     s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+}
+
+static void test_malformed_control_lengths_preserve_assignment(void)
+{
+    static const struct {
+        uint8_t type;
+        uint8_t length;
+    } commands[] = {
+        {NRF_CS_CONTROL_MESSAGE_EXECUTE, NRF_CS_CONTROL_EXECUTE_LENGTH},
+        {NRF_CS_CONTROL_MESSAGE_STATUS_REQUEST, NRF_CS_CONTROL_STATUS_REQUEST_LENGTH},
+        {NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH, NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH},
+        {NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE, NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH},
+        {NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE, NRF_UPSTREAM_PROTOCOL_IMU_CALIBRATE_LENGTH},
+    };
+    const nrf_upstream_status_t before = read_status(NULL);
+    const unsigned submits_before = s_submit_calls;
+    const unsigned refreshes_before = s_sensor_refresh_calls;
+    const unsigned heights_before = s_height_reference_calls;
+    const unsigned calibrations_before = s_imu_calibration_calls;
+
+    assert(before.result == NRF_UPSTREAM_RESULT_OK);
+    assert(before.role == NRF_UPSTREAM_ROLE_REMOTE);
+    for (size_t index = 0U; index < sizeof(commands) / sizeof(commands[0]); ++index) {
+        uint8_t frame[NRF_CS_CONTROL_EXECUTE_LENGTH + 1U] = {'G', 'S', 1U};
+        const uint32_t lengths[] = {
+            commands[index].length - 1U,
+            commands[index].length + 1U,
+            4U,
+        };
+        frame[3] = commands[index].type;
+        frame[4] = commands[index].length;
+        frame[6] = 0xA5U;
+        for (size_t length = 0U; length < sizeof(lengths) / sizeof(lengths[0]); ++length) {
+            s_callbacks->buf_write_received(NULL, frame, lengths[length]);
+            const nrf_upstream_status_t after = read_status(NULL);
+            assert(memcmp(&before, &after, sizeof(before)) == 0);
+        }
+    }
+    assert(s_submit_calls == submits_before);
+    assert(s_sensor_refresh_calls == refreshes_before);
+    assert(s_height_reference_calls == heights_before);
+    assert(s_imu_calibration_calls == calibrations_before);
 }
 
 static nrf_cs_control_result_t read_cs_result_for_request(
@@ -974,6 +1017,7 @@ int main(void)
     status = read_status(NULL);
     assert(status.request_id == 12U && status.result == NRF_UPSTREAM_RESULT_OK);
     assert(read_log_status().next_seq == 2U);
+    test_malformed_control_lengths_preserve_assignment();
 
     /* fail-before(real): a stopped shared queue reports INTERNAL_ERROR and drops that ASSIGN item. */
     {

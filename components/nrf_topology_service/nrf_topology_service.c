@@ -864,12 +864,23 @@ static esp_err_t platform_normalize_transfer_error(
      * ESP_ERR_INVALID_STATE on i2c_bus v2 / ESP-IDF 5.5 (like a timeout).
      * An absent XIAO must read as ESP_ERR_NOT_FOUND, never as a transport
      * fault, and must not trigger a bus recovery. */
+    const bool routed_classification = err == ESP_ERR_INVALID_STATE &&
+        platform != NULL && platform->mux_bound && platform->requested_mux_channel_valid &&
+        (address == NRF_UPSTREAM_ADDRESS_REMOTE || address == NRF_UPSTREAM_ADDRESS_DISCOVERY);
+    if (routed_classification) {
+        /* The transfer closed the mux; classify against the same downstream target. */
+        const esp_err_t route_err = platform_begin_remote_transfer(platform, address);
+        if (route_err != ESP_OK) return route_err;
+    }
     err = sensor_bus_classify_transfer_error_with_context(
         address,
         err,
         s_i2c_diag_source,
         platform != NULL && platform->selected_mux_channel_valid
             ? (int)platform->selected_mux_channel : -1);
+    if (routed_classification) {
+        err = platform_end_remote_transfer(platform, address, err);
+    }
     if (err == ESP_OK) {
         return ESP_OK;
     }
@@ -2057,7 +2068,10 @@ static esp_err_t cs_route_open(nrf_cs_platform_context_t *ctx, nrf_cs_node_id_t 
     esp_err_t err = platform_open_address_handles(ctx->platform);
     if (err != ESP_OK) return err;
     if (ctx->snapshot->main.state == NRF_TOPOLOGY_NODE_ASSIGNED && ctx->snapshot->main.node_id == node) {
-        if (ctx->platform->mux_bound) (void)platform_mux_close(ctx->platform);
+        if (ctx->platform->mux_bound) {
+            err = platform_mux_close(ctx->platform);
+            if (err != ESP_OK) return err;
+        }
         *device = ctx->platform->main_device; *remote = false; return ESP_OK;
     }
     if (!ctx->snapshot->tca_available || ctx->snapshot->tca_fault || !ctx->platform->mux_bound) return ESP_ERR_NOT_FOUND;
@@ -2090,10 +2104,7 @@ static int cs_write_execute(void *context, const nrf_cs_control_request_t *reque
             ? NRF_UPSTREAM_ADDRESS_REMOTE : NRF_UPSTREAM_ADDRESS_MAIN;
         err = platform_i2c_write_bytes(
             ctx->platform, device, address, sizeof(frame), frame);
-        sensor_bus_record_transfer_result_with_context(
-            address, err, s_i2c_diag_source,
-            ctx->platform->selected_mux_channel_valid
-                ? (int)ctx->platform->selected_mux_channel : -1);
+        err = platform_normalize_transfer_error(ctx->platform, address, err);
     }
     cs_route_close(ctx, remote);
     if (err != ESP_OK) { service_request_topology_refresh_from_worker(); return -1; }
@@ -2116,10 +2127,7 @@ static int cs_poll_result(void *context, const nrf_cs_control_request_t *request
         if (remote) address = NRF_UPSTREAM_ADDRESS_REMOTE;
         err = platform_i2c_write_bytes(
             ctx->platform, device, address, sizeof(selector), selector);
-        sensor_bus_record_transfer_result_with_context(
-            address, err, s_i2c_diag_source,
-            ctx->platform->selected_mux_channel_valid
-                ? (int)ctx->platform->selected_mux_channel : -1);
+        err = platform_normalize_transfer_error(ctx->platform, address, err);
     }
     if (err == ESP_OK) {
         err = platform_probe_before_read(ctx->platform, address, &route_index);
