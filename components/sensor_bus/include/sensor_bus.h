@@ -19,6 +19,7 @@
  */
 #define SENSOR_BUS_I2C_SPEED_HZ  100000U
 #define SENSOR_BUS_TRANSACTION_TIMEOUT_MS 20U
+#define SENSOR_BUS_MUX_CLOSE_RESERVE_MS (2U * SENSOR_BUS_TRANSACTION_TIMEOUT_MS)
 #define SENSOR_BUS_MUTEX_WAIT_MS 200U
 #define SENSOR_BUS_OWNER_MAX_HOLD_MS 150U
 
@@ -38,6 +39,7 @@ typedef struct {
     uint64_t last_waited_for_mutex_us;
     uint64_t last_hold_us;
     char holder_task[SENSOR_BUS_TASK_NAME_SIZE];
+    char last_waiter_task[SENSOR_BUS_TASK_NAME_SIZE];
 } sensor_bus_owner_stats_t;
 
 
@@ -56,6 +58,10 @@ esp_err_t sensor_bus_lock_init(void);
  * sensor_bus APIs recursively while holding it. Use it across a TCA
  * select -> downstream transfer(s) -> close sequence. */
 esp_err_t sensor_bus_owner_acquire(void);
+/* Background clients use this to skip a session instead of waiting behind an owner. */
+esp_err_t sensor_bus_owner_try_acquire(void);
+/* Only the current owner may shorten/extend its driver deadline; release clears it. */
+esp_err_t sensor_bus_owner_set_deadline_us(int64_t deadline_us);
 void sensor_bus_owner_release(void);
 bool sensor_bus_owner_hold_budget_exceeded(void);
 esp_err_t sensor_bus_get_owner_stats(sensor_bus_owner_stats_t *stats);

@@ -17,7 +17,6 @@
 
 #define SENSOR_BUS_DEVICE_LIMIT 16U
 #define SENSOR_BUS_WRITE_STACK_BYTES 32U
-#define SENSOR_BUS_MUX_CLOSE_RESERVE_MS (2U * SENSOR_BUS_TRANSACTION_TIMEOUT_MS)
 
 #define SENSOR_BUS_I2C_PORT I2C_NUM_0
 #define SENSOR_BUS_TCA9548A_ADDR_MIN 0x70U
@@ -55,6 +54,8 @@ static uint32_t s_owner_depth;
 static int64_t s_owner_started_us;
 static uint32_t s_owner_session_depth;
 static int64_t s_owner_session_started_us;
+static uint64_t s_owner_session_wait_us;
+static int64_t s_owner_deadline_us;
 static bool s_owner_hold_budget_exceeded;
 static bool s_owner_close_in_progress;
 static sensor_bus_owner_stats_t s_owner_stats;
@@ -345,24 +346,29 @@ static void sensor_bus_copy_task_name(
     destination[SENSOR_BUS_TASK_NAME_SIZE - 1U] = '\0';
 }
 
-static esp_err_t sensor_bus_lock_with_wait(uint64_t *waited_for_mutex_us)
+static esp_err_t sensor_bus_lock_with_timeout(
+    uint64_t *waited_for_mutex_us,
+    TickType_t timeout_ticks)
 {
     const TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
     const int64_t wait_started_us = sensor_bus_lines_now_us();
+    char task_name[SENSOR_BUS_TASK_NAME_SIZE];
     uint64_t waited_us = 0U;
 
     if (s_lock == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (xSemaphoreTakeRecursive(
-            s_lock, pdMS_TO_TICKS(SENSOR_BUS_MUTEX_WAIT_MS)) != pdTRUE) {
+    sensor_bus_copy_task_name(task_name, current_task);
+    if (xSemaphoreTakeRecursive(s_lock, timeout_ticks) != pdTRUE) {
         const int64_t wait_finished_us = sensor_bus_lines_now_us();
         waited_us = wait_finished_us >= wait_started_us
             ? (uint64_t)(wait_finished_us - wait_started_us) : 0U;
         portENTER_CRITICAL(&s_owner_stats_lock);
         ++s_owner_stats.busy_count;
         s_owner_stats.last_waited_for_mutex_us = waited_us;
+        (void)memcpy(s_owner_stats.last_waiter_task, task_name, sizeof(task_name));
+        s_owner_stats.last_waiter_task[sizeof(s_owner_stats.last_waiter_task) - 1U] = '\0';
         portEXIT_CRITICAL(&s_owner_stats_lock);
         if (waited_for_mutex_us != NULL) {
             *waited_for_mutex_us = waited_us;
@@ -373,10 +379,10 @@ static esp_err_t sensor_bus_lock_with_wait(uint64_t *waited_for_mutex_us)
     const int64_t wait_finished_us = sensor_bus_lines_now_us();
     waited_us = wait_finished_us >= wait_started_us
         ? (uint64_t)(wait_finished_us - wait_started_us) : 0U;
-    char task_name[SENSOR_BUS_TASK_NAME_SIZE];
-    sensor_bus_copy_task_name(task_name, current_task);
     portENTER_CRITICAL(&s_owner_stats_lock);
     s_owner_stats.last_waited_for_mutex_us = waited_us;
+    (void)memcpy(s_owner_stats.last_waiter_task, task_name, sizeof(task_name));
+    s_owner_stats.last_waiter_task[sizeof(s_owner_stats.last_waiter_task) - 1U] = '\0';
     if (s_owner_task == current_task) {
         ++s_owner_depth;
     } else {
@@ -391,6 +397,12 @@ static esp_err_t sensor_bus_lock_with_wait(uint64_t *waited_for_mutex_us)
         *waited_for_mutex_us = waited_us;
     }
     return ESP_OK;
+}
+
+static esp_err_t sensor_bus_lock_with_wait(uint64_t *waited_for_mutex_us)
+{
+    return sensor_bus_lock_with_timeout(
+        waited_for_mutex_us, pdMS_TO_TICKS(SENSOR_BUS_MUTEX_WAIT_MS));
 }
 
 static void sensor_bus_unlock(void)
@@ -497,19 +509,23 @@ static esp_err_t sensor_bus_owner_budget_after_transaction(
     return err;
 }
 
+static void sensor_bus_log_mutex_busy(uint64_t waited_us)
+{
+    sensor_bus_owner_stats_t stats = {0};
+    (void)sensor_bus_get_owner_stats(&stats);
+    ESP_LOGW(TAG,
+             "I2C_TIMEOUT_DIAG src=bus_owner addr=0x00 dev=unknown ch=direct err=mutex_busy waited_for_mutex_us=%llu waiter_task=%s holder_task=%s recover_attempts=%lu",
+             (unsigned long long)waited_us,
+             stats.last_waiter_task[0] != '\0' ? stats.last_waiter_task : "unknown",
+             stats.holder_task[0] != '\0' ? stats.holder_task : "unknown",
+             (unsigned long)stats.recover_attempts);
+}
+
 static esp_err_t sensor_bus_lock(void)
 {
     uint64_t waited_us = 0U;
     const esp_err_t err = sensor_bus_lock_with_wait(&waited_us);
-    if (err == SENSOR_BUS_ERR_MUTEX_BUSY) {
-        sensor_bus_owner_stats_t stats = {0};
-        (void)sensor_bus_get_owner_stats(&stats);
-        ESP_LOGW(TAG,
-                 "I2C_TIMEOUT_DIAG src=bus_owner addr=0x00 dev=unknown ch=direct err=mutex_busy waited_for_mutex_us=%llu transfer_us=0 holder_task=%s recover_attempts=%lu",
-                 (unsigned long long)waited_us,
-                 stats.holder_task[0] != '\0' ? stats.holder_task : "unknown",
-                 (unsigned long)stats.recover_attempts);
-    }
+    if (err == SENSOR_BUS_ERR_MUTEX_BUSY) sensor_bus_log_mutex_busy(waited_us);
     return err;
 }
 
@@ -603,25 +619,69 @@ esp_err_t sensor_bus_lock_init(void)
     return s_lock != NULL ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-esp_err_t sensor_bus_owner_acquire(void)
+static void sensor_bus_owner_note_acquired(uint64_t waited_us)
 {
-    const esp_err_t err = sensor_bus_lock();
-    if (err != ESP_OK) {
-        return err;
-    }
     const TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
     const int64_t now_us = sensor_bus_lines_now_us();
     portENTER_CRITICAL(&s_owner_stats_lock);
     if (s_owner_task == current_task) {
         if (s_owner_session_depth == 0U) {
             s_owner_session_started_us = now_us;
+            s_owner_session_wait_us = waited_us;
             s_owner_hold_budget_exceeded = false;
             s_owner_close_in_progress = false;
         }
         ++s_owner_session_depth;
     }
     portEXIT_CRITICAL(&s_owner_stats_lock);
+}
+
+static esp_err_t sensor_bus_owner_acquire_with_timeout(TickType_t timeout_ticks, bool log_busy)
+{
+    uint64_t waited_us = 0U;
+    const esp_err_t err = sensor_bus_lock_with_timeout(&waited_us, timeout_ticks);
+    if (err != ESP_OK) {
+        if (log_busy && err == SENSOR_BUS_ERR_MUTEX_BUSY) sensor_bus_log_mutex_busy(waited_us);
+        return err;
+    }
+    sensor_bus_owner_note_acquired(waited_us);
     return ESP_OK;
+}
+
+esp_err_t sensor_bus_owner_acquire(void)
+{
+    return sensor_bus_owner_acquire_with_timeout(
+        pdMS_TO_TICKS(SENSOR_BUS_MUTEX_WAIT_MS), true);
+}
+
+esp_err_t sensor_bus_owner_try_acquire(void)
+{
+    return sensor_bus_owner_acquire_with_timeout(0U, false);
+}
+
+esp_err_t sensor_bus_owner_set_deadline_us(int64_t deadline_us)
+{
+    if (deadline_us <= 0) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = ESP_ERR_INVALID_STATE;
+    portENTER_CRITICAL(&s_owner_stats_lock);
+    if (s_owner_task == xTaskGetCurrentTaskHandle() && s_owner_session_depth != 0U) {
+        s_owner_deadline_us = deadline_us;
+        err = ESP_OK;
+    }
+    portEXIT_CRITICAL(&s_owner_stats_lock);
+    return err;
+}
+
+/* Called under s_lock. Other clients keep their existing transfer timeout. */
+static uint32_t sensor_bus_owner_timeout_ms(uint32_t timeout_ms)
+{
+    if (s_owner_deadline_us != 0 && s_owner_task == xTaskGetCurrentTaskHandle()) {
+        const int64_t remaining_us = s_owner_deadline_us - sensor_bus_lines_now_us();
+        const uint64_t remaining_ms = remaining_us > 0 ? (uint64_t)remaining_us / 1000U : 0U;
+        if (remaining_ms < timeout_ms) timeout_ms = (uint32_t)remaining_ms;
+        if (timeout_ms < 1000U / configTICK_RATE_HZ) return 0U;
+    }
+    return timeout_ms;
 }
 
 void sensor_bus_owner_release(void)
@@ -635,12 +695,18 @@ void sensor_bus_owner_release(void)
     outermost = s_owner_task == current_task && s_owner_session_depth == 1U;
     if (outermost) {
         released_stats = s_owner_stats;
+        released_stats.last_waited_for_mutex_us = s_owner_session_wait_us;
+        (void)memcpy(released_stats.last_waiter_task, released_stats.holder_task,
+            sizeof(released_stats.last_waiter_task));
+        released_stats.last_waiter_task[sizeof(released_stats.last_waiter_task) - 1U] = '\0';
         released_stats.last_hold_us = now_us >= s_owner_started_us
             ? (uint64_t)(now_us - s_owner_started_us) : 0U;
         budget_exceeded = s_owner_hold_budget_exceeded ||
             released_stats.last_hold_us > (uint64_t)SENSOR_BUS_OWNER_MAX_HOLD_MS * 1000U;
         s_owner_session_depth = 0U;
         s_owner_session_started_us = 0;
+        s_owner_session_wait_us = 0U;
+        s_owner_deadline_us = 0;
         s_owner_hold_budget_exceeded = false;
         s_owner_close_in_progress = false;
     } else if (s_owner_task == current_task && s_owner_session_depth > 1U) {
@@ -656,9 +722,11 @@ void sensor_bus_owner_release(void)
                      (unsigned)SENSOR_BUS_OWNER_MAX_HOLD_MS);
         }
         ESP_LOGI(TAG,
-                 "I2C_BUS_OWNER owner=%s wait_ms=%llu hold_ms=%llu busy_count=%lu",
+                 "I2C_BUS_OWNER owner=%s waiter_task=%s wait_ms=%llu hold_ms=%llu busy_count=%lu",
                  released_stats.holder_task[0] != '\0'
                      ? released_stats.holder_task : "unknown",
+                 released_stats.last_waiter_task[0] != '\0'
+                     ? released_stats.last_waiter_task : "unknown",
                  (unsigned long long)(released_stats.last_waited_for_mutex_us / 1000U),
                  (unsigned long long)(released_stats.last_hold_us / 1000U),
                  (unsigned long)released_stats.busy_count);
@@ -1272,7 +1340,8 @@ static esp_err_t sensor_bus_read_bytes_internal(
     esp_err_t err = sensor_bus_find_native_device(device, &entry);
     if (err == ESP_OK) {
         bool close_read = false;
-        if (sensor_bus_owner_budget_blocks(
+        timeout_ms = sensor_bus_owner_timeout_ms(timeout_ms);
+        if (timeout_ms == 0U || sensor_bus_owner_budget_blocks(
                 entry, false, &close_read, timeout_ms)) {
             err = SENSOR_BUS_ERR_OWNER_HOLD_BUDGET;
         } else {
@@ -1387,12 +1456,13 @@ esp_err_t sensor_bus_write_bytes(
     bool report_timeout = false;
     esp_err_t err = sensor_bus_find_native_device(device, &entry);
     if (err == ESP_OK) {
+        const uint32_t timeout_ms = sensor_bus_owner_timeout_ms(SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
         const bool close_write = entry->address == s_tca9548a_address &&
             !has_mem_address && data_len == 1U && data[0] == 0U;
         bool close_read = false;
-        if (sensor_bus_owner_budget_blocks(
+        if (timeout_ms == 0U || sensor_bus_owner_budget_blocks(
                 entry, close_write, &close_read,
-                SENSOR_BUS_TRANSACTION_TIMEOUT_MS)) {
+                timeout_ms)) {
             err = SENSOR_BUS_ERR_OWNER_HOLD_BUDGET;
         } else {
             err = sensor_bus_ensure_controller_clean_locked();
@@ -1400,7 +1470,7 @@ esp_err_t sensor_bus_write_bytes(
                 const int64_t transfer_started_us = sensor_bus_lines_now_us();
                 err = i2c_master_transmit(
                     entry->master_device, tx, tx_len,
-                    SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
+                    (int)timeout_ms);
                 const int64_t transfer_finished_us = sensor_bus_lines_now_us();
                 if (err == ESP_ERR_TIMEOUT) {
                     report_timeout = true;

@@ -109,6 +109,7 @@ static bool s_native_bus_live;
 static uint32_t s_tick;
 static uint64_t s_fake_subtick_us;
 static uint32_t s_fake_transaction_duration_us;
+static void (*s_vtask_delay_hook)(TickType_t ticks);
 static unsigned s_fail_recursive_lock_attempts;
 static bool s_block_remote_scan_after_main_status;
 static uint32_t s_last_notify_wait_ms;
@@ -536,6 +537,11 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
 {
     sim_device_t *d = device_of(device);
     assert(mem_address == NULL_I2C_MEM_ADDR);
+    if (d->address == BOARD_INA3221_I2C_ADDRESS) {
+        assert(s_tca_control == 0U);
+        memset(data, 0, data_len);
+        return ESP_OK;
+    }
     if (s_tca_control == 0U && d->address >= NRF_UPSTREAM_ADDRESS_DISCOVERY &&
         d->address <= NRF_UPSTREAM_ADDRESS_REMOTE) {
         ++s_direct_nrf_read_calls;
@@ -881,6 +887,7 @@ static bool s_in_worker;
 static bool s_stop_waiting;
 static jmp_buf s_stop_return;
 static int s_task_token;
+static TaskHandle_t s_simulated_task;
 static uint32_t s_random = 0x1234U;
 
 void test_port_enter_critical(portMUX_TYPE *mux)
@@ -897,31 +904,41 @@ void test_port_exit_critical(portMUX_TYPE *mux)
     --s_critical_depth;
 }
 
-struct test_semaphore { int unused; };
+struct test_semaphore { TaskHandle_t owner; unsigned depth; };
 static struct test_semaphore s_mutex;
+static struct test_semaphore s_bus_mutex;
 
 SemaphoreHandle_t xSemaphoreCreateMutex(void) { return s_fail_mutex_create ? NULL : &s_mutex; }
 BaseType_t xSemaphoreTake(SemaphoreHandle_t s, TickType_t t) { (void)s; (void)t; assert(s_critical_depth == 0); return pdTRUE; }
 BaseType_t xSemaphoreGive(SemaphoreHandle_t s) { (void)s; return pdTRUE; }
-SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void) { return s_fail_mutex_create ? NULL : &s_mutex; }
+SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void) { return s_fail_mutex_create ? NULL : &s_bus_mutex; }
 BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t s, TickType_t t)
 {
-    (void)s;
+    assert(s == &s_bus_mutex);
     (void)t;
     assert(s_critical_depth == 0);
     if (s_fail_recursive_lock_attempts > 0U) {
         --s_fail_recursive_lock_attempts;
         return pdFALSE;
     }
+    const TaskHandle_t task = xTaskGetCurrentTaskHandle();
+    if (s->depth != 0U && s->owner != task) return pdFALSE;
+    s->owner = task;
+    ++s->depth;
     return pdTRUE;
 }
-BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t s) { (void)s; return pdTRUE; }
+BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t s)
+{
+    assert(s == &s_bus_mutex && s->depth != 0U && s->owner == xTaskGetCurrentTaskHandle());
+    if (--s->depth == 0U) s->owner = NULL;
+    return pdTRUE;
+}
 
 uint32_t esp_random(void) { s_random = s_random * 1103515245U + 12345U; return s_random; }
 int64_t esp_timer_get_time(void) { return (int64_t)s_tick * 10000LL + (int64_t)s_fake_subtick_us; }
 TickType_t xTaskGetTickCount(void) { return s_tick; }
-TaskHandle_t xTaskGetCurrentTaskHandle(void) { return &s_task_token; }
-const char *pcTaskGetName(TaskHandle_t task) { (void)task; return "topology-test"; }
+TaskHandle_t xTaskGetCurrentTaskHandle(void) { return s_simulated_task != NULL ? s_simulated_task : &s_task_token; }
+const char *pcTaskGetName(TaskHandle_t task) { return task == &s_task_token ? "topology-test" : "ina-test"; }
 UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task)
 {
     (void)task;
@@ -952,7 +969,9 @@ void vTaskDelay(TickType_t ticks)
         s_reconcile_stop_waiting = false;
         longjmp(s_reconcile_stop_return, 1);
     }
-    s_tick += ticks > 0U ? ticks : 1U;
+    const TickType_t elapsed_ticks = ticks > 0U ? ticks : 1U;
+    s_tick += elapsed_ticks;
+    if (s_vtask_delay_hook != NULL) s_vtask_delay_hook(elapsed_ticks);
 }
 
 BaseType_t xTaskCreatePinnedToCore(
@@ -2107,6 +2126,7 @@ static void reset_world(void)
     s_tick = 1000U;
     s_fake_subtick_us = 0U;
     s_fake_transaction_duration_us = 0U;
+    s_vtask_delay_hook = NULL;
     s_fail_recursive_lock_attempts = 0U;
     s_block_remote_scan_after_main_status = false;
     s_last_notify_wait_ms = 0U;

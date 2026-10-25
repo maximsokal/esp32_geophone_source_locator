@@ -33,6 +33,9 @@ typedef enum {
  * WATCHDOG_DEGRADED         watchdog arm-failure stage                raw errno
  * WATCHDOG_FEED_FAILED      watchdog channel id                       raw feed error
  * SENSOR_INIT_FAILED        sensor bit (1 BMI160, 2 BME280)           signed driver init result as uint32
+ * LOGGER_LATCH              nrf_logger_led_source_t of the latch    nrf_logger_led_severity_t (1 WARNING, 2 ERROR, 3 FATAL)
+ *                           (the record's own boot id and uptime say when and in which boot the LED latched;
+ *                           the record severity is the event class WARN, arg1 carries the latched severity)
  */
 
 #endif

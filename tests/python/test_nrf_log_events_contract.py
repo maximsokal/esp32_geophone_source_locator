@@ -33,6 +33,7 @@ def test_event_definition_and_generated_typescript_are_current():
         "ENV_FAULT_CLEARED", "HEIGHT_REF_REJECTED", "IMU_CAL_REJECTED", "CS_EXECUTE_FAILED",
         "CS_TIMEOUT", "WATCHDOG_PARTICIPANT_STALE", "LOG_TEST_EVENT", "FAULT_RECORD_WORD",
         "BOOT_FAILED", "CS_EVENT_QUEUE_OVERFLOW", "WATCHDOG_DEGRADED", "WATCHDOG_FEED_FAILED", "SENSOR_INIT_FAILED",
+        "LOGGER_LATCH",
     }
     parsed = events()
     assert {row[1] for row in parsed} == expected_names

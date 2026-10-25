@@ -28,6 +28,7 @@
 #include "esp_rom_gpio.h"
 #include "driver/i2c_master.h"
 #include "i2c_private.h"
+#include "i2c_timeout_budget.h"
 #include "driver/gpio.h"
 #include "clk_ctrl_os.h"
 #include "hal/i2c_types.h"
@@ -540,6 +541,7 @@ static void s_i2c_start_end_command(i2c_master_bus_handle_t i2c_master, i2c_oper
 
 static void s_i2c_send_commands(i2c_master_bus_handle_t i2c_master, TickType_t ticks_to_wait)
 {
+    const TickType_t started_tick = xTaskGetTickCount();
     i2c_hal_context_t *hal = &i2c_master->base->hal;
     uint8_t fifo_fill = 0;
     uint8_t address_fill = 0;
@@ -548,7 +550,9 @@ static void s_i2c_send_commands(i2c_master_bus_handle_t i2c_master, TickType_t t
     xQueueReset(i2c_master->event_queue);
     i2c_master->event = I2C_EVENT_ALIVE;
     while (i2c_master->i2c_trans.cmd_count) {
-        if (xSemaphoreTake(i2c_master->cmd_semphr, ticks_to_wait) != pdTRUE) {
+        const TickType_t remaining = i2c_timeout_remaining_ticks(
+            started_tick, ticks_to_wait, xTaskGetTickCount());
+        if (remaining == 0U || xSemaphoreTake(i2c_master->cmd_semphr, remaining) != pdTRUE) {
             // Software timeout, clear the command link and finish this transaction.
             atomic_store(&i2c_master->status, I2C_STATUS_TIMEOUT);
             i2c_master->cmd_idx = 0;
@@ -594,17 +598,16 @@ static void s_i2c_send_commands(i2c_master_bus_handle_t i2c_master, TickType_t t
     // For blocking implementation, we must wait event interrupt to update the status.
     // Otherwise, update status to timeout.
     i2c_master_event_t event;
-    if (xQueueReceive(i2c_master->event_queue, &event, ticks_to_wait) == pdTRUE) {
+    if (xQueueReceive(i2c_master->event_queue, &event,
+            i2c_timeout_remaining_ticks(started_tick, ticks_to_wait, xTaskGetTickCount())) == pdTRUE) {
         if (event == I2C_EVENT_DONE) {
             atomic_store(&i2c_master->status, I2C_STATUS_DONE);
         } else if (event == I2C_EVENT_NACK) {
             // For i2c nack detected, the i2c transaction not finish.
             // start->address->nack->stop
             // So wait the whole transaction finishes, then quit the function.
-            TickType_t start_tick = xTaskGetTickCount();
-            const TickType_t timeout_ticks = ticks_to_wait;
             while (i2c_ll_is_bus_busy(hal->dev)) {
-                if ((xTaskGetTickCount() - start_tick) > timeout_ticks) {
+                if (i2c_timeout_remaining_ticks(started_tick, ticks_to_wait, xTaskGetTickCount()) == 0U) {
                     ESP_LOGE(TAG, "I2C bus is still busy but software timeout detected");
                     atomic_store(&i2c_master->status, I2C_STATUS_TIMEOUT);
                     s_i2c_hw_fsm_reset(i2c_master, true);

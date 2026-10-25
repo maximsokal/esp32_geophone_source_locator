@@ -67,7 +67,7 @@ static void node_from_status(
     node->flags = status->flags;
 }
 
-static void main_conflict_from_status(
+static void conflict_from_status(
     nrf_topology_node_snapshot_t *node,
     nrf_topology_conflict_reason_t reason,
     const nrf_upstream_status_t *status)
@@ -108,13 +108,19 @@ static bool status_is_main(const nrf_upstream_status_t *status)
            (status->flags & NRF_UPSTREAM_STATUS_FLAG_ASSIGNED) != 0U;
 }
 
+/*
+ * REMOTE identity only, for the same reason as status_is_main(): status->result
+ * is the outcome of the last request (BUSY, PENDING, INVALID_FRAME,
+ * UNSUPPORTED_TYPE, ...) and is not part of who the node is. Wrong role,
+ * node_id, mux channel, address or a missing ASSIGNED flag are still conflicts;
+ * duplicate hardware ids are caught in detect_duplicate_hardware_ids().
+ */
 static bool status_is_remote(const nrf_upstream_status_t *status, uint8_t channel)
 {
     return status_is_registered_ready(status, NRF_UPSTREAM_ADDRESS_REMOTE) &&
            status->role == NRF_UPSTREAM_ROLE_REMOTE &&
            status->node_id == (uint8_t)(channel + 1U) &&
            status->mux_channel == channel &&
-           status->result == NRF_UPSTREAM_RESULT_OK &&
            (status->flags & NRF_UPSTREAM_STATUS_FLAG_ASSIGNED) != 0U;
 }
 
@@ -385,18 +391,18 @@ static main_reconcile_result_t reconcile_main(
 
 
     if (remote_present) {
-        main_conflict_from_status(
+        conflict_from_status(
             &snapshot->main, NRF_TOPOLOGY_CONFLICT_REMOTE_ON_DIRECT_BUS, &remote_status);
         return result;
     }
     if (discovery_present && main_present) {
-        main_conflict_from_status(
+        conflict_from_status(
             &snapshot->main, NRF_TOPOLOGY_CONFLICT_DISCOVERY_AND_MAIN, &main_status);
         return result;
     }
     if (main_present) {
         if (!status_is_main(&main_status)) {
-            main_conflict_from_status(
+            conflict_from_status(
                 &snapshot->main, NRF_TOPOLOGY_CONFLICT_MAIN_IDENTITY, &main_status);
             return result;
         }
@@ -412,7 +418,7 @@ static main_reconcile_result_t reconcile_main(
     }
 
     if (!status_is_unassigned_discovery(&discovery_status)) {
-        main_conflict_from_status(
+        conflict_from_status(
             &snapshot->main, NRF_TOPOLOGY_CONFLICT_DISCOVERY_NOT_UNASSIGNED, &discovery_status);
         return result;
     }
@@ -467,7 +473,7 @@ static void report_main_status_only(
         node_from_status(&snapshot->main, NRF_TOPOLOGY_NODE_ASSIGNED, &main_status);
     }
     else {
-        main_conflict_from_status(
+        conflict_from_status(
             &snapshot->main, NRF_TOPOLOGY_CONFLICT_MAIN_IDENTITY, &main_status);
     }
 }
@@ -546,6 +552,7 @@ static void scan_remote_channel(
             return;
         }
         node->state = NRF_TOPOLOGY_NODE_CONFLICT;
+        node->conflict_reason = (uint8_t)NRF_TOPOLOGY_CONFLICT_MAIN_LOST_DURING_SCAN;
         *main_lost = true;
         (void)close_mux_or_fault(io, snapshot);
         *continue_scan = false;
@@ -572,19 +579,22 @@ static void scan_remote_channel(
     }
 
     if (discovery_present && remote_present) {
-        node_from_status(node, NRF_TOPOLOGY_NODE_CONFLICT, &remote_status);
+        conflict_from_status(
+            node, NRF_TOPOLOGY_CONFLICT_REMOTE_DISCOVERY_AND_RUNTIME, &remote_status);
     }
     else if (remote_present) {
         if (status_is_remote(&remote_status, channel)) {
             node_from_status(node, NRF_TOPOLOGY_NODE_ASSIGNED, &remote_status);
         }
         else {
-            node_from_status(node, NRF_TOPOLOGY_NODE_CONFLICT, &remote_status);
+            conflict_from_status(
+                node, NRF_TOPOLOGY_CONFLICT_REMOTE_IDENTITY, &remote_status);
         }
     }
     else if (discovery_present) {
         if (!status_is_unassigned_discovery(&discovery_status)) {
-            node_from_status(node, NRF_TOPOLOGY_NODE_CONFLICT, &discovery_status);
+            conflict_from_status(
+                node, NRF_TOPOLOGY_CONFLICT_REMOTE_DISCOVERY_NOT_UNASSIGNED, &discovery_status);
         }
         else {
             nrf_upstream_status_t confirmed;
@@ -632,6 +642,8 @@ static void detect_duplicate_hardware_ids(nrf_topology_snapshot_t *snapshot)
                 hardware_id_equal_node(nodes[i], nodes[j])) {
                 nodes[i]->state = NRF_TOPOLOGY_NODE_CONFLICT;
                 nodes[j]->state = NRF_TOPOLOGY_NODE_CONFLICT;
+                nodes[i]->conflict_reason = (uint8_t)NRF_TOPOLOGY_CONFLICT_DUPLICATE_HARDWARE_ID;
+                nodes[j]->conflict_reason = (uint8_t)NRF_TOPOLOGY_CONFLICT_DUPLICATE_HARDWARE_ID;
             }
         }
     }

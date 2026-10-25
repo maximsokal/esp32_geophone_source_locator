@@ -22,6 +22,15 @@ static bool s_queue_calibration;
 static bool s_calibration_queued;
 static bool s_slow_log_output;
 static bool s_fail_block_read;
+static bool s_calibration_preempted_logs;
+static bool s_ina_monitor_waiting;
+static bool s_logger_pair_completed;
+static unsigned s_logger_pair_owner_release_count;
+static unsigned s_ina_accesses;
+static int s_ina_task_token;
+static int64_t s_ina_requested_us;
+static int64_t s_ina_max_wait_us;
+static unsigned s_ina_accesses_before_log_completion;
 static unsigned s_firmware_lines;
 static unsigned s_rx_lines;
 
@@ -75,13 +84,25 @@ static bool log_test_write(sim_node_t *node, const uint8_t *data, size_t length,
         data[3] != NRF_LOG_MESSAGE_READ_REQUEST && data[3] != NRF_LOG_MESSAGE_FIRMWARE_REQUEST)) {
         if (length >= 4U && (data[3] == NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE ||
             data[3] == NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE)) {
-            assert(s_completed_log_mask == s_expected_log_mask);
+            if (s_completed_log_mask != s_expected_log_mask) {
+                s_calibration_preempted_logs = true;
+            }
         }
         s_logger[index].selected = false;
         return false;
     }
     assert(!s_logger[index].pending);
     s_logger[index].owner_release_count = s_bus_owner_log_count;
+    s_logger_pair_owner_release_count = s_bus_owner_log_count;
+    if (s_vtask_delay_hook != NULL) {
+        /* Priority-1 INA becomes runnable while the priority-2 logger owns the pair. */
+        assert(!s_ina_monitor_waiting);
+        s_ina_requested_us = esp_timer_get_time();
+        s_simulated_task = &s_ina_task_token;
+        assert(sensor_bus_owner_try_acquire() == SENSOR_BUS_ERR_MUTEX_BUSY);
+        s_simulated_task = NULL;
+        s_ina_monitor_waiting = true;
+    }
     nrf_log_error_t error;
     if (data[3] == NRF_LOG_MESSAGE_STATUS_REQUEST) {
         nrf_log_status_request_t request;
@@ -138,6 +159,7 @@ static bool log_test_read(sim_node_t *node, uint8_t *data, size_t length, esp_er
     if (node->channel != UPSTREAM_CHANNEL) assert(s_tca_control == (uint8_t)(1U << node->channel));
     if (length >= s_logger[index].response_length) {
         s_logger[index].pending = false;
+        s_logger_pair_completed = true;
         if (s_logger[index].response[3] == NRF_LOG_MESSAGE_BLOCK) {
             assert(length == NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH);
             ++s_logger[index].block_reads;
@@ -154,6 +176,32 @@ static bool log_test_read(sim_node_t *node, uint8_t *data, size_t length, esp_er
         length < s_logger[index].response_length ? length : s_logger[index].response_length);
     *result = ESP_OK;
     return true;
+}
+
+static void log_test_ina_monitor(TickType_t ticks)
+{
+    if (!s_ina_monitor_waiting || !s_logger_pair_completed || ticks == 0U ||
+        s_bus_owner_log_count == s_logger_pair_owner_release_count) {
+        return;
+    }
+    sensor_bus_handles_t handles;
+    uint8_t registers[2] = {0};
+    assert(s_tca_control == 0U);
+    s_simulated_task = &s_ina_task_token;
+    assert(xTaskGetCurrentTaskHandle() != &s_task_token);
+    assert(sensor_bus_owner_try_acquire() == ESP_OK);
+    const int64_t waited_us = esp_timer_get_time() - s_ina_requested_us;
+    if (waited_us > s_ina_max_wait_us) s_ina_max_wait_us = waited_us;
+    assert(waited_us > 0 && waited_us <= 50000);
+    assert(sensor_bus_get_handles(&handles) == ESP_OK);
+    assert(sensor_bus_read_bytes(
+        handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(registers), registers) == ESP_OK);
+    sensor_bus_owner_release();
+    s_simulated_task = NULL;
+    s_ina_monitor_waiting = false;
+    s_logger_pair_completed = false;
+    ++s_ina_accesses;
+    if (s_completed_log_mask != s_expected_log_mask) ++s_ina_accesses_before_log_completion;
 }
 
 static void log_test_record(const char *line)
@@ -178,6 +226,13 @@ static void start_log_world(bool with_mux)
     memset(s_logger, 0, sizeof(s_logger));
     s_completed_log_mask = 0U;
     s_calibration_queued = false;
+    s_calibration_preempted_logs = false;
+    s_ina_monitor_waiting = false;
+    s_logger_pair_completed = false;
+    s_logger_pair_owner_release_count = 0U;
+    s_ina_accesses = 0U;
+    s_ina_max_wait_us = 0;
+    s_ina_accesses_before_log_completion = 0U;
     s_firmware_lines = 0U;
     s_rx_lines = 0U;
     s_tca_present = with_mux;
@@ -224,17 +279,23 @@ int main(void)
     start_log_world(true);
     s_queue_calibration = true;
     s_slow_log_output = true;
-    script(EV_WAIT_MS, 10U, NULL);
+    s_vtask_delay_hook = log_test_ina_monitor;
+    script(EV_WAIT_MS, 1000U, NULL);
+    script_waits(16U, 10U);
     script(EV_ACTION, 0U, verify_log_pages);
     script(EV_STOP, 0U, NULL);
     run_service();
     assert(s_calibration_queued && s_height_reference_writes == 2U && s_imu_calibration_writes == 2U);
-    assert(s_firmware_lines == 3U && s_rx_lines >= 9U);
+    assert(s_calibration_preempted_logs);
+    assert(s_firmware_lines == 3U && s_rx_lines >= 3U);
+    assert(s_ina_accesses >= 3U && s_ina_accesses_before_log_completion >= 3U);
+    assert(!s_ina_monitor_waiting && s_ina_max_wait_us > 0 && s_ina_max_wait_us <= 50000);
     assert(s_max_bus_owner_hold_ms <= SENSOR_BUS_OWNER_MAX_HOLD_MS);
     assert(s_collisions == 0U && s_tca_control == 0U);
 
     start_log_world(false);
     s_queue_calibration = false;
+    script_waits(4U, 10U);
     script(EV_ACTION, 0U, verify_log_pages);
     script(EV_STOP, 0U, NULL);
     run_service();
@@ -242,6 +303,7 @@ int main(void)
 
     start_log_world(true);
     s_fail_block_read = true;
+    script_waits(16U, 10U);
     script(EV_STOP, 0U, NULL);
     run_service();
     assert(!s_fail_block_read && s_logger[2].block_reads == 1U);

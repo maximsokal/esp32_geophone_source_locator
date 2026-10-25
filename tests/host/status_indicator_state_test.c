@@ -16,6 +16,9 @@
 
 const char *APP_EVENT = "APP_EVENT";
 char host_esp_log_last[256];
+char host_esp_log_all[4096];
+int host_esp_log_forbidden;
+unsigned host_esp_log_violations;
 
 static int s_loop_token;
 static esp_event_loop_handle_t s_loop;
@@ -81,10 +84,19 @@ BaseType_t xTimerDelete(TimerHandle_t timer, TickType_t wait)
 }
 
 #if !defined(STATUS_INDICATOR_FAILURE_TEST)
+/*
+ * The health timer runs on the FreeRTOS "Tmr Svc" task with a 2048-byte stack.
+ * A formatted ESP_LOGW there overflowed it and rebooted the device (field log
+ * 2026-10-25 20:16), so the callback must not log at all: it records the cause
+ * and posts; the event handler logs on the event-loop task.
+ */
 static void health_tick(void)
 {
     const unsigned calls = s_set_calls;
+    host_esp_log_forbidden = 1;
     s_health_tick(&s_timer_token);
+    host_esp_log_forbidden = 0;
+    assert(host_esp_log_violations == 0U);
     assert(s_set_calls == calls);
 }
 #endif
@@ -309,6 +321,7 @@ int main(void)
     strcpy(s_modules[HW_MODULE_BAROMETER].reason, "bus stuck");
     s_post_result = ESP_FAIL;
     host_esp_log_last[0] = '\0';
+    host_esp_log_all[0] = '\0';
     health_tick();
     assert(status_indicator_get_state() == STATUS_INDICATOR_WARNING);
     assert(host_esp_log_last[0] == '\0'); /* a failed post is retried silently */
@@ -316,22 +329,30 @@ int main(void)
     s_post_result = ESP_OK;
     health_tick();
     assert(s_post_calls == failed_posts + 1U && s_posted_event == APP_EVENT_STATUS_ERROR);
-    {
-        /* The transition to ERROR must name the module that caused it. */
-        char expected[160];
-        (void)snprintf(expected, sizeof(expected),
-            "STATUS_HEALTH event=%d module_id=%d state=%d requirement=%d reason=bus stuck",
-            (int)APP_EVENT_STATUS_ERROR, (int)HW_MODULE_BAROMETER,
-            (int)HW_STATE_FAULT, (int)HW_REQ_OPTIONAL);
-        assert(strcmp(host_esp_log_last, expected) == 0);
-    }
+    assert(host_esp_log_all[0] == '\0'); /* the timer task itself never logs */
     health_tick();
     assert(s_post_calls == failed_posts + 1U);
     emit(s_posted_event);
+    {
+        /* The transition to ERROR must name the module that caused it, logged by the handler. */
+        char expected[160];
+        (void)snprintf(expected, sizeof(expected),
+            "STATUS_HEALTH event=%d module_id=%d state=%d requirement=%d reason=bus stuck\n",
+            (int)APP_EVENT_STATUS_ERROR, (int)HW_MODULE_BAROMETER,
+            (int)HW_STATE_FAULT, (int)HW_REQ_OPTIONAL);
+        assert(strstr(host_esp_log_all, expected) != NULL);
+        /* Delivered once: a repeated event must not replay the cause. */
+        host_esp_log_all[0] = '\0';
+        emit(APP_EVENT_STATUS_ERROR);
+        assert(strstr(host_esp_log_all, "STATUS_HEALTH") == NULL);
+    }
+    host_esp_log_all[0] = '\0';
     s_modules[HW_MODULE_BAROMETER].state = HW_STATE_PRESENT;
     health_tick();
     assert(s_posted_event == APP_EVENT_STATUS_CLEAR_NON_STICKY);
     emit(s_posted_event);
+    assert(strstr(host_esp_log_all, "STATUS_HEALTH event=") != NULL);
+    assert(strstr(host_esp_log_all, "no faulting module") != NULL);
     s_modules[HW_MODULE_AD7606].state = HW_STATE_ABSENT;
     health_tick();
     assert(s_posted_event == APP_EVENT_STATUS_ERROR);

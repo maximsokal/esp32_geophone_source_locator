@@ -81,6 +81,9 @@ typedef struct {
     uint32_t invalid_input_count;
     uint32_t timestamp_anomaly_count;
     bool has_last_update;
+    /* Latch last handed out by nrf_logger_led_take_latch_change(). */
+    nrf_logger_led_severity_t reported_severity;
+    nrf_logger_led_source_t reported_source;
 } nrf_logger_led_t;
 
 /* Call before first use and on the node's explicit reboot/reset path. */
@@ -94,6 +97,17 @@ nrf_logger_led_result_t nrf_logger_led_update(
     nrf_logger_led_t *led,
     const nrf_logger_led_input_t *in,
     uint32_t now_ms);
+
+/*
+ * Report a latch the log ring has not seen yet. Returns true once per change of
+ * (severity_latched, reason_source) and fills the two outputs; the latch only
+ * rises, so this fires at most three times between resets. Lets the node tell
+ * the ESP32 which source turned the logger LED yellow or red.
+ */
+bool nrf_logger_led_take_latch_change(
+    nrf_logger_led_t *led,
+    nrf_logger_led_severity_t *severity,
+    nrf_logger_led_source_t *source);
 
 #ifdef __cplusplus
 }

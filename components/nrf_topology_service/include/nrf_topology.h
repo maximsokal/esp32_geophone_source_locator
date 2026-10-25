@@ -20,13 +20,18 @@ typedef enum {
     NRF_TOPOLOGY_NODE_TRANSPORT_ERROR,
 } nrf_topology_node_state_t;
 
-/* Which MAIN check declared NRF_TOPOLOGY_NODE_CONFLICT (diagnostics only). */
+/* Which check declared NRF_TOPOLOGY_NODE_CONFLICT (diagnostics only). */
 typedef enum {
     NRF_TOPOLOGY_CONFLICT_NONE = 0,
     NRF_TOPOLOGY_CONFLICT_REMOTE_ON_DIRECT_BUS,   /* 0x32 answered with the mux closed */
     NRF_TOPOLOGY_CONFLICT_DISCOVERY_AND_MAIN,     /* 0x30 and 0x31 both answered */
     NRF_TOPOLOGY_CONFLICT_MAIN_IDENTITY,          /* 0x31 answered but is not the assigned MAIN */
     NRF_TOPOLOGY_CONFLICT_DISCOVERY_NOT_UNASSIGNED, /* 0x30 answered but is not a ready unassigned node */
+    NRF_TOPOLOGY_CONFLICT_REMOTE_DISCOVERY_AND_RUNTIME, /* 0x30 and 0x32 both answered on one channel */
+    NRF_TOPOLOGY_CONFLICT_REMOTE_IDENTITY,        /* 0x32 answered but role/node_id/channel/ASSIGNED is wrong */
+    NRF_TOPOLOGY_CONFLICT_REMOTE_DISCOVERY_NOT_UNASSIGNED, /* channel 0x30 is not a ready unassigned node */
+    NRF_TOPOLOGY_CONFLICT_MAIN_LOST_DURING_SCAN,  /* known MAIN stopped answering while a channel was open */
+    NRF_TOPOLOGY_CONFLICT_DUPLICATE_HARDWARE_ID,  /* two assigned nodes report the same hardware id */
 } nrf_topology_conflict_reason_t;
 
 typedef struct {

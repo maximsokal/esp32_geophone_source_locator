@@ -171,6 +171,19 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore)
 BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t semaphore, TickType_t ticks_to_wait)
 {
     assert(semaphore == &s_lock);
+    if (ticks_to_wait == 0U) {
+#ifdef _WIN32
+        if (!TryEnterCriticalSection(&semaphore->mutex)) return pdFALSE;
+        s_owner_priority = s_current_priority;
+        return pdTRUE;
+#else
+        const int result = pthread_mutex_trylock(&semaphore->mutex);
+        if (result == EBUSY) return pdFALSE;
+        assert(result == 0);
+        s_owner_priority = s_current_priority;
+        return pdTRUE;
+#endif
+    }
     assert(ticks_to_wait == pdMS_TO_TICKS(SENSOR_BUS_MUTEX_WAIT_MS));
     if (atomic_exchange(&s_force_next_wait_timeout, false)) {
 #ifdef _WIN32
@@ -549,6 +562,7 @@ typedef struct {
     atomic_bool channel_open;
     esp_err_t waiter_result;
     sensor_bus_owner_stats_t waiter_stats;
+    uint64_t waiter_wait_us;
     char waiter_log[512];
 } owner_test_context_t;
 
@@ -636,6 +650,42 @@ static void *bounded_waiter_fn(void *arg)
 #else
     return NULL;
 #endif
+}
+
+#ifdef _WIN32
+static DWORD WINAPI try_waiter_fn(LPVOID arg)
+#else
+static void *try_waiter_fn(void *arg)
+#endif
+{
+    owner_test_context_t *context = arg;
+    s_current_priority = 1;
+    const int64_t started_us = sensor_bus_lines_now_us();
+    context->waiter_result = sensor_bus_owner_try_acquire();
+    const int64_t waited_us = sensor_bus_lines_now_us() - started_us;
+    context->waiter_wait_us = waited_us > 0 ? (uint64_t)waited_us : 0U;
+    assert(sensor_bus_get_owner_stats(&context->waiter_stats) == ESP_OK);
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+static void test_owner_try_acquire_does_not_wait(void)
+{
+    owner_test_context_t context = {0};
+    atomic_store(&s_owner_hold_started, false);
+    test_thread_t owner = test_thread_start(long_owner_fn, NULL);
+    while (!atomic_load(&s_owner_hold_started)) test_sleep_ms(1U);
+    test_thread_t waiter = test_thread_start(try_waiter_fn, &context);
+    test_thread_join(waiter);
+    test_thread_join(owner);
+    assert(context.waiter_result == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(context.waiter_wait_us < 5000U);
+    assert(context.waiter_stats.last_waited_for_mutex_us < 5000U);
+    assert(context.waiter_stats.last_waiter_task[0] != '\0');
+    assert(strcmp(context.waiter_stats.holder_task, "i2c-test") == 0);
 }
 
 static void test_ina_transfer_cannot_interleave_inside_open_tca_channel(void)
@@ -843,6 +893,9 @@ typedef struct {
     atomic_uint completed_channels;
     uint64_t waiter_wait_us;
     bool waiter_got_bus_between_channels;
+    i2c_bus_device_handle_t main;
+    i2c_bus_device_handle_t ina;
+    uint64_t waiter_wall_wait_ms;
 } scan_waiter_context_t;
 
 #ifdef _WIN32
@@ -897,9 +950,30 @@ static void *scan_bus_waiter_fn(void *arg)
         test_sleep_ms(1U);
     }
     atomic_store(&context->waiter_started, true);
+    s_current_priority = 1;
+#ifdef _WIN32
+    const uint64_t wall_started_ms = GetTickCount64();
+#else
+    struct timespec wall_started;
+    assert(clock_gettime(CLOCK_MONOTONIC, &wall_started) == 0);
+    const uint64_t wall_started_ms = (uint64_t)wall_started.tv_sec * 1000U + (uint64_t)wall_started.tv_nsec / 1000000U;
+#endif
     const int64_t started_us = sensor_bus_lines_now_us();
     assert(sensor_bus_owner_acquire() == ESP_OK);
     const int64_t waited_us = sensor_bus_lines_now_us() - started_us;
+#ifdef _WIN32
+    context->waiter_wall_wait_ms = GetTickCount64() - wall_started_ms;
+#else
+    struct timespec wall_finished;
+    assert(clock_gettime(CLOCK_MONOTONIC, &wall_finished) == 0);
+    context->waiter_wall_wait_ms = (uint64_t)wall_finished.tv_sec * 1000U +
+        (uint64_t)wall_finished.tv_nsec / 1000000U - wall_started_ms;
+#endif
+    if (context->ina != NULL) {
+        uint8_t registers[2];
+        assert(s_tca_control == 0U);
+        assert(sensor_bus_read_bytes(context->ina, NULL_I2C_MEM_ADDR, sizeof(registers), registers) == ESP_OK);
+    }
     context->waiter_wait_us = waited_us > 0 ? (uint64_t)waited_us : 0U;
     const unsigned completed = atomic_load(&context->completed_channels);
     context->waiter_got_bus_between_channels = completed == 1U;
@@ -936,6 +1010,88 @@ static void test_topology_waiter_gets_bus_between_channels(void)
     atomic_store(&s_fake_transaction_ms, 0U);
 }
 
+#ifdef _WIN32
+static DWORD WINAPI three_node_log_pairs_fn(LPVOID arg)
+#else
+static void *three_node_log_pairs_fn(void *arg)
+#endif
+{
+    scan_waiter_context_t *context = arg;
+    const uint8_t channels[] = {UINT8_MAX, 0U, 3U};
+    uint8_t frame[136] = {0};
+    s_current_priority = 2;
+    for (unsigned node = 0U; node < 3U; ++node) {
+        assert(sensor_bus_owner_acquire() == ESP_OK);
+        if (node == 0U) {
+            assert(tca9548a_mux_close(context->mux) == ESP_OK);
+            atomic_store(&context->first_channel_started, true);
+            while (!atomic_load(&context->waiter_started)) test_sleep_ms(1U);
+        } else {
+            assert(tca9548a_mux_select(context->mux, channels[node]) == ESP_OK);
+        }
+        const i2c_bus_device_handle_t device = node == 0U ? context->main : context->remote;
+        assert(sensor_bus_write_bytes(device, NULL_I2C_MEM_ADDR, 10U, frame) == ESP_OK);
+        assert(sensor_bus_read_bytes(device, NULL_I2C_MEM_ADDR, sizeof(frame), frame) == ESP_OK);
+        assert(tca9548a_mux_close(context->mux) == ESP_OK);
+        atomic_store(&context->completed_channels, node + 1U);
+        sensor_bus_owner_release();
+        test_sleep_ms(10U); /* The production logger blocks for one 100 Hz tick. */
+    }
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+static void test_waiting_ina_runs_between_main_ch0_ch3_log_pairs(void)
+{
+    sensor_bus_handles_t handles = {0};
+    tca9548a_mux_t mux = {0};
+    scan_waiter_context_t context = {.mux = &mux};
+    prepare_mux_fixture(&mux, &context.remote, &handles);
+    assert(sensor_bus_device_create(handles.bus, 0x31U, SENSOR_BUS_I2C_SPEED_HZ, &context.main) == ESP_OK);
+    context.ina = handles.ina3221;
+    atomic_store(&s_fake_transaction_ms, 1U);
+    test_thread_t logger = test_thread_start(three_node_log_pairs_fn, &context);
+    test_thread_t ina = test_thread_start(scan_bus_waiter_fn, &context);
+    test_thread_join(ina);
+    test_thread_join(logger);
+    assert(context.waiter_got_bus_between_channels);
+    assert(atomic_load(&context.completed_channels) == 3U);
+    assert(context.waiter_wait_us > 0U && context.waiter_wait_us < 50000U);
+    assert(context.waiter_wall_wait_ms < 250U); /* Host scheduler guard, not an RTOS P99 claim. */
+    assert(s_tca_control == 0U);
+    atomic_store(&s_fake_transaction_ms, 0U);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
+static void test_owner_deadline_bounds_driver_and_clears_on_release(void)
+{
+    sensor_bus_handles_t handles = {0};
+    i2c_bus_device_handle_t remote = NULL;
+    tca9548a_mux_t mux = {0};
+    uint8_t value = 0U;
+    prepare_mux_fixture(&mux, &remote, &handles);
+    assert(sensor_bus_owner_set_deadline_us(sensor_bus_lines_now_us() + 15000) == ESP_ERR_INVALID_STATE);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    assert(tca9548a_mux_select(&mux, 0U) == ESP_OK);
+    assert(sensor_bus_owner_set_deadline_us(0) == ESP_ERR_INVALID_ARG);
+    assert(sensor_bus_owner_set_deadline_us(sensor_bus_lines_now_us() + 15000) == ESP_OK);
+    assert(sensor_bus_write_bytes(remote, NULL_I2C_MEM_ADDR, 1U, &value) == ESP_OK);
+    assert(atomic_load(&s_last_transaction_timeout_ms) == 15);
+    sensor_bus_lines_delay_us(7000U);
+    const unsigned transfers = atomic_load(&s_master_transfer_calls);
+    assert(sensor_bus_read_byte(remote, NULL_I2C_MEM_ADDR, &value) == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET);
+    assert(atomic_load(&s_master_transfer_calls) == transfers);
+    assert(sensor_bus_owner_set_deadline_us(sensor_bus_lines_now_us() + 40000) == ESP_OK);
+    assert(tca9548a_mux_close(&mux) == ESP_OK && s_tca_control == 0U);
+    sensor_bus_owner_release();
+    assert(sensor_bus_read_byte(handles.ina3221, NULL_I2C_MEM_ADDR, &value) == ESP_OK);
+    assert(atomic_load(&s_last_transaction_timeout_ms) == SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
 static unsigned long long parse_log_ms(const char *line, const char *field)
 {
     const char *value = strstr(line, field);
@@ -970,6 +1126,7 @@ static void test_mutex_wait_and_transfer_timeouts_are_distinct_ms(void)
     assert(strstr(g_fake_lines.timeout_config_log, "mutex_wait_ms=200") != NULL);
     assert(strstr(g_fake_lines.timeout_config_log, "transaction_timeout_ms=20") != NULL);
 
+    test_owner_try_acquire_does_not_wait();
     test_bounded_wait_reports_owner_and_priority_inheritance();
     test_transaction_timeout_is_20ms_and_recovery_is_unlocked();
     test_owner_logs_match_fake_clock();
@@ -997,6 +1154,8 @@ int main(void)
     test_hold_budget_aborts_closes_mux_without_fault();
     test_hold_budget_preserves_driver_timeout();
     test_topology_waiter_gets_bus_between_channels();
+    test_waiting_ina_runs_between_main_ch0_ch3_log_pairs();
+    test_owner_deadline_bounds_driver_and_clears_on_release();
     assert(sensor_bus_deinit() == ESP_OK);
 
     return 0;

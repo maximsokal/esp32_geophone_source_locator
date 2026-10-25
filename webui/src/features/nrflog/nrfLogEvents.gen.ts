@@ -23,4 +23,5 @@ export const NRF_LOG_EVENTS = {
   21: { name: "WATCHDOG_DEGRADED", subsystem: "WATCHDOG", defaultSeverity: "ERROR" },
   22: { name: "WATCHDOG_FEED_FAILED", subsystem: "WATCHDOG", defaultSeverity: "ERROR" },
   23: { name: "SENSOR_INIT_FAILED", subsystem: "SENSOR", defaultSeverity: "ERROR" },
+  24: { name: "LOGGER_LATCH", subsystem: "LOG", defaultSeverity: "WARN" },
 } as const;

@@ -88,6 +88,8 @@ typedef struct {
     bool shutdown_injected;
     bool yield_after_status_read;
     uint8_t yield_after_status_node;
+    bool yield_after_block_read;
+    uint8_t yield_after_block_node;
     bool deadlines_enabled;
     uint64_t cs_deadline_ms;
     uint64_t sensor_deadline_ms;
@@ -145,6 +147,10 @@ typedef struct {
     uint8_t last_write_type[NRF_LOG_COLLECTOR_NODE_COUNT];
     uint32_t recoveries;
     uint32_t tx_cost_ms;
+    uint64_t driver_deadline_ms;
+    uint32_t scheduler_cost_ms;
+    uint32_t close_cost_ms;
+    uint32_t mux_close_reserve_ms;
     uint64_t now_ms;
     size_t event_count;
     nrf_log_collector_t *collector;
@@ -440,10 +446,15 @@ static esp_err_t fake_begin_node(void *context, uint8_t node)
 static esp_err_t fake_end_node(void *context, uint8_t node)
 {
     fake_bus_t *fake = context;
-    if (node == 0U) return ESP_OK;
+    if (node == 0U) {
+        fake->now_ms += fake->scheduler_cost_ms;
+        return ESP_OK;
+    }
     fake_event(fake, EVENT_CLOSE, node, 0U);
     fake_event(fake, EVENT_CLOSE_VERIFY, node, 0U);
-    fake->now_ms += 1U;
+    fake->now_ms += fake->close_cost_ms != 0U ? fake->close_cost_ms : 1U;
+    CHECK(fake->now_ms <= fake->driver_deadline_ms);
+    fake->now_ms += fake->scheduler_cost_ms;
     if (fake->close_failure && fake->close_failure_node == node) {
         fake_event(fake, EVENT_CLOSE, node, 0U);
         fake_event(fake, EVENT_CLOSE_VERIFY, node, 0U);
@@ -732,6 +743,11 @@ static esp_err_t fake_read_frame(
         fake->yield_after_status_read = false;
         fake->yield_pending = true;
     }
+    if (fake->yield_after_block_read && node == fake->yield_after_block_node &&
+        response_type == NRF_LOG_MESSAGE_BLOCK) {
+        fake->yield_after_block_read = false;
+        fake->yield_pending = true;
+    }
     *received_length = copy_length;
     if (response_type == NRF_LOG_MESSAGE_STATUS) fake_inject_priority_storm(fake, node);
     if (fake->shutdown_after_first_block_read && !fake->shutdown_injected &&
@@ -742,6 +758,7 @@ static esp_err_t fake_read_frame(
         fake->shutdown_requested = true;
         fake_event(fake, EVENT_SHUTDOWN, node, response_type);
     }
+    fake_reset_active_ring(fake, node, response_type);
     return ESP_OK;
 }
 
@@ -755,12 +772,6 @@ static void fake_service_due_deadlines(fake_bus_t *fake);
 static bool fake_yield_requested(void *context)
 {
     fake_bus_t *fake = context;
-    if (fake->event_count != 0U) {
-        const fake_event_t *last_event = &fake->events[fake->event_count - 1U];
-        if (last_event->kind == EVENT_READ && last_event->node == fake->active_node) {
-            fake_reset_active_ring(fake, last_event->node, last_event->message_type);
-        }
-    }
     const bool deadline_due = fake->deadlines_enabled &&
         (fake->now_ms >= fake->cs_deadline_ms ||
          fake->now_ms >= fake->sensor_deadline_ms ||
@@ -803,6 +814,12 @@ static void fake_report_firmware(void *context, uint8_t node, uint32_t boot_id,
     if (info != NULL) fake->firmware_info[node] = *info;
 }
 
+static void fake_set_deadline(void *context, uint64_t deadline_ms)
+{
+    fake_bus_t *fake = context;
+    fake->driver_deadline_ms = deadline_ms;
+}
+
 static nrf_log_collector_io_t fake_io(fake_bus_t *fake)
 {
     return (nrf_log_collector_io_t) {
@@ -812,12 +829,20 @@ static nrf_log_collector_io_t fake_io(fake_bus_t *fake)
         .write_frame = fake_write_frame,
         .read_frame = fake_read_frame,
         .now_ms = fake_now,
+        .set_deadline = fake_set_deadline,
+        .session_open_timeout_ms = 1U,
+        .exchange_timeout_ms = 2U * fake->tx_cost_ms,
+        .mux_close_reserve_ms = fake->mux_close_reserve_ms,
+        .scheduler_reserve_ms = fake->scheduler_cost_ms,
         .yield_requested = fake_yield_requested,
         .report_firmware = fake_report_firmware,
     };
 }
 
-static nrf_log_collector_iteration_t run_round_at_current_time(fake_bus_t *fake)
+static nrf_log_collector_iteration_t run_round_with_budgets(
+    fake_bus_t *fake,
+    uint32_t per_node_budget_ms,
+    uint32_t total_budget_ms)
 {
     nrf_log_collector_iteration_t iteration;
     const nrf_log_collector_io_t io = fake_io(fake);
@@ -825,10 +850,15 @@ static nrf_log_collector_iteration_t run_round_at_current_time(fake_bus_t *fake)
         fake->collector,
         fake->targets,
         &io,
-        50U,
-        100U,
+        per_node_budget_ms,
+        total_budget_ms,
         &iteration) == ESP_OK);
     return iteration;
+}
+
+static nrf_log_collector_iteration_t run_round_at_current_time(fake_bus_t *fake)
+{
+    return run_round_with_budgets(fake, 50U, 100U);
 }
 
 static nrf_log_collector_iteration_t run_round(fake_bus_t *fake)
@@ -910,12 +940,24 @@ static void test_framing_budget_and_order(void)
     CHECK(trace_event_is(&s_fake, 3U, EVENT_SELECT_VERIFY, 2U, 0U));
     CHECK(trace_event_is(&s_fake, 4U, EVENT_WRITE, 2U, NRF_LOG_MESSAGE_STATUS_REQUEST));
     CHECK(trace_event_is(&s_fake, 5U, EVENT_READ, 2U, NRF_LOG_MESSAGE_STATUS));
-    CHECK(trace_event_is(&s_fake, 6U, EVENT_WRITE, 2U, NRF_LOG_MESSAGE_READ_REQUEST));
-    CHECK(trace_event_is(&s_fake, 7U, EVENT_READ, 2U, NRF_LOG_MESSAGE_BLOCK));
-    CHECK(trace_event_is(&s_fake, 8U, EVENT_WRITE, 2U, NRF_LOG_MESSAGE_READ_REQUEST));
-    CHECK(trace_event_is(&s_fake, 9U, EVENT_READ, 2U, NRF_LOG_MESSAGE_BLOCK));
-    CHECK(trace_event_is(&s_fake, 10U, EVENT_CLOSE, 2U, 0U));
-    CHECK(trace_event_is(&s_fake, 11U, EVENT_CLOSE_VERIFY, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 6U, EVENT_CLOSE, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 7U, EVENT_CLOSE_VERIFY, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 8U, EVENT_CLOSE, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 9U, EVENT_CLOSE_VERIFY, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 10U, EVENT_SELECT, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 11U, EVENT_SELECT_VERIFY, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 12U, EVENT_WRITE, 2U, NRF_LOG_MESSAGE_READ_REQUEST));
+    CHECK(trace_event_is(&s_fake, 13U, EVENT_READ, 2U, NRF_LOG_MESSAGE_BLOCK));
+    CHECK(trace_event_is(&s_fake, 14U, EVENT_CLOSE, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 15U, EVENT_CLOSE_VERIFY, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 16U, EVENT_CLOSE, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 17U, EVENT_CLOSE_VERIFY, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 18U, EVENT_SELECT, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 19U, EVENT_SELECT_VERIFY, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 20U, EVENT_WRITE, 2U, NRF_LOG_MESSAGE_READ_REQUEST));
+    CHECK(trace_event_is(&s_fake, 21U, EVENT_READ, 2U, NRF_LOG_MESSAGE_BLOCK));
+    CHECK(trace_event_is(&s_fake, 22U, EVENT_CLOSE, 2U, 0U));
+    CHECK(trace_event_is(&s_fake, 23U, EVENT_CLOSE_VERIFY, 2U, 0U));
     CHECK(s_fake.last_status_id[2] % 32U == 9U);
     fake_stop();
 
@@ -953,25 +995,24 @@ static void test_framing_budget_and_order(void)
     fake_start(1U);
     fake_append(&s_fake, 0U, 5U);
     s_fake.tx_cost_ms = 30U;
-    const nrf_log_collector_iteration_t soft_budget = run_round_at_current_time(&s_fake);
-    CHECK(soft_budget.elapsed_ms >= 60U);
-    CHECK(s_fake.status_reads[0] == 1U);
-    CHECK(s_fake.block_writes[0] == 1U);
-    CHECK(soft_budget.nodes_succeeded == 1U);
-    CHECK(soft_budget.completed);
-    CHECK(node_summary(&s_fake, 0U).stored == 5U);
-    s_fake.tx_cost_ms = 1U;
-    CHECK(run_round(&s_fake).nodes_succeeded == 1U);
-    CHECK(s_fake.last_block_cursor[0] == 0U);
+    const nrf_log_collector_iteration_t first_slice = run_round_with_budgets(&s_fake, 100U, 100U);
+    CHECK(first_slice.elapsed_ms <= 100U && !first_slice.completed);
+    CHECK(s_fake.status_reads[0] == 1U && s_fake.block_writes[0] == 0U);
+    CHECK(node_summary(&s_fake, 0U).stored == 0U);
+    const nrf_log_collector_iteration_t resumed = run_round_with_budgets(&s_fake, 100U, 100U);
+    CHECK(resumed.elapsed_ms <= 100U && resumed.completed);
+    CHECK(s_fake.status_reads[0] == 1U && s_fake.block_writes[0] == 1U);
     CHECK(node_summary(&s_fake, 0U).stored == 5U);
     fake_stop();
 
     fake_start(5U);
     s_fake.tx_cost_ms = 30U;
-    const nrf_log_collector_iteration_t total_budget = run_round_at_current_time(&s_fake);
-    CHECK(total_budget.elapsed_ms >= 100U);
-    CHECK(total_budget.nodes_attempted == 5U);
-    CHECK(total_budget.nodes_succeeded == 5U && total_budget.completed);
+    const nrf_log_collector_iteration_t total_budget = run_round_with_budgets(&s_fake, 100U, 100U);
+    CHECK(total_budget.elapsed_ms <= 100U);
+    CHECK(total_budget.nodes_attempted == 1U);
+    CHECK(total_budget.nodes_succeeded == 1U && !total_budget.completed);
+    CHECK(s_fake.status_writes[0] == 1U && s_fake.status_writes[1] == 0U);
+    for (uint8_t node = 2U; node < 5U; ++node) CHECK(s_fake.status_writes[node] == 0U);
     fake_stop();
 }
 
@@ -1095,12 +1136,16 @@ static void test_rejected_frames_preserve_collector_state(void)
 {
     static const struct {
         fake_fault_t fault;
+        bool backs_off; /* Validation failures and timeouts back off; NACKs do not. */
     } rejection_cases[] = {
-        { FAULT_BIT_FLIP },
-        { FAULT_BAD_BLOCK_SEMANTICS },
-        { FAULT_SHORT_RX },
-        { FAULT_UNKNOWN_MESSAGE },
-        { FAULT_OTHER_BOOT_ID },
+        { FAULT_BIT_FLIP, true },
+        { FAULT_BAD_BLOCK_SEMANTICS, true },
+        { FAULT_SHORT_RX, true },
+        { FAULT_UNKNOWN_MESSAGE, true },
+        { FAULT_OTHER_BOOT_ID, true },
+        /* Field log 2026-10-25: 136-byte block read failed with ESP_ERR_INVALID_STATE. */
+        { FAULT_NACK_AFTER_WRITE, false },
+        { FAULT_TIMEOUT_AFTER_WRITE, true },
     };
 
     for (size_t case_index = 0U; case_index < sizeof(rejection_cases) / sizeof(rejection_cases[0]); ++case_index) {
@@ -1121,7 +1166,9 @@ static void test_rejected_frames_preserve_collector_state(void)
 
         s_fake.fault = FAULT_NONE;
         s_fake.last_block_cursor[0] = UINT32_MAX;
-        CHECK(run_round(&s_fake).nodes_attempted == 0U);
+        if (rejection_cases[case_index].backs_off) {
+            CHECK(run_round(&s_fake).nodes_attempted == 0U);
+        }
         CHECK(run_round(&s_fake).nodes_succeeded == 1U);
         CHECK(s_fake.last_block_cursor[0] == before.cursor_seq);
         const collector_state_snapshot_t accepted = snapshot_node(&s_fake, 0U);
@@ -1159,6 +1206,47 @@ static void test_fault_record_words_are_collected_without_decoding(void)
         }
     }
     CHECK(stored);
+    fake_stop();
+}
+
+/*
+ * The nRF records why its logger LED latched (source in arg0, severity in arg1);
+ * the ESP32 must store it unchanged and tied to the node's boot id, so a red
+ * MAIN can be explained from /api/nrf/logs without the XIAO console.
+ */
+static void test_logger_latch_events_are_collected_with_boot_id(void)
+{
+    const nrf_log_event_definition_t *event = nrf_log_event_find(NRF_LOG_EVENT_LOGGER_LATCH);
+
+    fake_start(2U);
+    CHECK(event != NULL);
+    CHECK(event->subsystem == NRF_LOG_SUBSYSTEM_LOG);
+    for (uint8_t node = 0U; node < 2U; ++node) {
+        CHECK(nrf_log_ring_append(
+            &s_fake.rings[node],
+            event->subsystem,
+            event->default_severity,
+            NRF_LOG_EVENT_LOGGER_LATCH,
+            node == 0U ? 4U : 5U,   /* CS_RANGING / WATCHDOG_PARTICIPANT_STALE */
+            node == 0U ? 2U : 3U,   /* ERROR / FATAL */
+            s_fake.next_uptime[node]++) == NRF_LOG_ERROR_OK);
+    }
+    CHECK(run_round(&s_fake).nodes_succeeded == 2U);
+
+    for (uint8_t node = 0U; node < 2U; ++node) {
+        const nrf_log_node_page_t page = node_page(&s_fake, node, false, 0U, 0U, 8U);
+        bool stored = false;
+        for (uint16_t index = 0U; index < page.count; ++index) {
+            if (page.records[index].event_id == NRF_LOG_EVENT_LOGGER_LATCH) {
+                CHECK(!stored);
+                CHECK(page.records[index].boot_id == s_fake.rings[node].boot_id);
+                CHECK(page.records[index].arg0 == (node == 0U ? 4U : 5U));
+                CHECK(page.records[index].arg1 == (node == 0U ? 2U : 3U));
+                stored = true;
+            }
+        }
+        CHECK(stored);
+    }
     fake_stop();
 }
 
@@ -1766,7 +1854,13 @@ static void test_full_ring_reboot_interleavings(void)
             (cases[case_index].point == RESET_AFTER_STATUS_READ
                 ? NRF_LOG_MESSAGE_STATUS
                 : NRF_LOG_MESSAGE_BLOCK));
-        CHECK(trace_event_is(&s_fake, reset_event + 1U, EVENT_WRITE, 1U,
+        CHECK(trace_event_is(&s_fake, reset_event + 1U, EVENT_CLOSE, 1U, 0U));
+        CHECK(trace_event_is(&s_fake, reset_event + 2U, EVENT_CLOSE_VERIFY, 1U, 0U));
+        CHECK(trace_event_is(&s_fake, reset_event + 3U, EVENT_CLOSE, 1U, 0U));
+        CHECK(trace_event_is(&s_fake, reset_event + 4U, EVENT_CLOSE_VERIFY, 1U, 0U));
+        CHECK(trace_event_is(&s_fake, reset_event + 5U, EVENT_SELECT, 1U, 0U));
+        CHECK(trace_event_is(&s_fake, reset_event + 6U, EVENT_SELECT_VERIFY, 1U, 0U));
+        CHECK(trace_event_is(&s_fake, reset_event + 7U, EVENT_WRITE, 1U,
             NRF_LOG_MESSAGE_READ_REQUEST));
 
         CHECK(run_round(&s_fake).nodes_succeeded == 1U);
@@ -1880,7 +1974,7 @@ static void test_shutdown_during_bus_transaction(void)
     CHECK(s_fake.block_reads[1] == 1U);
     CHECK(s_fake.last_block_cursor[1] == 0U);
     CHECK(!s_fake.mux_open);
-    CHECK(s_fake.mux_selects == 1U && s_fake.mux_closes == 1U);
+    CHECK(s_fake.mux_selects == 2U && s_fake.mux_closes == 2U);
 
     size_t shutdown_event = s_fake.event_count;
     for (size_t i = 0U; i < s_fake.event_count; ++i) {
@@ -1942,9 +2036,9 @@ static void test_priority_storm_during_refresh_and_cs(void)
     CHECK(s_fake.cs_deadlines_served == 1U);
     CHECK(s_fake.sensor_deadlines_served == 1U);
     CHECK(s_fake.reconcile_deadlines_served == 1U);
-    CHECK(s_fake.cs_deadline_max_lateness_ms == 0U);
-    CHECK(s_fake.sensor_deadline_max_lateness_ms == 0U);
-    CHECK(s_fake.reconcile_deadline_max_lateness_ms == 0U);
+    CHECK(s_fake.cs_deadline_max_lateness_ms <= 1U);
+    CHECK(s_fake.sensor_deadline_max_lateness_ms <= 1U);
+    CHECK(s_fake.reconcile_deadline_max_lateness_ms <= 1U);
     CHECK(!s_fake.deadlines_enabled);
     CHECK(!s_fake.mux_open);
     CHECK(s_fake.mux_selects == 1U && s_fake.mux_closes == 1U);
@@ -2003,27 +2097,143 @@ static void test_priority_storm_during_refresh_and_cs(void)
     fake_stop();
 }
 
-static void test_complete_pass_crosses_soft_budget(void)
+static void test_atomic_exchange_observes_node_and_iteration_budgets(void)
 {
     fake_start(5U);
     s_fake.tx_cost_ms = 30U;
-    for (uint8_t node = 0U; node < 5U; ++node) {
-        CHECK(nrf_log_ring_append(&s_fake.rings[node], NRF_LOG_SUBSYSTEM_SENSOR,
-            NRF_LOG_SEVERITY_ERROR, NRF_LOG_EVENT_IMU_FAULT_SET, 1U, 0U, 10U) == NRF_LOG_ERROR_OK);
-        CHECK(nrf_log_ring_append(&s_fake.rings[node], NRF_LOG_SUBSYSTEM_SENSOR,
-            NRF_LOG_SEVERITY_ERROR, NRF_LOG_EVENT_ENV_FAULT_SET, 2U, 0U, 11U) == NRF_LOG_ERROR_OK);
-    }
-    const nrf_log_collector_iteration_t pass = run_round_at_current_time(&s_fake);
-    CHECK(pass.nodes_attempted == 5U && pass.nodes_succeeded == 5U);
-    CHECK(pass.completed && pass.elapsed_ms > 100U);
-    for (uint8_t node = 0U; node < 5U; ++node) {
-        nrf_log_node_page_t page = node_page(&s_fake, node, false, 0U, 0U, 128U);
-        CHECK(page.count == 2U);
-        CHECK(page.records[0].event_id == NRF_LOG_EVENT_IMU_FAULT_SET);
-        CHECK(page.records[1].event_id == NRF_LOG_EVENT_ENV_FAULT_SET);
-        CHECK(s_fake.block_writes[node] == 1U && s_fake.block_reads[node] == 1U);
-    }
+    CHECK(nrf_log_ring_append(&s_fake.rings[0], NRF_LOG_SUBSYSTEM_SENSOR,
+        NRF_LOG_SEVERITY_ERROR, NRF_LOG_EVENT_IMU_FAULT_SET, 1U, 0U, 10U) == NRF_LOG_ERROR_OK);
+    CHECK(nrf_log_ring_append(&s_fake.rings[0], NRF_LOG_SUBSYSTEM_SENSOR,
+        NRF_LOG_SEVERITY_ERROR, NRF_LOG_EVENT_ENV_FAULT_SET, 2U, 0U, 11U) == NRF_LOG_ERROR_OK);
+    const nrf_log_collector_iteration_t pass = run_round_with_budgets(&s_fake, 100U, 100U);
+    CHECK(pass.nodes_attempted == 1U && pass.nodes_succeeded == 1U);
+    CHECK(!pass.completed && pass.elapsed_ms <= 100U);
+    CHECK(s_fake.status_writes[0] == 1U && s_fake.status_reads[0] == 1U);
+    CHECK(s_fake.block_writes[0] == 0U && node_summary(&s_fake, 0U).stored == 0U);
+    for (uint8_t node = 1U; node < 5U; ++node) CHECK(s_fake.status_writes[node] == 0U);
     CHECK(!s_fake.mux_open && s_fake.mux_selects == s_fake.mux_closes);
+    fake_stop();
+}
+
+static void test_close_reserve_applies_to_first_status_and_block(void)
+{
+    fake_start(2U);
+    s_fake.targets[0].present = false;
+    s_fake.targets[0].route_available = false;
+    CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+    s_fake.mux_close_reserve_ms = 40U;
+    nrf_log_collector_iteration_t result;
+    const nrf_log_collector_io_t invalid_io = fake_io(&s_fake);
+    CHECK(nrf_log_collector_poll_iteration(s_fake.collector, s_fake.targets,
+        &invalid_io, 40U, 100U, &result) == ESP_ERR_INVALID_ARG);
+    CHECK(s_fake.status_writes[1] == 0U && s_fake.event_count == 0U);
+
+    fake_append(&s_fake, 1U, 10U);
+    s_fake.tx_cost_ms = 16U;
+    s_fake.scheduler_cost_ms = 30U;
+    s_fake.firmware_supported[1] = true;
+    for (unsigned slice = 0U; slice < 4U; ++slice) {
+        result = run_round_with_budgets(&s_fake, 120U, 120U);
+        CHECK(result.elapsed_ms <= 120U);
+        CHECK(result.completed == (slice == 3U));
+        CHECK(!s_fake.mux_open && s_fake.mux_selects == s_fake.mux_closes);
+    }
+    CHECK(s_fake.status_reads[1] == 1U && s_fake.firmware_reads[1] == 1U);
+    CHECK(s_fake.firmware_reports[1] == 1U && s_fake.block_writes[1] == 2U);
+    CHECK(s_fake.last_block_cursor[1] == 5U && s_fake.duplicate_deliveries[1] == 0U);
+    const nrf_log_node_page_t page = node_page(&s_fake, 1U, false, 0U, 0U, 20U);
+    CHECK(page.count == 10U);
+    for (uint16_t i = 0U; i < page.count; ++i) CHECK(page.records[i].seq == i);
+    fake_stop();
+}
+
+static void test_pair_admission_and_deferred_retry_failure(void)
+{
+    nrf_log_collector_iteration_t result;
+    for (uint32_t cost = 15U; cost <= 20U; cost += 5U) {
+        fake_start(2U);
+        s_fake.tx_cost_ms = cost;
+        s_fake.mux_close_reserve_ms = 40U;
+        s_fake.close_cost_ms = 40U;
+        s_fake.scheduler_cost_ms = 10U;
+        result = run_round_with_budgets(&s_fake, 100U, 100U);
+        CHECK(result.elapsed_ms <= 100U && !result.completed);
+        CHECK(s_fake.status_reads[0] == 1U && s_fake.status_writes[1] == 0U);
+        result = run_round_with_budgets(&s_fake, 100U, 100U);
+        CHECK(result.elapsed_ms <= 100U && result.completed);
+        CHECK(s_fake.status_reads[1] == 1U && !s_fake.mux_open);
+        fake_stop();
+    }
+
+    fake_start(2U);
+    s_fake.targets[0].present = false;
+    CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+    s_fake.tx_cost_ms = 20U;
+    s_fake.mux_close_reserve_ms = 40U;
+    s_fake.fault_node = 1U;
+    s_fake.fault_response_type = NRF_LOG_MESSAGE_STATUS;
+    s_fake.fault = FAULT_TIMEOUT_BEFORE_WRITE;
+    s_fake.fault_always = true;
+    result = run_round_with_budgets(&s_fake, 100U, 100U);
+    CHECK(result.nodes_attempted == 1U && result.nodes_failed == 1U);
+    CHECK(result.nodes_succeeded == 0U && !s_fake.mux_open);
+    CHECK(s_fake.recoveries == 1U);
+    fake_stop();
+
+    fake_start(2U);
+    s_fake.targets[0].present = false;
+    CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+    fake_append(&s_fake, 1U, 5U);
+    s_fake.tx_cost_ms = 20U;
+    s_fake.mux_close_reserve_ms = 40U;
+    result = run_round_with_budgets(&s_fake, 100U, 100U);
+    CHECK(!result.completed && s_fake.status_reads[1] == 1U && s_fake.block_writes[1] == 0U);
+    s_fake.fault_node = 1U;
+    s_fake.fault_response_type = NRF_LOG_MESSAGE_BLOCK;
+    s_fake.fault = FAULT_TIMEOUT_BEFORE_WRITE;
+    s_fake.fault_always = true;
+    result = run_round_with_budgets(&s_fake, 100U, 100U);
+    CHECK(result.nodes_failed == 1U && result.nodes_succeeded == 0U);
+    CHECK(s_fake.status_reads[1] == 1U && s_fake.recoveries == 1U);
+    CHECK(node_summary(&s_fake, 1U).stored == 0U && !s_fake.mux_open);
+    CHECK(run_round_with_budgets(&s_fake, 100U, 100U).nodes_attempted == 0U); /* Backoff survives. */
+    fake_stop();
+
+    fake_start(1U);
+    fake_append(&s_fake, 0U, 5U);
+    s_fake.tx_cost_ms = 20U;
+    s_fake.mux_close_reserve_ms = 40U;
+    s_fake.scheduler_cost_ms = 10U;
+    result = run_round_with_budgets(&s_fake, 100U, 500U);
+    CHECK(!result.completed && result.elapsed_ms <= 100U);
+    CHECK(s_fake.status_reads[0] == 1U && s_fake.block_writes[0] == 0U);
+    result = run_round_with_budgets(&s_fake, 100U, 500U);
+    CHECK(result.completed && result.elapsed_ms <= 100U);
+    CHECK(node_summary(&s_fake, 0U).stored == 5U && s_fake.status_reads[0] == 1U);
+    fake_stop();
+}
+
+static void test_completed_block_is_not_replayed_after_yield(void)
+{
+    fake_start(1U);
+    fake_append(&s_fake, 0U, 11U);
+    s_fake.yield_after_block_read = true;
+    const nrf_log_collector_iteration_t first = run_round_at_current_time(&s_fake);
+    CHECK(!first.completed && s_fake.yield_pending);
+    CHECK(s_fake.block_reads[0] == 1U && s_fake.last_block_cursor[0] == 0U);
+    CHECK(node_summary(&s_fake, 0U).stored == 5U);
+    CHECK(!s_fake.mux_open && s_fake.mux_selects == s_fake.mux_closes);
+
+    s_fake.yield_pending = false;
+    const nrf_log_collector_iteration_t resumed = run_round_at_current_time(&s_fake);
+    CHECK(resumed.completed && resumed.nodes_succeeded == 1U);
+    const nrf_log_node_page_t page = node_page(&s_fake, 0U, false, 0U, 0U, 20U);
+    CHECK(page.count == 10U);
+    for (uint16_t i = 0U; i < page.count; ++i) CHECK(page.records[i].seq == i);
+    CHECK(s_fake.block_reads[0] == 2U && s_fake.last_block_cursor[0] == 5U);
+    CHECK(run_round(&s_fake).completed);
+    CHECK(node_summary(&s_fake, 0U).stored == 11U);
+    CHECK(s_fake.duplicate_deliveries[0] == 0U);
     fake_stop();
 }
 
@@ -2050,7 +2260,10 @@ static void test_firmware_report_is_bound_to_boot_and_capability(void)
 
 int main(void)
 {
-    test_complete_pass_crosses_soft_budget();
+    test_atomic_exchange_observes_node_and_iteration_budgets();
+    test_close_reserve_applies_to_first_status_and_block();
+    test_pair_admission_and_deferred_retry_failure();
+    test_completed_block_is_not_replayed_after_yield();
     test_firmware_report_is_bound_to_boot_and_capability();
     volatile uint32_t collector_period_ms = NRF_LOG_COLLECTOR_PERIOD_MS;
     CHECK(collector_period_ms == 1000U);
@@ -2060,6 +2273,7 @@ int main(void)
         void (*run)(void);
     } sections[] = {
         { "fault record event collection", test_fault_record_words_are_collected_without_decoding },
+        { "logger latch event collection", test_logger_latch_events_are_collected_with_boot_id },
         { "section 4 framing/budget/order", test_framing_budget_and_order },
         { "sections 5-7 corruption/fault/reboot", test_framing_faults_and_retries },
         { "section 12.3 rejected frames preserve state", test_rejected_frames_preserve_collector_state },

@@ -80,6 +80,12 @@ typedef struct {
         size_t frame_capacity,
         size_t *received_length);
     uint64_t (*now_ms)(void *context);
+    /* Bound every driver call, including mux selection/close, to this deadline. */
+    void (*set_deadline)(void *context, uint64_t deadline_ms);
+    uint32_t session_open_timeout_ms;
+    uint32_t exchange_timeout_ms;
+    uint32_t mux_close_reserve_ms;
+    uint32_t scheduler_reserve_ms;
     bool (*yield_requested)(void *context);
     bool (*node_link_ready)(void *context, uint8_t node_index);
     void (*report_link_failure)(void *context, uint8_t node_index);
@@ -113,8 +119,8 @@ esp_err_t nrf_log_collector_reset(nrf_log_collector_t *collector);
 esp_err_t nrf_log_collector_sync_targets(
     nrf_log_collector_t *collector,
     const nrf_log_poll_target_t targets[NRF_LOG_COLLECTOR_NODE_COUNT]);
-/* Complete one bounded pass before control work. Budgets limit extra blocks/retries,
- * never the first STATUS/data block of a node; yield_requested is cancellation. */
+/* Budgets include a full pair, mux close and scheduler opportunity. A node's
+ * budget starts once per visit; validated protocol progress survives yielding. */
 esp_err_t nrf_log_collector_poll_iteration(
     nrf_log_collector_t *collector,
     const nrf_log_poll_target_t targets[NRF_LOG_COLLECTOR_NODE_COUNT],

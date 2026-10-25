@@ -182,10 +182,16 @@ NRF_TEST_MAYBE_UNUSED static unsigned log_event_count(uint16_t event_id)
 NRF_TEST_MAYBE_UNUSED static void assert_last_log_event(
     uint16_t event_id, uint32_t arg0, uint32_t arg1)
 {
-    assert(s_log_event_count != 0U);
-    assert(s_log_events[s_log_event_count - 1U].event_id == event_id);
-    assert(s_log_events[s_log_event_count - 1U].arg0 == arg0);
-    assert(s_log_events[s_log_event_count - 1U].arg1 == arg1);
+    unsigned last = s_log_event_count;
+    assert(last != 0U);
+    /* A logger-LED latch can be recorded right after the event under test. */
+    while (event_id != NRF_LOG_EVENT_LOGGER_LATCH && last > 1U &&
+           s_log_events[last - 1U].event_id == NRF_LOG_EVENT_LOGGER_LATCH) {
+        --last;
+    }
+    assert(s_log_events[last - 1U].event_id == event_id);
+    assert(s_log_events[last - 1U].arg0 == arg0);
+    assert(s_log_events[last - 1U].arg1 == arg1);
 }
 
 NRF_TEST_MAYBE_UNUSED static void fill_sensor_queue_and_check_capacity(void)
@@ -696,6 +702,13 @@ static void test_failed_sensor_signal(void)
     assert(s_log_events[0].arg1 == (uint32_t)-EIO);
     assert_last_log_event(NRF_LOG_EVENT_SENSOR_INIT_FAILED, NRF_SENSOR_VALID_ENV, (uint32_t)-ENODEV);
     assert(diagnostics.logger_led_output.red);
+    /* The red LED's cause reaches the log ring: BMI160 init failure latched at ERROR. */
+    assert(log_event_count(NRF_LOG_EVENT_LOGGER_LATCH) == 1U);
+    assert(diagnostics.logger_led_output.reason_source == NRF_LOGGER_LED_SOURCE_BMI160_FAULT);
+    assert_last_log_event(
+        NRF_LOG_EVENT_LOGGER_LATCH,
+        NRF_LOGGER_LED_SOURCE_BMI160_FAULT,
+        NRF_LOGGER_LED_SEVERITY_ERROR);
     assert_last_applied_colors(false, false, false);
     assert(signal_log_count_containing("signal: stage=SENSORS_FAILED ") == 1U);
 
@@ -812,10 +825,34 @@ static void test_main_logger_without_remote_activation(void)
     assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
     assert(diagnostics.logger_led_output.yellow);
     assert(s_led_samples[s_led_sample_count - 1U].yellow);
+    /*
+     * The ESP32 must be told which source latched, once, with the latched
+     * severity. The harness re-enters the worker (which resets the policy) on
+     * every run_worker_advancing(), so "once" is checked per call: a 3 s run
+     * holds dozens of LED updates but records exactly one event.
+     */
+    assert(log_event_count(NRF_LOG_EVENT_LOGGER_LATCH) == 1U);
+    assert_last_log_event(
+        NRF_LOG_EVENT_LOGGER_LATCH,
+        NRF_LOGGER_LED_SOURCE_TWIS_PROTOCOL,
+        NRF_LOGGER_LED_SEVERITY_WARNING);
     s_led_counters.cs_ranging_failure_total = 1U;
     run_worker_advancing(1000U);
     assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
     assert(diagnostics.logger_led_output.red);
+    assert(log_event_count(NRF_LOG_EVENT_LOGGER_LATCH) == 2U);
+    assert_last_log_event(
+        NRF_LOG_EVENT_LOGGER_LATCH,
+        NRF_LOGGER_LED_SOURCE_CS_RANGING,
+        NRF_LOGGER_LED_SEVERITY_ERROR);
+    /* An equal-severity source added later neither replaces the reason nor adds an event. */
+    s_led_counters.role_lost_total = 1U;
+    run_worker_advancing(3000U);
+    assert(log_event_count(NRF_LOG_EVENT_LOGGER_LATCH) == 3U);
+    assert_last_log_event(
+        NRF_LOG_EVENT_LOGGER_LATCH,
+        NRF_LOGGER_LED_SOURCE_CS_RANGING,
+        NRF_LOGGER_LED_SEVERITY_ERROR);
     assert(s_led_samples[s_led_sample_count - 1U].green);
     assert(!s_led_samples[s_led_sample_count - 1U].red);
     assert(s_prepare_calls == 0U && s_refresh_calls == 0U && s_imu_read_calls == 0U);

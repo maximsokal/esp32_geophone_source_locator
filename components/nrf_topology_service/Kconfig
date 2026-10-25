@@ -1,20 +1,23 @@
 menu "nRF log collector"
 
 config NRF_LOG_POLL_NODE_BUDGET_MS
-    int "Soft budget for extra log work per node (ms)"
-    range 1 1000
-    default 50
+    int "Deadline for one node visit, including mux close (ms)"
+    range 120 1000
+    default 120
     help
-        Limits optional extra blocks and retries. Each eligible node still
-        receives its first complete STATUS/data exchange in the current pass.
+        Includes selection, a bounded request/reply, mux close and one scheduler
+        tick. Work stops between pairs and resumes from the saved protocol phase.
+        The 150 ms bus-owner guard remains independent of this visit budget.
 
 config NRF_LOG_POLL_ITERATION_BUDGET_MS
-    int "Soft budget for extra log work per polling pass (ms)"
-    range 1 2000
-    default 100
+    int "Deadline for one log polling slice (ms)"
+    range 120 2000
+    default 120
     help
-        Limits optional work after the mandatory exchanges. A queued calibration
-        waits for the pass; driver transaction timeouts and owner limits remain.
+        Every pair, including the first STATUS or BLOCK, must fit. Remaining
+        nodes and protocol progress resume in a later slice. Urgent work stops
+        collection at the next safe pair boundary. Driver timeouts are bounded
+        by the remaining deadline; task preemption can still delay scheduling.
 
 config NRF_LOG_POLL_PERIOD_MS
     int "Interval between log polling rounds (ms)"

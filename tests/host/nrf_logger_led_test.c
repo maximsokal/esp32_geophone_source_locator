@@ -767,8 +767,91 @@ static void test_four_node_isolation_and_randomized_invariants(void)
     }
 }
 
+/*
+ * The ESP32 learns why the logger LED turned yellow/red from a log event, so the
+ * policy must hand out each latch change exactly once, with its source.
+ */
+static void test_latch_change_is_reported_once_with_its_source(void)
+{
+    nrf_logger_led_t led;
+    nrf_logger_led_input_t in = ready_remote_input();
+    nrf_logger_led_severity_t severity = NRF_LOGGER_LED_SEVERITY_NONE;
+    nrf_logger_led_source_t source = NRF_LOGGER_LED_SOURCE_NONE;
+
+    nrf_logger_led_reset(&led);
+    update_ok(&led, &in, 0U);
+    assert(!nrf_logger_led_take_latch_change(&led, &severity, &source));
+
+    in.source_levels[NRF_LOGGER_LED_SOURCE_CS_RANGING] = NRF_LOGGER_LED_SEVERITY_ERROR;
+    update_ok(&led, &in, 10U);
+    assert(nrf_logger_led_take_latch_change(&led, &severity, &source));
+    assert(severity == NRF_LOGGER_LED_SEVERITY_ERROR);
+    assert(source == NRF_LOGGER_LED_SOURCE_CS_RANGING);
+    assert(!nrf_logger_led_take_latch_change(&led, &severity, &source));
+    update_ok(&led, &in, 20U);
+    assert(!nrf_logger_led_take_latch_change(&led, &severity, &source));
+
+    /* An equal severity from another source keeps the reason and is not a change. */
+    in.source_levels[NRF_LOGGER_LED_SOURCE_BME280_FAULT] = NRF_LOGGER_LED_SEVERITY_ERROR;
+    update_ok(&led, &in, 30U);
+    assert(!nrf_logger_led_take_latch_change(&led, &severity, &source));
+
+    /* A higher severity replaces the reason and is reported once more. */
+    in.source_levels[NRF_LOGGER_LED_SOURCE_WATCHDOG_PARTICIPANT_STALE] = NRF_LOGGER_LED_SEVERITY_FATAL;
+    update_ok(&led, &in, 40U);
+    assert(nrf_logger_led_take_latch_change(&led, &severity, &source));
+    assert(severity == NRF_LOGGER_LED_SEVERITY_FATAL);
+    assert(source == NRF_LOGGER_LED_SOURCE_WATCHDOG_PARTICIPANT_STALE);
+    assert(!nrf_logger_led_take_latch_change(&led, &severity, &source));
+
+    /* A reboot/reset starts a new report cycle: the same latch is reported again. */
+    nrf_logger_led_reset(&led);
+    assert(!nrf_logger_led_take_latch_change(&led, &severity, &source));
+    update_ok(&led, &in, 0U);
+    assert(nrf_logger_led_take_latch_change(&led, &severity, &source));
+    assert(severity == NRF_LOGGER_LED_SEVERITY_FATAL);
+}
+
+static void test_warning_latch_is_reported_after_confirmation_only(void)
+{
+    nrf_logger_led_t led;
+    nrf_logger_led_input_t in = ready_remote_input();
+    nrf_logger_led_severity_t severity;
+    nrf_logger_led_source_t source;
+
+    nrf_logger_led_reset(&led);
+    in.source_levels[NRF_LOGGER_LED_SOURCE_TWIS_PROTOCOL] = NRF_LOGGER_LED_SEVERITY_WARNING;
+    update_ok(&led, &in, 0U);
+    update_ok(&led, &in, NRF_LOGGER_LED_WARNING_CONFIRM_MS - 1U);
+    assert(!nrf_logger_led_take_latch_change(&led, &severity, &source));
+    update_ok(&led, &in, NRF_LOGGER_LED_WARNING_CONFIRM_MS);
+    assert(nrf_logger_led_take_latch_change(&led, &severity, &source));
+    assert(severity == NRF_LOGGER_LED_SEVERITY_WARNING);
+    assert(source == NRF_LOGGER_LED_SOURCE_TWIS_PROTOCOL);
+}
+
+static void test_invalid_input_latch_is_reported_and_null_arguments_are_safe(void)
+{
+    nrf_logger_led_t led;
+    nrf_logger_led_severity_t severity = NRF_LOGGER_LED_SEVERITY_NONE;
+    nrf_logger_led_source_t source = NRF_LOGGER_LED_SOURCE_NONE;
+
+    nrf_logger_led_reset(&led);
+    assert(nrf_logger_led_update(&led, 0, 0U) == NRF_LOGGER_LED_ERR_ARGUMENT);
+    assert(nrf_logger_led_take_latch_change(&led, &severity, &source));
+    assert(severity == NRF_LOGGER_LED_SEVERITY_ERROR);
+    assert(source == NRF_LOGGER_LED_SOURCE_INVALID_INPUT);
+
+    assert(!nrf_logger_led_take_latch_change(0, &severity, &source));
+    assert(!nrf_logger_led_take_latch_change(&led, 0, &source));
+    assert(!nrf_logger_led_take_latch_change(&led, &severity, 0));
+}
+
 int main(void)
 {
+    test_latch_change_is_reported_once_with_its_source();
+    test_warning_latch_is_reported_after_confirmation_only();
+    test_invalid_input_latch_is_reported_and_null_arguments_are_safe();
     test_persistent_runtime_state_mapping();
     test_pending_remote_sensor_preparation_does_not_latch();
     test_sensor_retry_does_not_clear_error_latch();

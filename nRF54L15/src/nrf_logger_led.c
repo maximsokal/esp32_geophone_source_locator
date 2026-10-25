@@ -135,6 +135,27 @@ void nrf_logger_led_reset(nrf_logger_led_t *led)
     led->invalid_input_count = 0U;
     led->timestamp_anomaly_count = 0U;
     led->has_last_update = false;
+    led->reported_severity = NRF_LOGGER_LED_SEVERITY_NONE;
+    led->reported_source = NRF_LOGGER_LED_SOURCE_NONE;
+}
+
+bool nrf_logger_led_take_latch_change(
+    nrf_logger_led_t *led,
+    nrf_logger_led_severity_t *severity,
+    nrf_logger_led_source_t *source)
+{
+    if (led == 0 || severity == 0 || source == 0) {
+        return false;
+    }
+    if (led->output.severity_latched == led->reported_severity &&
+        led->output.reason_source == led->reported_source) {
+        return false;
+    }
+    led->reported_severity = led->output.severity_latched;
+    led->reported_source = led->output.reason_source;
+    *severity = led->output.severity_latched;
+    *source = led->output.reason_source;
+    return true;
 }
 
 nrf_logger_led_result_t nrf_logger_led_inputs_from_state(

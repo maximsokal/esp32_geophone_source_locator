@@ -132,6 +132,25 @@ const watchdogParticipants = {
   2: key('participant.bt_cs_progress'),
 } as const;
 
+// Mirrors nrf_logger_led_source_t / nrf_logger_led_severity_t in nRF54L15/include/nrf_logger_led.h.
+const loggerLatchSources = {
+  0: key('logger_source.bmi160_fault'),
+  1: key('logger_source.bme280_fault'),
+  2: key('logger_source.log_ring_loss'),
+  3: key('logger_source.twis_protocol'),
+  4: key('logger_source.cs_ranging'),
+  5: key('logger_source.watchdog_participant_stale'),
+  6: key('logger_source.init_boot_fatal'),
+  7: key('logger_source.role_lost'),
+  9: key('logger_source.invalid_input'),
+} as const;
+
+const loggerLatchSeverities = {
+  1: key('logger_severity.warning'),
+  2: key('logger_severity.error'),
+  3: key('logger_severity.fatal'),
+} as const;
+
 export const NRF_LOG_ARG_FORMATS = {
   BOOT: [hex(key('reset_cause_bits')), enumeration(key('boot_id_fallback'), bootIdFallback)],
   LOG_GENERATION_ROLLOVER: [hex(key('previous_boot_id')), hex(key('new_boot_id'))],
@@ -158,6 +177,10 @@ export const NRF_LOG_ARG_FORMATS = {
   SENSOR_INIT_FAILED: [
     enumeration(key('sensor'), { 1: key('sensor.bmi160'), 2: key('sensor.bme280') }),
     { kind: 'signed', labelKey: key('init_result') },
+  ],
+  LOGGER_LATCH: [
+    enumeration(key('logger_source'), loggerLatchSources),
+    enumeration(key('logger_severity'), loggerLatchSeverities),
   ],
 } as const satisfies Record<EventName, readonly [ArgumentSpec, ArgumentSpec]>;
 

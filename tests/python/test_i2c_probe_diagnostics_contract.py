@@ -104,15 +104,18 @@ def test_transaction_prints_are_bounded_and_deferred_during_mux_ownership():
     assert "if (!s_storage.output_deferred)" in diag
     assert "I2C_PROBE_SUMMARY transactions_dropped=%lu" in diag
     service = _read("components/nrf_topology_service/nrf_topology_service.c")
-    # Mux close, mux select and the direct MAIN log node each take bus ownership,
-    # defer probe output while holding it and flush it on release.
-    assert service.count("sensor_bus_probe_diag_defer_output();") == 3
-    assert service.count("sensor_bus_owner_release();\n    sensor_bus_probe_diag_flush();") == 1
-    # mux select failure, MAIN log begin failure and MAIN log end.
-    assert service.count("sensor_bus_owner_release();\n        sensor_bus_probe_diag_flush();") == 3
+    close_mux = service.split("static esp_err_t platform_close_selected_mux(\n", 2)[-1]
+    close_mux = close_mux.split("static esp_err_t platform_mux_close_with_owner", 1)[0]
+    assert "sensor_bus_probe_diag_defer_output();" in close_mux
+    assert "sensor_bus_owner_release();\n    sensor_bus_probe_diag_flush();" in close_mux
     log_begin = service.split("static esp_err_t platform_log_begin_node", 1)[1]
     log_begin, log_end = log_begin.split("static esp_err_t platform_log_end_node", 1)
+    assert "sensor_bus_owner_try_acquire();" in log_begin
     assert "sensor_bus_probe_diag_defer_output();" in log_begin
-    assert "sensor_bus_probe_diag_flush();" in log_begin
-    assert "sensor_bus_probe_diag_flush();" in log_end.split("static ", 1)[0]
+    assert "sensor_bus_owner_set_deadline_us(" in log_begin
+    log_end = log_end.split("static uint64_t platform_log_now_ms", 1)[0]
+    assert "platform_mux_close(platform)" in log_end
+    assert "sensor_bus_owner_release();" in log_end
+    assert "sensor_bus_probe_diag_flush();" in log_end
+    assert "vTaskDelay(1U);" in log_end
     assert "I2C_PROBE_SUMMARY groups_dropped=%lu" in diag

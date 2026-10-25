@@ -608,6 +608,17 @@ static void update_logger_led(uint32_t uptime_ms)
 
     if (nrf_logger_led_inputs_from_state(&state, &input) == NRF_LOGGER_LED_OK) {
         (void)nrf_logger_led_update(&s_logger_led, &input, uptime_ms);
+        {
+            /* Console-only before: the ESP32 could not tell which source made the LED yellow/red. */
+            nrf_logger_led_severity_t latch_severity;
+            nrf_logger_led_source_t latch_source;
+            if (nrf_logger_led_take_latch_change(&s_logger_led, &latch_severity, &latch_source)) {
+                nrf_log_runtime_zephyr_append_event(
+                    NRF_LOG_EVENT_LOGGER_LATCH,
+                    (uint32_t)latch_source,
+                    (uint32_t)latch_severity);
+            }
+        }
         nrf_logger_led_output_t apply_output = s_logger_led.output;
 #if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
         nrf_stage_signal_output_t signal_output = {0};

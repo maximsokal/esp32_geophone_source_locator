@@ -2,6 +2,11 @@
   "version": 1,
   "tests": [
     {
+      "name": "i2c_timeout_budget",
+      "sources": ["tests/host/i2c_timeout_budget_test.c"],
+      "include_dirs": ["components/esp_driver_i2c", "tests/host/stubs/sensor_bus"]
+    },
+    {
       "name": "tca9548a_mux",
       "sources": [
         "components/tca9548a_mux/tca9548a_mux.c",

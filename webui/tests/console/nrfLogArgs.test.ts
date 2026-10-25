@@ -47,6 +47,11 @@ describe('nRF log event arguments', () => {
     ['LOG_TEST_EVENT', 17, 7, 100000, 'Test index: 7, Uptime (ms): 100000'],
     ['SENSOR_INIT_FAILED', 23, 1, 0xFFFFFFFB, 'Sensor: BMI160 (1), Driver initialization result: -5'],
     ['SENSOR_INIT_FAILED', 23, 2, 0xFFFFFFED, 'Sensor: BME280 (2), Driver initialization result: -19'],
+    ['LOGGER_LATCH', 24, 4, 2, 'Latch source: CS ranging failure (4), Latched severity: Error (red) (2)'],
+    ['LOGGER_LATCH', 24, 5, 3, 'Latch source: Watchdog participant stalled (5), Latched severity: Fatal (red) (3)'],
+    ['LOGGER_LATCH', 24, 3, 1, 'Latch source: TWIS protocol errors (3), Latched severity: Warning (yellow) (1)'],
+    ['LOGGER_LATCH', 24, 9, 2, 'Latch source: Invalid LED policy input (9), Latched severity: Error (red) (2)'],
+    ['LOGGER_LATCH', 24, 8, 0, 'Latch source: Unknown value (8), Latched severity: Unknown value (0)'],
   ] as const)('decodes %s (event %i)', (_name, eventId, arg0, arg1, expected) => {
     expect(formatEventArgsText(formatEventArgs(eventId, arg0, arg1), english)).toBe(expected);
   });

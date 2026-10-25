@@ -481,6 +481,8 @@ static void test_duplicate_hardware_ids_mark_both_conflict(void)
     assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
     assert(snapshot.remotes[0].state == NRF_TOPOLOGY_NODE_CONFLICT);
     assert(snapshot.remotes[1].state == NRF_TOPOLOGY_NODE_CONFLICT);
+    assert(snapshot.remotes[0].conflict_reason == NRF_TOPOLOGY_CONFLICT_DUPLICATE_HARDWARE_ID);
+    assert(snapshot.remotes[1].conflict_reason == NRF_TOPOLOGY_CONFLICT_DUPLICATE_HARDWARE_ID);
 }
 
 static void test_stale_remote_assignment_is_conflict(void)
@@ -501,6 +503,7 @@ static void test_stale_remote_assignment_is_conflict(void)
 
     assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
     assert(snapshot.remotes[3].state == NRF_TOPOLOGY_NODE_CONFLICT);
+    assert(snapshot.remotes[3].conflict_reason == NRF_TOPOLOGY_CONFLICT_REMOTE_IDENTITY);
 }
 
 static void test_readdress_failed_retries_same_request_id_once(void)
@@ -682,6 +685,8 @@ static void test_remote_discovery_and_runtime_same_channel_is_conflict(void)
 
     assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
     assert(snapshot.remotes[4].state == NRF_TOPOLOGY_NODE_CONFLICT);
+    assert(snapshot.remotes[4].conflict_reason ==
+           NRF_TOPOLOGY_CONFLICT_REMOTE_DISCOVERY_AND_RUNTIME);
 }
 
 static void test_pending_assignment_times_out_with_bounded_polls(void)
@@ -964,6 +969,77 @@ static void test_main_with_stale_request_result_stays_assigned(void)
     }
 }
 
+/*
+ * Same rule for REMOTE: an already assigned node with the right role, node_id,
+ * mux channel and ASSIGNED flag keeps its slot whatever the last request left
+ * in STATUS.result (field log 2026-10-25: both REMOTE went CONFLICT while still
+ * answering at 0x32).
+ */
+static void test_remote_with_stale_request_result_stays_assigned(void)
+{
+    static const uint8_t stale_results[] = {
+        NRF_UPSTREAM_RESULT_INVALID_FRAME,
+        NRF_UPSTREAM_RESULT_UNSUPPORTED_TYPE,
+        NRF_UPSTREAM_RESULT_BUSY,
+        NRF_UPSTREAM_RESULT_PENDING,
+    };
+    for (size_t index = 0U; index < sizeof(stale_results); ++index) {
+        fake_bus_t bus;
+        nrf_topology_snapshot_t snapshot;
+        nrf_topology_controller_t controller = make_controller();
+        setup_assigned_main_and_remotes(&bus);
+        for (uint8_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+            bus.remote[i].result = stale_results[index];
+        }
+        nrf_topology_io_t io = make_io(&bus);
+
+        assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+        assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+        for (uint8_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+            assert(snapshot.remotes[i].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+            assert(snapshot.remotes[i].conflict_reason == NRF_TOPOLOGY_CONFLICT_NONE);
+            assert(snapshot.remotes[i].protocol_result == stale_results[index]);
+            assert(snapshot.remotes[i].node_id == (uint8_t)(i + 1U));
+            assert(snapshot.remotes[i].mux_channel == i);
+            assert(bus.remote[i].assign_writes == 0U);
+        }
+        assert(bus.selected_channel == -1);
+    }
+}
+
+/* A stale result must not hide a real REMOTE identity or hardware-id problem. */
+static void test_remote_stale_result_does_not_mask_real_conflicts(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    setup_assigned_main_and_remotes(&bus);
+    bus.remote[0].result = NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    bus.remote[1].result = NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    bus.remote[1].node_id = 7U;           /* wrong slot id */
+    bus.remote[2].result = NRF_UPSTREAM_RESULT_BUSY;
+    bus.remote[2].channel = 5U;           /* claims another mux channel */
+    bus.remote[3].result = NRF_UPSTREAM_RESULT_PENDING;
+    bus.remote[4].result = NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    bus.remote[5].result = NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    fake_set_hw(&bus.remote[5], 0x80U);   /* same hardware id on 4 and 5 */
+    fake_set_hw(&bus.remote[4], 0x80U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.remotes[0].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(snapshot.remotes[1].state == NRF_TOPOLOGY_NODE_CONFLICT);
+    assert(snapshot.remotes[1].conflict_reason == NRF_TOPOLOGY_CONFLICT_REMOTE_IDENTITY);
+    assert(snapshot.remotes[1].node_id == 7U);
+    assert(snapshot.remotes[2].state == NRF_TOPOLOGY_NODE_CONFLICT);
+    assert(snapshot.remotes[2].conflict_reason == NRF_TOPOLOGY_CONFLICT_REMOTE_IDENTITY);
+    assert(snapshot.remotes[3].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(snapshot.remotes[4].state == NRF_TOPOLOGY_NODE_CONFLICT);
+    assert(snapshot.remotes[5].state == NRF_TOPOLOGY_NODE_CONFLICT);
+    assert(snapshot.remotes[4].conflict_reason == NRF_TOPOLOGY_CONFLICT_DUPLICATE_HARDWARE_ID);
+    assert(snapshot.remotes[5].conflict_reason == NRF_TOPOLOGY_CONFLICT_DUPLICATE_HARDWARE_ID);
+}
+
 /* A real identity problem must still block the remotes and say why. */
 static void test_main_identity_mismatch_is_conflict_with_reason(void)
 {
@@ -1008,6 +1084,8 @@ static void test_main_discovery_not_ready_is_conflict_with_reason(void)
 int main(void)
 {
     test_main_with_stale_request_result_stays_assigned();
+    test_remote_with_stale_request_result_stays_assigned();
+    test_remote_stale_result_does_not_mask_real_conflicts();
     test_main_identity_mismatch_is_conflict_with_reason();
     test_main_discovery_not_ready_is_conflict_with_reason();
     test_main_only_without_tca_assigns_safely();
