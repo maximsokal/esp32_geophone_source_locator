@@ -314,8 +314,7 @@ static void print_state_transitions(const nrf_node_state_t *node_state)
 }
 #endif
 
-#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
-static void note_stage_signal_upstream(void)
+static void note_upstream_state(void)
 {
     nrf_bootstrap_twis_diagnostics_t diagnostics = {0};
 
@@ -325,7 +324,6 @@ static void note_stage_signal_upstream(void)
         diagnostics.role_assignment_sequence,
         diagnostics.role_assignment_role);
 }
-#endif
 
 int main(void)
 {
@@ -462,9 +460,7 @@ int main(void)
         }
 
         nrf_boot_diagnostics_console_drain();
-#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
-        note_stage_signal_upstream();
-#endif
+        note_upstream_state();
 #if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
         print_state_transitions(&node_state);
 #endif

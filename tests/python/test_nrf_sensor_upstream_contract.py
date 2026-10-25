@@ -155,7 +155,7 @@ def test_altitude_payload_path_is_pure_and_covered_by_host_and_target_builds():
     assert "math.h" not in altitude
     assert "nrf_baro_pressure_to_altitude_mm(\n            s_runtime.core.snapshot.env.pressure_pa)" in runtime
     assert "../src/nrf_baro_altitude.c" in cmake
-    assert manifest.count("nRF54L15/src/nrf_baro_altitude.c") == 5
+    assert manifest.count("nRF54L15/src/nrf_baro_altitude.c") == 7
 
 
 def test_private_i2c_topology_is_preserved_with_max51_bluetooth_enabled():

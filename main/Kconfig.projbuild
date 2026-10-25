@@ -188,11 +188,11 @@ menu "Status indicator"
 
 config APP_STATUS_INDICATOR_ENABLED
     bool "Enable physical status LED backend"
-    default n
+    default y
     help
-        Keep disabled for the current diploma board: its three status LED
-        outputs are not connected. Enable only after a board revision supplies
-        explicit green/yellow/red GPIO assignments and a separate HIL check.
+        Drive the main-enclosure GPIO4 red, GPIO5 yellow and GPIO6 green LEDs
+        using the official led_indicator GPIO backend. Outputs assume active
+        high wiring; physical polarity and operation still require verification.
 
 endmenu
 

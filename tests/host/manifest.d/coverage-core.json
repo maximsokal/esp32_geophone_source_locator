@@ -27,6 +27,18 @@
       ]
     },
     {
+      "name": "status_indicator_gpio",
+      "sources": ["components/status_indicator/status_indicator.c", "tests/host/status_indicator_state_test.c"],
+      "include_dirs": ["tests/host/stubs/status_indicator", "components/status_indicator/include", "components/board_config/include", "components/hw_inventory/include"],
+      "defines": ["CONFIG_APP_STATUS_INDICATOR_ENABLED=1"]
+    },
+    {
+      "name": "status_indicator_gpio_failure",
+      "sources": ["components/status_indicator/status_indicator.c", "tests/host/status_indicator_state_test.c"],
+      "include_dirs": ["tests/host/stubs/status_indicator", "components/status_indicator/include", "components/board_config/include", "components/hw_inventory/include"],
+      "defines": ["CONFIG_APP_STATUS_INDICATOR_ENABLED=1", "STATUS_INDICATOR_FAILURE_TEST=1"]
+    },
+    {
       "name": "device_status_aggregation",
       "sources": [
         "components/device_status/device_status.c",

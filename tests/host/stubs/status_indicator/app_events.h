@@ -14,3 +14,4 @@ typedef enum {
 
 esp_event_loop_handle_t app_events_get_loop(void);
 esp_err_t app_events_post(app_event_type_t type, int32_t value);
+esp_err_t app_events_post_best_effort(app_event_type_t type, int32_t value);

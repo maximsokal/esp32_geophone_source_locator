@@ -100,11 +100,11 @@ static uint32_t s_activation_generation;
 static uint32_t s_activation_complete_generation;
 static uint32_t s_imu_calibration_request_id;
 static uint32_t s_imu_calibration_completed_request_id;
+static uint32_t s_upstream_transaction_count;
+static uint32_t s_upstream_role_assignment_sequence;
+static uint8_t s_upstream_role_assignment_role;
 #if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
 static nrf_stage_signal_t s_stage_signal;
-static volatile uint32_t s_stage_transaction_count;
-static volatile uint32_t s_stage_role_assignment_sequence;
-static volatile uint8_t s_stage_role_assignment_role;
 static uint32_t s_stage_last_role_assignment_sequence;
 static uint32_t s_stage_last_activation_complete_generation;
 #endif
@@ -572,9 +572,22 @@ static void update_logger_led(uint32_t uptime_ms)
     nrf_logger_led_state_t state = {0};
     nrf_logger_led_input_t input;
     nrf_log_runtime_zephyr_led_counters_t counters = {0};
+    k_spinlock_key_t key = k_spin_lock(&s_session_lock);
+    const uint32_t role_assignment_sequence = s_upstream_role_assignment_sequence;
+    const uint8_t role_assignment_role = s_upstream_role_assignment_role;
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
+    const uint32_t transaction_count = s_upstream_transaction_count;
+#endif
+    k_spin_unlock(&s_session_lock, key);
 
     (void)nrf_log_runtime_zephyr_get_led_counters(&counters);
     state.node_state = s_worker_node_state;
+    if (role_assignment_sequence != 0U &&
+        role_assignment_role == NRF_UPSTREAM_ROLE_MAIN) {
+        /* Bootstrap commits MAIN without activating REMOTE sensor I/O. */
+        state.node_state.role = NRF_NODE_ROLE_MAIN;
+        state.node_state.lifecycle = NRF_NODE_LIFECYCLE_READY;
+    }
     state.bmi160_ready = s_runtime.core.imu_ready;
     state.bme280_ready = s_runtime.core.env_ready;
     state.bmi160_init_failed = !s_runtime.core.imu_ready &&
@@ -593,19 +606,17 @@ static void update_logger_led(uint32_t uptime_ms)
 
     if (nrf_logger_led_inputs_from_state(&state, &input) == NRF_LOGGER_LED_OK) {
         (void)nrf_logger_led_update(&s_logger_led, &input, uptime_ms);
-#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
         nrf_logger_led_output_t apply_output = s_logger_led.output;
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
         nrf_stage_signal_output_t signal_output = {0};
         const bool was_link_lost = nrf_stage_signal_link_lost(&s_stage_signal);
-        const uint8_t role_assignment_role = s_stage_role_assignment_role;
-        uint32_t role_assignment_sequence = s_stage_role_assignment_sequence;
 
         (void)nrf_stage_signal_set_suppressed(
             &s_stage_signal,
             state.init_boot_fatal);
         (void)nrf_stage_signal_note_transactions(
             &s_stage_signal,
-            s_stage_transaction_count,
+            transaction_count,
             uptime_ms);
 
         if (role_assignment_sequence != s_stage_last_role_assignment_sequence) {
@@ -667,10 +678,14 @@ static void update_logger_led(uint32_t uptime_ms)
             apply_output.yellow = signal_output.yellow;
             apply_output.red = signal_output.red;
         }
-        (void)nrf_logger_led_zephyr_apply(&apply_output);
-#else
-        (void)nrf_logger_led_zephyr_apply(&s_logger_led.output);
 #endif
+        if (state.node_state.role == NRF_NODE_ROLE_MAIN) {
+            /* MAIN: P1.05 red/P1.07 green; REMOTE aliases have opposite colors. */
+            const bool green = apply_output.green;
+            apply_output.green = apply_output.red;
+            apply_output.red = green;
+        }
+        (void)nrf_logger_led_zephyr_apply(&apply_output);
     }
 }
 
@@ -1064,17 +1079,17 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
     }
 }
 
-#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
 void nrf_sensor_upstream_runtime_zephyr_note_upstream(
     uint32_t transaction_count,
     uint32_t role_assignment_sequence,
     uint8_t role_assignment_role)
 {
-    s_stage_transaction_count = transaction_count;
-    s_stage_role_assignment_role = role_assignment_role;
-    s_stage_role_assignment_sequence = role_assignment_sequence;
+    k_spinlock_key_t key = k_spin_lock(&s_session_lock);
+    s_upstream_transaction_count = transaction_count;
+    s_upstream_role_assignment_role = role_assignment_role;
+    s_upstream_role_assignment_sequence = role_assignment_sequence;
+    k_spin_unlock(&s_session_lock, key);
 }
-#endif
 
 int nrf_sensor_upstream_runtime_zephyr_configure_orientation(
     const nrf_orientation_config_t *config)
@@ -1150,10 +1165,10 @@ int nrf_sensor_upstream_runtime_zephyr_start(void)
         return -EINVAL;
     }
     nrf_node_state_init(&s_worker_node_state);
+    s_upstream_transaction_count = 0U;
+    s_upstream_role_assignment_sequence = 0U;
+    s_upstream_role_assignment_role = NRF_UPSTREAM_ROLE_UNASSIGNED;
 #if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
-    s_stage_transaction_count = 0U;
-    s_stage_role_assignment_sequence = 0U;
-    s_stage_role_assignment_role = NRF_UPSTREAM_ROLE_UNASSIGNED;
     s_stage_last_role_assignment_sequence = 0U;
     s_stage_last_activation_complete_generation = 0U;
     if (nrf_stage_signal_init(

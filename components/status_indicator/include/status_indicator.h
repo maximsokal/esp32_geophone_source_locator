@@ -33,7 +33,7 @@ typedef enum
 esp_err_t status_indicator_init(void);
 
 
-/* Stop the event subscription; state is intentionally not reset mid-boot. */
+/* Stop the subscription and release LEDs; state is not reset mid-boot. */
 void status_indicator_stop(void);
 
 

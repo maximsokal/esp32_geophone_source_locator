@@ -29,6 +29,11 @@ esp_err_t board_gpio_isr_service_install(void);
 // microSD
 #define BOARD_SD_CS_GPIO        GPIO_NUM_17
 
+// Main-enclosure status LEDs; actual soldered wiring (2026-10-25).
+#define BOARD_STATUS_LED_RED_GPIO     GPIO_NUM_4
+#define BOARD_STATUS_LED_YELLOW_GPIO  GPIO_NUM_5
+#define BOARD_STATUS_LED_GREEN_GPIO   GPIO_NUM_6
+
 // Sensor I2C bus. sensor_bus owns I2C0 and shares borrowed device handles.
 #define BOARD_SENSOR_I2C_SDA_GPIO     GPIO_NUM_9
 #define BOARD_SENSOR_I2C_SCL_GPIO     GPIO_NUM_10

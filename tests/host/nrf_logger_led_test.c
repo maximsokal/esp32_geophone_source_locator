@@ -181,8 +181,8 @@ static void test_persistent_runtime_state_mapping(void)
     map_state_ok(&state, &input);
     nrf_logger_led_reset(&led);
     update_ok(&led, &input, 1U);
-    assert(!led.output.green && !led.output.yellow && !led.output.red);
-    assert(led.output.severity_latched == NRF_LOGGER_LED_SEVERITY_NONE);
+    assert(led.output.red);
+    assert(led.output.severity_latched == NRF_LOGGER_LED_SEVERITY_FATAL);
 
     assert(nrf_logger_led_inputs_from_state(NULL, &input) ==
            NRF_LOGGER_LED_ERR_ARGUMENT);
@@ -464,10 +464,46 @@ static void test_latch_persists_until_reset(void)
     assert(led.output.green);
 }
 
-static void test_non_remote_roles_ignore_faults_and_unknown_roles_fail_off(void)
+static void test_main_uses_common_health_without_remote_sensors(void)
+{
+    nrf_logger_led_t led;
+    nrf_logger_led_input_t in = ready_remote_input();
+    nrf_logger_led_reset(&led);
+    in.node_state.role = NRF_NODE_ROLE_MAIN;
+    in.bmi160_init_failed = true;
+    in.bme280_init_failed = true;
+    in.source_levels[NRF_LOGGER_LED_SOURCE_BMI160_FAULT] = NRF_LOGGER_LED_SEVERITY_ERROR;
+    in.source_levels[NRF_LOGGER_LED_SOURCE_BME280_FAULT] = NRF_LOGGER_LED_SEVERITY_ERROR;
+    update_ok(&led, &in, 0U);
+    assert(led.output.green);
+    assert(led.output.severity_latched == NRF_LOGGER_LED_SEVERITY_NONE);
+
+    in.source_levels[NRF_LOGGER_LED_SOURCE_TWIS_PROTOCOL] = NRF_LOGGER_LED_SEVERITY_WARNING;
+    update_ok(&led, &in, 1U);
+    update_ok(&led, &in, NRF_LOGGER_LED_WARNING_CONFIRM_MS);
+    assert(led.output.green);
+    update_ok(&led, &in, NRF_LOGGER_LED_WARNING_CONFIRM_MS + 1U);
+    assert(led.output.yellow);
+    in.source_levels[NRF_LOGGER_LED_SOURCE_CS_RANGING] = NRF_LOGGER_LED_SEVERITY_ERROR;
+    update_ok(&led, &in, NRF_LOGGER_LED_WARNING_CONFIRM_MS + 2U);
+    assert(led.output.red && !led.output.yellow);
+    in.source_levels[NRF_LOGGER_LED_SOURCE_CS_RANGING] = NRF_LOGGER_LED_SEVERITY_NONE;
+    update_ok(&led, &in, NRF_LOGGER_LED_WARNING_CONFIRM_MS + 3U);
+    assert(led.output.red);
+    in.source_levels[NRF_LOGGER_LED_SOURCE_INIT_BOOT_FATAL] = NRF_LOGGER_LED_SEVERITY_FATAL;
+    update_ok(&led, &in, NRF_LOGGER_LED_WARNING_CONFIRM_MS + 4U);
+    assert(led.output.reason_source == NRF_LOGGER_LED_SOURCE_INIT_BOOT_FATAL);
+    in.node_state.lifecycle = NRF_NODE_LIFECYCLE_UNAVAILABLE;
+    update_ok(&led, &in, NRF_LOGGER_LED_WARNING_CONFIRM_MS + 5U);
+    assert(!led.output.green && !led.output.yellow && !led.output.red);
+    in.node_state.lifecycle = NRF_NODE_LIFECYCLE_READY;
+    update_ok(&led, &in, NRF_LOGGER_LED_WARNING_CONFIRM_MS + 6U);
+    assert(led.output.red);
+}
+
+static void test_unassigned_and_unknown_roles_fail_off(void)
 {
     const nrf_node_role_t roles[] = {
-        NRF_NODE_ROLE_MAIN,
         NRF_NODE_ROLE_UNASSIGNED,
         (nrf_node_role_t)99,
     };
@@ -743,7 +779,8 @@ int main(void)
     test_errors_and_fatals_latch_immediately();
     test_reason_changes_only_when_latched_severity_rises();
     test_latch_persists_until_reset();
-    test_non_remote_roles_ignore_faults_and_unknown_roles_fail_off();
+    test_main_uses_common_health_without_remote_sensors();
+    test_unassigned_and_unknown_roles_fail_off();
     test_non_ready_remote_never_shows_green();
     test_invalid_source_levels_are_errors_and_counted();
     test_null_arguments_fail_safe();

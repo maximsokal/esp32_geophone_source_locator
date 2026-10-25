@@ -90,7 +90,9 @@ def test_status_insights_and_dsp_boundaries_are_explicit():
     dsp_header = read("components/seismic_dsp/include/seismic_dsp.h")
 
     assert "led_indicator.h" in status
-    assert "return false;" in status[status.index("status_indicator_backend_enabled") :]
+    assert "return s_backend_enabled;" in status[status.index("status_indicator_backend_enabled") :]
+    assert "led_indicator_new_gpio_device" in status
+    assert "Status LED GPIO conflicts with the board pin contract" in status
     assert "APP_STATUS_WARNING" in status_header
     assert "APP_STATUS_ERROR" in status_header
     assert "APP_STATUS_CLEAR_NON_STICKY" in status_header

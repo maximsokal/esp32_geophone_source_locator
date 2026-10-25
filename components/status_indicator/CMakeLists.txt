@@ -7,9 +7,11 @@ idf_component_register(
 
     REQUIRES
         app_events
+        board_config
         device_status
         esp_event
         freertos
+        hw_inventory
         led_indicator
         log
 )

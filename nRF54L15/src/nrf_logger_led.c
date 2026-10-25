@@ -54,7 +54,8 @@ static void nrf_logger_led_render_for_state(
     nrf_logger_led_t *led,
     const nrf_node_state_t *node_state)
 {
-    if (node_state->role == NRF_NODE_ROLE_REMOTE &&
+    if ((node_state->role == NRF_NODE_ROLE_REMOTE ||
+         node_state->role == NRF_NODE_ROLE_MAIN) &&
         node_state->lifecycle == NRF_NODE_LIFECYCLE_READY) {
         nrf_logger_led_render(led, false);
     } else {
@@ -200,7 +201,7 @@ nrf_logger_led_result_t nrf_logger_led_update(
 {
     uint32_t effective_now_ms;
     uint32_t source;
-    bool remote_role;
+    bool assigned_role;
     bool valid_lifecycle;
 
     if (led == 0) {
@@ -237,8 +238,9 @@ nrf_logger_led_result_t nrf_logger_led_update(
         }
     }
 
-    remote_role = in->node_state.role == NRF_NODE_ROLE_REMOTE;
-    if (!remote_role) {
+    assigned_role = in->node_state.role == NRF_NODE_ROLE_REMOTE ||
+        in->node_state.role == NRF_NODE_ROLE_MAIN;
+    if (!assigned_role) {
         nrf_logger_led_clear_pending(led);
         nrf_logger_led_render_for_state(led, &in->node_state);
         return NRF_LOGGER_LED_OK;
@@ -259,8 +261,12 @@ nrf_logger_led_result_t nrf_logger_led_update(
         nrf_logger_led_severity_t severity =
             nrf_logger_led_source_level(led, in, source);
 
-        /* Unready with zero init result means preparation is still pending. */
-        if ((source == (uint32_t)NRF_LOGGER_LED_SOURCE_BMI160_FAULT &&
+        /* MAIN has no REMOTE private IMU/barometer requirement. */
+        if (in->node_state.role == NRF_NODE_ROLE_MAIN &&
+            (source == (uint32_t)NRF_LOGGER_LED_SOURCE_BMI160_FAULT ||
+             source == (uint32_t)NRF_LOGGER_LED_SOURCE_BME280_FAULT)) {
+            severity = NRF_LOGGER_LED_SEVERITY_NONE;
+        } else if ((source == (uint32_t)NRF_LOGGER_LED_SOURCE_BMI160_FAULT &&
              in->bmi160_init_failed) ||
             (source == (uint32_t)NRF_LOGGER_LED_SOURCE_BME280_FAULT &&
              in->bme280_init_failed)) {

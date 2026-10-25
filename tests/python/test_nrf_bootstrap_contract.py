@@ -19,6 +19,8 @@ def test_nrf_bootstrap_runtime_is_started_from_single_production_main():
     assert "nrf_bootstrap_runtime_zephyr_start(&node_state)" in main
     assert "NRF_NODE_ROLE_MAIN" not in main
     assert "NRF_NODE_ROLE_REMOTE" not in main
+    assert "note_upstream_state();" in main
+    assert "nrf_sensor_upstream_runtime_zephyr_note_upstream(" in main
 
 
 def test_unrecoverable_target_loss_has_reboot_recovery_enabled():

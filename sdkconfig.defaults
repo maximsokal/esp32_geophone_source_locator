@@ -22,7 +22,7 @@ CONFIG_SOC_CACHE_SUPPORT_WRAP=y
 # The optional remote diagnostics bridge is deliberately disabled in the
 # baseline image; enable it only with a separately measured overhead budget.
 # CONFIG_APP_ESP_INSIGHTS is not set
-# CONFIG_APP_STATUS_INDICATOR_ENABLED is not set
+CONFIG_APP_STATUS_INDICATOR_ENABLED=y
 CONFIG_SOC_ULP_SUPPORTED=y
 CONFIG_SOC_ULP_FSM_SUPPORTED=y
 CONFIG_SOC_RISCV_COPROC_SUPPORTED=y

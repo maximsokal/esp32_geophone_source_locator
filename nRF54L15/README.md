@@ -158,22 +158,24 @@ application. Real RAS/CS execution is the separate MAX-51 slice; multi-node
 execution authority/handoff is tracked separately so `BT_MAX_CONN=1` does not
 turn into an implicit distributed BLE race.
 
-## Remote external LEDs
+## External status LEDs
 
-Remote external LED wiring is:
+The same firmware image supports these enclosure-specific LED colors:
 
-| Pin | LED |
-| --- | --- |
-| `P1.04 / D0` | BLUE |
-| `P1.05 / D1` | GREEN |
-| `P1.06 / D2` | YELLOW |
-| `P1.07 / D3` | RED |
+| Pin | REMOTE | MAIN (user-confirmed 2026-10-25) |
+| --- | --- | --- |
+| `P1.04 / D0` | BLUE | Not fitted |
+| `P1.05 / D1` | GREEN | RED |
+| `P1.06 / D2` | YELLOW | YELLOW |
+| `P1.07 / D3` | RED | GREEN |
 
-The main-enclosure board has none of these four external LEDs. The production
-firmware keeps onboard `led0` as a board/toolchain heartbeat, drives the REMOTE
-blue LED on D0 from the sensor worker, and applies logger status to D1-D3. The
-logger GPIO backend tolerates missing or unavailable pins so MAIN and LED-less
-boards can continue booting and communicating.
+The production firmware keeps onboard `led0` as a board/toolchain heartbeat,
+drives the REMOTE blue LED on D0 from the sensor worker, and applies logger
+status to D1-D3. DeviceTree aliases retain the REMOTE colors; after a committed
+MAIN assignment, the worker swaps red/green at the GPIO adapter, including stage
+overlays. Logical health diagnostics retain their actual color/severity meaning.
+MAIN uses the existing worker without activating the REMOTE private sensors.
+The GPIO backend tolerates missing or unavailable pins.
 
 **ASSUMED active-high, same as BLUE; NOT verified (MAX-43); verify with a current-limited test before trusting.** This polarity is configured only in
 DeviceTree. The C GPIO glue reads each pin's DeviceTree flags.
@@ -181,7 +183,7 @@ DeviceTree. The C GPIO glue reads each pin's DeviceTree flags.
 BLUE is steady for `ACCEPTED`, blinks at 2 Hz for `STABILIZING` or `TILTED`, and
 is off for `FAULT`.
 
-REMOTE logger LED state is:
+READY MAIN and REMOTE use the same health priority (pin columns below are REMOTE):
 
 | Condition | GREEN D1 | YELLOW D2 | RED D3 |
 | --- | --- | --- | --- |
@@ -190,17 +192,23 @@ REMOTE logger LED state is:
 | WARNING confirmed for 2000 ms, without higher severity | Off | On | Off |
 | ERROR or FATAL, including watchdog stale | Off | Off | On |
 | ERROR/FATAL while WARNING is latched | Off | Off | On |
-| MAIN, UNASSIGNED, or not READY | Off | Off | Off |
+| UNASSIGNED or not READY | Off | Off | Off |
 
 Warnings need 2000 ms of continuous confirmation. Errors and fatals apply
 immediately. RED is shown alone and suppresses YELLOW. Logger latches persist
 until reset. GREEN means “no latched fault,” not that sensor preparation has
 completed. An unattempted sensor is pending, not a fault. A failed BMI160 init
-or failed required BME280 init produces RED immediately; runtime IMU/ENV fault
+or failed required BME280 init produces RED immediately on REMOTE; runtime IMU/ENV fault
 bits count only after their sensor is READY. `LOG_RING_LOSS` latches WARNING
 when `overwritten_total > 0` (internal logger losses also map to WARNING). The
 128-record ring can overwrite during a bench run without an ESP32 collector,
 producing a latched YELLOW; this is expected bench behavior.
+
+MAIN ignores the REMOTE BMI160/BME280 requirements, but retains log-loss,
+TWIS, CS, watchdog, init-fatal and role-loss faults. Its role snapshot is supplied
+even when stage signals are disabled. Before assignment, the boot lamp test
+exercises the same physical pins with REMOTE alias labels; MAIN red/green names
+cannot be resolved until its role is assigned.
 
 The policy, Zephyr GPIO backend, and D1-D3 DeviceTree mapping are
 **IMPLEMENTED-BUT-UNVERIFIED**. LED polarity and physical operation remain

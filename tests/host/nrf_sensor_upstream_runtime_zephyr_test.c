@@ -88,6 +88,7 @@ static unsigned s_log_event_count;
 static bool s_init_fatal;
 static bool s_fail_imu_init;
 static bool s_fail_env_init;
+static nrf_log_runtime_zephyr_led_counters_t s_led_counters;
 
 #define NRF_TEST_LED_SAMPLE_CAPACITY 2048U
 static nrf_logger_led_output_t s_led_samples[NRF_TEST_LED_SAMPLE_CAPACITY];
@@ -140,7 +141,7 @@ nrf_log_error_t nrf_log_runtime_zephyr_get_led_counters(
     if (counters == NULL) {
         return NRF_LOG_ERROR_NULL_ARGUMENT;
     }
-    memset(counters, 0, sizeof(*counters));
+    *counters = s_led_counters;
     return NRF_LOG_ERROR_OK;
 }
 
@@ -769,9 +770,56 @@ static void process_imu_calibration_request(
     }
 }
 
+#if defined(NRF_MAIN_LOGGER_TEST)
+static void test_main_logger_without_remote_activation(void)
+{
+    nrf_sensor_upstream_runtime_zephyr_diagnostics_t diagnostics = {0};
+    nrf_upstream_sensor_snapshot_t snapshot;
+    const nrf_upstream_sensor_refresh_t refresh = {.request_id = 1U};
+
+    assert(nrf_sensor_upstream_runtime_zephyr_start() == 0);
+    run_worker_advancing(1000U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    assert(!diagnostics.logger_led_output.green && !diagnostics.logger_led_output.red);
+    nrf_sensor_upstream_runtime_zephyr_note_upstream(0U, 0U, NRF_UPSTREAM_ROLE_MAIN);
+    run_worker_advancing(1000U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    assert(!diagnostics.logger_led_output.green);
+
+    nrf_sensor_upstream_runtime_zephyr_note_upstream(1U, 1U, NRF_UPSTREAM_ROLE_MAIN);
+    run_worker_advancing(3000U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    assert(diagnostics.logger_led_output.green);
+    /* P1.07 is the red REMOTE alias, but the physical green LED on MAIN. */
+    assert(s_led_samples[s_led_sample_count - 1U].red);
+    assert(!s_led_samples[s_led_sample_count - 1U].green);
+    assert(s_prepare_calls == 0U && s_refresh_calls == 0U && s_imu_read_calls == 0U);
+    assert(diagnostics.activation_generation == 0U);
+    assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&refresh) == -EAGAIN);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_NOT_READY);
+
+    s_led_counters.twis_protocol_error_total = 1U;
+    run_worker_advancing(3000U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    assert(diagnostics.logger_led_output.yellow);
+    assert(s_led_samples[s_led_sample_count - 1U].yellow);
+    s_led_counters.cs_ranging_failure_total = 1U;
+    run_worker_advancing(1000U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    assert(diagnostics.logger_led_output.red);
+    assert(s_led_samples[s_led_sample_count - 1U].green);
+    assert(!s_led_samples[s_led_sample_count - 1U].red);
+    assert(s_prepare_calls == 0U && s_refresh_calls == 0U && s_imu_read_calls == 0U);
+}
+#endif
+
 int main(void)
 {
-#if defined(NRF_STAGE_SIGNAL_FAILED_TEST)
+#if defined(NRF_MAIN_LOGGER_TEST)
+    test_main_logger_without_remote_activation();
+    return 0;
+#elif defined(NRF_STAGE_SIGNAL_FAILED_TEST)
     test_failed_sensor_signal();
     return 0;
 #elif defined(NRF_STAGE_SIGNAL_SUCCESS_TEST)
