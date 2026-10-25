@@ -51,3 +51,6 @@ Thumbs.db
 *.bak
 *.swp
 /repo.zip
+log.esp32_geophone_source_locator.20261025173629.txt
+# ESP32 serial monitor session logs (tools/monitor_esp32_logs.ps1)
+logs/esp32/
