@@ -26,6 +26,13 @@
 
 extern struct k_msgq s_sensor_queue;
 
+/* Each -D...TEST variant uses a different subset of the helpers below. */
+#if defined(__GNUC__) || defined(__clang__)
+#define NRF_TEST_MAYBE_UNUSED __attribute__((unused))
+#else
+#define NRF_TEST_MAYBE_UNUSED
+#endif
+
 static unsigned s_thread_create_calls;
 static int s_sensor_worker_priority;
 static unsigned s_queue_put_calls;
@@ -161,7 +168,7 @@ bool nrf_logger_led_zephyr_init_fatal(void)
     return s_init_fatal;
 }
 
-static unsigned log_event_count(uint16_t event_id)
+NRF_TEST_MAYBE_UNUSED static unsigned log_event_count(uint16_t event_id)
 {
     unsigned count = 0U;
     for (unsigned index = 0U; index < s_log_event_count; ++index) {
@@ -172,7 +179,8 @@ static unsigned log_event_count(uint16_t event_id)
     return count;
 }
 
-static void assert_last_log_event(uint16_t event_id, uint32_t arg0, uint32_t arg1)
+NRF_TEST_MAYBE_UNUSED static void assert_last_log_event(
+    uint16_t event_id, uint32_t arg0, uint32_t arg1)
 {
     assert(s_log_event_count != 0U);
     assert(s_log_events[s_log_event_count - 1U].event_id == event_id);
@@ -180,7 +188,7 @@ static void assert_last_log_event(uint16_t event_id, uint32_t arg0, uint32_t arg
     assert(s_log_events[s_log_event_count - 1U].arg1 == arg1);
 }
 
-static void fill_sensor_queue_and_check_capacity(void)
+NRF_TEST_MAYBE_UNUSED static void fill_sensor_queue_and_check_capacity(void)
 {
     uint8_t item[64] = {0U};
 
@@ -378,7 +386,7 @@ nrf_sensor_snapshot_result_t nrf_remote_sensor_runtime_zephyr_refresh(
         : NRF_SENSOR_SNAPSHOT_ERR_NO_DATA;
 }
 
-static nrf_upstream_assign_t make_assign(void)
+NRF_TEST_MAYBE_UNUSED static nrf_upstream_assign_t make_assign(void)
 {
     nrf_upstream_assign_t assign;
     memset(&assign, 0, sizeof(assign));
@@ -416,7 +424,7 @@ static void run_worker_ticks(unsigned tick_count)
 
 static void run_worker_advancing(uint32_t duration_ms);
 
-static void assert_last_applied_matches_policy(void)
+NRF_TEST_MAYBE_UNUSED static void assert_last_applied_matches_policy(void)
 {
     nrf_sensor_upstream_runtime_zephyr_diagnostics_t diagnostics = {0};
     const nrf_logger_led_output_t *applied;
@@ -440,7 +448,7 @@ static void assert_last_applied_colors(bool green, bool yellow, bool red)
     assert(s_led_samples[s_led_sample_count - 1U].red == red);
 }
 
-static bool led_colors_recorded_at(
+NRF_TEST_MAYBE_UNUSED static bool led_colors_recorded_at(
     uint64_t time_ms,
     bool green,
     bool yellow,
@@ -705,7 +713,7 @@ static void test_failed_sensor_signal(void)
 #endif
 #endif
 
-static void process_refresh_request(uint32_t request_id)
+NRF_TEST_MAYBE_UNUSED static void process_refresh_request(uint32_t request_id)
 {
     nrf_upstream_sensor_refresh_t request = {.request_id = request_id};
     s_test_uptime_ms += 100;
@@ -713,7 +721,7 @@ static void process_refresh_request(uint32_t request_id)
     run_worker_until_empty();
 }
 
-static void process_height_reference_request(
+NRF_TEST_MAYBE_UNUSED static void process_height_reference_request(
     uint8_t action,
     uint32_t request_id,
     uint16_t generation)
@@ -741,7 +749,7 @@ static void run_worker_advancing(uint32_t duration_ms)
     s_advance_worker_time = false;
 }
 
-static void process_imu_calibration_request(
+NRF_TEST_MAYBE_UNUSED static void process_imu_calibration_request(
     uint8_t action,
     uint32_t request_id,
     uint16_t generation)

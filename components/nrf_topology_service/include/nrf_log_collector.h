@@ -6,6 +6,7 @@
 
 #include "esp_err.h"
 #include "nrf_topology.h"
+#include "nrf_log_protocol.h"
 
 #define NRF_LOG_COLLECTOR_NODE_COUNT (NRF_TOPOLOGY_REMOTE_COUNT + 1U)
 #define NRF_LOG_COLLECTOR_RECORD_CAPACITY 128U
@@ -82,6 +83,8 @@ typedef struct {
     bool (*yield_requested)(void *context);
     bool (*node_link_ready)(void *context, uint8_t node_index);
     void (*report_link_failure)(void *context, uint8_t node_index);
+    void (*report_firmware)(void *context, uint8_t node_index,
+        uint32_t boot_id, const nrf_log_firmware_info_t *info);
 } nrf_log_collector_io_t;
 
 typedef struct {
@@ -90,6 +93,7 @@ typedef struct {
     uint8_t nodes_failed;
     uint8_t nodes_skipped_cs;
     uint32_t elapsed_ms;
+    bool completed;
 } nrf_log_collector_iteration_t;
 
 typedef struct nrf_log_collector nrf_log_collector_t;
@@ -109,6 +113,8 @@ esp_err_t nrf_log_collector_reset(nrf_log_collector_t *collector);
 esp_err_t nrf_log_collector_sync_targets(
     nrf_log_collector_t *collector,
     const nrf_log_poll_target_t targets[NRF_LOG_COLLECTOR_NODE_COUNT]);
+/* Complete one bounded pass before control work. Budgets limit extra blocks/retries,
+ * never the first STATUS/data block of a node; yield_requested is cancellation. */
 esp_err_t nrf_log_collector_poll_iteration(
     nrf_log_collector_t *collector,
     const nrf_log_poll_target_t targets[NRF_LOG_COLLECTOR_NODE_COUNT],

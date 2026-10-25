@@ -62,6 +62,18 @@ static void node_from_status(
     node->current_address = status->target_address;
     node->protocol_result = status->result;
     node->assignment_request_id = status->request_id;
+    node->role = status->role;
+    node->lifecycle = status->lifecycle;
+    node->flags = status->flags;
+}
+
+static void main_conflict_from_status(
+    nrf_topology_node_snapshot_t *node,
+    nrf_topology_conflict_reason_t reason,
+    const nrf_upstream_status_t *status)
+{
+    node_from_status(node, NRF_TOPOLOGY_NODE_CONFLICT, status);
+    node->conflict_reason = (uint8_t)reason;
 }
 
 static bool status_is_registered_ready(const nrf_upstream_status_t *status, uint8_t address)
@@ -80,13 +92,19 @@ static bool status_is_unassigned_discovery(const nrf_upstream_status_t *status)
            (status->flags & NRF_UPSTREAM_STATUS_FLAG_ASSIGNED) == 0U;
 }
 
+/*
+ * MAIN identity only. status->result is the outcome of the last request the
+ * node saw, not part of who it is: the nRF keeps a rejected or unsupported
+ * request's result in STATUS until the next ASSIGN completes. Requiring
+ * RESULT_OK here turned one stray bad frame into a permanent CONFLICT that
+ * hid every REMOTE. The result stays visible in node->protocol_result.
+ */
 static bool status_is_main(const nrf_upstream_status_t *status)
 {
     return status_is_registered_ready(status, NRF_UPSTREAM_ADDRESS_MAIN) &&
            status->role == NRF_UPSTREAM_ROLE_MAIN &&
            status->node_id == NRF_TOPOLOGY_MAIN_NODE_ID &&
            status->mux_channel == NRF_UPSTREAM_MUX_CHANNEL_NONE &&
-           status->result == NRF_UPSTREAM_RESULT_OK &&
            (status->flags & NRF_UPSTREAM_STATUS_FLAG_ASSIGNED) != 0U;
 }
 
@@ -367,16 +385,19 @@ static main_reconcile_result_t reconcile_main(
 
 
     if (remote_present) {
-        node_from_status(&snapshot->main, NRF_TOPOLOGY_NODE_CONFLICT, &remote_status);
+        main_conflict_from_status(
+            &snapshot->main, NRF_TOPOLOGY_CONFLICT_REMOTE_ON_DIRECT_BUS, &remote_status);
         return result;
     }
     if (discovery_present && main_present) {
-        node_from_status(&snapshot->main, NRF_TOPOLOGY_NODE_CONFLICT, &main_status);
+        main_conflict_from_status(
+            &snapshot->main, NRF_TOPOLOGY_CONFLICT_DISCOVERY_AND_MAIN, &main_status);
         return result;
     }
     if (main_present) {
         if (!status_is_main(&main_status)) {
-            node_from_status(&snapshot->main, NRF_TOPOLOGY_NODE_CONFLICT, &main_status);
+            main_conflict_from_status(
+                &snapshot->main, NRF_TOPOLOGY_CONFLICT_MAIN_IDENTITY, &main_status);
             return result;
         }
         node_from_status(&snapshot->main, NRF_TOPOLOGY_NODE_ASSIGNED, &main_status);
@@ -391,7 +412,8 @@ static main_reconcile_result_t reconcile_main(
     }
 
     if (!status_is_unassigned_discovery(&discovery_status)) {
-        node_from_status(&snapshot->main, NRF_TOPOLOGY_NODE_CONFLICT, &discovery_status);
+        main_conflict_from_status(
+            &snapshot->main, NRF_TOPOLOGY_CONFLICT_DISCOVERY_NOT_UNASSIGNED, &discovery_status);
         return result;
     }
 
@@ -441,12 +463,13 @@ static void report_main_status_only(
     if (!main_present) {
         return;
     }
-    node_from_status(
-        &snapshot->main,
-        status_is_main(&main_status)
-            ? NRF_TOPOLOGY_NODE_ASSIGNED
-            : NRF_TOPOLOGY_NODE_CONFLICT,
-        &main_status);
+    if (status_is_main(&main_status)) {
+        node_from_status(&snapshot->main, NRF_TOPOLOGY_NODE_ASSIGNED, &main_status);
+    }
+    else {
+        main_conflict_from_status(
+            &snapshot->main, NRF_TOPOLOGY_CONFLICT_MAIN_IDENTITY, &main_status);
+    }
 }
 
 static bool verify_known_main(

@@ -125,6 +125,11 @@ typedef struct {
     uint8_t select_failure_node;
     uint8_t close_failure_node;
     bool old_firmware[NRF_LOG_COLLECTOR_NODE_COUNT];
+    bool firmware_supported[NRF_LOG_COLLECTOR_NODE_COUNT];
+    uint32_t firmware_reads[NRF_LOG_COLLECTOR_NODE_COUNT];
+    uint32_t firmware_reports[NRF_LOG_COLLECTOR_NODE_COUNT];
+    bool firmware_report_supported[NRF_LOG_COLLECTOR_NODE_COUNT];
+    nrf_log_firmware_info_t firmware_info[NRF_LOG_COLLECTOR_NODE_COUNT];
     uint32_t last_status_id[NRF_LOG_COLLECTOR_NODE_COUNT];
     uint32_t last_block_id[NRF_LOG_COLLECTOR_NODE_COUNT];
     uint32_t last_block_cursor[NRF_LOG_COLLECTOR_NODE_COUNT];
@@ -489,7 +494,8 @@ static esp_err_t fake_write_frame(
     uint8_t physical_node = fake->active_physical_node;
     const uint8_t response_type = request_type == NRF_LOG_MESSAGE_STATUS_REQUEST
         ? NRF_LOG_MESSAGE_STATUS
-        : NRF_LOG_MESSAGE_BLOCK;
+        : request_type == NRF_LOG_MESSAGE_FIRMWARE_REQUEST
+            ? NRF_LOG_MESSAGE_FIRMWARE : NRF_LOG_MESSAGE_BLOCK;
     bool fault = false;
     esp_err_t result;
     if (node != 0U && fake->active_node != node) return ESP_ERR_INVALID_STATE;
@@ -543,7 +549,28 @@ static esp_err_t fake_write_frame(
                 ? ESP_OK
                 : ESP_ERR_INVALID_RESPONSE;
             fake->pending_type = NRF_LOG_MESSAGE_STATUS;
+            if (result == ESP_OK && fake->firmware_supported[node]) {
+                fake->pending[11] |= NRF_LOG_STATUS_FLAG_FIRMWARE_INFO;
+                fake_repair_crc(fake->pending, fake->pending_length);
+            }
         }
+    } else if (request_type == NRF_LOG_MESSAGE_FIRMWARE_REQUEST) {
+        nrf_log_status_request_t request;
+        CHECK(fake->firmware_supported[node]);
+        CHECK(nrf_log_protocol_decode_firmware_request(frame, frame_length, &request) == NRF_LOG_ERROR_OK);
+        nrf_log_firmware_info_t info = {
+            .request_id = request.request_id,
+            .boot_id = fake->rings[physical_node].boot_id,
+            .flags = NRF_LOG_FIRMWARE_FLAG_DIRTY,
+        };
+        for (uint8_t i = 0U; i < NRF_LOG_PROTOCOL_GIT_COMMIT_BYTES; ++i) {
+            info.git_commit[i] = (uint8_t)(i + node);
+        }
+        ++fake->firmware_reads[node];
+        fake->pending_length = NRF_LOG_PROTOCOL_FIRMWARE_LENGTH;
+        fake->pending_type = NRF_LOG_MESSAGE_FIRMWARE;
+        result = nrf_log_protocol_encode_firmware(&info, fake->pending) == NRF_LOG_ERROR_OK
+            ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
     } else if (request_type == NRF_LOG_MESSAGE_READ_REQUEST) {
         nrf_log_read_request_t request;
         if (nrf_log_protocol_decode_read_request(frame, frame_length, &request) != NRF_LOG_ERROR_OK) {
@@ -633,7 +660,7 @@ static esp_err_t fake_read_frame(
     fake_event(fake, EVENT_READ, node, response_type);
     fake->now_ms += fake->tx_cost_ms;
     if (response_type == NRF_LOG_MESSAGE_STATUS) ++fake->status_reads[node];
-    else ++fake->block_reads[node];
+    else if (response_type == NRF_LOG_MESSAGE_BLOCK) ++fake->block_reads[node];
     if (fake->pending_length > frame_capacity) return ESP_ERR_INVALID_RESPONSE;
 
     fault = fake_fault_applies(fake, node, response_type) &&
@@ -739,7 +766,7 @@ static bool fake_yield_requested(void *context)
          fake->now_ms >= fake->sensor_deadline_ms ||
          fake->now_ms >= fake->reconcile_deadline_ms);
     if (deadline_due) fake_service_due_deadlines(fake);
-    /* Production maps stop/immediate work/reconcile pressure through this callback. */
+    /* Explicit cancellation injection; production uses this hook for shutdown. */
     return fake->yield_pending || fake->shutdown_requested || fake->sensor_refresh_active || deadline_due;
 }
 
@@ -765,6 +792,17 @@ static void fake_service_due_deadlines(fake_bus_t *fake)
     fake->deadlines_enabled = false;
 }
 
+static void fake_report_firmware(void *context, uint8_t node, uint32_t boot_id,
+    const nrf_log_firmware_info_t *info)
+{
+    fake_bus_t *fake = context;
+    CHECK(!fake->mux_open);
+    CHECK(boot_id == fake->rings[fake->route_physical_node[node]].boot_id);
+    ++fake->firmware_reports[node];
+    fake->firmware_report_supported[node] = info != NULL;
+    if (info != NULL) fake->firmware_info[node] = *info;
+}
+
 static nrf_log_collector_io_t fake_io(fake_bus_t *fake)
 {
     return (nrf_log_collector_io_t) {
@@ -775,6 +813,7 @@ static nrf_log_collector_io_t fake_io(fake_bus_t *fake)
         .read_frame = fake_read_frame,
         .now_ms = fake_now,
         .yield_requested = fake_yield_requested,
+        .report_firmware = fake_report_firmware,
     };
 }
 
@@ -917,9 +956,10 @@ static void test_framing_budget_and_order(void)
     const nrf_log_collector_iteration_t soft_budget = run_round_at_current_time(&s_fake);
     CHECK(soft_budget.elapsed_ms >= 60U);
     CHECK(s_fake.status_reads[0] == 1U);
-    CHECK(s_fake.block_writes[0] == 0U);
+    CHECK(s_fake.block_writes[0] == 1U);
     CHECK(soft_budget.nodes_succeeded == 1U);
-    CHECK(node_summary(&s_fake, 0U).stored == 0U);
+    CHECK(soft_budget.completed);
+    CHECK(node_summary(&s_fake, 0U).stored == 5U);
     s_fake.tx_cost_ms = 1U;
     CHECK(run_round(&s_fake).nodes_succeeded == 1U);
     CHECK(s_fake.last_block_cursor[0] == 0U);
@@ -930,8 +970,8 @@ static void test_framing_budget_and_order(void)
     s_fake.tx_cost_ms = 30U;
     const nrf_log_collector_iteration_t total_budget = run_round_at_current_time(&s_fake);
     CHECK(total_budget.elapsed_ms >= 100U);
-    CHECK(total_budget.nodes_attempted < 5U);
-    CHECK(total_budget.nodes_attempted <= 2U);
+    CHECK(total_budget.nodes_attempted == 5U);
+    CHECK(total_budget.nodes_succeeded == 5U && total_budget.completed);
     fake_stop();
 }
 
@@ -1963,8 +2003,55 @@ static void test_priority_storm_during_refresh_and_cs(void)
     fake_stop();
 }
 
+static void test_complete_pass_crosses_soft_budget(void)
+{
+    fake_start(5U);
+    s_fake.tx_cost_ms = 30U;
+    for (uint8_t node = 0U; node < 5U; ++node) {
+        CHECK(nrf_log_ring_append(&s_fake.rings[node], NRF_LOG_SUBSYSTEM_SENSOR,
+            NRF_LOG_SEVERITY_ERROR, NRF_LOG_EVENT_IMU_FAULT_SET, 1U, 0U, 10U) == NRF_LOG_ERROR_OK);
+        CHECK(nrf_log_ring_append(&s_fake.rings[node], NRF_LOG_SUBSYSTEM_SENSOR,
+            NRF_LOG_SEVERITY_ERROR, NRF_LOG_EVENT_ENV_FAULT_SET, 2U, 0U, 11U) == NRF_LOG_ERROR_OK);
+    }
+    const nrf_log_collector_iteration_t pass = run_round_at_current_time(&s_fake);
+    CHECK(pass.nodes_attempted == 5U && pass.nodes_succeeded == 5U);
+    CHECK(pass.completed && pass.elapsed_ms > 100U);
+    for (uint8_t node = 0U; node < 5U; ++node) {
+        nrf_log_node_page_t page = node_page(&s_fake, node, false, 0U, 0U, 128U);
+        CHECK(page.count == 2U);
+        CHECK(page.records[0].event_id == NRF_LOG_EVENT_IMU_FAULT_SET);
+        CHECK(page.records[1].event_id == NRF_LOG_EVENT_ENV_FAULT_SET);
+        CHECK(s_fake.block_writes[node] == 1U && s_fake.block_reads[node] == 1U);
+    }
+    CHECK(!s_fake.mux_open && s_fake.mux_selects == s_fake.mux_closes);
+    fake_stop();
+}
+
+static void test_firmware_report_is_bound_to_boot_and_capability(void)
+{
+    fake_start(2U);
+    s_fake.firmware_supported[1] = true;
+    CHECK(run_round_at_current_time(&s_fake).completed);
+    CHECK(s_fake.firmware_reads[0] == 0U && s_fake.firmware_reports[0] == 1U);
+    CHECK(!s_fake.firmware_report_supported[0]);
+    CHECK(s_fake.firmware_reads[1] == 1U && s_fake.firmware_reports[1] == 1U);
+    CHECK(s_fake.firmware_report_supported[1]);
+    CHECK(s_fake.firmware_info[1].git_commit[0] == 1U);
+    CHECK(s_fake.firmware_info[1].git_commit[19] == 20U);
+    CHECK(s_fake.firmware_info[1].flags == NRF_LOG_FIRMWARE_FLAG_DIRTY);
+    CHECK(run_round(&s_fake).completed);
+    CHECK(s_fake.firmware_reads[1] == 1U && s_fake.firmware_reports[1] == 1U);
+    CHECK(fake_init_ring(&s_fake, 1U, s_fake.rings[1].boot_id + 1U) == ESP_OK);
+    CHECK(run_round(&s_fake).completed);
+    CHECK(s_fake.firmware_reads[1] == 2U && s_fake.firmware_reports[1] == 2U);
+    CHECK(s_fake.firmware_info[1].boot_id == s_fake.rings[1].boot_id);
+    fake_stop();
+}
+
 int main(void)
 {
+    test_complete_pass_crosses_soft_budget();
+    test_firmware_report_is_bound_to_boot_and_capability();
     volatile uint32_t collector_period_ms = NRF_LOG_COLLECTOR_PERIOD_MS;
     CHECK(collector_period_ms == 1000U);
     CHECK(collector_period_ms == ROUND_MS);

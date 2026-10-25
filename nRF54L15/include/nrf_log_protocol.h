@@ -15,6 +15,8 @@ extern "C" {
 #define NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH 12U
 #define NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH 22U
 #define NRF_LOG_PROTOCOL_STATUS_LENGTH 38U
+#define NRF_LOG_PROTOCOL_FIRMWARE_LENGTH 37U
+#define NRF_LOG_PROTOCOL_GIT_COMMIT_BYTES 20U
 #define NRF_LOG_PROTOCOL_RECORD_LENGTH 20U
 #define NRF_LOG_PROTOCOL_MAX_RECORDS 5U
 #define NRF_LOG_PROTOCOL_BLOCK_BASE_LENGTH 36U
@@ -23,8 +25,10 @@ extern "C" {
 typedef enum {
     NRF_LOG_MESSAGE_STATUS_REQUEST = 0x07,
     NRF_LOG_MESSAGE_READ_REQUEST = 0x08,
+    NRF_LOG_MESSAGE_FIRMWARE_REQUEST = 0x09,
     NRF_LOG_MESSAGE_STATUS = 0x82,
     NRF_LOG_MESSAGE_BLOCK = 0x83,
+    NRF_LOG_MESSAGE_FIRMWARE = 0x84,
 } nrf_log_message_type_t;
 
 typedef enum {
@@ -72,7 +76,8 @@ typedef enum {
 enum {
     NRF_LOG_STATUS_FLAG_ENABLED = 0x01U,
     NRF_LOG_STATUS_FLAG_BOOT_ID_FALLBACK = 0x02U,
-    NRF_LOG_STATUS_FLAG_MASK = 0x03U,
+    NRF_LOG_STATUS_FLAG_FIRMWARE_INFO = 0x04U,
+    NRF_LOG_STATUS_FLAG_MASK = 0x07U,
     NRF_LOG_BLOCK_FLAG_MORE = 0x01U,
     NRF_LOG_BLOCK_FLAG_GAP = 0x02U,
     NRF_LOG_BLOCK_FLAG_BOOT_MISMATCH = 0x04U,
@@ -112,6 +117,18 @@ typedef struct {
     uint32_t overwritten_total;
     uint32_t lost_internal_total;
 } nrf_log_status_t;
+
+enum {
+    NRF_LOG_FIRMWARE_FLAG_DIRTY = 0x01U,
+    NRF_LOG_FIRMWARE_FLAG_MASK = 0x01U,
+};
+
+typedef struct {
+    uint32_t request_id;
+    uint32_t boot_id;
+    uint8_t flags;
+    uint8_t git_commit[NRF_LOG_PROTOCOL_GIT_COMMIT_BYTES];
+} nrf_log_firmware_info_t;
 
 typedef struct {
     uint32_t seq;
@@ -160,6 +177,21 @@ nrf_log_error_t nrf_log_protocol_decode_status_request(
     const uint8_t *frame,
     size_t length,
     nrf_log_status_request_t *request);
+
+nrf_log_error_t nrf_log_protocol_encode_firmware_request(
+    const nrf_log_status_request_t *request,
+    uint8_t frame[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH]);
+nrf_log_error_t nrf_log_protocol_decode_firmware_request(
+    const uint8_t *frame,
+    size_t length,
+    nrf_log_status_request_t *request);
+nrf_log_error_t nrf_log_protocol_encode_firmware(
+    const nrf_log_firmware_info_t *info,
+    uint8_t frame[NRF_LOG_PROTOCOL_FIRMWARE_LENGTH]);
+nrf_log_error_t nrf_log_protocol_decode_firmware(
+    const uint8_t *frame,
+    size_t length,
+    nrf_log_firmware_info_t *info);
 nrf_log_error_t nrf_log_protocol_encode_read_request(
     const nrf_log_read_request_t *request,
     uint8_t frame[NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH]);

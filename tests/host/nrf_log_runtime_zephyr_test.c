@@ -100,6 +100,22 @@ int main(void)
     assert((status.flags & NRF_LOG_STATUS_FLAG_BOOT_ID_FALLBACK) != 0U);
     assert(status.boot_id == (0x12345678U ^ s_last_cycle));
     old_boot_id = status.boot_id;
+    assert((status.flags & NRF_LOG_STATUS_FLAG_FIRMWARE_INFO) != 0U);
+    {
+        uint8_t firmware_frame[NRF_LOG_PROTOCOL_FIRMWARE_LENGTH];
+        size_t firmware_length = 0U;
+        nrf_log_firmware_info_t firmware = {0};
+        assert(nrf_log_runtime_zephyr_build_firmware(123U, firmware_frame,
+            sizeof(firmware_frame), &firmware_length) == NRF_LOG_ERROR_OK);
+        assert(nrf_log_protocol_decode_firmware(firmware_frame, firmware_length,
+            &firmware) == NRF_LOG_ERROR_OK);
+        assert(firmware.request_id == 123U && firmware.boot_id == status.boot_id);
+        assert(firmware.flags == NRF_LOG_FIRMWARE_FLAG_DIRTY);
+        assert(firmware.git_commit[0] == 0x00U && firmware.git_commit[1] == 0x11U);
+        assert(firmware.git_commit[19] == 0x67U);
+        assert(nrf_log_runtime_zephyr_build_firmware(124U, firmware_frame,
+            sizeof(firmware_frame) - 1U, &firmware_length) == NRF_LOG_ERROR_BAD_LENGTH);
+    }
 
     request = (nrf_log_read_request_t){
         .request_id = 8U,

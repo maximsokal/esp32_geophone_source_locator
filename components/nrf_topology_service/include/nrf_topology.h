@@ -20,6 +20,15 @@ typedef enum {
     NRF_TOPOLOGY_NODE_TRANSPORT_ERROR,
 } nrf_topology_node_state_t;
 
+/* Which MAIN check declared NRF_TOPOLOGY_NODE_CONFLICT (diagnostics only). */
+typedef enum {
+    NRF_TOPOLOGY_CONFLICT_NONE = 0,
+    NRF_TOPOLOGY_CONFLICT_REMOTE_ON_DIRECT_BUS,   /* 0x32 answered with the mux closed */
+    NRF_TOPOLOGY_CONFLICT_DISCOVERY_AND_MAIN,     /* 0x30 and 0x31 both answered */
+    NRF_TOPOLOGY_CONFLICT_MAIN_IDENTITY,          /* 0x31 answered but is not the assigned MAIN */
+    NRF_TOPOLOGY_CONFLICT_DISCOVERY_NOT_UNASSIGNED, /* 0x30 answered but is not a ready unassigned node */
+} nrf_topology_conflict_reason_t;
+
 typedef struct {
     nrf_topology_node_state_t state;
     uint8_t hardware_id_length;
@@ -29,6 +38,11 @@ typedef struct {
     uint8_t current_address;
     uint8_t protocol_result;
     uint32_t assignment_request_id;
+    /* Raw STATUS fields behind the verdict, so a CONFLICT can be explained from a log. */
+    uint8_t role;
+    uint8_t lifecycle;
+    uint8_t flags;
+    uint8_t conflict_reason; /* nrf_topology_conflict_reason_t */
 } nrf_topology_node_snapshot_t;
 
 typedef struct {

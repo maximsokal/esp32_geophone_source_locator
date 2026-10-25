@@ -56,10 +56,10 @@ _Static_assert(
 /*
  * nRF topology discovery is low-rate control-plane work. Keep TCA selection,
  * assignment polling and hot-plug reconciliation on the service core and at
- * the lowest application priority so it cannot migrate onto acquisition.
+ * priority 2, below UI and measurement work, with room for protocol/log parsing.
  */
-#define APP_TASK_PRIORITY_NRF_TOPOLOGY    1
-#define APP_TASK_STACK_NRF_TOPOLOGY    5120
+#define APP_TASK_PRIORITY_NRF_TOPOLOGY    2
+#define APP_TASK_STACK_NRF_TOPOLOGY    8192
 
 /*
  * esp_lvgl_port owns the LVGL handler task. It stays on Core 0 so

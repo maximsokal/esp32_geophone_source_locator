@@ -100,7 +100,9 @@ static uint32_t s_activation_generation;
 static uint32_t s_activation_complete_generation;
 static uint32_t s_imu_calibration_request_id;
 static uint32_t s_imu_calibration_completed_request_id;
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
 static uint32_t s_upstream_transaction_count;
+#endif
 static uint32_t s_upstream_role_assignment_sequence;
 static uint8_t s_upstream_role_assignment_role;
 #if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
@@ -530,7 +532,7 @@ static void orientation_feed_sample(
         orientation.sample_valid,
         orientation.tilt_sin2_ppm,
         s_imu_filters.gyro_motion.initialized
-            ? rounded_i32(s_imu_filters.gyro_motion.value)
+            ? (uint32_t)rounded_i32(s_imu_filters.gyro_motion.value)
             : 0U,
         sample_uptime_ms);
     nrf_blue_led_zephyr_update(
@@ -1085,7 +1087,11 @@ void nrf_sensor_upstream_runtime_zephyr_note_upstream(
     uint8_t role_assignment_role)
 {
     k_spinlock_key_t key = k_spin_lock(&s_session_lock);
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
     s_upstream_transaction_count = transaction_count;
+#else
+    (void)transaction_count;
+#endif
     s_upstream_role_assignment_role = role_assignment_role;
     s_upstream_role_assignment_sequence = role_assignment_sequence;
     k_spin_unlock(&s_session_lock, key);
@@ -1165,7 +1171,9 @@ int nrf_sensor_upstream_runtime_zephyr_start(void)
         return -EINVAL;
     }
     nrf_node_state_init(&s_worker_node_state);
+#if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
     s_upstream_transaction_count = 0U;
+#endif
     s_upstream_role_assignment_sequence = 0U;
     s_upstream_role_assignment_role = NRF_UPSTREAM_ROLE_UNASSIGNED;
 #if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS

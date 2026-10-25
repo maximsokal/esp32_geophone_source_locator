@@ -266,6 +266,14 @@ printing stays outside IRQ. The ESP32 image rotates 28/31/32/33/38-byte status
 reads with bounded extra traffic. See [production I2C diagnostics](../docs/nrf-production-i2c-diagnostics.md)
 for fields, examples, budget behavior and the separate ESP32/nRF consoles.
 
+Every production build embeds its full Git commit and a dirty-checkout flag.
+The nRF prints `firmware: commit=<40 hex digits> dirty=0|1` at boot and advertises
+firmware-info support in `LOG_STATUS`. The ESP32 requests that identity once per
+node/boot and prints `NRF_FIRMWARE` with role, node ID, I2C address, mux channel,
+boot ID, commit and dirty flag. Install the rebuilt nRF image on MAIN and each
+REMOTE to obtain their identities; older loggers report `supported=0` and
+`commit=unavailable` without receiving the new request.
+
 For example, startup reports the backend result and each logger LED pin state,
 then emits one `lamp_test` line per available LED. Main-loop change lines carry
 uptime; a status line carries the latest state and counters:

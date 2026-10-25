@@ -16,6 +16,7 @@ endif()
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(geophone_nrf54l15_node)
+include("${CMAKE_CURRENT_LIST_DIR}/../cmake/build_info.cmake")
 
 target_sources(app PRIVATE
     ../src/main.c

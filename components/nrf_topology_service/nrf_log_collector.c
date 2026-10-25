@@ -27,6 +27,7 @@ typedef struct {
     bool logs_unsupported;
     bool boot_id_valid;
     bool cursor_valid;
+    bool firmware_reported;
     uint8_t hardware_id_length;
     uint8_t hardware_id[NRF_UPSTREAM_PROTOCOL_HW_ID_MAX];
     uint8_t node_id;
@@ -96,9 +97,9 @@ static uint32_t next_nonzero(uint32_t value)
 
 static uint32_t next_status_request_id(uint8_t node_index, uint32_t previous)
 {
-    /* Reserve three request IDs per node; the 32-ID stride keeps channel replies distinct across wrap. */
+    /* Four IDs per node; a 64-ID stride covers MAIN plus all eight mux channels. */
     const uint32_t first = (uint32_t)node_index * 4U + 1U;
-    return previous == 0U ? first : previous + 32U;
+    return previous == 0U ? first : previous + 64U;
 }
 
 static uint32_t elapsed_ms(const nrf_log_collector_io_t *io, uint64_t started_ms)
@@ -272,8 +273,8 @@ static esp_err_t exchange_status(
     for (uint8_t attempt = 0U; attempt <= NRF_LOG_REQUEST_RETRIES; ++attempt) {
         size_t received_length = 0U;
         esp_err_t err;
-        if (should_yield(io) || budget_expired(
-                io, node_started_ms, iteration_started_ms, per_node_budget_ms, total_budget_ms)) {
+        if (should_yield(io) || (attempt != 0U && budget_expired(
+                io, node_started_ms, iteration_started_ms, per_node_budget_ms, total_budget_ms))) {
             if (attempt == 0U) {
                 *yielded = true;
                 return ESP_OK;
@@ -331,8 +332,8 @@ static esp_err_t exchange_block(
         size_t response_length;
         esp_err_t err;
         nrf_log_block_validation_t validation;
-        if (should_yield(io) || budget_expired(
-                io, node_started_ms, iteration_started_ms, per_node_budget_ms, total_budget_ms)) {
+        if (should_yield(io) || (attempt != 0U && budget_expired(
+                io, node_started_ms, iteration_started_ms, per_node_budget_ms, total_budget_ms))) {
             if (attempt == 0U) {
                 *yielded = true;
                 return ESP_OK;
@@ -407,6 +408,33 @@ static esp_err_t exchange_block(
     return ESP_ERR_INVALID_RESPONSE;
 }
 
+static esp_err_t exchange_firmware(
+    const nrf_log_collector_io_t *io,
+    uint8_t node_index,
+    uint32_t request_id,
+    uint32_t boot_id,
+    nrf_log_firmware_info_t *info)
+{
+    const nrf_log_status_request_t request = {.request_id = request_id};
+    uint8_t request_frame[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+    uint8_t response_frame[NRF_LOG_PROTOCOL_FIRMWARE_LENGTH];
+    size_t received = 0U;
+    if (nrf_log_protocol_encode_firmware_request(&request, request_frame) != NRF_LOG_ERROR_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = io->write_frame(io->context, node_index, request_frame, sizeof(request_frame));
+    if (err == ESP_OK) {
+        err = io->read_frame(io->context, node_index, response_frame, sizeof(response_frame), &received);
+    }
+    if (err == ESP_OK && (received != sizeof(response_frame) ||
+        nrf_log_protocol_decode_firmware(response_frame, received, info) != NRF_LOG_ERROR_OK ||
+        info->request_id != request_id || info->boot_id != boot_id)) {
+        err = ESP_ERR_INVALID_RESPONSE;
+        report_link_failure(io, node_index);
+    }
+    return err;
+}
+
 static void stage_record(
     nrf_log_poll_stage_t *stage,
     uint32_t boot_id,
@@ -446,6 +474,9 @@ static esp_err_t poll_node(
     bool node_open = false;
     bool status_valid = false;
     bool stage_gap_counted = false;
+    bool firmware_needed = false;
+    bool firmware_supported = false;
+    nrf_log_firmware_info_t firmware = {0};
     uint32_t status_request_id;
 
     *attempted = false;
@@ -458,7 +489,7 @@ static esp_err_t poll_node(
 
     memset(&stage, 0, sizeof(stage));
     node_started_ms = io->now_ms(io->context);
-    if (should_yield(io) || elapsed_ms(io, iteration_started_ms) >= total_budget_ms) {
+    if (should_yield(io)) {
         *yielded = true;
         return ESP_OK;
     }
@@ -470,7 +501,7 @@ static esp_err_t poll_node(
         *yielded = true;
         return ESP_OK;
     }
-    node_open = node_index != 0U;
+    node_open = true;
     if (err == ESP_OK) {
         status_request.request_id = status_request_id;
         err = exchange_status(
@@ -508,6 +539,18 @@ static esp_err_t poll_node(
         if (stage.cursor_seq > status.next_seq) {
             err = ESP_ERR_INVALID_RESPONSE;
         }
+        firmware_needed = !old_state.firmware_reported ||
+            !old_state.boot_id_valid || old_state.boot_id != status.boot_id;
+        firmware_supported = (status.flags & NRF_LOG_STATUS_FLAG_FIRMWARE_INFO) != 0U;
+        firmware.boot_id = status.boot_id;
+        if (firmware_needed && firmware_supported && err == ESP_OK) {
+            if (should_yield(io)) {
+                *yielded = true;
+            } else {
+                err = exchange_firmware(io, node_index, status.request_id + 3U,
+                    status.boot_id, &firmware);
+            }
+        }
         for (uint8_t block_index = 0U;
              err == ESP_OK && block_index < 2U && !*yielded;
              ++block_index) {
@@ -516,9 +559,12 @@ static esp_err_t poll_node(
             const bool needs_read = status.available != 0U &&
                 (stage.cursor_seq < status.next_seq || stage.cursor_seq < status.oldest_seq);
             if (!needs_read) break;
-            if (should_yield(io) || budget_expired(
-                    io, node_started_ms, iteration_started_ms, per_node_budget_ms, total_budget_ms)) {
+            if (should_yield(io)) {
                 *yielded = true;
+                break;
+            }
+            if (block_index != 0U && budget_expired(
+                    io, node_started_ms, iteration_started_ms, per_node_budget_ms, total_budget_ms)) {
                 break;
             }
             read_request.request_id = next_nonzero(status_request.request_id);
@@ -599,9 +645,19 @@ static esp_err_t poll_node(
         state->overwritten_total = stage.overwritten_total;
         state->lost_internal_total = stage.lost_internal_total;
         state->wire_gap_total = saturating_add(state->wire_gap_total, stage.wire_gap_increments);
-        if (stage.boot_changed) state->logs_unsupported = false;
+        if (stage.boot_changed) {
+            state->logs_unsupported = false;
+            state->firmware_reported = false;
+        }
+        const bool report_firmware = firmware_needed && !*yielded &&
+            firmware.boot_id == stage.boot_id;
+        if (report_firmware) state->firmware_reported = true;
         for (uint8_t i = 0U; i < stage.count; ++i) append_record_locked(collector, node_index, &stage.records[i]);
         collector_unlock(collector);
+        if (report_firmware && io->report_firmware != NULL) {
+            io->report_firmware(io->context, node_index, stage.boot_id,
+                firmware_supported ? &firmware : NULL);
+        }
     }
     return ESP_OK;
 }
@@ -703,6 +759,7 @@ esp_err_t nrf_log_collector_poll_iteration(
         return ESP_ERR_INVALID_ARG;
     }
     memset(iteration, 0, sizeof(*iteration));
+    iteration->completed = true;
     iteration_started_ms = io->now_ms(io->context);
     if (!collector_lock(collector)) return ESP_ERR_TIMEOUT;
     if (collector->has_polled && iteration_started_ms >= collector->last_poll_ms &&
@@ -710,8 +767,6 @@ esp_err_t nrf_log_collector_poll_iteration(
         collector_unlock(collector);
         return ESP_OK;
     }
-    collector->has_polled = true;
-    collector->last_poll_ms = iteration_started_ms;
     first_node = next_routable_node(targets, collector->next_node_index);
     if (first_node < NRF_LOG_COLLECTOR_NODE_COUNT) {
         next_node = next_routable_node(
@@ -729,7 +784,10 @@ esp_err_t nrf_log_collector_poll_iteration(
         bool unsupported;
         uint8_t backoff_remaining;
         esp_err_t err;
-        if (elapsed_ms(io, iteration_started_ms) >= total_budget_ms || should_yield(io)) break;
+        if (should_yield(io)) {
+            iteration->completed = false;
+            break;
+        }
         if (!targets[node_index].present || !targets[node_index].route_available ||
             !targets[node_index].link_ready) continue;
         if (!collector_lock(collector)) return ESP_ERR_TIMEOUT;
@@ -778,7 +836,16 @@ esp_err_t nrf_log_collector_poll_iteration(
             }
             collector_unlock(collector);
         }
-        if (yielded || should_yield(io) || elapsed_ms(io, iteration_started_ms) >= total_budget_ms) break;
+        if (yielded || should_yield(io)) {
+            iteration->completed = false;
+            break;
+        }
+    }
+    if (iteration->completed) {
+        if (!collector_lock(collector)) return ESP_ERR_TIMEOUT;
+        collector->has_polled = true;
+        collector->last_poll_ms = iteration_started_ms;
+        collector_unlock(collector);
     }
     iteration->elapsed_ms = elapsed_ms(io, iteration_started_ms);
     return ESP_OK;

@@ -197,6 +197,13 @@ esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot)
 
 static void reset_world(void);
 static void run_service(void);
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR)
+static void log_test_record(const char *line);
+static void log_test_mux_write(void);
+static bool log_test_read(sim_node_t *node, uint8_t *data, size_t length, esp_err_t *result);
+static bool log_test_write(sim_node_t *node, const uint8_t *data, size_t length, esp_err_t *result);
+static void log_test_probe(sim_node_t *node);
+#endif
 
 const char *test_esp_err_to_name(int error)
 {
@@ -213,6 +220,9 @@ void test_log_record(char level, const char *tag, const char *format, ...)
     va_start(args, format);
     (void)vsnprintf(line, sizeof(line), format, args);
     va_end(args);
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR)
+    log_test_record(line);
+#endif
     if (level == 'W' && strstr(line, "STACK_HWM") != NULL) {
         ++s_stack_hwm_warning_logs;
     }
@@ -514,6 +524,9 @@ esp_err_t i2c_bus_write_byte(i2c_bus_device_handle_t device, uint8_t mem_address
     if (!s_tca_present) {
         return ESP_ERR_INVALID_STATE;
     }
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR)
+    log_test_mux_write();
+#endif
     s_tca_control = data;
     ++s_tca_writes;
     return ESP_OK;
@@ -532,6 +545,10 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
         ++s_nack_read_calls;
         return ESP_ERR_INVALID_STATE; /* IDF 5.5 NACK */
     }
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR)
+    esp_err_t log_result;
+    if (log_test_read(node, data, data_len, &log_result)) return log_result;
+#endif
     if (data_len == NRF_CS_CONTROL_RESULT_LENGTH) {
         nrf_cs_control_result_t result;
         uint8_t frame[NRF_CS_CONTROL_RESULT_LENGTH];
@@ -678,6 +695,10 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
     if (node == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR)
+    esp_err_t log_result;
+    if (log_test_write(node, data, data_len, &log_result)) return log_result;
+#endif
     if (data_len == NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH &&
         data[0] == 'G' && data[1] == 'S' &&
         data[3] == NRF_LOG_MESSAGE_STATUS_REQUEST) {
@@ -822,8 +843,12 @@ esp_err_t sensor_bus_lines_probe(i2c_bus_handle_t bus, uint8_t address)
         }
     }
     if (address_acks(address)) {
-        if (address >= NRF_UPSTREAM_ADDRESS_DISCOVERY && address <= NRF_UPSTREAM_ADDRESS_REMOTE)
+        if (address >= NRF_UPSTREAM_ADDRESS_DISCOVERY && address <= NRF_UPSTREAM_ADDRESS_REMOTE) {
             s_log_reply_selected = false;
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR)
+            log_test_probe(node_at(address));
+#endif
+        }
         return ESP_OK;
     }
     return ESP_ERR_NOT_FOUND;
@@ -937,6 +962,9 @@ BaseType_t xTaskCreatePinnedToCore(
     (void)name;
     (void)stack_depth;
     (void)priority;
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR)
+    assert(stack_depth == 8192U && priority == 2U);
+#endif
     assert(core_id == 0); /* service core */
     ++s_task_create_count;
     if (s_fail_task_create) {

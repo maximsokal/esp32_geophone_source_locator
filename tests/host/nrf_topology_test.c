@@ -25,6 +25,7 @@ typedef struct {
     uint8_t result;
     bool first_readdress_fail;
     bool stay_pending;
+    bool booting;
     unsigned assign_writes;
     uint32_t first_assign_request;
     uint32_t second_assign_request;
@@ -80,7 +81,9 @@ static void fake_make_status(const fake_node_t *node, nrf_upstream_status_t *sta
     status->hardware_id_length = node->hw_len;
     memcpy(status->hardware_id, node->hw, sizeof(status->hardware_id));
     status->request_id = node->request_id;
-    status->lifecycle = NRF_UPSTREAM_LIFECYCLE_READY;
+    status->lifecycle = node->booting
+        ? NRF_UPSTREAM_LIFECYCLE_BOOTING
+        : NRF_UPSTREAM_LIFECYCLE_READY;
     status->result = node->result;
     status->flags = NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED;
     switch (node->mode) {
@@ -92,7 +95,7 @@ static void fake_make_status(const fake_node_t *node, nrf_upstream_status_t *sta
         break;
     case FAKE_MAIN:
         status->role = NRF_UPSTREAM_ROLE_MAIN;
-        status->node_id = 0U;
+        status->node_id = node->node_id;
         status->mux_channel = NRF_UPSTREAM_MUX_CHANNEL_NONE;
         status->target_address = NRF_UPSTREAM_ADDRESS_MAIN;
         status->flags |= NRF_UPSTREAM_STATUS_FLAG_ASSIGNED;
@@ -913,8 +916,100 @@ static void test_assignment_deadline_includes_io_and_late_completion_recovers(vo
     assert(bus.main.assign_writes == 1U);
 }
 
+static void setup_assigned_main_and_remotes(fake_bus_t *bus)
+{
+    init_bus(bus, true);
+    bus->main.mode = FAKE_MAIN;
+    bus->main.result = NRF_UPSTREAM_RESULT_OK;
+    fake_set_hw(&bus->main, 0x50U);
+    for (uint8_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        bus->remote[i].mode = FAKE_REMOTE;
+        bus->remote[i].node_id = (uint8_t)(i + 1U);
+        bus->remote[i].channel = i;
+        bus->remote[i].result = NRF_UPSTREAM_RESULT_OK;
+        fake_set_hw(&bus->remote[i], (uint8_t)(0x60U + i * 4U));
+    }
+}
+
+/*
+ * The MAIN nRF keeps the result of the last rejected request (e.g. a garbled
+ * frame after an aborted read) in STATUS. That is not an identity problem:
+ * MAIN must stay ASSIGNED and the REMOTE scan must still run.
+ */
+static void test_main_with_stale_request_result_stays_assigned(void)
+{
+    static const uint8_t stale_results[] = {
+        NRF_UPSTREAM_RESULT_INVALID_FRAME,
+        NRF_UPSTREAM_RESULT_UNSUPPORTED_TYPE,
+        NRF_UPSTREAM_RESULT_BUSY,
+        NRF_UPSTREAM_RESULT_PENDING,
+    };
+    for (size_t index = 0U; index < sizeof(stale_results); ++index) {
+        fake_bus_t bus;
+        nrf_topology_snapshot_t snapshot;
+        nrf_topology_controller_t controller = make_controller();
+        setup_assigned_main_and_remotes(&bus);
+        bus.main.result = stale_results[index];
+        nrf_topology_io_t io = make_io(&bus);
+
+        assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+        assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+        assert(snapshot.main.conflict_reason == NRF_TOPOLOGY_CONFLICT_NONE);
+        assert(snapshot.main.protocol_result == stale_results[index]);
+        assert(bus.main.assign_writes == 0U);
+        assert(bus.select_calls == NRF_TOPOLOGY_REMOTE_COUNT);
+        for (uint8_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+            assert(snapshot.remotes[i].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+        }
+    }
+}
+
+/* A real identity problem must still block the remotes and say why. */
+static void test_main_identity_mismatch_is_conflict_with_reason(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    setup_assigned_main_and_remotes(&bus);
+    bus.main.node_id = 2U; /* answers at 0x31 but claims a REMOTE slot id */
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_CONFLICT);
+    assert(snapshot.main.conflict_reason == NRF_TOPOLOGY_CONFLICT_MAIN_IDENTITY);
+    assert(snapshot.main.role == NRF_UPSTREAM_ROLE_MAIN);
+    assert(snapshot.main.lifecycle == NRF_UPSTREAM_LIFECYCLE_READY);
+    assert(snapshot.main.node_id == 2U);
+    assert((snapshot.main.flags & NRF_UPSTREAM_STATUS_FLAG_ASSIGNED) != 0U);
+    assert(bus.select_calls == 0U);
+    assert(bus.main.assign_writes == 0U);
+}
+
+/* The same guard applies to a MAIN that is not (yet) a ready, unassigned node. */
+static void test_main_discovery_not_ready_is_conflict_with_reason(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.main.mode = FAKE_UNASSIGNED;
+    bus.main.booting = true;
+    fake_set_hw(&bus.main, 0x51U);
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.main.state == NRF_TOPOLOGY_NODE_CONFLICT);
+    assert(snapshot.main.conflict_reason == NRF_TOPOLOGY_CONFLICT_DISCOVERY_NOT_UNASSIGNED);
+    assert(snapshot.main.lifecycle == NRF_UPSTREAM_LIFECYCLE_BOOTING);
+    assert(bus.select_calls == 0U);
+    assert(bus.main.assign_writes == 0U);
+}
+
 int main(void)
 {
+    test_main_with_stale_request_result_stays_assigned();
+    test_main_identity_mismatch_is_conflict_with_reason();
+    test_main_discovery_not_ready_is_conflict_with_reason();
     test_main_only_without_tca_assigns_safely();
     test_main_is_assigned_before_any_channel_opens();
     test_warm_reset_accepts_existing_main_and_all_remotes();

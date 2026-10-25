@@ -473,7 +473,7 @@ static void test_semantic_error_codes(void)
     validation.status_next_seq = 1U;
     CHECK(nrf_log_protocol_decode_block(frame, length, &validation, &block_out) == NRF_LOG_ERROR_INVARIANT_VIOLATION);
 
-    status_out.flags = 0x04U;
+    status_out.flags = 0x08U;
     status_out.capacity = 0U;
     status_out.available = 0U;
     status_out.boot_id = 1U;
@@ -622,8 +622,48 @@ static void test_seeded_arbitrary_frames(void)
     printf("seeded arbitrary frame roundtrips: %u\n", successes);
 }
 
+static void test_firmware_identity_frame(void)
+{
+    nrf_log_status_request_t request = {.request_id = 0x12345678U};
+    nrf_log_status_request_t decoded_request = {0};
+    uint8_t query[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+    uint8_t frame[NRF_LOG_PROTOCOL_FIRMWARE_LENGTH];
+    nrf_log_firmware_info_t info = {
+        .request_id = request.request_id,
+        .boot_id = 0x87654321U,
+        .flags = NRF_LOG_FIRMWARE_FLAG_DIRTY,
+        .git_commit = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+            0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x01, 0x23, 0x45, 0x67},
+    };
+    nrf_log_firmware_info_t decoded = {0};
+    CHECK(nrf_log_protocol_encode_firmware_request(&request, query) == NRF_LOG_ERROR_OK);
+    CHECK(query[3] == 0x09U);
+    CHECK(nrf_log_protocol_decode_firmware_request(query, sizeof(query), &decoded_request) == NRF_LOG_ERROR_OK);
+    CHECK(decoded_request.request_id == request.request_id);
+    CHECK(nrf_log_protocol_encode_firmware(&info, frame) == NRF_LOG_ERROR_OK);
+    CHECK(frame[3] == 0x84U && frame[4] == 37U);
+    CHECK(nrf_log_protocol_decode_firmware(frame, sizeof(frame), &decoded) == NRF_LOG_ERROR_OK);
+    CHECK(decoded.request_id == info.request_id && decoded.boot_id == info.boot_id);
+    CHECK(decoded.flags == info.flags);
+    CHECK(memcmp(decoded.git_commit, info.git_commit, sizeof(info.git_commit)) == 0);
+    for (size_t length = 0U; length < sizeof(frame); ++length) {
+        CHECK(nrf_log_protocol_decode_firmware(frame, length, &decoded) != NRF_LOG_ERROR_OK);
+    }
+    frame[15] ^= 1U;
+    CHECK(nrf_log_protocol_decode_firmware(frame, sizeof(frame), &decoded) == NRF_LOG_ERROR_BAD_CRC);
+    frame[15] ^= 1U;
+    frame[10] = 0x80U;
+    refresh_crc(frame, sizeof(frame));
+    CHECK(nrf_log_protocol_decode_firmware(frame, sizeof(frame), &decoded) == NRF_LOG_ERROR_RESERVED_NONZERO);
+    info.boot_id = 0U;
+    CHECK(nrf_log_protocol_encode_firmware(&info, frame) == NRF_LOG_ERROR_BAD_BOOT_ID);
+    query[6] ^= 1U;
+    CHECK(nrf_log_protocol_decode_firmware_request(query, sizeof(query), &decoded_request) == NRF_LOG_ERROR_BAD_CRC);
+}
+
 int main(void)
 {
+    test_firmware_identity_frame();
     test_golden_vectors_and_roundtrip();
     test_request_boundaries_and_record_enums();
     test_block_count_lengths();

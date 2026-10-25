@@ -10,6 +10,7 @@
 #include <zephyr/random/random.h>
 
 #include "nrf_log_events.h"
+#include "nrf_build_info.h"
 #include "nrf_watchdog_zephyr.h"
 
 static nrf_log_ring_t s_log_ring;
@@ -220,12 +221,45 @@ nrf_log_error_t nrf_log_runtime_zephyr_build_status(
     if (!s_initialized) {
         return NRF_LOG_ERROR_INVARIANT_VIOLATION;
     }
-    return nrf_log_ring_build_status_frame(
-        &s_log_ring,
-        request_id,
-        frame,
-        frame_capacity,
-        frame_length);
+    nrf_log_error_t result = nrf_log_ring_build_status_frame(
+        &s_log_ring, request_id, frame, frame_capacity, frame_length);
+    if (result != NRF_LOG_ERROR_OK) return result;
+    /* Keep the ring's request-id snapshot cache when advertising capability. */
+    nrf_log_status_t status;
+    result = nrf_log_protocol_decode_status(frame, *frame_length, &status);
+    if (result == NRF_LOG_ERROR_OK) {
+        status.flags |= NRF_LOG_STATUS_FLAG_FIRMWARE_INFO;
+        result = nrf_log_protocol_encode_status(&status, frame);
+    }
+    return result;
+}
+
+nrf_log_error_t nrf_log_runtime_zephyr_build_firmware(
+    uint32_t request_id,
+    uint8_t *frame,
+    size_t frame_capacity,
+    size_t *frame_length)
+{
+    if (!s_initialized) {
+        return NRF_LOG_ERROR_INVARIANT_VIOLATION;
+    }
+    if (frame == NULL || frame_length == NULL) {
+        return NRF_LOG_ERROR_NULL_ARGUMENT;
+    }
+    if (frame_capacity < NRF_LOG_PROTOCOL_FIRMWARE_LENGTH) {
+        return NRF_LOG_ERROR_BAD_LENGTH;
+    }
+    const nrf_log_firmware_info_t info = {
+        .request_id = request_id,
+        .boot_id = s_log_ring.boot_id,
+        .flags = NRF_BUILD_GIT_DIRTY ? NRF_LOG_FIRMWARE_FLAG_DIRTY : 0U,
+        .git_commit = NRF_BUILD_GIT_COMMIT_BYTES,
+    };
+    const nrf_log_error_t result = nrf_log_protocol_encode_firmware(&info, frame);
+    if (result == NRF_LOG_ERROR_OK) {
+        *frame_length = NRF_LOG_PROTOCOL_FIRMWARE_LENGTH;
+    }
+    return result;
 }
 
 nrf_log_error_t nrf_log_runtime_zephyr_build_block(

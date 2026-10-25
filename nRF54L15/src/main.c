@@ -15,6 +15,7 @@
 #include <nrfx_power.h>
 
 #include "nrf_bootstrap_runtime_zephyr.h"
+#include "nrf_build_info.h"
 #include "nrf_boot_diagnostics.h"
 #include "nrf_boot_failure_reason.h"
 #include "nrf_blue_led.h"
@@ -327,6 +328,8 @@ static void note_upstream_state(void)
 
 int main(void)
 {
+    printk("firmware: commit=%s dirty=%u\n", NRF_BUILD_GIT_COMMIT,
+        (unsigned int)NRF_BUILD_GIT_DIRTY);
     int ret;
     bool led_is_on = true;
     nrf_node_state_t node_state;

@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "status_indicator.h"
@@ -14,6 +15,7 @@
 #endif
 
 const char *APP_EVENT = "APP_EVENT";
+char host_esp_log_last[256];
 
 static int s_loop_token;
 static esp_event_loop_handle_t s_loop;
@@ -78,12 +80,14 @@ BaseType_t xTimerDelete(TimerHandle_t timer, TickType_t wait)
     return pdPASS;
 }
 
+#if !defined(STATUS_INDICATOR_FAILURE_TEST)
 static void health_tick(void)
 {
     const unsigned calls = s_set_calls;
     s_health_tick(&s_timer_token);
     assert(s_set_calls == calls);
 }
+#endif
 
 esp_err_t led_indicator_new_gpio_device(
     const led_indicator_config_t *config,
@@ -208,6 +212,11 @@ static void emit(app_event_type_t event)
 
 int main(void)
 {
+    /* Some variants only write these probes; reading them keeps -Werror quiet. */
+    (void)s_post_calls;
+    (void)s_posted_event;
+    (void)s_posted_value;
+
     assert(status_indicator_get_state() == STATUS_INDICATOR_NORMAL);
     assert(!status_indicator_backend_enabled());
 
@@ -265,6 +274,9 @@ int main(void)
     assert(status_indicator_backend_enabled());
     assert(s_create_calls == 3U && s_delay_calls == 3U);
     assert_leds(true, false, false);
+    for (unsigned id = 0U; id < (unsigned)HW_MODULE_COUNT; ++id) {
+        s_modules[id].id = (hw_module_id_t)id;
+    }
     health_tick();
     s_modules[HW_MODULE_BAROMETER].state = HW_STATE_ABSENT;
     s_modules[HW_MODULE_AD7606].requirement = HW_REQ_REQUIRED;
@@ -294,13 +306,25 @@ int main(void)
 
 #if defined(CONFIG_APP_STATUS_INDICATOR_ENABLED) && CONFIG_APP_STATUS_INDICATOR_ENABLED
     s_modules[HW_MODULE_BAROMETER].state = HW_STATE_FAULT;
+    strcpy(s_modules[HW_MODULE_BAROMETER].reason, "bus stuck");
     s_post_result = ESP_FAIL;
+    host_esp_log_last[0] = '\0';
     health_tick();
     assert(status_indicator_get_state() == STATUS_INDICATOR_WARNING);
+    assert(host_esp_log_last[0] == '\0'); /* a failed post is retried silently */
     const unsigned failed_posts = s_post_calls;
     s_post_result = ESP_OK;
     health_tick();
     assert(s_post_calls == failed_posts + 1U && s_posted_event == APP_EVENT_STATUS_ERROR);
+    {
+        /* The transition to ERROR must name the module that caused it. */
+        char expected[160];
+        (void)snprintf(expected, sizeof(expected),
+            "STATUS_HEALTH event=%d module_id=%d state=%d requirement=%d reason=bus stuck",
+            (int)APP_EVENT_STATUS_ERROR, (int)HW_MODULE_BAROMETER,
+            (int)HW_STATE_FAULT, (int)HW_REQ_OPTIONAL);
+        assert(strcmp(host_esp_log_last, expected) == 0);
+    }
     health_tick();
     assert(s_post_calls == failed_posts + 1U);
     emit(s_posted_event);

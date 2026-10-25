@@ -1,14 +1,20 @@
 menu "nRF log collector"
 
 config NRF_LOG_POLL_NODE_BUDGET_MS
-    int "Maximum log poll time per node (ms)"
+    int "Soft budget for extra log work per node (ms)"
     range 1 1000
     default 50
+    help
+        Limits optional extra blocks and retries. Each eligible node still
+        receives its first complete STATUS/data exchange in the current pass.
 
 config NRF_LOG_POLL_ITERATION_BUDGET_MS
-    int "Maximum log poll time per worker iteration (ms)"
+    int "Soft budget for extra log work per polling pass (ms)"
     range 1 2000
     default 100
+    help
+        Limits optional work after the mandatory exchanges. A queued calibration
+        waits for the pass; driver transaction timeouts and owner limits remain.
 
 config NRF_LOG_POLL_PERIOD_MS
     int "Interval between log polling rounds (ms)"

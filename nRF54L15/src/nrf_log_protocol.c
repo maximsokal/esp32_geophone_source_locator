@@ -315,6 +315,89 @@ nrf_log_error_t nrf_log_protocol_decode_status_request(
     return result;
 }
 
+nrf_log_error_t nrf_log_protocol_encode_firmware_request(
+    const nrf_log_status_request_t *request,
+    uint8_t frame[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH])
+{
+    if (request == NULL || frame == NULL) {
+        return NRF_LOG_ERROR_NULL_ARGUMENT;
+    }
+    write_header(frame, NRF_LOG_MESSAGE_FIRMWARE_REQUEST,
+        NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH, request->request_id);
+    finish_frame(frame, NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH);
+    return NRF_LOG_ERROR_OK;
+}
+
+nrf_log_error_t nrf_log_protocol_decode_firmware_request(
+    const uint8_t *frame,
+    size_t length,
+    nrf_log_status_request_t *request)
+{
+    if (request == NULL) {
+        return NRF_LOG_ERROR_NULL_ARGUMENT;
+    }
+    nrf_log_error_t result = validate_header(frame, length,
+        NRF_LOG_MESSAGE_FIRMWARE_REQUEST, NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH);
+    if (result == NRF_LOG_ERROR_OK) {
+        result = validate_crc(frame, length);
+    }
+    if (result == NRF_LOG_ERROR_OK) {
+        request->request_id = read_le32(&frame[6]);
+    }
+    return result;
+}
+
+nrf_log_error_t nrf_log_protocol_encode_firmware(
+    const nrf_log_firmware_info_t *info,
+    uint8_t frame[NRF_LOG_PROTOCOL_FIRMWARE_LENGTH])
+{
+    if (info == NULL || frame == NULL) {
+        return NRF_LOG_ERROR_NULL_ARGUMENT;
+    }
+    if (info->boot_id == 0U) {
+        return NRF_LOG_ERROR_BAD_BOOT_ID;
+    }
+    if ((info->flags & (uint8_t)~NRF_LOG_FIRMWARE_FLAG_MASK) != 0U) {
+        return NRF_LOG_ERROR_RESERVED_NONZERO;
+    }
+    write_header(frame, NRF_LOG_MESSAGE_FIRMWARE, NRF_LOG_PROTOCOL_FIRMWARE_LENGTH,
+        info->request_id);
+    frame[10] = info->flags;
+    write_le32(&frame[11], info->boot_id);
+    memcpy(&frame[15], info->git_commit, sizeof(info->git_commit));
+    finish_frame(frame, NRF_LOG_PROTOCOL_FIRMWARE_LENGTH);
+    return NRF_LOG_ERROR_OK;
+}
+
+nrf_log_error_t nrf_log_protocol_decode_firmware(
+    const uint8_t *frame,
+    size_t length,
+    nrf_log_firmware_info_t *info)
+{
+    if (info == NULL) {
+        return NRF_LOG_ERROR_NULL_ARGUMENT;
+    }
+    nrf_log_error_t result = validate_header(frame, length,
+        NRF_LOG_MESSAGE_FIRMWARE, NRF_LOG_PROTOCOL_FIRMWARE_LENGTH);
+    if (result == NRF_LOG_ERROR_OK) {
+        result = validate_crc(frame, length);
+    }
+    if (result == NRF_LOG_ERROR_OK &&
+        (frame[10] & (uint8_t)~NRF_LOG_FIRMWARE_FLAG_MASK) != 0U) {
+        result = NRF_LOG_ERROR_RESERVED_NONZERO;
+    }
+    if (result == NRF_LOG_ERROR_OK && read_le32(&frame[11]) == 0U) {
+        result = NRF_LOG_ERROR_BAD_BOOT_ID;
+    }
+    if (result == NRF_LOG_ERROR_OK) {
+        info->request_id = read_le32(&frame[6]);
+        info->flags = frame[10];
+        info->boot_id = read_le32(&frame[11]);
+        memcpy(info->git_commit, &frame[15], sizeof(info->git_commit));
+    }
+    return result;
+}
+
 nrf_log_error_t nrf_log_protocol_encode_read_request(
     const nrf_log_read_request_t *request,
     uint8_t frame[NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH])

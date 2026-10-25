@@ -68,14 +68,19 @@ static void status_indicator_health_tick(TimerHandle_t timer)
     hw_module_info_t modules[HW_MODULE_COUNT];
     const size_t count = hw_inventory_snapshot(modules, HW_MODULE_COUNT);
     app_event_type_t event = APP_EVENT_STATUS_CLEAR_NON_STICKY;
+    size_t cause = count; /* module that decided the event; count = none */
     for (size_t index = 0; index < count; ++index) {
         if (modules[index].state == HW_STATE_FAULT ||
             (modules[index].requirement == HW_REQ_REQUIRED &&
              modules[index].state == HW_STATE_ABSENT)) {
             event = APP_EVENT_STATUS_ERROR;
+            cause = index;
             break;
         }
         if (modules[index].state == HW_STATE_DEGRADED) {
+            if (event != APP_EVENT_STATUS_WARNING) {
+                cause = index;
+            }
             event = APP_EVENT_STATUS_WARNING;
         }
     }
@@ -83,6 +88,16 @@ static void status_indicator_health_tick(TimerHandle_t timer)
     if (event != s_last_health_event &&
         app_events_post_best_effort(event, 0) == ESP_OK) {
         s_last_health_event = event;
+        if (cause < count) {
+            ESP_LOGW(TAG, "STATUS_HEALTH event=%d module_id=%d state=%d requirement=%d reason=%s",
+                (int)event,
+                (int)modules[cause].id,
+                (int)modules[cause].state,
+                (int)modules[cause].requirement,
+                modules[cause].reason);
+        } else {
+            ESP_LOGI(TAG, "STATUS_HEALTH event=%d no faulting module", (int)event);
+        }
     }
 }
 

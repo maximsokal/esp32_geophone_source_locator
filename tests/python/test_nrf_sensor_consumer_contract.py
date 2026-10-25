@@ -98,8 +98,8 @@ def test_component_keeps_existing_task_policy_and_adds_timer_only():
     task_config = read("components/app_config/include/app_task_config.h")
     assert '"nrf_sensor_transport.c"' in cmake
     assert re.search(r"\besp_timer\b", cmake)
-    assert re.search(r"#define\s+APP_TASK_PRIORITY_NRF_TOPOLOGY\s+1\b", task_config)
-    assert re.search(r"#define\s+APP_TASK_STACK_NRF_TOPOLOGY\s+5120\b", task_config)
+    assert re.search(r"#define\s+APP_TASK_PRIORITY_NRF_TOPOLOGY\s+2\b", task_config)
+    assert re.search(r"#define\s+APP_TASK_STACK_NRF_TOPOLOGY\s+8192\b", task_config)
 
 
 def test_i2c_bus_pin_and_shutdown_owner_contracts_remain_intact():

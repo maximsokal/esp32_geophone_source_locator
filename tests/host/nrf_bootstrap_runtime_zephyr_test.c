@@ -637,6 +637,7 @@ static void test_malformed_control_lengths_preserve_assignment(void)
         {NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH, NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH},
         {NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE, NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH},
         {NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE, NRF_UPSTREAM_PROTOCOL_IMU_CALIBRATE_LENGTH},
+        {NRF_LOG_MESSAGE_FIRMWARE_REQUEST, NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH},
     };
     const nrf_upstream_status_t before = read_status(NULL);
     const unsigned submits_before = s_submit_calls;
@@ -658,6 +659,11 @@ static void test_malformed_control_lengths_preserve_assignment(void)
         frame[6] = 0xA5U;
         for (size_t length = 0U; length < sizeof(lengths) / sizeof(lengths[0]); ++length) {
             s_callbacks->buf_write_received(NULL, frame, lengths[length]);
+            if (commands[index].type == NRF_LOG_MESSAGE_FIRMWARE_REQUEST) {
+                const nrf_upstream_status_t rejected = read_status(NULL);
+                assert(rejected.result == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+                s_callbacks->buf_write_received(NULL, NULL, 0U);
+            }
             const nrf_upstream_status_t after = read_status(NULL);
             assert(memcmp(&before, &after, sizeof(before)) == 0);
         }
@@ -666,6 +672,31 @@ static void test_malformed_control_lengths_preserve_assignment(void)
     assert(s_sensor_refresh_calls == refreshes_before);
     assert(s_height_reference_calls == heights_before);
     assert(s_imu_calibration_calls == calibrations_before);
+}
+
+static void test_firmware_query_preserves_assignment(void)
+{
+    const nrf_upstream_status_t before = read_status(NULL);
+    nrf_log_status_request_t request = {.request_id = 0xF1234567U};
+    uint8_t query[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+    uint32_t length = 0U;
+    nrf_log_firmware_info_t info;
+    assert(nrf_log_protocol_encode_firmware_request(&request, query) == NRF_LOG_ERROR_OK);
+    s_callbacks->buf_write_received(NULL, query, sizeof(query));
+    uint8_t *frame = read_frame(&length);
+    assert(nrf_log_protocol_decode_firmware(frame, length, &info) == NRF_LOG_ERROR_OK);
+    assert(info.request_id == request.request_id);
+    assert(info.boot_id == nrf_log_runtime_zephyr_boot_id());
+    assert(info.git_commit[0] == 0x00U && info.git_commit[19] == 0x67U);
+    s_callbacks->buf_write_received(NULL, NULL, 0U);
+    nrf_upstream_status_t after = read_status(NULL);
+    assert(memcmp(&before, &after, sizeof(before)) == 0);
+
+    query[sizeof(query) - 1U] ^= 1U;
+    s_callbacks->buf_write_received(NULL, query, sizeof(query));
+    s_callbacks->buf_write_received(NULL, NULL, 0U);
+    after = read_status(NULL);
+    assert(memcmp(&before, &after, sizeof(before)) == 0);
 }
 
 static nrf_cs_control_result_t read_cs_result_for_request(
@@ -1018,6 +1049,7 @@ int main(void)
     assert(status.request_id == 12U && status.result == NRF_UPSTREAM_RESULT_OK);
     assert(read_log_status().next_seq == 2U);
     test_malformed_control_lengths_preserve_assignment();
+    test_firmware_query_preserves_assignment();
 
     /* fail-before(real): a stopped shared queue reports INTERNAL_ERROR and drops that ASSIGN item. */
     {

@@ -374,7 +374,8 @@ static bool handle_log_write(
     size_t response_length=0U;
 
     if(frame==NULL||frame_length<=3U||
-       (frame[3]!=NRF_LOG_MESSAGE_STATUS_REQUEST&&frame[3]!=NRF_LOG_MESSAGE_READ_REQUEST)){
+       (frame[3]!=NRF_LOG_MESSAGE_STATUS_REQUEST&&frame[3]!=NRF_LOG_MESSAGE_READ_REQUEST&&
+        frame[3]!=NRF_LOG_MESSAGE_FIRMWARE_REQUEST)){
         return false;
     }
     if(frame[3]==NRF_LOG_MESSAGE_STATUS_REQUEST){
@@ -386,6 +387,14 @@ static bool handle_log_write(
                 s_log_response_frame,
                 sizeof(s_log_response_frame),
                 &response_length);
+        }
+    }else if(frame[3]==NRF_LOG_MESSAGE_FIRMWARE_REQUEST){
+        nrf_log_status_request_t request;
+        error=nrf_log_protocol_decode_firmware_request(frame,frame_length,&request);
+        if(error==NRF_LOG_ERROR_OK){
+            error=nrf_log_runtime_zephyr_build_firmware(
+                request.request_id, s_log_response_frame,
+                sizeof(s_log_response_frame), &response_length);
         }
     }else{
         nrf_log_read_request_t request;

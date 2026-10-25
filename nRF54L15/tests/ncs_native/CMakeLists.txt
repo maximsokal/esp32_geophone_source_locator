@@ -11,6 +11,7 @@ set(KCONFIG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../zephyr/Kconfig")
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(nrf54l15_ncs_native)
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/build_info.cmake")
 
 target_sources(app PRIVATE
     src/main.c
