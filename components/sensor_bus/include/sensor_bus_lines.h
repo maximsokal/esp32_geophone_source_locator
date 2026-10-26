@@ -29,5 +29,16 @@ esp_err_t sensor_bus_lines_controller_reset(i2c_bus_handle_t bus);
  * ESP_ERR_NOT_FOUND on NACK, ESP_ERR_TIMEOUT when the bus is busy/stuck. */
 esp_err_t sensor_bus_lines_probe(i2c_bus_handle_t bus, uint8_t address);
 
+/*
+ * The IDF master driver runs transfers of 31 bytes or more in FIFO-sized
+ * segments, and in blocking mode the calling task has to be scheduled at every
+ * segment boundary while the controller holds SCL low. Raise the caller to
+ * `priority` for one such transfer; the previous priority comes back from the
+ * first call and goes into the second. A priority that is not above the current
+ * one changes nothing.
+ */
+uint32_t sensor_bus_lines_boost_task_priority(uint32_t priority);
+void sensor_bus_lines_restore_task_priority(uint32_t previous_priority);
+
 void sensor_bus_lines_delay_us(uint32_t us);
 int64_t sensor_bus_lines_now_us(void);

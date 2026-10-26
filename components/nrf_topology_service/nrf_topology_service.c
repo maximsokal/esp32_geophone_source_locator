@@ -578,6 +578,16 @@ static esp_err_t platform_close_selected_mux(
     nrf_topology_platform_t *platform,
     bool preserve_requested_channel);
 static size_t platform_read_route_index(const nrf_topology_platform_t *platform);
+/*
+ * A log reply stays selected in the nRF until its next write. MAIN is one
+ * physical device on the direct bus that answers on every route (also while a
+ * mux channel is open for a scan), so its reply has to be forgotten on all of
+ * them; a REMOTE only answers on the channel it sits on.
+ */
+static void platform_invalidate_read_probe(
+    nrf_topology_platform_t *platform,
+    uint8_t address,
+    size_t route_index);
 static void platform_record_read_result(
     nrf_topology_platform_t *platform, uint8_t address, size_t route_index, bool success);
 
@@ -654,7 +664,7 @@ static esp_err_t platform_i2c_write_bytes(
     if (platform != NULL && length > 3U && data != NULL &&
         (data[3] == NRF_LOG_MESSAGE_STATUS_REQUEST || data[3] == NRF_LOG_MESSAGE_READ_REQUEST ||
          data[3] == NRF_LOG_MESSAGE_FIRMWARE_REQUEST)) {
-        platform_record_read_result(platform, address, platform_read_route_index(platform), false);
+        platform_invalidate_read_probe(platform, address, platform_read_route_index(platform));
     }
     err = sensor_bus_probe_diag_transaction(
         SENSOR_BUS_PROBE_PHASE_WRITE, address,
@@ -763,6 +773,20 @@ static void platform_record_read_result(
         address_index < NRF_PLATFORM_READ_ADDRESS_COUNT) {
         platform->read_probe_valid[route_index][address_index] = success;
     }
+}
+
+static void platform_invalidate_read_probe(
+    nrf_topology_platform_t *platform,
+    uint8_t address,
+    size_t route_index)
+{
+    if (address == NRF_UPSTREAM_ADDRESS_MAIN) {
+        for (size_t route = 0U; route < NRF_PLATFORM_READ_ROUTE_COUNT; ++route) {
+            platform_record_read_result(platform, address, route, false);
+        }
+        return;
+    }
+    platform_record_read_result(platform, address, route_index, false);
 }
 
 static esp_err_t platform_recovery_bus_recover(void *context, i2c_line_result_t *result)
@@ -1270,6 +1294,10 @@ static esp_err_t platform_mux_select(void *context, uint8_t channel);
 static uint64_t platform_now_ms(void *context);
 static bool tick_period_due(TickType_t now, TickType_t last, TickType_t period);
 
+#ifndef NRF_LOG_FIFO_PROBE_ENABLED
+#define NRF_LOG_FIFO_PROBE_ENABLED 0
+#endif
+
 #if NRF_TOPOLOGY_HAS_LOG_COLLECTOR
 static void platform_log_set_deadline(void *context, uint64_t deadline_ms)
 {
@@ -1439,7 +1467,7 @@ static esp_err_t platform_log_read_once(
         rx->call_us = call_us;
         rx->err = err;
     }
-    platform_record_read_result(log_context->platform, address, route_index, false);
+    platform_invalidate_read_probe(log_context->platform, address, route_index);
     err = platform_log_handle_transfer_error(log_context, node_index, address, err);
     if (err != ESP_OK) {
         if (err == ESP_ERR_NOT_FOUND) service_request_topology_refresh_from_worker();
@@ -1465,13 +1493,22 @@ static esp_err_t platform_log_read_frame(
     if (received_length != NULL) *received_length = 0U;
     if (log_context == NULL || log_context->platform == NULL ||
         node_index >= NRF_LOG_COLLECTOR_NODE_COUNT) return ESP_ERR_INVALID_ARG;
+    /*
+     * The 28/31/32/33 byte prefix reads were a one-off investigation of the FIFO
+     * boundary. The boundary is the IDF driver's (single shot below 31 bytes,
+     * segmented from there) and every prefix read is one more transfer for the
+     * nRF target to survive, so they stay out of the normal cycle.
+     */
+#if NRF_LOG_FIFO_PROBE_ENABLED
     const uint64_t now_ms = platform_now_ms(NULL);
-    const uint8_t node_mask = (uint8_t)(1U << node_index);
     const bool probe_allowed =
-        (log_context->fifo_probe_done_mask & node_mask) == 0U &&
+        (log_context->fifo_probe_done_mask & (uint8_t)(1U << node_index)) == 0U &&
         now_ms + 2U * SENSOR_BUS_TRANSACTION_TIMEOUT_MS < log_context->deadline_ms &&
         !platform_log_yield_requested(context);
-    if (probe_allowed) log_context->fifo_probe_done_mask |= node_mask;
+#else
+    const bool probe_allowed = false;
+#endif
+    if (probe_allowed) log_context->fifo_probe_done_mask |= (uint8_t)(1U << node_index);
     const nrf_log_collector_io_t io = {
         .context = context,
         .read_frame = platform_log_read_once,

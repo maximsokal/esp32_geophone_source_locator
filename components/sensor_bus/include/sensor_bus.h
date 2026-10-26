@@ -23,6 +23,16 @@
 #define SENSOR_BUS_MUTEX_WAIT_MS 200U
 #define SENSOR_BUS_OWNER_MAX_HOLD_MS 150U
 
+/*
+ * Transfers of this many bytes or more are executed in FIFO-sized segments by
+ * the IDF master driver (single shot only below FIFO_LEN - 1 = 31 bytes), and
+ * the blocking driver needs the calling task to run at each segment boundary.
+ * The caller is raised to the priority below for such a transfer only; it stays
+ * under the app event loop (6) and the web server and acquisition tasks.
+ */
+#define SENSOR_BUS_SEGMENTED_TRANSFER_BYTES 31U
+#define SENSOR_BUS_SEGMENTED_TRANSFER_PRIORITY 5U
+
 #define SENSOR_BUS_TASK_NAME_SIZE 16U
 
 

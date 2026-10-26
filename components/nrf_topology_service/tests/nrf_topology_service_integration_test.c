@@ -865,6 +865,17 @@ esp_err_t sensor_bus_lines_probe(i2c_bus_handle_t bus, uint8_t address)
     return ESP_ERR_NOT_FOUND;
 }
 
+uint32_t sensor_bus_lines_boost_task_priority(uint32_t priority)
+{
+    (void)priority;
+    return 0U;
+}
+
+void sensor_bus_lines_restore_task_priority(uint32_t previous_priority)
+{
+    (void)previous_priority;
+}
+
 void sensor_bus_lines_delay_us(uint32_t us)
 {
     (void)us;

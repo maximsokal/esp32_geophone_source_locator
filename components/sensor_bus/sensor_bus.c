@@ -1333,6 +1333,21 @@ static uint32_t sensor_bus_default_timeout_ms(size_t wire_data_bytes)
         SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
 }
 
+/* See SENSOR_BUS_SEGMENTED_TRANSFER_BYTES: only multi-segment transfers need the boost. */
+static uint32_t sensor_bus_segment_priority_boost(size_t wire_bytes)
+{
+    return wire_bytes >= SENSOR_BUS_SEGMENTED_TRANSFER_BYTES
+        ? sensor_bus_lines_boost_task_priority(SENSOR_BUS_SEGMENTED_TRANSFER_PRIORITY)
+        : UINT32_MAX;
+}
+
+static void sensor_bus_segment_priority_restore(uint32_t previous_priority)
+{
+    if (previous_priority != UINT32_MAX) {
+        sensor_bus_lines_restore_task_priority(previous_priority);
+    }
+}
+
 static esp_err_t sensor_bus_read_bytes_internal(
     i2c_bus_device_handle_t device,
     uint8_t mem_address,
@@ -1369,6 +1384,8 @@ static esp_err_t sensor_bus_read_bytes_internal(
             err = sensor_bus_ensure_controller_clean_locked();
             if (err == ESP_OK) {
                 const int64_t transfer_started_us = sensor_bus_lines_now_us();
+                const uint32_t previous_priority = sensor_bus_segment_priority_boost(
+                    data_len + (mem_address == NULL_I2C_MEM_ADDR ? 0U : 2U));
                 if (mem_address == NULL_I2C_MEM_ADDR) {
                     err = i2c_master_receive(
                         entry->master_device, data, data_len,
@@ -1378,6 +1395,7 @@ static esp_err_t sensor_bus_read_bytes_internal(
                         entry->master_device, &mem_address, 1U, data, data_len,
                         (int)timeout_ms);
                 }
+                sensor_bus_segment_priority_restore(previous_priority);
                 const int64_t transfer_finished_us = sensor_bus_lines_now_us();
                 if (err == ESP_ERR_TIMEOUT && log_timeout) {
                     report_timeout = true;
@@ -1491,9 +1509,11 @@ esp_err_t sensor_bus_write_bytes(
             err = sensor_bus_ensure_controller_clean_locked();
             if (err == ESP_OK) {
                 const int64_t transfer_started_us = sensor_bus_lines_now_us();
+                const uint32_t previous_priority = sensor_bus_segment_priority_boost(tx_len);
                 err = i2c_master_transmit(
                     entry->master_device, tx, tx_len,
                     (int)timeout_ms);
+                sensor_bus_segment_priority_restore(previous_priority);
                 const int64_t transfer_finished_us = sensor_bus_lines_now_us();
                 if (err == ESP_ERR_TIMEOUT) {
                     report_timeout = true;

@@ -290,6 +290,7 @@ static atomic_uint s_fake_transaction_ms;
 static atomic_bool s_hang_next_receive;
 static atomic_uint s_receive_resume_delay_ms;
 static atomic_int s_last_transaction_timeout_ms;
+static atomic_uint s_priority_during_transfer;
 static atomic_uint s_master_transfer_calls;
 #define TCA_RESPONDING_ADDRESS 0x70U
 
@@ -383,6 +384,7 @@ esp_err_t i2c_master_receive(
     fake_master_device_t *fake = master_device_of(device);
     assert(data != NULL && data_len > 0U);
     atomic_store(&s_last_transaction_timeout_ms, timeout_ms);
+    atomic_store(&s_priority_during_transfer, atomic_load(&g_fake_lines.task_priority));
     atomic_fetch_add(&s_master_transfer_calls, 1U);
     master_canary_enter(fake);
     memset(data, fake->address == TCA_RESPONDING_ADDRESS ? s_tca_control : 0U, data_len);
@@ -420,6 +422,7 @@ esp_err_t i2c_master_transmit(
     fake_master_device_t *fake = master_device_of(device);
     assert(data != NULL && data_len > 0U);
     atomic_store(&s_last_transaction_timeout_ms, timeout_ms);
+    atomic_store(&s_priority_during_transfer, atomic_load(&g_fake_lines.task_priority));
     atomic_fetch_add(&s_master_transfer_calls, 1U);
     master_canary_enter(fake);
     if (fake->address == TCA_RESPONDING_ADDRESS) {
@@ -1144,6 +1147,61 @@ static void test_default_transfer_timeout_covers_the_wire_time(void)
     assert(sensor_bus_deinit() == ESP_OK);
 }
 
+/*
+ * The IDF master driver executes transfers of 31 bytes or more in FIFO-sized
+ * segments and, in blocking mode, the calling task must run at every segment
+ * boundary. The topology task is priority 2 on the saturated service core, so
+ * the caller is raised for the duration of such a transfer only.
+ */
+static void test_segmented_transfers_raise_the_caller_priority_only_while_they_run(void)
+{
+    static const size_t lengths[] = {1U, 28U, 30U, 31U, 32U, 38U, 56U, 136U, 200U};
+    sensor_bus_handles_t handles = {0};
+    uint8_t buffer[256] = {0};
+
+    assert(sensor_bus_get_handles(&handles) == ESP_OK);
+    assert(atomic_load(&g_fake_lines.task_priority) == 2U);
+    for (size_t i = 0U; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+        const size_t length = lengths[i];
+        for (unsigned variant = 0U; variant < 3U; ++variant) {
+            /* 0: plain read, 1: register read, 2: write. */
+            const unsigned boosts_before = atomic_load(&g_fake_lines.priority_boosts);
+            const unsigned restores_before = atomic_load(&g_fake_lines.priority_restores);
+            size_t wire_bytes = length;
+            if (variant == 0U) {
+                assert(sensor_bus_read_bytes(
+                    handles.ina3221, NULL_I2C_MEM_ADDR, length, buffer) == ESP_OK);
+            } else if (variant == 1U) {
+                assert(sensor_bus_read_bytes(handles.ina3221, 0x10U, length, buffer) == ESP_OK);
+                wire_bytes = length + 2U;
+            } else {
+                assert(sensor_bus_write_bytes(
+                    handles.ina3221, NULL_I2C_MEM_ADDR, length, buffer) == ESP_OK);
+            }
+            const bool segmented = wire_bytes >= SENSOR_BUS_SEGMENTED_TRANSFER_BYTES;
+            assert(atomic_load(&s_priority_during_transfer) ==
+                   (segmented ? SENSOR_BUS_SEGMENTED_TRANSFER_PRIORITY : 2U));
+            assert(atomic_load(&g_fake_lines.task_priority) == 2U);
+            assert(atomic_load(&g_fake_lines.priority_boosts) == boosts_before + (segmented ? 1U : 0U));
+            assert(atomic_load(&g_fake_lines.priority_restores) == restores_before + (segmented ? 1U : 0U));
+        }
+    }
+
+    /* A failed or timed-out transfer gives the priority back as well. */
+    atomic_store(&s_hang_next_receive, true);
+    assert(sensor_bus_read_bytes(handles.ina3221, NULL_I2C_MEM_ADDR, 136U, buffer) == ESP_ERR_TIMEOUT);
+    assert(atomic_load(&s_priority_during_transfer) == SENSOR_BUS_SEGMENTED_TRANSFER_PRIORITY);
+    assert(atomic_load(&g_fake_lines.task_priority) == 2U);
+
+    /* A caller that already runs above the boost is left alone. */
+    atomic_store(&g_fake_lines.task_priority, SENSOR_BUS_SEGMENTED_TRANSFER_PRIORITY + 1U);
+    assert(sensor_bus_read_bytes(handles.ina3221, NULL_I2C_MEM_ADDR, 136U, buffer) == ESP_OK);
+    assert(atomic_load(&s_priority_during_transfer) == SENSOR_BUS_SEGMENTED_TRANSFER_PRIORITY + 1U);
+    assert(atomic_load(&g_fake_lines.task_priority) == SENSOR_BUS_SEGMENTED_TRANSFER_PRIORITY + 1U);
+    atomic_store(&g_fake_lines.task_priority, 2U);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
 static unsigned long long parse_log_ms(const char *line, const char *field)
 {
     const char *value = strstr(line, field);
@@ -1209,6 +1267,7 @@ int main(void)
     test_waiting_ina_runs_between_main_ch0_ch3_log_pairs();
     test_owner_deadline_bounds_driver_and_clears_on_release();
     test_default_transfer_timeout_covers_the_wire_time();
+    test_segmented_transfers_raise_the_caller_priority_only_while_they_run();
     assert(sensor_bus_deinit() == ESP_OK);
 
     return 0;

@@ -64,6 +64,9 @@ typedef struct {
     unsigned main_reads;
     unsigned remote_reads;
     esp_err_t main_read_error;
+    /* MAIN reads that fail while a channel is open: count left and the error to return. */
+    unsigned main_open_channel_failures;
+    esp_err_t main_open_channel_error;
 } fake_bus_t;
 
 static void fake_set_hw(fake_node_t *node, uint8_t value)
@@ -245,6 +248,10 @@ static esp_err_t fake_read_status(void *context, uint8_t address, nrf_upstream_s
     }
     if (address == NRF_UPSTREAM_ADDRESS_MAIN) {
         bus->main_reads++;
+        if (bus->selected_channel >= 0 && bus->main_open_channel_failures != 0U) {
+            --bus->main_open_channel_failures;
+            return bus->main_open_channel_error;
+        }
         if (bus->main_read_error != ESP_OK) {
             return bus->main_read_error;
         }
@@ -1081,8 +1088,60 @@ static void test_main_discovery_not_ready_is_conflict_with_reason(void)
     assert(bus.main.assign_writes == 0U);
 }
 
+/*
+ * A single failed MAIN read while a channel is open (the I2C timeouts seen on the
+ * board) is a transport problem, not "MAIN lost": the channel must not be
+ * declared in conflict and the scan must go on.
+ */
+static void test_transient_main_read_error_during_scan_is_retried(void)
+{
+    static const esp_err_t errors[] = {ESP_ERR_INVALID_STATE, ESP_ERR_TIMEOUT, ESP_ERR_INVALID_RESPONSE};
+
+    for (size_t i = 0U; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+        fake_bus_t bus;
+        nrf_topology_snapshot_t snapshot;
+        nrf_topology_controller_t controller = make_controller();
+
+        setup_assigned_main_and_remotes(&bus);
+        bus.main_open_channel_failures = 1U;
+        bus.main_open_channel_error = errors[i];
+        nrf_topology_io_t io = make_io(&bus);
+
+        assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+        assert(bus.main_open_channel_failures == 0U);
+        assert(snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            assert(snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+            assert(snapshot.remotes[channel].conflict_reason == 0U);
+        }
+        assert(bus.selected_channel == -1);
+    }
+}
+
+/* MAIN that stays unreadable on an open channel is a transport error, never a conflict. */
+static void test_persistent_main_read_error_during_scan_is_not_a_conflict(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+
+    setup_assigned_main_and_remotes(&bus);
+    bus.main_open_channel_failures = 100U;
+    bus.main_open_channel_error = ESP_ERR_INVALID_STATE;
+    nrf_topology_io_t io = make_io(&bus);
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.remotes[0].state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        assert(snapshot.remotes[channel].state != NRF_TOPOLOGY_NODE_CONFLICT);
+    }
+    assert(bus.selected_channel == -1);
+}
+
 int main(void)
 {
+    test_transient_main_read_error_during_scan_is_retried();
+    test_persistent_main_read_error_during_scan_is_not_a_conflict();
     test_main_with_stale_request_result_stays_assigned();
     test_remote_with_stale_request_result_stays_assigned();
     test_remote_stale_result_does_not_mask_real_conflicts();

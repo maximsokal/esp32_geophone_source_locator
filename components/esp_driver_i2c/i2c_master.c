@@ -557,7 +557,12 @@ static void s_i2c_send_commands(i2c_master_bus_handle_t i2c_master, TickType_t t
             atomic_store(&i2c_master->status, I2C_STATUS_TIMEOUT);
             i2c_master->cmd_idx = 0;
             i2c_master->trans_idx = 0;
-            ESP_LOGE(TAG, "I2C software timeout");
+            /* LOCAL PATCH (geolocator-i2c-3): tell an unserviced interrupt (this side was
+             * too slow) from a transfer that never progressed (the target held the bus). */
+            uint32_t pending_int = 0;
+            i2c_ll_get_intr_mask(hal->dev, &pending_int);
+            ESP_LOGE(TAG, "I2C software timeout pending_int=0x%" PRIx32 " bus_busy=%d cmds_left=%d",
+                     pending_int, (int)i2c_ll_is_bus_busy(hal->dev), (int)i2c_master->i2c_trans.cmd_count);
             xSemaphoreGive(i2c_master->cmd_semphr);
             return;
         }

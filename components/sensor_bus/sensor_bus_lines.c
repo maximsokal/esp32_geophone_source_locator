@@ -5,6 +5,8 @@
 #include "driver/i2c_master.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static bool line_read(void *context, gpio_num_t pin)
 {
@@ -108,6 +110,23 @@ esp_err_t sensor_bus_lines_probe(i2c_bus_handle_t bus, uint8_t address)
     return i2c_master_probe(handle, address, SENSOR_BUS_LINES_PROBE_TIMEOUT_MS);
 }
 
+
+uint32_t sensor_bus_lines_boost_task_priority(uint32_t priority)
+{
+    const uint32_t previous = (uint32_t)uxTaskPriorityGet(NULL);
+
+    if (priority > previous) {
+        vTaskPrioritySet(NULL, (UBaseType_t)priority);
+    }
+    return previous;
+}
+
+void sensor_bus_lines_restore_task_priority(uint32_t previous_priority)
+{
+    if ((uint32_t)uxTaskPriorityGet(NULL) != previous_priority) {
+        vTaskPrioritySet(NULL, (UBaseType_t)previous_priority);
+    }
+}
 
 void sensor_bus_lines_delay_us(uint32_t us)
 {

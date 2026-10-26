@@ -478,22 +478,50 @@ static void report_main_status_only(
     }
 }
 
-static bool verify_known_main(
+typedef enum {
+    MAIN_VERIFY_OK,
+    MAIN_VERIFY_LOST,            /* answers as something else, or does not answer at all */
+    MAIN_VERIFY_TRANSPORT_ERROR, /* the read itself failed twice */
+    MAIN_VERIFY_BUSY,
+} main_verify_t;
+
+/*
+ * One failed read with a channel open is not "MAIN lost": the shared bus
+ * times out now and then (the nRF target answers late), so a transport error
+ * is read once more before it is reported, and it is reported as an error of
+ * the transport. Only a MAIN that does not ACK or answers with another
+ * identity counts as lost.
+ */
+static main_verify_t verify_known_main(
     const nrf_topology_io_t *io,
     const nrf_topology_node_snapshot_t *known_main,
     bool *bus_busy)
 {
     nrf_upstream_status_t status;
-    esp_err_t err = io->read_status(io->context, NRF_UPSTREAM_ADDRESS_MAIN, &status);
-    if (bus_yield_error(err)) {
-        *bus_busy = true;
-        return false;
+    esp_err_t err = ESP_FAIL;
+
+    for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+        err = io->read_status(io->context, NRF_UPSTREAM_ADDRESS_MAIN, &status);
+        if (bus_yield_error(err)) {
+            *bus_busy = true;
+            return MAIN_VERIFY_BUSY;
+        }
+        if (err == ESP_OK || err == ESP_ERR_NOT_FOUND) {
+            break;
+        }
     }
-    if (err != ESP_OK || !status_is_main(&status)) {
-        return false;
+    if (err == ESP_ERR_NOT_FOUND) {
+        return MAIN_VERIFY_LOST;
     }
-    return status.hardware_id_length == known_main->hardware_id_length &&
-           memcmp(status.hardware_id, known_main->hardware_id, status.hardware_id_length) == 0;
+    if (err != ESP_OK) {
+        return MAIN_VERIFY_TRANSPORT_ERROR;
+    }
+    if (!status_is_main(&status) ||
+        status.hardware_id_length != known_main->hardware_id_length ||
+        memcmp(status.hardware_id, known_main->hardware_id, status.hardware_id_length) != 0) {
+        return MAIN_VERIFY_LOST;
+    }
+    return MAIN_VERIFY_OK;
 }
 
 static bool close_mux_or_fault(const nrf_topology_io_t *io, nrf_topology_snapshot_t *snapshot)
@@ -544,13 +572,22 @@ static void scan_remote_channel(
         return;
     }
 
-    if (main_assigned && !verify_known_main(io, &snapshot->main, &snapshot->bus_busy)) {
-        if (snapshot->bus_busy) {
-            node->state = NRF_TOPOLOGY_NODE_UNKNOWN;
-            (void)close_mux_or_fault(io, snapshot);
-            *continue_scan = false;
-            return;
-        }
+    const main_verify_t main_verdict = main_assigned
+        ? verify_known_main(io, &snapshot->main, &snapshot->bus_busy)
+        : MAIN_VERIFY_OK;
+    if (main_verdict == MAIN_VERIFY_BUSY) {
+        node->state = NRF_TOPOLOGY_NODE_UNKNOWN;
+        (void)close_mux_or_fault(io, snapshot);
+        *continue_scan = false;
+        return;
+    }
+    if (main_verdict == MAIN_VERIFY_TRANSPORT_ERROR) {
+        node->state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
+        (void)close_mux_or_fault(io, snapshot);
+        *continue_scan = false;
+        return;
+    }
+    if (main_verdict == MAIN_VERIFY_LOST) {
         node->state = NRF_TOPOLOGY_NODE_CONFLICT;
         node->conflict_reason = (uint8_t)NRF_TOPOLOGY_CONFLICT_MAIN_LOST_DURING_SCAN;
         *main_lost = true;

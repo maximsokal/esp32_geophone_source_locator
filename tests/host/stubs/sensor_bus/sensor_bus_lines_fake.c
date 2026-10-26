@@ -39,6 +39,7 @@ void fake_lines_reset(void)
 {
     memset(&g_fake_lines, 0, sizeof(g_fake_lines));
     atomic_init(&g_fake_lines.now_us, INT64_C(1000000));
+    atomic_init(&g_fake_lines.task_priority, 2U);
     g_fake_lines.ctrl_sda_low = false;
     g_fake_lines.ctrl_scl_low = false;
 }
@@ -138,6 +139,25 @@ esp_err_t sensor_bus_lines_probe(i2c_bus_handle_t bus, uint8_t address)
     ++g_fake_lines.probe_calls;
     /* Unconfigured: nobody answers the probe. */
     return g_fake_lines.probe_configured ? g_fake_lines.probe_result[address] : ESP_ERR_NOT_FOUND;
+}
+
+uint32_t sensor_bus_lines_boost_task_priority(uint32_t priority)
+{
+    const uint32_t previous = atomic_load(&g_fake_lines.task_priority);
+
+    if (priority > previous) {
+        atomic_store(&g_fake_lines.task_priority, priority);
+        atomic_fetch_add(&g_fake_lines.priority_boosts, 1U);
+    }
+    return previous;
+}
+
+void sensor_bus_lines_restore_task_priority(uint32_t previous_priority)
+{
+    if (atomic_load(&g_fake_lines.task_priority) != previous_priority) {
+        atomic_store(&g_fake_lines.task_priority, previous_priority);
+        atomic_fetch_add(&g_fake_lines.priority_restores, 1U);
+    }
 }
 
 void sensor_bus_lines_delay_us(uint32_t us)

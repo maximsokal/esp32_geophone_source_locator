@@ -25,6 +25,10 @@ typedef struct
     int scl_driven_low;
     int rising_edges;
     atomic_int_fast64_t now_us;
+    /* Calling task priority as the transfers see it (default 2, the topology task). */
+    atomic_uint task_priority;
+    atomic_uint priority_boosts;
+    atomic_uint priority_restores;
     unsigned log_calls;
     char last_log[512];
     char timeout_config_log[512];

@@ -15,6 +15,8 @@ static struct {
     bool firmware_supported;
     unsigned owner_release_count;
     unsigned block_reads;
+    unsigned status_reads;
+    uint8_t requested_records;
 } s_logger[MAX_NODES];
 static uint8_t s_expected_log_mask;
 static uint8_t s_completed_log_mask;
@@ -138,6 +140,7 @@ static bool log_test_write(sim_node_t *node, const uint8_t *data, size_t length,
     } else {
         nrf_log_read_request_t request;
         assert(nrf_log_protocol_decode_read_request(data, length, &request) == NRF_LOG_ERROR_OK);
+        s_logger[index].requested_records = request.max_records;
         error = nrf_log_ring_build_block_frame(&s_logger[index].ring, request.request_id,
             request.expected_boot_id, request.cursor_seq, request.max_records,
             s_logger[index].response, sizeof(s_logger[index].response), &s_logger[index].response_length);
@@ -157,11 +160,26 @@ static bool log_test_read(sim_node_t *node, uint8_t *data, size_t length, esp_er
         assert(s_bus_owner_log_count == s_logger[index].owner_release_count);
     }
     if (node->channel != UPSTREAM_CHANNEL) assert(s_tca_control == (uint8_t)(1U << node->channel));
+    /*
+     * The wire carries one read per reply, sized to what the reply can hold:
+     * logs are read once at their full length (no 28/31/32/33 byte probe
+     * reads, which are extra multi-segment transfers) and a block read asks for
+     * the base length plus the records it requested.
+     */
+    if (s_logger[index].response[3] == NRF_LOG_MESSAGE_STATUS) {
+        assert(length == NRF_LOG_PROTOCOL_STATUS_LENGTH);
+        ++s_logger[index].status_reads;
+    } else if (s_logger[index].response[3] == NRF_LOG_MESSAGE_FIRMWARE) {
+        assert(length == NRF_LOG_PROTOCOL_FIRMWARE_LENGTH);
+    } else {
+        assert(s_logger[index].response[3] == NRF_LOG_MESSAGE_BLOCK);
+        assert(length == NRF_LOG_PROTOCOL_BLOCK_BASE_LENGTH +
+                         (size_t)NRF_LOG_PROTOCOL_RECORD_LENGTH * s_logger[index].requested_records);
+    }
     if (length >= s_logger[index].response_length) {
         s_logger[index].pending = false;
         s_logger_pair_completed = true;
         if (s_logger[index].response[3] == NRF_LOG_MESSAGE_BLOCK) {
-            assert(length == NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH);
             ++s_logger[index].block_reads;
             s_completed_log_mask |= (uint8_t)(1U << log_slot(node));
             if (s_fail_block_read && node->channel == 0U) {
