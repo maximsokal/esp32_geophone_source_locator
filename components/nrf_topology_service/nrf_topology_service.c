@@ -4,6 +4,7 @@
 #include "nrf_cs_control_protocol.h"
 #include "nrf_log_event_text.h"
 #include "nrf_log_protocol.h"
+#include "nrf_read_window.h"
 #include "nrf_link_readiness_policy.h"
 #include "nrf_topology_periods.h"
 #include "sensor_bus_timeout.h"
@@ -673,6 +674,74 @@ static esp_err_t platform_i2c_write_bytes(
     return platform_end_remote_transfer(platform, address, err);
 }
 
+typedef struct {
+    nrf_topology_platform_t *platform;
+    i2c_bus_device_handle_t device;
+    uint8_t address;
+} platform_window_io_t;
+
+static int platform_window_write(
+    void *context,
+    const uint8_t frame[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH])
+{
+    const platform_window_io_t *io = context;
+    return (int)platform_i2c_write_bytes(
+        io->platform, io->device, io->address,
+        NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH, frame);
+}
+
+static int platform_window_read(void *context, uint8_t *data, size_t length)
+{
+    const platform_window_io_t *io = context;
+    return (int)platform_i2c_read_bytes(
+        io->platform, io->device, io->address, length, data);
+}
+
+/*
+ * Read a response of `length` bytes as consecutive windows of at most
+ * NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES. The IDF master splits any read of
+ * 31 bytes or more into FIFO segments, and every such read in the 2026-10-26
+ * logic analyzer capture was damaged in its tail. Up to one window this is a
+ * single ordinary read, exactly as before.
+ */
+static esp_err_t platform_i2c_read_windowed(
+    nrf_topology_platform_t *platform,
+    i2c_bus_device_handle_t device,
+    uint8_t address,
+    size_t length,
+    uint8_t *data)
+{
+    platform_window_io_t context = {
+        .platform = platform,
+        .device = device,
+        .address = address,
+    };
+    const nrf_read_window_io_t io = {
+        .context = &context,
+        .write_window = platform_window_write,
+        .read = platform_window_read,
+    };
+    const int result = nrf_read_window_client_read(&io, data, length);
+    return result == NRF_READ_WINDOW_ERR_ARGUMENT ? ESP_ERR_INVALID_ARG : (esp_err_t)result;
+}
+
+/* Time the same transfers occupy the wire: each window read plus each window request. */
+static uint32_t platform_windowed_wire_us(size_t length)
+{
+    uint32_t total = 0U;
+    for (size_t offset = 0U; offset < length;
+         offset += NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES) {
+        const size_t chunk = length - offset < NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES
+            ? length - offset : NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES;
+        total += sensor_bus_wire_time_us(chunk, SENSOR_BUS_I2C_SPEED_HZ);
+        if (offset != 0U) {
+            total += sensor_bus_wire_time_us(
+                NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH, SENSOR_BUS_I2C_SPEED_HZ);
+        }
+    }
+    return total;
+}
+
 static esp_err_t platform_normalize_transfer_error(
     nrf_topology_platform_t *platform,
     uint8_t address,
@@ -1263,7 +1332,7 @@ static esp_err_t platform_read_remote_snapshot(
     if (err != ESP_OK) {
         return err;
     }
-    err = platform_i2c_read_bytes(
+    err = platform_i2c_read_windowed(
         platform, platform->remote_device, NRF_UPSTREAM_ADDRESS_REMOTE,
         sizeof(frame), frame);
     if (err != ESP_OK) {
@@ -1450,7 +1519,7 @@ static esp_err_t platform_log_read_once(
     /* An address-only write probe would discard the selected log response. */
     route_index = platform_read_route_index(log_context->platform);
     const int64_t started_us = esp_timer_get_time();
-    err = platform_i2c_read_bytes(
+    err = platform_i2c_read_windowed(
         log_context->platform, device, address, frame_capacity, frame);
     const int64_t call_us = esp_timer_get_time() - started_us;
     if ((log_context->rx_seen_mask & (uint16_t)(1U << node_index)) == 0U ||
@@ -1728,7 +1797,7 @@ static bool service_log_collect_iteration(
             (int)rx->channel, (unsigned)rx->requested,
             rx->err == ESP_OK ? (int)rx->requested : -1, (unsigned)rx->type,
             (int)rx->declared, rx->call_us,
-            (unsigned)sensor_bus_wire_time_us(rx->requested, SENSOR_BUS_I2C_SPEED_HZ),
+            (unsigned)platform_windowed_wire_us(rx->requested),
             (unsigned)rx->err, esp_err_to_name(rx->err));
     }
     if (context.fifo_check) {
@@ -2407,7 +2476,7 @@ static int cs_poll_result(void *context, const nrf_cs_control_request_t *request
         err = platform_probe_before_read(ctx->platform, address, &route_index);
     }
     if (err == ESP_OK) {
-        err = platform_i2c_read_bytes(
+        err = platform_i2c_read_windowed(
             ctx->platform, device, address, sizeof(frame), frame);
         platform_record_read_result(ctx->platform, address, route_index, err == ESP_OK);
         err = platform_normalize_transfer_error(ctx->platform, address, err);

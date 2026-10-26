@@ -278,6 +278,120 @@ static void test_sensor_refresh_layout_and_validation(void)
     assert(nrf_upstream_protocol_encode_sensor_refresh(&request, frame) == NRF_UPSTREAM_RESULT_REQUEST_ID_INVALID);
 }
 
+static void refresh_read_window_crc(uint8_t frame[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH])
+{
+    uint16_t crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 10U);
+    frame[10] = (uint8_t)(crc & 0xFFU);
+    frame[11] = (uint8_t)(crc >> 8U);
+}
+
+static void test_read_window_exact_layout_and_roundtrip(void)
+{
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH];
+    nrf_upstream_read_window_t decoded = {0xFFFFU};
+    nrf_upstream_read_window_t request;
+    uint16_t offset;
+
+    request.offset = 0x0058U;
+    assert(nrf_upstream_protocol_encode_read_window(&request, frame) == NRF_UPSTREAM_RESULT_OK);
+    assert(frame[0] == 0x47U && frame[1] == 0x53U && frame[2] == 1U && frame[3] == 0x0AU);
+    assert(frame[4] == 12U && frame[5] == 0U);
+    assert(frame[6] == 0x58U && frame[7] == 0x00U);
+    assert(frame[8] == 0U && frame[9] == 0U);
+    assert(nrf_upstream_protocol_decode_read_window(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_OK);
+    assert(decoded.offset == 0x58U);
+
+    /* every offset inside the largest response round-trips, none outside does */
+    for (offset = 0U; offset < NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH; ++offset) {
+        request.offset = offset;
+        decoded.offset = 0xFFFFU;
+        assert(nrf_upstream_protocol_encode_read_window(&request, frame) == NRF_UPSTREAM_RESULT_OK);
+        assert(nrf_upstream_protocol_decode_read_window(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_OK);
+        assert(decoded.offset == offset);
+    }
+    request.offset = NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH;
+    memset(frame, 0xA5, sizeof(frame));
+    assert(nrf_upstream_protocol_encode_read_window(&request, frame) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+    request.offset = UINT16_MAX;
+    assert(nrf_upstream_protocol_encode_read_window(&request, frame) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+    assert(nrf_upstream_protocol_encode_read_window(NULL, frame) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+    request.offset = 1U;
+    assert(nrf_upstream_protocol_encode_read_window(&request, NULL) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+}
+
+static void test_read_window_decode_rejects_invalid_input(void)
+{
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH];
+    uint8_t longer[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH + 1U];
+    nrf_upstream_read_window_t request = {.offset = 28U};
+    nrf_upstream_read_window_t decoded = {.offset = 0x1234U};
+    size_t index;
+
+    assert(nrf_upstream_protocol_encode_read_window(&request, frame) == NRF_UPSTREAM_RESULT_OK);
+
+    assert(nrf_upstream_protocol_decode_read_window(NULL, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+    assert(nrf_upstream_protocol_decode_read_window(frame, sizeof(frame), NULL) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+    assert(nrf_upstream_protocol_decode_read_window(frame, sizeof(frame) - 1U, &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+    memcpy(longer, frame, sizeof(frame));
+    longer[sizeof(frame)] = 0U;
+    assert(nrf_upstream_protocol_decode_read_window(longer, sizeof(longer), &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+    assert(nrf_upstream_protocol_decode_read_window(frame, 0U, &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+
+    /* a single flipped bit anywhere in the frame is rejected and leaves the output alone */
+    for (index = 0U; index < sizeof(frame); ++index) {
+        uint8_t corrupt[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH];
+        nrf_upstream_result_t result;
+        memcpy(corrupt, frame, sizeof(frame));
+        corrupt[index] ^= 0x01U;
+        decoded.offset = 0x1234U;
+        result = nrf_upstream_protocol_decode_read_window(corrupt, sizeof(corrupt), &decoded);
+        assert(result != NRF_UPSTREAM_RESULT_OK);
+        assert(decoded.offset == 0x1234U);
+    }
+
+    memcpy(longer, frame, sizeof(frame));
+    frame[0] = 0x00U;
+    refresh_read_window_crc(frame);
+    assert(nrf_upstream_protocol_decode_read_window(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+
+    memcpy(frame, longer, sizeof(frame));
+    frame[2] = 2U;
+    refresh_read_window_crc(frame);
+    assert(nrf_upstream_protocol_decode_read_window(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_UNSUPPORTED_VERSION);
+
+    memcpy(frame, longer, sizeof(frame));
+    frame[3] = NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH;
+    refresh_read_window_crc(frame);
+    assert(nrf_upstream_protocol_decode_read_window(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_UNSUPPORTED_TYPE);
+
+    memcpy(frame, longer, sizeof(frame));
+    frame[4] = 13U;
+    refresh_read_window_crc(frame);
+    assert(nrf_upstream_protocol_decode_read_window(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+
+    /* reserved bytes must be zero, and a valid CRC does not excuse that */
+    memcpy(frame, longer, sizeof(frame));
+    frame[8] = 1U;
+    refresh_read_window_crc(frame);
+    assert(nrf_upstream_protocol_decode_read_window(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+    memcpy(frame, longer, sizeof(frame));
+    frame[9] = 1U;
+    refresh_read_window_crc(frame);
+    assert(nrf_upstream_protocol_decode_read_window(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+
+    /* an offset past the largest response is invalid even with a good CRC */
+    memcpy(frame, longer, sizeof(frame));
+    frame[6] = (uint8_t)NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH;
+    frame[7] = 0U;
+    refresh_read_window_crc(frame);
+    assert(nrf_upstream_protocol_decode_read_window(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+    memcpy(frame, longer, sizeof(frame));
+    frame[7] = 1U;
+    refresh_read_window_crc(frame);
+    assert(nrf_upstream_protocol_decode_read_window(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+    assert(decoded.offset == 0x1234U);
+}
+
 static void test_height_reference_codec(void)
 {
     static const uint16_t generations[] = {0U, UINT16_MAX};
@@ -662,6 +776,8 @@ int main(void)
     test_assign_field_validation();
     test_status_exact_layout();
     test_sensor_refresh_layout_and_validation();
+    test_read_window_exact_layout_and_roundtrip();
+    test_read_window_decode_rejects_invalid_input();
     test_height_reference_codec();
     test_imu_calibrate_codec();
     test_remote_snapshot_prefix_and_roundtrip();

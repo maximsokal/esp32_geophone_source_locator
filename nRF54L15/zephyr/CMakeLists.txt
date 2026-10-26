@@ -43,6 +43,7 @@ target_sources(app PRIVATE
     ../src/nrf_logger_led_zephyr.c
     ../src/nrf_stage_signal.c
     ../src/nrf_upstream_protocol.c
+    ../src/nrf_read_window.c
     ../src/nrf_log_protocol.c
     ../src/nrf_log_ring.c
     ../src/nrf_log_runtime_zephyr.c

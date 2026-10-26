@@ -1,0 +1,263 @@
+#include <assert.h>
+#include <errno.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+#include <zephyr/device.h>
+#include <zephyr/drivers/i2c.h>
+#include <zephyr/kernel.h>
+
+#include "nrf_bme280_zephyr.h"
+#include "nrf_bmi160_zephyr.h"
+#include "nrf_remote_sensor_runtime_zephyr.h"
+#include "nrf_sensor_bus_zephyr.h"
+
+const struct device test_i2c30 = {0};
+static bool s_ready;
+static bool s_present[3];
+static uint8_t s_registers[3][256];
+static unsigned s_transfers[3];
+static uint16_t s_fail_address;
+static uint8_t s_fail_register;
+static bool s_fail_read;
+static int s_fail_result;
+static char s_console[4096];
+
+static int sensor_index(uint16_t address)
+{
+    if (address == 0x68U) return 0;
+    if (address == 0x76U) return 1;
+    if (address == 0x77U) return 2;
+    assert(false);
+    return 0;
+}
+
+bool device_is_ready(const struct device *device)
+{
+    assert(device == &test_i2c30);
+    return s_ready;
+}
+
+int printk(const char *format, ...)
+{
+    const size_t used = strlen(s_console);
+    va_list args;
+    va_start(args, format);
+    const int written = vsnprintf(s_console + used, sizeof(s_console) - used, format, args);
+    va_end(args);
+    assert(written >= 0 && (size_t)written < sizeof(s_console) - used);
+    return written;
+}
+
+int32_t k_msleep(int32_t milliseconds)
+{
+    assert(milliseconds > 0);
+    return 0;
+}
+
+static int exchange(const struct device *device, uint16_t address,
+    const uint8_t *write_data, size_t write_len, uint8_t *read_data, size_t read_len)
+{
+    assert(device == &test_i2c30 && s_ready);
+    const int index = sensor_index(address);
+    ++s_transfers[index];
+    if (!s_present[index]) return -ENXIO;
+    const uint8_t reg = write_len > 0U ? write_data[0] : 0U;
+    if (address == s_fail_address && reg == s_fail_register &&
+        (read_len > 0U) == s_fail_read) return s_fail_result;
+    assert((size_t)reg + read_len <= sizeof(s_registers[index]));
+    if (read_len > 0U) {
+        memcpy(read_data, &s_registers[index][reg], read_len);
+    } else {
+        assert(write_len == 2U);
+        s_registers[index][reg] = write_data[1];
+        if (address == 0x68U && reg == 0x7EU) {
+            if (write_data[1] == 0xB6U) s_registers[index][0x03] = 0U;
+            if (write_data[1] == 0x11U) s_registers[index][0x03] |= 0x10U;
+            if (write_data[1] == 0x15U) s_registers[index][0x03] |= 0x04U;
+        }
+    }
+    return 0;
+}
+
+int i2c_write_read(const struct device *device, uint16_t address,
+    const void *write_data, size_t write_len, void *read_data, size_t read_len)
+{
+    assert(write_len == 1U && read_len > 0U);
+    return exchange(device, address, write_data, write_len, read_data, read_len);
+}
+
+int i2c_write(const struct device *device, const uint8_t *data,
+    uint32_t length, uint16_t address)
+{
+    return exchange(device, address, data, length, NULL, 0U);
+}
+
+int i2c_read(const struct device *device, uint8_t *data,
+    uint32_t length, uint16_t address)
+{
+    return exchange(device, address, NULL, 0U, data, length);
+}
+
+static void reset_fixture(void)
+{
+    s_ready = true;
+    memset(s_present, 0, sizeof(s_present));
+    s_present[0] = true;
+    s_present[1] = true;
+    memset(s_registers, 0, sizeof(s_registers));
+    s_registers[0][0x00] = 0xD1U;
+    s_registers[1][0xD0] = 0x60U;
+    s_registers[2][0xD0] = 0x60U;
+    s_registers[1][0x8E] = 1U;
+    s_registers[2][0x8E] = 1U;
+    memset(s_transfers, 0, sizeof(s_transfers));
+    s_fail_address = 0U;
+    s_fail_result = 0;
+    s_console[0] = '\0';
+}
+
+static void assert_diagnostic(const char *expected)
+{
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+    assert(strstr(s_console, expected) != NULL);
+#else
+    (void)expected;
+    assert(s_console[0] == '\0');
+#endif
+}
+
+static void test_controller_not_ready_and_recovery(void)
+{
+    reset_fixture();
+    s_ready = false;
+    nrf_sensor_bus_t bus = {0};
+    assert(!nrf_sensor_bus_zephyr_init_private(&bus));
+    assert(bus.transfer == NULL && bus.context == NULL);
+    assert(s_transfers[0] == 0U && s_transfers[1] == 0U && s_transfers[2] == 0U);
+    assert_diagnostic("sensor_i2c: bus=i2c30 ready=0");
+    s_ready = true;
+    s_console[0] = '\0';
+    assert(nrf_sensor_bus_zephyr_init_private(&bus));
+    assert(bus.transfer != NULL && bus.context != NULL);
+    assert(s_console[0] == '\0');
+}
+
+static void test_oversized_transfers_are_rejected_before_i2c(void)
+{
+#if SIZE_MAX > UINT32_MAX
+    reset_fixture();
+    nrf_sensor_bus_t bus = {0};
+    uint8_t byte = 0U;
+    assert(nrf_sensor_bus_zephyr_init_private(&bus));
+    const size_t oversized = (size_t)UINT32_MAX + 1U;
+    assert(bus.transfer(bus.context, 0x68U, &byte, oversized, NULL, 0U) == -EINVAL);
+    assert(bus.transfer(bus.context, 0x68U, NULL, 0U, &byte, oversized) == -EINVAL);
+    assert(bus.transfer(bus.context, 0x68U, &byte, 1U, &byte, oversized) == -EINVAL);
+    assert(s_transfers[0] == 0U);
+#endif
+}
+
+static void test_init_transfer_failures_report_original_errno_and_register(void)
+{
+    static const struct {
+        uint16_t address;
+        uint8_t reg;
+        size_t read_len;
+        int result;
+    } failures[] = {
+        {0x68U, 0x7EU, 0U, -EIO},
+        {0x68U, 0x00U, 1U, -ENXIO},
+        {0x68U, 0x03U, 1U, -ETIMEDOUT},
+        {0x68U, 0x40U, 4U, -EIO},
+        {0x76U, 0xD0U, 1U, -ENXIO},
+        {0x76U, 0xE0U, 0U, -EIO},
+        {0x76U, 0xF3U, 1U, -ETIMEDOUT},
+        {0x76U, 0x88U, 26U, -EIO},
+        {0x76U, 0xE1U, 7U, -ENXIO},
+        {0x76U, 0xF2U, 0U, -EIO},
+        {0x76U, 0xF5U, 0U, -EIO},
+        {0x76U, 0xF4U, 0U, -EIO},
+        {0x76U, 0xF2U, 4U, -ETIMEDOUT},
+    };
+    for (size_t i = 0U; i < sizeof(failures) / sizeof(failures[0]); ++i) {
+        reset_fixture();
+        s_fail_address = failures[i].address;
+        s_fail_register = failures[i].reg;
+        s_fail_read = failures[i].read_len > 0U;
+        s_fail_result = failures[i].result;
+        if (s_fail_address == 0x68U) {
+            nrf_bmi160_t device = {0};
+            assert(nrf_bmi160_zephyr_init_remote(&device) == NRF_BMI160_ERR_BUS);
+            assert(!device.initialized);
+        } else {
+            nrf_bme280_t device = {0};
+            assert(nrf_bme280_zephyr_init_remote(&device) == NRF_BME280_ERR_BUS);
+            assert(!device.initialized);
+        }
+        char expected[160];
+        const int written = snprintf(expected, sizeof(expected),
+            "sensor_i2c: bus=i2c30 addr=0x%02x reg=%d write=%u read=%u ret=%d",
+            (unsigned)failures[i].address, (int)failures[i].reg,
+            failures[i].read_len > 0U ? 1U : 2U,
+            (unsigned)failures[i].read_len, failures[i].result);
+        assert(written > 0 && (size_t)written < sizeof(expected));
+        assert_diagnostic(expected);
+    }
+}
+
+static void test_real_runtime_retries_only_failed_initializers(void)
+{
+    reset_fixture();
+    s_ready = false;
+    const nrf_node_state_t remote = {
+        .lifecycle = NRF_NODE_LIFECYCLE_READY,
+        .role = NRF_NODE_ROLE_REMOTE,
+    };
+    nrf_remote_sensor_runtime_zephyr_t runtime;
+    nrf_remote_sensor_runtime_zephyr_init(&runtime);
+    assert(nrf_remote_sensor_runtime_zephyr_prepare(&remote, &runtime) ==
+        NRF_REMOTE_SENSOR_PREPARE_ERR_NO_DATA);
+    assert(!runtime.core.imu_ready && !runtime.core.env_ready);
+    assert(runtime.core.imu_init_result == NRF_BMI160_ERR_BUS);
+    assert(runtime.core.env_init_result == NRF_BME280_ERR_BUS);
+
+    s_ready = true;
+    s_present[0] = false;
+    assert(nrf_remote_sensor_runtime_zephyr_prepare(&remote, &runtime) ==
+        NRF_REMOTE_SENSOR_PREPARE_PARTIAL);
+    assert(!runtime.core.imu_ready && runtime.core.env_ready);
+    const unsigned env_transfers = s_transfers[1];
+    s_present[0] = true;
+    assert(nrf_remote_sensor_runtime_zephyr_prepare(&remote, &runtime) ==
+        NRF_REMOTE_SENSOR_PREPARE_OK);
+    assert(runtime.core.imu_ready && runtime.core.env_ready);
+    assert(runtime.core.imu_init_result == 0 && runtime.core.env_init_result == 0);
+    assert(s_transfers[1] == env_transfers);
+}
+
+static void test_successful_initialization_is_quiet_and_supports_bme_secondary(void)
+{
+    reset_fixture();
+    nrf_bmi160_t imu = {0};
+    nrf_bme280_t env = {0};
+    assert(nrf_bmi160_zephyr_init_remote(&imu) == NRF_BMI160_OK);
+    assert(nrf_bme280_zephyr_init_remote(&env) == NRF_BME280_OK);
+    assert(imu.initialized && env.initialized);
+    assert(s_console[0] == '\0');
+    s_present[1] = false;
+    s_present[2] = true;
+    assert(nrf_bme280_zephyr_init_remote(&env) == NRF_BME280_OK);
+    assert(env.initialized && env.address == 0x77U);
+}
+
+int main(void)
+{
+    test_oversized_transfers_are_rejected_before_i2c();
+    test_controller_not_ready_and_recovery();
+    test_init_transfer_failures_report_original_errno_and_register();
+    test_real_runtime_retries_only_failed_initializers();
+    test_successful_initialization_is_quiet_and_supports_bme_secondary();
+    return 0;
+}

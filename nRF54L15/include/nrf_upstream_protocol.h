@@ -15,6 +15,16 @@ extern "C" {
 #define NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH 12U
 #define NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH 16U
 #define NRF_UPSTREAM_PROTOCOL_IMU_CALIBRATE_LENGTH 20U
+#define NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH 12U
+/*
+ * Longest read the ESP32 master performs as one FIFO transfer. A longer read is
+ * split into segments with the master holding SCL low between them, and on the
+ * wire capture (2026-10-26) every response longer than this arrived damaged in
+ * its tail while 259 of 259 status reads of 28 bytes were intact. Responses
+ * above this size are therefore read as consecutive windows of at most this
+ * many bytes (see nrf_read_window.h).
+ */
+#define NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES 28U
 #define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH 112U
 #define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V2_LENGTH 120U
 #define NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V3_LENGTH 136U
@@ -83,6 +93,7 @@ typedef enum {
     NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH = 0x02,
     NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE = 0x05,
     NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE = 0x06,
+    NRF_UPSTREAM_MESSAGE_READ_WINDOW = 0x0A,
     NRF_UPSTREAM_MESSAGE_STATUS = 0x80,
 } nrf_upstream_message_type_t;
 
@@ -167,6 +178,10 @@ typedef struct {
 } nrf_upstream_imu_calibrate_t;
 
 typedef struct {
+    uint16_t offset;
+} nrf_upstream_read_window_t;
+
+typedef struct {
     uint32_t request_id;
     uint32_t sequence;
     uint32_t valid_mask;
@@ -249,6 +264,20 @@ nrf_upstream_result_t nrf_upstream_protocol_decode_imu_calibrate(
     const uint8_t *frame,
     size_t length,
     nrf_upstream_imu_calibrate_t *request);
+
+/*
+ * Frame: common header (6), offset le16, two reserved zero bytes, CRC16.
+ * The offset selects where in the last response the next read starts; it must
+ * lie inside the largest response (the 136 byte snapshot / log block).
+ */
+nrf_upstream_result_t nrf_upstream_protocol_encode_read_window(
+    const nrf_upstream_read_window_t *request,
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH]);
+
+nrf_upstream_result_t nrf_upstream_protocol_decode_read_window(
+    const uint8_t *frame,
+    size_t length,
+    nrf_upstream_read_window_t *request);
 
 nrf_upstream_result_t nrf_upstream_protocol_encode_remote_snapshot(
     const nrf_upstream_status_t *status,

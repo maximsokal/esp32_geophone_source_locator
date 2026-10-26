@@ -6,6 +6,7 @@ idf_component_register(
     SRCS
         "${NRF_UPSTREAM_PROTOCOL_ROOT}/src/nrf_upstream_protocol.c"
         "${NRF_UPSTREAM_PROTOCOL_ROOT}/src/nrf_log_protocol.c"
+        "${NRF_UPSTREAM_PROTOCOL_ROOT}/src/nrf_read_window.c"
 
     INCLUDE_DIRS
         "${NRF_UPSTREAM_PROTOCOL_ROOT}/include"

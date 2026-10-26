@@ -1173,6 +1173,295 @@ static void test_twis_log_contract_never_leaves_the_target_without_a_response(vo
     assert(s_twis_contract_cases == 537U);
 }
 
+/*
+ * Windowed reads. The ESP32 reads responses longer than 28 bytes as windows
+ * because every segmented read of the 2026-10-26 wire capture arrived damaged.
+ * Same shim model as above: the buffer returned by buf_read_requested is what
+ * the TWIS would transmit, and the master clocks out only as many bytes as it asks.
+ */
+static twis_response_t twis_window_read(uint16_t offset)
+{
+    const nrf_upstream_read_window_t window = {.offset = offset};
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH];
+
+    assert(nrf_upstream_protocol_encode_read_window(&window, frame) == NRF_UPSTREAM_RESULT_OK);
+    return twis_write_then_read(frame, sizeof(frame));
+}
+
+/* What the ESP32 does after the first read: one window request + read per 28 bytes. */
+static void twis_assemble_windows(const twis_response_t *first, uint32_t total, uint8_t *out)
+{
+    const uint32_t step = NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES;
+    uint32_t offset;
+
+    assert(!first->stalled && first->length >= (total < step ? total : step));
+    memcpy(out, first->data, total < step ? total : step);
+    for (offset = step; offset < total; offset += step) {
+        const uint32_t want = total - offset < step ? total - offset : step;
+        const twis_response_t window = twis_window_read((uint16_t)offset);
+
+        assert(!window.stalled);
+        assert(window.length == first->length - offset); /* the rest of that response, nothing else */
+        assert(window.length >= want);
+        memcpy(&out[offset], window.data, want);
+    }
+}
+
+static void twis_send_raw(const uint8_t *frame, uint32_t length)
+{
+    s_callbacks->buf_write_received(NULL, (uint8_t *)frame, length);
+}
+
+static void twis_select_log_status_reply(uint32_t request_id)
+{
+    const nrf_log_status_request_t request = {.request_id = request_id};
+    uint8_t frame[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+    twis_response_t reply;
+
+    assert(nrf_log_protocol_encode_status_request(&request, frame) == NRF_LOG_ERROR_OK);
+    reply = twis_write_then_read(frame, sizeof(frame));
+    assert(!reply.stalled && reply.length == NRF_LOG_PROTOCOL_STATUS_LENGTH &&
+           reply.data[3] == NRF_LOG_MESSAGE_STATUS);
+}
+
+/* A write that is not a valid window request must leave an ordinary read behind. */
+static void twis_expect_window_write_refused(const uint8_t *frame, uint32_t length)
+{
+    twis_response_t reply;
+
+    twis_select_log_status_reply(0x7200U);
+    twis_send_raw(frame, length);
+    reply = twis_read();
+    twis_assert_upstream_status(&reply);
+}
+
+static void test_twis_read_windows_continue_the_selected_response(void)
+{
+    nrf_log_status_t log_status;
+    uint8_t assembled[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
+
+    for (uint32_t i = 0U; i < 12U; ++i) {
+        nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_BOOT, 100U + i, 0U);
+    }
+    log_status = read_log_status();
+    assert(log_status.next_seq - log_status.oldest_seq >= 12U);
+
+    /* 38 byte log status: the ordinary read, then one window completes it. */
+    {
+        const nrf_log_status_request_t request = {.request_id = 0x7100U};
+        uint8_t request_frame[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+        nrf_log_status_t decoded;
+        twis_response_t next;
+
+        assert(nrf_log_protocol_encode_status_request(&request, request_frame) == NRF_LOG_ERROR_OK);
+        const twis_response_t first = twis_write_then_read(request_frame, sizeof(request_frame));
+        assert(!first.stalled && first.length == NRF_LOG_PROTOCOL_STATUS_LENGTH);
+        twis_assemble_windows(&first, NRF_LOG_PROTOCOL_STATUS_LENGTH, assembled);
+        assert(memcmp(assembled, first.data, NRF_LOG_PROTOCOL_STATUS_LENGTH) == 0);
+        assert(nrf_log_protocol_decode_status(
+                   assembled, NRF_LOG_PROTOCOL_STATUS_LENGTH, &decoded) == NRF_LOG_ERROR_OK);
+        assert(decoded.request_id == 0x7100U);
+        /* The window request ended the log reply; the next ordinary read is the STATUS. */
+        next = twis_read();
+        twis_assert_upstream_status(&next);
+    }
+
+    /* Full block of five records (136 bytes): four windows after the ordinary read. */
+    {
+        const nrf_log_read_request_t request = {
+            .request_id = 0x7101U,
+            .expected_boot_id = log_status.boot_id,
+            .cursor_seq = log_status.oldest_seq,
+            .max_records = NRF_LOG_PROTOCOL_MAX_RECORDS,
+        };
+        const nrf_log_block_validation_t validation = {
+            .has_expected_boot_id = true,
+            .expected_boot_id = log_status.boot_id,
+            .has_max_records = true,
+            .max_records = NRF_LOG_PROTOCOL_MAX_RECORDS,
+        };
+        uint8_t request_frame[NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH];
+        uint8_t second[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
+        nrf_log_block_t block;
+        twis_response_t next;
+
+        assert(nrf_log_protocol_encode_read_request(&request, request_frame) == NRF_LOG_ERROR_OK);
+        const twis_response_t first = twis_write_then_read(request_frame, sizeof(request_frame));
+        assert(!first.stalled && first.length == NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH);
+        twis_assemble_windows(&first, first.length, assembled);
+        assert(memcmp(assembled, first.data, first.length) == 0);
+        assert(nrf_log_protocol_decode_block(assembled, first.length, &validation, &block) == NRF_LOG_ERROR_OK);
+        assert(block.request_id == 0x7101U && block.record_count == NRF_LOG_PROTOCOL_MAX_RECORDS);
+
+        /* The windows are the frozen block even after the log has moved on. */
+        assert(nrf_log_protocol_encode_read_request(&request, request_frame) == NRF_LOG_ERROR_OK);
+        {
+            const twis_response_t again = twis_write_then_read(request_frame, sizeof(request_frame));
+            nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_BOOT, 0xBEEFU, 0U);
+            assert(again.length == first.length && memcmp(again.data, first.data, first.length) == 0);
+            twis_assemble_windows(&again, again.length, second);
+            assert(memcmp(second, first.data, first.length) == 0);
+        }
+        next = twis_read();
+        twis_assert_upstream_status(&next);
+    }
+
+    /* A block with fewer records is windowed over its own, shorter length. */
+    {
+        const nrf_log_read_request_t request = {
+            .request_id = 0x7102U,
+            .expected_boot_id = log_status.boot_id,
+            .cursor_seq = log_status.oldest_seq,
+            .max_records = 2U,
+        };
+        uint8_t request_frame[NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH];
+        nrf_log_block_t block;
+
+        assert(nrf_log_protocol_encode_read_request(&request, request_frame) == NRF_LOG_ERROR_OK);
+        const twis_response_t first = twis_write_then_read(request_frame, sizeof(request_frame));
+        assert(!first.stalled && first.length == NRF_LOG_PROTOCOL_BLOCK_BASE_LENGTH + 2U * NRF_LOG_PROTOCOL_RECORD_LENGTH);
+        twis_assemble_windows(&first, first.length, assembled);
+        assert(nrf_log_protocol_decode_block(assembled, first.length, NULL, &block) == NRF_LOG_ERROR_OK);
+        assert(block.record_count == 2U);
+    }
+
+    /* Firmware reply (37 bytes). */
+    {
+        const nrf_log_status_request_t request = {.request_id = 0x7103U};
+        uint8_t request_frame[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+        nrf_log_firmware_info_t info;
+
+        assert(nrf_log_protocol_encode_firmware_request(&request, request_frame) == NRF_LOG_ERROR_OK);
+        const twis_response_t first = twis_write_then_read(request_frame, sizeof(request_frame));
+        assert(!first.stalled && first.length == NRF_LOG_PROTOCOL_FIRMWARE_LENGTH);
+        twis_assemble_windows(&first, NRF_LOG_PROTOCOL_FIRMWARE_LENGTH, assembled);
+        assert(nrf_log_protocol_decode_firmware(
+                   assembled, NRF_LOG_PROTOCOL_FIRMWARE_LENGTH, &info) == NRF_LOG_ERROR_OK);
+        assert(info.request_id == 0x7103U);
+    }
+
+    /* The ordinary upstream reply (STATUS, or the 136 byte snapshot on a REMOTE). */
+    {
+        uint8_t bytes[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH];
+        twis_response_t first;
+
+        s_callbacks->buf_write_received(NULL, NULL, 0U); /* ends any selected reply */
+        first = twis_read();
+        twis_assert_upstream_status(&first);
+        if (first.length > NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES) {
+            twis_assemble_windows(&first, first.length, bytes);
+            assert(memcmp(bytes, first.data, first.length) == 0);
+        } else {
+            /* A 28 byte reply has nothing past its first window: asking for one is refused. */
+            const twis_response_t refused = twis_window_read(NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES);
+            twis_assert_upstream_status(&refused);
+        }
+    }
+}
+
+static void test_twis_read_window_requests_are_validated_and_one_shot(void)
+{
+    const nrf_upstream_read_window_t window = {.offset = NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES};
+    const uint32_t window_slice = NRF_LOG_PROTOCOL_STATUS_LENGTH - NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES;
+    uint8_t good[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH];
+    const twis_state_t before = twis_state();
+
+    assert(nrf_upstream_protocol_encode_read_window(&window, good) == NRF_UPSTREAM_RESULT_OK);
+
+    /* A valid request is honoured exactly once. */
+    {
+        twis_response_t first;
+        twis_response_t served;
+        twis_response_t next;
+
+        twis_select_log_status_reply(0x7200U);
+        first = twis_read();
+        assert(first.length == NRF_LOG_PROTOCOL_STATUS_LENGTH);
+        twis_send_raw(good, sizeof(good));
+        served = twis_read();
+        assert(!served.stalled && served.length == window_slice);
+        assert(memcmp(served.data, &first.data[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES], window_slice) == 0);
+        next = twis_read();
+        twis_assert_upstream_status(&next);
+    }
+
+    /* Every single-bit corruption of the request is refused. */
+    for (uint32_t byte = 0U; byte < sizeof(good); ++byte) {
+        for (unsigned bit = 0U; bit < 8U; ++bit) {
+            uint8_t corrupted[sizeof(good)];
+
+            memcpy(corrupted, good, sizeof(good));
+            corrupted[byte] ^= (uint8_t)(1U << bit);
+            twis_expect_window_write_refused(corrupted, sizeof(corrupted));
+        }
+    }
+
+    /* Truncated, padded and over-long writes are refused. */
+    for (uint32_t length = 0U; length < sizeof(good); ++length) {
+        twis_expect_window_write_refused(good, length);
+    }
+    {
+        uint8_t padded[TWIS_DMA_BUFFER_SIZE] = {0};
+        static const uint32_t lengths[] = {13U, 14U, 16U, 24U, 100U, 144U};
+
+        memcpy(padded, good, sizeof(good));
+        for (size_t i = 0U; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+            twis_expect_window_write_refused(padded, lengths[i]);
+        }
+    }
+
+    /* Well-formed frames (valid CRC) with fields out of range. */
+    {
+        uint8_t forged[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH];
+        /* the selected reply is 38 bytes: 38 and above is past its end */
+        static const uint16_t past_the_reply[] = {38U, 39U, 100U, 135U};
+        static const uint16_t outside_any_response[] = {136U, 137U, 255U, 256U, 0xFFFFU};
+
+        for (size_t i = 0U; i < sizeof(past_the_reply) / sizeof(past_the_reply[0]); ++i) {
+            memcpy(forged, good, sizeof(forged));
+            forged[6] = (uint8_t)past_the_reply[i];
+            forged[7] = (uint8_t)(past_the_reply[i] >> 8U);
+            twis_refresh_crc(forged, sizeof(forged));
+            twis_expect_window_write_refused(forged, sizeof(forged));
+            assert(find_log_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME).arg0 == NRF_UPSTREAM_MESSAGE_READ_WINDOW);
+            assert(find_log_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME).arg1 == past_the_reply[i]);
+        }
+        for (size_t i = 0U; i < sizeof(outside_any_response) / sizeof(outside_any_response[0]); ++i) {
+            memcpy(forged, good, sizeof(forged));
+            forged[6] = (uint8_t)outside_any_response[i];
+            forged[7] = (uint8_t)(outside_any_response[i] >> 8U);
+            twis_refresh_crc(forged, sizeof(forged));
+            twis_expect_window_write_refused(forged, sizeof(forged));
+            assert(find_log_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME).arg1 == NRF_UPSTREAM_RESULT_INVALID_FRAME);
+        }
+        for (unsigned reserved = 8U; reserved <= 9U; ++reserved) {
+            memcpy(forged, good, sizeof(forged));
+            forged[reserved] = 0x5AU;
+            twis_refresh_crc(forged, sizeof(forged));
+            twis_expect_window_write_refused(forged, sizeof(forged));
+        }
+    }
+
+    /* Any other write between the window request and the read cancels it. */
+    {
+        twis_response_t reply;
+
+        twis_select_log_status_reply(0x7201U);
+        twis_send_raw(good, sizeof(good));
+        s_callbacks->buf_write_received(NULL, NULL, 0U); /* address-only probe */
+        reply = twis_read();
+        twis_assert_upstream_status(&reply);
+
+        twis_select_log_status_reply(0x7202U);
+        twis_send_raw(good, sizeof(good));
+        twis_select_log_status_reply(0x7203U); /* a new log request instead of the read */
+        reply = twis_read();
+        assert(!reply.stalled && reply.length == NRF_LOG_PROTOCOL_STATUS_LENGTH);
+    }
+
+    twis_assert_state_unchanged(&before);
+}
+
 /* characterization: host integration baseline for the real TWIS callbacks and work handlers. */
 int main(void)
 {
@@ -1754,5 +2043,7 @@ int main(void)
         assert(twis_diagnostics.transaction_count == callbacks_before);
     }
     test_twis_log_contract_never_leaves_the_target_without_a_response();
+    test_twis_read_windows_continue_the_selected_response();
+    test_twis_read_window_requests_are_validated_and_one_shot();
     return 0;
 }

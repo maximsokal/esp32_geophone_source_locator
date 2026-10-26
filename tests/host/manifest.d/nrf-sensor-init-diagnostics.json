@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "nrf_sensor_init_diagnostics",
+      "sources": [
+        "nRF54L15/src/nrf_sensor_bus.c",
+        "nRF54L15/src/nrf_sensor_bus_zephyr.c",
+        "nRF54L15/src/nrf_bmi160.c",
+        "nRF54L15/src/nrf_bmi160_zephyr.c",
+        "nRF54L15/src/nrf_bme280.c",
+        "nRF54L15/src/nrf_bme280_zephyr.c",
+        "nRF54L15/src/nrf_remote_sensor_runtime.c",
+        "nRF54L15/src/nrf_remote_sensor_runtime_zephyr.c",
+        "nRF54L15/src/nrf_node_state.c",
+        "nRF54L15/src/nrf_sensor_snapshot.c",
+        "tests/host/nrf_sensor_bus_zephyr_test.c"
+      ],
+      "include_dirs": ["tests/host/stubs/nrf_sensor_bus_zephyr", "nRF54L15/include"],
+      "defines": ["CONFIG_APP_NRF_VERBOSE_LOG=1"]
+    },
+    {
+      "name": "nrf_sensor_init_diagnostics_disabled",
+      "sources": [
+        "nRF54L15/src/nrf_sensor_bus.c",
+        "nRF54L15/src/nrf_sensor_bus_zephyr.c",
+        "nRF54L15/src/nrf_bmi160.c",
+        "nRF54L15/src/nrf_bmi160_zephyr.c",
+        "nRF54L15/src/nrf_bme280.c",
+        "nRF54L15/src/nrf_bme280_zephyr.c",
+        "nRF54L15/src/nrf_remote_sensor_runtime.c",
+        "nRF54L15/src/nrf_remote_sensor_runtime_zephyr.c",
+        "nRF54L15/src/nrf_node_state.c",
+        "nRF54L15/src/nrf_sensor_snapshot.c",
+        "tests/host/nrf_sensor_bus_zephyr_test.c"
+      ],
+      "include_dirs": ["tests/host/stubs/nrf_sensor_bus_zephyr", "nRF54L15/include"],
+      "defines": ["CONFIG_APP_NRF_VERBOSE_LOG=0"]
+    }
+  ]
+}

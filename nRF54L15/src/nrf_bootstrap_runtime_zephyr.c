@@ -18,6 +18,7 @@
 #include "nrf_log_events.h"
 #include "nrf_log_runtime_zephyr.h"
 #include "nrf_hci_workqueue.h"
+#include "nrf_read_window.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
 #include "nrf_upstream_protocol.h"
 #include "nrf_upstream_target_zephyr.h"
@@ -51,6 +52,9 @@ static uint8_t s_read_frame[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH];
 static uint8_t s_log_response_frame[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
 static uint32_t s_log_response_length;
 static bool s_log_response_selected;
+/* Copy of the last response handed to the master, served again window by window.
+ * Touched only from the TWIS callbacks, which never run concurrently. */
+static nrf_read_window_target_t s_read_window;
 static bool s_started;
 static uint32_t s_assign_sequence;
 static uint32_t s_cs_execute_sequence;
@@ -439,7 +443,27 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
     record_twis_request_type(ptr, len);
 
     s_log_response_selected=false;
+    /* Only the window request that follows a read may leave a window armed. */
+    nrf_read_window_target_disarm(&s_read_window);
     if (len == 0U) {
+        goto record_transaction;
+    }
+
+    if (ptr != NULL && len > 3U && ptr[3] == NRF_UPSTREAM_MESSAGE_READ_WINDOW) {
+        nrf_upstream_read_window_t window;
+        result = nrf_upstream_protocol_decode_read_window(ptr, (size_t)len, &window);
+        if (result == NRF_UPSTREAM_RESULT_OK) {
+            if (!nrf_read_window_target_arm(&s_read_window, window.offset)) {
+                /* No response to window, or offset past its end. */
+                nrf_log_runtime_zephyr_append_event(
+                    NRF_LOG_EVENT_TWIS_INVALID_FRAME, ptr[3], (uint32_t)window.offset);
+                transaction_result = -EINVAL;
+            }
+        } else {
+            nrf_log_runtime_zephyr_append_event(
+                NRF_LOG_EVENT_TWIS_INVALID_FRAME, ptr[3], (uint32_t)result);
+            transaction_result = (int32_t)result;
+        }
         goto record_transaction;
     }
 
@@ -556,11 +580,25 @@ static int target_read_requested(struct i2c_target_config *config,uint8_t **ptr,
     int callback_result = 0;
     k_spinlock_key_t key;
     bool have_cs;
+    bool served_window = false;
     (void)config;
     transaction_index = next_twis_transaction_index();
     increment_saturating(&s_twis_read_requested_count);
     record_first_twis_transaction(NRF_BOOTSTRAP_TWIS_TRANSACTION_READ_REQUESTED);
     if(ptr==NULL||len==NULL){callback_result=-EINVAL;goto record_transaction;}
+
+    {
+        /* A window request armed the next read: continue the response the master
+         * selected with its first read instead of building a new one. */
+        const uint8_t *window_data=NULL;
+        uint32_t window_length=0U;
+        if(nrf_read_window_target_serve(&s_read_window,&window_data,&window_length)){
+            response=(uint8_t *)window_data;response_length=window_length;
+            *ptr=response;*len=response_length;
+            served_window=true;
+            goto record_transaction;
+        }
+    }
 
     if(s_log_response_selected){*ptr=s_log_response_frame;*len=s_log_response_length;response=s_log_response_frame;response_length=s_log_response_length;goto record_transaction;}
 
@@ -576,6 +614,10 @@ static int target_read_requested(struct i2c_target_config *config,uint8_t **ptr,
     result=nrf_upstream_protocol_encode_status(&status,s_read_frame);if(result!=NRF_UPSTREAM_RESULT_OK){callback_result=-EIO;goto record_transaction;}*ptr=s_read_frame;*len=NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH;response=s_read_frame;response_length=NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH;
 
 record_transaction:
+    if(!served_window){
+        /* Keep what the master was just given so the rest of it can be windowed. */
+        nrf_read_window_target_record(&s_read_window,callback_result==0?response:NULL,response_length);
+    }
     record_twis_transaction(
         transaction_index,
         NRF_BOOT_TWIS_DIRECTION_READ_REQUESTED,
@@ -601,6 +643,7 @@ int nrf_bootstrap_runtime_zephyr_start(nrf_node_state_t *node_state)
     result=nrf_upstream_target_zephyr_read_device_id(hardware_id,sizeof(hardware_id),&hardware_id_length);if(result!=0)return result;
     if(nrf_bootstrap_init(&s_bootstrap,node_state,hardware_id,hardware_id_length,&ops)!=NRF_UPSTREAM_RESULT_OK)return -EINVAL;
     if(nrf_cs_control_runtime_init(&s_cs_control)!=0)return -EINVAL;
+    nrf_read_window_target_init(&s_read_window);
     k_msgq_purge(&s_assign_queue);k_msgq_purge(&s_cs_execute_queue);s_assign_sequence=0U;s_cs_execute_sequence=0U;k_work_init(&s_assign_work,assign_work_handler);k_work_init(&s_cs_execute_work,cs_execute_work_handler);
     if(nrf_bootstrap_make_status(&s_bootstrap,&initial_status)!=NRF_UPSTREAM_RESULT_OK)return -EIO;
     initial_status.target_address=NRF_UPSTREAM_ADDRESS_DISCOVERY;publish_status(&initial_status);

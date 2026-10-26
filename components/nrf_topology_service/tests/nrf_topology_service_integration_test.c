@@ -21,6 +21,7 @@
 #include "nrf_cs_control_protocol.h"
 #include "nrf_log_protocol.h"
 #include "nrf_node_state.h"
+#include "nrf_read_window.h"
 #include "nrf_topology_service.h"
 #include "nrf_topology_periods.h"
 #include "nrf_upstream_protocol.h"
@@ -89,6 +90,9 @@ typedef struct {
     unsigned sensor_refreshes;
     unsigned cs_execute_writes;
     unsigned cs_status_reads;
+    /* The real nRF keeps a copy of the response it last handed out and serves read windows from it. */
+    nrf_read_window_target_t window;
+    bool cs_result_selected;
 } sim_node_t;
 
 typedef struct {
@@ -119,6 +123,8 @@ static unsigned s_bus_owner_log_count;
 static unsigned s_collisions;
 static unsigned s_direct_nrf_read_calls;
 static unsigned s_direct_nrf_write_calls;
+static unsigned s_window_writes;
+static unsigned s_window_reads;
 static unsigned s_direct_nrf_probe_calls;
 static unsigned s_controller_reset_calls;
 static bool s_fail_i2c_bus_create;
@@ -538,6 +544,67 @@ esp_err_t i2c_bus_write_byte(i2c_bus_device_handle_t device, uint8_t mem_address
     return ESP_OK;
 }
 
+/*
+ * A REMOTE answers an ordinary read with the 136 byte snapshot (its first 28
+ * bytes are the STATUS). The fake builds it when the master asks for the part
+ * beyond the first window, which is also when the injected snapshot faults apply.
+ */
+static void fake_compose_remote_snapshot(sim_node_t *node, uint8_t data[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH])
+{
+    nrf_upstream_status_t status;
+    assert(nrf_bootstrap_make_status(&node->bootstrap, &status) == NRF_UPSTREAM_RESULT_OK);
+    const size_t data_len = NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH;
+        nrf_upstream_sensor_snapshot_t sensor;
+        memset(&sensor, 0, sizeof(sensor));
+        sensor.request_id = node->sensor_request_id;
+        sensor.result = node->snapshot_result;
+        sensor.valid_mask = node->snapshot_result == NRF_UPSTREAM_SENSOR_RESULT_OK
+            ? NRF_UPSTREAM_SENSOR_VALID_MASK
+            : 0U;
+        sensor.flags = sensor.valid_mask != 0U
+            ? NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE
+            : 0U;
+        sensor.relative_z_mm = node->relative_z_mm;
+        sensor.reference_state = node->reference_state;
+        sensor.reference_generation = node->reference_generation;
+        memcpy(sensor.gyro_bias_mdps, node->gyro_bias_mdps, sizeof(sensor.gyro_bias_mdps));
+        memcpy(sensor.gravity_ref_mg, node->gravity_ref_mg, sizeof(sensor.gravity_ref_mg));
+        sensor.imu_cal_state = node->imu_cal_state;
+        sensor.imu_cal_generation = node->imu_cal_generation;
+        assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, data) == NRF_UPSTREAM_RESULT_OK);
+        if (node->snapshot_version == 1U) {
+            data[30] = 1U;
+            data[32] = (uint8_t)NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH;
+            data[33] = 0U;
+            const uint16_t crc = nrf_upstream_protocol_crc16_ccitt_false(data, 110U);
+            data[110] = (uint8_t)crc;
+            data[111] = (uint8_t)(crc >> 8U);
+            memset(&data[112], 0xFF, data_len - 112U);
+        }
+        if (s_malformed_sensor_snapshots_remaining > 0U) {
+            data[32] = 0xFFU;
+            data[33] = 0xFFU;
+            --s_malformed_sensor_snapshots_remaining;
+            ++s_malformed_sensor_snapshots_seen;
+        }
+}
+
+static void fake_window_write(sim_node_t *node, const uint8_t *data, size_t length)
+{
+    nrf_upstream_read_window_t window;
+    uint8_t snapshot[NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH];
+
+    assert(nrf_upstream_protocol_decode_read_window(data, length, &window) == NRF_UPSTREAM_RESULT_OK);
+    ++s_window_writes;
+    if (node->window.length == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH &&
+        node->address == NRF_UPSTREAM_ADDRESS_REMOTE &&
+        node->node_state.role == NRF_NODE_ROLE_REMOTE) {
+        fake_compose_remote_snapshot(node, snapshot);
+        nrf_read_window_target_record(&node->window, snapshot, sizeof(snapshot));
+    }
+    assert(nrf_read_window_target_arm(&node->window, window.offset)); /* the master asks only inside the response */
+}
+
 esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address, size_t data_len, uint8_t *data)
 {
     sim_device_t *d = device_of(device);
@@ -556,11 +623,27 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
         ++s_nack_read_calls;
         return ESP_ERR_INVALID_STATE; /* IDF 5.5 NACK */
     }
+    /*
+     * Wire contract: the master never reads an nRF target for more than one
+     * window. The IDF driver splits longer reads into FIFO segments, and on the
+     * 2026-10-26 capture every one of them arrived damaged.
+     */
+    assert(data_len > 0U && data_len <= NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES);
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR)
     esp_err_t log_result;
     if (log_test_read(node, data, data_len, &log_result)) return log_result;
 #endif
-    if (data_len == NRF_CS_CONTROL_RESULT_LENGTH) {
+    {
+        const uint8_t *window_data = NULL;
+        uint32_t window_length = 0U;
+        if (nrf_read_window_target_serve(&node->window, &window_data, &window_length)) {
+            assert(data_len <= window_length); /* the master never reads past what it selected */
+            memcpy(data, window_data, data_len);
+            ++s_window_reads;
+            return ESP_OK;
+        }
+    }
+    if (node->cs_result_selected) {
         nrf_cs_control_result_t result;
         uint8_t frame[NRF_CS_CONTROL_RESULT_LENGTH];
         assert(node->cs_status_request_valid);
@@ -594,7 +677,9 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
             --s_malformed_cs_results_remaining;
             ++s_malformed_cs_results_seen;
         }
-        memcpy(data, frame, sizeof(frame));
+        node->cs_result_selected = false;
+        nrf_read_window_target_record(&node->window, frame, sizeof(frame));
+        memcpy(data, frame, data_len);
         ++node->cs_status_reads;
         return ESP_OK;
     }
@@ -642,6 +727,7 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
         }
         ++node->status_reads;
         assert(nrf_upstream_protocol_encode_status(&status, data) == NRF_UPSTREAM_RESULT_OK);
+        nrf_read_window_target_record(&node->window, data, data_len);
         if (s_block_remote_scan_after_main_status && s_tca_control == 0U &&
             d->address == NRF_UPSTREAM_ADDRESS_MAIN) {
             s_fail_recursive_lock_attempts = 1000U;
@@ -651,42 +737,6 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
                    NRF_UPSTREAM_RESULT_OK);
             node->delayed_assign_pending = false;
             ++s_delayed_assignment_confirmations;
-        }
-        return ESP_OK;
-    }
-    if (data_len == NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH) {
-        nrf_upstream_sensor_snapshot_t sensor;
-        memset(&sensor, 0, sizeof(sensor));
-        sensor.request_id = node->sensor_request_id;
-        sensor.result = node->snapshot_result;
-        sensor.valid_mask = node->snapshot_result == NRF_UPSTREAM_SENSOR_RESULT_OK
-            ? NRF_UPSTREAM_SENSOR_VALID_MASK
-            : 0U;
-        sensor.flags = sensor.valid_mask != 0U
-            ? NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE
-            : 0U;
-        sensor.relative_z_mm = node->relative_z_mm;
-        sensor.reference_state = node->reference_state;
-        sensor.reference_generation = node->reference_generation;
-        memcpy(sensor.gyro_bias_mdps, node->gyro_bias_mdps, sizeof(sensor.gyro_bias_mdps));
-        memcpy(sensor.gravity_ref_mg, node->gravity_ref_mg, sizeof(sensor.gravity_ref_mg));
-        sensor.imu_cal_state = node->imu_cal_state;
-        sensor.imu_cal_generation = node->imu_cal_generation;
-        assert(nrf_upstream_protocol_encode_remote_snapshot(&status, &sensor, data) == NRF_UPSTREAM_RESULT_OK);
-        if (node->snapshot_version == 1U) {
-            data[30] = 1U;
-            data[32] = (uint8_t)NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_V1_LENGTH;
-            data[33] = 0U;
-            const uint16_t crc = nrf_upstream_protocol_crc16_ccitt_false(data, 110U);
-            data[110] = (uint8_t)crc;
-            data[111] = (uint8_t)(crc >> 8U);
-            memset(&data[112], 0xFF, data_len - 112U);
-        }
-        if (s_malformed_sensor_snapshots_remaining > 0U) {
-            data[32] = 0xFFU;
-            data[33] = 0xFFU;
-            --s_malformed_sensor_snapshots_remaining;
-            ++s_malformed_sensor_snapshots_seen;
         }
         return ESP_OK;
     }
@@ -710,6 +760,12 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
     esp_err_t log_result;
     if (log_test_write(node, data, data_len, &log_result)) return log_result;
 #endif
+    if (data_len == NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH &&
+        data[0] == 'G' && data[1] == 'S' &&
+        data[3] == NRF_UPSTREAM_MESSAGE_READ_WINDOW) {
+        fake_window_write(node, data, data_len);
+        return ESP_OK;
+    }
     if (data_len == NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH &&
         data[0] == 'G' && data[1] == 'S' &&
         data[3] == NRF_LOG_MESSAGE_STATUS_REQUEST) {
@@ -793,6 +849,7 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
         assert(nrf_cs_control_decode_status_request(data, data_len, &request) == 0);
         node->cs_status_request = request;
         node->cs_status_request_valid = true;
+        node->cs_result_selected = true;
         ++node->cs_status_reads;
         return ESP_OK;
     }
@@ -1702,6 +1759,8 @@ static void test_ranging_full_rotation_progress_and_frozen_result(void)
     script(EV_STOP, 0U, NULL);
     run_service();
     assert(s_cs_execute_count == 12U);
+    /* Each of the 12 CS results is 44 bytes: the 28 byte read plus one window. */
+    assert(s_window_writes >= 12U && s_window_writes == s_window_reads);
 }
 
 static void test_ranging_failure_reasons(void)
@@ -2073,6 +2132,8 @@ static void reset_world(void)
     s_collisions = 0U;
     s_direct_nrf_read_calls = 0U;
     s_direct_nrf_write_calls = 0U;
+    s_window_writes = 0U;
+    s_window_reads = 0U;
     s_direct_nrf_probe_calls = 0U;
     s_controller_reset_calls = 0U;
     s_fail_i2c_bus_create = false;
@@ -2497,6 +2558,9 @@ static void test_remote_snapshot_v1_and_v2_cache_read_path(void)
     assert(s_seen_cache[5].sensor.relative_z_mm == -2467);
     assert(s_seen_cache[5].sensor.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
     assert(s_seen_cache[5].sensor.reference_generation == 91U);
+    /* A 136 byte snapshot is the 28 byte read plus four windows (28, 56, 84, 112). */
+    assert(s_window_writes >= 4U && s_window_writes % 4U == 0U);
+    assert(s_window_writes == s_window_reads);
 }
 
 /* MAX-434 B4: all eight channels reconcile and channel 0 receives refresh. */

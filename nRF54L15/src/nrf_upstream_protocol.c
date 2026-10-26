@@ -628,6 +628,65 @@ nrf_upstream_result_t nrf_upstream_protocol_decode_imu_calibrate(
     return NRF_UPSTREAM_RESULT_OK;
 }
 
+nrf_upstream_result_t nrf_upstream_protocol_encode_read_window(
+    const nrf_upstream_read_window_t *request,
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH])
+{
+    uint16_t crc;
+
+    if (request == NULL || frame == NULL ||
+        request->offset >= NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH) {
+        return NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    }
+
+    memset(frame, 0, NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH);
+    write_common_header(
+        frame,
+        NRF_UPSTREAM_MESSAGE_READ_WINDOW,
+        NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH);
+    write_le16(&frame[6], request->offset);
+    crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 10U);
+    write_le16(&frame[10], crc);
+    return NRF_UPSTREAM_RESULT_OK;
+}
+
+nrf_upstream_result_t nrf_upstream_protocol_decode_read_window(
+    const uint8_t *frame,
+    size_t length,
+    nrf_upstream_read_window_t *request)
+{
+    uint16_t expected_crc;
+    uint16_t actual_crc;
+
+    if (frame == NULL || request == NULL ||
+        length != NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH) {
+        return NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    }
+    if (frame[0] != NRF_UPSTREAM_MAGIC_0 || frame[1] != NRF_UPSTREAM_MAGIC_1 ||
+        read_le16(&frame[4]) != NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH) {
+        return NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    }
+
+    expected_crc = read_le16(&frame[10]);
+    actual_crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 10U);
+    if (actual_crc != expected_crc) {
+        return NRF_UPSTREAM_RESULT_BAD_CRC;
+    }
+    if (frame[2] != NRF_UPSTREAM_PROTOCOL_VERSION) {
+        return NRF_UPSTREAM_RESULT_UNSUPPORTED_VERSION;
+    }
+    if (frame[3] != NRF_UPSTREAM_MESSAGE_READ_WINDOW) {
+        return NRF_UPSTREAM_RESULT_UNSUPPORTED_TYPE;
+    }
+    if (frame[8] != 0U || frame[9] != 0U ||
+        read_le16(&frame[6]) >= NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH) {
+        return NRF_UPSTREAM_RESULT_INVALID_FRAME;
+    }
+
+    request->offset = read_le16(&frame[6]);
+    return NRF_UPSTREAM_RESULT_OK;
+}
+
 nrf_upstream_result_t nrf_upstream_protocol_encode_remote_snapshot(
     const nrf_upstream_status_t *status,
     const nrf_upstream_sensor_snapshot_t *sensor,

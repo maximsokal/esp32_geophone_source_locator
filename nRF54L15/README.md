@@ -84,6 +84,19 @@ not from a firmware GPIO. Validate total load and transient margin in HIL.
 The main-enclosure nRF54L15 has no geophone whose verticality must be measured
 and therefore does not require either remote sensor assembly.
 
+With `CONFIG_APP_NRF_VERBOSE_LOG=y`, the direct nRF console reports private-bus
+failures as `sensor_i2c:` lines. `bus=i2c30 ready=0` means the controller is not
+ready; transfer failures include the address, decimal register (`-1` if absent),
+write/read byte counts and original Zephyr `ret` value. This transport result
+is separate from the BMI160/BME280 driver's generic `ERR_BUS` initialization
+result. A failed `0x76` probe can be normal when the BME280 responds at `0x77`.
+These lines do not depend on ESP32 forwarding the nRF event ring. From the
+repository root, run the native initialization fault/recovery checks with:
+
+```powershell
+python tools/run_host_tests.py --manifest tests/host/manifest.d/nrf-sensor-init-diagnostics.json
+```
+
 Because MAIN and REMOTE use the same production firmware while their external
 sensor hardware differs, GY-BMI160 and BME280 are treated as **optional runtime
 peripherals**, not as always-present Zephyr DeviceTree sensor devices. The

@@ -425,6 +425,7 @@
         "components/tca9548a_mux/tca9548a_mux_i2c_bus.c",
         "components/nrf_cs_authority/nrf_cs_authority.c",
         "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_read_window.c",
         "nRF54L15/src/nrf_cs_scheduler.c",
         "nRF54L15/src/nrf_cs_control_protocol.c",
         "nRF54L15/src/nrf_bootstrap.c",

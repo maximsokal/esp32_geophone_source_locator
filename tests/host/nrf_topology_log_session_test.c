@@ -17,6 +17,10 @@ static struct {
     unsigned block_reads;
     unsigned status_reads;
     uint8_t requested_records;
+    size_t delivered;       /* bytes of the selected reply the master has read so far */
+    bool window_armed;
+    size_t window_offset;
+    unsigned window_requests;
 } s_logger[MAX_NODES];
 static uint8_t s_expected_log_mask;
 static uint8_t s_completed_log_mask;
@@ -82,6 +86,19 @@ static bool log_test_write(sim_node_t *node, const uint8_t *data, size_t length,
     esp_err_t *result)
 {
     const size_t index = (size_t)(node - s_nodes);
+    if (length == NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH && data[3] == NRF_UPSTREAM_MESSAGE_READ_WINDOW &&
+        s_logger[index].selected) {
+        nrf_upstream_read_window_t window;
+        assert(nrf_upstream_protocol_decode_read_window(data, length, &window) == NRF_UPSTREAM_RESULT_OK);
+        /* Each window continues where the previous read ended, inside the reply. */
+        assert(window.offset == s_logger[index].delivered);
+        assert(window.offset < s_logger[index].response_length);
+        s_logger[index].window_armed = true;
+        s_logger[index].window_offset = window.offset;
+        ++s_logger[index].window_requests;
+        *result = ESP_OK;
+        return true;
+    }
     if (length < 4U || (data[3] != NRF_LOG_MESSAGE_STATUS_REQUEST &&
         data[3] != NRF_LOG_MESSAGE_READ_REQUEST && data[3] != NRF_LOG_MESSAGE_FIRMWARE_REQUEST)) {
         if (length >= 4U && (data[3] == NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE ||
@@ -148,6 +165,8 @@ static bool log_test_write(sim_node_t *node, const uint8_t *data, size_t length,
     assert(error == NRF_LOG_ERROR_OK);
     s_logger[index].selected = true;
     s_logger[index].pending = true;
+    s_logger[index].delivered = 0U;
+    s_logger[index].window_armed = false;
     *result = ESP_OK;
     return true;
 }
@@ -161,22 +180,35 @@ static bool log_test_read(sim_node_t *node, uint8_t *data, size_t length, esp_er
     }
     if (node->channel != UPSTREAM_CHANNEL) assert(s_tca_control == (uint8_t)(1U << node->channel));
     /*
-     * The wire carries one read per reply, sized to what the reply can hold:
-     * logs are read once at their full length (no 28/31/32/33 byte probe
-     * reads, which are extra multi-segment transfers) and a block read asks for
-     * the base length plus the records it requested.
+     * No read is longer than one window: the first read of a reply is the
+     * ordinary 28 byte read, every further window is announced by a READ_WINDOW
+     * write and starts where the previous read ended. The master reads exactly
+     * what is left of the reply, up to one window.
      */
-    if (s_logger[index].response[3] == NRF_LOG_MESSAGE_STATUS) {
-        assert(length == NRF_LOG_PROTOCOL_STATUS_LENGTH);
-        ++s_logger[index].status_reads;
-    } else if (s_logger[index].response[3] == NRF_LOG_MESSAGE_FIRMWARE) {
-        assert(length == NRF_LOG_PROTOCOL_FIRMWARE_LENGTH);
+    const size_t total = s_logger[index].response_length;
+    size_t offset = 0U;
+    if (s_logger[index].window_armed) {
+        offset = s_logger[index].window_offset;
+        s_logger[index].window_armed = false;
+        assert(offset == s_logger[index].delivered);
     } else {
-        assert(s_logger[index].response[3] == NRF_LOG_MESSAGE_BLOCK);
-        assert(length == NRF_LOG_PROTOCOL_BLOCK_BASE_LENGTH +
-                         (size_t)NRF_LOG_PROTOCOL_RECORD_LENGTH * s_logger[index].requested_records);
+        s_logger[index].delivered = 0U; /* an ordinary read starts the reply again */
     }
-    if (length >= s_logger[index].response_length) {
+    const size_t remaining = total - offset;
+    assert(length == (remaining < NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES
+                          ? remaining : NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES));
+    s_logger[index].delivered = offset + length;
+    if (s_logger[index].delivered >= total) {
+        if (s_logger[index].response[3] == NRF_LOG_MESSAGE_STATUS) {
+            assert(total == NRF_LOG_PROTOCOL_STATUS_LENGTH);
+            ++s_logger[index].status_reads;
+        } else if (s_logger[index].response[3] == NRF_LOG_MESSAGE_FIRMWARE) {
+            assert(total == NRF_LOG_PROTOCOL_FIRMWARE_LENGTH);
+        } else {
+            assert(s_logger[index].response[3] == NRF_LOG_MESSAGE_BLOCK);
+            assert(total == NRF_LOG_PROTOCOL_BLOCK_BASE_LENGTH +
+                            (size_t)NRF_LOG_PROTOCOL_RECORD_LENGTH * s_logger[index].requested_records);
+        }
         s_logger[index].pending = false;
         s_logger_pair_completed = true;
         if (s_logger[index].response[3] == NRF_LOG_MESSAGE_BLOCK) {
@@ -190,8 +222,7 @@ static bool log_test_read(sim_node_t *node, uint8_t *data, size_t length, esp_er
         }
     }
     memset(data, 0xFF, length);
-    memcpy(data, s_logger[index].response,
-        length < s_logger[index].response_length ? length : s_logger[index].response_length);
+    memcpy(data, &s_logger[index].response[offset], length);
     *result = ESP_OK;
     return true;
 }

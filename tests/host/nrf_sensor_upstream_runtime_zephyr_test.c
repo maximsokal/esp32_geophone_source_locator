@@ -678,6 +678,7 @@ static void test_failed_sensor_signal(void)
     nrf_orientation_config_t orientation_config;
     nrf_upstream_assign_t assign = make_assign();
     nrf_sensor_upstream_runtime_zephyr_diagnostics_t diagnostics = {0};
+    nrf_upstream_sensor_snapshot_t snapshot = {0};
 
     nrf_orientation_default_config(&orientation_config);
     assert(nrf_sensor_upstream_runtime_zephyr_configure_orientation(
@@ -696,6 +697,13 @@ static void test_failed_sensor_signal(void)
     assert(diagnostics.activation_complete_generation == 1U);
     assert(!diagnostics.imu_ready && diagnostics.imu_init_result == -EIO);
     assert(!diagnostics.env_ready && diagnostics.env_init_result == -ENODEV);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_NO_DATA);
+    assert(snapshot.sequence == 0U && snapshot.sample_complete_uptime_ms == 0U);
+    assert(snapshot.valid_mask == 0U);
+    assert(snapshot.fault_mask == (NRF_SENSOR_VALID_IMU | NRF_SENSOR_VALID_ENV));
+    assert(snapshot.flags == NRF_UPSTREAM_SENSOR_FLAG_PREPARE_ATTEMPTED);
+    assert(s_refresh_calls == 0U && s_imu_read_calls == 0U);
     assert(log_event_count(NRF_LOG_EVENT_SENSOR_INIT_FAILED) == 2U);
     assert(s_log_events[0].event_id == NRF_LOG_EVENT_SENSOR_INIT_FAILED);
     assert(s_log_events[0].arg0 == NRF_SENSOR_VALID_IMU);
