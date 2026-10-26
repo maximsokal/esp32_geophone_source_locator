@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param()
 
-# Mock-only self-test for monitor_esp32_logs.ps1: fake COM inventory, fake runner process, fake port presence.
+# Mock-only self-test for monitor_esp32_logs.ps1: fake COM inventory and fake runner process.
 # No physical serial port or ESP32 is touched. ASCII-only file; non-ASCII text is built from char codes.
 
 $ErrorActionPreference = "Stop"
@@ -31,34 +31,57 @@ try {
     $fakeRunner = Join-Path $root "fake_run_idf.ps1"
     $runnerBody = @'
 param([string]$Action, [string]$ProjectPath, [string]$BuildDir, [string]$Port,
-      [string]$Mode = "normal", [int]$Lines = 0, [string]$PidFile = "")
+      [string]$Mode = "normal", [int]$Lines = 0, [string]$StateFile = "")
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-if ($PidFile) { Set-Content -LiteralPath $PidFile -Value $PID -Encoding ASCII }
+$attempt = 1
+if ($StateFile) {
+    if (Test-Path -LiteralPath $StateFile) { $attempt = 1 + [int](Get-Content -LiteralPath $StateFile) }
+    Set-Content -LiteralPath $StateFile -Value $attempt -Encoding ASCII
+}
 $cyr = -join ([char[]](0x041F, 0x0440, 0x0438, 0x0432, 0x0435, 0x0442))
 $mark = [string][char]0x2713
 $banner = "--- esp-idf-monitor 1.9.0 on $Port 115200 ---"
 switch ($Mode) {
     "normal" {
         Write-Output $banner
+        Write-Output "Executing action: monitor"
+        Write-Output "Running idf_monitor in directory '$ProjectPath'"
+        Write-Output 'Executing "python idf_monitor.py"...'
         for ($i = 1; $i -le $Lines; $i++) { Write-Output ("LINE-{0:D6} {1} {2}" -f $i, $cyr, $mark) }
         exit 0
     }
     "fail" {
         Write-Output $banner
-        Write-Output "Connection to $Port failed: PermissionError(13, 'Access is denied')"
+        Write-Output "--- Error: ELF file not found."
         exit 3
     }
-    "hang" {
+    { $_ -in @("retry_zero", "retry_nonzero", "retry_missing") } {
+        if ($attempt -le 2) {
+            if ($Mode -eq "retry_missing") {
+                [Console]::Error.WriteLine("Required live serial port(s) missing: $Port")
+            } else {
+                [Console]::Error.WriteLine($banner)
+                Write-Output "Executing action: monitor"
+                Write-Output "Running idf_monitor in directory '$ProjectPath'"
+                Write-Output 'Executing "python idf_monitor.py"...'
+                [Console]::Error.WriteLine("--- Connection to \\.\$Port failed. Available ports:")
+                Write-Output "Cannot configure port, something went wrong. Original message: PermissionError(13, 'A device attached to the system is not functioning.', None, 31)"
+            }
+            if ($Mode -eq "retry_zero") { exit 0 }
+            exit 3
+        }
         Write-Output $banner
         Write-Output ("LINE-000001 {0}" -f $cyr)
-        Write-Output "Waiting for the device to reconnect"
-        Start-Sleep -Seconds 300
         exit 0
     }
-    "hang_quiet" {
+    "reconnect" {
         Write-Output $banner
         Write-Output ("LINE-000001 {0}" -f $cyr)
-        Start-Sleep -Seconds 300
+        Start-Sleep -Milliseconds 150
+        [Console]::Error.WriteLine("--- Waiting for the device to reconnect")
+        [Console]::Error.WriteLine("Cannot configure port, something went wrong.")
+        Start-Sleep -Seconds 2
+        Write-Output ("LINE-000002 {0}" -f $cyr)
         exit 0
     }
     "silent" {
@@ -73,16 +96,15 @@ switch ($Mode) {
         param(
             [string]$Mode,
             [int]$Lines = 0,
-            [string]$PidFile = "",
-            [scriptblock]$PortNameProvider = { @("COM3") },
+            [string]$StateFile = "",
             [double]$NoDataWarningSeconds = 5
         )
         $runnerArgs = @("-Mode", $Mode, "-Lines", "$Lines")
-        if ($PidFile) { $runnerArgs += @("-PidFile", $PidFile) }
+        if ($StateFile) { $runnerArgs += @("-StateFile", $StateFile) }
         $clock = [Diagnostics.Stopwatch]::StartNew()
         $session = Invoke-MonitorSession -Port "COM3" -ProjectRoot $root -RunnerPath $fakeRunner `
             -LogDirectory (Join-Path $root "logs\esp32") -RunnerArguments $runnerArgs `
-            -PortNameProvider $PortNameProvider -NoDataWarningSeconds $NoDataWarningSeconds
+            -NoDataWarningSeconds $NoDataWarningSeconds
         $clock.Stop()
         return [pscustomobject]@{ Session = $session; Seconds = $clock.Elapsed.TotalSeconds }
     }
@@ -149,6 +171,8 @@ switch ($Mode) {
     $bannerIndex = [array]::IndexOf($logLines, ($logLines | Where-Object { $_ -like "--- esp-idf-monitor*" } | Select-Object -First 1))
     $runningIndex = [array]::IndexOf($logLines, "# ESP-IDF Monitor: RUNNING")
     Assert-Check ($bannerIndex -ge 0 -and $runningIndex -gt $bannerIndex) "RUNNING note is written after the banner"
+    $firstDataIndex = [array]::IndexOf($logLines, $serial[0])
+    Assert-Check ($runningIndex -gt $firstDataIndex) "launcher messages never report RUNNING before UART data"
     Assert-Check ((Split-Path -Leaf $session.LogPath) -match '^esp32_COM3_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(_\d{2})?\.log$') "session log is saved under logs/esp32"
 
     # 6. Monitor fails: error is logged, outcome is Failed, no hang.
@@ -156,26 +180,42 @@ switch ($Mode) {
     Assert-Check ($failed.Session.Outcome -eq "Failed" -and $failed.Session.ExitCode -eq 3) "failed monitor reports Failed with exit code" "outcome=$($failed.Session.Outcome)"
     Assert-Check (-not $failed.Session.Running) "failed monitor never reports RUNNING"
 
-    # 7. Device reconnect text: stop only this monitor's tree and report Disconnected.
-    $pidFile = Join-Path $root "hang.pid"
-    $hang = Invoke-FakeSession -Mode "hang" -PidFile $pidFile
-    Assert-Check ($hang.Session.Outcome -eq "Disconnected" -and $hang.Session.Disconnected) "reconnect wait ends as Disconnected" "outcome=$($hang.Session.Outcome)"
-    Assert-Check ($hang.Seconds -lt 30) "disconnect stops the monitor promptly" ("elapsed={0:N1}s" -f $hang.Seconds)
-    $childPid = [int]([IO.File]::ReadAllText($pidFile).Trim())
-    Assert-Check ($null -eq (Get-Process -Id $childPid -ErrorAction SilentlyContinue)) "monitor process tree is gone after disconnect"
+    # 7. Reproduce the real initial COM error, including ESP-IDF's successful process exit.
+    foreach ($mode in @("retry_zero", "retry_nonzero", "retry_missing")) {
+        $stateFile = Join-Path $root "$mode.attempts"
+        $logsBefore = @(Get-ChildItem -LiteralPath (Join-Path $root 'logs/esp32') -Filter '*.log').Count
+        $retry = Invoke-FakeSession -Mode $mode -StateFile $stateFile
+        $retryLines = [IO.File]::ReadAllLines($retry.Session.LogPath, [Text.Encoding]::UTF8)
+        $logsAfter = @(Get-ChildItem -LiteralPath (Join-Path $root 'logs/esp32') -Filter '*.log').Count
+        Assert-Check ([int](Get-Content -LiteralPath $stateFile) -eq 3) "$mode waits through two failed opens"
+        Assert-Check ($retry.Session.Outcome -eq "Exited" -and $retry.Session.Running) "$mode records UART after recovery"
+        Assert-Check ($logsAfter -eq $logsBefore + 1 -and
+            @($retryLines | Where-Object { $_ -like '# Started *' }).Count -eq 1 -and
+            @($retryLines | Where-Object { $_ -match 'Cannot configure port|Required live serial port\(s\) missing' }).Count -eq 2) "$mode keeps errors and recovered data in one log"
+        Assert-Check (@($retryLines | Where-Object { $_ -eq '# ESP-IDF Monitor: RUNNING' }).Count -eq 1) "$mode has no false RUNNING on failure"
+        $dataIndex = [array]::FindIndex($retryLines, [Predicate[string]]{ param($line) $line -like 'LINE-*' })
+        $retryRunningIndex = [array]::IndexOf($retryLines, '# ESP-IDF Monitor: RUNNING')
+        Assert-Check ($dataIndex -ge 0 -and $retryRunningIndex -gt $dataIndex) "$mode starts RUNNING only after UART data"
+        Assert-Check (($retryLines -join "`n") -match 'retrying') "$mode logs that it is waiting and retrying"
+    }
 
-    # 8. Port disappears silently (no reconnect text): detected through port presence and treated as Disconnected.
-    $script:portCalls = 0
-    $vanish = { $script:portCalls++; if ($script:portCalls -le 3) { @("COM3") } else { @() } }
-    $silent = Invoke-FakeSession -Mode "hang_quiet" -PortNameProvider $vanish
-    Assert-Check ($silent.Session.Outcome -eq "Disconnected") "vanished port ends as Disconnected" "outcome=$($silent.Session.Outcome)"
-    Assert-Check ($silent.Seconds -lt 30) "vanished port stops the monitor promptly" ("elapsed={0:N1}s" -f $silent.Seconds)
+    # 8. Let ESP-IDF's native reconnect complete instead of killing its reader process.
+    $stateFile = Join-Path $root "reconnect.attempts"
+    $reconnect = Invoke-FakeSession -Mode "reconnect" -StateFile $stateFile
+    $reconnectLog = [IO.File]::ReadAllText($reconnect.Session.LogPath, [Text.Encoding]::UTF8)
+    Assert-Check ($reconnect.Session.Outcome -eq "Exited") "native reconnect completes normally"
+    Assert-Check ([int](Get-Content -LiteralPath $stateFile) -eq 1) "native reconnect uses the same monitor process"
+    Assert-Check ($reconnectLog -match 'LINE-000001' -and $reconnectLog -match 'LINE-000002') "UART before and after reconnect stays in one log"
 
     # 9. No UART data: the monitor stays active and the log says so.
     $quiet = Invoke-FakeSession -Mode "silent" -NoDataWarningSeconds 1
     Assert-Check ($quiet.Session.Outcome -eq "Exited" -and -not $quiet.Session.Running) "silent monitor is not reported as RUNNING"
     $quietLog = [IO.File]::ReadAllText($quiet.Session.LogPath, [Text.Encoding]::UTF8)
-    Assert-Check ($quietLog -match "CONNECTING: no UART data yet") "no-data notice is logged"
+    Assert-Check ($quietLog -match "WAITING: no UART data arriving") "no-data notice is logged"
+    $metadataOnly = Invoke-FakeSession -Mode "normal" -Lines 0
+    $metadataLog = [IO.File]::ReadAllText($metadataOnly.Session.LogPath, [Text.Encoding]::UTF8)
+    Assert-Check (-not $metadataOnly.Session.Running) "launcher-only capture never reports UART data"
+    Assert-Check ($metadataLog -match 'without receiving UART data' -and $metadataLog -notmatch 'UART log saved:') "empty capture is not presented as a saved UART log"
 
     # 10. Invalid port is rejected before any process starts.
     $rejected = $false
@@ -183,6 +223,9 @@ switch ($Mode) {
     Assert-Check $rejected "invalid COM port throws before starting"
 }
 finally {
+    $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    if (-not ([IO.Path]::GetFullPath($root)).StartsWith($tempBase, [StringComparison]::OrdinalIgnoreCase) -or
+        (Split-Path -Leaf $root) -notlike 'monitor-selftest-*') { throw "Unsafe self-test cleanup path: $root" }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
 

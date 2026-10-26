@@ -353,6 +353,10 @@ For repeatable local verification, use the tasks in `.vscode/tasks.json`:
   acquisition/recorder/API gate with explicit COM4 flash and COM6 logging.
 * `ESP: Flash production (COM4)` and `ESP: Monitor logs (COM6)` remain separate
   tasks for production firmware, each with its matching live-port preflight.
+* `ESP-IDF: Monitor + Save Logs` lets you choose a COM port and keeps one UTF-8
+  capture file in `logs/esp32/` while waiting through startup port errors and
+  USB reconnects. `RUNNING` appears after UART data arrives. Stop the active
+  monitor with `Ctrl+]`, or use `Ctrl+C` while it is retrying the connection.
 
 For the keypad ADC/timer-task watchlist, use the dedicated opt-in procedure in
 [docs/keypad-adc-timing-hil.md](docs/keypad-adc-timing-hil.md). It measures

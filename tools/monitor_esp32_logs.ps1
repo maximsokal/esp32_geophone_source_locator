@@ -197,10 +197,16 @@ function Test-SerialOutputLine {
     param([string]$Text)
     $clean = (Remove-AnsiSequences $Text).Trim()
     if (-not $clean -or $clean.StartsWith("---")) { return $false }
-    if ($clean -match '(?i)Waiting for the device to reconnect|Connection to COM\d+ failed|Available ports:') {
+    if ((Test-MonitorConnectionFailure $clean) -or
+        $clean -match '(?i)^(Executing action:|Running idf_monitor in directory|Executing ["'']|ESP-IDF \d|Project: |COM\d+: |> )|Waiting for the device to reconnect|Available ports:|^\.+$') {
         return $false
     }
     return $true
+}
+
+function Test-MonitorConnectionFailure {
+    param([string]$Text)
+    return (Remove-AnsiSequences $Text) -match '(?i)^(?:---\s*)?Connection to .+ failed\b|Cannot configure port|could not open port|Required live serial port\(s\) missing'
 }
 
 function Write-MonitorNote {
@@ -247,7 +253,6 @@ function Invoke-MonitorSession {
         [Parameter(Mandatory = $true)][string]$RunnerPath,
         [string]$LogDirectory,
         [string[]]$RunnerArguments = @(),
-        [scriptblock]$PortNameProvider = { Get-SerialPortNames },
         [ValidateRange(0, 300)][double]$NoDataWarningSeconds = 5,
         [switch]$ShowOutput
     )
@@ -261,101 +266,96 @@ function Invoke-MonitorSession {
     $process = $null
     $outcome = "Failed"
     $exitCode = $null
-    $running = $false
-    $disconnected = $false
+    $hasSerialData = $false
 
     try {
         Write-MonitorNote $log.Writer ("Started {0:yyyy-MM-dd HH:mm:ss} | Port: {1}" -f $startedAt, $selectedPort) -ShowOutput:$ShowOutput
         Write-MonitorNote $log.Writer "ESP-IDF Monitor: CONNECTING" -ShowOutput:$ShowOutput
-        Write-MonitorNote $log.Writer "Logging: ENABLED | File: $relativeLog" -ShowOutput:$ShowOutput
+        Write-MonitorNote $log.Writer "Logging: WAITING FOR UART | File: $relativeLog" -ShowOutput:$ShowOutput
+        Write-MonitorNote $log.Writer "Waiting through port errors/reconnects. Ctrl+] stops the active monitor; Ctrl+C stops while retrying." -ShowOutput:$ShowOutput
 
-        $wasPresent = $false
-        try { $wasPresent = @(& $PortNameProvider) -contains $selectedPort } catch {}
         $startInfo = New-MonitorStartInfo -RunnerPath $RunnerPath -ProjectRoot $ProjectRoot -Port $selectedPort -RunnerArguments $RunnerArguments
-        $process = [Diagnostics.Process]::new()
-        $process.StartInfo = $startInfo
-        if (-not $process.Start()) { throw "Could not start the ESP-IDF monitor process." }
-        $startedClock = [Diagnostics.Stopwatch]::StartNew()
-        $stdoutTask = $process.StandardOutput.ReadLineAsync()
-        $stderrTask = $process.StandardError.ReadLineAsync()
-        $stdoutDone = $false
-        $stderrDone = $false
-        $monitorBannerSeen = $false
-        $noDataNoticeShown = $false
-        $lastPortCheck = [Diagnostics.Stopwatch]::StartNew()
-        $missingPortChecks = 0
+        do {
+            $connectionFailed = $false
+            $running = $false
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            if (-not $process.Start()) { throw "Could not start the ESP-IDF monitor process." }
+            $startedClock = [Diagnostics.Stopwatch]::StartNew()
+            $stdoutTask = $process.StandardOutput.ReadLineAsync()
+            $stderrTask = $process.StandardError.ReadLineAsync()
+            $stdoutDone = $false
+            $stderrDone = $false
+            $monitorBannerSeen = $false
+            $noDataNoticeShown = $false
 
-        while (-not ($process.HasExited -and $stdoutDone -and $stderrDone)) {
-            $readAny = $false
-            foreach ($streamName in @("stdout", "stderr")) {
-                # Drain every read that has already completed so a burst of boot output is not throttled to one line per tick.
-                while ($true) {
-                    $task = if ($streamName -eq "stdout") { $stdoutTask } else { $stderrTask }
-                    $done = if ($streamName -eq "stdout") { $stdoutDone } else { $stderrDone }
-                    if ($done -or -not $task.IsCompleted) { break }
-                    $readAny = $true
-                    $line = $null
-                    try { $line = $task.GetAwaiter().GetResult() }
-                    catch { Write-MonitorNote $log.Writer "[monitor output capture error] $($_.Exception.Message)" -ShowOutput:$ShowOutput }
-                    if ($null -eq $line) {
-                        if ($streamName -eq "stdout") { $stdoutDone = $true } else { $stderrDone = $true }
-                        break
-                    }
-                    Write-MonitorOutputLine $log.Writer $line -ShowOutput:$ShowOutput
-                    if (Test-MonitorBanner $line) { $monitorBannerSeen = $true }
-                    $clean = Remove-AnsiSequences $line
-                    if ($clean -match 'Waiting for the device to reconnect') { $disconnected = $true }
-                    if ($streamName -eq "stdout" -and $monitorBannerSeen -and
-                        -not $running -and (Test-SerialOutputLine $clean)) {
-                        $running = $true
-                        Write-MonitorNote $log.Writer "ESP-IDF Monitor: RUNNING" -ShowOutput:$ShowOutput
-                        Write-MonitorNote $log.Writer "Target: ESP32-S3 | Port: $selectedPort | Baudrate: 115200" -ShowOutput:$ShowOutput
-                        Write-MonitorNote $log.Writer "Logging: ENABLED | File: $relativeLog" -ShowOutput:$ShowOutput
-                        Write-MonitorNote $log.Writer "Press Ctrl+] to stop." -ShowOutput:$ShowOutput
-                    }
-                    if ($streamName -eq "stdout") {
-                        $stdoutTask = $process.StandardOutput.ReadLineAsync()
-                    } else {
-                        $stderrTask = $process.StandardError.ReadLineAsync()
+            while (-not ($process.HasExited -and $stdoutDone -and $stderrDone)) {
+                $readAny = $false
+                foreach ($streamName in @("stdout", "stderr")) {
+                    # Drain every read that has already completed so a burst of boot output is not throttled to one line per tick.
+                    while ($true) {
+                        $task = if ($streamName -eq "stdout") { $stdoutTask } else { $stderrTask }
+                        $done = if ($streamName -eq "stdout") { $stdoutDone } else { $stderrDone }
+                        if ($done -or -not $task.IsCompleted) { break }
+                        $readAny = $true
+                        $line = $null
+                        try { $line = $task.GetAwaiter().GetResult() }
+                        catch { Write-MonitorNote $log.Writer "[monitor output capture error] $($_.Exception.Message)" -ShowOutput:$ShowOutput }
+                        if ($null -eq $line) {
+                            if ($streamName -eq "stdout") { $stdoutDone = $true } else { $stderrDone = $true }
+                            break
+                        }
+                        Write-MonitorOutputLine $log.Writer $line -ShowOutput:$ShowOutput
+                        if (Test-MonitorBanner $line) { $monitorBannerSeen = $true }
+                        $clean = Remove-AnsiSequences $line
+                        if (-not $hasSerialData -and (Test-MonitorConnectionFailure $clean)) { $connectionFailed = $true }
+                        if ($clean -match '^(?:---\s*)?Waiting for the device to reconnect') {
+                            $running = $false
+                            Write-MonitorNote $log.Writer "ESP-IDF Monitor: RECONNECTING | Port: $selectedPort | Capture remains open." -ShowOutput:$ShowOutput
+                        }
+                        if ($streamName -eq "stdout" -and $monitorBannerSeen -and
+                            -not $connectionFailed -and -not $running -and (Test-SerialOutputLine $clean)) {
+                            $running = $true
+                            $hasSerialData = $true
+                            Write-MonitorNote $log.Writer "ESP-IDF Monitor: RUNNING" -ShowOutput:$ShowOutput
+                            Write-MonitorNote $log.Writer "Target: ESP32-S3 | Port: $selectedPort | Baudrate: 115200" -ShowOutput:$ShowOutput
+                            Write-MonitorNote $log.Writer "Logging: ACTIVE | File: $relativeLog" -ShowOutput:$ShowOutput
+                            Write-MonitorNote $log.Writer "Press Ctrl+] to stop." -ShowOutput:$ShowOutput
+                        }
+                        if ($streamName -eq "stdout") {
+                            $stdoutTask = $process.StandardOutput.ReadLineAsync()
+                        } else {
+                            $stderrTask = $process.StandardError.ReadLineAsync()
+                        }
                     }
                 }
-            }
 
-            if ($disconnected -and -not $process.HasExited) {
-                Write-MonitorNote $log.Writer "USB disconnect detected; stopping this monitor process tree." -ShowOutput:$ShowOutput
-                Stop-MonitorProcessTree $process
-                $disconnected = $true
+                if (-not $running -and -not $noDataNoticeShown -and
+                    $NoDataWarningSeconds -gt 0 -and $startedClock.Elapsed.TotalSeconds -ge $NoDataWarningSeconds) {
+                    $noDataNoticeShown = $true
+                    Write-MonitorNote $log.Writer "WAITING: no UART data arriving; monitor remains active." -ShowOutput:$ShowOutput
+                }
+                if (-not $readAny -and -not ($process.HasExited -and $stdoutDone -and $stderrDone)) {
+                    Start-Sleep -Milliseconds 40
+                }
             }
-
-            if ($wasPresent -and -not $disconnected -and $lastPortCheck.ElapsedMilliseconds -ge 500) {
-                try {
-                    $currentlyPresent = @(& $PortNameProvider) -contains $selectedPort
-                    $missingPortChecks = if ($currentlyPresent) { 0 } else { $missingPortChecks + 1 }
-                    if ($missingPortChecks -ge 2) {
-                        $disconnected = $true
-                        Write-MonitorNote $log.Writer "USB disconnect detected; stopping this monitor process tree." -ShowOutput:$ShowOutput
-                        Stop-MonitorProcessTree $process
-                    }
-                } catch {}
-                $lastPortCheck.Restart()
+            $process.WaitForExit()
+            $exitCode = $process.ExitCode
+            $process.Dispose()
+            $process = $null
+            if ($connectionFailed) {
+                # esp-idf-monitor 1.9.0 can exit 0 after its initial serial open fails.
+                Write-MonitorNote $log.Writer "Port $selectedPort unavailable; retrying in 1 second. Capture remains open. Ctrl+C to stop." -ShowOutput:$ShowOutput
+                Start-Sleep -Seconds 1
             }
-
-            if (-not $running -and -not $noDataNoticeShown -and
-                $NoDataWarningSeconds -gt 0 -and $startedClock.Elapsed.TotalSeconds -ge $NoDataWarningSeconds) {
-                $noDataNoticeShown = $true
-                Write-MonitorNote $log.Writer "CONNECTING: no UART data yet; monitor remains active." -ShowOutput:$ShowOutput
-            }
-            if (-not $readAny -and -not ($process.HasExited -and $stdoutDone -and $stderrDone)) {
-                Start-Sleep -Milliseconds 40
-            }
-        }
-        $process.WaitForExit()
-        $exitCode = $process.ExitCode
-        $outcome = if ($disconnected) { "Disconnected" } elseif ($exitCode -eq 0) { "Exited" } else { "Failed" }
-        if ($exitCode -ne 0 -and -not $disconnected) {
+        } while ($connectionFailed)
+        $outcome = if ($exitCode -eq 0) { "Exited" } else { "Failed" }
+        if ($exitCode -ne 0) {
             Write-MonitorNote $log.Writer "Monitor process exited with code $exitCode. Choose another port or retry from the picker." -ShowOutput:$ShowOutput
-        } elseif (-not $disconnected) {
-            Write-MonitorNote $log.Writer "Monitor stopped. Log saved: $relativeLog" -ShowOutput:$ShowOutput
+        } elseif ($hasSerialData) {
+            Write-MonitorNote $log.Writer "Monitor stopped. UART log saved: $relativeLog" -ShowOutput:$ShowOutput
+        } else {
+            Write-MonitorNote $log.Writer "Monitor stopped without receiving UART data. Capture file: $relativeLog" -ShowOutput:$ShowOutput
         }
     } catch {
         $message = $_.Exception.Message
@@ -373,9 +373,8 @@ function Invoke-MonitorSession {
     return [pscustomobject]@{
         Outcome      = $outcome
         ExitCode     = $exitCode
-        Running      = $running
+        Running      = $hasSerialData
         LogPath      = $log.Path
-        Disconnected = $disconnected
     }
 }
 
@@ -394,10 +393,8 @@ if (-not $LibraryOnly) {
         }
         $session = Invoke-MonitorSession -Port $selectedPort -ProjectRoot $projectRoot -RunnerPath $runnerPath -ShowOutput
         if ($session.Outcome -eq "Exited") {
-            Write-Host "Monitor finished. Log saved: $($session.LogPath)"
+            Write-Host "Monitor stopped. Capture file: $($session.LogPath)"
             break
-        } elseif ($session.Outcome -eq "Disconnected") {
-            Write-Host "The selected USB serial port was disconnected. Select a port or press Q to exit."
         } elseif ($session.Outcome -eq "Failed") {
             Write-Host "Monitor did not start or exited with an error. Available ports:"
             foreach ($item in @(Get-PortInventory)) {
