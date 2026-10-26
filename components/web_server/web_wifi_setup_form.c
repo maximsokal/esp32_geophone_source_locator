@@ -48,7 +48,9 @@ static esp_err_t web_wifi_setup_decode_field(
     bool required
 )
 {
-    char copy[256];
+    /* 32-byte SSID + 63-byte password, every byte percent-encoded, plus the
+     * two keys and separators, is 300 bytes: the limit must not be below that. */
+    char copy[WEB_WIFI_SETUP_BODY_MAX];
 
     if (strlen(body) >= sizeof(copy)) {
         return ESP_ERR_INVALID_SIZE;

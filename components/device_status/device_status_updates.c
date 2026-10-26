@@ -1,6 +1,7 @@
 #include "device_status.h"
 
 #include "device_status_internal.h"
+#include <math.h>
 
 
 esp_err_t device_status_set_power(
@@ -9,6 +10,9 @@ esp_err_t device_status_set_power(
     bool valid
 )
 {
+    if (!valid) voltage_v = current_a = 0.0f;
+    if (valid && (!isfinite(voltage_v) || !isfinite(current_a) ||
+        !isfinite(voltage_v * current_a))) return ESP_ERR_INVALID_ARG;
     device_status_snapshot_t *status;
 
 
@@ -51,8 +55,8 @@ esp_err_t device_status_set_power_state(
 )
 {
     if (
-        state > DEVICE_POWER_STATE_BATTERY_CRITICAL ||
-        low_battery > DEVICE_LOW_BATTERY_SHUTDOWN
+        (unsigned)state > DEVICE_POWER_STATE_BATTERY_CRITICAL ||
+        (unsigned)low_battery > DEVICE_LOW_BATTERY_SHUTDOWN
     ) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -77,7 +81,7 @@ esp_err_t device_status_set_battery_soc_quality(
     device_battery_soc_quality_t quality
 )
 {
-    if (quality > DEVICE_BATTERY_SOC_FULL_ANCHORED) {
+    if ((unsigned)quality > DEVICE_BATTERY_SOC_FULL_ANCHORED) {
         return ESP_ERR_INVALID_ARG;
     }
     device_status_snapshot_t *status;
@@ -99,7 +103,7 @@ esp_err_t device_status_set_power_channel_overcurrent(
 {
     if (
         channel_index >= DEVICE_STATUS_POWER_CHANNEL_COUNT ||
-        overcurrent > DEVICE_POWER_OVERCURRENT_CRITICAL
+        (unsigned)overcurrent > DEVICE_POWER_OVERCURRENT_CRITICAL
     ) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -125,6 +129,9 @@ esp_err_t device_status_set_power_channel(
     bool valid
 )
 {
+    if (!valid) voltage_v = current_a = 0.0f;
+    if (valid && (!isfinite(voltage_v) || !isfinite(current_a) ||
+        !isfinite(voltage_v * current_a))) return ESP_ERR_INVALID_ARG;
     if (
         channel_index >=
         DEVICE_STATUS_POWER_CHANNEL_COUNT
@@ -184,6 +191,13 @@ esp_err_t device_status_set_power_battery(
     device_power_source_t source
 )
 {
+    if ((battery_present && (!isfinite(battery_voltage_v) || !isfinite(battery_current_a))) ||
+        (battery_percent_valid && (!battery_present || !isfinite(battery_percent_estimate) ||
+         battery_percent_estimate < 0.0f || battery_percent_estimate > 100.0f))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!battery_present) battery_voltage_v = battery_current_a = 0.0f;
+    if (!battery_percent_valid) battery_percent_estimate = 0.0f;
     if (
         source < DEVICE_POWER_SOURCE_UNKNOWN ||
         source > DEVICE_POWER_SOURCE_USB
@@ -239,6 +253,10 @@ esp_err_t device_status_set_environment(
     bool valid
 )
 {
+    if (!valid) temperature_c = humidity_percent = pressure_pa = 0.0f;
+    if (valid && (!isfinite(temperature_c) || !isfinite(humidity_percent) ||
+        !isfinite(pressure_pa) || humidity_percent < 0.0f || humidity_percent > 100.0f ||
+        pressure_pa <= 0.0f)) return ESP_ERR_INVALID_ARG;
     device_status_snapshot_t *status;
 
 

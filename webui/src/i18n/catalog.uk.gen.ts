@@ -1317,6 +1317,7 @@ export const uk: Record<I18nKey, string> = {
   "tft.workflow.sensor.planar": "Можливе 2D; для 3D підключіть щонайменше 4",
   "tft.workflow.sensor.ready": "3D готове",
   "tft.workflow.sensor.remote_count": "REMOTE:%s N:nRF I:IMU B:баро C:кал",
+  "tft.workflow.sensor.values_legend": "гПа / °C / гіро °/с | MAIN %s %s",
   "tft.workflow.state.calibrated": "Відкалібровано",
   "tft.workflow.state.gravity": "Гравітація",
   "tft.workflow.state.moving": "Рух",

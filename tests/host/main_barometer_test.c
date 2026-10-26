@@ -41,6 +41,8 @@ typedef struct {
     bool timeout_bmp_data;
     /* Opt-in: a BMP/BME280 outside normal mode returns the reset data (0x80000). */
     bool bmp_model_sleep;
+    /* The shared bus is held by another owner: reads miss the owner lock. */
+    bool bmp_bus_busy;
     void *bus;
 } fake_sensor_bus_t;
 
@@ -179,6 +181,9 @@ static esp_err_t fake_read(
     if ((address == 0x76U || address == 0x77U) &&
         mem_address == REG_DATA && s_fake.timeout_bmp_data) {
         return ESP_ERR_TIMEOUT;
+    }
+    if ((address == 0x76U || address == 0x77U) && s_fake.bmp_bus_busy) {
+        return SENSOR_BUS_ERR_MUTEX_BUSY;
     }
     if ((address == 0x76U || address == 0x77U) && mem_address == REG_DATA &&
         s_fake.bmp_model_sleep && data_len == 6U &&
@@ -757,6 +762,84 @@ static void test_permanently_pending_sensor_invalidates_capture_after_bound(void
     main_barometer_close(&barometer);
 }
 
+/*
+ * SENSOR_BUS_ERR_MUTEX_BUSY means another task owns the shared bus (the field
+ * log prints it as "ERROR"). It says nothing about the sensor: it must not force
+ * a re-probe, and must not invalidate a height-reference capture.
+ */
+static void test_bus_busy_is_not_a_sensor_failure(void)
+{
+    reset_fake();
+    main_barometer_request_polling();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    poll_range(&barometer, 0U, 400U);
+    assert(barometer.reading.bmp280_valid);
+
+    const size_t probes_before = s_fake.address_probe_count;
+    s_fake.bmp_bus_busy = true;
+    for (uint64_t now_ms = 600U; now_ms <= 1000U; now_ms += 200U) {
+        assert(main_barometer_poll(&barometer, now_ms) == SENSOR_BUS_ERR_MUTEX_BUSY);
+        assert(!barometer.reading.bmp280_valid);
+    }
+    assert(s_fake.address_probe_count == probes_before);
+
+    s_fake.bmp_bus_busy = false;
+    assert(main_barometer_poll(&barometer, 1200U) == ESP_OK);
+    assert(barometer.reading.bmp280_valid);
+    assert(s_fake.address_probe_count == probes_before);
+    main_barometer_close(&barometer);
+}
+
+static void test_bus_busy_does_not_kill_height_reference_capture(void)
+{
+    reset_fake();
+    main_barometer_request_polling();
+    setup_bmp280(0x77U, BMP_ID);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_request_height_reference_capture(97U) == ESP_OK);
+    poll_range(&barometer, 0U, 400U);
+    assert(barometer.reading.bmp280_valid);
+
+    s_fake.bmp_bus_busy = true;
+    assert(main_barometer_poll(&barometer, 600U) == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(main_barometer_poll(&barometer, 800U) == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(barometer.reading.height_reference_state !=
+           MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    s_fake.bmp_bus_busy = false;
+
+    poll_range(&barometer, 1000U, 4000U);
+    assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID);
+    assert(barometer.reading.height_reference_generation == 97U);
+    main_barometer_close(&barometer);
+}
+
+static void test_persistent_bus_busy_invalidates_capture_after_bound(void)
+{
+    reset_fake();
+    main_barometer_request_polling();
+    setup_bmp280(0x77U, BMP_ID);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_request_height_reference_capture(98U) == ESP_OK);
+    poll_range(&barometer, 0U, 400U);
+
+    s_fake.bmp_bus_busy = true;
+    uint64_t now_ms = 600U;
+    for (unsigned busy = 1U; busy <= 14U; ++busy, now_ms += 200U) {
+        assert(main_barometer_poll(&barometer, now_ms) == SENSOR_BUS_ERR_MUTEX_BUSY);
+        assert(barometer.reading.height_reference_state !=
+               MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    }
+    assert(main_barometer_poll(&barometer, now_ms) == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(barometer.reading.height_reference_state ==
+           MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    main_barometer_close(&barometer);
+}
+
 int main(void)
 {
     test_boot_polling_does_not_touch_i2c_before_preflight();
@@ -778,5 +861,8 @@ int main(void)
     test_pending_conversion_does_not_add_probe_traffic();
     test_transient_pending_does_not_kill_height_reference_capture();
     test_permanently_pending_sensor_invalidates_capture_after_bound();
+    test_bus_busy_is_not_a_sensor_failure();
+    test_bus_busy_does_not_kill_height_reference_capture();
+    test_persistent_bus_busy_invalidates_capture_after_bound();
     return 0;
 }

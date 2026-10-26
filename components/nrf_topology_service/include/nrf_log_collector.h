@@ -91,6 +91,10 @@ typedef struct {
     void (*report_link_failure)(void *context, uint8_t node_index);
     void (*report_firmware)(void *context, uint8_t node_index,
         uint32_t boot_id, const nrf_log_firmware_info_t *info);
+    /* Optional. Newly stored records, called once per commit after the bus
+     * session has ended and the collector lock is released (serial-log sink). */
+    void (*report_records)(void *context, uint8_t node_index,
+        const nrf_log_stored_record_t *records, size_t count);
 } nrf_log_collector_io_t;
 
 typedef struct {

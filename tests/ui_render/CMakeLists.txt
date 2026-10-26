@@ -44,6 +44,7 @@ set(UI_RENDER_SOURCES
     "${REPO_ROOT}/components/ui/ui_perf_policy.c"
     "${REPO_ROOT}/components/ui/ui_power_badge.c"
     "${REPO_ROOT}/components/ui/ui_workflow_model.c"
+    "${REPO_ROOT}/components/ui/ui_workflow_sensor_values.c"
     "${REPO_ROOT}/components/ui_i18n/ui_utf8_format.c"
     "${REPO_ROOT}/components/ui/fonts/ui_font_montserrat_14.c"
     "${REPO_ROOT}/components/ui_i18n/ui_i18n.c"

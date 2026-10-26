@@ -14,7 +14,7 @@ static const char *TAG =
     "WEB_WIFI_SETUP";
 
 
-#define WIFI_SETUP_BODY_SIZE        256
+#define WIFI_SETUP_BODY_SIZE        WEB_WIFI_SETUP_BODY_MAX
 #define WIFI_SETUP_SSID_SIZE        33
 #define WIFI_SETUP_PASSWORD_SIZE    64
 #define WIFI_SETUP_STA_SWITCH_MS    750

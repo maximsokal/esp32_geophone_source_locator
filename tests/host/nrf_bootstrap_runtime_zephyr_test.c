@@ -811,6 +811,368 @@ static void check_cs_failure_event(
     }
 }
 
+/*
+ * Contract of the TWIS log path between the ESP32 master and this target.
+ *
+ * The nrfx TWIS shim (ncs v3.4.0 zephyr/drivers/i2c/i2c_nrfx_twis.c) only prepares
+ * the transmit DMA when buf_read_requested returns 0 and the buffer fits its DMA
+ * buffer (CONFIG_I2C_NRFX_TWIS_BUF_SIZE=144 in nRF54L15/zephyr/prj.conf). In every
+ * other case it logs and returns, the peripheral keeps SCL low and the ESP32
+ * aborts with "I2C transaction timeout detected" (the symptom seen on MAIN).
+ * RX is cut at the same DMA buffer size. This model applies exactly those rules,
+ * so no request, however malformed, may leave the target without a response.
+ */
+#define TWIS_DMA_BUFFER_SIZE 144U
+
+static unsigned s_twis_contract_cases;
+
+typedef struct {
+    bool stalled;
+    uint32_t length;
+    uint8_t data[TWIS_DMA_BUFFER_SIZE];
+} twis_response_t;
+
+static twis_response_t twis_read(void)
+{
+    twis_response_t response;
+    uint8_t *buffer = NULL;
+    uint32_t size = 0U;
+
+    memset(&response, 0, sizeof(response));
+    const int result = s_callbacks->buf_read_requested(NULL, &buffer, &size);
+    response.stalled = result != 0 || buffer == NULL || size == 0U || size > TWIS_DMA_BUFFER_SIZE;
+    if (!response.stalled) {
+        response.length = size;
+        memcpy(response.data, buffer, size);
+    }
+    return response;
+}
+
+static twis_response_t twis_write_then_read(const uint8_t *frame, uint32_t length)
+{
+    uint8_t rx[TWIS_DMA_BUFFER_SIZE] = {0};
+    const uint32_t accepted = length > TWIS_DMA_BUFFER_SIZE ? TWIS_DMA_BUFFER_SIZE : length;
+
+    if (accepted != 0U) {
+        memcpy(rx, frame, accepted);
+    }
+    s_callbacks->buf_write_received(NULL, rx, accepted);
+    return twis_read();
+}
+
+typedef struct {
+    unsigned submits;
+    unsigned refreshes;
+    unsigned heights;
+    unsigned calibrations;
+    unsigned reboots;
+    unsigned readdresses;
+    unsigned assignments;
+    nrf_upstream_status_t status;
+} twis_state_t;
+
+static twis_state_t twis_state(void)
+{
+    twis_state_t state = {
+        .submits = s_submit_calls,
+        .refreshes = s_sensor_refresh_calls,
+        .heights = s_height_reference_calls,
+        .calibrations = s_imu_calibration_calls,
+        .reboots = s_reboot_calls,
+        .readdresses = s_readdress_calls,
+        .assignments = s_sensor_assignment_calls,
+    };
+    /* A log reply stays selected until the next write; a zero-length write ends it. */
+    s_callbacks->buf_write_received(NULL, NULL, 0U);
+    state.status = read_status(NULL);
+    return state;
+}
+
+/* A rejected request must not start work or change the assignment. */
+static void twis_assert_state_unchanged(const twis_state_t *before)
+{
+    const twis_state_t after = twis_state();
+
+    assert(after.submits == before->submits);
+    assert(after.refreshes == before->refreshes);
+    assert(after.heights == before->heights);
+    assert(after.calibrations == before->calibrations);
+    assert(after.reboots == before->reboots);
+    assert(after.readdresses == before->readdresses);
+    assert(after.assignments == before->assignments);
+    assert(after.status.role == before->status.role);
+    assert(after.status.node_id == before->status.node_id);
+    assert(after.status.mux_channel == before->status.mux_channel);
+    assert(after.status.target_address == before->status.target_address);
+    assert(after.status.lifecycle == before->status.lifecycle);
+    assert(after.status.flags == before->status.flags);
+    assert(after.status.hardware_id_length == before->status.hardware_id_length);
+    assert(memcmp(after.status.hardware_id, before->status.hardware_id,
+                  sizeof(after.status.hardware_id)) == 0);
+}
+
+static bool twis_is_log_reply(const twis_response_t *response)
+{
+    return response->length > 3U &&
+           (response->data[3] == NRF_LOG_MESSAGE_STATUS ||
+            response->data[3] == NRF_LOG_MESSAGE_BLOCK ||
+            response->data[3] == NRF_LOG_MESSAGE_FIRMWARE);
+}
+
+/* The reply to a rejected write is the ordinary upstream STATUS (or snapshot). */
+static void twis_assert_upstream_status(const twis_response_t *response)
+{
+    nrf_upstream_status_t status;
+
+    assert(!response->stalled);
+    assert(response->length == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH ||
+           response->length == NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH);
+    assert(!twis_is_log_reply(response));
+    assert(nrf_upstream_protocol_decode_status(
+               response->data, NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH, &status) ==
+           NRF_UPSTREAM_RESULT_OK);
+}
+
+static void twis_refresh_crc(uint8_t *frame, size_t length)
+{
+    const uint16_t crc = nrf_upstream_protocol_crc16_ccitt_false(frame, length - 2U);
+
+    frame[length - 2U] = (uint8_t)crc;
+    frame[length - 1U] = (uint8_t)(crc >> 8U);
+}
+
+static void twis_check_log_status(uint32_t request_id)
+{
+    const nrf_log_status_request_t request = {.request_id = request_id};
+    uint8_t frame[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+    nrf_log_status_t status;
+
+    assert(nrf_log_protocol_encode_status_request(&request, frame) == NRF_LOG_ERROR_OK);
+    const twis_response_t first = twis_write_then_read(frame, sizeof(frame));
+    ++s_twis_contract_cases;
+    assert(!first.stalled && first.length == NRF_LOG_PROTOCOL_STATUS_LENGTH);
+    assert(first.data[3] == NRF_LOG_MESSAGE_STATUS);
+    assert(nrf_log_protocol_decode_status(first.data, first.length, &status) == NRF_LOG_ERROR_OK);
+    assert(status.request_id == request_id);
+    assert(status.boot_id == nrf_log_runtime_zephyr_boot_id());
+    assert(status.next_seq >= status.oldest_seq);
+    assert(status.available == status.next_seq - status.oldest_seq);
+    /* The ESP32 reads a 28..33 byte prefix first and the full frame afterwards. */
+    for (unsigned repeat = 0U; repeat < 3U; ++repeat) {
+        const twis_response_t again = twis_read();
+        assert(!again.stalled && again.length == first.length);
+        assert(memcmp(again.data, first.data, first.length) == 0);
+    }
+}
+
+static nrf_log_block_t twis_check_log_block(
+    uint32_t request_id,
+    uint32_t expected_boot_id,
+    uint32_t cursor_seq,
+    uint8_t max_records)
+{
+    const nrf_log_read_request_t request = {
+        .request_id = request_id,
+        .expected_boot_id = expected_boot_id,
+        .cursor_seq = cursor_seq,
+        .max_records = max_records,
+    };
+    uint8_t frame[NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH];
+    nrf_log_block_t block;
+    nrf_log_block_validation_t validation = {
+        .has_expected_boot_id = true,
+        .expected_boot_id = expected_boot_id,
+        .has_max_records = true,
+        .max_records = max_records,
+    };
+
+    assert(nrf_log_protocol_encode_read_request(&request, frame) == NRF_LOG_ERROR_OK);
+    const twis_response_t first = twis_write_then_read(frame, sizeof(frame));
+    ++s_twis_contract_cases;
+    assert(!first.stalled);
+    assert(first.data[3] == NRF_LOG_MESSAGE_BLOCK);
+    assert(nrf_log_protocol_decode_block(first.data, first.length, &validation, &block) ==
+           NRF_LOG_ERROR_OK);
+    assert(block.request_id == request_id);
+    assert(block.record_count <= max_records);
+    /* The ESP32 reads exactly base + records * record_length bytes for max_records. */
+    assert(first.length == NRF_LOG_PROTOCOL_BLOCK_BASE_LENGTH +
+                           (uint32_t)NRF_LOG_PROTOCOL_RECORD_LENGTH * block.record_count);
+    assert(first.length <= NRF_LOG_PROTOCOL_BLOCK_BASE_LENGTH +
+                           (uint32_t)NRF_LOG_PROTOCOL_RECORD_LENGTH * max_records);
+    assert(first.length <= TWIS_DMA_BUFFER_SIZE);
+    const twis_response_t again = twis_read();
+    assert(!again.stalled && again.length == first.length);
+    assert(memcmp(again.data, first.data, first.length) == 0);
+    return block;
+}
+
+static void twis_check_log_firmware(uint32_t request_id)
+{
+    const nrf_log_status_request_t request = {.request_id = request_id};
+    uint8_t frame[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+    nrf_log_firmware_info_t info;
+
+    assert(nrf_log_protocol_encode_firmware_request(&request, frame) == NRF_LOG_ERROR_OK);
+    const twis_response_t response = twis_write_then_read(frame, sizeof(frame));
+    ++s_twis_contract_cases;
+    assert(!response.stalled && response.length == NRF_LOG_PROTOCOL_FIRMWARE_LENGTH);
+    assert(response.data[3] == NRF_LOG_MESSAGE_FIRMWARE);
+    assert(nrf_log_protocol_decode_firmware(response.data, response.length, &info) ==
+           NRF_LOG_ERROR_OK);
+    assert(info.request_id == request_id);
+    assert(info.boot_id == nrf_log_runtime_zephyr_boot_id());
+}
+
+static void twis_check_rejected(const uint8_t *frame, uint32_t length, const twis_state_t *before)
+{
+    const twis_response_t response = twis_write_then_read(frame, length);
+
+    ++s_twis_contract_cases;
+    twis_assert_upstream_status(&response);
+    twis_assert_state_unchanged(before);
+}
+
+static void test_twis_log_contract_never_leaves_the_target_without_a_response(void)
+{
+    uint8_t status_request[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+    uint8_t firmware_request[NRF_LOG_PROTOCOL_STATUS_REQUEST_LENGTH];
+    uint8_t read_request[NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH];
+    const struct {
+        const uint8_t *frame;
+        uint32_t length;
+    } valid[] = {
+        {status_request, sizeof(status_request)},
+        {firmware_request, sizeof(firmware_request)},
+        {read_request, sizeof(read_request)},
+    };
+    nrf_log_status_t log_status;
+
+    /* Enough history for a full block, a partial block and an empty one. */
+    for (uint32_t i = 0U; i < 12U; ++i) {
+        nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_BOOT, i, 0U);
+    }
+    log_status = read_log_status();
+    assert(log_status.next_seq - log_status.oldest_seq >= 12U);
+
+    /* Valid requests: every record count, every cursor class, repeated reads. */
+    twis_check_log_status(0x5100U);
+    twis_check_log_firmware(0x5200U);
+    for (uint8_t max_records = 1U; max_records <= NRF_LOG_PROTOCOL_MAX_RECORDS; ++max_records) {
+        const uint32_t cursors[] = {
+            log_status.oldest_seq,
+            log_status.oldest_seq + 3U,
+            log_status.next_seq - 1U,
+            log_status.next_seq,
+        };
+        for (size_t c = 0U; c < sizeof(cursors) / sizeof(cursors[0]); ++c) {
+            const uint32_t pending = log_status.next_seq - cursors[c];
+            const nrf_log_block_t block = twis_check_log_block(
+                0x5300U + max_records * 16U + (uint32_t)c, log_status.boot_id, cursors[c], max_records);
+            assert(block.record_count == (pending < max_records ? pending : max_records));
+            assert(((block.flags & NRF_LOG_BLOCK_FLAG_MORE) != 0U) == (pending > block.record_count));
+        }
+        /* A reboot between STATUS and READ: empty block flagged BOOT_MISMATCH, 36 bytes. */
+        const nrf_log_block_t mismatch = twis_check_log_block(
+            0x5400U + max_records, log_status.boot_id ^ 0x5A5A5A5AU, log_status.oldest_seq, max_records);
+        assert(mismatch.record_count == 0U);
+        assert((mismatch.flags & NRF_LOG_BLOCK_FLAG_BOOT_MISMATCH) != 0U);
+    }
+
+    {
+        const nrf_log_status_request_t status_id = {.request_id = 0x5501U};
+        const nrf_log_status_request_t firmware_id = {.request_id = 0x5502U};
+        const nrf_log_read_request_t read_id = {
+            .request_id = 0x5503U,
+            .expected_boot_id = log_status.boot_id,
+            .cursor_seq = log_status.oldest_seq,
+            .max_records = NRF_LOG_PROTOCOL_MAX_RECORDS,
+        };
+        assert(nrf_log_protocol_encode_status_request(&status_id, status_request) == NRF_LOG_ERROR_OK);
+        assert(nrf_log_protocol_encode_firmware_request(&firmware_id, firmware_request) == NRF_LOG_ERROR_OK);
+        assert(nrf_log_protocol_encode_read_request(&read_id, read_request) == NRF_LOG_ERROR_OK);
+    }
+
+    const twis_state_t before = twis_state();
+
+    /* Any single flipped bit: the CRC rejects it, the target still answers. */
+    for (size_t v = 0U; v < sizeof(valid) / sizeof(valid[0]); ++v) {
+        for (uint32_t byte = 0U; byte < valid[v].length; ++byte) {
+            for (unsigned bit = 0U; bit < 8U; ++bit) {
+                uint8_t corrupted[NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH];
+                memcpy(corrupted, valid[v].frame, valid[v].length);
+                corrupted[byte] ^= (uint8_t)(1U << bit);
+                twis_check_rejected(corrupted, valid[v].length, &before);
+            }
+        }
+    }
+
+    /* Truncated, padded and over-long writes (the DMA buffer cuts RX at 144 bytes). */
+    for (size_t v = 0U; v < sizeof(valid) / sizeof(valid[0]); ++v) {
+        static const uint32_t extra[] = {1U, 2U, 3U, 4U, 20U, 100U, 120U, 132U, 150U};
+        for (uint32_t length = 0U; length < valid[v].length; ++length) {
+            twis_check_rejected(valid[v].frame, length, &before);
+        }
+        for (size_t e = 0U; e < sizeof(extra) / sizeof(extra[0]); ++e) {
+            uint8_t padded[TWIS_DMA_BUFFER_SIZE + 16U] = {0};
+            memcpy(padded, valid[v].frame, valid[v].length);
+            twis_check_rejected(padded, valid[v].length + extra[e], &before);
+            memset(padded + valid[v].length, 0xFF, sizeof(padded) - valid[v].length);
+            twis_check_rejected(padded, valid[v].length + extra[e], &before);
+        }
+    }
+    twis_check_rejected(NULL, 0U, &before);
+
+    /* Well-formed frames (valid CRC) carrying out-of-range fields. */
+    {
+        uint8_t forged[NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH];
+        static const uint8_t bad_counts[] = {0U, 6U, 7U, 16U, 128U, 255U};
+
+        for (size_t i = 0U; i < sizeof(bad_counts); ++i) {
+            memcpy(forged, read_request, sizeof(forged));
+            forged[18] = bad_counts[i];
+            twis_refresh_crc(forged, sizeof(forged));
+            twis_check_rejected(forged, sizeof(forged), &before);
+        }
+        for (unsigned value = 1U; value < 256U; value += 17U) {
+            memcpy(forged, read_request, sizeof(forged));
+            forged[19] = (uint8_t)value; /* reserved byte */
+            twis_refresh_crc(forged, sizeof(forged));
+            twis_check_rejected(forged, sizeof(forged), &before);
+        }
+        for (unsigned version = 0U; version < 256U; version += 51U) {
+            if (version == NRF_LOG_PROTOCOL_VERSION) continue;
+            memcpy(forged, read_request, sizeof(forged));
+            forged[2] = (uint8_t)version;
+            twis_refresh_crc(forged, sizeof(forged));
+            twis_check_rejected(forged, sizeof(forged), &before);
+        }
+        for (unsigned declared = 0U; declared < 64U; declared += 7U) {
+            if (declared == sizeof(forged)) continue;
+            memcpy(forged, read_request, sizeof(forged));
+            forged[4] = (uint8_t)declared; /* declared length differs from the wire length */
+            twis_refresh_crc(forged, sizeof(forged));
+            twis_check_rejected(forged, sizeof(forged), &before);
+        }
+        /* A cursor beyond next_seq for the current boot is an invariant violation, answered
+         * with the error STATUS, never with silence. */
+        memcpy(forged, read_request, sizeof(forged));
+        forged[14] = 0xFFU;
+        forged[15] = 0xFFU;
+        forged[16] = 0xFFU;
+        forged[17] = 0x7FU;
+        twis_refresh_crc(forged, sizeof(forged));
+        twis_check_rejected(forged, sizeof(forged), &before);
+    }
+
+    /* A valid request after all that noise is answered normally. */
+    twis_check_log_status(0x5600U);
+    twis_check_log_block(0x5601U, log_status.boot_id, log_status.oldest_seq, 2U);
+    twis_check_log_firmware(0x5602U);
+    /* 368 single-bit flips, 46 truncations, 54 padded writes, 1 empty write, 38 forged frames, 30 valid exchanges. */
+    assert(s_twis_contract_cases == 537U);
+}
+
 /* characterization: host integration baseline for the real TWIS callbacks and work handlers. */
 int main(void)
 {
@@ -1391,5 +1753,6 @@ int main(void)
         nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&twis_diagnostics);
         assert(twis_diagnostics.transaction_count == callbacks_before);
     }
+    test_twis_log_contract_never_leaves_the_target_without_a_response();
     return 0;
 }

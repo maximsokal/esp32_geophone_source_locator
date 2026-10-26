@@ -2,6 +2,7 @@
 #include "sensor_bus_diag.h"
 #include "sensor_bus_lines.h"
 #include "sensor_bus_probe_diag.h"
+#include "sensor_bus_timeout.h"
 #include "board_config.h"
 
 #include <stdlib.h>
@@ -253,6 +254,7 @@ static esp_err_t sensor_bus_device_create_locked(
     i2c_bus_handle_t bus,
     uint8_t address,
     uint32_t speed_hz,
+    uint32_t scl_wait_us,
     i2c_bus_device_handle_t *device)
 {
     if (bus == NULL || bus != s_bus || device == NULL) {
@@ -280,6 +282,7 @@ static esp_err_t sensor_bus_device_create_locked(
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = address,
         .scl_speed_hz = speed,
+        .scl_wait_us = scl_wait_us,
     };
     i2c_master_dev_handle_t master_device = NULL;
     const esp_err_t add_err = i2c_master_bus_add_device(
@@ -1052,7 +1055,7 @@ static esp_err_t sensor_bus_init_locked(void)
 #endif
 
     const esp_err_t device_err = sensor_bus_device_create_locked(
-        s_bus, BOARD_INA3221_I2C_ADDRESS, SENSOR_BUS_I2C_SPEED_HZ, &s_ina3221);
+        s_bus, BOARD_INA3221_I2C_ADDRESS, SENSOR_BUS_I2C_SPEED_HZ, 0U, &s_ina3221);
     if (device_err != ESP_OK) {
         (void)i2c_bus_delete(&s_bus);
         return device_err;
@@ -1150,7 +1153,7 @@ esp_err_t sensor_bus_get_tca9548a(i2c_bus_device_handle_t *device, uint8_t *addr
 
         i2c_bus_device_handle_t candidate = NULL;
         err = sensor_bus_device_create_locked(
-            s_bus, candidate_address, SENSOR_BUS_I2C_SPEED_HZ, &candidate);
+            s_bus, candidate_address, SENSOR_BUS_I2C_SPEED_HZ, 0U, &candidate);
         if (err != ESP_OK) {
             goto fail;
         }
@@ -1226,10 +1229,11 @@ fail:
     return err;
 }
 
-esp_err_t sensor_bus_device_create(
+esp_err_t sensor_bus_device_create_with_scl_wait(
     i2c_bus_handle_t bus,
     uint8_t address,
     uint32_t speed_hz,
+    uint32_t scl_wait_us,
     i2c_bus_device_handle_t *device)
 {
     if (device == NULL) {
@@ -1241,9 +1245,18 @@ esp_err_t sensor_bus_device_create(
         return lock_err;
     }
     const esp_err_t err = sensor_bus_device_create_locked(
-        bus, address, speed_hz, device);
+        bus, address, speed_hz, scl_wait_us, device);
     sensor_bus_unlock();
     return err;
+}
+
+esp_err_t sensor_bus_device_create(
+    i2c_bus_handle_t bus,
+    uint8_t address,
+    uint32_t speed_hz,
+    i2c_bus_device_handle_t *device)
+{
+    return sensor_bus_device_create_with_scl_wait(bus, address, speed_hz, 0U, device);
 }
 
 esp_err_t sensor_bus_device_delete(i2c_bus_device_handle_t *device)
@@ -1310,6 +1323,14 @@ static esp_err_t sensor_bus_find_native_device(
     *entry = sensor_bus_find_device_locked(device);
     return *entry != NULL && (*entry)->master_device != NULL
         ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+/* See sensor_bus_timeout.h: the fixed 20 ms is only guaranteed for 10 ms at a 100 Hz tick. */
+static uint32_t sensor_bus_default_timeout_ms(size_t wire_data_bytes)
+{
+    return sensor_bus_transfer_timeout_ms(
+        wire_data_bytes, SENSOR_BUS_I2C_SPEED_HZ, configTICK_RATE_HZ,
+        SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
 }
 
 static esp_err_t sensor_bus_read_bytes_internal(
@@ -1385,7 +1406,9 @@ esp_err_t sensor_bus_read_bytes(
 {
     return sensor_bus_read_bytes_internal(
         device, mem_address, data_len, data,
-        SENSOR_BUS_TRANSACTION_TIMEOUT_MS, true);
+        sensor_bus_default_timeout_ms(
+            data_len + (mem_address == NULL_I2C_MEM_ADDR ? 0U : 2U)),
+        true);
 }
 
 esp_err_t sensor_bus_read_bytes_with_timeout(
@@ -1456,7 +1479,7 @@ esp_err_t sensor_bus_write_bytes(
     bool report_timeout = false;
     esp_err_t err = sensor_bus_find_native_device(device, &entry);
     if (err == ESP_OK) {
-        const uint32_t timeout_ms = sensor_bus_owner_timeout_ms(SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
+        const uint32_t timeout_ms = sensor_bus_owner_timeout_ms(sensor_bus_default_timeout_ms(tx_len));
         const bool close_write = entry->address == s_tca9548a_address &&
             !has_mem_address && data_len == 1U && data[0] == 0U;
         bool close_read = false;

@@ -45,10 +45,13 @@ bool ina3221_limits_valid(const ina3221_limits_t *limits, float shunt_ohm)
 
 uint16_t ina3221_limits_register_value(float current_a, float shunt_ohm)
 {
-    if (!(shunt_ohm > 0.0f) || !isfinite(current_a)) {
+    if (!(shunt_ohm > 0.0f) || !isfinite(shunt_ohm) || !isfinite(current_a)) {
         return INA3221_LIMITS_REG_DISABLED;
     }
     float counts_f = (current_a * shunt_ohm) / INA3221_LIMITS_SHUNT_LSB_V;
+    /* Saturate before the float-to-int conversion, including product overflow. */
+    if (counts_f >= INA3221_LIMITS_MAX_COUNTS) return 0x7FF8U;
+    if (counts_f <= -INA3221_LIMITS_MAX_COUNTS - 1) return 0x8000U;
     counts_f = counts_f >= 0.0f ? floorf(counts_f + 0.5f) : ceilf(counts_f - 0.5f);
     int counts = (int)counts_f;
     if (counts > INA3221_LIMITS_MAX_COUNTS) {

@@ -25,6 +25,7 @@ esp_err_t device_status_set_pod_state(
     pod_state_t state
 )
 {
+    if ((unsigned)state > POD_STATE_ERROR) return ESP_ERR_INVALID_ARG;
     esp_err_t err =
         device_status_validate_pod(
             pod_index
@@ -62,6 +63,11 @@ esp_err_t device_status_set_pod_barometer(
     bool valid
 )
 {
+    if (!valid) pressure_pa = relative_altitude_cm = reference_pressure_pa = 0.0f;
+    if (valid && (!isfinite(pressure_pa) || !isfinite(relative_altitude_cm) ||
+        !isfinite(reference_pressure_pa) || pressure_pa <= 0.0f || reference_pressure_pa <= 0.0f)) {
+        return ESP_ERR_INVALID_ARG;
+    }
     esp_err_t err =
         device_status_validate_pod(
             pod_index
@@ -153,6 +159,36 @@ esp_err_t device_status_set_pod_sensor_health(
 }
 
 
+esp_err_t device_status_set_pod_gyro_rate(
+    size_t pod_index,
+    float rate_dps,
+    bool valid
+)
+{
+    if (!valid) rate_dps = 0.0f;
+    if (valid && (!isfinite(rate_dps) || rate_dps < 0.0f)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = device_status_validate_pod(pod_index);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    device_status_snapshot_t *status;
+    err = device_status_internal_lock(&status);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    device_imu_status_t *imu = &status->pods[pod_index].imu;
+    imu->gyro_valid = valid;
+    imu->gyro_rate_dps = rate_dps;
+
+    device_status_internal_unlock();
+    return ESP_OK;
+}
+
+
 esp_err_t device_status_set_pod_imu(
     size_t pod_index,
     float roll_deg,
@@ -161,6 +197,10 @@ esp_err_t device_status_set_pod_imu(
     bool valid
 )
 {
+    if (!valid) roll_deg = pitch_deg = yaw_relative_deg = 0.0f;
+    if (valid && (!isfinite(roll_deg) || !isfinite(pitch_deg) || !isfinite(yaw_relative_deg))) {
+        return ESP_ERR_INVALID_ARG;
+    }
     esp_err_t err =
         device_status_validate_pod(
             pod_index
@@ -341,6 +381,10 @@ esp_err_t device_status_set_pod_geophone(
     bool valid
 )
 {
+    if (!valid) instant_uv = rms_uv = peak_uv = noise_rms_uv = snr_db = 0.0f;
+    if (valid && (!isfinite(instant_uv) || !isfinite(rms_uv) || !isfinite(peak_uv) ||
+        !isfinite(noise_rms_uv) || !isfinite(snr_db) || rms_uv < 0.0f || peak_uv < 0.0f ||
+        noise_rms_uv < 0.0f)) return ESP_ERR_INVALID_ARG;
     esp_err_t err =
         device_status_validate_pod(
             pod_index

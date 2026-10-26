@@ -36,6 +36,9 @@ C_FIXTURE = r"""
 #include "ui_utf8_format.h"
 #include "device_status.h"
 #include "ui_node_link_status.h"
+#include "ui_workflow_sensor_values.h"
+
+int64_t esp_timer_get_time(void) { return 0; }
 
 typedef struct lv_obj_t {
     struct lv_obj_t *parent;
@@ -244,6 +247,7 @@ def layout_program():
     entry["include_dirs"].insert(0, "components/device_status/include")
     entry["include_dirs"].append("components/nrf_topology_service/include")
     entry["sources"] = [s for s in entry["sources"] if not s.endswith("/ui_workflow_model_test.c")] + [str(source)]
+    entry["sources"].append("components/ui/ui_workflow_sensor_values.c")
     manifest = work / "manifest.json"
     manifest.write_text(json.dumps({"version": 1, "tests": [entry]}), encoding="utf-8")
     result = subprocess.run(

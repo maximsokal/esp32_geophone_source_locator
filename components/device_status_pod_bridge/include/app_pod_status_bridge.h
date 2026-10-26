@@ -14,6 +14,9 @@
  * device_status_set_pod_barometer(). Read-only with respect to
  * nrf_topology_service: never requests a refresh, never blocks acquisition.
  *
+ * Also published, as plain measurements: BME280 temperature/humidity and the
+ * BMI160 gyroscope rate magnitude (device_status_set_pod_gyro_rate()).
+ *
  * IMU (roll/pitch/yaw) is intentionally NOT populated here: the actual
  * orientation estimator produces a single combined
  * tilt-from-vertical metric (orientation_tilt_sin2_ppm), not decomposed

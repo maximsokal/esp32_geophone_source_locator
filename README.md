@@ -306,6 +306,8 @@ The web component exposes only `include/web_server.h` publicly. Internal routes,
 
 For local firmware tests, the risk-based coverage plan and host/target verification boundaries, see [docs/firmware-test-plan.md](docs/firmware-test-plan.md). The project-wide validation contract, including the staged nRF54L15 software/HIL gates, is [docs/local-verification.md](docs/local-verification.md).
 
+The sensor input/output map and its offline executable checks are in [docs/sensor-signals.md](docs/sensor-signals.md): `python tools/run_sensor_signal_checks.py`.
+
 Install ESP-IDF v5.5.4 and open an ESP-IDF terminal in the repository directory.
 
 When managed dependencies change:

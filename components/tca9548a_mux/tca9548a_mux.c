@@ -67,6 +67,21 @@ static esp_err_t tca9548a_mux_best_effort_recover_closed(tca9548a_mux_t *mux)
     return err;
 }
 
+/*
+ * A select attempt may already have opened the channel. If the close that
+ * follows a failed attempt is itself only deferred (owner lock / hold budget),
+ * the channel can still be open: never report CLOSED then, or a caller that
+ * skips closing a closed mux leaves the channel open.
+ */
+static void tca9548a_mux_recover_after_failed_select(tca9548a_mux_t *mux, uint8_t channel)
+{
+    const esp_err_t err = tca9548a_mux_best_effort_recover_closed(mux);
+    if (err != ESP_OK && tca9548a_mux_is_yield_error(err)) {
+        mux->state = TCA9548A_MUX_STATE_SELECTED;
+        mux->selected_channel = (int8_t)channel;
+    }
+}
+
 esp_err_t tca9548a_mux_init(tca9548a_mux_t *mux, const tca9548a_mux_io_t *io)
 {
     if (mux == NULL || io == NULL || io->write_control == NULL || io->read_control == NULL) {
@@ -120,7 +135,7 @@ esp_err_t tca9548a_mux_select(tca9548a_mux_t *mux, uint8_t channel)
         mux->io.context, mux->io.address, mask,
         TCA9548A_MUX_PHASE_SELECT, (int)channel);
     if (err != ESP_OK) {
-        (void)tca9548a_mux_best_effort_recover_closed(mux);
+        tca9548a_mux_recover_after_failed_select(mux, channel);
         return err;
     }
 
@@ -129,11 +144,11 @@ esp_err_t tca9548a_mux_select(tca9548a_mux_t *mux, uint8_t channel)
         mux->io.context, mux->io.address, &readback, mask,
         TCA9548A_MUX_PHASE_VERIFY, (int)channel);
     if (err != ESP_OK) {
-        (void)tca9548a_mux_best_effort_recover_closed(mux);
+        tca9548a_mux_recover_after_failed_select(mux, channel);
         return err;
     }
     if (readback != mask) {
-        (void)tca9548a_mux_best_effort_recover_closed(mux);
+        tca9548a_mux_recover_after_failed_select(mux, channel);
         return ESP_ERR_INVALID_RESPONSE;
     }
 

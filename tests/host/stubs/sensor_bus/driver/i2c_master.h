@@ -30,6 +30,7 @@ typedef struct {
     int dev_addr_length;
     uint16_t device_address;
     uint32_t scl_speed_hz;
+    uint32_t scl_wait_us;
     struct {
         unsigned int disable_ack_check : 1;
     } flags;

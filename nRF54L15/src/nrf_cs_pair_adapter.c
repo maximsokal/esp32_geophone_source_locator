@@ -66,6 +66,7 @@ static nrf_cs_pair_adapter_result_t advance(
 {
     nrf_cs_pair_adapter_result_t result = validate_event(adapter, step, expected);
     if (result != NRF_CS_PAIR_ADAPTER_OK) {
+        /* `operation` may be NULL here: the wrapper could not read it from a NULL adapter. */
         return result;
     }
     adapter->phase = next;
@@ -129,7 +130,7 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_connected(
     const nrf_cs_step_t *step)
 {
     return advance(adapter, step, NRF_CS_PAIR_PHASE_CONNECTING,
-                   NRF_CS_PAIR_PHASE_SECURING, adapter->ops.secure);
+                   NRF_CS_PAIR_PHASE_SECURING, adapter != NULL ? adapter->ops.secure : NULL);
 }
 
 nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_security_ready(
@@ -137,7 +138,7 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_security_ready(
     const nrf_cs_step_t *step)
 {
     return advance(adapter, step, NRF_CS_PAIR_PHASE_SECURING,
-                   NRF_CS_PAIR_PHASE_MTU, adapter->ops.exchange_mtu);
+                   NRF_CS_PAIR_PHASE_MTU, adapter != NULL ? adapter->ops.exchange_mtu : NULL);
 }
 
 nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_mtu_ready(
@@ -145,7 +146,7 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_mtu_ready(
     const nrf_cs_step_t *step)
 {
     return advance(adapter, step, NRF_CS_PAIR_PHASE_MTU,
-                   NRF_CS_PAIR_PHASE_DISCOVERING, adapter->ops.discover_ras);
+                   NRF_CS_PAIR_PHASE_DISCOVERING, adapter != NULL ? adapter->ops.discover_ras : NULL);
 }
 
 nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_discovery_ready(
@@ -153,7 +154,7 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_discovery_ready(
     const nrf_cs_step_t *step)
 {
     return advance(adapter, step, NRF_CS_PAIR_PHASE_DISCOVERING,
-                   NRF_CS_PAIR_PHASE_FEATURES, adapter->ops.read_features);
+                   NRF_CS_PAIR_PHASE_FEATURES, adapter != NULL ? adapter->ops.read_features : NULL);
 }
 
 nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_features_ready(
@@ -181,7 +182,7 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_capabilities_ready(
     const nrf_cs_step_t *step)
 {
     return advance(adapter, step, NRF_CS_PAIR_PHASE_CAPABILITIES,
-                   NRF_CS_PAIR_PHASE_CONFIG, adapter->ops.create_config);
+                   NRF_CS_PAIR_PHASE_CONFIG, adapter != NULL ? adapter->ops.create_config : NULL);
 }
 
 nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_config_ready(
@@ -189,7 +190,7 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_config_ready(
     const nrf_cs_step_t *step)
 {
     return advance(adapter, step, NRF_CS_PAIR_PHASE_CONFIG,
-                   NRF_CS_PAIR_PHASE_CS_SECURITY, adapter->ops.enable_cs_security);
+                   NRF_CS_PAIR_PHASE_CS_SECURITY, adapter != NULL ? adapter->ops.enable_cs_security : NULL);
 }
 
 nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_cs_security_ready(
@@ -197,7 +198,7 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_cs_security_ready(
     const nrf_cs_step_t *step)
 {
     return advance(adapter, step, NRF_CS_PAIR_PHASE_CS_SECURITY,
-                   NRF_CS_PAIR_PHASE_PROCEDURE, adapter->ops.start_procedure);
+                   NRF_CS_PAIR_PHASE_PROCEDURE, adapter != NULL ? adapter->ops.start_procedure : NULL);
 }
 
 nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_measurement_ready(

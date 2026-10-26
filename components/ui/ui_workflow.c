@@ -26,6 +26,7 @@
 #include "ui_preview3d.h"
 #include "ui_utf8_format.h"
 #include "ui_workflow_model.h"
+#include "ui_workflow_sensor_values.h"
 #include "workflow_service.h"
 
 #define UI_WORKFLOW_REFRESH_PERIOD_MS 250U
@@ -59,6 +60,8 @@ typedef struct {
     ui_i18n_key_t preflight_power;
     nrf_node_link_status_t preflight_links[UI_WORKFLOW_REMOTE_SLOT_COUNT + 1U];
     char preflight_rail_v[12];
+    char preflight_main_hpa[12];
+    char preflight_main_temperature[12];
 
     lv_obj_t *screen;
     lv_obj_t *line_labels[UI_WORKFLOW_MODEL_MAX_LINES];
@@ -607,6 +610,12 @@ static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
     state->preflight_barometer = device->main.bmp280_valid ? UI_I18N_KEY_TFT_WORKFLOW_SENSOR_OK
         : device->main.bmp280_present ? UI_I18N_KEY_TFT_WORKFLOW_STATE_SENSOR_INVALID
         : UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN;
+    ui_workflow_sensor_pressure_text(
+        state->preflight_main_hpa, sizeof(state->preflight_main_hpa),
+        device->main.bmp280_valid, (float)device->main.pressure_pa);
+    ui_workflow_sensor_value_text(
+        state->preflight_main_temperature, sizeof(state->preflight_main_temperature),
+        device->main.bmp280_valid, (float)device->main.temperature_mc / 1000.0f, 1U);
     state->preflight_power = device->power.valid ? UI_I18N_KEY_TFT_WORKFLOW_SENSOR_OK
         : UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN;
     if (device->power.channels[2].valid) {
@@ -709,8 +718,17 @@ static void ui_workflow_update_remote_slots(ui_workflow_screen_state_t *state)
                 pod->height_reference.state == DEVICE_HEIGHT_REFERENCE_VALID ? "+" : "-";
             char node[8], text[64];
             (void)snprintf(node, sizeof(node), "G%u", (unsigned)i + 1U);
-            (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_SENSOR_NODE),
-                node, ui_workflow_nrf_indicator(link), imu, baro, calibration);
+            if (ui_workflow_sensor_values_page((uint64_t)(esp_timer_get_time() / 1000))) {
+                /* Measured values; shown only for a fresh, ready node. */
+                ui_workflow_sensor_values_line(
+                    text, sizeof(text), node,
+                    current && pod->barometer.valid, pod->barometer.pressure_pa,
+                    current && pod->environment.temperature_valid, pod->environment.temperature_c,
+                    current && pod->imu.gyro_valid, pod->imu.gyro_rate_dps);
+            } else {
+                (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_SENSOR_NODE),
+                    node, ui_workflow_nrf_indicator(link), imu, baro, calibration);
+            }
             ui_workflow_set_label(label, text);
         }
         const uint32_t color = ui_workflow_remote_pod_color(state->remote_pod_states[i]);
@@ -920,10 +938,15 @@ static void ui_workflow_update_lines(ui_workflow_screen_state_t *state)
     if (context->footer_label != NULL && state->snapshot.step == WORKFLOW_STEP_SENSOR_CHECK &&
         state->model.notice_key == UI_I18N_KEY_COUNT) {
         char text[96];
-        (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_SENSOR_MAIN),
-            ui_tr(state->preflight_adc), ui_workflow_nrf_indicator(state->preflight_links[0]),
-            ui_tr(state->preflight_barometer),
-            ui_tr(state->preflight_power), state->preflight_rail_v);
+        if (ui_workflow_sensor_values_page((uint64_t)(esp_timer_get_time() / 1000))) {
+            (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_SENSOR_VALUES_LEGEND),
+                state->preflight_main_hpa, state->preflight_main_temperature);
+        } else {
+            (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_SENSOR_MAIN),
+                ui_tr(state->preflight_adc), ui_workflow_nrf_indicator(state->preflight_links[0]),
+                ui_tr(state->preflight_barometer),
+                ui_tr(state->preflight_power), state->preflight_rail_v);
+        }
         ui_workflow_set_label(context->footer_label, text);
     } else if (context->footer_label != NULL && footer_key < UI_I18N_KEY_COUNT) {
         ui_workflow_set_label(context->footer_label, ui_tr(footer_key));

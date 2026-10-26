@@ -46,6 +46,18 @@ static const char *TAG =
     "INA3221";
 static sensor_bus_diag_state_t s_i2c_diag_state;
 
+/* The shared-bus owner codes are not in esp_err_to_name(), which prints "ERROR". */
+static const char *ina3221_monitor_barometer_error_name(esp_err_t err)
+{
+    if (err == SENSOR_BUS_ERR_MUTEX_BUSY) {
+        return "bus_busy";
+    }
+    if (err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) {
+        return "bus_hold_budget";
+    }
+    return esp_err_to_name(err);
+}
+
 static void ina3221_monitor_log_main_barometer_error(
     main_barometer_t *barometer,
     esp_err_t err,
@@ -69,19 +81,19 @@ static void ina3221_monitor_log_main_barometer_error(
                  sensor_bus_diag_device_name(
                      reading.bmp280_address, "main_barometer"),
                  sensor_bus_diag_device_name(0x38U, "main_barometer"),
-                 esp_err_to_name(err));
+                 ina3221_monitor_barometer_error_name(err));
     } else if (bmp280_invalid) {
         ESP_LOGW(TAG,
                  "I2C_BAROMETER_WARN src=main_barometer addr=0x%02X dev=%s err=%s",
                  (unsigned)reading.bmp280_address,
                  sensor_bus_diag_device_name(
                      reading.bmp280_address, "main_barometer"),
-                 esp_err_to_name(err));
+                 ina3221_monitor_barometer_error_name(err));
     } else if (aht20_invalid) {
         ESP_LOGW(TAG,
                  "I2C_BAROMETER_WARN src=main_barometer addr=0x38 dev=%s err=%s",
                  sensor_bus_diag_device_name(0x38U, "main_barometer"),
-                 esp_err_to_name(err));
+                 ina3221_monitor_barometer_error_name(err));
     } else {
         const uint8_t address = reading.bmp280_address != 0U
             ? reading.bmp280_address
@@ -90,7 +102,7 @@ static void ina3221_monitor_log_main_barometer_error(
                  "I2C_BAROMETER_WARN src=main_barometer addr=0x%02X dev=%s err=%s",
                  (unsigned)address,
                  sensor_bus_diag_device_name(address, "main_barometer"),
-                 esp_err_to_name(err));
+                 ina3221_monitor_barometer_error_name(err));
     }
 }
 

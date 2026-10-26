@@ -235,14 +235,16 @@ static bool nrf_cs_summarize_samples(
     }
     nrf_cs_sort_i32(deviations, count);
     const int32_t mad = nrf_cs_sorted_median(deviations, count);
-    const int32_t sigma = (int32_t)(((int64_t)mad * 14826 + 5000) / 10000);
-    int32_t band = 3 * sigma;
+    /* 64-bit: a legal wire distance can reach INT32_MAX mm, where 3 * sigma
+     * overflows int32 and used to reject every sample (then divide by zero). */
+    const int64_t sigma = ((int64_t)mad * 14826 + 5000) / 10000;
+    int64_t band = 3 * sigma;
     if (band < NRF_CS_MIN_OUTLIER_BAND_MM) {
         band = NRF_CS_MIN_OUTLIER_BAND_MM;
     }
 
     for (size_t i = 0U; i < count; ++i) {
-        if (nrf_cs_abs_i32(distances[i] - median) <= band) {
+        if ((int64_t)nrf_cs_abs_i32(distances[i] - median) <= band) {
             kept[kept_count++] = distances[i];
             kept_confidence_sum += confidences[i];
         }
@@ -252,7 +254,9 @@ static bool nrf_cs_summarize_samples(
     summary->sample_count = count;
     summary->distance_mm = nrf_cs_sorted_median(kept, kept_count);
     summary->confidence = (uint16_t)(kept_confidence_sum / kept_count);
-    summary->spread_mm = count > 1U ? sigma : 0;
+    summary->spread_mm = count > 1U
+        ? (sigma > INT32_MAX ? INT32_MAX : (int32_t)sigma)
+        : 0;
     summary->rejected_samples = (uint8_t)(count - kept_count);
     return true;
 }

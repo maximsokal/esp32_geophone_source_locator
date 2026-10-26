@@ -19,6 +19,11 @@
 #endif
 
 _Static_assert(sizeof(nrf_log_stored_record_t) == 28U, "nRF stored log record must stay 28 bytes");
+_Static_assert(
+    NRF_LOG_PROTOCOL_BLOCK_BASE_LENGTH +
+        NRF_LOG_PROTOCOL_RECORD_LENGTH * NRF_LOG_PROTOCOL_MAX_RECORDS ==
+        NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH,
+    "a block carries its base header plus fixed-size records");
 
 typedef struct {
     bool present;
@@ -392,6 +397,21 @@ static esp_err_t exchange_status(
     return ESP_ERR_INVALID_RESPONSE;
 }
 
+/*
+ * Records the nRF can return for this cursor: a block never carries more than
+ * the request allows, so asking for what is pending bounds both the reply and
+ * the time the bus is held (136 bytes need 14.3 ms at 100 kHz, one record 5 ms).
+ */
+static uint8_t block_request_records(const nrf_log_status_t *status, uint32_t cursor_seq)
+{
+    const uint32_t start = cursor_seq < status->oldest_seq ? status->oldest_seq : cursor_seq;
+    const uint32_t pending = status->next_seq > start ? status->next_seq - start : 0U;
+
+    if (pending == 0U) return 1U;
+    return pending > NRF_LOG_PROTOCOL_MAX_RECORDS
+        ? (uint8_t)NRF_LOG_PROTOCOL_MAX_RECORDS : (uint8_t)pending;
+}
+
 static esp_err_t exchange_block(
     const nrf_log_collector_io_t *io,
     uint8_t node_index,
@@ -408,6 +428,8 @@ static esp_err_t exchange_block(
     uint8_t response_frame[NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH];
     const nrf_log_error_t encoded = nrf_log_protocol_encode_read_request(request, request_frame);
     if (encoded != NRF_LOG_ERROR_OK) return ESP_ERR_INVALID_ARG;
+    const size_t response_capacity = NRF_LOG_PROTOCOL_BLOCK_BASE_LENGTH +
+        (size_t)NRF_LOG_PROTOCOL_RECORD_LENGTH * request->max_records;
     *exchange_completed = false;
 
     esp_err_t last_error = ESP_OK;
@@ -423,7 +445,7 @@ static esp_err_t exchange_block(
             request_frame,
             sizeof(request_frame),
             response_frame,
-            sizeof(response_frame),
+            response_capacity,
             &received_length,
             deadline_ms,
             attempted,
@@ -445,7 +467,7 @@ static esp_err_t exchange_block(
             validation.has_expected_boot_id = true;
             validation.expected_boot_id = status->boot_id;
             validation.has_max_records = true;
-            validation.max_records = NRF_LOG_PROTOCOL_MAX_RECORDS;
+            validation.max_records = request->max_records;
             if (nrf_log_protocol_decode_block(
                     response_frame, response_length, &validation, block) != NRF_LOG_ERROR_OK) {
                 err = ESP_ERR_INVALID_RESPONSE;
@@ -459,7 +481,7 @@ static esp_err_t exchange_block(
             validation.has_cursor = true;
             validation.cursor_seq = cursor_seq;
             validation.has_max_records = true;
-            validation.max_records = NRF_LOG_PROTOCOL_MAX_RECORDS;
+            validation.max_records = request->max_records;
             validation.has_status_next_seq = true;
             validation.status_next_seq = status->next_seq;
             if (nrf_log_protocol_decode_block(
@@ -472,7 +494,7 @@ static esp_err_t exchange_block(
             validation.has_expected_boot_id = true;
             validation.expected_boot_id = status->boot_id;
             validation.has_max_records = true;
-            validation.max_records = NRF_LOG_PROTOCOL_MAX_RECORDS;
+            validation.max_records = request->max_records;
             if (nrf_log_protocol_decode_block(
                     response_frame, response_length, &validation, block) != NRF_LOG_ERROR_OK) {
                 err = ESP_ERR_INVALID_RESPONSE;
@@ -670,7 +692,7 @@ static esp_err_t poll_node(
             if (block_index != 0U) read_request.request_id = next_nonzero(read_request.request_id);
             read_request.expected_boot_id = stage.boot_id;
             read_request.cursor_seq = stage.cursor_seq;
-            read_request.max_records = NRF_LOG_PROTOCOL_MAX_RECORDS;
+            read_request.max_records = block_request_records(&status, stage.cursor_seq);
             err = exchange_block(
                 io,
                 node_index,
@@ -759,6 +781,9 @@ static esp_err_t poll_node(
         if (report_firmware && io->report_firmware != NULL) {
             io->report_firmware(io->context, node_index, stage.boot_id,
                 firmware_supported ? &firmware : NULL);
+        }
+        if (stage.count != 0U && io->report_records != NULL) {
+            io->report_records(io->context, node_index, stage.records, stage.count);
         }
     }
     return err;

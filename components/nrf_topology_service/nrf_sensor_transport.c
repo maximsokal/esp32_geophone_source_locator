@@ -398,6 +398,21 @@ esp_err_t nrf_sensor_transport_refresh_channel(
             err = ESP_ERR_TIMEOUT;
             goto done;
         }
+        if (!selected) {
+            /* Back from a wait with the bus released; every snapshot below is
+             * re-verified against the node identity and request id. */
+            err = io->mux_select(io->context, channel);
+            if (err != ESP_OK) {
+                mark_failure(cache, NRF_SENSOR_CACHE_TRANSPORT_ERROR, true);
+                *request_topology_reconcile = true;
+                {
+                    const esp_err_t close_err =
+                        close_with_dominance(io, cache, request_topology_reconcile);
+                    return close_err != ESP_OK ? close_err : err;
+                }
+            }
+            selected = true;
+        }
 
         memset(&status, 0, sizeof(status));
         memset(&sensor, 0, sizeof(sensor));
@@ -456,6 +471,19 @@ esp_err_t nrf_sensor_transport_refresh_channel(
             resend_used = true;
         }
 
+        /*
+         * The nRF needs tens of milliseconds to sample. Hold neither the mux
+         * nor the shared bus owner while waiting, or INA3221 and the other bus
+         * clients starve for the whole refresh.
+         */
+        selected = false;
+        {
+            const esp_err_t close_err =
+                close_with_dominance(io, cache, request_topology_reconcile);
+            if (close_err != ESP_OK) {
+                return close_err;
+            }
+        }
         io->sleep_ms(io->context, controller->config.poll_interval_ms);
     }
 

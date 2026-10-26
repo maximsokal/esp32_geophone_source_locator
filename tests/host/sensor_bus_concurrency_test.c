@@ -24,6 +24,7 @@
 #include "driver/i2c_master.h"
 #include "board_config.h"
 #include "sensor_bus.h"
+#include "sensor_bus_timeout.h"
 #include "sensor_bus_lines.h"
 #include "sensor_bus_lines_fake.h"
 #include "tca9548a_mux.h"
@@ -1092,6 +1093,57 @@ static void test_owner_deadline_bounds_driver_and_clears_on_release(void)
     assert(sensor_bus_deinit() == ESP_OK);
 }
 
+/*
+ * Measured on the board: 136-byte nRF reads take 12.5-14.3 ms at 100 kHz and
+ * 40 of 50 were aborted by the fixed 20 ms timeout, which a 100 Hz tick only
+ * guarantees for 10 ms. Every default transfer must wait at least twice its
+ * wire time, whatever its length and whether or not it addresses a register.
+ */
+static void test_default_transfer_timeout_covers_the_wire_time(void)
+{
+    static const size_t lengths[] = {1U, 2U, 28U, 38U, 39U, 56U, 76U, 96U, 116U, 136U, 200U};
+    sensor_bus_handles_t handles = {0};
+    uint8_t buffer[256] = {0};
+
+    assert(sensor_bus_get_handles(&handles) == ESP_OK);
+    for (size_t i = 0U; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+        const size_t length = lengths[i];
+        for (unsigned variant = 0U; variant < 3U; ++variant) {
+            /* 0: plain read, 1: register read (write + read), 2: plain write. */
+            size_t wire_bytes = length;
+            if (variant == 0U) {
+                assert(sensor_bus_read_bytes(
+                    handles.ina3221, NULL_I2C_MEM_ADDR, length, buffer) == ESP_OK);
+            } else if (variant == 1U) {
+                assert(sensor_bus_read_bytes(handles.ina3221, 0x10U, length, buffer) == ESP_OK);
+                wire_bytes = length + 2U;
+            } else {
+                assert(sensor_bus_write_bytes(
+                    handles.ina3221, NULL_I2C_MEM_ADDR, length, buffer) == ESP_OK);
+            }
+            const uint32_t timeout_ms = (uint32_t)atomic_load(&s_last_transaction_timeout_ms);
+            const uint64_t required_ms =
+                ((uint64_t)sensor_bus_wire_time_us(wire_bytes, SENSOR_BUS_I2C_SPEED_HZ) *
+                     SENSOR_BUS_TIMEOUT_WIRE_MARGIN_PERCENT + 99999U) / 100000U;
+            assert(timeout_ms >= SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
+            assert(sensor_bus_wait_floor_ms(timeout_ms, configTICK_RATE_HZ) >= required_ms);
+            if (length <= 38U) {
+                assert(timeout_ms == SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
+            }
+            if (length == 136U && variant == 0U) {
+                /* The longest transfer that succeeded on the board lasted 14.273 ms. */
+                assert(sensor_bus_wait_floor_ms(timeout_ms, configTICK_RATE_HZ) * 1000U >= 14273U);
+            }
+        }
+    }
+
+    /* An explicit caller timeout stays exactly as requested. */
+    assert(sensor_bus_read_bytes_with_timeout(
+        handles.ina3221, NULL_I2C_MEM_ADDR, 136U, buffer, 25U) == ESP_OK);
+    assert(atomic_load(&s_last_transaction_timeout_ms) == 25);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
 static unsigned long long parse_log_ms(const char *line, const char *field)
 {
     const char *value = strstr(line, field);
@@ -1156,6 +1208,7 @@ int main(void)
     test_topology_waiter_gets_bus_between_channels();
     test_waiting_ina_runs_between_main_ch0_ch3_log_pairs();
     test_owner_deadline_bounds_driver_and_clears_on_release();
+    test_default_transfer_timeout_covers_the_wire_time();
     assert(sensor_bus_deinit() == ESP_OK);
 
     return 0;

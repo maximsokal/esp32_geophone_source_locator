@@ -163,6 +163,9 @@ esp_err_t web_json_writer_finish(web_json_writer_t *writer);
 
 esp_err_t web_wifi_setup_send_page(httpd_req_t *request);
 esp_err_t web_wifi_setup_register(httpd_handle_t server);
+/* Largest accepted Wi-Fi setup form body including the terminator. */
+#define WEB_WIFI_SETUP_BODY_MAX 320U
+
 esp_err_t web_wifi_setup_url_decode(const char *source, char *destination, size_t destination_size);
 esp_err_t web_wifi_setup_form_parse(char *body, char *ssid, size_t ssid_size, char *password, size_t password_size);
 esp_err_t web_wifi_setup_page_send_form(httpd_req_t *request);

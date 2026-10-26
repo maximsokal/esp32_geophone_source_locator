@@ -2,9 +2,11 @@
 #include "nrf_sensor_transport.h"
 #include "nrf_cs_authority.h"
 #include "nrf_cs_control_protocol.h"
+#include "nrf_log_event_text.h"
 #include "nrf_log_protocol.h"
 #include "nrf_link_readiness_policy.h"
 #include "nrf_topology_periods.h"
+#include "sensor_bus_timeout.h"
 
 #if defined(ESP_PLATFORM) || defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
 #define NRF_TOPOLOGY_HAS_RANGING_SOLVER 1
@@ -1591,6 +1593,23 @@ static void platform_log_report_firmware(void *context, uint8_t node_index,
     log_context->firmware[node_index].boot_id = boot_id;
 }
 
+/* Mirror every fetched nRF record into the serial log, so the ESP32 console
+ * capture on the PC also contains the nRF logs (no network needed). */
+static void platform_log_report_records(void *context, uint8_t node_index,
+    const nrf_log_stored_record_t *records, size_t count)
+{
+    (void)context;
+    char line[160];
+    for (size_t i = 0U; i < count; ++i) {
+        (void)nrf_log_event_text_format(line, sizeof(line), node_index, &records[i]);
+        if (records[i].severity >= NRF_LOG_SEVERITY_WARN) {
+            ESP_LOGW(TAG, "%s", line);
+        } else {
+            ESP_LOGI(TAG, "%s", line);
+        }
+    }
+}
+
 static void platform_log_emit_firmware(void *context, uint8_t node_index,
     uint32_t boot_id, const nrf_log_firmware_info_t *info)
 {
@@ -1644,6 +1663,7 @@ static bool service_log_collect_iteration(
         .node_link_ready = platform_log_node_link_ready,
         .report_link_failure = platform_log_report_link_failure,
         .report_firmware = platform_log_report_firmware,
+        .report_records = platform_log_report_records,
     };
     if (s_nrf_log_collector == NULL) return true;
     service_log_build_targets(worker, targets);
@@ -1665,12 +1685,14 @@ static bool service_log_collect_iteration(
         const nrf_log_rx_diag_t *rx = &context.rx[node_index];
         ESP_LOGI(TAG,
             "NRF_LOG_RX node=%u addr=0x%02x ch=%d requested=%u received=%d "
-            "type=0x%02x declared=%d call_us=%" PRId64 " err=0x%x(%s)",
+            "type=0x%02x declared=%d call_us=%" PRId64 " wire_us=%u err=0x%x(%s)",
             (unsigned)node_index,
             node_index == 0U ? NRF_UPSTREAM_ADDRESS_MAIN : NRF_UPSTREAM_ADDRESS_REMOTE,
             (int)rx->channel, (unsigned)rx->requested,
             rx->err == ESP_OK ? (int)rx->requested : -1, (unsigned)rx->type,
-            (int)rx->declared, rx->call_us, (unsigned)rx->err, esp_err_to_name(rx->err));
+            (int)rx->declared, rx->call_us,
+            (unsigned)sensor_bus_wire_time_us(rx->requested, SENSOR_BUS_I2C_SPEED_HZ),
+            (unsigned)rx->err, esp_err_to_name(rx->err));
     }
     if (context.fifo_check) {
         ESP_LOGI(TAG, "NRF_FIFO_CHECK node=%u extra_allowed=%u next_step=%u err=0x%x(%s)",
@@ -1817,20 +1839,22 @@ static esp_err_t platform_open_address_handles(nrf_topology_platform_t *platform
     }
 
     if (platform->discovery_device == NULL) {
-        err = sensor_bus_device_create(
+        err = sensor_bus_device_create_with_scl_wait(
             platform->bus_handles.bus,
             NRF_UPSTREAM_ADDRESS_DISCOVERY,
             SENSOR_BUS_I2C_SPEED_HZ,
+            NRF_TOPOLOGY_TARGET_SCL_WAIT_US,
             &platform->discovery_device);
         if (err != ESP_OK) {
             return err;
         }
     }
     if (platform->main_device == NULL) {
-        err = sensor_bus_device_create(
+        err = sensor_bus_device_create_with_scl_wait(
             platform->bus_handles.bus,
             NRF_UPSTREAM_ADDRESS_MAIN,
             SENSOR_BUS_I2C_SPEED_HZ,
+            NRF_TOPOLOGY_TARGET_SCL_WAIT_US,
             &platform->main_device);
         if (err != ESP_OK) {
             platform_delete_device(&platform->discovery_device);
@@ -1838,10 +1862,11 @@ static esp_err_t platform_open_address_handles(nrf_topology_platform_t *platform
         }
     }
     if (platform->remote_device == NULL) {
-        err = sensor_bus_device_create(
+        err = sensor_bus_device_create_with_scl_wait(
             platform->bus_handles.bus,
             NRF_UPSTREAM_ADDRESS_REMOTE,
             SENSOR_BUS_I2C_SPEED_HZ,
+            NRF_TOPOLOGY_TARGET_SCL_WAIT_US,
             &platform->remote_device);
         if (err != ESP_OK) {
             platform_delete_device(&platform->main_device);

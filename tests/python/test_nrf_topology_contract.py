@@ -59,7 +59,9 @@ def test_task_policy_and_service_defaults_are_centralized():
 
 def test_service_owns_only_nrf_address_handles_not_shared_bus_or_tca():
     service = read("components/nrf_topology_service/nrf_topology_service.c")
-    assert service.count("sensor_bus_device_create(") == 3
+    assert service.count("sensor_bus_device_create_with_scl_wait(") == 3
+    assert service.count("NRF_TOPOLOGY_TARGET_SCL_WAIT_US,") == 3
+    assert "sensor_bus_device_create(" not in service
     assert "sensor_bus_device_delete(" in service
     assert "platform_delete_device(&platform->remote_device);" in service
     assert "platform_delete_device(&platform->main_device);" in service

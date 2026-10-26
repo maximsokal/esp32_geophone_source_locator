@@ -256,6 +256,9 @@ int nrf_bmi160_read_imu(void *context, nrf_imu_sample_t *sample)
         return result;
     }
 
+    const int16_t temperature_raw = bmi160_read_le_i16(temperature_data);
+    if (temperature_raw == INT16_MIN) return NRF_BMI160_ERR_MEASUREMENT;
+
     for (size_t axis = 0U; axis < 3U; ++axis) {
         const int16_t gyro_raw = bmi160_read_le_i16(&motion_data[axis * 2U]);
         const int16_t accel_raw =
@@ -267,8 +270,7 @@ int nrf_bmi160_read_imu(void *context, nrf_imu_sample_t *sample)
             bmi160_round_scaled(accel_raw, 2000);
     }
 
-    sample->temperature_milli_c = bmi160_temperature_milli_c(
-        bmi160_read_le_i16(temperature_data));
+    sample->temperature_milli_c = bmi160_temperature_milli_c(temperature_raw);
 
     return NRF_BMI160_OK;
 }

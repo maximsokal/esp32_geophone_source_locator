@@ -69,7 +69,9 @@ static void test_form_parse(void)
         sizeof(password)
     ) == ESP_ERR_INVALID_ARG);
 
-    char too_long_body[258];
+    /* The limit is WEB_WIFI_SETUP_BODY_MAX - 1 characters: the largest legal SSID
+     * and password, fully percent-encoded, is 300 characters. */
+    char too_long_body[WEB_WIFI_SETUP_BODY_MAX + 1U];
     memset(too_long_body, 'x', sizeof(too_long_body) - 1U);
     too_long_body[sizeof(too_long_body) - 1U] = '\0';
     assert(web_wifi_setup_form_parse(
@@ -79,6 +81,14 @@ static void test_form_parse(void)
         password,
         sizeof(password)
     ) == ESP_ERR_INVALID_SIZE);
+    too_long_body[WEB_WIFI_SETUP_BODY_MAX - 1U] = '\0';
+    assert(web_wifi_setup_form_parse(
+        too_long_body,
+        ssid,
+        sizeof(ssid),
+        password,
+        sizeof(password)
+    ) == ESP_ERR_INVALID_ARG); /* within the limit, but it has no ssid field */
 
     char small_output[] = "ssid=abcdef";
     assert(web_wifi_setup_form_parse(

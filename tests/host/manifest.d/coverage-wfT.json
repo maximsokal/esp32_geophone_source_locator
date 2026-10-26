@@ -24,6 +24,15 @@
       ],
       "defines": ["CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"],
       "libraries": ["m"]
+    },
+    {
+      "name": "ui_workflow_sensor_values",
+      "sources": [
+        "components/ui/ui_workflow_sensor_values.c",
+        "components/ui/tests/ui_workflow_sensor_values_test.c"
+      ],
+      "include_dirs": ["components/ui"],
+      "libraries": ["m"]
     }
   ]
 }

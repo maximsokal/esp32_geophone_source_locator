@@ -469,6 +469,87 @@ int main(int argc, char **argv)
         assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "N+ I+ B+ C-") != NULL);
         (void)snprintf(name, sizeof(name), "%s_preflight_uncalibrated", language);
         capture(name, false);
+
+        /*
+         * The cards alternate between link status and measured values every
+         * UI_WORKFLOW_SENSOR_PAGE_MS. Show the values page: pressure in hPa,
+         * temperature in degC and the gyroscope rate in deg/s.
+         */
+        {
+            const uint64_t status_page_ms = render_now_ms;
+            uint64_t values_page_ms = status_page_ms - status_page_ms % UI_WORKFLOW_SENSOR_PAGE_MS;
+            if (!ui_workflow_sensor_values_page(values_page_ms)) values_page_ms += UI_WORKFLOW_SENSOR_PAGE_MS;
+            assert(ui_workflow_sensor_values_page(values_page_ms));
+            assert(values_page_ms - status_page_ms < NRF_NODE_LINK_STATUS_STALE_LIMIT_MS);
+
+            render_device_status.main.pressure_pa = 101010U;
+            render_device_status.main.temperature_mc = 24140;
+            render_device_status.pods[0].barometer.valid = true;
+            render_device_status.pods[0].barometer.pressure_pa = 101010.0f;
+            render_device_status.pods[0].environment.temperature_valid = true;
+            render_device_status.pods[0].environment.temperature_c = 24.14f;
+            render_device_status.pods[0].imu.gyro_valid = true;
+            render_device_status.pods[0].imu.gyro_rate_dps = 0.26f;
+
+            render_now_ms = values_page_ms;
+            ui_workflow_update(s_workflow, render_now_ms);
+            assert(strcmp(lv_label_get_text(s_workflow->remote_slot_labels[0]), "G1 1010.1 24.1 0.3") == 0);
+            assert(strcmp(lv_label_get_text(s_workflow->remote_slot_labels[1]), "G2 -- -- --") == 0);
+            assert(strstr(lv_label_get_text(render_context.footer_label), "1010.1 24.1") != NULL);
+            assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN") != NULL);
+            (void)snprintf(name, sizeof(name), "%s_sensor_values", language);
+            capture(name, true);
+
+            /* Back on the status page nothing of the values leaks into the cards. */
+            render_now_ms = status_page_ms;
+            ui_workflow_update(s_workflow, render_now_ms);
+            assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "N+ I+ B+ C-") != NULL);
+            assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN N+") != NULL);
+
+            /* Three nodes: full, partial (no gyroscope) and none. */
+            prepare(WORKFLOW_STEP_SENSOR_CHECK, 3U);
+            for (size_t i = 0U; i < 3U; ++i) {
+                render_device_status.pods[i].sensor_health = (device_sensor_health_t){
+                    .current = true, .imu_valid = i != 1U, .imu_fault = i == 1U, .barometer_valid = i != 2U,
+                };
+            }
+            render_device_status.pods[0].barometer.valid = true;
+            render_device_status.pods[0].barometer.pressure_pa = 100000.0f;
+            render_device_status.pods[0].environment.temperature_valid = true;
+            render_device_status.pods[0].environment.temperature_c = -5.5f;
+            render_device_status.pods[0].imu.gyro_valid = true;
+            render_device_status.pods[0].imu.gyro_rate_dps = 12.0f;
+            render_device_status.pods[1].barometer.valid = true;
+            render_device_status.pods[1].barometer.pressure_pa = 99950.0f;
+            render_device_status.pods[1].environment.temperature_valid = true;
+            render_device_status.pods[1].environment.temperature_c = 21.0f;
+            render_device_status.pods[1].imu.gyro_valid = false;
+            render_device_status.pods[2].barometer.valid = false;
+            render_device_status.pods[2].environment.temperature_valid = false;
+            render_device_status.pods[2].imu.gyro_valid = false;
+            render_now_ms = values_page_ms;
+            ui_workflow_update(s_workflow, render_now_ms);
+            assert(strcmp(lv_label_get_text(s_workflow->remote_slot_labels[0]), "G1 1000.0 -5.5 12.0") == 0);
+            assert(strcmp(lv_label_get_text(s_workflow->remote_slot_labels[1]), "G2 999.5 21.0 --") == 0);
+            assert(strcmp(lv_label_get_text(s_workflow->remote_slot_labels[2]), "G3 -- -- --") == 0);
+            (void)snprintf(name, sizeof(name), "%s_sensor_values_partial", language);
+            capture(name, true);
+            render_now_ms = status_page_ms;
+            memset(&render_device_status.pods[0].barometer, 0, sizeof(render_device_status.pods[0].barometer));
+            memset(&render_device_status.pods[1].barometer, 0, sizeof(render_device_status.pods[1].barometer));
+            memset(&render_device_status.pods[0].environment, 0, sizeof(render_device_status.pods[0].environment));
+            memset(&render_device_status.pods[1].environment, 0, sizeof(render_device_status.pods[1].environment));
+            memset(&render_device_status.pods[0].imu, 0, sizeof(render_device_status.pods[0].imu));
+            prepare(WORKFLOW_STEP_SENSOR_CHECK, 1U);
+            render_device_status.main.bmp280_present = true;
+            render_device_status.main.bmp280_valid = true;
+            render_device_status.pods[0].sensor_health = (device_sensor_health_t){
+                .current = true, .imu_valid = true, .barometer_valid = true,
+            };
+            render_device_status.main.pressure_pa = 0U;
+            render_device_status.main.temperature_mc = 0;
+            ui_workflow_update(s_workflow, render_now_ms);
+        }
         render_device_status.pods[0].sensor_health.imu_valid = false;
         render_device_status.pods[0].sensor_health.imu_fault = true;
         ui_workflow_update(s_workflow, render_now_ms);

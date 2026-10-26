@@ -110,6 +110,12 @@ static device_height_reference_status_t s_height_references[DEVICE_STATUS_POD_CO
 static fake_position_t s_positions[DEVICE_STATUS_POD_COUNT];
 static pod_state_t s_pod_states[DEVICE_STATUS_POD_COUNT];
 static unsigned s_barometer_calls;
+typedef struct { float temperature_c; bool temperature_valid; float humidity_percent; bool humidity_valid; } fake_environment_t;
+typedef struct { float rate_dps; bool valid; } fake_gyro_t;
+static fake_environment_t s_environments[DEVICE_STATUS_POD_COUNT];
+static fake_gyro_t s_gyros[DEVICE_STATUS_POD_COUNT];
+static unsigned s_environment_calls;
+static unsigned s_gyro_calls;
 static unsigned s_height_reference_calls;
 static unsigned s_position_calls;
 static unsigned s_pod_state_calls;
@@ -141,6 +147,10 @@ static void reset_fakes(void)
 {
     hw_inventory_init();
     memset(s_barometers, 0, sizeof(s_barometers));
+    memset(s_environments, 0, sizeof(s_environments));
+    memset(s_gyros, 0, sizeof(s_gyros));
+    s_environment_calls = 0U;
+    s_gyro_calls = 0U;
     memset(s_height_references, 0, sizeof(s_height_references));
     memset(s_positions, 0, sizeof(s_positions));
     memset(s_pod_states, 0, sizeof(s_pod_states));
@@ -244,6 +254,25 @@ esp_err_t device_status_set_pod_barometer(
         reference_pressure_pa,
         valid,
     };
+    return ESP_OK;
+}
+
+esp_err_t device_status_set_pod_environment(
+    size_t pod_index, float temperature_c, bool temperature_valid,
+    float humidity_percent, bool humidity_valid)
+{
+    assert(pod_index < DEVICE_STATUS_POD_COUNT);
+    s_environment_calls++;
+    s_environments[pod_index] = (fake_environment_t){
+        temperature_c, temperature_valid, humidity_percent, humidity_valid};
+    return ESP_OK;
+}
+
+esp_err_t device_status_set_pod_gyro_rate(size_t pod_index, float rate_dps, bool valid)
+{
+    assert(pod_index < DEVICE_STATUS_POD_COUNT);
+    s_gyro_calls++;
+    s_gyros[pod_index] = (fake_gyro_t){rate_dps, valid};
     return ESP_OK;
 }
 
@@ -497,6 +526,52 @@ static void test_cycle_publishes_fresh_sensor_and_frozen_geometry(void)
     assert(!s_positions[3].valid);
 }
 
+static void test_cycle_publishes_measured_temperature_humidity_and_gyro(void)
+{
+    reset_fakes();
+    configure_sensor(0U, true, true, true, 100000U, 1250);
+    s_sensor_cache[0].sensor.valid_mask |= NRF_UPSTREAM_SENSOR_VALID_IMU;
+    s_sensor_cache[0].sensor.env_temperature_milli_c = 24250;
+    s_sensor_cache[0].sensor.humidity_milli_percent = 48125U;
+    s_sensor_cache[0].sensor.gyro_mdps[0] = 3000;
+    s_sensor_cache[0].sensor.gyro_mdps[1] = 4000;
+    /* Pod 1: no valid domains. Pod 2: environment only. */
+    configure_sensor(1U, true, true, false, 0U, 0);
+    configure_sensor(2U, true, true, true, 100200U, 0);
+    s_sensor_cache[2].sensor.env_temperature_milli_c = -5500;
+    s_sensor_cache[3].topology_current = false;
+
+    app_pod_status_bridge_publish_cycle();
+
+    assert(s_environment_calls == DEVICE_STATUS_POD_COUNT);
+    assert(s_gyro_calls == DEVICE_STATUS_POD_COUNT);
+    assert(s_environments[0].temperature_valid && s_environments[0].temperature_c == 24.25f);
+    assert(s_environments[0].humidity_valid && s_environments[0].humidity_percent == 48.125f);
+    assert(s_gyros[0].valid && s_gyros[0].rate_dps > 4.999f && s_gyros[0].rate_dps < 5.001f);
+    assert(!s_environments[1].temperature_valid && !s_gyros[1].valid);
+    assert(s_environments[2].temperature_valid && s_environments[2].temperature_c == -5.5f);
+    assert(!s_gyros[2].valid);
+    assert(!s_environments[3].temperature_valid && !s_gyros[3].valid);
+}
+
+static void test_stale_snapshot_does_not_keep_showing_measured_values(void)
+{
+    reset_fakes();
+    configure_sensor(0U, true, true, true, 100000U, 0);
+    s_sensor_cache[0].sensor.valid_mask |= NRF_UPSTREAM_SENSOR_VALID_IMU;
+    s_sensor_cache[0].sensor.env_temperature_milli_c = 24250;
+    s_sensor_cache[0].sensor.gyro_mdps[0] = 1000;
+    /* The cache says valid, but the ESP last heard from this pod long ago. */
+    s_sensor_cache[0].esp_receipt_uptime_ms = 0U;
+    /* The fake clock advances 1 ms per call: age the receipt past the stale limit. */
+    for (unsigned i = 0U; i < 7000U; ++i) (void)esp_timer_get_time();
+
+    app_pod_status_bridge_publish_cycle();
+
+    assert(!s_environments[0].temperature_valid);
+    assert(!s_gyros[0].valid);
+}
+
 static void test_cycle_invalidates_local_position_when_active_profile_disappears(void)
 {
     reset_fakes();
@@ -684,6 +759,8 @@ int main(void)
 #else
     test_scratch_failure_retries_and_successful_cycles_reuse_storage();
     test_cycle_publishes_fresh_sensor_and_frozen_geometry();
+    test_cycle_publishes_measured_temperature_humidity_and_gyro();
+    test_stale_snapshot_does_not_keep_showing_measured_values();
     test_cycle_invalidates_local_position_when_active_profile_disappears();
     test_cycle_publishes_topology_pod_connection_states();
     test_bus_fault_does_not_publish_four_connected_pods();

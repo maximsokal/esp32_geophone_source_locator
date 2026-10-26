@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "peripheral_signal_cs_frames",
+      "sources": [
+        "nRF54L15/src/nrf_cs_control_protocol.c",
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "tests/host/peripheral_signal_cs_frames_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "peripheral_signal_cs_adapter",
+      "sources": [
+        "nRF54L15/src/nrf_cs_pair_adapter.c",
+        "tests/host/peripheral_signal_cs_adapter_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "peripheral_signal_cs_scheduler",
+      "sources": [
+        "nRF54L15/src/nrf_cs_scheduler.c",
+        "tests/host/peripheral_signal_cs_scheduler_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ]
+    },
+    {
+      "name": "peripheral_signal_cs_geometry",
+      "sources": [
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "tests/host/peripheral_signal_cs_geometry_test.c"
+      ],
+      "include_dirs": [
+        "components/nrf_geometry_solver/include",
+        "nRF54L15/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "peripheral_signal_mux",
+      "sources": [
+        "components/tca9548a_mux/tca9548a_mux.c",
+        "tests/host/peripheral_signal_mux_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/tca9548a",
+        "components/tca9548a_mux/include",
+        "components/sensor_bus/include"
+      ]
+    },
+    {
+      "name": "peripheral_signal_wifi_policy",
+      "sources": [
+        "components/wifi_manager/wifi_manager_event_policy.c",
+        "components/wifi_manager/wifi_manager_reconnect_policy.c",
+        "tests/host/peripheral_signal_wifi_policy_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/wifi_manager_events",
+        "components/wifi_manager"
+      ]
+    },
+    {
+      "name": "peripheral_signal_http_input",
+      "sources": [
+        "components/web_server/web_wifi_setup_decode.c",
+        "components/web_server/web_wifi_setup_form.c",
+        "tests/host/peripheral_signal_http_input_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/web_wifi_input",
+        "components/web_server"
+      ]
+    },
+    {
+      "name": "peripheral_signal_http_policy",
+      "sources": [
+        "components/web_server/web_server_lifecycle_policy.c",
+        "components/web_server/web_status_policy.c",
+        "components/web_server/web_route_capacity.c",
+        "tests/host/peripheral_signal_http_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/web_server"
+      ]
+    },
+    {
+      "name": "peripheral_signal_sd_paths",
+      "sources": [
+        "components/object_format/object_format.c",
+        "tests/host/peripheral_signal_sd_paths_test.c"
+      ],
+      "include_dirs": [
+        "components/object_format/include"
+      ]
+    }
+  ]
+}

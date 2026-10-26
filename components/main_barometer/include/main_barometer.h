@@ -63,6 +63,8 @@ typedef struct {
     esp_err_t aht20_retry_error;
     /* Consecutive polls that read the data-register reset value (0x80000). */
     uint8_t bmp280_pending_polls;
+    /* Consecutive polls that lost the shared-bus owner lock to another task. */
+    uint8_t bmp280_yield_polls;
     bool bmp280_initialized;
     bool aht20_initialized;
     bool bmp280_probe_required;

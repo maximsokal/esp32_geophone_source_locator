@@ -222,6 +222,14 @@ typedef struct
     float pitch_deg;
     float yaw_relative_deg;
 
+    /*
+     * Measured angular-rate magnitude from the pod gyroscope. Independent of
+     * roll/pitch/yaw above, which the hardware does not measure and which stay
+     * unpopulated: this is a raw measurement, not a derived orientation.
+     */
+    bool gyro_valid;
+    float gyro_rate_dps;
+
 } device_imu_status_t;
 
 
@@ -478,6 +486,13 @@ esp_err_t device_status_set_pod_height_reference(
  */
 esp_err_t device_status_set_pod_sensor_health(
     size_t pod_index, const device_sensor_health_t *health);
+
+/* Publish the measured gyroscope rate magnitude (deg/s, >= 0). valid=false clears it. */
+esp_err_t device_status_set_pod_gyro_rate(
+    size_t pod_index,
+    float rate_dps,
+    bool valid
+);
 
 esp_err_t device_status_set_pod_imu(
     size_t pod_index,

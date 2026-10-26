@@ -1,0 +1,187 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "sensor_signal_ina_policy",
+      "sources": [
+        "components/ina3221_monitor/ina3221_policy.c",
+        "tests/host/sensor_signal_ina_policy_test.c"
+      ],
+      "include_dirs": [
+        "components/ina3221_monitor"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "sensor_signal_ina_limits",
+      "sources": [
+        "components/ina3221_monitor/ina3221_limits.c",
+        "tests/host/sensor_signal_ina_limits_test.c"
+      ],
+      "include_dirs": [
+        "components/ina3221_monitor"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "sensor_signal_bmi160",
+      "sources": [
+        "nRF54L15/src/nrf_sensor_bus.c",
+        "nRF54L15/src/nrf_bmi160.c",
+        "tests/host/sensor_signal_bmi160_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "sensor_signal_bme280",
+      "sources": [
+        "nRF54L15/src/nrf_sensor_bus.c",
+        "nRF54L15/src/nrf_bme280.c",
+        "nRF54L15/src/nrf_baro_altitude.c",
+        "tests/host/sensor_signal_bme280_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "sensor_signal_status",
+      "sources": [
+        "components/device_status/device_status.c",
+        "components/device_status/device_status_updates.c",
+        "components/device_status/device_status_pods.c",
+        "tests/host/sensor_signal_status_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/device_status",
+        "components/device_status/include",
+        "components/device_status"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "sensor_signal_ad7606",
+      "sources": [
+        "components/ad7606_driver/ad7606_driver.c",
+        "components/ad7606_driver/ad7606_serial.c",
+        "tests/host/sensor_signal_ad7606_test.c"
+      ],
+      "include_dirs": [
+        "components/ad7606_driver/tests/stubs",
+        "components/ad7606_driver/include",
+        "components/ad7606_driver"
+      ],
+      "defines": [
+        "AD7606_DRIVER_HOST_TEST=1"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "sensor_signal_snapshot",
+      "sources": [
+        "nRF54L15/src/nrf_node_state.c",
+        "nRF54L15/src/nrf_sensor_snapshot.c",
+        "tests/host/sensor_signal_snapshot_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "sensor_signal_keypad",
+      "sources": [
+        "components/keypad/keypad_decode.c",
+        "tests/host/sensor_signal_keypad_test.c"
+      ],
+      "include_dirs": [
+        "components/keypad/tests/stubs",
+        "components/keypad/include",
+        "components/keypad"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "sensor_signal_barometer",
+      "sources": [
+        "components/main_barometer/main_barometer.c",
+        "nRF54L15/src/nrf_baro_altitude.c",
+        "nRF54L15/src/nrf_ema_filter.c",
+        "tests/host/sensor_signal_barometer_test.c",
+        "tests/host/stubs/sensor_bus/sensor_bus_api_fake.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/sensor_bus",
+        "components/app_config/include",
+        "components/main_barometer/include",
+        "components/sensor_bus/include",
+        "nRF54L15/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "sensor_signal_upstream",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "tests/host/sensor_signal_upstream_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "sensor_signal_cs_quality",
+      "sources": [
+        "nRF54L15/src/nrf_cs_measurement_quality.c",
+        "tests/host/sensor_signal_cs_quality_test.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
+      "name": "sensor_signal_measured_values",
+      "sources": [
+        "components/device_status_pod_bridge/app_pod_status_sensor_values_policy.c",
+        "tests/host/sensor_signal_measured_values_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_start",
+        "components/device_status_pod_bridge/include",
+        "components/nrf_topology_service/include",
+        "nRF54L15/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    }
+  ]
+}

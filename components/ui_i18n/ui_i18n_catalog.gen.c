@@ -344,6 +344,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "2D possible; connect >=4 for 3D", /* tft.workflow.sensor.planar */
     "3D ready", /* tft.workflow.sensor.ready */
     "REMOTE:%s N:nRF I:IMU B:baro C:cal", /* tft.workflow.sensor.remote_count */
+    "hPa / °C / gyro °/s | MAIN %s %s", /* tft.workflow.sensor.values_legend */
     "calibrated", /* tft.workflow.state.calibrated */
     "gravity", /* tft.workflow.state.gravity */
     "moving", /* tft.workflow.state.moving */
@@ -768,6 +769,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Можливе 2D; для 3D підключіть щонайменше 4", /* tft.workflow.sensor.planar */
     "3D готове", /* tft.workflow.sensor.ready */
     "REMOTE:%s N:nRF I:IMU B:баро C:кал", /* tft.workflow.sensor.remote_count */
+    "гПа / °C / гіро °/с | MAIN %s %s", /* tft.workflow.sensor.values_legend */
     "Відкалібровано", /* tft.workflow.state.calibrated */
     "Гравітація", /* tft.workflow.state.gravity */
     "Рух", /* tft.workflow.state.moving */

@@ -94,6 +94,19 @@ esp_err_t sensor_bus_device_create(
     uint8_t address,
     uint32_t speed_hz,
     i2c_bus_device_handle_t *device);
+/*
+ * Same as sensor_bus_device_create(), with the longest time the target may hold
+ * SCL low before the controller aborts the transfer. 0 keeps the driver default
+ * (about 2 ms). Software targets such as the nRF TWIS stretch the clock until an
+ * interrupt has prepared the response, so their devices need a longer allowance;
+ * the transfer's own software timeout still bounds a target that never answers.
+ */
+esp_err_t sensor_bus_device_create_with_scl_wait(
+    i2c_bus_handle_t bus,
+    uint8_t address,
+    uint32_t speed_hz,
+    uint32_t scl_wait_us,
+    i2c_bus_device_handle_t *device);
 esp_err_t sensor_bus_device_delete(i2c_bus_device_handle_t *device);
 esp_err_t sensor_bus_read_byte(
     i2c_bus_device_handle_t device,

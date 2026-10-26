@@ -137,6 +137,13 @@ typedef struct {
     uint32_t last_block_cursor[NRF_LOG_COLLECTOR_NODE_COUNT];
     uint32_t last_block_boot[NRF_LOG_COLLECTOR_NODE_COUNT];
     uint8_t last_block_max_records[NRF_LOG_COLLECTOR_NODE_COUNT];
+    struct {
+        uint8_t node;
+        uint32_t cursor;
+        uint8_t max_records;
+        size_t capacity;
+    } block_read_log[8];
+    uint8_t block_read_log_count;
     uint32_t next_uptime[NRF_LOG_COLLECTOR_NODE_COUNT];
     uint32_t status_writes[NRF_LOG_COLLECTOR_NODE_COUNT];
     uint32_t block_writes[NRF_LOG_COLLECTOR_NODE_COUNT];
@@ -672,6 +679,14 @@ static esp_err_t fake_read_frame(
     fake->now_ms += fake->tx_cost_ms;
     if (response_type == NRF_LOG_MESSAGE_STATUS) ++fake->status_reads[node];
     else if (response_type == NRF_LOG_MESSAGE_BLOCK) ++fake->block_reads[node];
+    if (response_type == NRF_LOG_MESSAGE_BLOCK &&
+        fake->block_read_log_count < sizeof(fake->block_read_log) / sizeof(fake->block_read_log[0])) {
+        const size_t slot = fake->block_read_log_count++;
+        fake->block_read_log[slot].node = node;
+        fake->block_read_log[slot].cursor = fake->last_block_cursor[node];
+        fake->block_read_log[slot].max_records = fake->last_block_max_records[node];
+        fake->block_read_log[slot].capacity = frame_capacity;
+    }
     if (fake->pending_length > frame_capacity) return ESP_ERR_INVALID_RESPONSE;
 
     fault = fake_fault_applies(fake, node, response_type) &&
@@ -803,6 +818,22 @@ static void fake_service_due_deadlines(fake_bus_t *fake)
     fake->deadlines_enabled = false;
 }
 
+static unsigned s_reported_records[8];
+static unsigned s_reported_latch_records[8];
+
+static void fake_report_records(void *context, uint8_t node,
+    const nrf_log_stored_record_t *records, size_t count)
+{
+    fake_bus_t *fake = context;
+    /* The serial-log sink must run after the bus session, never inside it. */
+    CHECK(!fake->mux_open);
+    CHECK(node < 8U && records != NULL && count != 0U);
+    s_reported_records[node] += (unsigned)count;
+    for (size_t i = 0U; i < count; ++i) {
+        if (records[i].event_id == NRF_LOG_EVENT_LOGGER_LATCH) ++s_reported_latch_records[node];
+    }
+}
+
 static void fake_report_firmware(void *context, uint8_t node, uint32_t boot_id,
     const nrf_log_firmware_info_t *info)
 {
@@ -836,6 +867,7 @@ static nrf_log_collector_io_t fake_io(fake_bus_t *fake)
         .scheduler_reserve_ms = fake->scheduler_cost_ms,
         .yield_requested = fake_yield_requested,
         .report_firmware = fake_report_firmware,
+        .report_records = fake_report_records,
     };
 }
 
@@ -1246,6 +1278,36 @@ static void test_logger_latch_events_are_collected_with_boot_id(void)
             }
         }
         CHECK(stored);
+    }
+    fake_stop();
+}
+
+static void test_stored_records_are_reported_once_outside_the_bus_session(void)
+{
+    const nrf_log_event_definition_t *event = nrf_log_event_find(NRF_LOG_EVENT_LOGGER_LATCH);
+
+    memset(s_reported_records, 0, sizeof(s_reported_records));
+    memset(s_reported_latch_records, 0, sizeof(s_reported_latch_records));
+    fake_start(2U);
+    CHECK(event != NULL);
+    for (uint8_t node = 0U; node < 2U; ++node) {
+        CHECK(nrf_log_ring_append(
+            &s_fake.rings[node], event->subsystem, event->default_severity,
+            NRF_LOG_EVENT_LOGGER_LATCH, 4U, 2U, s_fake.next_uptime[node]++) == NRF_LOG_ERROR_OK);
+    }
+    CHECK(run_round(&s_fake).nodes_succeeded == 2U);
+
+    for (uint8_t node = 0U; node < 2U; ++node) {
+        const nrf_log_node_page_t page = node_page(&s_fake, node, false, 0U, 0U, 16U);
+        CHECK(page.count != 0U);
+        CHECK(s_reported_records[node] == page.count);
+        CHECK(s_reported_latch_records[node] == 1U);
+    }
+
+    /* Nothing new on the nRF: nothing is reported again. */
+    CHECK(run_round(&s_fake).nodes_succeeded == 2U);
+    for (uint8_t node = 0U; node < 2U; ++node) {
+        CHECK(s_reported_latch_records[node] == 1U);
     }
     fake_stop();
 }
@@ -2258,6 +2320,44 @@ static void test_firmware_report_is_bound_to_boot_and_capability(void)
     fake_stop();
 }
 
+/*
+ * A block read must not ask the bus for more bytes than the block can carry.
+ * The board needs 14.3 ms for 136 bytes at 100 kHz (the 20 ms software timeout
+ * is only guaranteed for 10 ms), while one pending record is 56 bytes.
+ */
+static void test_block_reads_are_sized_to_the_pending_records(void)
+{
+    static const uint32_t pending_counts[] = {1U, 2U, 3U, 4U, 5U, 6U, 7U, 9U, 10U, 11U};
+
+    for (size_t i = 0U; i < sizeof(pending_counts) / sizeof(pending_counts[0]); ++i) {
+        const uint32_t pending = pending_counts[i];
+        uint32_t cursor = 0U;
+
+        fake_start(2U);
+        s_fake.targets[0].present = false;
+        CHECK(nrf_log_collector_sync_targets(s_fake.collector, s_fake.targets) == ESP_OK);
+        fake_append(&s_fake, 1U, pending);
+        CHECK(run_round_at_current_time(&s_fake).nodes_succeeded == 1U);
+
+        CHECK(s_fake.block_read_log_count == (pending > NRF_LOG_PROTOCOL_MAX_RECORDS ? 2U : 1U));
+        for (uint8_t block = 0U; block < s_fake.block_read_log_count; ++block) {
+            const uint32_t remaining = pending - cursor;
+            const uint8_t expected_records = remaining > NRF_LOG_PROTOCOL_MAX_RECORDS
+                ? NRF_LOG_PROTOCOL_MAX_RECORDS : (uint8_t)remaining;
+            CHECK(s_fake.block_read_log[block].node == 1U);
+            CHECK(s_fake.block_read_log[block].cursor == cursor);
+            CHECK(s_fake.block_read_log[block].max_records == expected_records);
+            CHECK(s_fake.block_read_log[block].capacity ==
+                  NRF_LOG_PROTOCOL_BLOCK_BASE_LENGTH +
+                  (size_t)NRF_LOG_PROTOCOL_RECORD_LENGTH * expected_records);
+            CHECK(s_fake.block_read_log[block].capacity <= NRF_LOG_PROTOCOL_MAX_BLOCK_LENGTH);
+            cursor += expected_records;
+        }
+        CHECK(node_summary(&s_fake, 1U).stored == (pending > 10U ? 10U : pending));
+        fake_stop();
+    }
+}
+
 int main(void)
 {
     test_atomic_exchange_observes_node_and_iteration_budgets();
@@ -2274,7 +2374,9 @@ int main(void)
     } sections[] = {
         { "fault record event collection", test_fault_record_words_are_collected_without_decoding },
         { "logger latch event collection", test_logger_latch_events_are_collected_with_boot_id },
+        { "stored records reported once outside bus", test_stored_records_are_reported_once_outside_the_bus_session },
         { "section 4 framing/budget/order", test_framing_budget_and_order },
+        { "block read sized to pending records", test_block_reads_are_sized_to_the_pending_records },
         { "sections 5-7 corruption/fault/reboot", test_framing_faults_and_retries },
         { "section 12.3 rejected frames preserve state", test_rejected_frames_preserve_collector_state },
         { "link readiness gating", test_link_not_ready_node_is_not_polled },

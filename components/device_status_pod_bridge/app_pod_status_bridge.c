@@ -15,6 +15,7 @@
 #include "app_pod_status_local_position_policy.h"
 #include "app_pod_status_state_policy.h"
 #include "app_pod_status_sensor_health_policy.h"
+#include "app_pod_status_sensor_values_policy.h"
 #include "app_task_config.h"
 #include "device_status.h"
 #include "nrf_topology_service.h"
@@ -218,6 +219,18 @@ static void publish_channel_barometer(uint8_t channel)
         reading.relative_altitude_cm,
         APP_POD_STATUS_BRIDGE_REFERENCE_PRESSURE_PA,
         reading.valid && health.current);
+
+    /* Measured values only, and only while the snapshot is fresh. */
+    const app_pod_status_sensor_values_t values =
+        app_pod_status_bridge_compute_sensor_values(err == ESP_OK ? cache : NULL);
+    (void)device_status_set_pod_environment(
+        channel,
+        values.temperature_c,
+        values.temperature_valid && health.current,
+        values.humidity_percent,
+        values.humidity_valid && health.current);
+    (void)device_status_set_pod_gyro_rate(
+        channel, values.gyro_rate_dps, values.gyro_valid && health.current);
 }
 
 

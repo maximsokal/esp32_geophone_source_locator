@@ -1317,6 +1317,7 @@ export const en: Record<I18nKey, string> = {
   "tft.workflow.sensor.planar": "2D possible; connect >=4 for 3D",
   "tft.workflow.sensor.ready": "3D ready",
   "tft.workflow.sensor.remote_count": "REMOTE:%s N:nRF I:IMU B:baro C:cal",
+  "tft.workflow.sensor.values_legend": "hPa / °C / gyro °/s | MAIN %s %s",
   "tft.workflow.state.calibrated": "calibrated",
   "tft.workflow.state.gravity": "gravity",
   "tft.workflow.state.moving": "moving",

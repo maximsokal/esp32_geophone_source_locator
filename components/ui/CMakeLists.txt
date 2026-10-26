@@ -21,6 +21,7 @@ idf_component_register(
         "ui_measurements_nodes.c"
         "ui_measurement_trace.c"
         "ui_workflow_model.c"
+        "ui_workflow_sensor_values.c"
         "ui_workflow.c"
         "fonts/ui_font_montserrat_14.c"
         "ui_frame_scheduler.c"

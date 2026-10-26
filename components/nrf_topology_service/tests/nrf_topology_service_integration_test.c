@@ -94,6 +94,7 @@ typedef struct {
 typedef struct {
     uint8_t address;
     bool live;
+    uint32_t scl_wait_us;
 } sim_device_t;
 
 static sim_node_t s_nodes[MAX_NODES];
@@ -388,6 +389,7 @@ i2c_bus_device_handle_t i2c_bus_device_create(i2c_bus_handle_t bus, uint8_t addr
         if (!s_devices[i].live) {
             s_devices[i].live = true;
             s_devices[i].address = address;
+            s_devices[i].scl_wait_us = 0U;
             return &s_devices[i];
         }
     }
@@ -404,6 +406,9 @@ esp_err_t i2c_master_bus_add_device(
     assert(config != NULL && device != NULL);
     *device = i2c_bus_device_create(
         &s_bus_token, (uint8_t)config->device_address, config->scl_speed_hz);
+    if (*device != NULL) {
+        ((sim_device_t *)*device)->scl_wait_us = config->scl_wait_us;
+    }
     return *device != NULL ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
@@ -2784,6 +2789,53 @@ static void test_without_tca_only_main_is_managed(void)
     }
 }
 
+/*
+ * The nRF TWIS target is interrupt driven and stretches SCL until its response
+ * is prepared; the controller default (about 2 ms) aborted MAIN reads. Only the
+ * three nRF addresses get the longer allowance.
+ */
+static uint32_t s_scl_wait_by_address[128];
+static bool s_scl_wait_seen[128];
+
+static void capture_scl_waits(void)
+{
+    for (size_t i = 0U; i < sizeof(s_devices) / sizeof(s_devices[0]); ++i) {
+        if (s_devices[i].live) {
+            s_scl_wait_seen[s_devices[i].address] = true;
+            s_scl_wait_by_address[s_devices[i].address] = s_devices[i].scl_wait_us;
+        }
+    }
+}
+
+static void test_nrf_target_devices_tolerate_scl_stretching(void)
+{
+    reset_world();
+    memset(s_scl_wait_seen, 0, sizeof(s_scl_wait_seen));
+    memset(s_scl_wait_by_address, 0, sizeof(s_scl_wait_by_address));
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture_scl_waits);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    static const uint8_t nrf_addresses[] = {
+        NRF_UPSTREAM_ADDRESS_DISCOVERY, NRF_UPSTREAM_ADDRESS_MAIN, NRF_UPSTREAM_ADDRESS_REMOTE,
+    };
+    for (size_t i = 0U; i < sizeof(nrf_addresses); ++i) {
+        assert(s_scl_wait_seen[nrf_addresses[i]]);
+        assert(s_scl_wait_by_address[nrf_addresses[i]] == NRF_TOPOLOGY_TARGET_SCL_WAIT_US);
+    }
+    assert(NRF_TOPOLOGY_TARGET_SCL_WAIT_US > 2000U && NRF_TOPOLOGY_TARGET_SCL_WAIT_US <= 100000U);
+    for (size_t address = 0U; address < sizeof(s_scl_wait_seen); ++address) {
+        bool is_nrf = false;
+        for (size_t i = 0U; i < sizeof(nrf_addresses); ++i) is_nrf = is_nrf || nrf_addresses[i] == address;
+        if (s_scl_wait_seen[address] && !is_nrf) {
+            assert(s_scl_wait_by_address[address] == 0U);
+        }
+    }
+}
+
 static void test_unplug_and_replug_between_reconciles(void)
 {
     reset_world();
@@ -2922,6 +2974,7 @@ int main(void)
     test_height_calibration_without_remotes();
     test_imu_calibration_worker_dispatch_and_v3_cache();
     test_without_tca_only_main_is_managed();
+    test_nrf_target_devices_tolerate_scl_stretching();
     test_stack_phase_tracking_and_cs_cycle_path();
     test_error_recovery_stack_hwm_and_long_error_name();
     test_persistent_timeouts_escalate_after_three_windows();

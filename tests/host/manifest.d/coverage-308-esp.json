@@ -33,7 +33,9 @@
         "components/nrf_topology_service/include",
         "components/sensor_bus/include"
       ],
-      "defines": ["NRF_LOG_RING_TEST_HOOKS"]
+      "defines": [
+        "NRF_LOG_RING_TEST_HOOKS"
+      ]
     },
     {
       "name": "web_nrf_logs_api_t2",
@@ -83,7 +85,22 @@
         "components/web_server/web_route_capacity.c",
         "components/web_server/tests/web_route_capacity_test.c"
       ],
-      "include_dirs": ["components/web_server"]
+      "include_dirs": [
+        "components/web_server"
+      ]
+    },
+    {
+      "name": "nrf_log_event_text",
+      "sources": [
+        "components/nrf_topology_service/nrf_log_event_text.c",
+        "tests/host/nrf_log_event_text_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_log_collector",
+        "nRF54L15/include",
+        "components/nrf_topology_service/include",
+        "components/sensor_bus/include"
+      ]
     }
   ]
 }

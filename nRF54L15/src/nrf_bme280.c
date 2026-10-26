@@ -287,7 +287,7 @@ static nrf_bme280_result_t bme280_wait_for_measurement(nrf_bme280_t *device)
         if (result != NRF_BME280_OK) {
             return result;
         }
-        if ((status & BME280_STATUS_MEASURING) == 0U) {
+        if ((status & (BME280_STATUS_MEASURING | BME280_STATUS_IM_UPDATE)) == 0U) {
             return NRF_BME280_OK;
         }
         if (attempt + 1U < BME280_MEASUREMENT_POLL_ATTEMPTS) {

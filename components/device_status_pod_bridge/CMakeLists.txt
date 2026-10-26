@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "app_pod_status_barometer_policy.c"
+        "app_pod_status_sensor_values_policy.c"
         "app_pod_status_inventory_policy.c"
         "app_pod_status_local_position_policy.c"
         "app_pod_status_state_policy.c"

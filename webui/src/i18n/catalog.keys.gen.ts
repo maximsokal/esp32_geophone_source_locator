@@ -1315,6 +1315,7 @@ export const i18nKeys = [
   "tft.workflow.sensor.planar",
   "tft.workflow.sensor.ready",
   "tft.workflow.sensor.remote_count",
+  "tft.workflow.sensor.values_legend",
   "tft.workflow.state.calibrated",
   "tft.workflow.state.gravity",
   "tft.workflow.state.moving",

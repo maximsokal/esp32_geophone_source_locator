@@ -75,6 +75,11 @@ esp_err_t web_wifi_setup_url_decode(
                 return ESP_ERR_INVALID_ARG;
             }
 
+            /* A decoded NUL would silently cut the SSID/password short. */
+            if (high == 0 && low == 0) {
+                return ESP_ERR_INVALID_ARG;
+            }
+
             destination[output++] =
                 (char)((high << 4) | low);
 

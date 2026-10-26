@@ -80,6 +80,13 @@ int main(void)
     assert(device_status_set_pod_state(DEVICE_STATUS_POD_COUNT, POD_STATE_READY) == ESP_ERR_INVALID_ARG);
     assert(device_status_set_pod_barometer(0, 100000.0f, 12.5f, 101325.0f, true) == ESP_OK);
     assert(device_status_set_pod_imu(0, 1.0f, 2.0f, 3.0f, true) == ESP_OK);
+    /* Gyro rate is its own measurement: it does not touch roll/pitch/yaw or capabilities. */
+    assert(device_status_set_pod_gyro_rate(1, 0.25f, true) == ESP_OK);
+    assert(device_status_set_pod_gyro_rate(1, -0.1f, true) == ESP_ERR_INVALID_ARG);
+    assert(device_status_set_pod_gyro_rate(1, NAN, true) == ESP_ERR_INVALID_ARG);
+    assert(device_status_set_pod_gyro_rate(DEVICE_STATUS_POD_COUNT, 0.0f, true) == ESP_ERR_INVALID_ARG);
+    assert(device_status_set_pod_gyro_rate(2, 7.0f, true) == ESP_OK);
+    assert(device_status_set_pod_gyro_rate(2, 7.0f, false) == ESP_OK);
     const device_sensor_health_t health = {
         .current = true, .imu_valid = true, .barometer_fault = true,
     };
@@ -110,6 +117,10 @@ int main(void)
     assert(snapshot.pods[0].state == POD_STATE_READY);
     assert(snapshot.pods[0].capabilities.barometer && snapshot.pods[0].barometer.valid);
     assert(snapshot.pods[0].capabilities.imu && snapshot.pods[0].imu.valid);
+    assert(!snapshot.pods[0].imu.gyro_valid && snapshot.pods[0].imu.gyro_rate_dps == 0.0f);
+    assert(snapshot.pods[1].imu.gyro_valid && snapshot.pods[1].imu.gyro_rate_dps == 0.25f);
+    assert(!snapshot.pods[1].capabilities.imu && !snapshot.pods[1].imu.valid);
+    assert(!snapshot.pods[2].imu.gyro_valid && snapshot.pods[2].imu.gyro_rate_dps == 0.0f);
     assert(snapshot.pods[0].capabilities.environment && snapshot.pods[0].environment.valid);
     assert(snapshot.pods[0].capabilities.local_position && snapshot.pods[0].position.local_valid);
     assert(snapshot.pods[0].capabilities.global_position && snapshot.pods[0].position.global_valid && snapshot.pods[0].position.altitude_valid);

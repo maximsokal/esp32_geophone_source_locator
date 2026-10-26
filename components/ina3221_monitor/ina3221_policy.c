@@ -1,6 +1,7 @@
 #include "ina3221_policy.h"
 
 #include <stddef.h>
+#include <math.h>
 
 
 #define INA3221_BUS_LSB_V              0.008f
@@ -25,8 +26,8 @@ float ina3221_policy_bus_raw_to_volts(
     uint16_t raw
 )
 {
-    const uint16_t counts =
-        raw >> 3;
+    const int16_t counts =
+        (int16_t)((int16_t)(raw & 0xFFF8U) / 8);
 
     return
         (float)counts *
@@ -61,15 +62,14 @@ float ina3221_policy_current_from_shunt(
 )
 {
     if (
-        shunt_resistance_ohm <=
-        0.0f
+        !isfinite(shunt_voltage_v) || !isfinite(shunt_resistance_ohm) ||
+        shunt_resistance_ohm <= 0.0f
     ) {
         return 0.0f;
     }
 
-    return
-        shunt_voltage_v /
-        shunt_resistance_ohm;
+    const float current = shunt_voltage_v / shunt_resistance_ohm;
+    return isfinite(current) ? current : 0.0f;
 }
 
 
@@ -120,14 +120,19 @@ const char *ina3221_policy_channel_name(
     }
 }
 
+static bool ina3221_sample_usable(const ina3221_channel_sample_t *sample)
+{
+    return sample != NULL && sample->valid && isfinite(sample->bus_voltage_v) &&
+        isfinite(sample->shunt_voltage_v) && isfinite(sample->current_a);
+}
+
 
 float ina3221_policy_battery_source_voltage(
     const ina3221_channel_sample_t *battery
 )
 {
     if (
-        battery == NULL ||
-        !battery->valid
+        !ina3221_sample_usable(battery)
     ) {
         return 0.0f;
     }
@@ -158,6 +163,7 @@ float ina3221_policy_battery_percent(
     float battery_voltage_v
 )
 {
+    if (!isfinite(battery_voltage_v)) return 0.0f;
     /*
      * Approximate 1S Li-ion voltage-to-SoC curve for the future TFT icon.
      * It is intentionally labelled an estimate: load/charge current shifts
@@ -236,7 +242,7 @@ ina3221_power_state_t ina3221_policy_classify_instant(
 {
     if (
         channels == NULL ||
-        !channels[0].valid
+        !ina3221_sample_usable(&channels[0])
     ) {
         return INA3221_POWER_STATE_UNKNOWN;
     }
@@ -252,7 +258,7 @@ ina3221_power_state_t ina3221_policy_classify_instant(
         );
 
     const bool esp32_rail_present =
-        channels[1].valid &&
+        ina3221_sample_usable(&channels[1]) &&
         channels[1].bus_voltage_v >=
             INA3221_ESP32_RAIL_PRESENT_V;
 
@@ -295,7 +301,7 @@ ina3221_power_state_t ina3221_policy_classifier_update(
     ina3221_power_state_t instantaneous_state
 )
 {
-    if (classifier == NULL) {
+    if (classifier == NULL || (unsigned)instantaneous_state > INA3221_POWER_STATE_USB_CHARGING) {
         return
             INA3221_POWER_STATE_UNKNOWN;
     }
@@ -386,7 +392,7 @@ void ina3221_policy_make_decision(
 
     if (
         channels == NULL ||
-        !channels[0].valid
+        !ina3221_sample_usable(&channels[0])
     ) {
         return;
     }

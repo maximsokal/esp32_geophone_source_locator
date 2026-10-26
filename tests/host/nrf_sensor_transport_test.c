@@ -41,7 +41,7 @@ typedef struct {
     uint64_t source_uptime_ms;
     mode_t mode;
     uint8_t status_result;
-    event_t events[128];
+    event_t events[512];
     unsigned event_count;
     unsigned select;
     unsigned close;
@@ -52,6 +52,9 @@ typedef struct {
     unsigned height_writes;
     unsigned imu_writes;
     unsigned discovery;
+    unsigned sleeps;
+    unsigned sleeps_with_bus_selected;
+    unsigned fail_select_from;
     bool main_absent;
     bool main_bad_epoch;
     bool fail_select;
@@ -139,7 +142,8 @@ static esp_err_t select_mux(void *context, uint8_t channel)
     ++bus->select;
     record_event(bus, E_SELECT);
     assert(channel == bus->ch);
-    if (bus->fail_select) {
+    if (bus->fail_select ||
+        (bus->fail_select_from != 0U && bus->select >= bus->fail_select_from)) {
         return ESP_FAIL;
     }
     bus->sel = channel;
@@ -306,6 +310,10 @@ static void sleep10(void *context, uint32_t delay_ms)
 {
     bus_t *bus = context;
     assert(delay_ms == 10U);
+    ++bus->sleeps;
+    if (bus->sel >= 0) {
+        ++bus->sleeps_with_bus_selected;
+    }
     bus->now += delay_ms;
 }
 
@@ -642,7 +650,9 @@ static void test_foreign_retry_and_second_conflict(void)
     assert(nrf_sensor_transport_refresh_channel(
                &controller, &io, &topology, 1U, &cache[1], &reconcile) == ESP_ERR_INVALID_STATE);
     assert(cache[1].state == NRF_SENSOR_CACHE_SENSOR_BUSY);
-    assert(bus.writes == 2U && bus.snaps == 3U && bus.close == 1U);
+    /* One select/close per poll: the bus is released while the nRF samples. */
+    assert(bus.writes == 2U && bus.snaps == 3U);
+    assert(bus.select == 3U && bus.close == 3U);
     assert(!reconcile);
 }
 
@@ -663,7 +673,8 @@ static void test_timeout_abort_and_faults(void)
     reconcile = false;
     assert(nrf_sensor_transport_refresh_channel(
                &controller, &io, &topology, 4U, &cache[4], &reconcile) == ESP_ERR_TIMEOUT);
-    assert(cache[4].state == NRF_SENSOR_CACHE_TIMEOUT && bus.now == 500U && bus.close == 1U);
+    assert(cache[4].state == NRF_SENSOR_CACHE_TIMEOUT && bus.now == 500U);
+    assert(bus.select == bus.snaps && bus.close == bus.select);
 
     topo(&bus, &topology, 4U);
     init_cache(&topology, cache, 4U);
@@ -846,6 +857,52 @@ static void test_capture_still_requires_ready_assigned_identity(void)
     assert(reconcile && bus.height_writes == 0U);
 }
 
+/*
+ * The nRF needs tens of milliseconds to sample. Waiting for it must not hold
+ * the mux or the shared bus owner (INA3221 and the barometer starved for it).
+ */
+static void test_bus_is_released_while_waiting_for_the_nrf(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    bool reconcile = false;
+
+    topo(&bus, &topology, 2U);
+    init_cache(&topology, cache, 2U);
+    bus.mode = M_FOREIGN;
+    nrf_sensor_transport_controller_t controller = make_controller();
+    nrf_sensor_transport_io_t io = make_io(&bus);
+
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 2U, &cache[2], &reconcile) == ESP_OK);
+    assert(cache[2].state == NRF_SENSOR_CACHE_OK);
+    assert(bus.sleeps > 0U);
+    assert(bus.sleeps_with_bus_selected == 0U);
+    assert(bus.sel == -1 && bus.select == bus.close);
+}
+
+static void test_reselect_failure_after_wait_is_a_transport_error(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    bool reconcile = false;
+
+    topo(&bus, &topology, 3U);
+    init_cache(&topology, cache, 3U);
+    bus.mode = M_PENDING;
+    bus.fail_select_from = 2U;
+    nrf_sensor_transport_controller_t controller = make_controller();
+    nrf_sensor_transport_io_t io = make_io(&bus);
+
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 3U, &cache[3], &reconcile) == ESP_FAIL);
+    assert(cache[3].state == NRF_SENSOR_CACHE_TRANSPORT_ERROR);
+    assert(reconcile && !cache[3].topology_current);
+    assert(bus.sel == -1 && bus.close == 2U);
+}
+
 int main(void)
 {
     test_cache_identity_lifecycle();
@@ -859,5 +916,7 @@ int main(void)
     test_sequence_can_reset_after_new_assignment_epoch();
     test_sticky_last_request_result_does_not_block_capture();
     test_capture_still_requires_ready_assigned_identity();
+    test_bus_is_released_while_waiting_for_the_nrf();
+    test_reselect_failure_after_wait_is_a_transport_error();
     return 0;
 }

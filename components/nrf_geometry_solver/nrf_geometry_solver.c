@@ -225,10 +225,12 @@ static double place_from_references(
             x = p2x;
             y = p2y;
         }
-    } else if (hypot(p1x - p2x, p1y - p2y) > 2.0 * TOLERANCE_MM && already_solved > 2U) {
-        /* Two references only, the two mirror candidates are clearly
-         * distinct, and the layout's reflection was already fixed by an
-         * earlier placement: picking one would be a guess. */
+    } else if (hypot(p1x - p2x, p1y - p2y) > TOLERANCE_MM && already_solved > 2U) {
+        /* Two references only, the two mirror candidates differ by more than
+         * the consistency tolerance, and the layout's reflection was already
+         * fixed by an earlier placement: picking one would be a guess whose
+         * possible error exceeds what the solver accepts everywhere else (and
+         * later nodes would be placed relative to it). */
         return -1.0;
     }
     /* Otherwise (first two-reference placement) p1 -- the candidate on the

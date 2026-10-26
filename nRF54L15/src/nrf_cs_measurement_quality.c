@@ -16,6 +16,10 @@ uint16_t nrf_cs_measurement_confidence(
 {
     float factor;
 
+    if ((pbr_valid && !isfinite(best_m)) || (rtt_valid && !isfinite(rtt_m))) {
+        return 0U;
+    }
+
     if (pbr_valid) {
         if (tone_ok_threshold == 0U || good_tone_channels < tone_ok_threshold) {
             return 0U;
@@ -25,9 +29,6 @@ uint16_t nrf_cs_measurement_confidence(
         factor = 0.6f + 0.4f * (extra > 1.0f ? 1.0f : extra);
 
         if (rtt_valid) {
-            if (!isfinite(best_m) || !isfinite(rtt_m)) {
-                return 0U;
-            }
             const float excess = fabsf(best_m - rtt_m) - NRF_CS_RTT_AGREEMENT_M;
             if (excess > 0.0f) {
                 const float ratio = excess / NRF_CS_RTT_AGREEMENT_M;

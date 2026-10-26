@@ -19,6 +19,9 @@ static inline size_t strlcpy(char *destination, const char *source, size_t size)
     return source_length;
 }
 
+/* Mirrors components/web_server/web_server_internal.h. */
+#define WEB_WIFI_SETUP_BODY_MAX 320U
+
 esp_err_t web_wifi_setup_url_decode(
     const char *source,
     char *destination,

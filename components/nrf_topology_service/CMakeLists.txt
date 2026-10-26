@@ -6,6 +6,7 @@ idf_component_register(
         "nrf_sensor_transport.c"
         "nrf_node_link_status_policy.c"
         "nrf_log_collector.c"
+        "nrf_log_event_text.c"
         "nrf_topology_leveling_policy.c"
         "nrf_topology_service.c"
 
