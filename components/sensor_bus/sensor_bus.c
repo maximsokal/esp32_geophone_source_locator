@@ -54,6 +54,8 @@ static TaskHandle_t s_owner_task;
 static uint32_t s_owner_depth;
 static int64_t s_owner_started_us;
 static uint32_t s_owner_session_depth;
+/* Priority the owner task had before its session boost; only the owner task touches it. */
+static uint32_t s_owner_saved_priority;
 static int64_t s_owner_session_started_us;
 static uint64_t s_owner_session_wait_us;
 static int64_t s_owner_deadline_us;
@@ -629,6 +631,8 @@ static void sensor_bus_owner_note_acquired(uint64_t waited_us)
     portENTER_CRITICAL(&s_owner_stats_lock);
     if (s_owner_task == current_task) {
         if (s_owner_session_depth == 0U) {
+            s_owner_saved_priority =
+                sensor_bus_lines_boost_task_priority(SENSOR_BUS_SESSION_PRIORITY);
             s_owner_session_started_us = now_us;
             s_owner_session_wait_us = waited_us;
             s_owner_hold_budget_exceeded = false;
@@ -693,10 +697,12 @@ void sensor_bus_owner_release(void)
     const int64_t now_us = sensor_bus_lines_now_us();
     bool outermost = false;
     bool budget_exceeded = false;
+    uint32_t saved_priority = UINT32_MAX;
     sensor_bus_owner_stats_t released_stats = {0};
     portENTER_CRITICAL(&s_owner_stats_lock);
     outermost = s_owner_task == current_task && s_owner_session_depth == 1U;
     if (outermost) {
+        saved_priority = s_owner_saved_priority;
         released_stats = s_owner_stats;
         released_stats.last_waited_for_mutex_us = s_owner_session_wait_us;
         (void)memcpy(released_stats.last_waiter_task, released_stats.holder_task,
@@ -718,6 +724,7 @@ void sensor_bus_owner_release(void)
     portEXIT_CRITICAL(&s_owner_stats_lock);
     sensor_bus_unlock();
     if (outermost) {
+        sensor_bus_lines_restore_task_priority(saved_priority);
         if (budget_exceeded) {
             ESP_LOGW(TAG,
                      "TCA_HOLD_BUDGET_EXCEEDED hold_ms=%llu max_hold_ms=%u",

@@ -33,6 +33,16 @@
 #define SENSOR_BUS_SEGMENTED_TRANSFER_BYTES 31U
 #define SENSOR_BUS_SEGMENTED_TRANSFER_PRIORITY 5U
 
+/*
+ * A bus-owner session (outermost owner acquire to release) runs at this priority.
+ * The nRF topology task is priority 2 on a service core that runs at 97.5 % busy;
+ * logs show even 1-byte TCA9548A transfers timing out before their commands were
+ * issued because the task was not scheduled for the whole timeout. The session is
+ * short and almost all of it is spent waiting for the bus, so the boost costs the
+ * UI little. It stays below the app event loop (6).
+ */
+#define SENSOR_BUS_SESSION_PRIORITY SENSOR_BUS_SEGMENTED_TRANSFER_PRIORITY
+
 #define SENSOR_BUS_TASK_NAME_SIZE 16U
 
 

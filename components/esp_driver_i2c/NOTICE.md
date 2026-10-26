@@ -9,6 +9,11 @@ Copied from Espressif ESP-IDF v5.5.4, components/esp_driver_i2c. The upstream so
   longer gets a fresh timeout for every FIFO command. Arithmetic is exercised
   by the `i2c_timeout_budget` host target, including tick wrap and infinite waits.
 
+- `s_i2c_send_commands` polls the command semaphore even when the tick budget is spent, so a task
+  that was not scheduled for the whole timeout does not report a bus fault for a transfer that
+  finished or never started (geolocator-i2c-3; board log 2026-10-26 20:02: `pending_int=0x0
+  bus_busy=0 cmds_left>0` on 1-byte TCA9548A transfers).
+
 - `s_i2c_send_commands` also logs `pending_int`, `bus_busy` and the commands left on a
   software timeout (geolocator-i2c-3): a pending interrupt means this side was too slow to
   service the controller, no pending interrupt means the target never let the transfer progress.

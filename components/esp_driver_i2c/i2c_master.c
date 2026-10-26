@@ -552,7 +552,11 @@ static void s_i2c_send_commands(i2c_master_bus_handle_t i2c_master, TickType_t t
     while (i2c_master->i2c_trans.cmd_count) {
         const TickType_t remaining = i2c_timeout_remaining_ticks(
             started_tick, ticks_to_wait, xTaskGetTickCount());
-        if (remaining == 0U || xSemaphoreTake(i2c_master->cmd_semphr, remaining) != pdTRUE) {
+        /* LOCAL PATCH (geolocator-i2c-3): a spent budget still polls the semaphore (zero ticks).
+         * When this task was not scheduled for the whole timeout the hardware may have finished
+         * (or never been started) and the semaphore is already given; declaring a timeout then
+         * reports scheduler starvation as a bus fault. */
+        if (xSemaphoreTake(i2c_master->cmd_semphr, remaining) != pdTRUE) {
             // Software timeout, clear the command link and finish this transaction.
             atomic_store(&i2c_master->status, I2C_STATUS_TIMEOUT);
             i2c_master->cmd_idx = 0;

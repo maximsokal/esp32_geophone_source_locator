@@ -1202,6 +1202,53 @@ static void test_segmented_transfers_raise_the_caller_priority_only_while_they_r
     assert(sensor_bus_deinit() == ESP_OK);
 }
 
+/*
+ * Logs from the board (2026-10-26 20:02) show 1-byte TCA9548A transfers timing out
+ * with no interrupt pending, an idle controller and commands still unissued: the
+ * priority-2 topology task did not get the core (cpu0 97.5 %) for the whole
+ * timeout. A bus-owner session therefore runs at SENSOR_BUS_SESSION_PRIORITY from
+ * the outermost acquire to the outermost release, whatever the transfer sizes.
+ */
+static void test_owner_session_runs_at_the_boosted_priority(void)
+{
+    sensor_bus_handles_t handles = {0};
+    uint8_t buffer[4] = {0};
+    uint8_t large[136] = {0};
+
+    atomic_store(&g_fake_lines.task_priority, 2U);
+    assert(sensor_bus_get_handles(&handles) == ESP_OK);
+    const unsigned boosts_before = atomic_load(&g_fake_lines.priority_boosts);
+    const unsigned restores_before = atomic_load(&g_fake_lines.priority_restores);
+
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    assert(atomic_load(&g_fake_lines.task_priority) == SENSOR_BUS_SESSION_PRIORITY);
+    assert(sensor_bus_read_bytes(handles.ina3221, NULL_I2C_MEM_ADDR, 2U, buffer) == ESP_OK);
+    assert(atomic_load(&s_priority_during_transfer) == SENSOR_BUS_SESSION_PRIORITY);
+
+    /* A nested session neither boosts again nor gives the priority back early. */
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    assert(atomic_load(&g_fake_lines.priority_boosts) == boosts_before + 1U);
+    sensor_bus_owner_release();
+    assert(atomic_load(&g_fake_lines.task_priority) == SENSOR_BUS_SESSION_PRIORITY);
+    assert(atomic_load(&g_fake_lines.priority_restores) == restores_before);
+
+    /* A long transfer inside the session does not restore the session priority either. */
+    assert(sensor_bus_read_bytes(handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(large), large) == ESP_OK);
+    assert(atomic_load(&g_fake_lines.task_priority) == SENSOR_BUS_SESSION_PRIORITY);
+
+    sensor_bus_owner_release();
+    assert(atomic_load(&g_fake_lines.task_priority) == 2U);
+    assert(atomic_load(&g_fake_lines.priority_boosts) == boosts_before + 1U);
+    assert(atomic_load(&g_fake_lines.priority_restores) == restores_before + 1U);
+
+    /* try_acquire is a session as well. */
+    assert(sensor_bus_owner_try_acquire() == ESP_OK);
+    assert(atomic_load(&g_fake_lines.task_priority) == SENSOR_BUS_SESSION_PRIORITY);
+    sensor_bus_owner_release();
+    assert(atomic_load(&g_fake_lines.task_priority) == 2U);
+    assert(sensor_bus_deinit() == ESP_OK);
+}
+
 static unsigned long long parse_log_ms(const char *line, const char *field)
 {
     const char *value = strstr(line, field);
@@ -1268,6 +1315,7 @@ int main(void)
     test_owner_deadline_bounds_driver_and_clears_on_release();
     test_default_transfer_timeout_covers_the_wire_time();
     test_segmented_transfers_raise_the_caller_priority_only_while_they_run();
+    test_owner_session_runs_at_the_boosted_priority();
     assert(sensor_bus_deinit() == ESP_OK);
 
     return 0;
