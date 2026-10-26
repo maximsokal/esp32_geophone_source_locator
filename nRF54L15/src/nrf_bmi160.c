@@ -223,6 +223,21 @@ int nrf_bmi160_read_imu(void *context, nrf_imu_sample_t *sample)
         return NRF_BMI160_ERR_NOT_INITIALIZED;
     }
 
+    /*
+     * A power loss or reset leaves the sensor ACKing in suspend mode with all
+     * data registers at zero, which would read as a valid motionless sample.
+     */
+    uint8_t pmu_status = 0U;
+    result = bmi160_read_regs(device, BMI160_REG_PMU_STATUS, &pmu_status, 1U);
+    if (result != NRF_BMI160_OK) {
+        return result;
+    }
+    if ((pmu_status & (BMI160_PMU_ACCEL_MASK | BMI160_PMU_GYRO_MASK)) !=
+        (BMI160_PMU_ACCEL_NORMAL | BMI160_PMU_GYRO_NORMAL)) {
+        device->initialized = false;
+        return NRF_BMI160_ERR_PMU;
+    }
+
     result = bmi160_read_regs(
         device,
         BMI160_REG_GYRO_DATA,

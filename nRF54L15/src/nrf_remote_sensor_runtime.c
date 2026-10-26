@@ -40,6 +40,7 @@ static void nrf_remote_sensor_prepare_imu(
     }
 
     runtime->imu_init_result = ops->init_imu(ops->imu_context);
+    runtime->imu_read_failures = 0U;
     if (runtime->imu_init_result == 0) {
         runtime->sources.read_imu = ops->read_imu;
         runtime->sources.imu_context = ops->imu_context;
@@ -62,10 +63,32 @@ static void nrf_remote_sensor_prepare_env(
     }
 
     runtime->env_init_result = ops->init_env(ops->env_context);
+    runtime->env_read_failures = 0U;
     if (runtime->env_init_result == 0) {
         runtime->sources.read_env = ops->read_env;
         runtime->sources.env_context = ops->env_context;
         runtime->env_ready = true;
+    }
+}
+
+static void nrf_remote_sensor_runtime_track_read(
+    bool ready,
+    bool faulted,
+    uint8_t *failures,
+    bool *ready_flag)
+{
+    if (!ready) {
+        return;
+    }
+    if (!faulted) {
+        *failures = 0U;
+        return;
+    }
+    if (*failures < UINT8_MAX) {
+        ++*failures;
+    }
+    if (*failures >= NRF_REMOTE_SENSOR_REINIT_AFTER_FAILURES) {
+        *ready_flag = false;
     }
 }
 
@@ -106,8 +129,23 @@ nrf_sensor_snapshot_result_t nrf_remote_sensor_runtime_refresh(
         return NRF_SENSOR_SNAPSHOT_ERR_ARGUMENT;
     }
 
-    return nrf_sensor_snapshot_refresh(
+    const nrf_sensor_snapshot_result_t result = nrf_sensor_snapshot_refresh(
         node_state,
         &runtime->sources,
         &runtime->snapshot);
+    if (result == NRF_SENSOR_SNAPSHOT_OK ||
+        result == NRF_SENSOR_SNAPSHOT_PARTIAL ||
+        result == NRF_SENSOR_SNAPSHOT_ERR_NO_DATA) {
+        nrf_remote_sensor_runtime_track_read(
+            runtime->imu_ready,
+            (runtime->snapshot.fault_mask & NRF_SENSOR_VALID_IMU) != 0U,
+            &runtime->imu_read_failures,
+            &runtime->imu_ready);
+        nrf_remote_sensor_runtime_track_read(
+            runtime->env_ready,
+            (runtime->snapshot.fault_mask & NRF_SENSOR_VALID_ENV) != 0U,
+            &runtime->env_read_failures,
+            &runtime->env_ready);
+    }
+    return result;
 }

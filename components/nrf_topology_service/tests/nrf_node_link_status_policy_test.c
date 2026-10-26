@@ -33,14 +33,29 @@ static void test_status_not_connected_when_node_absent_unassigned_or_error(void)
         NRF_NODE_LINK_STATUS_NOT_CONNECTED);
 
     input = ready_status();
-    input.result = NRF_UPSTREAM_RESULT_INTERNAL_ERROR;
-    assert(nrf_node_link_status_evaluate(&input, 1001U, false) ==
-        NRF_NODE_LINK_STATUS_NOT_CONNECTED);
-
-    input = ready_status();
     input.lifecycle = NRF_UPSTREAM_LIFECYCLE_UNAVAILABLE;
     assert(nrf_node_link_status_evaluate(&input, 1001U, false) ==
         NRF_NODE_LINK_STATUS_NOT_CONNECTED);
+}
+
+static void test_sticky_last_request_result_does_not_disconnect(void)
+{
+    static const nrf_upstream_result_t sticky[] = {
+        NRF_UPSTREAM_RESULT_PENDING,
+        NRF_UPSTREAM_RESULT_INVALID_FRAME,
+        NRF_UPSTREAM_RESULT_UNSUPPORTED_TYPE,
+        NRF_UPSTREAM_RESULT_BUSY,
+        NRF_UPSTREAM_RESULT_INTERNAL_ERROR,
+    };
+
+    for (unsigned index = 0U; index < sizeof(sticky) / sizeof(sticky[0]); ++index) {
+        nrf_node_link_status_input_t input = ready_status();
+        input.result = sticky[index];
+        assert(nrf_node_link_status_evaluate(&input, 1001U, false) ==
+            NRF_NODE_LINK_STATUS_READY);
+        assert(nrf_node_link_status_evaluate(&input, 1001U, true) ==
+            NRF_NODE_LINK_STATUS_MEASURING);
+    }
 }
 
 static void test_status_connected_when_fresh_status_not_ready(void)
@@ -121,6 +136,7 @@ static void test_refresh_and_stale_tolerances_are_pinned(void)
 int main(void)
 {
     test_status_not_connected_when_node_absent_unassigned_or_error();
+    test_sticky_last_request_result_does_not_disconnect();
     test_status_connected_when_fresh_status_not_ready();
     test_status_ready_when_fresh_ready_ok_assigned_registered();
     test_status_measuring_when_ready_and_recording();

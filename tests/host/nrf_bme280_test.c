@@ -23,6 +23,8 @@
 typedef struct {
     uint8_t regs[2][256];
     bool respond[2];
+    /* Humidity is skipped (0x8000) when CTRL_HUM oversampling is 0 at CTRL_MEAS write. */
+    bool emulate_humidity_gate;
     int transfer_count;
     int fail_at_transfer;
     uint8_t address_history[64];
@@ -71,6 +73,11 @@ static int fake_transfer(
     uint8_t *regs = fake->regs[index];
     if (write_len == 2U && read_len == 0U && write_data != NULL) {
         regs[write_data[0]] = write_data[1];
+        if (fake->emulate_humidity_gate && write_data[0] == TEST_REG_CTRL_MEAS &&
+            (regs[TEST_REG_CTRL_HUM] & 0x07U) == 0U) {
+            regs[TEST_REG_DATA + 6U] = 0x80U;
+            regs[TEST_REG_DATA + 7U] = 0x00U;
+        }
         return 0;
     }
 
@@ -393,8 +400,37 @@ static void test_pressure_to_altitude_mm_linear_approximation(void)
     }
 }
 
+/*
+ * CTRL_HUM and CONFIG are volatile: after a power loss the BME280 ACKs again
+ * with humidity oversampling off, so every forced conversion skips humidity
+ * (0x8000) and the read failed forever with ERR_MEASUREMENT.
+ */
+static void test_read_restores_humidity_setup_after_sensor_reset(void)
+{
+    fake_bme280_bus_t fake;
+    seed_sensor(&fake, NRF_BME280_ADDRESS_PRIMARY);
+    nrf_sensor_bus_t bus = make_bus(&fake);
+    nrf_bme280_t device;
+    nrf_env_sample_t sample;
+
+    assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) ==
+           NRF_BME280_OK);
+    pack_measurement(fake.regs[0], 415148U, 519888U, 30000U);
+    fake.emulate_humidity_gate = true;
+
+    fake.regs[0][TEST_REG_CTRL_HUM] = 0U;
+    fake.regs[0][TEST_REG_CONFIG] = 0U;
+    fake.regs[0][TEST_REG_CTRL_MEAS] = 0U;
+
+    assert(nrf_bme280_read_env(&device, &sample) == NRF_BME280_OK);
+    assert((fake.regs[0][TEST_REG_CTRL_HUM] & 0x07U) == 0x01U);
+    assert((fake.regs[0][TEST_REG_CONFIG] & 0x1CU) == 0x10U);
+    assert(sample.pressure_pa == 100653U);
+}
+
 int main(void)
 {
+    test_read_restores_humidity_setup_after_sensor_reset();
     test_pressure_to_altitude_mm_linear_approximation();
     test_init_rejects_invalid_arguments();
     test_init_detects_primary_and_configures_forced_profile();

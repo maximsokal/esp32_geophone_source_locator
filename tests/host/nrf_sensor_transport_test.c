@@ -40,6 +40,7 @@ typedef struct {
     uint32_t snapshot_sequence;
     uint64_t source_uptime_ms;
     mode_t mode;
+    uint8_t status_result;
     event_t events[128];
     unsigned event_count;
     unsigned select;
@@ -48,6 +49,8 @@ typedef struct {
     unsigned remote_reads;
     unsigned snaps;
     unsigned writes;
+    unsigned height_writes;
+    unsigned imu_writes;
     unsigned discovery;
     bool main_absent;
     bool main_bad_epoch;
@@ -179,6 +182,7 @@ static esp_err_t read_status(void *context, uint8_t address, nrf_upstream_status
             0x10U,
             bus->main_bad_epoch ? 0x9999U : 0x1111U);
         status(status_frame, &node_snapshot, NRF_UPSTREAM_ROLE_MAIN);
+        status_frame->result = bus->status_result;
         return ESP_OK;
     }
     if (address == NRF_UPSTREAM_ADDRESS_REMOTE) {
@@ -194,6 +198,7 @@ static esp_err_t read_status(void *context, uint8_t address, nrf_upstream_status
             bus->remote_hw,
             bus->remote_epoch);
         status(status_frame, &node_snapshot, NRF_UPSTREAM_ROLE_REMOTE);
+        status_frame->result = bus->status_result;
         if (bus->mode == M_STATUS_BOOTING) {
             status_frame->lifecycle = NRF_UPSTREAM_LIFECYCLE_BOOTING;
         }
@@ -208,6 +213,22 @@ static esp_err_t write_refresh(void *context, const nrf_upstream_sensor_refresh_
     ++bus->writes;
     record_event(bus, E_WRITE);
     bus->req = request->request_id;
+    return ESP_OK;
+}
+
+static esp_err_t write_height(void *context, const nrf_upstream_height_reference_t *request)
+{
+    bus_t *bus = context;
+    assert(request->action == NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE);
+    ++bus->height_writes;
+    return ESP_OK;
+}
+
+static esp_err_t write_imu(void *context, const nrf_upstream_imu_calibrate_t *request)
+{
+    bus_t *bus = context;
+    assert(request->action == NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE);
+    ++bus->imu_writes;
     return ESP_OK;
 }
 
@@ -232,6 +253,7 @@ static esp_err_t read_snapshot(
         bus->remote_hw,
         bus->remote_epoch);
     status(status_frame, &node_snapshot, NRF_UPSTREAM_ROLE_REMOTE);
+    status_frame->result = bus->status_result;
     if (bus->mode == M_SNAPSHOT_IDENTITY_MISMATCH) {
         status_frame->hardware_id[0] ^= 0x5AU;
     }
@@ -307,6 +329,8 @@ static nrf_sensor_transport_io_t make_io(bus_t *bus)
         .mux_faulted = mux_faulted,
         .read_status = read_status,
         .write_sensor_refresh = write_refresh,
+        .write_height_reference = write_height,
+        .write_imu_calibration = write_imu,
         .read_remote_snapshot = read_snapshot,
         .sleep_ms = sleep10,
         .now_ms = now_ms,
@@ -750,6 +774,78 @@ static void test_sequence_can_reset_after_new_assignment_epoch(void)
     assert(cache[5].state == NRF_SENSOR_CACHE_OK);
 }
 
+/*
+ * The nRF keeps the result of the last rejected request in STATUS until the
+ * next ASSIGN, so a node can be fully ready and still report INVALID_FRAME.
+ */
+static void test_sticky_last_request_result_does_not_block_capture(void)
+{
+    static const uint8_t sticky[] = {
+        NRF_UPSTREAM_RESULT_INVALID_FRAME,
+        NRF_UPSTREAM_RESULT_UNSUPPORTED_TYPE,
+        NRF_UPSTREAM_RESULT_BUSY,
+    };
+
+    for (unsigned index = 0U; index < sizeof(sticky) / sizeof(sticky[0]); ++index) {
+        bus_t bus;
+        nrf_topology_snapshot_t topology;
+        nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+        nrf_sensor_transport_controller_t controller;
+        nrf_sensor_transport_io_t io;
+        bool reconcile = true;
+
+        topo(&bus, &topology, 3U);
+        init_cache(&topology, cache, 3U);
+        bus.status_result = sticky[index];
+        controller = make_controller();
+        io = make_io(&bus);
+
+        assert(nrf_sensor_transport_capture_height_reference(
+                   &controller, &io, &topology, 3U, 1U, &reconcile) == ESP_OK);
+        assert(!reconcile && bus.height_writes == 1U && bus.close == 1U);
+
+        reconcile = true;
+        assert(nrf_sensor_transport_request_imu_calibration(
+                   &controller, &io, &topology, 3U, 1U, &reconcile) == ESP_OK);
+        assert(!reconcile && bus.imu_writes == 1U && bus.close == 2U);
+
+        reconcile = true;
+        assert(nrf_sensor_transport_refresh_channel(
+                   &controller, &io, &topology, 3U, &cache[3], &reconcile) == ESP_OK);
+        assert(!reconcile && cache[3].state == NRF_SENSOR_CACHE_OK);
+        assert(cache[3].upstream_status.result == sticky[index]);
+    }
+}
+
+static void test_capture_still_requires_ready_assigned_identity(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_sensor_transport_controller_t controller;
+    nrf_sensor_transport_io_t io;
+    bool reconcile = false;
+
+    topo(&bus, &topology, 2U);
+    bus.mode = M_STATUS_BOOTING;
+    controller = make_controller();
+    io = make_io(&bus);
+    assert(nrf_sensor_transport_capture_height_reference(
+               &controller, &io, &topology, 2U, 1U, &reconcile) == ESP_ERR_INVALID_RESPONSE);
+    assert(reconcile && bus.height_writes == 0U && bus.close == 1U);
+
+    reconcile = false;
+    assert(nrf_sensor_transport_request_imu_calibration(
+               &controller, &io, &topology, 2U, 1U, &reconcile) == ESP_ERR_INVALID_RESPONSE);
+    assert(reconcile && bus.imu_writes == 0U && bus.close == 2U);
+
+    topo(&bus, &topology, 2U);
+    bus.remote_epoch ^= 0x40U;
+    reconcile = false;
+    assert(nrf_sensor_transport_capture_height_reference(
+               &controller, &io, &topology, 2U, 1U, &reconcile) == ESP_ERR_INVALID_RESPONSE);
+    assert(reconcile && bus.height_writes == 0U);
+}
+
 int main(void)
 {
     test_cache_identity_lifecycle();
@@ -761,5 +857,7 @@ int main(void)
     test_foreign_retry_and_second_conflict();
     test_timeout_abort_and_faults();
     test_sequence_can_reset_after_new_assignment_epoch();
+    test_sticky_last_request_result_does_not_block_capture();
+    test_capture_still_requires_ready_assigned_identity();
     return 0;
 }

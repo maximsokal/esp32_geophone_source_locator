@@ -313,8 +313,50 @@ static void test_read_transfer_failure_does_not_leak_stale_sample(void)
     assert_sample_zero(&sample);
 }
 
+/*
+ * After a power loss or reset the BMI160 ACKs again but is in suspend mode and
+ * its data registers read zero. That must not look like a valid still-sensor
+ * sample (0 g, 0 dps), and the driver must report that it needs re-init.
+ */
+static void test_read_detects_suspended_sensor_instead_of_returning_zero_motion(void)
+{
+    fake_bmi160_bus_t fake;
+    seed_sensor(&fake);
+    nrf_sensor_bus_t bus = make_bus(&fake);
+    nrf_bmi160_t device;
+    nrf_imu_sample_t sample;
+
+    assert(nrf_bmi160_init(
+               &device,
+               &bus,
+               NRF_BMI160_DEFAULT_ADDRESS,
+               fake_delay_ms,
+               &fake) == NRF_BMI160_OK);
+
+    fake.regs[TEST_BMI160_REG_PMU_STATUS] = 0U;
+    memset(&fake.regs[TEST_BMI160_REG_GYRO_DATA], 0, 12U);
+    memset(&sample, 0x55, sizeof(sample));
+    assert(nrf_bmi160_read_imu(&device, &sample) == NRF_BMI160_ERR_PMU);
+    assert_sample_zero(&sample);
+    assert(!device.initialized);
+    assert(nrf_bmi160_read_imu(&device, &sample) ==
+           NRF_BMI160_ERR_NOT_INITIALIZED);
+
+    /* Re-init brings it back. */
+    assert(nrf_bmi160_init(
+               &device,
+               &bus,
+               NRF_BMI160_DEFAULT_ADDRESS,
+               fake_delay_ms,
+               &fake) == NRF_BMI160_OK);
+    put_i16_le(&fake.regs[TEST_BMI160_REG_GYRO_DATA + 6U], 16384);
+    assert(nrf_bmi160_read_imu(&device, &sample) == NRF_BMI160_OK);
+    assert(sample.accel_mg[0] == 1000);
+}
+
 int main(void)
 {
+    test_read_detects_suspended_sensor_instead_of_returning_zero_motion();
     test_init_rejects_invalid_arguments();
     test_init_configures_expected_runtime_profile();
     test_init_rejects_wrong_chip_id_before_powerup();

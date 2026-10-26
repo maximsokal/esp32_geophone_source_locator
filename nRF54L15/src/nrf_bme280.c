@@ -406,7 +406,27 @@ int nrf_bme280_read_env(void *context, nrf_env_sample_t *sample)
         return NRF_BME280_ERR_NOT_INITIALIZED;
     }
 
+    /*
+     * CTRL_HUM and CONFIG are volatile. After a power loss the sensor ACKs
+     * again with humidity oversampling off, so every conversion would skip
+     * humidity (0x8000) forever. Rewrite them (the sensor sleeps between forced
+     * conversions, so CONFIG is writable); CTRL_MEAS below latches CTRL_HUM.
+     */
     nrf_bme280_result_t result = bme280_write_reg(
+        device,
+        BME280_REG_CTRL_HUM,
+        BME280_CTRL_HUM_X1);
+    if (result != NRF_BME280_OK) {
+        return result;
+    }
+    result = bme280_write_reg(
+        device,
+        BME280_REG_CONFIG,
+        BME280_CONFIG_FILTER_X16);
+    if (result != NRF_BME280_OK) {
+        return result;
+    }
+    result = bme280_write_reg(
         device,
         BME280_REG_CTRL_MEAS,
         BME280_CTRL_MEAS_FORCED);

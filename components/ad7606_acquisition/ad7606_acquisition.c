@@ -1336,8 +1336,8 @@ static esp_err_t ad7606_resolve_measured_timing(
 
     s_read_mode = timing.mode;
     ESP_LOGI(TAG,
-        "Timing valid: rate=%u Hz configured=OS%u measured=OS%u tCONV=%u ns "
-        "SCLK=%u read=%" PRIu64 " ns tCONV(max)=%u ns mode=%s CONVST_high=%u ns",
+        "Timing valid: rate=%u Hz configured=OS%u measured=OS%u tCONV_measured=%u ns "
+        "SCLK=%u read=%" PRIu64 " ns tCONV_datasheet_max=%u ns mode=%s CONVST_high=%u ns",
         (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
         (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
         (unsigned)measured_os,

@@ -11,6 +11,8 @@
 #define REG_CHIP_ID 0xD0U
 #define REG_CALIB 0x88U
 #define REG_DATA 0xF7U
+#define REG_CTRL_MEAS 0xF4U
+#define REG_CONFIG 0xF5U
 #define BMP_ID 0x58U
 #define AHT_ADDRESS 0x38U
 
@@ -37,6 +39,8 @@ typedef struct {
     int64_t now_us;
     uint32_t delay_extra_us;
     bool timeout_bmp_data;
+    /* Opt-in: a BMP/BME280 outside normal mode returns the reset data (0x80000). */
+    bool bmp_model_sleep;
     void *bus;
 } fake_sensor_bus_t;
 
@@ -175,6 +179,13 @@ static esp_err_t fake_read(
     if ((address == 0x76U || address == 0x77U) &&
         mem_address == REG_DATA && s_fake.timeout_bmp_data) {
         return ESP_ERR_TIMEOUT;
+    }
+    if ((address == 0x76U || address == 0x77U) && mem_address == REG_DATA &&
+        s_fake.bmp_model_sleep && data_len == 6U &&
+        (s_fake.registers[address][REG_CTRL_MEAS] & 0x03U) != 0x03U) {
+        static const uint8_t reset_data[6] = {0x80U, 0x00U, 0x00U, 0x80U, 0x00U, 0x00U};
+        memcpy(data, reset_data, sizeof(reset_data));
+        return ESP_OK;
     }
     if (address == AHT_ADDRESS && mem_address == NULL_I2C_MEM_ADDR) {
         if (data_len == 1U) {
@@ -613,6 +624,139 @@ static void test_boot_polling_does_not_touch_i2c_before_preflight(void)
     main_barometer_close(&barometer);
 }
 
+/* A power loss or soft reset returns the sensor to sleep mode with default registers. */
+static void bmp_lose_configuration(uint8_t address)
+{
+    s_fake.registers[address][REG_CTRL_MEAS] = 0U;
+    s_fake.registers[address][REG_CONFIG] = 0U;
+}
+
+static void poll_range(
+    main_barometer_t *barometer,
+    uint64_t from_ms,
+    uint64_t to_ms)
+{
+    for (uint64_t now_ms = from_ms; now_ms <= to_ms; now_ms += 200U) {
+        (void)main_barometer_poll(barometer, now_ms);
+    }
+}
+
+static void test_sensor_power_cycle_is_rearmed_after_it_acks_again(void)
+{
+    reset_fake();
+    main_barometer_request_polling(); /* polling is a process-wide opt-in */
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    poll_range(&barometer, 0U, 400U);
+    assert(barometer.reading.bmp280_valid);
+
+    /* The sensor drops off the bus, then comes back reset (sleep mode). */
+    s_fake.responding[0x76U] = false;
+    assert(main_barometer_poll(&barometer, 600U) == ESP_ERR_NOT_FOUND);
+    assert(!barometer.reading.bmp280_valid);
+    s_fake.responding[0x76U] = true;
+    bmp_lose_configuration(0x76U);
+
+    poll_range(&barometer, 800U, 6600U);
+    assert(barometer.reading.bmp280_valid);
+    assert(s_fake.registers[0x76U][REG_CTRL_MEAS] == 0x57U);
+    assert(s_fake.registers[0x76U][REG_CONFIG] == 0x30U);
+    main_barometer_close(&barometer);
+}
+
+static void test_silent_sensor_reset_is_rearmed_after_bounded_pending_polls(void)
+{
+    reset_fake();
+    main_barometer_request_polling(); /* polling is a process-wide opt-in */
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    poll_range(&barometer, 0U, 400U);
+    assert(barometer.reading.bmp280_valid);
+
+    bmp_lose_configuration(0x76U);
+    for (uint64_t now_ms = 600U; now_ms <= 1400U; now_ms += 200U) {
+        assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_NOT_FINISHED);
+        assert(!barometer.reading.bmp280_valid);
+    }
+    /* 5th pending poll re-arms the mode; the next poll period reads real data. */
+    assert(s_fake.registers[0x76U][REG_CTRL_MEAS] == 0x57U);
+    assert(main_barometer_poll(&barometer, 1600U) == ESP_OK);
+    assert(barometer.reading.bmp280_valid);
+    main_barometer_close(&barometer);
+}
+
+static void test_pending_conversion_does_not_add_probe_traffic(void)
+{
+    reset_fake();
+    main_barometer_request_polling(); /* polling is a process-wide opt-in */
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    poll_range(&barometer, 0U, 400U);
+    bmp_lose_configuration(0x76U);
+
+    const size_t probes_before = s_fake.address_probe_count;
+    for (uint64_t now_ms = 600U; now_ms <= 1000U; now_ms += 200U) {
+        assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_NOT_FINISHED);
+    }
+    assert(s_fake.address_probe_count == probes_before);
+    main_barometer_close(&barometer);
+}
+
+static void test_transient_pending_does_not_kill_height_reference_capture(void)
+{
+    reset_fake();
+    main_barometer_request_polling(); /* polling is a process-wide opt-in */
+    setup_bmp280(0x77U, BMP_ID);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_request_height_reference_capture(95U) == ESP_OK);
+    poll_range(&barometer, 0U, 200U); /* init, then a first valid sample */
+    assert(barometer.reading.bmp280_valid);
+
+    /* One conversion not finished yet: not a sensor failure. */
+    uint8_t saved[6];
+    memcpy(saved, &s_fake.registers[0x77U][REG_DATA], sizeof(saved));
+    set_bmp_raw_pressure(0x77U, 0x80000U);
+    assert(main_barometer_poll(&barometer, 400U) == ESP_ERR_NOT_FINISHED);
+    assert(barometer.reading.height_reference_state !=
+           MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    memcpy(&s_fake.registers[0x77U][REG_DATA], saved, sizeof(saved));
+
+    poll_range(&barometer, 600U, 3600U);
+    assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID);
+    assert(barometer.reading.height_reference_generation == 95U);
+    main_barometer_close(&barometer);
+}
+
+static void test_permanently_pending_sensor_invalidates_capture_after_bound(void)
+{
+    reset_fake();
+    main_barometer_request_polling(); /* polling is a process-wide opt-in */
+    setup_bmp280(0x77U, BMP_ID);
+    set_bmp_raw_pressure(0x77U, 0x80000U); /* never converts, even after re-arm */
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_request_height_reference_capture(96U) == ESP_OK);
+    (void)main_barometer_poll(&barometer, 0U);
+
+    uint64_t now_ms = 200U;
+    for (unsigned pending = 1U; pending <= 14U; ++pending, now_ms += 200U) {
+        assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_NOT_FINISHED);
+        assert(barometer.reading.height_reference_state ==
+               MAIN_BAROMETER_REFERENCE_NOT_ESTABLISHED);
+    }
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_NOT_FINISHED);
+    assert(barometer.reading.height_reference_state ==
+           MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    main_barometer_close(&barometer);
+}
+
 int main(void)
 {
     test_boot_polling_does_not_touch_i2c_before_preflight();
@@ -629,5 +773,10 @@ int main(void)
     test_main_height_reference_stable_unstable_and_relative();
     test_main_height_reference_sensor_invalid_and_generation_validation();
     test_first_conversion_pending_is_not_a_bus_error();
+    test_sensor_power_cycle_is_rearmed_after_it_acks_again();
+    test_silent_sensor_reset_is_rearmed_after_bounded_pending_polls();
+    test_pending_conversion_does_not_add_probe_traffic();
+    test_transient_pending_does_not_kill_height_reference_capture();
+    test_permanently_pending_sensor_invalidates_capture_after_bound();
     return 0;
 }

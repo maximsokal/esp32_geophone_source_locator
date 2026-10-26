@@ -61,6 +61,8 @@ typedef struct {
     uint64_t last_aht20_attempt_ms;
     esp_err_t bmp280_retry_error;
     esp_err_t aht20_retry_error;
+    /* Consecutive polls that read the data-register reset value (0x80000). */
+    uint8_t bmp280_pending_polls;
     bool bmp280_initialized;
     bool aht20_initialized;
     bool bmp280_probe_required;

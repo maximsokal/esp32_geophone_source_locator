@@ -2,6 +2,7 @@
 #define NRF_REMOTE_SENSOR_RUNTIME_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "nrf_node_state.h"
 #include "nrf_sensor_snapshot.h"
@@ -19,6 +20,13 @@ typedef enum {
     NRF_REMOTE_SENSOR_PREPARE_ERR_NO_DATA = -3,
 } nrf_remote_sensor_prepare_result_t;
 
+/*
+ * A ready source whose read fails this many refreshes in a row is assumed to
+ * have lost its configuration (power loss, reset): it is marked not ready so
+ * the next prepare initializes it again.
+ */
+#define NRF_REMOTE_SENSOR_REINIT_AFTER_FAILURES 3U
+
 typedef int (*nrf_remote_sensor_init_fn)(void *context);
 
 typedef struct {
@@ -35,6 +43,8 @@ typedef struct {
     nrf_sensor_snapshot_t snapshot;
     int imu_init_result;
     int env_init_result;
+    uint8_t imu_read_failures;
+    uint8_t env_read_failures;
     bool imu_ready;
     bool env_ready;
 } nrf_remote_sensor_runtime_t;

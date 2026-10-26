@@ -183,11 +183,17 @@ static void status_cache_store(
     cache->esp_receipt_uptime_ms = receipt_uptime_ms;
 }
 
+/*
+ * Readiness only. status->result is the outcome of the last request the node
+ * saw and the nRF keeps a rejected request's result (e.g. INVALID_FRAME) until
+ * the next ASSIGN completes, so requiring RESULT_OK here made every CAPTURE and
+ * refresh fail with INVALID_RESPONSE after one stray frame. The result stays
+ * visible in the status caches.
+ */
 static bool status_is_ready(const nrf_upstream_status_t *status)
 {
     return status != NULL &&
         status->lifecycle == NRF_UPSTREAM_LIFECYCLE_READY &&
-        status->result == NRF_UPSTREAM_RESULT_OK &&
         (status->flags & NRF_UPSTREAM_STATUS_FLAG_ASSIGNED) != 0U &&
         (status->flags & NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED) != 0U;
 }

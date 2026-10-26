@@ -7,10 +7,14 @@ nrf_node_link_status_t nrf_node_link_status_evaluate(
     uint64_t now_ms,
     bool recording)
 {
+    /*
+     * input->result is the outcome of the last request the node saw, which the
+     * nRF keeps in STATUS until the next ASSIGN. It says nothing about whether
+     * the link is up, so a stray INVALID_FRAME must not hide a working node.
+     */
     if (input == NULL || !input->assigned || !input->status_valid ||
         !input->status_identity_matches || now_ms < input->status_receipt_uptime_ms ||
         now_ms - input->status_receipt_uptime_ms >= NRF_NODE_LINK_STATUS_STALE_LIMIT_MS ||
-        input->result != NRF_UPSTREAM_RESULT_OK ||
         (input->flags & NRF_UPSTREAM_STATUS_FLAG_ASSIGNED) == 0U ||
         (input->lifecycle != NRF_UPSTREAM_LIFECYCLE_BOOTING &&
          input->lifecycle != NRF_UPSTREAM_LIFECYCLE_READY)) {

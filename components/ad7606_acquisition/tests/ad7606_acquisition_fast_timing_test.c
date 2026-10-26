@@ -518,6 +518,60 @@ static void test_missed_conversion_accounting_and_restart(void)
 }
 
 
+/*
+ * HIL (MAX-435): this board's BUSY is 4.4-4.5 us, above the 4.15 us datasheet
+ * maximum used for the read budget, and the log shows both numbers. That is
+ * accepted only because the classification band is wider than the datasheet
+ * figure, so the per-sample budget must still hold with the widest BUSY width
+ * the band lets through, for every mode the resolver accepts.
+ */
+static uint32_t band_max_tconv_ns(uint32_t oversampling)
+{
+    switch (oversampling) {
+    case 1U: return AD7606_OS1_TCONV_MAX_NS;
+    case 2U: return AD7606_OS2_TCONV_MAX_NS;
+    case 4U: return AD7606_OS4_TCONV_MAX_NS;
+    default: return AD7606_OS8_TCONV_MAX_NS;
+    }
+}
+
+static void measured_busy_above_datasheet_max_keeps_read_budget(void)
+{
+    ad7606_timing_result_t result = {0};
+
+    /* The value from the failing field log: 4525 ns at OS1, 20 kHz. */
+    assert(ad7606_acquisition_classify_tconv_ns(4525U) == 1U);
+    assert(ad7606_acquisition_timing_resolve_measured(
+        20000U, 1U, 1U, 10000000U, AD7606_READ_MODE_AUTO, 2149U, &result));
+    assert(result.mode == AD7606_READ_MODE_AFTER_CONVERSION);
+    assert(result.tconv_max_ns == 4150U);
+    assert(4525U > result.tconv_max_ns);
+
+    unsigned accepted_after = 0U;
+    for (size_t rate = 0U; rate < sizeof(s_rates) / sizeof(s_rates[0]); ++rate) {
+        for (size_t os = 0U; os < sizeof(s_os) / sizeof(s_os[0]); ++os) {
+            for (size_t spi = 0U; spi < sizeof(s_spi) / sizeof(s_spi[0]); ++spi) {
+                for (size_t high = 0U;
+                     high < sizeof(s_convst_high_ns) / sizeof(s_convst_high_ns[0]);
+                     ++high) {
+                    if (!ad7606_acquisition_timing_resolve(
+                            s_rates[rate], s_os[os], s_spi[spi],
+                            AD7606_READ_MODE_AUTO, s_convst_high_ns[high], &result) ||
+                        result.mode != AD7606_READ_MODE_AFTER_CONVERSION) {
+                        continue;
+                    }
+                    ++accepted_after;
+                    const uint64_t worst_ns = (uint64_t)band_max_tconv_ns(s_os[os]) +
+                        result.read_time_ns + 3000U + s_convst_high_ns[high];
+                    assert(worst_ns * s_rates[rate] <= UINT64_C(1000000000));
+                }
+            }
+        }
+    }
+    assert(accepted_after > 0U);
+}
+
+
 int main(void)
 {
 #if defined(AD7606_TCONV_TOL1_BANDS_ONLY)
@@ -540,6 +594,7 @@ int main(void)
     test_full_rate_os_clock_mode_matrix();
     test_default_20khz_os1_auto_reads_after_conversion();
     test_measured_busy_width_classification_and_timing_gate();
+    measured_busy_above_datasheet_max_keeps_read_budget();
     test_invalid_timing_boundaries();
     test_sample_index_timestamps_for_long_runs_and_overflow();
     test_pcnt_extension_wrap_restart_and_monotonicity();
