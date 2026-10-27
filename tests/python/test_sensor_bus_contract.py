@@ -44,7 +44,7 @@ def test_sensor_bus_owns_the_board_contract_and_vendor_bus():
     assert "SENSOR_BUS_I2C_SPEED_HZ  ((uint32_t)CONFIG_APP_SENSOR_I2C_SPEED_HZ)" in header
     kconfig = read("main/Kconfig.projbuild")
     speed_block = kconfig.split("config APP_SENSOR_I2C_SPEED_HZ", 1)[1].split("endmenu", 1)[0]
-    assert "default 25000" in speed_block and "range 10000 400000" in speed_block
+    assert "default 100000" in speed_block and "range 10000 400000" in speed_block
     assert "SENSOR_BUS_TRANSACTION_TIMEOUT_MS 20U" in header
     assert "SENSOR_BUS_MUTEX_WAIT_MS 200U" in header
     assert "SENSOR_BUS_OWNER_MAX_HOLD_MS 150U" in header

@@ -20,7 +20,7 @@
 /* Shared bus clock; set by APP_SENSOR_I2C_SPEED_HZ (menuconfig "I2C bus"). Slow experiments lengthen
  * every transfer, so wire-time budgets must always be derived from this value, never from 100 kHz. */
 #ifndef CONFIG_APP_SENSOR_I2C_SPEED_HZ
-#define CONFIG_APP_SENSOR_I2C_SPEED_HZ 25000
+#define CONFIG_APP_SENSOR_I2C_SPEED_HZ 100000
 #endif
 #define SENSOR_BUS_I2C_SPEED_HZ  ((uint32_t)CONFIG_APP_SENSOR_I2C_SPEED_HZ)
 #define SENSOR_BUS_TRANSACTION_TIMEOUT_MS 20U

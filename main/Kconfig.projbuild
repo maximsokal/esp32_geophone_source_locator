@@ -262,12 +262,14 @@ menu "I2C bus"
 config APP_SENSOR_I2C_SPEED_HZ
     int "Shared sensor/nRF I2C bus clock (Hz)"
     range 10000 400000
-    default 25000
+    default 100000
     help
         Clock of the ESP32 I2C master on the shared bus (INA3221, barometer,
-        TCA9548A and the nRF nodes). 100000 is the previous value. A lower
-        clock lengthens every transfer, so a 136 byte nRF snapshot takes about
-        four times as long at 25000; the nRF log collector budgets scale with it.
+        TCA9548A and the nRF nodes). Keep 100000: at 25000 the nRF target stopped
+        driving its STATUS reply after a few bytes and no node was ever assigned
+        (2026-10-27 capture v4). A lower clock lengthens every transfer, so a
+        136 byte nRF snapshot takes about four times as long at 25000; the nRF log
+        collector budgets scale with it.
 
 endmenu
 
