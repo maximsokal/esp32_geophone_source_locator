@@ -367,6 +367,37 @@ static void sensor_bus_copy_task_name(
     destination[SENSOR_BUS_TASK_NAME_SIZE - 1U] = '\0';
 }
 
+/* Quiet lease state; guarded by s_owner_stats_lock like the other owner bookkeeping. */
+static bool s_quiet_active;
+static TaskHandle_t s_quiet_owner;
+static int64_t s_quiet_started_us;
+static int64_t s_quiet_deadline_us;
+
+/* True when the lease is active for another task. An expired lease is cleared here. */
+static bool sensor_bus_quiet_blocks_current_task(void)
+{
+    const TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
+    const int64_t now_us = sensor_bus_lines_now_us();
+    bool blocks = false;
+    bool expired = false;
+
+    portENTER_CRITICAL(&s_owner_stats_lock);
+    if (s_quiet_active) {
+        if (now_us >= s_quiet_deadline_us) {
+            s_quiet_active = false;
+            s_quiet_owner = NULL;
+            expired = true;
+        } else {
+            blocks = s_quiet_owner != current_task;
+        }
+    }
+    portEXIT_CRITICAL(&s_owner_stats_lock);
+    if (expired) {
+        ESP_LOGW(TAG, "I2C_BUS_QUIET expired without sensor_bus_quiet_end; bus released");
+    }
+    return blocks;
+}
+
 static esp_err_t sensor_bus_lock_with_timeout(
     uint64_t *waited_for_mutex_us,
     TickType_t timeout_ticks)
@@ -378,6 +409,13 @@ static esp_err_t sensor_bus_lock_with_timeout(
 
     if (s_lock == NULL) {
         return ESP_ERR_INVALID_STATE;
+    }
+    /* Not counted as a busy miss: a quiet bus is intended, not contention. */
+    if (sensor_bus_quiet_blocks_current_task()) {
+        if (waited_for_mutex_us != NULL) {
+            *waited_for_mutex_us = 0U;
+        }
+        return SENSOR_BUS_ERR_MUTEX_BUSY;
     }
 
     sensor_bus_copy_task_name(task_name, current_task);
@@ -807,6 +845,60 @@ void sensor_bus_owner_release(void)
                      (unsigned long)released_stats.busy_count);
         }
     }
+}
+
+esp_err_t sensor_bus_quiet_begin(uint32_t max_ms)
+{
+    if (max_ms == 0U || max_ms > SENSOR_BUS_QUIET_MAX_MS) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* Taking the lock first drains any transfer another task still has in flight. */
+    uint64_t waited_us = 0U;
+    const esp_err_t lock_err = sensor_bus_lock_with_wait(&waited_us);
+    if (lock_err != ESP_OK) {
+        return lock_err;
+    }
+    const TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
+    const int64_t now_us = sensor_bus_lines_now_us();
+    portENTER_CRITICAL(&s_owner_stats_lock);
+    s_quiet_active = true;
+    s_quiet_owner = current_task;
+    s_quiet_started_us = now_us;
+    s_quiet_deadline_us = now_us + (int64_t)max_ms * 1000;
+    portEXIT_CRITICAL(&s_owner_stats_lock);
+    sensor_bus_unlock();
+    ESP_LOGI(TAG, "I2C_BUS_QUIET begin max_ms=%lu", (unsigned long)max_ms);
+    return ESP_OK;
+}
+
+void sensor_bus_quiet_end(void)
+{
+    const TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
+    const int64_t now_us = sensor_bus_lines_now_us();
+    bool ended = false;
+    int64_t started_us = 0;
+
+    portENTER_CRITICAL(&s_owner_stats_lock);
+    if (s_quiet_active && s_quiet_owner == current_task) {
+        started_us = s_quiet_started_us;
+        s_quiet_active = false;
+        s_quiet_owner = NULL;
+        ended = true;
+    }
+    portEXIT_CRITICAL(&s_owner_stats_lock);
+    if (ended) {
+        ESP_LOGI(TAG, "I2C_BUS_QUIET end quiet_ms=%llu",
+                 (unsigned long long)(now_us >= started_us ? (now_us - started_us) / 1000 : 0));
+    }
+}
+
+bool sensor_bus_quiet_active(void)
+{
+    bool active;
+    portENTER_CRITICAL(&s_owner_stats_lock);
+    active = s_quiet_active && sensor_bus_lines_now_us() < s_quiet_deadline_us;
+    portEXIT_CRITICAL(&s_owner_stats_lock);
+    return active;
 }
 
 bool sensor_bus_owner_hold_budget_exceeded(void)

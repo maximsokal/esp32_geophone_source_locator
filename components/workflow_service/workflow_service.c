@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdatomic.h>
+#include <math.h>
 #include <string.h>
 
 #include "app_tick.h"
@@ -30,7 +31,6 @@
 #include "cJSON.h"
 
 #define WORKFLOW_CALIBRATION_TIMEOUT_MS 15000U
-#define WORKFLOW_CALIBRATION_CS_MAX_SPREAD_MM 150
 #define WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES 32U
 #define WORKFLOW_SERVICE_POLL_STACK_BYTES 8192U
 #define WORKFLOW_CALC_SETTINGS_MAX_JSON_DEPTH 8U
@@ -43,10 +43,8 @@
  * 8 KiB is the fixed Xtensa budget for the deepest branch: poll task (48 B) ->
  * poll (32 B) -> async dispatch (80 B) -> command (144 B) -> calculation start
  * (112 B), then an SD settings read, cJSON parse (depth capped at 8), config
- * parse, or job submit. Target-size locals above 256 B are in the 4,388 B
- * PSRAM scratch: job status 1,272 B, device status 792 B, ranging progress
- * 632 B, calibration-node copy 720 B, and CS cycle 428 B. workflow_snapshot_t
- * is a caller-owned output, never a poll-task local.
+ * parse, or job submit. Large poll snapshots and object data are in PSRAM
+ * scratch. workflow_snapshot_t is a caller-owned output, never a poll-task local.
  */
 static const char *TAG = "WORKFLOW";
 
@@ -56,12 +54,7 @@ typedef struct {
     uint8_t remote_count;
     uint8_t channels[WORKFLOW_MAX_REMOTE_NODES];
     uint8_t node_ids[WORKFLOW_MAX_REMOTE_NODES];
-    bool cs_pair_terminal[WORKFLOW_MAX_REMOTE_NODES];
     uint64_t started_ms;
-    bool previous_cycle_valid;
-    uint32_t previous_cycle_id;
-    bool cycle_seen;
-    uint32_t cycle_id;
 } workflow_calibration_run_t;
 
 typedef struct {
@@ -104,6 +97,7 @@ typedef struct {
     workflow_command_t command;
     bool has_generation;
     uint32_t expected_generation;
+    workflow_command_params_t distance;
     char material_id[WORKFLOW_CALC_MATERIAL_ID_SIZE];
     uint32_t custom_v_mps;
     uint32_t custom_sigma_mps;
@@ -117,9 +111,10 @@ typedef struct {
     localization_job_status_t job_status;
     localization_calculate_config_t calculation_config;
     nrf_topology_snapshot_t topology;
-    nrf_cs_cycle_snapshot_t cs_cycle;
     nrf_remote_sensor_cache_t remote_sensor;
     nrf_topology_ranging_progress_t ranging_progress;
+    object_store_profile_t ranging_object;
+    object_store_cs_pairs_t ranging_pairs;
     workflow_calibration_node_t old_calibration_nodes[WORKFLOW_MAX_CALIBRATION_NODES];
 } workflow_poll_scratch_t;
 
@@ -431,11 +426,10 @@ static void workflow_service_calibration_log_node(
 {
     ESP_LOGI(
         TAG,
-        "WORKFLOW_CAL node=%s height=%s imu=%s cs_pairs_ok=%s",
+        "WORKFLOW_CAL node=%s height=%s imu=%s",
         node->node,
         node->height_state,
-        node->imu_state,
-        node->cs_pairs_ok ? "true" : "false");
+        node->imu_state);
 }
 
 static const char *workflow_service_height_failure(const char *state)
@@ -541,33 +535,20 @@ static esp_err_t workflow_service_calibration_start(void)
     err = nrf_topology_service_request_imu_calibration(generation, channel_mask);
     if (err != ESP_OK) return err;
 
-    nrf_cs_cycle_snapshot_t *previous_cycle = &s_poll_scratch.cs_cycle;
-    const bool previous_cycle_valid =
-        nrf_topology_service_get_cs_cycle(previous_cycle) == ESP_OK;
-    const nrf_cs_policy_t policy = {
-        .pair_timeout_ms = 500U,
-        .max_attempts = 3U,
-        .min_confidence = 500U,
-        .samples_per_pair = 3U,
-    };
-    err = nrf_topology_service_request_cs_cycle(&policy);
-    if (err != ESP_OK) return err;
-
     memset(&s_calibration, 0, sizeof(s_calibration));
     s_calibration.active = true;
     s_calibration.remote_count = (uint8_t)remote_count;
     memcpy(s_calibration.channels, channels, remote_count * sizeof(channels[0]));
     memcpy(s_calibration.node_ids, node_ids, remote_count * sizeof(node_ids[0]));
     s_calibration.started_ms = workflow_service_now_ms();
-    s_calibration.previous_cycle_valid = previous_cycle_valid;
-    if (previous_cycle_valid) s_calibration.previous_cycle_id = previous_cycle->cycle_id;
     s_calibration.status.generation = generation;
     workflow_service_copy_string(
         s_calibration.status.phase,
         sizeof(s_calibration.status.phase),
         "running");
     s_calibration.status.per_node_count = remote_count + 1U;
-    s_calibration.status.pairs_total = remote_count;
+    /* Calibration is height + IMU only: Bluetooth stays idle until ranging, after placement. */
+    s_calibration.status.pairs_total = 0U;
     workflow_service_calibration_start_name(
         &s_calibration.status.per_node[0], NRF_TOPOLOGY_MAIN_NODE_ID);
     for (size_t i = 0U; i < remote_count; ++i) {
@@ -683,87 +664,6 @@ static void workflow_service_calibration_update_remote(
     workflow_service_add_node_reason(node, workflow_service_imu_failure(node->imu_state));
 }
 
-static bool workflow_service_cs_pair_matches(
-    const nrf_cs_pair_result_t *pair,
-    uint8_t main_node_id,
-    uint8_t remote_node_id)
-{
-    return (pair->node_a == main_node_id && pair->node_b == remote_node_id) ||
-        (pair->node_b == main_node_id && pair->node_a == remote_node_id);
-}
-
-static void workflow_service_calibration_update_cs(void)
-{
-    nrf_cs_cycle_snapshot_t *cycle = &s_poll_scratch.cs_cycle;
-    if (nrf_topology_service_get_cs_cycle(cycle) != ESP_OK) return;
-    if (s_calibration.previous_cycle_valid &&
-        cycle->cycle_id == s_calibration.previous_cycle_id) {
-        return;
-    }
-    if (!s_calibration.cycle_seen) {
-        s_calibration.cycle_seen = true;
-        s_calibration.cycle_id = cycle->cycle_id;
-    } else if (cycle->cycle_id != s_calibration.cycle_id) {
-        return;
-    }
-
-    for (size_t i = 0U; i < s_calibration.remote_count; ++i) {
-        workflow_calibration_node_t *node = &s_calibration.status.per_node[i + 1U];
-        const nrf_cs_pair_result_t *matched = NULL;
-        const size_t pair_count = cycle->pair_count < NRF_CS_MAX_PAIRS
-            ? cycle->pair_count
-            : NRF_CS_MAX_PAIRS;
-        for (size_t pair_index = 0U; pair_index < pair_count; ++pair_index) {
-            if (workflow_service_cs_pair_matches(
-                    &cycle->pairs[pair_index],
-                    NRF_TOPOLOGY_MAIN_NODE_ID,
-                    s_calibration.node_ids[i])) {
-                matched = &cycle->pairs[pair_index];
-                break;
-            }
-        }
-
-        if (matched != NULL && matched->state == NRF_CS_PAIR_VALID) {
-            s_calibration.cs_pair_terminal[i] = true;
-            node->cs_pairs_ok = matched->spread_mm <=
-                WORKFLOW_CALIBRATION_CS_MAX_SPREAD_MM;
-            if (!s_calibration.status.max_spread_valid ||
-                matched->spread_mm > s_calibration.status.max_spread_mm) {
-                s_calibration.status.max_spread_valid = true;
-                s_calibration.status.max_spread_mm = matched->spread_mm;
-            }
-            if (!node->cs_pairs_ok) {
-                workflow_service_calibration_add_reason("cs_spread_too_high");
-            }
-        } else if ((matched != NULL && matched->state != NRF_CS_PAIR_PENDING &&
-                    matched->state != NRF_CS_PAIR_UNKNOWN) || cycle->complete) {
-            s_calibration.cs_pair_terminal[i] = true;
-            node->cs_pairs_ok = false;
-            const uint8_t first = NRF_TOPOLOGY_MAIN_NODE_ID < s_calibration.node_ids[i]
-                ? NRF_TOPOLOGY_MAIN_NODE_ID
-                : s_calibration.node_ids[i];
-            const uint8_t second = NRF_TOPOLOGY_MAIN_NODE_ID < s_calibration.node_ids[i]
-                ? s_calibration.node_ids[i]
-                : NRF_TOPOLOGY_MAIN_NODE_ID;
-            char reason[WORKFLOW_CALIBRATION_REASON_MAX];
-            (void)snprintf(reason, sizeof(reason), "cs_pair_invalid:%u-%u",
-                (unsigned)first, (unsigned)second);
-            workflow_service_calibration_add_reason(reason);
-        }
-    }
-
-    s_calibration.status.pairs_done = 0U;
-    bool all_cs_ok = s_calibration.remote_count > 0U;
-    for (size_t i = 0U; i < s_calibration.remote_count; ++i) {
-        if (s_calibration.cs_pair_terminal[i]) ++s_calibration.status.pairs_done;
-        if (!s_calibration.cs_pair_terminal[i] ||
-            !s_calibration.status.per_node[i + 1U].cs_pairs_ok) {
-            all_cs_ok = false;
-        }
-    }
-    s_calibration.status.per_node[0].cs_pairs_ok = all_cs_ok;
-}
-
 static bool workflow_service_calibration_terminal(void)
 {
     if (strcmp(s_calibration.status.per_node[0].height_state, "pending") == 0) return false;
@@ -771,8 +671,7 @@ static bool workflow_service_calibration_terminal(void)
         const workflow_calibration_node_t *node =
             &s_calibration.status.per_node[i + 1U];
         if (strcmp(node->height_state, "pending") == 0 ||
-            strcmp(node->imu_state, "pending") == 0 ||
-            !s_calibration.cs_pair_terminal[i]) {
+            strcmp(node->imu_state, "pending") == 0) {
             return false;
         }
     }
@@ -786,8 +685,7 @@ static bool workflow_service_calibration_passed(void)
         const workflow_calibration_node_t *node =
             &s_calibration.status.per_node[i + 1U];
         if (strcmp(node->height_state, "valid") != 0 ||
-            strcmp(node->imu_state, "calibrated") != 0 ||
-            !s_calibration.cs_pair_terminal[i] || !node->cs_pairs_ok) {
+            strcmp(node->imu_state, "calibrated") != 0) {
             return false;
         }
     }
@@ -832,14 +730,12 @@ static void workflow_service_calibration_poll(void)
         memset(cache, 0, sizeof(*cache));
         workflow_service_calibration_update_remote(i, cache);
     }
-    workflow_service_calibration_update_cs();
 
     for (size_t i = 0U; i < s_calibration.status.per_node_count; ++i) {
         const workflow_calibration_node_t *old_node = &old_nodes[i];
         const workflow_calibration_node_t *node = &s_calibration.status.per_node[i];
         if (strcmp(old_node->height_state, node->height_state) != 0 ||
-            strcmp(old_node->imu_state, node->imu_state) != 0 ||
-            old_node->cs_pairs_ok != node->cs_pairs_ok) {
+            strcmp(old_node->imu_state, node->imu_state) != 0) {
             workflow_service_calibration_log_node(node);
         }
     }
@@ -866,9 +762,9 @@ static void workflow_service_calibration_cancel(void)
         "cancelled");
 }
 
-static void workflow_service_ranging_done(bool success, const char *reason)
+static void workflow_service_ranging_done(bool success, bool partial, const char *reason)
 {
-    if (!success) (void)nrf_topology_service_invalidate_ranging();
+    (void)partial;
     const workflow_command_params_t params = {
         .has_ok = true,
         .ok = success,
@@ -883,17 +779,34 @@ static void workflow_service_ranging_done(bool success, const char *reason)
         workflow_service_placement_ready());
 }
 
+static esp_err_t workflow_service_ranging_load_limits(uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT])
+{
+    memset(limits, 0, NRF_TOPOLOGY_REMOTE_COUNT * sizeof(limits[0]));
+    object_store_profile_t *profile = &s_poll_scratch.ranging_object;
+    esp_err_t err = object_store_get_profile_cached(s_active_object_id, profile);
+    if (err == ESP_OK) {
+        for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+            const float length = profile->cable_lengths_m[i];
+            if (!isfinite(length) || length <= 0.0f || length > (float)INT32_MAX / 1000.0f) {
+                err = ESP_ERR_INVALID_ARG;
+                break;
+            }
+            limits[i] = (uint32_t)(length * 1000.0f);
+        }
+    }
+    return err;
+}
+
 static void workflow_service_ranging_start(void)
 {
     if (s_assigned_remotes < 3U) {
-        workflow_service_ranging_done(false, "insufficient_nodes");
+        workflow_service_ranging_done(false, false, "insufficient_nodes");
         return;
     }
-
     (void)nrf_topology_service_invalidate_ranging();
-    esp_err_t err = nrf_topology_service_ranging_start(
-        &s_workflow_ranging_policy,
-        NRF_TOPOLOGY_RANGING_DEFAULT_TIMEOUT_MS);
+    uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT];
+    esp_err_t err = workflow_service_ranging_load_limits(limits);
+    if (err == ESP_OK) err = nrf_topology_service_ranging_start_autonomous_limited(&s_workflow_ranging_policy, limits);
     if (err == ESP_OK) {
         nrf_topology_ranging_progress_t *progress = &s_poll_scratch.ranging_progress;
         err = nrf_topology_service_ranging_get_progress(progress);
@@ -909,7 +822,8 @@ static void workflow_service_ranging_start(void)
 
     char reason[WORKFLOW_REASON_MAX];
     (void)snprintf(reason, sizeof(reason), "start_failed:%s", esp_err_to_name(err));
-    workflow_service_ranging_done(false, reason);
+    (void)nrf_topology_service_invalidate_ranging();
+    workflow_service_ranging_done(false, false, reason);
 }
 
 static void workflow_service_step_changed(workflow_step_t previous, workflow_step_t next)
@@ -926,22 +840,55 @@ static void workflow_service_step_changed(workflow_step_t previous, workflow_ste
     if (next == WORKFLOW_STEP_RANGING) workflow_service_ranging_start();
 }
 
+static esp_err_t workflow_service_ranging_save(const nrf_topology_ranging_progress_t *progress)
+{
+    if (progress->pair_count > 0U) {
+        object_store_cs_pairs_t *pairs = &s_poll_scratch.ranging_pairs;
+        memset(pairs, 0, sizeof(*pairs));
+        if (progress->pair_count > OBJECT_STORE_MAX_CS_PAIRS) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        pairs->pair_count = progress->pair_count;
+        for (size_t i = 0U; i < pairs->pair_count; ++i) {
+            const nrf_cs_pair_result_t *source = &progress->pairs[i];
+            object_store_cs_pair_t *dest = &pairs->pairs[i];
+            dest->node_a = source->node_a; dest->node_b = source->node_b;
+            dest->valid = source->state == NRF_CS_PAIR_VALID;
+            const char *pair_state = source->state == NRF_CS_PAIR_VALID ? "valid"
+                : source->state == NRF_CS_PAIR_CABLE_EXCEEDED ? "cable_exceeded"
+                : source->state == NRF_CS_PAIR_RETRY_EXHAUSTED ? "retry_exhausted"
+                : source->state == NRF_CS_PAIR_PENDING ? "pending" : "missing";
+            (void)snprintf(dest->state, sizeof(dest->state), "%s", pair_state);
+            dest->distance_mm = source->distance_mm; dest->confidence = source->confidence;
+            dest->attempts = source->attempts; dest->valid_samples = source->valid_samples;
+            dest->spread_mm = source->spread_mm; dest->rejected_samples = source->rejected_samples;
+            dest->scheduler_quality_flags = source->scheduler_quality_flags;
+            dest->automatic_distance_mm = source->automatic_distance_mm;
+        }
+        return object_store_set_ranging_pairs(s_active_object_id, pairs);
+    }
+    return ESP_OK;
+}
+
 static void workflow_service_ranging_poll(void)
 {
     if (!s_ranging.active) return;
     nrf_topology_ranging_progress_t *progress = &s_poll_scratch.ranging_progress;
     if (nrf_topology_service_ranging_get_progress(progress) != ESP_OK ||
-        progress->started_at_ms != s_ranging.started_at_ms || !progress->complete) {
-        return;
-    }
-
+        progress->started_at_ms != s_ranging.started_at_ms || !progress->complete) return;
     const bool orphaned = s_ranging.orphaned || s_core.step != WORKFLOW_STEP_RANGING;
     memset(&s_ranging, 0, sizeof(s_ranging));
     if (orphaned) {
         (void)nrf_topology_service_invalidate_ranging();
         return;
     }
-    workflow_service_ranging_done(progress->success, progress->failure_reason);
+    if (workflow_service_ranging_save(progress) != ESP_OK) {
+        (void)nrf_topology_service_invalidate_ranging();
+        workflow_service_ranging_done(false, false, "ranging_save_failed");
+        return;
+    }
+    if (progress->pair_count == 0U && !progress->success) (void)nrf_topology_service_invalidate_ranging();
+    workflow_service_ranging_done(progress->success, progress->partial, progress->failure_reason);
 }
 
 static void workflow_service_placement_clear_samples(
@@ -1612,6 +1559,35 @@ static workflow_command_result_t workflow_service_command_locked(
     s_placement_ready = workflow_service_placement_ready();
 
     workflow_command_params_t applied_params = *params;
+    if (command == WORKFLOW_COMMAND_SET_DISTANCE) {
+        if (!params->has_generation || !params->has_distance || params->distance_mm <= 0 ||
+            params->node_a == params->node_b) return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+        if (params->expected_generation != s_core.generation) return WORKFLOW_COMMAND_RESULT_STALE;
+        if (s_core.step != WORKFLOW_STEP_RANGING_RESULT || s_active_object_id[0] == '\0')
+            return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+        uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT];
+        esp_err_t err = workflow_service_ranging_load_limits(limits);
+        if (err == ESP_OK) err = nrf_topology_service_ranging_set_manual(
+            params->ranging_started_at_ms, params->ranging_updated_at_ms,
+            params->node_a, params->node_b, params->distance_mm, limits);
+        if (err == ESP_ERR_INVALID_ARG || err == ESP_ERR_NOT_FOUND) return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+        if (err == ESP_ERR_INVALID_STATE) return WORKFLOW_COMMAND_RESULT_STALE;
+        if (err != ESP_OK) return WORKFLOW_COMMAND_RESULT_UNAVAILABLE;
+        nrf_topology_ranging_progress_t *progress = &s_poll_scratch.ranging_progress;
+        err = nrf_topology_service_ranging_get_progress(progress);
+        if (err == ESP_OK) err = workflow_service_ranging_save(progress);
+        if (err != ESP_OK) {
+            (void)nrf_topology_service_invalidate_ranging();
+            applied_params.has_ok = true;
+            applied_params.ok = false;
+            applied_params.reason = "ranging_save_failed";
+            (void)workflow_core_apply(&s_core, command, &applied_params, s_assigned_remotes, s_placement_ready);
+            return WORKFLOW_COMMAND_RESULT_UNAVAILABLE;
+        }
+        applied_params.has_ok = true;
+        applied_params.ok = progress->success;
+        applied_params.reason = progress->failure_reason;
+    }
     if (command == WORKFLOW_COMMAND_SCAN_START || command == WORKFLOW_COMMAND_SCAN_COMPLETE) {
         s_scan_cache_valid = false;
         workflow_service_refresh_presence_locked();
@@ -1775,6 +1751,11 @@ static void workflow_service_process_async_locked(void)
         const workflow_command_params_t params = {
             .has_generation = item.has_generation,
             .expected_generation = item.expected_generation,
+            .has_distance = item.distance.has_distance,
+            .node_a = item.distance.node_a, .node_b = item.distance.node_b,
+            .distance_mm = item.distance.distance_mm,
+            .ranging_started_at_ms = item.distance.ranging_started_at_ms,
+            .ranging_updated_at_ms = item.distance.ranging_updated_at_ms,
         };
         s_last_async = (workflow_last_async_t){
             .seq = item.seq,
@@ -1801,10 +1782,9 @@ workflow_command_result_t workflow_service_command(
     return result;
 }
 
-esp_err_t workflow_service_command_async(
+static esp_err_t workflow_service_enqueue_command(
     workflow_command_t command,
-    bool has_generation,
-    uint32_t expected_generation,
+    const workflow_command_params_t *params,
     uint32_t *out_seq
 )
 {
@@ -1826,8 +1806,14 @@ esp_err_t workflow_service_command_async(
         .seq = seq,
         .kind = WORKFLOW_ASYNC_COMMAND,
         .command = command,
-        .has_generation = has_generation,
-        .expected_generation = expected_generation,
+        .has_generation = params->has_generation,
+        .expected_generation = params->expected_generation,
+        .distance = {
+            .has_distance = params->has_distance, .node_a = params->node_a, .node_b = params->node_b,
+            .distance_mm = params->distance_mm,
+            .ranging_started_at_ms = params->ranging_started_at_ms,
+            .ranging_updated_at_ms = params->ranging_updated_at_ms,
+        },
     };
     if (xQueueSend(s_async_queue, &item, 0U) != pdTRUE) {
         workflow_service_record_async_enqueue(false);
@@ -1839,6 +1825,21 @@ esp_err_t workflow_service_command_async(
     *out_seq = seq;
     xSemaphoreGive(s_async_enqueue_mutex);
     return ESP_OK;
+}
+
+esp_err_t workflow_service_command_async(workflow_command_t command, bool has_generation,
+    uint32_t expected_generation, uint32_t *out_seq)
+{
+    if (command == WORKFLOW_COMMAND_SET_DISTANCE) return ESP_ERR_INVALID_ARG;
+    const workflow_command_params_t params = {.has_generation = has_generation, .expected_generation = expected_generation};
+    return workflow_service_enqueue_command(command, &params, out_seq);
+}
+
+esp_err_t workflow_service_set_distance_async(const workflow_command_params_t *params, uint32_t *out_seq)
+{
+    if (params == NULL || !params->has_generation || !params->has_distance ||
+        params->distance_mm <= 0 || params->node_a == params->node_b) return ESP_ERR_INVALID_ARG;
+    return workflow_service_enqueue_command(WORKFLOW_COMMAND_SET_DISTANCE, params, out_seq);
 }
 
 esp_err_t workflow_service_save_calc_material_range_async(

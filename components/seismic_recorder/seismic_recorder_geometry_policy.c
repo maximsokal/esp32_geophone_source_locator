@@ -278,6 +278,7 @@ void seismic_recorder_geometry_apply_cs_pairs(
         snprintf(out->last_failure, sizeof(out->last_failure), "%s", last_failure);
         out->provider_quality_flags = pairs[i].provider_quality_flags;
         out->scheduler_quality_flags = pairs[i].scheduler_quality_flags;
+        out->automatic_distance_mm = pairs[i].automatic_distance_mm;
         ++count;
     }
     cs_pairs_out->pair_count = count;

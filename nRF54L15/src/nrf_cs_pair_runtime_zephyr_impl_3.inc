@@ -461,6 +461,20 @@ int nrf_cs_pair_runtime_zephyr_set_node_id(nrf_cs_node_id_t node_id)
     return runtime_start_advertising();
 }
 
+int nrf_cs_pair_runtime_zephyr_set_radio_enabled(bool enabled)
+{
+    if (!s_started) {
+        return -EINVAL;
+    }
+    atomic_set(&s_radio_enabled, enabled ? 1 : 0);
+    if (enabled) {
+        return runtime_start_advertising();
+    }
+    /* A scan or connection that is still winding down ends on its own timeout and cannot restart advertising. */
+    runtime_stop_advertising();
+    return 0;
+}
+
 int nrf_cs_pair_runtime_zephyr_execute(
     const nrf_cs_step_t *step,
     nrf_cs_pair_runtime_complete_cb_t complete_cb,

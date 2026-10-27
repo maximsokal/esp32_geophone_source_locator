@@ -14,6 +14,7 @@ static nrfx_twis_t *s_upstream;
 static nrfx_twis_event_handler_t s_driver_handler;
 static nrf_boot_twis_record_t s_selected;
 static uint32_t s_read_started_cycles;
+static uint32_t s_write_started_cycles;
 
 int __real_nrfx_twis_init(nrfx_twis_t *instance, const nrfx_twis_config_t *config,
                          nrfx_twis_event_handler_t handler);
@@ -29,6 +30,35 @@ static void trace_event(const nrfx_twis_event_t *event)
         s_read_started_cycles = k_cycle_get_32();
         s_driver_handler(event);
         nrf_bootstrap_runtime_zephyr_record_twis_hardware(&s_selected);
+        return;
+    }
+    if (event->type == NRFX_TWIS_EVT_WRITE_REQ) {
+        s_write_started_cycles = k_cycle_get_32();
+        s_driver_handler(event);
+        return;
+    }
+    if (event->type == NRFX_TWIS_EVT_WRITE_DONE || event->type == NRFX_TWIS_EVT_WRITE_ERROR) {
+        /* Sample the RX buffer before the shim hands it to the app: this shows whether the
+         * bytes the master wrote were in RAM when the TWIS finished, or were already
+         * replaced. Address-only writes (nothing received) are not recorded. */
+        nrf_boot_twis_record_t received = {0};
+        const bool failed = event->type == NRFX_TWIS_EVT_WRITE_ERROR;
+        received.direction = failed
+            ? NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR : NRF_BOOT_TWIS_DIRECTION_WRITE_DONE;
+        received.rx_amount = (uint32_t)nrfx_twis_rx_amount(s_upstream);
+        received.event_dt_us = k_cyc_to_us_floor32(k_cycle_get_32() - s_write_started_cycles);
+        received.hw_error = failed ? event->data.error : 0U;
+        received.result = failed ? -EIO : 0;
+        const uint8_t *rx = nrf_twis_rx_buffer_get(s_upstream->p_reg);
+        if (rx != NULL && received.rx_amount != 0U) {
+            received.prefix_length = (uint8_t)(received.rx_amount < sizeof(received.prefix)
+                ? received.rx_amount : sizeof(received.prefix));
+            memcpy(received.prefix, rx, received.prefix_length);
+        }
+        s_driver_handler(event);
+        if (failed || received.rx_amount != 0U) {
+            nrf_bootstrap_runtime_zephyr_record_twis_hardware(&received);
+        }
         return;
     }
     if (event->type == NRFX_TWIS_EVT_READ_DONE || event->type == NRFX_TWIS_EVT_READ_ERROR) {

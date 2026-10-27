@@ -1134,7 +1134,8 @@ static void test_default_transfer_timeout_covers_the_wire_time(void)
                      SENSOR_BUS_TIMEOUT_WIRE_MARGIN_PERCENT + 99999U) / 100000U;
             assert(timeout_ms >= SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
             assert(sensor_bus_wait_floor_ms(timeout_ms, configTICK_RATE_HZ) >= required_ms);
-            if (length <= 38U) {
+            /* The base timeout only covers 38 bytes at 100 kHz and above; a slower bus grows it. */
+            if (length <= 38U && SENSOR_BUS_I2C_SPEED_HZ >= 100000U) {
                 assert(timeout_ms == SENSOR_BUS_TRANSACTION_TIMEOUT_MS);
             }
             if (length == 136U && variant == 0U) {
@@ -1367,6 +1368,122 @@ static void test_owner_summary_aggregates_sessions_once_per_second(void)
     g_fake_lines.log_observer = NULL;
 }
 
+typedef struct {
+    sensor_bus_handles_t handles;
+    esp_err_t acquire_err;
+    esp_err_t read_err;
+    esp_err_t end_then_read_err;
+    uint32_t busy_before;
+    uint32_t busy_after;
+    uint64_t elapsed_us;
+} quiet_bystander_t;
+
+#ifdef _WIN32
+static DWORD WINAPI quiet_bystander_fn(LPVOID arg)
+#else
+static void *quiet_bystander_fn(void *arg)
+#endif
+{
+    quiet_bystander_t *c = arg;
+    uint8_t buffer[2] = {0};
+    sensor_bus_owner_stats_t stats;
+    s_current_priority = 1;
+    assert(sensor_bus_get_owner_stats(&stats) == ESP_OK);
+    c->busy_before = stats.busy_count;
+    const int64_t started_us = sensor_bus_lines_now_us();
+    c->acquire_err = sensor_bus_owner_acquire();
+    if (c->acquire_err == ESP_OK) sensor_bus_owner_release();
+    c->read_err = sensor_bus_read_bytes(c->handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(buffer), buffer);
+    c->elapsed_us = (uint64_t)(sensor_bus_lines_now_us() - started_us);
+    assert(sensor_bus_get_owner_stats(&stats) == ESP_OK);
+    c->busy_after = stats.busy_count;
+    /* Ending someone else's lease is a no-op: the bus stays quiet for its owner. */
+    sensor_bus_quiet_end();
+    c->end_then_read_err = sensor_bus_read_bytes(c->handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(buffer), buffer);
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+static quiet_bystander_t run_bystander(const sensor_bus_handles_t *handles)
+{
+    quiet_bystander_t context = {.handles = *handles};
+    test_thread_join(test_thread_start(quiet_bystander_fn, &context));
+    return context;
+}
+
+/* The ranging cycle needs the bus silent: other tasks skip at once, the lease owner still works. */
+static void test_quiet_lease_silences_other_tasks_only(void)
+{
+    sensor_bus_handles_t handles = {0};
+    uint8_t buffer[2] = {0};
+
+    assert(sensor_bus_get_handles(&handles) == ESP_OK);
+    assert(sensor_bus_quiet_begin(0U) == ESP_ERR_INVALID_ARG);
+    assert(sensor_bus_quiet_begin(SENSOR_BUS_QUIET_MAX_MS + 1U) == ESP_ERR_INVALID_ARG);
+    assert(!sensor_bus_quiet_active());
+
+    /* Before the lease nobody is blocked. */
+    quiet_bystander_t before = run_bystander(&handles);
+    assert(before.acquire_err == ESP_OK && before.read_err == ESP_OK);
+
+    assert(sensor_bus_quiet_begin(1000U) == ESP_OK);
+    assert(sensor_bus_quiet_active());
+    quiet_bystander_t during = run_bystander(&handles);
+    assert(during.acquire_err == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(during.read_err == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(during.end_then_read_err == SENSOR_BUS_ERR_MUTEX_BUSY); /* not owner: end changed nothing */
+    assert(sensor_bus_quiet_active());
+    assert(during.elapsed_us < 5000U);                 /* refused at once, no waiting */
+    assert(during.busy_after == during.busy_before);   /* intended silence is not a contention miss */
+
+    /* The lease owner keeps full access, including owner sessions. */
+    assert(sensor_bus_read_bytes(handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(buffer), buffer) == ESP_OK);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    sensor_bus_owner_release();
+    assert(sensor_bus_quiet_active());
+
+    sensor_bus_quiet_end();
+    assert(!sensor_bus_quiet_active());
+    quiet_bystander_t after = run_bystander(&handles);
+    assert(after.acquire_err == ESP_OK && after.read_err == ESP_OK);
+    sensor_bus_quiet_end(); /* ending twice is harmless */
+}
+
+/* A task that never ends its lease must not silence the bus forever. */
+static void test_quiet_lease_expires_by_itself(void)
+{
+    sensor_bus_handles_t handles = {0};
+    assert(sensor_bus_get_handles(&handles) == ESP_OK);
+
+    assert(sensor_bus_quiet_begin(50U) == ESP_OK);
+    sensor_bus_lines_delay_us(49000U);
+    quiet_bystander_t held = run_bystander(&handles);
+    assert(held.read_err == SENSOR_BUS_ERR_MUTEX_BUSY);
+
+    g_fake_lines.last_log[0] = '\0';
+    sensor_bus_lines_delay_us(1000U);
+    quiet_bystander_t released = run_bystander(&handles);
+    assert(released.acquire_err == ESP_OK && released.read_err == ESP_OK);
+    assert(!sensor_bus_quiet_active());
+    assert(strstr(g_fake_lines.last_log, "I2C_BUS_QUIET expired") != NULL);
+}
+
+/* begin must not start while another task still has a transfer in flight. */
+static void test_quiet_lease_cannot_start_over_an_open_session(void)
+{
+    atomic_store(&s_owner_hold_started, false);
+    test_thread_t owner = test_thread_start(long_owner_fn, NULL); /* holds the bus for 260 ms */
+    while (!atomic_load(&s_owner_hold_started)) test_sleep_ms(1U);
+    assert(sensor_bus_quiet_begin(1000U) == SENSOR_BUS_ERR_MUTEX_BUSY); /* waits 200 ms, then refuses */
+    assert(!sensor_bus_quiet_active());
+    test_thread_join(owner);
+    assert(sensor_bus_quiet_begin(1000U) == ESP_OK);
+    sensor_bus_quiet_end();
+}
+
 /* MAX-434 T1: mutex wait, transfer timeout, and configuration diagnostics use separate ms budgets. */
 static void test_mutex_wait_and_transfer_timeouts_are_distinct_ms(void)
 {
@@ -1384,6 +1501,9 @@ static void test_mutex_wait_and_transfer_timeouts_are_distinct_ms(void)
     test_owner_logs_match_fake_clock();
     test_owner_release_is_quiet_unless_anomalous();
     test_owner_summary_aggregates_sessions_once_per_second();
+    test_quiet_lease_silences_other_tasks_only();
+    test_quiet_lease_expires_by_itself();
+    test_quiet_lease_cannot_start_over_an_open_session();
 }
 
 int main(void)

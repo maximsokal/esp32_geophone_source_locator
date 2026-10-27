@@ -78,6 +78,7 @@
         "nRF54L15/src/nrf_log_runtime_zephyr.c",
         "nRF54L15/src/nrf_hci_workqueue.c",
         "nRF54L15/src/nrf_bootstrap_runtime_zephyr.c",
+        "nRF54L15/src/nrf_cs_cycle_protocol.c", "nRF54L15/src/nrf_cs_cycle_runtime.c",
         "nRF54L15/src/nrf_read_window.c",
         "tests/host/stubs/nrf_bootstrap_runtime_zephyr/nrf_cs_pair_runtime_zephyr_stub.c",
         "tests/host/nrf_bootstrap_runtime_zephyr_test.c"

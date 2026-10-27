@@ -74,6 +74,8 @@ static void test_progress_and_frozen_result_json(void)
         .distance_mm = 1000, .spread_mm = 300, .confidence = 850U,
         .valid_samples = 5U, .attempts = 1U, .single_direction = true,
         .direction_disagreement_mm = 100,
+        .scheduler_quality_flags = NRF_CS_QUALITY_MANUAL,
+        .automatic_distance_mm = 6001,
     };
     s_progress_error = ESP_OK;
 
@@ -104,6 +106,8 @@ static void test_progress_and_frozen_result_json(void)
     assert(strcmp(item(pair, "state")->valuestring, "valid") == 0);
     assert(cJSON_IsTrue(item(pair, "single_direction")));
     assert(number(pair, "direction_disagreement_mm") == 100);
+    assert(cJSON_IsTrue(item(pair, "manual")));
+    assert(number(pair, "automatic_distance_mm") == 6001);
     const cJSON *geometry = item(progress, "geometry");
     const cJSON *nodes = item(geometry, "nodes");
     assert(cJSON_GetArraySize(nodes) == 2);

@@ -784,11 +784,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+export interface ManualDistanceInput {
+  node_a: number;
+  node_b: number;
+  distance_mm: number;
+  ranging_started_at_ms: number;
+  ranging_updated_at_ms: number;
+}
+
 export function sendWorkflowCommand(
   command: string,
   generation: number,
   options: ApiRequestOptions = {},
   location?: PhoneLocationInput,
+  distance?: ManualDistanceInput,
 ): Promise<WorkflowCommandResult> {
   const request = queuedApiRequest<WorkflowCommandResult>(async (context) => {
     const gpsPayload = location === undefined ? {} : {
@@ -801,7 +810,7 @@ export function sendWorkflowCommand(
     };
     const body = await performJsonRequest<unknown>('/api/control', context, {
       method: 'POST',
-      body: JSON.stringify({ action: 'workflow_command', command, generation, ...gpsPayload }),
+      body: JSON.stringify({ action: 'workflow_command', command, generation, ...gpsPayload, ...distance }),
     }, DEVICE_API_CONTROL_TIMEOUT_MS, true);
 
     if (isRecord(body) && body.ok === true && isRecord(body.workflow)) {

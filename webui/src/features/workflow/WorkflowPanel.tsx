@@ -7,6 +7,7 @@ import { useLocale, useT, type I18nKey } from '../../i18n';
 import { formatDistance, formatNumber } from '../../i18n/format';
 import MaterialSettingsForm from '../objects/MaterialSettingsForm';
 import WorkflowResultViewer from './WorkflowResultViewer';
+import ManualDistanceForm from './ManualDistanceForm';
 import {
   rangingUncertaintyMm,
   resultFailureKey,
@@ -171,9 +172,12 @@ function PlacementSection({ value }: { value: Extract<WorkflowBodySection, { kin
   );
 }
 
-function RangingSection({ value, workflowReason }: {
+function RangingSection({ value, workflowReason, workflow, onSaved, onRefresh }: {
   value: Extract<WorkflowBodySection, { kind: 'ranging' }>['value'];
   workflowReason: string | null | undefined;
+  workflow: DeviceStatus['workflow'];
+  onSaved: (workflow: NonNullable<DeviceStatus['workflow']>) => void;
+  onRefresh: () => Promise<boolean>;
 }) {
   const { locale } = useLocale();
   const t = useT();
@@ -189,9 +193,29 @@ function RangingSection({ value, workflowReason }: {
   const residual = progress?.solution_residual_mm ?? geometry?.residual_mm;
   return (
     <div className="workflow-ranging">
+      {progress?.complete === true && <p role="status">{t(progress.success
+        ? 'workflow.ranging.success' : progress.partial ? 'workflow.ranging.partial' : 'workflow.ranging.failed')}</p>}
       <p>{t('workflow.ranging.pairs')}: {workflowNumberText(done, locale)} / {workflowNumberText(total, locale)}</p>
       <progress max={100} value={percent ?? undefined} aria-label={t('workflow.ranging.pairs')} />
       <p>{t('workflow.ranging.residual')}: {mmText(residual, locale)}</p>
+      {(progress?.pairs ?? lastResult?.pairs ?? []).map((pair, index) => (
+        <div key={`${pair.node_a}-${pair.node_b}-${index}`}><p>
+          {t('workflow.ranging.pair_distance', { a: pair.node_a, b: pair.node_b })}:{' '}
+          {pair.state === 'cable_exceeded'
+            ? `${mmText(pair.distance_mm, locale)} \u2014 ${t('workflow.ranging.cable_exceeded')}`
+            : pair.state === 'valid' && pair.distance_mm >= 0
+              ? mmText(pair.distance_mm, locale) : t('workflow.ranging.pair_unavailable')}
+          {pair.manual === true && ` (${t('workflow.distance.manual')})`}
+        </p>
+        {workflow?.step === 'RANGING_RESULT' && progress?.complete === true &&
+          workflow.allowed_actions.some(action => action.toUpperCase() === 'SET_DISTANCE') &&
+          Number.isSafeInteger(progress.started_at_ms) && Number.isSafeInteger(progress.updated_at_ms) && (
+          <ManualDistanceForm key={`${workflow.generation}-${progress.started_at_ms}-${progress.updated_at_ms}`}
+            pair={pair} generation={workflow.generation} startedAtMs={progress.started_at_ms!}
+            updatedAtMs={progress.updated_at_ms!} onSaved={onSaved} onRefresh={onRefresh} />
+        )}
+        </div>
+      ))}
       {failureReason !== '' && <p role="alert">{t('workflow.ranging.failure_reason')}: {rangingReasonLabel(failureReason, t)}</p>}
       {(geometry?.nodes ?? []).map((node, index) => {
         const uncertainty = rangingUncertaintyMm(node.uncertainty_mm);
@@ -271,9 +295,11 @@ function SensorPreflight({ status }: { status: DeviceStatus | null }) {
   );
 }
 
-function WorkflowSection({ section, status }: {
+function WorkflowSection({ section, status, onRangingSaved, onRefresh }: {
   section: WorkflowBodySection;
   status: DeviceStatus | null;
+  onRangingSaved: (workflow: NonNullable<DeviceStatus['workflow']>) => void;
+  onRefresh: () => Promise<boolean>;
 }) {
   const { locale } = useLocale();
   const t = useT();
@@ -301,10 +327,12 @@ function WorkflowSection({ section, status }: {
     case 'layout': return <p role="status">{t(section.value.placement.all_stable ? 'workflow.layout.ready' : 'workflow.layout.waiting')}</p>;
     case 'ranging': return (
       <>
+        {status?.workflow?.step === 'RANGING' && <p role="status">{t('workflow.ranging.wait')}</p>}
         {status?.workflow?.layout_result !== null && status?.workflow?.layout_result !== undefined && (
           <p role="status">{t(status.workflow.layout_result ? 'workflow.layout.solved' : 'workflow.layout.unsolved')}</p>
         )}
-        <RangingSection value={section.value} workflowReason={status?.workflow?.layout_reason} />
+        <RangingSection value={section.value} workflowReason={status?.workflow?.layout_reason}
+          workflow={status?.workflow} onSaved={onRangingSaved} onRefresh={onRefresh} />
       </>
     );
     case 'scan': return (
@@ -488,7 +516,8 @@ export default function WorkflowPanel({
         {notice !== null && <p className="console-alert" role="status">{notice}</p>}
         {error !== null && <p className="console-error" role="alert">{t('workflow.command_failed', { error })}</p>}
         {model.sections.map((section, index) => (
-          <WorkflowSection key={`${section.kind}-${index}`} section={section} status={status} />
+          <WorkflowSection key={`${section.kind}-${index}`} section={section} status={status}
+            onRangingSaved={onWorkflowUpdate} onRefresh={onRefreshStatus} />
         ))}
         {workflow?.step === 'STOPPED' && workflow.object_id && (
           <>

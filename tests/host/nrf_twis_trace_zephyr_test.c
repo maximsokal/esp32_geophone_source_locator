@@ -23,6 +23,7 @@ static int s_prepare_result;
 static bool s_supply_buffer = true;
 static uint32_t s_cycles;
 static const uint8_t s_frame[38] = {0x47, 0x53, 0x01, 0x82, 38, 0};
+static uint8_t s_rx_buffer[16];
 
 uint32_t k_cycle_get_32(void) { s_cycles += 17U; return s_cycles; }
 
@@ -53,6 +54,10 @@ int __real_nrfx_twis_tx_prepare(nrfx_twis_t *instance, const void *buffer, size_
 static void original_handler(const nrfx_twis_event_t *event)
 {
     ++s_forwarded;
+    if (event->type == NRFX_TWIS_EVT_WRITE_DONE) {
+        /* The shim callback and the next READ_REQ reuse this buffer; the trace must have sampled it already. */
+        memset(s_rx_buffer, 0xEE, sizeof(s_rx_buffer));
+    }
     if (event->type == NRFX_TWIS_EVT_READ_REQ && s_supply_buffer) {
         assert(__wrap_nrfx_twis_tx_prepare(&s_upstream, s_frame, sizeof(s_frame)) == s_prepare_result);
     }
@@ -118,6 +123,38 @@ int main(void)
     s_prepare_result = 0;
     emit(NRFX_TWIS_EVT_READ_REQ, 0U);
     assert(s_records[s_record_count - 1U].tx_prepared);
+
+    /* Receive side: a 12 byte write is sampled before the app callback touches the buffer. */
+    const unsigned before_rx = s_record_count;
+    const uint8_t request[12] = {0x47, 0x53, 0x01, 0x07, 0x0c, 0x00, 0x81, 0x00, 1, 2, 3, 4};
+    memcpy(s_rx_buffer, request, sizeof(request));
+    test_upstream_registers.rx_buffer = s_rx_buffer;
+    test_upstream_registers.rx_amount = 12U;
+    emit(NRFX_TWIS_EVT_WRITE_REQ, 0U);
+    emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+    assert(s_record_count == before_rx + 1U);
+    assert(s_records[before_rx].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_DONE);
+    assert(s_records[before_rx].rx_amount == 12U && s_records[before_rx].result == 0);
+    assert(s_records[before_rx].prefix_length == NRF_BOOT_TRANSACTION_PREFIX_CAPACITY);
+    assert(memcmp(s_records[before_rx].prefix, request, NRF_BOOT_TRANSACTION_PREFIX_CAPACITY) == 0);
+    assert(s_records[before_rx].event_dt_us == 17U);
+    assert(s_rx_buffer[0] == 0xEE); /* the callback did run and clobber the buffer afterwards */
+
+    /* A short write keeps only the bytes that were received. */
+    memcpy(s_rx_buffer, request, sizeof(request));
+    test_upstream_registers.rx_amount = 3U;
+    emit(NRFX_TWIS_EVT_WRITE_REQ, 0U);
+    emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+    assert(s_records[before_rx + 1U].prefix_length == 3U && s_records[before_rx + 1U].rx_amount == 3U);
+
+    /* An error is recorded with the ERRORSRC value even when nothing was received. */
+    test_upstream_registers.rx_amount = 0U;
+    emit(NRFX_TWIS_EVT_WRITE_REQ, 0U);
+    emit(NRFX_TWIS_EVT_WRITE_ERROR, 1U);
+    assert(s_record_count == before_rx + 3U);
+    assert(s_records[before_rx + 2U].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR);
+    assert(s_records[before_rx + 2U].hw_error == 1U && s_records[before_rx + 2U].rx_amount == 0U);
+    assert(s_records[before_rx + 2U].result == -EIO && s_records[before_rx + 2U].prefix_length == 0U);
 
     puts("nRF TWIS hardware trace: PASS");
     return 0;

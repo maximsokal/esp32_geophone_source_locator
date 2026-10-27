@@ -888,7 +888,8 @@ static void ina3221_monitor_worker(
                 if (!hardware_available) {
                     ESP_LOGI(
                         TAG,
-                        "INA3221 online: I2C 0x40, 100 kHz, avg=16, conversion=1.1 ms, period=1 s"
+                        "INA3221 online: I2C 0x40, %u kHz, avg=16, conversion=1.1 ms, period=1 s",
+                        (unsigned)(SENSOR_BUS_I2C_SPEED_HZ / 1000U)
                     );
                 }
 

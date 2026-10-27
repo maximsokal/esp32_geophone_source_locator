@@ -146,3 +146,146 @@ for (const permission of ['granted', 'denied'] as const) {
     await scenarioScreenshot(page, `gps-${permission}`);
   });
 }
+
+
+test('calibration, placement and radio ranging show the current stage and received progress', async ({ page, api }) => {
+  const stages = [
+    ['CALIB_PREP', 'workflow.title.calib_prep'],
+    ['CALIBRATING', 'workflow.title.calibrating'],
+    ['PLACEMENT', 'workflow.title.placement'],
+    ['LAYOUT_READY', 'workflow.title.layout_ready'],
+    ['RANGING', 'workflow.title.ranging'],
+    ['RANGING_RESULT', 'workflow.title.ranging_result'],
+  ] as const;
+  for (const [step, title] of stages) {
+    Object.assign(api.status.workflow!, { step, allowed_actions: ['BACK'] });
+    Object.assign(api.status.ranging!.progress!, {
+      active: step === 'RANGING', complete: step === 'RANGING_RESULT',
+      success: step === 'RANGING_RESULT', pairs_done: 2, pairs_total: 3,
+      pairs: [
+        { node_a: 1, node_b: 2, state: 'valid', distance_mm: 1234, spread_mm: 0, confidence: 900, valid_samples: 3, attempts: 3, single_direction: false, direction_disagreement_mm: 0 },
+        { node_a: 1, node_b: 3, state: 'missing', distance_mm: 0, spread_mm: 0, confidence: 0, valid_samples: 0, attempts: 3, single_direction: false, direction_disagreement_mm: 0 },
+      ],
+    });
+    await page.goto('/');
+    await expect(page.getByRole('heading', { name: catalog.en[title], exact: true })).toBeVisible();
+    if (step === 'RANGING') {
+      await expect(page.getByText(catalog.en['workflow.ranging.wait'])).toBeVisible();
+      await expect(page.getByRole('progressbar', { name: catalog.en['workflow.ranging.pairs'] })).toHaveAttribute('value', '66.66666666666666');
+    }
+    if (step === 'RANGING_RESULT') {
+      await expect(page.getByText(catalog.en['workflow.ranging.wait'])).toHaveCount(0);
+      await expect(page.getByText('2 / 3', { exact: false })).toBeVisible();
+      await expect(page.getByText('Nodes 1\u20132: 1,234 mm')).toBeVisible();
+      await expect(page.getByText('Nodes 1\u20133: Not measured')).toBeVisible();
+    }
+  }
+});
+
+
+test.describe('Ukrainian ranging text', () => {
+  test.use({ appLocale: 'uk' });
+  test('shows progress and labels a missing pair', async ({ page, api }) => {
+    Object.assign(api.status.workflow!, { step: 'RANGING', allowed_actions: ['BACK'] });
+    Object.assign(api.status.ranging!.progress!, {
+      active: true, complete: false, pairs_done: 1, pairs_total: 2,
+      pairs: [{ node_a: 0, node_b: 1, state: 'missing', distance_mm: 0, spread_mm: 0,
+        confidence: 0, valid_samples: 0, attempts: 3, single_direction: false, direction_disagreement_mm: 0 }],
+    });
+    await page.goto('/');
+    await expect(page.getByText(catalog.uk['workflow.ranging.wait'])).toBeVisible();
+    await expect(page.getByText(catalog.uk['workflow.ranging.pair_unavailable'], { exact: false })).toBeVisible();
+    await expect(page.getByText('\u0412\u0443\u0437\u043b\u0438 0\u20131:', { exact: false })).toBeVisible();
+  });
+});
+
+
+for (const outcome of ['success', 'partial', 'failed'] as const) {
+  test(`ranging result displays ${outcome} and cable violation`, async ({ page, api }) => {
+    Object.assign(api.status.workflow!, { step: 'RANGING_RESULT', allowed_actions: ['BACK', 'RETRY'] });
+    Object.assign(api.status.ranging!.progress!, {
+      active: false, complete: true, success: outcome === 'success', partial: outcome === 'partial',
+      pairs_done: 2, pairs_total: 3,
+      pairs: [
+        { node_a: 0, node_b: 1, state: 'valid', distance_mm: 950, spread_mm: 0, confidence: 900, valid_samples: 3, attempts: 3, single_direction: false, direction_disagreement_mm: 0 },
+        { node_a: 0, node_b: 2, state: 'cable_exceeded', distance_mm: 6001, spread_mm: 0, confidence: 900, valid_samples: 3, attempts: 3, single_direction: false, direction_disagreement_mm: 0 },
+      ],
+    });
+    await page.goto('/');
+    await expect(page.getByText(catalog.en[`workflow.ranging.${outcome}`], { exact: true })).toBeVisible();
+    await expect(page.getByText('6,001 mm', { exact: false })).toContainText(catalog.en['workflow.ranging.cable_exceeded']);
+    await expect(page.getByText('950 mm', { exact: false })).toBeVisible();
+  });
+}
+
+for (const locale of ['en', 'uk'] as const) {
+  test.describe(`manual distances ${locale}`, () => {
+    test.use({ appLocale: locale });
+    test('corrects an over-cable pair, preserves partial data and completes a missing pair', async ({ page, api }) => {
+      const t = catalog[locale];
+      Object.assign(api.status.workflow!, { step: 'RANGING_RESULT', generation: 12,
+        layout_result: false, allowed_actions: ['RETRY', 'SET_DISTANCE', 'BACK'] });
+      const pairs = [
+        { node_a: 0, node_b: 1, state: 'valid', distance_mm: 900, spread_mm: 0, confidence: 900,
+          valid_samples: 3, attempts: 3, single_direction: false, direction_disagreement_mm: 0, manual: false },
+        { node_a: 0, node_b: 2, state: 'cable_exceeded', distance_mm: 6001, spread_mm: 0, confidence: 900,
+          valid_samples: 3, attempts: 3, single_direction: false, direction_disagreement_mm: 0, manual: false },
+        { node_a: 1, node_b: 2, state: 'missing', distance_mm: 0, spread_mm: 0, confidence: 0,
+          valid_samples: 0, attempts: 3, single_direction: false, direction_disagreement_mm: 0, manual: false },
+      ];
+      Object.assign(api.status.ranging!.progress!, { active: false, complete: true, success: false,
+        partial: true, started_at_ms: 100, updated_at_ms: 200, pairs, failure_reason: 'cable_exceeded:0-2' });
+      api.overrides.set('POST /api/control', async route => {
+        const body = route.request().postDataJSON();
+        expect(body.command).toBe('SET_DISTANCE');
+        expect(body.generation).toBe(api.status.workflow!.generation);
+        expect(body.ranging_started_at_ms).toBe(100);
+        expect(body.ranging_updated_at_ms).toBe(api.status.ranging!.progress!.updated_at_ms);
+        if (body.distance_mm === 6001) {
+          api.expectedHttpErrors.add('/api/control');
+          await route.fulfill({ status: 400, json: { ok: false, error: 'ESP_ERR_INVALID_ARG' } });
+          return;
+        }
+        const last = body.node_a === 1;
+        expect(body).toMatchObject(last ? { node_a: 1, node_b: 2, distance_mm: 1000 }
+          : { node_a: 0, node_b: 2, distance_mm: 1500 });
+        Object.assign(pairs[last ? 2 : 1], { state: 'valid', distance_mm: body.distance_mm,
+          manual: true, automatic_distance_mm: last ? 0 : 6001 });
+        api.status.workflow!.generation += 1;
+        Object.assign(api.status.workflow!, { layout_result: last,
+          allowed_actions: [last ? 'CONFIRM' : 'RETRY', 'SET_DISTANCE', 'BACK'] });
+        Object.assign(api.status.ranging!.progress!, { success: last, partial: !last,
+          updated_at_ms: api.status.ranging!.progress!.updated_at_ms! + 1,
+          failure_reason: last ? '' : 'pair_failed:1-2' });
+        await route.fulfill({ json: { ok: true, workflow: api.status.workflow } });
+      });
+      await page.goto('/');
+      await page.getByRole('button', { name: /0.2/ }).click();
+      await expect(page.getByRole('spinbutton')).toHaveValue('6001');
+      await scenarioScreenshot(page, `${locale}-manual-distance-entry`);
+      await page.getByRole('button', { name: t['workflow.distance.save'], exact: true }).click();
+      await expect(page.getByText(t['workflow.distance.rejected'], { exact: true })).toBeVisible();
+      await scenarioScreenshot(page, `${locale}-manual-distance-rejected`);
+      await page.getByRole('spinbutton').fill('1500');
+      await page.getByRole('button', { name: t['workflow.distance.save'], exact: true }).click();
+      await expect(page.getByRole('spinbutton')).toHaveCount(0);
+      await expect(page.getByText(t['workflow.ranging.partial'], { exact: true })).toBeVisible();
+      await expect(page.locator('[data-command="CONFIRM"]')).toHaveCount(0);
+      await scenarioScreenshot(page, `${locale}-manual-distance-still-partial`);
+      await page.getByRole('button', { name: /1.2/ }).click();
+      await expect(page.getByRole('spinbutton')).toHaveValue('');
+      await page.getByRole('button', { name: t['workflow.distance.cancel'], exact: true }).click();
+      expect(api.controls).toHaveLength(2);
+      await page.getByRole('button', { name: /1.2/ }).click();
+      await page.getByRole('spinbutton').fill('1000');
+      await page.getByRole('button', { name: t['workflow.distance.save'], exact: true }).click();
+      await expect(page.getByText(t['workflow.ranging.success'], { exact: true })).toBeVisible();
+      await expect(page.locator('[data-command="CONFIRM"]')).toBeVisible();
+      await page.reload();
+      await expect(page.getByText(t['workflow.ranging.success'], { exact: true })).toBeVisible();
+      await expect(page.locator('.workflow-ranging')).toContainText(`(${t['workflow.distance.manual']})`);
+      await scenarioScreenshot(page, `${locale}-manual-distance-complete`);
+      expect(api.controls).toHaveLength(3);
+    });
+  });
+}

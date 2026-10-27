@@ -406,6 +406,9 @@ int main(void)
 
     ret = nrf_cs_pair_runtime_zephyr_start();
     printk("boot: nrf_cs_pair_runtime_zephyr_start ret=%d\n", ret);
+#if defined(CONFIG_APP_NRF_RADIO_ON_DEMAND) && CONFIG_APP_NRF_RADIO_ON_DEMAND
+    printk("boot: radio_on_demand=1 (radio silent until a ranging cycle starts)\n");
+#endif
     if (ret != 0) {
         nrf_log_runtime_zephyr_append_event(
             NRF_LOG_EVENT_BOOT_FAILED,
@@ -463,6 +466,7 @@ int main(void)
         }
 
         nrf_boot_diagnostics_console_drain();
+        nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
         note_upstream_state();
 #if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
         print_state_transitions(&node_state);

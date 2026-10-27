@@ -168,6 +168,7 @@ function sensorMessageKey(count: number | null, allowedActions: readonly string[
 function workflowActions(allowed: readonly string[]): WorkflowViewAction[] {
   const rank = new Map(ACTION_ORDER.map((command, index) => [command, index]));
   const sorted = allowed
+    .filter(command => command.toUpperCase() !== 'SET_DISTANCE')
     .map((command, originalIndex) => ({ command, originalIndex, canonical: command.toUpperCase() }))
     .sort((a, b) => (rank.get(a.canonical) ?? ACTION_ORDER.length) - (rank.get(b.canonical) ?? ACTION_ORDER.length)
       || a.canonical.localeCompare(b.canonical)

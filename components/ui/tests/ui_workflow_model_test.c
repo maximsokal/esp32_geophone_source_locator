@@ -434,7 +434,6 @@ static void test_unknown_values_and_ranging_sigma(void)
     snapshot = make_snapshot(WORKFLOW_STEP_CALIBRATING);
     build(&snapshot, &state, &ranging, &model);
     assert(model.lines[0].arg_keys[0] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
-    assert(model.lines[0].arg_keys[3] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
 
     snapshot = make_snapshot(WORKFLOW_STEP_PLACEMENT);
     snapshot.placement.per_node_count = 1U;
@@ -451,9 +450,13 @@ static void test_unknown_values_and_ranging_sigma(void)
     (void)snprintf(ranging.nodes[0], sizeof(ranging.nodes[0]), "G1");
     ranging.sigma_mm[0] = INT32_MAX;
     build(&snapshot, &state, &ranging, &model);
-    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_SIGMA);
-    assert(model.lines[1].arg_keys[1] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
-    assert(strcmp(model.lines[1].args[1], "0") != 0);
+    /* The nodes range over radio on their own: the screen says so right under the pair counter. */
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_PAIRS);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_WAIT);
+    assert(model.lines[2].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_SIGMA);
+    assert(model.lines[2].arg_keys[1] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
+    assert(strcmp(model.lines[2].args[1], "0") != 0);
+    assert(model.line_count == 3U);
 
     snapshot = make_snapshot(WORKFLOW_STEP_RECORDING);
     build(&snapshot, &state, &ranging, &model);
@@ -498,7 +501,6 @@ static void test_calibration_main_row_has_no_imu_fields(void)
     (void)snprintf(main_node->imu_state, sizeof(main_node->imu_state), "not_applicable");
     main_node->relative_z_mm_valid = true;
     main_node->relative_z_mm = 120;
-    main_node->cs_pairs_ok = true;
     workflow_calibration_node_t *remote = &snapshot.calibration.per_node[1];
     (void)snprintf(remote->node, sizeof(remote->node), "G1");
     (void)snprintf(remote->height_state, sizeof(remote->height_state), "valid");
@@ -506,7 +508,6 @@ static void test_calibration_main_row_has_no_imu_fields(void)
     remote->imu_values_valid = true;
     remote->relative_z_mm_valid = true;
     remote->relative_z_mm = 5;
-    remote->cs_pairs_ok = true;
 
     ui_workflow_model_state_t state = {0};
     ui_workflow_ranging_t ranging = {0};
@@ -517,7 +518,6 @@ static void test_calibration_main_row_has_no_imu_fields(void)
     assert(strcmp(model.lines[1].args[0], "MAIN") == 0);
     assert(model.lines[1].arg_keys[1] == UI_I18N_KEY_TFT_WORKFLOW_STATE_VALID);
     assert(strcmp(model.lines[1].args[2], "120") == 0);
-    assert(model.lines[1].arg_keys[3] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_OK);
     assert(model.lines[2].key == UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_ROW);
     assert(model.lines[2].arg_keys[3] == UI_I18N_KEY_TFT_WORKFLOW_STATE_CALIBRATED);
 }
@@ -690,6 +690,88 @@ static void test_insufficient_nodes_results_use_existing_warning(void)
     assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_SENSOR_INSUFFICIENT);
 }
 
+static void test_ranging_manual_entry(void)
+{
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_RANGING_RESULT);
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {.available = true, .pair_count = 2U, .started_at_ms = 10U, .updated_at_ms = 20U};
+    ranging.pairs[0].node_a = 0U; ranging.pairs[0].node_b = 1U; ranging.pairs[0].valid = true;
+    ranging.pairs[1].node_a = 0U; ranging.pairs[1].node_b = 2U;
+    ranging.pairs[1].cable_exceeded = true; ranging.pairs[1].distance_mm = 6001;
+    ui_workflow_distance_open(&snapshot, &ranging, &state);
+    assert(state.distance_view == UI_WORKFLOW_DISTANCE_PAIR && state.distance_pair == 1U);
+    ui_workflow_event_t event = ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_UP, 100U);
+    assert(event.type == UI_WORKFLOW_EVENT_NONE && state.distance_pair == 0U);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_DOWN, 100U);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_OK, 100U);
+    assert(state.distance_view == UI_WORKFLOW_DISTANCE_VALUE);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_RIGHT, 100U);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_RIGHT, 100U);
+    for (unsigned i = 0U; i < 5U; ++i)
+        (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_DOWN, 100U);
+    assert(state.distance_mm == 1001U);
+    state.distance_mm = 0U;
+    event = ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_OK, 100U);
+    assert(event.type == UI_WORKFLOW_EVENT_NONE && state.distance_view == UI_WORKFLOW_DISTANCE_VALUE);
+    state.distance_mm = 1500U;
+    event = ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_OK, 100U);
+    assert(event.type == UI_WORKFLOW_EVENT_SAVE_DISTANCE);
+    assert(event.distance.node_a == 0U && event.distance.node_b == 2U && event.distance.distance_mm == 1500);
+    assert(event.distance.expected_generation == snapshot.generation);
+    assert(event.distance.ranging_started_at_ms == 10U && event.distance.ranging_updated_at_ms == 20U);
+    assert(state.distance_view == UI_WORKFLOW_DISTANCE_SAVING);
+    event = ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_OK, 100U);
+    assert(event.type == UI_WORKFLOW_EVENT_NONE);
+    state.distance_view = UI_WORKFLOW_DISTANCE_CLOSED;
+    ui_workflow_distance_open(&snapshot, &ranging, &state);
+    event = ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_LEFT, 100U);
+    assert(event.type == UI_WORKFLOW_EVENT_NONE && state.distance_view == UI_WORKFLOW_DISTANCE_CLOSED);
+    ui_workflow_distance_open(&snapshot, &ranging, &state);
+    ++snapshot.generation;
+    event = ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_OK, 100U);
+    assert(event.type == UI_WORKFLOW_EVENT_NONE && state.distance_view == UI_WORKFLOW_DISTANCE_CLOSED);
+}
+
+static void test_ranging_result_three_outcomes(void)
+{
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_RANGING_RESULT);
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {.available = true};
+    ui_workflow_model_t model;
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_SUCCESS);
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_RETRY);
+    ranging.partial = true;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_PARTIAL);
+    ranging.partial = false;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_FAILED);
+}
+
+static void test_ranging_result_displays_pair_values(void)
+{
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_RANGING_RESULT);
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {.available = true, .pair_count = 2U};
+    ui_workflow_model_t model;
+    ranging.pairs[0].node_a = 0U; ranging.pairs[0].node_b = 1U;
+    ranging.pairs[0].valid = true; ranging.pairs[0].distance_mm = 1234;
+    ranging.pairs[1].node_a = 0U; ranging.pairs[1].node_b = 2U;
+    build(&snapshot, &state, &ranging, &model);
+    size_t found = 0U;
+    for (size_t i = 0U; i < model.line_count; ++i) {
+        if (model.lines[i].key != UI_I18N_KEY_TFT_WORKFLOW_RANGING_DISTANCE) continue;
+        assert(strcmp(model.lines[i].args[0], "0") == 0);
+        assert(strcmp(model.lines[i].args[1], found == 0U ? "1" : "2") == 0);
+        if (found == 0U) assert(strcmp(model.lines[i].args[2], "1234") == 0);
+        else assert(model.lines[i].arg_keys[2] != UI_I18N_KEY_COUNT);
+        ++found;
+    }
+    assert(found == 2U);
+}
+
 int main(void)
 {
 #ifdef MAX449_CASE
@@ -704,6 +786,9 @@ int main(void)
 #error "unknown MAX449_CASE for ui_workflow_model_test"
 #endif
 #else
+    test_ranging_manual_entry();
+    test_ranging_result_three_outcomes();
+    test_ranging_result_displays_pair_values();
     test_all_steps();
     test_actions_follow_allowed_mask();
     test_async_sequence_wrap_keeps_new_request_pending();

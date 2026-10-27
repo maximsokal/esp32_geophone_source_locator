@@ -180,7 +180,7 @@
     },
     {
       "name": "nrf_bootstrap_runtime_zephyr",
-      "sources": ["nRF54L15/src/nrf_node_state.c", "nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_bootstrap.c", "nRF54L15/src/nrf_cs_control_protocol.c", "nRF54L15/src/nrf_cs_control_runtime.c", "nRF54L15/src/nrf_log_protocol.c", "nRF54L15/src/nrf_log_ring.c", "nRF54L15/src/nrf_log_runtime_zephyr.c", "nRF54L15/src/nrf_hci_workqueue.c", "nRF54L15/src/nrf_bootstrap_runtime_zephyr.c", "nRF54L15/src/nrf_read_window.c", "tests/host/stubs/nrf_bootstrap_runtime_zephyr/nrf_cs_pair_runtime_zephyr_stub.c", "tests/host/nrf_bootstrap_runtime_zephyr_test.c"],
+      "sources": ["nRF54L15/src/nrf_node_state.c", "nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_bootstrap.c", "nRF54L15/src/nrf_cs_control_protocol.c", "nRF54L15/src/nrf_cs_control_runtime.c", "nRF54L15/src/nrf_log_protocol.c", "nRF54L15/src/nrf_log_ring.c", "nRF54L15/src/nrf_log_runtime_zephyr.c", "nRF54L15/src/nrf_hci_workqueue.c", "nRF54L15/src/nrf_bootstrap_runtime_zephyr.c", "nRF54L15/src/nrf_cs_cycle_protocol.c", "nRF54L15/src/nrf_cs_cycle_runtime.c", "nRF54L15/src/nrf_read_window.c", "tests/host/stubs/nrf_bootstrap_runtime_zephyr/nrf_cs_pair_runtime_zephyr_stub.c", "tests/host/nrf_bootstrap_runtime_zephyr_test.c"],
       "include_dirs": ["tests/host/stubs/nrf_bootstrap_runtime_zephyr", "tests/host/stubs/nrf_upstream_target_zephyr", "nRF54L15/include"],
       "defines": ["NRF_LOG_RING_TEST_HOOKS", "NRF_HCI_WORKQUEUE_TEST_HOOKS"]
     },
@@ -206,6 +206,21 @@
       "include_dirs": ["nRF54L15/include"]
     },
     {
+      "name": "nrf_cs_cycle_protocol",
+      "sources": ["nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_cs_cycle_protocol.c", "tests/host/nrf_cs_cycle_protocol_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "nrf_cs_cycle_runtime",
+      "sources": ["nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_cs_scheduler.c", "nRF54L15/src/nrf_cs_cycle_protocol.c", "nRF54L15/src/nrf_cs_cycle_runtime.c", "nRF54L15/src/nrf_cs_cycle_replay.c", "tests/host/nrf_cs_cycle_runtime_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
+      "name": "nrf_cs_cycle_coordinator",
+      "sources": ["nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_cs_scheduler.c", "nRF54L15/src/nrf_cs_cycle_protocol.c", "nRF54L15/src/nrf_cs_cycle_runtime.c", "nRF54L15/src/nrf_cs_cycle_replay.c", "nRF54L15/src/nrf_cs_cycle_coordinator.c", "tests/host/nrf_cs_cycle_coordinator_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
       "name": "nrf_cs_control_runtime",
       "sources": ["nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_cs_control_protocol.c", "nRF54L15/src/nrf_cs_control_runtime.c", "tests/host/nrf_cs_control_runtime_test.c"],
       "include_dirs": ["nRF54L15/include"]
@@ -217,7 +232,7 @@
     },
     {
       "name": "nrf_topology_log_session",
-      "sources": ["components/nrf_topology_service/nrf_topology_service.c", "components/nrf_topology_service/nrf_link_readiness_policy.c", "components/nrf_topology_service/nrf_topology.c", "components/nrf_topology_service/nrf_sensor_transport.c", "components/nrf_topology_service/nrf_topology_leveling_policy.c", "components/nrf_topology_service/nrf_topology_bus_recovery.c", "components/sensor_bus/sensor_bus.c", "components/sensor_bus/sensor_bus_diag.c", "components/sensor_bus/sensor_bus_probe_diag.c", "components/sensor_bus/i2c_line_recovery.c", "components/tca9548a_mux/tca9548a_mux.c", "components/tca9548a_mux/tca9548a_mux_i2c_bus.c", "components/nrf_cs_authority/nrf_cs_authority.c", "nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_read_window.c", "nRF54L15/src/nrf_cs_scheduler.c", "nRF54L15/src/nrf_cs_control_protocol.c", "nRF54L15/src/nrf_bootstrap.c", "nRF54L15/src/nrf_node_state.c", "components/nrf_topology_service/nrf_log_collector.c", "components/nrf_topology_service/nrf_log_event_text.c", "nRF54L15/src/nrf_log_protocol.c", "nRF54L15/src/nrf_log_ring.c", "tests/host/nrf_topology_log_session_test.c"],
+      "sources": ["components/nrf_topology_service/nrf_topology_service.c", "components/nrf_topology_service/nrf_link_readiness_policy.c", "components/nrf_topology_service/nrf_topology.c", "components/nrf_topology_service/nrf_sensor_transport.c", "components/nrf_topology_service/nrf_topology_leveling_policy.c", "components/nrf_topology_service/nrf_topology_bus_recovery.c", "components/sensor_bus/sensor_bus.c", "components/sensor_bus/sensor_bus_diag.c", "components/sensor_bus/sensor_bus_probe_diag.c", "components/sensor_bus/i2c_line_recovery.c", "components/tca9548a_mux/tca9548a_mux.c", "components/tca9548a_mux/tca9548a_mux_i2c_bus.c", "components/nrf_cs_authority/nrf_cs_authority.c", "nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_read_window.c", "nRF54L15/src/nrf_cs_scheduler.c", "nRF54L15/src/nrf_cs_control_protocol.c", "nRF54L15/src/nrf_cs_cycle_protocol.c", "nRF54L15/src/nrf_cs_cycle_runtime.c", "nRF54L15/src/nrf_cs_cycle_replay.c", "nRF54L15/src/nrf_cs_cycle_coordinator.c", "nRF54L15/src/nrf_bootstrap.c", "nRF54L15/src/nrf_node_state.c", "components/nrf_topology_service/nrf_log_collector.c", "components/nrf_topology_service/nrf_log_event_text.c", "nRF54L15/src/nrf_log_protocol.c", "nRF54L15/src/nrf_log_ring.c", "tests/host/nrf_topology_log_session_test.c"],
       "include_dirs": ["tests/host/stubs/nrf_topology_service", "tests/host/stubs/sensor_bus", "components/nrf_topology_service/include", "components/nrf_topology_service", "components/sensor_bus/include", "components/tca9548a_mux/include", "components/nrf_cs_authority/include", "components/app_config/include", "nRF54L15/include", "tests/host/stubs/nrf_log_collector"],
       "defines": ["NRF_TOPOLOGY_SERVICE_TEST_HARNESS", "NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR=1"],
       "libraries": ["m"]
@@ -242,6 +257,10 @@
         "nRF54L15/src/nrf_read_window.c",
         "nRF54L15/src/nrf_cs_scheduler.c",
         "nRF54L15/src/nrf_cs_control_protocol.c",
+        "nRF54L15/src/nrf_cs_cycle_protocol.c",
+        "nRF54L15/src/nrf_cs_cycle_runtime.c",
+        "nRF54L15/src/nrf_cs_cycle_replay.c",
+        "nRF54L15/src/nrf_cs_cycle_coordinator.c",
         "nRF54L15/src/nrf_bootstrap.c",
         "nRF54L15/src/nrf_node_state.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",

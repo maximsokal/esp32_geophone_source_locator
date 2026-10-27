@@ -15,6 +15,7 @@
 #include "seismic_acquisition.h"
 #include "seismic_recorder_internal.h"
 #include "nrf_cs_authority.h"
+#include "nrf_cs_cycle_coordinator.h"
 #include "nrf_geometry_solver.h"
 #include "nrf_topology_service.h"
 #include "object_store.h"
@@ -28,6 +29,13 @@ static nrf_cs_cycle_snapshot_t fake_cycle;
 static nrf_topology_ranging_result_t fake_frozen_ranging;
 static bool fake_reusable_ranging_available;
 static unsigned fake_cs_cycle_requests;
+static bool fake_radio_on_demand;
+static unsigned fake_autonomous_requests;
+static unsigned fake_progress_calls;
+static esp_err_t fake_autonomous_start_result;
+static bool fake_progress_never_completes;
+static bool fake_progress_changes_identity;
+static unsigned fake_progress_done_after = 1U;
 static nrf_remote_sensor_cache_t fake_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static device_status_snapshot_t fake_device_status;
 static object_store_geometry_t last_geometry;
@@ -132,6 +140,7 @@ esp_err_t storage_manager_atomic_write_text(const char *path, const char *text) 
 esp_err_t object_store_get_profile(const char *object_id, object_store_profile_t *profile) {
     (void)object_id;
     memset(profile, 0, sizeof(*profile));
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) profile->cable_lengths_m[i] = 5.0f;
     /* MAX-166: simulate real object_store persistence -- a fetch only sees
      * geometry that a *prior* object_store_set_geometry() call already
      * committed. If seismic_recorder_start() fetched the profile before
@@ -151,8 +160,39 @@ esp_err_t object_store_set_cs_pairs(const char *object_id, const object_store_cs
 esp_err_t seismic_acquisition_get_snapshot(seismic_acquisition_snapshot_t *snapshot) { *snapshot = fake_acquisition; return ESP_OK; }
 
 esp_err_t nrf_topology_service_get_leveling_summary(nrf_topology_leveling_summary_t *summary) { *summary = fake_leveling; return ESP_OK; }
-esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy) { (void)policy; ++fake_cs_cycle_requests; return ESP_OK; }
+esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy) { (void)policy; ++fake_cs_cycle_requests; return fake_radio_on_demand ? ESP_FAIL : ESP_OK; }
 esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot) { *snapshot = fake_cycle; return ESP_OK; }
+uint32_t nrf_cs_cycle_coordinator_budget_ms(const nrf_cs_policy_t *policy, size_t executions, size_t nodes)
+{
+    assert(policy->full_rotation && executions == NRF_CS_MAX_EXECUTIONS && nodes == NRF_CS_MAX_NODES);
+    return 92500U;
+}
+esp_err_t nrf_topology_service_ranging_start_autonomous_limited(const nrf_cs_policy_t *policy, const uint32_t *limits)
+{
+    assert(limits != NULL && limits[0] == 5000U && limits[3] == 5000U && limits[4] == 0U);
+    return nrf_topology_service_ranging_start_autonomous(policy);
+}
+
+esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *policy)
+{
+    assert(policy != NULL && policy->full_rotation);
+    ++fake_autonomous_requests;
+    fake_progress_calls = 0U;
+    return fake_autonomous_start_result;
+}
+esp_err_t nrf_topology_service_ranging_get_progress(nrf_topology_ranging_progress_t *progress)
+{
+    memset(progress, 0, sizeof(*progress));
+    progress->started_at_ms = fake_progress_changes_identity && fake_progress_calls > 0U ? 124U : 123U;
+    progress->active = fake_progress_never_completes || fake_progress_calls < fake_progress_done_after;
+    ++fake_progress_calls;
+    progress->complete = !progress->active;
+    progress->success = fake_cycle.result == NRF_CS_AUTHORITY_COMPLETE;
+    progress->membership_generation = fake_cycle.membership_generation;
+    progress->pair_count = fake_cycle.pair_count;
+    memcpy(progress->pairs, fake_cycle.pairs, sizeof(progress->pairs));
+    return ESP_OK;
+}
 esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot) { *snapshot = fake_topology; return ESP_OK; }
 esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
     const nrf_topology_snapshot_t *topology,
@@ -389,6 +429,9 @@ int main(void)
     fake_cycle.pairs[4] = (nrf_cs_pair_result_t){ .node_a = 1U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 250 };
     fake_cycle.pairs[5] = (nrf_cs_pair_result_t){ .node_a = 2U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 400 };
 
+    /* Legacy per-step CS cannot reach the reflector with on-demand radios. */
+    fake_radio_on_demand = true;
+
     /* MAX-166 G1: the live object already has a different pair set, and its
      * best-effort update fails. The session must still freeze this cycle. */
     memset(&last_cs_pairs, 0, sizeof(last_cs_pairs));
@@ -400,7 +443,26 @@ int main(void)
     fail_cs_pairs_write = true;
 
     assert(seismic_recorder_init() == ESP_OK);
+    fake_autonomous_start_result = ESP_ERR_INVALID_STATE;
+    assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_INVALID_STATE);
+    assert(!last_geometry_set && metadata_write_calls == 0U);
+    fake_autonomous_start_result = ESP_OK;
+    fake_cycle.result = NRF_CS_AUTHORITY_ERR_STATE;
+    assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_INVALID_STATE);
+    assert(!last_geometry_set && metadata_write_calls == 0U);
+    fake_cycle.result = NRF_CS_AUTHORITY_COMPLETE;
+    fake_progress_changes_identity = true;
+    assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_INVALID_STATE);
+    fake_progress_changes_identity = false;
+    fake_progress_never_completes = true;
+    assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_TIMEOUT);
+    assert(fake_progress_calls > 90000U / 50U);
+    assert(!last_geometry_set && metadata_write_calls == 0U);
+    fake_progress_never_completes = false;
+    fake_progress_done_after = 1000U; /* A valid cycle can exceed the former 45 s limit. */
     assert(seismic_recorder_start("OBJ_0005") == ESP_OK);
+    assert(fake_autonomous_requests == 5U && fake_cs_cycle_requests == 0U);
+    assert(fake_progress_calls == 1001U);
     assert(last_geometry_set);
     assert(!last_geometry.anchored);
     assert(last_geometry.pods[0].computed && last_geometry.pods[0].leveled);
@@ -567,9 +629,9 @@ int main(void)
     fake_frozen_ranging.membership_generation = 52U;
     fake_frozen_ranging.timestamp_ms = 999U;
     fake_reusable_ranging_available = true;
-    const unsigned cycle_requests_before_reuse = fake_cs_cycle_requests;
+    const unsigned cycle_requests_before_reuse = fake_autonomous_requests;
     assert(seismic_recorder_start("OBJ_0006") == ESP_OK);
-    assert(fake_cs_cycle_requests == cycle_requests_before_reuse);
+    assert(fake_autonomous_requests == cycle_requests_before_reuse);
     seismic_recorder_session_participation_t reused_participation;
     assert(seismic_recorder_read_session_participation("OBJ_0006", "S000001", &reused_participation) == ESP_OK);
     assert(strcmp(reused_participation.geometry_provenance.ranging_source, "workflow_ranging") == 0);

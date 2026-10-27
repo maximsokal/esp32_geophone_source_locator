@@ -45,6 +45,39 @@ assertions as well. `--render-only` writes candidates without changing reference
 
 ## Reference integrity and run identity
 
+### Ranging result references
+
+`golden/{en,uk}_ranging_result_{success,partial,failed,cable_exceeded}_page*.png`
+contains dedicated result screens, including every pair page reached by RIGHT
+and wrap back to the first page. The fixture uses all ten distinct pairs among
+MAIN (0) and four remotes (1-4), with fixed distances starting at 1234 mm.
+Partial success keeps a missing 0-4 pair; the cable-exceeded case preserves its
+6001 mm measurement and warning; complete failure shows unknown distances.
+
+These screenshots render the production LVGL screen, transition from RANGING
+using the workflow core, and refresh through a simulated topology service.
+They do not represent physical BLE/I2C measurements. Pytest checks the displayed
+status, exact values and units, unknown values, available action, footer, and
+presence/comparison of every reference page in both languages.
+
+`{en,uk}_ranging_manual_{pair,value,rejected,saving}.png` and
+`{en,uk}_ranging_manual_saved_page*.png` cover manual correction. The result
+screen exposes **Enter distances** beside Retry/Confirm and Back. Select a
+pair with UP/DOWN, press OK, change the selected digit with UP/DOWN and move
+between digits with LEFT/RIGHT; OK saves and recalculates. LEFT from the first
+digit returns to pair selection; LEFT again cancels. Distances are integer mm.
+The harness uses real application key handlers to change 6001 to 1500 mm,
+checks the queued payload and a rejected save, then displays a manually entered
+pair after a simulated successful backend response. Backend integration tests
+separately exercise the real geometry solver and per-remote cable checks.
+
+```powershell
+python -m pytest tests/python/test_ui_render.py -q --basetemp .test-build/ui-render/ranging-review-01
+```
+
+The existing `*_LAYOUT_READY_*`, `*_CALIBRATING_*`, `*_RANGING_*` and
+`*_ranging_progress.png` references cover preparation, calibration and waiting.
+
 Each run replaces its local reference copies from the authoritative `golden/`
 directory. Reusing an output directory cannot retain a deleted source reference.
 Old LVGL `_err.png` diagnostics are saved under `previous-errors/` before the

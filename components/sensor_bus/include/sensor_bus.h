@@ -17,7 +17,12 @@
  * This component is the only application owner that creates or deletes I2C0.
  * Consumers borrow returned device handles and must not delete them.
  */
-#define SENSOR_BUS_I2C_SPEED_HZ  100000U
+/* Shared bus clock; set by APP_SENSOR_I2C_SPEED_HZ (menuconfig "I2C bus"). Slow experiments lengthen
+ * every transfer, so wire-time budgets must always be derived from this value, never from 100 kHz. */
+#ifndef CONFIG_APP_SENSOR_I2C_SPEED_HZ
+#define CONFIG_APP_SENSOR_I2C_SPEED_HZ 25000
+#endif
+#define SENSOR_BUS_I2C_SPEED_HZ  ((uint32_t)CONFIG_APP_SENSOR_I2C_SPEED_HZ)
 #define SENSOR_BUS_TRANSACTION_TIMEOUT_MS 20U
 #define SENSOR_BUS_MUX_CLOSE_RESERVE_MS (2U * SENSOR_BUS_TRANSACTION_TIMEOUT_MS)
 #define SENSOR_BUS_MUTEX_WAIT_MS 200U
@@ -85,6 +90,19 @@ esp_err_t sensor_bus_owner_set_deadline_us(int64_t deadline_us);
 void sensor_bus_owner_release(void);
 bool sensor_bus_owner_hold_budget_exceeded(void);
 esp_err_t sensor_bus_get_owner_stats(sensor_bus_owner_stats_t *stats);
+
+/*
+ * Quiet lease: while it lasts, no task except the one that began it touches the
+ * bus. Other tasks get SENSOR_BUS_ERR_MUTEX_BUSY at once (their existing "skip,
+ * not a device fault" path) and never wait. The nRF nodes use the quiet time for
+ * Bluetooth Channel Sounding and cannot also serve I2C. begin returns only after
+ * every in-flight transfer has finished. The lease ends with sensor_bus_quiet_end()
+ * or by itself after max_ms, so a task that dies cannot silence the bus for good.
+ */
+#define SENSOR_BUS_QUIET_MAX_MS 600000U
+esp_err_t sensor_bus_quiet_begin(uint32_t max_ms);
+void sensor_bus_quiet_end(void);
+bool sensor_bus_quiet_active(void);
 
 /* Create the shared I2C0 bus and the currently contracted INA3221 device. */
 esp_err_t sensor_bus_init(void);

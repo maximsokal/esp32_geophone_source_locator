@@ -389,9 +389,14 @@ esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
     return ESP_OK;
 }
 
-esp_err_t nrf_topology_service_ranging_start(const nrf_cs_policy_t *policy, uint32_t timeout_ms)
+esp_err_t nrf_topology_service_ranging_start_autonomous_limited(const nrf_cs_policy_t *policy, const uint32_t *limits)
 {
-    (void)timeout_ms;
+    assert(limits != NULL && limits[0] == 5000U && limits[3] == 5000U && limits[4] == 0U);
+    return nrf_topology_service_ranging_start_autonomous(policy);
+}
+
+esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *policy)
+{
     if (policy == NULL) return ESP_ERR_INVALID_ARG;
     memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
     s_ranging_progress.active = true;
@@ -410,6 +415,13 @@ esp_err_t nrf_topology_service_ranging_get_progress(
 esp_err_t nrf_topology_service_invalidate_ranging(void)
 {
     return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_ranging_set_manual(uint64_t started, uint64_t updated,
+    uint8_t a, uint8_t b, int32_t distance, const uint32_t *limits)
+{
+    (void)started; (void)updated; (void)a; (void)b; (void)distance; (void)limits;
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 esp_err_t nrf_topology_service_get_leveling_summary(
@@ -1568,7 +1580,7 @@ static void test_low_remote_calibration_timeout_and_pair_counts(void)
         assert(command(WORKFLOW_COMMAND_SENSORS_PLACED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
         snapshot = try_snapshot();
         assert(snapshot.step == WORKFLOW_STEP_CALIBRATING);
-        assert(snapshot.calibration.pairs_total == remotes);
+        assert(snapshot.calibration.pairs_total == 0U && s_cs_request_calls == 0U);
         s_now_ms += UINT64_C(15000);
         assert(workflow_service_poll() == ESP_OK);
         snapshot = try_snapshot();
@@ -1596,19 +1608,18 @@ static void test_one_and_two_connected_remotes_complete_initialization(void)
         assert(command(WORKFLOW_COMMAND_START_MEASUREMENT, false, false) == WORKFLOW_COMMAND_RESULT_OK);
         assert(command(WORKFLOW_COMMAND_GO_CALIBRATION, false, false) == WORKFLOW_COMMAND_RESULT_OK);
         assert(command(WORKFLOW_COMMAND_SENSORS_PLACED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
-        assert(s_height_request_calls == 1U && s_imu_request_calls == 1U && s_cs_request_calls == 1U);
+        /* Calibration is height + IMU only: no Channel Sounding (BLE) traffic before ranging. */
+        assert(s_height_request_calls == 1U && s_imu_request_calls == 1U && s_cs_request_calls == 0U);
         assert(s_imu_request_mask == expected_mask);
         workflow_snapshot_t snapshot = try_snapshot();
         assert(snapshot.step == WORKFLOW_STEP_CALIBRATING);
         assert(snapshot.calibration.per_node_count == remotes + 1U);
-        assert(snapshot.calibration.pairs_total == remotes);
+        assert(snapshot.calibration.pairs_total == 0U);
 
         s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
         s_device.main.height_reference.generation = s_height_generation;
-        s_cs_cycle_valid = true;
-        s_cs_cycle.cycle_id = 1U;
-        s_cs_cycle.complete = true;
-        s_cs_cycle.pair_count = remotes;
+        /* No CS cycle exists at all; calibration must finish on height and IMU alone. */
+        s_cs_cycle_valid = false;
         for (size_t i = 0U; i < remotes; ++i) {
             const uint8_t channel = channels[i];
             nrf_remote_sensor_cache_t *cache = &s_cache[channel];
@@ -1620,17 +1631,14 @@ static void test_one_and_two_connected_remotes_complete_initialization(void)
             cache->sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
             cache->sensor.imu_cal_generation = s_height_generation;
             cache->sensor.imu_cal_state = NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED;
-            s_cs_cycle.pairs[i].node_a = NRF_TOPOLOGY_MAIN_NODE_ID;
-            s_cs_cycle.pairs[i].node_b = cache->identity.node_id;
-            s_cs_cycle.pairs[i].state = NRF_CS_PAIR_VALID;
-            s_cs_cycle.pairs[i].spread_mm = 25;
         }
         s_now_ms += 250U;
         assert(workflow_service_poll() == ESP_OK);
         snapshot = try_snapshot();
         assert(snapshot.step == WORKFLOW_STEP_CALIB_RESULT);
         assert(snapshot.calibration.result_valid && snapshot.calibration.result_ok);
-        assert(snapshot.calibration.pairs_done == remotes && snapshot.calibration.reasons_count == 0U);
+        assert(snapshot.calibration.pairs_done == 0U && snapshot.calibration.reasons_count == 0U);
+        assert(s_cs_request_calls == 0U);
         workflow_service_shutdown();
     }
 }

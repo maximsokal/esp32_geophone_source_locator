@@ -24,6 +24,7 @@ esp_err_t workflow_service_command_async(
     uint32_t expected_generation,
     uint32_t *out_seq
 );
+esp_err_t workflow_service_set_distance_async(const workflow_command_params_t *params, uint32_t *out_seq);
 workflow_command_result_t workflow_service_command(
     workflow_command_t command,
     const workflow_command_params_t *params

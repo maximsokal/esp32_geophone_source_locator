@@ -55,6 +55,7 @@ idf_component_register(
         cjson_alloc_guard
         device_status
         nrf_geometry_solver
+        nrf_cs_shared
         nrf_topology_service
         object_store
         recording_gate

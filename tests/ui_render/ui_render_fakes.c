@@ -245,14 +245,30 @@ esp_err_t workflow_service_command_async(workflow_command_t command, bool has_ge
     *out_seq = ++render_command_count;
     return ESP_OK;
 }
+workflow_command_params_t render_distance_params;
+unsigned render_distance_calls;
+esp_err_t workflow_service_set_distance_async(const workflow_command_params_t *params, uint32_t *out_seq)
+{
+    assert(params != NULL && params->has_distance);
+    render_distance_params = *params;
+    ++render_distance_calls;
+    return workflow_service_command_async(WORKFLOW_COMMAND_SET_DISTANCE,
+        params->has_generation, params->expected_generation, out_seq);
+}
 esp_err_t workflow_service_save_calc_material_range_async(const char *material, uint32_t velocity,
     uint32_t sigma, bool range, uint32_t minimum, uint32_t maximum)
 {
     (void)material; (void)velocity; (void)sigma; (void)range; (void)minimum; (void)maximum;
     return ESP_OK;
 }
+bool render_ranging_available;
+nrf_topology_ranging_progress_t render_ranging_progress;
 esp_err_t nrf_topology_service_ranging_get_progress(nrf_topology_ranging_progress_t *out)
-{ memset(out, 0, sizeof(*out)); return ESP_ERR_INVALID_STATE; }
+{
+    if (!render_ranging_available) { memset(out, 0, sizeof(*out)); return ESP_ERR_INVALID_STATE; }
+    *out = render_ranging_progress;
+    return ESP_OK;
+}
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *out)
 { (void)channel; memset(out, 0, sizeof(*out)); return ESP_ERR_NOT_FOUND; }
 esp_err_t nrf_topology_service_get_node_status_snapshot(uint8_t slot, nrf_node_link_status_input_t *out)

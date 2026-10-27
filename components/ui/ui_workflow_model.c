@@ -28,6 +28,7 @@ static const workflow_command_t s_action_order[] = {
     WORKFLOW_COMMAND_RECORD_AGAIN,
     WORKFLOW_COMMAND_SCAN_START,
     WORKFLOW_COMMAND_SCAN_SKIP,
+    WORKFLOW_COMMAND_SET_DISTANCE,
     WORKFLOW_COMMAND_BACK,
 };
 
@@ -89,6 +90,7 @@ static ui_i18n_key_t action_key(workflow_command_t command)
         case WORKFLOW_COMMAND_SCAN_START: return UI_I18N_KEY_TFT_WORKFLOW_SCAN_PHONE;
         case WORKFLOW_COMMAND_CALCULATE_POSITIONS: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_CALCULATE_POSITIONS;
         case WORKFLOW_COMMAND_CONFIRM: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_CONFIRM;
+        case WORKFLOW_COMMAND_SET_DISTANCE: return UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_EDIT;
         case WORKFLOW_COMMAND_START_RECORDING: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_START_RECORDING;
         case WORKFLOW_COMMAND_STOP_RECORDING: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_STOP_RECORDING;
         case WORKFLOW_COMMAND_MOVE_SENSORS: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_MOVE_SENSORS;
@@ -518,6 +520,25 @@ void ui_workflow_model_build(
 
     resolve_pending(state, snapshot, now_ms);
     resolve_material_save(state, snapshot, now_ms);
+    if (state->distance_view == UI_WORKFLOW_DISTANCE_SAVING && !state->has_pending) {
+        if (snapshot->last_async.result == WORKFLOW_COMMAND_RESULT_OK) {
+            state->distance_view = UI_WORKFLOW_DISTANCE_CLOSED;
+        } else {
+            state->distance_view = UI_WORKFLOW_DISTANCE_VALUE;
+            state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_REJECTED;
+            state->notice_until_ms = now_ms + 4000U;
+        }
+    }
+    if (state->distance_view != UI_WORKFLOW_DISTANCE_CLOSED &&
+        state->distance_view != UI_WORKFLOW_DISTANCE_SAVING &&
+        (snapshot->step != WORKFLOW_STEP_RANGING_RESULT || ranging == NULL || !ranging->available ||
+         state->distance_generation != snapshot->generation ||
+         state->distance_started_at_ms != ranging->started_at_ms ||
+         state->distance_updated_at_ms != ranging->updated_at_ms)) {
+        state->distance_view = UI_WORKFLOW_DISTANCE_CLOSED;
+        state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_NOTICE_STATE_CHANGED;
+        state->notice_until_ms = now_ms + 2000U;
+    }
     if (state->material_save_pending) {
         model->notice_key = UI_I18N_KEY_TFT_WORKFLOW_MATERIAL_SAVING;
     } else if (state->notice_key != UI_I18N_KEY_COUNT && now_ms < state->notice_until_ms) {
@@ -528,6 +549,37 @@ void ui_workflow_model_build(
 
     if (state->material_view != UI_WORKFLOW_MATERIAL_CLOSED) {
         build_material_picker(state, model);
+        return;
+    }
+
+    if (state->distance_view != UI_WORKFLOW_DISTANCE_CLOSED && ranging != NULL &&
+        state->distance_pair < ranging->pair_count) {
+        model->distance_picker_visible = true;
+        model->title_key = UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_EDIT;
+        model->hint_key = state->distance_view == UI_WORKFLOW_DISTANCE_PAIR
+            ? UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_PAIR_HINT : UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_VALUE_HINT;
+        char a[4], b[4], value[16], digit[12];
+        (void)snprintf(a, sizeof(a), "%u", (unsigned)ranging->pairs[state->distance_pair].node_a);
+        (void)snprintf(b, sizeof(b), "%u", (unsigned)ranging->pairs[state->distance_pair].node_b);
+        ui_workflow_model_line_t *pair = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_PAIR);
+        set_arg(pair, 0U, a); set_arg(pair, 1U, b);
+        (void)snprintf(value, sizeof(value), "%06lu", (unsigned long)state->distance_mm);
+        ui_workflow_model_line_t *distance = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_VALUE);
+        set_arg(distance, 0U, value);
+        if (state->distance_view == UI_WORKFLOW_DISTANCE_PAIR) {
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_CHOOSE);
+        } else {
+            (void)snprintf(digit, sizeof(digit), "%u", state->distance_digit + 1U);
+            set_arg(add_line(model, UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_DIGIT), 0U, digit);
+        }
+        add_action(model, WORKFLOW_COMMAND_SET_DISTANCE);
+        model->action_keys[0] = state->distance_view == UI_WORKFLOW_DISTANCE_PAIR
+            ? UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_ENTER : UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_SAVE;
+        add_action(model, WORKFLOW_COMMAND_BACK);
+        if (state->distance_view == UI_WORKFLOW_DISTANCE_SAVING) {
+            model->notice_key = UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_SAVING;
+            model->pending = true;
+        }
         return;
     }
 
@@ -558,18 +610,8 @@ void ui_workflow_model_build(
             (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_PREP);
             break;
         case WORKFLOW_STEP_CALIBRATING: {
-            char pairs_done[12], pairs_total[12], spread[20];
-            (void)snprintf(pairs_done, sizeof(pairs_done), "%u", (unsigned)snapshot->calibration.pairs_done);
-            (void)snprintf(pairs_total, sizeof(pairs_total), "%u", (unsigned)snapshot->calibration.pairs_total);
-            if (snapshot->calibration.max_spread_valid) {
-                (void)snprintf(spread, sizeof(spread), "%ld", (long)snapshot->calibration.max_spread_mm);
-            }
             ui_workflow_model_line_t *header = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_HEADER);
             set_key_arg(header, 0U, phase_value_key(snapshot->calibration.phase));
-            set_arg(header, 1U, pairs_done);
-            set_arg(header, 2U, pairs_total);
-            if (snapshot->calibration.max_spread_valid) set_arg(header, 3U, spread);
-            else unknown_arg(header, 3U);
             for (size_t i = 0U; i < snapshot->calibration.per_node_count && i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
                 const workflow_calibration_node_t *node = &snapshot->calibration.per_node[i];
                 char z[20], bias[20];
@@ -589,8 +631,6 @@ void ui_workflow_model_build(
                     set_key_arg(main_row, 1U, state_value_key(node->height_state));
                     if (node->relative_z_mm_valid) set_arg(main_row, 2U, z);
                     else unknown_arg(main_row, 2U);
-                    set_arg(main_row, 3U, node->cs_pairs_ok ? "OK" : "X");
-                    set_key_arg(main_row, 3U, command_result_key(node->cs_pairs_ok));
                     continue;
                 }
                 ui_workflow_model_line_t *row = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_ROW);
@@ -603,8 +643,6 @@ void ui_workflow_model_build(
                 set_key_arg(row, 3U, state_value_key(node->imu_state));
                 if (node->imu_values_valid) set_arg(row, 4U, bias);
                 else unknown_arg(row, 4U);
-                set_arg(row, 5U, node->cs_pairs_ok ? "OK" : "X");
-                set_key_arg(row, 5U, command_result_key(node->cs_pairs_ok));
             }
             break;
         }
@@ -670,6 +708,7 @@ void ui_workflow_model_build(
                 unknown_arg(pairs, 1U);
                 unknown_arg(pairs, 2U);
             }
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_WAIT);
             if (ranging != NULL && ranging->available) {
                 for (size_t i = 0U; i < ranging->node_count && i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
                     ui_workflow_model_line_t *row = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_SIGMA);
@@ -685,11 +724,19 @@ void ui_workflow_model_build(
             break;
         }
         case WORKFLOW_STEP_RANGING_RESULT: {
+            if (ranging != NULL && ranging->available && ranging->pair_count > 0U)
+                model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_HINT_RANGING_PAGES;
             const bool success = (snapshot->allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM)) != 0U;
             const bool known = success || (snapshot->allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_RETRY)) != 0U;
-            ui_workflow_model_line_t *status = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_STATUS);
-            if (known) set_key_arg(status, 0U, result_status_key(success));
-            else unknown_arg(status, 0U);
+            if (ranging != NULL && ranging->available && ranging->partial) {
+                (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_PARTIAL);
+            } else if (known) {
+                (void)add_line(model, success ? UI_I18N_KEY_TFT_WORKFLOW_RANGING_SUCCESS
+                    : UI_I18N_KEY_TFT_WORKFLOW_RANGING_FAILED);
+            } else {
+                ui_workflow_model_line_t *status = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_STATUS);
+                unknown_arg(status, 0U);
+            }
             if (snapshot->reason[0] != '\0') {
                 if (strcmp(snapshot->reason, "insufficient_nodes") == 0) {
                     (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_SENSOR_INSUFFICIENT);
@@ -710,6 +757,22 @@ void ui_workflow_model_build(
                     set_arg(pairs, 2U, residual);
                 } else {
                     unknown_arg(pairs, 2U);
+                }
+                for (size_t i = 0U; i < ranging->pair_count && i < UI_WORKFLOW_RANGING_MAX_PAIRS; ++i) {
+                    char a[4], b[4], distance[16];
+                    (void)snprintf(a, sizeof(a), "%u", (unsigned)ranging->pairs[i].node_a);
+                    (void)snprintf(b, sizeof(b), "%u", (unsigned)ranging->pairs[i].node_b);
+                    ui_workflow_model_line_t *row = add_line(model, ranging->pairs[i].manual
+                        ? UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_MANUAL
+                        : ranging->pairs[i].cable_exceeded
+                        ? UI_I18N_KEY_TFT_WORKFLOW_RANGING_CABLE_EXCEEDED
+                        : UI_I18N_KEY_TFT_WORKFLOW_RANGING_DISTANCE);
+                    set_arg(row, 0U, a);
+                    set_arg(row, 1U, b);
+                    if (ranging->pairs[i].valid || ranging->pairs[i].cable_exceeded) {
+                        (void)snprintf(distance, sizeof(distance), "%ld", (long)ranging->pairs[i].distance_mm);
+                        set_arg(row, 2U, distance);
+                    } else unknown_arg(row, 2U);
                 }
                 for (size_t i = 0U; i < ranging->node_count && i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
                     char sigma[20];
@@ -799,6 +862,82 @@ void ui_workflow_model_build(
         state->has_selected_action = true;
         model->selected_action = selected;
     }
+}
+
+void ui_workflow_distance_open(const workflow_snapshot_t *snapshot,
+    const ui_workflow_ranging_t *ranging, ui_workflow_model_state_t *state)
+{
+    if (snapshot == NULL || ranging == NULL || state == NULL ||
+        snapshot->step != WORKFLOW_STEP_RANGING_RESULT || !ranging->available ||
+        ranging->pair_count == 0U || ranging->pair_count > UI_WORKFLOW_RANGING_MAX_PAIRS || state->has_pending) return;
+    state->distance_pair = 0U;
+    for (size_t i = 0U; i < ranging->pair_count; ++i) {
+        if (!ranging->pairs[i].valid) { state->distance_pair = i; break; }
+    }
+    const int32_t value = ranging->pairs[state->distance_pair].distance_mm;
+    state->distance_mm = value > 0 && value <= 999999 ? (uint32_t)value : 1000U;
+    state->distance_digit = 0U;
+    state->distance_generation = snapshot->generation;
+    state->distance_started_at_ms = ranging->started_at_ms;
+    state->distance_updated_at_ms = ranging->updated_at_ms;
+    state->distance_view = UI_WORKFLOW_DISTANCE_PAIR;
+}
+
+ui_workflow_event_t ui_workflow_distance_handle_key(
+    const workflow_snapshot_t *snapshot, const ui_workflow_ranging_t *ranging,
+    ui_workflow_model_state_t *state, ui_workflow_key_t key, uint64_t now_ms)
+{
+    ui_workflow_event_t event = {.type = UI_WORKFLOW_EVENT_NONE};
+    if (snapshot == NULL || ranging == NULL || state == NULL ||
+        state->distance_view == UI_WORKFLOW_DISTANCE_CLOSED ||
+        state->distance_view == UI_WORKFLOW_DISTANCE_SAVING) return event;
+    if (snapshot->step != WORKFLOW_STEP_RANGING_RESULT || !ranging->available ||
+        ranging->pair_count == 0U || ranging->pair_count > UI_WORKFLOW_RANGING_MAX_PAIRS ||
+        state->distance_pair >= ranging->pair_count || state->distance_generation != snapshot->generation ||
+        state->distance_started_at_ms != ranging->started_at_ms ||
+        state->distance_updated_at_ms != ranging->updated_at_ms) {
+        state->distance_view = UI_WORKFLOW_DISTANCE_CLOSED;
+        return event;
+    }
+    if (state->distance_view == UI_WORKFLOW_DISTANCE_PAIR) {
+        if (key == UI_WORKFLOW_KEY_LEFT) state->distance_view = UI_WORKFLOW_DISTANCE_CLOSED;
+        else if (key == UI_WORKFLOW_KEY_OK) state->distance_view = UI_WORKFLOW_DISTANCE_VALUE;
+        else if (key == UI_WORKFLOW_KEY_UP || key == UI_WORKFLOW_KEY_DOWN) {
+            state->distance_pair = key == UI_WORKFLOW_KEY_DOWN
+                ? (state->distance_pair + 1U) % ranging->pair_count
+                : (state->distance_pair + ranging->pair_count - 1U) % ranging->pair_count;
+            const int32_t value = ranging->pairs[state->distance_pair].distance_mm;
+            state->distance_mm = value > 0 && value <= 999999 ? (uint32_t)value : 1000U;
+        }
+        return event;
+    }
+    static const uint32_t places[] = {100000U, 10000U, 1000U, 100U, 10U, 1U};
+    const uint32_t place = places[state->distance_digit];
+    if (key == UI_WORKFLOW_KEY_RIGHT) state->distance_digit = (state->distance_digit + 1U) % 6U;
+    else if (key == UI_WORKFLOW_KEY_LEFT) {
+        if (state->distance_digit == 0U) state->distance_view = UI_WORKFLOW_DISTANCE_PAIR;
+        else --state->distance_digit;
+    } else if (key == UI_WORKFLOW_KEY_UP || key == UI_WORKFLOW_KEY_DOWN) {
+        const uint32_t digit = state->distance_mm / place % 10U;
+        const uint32_t next = (digit + (key == UI_WORKFLOW_KEY_UP ? 1U : 9U)) % 10U;
+        state->distance_mm = state->distance_mm - digit * place + next * place;
+    } else if (key == UI_WORKFLOW_KEY_OK) {
+        if (state->distance_mm == 0U) {
+            state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_REJECTED;
+            state->notice_until_ms = now_ms + 4000U;
+            return event;
+        }
+        event.type = UI_WORKFLOW_EVENT_SAVE_DISTANCE;
+        event.command = WORKFLOW_COMMAND_SET_DISTANCE;
+        event.distance = (workflow_command_params_t){
+            .has_generation = true, .expected_generation = state->distance_generation,
+            .has_distance = true, .node_a = ranging->pairs[state->distance_pair].node_a,
+            .node_b = ranging->pairs[state->distance_pair].node_b, .distance_mm = (int32_t)state->distance_mm,
+            .ranging_started_at_ms = state->distance_started_at_ms, .ranging_updated_at_ms = state->distance_updated_at_ms,
+        };
+        state->distance_view = UI_WORKFLOW_DISTANCE_SAVING;
+    }
+    return event;
 }
 
 ui_workflow_event_t ui_workflow_model_handle_key(
@@ -988,7 +1127,9 @@ ui_workflow_event_t ui_workflow_model_handle_key(
                 }
             }
             event.command = actions[selected];
-            if (event.command == UI_WORKFLOW_ACTION_MATERIAL) {
+            if (event.command == WORKFLOW_COMMAND_SET_DISTANCE) {
+                event.type = UI_WORKFLOW_EVENT_EDIT_DISTANCE;
+            } else if (event.command == UI_WORKFLOW_ACTION_MATERIAL) {
                 state->material_selection_index = state->material_stored_index <= state->material_preset_count
                     ? state->material_stored_index : 0U;
                 state->material_view = UI_WORKFLOW_MATERIAL_SELECT;

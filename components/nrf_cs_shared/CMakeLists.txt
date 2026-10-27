@@ -5,6 +5,10 @@ idf_component_register(
     SRCS
         "${NRF_CS_ROOT}/src/nrf_cs_scheduler.c"
         "${NRF_CS_ROOT}/src/nrf_cs_control_protocol.c"
+        "${NRF_CS_ROOT}/src/nrf_cs_cycle_protocol.c"
+        "${NRF_CS_ROOT}/src/nrf_cs_cycle_runtime.c"
+        "${NRF_CS_ROOT}/src/nrf_cs_cycle_replay.c"
+        "${NRF_CS_ROOT}/src/nrf_cs_cycle_coordinator.c"
     INCLUDE_DIRS
         "${NRF_CS_ROOT}/include"
     REQUIRES

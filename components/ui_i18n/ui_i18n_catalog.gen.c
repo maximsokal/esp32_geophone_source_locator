@@ -240,7 +240,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "NOT TESTED", /* tft.hw.state.unknown */
     "HARDWARE", /* tft.hw.title */
     "Back", /* tft.workflow.action.back */
-    "Calculate positions", /* tft.workflow.action.calculate_positions */
+    "Calculate distances", /* tft.workflow.action.calculate_positions */
     "Calculate source", /* tft.workflow.action.calculate_sources */
     "Confirm", /* tft.workflow.action.confirm */
     "Delete recording", /* tft.workflow.action.delete_recording */
@@ -256,17 +256,30 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Start recording", /* tft.workflow.action.start_recording */
     "Stop recording", /* tft.workflow.action.stop_recording */
     "Progress %s%%", /* tft.workflow.calculating.progress */
-    "Phase %s CS %s/%s spread %s mm", /* tft.workflow.calibration.header */
+    "Phase %s", /* tft.workflow.calibration.header */
     "Place all sensors next to the main housing", /* tft.workflow.calibration.prep */
     "%s: %s", /* tft.workflow.calibration.reason */
     "%s", /* tft.workflow.calibration.reason_single */
-    "%s H:%s z:%smm I:%s b:%s CS:%s", /* tft.workflow.calibration.row */
-    "%s H:%s z:%smm CS:%s", /* tft.workflow.calibration.row_main */
+    "%s H:%s z:%smm I:%s b:%s", /* tft.workflow.calibration.row */
+    "%s H:%s z:%smm", /* tft.workflow.calibration.row_main */
     "Calibration: %s", /* tft.workflow.calibration.status */
     "Delete recording? OK = yes, LEFT = no", /* tft.workflow.confirm.delete */
+    "Choose the pair to correct", /* tft.workflow.distance.choose */
+    "Editing digit %s of 6", /* tft.workflow.distance.digit */
+    "Enter distances", /* tft.workflow.distance.edit */
+    "Edit this pair", /* tft.workflow.distance.enter */
+    "%s-%s: %s mm (manual)", /* tft.workflow.distance.manual */
+    "Pair %s-%s", /* tft.workflow.distance.pair */
+    "UP/DOWN pair OK edit LEFT cancel", /* tft.workflow.distance.pair_hint */
+    "Rejected: check distance and cable", /* tft.workflow.distance.rejected */
+    "Save and recalculate", /* tft.workflow.distance.save */
+    "Saving and recalculating...", /* tft.workflow.distance.saving */
+    "Distance: %s mm", /* tft.workflow.distance.value */
+    "UP/DOWN digit L/R move OK save", /* tft.workflow.distance.value_hint */
     "Waiting for phone GPS", /* tft.workflow.gps.waiting */
     "UP/DOWN select OK run LEFT back RIGHT 3D", /* tft.workflow.hint.3d */
     "UP/DOWN actions  OK run  LEFT back", /* tft.workflow.hint.navigation */
+    "UP/DOWN action OK select RIGHT more", /* tft.workflow.hint.ranging_pages */
     "Select an object", /* tft.workflow.idle.select_object */
     "Layout ready to calculate", /* tft.workflow.layout.ready */
     "Set uncertainty (m/s)", /* tft.workflow.material.custom_sigma */
@@ -316,8 +329,14 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "State changed", /* tft.workflow.preview.stop_error */
     "OK twice: stop recording", /* tft.workflow.preview.stop_hint */
     "Stopping recording...", /* tft.workflow.preview.stop_pending */
+    "%s-%s: %s mm > cable", /* tft.workflow.ranging.cable_exceeded */
+    "%s-%s: %s mm", /* tft.workflow.ranging.distance */
+    "Measurement failed", /* tft.workflow.ranging.failed */
     "Pairs %s/%s residual %s mm", /* tft.workflow.ranging.pairs */
+    "Partially measured", /* tft.workflow.ranging.partial */
     "%s sigma:%s mm", /* tft.workflow.ranging.sigma */
+    "Distances measured", /* tft.workflow.ranging.success */
+    "Ranging by radio, keep still", /* tft.workflow.ranging.wait */
     "CS pair failed", /* tft.workflow.reason.cs_pair */
     "CS spread high", /* tft.workflow.reason.cs_spread */
     "operation failed", /* tft.workflow.reason.failed */
@@ -666,7 +685,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Не тестовано", /* tft.hw.state.unknown */
     "ОБЛАДНАННЯ", /* tft.hw.title */
     "Назад", /* tft.workflow.action.back */
-    "Розрахувати координати", /* tft.workflow.action.calculate_positions */
+    "Розрахувати відстані", /* tft.workflow.action.calculate_positions */
     "Визначити джерело", /* tft.workflow.action.calculate_sources */
     "Підтвердити", /* tft.workflow.action.confirm */
     "Видалити запис", /* tft.workflow.action.delete_recording */
@@ -682,17 +701,30 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Почати запис", /* tft.workflow.action.start_recording */
     "Зупинити запис", /* tft.workflow.action.stop_recording */
     "Виконано %s%%", /* tft.workflow.calculating.progress */
-    "Етап %s CS %s/%s розкид %s мм", /* tft.workflow.calibration.header */
+    "Етап %s", /* tft.workflow.calibration.header */
     "Розмістіть усі датчики поруч із головним корпусом", /* tft.workflow.calibration.prep */
     "%s: %s", /* tft.workflow.calibration.reason */
     "%s", /* tft.workflow.calibration.reason_single */
-    "%s В:%s z:%sмм І:%s b:%s CS:%s", /* tft.workflow.calibration.row */
-    "%s В:%s z:%sмм CS:%s", /* tft.workflow.calibration.row_main */
+    "%s В:%s z:%sмм І:%s b:%s", /* tft.workflow.calibration.row */
+    "%s В:%s z:%sмм", /* tft.workflow.calibration.row_main */
     "Калібрування: %s", /* tft.workflow.calibration.status */
     "Видалити запис? OK = так, LEFT = ні", /* tft.workflow.confirm.delete */
+    "Оберіть пару для виправлення", /* tft.workflow.distance.choose */
+    "Редагування цифри %s із 6", /* tft.workflow.distance.digit */
+    "Ввести відстані", /* tft.workflow.distance.edit */
+    "Редагувати цю пару", /* tft.workflow.distance.enter */
+    "%s-%s: %s мм (вручну)", /* tft.workflow.distance.manual */
+    "Пара %s-%s", /* tft.workflow.distance.pair */
+    "UP/DOWN пара OK ввід LEFT скасувати", /* tft.workflow.distance.pair_hint */
+    "Відхилено: перевірте відстань і кабель", /* tft.workflow.distance.rejected */
+    "Зберегти й перерахувати", /* tft.workflow.distance.save */
+    "Збереження й перерахунок...", /* tft.workflow.distance.saving */
+    "Відстань: %s мм", /* tft.workflow.distance.value */
+    "UP/DOWN цифра L/R зсув OK зберегти", /* tft.workflow.distance.value_hint */
     "Очікування GPS телефона", /* tft.workflow.gps.waiting */
     "UP/DOWN вибір OK дія LEFT назад RIGHT 3D", /* tft.workflow.hint.3d */
     "UP/DOWN дії  OK вибір  LEFT назад", /* tft.workflow.hint.navigation */
+    "UP/DOWN дії OK вибір RIGHT далі", /* tft.workflow.hint.ranging_pages */
     "Виберіть об’єкт", /* tft.workflow.idle.select_object */
     "Схема готова до розрахунку", /* tft.workflow.layout.ready */
     "Задати невизначеність (м/с)", /* tft.workflow.material.custom_sigma */
@@ -742,8 +774,14 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Стан змінився", /* tft.workflow.preview.stop_error */
     "OK двічі: зупинити запис", /* tft.workflow.preview.stop_hint */
     "Зупинення запису...", /* tft.workflow.preview.stop_pending */
+    "%s-%s: %s мм > кабель", /* tft.workflow.ranging.cable_exceeded */
+    "%s-%s: %s мм", /* tft.workflow.ranging.distance */
+    "Вимірювання не вдалося", /* tft.workflow.ranging.failed */
     "Пари %s/%s нев’язка %s мм", /* tft.workflow.ranging.pairs */
+    "Частково виміряно", /* tft.workflow.ranging.partial */
     "%s сигма:%s мм", /* tft.workflow.ranging.sigma */
+    "Відстані виміряно", /* tft.workflow.ranging.success */
+    "Вимірювання по радіо, не чіпати", /* tft.workflow.ranging.wait */
     "помилка пари CS", /* tft.workflow.reason.cs_pair */
     "великий розкид CS", /* tft.workflow.reason.cs_spread */
     "операція не вдалася", /* tft.workflow.reason.failed */

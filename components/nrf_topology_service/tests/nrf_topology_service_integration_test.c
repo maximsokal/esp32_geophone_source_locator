@@ -19,6 +19,7 @@
 #include "i2c_bus.h"
 #include "nrf_bootstrap.h"
 #include "nrf_cs_control_protocol.h"
+#include "nrf_cs_cycle_runtime.h"
 #include "nrf_log_protocol.h"
 #include "nrf_node_state.h"
 #include "nrf_read_window.h"
@@ -93,6 +94,13 @@ typedef struct {
     /* The real nRF keeps a copy of the response it last handed out and serves read windows from it. */
     nrf_read_window_target_t window;
     bool cs_result_selected;
+    /* Autonomous ranging: the node side of the cycle protocol, driven by the fake clock. */
+    nrf_cs_cycle_runtime_t cycle;
+    uint8_t cycle_reply[NRF_CS_CYCLE_RESULT_LENGTH];
+    bool cycle_reply_selected;
+    unsigned cycle_plan_writes;
+    unsigned cycle_go_writes;
+    unsigned cycle_ble_attempts;
 } sim_node_t;
 
 typedef struct {
@@ -183,6 +191,20 @@ static bool s_in_imu_calibration_handler;
 static unsigned s_imu_calibration_writes;
 static nrf_upstream_imu_calibrate_t s_imu_calibration_requests[32];
 static bool s_cs_hold_pending;
+/* Autonomous ranging scenarios. */
+typedef struct {
+    int64_t at_us;
+    uint8_t address;
+    bool is_write;
+    uint8_t type; /* first cycle frame type, 0 otherwise */
+} wire_op_t;
+static wire_op_t s_wire_log[4096];
+static size_t s_wire_log_count;
+static bool s_wire_log_enabled;
+static int s_cycle_drop_go_channel = -1;
+static int s_cycle_drop_plan_channel = -1;
+static unsigned s_cycle_quiet_checks;
+static unsigned s_cycle_node_count;
 static unsigned s_status_reads_before_backoff;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
 static bool s_cs_use_pair_distances;
@@ -273,6 +295,12 @@ static void node_cold_reboot(void *context)
     (void)context;
 }
 
+static uint64_t sim_cycle_now_ms(void *context)
+{
+    (void)context;
+    return (uint64_t)esp_timer_get_time() / 1000U;
+}
+
 static void node_boot(sim_node_t *node, uint8_t channel, uint8_t id)
 {
     memset(node, 0, sizeof(*node));
@@ -292,6 +320,8 @@ static void node_boot(sim_node_t *node, uint8_t channel, uint8_t id)
         .cold_reboot = node_cold_reboot,
         .context = node,
     };
+    const nrf_cs_cycle_runtime_ops_t cycle_ops = {.now_ms = sim_cycle_now_ms};
+    nrf_cs_cycle_runtime_init(&node->cycle, &cycle_ops);
     nrf_node_state_init(&node->node_state);
     assert(nrf_node_state_mark_ready(&node->node_state) == NRF_NODE_STATE_OK);
     assert(nrf_bootstrap_init(&node->bootstrap, &node->node_state,
@@ -606,10 +636,112 @@ static void fake_window_write(sim_node_t *node, const uint8_t *data, size_t leng
     assert(nrf_read_window_target_arm(&node->window, window.offset)); /* the master asks only inside the response */
 }
 
+static void wire_log(uint8_t address, bool is_write, uint8_t type)
+{
+    if (s_wire_log_enabled && s_wire_log_count < sizeof(s_wire_log) / sizeof(s_wire_log[0])) {
+        s_wire_log[s_wire_log_count++] = (wire_op_t){esp_timer_get_time(), address, is_write, type};
+    }
+}
+
+/* Index of the undirected pair a<b among n nodes with ids 0..n-1, as the scheduler numbers them. */
+static unsigned sim_pair_index(unsigned a, unsigned b, unsigned n)
+{
+    if (a > b) { const unsigned t = a; a = b; b = t; }
+    return a * (2U * n - a - 1U) / 2U + (b - a - 1U);
+}
+
+static nrf_cs_measurement_t sim_cycle_measure(const nrf_cs_step_t *step)
+{
+    nrf_cs_measurement_t m = {.outcome = NRF_CS_OUTCOME_SUCCESS, .confidence = 900U};
+    const unsigned pair = sim_pair_index(step->initiator, step->reflector, s_cycle_node_count);
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+    if (s_cs_fail_pair_index == (int32_t)pair) {
+        m.outcome = NRF_CS_OUTCOME_TRANSPORT_ERROR;
+        m.confidence = 0U;
+        return m;
+    }
+    m.distance_mm = s_cs_use_pair_distances ? s_cs_pair_distances[pair] : (int32_t)(1000U + pair);
+#else
+    m.distance_mm = (int32_t)(1000U + pair);
+#endif
+    return m;
+}
+
+/* The nodes' main loops: tick the cycle runtimes and finish each Bluetooth attempt at once. */
+static void sim_cycle_tick_nodes(TickType_t ticks)
+{
+    (void)ticks;
+    /* The quiet lease must cover every moment the coordinator waits. */
+    assert(sensor_bus_quiet_active());
+    ++s_cycle_quiet_checks;
+    for (int i = 0; i < MAX_NODES; ++i) {
+        sim_node_t *node = &s_nodes[i];
+        nrf_cs_step_t step;
+        if (!node->present) continue;
+        nrf_cs_cycle_runtime_tick(&node->cycle);
+        if (nrf_cs_cycle_runtime_take_start(&node->cycle, &step)) {
+            const nrf_cs_measurement_t m = sim_cycle_measure(&step);
+            ++node->cycle_ble_attempts;
+            nrf_cs_cycle_runtime_start_result(&node->cycle, &step, 0);
+            assert(nrf_cs_cycle_runtime_step_done(&node->cycle, &step, &m) == 0);
+        }
+    }
+}
+
+/* Cycle frames the ESP32 writes; true when the frame was one of them. */
+static bool sim_cycle_write(sim_node_t *node, const uint8_t *data, size_t length, esp_err_t *result)
+{
+    if (length < 4U || data[0] != 'G' || data[1] != 'S' || data[3] < NRF_CS_CYCLE_MESSAGE_PLAN ||
+        data[3] > NRF_CS_CYCLE_MESSAGE_RESULT_REQUEST) {
+        return false;
+    }
+    *result = ESP_OK;
+    node->cycle_reply_selected = false;
+    switch (data[3]) {
+    case NRF_CS_CYCLE_MESSAGE_PLAN: {
+        nrf_cs_cycle_plan_t plan;
+        ++node->cycle_plan_writes;
+        if (s_cycle_drop_plan_channel == (int)node->channel) { *result = ESP_ERR_INVALID_STATE; break; }
+        assert(nrf_cs_cycle_decode_plan(data, length, &plan) == 0);
+        s_cycle_node_count = plan.node_count;
+        assert(nrf_cs_cycle_runtime_accept_plan(&node->cycle, plan.self_node, &plan) == 0);
+        break;
+    }
+    case NRF_CS_CYCLE_MESSAGE_PLAN_STEPS: {
+        nrf_cs_cycle_plan_steps_t chunk;
+        assert(nrf_cs_cycle_decode_plan_steps(data, length, &chunk) == 0);
+        assert(nrf_cs_cycle_runtime_accept_steps(&node->cycle, &chunk) == 0);
+        break;
+    }
+    case NRF_CS_CYCLE_MESSAGE_GO: {
+        nrf_cs_cycle_go_t go;
+        ++node->cycle_go_writes;
+        if (s_cycle_drop_go_channel == (int)node->channel) { *result = ESP_ERR_INVALID_STATE; break; }
+        assert(nrf_cs_cycle_decode_go(data, length, &go) == 0);
+        assert(nrf_cs_cycle_runtime_go(&node->cycle, &go) == 0);
+        break;
+    }
+    default: {
+        nrf_cs_cycle_result_request_t request;
+        nrf_cs_cycle_result_t page;
+        assert(nrf_cs_cycle_decode_result_request(data, length, &request) == 0);
+        if (request.page == NRF_CS_CYCLE_RESULT_RELEASE_PAGE) {
+            nrf_cs_cycle_runtime_release(&node->cycle);
+        } else if (nrf_cs_cycle_runtime_result_page(&node->cycle, request.request_id, request.page, &page) == 0) {
+            assert(nrf_cs_cycle_encode_result(&page, node->cycle_reply) == 0);
+            node->cycle_reply_selected = true;
+        }
+        break;
+    }
+    }
+    return true;
+}
+
 esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address, size_t data_len, uint8_t *data)
 {
     sim_device_t *d = device_of(device);
     assert(mem_address == NULL_I2C_MEM_ADDR);
+    wire_log(d->address, false, 0U);
     if (d->address == BOARD_INA3221_I2C_ADDRESS) {
         assert(s_tca_control == 0U);
         memset(data, 0, data_len);
@@ -643,6 +775,20 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
             ++s_window_reads;
             return ESP_OK;
         }
+    }
+    if (node->cycle_reply_selected) {
+        assert(data_len == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH);
+        nrf_read_window_target_record(&node->window, node->cycle_reply, sizeof(node->cycle_reply));
+        memcpy(data, node->cycle_reply, data_len);
+        node->cycle_reply_selected = false;
+        return ESP_OK;
+    }
+    if (nrf_cs_cycle_runtime_reply_active(&node->cycle) && data_len == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH) {
+        nrf_cs_cycle_status_t cycle_status;
+        nrf_cs_cycle_runtime_status(&node->cycle, 0U, &cycle_status);
+        assert(nrf_cs_cycle_encode_status(&cycle_status, data) == 0);
+        nrf_read_window_target_record(&node->window, data, data_len);
+        return ESP_OK;
     }
     if (node->cs_result_selected) {
         nrf_cs_control_result_t result;
@@ -758,6 +904,7 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
         d->address <= NRF_UPSTREAM_ADDRESS_REMOTE) {
         ++s_direct_nrf_write_calls;
     }
+    wire_log(d->address, true, data_len > 3U && data[0] == 'G' && data[1] == 'S' ? data[3] : 0U);
     sim_node_t *node = node_at(d->address);
     if (node == NULL) {
         return ESP_ERR_INVALID_STATE;
@@ -766,6 +913,10 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
     esp_err_t log_result;
     if (log_test_write(node, data, data_len, &log_result)) return log_result;
 #endif
+    {
+        esp_err_t cycle_result;
+        if (sim_cycle_write(node, data, data_len, &cycle_result)) return cycle_result;
+    }
     if (data_len == NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH &&
         data[0] == 'G' && data[1] == 'S' &&
         data[3] == NRF_UPSTREAM_MESSAGE_READ_WINDOW) {
@@ -1631,6 +1782,7 @@ static void assert_ranging_success_frozen(void)
     assert(s_seen_ranging_progress.solution_residual_mm == 0);
     for (size_t pair = 0U; pair < 6U; ++pair) {
         assert(s_seen_ranging_progress.pairs[pair].state == NRF_CS_PAIR_VALID);
+        assert(s_seen_ranging_progress.pairs[pair].distance_mm == s_cs_pair_distances[pair]);
         assert(!s_seen_ranging_progress.pairs[pair].single_direction);
         assert(s_seen_ranging_progress.pairs[pair].direction_disagreement_mm == 0);
     }
@@ -1644,6 +1796,11 @@ static void assert_ranging_success_frozen(void)
     assert(s_seen_frozen_ranging_result.membership[3].channel == NRF_UPSTREAM_MUX_CHANNEL_NONE);
     assert(s_seen_frozen_ranging_result.membership[3].node_id == 0U);
     assert(s_seen_frozen_ranging_result.pair_count == 6U);
+    for (size_t pair = 0U; pair < 6U; ++pair) {
+        assert(s_seen_frozen_ranging_result.pairs[pair].node_a == s_seen_ranging_progress.pairs[pair].node_a);
+        assert(s_seen_frozen_ranging_result.pairs[pair].node_b == s_seen_ranging_progress.pairs[pair].node_b);
+        assert(s_seen_frozen_ranging_result.pairs[pair].distance_mm == s_cs_pair_distances[pair]);
+    }
     assert(s_seen_frozen_ranging_result.topology_generation == s_seen_ranging_progress.topology_generation);
     assert(s_seen_frozen_ranging_result.membership_generation == s_seen_ranging_progress.membership_generation);
     assert(s_seen_frozen_ranging_result.timestamp_ms >= s_seen_ranging_progress.started_at_ms);
@@ -1713,7 +1870,13 @@ static void assert_ranging_pair_failure(void)
     assert(s_seen_ranging_progress.complete && !s_seen_ranging_progress.success);
     assert(strcmp(s_seen_ranging_progress.failure_reason, "pair_failed:0-1") == 0);
     assert(s_seen_ranging_progress.pairs[0].state == NRF_CS_PAIR_RETRY_EXHAUSTED);
-    assert(nrf_topology_service_get_frozen_ranging_result(&s_seen_frozen_ranging_result) == ESP_ERR_NOT_FOUND);
+    assert(s_seen_ranging_progress.partial);
+    assert(nrf_topology_service_get_frozen_ranging_result(&s_seen_frozen_ranging_result) == ESP_OK);
+    assert(s_seen_frozen_ranging_result.available && !s_seen_frozen_ranging_result.success);
+    nrf_topology_snapshot_t current;
+    assert(nrf_topology_service_get_snapshot(&current) == ESP_OK);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(
+        &current, s_seen_frozen_ranging_result.timestamp_ms, 0U, &s_seen_frozen_ranging_result) == ESP_ERR_NOT_FOUND);
 }
 
 static void assert_ranging_geometry_failure(void)
@@ -1809,6 +1972,344 @@ static void test_ranging_default_timeout_is_30_seconds(void)
     script(EV_ACTION, 0U, assert_ranging_default_timeout_still_active);
     script(EV_WAIT_MS, 20U, NULL);
     script(EV_ACTION, 0U, assert_ranging_default_timeout_result);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static const nrf_cs_policy_t k_autonomous_policy = {
+    .pair_timeout_ms = 500U, .max_attempts = 1U, .min_confidence = 500U, .samples_per_pair = 1U, .full_rotation = true,
+};
+
+static void request_autonomous_ranging_for_test(void)
+{
+    s_wire_log_enabled = true;
+    assert(nrf_topology_service_ranging_start_autonomous(&k_autonomous_policy) == ESP_OK);
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.active && !s_seen_ranging_progress.complete);
+    assert(s_seen_ranging_progress.pairs_total == 12U || s_seen_ranging_progress.pairs_total == 6U ||
+           s_seen_ranging_progress.pairs_total == 2U);
+    s_vtask_delay_hook = sim_cycle_tick_nodes;
+}
+
+static void clear_cycle_hook(void)
+{
+    s_vtask_delay_hook = NULL;
+}
+
+static uint64_t cycle_last_write_us(uint8_t type)
+{
+    int64_t last = 0;
+    for (size_t i = 0U; i < s_wire_log_count; ++i) {
+        if (s_wire_log[i].is_write && s_wire_log[i].type == type) last = s_wire_log[i].at_us;
+    }
+    return (uint64_t)last;
+}
+
+static void assert_autonomous_bus_silence(unsigned nodes)
+{
+    const unsigned executions = nodes * (nodes - 1U);
+    const uint64_t window_us = (300U + 650U) * 1000ULL;
+    const uint64_t go_end = cycle_last_write_us(NRF_CS_CYCLE_MESSAGE_GO);
+    const uint64_t run_end = go_end + (uint64_t)executions * window_us;
+    unsigned status_reads = 0U;
+    int64_t previous = 0;
+    assert(go_end != 0U);
+    for (size_t i = 0U; i < s_wire_log_count; ++i) {
+        const wire_op_t *op = &s_wire_log[i];
+        if ((uint64_t)op->at_us <= go_end || (uint64_t)op->at_us >= run_end) continue;
+        /* Nothing is written, nothing moves the mux, and only MAIN is read, at most every 5 s. */
+        assert(!op->is_write);
+        assert(op->address == NRF_UPSTREAM_ADDRESS_MAIN || op->address == TCA_ADDRESS);
+        if (op->address == NRF_UPSTREAM_ADDRESS_MAIN) {
+            if (previous != 0) assert(op->at_us - previous >= 5000 * 1000LL || op->at_us - previous < 50 * 1000LL);
+            previous = op->at_us;
+            ++status_reads;
+        }
+    }
+    assert(status_reads >= 1U);
+    assert(status_reads <= executions * 950U / 5000U + 2U);
+}
+
+static void assert_autonomous_success(void)
+{
+    assert_ranging_success_frozen();
+    assert(!sensor_bus_quiet_active());
+}
+
+static void assert_autonomous_pair_failure(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete && !s_seen_ranging_progress.success);
+    assert(strcmp(s_seen_ranging_progress.failure_reason, "pair_failed:0-1") == 0);
+    assert(s_seen_ranging_progress.pairs[0].state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+    assert(s_seen_ranging_progress.partial);
+    assert(nrf_topology_service_get_frozen_ranging_result(&s_seen_frozen_ranging_result) == ESP_OK);
+    assert(s_seen_frozen_ranging_result.available && !s_seen_frozen_ranging_result.success);
+    nrf_topology_snapshot_t current;
+    assert(nrf_topology_service_get_snapshot(&current) == ESP_OK);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(
+        &current, s_seen_frozen_ranging_result.timestamp_ms, 0U, &s_seen_frozen_ranging_result) == ESP_ERR_NOT_FOUND);
+    assert(!sensor_bus_quiet_active());
+}
+
+static void assert_autonomous_silent_node(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete);
+    /* The silent node still answers as a reflector, so its pairs keep the other direction only. */
+    unsigned silent_pairs = 0U;
+    for (size_t pair = 0U; pair < s_seen_ranging_progress.pair_count; ++pair) {
+        const nrf_cs_pair_result_t *result = &s_seen_ranging_progress.pairs[pair];
+        const bool involves_silent = result->node_a == 2U || result->node_b == 2U;
+        assert(result->state == NRF_CS_PAIR_VALID);
+        assert(result->single_direction == involves_silent);
+        silent_pairs += involves_silent ? 1U : 0U;
+    }
+    assert(silent_pairs == 2U);
+    assert(!sensor_bus_quiet_active());
+}
+
+static void assert_autonomous_plan_failure(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete && !s_seen_ranging_progress.success);
+    assert(strcmp(s_seen_ranging_progress.failure_reason, "plan_failed") == 0);
+    assert(!sensor_bus_quiet_active());
+}
+
+static void manually_complete_failed_cycle(void)
+{
+    const unsigned writes = s_window_writes, reads = s_window_reads, mux = s_tca_writes;
+    const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {2000U, 2000U};
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.complete && !progress.success && !progress.partial && progress.pair_count == 3U);
+    const int32_t distances[] = {1000, 1000, 1414};
+    for (size_t i = 0U; i < 3U; ++i) {
+        assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+            progress.pairs[i].node_a, progress.pairs[i].node_b, distances[i], limits) == ESP_OK);
+        assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+        assert(progress.success == (i == 2U));
+        assert(progress.partial == (i != 2U));
+    }
+    nrf_topology_snapshot_t topology;
+    assert(nrf_topology_service_get_snapshot(&topology) == ESP_OK);
+    nrf_topology_ranging_result_t frozen;
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(&topology,
+        (uint64_t)(esp_timer_get_time() / 1000), 0U, &frozen) == ESP_OK);
+    for (size_t i = 0U; i < frozen.geometry.node_count; ++i) assert(frozen.geometry.nodes[i].solved);
+    topology.remotes[0].hardware_id[0] ^= 1U;
+    assert(nrf_topology_service_test_publish_state(true, &topology, false, NULL) == ESP_OK);
+    assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+        0U, 1U, 900, limits) == ESP_ERR_INVALID_STATE);
+    assert(s_window_writes == writes && s_window_reads == reads && s_tca_writes == mux);
+}
+
+static unsigned total_cycle_ble_attempts(void)
+{
+    unsigned total = 0U;
+    for (int i = 0; i < MAX_NODES; ++i) total += s_nodes[i].cycle_ble_attempts;
+    return total;
+}
+
+static void test_autonomous_ranging_full_rotation(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(3U);
+    s_cs_use_pair_distances = true;
+    const int32_t square_distances[6] = {1000, 1000, 1414, 1414, 1000, 1000};
+    memcpy(s_cs_pair_distances, square_distances, sizeof(square_distances));
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_autonomous_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL); /* the worker runs the whole cycle inside this wait */
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_autonomous_success);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    assert(s_cs_execute_count == 0U); /* no per-step CS_EXECUTE traffic at all */
+    assert(total_cycle_ble_attempts() == 12U);
+    assert(s_cycle_quiet_checks > 100U);
+    for (int i = 0; i < 4; ++i) {
+        assert(s_nodes[i].cycle_plan_writes == 1U && s_nodes[i].cycle_go_writes == 1U);
+        assert(!nrf_cs_cycle_runtime_reply_active(&s_nodes[i].cycle)); /* collected and released */
+    }
+    assert_autonomous_bus_silence(4U);
+}
+
+static void test_autonomous_ranging_failures(void)
+{
+    /* One pair never measures: same failure the per-step path reports. */
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cs_fail_pair_index = 0;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_autonomous_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_autonomous_pair_failure);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_cs_execute_count == 0U);
+
+    /* A node that never got GO stays silent: its executions time out, the others are kept. */
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cycle_drop_go_channel = 1;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_autonomous_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_autonomous_silent_node);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_nodes[2].cycle_ble_attempts == 0U && s_nodes[1].cycle_ble_attempts > 0U);
+
+    /* A node that refuses its plan: nothing starts, the bus lease is given back. */
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cycle_drop_plan_channel = 1;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_autonomous_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_autonomous_plan_failure);
+    script(EV_ACTION, 0U, manually_complete_failed_cycle);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(total_cycle_ble_attempts() == 0U);
+    for (size_t i = 0U; i < s_wire_log_count; ++i) {
+        assert(!(s_wire_log[i].is_write && s_wire_log[i].type == NRF_CS_CYCLE_MESSAGE_GO));
+    }
+}
+
+static void request_limited_ranging_for_test(void)
+{
+    const uint32_t missing[NRF_TOPOLOGY_REMOTE_COUNT] = {1000U};
+    assert(nrf_topology_service_ranging_start_autonomous_limited(&k_autonomous_policy, missing) == ESP_ERR_INVALID_ARG);
+    const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {1000U, 1001U};
+    assert(nrf_topology_service_ranging_start_autonomous_limited(&k_autonomous_policy, limits) == ESP_OK);
+    s_vtask_delay_hook = sim_cycle_tick_nodes;
+}
+
+static void assert_limited_ranging_for_test(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete && !s_seen_ranging_progress.success);
+    assert(strcmp(s_seen_ranging_progress.failure_reason, "cable_exceeded:0-2") == 0);
+    assert(s_seen_ranging_progress.pairs[0].state == NRF_CS_PAIR_VALID);
+    assert(s_seen_ranging_progress.pairs[0].distance_mm == 1000);
+    assert(s_seen_ranging_progress.pairs[1].state == NRF_CS_PAIR_CABLE_EXCEEDED);
+    assert(s_seen_ranging_progress.pairs[1].distance_mm == 1002);
+    assert(s_seen_ranging_progress.pairs[2].state == NRF_CS_PAIR_VALID);
+}
+
+static void correct_limited_ranging_for_test(void)
+{
+    const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {1000U, 1001U};
+    nrf_topology_ranging_progress_t before;
+    assert(nrf_topology_service_ranging_get_progress(&before) == ESP_OK);
+    assert(nrf_topology_service_ranging_set_manual(before.started_at_ms, before.updated_at_ms,
+        0U, 2U, 1002, limits) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_ranging_set_manual(before.started_at_ms, before.updated_at_ms,
+        0U, 2U, -1, limits) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_ranging_set_manual(before.started_at_ms, before.updated_at_ms,
+        0U, 0U, 1000, limits) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_ranging_set_manual(before.started_at_ms, before.updated_at_ms,
+        0U, 7U, 1000, limits) == ESP_ERR_NOT_FOUND);
+    assert(nrf_topology_service_ranging_set_manual(before.started_at_ms + 1U, before.updated_at_ms,
+        0U, 2U, 1000, limits) == ESP_ERR_INVALID_STATE);
+    assert(nrf_topology_service_ranging_set_manual(before.started_at_ms, before.updated_at_ms,
+        2U, 0U, 1000, limits) == ESP_OK);
+    nrf_topology_ranging_progress_t after;
+    assert(nrf_topology_service_ranging_get_progress(&after) == ESP_OK);
+    assert(after.success && !after.partial && after.complete);
+    assert(after.updated_at_ms > before.updated_at_ms);
+    assert(after.pairs[1].state == NRF_CS_PAIR_VALID && after.pairs[1].distance_mm == 1000);
+    assert(after.pairs[1].automatic_distance_mm == 1002);
+    assert((after.pairs[1].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U);
+    assert(after.geometry.node_count == 3U);
+    for (size_t i = 0U; i < after.geometry.node_count; ++i) assert(after.geometry.nodes[i].solved);
+    assert(nrf_topology_service_ranging_set_manual(before.started_at_ms, before.updated_at_ms,
+        0U, 2U, 900, limits) == ESP_ERR_INVALID_STATE);
+    assert(nrf_topology_service_invalidate_ranging() == ESP_OK);
+    assert(nrf_topology_service_ranging_set_manual(after.started_at_ms, after.updated_at_ms,
+        0U, 2U, 900, limits) == ESP_ERR_INVALID_STATE);
+}
+
+static void test_autonomous_individual_cable_limits(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cs_use_pair_distances = true;
+    s_cs_pair_distances[0] = 1000;
+    s_cs_pair_distances[1] = 1002;
+    s_cs_pair_distances[2] = 500;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_limited_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_limited_ranging_for_test);
+    script(EV_ACTION, 0U, correct_limited_ranging_for_test);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void test_autonomous_ranging_rejects_bad_requests(void)
+{
+    nrf_cs_policy_t policy = k_autonomous_policy;
+    assert(nrf_topology_service_ranging_start_autonomous(NULL) == ESP_ERR_INVALID_ARG);
+    policy.pair_timeout_ms = 70000U; /* does not fit the plan frame */
+    assert(nrf_topology_service_ranging_start_autonomous(&policy) == ESP_ERR_INVALID_ARG);
+    policy = k_autonomous_policy;
+    policy.full_rotation = false;
+    assert(nrf_topology_service_ranging_start_autonomous(&policy) == ESP_ERR_INVALID_ARG);
+    policy = k_autonomous_policy;
+    assert(nrf_topology_service_ranging_start_autonomous(&policy) == ESP_ERR_INVALID_STATE); /* no service */
+}
+
+static void request_noisy_limited_ranging(void)
+{
+    const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {1000U, 1000U, 1000U};
+    assert(nrf_topology_service_ranging_start_autonomous_limited(&k_autonomous_policy, limits) == ESP_OK);
+    s_vtask_delay_hook = sim_cycle_tick_nodes;
+}
+
+static void assert_noisy_geometry_respects_cables(void)
+{
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.complete && !progress.success && progress.partial);
+    for (size_t i = 0U; i < progress.pair_count; ++i) assert(progress.pairs[i].state == NRF_CS_PAIR_VALID);
+    bool rejected = false;
+    for (size_t i = 0U; i < progress.geometry.node_count; ++i) {
+        const nrf_topology_ranging_node_t *node = &progress.geometry.nodes[i];
+        const double radius2 = (double)node->x_mm * node->x_mm + (double)node->y_mm * node->y_mm + (double)node->z_mm * node->z_mm;
+        if (node->node_id != 0U && radius2 > 1001.0 * 1001.0) {
+            assert(!node->solved && node->uncertainty_mm == INT32_MAX);
+            rejected = true;
+        }
+    }
+    assert(rejected);
+}
+
+static void test_noisy_geometry_cannot_exceed_individual_cables(void)
+{
+    reset_world(); s_tca_present = true; prepare_ranging_nodes(3U);
+    s_cs_use_pair_distances = true;
+    const int32_t distances[] = {1000, 1000, 1000, 1900, 1900, 1900};
+    memcpy(s_cs_pair_distances, distances, sizeof(distances));
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_noisy_limited_ranging);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_noisy_geometry_respects_cables);
     script(EV_STOP, 0U, NULL);
     run_service();
 }
@@ -2181,6 +2682,12 @@ static void reset_world(void)
     s_in_imu_calibration_handler = false;
     s_imu_calibration_writes = 0U;
     s_cs_hold_pending = false;
+    s_wire_log_count = 0U;
+    s_wire_log_enabled = false;
+    s_cycle_drop_go_channel = -1;
+    s_cycle_drop_plan_channel = -1;
+    s_cycle_quiet_checks = 0U;
+    s_cycle_node_count = 0U;
     s_status_reads_before_backoff = 0U;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
     s_cs_use_pair_distances = false;
@@ -3213,6 +3720,11 @@ int main(void)
     test_ranging_failure_reasons();
     test_ranging_default_timeout_is_30_seconds();
     test_ranging_requires_assigned_main();
+    test_autonomous_ranging_full_rotation();
+    test_autonomous_ranging_failures();
+    test_autonomous_individual_cable_limits();
+    test_noisy_geometry_cannot_exceed_individual_cables();
+    test_autonomous_ranging_rejects_bad_requests();
 #endif
     test_mux_discovery_timeouts_escalate_and_rejoin();
     test_main_timeout_preserves_stale_topology_until_recovery();

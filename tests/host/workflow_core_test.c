@@ -42,6 +42,7 @@ static const transition_t allowed_transitions[] = {
     { WORKFLOW_STEP_RANGING_RESULT, WORKFLOW_COMMAND_RETRY, WORKFLOW_STEP_LAYOUT_READY },
     { WORKFLOW_STEP_RANGING_RESULT, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_LAYOUT_READY },
     { WORKFLOW_STEP_RANGING_RESULT, WORKFLOW_COMMAND_CONFIRM, WORKFLOW_STEP_SCAN_CHOICE },
+    { WORKFLOW_STEP_RANGING_RESULT, WORKFLOW_COMMAND_SET_DISTANCE, WORKFLOW_STEP_RANGING_RESULT },
     { WORKFLOW_STEP_SCAN_CHOICE, WORKFLOW_COMMAND_SCAN_START, WORKFLOW_STEP_SCANNING },
     { WORKFLOW_STEP_SCAN_CHOICE, WORKFLOW_COMMAND_SCAN_SKIP, WORKFLOW_STEP_RECORD_READY },
     { WORKFLOW_STEP_SCAN_CHOICE, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_RANGING_RESULT },
@@ -87,6 +88,10 @@ static void test_exhaustive_transition_table(void)
             core.ranging_ok = command == WORKFLOW_COMMAND_CONFIRM;
             workflow_core_set_calc_settings_ready(&core, true);
             workflow_command_params_t params = {
+                .has_generation = command == WORKFLOW_COMMAND_SET_DISTANCE,
+                .expected_generation = 41U,
+                .has_distance = command == WORKFLOW_COMMAND_SET_DISTANCE,
+                .node_a = 0U, .node_b = 1U, .distance_mm = 1000,
                 .has_ok = true,
                 .ok = command == WORKFLOW_COMMAND_SCAN_COMPLETE,
                 .calculation_class = WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN,

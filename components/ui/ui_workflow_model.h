@@ -15,6 +15,7 @@
 #define UI_WORKFLOW_MODEL_ARGS 6U
 #define UI_WORKFLOW_MODEL_ARG_SIZE 80U
 #define UI_WORKFLOW_REMOTE_SLOT_COUNT 4U
+#define UI_WORKFLOW_RANGING_MAX_PAIRS 10U
 
 typedef struct {
     bool visible;
@@ -23,6 +24,8 @@ typedef struct {
 
 typedef struct {
     bool available;
+    bool partial;
+    uint64_t started_at_ms, updated_at_ms;
     size_t pairs_done;
     size_t pairs_total;
     bool residual_valid;
@@ -30,6 +33,14 @@ typedef struct {
     size_t node_count;
     char nodes[WORKFLOW_MAX_CALIBRATION_NODES][8];
     int32_t sigma_mm[WORKFLOW_MAX_CALIBRATION_NODES];
+    size_t pair_count;
+    struct {
+        uint8_t node_a, node_b;
+        bool valid;
+        bool cable_exceeded;
+        bool manual;
+        int32_t distance_mm;
+    } pairs[UI_WORKFLOW_RANGING_MAX_PAIRS];
 } ui_workflow_ranging_t;
 
 typedef enum {
@@ -41,6 +52,13 @@ typedef enum {
     UI_WORKFLOW_MATERIAL_CUSTOM_RANGE_MAX,
     UI_WORKFLOW_MATERIAL_SAVING,
 } ui_workflow_material_view_t;
+
+typedef enum {
+    UI_WORKFLOW_DISTANCE_CLOSED = 0,
+    UI_WORKFLOW_DISTANCE_PAIR,
+    UI_WORKFLOW_DISTANCE_VALUE,
+    UI_WORKFLOW_DISTANCE_SAVING,
+} ui_workflow_distance_view_t;
 
 typedef struct {
     bool has_selected_action;
@@ -72,6 +90,12 @@ typedef struct {
     bool material_custom_values_valid;
     bool material_save_pending;
     uint32_t material_save_seq;
+    ui_workflow_distance_view_t distance_view;
+    size_t distance_pair;
+    uint32_t distance_mm;
+    unsigned distance_digit;
+    uint32_t distance_generation;
+    uint64_t distance_started_at_ms, distance_updated_at_ms;
 
     bool result_data_ready;
     bool result_load_failed;
@@ -105,6 +129,7 @@ typedef struct {
     bool show_3d_hint;
     bool progress_indeterminate;
     bool material_picker_visible;
+    bool distance_picker_visible;
 } ui_workflow_model_t;
 
 typedef enum {
@@ -123,6 +148,8 @@ typedef enum {
     UI_WORKFLOW_EVENT_DELETE_CONFIRM_CHANGED,
     UI_WORKFLOW_EVENT_SAVE_MATERIAL,
     UI_WORKFLOW_EVENT_LEAVE_HOME,
+    UI_WORKFLOW_EVENT_EDIT_DISTANCE,
+    UI_WORKFLOW_EVENT_SAVE_DISTANCE,
 } ui_workflow_event_type_t;
 
 typedef struct {
@@ -134,6 +161,7 @@ typedef struct {
     bool has_range;
     uint32_t range_min_mps;
     uint32_t range_max_mps;
+    workflow_command_params_t distance;
 } ui_workflow_event_t;
 
 void ui_workflow_model_build(
@@ -153,6 +181,12 @@ ui_workflow_event_t ui_workflow_model_handle_key(
     ui_workflow_model_state_t *state,
     ui_workflow_key_t key,
     uint64_t now_ms);
+
+ui_workflow_event_t ui_workflow_distance_handle_key(
+    const workflow_snapshot_t *snapshot, const ui_workflow_ranging_t *ranging,
+    ui_workflow_model_state_t *state, ui_workflow_key_t key, uint64_t now_ms);
+void ui_workflow_distance_open(const workflow_snapshot_t *snapshot,
+    const ui_workflow_ranging_t *ranging, ui_workflow_model_state_t *state);
 
 void ui_workflow_model_command_sent(
     ui_workflow_model_state_t *state,

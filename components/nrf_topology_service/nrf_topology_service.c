@@ -1,6 +1,8 @@
 #include "nrf_topology_service.h"
 #include "nrf_sensor_transport.h"
 #include "nrf_cs_authority.h"
+#include "nrf_cs_cycle_coordinator.h"
+#include "nrf_cs_cycle_replay.h"
 #include "nrf_cs_control_protocol.h"
 #include "nrf_log_event_text.h"
 #include "nrf_log_protocol.h"
@@ -22,6 +24,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "app_task_config.h"
@@ -60,6 +63,9 @@
 #ifndef CONFIG_NRF_LOG_POLL_ITERATION_BUDGET_MS
 #define CONFIG_NRF_LOG_POLL_ITERATION_BUDGET_MS 120U
 #endif
+/* The Kconfig budgets are sized for 100 kHz; a slower bus needs proportionally more time per pair.
+ * The scale is 1 at 100 kHz and above, so the default behaviour is unchanged there. */
+#define NRF_LOG_POLL_SPEED_SCALE ((100000U + SENSOR_BUS_I2C_SPEED_HZ - 1U) / SENSOR_BUS_I2C_SPEED_HZ)
 static const char *TAG = "NRF_TOPOLOGY";
 static const char s_i2c_diag_source[] = "nrf_topology";
 
@@ -164,6 +170,7 @@ typedef struct {
     nrf_cs_platform_context_t cs_context;
     nrf_cs_authority_ops_t cs_ops;
     bool ranging_active;
+    uint32_t ranging_cable_limits_mm[NRF_TOPOLOGY_REMOTE_COUNT];
     uint64_t ranging_deadline_ms;
     uint32_t ranging_topology_generation;
     uint16_t ranging_processed_pairs_mask;
@@ -196,8 +203,10 @@ static nrf_remote_sensor_cache_t s_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static nrf_upstream_status_cache_t s_main_status_cache;
 static bool s_cs_request_pending = false;
 static bool s_cs_request_is_ranging = false;
+static bool s_cs_request_is_autonomous = false;
 static uint32_t s_cs_requested_ranging_timeout_ms = 0U;
 static uint64_t s_cs_requested_ranging_started_ms = 0U;
+static uint32_t s_cs_requested_cable_limits_mm[NRF_TOPOLOGY_REMOTE_COUNT];
 static bool s_cs_snapshot_valid = false;
 static nrf_cs_policy_t s_cs_requested_policy;
 static nrf_cs_cycle_snapshot_t s_cs_cycle_snapshot;
@@ -207,6 +216,7 @@ static EXT_RAM_BSS_ATTR nrf_topology_ranging_progress_t s_ranging_progress;
 static bool s_frozen_ranging_result_valid = false;
 static EXT_RAM_BSS_ATTR nrf_topology_ranging_result_t s_frozen_ranging_result;
 static nrf_topology_worker_state_t s_worker_state;
+static EXT_RAM_BSS_ATTR nrf_cs_cycle_collected_t s_cycle_collected;
 static nrf_topology_log_state_t s_topology_log_state;
 static bool s_direct_block_log_valid;
 static uint32_t s_direct_block_log_ms;
@@ -1802,8 +1812,8 @@ static bool service_log_collect_iteration(
         s_nrf_log_collector,
         targets,
         &io,
-        CONFIG_NRF_LOG_POLL_NODE_BUDGET_MS,
-        CONFIG_NRF_LOG_POLL_ITERATION_BUDGET_MS,
+        CONFIG_NRF_LOG_POLL_NODE_BUDGET_MS * NRF_LOG_POLL_SPEED_SCALE,
+        CONFIG_NRF_LOG_POLL_ITERATION_BUDGET_MS * NRF_LOG_POLL_SPEED_SCALE,
         &iteration);
     for (uint8_t node_index = 0U; node_index < NRF_LOG_COLLECTOR_NODE_COUNT; ++node_index) {
         const uint16_t bit = (uint16_t)(1U << node_index);
@@ -2539,6 +2549,18 @@ static void cs_publish(nrf_topology_worker_state_t *worker, bool active, int res
     for (size_t i = 0U; i < snapshot->pair_count && i < NRF_CS_MAX_PAIRS; ++i) {
         const nrf_cs_pair_result_t *pair = nrf_cs_authority_pair_at(authority, i);
         if (pair != NULL) snapshot->pairs[i] = *pair;
+        nrf_cs_pair_result_t *out = &snapshot->pairs[i];
+        if (!worker->ranging_active || out->state != NRF_CS_PAIR_VALID) continue;
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            const nrf_topology_node_snapshot_t *remote = &worker->snapshot.remotes[channel];
+            const uint32_t limit = worker->ranging_cable_limits_mm[channel];
+            if (limit == 0U || remote->state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+            if (((out->node_a == worker->snapshot.main.node_id && out->node_b == remote->node_id) ||
+                 (out->node_b == worker->snapshot.main.node_id && out->node_a == remote->node_id)) &&
+                out->distance_mm > 0 && (uint32_t)out->distance_mm > limit) {
+                out->state = NRF_CS_PAIR_CABLE_EXCEEDED;
+            }
+        }
     }
     portENTER_CRITICAL(&s_state_lock);
     s_cs_cycle_snapshot = *snapshot;
@@ -2549,8 +2571,10 @@ static void cs_publish(nrf_topology_worker_state_t *worker, bool active, int res
 static bool cs_take_request(
     nrf_cs_policy_t *policy,
     bool *is_ranging,
+    bool *is_autonomous,
     uint32_t *ranging_timeout_ms,
-    uint64_t *ranging_started_at_ms)
+    uint64_t *ranging_started_at_ms,
+    uint32_t cable_limits_mm[NRF_TOPOLOGY_REMOTE_COUNT])
 {
     bool pending;
     portENTER_CRITICAL(&s_state_lock);
@@ -2558,9 +2582,12 @@ static bool cs_take_request(
     if (pending) { *policy = s_cs_requested_policy; s_cs_request_pending = false; }
     if (pending) {
         *is_ranging = s_cs_request_is_ranging;
+        *is_autonomous = s_cs_request_is_autonomous;
         *ranging_timeout_ms = s_cs_requested_ranging_timeout_ms;
         *ranging_started_at_ms = s_cs_requested_ranging_started_ms;
+        memcpy(cable_limits_mm, s_cs_requested_cable_limits_mm, sizeof(s_cs_requested_cable_limits_mm));
         s_cs_request_is_ranging = false;
+        s_cs_request_is_autonomous = false;
         s_cs_requested_ranging_timeout_ms = 0U;
         s_cs_requested_ranging_started_ms = 0U;
     }
@@ -2692,6 +2719,19 @@ static nrf_geometry_result_t service_ranging_solve(
                 ? solution.nodes[i].uncertainty_mm
                 : INT32_MAX,
         };
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            const uint32_t limit = worker->ranging_cable_limits_mm[channel];
+            if (limit == 0U || worker->snapshot.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED ||
+                worker->snapshot.remotes[channel].node_id != geometry->nodes[i].node_id) continue;
+            const nrf_topology_ranging_node_t *node = &geometry->nodes[i];
+            const double radius2 = (double)node->x_mm * node->x_mm +
+                (double)node->y_mm * node->y_mm + (double)node->z_mm * node->z_mm;
+            /* XYZ is rounded to integer mm; allow at most one mm of norm rounding. */
+            if (radius2 > ((double)limit + 1.0) * ((double)limit + 1.0)) {
+                geometry->nodes[i].solved = false;
+                geometry->nodes[i].uncertainty_mm = INT32_MAX;
+            }
+        }
     }
     *residual_mm = has_valid_pair ? solution.max_residual_mm : INT32_MAX;
     *main_height_reference_generation = use_barometric_z
@@ -2879,6 +2919,12 @@ static void service_ranging_finish(
     progress->active = false;
     progress->complete = true;
     progress->success = success;
+    progress->partial = false;
+    if (!success) {
+        for (size_t i = 0U; i < progress->pair_count; ++i) {
+            if (progress->pairs[i].state == NRF_CS_PAIR_VALID) { progress->partial = true; break; }
+        }
+    }
     progress->updated_at_ms = now_ms;
     if (failure_reason != NULL) {
         snprintf(progress->failure_reason, sizeof(progress->failure_reason), "%s", failure_reason);
@@ -2887,9 +2933,10 @@ static void service_ranging_finish(
     }
     worker->ranging_active = false;
 
-    if (success) {
+    if (progress->pair_count > 0U) {
         nrf_topology_ranging_result_t result = {0};
         result.available = true;
+        result.success = success;
         result.pair_count = progress->pair_count;
         memcpy(result.pairs, progress->pairs, result.pair_count * sizeof(result.pairs[0]));
         result.geometry = progress->geometry;
@@ -2959,9 +3006,16 @@ static void service_ranging_process(nrf_topology_worker_state_t *worker)
         &progress->main_height_reference_generation);
     service_ranging_copy_cycle(worker);
     progress->topology_generation = worker->ranging_topology_generation;
-    if (service_ranging_geometry_solves_all_nodes(worker)) {
-        service_ranging_finish(worker, true, NULL, now_ms);
-    } else if (worker->ranging_pair_failure_seen) {
+    for (size_t i = 0U; i < progress->pair_count; ++i) {
+        if (progress->pairs[i].state == NRF_CS_PAIR_CABLE_EXCEEDED) {
+            char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
+            (void)snprintf(reason, sizeof(reason), "cable_exceeded:%u-%u",
+                (unsigned)progress->pairs[i].node_a, (unsigned)progress->pairs[i].node_b);
+            service_ranging_finish(worker, false, reason, now_ms);
+            return;
+        }
+    }
+    if (worker->ranging_pair_failure_seen) {
         char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
         (void)snprintf(
             reason,
@@ -2970,6 +3024,8 @@ static void service_ranging_process(nrf_topology_worker_state_t *worker)
             (unsigned)worker->ranging_failed_pair_a,
             (unsigned)worker->ranging_failed_pair_b);
         service_ranging_finish(worker, false, reason, now_ms);
+    } else if (service_ranging_geometry_solves_all_nodes(worker)) {
+        service_ranging_finish(worker, true, NULL, now_ms);
     } else {
         char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
         (void)snprintf(
@@ -2993,6 +3049,140 @@ static void service_ranging_fail_start(nrf_topology_worker_state_t *worker)
         "geometry_unsolved:%u",
         (unsigned)NRF_TOPOLOGY_MAIN_NODE_ID);
     service_ranging_publish_progress(worker);
+}
+
+/*
+ * Autonomous ranging: hand the plan to the nodes, keep the bus quiet while they range over
+ * Bluetooth, then read the attempt records back and replay them through the scheduler
+ * (nrf_cs_cycle_coordinate). Blocks the worker for the whole cycle.
+ */
+typedef struct {
+    nrf_topology_worker_state_t *worker;
+} cs_coordinator_context_t;
+
+static uint64_t cs_coordinator_now_ms(void *context)
+{
+    return platform_now_ms(&((cs_coordinator_context_t *)context)->worker->platform);
+}
+
+static void cs_coordinator_sleep_ms(void *context, uint32_t ms)
+{
+    (void)context;
+    TickType_t ticks = pdMS_TO_TICKS(ms);
+    if (ticks == 0U) ticks = 1U;
+    vTaskDelay(ticks);
+}
+
+static int cs_coordinator_write(void *context, nrf_cs_node_id_t node, const uint8_t *frame, size_t length)
+{
+    nrf_cs_platform_context_t *ctx = &((cs_coordinator_context_t *)context)->worker->cs_context;
+    i2c_bus_device_handle_t device = NULL;
+    bool remote = false;
+    esp_err_t err = cs_route_open(ctx, node, &device, &remote);
+    if (err == ESP_OK) {
+        const uint8_t address = remote ? NRF_UPSTREAM_ADDRESS_REMOTE : NRF_UPSTREAM_ADDRESS_MAIN;
+        err = platform_i2c_write_bytes(ctx->platform, device, address, length, frame);
+        err = platform_normalize_transfer_error(ctx->platform, address, err);
+    }
+    cs_route_close(ctx, remote);
+    return err == ESP_OK ? 0 : -1;
+}
+
+static int cs_coordinator_read(void *context, nrf_cs_node_id_t node, uint8_t *frame, size_t length)
+{
+    nrf_cs_platform_context_t *ctx = &((cs_coordinator_context_t *)context)->worker->cs_context;
+    i2c_bus_device_handle_t device = NULL;
+    bool remote = false;
+    size_t route_index = 0U;
+    uint8_t address = NRF_UPSTREAM_ADDRESS_MAIN;
+    esp_err_t err = cs_route_open(ctx, node, &device, &remote);
+    if (err == ESP_OK) {
+        if (remote) address = NRF_UPSTREAM_ADDRESS_REMOTE;
+        err = platform_probe_before_read(ctx->platform, address, &route_index);
+    }
+    if (err == ESP_OK) {
+        err = platform_i2c_read_windowed(ctx->platform, device, address, length, frame);
+        platform_record_read_result(ctx->platform, address, route_index, err == ESP_OK);
+        err = platform_normalize_transfer_error(ctx->platform, address, err);
+    }
+    cs_route_close(ctx, remote);
+    return err == ESP_OK ? 0 : -1;
+}
+
+static bool cs_coordinator_should_abort(void *context)
+{
+    (void)context;
+    return service_stop_requested();
+}
+
+static void cs_coordinator_progress(void *context, uint8_t done, uint8_t total)
+{
+    nrf_topology_worker_state_t *worker = ((cs_coordinator_context_t *)context)->worker;
+    worker->ranging_progress.pairs_done = done;
+    worker->ranging_progress.pairs_total = total;
+    service_ranging_publish_progress(worker);
+}
+
+static void service_ranging_abort_autonomous(nrf_topology_worker_state_t *worker, const char *reason)
+{
+    (void)nrf_cs_authority_abort_cycle(&worker->authority, NRF_CS_FAILURE_TRANSPORT);
+    cs_publish(worker, false, NRF_CS_AUTHORITY_COMPLETE);
+    service_ranging_copy_cycle(worker);
+    service_ranging_finish(worker, false, reason, platform_now_ms(&worker->platform));
+}
+
+static void service_ranging_run_autonomous(nrf_topology_worker_state_t *worker)
+{
+    nrf_cs_authority_t *authority = &worker->authority;
+    cs_coordinator_context_t context = {.worker = worker};
+    const nrf_cs_cycle_coordinator_ops_t ops = {
+        .context = &context,
+        .now_ms = cs_coordinator_now_ms,
+        .sleep_ms = cs_coordinator_sleep_ms,
+        .write_node = cs_coordinator_write,
+        .read_node = cs_coordinator_read,
+        .should_abort = cs_coordinator_should_abort,
+        .progress = cs_coordinator_progress,
+    };
+    nrf_cs_cycle_report_t report;
+    const uint32_t budget_ms = nrf_cs_cycle_coordinator_budget_ms(
+        &authority->scheduler.policy,
+        authority->scheduler.execution_count,
+        authority->scheduler.node_count);
+    int result;
+
+    if (sensor_bus_quiet_begin(budget_ms) != ESP_OK) {
+        service_ranging_abort_autonomous(worker, "bus_unavailable");
+        return;
+    }
+    result = nrf_cs_cycle_coordinate(
+        &ops, &authority->scheduler, worker->snapshot.main.node_id, esp_random(), &s_cycle_collected, &report);
+    sensor_bus_quiet_end();
+    ESP_LOGI(
+        TAG,
+        "RANGING_AUTONOMOUS result=%d plan=0x%02x go=0x%02x collected=0x%02x released=0x%02x polls=%u waited_ms=%u main_state=%u",
+        result,
+        (unsigned)report.plan_mask,
+        (unsigned)report.go_mask,
+        (unsigned)report.collected_mask,
+        (unsigned)report.release_mask,
+        (unsigned)report.polls,
+        (unsigned)report.waited_ms,
+        (unsigned)report.main_state);
+
+    if (result == NRF_CS_COORD_ERR_PLAN) {
+        service_ranging_abort_autonomous(worker, "plan_failed");
+    } else if (result == NRF_CS_COORD_ERR_GO) {
+        service_ranging_abort_autonomous(worker, "start_failed");
+    } else if (result < 0) {
+        service_ranging_abort_autonomous(worker, "aborted");
+    } else if (nrf_cs_cycle_replay(&authority->scheduler, s_cycle_collected.nodes, s_cycle_collected.node_count) < 0 ||
+               nrf_cs_authority_finish_external(authority) != NRF_CS_AUTHORITY_COMPLETE) {
+        service_ranging_abort_autonomous(worker, "replay_failed");
+    } else {
+        cs_publish(worker, false, NRF_CS_AUTHORITY_COMPLETE);
+        service_ranging_process(worker);
+    }
 }
 
 static void service_update_link_readiness(
@@ -3150,13 +3340,17 @@ static void service_worker(void *context)
 
         nrf_cs_policy_t requested_policy;
         bool ranging_request = false;
+        bool autonomous_request = false;
         uint32_t ranging_timeout_ms = 0U;
         uint64_t ranging_started_at_ms = 0U;
+        uint32_t cable_limits_mm[NRF_TOPOLOGY_REMOTE_COUNT];
         if (cs_take_request(
                 &requested_policy,
                 &ranging_request,
+                &autonomous_request,
                 &ranging_timeout_ms,
-                &ranging_started_at_ms)) {
+                &ranging_started_at_ms,
+                cable_limits_mm)) {
             nrf_cs_node_id_t nodes[NRF_CS_MAX_NODES];
             bool overflow = false;
             const size_t count = cs_collect_nodes(&worker->snapshot, nodes, &overflow);
@@ -3193,6 +3387,7 @@ static void service_worker(void *context)
                 cs_publish(worker, true, start_result);
                 if (ranging_request) {
                     worker->ranging_active = true;
+                    memcpy(worker->ranging_cable_limits_mm, cable_limits_mm, sizeof(cable_limits_mm));
                     worker->ranging_deadline_ms =
                         ranging_started_at_ms + (uint64_t)ranging_timeout_ms;
                     worker->ranging_topology_generation = worker->snapshot.generation;
@@ -3209,7 +3404,11 @@ static void service_worker(void *context)
                         &worker->ranging_progress.solution_residual_mm,
                         &worker->ranging_progress.main_height_reference_generation);
                     service_ranging_publish_progress(worker);
-                    service_ranging_process(worker);
+                    if (autonomous_request) {
+                        service_ranging_run_autonomous(worker);
+                    } else {
+                        service_ranging_process(worker);
+                    }
                 }
             }
             service_record_current_stack_hwm(
@@ -3348,6 +3547,7 @@ esp_err_t nrf_topology_service_start(void)
     s_imu_calibration_pending_generation = 0U;
     s_cs_request_pending = false;
     s_cs_request_is_ranging = false;
+    s_cs_request_is_autonomous = false;
     s_cs_requested_ranging_timeout_ms = 0U;
     s_cs_requested_ranging_started_ms = 0U;
     s_cs_snapshot_valid = false;
@@ -3450,6 +3650,7 @@ void nrf_topology_service_stop(void)
     s_imu_calibration_pending_generation = 0U;
     s_cs_request_pending = false;
     s_cs_request_is_ranging = false;
+    s_cs_request_is_autonomous = false;
     s_cs_requested_ranging_timeout_ms = 0U;
     s_cs_requested_ranging_started_ms = 0U;
     s_cs_snapshot_valid = false;
@@ -3910,6 +4111,7 @@ esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
         s_cs_requested_policy = *policy;
         s_cs_request_pending = true;
         s_cs_request_is_ranging = false;
+        s_cs_request_is_autonomous = false;
     } else if (available) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
@@ -3932,9 +4134,11 @@ esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
     return valid?ESP_OK:ESP_ERR_INVALID_STATE;
 }
 
-esp_err_t nrf_topology_service_ranging_start(
+static esp_err_t service_ranging_request(
     const nrf_cs_policy_t *policy,
-    uint32_t timeout_ms)
+    uint32_t timeout_ms,
+    bool autonomous,
+    const uint32_t *cable_limits_mm)
 {
     TaskHandle_t task;
     nrf_cs_node_id_t nodes[NRF_CS_MAX_NODES];
@@ -3944,6 +4148,9 @@ esp_err_t nrf_topology_service_ranging_start(
     if (policy == NULL || !policy->full_rotation || policy->pair_timeout_ms == 0U ||
         policy->max_attempts == 0U || policy->min_confidence > NRF_CS_CONFIDENCE_MAX ||
         policy->samples_per_pair > NRF_CS_MAX_SAMPLES_PER_EXECUTION) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (autonomous && nrf_cs_cycle_coordinator_budget_ms(policy, 1U, 1U) == 0U) {
         return ESP_ERR_INVALID_ARG;
     }
     if (timeout_ms == 0U) {
@@ -3963,6 +4170,14 @@ esp_err_t nrf_topology_service_ranging_start(
     ++node_count;
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         node_count += s_snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED ? 1U : 0U;
+    }
+    if (cable_limits_mm != NULL) {
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            if (s_snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED && cable_limits_mm[channel] == 0U) {
+                portEXIT_CRITICAL(&s_state_lock);
+                return ESP_ERR_INVALID_ARG;
+            }
+        }
     }
     if (node_count < 2U) {
         portEXIT_CRITICAL(&s_state_lock);
@@ -3996,8 +4211,14 @@ esp_err_t nrf_topology_service_ranging_start(
     }
 
     s_cs_requested_policy = *policy;
+    if (cable_limits_mm != NULL) memcpy(s_cs_requested_cable_limits_mm, cable_limits_mm, sizeof(s_cs_requested_cable_limits_mm));
+    else memset(s_cs_requested_cable_limits_mm, 0, sizeof(s_cs_requested_cable_limits_mm));
     s_cs_request_pending = true;
     s_cs_request_is_ranging = true;
+    s_cs_request_is_autonomous = autonomous;
+    if (autonomous) {
+        timeout_ms = nrf_cs_cycle_coordinator_budget_ms(policy, node_count * (node_count - 1U), node_count);
+    }
     s_cs_requested_ranging_timeout_ms = timeout_ms;
     s_cs_requested_ranging_started_ms = now_us > 0 ? (uint64_t)now_us / 1000U : 0U;
     s_ranging_active = true;
@@ -4032,6 +4253,25 @@ esp_err_t nrf_topology_service_ranging_start(
     return ESP_OK;
 }
 
+esp_err_t nrf_topology_service_ranging_start(
+    const nrf_cs_policy_t *policy,
+    uint32_t timeout_ms)
+{
+    return service_ranging_request(policy, timeout_ms, false, NULL);
+}
+
+esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *policy)
+{
+    return service_ranging_request(policy, 0U, true, NULL);
+}
+
+esp_err_t nrf_topology_service_ranging_start_autonomous_limited(
+    const nrf_cs_policy_t *policy, const uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT])
+{
+    if (limits_mm == NULL) return ESP_ERR_INVALID_ARG;
+    return service_ranging_request(policy, 0U, true, limits_mm);
+}
+
 esp_err_t nrf_topology_service_ranging_get_progress(
     nrf_topology_ranging_progress_t *progress)
 {
@@ -4062,6 +4302,156 @@ esp_err_t nrf_topology_service_get_frozen_ranging_result(
     return valid ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
+#if NRF_TOPOLOGY_HAS_RANGING_SOLVER
+static bool service_manual_revision_matches(uint64_t started_at_ms, uint64_t updated_at_ms)
+{
+    return s_snapshot_valid && !s_snapshot.stale && !s_snapshot.bus_busy &&
+        !s_ranging_active && !s_cs_request_pending &&
+        !(s_cs_snapshot_valid && s_cs_cycle_snapshot.active) &&
+        s_ranging_progress_valid && s_ranging_progress.complete &&
+        s_ranging_progress.started_at_ms == started_at_ms &&
+        s_ranging_progress.updated_at_ms == updated_at_ms &&
+        s_frozen_ranging_result_valid && !s_frozen_ranging_result.invalidated &&
+        service_ranging_membership_matches(&s_frozen_ranging_result, &s_snapshot);
+}
+#endif
+
+esp_err_t nrf_topology_service_ranging_set_manual(
+    uint64_t expected_started_at_ms, uint64_t expected_updated_at_ms,
+    uint8_t node_a, uint8_t node_b, int32_t distance_mm,
+    const uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT])
+{
+    if (node_a == node_b || distance_mm <= 0 || limits_mm == NULL) return ESP_ERR_INVALID_ARG;
+#if NRF_TOPOLOGY_HAS_RANGING_SOLVER
+    typedef struct {
+        nrf_topology_ranging_result_t result;
+        nrf_topology_ranging_progress_t progress;
+    } manual_scratch_t;
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
+    manual_scratch_t *scratch = calloc(1U, sizeof(*scratch));
+#else
+    manual_scratch_t *scratch = heap_caps_calloc(1U, sizeof(*scratch), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
+    if (scratch == NULL) return ESP_ERR_NO_MEM;
+    portENTER_CRITICAL(&s_state_lock);
+    const bool current = service_manual_revision_matches(expected_started_at_ms, expected_updated_at_ms);
+    if (current) {
+        scratch->result = s_frozen_ranging_result;
+        scratch->progress = s_ranging_progress;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    if (!current) { free(scratch); return ESP_ERR_INVALID_STATE; }
+
+    nrf_topology_ranging_result_t *result = &scratch->result;
+    nrf_topology_ranging_progress_t *progress = &scratch->progress;
+    nrf_geometry_node_input_t inputs[NRF_CS_MAX_NODES];
+    uint32_t node_limits[NRF_CS_MAX_NODES];
+    for (size_t i = 0U; i < result->membership_count; ++i) {
+        const nrf_topology_ranging_member_identity_t *member = &result->membership[i];
+        const nrf_topology_ranging_node_t *old = service_ranging_find_node(&result->geometry, member->node_id);
+        inputs[i] = (nrf_geometry_node_input_t){.node_id = member->node_id, .z_mm = old == NULL ? 0 : old->z_mm};
+        node_limits[i] = member->node_id == NRF_TOPOLOGY_MAIN_NODE_ID ? 0U
+            : member->channel < NRF_TOPOLOGY_REMOTE_COUNT ? limits_mm[member->channel] : 0U;
+        if (member->node_id != NRF_TOPOLOGY_MAIN_NODE_ID && node_limits[i] == 0U) {
+            free(scratch); return ESP_ERR_INVALID_ARG;
+        }
+    }
+    nrf_cs_pair_result_t *edited = NULL;
+    for (size_t i = 0U; i < result->pair_count; ++i) {
+        nrf_cs_pair_result_t *pair = &result->pairs[i];
+        if ((pair->node_a == node_a && pair->node_b == node_b) ||
+            (pair->node_a == node_b && pair->node_b == node_a)) edited = pair;
+    }
+    if (edited == NULL) { free(scratch); return ESP_ERR_NOT_FOUND; }
+    if ((edited->scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) == 0U)
+        edited->automatic_distance_mm = edited->distance_mm;
+    edited->distance_mm = distance_mm;
+    edited->state = NRF_CS_PAIR_VALID;
+    edited->scheduler_quality_flags |= NRF_CS_QUALITY_MANUAL;
+
+    progress->success = true;
+    progress->failure_reason[0] = '\0';
+    for (size_t i = 0U; i < result->pair_count; ++i) {
+        nrf_cs_pair_result_t *pair = &result->pairs[i];
+        uint64_t maximum = 0U;
+        size_t matched = 0U;
+        for (size_t n = 0U; n < result->membership_count; ++n) {
+            if (inputs[n].node_id == pair->node_a || inputs[n].node_id == pair->node_b) {
+                maximum += node_limits[n]; ++matched;
+            }
+        }
+        if (matched != 2U || (pair->state == NRF_CS_PAIR_VALID &&
+            (pair->distance_mm < 0 || (uint64_t)pair->distance_mm > maximum))) {
+            if (pair == edited) { free(scratch); return ESP_ERR_INVALID_ARG; }
+            pair->state = NRF_CS_PAIR_CABLE_EXCEEDED;
+        }
+        if (pair->state != NRF_CS_PAIR_VALID) {
+            progress->success = false;
+            if (progress->failure_reason[0] == '\0')
+                (void)snprintf(progress->failure_reason, sizeof(progress->failure_reason), "%s:%u-%u",
+                    pair->state == NRF_CS_PAIR_CABLE_EXCEEDED ? "cable_exceeded" : "pair_failed",
+                    (unsigned)pair->node_a, (unsigned)pair->node_b);
+        }
+    }
+
+    nrf_geometry_solution_t solution = {0};
+    const nrf_geometry_result_t solved = nrf_geometry_solver_solve_partial(
+        inputs, result->membership_count, result->pairs, result->pair_count, &solution);
+    memset(&result->geometry, 0, sizeof(result->geometry));
+    result->geometry.node_count = solution.node_count;
+    result->geometry.max_residual_mm = solution.max_residual_mm;
+    result->geometry.inconsistent_pair_count = solution.inconsistent_pair_count;
+    result->geometry.refined = solution.refined;
+    result->geometry.refine_iterations = solution.refine_iterations;
+    if (solved != NRF_GEOMETRY_OK || solution.inconsistent_pair_count != 0U) progress->success = false;
+    for (size_t i = 0U; i < solution.node_count; ++i) {
+        const nrf_geometry_node_position_t *node = &solution.nodes[i];
+        nrf_topology_ranging_node_t *dest = &result->geometry.nodes[i];
+        *dest = (nrf_topology_ranging_node_t){
+            .node_id = node->node_id, .solved = node->solved,
+            .x_mm = node->x_mm, .y_mm = node->y_mm, .z_mm = node->z_mm,
+            .residual_mm = node->residual_mm, .uncertainty_mm = node->uncertainty_mm,
+        };
+        for (size_t n = 0U; n < result->membership_count; ++n) {
+            if (node->node_id != NRF_TOPOLOGY_MAIN_NODE_ID && inputs[n].node_id == node->node_id) {
+                const double radius2 = (double)node->x_mm * node->x_mm +
+                    (double)node->y_mm * node->y_mm + (double)node->z_mm * node->z_mm;
+                if (radius2 > ((double)node_limits[n] + 1.0) * ((double)node_limits[n] + 1.0)) {
+                    dest->solved = false;
+                    dest->uncertainty_mm = INT32_MAX;
+                    (void)snprintf(progress->failure_reason, sizeof(progress->failure_reason),
+                        "geometry_cable_exceeded:%u", (unsigned)node->node_id);
+                }
+            }
+        }
+        if (!dest->solved) progress->success = false;
+    }
+    if (solution.node_count != result->membership_count) progress->success = false;
+    if (!progress->success && progress->failure_reason[0] == '\0')
+        (void)snprintf(progress->failure_reason, sizeof(progress->failure_reason), "geometry_unsolved");
+    progress->partial = !progress->success;
+    progress->geometry = result->geometry;
+    memcpy(progress->pairs, result->pairs, result->pair_count * sizeof(result->pairs[0]));
+    progress->solution_residual_mm = solved == NRF_GEOMETRY_OK ? solution.max_residual_mm : INT32_MAX;
+    const uint64_t now = (uint64_t)(esp_timer_get_time() / 1000);
+    progress->updated_at_ms = now > expected_updated_at_ms ? now : expected_updated_at_ms + 1U;
+    result->timestamp_ms = now;
+    result->success = progress->success;
+    portENTER_CRITICAL(&s_state_lock);
+    const bool unchanged = service_manual_revision_matches(expected_started_at_ms, expected_updated_at_ms);
+    if (unchanged) {
+        s_frozen_ranging_result = *result;
+        s_ranging_progress = *progress;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    free(scratch);
+    return unchanged ? ESP_OK : ESP_ERR_INVALID_STATE;
+#else
+    (void)expected_started_at_ms; (void)expected_updated_at_ms;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
 esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
     const nrf_topology_snapshot_t *current_topology,
     uint64_t now_ms,
@@ -4076,7 +4466,7 @@ esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
     }
 
     portENTER_CRITICAL(&s_state_lock);
-    const bool valid = s_frozen_ranging_result_valid &&
+    const bool valid = s_frozen_ranging_result_valid && s_frozen_ranging_result.success &&
         !s_frozen_ranging_result.invalidated &&
         now_ms >= s_frozen_ranging_result.timestamp_ms &&
         now_ms - s_frozen_ranging_result.timestamp_ms < max_age_ms &&

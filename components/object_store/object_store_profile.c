@@ -543,13 +543,14 @@ static void object_store_read_cables(
 
 static void object_store_read_cs_pairs(
     cJSON *root,
+    const char *key,
     object_store_cs_pairs_t *cs_pairs
 )
 {
     /* cs_pairs defaults to zero/empty via the caller's memset; absent or
      * malformed JSON leaves it exactly there -- objects written before
      * MAX-148 have no "cs_pairs" key at all. */
-    cJSON *node = cJSON_GetObjectItemCaseSensitive(root, "cs_pairs");
+    cJSON *node = cJSON_GetObjectItemCaseSensitive(root, key);
     if (!cJSON_IsObject(node)) {
         return;
     }
@@ -588,6 +589,15 @@ static void object_store_read_cs_pairs(
         out->confidence = (uint16_t)confidence->valuedouble;
         out->attempts = (uint16_t)attempts->valuedouble;
         out->valid_samples = (uint8_t)valid_samples->valuedouble;
+        cJSON *state = cJSON_GetObjectItemCaseSensitive(pair, "state");
+        if (cJSON_IsString(state) && state->valuestring != NULL)
+            (void)snprintf(out->state, sizeof(out->state), "%s", state->valuestring);
+        cJSON *manual_flags = cJSON_GetObjectItemCaseSensitive(pair, "scheduler_quality_flags");
+        if (cJSON_IsNumber(manual_flags) && manual_flags->valuedouble >= 0.0 && manual_flags->valuedouble <= UINT16_MAX)
+            out->scheduler_quality_flags = (uint16_t)manual_flags->valuedouble;
+        cJSON *automatic = cJSON_GetObjectItemCaseSensitive(pair, "automatic_distance_mm");
+        if (cJSON_IsNumber(automatic) && automatic->valuedouble >= INT32_MIN && automatic->valuedouble <= INT32_MAX)
+            out->automatic_distance_mm = (int32_t)automatic->valuedouble;
         /* Optional (MAX-206): absent in records written before the fields. */
         cJSON *spread_mm = cJSON_GetObjectItemCaseSensitive(pair, "spread_mm");
         cJSON *rejected_samples = cJSON_GetObjectItemCaseSensitive(pair, "rejected_samples");
@@ -622,7 +632,8 @@ static void object_store_profile_from_root_locked(
     object_store_read_location(root, &profile->location);
     object_store_read_cables(root, defaults, profile->cable_lengths_m);
     object_store_geometry_from_json(root, &profile->geometry);
-    object_store_read_cs_pairs(root, &profile->cs_pairs);
+    object_store_read_cs_pairs(root, "cs_pairs", &profile->cs_pairs);
+    object_store_read_cs_pairs(root, "ranging_pairs", &profile->ranging_pairs);
 }
 
 static esp_err_t object_store_json_read_profile_with_defaults_locked(
@@ -1319,9 +1330,10 @@ esp_err_t object_store_set_geometry(
     return object_store_mutation_finish(object_id, root);
 }
 
-esp_err_t object_store_set_cs_pairs(
+static esp_err_t object_store_set_pairs(
     const char *object_id,
-    const object_store_cs_pairs_t *cs_pairs
+    const object_store_cs_pairs_t *cs_pairs,
+    const char *key
 )
 {
     static const object_store_cs_pairs_t cleared = {0};
@@ -1333,8 +1345,8 @@ esp_err_t object_store_set_cs_pairs(
     esp_err_t err = object_store_mutation_begin(object_id, &root);
     if (err != ESP_OK) return err;
 
-    cJSON_DeleteItemFromObjectCaseSensitive(root, "cs_pairs");
-    cJSON *node = cJSON_AddObjectToObject(root, "cs_pairs");
+    cJSON_DeleteItemFromObjectCaseSensitive(root, key);
+    cJSON *node = cJSON_AddObjectToObject(root, key);
     cJSON *pairs = node == NULL ? NULL : cJSON_AddArrayToObject(node, "pairs");
     bool ok = node != NULL && pairs != NULL;
 
@@ -1348,6 +1360,9 @@ esp_err_t object_store_set_cs_pairs(
             cJSON_AddNumberToObject(pair, "node_a", pair_result->node_a) != NULL &&
             cJSON_AddNumberToObject(pair, "node_b", pair_result->node_b) != NULL &&
             cJSON_AddBoolToObject(pair, "valid", pair_result->valid) != NULL &&
+            cJSON_AddStringToObject(pair, "state", pair_result->state) != NULL &&
+            cJSON_AddNumberToObject(pair, "scheduler_quality_flags", pair_result->scheduler_quality_flags) != NULL &&
+            cJSON_AddNumberToObject(pair, "automatic_distance_mm", pair_result->automatic_distance_mm) != NULL &&
             cJSON_AddNumberToObject(pair, "distance_mm", (double)pair_result->distance_mm) != NULL &&
             cJSON_AddNumberToObject(pair, "confidence", pair_result->confidence) != NULL &&
             cJSON_AddNumberToObject(pair, "attempts", pair_result->attempts) != NULL &&
@@ -1367,6 +1382,16 @@ esp_err_t object_store_set_cs_pairs(
         return ESP_ERR_NO_MEM;
     }
     return object_store_mutation_finish(object_id, root);
+}
+
+esp_err_t object_store_set_cs_pairs(const char *object_id, const object_store_cs_pairs_t *cs_pairs)
+{
+    return object_store_set_pairs(object_id, cs_pairs, "cs_pairs");
+}
+
+esp_err_t object_store_set_ranging_pairs(const char *object_id, const object_store_cs_pairs_t *cs_pairs)
+{
+    return object_store_set_pairs(object_id, cs_pairs, "ranging_pairs");
 }
 
 esp_err_t object_store_get_cable_defaults(float lengths_m[OBJECT_STORE_POD_COUNT])

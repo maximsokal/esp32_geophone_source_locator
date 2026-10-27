@@ -1345,6 +1345,51 @@ static void test_workflow_command_success_and_conflict_responses(void)
     cJSON_Delete(body);
 }
 
+static void test_manual_distance_payload_is_strict_and_generation_scoped(void)
+{
+    reset_fakes();
+    char response[1024] = {0};
+    httpd_req_t request = make_request(
+        "{\"action\":\"workflow_command\",\"command\":\"SET_DISTANCE\",\"generation\":12,"
+        "\"node_a\":0,\"node_b\":2,\"distance_mm\":1500,\"ranging_started_at_ms\":100,\"ranging_updated_at_ms\":200}",
+        response, sizeof(response));
+    assert(web_api_control_handler(&request) == ESP_OK);
+    assert(s_workflow_command_calls == 1U && s_workflow_command == WORKFLOW_COMMAND_SET_DISTANCE);
+    assert(s_workflow_params.has_generation && s_workflow_params.expected_generation == 12U);
+    assert(s_workflow_params.has_distance && s_workflow_params.node_a == 0U && s_workflow_params.node_b == 2U);
+    assert(s_workflow_params.distance_mm == 1500 && s_workflow_params.ranging_started_at_ms == 100U);
+    assert(s_workflow_params.ranging_updated_at_ms == 200U);
+    static const char *bad_values[] = {"0", "-1", "1.5", "2147483648", "null", "true", "\"1500\""};
+    for (size_t i = 0U; i < sizeof(bad_values) / sizeof(bad_values[0]); ++i) {
+        reset_fakes();
+        char body[320];
+        (void)snprintf(body, sizeof(body),
+            "{\"action\":\"workflow_command\",\"command\":\"SET_DISTANCE\",\"generation\":12,"
+            "\"node_a\":0,\"node_b\":2,\"distance_mm\":%s,\"ranging_started_at_ms\":100,\"ranging_updated_at_ms\":200}", bad_values[i]);
+        memset(response, 0, sizeof(response));
+        request = make_request(body, response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+        assert(s_workflow_command_calls == 0U);
+    }
+    static const char *bad_payloads[] = {
+        "{\"node_a\":0,\"node_b\":2,\"distance_mm\":1500,\"ranging_started_at_ms\":100,\"ranging_updated_at_ms\":200}",
+        "{\"generation\":12,\"node_a\":0,\"node_b\":0,\"distance_mm\":1500,\"ranging_started_at_ms\":100,\"ranging_updated_at_ms\":200}",
+        "{\"generation\":12,\"node_a\":0,\"node_b\":2.5,\"distance_mm\":1500,\"ranging_started_at_ms\":100,\"ranging_updated_at_ms\":200}",
+        "{\"generation\":12,\"node_a\":0,\"node_b\":2,\"distance_mm\":1500,\"ranging_started_at_ms\":-1,\"ranging_updated_at_ms\":200}",
+        "{\"generation\":12,\"node_a\":0,\"node_b\":2,\"distance_mm\":1500,\"ranging_started_at_ms\":100}",
+    };
+    for (size_t i = 0U; i < sizeof(bad_payloads) / sizeof(bad_payloads[0]); ++i) {
+        reset_fakes();
+        char body[512];
+        (void)snprintf(body, sizeof(body), "{\"action\":\"workflow_command\",\"command\":\"SET_DISTANCE\",%s", bad_payloads[i] + 1);
+        request = make_request(body, response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(s_workflow_command_calls == 0U);
+        assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    }
+}
+
 static void test_workflow_command_rejects_unknown_name_before_dispatch(void)
 {
     reset_fakes();
@@ -1487,6 +1532,7 @@ int main(void)
     test_calculate_source_action_surfaces_solver_failure();
     test_calculate_source_time_budget();
     test_workflow_command_success_and_conflict_responses();
+    test_manual_distance_payload_is_strict_and_generation_scoped();
     test_workflow_gps_accept_parses_fix_and_optional_altitude();
     test_workflow_gps_accept_rejects_malformed_payload_before_dispatch();
     test_workflow_command_rejects_unknown_name_before_dispatch();

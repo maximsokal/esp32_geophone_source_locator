@@ -621,6 +621,8 @@ function checkRangingPairs(value: unknown, path: string): void {
     requiredNumber(pair, 'attempts', itemPath);
     requiredBoolean(pair, 'single_direction', itemPath);
     requiredNumber(pair, 'direction_disagreement_mm', itemPath);
+    if (pair.manual !== undefined) booleanValue(pair.manual, `${itemPath}.manual`);
+    optionalNumber(pair, 'automatic_distance_mm', itemPath);
   }
 }
 

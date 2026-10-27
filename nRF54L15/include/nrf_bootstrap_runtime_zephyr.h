@@ -14,6 +14,9 @@ extern "C" {
 
 int nrf_bootstrap_runtime_zephyr_start(nrf_node_state_t *node_state);
 
+/* Drives the autonomous Channel Sounding cycle; the main loop calls it every 50 ms. */
+void nrf_bootstrap_runtime_zephyr_cs_cycle_tick(void);
+
 typedef enum {
     NRF_BOOTSTRAP_TWIS_TRANSACTION_NONE = 0,
     NRF_BOOTSTRAP_TWIS_TRANSACTION_WRITE_RECEIVED,

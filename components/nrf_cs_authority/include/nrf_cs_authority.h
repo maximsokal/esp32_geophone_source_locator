@@ -43,6 +43,11 @@ nrf_cs_authority_result_t nrf_cs_authority_pump(nrf_cs_authority_t *authority);
 nrf_cs_authority_result_t nrf_cs_authority_abort_cycle(
     nrf_cs_authority_t *authority,
     nrf_cs_failure_reason_t reason);
+/*
+ * A cycle whose scheduler was completed from outside (autonomous ranging replays the nodes' records
+ * through it): ends the cycle. ERR_STATE unless a cycle is active and its scheduler is complete.
+ */
+nrf_cs_authority_result_t nrf_cs_authority_finish_external(nrf_cs_authority_t *authority);
 nrf_cs_authority_result_t nrf_cs_authority_disconnect(nrf_cs_authority_t *authority, nrf_cs_node_id_t node_id);
 bool nrf_cs_authority_is_active(const nrf_cs_authority_t *authority);
 size_t nrf_cs_authority_pair_count(const nrf_cs_authority_t *authority);

@@ -66,6 +66,7 @@ typedef enum {
     WORKFLOW_COMMAND_SCAN_SKIP,
     WORKFLOW_COMMAND_SCAN_COMPLETE,
     WORKFLOW_COMMAND_BACK,
+    WORKFLOW_COMMAND_SET_DISTANCE,
     WORKFLOW_COMMAND_COUNT
 } workflow_command_t;
 
@@ -118,6 +119,10 @@ typedef struct {
     uint32_t expected_generation;
     bool has_ok;
     bool ok;
+    bool has_distance;
+    uint8_t node_a, node_b;
+    int32_t distance_mm;
+    uint64_t ranging_started_at_ms, ranging_updated_at_ms;
     const char *reason;
     workflow_calculation_class_t calculation_class;
     bool has_location;

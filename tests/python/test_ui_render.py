@@ -183,7 +183,62 @@ def test_determinate_progress_widgets_are_visible(screens, locale):
         assert not progress["hidden"], frame["name"]
 
 
+@pytest.mark.parametrize("locale", ["en", "uk"])
+@pytest.mark.parametrize("outcome", ["success", "partial", "failed", "cable_exceeded"])
+def test_ranging_outcomes_have_reviewed_pages_and_exact_pair_values(screens, locale, outcome):
+    entries = json.loads((ROOT / "i18n/tft.json").read_text(encoding="utf-8"))["entries"]
+    prefix = f"{locale}_ranging_result_{outcome}_page"
+    pages = [frame for frame in _frames(screens, locale) if frame["name"].startswith(prefix)]
+    assert len(pages) > 1, "All pair pages must be captured, not only the first screen"
+    assert [frame["name"] for frame in pages] == [prefix + str(i + 1) for i in range(len(pages))]
+    for frame in pages:
+        assert frame["golden"] and frame["comparison"] == 1, frame["name"]
+        assert (ROOT / "tests/ui_render/golden" / (frame["name"] + ".png")).is_file()
+    status = "partial" if outcome == "cable_exceeded" else outcome
+    first_lines = [node["text"] for node in _visible(pages[0]) if node["role"].startswith("line_")]
+    assert first_lines[0] == entries[f"tft.workflow.ranging.{status}"][locale]
+    texts = [node["text"] for frame in pages for node in _visible(frame) if node["role"].startswith("line_")]
+    pair_lines = [text for text in texts if re.match(r"^[0-4]-[0-4]:", text)]
+    expected = []
+    for a in range(4):
+        for b in range(a + 1, 5):
+            index = len(expected)
+            missing = outcome == "failed" or (outcome == "partial" and index == 3)
+            exceeded = outcome == "cable_exceeded" and index == 3
+            value = entries["tft.workflow.value.unknown"][locale] if missing else str(6001 if exceeded else 1234 + index)
+            key = "cable_exceeded" if exceeded else "distance"
+            expected.append(entries[f"tft.workflow.ranging.{key}"][locale] % (str(a), str(b), value))
+    assert pair_lines == expected
+    action = "confirm" if outcome == "success" else "retry"
+    for frame in pages:
+        assert entries[f"tft.workflow.action.{action}"][locale] in [
+            node["text"] for node in _visible(frame) if node["role"].startswith("action_text_")]
+        assert entries["tft.workflow.hint.ranging_pages"][locale] in [
+            node["text"] for node in _visible(frame) if node["role"] == "footer"]
+
+
 MENU_FAMILIES = ["home", "objects", "storage", "wifi", "system", "hardware", "measurements", "boot", "preview"]
+
+
+@pytest.mark.parametrize("locale", ["en", "uk"])
+def test_manual_distance_entry_rejection_saving_and_completed_pages(screens, locale):
+    entries = json.loads((ROOT / "i18n/tft.json").read_text(encoding="utf-8"))["entries"]
+    captures = {frame["name"]: frame for frame in _frames(screens, locale) if "_ranging_manual_" in frame["name"]}
+    for suffix in ("pair", "value", "rejected", "saving"):
+        frame = captures[f"{locale}_ranging_manual_{suffix}"]
+        assert frame["golden"] and frame["comparison"] == 1
+    def texts(frame):
+        return [node.get("text", "") for node in _visible(frame)]
+    assert entries["tft.workflow.distance.pair"][locale] % ("0", "4") in texts(captures[f"{locale}_ranging_manual_pair"])
+    assert entries["tft.workflow.distance.value"][locale] % "006001" in texts(captures[f"{locale}_ranging_manual_value"])
+    assert entries["tft.workflow.distance.rejected"][locale] in texts(captures[f"{locale}_ranging_manual_rejected"])
+    assert entries["tft.workflow.distance.saving"][locale] in texts(captures[f"{locale}_ranging_manual_saving"])
+    saved = [frame for name, frame in captures.items() if "_saved_page" in name]
+    assert len(saved) > 1
+    assert all(frame["golden"] and frame["comparison"] == 1 for frame in saved)
+    assert entries["tft.workflow.ranging.success"][locale] in texts(saved[0])
+    assert entries["tft.workflow.distance.manual"][locale] % ("0", "4", "1500") in [text for frame in saved for text in texts(frame)]
+    assert not any("cable_exceeded" in text for frame in saved for text in texts(frame))
 
 
 def test_every_registered_screen_and_menu_has_both_locales(screens):

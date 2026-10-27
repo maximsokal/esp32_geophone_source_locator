@@ -14,6 +14,7 @@
 #include "nrf_boot_diagnostics.h"
 #include "nrf_cs_control_protocol.h"
 #include "nrf_cs_control_runtime.h"
+#include "nrf_cs_cycle_runtime.h"
 #include "nrf_cs_pair_runtime_zephyr.h"
 #include "nrf_log_events.h"
 #include "nrf_log_runtime_zephyr.h"
@@ -421,6 +422,153 @@ static bool handle_log_write(
     return true;
 }
 
+/*
+ * Autonomous Channel Sounding cycle (see nrf_cs_cycle_runtime.h). The runtime is shared between the
+ * TWIS callbacks (plan intake, replies) and the main loop (tick, BLE attempts), so every call is made
+ * under s_cycle_lock; the BLE attempt itself is started outside the lock.
+ */
+static nrf_cs_cycle_runtime_t s_cycle;
+static struct k_spinlock s_cycle_lock;
+static uint8_t s_cycle_reply[NRF_CS_CYCLE_RESULT_LENGTH];
+static uint32_t s_cycle_reply_length;
+static bool s_cycle_reply_selected;
+static uint8_t s_cycle_status_frame[NRF_CS_CYCLE_STATUS_LENGTH];
+static bool s_cycle_radio_on;
+
+static uint64_t cycle_now_ms(void *context)
+{
+    (void)context;
+    return (uint64_t)k_uptime_get();
+}
+
+static void cycle_abort_attempt(void *context)
+{
+    (void)context;
+    /* The step's own timeout (pair_timeout_ms) ends an attempt before its window closes. */
+}
+
+static void cycle_step_done(const nrf_cs_step_t *step, const nrf_cs_measurement_t *measurement, void *context)
+{
+    (void)context;
+    k_spinlock_key_t key = k_spin_lock(&s_cycle_lock);
+    (void)nrf_cs_cycle_runtime_step_done(&s_cycle, step, measurement);
+    k_spin_unlock(&s_cycle_lock, key);
+}
+
+void nrf_bootstrap_runtime_zephyr_cs_cycle_tick(void)
+{
+    nrf_cs_step_t step;
+    k_spinlock_key_t key = k_spin_lock(&s_cycle_lock);
+    nrf_cs_cycle_runtime_tick(&s_cycle);
+    const bool running = nrf_cs_cycle_runtime_running(&s_cycle);
+    const bool start = nrf_cs_cycle_runtime_take_start(&s_cycle, &step);
+    k_spin_unlock(&s_cycle_lock, key);
+    /* Radio only while the cycle runs: reflectors advertise from GO on, nothing before or after. */
+    if (running != s_cycle_radio_on && nrf_cs_pair_runtime_zephyr_set_radio_enabled(running) == 0) {
+        s_cycle_radio_on = running;
+    }
+    if (!start) {
+        return;
+    }
+    int result = nrf_cs_pair_runtime_zephyr_execute(&step, cycle_step_done, NULL);
+    if (result == -EBUSY) {
+        result = 1; /* a connection is still closing: retry shortly, it is not a failed attempt */
+    } else if (result != 0) {
+        nrf_log_runtime_zephyr_append_event(
+            NRF_LOG_EVENT_CS_EXECUTE_FAILED, step.attempt_id, (uint32_t)result);
+    }
+    key = k_spin_lock(&s_cycle_lock);
+    nrf_cs_cycle_runtime_start_result(&s_cycle, &step, result);
+    k_spin_unlock(&s_cycle_lock, key);
+}
+
+static bool cycle_local_node(nrf_cs_node_id_t *node)
+{
+    nrf_upstream_status_t status;
+    k_spinlock_key_t key = k_spin_lock(&s_status_lock);
+    status = s_published_status;
+    k_spin_unlock(&s_status_lock, key);
+    if (status.role == NRF_UPSTREAM_ROLE_UNASSIGNED) {
+        return false;
+    }
+    *node = (nrf_cs_node_id_t)status.node_id;
+    return true;
+}
+
+/* Handles the cycle frames the ESP32 writes. Returns true when the frame was one of them. */
+static bool handle_cycle_write(const uint8_t *frame, size_t length, int32_t *transaction_result)
+{
+    int rc = -EINVAL;
+    nrf_cs_node_id_t local;
+    k_spinlock_key_t key;
+
+    if (frame == NULL || length < 4U) {
+        return false;
+    }
+    switch (frame[3]) {
+    case NRF_CS_CYCLE_MESSAGE_PLAN: {
+        nrf_cs_cycle_plan_t plan;
+        if (nrf_cs_cycle_decode_plan(frame, length, &plan) == 0 && cycle_local_node(&local)) {
+            key = k_spin_lock(&s_cycle_lock);
+            rc = nrf_cs_cycle_runtime_accept_plan(&s_cycle, local, &plan);
+            k_spin_unlock(&s_cycle_lock, key);
+        }
+        break;
+    }
+    case NRF_CS_CYCLE_MESSAGE_PLAN_STEPS: {
+        nrf_cs_cycle_plan_steps_t chunk;
+        if (nrf_cs_cycle_decode_plan_steps(frame, length, &chunk) == 0) {
+            key = k_spin_lock(&s_cycle_lock);
+            rc = nrf_cs_cycle_runtime_accept_steps(&s_cycle, &chunk);
+            k_spin_unlock(&s_cycle_lock, key);
+        }
+        break;
+    }
+    case NRF_CS_CYCLE_MESSAGE_GO: {
+        nrf_cs_cycle_go_t go;
+        if (nrf_cs_cycle_decode_go(frame, length, &go) == 0) {
+            key = k_spin_lock(&s_cycle_lock);
+            rc = nrf_cs_cycle_runtime_go(&s_cycle, &go);
+            k_spin_unlock(&s_cycle_lock, key);
+        }
+        break;
+    }
+    case NRF_CS_CYCLE_MESSAGE_RESULT_REQUEST: {
+        nrf_cs_cycle_result_request_t request;
+        if (nrf_cs_cycle_decode_result_request(frame, length, &request) != 0) {
+            break;
+        }
+        if (request.page == NRF_CS_CYCLE_RESULT_RELEASE_PAGE) {
+            key = k_spin_lock(&s_cycle_lock);
+            nrf_cs_cycle_runtime_release(&s_cycle);
+            k_spin_unlock(&s_cycle_lock, key);
+            rc = 0;
+            break;
+        }
+        nrf_cs_cycle_result_t page;
+        key = k_spin_lock(&s_cycle_lock);
+        rc = nrf_cs_cycle_runtime_result_page(&s_cycle, request.request_id, request.page, &page);
+        k_spin_unlock(&s_cycle_lock, key);
+        if (rc == 0 && (page.cycle_id != request.cycle_id ||
+                nrf_cs_cycle_encode_result(&page, s_cycle_reply) != 0)) {
+            rc = -EINVAL;
+        }
+        if (rc == 0) {
+            s_cycle_reply_length = NRF_CS_CYCLE_RESULT_LENGTH;
+            s_cycle_reply_selected = true;
+        }
+        break;
+    }
+    default:
+        return false;
+    }
+    if (rc != 0) {
+        nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME, frame[3], (uint32_t)(-rc));
+        *transaction_result = rc;
+    }
+    return true;
+}
+
 static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,uint32_t len)
 {
     nrf_upstream_assign_t assign;
@@ -443,6 +591,7 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
     record_twis_request_type(ptr, len);
 
     s_log_response_selected=false;
+    s_cycle_reply_selected=false;
     /* Only the window request that follows a read may leave a window armed. */
     nrf_read_window_target_disarm(&s_read_window);
     if (len == 0U) {
@@ -468,6 +617,7 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
     }
 
     if(handle_log_write(ptr,(size_t)len,&transaction_result))goto record_transaction;
+    if(handle_cycle_write(ptr,(size_t)len,&transaction_result))goto record_transaction;
 
     /* Dispatch by type so a short control frame cannot overwrite ASSIGN status. */
     if(ptr!=NULL&&len>3U&&ptr[3]==NRF_CS_CONTROL_MESSAGE_EXECUTE){
@@ -602,6 +752,20 @@ static int target_read_requested(struct i2c_target_config *config,uint8_t **ptr,
 
     if(s_log_response_selected){*ptr=s_log_response_frame;*len=s_log_response_length;response=s_log_response_frame;response_length=s_log_response_length;goto record_transaction;}
 
+    if(s_cycle_reply_selected){*ptr=s_cycle_reply;*len=s_cycle_reply_length;response=s_cycle_reply;response_length=s_cycle_reply_length;goto record_transaction;}
+    {
+        /* While a cycle runs or waits to be collected, STATUS reads answer with the cycle status. */
+        nrf_cs_cycle_status_t cycle_status;
+        bool cycle_reply_active;
+        k_spinlock_key_t cycle_key=k_spin_lock(&s_cycle_lock);
+        cycle_reply_active=nrf_cs_cycle_runtime_reply_active(&s_cycle);
+        if(cycle_reply_active)nrf_cs_cycle_runtime_status(&s_cycle,0U,&cycle_status);
+        k_spin_unlock(&s_cycle_lock,cycle_key);
+        if(cycle_reply_active&&nrf_cs_cycle_encode_status(&cycle_status,s_cycle_status_frame)==0){
+            *ptr=s_cycle_status_frame;*len=NRF_CS_CYCLE_STATUS_LENGTH;response=s_cycle_status_frame;response_length=NRF_CS_CYCLE_STATUS_LENGTH;goto record_transaction;
+        }
+    }
+
     key=k_spin_lock(&s_cs_lock);
     have_cs=nrf_cs_control_runtime_take_selected(&s_cs_control,&cs_result);
     k_spin_unlock(&s_cs_lock,key);
@@ -644,6 +808,13 @@ int nrf_bootstrap_runtime_zephyr_start(nrf_node_state_t *node_state)
     if(nrf_bootstrap_init(&s_bootstrap,node_state,hardware_id,hardware_id_length,&ops)!=NRF_UPSTREAM_RESULT_OK)return -EINVAL;
     if(nrf_cs_control_runtime_init(&s_cs_control)!=0)return -EINVAL;
     nrf_read_window_target_init(&s_read_window);
+    {
+        const nrf_cs_cycle_runtime_ops_t cycle_ops={.now_ms=cycle_now_ms,.abort_attempt=cycle_abort_attempt};
+        k_spinlock_key_t cycle_key=k_spin_lock(&s_cycle_lock);
+        nrf_cs_cycle_runtime_init(&s_cycle,&cycle_ops);
+        k_spin_unlock(&s_cycle_lock,cycle_key);
+        s_cycle_reply_selected=false;
+    }
     k_msgq_purge(&s_assign_queue);k_msgq_purge(&s_cs_execute_queue);s_assign_sequence=0U;s_cs_execute_sequence=0U;k_work_init(&s_assign_work,assign_work_handler);k_work_init(&s_cs_execute_work,cs_execute_work_handler);
     if(nrf_bootstrap_make_status(&s_bootstrap,&initial_status)!=NRF_UPSTREAM_RESULT_OK)return -EIO;
     initial_status.target_address=NRF_UPSTREAM_ADDRESS_DISCOVERY;publish_status(&initial_status);

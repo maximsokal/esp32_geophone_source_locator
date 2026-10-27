@@ -74,13 +74,20 @@ typedef enum {
     NRF_CS_PAIR_VALID,
     NRF_CS_PAIR_MISSING,
     NRF_CS_PAIR_RETRY_EXHAUSTED,
+    NRF_CS_PAIR_CABLE_EXCEEDED,
 } nrf_cs_pair_state_t;
 
 typedef struct {
     uint8_t node_a;
     uint8_t node_b;
     nrf_cs_pair_state_t state;
+    int32_t distance_mm;
+    uint16_t confidence, attempts;
+    uint8_t valid_samples;
     int32_t spread_mm;
+    uint8_t rejected_samples;
+    uint16_t scheduler_quality_flags;
+    int32_t automatic_distance_mm;
 } nrf_cs_pair_result_t;
 
 typedef struct {
@@ -105,8 +112,12 @@ typedef struct {
     bool active;
     bool complete;
     bool success;
+    bool partial;
+    size_t pair_count;
+    nrf_cs_pair_result_t pairs[NRF_CS_MAX_PAIRS];
     char failure_reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
     uint64_t started_at_ms;
+    uint64_t updated_at_ms;
 } nrf_topology_ranging_progress_t;
 
 esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot);
@@ -119,7 +130,10 @@ esp_err_t nrf_topology_service_get_sensor_snapshot(
     nrf_remote_sensor_cache_t *snapshot);
 esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy);
 esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot);
-esp_err_t nrf_topology_service_ranging_start(const nrf_cs_policy_t *policy, uint32_t timeout_ms);
+esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *policy);
+esp_err_t nrf_topology_service_ranging_start_autonomous_limited(const nrf_cs_policy_t *policy, const uint32_t *limits);
 esp_err_t nrf_topology_service_ranging_get_progress(
     nrf_topology_ranging_progress_t *progress);
 esp_err_t nrf_topology_service_invalidate_ranging(void);
+esp_err_t nrf_topology_service_ranging_set_manual(uint64_t started, uint64_t updated,
+    uint8_t a, uint8_t b, int32_t distance, const uint32_t *limits);

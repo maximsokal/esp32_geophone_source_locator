@@ -49,6 +49,7 @@ typedef enum {
     NRF_CS_PAIR_VALID,
     NRF_CS_PAIR_MISSING,
     NRF_CS_PAIR_RETRY_EXHAUSTED,
+    NRF_CS_PAIR_CABLE_EXCEEDED,
 } nrf_cs_pair_state_t;
 
 typedef enum {
@@ -74,6 +75,7 @@ typedef enum {
     NRF_CS_QUALITY_TIMEOUT = 1U << 3,
     NRF_CS_QUALITY_TRANSPORT_ERROR = 1U << 4,
     NRF_CS_QUALITY_PARTIAL = 1U << 5,
+    NRF_CS_QUALITY_MANUAL = 1U << 6,
 } nrf_cs_scheduler_quality_t;
 
 typedef struct {
@@ -114,6 +116,8 @@ typedef struct {
     /* Full-rotation result metadata. */
     bool single_direction;
     int32_t direction_disagreement_mm;
+    /* Original radio value retained when an operator replaces the distance. */
+    int32_t automatic_distance_mm;
 } nrf_cs_pair_result_t;
 
 /* A directed execution token for one undirected matrix cell. */

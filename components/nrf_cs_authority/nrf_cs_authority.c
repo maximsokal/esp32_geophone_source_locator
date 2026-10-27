@@ -183,6 +183,18 @@ nrf_cs_authority_result_t nrf_cs_authority_abort_cycle(
     return NRF_CS_AUTHORITY_COMPLETE;
 }
 
+nrf_cs_authority_result_t nrf_cs_authority_finish_external(nrf_cs_authority_t *authority)
+{
+    if (authority == NULL) {
+        return NRF_CS_AUTHORITY_ERR_ARGUMENT;
+    }
+    if (!authority->cycle_active || !nrf_cs_scheduler_is_complete(&authority->scheduler)) {
+        return NRF_CS_AUTHORITY_ERR_STATE;
+    }
+    authority->cycle_active = false;
+    return NRF_CS_AUTHORITY_COMPLETE;
+}
+
 nrf_cs_authority_result_t nrf_cs_authority_disconnect(
     nrf_cs_authority_t *authority,
     nrf_cs_node_id_t node_id)

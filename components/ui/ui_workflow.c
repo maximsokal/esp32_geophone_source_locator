@@ -30,7 +30,7 @@
 #include "workflow_service.h"
 
 #define UI_WORKFLOW_REFRESH_PERIOD_MS 250U
-#define UI_WORKFLOW_VISIBLE_ACTIONS 2U
+#define UI_WORKFLOW_VISIBLE_ACTIONS 3U
 #define UI_WORKFLOW_ACTION_ROW_HEIGHT UI_MENU_ROW_HEIGHT
 #define UI_WORKFLOW_ACTION_ROW_STEP UI_MENU_ROW_STEP
 #define UI_WORKFLOW_LINE_HEIGHT 20
@@ -40,6 +40,7 @@
 typedef struct {
     workflow_step_t rendered_step;
     bool rendered_material_picker;
+    bool rendered_distance_picker;
     size_t rendered_action_count;
     char material_object_id[OBJECT_STORE_ID_SIZE];
     bool snapshot_valid;
@@ -66,6 +67,7 @@ typedef struct {
     lv_obj_t *screen;
     lv_obj_t *line_labels[UI_WORKFLOW_MODEL_MAX_LINES];
     size_t line_slots;
+    size_t ranging_line_offset;
     lv_obj_t *remote_slot_cards[UI_WORKFLOW_REMOTE_SLOT_COUNT];
     lv_obj_t *remote_slot_labels[UI_WORKFLOW_REMOTE_SLOT_COUNT];
     bool remote_slot_styles_dirty;
@@ -216,7 +218,8 @@ static size_t ui_workflow_visible_actions(const workflow_snapshot_t *snapshot, c
 {
     /* The result needs two readable chart rows above a full-size action. */
     const size_t capacity = snapshot->step == WORKFLOW_STEP_RESULT &&
-        snapshot->calculation_class == WORKFLOW_CALCULATION_CLASS_NONE ? 1U : UI_WORKFLOW_VISIBLE_ACTIONS;
+        snapshot->calculation_class == WORKFLOW_CALCULATION_CLASS_NONE ? 1U
+        : snapshot->step == WORKFLOW_STEP_RANGING_RESULT && !model->distance_picker_visible ? 3U : 2U;
     return model->action_count < capacity ? model->action_count : capacity;
 }
 
@@ -542,10 +545,24 @@ static void ui_workflow_build_ranging_view(ui_workflow_screen_state_t *state)
         nrf_topology_service_ranging_get_progress(&state->ranging_snapshot) != ESP_OK) return;
     const nrf_topology_ranging_progress_t *progress = &state->ranging_snapshot;
     state->ranging.available = true;
+    state->ranging.partial = progress->partial;
+    state->ranging.started_at_ms = progress->started_at_ms;
+    state->ranging.updated_at_ms = progress->updated_at_ms;
     state->ranging.pairs_done = progress->pairs_done;
     state->ranging.pairs_total = progress->pairs_total;
     state->ranging.residual_valid = progress->solution_residual_mm != INT32_MAX;
     state->ranging.residual_mm = progress->solution_residual_mm;
+    state->ranging.pair_count = progress->pair_count < UI_WORKFLOW_RANGING_MAX_PAIRS
+        ? progress->pair_count : UI_WORKFLOW_RANGING_MAX_PAIRS;
+    for (size_t i = 0U; i < state->ranging.pair_count; ++i) {
+        state->ranging.pairs[i].node_a = progress->pairs[i].node_a;
+        state->ranging.pairs[i].node_b = progress->pairs[i].node_b;
+        state->ranging.pairs[i].valid = progress->pairs[i].state == NRF_CS_PAIR_VALID &&
+            progress->pairs[i].distance_mm >= 0;
+        state->ranging.pairs[i].cable_exceeded = progress->pairs[i].state == NRF_CS_PAIR_CABLE_EXCEEDED;
+        state->ranging.pairs[i].manual = (progress->pairs[i].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U;
+        state->ranging.pairs[i].distance_mm = progress->pairs[i].distance_mm;
+    }
     state->ranging.node_count = progress->geometry.node_count;
     if (state->ranging.node_count > WORKFLOW_MAX_CALIBRATION_NODES) {
         state->ranging.node_count = WORKFLOW_MAX_CALIBRATION_NODES;
@@ -750,8 +767,10 @@ static void ui_workflow_render_step_locked(ui_workflow_screen_state_t *state)
         ? ui_tr(state->model.hint_key) : ui_tr(UI_I18N_KEY_TFT_WORKFLOW_HINT_NAVIGATION);
     state->screen = ui_create_screen_base_locked(ui_tr(state->model.title_key), footer);
     if (state->screen == NULL) return;
+    if (state->rendered_step != state->snapshot.step) state->ranging_line_offset = 0U;
     state->rendered_step = state->snapshot.step;
     state->rendered_material_picker = state->model.material_picker_visible;
+    state->rendered_distance_picker = state->model.distance_picker_visible;
     state->rendered_action_count = state->model.action_count;
     state->line_slots = ui_workflow_line_slots(&state->snapshot, &state->model);
     memset(state->line_labels, 0, sizeof(state->line_labels));
@@ -912,7 +931,9 @@ static void ui_workflow_update_lines(ui_workflow_screen_state_t *state)
     } else {
         for (size_t slot = 0U; slot < state->line_slots; ++slot) {
             char text[UI_WORKFLOW_MODEL_ARG_SIZE];
-            if (slot < state->model.line_count) ui_workflow_format_line(&state->model.lines[slot], text, sizeof(text));
+            const size_t index = slot + (state->snapshot.step == WORKFLOW_STEP_RANGING_RESULT && !state->model.distance_picker_visible
+                ? state->ranging_line_offset : 0U);
+            if (index < state->model.line_count) ui_workflow_format_line(&state->model.lines[index], text, sizeof(text));
             else text[0] = '\0';
             ui_workflow_set_label(state->line_labels[slot], text);
         }
@@ -1040,8 +1061,11 @@ static void ui_workflow_update(ui_workflow_screen_state_t *state, uint64_t now_m
     ui_workflow_refresh_remote_slots(state);
     ui_workflow_prepare_material_model(state);
     ui_workflow_model_build(&state->snapshot, &state->ranging, &state->model_state, now_ms, &state->model);
+    if (state->model.distance_picker_visible) state->ranging_line_offset = 0U;
+    if (state->ranging_line_offset >= state->model.line_count) state->ranging_line_offset = 0U;
     if (state->screen == NULL || state->rendered_step != state->snapshot.step ||
         state->rendered_material_picker != state->model.material_picker_visible ||
+        state->rendered_distance_picker != state->model.distance_picker_visible ||
         state->rendered_action_count != state->model.action_count ||
         state->line_slots != ui_workflow_line_slots(&state->snapshot, &state->model)) {
         ui_workflow_render_step_locked(state);
@@ -1139,18 +1163,38 @@ void ui_workflow_screen_handle_key_locked(keypad_key_t key)
         default: return;
     }
     const uint64_t now_ms = (uint64_t)esp_timer_get_time() / 1000U;
+    if (key == KEYPAD_KEY_RIGHT && s_workflow->model_state.distance_view == UI_WORKFLOW_DISTANCE_CLOSED &&
+        s_workflow->snapshot.step == WORKFLOW_STEP_RANGING_RESULT &&
+        s_workflow->line_slots > 0U && s_workflow->model.line_count > s_workflow->line_slots) {
+        s_workflow->ranging_line_offset += s_workflow->line_slots;
+        if (s_workflow->ranging_line_offset >= s_workflow->model.line_count) s_workflow->ranging_line_offset = 0U;
+        ui_workflow_update(s_workflow, now_ms);
+        return;
+    }
     ESP_LOGI("UI_WORKFLOW", "WORKFLOW_UI_KEY key=%d step=%s gen=%lu pending=%lu completed=%lu",
         (int)key, workflow_core_step_name(s_workflow->snapshot.step),
         (unsigned long)s_workflow->snapshot.generation,
         (unsigned long)(s_workflow->model_state.has_pending ? s_workflow->model_state.pending_seq : 0U),
         (unsigned long)s_workflow->snapshot.last_async.seq);
     ui_workflow_prepare_material_model(s_workflow);
-    const ui_workflow_event_t event = ui_workflow_model_handle_key(
-        &s_workflow->snapshot, &s_workflow->model_state, workflow_key, now_ms);
+    const ui_workflow_event_t event = s_workflow->model_state.distance_view != UI_WORKFLOW_DISTANCE_CLOSED
+        ? ui_workflow_distance_handle_key(&s_workflow->snapshot, &s_workflow->ranging,
+            &s_workflow->model_state, workflow_key, now_ms)
+        : ui_workflow_model_handle_key(&s_workflow->snapshot, &s_workflow->model_state, workflow_key, now_ms);
     switch (event.type) {
         case UI_WORKFLOW_EVENT_SEND_COMMAND:
             ui_workflow_send_command(s_workflow, event.command, now_ms);
             break;
+        case UI_WORKFLOW_EVENT_EDIT_DISTANCE:
+            ui_workflow_distance_open(&s_workflow->snapshot, &s_workflow->ranging, &s_workflow->model_state);
+            break;
+        case UI_WORKFLOW_EVENT_SAVE_DISTANCE: {
+            uint32_t seq = 0U;
+            const esp_err_t err = workflow_service_set_distance_async(&event.distance, &seq);
+            ui_workflow_model_command_sent(&s_workflow->model_state, WORKFLOW_COMMAND_SET_DISTANCE, err, seq, now_ms);
+            if (err != ESP_OK) s_workflow->model_state.distance_view = UI_WORKFLOW_DISTANCE_VALUE;
+            break;
+        }
         case UI_WORKFLOW_EVENT_LEAVE_OBJECTS:
             ui_screen_open_locked(UI_SCREEN_OBJECTS);
             return;

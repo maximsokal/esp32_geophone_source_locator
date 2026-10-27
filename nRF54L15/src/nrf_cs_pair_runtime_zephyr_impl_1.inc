@@ -56,6 +56,12 @@ static nrf_cs_pair_adapter_t s_adapter;
 static bool s_started;
 static atomic_t s_execute_pending;
 static bool s_advertising;
+/* Radio activity (advertising, scanning, connecting) is allowed while this is set. */
+#if defined(CONFIG_APP_NRF_RADIO_ON_DEMAND) && CONFIG_APP_NRF_RADIO_ON_DEMAND
+static atomic_t s_radio_enabled = ATOMIC_INIT(0);
+#else
+static atomic_t s_radio_enabled = ATOMIC_INIT(1);
+#endif
 static bool s_scanning;
 static nrf_cs_node_id_t s_node_id = 0xFFU;
 static nrf_cs_node_id_t s_scan_target = 0xFFU;
@@ -171,7 +177,7 @@ static int runtime_start_advertising(void)
 {
     int err;
 
-    if (!s_started || s_node_id == 0xFFU || s_advertising ||
+    if (atomic_get(&s_radio_enabled) == 0 || !s_started || s_node_id == 0xFFU || s_advertising ||
         s_scanning || s_outgoing_conn != NULL || s_incoming_conn != NULL ||
         nrf_cs_pair_adapter_is_active(&s_adapter)) {
         return 0;
@@ -308,6 +314,9 @@ static int op_connect(void *context, nrf_cs_node_id_t reflector)
     int err;
 
     ARG_UNUSED(context);
+    if (atomic_get(&s_radio_enabled) == 0) {
+        return -ENOTSUP;
+    }
     if (s_outgoing_conn != NULL || s_incoming_conn != NULL || s_scanning) {
         return -EBUSY;
     }

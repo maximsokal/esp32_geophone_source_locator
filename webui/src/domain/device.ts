@@ -211,6 +211,8 @@ export interface RangingPairStatus {
   attempts: number;
   single_direction: boolean;
   direction_disagreement_mm: number;
+  manual?: boolean;
+  automatic_distance_mm?: number;
 }
 
 export interface RangingNodeStatus {
@@ -233,6 +235,7 @@ export interface RangingProgressStatus {
   active?: boolean;
   complete?: boolean;
   success?: boolean;
+  partial?: boolean;
   pairs_done?: number | null;
   pairs_total?: number | null;
   topology_generation?: number;

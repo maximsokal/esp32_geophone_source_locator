@@ -10,6 +10,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/random/random.h>
 
+#include "nrf_cs_cycle_runtime.h"
 #include "nrf_boot_diagnostics.h"
 #include "nrf_bootstrap_runtime_zephyr.h"
 #include "nrf_cs_control_protocol.h"
@@ -20,6 +21,8 @@
 
 extern struct k_msgq s_cs_execute_queue;
 extern unsigned nrf_cs_pair_zephyr_stub_execute_calls;
+extern bool nrf_cs_pair_zephyr_stub_radio_enabled;
+extern unsigned nrf_cs_pair_zephyr_stub_radio_changes;
 #include "nrf_upstream_target_zephyr.h"
 #include "nrf_watchdog_zephyr.h"
 #include "nrf_hci_workqueue.h"
@@ -1463,6 +1466,170 @@ static void test_twis_read_window_requests_are_validated_and_one_shot(void)
 }
 
 /* characterization: host integration baseline for the real TWIS callbacks and work handlers. */
+
+/* Autonomous Channel Sounding cycle through the real TWIS callbacks: plan, GO, status, results, release. */
+static void cycle_send(const uint8_t *frame, size_t length)
+{
+    s_callbacks->buf_write_received(NULL, (uint8_t *)frame, (uint32_t)length);
+}
+
+/* A remote answers the legacy read with its 136 byte snapshot, a main node with the 28 byte STATUS. */
+static bool cycle_is_legacy_reply(const uint8_t *frame, uint32_t length)
+{
+    return (length == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH || length == NRF_UPSTREAM_PROTOCOL_REMOTE_SNAPSHOT_LENGTH) &&
+        frame[3] == 0x80U;
+}
+
+static nrf_cs_cycle_status_t cycle_read_status(void)
+{
+    uint32_t length;
+    uint8_t *frame = read_frame(&length);
+    nrf_cs_cycle_status_t status;
+    assert(length == NRF_CS_CYCLE_STATUS_LENGTH && frame[3] == NRF_CS_CYCLE_MESSAGE_STATUS);
+    assert(nrf_cs_cycle_decode_status(frame, length, &status) == 0);
+    return status;
+}
+
+static void test_autonomous_cs_cycle_messages(void)
+{
+    nrf_upstream_status_t node = read_status(NULL);
+    if (node.role == NRF_UPSTREAM_ROLE_UNASSIGNED) {
+        const nrf_upstream_assign_t assign = make_assign(0x7000U);
+        send_assign(&assign);
+        run_submitted_work();
+        node = read_status(NULL);
+    }
+    assert(node.role != NRF_UPSTREAM_ROLE_UNASSIGNED);
+    const uint8_t self = node.node_id;
+    const uint8_t peer = (uint8_t)(self + 1U);
+    const uint32_t window = nrf_cs_cycle_window_ms(500U, 1U, 1U);
+    uint8_t plan_frame[NRF_CS_CYCLE_PLAN_LENGTH];
+    uint8_t steps_frame[NRF_CS_CYCLE_PLAN_STEPS_LENGTH];
+    uint8_t go_frame[NRF_CS_CYCLE_GO_LENGTH];
+    uint8_t request_frame[NRF_CS_CYCLE_RESULT_REQUEST_LENGTH];
+    nrf_cs_cycle_plan_t plan = {
+        .request_id = 0x7101U, .cycle_id = 77U, .membership_generation = 1U, .pair_timeout_ms = 500U,
+        .max_attempts = 1U, .samples_per_pair = 1U, .min_confidence = 0U, .full_rotation = true,
+        .step_count = 2U, .node_count = 2U, .self_node = self,
+    };
+    nrf_cs_cycle_plan_steps_t steps = {.request_id = 0x7102U, .cycle_id = 77U, .first_step = 0U, .step_count = 2U};
+    const nrf_cs_cycle_go_t go = {.request_id = 0x7103U, .cycle_id = 77U, .total_timeout_ms = window * 2U + NRF_CS_CYCLE_TOTAL_MARGIN_MS};
+    nrf_bootstrap_twis_diagnostics_t diag;
+    uint32_t length;
+    uint8_t *frame;
+
+    steps.steps[0] = (nrf_cs_cycle_step_t){.initiator = self, .reflector = peer};
+    steps.steps[1] = (nrf_cs_cycle_step_t){.initiator = peer, .reflector = self};
+
+    /* Idle: STATUS reads stay the legacy 28 byte frame. */
+    frame = read_frame(&length);
+    assert(cycle_is_legacy_reply(frame, length));
+    nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&diag);
+    const uint32_t errors_before = diag.callback_error_count;
+
+    /* A plan for another node, a corrupted plan and a GO without a plan are refused. */
+    plan.self_node = peer;
+    assert(nrf_cs_cycle_encode_plan(&plan, plan_frame) == 0);
+    cycle_send(plan_frame, sizeof(plan_frame));
+    plan.self_node = self;
+    assert(nrf_cs_cycle_encode_plan(&plan, plan_frame) == 0);
+    plan_frame[12] ^= 0x01U;
+    cycle_send(plan_frame, sizeof(plan_frame));
+    assert(nrf_cs_cycle_encode_go(&go, go_frame) == 0);
+    cycle_send(go_frame, sizeof(go_frame));
+    nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&diag);
+    assert(diag.callback_error_count == errors_before + 3U);
+    assert(find_log_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME).arg0 == NRF_CS_CYCLE_MESSAGE_GO);
+    frame = read_frame(&length);
+    assert(cycle_is_legacy_reply(frame, length)); /* nothing started */
+
+    /* Plan intake: a plan alone is not a cycle, and GO needs every step. */
+    assert(nrf_cs_cycle_encode_plan(&plan, plan_frame) == 0);
+    cycle_send(plan_frame, sizeof(plan_frame));
+    steps.step_count = 1U;
+    assert(nrf_cs_cycle_encode_plan_steps(&steps, steps_frame) == 0);
+    cycle_send(steps_frame, sizeof(steps_frame));
+    cycle_send(go_frame, sizeof(go_frame)); /* refused: step 1 is missing */
+    frame = read_frame(&length);
+    assert(cycle_is_legacy_reply(frame, length));
+    steps.first_step = 1U;
+    steps.steps[0] = (nrf_cs_cycle_step_t){.initiator = peer, .reflector = self};
+    assert(nrf_cs_cycle_encode_plan_steps(&steps, steps_frame) == 0);
+    cycle_send(steps_frame, sizeof(steps_frame));
+    frame = read_frame(&length);
+    assert(cycle_is_legacy_reply(frame, length)); /* ready but not started: still the legacy reply */
+
+    /* GO: from now on STATUS reads answer with the cycle status. The radio stays silent until the cycle runs. */
+    assert(!nrf_cs_pair_zephyr_stub_radio_enabled);
+    const unsigned radio_changes_before = nrf_cs_pair_zephyr_stub_radio_changes;
+    nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
+    assert(nrf_cs_pair_zephyr_stub_radio_changes == radio_changes_before);
+    cycle_send(go_frame, sizeof(go_frame));
+    nrf_cs_cycle_status_t cycle = cycle_read_status();
+    assert(cycle.state == NRF_CS_CYCLE_STATE_RUNNING && cycle.cycle_id == 77U && cycle.pairs_total == 2U);
+    assert(cycle.request_id == go.request_id && cycle.failure == NRF_CS_CYCLE_FAILURE_NONE);
+    cycle_send(go_frame, sizeof(go_frame)); /* a repeated GO changes nothing */
+    assert(cycle_read_status().state == NRF_CS_CYCLE_STATE_RUNNING);
+    assert(nrf_cs_cycle_encode_plan(&plan, plan_frame) == 0);
+    nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&diag);
+    const uint32_t errors_running = diag.callback_error_count;
+    cycle_send(plan_frame, sizeof(plan_frame)); /* no new plan while running */
+    nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&diag);
+    assert(diag.callback_error_count == errors_running + 1U);
+
+    /* The main loop ticks; only window 0 belongs to this node, so exactly one attempt starts. */
+    const unsigned executes_before = nrf_cs_pair_zephyr_stub_execute_calls;
+    nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
+    assert(nrf_cs_pair_zephyr_stub_radio_enabled); /* GO opened the radio for the reflector role */
+    unsigned ticks = 0U;
+    while (ticks < 20000U) {
+        nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
+        ++ticks;
+        if (ticks % 100U == 0U && cycle_read_status().state == NRF_CS_CYCLE_STATE_COMPLETE) break;
+    }
+    cycle = cycle_read_status();
+    assert(cycle.state == NRF_CS_CYCLE_STATE_COMPLETE && cycle.pairs_done == 2U);
+    /* Opened once for the whole run and closed again when it ended. */
+    nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
+    assert(!nrf_cs_pair_zephyr_stub_radio_enabled);
+    assert(nrf_cs_pair_zephyr_stub_radio_changes == radio_changes_before + 2U);
+    assert(nrf_cs_pair_zephyr_stub_execute_calls == executes_before + 1U);
+
+    /* Results: one page with the single recorded attempt, through the real frame format. */
+    const nrf_cs_cycle_result_request_t request = {.request_id = 0x7104U, .cycle_id = 77U, .page = 0U};
+    nrf_cs_cycle_result_t result;
+    assert(nrf_cs_cycle_encode_result_request(&request, request_frame) == 0);
+    cycle_send(request_frame, sizeof(request_frame));
+    frame = read_frame(&length);
+    assert(length == NRF_CS_CYCLE_RESULT_LENGTH && frame[3] == NRF_CS_CYCLE_MESSAGE_RESULT);
+    assert(nrf_cs_cycle_decode_result(frame, length, &result) == 0);
+    assert(result.cycle_id == 77U && result.record_total == 1U && result.record_count == 1U);
+    assert(result.records[0].execution == 0U && result.records[0].attempt == 1U);
+    assert(result.records[0].outcome == NRF_CS_OUTCOME_SUCCESS);
+    /* A request for another cycle or a page that does not exist is refused. */
+    nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&diag);
+    const uint32_t errors_results = diag.callback_error_count;
+    nrf_cs_cycle_result_request_t wrong = request;
+    wrong.cycle_id = 78U;
+    assert(nrf_cs_cycle_encode_result_request(&wrong, request_frame) == 0);
+    cycle_send(request_frame, sizeof(request_frame));
+    wrong = request;
+    wrong.page = 5U;
+    assert(nrf_cs_cycle_encode_result_request(&wrong, request_frame) == 0);
+    cycle_send(request_frame, sizeof(request_frame));
+    nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&diag);
+    assert(diag.callback_error_count == errors_results + 2U);
+    s_callbacks->buf_write_received(NULL, NULL, 0U); /* an address-only write ends the selected reply */
+    assert(cycle_read_status().state == NRF_CS_CYCLE_STATE_COMPLETE);
+
+    /* Release: normal STATUS reads come back. */
+    const nrf_cs_cycle_result_request_t release = {.request_id = 0x7105U, .cycle_id = 77U, .page = NRF_CS_CYCLE_RESULT_RELEASE_PAGE};
+    assert(nrf_cs_cycle_encode_result_request(&release, request_frame) == 0);
+    cycle_send(request_frame, sizeof(request_frame));
+    frame = read_frame(&length);
+    assert(cycle_is_legacy_reply(frame, length));
+}
+
 int main(void)
 {
     /* The MAX-494 wrapper keeps using the runtime after this main returns. */
@@ -2045,5 +2212,6 @@ int main(void)
     test_twis_log_contract_never_leaves_the_target_without_a_response();
     test_twis_read_windows_continue_the_selected_response();
     test_twis_read_window_requests_are_validated_and_one_shot();
+    test_autonomous_cs_cycle_messages();
     return 0;
 }

@@ -104,6 +104,7 @@ static uint32_t workflow_core_actions(
         case WORKFLOW_STEP_RANGING_RESULT:
             ADD_ACTION(WORKFLOW_COMMAND_BACK);
             ADD_ACTION(ranging_ok ? WORKFLOW_COMMAND_CONFIRM : WORKFLOW_COMMAND_RETRY);
+            ADD_ACTION(WORKFLOW_COMMAND_SET_DISTANCE);
             break;
         case WORKFLOW_STEP_SCAN_CHOICE:
             ADD_ACTION(WORKFLOW_COMMAND_SCAN_START);
@@ -373,6 +374,18 @@ workflow_command_result_t workflow_core_apply(
                 next = WORKFLOW_STEP_SCAN_CHOICE;
             }
             break;
+        case WORKFLOW_COMMAND_SET_DISTANCE:
+            if (core->step == WORKFLOW_STEP_RANGING_RESULT) {
+                if (!params->has_generation || !params->has_distance || !params->has_ok ||
+                    params->distance_mm <= 0 || params->node_a == params->node_b)
+                    return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+                core->ranging_ok = params->ok;
+                core->layout_result_valid = true;
+                core->layout_ok = params->ok;
+                next = WORKFLOW_STEP_RANGING_RESULT;
+                reason = params->ok ? "" : params->reason;
+            }
+            break;
         case WORKFLOW_COMMAND_SCAN_START:
             if (core->step == WORKFLOW_STEP_SCAN_CHOICE) {
                 core->scan_choice = WORKFLOW_SCAN_CHOICE_YES;
@@ -589,7 +602,7 @@ const char *workflow_core_command_name(workflow_command_t command)
         "CALCULATE_POSITIONS", "RANGING_DONE", "CONFIRM", "START_RECORDING", "STOP_RECORDING",
         "MOVE_SENSORS", "CALCULATE_SOURCES", "CALCULATION_DONE",
         "DELETE_RECORDING", "RECORD_AGAIN", "SCAN_START", "SCAN_SKIP",
-        "SCAN_COMPLETE", "BACK"
+        "SCAN_COMPLETE", "BACK", "SET_DISTANCE"
     };
     return command >= 0 && command < WORKFLOW_COMMAND_COUNT ? names[command] : "UNKNOWN";
 }

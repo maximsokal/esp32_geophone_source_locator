@@ -24,6 +24,10 @@
 extern ui_context_t render_context;
 extern workflow_snapshot_t render_snapshot;
 extern device_status_snapshot_t render_device_status;
+extern bool render_ranging_available;
+extern nrf_topology_ranging_progress_t render_ranging_progress;
+extern workflow_command_params_t render_distance_params;
+extern unsigned render_distance_calls;
 extern nrf_node_link_status_input_t render_node_status[UI_WORKFLOW_REMOTE_SLOT_COUNT + 1U];
 extern uint64_t render_now_ms;
 extern workflow_command_t render_last_command;
@@ -233,18 +237,19 @@ static void prepare(workflow_step_t step, unsigned remotes)
     render_snapshot.calibration.result_valid = step == WORKFLOW_STEP_CALIB_RESULT;
     render_snapshot.calibration.result_ok = true;
     render_snapshot.calibration.per_node_count = remotes + 1U;
-    render_snapshot.calibration.pairs_done = remotes * (remotes + 1U) / 2U;
-    render_snapshot.calibration.pairs_total = render_snapshot.calibration.pairs_done;
+    /* Calibration is height + IMU only; Channel Sounding runs at ranging. */
+    render_snapshot.calibration.pairs_done = 0U;
+    render_snapshot.calibration.pairs_total = 0U;
     render_snapshot.placement.per_node_count = remotes + 1U;
     render_snapshot.placement.all_stable = true;
     for (size_t i = 0U; i < remotes + 1U; ++i) {
         workflow_calibration_node_t *node = &render_snapshot.calibration.per_node[i];
         (void)snprintf(node->node, sizeof(node->node), i == 0U ? "MAIN" : "G%u", (unsigned)i);
         (void)snprintf(node->height_state, sizeof(node->height_state), "ready");
-        (void)snprintf(node->imu_state, sizeof(node->imu_state), "ready");
+        /* MAIN has no IMU; the service reports it as not_applicable. */
+        (void)snprintf(node->imu_state, sizeof(node->imu_state), "%s", i == 0U ? "not_applicable" : "ready");
         node->relative_z_mm_valid = true;
         node->relative_z_mm = (int32_t)i * 12;
-        node->cs_pairs_ok = true;
         workflow_placement_node_t *placed = &render_snapshot.placement.per_node[i];
         (void)snprintf(placed->node, sizeof(placed->node), "%s", node->node);
         placed->vertical = true;
@@ -323,6 +328,156 @@ static void test_unchanged_sensor_cards_do_not_redraw(void)
     assert(lv_display_remove_event_cb_with_user_data(display, count_remote_invalidations, NULL) == 1U);
 }
 
+static void test_ranging_manual_screens(const char *language, workflow_core_t *core)
+{
+    for (size_t i = 0U; s_workflow->model_state.selected_action != WORKFLOW_COMMAND_SET_DISTANCE; ++i) {
+        assert(i < s_workflow->model.action_count);
+        ui_workflow_screen_handle_key_locked(KEYPAD_KEY_DOWN);
+    }
+    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_OK);
+    assert(s_workflow->model_state.distance_view == UI_WORKFLOW_DISTANCE_PAIR);
+    assert(s_workflow->model_state.distance_pair == 3U);
+    char name[96];
+    (void)snprintf(name, sizeof(name), "%s_ranging_manual_pair", language);
+    capture(name, true);
+    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_OK);
+    assert(s_workflow->model_state.distance_view == UI_WORKFLOW_DISTANCE_VALUE);
+    (void)snprintf(name, sizeof(name), "%s_ranging_manual_value", language);
+    capture(name, true);
+    const unsigned calls = render_distance_calls;
+    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_OK);
+    assert(render_distance_calls == calls + 1U && render_distance_params.distance_mm == 6001);
+    render_snapshot.last_async = (workflow_last_async_t){
+        .seq = s_workflow->model_state.pending_seq, .command = WORKFLOW_COMMAND_SET_DISTANCE,
+        .result = WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT,
+    };
+    s_workflow->last_snapshot_ms = 0U;
+    ui_workflow_screen_refresh_locked();
+    assert(s_workflow->model_state.distance_view == UI_WORKFLOW_DISTANCE_VALUE);
+    (void)snprintf(name, sizeof(name), "%s_ranging_manual_rejected", language);
+    capture(name, true);
+    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_RIGHT);
+    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_RIGHT);
+    for (unsigned i = 0U; i < 5U; ++i) ui_workflow_screen_handle_key_locked(KEYPAD_KEY_DOWN);
+    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_RIGHT);
+    for (unsigned i = 0U; i < 5U; ++i) ui_workflow_screen_handle_key_locked(KEYPAD_KEY_UP);
+    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_RIGHT);
+    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_RIGHT);
+    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_DOWN);
+    assert(s_workflow->model_state.distance_mm == 1500U);
+    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_OK);
+    assert(render_distance_calls == calls + 2U);
+    assert(render_distance_params.node_a == 0U && render_distance_params.node_b == 4U);
+    assert(render_distance_params.distance_mm == 1500);
+    (void)snprintf(name, sizeof(name), "%s_ranging_manual_saving", language);
+    capture(name, true);
+    const uint32_t seq = s_workflow->model_state.pending_seq;
+    workflow_command_params_t accepted = render_distance_params;
+    accepted.has_ok = true; accepted.ok = true;
+    assert(workflow_core_apply(core, WORKFLOW_COMMAND_SET_DISTANCE, &accepted, 4U, true) == WORKFLOW_COMMAND_RESULT_OK);
+    workflow_core_snapshot(core, 4U, true, &render_snapshot);
+    render_snapshot.last_async = (workflow_last_async_t){
+        .seq = seq, .command = WORKFLOW_COMMAND_SET_DISTANCE, .result = WORKFLOW_COMMAND_RESULT_OK,
+    };
+    render_ranging_progress.pairs[3].state = NRF_CS_PAIR_VALID;
+    render_ranging_progress.pairs[3].distance_mm = 1500;
+    render_ranging_progress.pairs[3].automatic_distance_mm = 6001;
+    render_ranging_progress.pairs[3].scheduler_quality_flags |= NRF_CS_QUALITY_MANUAL;
+    render_ranging_progress.success = true;
+    render_ranging_progress.partial = false;
+    ++render_ranging_progress.updated_at_ms;
+    s_workflow->last_snapshot_ms = 0U;
+    ui_workflow_screen_refresh_locked();
+    assert(s_workflow->model_state.distance_view == UI_WORKFLOW_DISTANCE_CLOSED);
+    assert((s_workflow->snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM)) != 0U);
+    size_t page = 0U;
+    do {
+        (void)snprintf(name, sizeof(name), "%s_ranging_manual_saved_page%u", language, (unsigned)++page);
+        capture(name, true);
+        ui_workflow_screen_handle_key_locked(KEYPAD_KEY_RIGHT);
+        assert(page <= UI_WORKFLOW_MODEL_MAX_LINES);
+    } while (s_workflow->ranging_line_offset != 0U);
+}
+
+static void test_ranging_result_screens(const char *language)
+{
+    static const char *outcomes[] = {"success", "partial", "failed", "cable_exceeded"};
+    static const char *reasons[] = {NULL, "pair_missing:0-4", "no_measurements", "cable_exceeded:0-4"};
+    for (size_t outcome = 0U; outcome < 4U; ++outcome) {
+        render_ranging_available = false;
+        prepare(WORKFLOW_STEP_RANGING, 4U);
+        memset(&render_ranging_progress, 0, sizeof(render_ranging_progress));
+        render_ranging_available = true;
+        render_ranging_progress.partial = outcome == 1U || outcome == 3U;
+        render_ranging_progress.complete = true;
+        render_ranging_progress.pair_count = UI_WORKFLOW_RANGING_MAX_PAIRS;
+        render_ranging_progress.pairs_done = UI_WORKFLOW_RANGING_MAX_PAIRS;
+        render_ranging_progress.pairs_total = UI_WORKFLOW_RANGING_MAX_PAIRS;
+        render_ranging_progress.solution_residual_mm = outcome == 2U ? INT32_MAX : 12;
+        size_t index = 0U;
+        for (uint8_t a = 0U; a < 4U; ++a) {
+            for (uint8_t b = a + 1U; b <= 4U; ++b) {
+                nrf_cs_pair_result_t *pair = &render_ranging_progress.pairs[index];
+                pair->node_a = a;
+                pair->node_b = b;
+                pair->state = outcome == 2U ? NRF_CS_PAIR_MISSING : NRF_CS_PAIR_VALID;
+                pair->distance_mm = outcome == 2U ? 0 : (int32_t)(1234U + index);
+                if (index == 3U && outcome == 1U) {
+                    pair->state = NRF_CS_PAIR_MISSING;
+                    pair->distance_mm = 0;
+                } else if (index == 3U && outcome == 3U) {
+                    pair->state = NRF_CS_PAIR_CABLE_EXCEEDED;
+                    pair->distance_mm = 6001;
+                }
+                ++index;
+            }
+        }
+        assert(index == UI_WORKFLOW_RANGING_MAX_PAIRS);
+
+        workflow_core_t core;
+        workflow_core_init(&core, true);
+        core.step = WORKFLOW_STEP_RANGING;
+        const workflow_command_params_t params = {
+            .has_ok = true, .ok = outcome == 0U, .reason = reasons[outcome],
+        };
+        assert(workflow_core_apply(&core, WORKFLOW_COMMAND_RANGING_DONE, &params, 4U, true) ==
+            WORKFLOW_COMMAND_RESULT_OK);
+        workflow_core_snapshot(&core, 4U, true, &render_snapshot);
+        (void)snprintf(render_snapshot.object_id, sizeof(render_snapshot.object_id), "fixture");
+        s_workflow->last_snapshot_ms = 0U;
+        ui_workflow_screen_refresh_locked();
+        assert(s_workflow->snapshot.step == WORKFLOW_STEP_RANGING_RESULT);
+        assert(s_workflow->model.lines[0].key == (outcome == 0U
+            ? UI_I18N_KEY_TFT_WORKFLOW_RANGING_SUCCESS : outcome == 2U
+            ? UI_I18N_KEY_TFT_WORKFLOW_RANGING_FAILED : UI_I18N_KEY_TFT_WORKFLOW_RANGING_PARTIAL));
+
+        unsigned pair_mask = 0U;
+        size_t page = 0U;
+        do {
+            char name[96];
+            (void)snprintf(name, sizeof(name), "%s_ranging_result_%s_page%u",
+                language, outcomes[outcome], (unsigned)++page);
+            capture(name, true);
+            for (size_t slot = 0U; slot < s_workflow->line_slots; ++slot) {
+                const char *text = lv_label_get_text(s_workflow->line_labels[slot]);
+                for (size_t i = 0U; i < UI_WORKFLOW_RANGING_MAX_PAIRS; ++i) {
+                    char expected[16];
+                    (void)snprintf(expected, sizeof(expected), "%u-%u:",
+                        (unsigned)render_ranging_progress.pairs[i].node_a,
+                        (unsigned)render_ranging_progress.pairs[i].node_b);
+                    if (strstr(text, expected) != NULL) pair_mask |= 1U << i;
+                }
+            }
+            ui_workflow_screen_handle_key_locked(KEYPAD_KEY_RIGHT);
+            assert(page <= UI_WORKFLOW_MODEL_MAX_LINES);
+        } while (s_workflow->ranging_line_offset != 0U);
+        assert(page > 1U);
+        assert(pair_mask == (1U << UI_WORKFLOW_RANGING_MAX_PAIRS) - 1U);
+        if (outcome == 3U) test_ranging_manual_screens(language, &core);
+    }
+    render_ranging_available = false;
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -385,6 +540,7 @@ int main(int argc, char **argv)
         ui_workflow_update(s_workflow, render_now_ms);
         (void)snprintf(name, sizeof(name), "%s_ranging_progress", language);
         capture(name, true);
+        test_ranging_result_screens(language);
         prepare(WORKFLOW_STEP_STOPPED, 4U);
         s_workflow->model_state.material_view = UI_WORKFLOW_MATERIAL_SELECT;
         ui_workflow_update(s_workflow, render_now_ms);

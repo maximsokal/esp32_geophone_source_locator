@@ -605,6 +605,7 @@ static bool seismic_recorder_json_add_cs_pairs(
             cJSON_AddNumberToObject(pair_object, "node_b", pair->node_b) == NULL ||
             cJSON_AddBoolToObject(pair_object, "valid", pair->valid) == NULL ||
             cJSON_AddNumberToObject(pair_object, "distance_mm", (double)pair->distance_mm) == NULL ||
+            cJSON_AddNumberToObject(pair_object, "automatic_distance_mm", (double)pair->automatic_distance_mm) == NULL ||
             cJSON_AddNumberToObject(pair_object, "confidence", pair->confidence) == NULL ||
             cJSON_AddNumberToObject(pair_object, "attempts", pair->attempts) == NULL ||
             cJSON_AddNumberToObject(pair_object, "valid_samples", pair->valid_samples) == NULL ||
@@ -1956,6 +1957,10 @@ esp_err_t seismic_recorder_read_session_cs_pairs(
         }
         snprintf(out->state, sizeof(out->state), "%s", state_name);
         snprintf(out->last_failure, sizeof(out->last_failure), "%s", failure_name);
+        cJSON *automatic = cJSON_GetObjectItemCaseSensitive(pair, "automatic_distance_mm");
+        if (cJSON_IsNumber(automatic) && isfinite(automatic->valuedouble) &&
+            automatic->valuedouble >= INT32_MIN && automatic->valuedouble <= INT32_MAX)
+            out->automatic_distance_mm = (int32_t)automatic->valuedouble;
         ++count;
     }
     cs_pairs->pair_count = count;

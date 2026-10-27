@@ -91,6 +91,9 @@ typedef enum {
     NRF_BOOT_TWIS_DIRECTION_READ_DONE,
     NRF_BOOT_TWIS_DIRECTION_READ_ERROR,
     NRF_BOOT_TWIS_DIRECTION_GENERAL_ERROR,
+    /* Receive side, recorded from the hardware event before the app callback runs. */
+    NRF_BOOT_TWIS_DIRECTION_WRITE_DONE,
+    NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR,
 } nrf_boot_twis_direction_t;
 
 /* Callback records contain no pointers and are copied through the SPSC ring. */
@@ -106,6 +109,9 @@ typedef struct nrf_boot_twis_record {
     uint32_t prepare_us;
     int32_t prepare_result;
     bool tx_prepared;
+    /* WRITE_DONE/WRITE_ERROR: bytes the TWIS counted, and WRITE_REQ-to-event time. */
+    uint32_t rx_amount;
+    uint32_t event_dt_us;
 } nrf_boot_twis_record_t;
 
 typedef struct {
@@ -120,6 +126,8 @@ typedef struct {
     volatile uint32_t prepare_us;
     volatile int32_t prepare_result;
     volatile bool tx_prepared;
+    volatile uint32_t rx_amount;
+    volatile uint32_t event_dt_us;
 } nrf_boot_twis_volatile_record_t;
 
 /* Single producer (serialized TWIS buffer callbacks), single main-loop reader. */
@@ -242,6 +250,8 @@ static inline bool nrf_boot_twis_record_ring_push(
     slot->prepare_us = record->prepare_us;
     slot->prepare_result = record->prepare_result;
     slot->tx_prepared = record->tx_prepared;
+    slot->rx_amount = record->rx_amount;
+    slot->event_dt_us = record->event_dt_us;
     ring->write_index = write_index + 1U;
     return true;
 }
@@ -276,6 +286,8 @@ static inline bool nrf_boot_twis_record_ring_pop(
     record->prepare_us = slot->prepare_us;
     record->prepare_result = slot->prepare_result;
     record->tx_prepared = slot->tx_prepared;
+    record->rx_amount = slot->rx_amount;
+    record->event_dt_us = slot->event_dt_us;
     ring->read_index = read_index + 1U;
     return true;
 }
@@ -351,6 +363,42 @@ static inline int nrf_boot_twis_record_format(
 
     if (record == NULL || buffer == NULL || capacity == 0U) {
         return -EINVAL;
+    }
+    if (record->direction == NRF_BOOT_TWIS_DIRECTION_WRITE_DONE ||
+        record->direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR) {
+        /* bytes= is the RX buffer as the TWIS left it, before the app callback. */
+        const bool failed = record->direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR;
+        uint8_t shown = record->prefix_length;
+        if ((uint32_t)shown > NRF_BOOT_TRANSACTION_PREFIX_CAPACITY) {
+            shown = NRF_BOOT_TRANSACTION_PREFIX_CAPACITY;
+        }
+        written = snprintf(
+            buffer, capacity,
+            "twis_rx: tx=%" PRIu32 " event=%s rx_amount=%" PRIu32 " dt_us=%" PRIu32
+            " hw_error=0x%08" PRIx32 " WRITE_ERROR=%u result=%" PRId32 " bytes=",
+            record->index, failed ? "WRITE_ERROR" : "WRITE_DONE", record->rx_amount,
+            record->event_dt_us, record->hw_error, (unsigned)failed, record->result);
+        if (written < 0 || (size_t)written >= capacity) {
+            return -ENOSPC;
+        }
+        offset = (size_t)written;
+        if (shown == 0U) {
+            written = snprintf(buffer + offset, capacity - offset, "-");
+            if (written < 0 || (size_t)written >= capacity - offset) {
+                return -ENOSPC;
+            }
+            return (int)(offset + (size_t)written);
+        }
+        for (uint8_t index = 0U; index < shown; ++index) {
+            written = snprintf(
+                buffer + offset, capacity - offset, "%s%02x",
+                index == 0U ? "" : " ", (unsigned int)record->prefix[index]);
+            if (written < 0 || (size_t)written >= capacity - offset) {
+                return -ENOSPC;
+            }
+            offset += (size_t)written;
+        }
+        return (int)offset;
     }
     if (record->direction >= NRF_BOOT_TWIS_DIRECTION_TX_PREPARED) {
         const char *event = "GENERAL_ERROR";

@@ -169,6 +169,7 @@ static void assert_cs_pairs_equal(
         assert(expected->pairs[i].node_a == actual->pairs[i].node_a);
         assert(expected->pairs[i].node_b == actual->pairs[i].node_b);
         assert(expected->pairs[i].valid == actual->pairs[i].valid);
+        assert(strcmp(expected->pairs[i].state, actual->pairs[i].state) == 0);
         assert(expected->pairs[i].distance_mm == actual->pairs[i].distance_mm);
         assert(expected->pairs[i].confidence == actual->pairs[i].confidence);
         assert(expected->pairs[i].attempts == actual->pairs[i].attempts);
@@ -189,6 +190,9 @@ static void test_cs_pairs_write_close_reopen_round_trip(void)
     expected.pairs[0] = (object_store_cs_pair_t){.node_a = 0, .node_b = 1, .valid = true, .distance_mm = 3200, .confidence = 950U, .attempts = 1U, .valid_samples = 12U};
     expected.pairs[1] = (object_store_cs_pair_t){.node_a = 0, .node_b = 2, .valid = false, .distance_mm = 0, .confidence = 0U, .attempts = 5U, .valid_samples = 0U};
 
+    (void)snprintf(expected.pairs[0].state, sizeof(expected.pairs[0].state), "valid");
+    (void)snprintf(expected.pairs[1].state, sizeof(expected.pairs[1].state), "cable_exceeded");
+    expected.pairs[1].distance_mm = 6001;
     assert(object_store_set_cs_pairs("OBJ_0001", &expected) == ESP_OK);
     assert(strstr(persisted_json, "\"cs_pairs\"") != NULL);
 
@@ -206,6 +210,19 @@ static void test_cs_pairs_write_close_reopen_round_trip(void)
     assert(object_store_get_profile("OBJ_0001", &after_geometry) == ESP_OK);
     assert_cs_pairs_equal(&expected, &after_geometry.cs_pairs);
     assert(after_geometry.geometry.pods[0].computed);
+
+    object_store_cs_pairs_t pending = expected;
+    pending.pairs[0].distance_mm = 1234;
+    pending.pairs[0].scheduler_quality_flags = 1U << 6;
+    pending.pairs[0].automatic_distance_mm = 3200;
+    assert(object_store_set_ranging_pairs("OBJ_0001", &pending) == ESP_OK);
+    object_store_profile_t after_ranging;
+    assert(object_store_get_profile("OBJ_0001", &after_ranging) == ESP_OK);
+    assert_cs_pairs_equal(&expected, &after_ranging.cs_pairs);
+    assert_cs_pairs_equal(&pending, &after_ranging.ranging_pairs);
+    assert(after_ranging.ranging_pairs.pairs[0].scheduler_quality_flags == 1U << 6);
+    assert(after_ranging.ranging_pairs.pairs[0].automatic_distance_mm == 3200);
+    assert(after_ranging.geometry.pods[0].computed);
 }
 
 static void test_cs_pairs_clear_with_null(void)

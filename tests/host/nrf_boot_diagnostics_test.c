@@ -463,6 +463,57 @@ static void test_hardware_trace_format_and_default_logging(void)
     assert(nrf_boot_twis_record_format(&record, line, 16U) == -ENOSPC);
 }
 
+static void test_receive_side_records_format_ring_and_log_policy(void)
+{
+    nrf_boot_twis_record_t record = {
+        .index = 61U,
+        .direction = NRF_BOOT_TWIS_DIRECTION_WRITE_DONE,
+        .prefix_length = 8U,
+        .prefix = {0x47U, 0x53U, 0x01U, 0x03U, 0x20U, 0x00U, 0x93U, 0xAEU},
+        .rx_amount = 19U,
+        .event_dt_us = 412U,
+    };
+    nrf_boot_twis_record_t popped = {0};
+    nrf_boot_twis_record_ring_t ring = {0};
+    nrf_boot_twis_log_state_t state = {0};
+    char line[NRF_BOOT_TRANSACTION_LINE_CAPACITY];
+
+    assert(nrf_boot_twis_record_format(&record, line, sizeof(line)) > 0);
+    assert(strstr(line, "twis_rx: tx=61 event=WRITE_DONE rx_amount=19 dt_us=412") != NULL);
+    assert(strstr(line, "hw_error=0x00000000 WRITE_ERROR=0 result=0 bytes=47 53 01 03 20 00 93 ae") != NULL);
+
+    /* The new fields survive the SPSC ring. */
+    assert(nrf_boot_twis_record_ring_push(&ring, &record));
+    assert(nrf_boot_twis_record_ring_pop(&ring, &popped));
+    assert(popped.rx_amount == 19U && popped.event_dt_us == 412U);
+    assert(popped.direction == NRF_BOOT_TWIS_DIRECTION_WRITE_DONE);
+    assert(memcmp(popped.prefix, record.prefix, sizeof(record.prefix)) == 0);
+
+    /* Past the detail limit a clean receive stays visible, an error is rate limited like others. */
+    record.index = NRF_BOOT_TRANSACTION_DETAIL_LIMIT + 5U;
+    assert(nrf_boot_twis_log_decide(&state, &record, 10U) == NRF_BOOT_TWIS_LOG_DETAIL);
+    record.direction = NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR;
+    record.hw_error = 1U;
+    record.result = -EIO;
+    record.prefix_length = 0U;
+    assert(nrf_boot_twis_record_format(&record, line, sizeof(line)) > 0);
+    assert(strstr(line, "event=WRITE_ERROR") != NULL);
+    assert(strstr(line, "hw_error=0x00000001 WRITE_ERROR=1 result=-5 bytes=-") != NULL);
+    assert(nrf_boot_twis_log_decide(&state, &record, 11U) == NRF_BOOT_TWIS_LOG_ERROR);
+
+    /* Largest values still fit, and a small buffer is reported instead of overrun. */
+    record.index = UINT32_MAX;
+    record.rx_amount = UINT32_MAX;
+    record.event_dt_us = UINT32_MAX;
+    record.hw_error = UINT32_MAX;
+    record.result = INT32_MIN;
+    record.prefix_length = 8U;
+    assert(nrf_boot_twis_record_format(&record, line, sizeof(line)) > 0);
+    assert(strstr(line, "rx_amount=4294967295 dt_us=4294967295") != NULL);
+    assert(nrf_boot_twis_record_format(&record, line, 20U) == -ENOSPC);
+    assert(nrf_boot_twis_record_format(&record, line, 120U) == -ENOSPC);
+}
+
 int main(void)
 {
     test_lamp_test_order_timing_and_off_state();
@@ -473,6 +524,7 @@ int main(void)
     test_transaction_rate_limit_details_summaries_and_errors();
     test_transaction_format_is_bounded_with_maximum_values();
     test_hardware_trace_format_and_default_logging();
+    test_receive_side_records_format_ring_and_log_policy();
     test_change_detector_reports_each_state_family_once();
     return 0;
 }

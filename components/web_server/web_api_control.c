@@ -338,8 +338,28 @@ static workflow_command_result_t web_control_workflow_command(
         params.expected_generation = (uint32_t)value;
     }
     if ((command == WORKFLOW_COMMAND_GPS_ACCEPT ||
-         command == WORKFLOW_COMMAND_GPS_CAPTURE_FAILED) && !params.has_generation) {
+         command == WORKFLOW_COMMAND_GPS_CAPTURE_FAILED ||
+         command == WORKFLOW_COMMAND_SET_DISTANCE) && !params.has_generation) {
         return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+    }
+
+    if (command == WORKFLOW_COMMAND_SET_DISTANCE) {
+        double a, b, distance, started, updated;
+        if (!web_control_number(root, "node_a", &a) || !web_control_number(root, "node_b", &b) ||
+            !web_control_number(root, "distance_mm", &distance) ||
+            !web_control_number(root, "ranging_started_at_ms", &started) ||
+            !web_control_number(root, "ranging_updated_at_ms", &updated) ||
+            a < 0 || b < 0 || a > NRF_TOPOLOGY_REMOTE_COUNT || b > NRF_TOPOLOGY_REMOTE_COUNT ||
+            floor(a) != a || floor(b) != b || a == b || distance <= 0 ||
+            distance > INT32_MAX || floor(distance) != distance ||
+            started < 0 || updated < 0 || started > 9007199254740991.0 || updated > 9007199254740991.0 ||
+            floor(started) != started || floor(updated) != updated)
+            return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+        params.has_distance = true;
+        params.node_a = (uint8_t)a; params.node_b = (uint8_t)b;
+        params.distance_mm = (int32_t)distance;
+        params.ranging_started_at_ms = (uint64_t)started;
+        params.ranging_updated_at_ms = (uint64_t)updated;
     }
 
     const cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");

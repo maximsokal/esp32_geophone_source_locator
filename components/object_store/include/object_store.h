@@ -118,6 +118,7 @@ typedef struct
     char last_failure[OBJECT_STORE_CS_PAIR_FAILURE_SIZE];
     uint16_t provider_quality_flags;
     uint16_t scheduler_quality_flags;
+    int32_t automatic_distance_mm;
 } object_store_cs_pair_t;
 
 typedef struct
@@ -133,6 +134,7 @@ typedef struct
     float cable_lengths_m[OBJECT_STORE_POD_COUNT];
     object_store_geometry_t geometry;
     object_store_cs_pairs_t cs_pairs;
+    object_store_cs_pairs_t ranging_pairs;
 } object_store_profile_t;
 
 typedef struct
@@ -214,6 +216,7 @@ esp_err_t object_store_set_geometry(const char *object_id, const object_store_ge
  * that produced the geometry solve). Passing NULL clears it back to empty.
  */
 esp_err_t object_store_set_cs_pairs(const char *object_id, const object_store_cs_pairs_t *cs_pairs);
+esp_err_t object_store_set_ranging_pairs(const char *object_id, const object_store_cs_pairs_t *cs_pairs);
 
 /* Per-object calculation input profile and shared scan artifact presence. */
 esp_err_t object_store_set_calc_settings_json(const char *object_id, const char *json);

@@ -157,3 +157,22 @@ void localization_job_get_status(localization_job_status_t *status_out)
     assert(status_out != NULL);
     *status_out = workflow_test_job_status;
 }
+
+esp_err_t object_store_get_profile_cached(const char *object_id, object_store_profile_t *profile)
+{
+    (void)object_id;
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) profile->cable_lengths_m[i] = 5.0f;
+    return ESP_OK;
+}
+
+object_store_cs_pairs_t workflow_test_saved_pairs;
+unsigned workflow_test_saved_pairs_calls;
+esp_err_t workflow_test_saved_pairs_result;
+esp_err_t object_store_set_ranging_pairs(const char *object_id, const object_store_cs_pairs_t *pairs)
+{
+    (void)object_id;
+    ++workflow_test_saved_pairs_calls;
+    if (workflow_test_saved_pairs_result != ESP_OK) return workflow_test_saved_pairs_result;
+    workflow_test_saved_pairs = *pairs;
+    return ESP_OK;
+}

@@ -12,6 +12,7 @@ static const char *pair_state_name(nrf_cs_pair_state_t state)
         case NRF_CS_PAIR_VALID: return "valid";
         case NRF_CS_PAIR_MISSING: return "missing";
         case NRF_CS_PAIR_RETRY_EXHAUSTED: return "retry_exhausted";
+        case NRF_CS_PAIR_CABLE_EXCEEDED: return "cable_exceeded";
         case NRF_CS_PAIR_UNKNOWN:
         default: return "unknown";
     }
@@ -34,6 +35,8 @@ static bool add_pairs(cJSON *object, const nrf_cs_pair_result_t *pairs, size_t c
             cJSON_AddNumberToObject(item, "node_b", pair->node_b) == NULL ||
             cJSON_AddStringToObject(item, "state", pair_state_name(pair->state)) == NULL ||
             cJSON_AddNumberToObject(item, "distance_mm", pair->distance_mm) == NULL ||
+            cJSON_AddBoolToObject(item, "manual", (pair->scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U) == NULL ||
+            cJSON_AddNumberToObject(item, "automatic_distance_mm", pair->automatic_distance_mm) == NULL ||
             cJSON_AddNumberToObject(item, "spread_mm", pair->spread_mm) == NULL ||
             cJSON_AddNumberToObject(item, "confidence", pair->confidence) == NULL ||
             cJSON_AddNumberToObject(item, "valid_samples", pair->valid_samples) == NULL ||
@@ -91,6 +94,7 @@ static bool add_progress(cJSON *root, const nrf_topology_ranging_progress_t *pro
         cJSON_AddBoolToObject(object, "active", progress->active) == NULL ||
         cJSON_AddBoolToObject(object, "complete", progress->complete) == NULL ||
         cJSON_AddBoolToObject(object, "success", progress->success) == NULL ||
+        cJSON_AddBoolToObject(object, "partial", progress->partial) == NULL ||
         cJSON_AddNumberToObject(object, "pairs_done", (double)progress->pairs_done) == NULL ||
         cJSON_AddNumberToObject(object, "pairs_total", (double)progress->pairs_total) == NULL ||
         cJSON_AddNumberToObject(object, "topology_generation", progress->topology_generation) == NULL ||
@@ -116,7 +120,8 @@ static bool add_result(cJSON *root, const nrf_topology_ranging_result_t *result)
     cJSON *object = cJSON_AddObjectToObject(root, "last_result");
     if (object == NULL ||
         cJSON_AddBoolToObject(object, "available", result->available) == NULL ||
-        cJSON_AddBoolToObject(object, "invalidated", result->invalidated) == NULL) {
+        cJSON_AddBoolToObject(object, "invalidated", result->invalidated) == NULL ||
+        cJSON_AddBoolToObject(object, "success", result->success) == NULL) {
         return false;
     }
     if (!result->available) return true;

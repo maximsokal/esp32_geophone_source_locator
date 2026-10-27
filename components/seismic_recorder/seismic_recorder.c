@@ -3,6 +3,7 @@
 #include "runtime_observability.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +19,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nrf_cs_authority.h"
+#include "nrf_cs_cycle_coordinator.h"
 #include "nrf_geometry_solver.h"
 #include "nrf_topology_service.h"
 #include "object_store.h"
@@ -53,7 +55,6 @@
 /* MAX-206: accepted samples per pair (median + MAD outlier rejection)
  * instead of trusting one procedure; the cycle budget scales with it. */
 #define SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR    3U
-#define SEISMIC_RECORDER_GEOMETRY_CS_TIMEOUT_MS     (15000U * SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR)
 
 #if defined(CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE)
 #define SEISMIC_RECORDER_GEOMETRY_Z_POLICY SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
@@ -1257,7 +1258,25 @@ static esp_err_t seismic_recorder_prepare_geometry(
         .max_attempts = SEISMIC_RECORDER_GEOMETRY_CS_MAX_ATTEMPTS,
         .min_confidence = SEISMIC_RECORDER_GEOMETRY_CS_MIN_CONFIDENCE,
         .samples_per_pair = SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR,
+        .full_rotation = true,
     };
+    uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {0};
+    object_store_profile_t *cable_profile = malloc(sizeof(*cable_profile));
+    if (cable_profile == NULL) return ESP_ERR_NO_MEM;
+    err = object_store_get_profile(object_id, cable_profile);
+    if (err == ESP_OK) {
+        for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+            const float length = cable_profile->cable_lengths_m[i];
+            if (!isfinite(length) || length <= 0.0f || length > (float)INT32_MAX / 1000.0f) {
+                err = ESP_ERR_INVALID_ARG;
+                break;
+            }
+            limits[i] = (uint32_t)(length * 1000.0f);
+        }
+    }
+    free(cable_profile);
+    if (err != ESP_OK) return err;
+
     nrf_topology_snapshot_t topology;
     nrf_topology_ranging_result_t frozen_ranging = {0};
     nrf_cs_cycle_snapshot_t cycle;
@@ -1276,35 +1295,57 @@ static esp_err_t seismic_recorder_prepare_geometry(
         cycle.pair_count = frozen_ranging.pair_count;
         memcpy(cycle.pairs, frozen_ranging.pairs, cycle.pair_count * sizeof(cycle.pairs[0]));
     } else {
-        err = nrf_topology_service_request_cs_cycle(&policy);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        err = nrf_topology_service_ranging_start_autonomous_limited(&policy, limits);
+        if (err != ESP_OK) {
             ESP_LOGE(TAG, "START rejected: could not request CS geometry cycle err=%s", esp_err_to_name(err));
             return err;
         }
 
+        nrf_topology_ranging_progress_t progress;
+        err = nrf_topology_service_ranging_get_progress(&progress);
+        if (err != ESP_OK) return err;
+        const uint64_t started_at_ms = progress.started_at_ms;
+        const uint32_t timeout_ms = nrf_cs_cycle_coordinator_budget_ms(
+            &policy, NRF_CS_MAX_EXECUTIONS, NRF_CS_MAX_NODES);
         uint32_t waited_ms = 0U;
         for (;;) {
-            err = nrf_topology_service_get_cs_cycle(&cycle);
-            if (err == ESP_OK && !cycle.active) {
-                break;
-            }
-            if (waited_ms >= SEISMIC_RECORDER_GEOMETRY_CS_TIMEOUT_MS) {
+            if (progress.started_at_ms != started_at_ms) return ESP_ERR_INVALID_STATE;
+            if (progress.complete) break;
+            if (waited_ms >= timeout_ms) {
                 ESP_LOGE(TAG, "START rejected: CS geometry cycle did not complete in time");
                 return ESP_ERR_TIMEOUT;
             }
             vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS));
             waited_ms += SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS;
+            err = nrf_topology_service_ranging_get_progress(&progress);
+            if (err != ESP_OK) return err;
         }
-
-        if (cycle.result != NRF_CS_AUTHORITY_COMPLETE) {
-            ESP_LOGE(TAG, "START rejected: CS geometry cycle failed result=%d", cycle.result);
+        if (!progress.success || progress.pair_count > NRF_CS_MAX_PAIRS) {
+            ESP_LOGE(TAG, "START rejected: CS geometry cycle failed reason=%s", progress.failure_reason);
             return ESP_ERR_INVALID_STATE;
         }
+        cycle.complete = true;
+        cycle.result = NRF_CS_AUTHORITY_COMPLETE;
+        cycle.membership_generation = progress.membership_generation;
+        cycle.pair_count = progress.pair_count;
+        memcpy(cycle.pairs, progress.pairs, cycle.pair_count * sizeof(cycle.pairs[0]));
 
         err = nrf_topology_service_get_snapshot(&topology);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "START rejected: topology snapshot unavailable err=%s", esp_err_to_name(err));
             return err;
+        }
+    }
+
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+        if (limits[channel] == 0U) return ESP_ERR_INVALID_ARG;
+        for (size_t i = 0U; i < cycle.pair_count; ++i) {
+            const nrf_cs_pair_result_t *pair = &cycle.pairs[i];
+            if (pair->state != NRF_CS_PAIR_VALID) continue;
+            if (((pair->node_a == topology.main.node_id && pair->node_b == topology.remotes[channel].node_id) ||
+                 (pair->node_b == topology.main.node_id && pair->node_a == topology.remotes[channel].node_id)) &&
+                pair->distance_mm > 0 && (uint32_t)pair->distance_mm > limits[channel]) return ESP_ERR_INVALID_STATE;
         }
     }
 

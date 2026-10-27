@@ -35,6 +35,7 @@ recording.action.0	Stop recording
 ranging_unknown.title	BLUETOOTH RANGING
 ranging_unknown.hint	UP/DOWN actions  OK run  LEFT back
 ranging_unknown.body.0	Pairs —/— residual — mm
+ranging_unknown.body.1	Ranging by radio, keep still
 localization_solved.text	G1 X0.0m Y0.0m LEVEL SOL
 localization_unverified.text	G1 XUNKNOWN YUNKNOWN N/D UNS
 battery_unknown.text	BAT

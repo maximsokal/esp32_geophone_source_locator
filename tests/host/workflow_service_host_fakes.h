@@ -28,3 +28,7 @@ extern char workflow_test_submitted_object_id[16];
 extern char workflow_test_submitted_session_id[16];
 
 void workflow_service_host_fakes_reset(void);
+
+extern object_store_cs_pairs_t workflow_test_saved_pairs;
+extern unsigned workflow_test_saved_pairs_calls;
+extern esp_err_t workflow_test_saved_pairs_result;

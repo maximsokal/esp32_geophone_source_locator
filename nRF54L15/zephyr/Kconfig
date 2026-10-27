@@ -28,6 +28,17 @@ config APP_NRF_VERBOSE_LOG
 	help
 	  Print upstream transaction records, state transitions, and periodic status.
 
+config APP_NRF_RADIO_ON_DEMAND
+	bool "Radio activity only during an autonomous ranging cycle"
+	default y
+	help
+	  Advertise, scan and connect only while the ESP32 has started an autonomous
+	  Channel Sounding cycle (CS_CYCLE_GO) and the cycle is running. Outside it the
+	  Bluetooth stack is up but the radio is silent, so it cannot disturb the I2C
+	  target during node discovery, calibration and recording. Per-step Channel
+	  Sounding commands (CS_EXECUTE) need the radio and fail with a transport error
+	  unless this is disabled; disable it for the CS accuracy HIL image.
+
 config APP_NRF_STAGE_SIGNALS
 	bool "Show lifecycle stage signals on the logger LEDs"
 	default y

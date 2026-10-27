@@ -58,6 +58,7 @@ typedef struct {
 typedef struct {
     bool available;
     bool invalidated;
+    bool success;
     bool membership_identity_valid;
     size_t membership_count;
     nrf_topology_ranging_member_identity_t membership[NRF_CS_MAX_NODES];
@@ -74,6 +75,7 @@ typedef struct {
     bool active;
     bool complete;
     bool success;
+    bool partial;
     size_t pairs_done; /* Directed executions, despite the legacy field name. */
     size_t pairs_total;
     size_t pair_count;
@@ -139,8 +141,22 @@ esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot);
 esp_err_t nrf_topology_service_ranging_start(
     const nrf_cs_policy_t *policy,
     uint32_t timeout_ms);
+/*
+ * Ranging for the workflow: the nodes range among themselves over Bluetooth while the shared I2C bus
+ * stays silent (quiet lease); the worker is busy for the whole cycle and the progress only moves when
+ * MAIN is polled. The time limit is derived from the policy and the node count.
+ */
+esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *policy);
+/* Per mux channel; every assigned remote must have a nonzero limit in mm. */
+esp_err_t nrf_topology_service_ranging_start_autonomous_limited(
+    const nrf_cs_policy_t *policy, const uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT]);
 esp_err_t nrf_topology_service_ranging_get_progress(
     nrf_topology_ranging_progress_t *progress);
+/* No radio/I2C traffic; rejects stale revisions and changed node identities. */
+esp_err_t nrf_topology_service_ranging_set_manual(
+    uint64_t expected_started_at_ms, uint64_t expected_updated_at_ms,
+    uint8_t node_a, uint8_t node_b, int32_t distance_mm,
+    const uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT]);
 esp_err_t nrf_topology_service_get_frozen_ranging_result(
     nrf_topology_ranging_result_t *result);
 esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(

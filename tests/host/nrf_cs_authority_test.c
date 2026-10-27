@@ -199,5 +199,35 @@ int main(void)
         assert(next_generation != first_generation);
     }
 
+    {
+        /* Autonomous ranging completes the scheduler from outside; the authority only has to end the cycle. */
+        const nrf_cs_node_id_t three_nodes[] = {1U, 2U, 3U};
+        nrf_cs_step_t step;
+        const nrf_cs_measurement_t good = {.outcome = NRF_CS_OUTCOME_SUCCESS, .distance_mm = 1500, .confidence = 900U};
+
+        memset(&transport, 0, sizeof(transport));
+        assert(nrf_cs_authority_finish_external(NULL) == NRF_CS_AUTHORITY_ERR_ARGUMENT);
+        assert(nrf_cs_authority_init(&authority, &policy, &ops, 300U) == NRF_CS_AUTHORITY_OK);
+        assert(nrf_cs_authority_finish_external(&authority) == NRF_CS_AUTHORITY_ERR_STATE); /* no cycle */
+        assert(nrf_cs_authority_start_cycle(&authority, three_nodes, 3U) == NRF_CS_AUTHORITY_PROGRESS);
+        assert(nrf_cs_authority_finish_external(&authority) == NRF_CS_AUTHORITY_ERR_STATE); /* not complete yet */
+        assert(nrf_cs_authority_is_active(&authority));
+        while (nrf_cs_scheduler_next_step(&authority.scheduler, &step) == NRF_CS_STEP_READY) {
+            assert(nrf_cs_scheduler_complete_step(&authority.scheduler, &step, &good) == NRF_CS_OK);
+        }
+        assert(nrf_cs_scheduler_is_complete(&authority.scheduler));
+        assert(nrf_cs_authority_is_active(&authority)); /* the authority has not noticed yet */
+        assert(nrf_cs_authority_finish_external(&authority) == NRF_CS_AUTHORITY_COMPLETE);
+        assert(!nrf_cs_authority_is_active(&authority));
+        assert(nrf_cs_authority_finish_external(&authority) == NRF_CS_AUTHORITY_ERR_STATE); /* only once */
+        assert(nrf_cs_authority_pair_at(&authority, 0U)->state == NRF_CS_PAIR_VALID);
+
+        /* A command in flight means the authority is driving the cycle itself. */
+        assert(nrf_cs_authority_start_cycle(&authority, three_nodes, 3U) == NRF_CS_AUTHORITY_PROGRESS);
+        assert(nrf_cs_authority_pump(&authority) == NRF_CS_AUTHORITY_PROGRESS);
+        assert(authority.command_active);
+        assert(nrf_cs_authority_finish_external(&authority) == NRF_CS_AUTHORITY_ERR_STATE);
+    }
+
     return 0;
 }

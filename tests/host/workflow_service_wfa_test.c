@@ -40,7 +40,6 @@ static nrf_topology_ranging_progress_t s_ranging_progress;
 static esp_err_t s_ranging_start_result;
 static esp_err_t s_ranging_progress_result;
 static nrf_cs_policy_t s_ranging_policy;
-static uint32_t s_ranging_timeout_ms;
 static unsigned s_ranging_start_calls;
 static unsigned s_ranging_progress_calls;
 static unsigned s_ranging_invalidate_calls;
@@ -224,13 +223,18 @@ esp_err_t nrf_topology_service_get_cs_cycle(nrf_cs_cycle_snapshot_t *snapshot)
     return ESP_OK;
 }
 
-esp_err_t nrf_topology_service_ranging_start(const nrf_cs_policy_t *policy, uint32_t timeout_ms)
+esp_err_t nrf_topology_service_ranging_start_autonomous_limited(const nrf_cs_policy_t *policy, const uint32_t *limits)
+{
+    assert(limits != NULL && limits[0] == 5000U && limits[3] == 5000U && limits[4] == 0U);
+    return nrf_topology_service_ranging_start_autonomous(policy);
+}
+
+esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *policy)
 {
     assert(policy != NULL);
     ranging_call(RANGING_CALL_START);
     ++s_ranging_start_calls;
     s_ranging_policy = *policy;
-    s_ranging_timeout_ms = timeout_ms;
     if (s_ranging_start_result == ESP_OK) {
         memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
         s_ranging_progress.active = true;
@@ -254,6 +258,23 @@ esp_err_t nrf_topology_service_invalidate_ranging(void)
 {
     ranging_call(RANGING_CALL_INVALIDATE);
     ++s_ranging_invalidate_calls;
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_ranging_set_manual(uint64_t started, uint64_t updated,
+    uint8_t a, uint8_t b, int32_t distance, const uint32_t *limits)
+{
+    if (started != s_ranging_progress.started_at_ms || updated != s_ranging_progress.updated_at_ms)
+        return ESP_ERR_INVALID_STATE;
+    if (a != 0U || b != 2U || distance <= 0 || (uint32_t)distance > limits[1]) return ESP_ERR_INVALID_ARG;
+    s_ranging_progress.pairs[1].automatic_distance_mm = s_ranging_progress.pairs[1].distance_mm;
+    s_ranging_progress.pairs[1].distance_mm = distance;
+    s_ranging_progress.pairs[1].state = NRF_CS_PAIR_VALID;
+    s_ranging_progress.pairs[1].scheduler_quality_flags |= 1U << 6;
+    s_ranging_progress.success = true;
+    s_ranging_progress.partial = false;
+    ++s_ranging_progress.updated_at_ms;
+    s_ranging_progress.failure_reason[0] = '\0';
     return ESP_OK;
 }
 
@@ -312,7 +333,6 @@ static void reset_fakes(void)
     memset(&s_ranging_policy, 0, sizeof(s_ranging_policy));
     s_ranging_start_result = ESP_OK;
     s_ranging_progress_result = ESP_OK;
-    s_ranging_timeout_ms = 0U;
     clear_ranging_calls();
     assert(workflow_service_init() == ESP_OK);
 }
@@ -332,7 +352,8 @@ static void enter_calibrating(void)
     assert(command(WORKFLOW_COMMAND_SENSORS_PLACED) == WORKFLOW_COMMAND_RESULT_OK);
     assert(s_height_requests == 1U);
     assert(s_imu_requests == 1U);
-    assert(s_cs_requests == 1U);
+    /* Calibration is height + IMU only; Channel Sounding (BLE) starts at ranging. */
+    assert(s_cs_requests == 0U);
     assert(s_main_requests == 1U);
     assert(s_requested_generation == s_imu_generation);
     assert(s_requested_generation == s_main_generation);
@@ -374,17 +395,6 @@ static void publish_all_pass_results(void)
         s_cache[channel].sensor.gravity_ref_mg[1] = 20;
         s_cache[channel].sensor.gravity_ref_mg[2] = 990;
     }
-    s_cycle.active = false;
-    s_cycle.complete = true;
-    s_cycle.pair_count = 3U;
-    for (uint8_t i = 0U; i < 3U; ++i) {
-        s_cycle.pairs[i] = (nrf_cs_pair_result_t){
-            .node_a = NRF_TOPOLOGY_MAIN_NODE_ID,
-            .node_b = (uint8_t)(i + 1U),
-            .state = NRF_CS_PAIR_VALID,
-            .spread_mm = (int32_t)(i == 2U ? 150U : 10U + i),
-        };
-    }
 }
 
 static bool has_reason(const workflow_calibration_snapshot_t *calibration, const char *reason)
@@ -409,12 +419,11 @@ static void test_calibration_all_pass(void)
     assert(snapshot.calibration.per_node_count == 4U);
     assert(strcmp(snapshot.calibration.per_node[0].node, "MAIN") == 0);
     assert(snapshot.calibration.per_node[0].relative_z_mm == 0);
-    assert(snapshot.calibration.per_node[0].cs_pairs_ok);
     assert(strcmp(snapshot.calibration.per_node[2].node, "G2") == 0);
     assert(snapshot.calibration.per_node[2].gyro_bias_mdps[0] == -11);
     assert(snapshot.calibration.per_node[2].gravity_ref_mg[2] == 990);
-    assert(snapshot.calibration.pairs_done == 3U && snapshot.calibration.pairs_total == 3U);
-    assert(snapshot.calibration.max_spread_valid && snapshot.calibration.max_spread_mm == 150);
+    assert(snapshot.calibration.pairs_done == 0U && snapshot.calibration.pairs_total == 0U);
+    assert(!snapshot.calibration.max_spread_valid);
     assert(snapshot.calibration.reasons_count == 0U);
     assert(s_log_count == 8U);
     workflow_service_shutdown();
@@ -480,32 +489,33 @@ static void test_calibration_imu_sensor_invalid_reason(void)
     assert_failure_reason("G2:imu_sensor_invalid");
 }
 
-static void test_calibration_cs_pair_invalid_reason_and_node_isolation(void)
+/* Whatever a stale or failed Channel Sounding cycle holds, calibration neither waits for it nor fails on it. */
+static void test_calibration_ignores_channel_sounding_state(void)
 {
     reset_fakes();
     enter_calibrating();
     publish_all_pass_results();
-    s_cycle.pairs[1].state = NRF_CS_PAIR_RETRY_EXHAUSTED;
+    s_cycle_valid = true;
+    s_cycle.active = false;
+    s_cycle.complete = true;
+    s_cycle.pair_count = 3U;
+    for (uint8_t i = 0U; i < 3U; ++i) {
+        s_cycle.pairs[i] = (nrf_cs_pair_result_t){
+            .node_a = NRF_TOPOLOGY_MAIN_NODE_ID,
+            .node_b = (uint8_t)(i + 1U),
+            .state = NRF_CS_PAIR_RETRY_EXHAUSTED,
+            .spread_mm = 999,
+        };
+    }
     assert(workflow_service_poll() == ESP_OK);
     workflow_snapshot_t snapshot;
     assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
     assert(snapshot.step == WORKFLOW_STEP_CALIB_RESULT);
-    assert(has_reason(&snapshot.calibration, "cs_pair_invalid:0-2"));
-    assert(!snapshot.calibration.per_node[2].cs_pairs_ok);
-    assert(snapshot.calibration.per_node[1].cs_pairs_ok);
-    assert(snapshot.calibration.per_node[3].cs_pairs_ok);
-    assert(snapshot.calibration.pairs_done == 3U);
+    assert(snapshot.calibration.result_valid && snapshot.calibration.result_ok);
+    assert(snapshot.calibration.reasons_count == 0U);
+    assert(!has_reason(&snapshot.calibration, "cs_spread_too_high"));
+    assert(s_cs_requests == 0U);
     workflow_service_shutdown();
-}
-
-static void test_calibration_cs_spread_reason(void)
-{
-    reset_fakes();
-    enter_calibrating();
-    publish_all_pass_results();
-    s_cycle.pairs[2].spread_mm = 151;
-    assert(workflow_service_poll() == ESP_OK);
-    assert_failure_reason("cs_spread_too_high");
 }
 
 static void test_calibration_timeout(void)
@@ -652,7 +662,6 @@ static void test_ranging_start_is_invalidated_and_nonblocking(void)
     assert(s_ranging_policy.max_attempts == 3U);
     assert(s_ranging_policy.min_confidence == 500U);
     assert(s_ranging_policy.samples_per_pair == 3U);
-    assert(s_ranging_timeout_ms == NRF_TOPOLOGY_RANGING_DEFAULT_TIMEOUT_MS);
     assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING);
     assert(s_ranging_progress_calls == 2U);
     workflow_service_shutdown();
@@ -696,6 +705,59 @@ static void assert_ranging_failure_reason(const char *reason)
     assert(snapshot.layout_result_valid && !snapshot.layout_ok);
     assert(strcmp(snapshot.reason, reason) == 0);
     assert(s_ranging_invalidate_calls == 2U);
+    workflow_service_shutdown();
+}
+
+static void test_ranging_partial_pairs_are_saved(void)
+{
+    reset_fakes();
+    workflow_test_saved_pairs_calls = 0U;
+    workflow_test_saved_pairs_result = ESP_OK;
+    enter_ready_placement();
+    start_ranging();
+    s_ranging_progress.complete = true;
+    s_ranging_progress.partial = true;
+    s_ranging_progress.pair_count = 2U;
+    s_ranging_progress.pairs[0] = (nrf_cs_pair_result_t){.node_a = 0, .node_b = 1,
+        .state = NRF_CS_PAIR_VALID, .distance_mm = 900};
+    s_ranging_progress.pairs[1] = (nrf_cs_pair_result_t){.node_a = 0, .node_b = 2,
+        .state = NRF_CS_PAIR_MISSING, .distance_mm = 0};
+    assert(workflow_service_poll() == ESP_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(workflow_test_saved_pairs_calls == 1U);
+    assert(workflow_test_saved_pairs.pair_count == 2U);
+    assert(workflow_test_saved_pairs.pairs[0].valid && workflow_test_saved_pairs.pairs[0].distance_mm == 900);
+    assert(!workflow_test_saved_pairs.pairs[1].valid && workflow_test_saved_pairs.pairs[1].node_b == 2);
+    assert(s_ranging_invalidate_calls == 1U);
+    const workflow_snapshot_t partial = get_workflow_snapshot();
+    workflow_command_params_t edit = {
+        .has_generation = true, .expected_generation = partial.generation,
+        .has_distance = true, .node_a = 0U, .node_b = 2U, .distance_mm = 5001,
+        .ranging_started_at_ms = s_ranging_progress.started_at_ms,
+        .ranging_updated_at_ms = s_ranging_progress.updated_at_ms,
+    };
+    assert(workflow_service_command(WORKFLOW_COMMAND_SET_DISTANCE, &edit) == WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT);
+    assert(workflow_test_saved_pairs_calls == 1U);
+    edit.distance_mm = 1400;
+    uint32_t seq = 0U;
+    assert(workflow_service_set_distance_async(&edit, &seq) == ESP_OK);
+    const workflow_snapshot_t completed = get_workflow_snapshot();
+    assert(completed.last_async.seq == seq && completed.last_async.result == WORKFLOW_COMMAND_RESULT_OK);
+    assert(completed.generation != partial.generation);
+    assert(completed.reason[0] == '\0');
+    assert((completed.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM)) != 0U);
+    assert(workflow_test_saved_pairs_calls == 2U);
+    assert(workflow_test_saved_pairs.pairs[1].valid && workflow_test_saved_pairs.pairs[1].distance_mm == 1400);
+    assert((workflow_test_saved_pairs.pairs[1].scheduler_quality_flags & (1U << 6)) != 0U);
+    assert(workflow_service_command(WORKFLOW_COMMAND_SET_DISTANCE, &edit) == WORKFLOW_COMMAND_RESULT_STALE);
+    edit.expected_generation = completed.generation;
+    edit.ranging_updated_at_ms = s_ranging_progress.updated_at_ms;
+    workflow_test_saved_pairs_result = ESP_FAIL;
+    assert(workflow_service_command(WORKFLOW_COMMAND_SET_DISTANCE, &edit) == WORKFLOW_COMMAND_RESULT_UNAVAILABLE);
+    const workflow_snapshot_t failed_save = get_workflow_snapshot();
+    assert((failed_save.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM)) == 0U);
+    assert(strcmp(failed_save.reason, "ranging_save_failed") == 0);
+    workflow_test_saved_pairs_result = ESP_OK;
     workflow_service_shutdown();
 }
 
@@ -798,6 +860,7 @@ static void test_max460_layout_success_failure_reason_retry_and_back(void)
 {
     test_ranging_success_and_confirm_preserve_frozen_result();
     test_ranging_failure_reasons_propagate();
+    test_ranging_partial_pairs_are_saved();
     test_ranging_start_error_reports_failure();
     test_ranging_retry_starts_a_new_run_and_ignores_stale_completion();
     test_ranging_back_orphans_run_and_invalidates_late_result();
@@ -1083,8 +1146,7 @@ int main(void)
     test_calibration_imu_rejected_moving_reason();
     test_calibration_imu_rejected_gravity_reason();
     test_calibration_imu_sensor_invalid_reason();
-    test_calibration_cs_pair_invalid_reason_and_node_isolation();
-    test_calibration_cs_spread_reason();
+    test_calibration_ignores_channel_sounding_state();
     test_calibration_timeout();
     test_calibration_back_cancels_pending_results();
     test_calibration_retry_changes_generation_and_ignores_stale_results();

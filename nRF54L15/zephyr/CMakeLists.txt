@@ -63,6 +63,8 @@ target_sources(app PRIVATE
     ../src/nrf_cs_measurement_quality.c
     ../src/nrf_cs_pair_runtime_zephyr.c
     ../src/nrf_cs_control_protocol.c
+    ../src/nrf_cs_cycle_protocol.c
+    ../src/nrf_cs_cycle_runtime.c
     ../src/nrf_cs_control_runtime.c
     ../src/nrf_watchdog_health.c
     ../src/nrf_watchdog_zephyr.c
