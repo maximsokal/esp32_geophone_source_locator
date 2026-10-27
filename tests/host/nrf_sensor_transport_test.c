@@ -547,6 +547,8 @@ static void test_status_cache_survives_busy_topology_refresh(void)
     topology.bus_busy = true;
     topology.stale = true;
     assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 0U);
+    assert(cache[1].identity_valid && !cache[1].topology_current);
+    assert(cache[1].state == NRF_SENSOR_CACHE_TOPOLOGY_STALE);
     assert(cache[1].upstream_status.valid);
     assert(cache[1].upstream_status.identity_matches);
     assert(cache[1].upstream_status.lifecycle == NRF_UPSTREAM_LIFECYCLE_READY);
@@ -570,6 +572,30 @@ static void test_status_cache_survives_busy_topology_refresh(void)
                &input,
                input.status_receipt_uptime_ms + NRF_NODE_LINK_STATUS_STALE_LIMIT_MS,
                false) == NRF_NODE_LINK_STATUS_NOT_CONNECTED);
+    topology.bus_busy = false;
+    topology.stale = false;
+    assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 0U);
+    assert(cache[1].topology_current && cache[1].upstream_status.valid);
+}
+
+static void test_stale_topology_blocks_sensor_and_calibration_io(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    topo(&bus, &topology, 3U);
+    init_cache(&topology, cache, 3U);
+    nrf_sensor_transport_controller_t controller = make_controller();
+    nrf_sensor_transport_io_t io = make_io(&bus);
+    bool reconcile = false;
+    topology.stale = true;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 3U, &cache[3], &reconcile) == ESP_ERR_INVALID_STATE);
+    assert(nrf_sensor_transport_capture_height_reference(
+               &controller, &io, &topology, 3U, 1U, &reconcile) == ESP_ERR_INVALID_STATE);
+    assert(nrf_sensor_transport_request_imu_calibration(
+               &controller, &io, &topology, 3U, 1U, &reconcile) == ESP_ERR_INVALID_STATE);
+    assert(bus.event_count == 0U && bus.select == 0U);
 }
 
 static void test_status_cache_retains_lifecycle_result_flags(void)
@@ -907,6 +933,7 @@ int main(void)
 {
     test_cache_identity_lifecycle();
     test_status_cache_survives_busy_topology_refresh();
+    test_stale_topology_blocks_sensor_and_calibration_io();
     test_success_order_and_no_discovery();
     test_final_result_mapping_and_timestamps();
     test_status_cache_retains_lifecycle_result_flags();

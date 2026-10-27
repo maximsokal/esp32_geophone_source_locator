@@ -62,6 +62,22 @@ static int64_t s_owner_deadline_us;
 static bool s_owner_hold_budget_exceeded;
 static bool s_owner_close_in_progress;
 static sensor_bus_owner_stats_t s_owner_stats;
+/* busy_count seen by the last INFO I2C_BUS_OWNER line; guarded by s_owner_stats_lock. */
+static uint32_t s_owner_logged_busy_count;
+static struct {
+    int64_t started_us;
+    uint64_t max_wait_us;
+    uint64_t max_hold_us;
+    uint32_t sessions;
+    uint32_t busy_start;
+    bool active;
+} s_owner_summary;
+
+/* A healthy session holds the bus for <10 ms with no wait; only outliers earn an INFO line. */
+#define SENSOR_BUS_OWNER_LOG_WAIT_MS 5U
+#define SENSOR_BUS_OWNER_LOG_HOLD_MS 25U
+#define SENSOR_BUS_OWNER_LOG_FORMAT \
+    "I2C_BUS_OWNER owner=%s waiter_task=%s wait_ms=%llu hold_ms=%llu busy_count=%lu"
 
 /*
  * s_bus/s_ina3221/s_tca9548a/s_tca9548a_address are shared mutable state
@@ -697,6 +713,12 @@ void sensor_bus_owner_release(void)
     const int64_t now_us = sensor_bus_lines_now_us();
     bool outermost = false;
     bool budget_exceeded = false;
+    bool busy_count_changed = false;
+    bool emit_summary = false;
+    uint32_t summary_sessions = 0U;
+    uint32_t summary_busy = 0U;
+    uint64_t summary_max_wait_us = 0U;
+    uint64_t summary_max_hold_us = 0U;
     uint32_t saved_priority = UINT32_MAX;
     sensor_bus_owner_stats_t released_stats = {0};
     portENTER_CRITICAL(&s_owner_stats_lock);
@@ -712,6 +734,33 @@ void sensor_bus_owner_release(void)
             ? (uint64_t)(now_us - s_owner_started_us) : 0U;
         budget_exceeded = s_owner_hold_budget_exceeded ||
             released_stats.last_hold_us > (uint64_t)SENSOR_BUS_OWNER_MAX_HOLD_MS * 1000U;
+        busy_count_changed = released_stats.busy_count != s_owner_logged_busy_count;
+        s_owner_logged_busy_count = released_stats.busy_count;
+        if (!s_owner_summary.active || now_us < s_owner_summary.started_us) {
+            memset(&s_owner_summary, 0, sizeof(s_owner_summary));
+            s_owner_summary.active = true;
+            s_owner_summary.started_us = now_us;
+            s_owner_summary.busy_start = released_stats.busy_count;
+        }
+        if (s_owner_summary.sessions != UINT32_MAX) ++s_owner_summary.sessions;
+        if (released_stats.last_waited_for_mutex_us > s_owner_summary.max_wait_us) {
+            s_owner_summary.max_wait_us = released_stats.last_waited_for_mutex_us;
+        }
+        if (released_stats.last_hold_us > s_owner_summary.max_hold_us) {
+            s_owner_summary.max_hold_us = released_stats.last_hold_us;
+        }
+        if ((uint64_t)(now_us - s_owner_summary.started_us) >= UINT64_C(1000000)) {
+            emit_summary = true;
+            summary_sessions = s_owner_summary.sessions;
+            summary_busy = released_stats.busy_count - s_owner_summary.busy_start;
+            summary_max_wait_us = s_owner_summary.max_wait_us;
+            summary_max_hold_us = s_owner_summary.max_hold_us;
+            s_owner_summary.started_us = now_us;
+            s_owner_summary.busy_start = released_stats.busy_count;
+            s_owner_summary.sessions = 0U;
+            s_owner_summary.max_wait_us = 0U;
+            s_owner_summary.max_hold_us = 0U;
+        }
         s_owner_session_depth = 0U;
         s_owner_session_started_us = 0;
         s_owner_session_wait_us = 0U;
@@ -725,21 +774,38 @@ void sensor_bus_owner_release(void)
     sensor_bus_unlock();
     if (outermost) {
         sensor_bus_lines_restore_task_priority(saved_priority);
+        if (emit_summary) {
+            ESP_LOGI(TAG, "I2C_BUS_OWNER_SUMMARY sessions=%lu busy=%lu max_wait_us=%llu max_hold_us=%llu",
+                     (unsigned long)summary_sessions, (unsigned long)summary_busy,
+                     (unsigned long long)summary_max_wait_us, (unsigned long long)summary_max_hold_us);
+        }
         if (budget_exceeded) {
             ESP_LOGW(TAG,
                      "TCA_HOLD_BUDGET_EXCEEDED hold_ms=%llu max_hold_ms=%u",
                      (unsigned long long)(released_stats.last_hold_us / 1000U),
                      (unsigned)SENSOR_BUS_OWNER_MAX_HOLD_MS);
         }
-        ESP_LOGI(TAG,
-                 "I2C_BUS_OWNER owner=%s waiter_task=%s wait_ms=%llu hold_ms=%llu busy_count=%lu",
-                 released_stats.holder_task[0] != '\0'
-                     ? released_stats.holder_task : "unknown",
-                 released_stats.last_waiter_task[0] != '\0'
-                     ? released_stats.last_waiter_task : "unknown",
-                 (unsigned long long)(released_stats.last_waited_for_mutex_us / 1000U),
-                 (unsigned long long)(released_stats.last_hold_us / 1000U),
-                 (unsigned long)released_stats.busy_count);
+        /* This runs once per external window read on the topology task, so a
+         * blocking UART write here stalls Core 0 (task watchdog, 2026-10-27).
+         * Healthy sessions go to DEBUG; anomalies stay visible at INFO. */
+        const uint64_t wait_ms = released_stats.last_waited_for_mutex_us / 1000U;
+        const uint64_t hold_ms = released_stats.last_hold_us / 1000U;
+        const bool anomalous = busy_count_changed || budget_exceeded ||
+            wait_ms >= SENSOR_BUS_OWNER_LOG_WAIT_MS ||
+            hold_ms >= SENSOR_BUS_OWNER_LOG_HOLD_MS;
+        const char *holder = released_stats.holder_task[0] != '\0'
+            ? released_stats.holder_task : "unknown";
+        const char *waiter = released_stats.last_waiter_task[0] != '\0'
+            ? released_stats.last_waiter_task : "unknown";
+        if (anomalous) {
+            ESP_LOGI(TAG, SENSOR_BUS_OWNER_LOG_FORMAT, holder, waiter,
+                     (unsigned long long)wait_ms, (unsigned long long)hold_ms,
+                     (unsigned long)released_stats.busy_count);
+        } else {
+            ESP_LOGD(TAG, SENSOR_BUS_OWNER_LOG_FORMAT, holder, waiter,
+                     (unsigned long long)wait_ms, (unsigned long long)hold_ms,
+                     (unsigned long)released_stats.busy_count);
+        }
     }
 }
 

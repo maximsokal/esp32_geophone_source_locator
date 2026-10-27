@@ -107,6 +107,9 @@ static void test_full_pass_and_result_change_detection(void)
         &state, &transaction, 101U, &changed, &should_print));
     assert(!changed && should_print);
     assert(sensor_bus_probe_diag_policy_end_pass(&state) == 0U);
+    assert(sensor_bus_probe_diag_policy_record(
+        &state, &transaction, 102U, &changed, &should_print));
+    assert(!changed && !should_print);
 
     sensor_bus_probe_diag_policy_begin_pass(&state, 4U, 3U);
     assert(sensor_bus_probe_diag_policy_record(
@@ -327,9 +330,108 @@ static void test_group_cap_overflow_is_counted_and_printed(void)
     assert(sensor_bus_probe_diag_policy_record(
         &state, &transaction, 103U, &changed, &should_print));
     assert(state.groups_dropped == UINT32_MAX);
+
+    /* Healthy untracked traffic is counted but not printed after the full passes. */
+    transaction = make_transaction(
+        SENSOR_BUS_PROBE_PHASE_WRITE, 0x41U, -1,
+        SENSOR_BUS_PROBE_RESULT_OK, 0, 14U);
+    assert(sensor_bus_probe_diag_policy_record(
+        &state, &transaction, 104U, &changed, &should_print));
+    assert(!should_print);
+    assert(state.groups_dropped == UINT32_MAX);
+    state.groups_dropped = 5U;
+    assert(sensor_bus_probe_diag_policy_record(
+        &state, &transaction, 105U, &changed, &should_print));
+    assert(!should_print && state.groups_dropped == 6U);
+    /* During a full pass it still prints. */
+    sensor_bus_probe_diag_policy_begin_pass(&state, 1U, 3U);
+    assert(sensor_bus_probe_diag_policy_record(
+        &state, &transaction, 106U, &changed, &should_print));
+    assert(should_print && state.groups_dropped == 7U);
+    sensor_bus_probe_diag_policy_begin_pass(&state, 4U, 3U);
+    state.groups_dropped = UINT32_MAX;
     assert(sensor_bus_probe_diag_policy_end_pass(&state) == UINT32_MAX);
     assert(state.groups_dropped == 0U);
     assert(sensor_bus_probe_diag_policy_end_pass(&state) == 0U);
+}
+
+static void test_overflow_routes_report_changes_and_recovery(void)
+{
+    sensor_bus_probe_diag_policy_t state;
+    sensor_bus_probe_diag_transaction_t transaction;
+    bool changed;
+    bool should_print;
+
+    sensor_bus_probe_diag_policy_reset(&state);
+    sensor_bus_probe_diag_policy_begin_pass(&state, 4U, 3U);
+    for (unsigned i = 0U; i < SENSOR_BUS_PROBE_DIAG_GROUP_LIMIT; ++i) {
+        transaction = make_transaction(SENSOR_BUS_PROBE_PHASE_PROBE, (uint8_t)i, -1,
+                                       SENSOR_BUS_PROBE_RESULT_OK, 0, 1U);
+        assert(sensor_bus_probe_diag_policy_record(&state, &transaction, i, &changed, &should_print));
+    }
+    transaction = make_transaction(SENSOR_BUS_PROBE_PHASE_WRITE, 0x31U, -1,
+                                   SENSOR_BUS_PROBE_RESULT_OTHER, 0x103, 1U);
+    assert(sensor_bus_probe_diag_policy_record(&state, &transaction, 100U, &changed, &should_print));
+    assert(changed && should_print);
+    for (unsigned i = 0U; i < 20U; ++i) {
+        assert(sensor_bus_probe_diag_policy_record(&state, &transaction, 101U + i, &changed, &should_print));
+        assert(!changed && !should_print);
+    }
+    transaction.err = 0x104;
+    assert(sensor_bus_probe_diag_policy_record(&state, &transaction, 121U, &changed, &should_print));
+    assert(changed && should_print);
+    transaction.address = 0x32U;
+    transaction.channel = 3;
+    assert(sensor_bus_probe_diag_policy_record(&state, &transaction, 122U, &changed, &should_print));
+    assert(changed && should_print);
+    transaction.address = 0x31U;
+    transaction.channel = -1;
+    assert(sensor_bus_probe_diag_policy_record(&state, &transaction, 123U, &changed, &should_print));
+    assert(!changed && !should_print);
+    transaction.result = SENSOR_BUS_PROBE_RESULT_OK;
+    transaction.err = 0;
+    assert(sensor_bus_probe_diag_policy_record(&state, &transaction, 124U, &changed, &should_print));
+    assert(changed && should_print);
+    assert(sensor_bus_probe_diag_policy_record(&state, &transaction, 125U, &changed, &should_print));
+    assert(!changed && !should_print);
+    transaction.address = 0x32U;
+    transaction.channel = 3;
+    assert(sensor_bus_probe_diag_policy_record(&state, &transaction, 126U, &changed, &should_print));
+    assert(changed && should_print);
+}
+
+static void test_every_probe_route_has_independent_overflow_state(void)
+{
+    sensor_bus_probe_diag_policy_t state;
+    sensor_bus_probe_diag_transaction_t transaction;
+    bool changed;
+    bool should_print;
+    sensor_bus_probe_diag_policy_reset(&state);
+    sensor_bus_probe_diag_policy_begin_pass(&state, 4U, 3U);
+    for (unsigned i = 0U; i < SENSOR_BUS_PROBE_DIAG_GROUP_LIMIT; ++i) {
+        transaction = make_transaction(SENSOR_BUS_PROBE_PHASE_PROBE, (uint8_t)i, -1,
+                                       SENSOR_BUS_PROBE_RESULT_OK, 0, 1U);
+        assert(sensor_bus_probe_diag_policy_record(&state, &transaction, i, &changed, &should_print));
+    }
+    for (unsigned round = 0U; round < 3U; ++round) {
+        for (unsigned phase = 0U; phase < SENSOR_BUS_PROBE_PHASE_COUNT; ++phase) {
+            for (unsigned address = 0U; address < 9U; ++address) {
+                for (int channel = -1; channel < 8; ++channel) {
+                    const uint8_t wire_address = (uint8_t)(address < 3U
+                        ? 0x30U + address : 0x70U + address - 3U);
+                    transaction = make_transaction((sensor_bus_probe_phase_t)phase,
+                        wire_address, (int8_t)channel,
+                        round == 2U ? SENSOR_BUS_PROBE_RESULT_OK : SENSOR_BUS_PROBE_RESULT_OTHER,
+                        round == 2U ? 0 : (int32_t)(100U + phase * 9U + address), 1U);
+                    assert(sensor_bus_probe_diag_policy_record(&state, &transaction, 200U,
+                                                                &changed, &should_print));
+                    assert(changed == (round != 1U));
+                    assert(should_print == (round != 1U));
+                }
+            }
+        }
+    }
+    assert(state.groups_dropped == 3U * SENSOR_BUS_PROBE_DIAG_OVERFLOW_ROUTES);
 }
 
 static void test_hex_formatting_is_bounded_to_four_bytes(void)
@@ -358,6 +460,8 @@ int main(void)
     test_mismatch_bucket_and_idle_change_detection();
     test_counter_and_elapsed_saturation();
     test_group_cap_overflow_is_counted_and_printed();
+    test_overflow_routes_report_changes_and_recovery();
+    test_every_probe_route_has_independent_overflow_state();
     test_hex_formatting_is_bounded_to_four_bytes();
     return 0;
 }

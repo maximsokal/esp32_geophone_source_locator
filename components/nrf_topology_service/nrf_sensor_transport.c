@@ -93,6 +93,12 @@ uint8_t nrf_sensor_cache_reconcile_topology(
     if (topology == NULL || cache == NULL) {
         return 0U;
     }
+    if (topology->stale || topology->bus_busy) {
+        for (channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            cache_mark_topology_stale(&cache[channel]);
+        }
+        return 0U;
+    }
 
     for (channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         const nrf_topology_node_snapshot_t *node = &topology->remotes[channel];
@@ -292,6 +298,11 @@ esp_err_t nrf_sensor_transport_refresh_channel(
     }
 
     *request_topology_reconcile = false;
+    if (topology->stale || topology->bus_busy) {
+        cache_mark_topology_stale(cache);
+        *request_topology_reconcile = true;
+        return ESP_ERR_INVALID_STATE;
+    }
     remote = &topology->remotes[channel];
     if (!topology->tca_available || topology->tca_fault) {
         mark_failure(
@@ -520,7 +531,7 @@ esp_err_t nrf_sensor_transport_capture_height_reference(
 
     *request_topology_reconcile = false;
     remote = &topology->remotes[channel];
-    if (!topology->tca_available || topology->tca_fault ||
+    if (topology->stale || topology->bus_busy || !topology->tca_available || topology->tca_fault ||
         remote->state != NRF_TOPOLOGY_NODE_ASSIGNED ||
         (topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED &&
          topology->main.state != NRF_TOPOLOGY_NODE_ABSENT)) {
@@ -600,7 +611,7 @@ esp_err_t nrf_sensor_transport_request_imu_calibration(
 
     *request_topology_reconcile = false;
     remote = &topology->remotes[channel];
-    if (!topology->tca_available || topology->tca_fault ||
+    if (topology->stale || topology->bus_busy || !topology->tca_available || topology->tca_fault ||
         remote->state != NRF_TOPOLOGY_NODE_ASSIGNED ||
         (topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED &&
          topology->main.state != NRF_TOPOLOGY_NODE_ABSENT)) {

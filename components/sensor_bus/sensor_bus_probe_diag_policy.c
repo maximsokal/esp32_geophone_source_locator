@@ -50,6 +50,20 @@ static uint16_t make_group_key(
         (address << GROUP_KEY_ADDRESS_SHIFT) | channel);
 }
 
+static size_t overflow_route_index(const sensor_bus_probe_diag_transaction_t *transaction)
+{
+    unsigned address;
+    if (transaction->address >= 0x30U && transaction->address <= 0x32U) {
+        address = (unsigned)transaction->address - 0x30U;
+    } else if (transaction->address >= 0x70U && transaction->address <= 0x75U) {
+        address = (unsigned)transaction->address - 0x70U + 3U;
+    } else {
+        return SENSOR_BUS_PROBE_DIAG_OVERFLOW_ROUTES;
+    }
+    const unsigned channel = transaction->channel < 0 ? 8U : (unsigned)transaction->channel;
+    return ((size_t)transaction->phase * 9U + address) * 9U + channel;
+}
+
 static sensor_bus_probe_diag_group_t *find_group(
     sensor_bus_probe_diag_policy_t *state,
     uint16_t key,
@@ -154,14 +168,29 @@ bool sensor_bus_probe_diag_policy_record(
     key = make_group_key(transaction);
     group = find_group(state, key, seconds, fraction_us, &is_new);
     if (group == NULL) {
-        /* Each untracked arrival counts once because its key is not retained. */
+        /* Detailed per-group counters are unavailable after all slots are occupied. */
         state->groups_dropped = sensor_bus_probe_diag_saturating_add_u32(
             state->groups_dropped, 1U);
-        if (changed != NULL) {
-            *changed = true;
+        const size_t route = overflow_route_index(transaction);
+        bool overflow_changed = true;
+        if (route < SENSOR_BUS_PROBE_DIAG_OVERFLOW_ROUTES) {
+            result_code = (uint8_t)transaction->result;
+            if (transaction->readback_mismatch) {
+                result_code = (uint8_t)(result_code | GROUP_RESULT_MISMATCH);
+            }
+            const uint8_t encoded = (uint8_t)(result_code + 1U);
+            const uint8_t previous = state->overflow_results[route];
+            overflow_changed = previous == 0U
+                ? result_code != SENSOR_BUS_PROBE_RESULT_OK
+                : previous != encoded || state->overflow_errors[route] != transaction->err;
+            state->overflow_results[route] = encoded;
+            state->overflow_errors[route] = transaction->err;
         }
+        if (changed != NULL) *changed = overflow_changed;
+        /* shortcut: other addresses keep the untracked policy; extend the route map if the probe filter expands. */
         if (should_print != NULL) {
-            *should_print = true;
+            *should_print = state->pass_full || (route < SENSOR_BUS_PROBE_DIAG_OVERFLOW_ROUTES
+                ? overflow_changed : transaction->result != SENSOR_BUS_PROBE_RESULT_OK);
         }
         return true;
     }
@@ -208,6 +237,7 @@ uint32_t sensor_bus_probe_diag_policy_end_pass(
         return 0U;
     }
     state->pass_active = false;
+    state->pass_full = false;
     groups_dropped = state->groups_dropped;
     state->groups_dropped = 0U;
     return groups_dropped;

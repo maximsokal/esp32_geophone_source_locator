@@ -21,6 +21,9 @@ typedef enum {
     SENSOR_BUS_PROBE_PHASE_COUNT,
 } sensor_bus_probe_phase_t;
 
+/* Probe diagnostics only instrument 0x30..0x32 and 0x70..0x75. */
+#define SENSOR_BUS_PROBE_DIAG_OVERFLOW_ROUTES ((size_t)SENSOR_BUS_PROBE_PHASE_COUNT * 9U * 9U)
+
 typedef enum {
     SENSOR_BUS_PROBE_RESULT_OK = 0,
     SENSOR_BUS_PROBE_RESULT_NACK,
@@ -67,6 +70,8 @@ typedef struct {
 
 typedef struct {
     sensor_bus_probe_diag_group_t groups[SENSOR_BUS_PROBE_DIAG_GROUP_LIMIT];
+    int32_t overflow_errors[SENSOR_BUS_PROBE_DIAG_OVERFLOW_ROUTES];
+    uint8_t overflow_results[SENSOR_BUS_PROBE_DIAG_OVERFLOW_ROUTES];
     uint32_t pass_index;
     uint32_t groups_dropped;
     bool pass_active;
@@ -107,7 +112,7 @@ void sensor_bus_probe_diag_policy_begin_pass(
     uint32_t pass_index,
     uint32_t full_passes);
 
-/* Returns false for invalid input; overflowed groups are accepted but untracked. */
+/* Returns false for invalid input; overflowed groups have no detailed summaries. */
 bool sensor_bus_probe_diag_policy_record(
     sensor_bus_probe_diag_policy_t *state,
     const sensor_bus_probe_diag_transaction_t *transaction,

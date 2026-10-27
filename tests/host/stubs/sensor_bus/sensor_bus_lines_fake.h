@@ -30,6 +30,9 @@ typedef struct
     atomic_uint priority_boosts;
     atomic_uint priority_restores;
     unsigned log_calls;
+    /* ESP_LOGD output is kept apart so tests can prove a line stayed off the UART. */
+    unsigned debug_log_calls;
+    char last_debug_log[512];
     char last_log[512];
     char timeout_config_log[512];
     char init_lines_log[512];

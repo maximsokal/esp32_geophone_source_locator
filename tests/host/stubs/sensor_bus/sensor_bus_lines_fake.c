@@ -170,6 +170,16 @@ int64_t sensor_bus_lines_now_us(void)
     return atomic_load(&g_fake_lines.now_us);
 }
 
+void fake_sensor_bus_log_debug(const char *tag, const char *format, ...)
+{
+    (void)tag;
+    ++g_fake_lines.debug_log_calls;
+    va_list args;
+    va_start(args, format);
+    (void)vsnprintf(g_fake_lines.last_debug_log, sizeof(g_fake_lines.last_debug_log), format, args);
+    va_end(args);
+}
+
 void fake_sensor_bus_log(const char *tag, const char *format, ...)
 {
     (void)tag;

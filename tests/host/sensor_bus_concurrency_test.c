@@ -108,6 +108,7 @@ static bool s_lock_initialized;
 static int s_recursive_mutex_create_calls;
 static atomic_int s_priority_boosts;
 static atomic_bool s_force_next_wait_timeout;
+static atomic_uint s_fake_next_wait_us;
 #ifdef _WIN32
 __declspec(thread) static int s_current_priority;
 #else
@@ -172,6 +173,9 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore)
 BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t semaphore, TickType_t ticks_to_wait)
 {
     assert(semaphore == &s_lock);
+    if (ticks_to_wait != 0U) {
+        sensor_bus_lines_delay_us(atomic_exchange(&s_fake_next_wait_us, 0U));
+    }
     if (ticks_to_wait == 0U) {
 #ifdef _WIN32
         if (!TryEnterCriticalSection(&semaphore->mutex)) return pdFALSE;
@@ -1272,6 +1276,97 @@ static void test_owner_logs_match_fake_clock(void)
     assert(hold_ms >= 36U && hold_ms <= 38U);
 }
 
+/* A healthy session must not touch the UART: the line is per window read on the topology task. */
+static void test_owner_release_is_quiet_unless_anomalous(void)
+{
+    /* Prime: the first release after other activity may report a busy_count change. */
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    sensor_bus_owner_release();
+
+    const unsigned info_before = g_fake_lines.log_calls;
+    const unsigned debug_before = g_fake_lines.debug_log_calls;
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    sensor_bus_lines_delay_us(3000U);
+    sensor_bus_owner_release();
+    assert(g_fake_lines.log_calls == info_before);
+    assert(g_fake_lines.debug_log_calls == debug_before + 1U);
+    assert(strstr(g_fake_lines.last_debug_log, "I2C_BUS_OWNER owner=") != NULL);
+    assert(parse_log_ms(g_fake_lines.last_debug_log, "hold_ms=") <= 4U);
+
+    /* A hold at the threshold is an anomaly and stays at INFO. */
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    sensor_bus_lines_delay_us(26000U);
+    sensor_bus_owner_release();
+    assert(g_fake_lines.log_calls == info_before + 1U);
+    assert(g_fake_lines.debug_log_calls == debug_before + 1U);
+    assert(strstr(g_fake_lines.last_log, "I2C_BUS_OWNER owner=") != NULL);
+}
+
+static unsigned s_owner_summary_lines;
+static char s_owner_summary_line[256];
+
+static void observe_owner_summary(const char *line)
+{
+    if (strstr(line, "I2C_BUS_OWNER_SUMMARY ") != NULL) {
+        ++s_owner_summary_lines;
+        (void)snprintf(s_owner_summary_line, sizeof(s_owner_summary_line), "%s", line);
+    }
+}
+
+static void test_owner_summary_aggregates_sessions_once_per_second(void)
+{
+    g_fake_lines.log_observer = observe_owner_summary;
+    sensor_bus_lines_delay_us(1000000U);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    sensor_bus_owner_release();
+    assert(s_owner_summary_lines > 0U);
+    const unsigned before = s_owner_summary_lines;
+    for (unsigned i = 0U; i < 3U; ++i) {
+        assert(sensor_bus_owner_acquire() == ESP_OK);
+        sensor_bus_owner_release();
+    }
+    sensor_bus_lines_delay_us(999999U);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    sensor_bus_owner_release();
+    assert(s_owner_summary_lines == before);
+    sensor_bus_lines_delay_us(1U);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    sensor_bus_owner_release();
+    assert(s_owner_summary_lines == before + 1U);
+    assert(strstr(s_owner_summary_line, "sessions=5") != NULL);
+    assert(strstr(s_owner_summary_line, "busy=0") != NULL);
+    unsigned info = g_fake_lines.log_calls;
+    unsigned debug = g_fake_lines.debug_log_calls;
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    sensor_bus_lines_delay_us(24999U);
+    sensor_bus_owner_release();
+    ++debug;
+    assert(g_fake_lines.log_calls == info && g_fake_lines.debug_log_calls == debug);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    sensor_bus_lines_delay_us(25000U);
+    sensor_bus_owner_release();
+    ++info;
+    assert(g_fake_lines.log_calls == info && g_fake_lines.debug_log_calls == debug);
+    atomic_store(&s_fake_next_wait_us, 4999U);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    sensor_bus_owner_release();
+    ++debug;
+    assert(g_fake_lines.log_calls == info && g_fake_lines.debug_log_calls == debug);
+    atomic_store(&s_fake_next_wait_us, 5000U);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    sensor_bus_owner_release();
+    ++info;
+    assert(g_fake_lines.log_calls == info && g_fake_lines.debug_log_calls == debug);
+    const unsigned before_busy_summary = s_owner_summary_lines;
+    test_owner_try_acquire_does_not_wait();
+    sensor_bus_lines_delay_us(1000000U);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    sensor_bus_owner_release();
+    assert(s_owner_summary_lines == before_busy_summary + 1U);
+    assert(strstr(s_owner_summary_line, "busy=1") != NULL);
+    g_fake_lines.log_observer = NULL;
+}
+
 /* MAX-434 T1: mutex wait, transfer timeout, and configuration diagnostics use separate ms budgets. */
 static void test_mutex_wait_and_transfer_timeouts_are_distinct_ms(void)
 {
@@ -1287,6 +1382,8 @@ static void test_mutex_wait_and_transfer_timeouts_are_distinct_ms(void)
     test_bounded_wait_reports_owner_and_priority_inheritance();
     test_transaction_timeout_is_20ms_and_recovery_is_unlocked();
     test_owner_logs_match_fake_clock();
+    test_owner_release_is_quiet_unless_anomalous();
+    test_owner_summary_aggregates_sessions_once_per_second();
 }
 
 int main(void)

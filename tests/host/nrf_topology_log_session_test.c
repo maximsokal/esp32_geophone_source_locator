@@ -39,6 +39,19 @@ static int64_t s_ina_max_wait_us;
 static unsigned s_ina_accesses_before_log_completion;
 static unsigned s_firmware_lines;
 static unsigned s_rx_lines;
+static unsigned s_log_requests;
+static unsigned s_log_requests_at_stale;
+static bool s_corrupt_log_block;
+static bool s_corrupt_log_status;
+static bool s_corrupt_log_length;
+static bool s_capture_rx_counters;
+/* MAIN LOG_STATUS is 38 bytes: a 28 byte window, a READ_WINDOW write, a 10 byte tail. */
+static unsigned s_fail_status_window_writes;
+static unsigned s_fail_status_tail_reads;
+static unsigned s_injected_status_faults;
+static uint32_t s_rx_transport_ok;
+static uint32_t s_rx_crc_ok;
+static uint32_t s_rx_crc_fail;
 
 void *heap_caps_calloc(size_t count, size_t size, unsigned caps)
 {
@@ -93,6 +106,14 @@ static bool log_test_write(sim_node_t *node, const uint8_t *data, size_t length,
         /* Each window continues where the previous read ended, inside the reply. */
         assert(window.offset == s_logger[index].delivered);
         assert(window.offset < s_logger[index].response_length);
+        if (s_fail_status_window_writes > 0U && index == 0U &&
+            s_logger[index].response[3] == NRF_LOG_MESSAGE_STATUS) {
+            --s_fail_status_window_writes;
+            ++s_injected_status_faults;
+            s_logger[index].pending = false; /* the master abandons the half-read reply */
+            *result = ESP_ERR_INVALID_STATE; /* IDF 5.5 NACK / timeout */
+            return true;
+        }
         s_logger[index].window_armed = true;
         s_logger[index].window_offset = window.offset;
         ++s_logger[index].window_requests;
@@ -110,6 +131,7 @@ static bool log_test_write(sim_node_t *node, const uint8_t *data, size_t length,
         s_logger[index].selected = false;
         return false;
     }
+    ++s_log_requests;
     assert(!s_logger[index].pending);
     s_logger[index].owner_release_count = s_bus_owner_log_count;
     s_logger_pair_owner_release_count = s_bus_owner_log_count;
@@ -194,6 +216,14 @@ static bool log_test_read(sim_node_t *node, uint8_t *data, size_t length, esp_er
     } else {
         s_logger[index].delivered = 0U; /* an ordinary read starts the reply again */
     }
+    if (offset != 0U && s_fail_status_tail_reads > 0U && index == 0U &&
+        s_logger[index].response[3] == NRF_LOG_MESSAGE_STATUS) {
+        --s_fail_status_tail_reads;
+        ++s_injected_status_faults;
+        s_logger[index].pending = false;
+        *result = ESP_ERR_INVALID_STATE;
+        return true;
+    }
     const size_t remaining = total - offset;
     assert(length == (remaining < NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES
                           ? remaining : NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES));
@@ -223,6 +253,22 @@ static bool log_test_read(sim_node_t *node, uint8_t *data, size_t length, esp_er
     }
     memset(data, 0xFF, length);
     memcpy(data, &s_logger[index].response[offset], length);
+    if (s_corrupt_log_block && s_logger[index].response[3] == NRF_LOG_MESSAGE_BLOCK &&
+        offset == 0U && length > 10U) {
+        data[10] ^= 1U;
+        s_corrupt_log_block = false;
+    }
+    if (s_corrupt_log_status && s_logger[index].response[3] == NRF_LOG_MESSAGE_STATUS &&
+        offset == 0U && length > 10U) {
+        data[10] ^= 1U;
+        s_corrupt_log_status = false;
+    }
+    if (s_corrupt_log_length && s_logger[index].response[3] == NRF_LOG_MESSAGE_BLOCK &&
+        offset == 0U && length > 5U) {
+        data[4] = 0xFFU;
+        data[5] = 0U;
+        s_corrupt_log_length = false;
+    }
     *result = ESP_OK;
     return true;
 }
@@ -264,6 +310,15 @@ static void log_test_record(const char *line)
             assert(strstr(line, "dirty=1 supported=1") != NULL);
         } else {
             ++s_rx_lines;
+            if (s_capture_rx_counters && strstr(line, "NRF_LOG_RX node=0 ") != NULL) {
+                const char *transport = strstr(line, "transport_ok=");
+                const char *crc_ok = strstr(line, "crc_ok=");
+                const char *crc_fail = strstr(line, "crc_fail=");
+                assert(transport != NULL && crc_ok != NULL && crc_fail != NULL);
+                s_rx_transport_ok = (uint32_t)strtoul(transport + strlen("transport_ok="), NULL, 10);
+                s_rx_crc_ok = (uint32_t)strtoul(crc_ok + strlen("crc_ok="), NULL, 10);
+                s_rx_crc_fail = (uint32_t)strtoul(crc_fail + strlen("crc_fail="), NULL, 10);
+            }
         }
         if (s_slow_log_output) s_fake_subtick_us += 100000U;
     }
@@ -284,6 +339,17 @@ static void start_log_world(bool with_mux)
     s_ina_accesses_before_log_completion = 0U;
     s_firmware_lines = 0U;
     s_rx_lines = 0U;
+    s_log_requests = 0U;
+    s_corrupt_log_block = false;
+    s_corrupt_log_status = false;
+    s_corrupt_log_length = false;
+    s_capture_rx_counters = false;
+    s_fail_status_window_writes = 0U;
+    s_fail_status_tail_reads = 0U;
+    s_injected_status_faults = 0U;
+    s_rx_transport_ok = 0U;
+    s_rx_crc_ok = 0U;
+    s_rx_crc_fail = 0U;
     s_tca_present = with_mux;
     node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
     if (with_mux) {
@@ -323,8 +389,57 @@ static void verify_log_pages(void)
     }
 }
 
+static void capture_stale_log_requests(void)
+{
+    capture();
+    assert(s_seen.stale && !s_seen.bus_busy);
+    assert(!s_fail_next_main_status_read);
+    s_log_requests_at_stale = s_log_requests;
+}
+
+static void assert_stale_topology_blocks_log_requests(void)
+{
+    capture();
+    assert(s_seen.stale);
+    assert(s_log_requests == s_log_requests_at_stale);
+}
+
+/*
+ * 2026-10-27 capture: MAIN answered the first 28 bytes of the 38 byte LOG_STATUS
+ * and the rest of the exchange failed with ESP_ERR_INVALID_STATE. The collector
+ * must start over with a fresh request, keep the topology, and still deliver
+ * MAIN's firmware and log blocks. The 100 ms steps matter: the worker repeats a
+ * yielded iteration at once, while 1 s steps would let the pending status expire.
+ */
+static void run_main_status_fault_scenario(unsigned window_write_faults, unsigned tail_read_faults)
+{
+    start_log_world(true);
+    s_queue_calibration = false;
+    s_slow_log_output = false;
+    s_fail_status_window_writes = window_write_faults;
+    s_fail_status_tail_reads = tail_read_faults;
+    script(EV_WAIT_MS, 1000U, NULL);
+    script_waits(16U, 10U);
+    script_waits(200U, 100U);
+    script(EV_ACTION, 0U, capture);
+    script(EV_ACTION, 0U, verify_log_pages);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_injected_status_faults == window_write_faults + tail_read_faults);
+    assert(s_fail_status_window_writes == 0U && s_fail_status_tail_reads == 0U);
+    assert(s_logger[0].status_reads >= 1U && s_logger[0].block_reads >= 1U);
+    assert(s_completed_log_mask == s_expected_log_mask);
+    assert(assigned_node_count(&s_seen) == 3U && !s_seen.stale && !s_seen.bus_busy);
+    assert(s_tca_control == 0U && s_collisions == 0U);
+}
+
 int main(void)
 {
+    run_main_status_fault_scenario(0U, 0U); /* control: same script without a fault */
+    run_main_status_fault_scenario(1U, 0U);
+    run_main_status_fault_scenario(0U, 1U);
+    run_main_status_fault_scenario(1U, 1U);
+
     start_log_world(true);
     s_queue_calibration = true;
     s_slow_log_output = true;
@@ -358,5 +473,47 @@ int main(void)
     assert(!s_fail_block_read && s_logger[2].block_reads == 1U);
     assert(s_completed_log_mask == s_expected_log_mask);
     assert(s_tca_control == 0U && s_collisions == 0U);
+
+    start_log_world(true);
+    s_queue_calibration = false;
+    s_slow_log_output = false;
+    script_waits(16U, 10U);
+    script(EV_ACTION, 0U, request_main_timeout_reconcile);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture_stale_log_requests);
+    script(EV_WAIT_MS, 1100U, NULL);
+    script(EV_ACTION, 0U, assert_stale_topology_blocks_log_requests);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_tca_control == 0U && s_collisions == 0U);
+
+    start_log_world(false);
+    s_corrupt_log_block = true;
+    s_capture_rx_counters = true;
+    script_waits(20U, 10U);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(!s_corrupt_log_block);
+    assert(s_rx_transport_ok >= 2U && s_rx_crc_ok >= 1U && s_rx_crc_fail == 1U);
+    assert(s_rx_transport_ok == s_rx_crc_ok + s_rx_crc_fail);
+
+    start_log_world(false);
+    s_corrupt_log_length = true;
+    s_capture_rx_counters = true;
+    script_waits(20U, 10U);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(!s_corrupt_log_length);
+    assert(s_rx_crc_ok >= 1U && s_rx_crc_fail == 0U);
+    assert(s_rx_transport_ok > s_rx_crc_ok + s_rx_crc_fail);
+
+    start_log_world(false);
+    s_corrupt_log_status = true;
+    s_capture_rx_counters = true;
+    script_waits(20U, 10U);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(!s_corrupt_log_status);
+    assert(s_rx_transport_ok >= 1U && s_rx_crc_fail == 1U);
     return 0;
 }

@@ -1105,6 +1105,7 @@ static void test_framing_faults_and_retries(void)
         uint8_t response_type;
     } corrupt_cases[] = {
         { FAULT_CORRUPT_FOREVER, NRF_LOG_MESSAGE_BLOCK },
+        { FAULT_CORRUPT_FOREVER, NRF_LOG_MESSAGE_STATUS },
         { FAULT_BAD_STATUS_SEMANTICS, NRF_LOG_MESSAGE_STATUS },
         { FAULT_BAD_BLOCK_SEMANTICS, NRF_LOG_MESSAGE_BLOCK },
     };

@@ -131,6 +131,7 @@ static bool s_fail_i2c_bus_create;
 static bool s_fail_mutex_create;
 static bool s_fail_task_create;
 static bool s_fail_next_status_read;
+static bool s_fail_next_main_status_read;
 static unsigned s_timeout_failures_until_stuck;
 static unsigned s_nack_read_calls;
 static unsigned s_nack_byte_read_calls;
@@ -686,6 +687,11 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
     nrf_upstream_status_t status;
     assert(nrf_bootstrap_make_status(&node->bootstrap, &status) == NRF_UPSTREAM_RESULT_OK);
     if (data_len == NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH) {
+        if (s_fail_next_main_status_read && d->address == NRF_UPSTREAM_ADDRESS_MAIN &&
+            s_tca_control == 0U) {
+            s_fail_next_main_status_read = false;
+            return ESP_ERR_TIMEOUT;
+        }
         if (s_log_reply_selected) {
             memset(data, 0, data_len);
             data[0] = 'G';
@@ -2140,6 +2146,7 @@ static void reset_world(void)
     s_fail_mutex_create = false;
     s_fail_task_create = false;
     s_fail_next_status_read = false;
+    s_fail_next_main_status_read = false;
     s_timeout_failures_until_stuck = 0U;
     memset(s_status_response_frames, 0, sizeof(s_status_response_frames));
     s_status_response_frame_count = 0U;
@@ -2998,6 +3005,146 @@ static void release_stuck_scl_and_refresh(void)
     request_topology_refresh_for_test();
 }
 
+static nrf_topology_snapshot_t s_main_timeout_snapshot;
+static nrf_topology_snapshot_t s_main_timeout_busy_snapshot;
+static nrf_remote_sensor_cache_t s_main_timeout_cache[2];
+static esp_err_t s_main_timeout_height_request;
+static esp_err_t s_main_timeout_imu_request;
+static esp_err_t s_main_timeout_cs_request;
+static esp_err_t s_main_timeout_ranging_request;
+static esp_err_t s_main_timeout_busy_ranging_request;
+
+static void request_main_timeout_reconcile(void)
+{
+    s_fail_next_main_status_read = true;
+    request_topology_refresh_for_test();
+}
+
+static void capture_main_timeout_snapshot(void)
+{
+    uint8_t mask = 0U;
+    uint16_t generation = 0U;
+    const nrf_cs_policy_t policy = {
+        .pair_timeout_ms = 100U, .max_attempts = 1U,
+        .min_confidence = 500U, .full_rotation = true,
+    };
+    capture();
+    s_main_timeout_snapshot = s_seen;
+    s_main_timeout_cache[0] = s_seen_cache[0];
+    s_main_timeout_cache[1] = s_seen_cache[3];
+    s_main_timeout_height_request =
+        nrf_topology_service_request_height_reference_capture(&mask, &generation);
+    s_main_timeout_imu_request = nrf_topology_service_request_imu_calibration(1U, 1U);
+    s_main_timeout_cs_request = nrf_topology_service_request_cs_cycle(&policy);
+    s_main_timeout_ranging_request = nrf_topology_service_ranging_start(&policy, 1000U);
+}
+
+static void capture_main_timeout_busy_snapshot(void)
+{
+    const nrf_cs_policy_t policy = {
+        .pair_timeout_ms = 100U, .max_attempts = 1U,
+        .min_confidence = 500U, .full_rotation = true,
+    };
+    capture();
+    s_main_timeout_busy_snapshot = s_seen;
+    s_main_timeout_busy_ranging_request = nrf_topology_service_ranging_start(&policy, 1000U);
+}
+
+static void test_main_timeout_preserves_stale_topology_until_recovery(void)
+{
+    reset_world();
+    s_tca_present = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    node_boot(&s_nodes[1], 0U, 0x22U);
+    node_boot(&s_nodes[2], 3U, 0x33U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture_initial_topology);
+    script(EV_ACTION, 0U, request_main_timeout_reconcile);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture_main_timeout_snapshot);
+    script(EV_ACTION, 0U, request_refresh_while_bus_busy);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture_main_timeout_busy_snapshot);
+    script(EV_ACTION, 0U, clear_bus_busy_injection);
+    script(EV_ACTION, 0U, request_topology_refresh_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    assert(!s_fail_next_main_status_read);
+    assert(assigned_node_count(&s_initial_topology) == 3U);
+    assert(s_main_timeout_snapshot.stale && !s_main_timeout_snapshot.bus_busy);
+    assert(s_main_timeout_snapshot.main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    assert(s_main_timeout_snapshot.remotes[0].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_main_timeout_snapshot.remotes[3].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_main_timeout_cache[0].identity_valid && !s_main_timeout_cache[0].topology_current);
+    assert(s_main_timeout_cache[1].identity_valid && !s_main_timeout_cache[1].topology_current);
+    assert(s_main_timeout_height_request == ESP_ERR_INVALID_STATE);
+    assert(s_main_timeout_imu_request == ESP_ERR_INVALID_STATE);
+    assert(s_main_timeout_cs_request == ESP_ERR_INVALID_STATE);
+    assert(s_main_timeout_ranging_request == ESP_ERR_INVALID_STATE);
+    assert(s_main_timeout_busy_ranging_request == ESP_ERR_INVALID_STATE);
+    assert(s_main_timeout_busy_snapshot.stale && s_main_timeout_busy_snapshot.bus_busy);
+    assert(assigned_node_count(&s_main_timeout_busy_snapshot) == 3U);
+    assert(!s_seen.stale && !s_seen.bus_busy && assigned_node_count(&s_seen) == 3U);
+    assert(s_seen_cache[0].topology_current && s_seen_cache[3].topology_current);
+    assert(s_collisions == 0U && s_tca_control == 0U);
+}
+
+static void test_main_timeout_does_not_extend_stale_topology_lifetime(void)
+{
+    reset_world();
+    s_tca_present = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    node_boot(&s_nodes[1], 0U, 0x22U);
+    node_boot(&s_nodes[2], 3U, 0x33U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture_initial_topology);
+    for (unsigned i = 0U; i < 5U; ++i) {
+        script(EV_ACTION, 0U, request_main_timeout_reconcile);
+        script(EV_WAIT_MS, NRF_TOPOLOGY_RECONCILE_PERIOD_MS, NULL);
+    }
+    script(EV_ACTION, 0U, capture);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    assert(assigned_node_count(&s_initial_topology) == 3U);
+    assert(s_seen.stale && s_seen.age_ms >= NRF_TOPOLOGY_STALE_LIMIT_MS);
+    assert(s_seen.main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    assert(s_seen.remotes[0].state == NRF_TOPOLOGY_NODE_UNKNOWN);
+    assert(s_seen.remotes[3].state == NRF_TOPOLOGY_NODE_UNKNOWN);
+    assert(s_collisions == 0U && s_tca_control == 0U);
+}
+
+static void test_main_timeout_without_a_previous_topology(void)
+{
+    reset_world();
+    s_tca_present = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    nrf_upstream_assign_t assign = {
+        .request_id = 1U,
+        .hardware_id_length = sizeof(s_nodes[0].hardware_id),
+        .role = NRF_UPSTREAM_ROLE_MAIN,
+        .node_id = NRF_TOPOLOGY_MAIN_NODE_ID,
+        .mux_channel = NRF_UPSTREAM_MUX_CHANNEL_NONE,
+    };
+    memcpy(assign.hardware_id, s_nodes[0].hardware_id, sizeof(s_nodes[0].hardware_id));
+    assert(nrf_bootstrap_process_assign(&s_nodes[0].bootstrap, &assign) == NRF_UPSTREAM_RESULT_OK);
+    s_fail_next_main_status_read = true;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    assert(!s_fail_next_main_status_read);
+    assert(s_seen.stale && !s_seen.bus_busy);
+    assert(s_seen.main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+    assert(s_seen.remotes[0].state == NRF_TOPOLOGY_NODE_UNKNOWN);
+    assert(assigned_node_count(&s_seen) == 0U);
+    assert(s_collisions == 0U && s_tca_control == 0U);
+}
+
 static void test_mux_discovery_timeouts_escalate_and_rejoin(void)
 {
     reset_world();
@@ -3068,5 +3215,8 @@ int main(void)
     test_ranging_requires_assigned_main();
 #endif
     test_mux_discovery_timeouts_escalate_and_rejoin();
+    test_main_timeout_preserves_stale_topology_until_recovery();
+    test_main_timeout_does_not_extend_stale_topology_lifetime();
+    test_main_timeout_without_a_previous_topology();
     return 0;
 }

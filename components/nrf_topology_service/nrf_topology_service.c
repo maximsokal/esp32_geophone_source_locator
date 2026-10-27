@@ -108,6 +108,11 @@ typedef struct {
     nrf_upstream_status_cache_t main_status_cache;
     bool read_probe_valid[NRF_PLATFORM_READ_ROUTE_COUNT][NRF_PLATFORM_READ_ADDRESS_COUNT];
     uint8_t log_fifo_probe[NRF_LOG_COLLECTOR_NODE_COUNT];
+#if NRF_TOPOLOGY_HAS_LOG_COLLECTOR
+    uint32_t log_transport_ok[NRF_LOG_COLLECTOR_NODE_COUNT];
+    uint32_t log_crc_ok[NRF_LOG_COLLECTOR_NODE_COUNT];
+    uint32_t log_crc_fail[NRF_LOG_COLLECTOR_NODE_COUNT];
+#endif
 } nrf_topology_platform_t;
 
 
@@ -1522,6 +1527,24 @@ static esp_err_t platform_log_read_once(
     err = platform_i2c_read_windowed(
         log_context->platform, device, address, frame_capacity, frame);
     const int64_t call_us = esp_timer_get_time() - started_us;
+    if (err == ESP_OK) {
+        uint32_t *transport_ok = &log_context->platform->log_transport_ok[node_index];
+        if (*transport_ok != UINT32_MAX) ++*transport_ok;
+        if (frame_capacity >= NRF_LOG_PROTOCOL_HEADER_LENGTH + NRF_LOG_PROTOCOL_CRC_LENGTH) {
+            const size_t declared = (size_t)frame[4] | ((size_t)frame[5] << 8U);
+            if (declared >= NRF_LOG_PROTOCOL_HEADER_LENGTH + NRF_LOG_PROTOCOL_CRC_LENGTH &&
+                declared <= frame_capacity) {
+                const size_t crc_offset = declared - NRF_LOG_PROTOCOL_CRC_LENGTH;
+                const uint16_t expected = (uint16_t)((uint16_t)frame[crc_offset] |
+                    ((uint16_t)frame[crc_offset + 1U] << 8U));
+                const uint16_t actual = nrf_upstream_protocol_crc16_ccitt_false(frame, crc_offset);
+                uint32_t *counter = actual == expected
+                    ? &log_context->platform->log_crc_ok[node_index]
+                    : &log_context->platform->log_crc_fail[node_index];
+                if (*counter != UINT32_MAX) ++*counter;
+            }
+        }
+    }
     if ((log_context->rx_seen_mask & (uint16_t)(1U << node_index)) == 0U ||
         (log_context->rx[node_index].err == ESP_OK && err != ESP_OK)) {
         nrf_log_rx_diag_t *rx = &log_context->rx[node_index];
@@ -1655,16 +1678,17 @@ static void service_log_build_targets(
     nrf_topology_worker_state_t *worker,
     nrf_log_poll_target_t targets[NRF_LOG_COLLECTOR_NODE_COUNT])
 {
+    const bool topology_current = !worker->snapshot.stale && !worker->snapshot.bus_busy;
     service_log_fill_target(
         &targets[0],
         &worker->snapshot.main,
-        true,
+        topology_current,
         nrf_link_readiness_is_ready(&worker->links[0]));
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         service_log_fill_target(
             &targets[channel + 1U],
             &worker->snapshot.remotes[channel],
-            worker->snapshot.tca_available && !worker->snapshot.tca_fault,
+            topology_current && worker->snapshot.tca_available && !worker->snapshot.tca_fault,
             nrf_link_readiness_is_ready(&worker->links[channel + 1U]));
     }
     if (worker->authority.command_active) {
@@ -1791,14 +1815,18 @@ static bool service_log_collect_iteration(
         const nrf_log_rx_diag_t *rx = &context.rx[node_index];
         ESP_LOGI(TAG,
             "NRF_LOG_RX node=%u addr=0x%02x ch=%d requested=%u received=%d "
-            "type=0x%02x declared=%d call_us=%" PRId64 " wire_us=%u err=0x%x(%s)",
+            "type=0x%02x declared=%d call_us=%" PRId64 " wire_us=%u err=0x%x(%s) "
+            "transport_ok=%lu crc_ok=%lu crc_fail=%lu",
             (unsigned)node_index,
             node_index == 0U ? NRF_UPSTREAM_ADDRESS_MAIN : NRF_UPSTREAM_ADDRESS_REMOTE,
             (int)rx->channel, (unsigned)rx->requested,
             rx->err == ESP_OK ? (int)rx->requested : -1, (unsigned)rx->type,
             (int)rx->declared, rx->call_us,
             (unsigned)platform_windowed_wire_us(rx->requested),
-            (unsigned)rx->err, esp_err_to_name(rx->err));
+            (unsigned)rx->err, esp_err_to_name(rx->err),
+            (unsigned long)worker->platform.log_transport_ok[node_index],
+            (unsigned long)worker->platform.log_crc_ok[node_index],
+            (unsigned long)worker->platform.log_crc_fail[node_index]);
     }
     if (context.fifo_check) {
         ESP_LOGI(TAG, "NRF_FIFO_CHECK node=%u extra_allowed=%u next_step=%u err=0x%x(%s)",
@@ -2138,7 +2166,9 @@ static void service_apply_snapshot_freshness(
     nrf_topology_snapshot_t *snapshot)
 {
     const uint64_t now_ms = platform_now_ms(platform);
-    if (!snapshot->bus_busy) {
+    const bool main_transport_failed = !snapshot->bus_busy && snapshot->tca_available &&
+        !snapshot->tca_fault && snapshot->main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
+    if (!snapshot->bus_busy && !main_transport_failed) {
         snapshot->stale = false;
         snapshot->age_ms = 0U;
         platform->last_good_snapshot = *snapshot;
@@ -2152,16 +2182,18 @@ static void service_apply_snapshot_freshness(
     }
 
     const uint32_t attempted_generation = snapshot->generation;
+    const bool attempted_busy = snapshot->bus_busy;
+    const nrf_topology_node_snapshot_t attempted_main = snapshot->main;
     if (!platform->last_good_snapshot_valid) {
         snapshot->stale = true;
         snapshot->age_ms = 0U;
-        service_snapshot_set_nodes_unknown(snapshot);
+        if (attempted_busy) service_snapshot_set_nodes_unknown(snapshot);
         return;
     }
 
     *snapshot = platform->last_good_snapshot;
     snapshot->generation = attempted_generation;
-    snapshot->bus_busy = true;
+    snapshot->bus_busy = attempted_busy;
     snapshot->stale = true;
     const uint64_t age_ms = now_ms >= platform->last_good_snapshot_ms
         ? now_ms - platform->last_good_snapshot_ms : 0U;
@@ -2169,6 +2201,7 @@ static void service_apply_snapshot_freshness(
     if (age_ms >= NRF_TOPOLOGY_STALE_LIMIT_MS) {
         service_snapshot_set_nodes_unknown(snapshot);
     }
+    if (main_transport_failed) snapshot->main = attempted_main;
 }
 
 static void service_preserve_direct_conflicts(
@@ -2397,6 +2430,7 @@ static size_t cs_collect_nodes(const nrf_topology_snapshot_t *snapshot, nrf_cs_n
 {
     size_t count = 0U;
     *overflow = false;
+    if (snapshot->stale || snapshot->bus_busy) return 0U;
     if (snapshot->main.state == NRF_TOPOLOGY_NODE_ASSIGNED) nodes[count++] = snapshot->main.node_id;
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         if (snapshot->remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
@@ -2408,6 +2442,7 @@ static size_t cs_collect_nodes(const nrf_topology_snapshot_t *snapshot, nrf_cs_n
 
 static esp_err_t cs_route_open(nrf_cs_platform_context_t *ctx, nrf_cs_node_id_t node, i2c_bus_device_handle_t *device, bool *remote)
 {
+    if (ctx->snapshot->stale || ctx->snapshot->bus_busy) return ESP_ERR_INVALID_STATE;
     esp_err_t err = platform_open_address_handles(ctx->platform);
     if (err != ESP_OK) return err;
     if (ctx->snapshot->main.state == NRF_TOPOLOGY_NODE_ASSIGNED && ctx->snapshot->main.node_id == node) {
@@ -3536,7 +3571,7 @@ esp_err_t nrf_topology_service_request_height_reference_capture(
 
     portENTER_CRITICAL(&s_state_lock);
     task = s_task;
-    if (task == NULL || !s_snapshot_valid || s_height_reference_pending ||
+    if (task == NULL || !s_snapshot_valid || s_snapshot.stale || s_snapshot.bus_busy || s_height_reference_pending ||
         s_height_reference_in_flight) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
@@ -3580,7 +3615,7 @@ esp_err_t nrf_topology_service_request_imu_calibration(
 
     portENTER_CRITICAL(&s_state_lock);
     task = s_task;
-    if (task == NULL || !s_snapshot_valid || s_imu_calibration_pending) {
+    if (task == NULL || !s_snapshot_valid || s_snapshot.stale || s_snapshot.bus_busy || s_imu_calibration_pending) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -3866,6 +3901,10 @@ esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
     portENTER_CRITICAL(&s_state_lock);
     task = s_task;
     available = task != NULL || s_starting;
+    if (s_snapshot_valid && (s_snapshot.stale || s_snapshot.bus_busy)) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     if (available && !s_ranging_active && !s_cs_request_pending &&
         (!s_cs_snapshot_valid || !s_cs_cycle_snapshot.active)) {
         s_cs_requested_policy = *policy;
@@ -3913,7 +3952,7 @@ esp_err_t nrf_topology_service_ranging_start(
 
     portENTER_CRITICAL(&s_state_lock);
     task = s_task;
-    if (task == NULL || !s_snapshot_valid) {
+    if (task == NULL || !s_snapshot_valid || s_snapshot.stale || s_snapshot.bus_busy) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
     }
