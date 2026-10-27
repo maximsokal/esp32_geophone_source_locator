@@ -29,6 +29,9 @@ typedef struct {
     int32_t temperature_milli_c;
 } nrf_imu_sample_t;
 
+/* humidity_milli_percent of a sensor that cannot measure humidity (BMP280): not a reading, not 0 %. */
+#define NRF_ENV_HUMIDITY_UNAVAILABLE UINT32_MAX
+
 typedef struct {
     int32_t temperature_milli_c;
     uint32_t pressure_pa;

@@ -46,8 +46,11 @@ static void test_bme_identity_and_status_bytes(void)
         fake.regs[0][TEST_REG_CHIP_ID] = (uint8_t)byte;
         nrf_sensor_bus_t bus = make_bus(&fake);
         nrf_bme280_t device;
+        /* 0x60 is a BME280; 0x56..0x58 are BMP280s (no humidity); every other id is refused. */
+        const bool known = byte == 0x60U || (byte >= 0x56U && byte <= 0x58U);
         assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) ==
-            (byte == 0x60U ? NRF_BME280_OK : NRF_BME280_ERR_CHIP_ID));
+            (known ? NRF_BME280_OK : NRF_BME280_ERR_CHIP_ID));
+        assert(!known || device.has_humidity == (byte == 0x60U));
 
         seed_sensor(&fake, 0x76U);
         bus = make_bus(&fake);
@@ -82,6 +85,13 @@ static void test_bme_each_failed_transfer_and_skipped_channel(void)
         seed_sensor(&fake, 0x76U);
         fake.fail_at_transfer = operation;
         bus = make_bus(&fake);
+        if (operation == 2) {
+            /* Transfer 2 is the probe of the other address (0x77), always made so it can be reported:
+             * a second address that does not answer must not stop the sensor on 0x76. */
+            assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_OK);
+            assert(device.initialized && device.address == 0x76U && !device.probe[1].acked);
+            continue;
+        }
         assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) != NRF_BME280_OK);
         assert(!device.initialized);
     }

@@ -25,6 +25,9 @@ enum {
     BME280_CTRL_MEAS_FORCED = 0x55U,
     BME280_CONFIG_FILTER_X16 = 0x10U,
 
+    BMP280_CALIB_BYTES = 24U,
+    BMP280_DATA_BYTES = 6U,
+
     BME280_STARTUP_DELAY_MS = 2U,
     BME280_NVM_POLL_DELAY_MS = 2U,
     BME280_NVM_POLL_ATTEMPTS = 10U,
@@ -228,7 +231,9 @@ static nrf_bme280_result_t bme280_probe(nrf_bme280_t *device)
         NRF_BME280_ADDRESS_SECONDARY,
     };
     bool saw_response = false;
+    bool found = false;
 
+    /* Probe both addresses even after a hit so the caller can report what is on the bus. */
     for (size_t index = 0U; index < 2U; ++index) {
         uint8_t chip_id = 0U;
         const nrf_bme280_result_t result = bme280_read_regs_at(
@@ -237,17 +242,30 @@ static nrf_bme280_result_t bme280_probe(nrf_bme280_t *device)
             BME280_REG_CHIP_ID,
             &chip_id,
             1U);
+        device->probe[index] = (nrf_bme280_probe_t){
+            .address = addresses[index],
+            .acked = result == NRF_BME280_OK,
+            .chip_id = result == NRF_BME280_OK ? chip_id : 0U,
+        };
         if (result != NRF_BME280_OK) {
             continue;
         }
 
         saw_response = true;
-        if (chip_id == NRF_BME280_CHIP_ID) {
+        const bool is_bme = chip_id == NRF_BME280_CHIP_ID;
+        const bool is_bmp = chip_id == NRF_BMP280_CHIP_ID ||
+                            chip_id == NRF_BMP280_CHIP_ID_SAMPLE_A ||
+                            chip_id == NRF_BMP280_CHIP_ID_SAMPLE_B;
+        if (!found && (is_bme || is_bmp)) {
             device->address = addresses[index];
-            return NRF_BME280_OK;
+            device->has_humidity = is_bme;
+            found = true;
         }
     }
 
+    if (found) {
+        return NRF_BME280_OK;
+    }
     return saw_response ? NRF_BME280_ERR_CHIP_ID : NRF_BME280_ERR_BUS;
 }
 
@@ -335,21 +353,24 @@ nrf_bme280_result_t nrf_bme280_init(
 
     uint8_t temp_press_calib[26] = {0};
     uint8_t humidity_calib[7] = {0};
+    /* A BMP280 has the 24 temperature/pressure words only: 0xA0.. and the humidity block do not exist. */
     result = bme280_read_regs(
         device,
         BME280_REG_TEMP_PRESS_CALIB,
         temp_press_calib,
-        sizeof(temp_press_calib));
+        device->has_humidity ? sizeof(temp_press_calib) : BMP280_CALIB_BYTES);
     if (result != NRF_BME280_OK) {
         return result;
     }
-    result = bme280_read_regs(
-        device,
-        BME280_REG_HUMIDITY_CALIB,
-        humidity_calib,
-        sizeof(humidity_calib));
-    if (result != NRF_BME280_OK) {
-        return result;
+    if (device->has_humidity) {
+        result = bme280_read_regs(
+            device,
+            BME280_REG_HUMIDITY_CALIB,
+            humidity_calib,
+            sizeof(humidity_calib));
+        if (result != NRF_BME280_OK) {
+            return result;
+        }
     }
 
     bme280_parse_calibration(
@@ -360,9 +381,11 @@ nrf_bme280_result_t nrf_bme280_init(
         return NRF_BME280_ERR_CALIBRATION;
     }
 
-    result = bme280_write_reg(device, BME280_REG_CTRL_HUM, BME280_CTRL_HUM_X1);
-    if (result != NRF_BME280_OK) {
-        return result;
+    if (device->has_humidity) {
+        result = bme280_write_reg(device, BME280_REG_CTRL_HUM, BME280_CTRL_HUM_X1);
+        if (result != NRF_BME280_OK) {
+            return result;
+        }
     }
     result = bme280_write_reg(device, BME280_REG_CONFIG, BME280_CONFIG_FILTER_X16);
     if (result != NRF_BME280_OK) {
@@ -375,19 +398,36 @@ nrf_bme280_result_t nrf_bme280_init(
     }
 
     uint8_t config[4] = {0};
-    result = bme280_read_regs(
-        device,
-        BME280_REG_CTRL_HUM,
-        config,
-        sizeof(config));
-    if (result != NRF_BME280_OK) {
-        return result;
-    }
-    if ((config[0] & 0x07U) != BME280_CTRL_HUM_X1 ||
-        (config[2] & 0xFCU) != BME280_CTRL_MEAS_SLEEP ||
-        (config[2] & 0x03U) != 0U ||
-        (config[3] & 0x1CU) != BME280_CONFIG_FILTER_X16) {
-        return NRF_BME280_ERR_CONFIG;
+    if (device->has_humidity) {
+        result = bme280_read_regs(
+            device,
+            BME280_REG_CTRL_HUM,
+            config,
+            sizeof(config));
+        if (result != NRF_BME280_OK) {
+            return result;
+        }
+        if ((config[0] & 0x07U) != BME280_CTRL_HUM_X1 ||
+            (config[2] & 0xFCU) != BME280_CTRL_MEAS_SLEEP ||
+            (config[2] & 0x03U) != 0U ||
+            (config[3] & 0x1CU) != BME280_CONFIG_FILTER_X16) {
+            return NRF_BME280_ERR_CONFIG;
+        }
+    } else {
+        /* STATUS, CTRL_MEAS, CONFIG: no CTRL_HUM register on a BMP280. */
+        result = bme280_read_regs(
+            device,
+            BME280_REG_STATUS,
+            &config[1],
+            3U);
+        if (result != NRF_BME280_OK) {
+            return result;
+        }
+        if ((config[2] & 0xFCU) != BME280_CTRL_MEAS_SLEEP ||
+            (config[2] & 0x03U) != 0U ||
+            (config[3] & 0x1CU) != BME280_CONFIG_FILTER_X16) {
+            return NRF_BME280_ERR_CONFIG;
+        }
     }
 
     device->initialized = true;
@@ -412,12 +452,15 @@ int nrf_bme280_read_env(void *context, nrf_env_sample_t *sample)
      * humidity (0x8000) forever. Rewrite them (the sensor sleeps between forced
      * conversions, so CONFIG is writable); CTRL_MEAS below latches CTRL_HUM.
      */
-    nrf_bme280_result_t result = bme280_write_reg(
-        device,
-        BME280_REG_CTRL_HUM,
-        BME280_CTRL_HUM_X1);
-    if (result != NRF_BME280_OK) {
-        return result;
+    nrf_bme280_result_t result = NRF_BME280_OK;
+    if (device->has_humidity) {
+        result = bme280_write_reg(
+            device,
+            BME280_REG_CTRL_HUM,
+            BME280_CTRL_HUM_X1);
+        if (result != NRF_BME280_OK) {
+            return result;
+        }
     }
     result = bme280_write_reg(
         device,
@@ -441,7 +484,8 @@ int nrf_bme280_read_env(void *context, nrf_env_sample_t *sample)
     }
 
     uint8_t data[8] = {0};
-    result = bme280_read_regs(device, BME280_REG_DATA, data, sizeof(data));
+    result = bme280_read_regs(
+        device, BME280_REG_DATA, data, device->has_humidity ? sizeof(data) : BMP280_DATA_BYTES);
     if (result != NRF_BME280_OK) {
         return result;
     }
@@ -458,7 +502,7 @@ int nrf_bme280_read_env(void *context, nrf_env_sample_t *sample)
         ((uint32_t)data[6] << 8U) | (uint32_t)data[7];
 
     if (raw_pressure == 0x80000U || raw_temperature == 0x80000U ||
-        raw_humidity == 0x8000U) {
+        (device->has_humidity && raw_humidity == 0x8000U)) {
         return NRF_BME280_ERR_MEASUREMENT;
     }
 
@@ -471,15 +515,17 @@ int nrf_bme280_read_env(void *context, nrf_env_sample_t *sample)
         raw_pressure,
         t_fine,
         &device->calibration);
-    const uint32_t humidity_x1024_percent =
-        bme280_compensate_humidity_x1024_percent(
-            raw_humidity,
-            t_fine,
-            &device->calibration);
+    const uint32_t humidity_x1024_percent = device->has_humidity
+        ? bme280_compensate_humidity_x1024_percent(
+              raw_humidity,
+              t_fine,
+              &device->calibration)
+        : 0U; /* unused: a BMP280 reports NRF_ENV_HUMIDITY_UNAVAILABLE below */
 
     sample->temperature_milli_c = temperature_centi_c * 10;
     sample->pressure_pa = (pressure_x100_pa + 50U) / 100U;
-    sample->humidity_milli_percent =
-        (humidity_x1024_percent * 1000U + 512U) / 1024U;
+    sample->humidity_milli_percent = device->has_humidity
+        ? (humidity_x1024_percent * 1000U + 512U) / 1024U
+        : NRF_ENV_HUMIDITY_UNAVAILABLE;
     return NRF_BME280_OK;
 }

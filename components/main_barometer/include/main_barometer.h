@@ -65,6 +65,8 @@ typedef struct {
     uint8_t bmp280_pending_polls;
     /* Consecutive polls that lost the shared-bus owner lock to another task. */
     uint8_t bmp280_yield_polls;
+    /* Normal mode never produced data: each poll runs one forced conversion instead. */
+    bool bmp280_forced;
     bool bmp280_initialized;
     bool aht20_initialized;
     bool bmp280_probe_required;

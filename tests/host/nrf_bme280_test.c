@@ -260,12 +260,15 @@ static void test_init_distinguishes_bus_absence_from_wrong_chip(void)
     memset(&fake, 0, sizeof(fake));
     fake.respond[0] = true;
     fake.respond[1] = true;
-    fake.regs[0][TEST_REG_CHIP_ID] = 0x58U;
+    fake.regs[0][TEST_REG_CHIP_ID] = 0x55U; /* neither a BME280 nor a BMP280 (0x56..0x58) */
     fake.regs[1][TEST_REG_CHIP_ID] = 0x61U;
     bus = make_bus(&fake);
     assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) ==
            NRF_BME280_ERR_CHIP_ID);
     assert(!device.initialized);
+    /* Both addresses were probed and what they said is kept for the report. */
+    assert(device.probe[0].acked && device.probe[0].chip_id == 0x55U && device.probe[0].address == 0x76U);
+    assert(device.probe[1].acked && device.probe[1].chip_id == 0x61U && device.probe[1].address == 0x77U);
 }
 
 static void test_init_has_bounded_nvm_wait(void)

@@ -170,7 +170,7 @@ static void test_init_configures_expected_runtime_profile(void)
     assert(device.initialized);
     assert(device.address == NRF_BMI160_DEFAULT_ADDRESS);
     assert(fake.last_address == NRF_BMI160_DEFAULT_ADDRESS);
-    assert(fake.transfer_count == 10);
+    assert(fake.transfer_count == 11); /* id read, soft reset, id read, ... */
 
     assert(fake.regs[TEST_BMI160_REG_PMU_STATUS] ==
            (TEST_BMI160_PMU_ACCEL_NORMAL | TEST_BMI160_PMU_GYRO_NORMAL));
@@ -204,8 +204,10 @@ static void test_init_rejects_wrong_chip_id_before_powerup(void)
                fake_delay_ms,
                &fake) == NRF_BMI160_ERR_CHIP_ID);
     assert(!device.initialized);
-    assert(fake.transfer_count == 2);
-    assert(fake.delay_count == 1U);
+    assert(device.chip_id == 0x00U);
+    /* Only the id was read: nothing is written to a device that is not a BMI160, not even the soft reset. */
+    assert(fake.transfer_count == 1);
+    assert(fake.delay_count == 0U);
 }
 
 static void test_init_rejects_pmu_that_did_not_enter_normal_mode(void)
@@ -223,7 +225,7 @@ static void test_init_rejects_pmu_that_did_not_enter_normal_mode(void)
                fake_delay_ms,
                &fake) == NRF_BMI160_ERR_PMU);
     assert(!device.initialized);
-    assert(fake.transfer_count == 5);
+    assert(fake.transfer_count == 6);
 }
 
 static void test_init_propagates_transfer_failure(void)

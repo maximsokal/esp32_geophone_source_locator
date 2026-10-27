@@ -117,6 +117,19 @@ nrf_bmi160_result_t nrf_bmi160_init(
         .initialized = false,
     };
 
+    /*
+     * Read the id first: the soft reset below is a write, and a write must not go to a device that is not a
+     * BMI160 (another part answering on 0x68/0x69 would take 0xB6 as a register value).
+     */
+    result = bmi160_read_regs(device, BMI160_REG_CHIP_ID, &value, 1U);
+    if (result != NRF_BMI160_OK) {
+        return result;
+    }
+    device->chip_id = value;
+    if (value != NRF_BMI160_CHIP_ID) {
+        return NRF_BMI160_ERR_CHIP_ID;
+    }
+
     result = bmi160_write_reg(device, BMI160_REG_CMD, BMI160_CMD_SOFT_RESET);
     if (result != NRF_BMI160_OK) {
         return result;
@@ -127,6 +140,7 @@ nrf_bmi160_result_t nrf_bmi160_init(
     if (result != NRF_BMI160_OK) {
         return result;
     }
+    device->chip_id = value;
     if (value != NRF_BMI160_CHIP_ID) {
         return NRF_BMI160_ERR_CHIP_ID;
     }

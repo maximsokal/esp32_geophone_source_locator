@@ -43,6 +43,15 @@ typedef struct {
     bool bmp_model_sleep;
     /* The shared bus is held by another owner: reads miss the owner lock. */
     bool bmp_bus_busy;
+    /* 2026-10-27 capture: the writes of CTRL_MEAS/CONFIG are ACKed but the sensor keeps its reset values. */
+    bool bmp_ignore_mode_writes;
+    /* Normal mode never converts (data stays at the reset value); a forced conversion does. */
+    bool bmp_normal_dead;
+    struct {
+        uint8_t reg;
+        uint8_t value;
+    } bmp_writes[16];
+    size_t bmp_write_count;
     void *bus;
 } fake_sensor_bus_t;
 
@@ -185,6 +194,12 @@ static esp_err_t fake_read(
     if ((address == 0x76U || address == 0x77U) && s_fake.bmp_bus_busy) {
         return SENSOR_BUS_ERR_MUTEX_BUSY;
     }
+    if ((address == 0x76U || address == 0x77U) && mem_address == REG_DATA && data_len == 6U &&
+        s_fake.bmp_normal_dead && (s_fake.registers[address][REG_CTRL_MEAS] & 0x03U) == 0x03U) {
+        static const uint8_t dead_data[6] = {0x80U, 0x00U, 0x00U, 0x80U, 0x00U, 0x00U};
+        memcpy(data, dead_data, sizeof(dead_data));
+        return ESP_OK;
+    }
     if ((address == 0x76U || address == 0x77U) && mem_address == REG_DATA &&
         s_fake.bmp_model_sleep && data_len == 6U &&
         (s_fake.registers[address][REG_CTRL_MEAS] & 0x03U) != 0x03U) {
@@ -258,6 +273,16 @@ esp_err_t i2c_bus_write_bytes(
     }
     if ((size_t)mem_address + data_len > sizeof(s_fake.registers[address])) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if ((address == 0x76U || address == 0x77U) && data_len == 1U &&
+        s_fake.bmp_write_count < sizeof(s_fake.bmp_writes) / sizeof(s_fake.bmp_writes[0])) {
+        s_fake.bmp_writes[s_fake.bmp_write_count].reg = mem_address;
+        s_fake.bmp_writes[s_fake.bmp_write_count].value = data[0];
+        ++s_fake.bmp_write_count;
+    }
+    if ((address == 0x76U || address == 0x77U) && s_fake.bmp_ignore_mode_writes &&
+        (mem_address == REG_CTRL_MEAS || mem_address == REG_CONFIG)) {
+        return ESP_OK; /* ACKed, not kept */
     }
     memcpy(&s_fake.registers[address][mem_address], data, data_len);
     return ESP_OK;
@@ -840,6 +865,64 @@ static void test_persistent_bus_busy_invalidates_capture_after_bound(void)
     main_barometer_close(&barometer);
 }
 
+static void test_bmp280_is_armed_through_sleep_and_verified(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, BMP_ID);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_poll(&barometer, 0U) == ESP_OK);
+    /* CONFIG is only writable in sleep mode: sleep, config, then the measuring mode. */
+    assert(s_fake.bmp_write_count == 3U);
+    assert(s_fake.bmp_writes[0].reg == REG_CTRL_MEAS && s_fake.bmp_writes[0].value == 0x00U);
+    assert(s_fake.bmp_writes[1].reg == REG_CONFIG && s_fake.bmp_writes[1].value == 0x30U);
+    assert(s_fake.bmp_writes[2].reg == REG_CTRL_MEAS && s_fake.bmp_writes[2].value == 0x57U);
+    assert(barometer.reading.bmp280_present);
+    main_barometer_close(&barometer);
+}
+
+static void test_bmp280_that_acks_but_keeps_the_reset_state_is_not_started(void)
+{
+    /* The 2026-10-27 capture: every write ACKed, the data registers never left 80 00 00 80 00 00. */
+    reset_fake();
+    main_barometer_request_polling();
+    setup_bmp280(0x76U, BMP_ID);
+    s_fake.bmp_ignore_mode_writes = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_INVALID_STATE);
+    assert(!barometer.reading.bmp280_present && !barometer.reading.bmp280_valid);
+    assert(!barometer.bmp280_initialized);
+    main_barometer_close(&barometer);
+}
+
+static void test_normal_mode_that_never_converts_falls_back_to_forced_conversions(void)
+{
+    reset_fake();
+    main_barometer_request_polling();
+    setup_bmp280(0x76U, BMP_ID);
+    s_fake.bmp_normal_dead = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    (void)main_barometer_poll(&barometer, 0U);
+
+    uint64_t now_ms = 200U;
+    for (unsigned polls = 1U; polls < 15U; ++polls, now_ms += 200U) {
+        assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_NOT_FINISHED);
+        assert(!barometer.bmp280_forced && !barometer.reading.bmp280_valid);
+    }
+    /* 15th poll with nothing: from here on every poll runs one forced conversion. */
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_NOT_FINISHED);
+    assert(barometer.bmp280_forced);
+    now_ms += 200U;
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_OK);
+    assert(barometer.reading.bmp280_valid);
+    assert(s_fake.registers[0x76U][REG_CTRL_MEAS] == 0x55U); /* forced, T x2 P x16 */
+    assert(s_fake.last_delay_ticks >= 4U); /* waited for the conversion */
+    main_barometer_close(&barometer);
+    assert(!barometer.bmp280_forced);
+}
+
 int main(void)
 {
     test_boot_polling_does_not_touch_i2c_before_preflight();
@@ -861,6 +944,9 @@ int main(void)
     test_pending_conversion_does_not_add_probe_traffic();
     test_transient_pending_does_not_kill_height_reference_capture();
     test_permanently_pending_sensor_invalidates_capture_after_bound();
+    test_bmp280_is_armed_through_sleep_and_verified();
+    test_bmp280_that_acks_but_keeps_the_reset_state_is_not_started();
+    test_normal_mode_that_never_converts_falls_back_to_forced_conversions();
     test_bus_busy_is_not_a_sensor_failure();
     test_bus_busy_does_not_kill_height_reference_capture();
     test_persistent_bus_busy_invalidates_capture_after_bound();

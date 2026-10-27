@@ -169,6 +169,11 @@ static void record_twis_request_type(const uint8_t *frame, uint32_t length)
     }
 }
 
+uint32_t nrf_bootstrap_runtime_zephyr_response_length(void)
+{
+    return s_read_window.length;
+}
+
 void nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(
     nrf_bootstrap_twis_diagnostics_t *diagnostics)
 {
@@ -788,6 +793,13 @@ record_transaction:
         response,
         response_length,
         callback_result);
+    /*
+     * The master never reads more than one window per read (the rest comes with READ_WINDOW), so the TWIS
+     * is handed no more than that. With transmit data left over at the master's NACK, MAIN held SDA low in
+     * that NACK slot on 15 of 19 reads of the 38 byte LOG STATUS (2026-10-27 capture v5), while every 28
+     * byte reply of exactly 28 bytes was clean (243/243). The full response stays recorded for the windows.
+     */
+    if(callback_result==0&&*len>NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES)*len=NRF_UPSTREAM_PROTOCOL_READ_WINDOW_BYTES;
     return callback_result;
 }
 

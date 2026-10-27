@@ -13,6 +13,8 @@ extern "C" {
 
 enum {
     NRF_BMI160_DEFAULT_ADDRESS = 0x68U,
+    /* SA0 high: the GY-BMI160 modules answer here when the SA0 pad is tied to VCC. */
+    NRF_BMI160_ALTERNATE_ADDRESS = 0x69U,
     NRF_BMI160_CHIP_ID = 0xD1U,
 };
 
@@ -37,6 +39,8 @@ typedef struct {
     void *delay_context;
     uint8_t address;
     bool initialized;
+    /* The CHIP_ID register as read (0 until a read succeeded); 0xD1 is a BMI160. */
+    uint8_t chip_id;
 } nrf_bmi160_t;
 
 /*

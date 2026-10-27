@@ -72,6 +72,44 @@ static int nrf_sensor_bus_zephyr_transfer(
     return result;
 }
 
+#define NRF_SENSOR_BUS_SCAN_FIRST_ADDRESS 0x08U
+#define NRF_SENSOR_BUS_SCAN_LAST_ADDRESS 0x77U
+
+int nrf_sensor_bus_zephyr_scan_private(void)
+{
+    static const uint8_t id_registers[] = {0x00U, 0x75U, 0xD0U};
+    int found = 0;
+
+    if (!device_is_ready(s_private_context.device)) {
+        return -ENODEV;
+    }
+    for (uint16_t address = NRF_SENSOR_BUS_SCAN_FIRST_ADDRESS;
+         address <= NRF_SENSOR_BUS_SCAN_LAST_ADDRESS; ++address) {
+        uint8_t byte = 0U;
+        if (i2c_read(s_private_context.device, &byte, 1U, address) != 0) {
+            continue;
+        }
+        ++found;
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+        int ids[sizeof(id_registers)];
+        for (size_t i = 0U; i < sizeof(id_registers); ++i) {
+            uint8_t value = 0U;
+            ids[i] = i2c_write_read(s_private_context.device, address, &id_registers[i], 1U, &value, 1U) == 0
+                ? (int)value
+                : -1;
+        }
+        printk("sensor_scan: bus=i2c30 addr=0x%02x ack reg00=%d reg75=%d regD0=%d (-1 = no answer)\n",
+               (unsigned)address, ids[0], ids[1], ids[2]);
+#else
+        (void)id_registers;
+#endif
+    }
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+    printk("sensor_scan: bus=i2c30 devices=%d\n", found);
+#endif
+    return found;
+}
+
 bool nrf_sensor_bus_zephyr_init_private(nrf_sensor_bus_t *out_bus)
 {
     if (out_bus == NULL) {

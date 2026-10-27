@@ -25,6 +25,7 @@
 #include "nrf_node_state.h"
 #include "nrf_log_events.h"
 #include "nrf_log_runtime_zephyr.h"
+#include "nrf_sensor_bus_zephyr.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
 #include "nrf_timing.h"
 #include "nrf_watchdog_zephyr.h"
@@ -273,6 +274,10 @@ static void print_state_transitions(const nrf_node_state_t *node_state)
                snapshot.env_ready ? 1U : 0U,
                snapshot.env_init_result,
                now_ms);
+        if (snapshot.imu_init_result != 0 || snapshot.env_init_result != 0) {
+            /* Shows which addresses answer and what they report, so a wrong address or part is visible. */
+            (void)nrf_sensor_bus_zephyr_scan_private();
+        }
     } else if ((changes & NRF_BOOT_CHANGE_SENSOR_RESULT) != 0U &&
                have_sensor_diagnostics) {
         printk("sensor: state bmi160_ready=%u bmi160_init=%" PRId32

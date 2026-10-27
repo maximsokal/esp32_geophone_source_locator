@@ -43,6 +43,11 @@ typedef struct {
 /* Lock-free best-effort snapshot of the target buffer callbacks. */
 void nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(
     nrf_bootstrap_twis_diagnostics_t *diagnostics);
+/*
+ * Length of the response the last read selected. A read hands the TWIS at most one window (28 bytes);
+ * the rest of a longer response follows through READ_WINDOW requests, so this is the master's total.
+ */
+uint32_t nrf_bootstrap_runtime_zephyr_response_length(void);
 bool nrf_bootstrap_runtime_zephyr_drain_twis_record(
     struct nrf_boot_twis_record *record);
 /* Called only by the upstream TWIS IRQ, the same producer as buffer callbacks. */

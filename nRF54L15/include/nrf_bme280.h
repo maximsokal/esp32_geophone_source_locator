@@ -15,6 +15,10 @@ enum {
     NRF_BME280_ADDRESS_PRIMARY = 0x76U,
     NRF_BME280_ADDRESS_SECONDARY = 0x77U,
     NRF_BME280_CHIP_ID = 0x60U,
+    /* BMP280 (no humidity): 0x58 in production parts, 0x56/0x57 on samples. Same T/P registers. */
+    NRF_BMP280_CHIP_ID_SAMPLE_A = 0x56U,
+    NRF_BMP280_CHIP_ID_SAMPLE_B = 0x57U,
+    NRF_BMP280_CHIP_ID = 0x58U,
 };
 
 typedef enum {
@@ -54,6 +58,13 @@ typedef struct {
     int8_t dig_h6;
 } nrf_bme280_calibration_t;
 
+/* What probing one address found; kept so a failed init can say exactly what was (not) there. */
+typedef struct {
+    uint8_t address;
+    bool acked;
+    uint8_t chip_id; /* valid when acked */
+} nrf_bme280_probe_t;
+
 typedef struct {
     nrf_sensor_bus_t bus;
     nrf_bme280_delay_ms_fn delay_ms;
@@ -61,10 +72,14 @@ typedef struct {
     nrf_bme280_calibration_t calibration;
     uint8_t address;
     bool initialized;
+    /* False for a BMP280: pressure and temperature only, humidity is NRF_ENV_HUMIDITY_UNAVAILABLE. */
+    bool has_humidity;
+    nrf_bme280_probe_t probe[2];
 } nrf_bme280_t;
 
 /*
- * Probe 0x76 then 0x77 and initialize an optional external BME280 at runtime.
+ * Probe 0x76 then 0x77 and initialize an optional external BME280 or BMP280 at runtime.
+ * Both addresses are always probed and recorded in device->probe[].
  * Call only after runtime role assignment selects a REMOTE node. The shared
  * MAIN/REMOTE production image must not require this sensor during boot.
  */
