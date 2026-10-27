@@ -1375,6 +1375,7 @@
     "tft.workflow.calibration.prep": { "en": "Place all sensors next to the main housing", "uk": "Розмістіть усі датчики поруч із головним корпусом", "max_len": 52 },
     "tft.workflow.calibration.header": {"en": "Phase %s CS %s/%s spread %s mm", "uk": "Етап %s CS %s/%s розкид %s мм", "max_len": 48},
     "tft.workflow.calibration.row": {"en": "%s H:%s z:%smm I:%s b:%s CS:%s", "uk": "%s \u0412:%s z:%s\u043c\u043c \u0406:%s b:%s CS:%s", "max_len": 58},
+    "tft.workflow.calibration.row_main": {"en": "%s H:%s z:%smm CS:%s", "uk": "%s В:%s z:%sмм CS:%s", "max_len": 58},
     "tft.workflow.calibration.status": { "en": "Calibration: %s", "uk": "Калібрування: %s", "max_len": 24 },
     "tft.workflow.calibration.reason": { "en": "%s: %s", "uk": "%s: %s", "max_len": 72 },
     "tft.workflow.calibration.reason_single": {"en": "%s", "uk": "%s", "max_len": 40},

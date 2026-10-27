@@ -580,6 +580,19 @@ void ui_workflow_model_build(
                     const double z_bias = node->gyro_bias_mdps[2];
                     (void)snprintf(bias, sizeof(bias), "%.0f", sqrt(x * x + y * y + z_bias * z_bias));
                 }
+                /* MAIN has no IMU: its row must not show IMU fields that can never fill in. */
+                if (strcmp(node->imu_state, "not_applicable") == 0) {
+                    ui_workflow_model_line_t *main_row =
+                        add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_ROW_MAIN);
+                    set_arg(main_row, 0U, node->node);
+                    set_arg(main_row, 1U, node->height_state);
+                    set_key_arg(main_row, 1U, state_value_key(node->height_state));
+                    if (node->relative_z_mm_valid) set_arg(main_row, 2U, z);
+                    else unknown_arg(main_row, 2U);
+                    set_arg(main_row, 3U, node->cs_pairs_ok ? "OK" : "X");
+                    set_key_arg(main_row, 3U, command_result_key(node->cs_pairs_ok));
+                    continue;
+                }
                 ui_workflow_model_line_t *row = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_ROW);
                 set_arg(row, 0U, node->node);
                 set_arg(row, 1U, node->height_state);

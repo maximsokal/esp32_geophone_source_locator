@@ -67,6 +67,16 @@
     aliases {
         /delete-property/ imu0;
     };
+
+    /*
+     * Console on the XIAO header instead of the on-board USB bridge (uart20),
+     * so a USB-UART adapter can log a node that is powered from the enclosure
+     * without connecting its USB-C: D6 = P2.08 = TX, D7 = P2.07 = RX, 115200
+     * 8N1, 3.3 V logic. Join the adapter GND to the node GND.
+     */
+    chosen {
+        zephyr,console = &uart21;
+    };
 };
 
 &lsm6ds3tr_c {

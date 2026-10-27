@@ -487,6 +487,41 @@ static void test_calibration_phase_and_result_status(void)
     assert(model.lines[0].arg_keys[0] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
 }
 
+/* MAIN has no IMU: its calibration row must be the IMU-free variant, remotes keep I:/b:. */
+static void test_calibration_main_row_has_no_imu_fields(void)
+{
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_CALIBRATING);
+    snapshot.calibration.per_node_count = 2U;
+    workflow_calibration_node_t *main_node = &snapshot.calibration.per_node[0];
+    (void)snprintf(main_node->node, sizeof(main_node->node), "MAIN");
+    (void)snprintf(main_node->height_state, sizeof(main_node->height_state), "valid");
+    (void)snprintf(main_node->imu_state, sizeof(main_node->imu_state), "not_applicable");
+    main_node->relative_z_mm_valid = true;
+    main_node->relative_z_mm = 120;
+    main_node->cs_pairs_ok = true;
+    workflow_calibration_node_t *remote = &snapshot.calibration.per_node[1];
+    (void)snprintf(remote->node, sizeof(remote->node), "G1");
+    (void)snprintf(remote->height_state, sizeof(remote->height_state), "valid");
+    (void)snprintf(remote->imu_state, sizeof(remote->imu_state), "calibrated");
+    remote->imu_values_valid = true;
+    remote->relative_z_mm_valid = true;
+    remote->relative_z_mm = 5;
+    remote->cs_pairs_ok = true;
+
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.line_count == 3U);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_ROW_MAIN);
+    assert(strcmp(model.lines[1].args[0], "MAIN") == 0);
+    assert(model.lines[1].arg_keys[1] == UI_I18N_KEY_TFT_WORKFLOW_STATE_VALID);
+    assert(strcmp(model.lines[1].args[2], "120") == 0);
+    assert(model.lines[1].arg_keys[3] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_OK);
+    assert(model.lines[2].key == UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_ROW);
+    assert(model.lines[2].arg_keys[3] == UI_I18N_KEY_TFT_WORKFLOW_STATE_CALIBRATED);
+}
+
 static void test_calibration_reason_mapping(void)
 {
     workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_CALIB_RESULT);
@@ -683,6 +718,7 @@ int main(void)
     test_pending_notices();
     test_unknown_values_and_ranging_sigma();
     test_calibration_phase_and_result_status();
+    test_calibration_main_row_has_no_imu_fields();
     test_calibration_reason_mapping();
     test_result_routing_and_distances();
     test_preview_stop_double_ok();

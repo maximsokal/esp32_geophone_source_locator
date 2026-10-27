@@ -261,6 +261,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "%s: %s", /* tft.workflow.calibration.reason */
     "%s", /* tft.workflow.calibration.reason_single */
     "%s H:%s z:%smm I:%s b:%s CS:%s", /* tft.workflow.calibration.row */
+    "%s H:%s z:%smm CS:%s", /* tft.workflow.calibration.row_main */
     "Calibration: %s", /* tft.workflow.calibration.status */
     "Delete recording? OK = yes, LEFT = no", /* tft.workflow.confirm.delete */
     "Waiting for phone GPS", /* tft.workflow.gps.waiting */
@@ -686,6 +687,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "%s: %s", /* tft.workflow.calibration.reason */
     "%s", /* tft.workflow.calibration.reason_single */
     "%s В:%s z:%sмм І:%s b:%s CS:%s", /* tft.workflow.calibration.row */
+    "%s В:%s z:%sмм CS:%s", /* tft.workflow.calibration.row_main */
     "Калібрування: %s", /* tft.workflow.calibration.status */
     "Видалити запис? OK = так, LEFT = ні", /* tft.workflow.confirm.delete */
     "Очікування GPS телефона", /* tft.workflow.gps.waiting */

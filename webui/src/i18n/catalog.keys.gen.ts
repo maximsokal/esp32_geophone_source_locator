@@ -1232,6 +1232,7 @@ export const i18nKeys = [
   "tft.workflow.calibration.reason",
   "tft.workflow.calibration.reason_single",
   "tft.workflow.calibration.row",
+  "tft.workflow.calibration.row_main",
   "tft.workflow.calibration.status",
   "tft.workflow.confirm.delete",
   "tft.workflow.gps.waiting",

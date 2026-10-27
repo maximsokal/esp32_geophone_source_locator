@@ -1234,6 +1234,7 @@ export const uk: Record<I18nKey, string> = {
   "tft.workflow.calibration.reason": "%s: %s",
   "tft.workflow.calibration.reason_single": "%s",
   "tft.workflow.calibration.row": "%s В:%s z:%sмм І:%s b:%s CS:%s",
+  "tft.workflow.calibration.row_main": "%s В:%s z:%sмм CS:%s",
   "tft.workflow.calibration.status": "Калібрування: %s",
   "tft.workflow.confirm.delete": "Видалити запис? OK = так, LEFT = ні",
   "tft.workflow.gps.waiting": "Очікування GPS телефона",

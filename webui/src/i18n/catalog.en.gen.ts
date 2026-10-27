@@ -1234,6 +1234,7 @@ export const en: Record<I18nKey, string> = {
   "tft.workflow.calibration.reason": "%s: %s",
   "tft.workflow.calibration.reason_single": "%s",
   "tft.workflow.calibration.row": "%s H:%s z:%smm I:%s b:%s CS:%s",
+  "tft.workflow.calibration.row_main": "%s H:%s z:%smm CS:%s",
   "tft.workflow.calibration.status": "Calibration: %s",
   "tft.workflow.confirm.delete": "Delete recording? OK = yes, LEFT = no",
   "tft.workflow.gps.waiting": "Waiting for phone GPS",
