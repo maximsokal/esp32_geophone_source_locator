@@ -6,6 +6,7 @@ import {
   createRequestOwner,
   fetchNrfLogs,
   retireRequestOwner,
+  sendControl,
 } from '../../api/deviceApi';
 import type { DeviceStatus, NrfLogCounters, NrfLogNodeId, NrfLogNodeSummary, NrfLogRecord } from '../../domain/device';
 import { useLocale, useT, type I18nKey } from '../../i18n';
@@ -42,6 +43,8 @@ export const NRF_LOG_PANEL_I18N_KEYS = [
   'nrf_log.panel.export_csv', 'nrf_log.panel.counter_not_reported', 'nrf_log.panel.loading',
   'nrf_log.panel.node_select_aria', 'nrf_log.panel.severity_filter_aria', 'nrf_log.panel.table_aria',
   'nrf_log.panel.unknown_event', 'nrf_log.notices.reset', 'nrf_log.notices.node_rebooted',
+  'nrf_log.panel.scan', 'nrf_log.panel.scan_queued', 'nrf_log.panel.scan_failed',
+  'nrf_log.panel.scan_sent', 'nrf_log.panel.scan_check_failed',
   ...NRF_LOG_ARG_I18N_KEYS,
   ...severityKeys,
   ...Object.values(subsystemKeys),
@@ -128,6 +131,8 @@ export default function NrfLogPanel({ status }: { status: DeviceStatus | null })
   const [requestFailed, setRequestFailed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [minimumSeverity, setMinimumSeverity] = useState(0);
+  const [scanPending, setScanPending] = useState(false);
+  const [scanResult, setScanResult] = useState<{ node: NrfLogNodeId; id: number | null; state: 'queued' | 'sent' | 'failed' | 'unknown' } | null>(null);
 
   useEffect(() => {
     if (selectedNode === null && nodeIds.length > 0) setSelectedNode(nodeIds[0]);
@@ -146,6 +151,29 @@ export default function NrfLogPanel({ status }: { status: DeviceStatus | null })
     setRequestFailed(false);
     setLoading(activeNode !== null && !summaryUnsupported);
   }, [activeNode]);
+
+  useEffect(() => {
+    if (scanResult === null || scanResult.state !== 'queued' || scanResult.id === null) return undefined;
+    let cancelled = false;
+    let timer: number | null = null;
+    const check = async (): Promise<void> => {
+      try {
+        const result = await sendControl('sensor_scan_dispatch', { request_id: scanResult.id });
+        if (cancelled) return;
+        if (!result.ok || typeof result.pending !== 'boolean' || typeof result.dispatch_error !== 'number') {
+          setScanResult({ ...scanResult, state: 'unknown' });
+        } else if (result.pending) {
+          timer = window.setTimeout(() => void check(), 1000);
+        } else {
+          setScanResult({ ...scanResult, state: result.dispatch_error === 0 ? 'sent' : 'failed' });
+        }
+      } catch {
+        if (!cancelled) setScanResult({ ...scanResult, state: 'unknown' });
+      }
+    };
+    timer = window.setTimeout(() => void check(), 1000);
+    return () => { cancelled = true; if (timer !== null) window.clearTimeout(timer); };
+  }, [scanResult]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
@@ -242,6 +270,21 @@ export default function NrfLogPanel({ status }: { status: DeviceStatus | null })
     );
   };
 
+  const requestScan = async (): Promise<void> => {
+    if (activeNode === null || nodeChannel(activeNode) === null || scanPending) return;
+    const node = activeNode;
+    setScanPending(true);
+    try {
+      const result = await sendControl('scan_remote_sensors', { channel: nodeChannel(node) });
+      const id = result.ok && typeof result.request_id === 'number' ? result.request_id : null;
+      setScanResult({ node, id, state: id === null ? 'failed' : 'queued' });
+    } catch {
+      setScanResult({ node, id: null, state: 'failed' });
+    } finally {
+      setScanPending(false);
+    }
+  };
+
   return (
     <article className="console-card wide-card nrf-log-card">
       <div className="card-heading">
@@ -264,7 +307,18 @@ export default function NrfLogPanel({ status }: { status: DeviceStatus | null })
               {severityKeys.map((key, severity) => <option key={key} value={severity}>{t(key)}</option>)}
             </select>
           </label>
+          {activeNode !== null && nodeChannel(activeNode) !== null && (
+            <button type="button" className="secondary" disabled={scanPending || unsupported || !summary?.present} onClick={() => void requestScan()}>
+              {t('nrf_log.panel.scan')}
+            </button>
+          )}
         </div>
+
+        {scanResult?.node === activeNode && <p role="status">{
+          scanResult.state === 'failed' ? t('nrf_log.panel.scan_failed')
+            : scanResult.state === 'unknown' ? t('nrf_log.panel.scan_check_failed')
+              : scanResult.state === 'sent' ? t('nrf_log.panel.scan_sent', { id: scanResult.id ?? 0 })
+                : t('nrf_log.panel.scan_queued', { id: scanResult.id ?? 0 })}</p>}
 
         <dl className="nrf-log-counters">
           {counterRows.map(([key, value]) => <div key={key}><dt>{t(key)}</dt><dd>{value === undefined ? t('nrf_log.panel.counter_not_reported') : formatNumber(locale, value)}</dd></div>)}

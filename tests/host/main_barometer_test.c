@@ -53,6 +53,12 @@ typedef struct {
     } bmp_writes[16];
     size_t bmp_write_count;
     void *bus;
+    main_barometer_t *observed;
+    unsigned state_mask;
+    unsigned bmp_transfer_count;
+    unsigned bmp_fail_at;
+    esp_err_t bmp_delete_error;
+    main_bmp280_state_t bmp_failed_state;
 } fake_sensor_bus_t;
 
 static fake_sensor_bus_t s_fake;
@@ -126,6 +132,8 @@ static void reset_fake(void)
 
 esp_err_t sensor_bus_probe_address(uint8_t address)
 {
+    if (s_fake.observed != NULL && (address == 0x76U || address == 0x77U))
+        s_fake.state_mask |= 1U << s_fake.observed->bmp280_state;
     if (s_fake.address_probe_count < sizeof(s_fake.probed_addresses)) {
         s_fake.probed_addresses[s_fake.address_probe_count++] = address;
     }
@@ -170,6 +178,10 @@ esp_err_t i2c_bus_device_delete(i2c_bus_device_handle_t *device)
     if (device == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (*device != NULL && ((fake_device_t *)*device)->address != AHT_ADDRESS &&
+        s_fake.bmp_delete_error != ESP_OK) {
+        return s_fake.bmp_delete_error;
+    }
     *device = NULL;
     return ESP_OK;
 }
@@ -181,8 +193,17 @@ static esp_err_t fake_read(
     uint8_t *data)
 {
     const uint8_t address = ((fake_device_t *)handle)->address;
+    if (s_fake.observed != NULL && (address == 0x76U || address == 0x77U))
+        s_fake.state_mask |= 1U << s_fake.observed->bmp280_state;
     if (s_fake.read_count < sizeof(s_fake.read_addresses)) {
         s_fake.read_addresses[s_fake.read_count++] = address;
+    }
+    if ((address == 0x76U || address == 0x77U) && s_fake.responding[address]) {
+        ++s_fake.bmp_transfer_count;
+        if (s_fake.bmp_fail_at == s_fake.bmp_transfer_count) {
+            s_fake.bmp_failed_state = s_fake.observed->bmp280_state;
+            return ESP_ERR_TIMEOUT;
+        }
     }
     if (!s_fake.responding[address]) {
         return ESP_ERR_INVALID_STATE;
@@ -262,6 +283,15 @@ esp_err_t i2c_bus_write_bytes(
     const uint8_t *data)
 {
     const uint8_t address = ((fake_device_t *)handle)->address;
+    if (s_fake.observed != NULL && (address == 0x76U || address == 0x77U))
+        s_fake.state_mask |= 1U << s_fake.observed->bmp280_state;
+    if ((address == 0x76U || address == 0x77U) && s_fake.responding[address]) {
+        ++s_fake.bmp_transfer_count;
+        if (s_fake.bmp_fail_at == s_fake.bmp_transfer_count) {
+            s_fake.bmp_failed_state = s_fake.observed->bmp280_state;
+            return ESP_ERR_TIMEOUT;
+        }
+    }
     if (!s_fake.responding[address]) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -923,9 +953,128 @@ static void test_normal_mode_that_never_converts_falls_back_to_forced_conversion
     assert(!barometer.bmp280_forced);
 }
 
+static void test_bmp_state_machine_reprobes_identity_after_read_failure(void)
+{
+    reset_fake();
+    main_barometer_request_polling();
+    setup_bmp280(0x77U, BMP_ID);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    s_fake.observed = &barometer;
+    assert(barometer.bmp280_state == MAIN_BMP280_PROBE);
+    assert(main_barometer_poll(&barometer, 0U) == ESP_OK);
+    assert((s_fake.state_mask & ((1U << MAIN_BMP280_PROBE) |
+        (1U << MAIN_BMP280_CONFIGURE) | (1U << MAIN_BMP280_VERIFY))) ==
+        ((1U << MAIN_BMP280_PROBE) | (1U << MAIN_BMP280_CONFIGURE) |
+         (1U << MAIN_BMP280_VERIFY)));
+    assert(barometer.bmp280_state == MAIN_BMP280_MEASURING);
+    assert(main_barometer_poll(&barometer, 200U) == ESP_OK);
+    s_fake.bmp_bus_busy = true;
+    assert(main_barometer_poll(&barometer, 400U) == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(barometer.bmp280_state == MAIN_BMP280_MEASURING);
+    s_fake.bmp_bus_busy = false;
+    s_fake.timeout_bmp_data = true;
+    assert(main_barometer_poll(&barometer, 600U) == ESP_ERR_TIMEOUT);
+    assert(barometer.bmp280_state == MAIN_BMP280_RECOVER);
+    assert(!barometer.reading.bmp280_valid);
+    s_fake.timeout_bmp_data = false;
+    s_fake.registers[0x77U][REG_CHIP_ID] = 0x42U;
+    const size_t writes = s_fake.bmp_write_count;
+    assert(main_barometer_poll(&barometer, 800U) == ESP_ERR_TIMEOUT);
+    assert(s_fake.bmp_write_count == writes);
+    assert(main_barometer_poll(&barometer, 5600U) == ESP_ERR_INVALID_RESPONSE);
+    assert(barometer.bmp280_state == MAIN_BMP280_RECOVER);
+    assert(s_fake.bmp_write_count == writes);
+    s_fake.registers[0x77U][REG_CHIP_ID] = BMP_ID;
+    assert(main_barometer_poll(&barometer, 5800U) == ESP_OK);
+    assert(barometer.bmp280_state == MAIN_BMP280_MEASURING);
+    assert(main_barometer_poll(&barometer, 6000U) == ESP_OK);
+    assert(barometer.reading.bmp280_valid);
+    main_barometer_close(&barometer);
+}
+
+static void test_bmp_state_machine_recovers_from_each_setup_transfer_failure(void)
+{
+    static const main_bmp280_state_t phase[] = {
+        MAIN_BMP280_PROBE, MAIN_BMP280_PROBE,
+        MAIN_BMP280_CONFIGURE, MAIN_BMP280_CONFIGURE, MAIN_BMP280_CONFIGURE,
+        MAIN_BMP280_VERIFY,
+    };
+    for (unsigned failure = 1U; failure <= sizeof(phase) / sizeof(phase[0]); ++failure) {
+        reset_fake();
+        setup_bmp280(0x77U, BMP_ID);
+        main_barometer_t barometer;
+        main_barometer_init(&barometer);
+        s_fake.observed = &barometer;
+        s_fake.bmp_fail_at = failure;
+        assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_TIMEOUT);
+        assert(s_fake.bmp_failed_state == phase[failure - 1U]);
+        assert(barometer.bmp280_state == MAIN_BMP280_RECOVER);
+        assert(!barometer.bmp280_initialized && !barometer.reading.bmp280_valid);
+        const unsigned transfers = s_fake.bmp_transfer_count;
+        s_fake.bmp_fail_at = 0U;
+        assert(main_barometer_poll(&barometer, 200U) == ESP_ERR_TIMEOUT);
+        assert(s_fake.bmp_transfer_count == transfers);
+        assert(main_barometer_poll(&barometer, 5000U) == ESP_OK);
+        assert(barometer.bmp280_state == MAIN_BMP280_MEASURING);
+        assert(!barometer.reading.bmp280_valid);
+        assert(main_barometer_poll(&barometer, 5200U) == ESP_OK);
+        assert(barometer.reading.bmp280_valid);
+        main_barometer_close(&barometer);
+    }
+}
+
+static void test_recovery_retains_handle_when_bus_lock_prevents_delete(void)
+{
+    reset_fake();
+    setup_bmp280(0x77U, BMP_ID);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_poll(&barometer, 0U) == ESP_OK);
+    s_fake.timeout_bmp_data = true;
+    assert(main_barometer_poll(&barometer, 200U) == ESP_ERR_TIMEOUT);
+    s_fake.timeout_bmp_data = false;
+    const i2c_bus_device_handle_t old = barometer.bmp280;
+    const size_t probes = s_fake.address_probe_count;
+    s_fake.bmp_delete_error = SENSOR_BUS_ERR_MUTEX_BUSY;
+    assert(main_barometer_poll(&barometer, 5200U) == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(barometer.bmp280 == old);
+    assert(barometer.bmp280_state == MAIN_BMP280_RECOVER);
+    assert(s_fake.address_probe_count == probes);
+    s_fake.bmp_delete_error = ESP_OK;
+    assert(main_barometer_poll(&barometer, 5400U) == ESP_OK);
+    assert(barometer.bmp280_state == MAIN_BMP280_MEASURING);
+    main_barometer_close(&barometer);
+}
+
+static void test_failed_candidate_is_retained_until_delete_succeeds(void)
+{
+    reset_fake();
+    setup_bmp280(0x77U, BMP_ID);
+    s_fake.bmp_ignore_mode_writes = true;
+    s_fake.bmp_delete_error = SENSOR_BUS_ERR_MUTEX_BUSY;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_poll(&barometer, 0U) == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(barometer.bmp280 != NULL);
+    assert(barometer.bmp280_state == MAIN_BMP280_RECOVER);
+    const size_t probes = s_fake.address_probe_count;
+    assert(main_barometer_poll(&barometer, 200U) == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(s_fake.address_probe_count == probes);
+    s_fake.bmp_delete_error = ESP_OK;
+    s_fake.bmp_ignore_mode_writes = false;
+    assert(main_barometer_poll(&barometer, 400U) == ESP_OK);
+    assert(barometer.bmp280_state == MAIN_BMP280_MEASURING);
+    main_barometer_close(&barometer);
+}
+
 int main(void)
 {
     test_boot_polling_does_not_touch_i2c_before_preflight();
+    test_bmp_state_machine_reprobes_identity_after_read_failure();
+    test_bmp_state_machine_recovers_from_each_setup_transfer_failure();
+    test_recovery_retains_handle_when_bus_lock_prevents_delete();
+    test_failed_candidate_is_retained_until_delete_succeeds();
     test_bmp280_compensation_datasheet_vector();
     test_bmp280_probes_preferred_then_fallback_address();
     test_bme280_accepted_as_bmp280();

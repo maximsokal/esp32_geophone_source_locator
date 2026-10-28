@@ -41,6 +41,9 @@ static uint32_t s_sensor_assignment_request_ids[128];
 static nrf_upstream_assign_t s_sensor_assignments[128];
 static unsigned s_work_queue_start_calls;
 static unsigned s_sensor_refresh_calls;
+static unsigned s_sensor_scan_calls;
+static uint32_t s_last_sensor_scan_id;
+static int s_sensor_scan_result;
 static unsigned s_height_reference_calls;
 static unsigned s_imu_calibration_calls;
 static bool s_registered;
@@ -196,6 +199,15 @@ int nrf_sensor_upstream_runtime_zephyr_request_refresh(
     s_last_sensor_refresh = *request;
     ++s_sensor_refresh_calls;
     return 0;
+}
+
+int nrf_sensor_upstream_runtime_zephyr_request_scan(
+    const nrf_upstream_sensor_refresh_t *request)
+{
+    assert(request != NULL);
+    ++s_sensor_scan_calls;
+    s_last_sensor_scan_id = request->request_id;
+    return s_sensor_scan_result;
 }
 
 int nrf_sensor_upstream_runtime_zephyr_request_height_reference(
@@ -1859,6 +1871,14 @@ int main(void)
     }
 
     {
+        const nrf_upstream_sensor_refresh_t request = {.request_id = 0x55667788U};
+        uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_SCAN_LENGTH];
+        assert(nrf_upstream_protocol_encode_sensor_scan(&request, frame) == NRF_UPSTREAM_RESULT_OK);
+        s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+        assert(s_sensor_scan_calls == 1U && s_last_sensor_scan_id == request.request_id);
+    }
+
+    {
         const unsigned before_submit = s_submit_calls;
         const unsigned before_refresh = s_sensor_refresh_calls;
         send_height_reference(
@@ -2271,5 +2291,24 @@ int main(void)
     test_twis_read_windows_continue_the_selected_response();
     test_twis_read_window_requests_are_validated_and_one_shot();
     test_autonomous_cs_cycle_messages();
+    {
+        const nrf_upstream_sensor_refresh_t request = {.request_id = 777U};
+        uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_SCAN_LENGTH];
+        s_sensor_scan_result = -EBUSY;
+        assert(nrf_upstream_protocol_encode_sensor_scan(&request, frame) == NRF_UPSTREAM_RESULT_OK);
+        s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+        const nrf_log_record_t rejected = find_log_event(NRF_LOG_EVENT_SENSOR_SCAN_DONE);
+        assert(rejected.arg0 == 777U && rejected.arg1 == (uint32_t)-EBUSY);
+        s_sensor_scan_result = 0;
+    }
+    {
+        const nrf_upstream_sensor_refresh_t request = {.request_id = 19U};
+        uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_SCAN_LENGTH];
+        const unsigned scans_before = s_sensor_scan_calls;
+        assert(nrf_upstream_protocol_encode_sensor_scan(&request, frame) == NRF_UPSTREAM_RESULT_OK);
+        frame[6] ^= 1U;
+        s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+        assert(s_sensor_scan_calls == scans_before);
+    }
     return 0;
 }

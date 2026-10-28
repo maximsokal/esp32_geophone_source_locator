@@ -26,10 +26,13 @@ typedef enum {
  * the next prepare initializes it again.
  */
 #define NRF_REMOTE_SENSOR_REINIT_AFTER_FAILURES 3U
+#define NRF_REMOTE_SENSOR_RETRY_MS 5000U
+#define NRF_REMOTE_SENSOR_INIT_PENDING 1
 
 typedef int (*nrf_remote_sensor_init_fn)(void *context);
 
 typedef struct {
+    uint64_t now_ms;
     nrf_remote_sensor_init_fn init_imu;
     nrf_read_imu_fn read_imu;
     void *imu_context;
@@ -45,11 +48,14 @@ typedef struct {
     int env_init_result;
     uint8_t imu_read_failures;
     uint8_t env_read_failures;
+    uint64_t imu_retry_after_ms;
+    uint64_t env_retry_after_ms;
     bool imu_ready;
     bool env_ready;
 } nrf_remote_sensor_runtime_t;
 
 void nrf_remote_sensor_runtime_init(nrf_remote_sensor_runtime_t *runtime);
+void nrf_remote_sensor_runtime_note_imu_read(nrf_remote_sensor_runtime_t *runtime, bool faulted);
 
 /*
  * Prepare optional REMOTE-only sensors after runtime role assignment.

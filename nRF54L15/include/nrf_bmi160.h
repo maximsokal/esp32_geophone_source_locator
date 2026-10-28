@@ -20,6 +20,7 @@ enum {
 
 typedef enum {
     NRF_BMI160_OK = 0,
+    NRF_BMI160_PENDING = 1,
     NRF_BMI160_ERR_ARGUMENT = -1,
     NRF_BMI160_ERR_BUS = -2,
     NRF_BMI160_ERR_CHIP_ID = -3,
@@ -33,14 +34,29 @@ typedef void (*nrf_bmi160_delay_ms_fn)(
     void *context,
     uint32_t delay_ms);
 
+typedef enum {
+    NRF_BMI160_PROBE = 0,
+    NRF_BMI160_CONFIGURE,
+    NRF_BMI160_VERIFY,
+    NRF_BMI160_MEASURING,
+    NRF_BMI160_RECOVER,
+} nrf_bmi160_state_t;
+
+typedef void (*nrf_bmi160_state_observer_fn)(void *context, nrf_bmi160_state_t state);
+
 typedef struct {
     nrf_sensor_bus_t bus;
     nrf_bmi160_delay_ms_fn delay_ms;
     void *delay_context;
     uint8_t address;
     bool initialized;
+    nrf_bmi160_state_t state;
     /* The CHIP_ID register as read (0 until a read succeeded); 0xD1 is a BMI160. */
     uint8_t chip_id;
+    uint8_t prepare_phase;
+    uint64_t prepare_due_ms;
+    nrf_bmi160_state_observer_fn observer;
+    void *observer_context;
 } nrf_bmi160_t;
 
 /*
@@ -56,6 +72,16 @@ nrf_bmi160_result_t nrf_bmi160_init(
     uint8_t address,
     nrf_bmi160_delay_ms_fn delay_ms,
     void *delay_context);
+
+nrf_bmi160_result_t nrf_bmi160_init_observed(
+    nrf_bmi160_t *device, const nrf_sensor_bus_t *bus, uint8_t address,
+    nrf_bmi160_delay_ms_fn delay_ms, void *delay_context,
+    nrf_bmi160_state_observer_fn observer, void *observer_context);
+
+nrf_bmi160_result_t nrf_bmi160_begin_async(
+    nrf_bmi160_t *device, const nrf_sensor_bus_t *bus, uint8_t address,
+    nrf_bmi160_state_observer_fn observer, void *observer_context);
+nrf_bmi160_result_t nrf_bmi160_step_async(nrf_bmi160_t *device, uint64_t now_ms);
 
 /* Matches nrf_read_imu_fn so it can plug directly into sensor snapshots. */
 int nrf_bmi160_read_imu(void *context, nrf_imu_sample_t *sample);

@@ -13,6 +13,8 @@
 #endif
 
 #include "nrf_bme280.h"
+#include "nrf_bme280_zephyr.h"
+#include "nrf_bmi160_zephyr.h"
 #include "nrf_blue_led.h"
 #include "nrf_ema_filter.h"
 #include "nrf_baro_altitude.h"
@@ -26,6 +28,7 @@
 #include "nrf_node_state.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
 #include "nrf_sensor_session.h"
+#include "nrf_sensor_bus_zephyr.h"
 #include "nrf_timing.h"
 #include "nrf_watchdog_zephyr.h"
 #if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS
@@ -52,6 +55,7 @@ typedef enum {
     NRF_SENSOR_EVENT_REFRESH = 2,
     NRF_SENSOR_EVENT_HEIGHT_REFERENCE = 3,
     NRF_SENSOR_EVENT_IMU_CALIBRATE = 4,
+    NRF_SENSOR_EVENT_SCAN = 5,
 } nrf_sensor_event_type_t;
 
 typedef struct {
@@ -74,6 +78,14 @@ static struct k_spinlock s_session_lock;
 static struct k_spinlock s_orientation_lock;
 static nrf_sensor_session_t s_session;
 static nrf_remote_sensor_runtime_zephyr_t s_runtime;
+static struct {
+    bool active;
+    bool has_height_request;
+    uint32_t request_id;
+    uint64_t next_poll_ms;
+    nrf_remote_sensor_prepare_result_t prepare_result;
+    nrf_upstream_height_reference_t height_request;
+} s_pending_refresh;
 static nrf_logger_led_t s_logger_led;
 static nrf_node_state_t s_worker_node_state;
 static nrf_orientation_config_t s_orientation_config;
@@ -93,7 +105,15 @@ static bool s_altitude_filter_initialized;
 static uint64_t s_next_orientation_due_ms;
 static bool s_orientation_config_set;
 static bool s_started;
+static bool s_scan_pending;
+static uint32_t s_scan_pending_request_id;
+static uint16_t s_scan_address;
+static uint32_t s_scan_bitmap[4];
+static int s_scan_found;
+static bool s_scan_queued;
+static uint32_t s_scan_last_request_id;
 static bool s_activation_queued;
+static bool s_activation_waiting_for_sensors;
 static volatile nrf_sensor_upstream_runtime_zephyr_diagnostics_t s_published_diagnostics;
 static volatile bool s_diagnostics_published;
 static uint32_t s_activation_generation;
@@ -377,21 +397,12 @@ static void copy_runtime_payload(
 static void orientation_advance_deadline(uint64_t sample_uptime_ms)
 {
     const uint64_t period = s_orientation_config.sample_period_ms;
-    const uint64_t target = sample_uptime_ms + period;
-
     if (period == 0U) {
         s_next_orientation_due_ms = 0U;
         return;
     }
-    if (s_next_orientation_due_ms == 0U) {
-        s_next_orientation_due_ms = target;
-        return;
-    }
-    if (s_next_orientation_due_ms < target) {
-        const uint64_t delta = target - s_next_orientation_due_ms;
-        const uint64_t steps = (delta + period - 1U) / period;
-        s_next_orientation_due_ms += steps * period;
-    }
+    s_next_orientation_due_ms = sample_uptime_ms > UINT64_MAX - period
+        ? UINT64_MAX : sample_uptime_ms + period;
 }
 
 static void orientation_reset(void)
@@ -422,6 +433,22 @@ static void set_orientation_reference_axis(nrf_orientation_reference_axis_t axis
     nrf_ema_filter_reset(&s_imu_filters.gyro_motion);
     s_next_orientation_due_ms = 0U;
     nrf_verticality_state_reset(&s_verticality_estimator);
+}
+
+static void invalidate_sensor_references(bool imu_lost, bool env_lost)
+{
+    if (imu_lost) {
+        const uint16_t generation = s_imu_calibration.generation;
+        nrf_imu_calibration_clear(&s_imu_calibration, generation);
+        s_imu_calibration.state = NRF_UPSTREAM_IMU_CALIBRATION_SENSOR_INVALID;
+        set_orientation_reference_axis(NRF_ORIENTATION_AXIS_UNCONFIGURED);
+        imu_filters_reset();
+    }
+    if ((imu_lost || env_lost) && s_height_reference.state == NRF_UPSTREAM_REFERENCE_VALID) {
+        s_height_reference.state = NRF_UPSTREAM_REFERENCE_SENSOR_INVALID;
+        s_height_reference.altitude_mm = 0;
+    }
+    if (env_lost) altitude_filter_reset();
 }
 
 static void update_gyro_motion(
@@ -731,10 +758,32 @@ static void publish_diagnostics(void)
 
 /* MAX-244: never wait longer than the worker heartbeat, so an idle
  * (non-REMOTE) worker still checks in with the watchdog. */
+static uint64_t sensor_retry_deadline(void)
+{
+    if (s_worker_node_state.lifecycle != NRF_NODE_LIFECYCLE_READY ||
+        s_worker_node_state.role != NRF_NODE_ROLE_REMOTE) return UINT64_MAX;
+    uint64_t deadline = UINT64_MAX;
+    if (!s_runtime.core.imu_ready) deadline = s_runtime.core.imu_retry_after_ms;
+    if (!s_runtime.core.env_ready && s_runtime.core.env_retry_after_ms < deadline)
+        deadline = s_runtime.core.env_retry_after_ms;
+    return deadline;
+}
+
 static k_timeout_t sensor_worker_wait_timeout(void)
 {
     const uint64_t now = runtime_uptime_ms();
     uint64_t wait_ms = NRF_SENSOR_WORKER_HEARTBEAT_MS;
+    if (s_scan_pending && !s_pending_refresh.active) wait_ms = 1U;
+    if (s_pending_refresh.active) {
+        const uint64_t remaining = now >= s_pending_refresh.next_poll_ms
+            ? 0U : s_pending_refresh.next_poll_ms - now;
+        if (remaining < wait_ms) wait_ms = remaining;
+    }
+    const uint64_t retry = sensor_retry_deadline();
+    if (retry != UINT64_MAX) {
+        const uint64_t remaining = now >= retry ? 0U : retry - now;
+        if (remaining < wait_ms) wait_ms = remaining;
+    }
 
     if (orientation_periodic_enabled()) {
         uint64_t remaining;
@@ -782,9 +831,11 @@ static void orientation_periodic_read(void)
     uint64_t completion_uptime_ms;
 
     memset(&sample, 0, sizeof(sample));
+    const bool imu_was_ready = s_runtime.core.imu_ready;
     result = s_runtime.core.sources.read_imu(
         s_runtime.core.sources.imu_context,
         &sample);
+    nrf_remote_sensor_runtime_zephyr_note_imu_read(&s_runtime, result != 0);
     completion_uptime_ms = runtime_uptime_ms();
     if (result == 0) {
         result = filter_imu_sample(&sample, completion_uptime_ms, &filtered_sample)
@@ -795,6 +846,7 @@ static void orientation_periodic_read(void)
         result == 0 ? &filtered_sample : NULL,
         result == 0,
         completion_uptime_ms);
+    invalidate_sensor_references(imu_was_ready && !s_runtime.core.imu_ready, false);
     if (s_imu_calibration_completed_request_id != 0U) {
         const uint32_t request_id = s_imu_calibration_completed_request_id;
         s_imu_calibration_completed_request_id = 0U;
@@ -913,37 +965,16 @@ static void handle_imu_calibration_request(
     s_next_orientation_due_ms = now;
 }
 
-static void publish_refresh(
+static void complete_refresh(
     uint32_t request_id,
-    const nrf_upstream_height_reference_t *height_reference_request)
+    const nrf_upstream_height_reference_t *height_reference_request,
+    nrf_remote_sensor_prepare_result_t prepare_result)
 {
     nrf_upstream_sensor_snapshot_t wire;
-    nrf_remote_sensor_prepare_result_t prepare_result;
     nrf_sensor_snapshot_result_t refresh_result = NRF_SENSOR_SNAPSHOT_ERR_NO_DATA;
     bool did_refresh = false;
     uint64_t completion_uptime_ms = 0U;
     uint32_t previous_fault_mask;
-    const int previous_imu_init_result = s_runtime.core.imu_init_result;
-    const int previous_env_init_result = s_runtime.core.env_init_result;
-
-    prepare_result = nrf_remote_sensor_runtime_zephyr_prepare(
-        &s_worker_node_state,
-        &s_runtime);
-
-    if (s_runtime.core.imu_init_result != 0 &&
-        s_runtime.core.imu_init_result != previous_imu_init_result) {
-        nrf_log_runtime_zephyr_append_event(
-            NRF_LOG_EVENT_SENSOR_INIT_FAILED,
-            NRF_SENSOR_VALID_IMU,
-            (uint32_t)s_runtime.core.imu_init_result);
-    }
-    if (s_runtime.core.env_init_result != 0 &&
-        s_runtime.core.env_init_result != previous_env_init_result) {
-        nrf_log_runtime_zephyr_append_event(
-            NRF_LOG_EVENT_SENSOR_INIT_FAILED,
-            NRF_SENSOR_VALID_ENV,
-            (uint32_t)s_runtime.core.env_init_result);
-    }
 
     if (prepare_result == NRF_REMOTE_SENSOR_PREPARE_ERR_ARGUMENT ||
         prepare_result == NRF_REMOTE_SENSOR_PREPARE_ERR_NOT_READY) {
@@ -960,11 +991,14 @@ static void publish_refresh(
         copy_imu_calibration_to_snapshot(&wire);
     } else if (s_runtime.core.imu_ready || s_runtime.core.env_ready) {
         did_refresh = true;
+        const bool imu_was_ready = s_runtime.core.imu_ready;
+        const bool env_was_ready = s_runtime.core.env_ready;
         previous_fault_mask = s_runtime.core.snapshot.fault_mask;
         refresh_result = nrf_remote_sensor_runtime_zephyr_refresh(
             &s_worker_node_state,
             &s_runtime);
         completion_uptime_ms = runtime_uptime_ms();
+        const uint32_t unfiltered_valid_mask = s_runtime.core.snapshot.valid_mask;
         /*
          * Feed this refresh's IMU sample into the orientation estimator
          * before building the wire snapshot, so orientation_state/
@@ -972,6 +1006,15 @@ static void publish_refresh(
          * the previous one.
          */
         orientation_consume_aggregate_refresh(did_refresh);
+        if (s_runtime.core.snapshot.valid_mask != unfiltered_valid_mask &&
+            (refresh_result == NRF_SENSOR_SNAPSHOT_OK ||
+             refresh_result == NRF_SENSOR_SNAPSHOT_PARTIAL ||
+             refresh_result == NRF_SENSOR_SNAPSHOT_ERR_NO_DATA)) {
+            refresh_result = s_runtime.core.snapshot.valid_mask != 0U
+                ? NRF_SENSOR_SNAPSHOT_PARTIAL : NRF_SENSOR_SNAPSHOT_ERR_NO_DATA;
+        }
+        invalidate_sensor_references(imu_was_ready && !s_runtime.core.imu_ready,
+                                     env_was_ready && !s_runtime.core.env_ready);
         log_sensor_fault_edges(
             previous_fault_mask,
             s_runtime.core.snapshot.fault_mask,
@@ -997,6 +1040,99 @@ static void publish_refresh(
     k_spinlock_key_t key = k_spin_lock(&s_session_lock);
     (void)nrf_sensor_session_complete(&s_session, request_id, &wire);
     k_spin_unlock(&s_session_lock, key);
+}
+
+/*
+ * SENSOR_INIT_FAILED only carries the driver result (-2 bus, -3 chip id). The cause of the failed transfers behind it
+ * (timeout, EIO, line levels) goes out as SENSOR_BUS_FAULT right after, so a node without a console still says
+ * whether the device was silent or the bus was broken.
+ */
+static void append_sensor_bus_fault(uint32_t sensor_bit, uint8_t first_address, uint8_t last_address)
+{
+    uint32_t packed;
+    if (!nrf_sensor_bus_zephyr_take_fault_word(first_address, last_address, &packed)) return;
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_SENSOR_BUS_FAULT, sensor_bit, packed);
+}
+
+static int s_reported_imu_init_result;
+static int s_reported_env_init_result;
+
+static void report_sensor_init_result(
+    uint32_t sensor_bit,
+    int result,
+    int *reported,
+    uint8_t first_address,
+    uint8_t last_address)
+{
+    if (result == NRF_REMOTE_SENSOR_INIT_PENDING) return;
+    if (result == 0) {
+        *reported = 0; /* a later failure is news again */
+        return;
+    }
+    if (result == *reported) return;
+    *reported = result;
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_SENSOR_INIT_FAILED, sensor_bit, (uint32_t)result);
+    append_sensor_bus_fault(sensor_bit, first_address, last_address);
+}
+
+/*
+ * Reports a changed init failure once, wherever the init was driven from. Cooperative init finishes in the worker's
+ * retry step as often as in publish_refresh, so comparing the result before and after one call misses it.
+ */
+static void report_sensor_init_failures(void)
+{
+    report_sensor_init_result(NRF_SENSOR_VALID_IMU, s_runtime.core.imu_init_result, &s_reported_imu_init_result,
+                              NRF_BMI160_DEFAULT_ADDRESS, NRF_BMI160_ALTERNATE_ADDRESS);
+    report_sensor_init_result(NRF_SENSOR_VALID_ENV, s_runtime.core.env_init_result, &s_reported_env_init_result,
+                              NRF_BME280_ADDRESS_PRIMARY, NRF_BME280_ADDRESS_SECONDARY);
+}
+
+static void publish_refresh(
+    uint32_t request_id,
+    const nrf_upstream_height_reference_t *height_reference_request)
+{
+    if (s_pending_refresh.active) return;
+    nrf_remote_sensor_prepare_result_t prepare_result;
+
+    prepare_result = nrf_remote_sensor_runtime_zephyr_prepare_cooperative(
+        &s_worker_node_state,
+        &s_runtime);
+    report_sensor_init_failures();
+
+
+    if (request_id == 0U && (s_runtime.imu_init_active || s_runtime.env_init_active)) {
+        s_activation_waiting_for_sensors = true;
+        return;
+    }
+    if (prepare_result != NRF_REMOTE_SENSOR_PREPARE_ERR_ARGUMENT &&
+        prepare_result != NRF_REMOTE_SENSOR_PREPARE_ERR_NOT_READY &&
+        s_runtime.core.env_ready &&
+        nrf_remote_sensor_runtime_zephyr_begin_env(&s_worker_node_state, &s_runtime,
+                                                   runtime_uptime_ms()) == NRF_BME280_PENDING) {
+        s_pending_refresh.active = true;
+        s_pending_refresh.request_id = request_id;
+        s_pending_refresh.prepare_result = prepare_result;
+        s_pending_refresh.has_height_request = height_reference_request != NULL;
+        if (height_reference_request != NULL) s_pending_refresh.height_request = *height_reference_request;
+        s_pending_refresh.next_poll_ms = s_runtime.bme280.conversion_ready_ms;
+        return;
+    }
+    complete_refresh(request_id, height_reference_request, prepare_result);
+}
+
+static void poll_pending_refresh(uint64_t now_ms)
+{
+    if (!s_pending_refresh.active || now_ms < s_pending_refresh.next_poll_ms) return;
+    if (nrf_remote_sensor_runtime_zephyr_poll_env(&s_runtime, now_ms) == NRF_BME280_PENDING) {
+        s_pending_refresh.next_poll_ms = now_ms + 2U;
+        return;
+    }
+    const uint32_t request_id = s_pending_refresh.request_id;
+    const nrf_upstream_height_reference_t *height = s_pending_refresh.has_height_request
+        ? &s_pending_refresh.height_request : NULL;
+    s_pending_refresh.active = false;
+    complete_refresh(request_id, height, s_pending_refresh.prepare_result);
+    if (request_id == 0U) s_activation_complete_generation = s_activation_generation;
 }
 
 static bool session_matches_assignment(
@@ -1046,7 +1182,8 @@ static void handle_activation(const nrf_upstream_assign_t *assign)
 
     orientation_reset();
     publish_refresh(0U, NULL);
-    s_activation_complete_generation = s_activation_generation;
+    if (!s_pending_refresh.active && !s_activation_waiting_for_sensors)
+        s_activation_complete_generation = s_activation_generation;
     publish_diagnostics();
 }
 
@@ -1083,9 +1220,52 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
                 publish_refresh(event.request_id, &event.height_reference);
             } else if (event.type == NRF_SENSOR_EVENT_IMU_CALIBRATE) {
                 handle_imu_calibration_request(&event.imu_calibration);
+            } else if (event.type == NRF_SENSOR_EVENT_SCAN) {
+                s_scan_pending = true;
+                s_scan_pending_request_id = event.request_id;
+                s_scan_address = 0x08U;
+                s_scan_found = 0;
+                memset(s_scan_bitmap, 0, sizeof(s_scan_bitmap));
+                if (!s_runtime.core.imu_ready) s_runtime.core.imu_retry_after_ms = 0U;
+                if (!s_runtime.core.env_ready) s_runtime.core.env_retry_after_ms = 0U;
             }
-        } else if (orientation_due(runtime_uptime_ms())) {
+        }
+        if ((queue_result != 0 || event.type != NRF_SENSOR_EVENT_IMU_CALIBRATE) &&
+            orientation_due(runtime_uptime_ms())) {
             orientation_periodic_read();
+        }
+        poll_pending_refresh(runtime_uptime_ms());
+        if (s_scan_pending && !s_pending_refresh.active) {
+            int scan_result = -EAGAIN;
+            if (s_worker_node_state.lifecycle == NRF_NODE_LIFECYCLE_READY &&
+                s_worker_node_state.role == NRF_NODE_ROLE_REMOTE)
+                scan_result = nrf_sensor_bus_zephyr_scan_address((uint8_t)s_scan_address);
+            if (scan_result > 0) {
+                s_scan_bitmap[s_scan_address / 32U] |= UINT32_C(1) << (s_scan_address % 32U);
+                ++s_scan_found;
+            }
+            if (scan_result < 0 || ++s_scan_address > 0x77U) {
+                s_scan_pending = false;
+                for (uint16_t i = 0U; i < 4U; ++i)
+                    nrf_log_runtime_zephyr_append_event((uint16_t)(NRF_LOG_EVENT_SENSOR_SCAN_WORD0 + i),
+                                                        s_scan_pending_request_id, s_scan_bitmap[i]);
+                nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_SENSOR_SCAN_DONE,
+                    s_scan_pending_request_id, (uint32_t)(scan_result < 0 ? scan_result : s_scan_found));
+                k_spinlock_key_t scan_key = k_spin_lock(&s_session_lock);
+                s_scan_queued = false;
+                k_spin_unlock(&s_session_lock, scan_key);
+            }
+        }
+        const uint64_t retry = sensor_retry_deadline();
+        if (retry != UINT64_MAX && runtime_uptime_ms() >= retry) {
+            (void)nrf_remote_sensor_runtime_zephyr_prepare_cooperative(&s_worker_node_state, &s_runtime);
+            report_sensor_init_failures();
+        }
+        if (s_activation_waiting_for_sensors && !s_runtime.imu_init_active && !s_runtime.env_init_active) {
+            s_activation_waiting_for_sensors = false;
+            publish_refresh(0U, NULL);
+            if (!s_pending_refresh.active && !s_activation_waiting_for_sensors)
+                s_activation_complete_generation = s_activation_generation;
         }
         update_logger_led((uint32_t)runtime_uptime_ms());
         publish_diagnostics();
@@ -1276,6 +1456,37 @@ int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
     return 0;
 }
 
+int nrf_sensor_upstream_runtime_zephyr_request_scan(
+    const nrf_upstream_sensor_refresh_t *request)
+{
+    nrf_sensor_event_t event = {0};
+    if (!s_started) return -EAGAIN;
+    if (request == NULL || request->request_id == 0U) return -EINVAL;
+    k_spinlock_key_t key = k_spin_lock(&s_session_lock);
+    if (!s_session.remote_active) {
+        k_spin_unlock(&s_session_lock, key);
+        return -EAGAIN;
+    }
+    if (s_scan_last_request_id == request->request_id) {
+        k_spin_unlock(&s_session_lock, key);
+        return 0;
+    }
+    if (s_scan_queued) {
+        k_spin_unlock(&s_session_lock, key);
+        return -EBUSY;
+    }
+    event.type = NRF_SENSOR_EVENT_SCAN;
+    event.request_id = request->request_id;
+    if (k_msgq_put(&s_sensor_queue, &event, K_NO_WAIT) != 0) {
+        k_spin_unlock(&s_session_lock, key);
+        return -ENOSPC;
+    }
+    s_scan_last_request_id = request->request_id;
+    s_scan_queued = true;
+    k_spin_unlock(&s_session_lock, key);
+    return 0;
+}
+
 int nrf_sensor_upstream_runtime_zephyr_request_refresh(
     const nrf_upstream_sensor_refresh_t *request)
 {
@@ -1454,8 +1665,10 @@ bool nrf_sensor_upstream_runtime_zephyr_get_diagnostics(
         s_published_diagnostics.activation_complete_generation;
     diagnostics->imu_ready = s_published_diagnostics.imu_ready;
     diagnostics->imu_init_result = s_published_diagnostics.imu_init_result;
+    diagnostics->imu_state = nrf_bmi160_zephyr_state();
     diagnostics->env_ready = s_published_diagnostics.env_ready;
     diagnostics->env_init_result = s_published_diagnostics.env_init_result;
+    diagnostics->env_state = nrf_bme280_zephyr_state();
     diagnostics->logger_led_output.green =
         s_published_diagnostics.logger_led_output.green;
     diagnostics->logger_led_output.yellow =

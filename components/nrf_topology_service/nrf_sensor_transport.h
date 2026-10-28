@@ -32,6 +32,7 @@ typedef struct {
     esp_err_t (*write_sensor_refresh)(void *context, const nrf_upstream_sensor_refresh_t *request);
     esp_err_t (*write_height_reference)(void *context, const nrf_upstream_height_reference_t *request);
     esp_err_t (*write_imu_calibration)(void *context, const nrf_upstream_imu_calibrate_t *request);
+    esp_err_t (*write_sensor_scan)(void *context, const nrf_upstream_sensor_refresh_t *request);
     esp_err_t (*read_remote_snapshot)(void *context, nrf_upstream_status_t *status, nrf_upstream_sensor_snapshot_t *sensor);
     void (*sleep_ms)(void *context, uint32_t delay_ms);
     uint64_t (*now_ms)(void *context);
@@ -69,3 +70,7 @@ esp_err_t nrf_sensor_transport_request_imu_calibration(
     uint8_t channel,
     uint16_t generation,
     bool *request_topology_reconcile);
+
+esp_err_t nrf_sensor_transport_request_scan(
+    const nrf_sensor_transport_io_t *io, const nrf_topology_snapshot_t *topology,
+    uint8_t channel, uint32_t request_id, bool *request_topology_reconcile);

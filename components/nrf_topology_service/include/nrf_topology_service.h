@@ -120,6 +120,8 @@ void nrf_topology_service_stop(void);
 esp_err_t nrf_topology_service_request_refresh(void);
 esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot);
 esp_err_t nrf_topology_service_request_sensor_refresh(uint8_t channel);
+esp_err_t nrf_topology_service_request_sensor_scan(uint8_t channel, uint32_t *request_id);
+esp_err_t nrf_topology_service_get_sensor_scan_dispatch(uint32_t request_id, bool *pending, esp_err_t *result);
 esp_err_t nrf_topology_service_request_all_sensor_refresh(void);
 /* Queues CAPTURE for all assigned REMOTEs; generations use 1..65535 and wrap to 1 (zero is never allocated). */
 esp_err_t nrf_topology_service_request_height_reference_capture(

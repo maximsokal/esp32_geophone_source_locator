@@ -16,9 +16,11 @@ app_pod_status_sensor_values_t app_pod_status_bridge_compute_sensor_values(
         values.temperature_valid = true;
         values.temperature_c = (float)sensor->env_temperature_milli_c / 1000.0f;
         /* The BME280 reports up to 102.4 %; clamp, the field accepts 0..100. */
-        const float humidity = (float)sensor->humidity_milli_percent / 1000.0f;
-        values.humidity_valid = true;
-        values.humidity_percent = humidity > 100.0f ? 100.0f : humidity;
+        if (sensor->humidity_milli_percent != UINT32_MAX) {
+            const float humidity = (float)sensor->humidity_milli_percent / 1000.0f;
+            values.humidity_valid = true;
+            values.humidity_percent = humidity > 100.0f ? 100.0f : humidity;
+        }
     }
 
     if ((sensor->valid_mask & NRF_UPSTREAM_SENSOR_VALID_IMU) != 0U &&

@@ -8,6 +8,7 @@
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/kernel.h>
 
+#include "nrf_line_sampling_stub.h"
 #include "nrf_bme280_zephyr.h"
 #include "nrf_bmi160_zephyr.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
@@ -15,9 +16,12 @@
 
 const struct device test_i2c30 = {0};
 static bool s_ready;
+static int64_t s_now_ms;
+static unsigned s_sleep_calls;
 static bool s_present[4];
 static uint8_t s_registers[4][256];
 static unsigned s_transfers[4];
+static unsigned s_other_transfers;
 static uint16_t s_fail_address;
 static uint8_t s_fail_register;
 static bool s_fail_read;
@@ -51,9 +55,12 @@ int printk(const char *format, ...)
     return written;
 }
 
+int64_t k_uptime_get(void) { return s_now_ms; }
+
 int32_t k_msleep(int32_t milliseconds)
 {
     assert(milliseconds > 0);
+    ++s_sleep_calls;
     return 0;
 }
 
@@ -62,7 +69,7 @@ static int exchange(const struct device *device, uint16_t address,
 {
     assert(device == &test_i2c30 && s_ready);
     const int index = sensor_index(address);
-    if (index < 0) return -ENXIO;
+    if (index < 0) { ++s_other_transfers; return -ENXIO; }
     ++s_transfers[index];
     if (!s_present[index]) return -ENXIO;
     const uint8_t reg = write_len > 0U ? write_data[0] : 0U;
@@ -106,6 +113,8 @@ int i2c_read(const struct device *device, uint8_t *data,
 static void reset_fixture(void)
 {
     s_ready = true;
+    s_now_ms = 0;
+    s_sleep_calls = 0U;
     memset(s_present, 0, sizeof(s_present));
     s_present[0] = true;
     s_present[1] = true;
@@ -116,6 +125,7 @@ static void reset_fixture(void)
     s_registers[1][0x8E] = 1U;
     s_registers[2][0x8E] = 1U;
     memset(s_transfers, 0, sizeof(s_transfers));
+    s_other_transfers = 0U;
     s_fail_address = 0U;
     s_fail_result = 0;
     s_console[0] = '\0';
@@ -223,21 +233,118 @@ static void test_real_runtime_retries_only_failed_initializers(void)
     assert(nrf_remote_sensor_runtime_zephyr_prepare(&remote, &runtime) ==
         NRF_REMOTE_SENSOR_PREPARE_ERR_NO_DATA);
     assert(!runtime.core.imu_ready && !runtime.core.env_ready);
+    assert(runtime.bmi160.state == NRF_BMI160_RECOVER);
+    assert(runtime.bme280.state == NRF_BME280_RECOVER);
     assert(runtime.core.imu_init_result == NRF_BMI160_ERR_BUS);
     assert(runtime.core.env_init_result == NRF_BME280_ERR_BUS);
 
     s_ready = true;
+    s_now_ms = NRF_REMOTE_SENSOR_RETRY_MS;
     s_present[0] = false;
     assert(nrf_remote_sensor_runtime_zephyr_prepare(&remote, &runtime) ==
         NRF_REMOTE_SENSOR_PREPARE_PARTIAL);
     assert(!runtime.core.imu_ready && runtime.core.env_ready);
     const unsigned env_transfers = s_transfers[1];
     s_present[0] = true;
+    s_now_ms += NRF_REMOTE_SENSOR_RETRY_MS;
     assert(nrf_remote_sensor_runtime_zephyr_prepare(&remote, &runtime) ==
         NRF_REMOTE_SENSOR_PREPARE_OK);
     assert(runtime.core.imu_ready && runtime.core.env_ready);
     assert(runtime.core.imu_init_result == 0 && runtime.core.env_init_result == 0);
     assert(s_transfers[1] == env_transfers);
+}
+
+static void test_runtime_marks_only_failed_sensor_recover_and_reprobes(void)
+{
+    for (unsigned sensor = 0; sensor < 3; ++sensor) {
+        reset_fixture();
+        if (sensor == 1) s_registers[1][0xD0U] = NRF_BMP280_CHIP_ID;
+        const nrf_node_state_t remote = {
+            .lifecycle = NRF_NODE_LIFECYCLE_READY, .role = NRF_NODE_ROLE_REMOTE,
+        };
+        nrf_remote_sensor_runtime_zephyr_t runtime;
+        nrf_remote_sensor_runtime_zephyr_init(&runtime);
+        assert(nrf_remote_sensor_runtime_zephyr_prepare(&remote, &runtime) ==
+               NRF_REMOTE_SENSOR_PREPARE_OK);
+        s_fail_address = sensor == 0 ? 0x68U : 0x76U;
+        s_fail_register = sensor == 0 ? 0x0CU : 0xF7U;
+        s_fail_read = true;
+        s_fail_result = -EIO;
+        for (unsigned i = 0; i < NRF_REMOTE_SENSOR_REINIT_AFTER_FAILURES; ++i) {
+            (void)nrf_remote_sensor_runtime_zephyr_refresh(&remote, &runtime);
+        }
+        assert(runtime.core.imu_ready == (sensor != 0));
+        assert(runtime.core.env_ready == (sensor == 0));
+        assert(runtime.bmi160.state == (sensor == 0 ? NRF_BMI160_RECOVER : NRF_BMI160_MEASURING));
+        assert(runtime.bme280.state == (sensor != 0 ? NRF_BME280_RECOVER : NRF_BME280_MEASURING));
+        s_fail_address = 0U;
+        const unsigned good_transfers = s_transfers[sensor == 0 ? 1 : 0];
+        assert(nrf_remote_sensor_runtime_zephyr_prepare(&remote, &runtime) == NRF_REMOTE_SENSOR_PREPARE_OK);
+        assert(s_transfers[sensor == 0 ? 1 : 0] == good_transfers);
+        assert(runtime.bmi160.state == NRF_BMI160_MEASURING);
+        assert(runtime.bme280.state == NRF_BME280_MEASURING);
+        assert(nrf_remote_sensor_runtime_zephyr_refresh(&remote, &runtime) == NRF_SENSOR_SNAPSHOT_OK);
+    }
+}
+
+static void test_async_environment_result_is_fresh_and_faults_are_counted(void)
+{
+    reset_fixture();
+    const nrf_node_state_t remote = { .lifecycle = NRF_NODE_LIFECYCLE_READY,
+                                      .role = NRF_NODE_ROLE_REMOTE };
+    nrf_node_state_t main_node = remote;
+    main_node.role = NRF_NODE_ROLE_MAIN;
+    nrf_remote_sensor_runtime_zephyr_t runtime;
+    nrf_remote_sensor_runtime_zephyr_init(&runtime);
+    assert(nrf_remote_sensor_runtime_zephyr_prepare(&remote, &runtime) == NRF_REMOTE_SENSOR_PREPARE_OK);
+    const unsigned transfers = s_transfers[1];
+    assert(nrf_remote_sensor_runtime_zephyr_begin_env(&main_node, &runtime, 100U) == NRF_BME280_ERR_ARGUMENT);
+    assert(s_transfers[1] == transfers);
+    assert(nrf_remote_sensor_runtime_zephyr_begin_env(&remote, &runtime, 100U) == NRF_BME280_PENDING);
+    assert(nrf_remote_sensor_runtime_zephyr_begin_env(&remote, &runtime, 101U) == NRF_BME280_PENDING);
+    assert(nrf_remote_sensor_runtime_zephyr_refresh(&remote, &runtime) == NRF_SENSOR_SNAPSHOT_ERR_NOT_READY);
+    assert(runtime.core.snapshot.sequence == 0U);
+    const unsigned started = s_transfers[1];
+    assert(nrf_remote_sensor_runtime_zephyr_poll_env(&runtime, 146U) == NRF_BME280_PENDING);
+    assert(s_transfers[1] == started);
+    assert(nrf_remote_sensor_runtime_zephyr_poll_env(&runtime, 147U) == NRF_BME280_OK);
+    assert(nrf_remote_sensor_runtime_zephyr_refresh(&remote, &runtime) == NRF_SENSOR_SNAPSHOT_OK);
+    assert((runtime.core.snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U);
+    assert(runtime.core.env_read_failures == 0U);
+    assert(!runtime.env_prepared);
+
+    assert(nrf_remote_sensor_runtime_zephyr_begin_env(&remote, &runtime, 200U) == NRF_BME280_PENDING);
+    s_fail_address = 0x76U;
+    s_fail_register = 0xF7U;
+    s_fail_read = true;
+    s_fail_result = -EIO;
+    assert(nrf_remote_sensor_runtime_zephyr_poll_env(&runtime, 247U) == NRF_BME280_OK);
+    assert(nrf_remote_sensor_runtime_zephyr_refresh(&remote, &runtime) == NRF_SENSOR_SNAPSHOT_PARTIAL);
+    assert((runtime.core.snapshot.fault_mask & NRF_SENSOR_VALID_ENV) != 0U);
+    assert(runtime.core.snapshot.env.pressure_pa == 0U);
+    assert(runtime.core.env_read_failures == 1U && runtime.core.imu_ready);
+}
+
+static void test_periodic_imu_failures_use_runtime_recovery_counter(void)
+{
+    reset_fixture();
+    const nrf_node_state_t remote = { .lifecycle = NRF_NODE_LIFECYCLE_READY,
+                                      .role = NRF_NODE_ROLE_REMOTE };
+    nrf_remote_sensor_runtime_zephyr_t runtime;
+    nrf_remote_sensor_runtime_zephyr_init(&runtime);
+    assert(nrf_remote_sensor_runtime_zephyr_prepare(&remote, &runtime) == NRF_REMOTE_SENSOR_PREPARE_OK);
+    for (unsigned i = 0; i < NRF_REMOTE_SENSOR_REINIT_AFTER_FAILURES - 1U; ++i) {
+        nrf_remote_sensor_runtime_zephyr_note_imu_read(&runtime, true);
+        assert(runtime.core.imu_ready);
+    }
+    nrf_remote_sensor_runtime_zephyr_note_imu_read(&runtime, false);
+    assert(runtime.core.imu_read_failures == 0U);
+    for (unsigned i = 0; i < NRF_REMOTE_SENSOR_REINIT_AFTER_FAILURES; ++i)
+        nrf_remote_sensor_runtime_zephyr_note_imu_read(&runtime, true);
+    assert(!runtime.core.imu_ready && runtime.core.env_ready);
+    assert(runtime.bmi160.state == NRF_BMI160_RECOVER);
+    assert(nrf_remote_sensor_runtime_zephyr_prepare(&remote, &runtime) == NRF_REMOTE_SENSOR_PREPARE_OK);
+    assert(runtime.bmi160.state == NRF_BMI160_MEASURING);
 }
 
 static void test_successful_initialization_is_quiet_and_supports_bme_secondary(void)
@@ -258,6 +365,18 @@ static void test_successful_initialization_is_quiet_and_supports_bme_secondary(v
     assert(env.initialized && env.address == 0x77U);
 }
 
+static void test_automatic_diagnostics_only_probe_expected_addresses(void)
+{
+    reset_fixture();
+    assert(nrf_sensor_bus_zephyr_scan_expected() == 2);
+    assert(s_other_transfers == 0U);
+    for (size_t i = 0; i < 4U; ++i) assert(s_transfers[i] == 1U);
+    assert_diagnostic("sensor_scan: expected addr=0x68 id=209");
+    assert_diagnostic("sensor_scan: expected addr=0x76 id=96");
+    s_ready = false;
+    assert(nrf_sensor_bus_zephyr_scan_expected() == -ENODEV);
+}
+
 static void test_scan_reports_who_answers_and_their_ids(void)
 {
     /* The REMOTE case seen on 2026-10-27: nothing at 0x68, a part at 0x76 whose chip id is not a BME280's. */
@@ -276,12 +395,16 @@ static void test_scan_reports_who_answers_and_their_ids(void)
     assert_diagnostic("sensor_scan: bus=i2c30 devices=0");
 
     reset_fixture();
-    assert(nrf_sensor_bus_zephyr_scan_private() == 2);
+    uint32_t bitmap[4] = {0};
+    assert(nrf_sensor_bus_zephyr_scan_private_bitmap(bitmap) == 2);
+    assert(bitmap[0] == 0U && bitmap[1] == 0U && bitmap[2] == 0U);
+    assert(bitmap[3] == ((UINT32_C(1) << 8U) | (UINT32_C(1) << 22U)));
     assert_diagnostic("addr=0x68 ack reg00=209");
 
     reset_fixture();
     s_ready = false;
-    assert(nrf_sensor_bus_zephyr_scan_private() == -ENODEV);
+    assert(nrf_sensor_bus_zephyr_scan_private_bitmap(bitmap) == -ENODEV);
+    assert(bitmap[0] == 0U && bitmap[1] == 0U && bitmap[2] == 0U && bitmap[3] == 0U);
     assert(s_console[0] == '\0');
 }
 
@@ -314,6 +437,32 @@ static void test_bmi160_is_found_on_the_alternate_address(void)
     assert(nrf_bmi160_zephyr_init_remote(&none) == NRF_BMI160_ERR_BUS);
     assert_diagnostic("sensor_probe: BMI160 addr=0x68 NO ANSWER");
     assert_diagnostic("sensor_probe: BMI160 addr=0x69 NO ANSWER");
+}
+
+static void test_cooperative_prepare_on_alternate_addresses(void)
+{
+    reset_fixture();
+    s_present[0] = false;
+    s_present[1] = false;
+    s_present[2] = true;
+    s_present[3] = true;
+    s_registers[3][0x00] = 0xD1U;
+    nrf_remote_sensor_runtime_zephyr_t runtime;
+    nrf_remote_sensor_runtime_zephyr_init(&runtime);
+    nrf_node_state_t state;
+    nrf_node_state_init(&state);
+    assert(nrf_node_state_mark_ready(&state) == NRF_NODE_STATE_OK);
+    assert(nrf_node_state_assign_role(&state, NRF_NODE_ROLE_MAIN) == NRF_NODE_STATE_OK);
+    assert(nrf_remote_sensor_runtime_zephyr_prepare_cooperative(&state, &runtime) == NRF_REMOTE_SENSOR_PREPARE_SKIPPED);
+    assert(s_transfers[0] == 0U && s_transfers[1] == 0U && s_transfers[2] == 0U && s_transfers[3] == 0U);
+    nrf_node_state_init(&state);
+    assert(nrf_node_state_mark_ready(&state) == NRF_NODE_STATE_OK);
+    assert(nrf_node_state_assign_role(&state, NRF_NODE_ROLE_REMOTE) == NRF_NODE_STATE_OK);
+    for (s_now_ms = 0; s_now_ms < 150 && (!runtime.core.imu_ready || !runtime.core.env_ready); ++s_now_ms)
+        (void)nrf_remote_sensor_runtime_zephyr_prepare_cooperative(&state, &runtime);
+    assert(runtime.core.imu_ready && runtime.bmi160.address == 0x69U);
+    assert(runtime.core.env_ready && runtime.bme280.address == 0x77U);
+    assert(s_sleep_calls == 0U);
 }
 
 static void test_bmp280_is_accepted_without_humidity(void)
@@ -381,8 +530,217 @@ static void test_bmp280_is_accepted_without_humidity(void)
     assert_diagnostic("0x76 answers, chip_id=0x60 (BME280) | 0x77 answers, chip_id=0x58 (BMP280)");
 }
 
+static void drain_faults(void)
+{
+    nrf_sensor_bus_fault_t ignored;
+    while (nrf_sensor_bus_zephyr_take_fault(0x00U, 0xFFU, &ignored)) {
+    }
+}
+
+static nrf_sensor_bus_t open_fault_bus(void)
+{
+    reset_fixture();
+    test_line_stub_reset();
+    drain_faults();
+    nrf_sensor_bus_t bus = {0};
+    assert(nrf_sensor_bus_zephyr_init_private(&bus));
+    return bus;
+}
+
+static int fail_write(const nrf_sensor_bus_t *bus, uint16_t address, uint8_t reg, int result)
+{
+    const uint8_t payload[2] = {reg, 0U};
+    s_fail_address = address;
+    s_fail_register = reg;
+    s_fail_read = false;
+    s_fail_result = result;
+    return bus->transfer(bus->context, (uint8_t)address, payload, sizeof(payload), NULL, 0U);
+}
+
+static void test_fault_records_cause_errno_and_line_levels(void)
+{
+    nrf_sensor_bus_t bus = open_fault_bus();
+    nrf_sensor_bus_fault_t fault;
+
+    test_line_stub_set_levels(false, true);
+    assert(fail_write(&bus, 0x68U, 0x7EU, -ETIMEDOUT) == -ETIMEDOUT);
+    assert(nrf_sensor_bus_zephyr_take_fault(0x68U, 0x69U, &fault));
+    assert(fault.address == 0x68U && fault.cause == NRF_SENSOR_BUS_ERR_TIMEOUT);
+    assert(fault.errno_abs == (uint8_t)ETIMEDOUT && fault.failures == 1U);
+    assert(fault.lines_valid && !fault.sda_high && fault.scl_high);
+    /* The sleep pinctrl state disconnects the inputs: the lines only read true after the controller is resumed. */
+    assert(test_line_stub_resume_count() == 1U && test_line_stub_suspend_count() == 1U);
+    assert(test_line_stub_reads_while_suspended() == 0U);
+    assert(!nrf_sensor_bus_zephyr_take_fault(0x68U, 0x69U, &fault));
+
+    test_line_stub_set_levels(true, true);
+    static const struct { int result; nrf_sensor_bus_result_t cause; } causes[] = {
+        {-EIO, NRF_SENSOR_BUS_ERR_IO},
+        {-EFAULT, NRF_SENSOR_BUS_ERR_IO},
+        {-EAGAIN, NRF_SENSOR_BUS_ERR_IO},
+        {-ENXIO, NRF_SENSOR_BUS_ERR_TRANSFER},
+        {-ETIMEDOUT, NRF_SENSOR_BUS_ERR_TIMEOUT},
+    };
+    for (size_t i = 0U; i < sizeof(causes) / sizeof(causes[0]); ++i) {
+        assert(fail_write(&bus, 0x76U, 0xF4U, causes[i].result) == causes[i].result);
+        assert(nrf_sensor_bus_zephyr_take_fault(0x76U, 0x77U, &fault));
+        assert(fault.address == 0x76U && fault.cause == causes[i].cause);
+        assert(fault.errno_abs == (uint8_t)-causes[i].result);
+        assert(fault.lines_valid && fault.sda_high && fault.scl_high);
+    }
+}
+
+static void test_fault_keeps_worst_sample_and_counts_failures(void)
+{
+    nrf_sensor_bus_t bus = open_fault_bus();
+    nrf_sensor_bus_fault_t fault;
+
+    test_line_stub_set_levels(true, true);
+    assert(fail_write(&bus, 0x76U, 0xF4U, -EIO) == -EIO);
+    assert(fail_write(&bus, 0x76U, 0xF4U, -ETIMEDOUT) == -ETIMEDOUT);
+    assert(fail_write(&bus, 0x76U, 0xF4U, -EIO) == -EIO); /* a later, milder failure must not hide the timeout */
+    assert(nrf_sensor_bus_zephyr_take_fault(0x76U, 0x77U, &fault));
+    assert(fault.cause == NRF_SENSOR_BUS_ERR_TIMEOUT && fault.errno_abs == (uint8_t)ETIMEDOUT);
+    assert(fault.failures == 3U);
+
+    /* A line held low outranks a timeout: the bus is broken, not silent. */
+    assert(fail_write(&bus, 0x76U, 0xF4U, -EIO) == -EIO);
+    assert(fail_write(&bus, 0x76U, 0xF4U, -ETIMEDOUT) == -ETIMEDOUT);
+    test_line_stub_set_levels(true, false);
+    assert(fail_write(&bus, 0x76U, 0xF4U, -EIO) == -EIO);
+    test_line_stub_set_levels(true, true);
+    assert(fail_write(&bus, 0x76U, 0xF4U, -ETIMEDOUT) == -ETIMEDOUT);
+    assert(nrf_sensor_bus_zephyr_take_fault(0x76U, 0x77U, &fault));
+    assert(fault.cause == NRF_SENSOR_BUS_ERR_IO && fault.errno_abs == (uint8_t)EIO);
+    assert(fault.lines_valid && fault.sda_high && !fault.scl_high);
+    assert(fault.failures == 4U);
+}
+
+static void test_fault_take_filters_by_address_range_and_clears_only_that_range(void)
+{
+    nrf_sensor_bus_t bus = open_fault_bus();
+    nrf_sensor_bus_fault_t fault;
+    s_present[2] = true;
+
+    assert(fail_write(&bus, 0x68U, 0x7EU, -EIO) == -EIO);
+    assert(fail_write(&bus, 0x77U, 0xE0U, -EIO) == -EIO);
+
+    assert(!nrf_sensor_bus_zephyr_take_fault(0x68U, 0x69U, NULL));
+    assert(!nrf_sensor_bus_zephyr_take_fault(0x69U, 0x68U, &fault));
+    assert(nrf_sensor_bus_zephyr_take_fault(0x68U, 0x69U, &fault)); /* the rejected calls cleared nothing */
+    assert(fault.address == 0x68U);
+    assert(!nrf_sensor_bus_zephyr_take_fault(0x68U, 0x69U, &fault));
+    assert(nrf_sensor_bus_zephyr_take_fault(0x76U, 0x77U, &fault));
+    assert(fault.address == 0x77U);
+    assert(!nrf_sensor_bus_zephyr_take_fault(0x00U, 0xFFU, &fault));
+}
+
+static void test_fault_ends_at_the_next_successful_transfer(void)
+{
+    nrf_sensor_bus_t bus = open_fault_bus();
+    nrf_sensor_bus_fault_t fault;
+
+    assert(fail_write(&bus, 0x68U, 0x7EU, -EIO) == -EIO);
+    s_fail_address = 0U;
+    const uint8_t payload[2] = {0x7EU, 0x00U};
+    assert(bus.transfer(bus.context, 0x68U, payload, sizeof(payload), NULL, 0U) == 0);
+    assert(!nrf_sensor_bus_zephyr_take_fault(0x68U, 0x69U, &fault));
+}
+
+static void test_scan_helpers_do_not_record_expected_nacks(void)
+{
+    nrf_sensor_bus_t bus = open_fault_bus();
+    nrf_sensor_bus_fault_t fault;
+    uint32_t bitmap[4];
+    (void)bus;
+
+    s_present[2] = false;
+    assert(nrf_sensor_bus_zephyr_scan_address(0x77U) == 0);
+    assert(nrf_sensor_bus_zephyr_scan_private_bitmap(bitmap) >= 0);
+    assert(nrf_sensor_bus_zephyr_scan_expected() >= 0);
+    assert(!nrf_sensor_bus_zephyr_take_fault(0x00U, 0xFFU, &fault));
+    assert(test_line_stub_resume_count() == 0U);
+}
+
+static void test_fault_table_is_bounded_and_counts_what_it_drops(void)
+{
+    nrf_sensor_bus_t bus = open_fault_bus();
+    nrf_sensor_bus_fault_t fault;
+    uint8_t byte = 0U;
+    const uint32_t dropped_before = nrf_sensor_bus_zephyr_dropped_faults();
+
+    for (uint8_t address = 0x10U; address <= 0x18U; ++address) {
+        assert(bus.transfer(bus.context, address, NULL, 0U, &byte, 1U) == -ENXIO);
+    }
+    assert(nrf_sensor_bus_zephyr_dropped_faults() == dropped_before + 1U); /* nine addresses, eight slots */
+    assert(nrf_sensor_bus_zephyr_take_fault(0x10U, 0x18U, &fault));
+    assert(fault.address == 0x10U && fault.cause == NRF_SENSOR_BUS_ERR_TRANSFER); /* equal rank: lowest address */
+    assert(!nrf_sensor_bus_zephyr_take_fault(0x10U, 0x18U, &fault));
+    assert(bus.transfer(bus.context, 0x19U, NULL, 0U, &byte, 1U) == -ENXIO); /* a freed slot is reusable */
+    assert(nrf_sensor_bus_zephyr_take_fault(0x19U, 0x19U, &fault));
+    assert(nrf_sensor_bus_zephyr_dropped_faults() == dropped_before + 1U);
+}
+
+static void test_unsampled_lines_are_reported_as_unknown_not_guessed(void)
+{
+    nrf_sensor_bus_t bus = open_fault_bus();
+    nrf_sensor_bus_fault_t fault;
+
+    test_line_stub_set_levels(true, true);
+    test_line_stub_fail_resume(true);
+    assert(fail_write(&bus, 0x68U, 0x7EU, -EIO) == -EIO);
+    assert(nrf_sensor_bus_zephyr_take_fault(0x68U, 0x69U, &fault));
+    assert(fault.cause == NRF_SENSOR_BUS_ERR_IO && fault.errno_abs == (uint8_t)EIO);
+    assert(!fault.lines_valid && !fault.sda_high && !fault.scl_high);
+    assert(test_line_stub_resume_count() == 0U);
+    assert_diagnostic("ret=-5 cause=io sda=-1 scl=-1");
+}
+
+static void test_take_fault_word_is_the_event_argument(void)
+{
+    nrf_sensor_bus_t bus = open_fault_bus();
+    uint32_t word = 0U;
+
+    test_line_stub_set_levels(true, false);
+    assert(fail_write(&bus, 0x76U, 0xF4U, -EIO) == -EIO);
+    assert(!nrf_sensor_bus_zephyr_take_fault_word(0x76U, 0x77U, NULL));
+    assert(nrf_sensor_bus_zephyr_take_fault_word(0x76U, 0x77U, &word));
+    /* 0x76, IO (2), errno 5, SDA high, SCL low, levels valid, one failure */
+    assert(word == (UINT32_C(0x76) | (UINT32_C(2) << 8) | (UINT32_C(5) << 16) | (UINT32_C(1) << 24) |
+                    (UINT32_C(1) << 26) | (UINT32_C(1) << 27)));
+    assert(!nrf_sensor_bus_zephyr_take_fault_word(0x76U, 0x77U, &word));
+}
+
+static void test_console_line_carries_cause_and_line_levels(void)
+{
+    nrf_sensor_bus_t bus = open_fault_bus();
+    char expected[160];
+
+    test_line_stub_set_levels(false, true);
+    assert(fail_write(&bus, 0x68U, 0x7EU, -ETIMEDOUT) == -ETIMEDOUT);
+    const int written = snprintf(expected, sizeof(expected),
+        "sensor_i2c: bus=i2c30 addr=0x68 reg=126 write=2 read=0 ret=%d cause=timeout sda=0 scl=1",
+        -ETIMEDOUT);
+    assert(written > 0 && (size_t)written < sizeof(expected));
+    assert_diagnostic(expected);
+}
+
 int main(void)
 {
+    test_fault_records_cause_errno_and_line_levels();
+    test_fault_keeps_worst_sample_and_counts_failures();
+    test_fault_take_filters_by_address_range_and_clears_only_that_range();
+    test_fault_ends_at_the_next_successful_transfer();
+    test_scan_helpers_do_not_record_expected_nacks();
+    test_fault_table_is_bounded_and_counts_what_it_drops();
+    test_unsampled_lines_are_reported_as_unknown_not_guessed();
+    test_take_fault_word_is_the_event_argument();
+    test_console_line_carries_cause_and_line_levels();
+    test_cooperative_prepare_on_alternate_addresses();
+    test_async_environment_result_is_fresh_and_faults_are_counted();
+    test_automatic_diagnostics_only_probe_expected_addresses();
+    test_periodic_imu_failures_use_runtime_recovery_counter();
+    test_runtime_marks_only_failed_sensor_recover_and_reprobes();
     test_bmi160_is_found_on_the_alternate_address();
     test_bmp280_is_accepted_without_humidity();
     test_scan_reports_who_answers_and_their_ids();

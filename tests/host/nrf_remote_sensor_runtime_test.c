@@ -91,7 +91,7 @@ static nrf_node_state_t make_ready_node(nrf_node_role_t role)
 static void test_main_and_unassigned_never_initialize_remote_hardware(void)
 {
     fake_sensor_context_t fake = make_fake();
-    const nrf_remote_sensor_ops_t ops = make_ops(&fake);
+    nrf_remote_sensor_ops_t ops = make_ops(&fake);
     nrf_remote_sensor_runtime_t runtime;
     nrf_remote_sensor_runtime_init(&runtime);
 
@@ -116,7 +116,7 @@ static void test_main_and_unassigned_never_initialize_remote_hardware(void)
 static void test_remote_prepare_is_idempotent_and_refreshes_both_sources(void)
 {
     fake_sensor_context_t fake = make_fake();
-    const nrf_remote_sensor_ops_t ops = make_ops(&fake);
+    nrf_remote_sensor_ops_t ops = make_ops(&fake);
     nrf_node_state_t remote = make_ready_node(NRF_NODE_ROLE_REMOTE);
     nrf_remote_sensor_runtime_t runtime;
     nrf_remote_sensor_runtime_init(&runtime);
@@ -148,7 +148,7 @@ static void test_failed_sensor_can_retry_without_reinitializing_good_sensor(void
 {
     fake_sensor_context_t fake = make_fake();
     fake.env_init_result = -7;
-    const nrf_remote_sensor_ops_t ops = make_ops(&fake);
+    nrf_remote_sensor_ops_t ops = make_ops(&fake);
     nrf_node_state_t remote = make_ready_node(NRF_NODE_ROLE_REMOTE);
     nrf_remote_sensor_runtime_t runtime;
     nrf_remote_sensor_runtime_init(&runtime);
@@ -167,6 +167,7 @@ static void test_failed_sensor_can_retry_without_reinitializing_good_sensor(void
     assert(fake.env_read_calls == 0);
 
     fake.env_init_result = 0;
+    ops.now_ms = NRF_REMOTE_SENSOR_RETRY_MS;
     assert(nrf_remote_sensor_runtime_prepare(&remote, &ops, &runtime) ==
            NRF_REMOTE_SENSOR_PREPARE_OK);
     assert(fake.imu_init_calls == 1);
@@ -182,7 +183,7 @@ static void test_failed_sensor_can_retry_without_reinitializing_good_sensor(void
 static void test_failed_read_clears_stale_payload_validity(void)
 {
     fake_sensor_context_t fake = make_fake();
-    const nrf_remote_sensor_ops_t ops = make_ops(&fake);
+    nrf_remote_sensor_ops_t ops = make_ops(&fake);
     nrf_node_state_t remote = make_ready_node(NRF_NODE_ROLE_REMOTE);
     nrf_remote_sensor_runtime_t runtime;
     nrf_remote_sensor_runtime_init(&runtime);
@@ -207,7 +208,7 @@ static void test_failed_read_clears_stale_payload_validity(void)
 static void test_unavailable_remote_does_not_touch_sensors(void)
 {
     fake_sensor_context_t fake = make_fake();
-    const nrf_remote_sensor_ops_t ops = make_ops(&fake);
+    nrf_remote_sensor_ops_t ops = make_ops(&fake);
     nrf_node_state_t remote = make_ready_node(NRF_NODE_ROLE_REMOTE);
     nrf_remote_sensor_runtime_t runtime;
     nrf_remote_sensor_runtime_init(&runtime);
@@ -242,7 +243,7 @@ static void test_missing_sensor_ops_report_no_data_without_crash(void)
 static void test_argument_validation(void)
 {
     fake_sensor_context_t fake = make_fake();
-    const nrf_remote_sensor_ops_t ops = make_ops(&fake);
+    nrf_remote_sensor_ops_t ops = make_ops(&fake);
     nrf_node_state_t remote = make_ready_node(NRF_NODE_ROLE_REMOTE);
     nrf_remote_sensor_runtime_t runtime;
     nrf_remote_sensor_runtime_init(&runtime);
@@ -262,7 +263,7 @@ static void test_argument_validation(void)
 static void test_ready_source_is_reinitialized_after_consecutive_read_failures(void)
 {
     fake_sensor_context_t fake = make_fake();
-    const nrf_remote_sensor_ops_t ops = make_ops(&fake);
+    nrf_remote_sensor_ops_t ops = make_ops(&fake);
     nrf_node_state_t remote = make_ready_node(NRF_NODE_ROLE_REMOTE);
     nrf_remote_sensor_runtime_t runtime;
     nrf_remote_sensor_runtime_init(&runtime);
@@ -299,10 +300,10 @@ static void test_ready_source_is_reinitialized_after_consecutive_read_failures(v
     assert(runtime.imu_ready);
 }
 
-static void test_failed_reinit_is_retried_on_every_prepare(void)
+static void test_failed_reinit_is_backed_off(void)
 {
     fake_sensor_context_t fake = make_fake();
-    const nrf_remote_sensor_ops_t ops = make_ops(&fake);
+    nrf_remote_sensor_ops_t ops = make_ops(&fake);
     nrf_node_state_t remote = make_ready_node(NRF_NODE_ROLE_REMOTE);
     nrf_remote_sensor_runtime_t runtime;
     nrf_remote_sensor_runtime_init(&runtime);
@@ -318,10 +319,14 @@ static void test_failed_reinit_is_retried_on_every_prepare(void)
     fake.env_init_result = -7;
     assert(nrf_remote_sensor_runtime_prepare(&remote, &ops, &runtime) ==
            NRF_REMOTE_SENSOR_PREPARE_PARTIAL);
-    assert(nrf_remote_sensor_runtime_prepare(&remote, &ops, &runtime) ==
-           NRF_REMOTE_SENSOR_PREPARE_PARTIAL);
-    assert(fake.env_init_calls == 3);
+    for (unsigned i = 0; i < 100U; ++i) {
+        assert(nrf_remote_sensor_runtime_prepare(&remote, &ops, &runtime) ==
+               NRF_REMOTE_SENSOR_PREPARE_PARTIAL);
+    }
+    assert(fake.env_init_calls == 2);
+    assert(fake.imu_init_calls == 1);
 
+    ops.now_ms = NRF_REMOTE_SENSOR_RETRY_MS;
     fake.env_init_result = 0;
     fake.env_read_result = 0;
     assert(nrf_remote_sensor_runtime_prepare(&remote, &ops, &runtime) ==
@@ -333,7 +338,7 @@ static void test_failed_reinit_is_retried_on_every_prepare(void)
 int main(void)
 {
     test_ready_source_is_reinitialized_after_consecutive_read_failures();
-    test_failed_reinit_is_retried_on_every_prepare();
+    test_failed_reinit_is_backed_off();
     test_main_and_unassigned_never_initialize_remote_hardware();
     test_remote_prepare_is_idempotent_and_refreshes_both_sources();
     test_failed_sensor_can_retry_without_reinitializing_good_sensor();

@@ -83,6 +83,22 @@ describe('Sensors power alerts', () => {
     expect(html).not.toContain('INA3221');
   });
 
+  it.each(['en', 'uk'] as const)('shows BMP280 temperature but unavailable humidity in %s', (locale) => {
+    const pod = {
+      id: 1, state: 'CONNECTED',
+      capabilities: { barometer: true, environment: true, imu: true, geophone: true, local_position: true, global_position: false },
+      barometer: { valid: true, pressure_pa: 100000, relative_altitude_cm: 0, reference_pressure_pa: 0 },
+      environment: { valid: true, temperature_valid: true, temperature_c: 24.25, humidity_valid: false, humidity_percent: 0 },
+      imu: { valid: false, roll_deg: 0, pitch_deg: 0, yaw_relative_deg: 0 },
+      geophone: { valid: false, instant_uv: 0, rms_uv: 0, peak_uv: 0, noise_rms_uv: 0, snr_db: 0 },
+      position: { local_valid: false, local_x_m: 0, local_y_m: 0, global_valid: false, latitude: 0, longitude: 0, altitude_valid: false, altitude_m: 0 },
+    } as DevicePod;
+    const html = render(statusWith({ pods: [pod] }), locale);
+    expect(html).toContain(`<dt>${translate(locale, 'sensors.humidity')}</dt><dd>${translate(locale, 'common.not_available')}</dd>`);
+    expect(html).toContain(`${formatNumber(locale, 24.25, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} \u00b0C`);
+    expect(html).not.toContain('100.0 %');
+  });
+
   it.each(['en', 'uk'] as const)('shows unknown markers for invalid zero-valued sensor metrics in %s', (locale) => {
     const pod: DevicePod = {
       id: 1,

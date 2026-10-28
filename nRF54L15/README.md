@@ -87,7 +87,12 @@ and therefore does not require either remote sensor assembly.
 With `CONFIG_APP_NRF_VERBOSE_LOG=y`, the direct nRF console reports private-bus
 failures as `sensor_i2c:` lines. `bus=i2c30 ready=0` means the controller is not
 ready; transfer failures include the address, decimal register (`-1` if absent),
-write/read byte counts and original Zephyr `ret` value. This transport result
+write/read byte counts, the original Zephyr `ret` value, a `cause=` (`timeout`,
+`io` or `other`) and the SDA/SCL levels read right after the failure (`sda=`/`scl=`,
+`-1` if not sampled). `ret=-5` is `-EIO`: Zephyr returns it for address NACK, data
+NACK and overrun alike, so use the line levels to tell a silent device from a bus
+held low. The same cause reaches the ESP32 as `SENSOR_BUS_FAULT` (see
+`docs/nrf-production-i2c-diagnostics.md`). This transport result
 is separate from the BMI160/BME280 driver's generic `ERR_BUS` initialization
 result. A failed `0x76` probe can be normal when the BME280 responds at `0x77`.
 These lines do not depend on ESP32 forwarding the nRF event ring. From the

@@ -52,6 +52,31 @@ describe('nRF log event arguments', () => {
     ['LOGGER_LATCH', 24, 3, 1, 'Latch source: TWIS protocol errors (3), Latched severity: Warning (yellow) (1)'],
     ['LOGGER_LATCH', 24, 9, 2, 'Latch source: Invalid LED policy input (9), Latched severity: Error (red) (2)'],
     ['LOGGER_LATCH', 24, 8, 0, 'Latch source: Unknown value (8), Latched severity: Unknown value (0)'],
+    ['SENSOR_SCAN_WORD3', 28, 900, 0x00400100, 'Request ID: 0x00000384, Found addresses: 0x68, 0x76'],
+    ['SENSOR_SCAN_DONE', 29, 900, 0xFFFFFFED, 'Request ID: 0x00000384, Device count or error: -19'],
+    // SENSOR_BUS_FAULT arg1: bits 0-7 address, 8-15 cause, 16-23 errno, 24-26 SDA/SCL/valid, 27-31 failures.
+    ['SENSOR_BUS_FAULT', 30, 2, 0x17050276,
+      'Sensor: BME280 (2), I²C address: 0x76, Cause: I/O error: no ACK or a bus error (the driver does not tell them apart) (2), '
+      + 'Error code (errno): 5, Line levels after the failure: SDA and SCL high: nobody holds the bus (7), '
+      + 'Failed transfers (31 means 31 or more): 2'],
+    ['SENSOR_BUS_FAULT', 30, 1, 0x26740168,
+      'Sensor: BMI160 (1), I²C address: 0x68, Cause: Timeout: the controller never finished the transfer (1), '
+      + 'Error code (errno): 116, Line levels after the failure: SDA held low (6), '
+      + 'Failed transfers (31 means 31 or more): 4'],
+    ['SENSOR_BUS_FAULT', 30, 1, 0x0C050269,
+      'Sensor: BMI160 (1), I²C address: 0x69, Cause: I/O error: no ACK or a bus error (the driver does not tell them apart) (2), '
+      + 'Error code (errno): 5, Line levels after the failure: SDA and SCL held low (4), '
+      + 'Failed transfers (31 means 31 or more): 1'],
+    ['SENSOR_BUS_FAULT', 30, 1, 0x0D050269,
+      'Sensor: BMI160 (1), I²C address: 0x69, Cause: I/O error: no ACK or a bus error (the driver does not tell them apart) (2), '
+      + 'Error code (errno): 5, Line levels after the failure: SCL held low (5), '
+      + 'Failed transfers (31 means 31 or more): 1'],
+    ['SENSOR_BUS_FAULT', 30, 2, 0xF8060377,
+      'Sensor: BME280 (2), I²C address: 0x77, Cause: Other transfer error (3), '
+      + 'Error code (errno): 6, Line levels after the failure: Not sampled (0), '
+      + 'Failed transfers (31 means 31 or more): 31'],
+    ['SENSOR_BUS_FAULT', 30, 1, 0x00000000, 'Sensor: BMI160 (1), Packed bus fault: Unknown value (0)'],
+    ['SENSOR_BUS_FAULT', 30, 1, 0x00000400, 'Sensor: BMI160 (1), Packed bus fault: Unknown value (1024)'],
   ] as const)('decodes %s (event %i)', (_name, eventId, arg0, arg1, expected) => {
     expect(formatEventArgsText(formatEventArgs(eventId, arg0, arg1), english)).toBe(expected);
   });

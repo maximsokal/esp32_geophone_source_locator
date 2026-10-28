@@ -276,7 +276,7 @@ static void print_state_transitions(const nrf_node_state_t *node_state)
                now_ms);
         if (snapshot.imu_init_result != 0 || snapshot.env_init_result != 0) {
             /* Shows which addresses answer and what they report, so a wrong address or part is visible. */
-            (void)nrf_sensor_bus_zephyr_scan_private();
+            (void)nrf_sensor_bus_zephyr_scan_expected();
         }
     } else if ((changes & NRF_BOOT_CHANGE_SENSOR_RESULT) != 0U &&
                have_sensor_diagnostics) {

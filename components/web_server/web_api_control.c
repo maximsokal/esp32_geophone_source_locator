@@ -985,6 +985,48 @@ static esp_err_t web_api_control_handler(httpd_req_t *request)
         return web_control_calibrate_heights(request);
     }
 
+    if (strcmp(action_copy, "scan_remote_sensors") == 0) {
+        double channel = -1.0;
+        uint32_t request_id = 0U;
+        if (!web_control_number(root, "channel", &channel) || channel < 0.0 ||
+            channel >= (double)NRF_TOPOLOGY_REMOTE_COUNT || floor(channel) != channel) {
+            cJSON_Delete(root);
+            return web_control_send_result(request, action_copy, ESP_ERR_INVALID_ARG, NULL);
+        }
+        err = nrf_topology_service_request_sensor_scan((uint8_t)channel, &request_id);
+        cJSON_Delete(root);
+        if (err != ESP_OK) return web_control_send_result(request, action_copy, err, NULL);
+        char response[96];
+        (void)snprintf(response, sizeof(response),
+                       "{\"ok\":true,\"action\":\"scan_remote_sensors\",\"request_id\":%lu}",
+                       (unsigned long)request_id);
+        httpd_resp_set_type(request, "application/json; charset=utf-8");
+        httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+        return httpd_resp_send(request, response, HTTPD_RESP_USE_STRLEN);
+    }
+
+    if (strcmp(action_copy, "sensor_scan_dispatch") == 0) {
+        double raw_id;
+        uint64_t parsed_id;
+        bool pending;
+        esp_err_t dispatch_result;
+        if (!web_control_number(root, "request_id", &raw_id) ||
+            !json_number_to_uint64(raw_id, &parsed_id) || parsed_id == 0U || parsed_id > UINT32_MAX) {
+            cJSON_Delete(root);
+            return web_control_send_result(request, action_copy, ESP_ERR_INVALID_ARG, NULL);
+        }
+        err = nrf_topology_service_get_sensor_scan_dispatch((uint32_t)parsed_id, &pending, &dispatch_result);
+        cJSON_Delete(root);
+        if (err != ESP_OK) return web_control_send_result(request, action_copy, err, NULL);
+        char response[120];
+        (void)snprintf(response, sizeof(response),
+            "{\"ok\":true,\"action\":\"sensor_scan_dispatch\",\"pending\":%s,\"dispatch_error\":%ld}",
+            pending ? "true" : "false", (long)dispatch_result);
+        httpd_resp_set_type(request, "application/json; charset=utf-8");
+        httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+        return httpd_resp_send(request, response, HTTPD_RESP_USE_STRLEN);
+    }
+
     char object_id[OBJECT_STORE_ID_SIZE];
     const char *error_class = NULL;
     const bool object_storage_mutation =

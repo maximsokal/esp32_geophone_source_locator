@@ -3,13 +3,14 @@
 #if defined(CONFIG_APP_NRF_STAGE_SIGNALS) && CONFIG_APP_NRF_STAGE_SIGNALS && \
     defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
 #include <stdarg.h>
-#include <stdio.h>
 #include <zephyr/sys/printk.h>
 #endif
+#include <limits.h>
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <zephyr/kernel.h>
@@ -19,12 +20,28 @@
 #include "nrf_log_events.h"
 #include "nrf_log_runtime_zephyr.h"
 #include "nrf_remote_sensor_runtime_zephyr.h"
+#include "nrf_sensor_bus_zephyr.h"
 #include "nrf_sensor_session.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
 #include "nrf_verticality_state.h"
 #include "nrf_watchdog_zephyr.h"
 
 extern struct k_msgq s_sensor_queue;
+#if defined(NRF_REAL_SENSOR_WORKER_TEST)
+extern void fake_sensor_bus_setup(void);
+extern void fake_sensor_bus_set_bad_pressure(void);
+extern void fake_sensor_bus_restore_pressure(void);
+extern void fake_sensor_bus_suspend_imu(void);
+extern void fake_sensor_bus_reset_env(void);
+extern void fake_sensor_bus_hold_env_nvm(bool busy);
+extern void fake_sensor_bus_set_imu_present(bool present);
+extern unsigned fake_sensor_bus_imu_id_probes;
+extern unsigned fake_sensor_bus_sleep_count;
+extern unsigned fake_sensor_bus_imu_reads;
+extern uint64_t fake_sensor_bus_imu_max_gap_ms;
+extern unsigned fake_sensor_bus_imu_states, fake_sensor_bus_env_states;
+extern unsigned fake_sensor_bus_scan_reads;
+#endif
 
 /* Each -D...TEST variant uses a different subset of the helpers below. */
 #if defined(__GNUC__) || defined(__clang__)
@@ -74,6 +91,8 @@ static bool s_exit_worker_when_empty;
 static unsigned s_empty_worker_returns_remaining;
 static bool s_include_env;
 static bool s_force_stationary;
+static bool s_fail_imu_reads;
+static bool s_async_env;
 static bool s_force_moving;
 static bool s_override_gravity;
 static unsigned s_fake_gravity_axis;
@@ -90,7 +109,7 @@ static struct {
     uint16_t event_id;
     uint32_t arg0;
     uint32_t arg1;
-} s_log_events[16];
+} s_log_events[512];
 static unsigned s_log_event_count;
 static bool s_init_fatal;
 static bool s_fail_imu_init;
@@ -177,6 +196,17 @@ NRF_TEST_MAYBE_UNUSED static unsigned log_event_count(uint16_t event_id)
         }
     }
     return count;
+}
+
+/* Index of the first logged event with this id and arg0, or UINT_MAX. */
+NRF_TEST_MAYBE_UNUSED static unsigned find_log_event(uint16_t event_id, uint32_t arg0)
+{
+    for (unsigned index = 0U; index < s_log_event_count; ++index) {
+        if (s_log_events[index].event_id == event_id && s_log_events[index].arg0 == arg0) {
+            return index;
+        }
+    }
+    return UINT_MAX;
 }
 
 NRF_TEST_MAYBE_UNUSED static void assert_last_log_event(
@@ -294,6 +324,9 @@ int64_t k_uptime_get(void)
 {
     return s_test_uptime_ms;
 }
+#if defined(NRF_REAL_SENSOR_WORKER_TEST)
+void fake_sensor_bus_advance(int32_t ms) { s_test_uptime_ms += ms; }
+#endif
 
 void nrf_node_state_init(nrf_node_state_t *state)
 {
@@ -330,11 +363,33 @@ nrf_node_state_result_t nrf_node_state_mark_available(nrf_node_state_t *state)
     return NRF_NODE_STATE_OK;
 }
 
+#if !defined(NRF_REAL_SENSOR_WORKER_TEST)
+int nrf_bmi160_zephyr_state(void) { return -1; }
+int nrf_bme280_zephyr_state(void) { return -1; }
+int nrf_sensor_bus_zephyr_scan_address(uint8_t address) { (void)address; return 0; }
+
+/* The packed cause of the failed transfers behind an init failure: slot 0 is the IMU range, slot 1 the ENV range. */
+static struct {
+    bool valid;
+    uint32_t word;
+} s_fake_faults[2];
+
+bool nrf_sensor_bus_zephyr_take_fault_word(uint8_t first_address, uint8_t last_address, uint32_t *packed)
+{
+    /* The runtime must ask for exactly the addresses each driver can use: BMI160 0x68-0x69, BME280 0x76-0x77. */
+    assert((first_address == 0x68U && last_address == 0x69U) || (first_address == 0x76U && last_address == 0x77U));
+    const size_t slot = first_address == 0x68U ? 0U : 1U;
+    if (packed == NULL || !s_fake_faults[slot].valid) return false;
+    *packed = s_fake_faults[slot].word;
+    s_fake_faults[slot].valid = false;
+    return true;
+}
 static int fake_read_imu(void *context, nrf_imu_sample_t *sample)
 {
     (void)context;
     ++s_imu_read_calls;
     memset(sample, 0, sizeof(*sample));
+    if (s_fail_imu_reads) return -EIO;
     sample->gyro_mdps[0] = s_fake_gyro_bias_mdps;
     if (s_force_moving) {
         sample->gyro_mdps[0] = 120000;
@@ -356,6 +411,17 @@ void nrf_remote_sensor_runtime_zephyr_init(nrf_remote_sensor_runtime_zephyr_t *r
     ++s_runtime_init_calls;
 }
 
+void nrf_remote_sensor_runtime_zephyr_note_imu_read(
+    nrf_remote_sensor_runtime_zephyr_t *runtime, bool faulted)
+{
+    if (!runtime->core.imu_ready) return;
+    if (!faulted) runtime->core.imu_read_failures = 0U;
+    else if (++runtime->core.imu_read_failures >= NRF_REMOTE_SENSOR_REINIT_AFTER_FAILURES) {
+        runtime->core.imu_ready = false;
+        runtime->bmi160.state = NRF_BMI160_RECOVER;
+    }
+}
+
 nrf_remote_sensor_prepare_result_t nrf_remote_sensor_runtime_zephyr_prepare(
     const nrf_node_state_t *node_state,
     nrf_remote_sensor_runtime_zephyr_t *runtime)
@@ -364,11 +430,40 @@ nrf_remote_sensor_prepare_result_t nrf_remote_sensor_runtime_zephyr_prepare(
     ++s_prepare_calls;
     runtime->core.imu_ready = !s_fail_imu_init;
     runtime->core.imu_init_result = s_fail_imu_init ? -EIO : 0;
+    runtime->core.imu_retry_after_ms = s_fail_imu_init
+        ? (uint64_t)s_test_uptime_ms + NRF_REMOTE_SENSOR_RETRY_MS : 0U;
     runtime->core.env_ready = s_include_env && !s_fail_env_init;
     runtime->core.env_init_result = s_fail_env_init ? -ENODEV : 0;
+    if (!runtime->core.env_ready && runtime->core.env_retry_after_ms <= (uint64_t)s_test_uptime_ms)
+        runtime->core.env_retry_after_ms = (uint64_t)s_test_uptime_ms + NRF_REMOTE_SENSOR_RETRY_MS;
+    if (runtime->core.env_ready) runtime->core.env_retry_after_ms = 0U;
     runtime->core.sources.read_imu = fake_read_imu;
     runtime->core.sources.imu_context = NULL;
     return NRF_REMOTE_SENSOR_PREPARE_PARTIAL;
+}
+
+nrf_remote_sensor_prepare_result_t nrf_remote_sensor_runtime_zephyr_prepare_cooperative(
+    const nrf_node_state_t *node_state, nrf_remote_sensor_runtime_zephyr_t *runtime)
+{
+    return nrf_remote_sensor_runtime_zephyr_prepare(node_state, runtime);
+}
+
+nrf_bme280_result_t nrf_remote_sensor_runtime_zephyr_begin_env(
+    const nrf_node_state_t *node_state, nrf_remote_sensor_runtime_zephyr_t *runtime, uint64_t now_ms)
+{
+    (void)node_state;
+    if (!s_async_env) return NRF_BME280_OK;
+    runtime->bme280.conversion_pending = true;
+    runtime->bme280.conversion_ready_ms = now_ms + 47U;
+    return NRF_BME280_PENDING;
+}
+
+nrf_bme280_result_t nrf_remote_sensor_runtime_zephyr_poll_env(
+    nrf_remote_sensor_runtime_zephyr_t *runtime, uint64_t now_ms)
+{
+    if (now_ms < runtime->bme280.conversion_ready_ms) return NRF_BME280_PENDING;
+    runtime->bme280.conversion_pending = false;
+    return NRF_BME280_OK;
 }
 
 nrf_sensor_snapshot_result_t nrf_remote_sensor_runtime_zephyr_refresh(
@@ -387,10 +482,20 @@ nrf_sensor_snapshot_result_t nrf_remote_sensor_runtime_zephyr_refresh(
             : (s_refresh_calls >= 3U ? 101085U : 101205U);
         runtime->core.snapshot.env.humidity_milli_percent = 50300U;
     }
+    if (runtime->core.env_ready) {
+        if ((s_test_fault_mask & NRF_SENSOR_VALID_ENV) != 0U) {
+            if (++runtime->core.env_read_failures >= NRF_REMOTE_SENSOR_REINIT_AFTER_FAILURES)
+                runtime->core.env_ready = false;
+        } else {
+            runtime->core.env_read_failures = 0U;
+        }
+    }
     return fake_read_imu(NULL, &runtime->core.snapshot.imu) == 0
         ? NRF_SENSOR_SNAPSHOT_PARTIAL
         : NRF_SENSOR_SNAPSHOT_ERR_NO_DATA;
 }
+
+#endif
 
 NRF_TEST_MAYBE_UNUSED static nrf_upstream_assign_t make_assign(void)
 {
@@ -686,10 +791,24 @@ static void test_failed_sensor_signal(void)
     s_fail_imu_init = true;
     s_fail_env_init = true;
     s_include_env = true;
+    /*
+     * The packed causes behind each init failure (layout in nrf_sensor_bus.h): a timeout at 0x68 with SDA held low,
+     * four failures; a plain EIO at 0x77 with both lines high, two failures.
+     */
+    const uint32_t imu_cause = UINT32_C(0x68) | (UINT32_C(1) << 8) | (UINT32_C(116) << 16) |
+                               (UINT32_C(1) << 25) | (UINT32_C(1) << 26) | (UINT32_C(4) << 27);
+    const uint32_t env_cause = UINT32_C(0x77) | (UINT32_C(2) << 8) | (UINT32_C(5) << 16) |
+                               (UINT32_C(3) << 24) | (UINT32_C(1) << 26) | (UINT32_C(2) << 27);
+    s_fake_faults[0].valid = true;
+    s_fake_faults[0].word = imu_cause;
+    s_fake_faults[1].valid = true;
+    s_fake_faults[1].word = env_cause;
     assert(nrf_sensor_upstream_runtime_zephyr_start() == 0);
     assert(s_sensor_worker_priority == 10);
     run_worker_ticks(1U);
     assert_last_applied_colors(false, false, false);
+    assert(log_event_count(NRF_LOG_EVENT_SENSOR_BUS_FAULT) == 0U); /* nothing is reported before an init fails */
+    assert(s_fake_faults[0].valid && s_fake_faults[1].valid);
 
     assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
     run_worker_until_empty();
@@ -708,7 +827,18 @@ static void test_failed_sensor_signal(void)
     assert(s_log_events[0].event_id == NRF_LOG_EVENT_SENSOR_INIT_FAILED);
     assert(s_log_events[0].arg0 == NRF_SENSOR_VALID_IMU);
     assert(s_log_events[0].arg1 == (uint32_t)-EIO);
-    assert_last_log_event(NRF_LOG_EVENT_SENSOR_INIT_FAILED, NRF_SENSOR_VALID_ENV, (uint32_t)-ENODEV);
+    /* Each init failure is followed by the cause of the transfers behind it, for that sensor only. */
+    assert(log_event_count(NRF_LOG_EVENT_SENSOR_BUS_FAULT) == 2U);
+    assert(s_log_events[1].event_id == NRF_LOG_EVENT_SENSOR_BUS_FAULT);
+    assert(s_log_events[1].arg0 == NRF_SENSOR_VALID_IMU);
+    assert(s_log_events[1].arg1 == imu_cause);
+    const unsigned env_failed = find_log_event(NRF_LOG_EVENT_SENSOR_INIT_FAILED, NRF_SENSOR_VALID_ENV);
+    assert(env_failed != UINT_MAX && s_log_events[env_failed].arg1 == (uint32_t)-ENODEV);
+    assert(env_failed + 1U < s_log_event_count);
+    assert(s_log_events[env_failed + 1U].event_id == NRF_LOG_EVENT_SENSOR_BUS_FAULT);
+    assert(s_log_events[env_failed + 1U].arg0 == NRF_SENSOR_VALID_ENV);
+    assert(s_log_events[env_failed + 1U].arg1 == env_cause);
+    assert(!s_fake_faults[0].valid && !s_fake_faults[1].valid); /* taken exactly once */
     assert(diagnostics.logger_led_output.red);
     /* The red LED's cause reaches the log ring: BMI160 init failure latched at ERROR. */
     assert(log_event_count(NRF_LOG_EVENT_LOGGER_LATCH) == 1U);
@@ -724,12 +854,19 @@ static void test_failed_sensor_signal(void)
     assert_last_applied_colors(false, false, true);
     assert_last_applied_matches_policy();
     assert(signal_log_count_containing("signal: stage=SENSORS_FAILED ") == 1U);
+    /* The same failure again is not a new event, so it must not report (or consume) a cause either. */
+    s_fake_faults[0].valid = true;
+    s_fake_faults[0].word = imu_cause;
+    s_fake_faults[1].valid = true;
+    s_fake_faults[1].word = env_cause;
     for (uint32_t id = 1U; id <= 3U; ++id) {
         const nrf_upstream_sensor_refresh_t request = {.request_id = id};
         assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == 0);
         run_worker_until_empty();
     }
     assert(log_event_count(NRF_LOG_EVENT_SENSOR_INIT_FAILED) == 2U);
+    assert(log_event_count(NRF_LOG_EVENT_SENSOR_BUS_FAULT) == 2U);
+    assert(s_fake_faults[0].valid && s_fake_faults[1].valid);
 }
 #endif
 #endif
@@ -787,7 +924,7 @@ NRF_TEST_MAYBE_UNUSED static void process_imu_calibration_request(
     assert(s_refresh_calls == refreshes_before && s_imu_read_calls == reads_before);
     run_worker_until_empty();
     if (action == NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE) {
-        assert(s_refresh_calls == refreshes_before && s_imu_read_calls == reads_before);
+        assert(s_refresh_calls == refreshes_before && s_imu_read_calls <= reads_before + 1U);
         nrf_upstream_sensor_refresh_t competing = {.request_id = request_id + 1U};
         assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&competing) == -EBUSY);
         run_worker_advancing(2000U);
@@ -871,6 +1008,257 @@ int main(void)
 {
 #if defined(NRF_MAIN_LOGGER_TEST)
     test_main_logger_without_remote_activation();
+    return 0;
+#elif defined(NRF_REAL_SENSOR_WORKER_TEST)
+    fake_sensor_bus_setup();
+    nrf_sensor_upstream_runtime_zephyr_diagnostics_t live_diagnostics;
+    nrf_orientation_config_t config;
+    nrf_orientation_default_config(&config);
+    config.reference_axis = NRF_ORIENTATION_AXIS_POS_Z;
+    assert(nrf_sensor_upstream_runtime_zephyr_configure_orientation(&config) == 0);
+    nrf_upstream_assign_t assign = make_assign();
+    nrf_upstream_sensor_snapshot_t snapshot;
+    assert(nrf_sensor_upstream_runtime_zephyr_start() == 0);
+    assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
+    run_worker_until_empty();
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PENDING);
+    const unsigned sleep_before = fake_sensor_bus_sleep_count;
+    run_worker_advancing(100U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
+    assert(live_diagnostics.imu_state == NRF_BMI160_MEASURING);
+    assert(live_diagnostics.env_state == NRF_BME280_MEASURING);
+    assert((fake_sensor_bus_imu_states & 7U) == 7U);
+    assert((fake_sensor_bus_env_states & 7U) == 7U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PENDING);
+    assert(fake_sensor_bus_scan_reads == 0U);
+    {
+        const nrf_upstream_sensor_refresh_t scan = {.request_id = 900U};
+        const nrf_upstream_sensor_refresh_t other_scan = {.request_id = 901U};
+        assert(nrf_sensor_upstream_runtime_zephyr_request_scan(&scan) == 0);
+        assert(nrf_sensor_upstream_runtime_zephyr_request_scan(&scan) == 0);
+        assert(nrf_sensor_upstream_runtime_zephyr_request_scan(&other_scan) == -EBUSY);
+        run_worker_until_empty();
+        assert(fake_sensor_bus_scan_reads == 0U);
+    }
+    run_worker_advancing(48U);
+    assert(fake_sensor_bus_scan_reads < 112U);
+    const unsigned imu_before_scan = fake_sensor_bus_imu_reads;
+    run_worker_advancing(20U);
+    {
+        const nrf_upstream_sensor_refresh_t during_scan = {.request_id = 701U};
+        assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&during_scan) == 0);
+        run_worker_until_empty();
+        const unsigned scan_before_wait = fake_sensor_bus_scan_reads;
+        run_worker_advancing(46U);
+        assert(fake_sensor_bus_scan_reads == scan_before_wait);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.request_id == 701U && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PENDING);
+        run_worker_advancing(2U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.request_id == 701U && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_OK);
+    }
+    run_worker_advancing(112U);
+    assert(fake_sensor_bus_scan_reads == 112U);
+    assert(fake_sensor_bus_imu_reads > imu_before_scan);
+    assert(s_log_event_count >= 5U);
+    {
+        const unsigned first = s_log_event_count - 5U;
+        for (unsigned i = 0U; i < 4U; ++i) {
+            assert(s_log_events[first + i].event_id == NRF_LOG_EVENT_SENSOR_SCAN_WORD0 + i);
+            assert(s_log_events[first + i].arg0 == 900U);
+            assert(s_log_events[first + i].arg1 == (i == 3U ? ((1U << 8U) | (1U << 22U)) : 0U));
+        }
+        assert(s_log_events[first + 4U].event_id == NRF_LOG_EVENT_SENSOR_SCAN_DONE);
+        assert(s_log_events[first + 4U].arg0 == 900U && s_log_events[first + 4U].arg1 == 2U);
+    }
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_OK);
+    assert((snapshot.valid_mask & (NRF_SENSOR_VALID_IMU | NRF_SENSOR_VALID_ENV)) ==
+           (NRF_SENSOR_VALID_IMU | NRF_SENSOR_VALID_ENV));
+    assert(snapshot.humidity_milli_percent == UINT32_MAX);
+    assert(fake_sensor_bus_sleep_count == sleep_before);
+    run_worker_advancing(75U);
+    const unsigned imu_before = fake_sensor_bus_imu_reads;
+    const nrf_upstream_sensor_refresh_t timing_req = {.request_id = 100U};
+    assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&timing_req) == 0);
+    run_worker_until_empty();
+    run_worker_advancing(30U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PENDING);
+    assert(fake_sensor_bus_imu_reads > imu_before);
+    run_worker_advancing(18U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.request_id == 100U && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_OK);
+    const unsigned imu_before_load = fake_sensor_bus_imu_reads;
+    for (uint32_t id = 1U; id <= 30U; ++id) {
+        const nrf_upstream_sensor_refresh_t req = {.request_id = id};
+        assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&req) == 0);
+        run_worker_until_empty();
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.request_id == id && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PENDING);
+        run_worker_advancing(48U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.request_id == id && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_OK);
+        assert(snapshot.humidity_milli_percent == UINT32_MAX);
+    }
+    assert(fake_sensor_bus_sleep_count == sleep_before);
+    assert(fake_sensor_bus_imu_reads >= imu_before_load + 30U);
+    assert(fake_sensor_bus_imu_max_gap_ms <= 100U);
+    {
+        const nrf_upstream_height_reference_t height = {
+            .action = NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, .request_id = 110U, .generation = 11U,
+        };
+        assert(nrf_sensor_upstream_runtime_zephyr_request_height_reference(&height) == 0);
+        run_worker_until_empty();
+        run_worker_advancing(48U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
+    }
+    {
+        const nrf_upstream_sensor_refresh_t reset_req = {.request_id = 102U};
+        assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&reset_req) == 0);
+        run_worker_until_empty();
+        fake_sensor_bus_reset_env();
+        run_worker_advancing(48U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.request_id == 102U && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PARTIAL);
+        assert((snapshot.valid_mask & NRF_SENSOR_VALID_IMU) != 0U);
+        assert((snapshot.valid_mask & NRF_SENSOR_VALID_ENV) == 0U);
+        assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
+        assert(!live_diagnostics.env_ready);
+        fake_sensor_bus_hold_env_nvm(true);
+        for (uint32_t id = 103U; id <= 104U; ++id) {
+            const nrf_upstream_sensor_refresh_t retry_req = {.request_id = id};
+            assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&retry_req) == 0);
+            run_worker_until_empty();
+        }
+        const unsigned imu_before_env_retry = fake_sensor_bus_imu_reads;
+        run_worker_advancing(150U);
+        assert(fake_sensor_bus_imu_reads > imu_before_env_retry);
+        assert(fake_sensor_bus_sleep_count == sleep_before);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
+        assert(live_diagnostics.env_state == NRF_BME280_RECOVER);
+        assert(live_diagnostics.imu_state == NRF_BMI160_MEASURING);
+        fake_sensor_bus_hold_env_nvm(false);
+        const nrf_upstream_sensor_refresh_t retry_scan = {.request_id = 901U};
+        assert(nrf_sensor_upstream_runtime_zephyr_request_scan(&retry_scan) == 0);
+        run_worker_until_empty();
+        run_worker_advancing(150U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
+        assert(live_diagnostics.env_state == NRF_BME280_MEASURING);
+    }
+    fake_sensor_bus_set_bad_pressure();
+    {
+        const nrf_upstream_sensor_refresh_t req = {.request_id = 101U};
+        assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&req) == 0);
+        run_worker_until_empty();
+        run_worker_advancing(48U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.request_id == 101U);
+        assert((snapshot.valid_mask & NRF_SENSOR_VALID_ENV) == 0U);
+        assert((snapshot.valid_mask & NRF_SENSOR_VALID_IMU) != 0U);
+        assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PARTIAL);
+    }
+    fake_sensor_bus_suspend_imu();
+    run_worker_advancing(100U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
+    assert(!live_diagnostics.imu_ready);
+    fake_sensor_bus_restore_pressure();
+    {
+        const nrf_upstream_sensor_refresh_t while_recovering = {.request_id = 2000U};
+        const unsigned sleeps_during_recovery = fake_sensor_bus_sleep_count;
+        assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&while_recovering) == 0);
+        run_worker_until_empty();
+        run_worker_advancing(48U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.request_id == 2000U && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PARTIAL);
+        assert((snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U);
+        assert(fake_sensor_bus_sleep_count == sleeps_during_recovery);
+        run_worker_advancing(100U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
+        assert(live_diagnostics.imu_state == NRF_BMI160_MEASURING);
+    }
+    fake_sensor_bus_set_imu_present(false);
+    for (uint32_t id = 2900U; id < 2903U; ++id) {
+        const nrf_upstream_sensor_refresh_t req = {.request_id = id};
+        assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&req) == 0);
+        run_worker_until_empty();
+        run_worker_advancing(48U);
+    }
+    run_worker_advancing(10U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
+    assert(!live_diagnostics.imu_ready);
+    assert(live_diagnostics.env_ready);
+    {
+        /* Real bus layer, real runtime: every cause event follows its init failure and decodes to what the fake did. */
+        unsigned imu_causes = 0U;
+        for (unsigned i = 0U; i < s_log_event_count; ++i) {
+            if (s_log_events[i].event_id != NRF_LOG_EVENT_SENSOR_BUS_FAULT) continue;
+            assert(i > 0U && s_log_events[i - 1U].event_id == NRF_LOG_EVENT_SENSOR_INIT_FAILED);
+            assert(s_log_events[i - 1U].arg0 == s_log_events[i].arg0);
+            nrf_sensor_bus_fault_t fault;
+            assert(nrf_sensor_bus_fault_unpack(s_log_events[i].arg1, &fault));
+            const bool imu = s_log_events[i].arg0 == NRF_SENSOR_VALID_IMU;
+            assert(imu ? (fault.address == 0x68U || fault.address == 0x69U)
+                       : (fault.address == 0x76U || fault.address == 0x77U));
+            assert(fault.cause == NRF_SENSOR_BUS_ERR_TRANSFER && fault.errno_abs == (uint8_t)ENXIO);
+            assert(fault.lines_valid && fault.sda_high && fault.scl_high && fault.failures >= 1U);
+            if (imu) ++imu_causes;
+        }
+        assert(imu_causes >= 1U); /* the removed IMU produced a cause, not only a driver code */
+    }
+    {
+        const unsigned probes_after_failure = fake_sensor_bus_imu_id_probes;
+        for (uint32_t id = 3000U; id < 3100U; ++id) {
+            const nrf_upstream_sensor_refresh_t req = {.request_id = id};
+            assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&req) == 0);
+            run_worker_until_empty();
+            run_worker_advancing(48U);
+            assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+            assert(snapshot.request_id == id && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PARTIAL);
+            assert((snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U);
+        }
+        assert(fake_sensor_bus_imu_id_probes == probes_after_failure);
+        fake_sensor_bus_set_imu_present(true);
+        run_worker_advancing(500U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
+        assert(live_diagnostics.imu_state == NRF_BMI160_MEASURING && live_diagnostics.imu_ready);
+        assert(fake_sensor_bus_sleep_count == sleep_before);
+        const nrf_upstream_sensor_refresh_t fresh = {.request_id = 3100U};
+        assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&fresh) == 0);
+        run_worker_until_empty();
+        run_worker_advancing(48U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.request_id == 3100U && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_OK);
+        assert((snapshot.valid_mask & (NRF_SENSOR_VALID_IMU | NRF_SENSOR_VALID_ENV)) ==
+               (NRF_SENSOR_VALID_IMU | NRF_SENSOR_VALID_ENV));
+    }
+    return 0;
+#elif defined(NRF_ASYNC_ACTIVATION_TEST)
+    s_include_env = true;
+    s_async_env = true;
+    nrf_upstream_assign_t assign = make_assign();
+    nrf_upstream_sensor_snapshot_t snapshot;
+    nrf_sensor_upstream_runtime_zephyr_diagnostics_t diagnostics = {0};
+    assert(nrf_sensor_upstream_runtime_zephyr_start() == 0);
+    assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
+    run_worker_until_empty();
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    assert(diagnostics.activation_generation == 1U && diagnostics.activation_complete_generation == 0U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.request_id == 0U && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PENDING);
+    run_worker_advancing(46U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    assert(diagnostics.activation_complete_generation == 0U);
+    run_worker_advancing(2U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    assert(diagnostics.activation_complete_generation == 1U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.request_id == 0U && snapshot.result != NRF_UPSTREAM_SENSOR_RESULT_PENDING);
+    assert((snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U);
     return 0;
 #elif defined(NRF_STAGE_SIGNAL_FAILED_TEST)
     test_failed_sensor_signal();
@@ -1242,6 +1630,104 @@ int main(void)
     process_refresh_request(73U);
     assert(log_event_count(NRF_LOG_EVENT_IMU_FAULT_CLEARED) == 1U);
     assert(log_event_count(NRF_LOG_EVENT_ENV_FAULT_CLEARED) == 1U);
+
+    /* Lose the BMI160 during periodic orientation, with both references established. */
+    s_force_stationary = true;
+    s_force_moving = false;
+    process_imu_calibration_request(NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE, 1000U, 100U);
+    process_height_reference_request(NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 1001U, 101U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
+    s_fail_imu_reads = true;
+    s_fail_imu_init = true;
+    const unsigned before_fail_reads = s_imu_read_calls;
+    run_worker_advancing(600U);
+    assert(s_imu_read_calls == before_fail_reads + NRF_REMOTE_SENSOR_REINIT_AFTER_FAILURES);
+    nrf_sensor_upstream_runtime_zephyr_diagnostics_t failed_diag = {0};
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&failed_diag));
+    assert(!failed_diag.imu_ready);
+    {
+        const unsigned attempts_before_scan = s_prepare_calls;
+        const nrf_upstream_sensor_refresh_t scan = {.request_id = 7000U};
+        assert(nrf_sensor_upstream_runtime_zephyr_request_scan(&scan) == 0);
+        run_worker_until_empty();
+        assert(s_prepare_calls == attempts_before_scan + 1U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&failed_diag));
+        assert(!failed_diag.imu_ready && failed_diag.env_ready);
+    }
+    s_fail_imu_reads = false;
+    s_fail_imu_init = false;
+    const unsigned attempts_after_loss = s_prepare_calls;
+    run_worker_advancing(NRF_REMOTE_SENSOR_RETRY_MS - 1000U);
+    assert(s_prepare_calls == attempts_after_loss);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&failed_diag));
+    assert(!failed_diag.imu_ready);
+    run_worker_advancing(1500U);
+    assert(s_prepare_calls == attempts_after_loss + 1U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&failed_diag));
+    assert(failed_diag.imu_ready);
+    process_refresh_request(1002U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.imu_cal_state != NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+    assert(snapshot.gyro_bias_mdps[0] == 0 && snapshot.gravity_ref_mg[0] == 0);
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
+    assert(snapshot.relative_z_mm == 0);
+
+    /* Losing the barometer invalidates height but preserves the healthy IMU calibration. */
+    process_imu_calibration_request(NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE, 1003U, 102U);
+    process_height_reference_request(NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 1004U, 103U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
+    s_test_fault_mask = NRF_SENSOR_VALID_ENV;
+    process_refresh_request(1005U);
+    process_refresh_request(1006U);
+    process_refresh_request(1007U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
+    assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+    s_test_fault_mask = 0U;
+    process_refresh_request(1008U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
+    assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+
+    /* A fresh environmental sample is pending without blocking periodic IMU reads. */
+    run_worker_advancing(70U);
+    s_async_env = true;
+    const nrf_upstream_sensor_refresh_t async_request = { .request_id = 2001U };
+    const unsigned async_refreshes = s_refresh_calls;
+    const unsigned async_imu_reads = s_imu_read_calls;
+    assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&async_request) == 0);
+    run_worker_until_empty();
+    assert(s_refresh_calls == async_refreshes);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PENDING && snapshot.request_id == 2001U);
+    assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(
+        &(nrf_upstream_sensor_refresh_t){.request_id = 2002U}) == -EBUSY);
+    run_worker_advancing(46U);
+    assert(s_refresh_calls == async_refreshes);
+    assert(s_imu_read_calls > async_imu_reads);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PENDING);
+    run_worker_advancing(2U);
+    assert(s_refresh_calls == async_refreshes + 1U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.request_id == 2001U && snapshot.result != NRF_UPSTREAM_SENSOR_RESULT_BUSY);
+    assert((snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U);
+    const nrf_upstream_height_reference_t async_height = {
+        .action = NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, .request_id = 2003U, .generation = 200U,
+    };
+    assert(nrf_sensor_upstream_runtime_zephyr_request_height_reference(&async_height) == 0);
+    run_worker_until_empty();
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.request_id == 2003U && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PENDING);
+    run_worker_advancing(48U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.request_id == 2003U && snapshot.reference_generation == 200U);
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
+    s_async_env = false;
 
     /* Same assignment is idempotent; a conflicting active identity is rejected. */
     {

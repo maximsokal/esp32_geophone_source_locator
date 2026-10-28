@@ -51,8 +51,10 @@ static void test_gyro_integer_extremes_bias_and_environment_boundaries(void)
                 assert(fabs((double)result.gyro_rate_dps - expected) <= expected * 0.000001 + 0.001);
                 assert(result.temperature_valid && isfinite(result.temperature_c));
                 assert(result.temperature_c == (float)words[value] / 1000.0f);
-                assert(result.humidity_valid && result.humidity_percent >= 0.0f && result.humidity_percent <= 100.0f);
-                const float expected_humidity = humidity[value] > 100000U ? 100.0f : (float)humidity[value] / 1000.0f;
+                const bool available = humidity[value] != UINT32_MAX;
+                assert(result.humidity_valid == available);
+                const float expected_humidity = !available ? 0.0f :
+                    humidity[value] > 100000U ? 100.0f : (float)humidity[value] / 1000.0f;
                 assert(result.humidity_percent == expected_humidity);
             }
         }

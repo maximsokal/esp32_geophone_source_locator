@@ -23,6 +23,7 @@ enum {
 
 typedef enum {
     NRF_BME280_OK = 0,
+    NRF_BME280_PENDING = 1,
     NRF_BME280_ERR_ARGUMENT = -1,
     NRF_BME280_ERR_BUS = -2,
     NRF_BME280_ERR_CHIP_ID = -3,
@@ -63,7 +64,19 @@ typedef struct {
     uint8_t address;
     bool acked;
     uint8_t chip_id; /* valid when acked */
+    /* Raw outcome of the ID read: a timeout or a line fault is not the same as "nobody answered". */
+    nrf_sensor_bus_result_t bus_result;
 } nrf_bme280_probe_t;
+
+typedef enum {
+    NRF_BME280_PROBE = 0,
+    NRF_BME280_CONFIGURE,
+    NRF_BME280_VERIFY,
+    NRF_BME280_MEASURING,
+    NRF_BME280_RECOVER,
+} nrf_bme280_state_t;
+
+typedef void (*nrf_bme280_state_observer_fn)(void *context, nrf_bme280_state_t state);
 
 typedef struct {
     nrf_sensor_bus_t bus;
@@ -72,9 +85,18 @@ typedef struct {
     nrf_bme280_calibration_t calibration;
     uint8_t address;
     bool initialized;
+    nrf_bme280_state_t state;
+    bool conversion_pending;
+    uint64_t conversion_ready_ms;
+    uint64_t conversion_deadline_ms;
     /* False for a BMP280: pressure and temperature only, humidity is NRF_ENV_HUMIDITY_UNAVAILABLE. */
     bool has_humidity;
     nrf_bme280_probe_t probe[2];
+    uint8_t prepare_phase;
+    uint8_t nvm_polls;
+    uint64_t prepare_due_ms;
+    nrf_bme280_state_observer_fn observer;
+    void *observer_context;
 } nrf_bme280_t;
 
 /*
@@ -88,6 +110,19 @@ nrf_bme280_result_t nrf_bme280_init(
     const nrf_sensor_bus_t *bus,
     nrf_bme280_delay_ms_fn delay_ms,
     void *delay_context);
+
+nrf_bme280_result_t nrf_bme280_init_observed(
+    nrf_bme280_t *device, const nrf_sensor_bus_t *bus,
+    nrf_bme280_delay_ms_fn delay_ms, void *delay_context,
+    nrf_bme280_state_observer_fn observer, void *observer_context);
+nrf_bme280_result_t nrf_bme280_begin_async(
+    nrf_bme280_t *device, const nrf_sensor_bus_t *bus,
+    nrf_bme280_state_observer_fn observer, void *observer_context);
+nrf_bme280_result_t nrf_bme280_step_async(nrf_bme280_t *device, uint64_t now_ms);
+
+/* Start and poll forced conversion without sleeping; now_ms is monotonic. */
+nrf_bme280_result_t nrf_bme280_start_conversion(nrf_bme280_t *device, uint64_t now_ms);
+nrf_bme280_result_t nrf_bme280_poll_conversion(nrf_bme280_t *device, uint64_t now_ms, nrf_env_sample_t *sample);
 
 /* Matches nrf_read_env_fn so it plugs directly into sensor snapshots. */
 int nrf_bme280_read_env(void *context, nrf_env_sample_t *sample);

@@ -236,18 +236,22 @@ static nrf_bme280_result_t bme280_probe(nrf_bme280_t *device)
     /* Probe both addresses even after a hit so the caller can report what is on the bus. */
     for (size_t index = 0U; index < 2U; ++index) {
         uint8_t chip_id = 0U;
-        const nrf_bme280_result_t result = bme280_read_regs_at(
+        const uint8_t chip_id_reg = BME280_REG_CHIP_ID;
+        const nrf_sensor_bus_result_t bus_result = nrf_sensor_bus_write_read(
             &device->bus,
             addresses[index],
-            BME280_REG_CHIP_ID,
+            &chip_id_reg,
+            1U,
             &chip_id,
             1U);
+        const bool acked = bus_result == NRF_SENSOR_BUS_OK;
         device->probe[index] = (nrf_bme280_probe_t){
             .address = addresses[index],
-            .acked = result == NRF_BME280_OK,
-            .chip_id = result == NRF_BME280_OK ? chip_id : 0U,
+            .acked = acked,
+            .chip_id = acked ? chip_id : 0U,
+            .bus_result = bus_result,
         };
-        if (result != NRF_BME280_OK) {
+        if (!acked) {
             continue;
         }
 
@@ -291,161 +295,214 @@ static nrf_bme280_result_t bme280_wait_for_nvm(nrf_bme280_t *device)
     return NRF_BME280_ERR_NVM;
 }
 
-static nrf_bme280_result_t bme280_wait_for_measurement(nrf_bme280_t *device)
+static nrf_bme280_result_t bme280_configure_after_nvm(nrf_bme280_t *device)
 {
-    for (uint32_t attempt = 0U;
-         attempt < BME280_MEASUREMENT_POLL_ATTEMPTS;
-         ++attempt) {
-        uint8_t status = 0U;
-        const nrf_bme280_result_t result = bme280_read_regs(
-            device,
-            BME280_REG_STATUS,
-            &status,
-            1U);
-        if (result != NRF_BME280_OK) {
-            return result;
-        }
-        if ((status & (BME280_STATUS_MEASURING | BME280_STATUS_IM_UPDATE)) == 0U) {
-            return NRF_BME280_OK;
-        }
-        if (attempt + 1U < BME280_MEASUREMENT_POLL_ATTEMPTS) {
-            device->delay_ms(
-                device->delay_context,
-                BME280_MEASUREMENT_POLL_DELAY_MS);
-        }
+    uint8_t temp_press_calib[26] = {0};
+    uint8_t humidity_calib[7] = {0};
+    nrf_bme280_result_t result = bme280_read_regs(device, BME280_REG_TEMP_PRESS_CALIB,
+        temp_press_calib, device->has_humidity ? sizeof(temp_press_calib) : BMP280_CALIB_BYTES);
+    if (result != NRF_BME280_OK) return result;
+    if (device->has_humidity) {
+        result = bme280_read_regs(device, BME280_REG_HUMIDITY_CALIB, humidity_calib, sizeof(humidity_calib));
+        if (result != NRF_BME280_OK) return result;
     }
-    return NRF_BME280_ERR_MEASUREMENT;
+    bme280_parse_calibration(&device->calibration, temp_press_calib, humidity_calib);
+    if (device->calibration.dig_p1 == 0U) return NRF_BME280_ERR_CALIBRATION;
+    if (device->has_humidity) {
+        result = bme280_write_reg(device, BME280_REG_CTRL_HUM, BME280_CTRL_HUM_X1);
+        if (result != NRF_BME280_OK) return result;
+    }
+    result = bme280_write_reg(device, BME280_REG_CONFIG, BME280_CONFIG_FILTER_X16);
+    if (result != NRF_BME280_OK) return result;
+    return bme280_write_reg(device, BME280_REG_CTRL_MEAS, BME280_CTRL_MEAS_SLEEP);
 }
 
-nrf_bme280_result_t nrf_bme280_init(
+static nrf_bme280_result_t bme280_prepare_step(nrf_bme280_t *device)
+{
+    uint8_t config[4] = {0};
+    nrf_bme280_result_t result = NRF_BME280_OK;
+    switch (device->state) {
+    case NRF_BME280_PROBE:
+        result = bme280_probe(device);
+        if (result != NRF_BME280_OK) {
+            goto failed;
+        }
+
+        device->state = NRF_BME280_CONFIGURE;
+        break;
+    case NRF_BME280_CONFIGURE: {
+        result = bme280_write_reg(device, BME280_REG_RESET, BME280_SOFT_RESET);
+        if (result != NRF_BME280_OK) {
+            goto failed;
+        }
+        device->delay_ms(device->delay_context, BME280_STARTUP_DELAY_MS);
+
+        result = bme280_wait_for_nvm(device);
+        if (result != NRF_BME280_OK) {
+            goto failed;
+        }
+
+        result = bme280_configure_after_nvm(device);
+        if (result != NRF_BME280_OK) {
+            goto failed;
+        }
+
+        device->state = NRF_BME280_VERIFY;
+        break;
+    }
+    case NRF_BME280_VERIFY:
+        if (device->has_humidity) {
+            result = bme280_read_regs(
+                device,
+                BME280_REG_CTRL_HUM,
+                config,
+                sizeof(config));
+            if (result != NRF_BME280_OK) {
+                goto failed;
+            }
+            if ((config[0] & 0x07U) != BME280_CTRL_HUM_X1 ||
+                (config[2] & 0xFCU) != BME280_CTRL_MEAS_SLEEP ||
+                (config[2] & 0x03U) != 0U ||
+                (config[3] & 0x1CU) != BME280_CONFIG_FILTER_X16) {
+                result = NRF_BME280_ERR_CONFIG;
+                goto failed;
+            }
+        } else {
+            /* STATUS, CTRL_MEAS, CONFIG: no CTRL_HUM register on a BMP280. */
+            result = bme280_read_regs(
+                device,
+                BME280_REG_STATUS,
+                &config[1],
+                3U);
+            if (result != NRF_BME280_OK) {
+                goto failed;
+            }
+            if ((config[2] & 0xFCU) != BME280_CTRL_MEAS_SLEEP ||
+                (config[2] & 0x03U) != 0U ||
+                (config[3] & 0x1CU) != BME280_CONFIG_FILTER_X16) {
+                result = NRF_BME280_ERR_CONFIG;
+                goto failed;
+            }
+        }
+
+        device->initialized = true;
+        device->state = NRF_BME280_MEASURING;
+        break;
+    default:
+        return NRF_BME280_ERR_NOT_INITIALIZED;
+    }
+    return NRF_BME280_OK;
+
+failed:
+    device->initialized = false;
+    device->state = NRF_BME280_RECOVER;
+    return result;
+}
+
+nrf_bme280_result_t nrf_bme280_init_observed(
     nrf_bme280_t *device,
     const nrf_sensor_bus_t *bus,
     nrf_bme280_delay_ms_fn delay_ms,
-    void *delay_context)
+    void *delay_context,
+    nrf_bme280_state_observer_fn observer,
+    void *observer_context)
 {
     if (device == NULL || bus == NULL || bus->transfer == NULL || delay_ms == NULL) {
         return NRF_BME280_ERR_ARGUMENT;
     }
-
     *device = (nrf_bme280_t){
         .bus = *bus,
         .delay_ms = delay_ms,
         .delay_context = delay_context,
-        .address = 0U,
-        .initialized = false,
+        .state = NRF_BME280_PROBE,
     };
-
-    nrf_bme280_result_t result = bme280_probe(device);
-    if (result != NRF_BME280_OK) {
-        return result;
-    }
-
-    result = bme280_write_reg(device, BME280_REG_RESET, BME280_SOFT_RESET);
-    if (result != NRF_BME280_OK) {
-        return result;
-    }
-    device->delay_ms(device->delay_context, BME280_STARTUP_DELAY_MS);
-
-    result = bme280_wait_for_nvm(device);
-    if (result != NRF_BME280_OK) {
-        return result;
-    }
-
-    uint8_t temp_press_calib[26] = {0};
-    uint8_t humidity_calib[7] = {0};
-    /* A BMP280 has the 24 temperature/pressure words only: 0xA0.. and the humidity block do not exist. */
-    result = bme280_read_regs(
-        device,
-        BME280_REG_TEMP_PRESS_CALIB,
-        temp_press_calib,
-        device->has_humidity ? sizeof(temp_press_calib) : BMP280_CALIB_BYTES);
-    if (result != NRF_BME280_OK) {
-        return result;
-    }
-    if (device->has_humidity) {
-        result = bme280_read_regs(
-            device,
-            BME280_REG_HUMIDITY_CALIB,
-            humidity_calib,
-            sizeof(humidity_calib));
+    if (observer != NULL) observer(observer_context, device->state);
+    while (device->state != NRF_BME280_MEASURING) {
+        const nrf_bme280_result_t result = bme280_prepare_step(device);
+        if (observer != NULL) observer(observer_context, device->state);
         if (result != NRF_BME280_OK) {
             return result;
         }
     }
-
-    bme280_parse_calibration(
-        &device->calibration,
-        temp_press_calib,
-        humidity_calib);
-    if (device->calibration.dig_p1 == 0U) {
-        return NRF_BME280_ERR_CALIBRATION;
-    }
-
-    if (device->has_humidity) {
-        result = bme280_write_reg(device, BME280_REG_CTRL_HUM, BME280_CTRL_HUM_X1);
-        if (result != NRF_BME280_OK) {
-            return result;
-        }
-    }
-    result = bme280_write_reg(device, BME280_REG_CONFIG, BME280_CONFIG_FILTER_X16);
-    if (result != NRF_BME280_OK) {
-        return result;
-    }
-    /* Writing CTRL_MEAS latches the humidity oversampling setting. */
-    result = bme280_write_reg(device, BME280_REG_CTRL_MEAS, BME280_CTRL_MEAS_SLEEP);
-    if (result != NRF_BME280_OK) {
-        return result;
-    }
-
-    uint8_t config[4] = {0};
-    if (device->has_humidity) {
-        result = bme280_read_regs(
-            device,
-            BME280_REG_CTRL_HUM,
-            config,
-            sizeof(config));
-        if (result != NRF_BME280_OK) {
-            return result;
-        }
-        if ((config[0] & 0x07U) != BME280_CTRL_HUM_X1 ||
-            (config[2] & 0xFCU) != BME280_CTRL_MEAS_SLEEP ||
-            (config[2] & 0x03U) != 0U ||
-            (config[3] & 0x1CU) != BME280_CONFIG_FILTER_X16) {
-            return NRF_BME280_ERR_CONFIG;
-        }
-    } else {
-        /* STATUS, CTRL_MEAS, CONFIG: no CTRL_HUM register on a BMP280. */
-        result = bme280_read_regs(
-            device,
-            BME280_REG_STATUS,
-            &config[1],
-            3U);
-        if (result != NRF_BME280_OK) {
-            return result;
-        }
-        if ((config[2] & 0xFCU) != BME280_CTRL_MEAS_SLEEP ||
-            (config[2] & 0x03U) != 0U ||
-            (config[3] & 0x1CU) != BME280_CONFIG_FILTER_X16) {
-            return NRF_BME280_ERR_CONFIG;
-        }
-    }
-
-    device->initialized = true;
     return NRF_BME280_OK;
 }
 
-int nrf_bme280_read_env(void *context, nrf_env_sample_t *sample)
+nrf_bme280_result_t nrf_bme280_init(
+    nrf_bme280_t *device, const nrf_sensor_bus_t *bus,
+    nrf_bme280_delay_ms_fn delay_ms, void *delay_context)
 {
-    nrf_bme280_t *device = (nrf_bme280_t *)context;
-    if (sample == NULL || device == NULL) {
-        return NRF_BME280_ERR_ARGUMENT;
-    }
+    return nrf_bme280_init_observed(device, bus, delay_ms, delay_context, NULL, NULL);
+}
 
-    *sample = (nrf_env_sample_t){0};
-    if (!device->initialized) {
+nrf_bme280_result_t nrf_bme280_begin_async(
+    nrf_bme280_t *device, const nrf_sensor_bus_t *bus,
+    nrf_bme280_state_observer_fn observer, void *observer_context)
+{
+    if (device == NULL || bus == NULL || bus->transfer == NULL) return NRF_BME280_ERR_ARGUMENT;
+    *device = (nrf_bme280_t){.bus = *bus, .state = NRF_BME280_PROBE,
+                              .observer = observer, .observer_context = observer_context};
+    if (observer != NULL) observer(observer_context, device->state);
+    return NRF_BME280_PENDING;
+}
+
+nrf_bme280_result_t nrf_bme280_step_async(nrf_bme280_t *device, uint64_t now_ms)
+{
+    nrf_bme280_result_t result;
+    if (device == NULL) return NRF_BME280_ERR_ARGUMENT;
+    if (device->state == NRF_BME280_MEASURING) return NRF_BME280_OK;
+    if (device->state == NRF_BME280_RECOVER) return NRF_BME280_ERR_NOT_INITIALIZED;
+    if (now_ms < device->prepare_due_ms) return NRF_BME280_PENDING;
+    if (device->state == NRF_BME280_PROBE) {
+        result = bme280_probe(device);
+        if (result != NRF_BME280_OK) goto failed_async;
+        device->state = NRF_BME280_CONFIGURE;
+    } else if (device->state == NRF_BME280_CONFIGURE && device->prepare_phase == 0U) {
+        result = bme280_write_reg(device, BME280_REG_RESET, BME280_SOFT_RESET);
+        if (result != NRF_BME280_OK) goto failed_async;
+        device->prepare_phase = 1U;
+        device->prepare_due_ms = now_ms > UINT64_MAX - BME280_STARTUP_DELAY_MS
+            ? UINT64_MAX : now_ms + BME280_STARTUP_DELAY_MS;
+        return NRF_BME280_PENDING;
+    } else if (device->state == NRF_BME280_CONFIGURE) {
+        uint8_t status = 0U;
+        result = bme280_read_regs(device, BME280_REG_STATUS, &status, 1U);
+        if (result != NRF_BME280_OK) goto failed_async;
+        if ((status & BME280_STATUS_IM_UPDATE) != 0U) {
+            if (++device->nvm_polls >= BME280_NVM_POLL_ATTEMPTS) {
+                result = NRF_BME280_ERR_NVM; goto failed_async;
+            }
+            device->prepare_due_ms = now_ms > UINT64_MAX - BME280_NVM_POLL_DELAY_MS
+                ? UINT64_MAX : now_ms + BME280_NVM_POLL_DELAY_MS;
+            return NRF_BME280_PENDING;
+        }
+        result = bme280_configure_after_nvm(device);
+        if (result != NRF_BME280_OK) goto failed_async;
+        device->state = NRF_BME280_VERIFY;
+    } else if (device->state == NRF_BME280_VERIFY) {
+        result = bme280_prepare_step(device);
+        if (result != NRF_BME280_OK) goto failed_async;
+    } else {
         return NRF_BME280_ERR_NOT_INITIALIZED;
     }
+    if (device->observer != NULL) device->observer(device->observer_context, device->state);
+    return device->state == NRF_BME280_MEASURING ? NRF_BME280_OK : NRF_BME280_PENDING;
 
+failed_async:
+    device->initialized = false;
+    device->state = NRF_BME280_RECOVER;
+    if (device->observer != NULL) device->observer(device->observer_context, device->state);
+    return result;
+}
+
+nrf_bme280_result_t nrf_bme280_start_conversion(nrf_bme280_t *device, uint64_t now_ms)
+{
+    if (device == NULL) return NRF_BME280_ERR_ARGUMENT;
+    if (!device->initialized || device->state != NRF_BME280_MEASURING)
+        return NRF_BME280_ERR_NOT_INITIALIZED;
+    if (device->conversion_pending) return NRF_BME280_PENDING;
+    if (now_ms > UINT64_MAX - BME280_MEASUREMENT_DELAY_MS -
+                     (BME280_MEASUREMENT_POLL_ATTEMPTS - 1U) * BME280_MEASUREMENT_POLL_DELAY_MS)
+        return NRF_BME280_ERR_ARGUMENT;
     /*
      * CTRL_HUM and CONFIG are volatile. After a power loss the sensor ACKs
      * again with humidity oversampling off, so every conversion would skip
@@ -477,12 +534,49 @@ int nrf_bme280_read_env(void *context, nrf_env_sample_t *sample)
         return result;
     }
 
-    device->delay_ms(device->delay_context, BME280_MEASUREMENT_DELAY_MS);
-    result = bme280_wait_for_measurement(device);
+    device->conversion_ready_ms = now_ms + BME280_MEASUREMENT_DELAY_MS;
+    device->conversion_deadline_ms = device->conversion_ready_ms +
+        (BME280_MEASUREMENT_POLL_ATTEMPTS - 1U) * BME280_MEASUREMENT_POLL_DELAY_MS;
+    device->conversion_pending = true;
+    return NRF_BME280_OK;
+}
+
+nrf_bme280_result_t nrf_bme280_poll_conversion(
+    nrf_bme280_t *device, uint64_t now_ms, nrf_env_sample_t *sample)
+{
+    if (sample == NULL || device == NULL) return NRF_BME280_ERR_ARGUMENT;
+    *sample = (nrf_env_sample_t){0};
+    if (!device->initialized || device->state != NRF_BME280_MEASURING || !device->conversion_pending)
+        return NRF_BME280_ERR_NOT_INITIALIZED;
+    if (now_ms < device->conversion_ready_ms) return NRF_BME280_PENDING;
+    uint8_t config[3] = {0};
+    nrf_bme280_result_t result = bme280_read_regs(device, BME280_REG_STATUS, config, sizeof(config));
     if (result != NRF_BME280_OK) {
+        device->conversion_pending = false;
         return result;
     }
-
+    if ((config[0] & (BME280_STATUS_MEASURING | BME280_STATUS_IM_UPDATE)) != 0U) {
+        if (now_ms < device->conversion_deadline_ms) return NRF_BME280_PENDING;
+        device->conversion_pending = false;
+        return NRF_BME280_ERR_MEASUREMENT;
+    }
+    device->conversion_pending = false;
+    if ((config[1] & 0xFCU) != BME280_CTRL_MEAS_SLEEP ||
+        (config[2] & 0x1CU) != BME280_CONFIG_FILTER_X16) {
+        device->initialized = false;
+        device->state = NRF_BME280_RECOVER;
+        return NRF_BME280_ERR_CONFIG;
+    }
+    if (device->has_humidity) {
+        uint8_t humidity_config = 0U;
+        result = bme280_read_regs(device, BME280_REG_CTRL_HUM, &humidity_config, 1U);
+        if (result != NRF_BME280_OK) return result;
+        if ((humidity_config & 0x07U) != BME280_CTRL_HUM_X1) {
+            device->initialized = false;
+            device->state = NRF_BME280_RECOVER;
+            return NRF_BME280_ERR_CONFIG;
+        }
+    }
     uint8_t data[8] = {0};
     result = bme280_read_regs(
         device, BME280_REG_DATA, data, device->has_humidity ? sizeof(data) : BMP280_DATA_BYTES);
@@ -528,4 +622,21 @@ int nrf_bme280_read_env(void *context, nrf_env_sample_t *sample)
         ? (humidity_x1024_percent * 1000U + 512U) / 1024U
         : NRF_ENV_HUMIDITY_UNAVAILABLE;
     return NRF_BME280_OK;
+}
+
+int nrf_bme280_read_env(void *context, nrf_env_sample_t *sample)
+{
+    nrf_bme280_t *device = (nrf_bme280_t *)context;
+    if (sample == NULL || device == NULL) return NRF_BME280_ERR_ARGUMENT;
+    *sample = (nrf_env_sample_t){0};
+    nrf_bme280_result_t result = nrf_bme280_start_conversion(device, 0U);
+    if (result != NRF_BME280_OK) return result;
+    device->delay_ms(device->delay_context, BME280_MEASUREMENT_DELAY_MS);
+    for (uint32_t attempt = 0U; attempt < BME280_MEASUREMENT_POLL_ATTEMPTS; ++attempt) {
+        result = nrf_bme280_poll_conversion(device, BME280_MEASUREMENT_DELAY_MS +
+            attempt * BME280_MEASUREMENT_POLL_DELAY_MS, sample);
+        if (result != NRF_BME280_PENDING) return result;
+        device->delay_ms(device->delay_context, BME280_MEASUREMENT_POLL_DELAY_MS);
+    }
+    return NRF_BME280_ERR_MEASUREMENT;
 }

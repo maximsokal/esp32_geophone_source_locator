@@ -13,6 +13,7 @@ extern "C" {
 #define NRF_UPSTREAM_PROTOCOL_ASSIGN_LENGTH 24U
 #define NRF_UPSTREAM_PROTOCOL_STATUS_LENGTH 28U
 #define NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH 12U
+#define NRF_UPSTREAM_PROTOCOL_SENSOR_SCAN_LENGTH 12U
 #define NRF_UPSTREAM_PROTOCOL_HEIGHT_REFERENCE_LENGTH 16U
 #define NRF_UPSTREAM_PROTOCOL_IMU_CALIBRATE_LENGTH 20U
 #define NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH 12U
@@ -94,6 +95,7 @@ typedef enum {
     NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE = 0x05,
     NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE = 0x06,
     NRF_UPSTREAM_MESSAGE_READ_WINDOW = 0x0A,
+    NRF_UPSTREAM_MESSAGE_SENSOR_SCAN = 0x0F,
     NRF_UPSTREAM_MESSAGE_STATUS = 0x80,
 } nrf_upstream_message_type_t;
 
@@ -246,6 +248,12 @@ nrf_upstream_result_t nrf_upstream_protocol_decode_sensor_refresh(
     const uint8_t *frame,
     size_t length,
     nrf_upstream_sensor_refresh_t *request);
+
+nrf_upstream_result_t nrf_upstream_protocol_encode_sensor_scan(
+    const nrf_upstream_sensor_refresh_t *request,
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_SCAN_LENGTH]);
+nrf_upstream_result_t nrf_upstream_protocol_decode_sensor_scan(
+    const uint8_t *frame, size_t length, nrf_upstream_sensor_refresh_t *request);
 
 nrf_upstream_result_t nrf_upstream_protocol_encode_height_reference(
     const nrf_upstream_height_reference_t *request,

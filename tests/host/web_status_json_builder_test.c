@@ -1037,6 +1037,23 @@ static void test_jitter_p99_nearest_rank_from_histogram(void)
     cJSON_Delete(root);
 }
 
+static void test_pod_unavailable_humidity_is_serialized(void)
+{
+    reset_fakes();
+    fill_status();
+    g_status.pods[0].environment.temperature_valid = true;
+    g_status.pods[0].environment.temperature_c = 24.25f;
+    g_status.pods[0].environment.humidity_valid = false;
+    g_status.pods[0].environment.humidity_percent = 0.0f;
+    cJSON *root = build_json(false, NULL);
+    cJSON *pod = cJSON_GetArrayItem(object_item(root, "pods"), 0);
+    cJSON *environment = object_item(pod, "environment");
+    assert(bool_item(environment, "temperature_valid"));
+    assert_number_near(number_item(environment, "temperature_c"), 24.25);
+    assert(!bool_item(environment, "humidity_valid"));
+    cJSON_Delete(root);
+}
+
 static void test_reset_reason_is_serialized(void)
 {
     reset_fakes();
@@ -1058,6 +1075,7 @@ int main(void)
     test_invalid_battery_percentage_is_not_serialized_as_zero();
     test_power_json_state_strings_remain_stable();
     test_main_status_omits_aht_humidity_when_absent();
+    test_pod_unavailable_humidity_is_serialized();
     test_policy_fault_and_snapshot_fallback();
     test_extended_cache_and_errors();
     test_storage_unavailable_is_not_reported_as_busy();

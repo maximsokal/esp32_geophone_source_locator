@@ -28,6 +28,8 @@ void nrf_sensor_upstream_runtime_zephyr_note_upstream(
 
 int nrf_sensor_upstream_runtime_zephyr_request_refresh(
     const nrf_upstream_sensor_refresh_t *request);
+int nrf_sensor_upstream_runtime_zephyr_request_scan(
+    const nrf_upstream_sensor_refresh_t *request);
 
 int nrf_sensor_upstream_runtime_zephyr_request_height_reference(
     const nrf_upstream_height_reference_t *request);
@@ -45,8 +47,10 @@ typedef struct {
     uint32_t activation_complete_generation;
     bool imu_ready;
     int32_t imu_init_result;
+    int32_t imu_state;
     bool env_ready;
     int32_t env_init_result;
+    int32_t env_state;
     nrf_logger_led_output_t logger_led_output;
     uint32_t logger_policy_invalid_count;
     uint32_t logger_policy_timestamp_anomaly_count;

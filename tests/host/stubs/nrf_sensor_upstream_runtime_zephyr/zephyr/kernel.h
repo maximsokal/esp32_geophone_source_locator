@@ -33,4 +33,5 @@ k_tid_t k_thread_create(struct k_thread *thread, void *stack, size_t stack_size,
                         void *p1, void *p2, void *p3,
                         int prio, uint32_t options, k_timeout_t delay);
 int64_t k_uptime_get(void);
+int32_t k_msleep(int32_t milliseconds);
 #endif

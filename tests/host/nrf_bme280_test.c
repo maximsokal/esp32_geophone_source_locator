@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -23,15 +24,28 @@
 typedef struct {
     uint8_t regs[2][256];
     bool respond[2];
+    /* What a silent address returns; 0 keeps the historic -2. */
+    int absent_result[2];
     /* Humidity is skipped (0x8000) when CTRL_HUM oversampling is 0 at CTRL_MEAS write. */
     bool emulate_humidity_gate;
     int transfer_count;
     int fail_at_transfer;
     uint8_t address_history[64];
     size_t address_history_count;
+    nrf_bme280_t *observed_device;
+    nrf_bme280_state_t observed_states[64];
+    nrf_bme280_state_t transitions[5];
+    size_t transition_count;
     uint32_t delays[32];
     size_t delay_count;
 } fake_bme280_bus_t;
+
+static void observe_state(void *context, nrf_bme280_state_t state)
+{
+    fake_bme280_bus_t *fake = context;
+    assert(fake->transition_count < 5U);
+    fake->transitions[fake->transition_count++] = state;
+}
 
 static int address_index(uint8_t address)
 {
@@ -56,6 +70,10 @@ static int fake_transfer(
     assert(fake != NULL);
 
     fake->transfer_count++;
+    if (fake->observed_device != NULL) {
+        assert(fake->transfer_count <= (int)(sizeof(fake->observed_states) / sizeof(fake->observed_states[0])));
+        fake->observed_states[fake->transfer_count - 1] = fake->observed_device->state;
+    }
     assert(fake->address_history_count <
            (sizeof(fake->address_history) / sizeof(fake->address_history[0])));
     fake->address_history[fake->address_history_count++] = address;
@@ -67,7 +85,7 @@ static int fake_transfer(
 
     const int index = address_index(address);
     if (index < 0 || !fake->respond[index]) {
-        return -2;
+        return index >= 0 && fake->absent_result[index] != 0 ? fake->absent_result[index] : -2;
     }
 
     uint8_t *regs = fake->regs[index];
@@ -271,6 +289,43 @@ static void test_init_distinguishes_bus_absence_from_wrong_chip(void)
     assert(device.probe[1].acked && device.probe[1].chip_id == 0x61U && device.probe[1].address == 0x77U);
 }
 
+static void test_probe_keeps_why_an_address_did_not_answer(void)
+{
+    fake_bme280_bus_t fake;
+    nrf_sensor_bus_t bus;
+    nrf_bme280_t device;
+
+    /* A timeout and a plain I/O error are different findings, and neither is "no device". */
+    memset(&fake, 0, sizeof(fake));
+    fake.absent_result[0] = -ETIMEDOUT;
+    fake.absent_result[1] = -EIO;
+    bus = make_bus(&fake);
+    assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_ERR_BUS);
+    assert(!device.probe[0].acked && device.probe[0].address == 0x76U &&
+           device.probe[0].bus_result == NRF_SENSOR_BUS_ERR_TIMEOUT);
+    assert(!device.probe[1].acked && device.probe[1].address == 0x77U &&
+           device.probe[1].bus_result == NRF_SENSOR_BUS_ERR_IO);
+
+    /* A device that answers has a clean bus result, whatever the silent address did. */
+    seed_sensor(&fake, NRF_BME280_ADDRESS_SECONDARY);
+    fake.absent_result[0] = -ETIMEDOUT;
+    bus = make_bus(&fake);
+    assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_OK);
+    assert(!device.probe[0].acked && device.probe[0].bus_result == NRF_SENSOR_BUS_ERR_TIMEOUT);
+    assert(device.probe[1].acked && device.probe[1].bus_result == NRF_SENSOR_BUS_OK);
+    assert(device.address == NRF_BME280_ADDRESS_SECONDARY);
+
+    /* Wrong chip ID is still reported as such, with both bus results clean. */
+    memset(&fake, 0, sizeof(fake));
+    fake.respond[0] = true;
+    fake.regs[0][TEST_REG_CHIP_ID] = 0x55U;
+    fake.absent_result[1] = -ETIMEDOUT;
+    bus = make_bus(&fake);
+    assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_ERR_CHIP_ID);
+    assert(device.probe[0].acked && device.probe[0].bus_result == NRF_SENSOR_BUS_OK);
+    assert(!device.probe[1].acked && device.probe[1].bus_result == NRF_SENSOR_BUS_ERR_TIMEOUT);
+}
+
 static void test_init_has_bounded_nvm_wait(void)
 {
     fake_bme280_bus_t fake;
@@ -431,14 +486,164 @@ static void test_read_restores_humidity_setup_after_sensor_reset(void)
     assert(sample.pressure_pa == 100653U);
 }
 
+static void test_state_machine_initialization_and_recovery(void)
+{
+    const uint8_t ids[] = {NRF_BMP280_CHIP_ID, NRF_BME280_CHIP_ID};
+    for (size_t model = 0; model < sizeof(ids); ++model) {
+        fake_bme280_bus_t baseline;
+        seed_sensor(&baseline, NRF_BME280_ADDRESS_PRIMARY);
+        baseline.regs[0][TEST_REG_CHIP_ID] = ids[model];
+        nrf_sensor_bus_t bus = make_bus(&baseline);
+        nrf_bme280_t device;
+        baseline.observed_device = &device;
+        assert(nrf_bme280_init_observed(&device, &bus, fake_delay_ms, &baseline,
+                                      observe_state, &baseline) == NRF_BME280_OK);
+        assert(baseline.transition_count == 4U);
+        assert(baseline.transitions[0] == NRF_BME280_PROBE);
+        assert(baseline.transitions[1] == NRF_BME280_CONFIGURE);
+        assert(baseline.transitions[2] == NRF_BME280_VERIFY);
+        assert(baseline.transitions[3] == NRF_BME280_MEASURING);
+        assert(device.state == NRF_BME280_MEASURING);
+        bool saw_probe = false, saw_configure = false, saw_verify = false;
+        for (int i = 0; i < baseline.transfer_count; ++i) {
+            saw_probe |= baseline.observed_states[i] == NRF_BME280_PROBE;
+            saw_configure |= baseline.observed_states[i] == NRF_BME280_CONFIGURE;
+            saw_verify |= baseline.observed_states[i] == NRF_BME280_VERIFY;
+        }
+        assert(saw_probe && saw_configure && saw_verify);
+        for (int failure = 1; failure <= baseline.transfer_count; ++failure) {
+            if (failure == 2) continue; /* The absent alternate address is optional. */
+            fake_bme280_bus_t fake;
+            seed_sensor(&fake, NRF_BME280_ADDRESS_PRIMARY);
+            fake.regs[0][TEST_REG_CHIP_ID] = ids[model];
+            bus = make_bus(&fake);
+            fake.observed_device = &device;
+            fake.fail_at_transfer = failure;
+            assert(nrf_bme280_init_observed(&device, &bus, fake_delay_ms, &fake,
+                                          observe_state, &fake) == NRF_BME280_ERR_BUS);
+            assert(fake.transitions[fake.transition_count - 1U] == NRF_BME280_RECOVER);
+            assert(fake.observed_states[failure - 1] == baseline.observed_states[failure - 1]);
+            assert(device.state == NRF_BME280_RECOVER && !device.initialized);
+            fake.fail_at_transfer = 0;
+            fake.transfer_count = 0;
+            fake.address_history_count = 0;
+            fake.delay_count = 0;
+            assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_OK);
+            assert(device.state == NRF_BME280_MEASURING);
+            assert(device.has_humidity == (ids[model] == NRF_BME280_CHIP_ID));
+        }
+    }
+}
+
+static void test_forced_conversion_can_be_polled_without_sleep(void)
+{
+    const uint8_t ids[] = {NRF_BMP280_CHIP_ID, NRF_BME280_CHIP_ID};
+    for (size_t model = 0; model < sizeof(ids); ++model) {
+        fake_bme280_bus_t fake;
+        seed_sensor(&fake, NRF_BME280_ADDRESS_PRIMARY);
+        fake.regs[0][TEST_REG_CHIP_ID] = ids[model];
+        pack_measurement(fake.regs[0], 415148U, 519888U, 30000U);
+        nrf_sensor_bus_t bus = make_bus(&fake);
+        nrf_bme280_t device;
+        nrf_env_sample_t sample;
+        assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_OK);
+        const size_t delays = fake.delay_count;
+        assert(nrf_bme280_start_conversion(&device, 100U) == NRF_BME280_OK);
+        assert(nrf_bme280_start_conversion(&device, 100U) == NRF_BME280_PENDING);
+        const int transactions = fake.transfer_count;
+        memset(&sample, 0xA5, sizeof(sample));
+        assert(nrf_bme280_poll_conversion(&device, 146U, &sample) == NRF_BME280_PENDING);
+        assert_sample_zero(&sample);
+        assert(fake.transfer_count == transactions);
+        assert(nrf_bme280_poll_conversion(&device, 147U, &sample) == NRF_BME280_OK);
+        assert(sample.pressure_pa == 100653U && sample.temperature_milli_c == 25080);
+        if (ids[model] == NRF_BMP280_CHIP_ID)
+            assert(sample.humidity_milli_percent == NRF_ENV_HUMIDITY_UNAVAILABLE);
+        assert(fake.delay_count == delays);
+        assert(nrf_bme280_start_conversion(&device, 160U) == NRF_BME280_OK);
+        fake.regs[0][TEST_REG_CTRL_MEAS] = 0U;
+        fake.regs[0][TEST_REG_CONFIG] = 0U;
+        assert(nrf_bme280_poll_conversion(&device, 207U, &sample) == NRF_BME280_ERR_CONFIG);
+        assert_sample_zero(&sample);
+        assert(device.state == NRF_BME280_RECOVER && !device.initialized);
+        assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_OK);
+        assert(nrf_bme280_start_conversion(&device, 200U) == NRF_BME280_OK);
+        fake.regs[0][TEST_REG_STATUS] = TEST_STATUS_MEASURING;
+        assert(nrf_bme280_poll_conversion(&device, 247U, &sample) == NRF_BME280_PENDING);
+        assert(nrf_bme280_poll_conversion(&device, 255U, &sample) == NRF_BME280_ERR_MEASUREMENT);
+        assert_sample_zero(&sample);
+        assert(!device.conversion_pending);
+        fake.regs[0][TEST_REG_STATUS] = 0U;
+        assert(nrf_bme280_start_conversion(&device, 300U) == NRF_BME280_OK);
+        fake.fail_at_transfer = fake.transfer_count + 1;
+        assert(nrf_bme280_poll_conversion(&device, 347U, &sample) == NRF_BME280_ERR_BUS);
+        assert_sample_zero(&sample);
+        assert(!device.conversion_pending);
+        assert(nrf_bme280_start_conversion(&device, UINT64_MAX) == NRF_BME280_ERR_ARGUMENT);
+    }
+}
+
+static void test_async_initialization_respects_deadline(void)
+{
+    const uint8_t ids[] = {NRF_BMP280_CHIP_ID, NRF_BME280_CHIP_ID};
+    for (size_t i = 0U; i < sizeof(ids); ++i) {
+        fake_bme280_bus_t fake;
+        seed_sensor(&fake, NRF_BME280_ADDRESS_PRIMARY);
+        fake.regs[0][TEST_REG_CHIP_ID] = ids[i];
+        nrf_sensor_bus_t bus = make_bus(&fake);
+        nrf_bme280_t device;
+        assert(nrf_bme280_begin_async(&device, &bus, observe_state, &fake) == NRF_BME280_PENDING);
+        assert(nrf_bme280_step_async(&device, 100U) == NRF_BME280_PENDING);
+        assert(nrf_bme280_step_async(&device, 100U) == NRF_BME280_PENDING);
+        const int transfers = fake.transfer_count;
+        assert(nrf_bme280_step_async(&device, 101U) == NRF_BME280_PENDING);
+        assert(fake.transfer_count == transfers && fake.delay_count == 0U);
+        assert(nrf_bme280_step_async(&device, 102U) == NRF_BME280_PENDING);
+        assert(nrf_bme280_step_async(&device, 102U) == NRF_BME280_OK);
+        assert(device.initialized && device.has_humidity == (ids[i] == NRF_BME280_CHIP_ID));
+        assert(fake.delay_count == 0U && fake.transition_count == 4U);
+        const int total_transfers = fake.transfer_count;
+        for (int failure = 1; failure <= total_transfers; ++failure) {
+            if (failure == 2) continue;
+            seed_sensor(&fake, NRF_BME280_ADDRESS_PRIMARY);
+            fake.regs[0][TEST_REG_CHIP_ID] = ids[i];
+            bus = make_bus(&fake);
+            fake.fail_at_transfer = failure;
+            assert(nrf_bme280_begin_async(&device, &bus, observe_state, &fake) == NRF_BME280_PENDING);
+            uint64_t now = 0U;
+            nrf_bme280_result_t result = NRF_BME280_PENDING;
+            for (unsigned steps = 0U; result == NRF_BME280_PENDING && steps < 20U; ++steps) {
+                if (now < device.prepare_due_ms) now = device.prepare_due_ms;
+                result = nrf_bme280_step_async(&device, now);
+            }
+            assert(result == NRF_BME280_ERR_BUS && device.state == NRF_BME280_RECOVER);
+            assert(!device.initialized && fake.delay_count == 0U);
+        }
+        seed_sensor(&fake, NRF_BME280_ADDRESS_PRIMARY);
+        bus = make_bus(&fake);
+        assert(nrf_bme280_begin_async(&device, &bus, observe_state, &fake) == NRF_BME280_PENDING);
+        assert(nrf_bme280_step_async(&device, 0U) == NRF_BME280_PENDING);
+        assert(nrf_bme280_step_async(&device, 0U) == NRF_BME280_PENDING);
+        fake.regs[0][TEST_REG_STATUS] = TEST_STATUS_IM_UPDATE;
+        for (unsigned poll = 0U; poll < 9U; ++poll)
+            assert(nrf_bme280_step_async(&device, 2U + 2U * poll) == NRF_BME280_PENDING);
+        assert(nrf_bme280_step_async(&device, 20U) == NRF_BME280_ERR_NVM);
+        assert(device.state == NRF_BME280_RECOVER);
+    }
+}
+
 int main(void)
 {
+    test_async_initialization_respects_deadline();
+    test_forced_conversion_can_be_polled_without_sleep();
+    test_state_machine_initialization_and_recovery();
     test_read_restores_humidity_setup_after_sensor_reset();
     test_pressure_to_altitude_mm_linear_approximation();
     test_init_rejects_invalid_arguments();
     test_init_detects_primary_and_configures_forced_profile();
     test_init_falls_back_to_secondary_address();
     test_init_distinguishes_bus_absence_from_wrong_chip();
+    test_probe_keeps_why_an_address_did_not_answer();
     test_init_has_bounded_nvm_wait();
     test_init_rejects_invalid_pressure_calibration();
     test_read_requires_initialized_device_and_clears_output();

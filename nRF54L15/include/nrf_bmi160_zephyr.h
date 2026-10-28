@@ -13,6 +13,10 @@ extern "C" {
  * assignment selects REMOTE. It is intentionally not a Zephyr boot device.
  */
 nrf_bmi160_result_t nrf_bmi160_zephyr_init_remote(nrf_bmi160_t *device);
+nrf_bmi160_result_t nrf_bmi160_zephyr_begin_address(nrf_bmi160_t *device, uint8_t address);
+nrf_bmi160_result_t nrf_bmi160_zephyr_step(nrf_bmi160_t *device, uint64_t now_ms);
+int nrf_bmi160_zephyr_state(void);
+void nrf_bmi160_zephyr_note_recover(void);
 
 #ifdef __cplusplus
 }

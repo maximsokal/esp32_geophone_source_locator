@@ -51,6 +51,7 @@ typedef struct {
     unsigned writes;
     unsigned height_writes;
     unsigned imu_writes;
+    unsigned scan_writes;
     unsigned discovery;
     unsigned sleeps;
     unsigned sleeps_with_bus_selected;
@@ -236,6 +237,15 @@ static esp_err_t write_imu(void *context, const nrf_upstream_imu_calibrate_t *re
     return ESP_OK;
 }
 
+static esp_err_t write_scan(void *context, const nrf_upstream_sensor_refresh_t *request)
+{
+    bus_t *bus = context;
+    assert(bus->sel == bus->ch);
+    ++bus->scan_writes;
+    bus->req = request->request_id;
+    return ESP_OK;
+}
+
 static esp_err_t read_snapshot(
     void *context,
     nrf_upstream_status_t *status_frame,
@@ -339,6 +349,7 @@ static nrf_sensor_transport_io_t make_io(bus_t *bus)
         .write_sensor_refresh = write_refresh,
         .write_height_reference = write_height,
         .write_imu_calibration = write_imu,
+        .write_sensor_scan = write_scan,
         .read_remote_snapshot = read_snapshot,
         .sleep_ms = sleep10,
         .now_ms = now_ms,
@@ -883,6 +894,26 @@ static void test_capture_still_requires_ready_assigned_identity(void)
     assert(reconcile && bus.height_writes == 0U);
 }
 
+static void test_scan_checks_identity_and_releases_mux(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    bool reconcile = false;
+    topo(&bus, &topology, 2U);
+    nrf_sensor_transport_io_t io = make_io(&bus);
+    assert(nrf_sensor_transport_request_scan(&io, &topology, 2U, 0x12345678U, &reconcile) == ESP_OK);
+    assert(!reconcile && bus.scan_writes == 1U && bus.req == 0x12345678U);
+    assert(bus.main_reads == 1U && bus.remote_reads == 1U && bus.sel == -1 && bus.close == 1U);
+    bus.remote_epoch++;
+    assert(nrf_sensor_transport_request_scan(&io, &topology, 2U, 2U, &reconcile) == ESP_ERR_INVALID_RESPONSE);
+    assert(reconcile && bus.scan_writes == 1U && bus.close == 2U && bus.sel == -1);
+    bus.remote_epoch--;
+    bus.fail_close = true;
+    assert(nrf_sensor_transport_request_scan(&io, &topology, 2U, 3U, &reconcile) == ESP_FAIL);
+    assert(reconcile && bus.scan_writes == 2U && bus.sel == -1);
+    assert(nrf_sensor_transport_request_scan(&io, &topology, 2U, 0U, &reconcile) == ESP_ERR_INVALID_ARG);
+}
+
 /*
  * The nRF needs tens of milliseconds to sample. Waiting for it must not hold
  * the mux or the shared bus owner (INA3221 and the barometer starved for it).
@@ -943,6 +974,7 @@ int main(void)
     test_sequence_can_reset_after_new_assignment_epoch();
     test_sticky_last_request_result_does_not_block_capture();
     test_capture_still_requires_ready_assigned_identity();
+    test_scan_checks_identity_and_releases_mux();
     test_bus_is_released_while_waiting_for_the_nrf();
     test_reselect_failure_after_wait_is_a_transport_error();
     return 0;

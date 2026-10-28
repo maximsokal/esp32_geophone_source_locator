@@ -95,6 +95,15 @@ static void test_humidity_above_hundred_is_clamped(void)
     assert(values.humidity_valid && values.humidity_percent == 100.0f);
 }
 
+static void test_bmp280_humidity_is_unavailable(void)
+{
+    nrf_remote_sensor_cache_t cache = make_cache(NRF_UPSTREAM_SENSOR_VALID_ENV, 0U);
+    cache.sensor.humidity_milli_percent = UINT32_MAX;
+    const app_pod_status_sensor_values_t values = app_pod_status_bridge_compute_sensor_values(&cache);
+    assert(values.temperature_valid && near(values.temperature_c, 24.25f));
+    assert(!values.humidity_valid && values.humidity_percent == 0.0f);
+}
+
 int main(void)
 {
     test_null_stale_or_unanswered_cache_gives_nothing();
@@ -102,5 +111,6 @@ int main(void)
     test_faulted_domain_is_not_published();
     test_calibrated_gyro_subtracts_the_stored_bias();
     test_humidity_above_hundred_is_clamped();
+    test_bmp280_humidity_is_unavailable();
     return 0;
 }

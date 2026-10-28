@@ -667,3 +667,48 @@ done:
     }
     return err;
 }
+
+esp_err_t nrf_sensor_transport_request_scan(
+    const nrf_sensor_transport_io_t *io, const nrf_topology_snapshot_t *topology,
+    uint8_t channel, uint32_t request_id, bool *request_topology_reconcile)
+{
+    nrf_upstream_status_t status = {0};
+    const nrf_topology_node_snapshot_t *remote;
+    esp_err_t err;
+    if (io == NULL || topology == NULL || request_topology_reconcile == NULL ||
+        channel >= NRF_TOPOLOGY_REMOTE_COUNT || request_id == 0U ||
+        io->mux_select == NULL || io->mux_close == NULL || io->read_status == NULL ||
+        io->write_sensor_scan == NULL) return ESP_ERR_INVALID_ARG;
+    *request_topology_reconcile = false;
+    remote = &topology->remotes[channel];
+    if (topology->stale || topology->bus_busy || !topology->tca_available || topology->tca_fault ||
+        remote->state != NRF_TOPOLOGY_NODE_ASSIGNED ||
+        (topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED && topology->main.state != NRF_TOPOLOGY_NODE_ABSENT)) {
+        *request_topology_reconcile = topology->tca_fault || remote->state == NRF_TOPOLOGY_NODE_ASSIGNED;
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (io->abort_requested != NULL && io->abort_requested(io->context)) return ESP_ERR_INVALID_STATE;
+    err = io->mux_select(io->context, channel);
+    if (err == ESP_OK && topology->main.state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+        err = io->read_status(io->context, NRF_UPSTREAM_ADDRESS_MAIN, &status);
+        if (err == ESP_OK && !status_matches_node(&status, &topology->main, NRF_UPSTREAM_ROLE_MAIN))
+            err = ESP_ERR_INVALID_RESPONSE;
+    }
+    if (err == ESP_OK) {
+        memset(&status, 0, sizeof(status));
+        err = io->read_status(io->context, NRF_UPSTREAM_ADDRESS_REMOTE, &status);
+        if (err == ESP_OK && !status_matches_node(&status, remote, NRF_UPSTREAM_ROLE_REMOTE))
+            err = ESP_ERR_INVALID_RESPONSE;
+    }
+    if (err == ESP_OK) {
+        const nrf_upstream_sensor_refresh_t request = {.request_id = request_id};
+        err = io->write_sensor_scan(io->context, &request);
+    }
+    if (err != ESP_OK) *request_topology_reconcile = true;
+    const esp_err_t close_err = io->mux_close(io->context);
+    if (close_err != ESP_OK) {
+        *request_topology_reconcile = true;
+        return close_err;
+    }
+    return err;
+}

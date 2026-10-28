@@ -671,6 +671,16 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
         if(result!=NRF_UPSTREAM_RESULT_OK)transaction_result=(int32_t)result;
         goto record_transaction;
     }
+    if(ptr!=NULL&&len>3U&&ptr[3]==NRF_UPSTREAM_MESSAGE_SENSOR_SCAN){
+        result=nrf_upstream_protocol_decode_sensor_scan(ptr,(size_t)len,&sensor_request);
+        if(result==NRF_UPSTREAM_RESULT_OK){
+            transaction_result=nrf_sensor_upstream_runtime_zephyr_request_scan(&sensor_request);
+            if(transaction_result!=0)nrf_log_runtime_zephyr_append_event(
+                NRF_LOG_EVENT_SENSOR_SCAN_DONE,sensor_request.request_id,(uint32_t)transaction_result);
+        }
+        else { nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_TWIS_INVALID_FRAME,ptr[3],(uint32_t)result); transaction_result=(int32_t)result; }
+        goto record_transaction;
+    }
     if(ptr!=NULL&&len>3U&&ptr[3]==NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE){
         result=nrf_upstream_protocol_decode_height_reference(ptr,(size_t)len,&height_reference_request);
         if(result==NRF_UPSTREAM_RESULT_OK)transaction_result=nrf_sensor_upstream_runtime_zephyr_request_height_reference(&height_reference_request);

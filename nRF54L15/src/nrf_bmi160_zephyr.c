@@ -1,11 +1,27 @@
 #include "nrf_bmi160_zephyr.h"
 
+#include <stdatomic.h>
 #include <zephyr/kernel.h>
 #if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
 #include <zephyr/sys/printk.h>
 #endif
 
 #include "nrf_sensor_bus_zephyr.h"
+
+static atomic_int s_state = -1;
+
+static void bmi160_observe_state(void *context, nrf_bmi160_state_t state)
+{
+    (void)context;
+    atomic_store(&s_state, (int)state);
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+    static const char *const names[] = {"PROBE", "CONFIGURE", "VERIFY", "MEASURING", "RECOVER"};
+    printk("sensor_state: BMI160 %s\n", names[state]);
+#endif
+}
+
+int nrf_bmi160_zephyr_state(void) { return atomic_load(&s_state); }
+void nrf_bmi160_zephyr_note_recover(void) { bmi160_observe_state(NULL, NRF_BMI160_RECOVER); }
 
 static void nrf_bmi160_zephyr_delay_ms(
     void *context,
@@ -40,6 +56,29 @@ static void bmi160_report(uint8_t address, nrf_bmi160_result_t result, uint8_t c
 }
 #endif
 
+nrf_bmi160_result_t nrf_bmi160_zephyr_begin_address(nrf_bmi160_t *device, uint8_t address)
+{
+    nrf_sensor_bus_t bus = {0};
+    if (device == NULL) return NRF_BMI160_ERR_ARGUMENT;
+    if (!nrf_sensor_bus_zephyr_init_private(&bus)) {
+        device->initialized = false;
+        device->state = NRF_BMI160_RECOVER;
+        nrf_bmi160_zephyr_note_recover();
+        return NRF_BMI160_ERR_BUS;
+    }
+    return nrf_bmi160_begin_async(device, &bus, address, bmi160_observe_state, NULL);
+}
+
+nrf_bmi160_result_t nrf_bmi160_zephyr_step(nrf_bmi160_t *device, uint64_t now_ms)
+{
+    const nrf_bmi160_result_t result = nrf_bmi160_step_async(device, now_ms);
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+    if (result != NRF_BMI160_PENDING && device != NULL)
+        bmi160_report(device->address, result, device->chip_id);
+#endif
+    return result;
+}
+
 nrf_bmi160_result_t nrf_bmi160_zephyr_init_remote(nrf_bmi160_t *device)
 {
     static const uint8_t addresses[] = {NRF_BMI160_DEFAULT_ADDRESS, NRF_BMI160_ALTERNATE_ADDRESS};
@@ -51,16 +90,21 @@ nrf_bmi160_result_t nrf_bmi160_zephyr_init_remote(nrf_bmi160_t *device)
         return NRF_BMI160_ERR_ARGUMENT;
     }
     if (!nrf_sensor_bus_zephyr_init_private(&bus)) {
+        device->initialized = false;
+        device->state = NRF_BMI160_RECOVER;
+        nrf_bmi160_zephyr_note_recover();
         return NRF_BMI160_ERR_BUS;
     }
 
     /* The GY-BMI160 sits on 0x68 (SA0 low) or 0x69 (SA0 high): try both and say what each one did. */
     for (size_t i = 0U; i < sizeof(addresses); ++i) {
-        const nrf_bmi160_result_t result = nrf_bmi160_init(
+        const nrf_bmi160_result_t result = nrf_bmi160_init_observed(
             &attempt,
             &bus,
             addresses[i],
             nrf_bmi160_zephyr_delay_ms,
+            NULL,
+            bmi160_observe_state,
             NULL);
 #if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
         bmi160_report(addresses[i], result, attempt.chip_id);

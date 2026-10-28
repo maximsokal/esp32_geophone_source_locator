@@ -89,6 +89,8 @@ typedef struct {
     bool cs_status_request_valid;
     unsigned status_reads;
     unsigned sensor_refreshes;
+    unsigned sensor_scans;
+    uint32_t sensor_scan_id;
     unsigned cs_execute_writes;
     unsigned cs_status_reads;
     /* The real nRF keeps a copy of the response it last handed out and serves read windows from it. */
@@ -941,6 +943,13 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
         }
         return ESP_OK;
     }
+    if (data_len == NRF_UPSTREAM_PROTOCOL_SENSOR_SCAN_LENGTH && data[3] == NRF_UPSTREAM_MESSAGE_SENSOR_SCAN) {
+        nrf_upstream_sensor_refresh_t request;
+        assert(nrf_upstream_protocol_decode_sensor_scan(data, data_len, &request) == NRF_UPSTREAM_RESULT_OK);
+        node->sensor_scan_id = request.request_id;
+        ++node->sensor_scans;
+        return ESP_OK;
+    }
     if (data_len == NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH) {
         nrf_upstream_sensor_refresh_t request;
         assert(nrf_upstream_protocol_decode_sensor_refresh(data, data_len, &request) == NRF_UPSTREAM_RESULT_OK);
@@ -1563,6 +1572,76 @@ static void test_imu_calibration_worker_dispatch_and_v3_cache(void)
            (uint8_t)((1U << 2U) | (1U << 5U)));
     assert(s_imu_calibration_requested_generation == 0xBEEFU);
     assert(s_imu_calibration_writes == 2U);
+}
+
+static uint32_t s_requested_scan_id;
+static void request_scan_from_handler(void)
+{
+    uint32_t ignored = 0U;
+    assert(nrf_topology_service_request_sensor_scan(8U, &ignored) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_request_sensor_scan(2U, NULL) == ESP_ERR_INVALID_ARG);
+    assert(nrf_topology_service_request_sensor_scan(4U, &ignored) == ESP_ERR_INVALID_STATE);
+    assert(nrf_topology_service_request_sensor_scan(2U, &s_requested_scan_id) == ESP_OK);
+    assert(s_requested_scan_id != 0U && s_nodes[1].sensor_scans == 0U);
+    bool pending = false;
+    esp_err_t dispatch_result = ESP_FAIL;
+    assert(nrf_topology_service_get_sensor_scan_dispatch(s_requested_scan_id, &pending, &dispatch_result) == ESP_OK);
+    assert(pending);
+    assert(nrf_topology_service_request_sensor_scan(5U, &ignored) == ESP_ERR_INVALID_STATE);
+}
+
+static void assert_scan_dispatched(void)
+{
+    bool pending = true;
+    esp_err_t result = ESP_FAIL;
+    assert(nrf_topology_service_get_sensor_scan_dispatch(s_requested_scan_id, &pending, &result) == ESP_OK);
+    assert(!pending && result == ESP_OK);
+}
+
+static void request_scan_then_disconnect(void)
+{
+    assert(nrf_topology_service_request_sensor_scan(2U, &s_requested_scan_id) == ESP_OK);
+    s_nodes[1].present = false;
+}
+
+static void assert_scan_dispatch_failed(void)
+{
+    bool pending = true;
+    esp_err_t result = ESP_OK;
+    assert(nrf_topology_service_get_sensor_scan_dispatch(s_requested_scan_id, &pending, &result) == ESP_OK);
+    assert(!pending && result != ESP_OK);
+}
+
+static void test_scan_worker_dispatches_only_to_selected_remote(void)
+{
+    reset_world();
+    s_tca_present = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    node_boot(&s_nodes[1], 2U, 0x22U);
+    node_boot(&s_nodes[2], 5U, 0x33U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_scan_from_handler);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_scan_dispatched);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_nodes[1].sensor_scans == 1U && s_nodes[1].sensor_scan_id == s_requested_scan_id);
+    assert(s_nodes[2].sensor_scans == 0U && s_collisions == 0U && s_tca_control == 0U);
+}
+
+static void test_scan_dispatch_failure_is_reported(void)
+{
+    reset_world();
+    s_tca_present = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    node_boot(&s_nodes[1], 2U, 0x22U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_scan_then_disconnect);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_scan_dispatch_failed);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_nodes[1].sensor_scans == 0U && s_tca_control == 0U);
 }
 
 static void capture_cs(void)
@@ -3702,6 +3781,8 @@ int main(void)
     test_height_calibration_worker_queue_and_generation_wrap();
     test_height_calibration_without_remotes();
     test_imu_calibration_worker_dispatch_and_v3_cache();
+    test_scan_worker_dispatches_only_to_selected_remote();
+    test_scan_dispatch_failure_is_reported();
     test_without_tca_only_main_is_managed();
     test_nrf_target_devices_tolerate_scl_stretching();
     test_stack_phase_tracking_and_cs_cycle_path();

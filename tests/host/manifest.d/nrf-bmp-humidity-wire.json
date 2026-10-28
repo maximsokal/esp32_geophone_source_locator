@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "nrf_bmp_humidity_wire",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "components/device_status_pod_bridge/app_pod_status_sensor_values_policy.c",
+        "tests/host/nrf_bmp_humidity_wire_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/seismic_recorder_start",
+        "nRF54L15/include",
+        "components/device_status_pod_bridge/include",
+        "components/nrf_topology_service/include"
+      ],
+      "libraries": ["m"]
+    }
+  ]
+}

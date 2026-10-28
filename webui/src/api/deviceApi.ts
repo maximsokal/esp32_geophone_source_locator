@@ -38,6 +38,9 @@ export interface ApiRequestOptions {
 export interface ControlResult {
   ok: boolean;
   action: string;
+  request_id?: number;
+  pending?: boolean;
+  dispatch_error?: number;
   object_id?: string;
   bytes?: number;
   id?: string;

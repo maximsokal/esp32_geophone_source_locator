@@ -53,6 +53,8 @@ static esp_err_t s_height_capture_result;
 static uint8_t s_height_capture_channel_mask;
 static uint16_t s_height_capture_generation;
 static unsigned s_height_capture_calls;
+static unsigned s_sensor_scan_calls;
+static uint8_t s_sensor_scan_channel;
 static unsigned s_height_capture_wire_sends;
 static uint16_t s_main_capture_generation;
 static unsigned s_main_capture_calls;
@@ -67,6 +69,8 @@ static workflow_snapshot_t s_workflow_snapshot;
 
 static void reset_fakes(void)
 {
+    s_sensor_scan_calls = 0U;
+    s_sensor_scan_channel = 0U;
     memset(&s_saved_location, 0, sizeof(s_saved_location));
     s_location_calls = 0U;
     s_cache_invalidations = 0U;
@@ -183,6 +187,22 @@ esp_err_t nrf_topology_service_request_height_reference_capture(
         *requested_generation = s_height_capture_generation;
     }
     return s_height_capture_result;
+}
+
+esp_err_t nrf_topology_service_request_sensor_scan(uint8_t channel, uint32_t *request_id)
+{
+    ++s_sensor_scan_calls;
+    s_sensor_scan_channel = channel;
+    *request_id = 1234U;
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_get_sensor_scan_dispatch(uint32_t request_id, bool *pending, esp_err_t *result)
+{
+    if (request_id != 1234U) return ESP_ERR_NOT_FOUND;
+    *pending = false;
+    *result = ESP_FAIL;
+    return ESP_OK;
 }
 
 esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
@@ -1515,6 +1535,28 @@ int main(void)
     test_calibrate_heights_rejects_active_measurements();
     test_calibrate_heights_rejects_no_remotes();
     test_calibrate_heights_queues_channel_mask_without_bus_io();
+    {
+        char response[512] = {0};
+        reset_fakes();
+        httpd_req_t request = make_request("{\"action\":\"scan_remote_sensors\",\"channel\":2}", response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(s_sensor_scan_calls == 1U && s_sensor_scan_channel == 2U);
+        cJSON *body = cJSON_Parse(response);
+        assert(body != NULL && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(body, "ok")));
+        assert(cJSON_GetObjectItemCaseSensitive(body, "request_id")->valueint == 1234);
+        cJSON_Delete(body);
+        request = make_request("{\"action\":\"sensor_scan_dispatch\",\"request_id\":1234}", response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        body = cJSON_Parse(response);
+        assert(body != NULL && cJSON_GetObjectItemCaseSensitive(body, "pending") != NULL &&
+               !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(body, "pending")));
+        assert(cJSON_GetObjectItemCaseSensitive(body, "dispatch_error")->valueint == ESP_FAIL);
+        cJSON_Delete(body);
+        request = make_request("{\"action\":\"scan_remote_sensors\",\"channel\":2.5}", response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(s_sensor_scan_calls == 1U);
+        assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+    }
     test_phone_location_handler_round_trip();
     test_phone_location_handler_rejects_negative_capture_time();
     test_phone_location_handler_rejects_unrepresentable_capture_time();

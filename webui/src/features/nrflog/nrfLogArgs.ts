@@ -3,6 +3,7 @@ import type { I18nKey } from '../../i18n';
 
 type ArgumentSpec =
   | { kind: 'number' | 'hex' | 'signed'; labelKey: I18nKey }
+  | { kind: 'addresses'; labelKey: I18nKey; base: number }
   | { kind: 'enum'; labelKey: I18nKey; values: Readonly<Record<number, I18nKey>> };
 
 type EventName = (typeof NRF_LOG_EVENTS)[keyof typeof NRF_LOG_EVENTS]['name'];
@@ -55,6 +56,7 @@ const NRF_UPSTREAM_MESSAGE_ASSIGN = 0x01;
 const NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH = 0x02;
 const NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE = 0x05;
 const NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE = 0x06;
+const NRF_UPSTREAM_MESSAGE_SENSOR_SCAN = 0x0F;
 const NRF_UPSTREAM_MESSAGE_STATUS = 0x80;
 const NRF_CS_CONTROL_MESSAGE_EXECUTE = 0x03;
 const NRF_CS_CONTROL_MESSAGE_STATUS_REQUEST = 0x04;
@@ -74,6 +76,7 @@ const upstreamMessageTypes = new Set([
   NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH,
   NRF_UPSTREAM_MESSAGE_HEIGHT_REFERENCE,
   NRF_UPSTREAM_MESSAGE_IMU_CALIBRATE,
+  NRF_UPSTREAM_MESSAGE_SENSOR_SCAN,
   NRF_UPSTREAM_MESSAGE_STATUS,
 ]);
 
@@ -182,11 +185,38 @@ export const NRF_LOG_ARG_FORMATS = {
     enumeration(key('logger_source'), loggerLatchSources),
     enumeration(key('logger_severity'), loggerLatchSeverities),
   ],
+  SENSOR_SCAN_WORD0: [hex(key('request_id')), { kind: 'addresses', labelKey: key('scan_addresses'), base: 0 }],
+  SENSOR_SCAN_WORD1: [hex(key('request_id')), { kind: 'addresses', labelKey: key('scan_addresses'), base: 32 }],
+  SENSOR_SCAN_WORD2: [hex(key('request_id')), { kind: 'addresses', labelKey: key('scan_addresses'), base: 64 }],
+  SENSOR_SCAN_WORD3: [hex(key('request_id')), { kind: 'addresses', labelKey: key('scan_addresses'), base: 96 }],
+  SENSOR_SCAN_DONE: [hex(key('request_id')), { kind: 'signed', labelKey: key('scan_result') }],
+  // arg1 is unpacked by formatBusFault(); the spec only names the field.
+  SENSOR_BUS_FAULT: [
+    enumeration(key('sensor'), { 1: key('sensor.bmi160'), 2: key('sensor.bme280') }),
+    number(key('bus_fault')),
+  ],
 } as const satisfies Record<EventName, readonly [ArgumentSpec, ArgumentSpec]>;
+
+// nRF54L15/include/nrf_sensor_bus.h: nrf_sensor_bus_fault_pack() layout (bits 8-15 cause, 24-26 line levels).
+const busFaultCauses = {
+  1: key('bus_cause.timeout'),
+  2: key('bus_cause.io'),
+  3: key('bus_cause.other'),
+} as const;
+
+const busFaultLines = {
+  released: key('bus_lines.released'),
+  sdaLow: key('bus_lines.sda_low'),
+  sclLow: key('bus_lines.scl_low'),
+  bothLow: key('bus_lines.both_low'),
+  unknown: key('bus_lines.unknown'),
+} as const;
 
 export const NRF_LOG_ARG_I18N_KEYS: readonly I18nKey[] = (() => {
   const keys = new Set<I18nKey>([key('arg0'), key('arg1'), key('raw_values'), key('unknown_value')]);
   keys.add(key('decoder_rejected'));
+  for (const labelKey of ['bus_address', 'bus_cause', 'bus_errno', 'bus_lines', 'bus_failures']) keys.add(key(labelKey));
+  for (const valueKey of [...Object.values(busFaultCauses), ...Object.values(busFaultLines)]) keys.add(valueKey);
   for (const valueKey of [...Object.values(logErrors), ...Object.values(upstreamResults)]) keys.add(valueKey);
   for (const [first, second] of Object.values(NRF_LOG_ARG_FORMATS)) {
     for (const spec of [first, second]) {
@@ -210,6 +240,12 @@ function formatArgument(spec: ArgumentSpec, value: number): FormattedArgument {
   if (spec.kind === 'enum') {
     return { labelKey: spec.labelKey, valueKey: spec.values[rawValue] ?? key('unknown_value'), raw: rawValue };
   }
+  if (spec.kind === 'addresses') {
+    const addresses = Array.from({ length: 32 }, (_, bit) => bit)
+      .filter((bit) => (rawValue & (2 ** bit)) !== 0)
+      .map((bit) => `0x${(spec.base + bit).toString(16).toUpperCase().padStart(2, '0')}`);
+    return { labelKey: spec.labelKey, valueText: addresses.join(', ') || '—', raw: rawValue };
+  }
   return {
     labelKey: spec.labelKey,
     valueText: spec.kind === 'hex' ? formatHex(rawValue) : String(spec.kind === 'signed' ? rawValue | 0 : rawValue),
@@ -231,6 +267,31 @@ function formatDecoderError(messageType: number, result: number): FormattedArgum
   return formatArgument(number(key('decoder_error')), result);
 }
 
+function formatBusFault(value: number): FormattedArgument[] {
+  const raw = asUint32(value);
+  const cause = (raw >>> 8) & 0xff;
+  if (!(cause in busFaultCauses)) {
+    return [{ labelKey: key('bus_fault'), valueKey: key('unknown_value'), raw }];
+  }
+  const address = raw & 0xff;
+  const errno = (raw >>> 16) & 0xff;
+  const lines = (raw >>> 24) & 0x07; // bit 0 SDA high, bit 1 SCL high, bit 2 levels valid
+  const sdaHigh = (lines & 0x01) !== 0;
+  const sclHigh = (lines & 0x02) !== 0;
+  const linesKey = (lines & 0x04) === 0
+    ? busFaultLines.unknown
+    : sdaHigh && sclHigh ? busFaultLines.released
+      : !sdaHigh && !sclHigh ? busFaultLines.bothLow
+        : sdaHigh ? busFaultLines.sclLow : busFaultLines.sdaLow;
+  return [
+    { labelKey: key('bus_address'), valueText: `0x${address.toString(16).toUpperCase().padStart(2, '0')}`, raw: address },
+    { labelKey: key('bus_cause'), valueKey: busFaultCauses[cause as keyof typeof busFaultCauses], raw: cause },
+    { labelKey: key('bus_errno'), valueText: String(errno), raw: errno },
+    { labelKey: key('bus_lines'), valueKey: linesKey, raw: lines },
+    { labelKey: key('bus_failures'), valueText: String(raw >>> 27), raw: raw >>> 27 },
+  ];
+}
+
 export function formatEventArgs(eventNameOrId: string | number, arg0: number, arg1: number): FormattedArgument[] {
   const eventName = typeof eventNameOrId === 'number'
     ? NRF_LOG_EVENTS[asUint32(eventNameOrId) as keyof typeof NRF_LOG_EVENTS]?.name
@@ -246,6 +307,9 @@ export function formatEventArgs(eventNameOrId: string | number, arg0: number, ar
   }
   if (eventName === 'TWIS_INVALID_FRAME') {
     return [formatArgument(specs[0], arg0), formatDecoderError(arg0, arg1)];
+  }
+  if (eventName === 'SENSOR_BUS_FAULT') {
+    return [formatArgument(specs[0], arg0), ...formatBusFault(arg1)];
   }
   return [formatArgument(specs[0], arg0), formatArgument(specs[1], arg1)];
 }

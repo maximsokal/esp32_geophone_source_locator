@@ -24,4 +24,10 @@ export const NRF_LOG_EVENTS = {
   22: { name: "WATCHDOG_FEED_FAILED", subsystem: "WATCHDOG", defaultSeverity: "ERROR" },
   23: { name: "SENSOR_INIT_FAILED", subsystem: "SENSOR", defaultSeverity: "ERROR" },
   24: { name: "LOGGER_LATCH", subsystem: "LOG", defaultSeverity: "WARN" },
+  25: { name: "SENSOR_SCAN_WORD0", subsystem: "SENSOR", defaultSeverity: "INFO" },
+  26: { name: "SENSOR_SCAN_WORD1", subsystem: "SENSOR", defaultSeverity: "INFO" },
+  27: { name: "SENSOR_SCAN_WORD2", subsystem: "SENSOR", defaultSeverity: "INFO" },
+  28: { name: "SENSOR_SCAN_WORD3", subsystem: "SENSOR", defaultSeverity: "INFO" },
+  29: { name: "SENSOR_SCAN_DONE", subsystem: "SENSOR", defaultSeverity: "INFO" },
+  30: { name: "SENSOR_BUS_FAULT", subsystem: "SENSOR", defaultSeverity: "ERROR" },
 } as const;

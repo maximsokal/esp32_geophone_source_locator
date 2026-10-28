@@ -33,6 +33,12 @@ typedef enum {
  * WATCHDOG_DEGRADED         watchdog arm-failure stage                raw errno
  * WATCHDOG_FEED_FAILED      watchdog channel id                       raw feed error
  * SENSOR_INIT_FAILED        sensor bit (1 BMI160, 2 BME280)           signed driver init result as uint32
+ * SENSOR_SCAN_WORD0..3      scan request id                           32-bit address bitmap, word 0 covers 0x00..0x1f
+ * SENSOR_SCAN_DONE          scan request id                           count or negative errno as uint32
+ * SENSOR_BUS_FAULT          sensor bit (1 BMI160, 2 BME280)           nrf_sensor_bus_fault_pack(): bits 0-7 address,
+ *                           8-15 cause (1 TIMEOUT, 2 IO, 3 other), 16-23 errno magnitude, 24 SDA high, 25 SCL high,
+ *                           26 line levels valid, 27-31 failure count (saturated at 31); sent right after
+ *                           SENSOR_INIT_FAILED for the worst failed transfer of that sensor's addresses
  * LOGGER_LATCH              nrf_logger_led_source_t of the latch    nrf_logger_led_severity_t (1 WARNING, 2 ERROR, 3 FATAL)
  *                           (the record's own boot id and uptime say when and in which boot the LED latched;
  *                           the record severity is the event class WARN, arg1 carries the latched severity)

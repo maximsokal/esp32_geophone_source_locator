@@ -13,6 +13,10 @@ extern "C" {
  * invoke it only after runtime role assignment selects REMOTE.
  */
 nrf_bme280_result_t nrf_bme280_zephyr_init_remote(nrf_bme280_t *device);
+nrf_bme280_result_t nrf_bme280_zephyr_begin_remote(nrf_bme280_t *device);
+nrf_bme280_result_t nrf_bme280_zephyr_step(nrf_bme280_t *device, uint64_t now_ms);
+int nrf_bme280_zephyr_state(void);
+void nrf_bme280_zephyr_note_recover(void);
 
 #ifdef __cplusplus
 }

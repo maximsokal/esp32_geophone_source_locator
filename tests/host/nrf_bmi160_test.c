@@ -28,9 +28,20 @@ typedef struct {
     int fail_at_transfer;
     bool emulate_pmu;
     uint8_t last_address;
+    nrf_bmi160_t *observed_device;
+    nrf_bmi160_state_t observed_states[32];
+    nrf_bmi160_state_t transitions[5];
+    size_t transition_count;
     uint32_t delays[16];
     size_t delay_count;
 } fake_bmi160_bus_t;
+
+static void observe_state(void *context, nrf_bmi160_state_t state)
+{
+    fake_bmi160_bus_t *fake = context;
+    assert(fake->transition_count < 5U);
+    fake->transitions[fake->transition_count++] = state;
+}
 
 static int fake_transfer(
     void *context,
@@ -44,6 +55,10 @@ static int fake_transfer(
     assert(fake != NULL);
 
     fake->transfer_count++;
+    if (fake->observed_device != NULL) {
+        assert(fake->transfer_count <= (int)(sizeof(fake->observed_states) / sizeof(fake->observed_states[0])));
+        fake->observed_states[fake->transfer_count - 1] = fake->observed_device->state;
+    }
     fake->last_address = address;
     if (fake->fail_at_transfer > 0 &&
         fake->transfer_count == fake->fail_at_transfer) {
@@ -341,6 +356,7 @@ static void test_read_detects_suspended_sensor_instead_of_returning_zero_motion(
     assert(nrf_bmi160_read_imu(&device, &sample) == NRF_BMI160_ERR_PMU);
     assert_sample_zero(&sample);
     assert(!device.initialized);
+    assert(device.state == NRF_BMI160_RECOVER);
     assert(nrf_bmi160_read_imu(&device, &sample) ==
            NRF_BMI160_ERR_NOT_INITIALIZED);
 
@@ -356,8 +372,98 @@ static void test_read_detects_suspended_sensor_instead_of_returning_zero_motion(
     assert(sample.accel_mg[0] == 1000);
 }
 
+static void test_state_machine_initialization_and_recovery(void)
+{
+    fake_bmi160_bus_t baseline;
+    seed_sensor(&baseline);
+    nrf_sensor_bus_t bus = make_bus(&baseline);
+    nrf_bmi160_t device;
+    baseline.observed_device = &device;
+    assert(nrf_bmi160_init_observed(&device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
+                           fake_delay_ms, &baseline, observe_state, &baseline) == NRF_BMI160_OK);
+    assert(baseline.transition_count == 4U);
+    assert(baseline.transitions[0] == NRF_BMI160_PROBE);
+    assert(baseline.transitions[1] == NRF_BMI160_CONFIGURE);
+    assert(baseline.transitions[2] == NRF_BMI160_VERIFY);
+    assert(baseline.transitions[3] == NRF_BMI160_MEASURING);
+    assert(device.state == NRF_BMI160_MEASURING);
+    bool saw_probe = false, saw_configure = false, saw_verify = false;
+    for (int i = 0; i < baseline.transfer_count; ++i) {
+        saw_probe |= baseline.observed_states[i] == NRF_BMI160_PROBE;
+        saw_configure |= baseline.observed_states[i] == NRF_BMI160_CONFIGURE;
+        saw_verify |= baseline.observed_states[i] == NRF_BMI160_VERIFY;
+    }
+    assert(saw_probe && saw_configure && saw_verify);
+
+    for (int failure = 1; failure <= baseline.transfer_count; ++failure) {
+        fake_bmi160_bus_t fake;
+        seed_sensor(&fake);
+        bus = make_bus(&fake);
+        fake.observed_device = &device;
+        fake.fail_at_transfer = failure;
+        assert(nrf_bmi160_init_observed(&device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
+                               fake_delay_ms, &fake, observe_state, &fake) == NRF_BMI160_ERR_BUS);
+        assert(fake.transitions[fake.transition_count - 1U] == NRF_BMI160_RECOVER);
+        assert(fake.observed_states[failure - 1] == baseline.observed_states[failure - 1]);
+        assert(device.state == NRF_BMI160_RECOVER && !device.initialized);
+        fake.fail_at_transfer = 0;
+        fake.transfer_count = 0;
+        fake.delay_count = 0;
+        assert(nrf_bmi160_init(&device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
+                               fake_delay_ms, &fake) == NRF_BMI160_OK);
+        assert(device.state == NRF_BMI160_MEASURING);
+    }
+}
+
+static void test_async_initialization_respects_deadlines(void)
+{
+    fake_bmi160_bus_t fake;
+    seed_sensor(&fake);
+    nrf_sensor_bus_t bus = make_bus(&fake);
+    nrf_bmi160_t device;
+    uint64_t now = 100U;
+    assert(nrf_bmi160_begin_async(&device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
+                                  observe_state, &fake) == NRF_BMI160_PENDING);
+    assert(nrf_bmi160_step_async(&device, now) == NRF_BMI160_PENDING);
+    assert(nrf_bmi160_step_async(&device, now) == NRF_BMI160_PENDING);
+    const int transfers = fake.transfer_count;
+    assert(nrf_bmi160_step_async(&device, now) == NRF_BMI160_PENDING);
+    assert(fake.transfer_count == transfers && fake.delay_count == 0U);
+    nrf_bmi160_result_t result = NRF_BMI160_PENDING;
+    for (unsigned steps = 0U; result == NRF_BMI160_PENDING && steps < 20U; ++steps) {
+        if (now < device.prepare_due_ms) now = device.prepare_due_ms;
+        result = nrf_bmi160_step_async(&device, now);
+    }
+    assert(result == NRF_BMI160_OK && device.initialized);
+    assert(now == 190U && fake.delay_count == 0U);
+    assert(fake.transition_count == 4U && fake.transitions[3] == NRF_BMI160_MEASURING);
+    const int total_transfers = fake.transfer_count;
+    for (int failure = 1; failure <= total_transfers; ++failure) {
+        seed_sensor(&fake);
+        fake.fail_at_transfer = failure;
+        assert(nrf_bmi160_begin_async(&device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
+                                      observe_state, &fake) == NRF_BMI160_PENDING);
+        now = 0U;
+        result = NRF_BMI160_PENDING;
+        for (unsigned steps = 0U; result == NRF_BMI160_PENDING && steps < 20U; ++steps) {
+            if (now < device.prepare_due_ms) now = device.prepare_due_ms;
+            result = nrf_bmi160_step_async(&device, now);
+        }
+        assert(result == NRF_BMI160_ERR_BUS && device.state == NRF_BMI160_RECOVER);
+        assert(!device.initialized && fake.delay_count == 0U);
+    }
+    seed_sensor(&fake);
+    fake.fail_at_transfer = 1;
+    assert(nrf_bmi160_begin_async(&device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
+                                  observe_state, &fake) == NRF_BMI160_PENDING);
+    assert(nrf_bmi160_step_async(&device, 0U) == NRF_BMI160_ERR_BUS);
+    assert(device.state == NRF_BMI160_RECOVER && fake.transitions[1] == NRF_BMI160_RECOVER);
+}
+
 int main(void)
 {
+    test_async_initialization_respects_deadlines();
+    test_state_machine_initialization_and_recovery();
     test_read_detects_suspended_sensor_instead_of_returning_zero_motion();
     test_init_rejects_invalid_arguments();
     test_init_configures_expected_runtime_profile();

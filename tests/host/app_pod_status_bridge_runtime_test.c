@@ -539,6 +539,7 @@ static void test_cycle_publishes_measured_temperature_humidity_and_gyro(void)
     configure_sensor(1U, true, true, false, 0U, 0);
     configure_sensor(2U, true, true, true, 100200U, 0);
     s_sensor_cache[2].sensor.env_temperature_milli_c = -5500;
+    s_sensor_cache[2].sensor.humidity_milli_percent = UINT32_MAX;
     s_sensor_cache[3].topology_current = false;
 
     app_pod_status_bridge_publish_cycle();
@@ -550,6 +551,7 @@ static void test_cycle_publishes_measured_temperature_humidity_and_gyro(void)
     assert(s_gyros[0].valid && s_gyros[0].rate_dps > 4.999f && s_gyros[0].rate_dps < 5.001f);
     assert(!s_environments[1].temperature_valid && !s_gyros[1].valid);
     assert(s_environments[2].temperature_valid && s_environments[2].temperature_c == -5.5f);
+    assert(!s_environments[2].humidity_valid && s_environments[2].humidity_percent == 0.0f);
     assert(!s_gyros[2].valid);
     assert(!s_environments[3].temperature_valid && !s_gyros[3].valid);
 }

@@ -6,6 +6,7 @@ const api = vi.hoisted(() => ({
   fetchNrfLogs: vi.fn(),
   createRequestOwner: vi.fn(),
   retireRequestOwner: vi.fn(),
+  sendControl: vi.fn(),
   actualApi: null as unknown,
 }));
 vi.mock('../../src/api/deviceApi', async (importOriginal) => {
@@ -18,6 +19,7 @@ vi.mock('../../src/api/deviceApi', async (importOriginal) => {
     fetchNrfLogs: api.fetchNrfLogs,
     createRequestOwner: api.createRequestOwner,
     retireRequestOwner: api.retireRequestOwner,
+    sendControl: api.sendControl,
   };
 });
 
@@ -89,6 +91,7 @@ beforeEach(() => {
     clearTimeout: (id: number) => globalThis.clearTimeout(id),
   });
   api.fetchNrfLogs.mockReset().mockResolvedValue(okPage([]));
+  api.sendControl.mockReset().mockResolvedValue({ ok: true, action: 'scan_remote_sensors', request_id: 1234 });
   const actual = api.actualApi as typeof import('../../src/api/deviceApi');
   api.createRequestOwner.mockClear().mockImplementation(() => actual.createRequestOwner());
   api.retireRequestOwner.mockClear().mockImplementation((owner: object) => actual.retireRequestOwner(owner));
@@ -107,6 +110,34 @@ afterEach(() => {
 });
 
 describe('nRF log panel', () => {
+  it('queues a scan for the selected remote and shows its request ID', async () => {
+    const view = await mount();
+    const button = view.root.findAllByType('button').find((item) => text(item) === en['nrf_log.panel.scan']);
+    expect(button).toBeDefined();
+    await act(async () => { button!.props.onClick(); });
+    expect(api.sendControl).toHaveBeenCalledWith('scan_remote_sensors', { channel: 2 });
+    expect(text(view.root)).toContain('Scan request 1234 queued');
+  });
+
+  it('reports scan admission failure', async () => {
+    api.sendControl.mockRejectedValueOnce(new Error('offline'));
+    const view = await mount();
+    const button = view.root.findAllByType('button').find((item) => text(item) === en['nrf_log.panel.scan']);
+    await act(async () => { button!.props.onClick(); });
+    expect(text(view.root)).toContain(en['nrf_log.panel.scan_failed']);
+  });
+
+  it('reports a later ESP32 dispatch failure', async () => {
+    api.sendControl.mockResolvedValueOnce({ ok: true, request_id: 1234 })
+      .mockResolvedValueOnce({ ok: true, pending: false, dispatch_error: -1 });
+    const view = await mount();
+    const button = view.root.findAllByType('button').find((item) => text(item) === en['nrf_log.panel.scan']);
+    await act(async () => { button!.props.onClick(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(api.sendControl).toHaveBeenLastCalledWith('sensor_scan_dispatch', { request_id: 1234 });
+    expect(text(view.root)).toContain(en['nrf_log.panel.scan_failed']);
+  });
+
   it('pages forward with the opaque next token and replaces records on reset', async () => {
     const first = sample({ token: 'opaque/first', event_id: 1 });
     const second = sample({ token: 'opaque/second', seq: 2, event_id: 6 });

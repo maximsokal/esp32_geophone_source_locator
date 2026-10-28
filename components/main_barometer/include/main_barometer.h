@@ -47,6 +47,14 @@ typedef struct {
     int32_t aht20_temperature_mc;
 } main_barometer_reading_t;
 
+typedef enum {
+    MAIN_BMP280_PROBE = 0,
+    MAIN_BMP280_CONFIGURE,
+    MAIN_BMP280_VERIFY,
+    MAIN_BMP280_MEASURING,
+    MAIN_BMP280_RECOVER,
+} main_bmp280_state_t;
+
 typedef struct {
     sensor_bus_handles_t handles;
     i2c_bus_device_handle_t bmp280;
@@ -67,9 +75,9 @@ typedef struct {
     uint8_t bmp280_yield_polls;
     /* Normal mode never produced data: each poll runs one forced conversion instead. */
     bool bmp280_forced;
+    main_bmp280_state_t bmp280_state;
     bool bmp280_initialized;
     bool aht20_initialized;
-    bool bmp280_probe_required;
     bool bme280;
     bool aht20_probe_required;
     bool aht20_attempted;

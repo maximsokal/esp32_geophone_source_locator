@@ -32,6 +32,9 @@ static void nrf_remote_sensor_prepare_imu(
     if (runtime->imu_ready) {
         return;
     }
+    if (ops->now_ms < runtime->imu_retry_after_ms) {
+        return;
+    }
 
     nrf_remote_sensor_runtime_clear_source(&runtime->sources, true);
     if (ops->init_imu == NULL || ops->read_imu == NULL) {
@@ -40,11 +43,16 @@ static void nrf_remote_sensor_prepare_imu(
     }
 
     runtime->imu_init_result = ops->init_imu(ops->imu_context);
+    if (runtime->imu_init_result == NRF_REMOTE_SENSOR_INIT_PENDING) return;
     runtime->imu_read_failures = 0U;
     if (runtime->imu_init_result == 0) {
+        runtime->imu_retry_after_ms = 0U;
         runtime->sources.read_imu = ops->read_imu;
         runtime->sources.imu_context = ops->imu_context;
         runtime->imu_ready = true;
+    } else {
+        runtime->imu_retry_after_ms = ops->now_ms > UINT64_MAX - NRF_REMOTE_SENSOR_RETRY_MS
+            ? UINT64_MAX : ops->now_ms + NRF_REMOTE_SENSOR_RETRY_MS;
     }
 }
 
@@ -55,6 +63,9 @@ static void nrf_remote_sensor_prepare_env(
     if (runtime->env_ready) {
         return;
     }
+    if (ops->now_ms < runtime->env_retry_after_ms) {
+        return;
+    }
 
     nrf_remote_sensor_runtime_clear_source(&runtime->sources, false);
     if (ops->init_env == NULL || ops->read_env == NULL) {
@@ -63,11 +74,16 @@ static void nrf_remote_sensor_prepare_env(
     }
 
     runtime->env_init_result = ops->init_env(ops->env_context);
+    if (runtime->env_init_result == NRF_REMOTE_SENSOR_INIT_PENDING) return;
     runtime->env_read_failures = 0U;
     if (runtime->env_init_result == 0) {
+        runtime->env_retry_after_ms = 0U;
         runtime->sources.read_env = ops->read_env;
         runtime->sources.env_context = ops->env_context;
         runtime->env_ready = true;
+    } else {
+        runtime->env_retry_after_ms = ops->now_ms > UINT64_MAX - NRF_REMOTE_SENSOR_RETRY_MS
+            ? UINT64_MAX : ops->now_ms + NRF_REMOTE_SENSOR_RETRY_MS;
     }
 }
 
@@ -89,6 +105,14 @@ static void nrf_remote_sensor_runtime_track_read(
     }
     if (*failures >= NRF_REMOTE_SENSOR_REINIT_AFTER_FAILURES) {
         *ready_flag = false;
+    }
+}
+
+void nrf_remote_sensor_runtime_note_imu_read(nrf_remote_sensor_runtime_t *runtime, bool faulted)
+{
+    if (runtime != NULL) {
+        nrf_remote_sensor_runtime_track_read(runtime->imu_ready, faulted,
+                                            &runtime->imu_read_failures, &runtime->imu_ready);
     }
 }
 
@@ -136,11 +160,8 @@ nrf_sensor_snapshot_result_t nrf_remote_sensor_runtime_refresh(
     if (result == NRF_SENSOR_SNAPSHOT_OK ||
         result == NRF_SENSOR_SNAPSHOT_PARTIAL ||
         result == NRF_SENSOR_SNAPSHOT_ERR_NO_DATA) {
-        nrf_remote_sensor_runtime_track_read(
-            runtime->imu_ready,
-            (runtime->snapshot.fault_mask & NRF_SENSOR_VALID_IMU) != 0U,
-            &runtime->imu_read_failures,
-            &runtime->imu_ready);
+        nrf_remote_sensor_runtime_note_imu_read(
+            runtime, (runtime->snapshot.fault_mask & NRF_SENSOR_VALID_IMU) != 0U);
         nrf_remote_sensor_runtime_track_read(
             runtime->env_ready,
             (runtime->snapshot.fault_mask & NRF_SENSOR_VALID_ENV) != 0U,

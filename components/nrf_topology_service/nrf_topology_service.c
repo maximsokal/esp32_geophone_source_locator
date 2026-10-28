@@ -198,6 +198,11 @@ static uint16_t s_height_reference_generation = 0U;
 static bool s_imu_calibration_pending = false;
 static uint8_t s_imu_calibration_pending_mask = 0U;
 static uint16_t s_imu_calibration_pending_generation = 0U;
+static bool s_sensor_scan_pending = false;
+static uint8_t s_sensor_scan_channel;
+static uint32_t s_sensor_scan_request_id;
+static uint32_t s_sensor_scan_next_id;
+static esp_err_t s_sensor_scan_dispatch_result;
 static nrf_topology_snapshot_t s_snapshot;
 static nrf_remote_sensor_cache_t s_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static nrf_upstream_status_cache_t s_main_status_cache;
@@ -302,6 +307,7 @@ static void service_clear_current_task(void)
     s_imu_calibration_pending = false;
     s_imu_calibration_pending_mask = 0U;
     s_imu_calibration_pending_generation = 0U;
+    s_sensor_scan_pending = false;
     portEXIT_CRITICAL(&s_state_lock);
 }
 
@@ -416,7 +422,7 @@ static bool service_has_immediate_work(void)
     pending = s_cs_request_pending || (!cs_active &&
         (s_topology_refresh_requested ||
          (sensor_snapshot_usable && s_sensor_pending_mask != 0U) ||
-         s_height_reference_pending || s_imu_calibration_pending));
+         s_height_reference_pending || s_imu_calibration_pending || s_sensor_scan_pending));
     portEXIT_CRITICAL(&s_state_lock);
     return pending;
 }
@@ -1285,6 +1291,19 @@ static esp_err_t platform_write_sensor_refresh(
         sizeof(frame), frame);
     return platform_normalize_transfer_error(
         platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
+}
+
+static esp_err_t platform_write_sensor_scan(
+    void *context, const nrf_upstream_sensor_refresh_t *request)
+{
+    nrf_topology_platform_t *platform = context;
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_SCAN_LENGTH];
+    if (platform == NULL || request == NULL || platform->remote_device == NULL ||
+        nrf_upstream_protocol_encode_sensor_scan(request, frame) != NRF_UPSTREAM_RESULT_OK)
+        return ESP_ERR_INVALID_ARG;
+    const esp_err_t err = platform_i2c_write_bytes(
+        platform, platform->remote_device, NRF_UPSTREAM_ADDRESS_REMOTE, sizeof(frame), frame);
+    return platform_normalize_transfer_error(platform, NRF_UPSTREAM_ADDRESS_REMOTE, err);
 }
 
 static esp_err_t platform_write_height_reference(
@@ -2426,6 +2445,8 @@ static void service_process_imu_calibration_mask(
     const nrf_topology_snapshot_t *snapshot,
     uint8_t mask,
     uint16_t generation);
+static void service_process_sensor_scan(nrf_topology_platform_t *platform,
+                                        const nrf_topology_snapshot_t *snapshot);
 
 static bool cs_node_present(const nrf_topology_snapshot_t *snapshot, nrf_cs_node_id_t node)
 {
@@ -3447,6 +3468,8 @@ static void service_worker(void *context)
                     imu_calibration_generation);
             }
 
+            service_process_sensor_scan(&worker->platform, &worker->snapshot);
+
             const uint8_t sensor_mask = service_take_sensor_mask();
             if (sensor_mask != 0U) {
                 service_process_sensor_mask(
@@ -3522,6 +3545,7 @@ static void service_worker(void *context)
 
 esp_err_t nrf_topology_service_start(void)
 {
+    const uint32_t scan_seed = esp_random();
     portENTER_CRITICAL(&s_state_lock);
     if (s_stop_requested) {
         portEXIT_CRITICAL(&s_state_lock);
@@ -3545,6 +3569,9 @@ esp_err_t nrf_topology_service_start(void)
     s_imu_calibration_pending = false;
     s_imu_calibration_pending_mask = 0U;
     s_imu_calibration_pending_generation = 0U;
+    s_sensor_scan_pending = false;
+    s_sensor_scan_next_id = scan_seed;
+    if (s_sensor_scan_next_id == 0U) s_sensor_scan_next_id = 1U;
     s_cs_request_pending = false;
     s_cs_request_is_ranging = false;
     s_cs_request_is_autonomous = false;
@@ -3648,6 +3675,7 @@ void nrf_topology_service_stop(void)
     s_imu_calibration_pending = false;
     s_imu_calibration_pending_mask = 0U;
     s_imu_calibration_pending_generation = 0U;
+    s_sensor_scan_pending = false;
     s_cs_request_pending = false;
     s_cs_request_is_ranging = false;
     s_cs_request_is_autonomous = false;
@@ -3723,6 +3751,42 @@ esp_err_t nrf_topology_service_request_sensor_refresh(uint8_t channel)
     if (task != NULL && queued) {
         (void)xTaskNotifyGive(task);
     }
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_request_sensor_scan(uint8_t channel, uint32_t *request_id)
+{
+    TaskHandle_t task;
+    if (channel >= NRF_TOPOLOGY_REMOTE_COUNT || request_id == NULL) return ESP_ERR_INVALID_ARG;
+    portENTER_CRITICAL(&s_state_lock);
+    task = s_task;
+    if (task == NULL || !s_snapshot_valid || s_snapshot.stale || s_snapshot.bus_busy ||
+        s_sensor_scan_pending || s_snapshot.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_sensor_scan_pending = true;
+    s_sensor_scan_dispatch_result = ESP_OK;
+    s_sensor_scan_channel = channel;
+    s_sensor_scan_request_id = s_sensor_scan_next_id++;
+    if (s_sensor_scan_next_id == 0U) s_sensor_scan_next_id = 1U;
+    *request_id = s_sensor_scan_request_id;
+    portEXIT_CRITICAL(&s_state_lock);
+    (void)xTaskNotifyGive(task);
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_get_sensor_scan_dispatch(uint32_t request_id, bool *pending, esp_err_t *result)
+{
+    if (request_id == 0U || pending == NULL || result == NULL) return ESP_ERR_INVALID_ARG;
+    portENTER_CRITICAL(&s_state_lock);
+    if (request_id != s_sensor_scan_request_id || s_task == NULL) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_NOT_FOUND;
+    }
+    *pending = s_sensor_scan_pending;
+    *result = s_sensor_scan_dispatch_result;
+    portEXIT_CRITICAL(&s_state_lock);
     return ESP_OK;
 }
 
@@ -4520,6 +4584,35 @@ static bool service_take_imu_calibration_request(uint8_t *mask, uint16_t *genera
     }
     portEXIT_CRITICAL(&s_state_lock);
     return pending;
+}
+
+static void service_process_sensor_scan(nrf_topology_platform_t *platform,
+                                        const nrf_topology_snapshot_t *snapshot)
+{
+    uint8_t channel;
+    uint32_t request_id;
+    portENTER_CRITICAL(&s_state_lock);
+    if (!s_sensor_scan_pending) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return;
+    }
+    channel = s_sensor_scan_channel;
+    request_id = s_sensor_scan_request_id;
+    portEXIT_CRITICAL(&s_state_lock);
+    const nrf_sensor_transport_io_t io = {
+        .context = platform, .mux_select = platform_mux_select, .mux_close = platform_mux_close,
+        .read_status = platform_read_status, .write_sensor_scan = platform_write_sensor_scan,
+        .abort_requested = platform_abort_requested,
+    };
+    bool reconcile = false;
+    const esp_err_t err = nrf_sensor_transport_request_scan(&io, snapshot, channel, request_id, &reconcile);
+    if (err != ESP_OK) ESP_LOGW(TAG, "sensor scan failed channel=%u request=%lu: %s",
+                                (unsigned)channel, (unsigned long)request_id, esp_err_to_name(err));
+    if (reconcile) service_request_topology_refresh_from_worker();
+    portENTER_CRITICAL(&s_state_lock);
+    s_sensor_scan_dispatch_result = err;
+    s_sensor_scan_pending = false;
+    portEXIT_CRITICAL(&s_state_lock);
 }
 
 static void service_process_height_reference_mask(

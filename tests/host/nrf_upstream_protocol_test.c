@@ -278,6 +278,21 @@ static void test_sensor_refresh_layout_and_validation(void)
     assert(nrf_upstream_protocol_encode_sensor_refresh(&request, frame) == NRF_UPSTREAM_RESULT_REQUEST_ID_INVALID);
 }
 
+static void test_sensor_scan_layout_and_validation(void)
+{
+    nrf_upstream_sensor_refresh_t request = {.request_id = 1234U}, decoded = {0};
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_SCAN_LENGTH];
+    assert(nrf_upstream_protocol_encode_sensor_scan(&request, frame) == NRF_UPSTREAM_RESULT_OK);
+    assert(frame[3] == NRF_UPSTREAM_MESSAGE_SENSOR_SCAN);
+    assert(nrf_upstream_protocol_decode_sensor_scan(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_OK);
+    assert(decoded.request_id == request.request_id);
+    assert(nrf_upstream_protocol_decode_sensor_refresh(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_UNSUPPORTED_TYPE);
+    frame[6] ^= 1U;
+    assert(nrf_upstream_protocol_decode_sensor_scan(frame, sizeof(frame), &decoded) == NRF_UPSTREAM_RESULT_BAD_CRC);
+    request.request_id = 0U;
+    assert(nrf_upstream_protocol_encode_sensor_scan(&request, frame) == NRF_UPSTREAM_RESULT_REQUEST_ID_INVALID);
+}
+
 static void refresh_read_window_crc(uint8_t frame[NRF_UPSTREAM_PROTOCOL_READ_WINDOW_LENGTH])
 {
     uint16_t crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 10U);
@@ -776,6 +791,7 @@ int main(void)
     test_assign_field_validation();
     test_status_exact_layout();
     test_sensor_refresh_layout_and_validation();
+    test_sensor_scan_layout_and_validation();
     test_read_window_exact_layout_and_roundtrip();
     test_read_window_decode_rejects_invalid_input();
     test_height_reference_codec();

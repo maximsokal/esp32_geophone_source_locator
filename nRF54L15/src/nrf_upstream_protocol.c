@@ -425,9 +425,9 @@ nrf_upstream_result_t nrf_upstream_protocol_decode_status(
     return NRF_UPSTREAM_RESULT_OK;
 }
 
-nrf_upstream_result_t nrf_upstream_protocol_encode_sensor_refresh(
+static nrf_upstream_result_t encode_sensor_request(
     const nrf_upstream_sensor_refresh_t *request,
-    uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH])
+    uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH], uint8_t type)
 {
     uint16_t crc;
 
@@ -441,7 +441,7 @@ nrf_upstream_result_t nrf_upstream_protocol_encode_sensor_refresh(
     memset(frame, 0, NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH);
     write_header(
         frame,
-        NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH,
+        type,
         NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH,
         request->request_id);
     crc = nrf_upstream_protocol_crc16_ccitt_false(frame, 10U);
@@ -449,10 +449,10 @@ nrf_upstream_result_t nrf_upstream_protocol_encode_sensor_refresh(
     return NRF_UPSTREAM_RESULT_OK;
 }
 
-nrf_upstream_result_t nrf_upstream_protocol_decode_sensor_refresh(
+static nrf_upstream_result_t decode_sensor_request(
     const uint8_t *frame,
     size_t length,
-    nrf_upstream_sensor_refresh_t *request)
+    nrf_upstream_sensor_refresh_t *request, uint8_t type)
 {
     uint16_t expected_crc;
     uint16_t actual_crc;
@@ -474,7 +474,7 @@ nrf_upstream_result_t nrf_upstream_protocol_decode_sensor_refresh(
     if (frame[2] != NRF_UPSTREAM_PROTOCOL_VERSION) {
         return NRF_UPSTREAM_RESULT_UNSUPPORTED_VERSION;
     }
-    if (frame[3] != NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH) {
+    if (frame[3] != type) {
         return NRF_UPSTREAM_RESULT_UNSUPPORTED_TYPE;
     }
 
@@ -484,6 +484,30 @@ nrf_upstream_result_t nrf_upstream_protocol_decode_sensor_refresh(
         return NRF_UPSTREAM_RESULT_REQUEST_ID_INVALID;
     }
     return NRF_UPSTREAM_RESULT_OK;
+}
+
+nrf_upstream_result_t nrf_upstream_protocol_encode_sensor_refresh(
+    const nrf_upstream_sensor_refresh_t *request, uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_REFRESH_LENGTH])
+{
+    return encode_sensor_request(request, frame, NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH);
+}
+
+nrf_upstream_result_t nrf_upstream_protocol_decode_sensor_refresh(
+    const uint8_t *frame, size_t length, nrf_upstream_sensor_refresh_t *request)
+{
+    return decode_sensor_request(frame, length, request, NRF_UPSTREAM_MESSAGE_SENSOR_REFRESH);
+}
+
+nrf_upstream_result_t nrf_upstream_protocol_encode_sensor_scan(
+    const nrf_upstream_sensor_refresh_t *request, uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_SCAN_LENGTH])
+{
+    return encode_sensor_request(request, frame, NRF_UPSTREAM_MESSAGE_SENSOR_SCAN);
+}
+
+nrf_upstream_result_t nrf_upstream_protocol_decode_sensor_scan(
+    const uint8_t *frame, size_t length, nrf_upstream_sensor_refresh_t *request)
+{
+    return decode_sensor_request(frame, length, request, NRF_UPSTREAM_MESSAGE_SENSOR_SCAN);
 }
 
 nrf_upstream_result_t nrf_upstream_protocol_encode_height_reference(

@@ -93,132 +93,136 @@ static int32_t bmi160_temperature_milli_c(int16_t raw)
     return 23000 + (int32_t)(rounded / INT64_C(512));
 }
 
-nrf_bmi160_result_t nrf_bmi160_init(
+nrf_bmi160_result_t nrf_bmi160_init_observed(
     nrf_bmi160_t *device,
     const nrf_sensor_bus_t *bus,
     uint8_t address,
     nrf_bmi160_delay_ms_fn delay_ms,
-    void *delay_context)
+    void *delay_context,
+    nrf_bmi160_state_observer_fn observer,
+    void *observer_context)
+{
+    if (delay_ms == NULL) return NRF_BMI160_ERR_ARGUMENT;
+    nrf_bmi160_result_t result = nrf_bmi160_begin_async(device, bus, address, observer, observer_context);
+    if (result == NRF_BMI160_PENDING) {
+        device->delay_ms = delay_ms;
+        device->delay_context = delay_context;
+    }
+    uint64_t now_ms = 0U;
+    while (result == NRF_BMI160_PENDING) {
+        result = nrf_bmi160_step_async(device, now_ms);
+        if (result == NRF_BMI160_PENDING && device->prepare_due_ms > now_ms) {
+            const uint32_t delay = (uint32_t)(device->prepare_due_ms - now_ms);
+            delay_ms(delay_context, delay);
+            now_ms = device->prepare_due_ms;
+        }
+    }
+    return result;
+}
+
+nrf_bmi160_result_t nrf_bmi160_init(
+    nrf_bmi160_t *device, const nrf_sensor_bus_t *bus, uint8_t address,
+    nrf_bmi160_delay_ms_fn delay_ms, void *delay_context)
+{
+    return nrf_bmi160_init_observed(device, bus, address, delay_ms, delay_context, NULL, NULL);
+}
+
+nrf_bmi160_result_t nrf_bmi160_begin_async(
+    nrf_bmi160_t *device, const nrf_sensor_bus_t *bus, uint8_t address,
+    nrf_bmi160_state_observer_fn observer, void *observer_context)
+{
+    if (device == NULL || bus == NULL || bus->transfer == NULL ||
+        !nrf_sensor_bus_is_valid_address(address)) return NRF_BMI160_ERR_ARGUMENT;
+    *device = (nrf_bmi160_t){.bus = *bus, .address = address, .state = NRF_BMI160_PROBE,
+                              .observer = observer, .observer_context = observer_context};
+    if (observer != NULL) observer(observer_context, device->state);
+    return NRF_BMI160_PENDING;
+}
+
+nrf_bmi160_result_t nrf_bmi160_step_async(nrf_bmi160_t *device, uint64_t now_ms)
 {
     uint8_t value = 0U;
-    uint8_t config[4] = {0};
-    nrf_bmi160_result_t result;
+    nrf_bmi160_result_t result = NRF_BMI160_OK;
+    uint32_t delay = 0U;
+    if (device == NULL) return NRF_BMI160_ERR_ARGUMENT;
+    if (device->state == NRF_BMI160_MEASURING) return NRF_BMI160_OK;
+    if (device->state == NRF_BMI160_RECOVER) return NRF_BMI160_ERR_NOT_INITIALIZED;
+    if (now_ms < device->prepare_due_ms) return NRF_BMI160_PENDING;
+    if (device->state == NRF_BMI160_PROBE) {
+        result = bmi160_read_regs(device, BMI160_REG_CHIP_ID, &value, 1U);
+        if (result != NRF_BMI160_OK) goto failed_async;
+        device->chip_id = value;
+        if (value != NRF_BMI160_CHIP_ID) { result = NRF_BMI160_ERR_CHIP_ID; goto failed_async; }
+        device->state = NRF_BMI160_CONFIGURE;
+        if (device->observer != NULL) device->observer(device->observer_context, device->state);
+        return NRF_BMI160_PENDING;
+    }
+    if (device->state == NRF_BMI160_VERIFY) {
+        uint8_t config[4] = {0};
+        result = bmi160_read_regs(device, BMI160_REG_ACCEL_CONFIG, config, sizeof(config));
+        if (result != NRF_BMI160_OK) goto failed_async;
+        if (config[0] != BMI160_ACCEL_CONFIG_100HZ_NORMAL || config[1] != BMI160_ACCEL_RANGE_2G ||
+            config[2] != BMI160_GYRO_CONFIG_100HZ_NORMAL || config[3] != BMI160_GYRO_RANGE_250DPS) {
+            result = NRF_BMI160_ERR_CONFIG; goto failed_async;
+        }
+        device->initialized = true;
+        device->state = NRF_BMI160_MEASURING;
+        if (device->observer != NULL) device->observer(device->observer_context, device->state);
+        return NRF_BMI160_OK;
+    }
+    if (device->state != NRF_BMI160_CONFIGURE) return NRF_BMI160_ERR_NOT_INITIALIZED;
+    switch (device->prepare_phase) {
+    case 0:
+        result = bmi160_write_reg(device, BMI160_REG_CMD, BMI160_CMD_SOFT_RESET);
+        delay = BMI160_SOFT_RESET_DELAY_MS;
+        break;
+    case 1:
+        result = bmi160_read_regs(device, BMI160_REG_CHIP_ID, &value, 1U);
+        if (result != NRF_BMI160_OK) break;
+        device->chip_id = value;
+        if (value != NRF_BMI160_CHIP_ID) { result = NRF_BMI160_ERR_CHIP_ID; break; }
+        result = bmi160_write_reg(device, BMI160_REG_CMD, BMI160_CMD_ACCEL_NORMAL);
+        delay = BMI160_ACCEL_NORMAL_DELAY_MS;
+        break;
+    case 2:
+        result = bmi160_write_reg(device, BMI160_REG_CMD, BMI160_CMD_GYRO_NORMAL);
+        delay = BMI160_GYRO_NORMAL_DELAY_MS;
+        break;
+    case 3:
+        result = bmi160_read_regs(device, BMI160_REG_PMU_STATUS, &value, 1U);
+        if (result != NRF_BMI160_OK) break;
+        if ((value & (BMI160_PMU_ACCEL_MASK | BMI160_PMU_GYRO_MASK)) !=
+            (BMI160_PMU_ACCEL_NORMAL | BMI160_PMU_GYRO_NORMAL)) { result = NRF_BMI160_ERR_PMU; break; }
+        result = bmi160_write_reg(device, BMI160_REG_ACCEL_CONFIG, BMI160_ACCEL_CONFIG_100HZ_NORMAL);
+        delay = BMI160_WRITE_SETTLE_DELAY_MS;
+        break;
+    case 4:
+        result = bmi160_write_reg(device, BMI160_REG_ACCEL_RANGE, BMI160_ACCEL_RANGE_2G);
+        delay = BMI160_WRITE_SETTLE_DELAY_MS;
+        break;
+    case 5:
+        result = bmi160_write_reg(device, BMI160_REG_GYRO_CONFIG, BMI160_GYRO_CONFIG_100HZ_NORMAL);
+        delay = BMI160_WRITE_SETTLE_DELAY_MS;
+        break;
+    case 6:
+        result = bmi160_write_reg(device, BMI160_REG_GYRO_RANGE, BMI160_GYRO_RANGE_250DPS);
+        delay = BMI160_WRITE_SETTLE_DELAY_MS;
+        break;
+    default:
+        device->state = NRF_BMI160_VERIFY;
+        if (device->observer != NULL) device->observer(device->observer_context, device->state);
+        return NRF_BMI160_PENDING;
+    }
+    if (result != NRF_BMI160_OK) goto failed_async;
+    ++device->prepare_phase;
+    device->prepare_due_ms = now_ms > UINT64_MAX - delay ? UINT64_MAX : now_ms + delay;
+    return NRF_BMI160_PENDING;
 
-    if (device == NULL || bus == NULL || bus->transfer == NULL ||
-        delay_ms == NULL || !nrf_sensor_bus_is_valid_address(address)) {
-        return NRF_BMI160_ERR_ARGUMENT;
-    }
-
-    *device = (nrf_bmi160_t){
-        .bus = *bus,
-        .delay_ms = delay_ms,
-        .delay_context = delay_context,
-        .address = address,
-        .initialized = false,
-    };
-
-    /*
-     * Read the id first: the soft reset below is a write, and a write must not go to a device that is not a
-     * BMI160 (another part answering on 0x68/0x69 would take 0xB6 as a register value).
-     */
-    result = bmi160_read_regs(device, BMI160_REG_CHIP_ID, &value, 1U);
-    if (result != NRF_BMI160_OK) {
-        return result;
-    }
-    device->chip_id = value;
-    if (value != NRF_BMI160_CHIP_ID) {
-        return NRF_BMI160_ERR_CHIP_ID;
-    }
-
-    result = bmi160_write_reg(device, BMI160_REG_CMD, BMI160_CMD_SOFT_RESET);
-    if (result != NRF_BMI160_OK) {
-        return result;
-    }
-    device->delay_ms(device->delay_context, BMI160_SOFT_RESET_DELAY_MS);
-
-    result = bmi160_read_regs(device, BMI160_REG_CHIP_ID, &value, 1U);
-    if (result != NRF_BMI160_OK) {
-        return result;
-    }
-    device->chip_id = value;
-    if (value != NRF_BMI160_CHIP_ID) {
-        return NRF_BMI160_ERR_CHIP_ID;
-    }
-
-    result = bmi160_write_reg(device, BMI160_REG_CMD, BMI160_CMD_ACCEL_NORMAL);
-    if (result != NRF_BMI160_OK) {
-        return result;
-    }
-    device->delay_ms(device->delay_context, BMI160_ACCEL_NORMAL_DELAY_MS);
-
-    result = bmi160_write_reg(device, BMI160_REG_CMD, BMI160_CMD_GYRO_NORMAL);
-    if (result != NRF_BMI160_OK) {
-        return result;
-    }
-    device->delay_ms(device->delay_context, BMI160_GYRO_NORMAL_DELAY_MS);
-
-    result = bmi160_read_regs(device, BMI160_REG_PMU_STATUS, &value, 1U);
-    if (result != NRF_BMI160_OK) {
-        return result;
-    }
-    if ((value & (BMI160_PMU_ACCEL_MASK | BMI160_PMU_GYRO_MASK)) !=
-        (BMI160_PMU_ACCEL_NORMAL | BMI160_PMU_GYRO_NORMAL)) {
-        return NRF_BMI160_ERR_PMU;
-    }
-
-    result = bmi160_write_reg(
-        device,
-        BMI160_REG_ACCEL_CONFIG,
-        BMI160_ACCEL_CONFIG_100HZ_NORMAL);
-    if (result != NRF_BMI160_OK) {
-        return result;
-    }
-    device->delay_ms(device->delay_context, BMI160_WRITE_SETTLE_DELAY_MS);
-
-    result = bmi160_write_reg(
-        device,
-        BMI160_REG_ACCEL_RANGE,
-        BMI160_ACCEL_RANGE_2G);
-    if (result != NRF_BMI160_OK) {
-        return result;
-    }
-    device->delay_ms(device->delay_context, BMI160_WRITE_SETTLE_DELAY_MS);
-
-    result = bmi160_write_reg(
-        device,
-        BMI160_REG_GYRO_CONFIG,
-        BMI160_GYRO_CONFIG_100HZ_NORMAL);
-    if (result != NRF_BMI160_OK) {
-        return result;
-    }
-    device->delay_ms(device->delay_context, BMI160_WRITE_SETTLE_DELAY_MS);
-
-    result = bmi160_write_reg(
-        device,
-        BMI160_REG_GYRO_RANGE,
-        BMI160_GYRO_RANGE_250DPS);
-    if (result != NRF_BMI160_OK) {
-        return result;
-    }
-    device->delay_ms(device->delay_context, BMI160_WRITE_SETTLE_DELAY_MS);
-
-    result = bmi160_read_regs(
-        device,
-        BMI160_REG_ACCEL_CONFIG,
-        config,
-        sizeof(config));
-    if (result != NRF_BMI160_OK) {
-        return result;
-    }
-    if (config[0] != BMI160_ACCEL_CONFIG_100HZ_NORMAL ||
-        config[1] != BMI160_ACCEL_RANGE_2G ||
-        config[2] != BMI160_GYRO_CONFIG_100HZ_NORMAL ||
-        config[3] != BMI160_GYRO_RANGE_250DPS) {
-        return NRF_BMI160_ERR_CONFIG;
-    }
-
-    device->initialized = true;
-    return NRF_BMI160_OK;
+failed_async:
+    device->initialized = false;
+    device->state = NRF_BMI160_RECOVER;
+    if (device->observer != NULL) device->observer(device->observer_context, device->state);
+    return result;
 }
 
 int nrf_bmi160_read_imu(void *context, nrf_imu_sample_t *sample)
@@ -233,7 +237,7 @@ int nrf_bmi160_read_imu(void *context, nrf_imu_sample_t *sample)
     }
 
     *sample = (nrf_imu_sample_t){0};
-    if (!device->initialized) {
+    if (!device->initialized || device->state != NRF_BMI160_MEASURING) {
         return NRF_BMI160_ERR_NOT_INITIALIZED;
     }
 
@@ -249,6 +253,7 @@ int nrf_bmi160_read_imu(void *context, nrf_imu_sample_t *sample)
     if ((pmu_status & (BMI160_PMU_ACCEL_MASK | BMI160_PMU_GYRO_MASK)) !=
         (BMI160_PMU_ACCEL_NORMAL | BMI160_PMU_GYRO_NORMAL)) {
         device->initialized = false;
+        device->state = NRF_BMI160_RECOVER;
         return NRF_BMI160_ERR_PMU;
     }
 
