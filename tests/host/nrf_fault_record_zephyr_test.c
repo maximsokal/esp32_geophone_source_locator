@@ -1,16 +1,20 @@
 #include <assert.h>
 #include <setjmp.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <cmsis_core.h>
 #include <zephyr/fatal.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/sys/printk.h>
 
 #include "nrf_fault_record.h"
 #include "nrf_fault_record_zephyr.h"
+#include "nrf_reboot_intent_zephyr.h"
 #include "nrf_log_events.h"
 
 #define TEST_EVENT_CAPACITY 21U
@@ -29,6 +33,19 @@ static uint32_t s_reset_cause = 0xA5A55A5AU;
 static jmp_buf s_reboot;
 static struct test_event s_events[TEST_EVENT_CAPACITY];
 static size_t s_event_count;
+static unsigned s_printk_calls;
+static char s_printk_text[160];
+
+int printk(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    const int length = vsnprintf(s_printk_text, sizeof(s_printk_text), format, args);
+    va_end(args);
+    assert(length >= 0 && (size_t)length < sizeof(s_printk_text));
+    ++s_printk_calls;
+    return length;
+}
 
 void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf);
 
@@ -108,8 +125,40 @@ static nrf_fault_record_t report_and_decode_pending(void)
     return record;
 }
 
+static void test_reboot_intent_is_reported_once_and_separate_from_faults(void)
+{
+    nrf_reboot_intent_zephyr_report_pending();
+    assert(s_printk_calls == 0U);
+    for (unsigned stage = NRF_REBOOT_INTENT_READDRESS; stage <= NRF_REBOOT_INTENT_ASSIGN_RETRY_QUEUE; ++stage) {
+        nrf_reboot_intent_zephyr_record((nrf_reboot_intent_stage_t)stage, -22);
+        nrf_reboot_intent_zephyr_report_pending();
+        assert(s_printk_calls == stage);
+        char expected[160];
+        (void)snprintf(expected, sizeof(expected),
+            "nrf_reboot_intent: previous software reboot request stage=%u error=-22\n", stage);
+        assert(strcmp(s_printk_text, expected) == 0);
+        nrf_reboot_intent_zephyr_report_pending();
+        assert(s_printk_calls == stage);
+    }
+    nrf_reboot_intent_zephyr_record(NRF_REBOOT_INTENT_ASSIGN_SENSOR, -5);
+    nrf_reboot_intent_zephyr_record(NRF_REBOOT_INTENT_READDRESS, 0);
+    nrf_reboot_intent_zephyr_report_pending();
+    assert(strcmp(s_printk_text,
+        "nrf_reboot_intent: previous software reboot request stage=1 error=0\n") == 0);
+    const unsigned printed = s_printk_calls;
+    nrf_reboot_intent_zephyr_record((nrf_reboot_intent_stage_t)0, -1);
+    nrf_reboot_intent_zephyr_report_pending();
+    nrf_reboot_intent_zephyr_record((nrf_reboot_intent_stage_t)(NRF_REBOOT_INTENT_ASSIGN_RETRY_QUEUE + 1), -1);
+    nrf_reboot_intent_zephyr_report_pending();
+    assert(s_printk_calls == printed);
+    assert(s_event_count == 0U);
+    nrf_fault_record_zephyr_report_pending();
+    assert(s_event_count == 0U);
+}
+
 int main(void)
 {
+    test_reboot_intent_is_reported_once_and_separate_from_faults();
     fire_fatal(K_ERR_STACK_CHK_FAIL, false);
     nrf_fault_record_t record = report_and_decode_pending();
     assert(record.fault_flags == NRF_FAULT_RECORD_FLAG_TERMINAL);
