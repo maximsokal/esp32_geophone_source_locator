@@ -655,6 +655,41 @@ static void test_ack_without_conversion_rejects_old_nonzero_sample(void)
     assert(result != NRF_BME280_OK && result != NRF_BME280_PENDING);
 }
 
+static void test_delayed_worker_accepts_completed_conversion_but_bounds_age(void)
+{
+    const uint8_t ids[] = {NRF_BMP280_CHIP_ID, NRF_BME280_CHIP_ID};
+    const uint64_t elapsed[] = {55U, 56U, 80U, 150U, 250U, 300U, 301U};
+    for (size_t model = 0U; model < sizeof(ids); ++model) {
+        for (size_t delay = 0U; delay < sizeof(elapsed) / sizeof(elapsed[0]); ++delay) {
+            fake_bme280_bus_t fake;
+            seed_sensor(&fake, NRF_BME280_ADDRESS_PRIMARY);
+            fake.regs[0][TEST_REG_CHIP_ID] = ids[model];
+            pack_measurement(fake.regs[0], 415148U, 519888U, 30000U);
+            nrf_sensor_bus_t bus = make_bus(&fake);
+            nrf_bme280_t device;
+            nrf_env_sample_t sample;
+            assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_OK);
+            assert(nrf_bme280_start_conversion(&device, 100U) == NRF_BME280_OK);
+            const size_t sleeps = fake.delay_count;
+            const nrf_bme280_result_t result = nrf_bme280_poll_conversion(
+                &device, 100U + elapsed[delay], &sample);
+            if (elapsed[delay] <= 300U) {
+                assert(result == NRF_BME280_OK);
+                assert(sample.pressure_pa == 100653U && sample.temperature_milli_c == 25080);
+                assert(device.initialized && device.state == NRF_BME280_MEASURING);
+                /* A finished conversion is consumed once, never replayed as fresh. */
+                assert(nrf_bme280_poll_conversion(&device, 100U + elapsed[delay], &sample) ==
+                       NRF_BME280_ERR_NOT_INITIALIZED);
+            } else {
+                assert(result == NRF_BME280_ERR_MEASUREMENT);
+                assert(!device.initialized && device.state == NRF_BME280_RECOVER);
+            }
+            assert_sample_zero(&sample);
+            assert(!device.conversion_pending && fake.delay_count == sleeps);
+        }
+    }
+}
+
 static void test_delayed_conversion_poll_does_not_publish_expired_sample(void)
 {
     fake_bme280_bus_t fake;
@@ -670,8 +705,28 @@ static void test_delayed_conversion_poll_does_not_publish_expired_sample(void)
     assert(!device.conversion_pending);
 }
 
+static void test_late_worker_does_not_extend_busy_timeout(void)
+{
+    const uint8_t busy[] = {TEST_STATUS_MEASURING, TEST_STATUS_IM_UPDATE};
+    for (size_t i = 0U; i < sizeof(busy); ++i) {
+        fake_bme280_bus_t fake;
+        seed_sensor(&fake, NRF_BME280_ADDRESS_PRIMARY);
+        nrf_sensor_bus_t bus = make_bus(&fake);
+        nrf_bme280_t device;
+        nrf_env_sample_t sample;
+        assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_OK);
+        assert(nrf_bme280_start_conversion(&device, 100U) == NRF_BME280_OK);
+        fake.regs[0][TEST_REG_STATUS] = busy[i];
+        assert(nrf_bme280_poll_conversion(&device, 180U, &sample) == NRF_BME280_ERR_MEASUREMENT);
+        assert(!device.conversion_pending);
+        assert_sample_zero(&sample);
+    }
+}
+
 int main(void)
 {
+    test_delayed_worker_accepts_completed_conversion_but_bounds_age();
+    test_late_worker_does_not_extend_busy_timeout();
     test_delayed_conversion_poll_does_not_publish_expired_sample();
     test_ack_without_conversion_rejects_old_nonzero_sample();
     test_async_initialization_respects_deadline();

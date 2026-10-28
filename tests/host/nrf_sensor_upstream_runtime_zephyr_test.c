@@ -1109,6 +1109,19 @@ int main(void)
     assert(fake_sensor_bus_imu_reads >= imu_before_load + 30U);
     assert(fake_sensor_bus_imu_max_gap_ms <= 100U);
     {
+        /* The worker can be descheduled after arming ENV while other tasks run. */
+        const nrf_upstream_sensor_refresh_t delayed = {.request_id = 109U};
+        assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&delayed) == 0);
+        run_worker_until_empty();
+        s_test_uptime_ms += 80;
+        run_worker_advancing(1U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.request_id == 109U && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_OK);
+        assert((snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U);
+        assert(snapshot.pressure_pa > 100000U && snapshot.pressure_pa < 101000U);
+        assert(fake_sensor_bus_sleep_count == sleep_before);
+    }
+    {
         const nrf_upstream_height_reference_t height = {
             .action = NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, .request_id = 110U, .generation = 11U,
         };

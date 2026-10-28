@@ -35,6 +35,8 @@ enum {
     BME280_MEASUREMENT_DELAY_MS = 47U,
     BME280_MEASUREMENT_POLL_DELAY_MS = 2U,
     BME280_MEASUREMENT_POLL_ATTEMPTS = 5U,
+    /* Bound result age independently of the hardware busy deadline (same 300 ms freshness budget as IMU). */
+    BME280_MAX_RESULT_AGE_MS = 300U,
 };
 
 static nrf_bme280_result_t bme280_read_regs_at(
@@ -500,8 +502,7 @@ nrf_bme280_result_t nrf_bme280_start_conversion(nrf_bme280_t *device, uint64_t n
     if (!device->initialized || device->state != NRF_BME280_MEASURING)
         return NRF_BME280_ERR_NOT_INITIALIZED;
     if (device->conversion_pending) return NRF_BME280_PENDING;
-    if (now_ms > UINT64_MAX - BME280_MEASUREMENT_DELAY_MS -
-                     (BME280_MEASUREMENT_POLL_ATTEMPTS - 1U) * BME280_MEASUREMENT_POLL_DELAY_MS)
+    if (now_ms > UINT64_MAX - BME280_MAX_RESULT_AGE_MS)
         return NRF_BME280_ERR_ARGUMENT;
     /*
      * CTRL_HUM and CONFIG are volatile. After a power loss the sensor ACKs
@@ -558,13 +559,15 @@ nrf_bme280_result_t nrf_bme280_poll_conversion(
     if (!device->initialized || device->state != NRF_BME280_MEASURING || !device->conversion_pending)
         return NRF_BME280_ERR_NOT_INITIALIZED;
     if (now_ms < device->conversion_ready_ms) return NRF_BME280_PENDING;
-    if (now_ms > device->conversion_deadline_ms) {
+    if (now_ms > device->conversion_ready_ms +
+                     (BME280_MAX_RESULT_AGE_MS - BME280_MEASUREMENT_DELAY_MS)) {
         device->conversion_pending = false;
         device->initialized = false;
         device->state = NRF_BME280_RECOVER;
         return NRF_BME280_ERR_MEASUREMENT;
     }
     uint8_t config[3] = {0};
+    /* A late worker must inspect the chip: completed forced data survives in sleep mode. */
     nrf_bme280_result_t result = bme280_read_regs(device, BME280_REG_STATUS, config, sizeof(config));
     if (result != NRF_BME280_OK) {
         device->conversion_pending = false;
