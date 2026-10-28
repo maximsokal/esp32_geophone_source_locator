@@ -269,6 +269,9 @@ int nrf_sensor_bus_zephyr_scan_expected(void)
 {
     static const uint8_t addresses[] = {0x68U, 0x69U, 0x76U, 0x77U};
     int found = 0;
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+    bool bmi_address_responded = false;
+#endif
     if (!device_is_ready(s_private_context.device)) return -ENODEV;
     for (size_t i = 0U; i < sizeof(addresses); ++i) {
         const uint8_t reg = i < 2U ? 0x00U : 0xD0U;
@@ -276,10 +279,30 @@ int nrf_sensor_bus_zephyr_scan_expected(void)
         const int result = i2c_write_read(s_private_context.device, addresses[i], &reg, 1U, &id, 1U);
         if (result == 0) ++found;
 #if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+        if (i < 2U && result == 0) bmi_address_responded = true;
         printk("sensor_scan: expected addr=0x%02x id=%d\n", (unsigned)addresses[i],
                result == 0 ? (int)id : -1);
 #endif
     }
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+    if (!bmi_address_responded) {
+        /*
+         * Bosch reports BMI160-labelled third-party boards responding at
+         * 0x6A/0x6B instead of the genuine BMI160's 0x68/0x69. Check only
+         * after the expected BMI addresses fail, and only in verbose mode.
+         * These are DIAGNOSTIC reads, not additional valid BMI160 addresses.
+         */
+        static const uint8_t lookalike_addresses[] = {0x6AU, 0x6BU};
+        for (size_t i = 0U; i < sizeof(lookalike_addresses); ++i) {
+            uint8_t value = 0U;
+            const int result = i2c_read(s_private_context.device, &value, 1U, lookalike_addresses[i]);
+            if (result == 0) {
+                printk("sensor_scan: nonstandard addr=0x%02x ack=1 not_bmi160=1\n",
+                       (unsigned)lookalike_addresses[i]);
+            }
+        }
+    }
+#endif
     return found;
 }
 

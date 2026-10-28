@@ -21,9 +21,9 @@ static uint8_t s_drdy_mask;
 static bool s_ignore_forced;
 static int64_t s_now_ms;
 static unsigned s_sleep_calls;
-static bool s_present[4];
-static uint8_t s_registers[4][256];
-static unsigned s_transfers[4];
+static bool s_present[6];
+static uint8_t s_registers[6][256];
+static unsigned s_transfers[6];
 static unsigned s_other_transfers;
 static uint16_t s_fail_address;
 static uint8_t s_fail_register;
@@ -53,6 +53,8 @@ static int sensor_index(uint16_t address)
     if (address == 0x76U) return 1;
     if (address == 0x77U) return 2;
     if (address == 0x69U) return 3;
+    if (address == 0x6AU) return 4;
+    if (address == 0x6BU) return 5;
     return -1; /* nothing else is wired; only a bus scan asks */
 }
 
@@ -406,6 +408,43 @@ static void test_automatic_diagnostics_only_probe_expected_addresses(void)
     assert_diagnostic("sensor_scan: expected addr=0x76 id=96");
     s_ready = false;
     assert(nrf_sensor_bus_zephyr_scan_expected() == -ENODEV);
+}
+
+static void test_automatic_scan_detects_nonstandard_bmi_lookalike(void)
+{
+    /* A real Bosch support case found a BMI160-labelled board at 0x6A/0x6B.
+     * On the normal boot path we must report the anomaly without changing
+     * the BMI160 driver's legal 0x68/0x69 addresses. */
+    reset_fixture();
+    s_present[0] = false;
+    s_present[3] = false;
+    s_present[4] = true;
+    assert(nrf_sensor_bus_zephyr_scan_expected() == 1);
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+    assert(s_transfers[4] == 1U);
+    assert(s_transfers[5] == 1U);
+    assert_diagnostic("sensor_scan: nonstandard addr=0x6a ack=1 not_bmi160=1");
+#else
+    assert(s_transfers[4] == 0U && s_transfers[5] == 0U);
+#endif
+    assert(s_transfers[1] == 1U); /* BMP280 still works */
+    {
+        nrf_bmi160_t imu = {0};
+        assert(nrf_bmi160_zephyr_init_remote(&imu) == NRF_BMI160_ERR_BUS);
+        assert(!imu.initialized); /* Never accept a lookalike as BMI160. */
+    }
+
+    reset_fixture();
+    s_present[0] = false;
+    s_present[5] = true;
+    assert(nrf_sensor_bus_zephyr_scan_expected() == 1);
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+    assert_diagnostic("sensor_scan: nonstandard addr=0x6b ack=1 not_bmi160=1");
+#endif
+
+    reset_fixture();
+    assert(nrf_sensor_bus_zephyr_scan_expected() == 2);
+    assert(s_transfers[4] == 0U && s_transfers[5] == 0U);
 }
 
 static void test_scan_reports_who_answers_and_their_ids(void)
@@ -884,6 +923,7 @@ int main(void)
     test_cooperative_prepare_on_alternate_addresses();
     test_async_environment_result_is_fresh_and_faults_are_counted();
     test_automatic_diagnostics_only_probe_expected_addresses();
+    test_automatic_scan_detects_nonstandard_bmi_lookalike();
     test_periodic_imu_failures_use_runtime_recovery_counter();
     test_runtime_marks_only_failed_sensor_recover_and_reprobes();
     test_bmi160_is_found_on_the_alternate_address();
