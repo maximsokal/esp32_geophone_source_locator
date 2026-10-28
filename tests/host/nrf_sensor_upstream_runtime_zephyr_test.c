@@ -1361,6 +1361,18 @@ int main(void)
      * refresh therefore observes request_id=0 PENDING/BUSY, never NOT_REMOTE.
      */
     assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
+    /* Same pending activation is idempotent; a different node/channel cannot
+     * be accepted while the first ACTIVATE is still in the queue. */
+    {
+        nrf_upstream_assign_t different_pending = assign;
+        const unsigned queued_calls = s_queue_put_calls;
+        different_pending.node_id = 3U;
+        different_pending.mux_channel = 2U;
+        assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign) == 0);
+        assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
+                   &different_pending) == -EALREADY);
+        assert(s_queue_put_calls == queued_calls);
+    }
     /* The worker must use the queue's copy after this caller-owned value changes. */
     assign.request_id = 0xBADU;
     assign.node_id = 0x77U;

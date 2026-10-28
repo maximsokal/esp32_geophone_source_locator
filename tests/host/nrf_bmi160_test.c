@@ -315,7 +315,8 @@ static void test_init_rejects_wrong_chip_id_before_powerup(void)
     assert(device.chip_id == 0x00U);
     /* Only the id was read: nothing is written to a device that is not a BMI160, not even the soft reset. */
     assert(fake.transfer_count == 3);
-    assert(fake.delay_count == 0U);
+    assert(fake.delay_count == 2U);
+    assert(fake.delays[0] == 5U && fake.delays[1] == 5U);
 }
 
 static void test_init_rejects_pmu_that_did_not_enter_normal_mode(void)
@@ -352,7 +353,8 @@ static void test_init_propagates_transfer_failure(void)
                &fake) == NRF_BMI160_ERR_BUS);
     assert(!device.initialized);
     assert(fake.transfer_count == 3);
-    assert(fake.delay_count == 0U);
+    assert(fake.delay_count == 2U);
+    assert(fake.delays[0] == 5U && fake.delays[1] == 5U);
 }
 
 static void test_read_requires_initialized_device_and_clears_output(void)
@@ -557,8 +559,9 @@ static void test_async_initialization_respects_deadlines(void)
     assert(nrf_bmi160_begin_async(&device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
                                   observe_state, &fake) == NRF_BMI160_PENDING);
     assert(nrf_bmi160_step_async(&device, 0U) == NRF_BMI160_PENDING);
-    assert(nrf_bmi160_step_async(&device, 0U) == NRF_BMI160_PENDING);
-    assert(nrf_bmi160_step_async(&device, 0U) == NRF_BMI160_ERR_BUS);
+    const uint64_t retry1 = device.prepare_due_ms;
+    assert(nrf_bmi160_step_async(&device, retry1) == NRF_BMI160_PENDING);
+    assert(nrf_bmi160_step_async(&device, device.prepare_due_ms) == NRF_BMI160_ERR_BUS);
     assert(device.state == NRF_BMI160_RECOVER && fake.transitions[1] == NRF_BMI160_RECOVER);
 }
 
@@ -599,8 +602,11 @@ static void test_probe_recovers_within_bosch_three_attempt_budget(void)
             nrf_bmi160_t device;
             assert(nrf_bmi160_begin_async(&device, &bus, 0x68U, NULL, NULL) == NRF_BMI160_PENDING);
             nrf_bmi160_result_t result = NRF_BMI160_PENDING;
-            for (unsigned step = 0U; step < 3U && device.state == NRF_BMI160_PROBE; ++step)
-                result = nrf_bmi160_step_async(&device, 100U);
+            uint64_t probe_now = 100U;
+            for (unsigned step = 0U; step < 3U && device.state == NRF_BMI160_PROBE; ++step) {
+                if (device.prepare_due_ms > probe_now) probe_now = device.prepare_due_ms;
+                result = nrf_bmi160_step_async(&device, probe_now);
+            }
             if (failed_reads < 3U) {
                 assert(result == NRF_BMI160_PENDING && device.state == NRF_BMI160_CONFIGURE);
                 assert(device.chip_id == 0xD1U);
@@ -621,8 +627,36 @@ static void test_probe_recovers_within_bosch_three_attempt_budget(void)
     }
 }
 
+/* A sensor waking during probe must get real elapsed time between attempts.
+ * Three reads in the same scheduler tick are not three meaningful retries. */
+static void test_probe_retry_waits_for_elapsed_time(void)
+{
+    fake_bmi160_bus_t fake;
+    seed_sensor(&fake);
+    fake.transient_probe_reads = 2U;
+    const nrf_sensor_bus_t bus = make_bus(&fake);
+    nrf_bmi160_t device;
+    assert(nrf_bmi160_begin_async(&device, &bus, 0x68U, NULL, NULL) == NRF_BMI160_PENDING);
+    assert(nrf_bmi160_step_async(&device, 100U) == NRF_BMI160_PENDING);
+    assert(fake.transfer_count == 1);
+    assert(device.prepare_due_ms > 100U);
+    const uint64_t first_due = device.prepare_due_ms;
+    assert(nrf_bmi160_step_async(&device, 100U) == NRF_BMI160_PENDING);
+    assert(nrf_bmi160_step_async(&device, first_due - 1U) == NRF_BMI160_PENDING);
+    assert(fake.transfer_count == 1);
+    assert(nrf_bmi160_step_async(&device, first_due) == NRF_BMI160_PENDING);
+    assert(fake.transfer_count == 2);
+    assert(device.prepare_due_ms > first_due);
+    assert(nrf_bmi160_step_async(&device, first_due) == NRF_BMI160_PENDING);
+    assert(fake.transfer_count == 2);
+    assert(nrf_bmi160_step_async(&device, device.prepare_due_ms) == NRF_BMI160_PENDING);
+    assert(fake.transfer_count == 3);
+    assert(device.state == NRF_BMI160_CONFIGURE);
+}
+
 int main(void)
 {
+    test_probe_retry_waits_for_elapsed_time();
     test_probe_recovers_within_bosch_three_attempt_budget();
     test_both_drdy_required_and_consumed();
     test_async_initialization_respects_deadlines();

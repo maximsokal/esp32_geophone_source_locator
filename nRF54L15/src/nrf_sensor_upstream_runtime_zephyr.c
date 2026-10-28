@@ -1431,8 +1431,9 @@ int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
 
     key = k_spin_lock(&s_session_lock);
     if (s_activation_queued) {
+        const bool same = session_matches_assignment(&s_session, assign);
         k_spin_unlock(&s_session_lock, key);
-        return 0;
+        return same ? 0 : -EALREADY;
     }
     if (s_session.remote_active) {
         const bool same = session_matches_assignment(&s_session, assign);
