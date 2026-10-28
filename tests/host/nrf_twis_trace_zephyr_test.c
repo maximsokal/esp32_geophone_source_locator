@@ -16,7 +16,7 @@ NRF_TWIS_Type test_upstream_registers;
 static nrfx_twis_t s_upstream = {&test_upstream_registers};
 static nrfx_twis_event_handler_t s_target_handler;
 static nrfx_twis_event_handler_t s_other_handler;
-static nrf_boot_twis_record_t s_records[32];
+static nrf_boot_twis_record_t s_records[64];
 static unsigned s_record_count;
 static unsigned s_forwarded;
 static int s_init_result;
@@ -252,6 +252,89 @@ int main(void)
         assert(s_record_count == records_before + 1U);
         assert(s_records[records_before].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_DONE);
         assert(s_records[records_before].result == 0);
+    }
+
+    /* Successfully arming DMA is not evidence that an address-only write
+     * replaced the previous AMOUNT. Reproduce the captured 12 bytes / 11 us. */
+    {
+        const unsigned forwarded_before = s_forwarded;
+        const unsigned records_before = s_record_count;
+        test_upstream_registers.rx_amount = 12U;
+        memset(s_rx_buffer, 0, sizeof(s_rx_buffer));
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 1U); /* buf_req: DMA has not started */
+        s_cycles -= 6U; /* next cycle read is 11 us after WRITE_REQ */
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_forwarded == forwarded_before + 1U);
+        assert(s_record_count == records_before + 1U);
+        assert(s_records[records_before].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR);
+        assert(s_records[records_before].result == -EPROTO);
+        assert(s_records[records_before].rx_amount == 12U);
+        assert(s_records[records_before].event_dt_us == 11U);
+        assert(s_records[records_before].prefix_length == 0U);
+    }
+
+    /* Real payload durations at the requested bus rates, plus fast-mode
+     * and 1 MHz, must still dispatch the exact bytes after a rejected write. */
+    const uint32_t rates[] = {25000U, 50000U, 100000U, 400000U, 1000000U};
+    for (unsigned i = 0; i < sizeof(rates) / sizeof(rates[0]); ++i) {
+        const unsigned forwarded_before = s_forwarded;
+        const unsigned records_before = s_record_count;
+        const uint32_t duration_us = (12U * 9000000U + rates[i] - 1U) / rates[i];
+        memcpy(s_rx_buffer, request, sizeof(request));
+        test_upstream_registers.rx_amount = 12U;
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 1U);
+        s_cycles += duration_us - 17U;
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_forwarded == forwarded_before + 2U);
+        assert(s_record_count == records_before + 1U);
+        assert(s_records[records_before].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_DONE);
+        assert(s_records[records_before].event_dt_us == duration_us);
+        assert(memcmp(s_records[records_before].prefix, request,
+                      NRF_BOOT_TRANSACTION_PREFIX_CAPACITY) == 0);
+    }
+
+    /* Even a slow completion cannot make AMOUNT larger than the armed buffer. */
+    {
+        const unsigned forwarded_before = s_forwarded;
+        const unsigned records_before = s_record_count;
+        test_upstream_registers.rx_amount = sizeof(s_rx_buffer) + 1U;
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 1U);
+        s_cycles += 10000U;
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_forwarded == forwarded_before + 1U);
+        assert(s_record_count == records_before + 1U);
+        assert(s_records[records_before].result == -EPROTO);
+        assert(s_records[records_before].prefix_length == 0U);
+    }
+
+    /* First-byte buffering and rounded timestamps must not reject legal
+     * transfers. Count validation applies even when RX started before IRQ. */
+    const struct { uint32_t amount; uint32_t elapsed; bool buf_req; bool valid; } edges[] = {
+        {1U, 0U, true, true},
+        {12U, 86U, true, false},
+        {12U, 87U, true, true},
+        {12U, 88U, true, true},
+        {12U, 11U, false, true},
+        {16U, 2000U, true, true},
+        {17U, 2000U, false, false},
+        {UINT32_MAX, 2000U, true, false},
+    };
+    for (unsigned i = 0; i < sizeof(edges) / sizeof(edges[0]); ++i) {
+        const unsigned forwarded_before = s_forwarded;
+        const unsigned records_before = s_record_count;
+        memset(s_rx_buffer, 0, sizeof(s_rx_buffer)); /* zeros are legal payload */
+        test_upstream_registers.rx_amount = edges[i].amount;
+        s_cycles = UINT32_MAX - 20U; /* also cross the cycle-counter wrap */
+        emit(NRFX_TWIS_EVT_WRITE_REQ, edges[i].buf_req ? 1U : 0U);
+        s_cycles = s_cycles - 17U + edges[i].elapsed;
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_forwarded == forwarded_before + (edges[i].valid ? 2U : 1U));
+        assert(s_record_count == records_before + 1U);
+        assert(s_records[records_before].result == (edges[i].valid ? 0 : -EPROTO));
+        assert(s_records[records_before].event_dt_us == edges[i].elapsed);
+        assert(s_records[records_before].prefix_length ==
+               (edges[i].valid ? (edges[i].amount < NRF_BOOT_TRANSACTION_PREFIX_CAPACITY
+                   ? edges[i].amount : NRF_BOOT_TRANSACTION_PREFIX_CAPACITY) : 0U));
     }
 
     puts("nRF TWIS hardware trace: PASS");
