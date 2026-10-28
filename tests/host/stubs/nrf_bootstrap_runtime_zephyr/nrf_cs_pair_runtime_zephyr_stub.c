@@ -3,6 +3,7 @@
 static int s_next_execute_result;
 static nrf_cs_outcome_t s_next_outcome;
 unsigned nrf_cs_pair_zephyr_stub_execute_calls;
+int nrf_cs_pair_zephyr_stub_set_node_result;
 
 void nrf_cs_pair_runtime_zephyr_stub_configure(int execute_result, nrf_cs_outcome_t outcome)
 {
@@ -18,7 +19,7 @@ int nrf_cs_pair_runtime_zephyr_start(void)
 int nrf_cs_pair_runtime_zephyr_set_node_id(nrf_cs_node_id_t node_id)
 {
     (void)node_id;
-    return 0;
+    return nrf_cs_pair_zephyr_stub_set_node_result;
 }
 
 bool nrf_cs_pair_zephyr_stub_radio_enabled;

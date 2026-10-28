@@ -341,7 +341,16 @@ static void assign_work_handler(struct k_work *work)
         publish_result_context(assign.request_id,NRF_UPSTREAM_RESULT_PENDING);
         result=nrf_bootstrap_process_assign(&s_bootstrap,&assign);
         if(result==NRF_UPSTREAM_RESULT_OK&&assign.role==NRF_UPSTREAM_ROLE_REMOTE){if(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign)!=0){assignment_runtime_failure();continue;}}
-        if(result==NRF_UPSTREAM_RESULT_OK&&nrf_cs_pair_runtime_zephyr_set_node_id(assign.node_id)!=0){assignment_runtime_failure();continue;}
+        if (result == NRF_UPSTREAM_RESULT_OK) {
+            const int cs_pair_result = nrf_cs_pair_runtime_zephyr_set_node_id(assign.node_id);
+            /* An unstarted optional CS subsystem returns -EAGAIN; main.c
+             * already logged BOOT_FAILED. Keep sensors and TWIS assigned,
+             * but still reboot on conflicting identity/invariant failures. */
+            if (cs_pair_result != 0 && cs_pair_result != -EAGAIN) {
+                assignment_runtime_failure();
+                continue;
+            }
+        }
         if(result==NRF_UPSTREAM_RESULT_OK){k_spinlock_key_t key=k_spin_lock(&s_cs_lock);int cs_result=nrf_cs_control_runtime_assign_node(&s_cs_control,assign.node_id);k_spin_unlock(&s_cs_lock,key);if(cs_result!=0){assignment_runtime_failure();continue;}}
         if(result==NRF_UPSTREAM_RESULT_OK&&nrf_bootstrap_make_status(&s_bootstrap,&current_status)==NRF_UPSTREAM_RESULT_OK&&previous_status.role!=current_status.role){
             if(previous_status.role!=NRF_UPSTREAM_ROLE_UNASSIGNED){nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_ROLE_LOST,previous_status.node_id,previous_status.role);}

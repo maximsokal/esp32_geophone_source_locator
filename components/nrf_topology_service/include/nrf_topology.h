@@ -88,7 +88,6 @@ typedef struct {
     nrf_topology_node_snapshot_t last_confirmed_remotes[NRF_TOPOLOGY_REMOTE_COUNT];
     uint64_t remote_confirmed_at_ms[NRF_TOPOLOGY_REMOTE_COUNT];
     bool remote_confirmed_valid[NRF_TOPOLOGY_REMOTE_COUNT];
-    uint8_t remote_absent_misses[NRF_TOPOLOGY_REMOTE_COUNT];
 } nrf_topology_controller_t;
 
 esp_err_t nrf_topology_controller_init(

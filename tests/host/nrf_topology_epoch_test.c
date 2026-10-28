@@ -120,11 +120,7 @@ int main(void)
     bus.remote_absent = true;
     ++bus.fake_now_ms;
     assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
-    /* One address NACK may be transient. Keep the previous identity briefly. */
-    assert(snapshot.remotes[2].state == NRF_TOPOLOGY_NODE_ASSIGNED);
-    bus.fake_now_ms += NRF_SENSOR_REFRESH_PERIOD_MS;
-    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
-    /* Consecutive absence must still be visible, not hidden indefinitely. */
+    /* Explicit absence is not a transport timeout and must be reported now. */
     assert(snapshot.remotes[2].state == NRF_TOPOLOGY_NODE_ABSENT);
     return 0;
 }

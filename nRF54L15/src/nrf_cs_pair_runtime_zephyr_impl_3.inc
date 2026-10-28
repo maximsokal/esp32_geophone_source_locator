@@ -449,8 +449,12 @@ int nrf_cs_pair_runtime_zephyr_start(void)
 
 int nrf_cs_pair_runtime_zephyr_set_node_id(nrf_cs_node_id_t node_id)
 {
-    if (!s_started || node_id == 0xFFU) {
+    if (node_id == 0xFFU) {
         return -EINVAL;
+    }
+    if (!s_started) {
+        /* Optional Bluetooth CS startup failed: sensors/TWIS may still run. */
+        return -EAGAIN;
     }
     if (s_node_id != 0xFFU && s_node_id != node_id) {
         return -EALREADY;

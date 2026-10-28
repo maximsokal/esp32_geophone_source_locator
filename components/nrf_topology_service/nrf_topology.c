@@ -1,6 +1,5 @@
 #include "nrf_topology.h"
 #include "nrf_topology_periods.h"
-#include "nrf_node_link_status_policy.h"
 #include "sensor_bus.h"
 
 #include <stddef.h>
@@ -691,9 +690,8 @@ static void detect_duplicate_hardware_ids(nrf_topology_snapshot_t *snapshot)
 /*
  * A transport/protocol read error is not evidence that an assigned remote
  * disappeared. Hold its last verified identity for the same bounded window
- * used for a globally stale topology. Debounce one missing address ACK only
- * inside the short link-freshness window. A second consecutive absence,
- * identity conflict or expired confirmation must never be hidden.
+ * used for a globally stale topology. A confirmed absence or identity
+ * conflict must never be hidden by a cached ASSIGNED identity.
  *
  * Only a successful, fresh ASSIGNED scan advances the window: replaying a
  * cached identity must not make an absent remote permanently present.
@@ -727,22 +725,6 @@ static void reconcile_transient_remote_failures(
         }
     }
 
-    /* A single missing ACK from a previously assigned target is not enough
-     * to prove disconnection. Debounce one miss within the short link-status
-     * freshness window; a second consecutive miss must be exposed. */
-    for (size_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
-        nrf_topology_node_snapshot_t *const remote = &snapshot->remotes[i];
-        if (remote->state == NRF_TOPOLOGY_NODE_ABSENT &&
-            controller->remote_confirmed_valid[i] &&
-            controller->remote_absent_misses[i] == 0U &&
-            now_ms >= controller->remote_confirmed_at_ms[i] &&
-            now_ms - controller->remote_confirmed_at_ms[i] < NRF_NODE_LINK_STATUS_STALE_LIMIT_MS) {
-            controller->remote_absent_misses[i] = 1U;
-            *remote = controller->last_confirmed_remotes[i];
-            retained[i] = true;
-        }
-    }
-
     /* Restoring a cached node must not conceal duplicate hardware identities. */
     detect_duplicate_hardware_ids(snapshot);
 
@@ -753,17 +735,14 @@ static void reconcile_transient_remote_failures(
                 controller->last_confirmed_remotes[i] = *remote;
                 controller->remote_confirmed_at_ms[i] = now_ms;
                 controller->remote_confirmed_valid[i] = true;
-                controller->remote_absent_misses[i] = 0U;
             }
         } else if (remote->state == NRF_TOPOLOGY_NODE_ABSENT ||
                    remote->state == NRF_TOPOLOGY_NODE_CONFLICT) {
             controller->remote_confirmed_valid[i] = false;
-            controller->remote_absent_misses[i] = 0U;
         } else if (controller->remote_confirmed_valid[i] &&
                    (now_ms < controller->remote_confirmed_at_ms[i] ||
                     now_ms - controller->remote_confirmed_at_ms[i] >= NRF_TOPOLOGY_STALE_LIMIT_MS)) {
             controller->remote_confirmed_valid[i] = false;
-            controller->remote_absent_misses[i] = 0U;
         }
     }
 }

@@ -21,6 +21,7 @@
 
 extern struct k_msgq s_cs_execute_queue;
 extern unsigned nrf_cs_pair_zephyr_stub_execute_calls;
+extern int nrf_cs_pair_zephyr_stub_set_node_result;
 extern bool nrf_cs_pair_zephyr_stub_radio_enabled;
 extern unsigned nrf_cs_pair_zephyr_stub_radio_changes;
 #include "nrf_upstream_target_zephyr.h"
@@ -1937,13 +1938,18 @@ int main(void)
     assert(status.role == NRF_UPSTREAM_ROLE_REMOTE);
 
     /* The host reboot stub returns; prove a later retry can publish OK again. */
+    /* If the optional CS radio failed at startup, REMOTE sensor assignment
+     * must not reboot the nRF indefinitely. A real CS node conflict remains fatal. */
     s_sensor_assignment_result = 0;
+    nrf_cs_pair_zephyr_stub_set_node_result = -EAGAIN;
     assign.request_id = 12U;
     send_assign(&assign);
     run_submitted_work();
     assert(s_sensor_assignment_calls == 3U);
     status = read_status(NULL);
+    assert(s_reboot_calls == 1U);
     assert(status.request_id == 12U && status.result == NRF_UPSTREAM_RESULT_OK);
+    nrf_cs_pair_zephyr_stub_set_node_result = 0;
     assert(read_log_status().next_seq == 2U);
     test_malformed_control_lengths_preserve_assignment();
     test_firmware_query_preserves_assignment();
@@ -2309,6 +2315,20 @@ int main(void)
         frame[6] ^= 1U;
         s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
         assert(s_sensor_scan_calls == scans_before);
+    }
+    /* Only an unavailable optional CS subsystem is recoverable. A conflicting
+     * CS identity is still a fail-closed assignment invariant. */
+    {
+        const unsigned reboots_before = s_reboot_calls;
+        assign.request_id = 0x314159U;
+        nrf_cs_pair_zephyr_stub_set_node_result = -EALREADY;
+        send_assign(&assign);
+        run_submitted_work();
+        status = read_status(NULL);
+        assert(status.request_id == assign.request_id);
+        assert(status.result == NRF_UPSTREAM_RESULT_INTERNAL_ERROR);
+        assert(s_reboot_calls == reboots_before + 1U);
+        nrf_cs_pair_zephyr_stub_set_node_result = 0;
     }
     return 0;
 }
