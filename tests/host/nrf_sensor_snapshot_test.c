@@ -198,8 +198,23 @@ static void test_argument_validation(void)
     assert(fake.env_calls == 0);
 }
 
+static void test_pending_imu_has_no_fault_or_stale_payload(void)
+{
+    fake_sources_context_t fake = make_good_samples();
+    nrf_sensor_sources_t sources = make_sources(&fake);
+    nrf_node_state_t state = make_ready_node(NRF_NODE_ROLE_REMOTE);
+    nrf_sensor_snapshot_t snapshot;
+    nrf_sensor_snapshot_init(&snapshot);
+    assert(nrf_sensor_snapshot_refresh(&state, &sources, &snapshot) == NRF_SENSOR_SNAPSHOT_OK);
+    fake.imu_result = NRF_SENSOR_READ_PENDING;
+    assert(nrf_sensor_snapshot_refresh(&state, &sources, &snapshot) == NRF_SENSOR_SNAPSHOT_PARTIAL);
+    assert(snapshot.valid_mask == NRF_SENSOR_VALID_ENV && snapshot.fault_mask == 0U);
+    assert(snapshot.imu.accel_mg[2] == 0);
+}
+
 int main(void)
 {
+    test_pending_imu_has_no_fault_or_stale_payload();
     test_remote_refresh_aggregates_both_sensors();
     test_main_and_unassigned_nodes_never_touch_remote_sensors();
     test_unavailable_remote_is_not_sampled();

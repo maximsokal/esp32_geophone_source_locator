@@ -6,10 +6,29 @@
 #include "nrf_bme280_zephyr.h"
 #include "nrf_bmi160_zephyr.h"
 
+#define IMU_FRESHNESS_TIMEOUT_MS 300U
+
 static int nrf_remote_sensor_zephyr_init_imu(void *context)
 {
-    nrf_bmi160_t *device = (nrf_bmi160_t *)context;
-    return (int)nrf_bmi160_zephyr_init_remote(device);
+    nrf_remote_sensor_runtime_zephyr_t *runtime = context;
+    runtime->imu_read_deadline_ms = 0U;
+    return (int)nrf_bmi160_zephyr_init_remote(&runtime->bmi160);
+}
+
+static int nrf_remote_sensor_zephyr_read_imu(void *context, nrf_imu_sample_t *sample)
+{
+    nrf_remote_sensor_runtime_zephyr_t *runtime = context;
+    const int result = nrf_bmi160_read_imu(&runtime->bmi160, sample);
+    const uint64_t now = (uint64_t)k_uptime_get();
+    if (result == NRF_BMI160_OK || runtime->imu_read_deadline_ms == 0U)
+        runtime->imu_read_deadline_ms = now > UINT64_MAX - IMU_FRESHNESS_TIMEOUT_MS
+            ? UINT64_MAX : now + IMU_FRESHNESS_TIMEOUT_MS;
+    if (result == NRF_BMI160_PENDING && now >= runtime->imu_read_deadline_ms) {
+        runtime->bmi160.initialized = false;
+        runtime->bmi160.state = NRF_BMI160_RECOVER;
+        return NRF_BMI160_ERR_MEASUREMENT;
+    }
+    return result;
 }
 
 static int nrf_remote_sensor_zephyr_init_env(void *context)
@@ -22,6 +41,7 @@ static int nrf_remote_sensor_zephyr_step_imu(void *context)
 {
     nrf_remote_sensor_runtime_zephyr_t *runtime = context;
     if (!runtime->imu_init_active) {
+        runtime->imu_read_deadline_ms = 0U;
         runtime->imu_address_index = 0U;
         runtime->imu_best_result = NRF_BMI160_ERR_BUS;
         const nrf_bmi160_result_t result = nrf_bmi160_zephyr_begin_address(
@@ -102,8 +122,8 @@ nrf_remote_sensor_prepare_result_t nrf_remote_sensor_runtime_zephyr_prepare(
     const nrf_remote_sensor_ops_t ops = {
         .now_ms = (uint64_t)k_uptime_get(),
         .init_imu = nrf_remote_sensor_zephyr_init_imu,
-        .read_imu = nrf_bmi160_read_imu,
-        .imu_context = &runtime->bmi160,
+        .read_imu = nrf_remote_sensor_zephyr_read_imu,
+        .imu_context = runtime,
         .init_env = nrf_remote_sensor_zephyr_init_env,
         .read_env = nrf_bme280_read_env,
         .env_context = &runtime->bme280,
@@ -122,13 +142,12 @@ nrf_remote_sensor_prepare_result_t nrf_remote_sensor_runtime_zephyr_prepare_coop
     const uint64_t now = (uint64_t)k_uptime_get();
     const nrf_remote_sensor_ops_t ops = {
         .now_ms = now, .init_imu = nrf_remote_sensor_zephyr_step_imu,
-        .read_imu = nrf_bmi160_read_imu, .imu_context = runtime,
+        .read_imu = nrf_remote_sensor_zephyr_read_imu, .imu_context = runtime,
         .init_env = nrf_remote_sensor_zephyr_step_env,
         .read_env = nrf_bme280_read_env, .env_context = runtime,
     };
     const nrf_remote_sensor_prepare_result_t result = nrf_remote_sensor_runtime_prepare(node_state, &ops, &runtime->core);
-    if (runtime->core.imu_ready) runtime->core.sources.imu_context = &runtime->bmi160;
-    else if (runtime->imu_init_active) {
+    if (!runtime->core.imu_ready && runtime->imu_init_active) {
         const uint64_t due = runtime->bmi160.prepare_due_ms;
         runtime->core.imu_retry_after_ms = due > now ? due : (now == UINT64_MAX ? now : now + 1U);
     }

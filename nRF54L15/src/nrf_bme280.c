@@ -534,6 +534,15 @@ nrf_bme280_result_t nrf_bme280_start_conversion(nrf_bme280_t *device, uint64_t n
         return result;
     }
 
+    /* Forced mode must be latched now and return to sleep after this conversion. */
+    uint8_t ctrl = 0U;
+    result = bme280_read_regs(device, BME280_REG_CTRL_MEAS, &ctrl, 1U);
+    if (result != NRF_BME280_OK || ctrl != BME280_CTRL_MEAS_FORCED) {
+        device->initialized = false;
+        device->state = NRF_BME280_RECOVER;
+        return result != NRF_BME280_OK ? result : NRF_BME280_ERR_CONFIG;
+    }
+
     device->conversion_ready_ms = now_ms + BME280_MEASUREMENT_DELAY_MS;
     device->conversion_deadline_ms = device->conversion_ready_ms +
         (BME280_MEASUREMENT_POLL_ATTEMPTS - 1U) * BME280_MEASUREMENT_POLL_DELAY_MS;
@@ -549,6 +558,12 @@ nrf_bme280_result_t nrf_bme280_poll_conversion(
     if (!device->initialized || device->state != NRF_BME280_MEASURING || !device->conversion_pending)
         return NRF_BME280_ERR_NOT_INITIALIZED;
     if (now_ms < device->conversion_ready_ms) return NRF_BME280_PENDING;
+    if (now_ms > device->conversion_deadline_ms) {
+        device->conversion_pending = false;
+        device->initialized = false;
+        device->state = NRF_BME280_RECOVER;
+        return NRF_BME280_ERR_MEASUREMENT;
+    }
     uint8_t config[3] = {0};
     nrf_bme280_result_t result = bme280_read_regs(device, BME280_REG_STATUS, config, sizeof(config));
     if (result != NRF_BME280_OK) {
@@ -561,7 +576,7 @@ nrf_bme280_result_t nrf_bme280_poll_conversion(
         return NRF_BME280_ERR_MEASUREMENT;
     }
     device->conversion_pending = false;
-    if ((config[1] & 0xFCU) != BME280_CTRL_MEAS_SLEEP ||
+    if (config[1] != BME280_CTRL_MEAS_SLEEP ||
         (config[2] & 0x1CU) != BME280_CONFIG_FILTER_X16) {
         device->initialized = false;
         device->state = NRF_BME280_RECOVER;

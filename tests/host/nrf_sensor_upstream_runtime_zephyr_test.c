@@ -35,6 +35,7 @@ extern void fake_sensor_bus_suspend_imu(void);
 extern void fake_sensor_bus_reset_env(void);
 extern void fake_sensor_bus_hold_env_nvm(bool busy);
 extern void fake_sensor_bus_set_imu_present(bool present);
+extern void fake_sensor_bus_set_drdy_mask(uint8_t mask);
 extern unsigned fake_sensor_bus_imu_id_probes;
 extern unsigned fake_sensor_bus_sleep_count;
 extern unsigned fake_sensor_bus_imu_reads;
@@ -1015,6 +1016,7 @@ int main(void)
     nrf_orientation_config_t config;
     nrf_orientation_default_config(&config);
     config.reference_axis = NRF_ORIENTATION_AXIS_POS_Z;
+    config.sample_period_ms = 20U; /* exercise IMU reads just before ENV readiness */
     assert(nrf_sensor_upstream_runtime_zephyr_configure_orientation(&config) == 0);
     nrf_upstream_assign_t assign = make_assign();
     nrf_upstream_sensor_snapshot_t snapshot;
@@ -1163,8 +1165,11 @@ int main(void)
         assert(snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PARTIAL);
     }
     fake_sensor_bus_suspend_imu();
-    run_worker_advancing(100U);
-    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
+    for (unsigned wait = 0U; wait < 100U; ++wait) {
+        run_worker_advancing(1U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
+        if (!live_diagnostics.imu_ready) break;
+    }
     assert(!live_diagnostics.imu_ready);
     fake_sensor_bus_restore_pressure();
     {
@@ -1235,6 +1240,31 @@ int main(void)
         assert(snapshot.request_id == 3100U && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_OK);
         assert((snapshot.valid_mask & (NRF_SENSOR_VALID_IMU | NRF_SENSOR_VALID_ENV)) ==
                (NRF_SENSOR_VALID_IMU | NRF_SENSOR_VALID_ENV));
+    }
+    {
+        const nrf_upstream_height_reference_t reference = {
+            .action = NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, .request_id = 3120U, .generation = 12U,
+        };
+        assert(nrf_sensor_upstream_runtime_zephyr_request_height_reference(&reference) == 0);
+        run_worker_until_empty();
+        run_worker_advancing(48U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
+        fake_sensor_bus_set_drdy_mask(0x40U); /* GYRO-only cannot keep a reference alive */
+        for (uint32_t id = 3121U; id <= 3128U; ++id) {
+            const nrf_upstream_sensor_refresh_t pending = {.request_id = id};
+            assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&pending) == 0);
+            run_worker_until_empty();
+            run_worker_advancing(48U);
+            assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+            assert(snapshot.request_id == id && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PARTIAL);
+            assert((snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U);
+        }
+        assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
+        fake_sensor_bus_set_drdy_mask(0xC0U);
+        run_worker_advancing(150U);
+        assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
+        assert(live_diagnostics.imu_ready && live_diagnostics.env_ready);
     }
     return 0;
 #elif defined(NRF_ASYNC_ACTIVATION_TEST)

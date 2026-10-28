@@ -24,7 +24,10 @@ static void test_source_result_cross_product(void)
                 const int result = nrf_sensor_snapshot_refresh(&state, &sources, &snapshot);
                 assert(result == (valid == 3U ? NRF_SENSOR_SNAPSHOT_OK :
                     valid != 0U ? NRF_SENSOR_SNAPSHOT_PARTIAL : NRF_SENSOR_SNAPSHOT_ERR_NO_DATA));
-                assert(snapshot.valid_mask == valid && snapshot.fault_mask == (3U ^ valid));
+                const unsigned fault = (((missing & 1U) != 0U ||
+                    (imu != 0 && imu != NRF_SENSOR_READ_PENDING)) ? 1U : 0U) |
+                    (((missing & 2U) != 0U || env != 0) ? 2U : 0U);
+                assert(snapshot.valid_mask == valid && snapshot.fault_mask == fault);
                 assert(snapshot.sequence == 0U);
                 assert(fake.imu_calls == ((missing & 1U) == 0U ? 1 : 0));
                 assert(fake.env_calls == ((missing & 2U) == 0U ? 1 : 0));

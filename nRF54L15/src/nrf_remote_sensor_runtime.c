@@ -160,8 +160,9 @@ nrf_sensor_snapshot_result_t nrf_remote_sensor_runtime_refresh(
     if (result == NRF_SENSOR_SNAPSHOT_OK ||
         result == NRF_SENSOR_SNAPSHOT_PARTIAL ||
         result == NRF_SENSOR_SNAPSHOT_ERR_NO_DATA) {
-        nrf_remote_sensor_runtime_note_imu_read(
-            runtime, (runtime->snapshot.fault_mask & NRF_SENSOR_VALID_IMU) != 0U);
+        if (((runtime->snapshot.valid_mask | runtime->snapshot.fault_mask) & NRF_SENSOR_VALID_IMU) != 0U)
+            nrf_remote_sensor_runtime_note_imu_read(
+                runtime, (runtime->snapshot.fault_mask & NRF_SENSOR_VALID_IMU) != 0U);
         nrf_remote_sensor_runtime_track_read(
             runtime->env_ready,
             (runtime->snapshot.fault_mask & NRF_SENSOR_VALID_ENV) != 0U,

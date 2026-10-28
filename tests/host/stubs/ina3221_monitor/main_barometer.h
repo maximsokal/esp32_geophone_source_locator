@@ -27,7 +27,8 @@ typedef struct {
 } main_barometer_reading_t;
 
 typedef struct {
-    uint8_t unused;
+    struct { void *bus; } handles;
+    uint64_t next_bmp280_poll_ms;
 } main_barometer_t;
 
 void main_barometer_init(main_barometer_t *barometer);

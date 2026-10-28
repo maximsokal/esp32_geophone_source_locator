@@ -65,16 +65,21 @@ typedef struct {
     main_barometer_reading_t reading;
     uint64_t next_bmp280_poll_ms;
     uint64_t bmp280_retry_after_ms;
+    uint64_t bmp280_pending_count_due_ms;
     uint64_t aht20_retry_after_ms;
     uint64_t last_aht20_attempt_ms;
     esp_err_t bmp280_retry_error;
     esp_err_t aht20_retry_error;
-    /* Consecutive polls that read the data-register reset value (0x80000). */
+    /* Consecutive polls without a proven new sample. */
     uint8_t bmp280_pending_polls;
     /* Consecutive polls that lost the shared-bus owner lock to another task. */
     uint8_t bmp280_yield_polls;
-    /* Normal mode never produced data: each poll runs one forced conversion instead. */
+    /* Normal mode stalled: start and finish forced conversions across polls. */
     bool bmp280_forced;
+    bool bmp280_conversion_pending;
+    bool bmp280_conversion_seen;
+    uint64_t bmp280_conversion_ready_ms;
+    uint64_t bmp280_conversion_deadline_ms;
     main_bmp280_state_t bmp280_state;
     bool bmp280_initialized;
     bool aht20_initialized;

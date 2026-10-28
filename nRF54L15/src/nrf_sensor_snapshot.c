@@ -44,10 +44,11 @@ nrf_sensor_snapshot_result_t nrf_sensor_snapshot_refresh(
         snapshot->fault_mask |= NRF_SENSOR_VALID_IMU;
     } else {
         nrf_imu_sample_t imu = {0};
-        if (sources->read_imu(sources->imu_context, &imu) == 0) {
+        const int result = sources->read_imu(sources->imu_context, &imu);
+        if (result == 0) {
             snapshot->imu = imu;
             snapshot->valid_mask |= NRF_SENSOR_VALID_IMU;
-        } else {
+        } else if (result != NRF_SENSOR_READ_PENDING) {
             snapshot->fault_mask |= NRF_SENSOR_VALID_IMU;
         }
     }

@@ -14,6 +14,7 @@
 #define TEST_BMI160_REG_ACCEL_RANGE 0x41U
 #define TEST_BMI160_REG_GYRO_CONFIG 0x42U
 #define TEST_BMI160_REG_GYRO_RANGE 0x43U
+#define TEST_BMI160_REG_STATUS 0x1BU
 #define TEST_BMI160_REG_CMD 0x7EU
 
 #define TEST_BMI160_CMD_ACCEL_NORMAL 0x11U
@@ -24,6 +25,7 @@
 
 typedef struct {
     uint8_t regs[256];
+    unsigned err_reg_reads;
     int transfer_count;
     int fail_at_transfer;
     bool emulate_pmu;
@@ -87,7 +89,9 @@ static int fake_transfer(
     if (write_len == 1U && read_len > 0U &&
         write_data != NULL && read_data != NULL) {
         const uint8_t reg = write_data[0];
+        if (reg == 0x02U) ++fake->err_reg_reads;
         memcpy(read_data, &fake->regs[reg], read_len);
+        if (reg == TEST_BMI160_REG_GYRO_DATA) fake->regs[TEST_BMI160_REG_STATUS] &= ~0xC0U;
         return 0;
     }
 
@@ -116,6 +120,7 @@ static void seed_sensor(fake_bmi160_bus_t *fake)
     memset(fake, 0, sizeof(*fake));
     fake->regs[TEST_BMI160_REG_CHIP_ID] = NRF_BMI160_CHIP_ID;
     fake->emulate_pmu = true;
+    fake->regs[TEST_BMI160_REG_STATUS] = 0xC0U;
 }
 
 static void put_i16_le(uint8_t *target, int16_t value)
@@ -240,7 +245,7 @@ static void test_init_rejects_pmu_that_did_not_enter_normal_mode(void)
                fake_delay_ms,
                &fake) == NRF_BMI160_ERR_PMU);
     assert(!device.initialized);
-    assert(fake.transfer_count == 6);
+    assert(fake.transfer_count == 7); /* includes ERR_REG diagnostic */
 }
 
 static void test_init_propagates_transfer_failure(void)
@@ -351,9 +356,12 @@ static void test_read_detects_suspended_sensor_instead_of_returning_zero_motion(
                &fake) == NRF_BMI160_OK);
 
     fake.regs[TEST_BMI160_REG_PMU_STATUS] = 0U;
+    fake.regs[0x02U] = 0x42U;
     memset(&fake.regs[TEST_BMI160_REG_GYRO_DATA], 0, 12U);
     memset(&sample, 0x55, sizeof(sample));
     assert(nrf_bmi160_read_imu(&device, &sample) == NRF_BMI160_ERR_PMU);
+    assert(fake.err_reg_reads == 1U);
+    assert(device.err_reg_valid && device.err_reg == 0x42U);
     assert_sample_zero(&sample);
     assert(!device.initialized);
     assert(device.state == NRF_BMI160_RECOVER);
@@ -460,8 +468,34 @@ static void test_async_initialization_respects_deadlines(void)
     assert(device.state == NRF_BMI160_RECOVER && fake.transitions[1] == NRF_BMI160_RECOVER);
 }
 
+static void test_both_drdy_required_and_consumed(void)
+{
+    fake_bmi160_bus_t fake;
+    seed_sensor(&fake);
+    nrf_sensor_bus_t bus = make_bus(&fake);
+    nrf_bmi160_t device;
+    nrf_imu_sample_t sample;
+    assert(nrf_bmi160_init(&device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
+                           fake_delay_ms, &fake) == NRF_BMI160_OK);
+    const uint8_t missing[] = {0U, 0x40U, 0x80U};
+    for (size_t i = 0U; i < sizeof(missing); ++i) {
+        fake.regs[TEST_BMI160_REG_STATUS] = missing[i];
+        memset(&sample, 0x55, sizeof(sample));
+        assert(nrf_bmi160_read_imu(&device, &sample) == NRF_BMI160_PENDING);
+        assert_sample_zero(&sample);
+        assert(device.initialized && device.state == NRF_BMI160_MEASURING);
+    }
+    fake.regs[TEST_BMI160_REG_STATUS] = 0xC0U;
+    assert(nrf_bmi160_read_imu(&device, &sample) == NRF_BMI160_OK);
+    assert(nrf_bmi160_read_imu(&device, &sample) == NRF_BMI160_PENDING);
+    assert_sample_zero(&sample);
+    fake.regs[TEST_BMI160_REG_STATUS] = 0xC0U;
+    assert(nrf_bmi160_read_imu(&device, &sample) == NRF_BMI160_OK);
+}
+
 int main(void)
 {
+    test_both_drdy_required_and_consumed();
     test_async_initialization_respects_deadlines();
     test_state_machine_initialization_and_recovery();
     test_read_detects_suspended_sensor_instead_of_returning_zero_motion();

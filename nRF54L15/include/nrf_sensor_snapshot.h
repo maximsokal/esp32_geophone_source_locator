@@ -38,6 +38,9 @@ typedef struct {
     uint32_t humidity_milli_percent;
 } nrf_env_sample_t;
 
+/* An IMU read can be pending without a sensor fault or a reusable sample. */
+enum { NRF_SENSOR_READ_PENDING = 1 };
+
 typedef int (*nrf_read_imu_fn)(void *context, nrf_imu_sample_t *sample);
 typedef int (*nrf_read_env_fn)(void *context, nrf_env_sample_t *sample);
 

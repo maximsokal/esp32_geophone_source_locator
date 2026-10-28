@@ -16,6 +16,7 @@ typedef struct {
     nrf_env_sample_t prepared_env;
     nrf_bme280_result_t prepared_env_result;
     bool env_prepared;
+    uint64_t imu_read_deadline_ms;
     bool imu_init_active;
     bool env_init_active;
     uint8_t imu_address_index;

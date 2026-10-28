@@ -28,6 +28,7 @@ typedef struct {
     int absent_result[2];
     /* Humidity is skipped (0x8000) when CTRL_HUM oversampling is 0 at CTRL_MEAS write. */
     bool emulate_humidity_gate;
+    bool ignore_forced;
     int transfer_count;
     int fail_at_transfer;
     uint8_t address_history[64];
@@ -90,6 +91,8 @@ static int fake_transfer(
 
     uint8_t *regs = fake->regs[index];
     if (write_len == 2U && read_len == 0U && write_data != NULL) {
+        if (fake->ignore_forced && write_data[0] == TEST_REG_CTRL_MEAS &&
+            (write_data[1] & 3U) == 1U) return 0;
         regs[write_data[0]] = write_data[1];
         if (fake->emulate_humidity_gate && write_data[0] == TEST_REG_CTRL_MEAS &&
             (regs[TEST_REG_CTRL_HUM] & 0x07U) == 0U) {
@@ -103,6 +106,9 @@ static int fake_transfer(
         write_data != NULL && read_data != NULL) {
         const uint8_t reg = write_data[0];
         assert((size_t)reg + read_len <= 256U);
+        if (reg == TEST_REG_STATUS && read_len == 3U &&
+            (regs[TEST_REG_STATUS] & TEST_STATUS_MEASURING) == 0U)
+            regs[TEST_REG_CTRL_MEAS] &= ~3U;
         memcpy(read_data, &regs[reg], read_len);
         return 0;
     }
@@ -384,7 +390,7 @@ static void test_read_matches_bosch_integer_compensation_vector(void)
     pack_measurement(fake.regs[0], 415148U, 519888U, 30000U);
 
     assert(nrf_bme280_read_env(&device, &sample) == NRF_BME280_OK);
-    assert(fake.regs[0][TEST_REG_CTRL_MEAS] == 0x55U);
+    assert(fake.regs[0][TEST_REG_CTRL_MEAS] == 0x54U); /* completed conversion sleeps */
     assert(sample.temperature_milli_c == 25080);
     assert(sample.pressure_pa == 100653U);
     assert(sample.humidity_milli_percent == 54285U);
@@ -632,8 +638,42 @@ static void test_async_initialization_respects_deadline(void)
     }
 }
 
+static void test_ack_without_conversion_rejects_old_nonzero_sample(void)
+{
+    fake_bme280_bus_t fake;
+    seed_sensor(&fake, NRF_BME280_ADDRESS_PRIMARY);
+    fake.regs[0][TEST_REG_CHIP_ID] = NRF_BMP280_CHIP_ID;
+    pack_measurement(fake.regs[0], 415148U, 519888U, 0U);
+    nrf_sensor_bus_t bus = make_bus(&fake);
+    nrf_bme280_t device;
+    nrf_env_sample_t sample;
+    assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_OK);
+    fake.ignore_forced = true;
+    int result = nrf_bme280_start_conversion(&device, 100U);
+    if (result == NRF_BME280_OK)
+        result = nrf_bme280_poll_conversion(&device, 147U, &sample);
+    assert(result != NRF_BME280_OK && result != NRF_BME280_PENDING);
+}
+
+static void test_delayed_conversion_poll_does_not_publish_expired_sample(void)
+{
+    fake_bme280_bus_t fake;
+    seed_sensor(&fake, NRF_BME280_ADDRESS_PRIMARY);
+    pack_measurement(fake.regs[0], 415148U, 519888U, 30000U);
+    nrf_sensor_bus_t bus = make_bus(&fake);
+    nrf_bme280_t device;
+    nrf_env_sample_t sample;
+    assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_OK);
+    assert(nrf_bme280_start_conversion(&device, 100U) == NRF_BME280_OK);
+    assert(nrf_bme280_poll_conversion(&device, 1000U, &sample) == NRF_BME280_ERR_MEASUREMENT);
+    assert_sample_zero(&sample);
+    assert(!device.conversion_pending);
+}
+
 int main(void)
 {
+    test_delayed_conversion_poll_does_not_publish_expired_sample();
+    test_ack_without_conversion_rejects_old_nonzero_sample();
     test_async_initialization_respects_deadline();
     test_forced_conversion_can_be_polled_without_sleep();
     test_state_machine_initialization_and_recovery();

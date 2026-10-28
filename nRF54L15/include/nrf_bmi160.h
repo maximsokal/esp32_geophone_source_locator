@@ -20,7 +20,7 @@ enum {
 
 typedef enum {
     NRF_BMI160_OK = 0,
-    NRF_BMI160_PENDING = 1,
+    NRF_BMI160_PENDING = NRF_SENSOR_READ_PENDING,
     NRF_BMI160_ERR_ARGUMENT = -1,
     NRF_BMI160_ERR_BUS = -2,
     NRF_BMI160_ERR_CHIP_ID = -3,
@@ -53,6 +53,8 @@ typedef struct {
     nrf_bmi160_state_t state;
     /* The CHIP_ID register as read (0 until a read succeeded); 0xD1 is a BMI160. */
     uint8_t chip_id;
+    uint8_t err_reg;
+    bool err_reg_valid;
     uint8_t prepare_phase;
     uint64_t prepare_due_ms;
     nrf_bmi160_state_observer_fn observer;

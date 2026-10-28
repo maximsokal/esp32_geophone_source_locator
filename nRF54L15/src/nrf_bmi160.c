@@ -5,8 +5,10 @@
 /* Bosch BMI160 register map / commands used by this minimal runtime driver. */
 enum {
     BMI160_REG_CHIP_ID = 0x00U,
+    BMI160_REG_ERROR = 0x02U,
     BMI160_REG_PMU_STATUS = 0x03U,
     BMI160_REG_GYRO_DATA = 0x0CU,
+    BMI160_REG_STATUS = 0x1BU,
     BMI160_REG_ACCEL_CONFIG = 0x40U,
     BMI160_REG_ACCEL_RANGE = 0x41U,
     BMI160_REG_GYRO_CONFIG = 0x42U,
@@ -70,6 +72,14 @@ static int16_t bmi160_read_le_i16(const uint8_t *data)
 {
     const uint16_t value = (uint16_t)data[0] | ((uint16_t)data[1] << 8U);
     return (int16_t)value;
+}
+
+static void bmi160_capture_error(nrf_bmi160_t *device)
+{
+    /* ERR_REG clears flags on read; keep it only when entering recovery. */
+    device->err_reg = 0U;
+    device->err_reg_valid = device->chip_id == NRF_BMI160_CHIP_ID &&
+        bmi160_read_regs(device, BMI160_REG_ERROR, &device->err_reg, 1U) == NRF_BMI160_OK;
 }
 
 static int32_t bmi160_round_scaled(
@@ -219,6 +229,7 @@ nrf_bmi160_result_t nrf_bmi160_step_async(nrf_bmi160_t *device, uint64_t now_ms)
     return NRF_BMI160_PENDING;
 
 failed_async:
+    bmi160_capture_error(device);
     device->initialized = false;
     device->state = NRF_BMI160_RECOVER;
     if (device->observer != NULL) device->observer(device->observer_context, device->state);
@@ -252,10 +263,16 @@ int nrf_bmi160_read_imu(void *context, nrf_imu_sample_t *sample)
     }
     if ((pmu_status & (BMI160_PMU_ACCEL_MASK | BMI160_PMU_GYRO_MASK)) !=
         (BMI160_PMU_ACCEL_NORMAL | BMI160_PMU_GYRO_NORMAL)) {
+        bmi160_capture_error(device);
         device->initialized = false;
         device->state = NRF_BMI160_RECOVER;
         return NRF_BMI160_ERR_PMU;
     }
+
+    uint8_t status = 0U;
+    result = bmi160_read_regs(device, BMI160_REG_STATUS, &status, 1U);
+    if (result != NRF_BMI160_OK) return result;
+    if ((status & 0xC0U) != 0xC0U) return NRF_BMI160_PENDING;
 
     result = bmi160_read_regs(
         device,

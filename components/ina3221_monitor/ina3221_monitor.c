@@ -712,19 +712,24 @@ static void ina3221_monitor_log_sample(
 }
 
 
-static bool ina3221_monitor_wait_for_period_or_stop(void)
+static bool ina3221_monitor_wait_for_period_or_stop(const main_barometer_t *barometer)
 {
-    const uint32_t period_ms =
+    uint32_t period_ms =
         ina3221_monitor_fast_sampling_active() ?
             INA3221_MONITOR_FAST_PERIOD_MS :
             INA3221_MONITOR_PERIOD_MS;
 
+    if (barometer->handles.bus != NULL) {
+        const uint64_t now_ms = (uint64_t)(esp_timer_get_time() / INT64_C(1000));
+        const uint64_t until_poll_ms = barometer->next_bmp280_poll_ms > now_ms
+            ? barometer->next_bmp280_poll_ms - now_ms : 1U;
+        if (until_poll_ms < period_ms) period_ms = (uint32_t)until_poll_ms;
+    }
+    const TickType_t wait_ticks = pdMS_TO_TICKS(period_ms);
     const uint32_t notifications =
         ulTaskNotifyTake(
             pdTRUE,
-            pdMS_TO_TICKS(
-                period_ms
-            )
+            wait_ticks > 0U ? wait_ticks : 1U
         );
 
     return
@@ -803,7 +808,7 @@ static void ina3221_monitor_worker(
                         }
                     }
                     hardware_available = false;
-                    if (ina3221_monitor_wait_for_period_or_stop()) {
+                    if (ina3221_monitor_wait_for_period_or_stop(&main_barometer)) {
                         break;
                     }
                     continue;
@@ -855,7 +860,7 @@ static void ina3221_monitor_worker(
                     hardware_available =
                         false;
 
-                    if (ina3221_monitor_wait_for_period_or_stop()) {
+                    if (ina3221_monitor_wait_for_period_or_stop(&main_barometer)) {
                         break;
                     }
                     continue;
@@ -929,7 +934,7 @@ static void ina3221_monitor_worker(
                     busy_log_started = true;
                 }
 
-                if (ina3221_monitor_wait_for_period_or_stop()) {
+                if (ina3221_monitor_wait_for_period_or_stop(&main_barometer)) {
                     break;
                 }
                 continue;
@@ -980,7 +985,7 @@ static void ina3221_monitor_worker(
                 hardware_available =
                     false;
 
-                if (ina3221_monitor_wait_for_period_or_stop()) {
+                if (ina3221_monitor_wait_for_period_or_stop(&main_barometer)) {
                     break;
                 }
                 continue;
@@ -1041,7 +1046,7 @@ static void ina3221_monitor_worker(
                 );
             }
 
-            if (ina3221_monitor_wait_for_period_or_stop()) {
+            if (ina3221_monitor_wait_for_period_or_stop(&main_barometer)) {
                 break;
             }
         }

@@ -45,14 +45,17 @@ static const char *bmi160_result_text(nrf_bmi160_result_t result)
 }
 
 /* One line per address and attempt (the init is retried every few seconds until it works). */
-static void bmi160_report(uint8_t address, nrf_bmi160_result_t result, uint8_t chip_id)
+static void bmi160_report(uint8_t address, nrf_bmi160_result_t result, const nrf_bmi160_t *device)
 {
     if (result == NRF_BMI160_ERR_BUS) {
         printk("sensor_probe: BMI160 addr=0x%02x NO ANSWER (%s)\n", (unsigned)address, bmi160_result_text(result));
     } else {
         printk("sensor_probe: BMI160 addr=0x%02x result=%d (%s) chip_id=0x%02x (BMI160 = 0xd1)\n",
-               (unsigned)address, (int)result, bmi160_result_text(result), (unsigned)chip_id);
+               (unsigned)address, (int)result, bmi160_result_text(result), (unsigned)device->chip_id);
     }
+    if (device->err_reg_valid)
+        printk("sensor_probe: BMI160 addr=0x%02x ERR_REG=0x%02x\n",
+               (unsigned)address, (unsigned)device->err_reg);
 }
 #endif
 
@@ -74,7 +77,7 @@ nrf_bmi160_result_t nrf_bmi160_zephyr_step(nrf_bmi160_t *device, uint64_t now_ms
     const nrf_bmi160_result_t result = nrf_bmi160_step_async(device, now_ms);
 #if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
     if (result != NRF_BMI160_PENDING && device != NULL)
-        bmi160_report(device->address, result, device->chip_id);
+        bmi160_report(device->address, result, device);
 #endif
     return result;
 }
@@ -107,7 +110,7 @@ nrf_bmi160_result_t nrf_bmi160_zephyr_init_remote(nrf_bmi160_t *device)
             bmi160_observe_state,
             NULL);
 #if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
-        bmi160_report(addresses[i], result, attempt.chip_id);
+        bmi160_report(addresses[i], result, &attempt);
 #endif
         if (result == NRF_BMI160_OK) {
             *device = attempt;

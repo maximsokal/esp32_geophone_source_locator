@@ -32,6 +32,8 @@ void sensor_bus_log_diag_summary(uint32_t now_ms)
     (void)now_ms;
 }
 
+static uint32_t s_barometer_delay_ms;
+
 void main_barometer_init(main_barometer_t *barometer)
 {
     memset(barometer, 0, sizeof(*barometer));
@@ -39,8 +41,10 @@ void main_barometer_init(main_barometer_t *barometer)
 
 esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
 {
-    (void)barometer;
-    (void)now_ms;
+    if (s_barometer_delay_ms != 0U) {
+        barometer->handles.bus = barometer;
+        barometer->next_bmp280_poll_ms = now_ms + s_barometer_delay_ms;
+    }
     return ESP_OK;
 }
 
@@ -274,6 +278,7 @@ uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
 {
     assert(clear_on_exit == pdTRUE);
     assert(
+        ticks_to_wait == pdMS_TO_TICKS(50U) ||
         ticks_to_wait == pdMS_TO_TICKS(1000U) ||
         ticks_to_wait == pdMS_TO_TICKS(20U)
     );
@@ -1281,6 +1286,17 @@ static bool run_requested_max440_test(const char *name)
 }
 
 
+static void test_barometer_deadline_wakes_idle_worker(void)
+{
+    reset_fakes();
+    s_barometer_delay_ms = 50U;
+    s_stop_on_wait = true;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_worker_entry(s_worker_argument);
+    assert(s_last_wait_ticks == pdMS_TO_TICKS(50U));
+    s_barometer_delay_ms = 0U;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2) {
@@ -1292,6 +1308,7 @@ int main(int argc, char **argv)
     test_start_is_rejected_while_stop_is_active();
     test_stop_handles_delayed_worker_registration();
     test_stop_notifies_running_worker_once();
+    test_barometer_deadline_wakes_idle_worker();
     test_worker_publishes_normal_sample_and_cleans_up();
     test_open_failure_publishes_invalid_and_stops_on_notification();
     test_absent_ina_retries_at_least_five_seconds_apart();

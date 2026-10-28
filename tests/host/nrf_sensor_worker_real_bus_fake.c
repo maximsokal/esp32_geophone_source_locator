@@ -10,6 +10,7 @@
 const struct device test_i2c30 = {0};
 static uint8_t imu[256], env[256];
 static bool imu_present;
+static uint8_t imu_drdy_mask;
 unsigned fake_sensor_bus_sleep_count, fake_sensor_bus_imu_reads;
 unsigned fake_sensor_bus_imu_id_probes;
 unsigned fake_sensor_bus_imu_states, fake_sensor_bus_env_states;
@@ -28,11 +29,13 @@ void fake_sensor_bus_restore_pressure(void)
 void fake_sensor_bus_suspend_imu(void) { imu[0x03U] = 0U; }
 void fake_sensor_bus_reset_env(void) { env[0xF4U] = 0U; env[0xF5U] = 0U; }
 void fake_sensor_bus_hold_env_nvm(bool busy) { env[0xF3U] = busy ? 1U : 0U; }
+void fake_sensor_bus_set_drdy_mask(uint8_t mask) { imu_drdy_mask = mask; }
 void fake_sensor_bus_set_imu_present(bool present) { imu_present = present; }
 
 void fake_sensor_bus_setup(void)
 {
     memset(imu, 0, sizeof(imu)); memset(env, 0, sizeof(env));
+    imu_drdy_mask = 0xC0U;
     imu_present = true; fake_sensor_bus_imu_id_probes = 0U;
     imu[0] = 0xD1U; imu[0x16U] = 0x00U; imu[0x17U] = 0x40U;
     env[0xD0U] = 0x58U;
@@ -80,7 +83,13 @@ int i2c_write_read(const struct device *device, uint16_t address, const void *wr
         imu_last_ms = now_ms;
         ++fake_sensor_bus_imu_reads;
     }
-    memcpy(read_data, &regs[reg], read_len); return 0;
+    if (address == 0x68U && reg == 0x1BU)
+        regs[0x1BU] = fake_sensor_bus_imu_reads == 0U || (uint64_t)k_uptime_get() - imu_last_ms >= 10U
+            ? imu_drdy_mask : 0U;
+    if (address == 0x76U && reg == 0xF3U && read_len == 3U) regs[0xF4U] &= ~3U;
+    memcpy(read_data, &regs[reg], read_len);
+    if (address == 0x68U && reg == 0x0CU) regs[0x1BU] = 0U;
+    return 0;
 }
 int i2c_write(const struct device *device, const uint8_t *data, uint32_t length, uint16_t address)
 {

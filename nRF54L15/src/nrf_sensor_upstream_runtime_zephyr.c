@@ -835,6 +835,10 @@ static void orientation_periodic_read(void)
     result = s_runtime.core.sources.read_imu(
         s_runtime.core.sources.imu_context,
         &sample);
+    if (result == NRF_SENSOR_READ_PENDING) {
+        orientation_advance_deadline(runtime_uptime_ms());
+        return;
+    }
     nrf_remote_sensor_runtime_zephyr_note_imu_read(&s_runtime, result != 0);
     completion_uptime_ms = runtime_uptime_ms();
     if (result == 0) {
@@ -859,6 +863,8 @@ static void orientation_consume_aggregate_refresh(bool did_refresh)
     bool imu_valid = did_refresh &&
         (s_runtime.core.snapshot.valid_mask & NRF_SENSOR_VALID_IMU) != 0U;
     const uint64_t completion_uptime_ms = runtime_uptime_ms();
+    const bool imu_pending = did_refresh &&
+        ((s_runtime.core.snapshot.valid_mask | s_runtime.core.snapshot.fault_mask) & NRF_SENSOR_VALID_IMU) == 0U;
 
     if (imu_valid) {
         nrf_imu_sample_t filtered;
@@ -870,7 +876,7 @@ static void orientation_consume_aggregate_refresh(bool did_refresh)
             s_runtime.core.snapshot.imu = filtered;
         }
     }
-    if (!imu_valid) {
+    if (!imu_valid && !imu_pending) {
         s_runtime.core.snapshot.valid_mask &= ~NRF_SENSOR_VALID_IMU;
         s_runtime.core.snapshot.fault_mask |= NRF_SENSOR_VALID_IMU;
         imu_filters_reset();
@@ -887,10 +893,11 @@ static void orientation_consume_aggregate_refresh(bool did_refresh)
         altitude_filter_reset();
     }
 
-    orientation_feed_sample(
-        &s_runtime.core.snapshot.imu,
-        imu_valid,
-        completion_uptime_ms);
+    if (!imu_pending)
+        orientation_feed_sample(
+            &s_runtime.core.snapshot.imu,
+            imu_valid,
+            completion_uptime_ms);
 }
 
 static void apply_height_reference_request(
@@ -1230,11 +1237,17 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
                 if (!s_runtime.core.env_ready) s_runtime.core.env_retry_after_ms = 0U;
             }
         }
+        poll_pending_refresh(runtime_uptime_ms());
         if ((queue_result != 0 || event.type != NRF_SENSOR_EVENT_IMU_CALIBRATE) &&
             orientation_due(runtime_uptime_ms())) {
-            orientation_periodic_read();
+            const uint64_t now_ms = runtime_uptime_ms();
+            /* Reserve the next 100 Hz IMU sample for an imminent aggregate read. */
+            if (s_pending_refresh.active && s_pending_refresh.next_poll_ms > now_ms &&
+                s_pending_refresh.next_poll_ms - now_ms <= 10U)
+                s_next_orientation_due_ms = s_pending_refresh.next_poll_ms;
+            else
+                orientation_periodic_read();
         }
-        poll_pending_refresh(runtime_uptime_ms());
         if (s_scan_pending && !s_pending_refresh.active) {
             int scan_result = -EAGAIN;
             if (s_worker_node_state.lifecycle == NRF_NODE_LIFECYCLE_READY &&

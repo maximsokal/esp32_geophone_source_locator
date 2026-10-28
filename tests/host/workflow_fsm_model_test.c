@@ -282,6 +282,18 @@ static workflow_command_result_t model_apply(
                 state->scan_upload_status = WORKFLOW_SCAN_UPLOAD_NONE;
             }
             break;
+        case WORKFLOW_COMMAND_SET_DISTANCE:
+            if (state->step == WORKFLOW_STEP_RANGING_RESULT) {
+                if (!params->has_generation || !params->has_distance || !params->has_ok ||
+                    params->distance_mm <= 0 || params->node_a == params->node_b)
+                    return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+                state->ranging_ok = params->ok;
+                state->layout_result_valid = true;
+                state->layout_ok = params->ok;
+                model_advance_generation(state);
+                return WORKFLOW_COMMAND_RESULT_OK;
+            }
+            break;
         default:
             break;
     }

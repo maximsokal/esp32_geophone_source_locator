@@ -73,7 +73,7 @@ static void test_bmi_failures_at_each_transfer(void)
         assert(nrf_bmi160_init(&device, &bus, 0x68U, fake_delay_ms, &fake) == NRF_BMI160_ERR_BUS);
         assert(!device.initialized);
     }
-    for (int operation = 1; operation <= 3; ++operation) {
+    for (int operation = 1; operation <= 4; ++operation) {
         fake_bmi160_bus_t fake;
         seed_sensor(&fake);
         nrf_sensor_bus_t bus = make_bus(&fake);
@@ -100,6 +100,7 @@ static void test_all_bmi_measurement_words(void)
             put_i16_le(&fake.regs[TEST_BMI160_REG_GYRO_DATA + 2U * axis], (int16_t)value);
         }
         put_i16_le(&fake.regs[TEST_BMI160_REG_TEMPERATURE], (int16_t)value);
+        fake.regs[TEST_BMI160_REG_STATUS] = 0xC0U; /* this iteration supplies a new sample */
         nrf_imu_sample_t sample;
         memset(&sample, 0x55, sizeof(sample));
         const int result = nrf_bmi160_read_imu(&device, &sample);
