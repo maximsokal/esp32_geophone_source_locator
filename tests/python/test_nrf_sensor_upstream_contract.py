@@ -91,21 +91,43 @@ def test_remote_logical_activation_precedes_published_assignment_ok():
     bootstrap = read("nRF54L15/src/nrf_bootstrap_runtime_zephyr.c")
 
     handler_start = bootstrap.index("static void assign_work_handler")
-    handler_end = bootstrap.index("static void target_write_received")
+    handler_end = bootstrap.index("static void select_log_error_response")
     handler = bootstrap[handler_start:handler_end]
     process = handler.index("nrf_bootstrap_process_assign")
     notify = handler.index("nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment")
-    publish_ok = handler.rindex("publish_core_status();")
-    assert process < notify < publish_ok
-    assert re.search(r"result\s*==\s*NRF_UPSTREAM_RESULT_OK", handler)
+    complete = handler.index("complete_committed_assignment(&assign")
+    assert process < notify < complete
+    assert "if (result != NRF_UPSTREAM_RESULT_OK)" in handler
     assert re.search(r"assign\.role\s*==\s*NRF_UPSTREAM_ROLE_REMOTE", handler)
-    assert handler.count("assignment_runtime_failure();") >= 2
+    assert "if (activation == -ENOSPC)" in handler
+    assert "publish_core_status_with_result(NRF_UPSTREAM_RESULT_PENDING);" in handler
+    assert "nrf_hci_workqueue_reschedule(" in handler
+
+    finish_start = bootstrap.index("static void complete_committed_assignment")
+    finish_end = bootstrap.index("static void assign_activation_retry_handler")
+    finish = bootstrap[finish_start:finish_end]
+    assert finish.index("nrf_cs_pair_runtime_zephyr_set_node_id") < finish.index("publish_core_status();")
+    assert finish.index("nrf_cs_control_runtime_assign_node") < finish.index("publish_core_status();")
+    assert "assignment_runtime_failure(NRF_REBOOT_INTENT_ASSIGN_CS_PAIR, cs_pair_result);" in finish
+    assert "assignment_runtime_failure(NRF_REBOOT_INTENT_ASSIGN_CS_CONTROL, cs_result);" in finish
+    assert finish.index("increment_saturating(&s_role_assignment_sequence)") < finish.index("publish_core_status();")
+
+    retry_start = bootstrap.index("static void assign_activation_retry_handler")
+    retry_end = bootstrap.index("static void assign_work_handler")
+    retry = bootstrap[retry_start:retry_end]
+    assert retry.index("nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment") < retry.index(
+        "complete_committed_assignment("
+    )
+    assert "if (activation == -ENOSPC)" in retry
+    assert "nrf_hci_workqueue_reschedule(" in retry
+    assert "assignment_runtime_failure(NRF_REBOOT_INTENT_ASSIGN_SENSOR, activation);" in retry
 
     failure_start = bootstrap.index("static void assignment_runtime_failure")
-    failure_end = bootstrap.index("static void assign_work_handler")
+    failure_end = bootstrap.index("static void complete_committed_assignment")
     failure = bootstrap[failure_start:failure_end]
     assert "publish_core_status_with_result(NRF_UPSTREAM_RESULT_INTERNAL_ERROR);" in failure
-    assert "runtime_cold_reboot(NULL);" in failure
+    assert "nrf_reboot_intent_zephyr_record(stage, error);" in failure
+    assert "sys_reboot(SYS_REBOOT_COLD);" in failure
 
     notify_start = sensor.index("int nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment")
     notify_end = sensor.index("int nrf_sensor_upstream_runtime_zephyr_request_refresh")

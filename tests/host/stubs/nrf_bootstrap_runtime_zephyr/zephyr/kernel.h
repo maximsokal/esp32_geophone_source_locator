@@ -71,12 +71,16 @@ struct k_work {
     bool queued;
 };
 struct k_work_delayable { struct k_work work; };
-
+#define K_MSEC(ms) ((k_timeout_t)(ms))
 static inline void k_work_init(struct k_work *work, k_work_handler_t handler)
 {
     work->handler = handler;
     work->queue = NULL;
     work->queued = false;
+}
+static inline void k_work_init_delayable(struct k_work_delayable *work, k_work_handler_t handler)
+{
+    k_work_init(&work->work, handler);
 }
 
 extern struct k_work_q k_sys_work_q;

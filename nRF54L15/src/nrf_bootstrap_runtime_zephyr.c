@@ -20,6 +20,7 @@
 #include "nrf_log_runtime_zephyr.h"
 #include "nrf_hci_workqueue.h"
 #include "nrf_read_window.h"
+#include "nrf_reboot_intent_zephyr.h"
 #include "nrf_sensor_upstream_runtime_zephyr.h"
 #include "nrf_upstream_protocol.h"
 #include "nrf_upstream_target_zephyr.h"
@@ -41,6 +42,10 @@ K_MSGQ_DEFINE(s_assign_queue, sizeof(assign_work_item_t), NRF_BOOTSTRAP_QUEUE_DE
 K_MSGQ_DEFINE(s_cs_execute_queue, sizeof(cs_execute_work_item_t), NRF_CS_EXECUTE_QUEUE_DEPTH, 4);
 
 static struct k_work s_assign_work;
+static struct k_work_delayable s_assign_activation_retry_work;
+static bool s_assign_activation_retry_pending;
+static nrf_upstream_assign_t s_assign_activation_retry_assign;
+static nrf_upstream_status_t s_assign_activation_previous_status;
 static struct k_work s_cs_execute_work;
 static struct k_spinlock s_assign_queue_lock;
 static struct k_spinlock s_cs_execute_queue_lock;
@@ -209,13 +214,23 @@ bool nrf_bootstrap_runtime_zephyr_drain_twis_record(
 static int runtime_readdress(void *context, uint8_t address){(void)context;return nrf_upstream_target_zephyr_readdress(address);}
 static bool runtime_target_is_registered(void *context){(void)context;return nrf_upstream_target_zephyr_is_registered();}
 static uint8_t runtime_target_address(void *context){(void)context;return (uint8_t)nrf_upstream_target_zephyr_address();}
-static void runtime_cold_reboot(void *context){(void)context;sys_reboot(SYS_REBOOT_COLD);}
+static void runtime_cold_reboot(void *context)
+{
+    (void)context;
+    nrf_reboot_intent_zephyr_record(NRF_REBOOT_INTENT_READDRESS, 0);
+    sys_reboot(SYS_REBOOT_COLD);
+}
 
 static void publish_status(const nrf_upstream_status_t *status){k_spinlock_key_t key=k_spin_lock(&s_status_lock);s_published_status=*status;k_spin_unlock(&s_status_lock,key);}
 static void publish_core_status(void){nrf_upstream_status_t status;if(nrf_bootstrap_make_status(&s_bootstrap,&status)==NRF_UPSTREAM_RESULT_OK)publish_status(&status);}
 static void publish_core_status_with_result(nrf_upstream_result_t result){nrf_upstream_status_t status;if(nrf_bootstrap_make_status(&s_bootstrap,&status)==NRF_UPSTREAM_RESULT_OK){status.result=(uint8_t)result;publish_status(&status);}}
 static void publish_result_context(uint32_t request_id,nrf_upstream_result_t result){k_spinlock_key_t key=k_spin_lock(&s_status_lock);s_published_status.request_id=request_id;s_published_status.result=(uint8_t)result;k_spin_unlock(&s_status_lock,key);}
-static void assignment_runtime_failure(void){publish_core_status_with_result(NRF_UPSTREAM_RESULT_INTERNAL_ERROR);runtime_cold_reboot(NULL);}
+static void assignment_runtime_failure(nrf_reboot_intent_stage_t stage, int error)
+{
+    publish_core_status_with_result(NRF_UPSTREAM_RESULT_INTERNAL_ERROR);
+    nrf_reboot_intent_zephyr_record(stage, error);
+    sys_reboot(SYS_REBOOT_COLD);
+}
 
 static uint32_t next_sequence(uint32_t *sequence)
 {
@@ -320,11 +335,87 @@ static void cs_execute_work_handler(struct k_work *work)
     }
 }
 
+/*
+ * A full sensor queue is transient. The I2C target has already readdressed
+ * and the bootstrap role has already committed; rebooting on -ENOSPC would
+ * turn a busy sensor worker into repeated REMOTE disconnects.
+ *
+ * Keep ASSIGN pending and retry only the sensor activation on the dedicated
+ * HCI workqueue. Retry never touches the TWIS callback or readdresses again.
+ */
+#define NRF_ASSIGN_ACTIVATION_RETRY_MS 100U
+
+static void complete_committed_assignment(
+    const nrf_upstream_assign_t *assign,
+    const nrf_upstream_status_t *previous_status)
+{
+    const int cs_pair_result = nrf_cs_pair_runtime_zephyr_set_node_id(assign->node_id);
+    /* CS is optional: if Bluetooth failed to start, retain the sensor link.
+     * Genuine identity conflicts still violate the assignment invariant. */
+    if (cs_pair_result != 0 && cs_pair_result != -EAGAIN) {
+        assignment_runtime_failure(NRF_REBOOT_INTENT_ASSIGN_CS_PAIR, cs_pair_result);
+        return;
+    }
+
+    k_spinlock_key_t key = k_spin_lock(&s_cs_lock);
+    const int cs_result = nrf_cs_control_runtime_assign_node(&s_cs_control, assign->node_id);
+    k_spin_unlock(&s_cs_lock, key);
+    if (cs_result != 0) {
+        assignment_runtime_failure(NRF_REBOOT_INTENT_ASSIGN_CS_CONTROL, cs_result);
+        return;
+    }
+
+    nrf_upstream_status_t current_status;
+    if (nrf_bootstrap_make_status(&s_bootstrap, &current_status) == NRF_UPSTREAM_RESULT_OK &&
+        previous_status->role != current_status.role) {
+        if (previous_status->role != NRF_UPSTREAM_ROLE_UNASSIGNED) {
+            nrf_log_runtime_zephyr_append_event(
+                NRF_LOG_EVENT_ROLE_LOST, previous_status->node_id, previous_status->role);
+        }
+        if (current_status.role != NRF_UPSTREAM_ROLE_UNASSIGNED) {
+            nrf_log_runtime_zephyr_append_event(
+                NRF_LOG_EVENT_ROLE_ASSIGNED, current_status.node_id, current_status.role);
+        }
+    }
+    s_role_assignment_node_id = assign->node_id;
+    s_role_assignment_role = (uint8_t)assign->role;
+    increment_saturating(&s_role_assignment_sequence);
+    publish_core_status();
+}
+
+static void assign_activation_retry_handler(struct k_work *work)
+{
+    (void)work;
+    if (!s_assign_activation_retry_pending) {
+        return;
+    }
+
+    /* A newer ASSIGN may have received BUSY meanwhile. Restore the pending
+     * transaction before the sensor worker snapshots its assignment status. */
+    publish_core_status_with_result(NRF_UPSTREAM_RESULT_PENDING);
+    const int activation = nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(
+        &s_assign_activation_retry_assign);
+    if (activation == -ENOSPC) {
+        const int submitted = nrf_hci_workqueue_reschedule(
+            &s_assign_activation_retry_work, K_MSEC(NRF_ASSIGN_ACTIVATION_RETRY_MS));
+        if (submitted < 0) {
+            assignment_runtime_failure(NRF_REBOOT_INTENT_ASSIGN_RETRY_QUEUE, submitted);
+        }
+        return;
+    }
+    if (activation != 0) {
+        assignment_runtime_failure(NRF_REBOOT_INTENT_ASSIGN_SENSOR, activation);
+        return;
+    }
+
+    s_assign_activation_retry_pending = false;
+    complete_committed_assignment(
+        &s_assign_activation_retry_assign, &s_assign_activation_previous_status);
+}
+
 static void assign_work_handler(struct k_work *work)
 {
     assign_work_item_t item;
-    nrf_upstream_status_t previous_status;
-    nrf_upstream_status_t current_status;
     (void)work;
     for (;;) {
         k_spinlock_key_t queue_key = k_spin_lock(&s_assign_queue_lock);
@@ -333,35 +424,45 @@ static void assign_work_handler(struct k_work *work)
         if (got != 0) {
             break;
         }
-        nrf_upstream_assign_t assign = item.assign;
-        nrf_upstream_result_t result;
-        k_spinlock_key_t status_key=k_spin_lock(&s_status_lock);
-        previous_status=s_published_status;
-        k_spin_unlock(&s_status_lock,status_key);
-        publish_result_context(assign.request_id,NRF_UPSTREAM_RESULT_PENDING);
-        result=nrf_bootstrap_process_assign(&s_bootstrap,&assign);
-        if(result==NRF_UPSTREAM_RESULT_OK&&assign.role==NRF_UPSTREAM_ROLE_REMOTE){if(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign)!=0){assignment_runtime_failure();continue;}}
-        if (result == NRF_UPSTREAM_RESULT_OK) {
-            const int cs_pair_result = nrf_cs_pair_runtime_zephyr_set_node_id(assign.node_id);
-            /* An unstarted optional CS subsystem returns -EAGAIN; main.c
-             * already logged BOOT_FAILED. Keep sensors and TWIS assigned,
-             * but still reboot on conflicting identity/invariant failures. */
-            if (cs_pair_result != 0 && cs_pair_result != -EAGAIN) {
-                assignment_runtime_failure();
+
+        const nrf_upstream_assign_t assign = item.assign;
+        if (s_assign_activation_retry_pending) {
+            publish_result_context(assign.request_id, NRF_UPSTREAM_RESULT_BUSY);
+            continue;
+        }
+
+        nrf_upstream_status_t previous_status;
+        k_spinlock_key_t status_key = k_spin_lock(&s_status_lock);
+        previous_status = s_published_status;
+        k_spin_unlock(&s_status_lock, status_key);
+
+        publish_result_context(assign.request_id, NRF_UPSTREAM_RESULT_PENDING);
+        const nrf_upstream_result_t result = nrf_bootstrap_process_assign(&s_bootstrap, &assign);
+        if (result != NRF_UPSTREAM_RESULT_OK) {
+            publish_core_status();
+            continue;
+        }
+
+        if (assign.role == NRF_UPSTREAM_ROLE_REMOTE) {
+            const int activation = nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&assign);
+            if (activation == -ENOSPC) {
+                s_assign_activation_retry_assign = assign;
+                s_assign_activation_previous_status = previous_status;
+                s_assign_activation_retry_pending = true;
+                publish_core_status_with_result(NRF_UPSTREAM_RESULT_PENDING);
+                const int submitted = nrf_hci_workqueue_reschedule(
+                    &s_assign_activation_retry_work, K_MSEC(NRF_ASSIGN_ACTIVATION_RETRY_MS));
+                if (submitted < 0) {
+                    assignment_runtime_failure(NRF_REBOOT_INTENT_ASSIGN_RETRY_QUEUE, submitted);
+                }
+                continue;
+            }
+            if (activation != 0) {
+                assignment_runtime_failure(NRF_REBOOT_INTENT_ASSIGN_SENSOR, activation);
                 continue;
             }
         }
-        if(result==NRF_UPSTREAM_RESULT_OK){k_spinlock_key_t key=k_spin_lock(&s_cs_lock);int cs_result=nrf_cs_control_runtime_assign_node(&s_cs_control,assign.node_id);k_spin_unlock(&s_cs_lock,key);if(cs_result!=0){assignment_runtime_failure();continue;}}
-        if(result==NRF_UPSTREAM_RESULT_OK&&nrf_bootstrap_make_status(&s_bootstrap,&current_status)==NRF_UPSTREAM_RESULT_OK&&previous_status.role!=current_status.role){
-            if(previous_status.role!=NRF_UPSTREAM_ROLE_UNASSIGNED){nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_ROLE_LOST,previous_status.node_id,previous_status.role);}
-            if(current_status.role!=NRF_UPSTREAM_ROLE_UNASSIGNED){nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_ROLE_ASSIGNED,current_status.node_id,current_status.role);}
-        }
-        if (result == NRF_UPSTREAM_RESULT_OK) {
-            s_role_assignment_node_id = assign.node_id;
-            s_role_assignment_role = (uint8_t)assign.role;
-            increment_saturating(&s_role_assignment_sequence);
-        }
-        publish_core_status();
+        complete_committed_assignment(&assign, &previous_status);
     }
 }
 
@@ -846,7 +947,11 @@ int nrf_bootstrap_runtime_zephyr_start(nrf_node_state_t *node_state)
         k_spin_unlock(&s_cycle_lock,cycle_key);
         s_cycle_reply_selected=false;
     }
-    k_msgq_purge(&s_assign_queue);k_msgq_purge(&s_cs_execute_queue);s_assign_sequence=0U;s_cs_execute_sequence=0U;k_work_init(&s_assign_work,assign_work_handler);k_work_init(&s_cs_execute_work,cs_execute_work_handler);
+    k_msgq_purge(&s_assign_queue);k_msgq_purge(&s_cs_execute_queue);s_assign_sequence=0U;s_cs_execute_sequence=0U;
+    s_assign_activation_retry_pending = false;
+    k_work_init(&s_assign_work,assign_work_handler);
+    k_work_init_delayable(&s_assign_activation_retry_work,assign_activation_retry_handler);
+    k_work_init(&s_cs_execute_work,cs_execute_work_handler);
     if(nrf_bootstrap_make_status(&s_bootstrap,&initial_status)!=NRF_UPSTREAM_RESULT_OK)return -EIO;
     initial_status.target_address=NRF_UPSTREAM_ADDRESS_DISCOVERY;publish_status(&initial_status);
     result=nrf_upstream_target_zephyr_init(&s_target_callbacks);if(result!=0)return result;

@@ -1199,6 +1199,7 @@ int main(void)
         assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
         assert(live_diagnostics.imu_state == NRF_BMI160_MEASURING);
     }
+    const unsigned imu_disconnect_log_start = s_log_event_count;
     fake_sensor_bus_set_imu_present(false);
     for (uint32_t id = 2900U; id < 2903U; ++id) {
         const nrf_upstream_sensor_refresh_t req = {.request_id = id};
@@ -1206,16 +1207,23 @@ int main(void)
         run_worker_until_empty();
         run_worker_advancing(48U);
     }
-    run_worker_advancing(10U);
+    /* Both addresses now use cooperative CHIP_ID retries; wait for their final result. */
+    for (unsigned wait = 0U; wait < 100U; ++wait) {
+        assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
+        if (live_diagnostics.imu_init_result != NRF_REMOTE_SENSOR_INIT_PENDING) break;
+        run_worker_advancing(1U);
+    }
     assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
     assert(!live_diagnostics.imu_ready);
+    assert(live_diagnostics.imu_init_result == NRF_BMI160_ERR_BUS);
+    assert(live_diagnostics.imu_state == NRF_BMI160_RECOVER);
     assert(live_diagnostics.env_ready);
     {
         /* Real bus layer, real runtime: every cause event follows its init failure and decodes to what the fake did. */
         unsigned imu_causes = 0U;
-        for (unsigned i = 0U; i < s_log_event_count; ++i) {
+        for (unsigned i = imu_disconnect_log_start; i < s_log_event_count; ++i) {
             if (s_log_events[i].event_id != NRF_LOG_EVENT_SENSOR_BUS_FAULT) continue;
-            assert(i > 0U && s_log_events[i - 1U].event_id == NRF_LOG_EVENT_SENSOR_INIT_FAILED);
+            assert(i > imu_disconnect_log_start && s_log_events[i - 1U].event_id == NRF_LOG_EVENT_SENSOR_INIT_FAILED);
             assert(s_log_events[i - 1U].arg0 == s_log_events[i].arg0);
             nrf_sensor_bus_fault_t fault;
             assert(nrf_sensor_bus_fault_unpack(s_log_events[i].arg1, &fault));

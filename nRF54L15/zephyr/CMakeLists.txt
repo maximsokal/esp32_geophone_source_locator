@@ -78,6 +78,7 @@ if(NOT DEFINED PIO_PACKAGES_DIR)
     target_link_options(app PUBLIC
         -Wl,--wrap=nrfx_twis_init
         -Wl,--wrap=nrfx_twis_tx_prepare
+        -Wl,--wrap=nrfx_twis_rx_prepare
     )
 endif()
 

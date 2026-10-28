@@ -10,6 +10,7 @@
 int __wrap_nrfx_twis_init(nrfx_twis_t *instance, const nrfx_twis_config_t *config,
                          nrfx_twis_event_handler_t handler);
 int __wrap_nrfx_twis_tx_prepare(nrfx_twis_t *instance, const void *buffer, size_t length);
+int __wrap_nrfx_twis_rx_prepare(nrfx_twis_t *instance, void *buffer, size_t length);
 
 NRF_TWIS_Type test_upstream_registers;
 static nrfx_twis_t s_upstream = {&test_upstream_registers};
@@ -20,7 +21,10 @@ static unsigned s_record_count;
 static unsigned s_forwarded;
 static int s_init_result;
 static int s_prepare_result;
+static int s_rx_prepare_result;
+static unsigned s_rx_prepare_calls;
 static bool s_supply_buffer = true;
+static bool s_supply_rx_buffer = true;
 static uint32_t s_cycles;
 static const uint8_t s_frame[38] = {0x47, 0x53, 0x01, 0x82, 38, 0};
 static uint8_t s_rx_buffer[16];
@@ -51,12 +55,25 @@ int __real_nrfx_twis_tx_prepare(nrfx_twis_t *instance, const void *buffer, size_
     return s_prepare_result;
 }
 
+int __real_nrfx_twis_rx_prepare(nrfx_twis_t *instance, void *buffer, size_t length)
+{
+    assert(instance == &s_upstream);
+    assert(buffer == s_rx_buffer && length == sizeof(s_rx_buffer));
+    ++s_rx_prepare_calls;
+    if (s_rx_prepare_result == 0) instance->p_reg->rx_buffer = buffer;
+    return s_rx_prepare_result;
+}
+
 static void original_handler(const nrfx_twis_event_t *event)
 {
     ++s_forwarded;
     if (event->type == NRFX_TWIS_EVT_WRITE_DONE) {
         /* The shim callback and the next READ_REQ reuse this buffer; the trace must have sampled it already. */
         memset(s_rx_buffer, 0xEE, sizeof(s_rx_buffer));
+    }
+    if (event->type == NRFX_TWIS_EVT_WRITE_REQ && s_supply_rx_buffer) {
+        assert(__wrap_nrfx_twis_rx_prepare(&s_upstream, s_rx_buffer, sizeof(s_rx_buffer))
+               == s_rx_prepare_result);
     }
     if (event->type == NRFX_TWIS_EVT_READ_REQ && s_supply_buffer) {
         assert(__wrap_nrfx_twis_tx_prepare(&s_upstream, s_frame, sizeof(s_frame)) == s_prepare_result);
@@ -155,6 +172,87 @@ int main(void)
     assert(s_records[before_rx + 2U].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR);
     assert(s_records[before_rx + 2U].hw_error == 1U && s_records[before_rx + 2U].rx_amount == 0U);
     assert(s_records[before_rx + 2U].result == -EIO && s_records[before_rx + 2U].prefix_length == 0U);
+
+    /* A WRITE_DONE without a matching WRITE_REQ has no prepared RX DMA
+     * transaction. The shim must not dispatch stale buffer contents as a
+     * fresh protocol frame (seen as apparent 12-byte / 10us writes). */
+    {
+        const unsigned forwarded_before = s_forwarded;
+        const unsigned records_before = s_record_count;
+        test_upstream_registers.rx_amount = 12U;
+        memset(s_rx_buffer, 0, 12U);
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_forwarded == forwarded_before);
+        assert(s_record_count == records_before + 1U);
+        assert(s_records[records_before].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR);
+        assert(s_records[records_before].result == -EPROTO);
+    }
+
+    /* A transition to a read ends any unfinished RX attempt. A delayed
+     * WRITE_DONE afterwards must not be dispatched with the old DMA count. */
+    {
+        const unsigned forwarded_before = s_forwarded;
+        const unsigned records_before = s_record_count;
+        s_supply_buffer = true;
+        test_upstream_registers.rx_amount = 12U;
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 0U);
+        emit(NRFX_TWIS_EVT_READ_REQ, 0U);
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_forwarded == forwarded_before + 2U);
+        assert(s_record_count == records_before + 2U);
+        assert(s_records[records_before + 1U].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR);
+        assert(s_records[records_before + 1U].result == -EPROTO);
+    }
+
+    /* A WRITE_REQ exists but nrfx refused to arm EasyDMA. A later completion
+     * must not forward the stale RX buffer to the application's ASSIGN decoder. */
+    {
+        const unsigned forwarded_before = s_forwarded;
+        const unsigned records_before = s_record_count;
+        const unsigned prepared_before = s_rx_prepare_calls;
+        s_rx_prepare_result = -EACCES;
+        test_upstream_registers.rx_amount = 12U;
+        memset(s_rx_buffer, 0, 12U);
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 0U);
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_rx_prepare_calls == prepared_before + 1U);
+        assert(s_forwarded == forwarded_before + 1U);
+        assert(s_record_count == records_before + 1U);
+        assert(s_records[records_before].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR);
+        assert(s_records[records_before].result == -EACCES);
+        s_rx_prepare_result = 0;
+    }
+
+    /* No DMA preparation at all must also prevent stale data dispatch. */
+    {
+        const unsigned forwarded_before = s_forwarded;
+        const unsigned records_before = s_record_count;
+        const unsigned prepared_before = s_rx_prepare_calls;
+        s_supply_rx_buffer = false;
+        test_upstream_registers.rx_amount = 12U;
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 0U);
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_rx_prepare_calls == prepared_before);
+        assert(s_forwarded == forwarded_before + 1U);
+        assert(s_record_count == records_before + 1U);
+        assert(s_records[records_before].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR);
+        assert(s_records[records_before].result == -ENOSYS);
+        s_supply_rx_buffer = true;
+    }
+
+    /* Recovery: a new successful DMA arm must allow the next valid frame. */
+    {
+        const unsigned forwarded_before = s_forwarded;
+        const unsigned records_before = s_record_count;
+        test_upstream_registers.rx_amount = 12U;
+        memcpy(s_rx_buffer, s_frame, 12U);
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 0U);
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_forwarded == forwarded_before + 2U);
+        assert(s_record_count == records_before + 1U);
+        assert(s_records[records_before].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_DONE);
+        assert(s_records[records_before].result == 0);
+    }
 
     puts("nRF TWIS hardware trace: PASS");
     return 0;

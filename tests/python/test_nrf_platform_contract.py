@@ -265,9 +265,14 @@ def test_remote_sensor_runtime_wires_real_drivers_only_after_remote_role():
     assert "runtime->env_ready" in core
     assert "nrf_sensor_snapshot_refresh(" in core
 
-    assert "nrf_bmi160_zephyr_init_remote(device)" in bridge
+    assert "nrf_bmi160_zephyr_init_remote(&runtime->bmi160)" in bridge
     assert "nrf_bme280_zephyr_init_remote(device)" in bridge
-    assert ".read_imu = nrf_bmi160_read_imu" in bridge
+    assert ".read_imu = nrf_remote_sensor_zephyr_read_imu" in bridge
+    assert "nrf_bmi160_read_imu(&runtime->bmi160, sample)" in bridge
+    assert ".imu_context = runtime" in bridge
+    assert ".init_imu = nrf_remote_sensor_zephyr_step_imu" in bridge
+    assert "nrf_bmi160_zephyr_step(" in bridge
+    assert ".read_imu = nrf_bmi160_read_imu" not in bridge
     assert ".read_env = nrf_bme280_read_env" in bridge
 
     assert "nrf_remote_sensor_runtime_zephyr_prepare(" not in main

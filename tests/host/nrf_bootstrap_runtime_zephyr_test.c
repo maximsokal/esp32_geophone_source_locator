@@ -26,17 +26,22 @@ extern bool nrf_cs_pair_zephyr_stub_radio_enabled;
 extern unsigned nrf_cs_pair_zephyr_stub_radio_changes;
 #include "nrf_upstream_target_zephyr.h"
 #include "nrf_watchdog_zephyr.h"
+#include "nrf_reboot_intent_zephyr.h"
 #include "nrf_hci_workqueue.h"
 
 void nrf_cs_pair_runtime_zephyr_stub_configure(int execute_result, nrf_cs_outcome_t outcome);
 
 static const struct i2c_target_callbacks *s_callbacks;
 static struct k_work *s_submitted_work;
+static struct k_work_delayable *s_delayed_work;
 static unsigned s_submit_calls;
 static bool s_fail_next_submit;
 static int s_next_submit_failure;
 static unsigned s_readdress_calls;
 static unsigned s_reboot_calls;
+static unsigned s_reboot_intent_count;
+static nrf_reboot_intent_stage_t s_reboot_intent_stage;
+static int s_reboot_intent_error;
 static unsigned s_sensor_assignment_calls;
 static uint32_t s_sensor_assignment_request_ids[128];
 static nrf_upstream_assign_t s_sensor_assignments[128];
@@ -158,7 +163,15 @@ int k_work_reschedule_for_queue(
         return -EAGAIN;
     }
     work->work.queue = queue;
+    s_delayed_work = work;
     return 1;
+}
+
+void nrf_reboot_intent_zephyr_record(nrf_reboot_intent_stage_t stage, int error_code)
+{
+    ++s_reboot_intent_count;
+    s_reboot_intent_stage = stage;
+    s_reboot_intent_error = error_code;
 }
 
 void sys_reboot(int type)
@@ -792,6 +805,14 @@ static void send_imu_calibration(uint8_t action, uint32_t request_id, uint16_t g
     assert(nrf_upstream_protocol_encode_imu_calibrate(&request, frame) ==
            NRF_UPSTREAM_RESULT_OK);
     s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
+}
+
+static void run_delayed_work(void)
+{
+    struct k_work_delayable *work = s_delayed_work;
+    assert(work != NULL && work->work.handler != NULL);
+    s_delayed_work = NULL;
+    work->work.handler(&work->work);
 }
 
 static void run_submitted_work(void)
@@ -1921,23 +1942,46 @@ int main(void)
     }
 
     /*
-     * REMOTE assignment confirmation must not publish OK before sensor logical
-     * activation/ACTIVATE enqueue succeeds. A post-commit enqueue failure is
-     * not safely rollbackable at the bootstrap layer, so fail closed by
-     * publishing INTERNAL_ERROR and requesting a cold reboot.
+     * Queue pressure after a committed REMOTE assignment is recoverable.
+     * Keep the node PENDING without reboot; retry activation on the HCI queue
+     * and publish OK only when the sensor worker accepts its ACTIVATE event.
      */
     s_sensor_assignment_result = -ENOSPC;
     assign.request_id = 11U;
     send_assign(&assign);
     run_submitted_work();
     assert(s_sensor_assignment_calls == 2U);
-    assert(s_reboot_calls == 1U);
+    assert(s_reboot_calls == 0U);
     status = read_status(NULL);
     assert(status.request_id == 11U);
-    assert(status.result == NRF_UPSTREAM_RESULT_INTERNAL_ERROR);
+    assert(status.result == NRF_UPSTREAM_RESULT_PENDING);
     assert(status.role == NRF_UPSTREAM_ROLE_REMOTE);
+    assert(s_delayed_work != NULL);
+    /* The worker may remain congested for more than one retry. No reboot or
+     * accidental OK is allowed while the queue still rejects activation. */
+    run_delayed_work();
+    assert(s_sensor_assignment_calls == 3U);
+    assert(s_delayed_work != NULL);
+    assert(s_reboot_calls == 0U);
+    status = read_status(NULL);
+    assert(status.request_id == 11U && status.result == NRF_UPSTREAM_RESULT_PENDING);
+    {
+        nrf_upstream_assign_t premature = assign;
+        premature.request_id = 111U;
+        send_assign(&premature);
+        run_submitted_work();
+        status = read_status(NULL);
+        assert(status.request_id == 111U && status.result == NRF_UPSTREAM_RESULT_BUSY);
+        assert(s_sensor_assignment_calls == 3U);
+        assert(s_reboot_calls == 0U);
+    }
+    s_sensor_assignment_result = 0;
+    run_delayed_work();
+    assert(s_sensor_assignment_calls == 4U);
+    status = read_status(NULL);
+    assert(status.request_id == 11U && status.result == NRF_UPSTREAM_RESULT_OK);
 
-    /* The host reboot stub returns; prove a later retry can publish OK again. */
+    /* A later idempotent ASSIGN must still work after the deferred recovery. */
     /* If the optional CS radio failed at startup, REMOTE sensor assignment
      * must not reboot the nRF indefinitely. A real CS node conflict remains fatal. */
     s_sensor_assignment_result = 0;
@@ -1945,9 +1989,9 @@ int main(void)
     assign.request_id = 12U;
     send_assign(&assign);
     run_submitted_work();
-    assert(s_sensor_assignment_calls == 3U);
+    assert(s_sensor_assignment_calls == 5U);
     status = read_status(NULL);
-    assert(s_reboot_calls == 1U);
+    assert(s_reboot_calls == 0U);
     assert(status.request_id == 12U && status.result == NRF_UPSTREAM_RESULT_OK);
     nrf_cs_pair_zephyr_stub_set_node_result = 0;
     assert(read_log_status().next_seq == 2U);
@@ -2267,7 +2311,7 @@ int main(void)
         assert(twis_diagnostics.last_request_type == 0xA5U);
         assert(twis_diagnostics.last_request_type_count == 2U);
     }
-    assert(s_reboot_calls == 1U);
+    assert(s_reboot_calls == 0U);
     {
         nrf_boot_twis_record_t record;
         while (nrf_bootstrap_runtime_zephyr_drain_twis_record(&record)) {}
@@ -2328,6 +2372,9 @@ int main(void)
         assert(status.request_id == assign.request_id);
         assert(status.result == NRF_UPSTREAM_RESULT_INTERNAL_ERROR);
         assert(s_reboot_calls == reboots_before + 1U);
+        assert(s_reboot_intent_count != 0U);
+        assert(s_reboot_intent_stage == NRF_REBOOT_INTENT_ASSIGN_CS_PAIR);
+        assert(s_reboot_intent_error == -EALREADY);
         nrf_cs_pair_zephyr_stub_set_node_result = 0;
     }
     return 0;

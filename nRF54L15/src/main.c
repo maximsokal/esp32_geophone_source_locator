@@ -21,6 +21,7 @@
 #include "nrf_blue_led.h"
 #include "nrf_cs_pair_runtime_zephyr.h"
 #include "nrf_fault_record_zephyr.h"
+#include "nrf_reboot_intent_zephyr.h"
 #include "nrf_logger_led_zephyr.h"
 #include "nrf_node_state.h"
 #include "nrf_log_events.h"
@@ -351,6 +352,7 @@ int main(void)
         return ret;
     }
     nrf_fault_record_zephyr_report_pending();
+    nrf_reboot_intent_zephyr_report_pending();
 
     {
         const nrf_logger_led_zephyr_result_t logger_result =
