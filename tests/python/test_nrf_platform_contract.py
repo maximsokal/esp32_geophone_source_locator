@@ -227,7 +227,7 @@ def test_bmi160_is_runtime_optional_instead_of_an_always_present_dt_device():
     assert "BMI160_GYRO_CONFIG_100HZ_NORMAL = 0x28U" in core
     assert "BMI160_GYRO_RANGE_250DPS = 0x03U" in core
     assert "nrf_sensor_bus_zephyr_init_private(&bus)" in bridge
-    assert "nrf_bmi160_init(" in bridge
+    assert "nrf_bmi160_init_observed(" in bridge
 
 
 def test_bme280_is_runtime_optional_and_uses_bounded_forced_measurements():
@@ -250,7 +250,7 @@ def test_bme280_is_runtime_optional_and_uses_bounded_forced_measurements():
     assert "BME280_NVM_POLL_ATTEMPTS = 10U" in core
     assert "BME280_MEASUREMENT_POLL_ATTEMPTS = 5U" in core
     assert "nrf_sensor_bus_zephyr_init_private(&bus)" in bridge
-    assert "nrf_bme280_init(" in bridge
+    assert "nrf_bme280_init_observed(" in bridge
     assert "nrf_bme280_result_t nrf_bme280_zephyr_init_remote" in bridge
 
 

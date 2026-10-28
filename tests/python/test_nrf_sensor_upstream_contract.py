@@ -74,7 +74,7 @@ def test_sensor_worker_is_dedicated_and_callback_path_is_nonblocking():
     assert "K_MSGQ_DEFINE" in sensor
     assert "K_NO_WAIT" in sensor
     assert "k_work_submit" not in sensor
-    assert "nrf_remote_sensor_runtime_zephyr_prepare(" in sensor
+    assert "nrf_remote_sensor_runtime_zephyr_prepare_cooperative(" in sensor
     assert "nrf_remote_sensor_runtime_zephyr_refresh(" in sensor
 
     callback_start = bootstrap.index("static void target_write_received")

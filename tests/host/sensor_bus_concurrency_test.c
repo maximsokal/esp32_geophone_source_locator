@@ -1043,6 +1043,13 @@ static void *three_node_log_pairs_fn(void *arg)
         assert(tca9548a_mux_close(context->mux) == ESP_OK);
         atomic_store(&context->completed_channels, node + 1U);
         sensor_bus_owner_release();
+        if (node == 0U) {
+            /* Give the waiting INA peer a deterministic window to take the bus
+             * while exactly one channel is completed (between log pairs). */
+            while (!atomic_load(&context->waiter_acquired)) {
+                test_sleep_ms(1U);
+            }
+        }
         test_sleep_ms(10U); /* The production logger blocks for one 100 Hz tick. */
     }
 #ifdef _WIN32

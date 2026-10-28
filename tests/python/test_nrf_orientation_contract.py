@@ -68,8 +68,8 @@ def test_orientation_configuration_is_explicit_and_prestart_only():
 def test_orientation_deadline_skips_catchup_bursts():
     source = read("nRF54L15/src/nrf_sensor_upstream_runtime_zephyr.c")
     advance = source[source.index("static void orientation_advance_deadline"):source.index("static void orientation_reset")]
-    assert "target = sample_uptime_ms + period" in advance
-    assert "steps = (delta + period - 1U) / period" in advance
+    assert "s_next_orientation_due_ms = sample_uptime_ms > UINT64_MAX - period" in advance
+    assert "? UINT64_MAX : sample_uptime_ms + period" in advance
     assert "while (" not in advance
 
 

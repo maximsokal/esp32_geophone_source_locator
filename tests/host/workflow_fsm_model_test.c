@@ -534,7 +534,7 @@ static void assert_sequence_matches(action_t *actions, size_t count, uint32_t se
 static void test_all_state_command_pairs(void)
 {
     assert(WORKFLOW_STEP_COUNT == 19);
-    assert(WORKFLOW_COMMAND_COUNT == 25);
+    assert(WORKFLOW_COMMAND_COUNT == 26);
     for (int state = 0; state < WORKFLOW_STEP_COUNT; ++state) {
         for (int command = 0; command < WORKFLOW_COMMAND_COUNT; ++command) {
             workflow_core_t core;
