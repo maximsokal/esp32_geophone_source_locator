@@ -19,6 +19,9 @@ bool nrf_sensor_bus_zephyr_init_private(nrf_sensor_bus_t *out_bus);
 /* Automatic diagnostics inspect only the four supported sensor addresses. */
 int nrf_sensor_bus_zephyr_scan_expected(void);
 
+/* Sensor-worker diagnostic only: compare failed BMI ID probe at 100 kHz, then restore 400 kHz. */
+void nrf_sensor_bus_zephyr_diagnose_bmi_probe(uint8_t address);
+
 /*
  * Diagnostic for a failed sensor initialisation: probes every 7-bit address on the private bus with
  * a one byte read and, for each address that answers, reads the ID registers the supported parts use

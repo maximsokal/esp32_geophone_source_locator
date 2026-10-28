@@ -31,6 +31,21 @@ static bool s_fail_read;
 static int s_fail_result;
 static char s_console[4096];
 static size_t s_data_read_len; /* length of the last read of the measurement registers (0xF7) */
+static uint32_t s_i2c_config;
+static unsigned s_configure_calls;
+static bool s_bmi_fast_nack;
+static int s_slow_config_result;
+static int s_restore_config_result;
+
+int i2c_configure(const struct device *device, uint32_t config)
+{
+    assert(device == &test_i2c30);
+    ++s_configure_calls;
+    const int result = config == (I2C_MODE_CONTROLLER | I2C_SPEED_SET(I2C_SPEED_STANDARD))
+        ? s_slow_config_result : s_restore_config_result;
+    if (result == 0) s_i2c_config = config;
+    return result;
+}
 
 static int sensor_index(uint16_t address)
 {
@@ -76,6 +91,8 @@ static int exchange(const struct device *device, uint16_t address,
     ++s_transfers[index];
     if (!s_present[index]) return -ENXIO;
     const uint8_t reg = write_len > 0U ? write_data[0] : 0U;
+    if (s_bmi_fast_nack && address == 0x68U && reg == 0U &&
+        s_i2c_config == (I2C_MODE_CONTROLLER | I2C_SPEED_SET(I2C_SPEED_FAST))) return -EIO;
     if (address == s_fail_address && reg == s_fail_register &&
         (read_len > 0U) == s_fail_read) return s_fail_result;
     assert((size_t)reg + read_len <= sizeof(s_registers[index]));
@@ -138,6 +155,11 @@ static void reset_fixture(void)
     s_fail_address = 0U;
     s_fail_result = 0;
     s_console[0] = '\0';
+    s_i2c_config = I2C_MODE_CONTROLLER | I2C_SPEED_SET(I2C_SPEED_FAST);
+    s_configure_calls = 0U;
+    s_bmi_fast_nack = false;
+    s_slow_config_result = 0;
+    s_restore_config_result = 0;
 }
 
 static void assert_diagnostic(const char *expected)
@@ -789,8 +811,65 @@ static void test_drdy_wait_is_bounded_across_runtime_readers(void)
     }
 }
 
+static void test_failed_bmi_probe_is_compared_at_100khz_without_marking_it_ready(void)
+{
+    reset_fixture();
+    s_bmi_fast_nack = true;
+    nrf_bmi160_t device;
+    assert(nrf_bmi160_zephyr_init_remote(&device) == NRF_BMI160_ERR_BUS);
+    assert(!device.initialized);
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+    assert(s_configure_calls == 4U); /* two failed addresses, each restored */
+    assert_diagnostic("sensor_probe_slow: bus=i2c30 addr=0x68 hz=100000 configure=0 ret=0 chip_id=209 restore=0");
+    assert_diagnostic("sensor_probe_slow: bus=i2c30 addr=0x69 hz=100000 configure=0 ret=-6 chip_id=-1 restore=0");
+#else
+    assert(s_configure_calls == 0U);
+#endif
+    assert(s_i2c_config == (I2C_MODE_CONTROLLER | I2C_SPEED_SET(I2C_SPEED_FAST)));
+    nrf_sensor_bus_fault_t fault;
+    assert(nrf_sensor_bus_zephyr_take_fault(0x68U, 0x68U, &fault));
+    assert(fault.errno_abs == EIO); /* a diagnostic ACK does not erase the failed production transfer */
+    s_bmi_fast_nack = false;
+    assert(nrf_bmi160_zephyr_init_remote(&device) == NRF_BMI160_OK);
+    assert(device.initialized);
+}
+
+static void test_slow_probe_reports_setup_read_and_restore_failures(void)
+{
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+    reset_fixture();
+    s_slow_config_result = -ENOTSUP;
+    nrf_sensor_bus_zephyr_diagnose_bmi_probe(0x68U);
+    assert(s_transfers[0] == 0U && s_configure_calls == 2U);
+    assert(s_i2c_config == (I2C_MODE_CONTROLLER | I2C_SPEED_SET(I2C_SPEED_FAST)));
+    assert_diagnostic("chip_id=-1 restore=0");
+    reset_fixture();
+    s_fail_address = 0x68U;
+    s_fail_register = 0x00U;
+    s_fail_read = true;
+    s_fail_result = -EIO;
+    nrf_sensor_bus_zephyr_diagnose_bmi_probe(0x68U);
+    assert(s_transfers[0] == 1U && s_configure_calls == 2U);
+    assert(s_i2c_config == (I2C_MODE_CONTROLLER | I2C_SPEED_SET(I2C_SPEED_FAST)));
+    assert_diagnostic("configure=0 ret=-5 chip_id=-1 restore=0");
+    reset_fixture();
+    s_restore_config_result = -EIO;
+    nrf_sensor_bus_zephyr_diagnose_bmi_probe(0x68U);
+    assert_diagnostic("ret=0 chip_id=209 restore=-5");
+    reset_fixture();
+    test_line_stub_reset();
+    test_line_stub_fail_resume(true);
+    nrf_sensor_bus_zephyr_diagnose_bmi_probe(0x68U);
+    assert(s_transfers[0] == 0U && s_configure_calls == 0U);
+    assert_diagnostic("addr=0x68 resume=-5");
+    test_line_stub_reset();
+#endif
+}
+
 int main(void)
 {
+    test_failed_bmi_probe_is_compared_at_100khz_without_marking_it_ready();
+    test_slow_probe_reports_setup_read_and_restore_failures();
     test_drdy_wait_is_bounded_across_runtime_readers();
     test_freshness_failures_preserve_the_other_sensor();
     test_fault_records_cause_errno_and_line_levels();

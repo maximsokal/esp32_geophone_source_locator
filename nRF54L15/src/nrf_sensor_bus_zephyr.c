@@ -241,6 +241,30 @@ static int nrf_sensor_bus_zephyr_transfer(
 #define NRF_SENSOR_BUS_SCAN_FIRST_ADDRESS 0x08U
 #define NRF_SENSOR_BUS_SCAN_LAST_ADDRESS 0x77U
 
+void nrf_sensor_bus_zephyr_diagnose_bmi_probe(uint8_t address)
+{
+#if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
+    if (address != 0x68U && address != 0x69U) return;
+    const struct device *device = s_private_context.device;
+    const int resume = pm_device_runtime_get(device);
+    if (resume != 0) {
+        printk("sensor_probe_slow: bus=i2c30 addr=0x%02x resume=%d\n", (unsigned)address, resume);
+        return;
+    }
+    const int configure = i2c_configure(device, I2C_MODE_CONTROLLER | I2C_SPEED_SET(I2C_SPEED_STANDARD));
+    const uint8_t reg = 0x00U;
+    uint8_t id = 0U;
+    const int result = configure == 0 ? i2c_write_read(device, address, &reg, 1U, &id, 1U) : configure;
+    /* i2c30's fixed board profile is 400 kHz; do not leave ENV on the diagnostic rate. */
+    const int restore = i2c_configure(device, I2C_MODE_CONTROLLER | I2C_SPEED_SET(I2C_SPEED_FAST));
+    (void)pm_device_runtime_put(device);
+    printk("sensor_probe_slow: bus=i2c30 addr=0x%02x hz=100000 configure=%d ret=%d chip_id=%d restore=%d\n",
+           (unsigned)address, configure, result, result == 0 ? (int)id : -1, restore);
+#else
+    (void)address;
+#endif
+}
+
 int nrf_sensor_bus_zephyr_scan_expected(void)
 {
     static const uint8_t addresses[] = {0x68U, 0x69U, 0x76U, 0x77U};

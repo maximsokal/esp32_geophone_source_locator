@@ -49,6 +49,7 @@ static void bmi160_report(uint8_t address, nrf_bmi160_result_t result, const nrf
 {
     if (result == NRF_BMI160_ERR_BUS) {
         printk("sensor_probe: BMI160 addr=0x%02x NO ANSWER (%s)\n", (unsigned)address, bmi160_result_text(result));
+        if (device->chip_id == 0U) nrf_sensor_bus_zephyr_diagnose_bmi_probe(address);
     } else {
         printk("sensor_probe: BMI160 addr=0x%02x result=%d (%s) chip_id=0x%02x (BMI160 = 0xd1)\n",
                (unsigned)address, (int)result, bmi160_result_text(result), (unsigned)device->chip_id);

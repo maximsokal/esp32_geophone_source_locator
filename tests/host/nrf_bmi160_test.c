@@ -20,6 +20,8 @@
 #define TEST_BMI160_CMD_ACCEL_NORMAL 0x11U
 #define TEST_BMI160_CMD_GYRO_NORMAL 0x15U
 
+#define TEST_BMI160_CMD_SOFT_RESET 0xB6U
+
 #define TEST_BMI160_PMU_ACCEL_NORMAL 0x10U
 #define TEST_BMI160_PMU_GYRO_NORMAL 0x04U
 
@@ -28,6 +30,8 @@ typedef struct {
     unsigned err_reg_reads;
     int transfer_count;
     int fail_at_transfer;
+    unsigned transient_probe_reads;
+    bool transient_wrong_id;
     bool emulate_pmu;
     uint8_t last_address;
     nrf_bmi160_t *observed_device;
@@ -90,6 +94,12 @@ static int fake_transfer(
         write_data != NULL && read_data != NULL) {
         const uint8_t reg = write_data[0];
         if (reg == 0x02U) ++fake->err_reg_reads;
+        if (reg == TEST_BMI160_REG_CHIP_ID && fake->transient_probe_reads != 0U) {
+            --fake->transient_probe_reads;
+            if (!fake->transient_wrong_id) return -1;
+            *read_data = 0U;
+            return 0;
+        }
         memcpy(read_data, &fake->regs[reg], read_len);
         if (reg == TEST_BMI160_REG_GYRO_DATA) fake->regs[TEST_BMI160_REG_STATUS] &= ~0xC0U;
         return 0;
@@ -138,6 +148,84 @@ static void assert_sample_zero(const nrf_imu_sample_t *sample)
         assert(sample->gyro_mdps[axis] == 0);
     }
     assert(sample->temperature_milli_c == 0);
+}
+
+/* Logs every register write during init so the exact Bosch command sequence can be asserted. */
+typedef struct {
+    fake_bmi160_bus_t base;
+    uint8_t write_reg[16];
+    uint8_t write_val[16];
+    size_t write_count;
+} write_log_bus_t;
+
+static int write_log_transfer(void *context, uint8_t address,
+    const uint8_t *write_data, size_t write_len,
+    uint8_t *read_data, size_t read_len)
+{
+    write_log_bus_t *log = (write_log_bus_t *)context;
+    if (write_len == 2U && read_len == 0U && write_data != NULL) {
+        if (log->write_count < sizeof(log->write_reg) / sizeof(log->write_reg[0])) {
+            log->write_reg[log->write_count] = write_data[0];
+            log->write_val[log->write_count] = write_data[1];
+            log->write_count++;
+        }
+    }
+    return fake_transfer(&log->base, address, write_data, write_len, read_data, read_len);
+}
+
+static void test_init_writes_expected_command_sequence(void)
+{
+    write_log_bus_t log;
+    memset(&log, 0, sizeof(log));
+    seed_sensor(&log.base);
+    nrf_sensor_bus_t bus = {.transfer = write_log_transfer, .context = &log};
+    nrf_bmi160_t device;
+
+    assert(nrf_bmi160_init(
+               &device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
+               fake_delay_ms, &log) == NRF_BMI160_OK);
+    assert(device.initialized);
+
+    /* Bosch init flow: soft reset, accel normal, gyro normal, then config registers. */
+    size_t i = 0U;
+    assert(log.write_reg[i] == TEST_BMI160_REG_CMD && log.write_val[i] == TEST_BMI160_CMD_SOFT_RESET); ++i;
+    assert(log.write_reg[i] == TEST_BMI160_REG_CMD && log.write_val[i] == TEST_BMI160_CMD_ACCEL_NORMAL); ++i;
+    assert(log.write_reg[i] == TEST_BMI160_REG_CMD && log.write_val[i] == TEST_BMI160_CMD_GYRO_NORMAL); ++i;
+    assert(log.write_reg[i] == TEST_BMI160_REG_ACCEL_CONFIG && log.write_val[i] == 0x28U); ++i;
+    assert(log.write_reg[i] == TEST_BMI160_REG_ACCEL_RANGE && log.write_val[i] == 0x03U); ++i;
+    assert(log.write_reg[i] == TEST_BMI160_REG_GYRO_CONFIG && log.write_val[i] == 0x28U); ++i;
+    assert(log.write_reg[i] == TEST_BMI160_REG_GYRO_RANGE && log.write_val[i] == 0x03U); ++i;
+}
+
+static void test_init_on_alternate_address_succeeds(void)
+{
+    fake_bmi160_bus_t fake;
+    seed_sensor(&fake);
+    nrf_sensor_bus_t bus = make_bus(&fake);
+    nrf_bmi160_t device;
+
+    assert(nrf_bmi160_init(
+               &device, &bus, NRF_BMI160_ALTERNATE_ADDRESS,
+               fake_delay_ms, &fake) == NRF_BMI160_OK);
+    assert(device.initialized);
+    assert(device.address == NRF_BMI160_ALTERNATE_ADDRESS);
+    assert(fake.last_address == NRF_BMI160_ALTERNATE_ADDRESS);
+}
+
+static void test_init_rejects_partial_pmu_normal_mode(void)
+{
+    fake_bmi160_bus_t fake;
+    seed_sensor(&fake);
+    fake.emulate_pmu = false;
+    /* Only accel reports normal mode; gyro stays in suspend. */
+    fake.regs[TEST_BMI160_REG_PMU_STATUS] = TEST_BMI160_PMU_ACCEL_NORMAL;
+    nrf_sensor_bus_t bus = make_bus(&fake);
+    nrf_bmi160_t device;
+
+    assert(nrf_bmi160_init(
+               &device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
+               fake_delay_ms, &fake) == NRF_BMI160_ERR_PMU);
+    assert(!device.initialized);
 }
 
 static void test_init_rejects_invalid_arguments(void)
@@ -226,7 +314,7 @@ static void test_init_rejects_wrong_chip_id_before_powerup(void)
     assert(!device.initialized);
     assert(device.chip_id == 0x00U);
     /* Only the id was read: nothing is written to a device that is not a BMI160, not even the soft reset. */
-    assert(fake.transfer_count == 1);
+    assert(fake.transfer_count == 3);
     assert(fake.delay_count == 0U);
 }
 
@@ -252,7 +340,7 @@ static void test_init_propagates_transfer_failure(void)
 {
     fake_bmi160_bus_t fake;
     seed_sensor(&fake);
-    fake.fail_at_transfer = 1;
+    fake.transient_probe_reads = 3U;
     nrf_sensor_bus_t bus = make_bus(&fake);
     nrf_bmi160_t device;
 
@@ -263,7 +351,7 @@ static void test_init_propagates_transfer_failure(void)
                fake_delay_ms,
                &fake) == NRF_BMI160_ERR_BUS);
     assert(!device.initialized);
-    assert(fake.transfer_count == 1);
+    assert(fake.transfer_count == 3);
     assert(fake.delay_count == 0U);
 }
 
@@ -409,11 +497,14 @@ static void test_state_machine_initialization_and_recovery(void)
         bus = make_bus(&fake);
         fake.observed_device = &device;
         fake.fail_at_transfer = failure;
-        assert(nrf_bmi160_init_observed(&device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
-                               fake_delay_ms, &fake, observe_state, &fake) == NRF_BMI160_ERR_BUS);
-        assert(fake.transitions[fake.transition_count - 1U] == NRF_BMI160_RECOVER);
+        const int result = nrf_bmi160_init_observed(&device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
+                               fake_delay_ms, &fake, observe_state, &fake);
+        assert(result == (failure == 1 ? NRF_BMI160_OK : NRF_BMI160_ERR_BUS));
+        assert(fake.transitions[fake.transition_count - 1U] ==
+               (failure == 1 ? NRF_BMI160_MEASURING : NRF_BMI160_RECOVER));
         assert(fake.observed_states[failure - 1] == baseline.observed_states[failure - 1]);
-        assert(device.state == NRF_BMI160_RECOVER && !device.initialized);
+        assert(device.state == (failure == 1 ? NRF_BMI160_MEASURING : NRF_BMI160_RECOVER));
+        assert(device.initialized == (failure == 1));
         fake.fail_at_transfer = 0;
         fake.transfer_count = 0;
         fake.delay_count = 0;
@@ -457,13 +548,16 @@ static void test_async_initialization_respects_deadlines(void)
             if (now < device.prepare_due_ms) now = device.prepare_due_ms;
             result = nrf_bmi160_step_async(&device, now);
         }
-        assert(result == NRF_BMI160_ERR_BUS && device.state == NRF_BMI160_RECOVER);
-        assert(!device.initialized && fake.delay_count == 0U);
+        assert(result == (failure == 1 ? NRF_BMI160_OK : NRF_BMI160_ERR_BUS));
+        assert(device.state == (failure == 1 ? NRF_BMI160_MEASURING : NRF_BMI160_RECOVER));
+        assert(device.initialized == (failure == 1) && fake.delay_count == 0U);
     }
     seed_sensor(&fake);
-    fake.fail_at_transfer = 1;
+    fake.transient_probe_reads = 3U;
     assert(nrf_bmi160_begin_async(&device, &bus, NRF_BMI160_DEFAULT_ADDRESS,
                                   observe_state, &fake) == NRF_BMI160_PENDING);
+    assert(nrf_bmi160_step_async(&device, 0U) == NRF_BMI160_PENDING);
+    assert(nrf_bmi160_step_async(&device, 0U) == NRF_BMI160_PENDING);
     assert(nrf_bmi160_step_async(&device, 0U) == NRF_BMI160_ERR_BUS);
     assert(device.state == NRF_BMI160_RECOVER && fake.transitions[1] == NRF_BMI160_RECOVER);
 }
@@ -493,8 +587,43 @@ static void test_both_drdy_required_and_consumed(void)
     assert(nrf_bmi160_read_imu(&device, &sample) == NRF_BMI160_OK);
 }
 
+static void test_probe_recovers_within_bosch_three_attempt_budget(void)
+{
+    for (unsigned wrong_id = 0U; wrong_id < 2U; ++wrong_id) {
+        for (unsigned failed_reads = 1U; failed_reads <= 3U; ++failed_reads) {
+            fake_bmi160_bus_t fake;
+            seed_sensor(&fake);
+            fake.transient_probe_reads = failed_reads;
+            fake.transient_wrong_id = wrong_id != 0U;
+            nrf_sensor_bus_t bus = make_bus(&fake);
+            nrf_bmi160_t device;
+            assert(nrf_bmi160_begin_async(&device, &bus, 0x68U, NULL, NULL) == NRF_BMI160_PENDING);
+            nrf_bmi160_result_t result = NRF_BMI160_PENDING;
+            for (unsigned step = 0U; step < 3U && device.state == NRF_BMI160_PROBE; ++step)
+                result = nrf_bmi160_step_async(&device, 100U);
+            if (failed_reads < 3U) {
+                assert(result == NRF_BMI160_PENDING && device.state == NRF_BMI160_CONFIGURE);
+                assert(device.chip_id == 0xD1U);
+                uint64_t now = 100U;
+                for (unsigned step = 0U; step < 16U && result == NRF_BMI160_PENDING; ++step) {
+                    if (device.prepare_due_ms > now) now = device.prepare_due_ms;
+                    result = nrf_bmi160_step_async(&device, now);
+                }
+                assert(result == NRF_BMI160_OK && device.initialized);
+            } else {
+                assert(result == (wrong_id ? NRF_BMI160_ERR_CHIP_ID : NRF_BMI160_ERR_BUS));
+                assert(fake.transfer_count == 3 && !device.initialized);
+                assert(device.state == NRF_BMI160_RECOVER);
+                assert(fake.regs[TEST_BMI160_REG_CMD] == 0U);
+            }
+            assert(fake.delay_count == 0U);
+        }
+    }
+}
+
 int main(void)
 {
+    test_probe_recovers_within_bosch_three_attempt_budget();
     test_both_drdy_required_and_consumed();
     test_async_initialization_respects_deadlines();
     test_state_machine_initialization_and_recovery();
@@ -503,7 +632,10 @@ int main(void)
     test_init_configures_expected_runtime_profile();
     test_init_rejects_wrong_chip_id_before_powerup();
     test_init_rejects_pmu_that_did_not_enter_normal_mode();
+    test_init_rejects_partial_pmu_normal_mode();
     test_init_propagates_transfer_failure();
+    test_init_writes_expected_command_sequence();
+    test_init_on_alternate_address_succeeds();
     test_read_requires_initialized_device_and_clears_output();
     test_read_converts_motion_and_temperature_without_float();
     test_read_transfer_failure_does_not_leak_stale_sample();

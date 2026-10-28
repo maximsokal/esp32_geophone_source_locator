@@ -34,6 +34,7 @@ enum {
     BMI160_ACCEL_NORMAL_DELAY_MS = 5U,
     BMI160_GYRO_NORMAL_DELAY_MS = 80U,
     BMI160_WRITE_SETTLE_DELAY_MS = 1U,
+    BMI160_PROBE_ATTEMPTS = 3U,
 };
 
 static nrf_bmi160_result_t bmi160_write_reg(
@@ -160,9 +161,13 @@ nrf_bmi160_result_t nrf_bmi160_step_async(nrf_bmi160_t *device, uint64_t now_ms)
     if (now_ms < device->prepare_due_ms) return NRF_BMI160_PENDING;
     if (device->state == NRF_BMI160_PROBE) {
         result = bmi160_read_regs(device, BMI160_REG_CHIP_ID, &value, 1U);
+        /* Match Bosch SensorAPI: a transient ID read must not reject this address. */
+        if ((result != NRF_BMI160_OK || value != NRF_BMI160_CHIP_ID) &&
+            ++device->prepare_phase < BMI160_PROBE_ATTEMPTS) return NRF_BMI160_PENDING;
         if (result != NRF_BMI160_OK) goto failed_async;
         device->chip_id = value;
         if (value != NRF_BMI160_CHIP_ID) { result = NRF_BMI160_ERR_CHIP_ID; goto failed_async; }
+        device->prepare_phase = 0U;
         device->state = NRF_BMI160_CONFIGURE;
         if (device->observer != NULL) device->observer(device->observer_context, device->state);
         return NRF_BMI160_PENDING;

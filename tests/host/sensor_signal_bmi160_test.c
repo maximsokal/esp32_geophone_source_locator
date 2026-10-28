@@ -70,8 +70,9 @@ static void test_bmi_failures_at_each_transfer(void)
         fake.fail_at_transfer = operation;
         nrf_sensor_bus_t bus = make_bus(&fake);
         nrf_bmi160_t device;
-        assert(nrf_bmi160_init(&device, &bus, 0x68U, fake_delay_ms, &fake) == NRF_BMI160_ERR_BUS);
-        assert(!device.initialized);
+        const int result = nrf_bmi160_init(&device, &bus, 0x68U, fake_delay_ms, &fake);
+        assert(result == (operation == 1 ? NRF_BMI160_OK : NRF_BMI160_ERR_BUS));
+        assert(device.initialized == (operation == 1));
     }
     for (int operation = 1; operation <= 4; ++operation) {
         fake_bmi160_bus_t fake;
