@@ -1,5 +1,5 @@
 import type { LocalizationJobStatus } from '../domain/localizationJob';
-import { normalizeDeviceStatus } from './deviceStatusSchema';
+import { normalizeDeviceStatus, normalizeWorkflowStatus } from './deviceStatusSchema';
 import { recordApiBoundaryCopy } from '../xr/scanIdentity';
 import {
   normalizeSeismicSnapshot,
@@ -110,6 +110,14 @@ export class BulkTransferPreemptedError extends Error {
 }
 
 export type ScanWriteOutcome = 'confirmed_not_committed' | 'unknown';
+
+export class ControlOutcomeUnknownError extends Error {
+  readonly outcome = 'unknown' as const;
+  constructor(readonly detail: string = 'invalid_response') {
+    super('CONTROL_OUTCOME_UNKNOWN');
+    this.name = 'ControlOutcomeUnknownError';
+  }
+}
 
 export class ScanWriteOutcomeError extends Error {
   constructor(
@@ -731,15 +739,41 @@ export async function fetchNrfLogs(
   }
 }
 
-export function sendControl(
+function normalizeControlResult(raw: unknown, action: string): ControlResult {
+  if (!isRecord(raw) || typeof raw.ok !== 'boolean' || raw.action !== action)
+    throw new ControlOutcomeUnknownError();
+  for (const key of ['pending', 'accepted', 'running', 'completed', 'rejected'])
+    if (raw[key] !== undefined && typeof raw[key] !== 'boolean') throw new ControlOutcomeUnknownError();
+  for (const key of ['object_id', 'id', 'error_class', 'error', 'outcome', 'busy_reason'])
+    if (raw[key] !== undefined && typeof raw[key] !== 'string') throw new ControlOutcomeUnknownError();
+  if (raw.current_id !== undefined && raw.current_id !== null && typeof raw.current_id !== 'string')
+    throw new ControlOutcomeUnknownError();
+  for (const key of ['request_id', 'bytes', 'dispatch_error'])
+    if (raw[key] !== undefined && (typeof raw[key] !== 'number' || !Number.isSafeInteger(raw[key])))
+      throw new ControlOutcomeUnknownError();
+  if ((raw.request_id !== undefined && !isU32(raw.request_id)) ||
+      (typeof raw.bytes === 'number' && raw.bytes < 0) ||
+      (raw.ok && (raw.rejected === true || raw.accepted === false)) ||
+      (raw.completed === true && (raw.pending === true || raw.running === true)))
+    throw new ControlOutcomeUnknownError();
+  return raw as unknown as ControlResult;
+}
+
+export async function sendControl(
   action: string,
   payload: Record<string, unknown> = {},
   options: ApiRequestOptions = {},
 ): Promise<ControlResult> {
-  return jsonRequest<ControlResult>('/api/control', {
-    method: 'POST',
-    body: JSON.stringify({ action, ...payload }),
-  }, DEVICE_API_CONTROL_TIMEOUT_MS, CRITICAL_CONTROL_ACTIONS.has(action) ? 'critical' : 'normal', options);
+  try {
+    const raw = await jsonRequest<unknown>('/api/control', {
+      method: 'POST',
+      body: JSON.stringify({ ...payload, action }),
+    }, DEVICE_API_CONTROL_TIMEOUT_MS, CRITICAL_CONTROL_ACTIONS.has(action) ? 'critical' : 'normal', options);
+    return normalizeControlResult(raw, action);
+  } catch (reason) {
+    if (reason instanceof ApiHttpError || reason instanceof ScanStorageBlockedRecordingError || isRequestCancellation(reason)) throw reason;
+    throw reason instanceof ControlOutcomeUnknownError ? reason : new ControlOutcomeUnknownError(errorText(reason));
+  }
 }
 
 export function getCalcSettings(objectId: string, options: ApiRequestOptions = {}): Promise<CalcSettingsResponse> {
@@ -781,7 +815,8 @@ export async function saveCalcSettings(
 export type WorkflowCommandResult =
   | { ok: true; workflow: DeviceWorkflowStatus }
   | { ok: false; reason: 'stale' | 'not_allowed' }
-  | { ok: false; reason: 'error'; message: string };
+  | { ok: false; reason: 'error'; message: string }
+  | { ok: false; reason: 'unknown_outcome' };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -817,20 +852,19 @@ export function sendWorkflowCommand(
     }, DEVICE_API_CONTROL_TIMEOUT_MS, true);
 
     if (isRecord(body) && body.ok === true && isRecord(body.workflow)) {
-      return { ok: true, workflow: body.workflow as unknown as DeviceWorkflowStatus };
+      return { ok: true, workflow: normalizeWorkflowStatus(body.workflow) };
     }
     if (isRecord(body) && body.ok === false &&
         (body.reason === 'stale' || body.reason === 'not_allowed')) {
       return { ok: false, reason: body.reason };
     }
-    return { ok: false, reason: 'error', message: 'invalid_response' };
+    throw new ControlOutcomeUnknownError();
   }, 'critical', { ...options, preemptible: false });
 
-  return request.catch((reason: unknown) => ({
-    ok: false as const,
-    reason: 'error' as const,
-    message: errorText(reason),
-  }));
+  return request.catch((reason: unknown): WorkflowCommandResult =>
+    reason instanceof ApiHttpError || isRequestCancellation(reason)
+      ? { ok: false, reason: 'error', message: errorText(reason) }
+      : { ok: false, reason: 'unknown_outcome' });
 }
 
 export function saveObjectScanArtifact(objectId: string, sessionId: string, artifact: Uint8Array): Promise<ControlResult> {

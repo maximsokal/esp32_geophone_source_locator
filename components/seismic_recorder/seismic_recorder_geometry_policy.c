@@ -291,6 +291,5 @@ bool seismic_recorder_geometry_solution_consistent(
 {
     return
         solution != NULL &&
-        solution->inconsistent_pair_count == 0U &&
-        solution->max_residual_mm <= NRF_GEOMETRY_CONSISTENCY_TOLERANCE_MM;
+        nrf_geometry_metrics_consistent(solution->inconsistent_pair_count, solution->max_residual_mm);
 }

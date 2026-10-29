@@ -27,6 +27,9 @@ typedef struct {
     unsigned corrupt_result_reads;
     bool never_answers_results;
     bool noise_record;     /* adds a record for an execution this node does not own */
+    bool pending_measurement;
+    uint64_t complete_at_ms;
+    nrf_cs_step_t pending_step;
     bool stale_cycle_id;   /* status answers carry another cycle's id */
 } sim_node_t;
 
@@ -38,6 +41,8 @@ typedef struct {
 } bus_log_t;
 
 static uint64_t g_now;
+static uint32_t g_ble_latency_ms;
+static uint32_t g_result_latency_ms;
 static uint32_t g_bus_hz = 100000U;
 static sim_node_t g_nodes[NRF_CS_MAX_NODES];
 static size_t g_node_count;
@@ -85,8 +90,14 @@ static void tick_nodes(void)
         if (nrf_cs_cycle_runtime_take_start(&sim->rt, &step)) {
             ++sim->executes;
             nrf_cs_cycle_runtime_start_result(&sim->rt, &step, 0);
-            const nrf_cs_measurement_t m = scripted(sim->rt.window, step.attempt_number);
-            assert(nrf_cs_cycle_runtime_step_done(&sim->rt, &step, &m) == 0);
+            sim->pending_step = step;
+            sim->complete_at_ms = g_now + g_ble_latency_ms;
+            sim->pending_measurement = true;
+        }
+        if (sim->pending_measurement && g_now >= sim->complete_at_ms) {
+            const nrf_cs_measurement_t outcome = scripted(sim->rt.window, sim->pending_step.attempt_number);
+            assert(nrf_cs_cycle_runtime_step_done(&sim->rt, &sim->pending_step, &outcome) == 0);
+            sim->pending_measurement = false;
         }
     }
 }
@@ -185,6 +196,7 @@ static int fake_read(void *context, nrf_cs_node_id_t node, uint8_t *frame, size_
     if (node == g_main && g_main_unreadable && length == NRF_CS_CYCLE_STATUS_LENGTH) return -1;
     memset(frame, 0, length);
     if (sim->reply_selected && length == NRF_CS_CYCLE_RESULT_LENGTH) {
+        g_now += g_result_latency_ms;
         memcpy(frame, sim->reply, length);
         sim->reply_selected = false;
         return 0;
@@ -227,6 +239,8 @@ static void setup(size_t node_count, nrf_cs_node_id_t *ids)
     g_node_count = node_count;
     g_log_count = 0U;
     g_now = 100000U;
+    g_ble_latency_ms = 0U;
+    g_result_latency_ms = 0U;
     g_main_unreadable = false;
     g_main_early_complete = false;
     g_abort_after_polls = 0U;
@@ -587,9 +601,38 @@ static void test_five_nodes_all_pairs(void)
     }
 }
 
+static void test_workflow_policy_with_phase_latency(void)
+{
+    const uint32_t rates[] = {25000U, 50000U, 100000U};
+    for (size_t r = 0U; r < sizeof(rates) / sizeof(rates[0]); ++r) {
+        for (size_t nodes = 3U; nodes <= 5U; ++nodes) {
+            nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
+            nrf_cs_scheduler_t scheduler;
+            nrf_cs_cycle_collected_t out;
+            nrf_cs_cycle_report_t report;
+            setup(nodes, ids);
+            g_bus_hz = rates[r];
+            /* Virtual setup/security 100 ms + procedure 300 ms + cleanup 100 ms. */
+            g_ble_latency_ms = 500U;
+            g_result_latency_ms = 100U;
+            start_scheduler(&scheduler, ids, nodes, &k_policy);
+            const uint64_t started = g_now;
+            const uint32_t budget = nrf_cs_cycle_coordinator_budget_ms(&k_policy, nodes * (nodes - 1U), nodes);
+            assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 500U, &out, &report) == NRF_CS_COORD_OK);
+            assert(g_now - started <= budget);
+            assert(report.collected_mask == (1U << nodes) - 1U);
+            assert(nrf_cs_cycle_replay(&scheduler, out.nodes, out.node_count) == 0);
+            for (size_t i = 0U; i < nrf_cs_scheduler_pair_count(&scheduler); ++i)
+                assert(nrf_cs_scheduler_pair_at(&scheduler, i)->state == NRF_CS_PAIR_VALID);
+            assert(count_ops(last_go_end() + 1U, last_go_end() + report.run_ms, true, 0U) == 0U);
+        }
+    }
+}
+
 int main(void)
 {
     test_budget_and_arguments();
+    test_workflow_policy_with_phase_latency();
     const uint32_t rates[] = {25000U, 50000U, 100000U};
     for (size_t i = 0U; i < sizeof(rates) / sizeof(rates[0]); ++i) {
         g_bus_hz = rates[i];

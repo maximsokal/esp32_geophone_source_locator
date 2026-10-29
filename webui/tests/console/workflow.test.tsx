@@ -6,6 +6,8 @@ import type { DevicePod, DeviceStatus, DeviceWorkflowStatus, PhoneLocationInput,
 import { sendWorkflowCommand } from '../../src/api/deviceApi';
 import type { WorkflowCommandResult } from '../../src/api/deviceApi';
 import WorkflowPanel from '../../src/features/workflow/WorkflowPanel';
+import ManualDistanceForm from '../../src/features/workflow/ManualDistanceForm';
+import type { RangingPairStatus } from '../../src/domain/device';
 import {
   rangingUncertaintyMm,
   resultFailureKey,
@@ -712,4 +714,36 @@ describe('workflow operator actions', () => {
     expect(poll).toHaveBeenCalledTimes(2);
     expect(workflowStatusPollDelay('STOPPED', false, 1)).toBe(10000);
   });
+});
+
+
+it('keeps manual distance outcome unknown after a dropped reply and refreshes without retry', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  const fetchMock = vi.fn(async () => { throw new Error('lost reply'); });
+  vi.stubGlobal('fetch', fetchMock);
+  const refresh = vi.fn(async () => true);
+  const saved = vi.fn();
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(createElement(ManualDistanceForm, {
+      pair: { node_a: 0, node_b: 1, distance_mm: 1000 } as RangingPairStatus,
+      generation: 7, startedAtMs: 1, updatedAtMs: 2, onSaved: saved, onRefresh: refresh,
+    }));
+  });
+  await act(async () => { renderer.root.findByType('button').props.onClick(); });
+  await act(async () => { renderer.root.findByType('form').props.onSubmit({ preventDefault() {} }); });
+  expect(renderer.root.findByProps({ role: 'alert' }).children.join(''))
+    .toBe(translate('en', 'api.error_control_outcome_unknown'));
+  expect(fetchMock).toHaveBeenCalledOnce();
+  expect(saved).not.toHaveBeenCalled();
+  expect(refresh).toHaveBeenCalledOnce();
+  act(() => renderer.unmount());
+});
+
+
+it('explains the geometry consistency rejection instead of an unknown reason', () => {
+  const status = statusFor('RANGING_RESULT');
+  (status as unknown as { ranging: unknown }).ranging = { available: true, progress: { failure_reason: 'geometry_inconsistent' } };
+  const html = panelHtml(status);
+  expect(html).toContain('Measured distances disagree with the solved geometry.');
 });

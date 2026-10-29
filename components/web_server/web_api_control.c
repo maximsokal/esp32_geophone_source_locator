@@ -337,9 +337,7 @@ static workflow_command_result_t web_control_workflow_command(
         params.has_generation = true;
         params.expected_generation = (uint32_t)value;
     }
-    if ((command == WORKFLOW_COMMAND_GPS_ACCEPT ||
-         command == WORKFLOW_COMMAND_GPS_CAPTURE_FAILED ||
-         command == WORKFLOW_COMMAND_SET_DISTANCE) && !params.has_generation) {
+    if (!params.has_generation) {
         return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
     }
 

@@ -41,7 +41,8 @@ export default function ManualDistanceForm({ pair, generation, startedAtMs, upda
         setOpen(false);
       } else {
         const stale = result.reason === 'stale';
-        setError(t(stale ? 'workflow.state_changed' : 'workflow.distance.rejected'));
+        setError(t(result.reason === 'unknown_outcome' ? 'api.error_control_outcome_unknown'
+          : stale ? 'workflow.state_changed' : 'workflow.distance.rejected'));
       }
       await onRefresh();
     } catch {

@@ -93,6 +93,7 @@ function calibrationReasonLabel(reason: string, t: (key: I18nKey, params?: Reado
 function rangingReasonLabel(reason: string, t: (key: I18nKey, params?: Readonly<Record<string, string | number>>) => string): string {
   const normalized = reason.trim();
   if (normalized === 'timeout') return t('workflow.ranging.reason.timeout');
+  if (normalized === 'geometry_inconsistent') return t('workflow.ranging.reason.geometry_inconsistent');
   if (normalized === 'insufficient_nodes') return t('workflow.ranging.reason.insufficient_nodes');
   const pair = normalized.match(/^pair_failed:(.+)$/);
   if (pair !== null) return t('workflow.ranging.reason.pair_failed', { pair: pair[1] });
@@ -425,6 +426,10 @@ export default function WorkflowPanel({
       void onRefreshStatus();
       setDeleteArmed(false);
       setNotice(t('workflow.state_changed'));
+    } else if (result.reason === 'unknown_outcome') {
+      void onRefreshStatus();
+      setDeleteArmed(false);
+      setError(t('api.error_control_outcome_unknown'));
     } else if (result.reason === 'error') {
       setDeleteArmed(false);
       setError(result.message === 'invalid_response' ? t('workflow.command.invalid_response') : result.message);

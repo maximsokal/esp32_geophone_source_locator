@@ -62,6 +62,14 @@ typedef struct {
  */
 #define NRF_GEOMETRY_CONSISTENCY_TOLERANCE_MM 750
 
+/* Shared by ranging acceptance and recording admission. */
+static inline bool nrf_geometry_metrics_consistent(size_t inconsistent_pair_count, int32_t max_residual_mm)
+{
+    return inconsistent_pair_count == 0U && max_residual_mm >= 0 &&
+        max_residual_mm <= NRF_GEOMETRY_CONSISTENCY_TOLERANCE_MM;
+}
+
+
 /*
  * MAX-144: 1-sigma range error used to weight a CS pair in the full-mesh
  * refinement: the pair's own sample spread (MAX-206) but never less than

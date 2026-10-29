@@ -1,5 +1,6 @@
 // generated — do not edit
 export const i18nKeys = [
+  "api.error_control_outcome_unknown",
   "api.error_http",
   "api.error_prefix",
   "api.error_request_failed",
@@ -1613,6 +1614,7 @@ export const i18nKeys = [
   "workflow.ranging.pair_unavailable",
   "workflow.ranging.pairs",
   "workflow.ranging.partial",
+  "workflow.ranging.reason.geometry_inconsistent",
   "workflow.ranging.reason.geometry_unsolved",
   "workflow.ranging.reason.insufficient_nodes",
   "workflow.ranging.reason.pair_failed",

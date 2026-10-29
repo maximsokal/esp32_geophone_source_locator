@@ -1,4 +1,4 @@
-import type { DeviceStatus } from '../domain/device';
+import type { DeviceStatus, DeviceWorkflowStatus } from '../domain/device';
 
 /*
  * Required sections: system, power, environment, mux, pods, acquisition.
@@ -534,10 +534,12 @@ function checkRecordingSessions(sessions: StatusObject): void {
 function checkWorkflow(workflow: StatusObject): void {
   requiredString(workflow, 'step', 'workflow');
   requiredNumber(workflow, 'generation', 'workflow');
+  if (!Number.isInteger(workflow.generation) || (workflow.generation as number) < 0 ||
+      (workflow.generation as number) > 0xffffffff) fail('workflow.generation', 'not_u32');
   requiredStringArray(workflow, 'allowed_actions', 'workflow');
   optionalString(workflow, 'sensor_sufficiency', 'workflow');
   optionalNumber(workflow, 'assigned_remotes', 'workflow');
-  optionalString(workflow, 'reason', 'workflow');
+  optionalStringOrNull(workflow, 'reason', 'workflow');
   requiredNumberOrNull(workflow, 'progress', 'workflow');
   optionalStringOrNull(workflow, 'object_id', 'workflow');
   optionalStringOrNull(workflow, 'session_id', 'workflow');
@@ -706,6 +708,13 @@ function checkNrfLogs(value: unknown): void {
       requiredNumber(node, key, path);
     }
   }
+}
+
+/** Apply the same runtime contract to command responses and status polling. */
+export function normalizeWorkflowStatus(raw: unknown): DeviceWorkflowStatus {
+  const workflow = objectValue(raw, 'workflow');
+  checkWorkflow(workflow);
+  return workflow as unknown as DeviceWorkflowStatus;
 }
 
 /** Validate /api/status in place, preserving unknown fields and object identity when possible. */

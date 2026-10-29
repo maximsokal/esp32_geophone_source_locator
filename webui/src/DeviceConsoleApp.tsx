@@ -7,6 +7,7 @@ import {
   isStorageAvailabilityError,
   retireRequestOwner,
   sendControl,
+  ControlOutcomeUnknownError,
   sendWorkflowCommand,
 } from './api/deviceApi';
 import type { ApiRequestOwner } from './api/deviceApi';
@@ -560,7 +561,8 @@ export default function DeviceConsoleApp() {
        * does not block the button handler or race the fast status poll.
        */
       const storageAvailabilityFailure = isStorageAvailabilityError(reason);
-      if (!storageAvailabilityFailure && transportFailure(rawMessage) && LOCAL_OBJECT_MUTATION_ACTIONS.has(action)) {
+      const unknownOutcome = reason instanceof ControlOutcomeUnknownError;
+      if (!storageAvailabilityFailure && (unknownOutcome || transportFailure(rawMessage)) && LOCAL_OBJECT_MUTATION_ACTIONS.has(action)) {
         scheduleObjectReconcile(selectionMode);
       }
       else if (!storageAvailabilityFailure && action === 'measurement_start') {
@@ -570,7 +572,7 @@ export default function DeviceConsoleApp() {
       }
 
       setWorkspaceError(reason);
-      if (transportFailure(rawMessage)) setLinkError(reason);
+      if (unknownOutcome || transportFailure(rawMessage)) setLinkError(reason);
       return false;
     }
     finally {
@@ -625,7 +627,10 @@ export default function DeviceConsoleApp() {
         const result = await sendWorkflowCommand('BACK', latest.workflow.generation);
         if (requestOwnerRef.current !== owner) return;
         if (result.ok) setStatus({ ...latest, workflow: result.workflow });
-        else await refreshStatus();
+        else {
+          if (result.reason === 'unknown_outcome') setWorkspaceError(new ControlOutcomeUnknownError());
+          await refreshStatus();
+        }
       }
     } catch (reason) {
       setWorkspaceError(reason);
@@ -645,7 +650,10 @@ export default function DeviceConsoleApp() {
       const result = await sendWorkflowCommand('SCAN_COMPLETE', latest.workflow.generation);
       if (requestOwnerRef.current !== owner) return;
       if (result.ok) setStatus((current) => current === null ? current : { ...current, workflow: result.workflow });
-      else await refreshStatus();
+      else {
+        if (result.reason === 'unknown_outcome') setWorkspaceError(new ControlOutcomeUnknownError());
+        await refreshStatus();
+      }
     } catch (reason) {
       setWorkspaceError(reason);
       await refreshStatus();

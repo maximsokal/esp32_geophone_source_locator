@@ -361,6 +361,16 @@ static void test_solution_consistency_gate_and_residual_mapping(void)
     solution.inconsistent_pair_count = 1U;
     assert(!seismic_recorder_geometry_solution_consistent(&solution));
 
+    const int32_t residuals[] = {-1, 0, 750, 751, INT32_MAX};
+    for (size_t count = 0U; count < 2U; ++count) {
+        for (size_t i = 0U; i < sizeof(residuals) / sizeof(residuals[0]); ++i) {
+            solution.inconsistent_pair_count = count;
+            solution.max_residual_mm = residuals[i];
+            assert(seismic_recorder_geometry_solution_consistent(&solution) ==
+                nrf_geometry_metrics_consistent(count, residuals[i]));
+        }
+    }
+
     nrf_topology_snapshot_t topology;
     memset(&topology, 0, sizeof(topology));
     topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;

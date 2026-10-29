@@ -2,6 +2,7 @@
 import type { I18nKey } from './catalog.keys.gen';
 
 export const uk: Record<I18nKey, string> = {
+  "api.error_control_outcome_unknown": "Результат команди невідомий. Оновіть стан пристрою перед повторною спробою.",
   "api.error_http": "ESP API повернув HTTP {status} ({request}): {detail}",
   "api.error_prefix": "ESP API: {error}",
   "api.error_request_failed": "Не вдалося виконати запит ESP API ({detail}).",
@@ -1615,6 +1616,7 @@ export const uk: Record<I18nKey, string> = {
   "workflow.ranging.pair_unavailable": "Не виміряно",
   "workflow.ranging.pairs": "Виконано пар",
   "workflow.ranging.partial": "Відстані виміряно частково",
+  "workflow.ranging.reason.geometry_inconsistent": "Виміряні відстані не узгоджуються з обчисленою геометрією.",
   "workflow.ranging.reason.geometry_unsolved": "Не вдалося визначити позицію вузла {node}.",
   "workflow.ranging.reason.insufficient_nodes": "Недостатньо призначених датчиків для розрахунку схеми.",
   "workflow.ranging.reason.pair_failed": "Не вдалося виміряти пару Bluetooth {pair}.",

@@ -180,6 +180,7 @@ export function translate(
 }
 
 const EXACT_ERROR_KEYS: Readonly<Record<string, I18nKey>> = {
+  CONTROL_OUTCOME_UNKNOWN: 'api.error_control_outcome_unknown',
   'Saved seismic object and session are required.': 'api.error_saved_session_required',
   'Geolocation is not supported by this browser.': 'console.error.geolocation_unsupported',
   'measurement service error': 'console.error.measurement_failed',

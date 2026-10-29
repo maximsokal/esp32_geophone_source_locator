@@ -9,12 +9,12 @@
 #include "nrf_read_window.h"
 #include "nrf_link_readiness_policy.h"
 #include "nrf_topology_periods.h"
+#include "nrf_geometry_solver.h"
 #include "sensor_bus_timeout.h"
 
 #if defined(ESP_PLATFORM) || defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
 #define NRF_TOPOLOGY_HAS_RANGING_SOLVER 1
 #include "device_status.h"
-#include "nrf_geometry_solver.h"
 #else
 #define NRF_TOPOLOGY_HAS_RANGING_SOLVER 0
 #endif
@@ -3045,6 +3045,9 @@ static void service_ranging_process(nrf_topology_worker_state_t *worker)
             (unsigned)worker->ranging_failed_pair_a,
             (unsigned)worker->ranging_failed_pair_b);
         service_ranging_finish(worker, false, reason, now_ms);
+    } else if (!nrf_geometry_metrics_consistent(progress->geometry.inconsistent_pair_count,
+                   progress->geometry.max_residual_mm)) {
+        service_ranging_finish(worker, false, "geometry_inconsistent", now_ms);
     } else if (service_ranging_geometry_solves_all_nodes(worker)) {
         service_ranging_finish(worker, true, NULL, now_ms);
     } else {
@@ -4470,7 +4473,12 @@ esp_err_t nrf_topology_service_ranging_set_manual(
     result->geometry.inconsistent_pair_count = solution.inconsistent_pair_count;
     result->geometry.refined = solution.refined;
     result->geometry.refine_iterations = solution.refine_iterations;
-    if (solved != NRF_GEOMETRY_OK || solution.inconsistent_pair_count != 0U) progress->success = false;
+    if (solved != NRF_GEOMETRY_OK ||
+        !nrf_geometry_metrics_consistent(solution.inconsistent_pair_count, solution.max_residual_mm)) {
+        progress->success = false;
+        if (progress->failure_reason[0] == '\0')
+            (void)snprintf(progress->failure_reason, sizeof(progress->failure_reason), "geometry_inconsistent");
+    }
     for (size_t i = 0U; i < solution.node_count; ++i) {
         const nrf_geometry_node_position_t *node = &solution.nodes[i];
         nrf_topology_ranging_node_t *dest = &result->geometry.nodes[i];

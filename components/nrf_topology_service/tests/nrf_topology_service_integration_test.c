@@ -656,6 +656,14 @@ static nrf_cs_measurement_t sim_cycle_measure(const nrf_cs_step_t *step)
 {
     nrf_cs_measurement_t m = {.outcome = NRF_CS_OUTCOME_SUCCESS, .confidence = 900U};
     const unsigned pair = sim_pair_index(step->initiator, step->reflector, s_cycle_node_count);
+    bool reflector_present = false;
+    for (size_t i = 0U; i < MAX_NODES; ++i)
+        reflector_present |= s_nodes[i].present && s_nodes[i].bootstrap.node_id == step->reflector;
+    if (!reflector_present) {
+        m.outcome = NRF_CS_OUTCOME_TRANSPORT_ERROR;
+        m.confidence = 0U;
+        return m;
+    }
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
     if (s_cs_fail_pair_index == (int32_t)pair) {
         m.outcome = NRF_CS_OUTCOME_TRANSPORT_ERROR;
@@ -2345,6 +2353,90 @@ static void test_autonomous_individual_cable_limits(void)
     run_service();
 }
 
+static void unplug_during_cycle(TickType_t ticks)
+{
+    s_nodes[1].present = false;
+    sim_cycle_tick_nodes(ticks);
+}
+
+static void request_cycle_with_unplug(void)
+{
+    assert(nrf_topology_service_ranging_start_autonomous(&k_autonomous_policy) == ESP_OK);
+    s_vtask_delay_hook = unplug_during_cycle;
+}
+
+static void verify_failed_cycle_and_rejoin(void)
+{
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.complete && !progress.active && !progress.success && progress.partial);
+    assert(!sensor_bus_quiet_active());
+    node_boot(&s_nodes[1], 0U, 0x22U);
+    assert(nrf_topology_service_request_refresh() == ESP_OK);
+}
+
+static void test_unplug_during_cs_rejoins_after_quiet_lease(void)
+{
+    reset_world(); s_tca_present = true; prepare_ranging_nodes(2U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_cycle_with_unplug);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, verify_failed_cycle_and_rejoin);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_seen.remotes[0].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_seen.remotes[1].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_seen.remotes[1].hardware_id[2] == 0x23U);
+    assert(!sensor_bus_quiet_active() && s_tca_control == 0U);
+}
+
+static void request_inconsistent_mesh(void)
+{
+    assert(nrf_topology_service_ranging_start_autonomous(&k_autonomous_policy) == ESP_OK);
+    s_vtask_delay_hook = sim_cycle_tick_nodes;
+}
+
+static void assert_inconsistent_mesh_and_correct(void)
+{
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.complete && progress.geometry.node_count == 5U);
+    for (size_t i = 0U; i < progress.geometry.node_count; ++i) assert(progress.geometry.nodes[i].solved);
+    assert(progress.geometry.inconsistent_pair_count > 0U);
+    assert(progress.geometry.max_residual_mm > 750);
+    assert(!progress.success && progress.partial);
+    assert(strcmp(progress.failure_reason, "geometry_inconsistent") == 0);
+    nrf_topology_snapshot_t topology;
+    nrf_topology_ranging_result_t result;
+    assert(nrf_topology_service_get_snapshot(&topology) == ESP_OK);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(&topology,
+        (uint64_t)esp_timer_get_time() / 1000U, 0U, &result) == ESP_ERR_NOT_FOUND);
+    const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {20000U, 20000U, 20000U, 20000U};
+    assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+        3U, 4U, 3421, limits) == ESP_OK);
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.success && !progress.partial && progress.failure_reason[0] == '\0');
+}
+
+static void test_inconsistent_solved_mesh_is_not_success(void)
+{
+    reset_world(); s_tca_present = true; prepare_ranging_nodes(4U);
+    s_cs_use_pair_distances = true;
+    /* Same 5-node mesh as the solver's gross-outlier regression; last pair is +3 m. */
+    const int32_t distances[] = {5000, 6313, 3912, 3000, 4105, 6580, 3162, 5104, 3324, 6421};
+    memcpy(s_cs_pair_distances, distances, sizeof(distances));
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_inconsistent_mesh);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_inconsistent_mesh_and_correct);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
 static void test_autonomous_ranging_rejects_bad_requests(void)
 {
     nrf_cs_policy_t policy = k_autonomous_policy;
@@ -2509,14 +2601,14 @@ static void test_stack_phase_tracking_and_cs_cycle_path(void)
 
     assert(s_first_cs.complete && s_first_cs.pair_count == 1U);
     assert(s_first_cs.pairs[0].state == NRF_CS_PAIR_VALID);
-    assert(s_first_cs.pairs[0].attempts >= 3U); /* malformed result was retried */
+    assert(s_first_cs.pairs[0].attempts == 2U); /* same request retried, no extra radio attempt */
     assert(s_malformed_cs_results_seen == 1U);
     assert(s_seen_cs.complete && s_seen_cs.pair_count == NRF_CS_MAX_PAIRS);
     for (size_t pair = 0U; pair < s_seen_cs.pair_count; ++pair) {
         assert(s_seen_cs.pairs[pair].state == NRF_CS_PAIR_VALID);
         assert(s_seen_cs.pairs[pair].valid_samples == 1U);
     }
-    assert(s_cs_execute_count >= 13U); /* retried 1-node pair plus all 10 pairs in the 5-node cycle */
+    assert(s_cs_execute_count == 12U); /* two-node executions plus all ten five-node pairs */
     assert(s_unplug_snapshot.remotes[5].state == NRF_TOPOLOGY_NODE_ABSENT);
     assert(s_rejoin_snapshot.remotes[5].state == NRF_TOPOLOGY_NODE_ASSIGNED);
     assert(s_collisions == 0U);
@@ -3810,6 +3902,8 @@ int main(void)
     test_autonomous_ranging_failures();
     test_autonomous_individual_cable_limits();
     test_noisy_geometry_cannot_exceed_individual_cables();
+    test_unplug_during_cs_rejoins_after_quiet_lease();
+    test_inconsistent_solved_mesh_is_not_success();
     test_autonomous_ranging_rejects_bad_requests();
 #endif
     test_mux_discovery_timeouts_escalate_and_rejoin();

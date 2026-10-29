@@ -700,7 +700,7 @@ describe('scan persistence after bulk preemption', () => {
     let signalOccupancyStarted!: () => void;
     const occupancyStarted = new Promise<void>((resolve) => { signalOccupancyStarted = resolve; });
     const fetchMock = vi.fn((url: string, init?: RequestInit) => {
-      if (url.includes('measurement_stop')) {
+      if (url === '/api/control' && JSON.parse(String(init?.body)).action === 'measurement_stop') {
         return Promise.resolve(new Response(JSON.stringify({ ok: true, action: 'measurement_stop' }), { status: 200 }));
       }
       if (url.includes('kind=occupancy')) {

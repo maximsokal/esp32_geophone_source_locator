@@ -221,6 +221,7 @@ describe('DeviceConsoleApp scanner chunk boundary', () => {
       workflow: {
         step: 'SCAN_CHOICE',
         generation: 52,
+        progress: null,
         allowed_actions: ['SCAN_START', 'SCAN_SKIP', 'BACK'],
         object_id: 'OBJ_0001',
       },
@@ -263,6 +264,7 @@ describe('DeviceConsoleApp scanner chunk boundary', () => {
       workflow: {
         step: 'RECORD_READY',
         generation: 62,
+        progress: null,
         allowed_actions: ['START_RECORDING', 'MOVE_SENSORS', 'BACK'],
         object_id: 'OBJ_0001',
       },

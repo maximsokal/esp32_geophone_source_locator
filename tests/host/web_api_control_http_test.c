@@ -1310,6 +1310,20 @@ static void test_activate_object_does_not_clear_staging_when_activation_fails(vo
     assert(s_clear_staging_calls == 0U);
 }
 
+static void test_external_workflow_commands_require_generation(void)
+{
+    for (int command = 0; command < WORKFLOW_COMMAND_COUNT; ++command) {
+        reset_fakes();
+        char body[256], response[512] = {0};
+        (void)snprintf(body, sizeof(body), "{\"action\":\"workflow_command\",\"command\":\"%s\"}",
+            workflow_core_command_name((workflow_command_t)command));
+        httpd_req_t request = make_request(body, response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
+        assert(s_workflow_command_calls == 0U);
+    }
+}
+
 static void test_workflow_command_success_and_conflict_responses(void)
 {
     static const char *const success_body =
@@ -1338,7 +1352,7 @@ static void test_workflow_command_success_and_conflict_responses(void)
     reset_fakes();
     s_workflow_result = WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
     request = make_request(
-        "{\"action\":\"workflow_command\",\"command\":\"BACK\"}",
+        "{\"action\":\"workflow_command\",\"command\":\"BACK\",\"generation\":1}",
         response,
         sizeof(response)
     );
@@ -1573,6 +1587,7 @@ int main(void)
     test_save_calc_material_rejects_unknown_and_custom_bounds();
     test_calculate_source_action_surfaces_solver_failure();
     test_calculate_source_time_budget();
+    test_external_workflow_commands_require_generation();
     test_workflow_command_success_and_conflict_responses();
     test_manual_distance_payload_is_strict_and_generation_scoped();
     test_workflow_gps_accept_parses_fix_and_optional_altitude();

@@ -437,6 +437,7 @@
         "components/nrf_topology_service/tests/nrf_topology_service_integration_test.c"
       ],
       "include_dirs": [
+        "components/nrf_geometry_solver/include",
         "tests/host/stubs/nrf_topology_service",
         "tests/host/stubs/sensor_bus",
         "components/nrf_topology_service/include",

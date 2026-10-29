@@ -207,7 +207,7 @@ describe('device API request pressure and failures', () => {
       object_id: 'OBJ_0001',
       pod_id: 1,
       length_m: 7.5,
-    })).rejects.toThrow('ESP API network error (POST /api/control): socket reset');
+    })).rejects.toMatchObject({ outcome: 'unknown', detail: 'ESP API network error (POST /api/control): socket reset' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -15,6 +15,8 @@ typedef struct {
     unsigned poll_calls;
     unsigned fail_first_write;
     unsigned busy_polls;
+    unsigned failed_polls;
+    unsigned stale_polls;
 } fake_transport_t;
 
 static int fake_write_execute(void *context, const nrf_cs_control_request_t *request)
@@ -43,9 +45,11 @@ static int fake_poll_result(void *context, const nrf_cs_control_request_t *reque
     assert(transport->have_request);
     assert(request->request_id == transport->last_request.request_id);
     assert(nrf_cs_control_step_equal(&request->step, &transport->last_request.step));
+    if (transport->failed_polls > 0U) { --transport->failed_polls; return -1; }
     memset(result, 0, sizeof(*result));
     result->request_id = request->request_id;
     result->step = request->step;
+    if (transport->stale_polls > 0U) { --transport->stale_polls; --result->request_id; }
     if (transport->busy_polls > 0U) {
         --transport->busy_polls;
         result->state = NRF_CS_CONTROL_STATE_FAILED;
@@ -92,6 +96,45 @@ int main(void)
     ops.write_execute = fake_write_execute;
     ops.poll_result = fake_poll_result;
     ops.now_ms = fake_now_ms;
+
+    {
+        const nrf_cs_node_id_t nodes[] = {1U, 2U};
+        const nrf_cs_policy_t single = {.pair_timeout_ms = 100U, .max_attempts = 1U, .min_confidence = 500U};
+        assert(nrf_cs_authority_init(&authority, &single, &ops, 1U) == NRF_CS_AUTHORITY_OK);
+        assert(nrf_cs_authority_start_cycle(&authority, nodes, 2U) == NRF_CS_AUTHORITY_PROGRESS);
+        assert(nrf_cs_authority_pump(&authority) == NRF_CS_AUTHORITY_PROGRESS);
+        const uint32_t request = authority.request.request_id;
+        const uint32_t attempt = authority.request.step.attempt_id;
+        transport.failed_polls = 1U;
+        assert(nrf_cs_authority_pump(&authority) == NRF_CS_AUTHORITY_PROGRESS);
+        assert(authority.command_active && authority.execute_acked);
+        assert(authority.request.request_id == request && authority.request.step.attempt_id == attempt);
+        transport.stale_polls = 1U;
+        assert(nrf_cs_authority_pump(&authority) == NRF_CS_AUTHORITY_ERR_STALE);
+        assert(authority.command_active && authority.request.request_id == request);
+        assert(nrf_cs_authority_pump(&authority) == NRF_CS_AUTHORITY_PROGRESS);
+        assert(!authority.command_active && transport.write_calls == 1U);
+        run_to_completion(&authority, &transport);
+        assert(transport.write_calls == 2U); /* two-node mode has two independent executions */
+        assert(nrf_cs_authority_pair_at(&authority, 0U)->state == NRF_CS_PAIR_VALID);
+
+        memset(&transport, 0, sizeof(transport));
+        assert(nrf_cs_authority_init(&authority, &single, &ops, 2U) == NRF_CS_AUTHORITY_OK);
+        assert(nrf_cs_authority_start_cycle(&authority, nodes, 2U) == NRF_CS_AUTHORITY_PROGRESS);
+        assert(nrf_cs_authority_pump(&authority) == NRF_CS_AUTHORITY_PROGRESS);
+        transport.failed_polls = 1000U;
+        for (transport.now_ms = 1U; transport.now_ms < 100U; ++transport.now_ms) {
+            assert(nrf_cs_authority_pump(&authority) == NRF_CS_AUTHORITY_PROGRESS);
+            assert(authority.command_active);
+        }
+        const unsigned polls = transport.poll_calls;
+        (void)nrf_cs_authority_pump(&authority); /* exact deadline: no more I2C reads */
+        assert(transport.poll_calls == polls && !authority.command_active);
+        run_to_completion(&authority, &transport);
+        assert(transport.write_calls == 2U);
+        assert(nrf_cs_authority_pair_at(&authority, 0U)->last_failure == NRF_CS_FAILURE_TIMEOUT);
+        memset(&transport, 0, sizeof(transport));
+    }
 
     assert(nrf_cs_authority_init(&authority, &policy, &ops, 100U) == NRF_CS_AUTHORITY_OK);
     transport.fail_first_write = 1U;

@@ -141,7 +141,8 @@ nrf_cs_authority_result_t nrf_cs_authority_pump(nrf_cs_authority_t *authority)
         return NRF_CS_AUTHORITY_PROGRESS;
     }
     if (io_result != 0) {
-        return complete_measurement(authority, &failure);
+        /* A failed status read does not invalidate the remote radio attempt. */
+        return NRF_CS_AUTHORITY_PROGRESS;
     }
     if (remote.request_id != authority->request.request_id ||
         !nrf_cs_control_step_equal(&remote.step, &authority->request.step)) {

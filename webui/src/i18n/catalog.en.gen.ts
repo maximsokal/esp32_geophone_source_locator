@@ -2,6 +2,7 @@
 import type { I18nKey } from './catalog.keys.gen';
 
 export const en: Record<I18nKey, string> = {
+  "api.error_control_outcome_unknown": "The command outcome is unknown. Refresh device status before retrying.",
   "api.error_http": "ESP API returned HTTP {status} ({request}): {detail}",
   "api.error_prefix": "ESP API: {error}",
   "api.error_request_failed": "ESP API request failed ({detail}).",
@@ -1615,6 +1616,7 @@ export const en: Record<I18nKey, string> = {
   "workflow.ranging.pair_unavailable": "Not measured",
   "workflow.ranging.pairs": "Pairs completed",
   "workflow.ranging.partial": "Distances partially measured",
+  "workflow.ranging.reason.geometry_inconsistent": "Measured distances disagree with the solved geometry.",
   "workflow.ranging.reason.geometry_unsolved": "Position for node {node} could not be solved.",
   "workflow.ranging.reason.insufficient_nodes": "Not enough assigned sensors to calculate the layout.",
   "workflow.ranging.reason.pair_failed": "Bluetooth ranging pair {pair} failed.",
