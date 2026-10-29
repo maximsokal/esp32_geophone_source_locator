@@ -582,7 +582,7 @@ static void test_status_cache_survives_busy_topology_refresh(void)
     assert(nrf_node_link_status_evaluate(
                &input,
                input.status_receipt_uptime_ms + NRF_NODE_LINK_STATUS_STALE_LIMIT_MS,
-               false) == NRF_NODE_LINK_STATUS_NOT_CONNECTED);
+               false) == NRF_NODE_LINK_STATUS_STALE);
     topology.bus_busy = false;
     topology.stale = false;
     assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 0U);

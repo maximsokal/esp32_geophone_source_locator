@@ -1147,6 +1147,7 @@ export const uk: Record<I18nKey, string> = {
   "sensors.node_link.measuring": "Вимірює",
   "sensors.node_link.not_connected": "Не підключено",
   "sensors.node_link.ready": "Готовий",
+  "sensors.node_link.stale": "Статус застарів",
   "sensors.node_link.unknown": "Невідомий стан: {status}",
   "sensors.none": "немає",
   "sensors.not_detected": "НЕ ВИЯВЛЕНО",

@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "nrf_node_link_status_policy.h"
 #include "nrf_upstream_protocol.h"
@@ -101,7 +102,7 @@ static void test_stale_limit_includes_exact_boundary(void)
     assert(nrf_node_link_status_evaluate(
                &input,
                input.status_receipt_uptime_ms + NRF_NODE_LINK_STATUS_STALE_LIMIT_MS,
-               false) == NRF_NODE_LINK_STATUS_NOT_CONNECTED);
+               false) == NRF_NODE_LINK_STATUS_STALE);
 }
 
 static void test_busy_window_keeps_last_good_status_until_limit(void)
@@ -114,8 +115,32 @@ static void test_busy_window_keeps_last_good_status_until_limit(void)
     assert(nrf_node_link_status_evaluate(&cached_status, fake_now_ms, false) ==
         NRF_NODE_LINK_STATUS_READY);
     fake_now_ms += 1U;
-    assert(nrf_node_link_status_evaluate(&cached_status, fake_now_ms, false) ==
-        NRF_NODE_LINK_STATUS_NOT_CONNECTED);
+    assert(strcmp(nrf_node_link_status_name(nrf_node_link_status_evaluate(
+        &cached_status, fake_now_ms, false)), "STALE") == 0);
+}
+
+static void test_pause_recovery_and_independent_nodes(void)
+{
+    nrf_node_link_status_input_t paused = ready_status();
+    nrf_node_link_status_input_t other = ready_status();
+    const uint64_t gaps[] = {6098U, 6500U, 8000U};
+    for (unsigned i = 0U; i < sizeof(gaps) / sizeof(gaps[0]); ++i) {
+        const uint64_t now = paused.status_receipt_uptime_ms + gaps[i];
+        other.status_receipt_uptime_ms = now;
+        assert(strcmp(nrf_node_link_status_name(nrf_node_link_status_evaluate(
+            &paused, now, true)), "STALE") == 0);
+        assert(nrf_node_link_status_evaluate(&other, now, false) == NRF_NODE_LINK_STATUS_READY);
+    }
+    /* A completed topology scan confirms removal even while STATUS is cached. */
+    paused.assigned = false;
+    assert(nrf_node_link_status_evaluate(&paused, 9000U, false) == NRF_NODE_LINK_STATUS_NOT_CONNECTED);
+    paused.assigned = true;
+    paused.status_receipt_uptime_ms = 9000U;
+    assert(nrf_node_link_status_evaluate(&paused, 9000U, false) == NRF_NODE_LINK_STATUS_READY);
+    for (uint64_t now = 11000U; now <= 19000U; now += 2000U) {
+        paused.status_receipt_uptime_ms = now;
+        assert(nrf_node_link_status_evaluate(&paused, now, false) == NRF_NODE_LINK_STATUS_READY);
+    }
 }
 
 static void test_identity_mismatch_is_not_connected(void)
@@ -142,6 +167,7 @@ int main(void)
     test_status_measuring_when_ready_and_recording();
     test_stale_limit_includes_exact_boundary();
     test_busy_window_keeps_last_good_status_until_limit();
+    test_pause_recovery_and_independent_nodes();
     test_identity_mismatch_is_not_connected();
     test_refresh_and_stale_tolerances_are_pinned();
     puts("nrf_node_link_status_policy_test: PASS");

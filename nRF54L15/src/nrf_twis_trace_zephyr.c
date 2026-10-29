@@ -55,6 +55,8 @@ static void trace_event(const nrfx_twis_event_t *event)
         return;
     }
     if (event->type == NRFX_TWIS_EVT_WRITE_REQ) {
+        /* Address-only selectors may never produce a trustworthy RX amount. */
+        nrf_bootstrap_runtime_zephyr_begin_twis_write();
         s_write_in_flight = true;
         s_rx_dma_prepared = false;
         s_rx_requested_before_start = event->data.buf_req;
@@ -74,6 +76,7 @@ static void trace_event(const nrfx_twis_event_t *event)
         received.direction = failed
             ? NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR : NRF_BOOT_TWIS_DIRECTION_WRITE_DONE;
         received.rx_amount = (uint32_t)nrfx_twis_rx_amount(s_upstream);
+        received.hw_error = failed ? event->data.error : 0U;
         if (!s_write_in_flight) {
             /* The nrfx driver cannot legitimately finish a transfer that
              * never requested an RX buffer. Its cached DMA amount may still
@@ -100,7 +103,6 @@ static void trace_event(const nrfx_twis_event_t *event)
             nrf_twis_event_check(s_upstream->p_reg, NRF_TWIS_EVENT_RXSTARTED);
         s_rx_started = false;
         received.event_dt_us = k_cyc_to_us_floor32(k_cycle_get_32() - s_write_started_cycles);
-        received.hw_error = failed ? event->data.error : 0U;
         received.result = failed ? -EIO : 0;
         /* TWIS may buffer the first byte before PREPARERX. At 1 MHz the
          * remaining bytes need >=8 us each; allow 1 us timestamp rounding.

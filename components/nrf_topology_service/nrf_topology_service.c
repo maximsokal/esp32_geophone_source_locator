@@ -3961,6 +3961,9 @@ esp_err_t nrf_topology_service_get_node_status_snapshot(
         node = &status_cache->identity;
     }
     memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->polling_deferred = s_cs_request_pending || s_ranging_active ||
+        (s_cs_snapshot_valid && s_cs_cycle_snapshot.active);
+    snapshot->topology_state = (uint8_t)node->state;
     snapshot->status_valid = status_cache->valid;
     snapshot->status_identity_matches = status_cache->identity_matches &&
         service_node_identity_equal(node, &status_cache->identity);

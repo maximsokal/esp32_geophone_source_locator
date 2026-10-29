@@ -434,12 +434,12 @@ static void test_hardware_trace_format_and_default_logging(void)
     assert(strstr(line, "event=READ_DONE type=0x82 selected_len=38 prepared=1") != NULL);
     assert(strstr(line, "prepare_ret=0 prepare_us=17 tx_amount=33") != NULL);
     assert(strstr(line, "hw_error=0x00000000 READ_ERROR=0") != NULL);
-    assert(nrf_boot_twis_log_decide(&state, &record, 0U) == NRF_BOOT_TWIS_LOG_DETAIL);
-    assert(nrf_boot_twis_log_decide(&state, &record, 1U) == NRF_BOOT_TWIS_LOG_DETAIL);
+    assert(nrf_boot_twis_log_decide(&state, &record, 0U) == NRF_BOOT_TWIS_LOG_NONE);
+    assert(nrf_boot_twis_log_decide(&state, &record, 1U) == NRF_BOOT_TWIS_LOG_NONE);
     record.direction = NRF_BOOT_TWIS_DIRECTION_TX_PREPARED;
     assert(nrf_boot_twis_record_format(&record, line, sizeof(line)) > 0);
     assert(strstr(line, "tx_amount=n/a") != NULL);
-    assert(nrf_boot_twis_log_decide(&state, &record, 2U) == NRF_BOOT_TWIS_LOG_DETAIL);
+    assert(nrf_boot_twis_log_decide(&state, &record, 2U) == NRF_BOOT_TWIS_LOG_NONE);
     record.direction = NRF_BOOT_TWIS_DIRECTION_READ_ERROR;
     record.hw_error = 4U;
     record.result = -EIO;
@@ -489,9 +489,9 @@ static void test_receive_side_records_format_ring_and_log_policy(void)
     assert(popped.direction == NRF_BOOT_TWIS_DIRECTION_WRITE_DONE);
     assert(memcmp(popped.prefix, record.prefix, sizeof(record.prefix)) == 0);
 
-    /* Past the detail limit a clean receive stays visible, an error is rate limited like others. */
+    /* Past the detail limit a clean receive is summarized; errors retain bounded detail. */
     record.index = NRF_BOOT_TRANSACTION_DETAIL_LIMIT + 5U;
-    assert(nrf_boot_twis_log_decide(&state, &record, 10U) == NRF_BOOT_TWIS_LOG_DETAIL);
+    assert(nrf_boot_twis_log_decide(&state, &record, 10U) == NRF_BOOT_TWIS_LOG_NONE);
     record.direction = NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR;
     record.hw_error = 1U;
     record.result = -EIO;

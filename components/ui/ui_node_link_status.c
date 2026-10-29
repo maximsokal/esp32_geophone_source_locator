@@ -36,6 +36,7 @@ bool ui_node_link_status_changed(
 uint32_t ui_node_link_status_color(nrf_node_link_status_t status)
 {
     switch (status) {
+    case NRF_NODE_LINK_STATUS_STALE:
     case NRF_NODE_LINK_STATUS_CONNECTED:
         return UI_COLOR_WARNING;
     case NRF_NODE_LINK_STATUS_READY:
@@ -51,6 +52,8 @@ uint32_t ui_node_link_status_color(nrf_node_link_status_t status)
 ui_i18n_key_t ui_node_link_status_label_key(nrf_node_link_status_t status)
 {
     switch (status) {
+    case NRF_NODE_LINK_STATUS_STALE:
+        return UI_I18N_KEY_MEASUREMENT_UNKNOWN;
     case NRF_NODE_LINK_STATUS_CONNECTED:
         return UI_I18N_KEY_MEASUREMENT_LINK_CONNECTED;
     case NRF_NODE_LINK_STATUS_READY:

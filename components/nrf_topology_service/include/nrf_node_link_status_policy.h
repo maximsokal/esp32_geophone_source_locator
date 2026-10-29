@@ -14,6 +14,7 @@ typedef enum {
     NRF_NODE_LINK_STATUS_CONNECTED,
     NRF_NODE_LINK_STATUS_READY,
     NRF_NODE_LINK_STATUS_MEASURING,
+    NRF_NODE_LINK_STATUS_STALE,
 } nrf_node_link_status_t;
 
 typedef struct {
@@ -24,6 +25,8 @@ typedef struct {
     uint8_t result;
     uint8_t flags;
     uint64_t status_receipt_uptime_ms;
+    bool polling_deferred;
+    uint8_t topology_state;
     bool sensor_result_valid;
     uint8_t sensor_result;
 } nrf_node_link_status_input_t;

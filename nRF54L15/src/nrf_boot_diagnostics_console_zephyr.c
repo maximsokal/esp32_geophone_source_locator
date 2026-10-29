@@ -14,8 +14,9 @@ void nrf_boot_diagnostics_console_drain(void)
     nrf_boot_twis_record_t record;
     char line[NRF_BOOT_TRANSACTION_LINE_CAPACITY];
 
-    /* An IRQ producer can refill forever; return to main's sleep for ASSIGN/HCI work. */
-    for (size_t count = 0U; count < NRF_BOOT_TRANSACTION_CONSOLE_BATCH_LIMIT; ++count) {
+    size_t printed = 0U;
+    /* Drain cheap suppressed records without spending the UART budget on each one. */
+    for (size_t count = 0U; count < NRF_BOOT_TRANSACTION_CONSOLE_DRAIN_LIMIT; ++count) {
         if (!nrf_bootstrap_runtime_zephyr_drain_twis_record(&record)) break;
 #if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG
         const nrf_boot_twis_log_action_t action = nrf_boot_twis_log_decide(
@@ -25,19 +26,23 @@ void nrf_boot_diagnostics_console_drain(void)
             action == NRF_BOOT_TWIS_LOG_ERROR) {
             if (nrf_boot_twis_record_format(&record, line, sizeof(line)) >= 0) {
                 printk("%s\n", line);
+                ++printed;
             }
         } else if (action == NRF_BOOT_TWIS_LOG_SUMMARY) {
             if (nrf_boot_twis_summary_format(
                     &log_state, diagnostics.diagnostic_ring_dropped_total,
                     line, sizeof(line)) >= 0) {
                 printk("%s\n", line);
+                ++printed;
             }
         }
 #else
         if (record.index == 1U &&
             nrf_boot_twis_record_format(&record, line, sizeof(line)) >= 0) {
             printk("%s\n", line);
+            ++printed;
         }
 #endif
+        if (printed >= NRF_BOOT_TRANSACTION_CONSOLE_BATCH_LIMIT) break;
     }
 }

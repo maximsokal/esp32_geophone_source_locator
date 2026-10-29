@@ -1147,6 +1147,7 @@ export const en: Record<I18nKey, string> = {
   "sensors.node_link.measuring": "Measuring",
   "sensors.node_link.not_connected": "Not connected",
   "sensors.node_link.ready": "Ready",
+  "sensors.node_link.stale": "Status stale",
   "sensors.node_link.unknown": "Unknown status: {status}",
   "sensors.none": "none",
   "sensors.not_detected": "NOT DETECTED",

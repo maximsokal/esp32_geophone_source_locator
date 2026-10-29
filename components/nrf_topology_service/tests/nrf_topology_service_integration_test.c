@@ -676,6 +676,11 @@ static void sim_cycle_tick_nodes(TickType_t ticks)
     /* The quiet lease must cover every moment the coordinator waits. */
     assert(sensor_bus_quiet_active());
     ++s_cycle_quiet_checks;
+    nrf_node_link_status_input_t status;
+    assert(nrf_topology_service_get_node_status_snapshot(1U, &status) == ESP_OK);
+    assert(status.assigned && status.status_valid && status.status_identity_matches);
+    assert(status.polling_deferred);
+    assert(status.topology_state == NRF_TOPOLOGY_NODE_ASSIGNED);
     for (int i = 0; i < MAX_NODES; ++i) {
         sim_node_t *node = &s_nodes[i];
         nrf_cs_step_t step;

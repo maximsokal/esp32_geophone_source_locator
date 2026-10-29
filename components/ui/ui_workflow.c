@@ -614,9 +614,20 @@ static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
     for (uint8_t slot = 0U; slot <= UI_WORKFLOW_REMOTE_SLOT_COUNT; ++slot) {
         nrf_node_link_status_input_t input = {0};
         const esp_err_t err = nrf_topology_service_get_node_status_snapshot(slot, &input);
+        const nrf_node_link_status_t previous = state->preflight_links[slot];
         state->preflight_links[slot] = err == ESP_OK
             ? nrf_node_link_status_evaluate(&input, now_ms, false)
             : NRF_NODE_LINK_STATUS_NOT_CONNECTED;
+        if (previous != state->preflight_links[slot]) {
+            ESP_LOGI("UI_WORKFLOW", "[POD_LINK_CHANGE] node_slot=%u old=%s new=%s "
+                "status_age_ms=%llu identity_matches=%u topology_state=%u cs_active=%u snapshot_err=%d",
+                (unsigned)slot, nrf_node_link_status_name(previous),
+                nrf_node_link_status_name(state->preflight_links[slot]),
+                (unsigned long long)(now_ms >= input.status_receipt_uptime_ms
+                    ? now_ms - input.status_receipt_uptime_ms : 0U),
+                (unsigned)input.status_identity_matches, (unsigned)input.topology_state,
+                (unsigned)input.polling_deferred, (int)err);
+        }
     }
     hw_module_info_t adc = {0};
     (void)hw_inventory_get(HW_MODULE_AD7606, &adc);
@@ -650,7 +661,8 @@ static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
             pod_state_t pod_state = device->pods[i].state;
             const nrf_node_link_status_t link = state->preflight_links[i + 1U];
             if (link == NRF_NODE_LINK_STATUS_NOT_CONNECTED) pod_state = POD_STATE_DISCONNECTED;
-            else if (link == NRF_NODE_LINK_STATUS_CONNECTED && pod_state != POD_STATE_ERROR)
+            else if ((link == NRF_NODE_LINK_STATUS_CONNECTED || link == NRF_NODE_LINK_STATUS_STALE) &&
+                pod_state != POD_STATE_ERROR)
                 pod_state = POD_STATE_WARNING;
             if (state->remote_pod_states[i] != pod_state) changed = true;
             state->remote_pod_states[i] = pod_state;
@@ -713,7 +725,7 @@ static void ui_workflow_create_remote_slots(ui_workflow_screen_state_t *state)
 static const char *ui_workflow_nrf_indicator(nrf_node_link_status_t status)
 {
     return status == NRF_NODE_LINK_STATUS_NOT_CONNECTED ? "-"
-        : status == NRF_NODE_LINK_STATUS_CONNECTED ? "!" : "+";
+        : (status == NRF_NODE_LINK_STATUS_CONNECTED || status == NRF_NODE_LINK_STATUS_STALE) ? "!" : "+";
 }
 
 static void ui_workflow_update_remote_slots(ui_workflow_screen_state_t *state)

@@ -50,6 +50,8 @@ void nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(
 uint32_t nrf_bootstrap_runtime_zephyr_response_length(void);
 bool nrf_bootstrap_runtime_zephyr_drain_twis_record(
     struct nrf_boot_twis_record *record);
+/* A WRITE address ends the previous selection even if RX completion has stale DMA metadata. */
+void nrf_bootstrap_runtime_zephyr_begin_twis_write(void);
 /* Called only by the upstream TWIS IRQ, the same producer as buffer callbacks. */
 void nrf_bootstrap_runtime_zephyr_record_twis_hardware(
     const struct nrf_boot_twis_record *record);

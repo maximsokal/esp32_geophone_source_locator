@@ -26,6 +26,7 @@ static bool g_sessions_called;
 static bool g_recording_called;
 static bool g_workflow_called;
 static int64_t g_now_us;
+static uint64_t g_node_status_age_ms;
 
 static bool g_acquisition_running;
 static bool g_acquisition_healthy;
@@ -60,6 +61,7 @@ static void reset_fakes(void)
     g_recording_called = false;
     g_workflow_called = false;
     g_now_us = 1234567;
+    g_node_status_age_ms = 0U;
     g_measurement_recording = false;
 
     g_acquisition_running = true;
@@ -127,7 +129,7 @@ int32_t nrf_topology_service_get_node_status_snapshot(
         .result = NRF_UPSTREAM_RESULT_OK,
         .flags = NRF_UPSTREAM_STATUS_FLAG_ASSIGNED |
             NRF_UPSTREAM_STATUS_FLAG_TARGET_REGISTERED,
-        .status_receipt_uptime_ms = (uint64_t)g_now_us / 1000U,
+        .status_receipt_uptime_ms = (uint64_t)g_now_us / 1000U - g_node_status_age_ms,
     };
     return ESP_OK;
 }
@@ -785,6 +787,15 @@ static void test_node_link_status_is_added_to_pods(void)
     pod = cJSON_GetArrayItem(pods, 0);
     assert(pod != NULL);
     assert(strcmp(string_item(pod, "node_link_status"), "MEASURING") == 0);
+    cJSON_Delete(root);
+
+    g_now_us = 10000000;
+    g_node_status_age_ms = 6098U;
+    root = build_json(false, NULL);
+    links = object_item(root, "node_links");
+    assert(strcmp(string_item(cJSON_GetArrayItem(links, 1), "status"), "STALE") == 0);
+    pod = cJSON_GetArrayItem(object_item(root, "pods"), 0);
+    assert(strcmp(string_item(pod, "node_link_status"), "STALE") == 0);
     cJSON_Delete(root);
 }
 

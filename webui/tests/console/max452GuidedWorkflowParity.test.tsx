@@ -219,6 +219,18 @@ describe('MAX-452 recording bypass and sensor status display', () => {
     }
   });
 
+  it.each(['en', 'uk'] as const)('shows stale STATUS as a warning instead of ready or disconnected in %s', (locale) => {
+    const status = statusFor('RECORD_READY');
+    status.node_links = [{ channel: 2, node: 'G1', status: 'STALE' }];
+    status.pods[0].node_link_status = 'STALE';
+    const html = sensorsHtml(status, locale);
+    expect(html).toContain('node-link-status--connected');
+    expect(html).toContain(translate(locale, 'sensors.node_link.stale'));
+    expect(html).not.toContain('node-link-status--ready');
+    expect(html).not.toContain('node-link-status--not-connected');
+    expect(html).toContain(`<span class="state-pill warning">${translate(locale, 'sensors.node_link.stale')}</span>`);
+  });
+
   it.each(['en', 'uk'] as const)('marks stale power and topology snapshots in %s', (locale) => {
     const status = statusFor('RECORD_READY');
     const channels = status.power.channels ?? [];

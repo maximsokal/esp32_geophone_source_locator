@@ -26,7 +26,8 @@ const POD_STATE_KEYS: Record<string, 'sensors.pod_state.disconnected' | 'sensors
   ERROR: 'sensors.pod_state.error',
 };
 
-const NODE_LINK_STATUS_KEYS: Record<string, 'sensors.node_link.not_connected' | 'sensors.node_link.connected' | 'sensors.node_link.ready' | 'sensors.node_link.measuring'> = {
+const NODE_LINK_STATUS_KEYS: Record<string, 'sensors.node_link.not_connected' | 'sensors.node_link.connected' | 'sensors.node_link.ready' | 'sensors.node_link.measuring' | 'sensors.node_link.stale'> = {
+  STALE: 'sensors.node_link.stale',
   NOT_CONNECTED: 'sensors.node_link.not_connected',
   CONNECTED: 'sensors.node_link.connected',
   READY: 'sensors.node_link.ready',
@@ -34,6 +35,7 @@ const NODE_LINK_STATUS_KEYS: Record<string, 'sensors.node_link.not_connected' | 
 };
 
 const NODE_LINK_STATUS_CLASSES: Record<string, string> = {
+  STALE: 'connected',
   NOT_CONNECTED: 'not-connected',
   CONNECTED: 'connected',
   READY: 'ready',
@@ -186,14 +188,15 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
         {[0, 1, 2, 3].map((index) => {
           const pod = pods[index];
           const connected = pod !== undefined && pod.state !== 'DISCONNECTED';
+          const stale = pod?.node_link_status === 'STALE' && pod.state !== 'ERROR';
           const podState = pod?.state ?? 'DISCONNECTED';
           const podStateKey = POD_STATE_KEYS[podState];
           return (
             <article className="console-card pod-card" key={index}>
               <div className="card-heading">
                 <h2>{t('sensors.pod', { number: formatNumber(locale, index + 1) })}</h2>
-                <span className={`state-pill ${connected ? 'ready' : 'offline'}`}>
-                  {podStateKey === undefined
+                <span className={`state-pill ${stale ? 'warning' : connected ? 'ready' : 'offline'}`}>
+                  {stale ? t('sensors.node_link.stale') : podStateKey === undefined
                     ? t('sensors.pod_state.unknown', { state: podState })
                     : t(podStateKey)}
                 </span>

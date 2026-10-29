@@ -41,6 +41,8 @@ void __real_nrfx_twis_irq_handler(nrfx_twis_t *instance)
 
 uint32_t k_cycle_get_32(void) { s_cycles += 17U; return s_cycles; }
 
+void nrf_bootstrap_runtime_zephyr_begin_twis_write(void) {}
+
 void nrf_bootstrap_runtime_zephyr_record_twis_hardware(const struct nrf_boot_twis_record *record)
 {
     assert(s_record_count < sizeof(s_records) / sizeof(s_records[0]));
@@ -407,6 +409,20 @@ int main(void)
         assert(s_forwarded == forwarded_before + 4U);
         assert(s_record_count == records_before + 2U);
         s_generate_rx_started = true;
+    }
+
+    /* Hardware ERRORSRC must survive every software rejection branch. */
+    {
+        const unsigned records_before = s_record_count;
+        emit(NRFX_TWIS_EVT_WRITE_ERROR, 4U); /* no WRITE_REQ */
+        assert(s_records[records_before].result == -EPROTO);
+        assert(s_records[records_before].hw_error == 4U);
+        s_rx_prepare_result = -EACCES;
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 1U);
+        emit(NRFX_TWIS_EVT_WRITE_ERROR, 2U);
+        assert(s_records[records_before + 1U].result == -EACCES);
+        assert(s_records[records_before + 1U].hw_error == 2U);
+        s_rx_prepare_result = 0;
     }
 
     puts("nRF TWIS hardware trace: PASS");

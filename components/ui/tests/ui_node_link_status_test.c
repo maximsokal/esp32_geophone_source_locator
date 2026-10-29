@@ -18,6 +18,8 @@ static void test_status_widget_changes_only_when_status_changes(void)
 static void test_status_colors_and_text_keys(void)
 {
     assert(ui_node_link_status_color(NRF_NODE_LINK_STATUS_NOT_CONNECTED) == UI_COLOR_ERROR);
+    assert(ui_node_link_status_color(NRF_NODE_LINK_STATUS_STALE) == UI_COLOR_WARNING);
+    assert(ui_node_link_status_label_key(NRF_NODE_LINK_STATUS_STALE) == UI_I18N_KEY_MEASUREMENT_UNKNOWN);
     assert(ui_node_link_status_color(NRF_NODE_LINK_STATUS_CONNECTED) == UI_COLOR_WARNING);
     assert(ui_node_link_status_color(NRF_NODE_LINK_STATUS_READY) == UI_COLOR_GOOD);
     assert(ui_node_link_status_color(NRF_NODE_LINK_STATUS_MEASURING) == UI_COLOR_LINK_MEASURING);

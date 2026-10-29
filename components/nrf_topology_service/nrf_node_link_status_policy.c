@@ -14,11 +14,15 @@ nrf_node_link_status_t nrf_node_link_status_evaluate(
      */
     if (input == NULL || !input->assigned || !input->status_valid ||
         !input->status_identity_matches || now_ms < input->status_receipt_uptime_ms ||
-        now_ms - input->status_receipt_uptime_ms >= NRF_NODE_LINK_STATUS_STALE_LIMIT_MS ||
         (input->flags & NRF_UPSTREAM_STATUS_FLAG_ASSIGNED) == 0U ||
         (input->lifecycle != NRF_UPSTREAM_LIFECYCLE_BOOTING &&
          input->lifecycle != NRF_UPSTREAM_LIFECYCLE_READY)) {
         return NRF_NODE_LINK_STATUS_NOT_CONNECTED;
+    }
+
+    /* Age alone cannot confirm removal; topology/identity checks above can. */
+    if (now_ms - input->status_receipt_uptime_ms >= NRF_NODE_LINK_STATUS_STALE_LIMIT_MS) {
+        return NRF_NODE_LINK_STATUS_STALE;
     }
 
     if (input->lifecycle != NRF_UPSTREAM_LIFECYCLE_READY ||
@@ -39,6 +43,8 @@ const char *nrf_node_link_status_name(nrf_node_link_status_t status)
     switch (status) {
     case NRF_NODE_LINK_STATUS_NOT_CONNECTED:
         return "NOT_CONNECTED";
+    case NRF_NODE_LINK_STATUS_STALE:
+        return "STALE";
     case NRF_NODE_LINK_STATUS_CONNECTED:
         return "CONNECTED";
     case NRF_NODE_LINK_STATUS_READY:

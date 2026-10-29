@@ -180,9 +180,9 @@
     },
     {
       "name": "nrf_bootstrap_runtime_zephyr",
-      "sources": ["nRF54L15/src/nrf_node_state.c", "nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_bootstrap.c", "nRF54L15/src/nrf_cs_control_protocol.c", "nRF54L15/src/nrf_cs_control_runtime.c", "nRF54L15/src/nrf_log_protocol.c", "nRF54L15/src/nrf_log_ring.c", "nRF54L15/src/nrf_log_runtime_zephyr.c", "nRF54L15/src/nrf_hci_workqueue.c", "nRF54L15/src/nrf_bootstrap_runtime_zephyr.c", "nRF54L15/src/nrf_cs_cycle_protocol.c", "nRF54L15/src/nrf_cs_cycle_runtime.c", "nRF54L15/src/nrf_read_window.c", "tests/host/stubs/nrf_bootstrap_runtime_zephyr/nrf_cs_pair_runtime_zephyr_stub.c", "tests/host/nrf_bootstrap_runtime_zephyr_test.c"],
-      "include_dirs": ["tests/host/stubs/nrf_bootstrap_runtime_zephyr", "tests/host/stubs/nrf_upstream_target_zephyr", "nRF54L15/include"],
-      "defines": ["NRF_LOG_RING_TEST_HOOKS", "NRF_HCI_WORKQUEUE_TEST_HOOKS"]
+      "sources": ["nRF54L15/src/nrf_twis_trace_zephyr.c", "nRF54L15/src/nrf_node_state.c", "nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_bootstrap.c", "nRF54L15/src/nrf_cs_control_protocol.c", "nRF54L15/src/nrf_cs_control_runtime.c", "nRF54L15/src/nrf_log_protocol.c", "nRF54L15/src/nrf_log_ring.c", "nRF54L15/src/nrf_log_runtime_zephyr.c", "nRF54L15/src/nrf_hci_workqueue.c", "nRF54L15/src/nrf_bootstrap_runtime_zephyr.c", "nRF54L15/src/nrf_cs_cycle_protocol.c", "nRF54L15/src/nrf_cs_cycle_runtime.c", "nRF54L15/src/nrf_read_window.c", "tests/host/stubs/nrf_bootstrap_runtime_zephyr/nrf_cs_pair_runtime_zephyr_stub.c", "tests/host/nrf_bootstrap_runtime_zephyr_test.c"],
+      "include_dirs": ["tests/host/stubs/nrf_bootstrap_runtime_zephyr", "tests/host/stubs/nrf_twis_trace_zephyr", "tests/host/stubs/nrf_upstream_target_zephyr", "nRF54L15/include"],
+      "defines": ["NRF_TWIS_RUNTIME_INTEGRATION", "NRF_LOG_RING_TEST_HOOKS", "NRF_HCI_WORKQUEUE_TEST_HOOKS"]
     },
     {
       "name": "nrf_cs_scheduler",

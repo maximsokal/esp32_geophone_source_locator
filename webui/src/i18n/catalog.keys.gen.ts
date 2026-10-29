@@ -1145,6 +1145,7 @@ export const i18nKeys = [
   "sensors.node_link.measuring",
   "sensors.node_link.not_connected",
   "sensors.node_link.ready",
+  "sensors.node_link.stale",
   "sensors.node_link.unknown",
   "sensors.none",
   "sensors.not_detected",

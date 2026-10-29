@@ -3370,16 +3370,6 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 165.1) (xy 106.68 165.1)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "3f938fe0-662d-4ea4-9f2b-35877cdf9f22")
-	)
-	(wire
-		(pts
 			(xy 182.88 82.55) (xy 185.42 82.55)
 		)
 		(stroke
@@ -3477,6 +3467,16 @@
 			(type default)
 		)
 		(uuid "4dfbf435-8c19-4c28-9188-f56e19b39540")
+	)
+	(wire
+		(pts
+			(xy 60.96 165.1) (xy 80.01 165.1)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "50693367-b5c8-4903-9279-f6f2db198ef1")
 	)
 	(wire
 		(pts
@@ -4237,6 +4237,16 @@
 			(type default)
 		)
 		(uuid "e45ef34d-52af-477e-be1b-b6d6e0b7b04d")
+	)
+	(wire
+		(pts
+			(xy 87.63 165.1) (xy 106.68 165.1)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e8724e1d-3b9b-400f-bf72-a115a85e39a2")
 	)
 	(wire
 		(pts
@@ -6473,6 +6483,85 @@
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6/35858c28-4ff4-4411-bf79-e4651b2e5323/d8613105-1124-47f4-addf-a9fc1438f197/06433963-dfa5-450f-a917-bf170d3bb840"
 					(reference "R11")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 83.82 165.1 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "7af941cd-bee7-4b30-8bfd-f0ffa8430852")
+		(property "Reference" "R1"
+			(at 83.82 161.29 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "10 k"
+			(at 84.582 163.068 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 83.82 166.878 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 83.82 165.1 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 83.82 165.1 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "e3013a4d-f58b-4b1e-8c4a-3a4c6a889dba")
+		)
+		(pin "2"
+			(uuid "573d81a2-b7be-4239-8799-d60e27966c9a")
+		)
+		(instances
+			(project "remote_sensor_node"
+				(path "/6aa219e5-72f2-4956-9b4c-a1ebfcd7fe16"
+					(reference "R1")
 					(unit 1)
 				)
 			)

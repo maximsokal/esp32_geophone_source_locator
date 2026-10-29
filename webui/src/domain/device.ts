@@ -369,7 +369,7 @@ export interface DeviceMainStatus {
   sensor_valid?: { bmp280: boolean; aht20: boolean };
 }
 
-export type NodeLinkStatus = 'NOT_CONNECTED' | 'CONNECTED' | 'READY' | 'MEASURING';
+export type NodeLinkStatus = 'NOT_CONNECTED' | 'CONNECTED' | 'READY' | 'MEASURING' | 'STALE';
 
 export interface DeviceNodeLink {
   channel: number;

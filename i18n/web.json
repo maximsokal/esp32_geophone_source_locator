@@ -231,6 +231,7 @@
     "sensors.node_link.not_connected": { "en": "Not connected", "uk": "Не підключено" },
     "sensors.node_link.connected": { "en": "Connected", "uk": "Підключено" },
     "sensors.node_link.ready": { "en": "Ready", "uk": "Готовий" },
+    "sensors.node_link.stale": { "en": "Status stale", "uk": "\u0421\u0442\u0430\u0442\u0443\u0441 \u0437\u0430\u0441\u0442\u0430\u0440\u0456\u0432" },
     "sensors.node_link.measuring": { "en": "Measuring", "uk": "Вимірює" },
     "sensors.node_link.unknown": { "en": "Unknown status: {status}", "uk": "Невідомий стан: {status}" },
     "sensors.power_snapshot_stale": { "en": "Power channel {channel} data is stale ({age} ms old).", "uk": "Дані каналу живлення {channel} застаріли ({age} мс)." },

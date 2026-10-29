@@ -5,6 +5,9 @@
 #include <stdint.h>
 #include <string.h>
 
+#if defined(NRF_TWIS_RUNTIME_INTEGRATION)
+#include <nrfx_twis.h>
+#endif
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/kernel.h>
@@ -32,6 +35,48 @@ extern unsigned nrf_cs_pair_zephyr_stub_radio_changes;
 void nrf_cs_pair_runtime_zephyr_stub_configure(int execute_result, nrf_cs_outcome_t outcome);
 
 static const struct i2c_target_callbacks *s_callbacks;
+
+#if defined(NRF_TWIS_RUNTIME_INTEGRATION)
+/* Real trace wrapper + real application callback; only SDK register/IRQ delivery is simulated. */
+NRF_TWIS_Type test_upstream_registers;
+static nrfx_twis_t s_test_twis = {&test_upstream_registers};
+static nrfx_twis_event_handler_t s_test_twis_handler;
+static uint8_t s_test_rx[16];
+int __wrap_nrfx_twis_init(nrfx_twis_t *, const nrfx_twis_config_t *, nrfx_twis_event_handler_t);
+int __wrap_nrfx_twis_rx_prepare(nrfx_twis_t *, void *, size_t);
+void __wrap_nrfx_twis_irq_handler(nrfx_twis_t *);
+int __real_nrfx_twis_init(nrfx_twis_t *instance, const nrfx_twis_config_t *config,
+                         nrfx_twis_event_handler_t handler)
+{
+    (void)instance; (void)config;
+    s_test_twis_handler = handler;
+    return 0;
+}
+int __real_nrfx_twis_rx_prepare(nrfx_twis_t *instance, void *buffer, size_t length)
+{
+    (void)length;
+    instance->p_reg->rx_buffer = buffer;
+    return 0;
+}
+int __real_nrfx_twis_tx_prepare(nrfx_twis_t *instance, const void *buffer, size_t length)
+{
+    (void)instance; (void)buffer; (void)length;
+    return 0;
+}
+void __real_nrfx_twis_irq_handler(nrfx_twis_t *instance)
+{
+    instance->p_reg->rx_started = false;
+}
+static void test_twis_shim(const nrfx_twis_event_t *event)
+{
+    if (event->type == NRFX_TWIS_EVT_WRITE_REQ) {
+        assert(__wrap_nrfx_twis_rx_prepare(&s_test_twis, s_test_rx, sizeof(s_test_rx)) == 0);
+    } else if (event->type == NRFX_TWIS_EVT_WRITE_DONE) {
+        s_callbacks->buf_write_received(NULL, s_test_rx, (uint32_t)nrfx_twis_rx_amount(&s_test_twis));
+    }
+}
+
+#endif
 static struct k_work *s_submitted_work;
 static struct k_work_delayable *s_delayed_work;
 static unsigned s_submit_calls;
@@ -387,6 +432,49 @@ static void send_log_status(uint32_t request_id)
     s_callbacks->buf_write_received(NULL, frame, sizeof(frame));
 }
 
+#if defined(NRF_TWIS_RUNTIME_INTEGRATION)
+static void test_address_only_status_select_with_stale_dma_count(void)
+{
+    nrfx_twis_config_t config = {0};
+    assert(__wrap_nrfx_twis_init(&s_test_twis, &config, test_twis_shim) == 0);
+    nrf_boot_twis_record_t drained;
+    while (nrf_bootstrap_runtime_zephyr_drain_twis_record(&drained)) {}
+    const nrf_upstream_status_t before = read_status(NULL);
+    send_log_status(0xAA55U);
+    uint8_t *response;
+    uint32_t length;
+    assert(s_callbacks->buf_read_requested(NULL, &response, &length) == 0);
+    assert(response[3] == NRF_LOG_MESSAGE_STATUS);
+
+    /* ESP32's address-only selector follows a previous 12-byte write. nrfx
+     * reports the old AMOUNT; the guard must reject the payload but end LOG selection. */
+    test_upstream_registers.rx_amount = 12U;
+    memset(s_test_rx, 0xFF, sizeof(s_test_rx));
+    nrfx_twis_event_t event = {.type = NRFX_TWIS_EVT_WRITE_REQ, .data.buf_req = true};
+    s_test_twis_handler(&event);
+    s_cycle += 10U;
+    event.type = NRFX_TWIS_EVT_WRITE_DONE;
+    s_test_twis_handler(&event);
+    bool rejected_stale_payload = false;
+    while (nrf_bootstrap_runtime_zephyr_drain_twis_record(&drained)) {
+        if (drained.direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR) {
+            assert(drained.result == -EPROTO && drained.rx_amount == 12U);
+            assert(drained.event_dt_us == 11U && drained.prefix_length == 0U);
+            rejected_stale_payload = true;
+        }
+    }
+    assert(rejected_stale_payload);
+    const nrf_upstream_status_t after = read_status(NULL);
+    assert(after.request_id == before.request_id && after.result == before.result);
+
+    /* A valid log request must still work after the rejected completion. */
+    send_log_status(0xAA56U);
+    assert(s_callbacks->buf_read_requested(NULL, &response, &length) == 0);
+    assert(response[3] == NRF_LOG_MESSAGE_STATUS);
+    s_callbacks->buf_write_received(NULL, NULL, 0U);
+}
+
+#endif
 static void send_log_read(const nrf_log_read_request_t *request)
 {
     uint8_t frame[NRF_LOG_PROTOCOL_READ_REQUEST_LENGTH];
@@ -2377,5 +2465,8 @@ int main(void)
         assert(s_reboot_intent_error == -EALREADY);
         nrf_cs_pair_zephyr_stub_set_node_result = 0;
     }
+#if defined(NRF_TWIS_RUNTIME_INTEGRATION)
+    test_address_only_status_select_with_stale_dma_count();
+#endif
     return 0;
 }

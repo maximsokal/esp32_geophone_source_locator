@@ -684,6 +684,13 @@ static bool handle_cycle_write(const uint8_t *frame, size_t length, int32_t *tra
     return true;
 }
 
+void nrf_bootstrap_runtime_zephyr_begin_twis_write(void)
+{
+    s_log_response_selected = false;
+    s_cycle_reply_selected = false;
+    nrf_read_window_target_disarm(&s_read_window);
+}
+
 static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,uint32_t len)
 {
     nrf_upstream_assign_t assign;
@@ -705,10 +712,7 @@ static void target_write_received(struct i2c_target_config *config,uint8_t *ptr,
     record_first_twis_transaction(NRF_BOOTSTRAP_TWIS_TRANSACTION_WRITE_RECEIVED);
     record_twis_request_type(ptr, len);
 
-    s_log_response_selected=false;
-    s_cycle_reply_selected=false;
-    /* Only the window request that follows a read may leave a window armed. */
-    nrf_read_window_target_disarm(&s_read_window);
+    nrf_bootstrap_runtime_zephyr_begin_twis_write();
     if (len == 0U) {
         goto record_transaction;
     }
