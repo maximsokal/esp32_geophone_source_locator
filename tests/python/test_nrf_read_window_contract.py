@@ -69,7 +69,7 @@ def test_nrf_runtime_serves_windows_from_the_copy_of_the_last_response():
     write = function_body(runtime, "static void target_write_received(")
     reader = function_body(runtime, "static int target_read_requested(")
 
-    assert "nrf_read_window_target_disarm(&s_read_window)" in write
+    assert "nrf_bootstrap_runtime_zephyr_begin_twis_write()" in write
     assert "NRF_UPSTREAM_MESSAGE_READ_WINDOW" in write
     assert "nrf_read_window_target_arm(&s_read_window" in write
     # a window read must come before building a new response, and ordinary
