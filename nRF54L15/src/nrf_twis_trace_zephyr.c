@@ -8,8 +8,8 @@
 #include "nrf_boot_diagnostics.h"
 #include "nrf_bootstrap_runtime_zephyr.h"
 
-/* The NCS buffer shim drops completion/error events; observe them without
- * changing its handling or printing while the controller waits for the IRQ. */
+/* Observe SDK completions and reject stale RX metadata before the app callback,
+ * without printing while the controller waits for the IRQ. */
 static nrfx_twis_t *s_upstream;
 static nrfx_twis_event_handler_t s_driver_handler;
 static nrf_boot_twis_record_t s_selected;
@@ -18,6 +18,7 @@ static uint32_t s_write_started_cycles;
 static bool s_write_in_flight;
 static bool s_rx_dma_prepared;
 static bool s_rx_requested_before_start;
+static bool s_rx_started;
 static size_t s_rx_capacity;
 static int s_rx_prepare_result;
 
@@ -25,6 +26,17 @@ int __real_nrfx_twis_init(nrfx_twis_t *instance, const nrfx_twis_config_t *confi
                          nrfx_twis_event_handler_t handler);
 int __real_nrfx_twis_tx_prepare(nrfx_twis_t *instance, const void *buffer, size_t length);
 int __real_nrfx_twis_rx_prepare(nrfx_twis_t *instance, void *buffer, size_t length);
+void __real_nrfx_twis_irq_handler(nrfx_twis_t *instance);
+
+void __wrap_nrfx_twis_irq_handler(nrfx_twis_t *instance)
+{
+    /* nrfx clears RXSTARTED before invoking the completion callback. */
+    if (instance == s_upstream && s_write_in_flight &&
+        nrf_twis_event_check(instance->p_reg, NRF_TWIS_EVENT_RXSTARTED)) {
+        s_rx_started = true;
+    }
+    __real_nrfx_twis_irq_handler(instance);
+}
 
 static void trace_event(const nrfx_twis_event_t *event)
 {
@@ -32,6 +44,7 @@ static void trace_event(const nrfx_twis_event_t *event)
         /* A read begins a new transfer; do not reuse an orphaned RX arm. */
         s_write_in_flight = false;
         s_rx_dma_prepared = false;
+        s_rx_started = false;
         memset(&s_selected, 0, sizeof(s_selected));
         s_selected.direction = NRF_BOOT_TWIS_DIRECTION_TX_PREPARED;
         s_selected.prepare_result = -ENOSYS;
@@ -45,6 +58,7 @@ static void trace_event(const nrfx_twis_event_t *event)
         s_write_in_flight = true;
         s_rx_dma_prepared = false;
         s_rx_requested_before_start = event->data.buf_req;
+        s_rx_started = !event->data.buf_req;
         s_rx_capacity = 0U;
         s_rx_prepare_result = -ENOSYS;
         s_write_started_cycles = k_cycle_get_32();
@@ -82,13 +96,17 @@ static void trace_event(const nrfx_twis_event_t *event)
             return;
         }
         s_rx_dma_prepared = false;
+        const bool rx_started = s_rx_started ||
+            nrf_twis_event_check(s_upstream->p_reg, NRF_TWIS_EVENT_RXSTARTED);
+        s_rx_started = false;
         received.event_dt_us = k_cyc_to_us_floor32(k_cycle_get_32() - s_write_started_cycles);
         received.hw_error = failed ? event->data.error : 0U;
         received.result = failed ? -EIO : 0;
         /* TWIS may buffer the first byte before PREPARERX. At 1 MHz the
          * remaining bytes need >=8 us each; allow 1 us timestamp rounding.
          * buf_req=false means RX already started, so elapsed time is unusable. */
-        if (received.rx_amount > s_rx_capacity ||
+        if ((!rx_started && received.rx_amount != 0U) ||
+            received.rx_amount > s_rx_capacity ||
             (s_rx_requested_before_start && received.rx_amount != 0U &&
              (uint64_t)(received.rx_amount - 1U) * 8U >
                  (uint64_t)received.event_dt_us + 1U)) {
@@ -97,6 +115,7 @@ static void trace_event(const nrfx_twis_event_t *event)
             nrf_bootstrap_runtime_zephyr_record_twis_hardware(&received);
             return;
         }
+        if (!rx_started && !failed) return; /* Address-only write, no payload. */
         const uint8_t *rx = nrf_twis_rx_buffer_get(s_upstream->p_reg);
         if (rx != NULL && received.rx_amount != 0U) {
             received.prefix_length = (uint8_t)(received.rx_amount < sizeof(received.prefix)
@@ -120,6 +139,7 @@ static void trace_event(const nrfx_twis_event_t *event)
     } else if (event->type == NRFX_TWIS_EVT_GENERAL_ERROR) {
         s_write_in_flight = false;
         s_rx_dma_prepared = false;
+        s_rx_started = false;
         nrf_boot_twis_record_t error = {0};
         error.direction = NRF_BOOT_TWIS_DIRECTION_GENERAL_ERROR;
         error.prepare_result = -ENOSYS;
@@ -141,11 +161,13 @@ int __wrap_nrfx_twis_init(nrfx_twis_t *instance, const nrfx_twis_config_t *confi
     const bool previous_write_in_flight = s_write_in_flight;
     const bool previous_rx_dma_prepared = s_rx_dma_prepared;
     const bool previous_rx_requested_before_start = s_rx_requested_before_start;
+    const bool previous_rx_started = s_rx_started;
     const size_t previous_rx_capacity = s_rx_capacity;
     const int previous_rx_prepare_result = s_rx_prepare_result;
     s_upstream = instance;
     s_write_in_flight = false;
     s_rx_dma_prepared = false;
+    s_rx_started = false;
     s_rx_prepare_result = -ENOSYS;
     s_driver_handler = handler;
     const int result = __real_nrfx_twis_init(instance, config, trace_event);
@@ -155,6 +177,7 @@ int __wrap_nrfx_twis_init(nrfx_twis_t *instance, const nrfx_twis_config_t *confi
         s_write_in_flight = previous_write_in_flight;
         s_rx_dma_prepared = previous_rx_dma_prepared;
         s_rx_requested_before_start = previous_rx_requested_before_start;
+        s_rx_started = previous_rx_started;
         s_rx_capacity = previous_rx_capacity;
         s_rx_prepare_result = previous_rx_prepare_result;
     }

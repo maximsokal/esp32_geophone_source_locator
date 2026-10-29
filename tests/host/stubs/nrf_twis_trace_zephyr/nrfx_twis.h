@@ -4,7 +4,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct { uint32_t tx_amount; uint32_t rx_amount; uint8_t *rx_buffer; } NRF_TWIS_Type;
+typedef struct {
+    uint32_t tx_amount;
+    uint32_t rx_amount;
+    uint8_t *rx_buffer;
+    bool rx_started;
+} NRF_TWIS_Type;
+typedef enum { NRF_TWIS_EVENT_RXSTARTED } nrf_twis_event_t;
+static inline bool nrf_twis_event_check(const NRF_TWIS_Type *reg, nrf_twis_event_t event)
+{
+    (void)event;
+    return reg->rx_started;
+}
 typedef struct { NRF_TWIS_Type *p_reg; } nrfx_twis_t;
 typedef struct { unsigned unused; } nrfx_twis_config_t;
 typedef enum {

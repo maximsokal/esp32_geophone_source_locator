@@ -79,6 +79,7 @@ if(NOT DEFINED PIO_PACKAGES_DIR)
         -Wl,--wrap=nrfx_twis_init
         -Wl,--wrap=nrfx_twis_tx_prepare
         -Wl,--wrap=nrfx_twis_rx_prepare
+        -Wl,--wrap=nrfx_twis_irq_handler
     )
 endif()
 

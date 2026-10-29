@@ -11,6 +11,7 @@ int __wrap_nrfx_twis_init(nrfx_twis_t *instance, const nrfx_twis_config_t *confi
                          nrfx_twis_event_handler_t handler);
 int __wrap_nrfx_twis_tx_prepare(nrfx_twis_t *instance, const void *buffer, size_t length);
 int __wrap_nrfx_twis_rx_prepare(nrfx_twis_t *instance, void *buffer, size_t length);
+void __wrap_nrfx_twis_irq_handler(nrfx_twis_t *instance);
 
 NRF_TWIS_Type test_upstream_registers;
 static nrfx_twis_t s_upstream = {&test_upstream_registers};
@@ -28,6 +29,15 @@ static bool s_supply_rx_buffer = true;
 static uint32_t s_cycles;
 static const uint8_t s_frame[38] = {0x47, 0x53, 0x01, 0x82, 38, 0};
 static uint8_t s_rx_buffer[16];
+static bool s_generate_rx_started = true;
+static const nrfx_twis_event_t *s_irq_event;
+
+void __real_nrfx_twis_irq_handler(nrfx_twis_t *instance)
+{
+    /* nrfx clears the hardware event before calling its event handler. */
+    instance->p_reg->rx_started = false;
+    if (s_irq_event != NULL) s_target_handler(s_irq_event);
+}
 
 uint32_t k_cycle_get_32(void) { s_cycles += 17U; return s_cycles; }
 
@@ -84,7 +94,12 @@ static void emit(nrfx_twis_event_type_t type, uint32_t value)
 {
     nrfx_twis_event_t event = {.type = type};
     event.data.error = value;
-    s_target_handler(&event);
+    if (type == NRFX_TWIS_EVT_WRITE_DONE || type == NRFX_TWIS_EVT_WRITE_ERROR) {
+        test_upstream_registers.rx_started = s_generate_rx_started;
+    }
+    s_irq_event = &event;
+    __wrap_nrfx_twis_irq_handler(&s_upstream);
+    s_irq_event = NULL;
 }
 
 int main(void)
@@ -335,6 +350,63 @@ int main(void)
         assert(s_records[records_before].prefix_length ==
                (edges[i].valid ? (edges[i].amount < NRF_BOOT_TRANSACTION_PREFIX_CAPACITY
                    ? edges[i].amount : NRF_BOOT_TRANSACTION_PREFIX_CAPACITY) : 0U));
+    }
+
+    /* A plausible duration cannot validate stale AMOUNT without RXSTARTED. */
+    {
+        const unsigned forwarded_before = s_forwarded;
+        const unsigned records_before = s_record_count;
+        s_generate_rx_started = false;
+        test_upstream_registers.rx_amount = 12U;
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 1U);
+        s_cycles += 10000U;
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_forwarded == forwarded_before + 1U);
+        assert(s_record_count == records_before + 1U);
+        assert(s_records[records_before].result == -EPROTO);
+        assert(s_records[records_before].prefix_length == 0U);
+        s_generate_rx_started = true;
+    }
+
+    /* RXSTARTED may have its own IRQ long before STOP; the driver clears
+     * the register in that IRQ, but the completion must retain the proof. */
+    {
+        const unsigned forwarded_before = s_forwarded;
+        const unsigned records_before = s_record_count;
+        test_upstream_registers.rx_amount = 12U;
+        memcpy(s_rx_buffer, request, sizeof(request));
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 1U);
+        test_upstream_registers.rx_started = true;
+        __wrap_nrfx_twis_irq_handler(&s_upstream);
+        assert(!test_upstream_registers.rx_started);
+        s_cycles += 2000U;
+        s_generate_rx_started = false;
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_forwarded == forwarded_before + 2U);
+        assert(s_record_count == records_before + 1U);
+        assert(s_records[records_before].result == 0);
+        assert(memcmp(s_records[records_before].prefix, request,
+                      NRF_BOOT_TRANSACTION_PREFIX_CAPACITY) == 0);
+
+        /* Neither that old READY nor an unrelated instance's READY can
+         * validate the next transfer's cached count. */
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 1U);
+        other_registers.rx_started = true;
+        __wrap_nrfx_twis_irq_handler(&other);
+        assert(!other_registers.rx_started);
+        s_cycles += 2000U;
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_forwarded == forwarded_before + 3U);
+        assert(s_record_count == records_before + 2U);
+        assert(s_records[records_before + 1U].result == -EPROTO);
+
+        /* Zero count and no RXSTARTED is an ordinary address-only probe. */
+        test_upstream_registers.rx_amount = 0U;
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 1U);
+        emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
+        assert(s_forwarded == forwarded_before + 4U);
+        assert(s_record_count == records_before + 2U);
+        s_generate_rx_started = true;
     }
 
     puts("nRF TWIS hardware trace: PASS");
