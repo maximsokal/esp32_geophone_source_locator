@@ -1404,6 +1404,7 @@
     "tft.workflow.ranging.cable_exceeded": {"en": "%s-%s: %s mm > cable", "uk": "%s-%s: %s \u043c\u043c > \u043a\u0430\u0431\u0435\u043b\u044c", "max_len": 40},
     "tft.workflow.ranging.distance": {"en": "%s-%s: %s mm", "uk": "%s-%s: %s \u043c\u043c", "max_len": 32},
     "tft.workflow.ranging.sigma": {"en": "%s sigma:%s mm", "uk": "%s сигма:%s мм", "max_len": 24},
+    "tft.workflow.ranging.wait_percent": {"en": "Ranging %s%%, keep still", "uk": "Вимірювання %s%%, не чіпати", "max_len": 34},
     "tft.workflow.ranging.wait": {"en": "Ranging by radio, keep still", "uk": "Вимірювання по радіо, не чіпати", "max_len": 34},
     "tft.workflow.record_ready.instruction": { "en": "Sensors are ready to record", "uk": "Датчики готові до запису", "max_len": 28 },
     "tft.workflow.recording.elapsed": {"en": "Elapsed %s", "uk": "Тривалість %s", "max_len": 22},

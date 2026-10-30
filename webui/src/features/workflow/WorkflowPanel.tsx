@@ -4,11 +4,12 @@ import type { DeviceStatus, WorkflowCalibrationNode } from '../../domain/device'
 import { capturePhoneLocation, type WorkflowCommandResult } from '../../api/deviceApi';
 import type { PhoneLocationInput } from '../../domain/device';
 import { useLocale, useT, type I18nKey } from '../../i18n';
-import { formatDistance, formatNumber } from '../../i18n/format';
+import { formatDistance, formatNumber, formatPercent } from '../../i18n/format';
 import MaterialSettingsForm from '../objects/MaterialSettingsForm';
 import WorkflowResultViewer from './WorkflowResultViewer';
 import ManualDistanceForm from './ManualDistanceForm';
 import {
+  rangingPairQualityNotes,
   rangingUncertaintyMm,
   resultFailureKey,
   workflowNumberText,
@@ -196,7 +197,8 @@ function RangingSection({ value, workflowReason, workflow, onSaved, onRefresh }:
     <div className="workflow-ranging">
       {progress?.complete === true && <p role="status">{t(progress.success
         ? 'workflow.ranging.success' : progress.partial ? 'workflow.ranging.partial' : 'workflow.ranging.failed')}</p>}
-      <p>{t('workflow.ranging.pairs')}: {workflowNumberText(done, locale)} / {workflowNumberText(total, locale)}</p>
+      <p>{t('workflow.ranging.pairs')}: {workflowNumberText(done, locale)} / {workflowNumberText(total, locale)}
+        {percent !== null && ` (${formatPercent(locale, percent / 100)})`}</p>
       <progress max={100} value={percent ?? undefined} aria-label={t('workflow.ranging.pairs')} />
       <p>{t('workflow.ranging.residual')}: {mmText(residual, locale)}</p>
       {(progress?.pairs ?? lastResult?.pairs ?? []).map((pair, index) => (
@@ -208,6 +210,15 @@ function RangingSection({ value, workflowReason, workflow, onSaved, onRefresh }:
               ? mmText(pair.distance_mm, locale) : t('workflow.ranging.pair_unavailable')}
           {pair.manual === true && ` (${t('workflow.distance.manual')})`}
         </p>
+        {rangingPairQualityNotes(pair).map((note) => (
+          <p key={note.key} className="workflow-ranging-quality">
+            {note.key === 'workflow.ranging.pair_disagreement'
+              ? t(note.key, { value: mmText(note.value, locale) })
+              : note.key === 'workflow.ranging.pair_failed_attempts'
+                ? t(note.key, { count: workflowNumberText(note.count, locale) })
+                : t(note.key)}
+          </p>
+        ))}
         {workflow?.step === 'RANGING_RESULT' && progress?.complete === true &&
           workflow.allowed_actions.some(action => action.toUpperCase() === 'SET_DISTANCE') &&
           Number.isSafeInteger(progress.started_at_ms) && Number.isSafeInteger(progress.updated_at_ms) && (

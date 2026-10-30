@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import WorkflowPanel from '../../src/features/workflow/WorkflowPanel';
 import type { WorkflowCommandResult } from '../../src/api/deviceApi';
 import { translate } from '../../src/i18n';
+import { formatPercent } from '../../src/i18n/format';
 import { readyStatus, renderUi, respondJson } from './setup';
 
 type Props = ComponentProps<typeof WorkflowPanel>;
@@ -52,6 +53,23 @@ describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
     expect((submit as HTMLButtonElement).disabled).toBe(false);
     expect(props.onWorkflowUpdate).not.toHaveBeenCalled();
   });
+
+  // The plan holds one execution per ordered pair, so the same three finished windows are a
+  // smaller share of a bigger network: 3 of 6, 3 of 12, 3 of 20.
+  it.each([[3, 6, '50'], [4, 12, '25'], [5, 20, '15']] as const)(
+    'shows radio ranging progress as a share of all %i-node measurements', (nodes, total, percent) => {
+      expect(total).toBe(nodes * (nodes - 1));
+      const props = panelProps('RANGING', ['BACK']);
+      (props.status as unknown as { ranging: unknown }).ranging = {
+        available: true, progress: { pairs_done: 3, pairs_total: total },
+      };
+      renderUi(<WorkflowPanel {...props} />, locale);
+      const text = document.body.textContent ?? '';
+      expect(text).toContain(`3 / ${total} (${formatPercent(locale, 3 / total)})`);
+      expect(text).toMatch(new RegExp(`\(${percent}\s?%\)`));
+      expect(screen.getByRole('progressbar', { name: t('workflow.ranging.pairs') }).getAttribute('value'))
+        .toBe(String((3 / total) * 100));
+    });
 
   it('requires a second delete confirmation and Back cancels the armed action', async () => {
     const user = userEvent.setup();

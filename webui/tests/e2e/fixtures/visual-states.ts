@@ -100,6 +100,13 @@ export async function prepareVisualState(page: Page, api: DeviceApi, state: Visu
     await page.getByText(t['workflow.delete_confirm.prompt'], { exact: true }).waitFor();
   }
   await page.evaluate(() => document.fonts.ready);
+  if (state.step === 'RANGING' || state.step === 'RANGING_RESULT') {
+    const done = state.step === 'RANGING_RESULT' ? 3 : 1;
+    const percent = state.step === 'RANGING_RESULT' ? 100 : 33;
+    await expect(page.getByText(new RegExp(String.raw`${done} / 3 \(${percent}\s?%\)`))).toBeVisible();
+    await expect(page.getByRole('progressbar', { name: t['workflow.ranging.pairs'] }))
+      .toHaveAttribute('value', String(done / 3 * 100));
+  }
   await expect(page.getByText(t['workflow.result.loading'], { exact: true })).toHaveCount(0);
   await page.evaluate(() => window.scrollTo(0, 0));
 }

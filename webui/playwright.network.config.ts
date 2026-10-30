@@ -9,5 +9,5 @@ export default defineConfig(base, {
   reporter: [['line'], ['json', { outputFile: '../.test-build/ui-network/playwright.json' }],
     ['html', { outputFolder: '../.test-build/ui-network/html', open: 'never' }]],
   metadata: { ...base.metadata, selection: 'HTTP faults/recovery, Objects, seismic, workflow and lazy-scanner lifecycle',
-    expectedTests: 40, reproduce: 'cd webui; npm run test:ui:network' },
+    expectedTests: 53, reproduce: 'cd webui; npm run test:ui:network' },
 });

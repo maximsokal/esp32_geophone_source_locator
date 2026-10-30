@@ -399,6 +399,32 @@ static void test_ranging_manual_screens(const char *language, workflow_core_t *c
     } while (s_workflow->ranging_line_offset != 0U);
 }
 
+/*
+ * The plan MAIN runs holds one execution per ordered pair of the connected nodes, so its
+ * "pairs_total" is nodes * (nodes - 1) and the same number of finished windows is a smaller
+ * share of a bigger network.
+ */
+static void test_ranging_progress_scene(const char *language, const char *suffix,
+    unsigned nodes, unsigned done)
+{
+    char name[96];
+    prepare(WORKFLOW_STEP_RANGING, nodes - 1U);
+    s_workflow->ranging.available = true;
+    s_workflow->ranging.pairs_done = done;
+    s_workflow->ranging.pairs_total = nodes * (nodes - 1U);
+    s_workflow->ranging.residual_valid = true;
+    s_workflow->ranging.residual_mm = 12;
+    s_workflow->ranging.node_count = nodes;
+    for (size_t node = 0U; node < nodes; ++node) {
+        (void)snprintf(s_workflow->ranging.nodes[node], sizeof(s_workflow->ranging.nodes[node]),
+            node == 0U ? "MAIN" : "G%u", (unsigned)node);
+        s_workflow->ranging.sigma_mm[node] = 10;
+    }
+    ui_workflow_update(s_workflow, render_now_ms);
+    (void)snprintf(name, sizeof(name), "%s_ranging_progress%s", language, suffix);
+    capture(name, true);
+}
+
 static void test_ranging_result_screens(const char *language)
 {
     static const char *outcomes[] = {"success", "partial", "failed", "cable_exceeded"};
@@ -525,21 +551,10 @@ int main(int argc, char **argv)
         ui_workflow_update(s_workflow, render_now_ms);
         (void)snprintf(name, sizeof(name), "%s_calculating_progress", language);
         capture(name, true);
-        prepare(WORKFLOW_STEP_RANGING, 4U);
-        s_workflow->ranging.available = true;
-        s_workflow->ranging.pairs_done = 3U;
-        s_workflow->ranging.pairs_total = 10U;
-        s_workflow->ranging.residual_valid = true;
-        s_workflow->ranging.residual_mm = 12;
-        s_workflow->ranging.node_count = 5U;
-        for (size_t node = 0U; node < 5U; ++node) {
-            (void)snprintf(s_workflow->ranging.nodes[node], sizeof(s_workflow->ranging.nodes[node]),
-                node == 0U ? "MAIN" : "G%u", (unsigned)node);
-            s_workflow->ranging.sigma_mm[node] = 10;
-        }
-        ui_workflow_update(s_workflow, render_now_ms);
-        (void)snprintf(name, sizeof(name), "%s_ranging_progress", language);
-        capture(name, true);
+        test_ranging_progress_scene(language, "", 5U, 10U);          /* 10 of 20: 50% */
+        test_ranging_progress_scene(language, "_3_nodes", 3U, 3U);   /* 3 of 6: 50% */
+        test_ranging_progress_scene(language, "_4_nodes", 4U, 3U);   /* 3 of 12: 25% */
+        test_ranging_progress_scene(language, "_5_nodes", 5U, 3U);   /* 3 of 20: 15% */
         test_ranging_result_screens(language);
         prepare(WORKFLOW_STEP_STOPPED, 4U);
         s_workflow->model_state.material_view = UI_WORKFLOW_MATERIAL_SELECT;
@@ -729,8 +744,9 @@ int main(int argc, char **argv)
         const uint64_t before_stale_test_ms = render_now_ms;
         render_now_ms += NRF_NODE_LINK_STATUS_STALE_LIMIT_MS;
         ui_workflow_update(s_workflow, render_now_ms);
-        assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN N-") != NULL);
-        assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "N- I? B? C-") != NULL);
+        /* A quiet link with a known identity is STALE (33907fc1), shown as "!" rather than "not connected". */
+        assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN N!") != NULL);
+        assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "N! I? B? C-") != NULL);
         (void)snprintf(name, sizeof(name), "%s_preflight_nrf_stale", language);
         capture(name, false);
         render_node_status[0].status_receipt_uptime_ms = render_now_ms;

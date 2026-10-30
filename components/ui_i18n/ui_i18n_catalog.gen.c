@@ -337,6 +337,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "%s sigma:%s mm", /* tft.workflow.ranging.sigma */
     "Distances measured", /* tft.workflow.ranging.success */
     "Ranging by radio, keep still", /* tft.workflow.ranging.wait */
+    "Ranging %s%%, keep still", /* tft.workflow.ranging.wait_percent */
     "CS pair failed", /* tft.workflow.reason.cs_pair */
     "CS spread high", /* tft.workflow.reason.cs_spread */
     "operation failed", /* tft.workflow.reason.failed */
@@ -782,6 +783,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "%s сигма:%s мм", /* tft.workflow.ranging.sigma */
     "Відстані виміряно", /* tft.workflow.ranging.success */
     "Вимірювання по радіо, не чіпати", /* tft.workflow.ranging.wait */
+    "Вимірювання %s%%, не чіпати", /* tft.workflow.ranging.wait_percent */
     "помилка пари CS", /* tft.workflow.reason.cs_pair */
     "великий розкид CS", /* tft.workflow.reason.cs_spread */
     "операція не вдалася", /* tft.workflow.reason.failed */

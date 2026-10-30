@@ -13,7 +13,7 @@ MAX440_TEST_NAMES = (
     "I1_single_mutex_busy_does_not_invalidate_or_close_driver",
     "I2_owner_hold_budget_error_treated_like_busy",
     "I3_three_consecutive_device_errors_invalidate_after_backoff",
-    "I4_stale_limit_5s",
+    "I4_stale_limit_10s",
     "I5_busy_then_ok_clears_stale_and_keeps_power_state",
     "I6_device_NACK_error_policy_pinned",
     "I7_period_retry_and_fast_period_tolerances",

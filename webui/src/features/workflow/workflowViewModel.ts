@@ -18,6 +18,36 @@ export function workflowNumberText(value: unknown, locale: I18nLocale = 'en'): s
     : WORKFLOW_UNKNOWN;
 }
 
+export type RangingPairQualityNote =
+  | { key: 'workflow.ranging.pair_one_direction' }
+  | { key: 'workflow.ranging.pair_disagreement'; value: number }
+  | { key: 'workflow.ranging.pair_failed_attempts'; count: number };
+
+/**
+ * Raw per-pair evidence the device already reports. These notes explain a pair;
+ * they never decide acceptance (the device's geometry gate does).
+ */
+export function rangingPairQualityNotes(pair: {
+  state: string;
+  valid_samples: number;
+  attempts: number;
+  single_direction: boolean;
+  direction_disagreement_mm: number;
+}): RangingPairQualityNote[] {
+  const notes: RangingPairQualityNote[] = [];
+  if (pair.state === 'valid') {
+    if (pair.single_direction) notes.push({ key: 'workflow.ranging.pair_one_direction' });
+    else if (Number.isFinite(pair.direction_disagreement_mm) && pair.direction_disagreement_mm > 0) {
+      notes.push({ key: 'workflow.ranging.pair_disagreement', value: pair.direction_disagreement_mm });
+    }
+  }
+  const failed = pair.attempts - pair.valid_samples;
+  if (Number.isFinite(failed) && failed > 0) {
+    notes.push({ key: 'workflow.ranging.pair_failed_attempts', count: failed });
+  }
+  return notes;
+}
+
 export function rangingUncertaintyMm(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value !== RANGING_UNKNOWN_UNCERTAINTY_MM
     ? value

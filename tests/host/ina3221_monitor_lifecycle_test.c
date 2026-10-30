@@ -870,31 +870,31 @@ static void test_I2_owner_hold_budget_error_treated_like_busy(void)
 }
 
 
-static void test_I4_stale_limit_5s(void)
+static void test_I4_stale_limit_10s(void)
 {
     ina3221_monitor_rail_t rail;
     const esp_err_t results[] = { ESP_OK, SENSOR_BUS_ERR_MUTEX_BUSY };
 
     reset_fakes();
     set_fake_read_results(results, sizeof(results) / sizeof(results[0]));
-    s_fake_wait_advance_us = 4999000U;
+    s_fake_wait_advance_us = 9999000U;
     assert(ina3221_monitor_start() == ESP_OK);
     s_stop_after_waits = 2U;
     s_worker_entry(s_worker_argument);
     assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_BATTERY, &rail) == ESP_OK);
     assert(rail.available && rail.valid && rail.stale);
-    assert(rail.age_ms == 4999U);
+    assert(rail.age_ms == 9999U);
     assert_lock_balanced();
 
     reset_fakes();
     set_fake_read_results(results, sizeof(results) / sizeof(results[0]));
-    s_fake_wait_advance_us = 5000000U;
+    s_fake_wait_advance_us = 10000000U;
     assert(ina3221_monitor_start() == ESP_OK);
     s_stop_after_waits = 2U;
     s_worker_entry(s_worker_argument);
     assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_BATTERY, &rail) == ESP_OK);
     assert(rail.available && !rail.valid && rail.stale);
-    assert(rail.age_ms == 5000U);
+    assert(rail.age_ms == 10000U);
     assert_lock_balanced();
 }
 
@@ -1123,10 +1123,11 @@ static void test_read_failure_clears_last_power_state(void)
     assert(ina3221_monitor_start() == ESP_OK);
     s_wait_hook = fail_next_power_read;
     s_wait_hook_at = 1U;
-    s_stop_after_waits = 6U; /* wait through the 5 s last-good expiry */
+    s_stop_after_waits = 11U; /* wait through the 10 s last-good expiry */
     s_worker_entry(s_worker_argument);
 
-    assert(s_read_calls == 2U);
+    /* Good read, the failing read, and one more failing read after the 5 s retry backoff. */
+    assert(s_read_calls == 3U);
     assert(s_status_power_state == DEVICE_POWER_STATE_UNKNOWN);
     assert(s_status_low_battery == DEVICE_LOW_BATTERY_NORMAL);
     assert(s_critical_handler_calls == 0U);
@@ -1247,7 +1248,7 @@ static bool run_requested_max440_test(const char *name)
     else if (strcmp(name, "I2") == 0) test_I2_owner_hold_budget_error_treated_like_busy();
     else if (strcmp(name, "I3") == 0) test_I3_three_consecutive_device_errors_invalidate_after_backoff();
     else if (strcmp(name, "I6") == 0) test_I6_device_NACK_error_policy_pinned();
-    else if (strcmp(name, "I4") == 0) test_I4_stale_limit_5s();
+    else if (strcmp(name, "I4") == 0) test_I4_stale_limit_10s();
     else if (strcmp(name, "I5") == 0) test_I5_busy_then_ok_clears_stale_and_keeps_power_state();
     else if (strcmp(name, "I7") == 0) test_I7_period_retry_and_fast_period_tolerances();
     else if (strcmp(name, "I8") == 0) test_I8_busy_skip_log_has_counter_age_and_rate_limit();
@@ -1287,7 +1288,7 @@ int main(int argc, char **argv)
     test_I2_owner_hold_budget_error_treated_like_busy();
     test_I3_three_consecutive_device_errors_invalidate_after_backoff();
     test_I6_device_NACK_error_policy_pinned();
-    test_I4_stale_limit_5s();
+    test_I4_stale_limit_10s();
     test_I5_busy_then_ok_clears_stale_and_keeps_power_state();
     test_I7_period_retry_and_fast_period_tolerances();
     test_I8_busy_skip_log_has_counter_age_and_rate_limit();

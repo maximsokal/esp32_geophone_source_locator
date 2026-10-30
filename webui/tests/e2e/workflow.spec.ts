@@ -289,3 +289,41 @@ for (const locale of ['en', 'uk'] as const) {
     });
   });
 }
+
+
+// ESP32 exposes MAIN's execution counters; completed executions do not imply a successful result.
+for (const locale of ['en', 'uk'] as const) {
+  test.describe(`${locale} radio ranging percentage`, () => {
+    test.use({ appLocale: locale });
+    for (const [nodes, total, percent] of [[3, 6, '50'], [4, 12, '25'], [5, 20, '15']] as const) {
+      test(`${nodes} nodes: 3 of ${total} windows is ${percent}%`, async ({ page, api }, testInfo) => {
+        expect(total).toBe(nodes * (nodes - 1));
+        Object.assign(api.status.workflow!, { step: 'RANGING', allowed_actions: ['BACK'] });
+        Object.assign(api.status.ranging!.progress!, {
+          active: true, complete: false, success: false, pairs_done: 3, pairs_total: total, pairs: [],
+        });
+        await page.goto('/');
+        await expect(page.getByText(catalog[locale]['workflow.ranging.wait'])).toBeVisible();
+        await expect(page.getByText(new RegExp(String.raw`3 / ${total} \(${percent}\s?%\)`))).toBeVisible();
+        await expect(page.getByRole('progressbar', { name: catalog[locale]['workflow.ranging.pairs'] }))
+          .toHaveAttribute('value', String((3 / total) * 100));
+        await testInfo.attach(`ranging-${locale}-${nodes}-nodes`, {
+          body: await page.screenshot({ fullPage: true }), contentType: 'image/png',
+        });
+
+        // Exercise the next /api/status poll without reloading the page.
+        api.status.ranging!.progress!.pairs_done = total;
+        await expect(page.getByText(new RegExp(String.raw`${total} / ${total} \(100\s?%\)`))).toBeVisible();
+        await expect(page.getByRole('progressbar', { name: catalog[locale]['workflow.ranging.pairs'] }))
+          .toHaveAttribute('value', '100');
+        await expect(page.getByText(catalog[locale]['workflow.ranging.success'], { exact: true })).toHaveCount(0);
+
+        Object.assign(api.status.workflow!, { step: 'RANGING_RESULT', allowed_actions: ['RETRY', 'BACK'] });
+        Object.assign(api.status.ranging!.progress!, { active: false, complete: true, success: true });
+        await expect(page.getByText(catalog[locale]['workflow.ranging.success'], { exact: true })).toBeVisible();
+        await expect(page.getByText(new RegExp(String.raw`${total} / ${total} \(100\s?%\)`))).toBeVisible();
+        expect(api.controls).toHaveLength(0);
+      });
+    }
+  });
+}

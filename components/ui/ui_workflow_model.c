@@ -708,7 +708,17 @@ void ui_workflow_model_build(
                 unknown_arg(pairs, 1U);
                 unknown_arg(pairs, 2U);
             }
-            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_WAIT);
+            if (ranging != NULL && ranging->available && ranging->pairs_total > 0U) {
+                /* The nodes ranging on their own report which window of the plan is running. */
+                const size_t done_clamped = ranging->pairs_done < ranging->pairs_total
+                    ? ranging->pairs_done : ranging->pairs_total;
+                char percent[8];
+                (void)snprintf(percent, sizeof(percent), "%u",
+                    (unsigned)((done_clamped * 100U) / ranging->pairs_total));
+                set_arg(add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_WAIT_PERCENT), 0U, percent);
+            } else {
+                (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_WAIT);
+            }
             if (ranging != NULL && ranging->available) {
                 for (size_t i = 0U; i < ranging->node_count && i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
                     ui_workflow_model_line_t *row = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_SIGMA);

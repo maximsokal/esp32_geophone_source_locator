@@ -184,6 +184,26 @@ def test_determinate_progress_widgets_are_visible(screens, locale):
 
 
 @pytest.mark.parametrize("locale", ["en", "uk"])
+@pytest.mark.parametrize("suffix,nodes,done,total,percent", [
+    ("", 5, 10, 20, "50"),
+    ("_3_nodes", 3, 3, 6, "50"),
+    ("_4_nodes", 4, 3, 12, "25"),
+    ("_5_nodes", 5, 3, 20, "15"),
+])
+def test_ranging_progress_percent_grows_with_the_number_of_nodes(screens, locale, suffix, nodes, done, total, percent):
+    entries = json.loads((ROOT / "i18n/tft.json").read_text(encoding="utf-8"))["entries"]
+    assert total == nodes * (nodes - 1), "the plan holds one execution per ordered pair"
+    frame = next(frame for frame in _frames(screens, locale) if frame["name"] == f"{locale}_ranging_progress{suffix}")
+    assert frame["golden"] and frame["comparison"] == 1, frame["name"]
+    assert (ROOT / "tests/ui_render/golden" / (frame["name"] + ".png")).is_file()
+    lines = [node["text"] for node in _visible(frame) if node["role"].startswith("line_")]
+    assert entries["tft.workflow.ranging.pairs"][locale] % (str(done), str(total), "12") == lines[0]
+    assert entries["tft.workflow.ranging.wait_percent"][locale] % percent == lines[1]
+    assert entries["tft.workflow.ranging.wait"][locale] not in lines
+    assert next(node for node in frame["widgets"] if node["role"] == "progress")["hidden"] is False
+
+
+@pytest.mark.parametrize("locale", ["en", "uk"])
 @pytest.mark.parametrize("outcome", ["success", "partial", "failed", "cable_exceeded"])
 def test_ranging_outcomes_have_reviewed_pages_and_exact_pair_values(screens, locale, outcome):
     entries = json.loads((ROOT / "i18n/tft.json").read_text(encoding="utf-8"))["entries"]

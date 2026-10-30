@@ -145,6 +145,23 @@ static void test_gap_is_not_integrated_as_zero_current(void)
     assert(soc.quality == INA3221_SOC_VOLTAGE_ONLY);
 }
 
+/* A sample may be up to 10 s late (the rail stale window) without losing coulomb tracking. */
+static void test_default_gap_window_is_ten_seconds(void)
+{
+    setup(3000.0f);
+    assert(cfg.max_gap_ms == 10000U);
+    ina3221_soc_t soc;
+    ina3221_soc_reset(&soc);
+    ina3221_soc_input_t rest = sample(3.80f, 0.0f);
+    ina3221_soc_update(&soc, &cfg, &rest, 0);
+    ina3221_soc_input_t load = sample(3.70f, 1.0f);
+    ina3221_soc_update(&soc, &cfg, &load, 1000);
+    ina3221_soc_update(&soc, &cfg, &load, 11000);
+    assert(soc.quality == INA3221_SOC_COULOMB_TRACKED);
+    ina3221_soc_update(&soc, &cfg, &load, 21001);
+    assert(soc.quality == INA3221_SOC_VOLTAGE_ONLY);
+}
+
 static void test_zero_time_huge_gap_and_reboot_do_not_integrate_stale_current(void)
 {
     setup(3000.0f);
@@ -264,6 +281,7 @@ int main(void)
     test_bootstrap_only_at_rest();
     test_discharge_and_charge_integration_with_irregular_intervals();
     test_gap_is_not_integrated_as_zero_current();
+    test_default_gap_window_is_ten_seconds();
     test_zero_time_huge_gap_and_reboot_do_not_integrate_stale_current();
     test_invalid_sample_breaks_tracking_and_hides_percent();
     test_full_anchor_and_clamps();

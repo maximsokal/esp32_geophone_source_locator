@@ -59,7 +59,7 @@ void ina3221_soc_default_config(ina3221_soc_config_t *config)
         .capacity_mah = 0.0f,          /* unknown until MAX-184 */
         .rest_current_a = 0.050f,
         .rest_anchor_ms = 30U * 60U * 1000U,
-        .max_gap_ms = 5000U,
+        .max_gap_ms = 10000U,  /* same window as INA3221_MONITOR_STALE_LIMIT_MS */
         .full_v = 4.10f,
     };
 }

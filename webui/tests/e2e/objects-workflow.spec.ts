@@ -76,7 +76,8 @@ test('lost create reply reconciles the committed object without replaying the wr
   await enterObjects(page, api);
   await page.getByRole('textbox', { name: catalog.en['objects.new_name'], exact: true }).fill('Committed survey');
   await page.getByRole('button', { name: catalog.en['objects.create'], exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('request failed');
+  // A reply lost after the write may have been committed: the UI must say the outcome is unknown, not that the request failed.
+  await expect(page.getByRole('alert')).toContainText(catalog.en['api.error_control_outcome_unknown']);
   await expect(page.getByRole('heading', { name: 'Committed survey', exact: true })).toBeVisible();
   expect(api.controls).toHaveLength(1);
   await expect(page.getByRole('alert')).toHaveCount(0);

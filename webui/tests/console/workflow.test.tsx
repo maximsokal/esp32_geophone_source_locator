@@ -9,6 +9,7 @@ import WorkflowPanel from '../../src/features/workflow/WorkflowPanel';
 import ManualDistanceForm from '../../src/features/workflow/ManualDistanceForm';
 import type { RangingPairStatus } from '../../src/domain/device';
 import {
+  rangingPairQualityNotes,
   rangingUncertaintyMm,
   resultFailureKey,
   workflowNumberText,
@@ -179,6 +180,57 @@ describe('workflow view model (MAX-296)', () => {
     const html = panelHtml(status);
     expect(html).toContain('REMOTE 2 σ: —');
     expect(html).not.toContain('2147483647');
+  });
+
+  it('explains a ranging pair from the evidence the device reports', () => {
+    const base = { state: 'valid', valid_samples: 6, attempts: 6, single_direction: false, direction_disagreement_mm: 0 };
+    expect(rangingPairQualityNotes(base)).toEqual([]);
+    expect(rangingPairQualityNotes({ ...base, single_direction: true, valid_samples: 3, attempts: 3 }))
+      .toEqual([{ key: 'workflow.ranging.pair_one_direction' }]);
+    expect(rangingPairQualityNotes({ ...base, direction_disagreement_mm: 1200 }))
+      .toEqual([{ key: 'workflow.ranging.pair_disagreement', value: 1200 }]);
+    expect(rangingPairQualityNotes({ ...base, attempts: 8 }))
+      .toEqual([{ key: 'workflow.ranging.pair_failed_attempts', count: 2 }]);
+    // An unmeasured pair has no direction evidence, only its failed attempts.
+    expect(rangingPairQualityNotes({ ...base, state: 'missing', valid_samples: 0, attempts: 3, direction_disagreement_mm: 900 }))
+      .toEqual([{ key: 'workflow.ranging.pair_failed_attempts', count: 3 }]);
+    expect(rangingPairQualityNotes({ ...base, direction_disagreement_mm: Number.NaN })).toEqual([]);
+  });
+
+  it('shows pair quality notes next to the distance without changing the distance line', () => {
+    const status = statusFor('RANGING');
+    (status as unknown as { ranging: unknown }).ranging = {
+      available: true,
+      progress: {
+        pairs_done: 2,
+        pairs_total: 2,
+        pairs: [
+          { node_a: 1, node_b: 2, state: 'valid', distance_mm: 1100, spread_mm: 300, confidence: 900,
+            valid_samples: 5, attempts: 7, single_direction: false, direction_disagreement_mm: 200 },
+          { node_a: 1, node_b: 3, state: 'valid', distance_mm: 2000, spread_mm: 10, confidence: 900,
+            valid_samples: 3, attempts: 3, single_direction: true, direction_disagreement_mm: 0 },
+        ],
+      },
+    };
+    const html = panelHtml(status);
+    expect(html).toMatch(/Nodes 1–2: 1,?100 mm<\/p>/);
+    expect(html).toContain('Forward and reverse measurements differ by 200 mm');
+    expect(html).toContain('Failed attempts: 2');
+    expect(html).toContain('Measured in one direction only');
+    expect(html).not.toContain('differ by 0');
+  });
+
+  it('shows how far the radio ranging plan has run as a percentage', () => {
+    const rangingStatus = (done: number, total: number) => {
+      const status = statusFor('RANGING');
+      (status as unknown as { ranging: unknown }).ranging = { available: true, progress: { pairs_done: done, pairs_total: total } };
+      return status;
+    };
+    expect(panelHtml(rangingStatus(15, 30))).toContain('15 / 30 (50%)');
+    expect(panelHtml(rangingStatus(0, 20))).toContain('0 / 20 (0%)');
+    expect(panelHtml(rangingStatus(20, 20))).toContain('20 / 20 (100%)');
+    // Without a total there is nothing to divide by.
+    expect(panelHtml(rangingStatus(0, 0))).not.toContain('%)');
   });
 
   it('renders unknown calculation progress as an indeterminate bar', () => {

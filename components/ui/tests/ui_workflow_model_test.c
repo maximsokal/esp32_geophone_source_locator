@@ -452,11 +452,53 @@ static void test_unknown_values_and_ranging_sigma(void)
     build(&snapshot, &state, &ranging, &model);
     /* The nodes range over radio on their own: the screen says so right under the pair counter. */
     assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_PAIRS);
-    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_WAIT);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_WAIT_PERCENT);
+    assert(strcmp(model.lines[1].args[0], "40") == 0); /* 2 of 5 windows */
     assert(model.lines[2].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_SIGMA);
     assert(model.lines[2].arg_keys[1] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
     assert(strcmp(model.lines[2].args[1], "0") != 0);
     assert(model.line_count == 3U);
+
+    /* The plan holds one execution per ordered pair of the connected nodes: 3 nodes 6, 4 nodes 12,
+     * 5 nodes 20. The same three finished windows are a smaller share of a bigger network. */
+    {
+        static const struct { size_t total; const char *percent; } by_nodes[] = {
+            { 6U, "50" }, { 12U, "25" }, { 20U, "15" },
+        };
+        for (size_t nodes = 3U; nodes <= 5U; ++nodes) {
+            ranging.node_count = 0U;
+            ranging.pairs_total = nodes * (nodes - 1U);
+            ranging.pairs_done = 3U;
+            assert(ranging.pairs_total == by_nodes[nodes - 3U].total);
+            build(&snapshot, &state, &ranging, &model);
+            assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_WAIT_PERCENT);
+            assert(strcmp(model.lines[1].args[0], by_nodes[nodes - 3U].percent) == 0);
+        }
+    }
+
+    /* Percent follows the reported windows: none, half, all, and never above 100 or from nothing. */
+    snapshot = make_snapshot(WORKFLOW_STEP_RANGING);
+    ranging.node_count = 0U;
+    ranging.pairs_total = 30U;
+    ranging.pairs_done = 0U;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_WAIT_PERCENT);
+    assert(strcmp(model.lines[1].args[0], "0") == 0);
+    ranging.pairs_done = 15U;
+    build(&snapshot, &state, &ranging, &model);
+    assert(strcmp(model.lines[1].args[0], "50") == 0);
+    ranging.pairs_done = 30U;
+    build(&snapshot, &state, &ranging, &model);
+    assert(strcmp(model.lines[1].args[0], "100") == 0);
+    ranging.pairs_done = 31U;
+    build(&snapshot, &state, &ranging, &model);
+    assert(strcmp(model.lines[1].args[0], "100") == 0);
+    ranging.pairs_total = 0U;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_WAIT);
+    ranging.available = false;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_WAIT);
 
     snapshot = make_snapshot(WORKFLOW_STEP_RECORDING);
     build(&snapshot, &state, &ranging, &model);
