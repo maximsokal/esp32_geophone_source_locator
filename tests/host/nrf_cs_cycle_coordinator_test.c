@@ -31,6 +31,8 @@ typedef struct {
     uint64_t complete_at_ms;
     nrf_cs_step_t pending_step;
     bool stale_cycle_id;   /* status answers carry another cycle's id */
+    unsigned fail_release_writes; /* drop this many release frames (NACK) */
+    unsigned release_writes;
 } sim_node_t;
 
 typedef struct {
@@ -52,6 +54,7 @@ static bool g_main_unreadable;
 static bool g_main_early_complete;
 static unsigned g_noise_injected;
 static unsigned g_abort_after_polls;
+static unsigned g_abort_after_plan_writes;
 static nrf_cs_node_id_t g_main;
 static unsigned g_always_fail_mask; /* executions that never work */
 
@@ -158,6 +161,8 @@ static int fake_write(void *context, nrf_cs_node_id_t node, const uint8_t *frame
         nrf_cs_cycle_result_t page;
         if (nrf_cs_cycle_decode_result_request(frame, length, &request) != 0) return 0;
         if (request.page == NRF_CS_CYCLE_RESULT_RELEASE_PAGE) {
+            ++sim->release_writes;
+            if (sim->fail_release_writes > 0U) { --sim->fail_release_writes; return -1; }
             nrf_cs_cycle_runtime_release(&sim->rt);
         } else if (nrf_cs_cycle_runtime_result_page(&sim->rt, request.request_id, request.page, &page) == 0 &&
                    page.cycle_id == request.cycle_id && !sim->never_answers_results) {
@@ -219,6 +224,13 @@ static int fake_read(void *context, nrf_cs_node_id_t node, uint8_t *frame, size_
 static bool fake_should_abort(void *context)
 {
     (void)context;
+    if (g_abort_after_plan_writes != 0U) {
+        unsigned plans = 0U;
+        for (size_t i = 0U; i < g_log_count; ++i) {
+            if (g_log[i].is_write && g_log[i].type == NRF_CS_CYCLE_MESSAGE_PLAN) ++plans;
+        }
+        if (plans >= g_abort_after_plan_writes) return true;
+    }
     if (g_abort_after_polls == 0U) return false;
     unsigned polls = 0U;
     for (size_t i = 0U; i < g_log_count; ++i) {
@@ -244,6 +256,7 @@ static void setup(size_t node_count, nrf_cs_node_id_t *ids)
     g_main_unreadable = false;
     g_main_early_complete = false;
     g_abort_after_polls = 0U;
+    g_abort_after_plan_writes = 0U;
     g_always_fail_mask = 0U;
     for (size_t n = 0U; n < node_count; ++n) {
         ids[n] = (nrf_cs_node_id_t)(10U * (n + 1U));
@@ -528,7 +541,22 @@ static void test_unreadable_main_still_collects_after_deadline(void)
     assert_same_pairs(&scheduler, &live);
 }
 
-static void test_abort_stops_waiting_and_leaves_nodes_alone(void)
+/* Virtual time one abort may spend releasing nodes: every node, every try, bus time plus the pause. */
+static uint32_t abort_release_bound_ms(size_t nodes)
+{
+    return (uint32_t)(nodes * NRF_CS_COORD_RELEASE_TRIES * (transfer_ms(NRF_CS_CYCLE_RESULT_REQUEST_LENGTH) + 20U));
+}
+
+static uint64_t time_of_main_read(unsigned n)
+{
+    unsigned seen = 0U;
+    for (size_t i = 0U; i < g_log_count; ++i) {
+        if (!g_log[i].is_write && g_log[i].node == g_main && ++seen == n) return g_log[i].at_ms;
+    }
+    return 0U;
+}
+
+static void test_abort_stops_waiting_and_releases_every_node(void)
 {
     nrf_cs_scheduler_t scheduler;
     nrf_cs_cycle_collected_t out;
@@ -541,6 +569,98 @@ static void test_abort_stops_waiting_and_leaves_nodes_alone(void)
     assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 100U, &out, &report) == NRF_CS_COORD_ERR_ABORTED);
     assert(report.waited_ms < report.run_ms);
     assert(report.collected_mask == 0U && report.release_mask == 0U);
+
+    /* The nodes were really ranging when the abort came ... */
+    for (size_t n = 0U; n < g_node_count; ++n) assert(g_nodes[n].plan_writes == 1U);
+    /* ... and none of them is left running the rest of the cycle. */
+    for (size_t n = 0U; n < g_node_count; ++n) {
+        assert(!nrf_cs_cycle_runtime_running(&g_nodes[n].rt));
+        assert(!nrf_cs_cycle_runtime_reply_active(&g_nodes[n].rt));
+    }
+    assert(report.abort_release_mask == 0x0FU);
+    /* The abort costs a bounded amount of bus time, not the remaining cycle. */
+    const uint64_t abort_seen = time_of_main_read(2U);
+    assert(abort_seen != 0U && g_now - abort_seen <= abort_release_bound_ms(4U));
+}
+
+static void test_abort_during_plan_phase_releases_every_node(void)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_cycle_collected_t out;
+    nrf_cs_cycle_report_t report;
+    nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
+
+    setup(4U, ids);
+    g_abort_after_plan_writes = 2U; /* two nodes hold a plan, two have none */
+    start_scheduler(&scheduler, ids, 4U, &k_policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 100U, &out, &report) == NRF_CS_COORD_ERR_ABORTED);
+    assert(report.go_mask == 0U);
+    for (size_t n = 0U; n < g_node_count; ++n) {
+        assert(!g_nodes[n].rt.plan_valid); /* a half-delivered plan does not survive */
+        assert(!nrf_cs_cycle_runtime_running(&g_nodes[n].rt));
+    }
+    assert(report.abort_release_mask == 0x0FU);
+}
+
+static void test_abort_release_failures_are_reported_and_bounded(void)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_cycle_collected_t out;
+    nrf_cs_cycle_report_t report;
+    nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
+
+    setup(5U, ids);
+    g_abort_after_polls = 2U;
+    for (size_t n = 0U; n < 5U; ++n) g_nodes[n].fail_release_writes = 100U; /* every node unreachable */
+    start_scheduler(&scheduler, ids, 5U, &k_policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 100U, &out, &report) == NRF_CS_COORD_ERR_ABORTED);
+    assert(report.abort_release_mask == 0U);
+    const uint64_t abort_seen = time_of_main_read(2U);
+    assert(abort_seen != 0U && g_now - abort_seen <= abort_release_bound_ms(5U));
+    for (size_t n = 0U; n < 5U; ++n) assert(g_nodes[n].release_writes >= NRF_CS_COORD_RELEASE_TRIES);
+
+    /* One unreachable node does not stop the others from being released. */
+    setup(4U, ids);
+    g_abort_after_polls = 2U;
+    g_nodes[2].fail_release_writes = 100U;
+    start_scheduler(&scheduler, ids, 4U, &k_policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 100U, &out, &report) == NRF_CS_COORD_ERR_ABORTED);
+    assert(report.abort_release_mask == 0x0BU);
+    assert(nrf_cs_cycle_runtime_running(&g_nodes[2].rt));
+    assert(!nrf_cs_cycle_runtime_running(&g_nodes[0].rt) && !nrf_cs_cycle_runtime_running(&g_nodes[1].rt) &&
+           !nrf_cs_cycle_runtime_running(&g_nodes[3].rt));
+}
+
+static void test_cycle_after_lost_release_still_runs_on_every_node(void)
+{
+    nrf_cs_scheduler_t aborted, live;
+    nrf_cs_cycle_collected_t out;
+    nrf_cs_cycle_report_t report;
+    nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
+
+    /* BACK aborts the first cycle, but node 2 never hears the release and keeps ranging. */
+    setup(4U, ids);
+    g_abort_after_polls = 2U;
+    g_nodes[2].fail_release_writes = 100U;
+    start_scheduler(&aborted, ids, 4U, &k_policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &aborted, g_main, 100U, &out, &report) == NRF_CS_COORD_ERR_ABORTED);
+    assert(nrf_cs_cycle_runtime_running(&g_nodes[2].rt));
+
+    /* The next cycle (a new cycle id) clears the leftover before planning, so every node takes part. */
+    g_abort_after_polls = 0U;
+    g_nodes[2].fail_release_writes = 0U;
+    const uint32_t old_cycle_id = aborted.cycle_id;
+    (void)nrf_cs_scheduler_abort_cycle(&aborted, NRF_CS_FAILURE_TRANSPORT);
+    assert(nrf_cs_scheduler_start_cycle(&aborted, ids, 4U) == NRF_CS_OK);
+    assert(aborted.cycle_id != old_cycle_id);
+    start_scheduler(&live, ids, 4U, &k_policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &aborted, g_main, 200U, &out, &report) == NRF_CS_COORD_OK);
+    assert(report.plan_mask == 0x0FU && report.go_mask == 0x0FU && report.collected_mask == 0x0FU);
+    assert(nrf_cs_cycle_replay(&aborted, out.nodes, out.node_count) == 0);
+    run_live(&live);
+    assert_same_pairs(&aborted, &live);
+    for (size_t n = 0U; n < g_node_count; ++n) assert(!nrf_cs_cycle_runtime_reply_active(&g_nodes[n].rt));
+    assert(report.prerelease_mask == 0x0FU);
 }
 
 static void test_noise_records_and_foreign_status_are_ignored(void)
@@ -645,7 +765,10 @@ int main(void)
     test_plan_failure_starts_nothing();
     test_go_failure_costs_only_that_node();
     test_unreadable_main_still_collects_after_deadline();
-    test_abort_stops_waiting_and_leaves_nodes_alone();
+    test_abort_stops_waiting_and_releases_every_node();
+    test_abort_during_plan_phase_releases_every_node();
+    test_abort_release_failures_are_reported_and_bounded();
+    test_cycle_after_lost_release_still_runs_on_every_node();
     test_five_nodes_all_pairs();
     puts("nrf_cs_cycle_coordinator tests passed");
     return 0;

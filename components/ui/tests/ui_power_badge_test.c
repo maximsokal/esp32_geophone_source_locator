@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "ui_power_badge.h"
@@ -97,6 +98,67 @@ static void test_low_battery_alerts_outrank_everything(void)
     assert(strcmp(b.text, "OFF") == 0 && b.severity == UI_POWER_SEVERITY_ALERT);
 }
 
+static ui_power_banner_t banner_of(const device_power_status_t *p)
+{
+    ui_power_banner_t b;
+    ui_power_banner_from_status(p, &b);
+    return b;
+}
+
+/* Critical battery stops the device: every screen must say so, in both languages. */
+static void test_critical_stop_banner_en(void)
+{
+    device_power_status_t p = power_with(DEVICE_POWER_STATE_BATTERY_CRITICAL, 1.0f);
+    p.low_battery = DEVICE_LOW_BATTERY_SHUTDOWN;
+    ui_power_banner_t b = banner_of(&p);
+    assert(b.visible && b.severity == UI_POWER_SEVERITY_ALERT);
+    assert(strcmp(b.text, "CRITICAL BATTERY - STOPPING") == 0);
+
+    p.low_battery = DEVICE_LOW_BATTERY_GRACE;
+    p.shutdown_in_s = 8U;
+    b = banner_of(&p);
+    assert(b.visible && strcmp(b.text, "CRITICAL - USB 8s OR STOP") == 0);
+    p.shutdown_in_s = 120U;
+    assert(strcmp(banner_of(&p).text, "CRITICAL - USB 120s OR STOP") == 0);
+    assert(strlen(banner_of(&p).text) < UI_POWER_BANNER_TEXT_MAX);
+
+    /* Hidden in every state that is not a countdown or a stop, even a critical reading. */
+    p.low_battery = DEVICE_LOW_BATTERY_NORMAL;
+    b = banner_of(&p);
+    assert(!b.visible && b.text[0] == '\0');
+    p.low_battery = DEVICE_LOW_BATTERY_WARNING;
+    assert(!banner_of(&p).visible);
+    p = power_with(DEVICE_POWER_STATE_BATTERY, 80.0f);
+    assert(!banner_of(&p).visible);
+    ui_power_banner_from_status(NULL, &b);
+    assert(!b.visible);
+    ui_power_banner_from_status(&p, NULL);
+}
+
+static void test_critical_stop_banner_uk(void)
+{
+    /* The em dash in the catalog text is not safe to repeat as a literal under every host compiler
+     * code page, so the Ukrainian text is checked against the catalog itself and by its bytes. */
+    device_power_status_t p = power_with(DEVICE_POWER_STATE_BATTERY_CRITICAL, 1.0f);
+    p.low_battery = DEVICE_LOW_BATTERY_SHUTDOWN;
+    ui_power_banner_t b = banner_of(&p);
+    assert(b.visible);
+    assert(strcmp(b.text, ui_tr(UI_I18N_KEY_POWER_BANNER_STOP)) == 0);
+    assert(strcmp(b.text, "CRITICAL BATTERY - STOPPING") != 0);
+    assert((unsigned char)b.text[0] == 0xD0U && (unsigned char)b.text[1] == 0x9AU); /* UTF-8 "К" */
+
+    p.low_battery = DEVICE_LOW_BATTERY_GRACE;
+    p.shutdown_in_s = 8U;
+    b = banner_of(&p);
+    char expected[UI_POWER_BANNER_TEXT_MAX];
+    (void)snprintf(expected, sizeof(expected), ui_tr(UI_I18N_KEY_POWER_BANNER_GRACE), 8U);
+    assert(b.visible && strcmp(b.text, expected) == 0);
+    assert(strstr(b.text, "USB 8") != NULL && strstr(b.text, "OR STOP") == NULL);
+    p.low_battery = DEVICE_LOW_BATTERY_NORMAL;
+    b = banner_of(&p);
+    assert(!b.visible);
+}
+
 static void test_unknown_and_null(void)
 {
     device_power_status_t p = power_with(DEVICE_POWER_STATE_UNKNOWN, 50.0f);
@@ -113,6 +175,7 @@ int main(void)
     test_battery_levels();
     test_usb_states();
     test_low_battery_alerts_outrank_everything();
+    test_critical_stop_banner_en();
     test_unknown_and_null();
 
     ui_i18n_set_locale(UI_LOCALE_UK);
@@ -129,5 +192,6 @@ int main(void)
     p.low_battery = DEVICE_LOW_BATTERY_GRACE;
     p.shutdown_in_s = 8U;
     assert(strcmp(badge_of(&p).text, "USB 8с") == 0);
+    test_critical_stop_banner_uk();
     return 0;
 }

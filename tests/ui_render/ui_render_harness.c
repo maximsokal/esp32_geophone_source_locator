@@ -504,6 +504,51 @@ static void test_ranging_result_screens(const char *language)
     render_ranging_available = false;
 }
 
+/*
+ * Critical battery: the device is going to stop. The red bar over the footer must be on every
+ * screen the user can be on while a START, RANGING or recording is running, and nowhere else.
+ */
+static void set_battery_phase(device_low_battery_phase_t phase, uint32_t seconds)
+{
+    render_device_status.power.valid = true;
+    render_device_status.power.state = phase == DEVICE_LOW_BATTERY_NORMAL
+        ? DEVICE_POWER_STATE_BATTERY : DEVICE_POWER_STATE_BATTERY_CRITICAL;
+    render_device_status.power.low_battery = phase;
+    render_device_status.power.shutdown_in_s = seconds;
+    ui_refresh_header_locked();
+}
+
+static void test_critical_battery_screens(const char *language)
+{
+    static const struct { workflow_step_t step; const char *scene; } workflow_scenes[] = {
+        {WORKFLOW_STEP_RANGING, "ranging"},
+        {WORKFLOW_STEP_CALCULATING, "calculating"},
+        {WORKFLOW_STEP_RECORDING, "recording"},
+    };
+    char name[96];
+    for (size_t i = 0U; i < sizeof(workflow_scenes) / sizeof(workflow_scenes[0]); ++i) {
+        prepare(workflow_scenes[i].step, 4U);
+        set_battery_phase(DEVICE_LOW_BATTERY_GRACE, 8U);
+        (void)snprintf(name, sizeof(name), "%s_critical_battery_%s_grace", language, workflow_scenes[i].scene);
+        capture(name, false);
+        set_battery_phase(DEVICE_LOW_BATTERY_SHUTDOWN, 0U);
+        (void)snprintf(name, sizeof(name), "%s_critical_battery_%s_stopping", language, workflow_scenes[i].scene);
+        capture(name, false);
+        set_battery_phase(DEVICE_LOW_BATTERY_NORMAL, 0U);
+        (void)snprintf(name, sizeof(name), "%s_critical_battery_%s_cleared", language, workflow_scenes[i].scene);
+        capture(name, false);
+    }
+    /* A screen that is not the workflow: the same device status, the same bar. */
+    ui_workflow_screen_close_locked();
+    memset(&render_device_status, 0, sizeof(render_device_status));
+    render_context.screen = UI_SCREEN_HOME;
+    ui_render_home_locked();
+    set_battery_phase(DEVICE_LOW_BATTERY_SHUTDOWN, 0U);
+    (void)snprintf(name, sizeof(name), "%s_critical_battery_home_stopping", language);
+    capture(name, false);
+    memset(&render_device_status, 0, sizeof(render_device_status));
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -556,6 +601,7 @@ int main(int argc, char **argv)
         test_ranging_progress_scene(language, "_4_nodes", 4U, 3U);   /* 3 of 12: 25% */
         test_ranging_progress_scene(language, "_5_nodes", 5U, 3U);   /* 3 of 20: 15% */
         test_ranging_result_screens(language);
+        test_critical_battery_screens(language);
         prepare(WORKFLOW_STEP_STOPPED, 4U);
         s_workflow->model_state.material_view = UI_WORKFLOW_MATERIAL_SELECT;
         ui_workflow_update(s_workflow, render_now_ms);

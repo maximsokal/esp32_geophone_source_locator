@@ -108,6 +108,8 @@ lv_obj_t *ui_create_screen_base_locked(
     context->header_wifi = NULL;
     context->header_power = NULL;
     context->footer_label = NULL;
+    context->critical_bar = NULL;
+    context->critical_label = NULL;
     memset(context->home_rows, 0, sizeof(context->home_rows));
     memset(
         context->measurement_channel_labels,
@@ -213,6 +215,27 @@ lv_obj_t *ui_create_screen_base_locked(
             304,
             footer,
             UI_COLOR_MUTED
+        );
+    }
+
+    /* Above the footer, hidden until the battery is critical (see ui_refresh_critical_bar_locked). */
+    context->critical_bar = lv_obj_create(screen);
+    if (context->critical_bar != NULL) {
+        lv_obj_set_pos(context->critical_bar, 0, 216);
+        lv_obj_set_size(context->critical_bar, 320, 24);
+        lv_obj_set_style_bg_color(context->critical_bar, lv_color_hex(UI_COLOR_ERROR), 0);
+        lv_obj_set_style_bg_opa(context->critical_bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(context->critical_bar, 0, 0);
+        lv_obj_set_style_radius(context->critical_bar, 0, 0);
+        lv_obj_set_style_pad_all(context->critical_bar, 0, 0);
+        lv_obj_set_hidden(context->critical_bar, true);
+        context->critical_label = ui_create_label_locked(
+            context->critical_bar,
+            8,
+            (24 - (int)ui_font_montserrat_14.line_height) / 2,
+            304,
+            "",
+            UI_COLOR_HEADER
         );
     }
 
@@ -364,6 +387,24 @@ static uint32_t ui_power_severity_color(ui_power_severity_t severity)
 }
 
 
+static void ui_refresh_critical_bar_locked(ui_context_t *context, const device_power_status_t *power)
+{
+    if (context->critical_bar == NULL || context->critical_label == NULL) {
+        return;
+    }
+    ui_power_banner_t banner;
+    ui_power_banner_from_status(power, &banner);
+    if (!banner.visible) {
+        lv_obj_set_hidden(context->critical_bar, true);
+        return;
+    }
+    ui_set_label_text_if_changed(context->critical_label, banner.text);
+    lv_obj_set_hidden(context->critical_bar, false);
+    /* Screens add their widgets after the base: keep the alarm on top of them. */
+    lv_obj_move_foreground(context->critical_bar);
+}
+
+
 static void ui_refresh_power_badge_locked(ui_context_t *context)
 {
     if (context->header_power == NULL) {
@@ -374,8 +415,10 @@ static void ui_refresh_power_badge_locked(ui_context_t *context)
     ui_power_badge_t badge;
     if (device_status_try_get_snapshot(&snapshot) == ESP_OK) {
         ui_power_badge_from_status(&snapshot.power, &badge);
+        ui_refresh_critical_bar_locked(context, &snapshot.power);
     } else {
         ui_power_badge_from_status(NULL, &badge);
+        ui_refresh_critical_bar_locked(context, NULL);
     }
     char text[UI_POWER_BADGE_TEXT_MAX + 8];
     const char *symbol = ui_power_icon_symbol(badge.icon);

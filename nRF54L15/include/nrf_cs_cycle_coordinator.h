@@ -35,6 +35,8 @@ extern "C" {
 #define NRF_CS_COORD_WRITE_TRIES 3U
 #define NRF_CS_COORD_GO_TRIES 2U
 #define NRF_CS_COORD_PAGE_TRIES 6U
+/* Tries per node for a release that must not hold up an abort (shutdown, BACK). */
+#define NRF_CS_COORD_RELEASE_TRIES 2U
 #define NRF_CS_COORD_RETRY_PAUSE_MS 300U
 /* Extra time for collecting results after the cycle deadline. */
 #define NRF_CS_COORD_COLLECT_GRACE_MS 6000U
@@ -83,6 +85,10 @@ typedef struct {
     uint8_t go_mask;
     uint8_t collected_mask;
     uint8_t release_mask;
+    /* Nodes whose stale cycle was released before the plan went out. */
+    uint8_t prerelease_mask;
+    /* Nodes released after an abort so none keeps ranging for the rest of the cycle. */
+    uint8_t abort_release_mask;
     /* MAIN's last readable cycle status. */
     bool main_status_seen;
     bool main_complete;
@@ -99,6 +105,11 @@ uint32_t nrf_cs_cycle_coordinator_budget_ms(const nrf_cs_policy_t *policy, size_
  * `scheduler` has a started cycle whose executions were not stepped; status_node is the node
  * whose status is polled (MAIN). request_seed numbers the frames. Returns an
  * nrf_cs_coord_result_t; out and report are filled as far as the run got.
+ *
+ * Every node is released before the plan goes out, so a cycle abandoned earlier (BACK, a lost
+ * release, an ESP32 reset) cannot make a node refuse the new plan. When the run is aborted the
+ * nodes are released too: a node left alone keeps ranging until its own cycle timer ends, up to
+ * run_ms. Those releases ignore should_abort and are best effort.
  */
 int nrf_cs_cycle_coordinate(
     const nrf_cs_cycle_coordinator_ops_t *ops,

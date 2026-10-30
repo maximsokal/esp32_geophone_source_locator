@@ -222,6 +222,8 @@ static nrf_cs_cycle_snapshot_t s_cs_cycle_snapshot;
 static bool s_ranging_active = false;
 /* Set by nrf_topology_service_ranging_cancel() while the worker owns the run; consumed by the worker. */
 static bool s_ranging_cancel_requested = false;
+/* Shutdown: no new Channel Sounding cycle until the service is started again. */
+static bool s_cs_disabled = false;
 static bool s_ranging_progress_valid = false;
 static EXT_RAM_BSS_ATTR nrf_topology_ranging_progress_t s_ranging_progress;
 static bool s_frozen_ranging_result_valid = false;
@@ -3638,6 +3640,7 @@ esp_err_t nrf_topology_service_start(void)
     s_cs_snapshot_valid = false;
     s_ranging_active = false;
     s_ranging_cancel_requested = false;
+    s_cs_disabled = false;
     s_ranging_progress_valid = false;
     s_frozen_ranging_result_valid = false;
     memset(&s_snapshot, 0, sizeof(s_snapshot));
@@ -4227,6 +4230,10 @@ esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
         return ESP_ERR_INVALID_ARG;
     }
     portENTER_CRITICAL(&s_state_lock);
+    if (s_cs_disabled) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
     task = s_task;
     available = task != NULL || s_starting;
     if (s_snapshot_valid && (s_snapshot.stale || s_snapshot.bus_busy)) {
@@ -4286,7 +4293,7 @@ static esp_err_t service_ranging_request(
 
     portENTER_CRITICAL(&s_state_lock);
     task = s_task;
-    if (task == NULL || !s_snapshot_valid || s_snapshot.stale || s_snapshot.bus_busy) {
+    if (s_cs_disabled || task == NULL || !s_snapshot_valid || s_snapshot.stale || s_snapshot.bus_busy) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -4621,12 +4628,11 @@ esp_err_t nrf_topology_service_invalidate_ranging(void)
     return ESP_OK;
 }
 
-esp_err_t nrf_topology_service_ranging_cancel(void)
+/* Caller holds s_state_lock. */
+static void service_ranging_cancel_locked(void)
 {
-    portENTER_CRITICAL(&s_state_lock);
     if (!s_ranging_active) {
-        portEXIT_CRITICAL(&s_state_lock);
-        return ESP_OK;
+        return;
     }
     if (s_cs_request_pending && s_cs_request_is_ranging) {
         /* The worker has not taken the request yet: withdraw it and publish the outcome ourselves. */
@@ -4651,6 +4657,21 @@ esp_err_t nrf_topology_service_ranging_cancel(void)
         /* The worker owns the run; it notices the flag at its next abort check. */
         s_ranging_cancel_requested = true;
     }
+}
+
+esp_err_t nrf_topology_service_ranging_cancel(void)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    service_ranging_cancel_locked();
+    portEXIT_CRITICAL(&s_state_lock);
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_ranging_disable(void)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    s_cs_disabled = true;
+    service_ranging_cancel_locked();
     portEXIT_CRITICAL(&s_state_lock);
     return ESP_OK;
 }

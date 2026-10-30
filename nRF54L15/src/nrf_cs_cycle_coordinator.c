@@ -264,7 +264,24 @@ static bool release_node(coord_t *coord, nrf_cs_node_id_t node)
     return write_with_retries(coord, node, frame, sizeof(frame), NRF_CS_COORD_WRITE_TRIES) == 0;
 }
 
-int nrf_cs_cycle_coordinate(
+/* Release that is attempted even while an abort is pending. */
+static bool release_node_unconditionally(coord_t *coord, nrf_cs_node_id_t node)
+{
+    uint8_t frame[NRF_CS_CYCLE_RESULT_REQUEST_LENGTH];
+    const nrf_cs_cycle_result_request_t release = {
+        .request_id = next_request_id(coord),
+        .cycle_id = coord->scheduler->cycle_id,
+        .page = NRF_CS_CYCLE_RESULT_RELEASE_PAGE,
+    };
+    if (nrf_cs_cycle_encode_result_request(&release, frame) != 0) return false;
+    for (unsigned i = 0U; i < NRF_CS_COORD_RELEASE_TRIES; ++i) {
+        if (coord->ops->write_node(coord->ops->context, node, frame, sizeof(frame)) == 0) return true;
+        if (i + 1U < NRF_CS_COORD_RELEASE_TRIES) pause_ms(coord, 20U);
+    }
+    return false;
+}
+
+static int coordinate_cycle(
     const nrf_cs_cycle_coordinator_ops_t *ops,
     const nrf_cs_scheduler_t *scheduler,
     nrf_cs_node_id_t status_node,
@@ -300,6 +317,14 @@ int nrf_cs_cycle_coordinate(
     report->cycle_id = scheduler->cycle_id;
     report->window_ms = window_ms;
     report->run_ms = run_ms;
+
+    /* 0. A node still running a cycle nobody collected refuses a new plan: free every node first. */
+    for (size_t i = 0U; i < scheduler->node_count; ++i) {
+        if (should_abort(&coord)) return NRF_CS_COORD_ERR_ABORTED;
+        if (release_node_unconditionally(&coord, scheduler->nodes[i])) {
+            report->prerelease_mask |= (uint8_t)(1U << i);
+        }
+    }
 
     /* 1. Plans. The nodes do nothing until GO, so a failure here leaves everything idle. */
     for (size_t i = 0U; i < scheduler->node_count; ++i) {
@@ -346,4 +371,26 @@ int nrf_cs_cycle_coordinate(
         if (release_node(&coord, scheduler->nodes[i])) report->release_mask |= (uint8_t)(1U << i);
     }
     return partial ? NRF_CS_COORD_PARTIAL : NRF_CS_COORD_OK;
+}
+
+int nrf_cs_cycle_coordinate(
+    const nrf_cs_cycle_coordinator_ops_t *ops,
+    const nrf_cs_scheduler_t *scheduler,
+    nrf_cs_node_id_t status_node,
+    uint32_t request_seed,
+    nrf_cs_cycle_collected_t *out,
+    nrf_cs_cycle_report_t *report)
+{
+    const int result = coordinate_cycle(ops, scheduler, status_node, request_seed, out, report);
+    if (result == NRF_CS_COORD_ERR_ABORTED) {
+        /* Aborted after validation: nodes may hold a plan or be ranging. Stop them all. */
+        coord_t coord = {
+            .ops = ops, .scheduler = scheduler, .report = report, .request_id = request_seed ^ 0x5A5A5A5AU};
+        for (size_t i = 0U; i < scheduler->node_count; ++i) {
+            if (release_node_unconditionally(&coord, scheduler->nodes[i])) {
+                report->abort_release_mask |= (uint8_t)(1U << i);
+            }
+        }
+    }
+    return result;
 }

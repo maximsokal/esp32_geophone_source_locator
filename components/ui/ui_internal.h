@@ -87,6 +87,9 @@ typedef struct
     /* MAX-182: battery/USB badge, refreshed with the header. */
     lv_obj_t *header_power;
     lv_obj_t *footer_label;
+    /* Critical battery: red bar over the footer, hidden unless the device is stopping. */
+    lv_obj_t *critical_bar;
+    lv_obj_t *critical_label;
 
     ui_screen_t screen;
     size_t selected;

@@ -193,6 +193,42 @@
     ]
   },
   {
+    "id": "power.critical_stopping",
+    "tft": "power.banner_stop",
+    "web": "power.critical_shutdown",
+    "report": null,
+    "note": "Critical battery has started the safe stop: the TFT bar on every screen and the Web power banner say it is stopping.",
+    "rule": "equivalent",
+    "equivalent_terms": [
+      {
+        "en": "CRITICAL BATTERY - STOPPING",
+        "uk": "КРИТИЧНИЙ ЗАРЯД — ЗУПИНКА"
+      },
+      {
+        "en": "Battery critical: stopping. The device is shutting down safely (measurement stopped, recording finalised, SD flushed).",
+        "uk": "Критичний заряд акумулятора: зупинка. Пристрій безпечно вимикається (вимірювання зупинено, запис завершено, дані на SD-карті збережено)."
+      }
+    ]
+  },
+  {
+    "id": "power.critical_countdown",
+    "tft": "power.banner_grace",
+    "web": "power.critical_grace",
+    "report": null,
+    "note": "Critical battery grace period: connect USB within the countdown or the device stops.",
+    "rule": "equivalent",
+    "equivalent_terms": [
+      {
+        "en": "CRITICAL - USB %us OR STOP",
+        "uk": "КРИТИЧНО — USB %uс АБО СТОП"
+      },
+      {
+        "en": "Battery critical: connect USB power within {seconds} s or the device stops measuring and shuts down.",
+        "uk": "Критичний заряд акумулятора: під’єднайте живлення USB протягом {seconds} с, інакше пристрій зупинить вимірювання й вимкнеться."
+      }
+    ]
+  },
+  {
     "id": "power.unknown",
     "tft": null,
     "web": "power.state_unknown",

@@ -321,6 +321,8 @@ def test_menu_siblings_do_not_cover_each_other(screens, family, locale):
     for frame in _frames(screens, locale):
         if frame["family"] != family:
             continue
+        if "_critical_battery_" in frame["name"]:
+            continue  # the red bar covers the footer on purpose; test_critical_battery_stop_is_shown checks it
         nodes = [node for node in _visible(frame) if node["parent"] >= 0
                  and node["role"] != "preview_canvas" and node.get("text", "visible") != ""]
         for index, first in enumerate(nodes):
@@ -418,3 +420,60 @@ def test_reused_report_rejects_removed_source_reference(screens, tmp_path, monke
     assert (ROOT / "tests/ui_render/golden/en_home.png").is_file()
     identity = json.loads((output / "run.json").read_text(encoding="utf-8"))
     assert identity["status"] == "FAIL" and identity["comparisons"]["missing"] == 1
+
+
+def _tft(key, locale):
+    catalog = json.loads((ROOT / "i18n/tft.json").read_text(encoding="utf-8"))
+    entries = catalog["entries"]
+    return entries[key][locale]
+
+
+def _bar_text_nodes(frame):
+    """Visible red-bar labels: a label whose parent is the 24 px bar over the footer."""
+    nodes = []
+    for node in frame["widgets"]:
+        if node.get("kind") != "label" or node["hidden"] or node["parent"] < 0:
+            continue
+        parent = frame["widgets"][node["parent"]]
+        if (parent["bg"] & 0xFFFFFF) == 0xF05A67 and parent["bounds"] == [0, 216, 319, 239]:
+            nodes.append((node, parent))
+    return nodes
+
+
+@pytest.mark.parametrize("locale", ["en", "uk"])
+def test_critical_battery_stop_is_shown_on_the_device_screen(screens, locale):
+    """Critical charge: the TFT says it is stopping on every screen, in both languages."""
+    stop = _tft("power.banner_stop", locale)
+    grace = _tft("power.banner_grace", locale).replace("%u", "8")
+    frames = [f for f in _frames(screens, locale) if f["name"].startswith(f"{locale}_critical_battery_")]
+    names = {f["name"] for f in frames}
+    for scene in ("ranging", "calculating", "recording"):
+        for phase in ("grace", "stopping", "cleared"):
+            assert f"{locale}_critical_battery_{scene}_{phase}" in names
+    assert f"{locale}_critical_battery_home_stopping" in names
+    errors = []
+    for frame in frames:
+        shown = _bar_text_nodes(frame)
+        name = frame["name"]
+        if name.endswith("_cleared"):
+            if shown:
+                errors.append(f"{name}: bar still visible after the battery recovered: {shown[0][0]['text']!r}")
+            continue
+        expected = grace if name.endswith("_grace") else stop
+        if len(shown) != 1:
+            errors.append(f"{name}: expected exactly one visible critical bar, got {len(shown)}")
+            continue
+        label, bar = shown[0]
+        if label["text"] != expected:
+            errors.append(f"{name}: bar says {label['text']!r}, expected {expected!r}")
+        if label["natural"][0] > label["bounds"][2] - label["bounds"][0] + 1:
+            errors.append(f"{name}: bar text {label['natural'][0]}px does not fit and would scroll")
+        # Above every other widget of the screen, so no screen can hide it.
+        bar_index = frame["widgets"].index(bar)
+        siblings = [i for i, n in enumerate(frame["widgets"]) if n["parent"] == bar["parent"]]
+        if bar_index != max(siblings):
+            errors.append(f"{name}: a widget is drawn over the critical bar")
+        badge = next(n for n in frame["widgets"] if n["role"] == "header_power")
+        if not name.endswith("_grace") and badge["text"].split()[-1] not in {"OFF", "ВИМК."}:
+            errors.append(f"{name}: header badge {badge['text']!r} does not show the power-off state")
+    _fail(errors)

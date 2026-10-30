@@ -150,9 +150,11 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "SET ACTIVE FAILED TO START", /* objects.set_active_start_failed */
     "SETTING ACTIVE...", /* objects.setting_active */
     "USB CONNECTED - SHUTDOWN CANCELLED", /* power.alert_cancelled */
-    "LOW BATTERY - CONNECT USB - SHUTTING DOWN", /* power.alert_critical */
+    "CRITICAL BATTERY - USB OR STOP", /* power.alert_critical */
     "LOW BATTERY - CONNECT USB SOON", /* power.alert_low */
-    "LOW BATTERY - SHUTTING DOWN", /* power.alert_shutdown */
+    "CRITICAL BATTERY - STOPPING", /* power.alert_shutdown */
+    "CRITICAL - USB %us OR STOP", /* power.banner_grace */
+    "CRITICAL BATTERY - STOPPING", /* power.banner_stop */
     "BAT", /* power.battery */
     "CHG", /* power.charging */
     "CRIT", /* power.critical */
@@ -596,9 +598,11 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "НЕ ВДАЛОСЯ ПОЧАТИ АКТИВАЦІЮ", /* objects.set_active_start_failed */
     "АКТИВАЦІЯ ОБ’ЄКТА...", /* objects.setting_active */
     "USB ПІДКЛЮЧЕНО — ВИМКНЕННЯ СКАСОВАНО", /* power.alert_cancelled */
-    "НИЗЬКИЙ ЗАРЯД — USB АБО ВИМКНЕННЯ", /* power.alert_critical */
+    "КРИТИЧНИЙ ЗАРЯД — USB АБО СТОП", /* power.alert_critical */
     "НИЗЬКИЙ ЗАРЯД — ПІДКЛЮЧІТЬ USB", /* power.alert_low */
-    "НИЗЬКИЙ ЗАРЯД — ВИМКНЕННЯ", /* power.alert_shutdown */
+    "КРИТИЧНИЙ ЗАРЯД — ЗУПИНКА", /* power.alert_shutdown */
+    "КРИТИЧНО — USB %uс АБО СТОП", /* power.banner_grace */
+    "КРИТИЧНИЙ ЗАРЯД — ЗУПИНКА", /* power.banner_stop */
     "АКБ", /* power.battery */
     "ЗАРЯД", /* power.charging */
     "КРИТ.", /* power.critical */

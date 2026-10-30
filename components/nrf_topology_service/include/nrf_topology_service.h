@@ -169,6 +169,12 @@ esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
 esp_err_t nrf_topology_service_invalidate_ranging(void);
 /* Abort the running or queued ranging cycle. Best effort and idempotent: ESP_OK when nothing runs. */
 esp_err_t nrf_topology_service_ranging_cancel(void);
+/*
+ * Shutdown: cancel like nrf_topology_service_ranging_cancel() and refuse every new Channel
+ * Sounding request until the service is started again, so a START that is still on its way to
+ * Channel Sounding cannot begin a cycle the shutdown would have to wait for.
+ */
+esp_err_t nrf_topology_service_ranging_disable(void);
 esp_err_t nrf_topology_service_get_stack_stats(nrf_topology_service_stack_stats_t *stats);
 esp_err_t nrf_topology_service_get_nrf_log_summary(
     uint8_t node_index,

@@ -833,9 +833,9 @@
       "max_len": 30
     },
     "power.alert_critical": {
-      "en": "LOW BATTERY - CONNECT USB - SHUTTING DOWN",
-      "uk": "НИЗЬКИЙ ЗАРЯД — USB АБО ВИМКНЕННЯ",
-      "max_len": 41
+      "en": "CRITICAL BATTERY - USB OR STOP",
+      "uk": "КРИТИЧНИЙ ЗАРЯД — USB АБО СТОП",
+      "max_len": 30
     },
     "power.alert_cancelled": {
       "en": "USB CONNECTED - SHUTDOWN CANCELLED",
@@ -843,8 +843,18 @@
       "max_len": 36
     },
     "power.alert_shutdown": {
-      "en": "LOW BATTERY - SHUTTING DOWN",
-      "uk": "НИЗЬКИЙ ЗАРЯД — ВИМКНЕННЯ",
+      "en": "CRITICAL BATTERY - STOPPING",
+      "uk": "КРИТИЧНИЙ ЗАРЯД — ЗУПИНКА",
+      "max_len": 27
+    },
+    "power.banner_stop": {
+      "en": "CRITICAL BATTERY - STOPPING",
+      "uk": "КРИТИЧНИЙ ЗАРЯД — ЗУПИНКА",
+      "max_len": 27
+    },
+    "power.banner_grace": {
+      "en": "CRITICAL - USB %us OR STOP",
+      "uk": "КРИТИЧНО — USB %uс АБО СТОП",
       "max_len": 27
     },
     "measurement.title": {

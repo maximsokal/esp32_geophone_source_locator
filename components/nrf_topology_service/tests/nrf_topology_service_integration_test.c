@@ -206,6 +206,7 @@ static size_t s_wire_log_count;
 static bool s_wire_log_enabled;
 static int s_cycle_drop_go_channel = -1;
 static int s_cycle_drop_plan_channel = -1;
+static int s_cycle_drop_release_channel = -1;
 static unsigned s_cycle_quiet_checks;
 static unsigned s_cycle_node_count;
 static unsigned s_status_reads_before_backoff;
@@ -742,6 +743,7 @@ static bool sim_cycle_write(sim_node_t *node, const uint8_t *data, size_t length
         nrf_cs_cycle_result_t page;
         assert(nrf_cs_cycle_decode_result_request(data, length, &request) == 0);
         if (request.page == NRF_CS_CYCLE_RESULT_RELEASE_PAGE) {
+            if (s_cycle_drop_release_channel == (int)node->channel) { *result = ESP_ERR_INVALID_STATE; break; }
             nrf_cs_cycle_runtime_release(&node->cycle);
         } else if (nrf_cs_cycle_runtime_result_page(&node->cycle, request.request_id, request.page, &page) == 0) {
             assert(nrf_cs_cycle_encode_result(&page, node->cycle_reply) == 0);
@@ -2321,11 +2323,13 @@ static void assert_autonomous_run_cancelled_early(void)
     assert(nrf_topology_service_get_reusable_frozen_ranging_result(&current, 0U, 0U, &reusable) == ESP_ERR_NOT_FOUND);
 }
 
-/* The ESP32 stopped listening; the nodes keep ranging until their own cycle timer ends and frees them. */
-static void nodes_run_out_their_abandoned_cycle(void)
+/* Cancelling stops the nodes too: none may keep ranging for the rest of the cycle. */
+static void assert_cancel_freed_every_node(void)
 {
     for (int i = 0; i < MAX_NODES; ++i) {
-        if (s_nodes[i].present) nrf_cs_cycle_runtime_release(&s_nodes[i].cycle);
+        if (!s_nodes[i].present) continue;
+        assert(!nrf_cs_cycle_runtime_running(&s_nodes[i].cycle));
+        assert(!nrf_cs_cycle_runtime_reply_active(&s_nodes[i].cycle));
     }
 }
 
@@ -2348,7 +2352,7 @@ static void test_cancel_during_autonomous_cycle_frees_the_service(void)
     script(EV_ACTION, 0U, clear_cycle_hook);
     script(EV_ACTION, 0U, assert_autonomous_run_cancelled_early);
     /* The service is free again at once, and the old cancel does not leak into the next run. */
-    script(EV_ACTION, 0U, nodes_run_out_their_abandoned_cycle);
+    script(EV_ACTION, 0U, assert_cancel_freed_every_node);
     script(EV_ACTION, 0U, request_autonomous_ranging_for_test);
     script(EV_WAIT_MS, 10U, NULL);
     script(EV_ACTION, 0U, clear_cycle_hook);
@@ -2453,12 +2457,153 @@ static void test_cancel_stepwise_ranging(void)
     run_service();
 }
 
+static void request_cancelled_cycle_that_loses_a_release(void)
+{
+    s_cycle_drop_release_channel = 1;
+    request_autonomous_ranging_cancelled_mid_cycle();
+}
+
+static void assert_one_node_kept_ranging_and_heal_the_link(void)
+{
+    assert_run_was_cancelled();
+    /* Channel 1's remote never heard the release: it is still ranging the abandoned cycle. */
+    assert(nrf_cs_cycle_runtime_running(&s_nodes[2].cycle));
+    assert(!nrf_cs_cycle_runtime_running(&s_nodes[0].cycle) && !nrf_cs_cycle_runtime_running(&s_nodes[1].cycle));
+    s_cycle_drop_release_channel = -1;
+}
+
+static void assert_new_run_completed_on_every_node(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete && s_seen_ranging_progress.success);
+    assert(s_seen_ranging_progress.failure_reason[0] == '\0');
+    for (int i = 0; i < 3; ++i) assert(!nrf_cs_cycle_runtime_reply_active(&s_nodes[i].cycle));
+}
+
+static void test_cycle_after_a_lost_release_clears_the_stale_node(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_cancelled_cycle_that_loses_a_release);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_one_node_kept_ranging_and_heal_the_link);
+    /* The next cycle releases every node before planning, so the stale one takes part. */
+    script(EV_ACTION, 0U, request_autonomous_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_new_run_completed_on_every_node);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+/* ---- shutdown: critical battery must not wait for a Channel Sounding cycle ---- */
+
+/* Shutdown asks for the whole stop to take no more than this (device time). */
+#define SHUTDOWN_CS_STOP_BUDGET_MS 2000U
+
+static uint64_t s_disable_at_ms;
+
+static void disable_after_go_hook(TickType_t ticks)
+{
+    sim_cycle_tick_nodes(ticks);
+    if (!s_cancel_hook_fired && cycle_last_write_us(NRF_CS_CYCLE_MESSAGE_GO) != 0U) {
+        s_cancel_hook_fired = true;
+        s_disable_at_ms = (uint64_t)(esp_timer_get_time() / 1000);
+        assert(nrf_topology_service_ranging_disable() == ESP_OK);
+    }
+}
+
+static void request_autonomous_ranging_disabled_mid_cycle(void)
+{
+    s_cancel_hook_fired = false;
+    request_autonomous_ranging_for_test();
+    s_vtask_delay_hook = disable_after_go_hook;
+}
+
+static void assert_no_new_cs_cycle_can_start(void)
+{
+    const nrf_cs_policy_t policy = ranging_test_policy();
+    assert(nrf_topology_service_ranging_start_autonomous(&k_autonomous_policy) == ESP_ERR_INVALID_STATE);
+    assert(nrf_topology_service_ranging_start(&policy, 1000U) == ESP_ERR_INVALID_STATE);
+    assert(nrf_topology_service_request_cs_cycle(&policy) == ESP_ERR_INVALID_STATE);
+}
+
+static void assert_shutdown_stopped_the_cycle_quickly(void)
+{
+    assert(s_cancel_hook_fired);
+    assert_run_was_cancelled();
+    assert_cancel_freed_every_node();
+    assert(s_seen_ranging_progress.updated_at_ms >= s_disable_at_ms);
+    assert(s_seen_ranging_progress.updated_at_ms - s_disable_at_ms <= SHUTDOWN_CS_STOP_BUDGET_MS);
+    assert_no_new_cs_cycle_can_start();
+}
+
+static void test_shutdown_stops_a_running_cycle_within_budget(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(3U); /* MAIN + 3 remotes: the longest realistic cycle */
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_autonomous_ranging_disabled_mid_cycle);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_shutdown_stopped_the_cycle_quickly);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void disable_while_idle(void)
+{
+    assert(nrf_topology_service_ranging_disable() == ESP_OK);
+    assert(nrf_topology_service_ranging_disable() == ESP_OK);
+    assert_no_new_cs_cycle_can_start();
+}
+
+static void request_then_disable_before_worker_takes_it(void)
+{
+    assert(nrf_topology_service_ranging_start_autonomous(&k_autonomous_policy) == ESP_OK);
+    assert(nrf_topology_service_ranging_disable() == ESP_OK);
+    assert_run_was_cancelled();
+    assert_no_new_cs_cycle_can_start();
+}
+
+static void test_shutdown_refuses_new_cycles_even_when_idle(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(3U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, disable_while_idle);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_no_new_cs_cycle_can_start);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(total_cycle_ble_attempts() == 0U);
+
+    /* A request that was queued but not taken yet is withdrawn as well. */
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(3U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_then_disable_before_worker_takes_it);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_cancelled_request_never_started_a_cycle);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
 static void test_ranging_cancel(void)
 {
     test_cancel_during_autonomous_cycle_frees_the_service();
     test_cancel_before_worker_takes_request();
     test_cancel_when_idle_is_noop_and_not_sticky();
     test_cancel_stepwise_ranging();
+    test_cycle_after_a_lost_release_clears_the_stale_node();
+    test_shutdown_stops_a_running_cycle_within_budget();
+    test_shutdown_refuses_new_cycles_even_when_idle();
 }
 
 static void request_limited_ranging_for_test(void)
@@ -3046,6 +3191,7 @@ static void reset_world(void)
     s_wire_log_enabled = false;
     s_cycle_drop_go_channel = -1;
     s_cycle_drop_plan_channel = -1;
+    s_cycle_drop_release_channel = -1;
     s_cycle_quiet_checks = 0U;
     s_cycle_node_count = 0U;
     s_status_reads_before_backoff = 0U;

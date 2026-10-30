@@ -45,6 +45,32 @@ static void set(ui_power_badge_t *badge, ui_power_icon_t icon, ui_power_severity
 }
 
 
+void ui_power_banner_from_status(
+    const device_power_status_t *power,
+    ui_power_banner_t *banner)
+{
+    if (banner == NULL) {
+        return;
+    }
+    memset(banner, 0, sizeof(*banner));
+    banner->severity = UI_POWER_SEVERITY_ALERT;
+    if (power == NULL) {
+        return;
+    }
+    if (power->low_battery == DEVICE_LOW_BATTERY_SHUTDOWN) {
+        banner->visible = true;
+        ui_utf8_format(banner->text, sizeof(banner->text), "%s", ui_tr(UI_I18N_KEY_POWER_BANNER_STOP));
+    } else if (power->low_battery == DEVICE_LOW_BATTERY_GRACE) {
+        banner->visible = true;
+        ui_utf8_format(
+            banner->text,
+            sizeof(banner->text),
+            ui_tr(UI_I18N_KEY_POWER_BANNER_GRACE),
+            (unsigned)(power->shutdown_in_s % 1000U));
+    }
+}
+
+
 void ui_power_badge_from_status(
     const device_power_status_t *power,
     ui_power_badge_t *badge)

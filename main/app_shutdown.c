@@ -128,6 +128,13 @@ void app_shutdown_wait_and_run(void)
         )
     );
 
+    /*
+     * A START that is waiting for a Channel Sounding cycle holds the measurement worker, and so
+     * the whole shutdown, for the rest of that cycle (up to ~90 s with five nodes). Stop the
+     * cycle, release the nodes and refuse new cycles now; the START then fails at once.
+     */
+    (void)nrf_topology_service_ranging_disable();
+
 #if APP_KEYPAD_ENABLED
     keypad_stop_event_monitor();
 #endif

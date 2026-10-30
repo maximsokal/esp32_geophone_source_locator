@@ -731,6 +731,8 @@ export const i18nKeys = [
   "power.alert_critical",
   "power.alert_low",
   "power.alert_shutdown",
+  "power.banner_grace",
+  "power.banner_stop",
   "power.battery",
   "power.charging",
   "power.critical",
