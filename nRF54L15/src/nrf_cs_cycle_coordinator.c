@@ -264,8 +264,26 @@ static bool release_node(coord_t *coord, nrf_cs_node_id_t node)
     return write_with_retries(coord, node, frame, sizeof(frame), NRF_CS_COORD_WRITE_TRIES) == 0;
 }
 
-/* Release that is attempted even while an abort is pending. */
-static bool release_node_unconditionally(coord_t *coord, nrf_cs_node_id_t node)
+/*
+ * A node that has let go of its cycle answers a STATUS read with the ordinary status frame. While
+ * it still serves a cycle (running, finished and waiting for collection, failed) the reply is a
+ * cycle STATUS frame; both kinds share the frame magic, the message type tells them apart. A cycle
+ * STATUS frame that is damaged still means the node serves a cycle. A read that fails proves
+ * nothing.
+ */
+static bool node_serves_no_cycle(coord_t *coord, nrf_cs_node_id_t node)
+{
+    uint8_t frame[NRF_CS_CYCLE_STATUS_LENGTH];
+    if (coord->ops->read_node(coord->ops->context, node, frame, sizeof(frame)) != 0) return false;
+    return !(frame[0] == (uint8_t)'G' && frame[1] == (uint8_t)'S' && frame[3] == NRF_CS_CYCLE_MESSAGE_STATUS);
+}
+
+/*
+ * Release that is attempted even while an abort is pending. *sent is set once a release frame was
+ * acknowledged on the bus; the result is true only when the node was then read back as idle: an
+ * acknowledged write does not prove that the node stopped.
+ */
+static bool release_node_unconditionally(coord_t *coord, nrf_cs_node_id_t node, bool *sent)
 {
     uint8_t frame[NRF_CS_CYCLE_RESULT_REQUEST_LENGTH];
     const nrf_cs_cycle_result_request_t release = {
@@ -275,7 +293,10 @@ static bool release_node_unconditionally(coord_t *coord, nrf_cs_node_id_t node)
     };
     if (nrf_cs_cycle_encode_result_request(&release, frame) != 0) return false;
     for (unsigned i = 0U; i < NRF_CS_COORD_RELEASE_TRIES; ++i) {
-        if (coord->ops->write_node(coord->ops->context, node, frame, sizeof(frame)) == 0) return true;
+        if (coord->ops->write_node(coord->ops->context, node, frame, sizeof(frame)) == 0) {
+            *sent = true;
+            if (node_serves_no_cycle(coord, node)) return true;
+        }
         if (i + 1U < NRF_CS_COORD_RELEASE_TRIES) pause_ms(coord, 20U);
     }
     return false;
@@ -321,9 +342,10 @@ static int coordinate_cycle(
     /* 0. A node still running a cycle nobody collected refuses a new plan: free every node first. */
     for (size_t i = 0U; i < scheduler->node_count; ++i) {
         if (should_abort(&coord)) return NRF_CS_COORD_ERR_ABORTED;
-        if (release_node_unconditionally(&coord, scheduler->nodes[i])) {
-            report->prerelease_mask |= (uint8_t)(1U << i);
-        }
+        bool sent = false;
+        const bool confirmed = release_node_unconditionally(&coord, scheduler->nodes[i], &sent);
+        if (sent) report->prerelease_sent_mask |= (uint8_t)(1U << i);
+        if (confirmed) report->prerelease_mask |= (uint8_t)(1U << i);
     }
 
     /* 1. Plans. The nodes do nothing until GO, so a failure here leaves everything idle. */
@@ -387,9 +409,10 @@ int nrf_cs_cycle_coordinate(
         coord_t coord = {
             .ops = ops, .scheduler = scheduler, .report = report, .request_id = request_seed ^ 0x5A5A5A5AU};
         for (size_t i = 0U; i < scheduler->node_count; ++i) {
-            if (release_node_unconditionally(&coord, scheduler->nodes[i])) {
-                report->abort_release_mask |= (uint8_t)(1U << i);
-            }
+            bool sent = false;
+            const bool confirmed = release_node_unconditionally(&coord, scheduler->nodes[i], &sent);
+            if (sent) report->abort_release_sent_mask |= (uint8_t)(1U << i);
+            if (confirmed) report->abort_release_mask |= (uint8_t)(1U << i);
         }
     }
     return result;

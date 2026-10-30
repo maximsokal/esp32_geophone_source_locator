@@ -450,16 +450,19 @@ def test_critical_battery_stop_is_shown_on_the_device_screen(screens, locale):
     for scene in ("ranging", "calculating", "recording"):
         for phase in ("grace", "stopping", "cleared"):
             assert f"{locale}_critical_battery_{scene}_{phase}" in names
+    for phase in ("grace", "stopping", "cleared"):
+        assert f"{locale}_critical_battery_ranging_{phase}_after_read_failure" in names
+    assert f"{locale}_critical_battery_ranging_cleared_after_recovery" in names
     assert f"{locale}_critical_battery_home_stopping" in names
     errors = []
     for frame in frames:
         shown = _bar_text_nodes(frame)
         name = frame["name"]
-        if name.endswith("_cleared"):
+        if "_cleared" in name:
             if shown:
-                errors.append(f"{name}: bar still visible after the battery recovered: {shown[0][0]['text']!r}")
+                errors.append(f"{name}: bar still visible although the battery is not critical: {shown[0][0]['text']!r}")
             continue
-        expected = grace if name.endswith("_grace") else stop
+        expected = grace if "_grace" in name else stop
         if len(shown) != 1:
             errors.append(f"{name}: expected exactly one visible critical bar, got {len(shown)}")
             continue
@@ -474,6 +477,6 @@ def test_critical_battery_stop_is_shown_on_the_device_screen(screens, locale):
         if bar_index != max(siblings):
             errors.append(f"{name}: a widget is drawn over the critical bar")
         badge = next(n for n in frame["widgets"] if n["role"] == "header_power")
-        if not name.endswith("_grace") and badge["text"].split()[-1] not in {"OFF", "ВИМК."}:
+        if "_grace" not in name and badge["text"].split()[-1] not in {"OFF", "ВИМК."}:
             errors.append(f"{name}: header badge {badge['text']!r} does not show the power-off state")
     _fail(errors)

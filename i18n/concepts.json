@@ -205,8 +205,8 @@
         "uk": "КРИТИЧНИЙ ЗАРЯД — ЗУПИНКА"
       },
       {
-        "en": "Battery critical: stopping. The device is shutting down safely (measurement stopped, recording finalised, SD flushed).",
-        "uk": "Критичний заряд акумулятора: зупинка. Пристрій безпечно вимикається (вимірювання зупинено, запис завершено, дані на SD-карті збережено)."
+        "en": "Battery critical: stopping. Saving the recording and the SD card, then the device shuts down safely.",
+        "uk": "Критичний заряд акумулятора: зупинка. Запис і дані на SD-карті зберігаються, потім пристрій безпечно вимкнеться."
       }
     ]
   },
@@ -223,8 +223,8 @@
         "uk": "КРИТИЧНО — USB %uс АБО СТОП"
       },
       {
-        "en": "Battery critical: connect USB power within {seconds} s or the device stops measuring and shuts down.",
-        "uk": "Критичний заряд акумулятора: під’єднайте живлення USB протягом {seconds} с, інакше пристрій зупинить вимірювання й вимкнеться."
+        "en": "Battery critical: connect USB power within {seconds} s or the device stops measuring, saves the data and shuts down.",
+        "uk": "Критичний заряд акумулятора: під’єднайте живлення USB протягом {seconds} с, інакше пристрій зупинить вимірювання, збереже дані й вимкнеться."
       }
     ]
   },

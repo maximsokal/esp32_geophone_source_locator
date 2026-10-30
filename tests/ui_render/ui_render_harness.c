@@ -33,6 +33,7 @@ extern uint64_t render_now_ms;
 extern workflow_command_t render_last_command;
 extern unsigned render_command_count;
 extern esp_err_t render_workflow_snapshot_result;
+extern esp_err_t render_device_status_result;
 extern unsigned render_delete_calls;
 extern measurement_service_snapshot_t render_measurement;
 
@@ -538,6 +539,45 @@ static void test_critical_battery_screens(const char *language)
         (void)snprintf(name, sizeof(name), "%s_critical_battery_%s_cleared", language, workflow_scenes[i].scene);
         capture(name, false);
     }
+    /*
+     * The status read is non-blocking and fails while another task holds the status mutex. A
+     * critical battery that was confirmed a moment ago must not vanish from the screen because of
+     * that; a screen that never saw a critical state must not invent one.
+     */
+    prepare(WORKFLOW_STEP_RANGING, 4U);
+    set_battery_phase(DEVICE_LOW_BATTERY_SHUTDOWN, 0U);
+    render_device_status_result = ESP_ERR_TIMEOUT;
+    ui_refresh_header_locked();
+    (void)snprintf(name, sizeof(name), "%s_critical_battery_ranging_stopping_after_read_failure", language);
+    capture(name, false);
+    render_device_status_result = ESP_OK;
+
+    prepare(WORKFLOW_STEP_RANGING, 4U);
+    set_battery_phase(DEVICE_LOW_BATTERY_GRACE, 8U);
+    render_device_status_result = ESP_ERR_TIMEOUT;
+    ui_refresh_header_locked();
+    (void)snprintf(name, sizeof(name), "%s_critical_battery_ranging_grace_after_read_failure", language);
+    capture(name, false);
+    render_device_status_result = ESP_OK;
+
+    prepare(WORKFLOW_STEP_RANGING, 4U);
+    set_battery_phase(DEVICE_LOW_BATTERY_NORMAL, 0U);
+    render_device_status_result = ESP_ERR_TIMEOUT;
+    ui_refresh_header_locked();
+    (void)snprintf(name, sizeof(name), "%s_critical_battery_ranging_cleared_after_read_failure", language);
+    capture(name, false);
+    render_device_status_result = ESP_OK;
+
+    /* USB came back: the next good read clears the bar for good. */
+    prepare(WORKFLOW_STEP_RANGING, 4U);
+    set_battery_phase(DEVICE_LOW_BATTERY_GRACE, 8U);
+    render_device_status_result = ESP_ERR_TIMEOUT;
+    ui_refresh_header_locked();
+    render_device_status_result = ESP_OK;
+    set_battery_phase(DEVICE_LOW_BATTERY_NORMAL, 0U);
+    (void)snprintf(name, sizeof(name), "%s_critical_battery_ranging_cleared_after_recovery", language);
+    capture(name, false);
+
     /* A screen that is not the workflow: the same device status, the same bar. */
     ui_workflow_screen_close_locked();
     memset(&render_device_status, 0, sizeof(render_device_status));

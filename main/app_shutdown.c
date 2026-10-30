@@ -1,4 +1,6 @@
 #include "app_shutdown.h"
+#include "app_shutdown_drain.h"
+#include "app_stop_timeout_config.h"
 #include "app_keypad_config.h"
 
 #include "app_poweroff.h"
@@ -25,6 +27,9 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 
 static const char *TAG =
@@ -116,6 +121,68 @@ static void app_shutdown_stop_display(void)
 }
 
 
+/* Poll period of the write drain; short enough for the TFT and the Web UI to follow the stop. */
+#define APP_SHUTDOWN_DRAIN_POLL_MS 100U
+
+
+static uint64_t app_shutdown_drain_now_ms(void *context)
+{
+    (void)context;
+    return (uint64_t)xTaskGetTickCount() * (uint64_t)portTICK_PERIOD_MS;
+}
+
+
+static void app_shutdown_drain_sleep_ms(void *context, uint32_t ms)
+{
+    (void)context;
+    TickType_t ticks = pdMS_TO_TICKS(ms);
+    if (ticks == 0U) ticks = 1U;
+    vTaskDelay(ticks);
+}
+
+
+/* Anything that still has data on its way to the SD card, or is about to produce some. */
+static bool app_shutdown_drain_writes_pending(void *context)
+{
+    (void)context;
+    measurement_service_snapshot_t measurement;
+    if (measurement_service_get_snapshot(&measurement) == ESP_OK) {
+        if (measurement.busy ||
+            measurement.state == MEASUREMENT_SERVICE_STARTING ||
+            measurement.state == MEASUREMENT_SERVICE_RECORDING ||
+            measurement.state == MEASUREMENT_SERVICE_STOPPING ||
+            measurement.state == MEASUREMENT_SERVICE_DELETING) {
+            return true;
+        }
+    }
+    seismic_recorder_snapshot_t recorder;
+    if (seismic_recorder_get_snapshot(&recorder) == ESP_OK &&
+        (recorder.state == SEISMIC_RECORDER_RECORDING || recorder.state == SEISMIC_RECORDER_STOPPING)) {
+        return true;
+    }
+    return object_service_is_busy() || storage_service_is_busy();
+}
+
+
+static void app_shutdown_drain_request_stop(void *context)
+{
+    (void)context;
+    const esp_err_t err = measurement_service_stop_async();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "Could not ask the recording to stop: %s", esp_err_to_name(err));
+    }
+}
+
+
+static void app_shutdown_drain_progress(void *context, uint32_t waited_ms)
+{
+    (void)context;
+    if (waited_ms / 1000U != (waited_ms - APP_SHUTDOWN_DRAIN_POLL_MS) / 1000U) {
+        ESP_LOGW(TAG, "Writing out queued data before power off (%u s)", (unsigned)(waited_ms / 1000U));
+    }
+}
+
+
 void app_shutdown_wait_and_run(void)
 {
     power_control_wait_for_shutdown_request();
@@ -152,6 +219,37 @@ void app_shutdown_wait_and_run(void)
     object_recovery_stop_background();
 
     /*
+     * Battery critical or the button: write out everything already on its way to the SD card and
+     * take nothing new (the shutdown latch makes the Web UI refuse new commands and the keypad is
+     * stopped). The network stays up for this wait, so the Web UI and the TFT keep showing
+     * "critical battery - stopping" until the queue is gone. The wait is bounded: the device
+     * switches off afterwards whatever the outcome.
+     */
+    {
+        const app_shutdown_drain_ops_t drain_ops = {
+            .now_ms = app_shutdown_drain_now_ms,
+            .sleep_ms = app_shutdown_drain_sleep_ms,
+            .writes_pending = app_shutdown_drain_writes_pending,
+            .request_stop = app_shutdown_drain_request_stop,
+            .progress = app_shutdown_drain_progress,
+        };
+        app_shutdown_drain_report_t drain_report;
+        const app_shutdown_drain_result_t drain_result = app_shutdown_drain_writes(
+            &drain_ops,
+            APP_STOP_TIMEOUT_RECORDING_MS,
+            APP_SHUTDOWN_DRAIN_POLL_MS,
+            &drain_report
+        );
+        ESP_LOGW(
+            TAG,
+            "Write drain %s after %u ms (stop requested: %s)",
+            app_shutdown_drain_result_name(drain_result),
+            (unsigned)drain_report.waited_ms,
+            drain_report.stop_requested ? "yes" : "no"
+        );
+    }
+
+    /*
      * Stop command ingress while measurement, recorder, object and storage
      * dependencies are still alive. web_server_stop() is the synchronous HTTP
      * drain barrier; Wi-Fi is stopped only after those handlers have exited.
@@ -166,14 +264,23 @@ void app_shutdown_wait_and_run(void)
     );
     runtime_observability_beat(RUNTIME_TASK_CONTROL, 0U);
     const esp_err_t measurement_err = measurement_service_shutdown();
-    if (measurement_err != ESP_OK) {
+    const app_shutdown_plan_t plan =
+        app_shutdown_plan_after_measurement(measurement_err == ESP_OK);
+    if (!plan.full_teardown) {
+        /*
+         * The measurement worker did not stop in time. The battery is critical, so the power is
+         * not kept on for it: the services that worker may still be using are left alone (no
+         * teardown below its feet) and only the power is cut. The queued data was written out by
+         * the drain above, which already had the full recording-stop budget.
+         */
         ESP_LOGE(
             TAG,
-            "Measurement service shutdown failed: %s; retaining its dependencies and deferring poweroff",
+            "Measurement service shutdown failed: %s; cutting power without tearing its dependencies down",
             esp_err_to_name(measurement_err)
         );
         runtime_observability_log_snapshot("measurement-shutdown-failed");
-        return;
+        power_control_shutdown();
+        app_poweroff_idle_forever();
     }
     runtime_observability_set_health_phase(
         RUNTIME_TASK_CONTROL,

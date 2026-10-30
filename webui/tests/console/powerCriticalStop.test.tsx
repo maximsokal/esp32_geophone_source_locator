@@ -23,6 +23,7 @@ const ACTIVITIES: Activity[] = [
   { name: 'START waiting for geometry', measurementState: 'STARTING', workflowStep: 'RECORD_READY' },
   { name: 'ranging', measurementState: 'LIVE', workflowStep: 'RANGING' },
   { name: 'recording', measurementState: 'RECORDING', workflowStep: 'RECORDING' },
+  { name: 'saving the recording after the stop', measurementState: 'STOPPING', workflowStep: 'RECORDING' },
 ];
 
 function criticalStatus(activity: Activity, lowBattery: 'grace' | 'shutdown', seconds: number) {
@@ -55,15 +56,15 @@ describe('critical battery stop in the Web UI', () => {
       expect(text).toBe(translate(locale, 'power.critical_shutdown'));
       const html = render(status, locale);
       expect(html).toContain('role="alert"');
-      // The wording itself, not only the catalog lookup: critical, stopping, measurement stopped.
+      // The wording itself, not only the catalog lookup: critical, stopping, data is being saved.
       if (locale === 'en') {
         expect(text).toMatch(/Battery critical/);
         expect(text).toMatch(/stopping/);
-        expect(text).toMatch(/measurement stopped/);
+        expect(text).toMatch(/Saving the recording and the SD card/);
       } else {
         expect(text).toMatch(/Критичний заряд/);
         expect(text).toMatch(/зупинка/);
-        expect(text).toMatch(/вимірювання зупинено/);
+        expect(text).toMatch(/Запис і дані на SD-карті зберігаються/);
       }
       // No raw catalog keys leak into the page.
       expect(/(?:^|\s)[a-z_]+\.[a-z_.]+(?=\s|$)/.test(html.replace(/<[^>]*>/g, ' '))).toBe(false);
@@ -78,10 +79,10 @@ describe('critical battery stop in the Web UI', () => {
       expect(render(status, locale)).toContain('role="alert"');
       if (locale === 'en') {
         expect(text).toMatch(/connect USB power within 8 s/);
-        expect(text).toMatch(/stops measuring/);
+        expect(text).toMatch(/stops measuring, saves the data and shuts down/);
       } else {
         expect(text).toMatch(/протягом 8 с/);
-        expect(text).toMatch(/зупинить вимірювання/);
+        expect(text).toMatch(/зупинить вимірювання, збереже дані й вимкнеться/);
       }
     }
   });

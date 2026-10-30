@@ -17,6 +17,7 @@ idf_component_register(
         app_storage_boot_ui.c
         app_storage_boot_policy.c
         app_shutdown.c
+        app_shutdown_drain.c
         app_poweroff.c
         ${APP_TEST_WDT_SOURCES}
 

@@ -405,6 +405,16 @@ static void ui_refresh_critical_bar_locked(ui_context_t *context, const device_p
 }
 
 
+/*
+ * The status read below never waits for the mutex, so it fails whenever another task holds it. A
+ * critical battery (countdown or stop) that was read a moment ago stays on the screen through
+ * such a miss; only a later successful read that says otherwise takes it down. Without a
+ * critical state on record a miss shows nothing, as before.
+ */
+static device_power_status_t s_last_critical_power;
+static bool s_last_critical_power_valid;
+
+
 static void ui_refresh_power_badge_locked(ui_context_t *context)
 {
     if (context->header_power == NULL) {
@@ -413,13 +423,19 @@ static void ui_refresh_power_badge_locked(ui_context_t *context)
     /* This runs on LVGL; never wait for the shared status mutex here. */
     static device_status_snapshot_t snapshot;
     ui_power_badge_t badge;
+    const device_power_status_t *power = NULL;
     if (device_status_try_get_snapshot(&snapshot) == ESP_OK) {
-        ui_power_badge_from_status(&snapshot.power, &badge);
-        ui_refresh_critical_bar_locked(context, &snapshot.power);
-    } else {
-        ui_power_badge_from_status(NULL, &badge);
-        ui_refresh_critical_bar_locked(context, NULL);
+        power = &snapshot.power;
+        s_last_critical_power_valid =
+            power->low_battery == DEVICE_LOW_BATTERY_GRACE || power->low_battery == DEVICE_LOW_BATTERY_SHUTDOWN;
+        if (s_last_critical_power_valid) {
+            s_last_critical_power = *power;
+        }
+    } else if (s_last_critical_power_valid) {
+        power = &s_last_critical_power;
     }
+    ui_power_badge_from_status(power, &badge);
+    ui_refresh_critical_bar_locked(context, power);
     char text[UI_POWER_BADGE_TEXT_MAX + 8];
     const char *symbol = ui_power_icon_symbol(badge.icon);
     ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_HEADER_POWER_FORMAT),

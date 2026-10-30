@@ -128,8 +128,11 @@ esp_err_t workflow_service_try_get_snapshot(workflow_snapshot_t *out)
     *out = render_snapshot;
     return ESP_OK;
 }
+/* ESP_OK normally; a test sets it to make the non-blocking status read fail like a busy mutex. */
+esp_err_t render_device_status_result = ESP_OK;
 esp_err_t device_status_try_get_snapshot(device_status_snapshot_t *out)
 {
+    if (render_device_status_result != ESP_OK) return render_device_status_result;
     *out = render_device_status;
     return ESP_OK;
 }

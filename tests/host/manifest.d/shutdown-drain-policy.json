@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "app_shutdown_drain",
+      "sources": [
+        "tests/host/app_shutdown_drain_test.c",
+        "main/app_shutdown_drain.c"
+      ],
+      "include_dirs": ["main"]
+    }
+  ]
+}

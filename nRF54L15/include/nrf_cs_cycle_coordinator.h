@@ -85,9 +85,12 @@ typedef struct {
     uint8_t go_mask;
     uint8_t collected_mask;
     uint8_t release_mask;
-    /* Nodes whose stale cycle was released before the plan went out. */
+    /* Nodes whose stale cycle was released before the plan went out: sent = a release frame was
+     * acknowledged on the bus, mask = the node was then read back and no longer serves a cycle. */
+    uint8_t prerelease_sent_mask;
     uint8_t prerelease_mask;
-    /* Nodes released after an abort so none keeps ranging for the rest of the cycle. */
+    /* Nodes released after an abort so none keeps ranging for the rest of the cycle (same meaning). */
+    uint8_t abort_release_sent_mask;
     uint8_t abort_release_mask;
     /* MAIN's last readable cycle status. */
     bool main_status_seen;
@@ -109,7 +112,8 @@ uint32_t nrf_cs_cycle_coordinator_budget_ms(const nrf_cs_policy_t *policy, size_
  * Every node is released before the plan goes out, so a cycle abandoned earlier (BACK, a lost
  * release, an ESP32 reset) cannot make a node refuse the new plan. When the run is aborted the
  * nodes are released too: a node left alone keeps ranging until its own cycle timer ends, up to
- * run_ms. Those releases ignore should_abort and are best effort.
+ * run_ms. Those releases ignore should_abort and are best effort. A release only counts once the
+ * node has been read back and no longer serves a cycle frame; an acknowledged write is not enough.
  */
 int nrf_cs_cycle_coordinate(
     const nrf_cs_cycle_coordinator_ops_t *ops,

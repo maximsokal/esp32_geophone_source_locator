@@ -32,6 +32,7 @@ typedef struct {
     nrf_cs_step_t pending_step;
     bool stale_cycle_id;   /* status answers carry another cycle's id */
     unsigned fail_release_writes; /* drop this many release frames (NACK) */
+    unsigned ignored_release_writes; /* acknowledge this many release frames but do nothing */
     unsigned release_writes;
 } sim_node_t;
 
@@ -163,6 +164,7 @@ static int fake_write(void *context, nrf_cs_node_id_t node, const uint8_t *frame
         if (request.page == NRF_CS_CYCLE_RESULT_RELEASE_PAGE) {
             ++sim->release_writes;
             if (sim->fail_release_writes > 0U) { --sim->fail_release_writes; return -1; }
+            if (sim->ignored_release_writes > 0U) { --sim->ignored_release_writes; return 0; }
             nrf_cs_cycle_runtime_release(&sim->rt);
         } else if (nrf_cs_cycle_runtime_result_page(&sim->rt, request.request_id, request.page, &page) == 0 &&
                    page.cycle_id == request.cycle_id && !sim->never_answers_results) {
@@ -217,8 +219,25 @@ static int fake_read(void *context, nrf_cs_node_id_t node, uint8_t *frame, size_
         assert(nrf_cs_cycle_encode_status(&status, frame) == 0);
         return 0;
     }
-    frame[3] = 0x80U; /* the legacy STATUS: not a cycle frame */
+    /* The ordinary STATUS shares the frame magic with the cycle frames; only the type differs. */
+    frame[0] = (uint8_t)'G';
+    frame[1] = (uint8_t)'S';
+    frame[3] = 0x80U;
     return 0;
+}
+
+static unsigned main_polls_after_go(void)
+{
+    uint64_t go_at = 0U;
+    for (size_t i = 0U; i < g_log_count; ++i) {
+        if (g_log[i].is_write && g_log[i].type == NRF_CS_CYCLE_MESSAGE_GO) go_at = g_log[i].at_ms;
+    }
+    if (go_at == 0U) return 0U;
+    unsigned polls = 0U;
+    for (size_t i = 0U; i < g_log_count; ++i) {
+        if (!g_log[i].is_write && g_log[i].node == g_main && g_log[i].at_ms > go_at) ++polls;
+    }
+    return polls;
 }
 
 static bool fake_should_abort(void *context)
@@ -232,11 +251,7 @@ static bool fake_should_abort(void *context)
         if (plans >= g_abort_after_plan_writes) return true;
     }
     if (g_abort_after_polls == 0U) return false;
-    unsigned polls = 0U;
-    for (size_t i = 0U; i < g_log_count; ++i) {
-        if (!g_log[i].is_write && g_log[i].node == g_main) ++polls;
-    }
-    return polls >= g_abort_after_polls;
+    return main_polls_after_go() >= g_abort_after_polls;
 }
 
 static const nrf_cs_cycle_coordinator_ops_t g_ops = {
@@ -544,14 +559,22 @@ static void test_unreadable_main_still_collects_after_deadline(void)
 /* Virtual time one abort may spend releasing nodes: every node, every try, bus time plus the pause. */
 static uint32_t abort_release_bound_ms(size_t nodes)
 {
-    return (uint32_t)(nodes * NRF_CS_COORD_RELEASE_TRIES * (transfer_ms(NRF_CS_CYCLE_RESULT_REQUEST_LENGTH) + 20U));
+    return (uint32_t)(nodes * NRF_CS_COORD_RELEASE_TRIES *
+        (transfer_ms(NRF_CS_CYCLE_RESULT_REQUEST_LENGTH) + transfer_ms(NRF_CS_CYCLE_STATUS_LENGTH) + 20U));
 }
 
+/* Time of the n-th poll of MAIN after GO (what the abort condition counts). */
 static uint64_t time_of_main_read(unsigned n)
 {
+    uint64_t go_at = 0U;
+    for (size_t i = 0U; i < g_log_count; ++i) {
+        if (g_log[i].is_write && g_log[i].type == NRF_CS_CYCLE_MESSAGE_GO) go_at = g_log[i].at_ms;
+    }
     unsigned seen = 0U;
     for (size_t i = 0U; i < g_log_count; ++i) {
-        if (!g_log[i].is_write && g_log[i].node == g_main && ++seen == n) return g_log[i].at_ms;
+        if (!g_log[i].is_write && g_log[i].node == g_main && g_log[i].at_ms > go_at && ++seen == n) {
+            return g_log[i].at_ms;
+        }
     }
     return 0U;
 }
@@ -629,6 +652,60 @@ static void test_abort_release_failures_are_reported_and_bounded(void)
     assert(nrf_cs_cycle_runtime_running(&g_nodes[2].rt));
     assert(!nrf_cs_cycle_runtime_running(&g_nodes[0].rt) && !nrf_cs_cycle_runtime_running(&g_nodes[1].rt) &&
            !nrf_cs_cycle_runtime_running(&g_nodes[3].rt));
+}
+
+static void test_acknowledged_release_is_not_a_confirmed_release(void)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_cycle_collected_t out;
+    nrf_cs_cycle_report_t report;
+    nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
+
+    /* Node 2 takes the release frame on the bus but keeps ranging. */
+    setup(4U, ids);
+    g_abort_after_polls = 2U;
+    g_nodes[2].ignored_release_writes = 100U;
+    start_scheduler(&scheduler, ids, 4U, &k_policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 100U, &out, &report) == NRF_CS_COORD_ERR_ABORTED);
+    assert(nrf_cs_cycle_runtime_running(&g_nodes[2].rt));
+    assert(report.abort_release_mask == 0x0BU);      /* node 2 is not released ... */
+    assert(report.abort_release_sent_mask == 0x0FU); /* ... although every frame was acknowledged */
+    assert(g_nodes[2].release_writes >= NRF_CS_COORD_RELEASE_TRIES);
+    const uint64_t abort_seen = time_of_main_read(2U);
+    assert(abort_seen != 0U && g_now - abort_seen <= abort_release_bound_ms(4U));
+
+    /* The same holds for the release that clears a stale node before the plan. */
+    setup(4U, ids);
+    g_abort_after_polls = 2U;
+    g_nodes[2].fail_release_writes = 100U; /* node 2 keeps the cycle ... */
+    start_scheduler(&scheduler, ids, 4U, &k_policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 100U, &out, &report) == NRF_CS_COORD_ERR_ABORTED);
+    assert(nrf_cs_cycle_runtime_running(&g_nodes[2].rt));
+    g_abort_after_polls = 0U;
+    g_nodes[2].fail_release_writes = 0U;
+    g_nodes[2].ignored_release_writes = 100U; /* ... and now acknowledges without acting */
+    (void)nrf_cs_scheduler_abort_cycle(&scheduler, NRF_CS_FAILURE_TRANSPORT);
+    assert(nrf_cs_scheduler_start_cycle(&scheduler, ids, 4U) == NRF_CS_OK);
+    (void)nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 200U, &out, &report);
+    assert(report.prerelease_mask == 0x0BU);
+    assert(report.prerelease_sent_mask == 0x0FU);
+}
+
+static void test_release_that_needs_a_second_try_is_confirmed(void)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_cycle_collected_t out;
+    nrf_cs_cycle_report_t report;
+    nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
+
+    setup(4U, ids);
+    g_abort_after_polls = 2U;
+    g_nodes[1].ignored_release_writes = 1U; /* the first release is lost, the retry lands */
+    start_scheduler(&scheduler, ids, 4U, &k_policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 100U, &out, &report) == NRF_CS_COORD_ERR_ABORTED);
+    assert(!nrf_cs_cycle_runtime_running(&g_nodes[1].rt));
+    assert(report.abort_release_mask == 0x0FU && report.abort_release_sent_mask == 0x0FU);
+    assert(g_nodes[1].release_writes >= 2U);
 }
 
 static void test_cycle_after_lost_release_still_runs_on_every_node(void)
@@ -769,6 +846,8 @@ int main(void)
     test_abort_during_plan_phase_releases_every_node();
     test_abort_release_failures_are_reported_and_bounded();
     test_cycle_after_lost_release_still_runs_on_every_node();
+    test_acknowledged_release_is_not_a_confirmed_release();
+    test_release_that_needs_a_second_try_is_confirmed();
     test_five_nodes_all_pairs();
     puts("nrf_cs_cycle_coordinator tests passed");
     return 0;
