@@ -43,6 +43,8 @@ static nrf_cs_policy_t s_ranging_policy;
 static unsigned s_ranging_start_calls;
 static unsigned s_ranging_progress_calls;
 static unsigned s_ranging_invalidate_calls;
+static unsigned s_ranging_cancel_calls;
+static bool s_ranging_cancel_winds_down;
 static unsigned s_ranging_call_count;
 static char s_ranging_calls[32];
 
@@ -64,6 +66,7 @@ static void clear_ranging_calls(void)
     s_ranging_start_calls = 0U;
     s_ranging_progress_calls = 0U;
     s_ranging_invalidate_calls = 0U;
+    s_ranging_cancel_calls = 0U;
     memset(s_ranging_calls, 0, sizeof(s_ranging_calls));
 }
 
@@ -235,6 +238,10 @@ esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *p
     ranging_call(RANGING_CALL_START);
     ++s_ranging_start_calls;
     s_ranging_policy = *policy;
+    /* Single-flight like the real service: a run still in flight rejects a new request. */
+    if (s_ranging_start_result == ESP_OK && s_ranging_progress.active && !s_ranging_progress.complete) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (s_ranging_start_result == ESP_OK) {
         memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
         s_ranging_progress.active = true;
@@ -259,6 +266,26 @@ esp_err_t nrf_topology_service_invalidate_ranging(void)
     ranging_call(RANGING_CALL_INVALIDATE);
     ++s_ranging_invalidate_calls;
     return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_ranging_cancel(void)
+{
+    ++s_ranging_cancel_calls;
+    if (!s_ranging_cancel_winds_down && s_ranging_progress.active && !s_ranging_progress.complete) {
+        s_ranging_progress.active = false;
+        s_ranging_progress.complete = true;
+        s_ranging_progress.success = false;
+        (void)snprintf(s_ranging_progress.failure_reason, sizeof(s_ranging_progress.failure_reason), "cancelled");
+    }
+    return ESP_OK;
+}
+
+/* The in-flight run finally stops (winding-down cancel); optionally with a result that must be ignored. */
+static void release_fake_run(bool success)
+{
+    s_ranging_progress.active = false;
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = success;
 }
 
 esp_err_t nrf_topology_service_ranging_set_manual(uint64_t started, uint64_t updated,
@@ -333,6 +360,8 @@ static void reset_fakes(void)
     memset(&s_ranging_policy, 0, sizeof(s_ranging_policy));
     s_ranging_start_result = ESP_OK;
     s_ranging_progress_result = ESP_OK;
+    /* The real cancel is asynchronous: the run keeps going until the worker notices the flag. */
+    s_ranging_cancel_winds_down = true;
     clear_ranging_calls();
     assert(workflow_service_init() == ESP_OK);
 }
@@ -856,6 +885,178 @@ static void test_ranging_back_orphans_run_and_invalidates_late_result(void)
     workflow_service_shutdown();
 }
 
+/* Back from LAYOUT_READY into RANGING; placement history must be rebuilt after BACK. */
+static void reenter_ranging_after_back(void)
+{
+    const int32_t heights[3] = { 100, 200, 300 };
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    publish_placement_sample(1400U, heights, upright);
+    publish_placement_sample(1500U, heights, upright);
+    publish_placement_sample(1600U, heights, upright);
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) == WORKFLOW_COMMAND_RESULT_OK);
+}
+
+static bool ranging_failed_to_start(const workflow_snapshot_t *snapshot)
+{
+    return strstr(snapshot->reason, "start_failed") != NULL;
+}
+
+static void test_back_from_ranging_cancels_active_run(void)
+{
+    reset_fakes();
+    s_ranging_cancel_winds_down = false;
+    enter_ready_placement();
+    start_ranging();
+    assert(s_ranging_cancel_calls == 0U);
+    assert(command(WORKFLOW_COMMAND_BACK) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(s_ranging_cancel_calls == 1U);
+    assert(!s_ranging_progress.active);
+    workflow_service_shutdown();
+}
+
+static void test_back_then_reenter_starts_new_run(void)
+{
+    reset_fakes();
+    s_ranging_cancel_winds_down = false;
+    enter_ready_placement();
+    start_ranging();
+    const uint64_t old_started_at_ms = s_ranging_progress.started_at_ms;
+    assert(command(WORKFLOW_COMMAND_BACK) == WORKFLOW_COMMAND_RESULT_OK);
+
+    reenter_ranging_after_back();
+    workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RANGING);
+    assert(!ranging_failed_to_start(&snapshot));
+    assert(s_ranging_start_calls == 2U);
+    const uint64_t new_started_at_ms = s_ranging_progress.started_at_ms;
+    assert(new_started_at_ms != old_started_at_ms);
+
+    /* A late completion of the cancelled run is never applied to the new one. */
+    s_ranging_progress.started_at_ms = old_started_at_ms;
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = true;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING);
+
+    s_ranging_progress.started_at_ms = new_started_at_ms;
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = true;
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = get_workflow_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(snapshot.layout_result_valid && snapshot.layout_ok);
+    workflow_service_shutdown();
+}
+
+/* BACK, then straight back into RANGING while the old cycle is still winding down. */
+static uint64_t enter_ranging_while_old_run_winds_down(void)
+{
+    reset_fakes();
+    enter_ready_placement();
+    start_ranging();
+    const uint64_t old_started_at_ms = s_ranging_progress.started_at_ms;
+    assert(command(WORKFLOW_COMMAND_BACK) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_ranging_cancel_calls == 1U);
+    assert(s_ranging_progress.active && !s_ranging_progress.complete);
+
+    reenter_ranging_after_back();
+    assert(s_ranging_start_calls == 2U);
+    return old_started_at_ms;
+}
+
+static void test_reenter_while_old_run_winding_down_defers_start(void)
+{
+    const uint64_t old_started_at_ms = enter_ranging_while_old_run_winds_down();
+    workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RANGING);
+    assert(!ranging_failed_to_start(&snapshot));
+
+    /* Old run still in flight: nothing is retried and nothing fails. */
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = get_workflow_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RANGING);
+    assert(s_ranging_start_calls == 2U);
+
+    /* Old run stops, even with a "success" that must never be applied to the new request. */
+    s_now_ms += 100U;
+    release_fake_run(true);
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = get_workflow_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RANGING);
+    assert(!ranging_failed_to_start(&snapshot));
+    assert(s_ranging_start_calls == 3U);
+    assert(s_ranging_progress.active && !s_ranging_progress.complete);
+    const uint64_t new_started_at_ms = s_ranging_progress.started_at_ms;
+    assert(new_started_at_ms != old_started_at_ms);
+
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = true;
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = get_workflow_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(snapshot.layout_result_valid && snapshot.layout_ok);
+    workflow_service_shutdown();
+}
+
+static void test_leave_ranging_again_cancels_deferred_start(void)
+{
+    (void)enter_ranging_while_old_run_winds_down();
+    assert(command(WORKFLOW_COMMAND_BACK) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(s_ranging_cancel_calls == 2U);
+
+    s_now_ms += 100U;
+    release_fake_run(true);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(s_ranging_start_calls == 2U);
+    workflow_service_shutdown();
+}
+
+static void test_deferred_start_gives_up_when_old_run_never_stops(void)
+{
+    (void)enter_ranging_while_old_run_winds_down();
+    s_now_ms += 60000U;
+    assert(workflow_service_poll() == ESP_OK);
+    const workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(strcmp(snapshot.reason, "start_failed:ESP_ERR_INVALID_STATE") == 0);
+    assert(s_ranging_start_calls == 2U);
+
+    /* The straggler finishing later changes nothing. */
+    release_fake_run(true);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(s_ranging_start_calls == 2U);
+    workflow_service_shutdown();
+}
+
+static void test_start_errors_without_orphaned_run_fail_immediately(void)
+{
+    reset_fakes();
+    enter_ready_placement();
+    s_ranging_start_result = ESP_ERR_NO_MEM;
+    start_ranging();
+    const workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RANGING_RESULT);
+    char expected[WORKFLOW_REASON_MAX];
+    (void)snprintf(expected, sizeof(expected), "start_failed:%s", esp_err_to_name(ESP_ERR_NO_MEM));
+    assert(strcmp(snapshot.reason, expected) == 0);
+    assert(s_ranging_start_calls == 1U);
+    workflow_service_shutdown();
+}
+
+static void test_ranging_back_and_retry_race(void)
+{
+    test_back_from_ranging_cancels_active_run();
+    test_back_then_reenter_starts_new_run();
+    test_reenter_while_old_run_winding_down_defers_start();
+    test_leave_ranging_again_cancels_deferred_start();
+    test_deferred_start_gives_up_when_old_run_never_stops();
+    test_start_errors_without_orphaned_run_fail_immediately();
+}
+
 static void test_max460_layout_success_failure_reason_retry_and_back(void)
 {
     test_ranging_success_and_confirm_preserve_frozen_result();
@@ -864,6 +1065,7 @@ static void test_max460_layout_success_failure_reason_retry_and_back(void)
     test_ranging_start_error_reports_failure();
     test_ranging_retry_starts_a_new_run_and_ignores_stale_completion();
     test_ranging_back_orphans_run_and_invalidates_late_result();
+    test_ranging_back_and_retry_race();
 }
 
 static void test_placement_entry_invalidates_back_and_move_sensors(void)

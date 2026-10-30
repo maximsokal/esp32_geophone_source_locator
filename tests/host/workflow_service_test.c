@@ -419,6 +419,11 @@ esp_err_t nrf_topology_service_invalidate_ranging(void)
     return ESP_OK;
 }
 
+esp_err_t nrf_topology_service_ranging_cancel(void)
+{
+    return ESP_OK;
+}
+
 esp_err_t nrf_topology_service_ranging_set_manual(uint64_t started, uint64_t updated,
     uint8_t a, uint8_t b, int32_t distance, const uint32_t *limits)
 {

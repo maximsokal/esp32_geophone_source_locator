@@ -220,6 +220,8 @@ static bool s_cs_snapshot_valid = false;
 static nrf_cs_policy_t s_cs_requested_policy;
 static nrf_cs_cycle_snapshot_t s_cs_cycle_snapshot;
 static bool s_ranging_active = false;
+/* Set by nrf_topology_service_ranging_cancel() while the worker owns the run; consumed by the worker. */
+static bool s_ranging_cancel_requested = false;
 static bool s_ranging_progress_valid = false;
 static EXT_RAM_BSS_ATTR nrf_topology_ranging_progress_t s_ranging_progress;
 static bool s_frozen_ranging_result_valid = false;
@@ -2934,6 +2936,22 @@ static bool service_ranging_membership_matches(
         current_count * sizeof(current[0])) == 0;
 }
 
+static bool service_ranging_cancel_requested(void)
+{
+    bool requested;
+    portENTER_CRITICAL(&s_state_lock);
+    requested = s_ranging_cancel_requested;
+    portEXIT_CRITICAL(&s_state_lock);
+    return requested;
+}
+
+static void service_ranging_clear_cancel_request(void)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    s_ranging_cancel_requested = false;
+    portEXIT_CRITICAL(&s_state_lock);
+}
+
 static void service_ranging_finish(
     nrf_topology_worker_state_t *worker,
     bool success,
@@ -2957,6 +2975,7 @@ static void service_ranging_finish(
         progress->failure_reason[0] = '\0';
     }
     worker->ranging_active = false;
+    service_ranging_clear_cancel_request();
 
     if (progress->pair_count > 0U) {
         nrf_topology_ranging_result_t result = {0};
@@ -2986,6 +3005,16 @@ static void service_ranging_process(nrf_topology_worker_state_t *worker)
     nrf_topology_ranging_progress_t *progress = &worker->ranging_progress;
     const uint64_t now_ms = platform_now_ms(&worker->platform);
     if (!worker->ranging_active) {
+        return;
+    }
+
+    if (service_ranging_cancel_requested()) {
+        if (nrf_cs_authority_is_active(&worker->authority)) {
+            (void)nrf_cs_authority_abort_cycle(&worker->authority, NRF_CS_FAILURE_TRANSPORT);
+            cs_publish(worker, false, NRF_CS_AUTHORITY_COMPLETE);
+        }
+        service_ranging_copy_cycle(worker);
+        service_ranging_finish(worker, false, "cancelled", now_ms);
         return;
     }
 
@@ -3068,6 +3097,7 @@ static void service_ranging_process(nrf_topology_worker_state_t *worker)
 static void service_ranging_fail_start(nrf_topology_worker_state_t *worker)
 {
     worker->ranging_active = false;
+    service_ranging_clear_cancel_request();
     worker->ranging_progress.active = false;
     worker->ranging_progress.complete = true;
     worker->ranging_progress.success = false;
@@ -3140,7 +3170,7 @@ static int cs_coordinator_read(void *context, nrf_cs_node_id_t node, uint8_t *fr
 static bool cs_coordinator_should_abort(void *context)
 {
     (void)context;
-    return service_stop_requested();
+    return service_stop_requested() || service_ranging_cancel_requested();
 }
 
 static void cs_coordinator_progress(void *context, uint8_t done, uint8_t total)
@@ -3203,7 +3233,7 @@ static void service_ranging_run_autonomous(nrf_topology_worker_state_t *worker)
     } else if (result == NRF_CS_COORD_ERR_GO) {
         service_ranging_abort_autonomous(worker, "start_failed");
     } else if (result < 0) {
-        service_ranging_abort_autonomous(worker, "aborted");
+        service_ranging_abort_autonomous(worker, service_ranging_cancel_requested() ? "cancelled" : "aborted");
     } else if (nrf_cs_cycle_replay(&authority->scheduler, s_cycle_collected.nodes, s_cycle_collected.node_count) < 0 ||
                nrf_cs_authority_finish_external(authority) != NRF_CS_AUTHORITY_COMPLETE) {
         service_ranging_abort_autonomous(worker, "replay_failed");
@@ -3607,6 +3637,7 @@ esp_err_t nrf_topology_service_start(void)
     s_cs_requested_ranging_started_ms = 0U;
     s_cs_snapshot_valid = false;
     s_ranging_active = false;
+    s_ranging_cancel_requested = false;
     s_ranging_progress_valid = false;
     s_frozen_ranging_result_valid = false;
     memset(&s_snapshot, 0, sizeof(s_snapshot));
@@ -3711,6 +3742,7 @@ void nrf_topology_service_stop(void)
     s_cs_requested_ranging_started_ms = 0U;
     s_cs_snapshot_valid = false;
     s_ranging_active = false;
+    s_ranging_cancel_requested = false;
     memset(&s_cs_requested_policy, 0, sizeof(s_cs_requested_policy));
     memset(&s_cs_cycle_snapshot, 0, sizeof(s_cs_cycle_snapshot));
     portEXIT_CRITICAL(&s_state_lock);
@@ -4317,6 +4349,7 @@ static esp_err_t service_ranging_request(
     s_cs_requested_ranging_timeout_ms = timeout_ms;
     s_cs_requested_ranging_started_ms = now_us > 0 ? (uint64_t)now_us / 1000U : 0U;
     s_ranging_active = true;
+    s_ranging_cancel_requested = false;
     s_ranging_progress_valid = true;
     memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
     s_ranging_progress.active = true;
@@ -4583,6 +4616,40 @@ esp_err_t nrf_topology_service_invalidate_ranging(void)
     portENTER_CRITICAL(&s_state_lock);
     if (s_frozen_ranging_result_valid) {
         s_frozen_ranging_result.invalidated = true;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_ranging_cancel(void)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    if (!s_ranging_active) {
+        portEXIT_CRITICAL(&s_state_lock);
+        return ESP_OK;
+    }
+    if (s_cs_request_pending && s_cs_request_is_ranging) {
+        /* The worker has not taken the request yet: withdraw it and publish the outcome ourselves. */
+        const int64_t now_us = esp_timer_get_time();
+        s_cs_request_pending = false;
+        s_cs_request_is_ranging = false;
+        s_cs_request_is_autonomous = false;
+        s_cs_requested_ranging_timeout_ms = 0U;
+        s_cs_requested_ranging_started_ms = 0U;
+        s_ranging_progress.active = false;
+        s_ranging_progress.complete = true;
+        s_ranging_progress.success = false;
+        s_ranging_progress.partial = false;
+        s_ranging_progress.updated_at_ms = now_us > 0 ? (uint64_t)now_us / 1000U : 0U;
+        (void)snprintf(
+            s_ranging_progress.failure_reason,
+            sizeof(s_ranging_progress.failure_reason),
+            "%s",
+            "cancelled");
+        s_ranging_active = false;
+    } else {
+        /* The worker owns the run; it notices the flag at its next abort check. */
+        s_ranging_cancel_requested = true;
     }
     portEXIT_CRITICAL(&s_state_lock);
     return ESP_OK;

@@ -135,5 +135,6 @@ esp_err_t nrf_topology_service_ranging_start_autonomous_limited(const nrf_cs_pol
 esp_err_t nrf_topology_service_ranging_get_progress(
     nrf_topology_ranging_progress_t *progress);
 esp_err_t nrf_topology_service_invalidate_ranging(void);
+esp_err_t nrf_topology_service_ranging_cancel(void);
 esp_err_t nrf_topology_service_ranging_set_manual(uint64_t started, uint64_t updated,
     uint8_t a, uint8_t b, int32_t distance, const uint32_t *limits);

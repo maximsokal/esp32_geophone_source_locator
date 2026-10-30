@@ -2281,6 +2281,186 @@ static void test_autonomous_ranging_failures(void)
     }
 }
 
+/* ---- ranging cancel (BACK from RANGING must free the service) ---- */
+
+static bool s_cancel_hook_fired;
+
+static void cancel_after_go_hook(TickType_t ticks)
+{
+    sim_cycle_tick_nodes(ticks);
+    if (!s_cancel_hook_fired && cycle_last_write_us(NRF_CS_CYCLE_MESSAGE_GO) != 0U) {
+        s_cancel_hook_fired = true;
+        assert(nrf_topology_service_ranging_cancel() == ESP_OK);
+    }
+}
+
+static void request_autonomous_ranging_cancelled_mid_cycle(void)
+{
+    s_cancel_hook_fired = false;
+    request_autonomous_ranging_for_test();
+    s_vtask_delay_hook = cancel_after_go_hook;
+}
+
+static void assert_run_was_cancelled(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(!s_seen_ranging_progress.active);
+    assert(s_seen_ranging_progress.complete && !s_seen_ranging_progress.success);
+    assert(strcmp(s_seen_ranging_progress.failure_reason, "cancelled") == 0);
+    assert(!sensor_bus_quiet_active());
+}
+
+static void assert_autonomous_run_cancelled_early(void)
+{
+    assert(s_cancel_hook_fired);
+    assert_run_was_cancelled();
+    assert(total_cycle_ble_attempts() < 6U); /* 3 nodes = 6 executions; the cycle did not run out */
+    nrf_topology_snapshot_t current;
+    nrf_topology_ranging_result_t reusable;
+    assert(nrf_topology_service_get_snapshot(&current) == ESP_OK);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(&current, 0U, 0U, &reusable) == ESP_ERR_NOT_FOUND);
+}
+
+/* The ESP32 stopped listening; the nodes keep ranging until their own cycle timer ends and frees them. */
+static void nodes_run_out_their_abandoned_cycle(void)
+{
+    for (int i = 0; i < MAX_NODES; ++i) {
+        if (s_nodes[i].present) nrf_cs_cycle_runtime_release(&s_nodes[i].cycle);
+    }
+}
+
+static void assert_new_run_not_aborted_by_stale_cancel(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete);
+    assert(strcmp(s_seen_ranging_progress.failure_reason, "cancelled") != 0);
+    assert(strcmp(s_seen_ranging_progress.failure_reason, "aborted") != 0);
+}
+
+static void test_cancel_during_autonomous_cycle_frees_the_service(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_autonomous_ranging_cancelled_mid_cycle);
+    script(EV_WAIT_MS, 10U, NULL); /* the worker runs (and abandons) the cycle inside this wait */
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_autonomous_run_cancelled_early);
+    /* The service is free again at once, and the old cancel does not leak into the next run. */
+    script(EV_ACTION, 0U, nodes_run_out_their_abandoned_cycle);
+    script(EV_ACTION, 0U, request_autonomous_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_new_run_not_aborted_by_stale_cancel);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void request_then_cancel_before_worker_takes_it(void)
+{
+    assert(nrf_topology_service_ranging_start_autonomous(&k_autonomous_policy) == ESP_OK);
+    assert(nrf_topology_service_ranging_cancel() == ESP_OK);
+    assert_run_was_cancelled();
+}
+
+static void assert_cancelled_request_never_started_a_cycle(void)
+{
+    assert_run_was_cancelled();
+    assert(total_cycle_ble_attempts() == 0U);
+    for (size_t i = 0U; i < s_wire_log_count; ++i) {
+        assert(!(s_wire_log[i].is_write && s_wire_log[i].type == NRF_CS_CYCLE_MESSAGE_PLAN));
+    }
+}
+
+static void test_cancel_before_worker_takes_request(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(3U);
+    s_cs_use_pair_distances = true;
+    const int32_t square_distances[6] = {1000, 1000, 1414, 1414, 1000, 1000};
+    memcpy(s_cs_pair_distances, square_distances, sizeof(square_distances));
+    s_wire_log_enabled = true;
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_then_cancel_before_worker_takes_it);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_cancelled_request_never_started_a_cycle);
+    /* Service is free: a fresh run is accepted and completes normally. */
+    script(EV_ACTION, 0U, request_autonomous_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_autonomous_success);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void cancel_when_nothing_runs(void)
+{
+    assert(nrf_topology_service_ranging_cancel() == ESP_OK);
+    assert(nrf_topology_service_ranging_cancel() == ESP_OK);
+}
+
+static void test_cancel_when_idle_is_noop_and_not_sticky(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(3U);
+    s_cs_use_pair_distances = true;
+    const int32_t square_distances[6] = {1000, 1000, 1414, 1414, 1000, 1000};
+    memcpy(s_cs_pair_distances, square_distances, sizeof(square_distances));
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, cancel_when_nothing_runs);
+    script(EV_ACTION, 0U, request_autonomous_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_autonomous_success);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void cancel_stepwise_ranging(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.active && !s_seen_ranging_progress.complete);
+    assert(nrf_topology_service_ranging_cancel() == ESP_OK);
+}
+
+static void assert_stepwise_run_cancelled(void)
+{
+    assert_run_was_cancelled();
+    assert(s_cs_execute_count < 12U);
+}
+
+static void test_cancel_stepwise_ranging(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(3U);
+    s_cs_use_pair_distances = true;
+    const int32_t square_distances[6] = {1000, 1000, 1414, 1414, 1000, 1000};
+    memcpy(s_cs_pair_distances, square_distances, sizeof(square_distances));
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_full_ranging_for_test);
+    script_waits(2U, 10U);
+    script(EV_ACTION, 0U, cancel_stepwise_ranging);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_stepwise_run_cancelled);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void test_ranging_cancel(void)
+{
+    test_cancel_during_autonomous_cycle_frees_the_service();
+    test_cancel_before_worker_takes_request();
+    test_cancel_when_idle_is_noop_and_not_sticky();
+    test_cancel_stepwise_ranging();
+}
+
 static void request_limited_ranging_for_test(void)
 {
     const uint32_t missing[NRF_TOPOLOGY_REMOTE_COUNT] = {1000U};
@@ -3980,6 +4160,7 @@ int main(void)
     test_ranging_requires_assigned_main();
     test_autonomous_ranging_full_rotation();
     test_autonomous_ranging_failures();
+    test_ranging_cancel();
     test_autonomous_individual_cable_limits();
     test_noisy_geometry_cannot_exceed_individual_cables();
     test_unplug_during_cs_rejoins_after_quiet_lease();

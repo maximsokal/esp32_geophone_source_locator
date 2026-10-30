@@ -31,6 +31,8 @@
 #include "cJSON.h"
 
 #define WORKFLOW_CALIBRATION_TIMEOUT_MS 15000U
+/* How long a new RANGING start waits for a cancelled run to wind down before it is reported as failed. */
+#define WORKFLOW_RANGING_RESTART_WAIT_MS 10000U
 #define WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES 32U
 #define WORKFLOW_SERVICE_POLL_STACK_BYTES 8192U
 #define WORKFLOW_CALC_SETTINGS_MAX_JSON_DEPTH 8U
@@ -83,7 +85,9 @@ typedef struct {
 typedef struct {
     bool active;
     bool orphaned;
+    bool restart_pending;
     uint64_t started_at_ms;
+    uint64_t restart_deadline_ms;
 } workflow_ranging_run_t;
 
 typedef enum {
@@ -806,7 +810,15 @@ static void workflow_service_ranging_start(void)
     (void)nrf_topology_service_invalidate_ranging();
     uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT];
     esp_err_t err = workflow_service_ranging_load_limits(limits);
-    if (err == ESP_OK) err = nrf_topology_service_ranging_start_autonomous_limited(&s_workflow_ranging_policy, limits);
+    if (err == ESP_OK) {
+        err = nrf_topology_service_ranging_start_autonomous_limited(&s_workflow_ranging_policy, limits);
+        if (err == ESP_ERR_INVALID_STATE && s_ranging.active && s_ranging.orphaned) {
+            /* The run cancelled by BACK is still winding down; poll starts this one once it has stopped. */
+            s_ranging.restart_pending = true;
+            s_ranging.restart_deadline_ms = workflow_service_now_ms() + WORKFLOW_RANGING_RESTART_WAIT_MS;
+            return;
+        }
+    }
     if (err == ESP_OK) {
         nrf_topology_ranging_progress_t *progress = &s_poll_scratch.ranging_progress;
         err = nrf_topology_service_ranging_get_progress(progress);
@@ -832,6 +844,7 @@ static void workflow_service_step_changed(workflow_step_t previous, workflow_ste
     if (next == WORKFLOW_STEP_SENSOR_CHECK) main_barometer_request_polling();
     if (previous == WORKFLOW_STEP_RANGING && next != WORKFLOW_STEP_RANGING && s_ranging.active) {
         s_ranging.orphaned = true;
+        (void)nrf_topology_service_ranging_cancel();
         (void)nrf_topology_service_invalidate_ranging();
     }
     else if (next == WORKFLOW_STEP_PLACEMENT) {
@@ -874,12 +887,22 @@ static void workflow_service_ranging_poll(void)
 {
     if (!s_ranging.active) return;
     nrf_topology_ranging_progress_t *progress = &s_poll_scratch.ranging_progress;
-    if (nrf_topology_service_ranging_get_progress(progress) != ESP_OK ||
-        progress->started_at_ms != s_ranging.started_at_ms || !progress->complete) return;
+    const bool finished = nrf_topology_service_ranging_get_progress(progress) == ESP_OK &&
+        progress->started_at_ms == s_ranging.started_at_ms && progress->complete;
+    if (!finished) {
+        if (s_ranging.restart_pending && s_core.step == WORKFLOW_STEP_RANGING &&
+            workflow_service_now_ms() >= s_ranging.restart_deadline_ms) {
+            s_ranging.restart_pending = false;
+            workflow_service_ranging_done(false, false, "start_failed:ESP_ERR_INVALID_STATE");
+        }
+        return;
+    }
     const bool orphaned = s_ranging.orphaned || s_core.step != WORKFLOW_STEP_RANGING;
+    const bool restart = s_ranging.restart_pending && s_core.step == WORKFLOW_STEP_RANGING;
     memset(&s_ranging, 0, sizeof(s_ranging));
     if (orphaned) {
         (void)nrf_topology_service_invalidate_ranging();
+        if (restart) workflow_service_ranging_start();
         return;
     }
     if (workflow_service_ranging_save(progress) != ESP_OK) {
