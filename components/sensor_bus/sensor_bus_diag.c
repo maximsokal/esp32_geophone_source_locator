@@ -58,9 +58,6 @@ const char *sensor_bus_diag_device_name(uint8_t address, const char *source)
         }
         return "TCA9548A/BMP280?";
     }
-    if (address == 0x38U) {
-        return "AHT20";
-    }
     if (address == 0x40U) {
         return "INA3221";
     }

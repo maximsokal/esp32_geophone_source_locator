@@ -400,7 +400,6 @@ function checkAcquisition(acquisition: StatusObject): void {
 function checkMain(main: StatusObject): void {
   requiredNumber(main, 'pressure_pa', 'main');
   requiredNumber(main, 'temperature_mc', 'main');
-  optionalNumber(main, 'humidity_mpct', 'main');
   const heightValue = main.height_reference;
   if (heightValue !== undefined) {
     const height = objectValue(heightValue, 'main.height_reference');
@@ -413,7 +412,6 @@ function checkMain(main: StatusObject): void {
     if (sensorsValue !== undefined) {
       const sensors = objectValue(sensorsValue, `main.${key}`);
       requiredBoolean(sensors, 'bmp280', `main.${key}`);
-      requiredBoolean(sensors, 'aht20', `main.${key}`);
     }
   }
 }

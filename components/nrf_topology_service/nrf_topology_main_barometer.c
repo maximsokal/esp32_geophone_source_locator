@@ -41,11 +41,8 @@ static bool status_equal(const device_main_status_t *a, const device_main_status
 {
     return a->bmp280_present == b->bmp280_present &&
         a->bmp280_valid == b->bmp280_valid &&
-        a->aht20_present == b->aht20_present &&
-        a->aht20_valid == b->aht20_valid &&
         a->pressure_pa == b->pressure_pa &&
         a->temperature_mc == b->temperature_mc &&
-        a->humidity_mpct == b->humidity_mpct &&
         a->height_reference.state == b->height_reference.state &&
         a->height_reference.generation == b->height_reference.generation &&
         a->height_reference.relative_z_mm == b->height_reference.relative_z_mm;
@@ -58,11 +55,8 @@ static void publish(nrf_topology_main_barometer_t *state)
     const device_main_status_t status = {
         .bmp280_present = reading.bmp280_present,
         .bmp280_valid = reading.bmp280_valid,
-        .aht20_present = reading.aht20_present,
-        .aht20_valid = reading.aht20_valid,
         .pressure_pa = reading.pressure_pa,
         .temperature_mc = reading.temperature_mc,
-        .humidity_mpct = reading.humidity_mpct,
         .height_reference = {
             .state = reference_state(reading.height_reference_state),
             .generation = reading.height_reference_generation,
@@ -87,40 +81,12 @@ static void log_error(nrf_topology_main_barometer_t *state, esp_err_t err, uint3
 
     main_barometer_reading_t reading = {0};
     main_barometer_get_reading(&state->barometer, &reading);
-    const bool bmp280_invalid =
-        reading.bmp280_address != 0U && !reading.bmp280_valid;
-    const bool aht20_invalid =
-        reading.aht20_present && !reading.aht20_valid;
-    if (bmp280_invalid && aht20_invalid) {
-        ESP_LOGW(TAG,
-                 "I2C_BAROMETER_WARN src=main_barometer bmp_addr=0x%02X bmp_dev=%s aht20_addr=0x38 aht20_dev=%s err=%s",
-                 (unsigned)reading.bmp280_address,
-                 sensor_bus_diag_device_name(
-                     reading.bmp280_address, "main_barometer"),
-                 sensor_bus_diag_device_name(0x38U, "main_barometer"),
-                 error_name(err));
-    } else if (bmp280_invalid) {
-        ESP_LOGW(TAG,
-                 "I2C_BAROMETER_WARN src=main_barometer addr=0x%02X dev=%s err=%s",
-                 (unsigned)reading.bmp280_address,
-                 sensor_bus_diag_device_name(
-                     reading.bmp280_address, "main_barometer"),
-                 error_name(err));
-    } else if (aht20_invalid) {
-        ESP_LOGW(TAG,
-                 "I2C_BAROMETER_WARN src=main_barometer addr=0x38 dev=%s err=%s",
-                 sensor_bus_diag_device_name(0x38U, "main_barometer"),
-                 error_name(err));
-    } else {
-        const uint8_t address = reading.bmp280_address != 0U
-            ? reading.bmp280_address
-            : reading.aht20_present ? 0x38U : 0U;
-        ESP_LOGW(TAG,
-                 "I2C_BAROMETER_WARN src=main_barometer addr=0x%02X dev=%s err=%s",
-                 (unsigned)address,
-                 sensor_bus_diag_device_name(address, "main_barometer"),
-                 error_name(err));
-    }
+    const uint8_t address = reading.bmp280_address;
+    ESP_LOGW(TAG,
+             "I2C_BAROMETER_WARN src=main_barometer addr=0x%02X dev=%s err=%s",
+             (unsigned)address,
+             sensor_bus_diag_device_name(address, "main_barometer"),
+             error_name(err));
 }
 
 void nrf_topology_main_barometer_init(nrf_topology_main_barometer_t *state)

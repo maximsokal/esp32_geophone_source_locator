@@ -5,11 +5,7 @@
 #include <stdatomic.h>
 #include <string.h>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "app_tick.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "nrf_baro_altitude.h"
 
 #ifndef CONFIG_MAIN_BAROMETER_BMP280_ADDRESS
@@ -43,15 +39,6 @@
 /* ... and this many (3 s) without recovery: a height-reference capture is invalid. */
 #define MAIN_BAROMETER_PENDING_INVALID_POLLS 15U
 
-#define AHT20_ADDRESS 0x38U
-#define AHT20_STATUS_CALIBRATED 0x08U
-#define AHT20_STATUS_BUSY 0x80U
-#define AHT20_CMD_INITIALIZE 0xBEU
-#define AHT20_CMD_MEASURE 0xACU
-#define AHT20_INIT_DELAY_MS 10U
-#define AHT20_BUSY_POLL_MS 2U
-#define AHT20_TIMEOUT_MS 100U
-#define AHT20_POLL_PERIOD_MS 1000U
 #define MAIN_HEIGHT_REFERENCE_WINDOW_MS 2000U
 /* A 2 Pa filtered-pressure range is about 167 mm on the shared 12 Pa/m model. */
 #define MAIN_HEIGHT_REFERENCE_MAX_PRESSURE_RANGE_PA 2.0
@@ -103,17 +90,6 @@ static bool main_barometer_retryable_bus_error(esp_err_t err)
 static uint16_t main_barometer_le_u16(const uint8_t *data)
 {
     return (uint16_t)data[0] | ((uint16_t)data[1] << 8U);
-}
-
-static void main_barometer_aht20_transfer_failed(
-    main_barometer_t *barometer,
-    esp_err_t err)
-{
-    if (main_barometer_bus_yield_error(err)) {
-        return;
-    }
-    barometer->aht20_probe_required = true;
-    barometer->aht20_initialized = false;
 }
 
 static int16_t main_barometer_le_i16(const uint8_t *data)
@@ -370,181 +346,12 @@ static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
     return last_error;
 }
 
-uint8_t main_barometer_aht20_crc8(const uint8_t *data, uint8_t length)
-{
-    if (data == NULL) {
-        return 0U;
-    }
-    uint8_t crc = 0xFFU;
-    for (uint8_t i = 0U; i < length; ++i) {
-        crc ^= data[i];
-        for (uint8_t bit = 0U; bit < 8U; ++bit) {
-            crc = (crc & 0x80U) != 0U
-                ? (uint8_t)((crc << 1U) ^ 0x31U)
-                : (uint8_t)(crc << 1U);
-        }
-    }
-    return crc;
-}
-
-static esp_err_t main_barometer_init_aht20(main_barometer_t *barometer)
-{
-    if (barometer->aht20 == NULL) {
-        const esp_err_t create_err = sensor_bus_device_create(
-            barometer->handles.bus, AHT20_ADDRESS, SENSOR_BUS_I2C_SPEED_HZ,
-            &barometer->aht20);
-        if (create_err != ESP_OK) {
-            return create_err;
-        }
-    }
-
-    if (barometer->aht20_probe_required) {
-        const esp_err_t probe_err = sensor_bus_probe_address(AHT20_ADDRESS);
-        if (probe_err != ESP_OK) {
-            ESP_LOGW(TAG, "MAIN_BARO_PROBE AHT20 addr=0x%02x NO ANSWER (%s)", (unsigned)AHT20_ADDRESS,
-                     esp_err_to_name(probe_err));
-            return probe_err;
-        }
-    }
-
-    uint8_t status = 0U;
-    esp_err_t err = main_barometer_classify_error(
-        AHT20_ADDRESS,
-        sensor_bus_read_byte(barometer->aht20, NULL_I2C_MEM_ADDR, &status));
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "MAIN_BARO_PROBE AHT20 addr=0x%02x answers but the status read FAILED (%s)",
-                 (unsigned)AHT20_ADDRESS, esp_err_to_name(err));
-        main_barometer_aht20_transfer_failed(barometer, err);
-        return err;
-    }
-    ESP_LOGI(TAG, "MAIN_BARO_PROBE AHT20 addr=0x%02x answers, status=0x%02x (%s)", (unsigned)AHT20_ADDRESS,
-             (unsigned)status, (status & AHT20_STATUS_CALIBRATED) != 0U ? "calibrated" : "not calibrated yet");
-    barometer->reading.aht20_present = true;
-
-    if ((status & AHT20_STATUS_CALIBRATED) == 0U) {
-        const uint8_t initialize[3] = {AHT20_CMD_INITIALIZE, 0x08U, 0x00U};
-        err = main_barometer_classify_error(
-            AHT20_ADDRESS,
-            sensor_bus_write_bytes(
-                barometer->aht20, NULL_I2C_MEM_ADDR,
-                sizeof(initialize), initialize));
-        if (err != ESP_OK) {
-            main_barometer_aht20_transfer_failed(barometer, err);
-            return err;
-        }
-        vTaskDelay(pdMS_TO_TICKS(AHT20_INIT_DELAY_MS));
-        err = main_barometer_classify_error(
-            AHT20_ADDRESS,
-            sensor_bus_read_byte(barometer->aht20, NULL_I2C_MEM_ADDR, &status));
-        if (err != ESP_OK) {
-            main_barometer_aht20_transfer_failed(barometer, err);
-            return err;
-        }
-        if ((status & AHT20_STATUS_CALIBRATED) == 0U) {
-            return ESP_ERR_INVALID_STATE;
-        }
-    }
-    barometer->aht20_initialized = true;
-    barometer->aht20_probe_required = false;
-    return ESP_OK;
-}
-
-static esp_err_t main_barometer_read_aht20(main_barometer_t *barometer)
-{
-    if (!barometer->aht20_initialized) {
-        const esp_err_t init_err = main_barometer_init_aht20(barometer);
-        if (init_err != ESP_OK) {
-            barometer->reading.aht20_valid = false;
-            return init_err;
-        }
-    }
-
-    if (barometer->aht20_probe_required) {
-        const esp_err_t probe_err = sensor_bus_probe_address(AHT20_ADDRESS);
-        if (probe_err != ESP_OK) {
-            barometer->reading.aht20_valid = false;
-            return probe_err;
-        }
-        barometer->aht20_probe_required = false;
-    }
-
-    const uint8_t trigger[3] = {AHT20_CMD_MEASURE, 0x33U, 0x00U};
-    esp_err_t err = main_barometer_classify_error(
-        AHT20_ADDRESS,
-        sensor_bus_write_bytes(
-            barometer->aht20, NULL_I2C_MEM_ADDR, sizeof(trigger), trigger));
-    if (err != ESP_OK) {
-        main_barometer_aht20_transfer_failed(barometer, err);
-        barometer->reading.aht20_valid = false;
-        return err;
-    }
-
-    uint8_t data[7] = {0};
-    const int64_t deadline_us = esp_timer_get_time() +
-        (int64_t)AHT20_TIMEOUT_MS * INT64_C(1000);
-    bool ready = false;
-    while (esp_timer_get_time() < deadline_us) {
-        /* A 2 ms poll is one 10 ms tick at HZ=100; the deadline remains wall time. */
-        vTaskDelay((TickType_t)app_ms_to_ticks_min_one(
-            AHT20_BUSY_POLL_MS, configTICK_RATE_HZ));
-        if (esp_timer_get_time() >= deadline_us) {
-            break;
-        }
-        err = main_barometer_classify_error(
-            AHT20_ADDRESS,
-            sensor_bus_read_bytes(
-                barometer->aht20, NULL_I2C_MEM_ADDR, sizeof(data), data));
-        if (err != ESP_OK) {
-            main_barometer_aht20_transfer_failed(barometer, err);
-            barometer->reading.aht20_valid = false;
-            return err;
-        }
-        if (esp_timer_get_time() >= deadline_us) {
-            break;
-        }
-        if ((data[0] & AHT20_STATUS_BUSY) == 0U) {
-            ready = true;
-            break;
-        }
-    }
-
-    if (!ready) {
-        barometer->reading.aht20_valid = false;
-        return ESP_ERR_TIMEOUT;
-    }
-    if (main_barometer_aht20_crc8(data, 6U) != data[6]) {
-        barometer->reading.aht20_valid = false;
-        return ESP_ERR_INVALID_STATE;
-    }
-    if ((data[0] & AHT20_STATUS_CALIBRATED) == 0U) {
-        barometer->reading.aht20_valid = false;
-        barometer->aht20_initialized = false;
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    const uint32_t raw_humidity =
-        ((uint32_t)data[1] << 12U) | ((uint32_t)data[2] << 4U) |
-        ((uint32_t)data[3] >> 4U);
-    const uint32_t raw_temperature =
-        (((uint32_t)data[3] & 0x0FU) << 16U) | ((uint32_t)data[4] << 8U) |
-        (uint32_t)data[5];
-    barometer->reading.humidity_mpct =
-        (uint32_t)(((uint64_t)raw_humidity * UINT64_C(100000) + 524288U) /
-                   UINT64_C(1048576));
-    barometer->reading.aht20_temperature_mc =
-        (int32_t)(((uint64_t)raw_temperature * UINT64_C(200000) + 524288U) /
-                  UINT64_C(1048576)) - 50000;
-    barometer->reading.aht20_valid = true;
-    return ESP_OK;
-}
-
 void main_barometer_init(main_barometer_t *barometer)
 {
     if (barometer == NULL) {
         return;
     }
     memset(barometer, 0, sizeof(*barometer));
-    barometer->aht20_probe_required = true;
     (void)nrf_ema_filter_init(
         &barometer->altitude_filter, 1000U, -2000000.0, 10000000.0);
     (void)nrf_ema_filter_init(
@@ -901,37 +708,6 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
         }
     }
 
-    if (!barometer->bme280 &&
-        (!barometer->aht20_attempted ||
-         (now_ms >= barometer->last_aht20_attempt_ms &&
-          now_ms - barometer->last_aht20_attempt_ms >= AHT20_POLL_PERIOD_MS))) {
-        barometer->aht20_attempted = true;
-        barometer->last_aht20_attempt_ms = now_ms;
-        esp_err_t aht_err;
-        bool aht_retry_deferred = false;
-        if (barometer->aht20_probe_required &&
-            now_ms < barometer->aht20_retry_after_ms) {
-            aht_err = barometer->aht20_retry_error;
-            aht_retry_deferred = true;
-        } else {
-            aht_err = main_barometer_read_aht20(barometer);
-        }
-        if (aht_err == ESP_OK) {
-            barometer->aht20_retry_after_ms = 0U;
-            barometer->aht20_retry_error = ESP_OK;
-        } else if (barometer->aht20_probe_required && !aht_retry_deferred) {
-            barometer->aht20_retry_error = aht_err;
-            if (main_barometer_retryable_bus_error(aht_err)) {
-                barometer->aht20_retry_after_ms =
-                    now_ms + MAIN_BAROMETER_RETRY_BACKOFF_MS;
-            } else {
-                barometer->aht20_retry_after_ms = now_ms;
-            }
-        }
-        if (result == ESP_OK) {
-            result = aht_err;
-        }
-    }
     return result;
 }
 
@@ -957,9 +733,6 @@ void main_barometer_close(main_barometer_t *barometer)
     if (barometer->bmp280 != NULL) {
         (void)sensor_bus_device_delete(&barometer->bmp280);
     }
-    if (barometer->aht20 != NULL) {
-        (void)sensor_bus_device_delete(&barometer->aht20);
-    }
     memset(&barometer->handles, 0, sizeof(barometer->handles));
     barometer->bmp280_initialized = false;
     barometer->bmp280_state = MAIN_BMP280_PROBE;
@@ -970,12 +743,8 @@ void main_barometer_close(main_barometer_t *barometer)
     barometer->bmp280_conversion_pending = false;
     barometer->bmp280_conversion_seen = false;
     barometer->reading.bmp280_valid = false;
-    barometer->aht20_initialized = false;
-    barometer->aht20_probe_required = true;
     barometer->bmp280_retry_after_ms = 0U;
-    barometer->aht20_retry_after_ms = 0U;
     barometer->bmp280_retry_error = ESP_OK;
-    barometer->aht20_retry_error = ESP_OK;
 }
 
 void main_barometer_get_reading(

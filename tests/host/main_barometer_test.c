@@ -15,7 +15,6 @@
 #define REG_CTRL_MEAS 0xF4U
 #define REG_CONFIG 0xF5U
 #define BMP_ID 0x58U
-#define AHT_ADDRESS 0x38U
 
 typedef struct {
     uint8_t address;
@@ -32,13 +31,7 @@ typedef struct {
     unsigned get_handles_calls;
     bool probe_timeout_enabled;
     uint8_t probe_timeout_address;
-    uint8_t aht_frame[7];
-    uint8_t aht_status;
-    unsigned aht_busy_reads;
-    unsigned aht_frame_reads;
-    TickType_t last_delay_ticks;
     int64_t now_us;
-    uint32_t delay_extra_us;
     bool timeout_bmp_data;
     /* Opt-in: a BMP/BME280 outside normal mode returns the reset data (0x80000). */
     bool bmp_model_sleep;
@@ -114,25 +107,10 @@ static void setup_bmp280(uint8_t address, uint8_t chip_id)
     data[5] = (uint8_t)(raw_temperature << 4U);
 }
 
-static void setup_aht20(void)
-{
-    s_fake.responding[AHT_ADDRESS] = true;
-    s_fake.aht_status = 0x08U;
-    s_fake.aht_frame[0] = 0x08U;
-    /* 50.000% RH and 0 C. */
-    s_fake.aht_frame[1] = 0x80U;
-    s_fake.aht_frame[2] = 0x00U;
-    s_fake.aht_frame[3] = 0x04U;
-    s_fake.aht_frame[4] = 0x00U;
-    s_fake.aht_frame[5] = 0x00U;
-    s_fake.aht_frame[6] = main_barometer_aht20_crc8(s_fake.aht_frame, 6U);
-}
-
 static void reset_fake(void)
 {
     memset(&s_fake, 0, sizeof(s_fake));
     fake_barometer_log[0] = '\0';
-    setup_aht20();
 }
 
 esp_err_t sensor_bus_probe_address(uint8_t address)
@@ -183,8 +161,7 @@ esp_err_t i2c_bus_device_delete(i2c_bus_device_handle_t *device)
     if (device == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (*device != NULL && ((fake_device_t *)*device)->address != AHT_ADDRESS &&
-        s_fake.bmp_delete_error != ESP_OK) {
+    if (*device != NULL && s_fake.bmp_delete_error != ESP_OK) {
         return s_fake.bmp_delete_error;
     }
     *device = NULL;
@@ -232,22 +209,6 @@ static esp_err_t fake_read(
         static const uint8_t reset_data[6] = {0x80U, 0x00U, 0x00U, 0x80U, 0x00U, 0x00U};
         memcpy(data, reset_data, sizeof(reset_data));
         return ESP_OK;
-    }
-    if (address == AHT_ADDRESS && mem_address == NULL_I2C_MEM_ADDR) {
-        if (data_len == 1U) {
-            data[0] = s_fake.aht_status;
-            return ESP_OK;
-        }
-        if (data_len == sizeof(s_fake.aht_frame)) {
-            ++s_fake.aht_frame_reads;
-            memcpy(data, s_fake.aht_frame, data_len);
-            if (s_fake.aht_busy_reads > 0U) {
-                data[0] |= 0x80U;
-                --s_fake.aht_busy_reads;
-            }
-            return ESP_OK;
-        }
-        return ESP_ERR_INVALID_ARG;
     }
     if ((size_t)mem_address + data_len > sizeof(s_fake.registers[address])) {
         return ESP_ERR_INVALID_ARG;
@@ -314,12 +275,6 @@ esp_err_t i2c_bus_write_bytes(
     if (!s_fake.responding[address]) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (address == AHT_ADDRESS && mem_address == NULL_I2C_MEM_ADDR) {
-        if (data_len == 3U && data[0] == 0xBEU) {
-            s_fake.aht_status |= 0x08U;
-        }
-        return ESP_OK;
-    }
     if ((size_t)mem_address + data_len > sizeof(s_fake.registers[address])) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -342,9 +297,7 @@ esp_err_t i2c_bus_write_bytes(
 
 void vTaskDelay(TickType_t ticks_to_wait)
 {
-    s_fake.last_delay_ticks = ticks_to_wait;
-    s_fake.now_us += (int64_t)ticks_to_wait * INT64_C(10000) +
-        s_fake.delay_extra_us;
+    s_fake.now_us += (int64_t)ticks_to_wait * INT64_C(10000);
 }
 
 int64_t esp_timer_get_time(void)
@@ -406,26 +359,6 @@ static void test_bme280_accepted_as_bmp280(void)
     main_barometer_close(&barometer);
 }
 
-static void test_bme280_skips_aht20_probe(void)
-{
-    reset_fake();
-    setup_bmp280(0x76U, 0x60U);
-    main_barometer_t barometer;
-    main_barometer_init(&barometer);
-    (void)main_barometer_poll(&barometer, 0U);
-
-    assert(barometer.bme280);
-    assert(!barometer.reading.aht20_present);
-    assert(!barometer.reading.aht20_valid);
-    for (size_t i = 0U; i < s_fake.address_probe_count; ++i) {
-        assert(s_fake.probed_addresses[i] != AHT_ADDRESS);
-    }
-    for (size_t i = 0U; i < s_fake.read_count; ++i) {
-        assert(s_fake.read_addresses[i] != AHT_ADDRESS);
-    }
-    main_barometer_close(&barometer);
-}
-
 static void test_bmp280_rejects_wrong_chip_id(void)
 {
     reset_fake();
@@ -439,40 +372,9 @@ static void test_bmp280_rejects_wrong_chip_id(void)
     main_barometer_close(&barometer);
 }
 
-static void test_aht20_crc_and_conversion(void)
+static void test_absent_bmp280_and_data_timeout_error_classification(void)
 {
-    reset_fake();
-    setup_bmp280(0x77U, BMP_ID);
     main_barometer_t barometer;
-    main_barometer_init(&barometer);
-    assert(main_barometer_poll(&barometer, 0U) == ESP_OK);
-    assert(barometer.reading.aht20_present);
-    assert(barometer.reading.aht20_valid);
-    assert(barometer.reading.humidity_mpct == 50000U);
-    assert(barometer.reading.aht20_temperature_mc == 0);
-    main_barometer_close(&barometer);
-
-    reset_fake();
-    setup_bmp280(0x77U, BMP_ID);
-    s_fake.aht_frame[6] ^= 1U;
-    main_barometer_init(&barometer);
-    assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_INVALID_STATE);
-    assert(s_fake.aht_status == 0x08U);
-    assert(barometer.reading.aht20_present);
-    assert(!barometer.reading.aht20_valid);
-    main_barometer_close(&barometer);
-}
-
-static void test_aht20_busy_timeout_and_transfer_error_classification(void)
-{
-    reset_fake();
-    setup_bmp280(0x77U, BMP_ID);
-    s_fake.aht_busy_reads = 100U;
-    main_barometer_t barometer;
-    main_barometer_init(&barometer);
-    assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_TIMEOUT);
-    assert(!barometer.reading.aht20_valid);
-    main_barometer_close(&barometer);
 
     reset_fake();
     main_barometer_init(&barometer);
@@ -490,57 +392,19 @@ static void test_aht20_busy_timeout_and_transfer_error_classification(void)
     main_barometer_close(&barometer);
 }
 
-static void test_aht20_monotonic_deadline_boundaries_and_minimum_tick(void)
-{
-    main_barometer_t barometer;
-
-    reset_fake();
-    setup_bmp280(0x77U, BMP_ID);
-    s_fake.aht_busy_reads = 8U;
-    main_barometer_init(&barometer);
-    assert(main_barometer_poll(&barometer, 0U) == ESP_OK);
-    assert(s_fake.now_us == INT64_C(90000));
-    assert(s_fake.last_delay_ticks == 1U);
-    assert(s_fake.aht_frame_reads == 9U);
-    main_barometer_close(&barometer);
-
-    reset_fake();
-    setup_bmp280(0x77U, BMP_ID);
-    s_fake.aht_busy_reads = 9U;
-    main_barometer_init(&barometer);
-    assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_TIMEOUT);
-    assert(s_fake.now_us == INT64_C(100000));
-    assert(s_fake.aht_frame_reads == 9U);
-    assert(!barometer.reading.aht20_valid);
-    main_barometer_close(&barometer);
-
-    reset_fake();
-    setup_bmp280(0x77U, BMP_ID);
-    s_fake.aht_busy_reads = 100U;
-    s_fake.delay_extra_us = 1000U;
-    main_barometer_init(&barometer);
-    assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_TIMEOUT);
-    assert(s_fake.now_us == INT64_C(110000));
-    assert(s_fake.last_delay_ticks == 1U);
-    assert(s_fake.aht_frame_reads == 9U);
-    assert(!barometer.reading.aht20_valid);
-    main_barometer_close(&barometer);
-}
-
 static void test_absent_bmp280_retries_probe_only_for_five_seconds_then_reads_after_ack(void)
 {
     reset_fake();
-    s_fake.responding[AHT_ADDRESS] = false;
     main_barometer_t barometer;
     main_barometer_init(&barometer);
 
     assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_NOT_FOUND);
-    assert(s_fake.address_probe_count == 3U); /* BMP 0x77/0x76 and AHT20 */
+    assert(s_fake.address_probe_count == 2U); /* BMP 0x77/0x76 */
     assert(s_fake.read_count == 0U);
 
     (void)main_barometer_poll(&barometer, 200U);
     (void)main_barometer_poll(&barometer, 4800U);
-    assert(s_fake.address_probe_count == 3U);
+    assert(s_fake.address_probe_count == 2U);
     assert(s_fake.read_count == 0U);
 
     setup_bmp280(0x76U, BMP_ID);
@@ -548,7 +412,7 @@ static void test_absent_bmp280_retries_probe_only_for_five_seconds_then_reads_af
     (void)main_barometer_poll(&barometer, 5200U);
     assert(barometer.reading.bmp280_valid);
     assert(barometer.reading.bmp280_address == 0x76U);
-    assert(s_fake.address_probe_count > 3U);
+    assert(s_fake.address_probe_count > 2U);
     assert(s_fake.read_count > 0U);
     main_barometer_close(&barometer);
 }
@@ -556,7 +420,6 @@ static void test_absent_bmp280_retries_probe_only_for_five_seconds_then_reads_af
 static void test_probe_timeout_skips_full_read_transaction(void)
 {
     reset_fake();
-    s_fake.responding[AHT_ADDRESS] = false;
     s_fake.probe_timeout_enabled = true;
     s_fake.probe_timeout_address = 0x77U;
     main_barometer_t barometer;
@@ -689,7 +552,6 @@ static void test_boot_polling_does_not_touch_i2c_before_preflight(void)
         assert(s_fake.address_probe_count == 0U);
         assert(s_fake.read_count == 0U);
         assert(!barometer.reading.bmp280_present);
-        assert(!barometer.reading.aht20_present);
     }
     main_barometer_request_polling();
     main_barometer_request_polling();
@@ -710,7 +572,6 @@ static void test_boot_polling_does_not_touch_i2c_before_preflight(void)
     assert(main_barometer_ms_until_poll(&barometer, due_ms + 500U, 700U) == 1U);
     assert(barometer.reading.bmp280_present);
     assert(!barometer.reading.bmp280_valid);
-    assert(barometer.reading.aht20_valid);
     assert(main_barometer_poll(&barometer, 12000U) == ESP_OK);
     assert(barometer.reading.bmp280_valid);
     assert(barometer.reading.pressure_pa > 0U);
@@ -1117,7 +978,6 @@ static void test_fallback_preserves_capture_and_does_not_sleep(void)
         (void)main_barometer_poll(&barometer, now);
     assert(barometer.bmp280_forced);
     assert(barometer.height_reference_capture_active);
-    barometer.last_aht20_attempt_ms = 3200U; /* isolate BMP timing from the separate AHT20 delay */
     const int64_t before = s_fake.now_us;
     (void)main_barometer_poll(&barometer, 3200U);
     assert(s_fake.now_us == before);
@@ -1145,7 +1005,7 @@ static void test_normal_without_conversion_evidence_rejects_old_registers(void)
 static void test_forced_conversion_timeout_discards_state(void)
 {
     reset_fake();
-    setup_bmp280(0x76U, 0x60U); /* isolate BMP from AHT scheduling */
+    setup_bmp280(0x76U, 0x60U);
     main_barometer_t barometer;
     main_barometer_init(&barometer);
     (void)main_barometer_poll(&barometer, 0U);
@@ -1301,11 +1161,8 @@ int main(void)
     test_bmp280_compensation_datasheet_vector();
     test_bmp280_probes_preferred_then_fallback_address();
     test_bme280_accepted_as_bmp280();
-    test_bme280_skips_aht20_probe();
     test_bmp280_rejects_wrong_chip_id();
-    test_aht20_crc_and_conversion();
-    test_aht20_busy_timeout_and_transfer_error_classification();
-    test_aht20_monotonic_deadline_boundaries_and_minimum_tick();
+    test_absent_bmp280_and_data_timeout_error_classification();
     test_absent_bmp280_retries_probe_only_for_five_seconds_then_reads_after_ack();
     test_probe_timeout_skips_full_read_transaction();
     test_main_height_reference_stable_unstable_and_relative();

@@ -41,10 +41,6 @@ typedef struct {
     main_barometer_reference_state_t height_reference_state;
     uint16_t height_reference_generation;
     int32_t relative_z_mm;
-    bool aht20_present;
-    bool aht20_valid;
-    uint32_t humidity_mpct;
-    int32_t aht20_temperature_mc;
 } main_barometer_reading_t;
 
 typedef enum {
@@ -58,7 +54,6 @@ typedef enum {
 typedef struct {
     sensor_bus_handles_t handles;
     i2c_bus_device_handle_t bmp280;
-    i2c_bus_device_handle_t aht20;
     main_barometer_bmp280_calibration_t calibration;
     nrf_ema_filter_t altitude_filter;
     nrf_ema_filter_t pressure_filter;
@@ -66,10 +61,7 @@ typedef struct {
     uint64_t next_bmp280_poll_ms;
     uint64_t bmp280_retry_after_ms;
     uint64_t bmp280_pending_count_due_ms;
-    uint64_t aht20_retry_after_ms;
-    uint64_t last_aht20_attempt_ms;
     esp_err_t bmp280_retry_error;
-    esp_err_t aht20_retry_error;
     /* Consecutive polls without a proven new sample. */
     uint8_t bmp280_pending_polls;
     /* Consecutive polls that lost the shared-bus owner lock to another task. */
@@ -82,10 +74,7 @@ typedef struct {
     uint64_t bmp280_conversion_deadline_ms;
     main_bmp280_state_t bmp280_state;
     bool bmp280_initialized;
-    bool aht20_initialized;
     bool bme280;
-    bool aht20_probe_required;
-    bool aht20_attempted;
     bool height_reference_capture_active;
     bool height_reference_has_sample;
     uint64_t height_reference_capture_started_ms;
@@ -117,5 +106,3 @@ bool main_barometer_bmp280_compensate(
     const main_barometer_bmp280_calibration_t *calibration,
     uint32_t *pressure_pa,
     int32_t *temperature_mc);
-
-uint8_t main_barometer_aht20_crc8(const uint8_t *data, uint8_t length);

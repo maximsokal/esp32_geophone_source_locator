@@ -145,7 +145,7 @@ def test_max481_cases_are_reachable_from_main_and_registered():
         (
             "main_barometer",
             "tests/host/main_barometer_test.c",
-            ("aht20_monotonic_deadline_boundaries_and_minimum_tick",),
+            ("bmp280_compensation_datasheet_vector",),
         ),
         (
             "app_tick_conversion",

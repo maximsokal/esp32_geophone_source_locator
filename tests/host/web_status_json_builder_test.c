@@ -427,11 +427,8 @@ static void fill_status(void)
     g_status.mux.active_pod = 2;
     g_status.main.bmp280_present = true;
     g_status.main.bmp280_valid = true;
-    g_status.main.aht20_present = true;
-    g_status.main.aht20_valid = true;
     g_status.main.pressure_pa = 100654U;
     g_status.main.temperature_mc = 25080;
-    g_status.main.humidity_mpct = 50000U;
     g_status.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
     g_status.main.height_reference.generation = 27U;
     g_status.main.height_reference.relative_z_mm = 0;
@@ -708,11 +705,8 @@ static void test_full_builder_and_pods(void)
     assert_number_near(number_item(main_reference, "relative_z_mm"), 0.0);
     assert_number_near(number_item(main, "pressure_pa"), 100654.0);
     assert_number_near(number_item(main, "temperature_mc"), 25080.0);
-    assert_number_near(number_item(main, "humidity_mpct"), 50000.0);
     assert(bool_item(object_item(main, "sensor_present"), "bmp280"));
-    assert(bool_item(object_item(main, "sensor_present"), "aht20"));
     assert(bool_item(object_item(main, "sensor_valid"), "bmp280"));
-    assert(bool_item(object_item(main, "sensor_valid"), "aht20"));
 
     static const char *const reference_states[] = {
         "not_established", "valid", "rejected_moving", "sensor_invalid",
@@ -843,16 +837,15 @@ static void test_power_json_state_strings_remain_stable(void)
     }
 }
 
-static void test_main_status_omits_aht_humidity_when_absent(void)
+static void test_main_status_has_no_aht20_fields(void)
 {
     reset_fakes();
     fill_status();
-    g_status.main.aht20_present = false;
-    g_status.main.aht20_valid = false;
     cJSON *root = build_json(false, NULL);
     cJSON *main = object_item(root, "main");
     assert(cJSON_GetObjectItemCaseSensitive(main, "humidity_mpct") == NULL);
-    assert(!bool_item(object_item(main, "sensor_present"), "aht20"));
+    assert(cJSON_GetObjectItemCaseSensitive(object_item(main, "sensor_present"), "aht20") == NULL);
+    assert(cJSON_GetObjectItemCaseSensitive(object_item(main, "sensor_valid"), "aht20") == NULL);
     cJSON_Delete(root);
 }
 
@@ -1085,7 +1078,7 @@ int main(void)
     test_node_link_status_is_added_to_pods();
     test_invalid_battery_percentage_is_not_serialized_as_zero();
     test_power_json_state_strings_remain_stable();
-    test_main_status_omits_aht_humidity_when_absent();
+    test_main_status_has_no_aht20_fields();
     test_pod_unavailable_humidity_is_serialized();
     test_policy_fault_and_snapshot_fallback();
     test_extended_cache_and_errors();

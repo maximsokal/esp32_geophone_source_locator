@@ -19,7 +19,7 @@
 #define WEB_STATUS_BUDGET_ALLOCS_CEILING 1310U
 #define WEB_STATUS_BUDGET_PEAK_BYTES_CEILING 68000U
 #define WEB_STATUS_BUDGET_JSON_BYTES_CEILING 12288U
-#define WEB_STATUS_BUDGET_EXPECTED_NODE_COUNT 619U
+#define WEB_STATUS_BUDGET_EXPECTED_NODE_COUNT 616U
 
 typedef struct {
     const char *label;
@@ -458,7 +458,9 @@ static void budget_assert_regression_ceilings(
     /* Full-scenario measurement with the per-pod sensor_health object (object
      * plus six booleans = 7 nodes x 4 pods = +28 nodes over the previous 591):
      * 1281 allocs, 66401 peak bytes, 10467 JSON bytes, and 619 cJSON nodes.
-     * The allocation ceiling keeps ~2% headroom over that measurement. */
+     * Removing the MAIN AHT20 fields (humidity plus two sensor flags) took
+     * 3 nodes off: 1275 allocs, 66207 peak bytes, 10419 JSON bytes, 616 nodes.
+     * The allocation ceiling keeps ~2% headroom over the 1281 measurement. */
     if (result->allocs_per_build > WEB_STATUS_BUDGET_ALLOCS_CEILING) {
         fprintf(stderr, "%s allocation ceiling exceeded: %llu > %u\n",
                 scenario->label,

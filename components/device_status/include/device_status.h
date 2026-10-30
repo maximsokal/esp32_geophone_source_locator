@@ -204,11 +204,8 @@ typedef struct
 {
     bool bmp280_present;
     bool bmp280_valid;
-    bool aht20_present;
-    bool aht20_valid;
     uint32_t pressure_pa;
     int32_t temperature_mc;
-    uint32_t humidity_mpct;
     device_main_height_reference_status_t height_reference;
 
 } device_main_status_t;
@@ -418,7 +415,7 @@ esp_err_t device_status_set_environment(
     bool valid
 );
 
-/* Publish MAIN's directly connected BMP280/AHT20 diagnostics and reference. */
+/* Publish MAIN's directly connected BMP280 diagnostics and reference. */
 esp_err_t device_status_set_main(const device_main_status_t *main_status);
 
 

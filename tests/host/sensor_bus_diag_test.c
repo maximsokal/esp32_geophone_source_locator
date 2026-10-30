@@ -93,7 +93,7 @@ static void test_device_names_and_timeout_formatting(void)
 {
     char line[192];
 
-    assert(strcmp(sensor_bus_diag_device_name(0x38U, "main_barometer"), "AHT20") == 0);
+    assert(strcmp(sensor_bus_diag_device_name(0x38U, "main_barometer"), "unknown") == 0);
     assert(strcmp(sensor_bus_diag_device_name(0x40U, "ina3221"), "INA3221") == 0);
     assert(strcmp(sensor_bus_diag_device_name(0x70U, "tca9548a"), "TCA9548A") == 0);
     assert(strcmp(sensor_bus_diag_device_name(0x76U, "main_barometer"), "BMP280") == 0);

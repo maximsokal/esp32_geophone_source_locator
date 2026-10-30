@@ -59,7 +59,6 @@ const OPTIONAL_INNER_FIELDS: Array<[string, unknown]> = [
   ['acquisition.signal.rail_hit_ratio', '0.1'],
   ['acquisition.signal.clip_ratio', '0.1'],
   ['main.height_reference', []],
-  ['main.humidity_mpct', '50000'],
   ['main.sensor_present', []],
   ['main.sensor_valid', []],
   ['hardware.modules.0.reason_code', 3],
@@ -354,7 +353,6 @@ describe('normalizeDeviceStatus', () => {
       'acquisition.signal.rail_hit_ratio',
       'acquisition.signal.clip_ratio',
       'main.height_reference',
-      'main.humidity_mpct',
       'hardware.modules.0.reason_code',
       'recording_sessions.sessions.0.dropped_frames_available',
       'recording_sessions.sessions.0.recording_ms_available',
@@ -395,9 +393,6 @@ describe('normalizeDeviceStatus', () => {
     setAt(raw, 'ranging.available', false);
     setAt(raw, 'ranging.error', 'ESP_ERR_INVALID_STATE');
     deleteAt(raw, 'ranging.progress');
-    setAt(raw, 'main.sensor_present.aht20', false);
-    setAt(raw, 'main.sensor_valid.aht20', false);
-    deleteAt(raw, 'main.humidity_mpct');
 
     expect(normalizeDeviceStatus(raw)).toBe(raw);
 

@@ -364,9 +364,8 @@ export interface DeviceMainStatus {
   height_reference?: MainHeightReference;
   pressure_pa?: number;
   temperature_mc?: number;
-  humidity_mpct?: number;
-  sensor_present?: { bmp280: boolean; aht20: boolean };
-  sensor_valid?: { bmp280: boolean; aht20: boolean };
+  sensor_present?: { bmp280: boolean };
+  sensor_valid?: { bmp280: boolean };
 }
 
 export type NodeLinkStatus = 'NOT_CONNECTED' | 'CONNECTED' | 'READY' | 'MEASURING' | 'STALE';

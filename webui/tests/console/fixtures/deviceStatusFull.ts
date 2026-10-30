@@ -84,9 +84,8 @@ export function fullDeviceStatus(): DeviceStatus {
       height_reference: { state: 'valid', generation: 1, relative_z_mm: 0 },
       pressure_pa: 100000,
       temperature_mc: 20000,
-      humidity_mpct: 50000,
-      sensor_present: { bmp280: true, aht20: true },
-      sensor_valid: { bmp280: true, aht20: true },
+      sensor_present: { bmp280: true },
+      sensor_valid: { bmp280: true },
     },
     pods: [pod(1), pod(2)],
     acquisition: {

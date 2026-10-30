@@ -134,17 +134,15 @@ static void test_status_enum_and_presence_domains(void)
     assert(device_status_set_battery_soc_quality((device_battery_soc_quality_t)-1) == ESP_ERR_INVALID_ARG);
     assert(device_status_set_power_state(DEVICE_POWER_STATE_UNKNOWN, false,
         (device_low_battery_phase_t)-1, 0U) == ESP_ERR_INVALID_ARG);
-    for (unsigned flags = 0U; flags < 16U; ++flags) {
+    for (unsigned flags = 0U; flags < 4U; ++flags) {
         const device_main_status_t main_value = {
             .bmp280_present = (flags & 1U) != 0U, .bmp280_valid = (flags & 2U) != 0U,
-            .aht20_present = (flags & 4U) != 0U, .aht20_valid = (flags & 8U) != 0U,
-            .pressure_pa = 100000U, .humidity_mpct = 50000U,
+            .pressure_pa = 100000U,
         };
-        const bool coherent = (!main_value.bmp280_valid || main_value.bmp280_present) &&
-            (!main_value.aht20_valid || main_value.aht20_present);
+        const bool coherent = !main_value.bmp280_valid || main_value.bmp280_present;
         assert(device_status_set_main(&main_value) == (coherent ? ESP_OK : ESP_ERR_INVALID_ARG));
     }
-    puts("SIGNAL_CASE STATUS.ENUMS_PRESENCE PASS bytes=256 flag_sets=16");
+    puts("SIGNAL_CASE STATUS.ENUMS_PRESENCE PASS bytes=256 flag_sets=4");
 }
 
 int main(void)

@@ -298,8 +298,7 @@ esp_err_t device_status_set_main(const device_main_status_t *main_status)
             (unsigned)DEVICE_MAIN_HEIGHT_REFERENCE_SENSOR_INVALID ||
         (main_status->height_reference.state != DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
          main_status->height_reference.relative_z_mm != 0) ||
-        (main_status->bmp280_valid && !main_status->bmp280_present) ||
-        (main_status->aht20_valid && !main_status->aht20_present)) {
+        (main_status->bmp280_valid && !main_status->bmp280_present)) {
         return ESP_ERR_INVALID_ARG;
     }
 

@@ -60,11 +60,9 @@ static void app_main_report_topology_inventory(esp_err_t topology_start_err)
                 device_status_snapshot_t status;
                 if (device_status_get_snapshot(&status) == ESP_OK) {
                     const device_main_status_t *main_status = &status.main;
-                    const bool sensor_present =
-                        main_status->bmp280_present || main_status->aht20_present;
+                    const bool sensor_present = main_status->bmp280_present;
                     const bool sensor_valid =
-                        (main_status->bmp280_present && main_status->bmp280_valid) ||
-                        (main_status->aht20_present && main_status->aht20_valid);
+                        main_status->bmp280_present && main_status->bmp280_valid;
 
                     if (sensor_valid) {
                         hw_inventory_report(

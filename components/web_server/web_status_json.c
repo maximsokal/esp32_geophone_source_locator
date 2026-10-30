@@ -317,13 +317,10 @@ static bool web_status_json_add_main(cJSON *root, const device_main_status_t *ma
         cJSON_AddNumberToObject(object, "pressure_pa", main_status->pressure_pa) == NULL ||
         cJSON_AddNumberToObject(object, "temperature_mc", main_status->temperature_mc) == NULL ||
         cJSON_AddBoolToObject(sensor_present, "bmp280", main_status->bmp280_present) == NULL ||
-        cJSON_AddBoolToObject(sensor_present, "aht20", main_status->aht20_present) == NULL ||
-        cJSON_AddBoolToObject(sensor_valid, "bmp280", main_status->bmp280_valid) == NULL ||
-        cJSON_AddBoolToObject(sensor_valid, "aht20", main_status->aht20_valid) == NULL) {
+        cJSON_AddBoolToObject(sensor_valid, "bmp280", main_status->bmp280_valid) == NULL) {
         return false;
     }
-    return !main_status->aht20_present ||
-        cJSON_AddNumberToObject(object, "humidity_mpct", main_status->humidity_mpct) != NULL;
+    return true;
 }
 
 static bool web_status_json_add_mux(cJSON *root, const device_mux_status_t *mux)
