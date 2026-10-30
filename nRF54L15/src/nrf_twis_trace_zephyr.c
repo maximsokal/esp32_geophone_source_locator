@@ -107,12 +107,19 @@ static void trace_event(const nrfx_twis_event_t *event)
         /* TWIS may buffer the first byte before PREPARERX. At 1 MHz the
          * remaining bytes need >=8 us each; allow 1 us timestamp rounding.
          * buf_req=false means RX already started, so elapsed time is unusable. */
-        if ((!rx_started && received.rx_amount != 0U) ||
-            received.rx_amount > s_rx_capacity ||
+        const bool over_capacity = received.rx_amount > s_rx_capacity;
+        const bool stale_amount =
+            (!rx_started && received.rx_amount != 0U) ||
             (s_rx_requested_before_start && received.rx_amount != 0U &&
              (uint64_t)(received.rx_amount - 1U) * 8U >
-                 (uint64_t)received.event_dt_us + 1U)) {
-            received.direction = NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR;
+                 (uint64_t)received.event_dt_us + 1U);
+        if (over_capacity || stale_amount) {
+            /* Without ERRORSRC, a count the bus could not have delivered is the
+             * leftover of the previous transfer (an address-only probe), not a bus
+             * fault. A count above the armed buffer is never legitimate. */
+            received.direction = (!over_capacity && !failed && received.hw_error == 0U)
+                ? NRF_BOOT_TWIS_DIRECTION_WRITE_STALE_AMOUNT
+                : NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR;
             received.result = -EPROTO;
             nrf_bootstrap_runtime_zephyr_record_twis_hardware(&received);
             return;

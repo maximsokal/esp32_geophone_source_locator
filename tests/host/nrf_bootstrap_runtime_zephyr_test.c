@@ -457,7 +457,8 @@ static void test_address_only_status_select_with_stale_dma_count(void)
     s_test_twis_handler(&event);
     bool rejected_stale_payload = false;
     while (nrf_bootstrap_runtime_zephyr_drain_twis_record(&drained)) {
-        if (drained.direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR) {
+        assert(drained.direction != NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR);
+        if (drained.direction == NRF_BOOT_TWIS_DIRECTION_WRITE_STALE_AMOUNT) {
             assert(drained.result == -EPROTO && drained.rx_amount == 12U);
             assert(drained.event_dt_us == 11U && drained.prefix_length == 0U);
             rejected_stale_payload = true;

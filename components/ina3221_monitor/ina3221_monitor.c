@@ -15,7 +15,6 @@
 #include "ina3221_status_log_policy.h"
 #include "app_events.h"
 #include "ina3221_policy.h"
-#include "main_barometer.h"
 #include "sensor_bus.h"
 #include "sensor_bus_diag.h"
 
@@ -44,67 +43,6 @@
 
 static const char *TAG =
     "INA3221";
-static sensor_bus_diag_state_t s_i2c_diag_state;
-
-/* The shared-bus owner codes are not in esp_err_to_name(), which prints "ERROR". */
-static const char *ina3221_monitor_barometer_error_name(esp_err_t err)
-{
-    if (err == SENSOR_BUS_ERR_MUTEX_BUSY) {
-        return "bus_busy";
-    }
-    if (err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) {
-        return "bus_hold_budget";
-    }
-    return esp_err_to_name(err);
-}
-
-static void ina3221_monitor_log_main_barometer_error(
-    main_barometer_t *barometer,
-    esp_err_t err,
-    uint32_t now_ms)
-{
-    if (err == ESP_OK || !sensor_bus_diag_rate_limit_allow(
-            &s_i2c_diag_state, now_ms, "main_barometer")) {
-        return;
-    }
-
-    main_barometer_reading_t reading = { 0 };
-    main_barometer_get_reading(barometer, &reading);
-    const bool bmp280_invalid =
-        reading.bmp280_address != 0U && !reading.bmp280_valid;
-    const bool aht20_invalid =
-        reading.aht20_present && !reading.aht20_valid;
-    if (bmp280_invalid && aht20_invalid) {
-        ESP_LOGW(TAG,
-                 "I2C_BAROMETER_WARN src=main_barometer bmp_addr=0x%02X bmp_dev=%s aht20_addr=0x38 aht20_dev=%s err=%s",
-                 (unsigned)reading.bmp280_address,
-                 sensor_bus_diag_device_name(
-                     reading.bmp280_address, "main_barometer"),
-                 sensor_bus_diag_device_name(0x38U, "main_barometer"),
-                 ina3221_monitor_barometer_error_name(err));
-    } else if (bmp280_invalid) {
-        ESP_LOGW(TAG,
-                 "I2C_BAROMETER_WARN src=main_barometer addr=0x%02X dev=%s err=%s",
-                 (unsigned)reading.bmp280_address,
-                 sensor_bus_diag_device_name(
-                     reading.bmp280_address, "main_barometer"),
-                 ina3221_monitor_barometer_error_name(err));
-    } else if (aht20_invalid) {
-        ESP_LOGW(TAG,
-                 "I2C_BAROMETER_WARN src=main_barometer addr=0x38 dev=%s err=%s",
-                 sensor_bus_diag_device_name(0x38U, "main_barometer"),
-                 ina3221_monitor_barometer_error_name(err));
-    } else {
-        const uint8_t address = reading.bmp280_address != 0U
-            ? reading.bmp280_address
-            : reading.aht20_present ? 0x38U : 0U;
-        ESP_LOGW(TAG,
-                 "I2C_BAROMETER_WARN src=main_barometer addr=0x%02X dev=%s err=%s",
-                 (unsigned)address,
-                 sensor_bus_diag_device_name(address, "main_barometer"),
-                 ina3221_monitor_barometer_error_name(err));
-    }
-}
 
 
 static TaskHandle_t s_task =
@@ -597,45 +535,6 @@ static void ina3221_monitor_publish(
     );
 }
 
-static device_main_height_reference_state_t ina3221_monitor_main_reference_state(
-    main_barometer_reference_state_t state)
-{
-    switch (state) {
-        case MAIN_BAROMETER_REFERENCE_VALID:
-            return DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
-        case MAIN_BAROMETER_REFERENCE_REJECTED_UNSTABLE:
-            return DEVICE_MAIN_HEIGHT_REFERENCE_REJECTED_UNSTABLE;
-        case MAIN_BAROMETER_REFERENCE_SENSOR_INVALID:
-            return DEVICE_MAIN_HEIGHT_REFERENCE_SENSOR_INVALID;
-        case MAIN_BAROMETER_REFERENCE_NOT_ESTABLISHED:
-        default:
-            return DEVICE_MAIN_HEIGHT_REFERENCE_NOT_ESTABLISHED;
-    }
-}
-
-static void ina3221_monitor_publish_main_barometer(main_barometer_t *barometer)
-{
-    main_barometer_reading_t reading = {0};
-    main_barometer_get_reading(barometer, &reading);
-    const device_main_status_t status = {
-        .bmp280_present = reading.bmp280_present,
-        .bmp280_valid = reading.bmp280_valid,
-        .aht20_present = reading.aht20_present,
-        .aht20_valid = reading.aht20_valid,
-        .pressure_pa = reading.pressure_pa,
-        .temperature_mc = reading.temperature_mc,
-        .humidity_mpct = reading.humidity_mpct,
-        .height_reference = {
-            .state = ina3221_monitor_main_reference_state(
-                reading.height_reference_state),
-            .generation = reading.height_reference_generation,
-            .relative_z_mm = reading.relative_z_mm,
-        },
-    };
-    (void)device_status_set_main(&status);
-}
-
-
 static void ina3221_monitor_log_sample(
     const ina3221_channel_sample_t
         channels[INA3221_POLICY_CHANNEL_COUNT],
@@ -712,19 +611,13 @@ static void ina3221_monitor_log_sample(
 }
 
 
-static bool ina3221_monitor_wait_for_period_or_stop(const main_barometer_t *barometer)
+static bool ina3221_monitor_wait_for_period_or_stop(void)
 {
-    uint32_t period_ms =
+    const uint32_t period_ms =
         ina3221_monitor_fast_sampling_active() ?
             INA3221_MONITOR_FAST_PERIOD_MS :
             INA3221_MONITOR_PERIOD_MS;
 
-    if (barometer->handles.bus != NULL) {
-        const uint64_t now_ms = (uint64_t)(esp_timer_get_time() / INT64_C(1000));
-        const uint64_t until_poll_ms = barometer->next_bmp280_poll_ms > now_ms
-            ? barometer->next_bmp280_poll_ms - now_ms : 1U;
-        if (until_poll_ms < period_ms) period_ms = (uint32_t)until_poll_ms;
-    }
     const TickType_t wait_ticks = pdMS_TO_TICKS(period_ms);
     const uint32_t notifications =
         ulTaskNotifyTake(
@@ -768,20 +661,11 @@ static void ina3221_monitor_worker(
     bool hardware_available =
         false;
 
-    main_barometer_t main_barometer;
-    main_barometer_init(&main_barometer);
-
     if (!stop_before_start) {
         while (true) {
             const uint64_t now_ms =
                 (uint64_t)(esp_timer_get_time() / INT64_C(1000));
-            const esp_err_t barometer_err = main_barometer_poll(
-                &main_barometer,
-                now_ms);
             sensor_bus_log_diag_summary((uint32_t)now_ms);
-            ina3221_monitor_log_main_barometer_error(
-                &main_barometer, barometer_err, (uint32_t)now_ms);
-            ina3221_monitor_publish_main_barometer(&main_barometer);
 
             if (
                 has_last_good_sample &&
@@ -808,7 +692,7 @@ static void ina3221_monitor_worker(
                         }
                     }
                     hardware_available = false;
-                    if (ina3221_monitor_wait_for_period_or_stop(&main_barometer)) {
+                    if (ina3221_monitor_wait_for_period_or_stop()) {
                         break;
                     }
                     continue;
@@ -860,7 +744,7 @@ static void ina3221_monitor_worker(
                     hardware_available =
                         false;
 
-                    if (ina3221_monitor_wait_for_period_or_stop(&main_barometer)) {
+                    if (ina3221_monitor_wait_for_period_or_stop()) {
                         break;
                     }
                     continue;
@@ -934,7 +818,7 @@ static void ina3221_monitor_worker(
                     busy_log_started = true;
                 }
 
-                if (ina3221_monitor_wait_for_period_or_stop(&main_barometer)) {
+                if (ina3221_monitor_wait_for_period_or_stop()) {
                     break;
                 }
                 continue;
@@ -985,7 +869,7 @@ static void ina3221_monitor_worker(
                 hardware_available =
                     false;
 
-                if (ina3221_monitor_wait_for_period_or_stop(&main_barometer)) {
+                if (ina3221_monitor_wait_for_period_or_stop()) {
                     break;
                 }
                 continue;
@@ -1046,13 +930,12 @@ static void ina3221_monitor_worker(
                 );
             }
 
-            if (ina3221_monitor_wait_for_period_or_stop(&main_barometer)) {
+            if (ina3221_monitor_wait_for_period_or_stop()) {
                 break;
             }
         }
     }
 
-    main_barometer_close(&main_barometer);
     ina3221_driver_close(
         &driver
     );

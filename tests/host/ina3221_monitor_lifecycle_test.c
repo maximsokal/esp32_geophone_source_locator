@@ -32,36 +32,6 @@ void sensor_bus_log_diag_summary(uint32_t now_ms)
     (void)now_ms;
 }
 
-static uint32_t s_barometer_delay_ms;
-
-void main_barometer_init(main_barometer_t *barometer)
-{
-    memset(barometer, 0, sizeof(*barometer));
-}
-
-esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
-{
-    if (s_barometer_delay_ms != 0U) {
-        barometer->handles.bus = barometer;
-        barometer->next_bmp280_poll_ms = now_ms + s_barometer_delay_ms;
-    }
-    return ESP_OK;
-}
-
-void main_barometer_close(main_barometer_t *barometer)
-{
-    (void)barometer;
-}
-
-void main_barometer_get_reading(
-    const main_barometer_t *barometer,
-    main_barometer_reading_t *reading
-)
-{
-    (void)barometer;
-    memset(reading, 0, sizeof(*reading));
-}
-
 static int s_task_token;
 static TaskFunction_t s_worker_entry;
 static void *s_worker_argument;
@@ -1286,15 +1256,15 @@ static bool run_requested_max440_test(const char *name)
 }
 
 
-static void test_barometer_deadline_wakes_idle_worker(void)
+/* MAIN's barometer is polled by the nrf_topology task: this worker has no
+ * barometer, so its idle wait is its own sampling period and nothing else. */
+static void test_idle_wait_is_the_sampling_period_only(void)
 {
     reset_fakes();
-    s_barometer_delay_ms = 50U;
     s_stop_on_wait = true;
     assert(ina3221_monitor_start() == ESP_OK);
     s_worker_entry(s_worker_argument);
-    assert(s_last_wait_ticks == pdMS_TO_TICKS(50U));
-    s_barometer_delay_ms = 0U;
+    assert(s_last_wait_ticks == pdMS_TO_TICKS(INA3221_MONITOR_PERIOD_MS));
 }
 
 int main(int argc, char **argv)
@@ -1308,7 +1278,7 @@ int main(int argc, char **argv)
     test_start_is_rejected_while_stop_is_active();
     test_stop_handles_delayed_worker_registration();
     test_stop_notifies_running_worker_once();
-    test_barometer_deadline_wakes_idle_worker();
+    test_idle_wait_is_the_sampling_period_only();
     test_worker_publishes_normal_sample_and_cleans_up();
     test_open_failure_publishes_invalid_and_stops_on_notification();
     test_absent_ina_retries_at_least_five_seconds_apart();

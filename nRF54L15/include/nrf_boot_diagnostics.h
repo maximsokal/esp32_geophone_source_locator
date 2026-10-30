@@ -95,6 +95,10 @@ typedef enum {
     /* Receive side, recorded from the hardware event before the app callback runs. */
     NRF_BOOT_TWIS_DIRECTION_WRITE_DONE,
     NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR,
+    /* A write finished without RXSTARTED or a hardware error, yet RXD.AMOUNT still
+     * holds the previous transfer's count. This is the normal tail of an address-only
+     * probe, not a bus fault: the payload is dropped and it is counted apart from errors. */
+    NRF_BOOT_TWIS_DIRECTION_WRITE_STALE_AMOUNT,
 } nrf_boot_twis_direction_t;
 
 /* Callback records contain no pointers and are copied through the SPSC ring. */
@@ -148,6 +152,7 @@ typedef struct {
     uint32_t post_detail_read_count;
     uint32_t post_detail_error_count;
     uint32_t suppressed_error_count;
+    uint32_t post_detail_stale_amount_count;
 } nrf_boot_twis_log_state_t;
 
 typedef enum {
@@ -312,13 +317,17 @@ static inline nrf_boot_twis_log_action_t nrf_boot_twis_log_decide(
         state->last_summary_ms = now_ms;
         state->error_window_second = error_second;
     }
-    if (record->direction != NRF_BOOT_TWIS_DIRECTION_WRITE_RECEIVED) {
+    const bool stale_amount =
+        record->direction == NRF_BOOT_TWIS_DIRECTION_WRITE_STALE_AMOUNT;
+    if (stale_amount) {
+        nrf_boot_saturating_increment(&state->post_detail_stale_amount_count);
+    } else if (record->direction != NRF_BOOT_TWIS_DIRECTION_WRITE_RECEIVED) {
         nrf_boot_saturating_increment(&state->post_detail_read_count);
     } else {
         nrf_boot_saturating_increment(&state->post_detail_write_count);
     }
 
-    if (record->result != 0) {
+    if (record->result != 0 && !stale_amount) {
         nrf_boot_saturating_increment(&state->post_detail_error_count);
         if (state->error_window_second != error_second) {
             state->error_window_second = error_second;
@@ -363,9 +372,13 @@ static inline int nrf_boot_twis_record_format(
         return -EINVAL;
     }
     if (record->direction == NRF_BOOT_TWIS_DIRECTION_WRITE_DONE ||
-        record->direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR) {
+        record->direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR ||
+        record->direction == NRF_BOOT_TWIS_DIRECTION_WRITE_STALE_AMOUNT) {
         /* bytes= is the RX buffer as the TWIS left it, before the app callback. */
         const bool failed = record->direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR;
+        const char *rx_event = failed ? "WRITE_ERROR"
+            : record->direction == NRF_BOOT_TWIS_DIRECTION_WRITE_STALE_AMOUNT
+                ? "WRITE_STALE_AMOUNT" : "WRITE_DONE";
         uint8_t shown = record->prefix_length;
         if ((uint32_t)shown > NRF_BOOT_TRANSACTION_PREFIX_CAPACITY) {
             shown = NRF_BOOT_TRANSACTION_PREFIX_CAPACITY;
@@ -374,7 +387,7 @@ static inline int nrf_boot_twis_record_format(
             buffer, capacity,
             "twis_rx: tx=%" PRIu32 " event=%s rx_amount=%" PRIu32 " dt_us=%" PRIu32
             " hw_error=0x%08" PRIx32 " WRITE_ERROR=%u result=%" PRId32 " bytes=",
-            record->index, failed ? "WRITE_ERROR" : "WRITE_DONE", record->rx_amount,
+            record->index, rx_event, record->rx_amount,
             record->event_dt_us, record->hw_error, (unsigned)failed, record->result);
         if (written < 0 || (size_t)written >= capacity) {
             return -ENOSPC;
@@ -488,12 +501,13 @@ static inline int nrf_boot_twis_summary_format(
         capacity,
         "twis: summary write=%" PRIu32 " read=%" PRIu32
         " errors=%" PRIu32 " suppressed=%" PRIu32
-        " ring_dropped=%" PRIu32,
+        " ring_dropped=%" PRIu32 " stale_rx=%" PRIu32,
         state->post_detail_write_count,
         state->post_detail_read_count,
         state->post_detail_error_count,
         state->suppressed_error_count,
-        dropped_total);
+        dropped_total,
+        state->post_detail_stale_amount_count);
     if (written < 0 || (size_t)written >= capacity) {
         return -ENOSPC;
     }

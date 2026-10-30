@@ -680,6 +680,9 @@ static void test_boot_polling_does_not_touch_i2c_before_preflight(void)
     main_barometer_init(&barometer);
     assert(main_barometer_poll(NULL, 0U) == ESP_ERR_INVALID_ARG);
     assert(main_barometer_request_height_reference_capture(0U) == ESP_ERR_INVALID_ARG);
+    /* No polling requested and no bus yet: the owning task has no deadline to meet. */
+    assert(main_barometer_ms_until_poll(NULL, 0U, 700U) == 700U);
+    assert(main_barometer_ms_until_poll(&barometer, 0U, 700U) == 700U);
     for (uint64_t now_ms = 0U; now_ms <= 10000U; now_ms += 1000U) {
         assert(main_barometer_poll(&barometer, now_ms) == ESP_OK);
         assert(s_fake.get_handles_calls == 0U);
@@ -693,8 +696,18 @@ static void test_boot_polling_does_not_touch_i2c_before_preflight(void)
     assert(s_fake.get_handles_calls == 0U);
     assert(s_fake.address_probe_count == 0U);
     assert(s_fake.read_count == 0U);
+    /* Requested, but the bus is not open yet: still no deadline. */
+    assert(main_barometer_ms_until_poll(&barometer, 11000U, 700U) == 700U);
     assert(main_barometer_poll(&barometer, 11000U) == ESP_OK);
     assert(s_fake.get_handles_calls == 1U);
+    /* The task must wake for the next poll, never later and never past its own cap. */
+    assert(barometer.next_bmp280_poll_ms > 11000U);
+    const uint64_t due_ms = barometer.next_bmp280_poll_ms;
+    assert(main_barometer_ms_until_poll(&barometer, 11000U, 700U) ==
+           (due_ms - 11000U < 700U ? (uint32_t)(due_ms - 11000U) : 700U));
+    assert(main_barometer_ms_until_poll(&barometer, 11000U, 1U) == 1U);
+    assert(main_barometer_ms_until_poll(&barometer, due_ms, 700U) == 1U);
+    assert(main_barometer_ms_until_poll(&barometer, due_ms + 500U, 700U) == 1U);
     assert(barometer.reading.bmp280_present);
     assert(!barometer.reading.bmp280_valid);
     assert(barometer.reading.aht20_valid);

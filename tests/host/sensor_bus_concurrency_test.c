@@ -694,6 +694,12 @@ static void test_owner_try_acquire_does_not_wait(void)
     assert(context.waiter_stats.last_waited_for_mutex_us < 5000U);
     assert(context.waiter_stats.last_waiter_task[0] != '\0');
     assert(strcmp(context.waiter_stats.holder_task, "i2c-test") == 0);
+
+    /* Once the owner is gone nobody holds the bus: a stale holder name would blame
+     * the last user for a waiter that was merely scheduled late. */
+    sensor_bus_owner_stats_t free_stats = {0};
+    assert(sensor_bus_get_owner_stats(&free_stats) == ESP_OK);
+    assert(free_stats.holder_task[0] == '\0');
 }
 
 static void test_ina_transfer_cannot_interleave_inside_open_tca_channel(void)

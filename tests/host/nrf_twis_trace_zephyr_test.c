@@ -283,11 +283,27 @@ int main(void)
         emit(NRFX_TWIS_EVT_WRITE_DONE, 0U);
         assert(s_forwarded == forwarded_before + 1U);
         assert(s_record_count == records_before + 1U);
-        assert(s_records[records_before].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR);
+        /* Rejected, but classified apart from bus errors: nothing failed on the wire. */
+        assert(s_records[records_before].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_STALE_AMOUNT);
         assert(s_records[records_before].result == -EPROTO);
+        assert(s_records[records_before].hw_error == 0U);
         assert(s_records[records_before].rx_amount == 12U);
         assert(s_records[records_before].event_dt_us == 11U);
         assert(s_records[records_before].prefix_length == 0U);
+    }
+
+    /* The same stale amount together with a hardware error is a real fault. */
+    {
+        const unsigned forwarded_before = s_forwarded;
+        const unsigned records_before = s_record_count;
+        test_upstream_registers.rx_amount = 12U;
+        emit(NRFX_TWIS_EVT_WRITE_REQ, 1U);
+        s_cycles -= 6U;
+        emit(NRFX_TWIS_EVT_WRITE_ERROR, 1U);
+        assert(s_forwarded == forwarded_before + 1U);
+        assert(s_record_count == records_before + 1U);
+        assert(s_records[records_before].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR);
+        assert(s_records[records_before].hw_error == 1U);
     }
 
     /* Real payload durations at the requested bus rates, plus fast-mode
@@ -321,6 +337,7 @@ int main(void)
         assert(s_forwarded == forwarded_before + 1U);
         assert(s_record_count == records_before + 1U);
         assert(s_records[records_before].result == -EPROTO);
+        assert(s_records[records_before].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR);
         assert(s_records[records_before].prefix_length == 0U);
     }
 
@@ -348,6 +365,12 @@ int main(void)
         assert(s_forwarded == forwarded_before + (edges[i].valid ? 2U : 1U));
         assert(s_record_count == records_before + 1U);
         assert(s_records[records_before].result == (edges[i].valid ? 0 : -EPROTO));
+        if (!edges[i].valid) {
+            assert(s_records[records_before].direction ==
+                   (edges[i].amount > sizeof(s_rx_buffer)
+                       ? NRF_BOOT_TWIS_DIRECTION_WRITE_ERROR
+                       : NRF_BOOT_TWIS_DIRECTION_WRITE_STALE_AMOUNT));
+        }
         assert(s_records[records_before].event_dt_us == edges[i].elapsed);
         assert(s_records[records_before].prefix_length ==
                (edges[i].valid ? (edges[i].amount < NRF_BOOT_TRANSACTION_PREFIX_CAPACITY
@@ -366,6 +389,7 @@ int main(void)
         assert(s_forwarded == forwarded_before + 1U);
         assert(s_record_count == records_before + 1U);
         assert(s_records[records_before].result == -EPROTO);
+        assert(s_records[records_before].direction == NRF_BOOT_TWIS_DIRECTION_WRITE_STALE_AMOUNT);
         assert(s_records[records_before].prefix_length == 0U);
         s_generate_rx_started = true;
     }

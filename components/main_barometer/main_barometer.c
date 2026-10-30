@@ -935,6 +935,20 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
     return result;
 }
 
+uint32_t main_barometer_ms_until_poll(
+    const main_barometer_t *barometer,
+    uint64_t now_ms,
+    uint32_t max_ms)
+{
+    if (barometer == NULL || barometer->handles.bus == NULL ||
+        !atomic_load_explicit(&s_polling_requested, memory_order_acquire)) {
+        return max_ms;
+    }
+    const uint64_t until_ms = barometer->next_bmp280_poll_ms > now_ms
+        ? barometer->next_bmp280_poll_ms - now_ms : 1U;
+    return until_ms < max_ms ? (uint32_t)until_ms : max_ms;
+}
+
 void main_barometer_close(main_barometer_t *barometer)
 {
     if (barometer == NULL) {

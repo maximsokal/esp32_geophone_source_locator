@@ -30,6 +30,7 @@
 #include "sensor_bus_lines.h"
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
 #include "device_status.h"
+#include "main_barometer_fake.h"
 #endif
 
 /*
@@ -2804,6 +2805,9 @@ static void test_lifecycle_failures_mid_reconcile_and_repeated_restart(void)
 
 static void reset_world(void)
 {
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+    main_barometer_fake_reset();
+#endif
     memset(s_nodes, 0, sizeof(s_nodes));
     memset(s_devices, 0, sizeof(s_devices));
     memset(s_height_reference_requests, 0, sizeof(s_height_reference_requests));
@@ -3478,6 +3482,80 @@ static void test_named_reconcile_and_sensor_periods_on_fake_clock(void)
 }
 
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+static unsigned s_baro_polls_inside_bus_session;
+
+/* The barometer runs between topology bus sessions, never inside one. */
+static void baro_poll_checks_bus_is_free(void)
+{
+    sensor_bus_owner_stats_t stats = {0};
+    assert(sensor_bus_get_owner_stats(&stats) == ESP_OK);
+    if (stats.holder_task[0] != '\0') ++s_baro_polls_inside_bus_session;
+}
+
+static void assert_baro_polled_and_wait_bounded(void)
+{
+    assert(g_main_barometer_fake.poll_calls >= 1U);
+    assert(s_last_notify_wait_ms >= 1U && s_last_notify_wait_ms <= 200U);
+}
+
+static unsigned s_baro_polls_before;
+
+static void capture_baro_polls(void)
+{
+    s_baro_polls_before = g_main_barometer_fake.poll_calls;
+}
+
+static void assert_baro_polled_again_at_its_deadline(void)
+{
+    assert(g_main_barometer_fake.poll_calls >= s_baro_polls_before + 1U);
+}
+
+static void assert_idle_wait_ignores_unrequested_barometer(void)
+{
+    assert(g_main_barometer_fake.poll_calls >= 1U);
+    /* Polling not requested: the task keeps its reconcile/log/sensor periods. */
+    assert(s_last_notify_wait_ms > 200U);
+}
+
+static void test_main_barometer_is_polled_by_the_topology_task(void)
+{
+    reset_world();
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    g_main_barometer_fake.polling_requested = true;
+    g_main_barometer_fake.next_poll_delay_ms = 200U;
+    g_main_barometer_fake.on_poll = baro_poll_checks_bus_is_free;
+    g_main_barometer_fake.reading.bmp280_present = true;
+    g_main_barometer_fake.reading.bmp280_valid = true;
+    g_main_barometer_fake.reading.pressure_pa = 100650U;
+    s_baro_polls_inside_bus_session = 0U;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_baro_polled_and_wait_bounded);
+    script(EV_ACTION, 0U, capture_baro_polls);
+    script(EV_WAIT_MS, 200U, NULL);
+    script(EV_ACTION, 0U, assert_baro_polled_again_at_its_deadline);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(g_main_barometer_fake.init_calls == 1U);
+    assert(g_main_barometer_fake.close_calls == 1U);
+    assert(s_baro_polls_inside_bus_session == 0U);
+    /* The reading reached the shared device status. */
+    assert(g_main_barometer_fake.set_main_calls >= 1U);
+    assert(g_main_barometer_fake.last_main_status.bmp280_valid);
+    assert(g_main_barometer_fake.last_main_status.pressure_pa == 100650U);
+}
+
+static void test_unrequested_barometer_does_not_shorten_the_idle_wait(void)
+{
+    reset_world();
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    g_main_barometer_fake.polling_requested = false;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_idle_wait_ignores_unrequested_barometer);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(g_main_barometer_fake.close_calls == 1U);
+}
+
 static void assert_cs_wait_uses_named_10ms_period(void)
 {
     nrf_cs_cycle_snapshot_t snapshot;
@@ -3893,6 +3971,8 @@ int main(void)
     test_snapshot_becomes_unknown_after_stale_limit();
     test_named_reconcile_and_sensor_periods_on_fake_clock();
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+    test_main_barometer_is_polled_by_the_topology_task();
+    test_unrequested_barometer_does_not_shorten_the_idle_wait();
     test_cs_pump_period_on_fake_clock();
     test_ranging_full_rotation_progress_and_frozen_result();
     test_ranging_failure_reasons();

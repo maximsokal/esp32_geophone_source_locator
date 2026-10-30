@@ -501,6 +501,33 @@ static void test_receive_side_records_format_ring_and_log_policy(void)
     assert(strstr(line, "hw_error=0x00000001 WRITE_ERROR=1 result=-5 bytes=-") != NULL);
     assert(nrf_boot_twis_log_decide(&state, &record, 11U) == NRF_BOOT_TWIS_LOG_ERROR);
 
+    /* A rejected stale RXD.AMOUNT is shown as its own event and never counts as an error. */
+    {
+        nrf_boot_twis_log_state_t stale_state = {0};
+        nrf_boot_twis_record_t stale = {
+            .index = NRF_BOOT_TRANSACTION_DETAIL_LIMIT + 1U,
+            .direction = NRF_BOOT_TWIS_DIRECTION_WRITE_STALE_AMOUNT,
+            .result = -EPROTO,
+            .rx_amount = 12U,
+            .event_dt_us = 10U,
+        };
+        char summary[NRF_BOOT_TRANSACTION_LINE_CAPACITY];
+        assert(nrf_boot_twis_record_format(&stale, line, sizeof(line)) > 0);
+        assert(strstr(line, "event=WRITE_STALE_AMOUNT rx_amount=12 dt_us=10") != NULL);
+        char expected[48];
+        (void)snprintf(expected, sizeof(expected), "WRITE_ERROR=0 result=%d", -EPROTO);
+        assert(strstr(line, expected) != NULL);
+        for (uint32_t n = 0U; n < 5U; ++n) {
+            stale.index++;
+            assert(nrf_boot_twis_log_decide(&stale_state, &stale, 10U) == NRF_BOOT_TWIS_LOG_NONE);
+        }
+        assert(stale_state.post_detail_stale_amount_count == 5U);
+        assert(stale_state.post_detail_error_count == 0U);
+        assert(stale_state.post_detail_read_count == 0U && stale_state.post_detail_write_count == 0U);
+        assert(nrf_boot_twis_summary_format(&stale_state, 0U, summary, sizeof(summary)) > 0);
+        assert(strstr(summary, "errors=0 suppressed=0 ring_dropped=0 stale_rx=5") != NULL);
+    }
+
     /* Largest values still fit, and a small buffer is reported instead of overrun. */
     record.index = UINT32_MAX;
     record.rx_amount = UINT32_MAX;

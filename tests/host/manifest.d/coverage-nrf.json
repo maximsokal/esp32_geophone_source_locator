@@ -246,6 +246,8 @@
         "components/nrf_topology_service/nrf_sensor_transport.c",
         "components/nrf_topology_service/nrf_topology_leveling_policy.c",
         "components/nrf_topology_service/nrf_topology_bus_recovery.c",
+        "components/nrf_topology_service/nrf_topology_main_barometer.c",
+        "tests/host/stubs/main_barometer/main_barometer_fake.c",
         "components/sensor_bus/sensor_bus.c",
         "components/sensor_bus/sensor_bus_diag.c",
         "components/sensor_bus/sensor_bus_probe_diag.c",
@@ -277,10 +279,32 @@
         "components/app_config/include",
         "components/device_status/include",
         "components/nrf_geometry_solver/include",
+        "components/main_barometer/include",
+        "tests/host/stubs/main_barometer",
         "nRF54L15/include"
       ],
       "defines": ["NRF_TOPOLOGY_SERVICE_TEST_HARNESS", "NRF_TOPOLOGY_SERVICE_TEST_RANGING"],
       "libraries": ["m"]
+    },
+    {
+      "name": "nrf_topology_main_barometer",
+      "sources": [
+        "components/nrf_topology_service/nrf_topology_main_barometer.c",
+        "components/sensor_bus/sensor_bus_diag.c",
+        "tests/host/stubs/main_barometer/main_barometer_fake.c",
+        "tests/host/nrf_topology_main_barometer_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/nrf_topology_service",
+        "tests/host/stubs/sensor_bus",
+        "tests/host/stubs/main_barometer",
+        "components/nrf_topology_service",
+        "components/main_barometer/include",
+        "components/device_status/include",
+        "components/sensor_bus/include",
+        "components/app_config/include",
+        "nRF54L15/include"
+      ]
     },
     {
       "name": "nrf_topology_log_policy",

@@ -15,6 +15,7 @@
 #if defined(ESP_PLATFORM) || defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
 #define NRF_TOPOLOGY_HAS_RANGING_SOLVER 1
 #include "device_status.h"
+#include "nrf_topology_main_barometer.h"
 #else
 #define NRF_TOPOLOGY_HAS_RANGING_SOLVER 0
 #endif
@@ -178,6 +179,9 @@ typedef struct {
     uint8_t ranging_failed_pair_a;
     uint8_t ranging_failed_pair_b;
     nrf_topology_ranging_progress_t ranging_progress;
+#if NRF_TOPOLOGY_HAS_RANGING_SOLVER
+    nrf_topology_main_barometer_t main_barometer;
+#endif
 } nrf_topology_worker_state_t;
 
 static TaskHandle_t s_task = NULL;
@@ -927,7 +931,7 @@ static void platform_log_owner_busy(
                  platform != NULL ? platform->tca_address : 0U, source),
              (unsigned long long)stats.last_waited_for_mutex_us,
              stats.last_waiter_task[0] != '\0' ? stats.last_waiter_task : "unknown",
-             stats.holder_task[0] != '\0' ? stats.holder_task : "unknown",
+             stats.holder_task[0] != '\0' ? stats.holder_task : "none",
              (unsigned long)stats.recover_attempts);
 }
 
@@ -3288,10 +3292,18 @@ static void service_worker(void *context)
         controllers_ready =
             nrf_topology_controller_init(&worker->controller, &runtime_topology_config) == ESP_OK &&
             nrf_sensor_transport_controller_init(&worker->sensor_controller, &runtime_sensor_config) == ESP_OK;
+#if NRF_TOPOLOGY_HAS_RANGING_SOLVER
+        nrf_topology_main_barometer_init(&worker->main_barometer);
+#endif
     }
 
     while (!stop_before_start && controllers_ready && !service_stop_requested()) {
         const TickType_t now = xTaskGetTickCount();
+#if NRF_TOPOLOGY_HAS_RANGING_SOLVER
+        /* Between bus sessions, never inside one: the barometer waits for the
+         * topology work that is running, and calibration needs it every cycle. */
+        nrf_topology_main_barometer_step(&worker->main_barometer, platform_now_ms(NULL));
+#endif
         const bool background_deferred = service_background_deferred(worker, cs_initialized);
         const bool explicit_refresh = !background_deferred &&
             service_take_topology_refresh_request();
@@ -3525,6 +3537,16 @@ static void service_worker(void *context)
                     sensor_refresh_period_ticks);
                 if (sensor_wait_ticks < wait_ticks) wait_ticks = sensor_wait_ticks;
             }
+#if NRF_TOPOLOGY_HAS_RANGING_SOLVER
+            /* Wake for the next barometer poll once polling has been requested. */
+            const uint32_t baro_ms = nrf_topology_main_barometer_wait_ms(
+                &worker->main_barometer, platform_now_ms(NULL), UINT32_MAX);
+            if (baro_ms != UINT32_MAX) {
+                TickType_t baro_ticks = pdMS_TO_TICKS(baro_ms);
+                if (baro_ticks == 0U) baro_ticks = 1U;
+                if (baro_ticks < wait_ticks) wait_ticks = baro_ticks;
+            }
+#endif
         }
         (void)ulTaskNotifyTake(pdTRUE, wait_ticks);
     }
@@ -3540,6 +3562,9 @@ static void service_worker(void *context)
             platform_now_ms(&worker->platform));
     }
 
+#if NRF_TOPOLOGY_HAS_RANGING_SOLVER
+    nrf_topology_main_barometer_close(&worker->main_barometer);
+#endif
     platform_close(&worker->platform);
     memset(worker, 0, sizeof(*worker));
     service_clear_current_task();

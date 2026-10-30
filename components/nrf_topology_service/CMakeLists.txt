@@ -8,6 +8,7 @@ idf_component_register(
         "nrf_log_collector.c"
         "nrf_log_event_text.c"
         "nrf_topology_leveling_policy.c"
+        "nrf_topology_main_barometer.c"
         "nrf_topology_service.c"
 
     INCLUDE_DIRS
@@ -21,6 +22,7 @@ idf_component_register(
         freertos
         i2c_bus
         log
+        main_barometer
         nrf_cs_authority
         nrf_cs_shared
         nrf_geometry_solver

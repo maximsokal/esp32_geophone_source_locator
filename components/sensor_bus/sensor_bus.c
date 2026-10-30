@@ -477,6 +477,9 @@ static void sensor_bus_unlock(void)
                     ? (uint64_t)(now_us - s_owner_started_us) : 0U;
                 s_owner_task = NULL;
                 s_owner_started_us = 0;
+                /* holder_task names who holds the bus now. A stale name made every
+                 * late waiter look blocked by the last user (2026-10-29 log). */
+                s_owner_stats.holder_task[0] = '\0';
             }
         }
         portEXIT_CRITICAL(&s_owner_stats_lock);
@@ -571,12 +574,16 @@ static esp_err_t sensor_bus_owner_budget_after_transaction(
 static void sensor_bus_log_mutex_busy(uint64_t waited_us)
 {
     sensor_bus_owner_stats_t stats = {0};
+    char waiter_name[SENSOR_BUS_TASK_NAME_SIZE];
     (void)sensor_bus_get_owner_stats(&stats);
+    /* Runs in the waiter's own task; last_waiter_task is overwritten by every
+     * successful take, so it may already name someone else. */
+    sensor_bus_copy_task_name(waiter_name, xTaskGetCurrentTaskHandle());
     ESP_LOGW(TAG,
              "I2C_TIMEOUT_DIAG src=bus_owner addr=0x00 dev=unknown ch=direct err=mutex_busy waited_for_mutex_us=%llu waiter_task=%s holder_task=%s recover_attempts=%lu",
              (unsigned long long)waited_us,
-             stats.last_waiter_task[0] != '\0' ? stats.last_waiter_task : "unknown",
-             stats.holder_task[0] != '\0' ? stats.holder_task : "unknown",
+             waiter_name,
+             stats.holder_task[0] != '\0' ? stats.holder_task : "none",
              (unsigned long)stats.recover_attempts);
 }
 
@@ -1461,7 +1468,7 @@ static void sensor_bus_log_timeout_diag(
         (void)strncpy(holder_name, stats.holder_task, sizeof(holder_name) - 1U);
         holder_name[sizeof(holder_name) - 1U] = '\0';
         if (holder_name[0] == '\0') {
-            (void)strcpy(holder_name, "unknown");
+            (void)strcpy(holder_name, "none");
         }
     } else {
         sensor_bus_copy_task_name(holder_name, xTaskGetCurrentTaskHandle());
