@@ -129,6 +129,19 @@ static void test_poll_failures_are_logged_with_the_device_and_rate_limited(void)
     assert(s_warnings == 2U);
 }
 
+static void test_undetected_barometer_logs_both_candidate_addresses(void)
+{
+    nrf_topology_main_barometer_t state;
+    reset(&state);
+    g_main_barometer_fake.reading.bmp280_address = 0U;
+    g_main_barometer_fake.poll_result = ESP_ERR_NOT_FOUND;
+    nrf_topology_main_barometer_step(&state, 10000U);
+    assert(s_warnings == 1U);
+    assert(strstr(s_last_warning, "addr=0x77|0x76") != NULL);
+    assert(strstr(s_last_warning, "addr=0x00") == NULL);
+    assert(strstr(s_last_warning, "BMP280") != NULL);
+}
+
 static void test_wait_follows_the_next_poll_and_close_is_forwarded(void)
 {
     nrf_topology_main_barometer_t state;
@@ -158,6 +171,7 @@ int main(void)
     test_height_reference_states_reach_device_status();
     test_rejected_publish_is_retried();
     test_poll_failures_are_logged_with_the_device_and_rate_limited();
+    test_undetected_barometer_logs_both_candidate_addresses();
     test_wait_follows_the_next_poll_and_close_is_forwarded();
     return 0;
 }

@@ -26,6 +26,8 @@ bool nrf_height_reference_apply(
         return false;
     }
     if (action == NRF_UPSTREAM_HEIGHT_REFERENCE_CLEAR) {
+        reference->has_last_good = false;
+        reference->last_relative_z_mm = 0;
         reference->altitude_mm = 0;
         reference->generation = generation;
         reference->state = NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED;
@@ -36,6 +38,8 @@ bool nrf_height_reference_apply(
     }
 
     reference->altitude_mm = 0;
+    reference->has_last_good = false;
+    reference->last_relative_z_mm = 0;
     if (!imu_valid || !env_valid) {
         reference->state = NRF_UPSTREAM_REFERENCE_SENSOR_INVALID;
     } else if (!stationary) {
@@ -66,4 +70,42 @@ int32_t nrf_height_reference_relative_z_mm(
         return INT32_MIN;
     }
     return (int32_t)relative;
+}
+
+nrf_upstream_reference_state_t nrf_height_reference_sample(
+    nrf_height_reference_t *reference,
+    bool current_altitude_valid,
+    int32_t filtered_altitude_mm,
+    uint64_t now_ms,
+    int32_t *relative_z_mm)
+{
+    if (relative_z_mm != NULL) {
+        *relative_z_mm = 0;
+    }
+    if (reference == NULL || relative_z_mm == NULL) {
+        return NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED;
+    }
+    if (reference->state != NRF_UPSTREAM_REFERENCE_VALID) {
+        return reference->state;
+    }
+    if (current_altitude_valid) {
+        *relative_z_mm = nrf_height_reference_relative_z_mm(
+            reference, true, filtered_altitude_mm);
+        reference->last_relative_z_mm = *relative_z_mm;
+        reference->last_good_uptime_ms = now_ms;
+        reference->has_last_good = true;
+        return NRF_UPSTREAM_REFERENCE_VALID;
+    }
+    if (!reference->has_last_good) {
+        /* Captured at Z = 0; the hold clock starts at the first sample without a barometer. */
+        reference->last_relative_z_mm = 0;
+        reference->last_good_uptime_ms = now_ms;
+        reference->has_last_good = true;
+    }
+    if (now_ms >= reference->last_good_uptime_ms &&
+        now_ms - reference->last_good_uptime_ms <= NRF_HEIGHT_REFERENCE_HOLD_MS) {
+        *relative_z_mm = reference->last_relative_z_mm;
+        return NRF_UPSTREAM_REFERENCE_VALID;
+    }
+    return NRF_UPSTREAM_REFERENCE_SENSOR_INVALID;
 }

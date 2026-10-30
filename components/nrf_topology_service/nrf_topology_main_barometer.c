@@ -82,6 +82,13 @@ static void log_error(nrf_topology_main_barometer_t *state, esp_err_t err, uint3
     main_barometer_reading_t reading = {0};
     main_barometer_get_reading(&state->barometer, &reading);
     const uint8_t address = reading.bmp280_address;
+    if (address == 0U) {
+        /* Not detected yet: both candidates were probed, so do not report a bogus 0x00. */
+        ESP_LOGW(TAG,
+                 "I2C_BAROMETER_WARN src=main_barometer addr=0x77|0x76 dev=BMP280 (not detected) err=%s",
+                 error_name(err));
+        return;
+    }
     ESP_LOGW(TAG,
              "I2C_BAROMETER_WARN src=main_barometer addr=0x%02X dev=%s err=%s",
              (unsigned)address,

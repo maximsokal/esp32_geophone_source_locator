@@ -321,6 +321,81 @@ static void test_bmp280_compensation_datasheet_vector(void)
     assert(pressure_pa >= 100652U && pressure_pa <= 100654U);
 }
 
+static void poll_range(
+    main_barometer_t *barometer,
+    uint64_t from_ms,
+    uint64_t to_ms);
+
+static void test_established_reference_holds_through_sensor_failure_and_restores(void)
+{
+    reset_fake();
+    setup_bmp280(0x77U, BMP_ID);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_request_height_reference_capture(130U) == ESP_OK);
+    poll_range(&barometer, 0U, 3400U);
+    assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID);
+
+    set_bmp_raw_pressure(0x77U, 414000U);
+    poll_range(&barometer, 3600U, 4800U);
+    assert(barometer.reading.bmp280_valid);
+    const int32_t held_z_mm = barometer.reading.relative_z_mm;
+    assert(held_z_mm != 0);
+    assert(held_z_mm == barometer.reading.filtered_altitude_mm - barometer.height_reference_altitude_mm);
+    const uint64_t last_good_ms = barometer.height_reference_last_good_ms;
+    assert(last_good_ms >= 4600U);
+
+    /* The sensor stops answering: the calibrated Z is held, not discarded. */
+    s_fake.timeout_bmp_data = true;
+    uint64_t now_ms = 5000U;
+    for (; now_ms < last_good_ms + 590000U; now_ms += 1000U) {
+        (void)main_barometer_poll(&barometer, now_ms);
+        assert(!barometer.reading.bmp280_valid);
+        assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID);
+        assert(barometer.reading.height_reference_generation == 130U);
+        assert(barometer.reading.relative_z_mm == held_z_mm);
+    }
+
+    /* A long outage stops the hold: weather drift no longer cancels against the REMOTE nodes. */
+    for (; now_ms <= last_good_ms + 601000U; now_ms += 1000U) {
+        (void)main_barometer_poll(&barometer, now_ms);
+    }
+    assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    assert(barometer.reading.relative_z_mm == 0);
+
+    /* The sensor returns: the stored reference is restored from a fresh sample. */
+    s_fake.timeout_bmp_data = false;
+    for (unsigned i = 0U; i < 80U &&
+         barometer.reading.height_reference_state != MAIN_BAROMETER_REFERENCE_VALID; ++i, now_ms += 1000U) {
+        (void)main_barometer_poll(&barometer, now_ms);
+    }
+    assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID);
+    assert(barometer.reading.height_reference_generation == 130U);
+    assert(barometer.reading.bmp280_valid);
+    assert(barometer.reading.relative_z_mm ==
+           barometer.reading.filtered_altitude_mm - barometer.height_reference_altitude_mm);
+    main_barometer_close(&barometer);
+}
+
+static void test_transient_failure_during_capture_still_invalidates_it(void)
+{
+    reset_fake();
+    setup_bmp280(0x77U, BMP_ID);
+    s_fake.timeout_bmp_data = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_request_height_reference_capture(131U) == ESP_OK);
+    (void)main_barometer_poll(&barometer, 0U);
+    (void)main_barometer_poll(&barometer, 200U);
+    assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    /* No reference was ever established, so a returning sensor must not invent one. */
+    s_fake.timeout_bmp_data = false;
+    poll_range(&barometer, 6000U, 9000U);
+    assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    assert(barometer.reading.relative_z_mm == 0);
+    main_barometer_close(&barometer);
+}
+
 static void test_bmp280_probes_preferred_then_fallback_address(void)
 {
     reset_fake();
@@ -1166,6 +1241,8 @@ int main(void)
     test_absent_bmp280_retries_probe_only_for_five_seconds_then_reads_after_ack();
     test_probe_timeout_skips_full_read_transaction();
     test_main_height_reference_stable_unstable_and_relative();
+    test_established_reference_holds_through_sensor_failure_and_restores();
+    test_transient_failure_during_capture_still_invalidates_it();
     test_main_height_reference_sensor_invalid_and_generation_validation();
     test_first_conversion_pending_is_not_a_bus_error();
     test_sensor_power_cycle_is_rearmed_after_it_acks_again();

@@ -1141,7 +1141,9 @@ int main(void)
         assert(snapshot.request_id == 102U && snapshot.result == NRF_UPSTREAM_SENSOR_RESULT_PARTIAL);
         assert((snapshot.valid_mask & NRF_SENSOR_VALID_IMU) != 0U);
         assert((snapshot.valid_mask & NRF_SENSOR_VALID_ENV) == 0U);
-        assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
+        /* Barometer lost: the established reference is held, not voided. */
+        assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
+        assert(snapshot.reference_generation == 11U);
         assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&live_diagnostics));
         assert(!live_diagnostics.env_ready);
         fake_sensor_bus_hold_env_nvm(true);
@@ -1737,24 +1739,27 @@ int main(void)
     assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
     assert(snapshot.relative_z_mm == 0);
 
-    /* Losing the barometer invalidates height but preserves the healthy IMU calibration. */
+    /* Losing the barometer keeps the height reference (Z held) and the healthy IMU calibration. */
     process_imu_calibration_request(NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE, 1003U, 102U);
     process_height_reference_request(NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 1004U, 103U);
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
     assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
     assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
+    const uint16_t held_generation = snapshot.reference_generation;
     s_test_fault_mask = NRF_SENSOR_VALID_ENV;
     process_refresh_request(1005U);
     process_refresh_request(1006U);
     process_refresh_request(1007U);
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
-    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
+    assert(snapshot.reference_generation == held_generation);
     assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
     s_test_fault_mask = 0U;
     process_refresh_request(1008U);
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
-    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
     assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+
 
     /* A fresh environmental sample is pending without blocking periodic IMU reads. */
     run_worker_advancing(70U);

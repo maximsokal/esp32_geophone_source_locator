@@ -385,12 +385,13 @@ static void copy_runtime_payload(
         wire->orientation_blink_class = (uint8_t)orientation.blink_class;
         wire->orientation_tilt_sin2_ppm = orientation.tilt_sin2_ppm;
     }
-    wire->reference_state = (uint8_t)s_height_reference.state;
-    wire->reference_generation = s_height_reference.generation;
-    wire->relative_z_mm = nrf_height_reference_relative_z_mm(
+    wire->reference_state = (uint8_t)nrf_height_reference_sample(
         &s_height_reference,
         (wire->valid_mask & NRF_UPSTREAM_SENSOR_VALID_ENV) != 0U,
-        wire->altitude_mm);
+        wire->altitude_mm,
+        runtime_uptime_ms(),
+        &wire->relative_z_mm);
+    wire->reference_generation = s_height_reference.generation;
     copy_imu_calibration_to_snapshot(wire);
 }
 
@@ -444,7 +445,11 @@ static void invalidate_sensor_references(bool imu_lost, bool env_lost)
         set_orientation_reference_axis(NRF_ORIENTATION_AXIS_UNCONFIGURED);
         imu_filters_reset();
     }
-    if ((imu_lost || env_lost) && s_height_reference.state == NRF_UPSTREAM_REFERENCE_VALID) {
+    /*
+     * Only an IMU loss voids the reference (the node can no longer prove it stayed put). A lost
+     * barometer keeps it: relative Z holds its last good value and the next fresh sample resumes.
+     */
+    if (imu_lost && s_height_reference.state == NRF_UPSTREAM_REFERENCE_VALID) {
         s_height_reference.state = NRF_UPSTREAM_REFERENCE_SENSOR_INVALID;
         s_height_reference.altitude_mm = 0;
     }
@@ -993,7 +998,8 @@ static void complete_refresh(
             ? NRF_UPSTREAM_SENSOR_RESULT_NOT_READY
             : NRF_UPSTREAM_SENSOR_RESULT_INTERNAL_ERROR;
         wire.flags = runtime_flags();
-        wire.reference_state = (uint8_t)s_height_reference.state;
+        wire.reference_state = (uint8_t)nrf_height_reference_sample(
+            &s_height_reference, false, 0, runtime_uptime_ms(), &wire.relative_z_mm);
         wire.reference_generation = s_height_reference.generation;
         copy_imu_calibration_to_snapshot(&wire);
     } else if (s_runtime.core.imu_ready || s_runtime.core.env_ready) {

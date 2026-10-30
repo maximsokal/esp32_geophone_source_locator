@@ -78,6 +78,10 @@ typedef struct {
     bool height_reference_capture_active;
     bool height_reference_has_sample;
     uint64_t height_reference_capture_started_ms;
+    /* Last poll that produced a fresh sample while the reference was valid. */
+    uint64_t height_reference_last_good_ms;
+    /* Held reference timed out; a fresh sample restores it. */
+    bool height_reference_restorable;
     double height_reference_min_pressure_pa;
     double height_reference_max_pressure_pa;
     int32_t height_reference_altitude_mm;

@@ -40,6 +40,12 @@
 #define MAIN_BAROMETER_PENDING_INVALID_POLLS 15U
 
 #define MAIN_HEIGHT_REFERENCE_WINDOW_MS 2000U
+/*
+ * An established reference outlives sensor glitches: relative Z holds its last good value. Weather
+ * drift (a few cm per minute) cancels against the REMOTE nodes only while MAIN is sampled live, so
+ * a hold that lasts too long becomes SENSOR_INVALID; the next fresh sample restores it.
+ */
+#define MAIN_HEIGHT_REFERENCE_HOLD_MS 600000U
 /* A 2 Pa filtered-pressure range is about 167 mm on the shared 12 Pa/m model. */
 #define MAIN_HEIGHT_REFERENCE_MAX_PRESSURE_RANGE_PA 2.0
 
@@ -383,6 +389,10 @@ static void main_barometer_height_reference_sensor_invalid(
          barometer->reading.height_reference_state != MAIN_BAROMETER_REFERENCE_VALID)) {
         return;
     }
+    if (!barometer->height_reference_capture_active) {
+        /* Established reference: keep it and the last good relative Z; expiry is time-based. */
+        return;
+    }
     barometer->height_reference_capture_active = false;
     barometer->height_reference_has_sample = false;
     barometer->reading.height_reference_state = MAIN_BAROMETER_REFERENCE_SENSOR_INVALID;
@@ -400,12 +410,33 @@ static void main_barometer_height_reference_pending(main_barometer_t *barometer)
     barometer->height_reference_has_sample = false;
 }
 
+static void main_barometer_height_reference_hold_expire(
+    main_barometer_t *barometer,
+    uint64_t now_ms)
+{
+    if (barometer->height_reference_capture_active ||
+        barometer->reading.height_reference_state != MAIN_BAROMETER_REFERENCE_VALID ||
+        now_ms < barometer->height_reference_last_good_ms ||
+        now_ms - barometer->height_reference_last_good_ms <= MAIN_HEIGHT_REFERENCE_HOLD_MS) {
+        return;
+    }
+    barometer->reading.height_reference_state = MAIN_BAROMETER_REFERENCE_SENSOR_INVALID;
+    barometer->reading.relative_z_mm = 0;
+    barometer->height_reference_restorable = true;
+}
+
 static void main_barometer_height_reference_update(
     main_barometer_t *barometer,
     uint64_t now_ms)
 {
     if (!barometer->height_reference_capture_active) {
+        if (barometer->height_reference_restorable &&
+            barometer->reading.height_reference_state == MAIN_BAROMETER_REFERENCE_SENSOR_INVALID) {
+            barometer->reading.height_reference_state = MAIN_BAROMETER_REFERENCE_VALID;
+        }
+        barometer->height_reference_restorable = false;
         if (barometer->reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID) {
+            barometer->height_reference_last_good_ms = now_ms;
             barometer->reading.relative_z_mm =
                 barometer->reading.filtered_altitude_mm -
                 barometer->height_reference_altitude_mm;
@@ -442,6 +473,7 @@ static void main_barometer_height_reference_update(
             barometer->reading.filtered_altitude_mm;
         barometer->reading.height_reference_state = MAIN_BAROMETER_REFERENCE_VALID;
         barometer->reading.relative_z_mm = 0;
+        barometer->height_reference_last_good_ms = now_ms;
     } else {
         barometer->reading.height_reference_state =
             MAIN_BAROMETER_REFERENCE_REJECTED_UNSTABLE;
@@ -586,7 +618,9 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
         barometer->reading.relative_z_mm = 0;
         barometer->height_reference_capture_active = true;
         barometer->height_reference_has_sample = false;
+        barometer->height_reference_restorable = false;
     }
+    main_barometer_height_reference_hold_expire(barometer, now_ms);
     if (barometer->handles.bus == NULL) {
         const esp_err_t bus_err = sensor_bus_get_handles(&barometer->handles);
         if (bus_err != ESP_OK) {

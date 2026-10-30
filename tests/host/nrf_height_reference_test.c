@@ -165,6 +165,77 @@ static void test_fixed_seed_relative_altitude_properties(void)
     }
 }
 
+static void test_sample_holds_last_good_z_through_a_barometer_outage_and_restores(void)
+{
+    nrf_height_reference_t reference;
+    int32_t z = -1;
+    nrf_height_reference_init(&reference);
+    assert(nrf_height_reference_apply(
+        &reference, NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 30U, true, true, true, 10000));
+
+    assert(nrf_height_reference_sample(&reference, true, 11500, 1000U, &z) ==
+           NRF_UPSTREAM_REFERENCE_VALID);
+    assert(z == 1500);
+
+    /* Outage inside the hold window: the generation stays and Z is the last good value. */
+    assert(nrf_height_reference_sample(&reference, false, 0, 1000U + 5000U, &z) ==
+           NRF_UPSTREAM_REFERENCE_VALID);
+    assert(z == 1500 && reference.generation == 30U);
+    assert(nrf_height_reference_sample(
+               &reference, false, 0, 1000U + NRF_HEIGHT_REFERENCE_HOLD_MS, &z) ==
+           NRF_UPSTREAM_REFERENCE_VALID);
+    assert(z == 1500);
+
+    /* Past the hold window Z is voided, but the stored reference survives. */
+    assert(nrf_height_reference_sample(
+               &reference, false, 0, 1000U + NRF_HEIGHT_REFERENCE_HOLD_MS + 1U, &z) ==
+           NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
+    assert(z == 0 && reference.state == NRF_UPSTREAM_REFERENCE_VALID);
+
+    /* A fresh sample restores it against the original reference altitude. */
+    assert(nrf_height_reference_sample(
+               &reference, true, 10800, 1000U + NRF_HEIGHT_REFERENCE_HOLD_MS + 2000U, &z) ==
+           NRF_UPSTREAM_REFERENCE_VALID);
+    assert(z == 800 && reference.generation == 30U);
+}
+
+static void test_sample_without_any_live_sample_holds_the_capture_point(void)
+{
+    nrf_height_reference_t reference;
+    int32_t z = -1;
+    nrf_height_reference_init(&reference);
+    assert(nrf_height_reference_apply(
+        &reference, NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 31U, true, true, true, 5000));
+    /* Barometer lost right after the capture: Z = 0 is the truthful held value. */
+    assert(nrf_height_reference_sample(&reference, false, 0, 777U, &z) ==
+           NRF_UPSTREAM_REFERENCE_VALID);
+    assert(z == 0);
+    assert(nrf_height_reference_sample(
+               &reference, false, 0, 777U + NRF_HEIGHT_REFERENCE_HOLD_MS + 1U, &z) ==
+           NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
+}
+
+static void test_sample_never_invents_a_reference(void)
+{
+    nrf_height_reference_t reference;
+    int32_t z = -1;
+    nrf_height_reference_init(&reference);
+    assert(nrf_height_reference_sample(&reference, true, 9000, 10U, &z) ==
+           NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+    assert(z == 0);
+    assert(nrf_height_reference_apply(
+        &reference, NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 32U, true, false, true, 9000));
+    assert(nrf_height_reference_sample(&reference, true, 9000, 20U, &z) ==
+           NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
+    assert(z == 0);
+    assert(nrf_height_reference_apply(
+        &reference, NRF_UPSTREAM_HEIGHT_REFERENCE_CLEAR, 33U, true, true, true, 0));
+    assert(nrf_height_reference_sample(&reference, false, 0, 30U, &z) ==
+           NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+    assert(nrf_height_reference_sample(NULL, true, 0, 0U, &z) ==
+           NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+}
+
 int main(void)
 {
     test_relative_altitude_math();
@@ -176,5 +247,8 @@ int main(void)
     test_generation_and_reference_provenance();
     test_reference_instances_are_independent();
     test_fixed_seed_relative_altitude_properties();
+    test_sample_holds_last_good_z_through_a_barometer_outage_and_restores();
+    test_sample_without_any_live_sample_holds_the_capture_point();
+    test_sample_never_invents_a_reference();
     return 0;
 }
