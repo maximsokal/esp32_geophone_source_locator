@@ -3,8 +3,10 @@ normal.hint	UP/DOWN дії  OK вибір  LEFT назад
 normal.body.0	Виберіть об’єкт
 warning.title	Розміщення датчиків
 warning.hint	UP/DOWN дії  OK вибір  LEFT назад
-warning.body.0	G1 В:Ні dH:—мм над.р.м:—м Ст:Ні
-warning.body.1	Очікування стабільності
+warning.body.0	G1: Не вертикально
+warning.body.1	G1 В:Ні dH:—мм над.р.м:—м Ст:Ні
+warning.action.0	Датчики встановлено
+warning.action.1	Живі сигнали
 error.title	Результат
 error.hint	UP/DOWN дії  OK вибір  LEFT назад
 error.body.0	Внутрішня помилка

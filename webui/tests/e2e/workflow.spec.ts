@@ -1,5 +1,5 @@
 import { test, expect, catalog } from './fixtures/device';
-import { gate, scenarioScreenshot } from './fixtures/scenarios';
+import { gate, savedSnapshot, scenarioScreenshot } from './fixtures/scenarios';
 
 test('one attached remote can enter the permitted initialization stage', async ({ page, api }) => {
   api.status.pods = [api.status.pods[0]];
@@ -325,5 +325,74 @@ for (const locale of ['en', 'uk'] as const) {
         expect(api.controls).toHaveLength(0);
       });
     }
+  });
+}
+
+for (const locale of ['en', 'uk'] as const) {
+  test.describe(`placement stability and live signals (${locale})`, () => {
+    test.use({ appLocale: locale });
+
+    const unstablePlacement = {
+      all_stable: false,
+      max_range_mm: 50,
+      min_samples: 3,
+      per_node: [
+        { node: 'MAIN', vertical: true, height_rel_main_mm: 0, altitude_asl_m: 10, stable: true, reason: 'stable', samples: 30, range_mm: 0 },
+        { node: 'G2', vertical: true, height_rel_main_mm: 84, altitude_asl_m: 10.1, stable: false, reason: 'range_exceeded', samples: 5, range_mm: 84 },
+      ],
+    };
+
+    test('Continue stays visible but disabled, naming the node and the reason', async ({ page, api }) => {
+      const t = catalog[locale];
+      Object.assign(api.status.workflow!, { step: 'PLACEMENT', allowed_actions: ['BACK'], placement: unstablePlacement });
+      await page.goto('/');
+      const proceed = page.locator('[data-command="PLACEMENT_CONFIRMED"]');
+      await expect(proceed).toBeVisible();
+      await expect(proceed).toBeDisabled();
+      const blocked = page.getByTestId('placement-blocked');
+      await expect(blocked).toContainText('G2');
+      await expect(blocked).toContainText(t['workflow.placement.reason.range_exceeded']);
+      await expect(blocked).toContainText('84');
+      await expect(page.locator('[data-reason="range_exceeded"]')).toBeVisible();
+      await proceed.click({ force: true });
+      expect(api.controls).toHaveLength(0);
+      await scenarioScreenshot(page, `placement-blocked-${locale}`);
+
+      // The firmware allows it once every node is stable: the same button works.
+      Object.assign(api.status.workflow!, {
+        allowed_actions: ['PLACEMENT_CONFIRMED', 'BACK'],
+        placement: { ...unstablePlacement, all_stable: true, per_node: unstablePlacement.per_node.map(node => ({ ...node, stable: true, reason: 'stable', range_mm: 2 })) },
+      });
+      api.once('POST /api/control', async route => {
+        expect(route.request().postDataJSON()).toEqual({ action: 'workflow_command', command: 'PLACEMENT_CONFIRMED', generation: 1 });
+        Object.assign(api.status.workflow!, { step: 'GPS_CHOICE', generation: 2, allowed_actions: ['GPS_SKIP', 'BACK'] });
+        await route.fulfill({ json: { ok: true, workflow: api.status.workflow } });
+      });
+      await expect(proceed).toBeEnabled();
+      await proceed.click();
+      await expect(page.getByTestId('placement-blocked')).toHaveCount(0);
+      expect(api.controls).toHaveLength(1);
+    });
+
+    test('the geophone signals can be listened to from the calibration result without recording', async ({ page, api }) => {
+      Object.assign(api.status.workflow!, { step: 'CALIB_RESULT', allowed_actions: ['PLACE_SENSORS', 'BACK'] });
+      api.status.acquisition.running = false;
+      api.overrides.set('GET /api/seismic', async route => {
+        await route.fulfill({ json: { source: 'AD7606', sample_rate_hz: 500, count: 2, frame_count: 100,
+          requested_span_ms: 440, span_ms: 200, decimation_factor: 50, buffered_frames: 100, total_frames: 100,
+          points: savedSnapshot().points } });
+      });
+      api.once('POST /api/control', async route => {
+        expect(route.request().postDataJSON()).toEqual({ action: 'acquisition_start' });
+        api.status.acquisition.running = true;
+        await route.fulfill({ json: { ok: true } });
+      });
+      await page.goto('/');
+      await page.locator('[data-command="LIVE_SIGNALS"]').click();
+      await expect(page.locator('.seismic-live-card path').first()).not.toHaveAttribute('d', '');
+      // Only the preview was started: no workflow command, no recording.
+      expect(api.controls).toEqual([{ action: 'acquisition_start' }]);
+      await scenarioScreenshot(page, `calibration-result-live-${locale}`);
+    });
   });
 }

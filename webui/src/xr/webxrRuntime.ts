@@ -486,7 +486,9 @@ export class WebXrRuntime{
       if(Binding!==undefined){try{this.cameraBinding=new Binding(session,gl);this.cameraCapture=new RawCameraGuidanceCapture(gl);}catch(error){this.cameraBinding=null;this.cameraCapture=null;clientDiagnostics.warn('XR_RAW_CAMERA_UNAVAILABLE',error);}}
       if(typeof session.requestLightProbe==='function'){try{const lightProbe=await session.requestLightProbe();if(!ownsAttempt())return;this.lightProbe=lightProbe;}catch{if(!ownsAttempt())return;this.lightProbe=null;}}
       if(!ownsAttempt())return;
-      document.documentElement.classList.add('xr-session-active');const depthConfiguration=readDepthConfiguration(session);this.depthEnabled=depthConfiguration.enabled;void this.acquireWakeLock(generation);
+      document.documentElement.classList.add('xr-session-active');
+      if(session.environmentBlendMode==='alpha-blend'||session.environmentBlendMode==='additive')document.documentElement.classList.add('xr-passthrough-active');
+      const depthConfiguration=readDepthConfiguration(session);this.depthEnabled=depthConfiguration.enabled;void this.acquireWakeLock(generation);
       this.publish({phase:'running',referenceSpace:referenceSpaceType,domOverlay:session.domOverlayState!=null,environmentBlendMode:session.environmentBlendMode??null,
         depthAvailable:depthConfiguration.enabled,depthUsage:depthConfiguration.usage,depthDataFormat:depthConfiguration.dataFormat,depthType:depthConfiguration.type,
         coverageGuideError:this.coverageGuideError,wakeLockActive:this.wakeLock!==null&&!this.wakeLock.released,monocularPriorStatus:optionalMonocularPrior.status,
@@ -608,7 +610,7 @@ export class WebXrRuntime{
   private cleanupRuntime():void{
     this.lifecycleGeneration+=1;this.detachSessionListeners(this.session);
     if(this.session!==null&&this.rafHandle!==null){try{this.session.cancelAnimationFrame?.(this.rafHandle);}catch{/* session ended */}}this.rafHandle=null;
-    this.detachWebGlContextHandlers();try{document.documentElement.classList.remove('xr-session-active');}catch{/* document is already tearing down */}
+    this.detachWebGlContextHandlers();try{document.documentElement.classList.remove('xr-session-active','xr-passthrough-active');}catch{/* document is already tearing down */}
     try{this.coverageRenderer?.dispose();}catch{/* continue releasing the remaining XR resources */}this.coverageRenderer=null;
     try{this.cameraCapture?.dispose();}catch{/* continue releasing the remaining XR resources */}this.cameraCapture=null;
     try{this.tagCameraCapture?.dispose();}catch{/* continue releasing the remaining XR resources */}this.tagCameraCapture=null;

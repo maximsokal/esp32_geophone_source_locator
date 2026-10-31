@@ -135,6 +135,6 @@ def test_measurements_reads_cached_node_status_and_updates_widgets_on_change():
     assert "ui_measurements_label_set_if_changed(" in source
     policy = (ROOT / "components/nrf_topology_service/nrf_topology_service.c").read_text(encoding="utf-8")
     refresh = _function_body(policy, "service_process_sensor_mask")
-    assert "snapshot->bus_busy || snapshot->stale" in refresh
+    assert "nrf_topology_remote_data_stale(snapshot)" in refresh
     assert "service_requeue_inflight_mask(mask);" in refresh
 

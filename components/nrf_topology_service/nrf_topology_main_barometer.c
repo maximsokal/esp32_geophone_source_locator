@@ -7,6 +7,15 @@
 #include "sensor_bus_diag.h"
 
 static const char *TAG = "MAIN_BARO";
+
+/*
+ * How long a sample stays "valid" for the status consumers after the poll that produced it. The driver
+ * clears bmp280_valid on every poll that finds no new conversion yet (about three polls in four with a
+ * continuously converting sensor), but the pressure and temperature it holds are still the current ones.
+ * The placement-stability check needs MAIN valid on every poll and wiped its history each time, so the
+ * stability screen never completed (2026-10-31 16:24).
+ */
+#define MAIN_BARO_PUBLISH_HOLD_MS 2000U
 static sensor_bus_diag_state_t s_diag_state;
 
 /* The shared-bus owner codes are not in esp_err_to_name(), which prints "ERROR". */
@@ -48,13 +57,18 @@ static bool status_equal(const device_main_status_t *a, const device_main_status
         a->height_reference.relative_z_mm == b->height_reference.relative_z_mm;
 }
 
-static void publish(nrf_topology_main_barometer_t *state)
+static void publish(nrf_topology_main_barometer_t *state, uint32_t now_ms, esp_err_t poll_err)
 {
     main_barometer_reading_t reading = {0};
     main_barometer_get_reading(&state->barometer, &reading);
+    /* Only "no new conversion yet" keeps the previous sample alive; a real error never does. */
+    const bool hold_allowed = poll_err == ESP_OK || poll_err == ESP_ERR_NOT_FINISHED;
+    const bool sample_current = reading.bmp280_present && reading.last_sample_ms != 0U &&
+        now_ms >= reading.last_sample_ms &&
+        now_ms - reading.last_sample_ms <= MAIN_BARO_PUBLISH_HOLD_MS;
     const device_main_status_t status = {
         .bmp280_present = reading.bmp280_present,
-        .bmp280_valid = reading.bmp280_valid,
+        .bmp280_valid = reading.bmp280_valid || (hold_allowed && sample_current),
         .pressure_pa = reading.pressure_pa,
         .temperature_mc = reading.temperature_mc,
         .height_reference = {
@@ -119,7 +133,7 @@ void nrf_topology_main_barometer_step(
     }
     const esp_err_t err = main_barometer_poll(&state->barometer, now_ms);
     log_error(state, err, (uint32_t)now_ms);
-    publish(state);
+    publish(state, (uint32_t)now_ms, err);
 }
 
 uint32_t nrf_topology_main_barometer_wait_ms(

@@ -161,7 +161,7 @@ def test_max460_workflow_tests_are_in_main_and_manifest_targets():
     assert "test_ranging_success_and_confirm_preserve_frozen_result();" in wfa
     assert "test_max460_layout_success_failure_reason_retry_and_back();" in wfa
     assert "test_placement_sample_count_and_calculate_guard();" in wfa
-    assert "test_placement_uses_inclusive_three_second_window();" in wfa
+    assert "test_placement_uses_inclusive_window();" in wfa
     assert "test_layout_rechecks_placement_after_gps_choice();" in wfa
     assert "test_max460_guided_step_content_and_placement_gate();" in ui
     assert "test_workflow_gps_accept_parses_fix_and_optional_altitude();" in api

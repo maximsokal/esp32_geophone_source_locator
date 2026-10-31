@@ -8,6 +8,11 @@ import { translate } from '../../src/i18n';
 import { formatPercent } from '../../src/i18n/format';
 import { readyStatus, renderUi, respondJson } from './setup';
 
+vi.mock('../../src/features/seismic/LiveSeismicPanel', async () => {
+  const { createElement } = await import('react');
+  return { default: () => createElement('div', { 'data-testid': 'live-seismic' }, 'LIVE_SEISMIC_PANEL') };
+});
+
 type Props = ComponentProps<typeof WorkflowPanel>;
 function panelProps(step: string, actions: string[]): Props {
   const status = readyStatus();
@@ -21,6 +26,83 @@ function panelProps(step: string, actions: string[]): Props {
 
 describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
   const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
+
+  function placementProps(allowed: string[], allStable: boolean): Props {
+    const props = panelProps('PLACEMENT', allowed);
+    props.status!.workflow!.placement = {
+      all_stable: allStable,
+      max_range_mm: 50,
+      min_samples: 3,
+      per_node: [
+        { node: 'MAIN', vertical: true, height_rel_main_mm: 0, altitude_asl_m: 10, stable: true,
+          reason: 'stable', samples: 30, range_mm: 0 },
+        { node: 'G2', vertical: true, height_rel_main_mm: 84, altitude_asl_m: 10.1, stable: allStable,
+          reason: allStable ? 'stable' : 'range_exceeded', samples: 5, range_mm: allStable ? 2 : 84 },
+      ],
+    };
+    return props;
+  }
+
+  it('shows Continue disabled with the blocking node and reason while placement is not stable', async () => {
+    const user = userEvent.setup();
+    const props = placementProps(['BACK'], false);
+    renderUi(<WorkflowPanel {...props} />, locale);
+    const proceed = screen.getByRole('button', { name: t('workflow.action.placement_confirmed') }) as HTMLButtonElement;
+    expect(proceed.disabled).toBe(true);
+    expect(proceed.getAttribute('aria-disabled')).toBe('true');
+    const blocked = screen.getByTestId('placement-blocked');
+    expect(blocked.textContent).toContain('G2');
+    expect(blocked.textContent).toContain(t('workflow.placement.reason.range_exceeded'));
+    expect(blocked.textContent).toContain('84');
+    await user.click(proceed);
+    expect(props.sendCommand).not.toHaveBeenCalled();
+    // The per-node reason is listed too.
+    expect(document.querySelector('[data-reason="range_exceeded"]')).not.toBeNull();
+  });
+
+  it('enables Continue and sends it once every node is stable', async () => {
+    const user = userEvent.setup();
+    const props = placementProps(['PLACEMENT_CONFIRMED', 'BACK'], true);
+    renderUi(<WorkflowPanel {...props} />, locale);
+    expect(screen.queryByTestId('placement-blocked')).toBeNull();
+    const proceed = screen.getByRole('button', { name: t('workflow.action.placement_confirmed') }) as HTMLButtonElement;
+    expect(proceed.disabled).toBe(false);
+    await user.click(proceed);
+    expect(props.sendCommand).toHaveBeenCalledExactlyOnceWith('PLACEMENT_CONFIRMED', 7);
+  });
+
+  it.each(['CALIB_RESULT', 'PLACEMENT'] as const)('lets the operator listen to the geophones at %s without recording', async (step) => {
+    const user = userEvent.setup();
+    const props = step === 'PLACEMENT' ? placementProps(['BACK'], false) : panelProps(step, ['PLACE_SENSORS', 'BACK']);
+    props.status!.acquisition.running = false;
+    const onAcquisition = vi.fn<NonNullable<Props['onAcquisition']>>().mockResolvedValue(undefined);
+    renderUi(<WorkflowPanel {...props} onAcquisition={onAcquisition} />, locale);
+    expect(screen.queryByTestId('live-seismic')).toBeNull();
+    await user.click(screen.getByRole('button', { name: t('workflow.live.show') }));
+    expect(onAcquisition).toHaveBeenCalledExactlyOnceWith(true);
+    // No workflow command is involved: listening never starts a recording.
+    expect(props.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('shows the live signal panel once the preview runs and stops the preview when hidden', async () => {
+    const user = userEvent.setup();
+    const props = placementProps(['BACK'], false);
+    props.status!.acquisition.running = true;
+    const onAcquisition = vi.fn<NonNullable<Props['onAcquisition']>>().mockResolvedValue(undefined);
+    renderUi(<WorkflowPanel {...props} onAcquisition={onAcquisition} />, locale);
+    await user.click(screen.getByRole('button', { name: t('workflow.live.show') }));
+    expect(onAcquisition).not.toHaveBeenCalled();
+    expect(await screen.findByTestId('live-seismic')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: t('workflow.live.hide') }));
+    expect(onAcquisition).toHaveBeenCalledExactlyOnceWith(false);
+    expect(screen.queryByTestId('live-seismic')).toBeNull();
+  });
+
+  it('offers no live signals on steps outside calibration result and placement', () => {
+    const props = panelProps('RANGING', ['BACK']);
+    renderUi(<WorkflowPanel {...props} onAcquisition={vi.fn()} />, locale);
+    expect(screen.queryByRole('button', { name: t('workflow.live.show') })).toBeNull();
+  });
 
   it.each([0, 1, 2])('keeps permitted initialization reachable with %i remotes by keyboard', async (count) => {
     const user = userEvent.setup();

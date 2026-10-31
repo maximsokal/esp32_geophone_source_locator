@@ -448,6 +448,9 @@ static void test_workflow_calibration_json_serializes_values_and_nulls(void)
                     .height_rel_main_mm_valid = false,
                     .altitude_asl_m_valid = false,
                     .stable = false,
+                    .reason = WORKFLOW_PLACEMENT_REASON_COLLECTING,
+                    .sample_count = 2U,
+                    .range_mm = -1,
                 },
                 {
                     .node = "G1",
@@ -455,6 +458,9 @@ static void test_workflow_calibration_json_serializes_values_and_nulls(void)
                     .height_rel_main_mm_valid = false,
                     .altitude_asl_m_valid = false,
                     .stable = false,
+                    .reason = WORKFLOW_PLACEMENT_REASON_NOT_VERTICAL,
+                    .sample_count = 0U,
+                    .range_mm = -1,
                 },
             },
             .all_stable = false,
@@ -491,6 +497,8 @@ static void test_workflow_calibration_json_serializes_values_and_nulls(void)
     }
     const cJSON *placement = item(item(root, "workflow"), "placement");
     assert_bool(placement, "all_stable", false);
+    assert_number(placement, "max_range_mm", (double)WORKFLOW_PLACEMENT_MAX_RANGE_MM);
+    assert_number(placement, "min_samples", (double)WORKFLOW_PLACEMENT_MIN_SAMPLES);
     const cJSON *placement_nodes = item(placement, "per_node");
     assert(cJSON_GetArraySize(placement_nodes) == 2);
     const cJSON *placement_node = cJSON_GetArrayItem(placement_nodes, 0);
@@ -499,12 +507,17 @@ static void test_workflow_calibration_json_serializes_values_and_nulls(void)
     assert(cJSON_IsNull(item(placement_node, "height_rel_main_mm")));
     assert(cJSON_IsNull(item(placement_node, "altitude_asl_m")));
     assert_bool(placement_node, "stable", false);
+    assert_string(placement_node, "reason", "collecting");
+    assert_number(placement_node, "samples", 2.0);
+    assert(cJSON_IsNull(item(placement_node, "range_mm")));
     placement_node = cJSON_GetArrayItem(placement_nodes, 1);
     assert_string(placement_node, "node", "G1");
     assert_bool(placement_node, "vertical", false);
     assert(cJSON_IsNull(item(placement_node, "height_rel_main_mm")));
     assert(cJSON_IsNull(item(placement_node, "altitude_asl_m")));
     assert_bool(placement_node, "stable", false);
+    assert_string(placement_node, "reason", "not_vertical");
+    assert_number(placement_node, "samples", 0.0);
     cJSON_Delete(root);
 
     workflow_calibration_node_t *source =
@@ -539,6 +552,9 @@ static void test_workflow_calibration_json_serializes_values_and_nulls(void)
         .altitude_asl_m_valid = true,
         .altitude_asl_m = 12.345,
         .stable = true,
+        .reason = WORKFLOW_PLACEMENT_REASON_STABLE,
+        .sample_count = 5U,
+        .range_mm = 3,
     };
     g_workflow_snapshot.calibration.max_spread_valid = true;
     g_workflow_snapshot.calibration.max_spread_mm = 149;
@@ -576,6 +592,22 @@ static void test_workflow_calibration_json_serializes_values_and_nulls(void)
     assert(item(placement_node, "height_rel_main_mm")->valuedouble == -23.0);
     assert(item(placement_node, "altitude_asl_m")->valuedouble == 12.345);
     assert_bool(placement_node, "stable", true);
+    assert_string(placement_node, "reason", "stable");
+    assert_number(placement_node, "samples", 5.0);
+    assert_number(placement_node, "range_mm", 3.0);
+
+    /* A node that moved: the web shows the reason and the measured spread. */
+    g_workflow_snapshot.placement.all_stable = false;
+    g_workflow_snapshot.placement.per_node[1].stable = false;
+    g_workflow_snapshot.placement.per_node[1].reason = WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED;
+    g_workflow_snapshot.placement.per_node[1].range_mm = 84;
+    root = cJSON_CreateObject();
+    assert(web_status_json_add_workflow(root));
+    placement = item(item(root, "workflow"), "placement");
+    placement_node = cJSON_GetArrayItem(item(placement, "per_node"), 1);
+    assert_bool(placement_node, "stable", false);
+    assert_string(placement_node, "reason", "range_exceeded");
+    assert_number(placement_node, "range_mm", 84.0);
     cJSON_Delete(root);
 }
 

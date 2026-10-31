@@ -13,7 +13,14 @@
 #define WORKFLOW_MAX_CALIBRATION_NODES (WORKFLOW_MAX_REMOTE_NODES + 1U)
 #define WORKFLOW_MAX_CALIBRATION_REASONS (WORKFLOW_MAX_REMOTE_NODES * 3U + 3U)
 #define WORKFLOW_CALIBRATION_REASON_MAX 40U
-#define WORKFLOW_PLACEMENT_WINDOW_MS 3000U
+/*
+ * REMOTE sensor data arrives once per NRF_SENSOR_REFRESH_PERIOD_MS (2 s). The stability window must hold
+ * WORKFLOW_PLACEMENT_MIN_SAMPLES of them at all times between refreshes, i.e. more than three periods;
+ * the former 3 s window kept two and the stability screen never completed (2026-10-31 bench).
+ */
+#define WORKFLOW_PLACEMENT_WINDOW_MS 7000U
+/* A node whose newest sensor snapshot is older than this is not current (two refresh periods plus margin). */
+#define WORKFLOW_PLACEMENT_FRESH_MS 5000U
 #define WORKFLOW_PLACEMENT_MAX_RANGE_MM 50
 #define WORKFLOW_PLACEMENT_MIN_SAMPLES 3U
 
@@ -162,6 +169,24 @@ typedef struct {
     char reasons[WORKFLOW_MAX_CALIBRATION_REASONS][WORKFLOW_CALIBRATION_REASON_MAX];
 } workflow_calibration_snapshot_t;
 
+/* Why a node is (not) stable; STABLE is also "no external blocker" where a blocker is passed in. */
+typedef enum {
+    WORKFLOW_PLACEMENT_REASON_STABLE = 0,
+    WORKFLOW_PLACEMENT_REASON_COLLECTING,
+    WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED,
+    WORKFLOW_PLACEMENT_REASON_NOT_VERTICAL,
+    WORKFLOW_PLACEMENT_REASON_DEVICE_STATUS_BUSY,
+    WORKFLOW_PLACEMENT_REASON_MAIN_REFERENCE,
+    WORKFLOW_PLACEMENT_REASON_MAIN_BAROMETER,
+    WORKFLOW_PLACEMENT_REASON_NODE_STALE,
+    WORKFLOW_PLACEMENT_REASON_NODE_ENVIRONMENT,
+    WORKFLOW_PLACEMENT_REASON_NODE_REFERENCE,
+    WORKFLOW_PLACEMENT_REASON_SAMPLE_STALE,
+    WORKFLOW_PLACEMENT_REASON_OVERFLOW_BLOCKED,
+    WORKFLOW_PLACEMENT_REASON_CLOCK_BACKWARD,
+    WORKFLOW_PLACEMENT_REASON_COUNT
+} workflow_placement_reason_t;
+
 typedef struct {
     char node[8];
     bool vertical;
@@ -170,6 +195,9 @@ typedef struct {
     bool altitude_asl_m_valid;
     double altitude_asl_m;
     bool stable;
+    workflow_placement_reason_t reason;
+    uint8_t sample_count;
+    int32_t range_mm;       /* spread of the samples in the window; -1 until MIN_SAMPLES are collected */
 } workflow_placement_node_t;
 
 typedef struct {
@@ -260,6 +288,17 @@ void workflow_core_snapshot(
 );
 
 const char *workflow_core_step_name(workflow_step_t step);
+
+/* Header-only so the web JSON writer and the firmware log share it without extra link dependencies. */
+static inline const char *workflow_core_placement_reason_name(workflow_placement_reason_t reason)
+{
+    static const char *const names[WORKFLOW_PLACEMENT_REASON_COUNT] = {
+        "stable", "collecting", "range_exceeded", "not_vertical", "device_status_busy",
+        "main_reference", "main_barometer", "node_stale", "node_environment", "node_reference",
+        "sample_stale", "overflow_blocked", "clock_backward"
+    };
+    return reason >= 0 && reason < WORKFLOW_PLACEMENT_REASON_COUNT ? names[reason] : "unknown";
+}
 const char *workflow_core_command_name(workflow_command_t command);
 const char *workflow_core_sufficiency_name(workflow_sensor_sufficiency_t sufficiency);
 const char *workflow_core_calculation_class_name(workflow_calculation_class_t calculation_class);

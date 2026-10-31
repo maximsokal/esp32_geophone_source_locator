@@ -479,7 +479,19 @@ h1 {
 html.xr-session-active,
 html.xr-session-active body,
 html.xr-session-active #root {
+  background: #050a12 !important;
+}
+
+/* Only passthrough sessions composite the camera behind the DOM overlay. */
+html.xr-passthrough-active,
+html.xr-passthrough-active body,
+html.xr-passthrough-active #root {
   background: transparent !important;
+}
+
+html.xr-session-active,
+html.xr-session-active body {
+  overflow: hidden;
 }
 
 html.xr-session-active .app-header,
@@ -503,6 +515,10 @@ html.xr-session-active .xr-immersive-overlay {
 
 .xr-overlay-card {
   width: min(560px, 100%);
+  /* Reserve the fixed Back button (rem-sized, so it grows with enlarged text) plus the overlay's bottom padding. */
+  max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 2.75rem - 12px - max(16px, env(safe-area-inset-bottom)));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid rgba(148, 163, 184, 0.55);
   border-radius: 16px;
   padding: 14px;

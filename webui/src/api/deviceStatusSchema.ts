@@ -587,6 +587,8 @@ function checkWorkflow(workflow: StatusObject): void {
   if (placementValue !== undefined) {
     const placement = objectValue(placementValue, 'workflow.placement');
     requiredBoolean(placement, 'all_stable', 'workflow.placement');
+    requiredNumber(placement, 'max_range_mm', 'workflow.placement');
+    requiredNumber(placement, 'min_samples', 'workflow.placement');
     const placementNodes = requiredArray(placement, 'per_node', 'workflow.placement');
     for (let index = 0; index < placementNodes.length; index++) {
       const path = `workflow.placement.per_node.${index}`;
@@ -596,6 +598,9 @@ function checkWorkflow(workflow: StatusObject): void {
       requiredNumberOrNull(node, 'height_rel_main_mm', path);
       finiteNumberOrNull(requiredValue(node, 'altitude_asl_m', path), `${path}.altitude_asl_m`);
       requiredBoolean(node, 'stable', path);
+      requiredString(node, 'reason', path);
+      requiredNumber(node, 'samples', path);
+      requiredNumberOrNull(node, 'range_mm', path);
     }
   }
 }

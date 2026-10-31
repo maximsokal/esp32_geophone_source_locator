@@ -106,6 +106,18 @@ export async function layoutIssues(page: Page): Promise<string[]> {
         if (minGap && gap < minGap - eps) issues.push(`shared gap ${label(container)}: actual=${gap}px expected>=${minGap}px`);
       }
     }
+    // A stacked (grid) heading must start every child's text at the container's left edge; a leftover
+    // flex `justify-content` once centred the single grid column and indented the title.
+    for (const heading of document.querySelectorAll('.card-heading,.section-heading')) {
+      if (getComputedStyle(heading).display !== 'grid') continue;
+      const edge = rect(heading).left;
+      for (const child of [...heading.children].filter(visible)) {
+        // Text blocks are judged by where their text starts; boxed controls (button, pill) by their own edge.
+        const range = document.createRange(); range.selectNodeContents(child);
+        const left = child.matches('h1,h2,h3,h4,p,div') ? range.getBoundingClientRect().left : rect(child).left;
+        if (left > edge + eps) issues.push(`indented heading ${label(child)}: actual=${left}px expected=${edge}px`);
+      }
+    }
     for (const wrapper of document.querySelectorAll<HTMLElement>('.nrf-log-table-wrap')) {
       const saved = wrapper.scrollLeft;
       wrapper.scrollLeft = wrapper.scrollWidth;

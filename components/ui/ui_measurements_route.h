@@ -13,3 +13,6 @@ typedef enum {
 ui_measurements_route_t ui_measurements_route_decide(
     workflow_step_t workflow_step,
     bool has_active_object);
+
+/* Steps where the live view is only for listening: OK/RIGHT must not start a recording from it. */
+bool ui_measurements_listen_only(workflow_step_t workflow_step);

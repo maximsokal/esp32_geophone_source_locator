@@ -10,7 +10,11 @@
 
 .workflow-page .card-heading h2 {
   margin: 0;
-  text-align: right;
+}
+
+/* Right-align only where the heading sits beside the title in a flex row (stacked below 561px). */
+@media (min-width: 561px) {
+  .workflow-page .card-heading h2 { text-align: right; }
 }
 
 .workflow-node-list {

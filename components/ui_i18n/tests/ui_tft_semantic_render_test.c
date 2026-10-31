@@ -152,6 +152,8 @@ static void make_workflow_case(
         snapshot->step = WORKFLOW_STEP_PLACEMENT;
         snapshot->placement.per_node_count = 1U;
         (void)snprintf(snapshot->placement.per_node[0].node, sizeof(snapshot->placement.per_node[0].node), "G1");
+        /* A node that is not stable always carries the reason; the screen names it above the node rows. */
+        snapshot->placement.per_node[0].reason = WORKFLOW_PLACEMENT_REASON_NOT_VERTICAL;
     } else if (strcmp(name, "error") == 0) {
         snapshot->step = WORKFLOW_STEP_RESULT;
         snapshot->calculation_class = WORKFLOW_CALCULATION_CLASS_INTERNAL;

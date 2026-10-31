@@ -208,6 +208,8 @@ static void test_max460_tft_action_set_matches_core_for_guided_steps(void)
             assert(offered == allowed);
             if (allowed) ++expected_count;
         }
+        /* The only entry that is not a firmware command here is the live-signals view on the placement step. */
+        if (steps[step_index] == WORKFLOW_STEP_PLACEMENT) ++expected_count;
         assert(model.action_count == expected_count);
     }
 }
@@ -439,8 +441,10 @@ static void test_unknown_values_and_ranging_sigma(void)
     snapshot.placement.per_node_count = 1U;
     (void)snprintf(snapshot.placement.per_node[0].node, sizeof(snapshot.placement.per_node[0].node), "G1");
     build(&snapshot, &state, &ranging, &model);
-    assert(model.lines[0].arg_keys[2] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
-    assert(model.lines[0].arg_keys[3] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
+    /* The node is not stable, so its blocker line comes first and the row follows. */
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_BLOCKED);
+    assert(model.lines[1].arg_keys[2] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
+    assert(model.lines[1].arg_keys[3] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
 
     snapshot = make_snapshot(WORKFLOW_STEP_RANGING);
     ranging.available = true;
@@ -814,6 +818,166 @@ static void test_ranging_result_displays_pair_values(void)
     assert(found == 2U);
 }
 
+static void test_selection_does_not_stick_to_back_after_a_step_with_only_back(void)
+{
+    /* 2026-10-31 16:24: after the calibration run the highlighted action on the result screen was BACK, so
+     * OK walked the user back instead of to the placement step ("no button to continue"). While the run is
+     * in progress BACK is the only action, the selection fell onto it and was carried to the next step. */
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_CALIB_PREP);
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_SENSORS_PLACED) | WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.actions[model.selected_action] == WORKFLOW_COMMAND_SENSORS_PLACED);
+
+    snapshot = make_snapshot(WORKFLOW_STEP_CALIBRATING);
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.action_count == 1U && model.actions[0] == WORKFLOW_COMMAND_BACK);
+
+    snapshot = make_snapshot(WORKFLOW_STEP_CALIB_RESULT);
+    snapshot.calibration.result_valid = true;
+    snapshot.calibration.result_ok = true;
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK) | WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACE_SENSORS);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.action_count == 3U);
+    assert(model.actions[0] == WORKFLOW_COMMAND_PLACE_SENSORS);
+    assert(model.actions[1] == UI_WORKFLOW_ACTION_LIVE_SIGNALS);
+    assert(model.actions[2] == WORKFLOW_COMMAND_BACK);
+    assert(model.actions[model.selected_action] == WORKFLOW_COMMAND_PLACE_SENSORS);
+    ui_workflow_event_t event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_OK, 200U);
+    assert(event.type == UI_WORKFLOW_EVENT_SEND_COMMAND);
+    assert(event.command == WORKFLOW_COMMAND_PLACE_SENSORS);
+
+    /* A choice made inside a step is kept across rebuilds of that step. */
+    state.has_pending = false;
+    event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_DOWN, 201U);
+    event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_DOWN, 202U);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.actions[model.selected_action] == WORKFLOW_COMMAND_BACK);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.actions[model.selected_action] == WORKFLOW_COMMAND_BACK);
+
+    /* The key can arrive before the screen rebuilt for a new step: it must not act on the old choice. */
+    ui_workflow_model_state_t late = {0};
+    snapshot = make_snapshot(WORKFLOW_STEP_CALIBRATING);
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+    build(&snapshot, &late, &ranging, &model);
+    assert(model.action_count == 1U);      /* no live-signals entry while a calibration runs */
+    workflow_snapshot_t result = make_snapshot(WORKFLOW_STEP_CALIB_RESULT);
+    result.calibration.result_ok = true;
+    result.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK) | WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACE_SENSORS);
+    event = ui_workflow_model_handle_key(&result, &late, UI_WORKFLOW_KEY_OK, 300U);
+    assert(event.command == WORKFLOW_COMMAND_PLACE_SENSORS);
+}
+
+static void set_placement_node(
+    workflow_snapshot_t *snapshot,
+    size_t index,
+    const char *name,
+    bool stable,
+    workflow_placement_reason_t reason,
+    uint8_t samples,
+    int32_t range_mm)
+{
+    workflow_placement_node_t *node = &snapshot->placement.per_node[index];
+    (void)snprintf(node->node, sizeof(node->node), "%s", name);
+    node->vertical = true;
+    node->stable = stable;
+    node->reason = reason;
+    node->sample_count = samples;
+    node->range_mm = range_mm;
+    if (index >= snapshot->placement.per_node_count) snapshot->placement.per_node_count = index + 1U;
+}
+
+static void test_placement_shows_continue_with_the_blocking_reason_and_live_signals(void)
+{
+    /* 2026-10-31 bench: "Sensors placed" was simply absent while the nodes were not stable, with no reason. */
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_PLACEMENT);
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+    set_placement_node(&snapshot, 0U, "MAIN", true, WORKFLOW_PLACEMENT_REASON_STABLE, 30U, 0);
+    set_placement_node(&snapshot, 1U, "G1", true, WORKFLOW_PLACEMENT_REASON_STABLE, 4U, 2);
+    set_placement_node(&snapshot, 2U, "G2", false, WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED, 5U, 84);
+    build(&snapshot, &state, &ranging, &model);
+
+    /* The first node that is not stable is named, with its reason and the number behind it, above the rows. */
+    const size_t rows = 3U;
+    assert(model.line_count == rows + 1U);
+    const ui_workflow_model_line_t *why = &model.lines[0];
+    assert(why->key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_BLOCKED);
+    assert(strcmp(why->args[0], "G2") == 0);
+    assert(why->arg_keys[1] == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED);
+    assert(strcmp(why->args[2], " 84/50mm") == 0);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ROW);
+
+    /* Continue is on the list, ahead of the live view and Back, but is not a command the firmware would accept. */
+    assert(model.action_count == 3U);
+    assert(model.actions[0] == UI_WORKFLOW_ACTION_PLACEMENT_BLOCKED);
+    assert(model.action_keys[0] == UI_I18N_KEY_TFT_WORKFLOW_ACTION_PLACEMENT_CONFIRMED);
+    assert(model.actions[1] == UI_WORKFLOW_ACTION_LIVE_SIGNALS);
+    assert(model.actions[2] == WORKFLOW_COMMAND_BACK);
+    assert((model.actions_mask & WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED)) == 0U);
+    assert(model.selected_action == 0U);
+
+    /* OK on the disabled Continue sends nothing and says why instead. */
+    ui_workflow_event_t event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_OK, 500U);
+    assert(event.type == UI_WORKFLOW_EVENT_NONE);
+    assert(state.notice_key == UI_I18N_KEY_TFT_WORKFLOW_NOTICE_PLACEMENT_BLOCKED);
+    assert(!state.has_pending);
+
+    /* DOWN reaches the live signals, OK opens them (no workflow command). */
+    event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_DOWN, 501U);
+    event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_OK, 502U);
+    assert(event.type == UI_WORKFLOW_EVENT_OPEN_LIVE_SIGNALS);
+
+    /* Still collecting: the sample count against the minimum instead of a spread. */
+    set_placement_node(&snapshot, 2U, "G2", false, WORKFLOW_PLACEMENT_REASON_COLLECTING, 2U, -1);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].arg_keys[1] == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_COLLECTING);
+    assert(strcmp(model.lines[0].args[2], " 2/3") == 0);
+    /* A reason with no number leaves that part empty. */
+    set_placement_node(&snapshot, 2U, "G2", false, WORKFLOW_PLACEMENT_REASON_NOT_VERTICAL, 0U, -1);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].args[2][0] == '\0');
+
+    /* Once the firmware allows it, Continue is the real command and OK sends it. */
+    ui_workflow_model_state_t ready_state = {0};
+    snapshot.allowed_actions |= WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED);
+    snapshot.placement.all_stable = true;
+    set_placement_node(&snapshot, 2U, "G2", true, WORKFLOW_PLACEMENT_REASON_STABLE, 5U, 3);
+    build(&snapshot, &ready_state, &ranging, &model);
+    assert(model.action_count == 3U);
+    assert(model.actions[0] == WORKFLOW_COMMAND_PLACEMENT_CONFIRMED);
+    assert(model.lines[rows].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ALL_STABLE);   /* after the rows, no blocker line */
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ROW);
+    event = ui_workflow_model_handle_key(&snapshot, &ready_state, UI_WORKFLOW_KEY_OK, 600U);
+    assert(event.type == UI_WORKFLOW_EVENT_SEND_COMMAND);
+    assert(event.command == WORKFLOW_COMMAND_PLACEMENT_CONFIRMED);
+}
+
+static void test_live_signals_are_offered_only_before_recording_steps_that_need_them(void)
+{
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    for (workflow_step_t step = WORKFLOW_STEP_IDLE; step < WORKFLOW_STEP_COUNT; ++step) {
+        workflow_snapshot_t snapshot = make_snapshot(step);
+        snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+        state = (ui_workflow_model_state_t){0};
+        build(&snapshot, &state, &ranging, &model);
+        bool offered = false;
+        for (size_t i = 0U; i < model.action_count; ++i) {
+            if (model.actions[i] == UI_WORKFLOW_ACTION_LIVE_SIGNALS) offered = true;
+        }
+        assert(offered == (step == WORKFLOW_STEP_CALIB_RESULT || step == WORKFLOW_STEP_PLACEMENT));
+    }
+}
+
 int main(void)
 {
 #ifdef MAX449_CASE
@@ -832,6 +996,9 @@ int main(void)
     test_ranging_result_three_outcomes();
     test_ranging_result_displays_pair_values();
     test_all_steps();
+    test_selection_does_not_stick_to_back_after_a_step_with_only_back();
+    test_placement_shows_continue_with_the_blocking_reason_and_live_signals();
+    test_live_signals_are_offered_only_before_recording_steps_that_need_them();
     test_actions_follow_allowed_mask();
     test_async_sequence_wrap_keeps_new_request_pending();
     test_material_save_sequence_wrap_keeps_new_save_pending();

@@ -66,6 +66,7 @@ typedef struct {
     bool action_row_cache_valid[UI_WORKFLOW_VISIBLE_ACTIONS];
     bool action_row_cache_visible[UI_WORKFLOW_VISIBLE_ACTIONS];
     bool action_row_cache_selected[UI_WORKFLOW_VISIBLE_ACTIONS];
+    bool action_row_cache_disabled[UI_WORKFLOW_VISIBLE_ACTIONS];
     int action_row_cache_y[UI_WORKFLOW_VISIBLE_ACTIONS];
 } ui_workflow_screen_state_t;
 

@@ -79,6 +79,7 @@ typedef struct {
     bool action_row_cache_valid[UI_WORKFLOW_VISIBLE_ACTIONS];
     bool action_row_cache_visible[UI_WORKFLOW_VISIBLE_ACTIONS];
     bool action_row_cache_selected[UI_WORKFLOW_VISIBLE_ACTIONS];
+    bool action_row_cache_disabled[UI_WORKFLOW_VISIBLE_ACTIONS];
     int action_row_cache_y[UI_WORKFLOW_VISIBLE_ACTIONS];
     lv_obj_t *progress_bar;
     lv_obj_t *progress_spinner;
@@ -808,6 +809,7 @@ static void ui_workflow_render_step_locked(ui_workflow_screen_state_t *state)
     memset(state->action_row_cache_valid, 0, sizeof(state->action_row_cache_valid));
     memset(state->action_row_cache_visible, 0, sizeof(state->action_row_cache_visible));
     memset(state->action_row_cache_selected, 0, sizeof(state->action_row_cache_selected));
+    memset(state->action_row_cache_disabled, 0, sizeof(state->action_row_cache_disabled));
     memset(state->action_row_cache_y, 0, sizeof(state->action_row_cache_y));
     memset(state->arrival_markers, 0, sizeof(state->arrival_markers));
     state->progress_bar = NULL;
@@ -919,6 +921,11 @@ static void ui_workflow_update_actions(ui_workflow_screen_state_t *state)
             (void)ui_utf8_format(text + length, sizeof(text) - length, "%s", ui_tr(UI_I18N_KEY_TFT_WORKFLOW_VALUE_PENDING));
         }
         ui_workflow_set_label(label, text);
+        const bool disabled = command == UI_WORKFLOW_ACTION_PLACEMENT_BLOCKED;
+        if (!state->action_row_cache_valid[slot] || state->action_row_cache_disabled[slot] != disabled) {
+            lv_obj_set_style_text_color(label, lv_color_hex(disabled ? UI_COLOR_MUTED : UI_COLOR_TEXT), 0);
+        }
+        state->action_row_cache_disabled[slot] = disabled;
         const int row_y = start_y + (int)(slot * UI_WORKFLOW_ACTION_ROW_STEP);
         if (!state->action_row_cache_valid[slot] || state->action_row_cache_y[slot] != row_y) {
             lv_obj_set_pos(row, 10, row_y);
@@ -1231,6 +1238,9 @@ void ui_workflow_screen_handle_key_locked(keypad_key_t key)
         case UI_WORKFLOW_EVENT_OPEN_PREVIEW:
             ui_scan_preview_open_from_workflow_locked(
                 s_workflow->snapshot.object_id, s_workflow->snapshot.session_id);
+            return;
+        case UI_WORKFLOW_EVENT_OPEN_LIVE_SIGNALS:
+            ui_screen_open_locked(UI_SCREEN_MEASUREMENTS);
             return;
         case UI_WORKFLOW_EVENT_SAVE_MATERIAL:
             ui_workflow_save_material(s_workflow, &event, now_ms);

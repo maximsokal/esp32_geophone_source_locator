@@ -171,11 +171,19 @@ export interface WorkflowPlacementNode {
   height_rel_main_mm: number | null;
   altitude_asl_m: number | null;
   stable: boolean;
+  /** Why the node is (not) stable: a workflow_placement_reason_t name from the firmware. */
+  reason: string;
+  /** Samples currently inside the stability window. */
+  samples: number;
+  /** Height spread of those samples; null until the minimum number of samples is collected. */
+  range_mm: number | null;
 }
 
 export interface WorkflowPlacementStatus {
   per_node: WorkflowPlacementNode[];
   all_stable: boolean;
+  max_range_mm: number;
+  min_samples: number;
 }
 
 export interface DeviceWorkflowStatus {

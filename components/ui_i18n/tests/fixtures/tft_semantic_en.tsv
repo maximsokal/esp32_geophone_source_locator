@@ -3,8 +3,10 @@ normal.hint	UP/DOWN actions  OK run  LEFT back
 normal.body.0	Select an object
 warning.title	SENSOR PLACEMENT
 warning.hint	UP/DOWN actions  OK run  LEFT back
-warning.body.0	G1 V:X dH:—mm ASL:—m St:X
-warning.body.1	Waiting for stability
+warning.body.0	G1: Not upright
+warning.body.1	G1 V:X dH:—mm ASL:—m St:X
+warning.action.0	Sensors placed
+warning.action.1	Live signals
 error.title	RESULT
 error.hint	UP/DOWN actions  OK run  LEFT back
 error.body.0	Internal error

@@ -128,6 +128,8 @@ typedef struct
     lv_obj_t *measurement_node_labels[UI_MEASUREMENTS_NODE_COUNT];
     size_t measurement_action;
     bool measurement_exit_after_stop;
+    /* The live view was opened before the recording steps: OK/RIGHT must not start a recording. */
+    bool measurement_listen_only;
 
     lv_obj_t *system_heap;
     lv_obj_t *system_psram;

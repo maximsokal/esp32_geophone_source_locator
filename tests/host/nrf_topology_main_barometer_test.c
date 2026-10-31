@@ -150,6 +150,54 @@ static void test_pending_conversion_is_not_logged_as_a_bus_error(void)
     assert(strstr(s_last_warning, "ESP_ERR_INVALID_STATE") != NULL);
 }
 
+static void test_valid_flag_is_held_between_fresh_samples(void)
+{
+    /* The driver clears bmp280_valid on every poll that finds no new conversion yet (three polls in four
+     * with a continuously converting sensor). The placement-stability check needs MAIN valid on every
+     * poll and wiped its history each time: 2026-10-31 16:24 the stability screen never completed. */
+    nrf_topology_main_barometer_t state;
+    reset(&state);
+    g_main_barometer_fake.reading.bmp280_address = 0x76U;
+    g_main_barometer_fake.reading.bmp280_present = true;
+    g_main_barometer_fake.reading.bmp280_valid = true;
+    g_main_barometer_fake.reading.pressure_pa = 100650U;
+    g_main_barometer_fake.reading.last_sample_ms = 1000U;
+    g_main_barometer_fake.poll_result = ESP_OK;
+    nrf_topology_main_barometer_step(&state, 1000U);
+    assert(g_main_barometer_fake.last_main_status.bmp280_valid);
+
+    /* No new conversion yet: the sample is still the current one. */
+    g_main_barometer_fake.reading.bmp280_valid = false;
+    g_main_barometer_fake.poll_result = ESP_ERR_NOT_FINISHED;
+    nrf_topology_main_barometer_step(&state, 1200U);
+    assert(g_main_barometer_fake.last_main_status.bmp280_valid);
+    assert(g_main_barometer_fake.last_main_status.pressure_pa == 100650U);
+    nrf_topology_main_barometer_step(&state, 2400U);
+    assert(g_main_barometer_fake.last_main_status.bmp280_valid);
+
+    /* No fresh sample for long enough: the value is stale and must not be shown as valid. */
+    nrf_topology_main_barometer_step(&state, 3100U);
+    assert(!g_main_barometer_fake.last_main_status.bmp280_valid);
+
+    /* A real error never holds the old sample. */
+    g_main_barometer_fake.reading.bmp280_valid = true;
+    g_main_barometer_fake.reading.last_sample_ms = 4000U;
+    g_main_barometer_fake.poll_result = ESP_OK;
+    nrf_topology_main_barometer_step(&state, 4000U);
+    assert(g_main_barometer_fake.last_main_status.bmp280_valid);
+    g_main_barometer_fake.reading.bmp280_valid = false;
+    g_main_barometer_fake.poll_result = ESP_ERR_INVALID_STATE;
+    nrf_topology_main_barometer_step(&state, 4100U);
+    assert(!g_main_barometer_fake.last_main_status.bmp280_valid);
+
+    /* A sensor that is not present is never valid, whatever the sample age. */
+    g_main_barometer_fake.reading.bmp280_present = false;
+    g_main_barometer_fake.reading.last_sample_ms = 5000U;
+    g_main_barometer_fake.poll_result = ESP_ERR_NOT_FINISHED;
+    nrf_topology_main_barometer_step(&state, 5100U);
+    assert(!g_main_barometer_fake.last_main_status.bmp280_valid);
+}
+
 static void test_undetected_barometer_logs_both_candidate_addresses(void)
 {
     nrf_topology_main_barometer_t state;
@@ -193,6 +241,7 @@ int main(void)
     test_rejected_publish_is_retried();
     test_poll_failures_are_logged_with_the_device_and_rate_limited();
     test_pending_conversion_is_not_logged_as_a_bus_error();
+    test_valid_flag_is_held_between_fresh_samples();
     test_undetected_barometer_logs_both_candidate_addresses();
     test_wait_follows_the_next_poll_and_close_is_forwarded();
     return 0;

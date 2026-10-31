@@ -456,6 +456,21 @@ static void test_success_and_failure_result_routes(void)
     ) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
 }
 
+static void test_placement_reason_names_are_unique_and_known(void)
+{
+    /* The names appear in the PLACEMENT_STABILITY log lines that are read back from the bench logs. */
+    for (int reason = 0; reason < (int)WORKFLOW_PLACEMENT_REASON_COUNT; ++reason) {
+        const char *name = workflow_core_placement_reason_name((workflow_placement_reason_t)reason);
+        assert(name != NULL && name[0] != '\0' && strcmp(name, "unknown") != 0);
+        for (int other = 0; other < reason; ++other) {
+            assert(strcmp(name, workflow_core_placement_reason_name((workflow_placement_reason_t)other)) != 0);
+        }
+    }
+    assert(strcmp(workflow_core_placement_reason_name(WORKFLOW_PLACEMENT_REASON_STABLE), "stable") == 0);
+    assert(strcmp(workflow_core_placement_reason_name(WORKFLOW_PLACEMENT_REASON_COUNT), "unknown") == 0);
+    assert(strcmp(workflow_core_placement_reason_name((workflow_placement_reason_t)-1), "unknown") == 0);
+}
+
 int main(void)
 {
 #ifdef MAX449_CASE
@@ -479,6 +494,7 @@ int main(void)
     test_sensor_count_guards_zero_through_five();
     test_stale_generation_and_placement_guard();
     test_success_and_failure_result_routes();
+    test_placement_reason_names_are_unique_and_known();
     return 0;
 #endif
 }

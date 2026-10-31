@@ -445,6 +445,9 @@ describe('normalizeDeviceStatus', () => {
       height_rel_main_mm: null,
       altitude_asl_m: null,
       stable: false,
+      reason: 'not_vertical',
+      samples: 0,
+      range_mm: null,
     }]);
 
     const normalized = normalizeDeviceStatus(raw);

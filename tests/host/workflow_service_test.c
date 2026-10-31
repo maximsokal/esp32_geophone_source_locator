@@ -28,6 +28,7 @@
 #include "workflow_service_host_fakes.h"
 #include "host_rtos.h"
 #include "cJSON.h"
+#include "esp_log.h"
 
 #ifndef CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
 #define CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING 0
@@ -486,9 +487,12 @@ esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
     return generation != 0U ? ESP_OK : ESP_ERR_INVALID_ARG;
 }
 
+static esp_err_t s_device_snapshot_result = ESP_OK;
+
 esp_err_t device_status_try_get_snapshot(device_status_snapshot_t *snapshot)
 {
     if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
+    if (s_device_snapshot_result != ESP_OK) return s_device_snapshot_result;
     *snapshot = s_device;
     return ESP_OK;
 }
@@ -536,6 +540,7 @@ static void reset_fakes(bool active_object, measurement_service_state_t state, s
     memset(&s_cs_cycle, 0, sizeof(s_cs_cycle));
     s_now_ms = 1000U;
     s_placement_ready = false;
+    s_device_snapshot_result = ESP_OK;
     memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
     assert(workflow_service_init() == ESP_OK);
 }
@@ -1761,6 +1766,193 @@ static void test_low_remote_placement_and_ranging_finish(void)
     }
 }
 
+/* One sensor refresh answered by every assigned remote; channel 1 (G2) can be offset in height. */
+static void feed_remote_sensor_refresh(int32_t channel1_offset_mm)
+{
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (s_topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+        nrf_remote_sensor_cache_t *cache = &s_cache[channel];
+        cache->identity_valid = true;
+        cache->topology_current = true;
+        cache->response_valid = true;
+        cache->identity.node_id = s_topology.remotes[channel].node_id;
+        cache->esp_receipt_uptime_ms = s_now_ms;
+        cache->sensor.valid_mask = NRF_UPSTREAM_SENSOR_VALID_ENV;
+        cache->sensor.pressure_pa = 101325U;
+        cache->sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+        cache->sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+        cache->sensor.reference_generation = s_height_generation;
+        cache->sensor.relative_z_mm = (int32_t)(100U + channel * 100U) +
+            (channel == 1U ? channel1_offset_mm : 0);
+    }
+}
+
+static void begin_placement_without_samples(size_t remotes)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, remotes);
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    assert(command(WORKFLOW_COMMAND_START_MEASUREMENT, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_GO_CALIBRATION, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_SENSORS_PLACED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_CALIBRATION_DONE, true, true) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_PLACE_SENSORS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    s_placement_ready = true;
+    s_device.main.bmp280_valid = true;
+    s_device.main.pressure_pa = 101325U;
+    s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
+    s_device.main.height_reference.generation = s_height_generation;
+}
+
+/* Advances 100 ms polls; the remotes answer a sensor refresh every 2 s counted from `refresh_origin_ms`. */
+static void run_placement_polls(unsigned duration_ms, uint64_t refresh_origin_ms, int32_t channel1_offset_mm)
+{
+    for (unsigned elapsed = 0U; elapsed < duration_ms; elapsed += 100U) {
+        s_now_ms += 100U;
+        if (((s_now_ms - refresh_origin_ms) % 2000U) == 0U) feed_remote_sensor_refresh(channel1_offset_mm);
+        assert(workflow_service_poll() == ESP_OK);
+    }
+}
+
+static const workflow_placement_node_t *placement_node(const workflow_snapshot_t *snapshot, const char *name)
+{
+    for (size_t i = 0U; i < snapshot->placement.per_node_count; ++i) {
+        if (strcmp(snapshot->placement.per_node[i].node, name) == 0) return &snapshot->placement.per_node[i];
+    }
+    assert(!"placement node not found");
+    return NULL;
+}
+
+static unsigned count_log_matches(const char *needle)
+{
+    unsigned matches = 0U;
+    for (const char *at = workflow_test_log_buffer; (at = strstr(at, needle)) != NULL; at += strlen(needle)) ++matches;
+    return matches;
+}
+
+static void test_placement_becomes_stable_at_the_production_remote_refresh_cadence(void)
+{
+    /*
+     * REMOTE sensor data reaches the ESP once per NRF_SENSOR_REFRESH_PERIOD_MS (2 s), MAIN every poll. The
+     * stability check needs WORKFLOW_PLACEMENT_MIN_SAMPLES samples inside its window, so a window shorter
+     * than (MIN_SAMPLES - 1) refresh periods can never be satisfied: 2026-10-31 16:24 bench, the stability
+     * screen never let the user continue. Every other placement test refreshes the remotes every 100 ms.
+     */
+    begin_placement_without_samples(3U);
+    uint64_t first_stable_ms = 0U;
+    unsigned flaps = 0U;
+    const uint64_t start_ms = s_now_ms;
+    for (unsigned step = 0U; step < 300U; ++step) {          /* 30 s in 100 ms polls */
+        run_placement_polls(100U, start_ms, 0);
+        const workflow_snapshot_t snapshot = try_snapshot();
+        if (snapshot.placement.all_stable) {
+            if (first_stable_ms == 0U) first_stable_ms = s_now_ms - start_ms;
+        } else if (first_stable_ms != 0U) {
+            ++flaps;
+        }
+    }
+    assert(first_stable_ms != 0U);
+    assert(first_stable_ms <= 10000U);
+    /* Once reached it must hold between refreshes instead of dropping out before each one. */
+    assert(flaps == 0U);
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    workflow_service_shutdown();
+}
+
+static void test_placement_reports_why_each_node_is_not_stable_and_logs_the_readings(void)
+{
+    begin_placement_without_samples(3U);
+    workflow_test_log_clear();
+    const uint64_t origin_ms = s_now_ms;
+
+    /* Before the first refresh the remotes have no current snapshot; then samples accumulate. */
+    run_placement_polls(1000U, origin_ms, 0);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G1")->reason == WORKFLOW_PLACEMENT_REASON_NODE_STALE);
+    assert(placement_node(&snapshot, "MAIN")->reason == WORKFLOW_PLACEMENT_REASON_COLLECTING ||
+           placement_node(&snapshot, "MAIN")->reason == WORKFLOW_PLACEMENT_REASON_STABLE);
+    run_placement_polls(7000U, origin_ms, 0);
+    snapshot = try_snapshot();
+    assert(snapshot.placement.all_stable);
+    assert(placement_node(&snapshot, "G1")->reason == WORKFLOW_PLACEMENT_REASON_STABLE);
+    assert(placement_node(&snapshot, "G1")->sample_count >= WORKFLOW_PLACEMENT_MIN_SAMPLES);
+    assert(placement_node(&snapshot, "G1")->range_mm == 0);
+
+    /* The readings are logged: each state change once, and a periodic line while the state holds. */
+    assert(count_log_matches("PLACEMENT_STABILITY node=G1 stable=0 reason=node_stale trigger=change") == 1U);
+    assert(count_log_matches("PLACEMENT_STABILITY node=G1 stable=0 reason=collecting trigger=change") == 1U);
+    assert(count_log_matches("PLACEMENT_STABILITY node=G1 stable=1 reason=stable trigger=change") == 1U);
+    assert(count_log_matches("PLACEMENT_STABILITY node=G1 stable=1 reason=stable trigger=periodic") >= 1U);
+    assert(strstr(workflow_test_log_buffer, "limit_mm=50") != NULL);
+    assert(strstr(workflow_test_log_buffer, "pressure_pa=101325") != NULL);
+    assert(strstr(workflow_test_log_buffer, "age_ms=") != NULL);
+
+    /* A node that moves beyond the limit names the spread. */
+    workflow_test_log_clear();
+    run_placement_polls(2000U, origin_ms, 80);
+    snapshot = try_snapshot();
+    assert(!snapshot.placement.all_stable);
+    assert(placement_node(&snapshot, "G2")->reason == WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED);
+    assert(placement_node(&snapshot, "G2")->range_mm == 80);
+    assert(placement_node(&snapshot, "G1")->reason == WORKFLOW_PLACEMENT_REASON_STABLE);
+    assert(count_log_matches("PLACEMENT_STABILITY node=G2 stable=0 reason=range_exceeded trigger=change") == 1U);
+    assert(strstr(workflow_test_log_buffer, "range_mm=80") != NULL);
+    assert(count_log_matches("node=G1 stable=1 reason=stable trigger=change") == 0U);
+
+    /* A node that is not upright. */
+    s_cache[0].sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED - 1U; /* moving */
+    workflow_test_log_clear();
+    run_placement_polls(100U, origin_ms, 0);
+    snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G1")->reason == WORKFLOW_PLACEMENT_REASON_NOT_VERTICAL);
+    assert(!placement_node(&snapshot, "G1")->stable);
+    assert(count_log_matches("PLACEMENT_STABILITY node=G1 stable=0 reason=not_vertical trigger=change") == 1U);
+
+    /* MAIN's barometer gone for good. */
+    s_device.main.bmp280_valid = false;
+    workflow_test_log_clear();
+    run_placement_polls(100U, origin_ms, 0);
+    snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "MAIN")->reason == WORKFLOW_PLACEMENT_REASON_MAIN_BAROMETER);
+    assert(count_log_matches("PLACEMENT_STABILITY node=MAIN stable=0 reason=main_barometer trigger=change") == 1U);
+    s_device.main.bmp280_valid = true;
+
+    /* The remotes stop answering: not current any more. */
+    run_placement_polls(100U, origin_ms, 0);
+    s_now_ms += 6000U;
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G3")->reason == WORKFLOW_PLACEMENT_REASON_NODE_STALE);
+    workflow_service_shutdown();
+}
+
+static void test_placement_survives_a_missed_device_status_read_but_not_a_long_outage(void)
+{
+    /* device_status_try_get_snapshot() never waits for its lock; a poll that lands on a writer got nothing and
+     * used to wipe every node's history, so the stability window had to start over. */
+    begin_placement_without_samples(3U);
+    const uint64_t origin_ms = s_now_ms;
+    run_placement_polls(8000U, origin_ms, 0);
+    assert(try_snapshot().placement.all_stable);
+
+    s_device_snapshot_result = ESP_ERR_TIMEOUT;
+    run_placement_polls(100U, origin_ms, 0);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(snapshot.placement.all_stable);
+    assert(placement_node(&snapshot, "MAIN")->reason == WORKFLOW_PLACEMENT_REASON_STABLE);
+
+    s_device_snapshot_result = ESP_OK;
+    run_placement_polls(100U, origin_ms, 0);
+    assert(try_snapshot().placement.all_stable);
+
+    /* Without status for longer than the hold the value is not trusted: the cause is named. */
+    s_device_snapshot_result = ESP_ERR_TIMEOUT;
+    run_placement_polls(1500U, origin_ms, 0);
+    snapshot = try_snapshot();
+    assert(!snapshot.placement.all_stable);
+    assert(placement_node(&snapshot, "MAIN")->reason == WORKFLOW_PLACEMENT_REASON_DEVICE_STATUS_BUSY);
+    workflow_service_shutdown();
+}
+
 static void test_scan_presence_and_settings_refresh_are_cached_for_two_seconds(void)
 {
     reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
@@ -2143,6 +2335,9 @@ int main(void)
     test_one_and_two_connected_remotes_complete_initialization();
     test_rejected_imu_calibration_command_is_repeated_for_silent_nodes_only();
     test_low_remote_placement_and_ranging_finish();
+    test_placement_becomes_stable_at_the_production_remote_refresh_cadence();
+    test_placement_reports_why_each_node_is_not_stable_and_logs_the_readings();
+    test_placement_survives_a_missed_device_status_read_but_not_a_long_outage();
 #else
 #error "unknown MAX449_CASE for workflow_service_test"
 #endif
@@ -2166,6 +2361,9 @@ int main(void)
     test_new_workflow_steps_wait_for_explicit_commands();
     test_one_and_two_connected_remotes_complete_initialization();
     test_rejected_imu_calibration_command_is_repeated_for_silent_nodes_only();
+    test_placement_becomes_stable_at_the_production_remote_refresh_cadence();
+    test_placement_reports_why_each_node_is_not_stable_and_logs_the_readings();
+    test_placement_survives_a_missed_device_status_read_but_not_a_long_outage();
     test_no_step_advances_without_a_command_fake_clock();
     test_staged_scan_remains_visible_across_session_creation();
     test_scan_presence_and_settings_refresh_are_cached_for_two_seconds();

@@ -17,7 +17,7 @@ type StubListener=EventListenerOrEventListenerObject;
 interface StubDocument{
   visibilityState:string;
   body:object;
-  documentElement:{classList:{add:(name:string)=>void;remove:(name:string)=>void;contains:(name:string)=>boolean}};
+  documentElement:{classList:{add:(name:string)=>void;remove:(...names:string[])=>void;contains:(name:string)=>boolean}};
   addEventListener:(type:string,listener:StubListener|null)=>void;
   removeEventListener:(type:string,listener:StubListener|null)=>void;
   dispatchEvent:(event:Event)=>boolean;
@@ -45,7 +45,7 @@ function installEnvironment(makeCompatible?:()=>Promise<void>):void{
     body:{},
     documentElement:{classList:{
       add:(name)=>{classes.add(name);},
-      remove:(name)=>{classes.delete(name);},
+      remove:(...names)=>{for(const name of names)classes.delete(name);},
       contains:(name)=>classes.has(name),
     }},
     addEventListener:(type,listener)=>{
@@ -113,6 +113,15 @@ afterEach(async()=>{
 });
 
 describe('WebXrRuntime lifecycle ownership',()=>{
+  it.each(['opaque','alpha-blend','additive'])('restores the document after %s compositing',async(blend)=>{
+    const session=new FakeXrSession();session.environmentBlendMode=blend;xr.queue(session);
+    const runtime=createRuntime();await runtime.start();
+    expect(document.documentElement.classList.contains('xr-session-active')).toBe(true);
+    expect(document.documentElement.classList.contains('xr-passthrough-active')).toBe(blend!=='opaque');
+    await runtime.stop();
+    expect(document.documentElement.classList.contains('xr-session-active')).toBe(false);
+    expect(document.documentElement.classList.contains('xr-passthrough-active')).toBe(false);
+  });
   it('keeps construction pure and protects the active profiler from stale detach',async()=>{
     const addListener=vi.spyOn(document,'addEventListener');const removeListener=vi.spyOn(document,'removeEventListener');
     const policyBefore=activeXrRenderPolicy();const abandoned=new WebXrRuntime();runtimes.push(abandoned);

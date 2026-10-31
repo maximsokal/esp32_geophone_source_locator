@@ -40,7 +40,15 @@
 #define WORKFLOW_CALIBRATION_IMU_RETRY_MS 3000U
 /* How long a new RANGING start waits for a cancelled run to wind down before it is reported as failed. */
 #define WORKFLOW_RANGING_RESTART_WAIT_MS 10000U
-#define WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES 32U
+/* WORKFLOW_PLACEMENT_WINDOW_MS at the poll period, plus headroom (35 samples at 200 ms). */
+#define WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES 96U
+/* While on a placement step each node's stability state is logged this often, and at once on a change. */
+#define WORKFLOW_PLACEMENT_LOG_PERIOD_MS 2000U
+/*
+ * device_status_try_get_snapshot() takes its lock without waiting, so a poll that lands while a writer holds
+ * it gets nothing. MAIN's last good status is reused for this long rather than wiping every node's history.
+ */
+#define WORKFLOW_PLACEMENT_MAIN_HOLD_MS 1000U
 #define WORKFLOW_SERVICE_POLL_STACK_BYTES 8192U
 #define WORKFLOW_CALC_SETTINGS_MAX_JSON_DEPTH 8U
 #define WORKFLOW_SERVICE_STATUS_REFRESH_MS 2000U
@@ -81,6 +89,8 @@ typedef struct {
     uint64_t last_sample_ms;
     bool last_sample_valid;
     uint64_t blocked_until_ms;
+    bool reason_logged;
+    workflow_placement_reason_t logged_reason;
     size_t sample_count;
     workflow_placement_sample_t samples[WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES];
 } workflow_placement_history_t;
@@ -88,6 +98,10 @@ typedef struct {
 typedef struct {
     workflow_placement_snapshot_t status;
     workflow_placement_history_t history[WORKFLOW_MAX_CALIBRATION_NODES];
+    bool main_cached;
+    uint64_t main_cached_ms;
+    device_main_status_t main_cache;
+    uint64_t next_log_ms;
 } workflow_placement_run_t;
 
 typedef struct {
@@ -963,11 +977,16 @@ static bool workflow_service_placement_update_node(
     uint16_t generation,
     bool vertical,
     bool height_valid,
+    workflow_placement_reason_t blocker,
     int64_t height_rel_main_mm,
     uint64_t sample_ms,
     uint64_t now_ms,
-    bool collect_sample)
+    bool collect_sample,
+    workflow_placement_reason_t *reason,
+    int32_t *range_mm)
 {
+    *reason = WORKFLOW_PLACEMENT_REASON_COLLECTING;
+    *range_mm = -1;
     if (!history->node_valid || history->node_id != node_id ||
         history->generation != generation) {
         workflow_service_placement_reset_history(history);
@@ -983,13 +1002,26 @@ static bool workflow_service_placement_update_node(
 
     if (now_ms < sample_ms || !vertical || !height_valid) {
         workflow_service_placement_clear_samples(history);
+        if (blocker != WORKFLOW_PLACEMENT_REASON_STABLE) {
+            *reason = blocker;
+        } else if (!vertical) {
+            *reason = WORKFLOW_PLACEMENT_REASON_NOT_VERTICAL;
+        } else if (!height_valid) {
+            *reason = WORKFLOW_PLACEMENT_REASON_MAIN_REFERENCE;
+        } else {
+            *reason = WORKFLOW_PLACEMENT_REASON_CLOCK_BACKWARD;
+        }
         return false;
     }
-    if (now_ms - sample_ms > WORKFLOW_PLACEMENT_WINDOW_MS) {
+    if (now_ms - sample_ms > WORKFLOW_PLACEMENT_FRESH_MS) {
         workflow_service_placement_clear_samples(history);
+        *reason = WORKFLOW_PLACEMENT_REASON_SAMPLE_STALE;
         return false;
     }
-    if (now_ms < history->blocked_until_ms) return false;
+    if (now_ms < history->blocked_until_ms) {
+        *reason = WORKFLOW_PLACEMENT_REASON_OVERFLOW_BLOCKED;
+        return false;
+    }
 
     while (history->sample_count > 0U &&
            now_ms - history->samples[0].timestamp_ms > WORKFLOW_PLACEMENT_WINDOW_MS) {
@@ -1003,9 +1035,10 @@ static bool workflow_service_placement_update_node(
     if (collect_sample &&
         (!history->last_sample_valid || sample_ms > history->last_sample_ms)) {
         if (history->sample_count >= WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES) {
-            /* ponytail: 32 samples cap RAM; overflow blocks one window rather than lose a live outlier. Raise the cap if polling exceeds 10 Hz. */
+            /* ponytail: the cap bounds RAM; overflow blocks one window rather than lose a live outlier. Raise it if polling gets faster than the cap/window ratio. */
             workflow_service_placement_clear_samples(history);
             history->blocked_until_ms = now_ms + WORKFLOW_PLACEMENT_WINDOW_MS;
+            *reason = WORKFLOW_PLACEMENT_REASON_OVERFLOW_BLOCKED;
             return false;
         }
         history->samples[history->sample_count++] = (workflow_placement_sample_t){
@@ -1017,6 +1050,7 @@ static bool workflow_service_placement_update_node(
     } else if (collect_sample && history->last_sample_valid &&
                sample_ms < history->last_sample_ms) {
         workflow_service_placement_clear_samples(history);
+        *reason = WORKFLOW_PLACEMENT_REASON_CLOCK_BACKWARD;
         return false;
     }
 
@@ -1031,7 +1065,14 @@ static bool workflow_service_placement_update_node(
             maximum = history->samples[i].height_rel_main_mm;
         }
     }
-    return maximum - minimum <= WORKFLOW_PLACEMENT_MAX_RANGE_MM;
+    const int64_t spread = maximum - minimum;
+    *range_mm = spread > INT32_MAX ? INT32_MAX : (int32_t)spread;
+    if (spread > WORKFLOW_PLACEMENT_MAX_RANGE_MM) {
+        *reason = WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED;
+        return false;
+    }
+    *reason = WORKFLOW_PLACEMENT_REASON_STABLE;
+    return true;
 }
 
 static void workflow_service_placement_set_name(
@@ -1053,6 +1094,36 @@ static bool workflow_service_tracks_placement(workflow_step_t step)
         step == WORKFLOW_STEP_LAYOUT_READY;
 }
 
+/* Logs a node's stability state at once when its reason changes and otherwise once per log period. */
+static void workflow_service_placement_log_node(
+    workflow_placement_history_t *history,
+    const workflow_placement_node_t *node,
+    int32_t age_ms,
+    uint32_t pressure_pa,
+    bool periodic_due)
+{
+    const bool changed = !history->reason_logged || history->logged_reason != node->reason;
+    if (!changed && !periodic_due) return;
+    history->reason_logged = true;
+    history->logged_reason = node->reason;
+    ESP_LOGI(TAG,
+        "PLACEMENT_STABILITY node=%s stable=%u reason=%s trigger=%s samples=%u/%u range_mm=%d limit_mm=%d "
+        "age_ms=%d vertical=%u height_valid=%u height_mm=%d pressure_pa=%u",
+        node->node,
+        node->stable ? 1U : 0U,
+        workflow_core_placement_reason_name(node->reason),
+        changed ? "change" : "periodic",
+        (unsigned)node->sample_count,
+        (unsigned)WORKFLOW_PLACEMENT_MIN_SAMPLES,
+        (int)node->range_mm,
+        (int)WORKFLOW_PLACEMENT_MAX_RANGE_MM,
+        (int)age_ms,
+        node->vertical ? 1U : 0U,
+        node->height_rel_main_mm_valid ? 1U : 0U,
+        (int)node->height_rel_main_mm,
+        (unsigned)pressure_pa);
+}
+
 static void workflow_service_placement_poll(bool collect_samples)
 {
     workflow_placement_snapshot_t *status = &s_placement.status;
@@ -1060,7 +1131,16 @@ static void workflow_service_placement_poll(bool collect_samples)
     const uint64_t now_ms = workflow_service_now_ms();
     const bool tracks_placement = workflow_service_tracks_placement(s_core.step);
     device_status_snapshot_t *device = &s_poll_scratch.device;
-    const bool device_valid = device_status_try_get_snapshot(device) == ESP_OK;
+    bool device_valid = device_status_try_get_snapshot(device) == ESP_OK;
+    if (device_valid) {
+        s_placement.main_cache = device->main;
+        s_placement.main_cached = true;
+        s_placement.main_cached_ms = now_ms;
+    } else if (s_placement.main_cached && now_ms >= s_placement.main_cached_ms &&
+               now_ms - s_placement.main_cached_ms <= WORKFLOW_PLACEMENT_MAIN_HOLD_MS) {
+        device->main = s_placement.main_cache;
+        device_valid = true;
+    }
     const bool main_reference_valid = device_valid &&
         device->main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
         device->main.height_reference.generation != 0U;
@@ -1070,12 +1150,19 @@ static void workflow_service_placement_poll(bool collect_samples)
     const uint16_t main_generation = main_reference_valid
         ? device->main.height_reference.generation
         : 0U;
+    const workflow_placement_reason_t main_blocker = !device_valid
+        ? WORKFLOW_PLACEMENT_REASON_DEVICE_STATUS_BUSY
+        : !main_reference_valid ? WORKFLOW_PLACEMENT_REASON_MAIN_REFERENCE
+        : !main_baro_valid ? WORKFLOW_PLACEMENT_REASON_MAIN_BAROMETER
+        : WORKFLOW_PLACEMENT_REASON_STABLE;
     const bool take_samples = tracks_placement && collect_samples;
+    const bool log_due = take_samples && now_ms >= s_placement.next_log_ms;
 
     if (!tracks_placement) {
         for (size_t i = 0U; i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
             workflow_service_placement_reset_history(&s_placement.history[i]);
         }
+        s_placement.next_log_ms = 0U;
     }
 
     workflow_placement_node_t *main_node = &status->per_node[status->per_node_count++];
@@ -1094,10 +1181,19 @@ static void workflow_service_placement_poll(bool collect_samples)
         main_generation,
         main_node->vertical,
         main_height_valid,
+        main_blocker,
         0,
         now_ms,
         now_ms,
-        take_samples);
+        take_samples,
+        &main_node->reason,
+        &main_node->range_mm);
+    main_node->sample_count = (uint8_t)s_placement.history[0].sample_count;
+    if (take_samples) {
+        workflow_service_placement_log_node(
+            &s_placement.history[0], main_node, 0,
+            device_valid ? device->main.pressure_pa : 0U, log_due);
+    }
 
     nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
     const bool topology_valid = nrf_topology_service_get_snapshot(topology) == ESP_OK;
@@ -1120,15 +1216,17 @@ static void workflow_service_placement_poll(bool collect_samples)
                 cache->topology_current && cache->response_valid &&
                 cache->identity.node_id == remote->node_id &&
                 now_ms >= cache->esp_receipt_uptime_ms &&
-                now_ms - cache->esp_receipt_uptime_ms <= WORKFLOW_PLACEMENT_WINDOW_MS;
+                now_ms - cache->esp_receipt_uptime_ms <= WORKFLOW_PLACEMENT_FRESH_MS;
             const bool environment_valid = cache_current &&
                 (cache->sensor.valid_mask & NRF_UPSTREAM_SENSOR_VALID_ENV) != 0U &&
                 cache->sensor.pressure_pa > 0U;
             node->vertical = cache_current &&
                 cache->sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
-            node->height_rel_main_mm_valid = main_height_valid && environment_valid &&
+            const bool reference_matches = cache_current &&
                 cache->sensor.reference_state == NRF_UPSTREAM_REFERENCE_VALID &&
                 cache->sensor.reference_generation == main_generation;
+            node->height_rel_main_mm_valid = main_height_valid && environment_valid &&
+                reference_matches;
             if (node->height_rel_main_mm_valid) {
                 node->height_rel_main_mm =
                     (int64_t)cache->sensor.relative_z_mm -
@@ -1138,16 +1236,36 @@ static void workflow_service_placement_poll(bool collect_samples)
             if (environment_valid) {
                 node->altitude_asl_m = (double)cache->sensor.altitude_mm / 1000.0;
             }
+            const workflow_placement_reason_t blocker = !cache_current
+                ? WORKFLOW_PLACEMENT_REASON_NODE_STALE
+                : !node->vertical ? WORKFLOW_PLACEMENT_REASON_NOT_VERTICAL
+                : main_blocker != WORKFLOW_PLACEMENT_REASON_STABLE ? main_blocker
+                : !environment_valid ? WORKFLOW_PLACEMENT_REASON_NODE_ENVIRONMENT
+                : !reference_matches ? WORKFLOW_PLACEMENT_REASON_NODE_REFERENCE
+                : WORKFLOW_PLACEMENT_REASON_STABLE;
+            workflow_placement_history_t *history = &s_placement.history[(size_t)channel + 1U];
             node->stable = workflow_service_placement_update_node(
-                &s_placement.history[(size_t)channel + 1U],
+                history,
                 remote->node_id,
                 node->height_rel_main_mm_valid ? main_generation : 0U,
                 node->vertical,
                 node->height_rel_main_mm_valid,
+                blocker,
                 node->height_rel_main_mm,
                 cache->esp_receipt_uptime_ms,
                 now_ms,
-                take_samples && cache_current);
+                take_samples && cache_current,
+                &node->reason,
+                &node->range_mm);
+            node->sample_count = (uint8_t)history->sample_count;
+            if (take_samples) {
+                const uint64_t age = now_ms - cache->esp_receipt_uptime_ms;
+                const int32_t age_ms = cache_read && now_ms >= cache->esp_receipt_uptime_ms
+                    ? (int32_t)(age > INT32_MAX ? INT32_MAX : age)
+                    : -1;
+                workflow_service_placement_log_node(
+                    history, node, age_ms, cache_read ? cache->sensor.pressure_pa : 0U, log_due);
+            }
             all_stable = all_stable && node->stable;
         }
     }
@@ -1156,6 +1274,7 @@ static void workflow_service_placement_poll(bool collect_samples)
             workflow_service_placement_reset_history(&s_placement.history[channel + 1U]);
         }
     }
+    if (log_due) s_placement.next_log_ms = now_ms + WORKFLOW_PLACEMENT_LOG_PERIOD_MS;
     status->all_stable = all_stable;
 }
 

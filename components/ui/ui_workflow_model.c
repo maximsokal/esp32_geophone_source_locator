@@ -77,6 +77,9 @@ static void set_key_arg(ui_workflow_model_line_t *line, size_t index, ui_i18n_ke
 
 static ui_i18n_key_t action_key(workflow_command_t command)
 {
+    /* Not members of workflow_command_t, so they cannot be switch cases. */
+    if (command == UI_WORKFLOW_ACTION_PLACEMENT_BLOCKED) return UI_I18N_KEY_TFT_WORKFLOW_ACTION_PLACEMENT_CONFIRMED;
+    if (command == UI_WORKFLOW_ACTION_LIVE_SIGNALS) return UI_I18N_KEY_TFT_WORKFLOW_ACTION_LIVE_SIGNALS;
     switch (command) {
         case WORKFLOW_COMMAND_START_MEASUREMENT: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_START_MEASUREMENT;
         case WORKFLOW_COMMAND_GO_CALIBRATION: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_GO_CALIBRATION;
@@ -110,6 +113,50 @@ static ui_i18n_key_t action_key(workflow_command_t command)
     }
 }
 
+/*
+ * The highlighted action belongs to the step it was chosen in. It used to be carried over: while a
+ * calibration runs BACK is the only action, the selection fell onto it, and on the result screen OK then
+ * went BACK instead of forward to the placement step (2026-10-31 bench: "no button to continue").
+ */
+static void sync_selection_step(ui_workflow_model_state_t *state, workflow_step_t step)
+{
+    if (!state->selection_step_valid || state->selection_step != step) {
+        state->has_selected_action = false;
+        state->selection_step = step;
+        state->selection_step_valid = true;
+    }
+}
+
+/* The firmware hides "Sensors placed" until every node is stable; the screen still shows it, with the reason. */
+static bool placement_continue_blocked(const workflow_snapshot_t *snapshot)
+{
+    return snapshot->step == WORKFLOW_STEP_PLACEMENT &&
+        (snapshot->allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED)) == 0U;
+}
+
+static bool live_signals_offered(const workflow_snapshot_t *snapshot)
+{
+    return snapshot->step == WORKFLOW_STEP_CALIB_RESULT || snapshot->step == WORKFLOW_STEP_PLACEMENT;
+}
+
+/* What one s_action_order entry puts on the screen: the command, a stand-in for it, or extra entries before it. */
+static size_t expand_action(
+    const workflow_snapshot_t *snapshot,
+    workflow_command_t command,
+    workflow_command_t out[2])
+{
+    size_t count = 0U;
+    if (command == WORKFLOW_COMMAND_BACK && live_signals_offered(snapshot)) {
+        out[count++] = UI_WORKFLOW_ACTION_LIVE_SIGNALS;
+    }
+    if (command == WORKFLOW_COMMAND_PLACEMENT_CONFIRMED && placement_continue_blocked(snapshot)) {
+        out[count++] = UI_WORKFLOW_ACTION_PLACEMENT_BLOCKED;
+    } else if ((snapshot->allowed_actions & WORKFLOW_ACTION(command)) != 0U) {
+        out[count++] = command;
+    }
+    return count;
+}
+
 static size_t collect_actions(
     const workflow_snapshot_t *snapshot,
     const ui_workflow_model_state_t *state,
@@ -120,10 +167,12 @@ static size_t collect_actions(
         actions[count++] = UI_WORKFLOW_ACTION_MATERIAL;
     }
     for (size_t i = 0U; i < sizeof(s_action_order) / sizeof(s_action_order[0]); ++i) {
-        const workflow_command_t command = s_action_order[i];
-        if ((snapshot->allowed_actions & WORKFLOW_ACTION(command)) != 0U &&
-            action_key(command) < UI_I18N_KEY_COUNT && count < UI_WORKFLOW_MODEL_MAX_ACTIONS) {
-            actions[count++] = command;
+        workflow_command_t expanded[2];
+        const size_t expanded_count = expand_action(snapshot, s_action_order[i], expanded);
+        for (size_t j = 0U; j < expanded_count; ++j) {
+            if (action_key(expanded[j]) < UI_I18N_KEY_COUNT && count < UI_WORKFLOW_MODEL_MAX_ACTIONS) {
+                actions[count++] = expanded[j];
+            }
         }
     }
     return count;
@@ -197,7 +246,28 @@ static void add_action(ui_workflow_model_t *model, workflow_command_t command)
     const size_t index = model->action_count++;
     model->actions[index] = command;
     model->action_keys[index] = key;
-    model->actions_mask |= WORKFLOW_ACTION(command);
+    if (command < WORKFLOW_COMMAND_COUNT) model->actions_mask |= WORKFLOW_ACTION(command);
+}
+
+static ui_i18n_key_t placement_reason_key(workflow_placement_reason_t reason)
+{
+    switch (reason) {
+        case WORKFLOW_PLACEMENT_REASON_STABLE: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_STABLE;
+        case WORKFLOW_PLACEMENT_REASON_COLLECTING: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_COLLECTING;
+        case WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED;
+        case WORKFLOW_PLACEMENT_REASON_NOT_VERTICAL: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_NOT_VERTICAL;
+        case WORKFLOW_PLACEMENT_REASON_DEVICE_STATUS_BUSY: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_DEVICE_STATUS_BUSY;
+        case WORKFLOW_PLACEMENT_REASON_MAIN_REFERENCE: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_MAIN_REFERENCE;
+        case WORKFLOW_PLACEMENT_REASON_MAIN_BAROMETER: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_MAIN_BAROMETER;
+        case WORKFLOW_PLACEMENT_REASON_NODE_STALE: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_NODE_STALE;
+        case WORKFLOW_PLACEMENT_REASON_NODE_ENVIRONMENT: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_NODE_ENVIRONMENT;
+        case WORKFLOW_PLACEMENT_REASON_NODE_REFERENCE: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_NODE_REFERENCE;
+        case WORKFLOW_PLACEMENT_REASON_SAMPLE_STALE: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_SAMPLE_STALE;
+        case WORKFLOW_PLACEMENT_REASON_OVERFLOW_BLOCKED: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_OVERFLOW_BLOCKED;
+        case WORKFLOW_PLACEMENT_REASON_CLOCK_BACKWARD: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_CLOCK_BACKWARD;
+        case WORKFLOW_PLACEMENT_REASON_COUNT:
+        default: return UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_COLLECTING;
+    }
 }
 
 static ui_i18n_key_t title_key(workflow_step_t step)
@@ -281,6 +351,34 @@ static ui_i18n_key_t calibration_reason_key(const char *reason)
 static void unknown_arg(ui_workflow_model_line_t *line, size_t index)
 {
     set_key_arg(line, index, UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
+}
+
+static const workflow_placement_node_t *placement_blocker(const workflow_snapshot_t *snapshot)
+{
+    if (snapshot->placement.all_stable) return NULL;
+    for (size_t i = 0U; i < snapshot->placement.per_node_count && i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
+        if (!snapshot->placement.per_node[i].stable) return &snapshot->placement.per_node[i];
+    }
+    return NULL;
+}
+
+/*
+ * The first node that keeps the operator from continuing, why, and the number behind it: "G2: Spread too
+ * big 84/50mm", "G1: Collecting 2/3" (the number carries its own leading space). The node rows are all the screen has room for, so this goes first.
+ */
+static void add_placement_blocker_line(const workflow_placement_node_t *blocker, ui_workflow_model_t *model)
+{
+    ui_workflow_model_line_t *why = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_BLOCKED);
+    set_arg(why, 0U, blocker->node);
+    set_key_arg(why, 1U, placement_reason_key(blocker->reason));
+    char detail[24] = "";
+    if (blocker->reason == WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED && blocker->range_mm >= 0) {
+        (void)snprintf(detail, sizeof(detail), " %ld/%dmm", (long)blocker->range_mm, (int)WORKFLOW_PLACEMENT_MAX_RANGE_MM);
+    } else if (blocker->reason == WORKFLOW_PLACEMENT_REASON_COLLECTING) {
+        (void)snprintf(detail, sizeof(detail), " %u/%u", (unsigned)blocker->sample_count,
+            (unsigned)WORKFLOW_PLACEMENT_MIN_SAMPLES);
+    }
+    set_arg(why, 2U, detail);
 }
 
 static void add_reason(ui_workflow_model_t *model, const char *reason)
@@ -658,6 +756,7 @@ void ui_workflow_model_build(
             break;
         }
         case WORKFLOW_STEP_PLACEMENT:
+            if (placement_blocker(snapshot) != NULL) add_placement_blocker_line(placement_blocker(snapshot), model);
             for (size_t i = 0U; i < snapshot->placement.per_node_count && i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
                 const workflow_placement_node_t *node = &snapshot->placement.per_node[i];
                 char height[24], altitude[24];
@@ -672,9 +771,8 @@ void ui_workflow_model_build(
                 else unknown_arg(row, 3U);
                 set_key_arg(row, 4U, command_result_key(node->stable));
             }
-            (void)add_line(model, snapshot->placement.all_stable
-                ? UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ALL_STABLE
-                : UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_WAITING);
+            if (snapshot->placement.all_stable) (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ALL_STABLE);
+            else if (placement_blocker(snapshot) == NULL) (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_WAITING);
             break;
         case WORKFLOW_STEP_GPS_CHOICE:
         case WORKFLOW_STEP_GPS_PENDING:
@@ -848,13 +946,15 @@ void ui_workflow_model_build(
 
     if (snapshot->step == WORKFLOW_STEP_STOPPED) add_material_action(model, state);
     for (size_t i = 0U; i < sizeof(s_action_order) / sizeof(s_action_order[0]); ++i) {
-        const workflow_command_t command = s_action_order[i];
-        if ((snapshot->allowed_actions & WORKFLOW_ACTION(command)) != 0U) add_action(model, command);
+        workflow_command_t expanded[2];
+        const size_t expanded_count = expand_action(snapshot, s_action_order[i], expanded);
+        for (size_t j = 0U; j < expanded_count; ++j) add_action(model, expanded[j]);
     }
     if (state->has_pending) {
         model->pending = true;
         model->pending_command = state->pending_command;
     }
+    sync_selection_step(state, snapshot->step);
     if (model->action_count == 0U) {
         model->selected_action = 0U;
         state->has_selected_action = false;
@@ -1081,6 +1181,7 @@ ui_workflow_event_t ui_workflow_model_handle_key(
         return event;
     }
     if (key == UI_WORKFLOW_KEY_OK && state->has_pending) return event;
+    sync_selection_step(state, snapshot->step);
     switch (key) {
         case UI_WORKFLOW_KEY_UP:
         case UI_WORKFLOW_KEY_DOWN: {
@@ -1145,6 +1246,13 @@ ui_workflow_event_t ui_workflow_model_handle_key(
                 state->material_view = UI_WORKFLOW_MATERIAL_SELECT;
                 state->notice_key = UI_I18N_KEY_COUNT;
                 state->notice_until_ms = 0U;
+            } else if (event.command == UI_WORKFLOW_ACTION_PLACEMENT_BLOCKED) {
+                /* Not a command: the firmware would refuse it. Explain instead; the reason is on screen. */
+                event.type = UI_WORKFLOW_EVENT_NONE;
+                state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_NOTICE_PLACEMENT_BLOCKED;
+                state->notice_until_ms = now_ms + 2000U;
+            } else if (event.command == UI_WORKFLOW_ACTION_LIVE_SIGNALS) {
+                event.type = UI_WORKFLOW_EVENT_OPEN_LIVE_SIGNALS;
             } else if (event.command == WORKFLOW_COMMAND_DELETE_RECORDING && !state->delete_confirm) {
                 state->delete_confirm = true;
                 event.type = UI_WORKFLOW_EVENT_DELETE_CONFIRM_CHANGED;

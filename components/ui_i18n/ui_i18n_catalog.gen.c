@@ -75,6 +75,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "measuring", /* measurement.link_measuring */
     "not connected", /* measurement.link_not_connected */
     "ready", /* measurement.link_ready */
+    "LISTEN ONLY BEFORE RECORDING", /* measurement.listen_only */
     "NO SAVED SESSION TO PREVIEW", /* measurement.no_session_preview */
     "G1", /* measurement.node_g1 */
     "G2", /* measurement.node_g2 */
@@ -247,6 +248,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Confirm", /* tft.workflow.action.confirm */
     "Delete recording", /* tft.workflow.action.delete_recording */
     "Go to calibration", /* tft.workflow.action.go_calibration */
+    "Live signals", /* tft.workflow.action.live_signals */
     "Move sensors", /* tft.workflow.action.move_sensors */
     "Place sensors", /* tft.workflow.action.place_sensors */
     "Sensors placed", /* tft.workflow.action.placement_confirmed */
@@ -316,6 +318,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Material: not set", /* tft.workflow.material.unset */
     "Not enough memory. Try again.", /* tft.workflow.memory_unavailable */
     "Busy", /* tft.workflow.notice.busy */
+    "Not stable yet", /* tft.workflow.notice.placement_blocked */
     "State changed", /* tft.workflow.notice.state_changed */
     "%s", /* tft.workflow.object.name */
     "Select object for measurement", /* tft.workflow.object.select */
@@ -325,6 +328,20 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "idle", /* tft.workflow.phase.idle */
     "running", /* tft.workflow.phase.running */
     "All stable", /* tft.workflow.placement.all_stable */
+    "%s: %s%s", /* tft.workflow.placement.blocked */
+    "Clock went back", /* tft.workflow.placement.reason.clock_backward */
+    "Collecting", /* tft.workflow.placement.reason.collecting */
+    "No MAIN status", /* tft.workflow.placement.reason.device_status_busy */
+    "MAIN baro n/a", /* tft.workflow.placement.reason.main_barometer */
+    "No MAIN ref", /* tft.workflow.placement.reason.main_reference */
+    "Node baro n/a", /* tft.workflow.placement.reason.node_environment */
+    "Ref mismatch", /* tft.workflow.placement.reason.node_reference */
+    "No fresh data", /* tft.workflow.placement.reason.node_stale */
+    "Not upright", /* tft.workflow.placement.reason.not_vertical */
+    "Buffer full", /* tft.workflow.placement.reason.overflow_blocked */
+    "Spread too big", /* tft.workflow.placement.reason.range_exceeded */
+    "Sample too old", /* tft.workflow.placement.reason.sample_stale */
+    "Stable", /* tft.workflow.placement.reason.stable */
     "%s V:%s dH:%smm ASL:%sm St:%s", /* tft.workflow.placement.row */
     "Waiting for stability", /* tft.workflow.placement.waiting */
     "OK again to stop recording", /* tft.workflow.preview.stop_confirm */
@@ -523,6 +540,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "вимірювання", /* measurement.link_measuring */
     "не підключено", /* measurement.link_not_connected */
     "готовий", /* measurement.link_ready */
+    "ЛИШЕ ПРОСЛУХОВУВАННЯ ДО ЗАПИСУ", /* measurement.listen_only */
     "НЕМАЄ ЗБЕРЕЖЕНОГО СЕАНСУ ДЛЯ 3D ОГЛЯДУ", /* measurement.no_session_preview */
     "G1", /* measurement.node_g1 */
     "G2", /* measurement.node_g2 */
@@ -695,6 +713,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Підтвердити", /* tft.workflow.action.confirm */
     "Видалити запис", /* tft.workflow.action.delete_recording */
     "Перейти до калібрування", /* tft.workflow.action.go_calibration */
+    "Живі сигнали", /* tft.workflow.action.live_signals */
     "Перемістити датчики", /* tft.workflow.action.move_sensors */
     "Розмістити датчики", /* tft.workflow.action.place_sensors */
     "Датчики встановлено", /* tft.workflow.action.placement_confirmed */
@@ -764,6 +783,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Матеріал: не задано", /* tft.workflow.material.unset */
     "Недостатньо пам’яті. Спробуйте ще раз.", /* tft.workflow.memory_unavailable */
     "Зайнято", /* tft.workflow.notice.busy */
+    "Ще не стабільно", /* tft.workflow.notice.placement_blocked */
     "Стан змінився", /* tft.workflow.notice.state_changed */
     "%s", /* tft.workflow.object.name */
     "Виберіть об’єкт для вимірювання", /* tft.workflow.object.select */
@@ -773,6 +793,20 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Очікування", /* tft.workflow.phase.idle */
     "Виконується", /* tft.workflow.phase.running */
     "Усі стабільні", /* tft.workflow.placement.all_stable */
+    "%s: %s%s", /* tft.workflow.placement.blocked */
+    "Час пішов назад", /* tft.workflow.placement.reason.clock_backward */
+    "Збір відліків", /* tft.workflow.placement.reason.collecting */
+    "Немає стану MAIN", /* tft.workflow.placement.reason.device_status_busy */
+    "Барометр MAIN н/д", /* tft.workflow.placement.reason.main_barometer */
+    "Немає опори MAIN", /* tft.workflow.placement.reason.main_reference */
+    "Барометр вузла н/д", /* tft.workflow.placement.reason.node_environment */
+    "Опора не збігається", /* tft.workflow.placement.reason.node_reference */
+    "Немає свіжих даних", /* tft.workflow.placement.reason.node_stale */
+    "Не вертикально", /* tft.workflow.placement.reason.not_vertical */
+    "Буфер повний", /* tft.workflow.placement.reason.overflow_blocked */
+    "Розкид завеликий", /* tft.workflow.placement.reason.range_exceeded */
+    "Відлік застарів", /* tft.workflow.placement.reason.sample_stale */
+    "Стабільно", /* tft.workflow.placement.reason.stable */
     "%s В:%s dH:%sмм над.р.м:%sм Ст:%s", /* tft.workflow.placement.row */
     "Очікування стабільності", /* tft.workflow.placement.waiting */
     "Натисніть OK ще раз, щоб зупинити запис", /* tft.workflow.preview.stop_confirm */

@@ -421,7 +421,9 @@ static bool web_status_json_add_workflow_placement(
     cJSON *object = cJSON_AddObjectToObject(workflow, "placement");
     cJSON *nodes = object != NULL ? cJSON_AddArrayToObject(object, "per_node") : NULL;
     if (object == NULL || nodes == NULL ||
-        cJSON_AddBoolToObject(object, "all_stable", placement->all_stable) == NULL) {
+        cJSON_AddBoolToObject(object, "all_stable", placement->all_stable) == NULL ||
+        cJSON_AddNumberToObject(object, "max_range_mm", (double)WORKFLOW_PLACEMENT_MAX_RANGE_MM) == NULL ||
+        cJSON_AddNumberToObject(object, "min_samples", (double)WORKFLOW_PLACEMENT_MIN_SAMPLES) == NULL) {
         return false;
     }
     const size_t node_count = placement->per_node_count < WORKFLOW_MAX_CALIBRATION_NODES
@@ -433,7 +435,18 @@ static bool web_status_json_add_workflow_placement(
         if (node == NULL ||
             cJSON_AddStringToObject(node, "node", source->node) == NULL ||
             cJSON_AddBoolToObject(node, "vertical", source->vertical) == NULL ||
-            cJSON_AddBoolToObject(node, "stable", source->stable) == NULL) {
+            cJSON_AddBoolToObject(node, "stable", source->stable) == NULL ||
+            cJSON_AddStringToObject(
+                node, "reason", workflow_core_placement_reason_name(source->reason)) == NULL ||
+            cJSON_AddNumberToObject(node, "samples", (double)source->sample_count) == NULL) {
+            cJSON_Delete(node);
+            return false;
+        }
+        /* The spread is only known once the minimum number of samples is in the window. */
+        const bool range_added = source->range_mm >= 0
+            ? cJSON_AddNumberToObject(node, "range_mm", (double)source->range_mm) != NULL
+            : cJSON_AddNullToObject(node, "range_mm") != NULL;
+        if (!range_added) {
             cJSON_Delete(node);
             return false;
         }

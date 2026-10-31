@@ -3,6 +3,7 @@ import type {
   DeviceStatus,
   DeviceWorkflowStatus,
   WorkflowCalibrationStatus,
+  WorkflowPlacementNode,
   WorkflowPlacementStatus,
 } from '../../domain/device';
 import { connectedPodCount } from '../../domain/device';
@@ -79,6 +80,34 @@ export interface WorkflowViewAction {
   labelKey: I18nKey;
   primary: boolean;
   back: boolean;
+  /** Shown but not available: the firmware does not allow the command yet (see placementBlocker). */
+  disabled?: boolean;
+}
+
+const PLACEMENT_REASON_KEYS: Record<string, I18nKey> = {
+  stable: 'workflow.placement.reason.stable',
+  collecting: 'workflow.placement.reason.collecting',
+  range_exceeded: 'workflow.placement.reason.range_exceeded',
+  not_vertical: 'workflow.placement.reason.not_vertical',
+  device_status_busy: 'workflow.placement.reason.device_status_busy',
+  main_reference: 'workflow.placement.reason.main_reference',
+  main_barometer: 'workflow.placement.reason.main_barometer',
+  node_stale: 'workflow.placement.reason.node_stale',
+  node_environment: 'workflow.placement.reason.node_environment',
+  node_reference: 'workflow.placement.reason.node_reference',
+  sample_stale: 'workflow.placement.reason.sample_stale',
+  overflow_blocked: 'workflow.placement.reason.overflow_blocked',
+  clock_backward: 'workflow.placement.reason.clock_backward',
+};
+
+/** Localisation key for a firmware placement reason; null for a name this build does not know. */
+export function placementReasonKey(reason: string): I18nKey | null {
+  return PLACEMENT_REASON_KEYS[reason] ?? null;
+}
+
+/** The first node that keeps the placement from being confirmed, or null when every node is stable. */
+export function placementBlocker(placement: WorkflowPlacementStatus): WorkflowPlacementNode | null {
+  return placement.per_node.find((node) => !node.stable) ?? null;
 }
 
 export interface WorkflowViewModel {
@@ -265,9 +294,13 @@ export function workflowViewModel(status: DeviceStatus | null, objectName: strin
     default: sections.push({ kind: 'unknown' });
   }
 
-  return {
-    titleKey,
-    sections,
-    actions: workflowActions(workflow.allowed_actions ?? []),
-  };
+  const allowed = workflow.allowed_actions ?? [];
+  // The firmware hides "Sensors placed" until every node is stable; the operator still sees it, disabled, with the reason.
+  const placementBlocked = workflow.step === 'PLACEMENT' &&
+    !allowed.some((command) => command.toUpperCase() === 'PLACEMENT_CONFIRMED');
+  const actions = workflowActions(placementBlocked ? [...allowed, 'PLACEMENT_CONFIRMED'] : allowed)
+    .map((action) => placementBlocked && action.command === 'PLACEMENT_CONFIRMED'
+      ? { ...action, disabled: true }
+      : action);
+  return { titleKey, sections, actions };
 }

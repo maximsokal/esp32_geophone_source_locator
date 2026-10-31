@@ -229,8 +229,13 @@ export function fullDeviceStatus(): DeviceStatus {
         reasons: [],
       },
       placement: {
-        per_node: [{ node: 'remote1', vertical: true, height_rel_main_mm: 0, altitude_asl_m: 12.5, stable: true }],
+        per_node: [{
+          node: 'remote1', vertical: true, height_rel_main_mm: 0, altitude_asl_m: 12.5, stable: true,
+          reason: 'stable', samples: 4, range_mm: 3,
+        }],
         all_stable: true,
+        max_range_mm: 50,
+        min_samples: 3,
       },
       object_id: 'OBJ_0001',
       session_id: 'S000001',

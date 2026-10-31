@@ -302,12 +302,19 @@ const char *ui_screen_home_label(
 }
 
 
+bool ui_measurements_listen_only(workflow_step_t workflow_step)
+{
+    return workflow_step == WORKFLOW_STEP_CALIB_RESULT || workflow_step == WORKFLOW_STEP_PLACEMENT;
+}
+
+
 ui_measurements_route_t ui_measurements_route_decide(
     workflow_step_t workflow_step,
     bool has_active_object)
 {
     if (workflow_step == WORKFLOW_STEP_RECORD_READY ||
-        workflow_step == WORKFLOW_STEP_RECORDING) {
+        workflow_step == WORKFLOW_STEP_RECORDING ||
+        ui_measurements_listen_only(workflow_step)) {
         return UI_MEASUREMENTS_ROUTE_ALLOW;
     }
     return has_active_object
@@ -335,6 +342,8 @@ void ui_screen_open_locked(
         const ui_measurements_route_t route = ui_measurements_route_decide(
             workflow_available ? s_measurements_route_snapshot.step : WORKFLOW_STEP_IDLE,
             has_active_object);
+        ui_context()->measurement_listen_only = route == UI_MEASUREMENTS_ROUTE_ALLOW && workflow_available &&
+            ui_measurements_listen_only(s_measurements_route_snapshot.step);
         if (route == UI_MEASUREMENTS_ROUTE_WORKFLOW) {
             screen = UI_SCREEN_WORKFLOW;
         } else if (route == UI_MEASUREMENTS_ROUTE_OBJECT_PICKER) {

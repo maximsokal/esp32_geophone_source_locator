@@ -1172,7 +1172,7 @@ static void test_placement_height_range_50mm_boundary(void)
     workflow_service_shutdown();
 }
 
-static void test_placement_uses_inclusive_three_second_window(void)
+static void test_placement_uses_inclusive_window(void)
 {
     reset_fakes();
     enter_placement();
@@ -1183,20 +1183,23 @@ static void test_placement_uses_inclusive_three_second_window(void)
         { 0, 200, 300 },
         { 0, 200, 300 },
     };
-    publish_placement_sample(1000U, outside_then_stable[0], upright);
-    publish_placement_sample(2000U, outside_then_stable[1], upright);
-    publish_placement_sample(3000U, outside_then_stable[2], upright);
-    publish_placement_sample(3999U, outside_then_stable[3], upright);
+    const uint64_t outlier_ms = 1000U;
+    publish_placement_sample(outlier_ms, outside_then_stable[0], upright);
+    publish_placement_sample(outlier_ms + 2000U, outside_then_stable[1], upright);
+    publish_placement_sample(outlier_ms + 4000U, outside_then_stable[2], upright);
+    publish_placement_sample(outlier_ms + WORKFLOW_PLACEMENT_WINDOW_MS - 1U, outside_then_stable[3], upright);
     workflow_snapshot_t snapshot = get_workflow_snapshot();
     assert(!snapshot.placement.per_node[1].stable);
     assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) ==
         WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
-    publish_placement_sample(4000U, outside_then_stable[3], upright);
+    /* A sample exactly one window old is still inside it... */
+    publish_placement_sample(outlier_ms + WORKFLOW_PLACEMENT_WINDOW_MS, outside_then_stable[3], upright);
     snapshot = get_workflow_snapshot();
     assert(!snapshot.placement.per_node[1].stable);
     assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) ==
         WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
-    publish_placement_sample(4001U, outside_then_stable[3], upright);
+    /* ...and one millisecond later it has left. */
+    publish_placement_sample(outlier_ms + WORKFLOW_PLACEMENT_WINDOW_MS + 1U, outside_then_stable[3], upright);
     snapshot = get_workflow_snapshot();
     assert(snapshot.placement.per_node[1].stable);
     assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) == WORKFLOW_COMMAND_RESULT_OK);
@@ -1224,9 +1227,10 @@ static void test_layout_rechecks_placement_after_gps_choice(void)
     assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) ==
         WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
 
-    publish_placement_sample(4301U, steady, upright);
-    publish_placement_sample(4401U, steady, upright);
-    publish_placement_sample(4501U, steady, upright);
+    const uint64_t settled_ms = 1300U + WORKFLOW_PLACEMENT_WINDOW_MS + 1U;
+    publish_placement_sample(settled_ms, steady, upright);
+    publish_placement_sample(settled_ms + 100U, steady, upright);
+    publish_placement_sample(settled_ms + 200U, steady, upright);
     snapshot = get_workflow_snapshot();
     assert(snapshot.placement.all_stable);
     assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) == WORKFLOW_COMMAND_RESULT_OK);
@@ -1316,7 +1320,8 @@ static void test_placement_history_overflow_fails_closed(void)
     reset_fakes();
     enter_placement();
     const uint8_t upright[3] = { 2U, 2U, 2U };
-    for (uint64_t sample = 0U; sample < 40U; ++sample) {
+    /* The history holds 96 samples (WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES in workflow_service.c). */
+    for (uint64_t sample = 0U; sample < 104U; ++sample) {
         const int32_t heights[3] = {
             sample == 0U ? 100 : 0,
             200,
@@ -1329,12 +1334,14 @@ static void test_placement_history_overflow_fails_closed(void)
     assert(!snapshot.placement.all_stable);
 
     const int32_t steady[3] = { 0, 200, 300 };
-    publish_placement_sample(4031U, steady, upright);
+    const uint64_t overflow_ms = 1096U;     /* the 97th sample found the history full */
+    const uint64_t unblocked_ms = overflow_ms + WORKFLOW_PLACEMENT_WINDOW_MS;
+    publish_placement_sample(unblocked_ms - 1U, steady, upright);
     snapshot = get_workflow_snapshot();
     assert(!snapshot.placement.all_stable);
-    publish_placement_sample(4032U, steady, upright);
-    publish_placement_sample(4033U, steady, upright);
-    publish_placement_sample(4034U, steady, upright);
+    publish_placement_sample(unblocked_ms, steady, upright);
+    publish_placement_sample(unblocked_ms + 1U, steady, upright);
+    publish_placement_sample(unblocked_ms + 2U, steady, upright);
     snapshot = get_workflow_snapshot();
     assert(snapshot.placement.all_stable);
     workflow_service_shutdown();
@@ -1357,7 +1364,7 @@ int main(void)
     test_placement_entry_invalidates_back_and_move_sensors();
     test_placement_sample_count_and_calculate_guard();
     test_placement_height_range_50mm_boundary();
-    test_placement_uses_inclusive_three_second_window();
+    test_placement_uses_inclusive_window();
     test_layout_rechecks_placement_after_gps_choice();
     test_placement_vertical_flip_resets_sample_window();
     test_placement_generation_mismatch_and_node_dropout_are_unknown();

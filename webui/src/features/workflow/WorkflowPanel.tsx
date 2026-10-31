@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import './workflow.css';
 import type { DeviceStatus, WorkflowCalibrationNode } from '../../domain/device';
 import { capturePhoneLocation, type WorkflowCommandResult } from '../../api/deviceApi';
@@ -9,6 +9,8 @@ import MaterialSettingsForm from '../objects/MaterialSettingsForm';
 import WorkflowResultViewer from './WorkflowResultViewer';
 import ManualDistanceForm from './ManualDistanceForm';
 import {
+  placementBlocker,
+  placementReasonKey,
   rangingPairQualityNotes,
   rangingUncertaintyMm,
   resultFailureKey,
@@ -19,6 +21,11 @@ import {
   type WorkflowViewAction,
 } from './workflowViewModel';
 
+const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
+
+/** Steps where the operator can listen to the geophones before the recording steps. */
+const LIVE_SIGNAL_STEPS = new Set(['CALIB_RESULT', 'PLACEMENT']);
+
 interface Props {
   status: DeviceStatus | null;
   objectName: string | null;
@@ -26,6 +33,8 @@ interface Props {
   onRefreshStatus: () => Promise<boolean>;
   onWorkflowUpdate: (workflow: NonNullable<DeviceStatus['workflow']>) => void;
   onOpenScanner: (objectId: string, sessionId: string | null) => void;
+  /** Starts/stops the geophone signal preview; without it the live-signal toggle is not offered. */
+  onAcquisition?: (running: boolean) => Promise<void>;
 }
 
 const HEIGHT_STATE_KEYS: Record<string, I18nKey> = {
@@ -157,20 +166,44 @@ function CalibrationNode({ node, locale }: { node: WorkflowCalibrationNode; loca
 function PlacementSection({ value }: { value: Extract<WorkflowBodySection, { kind: 'placement' }>['value'] }) {
   const { locale } = useLocale();
   const t = useT();
+  const reasonText = (reason: string): string => {
+    const key = placementReasonKey(reason);
+    return key === null ? reason : t(key);
+  };
+  const blocker = placementBlocker(value);
   return (
-    <div className="workflow-node-list">
-      {value.per_node.map((node, index) => (
-        <article className="workflow-node" key={`${node.node}-${index}`}>
-          <h3>{node.node || WORKFLOW_UNKNOWN}</h3>
-          <dl className="console-dl">
-            <div><dt>{t('workflow.placement.vertical')}</dt><dd>{yesNo(node.vertical, t)}</dd></div>
-            <div><dt>{t('workflow.placement.height_rel_main')}</dt><dd>{mmText(node.height_rel_main_mm, locale)}</dd></div>
-            <div><dt>{t('workflow.placement.altitude_asl')}</dt><dd>{node.altitude_asl_m === null ? WORKFLOW_UNKNOWN : `${workflowNumberText(node.altitude_asl_m, locale)} m`}</dd></div>
-            <div><dt>{t('workflow.placement.stable')}</dt><dd>{yesNo(node.stable, t)}</dd></div>
-          </dl>
-        </article>
-      ))}
-    </div>
+    <>
+      <p>{t('workflow.placement.limit', {
+        max: formatNumber(locale, value.max_range_mm),
+        samples: formatNumber(locale, value.min_samples),
+      })}</p>
+      {!value.all_stable && blocker !== null && (
+        <div className="console-alert warning" role="status" data-testid="placement-blocked">
+          <p>{t('workflow.placement.blocked', { node: blocker.node, reason: reasonText(blocker.reason) })}</p>
+          <p>{t('workflow.placement.blocked_detail', {
+            node: blocker.node,
+            samples: formatNumber(locale, blocker.samples),
+            range: mmText(blocker.range_mm, locale),
+          })}</p>
+        </div>
+      )}
+      <div className="workflow-node-list">
+        {value.per_node.map((node, index) => (
+          <article className="workflow-node" key={`${node.node}-${index}`}>
+            <h3>{node.node || WORKFLOW_UNKNOWN}</h3>
+            <dl className="console-dl">
+              <div><dt>{t('workflow.placement.vertical')}</dt><dd>{yesNo(node.vertical, t)}</dd></div>
+              <div><dt>{t('workflow.placement.height_rel_main')}</dt><dd>{mmText(node.height_rel_main_mm, locale)}</dd></div>
+              <div><dt>{t('workflow.placement.altitude_asl')}</dt><dd>{node.altitude_asl_m === null ? WORKFLOW_UNKNOWN : `${workflowNumberText(node.altitude_asl_m, locale)} m`}</dd></div>
+              <div><dt>{t('workflow.placement.stable')}</dt><dd>{yesNo(node.stable, t)}</dd></div>
+              <div><dt>{t('workflow.placement.reason')}</dt><dd data-reason={node.reason}>{reasonText(node.reason)}</dd></div>
+              <div><dt>{t('workflow.placement.samples')}</dt><dd>{formatNumber(locale, node.samples)}</dd></div>
+              <div><dt>{t('workflow.placement.range')}</dt><dd>{mmText(node.range_mm, locale)}</dd></div>
+            </dl>
+          </article>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -393,7 +426,8 @@ function ActionButton({ action, pending, deleteArmed, onClick }: {
       type="button"
       data-command={action.command}
       className={action.back || !action.primary ? 'secondary' : undefined}
-      disabled={pending}
+      disabled={pending || action.disabled === true}
+      aria-disabled={action.disabled === true ? true : undefined}
       onClick={onClick}
     >{t(key)}</button>
   );
@@ -406,6 +440,7 @@ export default function WorkflowPanel({
   onRefreshStatus,
   onWorkflowUpdate,
   onOpenScanner,
+  onAcquisition,
 }: Props) {
   const t = useT();
   const workflow = status?.workflow;
@@ -415,6 +450,21 @@ export default function WorkflowPanel({
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const gpsCaptureGenerationRef = useRef<number | null>(null);
+  const [showLive, setShowLive] = useState(false);
+  const liveStep = workflow !== undefined && LIVE_SIGNAL_STEPS.has(workflow.step);
+  useEffect(() => {
+    if (!liveStep) setShowLive(false);
+  }, [liveStep]);
+  const toggleLive = async (): Promise<void> => {
+    if (onAcquisition === undefined) return;
+    if (showLive) {
+      setShowLive(false);
+      await onAcquisition(false);
+      return;
+    }
+    setShowLive(true);
+    if (status?.acquisition.running !== true) await onAcquisition(true);
+  };
 
   useEffect(() => {
     if (!model.actions.some((action) => action.command.toUpperCase() === 'DELETE_RECORDING')) {
@@ -548,6 +598,16 @@ export default function WorkflowPanel({
           </>
         )}
         {deleteArmed && <p role="alert">{t('workflow.delete_confirm.prompt')}</p>}
+        {liveStep && onAcquisition !== undefined && showLive && (
+          status?.acquisition.running === true
+            ? (
+              <Suspense fallback={<p>{t('workflow.live.starting')}</p>}>
+                <LiveSeismicPanel />
+              </Suspense>
+            )
+            : <p role="status">{t('workflow.live.starting')}</p>
+        )}
+        {liveStep && onAcquisition !== undefined && <p>{t('workflow.live.hint')}</p>}
         <div className="console-actions" aria-busy={pendingCommand !== null}>
           {model.actions.map((action) => (
             <ActionButton
@@ -558,6 +618,14 @@ export default function WorkflowPanel({
               onClick={() => { void runAction(action); }}
             />
           ))}
+          {liveStep && onAcquisition !== undefined && (
+            <button
+              type="button"
+              className="secondary"
+              data-command="LIVE_SIGNALS"
+              onClick={() => { void toggleLive(); }}
+            >{t(showLive ? 'workflow.live.hide' : 'workflow.live.show')}</button>
+          )}
           {showScanButton && (
             <button
               type="button"

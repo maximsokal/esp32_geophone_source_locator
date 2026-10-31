@@ -63,6 +63,9 @@ typedef enum {
 typedef struct {
     bool has_selected_action;
     workflow_command_t selected_action;
+    /* Step the selection belongs to: a new step starts on its first (forward) action. */
+    bool selection_step_valid;
+    workflow_step_t selection_step;
     bool delete_confirm;
     bool has_pending;
     workflow_command_t pending_command;
@@ -150,7 +153,17 @@ typedef enum {
     UI_WORKFLOW_EVENT_LEAVE_HOME,
     UI_WORKFLOW_EVENT_EDIT_DISTANCE,
     UI_WORKFLOW_EVENT_SAVE_DISTANCE,
+    UI_WORKFLOW_EVENT_OPEN_LIVE_SIGNALS,
 } ui_workflow_event_type_t;
+
+/*
+ * Entries of the action list that are not workflow commands. MATERIAL (WORKFLOW_COMMAND_COUNT) is the
+ * material picker; these two follow it.
+ *   PLACEMENT_BLOCKED  "Sensors placed" shown while the firmware has not allowed it; OK only explains why.
+ *   LIVE_SIGNALS       opens the live geophone view before the recording steps.
+ */
+#define UI_WORKFLOW_ACTION_PLACEMENT_BLOCKED ((workflow_command_t)(WORKFLOW_COMMAND_COUNT + 1))
+#define UI_WORKFLOW_ACTION_LIVE_SIGNALS ((workflow_command_t)(WORKFLOW_COMMAND_COUNT + 2))
 
 typedef struct {
     ui_workflow_event_type_t type;

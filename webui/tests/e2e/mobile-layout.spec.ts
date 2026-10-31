@@ -77,6 +77,7 @@ for (const locale of ['en', 'uk'] as const) {
         if (step === 'STOPPED') await expect(page.locator('.workflow-material-settings')).toBeVisible();
         await capture(page, `${locale}-workflow-${step}`);
         await assertLayout(page);
+        await assertSemanticStyles(page);
         await assertReachable(page);
       });
     }

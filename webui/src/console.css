@@ -70,6 +70,16 @@ summary:focus-visible, [tabindex="0"]:focus-visible {
 }
 /* Keep Back in document flow so loading, headings and enlarged text retain their space. */
 .console-floating-back { position: static; display: block; margin: var(--ui-section-gap); }
+html.xr-session-active .console-floating-back {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top));
+  left: max(16px, env(safe-area-inset-left));
+  margin: 0;
+  z-index: 10003;
+}
+/* `.console-card p` (0,1,1) would otherwise grey out error text rendered as a paragraph. */
+.console-card .console-error,
+.console-card .console-alert:not(.warning) { color: #ffd5d8; }
 .leveling-table { table-layout: fixed; overflow-wrap: anywhere; }
 .cable-grid label { grid-template-columns: minmax(0, 1fr) minmax(0, 6rem) auto; }
 .workflow-material-settings > label { display: grid; gap: var(--ui-action-gap); }

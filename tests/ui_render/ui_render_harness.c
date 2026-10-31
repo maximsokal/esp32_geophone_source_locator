@@ -426,6 +426,98 @@ static void test_ranging_progress_scene(const char *language, const char *suffix
     capture(name, true);
 }
 
+/*
+ * 2026-10-31 bench: after a calibration run OK on the result screen walked BACK instead of to the placement
+ * step. BACK is the only action while the run is in progress; the highlight stayed on it into the next step.
+ */
+/*
+ * The placement step while a node is not stable: "Sensors placed" is on the list but disabled, the screen
+ * names the node, the reason and the numbers, and the live geophone view is reachable from here.
+ */
+static void test_placement_blocked_screens(const char *language)
+{
+    static const struct {
+        const char *name;
+        workflow_placement_reason_t reason;
+        uint8_t samples;
+        int32_t range_mm;
+        bool vertical;
+    } cases[] = {
+        {"range", WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED, 5U, 84, true},
+        {"tilted", WORKFLOW_PLACEMENT_REASON_NOT_VERTICAL, 0U, -1, false},
+        {"collecting", WORKFLOW_PLACEMENT_REASON_COLLECTING, 2U, -1, true},
+    };
+    for (size_t index = 0U; index < sizeof(cases) / sizeof(cases[0]); ++index) {
+        prepare(WORKFLOW_STEP_PLACEMENT, 4U);
+        render_snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+        render_snapshot.placement.all_stable = false;
+        workflow_placement_node_t *node = &render_snapshot.placement.per_node[2];
+        node->stable = false;
+        node->vertical = cases[index].vertical;
+        node->reason = cases[index].reason;
+        node->sample_count = cases[index].samples;
+        node->range_mm = cases[index].range_mm;
+        s_workflow->last_snapshot_ms = 0U;
+        ui_workflow_screen_refresh_locked();
+
+        assert(s_workflow->snapshot.step == WORKFLOW_STEP_PLACEMENT);
+        assert(s_workflow->model.action_count == 3U);
+        assert(s_workflow->model.actions[0] == UI_WORKFLOW_ACTION_PLACEMENT_BLOCKED);
+        assert(s_workflow->model.actions[1] == UI_WORKFLOW_ACTION_LIVE_SIGNALS);
+        assert(s_workflow->model.actions[2] == WORKFLOW_COMMAND_BACK);
+        assert(s_workflow->model.selected_action == 0U);
+        char name[96];
+        (void)snprintf(name, sizeof(name), "%s_placement_blocked_%s", language, cases[index].name);
+        capture(name, true);
+
+        if (index == 0U) {
+            /* OK on the disabled button sends nothing and explains instead. */
+            const unsigned before = render_command_count;
+            ui_workflow_screen_handle_key_locked(KEYPAD_KEY_OK);
+            assert(render_command_count == before);
+            assert(s_workflow->model_state.notice_key == UI_I18N_KEY_TFT_WORKFLOW_NOTICE_PLACEMENT_BLOCKED);
+            (void)snprintf(name, sizeof(name), "%s_placement_blocked_notice", language);
+            capture(name, true);
+
+            /* The live view is one step down, and opens the Measurements screen (no workflow command). */
+            ui_workflow_screen_handle_key_locked(KEYPAD_KEY_DOWN);
+            assert(s_workflow->model.actions[s_workflow->model.selected_action] == UI_WORKFLOW_ACTION_LIVE_SIGNALS);
+            (void)snprintf(name, sizeof(name), "%s_placement_blocked_live_selected", language);
+            capture(name, true);
+            render_context.screen = UI_SCREEN_WORKFLOW;
+            ui_workflow_screen_handle_key_locked(KEYPAD_KEY_OK);
+            assert(render_context.screen == UI_SCREEN_MEASUREMENTS);
+            assert(render_command_count == before);
+        }
+    }
+}
+
+static void test_calibration_result_selection_after_run(const char *language)
+{
+    static workflow_snapshot_t result_snapshot;
+    prepare(WORKFLOW_STEP_CALIB_RESULT, 4U);
+    result_snapshot = render_snapshot;
+
+    prepare(WORKFLOW_STEP_CALIBRATING, 4U);
+    assert(s_workflow->model.action_count == 1U);
+    assert(s_workflow->model.actions[0] == WORKFLOW_COMMAND_BACK);
+
+    render_snapshot = result_snapshot;
+    s_workflow->last_snapshot_ms = 0U;
+    ui_workflow_screen_refresh_locked();
+    assert(s_workflow->snapshot.step == WORKFLOW_STEP_CALIB_RESULT);
+    assert(s_workflow->model.action_count >= 2U);
+    assert(s_workflow->model.actions[s_workflow->model.selected_action] == WORKFLOW_COMMAND_PLACE_SENSORS);
+
+    char name[96];
+    (void)snprintf(name, sizeof(name), "%s_calibration_result_after_run", language);
+    capture(name, true);
+
+    const unsigned before = render_command_count;
+    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_OK);
+    assert(render_command_count == before + 1U && render_last_command == WORKFLOW_COMMAND_PLACE_SENSORS);
+}
+
 static void test_ranging_result_screens(const char *language)
 {
     static const char *outcomes[] = {"success", "partial", "failed", "cable_exceeded"};
@@ -477,6 +569,8 @@ static void test_ranging_result_screens(const char *language)
         assert(s_workflow->model.lines[0].key == (outcome == 0U
             ? UI_I18N_KEY_TFT_WORKFLOW_RANGING_SUCCESS : outcome == 2U
             ? UI_I18N_KEY_TFT_WORKFLOW_RANGING_FAILED : UI_I18N_KEY_TFT_WORKFLOW_RANGING_PARTIAL));
+        /* A result screen opens on its first (forward) action, not on the BACK left over from RANGING. */
+        assert(s_workflow->model.actions[s_workflow->model.selected_action] != WORKFLOW_COMMAND_BACK);
 
         unsigned pair_mask = 0U;
         size_t page = 0U;
@@ -640,6 +734,8 @@ int main(int argc, char **argv)
         test_ranging_progress_scene(language, "_3_nodes", 3U, 3U);   /* 3 of 6: 50% */
         test_ranging_progress_scene(language, "_4_nodes", 4U, 3U);   /* 3 of 12: 25% */
         test_ranging_progress_scene(language, "_5_nodes", 5U, 3U);   /* 3 of 20: 15% */
+        test_calibration_result_selection_after_run(language);
+        test_placement_blocked_screens(language);
         test_ranging_result_screens(language);
         test_critical_battery_screens(language);
         prepare(WORKFLOW_STEP_STOPPED, 4U);

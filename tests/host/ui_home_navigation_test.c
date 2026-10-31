@@ -495,8 +495,13 @@ static void test_dispatch_uses_current_screen_driver(void)
 static void test_measurements_route_decision_all_workflow_states(void)
 {
     for (workflow_step_t step = WORKFLOW_STEP_IDLE; step < WORKFLOW_STEP_COUNT; ++step) {
+        /* CALIB_RESULT and PLACEMENT open the live view for listening only (no recording from it). */
         const bool allowed = step == WORKFLOW_STEP_RECORD_READY ||
-            step == WORKFLOW_STEP_RECORDING;
+            step == WORKFLOW_STEP_RECORDING ||
+            step == WORKFLOW_STEP_CALIB_RESULT ||
+            step == WORKFLOW_STEP_PLACEMENT;
+        assert(ui_measurements_listen_only(step) ==
+            (step == WORKFLOW_STEP_CALIB_RESULT || step == WORKFLOW_STEP_PLACEMENT));
         assert(ui_measurements_route_decide(step, true) ==
             (allowed ? UI_MEASUREMENTS_ROUTE_ALLOW : UI_MEASUREMENTS_ROUTE_WORKFLOW));
         assert(ui_measurements_route_decide(step, false) ==

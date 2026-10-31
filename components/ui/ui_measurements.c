@@ -1445,6 +1445,11 @@ void ui_handle_measurements_key_locked(
     switch (snapshot.state) {
         case MEASUREMENT_SERVICE_LIVE:
         case MEASUREMENT_SERVICE_ERROR:
+            if (context->measurement_listen_only) {
+                ui_set_notice_locked(ui_tr(UI_I18N_KEY_MEASUREMENT_LISTEN_ONLY));
+                ui_measurements_refresh_locked();
+                return;
+            }
             if (!snapshot.active_object_present) {
                 ui_set_notice_locked(ui_tr(UI_I18N_KEY_MEASUREMENT_SELECT_OBJECT));
                 ui_measurements_refresh_locked();

@@ -788,6 +788,11 @@ export default function DeviceConsoleApp() {
             setStatus((current) => current === null ? current : { ...current, workflow });
           }}
           onOpenScanner={(id, sessionId) => { setSelectedId(id); setScannerSessionId(sessionId); setScreen('scanner'); }}
+          onAcquisition={async (running) => {
+            if (await runControl(running ? 'acquisition_start' : 'acquisition_stop')) {
+              setWebPreview(running);
+            }
+          }}
         />
       )}
     </main>
