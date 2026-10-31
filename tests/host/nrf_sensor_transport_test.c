@@ -57,6 +57,8 @@ typedef struct {
     unsigned sleeps_with_bus_selected;
     unsigned fail_select_from;
     bool main_absent;
+    /* Transport error returned by every read of the MAIN status (0 = healthy). */
+    esp_err_t main_read_error;
     bool main_bad_epoch;
     bool fail_select;
     bool fail_close;
@@ -179,6 +181,9 @@ static esp_err_t read_status(void *context, uint8_t address, nrf_upstream_status
         record_event(bus, E_MAIN_READ);
         if (bus->main_absent) {
             return ESP_ERR_NOT_FOUND;
+        }
+        if (bus->main_read_error != ESP_OK) {
+            return bus->main_read_error;
         }
         node(
             &node_snapshot,
@@ -609,6 +614,78 @@ static void test_stale_topology_blocks_sensor_and_calibration_io(void)
     assert(bus.event_count == 0U && bus.select == 0U);
 }
 
+static void test_remote_work_continues_while_topology_is_stale_only_because_main_failed(void)
+{
+    /* 2026-10-31: MAIN failing its status read marks the whole snapshot stale. Calibration (height
+     * reference + IMU) and sensor refresh only talk to REMOTE nodes through the mux, so a MAIN-only
+     * fault must not refuse them; the REMOTE caches must stay current for the same reason. */
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    topo(&bus, &topology, 2U);
+    init_cache(&topology, cache, 2U);
+    nrf_sensor_transport_controller_t controller = make_controller();
+    nrf_sensor_transport_io_t io = make_io(&bus);
+    bool reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 2U, &cache[2], &reconcile) == ESP_OK);
+    assert(cache[2].topology_current && cache[2].response_valid);
+
+    topology.stale = true;
+    topology.main.state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
+    assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 0U);
+    assert(cache[2].topology_current);
+    assert(cache[2].state == NRF_SENSOR_CACHE_OK);
+
+    bus.event_count = 0U;
+    bus.now += 2000U;
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 2U, &cache[2], &reconcile) == ESP_OK);
+    assert(cache[2].state == NRF_SENSOR_CACHE_OK && cache[2].topology_current);
+    assert(cache[2].esp_receipt_uptime_ms == bus.now);
+    const event_t expected[] = {E_SELECT, E_REMOTE_READ, E_WRITE, E_SNAPSHOT, E_CLOSE};
+    assert_events(&bus, expected, sizeof(expected) / sizeof(expected[0]));
+    assert(bus.main_reads == 1U); /* only the first, healthy refresh read MAIN */
+
+    reconcile = false;
+    assert(nrf_sensor_transport_capture_height_reference(
+               &controller, &io, &topology, 2U, 7U, &reconcile) == ESP_OK);
+    assert(nrf_sensor_transport_request_imu_calibration(
+               &controller, &io, &topology, 2U, 7U, &reconcile) == ESP_OK);
+    assert(bus.sel == -1 && bus.close == bus.select);
+}
+
+static void test_other_stale_causes_still_block_remote_work(void)
+{
+    /* Only a MAIN transport fault is let through: a busy bus, a faulted mux, or a stale snapshot whose
+     * MAIN is otherwise fine still refuse everything. */
+    for (unsigned cause = 0U; cause < 3U; ++cause) {
+        bus_t bus;
+        nrf_topology_snapshot_t topology;
+        nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+        topo(&bus, &topology, 1U);
+        init_cache(&topology, cache, 1U);
+        nrf_sensor_transport_controller_t controller = make_controller();
+        nrf_sensor_transport_io_t io = make_io(&bus);
+        bool reconcile = false;
+        topology.stale = true;
+        topology.main.state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
+        if (cause == 0U) topology.bus_busy = true;
+        if (cause == 1U) topology.tca_fault = true;
+        if (cause == 2U) topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
+        assert(nrf_sensor_transport_refresh_channel(
+                   &controller, &io, &topology, 1U, &cache[1], &reconcile) == ESP_ERR_INVALID_STATE);
+        assert(nrf_sensor_transport_capture_height_reference(
+                   &controller, &io, &topology, 1U, 1U, &reconcile) == ESP_ERR_INVALID_STATE);
+        assert(nrf_sensor_transport_request_imu_calibration(
+                   &controller, &io, &topology, 1U, 1U, &reconcile) == ESP_ERR_INVALID_STATE);
+        assert(nrf_sensor_cache_reconcile_topology(&topology, cache) == 0U);
+        assert(!cache[1].topology_current);
+        assert(bus.event_count == 0U && bus.select == 0U);
+    }
+}
+
 static void test_status_cache_retains_lifecycle_result_flags(void)
 {
     bus_t bus;
@@ -790,6 +867,156 @@ static void test_timeout_abort_and_faults(void)
     assert(bus.remote_reads == 0U && bus.discovery == 0U);
 }
 
+static void test_main_status_read_failure_does_not_poison_remote_cache(void)
+{
+    /* 2026-10-31 bench: MAIN's own 0x31 reads fail (INVALID_STATE / CRC) while every REMOTE answers.
+     * The REMOTE refresh read MAIN first and, on any error, marked this REMOTE's cache stale. */
+    const esp_err_t main_errors[] = {
+        ESP_ERR_INVALID_STATE, ESP_ERR_TIMEOUT, ESP_ERR_NOT_FOUND, ESP_ERR_INVALID_RESPONSE,
+    };
+    const event_t expected[] = {
+        E_MAIN_READ, E_SELECT, E_REMOTE_READ, E_WRITE, E_SNAPSHOT, E_CLOSE,
+    };
+
+    for (unsigned index = 0U; index < sizeof(main_errors) / sizeof(main_errors[0]); ++index) {
+        bus_t bus;
+        nrf_topology_snapshot_t topology;
+        nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+        topo(&bus, &topology, 2U);
+        init_cache(&topology, cache, 2U);
+        nrf_sensor_transport_controller_t controller = make_controller();
+        nrf_sensor_transport_io_t io = make_io(&bus);
+        bool reconcile = false;
+
+        /* A first healthy refresh gives MAIN a status cache entry and the REMOTE a fresh answer. */
+        assert(nrf_sensor_transport_refresh_channel(
+                   &controller, &io, &topology, 2U, &cache[2], &reconcile) == ESP_OK);
+        assert(controller.main_status_cache.valid);
+        const uint64_t main_receipt_ms = controller.main_status_cache.esp_receipt_uptime_ms;
+
+        bus.now += 2000U;
+        bus.event_count = 0U;
+        bus.main_read_error = main_errors[index];
+        reconcile = false;
+        assert(nrf_sensor_transport_refresh_channel(
+                   &controller, &io, &topology, 2U, &cache[2], &reconcile) == ESP_OK);
+        /* The REMOTE answered, so its cache is fresh and current. A MAIN read fault must NOT request a
+         * topology re-check: the service loop drops the remaining channels of the cycle while a re-check
+         * is pending and a re-check takes ~2 s, so a flaky MAIN would starve every REMOTE refresh. The
+         * periodic reconcile reads MAIN itself. */
+        assert(cache[2].state == NRF_SENSOR_CACHE_OK);
+        assert(cache[2].topology_current && cache[2].response_valid);
+        assert(cache[2].esp_receipt_uptime_ms == bus.now);
+        assert(!reconcile);
+        assert_events(&bus, expected, sizeof(expected) / sizeof(expected[0]));
+        /* The failed read stored nothing: MAIN's own link status keeps aging towards STALE. */
+        assert(controller.main_status_cache.esp_receipt_uptime_ms == main_receipt_ms);
+    }
+}
+
+static void test_real_remote_loss_still_invalidates_when_main_is_also_failing(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    topo(&bus, &topology, 2U);
+    init_cache(&topology, cache, 2U);
+    nrf_sensor_transport_controller_t controller = make_controller();
+    nrf_sensor_transport_io_t io = make_io(&bus);
+    bool reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 2U, &cache[2], &reconcile) == ESP_OK);
+
+    /* The REMOTE itself stops answering: that must still stale its cache, MAIN failure or not. */
+    bus.mode = M_NACK;
+    bus.main_read_error = ESP_ERR_INVALID_STATE;
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 2U, &cache[2], &reconcile) == ESP_ERR_NOT_FOUND);
+    assert(cache[2].state == NRF_SENSOR_CACHE_IDENTITY_STALE);
+    assert(!cache[2].topology_current && reconcile);
+    assert(bus.close == bus.select);
+}
+
+static void test_flaky_main_never_costs_a_remote_its_cache_or_leaves_the_mux_open(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    topo(&bus, &topology, 3U);
+    init_cache(&topology, cache, 3U);
+    nrf_sensor_transport_controller_t controller = make_controller();
+    nrf_sensor_transport_io_t io = make_io(&bus);
+
+    /* MAIN fails on every second refresh for a long stretch (the bench MAIN fails most of its 0x82 reads). */
+    for (unsigned cycle = 0U; cycle < 200U; ++cycle) {
+        bool reconcile = false;
+        bus.event_count = 0U; /* the fake keeps a bounded event log */
+        bus.now += 2000U;
+        bus.main_read_error = (cycle % 2U) != 0U ? ESP_ERR_INVALID_STATE : ESP_OK;
+        assert(nrf_sensor_transport_refresh_channel(
+                   &controller, &io, &topology, 3U, &cache[3], &reconcile) == ESP_OK);
+        assert(cache[3].state == NRF_SENSOR_CACHE_OK);
+        assert(cache[3].topology_current && cache[3].response_valid);
+        assert(cache[3].esp_receipt_uptime_ms == bus.now);
+        assert(!reconcile);
+        assert(bus.sel == -1 && bus.close == bus.select);
+    }
+}
+
+static void test_failing_main_does_not_hide_a_remote_timeout_or_abort(void)
+{
+    /* A REMOTE that stays pending still times out, and an abort still releases the mux, while MAIN fails. */
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    bool reconcile;
+
+    topo(&bus, &topology, 4U);
+    init_cache(&topology, cache, 4U);
+    bus.mode = M_PENDING;
+    bus.main_read_error = ESP_ERR_INVALID_STATE;
+    nrf_sensor_transport_controller_t controller = make_controller();
+    nrf_sensor_transport_io_t io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 4U, &cache[4], &reconcile) == ESP_ERR_TIMEOUT);
+    assert(cache[4].state == NRF_SENSOR_CACHE_TIMEOUT);
+    assert(bus.select == bus.close);
+
+    topo(&bus, &topology, 4U);
+    init_cache(&topology, cache, 4U);
+    bus.mode = M_ABORT_AFTER_PENDING;
+    bus.main_read_error = ESP_ERR_TIMEOUT;
+    controller = make_controller();
+    io = make_io(&bus);
+    reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 4U, &cache[4], &reconcile) == ESP_ERR_INVALID_STATE);
+    assert(cache[4].state == NRF_SENSOR_CACHE_ABORTED);
+    assert(bus.sel == -1 && bus.close == bus.select);
+}
+
+static void test_main_failure_with_an_unready_remote_reports_the_remote_not_main(void)
+{
+    bus_t bus;
+    nrf_topology_snapshot_t topology;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    topo(&bus, &topology, 1U);
+    init_cache(&topology, cache, 1U);
+    bus.mode = M_STATUS_BOOTING;
+    bus.main_read_error = ESP_ERR_INVALID_STATE;
+    nrf_sensor_transport_controller_t controller = make_controller();
+    nrf_sensor_transport_io_t io = make_io(&bus);
+    bool reconcile = false;
+    assert(nrf_sensor_transport_refresh_channel(
+               &controller, &io, &topology, 1U, &cache[1], &reconcile) == ESP_ERR_INVALID_STATE);
+    /* The REMOTE's own lifecycle decides; it is not a transport fault and not a stale topology. */
+    assert(cache[1].state == NRF_SENSOR_CACHE_SENSOR_ERROR);
+    assert(cache[1].topology_current);
+    assert(bus.sel == -1 && bus.close == bus.select);
+}
+
 static void test_sequence_can_reset_after_new_assignment_epoch(void)
 {
     bus_t bus;
@@ -965,12 +1192,19 @@ int main(void)
     test_cache_identity_lifecycle();
     test_status_cache_survives_busy_topology_refresh();
     test_stale_topology_blocks_sensor_and_calibration_io();
+    test_remote_work_continues_while_topology_is_stale_only_because_main_failed();
+    test_other_stale_causes_still_block_remote_work();
     test_success_order_and_no_discovery();
     test_final_result_mapping_and_timestamps();
     test_status_cache_retains_lifecycle_result_flags();
     test_fresh_booting_status_is_retained_without_reconcile();
     test_foreign_retry_and_second_conflict();
     test_timeout_abort_and_faults();
+    test_main_status_read_failure_does_not_poison_remote_cache();
+    test_real_remote_loss_still_invalidates_when_main_is_also_failing();
+    test_flaky_main_never_costs_a_remote_its_cache_or_leaves_the_mux_open();
+    test_failing_main_does_not_hide_a_remote_timeout_or_abort();
+    test_main_failure_with_an_unready_remote_reports_the_remote_not_main();
     test_sequence_can_reset_after_new_assignment_epoch();
     test_sticky_last_request_result_does_not_block_capture();
     test_capture_still_requires_ready_assigned_identity();

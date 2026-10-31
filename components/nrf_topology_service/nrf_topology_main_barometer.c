@@ -74,6 +74,11 @@ static void publish(nrf_topology_main_barometer_t *state)
 
 static void log_error(nrf_topology_main_barometer_t *state, esp_err_t err, uint32_t now_ms)
 {
+    if (err == ESP_ERR_NOT_FINISHED) {
+        /* Expected FSM state (conversion pending, or a reset sensor just re-armed), not a bus error:
+         * keep it out of I2C_BAROMETER_WARN and out of the rate-limit window real errors need. */
+        return;
+    }
     if (err == ESP_OK || !sensor_bus_diag_rate_limit_allow(
             &s_diag_state, now_ms, "main_barometer")) {
         return;

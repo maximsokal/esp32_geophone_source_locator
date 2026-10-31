@@ -25,6 +25,8 @@
 #define BMP280_CONFIG_FILTER_X16_STANDBY_62_5_MS 0x30U
 #define BMP280_CTRL_TEMP_X2_PRESS_X16_NORMAL 0x57U
 #define BMP280_CTRL_SLEEP 0x00U
+/* T x2 + P x16 oversampling kept while the mode bits are sleep: what a finished forced conversion leaves. */
+#define BMP280_CTRL_TEMP_X2_PRESS_X16_SLEEP 0x54U
 #define BMP280_CTRL_TEMP_X2_PRESS_X16_FORCED 0x55U
 /* T x2 + P x16: maximum 43.2 ms, plus scheduling margin. */
 #define BMP280_FORCED_CONVERSION_MS 50U
@@ -40,6 +42,23 @@
 #define MAIN_BAROMETER_PENDING_INVALID_POLLS 15U
 
 #define MAIN_HEIGHT_REFERENCE_WINDOW_MS 2000U
+/*
+ * The topology task polls the barometer only between its other jobs (three REMOTE refreshes, a
+ * reconcile, calibration traffic), so a poll often arrives later than the 200 ms it was due. A poll
+ * that finds no new conversion yet is not a hole in the data: the stability window only restarts when
+ * no fresh sample has arrived for this long. (Restarting after 300 ms made the 2 s window unreachable
+ * as soon as polls ran 50 ms late, and MAIN's calibration row never completed.)
+ */
+#define MAIN_HEIGHT_REFERENCE_MAX_SAMPLE_GAP_MS 1500U
+/*
+ * A bus error while a capture runs (calibration gives it ~15 s) is retried instead of ending the capture:
+ * 2026-10-31 the MAIN nRF held SDA low for ~16 ms after a failed log read, the BMP280 access that landed in
+ * it failed, and the MAIN row of the calibration was "sensor_invalid" 2 s after the start. Only a sensor
+ * that makes no progress for this long is declared invalid (inside the workflow's own timeout).
+ */
+#define MAIN_HEIGHT_REFERENCE_FAILURE_GRACE_MS 8000U
+/* Re-probe delay after a bus error while a capture is active (5 s otherwise). */
+#define MAIN_BAROMETER_CAPTURE_RETRY_BACKOFF_MS 400U
 /*
  * An established reference outlives sensor glitches: relative Z holds its last good value. Weather
  * drift (a few cm per minute) cancels against the REMOTE nodes only while MAIN is sampled live, so
@@ -190,8 +209,12 @@ bool main_barometer_bmp280_compensate(
 static esp_err_t main_barometer_arm_bmp280(
     main_barometer_t *barometer,
     i2c_bus_device_handle_t device,
-    uint8_t address)
+    uint8_t address,
+    bool forced)
 {
+    /* Forced conversions start themselves: they only need the oversampling and CONFIG left in place. */
+    const uint8_t target_ctrl = forced
+        ? BMP280_CTRL_TEMP_X2_PRESS_X16_SLEEP : BMP280_CTRL_TEMP_X2_PRESS_X16_NORMAL;
     /*
      * T x2, P x16, normal mode; IIR x16 and 62.5 ms standby. The datasheet allows CONFIG writes only in sleep
      * mode (they are ignored in normal mode, which matters on a re-arm), so go to sleep first. A write that
@@ -213,8 +236,7 @@ static esp_err_t main_barometer_arm_bmp280(
             }
             if (err == ESP_OK) {
                 err = main_barometer_write_reg(
-                    device, address, BMP280_REG_CTRL_MEAS,
-                    BMP280_CTRL_TEMP_X2_PRESS_X16_NORMAL);
+                    device, address, BMP280_REG_CTRL_MEAS, target_ctrl);
             }
             if (err != ESP_OK) {
                 return err;
@@ -228,11 +250,11 @@ static esp_err_t main_barometer_arm_bmp280(
             if (err != ESP_OK) {
                 return err;
             }
-            const bool applied = state[1] == BMP280_CTRL_TEMP_X2_PRESS_X16_NORMAL &&
+            const bool applied = state[1] == target_ctrl &&
                 (state[2] & 0xFCU) == BMP280_CONFIG_FILTER_X16_STANDBY_62_5_MS;
             ESP_LOGI(TAG,
                 "MAIN_BARO_ARM addr=0x%02x wrote ctrl_meas=0x%02x config=0x%02x | read back status=0x%02x ctrl_meas=0x%02x config=0x%02x -> %s",
-                (unsigned)address, (unsigned)BMP280_CTRL_TEMP_X2_PRESS_X16_NORMAL,
+                (unsigned)address, (unsigned)target_ctrl,
                 (unsigned)BMP280_CONFIG_FILTER_X16_STANDBY_62_5_MS, (unsigned)state[0], (unsigned)state[1],
                 (unsigned)state[2], applied ? "APPLIED" : "NOT APPLIED (the sensor ACKs but does not keep the mode)");
             if (applied) {
@@ -310,7 +332,7 @@ static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
                 }
             }
             if (err == ESP_OK) {
-                err = main_barometer_arm_bmp280(barometer, candidate, addresses[i]);
+                err = main_barometer_arm_bmp280(barometer, candidate, addresses[i], false);
             }
             if (err == ESP_OK) {
                 barometer->bmp280 = candidate;
@@ -403,6 +425,7 @@ static void main_barometer_height_reference_sensor_invalid(
 static void main_barometer_height_reference_pending(main_barometer_t *barometer)
 {
     if (barometer->bmp280_pending_polls >= MAIN_BAROMETER_PENDING_INVALID_POLLS ||
+        barometer->bmp280_config_lost_polls >= MAIN_BAROMETER_PENDING_INVALID_POLLS ||
         barometer->bmp280_yield_polls >= MAIN_BAROMETER_PENDING_INVALID_POLLS) {
         main_barometer_height_reference_sensor_invalid(barometer);
         return;
@@ -445,6 +468,7 @@ static void main_barometer_height_reference_update(
     }
 
     const double pressure_pa = barometer->reading.filtered_pressure_pa;
+    barometer->height_reference_progress_ms = now_ms;
     if (!barometer->height_reference_has_sample) {
         barometer->height_reference_capture_started_ms = now_ms;
         barometer->height_reference_min_pressure_pa = pressure_pa;
@@ -481,6 +505,31 @@ static void main_barometer_height_reference_update(
     }
 }
 
+static esp_err_t main_barometer_recover_lost_config(
+    main_barometer_t *barometer,
+    uint8_t address,
+    const uint8_t state[3])
+{
+    if (barometer->reading.config_lost_count < UINT16_MAX) {
+        ++barometer->reading.config_lost_count;
+    }
+    if (barometer->bmp280_config_lost_polls < UINT8_MAX) {
+        ++barometer->bmp280_config_lost_polls;
+    }
+    if (barometer->reading.config_lost_count == 1U || barometer->reading.config_lost_count % 16U == 0U) {
+        ESP_LOGW(TAG,
+                 "MAIN_BARO addr=0x%02x configuration lost (status=0x%02x ctrl_meas=0x%02x config=0x%02x) | count=%u: re-arming now",
+                 (unsigned)address, (unsigned)state[0], (unsigned)state[1], (unsigned)state[2],
+                 (unsigned)barometer->reading.config_lost_count);
+    }
+    /* A reset sensor is not a slow one: keep it out of the pending bound that ends in the forced fallback. */
+    barometer->bmp280_pending_polls = 0U;
+    barometer->bmp280_pending_count_due_ms = 0U;
+    barometer->bmp280_config_recovered = true;
+    const esp_err_t err = main_barometer_arm_bmp280(barometer, barometer->bmp280, address, barometer->bmp280_forced);
+    return err != ESP_OK ? err : ESP_ERR_NOT_FINISHED;
+}
+
 static esp_err_t main_barometer_read_bmp280(
     main_barometer_t *barometer,
     uint64_t now_ms)
@@ -503,8 +552,11 @@ static esp_err_t main_barometer_read_bmp280(
         barometer->next_bmp280_poll_ms = barometer->bmp280_conversion_ready_ms;
         return ESP_ERR_NOT_FINISHED;
     }
-    if (barometer->bmp280_conversion_pending && now_ms > barometer->bmp280_conversion_deadline_ms)
-        return ESP_ERR_TIMEOUT;
+    /*
+     * No timeout verdict before the sensor has been read: a late poll (the topology task runs this between
+     * its other jobs) finds a conversion that finished long ago, and the wall clock alone would call that a
+     * sensor timeout and re-probe a healthy sensor. The deadline is applied below, to what the sensor shows.
+     */
     if (barometer->bmp280_forced && now_ms < barometer->bmp280_conversion_ready_ms)
         return ESP_ERR_NOT_FINISHED;
     uint8_t state[3] = {0};
@@ -512,22 +564,34 @@ static esp_err_t main_barometer_read_bmp280(
     if (err != ESP_OK) return err;
     const uint8_t expected_ctrl = barometer->bmp280_forced ? 0x54U : 0x57U;
     if ((state[1] & 0xFCU) != 0x54U || (state[2] & 0xFCU) != 0x30U) {
-        barometer->bmp280_conversion_seen = false;
-        return ESP_ERR_NOT_FINISHED;
+        /* Not a slow conversion: the sensor lost the oversampling/CONFIG written to it (2026-10-31 bench:
+         * 00 00 00 within 200 ms of every arm). Write them again now instead of waiting several polls. */
+        return main_barometer_recover_lost_config(barometer, address, state);
     }
     if ((state[0] & 0x09U) != 0U) {
         if (!barometer->bmp280_conversion_pending) {
             barometer->bmp280_conversion_pending = true;
             barometer->bmp280_conversion_deadline_ms = now_ms + BMP280_CONVERSION_TIMEOUT_MS;
         }
-        if (now_ms >= barometer->bmp280_conversion_deadline_ms) return ESP_ERR_TIMEOUT;
+        if (now_ms >= barometer->bmp280_conversion_deadline_ms) {
+            /*
+             * Only a forced conversion has a deadline: it is one command with one answer. In normal mode
+             * the sensor converts continuously, so "measuring" at several polls over 300 ms is a new
+             * cycle each time (a late poll can hit one again and again), not a stuck conversion. A sensor
+             * that never delivers is caught by the pending-poll bounds (re-arm, forced, invalid).
+             */
+            if (barometer->bmp280_forced) return ESP_ERR_TIMEOUT;
+            barometer->bmp280_conversion_deadline_ms = now_ms + BMP280_CONVERSION_TIMEOUT_MS;
+        }
         if ((state[0] & 0x08U) != 0U) barometer->bmp280_conversion_seen = true;
         barometer->next_bmp280_poll_ms = now_ms + 10U;
         return ESP_ERR_NOT_FINISHED;
     }
     if (state[1] != expected_ctrl || !barometer->bmp280_conversion_seen) {
-        if (barometer->bmp280_conversion_pending && now_ms >= barometer->bmp280_conversion_deadline_ms)
-            return ESP_ERR_TIMEOUT;
+        if (barometer->bmp280_conversion_pending && now_ms >= barometer->bmp280_conversion_deadline_ms) {
+            if (barometer->bmp280_forced) return ESP_ERR_TIMEOUT;
+            barometer->bmp280_conversion_deadline_ms = now_ms + BMP280_CONVERSION_TIMEOUT_MS;
+        }
         if (!barometer->bmp280_forced) barometer->next_bmp280_poll_ms = now_ms + 20U;
         return ESP_ERR_NOT_FINISHED;
     }
@@ -595,8 +659,10 @@ static esp_err_t main_barometer_read_bmp280(
         /* Preserve a next conversion observed after reading this sample. */
         uint8_t status = 0U;
         err = main_barometer_read_regs(barometer->bmp280, address, BMP280_REG_STATUS, &status, 1U);
-        if (err != ESP_OK) return err;
-        barometer->bmp280_conversion_seen = (status & 0x08U) != 0U;
+        /* The sample above is already compensated and correct: a failed look-ahead must not discard it.
+         * Without the witness the next sample is simply not accepted, and the next poll reports a bus
+         * fault that persists through its own STATUS read. */
+        barometer->bmp280_conversion_seen = err == ESP_OK && (status & 0x08U) != 0U;
     }
     return ESP_OK;
 }
@@ -619,6 +685,7 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
         barometer->height_reference_capture_active = true;
         barometer->height_reference_has_sample = false;
         barometer->height_reference_restorable = false;
+        barometer->height_reference_progress_ms = now_ms;
     }
     main_barometer_height_reference_hold_expire(barometer, now_ms);
     if (barometer->handles.bus == NULL) {
@@ -657,6 +724,7 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
             bmp_just_initialized = (bmp_err == ESP_OK);
             break;
         case MAIN_BMP280_MEASURING:
+            barometer->bmp280_config_recovered = false;
             bmp_err = main_barometer_read_bmp280(barometer, now_ms);
             break;
         default:
@@ -669,12 +737,14 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
             barometer->bmp280_yield_polls = 0U;
             if (!bmp_just_initialized) {
                 barometer->bmp280_pending_polls = 0U;
+                barometer->bmp280_config_lost_polls = 0U;
                 barometer->bmp280_pending_count_due_ms = 0U;
                 main_barometer_height_reference_update(barometer, now_ms);
             }
         } else {
             barometer->reading.bmp280_valid = false;
-            if (bmp_err == ESP_ERR_NOT_FINISHED && now_ms >= barometer->bmp280_pending_count_due_ms) {
+            if (bmp_err == ESP_ERR_NOT_FINISHED && !barometer->bmp280_config_recovered &&
+                now_ms >= barometer->bmp280_pending_count_due_ms) {
                 barometer->bmp280_pending_count_due_ms = now_ms + BMP280_POLL_PERIOD_MS;
                 if (barometer->bmp280_pending_polls < UINT8_MAX) {
                     ++barometer->bmp280_pending_polls;
@@ -690,7 +760,7 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
                     ESP_LOGW(TAG, "MAIN_BARO addr=0x%02x no fresh conversion after %u polls: re-arming",
                              (unsigned)barometer->reading.bmp280_address, (unsigned)barometer->bmp280_pending_polls);
                     const esp_err_t rearm_err = main_barometer_arm_bmp280(
-                        barometer, barometer->bmp280, barometer->reading.bmp280_address);
+                        barometer, barometer->bmp280, barometer->reading.bmp280_address, false);
                     if (rearm_err != ESP_OK) {
                         bmp_err = rearm_err;
                     }
@@ -720,8 +790,10 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
             if (!bmp_retry_deferred) {
                 barometer->bmp280_retry_error = bmp_err;
                 if (main_barometer_retryable_bus_error(bmp_err)) {
-                    barometer->bmp280_retry_after_ms =
-                        now_ms + MAIN_BAROMETER_RETRY_BACKOFF_MS;
+                    barometer->bmp280_retry_after_ms = now_ms +
+                        (barometer->height_reference_capture_active
+                            ? MAIN_BAROMETER_CAPTURE_RETRY_BACKOFF_MS
+                            : MAIN_BAROMETER_RETRY_BACKOFF_MS);
                 } else {
                     barometer->bmp280_retry_after_ms = now_ms;
                 }
@@ -729,10 +801,17 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
             if (bmp_err == ESP_ERR_NOT_FINISHED || bus_yield) {
                 const bool recent_sample = barometer->pressure_filter.initialized &&
                     now_ms >= barometer->pressure_filter.timestamp_ms &&
-                    now_ms - barometer->pressure_filter.timestamp_ms <= BMP280_CONVERSION_TIMEOUT_MS;
+                    now_ms - barometer->pressure_filter.timestamp_ms <= MAIN_HEIGHT_REFERENCE_MAX_SAMPLE_GAP_MS;
                 if ((!barometer->bmp280_conversion_pending && !recent_sample) ||
-                    barometer->bmp280_pending_polls >= MAIN_BAROMETER_PENDING_INVALID_POLLS || bus_yield)
+                    barometer->bmp280_pending_polls >= MAIN_BAROMETER_PENDING_INVALID_POLLS ||
+                    barometer->bmp280_config_lost_polls >= MAIN_BAROMETER_PENDING_INVALID_POLLS || bus_yield)
                     main_barometer_height_reference_pending(barometer);
+            } else if (barometer->height_reference_capture_active &&
+                       now_ms >= barometer->height_reference_progress_ms &&
+                       now_ms - barometer->height_reference_progress_ms <
+                           MAIN_HEIGHT_REFERENCE_FAILURE_GRACE_MS) {
+                /* A bus error is a hole in the data, not a verdict: restart the window and retry. */
+                barometer->height_reference_has_sample = false;
             } else {
                 main_barometer_height_reference_sensor_invalid(barometer);
             }

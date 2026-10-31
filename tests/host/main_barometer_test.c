@@ -377,7 +377,7 @@ static void test_established_reference_holds_through_sensor_failure_and_restores
     main_barometer_close(&barometer);
 }
 
-static void test_transient_failure_during_capture_still_invalidates_it(void)
+static void test_persistent_failure_during_capture_invalidates_it_after_the_grace(void)
 {
     reset_fake();
     setup_bmp280(0x77U, BMP_ID);
@@ -387,12 +387,85 @@ static void test_transient_failure_during_capture_still_invalidates_it(void)
     assert(main_barometer_request_height_reference_capture(131U) == ESP_OK);
     (void)main_barometer_poll(&barometer, 0U);
     (void)main_barometer_poll(&barometer, 200U);
+    /* Superseded 2026-10-31: one bus error no longer ends the capture at once (the 15 s calibration run
+     * has time to retry). A sensor that keeps failing is still declared invalid, after the grace. */
+    assert(barometer.reading.height_reference_state != MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    poll_range(&barometer, 400U, 5000U);
+    assert(barometer.reading.height_reference_state != MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    poll_range(&barometer, 5200U, 9000U);
     assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
     /* No reference was ever established, so a returning sensor must not invent one. */
     s_fake.timeout_bmp_data = false;
-    poll_range(&barometer, 6000U, 9000U);
+    poll_range(&barometer, 9200U, 14000U);
     assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
     assert(barometer.reading.relative_z_mm == 0);
+    main_barometer_close(&barometer);
+}
+
+static void test_transient_bus_failure_during_capture_does_not_end_it(void)
+{
+    /* 2026-10-31 bench: MAIN nRF holds SDA low for ~16 ms after a failed log read and the BMP280 access
+     * that lands in that window fails with INVALID_STATE. That aborted the MAIN calibration row
+     * ("height=sensor_invalid" 2 s after the start) and the re-probe then waited 5 s. */
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_timed_normal = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    s_fake.observed = &barometer;
+    main_barometer_request_polling();
+    assert(main_barometer_request_height_reference_capture(133U) == ESP_OK);
+    uint64_t now = 0U;
+    bool valid = false;
+    bool injected = false;
+    while (now <= 15000U && !valid) {
+        s_fake.now_us = (int64_t)now * 1000;
+        if (!injected && now >= 600U) {
+            /* The very next sensor access fails once, like a transfer lost to the held bus. */
+            s_fake.bmp_fail_at = s_fake.bmp_transfer_count + 1U;
+            injected = true;
+        }
+        (void)main_barometer_poll(&barometer, now);
+        assert(barometer.reading.height_reference_state != MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+        valid = barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID;
+        now = barometer.next_bmp280_poll_ms > now ? barometer.next_bmp280_poll_ms : now + 1U;
+    }
+    assert(injected && valid);
+    main_barometer_close(&barometer);
+}
+
+static void test_capture_started_before_the_sensor_initialised_still_completes(void)
+{
+    /* The barometer failed its probe at boot and sits in the 5 s retry backoff when calibration starts:
+     * the capture must wait for the sensor instead of failing the MAIN row on the first poll. */
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_timed_normal = true;
+    s_fake.bmp_ignore_mode_writes = true; /* arm is not applied: init fails with INVALID_STATE */
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    main_barometer_request_polling();
+    uint64_t now = 0U;
+    for (; now <= 1000U; now += 200U) {
+        s_fake.now_us = (int64_t)now * 1000;
+        (void)main_barometer_poll(&barometer, now);
+    }
+    assert(!barometer.reading.bmp280_present);
+    assert(main_barometer_request_height_reference_capture(134U) == ESP_OK);
+    bool recovered = false;
+    bool valid = false;
+    while (now <= 16000U && !valid) {
+        s_fake.now_us = (int64_t)now * 1000;
+        if (!recovered && now >= 2400U) {
+            s_fake.bmp_ignore_mode_writes = false; /* the bus settles */
+            recovered = true;
+        }
+        (void)main_barometer_poll(&barometer, now);
+        assert(barometer.reading.height_reference_state != MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+        valid = barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID;
+        now = barometer.next_bmp280_poll_ms > now ? barometer.next_bmp280_poll_ms : now + 1U;
+    }
+    assert(recovered && valid);
     main_barometer_close(&barometer);
 }
 
@@ -556,6 +629,11 @@ static void test_main_height_reference_sensor_invalid_and_generation_validation(
     main_barometer_init(&barometer);
     assert(main_barometer_request_height_reference_capture(93U) == ESP_OK);
     (void)main_barometer_poll(&barometer, 0U);
+    /* Superseded 2026-10-31: even an unanswering sensor is retried for the failure grace (a probe that
+     * lands in a held bus looks exactly like an absent sensor); then the capture is declared invalid. */
+    assert(barometer.reading.height_reference_state != MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    assert(barometer.reading.height_reference_generation == 93U);
+    poll_range(&barometer, 200U, 9000U);
     assert(barometer.reading.height_reference_state ==
            MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
     assert(barometer.reading.height_reference_generation == 93U);
@@ -568,6 +646,10 @@ static void test_main_height_reference_sensor_invalid_and_generation_validation(
     assert(main_barometer_request_height_reference_capture(94U) == ESP_OK);
     (void)main_barometer_poll(&barometer, 0U);
     (void)main_barometer_poll(&barometer, 200U);
+    /* Superseded 2026-10-31: retried for the failure grace before the capture is declared invalid. */
+    assert(barometer.reading.height_reference_state !=
+           MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    poll_range(&barometer, 400U, 9000U);
     assert(barometer.reading.height_reference_state ==
            MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
     assert(barometer.reading.bmp280_present);
@@ -697,7 +779,7 @@ static void test_sensor_power_cycle_is_rearmed_after_it_acks_again(void)
     main_barometer_close(&barometer);
 }
 
-static void test_silent_sensor_reset_is_rearmed_after_bounded_pending_polls(void)
+static void test_silent_sensor_reset_is_rearmed_without_waiting_for_pending_polls(void)
 {
     reset_fake();
     main_barometer_request_polling(); /* polling is a process-wide opt-in */
@@ -709,14 +791,397 @@ static void test_silent_sensor_reset_is_rearmed_after_bounded_pending_polls(void
     assert(barometer.reading.bmp280_valid);
 
     bmp_lose_configuration(0x76U);
-    for (uint64_t now_ms = 600U; now_ms <= 1400U; now_ms += 200U) {
-        assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_NOT_FINISHED);
-        assert(!barometer.reading.bmp280_valid);
-    }
-    /* 5th pending poll re-arms the mode; the next poll period reads real data. */
+    /* Superseded 2026-10-31: the reset registers are recognised on the first poll (no five-poll wait,
+     * see test_lost_configuration_is_rearmed_in_the_same_poll); the next poll reads real data. */
+    assert(main_barometer_poll(&barometer, 600U) == ESP_ERR_NOT_FINISHED);
+    assert(!barometer.reading.bmp280_valid);
     assert(s_fake.registers[0x76U][REG_CTRL_MEAS] == 0x57U);
-    assert(main_barometer_poll(&barometer, 1600U) == ESP_OK);
+    assert(main_barometer_poll(&barometer, 800U) == ESP_OK);
     assert(barometer.reading.bmp280_valid);
+    main_barometer_close(&barometer);
+}
+
+/* Poll on the driver's own schedule until a sample is valid; false if none within max_polls. */
+static bool poll_until_valid(main_barometer_t *barometer, uint64_t *now_ms, unsigned max_polls)
+{
+    for (unsigned polls = 0U; polls < max_polls; ++polls) {
+        *now_ms = barometer->next_bmp280_poll_ms > *now_ms ? barometer->next_bmp280_poll_ms : *now_ms + 1U;
+        s_fake.now_us = (int64_t)*now_ms * 1000;
+        (void)main_barometer_poll(barometer, *now_ms);
+        if (barometer->reading.bmp280_valid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void test_lost_configuration_is_rearmed_in_the_same_poll(void)
+{
+    /* 2026-10-31 capture: 26 of 36 F3..F5 reads were 00 00 00 (the sensor holds its reset state)
+     * although the driver never wrote a reset: re-arming must not wait five 200 ms polls. */
+    reset_fake();
+    main_barometer_request_polling();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    poll_range(&barometer, 0U, 400U);
+    assert(barometer.reading.bmp280_valid);
+
+    bmp_lose_configuration(0x76U);
+    const size_t writes_before = s_fake.bmp_write_count;
+    assert(main_barometer_poll(&barometer, 600U) == ESP_ERR_NOT_FINISHED);
+    assert(s_fake.registers[0x76U][REG_CTRL_MEAS] == 0x57U);
+    assert(s_fake.registers[0x76U][REG_CONFIG] == 0x30U);
+    assert(s_fake.bmp_write_count == writes_before + 3U);
+    assert(s_fake.bmp_writes[writes_before].reg == REG_CTRL_MEAS && s_fake.bmp_writes[writes_before].value == 0x00U);
+    assert(s_fake.bmp_writes[writes_before + 1U].reg == REG_CONFIG && s_fake.bmp_writes[writes_before + 1U].value == 0x30U);
+    assert(s_fake.bmp_writes[writes_before + 2U].reg == REG_CTRL_MEAS && s_fake.bmp_writes[writes_before + 2U].value == 0x57U);
+    /* A reset sensor is not a slow one: it must not count towards the pending bound or the forced fallback. */
+    assert(barometer.bmp280_pending_polls == 0U);
+    assert(!barometer.bmp280_forced);
+    assert(barometer.bmp280_state == MAIN_BMP280_MEASURING);
+    assert(barometer.reading.config_lost_count == 1U);
+    assert(strstr(fake_barometer_log, "configuration lost") != NULL);
+    assert(main_barometer_poll(&barometer, 800U) == ESP_OK);
+    assert(barometer.reading.config_lost_count == 1U);
+    assert(barometer.reading.bmp280_valid);
+    main_barometer_close(&barometer);
+}
+
+static void test_repeated_resets_never_trigger_the_forced_fallback(void)
+{
+    reset_fake();
+    main_barometer_request_polling();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    poll_range(&barometer, 0U, 400U);
+    assert(barometer.reading.bmp280_valid);
+
+    unsigned valid_samples = 0U;
+    for (uint64_t now_ms = 600U; now_ms < 600U + 20U * 200U; now_ms += 200U) {
+        /* The sensor resets between every two polls, as on the bench. */
+        bmp_lose_configuration(0x76U);
+        const esp_err_t err = main_barometer_poll(&barometer, now_ms);
+        assert(err == ESP_ERR_NOT_FINISHED);
+        assert(!barometer.bmp280_forced);
+        assert(barometer.bmp280_state == MAIN_BMP280_MEASURING);
+        assert(barometer.bmp280_pending_polls == 0U);
+        assert(s_fake.registers[0x76U][REG_CTRL_MEAS] == 0x57U);
+        valid_samples += barometer.reading.bmp280_valid ? 1U : 0U;
+    }
+    assert(valid_samples == 0U);
+    assert(barometer.reading.config_lost_count == 20U);
+    /* One line for the first loss and one for the 16th, not one per 200 ms poll. */
+    unsigned lost_lines = 0U;
+    for (const char *line = fake_barometer_log; (line = strstr(line, "configuration lost")) != NULL; ++line) {
+        ++lost_lines;
+    }
+    assert(lost_lines == 2U);
+    main_barometer_close(&barometer);
+}
+
+static void test_forced_mode_recovers_its_configuration_after_a_reset(void)
+{
+    reset_fake();
+    main_barometer_request_polling();
+    setup_bmp280(0x76U, 0x60U);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    (void)main_barometer_poll(&barometer, 0U);
+    barometer.bmp280_forced = true;
+    uint64_t now_ms = 0U;
+    assert(poll_until_valid(&barometer, &now_ms, 6U));
+
+    /* Reset in forced mode: only CTRL_MEAS is written per conversion, CONFIG stayed 0x00 and
+     * every later conversion was rejected until a bus-level timeout reprobed the sensor 5 s later. */
+    bmp_lose_configuration(0x76U);
+    barometer.reading.bmp280_valid = false;
+    assert(poll_until_valid(&barometer, &now_ms, 6U));
+    assert(barometer.bmp280_state == MAIN_BMP280_MEASURING);
+    assert(s_fake.registers[0x76U][REG_CONFIG] == 0x30U);
+    assert(barometer.bmp280_forced);
+    assert(barometer.reading.config_lost_count >= 1U);
+    main_barometer_close(&barometer);
+}
+
+static void test_failed_trailing_status_read_does_not_discard_a_good_sample(void)
+{
+    reset_fake();
+    main_barometer_request_polling();
+    setup_bmp280(0x76U, 0x60U);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    s_fake.observed = &barometer;
+    assert(main_barometer_poll(&barometer, 0U) == ESP_OK);
+
+    /* A sample poll is STATUS(3), DATA(6), then a 1-byte STATUS read to witness the next conversion. */
+    bool injected = false;
+    for (uint64_t now_ms = 200U; now_ms <= 2000U && !injected; now_ms += 200U) {
+        s_fake.bmp_fail_at = s_fake.bmp_transfer_count + 3U;
+        const esp_err_t err = main_barometer_poll(&barometer, now_ms);
+        injected = s_fake.bmp_transfer_count == s_fake.bmp_fail_at;
+        if (injected) {
+            /* The sample was already compensated and is correct: the failed trailing read must not erase it. */
+            assert(err == ESP_OK);
+            assert(barometer.reading.bmp280_valid);
+            assert(barometer.reading.pressure_pa != 0U);
+            assert(barometer.bmp280_state == MAIN_BMP280_MEASURING);
+        }
+    }
+    assert(injected);
+    s_fake.bmp_fail_at = 0U;
+    /* The next sample must be witnessed again, and the sensor is not reprobed. */
+    uint64_t now_ms = 2200U;
+    assert(poll_until_valid(&barometer, &now_ms, 6U));
+    assert(barometer.bmp280_state == MAIN_BMP280_MEASURING);
+    main_barometer_close(&barometer);
+}
+
+static void arm_and_get_first_sample(main_barometer_t *barometer, uint64_t *now_ms)
+{
+    main_barometer_request_polling();
+    main_barometer_init(barometer);
+    s_fake.observed = barometer;
+    *now_ms = 0U;
+    assert(poll_until_valid(barometer, now_ms, 8U));
+}
+
+static void test_persistent_resets_invalidate_a_height_reference_capture_after_the_bound(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    main_barometer_request_polling();
+    assert(main_barometer_request_height_reference_capture(131U) == ESP_OK);
+    poll_range(&barometer, 0U, 200U);
+    assert(barometer.reading.bmp280_valid);
+
+    /* A sensor that resets before every poll never yields a sample: the capture is pending, not valid... */
+    uint64_t now_ms = 400U;
+    for (unsigned lost = 1U; lost <= 14U; ++lost, now_ms += 200U) {
+        bmp_lose_configuration(0x76U);
+        assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_NOT_FINISHED);
+        assert(barometer.reading.height_reference_state != MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    }
+    /* ...and after the same 15-poll bound as a silent sensor, the capture is declared invalid. */
+    bmp_lose_configuration(0x76U);
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_NOT_FINISHED);
+    assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    main_barometer_close(&barometer);
+}
+
+static void test_a_good_sample_clears_the_reset_streak(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    main_barometer_request_polling();
+    assert(main_barometer_request_height_reference_capture(132U) == ESP_OK);
+    poll_range(&barometer, 0U, 200U);
+
+    /* Isolated resets, each followed by a real sample, are noise and must never add up to an invalid capture. */
+    uint64_t now_ms = 400U;
+    for (unsigned cycle = 0U; cycle < 40U; ++cycle) {
+        bmp_lose_configuration(0x76U);
+        (void)main_barometer_poll(&barometer, now_ms);
+        now_ms += 200U;
+        (void)main_barometer_poll(&barometer, now_ms);
+        now_ms += 200U;
+        assert(barometer.reading.height_reference_state != MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    }
+    assert(barometer.reading.bmp280_valid);
+    assert(barometer.bmp280_config_lost_polls == 0U);
+    main_barometer_close(&barometer);
+}
+
+static void test_failed_rearm_is_a_bus_fault_that_reprobes(void)
+{
+    for (unsigned fail_offset = 2U; fail_offset <= 5U; ++fail_offset) {
+        reset_fake();
+        setup_bmp280(0x76U, 0x60U);
+        s_fake.bmp_model_sleep = true;
+        main_barometer_t barometer;
+        uint64_t now_ms;
+        arm_and_get_first_sample(&barometer, &now_ms);
+
+        bmp_lose_configuration(0x76U);
+        /* STATUS read is transfer 1; re-arm is 3 writes (2..4) and a verify read (5). */
+        s_fake.bmp_fail_at = s_fake.bmp_transfer_count + fail_offset;
+        now_ms = barometer.next_bmp280_poll_ms;
+        assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_TIMEOUT);
+        assert(barometer.bmp280_state == MAIN_BMP280_RECOVER);
+        assert(!barometer.reading.bmp280_valid);
+        s_fake.bmp_fail_at = 0U;
+        main_barometer_close(&barometer);
+    }
+}
+
+static void test_rearm_that_is_not_applied_is_reported_not_swallowed(void)
+{
+    for (unsigned forced = 0U; forced < 2U; ++forced) {
+        reset_fake();
+        setup_bmp280(0x76U, 0x60U);
+        s_fake.bmp_model_sleep = true;
+        main_barometer_t barometer;
+        uint64_t now_ms;
+        arm_and_get_first_sample(&barometer, &now_ms);
+        barometer.bmp280_forced = forced != 0U;
+        barometer.bmp280_conversion_pending = false;
+
+        /* The sensor resets and from now on ACKs but keeps nothing (the 2026-10-27 symptom). */
+        bmp_lose_configuration(0x76U);
+        s_fake.bmp_ignore_mode_writes = true;
+        bool saw_invalid_state = false;
+        for (unsigned polls = 0U; polls < 4U && !saw_invalid_state; ++polls) {
+            now_ms = barometer.next_bmp280_poll_ms;
+            saw_invalid_state = main_barometer_poll(&barometer, now_ms) == ESP_ERR_INVALID_STATE;
+        }
+        assert(saw_invalid_state);
+        assert(barometer.bmp280_state == MAIN_BMP280_RECOVER);
+        assert(!barometer.reading.bmp280_valid);
+        main_barometer_close(&barometer);
+    }
+}
+
+static void test_reset_mid_conversion_drops_the_pending_forced_conversion(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    main_barometer_t barometer;
+    main_barometer_request_polling();
+    main_barometer_init(&barometer);
+    (void)main_barometer_poll(&barometer, 0U);
+    barometer.bmp280_forced = true;
+    uint64_t now_ms = 200U;
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_NOT_FINISHED); /* forced command written */
+    assert(barometer.bmp280_conversion_pending);
+
+    bmp_lose_configuration(0x76U); /* reset while that conversion is in flight */
+    now_ms = barometer.next_bmp280_poll_ms;
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_NOT_FINISHED);
+    assert(!barometer.bmp280_conversion_pending);
+    assert(s_fake.registers[0x76U][REG_CONFIG] == 0x30U);
+    assert(poll_until_valid(&barometer, &now_ms, 6U));
+    main_barometer_close(&barometer);
+}
+
+static void test_garbage_registers_are_treated_as_lost_configuration(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    uint64_t now_ms;
+    arm_and_get_first_sample(&barometer, &now_ms);
+
+    /* A glitched bus can return 0xFF for everything: that is neither a pending conversion nor a sample. */
+    s_fake.registers[0x76U][REG_CTRL_MEAS] = 0xFFU;
+    s_fake.registers[0x76U][REG_CONFIG] = 0xFFU;
+    now_ms = barometer.next_bmp280_poll_ms;
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_NOT_FINISHED);
+    assert(s_fake.registers[0x76U][REG_CTRL_MEAS] == 0x57U);
+    assert(s_fake.registers[0x76U][REG_CONFIG] == 0x30U);
+    assert(barometer.reading.config_lost_count >= 1U);
+    assert(!barometer.bmp280_forced);
+    main_barometer_close(&barometer);
+}
+
+static void test_reset_counters_saturate_instead_of_wrapping(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    uint64_t now_ms;
+    arm_and_get_first_sample(&barometer, &now_ms);
+
+    now_ms = barometer.next_bmp280_poll_ms;
+    for (unsigned polls = 0U; polls < 66000U; ++polls, now_ms += 200U) {
+        bmp_lose_configuration(0x76U);
+        (void)main_barometer_poll(&barometer, now_ms);
+    }
+    assert(barometer.reading.config_lost_count == UINT16_MAX);
+    assert(barometer.bmp280_config_lost_polls == UINT8_MAX);
+    main_barometer_close(&barometer);
+}
+
+/* MAIN calibration cadence: the topology task polls the barometer only between its other jobs, so
+ * during a calibration a poll arrives later than the driver asked for, by a varying amount. A healthy
+ * sensor must still complete the 2 s stability window inside the 15 s calibration timeout. */
+static bool capture_completes_with_busy_task(uint64_t mean_delay_ms, uint16_t generation, uint32_t seed)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_timed_normal = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    main_barometer_request_polling();
+    assert(main_barometer_request_height_reference_capture(generation) == ESP_OK);
+    bool valid = false;
+    uint64_t now = 0U;
+    uint32_t rng = seed;
+    while (now <= 15000U && !valid) {
+        s_fake.now_us = (int64_t)now * 1000;
+        (void)main_barometer_poll(&barometer, now);
+        valid = barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID;
+        const uint64_t due = barometer.next_bmp280_poll_ms > now ? barometer.next_bmp280_poll_ms : now + 1U;
+        rng = rng * 1664525U + 1013904223U;
+        const uint64_t delay = mean_delay_ms == 0U ? 0U : (uint64_t)((rng >> 8U) % (2U * mean_delay_ms + 1U));
+        now = due + delay;
+    }
+    main_barometer_close(&barometer);
+    return valid;
+}
+
+static void test_main_height_capture_completes_when_the_topology_task_polls_slowly(void)
+{
+    /* A late poll is not a gap in the data: the window may only restart when samples really stop. */
+    const uint64_t mean_delays_ms[] = {0U, 50U, 100U, 200U, 400U};
+    for (size_t i = 0U; i < sizeof(mean_delays_ms) / sizeof(mean_delays_ms[0]); ++i) {
+        for (uint32_t seed = 1U; seed <= 8U; ++seed) {
+            assert(capture_completes_with_busy_task(mean_delays_ms[i], (uint16_t)(140U + i), seed * 7919U));
+        }
+    }
+}
+
+/* What the topology task really does during a calibration: three REMOTE refreshes (~1.1 s busy) every
+ * 2 s and a reconcile (~2.1 s busy) every 5 s. The barometer is polled only outside those windows. */
+static uint64_t skip_topology_task_busy_windows(uint64_t t)
+{
+    for (unsigned guard = 0U; guard < 8U; ++guard) {
+        if (t % 2000U >= 400U && t % 2000U < 1500U) { t = t - t % 2000U + 1500U; continue; }
+        if (t % 5000U >= 3000U) { t = t - t % 5000U + 5100U; continue; }
+        break;
+    }
+    return t;
+}
+
+static void test_main_height_capture_completes_between_topology_task_busy_windows(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_timed_normal = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    main_barometer_request_polling();
+    assert(main_barometer_request_height_reference_capture(160U) == ESP_OK);
+    bool valid = false;
+    uint64_t now = 0U;
+    while (now <= 15000U && !valid) {
+        s_fake.now_us = (int64_t)now * 1000;
+        (void)main_barometer_poll(&barometer, now);
+        valid = barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID;
+        const uint64_t due = barometer.next_bmp280_poll_ms > now ? barometer.next_bmp280_poll_ms : now + 1U;
+        now = skip_topology_task_busy_windows(due);
+    }
+    assert(valid);
     main_barometer_close(&barometer);
 }
 
@@ -729,7 +1194,9 @@ static void test_pending_conversion_does_not_add_probe_traffic(void)
     main_barometer_t barometer;
     main_barometer_init(&barometer);
     poll_range(&barometer, 0U, 400U);
-    bmp_lose_configuration(0x76U);
+    /* Armed correctly but no conversion ever finishes. (A reset sensor, previously used here, is now
+     * re-armed on the first poll and is covered by test_lost_configuration_is_rearmed_in_the_same_poll.) */
+    s_fake.bmp_normal_dead = true;
 
     const size_t probes_before = s_fake.address_probe_count;
     for (uint64_t now_ms = 600U; now_ms <= 1000U; now_ms += 200U) {
@@ -1242,11 +1709,26 @@ int main(void)
     test_probe_timeout_skips_full_read_transaction();
     test_main_height_reference_stable_unstable_and_relative();
     test_established_reference_holds_through_sensor_failure_and_restores();
-    test_transient_failure_during_capture_still_invalidates_it();
+    test_persistent_failure_during_capture_invalidates_it_after_the_grace();
+    test_transient_bus_failure_during_capture_does_not_end_it();
+    test_capture_started_before_the_sensor_initialised_still_completes();
     test_main_height_reference_sensor_invalid_and_generation_validation();
     test_first_conversion_pending_is_not_a_bus_error();
     test_sensor_power_cycle_is_rearmed_after_it_acks_again();
-    test_silent_sensor_reset_is_rearmed_after_bounded_pending_polls();
+    test_silent_sensor_reset_is_rearmed_without_waiting_for_pending_polls();
+    test_lost_configuration_is_rearmed_in_the_same_poll();
+    test_repeated_resets_never_trigger_the_forced_fallback();
+    test_forced_mode_recovers_its_configuration_after_a_reset();
+    test_failed_trailing_status_read_does_not_discard_a_good_sample();
+    test_main_height_capture_completes_when_the_topology_task_polls_slowly();
+    test_main_height_capture_completes_between_topology_task_busy_windows();
+    test_persistent_resets_invalidate_a_height_reference_capture_after_the_bound();
+    test_a_good_sample_clears_the_reset_streak();
+    test_failed_rearm_is_a_bus_fault_that_reprobes();
+    test_rearm_that_is_not_applied_is_reported_not_swallowed();
+    test_reset_mid_conversion_drops_the_pending_forced_conversion();
+    test_garbage_registers_are_treated_as_lost_configuration();
+    test_reset_counters_saturate_instead_of_wrapping();
     test_pending_conversion_does_not_add_probe_traffic();
     test_transient_pending_does_not_kill_height_reference_capture();
     test_permanently_pending_sensor_invalidates_capture_after_bound();

@@ -426,7 +426,7 @@ static bool service_has_immediate_work(void)
     const bool cs_active = s_ranging_active || s_cs_request_pending ||
         (s_cs_snapshot_valid && s_cs_cycle_snapshot.active);
     const bool sensor_snapshot_usable = s_snapshot_valid &&
-        !s_snapshot.bus_busy && !s_snapshot.stale;
+        !nrf_topology_remote_data_stale(&s_snapshot);
     pending = s_cs_request_pending || (!cs_active &&
         (s_topology_refresh_requested ||
          (sensor_snapshot_usable && s_sensor_pending_mask != 0U) ||
@@ -2383,7 +2383,7 @@ static void service_process_sensor_mask(
         .abort_requested = platform_abort_requested,
     };
 
-    if (snapshot->bus_busy || snapshot->stale) {
+    if (nrf_topology_remote_data_stale(snapshot)) {
         service_requeue_inflight_mask(mask);
         return;
     }
@@ -3398,7 +3398,7 @@ static void service_worker(void *context)
                 last_sensor_refresh_tick,
                 sensor_refresh_period_ticks)) {
             uint8_t assigned_mask = 0U;
-            if (!worker->snapshot.bus_busy && !worker->snapshot.stale &&
+            if (!nrf_topology_remote_data_stale(&worker->snapshot) &&
                 worker->snapshot.tca_available && !worker->snapshot.tca_fault) {
                 for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
                     if (worker->snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
@@ -3827,7 +3827,7 @@ esp_err_t nrf_topology_service_request_sensor_scan(uint8_t channel, uint32_t *re
     if (channel >= NRF_TOPOLOGY_REMOTE_COUNT || request_id == NULL) return ESP_ERR_INVALID_ARG;
     portENTER_CRITICAL(&s_state_lock);
     task = s_task;
-    if (task == NULL || !s_snapshot_valid || s_snapshot.stale || s_snapshot.bus_busy ||
+    if (task == NULL || !s_snapshot_valid || nrf_topology_remote_data_stale(&s_snapshot) ||
         s_sensor_scan_pending || s_snapshot.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
@@ -3903,8 +3903,8 @@ esp_err_t nrf_topology_service_request_height_reference_capture(
 
     portENTER_CRITICAL(&s_state_lock);
     task = s_task;
-    if (task == NULL || !s_snapshot_valid || s_snapshot.stale || s_snapshot.bus_busy || s_height_reference_pending ||
-        s_height_reference_in_flight) {
+    if (task == NULL || !s_snapshot_valid || nrf_topology_remote_data_stale(&s_snapshot) ||
+        s_height_reference_pending || s_height_reference_in_flight) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -3947,7 +3947,8 @@ esp_err_t nrf_topology_service_request_imu_calibration(
 
     portENTER_CRITICAL(&s_state_lock);
     task = s_task;
-    if (task == NULL || !s_snapshot_valid || s_snapshot.stale || s_snapshot.bus_busy || s_imu_calibration_pending) {
+    if (task == NULL || !s_snapshot_valid || nrf_topology_remote_data_stale(&s_snapshot) ||
+        s_imu_calibration_pending) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
     }

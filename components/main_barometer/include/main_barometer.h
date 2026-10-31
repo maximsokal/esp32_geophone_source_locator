@@ -41,6 +41,8 @@ typedef struct {
     main_barometer_reference_state_t height_reference_state;
     uint16_t height_reference_generation;
     int32_t relative_z_mm;
+    /* Times the sensor was found back in its reset state (CTRL_MEAS/CONFIG lost) and re-armed; saturating. */
+    uint16_t config_lost_count;
 } main_barometer_reading_t;
 
 typedef enum {
@@ -64,6 +66,10 @@ typedef struct {
     esp_err_t bmp280_retry_error;
     /* Consecutive polls without a proven new sample. */
     uint8_t bmp280_pending_polls;
+    /* Consecutive polls that found the sensor in its reset state; cleared by a fresh sample. */
+    uint8_t bmp280_config_lost_polls;
+    /* Set by one read when it re-armed a reset sensor: that poll is not a slow conversion. */
+    bool bmp280_config_recovered;
     /* Consecutive polls that lost the shared-bus owner lock to another task. */
     uint8_t bmp280_yield_polls;
     /* Normal mode stalled: start and finish forced conversions across polls. */
@@ -78,6 +84,8 @@ typedef struct {
     bool height_reference_capture_active;
     bool height_reference_has_sample;
     uint64_t height_reference_capture_started_ms;
+    /* Last time the active capture made progress: its start, or a sample that fed the window. */
+    uint64_t height_reference_progress_ms;
     /* Last poll that produced a fresh sample while the reference was valid. */
     uint64_t height_reference_last_good_ms;
     /* Held reference timed out; a fresh sample restores it. */

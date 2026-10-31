@@ -130,6 +130,52 @@ static void test_capture_rejection_states_and_clear(void)
     assert(calibration.gravity_ref_mg[2] == 0 && calibration.gyro_bias_mdps[0] == 0);
 }
 
+static void test_every_failed_capture_reports_the_requested_generation(void)
+{
+    /* The ESP accepts a calibration result only when imu_cal_generation equals the generation it asked
+     * for. A rejected or invalid capture used to keep the previous generation, so the ESP never saw
+     * "rejected_moving" / "sensor_invalid" and the run ended only at its 15 s timeout. */
+    nrf_imu_calibration_t calibration;
+    nrf_imu_sample_t sample = sample_for_axis(2U, 1, 0);
+    bool completed = false;
+
+    nrf_imu_calibration_init(&calibration);
+    assert(calibration.generation == 0U);
+
+    assert(nrf_imu_calibration_begin_capture(&calibration, 21U, 100U));
+    assert(nrf_imu_calibration_update(&calibration, &sample, true, true, 100U));
+    assert(calibration.state == NRF_UPSTREAM_IMU_CALIBRATION_REJECTED_MOVING);
+    assert(calibration.generation == 21U);
+    assert(calibration.capture_generation == 0U);
+
+    assert(nrf_imu_calibration_begin_capture(&calibration, 22U, 1000U));
+    assert(nrf_imu_calibration_update(&calibration, NULL, false, false, 1100U));
+    assert(calibration.state == NRF_UPSTREAM_IMU_CALIBRATION_SENSOR_INVALID);
+    assert(calibration.generation == 22U);
+    assert(calibration.capture_generation == 0U);
+
+    sample = sample_for_axis(2U, 1, 0);
+    sample.accel_mg[2] = 800;
+    assert(nrf_imu_calibration_begin_capture(&calibration, 23U, 2000U));
+    for (uint64_t i = 0U; i <= 10U; ++i) {
+        completed = nrf_imu_calibration_update(&calibration, &sample, true, false, 2000U + i * 100U);
+    }
+    assert(completed);
+    assert(calibration.state == NRF_UPSTREAM_IMU_CALIBRATION_REJECTED_GRAVITY);
+    assert(calibration.generation == 23U);
+
+    /* A good calibration followed by a failed one: the failure is attributed to its own request. */
+    sample = sample_for_axis(2U, 1, 0);
+    assert(capture_window(&calibration, &sample, 24U));
+    assert(calibration.state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+    assert(calibration.generation == 24U);
+    assert(nrf_imu_calibration_begin_capture(&calibration, 25U, 9000U));
+    assert(nrf_imu_calibration_update(&calibration, &sample, true, true, 9000U));
+    assert(calibration.state == NRF_UPSTREAM_IMU_CALIBRATION_REJECTED_MOVING);
+    assert(calibration.generation == 25U);
+    assert(calibration.gyro_bias_mdps[0] == 0 && calibration.gravity_ref_mg[2] == 0);
+}
+
 static void test_four_instances_and_reboot_reset(void)
 {
     nrf_imu_calibration_t nodes[4];
@@ -159,6 +205,7 @@ int main(void)
     test_capture_bias_gravity_reference_and_all_axes();
     test_window_duration_and_gyro_bias_correction();
     test_capture_rejection_states_and_clear();
+    test_every_failed_capture_reports_the_requested_generation();
     test_four_instances_and_reboot_reset();
     return 0;
 }

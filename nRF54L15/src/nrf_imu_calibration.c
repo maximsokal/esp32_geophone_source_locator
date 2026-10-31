@@ -21,6 +21,14 @@ static void finish(nrf_imu_calibration_t *calibration, uint8_t state)
     calibration->state = (nrf_upstream_imu_calibration_state_t)state;
     calibration->capturing = false;
     clear_result(calibration);
+    /*
+     * The result belongs to the request that started this capture, whether it succeeded or not: the
+     * ESP accepts a calibration state only when imu_cal_generation matches the generation it asked for.
+     * Keeping the previous generation hid "rejected_moving" / "sensor_invalid" from the ESP, so a node
+     * with a dead BMI160 looked like a silent node and the run ended only at its timeout.
+     */
+    calibration->generation = calibration->capture_generation;
+    calibration->capture_generation = 0U;
 }
 
 static int64_t rounded_mean(int64_t sum, uint32_t count)

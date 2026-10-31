@@ -52,6 +52,9 @@ typedef struct {
     nrf_topology_ranging_progress_t ranging_snapshot;
     ui_workflow_ranging_t ranging;
     device_status_snapshot_t remote_status_snapshot;
+    /* Last good non-blocking read of the shared status, see UI_WORKFLOW_STATUS_HOLD_MS. */
+    ui_workflow_status_hold_t remote_status_hold;
+    bool remote_status_miss_logged;
     pod_state_t remote_pod_states[UI_WORKFLOW_REMOTE_SLOT_COUNT];
     ui_workflow_remote_slot_t remote_slots[UI_WORKFLOW_REMOTE_SLOT_COUNT];
     ui_workflow_model_state_t model_state;
@@ -606,11 +609,23 @@ static uint32_t ui_workflow_remote_pod_color(pod_state_t state)
 
 static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
 {
-    const bool status_available =
-        device_status_try_get_snapshot(&state->remote_status_snapshot) == ESP_OK;
-    /* A failed snapshot read must not keep the previous sensor health green. */
-    if (!status_available) memset(&state->remote_status_snapshot, 0, sizeof(state->remote_status_snapshot));
     const uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    /*
+     * The read does not wait, so it also fails when a priority-1 writer (status bridge, INA3221) was
+     * preempted holding the lock. Clearing the snapshot on every such miss turned all four cards grey
+     * ("--") for a tick; keep the last good one for a bounded time, then clear it so a dead status
+     * cannot keep a card green.
+     */
+    const bool read_ok = device_status_try_get_snapshot(&state->remote_status_snapshot) == ESP_OK;
+    const bool status_usable = ui_workflow_status_hold_update(&state->remote_status_hold, read_ok, now_ms);
+    if (!status_usable) memset(&state->remote_status_snapshot, 0, sizeof(state->remote_status_snapshot));
+    if (read_ok) {
+        state->remote_status_miss_logged = false;
+    } else if (!state->remote_status_miss_logged) {
+        state->remote_status_miss_logged = true;
+        ESP_LOGW("UI_WORKFLOW", "[POD_STATUS_READ_MISS] shared device status busy; %s",
+            status_usable ? "holding the last snapshot" : "snapshot cleared");
+    }
     for (uint8_t slot = 0U; slot <= UI_WORKFLOW_REMOTE_SLOT_COUNT; ++slot) {
         nrf_node_link_status_input_t input = {0};
         const esp_err_t err = nrf_topology_service_get_node_status_snapshot(slot, &input);

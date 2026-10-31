@@ -129,6 +129,27 @@ static void test_poll_failures_are_logged_with_the_device_and_rate_limited(void)
     assert(s_warnings == 2U);
 }
 
+static void test_pending_conversion_is_not_logged_as_a_bus_error(void)
+{
+    nrf_topology_main_barometer_t state;
+    reset(&state);
+    g_main_barometer_fake.reading.bmp280_address = 0x76U;
+    /* ESP_ERR_NOT_FINISHED is the driver's normal "conversion pending / sensor re-armed" result:
+     * the bench log showed it as I2C_BAROMETER_WARN at 22846 ms next to real bus errors. */
+    g_main_barometer_fake.poll_result = ESP_ERR_NOT_FINISHED;
+    for (uint32_t now_ms = 500000U; now_ms < 500000U + 10U * 200U; now_ms += 200U) {
+        nrf_topology_main_barometer_step(&state, now_ms);
+    }
+    assert(s_warnings == 0U);
+
+    /* ...and it must not use up the rate-limit window of a real error that follows. */
+    g_main_barometer_fake.poll_result = ESP_ERR_INVALID_STATE;
+    nrf_topology_main_barometer_step(&state, 500000U + 10U * 200U);
+    assert(s_warnings == 1U);
+    assert(strstr(s_last_warning, "I2C_BAROMETER_WARN") != NULL);
+    assert(strstr(s_last_warning, "ESP_ERR_INVALID_STATE") != NULL);
+}
+
 static void test_undetected_barometer_logs_both_candidate_addresses(void)
 {
     nrf_topology_main_barometer_t state;
@@ -171,6 +192,7 @@ int main(void)
     test_height_reference_states_reach_device_status();
     test_rejected_publish_is_retried();
     test_poll_failures_are_logged_with_the_device_and_rate_limited();
+    test_pending_conversion_is_not_logged_as_a_bus_error();
     test_undetected_barometer_logs_both_candidate_addresses();
     test_wait_follows_the_next_poll_and_close_is_forwarded();
     return 0;

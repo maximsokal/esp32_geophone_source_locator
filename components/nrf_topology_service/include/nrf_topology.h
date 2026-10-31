@@ -61,6 +61,31 @@ typedef struct {
     nrf_topology_node_snapshot_t remotes[NRF_TOPOLOGY_REMOTE_COUNT];
 } nrf_topology_snapshot_t;
 
+/*
+ * Sensor refresh, height-reference capture, IMU calibration and sensor scan only talk to REMOTE nodes
+ * through the mux; they never touch MAIN. A snapshot is stale for them only when the bus really was
+ * busy or the retained picture is otherwise unusable. A snapshot made stale solely because MAIN failed
+ * its own status read (main.state == TRANSPORT_ERROR, the REMOTE states retained from the last good
+ * pass) keeps them running: before this, one MAIN read failure refused every calibration start and
+ * turned every REMOTE card to "--" until the next reconcile. CS / ranging include MAIN as a node and
+ * keep checking `stale` directly.
+ */
+static inline bool nrf_topology_remote_data_stale(const nrf_topology_snapshot_t *topology)
+{
+    const bool main_only_fault = topology->main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR &&
+        topology->tca_available && !topology->tca_fault;
+    return topology->bus_busy || (topology->stale && !main_only_fault);
+}
+
+/* MAIN need not have been verified for REMOTE work, but a MAIN in any other odd state still blocks it. */
+static inline bool nrf_topology_main_state_allows_remote_work(const nrf_topology_snapshot_t *topology)
+{
+    return topology->main.state == NRF_TOPOLOGY_NODE_ASSIGNED ||
+        topology->main.state == NRF_TOPOLOGY_NODE_ABSENT ||
+        (topology->stale && topology->main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR &&
+         topology->tca_available && !topology->tca_fault);
+}
+
 typedef struct {
     uint32_t confirm_timeout_ms;
     uint32_t poll_interval_ms;

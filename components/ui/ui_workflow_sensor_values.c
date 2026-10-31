@@ -4,6 +4,18 @@
 #include <stdio.h>
 #include <string.h>
 
+bool ui_workflow_status_hold_update(ui_workflow_status_hold_t *hold, bool read_ok, uint64_t now_ms)
+{
+    if (hold == NULL) return read_ok;
+    if (read_ok) {
+        hold->valid = true;
+        hold->last_ok_ms = now_ms;
+        return true;
+    }
+    return hold->valid && now_ms >= hold->last_ok_ms &&
+        now_ms - hold->last_ok_ms < UI_WORKFLOW_STATUS_HOLD_MS;
+}
+
 bool ui_workflow_sensor_values_page(uint64_t now_ms)
 {
     return ((now_ms / UI_WORKFLOW_SENSOR_PAGE_MS) & 1U) != 0U;

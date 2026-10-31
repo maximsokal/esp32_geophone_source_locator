@@ -1671,6 +1671,8 @@ int main(void)
         NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE, 63U, 63U);
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
     assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_REJECTED_MOVING);
+    /* The ESP only accepts this result when the generation is the one it asked for (63), not the last good one (61). */
+    assert(snapshot.imu_cal_generation == 63U);
     assert(log_event_count(NRF_LOG_EVENT_IMU_CAL_REJECTED) == 1U);
     assert_last_log_event(
         NRF_LOG_EVENT_IMU_CAL_REJECTED,

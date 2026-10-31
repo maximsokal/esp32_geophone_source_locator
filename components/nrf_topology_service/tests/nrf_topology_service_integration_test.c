@@ -4165,10 +4165,13 @@ static void test_main_timeout_preserves_stale_topology_until_recovery(void)
     assert(s_main_timeout_snapshot.main.state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
     assert(s_main_timeout_snapshot.remotes[0].state == NRF_TOPOLOGY_NODE_ASSIGNED);
     assert(s_main_timeout_snapshot.remotes[3].state == NRF_TOPOLOGY_NODE_ASSIGNED);
-    assert(s_main_timeout_cache[0].identity_valid && !s_main_timeout_cache[0].topology_current);
-    assert(s_main_timeout_cache[1].identity_valid && !s_main_timeout_cache[1].topology_current);
-    assert(s_main_timeout_height_request == ESP_ERR_INVALID_STATE);
-    assert(s_main_timeout_imu_request == ESP_ERR_INVALID_STATE);
+    /* Superseded 2026-10-31: a MAIN-only fault leaves the REMOTE caches current and does not refuse
+     * REMOTE-only work. Bench: calibration was refused / its MAIN row lost whenever MAIN failed one read.
+     * CS and ranging include MAIN as a node and are still refused. */
+    assert(s_main_timeout_cache[0].identity_valid && s_main_timeout_cache[0].topology_current);
+    assert(s_main_timeout_cache[1].identity_valid && s_main_timeout_cache[1].topology_current);
+    assert(s_main_timeout_height_request == ESP_OK);
+    assert(s_main_timeout_imu_request == ESP_OK);
     assert(s_main_timeout_cs_request == ESP_ERR_INVALID_STATE);
     assert(s_main_timeout_ranging_request == ESP_ERR_INVALID_STATE);
     assert(s_main_timeout_busy_ranging_request == ESP_ERR_INVALID_STATE);

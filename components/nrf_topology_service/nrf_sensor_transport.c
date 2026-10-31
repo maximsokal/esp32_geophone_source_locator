@@ -93,7 +93,7 @@ uint8_t nrf_sensor_cache_reconcile_topology(
     if (topology == NULL || cache == NULL) {
         return 0U;
     }
-    if (topology->stale || topology->bus_busy) {
+    if (nrf_topology_remote_data_stale(topology)) {
         for (channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
             cache_mark_topology_stale(&cache[channel]);
         }
@@ -298,7 +298,7 @@ esp_err_t nrf_sensor_transport_refresh_channel(
     }
 
     *request_topology_reconcile = false;
-    if (topology->stale || topology->bus_busy) {
+    if (nrf_topology_remote_data_stale(topology)) {
         cache_mark_topology_stale(cache);
         *request_topology_reconcile = true;
         return ESP_ERR_INVALID_STATE;
@@ -318,8 +318,7 @@ esp_err_t nrf_sensor_transport_refresh_channel(
         *request_topology_reconcile = true;
         return ESP_ERR_INVALID_STATE;
     }
-    if (topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED &&
-        topology->main.state != NRF_TOPOLOGY_NODE_ABSENT) {
+    if (!nrf_topology_main_state_allows_remote_work(topology)) {
         mark_failure(cache, NRF_SENSOR_CACHE_TOPOLOGY_STALE, true);
         *request_topology_reconcile = true;
         return ESP_ERR_INVALID_STATE;
@@ -340,20 +339,30 @@ esp_err_t nrf_sensor_transport_refresh_channel(
         memset(&status, 0, sizeof(status));
         err = io->read_status(io->context, NRF_UPSTREAM_ADDRESS_MAIN, &status);
         if (err != ESP_OK) {
-            mark_read_failure(err, cache, request_topology_reconcile);
-            goto done;
+            /*
+             * MAIN is a different device on a different address: its own read fault says nothing about
+             * this REMOTE (2026-10-31 bench: MAIN reads failed while every REMOTE answered, and each
+             * failure turned all REMOTE caches stale and their values into '--'). Keep MAIN's last
+             * status aging on its own and read the REMOTE as usual; a REMOTE that really is gone fails
+             * its own read below. No topology re-check is requested here: while one is pending the
+             * service loop drops the other channels of the cycle, and a re-check takes ~2 s, so a flaky
+             * MAIN would starve all REMOTE refreshes. The periodic reconcile reads MAIN itself.
+             */
+            err = ESP_OK;
         }
-        status_cache_store(
-            &controller->main_status_cache,
-            &status,
-            &topology->main,
-            NRF_UPSTREAM_ROLE_MAIN,
-            io->now_ms(io->context));
-        if (!controller->main_status_cache.identity_matches) {
-            mark_failure(cache, NRF_SENSOR_CACHE_IDENTITY_STALE, true);
-            *request_topology_reconcile = true;
-            err = ESP_ERR_INVALID_RESPONSE;
-            goto done;
+        else {
+            status_cache_store(
+                &controller->main_status_cache,
+                &status,
+                &topology->main,
+                NRF_UPSTREAM_ROLE_MAIN,
+                io->now_ms(io->context));
+            if (!controller->main_status_cache.identity_matches) {
+                mark_failure(cache, NRF_SENSOR_CACHE_IDENTITY_STALE, true);
+                *request_topology_reconcile = true;
+                err = ESP_ERR_INVALID_RESPONSE;
+                goto done;
+            }
         }
     }
 
@@ -531,10 +540,9 @@ esp_err_t nrf_sensor_transport_capture_height_reference(
 
     *request_topology_reconcile = false;
     remote = &topology->remotes[channel];
-    if (topology->stale || topology->bus_busy || !topology->tca_available || topology->tca_fault ||
+    if (nrf_topology_remote_data_stale(topology) || !topology->tca_available || topology->tca_fault ||
         remote->state != NRF_TOPOLOGY_NODE_ASSIGNED ||
-        (topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED &&
-         topology->main.state != NRF_TOPOLOGY_NODE_ABSENT)) {
+        !nrf_topology_main_state_allows_remote_work(topology)) {
         *request_topology_reconcile = topology->tca_fault ||
             remote->state == NRF_TOPOLOGY_NODE_ASSIGNED;
         return ESP_ERR_INVALID_STATE;
@@ -611,10 +619,9 @@ esp_err_t nrf_sensor_transport_request_imu_calibration(
 
     *request_topology_reconcile = false;
     remote = &topology->remotes[channel];
-    if (topology->stale || topology->bus_busy || !topology->tca_available || topology->tca_fault ||
+    if (nrf_topology_remote_data_stale(topology) || !topology->tca_available || topology->tca_fault ||
         remote->state != NRF_TOPOLOGY_NODE_ASSIGNED ||
-        (topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED &&
-         topology->main.state != NRF_TOPOLOGY_NODE_ABSENT)) {
+        !nrf_topology_main_state_allows_remote_work(topology)) {
         *request_topology_reconcile = topology->tca_fault ||
             remote->state == NRF_TOPOLOGY_NODE_ASSIGNED;
         return ESP_ERR_INVALID_STATE;
@@ -681,9 +688,9 @@ esp_err_t nrf_sensor_transport_request_scan(
         io->write_sensor_scan == NULL) return ESP_ERR_INVALID_ARG;
     *request_topology_reconcile = false;
     remote = &topology->remotes[channel];
-    if (topology->stale || topology->bus_busy || !topology->tca_available || topology->tca_fault ||
+    if (nrf_topology_remote_data_stale(topology) || !topology->tca_available || topology->tca_fault ||
         remote->state != NRF_TOPOLOGY_NODE_ASSIGNED ||
-        (topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED && topology->main.state != NRF_TOPOLOGY_NODE_ABSENT)) {
+        !nrf_topology_main_state_allows_remote_work(topology)) {
         *request_topology_reconcile = topology->tca_fault || remote->state == NRF_TOPOLOGY_NODE_ASSIGNED;
         return ESP_ERR_INVALID_STATE;
     }
