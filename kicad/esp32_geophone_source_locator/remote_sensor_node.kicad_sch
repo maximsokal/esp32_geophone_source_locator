@@ -2845,12 +2845,6 @@
 		(uuid "0ff49ce4-ec8b-4eed-b2c0-1f39ea7a8a73")
 	)
 	(junction
-		(at 60.96 148.59)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "460dcbdd-0c71-4200-ad89-863a44822d41")
-	)
-	(junction
 		(at 35.56 148.59)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -3023,6 +3017,10 @@
 	(no_connect
 		(at 27.94 50.8)
 		(uuid "83a0f862-4224-414d-a5c8-51b3ae43784d")
+	)
+	(no_connect
+		(at 106.68 161.29)
+		(uuid "843fa463-d3ea-4689-811c-4c0953f33af0")
 	)
 	(no_connect
 		(at 208.28 116.84)
@@ -3270,16 +3268,6 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 148.59) (xy 83.82 148.59)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "1e4814e5-33e8-471d-868c-02d1a65fcb19")
-	)
-	(wire
-		(pts
 			(xy 165.1 60.96) (xy 160.02 60.96)
 		)
 		(stroke
@@ -3357,16 +3345,6 @@
 			(type default)
 		)
 		(uuid "3b9824cd-0c1f-44e1-be52-c1030cbaf2b5")
-	)
-	(wire
-		(pts
-			(xy 106.68 161.29) (xy 106.68 165.1)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "3da6e990-e542-4480-bba1-e5c448628293")
 	)
 	(wire
 		(pts
@@ -3470,16 +3448,6 @@
 	)
 	(wire
 		(pts
-			(xy 60.96 165.1) (xy 80.01 165.1)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "50693367-b5c8-4903-9279-f6f2db198ef1")
-	)
-	(wire
-		(pts
 			(xy 96.52 148.59) (xy 125.73 148.59)
 		)
 		(stroke
@@ -3567,16 +3535,6 @@
 			(type default)
 		)
 		(uuid "5db682a6-c443-4e0e-81df-d85777adcfab")
-	)
-	(wire
-		(pts
-			(xy 60.96 148.59) (xy 60.96 157.48)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "5fdb4716-9d34-4c25-9772-3fd4771e10a5")
 	)
 	(wire
 		(pts
@@ -3810,7 +3768,7 @@
 	)
 	(wire
 		(pts
-			(xy 48.26 148.59) (xy 60.96 148.59)
+			(xy 48.26 148.59) (xy 83.82 148.59)
 		)
 		(stroke
 			(width 0)
@@ -4237,16 +4195,6 @@
 			(type default)
 		)
 		(uuid "e45ef34d-52af-477e-be1b-b6d6e0b7b04d")
-	)
-	(wire
-		(pts
-			(xy 87.63 165.1) (xy 106.68 165.1)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e8724e1d-3b9b-400f-bf72-a115a85e39a2")
 	)
 	(wire
 		(pts
@@ -6489,85 +6437,6 @@
 		)
 	)
 	(symbol
-		(lib_id "Device:R")
-		(at 83.82 165.1 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "7af941cd-bee7-4b30-8bfd-f0ffa8430852")
-		(property "Reference" "R1"
-			(at 83.82 161.29 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "10 k"
-			(at 84.582 163.068 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 83.82 166.878 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 83.82 165.1 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 83.82 165.1 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "e3013a4d-f58b-4b1e-8c4a-3a4c6a889dba")
-		)
-		(pin "2"
-			(uuid "573d81a2-b7be-4239-8799-d60e27966c9a")
-		)
-		(instances
-			(project "remote_sensor_node"
-				(path "/6aa219e5-72f2-4956-9b4c-a1ebfcd7fe16"
-					(reference "R1")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "Device:C")
 		(at 22.86 87.63 0)
 		(unit 1)
@@ -8297,100 +8166,6 @@
 			(project "ESP32-S3 MAIN"
 				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6/35858c28-4ff4-4411-bf79-e4651b2e5323/d8613105-1124-47f4-addf-a9fc1438f197/06433963-dfa5-450f-a917-bf170d3bb840"
 					(reference "D2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 60.96 161.29 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "dda6f182-f97f-4975-af90-2428ea23daab")
-		(property "Reference" "R24"
-			(at 63.5 160.0199 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "3.9 k"
-			(at 63.5 162.5599 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0805_2012Metric"
-			(at 59.182 161.29 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 60.96 161.29 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 60.96 161.29 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "fe170e52-f1d3-48e4-bcf9-8f48e5e86629")
-		)
-		(pin "2"
-			(uuid "3ffe76b8-4159-4cea-a22a-66cf05c45ca9")
-		)
-		(instances
-			(project "remote_sensor_node"
-				(path "/6aa219e5-72f2-4956-9b4c-a1ebfcd7fe16"
-					(reference "R24")
-					(unit 1)
-				)
-			)
-			(project "AD7606_ADC"
-				(path "/6e00afba-303c-42fb-b65d-8fed01f2988d/35858c28-4ff4-4411-bf79-e4651b2e5323/d8613105-1124-47f4-addf-a9fc1438f197/06433963-dfa5-450f-a917-bf170d3bb840"
-					(reference "R24")
-					(unit 1)
-				)
-			)
-			(project "ESP32-S3 MAIN"
-				(path "/f4fb91f0-ad47-4c4f-8f8b-dd0f6533e766/aedc304f-e985-4a72-a3da-c38a918c96c6/35858c28-4ff4-4411-bf79-e4651b2e5323/d8613105-1124-47f4-addf-a9fc1438f197/06433963-dfa5-450f-a917-bf170d3bb840"
-					(reference "R24")
 					(unit 1)
 				)
 			)
