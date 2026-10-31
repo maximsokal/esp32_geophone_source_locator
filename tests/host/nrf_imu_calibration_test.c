@@ -176,6 +176,40 @@ static void test_every_failed_capture_reports_the_requested_generation(void)
     assert(calibration.gyro_bias_mdps[0] == 0 && calibration.gravity_ref_mg[2] == 0);
 }
 
+static void test_stalled_capture_expires_with_its_generation(void)
+{
+    /* A capture is fed only by IMU samples. If the samples stop (IMU read stuck "pending", sensor lost
+     * between reads) nothing ever finished it and the node stayed silent until the ESP's own timeout. */
+    nrf_imu_calibration_t calibration;
+    nrf_imu_calibration_init(&calibration);
+
+    /* Nothing is running: nothing to expire. */
+    assert(!nrf_imu_calibration_expire(&calibration, 100000U));
+
+    assert(nrf_imu_calibration_begin_capture(&calibration, 31U, 1000U));
+    assert(!nrf_imu_calibration_expire(&calibration, 1000U + NRF_IMU_CALIBRATION_TIMEOUT_MS - 1U));
+    assert(calibration.capturing);
+    assert(nrf_imu_calibration_expire(&calibration, 1000U + NRF_IMU_CALIBRATION_TIMEOUT_MS));
+    assert(!calibration.capturing);
+    assert(calibration.state == NRF_UPSTREAM_IMU_CALIBRATION_SENSOR_INVALID);
+    assert(calibration.generation == 31U && calibration.capture_generation == 0U);
+    assert(calibration.gyro_bias_mdps[0] == 0 && calibration.gravity_ref_mg[2] == 0);
+    assert(!nrf_imu_calibration_expire(&calibration, 900000U)); /* once */
+
+    /* A clock that went backwards never expires a capture. */
+    assert(nrf_imu_calibration_begin_capture(&calibration, 32U, 50000U));
+    assert(!nrf_imu_calibration_expire(&calibration, 100U));
+    assert(calibration.capturing);
+
+    /* A normal capture is far inside the timeout: 1 s window, 100 Hz samples. */
+    nrf_imu_calibration_t healthy;
+    nrf_imu_sample_t sample = sample_for_axis(2U, 1, 0);
+    nrf_imu_calibration_init(&healthy);
+    assert(capture_window(&healthy, &sample, 33U));
+    assert(healthy.state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+    assert(!nrf_imu_calibration_expire(&healthy, 1000U + NRF_IMU_CALIBRATION_TIMEOUT_MS));
+}
+
 static void test_four_instances_and_reboot_reset(void)
 {
     nrf_imu_calibration_t nodes[4];
@@ -206,6 +240,7 @@ int main(void)
     test_window_duration_and_gyro_bias_correction();
     test_capture_rejection_states_and_clear();
     test_every_failed_capture_reports_the_requested_generation();
+    test_stalled_capture_expires_with_its_generation();
     test_four_instances_and_reboot_reset();
     return 0;
 }

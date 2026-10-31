@@ -1244,6 +1244,20 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
             }
         }
         poll_pending_refresh(runtime_uptime_ms());
+        if (s_imu_calibration.capturing &&
+            nrf_imu_calibration_expire(&s_imu_calibration, runtime_uptime_ms())) {
+            /* The samples that drive a capture stopped: answer the ESP instead of staying pending. */
+            const uint32_t expired_request_id = s_imu_calibration_request_id;
+            s_imu_calibration_request_id = 0U;
+            s_imu_calibration_completed_request_id = 0U;
+            if (expired_request_id != 0U) {
+                nrf_log_runtime_zephyr_append_event(
+                    NRF_LOG_EVENT_IMU_CAL_REJECTED,
+                    expired_request_id,
+                    (uint32_t)s_imu_calibration.state);
+                publish_refresh(expired_request_id, NULL);
+            }
+        }
         if ((queue_result != 0 || event.type != NRF_SENSOR_EVENT_IMU_CALIBRATE) &&
             orientation_due(runtime_uptime_ms())) {
             const uint64_t now_ms = runtime_uptime_ms();

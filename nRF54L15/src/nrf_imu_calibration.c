@@ -91,6 +91,19 @@ bool nrf_imu_calibration_begin_capture(
     return true;
 }
 
+bool nrf_imu_calibration_expire(
+    nrf_imu_calibration_t *calibration,
+    uint64_t now_uptime_ms)
+{
+    if (calibration == NULL || !calibration->capturing ||
+        now_uptime_ms < calibration->capture_started_ms ||
+        now_uptime_ms - calibration->capture_started_ms < NRF_IMU_CALIBRATION_TIMEOUT_MS) {
+        return false;
+    }
+    finish(calibration, NRF_UPSTREAM_IMU_CALIBRATION_SENSOR_INVALID);
+    return true;
+}
+
 bool nrf_imu_calibration_update(
     nrf_imu_calibration_t *calibration,
     const nrf_imu_sample_t *sample,

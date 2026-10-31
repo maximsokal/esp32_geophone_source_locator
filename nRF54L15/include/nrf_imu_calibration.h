@@ -14,6 +14,8 @@ extern "C" {
 #define NRF_IMU_CALIBRATION_WINDOW_MS 1000U
 #define NRF_IMU_CALIBRATION_MIN_SAMPLES 8U
 #define NRF_IMU_CALIBRATION_GYRO_STDDEV_MAX_MDPS 1500U
+/* A capture needs ~1.1 s of samples; one that has not finished after this long is not going to. */
+#define NRF_IMU_CALIBRATION_TIMEOUT_MS 5000U
 
 typedef struct {
     int16_t gyro_bias_mdps[3];
@@ -32,6 +34,15 @@ typedef struct {
 } nrf_imu_calibration_t;
 
 void nrf_imu_calibration_init(nrf_imu_calibration_t *calibration);
+
+/*
+ * Ends a capture that has been running for NRF_IMU_CALIBRATION_TIMEOUT_MS without finishing (the samples
+ * that drive it stopped arriving). Result: SENSOR_INVALID under the capture's own generation, so the ESP
+ * can attribute it. Returns true when it just ended one; false when no capture ran or it is still young.
+ */
+bool nrf_imu_calibration_expire(
+    nrf_imu_calibration_t *calibration,
+    uint64_t now_uptime_ms);
 
 bool nrf_imu_calibration_begin_capture(
     nrf_imu_calibration_t *calibration,

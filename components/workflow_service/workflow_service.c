@@ -31,6 +31,13 @@
 #include "cJSON.h"
 
 #define WORKFLOW_CALIBRATION_TIMEOUT_MS 15000U
+/*
+ * A REMOTE that cannot take the IMU calibration command (its sensor session is busy, e.g. still finishing
+ * the height-reference refresh) drops it and says so only in its own TWIS log; the I2C write is ACKed.
+ * 2026-10-31: G1 stayed imu=pending until the timeout. The command is repeated at this interval for the
+ * nodes that have not answered; a node that already runs a capture refuses the repeat as busy, harmlessly.
+ */
+#define WORKFLOW_CALIBRATION_IMU_RETRY_MS 3000U
 /* How long a new RANGING start waits for a cancelled run to wind down before it is reported as failed. */
 #define WORKFLOW_RANGING_RESTART_WAIT_MS 10000U
 #define WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES 32U
@@ -57,6 +64,7 @@ typedef struct {
     uint8_t channels[WORKFLOW_MAX_REMOTE_NODES];
     uint8_t node_ids[WORKFLOW_MAX_REMOTE_NODES];
     uint64_t started_ms;
+    uint64_t imu_request_ms;
 } workflow_calibration_run_t;
 
 typedef struct {
@@ -545,6 +553,7 @@ static esp_err_t workflow_service_calibration_start(void)
     memcpy(s_calibration.channels, channels, remote_count * sizeof(channels[0]));
     memcpy(s_calibration.node_ids, node_ids, remote_count * sizeof(node_ids[0]));
     s_calibration.started_ms = workflow_service_now_ms();
+    s_calibration.imu_request_ms = s_calibration.started_ms;
     s_calibration.status.generation = generation;
     workflow_service_copy_string(
         s_calibration.status.phase,
@@ -748,6 +757,26 @@ static void workflow_service_calibration_poll(void)
     const uint64_t now_ms = workflow_service_now_ms();
     const bool timed_out = now_ms >= s_calibration.started_ms &&
         now_ms - s_calibration.started_ms >= WORKFLOW_CALIBRATION_TIMEOUT_MS;
+    if (!terminal && !timed_out && now_ms >= s_calibration.imu_request_ms &&
+        now_ms - s_calibration.imu_request_ms >= WORKFLOW_CALIBRATION_IMU_RETRY_MS) {
+        uint8_t silent_mask = 0U;
+        for (size_t i = 0U; i < s_calibration.remote_count; ++i) {
+            if (strcmp(s_calibration.status.per_node[i + 1U].imu_state, "pending") == 0) {
+                silent_mask |= (uint8_t)(1U << s_calibration.channels[i]);
+            }
+        }
+        if (silent_mask != 0U) {
+            const esp_err_t repeat_err = nrf_topology_service_request_imu_calibration(
+                s_calibration.status.generation, silent_mask);
+            ESP_LOGW(
+                TAG,
+                "WORKFLOW_CAL imu command repeated generation=%u channels=0x%02x result=%s",
+                (unsigned)s_calibration.status.generation,
+                (unsigned)silent_mask,
+                esp_err_to_name(repeat_err));
+        }
+        s_calibration.imu_request_ms = now_ms;
+    }
     if (terminal) {
         workflow_service_calibration_finish(workflow_service_calibration_passed());
     } else if (timed_out) {
