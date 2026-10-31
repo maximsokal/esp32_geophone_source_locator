@@ -394,6 +394,12 @@ static void test_persistent_failure_during_capture_invalidates_it_after_the_grac
     assert(barometer.reading.height_reference_state != MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
     poll_range(&barometer, 5200U, 9000U);
     assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_SENSOR_INVALID);
+    /* 2026-10-31: a failed MAIN row used to say nothing about why. The line must name what the driver saw. */
+    assert(strstr(fake_barometer_log, "MAIN_BARO_CAPTURE_INVALID generation=131") != NULL);
+    assert(strstr(fake_barometer_log, "last_sample=none") != NULL);
+    assert(strstr(fake_barometer_log, "last_error=ESP_ERR_TIMEOUT") != NULL);
+    assert(barometer.reading.bmp280_bus_error_count >= 1U);
+    assert(barometer.reading.bmp280_probe_count >= 1U);
     /* No reference was ever established, so a returning sensor must not invent one. */
     s_fake.timeout_bmp_data = false;
     poll_range(&barometer, 9200U, 14000U);
@@ -1185,6 +1191,38 @@ static void test_main_height_capture_completes_between_topology_task_busy_window
     main_barometer_close(&barometer);
 }
 
+static void test_capture_cuts_short_a_retry_pause_set_before_it_started(void)
+{
+    /* 2026-10-31 15:02 log: the barometer failed at 12.5 s and entered the 5 s pause; calibration started
+     * at 14.1 s but the pause ran to 17.5 s, so 3.4 s of the capture's 8 s grace were spent not polling. */
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_timed_normal = true;
+    s_fake.bmp_ignore_mode_writes = true; /* init fails (arm not applied) -> long pause, no capture yet */
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    main_barometer_request_polling();
+    (void)main_barometer_poll(&barometer, 0U);
+    assert(!barometer.reading.bmp280_present);
+    assert(barometer.bmp280_retry_after_ms >= 5000U);
+
+    s_fake.bmp_ignore_mode_writes = false; /* the bus settles, but the pause is still running */
+    uint64_t now = 1000U;
+    assert(main_barometer_request_height_reference_capture(135U) == ESP_OK);
+    bool present_early = false;
+    bool valid = false;
+    while (now <= 16000U && !valid) {
+        s_fake.now_us = (int64_t)now * 1000;
+        (void)main_barometer_poll(&barometer, now);
+        if (now < 4000U && barometer.reading.bmp280_present) present_early = true;
+        valid = barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID;
+        now = barometer.next_bmp280_poll_ms > now ? barometer.next_bmp280_poll_ms : now + 1U;
+    }
+    assert(present_early);
+    assert(valid);
+    main_barometer_close(&barometer);
+}
+
 static void test_pending_conversion_does_not_add_probe_traffic(void)
 {
     reset_fake();
@@ -1712,6 +1750,7 @@ int main(void)
     test_persistent_failure_during_capture_invalidates_it_after_the_grace();
     test_transient_bus_failure_during_capture_does_not_end_it();
     test_capture_started_before_the_sensor_initialised_still_completes();
+    test_capture_cuts_short_a_retry_pause_set_before_it_started();
     test_main_height_reference_sensor_invalid_and_generation_validation();
     test_first_conversion_pending_is_not_a_bus_error();
     test_sensor_power_cycle_is_rearmed_after_it_acks_again();

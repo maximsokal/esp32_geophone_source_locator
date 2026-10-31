@@ -342,6 +342,9 @@ static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
                 barometer->reading.bmp280_address = addresses[i];
                 barometer->reading.bmp280_present = true;
                 barometer->bmp280_initialized = true;
+                if (barometer->reading.bmp280_probe_count < UINT16_MAX) {
+                    ++barometer->reading.bmp280_probe_count;
+                }
                 ESP_LOGI(TAG, "MAIN_BARO_PROBE %s in use | %s | %s",
                          barometer->bme280 ? "BME280" : "BMP280", detail[0], detail[1]);
                 return ESP_OK;
@@ -419,6 +422,21 @@ static void main_barometer_height_reference_sensor_invalid(
     barometer->height_reference_has_sample = false;
     barometer->reading.height_reference_state = MAIN_BAROMETER_REFERENCE_SENSOR_INVALID;
     barometer->reading.relative_z_mm = 0;
+    /* What the driver saw, so a failed MAIN calibration row can be traced without a logic analyzer. */
+    char last_sample[24];
+    if (barometer->reading.last_sample_ms == 0U) {
+        (void)snprintf(last_sample, sizeof(last_sample), "none");
+    } else {
+        (void)snprintf(last_sample, sizeof(last_sample), "%ums_ago",
+                       (unsigned)(barometer->last_poll_ms - barometer->reading.last_sample_ms));
+    }
+    ESP_LOGW(TAG,
+             "MAIN_BARO_CAPTURE_INVALID generation=%u last_sample=%s probes=%u bus_errors=%u config_lost=%u last_error=%s",
+             (unsigned)barometer->reading.height_reference_generation, last_sample,
+             (unsigned)barometer->reading.bmp280_probe_count,
+             (unsigned)barometer->reading.bmp280_bus_error_count,
+             (unsigned)barometer->reading.config_lost_count,
+             esp_err_to_name(barometer->bmp280_retry_error));
 }
 
 /* A conversion that has not finished is not a failure: restart the stability window. */
@@ -655,6 +673,7 @@ static esp_err_t main_barometer_read_bmp280(
                       ? filtered_altitude_mm + 0.5
                       : filtered_altitude_mm - 0.5);
     barometer->reading.bmp280_valid = true;
+    barometer->reading.last_sample_ms = (uint32_t)now_ms == 0U ? 1U : (uint32_t)now_ms;
     if (!barometer->bmp280_forced) {
         /* Preserve a next conversion observed after reading this sample. */
         uint8_t status = 0U;
@@ -675,6 +694,7 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
     if (!atomic_load_explicit(&s_polling_requested, memory_order_acquire)) {
         return ESP_OK;
     }
+    barometer->last_poll_ms = now_ms;
     const uint16_t requested_generation = atomic_exchange_explicit(
         &s_height_reference_request_generation, 0U, memory_order_acq_rel);
     if (requested_generation != 0U) {
@@ -686,6 +706,11 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
         barometer->height_reference_has_sample = false;
         barometer->height_reference_restorable = false;
         barometer->height_reference_progress_ms = now_ms;
+        /* A pause set before the capture began (up to 5 s) would eat the capture's failure grace without
+         * a single poll: cut it to the capture's own retry delay. */
+        if (barometer->bmp280_retry_after_ms > now_ms + MAIN_BAROMETER_CAPTURE_RETRY_BACKOFF_MS) {
+            barometer->bmp280_retry_after_ms = now_ms + MAIN_BAROMETER_CAPTURE_RETRY_BACKOFF_MS;
+        }
     }
     main_barometer_height_reference_hold_expire(barometer, now_ms);
     if (barometer->handles.bus == NULL) {
@@ -775,6 +800,9 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
                 barometer->bmp280_yield_polls = 0U;
             }
             if (bmp_err != ESP_ERR_NOT_FINISHED && !bus_yield) {
+                if (!bmp_retry_deferred && barometer->reading.bmp280_bus_error_count < UINT16_MAX) {
+                    ++barometer->reading.bmp280_bus_error_count;
+                }
                 /* A bus-level failure: probe again before the next read. */
                 barometer->bmp280_state = MAIN_BMP280_RECOVER;
                 barometer->bmp280_conversion_pending = false;
