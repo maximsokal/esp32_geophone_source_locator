@@ -495,18 +495,27 @@ static void test_dispatch_uses_current_screen_driver(void)
 static void test_measurements_route_decision_all_workflow_states(void)
 {
     for (workflow_step_t step = WORKFLOW_STEP_IDLE; step < WORKFLOW_STEP_COUNT; ++step) {
-        /* CALIB_RESULT and PLACEMENT open the live view for listening only (no recording from it). */
+        /* The sensor-check, calibration-prep, calibration-result and placement steps open the live view for
+         * listening only (no recording from it); CALIBRATING does not, the IMU calibration owns the I2C bus. */
+        const bool listen = step == WORKFLOW_STEP_SENSOR_CHECK || step == WORKFLOW_STEP_CALIB_PREP ||
+            step == WORKFLOW_STEP_CALIB_RESULT || step == WORKFLOW_STEP_PLACEMENT;
         const bool allowed = step == WORKFLOW_STEP_RECORD_READY ||
             step == WORKFLOW_STEP_RECORDING ||
-            step == WORKFLOW_STEP_CALIB_RESULT ||
-            step == WORKFLOW_STEP_PLACEMENT;
-        assert(ui_measurements_listen_only(step) ==
-            (step == WORKFLOW_STEP_CALIB_RESULT || step == WORKFLOW_STEP_PLACEMENT));
+            listen;
+        assert(ui_measurements_listen_only(step) == listen);
         assert(ui_measurements_route_decide(step, true) ==
             (allowed ? UI_MEASUREMENTS_ROUTE_ALLOW : UI_MEASUREMENTS_ROUTE_WORKFLOW));
         assert(ui_measurements_route_decide(step, false) ==
             (allowed ? UI_MEASUREMENTS_ROUTE_ALLOW : UI_MEASUREMENTS_ROUTE_OBJECT_PICKER));
     }
+}
+
+
+static void test_measurements_exit_returns_to_the_workflow_only_for_listen_only_entries(void)
+{
+    /* The live view opened from a workflow step must hand the operator back to that step, not to HOME. */
+    assert(ui_measurements_exit_destination(true) == UI_MEASUREMENTS_EXIT_WORKFLOW);
+    assert(ui_measurements_exit_destination(false) == UI_MEASUREMENTS_EXIT_HOME);
 }
 
 
@@ -586,7 +595,8 @@ static void test_workflow_probes_without_sampling_or_duplicate_entry_probe(void)
     for (uint8_t remotes = 0U; remotes <= 1U; ++remotes) {
         reset_state();
         s_active_object_present = true;
-        s_workflow_snapshot.step = WORKFLOW_STEP_SENSOR_CHECK;
+        /* CALIBRATING is not a live-view step: navigation redirects to the workflow and starts nothing. */
+        s_workflow_snapshot.step = WORKFLOW_STEP_CALIBRATING;
         s_workflow_snapshot.assigned_remotes = remotes;
         s_workflow_snapshot.allowed_actions = 0U;
 
@@ -594,9 +604,18 @@ static void test_workflow_probes_without_sampling_or_duplicate_entry_probe(void)
 
         assert(s_context.screen == UI_SCREEN_WORKFLOW);
         assert(s_acquisition_start_calls == 0U);
-        assert(s_workflow_snapshot.step == WORKFLOW_STEP_SENSOR_CHECK);
+        assert(s_workflow_snapshot.step == WORKFLOW_STEP_CALIBRATING);
         assert(s_workflow_snapshot.allowed_actions == 0U);
     }
+
+    /* Sensor check offers the live view, for listening only, and leaves the workflow step untouched. */
+    reset_state();
+    s_active_object_present = true;
+    s_workflow_snapshot.step = WORKFLOW_STEP_SENSOR_CHECK;
+    ui_screen_open_locked(UI_SCREEN_MEASUREMENTS);
+    assert(s_context.screen == UI_SCREEN_MEASUREMENTS);
+    assert(s_context.measurement_listen_only);
+    assert(s_workflow_snapshot.step == WORKFLOW_STEP_SENSOR_CHECK);
 
     reset_state();
     s_acquisition_start_result = ESP_ERR_INVALID_STATE;
@@ -719,6 +738,7 @@ int main(void)
             return 0;
         case 3:
             test_measurements_route_decision_all_workflow_states();
+            test_measurements_exit_returns_to_the_workflow_only_for_listen_only_entries();
             return 0;
         case 4:
             test_objects_start_measurement_probes_without_sampling();
@@ -734,6 +754,7 @@ int main(void)
     test_left_from_system_returns_home();
     test_dispatch_uses_current_screen_driver();
     test_measurements_route_decision_all_workflow_states();
+    test_measurements_exit_returns_to_the_workflow_only_for_listen_only_entries();
     test_home_measurements_redirects_active_object_for_ok_and_right();
     test_workflow_probes_without_sampling_or_duplicate_entry_probe();
     test_home_measurements_without_active_object_opens_workflow_picker();

@@ -1623,6 +1623,7 @@ export const en: Record<I18nKey, string> = {
   "workflow.material.validation.uncertainty": "Uncertainty must be greater than 0 and less than speed.",
   "workflow.nav": "Workflow",
   "workflow.open_3d": "Open 3D scan",
+  "workflow.open_recordings": "Open this object's recordings",
   "workflow.placement.altitude_asl": "Altitude ASL",
   "workflow.placement.blocked": "Continue is unavailable: {node} — {reason}.",
   "workflow.placement.blocked_detail": "{node}: {samples} samples, spread {range} mm.",

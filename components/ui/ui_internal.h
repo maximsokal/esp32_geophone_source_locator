@@ -299,6 +299,8 @@ void ui_workflow_screen_open_locked(void);
 void ui_workflow_screen_close_locked(void);
 void ui_workflow_screen_render_locked(void);
 void ui_workflow_screen_refresh_locked(void);
+/* True while the workflow is on its RECORDING step (the step that draws the live charts). */
+bool ui_workflow_recording_charts_active_locked(void);
 void ui_workflow_screen_handle_key_locked(keypad_key_t key);
 void ui_scan_preview_open_locked(const char *object_id, const char *session_id);
 void ui_scan_preview_open_from_workflow_locked(const char *object_id, const char *session_id);

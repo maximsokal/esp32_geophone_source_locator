@@ -120,8 +120,8 @@
         "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
       },
       "en-workflow-calib-prep-393x852.png": {
-        "sha256": "57ef1631dd65ca3a1955e08ffaf4fbb18a60f33bdf7c8bb77e7737833a0a3ee5",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "0c3de8ac171094b4ce47d48e960db1b1751f22643eb927a5e9dac2919a94b5ee",
+        "candidateId": "bdadfd12e2d558fae145706f2a6e5495d434b15c8b51d85af16af58a8924edb6"
       },
       "en-workflow-calib-result-393x852.png": {
         "sha256": "6a46a851746bc979e1877fc3ae917e24d6918060a402594e060781b507f07561",
@@ -132,8 +132,8 @@
         "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
       },
       "en-workflow-confirmation-393x852.png": {
-        "sha256": "b3fe5f515f770b1afaa15ee4b8fd039167bdb82fab70d5b286e7639a7f34d94d",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "7db3bd5f4a903e224eb7d092cab18eb12e5460434b1c1edcfc2d5eee79b7004c",
+        "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
       },
       "en-workflow-gps-choice-393x852.png": {
         "sha256": "ea05e5abf52b2b40382823355ae911f3c742820436e888ded048d41adf394c1a",
@@ -176,8 +176,8 @@
         "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
       },
       "en-workflow-result-393x852.png": {
-        "sha256": "3527e6441bdae5e9ddb2f06d9b0776f03797ded3a078ecbf5e16835e53fd6e12",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "f7156545cc0be3bc6802d6acf60d364da11c553b51000dadc421127f5dec6b9e",
+        "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
       },
       "en-workflow-scan-choice-393x852.png": {
         "sha256": "f4a3383661befecd08aba073068f9dce7d489a9beb8419a5d01cd5309e8fb392",
@@ -188,12 +188,12 @@
         "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
       },
       "en-workflow-sensor-check-393x852.png": {
-        "sha256": "02b2c1513eccdbc6ff30213a948971979476f8c2f60be6793f4fc7a10caebe4e",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "2a9ad3f25ea542966ccfe838756399ca1ea4786c06cc068e0383913a96b61db2",
+        "candidateId": "bdadfd12e2d558fae145706f2a6e5495d434b15c8b51d85af16af58a8924edb6"
       },
       "en-workflow-stopped-393x852.png": {
-        "sha256": "b1d84c0315e3fa960ad79c4a04c8e8a4800e7e74076806a904979d59e19fc569",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "8c174a2181748f4b431d1963aa2ee66e6203c757adcca8ef5ca35f2930b13f26",
+        "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
       },
       "uk-home-360x800.png": {
         "sha256": "bca90cc2f2159a6d0b9db7fa4d5d0227eb0d11af648457eaf32723a1323b611b",
@@ -292,8 +292,8 @@
         "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
       },
       "uk-workflow-calib-prep-393x852.png": {
-        "sha256": "124ef9482494585a43717837609049aea84c7e4837dcbee77f576bde3af8c583",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "cd5c33c0febae63901d9ed84b801828889660720a83fb539609dbcf6e14bbc88",
+        "candidateId": "bdadfd12e2d558fae145706f2a6e5495d434b15c8b51d85af16af58a8924edb6"
       },
       "uk-workflow-calib-result-393x852.png": {
         "sha256": "a1fe11e6b5cc1fd428e9d7ebb08389ae79108e3d045e185d407ce89be1016d2c",
@@ -304,8 +304,8 @@
         "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
       },
       "uk-workflow-confirmation-393x852.png": {
-        "sha256": "a0f20fad905bf1249c22e2abe414591c29fa0837fba73aa4145e7bc0a03ba40d",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "39823e9fc7bb974b4b9775f8406b63fc223ce81b366b63605e9cf6fb43d06f3d",
+        "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
       },
       "uk-workflow-gps-choice-393x852.png": {
         "sha256": "213d7f42184490a01432e27b2a73c2b475a5d5ec1eab066f54c09a26f24fa1f9",
@@ -348,8 +348,8 @@
         "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
       },
       "uk-workflow-result-393x852.png": {
-        "sha256": "1de825093959e730161d1f08a62bef9b20b26d769b2b6936793d0956e60ba237",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "2872d0df567dacc035710458a3fc2d2241cb805ed1d22eeb707a734a5deb65cd",
+        "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
       },
       "uk-workflow-scan-choice-393x852.png": {
         "sha256": "99be71e72b9886b6849cdb97228d1d5d08b1d65681ad7fd16bc3c59576ffd527",
@@ -360,12 +360,12 @@
         "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
       },
       "uk-workflow-sensor-check-393x852.png": {
-        "sha256": "ca708d718572cec8a280b42881ecd1b55602d8f282524efa9ef205ad6c936051",
-        "candidateId": "f2faa4746b3cce820c0cc9145a14550db97fc6613159988bec9f052c8f3c841f"
+        "sha256": "5cb64bdade4d2feef87be4d9be0399500ec3e615cf124aafbb41797a58ebde11",
+        "candidateId": "bdadfd12e2d558fae145706f2a6e5495d434b15c8b51d85af16af58a8924edb6"
       },
       "uk-workflow-stopped-393x852.png": {
-        "sha256": "c9f83d9a636cb938e4597bc0214f32f95b8d41462ec1cc9f596c3a5a7c9bd53a",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "f017299aa67379ed921db335d71fb2e2b6ed999bb7eb10225e727236e670ea9b",
+        "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
       }
     }
   }

@@ -15,6 +15,13 @@ bool ui_perf_policy_measurements_load_active(bool measurements_screen_active, bo
     return false;
 }
 
+bool ui_perf_policy_live_charts_screen(bool measurements_screen, bool workflow_screen, bool workflow_recording)
+{
+    (void)workflow_screen;
+    (void)workflow_recording;
+    return measurements_screen;
+}
+
 uint32_t ui_perf_policy_target_fps(bool load_limited)
 {
     (void)load_limited;
@@ -178,6 +185,22 @@ static void test_heartbeat_handles_uint32_wraparound(void)
 }
 
 
+static void test_U1b_workflow_recording_gets_the_same_load_profile_as_measurements(void)
+{
+    /* The workflow's RECORDING step draws the same live charts, so it must be throttled like MEASUREMENTS. */
+    assert(ui_perf_policy_live_charts_screen(true, false, false));
+    assert(ui_perf_policy_live_charts_screen(false, true, true));
+    assert(!ui_perf_policy_live_charts_screen(false, true, false));    /* other workflow steps stay at full rate */
+    assert(!ui_perf_policy_live_charts_screen(false, false, true));    /* a stale flag on another screen counts for nothing */
+    assert(!ui_perf_policy_live_charts_screen(false, false, false));
+    const bool recording_in_workflow = ui_perf_policy_measurements_load_active(
+        ui_perf_policy_live_charts_screen(false, true, true), true);
+    assert(recording_in_workflow);
+    assert(ui_perf_policy_target_fps(recording_in_workflow) == UI_PERF_MEASUREMENTS_TARGET_FPS);
+    assert(!ui_perf_policy_measurements_load_active(ui_perf_policy_live_charts_screen(false, true, true), false));
+}
+
+
 static void test_U1_measurement_load_policy_throttles_live_and_recording(void)
 {
     /* LIVE and RECORDING both keep seismic_acquisition_snapshot.running true. */
@@ -330,6 +353,7 @@ static void test_U6_preview_caps_and_chunk_size_boundaries(void)
 static bool run_requested_test(const char *name)
 {
     if (strcmp(name, "U1") == 0) test_U1_measurement_load_policy_throttles_live_and_recording();
+    if (strcmp(name, "U1b") == 0) test_U1b_workflow_recording_gets_the_same_load_profile_as_measurements();
     else if (strcmp(name, "U2") == 0) test_U2_flush_chunks_stay_under_5ms_and_yield_between();
     else if (strcmp(name, "U3") == 0) test_U3_render_warning_boundary_is_strictly_over_50ms();
     else if (strcmp(name, "U4") == 0) test_U4_old_frame_starves_150ms_budget_and_recording_cap_does_not();
@@ -349,6 +373,7 @@ int main(int argc, char **argv)
     test_render_budget_boundary();
     test_heartbeat_handles_uint32_wraparound();
     test_U1_measurement_load_policy_throttles_live_and_recording();
+    test_U1b_workflow_recording_gets_the_same_load_profile_as_measurements();
     test_U2_flush_chunks_stay_under_5ms_and_yield_between();
     test_U3_render_warning_boundary_is_strictly_over_50ms();
     test_U4_old_frame_starves_150ms_budget_and_recording_cap_does_not();

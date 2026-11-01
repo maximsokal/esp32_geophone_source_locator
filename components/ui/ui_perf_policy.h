@@ -67,6 +67,13 @@ bool ui_perf_policy_measurements_load_active(
     bool measurements_screen_active,
     bool acquisition_running
 );
+
+/* Screens that draw the live geophone charts: MEASUREMENTS and the workflow while it is RECORDING. */
+bool ui_perf_policy_live_charts_screen(
+    bool measurements_screen,
+    bool workflow_screen,
+    bool workflow_recording
+);
 uint32_t ui_perf_policy_target_fps(bool load_limited);
 uint32_t ui_perf_policy_update_interval_ms(bool load_limited);
 uint64_t ui_perf_policy_update_interval_us(bool load_limited);

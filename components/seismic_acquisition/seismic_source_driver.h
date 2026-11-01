@@ -25,6 +25,8 @@ typedef struct
     esp_err_t (*populate_snapshot)(
         seismic_acquisition_snapshot_t *snapshot
     );
+    /* Optional, called about once a second from the idle poll (never from the source's own worker). */
+    void (*periodic_report)(void);
 
 } seismic_source_driver_t;
 

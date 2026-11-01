@@ -23,8 +23,11 @@ import {
 
 const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
 
-/** Steps where the operator can listen to the geophones before the recording steps. */
-const LIVE_SIGNAL_STEPS = new Set(['CALIB_RESULT', 'PLACEMENT']);
+/**
+ * Steps where the operator can listen to the geophones before the recording steps. Not CALIBRATING: starting the
+ * AD7606 while the IMU calibration uses the I2C bus would starve it.
+ */
+const LIVE_SIGNAL_STEPS = new Set(['SENSOR_CHECK', 'CALIB_PREP', 'CALIB_RESULT', 'PLACEMENT']);
 
 interface Props {
   status: DeviceStatus | null;
@@ -35,6 +38,8 @@ interface Props {
   onOpenScanner: (objectId: string, sessionId: string | null) => void;
   /** Starts/stops the geophone signal preview; without it the live-signal toggle is not offered. */
   onAcquisition?: (running: boolean) => Promise<void>;
+  /** Opens the recordings of the object with the session this workflow just made selected. */
+  onOpenRecordings?: (objectId: string, sessionId: string | null) => void;
 }
 
 const HEIGHT_STATE_KEYS: Record<string, I18nKey> = {
@@ -441,6 +446,7 @@ export default function WorkflowPanel({
   onWorkflowUpdate,
   onOpenScanner,
   onAcquisition,
+  onOpenRecordings,
 }: Props) {
   const t = useT();
   const workflow = status?.workflow;
@@ -452,9 +458,22 @@ export default function WorkflowPanel({
   const gpsCaptureGenerationRef = useRef<number | null>(null);
   const [showLive, setShowLive] = useState(false);
   const liveStep = workflow !== undefined && LIVE_SIGNAL_STEPS.has(workflow.step);
+  const showLiveRef = useRef(false);
+  const onAcquisitionRef = useRef(onAcquisition);
   useEffect(() => {
-    if (!liveStep) setShowLive(false);
+    showLiveRef.current = showLive;
+    onAcquisitionRef.current = onAcquisition;
+  });
+  // The preview belongs to the live steps: leaving them (or the panel) must release the acquisition lease,
+  // otherwise the AD7606 keeps running through ranging and recording setup.
+  useEffect(() => {
+    if (liveStep || !showLiveRef.current) return;
+    setShowLive(false);
+    void onAcquisitionRef.current?.(false);
   }, [liveStep]);
+  useEffect(() => () => {
+    if (showLiveRef.current) void onAcquisitionRef.current?.(false);
+  }, []);
   const toggleLive = async (): Promise<void> => {
     if (onAcquisition === undefined) return;
     if (showLive) {
@@ -625,6 +644,15 @@ export default function WorkflowPanel({
               data-command="LIVE_SIGNALS"
               onClick={() => { void toggleLive(); }}
             >{t(showLive ? 'workflow.live.hide' : 'workflow.live.show')}</button>
+          )}
+          {onOpenRecordings !== undefined && workflow?.object_id &&
+            (workflow.step === 'STOPPED' || workflow.step === 'RESULT') && (
+            <button
+              type="button"
+              className="secondary"
+              data-command="OPEN_RECORDINGS"
+              onClick={() => { onOpenRecordings(workflow.object_id!, workflow.session_id ?? null); }}
+            >{t('workflow.open_recordings')}</button>
           )}
           {showScanButton && (
             <button

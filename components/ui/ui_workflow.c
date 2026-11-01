@@ -1184,6 +1184,12 @@ void ui_workflow_screen_refresh_locked(void)
     }
 }
 
+bool ui_workflow_recording_charts_active_locked(void)
+{
+    return s_workflow != NULL && s_workflow->snapshot_valid &&
+        s_workflow->snapshot.step == WORKFLOW_STEP_RECORDING;
+}
+
 void ui_workflow_screen_handle_key_locked(keypad_key_t key)
 {
     if (s_workflow == NULL || !s_workflow->snapshot_valid) return;

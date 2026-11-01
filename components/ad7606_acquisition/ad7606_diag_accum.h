@@ -75,6 +75,7 @@ typedef enum
     AD7606_ACQUISITION_TEST_LOG_SERIAL_COALESCED,
     AD7606_ACQUISITION_TEST_LOG_SERIAL_SUPPRESSED,
     AD7606_ACQUISITION_TEST_LOG_OS_RESOLUTION,
+    AD7606_ACQUISITION_TEST_LOG_RATE,
 
 } ad7606_acquisition_test_log_event_t;
 
@@ -95,6 +96,8 @@ bool ad7606_acquisition_test_diag_metrics(
     ad7606_diag_metrics_t *out
 );
 void ad7606_acquisition_test_diag_finish_sample(uint64_t sample_index);
+void ad7606_acquisition_test_rate_window_set(uint32_t cycles);
+void ad7606_acquisition_test_rate_flush(void);
 void ad7606_acquisition_test_log_sink_set(
     ad7606_acquisition_test_log_sink_t sink
 );

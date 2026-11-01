@@ -30,6 +30,9 @@ interface Props {
   store: ObjectStoreState | null;
   sessions: RecordingSessionCollection | null;
   selectedId: string | null;
+  /** A session to open as soon as it appears in the list (set when arriving from the workflow). */
+  preselectSessionId?: string | null;
+  onPreselectConsumed?: () => void;
   busy: boolean;
   error: string | null;
   onSelect: (id: string) => void;
@@ -140,6 +143,15 @@ export default function ObjectsFeature(props: Props) {
   const openSession = selectedSessions.find((session) =>
     session.session_id === openSessionId && (session.readable ?? session.complete)) ?? null;
   const liveAvailable = status?.acquisition.running === true;
+
+  const { preselectSessionId, onPreselectConsumed } = props;
+  useEffect(() => {
+    if (preselectSessionId == null) return;
+    const target = selectedSessions.find((session) => session.session_id === preselectSessionId);
+    if (target === undefined) return;
+    if (target.readable ?? target.complete) setOpenSessionId(target.session_id);
+    onPreselectConsumed?.();
+  }, [preselectSessionId, selectedSessions, onPreselectConsumed]);
 
   return (
     <section className="console-page object-layout">

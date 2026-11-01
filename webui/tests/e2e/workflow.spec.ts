@@ -1,5 +1,6 @@
 import { test, expect, catalog } from './fixtures/device';
-import { gate, savedSnapshot, scenarioScreenshot } from './fixtures/scenarios';
+import { gate, savedSnapshot, scenarioScreenshot, seismicResponses } from './fixtures/scenarios';
+import { workflowActions } from './fixtures/visual-states';
 
 test('one attached remote can enter the permitted initialization stage', async ({ page, api }) => {
   api.status.pods = [api.status.pods[0]];
@@ -393,6 +394,82 @@ for (const locale of ['en', 'uk'] as const) {
       // Only the preview was started: no workflow command, no recording.
       expect(api.controls).toEqual([{ action: 'acquisition_start' }]);
       await scenarioScreenshot(page, `calibration-result-live-${locale}`);
+    });
+
+    test('after recording the operator reaches this recording in the object and can calculate it', async ({ page, api }) => {
+      seismicResponses(api);
+      // STOPPED also loads the material settings of the object; seismicResponses only models the session reads.
+      api.overrides.set('GET /api/localization/runs', async route => {
+        const q = new URL(route.request().url()).searchParams;
+        await route.fulfill({ json: q.get('job') === 'settings'
+          ? { ok: true, settings: null, presets: [], standard_processing: {} }
+          : { geometry: { available: false, pods: [] }, cs_pairs: { available: false, pairs: [] }, picks: [], runs: [] } });
+      });
+      const workflow = api.status.workflow!;
+      const sessions = api.status.recording_sessions!;
+      // The object already holds an older recording; the new one is the one the workflow just made.
+      sessions.sessions.push({ ...sessions.sessions[0], session_id: 'S000002' });
+      Object.assign(workflow, { step: 'STOPPED', allowed_actions: ['CALCULATE_SOURCES', ...workflowActions.STOPPED],
+        object_id: sessions.object_id, session_id: 'S000002', calc_settings_ready: true });
+      await page.goto('/');
+      await page.locator('[data-command="OPEN_RECORDINGS"]').click();
+      // The recordings of the object are open with the new session selected, not the first one in the list.
+      await expect(page.locator('.saved-seismic-viewer').getByRole('heading', { name: 'S000002', exact: true })).toBeVisible();
+      await expect(page.locator('.saved-seismic-viewer svg')).toHaveCount(4);
+      await scenarioScreenshot(page, `workflow-to-recordings-${locale}`);
+      expect(api.controls).toHaveLength(0);
+    });
+
+    test('listening during sensor check is released when calibration starts and never blocks recording', async ({ page, api }) => {
+      const workflow = api.status.workflow!;
+      const enter = (step: string, actions: string[]) =>
+        Object.assign(workflow, { step, generation: workflow.generation + 1, allowed_actions: actions });
+      enter('SENSOR_CHECK', ['GO_CALIBRATION', 'BACK']);
+      api.status.acquisition.running = false;
+      api.overrides.set('GET /api/seismic', async route => {
+        await route.fulfill({ json: { source: 'AD7606', sample_rate_hz: 500, count: 2, frame_count: 100,
+          requested_span_ms: 440, span_ms: 200, decimation_factor: 50, buffered_frames: 100, total_frames: 100,
+          points: savedSnapshot().points } });
+      });
+      const seen: string[] = [];
+      api.overrides.set('POST /api/control', async route => {
+        const body = route.request().postDataJSON();
+        if (body.action === 'acquisition_start' || body.action === 'acquisition_stop') {
+          seen.push(body.action);
+          api.status.acquisition.running = body.action === 'acquisition_start';
+          await route.fulfill({ json: { ok: true } });
+          return;
+        }
+        expect(body.action).toBe('workflow_command');
+        seen.push(body.command);
+        expect(workflow.allowed_actions, `command must be allowed at ${workflow.step}`).toContain(body.command);
+        if (body.command === 'GO_CALIBRATION') enter('CALIB_PREP', ['SENSORS_PLACED', 'BACK']);
+        else if (body.command === 'SENSORS_PLACED') enter('CALIBRATING', ['BACK']);
+        else if (body.command === 'START_RECORDING') enter('RECORDING', ['STOP_RECORDING']);
+        else throw new Error(`Unexpected command ${body.command}`);
+        await route.fulfill({ json: { ok: true, workflow } });
+      });
+      await page.goto('/');
+      await page.locator('[data-command="LIVE_SIGNALS"]').click();
+      await expect(page.locator('.seismic-live-card path').first()).not.toHaveAttribute('d', '');
+      // Moving between two live steps keeps listening; no recording command was involved.
+      await page.locator('[data-command="GO_CALIBRATION"]').click();
+      await expect(page.locator('[data-command="SENSORS_PLACED"]')).toBeVisible();
+      await expect(page.locator('.seismic-live-card')).toBeVisible();
+      expect(seen).toEqual(['acquisition_start', 'GO_CALIBRATION']);
+      // IMU calibration owns the I2C bus: the preview is released and not offered again.
+      await page.locator('[data-command="SENSORS_PLACED"]').click();
+      await expect.poll(() => seen).toEqual(['acquisition_start', 'GO_CALIBRATION', 'SENSORS_PLACED', 'acquisition_stop']);
+      await expect(page.locator('[data-command="LIVE_SIGNALS"]')).toHaveCount(0);
+      await expect(page.locator('.seismic-live-card')).toHaveCount(0);
+      // Recording starts from its own step, regardless of the earlier preview.
+      enter('RECORD_READY', ['START_RECORDING', 'BACK']);
+      await expect(page.locator('[data-command="LIVE_SIGNALS"]')).toHaveCount(0);
+      await expect(page.locator('[data-command="START_RECORDING"]')).toBeEnabled();
+      await page.locator('[data-command="START_RECORDING"]').click();
+      await expect.poll(() => seen.at(-1)).toBe('START_RECORDING');
+      await expect(page.locator('[data-command="STOP_RECORDING"]')).toBeVisible();
+      await scenarioScreenshot(page, `sensor-check-live-${locale}`);
     });
   });
 }

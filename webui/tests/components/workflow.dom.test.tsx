@@ -71,9 +71,10 @@ describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
     expect(props.sendCommand).toHaveBeenCalledExactlyOnceWith('PLACEMENT_CONFIRMED', 7);
   });
 
-  it.each(['CALIB_RESULT', 'PLACEMENT'] as const)('lets the operator listen to the geophones at %s without recording', async (step) => {
+  it.each(['SENSOR_CHECK', 'CALIB_PREP', 'CALIB_RESULT', 'PLACEMENT'] as const)('lets the operator listen to the geophones at %s without recording', async (step) => {
     const user = userEvent.setup();
-    const props = step === 'PLACEMENT' ? placementProps(['BACK'], false) : panelProps(step, ['PLACE_SENSORS', 'BACK']);
+    const props = step === 'PLACEMENT' ? placementProps(['BACK'], false)
+      : panelProps(step, step === 'CALIB_RESULT' ? ['PLACE_SENSORS', 'BACK'] : ['BACK']);
     props.status!.acquisition.running = false;
     const onAcquisition = vi.fn<NonNullable<Props['onAcquisition']>>().mockResolvedValue(undefined);
     renderUi(<WorkflowPanel {...props} onAcquisition={onAcquisition} />, locale);
@@ -98,10 +99,87 @@ describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
     expect(screen.queryByTestId('live-seismic')).toBeNull();
   });
 
-  it('offers no live signals on steps outside calibration result and placement', () => {
-    const props = panelProps('RANGING', ['BACK']);
+  // CALIBRATING owns the I2C bus for IMU calibration; later steps record or measure distances.
+  it.each(['CALIBRATING', 'RANGING', 'RECORD_READY'] as const)('offers no live signals at %s', (step) => {
+    const props = panelProps(step, ['BACK']);
     renderUi(<WorkflowPanel {...props} onAcquisition={vi.fn()} />, locale);
     expect(screen.queryByRole('button', { name: t('workflow.live.show') })).toBeNull();
+  });
+
+  // STOPPED loads the material settings of the object; the other steps in these tests make no HTTP request.
+  function modelStoppedSettings() {
+    respondJson('/api/localization/runs?job=settings&object_id=OBJ_0001', {
+      ok: true, settings: null, presets: [],
+      standard_processing: {
+        timing_uncertainty_us: 2, noise_window_samples: 100, sta_window_samples: 20,
+        lta_window_samples: 200, sta_lta_trigger_ratio: 3, refine_lookback_samples: 20,
+        refine_lookahead_samples: 20, refine_amplitude_fraction: 0.5,
+        snr_signal_window_samples: 40, minimum_snr: 2, semblance_window_half_span_samples: 8,
+        s_pick_enabled: false, time_budget_s: 60,
+      },
+    });
+  }
+
+  it('leads from STOPPED to the recordings of this object', async () => {
+    const user = userEvent.setup();
+    modelStoppedSettings();
+    const props = panelProps('STOPPED', ['BACK']);
+    Object.assign(props.status!.workflow!, { object_id: 'OBJ_0001', session_id: 'S000002' });
+    const onOpenRecordings = vi.fn<NonNullable<Props['onOpenRecordings']>>();
+    renderUi(<WorkflowPanel {...props} onOpenRecordings={onOpenRecordings} />, locale);
+    await user.click(await screen.findByRole('button', { name: t('workflow.open_recordings') }));
+    expect(onOpenRecordings).toHaveBeenCalledExactlyOnceWith('OBJ_0001', 'S000002');
+  });
+
+  it.each(['PLACEMENT', 'RECORDING', 'CALCULATING'] as const)('does not offer the object recordings at %s', (step) => {
+    const props = panelProps(step, ['BACK']);
+    Object.assign(props.status!.workflow!, { object_id: 'OBJ_0001', session_id: 'S000002' });
+    renderUi(<WorkflowPanel {...props} onOpenRecordings={vi.fn()} />, locale);
+    expect(screen.queryByRole('button', { name: t('workflow.open_recordings') })).toBeNull();
+  });
+
+  it('offers the object recordings only when the app can open them', () => {
+    modelStoppedSettings();
+    const props = panelProps('STOPPED', ['BACK']);
+    Object.assign(props.status!.workflow!, { object_id: 'OBJ_0001', session_id: 'S000002' });
+    renderUi(<WorkflowPanel {...props} />, locale);
+    expect(screen.queryByRole('button', { name: t('workflow.open_recordings') })).toBeNull();
+  });
+
+  it('releases the preview when the workflow moves past the live steps', async () => {
+    const user = userEvent.setup();
+    const props = panelProps('CALIB_RESULT', ['PLACE_SENSORS', 'BACK']);
+    props.status!.acquisition.running = false;
+    const onAcquisition = vi.fn<NonNullable<Props['onAcquisition']>>().mockResolvedValue(undefined);
+    const view = renderUi(<WorkflowPanel {...props} onAcquisition={onAcquisition} />, locale);
+    await user.click(screen.getByRole('button', { name: t('workflow.live.show') }));
+    expect(onAcquisition).toHaveBeenCalledExactlyOnceWith(true);
+    const next = panelProps('RANGING', ['BACK']);
+    view.rerender(<WorkflowPanel {...next} onAcquisition={onAcquisition} />);
+    await waitFor(() => expect(onAcquisition).toHaveBeenLastCalledWith(false));
+    expect(onAcquisition).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases the preview when the panel is left while listening', async () => {
+    const user = userEvent.setup();
+    const props = panelProps('SENSOR_CHECK', ['GO_CALIBRATION', 'BACK']);
+    props.status!.acquisition.running = false;
+    const onAcquisition = vi.fn<NonNullable<Props['onAcquisition']>>().mockResolvedValue(undefined);
+    const view = renderUi(<WorkflowPanel {...props} onAcquisition={onAcquisition} />, locale);
+    await user.click(screen.getByRole('button', { name: t('workflow.live.show') }));
+    expect(onAcquisition).toHaveBeenCalledExactlyOnceWith(true);
+    view.unmount();
+    expect(onAcquisition).toHaveBeenLastCalledWith(false);
+    expect(onAcquisition).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not touch the acquisition when the preview was never shown', async () => {
+    const props = panelProps('CALIB_RESULT', ['PLACE_SENSORS', 'BACK']);
+    const onAcquisition = vi.fn<NonNullable<Props['onAcquisition']>>().mockResolvedValue(undefined);
+    const view = renderUi(<WorkflowPanel {...props} onAcquisition={onAcquisition} />, locale);
+    view.rerender(<WorkflowPanel {...panelProps('RANGING', ['BACK'])} onAcquisition={onAcquisition} />);
+    view.unmount();
+    expect(onAcquisition).not.toHaveBeenCalled();
   });
 
   it.each([0, 1, 2])('keeps permitted initialization reachable with %i remotes by keyboard', async (count) => {

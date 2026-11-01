@@ -25,6 +25,9 @@
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_sys.h"
+#if !defined(AD7606_ACQUISITION_HOST_TEST)
+#include "esp_cpu.h"
+#endif
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -56,8 +59,27 @@ _Static_assert(
 );
 
 
+/*
+ * CPU cycle counter for the per-second AD7606_RATE report. A read costs a few cycles;
+ * esp_timer_get_time() is deliberately not used on the per-sample path.
+ */
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+static uint32_t s_test_cycles;
+static uint32_t s_test_rate_window_cycles = 4000U;
+#define AD7606_CYCLES() (s_test_cycles += 100U)
+#define AD7606_CPU_MHZ 240U
+#define AD7606_RATE_WINDOW_CYCLES s_test_rate_window_cycles
+#else
+#define AD7606_CYCLES() ((uint32_t)esp_cpu_get_cycle_count())
+#define AD7606_CPU_MHZ ((uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)
+#define AD7606_RATE_WINDOW_CYCLES (AD7606_CPU_MHZ * 1000000U)
+#endif
+
 static const char *TAG =
     "AD7606_ACQ";
+
+static const char *RATE_TAG =
+    "AD7606_RATE";
 
 static const char *DIAG_TAG =
     "AD7606_DIAG";
@@ -91,6 +113,40 @@ static ad7606_serial_diag_state_t s_serial_diag;
 static uint8_t *s_serial_quality_window_flags;
 static uint64_t s_serial_diag_last_log_sample = 0U;
 static bool s_serial_diag_log_pending = false;
+
+/* Worker-owned accumulators for the AD7606_RATE report; only the ISR touches the isr_* globals. */
+typedef struct
+{
+    uint32_t window_start_cycles;
+    uint32_t loops;
+    uint32_t notify_total;
+    uint32_t notify_max;
+    uint32_t unstable;
+    uint32_t spi_samples;
+    uint32_t publish_samples;
+    uint64_t loop_cycles_total;
+    uint64_t spi_cycles_total;
+    uint64_t publish_cycles_total;
+    uint32_t loop_cycles_max;
+    uint32_t spi_cycles_max;
+    uint32_t publish_cycles_max;
+    uint32_t base_isr_count;
+    uint32_t base_isr_cycles;
+    uint64_t base_ticks;
+    uint64_t base_samples;
+    uint64_t base_attempts;
+    uint64_t base_read_errors;
+    uint64_t base_collapsed;
+} ad7606_rate_acc_t;
+
+static ad7606_rate_acc_t s_rate_acc;
+static ad7606_diag_channel_t s_rate_diag[AD7606_CHANNEL_COUNT];
+static volatile uint32_t s_isr_count;
+static volatile uint32_t s_isr_cycles_total;
+static volatile uint32_t s_isr_cycles_max;
+static ad7606_rate_report_t s_rate_report;
+static bool s_rate_report_fresh;
+static uint32_t s_rate_sequence;
 
 #if defined(AD7606_ACQUISITION_HOST_TEST)
 static ad7606_acquisition_test_log_sink_t s_test_log_sink;
@@ -374,6 +430,7 @@ static void ad7606_diag_record(
 {
     for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
         ad7606_diag_channel_record(&s_diag[channel], sample->raw[channel]);
+        ad7606_diag_channel_record(&s_rate_diag[channel], sample->raw[channel]);
     }
 }
 
@@ -972,6 +1029,136 @@ static bool ad7606_account_sample_index(uint64_t sample_index, bool sample_valid
 }
 
 
+static uint32_t ad7606_rate_u32(uint64_t value)
+{
+    return value > UINT32_MAX ? UINT32_MAX : (uint32_t)value;
+}
+
+
+static void ad7606_rate_diag_reset(void)
+{
+    memset(s_rate_diag, 0, sizeof(s_rate_diag));
+    for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+        s_rate_diag[channel].min_raw = INT16_MAX;
+        s_rate_diag[channel].max_raw = INT16_MIN;
+    }
+}
+
+
+static void ad7606_rate_reset(uint32_t now_cycles)
+{
+    ad7606_rate_diag_reset();
+    memset(&s_rate_acc, 0, sizeof(s_rate_acc));
+    s_rate_acc.window_start_cycles = now_cycles;
+    s_rate_acc.base_isr_count = s_isr_count;
+    s_rate_acc.base_isr_cycles = s_isr_cycles_total;
+    s_isr_cycles_max = 0U;
+    portENTER_CRITICAL(&s_status_lock);
+    s_rate_acc.base_ticks = s_status.timer_ticks;
+    s_rate_acc.base_samples = s_status.samples;
+    s_rate_acc.base_attempts = s_status.conversion_attempts;
+    s_rate_acc.base_read_errors = s_status.read_errors;
+    s_rate_acc.base_collapsed = s_status.collapsed_periods;
+    s_rate_report_fresh = false;
+    portEXIT_CRITICAL(&s_status_lock);
+}
+
+
+static void ad7606_rate_note(uint64_t *total, uint32_t *maximum, uint32_t cycles)
+{
+    *total += cycles;
+    if (cycles > *maximum) {
+        *maximum = cycles;
+    }
+}
+
+
+static void ad7606_rate_note_loop(uint32_t start_cycles)
+{
+    ad7606_rate_note(
+        &s_rate_acc.loop_cycles_total,
+        &s_rate_acc.loop_cycles_max,
+        AD7606_CYCLES() - start_cycles);
+}
+
+
+/* Closes the one-second window once per second; the only place that takes a lock for the report. */
+static void ad7606_rate_maybe_close(uint32_t now_cycles)
+{
+    ad7606_rate_acc_t *acc = &s_rate_acc;
+    const uint32_t elapsed = now_cycles - acc->window_start_cycles;
+    if (elapsed < AD7606_RATE_WINDOW_CYCLES) {
+        return;
+    }
+
+    ad7606_rate_report_t report = {0};
+    report.window_ms = elapsed / (AD7606_CPU_MHZ * 1000U);
+    report.cpu_mhz = AD7606_CPU_MHZ;
+    report.unstable = acc->unstable;
+    report.loops = acc->loops;
+    report.notify_total = acc->notify_total;
+    report.notify_max = acc->notify_max;
+    report.isr_count = s_isr_count - acc->base_isr_count;
+    const uint32_t isr_cycles = s_isr_cycles_total - acc->base_isr_cycles;
+    report.isr_cycles_avg = report.isr_count > 0U ? isr_cycles / report.isr_count : 0U;
+    report.isr_cycles_max = s_isr_cycles_max;
+    report.loop_cycles_avg = acc->loops > 0U
+        ? ad7606_rate_u32(acc->loop_cycles_total / acc->loops) : 0U;
+    report.loop_cycles_max = acc->loop_cycles_max;
+    report.spi_cycles_avg = acc->spi_samples > 0U
+        ? ad7606_rate_u32(acc->spi_cycles_total / acc->spi_samples) : 0U;
+    report.spi_cycles_max = acc->spi_cycles_max;
+    report.publish_cycles_avg = acc->publish_samples > 0U
+        ? ad7606_rate_u32(acc->publish_cycles_total / acc->publish_samples) : 0U;
+    report.publish_cycles_max = acc->publish_cycles_max;
+    for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+        const ad7606_diag_channel_t *diag = &s_rate_diag[channel];
+        if (diag->count == 0U) {
+            continue;
+        }
+        const ad7606_diag_metrics_t metrics = ad7606_diag_measure(diag);
+        report.ch_mean_raw[channel] = (int32_t)(metrics.mean_raw >= 0.0 ? metrics.mean_raw + 0.5 : metrics.mean_raw - 0.5);
+        report.ch_p2p_raw[channel] = (uint32_t)metrics.p2p_raw;
+        report.ch_rms_raw_x10[channel] = (uint32_t)(metrics.rms_raw * 10.0 + 0.5);
+        report.ch_saturated[channel] = diag->saturation_count;
+    }
+    ad7606_rate_diag_reset();
+
+    portENTER_CRITICAL(&s_status_lock);
+    report.conversions = ad7606_rate_u32(s_status.timer_ticks - acc->base_ticks);
+    report.published = ad7606_rate_u32(s_status.samples - acc->base_samples);
+    report.attempts = ad7606_rate_u32(s_status.conversion_attempts - acc->base_attempts);
+    report.read_errors = ad7606_rate_u32(s_status.read_errors - acc->base_read_errors);
+    report.gaps = ad7606_rate_u32(s_status.collapsed_periods - acc->base_collapsed);
+    acc->base_ticks = s_status.timer_ticks;
+    acc->base_samples = s_status.samples;
+    acc->base_attempts = s_status.conversion_attempts;
+    acc->base_read_errors = s_status.read_errors;
+    acc->base_collapsed = s_status.collapsed_periods;
+    report.sequence = ++s_rate_sequence;
+    s_rate_report = report;
+    s_rate_report_fresh = true;
+    portEXIT_CRITICAL(&s_status_lock);
+
+    acc->window_start_cycles = now_cycles;
+    acc->base_isr_count = s_isr_count;
+    acc->base_isr_cycles = s_isr_cycles_total;
+    s_isr_cycles_max = 0U;
+    acc->loops = 0U;
+    acc->notify_total = 0U;
+    acc->notify_max = 0U;
+    acc->unstable = 0U;
+    acc->spi_samples = 0U;
+    acc->publish_samples = 0U;
+    acc->loop_cycles_total = 0U;
+    acc->spi_cycles_total = 0U;
+    acc->publish_cycles_total = 0U;
+    acc->loop_cycles_max = 0U;
+    acc->spi_cycles_max = 0U;
+    acc->publish_cycles_max = 0U;
+}
+
+
 static esp_err_t ad7606_publish_sample(
     uint64_t sample_index,
     ad7606_sample_t *sample,
@@ -1041,7 +1228,6 @@ static esp_err_t ad7606_publish_sample(
     }
 
     ++*successful_samples;
-    runtime_observability_beat(RUNTIME_TASK_ACQUISITION, *successful_samples);
     ad7606_diag_finish_sample(sample_index);
     return ESP_OK;
 }
@@ -1174,11 +1360,18 @@ static void ad7606_serial_diag_log_frame(
 static void IRAM_ATTR ad7606_busy_isr(void *argument)
 {
     (void)argument;
+    const uint32_t isr_start = AD7606_CYCLES();
     TaskHandle_t task = ad7606_lifecycle_acquire_busy_isr();
     if (task != NULL) {
         BaseType_t higher_priority_woken = pdFALSE;
         vTaskNotifyGiveFromISR(task, &higher_priority_woken);
         ad7606_lifecycle_release_busy_isr();
+        const uint32_t isr_cycles = AD7606_CYCLES() - isr_start;
+        s_isr_count = s_isr_count + 1U;
+        s_isr_cycles_total = s_isr_cycles_total + isr_cycles;
+        if (isr_cycles > s_isr_cycles_max) {
+            s_isr_cycles_max = isr_cycles;
+        }
         if (higher_priority_woken == pdTRUE) {
             portYIELD_FROM_ISR();
         }
@@ -1684,6 +1877,7 @@ static esp_err_t ad7606_worker_initialize(void)
     ad7606_diag_reset();
     s_serial_diag_last_log_sample = 0U;
     s_serial_diag_log_pending = false;
+    ad7606_rate_reset(AD7606_CYCLES());
 
     err = ad7606_counter_init();
     if (err != ESP_OK) {
@@ -1801,6 +1995,15 @@ static void ad7606_worker(
             continue;
         }
 
+        const uint32_t loop_start = AD7606_CYCLES();
+        ad7606_rate_maybe_close(loop_start);
+        ++s_rate_acc.loops;
+        s_rate_acc.notify_total =
+            ad7606_acquisition_saturating_add_u32(s_rate_acc.notify_total, notification_count);
+        if (notification_count > s_rate_acc.notify_max) {
+            s_rate_acc.notify_max = notification_count;
+        }
+
         uint64_t conversion_count = 0U;
         esp_err_t err = ad7606_read_conversion_count(&conversion_count);
         if (err != ESP_OK) {
@@ -1853,16 +2056,19 @@ static void ad7606_worker(
         );
         if (!candidate_exists) {
             runtime_observability_beat(RUNTIME_TASK_ACQUISITION, successful_samples);
+            ad7606_rate_note_loop(loop_start);
             continue;
         }
         if (discard_candidate) {
             (void)ad7606_account_sample_index(sample_index, false);
             runtime_observability_beat(RUNTIME_TASK_ACQUISITION, successful_samples);
+            ad7606_rate_note_loop(loop_start);
             continue;
         }
 
         ad7606_status_record_attempt();
         ad7606_sample_t sample = {0};
+        const uint32_t spi_start = AD7606_CYCLES();
         err = ad7606_driver_read_result(&sample);
         const int busy_after = gpio_get_level(BOARD_AD7606_BUSY_GPIO);
         uint64_t count_after = conversion_count;
@@ -1870,6 +2076,7 @@ static void ad7606_worker(
             err = ad7606_read_conversion_count(&count_after);
         }
 
+        const bool transaction_ok = err == ESP_OK;
         bool stable = err == ESP_OK;
         if (s_read_mode == AD7606_READ_MODE_DURING_CONVERSION) {
             stable = stable && busy_before != 0 && busy_after != 0 &&
@@ -1884,14 +2091,25 @@ static void ad7606_worker(
             err = ad7606_driver_get_last_serial_observation(&serial_observation);
             stable = err == ESP_OK && serial_observation.spi_transaction_ok;
         }
+        ++s_rate_acc.spi_samples;
+        ad7606_rate_note(
+            &s_rate_acc.spi_cycles_total, &s_rate_acc.spi_cycles_max, AD7606_CYCLES() - spi_start);
+        if (transaction_ok && !stable) {
+            ++s_rate_acc.unstable;
+        }
         if (stable) {
             serial_observation.busy_level = busy_after;
+            const uint32_t publish_start = AD7606_CYCLES();
             err = ad7606_publish_sample(
                 sample_index,
                 &sample,
                 &serial_observation,
                 &successful_samples
             );
+            ++s_rate_acc.publish_samples;
+            ad7606_rate_note(
+                &s_rate_acc.publish_cycles_total, &s_rate_acc.publish_cycles_max,
+                AD7606_CYCLES() - publish_start);
             if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
                 ESP_LOGW(TAG, "Sample %" PRIu64 " not published: %s",
                     sample_index, esp_err_to_name(err));
@@ -1909,6 +2127,7 @@ static void ad7606_worker(
             }
         }
         runtime_observability_beat(RUNTIME_TASK_ACQUISITION, successful_samples);
+        ad7606_rate_note_loop(loop_start);
     }
 
     ad7606_worker_cleanup(
@@ -2111,3 +2330,64 @@ esp_err_t ad7606_acquisition_get_status(
 
     return ESP_OK;
 }
+
+
+bool ad7606_acquisition_take_rate_report(ad7606_rate_report_t *report)
+{
+    if (report == NULL) {
+        return false;
+    }
+    portENTER_CRITICAL(&s_status_lock);
+    const bool fresh = s_rate_report_fresh;
+    if (fresh) {
+        *report = s_rate_report;
+        s_rate_report_fresh = false;
+    }
+    portEXIT_CRITICAL(&s_status_lock);
+    return fresh;
+}
+
+
+void ad7606_acquisition_log_rate_report(void)
+{
+    ad7606_rate_report_t report;
+    if (!ad7606_acquisition_take_rate_report(&report)) {
+        return;
+    }
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ad7606_test_log_event(
+        AD7606_ACQUISITION_TEST_LOG_RATE, report.sequence, report.published, report.conversions, "RATE");
+#endif
+    /* Cycle triples are n/avg/max, pairs avg/max; p2p, rms10 (tenths) and mean are per channel CH1..CH4. */
+    ESP_LOGI(
+        RATE_TAG,
+        "AD7606_RATE: window_ms=%" PRIu32 " conv=%" PRIu32 " published=%" PRIu32 " attempts=%" PRIu32
+        " unstable=%" PRIu32 " read_err=%" PRIu32 " gaps=%" PRIu32 " loops=%" PRIu32 " notify_max=%" PRIu32
+        " isr=%" PRIu32 "/%" PRIu32 "/%" PRIu32 " loop=%" PRIu32 "/%" PRIu32
+        " spi=%" PRIu32 "/%" PRIu32 " pub=%" PRIu32 "/%" PRIu32 " cpu_mhz=%" PRIu32
+        " p2p=%" PRIu32 "/%" PRIu32 "/%" PRIu32 "/%" PRIu32
+        " rms10=%" PRIu32 "/%" PRIu32 "/%" PRIu32 "/%" PRIu32
+        " mean=%" PRId32 "/%" PRId32 "/%" PRId32 "/%" PRId32 " sat=%" PRIu32 "/%" PRIu32 "/%" PRIu32 "/%" PRIu32,
+        report.window_ms, report.conversions, report.published, report.attempts, report.unstable,
+        report.read_errors, report.gaps, report.loops, report.notify_max,
+        report.isr_count, report.isr_cycles_avg, report.isr_cycles_max, report.loop_cycles_avg,
+        report.loop_cycles_max, report.spi_cycles_avg, report.spi_cycles_max, report.publish_cycles_avg,
+        report.publish_cycles_max, report.cpu_mhz,
+        report.ch_p2p_raw[0], report.ch_p2p_raw[1], report.ch_p2p_raw[2], report.ch_p2p_raw[3],
+        report.ch_rms_raw_x10[0], report.ch_rms_raw_x10[1], report.ch_rms_raw_x10[2], report.ch_rms_raw_x10[3],
+        report.ch_mean_raw[0], report.ch_mean_raw[1], report.ch_mean_raw[2], report.ch_mean_raw[3],
+        report.ch_saturated[0], report.ch_saturated[1], report.ch_saturated[2], report.ch_saturated[3]);
+}
+
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+void ad7606_acquisition_test_rate_window_set(uint32_t cycles)
+{
+    s_test_rate_window_cycles = cycles;
+}
+
+
+void ad7606_acquisition_test_rate_flush(void)
+{
+    ad7606_rate_maybe_close(s_rate_acc.window_start_cycles + s_test_rate_window_cycles);
+}
+#endif

@@ -304,7 +304,9 @@ const char *ui_screen_home_label(
 
 bool ui_measurements_listen_only(workflow_step_t workflow_step)
 {
-    return workflow_step == WORKFLOW_STEP_CALIB_RESULT || workflow_step == WORKFLOW_STEP_PLACEMENT;
+    /* Same steps as the TFT workflow's "live signals" entry; never CALIBRATING (IMU calibration owns the I2C bus). */
+    return workflow_step == WORKFLOW_STEP_SENSOR_CHECK || workflow_step == WORKFLOW_STEP_CALIB_PREP ||
+        workflow_step == WORKFLOW_STEP_CALIB_RESULT || workflow_step == WORKFLOW_STEP_PLACEMENT;
 }
 
 

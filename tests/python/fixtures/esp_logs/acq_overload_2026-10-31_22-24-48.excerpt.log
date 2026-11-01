@@ -1,0 +1,163 @@
+I (2278) RUNTIME_OBSERVABILITY: RUNTIME_CPU stage=after-lvgl window_ms=0 valid=0 cpu0_busy=100.0 cpu0_idle=0.0 cpu1_busy=100.0 cpu1_idle=0.0
+I (2288) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=2 name=IDLE1 core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=0 cpu=0.0 stack_free=808
+I (3658) RUNTIME_OBSERVABILITY: RUNTIME_CPU stage=after-service-tasks window_ms=1377 valid=1 cpu0_busy=94.4 cpu0_idle=5.6 cpu1_busy=0.0 cpu1_idle=100.0
+I (3668) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=1 name=IDLE1 core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=1379969 cpu=100.0 stack_free=808
+I (4288) RUNTIME_OBSERVABILITY: RUNTIME_CPU stage=after-wifi window_ms=630 valid=1 cpu0_busy=99.6 cpu0_idle=0.4 cpu1_busy=3.4 cpu1_idle=96.6
+I (4288) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=1 name=IDLE1 core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=609085 cpu=96.6 stack_free=696
+I (4808) RUNTIME_OBSERVABILITY: RUNTIME_CPU stage=boot window_ms=523 valid=1 cpu0_busy=100.0 cpu0_idle=0.0 cpu1_busy=0.9 cpu1_idle=99.1
+I (4808) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=1 name=IDLE1 core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=528823 cpu=100.0 stack_free=696
+I (9008) NRF_TOPOLOGY: generation=1 tca=yes assigned=4 conflicts=0 main_state=2 bus_busy=0 stale=0 age_ms=0
+I (9578) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6049 wire_us=4830 err=0x0(ESP_OK) transport_ok=1 crc_ok=1 crc_fail=0
+I (9628) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=6540 wire_us=4830 err=0x0(ESP_OK) transport_ok=1 crc_ok=1 crc_fail=0
+I (9668) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=7235 wire_us=4830 err=0x0(ESP_OK) transport_ok=1 crc_ok=1 crc_fail=0
+I (9708) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=7435 wire_us=4830 err=0x0(ESP_OK) transport_ok=1 crc_ok=1 crc_fail=0
+I (9748) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=37 received=37 type=0x84 declared=37 call_us=6597 wire_us=4740 err=0x0(ESP_OK) transport_ok=2 crc_ok=2 crc_fail=0
+I (9798) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=37 received=37 type=0x84 declared=37 call_us=7322 wire_us=4740 err=0x0(ESP_OK) transport_ok=2 crc_ok=2 crc_fail=0
+I (9848) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=37 received=37 type=0x84 declared=37 call_us=7240 wire_us=4740 err=0x0(ESP_OK) transport_ok=2 crc_ok=2 crc_fail=0
+I (9898) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=37 received=37 type=0x84 declared=37 call_us=7275 wire_us=4740 err=0x0(ESP_OK) transport_ok=2 crc_ok=2 crc_fail=0
+I (9958) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=76 received=76 type=0x83 declared=76 call_us=12521 wire_us=9550 err=0x0(ESP_OK) transport_ok=3 crc_ok=3 crc_fail=0
+I (10028) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=96 received=96 type=0x83 declared=96 call_us=16602 wire_us=12650 err=0x0(ESP_OK) transport_ok=3 crc_ok=3 crc_fail=0
+I (10128) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=136 received=136 type=0x83 declared=136 call_us=23094 wire_us=17550 err=0x0(ESP_OK) transport_ok=3 crc_ok=3 crc_fail=0
+I (10248) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=136 received=136 type=0x83 declared=136 call_us=23218 wire_us=17550 err=0x0(ESP_OK) transport_ok=3 crc_ok=3 crc_fail=0
+I (10328) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=56 received=56 type=0x83 declared=56 call_us=7906 wire_us=6450 err=0x0(ESP_OK) transport_ok=4 crc_ok=4 crc_fail=0
+I (10398) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=56 received=56 type=0x83 declared=56 call_us=7618 wire_us=6450 err=0x0(ESP_OK) transport_ok=4 crc_ok=4 crc_fail=0
+I (10708) AD7606_ACQ: Timing valid: rate=20000 Hz configured=OS1 measured=OS1 tCONV_measured=4525 ns SCLK=10000000 read=6400 ns tCONV_datasheet_max=4150 ns mode=after_conversion CONVST_high=2149 ns
+I (11778) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=8422 wire_us=4830 err=0x0(ESP_OK) transport_ok=5 crc_ok=5 crc_fail=0
+I (11888) RUNTIME_OBSERVABILITY: RUNTIME_CPU stage=periodic window_ms=6953 valid=1 cpu0_busy=83.9 cpu0_idle=16.1 cpu1_busy=0.0 cpu1_idle=100.0
+I (11898) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=1 name=IDLE1 core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=6799793 cpu=97.7 stack_free=696
+I (12098) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6599 wire_us=4830 err=0x0(ESP_OK) transport_ok=4 crc_ok=4 crc_fail=0
+I (12148) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=7633 wire_us=4830 err=0x0(ESP_OK) transport_ok=5 crc_ok=5 crc_fail=0
+I (12188) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=7408 wire_us=4830 err=0x0(ESP_OK) transport_ok=4 crc_ok=4 crc_fail=0
+I (13018) AD7606_ACQ: Timing valid: rate=20000 Hz configured=OS1 measured=OS1 tCONV_measured=4525 ns SCLK=10000000 read=6400 ns tCONV_datasheet_max=4150 ns mode=after_conversion CONVST_high=2149 ns
+I (13818) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=6872 wire_us=4830 err=0x0(ESP_OK) transport_ok=5 crc_ok=5 crc_fail=0
+I (13858) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=7059 wire_us=4830 err=0x0(ESP_OK) transport_ok=5 crc_ok=5 crc_fail=0
+I (13898) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=7443 wire_us=4830 err=0x0(ESP_OK) transport_ok=6 crc_ok=6 crc_fail=0
+I (13938) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=7369 wire_us=4830 err=0x0(ESP_OK) transport_ok=6 crc_ok=6 crc_fail=0
+I (13978) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=56 received=56 type=0x83 declared=56 call_us=7622 wire_us=6450 err=0x0(ESP_OK) transport_ok=7 crc_ok=7 crc_fail=0
+I (14018) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=56 received=56 type=0x83 declared=56 call_us=8373 wire_us=6450 err=0x0(ESP_OK) transport_ok=7 crc_ok=7 crc_fail=0
+W (14508) UI: UI_PERF: target_fps=24 actual_fps=14.9 frames_rendered=149 frames_coalesced=0 max_render_us=222678 avg_render_us=149060 max_update_us=4798 avg_update_us=658 max_flush_submit_us=1987 avg_flush_submit_us=557 max_flush_wait_us=6593 avg_flush_wait_us=1147 flush_chunks=151 flush_yields=151 flush_submit_over_5ms=0 max_data_prep_us=0 avg_data_prep_us=0 starvation_windows=1
+I (16478) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=8026 wire_us=4830 err=0x0(ESP_OK) transport_ok=8 crc_ok=8 crc_fail=0
+I (17128) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=6942 wire_us=4830 err=0x0(ESP_OK) transport_ok=8 crc_ok=8 crc_fail=0
+I (17178) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6699 wire_us=4830 err=0x0(ESP_OK) transport_ok=6 crc_ok=6 crc_fail=0
+I (17248) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=7964 wire_us=4830 err=0x0(ESP_OK) transport_ok=6 crc_ok=6 crc_fail=0
+I (18398) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6969 wire_us=4830 err=0x0(ESP_OK) transport_ok=7 crc_ok=7 crc_fail=0
+I (18468) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=7057 wire_us=4830 err=0x0(ESP_OK) transport_ok=7 crc_ok=7 crc_fail=0
+I (18748) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=6610 wire_us=4830 err=0x0(ESP_OK) transport_ok=9 crc_ok=9 crc_fail=0
+I (20068) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=7235 wire_us=4830 err=0x0(ESP_OK) transport_ok=9 crc_ok=9 crc_fail=0
+I (21328) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=6460 wire_us=4830 err=0x0(ESP_OK) transport_ok=10 crc_ok=10 crc_fail=0
+I (21368) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=7420 wire_us=4830 err=0x0(ESP_OK) transport_ok=10 crc_ok=10 crc_fail=0
+I (21408) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=7459 wire_us=4830 err=0x0(ESP_OK) transport_ok=8 crc_ok=8 crc_fail=0
+I (21448) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6530 wire_us=4830 err=0x0(ESP_OK) transport_ok=8 crc_ok=8 crc_fail=0
+I (23288) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=6267 wire_us=4830 err=0x0(ESP_OK) transport_ok=9 crc_ok=9 crc_fail=0
+I (23728) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=7108 wire_us=4830 err=0x0(ESP_OK) transport_ok=9 crc_ok=9 crc_fail=0
+I (23768) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=7449 wire_us=4830 err=0x0(ESP_OK) transport_ok=11 crc_ok=11 crc_fail=0
+I (23808) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=7373 wire_us=4830 err=0x0(ESP_OK) transport_ok=11 crc_ok=11 crc_fail=0
+W (24518) UI: UI_PERF: target_fps=24 actual_fps=16.7 frames_rendered=167 frames_coalesced=0 max_render_us=215019 avg_render_us=31806 max_update_us=72061 avg_update_us=2393 max_flush_submit_us=2380 avg_flush_submit_us=532 max_flush_wait_us=3169 avg_flush_wait_us=877 flush_chunks=299 flush_yields=299 flush_submit_over_5ms=0 max_data_prep_us=0 avg_data_prep_us=0 starvation_windows=2
+I (24838) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=6183 wire_us=4830 err=0x0(ESP_OK) transport_ok=12 crc_ok=12 crc_fail=0
+I (24878) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=6391 wire_us=4830 err=0x0(ESP_OK) transport_ok=12 crc_ok=12 crc_fail=0
+I (24918) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=7180 wire_us=4830 err=0x0(ESP_OK) transport_ok=10 crc_ok=10 crc_fail=0
+I (24958) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=7419 wire_us=4830 err=0x0(ESP_OK) transport_ok=10 crc_ok=10 crc_fail=0
+I (26088) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6692 wire_us=4830 err=0x0(ESP_OK) transport_ok=11 crc_ok=11 crc_fail=0
+I (26168) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=7046 wire_us=4830 err=0x0(ESP_OK) transport_ok=13 crc_ok=13 crc_fail=0
+I (26258) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=8492 wire_us=4830 err=0x0(ESP_OK) transport_ok=13 crc_ok=13 crc_fail=0
+I (26308) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=6972 wire_us=4830 err=0x0(ESP_OK) transport_ok=11 crc_ok=11 crc_fail=0
+I (27988) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=6539 wire_us=4830 err=0x0(ESP_OK) transport_ok=14 crc_ok=14 crc_fail=0
+I (28038) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=5940 wire_us=4830 err=0x0(ESP_OK) transport_ok=14 crc_ok=14 crc_fail=0
+I (28098) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=6823 wire_us=4830 err=0x0(ESP_OK) transport_ok=12 crc_ok=12 crc_fail=0
+I (28138) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6394 wire_us=4830 err=0x0(ESP_OK) transport_ok=12 crc_ok=12 crc_fail=0
+I (29168) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=6669 wire_us=4830 err=0x0(ESP_OK) transport_ok=13 crc_ok=13 crc_fail=0
+I (29228) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6655 wire_us=4830 err=0x0(ESP_OK) transport_ok=13 crc_ok=13 crc_fail=0
+I (29278) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=6387 wire_us=4830 err=0x0(ESP_OK) transport_ok=15 crc_ok=15 crc_fail=0
+I (29338) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=7153 wire_us=4830 err=0x0(ESP_OK) transport_ok=15 crc_ok=15 crc_fail=0
+I (30378) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=6633 wire_us=4830 err=0x0(ESP_OK) transport_ok=16 crc_ok=16 crc_fail=0
+I (30418) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=6411 wire_us=4830 err=0x0(ESP_OK) transport_ok=16 crc_ok=16 crc_fail=0
+I (30468) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6376 wire_us=4830 err=0x0(ESP_OK) transport_ok=14 crc_ok=14 crc_fail=0
+I (30518) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=7476 wire_us=4830 err=0x0(ESP_OK) transport_ok=14 crc_ok=14 crc_fail=0
+I (31948) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6105 wire_us=4830 err=0x0(ESP_OK) transport_ok=15 crc_ok=15 crc_fail=0
+I (31998) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=7307 wire_us=4830 err=0x0(ESP_OK) transport_ok=15 crc_ok=15 crc_fail=0
+I (32068) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=6919 wire_us=4830 err=0x0(ESP_OK) transport_ok=17 crc_ok=17 crc_fail=0
+I (32158) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=6363 wire_us=4830 err=0x0(ESP_OK) transport_ok=17 crc_ok=17 crc_fail=0
+I (33098) AD7606_ACQ: Timing valid: rate=20000 Hz configured=OS1 measured=OS1 tCONV_measured=4525 ns SCLK=10000000 read=6400 ns tCONV_datasheet_max=4150 ns mode=after_conversion CONVST_high=2149 ns
+I (33118) AD7606_ACQ: PCNT BUSY input GPIO47 shares the interrupt pad through GPIO matrix; self-test pulses=12
+I (33188) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=7244 wire_us=4830 err=0x0(ESP_OK) transport_ok=18 crc_ok=18 crc_fail=0
+I (33188) AD7606_ACQ: Started: 20000 Hz, 4 channels, SPI3=10000000 Hz, OS configured=1 measured=1 mismatch=no mode=after_conversion, LEDC XTAL, BUSY GPIO=47 PCNT, core=1
+I (33218) AD7606_DIAG: AD7606_SERIAL_DIAG: rx=00 A9 04 11 0B C1 FF FD words=[169,1041,3009,-3] class=VARIED transport_quality=UNKNOWN signal_quality=UNKNOWN stream_state=UNKNOWN stream_stuck=no busy=1 samples=428 streak=0 repeated_streak=0 all_zero=0 all_ff=0 identical=0 varied=1 digital_interference=0 signal_rail_hits=0 signal_clips=0 window=1 transport_bad=0 all_zero=0 all_ff=0 identical=0 repeated=0 digital=0 signal_rail=0 signal_clip=0 serial_suspicious=no
+I (33228) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=8116 wire_us=4830 err=0x0(ESP_OK) transport_ok=18 crc_ok=18 crc_fail=0
+I (34228) AD7606_DIAG: AD7606_SERIAL_DIAG: rx=00 9F 00 BA FE 32 FF FD words=[159,186,-462,-3] class=VARIED transport_quality=HEALTHY signal_quality=HEALTHY stream_state=UNKNOWN stream_stuck=no busy=1 samples=20692 streak=0 repeated_streak=0 all_zero=0 all_ff=0 identical=0 varied=213 digital_interference=0 signal_rail_hits=0 signal_clips=0 window=213 transport_bad=0 all_zero=0 all_ff=0 identical=0 repeated=0 digital=0 signal_rail=0 signal_clip=0 serial_suspicious=no
+W (34728) UI: UI_PERF: target_fps=4 actual_fps=15.2 frames_rendered=155 frames_coalesced=287 max_render_us=602129 avg_render_us=21032 max_update_us=68168 avg_update_us=1661 max_flush_submit_us=4334 avg_flush_submit_us=557 max_flush_wait_us=4105 avg_flush_wait_us=955 flush_chunks=366 flush_yields=366 flush_submit_over_5ms=0 max_data_prep_us=8133 avg_data_prep_us=4153 starvation_windows=3
+I (39908) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=9285 wire_us=4830 err=0x0(ESP_OK) transport_ok=16 crc_ok=16 crc_fail=0
+E (41698) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+W (45038) UI: UI_PERF: target_fps=4 actual_fps=2.1 frames_rendered=22 frames_coalesced=2929 max_render_us=425118 avg_render_us=373883 max_update_us=54034 avg_update_us=32542 max_flush_submit_us=2967 avg_flush_submit_us=860 max_flush_wait_us=5499 avg_flush_wait_us=1177 flush_chunks=348 flush_yields=348 flush_submit_over_5ms=0 max_data_prep_us=40148 avg_data_prep_us=23188 starvation_windows=4
+I (45078) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=7753 wire_us=4830 err=0x0(ESP_OK) transport_ok=16 crc_ok=16 crc_fail=0
+I (48328) NRF_TOPOLOGY: generation=7 tca=yes assigned=3 conflicts=0 main_state=5 bus_busy=0 stale=1 age_ms=5801
+E (52928) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+W (55248) UI: UI_PERF: target_fps=4 actual_fps=2.1 frames_rendered=21 frames_coalesced=3111 max_render_us=417007 avg_render_us=358932 max_update_us=69768 avg_update_us=52458 max_flush_submit_us=3087 avg_flush_submit_us=841 max_flush_wait_us=4469 avg_flush_wait_us=1164 flush_chunks=339 flush_yields=339 flush_submit_over_5ms=0 max_data_prep_us=50485 avg_data_prep_us=43611 starvation_windows=5
+W (57188) sensor_bus: I2C_BUS_SUMMARY addr=0x32 dev=XIAO_UPSTREAM ok=260 nack=39 timeout=0 other=0 last_err=ESP_ERR_NOT_FOUND laE (57928) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+E (62928) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+W (65648) UI: UI_PERF: target_fps=4 actual_fps=2.1 frames_rendered=22 frames_coalesced=3127 max_render_us=430012 avg_render_us=348673 max_update_us=59221 avg_update_us=50743 max_flush_submit_us=3153 avg_flush_submit_us=822 max_flush_wait_us=4521 avg_flush_wait_us=1209 flush_chunks=345 flush_yields=345 flush_submit_over_5ms=0 max_data_prep_us=50340 avg_data_prep_us=44109 starvation_windows=6
+I (66328) AD7606_ACQ: Stopped
+I (70668) NRF_TOPOLOGY: generation=11 tca=yes assigned=4 conflicts=0 main_state=2 bus_busy=0 stale=0 age_ms=0
+I (70708) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=7827 wire_us=4830 err=0x0(ESP_OK) transport_ok=17 crc_ok=17 crc_fail=0
+I (70748) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=7132 wire_us=4830 err=0x0(ESP_OK) transport_ok=17 crc_ok=17 crc_fail=0
+I (70788) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=6562 wire_us=4830 err=0x0(ESP_OK) transport_ok=19 crc_ok=19 crc_fail=0
+I (70828) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=7616 wire_us=4830 err=0x0(ESP_OK) transport_ok=19 crc_ok=19 crc_fail=0
+I (72088) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=6378 wire_us=4830 err=0x0(ESP_OK) transport_ok=20 crc_ok=20 crc_fail=0
+I (72128) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=7433 wire_us=4830 err=0x0(ESP_OK) transport_ok=20 crc_ok=20 crc_fail=0
+I (72258) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=7547 wire_us=4830 err=0x0(ESP_OK) transport_ok=18 crc_ok=18 crc_fail=0
+I (72338) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=7454 wire_us=4830 err=0x0(ESP_OK) transport_ok=18 crc_ok=18 crc_fail=0
+I (73398) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=7452 wire_us=4830 err=0x0(ESP_OK) transport_ok=19 crc_ok=19 crc_fail=0
+I (73488) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=8315 wire_us=4830 err=0x0(ESP_OK) transport_ok=19 crc_ok=19 crc_fail=0
+I (73558) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=8713 wire_us=4830 err=0x0(ESP_OK) transport_ok=21 crc_ok=21 crc_fail=0
+I (74248) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=6014 wire_us=4830 err=0x0(ESP_OK) transport_ok=21 crc_ok=21 crc_fail=0
+I (75298) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=6211 wire_us=4830 err=0x0(ESP_OK) transport_ok=22 crc_ok=22 crc_fail=0
+I (75338) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=6160 wire_us=4830 err=0x0(ESP_OK) transport_ok=22 crc_ok=22 crc_fail=0
+I (75378) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=6012 wire_us=4830 err=0x0(ESP_OK) transport_ok=20 crc_ok=20 crc_fail=0
+I (75418) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6284 wire_us=4830 err=0x0(ESP_OK) transport_ok=20 crc_ok=20 crc_fail=0
+W (75608) UI: UI_PERF: target_fps=24 actual_fps=13.4 frames_rendered=134 frames_coalesced=7 max_render_us=377374 avg_render_us=195149 max_update_us=4364 avg_update_us=527 max_flush_submit_us=3892 avg_flush_submit_us=605 max_flush_wait_us=13593 avg_flush_wait_us=1216 flush_chunks=258 flush_yields=258 flush_submit_over_5ms=0 max_data_prep_us=0 avg_data_prep_us=0 starvation_windows=7
+I (76458) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=6356 wire_us=4830 err=0x0(ESP_OK) transport_ok=21 crc_ok=21 crc_fail=0
+I (76498) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6915 wire_us=4830 err=0x0(ESP_OK) transport_ok=21 crc_ok=21 crc_fail=0
+I (76548) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=8086 wire_us=4830 err=0x0(ESP_OK) transport_ok=23 crc_ok=23 crc_fail=0
+I (76598) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=8521 wire_us=4830 err=0x0(ESP_OK) transport_ok=23 crc_ok=23 crc_fail=0
+I (76748) RUNTIME_OBSERVABILITY: RUNTIME_CPU stage=periodic window_ms=64977 valid=1 cpu0_busy=82.8 cpu0_idle=17.2 cpu1_busy=50.6 cpu1_idle=49.4
+I (76758) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=1 name=IDLE1 core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=32293807 cpu=49.6 stack_free=696
+I (77108) AD7606_ACQ: Timing valid: rate=20000 Hz configured=OS1 measured=OS1 tCONV_measured=4525 ns SCLK=10000000 read=6400 ns tCONV_datasheet_max=4150 ns mode=after_conversion CONVST_high=2149 ns
+I (78208) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=6483 wire_us=4830 err=0x0(ESP_OK) transport_ok=24 crc_ok=24 crc_fail=0
+I (78268) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=7251 wire_us=4830 err=0x0(ESP_OK) transport_ok=24 crc_ok=24 crc_fail=0
+I (78328) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6654 wire_us=4830 err=0x0(ESP_OK) transport_ok=22 crc_ok=22 crc_fail=0
+I (78378) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=8610 wire_us=4830 err=0x0(ESP_OK) transport_ok=22 crc_ok=22 crc_fail=0
+I (79418) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6671 wire_us=4830 err=0x0(ESP_OK) transport_ok=23 crc_ok=23 crc_fail=0
+I (79478) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=7324 wire_us=4830 err=0x0(ESP_OK) transport_ok=23 crc_ok=23 crc_fail=0
+I (79538) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=6480 wire_us=4830 err=0x0(ESP_OK) transport_ok=25 crc_ok=25 crc_fail=0
+I (79598) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=6822 wire_us=4830 err=0x0(ESP_OK) transport_ok=25 crc_ok=25 crc_fail=0
+I (80638) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=6966 wire_us=4830 err=0x0(ESP_OK) transport_ok=26 crc_ok=26 crc_fail=0
+I (80688) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=6125 wire_us=4830 err=0x0(ESP_OK) transport_ok=26 crc_ok=26 crc_fail=0
+I (80738) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=6019 wire_us=4830 err=0x0(ESP_OK) transport_ok=24 crc_ok=24 crc_fail=0
+I (80788) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=7098 wire_us=4830 err=0x0(ESP_OK) transport_ok=24 crc_ok=24 crc_fail=0
+I (82238) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=7863 wire_us=4830 err=0x0(ESP_OK) transport_ok=25 crc_ok=25 crc_fail=0
+I (82288) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=7322 wire_us=4830 err=0x0(ESP_OK) transport_ok=25 crc_ok=25 crc_fail=0
+I (82358) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=7139 wire_us=4830 err=0x0(ESP_OK) transport_ok=27 crc_ok=27 crc_fail=0
+I (82408) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=7645 wire_us=4830 err=0x0(ESP_OK) transport_ok=27 crc_ok=27 crc_fail=0
+I (83448) NRF_TOPOLOGY: NRF_LOG_RX node=4 addr=0x32 ch=3 requested=38 received=38 type=0x82 declared=38 call_us=8179 wire_us=4830 err=0x0(ESP_OK) transport_ok=28 crc_ok=28 crc_fail=0
+I (83508) NRF_TOPOLOGY: NRF_LOG_RX node=1 addr=0x32 ch=0 requested=38 received=38 type=0x82 declared=38 call_us=6700 wire_us=4830 err=0x0(ESP_OK) transport_ok=28 crc_ok=28 crc_fail=0
+I (83578) NRF_TOPOLOGY: NRF_LOG_RX node=0 addr=0x31 ch=-1 requested=38 received=38 type=0x82 declared=38 call_us=6008 wire_us=4830 err=0x0(ESP_OK) transport_ok=26 crc_ok=26 crc_fail=0
+I (83708) AD7606_ACQ: Timing valid: rate=20000 Hz configured=OS1 measured=OS1 tCONV_measured=4181 ns SCLK=10000000 read=6400 ns tCONV_datasheet_max=4150 ns mode=after_conversion CONVST_high=2149 ns
+I (83728) AD7606_ACQ: PCNT BUSY input GPIO47 shares the interrupt pad through GPIO matrix; self-test pulses=12
+I (83808) AD7606_ACQ: Started: 20000 Hz, 4 channels, SPI3=10000000 Hz, OS configured=1 measured=1 mismatch=no mode=after_conversion, LEDC XTAL, BUSY GPIO=47 PCNT, core=1
+I (83818) AD7606_DIAG: AD7606_SERIAL_DIAG: rx=00 A1 00 A7 F1 6F FF FC words=[161,167,-3729,-4] class=VARIED transport_quality=UNKNOWN signal_quality=UNKNOWN stream_state=UNKNOWN stream_stuck=no busy=1 samples=232 streak=0 repeated_streak=0 all_zero=0 all_ff=0 identical=0 varied=1 digital_interference=0 signal_rail_hits=0 signal_clips=0 window=1 transport_bad=0 all_zero=0 all_ff=0 identical=0 repeated=0 digital=0 signal_rail=0 signal_clip=0 serial_suspicious=no
+I (84818) AD7606_DIAG: AD7606_SERIAL_DIAG: rx=00 9D 03 38 17 42 FF FE words=[157,824,5954,-2] class=VARIED transport_quality=HEALTHY signal_quality=HEALTHY stream_state=UNKNOWN stream_stuck=no busy=1 samples=20238 streak=0 repeated_streak=0 all_zero=0 all_ff=0 identical=0 varied=192 digital_interference=0 signal_rail_hits=0 signal_clips=0 window=192 transport_bad=0 all_zero=0 all_ff=0 identical=0 repeated=0 digital=0 signal_rail=0 signal_clip=0 serial_suspicious=no
+I (85388) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=8648 wire_us=4830 err=0x0(ESP_OK) transport_ok=26 crc_ok=26 crc_fail=0
+W (85828) UI: UI_PERF: target_fps=4 actual_fps=12.7 frames_rendered=130 frames_coalesced=442 max_render_us=589623 avg_render_us=24105 max_update_us=27836 avg_update_us=1440 max_flush_submit_us=5198 avg_flush_submit_us=581 max_flush_wait_us=6208 avg_flush_wait_us=966 flush_chunks=444 flush_yields=444 flush_submit_over_5ms=1 max_data_prep_us=7060 avg_data_prep_us=4895 starvation_windows=8
+I (86868) NRF_TOPOLOGY: generation=14 tca=yes assigned=3 conflicts=0 main_state=5 bus_busy=0 stale=1 age_ms=5827
+E (91378) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+W (95968) UI: UI_PERF: target_fps=4 actual_fps=2.1 frames_rendered=21 frames_coalesced=2793 max_render_us=462312 avg_render_us=388755 max_update_us=61899 avg_update_us=33299 max_flush_submit_us=3006 avg_flush_submit_us=882 max_flush_wait_us=4982 avg_flush_wait_us=1221 flush_chunks=336 flush_yields=336 flush_submit_over_5ms=0 max_data_prep_us=49080 avg_data_prep_us=23416 starvation_windows=9
+E (100928) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+I (106148) NRF_TOPOLOGY: generation=17 tca=yes assigned=4 conflicts=0 main_state=2 bus_busy=0 stale=0 age_ms=0
+W (106398) UI: UI_PERF: target_fps=4 actual_fps=2.0 frames_rendered=21 frames_coalesced=3145 max_render_us=463647 avg_render_us=389507 max_update_us=64088 avg_update_us=49905 max_flush_submit_us=3241 avg_flush_submit_us=782 max_flush_wait_us=5029 avg_flush_wait_us=1215 flush_chunks=337 flush_yields=337 flush_submit_over_5ms=0 max_data_prep_us=49612 avg_data_prep_us=44055 starvation_windows=10
+I (110898) NRF_TOPOLOGY: NRF_LOG_RX node=2 addr=0x32 ch=1 requested=38 received=38 type=0x82 declared=38 call_us=8251 wire_us=4830 err=0x0(ESP_OK) transport_ok=27 crc_ok=27 crc_fail=0
+I (112058) NRF_TOPOLOGY: generation=18 tca=yes assigned=3 conflicts=0 main_state=5 bus_busy=0 stale=1 age_ms=5921
+E (112878) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+W (116718) UI: UI_PERF: target_fps=4 actual_fps=2.0 frames_rendered=21 frames_coalesced=3174 max_render_us=435862 avg_render_us=315308 max_update_us=73423 avg_update_us=55479 max_flush_submit_us=2971 avg_flush_submit_us=882 max_flush_wait_us=4986 avg_flush_wait_us=1253 flush_chunks=344 flush_yields=344 flush_submit_over_5ms=0 max_data_prep_us=50665 avg_data_prep_us=45006 starvation_windows=11
+E (117878) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:
+I (120688) AD7606_ACQ: Stopped
+I (121678) RUNTIME_OBSERVABILITY: RUNTIME_CPU stage=after-recorder-finalization window_ms=44936 valid=1 cpu0_busy=95.0 cpu0_idle=5.0 cpu1_busy=81.3 cpu1_idle=18.7
+I (121698) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=2 name=IDLE1 core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=8437781 cpu=18.7 stack_free=696

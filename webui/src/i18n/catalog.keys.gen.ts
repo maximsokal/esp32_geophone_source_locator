@@ -1621,6 +1621,7 @@ export const i18nKeys = [
   "workflow.material.validation.uncertainty",
   "workflow.nav",
   "workflow.open_3d",
+  "workflow.open_recordings",
   "workflow.placement.altitude_asl",
   "workflow.placement.blocked",
   "workflow.placement.blocked_detail",

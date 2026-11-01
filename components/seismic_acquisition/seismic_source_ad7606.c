@@ -217,4 +217,5 @@ const seismic_source_driver_t g_seismic_source_ad7606 = {
     .stop = seismic_source_ad7606_stop,
     .is_healthy = seismic_source_ad7606_is_healthy,
     .populate_snapshot = seismic_source_ad7606_snapshot,
+    .periodic_report = ad7606_acquisition_log_rate_report,
 };

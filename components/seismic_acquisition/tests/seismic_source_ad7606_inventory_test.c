@@ -38,6 +38,12 @@ void ad7606_acquisition_stop(void)
 }
 
 
+void ad7606_acquisition_log_rate_report(void)
+{
+    /* The periodic AD7606_RATE print is not under test here. */
+}
+
+
 esp_err_t ad7606_acquisition_get_status(ad7606_acquisition_status_t *status)
 {
     if (status == NULL) {

@@ -303,6 +303,7 @@ esp_err_t seismic_acquisition_set_preview(seismic_preview_t preview, bool active
 void seismic_acquisition_poll(bool measurement_owns_source)
 {
     if (seismic_acquisition_lifecycle_lock() != ESP_OK) return;
+    bool report_rate = false;
     if (!s_shutdown) {
         if (s_probe_waiting_for_power && !atomic_load(&s_running)) {
             (void)seismic_acquisition_probe_locked();
@@ -312,8 +313,14 @@ void seismic_acquisition_poll(bool measurement_owns_source)
             atomic_load(&s_running)) {
             seismic_acquisition_stop_locked(false);
         }
+        report_rate = atomic_load(&s_running);
     }
     seismic_acquisition_lifecycle_unlock();
+    /* Printing to the UART blocks for milliseconds: do it here on the service core, never in the worker. */
+    if (report_rate) {
+        const seismic_source_driver_t *driver = seismic_driver();
+        if (driver != NULL && driver->periodic_report != NULL) driver->periodic_report();
+    }
 }
 
 

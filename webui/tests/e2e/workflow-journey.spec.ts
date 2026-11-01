@@ -158,6 +158,7 @@ for (const locale of ['en', 'uk'] as const) {
         Object.assign(workflow, { calculation_class: 'none', progress: 100 });
         enter('RESULT'); await stage('RESULT');
         await expect(page.getByText(t['workflow.result.success'], { exact: true })).toBeVisible();
+        await expect(page.locator('[data-command="OPEN_RECORDINGS"]'), 'the result leads to this object recordings').toBeVisible();
         expect(commands).toEqual(['START_MEASUREMENT', 'GO_CALIBRATION', 'SENSORS_PLACED', 'PLACE_SENSORS',
           'PLACEMENT_CONFIRMED', ...(scan ? ['REQUEST_GPS', 'GPS_ACCEPT'] : ['GPS_SKIP']), 'CALCULATE_POSITIONS',
           'CONFIRM', ...(scan ? ['SCAN_START', 'SCAN_COMPLETE'] : ['SCAN_SKIP']), 'START_RECORDING', 'STOP_RECORDING', 'CALCULATE_SOURCES']);

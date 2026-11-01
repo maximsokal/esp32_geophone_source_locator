@@ -1623,6 +1623,7 @@ export const uk: Record<I18nKey, string> = {
   "workflow.material.validation.uncertainty": "Невизначеність має бути більшою за 0 і меншою за швидкість.",
   "workflow.nav": "Робочий процес",
   "workflow.open_3d": "Відкрити 3D-скан",
+  "workflow.open_recordings": "Відкрити записи цього об’єкта",
   "workflow.placement.altitude_asl": "Висота над рівнем моря",
   "workflow.placement.blocked": "Продовжити неможливо: {node} — {reason}.",
   "workflow.placement.blocked_detail": "{node}: відліків {samples}, розкид {range} мм.",

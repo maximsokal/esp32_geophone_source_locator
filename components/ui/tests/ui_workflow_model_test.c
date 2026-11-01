@@ -974,7 +974,9 @@ static void test_live_signals_are_offered_only_before_recording_steps_that_need_
         for (size_t i = 0U; i < model.action_count; ++i) {
             if (model.actions[i] == UI_WORKFLOW_ACTION_LIVE_SIGNALS) offered = true;
         }
-        assert(offered == (step == WORKFLOW_STEP_CALIB_RESULT || step == WORKFLOW_STEP_PLACEMENT));
+        /* Steps where the operator can check the geophones; never while IMU calibration owns the I2C bus. */
+        assert(offered == (step == WORKFLOW_STEP_SENSOR_CHECK || step == WORKFLOW_STEP_CALIB_PREP ||
+                           step == WORKFLOW_STEP_CALIB_RESULT || step == WORKFLOW_STEP_PLACEMENT));
     }
 }
 

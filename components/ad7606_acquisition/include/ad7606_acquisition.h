@@ -107,3 +107,55 @@ void ad7606_acquisition_stop(void);
 esp_err_t ad7606_acquisition_get_status(
     ad7606_acquisition_status_t *status
 );
+
+
+/*
+ * One report per second of acquisition, produced by the Core 1 worker without any
+ * logging or extra locking per sample. It tells whether the worker keeps up with the
+ * conversions (conversions vs published) and where the cycles go. Cycle counts are CPU
+ * cycles (cpu_mhz per microsecond).
+ */
+typedef struct
+{
+    uint32_t sequence;
+    uint32_t window_ms;
+    uint32_t cpu_mhz;
+
+    uint32_t conversions;   /* BUSY conversions counted by the PCNT in the window */
+    uint32_t published;     /* frames that reached the ring buffer */
+    uint32_t attempts;      /* SPI reads started */
+    uint32_t unstable;      /* reads discarded because a conversion finished during the read */
+    uint32_t read_errors;
+    uint32_t gaps;          /* conversion periods never read (collapsed) */
+
+    uint32_t loops;         /* worker wake-ups handled */
+    uint32_t notify_total;  /* BUSY notifications consumed by those wake-ups */
+    uint32_t notify_max;    /* largest backlog found by one wake-up */
+
+    uint32_t isr_count;
+    uint32_t isr_cycles_avg;
+    uint32_t isr_cycles_max;
+    uint32_t loop_cycles_avg;
+    uint32_t loop_cycles_max;
+    uint32_t spi_cycles_avg;
+    uint32_t spi_cycles_max;
+    uint32_t publish_cycles_avg;
+    uint32_t publish_cycles_max;
+
+    /*
+     * Raw ADC codes per channel over the window, from accumulators the worker already feeds
+     * once per frame: tells a flat or saturated geophone channel from a quiet one without any
+     * per-frame logging. Only frames the worker actually processed are counted.
+     */
+    int32_t ch_mean_raw[AD7606_CHANNEL_COUNT];
+    uint32_t ch_p2p_raw[AD7606_CHANNEL_COUNT];
+    uint32_t ch_rms_raw_x10[AD7606_CHANNEL_COUNT];  /* AC RMS about the mean, tenths of a code */
+    uint32_t ch_saturated[AD7606_CHANNEL_COUNT];
+
+} ad7606_rate_report_t;
+
+/* Returns true once per new report; safe from any task. */
+bool ad7606_acquisition_take_rate_report(ad7606_rate_report_t *report);
+
+/* Logs the pending report (AD7606_RATE) from the caller's context, never from the worker. */
+void ad7606_acquisition_log_rate_report(void);

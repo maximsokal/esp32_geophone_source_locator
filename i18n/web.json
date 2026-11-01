@@ -81,6 +81,7 @@
     "workflow.placement.limit": { "en": "Allowed spread {max} mm, at least {samples} samples in the window.", "uk": "Допустимий розкид {max} мм, щонайменше {samples} відліків у вікні." },
     "workflow.placement.blocked": { "en": "Continue is unavailable: {node} — {reason}.", "uk": "Продовжити неможливо: {node} — {reason}." },
     "workflow.placement.blocked_detail": { "en": "{node}: {samples} samples, spread {range} mm.", "uk": "{node}: відліків {samples}, розкид {range} мм." },
+    "workflow.open_recordings": { "en": "Open this object's recordings", "uk": "Відкрити записи цього об’єкта" },
     "workflow.live.show": { "en": "Show live geophone signals", "uk": "Показати живі сигнали геофонів" },
     "workflow.live.hide": { "en": "Hide live signals", "uk": "Сховати живі сигнали" },
     "workflow.live.starting": { "en": "Starting the signal preview…", "uk": "Запуск перегляду сигналів…" },

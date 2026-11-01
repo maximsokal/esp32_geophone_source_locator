@@ -70,6 +70,16 @@ bool ui_perf_policy_measurements_load_active(
 }
 
 
+bool ui_perf_policy_live_charts_screen(
+    bool measurements_screen,
+    bool workflow_screen,
+    bool workflow_recording
+)
+{
+    return measurements_screen || (workflow_screen && workflow_recording);
+}
+
+
 uint32_t ui_perf_policy_target_fps(bool load_limited)
 {
     return load_limited

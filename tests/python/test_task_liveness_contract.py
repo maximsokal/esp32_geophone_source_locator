@@ -122,5 +122,9 @@ def test_acquisition_heartbeat_follows_read_and_buffer_publication():
     assert read < publish
     assert any(beat > publish for beat in beats)
     push = publish_helper.index("seismic_buffer_push_indexed(")
-    published_beat = publish_helper.index("runtime_observability_beat(")
-    assert push < published_beat
+    # The heartbeat is taken once per wake-up by the worker loop, after the sample was published; a second
+    # beat inside the helper doubled the esp_timer reads and spinlock entries on every sample
+    # (docs/acquisition-ui-load-plan-2026-11-01.md, WP4).
+    assert "runtime_observability_beat(" not in publish_helper
+    assert push < len(publish_helper)
+    assert max(beats) > publish

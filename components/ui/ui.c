@@ -55,7 +55,12 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
     const esp_err_t acquisition_error = seismic_acquisition_get_snapshot(&acquisition);
     const bool acquisition_running =
         acquisition_error == ESP_OK && acquisition.running;
-    const bool measurements_screen_active = s_context.screen == UI_SCREEN_MEASUREMENTS;
+    /* The workflow's RECORDING step draws the same charts: it gets the same throttled profile. */
+    const bool measurements_screen_active = ui_perf_policy_live_charts_screen(
+        s_context.screen == UI_SCREEN_MEASUREMENTS,
+        s_context.screen == UI_SCREEN_WORKFLOW,
+        ui_workflow_recording_charts_active_locked()
+    );
     const bool measurement_load_active = ui_perf_policy_measurements_load_active(
         measurements_screen_active,
         acquisition_running

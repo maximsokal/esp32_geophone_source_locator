@@ -90,6 +90,8 @@ export default function DeviceConsoleApp() {
   /* Session scans use both IDs; the workflow intentionally passes a null
    * session so the scanner saves into the object's pre-record staging area. */
   const [scannerSessionId, setScannerSessionId] = useState<string | null>(null);
+  /* The recording the workflow just made: Objects opens with it selected, once. */
+  const [preselectSessionId, setPreselectSessionId] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<unknown | null>(null);
   const [workspaceError, setWorkspaceError] = useState<unknown | null>(null);
   const [busy, setBusy] = useState(false);
@@ -735,6 +737,8 @@ export default function DeviceConsoleApp() {
           store={objects}
           sessions={sessions}
           selectedId={selectedId}
+          preselectSessionId={preselectSessionId}
+          onPreselectConsumed={() => setPreselectSessionId(null)}
           busy={busy}
           error={pageError}
           onSelect={setSelectedId}
@@ -792,6 +796,11 @@ export default function DeviceConsoleApp() {
             if (await runControl(running ? 'acquisition_start' : 'acquisition_stop')) {
               setWebPreview(running);
             }
+          }}
+          onOpenRecordings={(id, sessionId) => {
+            setSelectedId(id);
+            setPreselectSessionId(sessionId);
+            setScreen('objects');
           }}
         />
       )}

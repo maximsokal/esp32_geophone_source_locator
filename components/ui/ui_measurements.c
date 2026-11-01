@@ -23,6 +23,7 @@
 
 #include "ui_measurement_trace.h"
 #include "ui_perf_policy.h"
+#include "ui_measurements_route.h"
 
 
 #define UI_MEASUREMENT_MIN_SCALE_UV   1000.0f
@@ -1412,7 +1413,10 @@ void ui_handle_measurements_key_locked(
             }
         }
 
-        ui_screen_open_locked(UI_SCREEN_HOME);
+        ui_screen_open_locked(
+            ui_measurements_exit_destination(context->measurement_listen_only) == UI_MEASUREMENTS_EXIT_WORKFLOW
+                ? UI_SCREEN_WORKFLOW
+                : UI_SCREEN_HOME);
         return;
     }
 

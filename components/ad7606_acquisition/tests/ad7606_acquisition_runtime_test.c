@@ -213,6 +213,7 @@ static uint64_t s_log_sink_unavailable_count;
 static uint32_t s_fake_diag_log_cost_us;
 static uint32_t s_fake_serial_log_cost_us;
 static bool s_fake_log_sink_available;
+static unsigned s_conversions_during_read;
 static bool s_log_allocation_baseline_set;
 static uint32_t s_log_allocation_baseline;
 
@@ -220,6 +221,8 @@ static void reset_world(void)
 {
     ad7606_acquisition_test_counters_reset();
     ad7606_acquisition_test_status_delay_set(0U);
+    ad7606_acquisition_test_rate_window_set(4000U);
+    s_conversions_during_read = 0U;
     s_script_len = 0U;
     s_script_pos = 0U;
     s_now_us = 50000000LL;
@@ -1037,6 +1040,11 @@ esp_err_t ad7606_driver_read_result(ad7606_sample_t *sample)
     sample->timestamp_us = 0;
     for (unsigned c = 0U; c < AD7606_CHANNEL_COUNT; ++c) {
         sample->raw[c] = raw_for(completed_conversion, c);
+    }
+    if (s_conversions_during_read > 0U) {
+        /* The next conversion finishes while the SPI words are clocked out. */
+        --s_conversions_during_read;
+        ++s_fake_pcnt_count;
     }
     return ESP_OK;
 }
@@ -1968,6 +1976,127 @@ static void *run_status_snapshot_reader(void *unused)
     return NULL;
 }
 
+/* One report for a whole scripted run: no automatic window, closed by hand afterwards. */
+static ad7606_rate_report_t run_for_one_rate_report(void)
+{
+    ad7606_acquisition_test_rate_window_set(UINT32_MAX);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    ad7606_acquisition_test_rate_flush();
+    ad7606_rate_report_t report;
+    assert(ad7606_acquisition_take_rate_report(&report));
+    assert(!ad7606_acquisition_take_rate_report(&report)); /* consumed: one report, one log line */
+    return report;
+}
+
+static void test_rate_report_counts_conversions_published_gaps_and_backlog(void)
+{
+    reset_world();
+    /* Ticks 1,1,3,1,2,1: nine conversions, six reads; the worker only ever reads the latest one. */
+    const uint32_t ticks[] = { 1U, 1U, 3U, 1U, 2U, 1U };
+    for (size_t i = 0U; i < sizeof(ticks) / sizeof(ticks[0]); ++i) script(EV_TICK, ticks[i]);
+    const ad7606_rate_report_t report = run_for_one_rate_report();
+
+    assert(report.sequence > 0U);
+    assert(report.cpu_mhz == 240U);
+    assert(report.conversions == 9U);
+    assert(report.published == 6U);
+    assert(report.attempts == 6U);
+    assert(report.gaps == 3U);              /* the conversions the worker never got to */
+    assert(report.conversions == report.published + report.gaps);
+    assert(report.unstable == 0U && report.read_errors == 0U);
+    assert(report.loops == 6U);
+    assert(report.notify_total == 9U);
+    assert(report.notify_max == 3U);        /* the backlog is visible, not just the lost samples */
+    assert(report.isr_count == 9U);
+    assert(report.loop_cycles_avg > 0U && report.loop_cycles_max >= report.loop_cycles_avg);
+    assert(report.spi_cycles_avg > 0U && report.publish_cycles_avg > 0U);
+    assert(report.loop_cycles_avg >= report.spi_cycles_avg);
+}
+
+static void test_rate_report_gives_per_channel_codes_without_logging_per_frame(void)
+{
+    reset_world();
+    /* Reads land on conversions 1,2,5,6,8,9; channel c then carries raw = conversion*10 + c - 40. */
+    const uint32_t ticks[] = { 1U, 1U, 3U, 1U, 2U, 1U };
+    for (size_t i = 0U; i < sizeof(ticks) / sizeof(ticks[0]); ++i) script(EV_TICK, ticks[i]);
+    const ad7606_rate_report_t report = run_for_one_rate_report();
+    const unsigned read_at[] = { 1U, 2U, 5U, 6U, 8U, 9U };
+    for (unsigned c = 0U; c < AD7606_CHANNEL_COUNT; ++c) {
+        double sum = 0.0;
+        for (size_t i = 0U; i < 6U; ++i) sum += raw_for(read_at[i], c);
+        const double mean = sum / 6.0;
+        double square = 0.0;
+        for (size_t i = 0U; i < 6U; ++i) square += (raw_for(read_at[i], c) - mean) * (raw_for(read_at[i], c) - mean);
+        assert(report.ch_p2p_raw[c] == (uint32_t)(raw_for(9U, c) - raw_for(1U, c)));
+        assert(report.ch_mean_raw[c] == (int32_t)lround(mean));
+        assert(report.ch_rms_raw_x10[c] == (uint32_t)lround(sqrt(square / 6.0) * 10.0));
+        assert(report.ch_saturated[c] == 0U);
+    }
+    /* A second window starts empty: nothing is carried over from the first. */
+    ad7606_acquisition_test_rate_flush();
+    ad7606_rate_report_t next;
+    assert(ad7606_acquisition_take_rate_report(&next));
+    assert(next.ch_p2p_raw[0] == 0U && next.ch_rms_raw_x10[0] == 0U && next.ch_mean_raw[0] == 0);
+}
+
+static void test_rate_report_counts_reads_lost_to_a_conversion_during_the_read(void)
+{
+    reset_world();
+    /* This is the failure that collapses throughput once the worker is slower than the sample period:
+     * a conversion completes while the words are read, so the frame cannot be trusted and is dropped. */
+    s_conversions_during_read = 2U;
+    for (unsigned i = 0U; i < 5U; ++i) script(EV_TICK, 1U);
+    const ad7606_rate_report_t report = run_for_one_rate_report();
+
+    assert(report.attempts == 5U);
+    assert(report.unstable == 2U);
+    assert(report.published == 3U);
+    assert(report.conversions == 7U);       /* five ticks plus the two that landed mid-read */
+    assert(report.attempts == report.published + report.unstable + report.read_errors);
+}
+
+static void test_rate_report_windows_close_on_their_own_and_stay_consistent(void)
+{
+    reset_world();
+    for (unsigned i = 0U; i < 60U; ++i) script(EV_TICK, 1U);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);   /* 4000-cycle windows: many close during the run */
+    ad7606_rate_report_t report;
+    assert(ad7606_acquisition_take_rate_report(&report));
+    assert(report.sequence >= 5U);
+    assert(report.conversions == report.published + report.gaps);
+    assert(report.unstable == 0U);
+    assert(report.loops > 0U && report.loops <= 60U);
+}
+
+static void test_rate_report_is_logged_once_and_never_by_the_worker(void)
+{
+    reset_world();
+    ad7606_acquisition_test_log_sink_set(fake_log_sink);
+    memset(s_log_records, 0, sizeof(s_log_records));
+    s_log_record_count = 0U;
+    for (unsigned i = 0U; i < 4U; ++i) script(EV_TICK, 1U);
+    ad7606_acquisition_test_rate_window_set(UINT32_MAX);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    for (size_t i = 0U; i < s_log_record_count; ++i) {
+        assert(s_log_records[i].event != AD7606_ACQUISITION_TEST_LOG_RATE); /* a print would stall Core 1 for ms */
+    }
+    ad7606_acquisition_test_rate_flush();
+    ad7606_acquisition_log_rate_report();
+    ad7606_acquisition_log_rate_report();           /* nothing new: no second line */
+    size_t rate_lines = 0U;
+    for (size_t i = 0U; i < s_log_record_count; ++i) {
+        if (s_log_records[i].event != AD7606_ACQUISITION_TEST_LOG_RATE) continue;
+        ++rate_lines;
+        assert(s_log_records[i].channel == 4U);      /* published */
+        assert(s_log_records[i].count == 4U);        /* conversions */
+    }
+    assert(rate_lines == 1U);
+    ad7606_acquisition_test_log_sink_set(NULL);
+}
+
 static void test_status_writer_lock_blocks_snapshot_reader(void)
 {
     reset_world();
@@ -2701,6 +2830,11 @@ int main(void)
     test_restart_resets_cadence_counters();
     test_restart_clears_a_latched_fault();
     test_overcurrent_stops_and_latches();
+    test_rate_report_counts_conversions_published_gaps_and_backlog();
+    test_rate_report_gives_per_channel_codes_without_logging_per_frame();
+    test_rate_report_counts_reads_lost_to_a_conversion_during_the_read();
+    test_rate_report_windows_close_on_their_own_and_stay_consistent();
+    test_rate_report_is_logged_once_and_never_by_the_worker();
     test_status_writer_lock_blocks_snapshot_reader();
     test_status_delay_negative_control_and_snapshot();
     return s_max435_failures == 0U ? 0 : 1;
