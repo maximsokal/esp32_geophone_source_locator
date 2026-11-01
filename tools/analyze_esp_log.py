@@ -3,13 +3,15 @@
 
 The analyzer never opens serial ports or touches hardware. It looks only at the
 windows in which the AD7606 acquisition was running (``AD7606_ACQ: Started`` ..
-``Stopped``) and evaluates gates G1-G7 from docs/acquisition-ui-load-plan-2026-11-01.md.
+``Stopped``) and evaluates gates G1-G7 from docs/acquisition-ui-load-plan-2026-11-01.md. Gate G0 looks at the
+whole log: a boot that never reaches the application (incomplete flash, no bootable partition) or a
+panic must FAIL even when no acquisition ran, instead of passing as "not applicable".
 A log without an acquisition window reports every gate as NOT_APPLICABLE; that
 is never a PASS, because a system that never ran the acquisition proves nothing
 about it.
 
-Exit code: 1 if any gate FAILs, 0 if nothing failed and at least one gate was
-evaluated, 2 if nothing could be evaluated.
+Exit code: 1 if any gate FAILs, 0 if nothing failed and at least one acquisition gate
+(G1-G7) passed, 2 if nothing could be evaluated.
 """
 
 from __future__ import annotations
@@ -39,6 +41,17 @@ UI_PERF_TRAILING_MS = 500
 IDLE1_MIN_OVERLAP_MS = 5_000
 
 _ANSI = re.compile(rb"\x1b\[[0-9;]*m")
+# Boot failures and panics; the plain text is searched because the ROM prints them without a timestamp.
+_BOOT_FAILURES = (
+    "No bootable app partitions",
+    "Factory app partition is not bootable",
+    "invalid segment length",
+    "image hash",
+    "Guru Meditation Error",
+    "abort() was called",
+    "Rebooting...",
+)
+_BOOT_OK = re.compile(r"I \(\d+\) (?:app_init|cpu_start): ")
 # Lines can be glued together by the serial monitor, so tokenise the whole text.
 _MARKER = re.compile(r"([EWI]) \((\d+)\) ([A-Za-z0-9_.-]+): ")
 
@@ -85,13 +98,14 @@ class Report:
         return NOT_APPLICABLE
 
     def gates(self) -> dict[str, str]:
-        return {gate: self.gate_status(gate) for gate in ("G1", "G2", "G3", "G4", "G5", "G6", "G7")}
+        return {gate: self.gate_status(gate) for gate in ("G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7")}
 
     def exit_code(self) -> int:
-        values = list(self.gates().values())
-        if FAIL in values:
+        gates = self.gates()
+        if FAIL in gates.values():
             return 1
-        return 0 if PASS in values else 2
+        # A clean boot alone proves nothing about the acquisition.
+        return 0 if any(status == PASS for gate, status in gates.items() if gate != "G0") else 2
 
 
 def clean_text(raw: bytes) -> str:
@@ -327,6 +341,17 @@ def _adc_words(entries: list[Entry], windows: list[Window]) -> dict[str, dict[st
     return result
 
 
+def _gate_g0(text: str) -> Finding:
+    """The firmware must boot into the application and must not panic."""
+    found = sorted({marker for marker in _BOOT_FAILURES if marker in text})
+    if found:
+        count = sum(text.count(marker) for marker in found)
+        return Finding("G0", "whole log", FAIL, f"{count} boot/panic lines: " + "; ".join(found), "none")
+    if _BOOT_OK.search(text):
+        return Finding("G0", "whole log", PASS, "application started, no boot failure or panic", "none")
+    return Finding("G0", "whole log", NOT_APPLICABLE, "no boot lines in this log", "none")
+
+
 def analyze_text(text: str, path: str = "<memory>", *, min_fps_ratio: float = DEFAULT_MIN_FPS_RATIO,
                  max_render_us: int = DEFAULT_MAX_RENDER_US, max_node_gap_ms: int = DEFAULT_MAX_NODE_GAP_MS,
                  min_idle1_share: float = DEFAULT_MIN_IDLE1_SHARE,
@@ -334,6 +359,7 @@ def analyze_text(text: str, path: str = "<memory>", *, min_fps_ratio: float = DE
                  max_core1_load: float = DEFAULT_MAX_CORE1_LOAD) -> Report:
     entries = tokenize(text)
     report = Report(path=path, windows=find_windows(entries))
+    report.findings.append(_gate_g0(text))
     for window in report.windows:
         report.findings.append(_gate_g1(entries, window))
         report.findings.append(_gate_g2(entries, window, min_fps_ratio, max_render_us))
@@ -354,7 +380,7 @@ def analyze_file(path: Path, **options) -> Report:
 def format_report(report: Report) -> str:
     lines = [f"== {report.path}"]
     if not report.windows:
-        lines.append("   no AD7606 acquisition window: all gates NOT_APPLICABLE")
+        lines.append("   no AD7606 acquisition window: the acquisition gates are NOT_APPLICABLE")
     for window in report.windows:
         lines.append(f"   ACQ {_scope(window)} {window.rate_hz} Hz, {window.channels} channels")
     for finding in report.findings:

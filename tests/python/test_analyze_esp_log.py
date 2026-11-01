@@ -49,7 +49,7 @@ def test_real_overload_log_fails_every_gate_with_measured_values():
     report = analyzer.analyze_file(FIXTURES / "acq_overload_2026-10-31_22-24-48.excerpt.log")
     # G6 is decided from the old SERIAL_DIAG fields (no AD7606_RATE line exists in this log); G7 has no data.
     assert report.gates() == {**{g: analyzer.FAIL for g in ("G1", "G2", "G3", "G4", "G5", "G6")},
-                              "G7": analyzer.NOT_APPLICABLE}
+                              "G0": analyzer.NOT_APPLICABLE, "G7": analyzer.NOT_APPLICABLE}  # excerpt has no boot lines
     g6 = [f for f in report.findings if f.gate == "G6"]
     assert len(g6) == 2 and all(f.status == analyzer.FAIL and "estimate" in f.measured for f in g6)
     assert "213 frames observed of 20692 conversions" in g6[0].measured
@@ -74,13 +74,17 @@ def test_real_overload_log_fails_every_gate_with_measured_values():
 def test_log_without_acquisition_is_not_applicable_never_pass():
     report = analyzer.analyze_file(FIXTURES / "no_acq_2026-10-31_16-24-32.excerpt.log")
     assert report.windows == []
-    assert set(report.gates().values()) == {analyzer.NOT_APPLICABLE}
+    gates = report.gates()
+    assert gates.pop("G0") == analyzer.NOT_APPLICABLE       # the excerpt keeps only the acquisition tags
+    assert set(gates.values()) == {analyzer.NOT_APPLICABLE}
     assert report.exit_code() == 2
 
 
 def test_healthy_window_passes_all_gates():
     report = analyzer.analyze_text(healthy_log())
-    assert report.gates() == {g: analyzer.PASS for g in ("G1", "G2", "G3", "G4", "G5", "G6", "G7")}
+    gates = report.gates()
+    assert gates.pop("G0") == analyzer.NOT_APPLICABLE        # the synthetic log has no boot lines
+    assert gates == {g: analyzer.PASS for g in ("G1", "G2", "G3", "G4", "G5", "G6", "G7")}
     assert report.exit_code() == 0
 
 
@@ -121,7 +125,7 @@ def test_each_gate_fails_alone():
     for failing, text in expected.items():
         result = gates(text)
         assert result[failing] == analyzer.FAIL, failing
-        assert all(status == analyzer.PASS for gate, status in result.items() if gate != failing), (failing, result)
+        assert all(status == analyzer.PASS for gate, status in result.items() if gate not in (failing, "G0")), (failing, result)
 
 
 def test_noise_bytes_and_glued_lines_do_not_hide_watchdog_events():
@@ -165,3 +169,22 @@ def test_rate_report_channel_codes_are_reported_per_channel():
     assert report.adc_rate_channels["ch3"]["p2p_max"] == 9683
     assert report.adc_rate_channels["ch4"]["rms10_max"] == 9
     assert "info ch1 (AD7606_RATE): n=1 p2p=12..12" in analyzer.format_report(report)
+
+
+def test_a_boot_that_never_reaches_the_application_fails_even_without_an_acquisition():
+    # 2026-11-01: esptool lost the chip at 94%, the app partition was left half written and the ROM
+    # bootloader looped on "invalid segment length 0xffffffff". Nothing else in the log looked wrong.
+    report = analyzer.analyze_file(FIXTURES / "boot_failed_incomplete_flash_2026-11-01_13-02-20.excerpt.log")
+    assert report.windows == []
+    assert report.gate_status("G0") == analyzer.FAIL
+    finding = next(f for f in report.findings if f.gate == "G0")
+    assert "invalid segment length" in finding.measured and "No bootable app partitions" in finding.measured
+    assert report.exit_code() == 1
+
+
+def test_panics_fail_the_boot_gate_and_a_clean_start_passes_it():
+    clean = "I (1200) app_init: Project name: x\nI (1300) cpu_start: Starting scheduler\n"
+    assert analyzer.analyze_text(clean).gate_status("G0") == analyzer.PASS
+    panic = clean + "Guru Meditation Error: Core  1 panic'ed (LoadProhibited)\n"
+    assert analyzer.analyze_text(panic).gate_status("G0") == analyzer.FAIL
+    assert analyzer.analyze_text("").gate_status("G0") == analyzer.NOT_APPLICABLE

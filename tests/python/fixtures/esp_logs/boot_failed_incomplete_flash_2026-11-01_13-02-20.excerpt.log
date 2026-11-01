@@ -1,0 +1,42 @@
+rst:0x1 (POWERON),boot:0x2b (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x14f0
+load:0x403c8700,len:0xd24
+--- 0x403c8700: _stext at ??:?
+load:0x403cb700,len:0x2ef0
+entry 0x403c8924
+--- 0x403c8924: call_start_cpu0 at C:/Espressif/frameworks/esp-idf-v5.5.4/components/bootloader/subproject/main/bootloader_start.c:27
+I (24) boot: ESP-IDF v5.5.4 2nd stage bootloader
+I (25) boot: compile time Oct 31 2026 14:37:20
+I (25) boot: Multicore bootloader
+I (25) boot: chip revision: v0.2
+I (28) boot: efuse block revision: v1.4
+I (31) boot.esp32s3: Boot SPI Speed : 80MHz
+I (35) boot.esp32s3: SPI Mode       : DIO
+I (39) boot.esp32s3: SPI Flash Size : 16MB
+I (43) boot: Enabling RNG early entropy source...
+I (47) boot: Partition Table:
+I (50) boot: ## Label            Usage          Type ST Offset   Length
+I (56) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (63) boot:  1 phy_init         RF data          01 01 0000f000 00001000
+I (69) boot:  2 factory          factory app      00 00 00010000 00800000
+I (76) boot: End of partition table
+I (79) esp_image: segment 0: paddr=00010020 vaddr=3c1b0020 size=12e8a4h (1239204) map
+I (305) esp_image: segment 1: paddr=0013e8cc vaddr=3fc9fc00 size=0174ch (  5964) load
+I (307) esp_image: segment 2: paddr=00140020 vaddr=42000020 size=1a8074h (1736820) map
+E (615) esp_image: invalid segment length 0xffffffff
+E (615) boot: Factory app partition is not bootable
+E (615) boot: No bootable app partitions in the partition table
+E (615) esp_image: invalid segment length 0xffffffff
+E (615) boot: Factory app partition is not bootable
+E (615) boot: No bootable app partitions in the partition table
+E (619) esp_image: invalid segment length 0xffffffff
+E (619) boot: Factory app partition is not bootable
+E (620) boot: No bootable app partitions in the partition table
+E (619) esp_image: invalid segment length 0xffffffff
+E (619) boot: Factory app partition is not bootable
+E (620) boot: No bootable app partitions in the partition table
+E (619) esp_image: invalid segment length 0xffffffff
+E (619) boot: Factory app partition is not bootable
+E (620) boot: No bootable app partitions in the partition table
