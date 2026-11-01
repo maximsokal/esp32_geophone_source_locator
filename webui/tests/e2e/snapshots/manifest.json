@@ -120,12 +120,12 @@
         "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
       },
       "en-workflow-calib-prep-393x852.png": {
-        "sha256": "0c3de8ac171094b4ce47d48e960db1b1751f22643eb927a5e9dac2919a94b5ee",
-        "candidateId": "bdadfd12e2d558fae145706f2a6e5495d434b15c8b51d85af16af58a8924edb6"
+        "sha256": "57ef1631dd65ca3a1955e08ffaf4fbb18a60f33bdf7c8bb77e7737833a0a3ee5",
+        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
       },
       "en-workflow-calib-result-393x852.png": {
-        "sha256": "6a46a851746bc979e1877fc3ae917e24d6918060a402594e060781b507f07561",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "06a08bbb7b89dbc26f7c9ffbbb4d4310516f9bb9020b57f9575c7596de3df733",
+        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
       },
       "en-workflow-calibrating-393x852.png": {
         "sha256": "c59c53ca6ba99658579b1b09260e670fd651d543fa9f81c9af4ee999a36931ae",
@@ -156,16 +156,16 @@
         "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
       },
       "en-workflow-placement-393x852.png": {
-        "sha256": "d76a678a62fb2c263ae1d5919db169cb2765bbafd914b3907f55dc56dab52642",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "fe55b090409fe70c356f0719781e5b40295029ae5e576f0015e9e78864cbf376",
+        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
       },
       "en-workflow-ranging-393x852.png": {
         "sha256": "719d271c4894a0572bb7b85bade99eecf0f69d7663e00c55c787e6655b78e153",
         "candidateId": "f2faa4746b3cce820c0cc9145a14550db97fc6613159988bec9f052c8f3c841f"
       },
       "en-workflow-ranging-result-393x852.png": {
-        "sha256": "c9e7dbceea5c82a8b84d945fbb6f69401aeafe104974e945a59eb66720f2cc64",
-        "candidateId": "f2faa4746b3cce820c0cc9145a14550db97fc6613159988bec9f052c8f3c841f"
+        "sha256": "48856d48ef6c54332b02911a02a3d8ea6b717a9f152d0af944607cdc3b57d686",
+        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
       },
       "en-workflow-record-ready-393x852.png": {
         "sha256": "f117ba0f80593dc693813c1854eeac047457c84f40cdb212c2a3e3d5fb75c932",
@@ -188,8 +188,8 @@
         "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
       },
       "en-workflow-sensor-check-393x852.png": {
-        "sha256": "2a9ad3f25ea542966ccfe838756399ca1ea4786c06cc068e0383913a96b61db2",
-        "candidateId": "bdadfd12e2d558fae145706f2a6e5495d434b15c8b51d85af16af58a8924edb6"
+        "sha256": "02b2c1513eccdbc6ff30213a948971979476f8c2f60be6793f4fc7a10caebe4e",
+        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
       },
       "en-workflow-stopped-393x852.png": {
         "sha256": "8c174a2181748f4b431d1963aa2ee66e6203c757adcca8ef5ca35f2930b13f26",
@@ -292,12 +292,12 @@
         "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
       },
       "uk-workflow-calib-prep-393x852.png": {
-        "sha256": "cd5c33c0febae63901d9ed84b801828889660720a83fb539609dbcf6e14bbc88",
-        "candidateId": "bdadfd12e2d558fae145706f2a6e5495d434b15c8b51d85af16af58a8924edb6"
+        "sha256": "124ef9482494585a43717837609049aea84c7e4837dcbee77f576bde3af8c583",
+        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
       },
       "uk-workflow-calib-result-393x852.png": {
-        "sha256": "a1fe11e6b5cc1fd428e9d7ebb08389ae79108e3d045e185d407ce89be1016d2c",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "80287eddf42ab02697ef3c38d82c687242e88273721d838220ab935cf868e33b",
+        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
       },
       "uk-workflow-calibrating-393x852.png": {
         "sha256": "368b69f19ce003cff5034e7a6dab7e4878b8cf15894a0276516e78831db0d98c",
@@ -328,16 +328,16 @@
         "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
       },
       "uk-workflow-placement-393x852.png": {
-        "sha256": "2dc0f570a21846f4c4c8cddbb0f7d9f641f894c964111e55cc080fe1c6ec3371",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "99b9cdc4ad793af03dba91da67da2fcd7b975e7c0543a60d7f207b3d127f8098",
+        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
       },
       "uk-workflow-ranging-393x852.png": {
         "sha256": "b5ee98fb5f6701b56e5e297f9a7ac126e82d1a2506e15897bc5c5591427b8aec",
         "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
       },
       "uk-workflow-ranging-result-393x852.png": {
-        "sha256": "cf635b912e384ef0e8416ec5869ba6bf8db14101d5d97ce9986512c939e4da48",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "8b70dfb5fbbdb1fffe1884df4a35f9c188075edd8c5afd4b9c734cf8b312ea93",
+        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
       },
       "uk-workflow-record-ready-393x852.png": {
         "sha256": "e6fe0e95f178fb292261f98b8ae8c6d9108735c774a732176a3ed7457ea4ac09",
@@ -360,8 +360,8 @@
         "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
       },
       "uk-workflow-sensor-check-393x852.png": {
-        "sha256": "5cb64bdade4d2feef87be4d9be0399500ec3e615cf124aafbb41797a58ebde11",
-        "candidateId": "bdadfd12e2d558fae145706f2a6e5495d434b15c8b51d85af16af58a8924edb6"
+        "sha256": "ca708d718572cec8a280b42881ecd1b55602d8f282524efa9ef205ad6c936051",
+        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
       },
       "uk-workflow-stopped-393x852.png": {
         "sha256": "f017299aa67379ed921db335d71fb2e2b6ed999bb7eb10225e727236e670ea9b",

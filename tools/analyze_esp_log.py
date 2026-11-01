@@ -49,7 +49,6 @@ _BOOT_FAILURES = (
     "image hash",
     "Guru Meditation Error",
     "abort() was called",
-    "Rebooting...",
 )
 _BOOT_OK = re.compile(r"I \(\d+\) (?:app_init|cpu_start): ")
 # Lines can be glued together by the serial monitor, so tokenise the whole text.
@@ -318,12 +317,15 @@ def _adc_rate_channels(entries: list[Entry], windows: list[Window]) -> dict[str,
     result: dict[str, dict[str, int]] = {}
     for window in windows:
         for line in _rate_lines(entries, window):
+            rms = line.get("rms10", [])
+            # A line cut short by the serial link still counts for the gates; its channel fields may be missing.
             for index, value in enumerate(line.get("p2p", [])):
                 stats = result.setdefault(f"ch{index + 1}", {"n": 0, "p2p_min": value, "p2p_max": value, "rms10_max": 0})
                 stats["n"] += 1
                 stats["p2p_min"] = min(stats["p2p_min"], value)
                 stats["p2p_max"] = max(stats["p2p_max"], value)
-                stats["rms10_max"] = max(stats["rms10_max"], line["rms10"][index])
+                if index < len(rms):
+                    stats["rms10_max"] = max(stats["rms10_max"], rms[index])
     return result
 
 

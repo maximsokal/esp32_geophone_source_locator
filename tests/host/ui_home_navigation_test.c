@@ -495,10 +495,9 @@ static void test_dispatch_uses_current_screen_driver(void)
 static void test_measurements_route_decision_all_workflow_states(void)
 {
     for (workflow_step_t step = WORKFLOW_STEP_IDLE; step < WORKFLOW_STEP_COUNT; ++step) {
-        /* The sensor-check, calibration-prep, calibration-result and placement steps open the live view for
-         * listening only (no recording from it); CALIBRATING does not, the IMU calibration owns the I2C bus. */
-        const bool listen = step == WORKFLOW_STEP_SENSOR_CHECK || step == WORKFLOW_STEP_CALIB_PREP ||
-            step == WORKFLOW_STEP_CALIB_RESULT || step == WORKFLOW_STEP_PLACEMENT;
+        /* Only the ranging result (positions already calculated) opens the live view, for listening only: no
+         * recording from it. Before that the workflow owns the screen. */
+        const bool listen = step == WORKFLOW_STEP_RANGING_RESULT;
         const bool allowed = step == WORKFLOW_STEP_RECORD_READY ||
             step == WORKFLOW_STEP_RECORDING ||
             listen;
@@ -595,8 +594,8 @@ static void test_workflow_probes_without_sampling_or_duplicate_entry_probe(void)
     for (uint8_t remotes = 0U; remotes <= 1U; ++remotes) {
         reset_state();
         s_active_object_present = true;
-        /* CALIBRATING is not a live-view step: navigation redirects to the workflow and starts nothing. */
-        s_workflow_snapshot.step = WORKFLOW_STEP_CALIBRATING;
+        /* SENSOR_CHECK is not a live-view step: navigation redirects to the workflow and starts nothing. */
+        s_workflow_snapshot.step = WORKFLOW_STEP_SENSOR_CHECK;
         s_workflow_snapshot.assigned_remotes = remotes;
         s_workflow_snapshot.allowed_actions = 0U;
 
@@ -604,18 +603,18 @@ static void test_workflow_probes_without_sampling_or_duplicate_entry_probe(void)
 
         assert(s_context.screen == UI_SCREEN_WORKFLOW);
         assert(s_acquisition_start_calls == 0U);
-        assert(s_workflow_snapshot.step == WORKFLOW_STEP_CALIBRATING);
+        assert(s_workflow_snapshot.step == WORKFLOW_STEP_SENSOR_CHECK);
         assert(s_workflow_snapshot.allowed_actions == 0U);
     }
 
-    /* Sensor check offers the live view, for listening only, and leaves the workflow step untouched. */
+    /* The ranging result offers the live view, for listening only, and leaves the workflow step untouched. */
     reset_state();
     s_active_object_present = true;
-    s_workflow_snapshot.step = WORKFLOW_STEP_SENSOR_CHECK;
+    s_workflow_snapshot.step = WORKFLOW_STEP_RANGING_RESULT;
     ui_screen_open_locked(UI_SCREEN_MEASUREMENTS);
     assert(s_context.screen == UI_SCREEN_MEASUREMENTS);
     assert(s_context.measurement_listen_only);
-    assert(s_workflow_snapshot.step == WORKFLOW_STEP_SENSOR_CHECK);
+    assert(s_workflow_snapshot.step == WORKFLOW_STEP_RANGING_RESULT);
 
     reset_state();
     s_acquisition_start_result = ESP_ERR_INVALID_STATE;

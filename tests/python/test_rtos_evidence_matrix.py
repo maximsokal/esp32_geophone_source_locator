@@ -111,7 +111,8 @@ def test_reports_attach_actual_results_and_run_manifest_smoke(tmp_path: Path):
     assert emitted["git_sha"]
     assert isinstance(emitted["dirty"], bool)
     assert "sdkconfig" in {Path(item["path"]).name for item in emitted["config_sha256"]}
-    assert emitted["signal_configuration"]["ESP32-S3"]["sample_rate_hz"] == 20000
+    # 500 Hz since 2026-11-01 (docs/acquisition-ui-load-plan-2026-11-01.md): the sdkconfig default moved from 20 kHz.
+    assert emitted["signal_configuration"]["ESP32-S3"]["sample_rate_hz"] == 500
     assert emitted["signal_configuration"]["ESP32-S3"]["channel_count"] == 4
     provenance = next(item for item in emitted["scenario_provenance"] if item["case_id"] == row["case_id"])
     assert provenance["src_sha"] == emitted["git_sha"]

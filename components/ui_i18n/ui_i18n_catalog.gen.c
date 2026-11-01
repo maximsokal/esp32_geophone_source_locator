@@ -260,6 +260,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Start recording", /* tft.workflow.action.start_recording */
     "Stop recording", /* tft.workflow.action.stop_recording */
     "Progress %s%%", /* tft.workflow.calculating.progress */
+    "Next: place the geophones", /* tft.workflow.calib_result.next */
     "Phase %s", /* tft.workflow.calibration.header */
     "Place all sensors next to the main housing", /* tft.workflow.calibration.prep */
     "%s: %s", /* tft.workflow.calibration.reason */
@@ -725,6 +726,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Почати запис", /* tft.workflow.action.start_recording */
     "Зупинити запис", /* tft.workflow.action.stop_recording */
     "Виконано %s%%", /* tft.workflow.calculating.progress */
+    "Далі: розставте геофони", /* tft.workflow.calib_result.next */
     "Етап %s", /* tft.workflow.calibration.header */
     "Розмістіть усі датчики поруч із головним корпусом", /* tft.workflow.calibration.prep */
     "%s: %s", /* tft.workflow.calibration.reason */

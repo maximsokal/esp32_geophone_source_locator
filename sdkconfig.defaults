@@ -2527,7 +2527,9 @@ CONFIG_SEMIHOSTFS_MAX_MOUNT_POINTS=1
 # End of deprecated options
 
 # MAX-307 AD7606 production defaults
-CONFIG_SEISMIC_AD7606_RATE_20000=y
+# 2026-11-01: 500 Hz. At 20 kHz the worker delivered ~2% of the conversions (first AD7606_RATE log, 160 MHz CPU:
+# ~45.6k cycles per frame against an 8k-cycle period); see docs/acquisition-ui-load-plan-2026-11-01.md.
+CONFIG_SEISMIC_AD7606_RATE_500=y
 CONFIG_AD7606_OS_RATIO_1=y
 CONFIG_AD7606_READ_MODE_AUTO=y
 

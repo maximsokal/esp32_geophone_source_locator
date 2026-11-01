@@ -1392,6 +1392,7 @@
     "tft.workflow.calibration.row": {"en": "%s H:%s z:%smm I:%s b:%s", "uk": "%s В:%s z:%sмм І:%s b:%s", "max_len": 58},
     "tft.workflow.calibration.row_main": {"en": "%s H:%s z:%smm", "uk": "%s В:%s z:%sмм", "max_len": 58},
     "tft.workflow.calibration.status": { "en": "Calibration: %s", "uk": "Калібрування: %s", "max_len": 24 },
+    "tft.workflow.calib_result.next": { "en": "Next: place the geophones", "uk": "Далі: розставте геофони", "max_len": 30 },
     "tft.workflow.calibration.reason": { "en": "%s: %s", "uk": "%s: %s", "max_len": 72 },
     "tft.workflow.calibration.reason_single": {"en": "%s", "uk": "%s", "max_len": 40},
     "tft.workflow.placement.row": {"en": "%s V:%s dH:%smm ASL:%sm St:%s", "uk": "%s В:%s dH:%sмм над.р.м:%sм Ст:%s", "max_len": 62},

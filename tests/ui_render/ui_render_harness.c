@@ -461,10 +461,9 @@ static void test_placement_blocked_screens(const char *language)
         ui_workflow_screen_refresh_locked();
 
         assert(s_workflow->snapshot.step == WORKFLOW_STEP_PLACEMENT);
-        assert(s_workflow->model.action_count == 3U);
+        assert(s_workflow->model.action_count == 2U);
         assert(s_workflow->model.actions[0] == UI_WORKFLOW_ACTION_PLACEMENT_BLOCKED);
-        assert(s_workflow->model.actions[1] == UI_WORKFLOW_ACTION_LIVE_SIGNALS);
-        assert(s_workflow->model.actions[2] == WORKFLOW_COMMAND_BACK);
+        assert(s_workflow->model.actions[1] == WORKFLOW_COMMAND_BACK);
         assert(s_workflow->model.selected_action == 0U);
         char name[96];
         (void)snprintf(name, sizeof(name), "%s_placement_blocked_%s", language, cases[index].name);
@@ -478,16 +477,6 @@ static void test_placement_blocked_screens(const char *language)
             assert(s_workflow->model_state.notice_key == UI_I18N_KEY_TFT_WORKFLOW_NOTICE_PLACEMENT_BLOCKED);
             (void)snprintf(name, sizeof(name), "%s_placement_blocked_notice", language);
             capture(name, true);
-
-            /* The live view is one step down, and opens the Measurements screen (no workflow command). */
-            ui_workflow_screen_handle_key_locked(KEYPAD_KEY_DOWN);
-            assert(s_workflow->model.actions[s_workflow->model.selected_action] == UI_WORKFLOW_ACTION_LIVE_SIGNALS);
-            (void)snprintf(name, sizeof(name), "%s_placement_blocked_live_selected", language);
-            capture(name, true);
-            render_context.screen = UI_SCREEN_WORKFLOW;
-            ui_workflow_screen_handle_key_locked(KEYPAD_KEY_OK);
-            assert(render_context.screen == UI_SCREEN_MEASUREMENTS);
-            assert(render_command_count == before);
         }
     }
 }

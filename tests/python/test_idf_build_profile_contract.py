@@ -467,7 +467,7 @@ def _check_backend_kconfig_structure(main_kconfig: Path, config_symbols: set[str
 
     combined = "\n".join(source_text)
     for name, expected in (
-        ("SEISMIC_AD7606_SAMPLE_RATE_HZ", "20000"),
+        ("SEISMIC_AD7606_SAMPLE_RATE_HZ", "500"),
         ("AD7606_OVERSAMPLING_RATIO", "1"),
     ):
         block = re.search(
@@ -555,13 +555,14 @@ def test_backend_config_symbols_resolve_for_test_and_ad7606_sources(tmp_path):
         )
         assert values[selected_source] == "y"
         if selected_source == "SEISMIC_SOURCE_TEST":
-            assert values["SEISMIC_AD7606_SAMPLE_RATE_HZ"] == "20000"
+            # 500 Hz since 2026-11-01: 20 kHz delivered ~2% of the conversions (docs/acquisition-ui-load-plan-2026-11-01.md).
+            assert values["SEISMIC_AD7606_SAMPLE_RATE_HZ"] == "500"
             assert values["AD7606_OVERSAMPLING_RATIO"] == "1"
         else:
             ad7606_values = values
 
     assert ad7606_values is not None
-    assert ad7606_values["SEISMIC_AD7606_SAMPLE_RATE_HZ"] == "20000"
+    assert ad7606_values["SEISMIC_AD7606_SAMPLE_RATE_HZ"] == "500"
     assert ad7606_values["AD7606_OVERSAMPLING_RATIO"] == "1"
     assert ad7606_values["AD7606_SPI_CLOCK_HZ"] == "10000000"
     assert ad7606_values["AD7606_READ_MODE_AFTER_CONVERSION"] == "n"

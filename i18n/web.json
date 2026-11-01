@@ -23,6 +23,7 @@
     "workflow.title.calib_prep": { "en": "Calibration setup", "uk": "Підготовка до калібрування" },
     "workflow.title.calibrating": { "en": "Calibration", "uk": "Калібрування" },
     "workflow.title.calib_result": { "en": "Calibration result", "uk": "Результат калібрування" },
+    "workflow.calib_result.next": { "en": "Next: place the geophones where they will record, then confirm they are placed. The positions are measured after that.", "uk": "Далі: розставте геофони там, де вони записуватимуть, і підтвердіть розстановку. Після цього вимірюються позиції." },
     "workflow.title.placement": { "en": "Sensor placement", "uk": "Розміщення датчиків" },
     "workflow.title.gps_choice": { "en": "Phone GPS", "uk": "GPS телефона" },
     "workflow.title.gps_pending": { "en": "Getting phone GPS", "uk": "Отримання GPS телефона" },

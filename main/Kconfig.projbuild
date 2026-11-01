@@ -21,7 +21,7 @@ menu "Seismic Acquisition"
 
     choice SEISMIC_AD7606_RATE
         prompt "AD7606 acquisition sample rate" if SEISMIC_SOURCE_AD7606
-        default SEISMIC_AD7606_RATE_20000
+        default SEISMIC_AD7606_RATE_500
 
         config SEISMIC_AD7606_RATE_500
             bool "500 Hz"
@@ -47,7 +47,7 @@ menu "Seismic Acquisition"
         default 10000 if SEISMIC_AD7606_RATE_10000
         default 20000 if SEISMIC_AD7606_RATE_20000
         default 40000 if SEISMIC_AD7606_RATE_40000
-        default 20000
+        default 500
 
     choice AD7606_OS_RATIO
         prompt "AD7606 oversampling jumper setting (must match OS0-2 jumpers)" if SEISMIC_SOURCE_AD7606

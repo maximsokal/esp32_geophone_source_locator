@@ -188,3 +188,22 @@ def test_panics_fail_the_boot_gate_and_a_clean_start_passes_it():
     panic = clean + "Guru Meditation Error: Core  1 panic'ed (LoadProhibited)\n"
     assert analyzer.analyze_text(panic).gate_status("G0") == analyzer.FAIL
     assert analyzer.analyze_text("").gate_status("G0") == analyzer.NOT_APPLICABLE
+
+
+def test_a_rate_line_cut_short_does_not_crash_the_analyzer():
+    cut = healthy_log(rate="I (39000) AD7606_RATE: AD7606_RATE: window_ms=1000 conv=20000 published=20000 "
+                           "attempts=20000 unstable=0 read_err=0 gaps=0 loops=20000 notify_max=1 "
+                           "isr=20000/300/900 loop=6000/9000 spi=3500/4000 pub=2000/3000 cpu_mhz=240 "
+                           "p2p=12/874/9683/2 rm\n")
+    report = analyzer.analyze_text(cut)
+    assert report.gate_status("G6") == analyzer.PASS
+    assert report.adc_rate_channels["ch1"]["p2p_max"] == 12
+    assert report.adc_rate_channels["ch1"]["rms10_max"] == 0
+
+
+def test_an_intentional_restart_is_not_a_boot_failure():
+    # esp_restart() and the safe-shutdown path print "Rebooting..."; only a panic or a failed boot must fail G0.
+    clean = "I (1200) app_init: Project name: x\nI (1300) cpu_start: Starting scheduler\nRebooting...\n"
+    assert analyzer.analyze_text(clean).gate_status("G0") == analyzer.PASS
+    panic = clean + "Guru Meditation Error: Core  1 panic'ed (LoadProhibited)\nRebooting...\n"
+    assert analyzer.analyze_text(panic).gate_status("G0") == analyzer.FAIL

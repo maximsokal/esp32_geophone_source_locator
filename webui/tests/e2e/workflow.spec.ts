@@ -375,8 +375,8 @@ for (const locale of ['en', 'uk'] as const) {
       expect(api.controls).toHaveLength(1);
     });
 
-    test('the geophone signals can be listened to from the calibration result without recording', async ({ page, api }) => {
-      Object.assign(api.status.workflow!, { step: 'CALIB_RESULT', allowed_actions: ['PLACE_SENSORS', 'BACK'] });
+    test('the geophone signals can be listened to after the positions are calculated, without recording', async ({ page, api }) => {
+      Object.assign(api.status.workflow!, { step: 'RANGING_RESULT', allowed_actions: ['CONFIRM', 'SET_DISTANCE', 'BACK'] });
       api.status.acquisition.running = false;
       api.overrides.set('GET /api/seismic', async route => {
         await route.fulfill({ json: { source: 'AD7606', sample_rate_hz: 500, count: 2, frame_count: 100,
@@ -393,7 +393,7 @@ for (const locale of ['en', 'uk'] as const) {
       await expect(page.locator('.seismic-live-card path').first()).not.toHaveAttribute('d', '');
       // Only the preview was started: no workflow command, no recording.
       expect(api.controls).toEqual([{ action: 'acquisition_start' }]);
-      await scenarioScreenshot(page, `calibration-result-live-${locale}`);
+      await scenarioScreenshot(page, `ranging-result-live-${locale}`);
     });
 
     test('after recording the operator reaches this recording in the object and can calculate it', async ({ page, api }) => {
@@ -420,11 +420,12 @@ for (const locale of ['en', 'uk'] as const) {
       expect(api.controls).toHaveLength(0);
     });
 
-    test('listening during sensor check is released when calibration starts and never blocks recording', async ({ page, api }) => {
+    test('after calibration the geophones are placed first; the live signals come after the positions and never block recording', async ({ page, api }) => {
+      const t = catalog[locale];
       const workflow = api.status.workflow!;
       const enter = (step: string, actions: string[]) =>
         Object.assign(workflow, { step, generation: workflow.generation + 1, allowed_actions: actions });
-      enter('SENSOR_CHECK', ['GO_CALIBRATION', 'BACK']);
+      enter('CALIB_RESULT', ['PLACE_SENSORS', 'BACK']);
       api.status.acquisition.running = false;
       api.overrides.set('GET /api/seismic', async route => {
         await route.fulfill({ json: { source: 'AD7606', sample_rate_hz: 500, count: 2, frame_count: 100,
@@ -443,23 +444,27 @@ for (const locale of ['en', 'uk'] as const) {
         expect(body.action).toBe('workflow_command');
         seen.push(body.command);
         expect(workflow.allowed_actions, `command must be allowed at ${workflow.step}`).toContain(body.command);
-        if (body.command === 'GO_CALIBRATION') enter('CALIB_PREP', ['SENSORS_PLACED', 'BACK']);
-        else if (body.command === 'SENSORS_PLACED') enter('CALIBRATING', ['BACK']);
+        if (body.command === 'PLACE_SENSORS') enter('PLACEMENT', ['BACK']);
+        else if (body.command === 'CONFIRM') enter('SCAN_CHOICE', ['SCAN_START', 'SCAN_SKIP', 'BACK']);
         else if (body.command === 'START_RECORDING') enter('RECORDING', ['STOP_RECORDING']);
         else throw new Error(`Unexpected command ${body.command}`);
         await route.fulfill({ json: { ok: true, workflow } });
       });
       await page.goto('/');
+      // After the calibration the operator is told to place the geophones; there is no way into the live view yet.
+      await expect(page.getByText(t['workflow.calib_result.next'])).toBeVisible();
+      await expect(page.locator('[data-command="LIVE_SIGNALS"]')).toHaveCount(0);
+      await page.locator('[data-command="PLACE_SENSORS"]').click();
+      await expect(page.locator('.workflow-page h2')).toHaveText(t['workflow.title.placement']);
+      await expect(page.locator('[data-command="LIVE_SIGNALS"]')).toHaveCount(0);
+      // The Channel Sounding positions are calculated before anything is shown live.
+      enter('RANGING_RESULT', ['CONFIRM', 'SET_DISTANCE', 'BACK']);
       await page.locator('[data-command="LIVE_SIGNALS"]').click();
       await expect(page.locator('.seismic-live-card path').first()).not.toHaveAttribute('d', '');
-      // Moving between two live steps keeps listening; no recording command was involved.
-      await page.locator('[data-command="GO_CALIBRATION"]').click();
-      await expect(page.locator('[data-command="SENSORS_PLACED"]')).toBeVisible();
-      await expect(page.locator('.seismic-live-card')).toBeVisible();
-      expect(seen).toEqual(['acquisition_start', 'GO_CALIBRATION']);
-      // IMU calibration owns the I2C bus: the preview is released and not offered again.
-      await page.locator('[data-command="SENSORS_PLACED"]').click();
-      await expect.poll(() => seen).toEqual(['acquisition_start', 'GO_CALIBRATION', 'SENSORS_PLACED', 'acquisition_stop']);
+      expect(seen).toEqual(['PLACE_SENSORS', 'acquisition_start']);
+      // Confirming the positions releases the preview and does not start a recording.
+      await page.locator('[data-command="CONFIRM"]').click();
+      await expect.poll(() => seen).toEqual(['PLACE_SENSORS', 'acquisition_start', 'CONFIRM', 'acquisition_stop']);
       await expect(page.locator('[data-command="LIVE_SIGNALS"]')).toHaveCount(0);
       await expect(page.locator('.seismic-live-card')).toHaveCount(0);
       // Recording starts from its own step, regardless of the earlier preview.
@@ -469,7 +474,7 @@ for (const locale of ['en', 'uk'] as const) {
       await page.locator('[data-command="START_RECORDING"]').click();
       await expect.poll(() => seen.at(-1)).toBe('START_RECORDING');
       await expect(page.locator('[data-command="STOP_RECORDING"]')).toBeVisible();
-      await scenarioScreenshot(page, `sensor-check-live-${locale}`);
+      await scenarioScreenshot(page, `calibration-to-recording-${locale}`);
     });
   });
 }

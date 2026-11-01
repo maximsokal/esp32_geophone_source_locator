@@ -188,25 +188,26 @@ static void entry_routes(void)
     for (unsigned remotes = 0U; remotes < 3U; ++remotes) {
         snapshot(WORKFLOW_STEP_SENSOR_CHECK, remotes, true);
         const unsigned commands = render_command_count;
+        const unsigned starts = render_acquisition_starts;
         enter(UI_SCREEN_MEASUREMENTS);
-        /* Sensor check offers the live view for listening only; it sends no workflow command. */
-        assert(render_context.screen == UI_SCREEN_MEASUREMENTS && render_context.measurement_listen_only);
-        assert(render_command_count == commands);
-        key(KEYPAD_KEY_LEFT);
-        /* Leaving it returns to the step it was opened from, not to HOME. */
+        /* The sensor check has no live view: navigation hands over to the workflow and starts nothing. */
         assert(render_context.screen == UI_SCREEN_WORKFLOW);
-        assert(render_command_count == commands);
+        assert(render_acquisition_starts == starts && render_command_count == commands);
         key(KEYPAD_KEY_OK);
         assert(render_command_count == commands + 1U && render_last_command == WORKFLOW_COMMAND_GO_CALIBRATION);
         checkpoint("initialize_fewer_than_three");
     }
     snapshot(WORKFLOW_STEP_SENSOR_CHECK, 0U, true);
     render_acquisition_result = ESP_ERR_INVALID_STATE;
+    const unsigned before = render_acquisition_starts;
     enter(UI_SCREEN_MEASUREMENTS);
-    /* The live view opens even when the ADC cannot start (it then shows the unavailable state) and
-     * hands the operator back to the workflow. */
-    assert(render_context.screen == UI_SCREEN_MEASUREMENTS && render_context.measurement_listen_only);
+    assert(render_context.screen == UI_SCREEN_WORKFLOW && render_acquisition_starts == before);
     checkpoint("acquisition_unavailable");
+    /* The ranging result is where the live view lives: it opens even when the ADC cannot start (it then shows
+     * the unavailable state) and LEFT hands the operator back to that step, not to HOME. */
+    snapshot(WORKFLOW_STEP_RANGING_RESULT, 3U, true);
+    enter(UI_SCREEN_MEASUREMENTS);
+    assert(render_context.screen == UI_SCREEN_MEASUREMENTS && render_context.measurement_listen_only);
     key(KEYPAD_KEY_LEFT);
     assert(render_context.screen == UI_SCREEN_WORKFLOW);
     home();

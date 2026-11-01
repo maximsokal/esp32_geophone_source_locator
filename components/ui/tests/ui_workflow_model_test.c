@@ -208,8 +208,8 @@ static void test_max460_tft_action_set_matches_core_for_guided_steps(void)
             assert(offered == allowed);
             if (allowed) ++expected_count;
         }
-        /* The only entry that is not a firmware command here is the live-signals view on the placement step. */
-        if (steps[step_index] == WORKFLOW_STEP_PLACEMENT) ++expected_count;
+        /* The only entry that is not a firmware command here is the live-signals view on the ranging result. */
+        if (steps[step_index] == WORKFLOW_STEP_RANGING_RESULT) ++expected_count;
         assert(model.action_count == expected_count);
     }
 }
@@ -507,6 +507,29 @@ static void test_unknown_values_and_ranging_sigma(void)
     snapshot = make_snapshot(WORKFLOW_STEP_RECORDING);
     build(&snapshot, &state, &ranging, &model);
     assert(model.lines[0].arg_keys[0] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
+}
+
+static void test_calibration_result_points_to_placing_the_geophones_next(void)
+{
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_CALIB_RESULT);
+    snapshot.calibration.result_valid = true;
+    snapshot.calibration.result_ok = true;
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACE_SENSORS) | WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+    build(&snapshot, &state, &ranging, &model);
+    /* The operator is told what comes after the calibration: placing the geophones, not the live view. */
+    assert(model.line_count >= 2U);
+    assert(model.lines[model.line_count - 1U].key == UI_I18N_KEY_TFT_WORKFLOW_CALIB_RESULT_NEXT);
+
+    /* A failed calibration offers a retry, not the next step: no such line. */
+    snapshot.calibration.result_ok = false;
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_RETRY) | WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+    build(&snapshot, &state, &ranging, &model);
+    for (size_t i = 0U; i < model.line_count; ++i) {
+        assert(model.lines[i].key != UI_I18N_KEY_TFT_WORKFLOW_CALIB_RESULT_NEXT);
+    }
 }
 
 static void test_calibration_phase_and_result_status(void)
@@ -842,10 +865,10 @@ static void test_selection_does_not_stick_to_back_after_a_step_with_only_back(vo
     snapshot.calibration.result_ok = true;
     snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK) | WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACE_SENSORS);
     build(&snapshot, &state, &ranging, &model);
-    assert(model.action_count == 3U);
+    /* After the calibration the next step is placing the geophones; the live signals come after the positions. */
+    assert(model.action_count == 2U);
     assert(model.actions[0] == WORKFLOW_COMMAND_PLACE_SENSORS);
-    assert(model.actions[1] == UI_WORKFLOW_ACTION_LIVE_SIGNALS);
-    assert(model.actions[2] == WORKFLOW_COMMAND_BACK);
+    assert(model.actions[1] == WORKFLOW_COMMAND_BACK);
     assert(model.actions[model.selected_action] == WORKFLOW_COMMAND_PLACE_SENSORS);
     ui_workflow_event_t event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_OK, 200U);
     assert(event.type == UI_WORKFLOW_EVENT_SEND_COMMAND);
@@ -854,7 +877,6 @@ static void test_selection_does_not_stick_to_back_after_a_step_with_only_back(vo
     /* A choice made inside a step is kept across rebuilds of that step. */
     state.has_pending = false;
     event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_DOWN, 201U);
-    event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_DOWN, 202U);
     build(&snapshot, &state, &ranging, &model);
     assert(model.actions[model.selected_action] == WORKFLOW_COMMAND_BACK);
     build(&snapshot, &state, &ranging, &model);
@@ -915,12 +937,11 @@ static void test_placement_shows_continue_with_the_blocking_reason_and_live_sign
     assert(strcmp(why->args[2], " 84/50mm") == 0);
     assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ROW);
 
-    /* Continue is on the list, ahead of the live view and Back, but is not a command the firmware would accept. */
-    assert(model.action_count == 3U);
+    /* Continue is on the list, ahead of Back, but is not a command the firmware would accept. */
+    assert(model.action_count == 2U);
     assert(model.actions[0] == UI_WORKFLOW_ACTION_PLACEMENT_BLOCKED);
     assert(model.action_keys[0] == UI_I18N_KEY_TFT_WORKFLOW_ACTION_PLACEMENT_CONFIRMED);
-    assert(model.actions[1] == UI_WORKFLOW_ACTION_LIVE_SIGNALS);
-    assert(model.actions[2] == WORKFLOW_COMMAND_BACK);
+    assert(model.actions[1] == WORKFLOW_COMMAND_BACK);
     assert((model.actions_mask & WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED)) == 0U);
     assert(model.selected_action == 0U);
 
@@ -929,11 +950,6 @@ static void test_placement_shows_continue_with_the_blocking_reason_and_live_sign
     assert(event.type == UI_WORKFLOW_EVENT_NONE);
     assert(state.notice_key == UI_I18N_KEY_TFT_WORKFLOW_NOTICE_PLACEMENT_BLOCKED);
     assert(!state.has_pending);
-
-    /* DOWN reaches the live signals, OK opens them (no workflow command). */
-    event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_DOWN, 501U);
-    event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_OK, 502U);
-    assert(event.type == UI_WORKFLOW_EVENT_OPEN_LIVE_SIGNALS);
 
     /* Still collecting: the sample count against the minimum instead of a spread. */
     set_placement_node(&snapshot, 2U, "G2", false, WORKFLOW_PLACEMENT_REASON_COLLECTING, 2U, -1);
@@ -951,7 +967,7 @@ static void test_placement_shows_continue_with_the_blocking_reason_and_live_sign
     snapshot.placement.all_stable = true;
     set_placement_node(&snapshot, 2U, "G2", true, WORKFLOW_PLACEMENT_REASON_STABLE, 5U, 3);
     build(&snapshot, &ready_state, &ranging, &model);
-    assert(model.action_count == 3U);
+    assert(model.action_count == 2U);
     assert(model.actions[0] == WORKFLOW_COMMAND_PLACEMENT_CONFIRMED);
     assert(model.lines[rows].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ALL_STABLE);   /* after the rows, no blocker line */
     assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ROW);
@@ -974,10 +990,27 @@ static void test_live_signals_are_offered_only_before_recording_steps_that_need_
         for (size_t i = 0U; i < model.action_count; ++i) {
             if (model.actions[i] == UI_WORKFLOW_ACTION_LIVE_SIGNALS) offered = true;
         }
-        /* Steps where the operator can check the geophones; never while IMU calibration owns the I2C bus. */
-        assert(offered == (step == WORKFLOW_STEP_SENSOR_CHECK || step == WORKFLOW_STEP_CALIB_PREP ||
-                           step == WORKFLOW_STEP_CALIB_RESULT || step == WORKFLOW_STEP_PLACEMENT));
+        /* Only once the BLE Channel Sounding positions exist: not during calibration, placing or ranging. */
+        assert(offered == (step == WORKFLOW_STEP_RANGING_RESULT));
     }
+}
+
+static void test_live_signals_open_from_the_ranging_result_without_a_workflow_command(void)
+{
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_RANGING_RESULT);
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM) | WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.action_count == 3U);
+    assert(model.actions[0] == WORKFLOW_COMMAND_CONFIRM);
+    assert(model.actions[1] == UI_WORKFLOW_ACTION_LIVE_SIGNALS);
+    assert(model.actions[2] == WORKFLOW_COMMAND_BACK);
+    ui_workflow_event_t event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_DOWN, 700U);
+    event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_OK, 701U);
+    assert(event.type == UI_WORKFLOW_EVENT_OPEN_LIVE_SIGNALS);
+    assert(!state.has_pending);
 }
 
 int main(void)
@@ -1001,6 +1034,7 @@ int main(void)
     test_selection_does_not_stick_to_back_after_a_step_with_only_back();
     test_placement_shows_continue_with_the_blocking_reason_and_live_signals();
     test_live_signals_are_offered_only_before_recording_steps_that_need_them();
+    test_live_signals_open_from_the_ranging_result_without_a_workflow_command();
     test_actions_follow_allowed_mask();
     test_async_sequence_wrap_keeps_new_request_pending();
     test_material_save_sequence_wrap_keeps_new_save_pending();
@@ -1014,6 +1048,7 @@ int main(void)
     test_pending_notices();
     test_unknown_values_and_ranging_sigma();
     test_calibration_phase_and_result_status();
+    test_calibration_result_points_to_placing_the_geophones_next();
     test_calibration_main_row_has_no_imu_fields();
     test_calibration_reason_mapping();
     test_result_routing_and_distances();

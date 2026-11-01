@@ -136,9 +136,12 @@ static bool placement_continue_blocked(const workflow_snapshot_t *snapshot)
 
 static bool live_signals_offered(const workflow_snapshot_t *snapshot)
 {
-    /* Not during CALIBRATING: starting the AD7606 then would load the I2C bus the IMU calibration is using. */
-    return snapshot->step == WORKFLOW_STEP_SENSOR_CHECK || snapshot->step == WORKFLOW_STEP_CALIB_PREP ||
-        snapshot->step == WORKFLOW_STEP_CALIB_RESULT || snapshot->step == WORKFLOW_STEP_PLACEMENT;
+    /*
+     * The operator order is: calibration, place the geophones, BLE Channel Sounding positions, and only then
+     * the live signals (with the positions known). Before that the live view would show empty positions and
+     * would load the AD7606 on top of the I2C work of calibration and ranging.
+     */
+    return snapshot->step == WORKFLOW_STEP_RANGING_RESULT;
 }
 
 /* What one s_action_order entry puts on the screen: the command, a stand-in for it, or extra entries before it. */
@@ -754,6 +757,10 @@ void ui_workflow_model_build(
             else unknown_arg(status, 0U);
             for (size_t i = 0U; i < snapshot->calibration.reasons_count && i < WORKFLOW_MAX_CALIBRATION_REASONS; ++i) {
                 add_reason(model, snapshot->calibration.reasons[i]);
+            }
+            /* A usable calibration leads to placing the geophones; the live signals come only after the positions. */
+            if ((snapshot->allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_PLACE_SENSORS)) != 0U) {
+                (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_CALIB_RESULT_NEXT);
             }
             break;
         }

@@ -24,10 +24,11 @@ import {
 const LiveSeismicPanel = lazy(() => import('../seismic/LiveSeismicPanel'));
 
 /**
- * Steps where the operator can listen to the geophones before the recording steps. Not CALIBRATING: starting the
- * AD7606 while the IMU calibration uses the I2C bus would starve it.
+ * The live geophone signals are offered once the BLE Channel Sounding positions have been calculated, not
+ * before: until then there are no positions to show, and the AD7606 would load the I2C work of calibration
+ * and ranging.
  */
-const LIVE_SIGNAL_STEPS = new Set(['SENSOR_CHECK', 'CALIB_PREP', 'CALIB_RESULT', 'PLACEMENT']);
+const LIVE_SIGNAL_STEPS = new Set(['RANGING_RESULT']);
 
 interface Props {
   status: DeviceStatus | null;
@@ -604,6 +605,9 @@ export default function WorkflowPanel({
           <WorkflowSection key={`${section.kind}-${index}`} section={section} status={status}
             onRangingSaved={onWorkflowUpdate} onRefresh={onRefreshStatus} />
         ))}
+        {workflow?.step === 'CALIB_RESULT' && workflow.allowed_actions.some((a) => a.toUpperCase() === 'PLACE_SENSORS') && (
+          <p>{t('workflow.calib_result.next')}</p>
+        )}
         {workflow?.step === 'STOPPED' && workflow.object_id && (
           <>
             {workflow.calc_settings_ready !== true && (

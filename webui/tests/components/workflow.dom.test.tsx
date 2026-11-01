@@ -71,10 +71,9 @@ describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
     expect(props.sendCommand).toHaveBeenCalledExactlyOnceWith('PLACEMENT_CONFIRMED', 7);
   });
 
-  it.each(['SENSOR_CHECK', 'CALIB_PREP', 'CALIB_RESULT', 'PLACEMENT'] as const)('lets the operator listen to the geophones at %s without recording', async (step) => {
+  it('lets the operator listen to the geophones at the ranging result without recording', async () => {
     const user = userEvent.setup();
-    const props = step === 'PLACEMENT' ? placementProps(['BACK'], false)
-      : panelProps(step, step === 'CALIB_RESULT' ? ['PLACE_SENSORS', 'BACK'] : ['BACK']);
+    const props = panelProps('RANGING_RESULT', ['CONFIRM', 'BACK']);
     props.status!.acquisition.running = false;
     const onAcquisition = vi.fn<NonNullable<Props['onAcquisition']>>().mockResolvedValue(undefined);
     renderUi(<WorkflowPanel {...props} onAcquisition={onAcquisition} />, locale);
@@ -87,7 +86,7 @@ describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
 
   it('shows the live signal panel once the preview runs and stops the preview when hidden', async () => {
     const user = userEvent.setup();
-    const props = placementProps(['BACK'], false);
+    const props = panelProps('RANGING_RESULT', ['CONFIRM', 'BACK']);
     props.status!.acquisition.running = true;
     const onAcquisition = vi.fn<NonNullable<Props['onAcquisition']>>().mockResolvedValue(undefined);
     renderUi(<WorkflowPanel {...props} onAcquisition={onAcquisition} />, locale);
@@ -99,11 +98,24 @@ describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
     expect(screen.queryByTestId('live-seismic')).toBeNull();
   });
 
-  // CALIBRATING owns the I2C bus for IMU calibration; later steps record or measure distances.
-  it.each(['CALIBRATING', 'RANGING', 'RECORD_READY'] as const)('offers no live signals at %s', (step) => {
+  // The live signals come only after the BLE Channel Sounding positions: never during calibration, placing or ranging.
+  it.each(['SENSOR_CHECK', 'CALIB_PREP', 'CALIBRATING', 'CALIB_RESULT', 'PLACEMENT', 'RANGING', 'RECORD_READY'] as const)('offers no live signals at %s', (step) => {
     const props = panelProps(step, ['BACK']);
     renderUi(<WorkflowPanel {...props} onAcquisition={vi.fn()} />, locale);
     expect(screen.queryByRole('button', { name: t('workflow.live.show') })).toBeNull();
+  });
+
+  it('tells the operator after the calibration that placing the geophones comes next, not the live view', () => {
+    const props = panelProps('CALIB_RESULT', ['PLACE_SENSORS', 'BACK']);
+    renderUi(<WorkflowPanel {...props} onAcquisition={vi.fn()} />, locale);
+    expect(screen.getByText(t('workflow.calib_result.next'))).toBeTruthy();
+    expect(screen.queryByRole('button', { name: t('workflow.live.show') })).toBeNull();
+  });
+
+  it('shows no next-step hint when the calibration must be repeated', () => {
+    const props = panelProps('CALIB_RESULT', ['RETRY', 'BACK']);
+    renderUi(<WorkflowPanel {...props} />, locale);
+    expect(screen.queryByText(t('workflow.calib_result.next'))).toBeNull();
   });
 
   // STOPPED loads the material settings of the object; the other steps in these tests make no HTTP request.
@@ -148,13 +160,13 @@ describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
 
   it('releases the preview when the workflow moves past the live steps', async () => {
     const user = userEvent.setup();
-    const props = panelProps('CALIB_RESULT', ['PLACE_SENSORS', 'BACK']);
+    const props = panelProps('RANGING_RESULT', ['CONFIRM', 'BACK']);
     props.status!.acquisition.running = false;
     const onAcquisition = vi.fn<NonNullable<Props['onAcquisition']>>().mockResolvedValue(undefined);
     const view = renderUi(<WorkflowPanel {...props} onAcquisition={onAcquisition} />, locale);
     await user.click(screen.getByRole('button', { name: t('workflow.live.show') }));
     expect(onAcquisition).toHaveBeenCalledExactlyOnceWith(true);
-    const next = panelProps('RANGING', ['BACK']);
+    const next = panelProps('SCAN_CHOICE', ['SCAN_START', 'SCAN_SKIP', 'BACK']);
     view.rerender(<WorkflowPanel {...next} onAcquisition={onAcquisition} />);
     await waitFor(() => expect(onAcquisition).toHaveBeenLastCalledWith(false));
     expect(onAcquisition).toHaveBeenCalledTimes(2);
@@ -162,7 +174,7 @@ describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
 
   it('releases the preview when the panel is left while listening', async () => {
     const user = userEvent.setup();
-    const props = panelProps('SENSOR_CHECK', ['GO_CALIBRATION', 'BACK']);
+    const props = panelProps('RANGING_RESULT', ['CONFIRM', 'BACK']);
     props.status!.acquisition.running = false;
     const onAcquisition = vi.fn<NonNullable<Props['onAcquisition']>>().mockResolvedValue(undefined);
     const view = renderUi(<WorkflowPanel {...props} onAcquisition={onAcquisition} />, locale);
@@ -174,10 +186,10 @@ describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
   });
 
   it('does not touch the acquisition when the preview was never shown', async () => {
-    const props = panelProps('CALIB_RESULT', ['PLACE_SENSORS', 'BACK']);
+    const props = panelProps('RANGING_RESULT', ['CONFIRM', 'BACK']);
     const onAcquisition = vi.fn<NonNullable<Props['onAcquisition']>>().mockResolvedValue(undefined);
     const view = renderUi(<WorkflowPanel {...props} onAcquisition={onAcquisition} />, locale);
-    view.rerender(<WorkflowPanel {...panelProps('RANGING', ['BACK'])} onAcquisition={onAcquisition} />);
+    view.rerender(<WorkflowPanel {...panelProps('SCAN_CHOICE', ['SCAN_SKIP', 'BACK'])} onAcquisition={onAcquisition} />);
     view.unmount();
     expect(onAcquisition).not.toHaveBeenCalled();
   });
