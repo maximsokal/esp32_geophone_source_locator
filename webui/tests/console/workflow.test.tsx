@@ -71,7 +71,7 @@ const calibration = {
   reasons: [],
 };
 
-const placement = { per_node: [], all_stable: false, max_range_mm: 50, min_samples: 3 };
+const placement = { per_node: [], all_stable: false, max_range_mm: 100, min_samples: 8 };
 
 function workflow(step: string, actions: string[] = [], extra: Partial<DeviceWorkflowStatus> = {}): DeviceWorkflowStatus {
   return {
@@ -213,8 +213,8 @@ describe('workflow view model (MAX-296)', () => {
       },
     };
     const html = panelHtml(status);
-    expect(html).toMatch(/Nodes 1–2: 1,?100 mm<\/p>/);
-    expect(html).toContain('Forward and reverse measurements differ by 200 mm');
+    expect(html).toMatch(/Nodes 1–2: 110 cm<\/p>/);   // 1100 mm
+    expect(html).toContain('Forward and reverse measurements differ by 20 cm');
     expect(html).toContain('Failed attempts: 2');
     expect(html).toContain('Measured in one direction only');
     expect(html).not.toContain('differ by 0');
@@ -358,7 +358,7 @@ describe('workflow view model (MAX-296)', () => {
       const expected = max460AllowedActions[step];
       const status = statusFor(step, [...expected], 4, {
         generation: 460,
-        placement: { per_node: [], all_stable: true, max_range_mm: 50, min_samples: 3 },
+        placement: { per_node: [], all_stable: true, max_range_mm: 100, min_samples: 8 },
       });
       const modelActions = workflowViewModel(status).actions;
       expect(modelActions.map((action) => action.command).sort()).toEqual([...expected].sort());

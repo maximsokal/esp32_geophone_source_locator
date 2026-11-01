@@ -31,13 +31,13 @@ describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
     const props = panelProps('PLACEMENT', allowed);
     props.status!.workflow!.placement = {
       all_stable: allStable,
-      max_range_mm: 50,
-      min_samples: 3,
+      max_range_mm: 100,
+      min_samples: 8,
       per_node: [
         { node: 'MAIN', vertical: true, height_rel_main_mm: 0, altitude_asl_m: 10, stable: true,
           reason: 'stable', samples: 30, range_mm: 0 },
         { node: 'G2', vertical: true, height_rel_main_mm: 84, altitude_asl_m: 10.1, stable: allStable,
-          reason: allStable ? 'stable' : 'range_exceeded', samples: 5, range_mm: allStable ? 2 : 84 },
+          reason: allStable ? 'stable' : 'range_exceeded', samples: 9, range_mm: allStable ? 2 : 134 },
       ],
     };
     return props;
@@ -53,11 +53,31 @@ describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
     const blocked = screen.getByTestId('placement-blocked');
     expect(blocked.textContent).toContain('G2');
     expect(blocked.textContent).toContain(t('workflow.placement.reason.range_exceeded'));
-    expect(blocked.textContent).toContain('84');
+    // 134 mm of uncertainty is shown rounded up to whole centimetres, in the unit of the locale.
+    expect(blocked.textContent).toContain(locale === 'uk' ? '14 см' : '14 cm');
+    expect(blocked.textContent).not.toMatch(/mm|мм/);
     await user.click(proceed);
     expect(props.sendCommand).not.toHaveBeenCalled();
     // The per-node reason is listed too.
     expect(document.querySelector('[data-reason="range_exceeded"]')).not.toBeNull();
+  });
+
+  it('shows heights and uncertainty in centimetres, rounded as on the TFT, never in millimetres', () => {
+    const props = placementProps(['BACK'], false);
+    const nodes = props.status!.workflow!.placement.per_node;
+    nodes[0].height_rel_main_mm = 0;
+    nodes[1].height_rel_main_mm = 1234;     /* 123 cm */
+    nodes[1].range_mm = 101;                /* an uncertainty rounds up: 11 cm against the 10 cm limit */
+    renderUi(<WorkflowPanel {...props} />, locale);
+    const unit = locale === 'uk' ? 'см' : 'cm';
+    const text = document.body.textContent ?? '';
+    expect(text).toContain(`123 ${unit}`);
+    expect(text).toContain(`11 ${unit}`);
+    expect(text).toContain(`0 ${unit}`);
+    expect(text).not.toContain('1234');
+    expect(text).not.toMatch(/\d\s?(mm|мм)/);
+    // The rule the operator reads: 10 cm, taken from the limit the firmware reports.
+    expect(text).toContain(locale === 'uk' ? '10 см' : '10 cm');
   });
 
   it('enables Continue and sends it once every node is stable', async () => {

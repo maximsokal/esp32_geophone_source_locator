@@ -586,7 +586,8 @@ static void test_calibration_main_row_has_no_imu_fields(void)
     assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_ROW_MAIN);
     assert(strcmp(model.lines[1].args[0], "MAIN") == 0);
     assert(model.lines[1].arg_keys[1] == UI_I18N_KEY_TFT_WORKFLOW_STATE_VALID);
-    assert(strcmp(model.lines[1].args[2], "120") == 0);
+    assert(strcmp(model.lines[1].args[2], "12") == 0);    /* 120 mm, shown in centimetres */
+    assert(strcmp(model.lines[2].args[2], "1") == 0);     /* 5 mm rounds to the nearest centimetre */
     assert(model.lines[2].key == UI_I18N_KEY_TFT_WORKFLOW_CALIBRATION_ROW);
     assert(model.lines[2].arg_keys[3] == UI_I18N_KEY_TFT_WORKFLOW_STATE_CALIBRATED);
 }
@@ -834,7 +835,7 @@ static void test_ranging_result_displays_pair_values(void)
         if (model.lines[i].key != UI_I18N_KEY_TFT_WORKFLOW_RANGING_DISTANCE) continue;
         assert(strcmp(model.lines[i].args[0], "0") == 0);
         assert(strcmp(model.lines[i].args[1], found == 0U ? "1" : "2") == 0);
-        if (found == 0U) assert(strcmp(model.lines[i].args[2], "1234") == 0);
+        if (found == 0U) assert(strcmp(model.lines[i].args[2], "123") == 0);   /* 1234 mm, shown in centimetres */
         else assert(model.lines[i].arg_keys[2] != UI_I18N_KEY_COUNT);
         ++found;
     }
@@ -924,7 +925,7 @@ static void test_placement_shows_continue_with_the_blocking_reason_and_live_sign
     snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
     set_placement_node(&snapshot, 0U, "MAIN", true, WORKFLOW_PLACEMENT_REASON_STABLE, 30U, 0);
     set_placement_node(&snapshot, 1U, "G1", true, WORKFLOW_PLACEMENT_REASON_STABLE, 4U, 2);
-    set_placement_node(&snapshot, 2U, "G2", false, WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED, 5U, 84);
+    set_placement_node(&snapshot, 2U, "G2", false, WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED, 9U, 134);
     build(&snapshot, &state, &ranging, &model);
 
     /* The first node that is not stable is named, with its reason and the number behind it, above the rows. */
@@ -934,7 +935,7 @@ static void test_placement_shows_continue_with_the_blocking_reason_and_live_sign
     assert(why->key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_BLOCKED);
     assert(strcmp(why->args[0], "G2") == 0);
     assert(why->arg_keys[1] == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED);
-    assert(strcmp(why->args[2], " 84/50mm") == 0);
+    assert(strcmp(why->args[2], " 14/10cm") == 0);   /* 134 mm over the 100 mm limit, rounded up */
     assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ROW);
 
     /* Continue is on the list, ahead of Back, but is not a command the firmware would accept. */
@@ -951,11 +952,18 @@ static void test_placement_shows_continue_with_the_blocking_reason_and_live_sign
     assert(state.notice_key == UI_I18N_KEY_TFT_WORKFLOW_NOTICE_PLACEMENT_BLOCKED);
     assert(!state.has_pending);
 
-    /* Still collecting: the sample count against the minimum instead of a spread. */
+    /* An uncertainty is rounded up: one millimetre over the limit must not read as equal to it. */
+    set_placement_node(&snapshot, 2U, "G2", false, WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED, 9U, WORKFLOW_PLACEMENT_MAX_RANGE_MM + 1);
+    build(&snapshot, &state, &ranging, &model);
+    assert(strcmp(model.lines[0].args[2], " 11/10cm") == 0);
+
+    /* Still collecting: the sample count against the minimum instead of an uncertainty. */
     set_placement_node(&snapshot, 2U, "G2", false, WORKFLOW_PLACEMENT_REASON_COLLECTING, 2U, -1);
     build(&snapshot, &state, &ranging, &model);
     assert(model.lines[0].arg_keys[1] == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_REASON_COLLECTING);
-    assert(strcmp(model.lines[0].args[2], " 2/3") == 0);
+    char collecting[16];
+    (void)snprintf(collecting, sizeof(collecting), " 2/%u", (unsigned)WORKFLOW_PLACEMENT_MIN_SAMPLES);
+    assert(strcmp(model.lines[0].args[2], collecting) == 0);
     /* A reason with no number leaves that part empty. */
     set_placement_node(&snapshot, 2U, "G2", false, WORKFLOW_PLACEMENT_REASON_NOT_VERTICAL, 0U, -1);
     build(&snapshot, &state, &ranging, &model);
@@ -974,6 +982,68 @@ static void test_placement_shows_continue_with_the_blocking_reason_and_live_sign
     event = ui_workflow_model_handle_key(&snapshot, &ready_state, UI_WORKFLOW_KEY_OK, 600U);
     assert(event.type == UI_WORKFLOW_EVENT_SEND_COMMAND);
     assert(event.command == WORKFLOW_COMMAND_PLACEMENT_CONFIRMED);
+}
+
+/* The operator asked for 0.1 m: heights are centimetres, rounded to the nearest, halves away from zero. */
+static void test_placement_heights_are_shown_in_centimetres(void)
+{
+    static const struct { int64_t mm; const char *cm; } cases[] = {
+        { 0, "0" }, { 4, "0" }, { 5, "1" }, { 14, "1" }, { 15, "2" }, { 120, "12" }, { 1234, "123" },
+        { -4, "0" }, { -5, "-1" }, { -14, "-1" }, { -15, "-2" }, { -129, "-13" }, { -1234, "-123" },
+    };
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_PLACEMENT);
+        snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+        snapshot.placement.all_stable = true;
+        set_placement_node(&snapshot, 0U, "G1", true, WORKFLOW_PLACEMENT_REASON_STABLE, 9U, 0);
+        snapshot.placement.per_node[0].height_rel_main_mm_valid = true;
+        snapshot.placement.per_node[0].height_rel_main_mm = cases[i].mm;
+        ui_workflow_model_t model;
+        build(&snapshot, &state, &ranging, &model);
+        assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ROW);
+        assert(strcmp(model.lines[0].args[2], cases[i].cm) == 0);
+    }
+}
+
+/* Ranging distances, the residual and the sigma are shown in centimetres, rounded to the nearest. */
+static void test_ranging_values_are_shown_in_centimetres(void)
+{
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_RANGING_RESULT);
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM) | WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+    ranging.available = true;
+    ranging.pairs_done = 3U;
+    ranging.pairs_total = 3U;
+    ranging.residual_valid = true;
+    ranging.residual_mm = 74;                 /* 7 cm */
+    ranging.pair_count = 1U;
+    ranging.pairs[0].node_a = 0U;
+    ranging.pairs[0].node_b = 1U;
+    ranging.pairs[0].valid = true;
+    ranging.pairs[0].distance_mm = 2345;      /* 235 cm, half away from zero */
+    ranging.node_count = 1U;
+    (void)snprintf(ranging.nodes[0], sizeof(ranging.nodes[0]), "G1");
+    ranging.sigma_mm[0] = 124;                /* 12 cm */
+    build(&snapshot, &state, &ranging, &model);
+
+    bool saw_pairs = false, saw_distance = false, saw_sigma = false;
+    for (size_t i = 0U; i < model.line_count; ++i) {
+        if (model.lines[i].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_PAIRS) {
+            saw_pairs = true;
+            assert(strcmp(model.lines[i].args[2], "7") == 0);
+        } else if (model.lines[i].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_DISTANCE) {
+            saw_distance = true;
+            assert(strcmp(model.lines[i].args[2], "235") == 0);
+        } else if (model.lines[i].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_SIGMA) {
+            saw_sigma = true;
+            assert(strcmp(model.lines[i].args[1], "12") == 0);
+        }
+    }
+    assert(saw_pairs && saw_distance && saw_sigma);
 }
 
 static void test_live_signals_are_offered_only_before_recording_steps_that_need_them(void)
@@ -1033,6 +1103,8 @@ int main(void)
     test_all_steps();
     test_selection_does_not_stick_to_back_after_a_step_with_only_back();
     test_placement_shows_continue_with_the_blocking_reason_and_live_signals();
+    test_placement_heights_are_shown_in_centimetres();
+    test_ranging_values_are_shown_in_centimetres();
     test_live_signals_are_offered_only_before_recording_steps_that_need_them();
     test_live_signals_open_from_the_ranging_result_without_a_workflow_command();
     test_actions_follow_allowed_mask();

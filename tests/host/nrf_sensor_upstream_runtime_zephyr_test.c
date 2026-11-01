@@ -1589,6 +1589,12 @@ int main(void)
         s_change_pressure = true;
         s_fake_pressure_pa = 100000U;
         process_refresh_request(43U);
+        /* One reading far from the last five is an outlier of the window: the reported altitude does not move. */
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        assert(snapshot.altitude_mm == captured_altitude_mm && snapshot.relative_z_mm == 0);
+        /* A real change (the node was lifted) is followed once it has lasted three refreshes. */
+        process_refresh_request(143U);
+        process_refresh_request(144U);
         assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
         assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
         assert(snapshot.reference_generation == 42U);

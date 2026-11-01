@@ -72,6 +72,20 @@ function mmText(value: unknown, locale: 'en' | 'uk'): string {
   return number === WORKFLOW_UNKNOWN ? number : `${number} mm`;
 }
 
+/**
+ * Placement heights are shown in centimetres: the barometers cannot vouch for millimetres and the operator
+ * asks for 0.1 m. A height is rounded to the nearest centimetre (halves away from zero, as on the TFT); an
+ * uncertainty is rounded up so that a bound over its limit never reads as equal to it.
+ */
+function cmText(value: unknown, locale: 'en' | 'uk', rounding: 'nearest' | 'up'): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return WORKFLOW_UNKNOWN;
+  const centimetres = rounding === 'up'
+    ? Math.ceil(value / 10)
+    : value < 0 ? -Math.round(-value / 10) : Math.round(value / 10);
+  const number = workflowNumberText(centimetres || 0, locale);
+  return number === WORKFLOW_UNKNOWN ? number : `${number} ${locale === 'uk' ? 'см' : 'cm'}`;
+}
+
 function yesNo(value: unknown, t: (key: I18nKey) => string): string {
   if (value === true) return t('report.yes');
   if (value === false) return t('report.no');
@@ -159,7 +173,7 @@ function CalibrationNode({ node, locale }: { node: WorkflowCalibrationNode; loca
       <h3>{node.node || WORKFLOW_UNKNOWN}</h3>
       <dl className="console-dl">
         <div><dt>{t('workflow.calibration.height')}</dt><dd>{stateLabel(node.height?.state, HEIGHT_STATE_KEYS, t)}</dd></div>
-        <div><dt>{t('workflow.calibration.relative_z')}</dt><dd>{mmText(node.height?.relative_z_mm, locale)}</dd></div>
+        <div><dt>{t('workflow.calibration.relative_z')}</dt><dd>{cmText(node.height?.relative_z_mm, locale, 'nearest')}</dd></div>
         <div><dt>{t('workflow.calibration.imu')}</dt><dd>{stateLabel(node.imu?.state, IMU_STATE_KEYS, t)}</dd></div>
         <div><dt>{t('workflow.calibration.gyro_bias')}</dt><dd>{imuVector(node.imu?.gyro_bias_mdps, locale)} mdps</dd></div>
         <div><dt>{t('workflow.calibration.gravity')}</dt><dd>{imuVector(node.imu?.gravity_ref_mg, locale)} mg</dd></div>
@@ -180,7 +194,7 @@ function PlacementSection({ value }: { value: Extract<WorkflowBodySection, { kin
   return (
     <>
       <p>{t('workflow.placement.limit', {
-        max: formatNumber(locale, value.max_range_mm),
+        max: formatNumber(locale, Math.ceil(value.max_range_mm / 10)),
         samples: formatNumber(locale, value.min_samples),
       })}</p>
       {!value.all_stable && blocker !== null && (
@@ -189,7 +203,7 @@ function PlacementSection({ value }: { value: Extract<WorkflowBodySection, { kin
           <p>{t('workflow.placement.blocked_detail', {
             node: blocker.node,
             samples: formatNumber(locale, blocker.samples),
-            range: mmText(blocker.range_mm, locale),
+            range: cmText(blocker.range_mm, locale, 'up'),
           })}</p>
         </div>
       )}
@@ -199,12 +213,12 @@ function PlacementSection({ value }: { value: Extract<WorkflowBodySection, { kin
             <h3>{node.node || WORKFLOW_UNKNOWN}</h3>
             <dl className="console-dl">
               <div><dt>{t('workflow.placement.vertical')}</dt><dd>{yesNo(node.vertical, t)}</dd></div>
-              <div><dt>{t('workflow.placement.height_rel_main')}</dt><dd>{mmText(node.height_rel_main_mm, locale)}</dd></div>
+              <div><dt>{t('workflow.placement.height_rel_main')}</dt><dd>{cmText(node.height_rel_main_mm, locale, 'nearest')}</dd></div>
               <div><dt>{t('workflow.placement.altitude_asl')}</dt><dd>{node.altitude_asl_m === null ? WORKFLOW_UNKNOWN : `${workflowNumberText(node.altitude_asl_m, locale)} m`}</dd></div>
               <div><dt>{t('workflow.placement.stable')}</dt><dd>{yesNo(node.stable, t)}</dd></div>
               <div><dt>{t('workflow.placement.reason')}</dt><dd data-reason={node.reason}>{reasonText(node.reason)}</dd></div>
               <div><dt>{t('workflow.placement.samples')}</dt><dd>{formatNumber(locale, node.samples)}</dd></div>
-              <div><dt>{t('workflow.placement.range')}</dt><dd>{mmText(node.range_mm, locale)}</dd></div>
+              <div><dt>{t('workflow.placement.range')}</dt><dd>{cmText(node.range_mm, locale, 'up')}</dd></div>
             </dl>
           </article>
         ))}
@@ -239,20 +253,20 @@ function RangingSection({ value, workflowReason, workflow, onSaved, onRefresh }:
       <p>{t('workflow.ranging.pairs')}: {workflowNumberText(done, locale)} / {workflowNumberText(total, locale)}
         {percent !== null && ` (${formatPercent(locale, percent / 100)})`}</p>
       <progress max={100} value={percent ?? undefined} aria-label={t('workflow.ranging.pairs')} />
-      <p>{t('workflow.ranging.residual')}: {mmText(residual, locale)}</p>
+      <p>{t('workflow.ranging.residual')}: {cmText(residual, locale, 'nearest')}</p>
       {(progress?.pairs ?? lastResult?.pairs ?? []).map((pair, index) => (
         <div key={`${pair.node_a}-${pair.node_b}-${index}`}><p>
           {t('workflow.ranging.pair_distance', { a: pair.node_a, b: pair.node_b })}:{' '}
           {pair.state === 'cable_exceeded'
-            ? `${mmText(pair.distance_mm, locale)} \u2014 ${t('workflow.ranging.cable_exceeded')}`
+            ? `${cmText(pair.distance_mm, locale, 'nearest')} \u2014 ${t('workflow.ranging.cable_exceeded')}`
             : pair.state === 'valid' && pair.distance_mm >= 0
-              ? mmText(pair.distance_mm, locale) : t('workflow.ranging.pair_unavailable')}
+              ? cmText(pair.distance_mm, locale, 'nearest') : t('workflow.ranging.pair_unavailable')}
           {pair.manual === true && ` (${t('workflow.distance.manual')})`}
         </p>
         {rangingPairQualityNotes(pair).map((note) => (
           <p key={note.key} className="workflow-ranging-quality">
             {note.key === 'workflow.ranging.pair_disagreement'
-              ? t(note.key, { value: mmText(note.value, locale) })
+              ? t(note.key, { value: cmText(note.value, locale, 'nearest') })
               : note.key === 'workflow.ranging.pair_failed_attempts'
                 ? t(note.key, { count: workflowNumberText(note.count, locale) })
                 : t(note.key)}
@@ -273,7 +287,7 @@ function RangingSection({ value, workflowReason, workflow, onSaved, onRefresh }:
         return (
           <p key={`${node.node_id}-${index}`}>
             {t('workflow.ranging.remote_sigma', { number: workflowNumberText(node.node_id, locale) })}:{' '}
-            {uncertainty === null ? WORKFLOW_UNKNOWN : mmText(uncertainty, locale)}
+            {uncertainty === null ? WORKFLOW_UNKNOWN : cmText(uncertainty, locale, 'nearest')}
           </p>
         );
       })}

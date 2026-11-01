@@ -160,8 +160,13 @@ def test_max460_workflow_tests_are_in_main_and_manifest_targets():
     assert "test_back_clears_downstream_workflow_choices();" in core
     assert "test_ranging_success_and_confirm_preserve_frozen_result();" in wfa
     assert "test_max460_layout_success_failure_reason_retry_and_back();" in wfa
-    assert "test_placement_sample_count_and_calculate_guard();" in wfa
-    assert "test_placement_uses_inclusive_window();" in wfa
+    assert "test_placement_needs_a_full_window_of_samples_and_reports_their_mean();" in wfa
+    assert "test_placement_window_boundary_is_inclusive();" in wfa
+    # The 0.1 m rule and the real bench log (2026-11-01 18:16) that the old 50 mm rule never accepted.
+    assert "test_placement_uncertainty_of_the_mean_is_bounded_at_100_mm();" in wfa
+    assert "test_placement_accepts_the_noisy_bench_log_of_2026_11_01();" in wfa
+    assert "test_placement_cancels_the_wander_of_the_main_barometer();" in wfa
+    assert "test_placement_with_noisy_barometers_settles_and_reports_the_true_height();" in service
     assert "test_layout_rechecks_placement_after_gps_choice();" in wfa
     assert "test_max460_guided_step_content_and_placement_gate();" in ui
     assert "test_workflow_gps_accept_parses_fix_and_optional_altitude();" in api

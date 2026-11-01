@@ -29,6 +29,8 @@ typedef struct {
     /* Humidity is skipped (0x8000) when CTRL_HUM oversampling is 0 at CTRL_MEAS write. */
     bool emulate_humidity_gate;
     bool ignore_forced;
+    /* Writes to CONFIG (the IIR filter): the sensor must not be rewritten when it already holds its setup. */
+    int config_writes;
     int transfer_count;
     int fail_at_transfer;
     uint8_t address_history[64];
@@ -93,6 +95,7 @@ static int fake_transfer(
     if (write_len == 2U && read_len == 0U && write_data != NULL) {
         if (fake->ignore_forced && write_data[0] == TEST_REG_CTRL_MEAS &&
             (write_data[1] & 3U) == 1U) return 0;
+        if (write_data[0] == TEST_REG_CONFIG) fake->config_writes++;
         regs[write_data[0]] = write_data[1];
         if (fake->emulate_humidity_gate && write_data[0] == TEST_REG_CTRL_MEAS &&
             (regs[TEST_REG_CTRL_HUM] & 0x07U) == 0U) {
@@ -204,6 +207,7 @@ static void assert_sample_zero(const nrf_env_sample_t *sample)
     assert(sample != NULL);
     assert(sample->temperature_milli_c == 0);
     assert(sample->pressure_pa == 0U);
+    assert(sample->pressure_x100_pa == 0U);
     assert(sample->humidity_milli_percent == 0U);
 }
 
@@ -492,6 +496,77 @@ static void test_read_restores_humidity_setup_after_sensor_reset(void)
     assert(sample.pressure_pa == 100653U);
 }
 
+static void test_sample_keeps_the_pressure_to_a_hundredth_of_a_pascal(void)
+{
+    fake_bme280_bus_t fake;
+    seed_sensor(&fake, NRF_BME280_ADDRESS_PRIMARY);
+    nrf_sensor_bus_t bus = make_bus(&fake);
+    nrf_bme280_t device;
+    nrf_env_sample_t first, second;
+    assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_OK);
+    pack_measurement(fake.regs[0], 415148U, 519888U, 30000U);
+    assert(nrf_bme280_read_env(&device, &first) == NRF_BME280_OK);
+    /* One raw step further: a fraction of a pascal, which the whole-pascal value of the old protocol cannot show. */
+    pack_measurement(fake.regs[0], 415152U, 519888U, 30000U);
+    assert(nrf_bme280_read_env(&device, &second) == NRF_BME280_OK);
+
+    assert(first.pressure_pa == (first.pressure_x100_pa + 50U) / 100U);
+    assert(second.pressure_pa == (second.pressure_x100_pa + 50U) / 100U);
+    assert(first.pressure_x100_pa >= 10065200U && first.pressure_x100_pa <= 10065400U);
+    assert(second.pressure_x100_pa != first.pressure_x100_pa);
+    const uint32_t step_x100 = second.pressure_x100_pa > first.pressure_x100_pa
+        ? second.pressure_x100_pa - first.pressure_x100_pa : first.pressure_x100_pa - second.pressure_x100_pa;
+    assert(step_x100 > 20U && step_x100 < 100U);          /* 0.2 .. 1 Pa: below one whole pascal */
+
+    /* ...and the altitude computed from it follows, by 83 mm per pascal. */
+    const int32_t altitude_first = nrf_baro_pressure_x100_to_altitude_mm(first.pressure_x100_pa);
+    const int32_t altitude_second = nrf_baro_pressure_x100_to_altitude_mm(second.pressure_x100_pa);
+    const int32_t delta_mm = altitude_first - altitude_second;
+    assert(delta_mm != 0 && (delta_mm < 83 && delta_mm > -83));
+    assert(delta_mm - (((int32_t)second.pressure_x100_pa - (int32_t)first.pressure_x100_pa) * 10) / 12 >= -1);
+    assert(delta_mm - (((int32_t)second.pressure_x100_pa - (int32_t)first.pressure_x100_pa) * 10) / 12 <= 1);
+}
+
+static void test_altitude_from_hundredths_matches_the_whole_pascal_model(void)
+{
+    for (uint32_t pressure_pa = 30000U; pressure_pa <= 120000U; pressure_pa += 7U) {
+        const int32_t whole = nrf_baro_pressure_to_altitude_mm(pressure_pa);
+        const int32_t fine = nrf_baro_pressure_x100_to_altitude_mm(pressure_pa * 100U);
+        assert(fine - whole >= -1 && fine - whole <= 1);
+    }
+    /* 12 hundredths of a pascal are 10 mm of height; a whole pascal is 83. */
+    assert(nrf_baro_pressure_x100_to_altitude_mm(10132500U - 12U) - nrf_baro_pressure_x100_to_altitude_mm(10132500U) == 10);
+    assert(nrf_baro_pressure_x100_to_altitude_mm(10132500U - 100U) == 83);
+    assert(nrf_baro_pressure_x100_to_altitude_mm(0U) == 8443750);
+    assert(nrf_baro_pressure_x100_to_altitude_mm(UINT32_MAX) < 0);
+}
+
+static void test_conversions_do_not_rewrite_the_filter_setting_unless_it_was_lost(void)
+{
+    fake_bme280_bus_t fake;
+    seed_sensor(&fake, NRF_BME280_ADDRESS_PRIMARY);
+    nrf_sensor_bus_t bus = make_bus(&fake);
+    nrf_bme280_t device;
+    nrf_env_sample_t sample;
+    assert(nrf_bme280_init(&device, &bus, fake_delay_ms, &fake) == NRF_BME280_OK);
+    pack_measurement(fake.regs[0], 415148U, 519888U, 30000U);
+    const int writes_after_init = fake.config_writes;
+    assert(writes_after_init >= 1);                       /* the setup writes it once */
+
+    for (int i = 0; i < 4; ++i) {
+        assert(nrf_bme280_read_env(&device, &sample) == NRF_BME280_OK);
+    }
+    assert(fake.config_writes == writes_after_init);      /* four conversions, no rewrite */
+
+    /* A sensor that lost its setup is put back, once, before the conversion. */
+    fake.regs[0][TEST_REG_CONFIG] = 0U;
+    assert(nrf_bme280_read_env(&device, &sample) == NRF_BME280_OK);
+    assert(fake.config_writes == writes_after_init + 1);
+    assert((fake.regs[0][TEST_REG_CONFIG] & 0x1CU) == 0x10U);
+    assert(nrf_bme280_read_env(&device, &sample) == NRF_BME280_OK);
+    assert(fake.config_writes == writes_after_init + 1);
+}
+
 static void test_state_machine_initialization_and_recovery(void)
 {
     const uint8_t ids[] = {NRF_BMP280_CHIP_ID, NRF_BME280_CHIP_ID};
@@ -733,6 +808,9 @@ int main(void)
     test_forced_conversion_can_be_polled_without_sleep();
     test_state_machine_initialization_and_recovery();
     test_read_restores_humidity_setup_after_sensor_reset();
+    test_sample_keeps_the_pressure_to_a_hundredth_of_a_pascal();
+    test_altitude_from_hundredths_matches_the_whole_pascal_model();
+    test_conversions_do_not_rewrite_the_filter_setting_unless_it_was_lost();
     test_pressure_to_altitude_mm_linear_approximation();
     test_init_rejects_invalid_arguments();
     test_init_detects_primary_and_configures_forced_profile();

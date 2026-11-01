@@ -1382,6 +1382,16 @@ static esp_err_t seismic_recorder_prepare_geometry(
         main_reference.relative_z_mm = device_status.main.height_reference.relative_z_mm;
     }
 
+    /* Z comes from the heights the placement step settled, where it settled them for this MAIN reference. */
+    if (main_reference.valid) {
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            if (topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+            channels[channel].placement_height_valid = nrf_topology_service_get_placement_height_mm(
+                topology.remotes[channel].node_id, main_reference.generation,
+                &channels[channel].placement_height_mm);
+        }
+    }
+
     nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
     size_t input_count = 0U;
     seismic_recorder_geometry_z_provenance_t z_provenance = {0};

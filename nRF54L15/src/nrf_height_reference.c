@@ -3,6 +3,76 @@
 #include <limits.h>
 #include <stddef.h>
 
+int32_t nrf_height_reference_window_centre_mm(
+    const int32_t *altitudes_mm,
+    size_t count,
+    int32_t fallback_mm)
+{
+    if (altitudes_mm == NULL || count < 3U) {
+        return fallback_mm;
+    }
+    if (count > NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES) {
+        altitudes_mm += count - NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES;
+        count = NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES;
+    }
+    double sorted[NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES];
+    double deviation[NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES];
+    for (size_t i = 0U; i < count; ++i) {
+        sorted[i] = (double)altitudes_mm[i];
+    }
+    for (size_t i = 1U; i < count; ++i) {
+        const double key = sorted[i];
+        size_t j = i;
+        while (j > 0U && sorted[j - 1U] > key) {
+            sorted[j] = sorted[j - 1U];
+            --j;
+        }
+        sorted[j] = key;
+    }
+    const double median = (count % 2U) == 1U
+        ? sorted[count / 2U] : 0.5 * (sorted[count / 2U - 1U] + sorted[count / 2U]);
+    for (size_t i = 0U; i < count; ++i) {
+        const double d = (double)altitudes_mm[i] - median;
+        deviation[i] = d < 0.0 ? -d : d;
+    }
+    for (size_t i = 1U; i < count; ++i) {
+        const double key = deviation[i];
+        size_t j = i;
+        while (j > 0U && deviation[j - 1U] > key) {
+            deviation[j] = deviation[j - 1U];
+            --j;
+        }
+        deviation[j] = key;
+    }
+    const double mad = (count % 2U) == 1U
+        ? deviation[count / 2U] : 0.5 * (deviation[count / 2U - 1U] + deviation[count / 2U]);
+    double sigma_r = 1.4826 * mad;
+    if (sigma_r < 40.0) {
+        sigma_r = 40.0;
+    }
+    size_t outliers = 0U;
+    for (size_t i = 0U; i < count; ++i) {
+        const double d = (double)altitudes_mm[i] - median;
+        if ((d < 0.0 ? -d : d) > 3.0 * sigma_r) {
+            ++outliers;
+        }
+    }
+    const size_t allowed = count / 8U > 1U ? count / 8U : 1U;
+    const bool drop = outliers <= allowed;
+    double sum = 0.0;
+    size_t used = 0U;
+    for (size_t i = 0U; i < count; ++i) {
+        const double d = (double)altitudes_mm[i] - median;
+        if (drop && (d < 0.0 ? -d : d) > 3.0 * sigma_r) {
+            continue;
+        }
+        sum += (double)altitudes_mm[i];
+        ++used;
+    }
+    const double centre = sum / (double)used;
+    return (int32_t)(centre >= 0.0 ? centre + 0.5 : centre - 0.5);
+}
+
 void nrf_height_reference_init(nrf_height_reference_t *reference)
 {
     if (reference == NULL) {

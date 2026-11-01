@@ -197,7 +197,7 @@ def test_ranging_progress_percent_grows_with_the_number_of_nodes(screens, locale
     assert frame["golden"] and frame["comparison"] == 1, frame["name"]
     assert (ROOT / "tests/ui_render/golden" / (frame["name"] + ".png")).is_file()
     lines = [node["text"] for node in _visible(frame) if node["role"].startswith("line_")]
-    assert entries["tft.workflow.ranging.pairs"][locale] % (str(done), str(total), "12") == lines[0]
+    assert entries["tft.workflow.ranging.pairs"][locale] % (str(done), str(total), _cm(12)) == lines[0]
     assert entries["tft.workflow.ranging.wait_percent"][locale] % percent == lines[1]
     assert entries["tft.workflow.ranging.wait"][locale] not in lines
     assert next(node for node in frame["widgets"] if node["role"] == "progress")["hidden"] is False
@@ -225,7 +225,7 @@ def test_ranging_outcomes_have_reviewed_pages_and_exact_pair_values(screens, loc
             index = len(expected)
             missing = outcome == "failed" or (outcome == "partial" and index == 3)
             exceeded = outcome == "cable_exceeded" and index == 3
-            value = entries["tft.workflow.value.unknown"][locale] if missing else str(6001 if exceeded else 1234 + index)
+            value = entries["tft.workflow.value.unknown"][locale] if missing else _cm(6001 if exceeded else 1234 + index)
             key = "cable_exceeded" if exceeded else "distance"
             expected.append(entries[f"tft.workflow.ranging.{key}"][locale] % (str(a), str(b), value))
     assert pair_lines == expected
@@ -235,6 +235,11 @@ def test_ranging_outcomes_have_reviewed_pages_and_exact_pair_values(screens, loc
             node["text"] for node in _visible(frame) if node["role"].startswith("action_text_")]
         assert entries["tft.workflow.hint.ranging_pages"][locale] in [
             node["text"] for node in _visible(frame) if node["role"] == "footer"]
+
+
+def _cm(millimetres):
+    """The TFT shows ranging values in whole centimetres, rounded to the nearest (halves up for positives)."""
+    return str((millimetres + 5) // 10)
 
 
 MENU_FAMILIES = ["home", "objects", "storage", "wifi", "system", "hardware", "measurements", "boot", "preview"]
@@ -257,7 +262,7 @@ def test_manual_distance_entry_rejection_saving_and_completed_pages(screens, loc
     assert len(saved) > 1
     assert all(frame["golden"] and frame["comparison"] == 1 for frame in saved)
     assert entries["tft.workflow.ranging.success"][locale] in texts(saved[0])
-    assert entries["tft.workflow.distance.manual"][locale] % ("0", "4", "1500") in [text for frame in saved for text in texts(frame)]
+    assert entries["tft.workflow.distance.manual"][locale] % ("0", "4", _cm(1500)) in [text for frame in saved for text in texts(frame)]
     assert not any("cable_exceeded" in text for frame in saved for text in texts(frame))
 
 

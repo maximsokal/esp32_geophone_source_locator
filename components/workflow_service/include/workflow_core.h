@@ -15,14 +15,33 @@
 #define WORKFLOW_CALIBRATION_REASON_MAX 40U
 /*
  * REMOTE sensor data arrives once per NRF_SENSOR_REFRESH_PERIOD_MS (2 s). The stability window must hold
- * WORKFLOW_PLACEMENT_MIN_SAMPLES of them at all times between refreshes, i.e. more than three periods;
- * the former 3 s window kept two and the stability screen never completed (2026-10-31 bench).
+ * WORKFLOW_PLACEMENT_MIN_SAMPLES of them at all times between refreshes, i.e. more than eight periods;
+ * a 3 s window once kept two and the stability screen never completed (2026-10-31 bench).
  */
-#define WORKFLOW_PLACEMENT_WINDOW_MS 7000U
+#define WORKFLOW_PLACEMENT_WINDOW_MS 20000U
 /* A node whose newest sensor snapshot is older than this is not current (two refresh periods plus margin). */
 #define WORKFLOW_PLACEMENT_FRESH_MS 5000U
-#define WORKFLOW_PLACEMENT_MAX_RANGE_MM 50
-#define WORKFLOW_PLACEMENT_MIN_SAMPLES 3U
+/*
+ * The height of a node is the centre of the window, not the last sample: a barometer reports whole pascals
+ * (about 83 mm each on the 12 Pa/m model), the MAIN reading wanders by a few pascals (bench log 2026-11-01
+ * 18:16: 70..130 mm per node) and single readings are outliers. The centre is the mean of the samples left by a
+ * Hampel filter (see workflow_placement_stats_t in workflow_service.c). A node is stable when that centre is
+ * trustworthy to WORKFLOW_PLACEMENT_MAX_RANGE_MM (the operator's 0.1 m), judged by the larger of
+ *   - the 95 % half-width of the centre (2 * sigma / sqrt(n)), and
+ *   - how far the median of the newest WORKFLOW_PLACEMENT_RECENT_SAMPLES samples sits from the centre, scaled so
+ *     that WORKFLOW_PLACEMENT_MAX_SHIFT_MM (the operator's 0.25 m) counts as the limit. At the 2 s cadence of the
+ *     REMOTE nodes (at most 11 samples) the first term always binds earlier, so this is a backstop for a window
+ *     that a faster source could fill.
+ * The historic names "range" and "max_range_mm" are kept for the JSON and the screens; they now mean this bound.
+ */
+#define WORKFLOW_PLACEMENT_MAX_RANGE_MM 100
+#define WORKFLOW_PLACEMENT_MAX_SHIFT_MM 250
+/* The Hampel filter never trusts a spread below this: whole-pascal steps are about 83 mm apart. */
+#define WORKFLOW_PLACEMENT_SIGMA_FLOOR_MM 40.0
+#define WORKFLOW_PLACEMENT_MIN_SAMPLES 8U
+#define WORKFLOW_PLACEMENT_RECENT_SAMPLES 4U
+/* Samples of one node are stored at most this often, so a 20 s window holds 21 of them at most. */
+#define WORKFLOW_PLACEMENT_MIN_SAMPLE_GAP_MS 1000U
 
 typedef enum {
     WORKFLOW_STEP_IDLE = 0,
@@ -191,13 +210,13 @@ typedef struct {
     char node[8];
     bool vertical;
     bool height_rel_main_mm_valid;
-    int64_t height_rel_main_mm;
+    int64_t height_rel_main_mm;     /* centre of the window once there are samples, else the latest reading */
     bool altitude_asl_m_valid;
     double altitude_asl_m;
     bool stable;
     workflow_placement_reason_t reason;
     uint8_t sample_count;
-    int32_t range_mm;       /* spread of the samples in the window; -1 until MIN_SAMPLES are collected */
+    int32_t range_mm;       /* uncertainty bound of the centre (see MAX_RANGE_MM); -1 until MIN_SAMPLES are collected */
 } workflow_placement_node_t;
 
 typedef struct {

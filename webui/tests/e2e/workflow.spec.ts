@@ -177,7 +177,7 @@ test('calibration, placement and radio ranging show the current stage and receiv
     if (step === 'RANGING_RESULT') {
       await expect(page.getByText(catalog.en['workflow.ranging.wait'])).toHaveCount(0);
       await expect(page.getByText('2 / 3', { exact: false })).toBeVisible();
-      await expect(page.getByText('Nodes 1\u20132: 1,234 mm')).toBeVisible();
+      await expect(page.getByText('Nodes 1\u20132: 123 cm')).toBeVisible();
       await expect(page.getByText('Nodes 1\u20133: Not measured')).toBeVisible();
     }
   }
@@ -214,8 +214,8 @@ for (const outcome of ['success', 'partial', 'failed'] as const) {
     });
     await page.goto('/');
     await expect(page.getByText(catalog.en[`workflow.ranging.${outcome}`], { exact: true })).toBeVisible();
-    await expect(page.getByText('6,001 mm', { exact: false })).toContainText(catalog.en['workflow.ranging.cable_exceeded']);
-    await expect(page.getByText('950 mm', { exact: false })).toBeVisible();
+    await expect(page.getByText('600 cm', { exact: false })).toContainText(catalog.en['workflow.ranging.cable_exceeded']);
+    await expect(page.getByText('95 cm', { exact: false })).toBeVisible();
   });
 }
 
@@ -335,11 +335,11 @@ for (const locale of ['en', 'uk'] as const) {
 
     const unstablePlacement = {
       all_stable: false,
-      max_range_mm: 50,
-      min_samples: 3,
+      max_range_mm: 100,
+      min_samples: 8,
       per_node: [
         { node: 'MAIN', vertical: true, height_rel_main_mm: 0, altitude_asl_m: 10, stable: true, reason: 'stable', samples: 30, range_mm: 0 },
-        { node: 'G2', vertical: true, height_rel_main_mm: 84, altitude_asl_m: 10.1, stable: false, reason: 'range_exceeded', samples: 5, range_mm: 84 },
+        { node: 'G2', vertical: true, height_rel_main_mm: 84, altitude_asl_m: 10.1, stable: false, reason: 'range_exceeded', samples: 9, range_mm: 134 },
       ],
     };
 
@@ -353,7 +353,8 @@ for (const locale of ['en', 'uk'] as const) {
       const blocked = page.getByTestId('placement-blocked');
       await expect(blocked).toContainText('G2');
       await expect(blocked).toContainText(t['workflow.placement.reason.range_exceeded']);
-      await expect(blocked).toContainText('84');
+      await expect(blocked).toContainText(locale === 'uk' ? '14 см' : '14 cm');   // 134 mm of uncertainty, rounded up
+      await expect(blocked).not.toContainText(/mm|мм/);
       await expect(page.locator('[data-reason="range_exceeded"]')).toBeVisible();
       await proceed.click({ force: true });
       expect(api.controls).toHaveLength(0);

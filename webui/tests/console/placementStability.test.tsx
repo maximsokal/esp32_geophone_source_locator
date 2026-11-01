@@ -49,11 +49,11 @@ describe('placement stability on the web (parity with the TFT)', () => {
   it('names the first node that is not stable', () => {
     const base = fullDeviceStatus().workflow!.placement.per_node[0];
     const placement: WorkflowPlacementStatus = {
-      all_stable: false, max_range_mm: 50, min_samples: 3,
+      all_stable: false, max_range_mm: 100, min_samples: 8,
       per_node: [
         { ...base, node: 'MAIN', stable: true, reason: 'stable' },
         { ...base, node: 'G1', stable: false, reason: 'not_vertical', samples: 0, range_mm: null },
-        { ...base, node: 'G2', stable: false, reason: 'range_exceeded', samples: 5, range_mm: 84 },
+        { ...base, node: 'G2', stable: false, reason: 'range_exceeded', samples: 9, range_mm: 134 },
       ],
     };
     expect(placementBlocker(placement)?.node).toBe('G1');

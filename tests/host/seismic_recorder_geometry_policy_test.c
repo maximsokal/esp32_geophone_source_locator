@@ -88,6 +88,65 @@ static void test_build_inputs_skips_unassigned_and_invalid_sensor_snapshot(void)
 }
 
 
+static void test_build_inputs_prefers_the_height_the_placement_settled(void)
+{
+    nrf_topology_snapshot_t topology;
+    memset(&topology, 0, sizeof(topology));
+    topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    topology.main.node_id = 0U;
+    set_assigned(&topology, 0U, 1U);
+    set_assigned(&topology, 1U, 2U);
+    set_assigned(&topology, 2U, 3U);
+
+    seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT];
+    memset(channels, 0, sizeof(channels));
+    for (uint8_t channel = 0U; channel < 3U; ++channel) {
+        channels[channel].sensor_valid = true;
+        channels[channel].height_reference_valid = true;
+        channels[channel].height_reference_generation = 1U;
+        channels[channel].leveled = true;
+    }
+    /* The instantaneous readings wander: 450, -300, 100 mm against MAIN's 100 mm (MAIN reference 1, z = 100). */
+    channels[0].relative_z_mm = 550;
+    channels[1].relative_z_mm = -200;
+    channels[2].relative_z_mm = 200;
+    /* The placement settled channel 0 at 120 mm and channel 1 at -250 mm; channel 2 has nothing settled. */
+    channels[0].placement_height_valid = true;
+    channels[0].placement_height_mm = 120;
+    channels[1].placement_height_valid = true;
+    channels[1].placement_height_mm = -250;
+
+    const seismic_recorder_geometry_main_reference_t main_reference = {
+        .valid = true, .generation = 1U, .relative_z_mm = 100,
+    };
+    nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
+    size_t count = 0U;
+    seismic_recorder_geometry_z_provenance_t provenance;
+    assert(seismic_recorder_geometry_build_inputs(
+        &topology, channels, &main_reference, SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE,
+        inputs, NRF_GEOMETRY_MAX_NODES, &count, &provenance) == ESP_OK);
+    assert(count == 4U);
+    assert(provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE);
+    assert(inputs[1].node_id == 1U && inputs[1].z_mm == 120);    /* settled, not 550 - 100 = 450 */
+    assert(inputs[2].node_id == 2U && inputs[2].z_mm == -250);   /* settled, not -200 - 100 = -300 */
+    assert(inputs[3].node_id == 3U && inputs[3].z_mm == 100);    /* nothing settled: the instantaneous reading */
+
+    /* A planar policy ignores every height, including the settled ones. */
+    assert(seismic_recorder_geometry_build_inputs(
+        &topology, channels, &main_reference, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR,
+        inputs, NRF_GEOMETRY_MAX_NODES, &count, &provenance) == ESP_OK);
+    assert(inputs[1].z_mm == 0 && inputs[2].z_mm == 0 && inputs[3].z_mm == 0);
+
+    /* A missing reference generation falls back to planar before any height is looked at. */
+    channels[1].height_reference_generation = 2U;
+    assert(seismic_recorder_geometry_build_inputs(
+        &topology, channels, &main_reference, SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE,
+        inputs, NRF_GEOMETRY_MAX_NODES, &count, &provenance) == ESP_OK);
+    assert(provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_PLANAR);
+    assert(inputs[1].z_mm == 0 && inputs[2].z_mm == 0);
+}
+
+
 static void test_build_inputs_rejects_overflow(void)
 {
     nrf_topology_snapshot_t topology;
@@ -394,6 +453,7 @@ int main(void)
 {
     test_build_inputs_requires_main();
     test_build_inputs_skips_unassigned_and_invalid_sensor_snapshot();
+    test_build_inputs_prefers_the_height_the_placement_settled();
     test_build_inputs_rejects_overflow();
     test_apply_solution_maps_pods_and_skips_unsolved();
     test_planar_policy_keeps_all_nodes_at_zero_z();

@@ -2027,6 +2027,97 @@ static void test_ranging_full_rotation_progress_and_frozen_result(void)
     assert(s_window_writes >= 12U && s_window_writes == s_window_reads);
 }
 
+static int32_t s_seen_ranging_z_mm[4];
+static size_t s_seen_ranging_z_count;
+
+static void capture_ranging_z(void)
+{
+    assert(nrf_topology_service_get_frozen_ranging_result(&s_seen_frozen_ranging_result) == ESP_OK);
+    assert(s_seen_frozen_ranging_result.available);
+    s_seen_ranging_z_count = s_seen_frozen_ranging_result.geometry.node_count;
+    for (size_t i = 0U; i < s_seen_ranging_z_count && i < 4U; ++i) {
+        s_seen_ranging_z_mm[i] = s_seen_frozen_ranging_result.geometry.nodes[i].z_mm;
+    }
+}
+
+/* The sensors read `reading_mm` against MAIN at this instant; the placement settled `settled_mm` (if `settled`). */
+static void run_ranging_and_capture_z(bool settled, int32_t reading_mm, int32_t settled_mm)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(3U);
+    for (size_t index = 1U; index <= 3U; ++index) s_nodes[index].relative_z_mm = reading_mm;
+    s_cs_use_pair_distances = true;
+    const int32_t square_distances[6] = {1000, 1000, 1414, 1414, 1000, 1000};
+    memcpy(s_cs_pair_distances, square_distances, sizeof(square_distances));
+    nrf_topology_placement_heights_t heights = { .valid = settled, .generation = 91U };
+    for (uint8_t channel = 0U; channel < 3U; ++channel) {
+        heights.node_valid[channel] = true;
+        heights.node_id[channel] = (nrf_cs_node_id_t)(channel + 1U);
+        heights.height_rel_main_mm[channel] = settled_mm;
+    }
+    assert(nrf_topology_service_set_placement_heights(settled ? &heights : NULL) == ESP_OK);
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_full_ranging_for_test);
+    script_waits(2U, 10U);
+    script_waits(2U, 10U);
+    for (size_t pair = 1U; pair < 6U; ++pair) script_waits(4U, 10U);
+    script(EV_ACTION, 0U, capture_ranging_z);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(nrf_topology_service_set_placement_heights(NULL) == ESP_OK);
+}
+
+static void test_ranging_geometry_takes_z_from_the_placement_heights(void)
+{
+    /* Without settled heights the geometry takes the reading of the instant: 300 mm for every remote. */
+    run_ranging_and_capture_z(false, 300, 0);
+    assert(s_seen_ranging_z_count == 4U);
+    size_t remotes_at_reading = 0U;
+    for (size_t i = 0U; i < s_seen_ranging_z_count; ++i) if (s_seen_ranging_z_mm[i] == 300) ++remotes_at_reading;
+    assert(remotes_at_reading == 3U);
+
+    /* With them it takes the settled height, whatever the sensors read now. */
+    run_ranging_and_capture_z(true, 300, -120);
+    assert(s_seen_ranging_z_count == 4U);
+    size_t remotes_settled = 0U;
+    for (size_t i = 0U; i < s_seen_ranging_z_count; ++i) {
+        assert(s_seen_ranging_z_mm[i] != 300);
+        if (s_seen_ranging_z_mm[i] == -120) ++remotes_settled;
+    }
+    assert(remotes_settled == 3U);
+}
+
+static void test_placement_heights_are_checked_against_the_reference_generation(void)
+{
+    nrf_topology_placement_heights_t heights = { .valid = true, .generation = 7U };
+    heights.node_valid[0] = true;
+    heights.node_id[0] = 4U;
+    heights.height_rel_main_mm[0] = -85;
+    heights.node_valid[1] = false;      /* a node the placement did not settle */
+    heights.node_id[1] = 5U;
+    heights.height_rel_main_mm[1] = 999;
+    assert(nrf_topology_service_set_placement_heights(&heights) == ESP_OK);
+
+    int32_t height_mm = 12345;
+    assert(nrf_topology_service_get_placement_height_mm(4U, 7U, &height_mm) && height_mm == -85);
+    assert(!nrf_topology_service_get_placement_height_mm(5U, 7U, &height_mm));    /* not settled */
+    assert(!nrf_topology_service_get_placement_height_mm(6U, 7U, &height_mm));    /* unknown node */
+    assert(!nrf_topology_service_get_placement_height_mm(4U, 8U, &height_mm));    /* another MAIN reference */
+    assert(!nrf_topology_service_get_placement_height_mm(4U, 0U, &height_mm));    /* no generation */
+    assert(!nrf_topology_service_get_placement_height_mm(4U, 7U, NULL));
+
+    heights.valid = false;
+    assert(nrf_topology_service_set_placement_heights(&heights) == ESP_OK);
+    assert(!nrf_topology_service_get_placement_height_mm(4U, 7U, &height_mm));
+    heights.valid = true;
+    assert(nrf_topology_service_set_placement_heights(&heights) == ESP_OK);
+    assert(nrf_topology_service_get_placement_height_mm(4U, 7U, &height_mm));
+    assert(nrf_topology_service_set_placement_heights(NULL) == ESP_OK);
+    assert(!nrf_topology_service_get_placement_height_mm(4U, 7U, &height_mm));
+}
+
 static void test_ranging_failure_reasons(void)
 {
     reset_world();
@@ -4304,6 +4395,8 @@ int main(void)
     test_unrequested_barometer_does_not_shorten_the_idle_wait();
     test_cs_pump_period_on_fake_clock();
     test_ranging_full_rotation_progress_and_frozen_result();
+    test_ranging_geometry_takes_z_from_the_placement_heights();
+    test_placement_heights_are_checked_against_the_reference_generation();
     test_ranging_failure_reasons();
     test_ranging_default_timeout_is_30_seconds();
     test_ranging_requires_assigned_main();

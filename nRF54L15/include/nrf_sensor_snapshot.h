@@ -35,6 +35,9 @@ typedef struct {
 typedef struct {
     int32_t temperature_milli_c;
     uint32_t pressure_pa;
+    /* The same pressure in hundredths of a pascal (0 when the source has only whole pascals): a whole pascal is
+     * 83 mm of height, the sensors resolve 0.01 Pa. The altitude is computed from this, not from pressure_pa. */
+    uint32_t pressure_x100_pa;
     uint32_t humidity_milli_percent;
 } nrf_env_sample_t;
 

@@ -96,12 +96,14 @@ esp_err_t seismic_recorder_geometry_build_inputs(
         }
         inputs[count].node_id = topology->remotes[channel].node_id;
         inputs[count].z_mm =
-            provenance->effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
-            ? saturate_i32(
-                  (int64_t)channels[channel].relative_z_mm -
-                  (int64_t)main_reference->relative_z_mm
-              )
-            : 0;
+            provenance->effective_policy != SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
+            ? 0
+            : channels[channel].placement_height_valid
+                ? channels[channel].placement_height_mm
+                : saturate_i32(
+                      (int64_t)channels[channel].relative_z_mm -
+                      (int64_t)main_reference->relative_z_mm
+                  );
         ++count;
     }
 

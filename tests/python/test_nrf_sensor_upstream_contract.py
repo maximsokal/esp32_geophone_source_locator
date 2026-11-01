@@ -175,7 +175,13 @@ def test_altitude_payload_path_is_pure_and_covered_by_host_and_target_builds():
     assert "nrf_baro_pressure_to_altitude_mm" in altitude
     assert "pow(" not in altitude
     assert "math.h" not in altitude
-    assert "nrf_baro_pressure_to_altitude_mm(\n            s_runtime.core.snapshot.env.pressure_pa)" in runtime
+    # The altitude is computed from the pressure with its fraction (hundredths of a pascal); the whole-pascal
+    # function is only the fallback for a source that has no fraction, and the node's one altitude comes from
+    # env_altitude_mm().
+    assert "nrf_baro_pressure_x100_to_altitude_mm" in altitude
+    assert "nrf_baro_pressure_x100_to_altitude_mm(env->pressure_x100_pa)" in runtime
+    assert "nrf_baro_pressure_to_altitude_mm(env->pressure_pa)" in runtime
+    assert "env_altitude_mm(&s_runtime.core.snapshot.env)" in runtime
     assert "../src/nrf_baro_altitude.c" in cmake
     assert manifest.count("nRF54L15/src/nrf_baro_altitude.c") == 7
 

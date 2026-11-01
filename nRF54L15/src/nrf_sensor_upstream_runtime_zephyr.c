@@ -171,16 +171,40 @@ static void imu_filters_reset(void)
     nrf_ema_filter_reset(&s_imu_filters.gyro_motion);
 }
 
+/* Altitudes of the last refreshes, unfiltered, for the centre a reference capture is taken from. */
+static int32_t s_altitude_ring_mm[NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES];
+static size_t s_altitude_ring_count;
+
 static void altitude_filter_reset(void)
 {
     nrf_ema_filter_reset(&s_altitude_filter);
     s_filtered_altitude_mm = 0.0;
     s_altitude_filter_initialized = false;
+    s_altitude_ring_count = 0U;
+}
+
+/* The altitude of an env sample: from the pressure with its fraction when the sensor gave it. */
+static int32_t env_altitude_mm(const nrf_env_sample_t *env)
+{
+    return env->pressure_x100_pa != 0U
+        ? nrf_baro_pressure_x100_to_altitude_mm(env->pressure_x100_pa)
+        : nrf_baro_pressure_to_altitude_mm(env->pressure_pa);
 }
 
 static int32_t rounded_i32(double value)
 {
     return (int32_t)(value >= 0.0 ? value + 0.5 : -(-value + 0.5));
+}
+
+/*
+ * The altitude the node reports and takes its relative Z from: the centre of the last few unfiltered altitudes
+ * (Hampel filter, then the mean), the same estimator the reference is captured with, so that the Z of the moment
+ * of the capture is exactly 0. The EMA stands in until three samples exist.
+ */
+static int32_t reported_altitude_mm(void)
+{
+    return nrf_height_reference_window_centre_mm(
+        s_altitude_ring_mm, s_altitude_ring_count, rounded_i32(s_filtered_altitude_mm));
 }
 
 static uint32_t gyro_peak_mdps(const nrf_imu_sample_t *sample)
@@ -279,6 +303,11 @@ static bool filter_altitude_sample(int32_t altitude_mm, uint64_t timestamp_ms)
     if (result == NRF_EMA_FILTER_UPDATED) {
         s_filtered_altitude_mm = filtered_value;
         s_altitude_filter_initialized = true;
+        if (s_altitude_ring_count == NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES) {
+            for (size_t i = 1U; i < s_altitude_ring_count; ++i) s_altitude_ring_mm[i - 1U] = s_altitude_ring_mm[i];
+            --s_altitude_ring_count;
+        }
+        s_altitude_ring_mm[s_altitude_ring_count++] = altitude_mm;
     }
     return s_altitude_filter_initialized;
 }
@@ -363,7 +392,7 @@ static void copy_runtime_payload(
         wire->env_temperature_milli_c = snapshot->env.temperature_milli_c;
         wire->pressure_pa = snapshot->env.pressure_pa;
         wire->humidity_milli_percent = snapshot->env.humidity_milli_percent;
-        wire->altitude_mm = rounded_i32(s_filtered_altitude_mm);
+        wire->altitude_mm = reported_altitude_mm();
     }
     if (wire->valid_mask != 0U) {
         wire->flags |= NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE;
@@ -888,8 +917,7 @@ static void orientation_consume_aggregate_refresh(bool did_refresh)
     }
     if (did_refresh &&
         (s_runtime.core.snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U) {
-        const int32_t altitude_mm = nrf_baro_pressure_to_altitude_mm(
-            s_runtime.core.snapshot.env.pressure_pa);
+        const int32_t altitude_mm = env_altitude_mm(&s_runtime.core.snapshot.env);
         if (!filter_altitude_sample(altitude_mm, completion_uptime_ms)) {
             s_runtime.core.snapshot.valid_mask &= ~NRF_SENSOR_VALID_ENV;
             s_runtime.core.snapshot.fault_mask |= NRF_SENSOR_VALID_ENV;
@@ -931,7 +959,7 @@ static void apply_height_reference_request(
             imu_valid,
             env_valid,
             stationary,
-            rounded_i32(s_filtered_altitude_mm));
+            reported_altitude_mm());
         if (applied &&
             previous_state != s_height_reference.state &&
             s_height_reference.state == NRF_UPSTREAM_REFERENCE_REJECTED_MOVING) {

@@ -50,7 +50,7 @@ describe('LevelingCard', () => {
     })));
     expect(html).toContain(translate(locale, 'leveling.rejected_pressure_unstable'));
     expect(html).toContain(translate(locale, 'leveling.valid'));
-    expect(html).toContain(`${formatNumber(locale, 12.34, { maximumFractionDigits: 1 })} mm`);
+    expect(html).toContain(`${formatNumber(locale, 1)} ${locale === 'uk' ? 'см' : 'cm'}`);   // 12.34 mm, in centimetres
   });
 
   it('explains an unavailable topology and keeps calibration available without gate data', () => {

@@ -236,6 +236,49 @@ static void test_sample_never_invents_a_reference(void)
            NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
 }
 
+static void test_window_centre_needs_three_samples_else_the_fallback(void)
+{
+    const int32_t two[2] = { 1000, 1010 };
+    assert(nrf_height_reference_window_centre_mm(two, 2U, 777) == 777);
+    assert(nrf_height_reference_window_centre_mm(NULL, 5U, 777) == 777);
+    assert(nrf_height_reference_window_centre_mm(two, 0U, 777) == 777);
+}
+
+static void test_window_centre_is_the_mean_of_quiet_samples(void)
+{
+    const int32_t quiet[5] = { 1000, 1010, 990, 1005, 995 };
+    assert(nrf_height_reference_window_centre_mm(quiet, 5U, 0) == 1000);
+    const int32_t steady[5] = { -250, -250, -250, -250, -250 };
+    assert(nrf_height_reference_window_centre_mm(steady, 5U, 0) == -250);
+    const int32_t three[3] = { 100, 160, 130 };
+    assert(nrf_height_reference_window_centre_mm(three, 3U, 0) == 130);
+    /* Half-millimetres round away from zero. */
+    const int32_t halves[4] = { 0, 1, 0, 1 };
+    assert(nrf_height_reference_window_centre_mm(halves, 4U, 99) == 1);
+    const int32_t negative_halves[4] = { 0, -1, 0, -1 };
+    assert(nrf_height_reference_window_centre_mm(negative_halves, 4U, 99) == -1);
+}
+
+static void test_window_centre_drops_one_outlier_but_not_two(void)
+{
+    /* One reading 900 mm away from four steady ones is a glitch: the centre is the steady value. */
+    const int32_t one[5] = { 2000, 2010, 2900, 1990, 2000 };
+    assert(nrf_height_reference_window_centre_mm(one, 5U, 0) == 2000);
+    /* Two of five is not a glitch: nothing is dropped, the mean of all five is the centre. */
+    const int32_t two[5] = { 2000, 2900, 2010, 2900, 1990 };
+    assert(nrf_height_reference_window_centre_mm(two, 5U, 0) == 2360);
+    /* A spread no wider than three sigma_r is ordinary noise (the floor is 40 mm): nothing is an outlier. */
+    const int32_t noisy[5] = { 2000, 2100, 1900, 2110, 1890 };
+    assert(nrf_height_reference_window_centre_mm(noisy, 5U, 0) == 2000);
+}
+
+static void test_window_centre_uses_only_the_newest_samples(void)
+{
+    /* Seven values were given; the window is the last five. */
+    const int32_t many[7] = { 9000, 9000, 1000, 1010, 990, 1005, 995 };
+    assert(nrf_height_reference_window_centre_mm(many, 7U, 0) == 1000);
+}
+
 int main(void)
 {
     test_relative_altitude_math();
@@ -250,5 +293,9 @@ int main(void)
     test_sample_holds_last_good_z_through_a_barometer_outage_and_restores();
     test_sample_without_any_live_sample_holds_the_capture_point();
     test_sample_never_invents_a_reference();
+    test_window_centre_needs_three_samples_else_the_fallback();
+    test_window_centre_is_the_mean_of_quiet_samples();
+    test_window_centre_drops_one_outlier_but_not_two();
+    test_window_centre_uses_only_the_newest_samples();
     return 0;
 }

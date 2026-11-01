@@ -368,8 +368,24 @@ static const workflow_placement_node_t *placement_blocker(const workflow_snapsho
 }
 
 /*
- * The first node that keeps the operator from continuing, why, and the number behind it: "G2: Spread too
- * big 84/50mm", "G1: Collecting 2/3" (the number carries its own leading space). The node rows are all the screen has room for, so this goes first.
+ * Heights are shown in centimetres: the barometers cannot vouch for millimetres and the operator asks for
+ * 0.1 m. A height is rounded to the nearest centimetre (halves away from zero); an uncertainty is rounded up,
+ * so a bound that exceeds its limit never reads as equal to it ("11/10cm", not "10/10cm").
+ */
+static long long mm_to_cm_nearest(long long mm)
+{
+    return mm >= 0 ? (mm + 5) / 10 : -((-mm + 5) / 10);
+}
+
+static long mm_to_cm_up(long mm)
+{
+    return mm <= 0 ? 0 : (mm + 9) / 10;
+}
+
+/*
+ * The first node that keeps the operator from continuing, why, and the number behind it: "G2: Not settled yet
+ * 14/10cm" (uncertainty of the mean over the allowed one), "G1: Collecting 2/8" (the number carries its own
+ * leading space). The node rows are all the screen has room for, so this goes first.
  */
 static void add_placement_blocker_line(const workflow_placement_node_t *blocker, ui_workflow_model_t *model)
 {
@@ -378,7 +394,8 @@ static void add_placement_blocker_line(const workflow_placement_node_t *blocker,
     set_key_arg(why, 1U, placement_reason_key(blocker->reason));
     char detail[24] = "";
     if (blocker->reason == WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED && blocker->range_mm >= 0) {
-        (void)snprintf(detail, sizeof(detail), " %ld/%dmm", (long)blocker->range_mm, (int)WORKFLOW_PLACEMENT_MAX_RANGE_MM);
+        (void)snprintf(detail, sizeof(detail), " %ld/%ldcm", mm_to_cm_up((long)blocker->range_mm),
+            mm_to_cm_up((long)WORKFLOW_PLACEMENT_MAX_RANGE_MM));
     } else if (blocker->reason == WORKFLOW_PLACEMENT_REASON_COLLECTING) {
         (void)snprintf(detail, sizeof(detail), " %u/%u", (unsigned)blocker->sample_count,
             (unsigned)WORKFLOW_PLACEMENT_MIN_SAMPLES);
@@ -718,7 +735,9 @@ void ui_workflow_model_build(
             for (size_t i = 0U; i < snapshot->calibration.per_node_count && i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
                 const workflow_calibration_node_t *node = &snapshot->calibration.per_node[i];
                 char z[20], bias[20];
-                if (node->relative_z_mm_valid) (void)snprintf(z, sizeof(z), "%ld", (long)node->relative_z_mm);
+                if (node->relative_z_mm_valid) {
+                    (void)snprintf(z, sizeof(z), "%lld", mm_to_cm_nearest((long long)node->relative_z_mm));
+                }
                 if (node->imu_values_valid) {
                     const double x = node->gyro_bias_mdps[0];
                     const double y = node->gyro_bias_mdps[1];
@@ -769,7 +788,9 @@ void ui_workflow_model_build(
             for (size_t i = 0U; i < snapshot->placement.per_node_count && i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) {
                 const workflow_placement_node_t *node = &snapshot->placement.per_node[i];
                 char height[24], altitude[24];
-                if (node->height_rel_main_mm_valid) (void)snprintf(height, sizeof(height), "%lld", (long long)node->height_rel_main_mm);
+                if (node->height_rel_main_mm_valid) {
+                    (void)snprintf(height, sizeof(height), "%lld", mm_to_cm_nearest((long long)node->height_rel_main_mm));
+                }
                 if (node->altitude_asl_m_valid) (void)snprintf(altitude, sizeof(altitude), "%.1f", node->altitude_asl_m);
                 ui_workflow_model_line_t *row = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_ROW);
                 set_arg(row, 0U, node->node);
@@ -797,7 +818,7 @@ void ui_workflow_model_build(
             if (ranging != NULL && ranging->available) {
                 (void)snprintf(done, sizeof(done), "%u", (unsigned)ranging->pairs_done);
                 (void)snprintf(total, sizeof(total), "%u", (unsigned)ranging->pairs_total);
-                if (ranging->residual_valid) (void)snprintf(residual, sizeof(residual), "%ld", (long)ranging->residual_mm);
+                if (ranging->residual_valid) (void)snprintf(residual, sizeof(residual), "%lld", mm_to_cm_nearest((long long)ranging->residual_mm));
                 else residual[0] = '\0';
             } else {
                 done[0] = '\0';
@@ -833,7 +854,7 @@ void ui_workflow_model_build(
                     if (ranging->sigma_mm[i] == INT32_MAX) unknown_arg(row, 1U);
                     else {
                         char sigma[20];
-                        (void)snprintf(sigma, sizeof(sigma), "%ld", (long)ranging->sigma_mm[i]);
+                        (void)snprintf(sigma, sizeof(sigma), "%lld", mm_to_cm_nearest((long long)ranging->sigma_mm[i]));
                         set_arg(row, 1U, sigma);
                     }
                 }
@@ -870,7 +891,7 @@ void ui_workflow_model_build(
                 set_arg(pairs, 0U, done);
                 set_arg(pairs, 1U, total);
                 if (ranging->residual_valid) {
-                    (void)snprintf(residual, sizeof(residual), "%ld", (long)ranging->residual_mm);
+                    (void)snprintf(residual, sizeof(residual), "%lld", mm_to_cm_nearest((long long)ranging->residual_mm));
                     set_arg(pairs, 2U, residual);
                 } else {
                     unknown_arg(pairs, 2U);
@@ -887,7 +908,7 @@ void ui_workflow_model_build(
                     set_arg(row, 0U, a);
                     set_arg(row, 1U, b);
                     if (ranging->pairs[i].valid || ranging->pairs[i].cable_exceeded) {
-                        (void)snprintf(distance, sizeof(distance), "%ld", (long)ranging->pairs[i].distance_mm);
+                        (void)snprintf(distance, sizeof(distance), "%lld", mm_to_cm_nearest((long long)ranging->pairs[i].distance_mm));
                         set_arg(row, 2U, distance);
                     } else unknown_arg(row, 2U);
                 }
@@ -897,7 +918,7 @@ void ui_workflow_model_build(
                     set_arg(row, 0U, ranging->nodes[i]);
                     if (ranging->sigma_mm[i] == INT32_MAX) unknown_arg(row, 1U);
                     else {
-                        (void)snprintf(sigma, sizeof(sigma), "%ld", (long)ranging->sigma_mm[i]);
+                        (void)snprintf(sigma, sizeof(sigma), "%lld", mm_to_cm_nearest((long long)ranging->sigma_mm[i]));
                         set_arg(row, 1U, sigma);
                     }
                 }

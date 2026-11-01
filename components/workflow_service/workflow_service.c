@@ -40,8 +40,15 @@
 #define WORKFLOW_CALIBRATION_IMU_RETRY_MS 3000U
 /* How long a new RANGING start waits for a cancelled run to wind down before it is reported as failed. */
 #define WORKFLOW_RANGING_RESTART_WAIT_MS 10000U
-/* WORKFLOW_PLACEMENT_WINDOW_MS at the poll period, plus headroom (35 samples at 200 ms). */
-#define WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES 96U
+/* One sample per WORKFLOW_PLACEMENT_MIN_SAMPLE_GAP_MS at most, so the window can never hold more than this. */
+#define WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES 32U
+_Static_assert(
+    WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES >=
+        WORKFLOW_PLACEMENT_WINDOW_MS / WORKFLOW_PLACEMENT_MIN_SAMPLE_GAP_MS + 2U,
+    "the placement history must hold a whole window of samples");
+_Static_assert(
+    WORKFLOW_PLACEMENT_RECENT_SAMPLES * 2U <= WORKFLOW_PLACEMENT_MIN_SAMPLES,
+    "the recent samples must be a minority of the minimum window");
 /* While on a placement step each node's stability state is logged this often, and at once on a change. */
 #define WORKFLOW_PLACEMENT_LOG_PERIOD_MS 2000U
 /*
@@ -80,6 +87,23 @@ typedef struct {
     int64_t height_rel_main_mm;
 } workflow_placement_sample_t;
 
+/*
+ * What the window says about one node, in millimetres; the same numbers are logged and drive the verdict.
+ * Hampel filter, then the mean: samples farther than 3 sigma from the median are outliers (sigma = 1.4826 times
+ * the median absolute deviation, never below WORKFLOW_PLACEMENT_SIGMA_FLOOR_MM), and the height is the mean of
+ * the others. That keeps the accuracy of a mean on ordinary noise (a median is a quarter less efficient there)
+ * and is not moved by a stray reading. If more than one in eight samples is an outlier the window is not one
+ * disturbance but a node that moves or a sensor that is unwell: nothing is dropped and the spread of all samples
+ * decides.
+ */
+typedef struct {
+    int64_t center_mm;
+    int32_t sigma_mm;   /* standard deviation of the samples used */
+    int32_t u95_mm;     /* 95 % half-width of the centre: 2 * sigma / sqrt(n used) */
+    int32_t shift_mm;   /* |median of the newest samples - centre| */
+    uint8_t outliers;   /* samples dropped by the Hampel filter */
+} workflow_placement_stats_t;
+
 typedef struct {
     bool node_valid;
     uint8_t node_id;
@@ -88,10 +112,10 @@ typedef struct {
     uint16_t generation;
     uint64_t last_sample_ms;
     bool last_sample_valid;
-    uint64_t blocked_until_ms;
     bool reason_logged;
     workflow_placement_reason_t logged_reason;
     size_t sample_count;
+    workflow_placement_stats_t stats;
     workflow_placement_sample_t samples[WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES];
 } workflow_placement_history_t;
 
@@ -962,7 +986,89 @@ static void workflow_service_placement_clear_samples(
 {
     history->sample_count = 0U;
     history->last_sample_valid = false;
-    history->blocked_until_ms = 0U;
+    history->stats = (workflow_placement_stats_t){ 0 };
+}
+
+/* Median of `count` values; sorts them in place (insertion sort: at most WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES). */
+static double workflow_service_median(double *values, size_t count)
+{
+    for (size_t i = 1U; i < count; ++i) {
+        const double key = values[i];
+        size_t j = i;
+        while (j > 0U && values[j - 1U] > key) {
+            values[j] = values[j - 1U];
+            --j;
+        }
+        values[j] = key;
+    }
+    return (count % 2U) == 1U ? values[count / 2U] : 0.5 * (values[count / 2U - 1U] + values[count / 2U]);
+}
+
+static int64_t workflow_service_round_i64(double value)
+{
+    return (int64_t)(value >= 0.0 ? value + 0.5 : value - 0.5);
+}
+
+/*
+ *   m      = median(x);  sigma_r = max(1.4826 * median(|x - m|), floor);  outlier: |x - m| > 3 * sigma_r
+ *   centre = mean of the samples that are not outliers;  sd = their sample standard deviation
+ *   u95    = 2 * sd / sqrt(n used)
+ *   shift  = |median(newest RECENT samples) - centre|
+ */
+static workflow_placement_stats_t workflow_service_placement_stats(
+    const workflow_placement_history_t *history)
+{
+    const size_t n = history->sample_count;
+    workflow_placement_stats_t stats = { 0 };
+    if (n == 0U) return stats;
+
+    double values[WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES];
+    for (size_t i = 0U; i < n; ++i) values[i] = (double)history->samples[i].height_rel_main_mm;
+    const double median = workflow_service_median(values, n);
+
+    bool keep[WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES];
+    size_t kept = n;
+    for (size_t i = 0U; i < n; ++i) keep[i] = true;
+    if (n > 1U) {
+        for (size_t i = 0U; i < n; ++i) values[i] = fabs((double)history->samples[i].height_rel_main_mm - median);
+        double sigma_r = 1.4826 * workflow_service_median(values, n);
+        if (sigma_r < WORKFLOW_PLACEMENT_SIGMA_FLOOR_MM) sigma_r = WORKFLOW_PLACEMENT_SIGMA_FLOOR_MM;
+        size_t outliers = 0U;
+        for (size_t i = 0U; i < n; ++i) {
+            if (fabs((double)history->samples[i].height_rel_main_mm - median) > 3.0 * sigma_r) {
+                keep[i] = false;
+                ++outliers;
+            }
+        }
+        const size_t allowed = n / 8U > 1U ? n / 8U : 1U;
+        if (outliers <= allowed) {
+            kept = n - outliers;
+            stats.outliers = (uint8_t)outliers;
+        } else {
+            for (size_t i = 0U; i < n; ++i) keep[i] = true;
+        }
+    }
+
+    double sum = 0.0;
+    for (size_t i = 0U; i < n; ++i) if (keep[i]) sum += (double)history->samples[i].height_rel_main_mm;
+    const double centre = sum / (double)kept;
+    stats.center_mm = workflow_service_round_i64(centre);
+    if (kept > 1U) {
+        double squares = 0.0;
+        for (size_t i = 0U; i < n; ++i) {
+            if (!keep[i]) continue;
+            const double deviation = (double)history->samples[i].height_rel_main_mm - centre;
+            squares += deviation * deviation;
+        }
+        const double sd = sqrt(squares / (double)(kept - 1U));
+        stats.sigma_mm = (int32_t)(sd + 0.5);
+        stats.u95_mm = (int32_t)ceil(2.0 * sd / sqrt((double)kept));
+    }
+
+    const size_t recent = n < WORKFLOW_PLACEMENT_RECENT_SAMPLES ? n : WORKFLOW_PLACEMENT_RECENT_SAMPLES;
+    for (size_t i = 0U; i < recent; ++i) values[i] = (double)history->samples[n - recent + i].height_rel_main_mm;
+    stats.shift_mm = (int32_t)ceil(fabs(workflow_service_median(values, recent) - centre));
+    return stats;
 }
 
 static void workflow_service_placement_reset_history(
@@ -1018,10 +1124,6 @@ static bool workflow_service_placement_update_node(
         *reason = WORKFLOW_PLACEMENT_REASON_SAMPLE_STALE;
         return false;
     }
-    if (now_ms < history->blocked_until_ms) {
-        *reason = WORKFLOW_PLACEMENT_REASON_OVERFLOW_BLOCKED;
-        return false;
-    }
 
     while (history->sample_count > 0U &&
            now_ms - history->samples[0].timestamp_ms > WORKFLOW_PLACEMENT_WINDOW_MS) {
@@ -1032,12 +1134,18 @@ static bool workflow_service_placement_update_node(
             history->sample_count * sizeof(history->samples[0]));
     }
 
+    if (collect_sample && history->last_sample_valid && sample_ms < history->last_sample_ms) {
+        workflow_service_placement_clear_samples(history);
+        *reason = WORKFLOW_PLACEMENT_REASON_CLOCK_BACKWARD;
+        return false;
+    }
+    /* A reading closer than the gap to the stored one adds nothing: it is the same atmosphere. */
     if (collect_sample &&
-        (!history->last_sample_valid || sample_ms > history->last_sample_ms)) {
+        (!history->last_sample_valid ||
+         sample_ms - history->last_sample_ms >= WORKFLOW_PLACEMENT_MIN_SAMPLE_GAP_MS)) {
+        /* The static assert on the capacity makes a full history impossible; guard it anyway. */
         if (history->sample_count >= WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES) {
-            /* ponytail: the cap bounds RAM; overflow blocks one window rather than lose a live outlier. Raise it if polling gets faster than the cap/window ratio. */
             workflow_service_placement_clear_samples(history);
-            history->blocked_until_ms = now_ms + WORKFLOW_PLACEMENT_WINDOW_MS;
             *reason = WORKFLOW_PLACEMENT_REASON_OVERFLOW_BLOCKED;
             return false;
         }
@@ -1047,27 +1155,16 @@ static bool workflow_service_placement_update_node(
         };
         history->last_sample_ms = sample_ms;
         history->last_sample_valid = true;
-    } else if (collect_sample && history->last_sample_valid &&
-               sample_ms < history->last_sample_ms) {
-        workflow_service_placement_clear_samples(history);
-        *reason = WORKFLOW_PLACEMENT_REASON_CLOCK_BACKWARD;
-        return false;
     }
 
+    history->stats = workflow_service_placement_stats(history);
     if (history->sample_count < WORKFLOW_PLACEMENT_MIN_SAMPLES) return false;
-    int64_t minimum = history->samples[0].height_rel_main_mm;
-    int64_t maximum = minimum;
-    for (size_t i = 1U; i < history->sample_count; ++i) {
-        if (history->samples[i].height_rel_main_mm < minimum) {
-            minimum = history->samples[i].height_rel_main_mm;
-        }
-        if (history->samples[i].height_rel_main_mm > maximum) {
-            maximum = history->samples[i].height_rel_main_mm;
-        }
-    }
-    const int64_t spread = maximum - minimum;
-    *range_mm = spread > INT32_MAX ? INT32_MAX : (int32_t)spread;
-    if (spread > WORKFLOW_PLACEMENT_MAX_RANGE_MM) {
+    const int32_t drift_bound = (int32_t)(
+        ((int64_t)history->stats.shift_mm * WORKFLOW_PLACEMENT_MAX_RANGE_MM +
+         WORKFLOW_PLACEMENT_MAX_SHIFT_MM - 1) / WORKFLOW_PLACEMENT_MAX_SHIFT_MM);
+    const int32_t bound = history->stats.u95_mm > drift_bound ? history->stats.u95_mm : drift_bound;
+    *range_mm = bound;
+    if (bound > WORKFLOW_PLACEMENT_MAX_RANGE_MM) {
         *reason = WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED;
         return false;
     }
@@ -1108,7 +1205,7 @@ static void workflow_service_placement_log_node(
     history->logged_reason = node->reason;
     ESP_LOGI(TAG,
         "PLACEMENT_STABILITY node=%s stable=%u reason=%s trigger=%s samples=%u/%u range_mm=%d limit_mm=%d "
-        "age_ms=%d vertical=%u height_valid=%u height_mm=%d pressure_pa=%u",
+        "age_ms=%d vertical=%u height_valid=%u height_mm=%d pressure_pa=%u sigma_mm=%d u95_mm=%d shift_mm=%d outliers=%u",
         node->node,
         node->stable ? 1U : 0U,
         workflow_core_placement_reason_name(node->reason),
@@ -1121,7 +1218,21 @@ static void workflow_service_placement_log_node(
         node->vertical ? 1U : 0U,
         node->height_rel_main_mm_valid ? 1U : 0U,
         (int)node->height_rel_main_mm,
-        (unsigned)pressure_pa);
+        (unsigned)pressure_pa,
+        (int)history->stats.sigma_mm,
+        (int)history->stats.u95_mm,
+        (int)history->stats.shift_mm,
+        (unsigned)history->stats.outliers);
+}
+
+/* The window centre replaces the latest reading as soon as there are samples; the node has no other height. */
+static void workflow_service_placement_publish_mean(
+    const workflow_placement_history_t *history,
+    workflow_placement_node_t *node)
+{
+    if (history->sample_count > 0U && node->height_rel_main_mm_valid) {
+        node->height_rel_main_mm = history->stats.center_mm;
+    }
 }
 
 static void workflow_service_placement_poll(bool collect_samples)
@@ -1198,6 +1309,7 @@ static void workflow_service_placement_poll(bool collect_samples)
     nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
     const bool topology_valid = nrf_topology_service_get_snapshot(topology) == ESP_OK;
     bool assigned[NRF_TOPOLOGY_REMOTE_COUNT] = { false };
+    nrf_topology_placement_heights_t placed = { .valid = main_height_valid, .generation = main_generation };
     bool all_stable = topology_valid && tracks_placement && main_node->stable;
     if (topology_valid) {
         for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
@@ -1258,6 +1370,10 @@ static void workflow_service_placement_poll(bool collect_samples)
                 &node->reason,
                 &node->range_mm);
             node->sample_count = (uint8_t)history->sample_count;
+            workflow_service_placement_publish_mean(history, node);
+            placed.node_valid[channel] = node->stable && node->height_rel_main_mm_valid;
+            placed.node_id[channel] = remote->node_id;
+            placed.height_rel_main_mm[channel] = (int32_t)node->height_rel_main_mm;
             if (take_samples) {
                 const uint64_t age = now_ms - cache->esp_receipt_uptime_ms;
                 const int32_t age_ms = cache_read && now_ms >= cache->esp_receipt_uptime_ms
@@ -1276,6 +1392,16 @@ static void workflow_service_placement_poll(bool collect_samples)
     }
     if (log_due) s_placement.next_log_ms = now_ms + WORKFLOW_PLACEMENT_LOG_PERIOD_MS;
     status->all_stable = all_stable;
+    /*
+     * The geometry of the ranging and of the recording takes Z from the settled heights, not from the reading of
+     * the instant. They follow the window while the placement is tracked, stay as they were through ranging and
+     * recording (the nodes are not touched then), and go when the workflow returns to before the placement.
+     */
+    if (tracks_placement) {
+        (void)nrf_topology_service_set_placement_heights(&placed);
+    } else if (s_core.step < WORKFLOW_STEP_PLACEMENT) {
+        (void)nrf_topology_service_set_placement_heights(NULL);
+    }
 }
 
 static uint8_t workflow_service_assigned_remote_count(void)

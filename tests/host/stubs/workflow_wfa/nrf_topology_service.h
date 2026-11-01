@@ -138,3 +138,13 @@ esp_err_t nrf_topology_service_invalidate_ranging(void);
 esp_err_t nrf_topology_service_ranging_cancel(void);
 esp_err_t nrf_topology_service_ranging_set_manual(uint64_t started, uint64_t updated,
     uint8_t a, uint8_t b, int32_t distance, const uint32_t *limits);
+
+typedef uint8_t nrf_cs_node_id_t;
+typedef struct {
+    bool valid;
+    uint16_t generation;
+    bool node_valid[NRF_TOPOLOGY_REMOTE_COUNT];
+    nrf_cs_node_id_t node_id[NRF_TOPOLOGY_REMOTE_COUNT];
+    int32_t height_rel_main_mm[NRF_TOPOLOGY_REMOTE_COUNT];
+} nrf_topology_placement_heights_t;
+esp_err_t nrf_topology_service_set_placement_heights(const nrf_topology_placement_heights_t *heights);

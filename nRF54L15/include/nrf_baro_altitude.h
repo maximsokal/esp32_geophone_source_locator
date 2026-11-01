@@ -14,6 +14,8 @@ extern "C" {
  * is under about 1.5%; revisit only if HIL measurements justify it.
  */
 int32_t nrf_baro_pressure_to_altitude_mm(uint32_t pressure_pa);
+/* The same model for a pressure in hundredths of a pascal (the sensors resolve 0.01 Pa). */
+int32_t nrf_baro_pressure_x100_to_altitude_mm(uint32_t pressure_x100_pa);
 
 #ifdef __cplusplus
 }

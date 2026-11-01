@@ -24,6 +24,22 @@ typedef struct {
     nrf_cs_pair_result_t pairs[NRF_CS_MAX_PAIRS];
 } nrf_cs_cycle_snapshot_t;
 
+/*
+ * Heights of the REMOTE nodes relative to MAIN as the placement step settled them: the centre of its window,
+ * good to about 0.1 m (workflow_core.h). The geometry of the ranging and of the recording takes Z from here, not
+ * from the instantaneous barometer reading, which wanders by 10..20 cm (bench log 2026-11-01 18:16). The
+ * workflow writes it while it tracks the placement and keeps it through ranging and recording; it is cleared
+ * when the workflow goes back before the placement. A height only counts for the MAIN height-reference
+ * generation it was measured against.
+ */
+typedef struct {
+    bool valid;
+    uint16_t generation;
+    bool node_valid[NRF_TOPOLOGY_REMOTE_COUNT];
+    nrf_cs_node_id_t node_id[NRF_TOPOLOGY_REMOTE_COUNT];
+    int32_t height_rel_main_mm[NRF_TOPOLOGY_REMOTE_COUNT];
+} nrf_topology_placement_heights_t;
+
 #define NRF_TOPOLOGY_RANGING_DEFAULT_TIMEOUT_MS 30000U
 #define NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS 600000U
 #define NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE 48U
@@ -131,6 +147,11 @@ esp_err_t nrf_topology_service_request_imu_calibration(
     uint16_t generation,
     uint8_t channel_mask);
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *snapshot);
+/* NULL clears the heights. */
+esp_err_t nrf_topology_service_set_placement_heights(const nrf_topology_placement_heights_t *heights);
+/* True and the height when the placement settled this node against this MAIN reference generation. */
+bool nrf_topology_service_get_placement_height_mm(
+    nrf_cs_node_id_t node_id, uint16_t generation, int32_t *height_mm);
 /* node_slot 0 is MAIN; node_slots 1..8 are G1..G8 in mux-channel order. */
 esp_err_t nrf_topology_service_get_node_status_snapshot(
     uint8_t node_slot,

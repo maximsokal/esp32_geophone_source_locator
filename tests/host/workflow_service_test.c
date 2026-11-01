@@ -367,6 +367,22 @@ esp_err_t nrf_topology_service_request_imu_calibration(uint16_t generation, uint
     return ESP_OK;
 }
 
+static nrf_topology_placement_heights_t s_placed_heights;
+static unsigned s_placed_heights_sets;
+static unsigned s_placed_heights_clears;
+
+esp_err_t nrf_topology_service_set_placement_heights(const nrf_topology_placement_heights_t *heights)
+{
+    if (heights == NULL) {
+        memset(&s_placed_heights, 0, sizeof(s_placed_heights));
+        ++s_placed_heights_clears;
+    } else {
+        s_placed_heights = *heights;
+        ++s_placed_heights_sets;
+    }
+    return ESP_OK;
+}
+
 esp_err_t nrf_topology_service_get_sensor_snapshot(
     uint8_t channel,
     nrf_remote_sensor_cache_t *snapshot)
@@ -578,8 +594,8 @@ static void enter_stable_placement(void)
     s_device.main.pressure_pa = 101325U;
     s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
     s_device.main.height_reference.generation = s_height_generation;
-    for (unsigned sample = 0U; sample < 3U; ++sample) {
-        s_now_ms += 100U;
+    for (unsigned sample = 0U; sample < WORKFLOW_PLACEMENT_MIN_SAMPLES; ++sample) {
+        s_now_ms += 2000U;
         for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
             if (s_topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
             nrf_remote_sensor_cache_t *cache = &s_cache[channel];
@@ -863,8 +879,8 @@ static void wait_workflow_without_command(workflow_step_t expected)
 
 static void refresh_placement_gate(void)
 {
-    for (unsigned sample = 0U; sample < 3U; ++sample) {
-        s_now_ms += 100U;
+    for (unsigned sample = 0U; sample < WORKFLOW_PLACEMENT_MIN_SAMPLES; ++sample) {
+        s_now_ms += 2000U;
         for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
             if (s_topology.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
                 s_cache[channel].esp_receipt_uptime_ms = s_now_ms;
@@ -952,8 +968,8 @@ static void poll_after_fake_time_advance(
     uint64_t advance_ms)
 {
     s_now_ms += advance_ms;
-    for (unsigned sample = 0U; sample < 3U; ++sample) {
-        s_now_ms += 100U;
+    for (unsigned sample = 0U; sample < WORKFLOW_PLACEMENT_MIN_SAMPLES; ++sample) {
+        s_now_ms += 2000U;
         for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
             if (s_topology.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
                 s_cache[channel].esp_receipt_uptime_ms = s_now_ms;
@@ -1038,8 +1054,10 @@ static void enter_record_ready(void)
     assert(command(WORKFLOW_COMMAND_CALIBRATION_DONE, true, true) == WORKFLOW_COMMAND_RESULT_OK);
     assert(command(WORKFLOW_COMMAND_PLACE_SENSORS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
     s_placement_ready = true;
-    for (unsigned sample = 0U; sample < 2U; ++sample) {
-        s_now_ms += 100U;
+    workflow_snapshot_t placement_snapshot;
+    /* One reading per refresh period (2 s); the window needs WORKFLOW_PLACEMENT_MIN_SAMPLES of them. */
+    for (unsigned sample = 0U; sample < WORKFLOW_PLACEMENT_MIN_SAMPLES; ++sample) {
+        s_now_ms += 2000U;
         s_device.main.bmp280_valid = true;
         s_device.main.pressure_pa = 101325U;
         s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
@@ -1060,20 +1078,13 @@ static void enter_record_ready(void)
             s_cache[channel].sensor.relative_z_mm = (int32_t)(100U + channel * 100U);
         }
         assert(workflow_service_poll() == ESP_OK);
-    }
-    workflow_snapshot_t placement_snapshot;
-    assert(workflow_service_get_snapshot(&placement_snapshot) == ESP_OK);
-    assert(!placement_snapshot.placement.all_stable);
-    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, false, false) ==
-        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
-    s_now_ms += 100U;
-    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
-        if (s_topology.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
-            s_cache[channel].esp_receipt_uptime_ms = s_now_ms;
+        assert(workflow_service_get_snapshot(&placement_snapshot) == ESP_OK);
+        if (sample + 1U < WORKFLOW_PLACEMENT_MIN_SAMPLES) {
+            assert(!placement_snapshot.placement.all_stable);
+            assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, false, false) ==
+                WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
         }
     }
-    assert(workflow_service_poll() == ESP_OK);
-    assert(workflow_service_get_snapshot(&placement_snapshot) == ESP_OK);
     assert(placement_snapshot.placement.all_stable);
     assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
     assert(command(WORKFLOW_COMMAND_GPS_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
@@ -1731,7 +1742,7 @@ static void test_low_remote_placement_and_ranging_finish(void)
         assert(command(WORKFLOW_COMMAND_PLACE_SENSORS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
         s_placement_ready = true;
         for (unsigned sample = 0U; sample < WORKFLOW_PLACEMENT_MIN_SAMPLES; ++sample) {
-            s_now_ms += 100U;
+            s_now_ms += 2000U;      /* the production refresh period: readings closer than 1 s are not counted */
             s_device.main.bmp280_valid = true;
             s_device.main.pressure_pa = 101325U;
             s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
@@ -1766,6 +1777,18 @@ static void test_low_remote_placement_and_ranging_finish(void)
     }
 }
 
+/* Deterministic reading noise (uniform, +-amplitude) for the tests that need a barometer that is not perfect. */
+static int32_t s_feed_noise_amplitude_mm;
+static uint32_t s_feed_noise_state = 12345U;
+
+static int32_t feed_noise_mm(void)
+{
+    if (s_feed_noise_amplitude_mm == 0) return 0;
+    s_feed_noise_state = s_feed_noise_state * 1664525U + 1013904223U;
+    const int32_t span = 2 * s_feed_noise_amplitude_mm + 1;
+    return (int32_t)((s_feed_noise_state >> 8) % (uint32_t)span) - s_feed_noise_amplitude_mm;
+}
+
 /* One sensor refresh answered by every assigned remote; channel 1 (G2) can be offset in height. */
 static void feed_remote_sensor_refresh(int32_t channel1_offset_mm)
 {
@@ -1783,7 +1806,7 @@ static void feed_remote_sensor_refresh(int32_t channel1_offset_mm)
         cache->sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
         cache->sensor.reference_generation = s_height_generation;
         cache->sensor.relative_z_mm = (int32_t)(100U + channel * 100U) +
-            (channel == 1U ? channel1_offset_mm : 0);
+            (channel == 1U ? channel1_offset_mm : 0) + feed_noise_mm();
     }
 }
 
@@ -1835,13 +1858,13 @@ static void test_placement_becomes_stable_at_the_production_remote_refresh_caden
      * REMOTE sensor data reaches the ESP once per NRF_SENSOR_REFRESH_PERIOD_MS (2 s), MAIN every poll. The
      * stability check needs WORKFLOW_PLACEMENT_MIN_SAMPLES samples inside its window, so a window shorter
      * than (MIN_SAMPLES - 1) refresh periods can never be satisfied: 2026-10-31 16:24 bench, the stability
-     * screen never let the user continue. Every other placement test refreshes the remotes every 100 ms.
+     * screen never let the user continue. The eighth reading arrives 16 s after the first.
      */
     begin_placement_without_samples(3U);
     uint64_t first_stable_ms = 0U;
     unsigned flaps = 0U;
     const uint64_t start_ms = s_now_ms;
-    for (unsigned step = 0U; step < 300U; ++step) {          /* 30 s in 100 ms polls */
+    for (unsigned step = 0U; step < 450U; ++step) {          /* 45 s in 100 ms polls */
         run_placement_polls(100U, start_ms, 0);
         const workflow_snapshot_t snapshot = try_snapshot();
         if (snapshot.placement.all_stable) {
@@ -1851,10 +1874,45 @@ static void test_placement_becomes_stable_at_the_production_remote_refresh_caden
         }
     }
     assert(first_stable_ms != 0U);
-    assert(first_stable_ms <= 10000U);
+    assert(first_stable_ms >= (WORKFLOW_PLACEMENT_MIN_SAMPLES - 1U) * 2000U);  /* never before the 8th reading */
+    assert(first_stable_ms <= WORKFLOW_PLACEMENT_MIN_SAMPLES * 2000U + 1000U);
     /* Once reached it must hold between refreshes instead of dropping out before each one. */
     assert(flaps == 0U);
     assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    workflow_service_shutdown();
+}
+
+static void test_placement_with_noisy_barometers_settles_and_reports_the_true_height(void)
+{
+    /*
+     * The bench of 2026-11-01 showed 70..130 mm of standard deviation per node. Uniform noise of +-150 mm
+     * (sigma 87 mm) is the same order. The gate must neither stay shut for ever (the old 50 mm spread rule did)
+     * nor open on a window that cannot vouch for 0.1 m, and the height it reports must be the true one.
+     */
+    begin_placement_without_samples(3U);
+    s_feed_noise_amplitude_mm = 150;
+    const uint64_t start_ms = s_now_ms;
+    bool was_stable = false;
+    unsigned flaps = 0U;
+    for (unsigned step = 0U; step < 900U; ++step) {          /* 90 s in 100 ms polls */
+        run_placement_polls(100U, start_ms, 0);
+        const workflow_snapshot_t snapshot = try_snapshot();
+        if (snapshot.placement.all_stable) was_stable = true;
+        else if (was_stable) ++flaps;
+    }
+    const workflow_snapshot_t snapshot = try_snapshot();
+    s_feed_noise_amplitude_mm = 0;
+    assert(was_stable);
+    assert(flaps <= 3U);
+    for (uint8_t channel = 0U; channel < 3U; ++channel) {
+        char name[8];
+        (void)snprintf(name, sizeof(name), "G%u", (unsigned)(channel + 1U));
+        const workflow_placement_node_t *node = placement_node(&snapshot, name);
+        const int32_t truth = (int32_t)(100U + channel * 100U);
+        assert(node->sample_count >= WORKFLOW_PLACEMENT_MIN_SAMPLES);
+        assert(node->height_rel_main_mm > truth - 100 && node->height_rel_main_mm < truth + 100);
+        if (node->stable) assert(node->range_mm <= WORKFLOW_PLACEMENT_MAX_RANGE_MM);
+    }
     workflow_service_shutdown();
 }
 
@@ -1870,32 +1928,36 @@ static void test_placement_reports_why_each_node_is_not_stable_and_logs_the_read
     assert(placement_node(&snapshot, "G1")->reason == WORKFLOW_PLACEMENT_REASON_NODE_STALE);
     assert(placement_node(&snapshot, "MAIN")->reason == WORKFLOW_PLACEMENT_REASON_COLLECTING ||
            placement_node(&snapshot, "MAIN")->reason == WORKFLOW_PLACEMENT_REASON_STABLE);
-    run_placement_polls(7000U, origin_ms, 0);
+    run_placement_polls(15000U, origin_ms, 0);
     snapshot = try_snapshot();
     assert(snapshot.placement.all_stable);
     assert(placement_node(&snapshot, "G1")->reason == WORKFLOW_PLACEMENT_REASON_STABLE);
     assert(placement_node(&snapshot, "G1")->sample_count >= WORKFLOW_PLACEMENT_MIN_SAMPLES);
     assert(placement_node(&snapshot, "G1")->range_mm == 0);
+    run_placement_polls(2500U, origin_ms, 0);   /* long enough for one periodic log line */
 
     /* The readings are logged: each state change once, and a periodic line while the state holds. */
     assert(count_log_matches("PLACEMENT_STABILITY node=G1 stable=0 reason=node_stale trigger=change") == 1U);
     assert(count_log_matches("PLACEMENT_STABILITY node=G1 stable=0 reason=collecting trigger=change") == 1U);
     assert(count_log_matches("PLACEMENT_STABILITY node=G1 stable=1 reason=stable trigger=change") == 1U);
     assert(count_log_matches("PLACEMENT_STABILITY node=G1 stable=1 reason=stable trigger=periodic") >= 1U);
-    assert(strstr(workflow_test_log_buffer, "limit_mm=50") != NULL);
+    assert(strstr(workflow_test_log_buffer, "limit_mm=100") != NULL);
+    assert(strstr(workflow_test_log_buffer, "sigma_mm=0 u95_mm=0 shift_mm=0 outliers=0") != NULL);
     assert(strstr(workflow_test_log_buffer, "pressure_pa=101325") != NULL);
     assert(strstr(workflow_test_log_buffer, "age_ms=") != NULL);
 
-    /* A node that moves beyond the limit names the spread. */
+    /* A node carried 500 mm higher (two readings so far) names the uncertainty of its mean: 8 x 200 and 2 x 700 mm. */
     workflow_test_log_clear();
-    run_placement_polls(2000U, origin_ms, 80);
+    run_placement_polls(4000U, origin_ms, 500);
     snapshot = try_snapshot();
     assert(!snapshot.placement.all_stable);
     assert(placement_node(&snapshot, "G2")->reason == WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED);
-    assert(placement_node(&snapshot, "G2")->range_mm == 80);
+    assert(placement_node(&snapshot, "G2")->range_mm == 134);
+    assert(placement_node(&snapshot, "G2")->height_rel_main_mm == 300);
     assert(placement_node(&snapshot, "G1")->reason == WORKFLOW_PLACEMENT_REASON_STABLE);
     assert(count_log_matches("PLACEMENT_STABILITY node=G2 stable=0 reason=range_exceeded trigger=change") == 1U);
-    assert(strstr(workflow_test_log_buffer, "range_mm=80") != NULL);
+    assert(strstr(workflow_test_log_buffer, "range_mm=134") != NULL);
+    assert(strstr(workflow_test_log_buffer, "height_mm=300") != NULL);
     assert(count_log_matches("node=G1 stable=1 reason=stable trigger=change") == 0U);
 
     /* A node that is not upright. */
@@ -1931,7 +1993,7 @@ static void test_placement_survives_a_missed_device_status_read_but_not_a_long_o
      * used to wipe every node's history, so the stability window had to start over. */
     begin_placement_without_samples(3U);
     const uint64_t origin_ms = s_now_ms;
-    run_placement_polls(8000U, origin_ms, 0);
+    run_placement_polls(16000U, origin_ms, 0);
     assert(try_snapshot().placement.all_stable);
 
     s_device_snapshot_result = ESP_ERR_TIMEOUT;
@@ -2336,6 +2398,7 @@ int main(void)
     test_rejected_imu_calibration_command_is_repeated_for_silent_nodes_only();
     test_low_remote_placement_and_ranging_finish();
     test_placement_becomes_stable_at_the_production_remote_refresh_cadence();
+    test_placement_with_noisy_barometers_settles_and_reports_the_true_height();
     test_placement_reports_why_each_node_is_not_stable_and_logs_the_readings();
     test_placement_survives_a_missed_device_status_read_but_not_a_long_outage();
 #else

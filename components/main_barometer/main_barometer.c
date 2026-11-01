@@ -140,14 +140,14 @@ static void main_barometer_parse_calibration(
     calibration->dig_p9 = main_barometer_le_i16(&bytes[22]);
 }
 
-bool main_barometer_bmp280_compensate(
+bool main_barometer_bmp280_compensate_q8(
     uint32_t raw_pressure,
     uint32_t raw_temperature,
     const main_barometer_bmp280_calibration_t *calibration,
-    uint32_t *pressure_pa,
+    uint32_t *pressure_q8_pa,
     int32_t *temperature_mc)
 {
-    if (calibration == NULL || pressure_pa == NULL || temperature_mc == NULL ||
+    if (calibration == NULL || pressure_q8_pa == NULL || temperature_mc == NULL ||
         raw_pressure > 0xFFFFFU || raw_temperature > 0xFFFFFU ||
         calibration->dig_p1 == 0U) {
         return false;
@@ -196,8 +196,24 @@ bool main_barometer_bmp280_compensate(
         return false;
     }
 
-    *pressure_pa = (uint32_t)pressure;
+    *pressure_q8_pa = (uint32_t)pressure_q24_8;
     *temperature_mc = temp_centi_c * 10;
+    return true;
+}
+
+bool main_barometer_bmp280_compensate(
+    uint32_t raw_pressure,
+    uint32_t raw_temperature,
+    const main_barometer_bmp280_calibration_t *calibration,
+    uint32_t *pressure_pa,
+    int32_t *temperature_mc)
+{
+    uint32_t pressure_q8 = 0U;
+    if (pressure_pa == NULL ||
+        !main_barometer_bmp280_compensate_q8(raw_pressure, raw_temperature, calibration, &pressure_q8, temperature_mc)) {
+        return false;
+    }
+    *pressure_pa = (pressure_q8 + 128U) >> 8U;
     return true;
 }
 
@@ -466,6 +482,52 @@ static void main_barometer_height_reference_hold_expire(
     barometer->height_reference_restorable = true;
 }
 
+/*
+ * Centre of the altitudes of a capture window: a Hampel filter, then the mean, as the placement step does for the
+ * node heights (workflow_service.c): samples farther than 3 sigma_r from the median (sigma_r = 1.4826 MAD, never
+ * below 40 mm) are outliers; more than one in eight of them means no sample is dropped. The reference used to be
+ * the single last filtered sample, so its error (up to ~100 mm) stayed in every node height for good.
+ */
+static double main_barometer_window_centre_mm(const double *values, size_t count)
+{
+    double sorted[MAIN_HEIGHT_REFERENCE_MAX_SAMPLES];
+    double deviation[MAIN_HEIGHT_REFERENCE_MAX_SAMPLES];
+    for (size_t i = 0U; i < count; ++i) sorted[i] = values[i];
+    for (size_t i = 1U; i < count; ++i) {
+        const double key = sorted[i];
+        size_t j = i;
+        while (j > 0U && sorted[j - 1U] > key) { sorted[j] = sorted[j - 1U]; --j; }
+        sorted[j] = key;
+    }
+    const double median = (count % 2U) == 1U ? sorted[count / 2U] : 0.5 * (sorted[count / 2U - 1U] + sorted[count / 2U]);
+    for (size_t i = 0U; i < count; ++i) deviation[i] = values[i] > median ? values[i] - median : median - values[i];
+    for (size_t i = 1U; i < count; ++i) {
+        const double key = deviation[i];
+        size_t j = i;
+        while (j > 0U && deviation[j - 1U] > key) { deviation[j] = deviation[j - 1U]; --j; }
+        deviation[j] = key;
+    }
+    const double mad = (count % 2U) == 1U ? deviation[count / 2U] : 0.5 * (deviation[count / 2U - 1U] + deviation[count / 2U]);
+    double sigma_r = 1.4826 * mad;
+    if (sigma_r < 40.0) sigma_r = 40.0;
+    size_t outliers = 0U;
+    for (size_t i = 0U; i < count; ++i) {
+        const double d = values[i] > median ? values[i] - median : median - values[i];
+        if (d > 3.0 * sigma_r) ++outliers;
+    }
+    const size_t allowed = count / 8U > 1U ? count / 8U : 1U;
+    const bool drop = outliers <= allowed;
+    double sum = 0.0;
+    size_t used = 0U;
+    for (size_t i = 0U; i < count; ++i) {
+        const double d = values[i] > median ? values[i] - median : median - values[i];
+        if (drop && d > 3.0 * sigma_r) continue;
+        sum += values[i];
+        ++used;
+    }
+    return used > 0U ? sum / (double)used : median;
+}
+
 static void main_barometer_height_reference_update(
     main_barometer_t *barometer,
     uint64_t now_ms)
@@ -487,6 +549,13 @@ static void main_barometer_height_reference_update(
 
     const double pressure_pa = barometer->reading.filtered_pressure_pa;
     barometer->height_reference_progress_ms = now_ms;
+    if (!barometer->height_reference_has_sample) {
+        barometer->height_reference_altitude_count = 0U;
+    }
+    if (barometer->height_reference_altitude_count < MAIN_HEIGHT_REFERENCE_MAX_SAMPLES) {
+        barometer->height_reference_altitudes_mm[barometer->height_reference_altitude_count++] =
+            barometer->last_raw_altitude_mm;
+    }
     if (!barometer->height_reference_has_sample) {
         barometer->height_reference_capture_started_ms = now_ms;
         barometer->height_reference_min_pressure_pa = pressure_pa;
@@ -511,8 +580,10 @@ static void main_barometer_height_reference_update(
     if (barometer->height_reference_max_pressure_pa -
             barometer->height_reference_min_pressure_pa <=
         MAIN_HEIGHT_REFERENCE_MAX_PRESSURE_RANGE_PA) {
+        const double centre_mm = main_barometer_window_centre_mm(
+            barometer->height_reference_altitudes_mm, barometer->height_reference_altitude_count);
         barometer->height_reference_altitude_mm =
-            barometer->reading.filtered_altitude_mm;
+            (int32_t)(centre_mm >= 0.0 ? centre_mm + 0.5 : centre_mm - 0.5);
         barometer->reading.height_reference_state = MAIN_BAROMETER_REFERENCE_VALID;
         barometer->reading.relative_z_mm = 0;
         barometer->height_reference_last_good_ms = now_ms;
@@ -628,7 +699,7 @@ static esp_err_t main_barometer_read_bmp280(
     const uint32_t raw_temperature =
         ((uint32_t)bytes[3] << 12U) | ((uint32_t)bytes[4] << 4U) |
         ((uint32_t)bytes[5] >> 4U);
-    uint32_t pressure_pa = 0U;
+    uint32_t pressure_q8 = 0U;
     int32_t temperature_mc = 0;
     if (raw_pressure == 0x80000U || raw_temperature == 0x80000U) {
         if (now_ms >= barometer->bmp280_pending_count_due_ms &&
@@ -644,18 +715,22 @@ static esp_err_t main_barometer_read_bmp280(
         barometer->reading.bmp280_valid = false;
         return ESP_ERR_NOT_FINISHED;
     }
-    if (!main_barometer_bmp280_compensate(
+    if (!main_barometer_bmp280_compensate_q8(
             raw_pressure, raw_temperature, &barometer->calibration,
-            &pressure_pa, &temperature_mc)) {
+            &pressure_q8, &temperature_mc)) {
         barometer->reading.bmp280_valid = false;
         return ESP_ERR_INVALID_STATE;
     }
+    /* The pressure keeps its fraction down to 0.01 Pa; only the reported integer is rounded. */
+    const uint32_t pressure_pa = (pressure_q8 + 128U) >> 8U;
+    const uint32_t pressure_x100_pa = (uint32_t)(((uint64_t)pressure_q8 * 100U + 128U) >> 8U);
 
     double filtered_altitude_mm = 0.0;
     double filtered_pressure_pa = 0.0;
-    const int32_t altitude_mm = nrf_baro_pressure_to_altitude_mm(pressure_pa);
+    const int32_t altitude_mm = nrf_baro_pressure_x100_to_altitude_mm(pressure_x100_pa);
+    barometer->last_raw_altitude_mm = (double)altitude_mm;
     if (nrf_ema_filter_update(
-            &barometer->pressure_filter, pressure_pa,
+            &barometer->pressure_filter, (double)pressure_x100_pa / 100.0,
             now_ms, &filtered_pressure_pa) != NRF_EMA_FILTER_UPDATED ||
         nrf_ema_filter_update(
             &barometer->altitude_filter, altitude_mm,

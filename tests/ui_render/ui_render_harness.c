@@ -443,7 +443,7 @@ static void test_placement_blocked_screens(const char *language)
         int32_t range_mm;
         bool vertical;
     } cases[] = {
-        {"range", WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED, 5U, 84, true},
+        {"range", WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED, 9U, 134, true},
         {"tilted", WORKFLOW_PLACEMENT_REASON_NOT_VERTICAL, 0U, -1, false},
         {"collecting", WORKFLOW_PLACEMENT_REASON_COLLECTING, 2U, -1, true},
     };

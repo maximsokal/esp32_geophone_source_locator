@@ -2,6 +2,7 @@
 #define NRF_HEIGHT_REFERENCE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "nrf_upstream_protocol.h"
@@ -25,6 +26,22 @@ typedef struct {
     uint64_t last_good_uptime_ms;
     bool has_last_good;
 } nrf_height_reference_t;
+
+/* Altitudes of this many recent refreshes (2 s apart) feed the reference captured at a calibration. */
+#define NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES 5U
+
+/*
+ * Centre of the recent altitudes for a reference capture: samples farther than 3 sigma_r from the median
+ * (sigma_r = 1.4826 times the median absolute deviation, never below 40 mm) are outliers, the centre is the mean
+ * of the others; if more than one in eight are outliers nothing is dropped. The reference used to be the single
+ * filtered sample of the instant, whose error stayed in every height of the node for good. With fewer than three
+ * samples (a node that has just started) there is nothing to take a centre of: `fallback_mm`.
+ * The ESP32 uses the same estimator for the MAIN reference and for the node heights of the placement step.
+ */
+int32_t nrf_height_reference_window_centre_mm(
+    const int32_t *altitudes_mm,
+    size_t count,
+    int32_t fallback_mm);
 
 void nrf_height_reference_init(nrf_height_reference_t *reference);
 

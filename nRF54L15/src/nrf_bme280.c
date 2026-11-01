@@ -520,12 +520,25 @@ nrf_bme280_result_t nrf_bme280_start_conversion(nrf_bme280_t *device, uint64_t n
             return result;
         }
     }
-    result = bme280_write_reg(
-        device,
-        BME280_REG_CONFIG,
-        BME280_CONFIG_FILTER_X16);
+    /*
+     * CONFIG (the IIR filter) is only written when it is not what we set: the sensor sleeps between forced
+     * conversions, so a write is effective, but there is no reason to rewrite the same value before every
+     * conversion (it costs an I2C write per conversion, and the datasheet does not promise that the filter state
+     * survives a rewrite). A sensor that lost its configuration is restored here as before.
+     */
+    uint8_t config = 0U;
+    result = bme280_read_regs(device, BME280_REG_CONFIG, &config, 1U);
     if (result != NRF_BME280_OK) {
         return result;
+    }
+    if ((config & 0x1CU) != BME280_CONFIG_FILTER_X16) {
+        result = bme280_write_reg(
+            device,
+            BME280_REG_CONFIG,
+            BME280_CONFIG_FILTER_X16);
+        if (result != NRF_BME280_OK) {
+            return result;
+        }
     }
     result = bme280_write_reg(
         device,
@@ -636,6 +649,7 @@ nrf_bme280_result_t nrf_bme280_poll_conversion(
 
     sample->temperature_milli_c = temperature_centi_c * 10;
     sample->pressure_pa = (pressure_x100_pa + 50U) / 100U;
+    sample->pressure_x100_pa = pressure_x100_pa;
     sample->humidity_milli_percent = device->has_humidity
         ? (humidity_x1024_percent * 1000U + 512U) / 1024U
         : NRF_ENV_HUMIDITY_UNAVAILABLE;

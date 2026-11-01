@@ -186,6 +186,7 @@ typedef struct {
 
 static TaskHandle_t s_task = NULL;
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
+static nrf_topology_placement_heights_t s_placement_heights;
 static bool s_starting = false;
 static bool s_stop_requested = false;
 static bool s_topology_refresh_requested = false;
@@ -2707,10 +2708,16 @@ static nrf_geometry_result_t service_ranging_solve(
             return NRF_GEOMETRY_ERR_ARGUMENT;
         }
         const nrf_remote_sensor_cache_t *cache = &worker->cache[channel];
-        const int32_t z_mm = use_barometric_z
-            ? ranging_saturate_i32(
-                  (int64_t)cache->sensor.relative_z_mm - main_relative_z_mm)
-            : 0;
+        /* The height the placement step settled, when it has one; else the reading of this instant. */
+        int32_t placed_mm = 0;
+        const bool placed = use_barometric_z && nrf_topology_service_get_placement_height_mm(
+            worker->snapshot.remotes[channel].node_id, main_reference_generation, &placed_mm);
+        const int32_t z_mm = placed
+            ? placed_mm
+            : use_barometric_z
+                ? ranging_saturate_i32(
+                      (int64_t)cache->sensor.relative_z_mm - main_relative_z_mm)
+                : 0;
         inputs[input_count++] = (nrf_geometry_node_input_t) {
             .node_id = worker->snapshot.remotes[channel].node_id,
             .z_mm = z_mm,
@@ -3966,6 +3973,38 @@ esp_err_t nrf_topology_service_request_imu_calibration(
 
     (void)xTaskNotifyGive(task);
     return ESP_OK;
+}
+
+esp_err_t nrf_topology_service_set_placement_heights(const nrf_topology_placement_heights_t *heights)
+{
+    portENTER_CRITICAL(&s_state_lock);
+    if (heights == NULL) {
+        memset(&s_placement_heights, 0, sizeof(s_placement_heights));
+    } else {
+        s_placement_heights = *heights;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return ESP_OK;
+}
+
+bool nrf_topology_service_get_placement_height_mm(
+    nrf_cs_node_id_t node_id,
+    uint16_t generation,
+    int32_t *height_mm)
+{
+    if (height_mm == NULL || generation == 0U) return false;
+    bool found = false;
+    portENTER_CRITICAL(&s_state_lock);
+    if (s_placement_heights.valid && s_placement_heights.generation == generation) {
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            if (!s_placement_heights.node_valid[channel] || s_placement_heights.node_id[channel] != node_id) continue;
+            *height_mm = s_placement_heights.height_rel_main_mm[channel];
+            found = true;
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return found;
 }
 
 esp_err_t nrf_topology_service_get_sensor_snapshot(

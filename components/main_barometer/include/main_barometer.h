@@ -8,6 +8,9 @@
 #include "nrf_ema_filter.h"
 #include "sensor_bus.h"
 
+/* Samples kept for the centre of a capture window: 2 s at the 200 ms poll, with room for jitter. */
+#define MAIN_HEIGHT_REFERENCE_MAX_SAMPLES 24U
+
 typedef struct {
     uint16_t dig_t1;
     int16_t dig_t2;
@@ -100,6 +103,11 @@ typedef struct {
     double height_reference_min_pressure_pa;
     double height_reference_max_pressure_pa;
     int32_t height_reference_altitude_mm;
+    /* Unfiltered altitude of the samples of the capture window, for its robust centre. */
+    double height_reference_altitudes_mm[MAIN_HEIGHT_REFERENCE_MAX_SAMPLES];
+    /* Unfiltered altitude of the newest sample, in millimetres, from the pressure with its fraction. */
+    double last_raw_altitude_mm;
+    uint8_t height_reference_altitude_count;
 } main_barometer_t;
 
 void main_barometer_init(main_barometer_t *barometer);
@@ -124,4 +132,11 @@ bool main_barometer_bmp280_compensate(
     uint32_t raw_temperature,
     const main_barometer_bmp280_calibration_t *calibration,
     uint32_t *pressure_pa,
+    int32_t *temperature_mc);
+/* The same, with the pressure in Q24.8 pascals (1/256 Pa): one whole pascal is 83 mm of height. */
+bool main_barometer_bmp280_compensate_q8(
+    uint32_t raw_pressure,
+    uint32_t raw_temperature,
+    const main_barometer_bmp280_calibration_t *calibration,
+    uint32_t *pressure_q8_pa,
     int32_t *temperature_mc);

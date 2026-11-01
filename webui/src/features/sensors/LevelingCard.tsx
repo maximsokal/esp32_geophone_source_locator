@@ -73,7 +73,7 @@ export default function LevelingCard({ gate, pods, main, onCalibrateHeights }: P
                 ? t('leveling.not_reported_firmware')
                 : t(MAIN_HEIGHT_REFERENCE_LABEL[mainReference.state])}</td>
               <td>{mainReference?.state === 'valid'
-                ? `${formatNumber(locale, mainReference.relative_z_mm, { maximumFractionDigits: 1 })} mm`
+                ? `${formatNumber(locale, Math.round(mainReference.relative_z_mm / 10) || 0)} ${locale === 'uk' ? 'см' : 'cm'}`
                 : 'вЂ”'}</td>
             </tr>
             {pods.map((pod, index) => (
@@ -83,7 +83,7 @@ export default function LevelingCard({ gate, pods, main, onCalibrateHeights }: P
                   ? t('leveling.not_reported_firmware')
                   : t(HEIGHT_REFERENCE_LABEL[pod.height_reference.state])}</td>
                 <td>{pod.height_reference?.state === 'valid'
-                  ? `${formatNumber(locale, pod.height_reference.relative_z_mm, { maximumFractionDigits: 1 })} mm`
+                  ? `${formatNumber(locale, Math.round(pod.height_reference.relative_z_mm / 10) || 0)} ${locale === 'uk' ? 'см' : 'cm'}`
                   : '—'}</td>
               </tr>
             ))}

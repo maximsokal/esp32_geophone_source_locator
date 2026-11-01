@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -59,6 +60,28 @@ typedef struct {
 
 static fake_sensor_bus_t s_fake;
 extern char fake_barometer_log[8192];
+
+static const main_barometer_bmp280_calibration_t k_datasheet_calibration = {
+    .dig_t1 = 27504U, .dig_t2 = 26435, .dig_t3 = -1000,
+    .dig_p1 = 36477U, .dig_p2 = -10685, .dig_p3 = 3024,
+    .dig_p4 = 2855, .dig_p5 = 140, .dig_p6 = -7,
+    .dig_p7 = 15500, .dig_p8 = -14600, .dig_p9 = 6000,
+};
+
+/* Pressure of a raw reading with its fraction, as Pa * 256, for the datasheet temperature. */
+static uint32_t pressure_q8_of_raw(uint32_t raw_pressure)
+{
+    uint32_t q8 = 0U;
+    int32_t temperature_mc = 0;
+    assert(main_barometer_bmp280_compensate_q8(raw_pressure, 519888U, &k_datasheet_calibration, &q8, &temperature_mc));
+    return q8;
+}
+
+/* Altitude, mm, of a Q24.8 pressure on the 12 Pa/m model, from first principles (no firmware helper). */
+static double altitude_mm_of_q8(uint32_t q8)
+{
+    return (101325.0 - (double)q8 / 256.0) * 1000.0 / 12.0;
+}
 
 static void put_le16(uint8_t *destination, uint16_t value)
 {
@@ -489,8 +512,8 @@ static void test_bmp280_probes_preferred_then_fallback_address(void)
     assert(barometer.reading.bmp280_address == 0x76U);
     assert(barometer.reading.pressure_pa >= 100652U &&
            barometer.reading.pressure_pa <= 100654U);
-    assert(barometer.reading.filtered_altitude_mm ==
-           nrf_baro_pressure_to_altitude_mm(barometer.reading.pressure_pa));
+    /* The altitude comes from the pressure with its fraction (within a millimetre), not from the whole pascal. */
+    assert(fabs((double)barometer.reading.filtered_altitude_mm - altitude_mm_of_q8(pressure_q8_of_raw(415148U))) <= 1.0);
     assert(s_fake.address_probe_count >= 2U);
     assert(s_fake.probed_addresses[0] == 0x77U);
     assert(s_fake.probed_addresses[1] == 0x76U);
@@ -623,6 +646,66 @@ static void test_main_height_reference_stable_unstable_and_relative(void)
            MAIN_BAROMETER_REFERENCE_REJECTED_UNSTABLE);
     assert(barometer.reading.height_reference_generation == 92U);
     assert(barometer.reading.relative_z_mm == 0);
+    main_barometer_close(&barometer);
+}
+
+static void test_pressure_keeps_the_fraction_below_one_pascal(void)
+{
+    const uint32_t a = pressure_q8_of_raw(415148U);
+    const uint32_t b = pressure_q8_of_raw(415149U);
+    uint32_t integer_a = 0U, integer_b = 0U;
+    int32_t temperature_mc = 0;
+    assert(main_barometer_bmp280_compensate(415148U, 519888U, &k_datasheet_calibration, &integer_a, &temperature_mc));
+    assert(main_barometer_bmp280_compensate(415149U, 519888U, &k_datasheet_calibration, &integer_b, &temperature_mc));
+    /* The integer API is the Q24.8 value rounded, as before. */
+    assert(integer_a == ((a + 128U) >> 8U) && integer_b == ((b + 128U) >> 8U));
+    /* One raw step is a fraction of a pascal: the Q24.8 value sees it, the whole pascal need not. */
+    assert(b != a);
+    const uint32_t step_q8 = b > a ? b - a : a - b;
+    assert(step_q8 > 0U && step_q8 < 256U);
+}
+
+static void test_altitude_resolves_a_fraction_of_a_pascal(void)
+{
+    /* Raw 415148 and 415152 are about 0.6 Pa (50 mm) apart; the same whole pascal can hide it. */
+    double altitude_mm[2];
+    const uint32_t raws[2] = { 415148U, 415152U };
+    for (size_t i = 0U; i < 2U; ++i) {
+        reset_fake();
+        setup_bmp280(0x77U, BMP_ID);
+        set_bmp_raw_pressure(0x77U, raws[i]);
+        main_barometer_t barometer;
+        main_barometer_init(&barometer);
+        (void)main_barometer_poll(&barometer, 0U);
+        (void)main_barometer_poll(&barometer, 200U);
+        assert(barometer.reading.bmp280_valid);
+        altitude_mm[i] = (double)barometer.reading.filtered_altitude_mm;
+        main_barometer_close(&barometer);
+    }
+    const double difference_mm = altitude_mm[0] - altitude_mm[1];
+    const double expected_mm = altitude_mm_of_q8(pressure_q8_of_raw(raws[0])) - altitude_mm_of_q8(pressure_q8_of_raw(raws[1]));
+    assert(fabs(expected_mm) > 20.0 && fabs(expected_mm) < 83.0);   /* below one whole-pascal step */
+    assert(fabs(difference_mm - expected_mm) <= 2.0);
+}
+
+static void test_height_reference_is_the_window_centre_not_the_last_sample(void)
+{
+    reset_fake();
+    setup_bmp280(0x77U, BMP_ID);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_request_height_reference_capture(95U) == ESP_OK);
+    (void)main_barometer_poll(&barometer, 0U);
+    set_bmp_raw_pressure(0x77U, 415148U);
+    (void)main_barometer_poll(&barometer, 1000U);    /* the capture window starts */
+    (void)main_barometer_poll(&barometer, 2000U);
+    set_bmp_raw_pressure(0x77U, 415160U);            /* a spike of about 1.9 Pa on the closing sample */
+    (void)main_barometer_poll(&barometer, 3000U);
+    assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID);
+    /* The spike is an outlier of the window: the reference is the altitude of the steady value... */
+    assert(fabs((double)barometer.height_reference_altitude_mm - altitude_mm_of_q8(pressure_q8_of_raw(415148U))) <= 1.0);
+    /* ...while the filtered altitude the old code took as the reference is pulled towards the spike. */
+    assert(fabs((double)barometer.reading.filtered_altitude_mm - (double)barometer.height_reference_altitude_mm) > 30.0);
     main_barometer_close(&barometer);
 }
 
@@ -1751,6 +1834,9 @@ int main(void)
     test_transient_bus_failure_during_capture_does_not_end_it();
     test_capture_started_before_the_sensor_initialised_still_completes();
     test_capture_cuts_short_a_retry_pause_set_before_it_started();
+    test_pressure_keeps_the_fraction_below_one_pascal();
+    test_altitude_resolves_a_fraction_of_a_pascal();
+    test_height_reference_is_the_window_centre_not_the_last_sample();
     test_main_height_reference_sensor_invalid_and_generation_validation();
     test_first_conversion_pending_is_not_a_bus_error();
     test_sensor_power_cycle_is_rearmed_after_it_acks_again();

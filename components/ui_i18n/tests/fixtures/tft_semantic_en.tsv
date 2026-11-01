@@ -4,7 +4,7 @@ normal.body.0	Select an object
 warning.title	SENSOR PLACEMENT
 warning.hint	UP/DOWN actions  OK run  LEFT back
 warning.body.0	G1: Not upright
-warning.body.1	G1 V:X dH:—mm ASL:—m St:X
+warning.body.1	G1 V:X dH:—cm ASL:—m St:X
 warning.action.0	Sensors placed
 error.title	RESULT
 error.hint	UP/DOWN actions  OK run  LEFT back
@@ -35,7 +35,7 @@ recording.body.0	Elapsed 01:05
 recording.action.0	Stop recording
 ranging_unknown.title	BLUETOOTH RANGING
 ranging_unknown.hint	UP/DOWN actions  OK run  LEFT back
-ranging_unknown.body.0	Pairs —/— residual — mm
+ranging_unknown.body.0	Pairs —/— residual — cm
 ranging_unknown.body.1	Ranging by radio, keep still
 localization_solved.text	G1 X0.0m Y0.0m LEVEL SOL
 localization_unverified.text	G1 XUNKNOWN YUNKNOWN N/D UNS

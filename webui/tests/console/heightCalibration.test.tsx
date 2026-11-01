@@ -65,10 +65,10 @@ describe('height calibration UI (MAX-282)', () => {
     expect(html).toContain(translate('en', 'leveling.valid'));
     expect(html).toContain(translate('en', 'leveling.rejected_moving'));
     expect(html).toContain(translate('en', 'leveling.unavailable_sensor_invalid'));
-    expect(html).toContain(`${formatNumber('en', 12.34, { maximumFractionDigits: 1 })} mm`);
-    expect(html).not.toContain(`${formatNumber('en', 80, { maximumFractionDigits: 1 })} mm`);
-    expect(html).not.toContain(`${formatNumber('en', 81, { maximumFractionDigits: 1 })} mm`);
-    expect(html).not.toContain(`${formatNumber('en', 82, { maximumFractionDigits: 1 })} mm`);
+    // Heights are shown in whole centimetres: 12.34 mm is 1 cm; the 80..82 mm of the invalid states (8 cm) are hidden.
+    expect(html).toContain(`${formatNumber('en', 1)} cm`);
+    expect(html).not.toContain(`${formatNumber('en', 8)} cm`);
+    expect(html).not.toMatch(/\d\s?mm/);
   });
 
   it('reports differing generations and missing height data from older firmware', () => {
@@ -94,8 +94,8 @@ describe('height calibration UI (MAX-282)', () => {
     const olderFirmware = renderCard([pod(1)]);
 
     expect(current).toContain('<td>MAIN</td>');
-    expect(current).toContain(`${formatNumber('en', 0, { maximumFractionDigits: 1 })} mm`);
-    expect(current).toContain(`${formatNumber('en', -80, { maximumFractionDigits: 1 })} mm`);
+    expect(current).toContain(`${formatNumber('en', 0)} cm`);
+    expect(current).toContain(`${formatNumber('en', -8)} cm`);   // -80 mm
     expect(unstable).toContain(translate('en', 'leveling.rejected_pressure_unstable'));
     expect(olderFirmware).toContain('<td>MAIN</td>');
     expect(olderFirmware).toContain(translate('en', 'leveling.not_reported_firmware'));

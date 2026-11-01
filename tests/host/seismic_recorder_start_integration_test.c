@@ -207,6 +207,17 @@ esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
     *result = fake_frozen_ranging;
     return ESP_OK;
 }
+/* Heights the placement step settled, by node id; none unless a test sets them. */
+static uint16_t fake_placement_generation;
+static bool fake_placement_valid[16];
+static int32_t fake_placement_height_mm[16];
+bool nrf_topology_service_get_placement_height_mm(nrf_cs_node_id_t node_id, uint16_t generation, int32_t *height_mm)
+{
+    if (height_mm == NULL || generation == 0U || generation != fake_placement_generation) return false;
+    if (node_id >= 16U || !fake_placement_valid[node_id]) return false;
+    *height_mm = fake_placement_height_mm[node_id];
+    return true;
+}
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *snapshot) { if (channel >= NRF_TOPOLOGY_REMOTE_COUNT) return ESP_ERR_INVALID_ARG; *snapshot = fake_sensor_cache[channel]; return ESP_OK; }
 esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot) { if (snapshot == NULL) return ESP_ERR_INVALID_ARG; *snapshot = fake_device_status; return ESP_OK; }
 
@@ -460,6 +471,17 @@ int main(void)
     assert(!last_geometry_set && metadata_write_calls == 0U);
     fake_progress_never_completes = false;
     fake_progress_done_after = 1000U; /* A valid cycle can exceed the former 45 s limit. */
+    /*
+     * The sensors read 500, 480 and -300 mm against MAIN at this instant (a wandering barometer), but the
+     * placement settled all three at the same height as MAIN for MAIN reference generation 7. The geometry
+     * must use the settled one: planar x/y below only come out right when Z is 0.
+     */
+    fake_sensor_cache[0].sensor.relative_z_mm = 500;
+    fake_sensor_cache[1].sensor.relative_z_mm = 480;
+    fake_sensor_cache[2].sensor.relative_z_mm = -300;
+    fake_placement_generation = 7U;
+    fake_placement_valid[1] = fake_placement_valid[2] = fake_placement_valid[3] = true;
+    fake_placement_height_mm[1] = fake_placement_height_mm[2] = fake_placement_height_mm[3] = 0;
     assert(seismic_recorder_start("OBJ_0005") == ESP_OK);
     assert(fake_autonomous_requests == 5U && fake_cs_cycle_requests == 0U);
     assert(fake_progress_calls == 1001U);
@@ -472,6 +494,8 @@ int main(void)
     assert(last_geometry.pods[2].computed && last_geometry.pods[2].leveled);
     /* The mirror-disambiguated point, not (150,200) again. */
     assert(abs(last_geometry.pods[2].x_mm - 150) <= 2 && abs(last_geometry.pods[2].y_mm - (-200)) <= 2);
+    /* Z is the settled height, not the reading of the instant that the sensor cache happens to hold. */
+    assert(last_geometry.pods[0].z_mm == 0 && last_geometry.pods[1].z_mm == 0 && last_geometry.pods[2].z_mm == 0);
 
     /* MAX-166: session.json must freeze the geometry this recording solved,
      * not a stale pre-solve fetch. */

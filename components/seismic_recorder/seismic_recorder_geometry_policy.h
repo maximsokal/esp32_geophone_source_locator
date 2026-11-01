@@ -27,6 +27,10 @@ typedef struct
     bool height_reference_valid;
     uint16_t height_reference_generation;
     int32_t relative_z_mm;
+    /* The height relative to MAIN that the placement step settled (the centre of its 20 s window, good to about
+     * 0.1 m). When present it is the Z of the geometry; the instantaneous relative_z_mm wanders by 10..20 cm. */
+    bool placement_height_valid;
+    int32_t placement_height_mm;
     bool leveled;
     uint64_t source_sample_uptime_ms;
     uint64_t esp_receipt_uptime_ms;
