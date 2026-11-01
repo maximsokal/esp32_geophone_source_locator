@@ -300,9 +300,29 @@ esp_err_t localization_run_store_list_picks(const char *object, const char *sess
     localization_pick_record_t *out, size_t maximum, size_t *count)
 { (void)object; (void)session; (void)out; (void)maximum; *count = 0U; return ESP_ERR_NOT_FOUND; }
 
+/* A moving waveform on every channel while a test asks for one; otherwise the buffer is empty. */
+bool render_synth_waveform;
 esp_err_t seismic_buffer_copy_latest(seismic_frame_t *frames, size_t maximum,
     size_t *count, seismic_buffer_info_t *info)
 {
+    if (render_synth_waveform && frames != NULL && maximum > 0U) {
+        static uint64_t generation;
+        ++generation;
+        for (size_t i = 0U; i < maximum; ++i) {
+            frames[i].timestamp_us = (int64_t)(i * 2000U);
+            for (size_t k = 0U; k < 4U; ++k) {
+                const float amplitude = k == 0U ? 24000.0f : k == 2U ? 3000.0f : 300.0f;
+                frames[i].channel_uv[k] = amplitude * (float)((int)((i + generation * 7U) * (k + 1U) % 200U) - 100) / 100.0f;
+            }
+        }
+        *count = maximum;
+        memset(info, 0, sizeof(*info));
+        info->source = SEISMIC_SOURCE_AD7606;
+        info->sample_rate_hz = 500U;
+        info->buffered_frames = maximum;
+        info->total_frames = generation * 1000U;
+        return ESP_OK;
+    }
     (void)frames; (void)maximum; *count = 0U; memset(info, 0, sizeof(*info));
     return ESP_ERR_INVALID_STATE;
 }

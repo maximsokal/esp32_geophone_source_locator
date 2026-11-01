@@ -84,6 +84,8 @@ typedef struct {
 
 typedef struct {
     uint64_t timestamp_ms;
+    /* The blind time of the history (MAIN's barometer out) when this sample was stored: it did not age since. */
+    uint64_t blind_at_insert_ms;
     int64_t height_rel_main_mm;
 } workflow_placement_sample_t;
 
@@ -112,6 +114,8 @@ typedef struct {
     uint16_t generation;
     uint64_t last_sample_ms;
     bool last_sample_valid;
+    /* Time spent while MAIN's barometer was blind inside the grace: it does not count towards a sample's age. */
+    uint64_t blind_total_ms;
     bool reason_logged;
     workflow_placement_reason_t logged_reason;
     size_t sample_count;
@@ -124,6 +128,9 @@ typedef struct {
     workflow_placement_history_t history[WORKFLOW_MAX_CALIBRATION_NODES];
     bool main_cached;
     uint64_t main_cached_ms;
+    bool main_baro_seen;
+    uint64_t main_baro_last_valid_ms;
+    uint64_t last_poll_ms;
     device_main_status_t main_cache;
     uint64_t next_log_ms;
 } workflow_placement_run_t;
@@ -423,8 +430,22 @@ static void workflow_service_refresh_calc_settings_locked(uint64_t now_ms)
     }
 }
 
+/*
+ * The scan and the calculation settings are read from the SD card, which shares the SPI bus with the TFT: every
+ * read first takes the LVGL lock and drains the display queue. Bench log 2026-11-01 21:46: 8..12 such reads per
+ * 20 s during the live preview, each waiting 80..440 ms for the LVGL task, holding workflow_poll (and its
+ * priority inheritance) for up to 780 ms and missing 65 workflow deadlines, to learn what no step before the scan
+ * choice uses. Those steps leave the card alone; the first poll on a later step reads it (the cache keys on the
+ * step).
+ */
+static bool workflow_service_step_leaves_the_sd_card_alone(workflow_step_t step)
+{
+    return step >= WORKFLOW_STEP_CALIB_PREP && step <= WORKFLOW_STEP_RANGING_RESULT;
+}
+
 static void workflow_service_refresh_presence_locked(void)
 {
+    if (workflow_service_step_leaves_the_sd_card_alone(s_core.step)) return;
     const uint64_t now_ms = workflow_service_now_ms();
     const bool identity_changed =
         s_scan_cache_step != s_core.step ||
@@ -950,6 +971,59 @@ static esp_err_t workflow_service_ranging_save(const nrf_topology_ranging_progre
     return ESP_OK;
 }
 
+static const char *workflow_service_pair_state_name(nrf_cs_pair_state_t state)
+{
+    switch (state) {
+    case NRF_CS_PAIR_PENDING: return "pending";
+    case NRF_CS_PAIR_VALID: return "valid";
+    case NRF_CS_PAIR_MISSING: return "missing";
+    case NRF_CS_PAIR_RETRY_EXHAUSTED: return "retry_exhausted";
+    case NRF_CS_PAIR_CABLE_EXCEEDED: return "cable_exceeded";
+    case NRF_CS_PAIR_UNKNOWN:
+    default: return "unknown";
+    }
+}
+
+/*
+ * What the ranging produced, in the log: until 2026-11-01 21:46 the bench log said only "RANGING_AUTONOMOUS
+ * result=0", so a failed positions step could not be told from a solved one. One summary line, then one line per
+ * pair and per node (at most 10 + 5), once per ranging.
+ */
+static void workflow_service_log_ranging_result(const nrf_topology_ranging_progress_t *progress)
+{
+    ESP_LOGI(TAG,
+        "RANGING_RESULT success=%u partial=%u reason=%s executions=%u/%u pairs=%u residual_mm=%d max_residual_mm=%d "
+        "inconsistent_pairs=%u main_reference_generation=%u",
+        progress->success ? 1U : 0U,
+        progress->partial ? 1U : 0U,
+        progress->failure_reason[0] != '\0' ? progress->failure_reason : "none",
+        (unsigned)progress->pairs_done,
+        (unsigned)progress->pairs_total,
+        (unsigned)progress->pair_count,
+        (int)progress->solution_residual_mm,
+        (int)progress->geometry.max_residual_mm,
+        (unsigned)progress->geometry.inconsistent_pair_count,
+        (unsigned)progress->main_height_reference_generation);
+    for (size_t i = 0U; i < progress->pair_count && i < NRF_CS_MAX_PAIRS; ++i) {
+        const nrf_cs_pair_result_t *pair = &progress->pairs[i];
+        ESP_LOGI(TAG,
+            "RANGING_PAIR %u-%u state=%s distance_mm=%d confidence=%u valid_samples=%u attempts=%u rejected=%u "
+            "spread_mm=%d automatic_mm=%d",
+            (unsigned)pair->node_a, (unsigned)pair->node_b,
+            workflow_service_pair_state_name(pair->state),
+            (int)pair->distance_mm, (unsigned)pair->confidence, (unsigned)pair->valid_samples,
+            (unsigned)pair->attempts, (unsigned)pair->rejected_samples, (int)pair->spread_mm,
+            (int)pair->automatic_distance_mm);
+    }
+    for (size_t i = 0U; i < progress->geometry.node_count && i < NRF_CS_MAX_NODES; ++i) {
+        const nrf_topology_ranging_node_t *node = &progress->geometry.nodes[i];
+        ESP_LOGI(TAG,
+            "RANGING_NODE id=%u solved=%u x_mm=%d y_mm=%d z_mm=%d residual_mm=%d uncertainty_mm=%d",
+            (unsigned)node->node_id, node->solved ? 1U : 0U, (int)node->x_mm, (int)node->y_mm,
+            (int)node->z_mm, (int)node->residual_mm, (int)node->uncertainty_mm);
+    }
+}
+
 static void workflow_service_ranging_poll(void)
 {
     if (!s_ranging.active) return;
@@ -972,6 +1046,7 @@ static void workflow_service_ranging_poll(void)
         if (restart) workflow_service_ranging_start();
         return;
     }
+    workflow_service_log_ranging_result(progress);
     if (workflow_service_ranging_save(progress) != ESP_OK) {
         (void)nrf_topology_service_invalidate_ranging();
         workflow_service_ranging_done(false, false, "ranging_save_failed");
@@ -1126,7 +1201,8 @@ static bool workflow_service_placement_update_node(
     }
 
     while (history->sample_count > 0U &&
-           now_ms - history->samples[0].timestamp_ms > WORKFLOW_PLACEMENT_WINDOW_MS) {
+           now_ms - history->samples[0].timestamp_ms -
+               (history->blind_total_ms - history->samples[0].blind_at_insert_ms) > WORKFLOW_PLACEMENT_WINDOW_MS) {
         --history->sample_count;
         memmove(
             &history->samples[0],
@@ -1151,6 +1227,7 @@ static bool workflow_service_placement_update_node(
         }
         history->samples[history->sample_count++] = (workflow_placement_sample_t){
             .timestamp_ms = sample_ms,
+            .blind_at_insert_ms = history->blind_total_ms,
             .height_rel_main_mm = height_rel_main_mm,
         };
         history->last_sample_ms = sample_ms;
@@ -1257,16 +1334,32 @@ static void workflow_service_placement_poll(bool collect_samples)
         device->main.height_reference.generation != 0U;
     const bool main_baro_valid = device_valid && device->main.bmp280_valid &&
         device->main.pressure_pa > 0U;
-    const bool main_height_valid = main_reference_valid && main_baro_valid;
+    if (tracks_placement && main_baro_valid) {
+        s_placement.main_baro_seen = true;
+        s_placement.main_baro_last_valid_ms = now_ms;
+    }
+    const bool main_baro_held = tracks_placement && !main_baro_valid && device_valid &&
+        s_placement.main_baro_seen && now_ms >= s_placement.main_baro_last_valid_ms &&
+        now_ms - s_placement.main_baro_last_valid_ms <= WORKFLOW_PLACEMENT_MAIN_BARO_GRACE_MS;
+    if (main_baro_held && s_placement.last_poll_ms != 0U && now_ms > s_placement.last_poll_ms &&
+        now_ms - s_placement.last_poll_ms <= WORKFLOW_PLACEMENT_MAIN_BARO_GRACE_MS) {
+        /* The window waits for the barometer: the time it is blind does not age the collected samples. */
+        const uint64_t blind_ms = now_ms - s_placement.last_poll_ms;
+        for (size_t i = 0U; i < WORKFLOW_MAX_CALIBRATION_NODES; ++i) s_placement.history[i].blind_total_ms += blind_ms;
+    }
+    s_placement.last_poll_ms = now_ms;
+    const bool main_height_valid = main_reference_valid && (main_baro_valid || main_baro_held);
     const uint16_t main_generation = main_reference_valid
         ? device->main.height_reference.generation
         : 0U;
     const workflow_placement_reason_t main_blocker = !device_valid
         ? WORKFLOW_PLACEMENT_REASON_DEVICE_STATUS_BUSY
         : !main_reference_valid ? WORKFLOW_PLACEMENT_REASON_MAIN_REFERENCE
-        : !main_baro_valid ? WORKFLOW_PLACEMENT_REASON_MAIN_BAROMETER
+        : !main_baro_valid && !main_baro_held ? WORKFLOW_PLACEMENT_REASON_MAIN_BAROMETER
         : WORKFLOW_PLACEMENT_REASON_STABLE;
     const bool take_samples = tracks_placement && collect_samples;
+    /* No new sample while MAIN's barometer is blind: the height of a node is relative to it. */
+    const bool collect_now = take_samples && main_baro_valid;
     const bool log_due = take_samples && now_ms >= s_placement.next_log_ms;
 
     if (!tracks_placement) {
@@ -1274,6 +1367,7 @@ static void workflow_service_placement_poll(bool collect_samples)
             workflow_service_placement_reset_history(&s_placement.history[i]);
         }
         s_placement.next_log_ms = 0U;
+        s_placement.main_baro_seen = false;
     }
 
     workflow_placement_node_t *main_node = &status->per_node[status->per_node_count++];
@@ -1296,7 +1390,7 @@ static void workflow_service_placement_poll(bool collect_samples)
         0,
         now_ms,
         now_ms,
-        take_samples,
+        collect_now,
         &main_node->reason,
         &main_node->range_mm);
     main_node->sample_count = (uint8_t)s_placement.history[0].sample_count;
@@ -1366,7 +1460,7 @@ static void workflow_service_placement_poll(bool collect_samples)
                 node->height_rel_main_mm,
                 cache->esp_receipt_uptime_ms,
                 now_ms,
-                take_samples && cache_current,
+                collect_now && cache_current,
                 &node->reason,
                 &node->range_mm);
             node->sample_count = (uint8_t)history->sample_count;

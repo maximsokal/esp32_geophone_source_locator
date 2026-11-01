@@ -1852,6 +1852,57 @@ static unsigned count_log_matches(const char *needle)
     return matches;
 }
 
+/* Until 2026-11-01 21:46 the log said only "RANGING_AUTONOMOUS result=0": a failed positions step was invisible. */
+static void test_ranging_result_is_logged_with_every_pair_and_node(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    enter_gps_choice();
+    assert(command(WORKFLOW_COMMAND_GPS_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    refresh_placement_gate();
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    workflow_test_log_clear();
+
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = false;
+    s_ranging_progress.partial = true;
+    (void)snprintf(s_ranging_progress.failure_reason, sizeof(s_ranging_progress.failure_reason), "pair_failed:0-2");
+    s_ranging_progress.pairs_done = 10U;
+    s_ranging_progress.pairs_total = 12U;
+    s_ranging_progress.pair_count = 2U;
+    s_ranging_progress.pairs[0] = (nrf_cs_pair_result_t){
+        .node_a = 0U, .node_b = 1U, .state = NRF_CS_PAIR_VALID, .distance_mm = 2345, .confidence = 900U,
+        .attempts = 7U, .valid_samples = 5U, .spread_mm = 12, .rejected_samples = 1U, .automatic_distance_mm = 2340,
+    };
+    s_ranging_progress.pairs[1] = (nrf_cs_pair_result_t){
+        .node_a = 0U, .node_b = 2U, .state = NRF_CS_PAIR_MISSING, .distance_mm = -1, .attempts = 3U,
+    };
+    s_ranging_progress.solution_residual_mm = 74;
+    s_ranging_progress.geometry.max_residual_mm = 74;
+    s_ranging_progress.geometry.inconsistent_pair_count = 1U;
+    s_ranging_progress.geometry.node_count = 2U;
+    s_ranging_progress.geometry.nodes[0] = (nrf_topology_ranging_node_t){
+        .node_id = 0U, .solved = true, .x_mm = 0, .y_mm = 0, .z_mm = 0, .residual_mm = 0, .uncertainty_mm = 5,
+    };
+    s_ranging_progress.geometry.nodes[1] = (nrf_topology_ranging_node_t){
+        .node_id = 1U, .solved = true, .x_mm = 2345, .y_mm = -120, .z_mm = -180, .residual_mm = 74, .uncertainty_mm = 90,
+    };
+    s_ranging_progress.main_height_reference_generation = 9U;
+    assert(workflow_service_poll() == ESP_OK);
+
+    assert(count_log_matches("RANGING_RESULT success=0 partial=1 reason=pair_failed:0-2 executions=10/12 pairs=2 "
+        "residual_mm=74 max_residual_mm=74 inconsistent_pairs=1 main_reference_generation=9") == 1U);
+    assert(count_log_matches("RANGING_PAIR 0-1 state=valid distance_mm=2345 confidence=900 valid_samples=5 attempts=7 "
+        "rejected=1 spread_mm=12 automatic_mm=2340") == 1U);
+    assert(count_log_matches("RANGING_PAIR 0-2 state=missing distance_mm=-1") == 1U);
+    assert(count_log_matches("RANGING_NODE id=1 solved=1 x_mm=2345 y_mm=-120 z_mm=-180 residual_mm=74 "
+        "uncertainty_mm=90") == 1U);
+    assert(count_log_matches("RANGING_NODE id=0 solved=1") == 1U);
+    /* Logged once per ranging, not on every poll. */
+    assert(workflow_service_poll() == ESP_OK);
+    assert(count_log_matches("RANGING_RESULT ") == 1U);
+    workflow_service_shutdown();
+}
+
 static void test_placement_becomes_stable_at_the_production_remote_refresh_cadence(void)
 {
     /*
@@ -1969,10 +2020,13 @@ static void test_placement_reports_why_each_node_is_not_stable_and_logs_the_read
     assert(!placement_node(&snapshot, "G1")->stable);
     assert(count_log_matches("PLACEMENT_STABILITY node=G1 stable=0 reason=not_vertical trigger=change") == 1U);
 
-    /* MAIN's barometer gone for good. */
+    /* MAIN's barometer gone: for a few seconds the collected samples are kept, then the cause is named. */
     s_device.main.bmp280_valid = false;
     workflow_test_log_clear();
     run_placement_polls(100U, origin_ms, 0);
+    snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "MAIN")->reason != WORKFLOW_PLACEMENT_REASON_MAIN_BAROMETER);
+    run_placement_polls(WORKFLOW_PLACEMENT_MAIN_BARO_GRACE_MS, origin_ms, 0);
     snapshot = try_snapshot();
     assert(placement_node(&snapshot, "MAIN")->reason == WORKFLOW_PLACEMENT_REASON_MAIN_BAROMETER);
     assert(count_log_matches("PLACEMENT_STABILITY node=MAIN stable=0 reason=main_barometer trigger=change") == 1U);
@@ -2039,6 +2093,42 @@ static void test_scan_presence_and_settings_refresh_are_cached_for_two_seconds(v
     assert(workflow_service_poll() == ESP_OK);
     snapshot = try_snapshot();
     assert(snapshot.session_id[0] == '\0' && snapshot.has_scan);
+    workflow_service_shutdown();
+}
+
+/*
+ * Bench log 2026-11-01 21:46: workflow_poll read the SD card every ~2 s during the live preview; each read waited
+ * 80..440 ms for the LVGL task (the card shares the display's SPI bus), held workflow_poll up and missed deadlines.
+ * No step from the calibration to the ranging result uses what it reads.
+ */
+static void test_the_sd_card_is_left_alone_from_calibration_to_the_ranging_result(void)
+{
+    begin_placement_without_samples(3U);
+    const uint64_t origin_ms = s_now_ms;
+    run_placement_polls(2000U, origin_ms, 0);
+    const unsigned reads_on_entry = workflow_test_scan_calls;
+
+    run_placement_polls(30000U, origin_ms, 0);                      /* 30 s of polls on the placement */
+    assert(workflow_test_scan_calls == reads_on_entry);
+    assert(try_snapshot().placement.all_stable);
+
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_GPS_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_RANGING_DONE, true, true) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_RANGING_RESULT);
+    for (unsigned i = 0U; i < 10U; ++i) {
+        s_now_ms += 2000U;
+        assert(workflow_service_poll() == ESP_OK);
+    }
+    assert(workflow_test_scan_calls == reads_on_entry);             /* the live preview polls are quiet too */
+
+    /* The scan choice is where the card is read again: the first poll on the new step does it. */
+    assert(command(WORKFLOW_COMMAND_CONFIRM, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    s_now_ms += 100U;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_SCAN_CHOICE);
+    assert(workflow_test_scan_calls > reads_on_entry);
     workflow_service_shutdown();
 }
 
@@ -2422,6 +2512,7 @@ int main(void)
     test_scan_choice_requires_explicit_skip_before_recording();
     test_service_fsm_illegal_events_and_single_recording_lifecycle();
     test_new_workflow_steps_wait_for_explicit_commands();
+    test_ranging_result_is_logged_with_every_pair_and_node();
     test_one_and_two_connected_remotes_complete_initialization();
     test_rejected_imu_calibration_command_is_repeated_for_silent_nodes_only();
     test_placement_becomes_stable_at_the_production_remote_refresh_cadence();
@@ -2430,6 +2521,7 @@ int main(void)
     test_no_step_advances_without_a_command_fake_clock();
     test_staged_scan_remains_visible_across_session_creation();
     test_scan_presence_and_settings_refresh_are_cached_for_two_seconds();
+    test_the_sd_card_is_left_alone_from_calibration_to_the_ranging_result();
     test_calc_settings_readiness_gates_calculate_and_save_invalidates_cache();
     test_calculation_success_progress_failure_classes_and_submit_errors();
     test_invalid_settings_at_submit_and_orphaned_job_completion();

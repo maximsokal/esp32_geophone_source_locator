@@ -634,6 +634,9 @@ static void enter_placement(void)
     assert(command(WORKFLOW_COMMAND_PLACE_SENSORS) == WORKFLOW_COMMAND_RESULT_OK);
 }
 
+/* False while a test wants MAIN's barometer to deliver nothing (a read timed out, the sensor is being re-armed). */
+static bool s_main_barometer_reads = true;
+
 /* `remote_height_mm` is each node's own relative Z; MAIN's own relative Z (its barometer wandering) is `main_z_mm`. */
 static void publish_placement_sample_with_main(
     uint64_t timestamp_ms,
@@ -642,7 +645,7 @@ static void publish_placement_sample_with_main(
     int32_t main_z_mm)
 {
     s_now_ms = timestamp_ms;
-    s_device.main.bmp280_valid = true;
+    s_device.main.bmp280_valid = s_main_barometer_reads;
     s_device.main.pressure_pa = 101325U;
     s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
     s_device.main.height_reference.generation = s_requested_generation;
@@ -1440,6 +1443,78 @@ static void test_settled_heights_are_given_to_the_geometry_and_dropped_when_goin
     workflow_service_shutdown();
 }
 
+/*
+ * Bench log 2026-11-01 21:46: MAIN's barometer missed a reading every ~6 s for half a minute (a read timed out
+ * while core 0 was busy, then a 5 s pause before the re-arm). Each miss wiped all collected samples, so the
+ * stability that needs 16 s of readings took 76 s.
+ */
+static void test_placement_keeps_its_samples_through_a_short_main_barometer_outage(void)
+{
+    reset_fakes();
+    enter_placement();
+    const int32_t heights[3] = { 100, 200, 300 };
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+
+    publish_steady_placement(heights, upright, 5U);
+    assert(get_workflow_snapshot().placement.per_node[1].sample_count == 5U);
+
+    s_main_barometer_reads = false;
+    publish_steady_placement(heights, upright, 3U);                 /* six seconds without a barometer */
+    workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(snapshot.placement.per_node[1].sample_count == 5U);      /* kept, none added */
+    assert(snapshot.placement.per_node[0].sample_count == 5U);
+    assert(snapshot.placement.per_node[1].reason == WORKFLOW_PLACEMENT_REASON_COLLECTING);
+    assert(!snapshot.placement.all_stable);
+
+    s_main_barometer_reads = true;
+    publish_steady_placement(heights, upright, 2U);
+    assert(get_workflow_snapshot().placement.per_node[1].sample_count == 7U);
+    assert(!get_workflow_snapshot().placement.all_stable);
+    publish_steady_placement(heights, upright, 1U);                 /* the eighth reading with a barometer */
+    snapshot = get_workflow_snapshot();
+    assert(snapshot.placement.all_stable);
+    assert(snapshot.placement.per_node[1].height_rel_main_mm == 100);
+    workflow_service_shutdown();
+}
+
+static void test_placement_that_is_stable_stays_stable_through_a_short_main_barometer_outage(void)
+{
+    reset_fakes();
+    enter_ready_placement();
+    const int32_t heights[3] = { 100, 200, 300 };
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    s_main_barometer_reads = false;
+    for (unsigned i = 0U; i < WORKFLOW_PLACEMENT_MAIN_BARO_GRACE_MS / PLACEMENT_REFRESH_MS; ++i) {
+        publish_steady_placement(heights, upright, 1U);             /* up to 14 s blind */
+        const workflow_snapshot_t snapshot = get_workflow_snapshot();
+        assert(snapshot.placement.all_stable);
+        assert(snapshot.placement.per_node[1].height_rel_main_mm == 100);
+    }
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) == WORKFLOW_COMMAND_RESULT_OK);
+    s_main_barometer_reads = true;
+    workflow_service_shutdown();
+}
+
+static void test_placement_gives_up_when_the_main_barometer_stays_blind_too_long(void)
+{
+    reset_fakes();
+    enter_ready_placement();
+    const int32_t heights[3] = { 100, 200, 300 };
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    s_main_barometer_reads = false;
+    const unsigned held = WORKFLOW_PLACEMENT_MAIN_BARO_GRACE_MS / PLACEMENT_REFRESH_MS;   /* 7 readings, 14 s */
+    publish_steady_placement(heights, upright, held);
+    assert(get_workflow_snapshot().placement.all_stable);
+    publish_steady_placement(heights, upright, 1U);                 /* 16 s: past the grace */
+    const workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(!snapshot.placement.all_stable);
+    assert(snapshot.placement.per_node[1].reason == WORKFLOW_PLACEMENT_REASON_MAIN_BAROMETER);
+    assert(snapshot.placement.per_node[1].sample_count == 0U);
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    s_main_barometer_reads = true;
+    workflow_service_shutdown();
+}
+
 static void test_placement_does_not_count_readings_closer_than_the_gap(void)
 {
     reset_fakes();
@@ -1620,6 +1695,9 @@ int main(void)
     test_placement_cancels_the_wander_of_the_main_barometer();
     test_placement_accepts_the_noisy_bench_log_of_2026_11_01();
     test_settled_heights_are_given_to_the_geometry_and_dropped_when_going_back();
+    test_placement_keeps_its_samples_through_a_short_main_barometer_outage();
+    test_placement_that_is_stable_stays_stable_through_a_short_main_barometer_outage();
+    test_placement_gives_up_when_the_main_barometer_stays_blind_too_long();
     test_placement_does_not_count_readings_closer_than_the_gap();
     test_placement_window_boundary_is_inclusive();
     test_layout_rechecks_placement_after_gps_choice();

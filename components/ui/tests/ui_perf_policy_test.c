@@ -40,6 +40,17 @@ uint64_t ui_perf_policy_update_interval_us(bool load_limited)
     return fps > 0U ? 1000000U / fps : 0U;
 }
 
+uint64_t ui_perf_policy_update_gap_us(bool load_limited, uint64_t last_render_us)
+{
+    (void)last_render_us;
+    return ui_perf_policy_update_interval_us(load_limited);
+}
+
+uint64_t ui_perf_policy_last_render_us(void)
+{
+    return 0U;
+}
+
 bool ui_perf_policy_chart_refresh_due(uint64_t elapsed_us, bool load_limited)
 {
     (void)elapsed_us;
@@ -243,6 +254,46 @@ static void test_U1_measurement_load_policy_throttles_live_and_recording(void)
 }
 
 
+/*
+ * Bench log 2026-11-01 21:46: a frame of the live charts costs ~340 ms of core 0 and the 250 ms target interval
+ * left no rest: taskLVGL held 66 % of the core, IDLE0 3 %, the watchdog fired and nrf_topology (priority below
+ * LVGL's) did not run for up to 58 s. After a costly frame the task now rests twice its cost.
+ */
+static void test_U7_a_costly_live_frame_is_followed_by_a_rest_that_leaves_core_time_to_others(void)
+{
+    /* Cheap frames keep the 4 FPS interval. */
+    assert(ui_perf_policy_update_gap_us(true, 0U) == 250000U);
+    assert(ui_perf_policy_update_gap_us(true, 11000U) == 250000U);
+    assert(ui_perf_policy_update_gap_us(true, 125000U) == 250000U);      /* 2 x 125 ms = the interval itself */
+    /* Costly frames rest twice their cost: LVGL then holds a third of the core, not two thirds. */
+    assert(ui_perf_policy_update_gap_us(true, 126000U) == 252000U);
+    assert(ui_perf_policy_update_gap_us(true, 340000U) == 680000U);
+    assert(ui_perf_policy_update_gap_us(true, 345012U) == 690024U);
+    /* The rest is bounded so that the picture still moves. */
+    assert(ui_perf_policy_update_gap_us(true, 400000U) == UI_PERF_LOAD_REST_MAX_US);
+    assert(ui_perf_policy_update_gap_us(true, 5000000U) == UI_PERF_LOAD_REST_MAX_US);
+    /* The share of the core LVGL keeps stays at or under a third while the rest is not capped. */
+    for (uint64_t render_us = 130000U; render_us <= 400000U; render_us += 10000U) {
+        const uint64_t period_us = render_us + ui_perf_policy_update_gap_us(true, render_us);
+        assert(render_us * 3U <= period_us + 3U);
+    }
+    /* Other screens are not throttled by their frame cost. */
+    assert(ui_perf_policy_update_gap_us(false, 340000U) == ui_perf_policy_update_interval_us(false));
+    assert(ui_perf_policy_update_gap_us(false, 0U) == 41666U);
+}
+
+static void test_U7b_the_last_render_cost_is_the_one_recorded(void)
+{
+    ui_perf_policy_record_render(11000U);
+    assert(ui_perf_policy_last_render_us() == 11000U);
+    ui_perf_policy_record_render(345012U);
+    assert(ui_perf_policy_last_render_us() == 345012U);
+    ui_perf_policy_record_render(9000U);                 /* the latest, not the largest */
+    assert(ui_perf_policy_last_render_us() == 9000U);
+    (void)ui_perf_policy_stage_take();                   /* the log window reset leaves it */
+    assert(ui_perf_policy_last_render_us() == 9000U);
+}
+
 static void test_U2_flush_chunks_stay_under_5ms_and_yield_between(void)
 {
     const uint64_t chunk_wire_us = ui_perf_policy_flush_wire_time_us(
@@ -359,6 +410,8 @@ static bool run_requested_test(const char *name)
     else if (strcmp(name, "U4") == 0) test_U4_old_frame_starves_150ms_budget_and_recording_cap_does_not();
     else if (strcmp(name, "U5") == 0) test_U5_chart_refresh_interval_boundary();
     else if (strcmp(name, "U6") == 0) test_U6_preview_caps_and_chunk_size_boundaries();
+    else if (strcmp(name, "U7") == 0) test_U7_a_costly_live_frame_is_followed_by_a_rest_that_leaves_core_time_to_others();
+    else if (strcmp(name, "U7b") == 0) test_U7b_the_last_render_cost_is_the_one_recorded();
     else return false;
     return true;
 }
@@ -379,5 +432,7 @@ int main(int argc, char **argv)
     test_U4_old_frame_starves_150ms_budget_and_recording_cap_does_not();
     test_U5_chart_refresh_interval_boundary();
     test_U6_preview_caps_and_chunk_size_boundaries();
+    test_U7_a_costly_live_frame_is_followed_by_a_rest_that_leaves_core_time_to_others();
+    test_U7b_the_last_render_cost_is_the_one_recorded();
     return 0;
 }

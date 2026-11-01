@@ -28,6 +28,10 @@
 
 #define UI_MEASUREMENT_MIN_SCALE_UV   1000.0f
 #define UI_MEASUREMENT_CHART_HEIGHT 42
+/* The channel value lines change with every sample; redrawing them at the chart rate doubles the dirty area. */
+#define UI_MEASUREMENT_LABEL_PERIOD_US 1000000U
+/* The channel value lines change with every sample; redrawing them at the chart rate doubles the dirty area. */
+#define UI_MEASUREMENT_LABEL_PERIOD_US 1000000U
 #define UI_MEASUREMENT_CHART_ROW_STEP 44
 #define UI_MEASUREMENT_CHART_LINK_TOP 21
 
@@ -120,6 +124,8 @@ static uint64_t s_measurement_perf_label_us = 0U;
 static uint64_t s_measurement_perf_total_us = 0U;
 static uint64_t s_measurement_perf_max_total_us = 0U;
 static uint64_t s_last_chart_refresh_us = 0U;
+static uint64_t s_last_label_refresh_us = 0U;
+static uint32_t s_last_label_mode = UINT32_MAX;
 
 
 static void ui_measurements_perf_reset(uint64_t started_us)
@@ -578,25 +584,31 @@ void ui_measurements_refresh_charts_locked(
 
         }
     }
-    /* External min/max arrays are updated as one batch. The graph container
-     * is deliberately limited to the four chart cards, so summary/footer
-     * pixels do not become dirty on every preview update. */
-    if (context->measurement_graphs != NULL) {
-        lv_obj_invalidate(context->measurement_graphs);
-    }
-    else {
-        /* Allocation failure fallback: keep invalidation local to each chart. */
-        for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
-            if (context->measurement_charts[channel] != NULL) {
-                lv_obj_invalidate(context->measurement_charts[channel]);
-            }
+    /*
+     * Only the four 58x14 chart strips change when the external min/max arrays are updated. Invalidating the
+     * container of the four cards redrew its 86 rows (12 of the 30 eight-row flush chunks, 40 % of the screen)
+     * on every update, and a chunk costs ~20 ms of core 0 on this hardware: the bench log 2026-11-01 21:46 had
+     * 340 ms per frame, taskLVGL at 66 % of the core and the sensor bus services starved.
+     */
+    for (size_t channel = 0U; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+        if (context->measurement_charts[channel] != NULL) {
+            lv_obj_invalidate(context->measurement_charts[channel]);
         }
     }
     const uint64_t chart_us =
         (uint64_t)(esp_timer_get_time() - (uint64_t)chart_started_us);
 
     const int64_t label_started_us = esp_timer_get_time();
-    for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+    /* A change of what the lines say (a fault, data appearing) shows at once; the values follow once a second. */
+    const uint32_t label_mode = (transport_fault ? 1U : 0U) | (digital_interference ? 2U : 0U) |
+        (serial_suspicious ? 4U : 0U) | (err == ESP_OK && frame_count > 0U ? 8U : 0U);
+    const bool label_due = s_last_label_refresh_us == 0U || label_mode != s_last_label_mode ||
+        refresh_now_us - s_last_label_refresh_us >= UI_MEASUREMENT_LABEL_PERIOD_US;
+    if (label_due) {
+        s_last_label_refresh_us = refresh_now_us;
+        s_last_label_mode = label_mode;
+    }
+    for (size_t channel = 0; label_due && channel < SEISMIC_CHANNEL_COUNT; ++channel) {
         lv_obj_t *label = context->measurement_channel_labels[channel];
         if (label == NULL) {
             continue;
@@ -759,6 +771,8 @@ void ui_measurements_create_charts_locked(lv_obj_t *screen, int y)
     s_last_transport_fault = false;
     s_last_digital_interference = false;
     s_last_chart_refresh_us = 0U;
+    s_last_label_refresh_us = 0U;
+    s_last_label_mode = UINT32_MAX;
     ui_measurements_perf_reset((uint64_t)esp_timer_get_time());
 #endif
 

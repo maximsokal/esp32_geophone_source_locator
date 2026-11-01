@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ui_internal.h"
+#include "ui_perf_policy.h"
 #include "hw_inventory.h"
 #include "device_status.h"
 #include "app_events.h"
@@ -256,6 +257,82 @@ static void capture_system(void)
     }
 }
 
+extern bool render_synth_waveform;
+extern uint64_t render_now_ms;
+
+static unsigned char s_dirty_rows[240];
+static int s_dirty_widest, s_dirty_tallest;
+
+static void collect_dirty_rows(lv_event_t *event)
+{
+    const lv_area_t *area = lv_event_get_param(event);
+    if (area == NULL) return;
+    const int width = (int)(area->x2 - area->x1 + 1), height = (int)(area->y2 - area->y1 + 1);
+    if (width > s_dirty_widest) s_dirty_widest = width;
+    if (height > s_dirty_tallest) s_dirty_tallest = height;
+    for (int32_t y = area->y1 < 0 ? 0 : area->y1; y <= area->y2 && y < 240; ++y) s_dirty_rows[y] = 1U;
+}
+
+/* Rows and flush chunks (UI_PERF_FLUSH_CHUNK_ROWS rows each) that one refresh marks for redraw. */
+static void measure_live_refresh(unsigned *rows, unsigned *chunks)
+{
+    lv_display_t *display = lv_display_get_default();
+    lv_event_dsc_t *listener = lv_display_add_event_cb(display, collect_dirty_rows, LV_EVENT_INVALIDATE_AREA, NULL);
+    assert(listener != NULL);
+    memset(s_dirty_rows, 0, sizeof(s_dirty_rows));
+    s_dirty_widest = s_dirty_tallest = 0;
+    ui_measurements_refresh_locked();
+    *rows = 0U;
+    *chunks = 0U;
+    for (unsigned y = 0U; y < 240U; ++y) *rows += s_dirty_rows[y];
+    for (unsigned chunk = 0U; chunk < 240U / UI_PERF_FLUSH_CHUNK_ROWS; ++chunk) {
+        for (unsigned y = chunk * UI_PERF_FLUSH_CHUNK_ROWS; y < (chunk + 1U) * UI_PERF_FLUSH_CHUNK_ROWS; ++y) {
+            if (s_dirty_rows[y] != 0U) { ++*chunks; break; }
+        }
+    }
+    assert(lv_display_remove_event_cb_with_user_data(display, collect_dirty_rows, NULL) == 1U);
+    lv_refr_now(display);
+}
+
+/*
+ * Bench log 2026-11-01 21:46: a frame of the live charts cost ~340 ms because one update marked the whole block
+ * of the four cards (300x86, 12 of the 30 eight-row flush chunks) for redraw; a chunk costs ~20 ms of core 0 on
+ * this hardware, with the acquisition off as well (the one large-area frame of log 13:12 cost the same 20 ms per
+ * chunk). An update of the charts must dirty the four 58x14 chart strips only, and the channel value lines
+ * follow once a second.
+ */
+static void test_live_chart_update_dirties_only_what_changed(void)
+{
+    const uint64_t clock_before_ms = render_now_ms;   /* later captures show the uptime */
+    reset_menu(UI_SCREEN_MEASUREMENTS);
+    render_measurement.state = MEASUREMENT_SERVICE_LIVE;
+    render_measurement.active_object_present = true;
+    render_synth_waveform = true;
+    ui_render_measurements_locked();                  /* creates the screen and does the first refresh */
+    lv_refr_now(lv_display_get_default());
+    unsigned rows = 0U, chunks = 0U;
+
+    /* 200 ms later: new samples, the charts move, the values are not yet due. */
+    render_now_ms += 200U;
+    measure_live_refresh(&rows, &chunks);
+    assert(rows > 0U);
+    assert(s_dirty_widest <= 58 && s_dirty_tallest <= 14);      /* the strips, never the block of the cards */
+    assert(rows == 28U && chunks <= 5U);
+
+    /* A second after the values were written they are redrawn with the charts: two bands of label lines more. */
+    render_now_ms += 1000U;
+    measure_live_refresh(&rows, &chunks);
+    assert(rows > 28U && chunks <= 10U);
+    assert(s_dirty_widest <= 146 && s_dirty_tallest <= 24);
+
+    /* Faster than the chart interval nothing is touched at all. */
+    render_now_ms += 20U;
+    measure_live_refresh(&rows, &chunks);
+    assert(rows == 0U && chunks == 0U);
+    render_synth_waveform = false;
+    render_now_ms = clock_before_ms;
+}
+
 static void capture_measurements(void)
 {
     for (measurement_service_state_t state = MEASUREMENT_SERVICE_LIVE; state <= MEASUREMENT_SERVICE_ERROR; ++state) {
@@ -283,6 +360,7 @@ static void capture_measurements(void)
             }
         }
     }
+    test_live_chart_update_dirties_only_what_changed();
     for (unsigned fault = 0U; fault < 6U; ++fault) {
         reset_menu(UI_SCREEN_MEASUREMENTS);
         render_acquisition_mode = fault;

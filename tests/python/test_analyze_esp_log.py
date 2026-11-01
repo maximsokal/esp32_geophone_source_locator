@@ -49,7 +49,8 @@ def test_real_overload_log_fails_every_gate_with_measured_values():
     report = analyzer.analyze_file(FIXTURES / "acq_overload_2026-10-31_22-24-48.excerpt.log")
     # G6 is decided from the old SERIAL_DIAG fields (no AD7606_RATE line exists in this log); G7 has no data.
     assert report.gates() == {**{g: analyzer.FAIL for g in ("G1", "G2", "G3", "G4", "G5", "G6")},
-                              "G0": analyzer.NOT_APPLICABLE, "G7": analyzer.NOT_APPLICABLE}  # excerpt has no boot lines
+                              "G0": analyzer.NOT_APPLICABLE, "G7": analyzer.NOT_APPLICABLE,  # excerpt has no boot lines
+                              "G8": analyzer.NOT_APPLICABLE, "G9": analyzer.NOT_APPLICABLE}   # nor placement or ranging
     g6 = [f for f in report.findings if f.gate == "G6"]
     assert len(g6) == 2 and all(f.status == analyzer.FAIL and "estimate" in f.measured for f in g6)
     assert "213 frames observed of 20692 conversions" in g6[0].measured
@@ -84,6 +85,7 @@ def test_healthy_window_passes_all_gates():
     report = analyzer.analyze_text(healthy_log())
     gates = report.gates()
     assert gates.pop("G0") == analyzer.NOT_APPLICABLE        # the synthetic log has no boot lines
+    assert gates.pop("G8") == analyzer.NOT_APPLICABLE and gates.pop("G9") == analyzer.NOT_APPLICABLE
     assert gates == {g: analyzer.PASS for g in ("G1", "G2", "G3", "G4", "G5", "G6", "G7")}
     assert report.exit_code() == 0
 
@@ -125,7 +127,9 @@ def test_each_gate_fails_alone():
     for failing, text in expected.items():
         result = gates(text)
         assert result[failing] == analyzer.FAIL, failing
-        assert all(status == analyzer.PASS for gate, status in result.items() if gate not in (failing, "G0")), (failing, result)
+        # G8 and G9 (placement, ranging) have no lines in these synthetic acquisition logs.
+        assert all(status == analyzer.PASS for gate, status in result.items() if gate not in (failing, "G0", "G8", "G9")), (failing, result)
+        assert result["G8"] == analyzer.NOT_APPLICABLE and result["G9"] == analyzer.NOT_APPLICABLE
 
 
 def test_noise_bytes_and_glued_lines_do_not_hide_watchdog_events():
@@ -207,3 +211,71 @@ def test_an_intentional_restart_is_not_a_boot_failure():
     assert analyzer.analyze_text(clean).gate_status("G0") == analyzer.PASS
     panic = clean + "Guru Meditation Error: Core  1 panic'ed (LoadProhibited)\nRebooting...\n"
     assert analyzer.analyze_text(panic).gate_status("G0") == analyzer.FAIL
+
+
+def placement_lines(stable_at_ms: int | None, start_ms: int = 44000, interruptions: int = 0) -> str:
+    """PLACEMENT_STABILITY lines of MAIN and two nodes, as the firmware logs them (reason changes only)."""
+    def line(t, node, stable, reason, trigger="change"):
+        return (f"I ({t}) WORKFLOW: PLACEMENT_STABILITY node={node} stable={stable} reason={reason} trigger={trigger} "
+                f"samples=1/8 range_mm=-1 limit_mm=100 age_ms=0 vertical=1 height_valid=1 height_mm=0\n")
+    text = "".join(line(start_ms + i, node, 0, "collecting") for i, node in enumerate(("MAIN", "G1", "G2")))
+    for k in range(interruptions):
+        t = start_ms + 1000 * (k + 1)
+        text += line(t, "MAIN", 0, "main_barometer") + line(t + 500, "MAIN", 0, "collecting")
+    if stable_at_ms is not None:
+        text += "".join(line(stable_at_ms + i, node, 1, "stable") for i, node in enumerate(("MAIN", "G1", "G2")))
+    return text
+
+
+def test_placement_gate_measures_the_time_until_every_node_is_stable():
+    fast = analyzer.analyze_text(placement_lines(stable_at_ms=60000))     # 16 s after the first line
+    g8 = [f for f in fast.findings if f.gate == "G8"]
+    assert len(g8) == 1 and g8[0].status == analyzer.PASS
+    assert "all nodes stable after 16.0s" in g8[0].measured and g8[0].scope == "placement 44.0s"
+
+    # The last node turns stable two lines after the first stable line: exactly at the limit passes, a millisecond over fails.
+    assert gates(placement_lines(stable_at_ms=44000 + 40000 - 2))["G8"] == analyzer.PASS
+    assert gates(placement_lines(stable_at_ms=44000 + 40000 - 1))["G8"] == analyzer.FAIL
+
+
+def test_placement_gate_names_the_barometer_interruptions_that_wiped_the_samples():
+    # The bench log 2026-11-01 21:46: 10 interruptions, stable only after 76.8 s.
+    slow = analyzer.analyze_text(placement_lines(stable_at_ms=44000 + 76800, interruptions=10))
+    g8 = [f for f in slow.findings if f.gate == "G8"][0]
+    assert g8.status == analyzer.FAIL
+    assert "all nodes stable after 76.8s" in g8.measured and "10 MAIN barometer interruptions" in g8.measured
+
+
+def test_placement_gate_fails_when_the_nodes_never_settle_and_is_silent_without_the_step():
+    never = analyzer.analyze_text(placement_lines(stable_at_ms=None, interruptions=2) +
+                                  "I (90000) WORKFLOW: WORKFLOW_COMMAND_DONE seq=9\n")
+    g8 = [f for f in never.findings if f.gate == "G8"][0]
+    assert g8.status == analyzer.FAIL and g8.measured.startswith("never settled in 46.0s")
+    assert gates("I (1000) app_init: Project name: x\n")["G8"] == analyzer.NOT_APPLICABLE
+    # A node that falls unstable again after the first moment of stability does not erase it.
+    flap = placement_lines(stable_at_ms=60000) + "I (70000) WORKFLOW: PLACEMENT_STABILITY node=G1 stable=0 reason=range_exceeded trigger=change samples=8/8\n"
+    assert gates(flap)["G8"] == analyzer.PASS
+
+
+def ranging_lines(success: int, reason: str = "none", partial: int = 0) -> str:
+    return (f"I (180000) WORKFLOW: RANGING_RESULT success={success} partial={partial} reason={reason} "
+            "executions=10/12 pairs=6 residual_mm=74 max_residual_mm=74 inconsistent_pairs=0 main_reference_generation=9\n"
+            "I (180001) WORKFLOW: RANGING_PAIR 0-1 state=valid distance_mm=2345 confidence=900 valid_samples=5 attempts=7 "
+            "rejected=1 spread_mm=12 automatic_mm=2340\n")
+
+
+def test_ranging_gate_decides_from_the_result_line_of_the_firmware():
+    ok = analyzer.analyze_text(ranging_lines(1))
+    g9 = [f for f in ok.findings if f.gate == "G9"][0]
+    assert g9.status == analyzer.PASS and g9.measured == "success, 6 pairs"
+
+    failed = analyzer.analyze_text(ranging_lines(0, "pair_failed:0-2", partial=1))
+    g9 = [f for f in failed.findings if f.gate == "G9"][0]
+    assert g9.status == analyzer.FAIL
+    assert g9.measured == "failed: pair_failed:0-2 (partial pairs saved), executions 10/12"
+    assert failed.exit_code() == 1
+
+    # The last result of the log decides: a retry that succeeded makes it pass.
+    retried = analyzer.analyze_text(ranging_lines(0, "timeout") + ranging_lines(1).replace("(180000)", "(260000)").replace("(180001)", "(260001)"))
+    assert [f.status for f in retried.findings if f.gate == "G9"] == [analyzer.PASS]
+    assert gates("I (1000) app_init: Project name: x\n")["G9"] == analyzer.NOT_APPLICABLE

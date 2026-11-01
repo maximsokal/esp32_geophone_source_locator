@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Apply measurable load gates to an already-captured ESP32 UART log.
 
 The analyzer never opens serial ports or touches hardware. It looks only at the
@@ -97,7 +97,7 @@ class Report:
         return NOT_APPLICABLE
 
     def gates(self) -> dict[str, str]:
-        return {gate: self.gate_status(gate) for gate in ("G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7")}
+        return {gate: self.gate_status(gate) for gate in ("G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9")}
 
     def exit_code(self) -> int:
         gates = self.gates()
@@ -354,11 +354,70 @@ def _gate_g0(text: str) -> Finding:
     return Finding("G0", "whole log", NOT_APPLICABLE, "no boot lines in this log", "none")
 
 
+_PLACEMENT_LINE = re.compile(r"PLACEMENT_STABILITY node=(\S+) stable=(\d) reason=(\S+) trigger=(\S+)")
+_RANGING_RESULT = re.compile(r"RANGING_RESULT success=(\d) partial=(\d) reason=(\S+) executions=(\d+)/(\d+) pairs=(\d+)")
+DEFAULT_MAX_PLACEMENT_MS = 40000
+
+
+def _gate_g8(entries: list[Entry], max_ms: int) -> Finding:
+    """The placement step must settle in time: every node stable at once, not wiped by a blind MAIN barometer."""
+    first_ms = None
+    latest: dict[str, bool] = {}
+    settled_ms = None
+    barometer_resets = 0
+    for entry in entries:
+        if entry.tag != "WORKFLOW":
+            continue
+        match = _PLACEMENT_LINE.match(entry.message)
+        if match is None:
+            continue
+        node, stable, reason, trigger = match.group(1), match.group(2) == "1", match.group(3), match.group(4)
+        if first_ms is None:
+            first_ms = entry.t_ms
+        if reason == "main_barometer" and trigger == "change" and node == "MAIN":
+            barometer_resets += 1
+        latest[node] = stable
+        if settled_ms is None and len(latest) >= 2 and all(latest.values()):
+            settled_ms = entry.t_ms
+    if first_ms is None:
+        return Finding("G8", "placement", NOT_APPLICABLE, "no PLACEMENT_STABILITY lines", f"<={max_ms // 1000}s")
+    resets = f", {barometer_resets} MAIN barometer interruptions" if barometer_resets else ""
+    if settled_ms is None:
+        return Finding("G8", "placement", FAIL, f"never settled in {(entry_end(entries) - first_ms) / 1000:.1f}s{resets}",
+                       f"<={max_ms // 1000}s")
+    took = settled_ms - first_ms
+    return Finding("G8", f"placement {first_ms / 1000:.1f}s", PASS if took <= max_ms else FAIL,
+                   f"all nodes stable after {took / 1000:.1f}s{resets}", f"<={max_ms // 1000}s")
+
+
+def entry_end(entries: list[Entry]) -> int:
+    return entries[-1].t_ms if entries else 0
+
+
+def _gate_g9(entries: list[Entry]) -> Finding:
+    """The BLE Channel Sounding positions must be solved: the last RANGING_RESULT of the log decides."""
+    last = None
+    for entry in entries:
+        if entry.tag != "WORKFLOW":
+            continue
+        match = _RANGING_RESULT.match(entry.message)
+        if match is not None:
+            last = (entry.t_ms, match)
+    if last is None:
+        return Finding("G9", "ranging", NOT_APPLICABLE, "no RANGING_RESULT line (older firmware?)", "success")
+    t_ms, match = last
+    success, partial, reason = match.group(1) == "1", match.group(2) == "1", match.group(3)
+    measured = f"success, {match.group(6)} pairs" if success else (
+        f"failed: {reason}{' (partial pairs saved)' if partial else ''}, executions {match.group(4)}/{match.group(5)}")
+    return Finding("G9", f"ranging {t_ms / 1000:.1f}s", PASS if success else FAIL, measured, "success")
+
+
 def analyze_text(text: str, path: str = "<memory>", *, min_fps_ratio: float = DEFAULT_MIN_FPS_RATIO,
                  max_render_us: int = DEFAULT_MAX_RENDER_US, max_node_gap_ms: int = DEFAULT_MAX_NODE_GAP_MS,
                  min_idle1_share: float = DEFAULT_MIN_IDLE1_SHARE,
                  min_delivery_ratio: float = DEFAULT_MIN_DELIVERY_RATIO,
-                 max_core1_load: float = DEFAULT_MAX_CORE1_LOAD) -> Report:
+                 max_core1_load: float = DEFAULT_MAX_CORE1_LOAD,
+                 max_placement_ms: int = DEFAULT_MAX_PLACEMENT_MS) -> Report:
     entries = tokenize(text)
     report = Report(path=path, windows=find_windows(entries))
     report.findings.append(_gate_g0(text))
@@ -370,6 +429,8 @@ def analyze_text(text: str, path: str = "<memory>", *, min_fps_ratio: float = DE
         report.findings.append(_gate_g6(entries, window, min_delivery_ratio))
         report.findings.append(_gate_g7(entries, window, max_core1_load))
     report.findings.extend(_gate_g5(entries, report.windows, min_idle1_share))
+    report.findings.append(_gate_g8(entries, max_placement_ms))
+    report.findings.append(_gate_g9(entries))
     report.adc_words = _adc_words(entries, report.windows)
     report.adc_rate_channels = _adc_rate_channels(entries, report.windows)
     return report
@@ -406,10 +467,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-idle1-share", type=float, default=DEFAULT_MIN_IDLE1_SHARE)
     parser.add_argument("--min-delivery-ratio", type=float, default=DEFAULT_MIN_DELIVERY_RATIO)
     parser.add_argument("--max-core1-load", type=float, default=DEFAULT_MAX_CORE1_LOAD)
+    parser.add_argument("--max-placement-ms", type=int, default=DEFAULT_MAX_PLACEMENT_MS)
     args = parser.parse_args(argv)
     options = dict(min_fps_ratio=args.min_fps_ratio, max_render_us=args.max_render_us,
                    max_node_gap_ms=args.max_node_gap_ms, min_idle1_share=args.min_idle1_share,
-                   min_delivery_ratio=args.min_delivery_ratio, max_core1_load=args.max_core1_load)
+                   min_delivery_ratio=args.min_delivery_ratio, max_core1_load=args.max_core1_load,
+                   max_placement_ms=args.max_placement_ms)
     reports = [analyze_file(path, **options) for path in args.logs]
     for report in reports:
         print(format_report(report))

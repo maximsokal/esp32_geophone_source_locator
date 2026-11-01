@@ -108,14 +108,39 @@ typedef struct {
     bool full_rotation;
 } nrf_cs_policy_t;
 
+#define NRF_CS_MAX_NODES 5U
+typedef uint8_t nrf_cs_node_id_t;
+
+typedef struct {
+    nrf_cs_node_id_t node_id;
+    bool solved;
+    int32_t x_mm;
+    int32_t y_mm;
+    int32_t z_mm;
+    int32_t residual_mm;
+    int32_t uncertainty_mm;
+} nrf_topology_ranging_node_t;
+
+typedef struct {
+    size_t node_count;
+    nrf_topology_ranging_node_t nodes[NRF_CS_MAX_NODES];
+    int32_t max_residual_mm;
+    size_t inconsistent_pair_count;
+} nrf_topology_ranging_geometry_t;
+
 typedef struct {
     bool active;
     bool complete;
     bool success;
     bool partial;
+    size_t pairs_done;
+    size_t pairs_total;
     size_t pair_count;
     nrf_cs_pair_result_t pairs[NRF_CS_MAX_PAIRS];
+    nrf_topology_ranging_geometry_t geometry;
+    int32_t solution_residual_mm;
     char failure_reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
+    uint16_t main_height_reference_generation;
     uint64_t started_at_ms;
     uint64_t updated_at_ms;
 } nrf_topology_ranging_progress_t;
@@ -139,7 +164,6 @@ esp_err_t nrf_topology_service_ranging_cancel(void);
 esp_err_t nrf_topology_service_ranging_set_manual(uint64_t started, uint64_t updated,
     uint8_t a, uint8_t b, int32_t distance, const uint32_t *limits);
 
-typedef uint8_t nrf_cs_node_id_t;
 typedef struct {
     bool valid;
     uint16_t generation;

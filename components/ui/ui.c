@@ -78,7 +78,7 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
         if (measurement_load_started) s_measurement_load_next_update_us = now_us;
         if (now_us < s_measurement_load_next_update_us) return;
         s_measurement_load_next_update_us = now_us +
-            ui_perf_policy_update_interval_us(measurement_load_active);
+            ui_perf_policy_update_gap_us(measurement_load_active, ui_perf_policy_last_render_us());
     }
     else {
         s_measurement_load_next_update_us = 0U;

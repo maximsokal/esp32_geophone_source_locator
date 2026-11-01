@@ -4,6 +4,7 @@
 
 
 static ui_perf_stage_metrics_t s_stage_metrics;
+static uint64_t s_last_render_us;
 
 
 bool ui_perf_policy_should_log(
@@ -99,6 +100,22 @@ uint64_t ui_perf_policy_update_interval_us(bool load_limited)
 {
     const uint32_t fps = ui_perf_policy_target_fps(load_limited);
     return fps > 0U ? 1000000U / fps : 0U;
+}
+
+
+uint64_t ui_perf_policy_update_gap_us(bool load_limited, uint64_t last_render_us)
+{
+    const uint64_t interval_us = ui_perf_policy_update_interval_us(load_limited);
+    if (!load_limited) return interval_us;
+    uint64_t rest_us = last_render_us * UI_PERF_LOAD_REST_FACTOR;
+    if (rest_us > UI_PERF_LOAD_REST_MAX_US) rest_us = UI_PERF_LOAD_REST_MAX_US;
+    return rest_us > interval_us ? rest_us : interval_us;
+}
+
+
+uint64_t ui_perf_policy_last_render_us(void)
+{
+    return s_last_render_us;
 }
 
 
@@ -200,6 +217,7 @@ void ui_perf_policy_record_update(uint64_t elapsed_us)
 
 void ui_perf_policy_record_render(uint64_t elapsed_us)
 {
+    s_last_render_us = elapsed_us;
     ui_perf_policy_record_stage(
         elapsed_us,
         &s_stage_metrics.render_total_us,

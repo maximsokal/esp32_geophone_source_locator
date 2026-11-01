@@ -42,6 +42,13 @@
 #define WORKFLOW_PLACEMENT_RECENT_SAMPLES 4U
 /* Samples of one node are stored at most this often, so a 20 s window holds 21 of them at most. */
 #define WORKFLOW_PLACEMENT_MIN_SAMPLE_GAP_MS 1000U
+/*
+ * MAIN's barometer misses readings now and then: a read times out while core 0 is busy and the sensor is re-armed
+ * after a pause (bench log 2026-11-01 21:46: a miss every ~6 s for half a minute). Every miss used to wipe all
+ * collected samples and the window had to start over, so the stability took 76 s instead of 16. While MAIN's
+ * barometer is blind for at most this long the collected samples are kept and no new ones are taken.
+ */
+#define WORKFLOW_PLACEMENT_MAIN_BARO_GRACE_MS 15000U
 
 typedef enum {
     WORKFLOW_STEP_IDLE = 0,
