@@ -75,6 +75,7 @@ typedef enum {
     NRF_CS_PAIR_MISSING,
     NRF_CS_PAIR_RETRY_EXHAUSTED,
     NRF_CS_PAIR_CABLE_EXCEEDED,
+    NRF_CS_PAIR_DIRECTIONS_DISAGREE,
 } nrf_cs_pair_state_t;
 
 typedef struct {
@@ -87,6 +88,8 @@ typedef struct {
     int32_t spread_mm;
     uint8_t rejected_samples;
     uint16_t scheduler_quality_flags;
+    bool single_direction;
+    int32_t direction_disagreement_mm;
     int32_t automatic_distance_mm;
 } nrf_cs_pair_result_t;
 

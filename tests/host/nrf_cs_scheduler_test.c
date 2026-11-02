@@ -532,6 +532,70 @@ static void test_full_rotation_pair_combine_and_direction_failures(void)
     assert(!pair.single_direction);
 }
 
+/* Audit 2026-11-02: two directions that contradict each other (1 m one way, 9 m the other) used to be averaged into a
+ * "valid" 5 m. Now the pair is not published as a distance; the numbers stay so the log shows what happened. */
+static nrf_cs_pair_result_t run_two_directions(size_t samples, const int32_t *forward, const int32_t *reverse)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_policy_t policy = test_policy(1U);
+    const nrf_cs_node_id_t nodes[] = { 0U, 1U, 2U };
+    nrf_cs_step_t step;
+
+    policy.full_rotation = true;
+    policy.samples_per_pair = (uint8_t)samples;
+    assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, 3U) == NRF_CS_OK);
+    for (size_t direction = 0U; direction < 2U; ++direction) {
+        const int32_t *distances = direction == 0U ? forward : reverse;
+        for (size_t sample = 0U; sample < samples; ++sample) {
+            assert(nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY);
+            assert(step.pair_index == 0U);
+            const nrf_cs_measurement_t measurement = success_measurement(distances[sample], 900U);
+            assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &measurement) == NRF_CS_OK);
+        }
+    }
+    return *nrf_cs_scheduler_pair_at(&scheduler, 0U);
+}
+
+static void test_contradicting_directions_are_not_a_valid_pair(void)
+{
+    const int32_t forward[] = { 990, 1000, 1010 };
+    const int32_t reverse[] = { 8990, 9000, 9010 };
+    nrf_cs_pair_result_t pair = run_two_directions(3U, forward, reverse);
+
+    assert(pair.state == NRF_CS_PAIR_DIRECTIONS_DISAGREE);
+    assert(pair.distance_mm == 5000);
+    assert(pair.direction_disagreement_mm == 8000);
+    assert(pair.spread_mm >= pair.direction_disagreement_mm);
+
+    /* The limit itself is still a pair; one millimetre more is not. */
+    const int32_t at_limit[] = { 1000 + NRF_CS_DIRECTION_DISAGREEMENT_LIMIT_MM, 1000 + NRF_CS_DIRECTION_DISAGREEMENT_LIMIT_MM,
+                                 1000 + NRF_CS_DIRECTION_DISAGREEMENT_LIMIT_MM };
+    const int32_t base[] = { 1000, 1000, 1000 };
+    pair = run_two_directions(3U, base, at_limit);
+    assert(pair.direction_disagreement_mm == NRF_CS_DIRECTION_DISAGREEMENT_LIMIT_MM);
+    assert(pair.state == NRF_CS_PAIR_VALID);
+    const int32_t past_limit[] = { 1301, 1301, 1301 };
+    pair = run_two_directions(3U, base, past_limit);
+    assert(pair.direction_disagreement_mm == NRF_CS_DIRECTION_DISAGREEMENT_LIMIT_MM + 1);
+    assert(pair.state == NRF_CS_PAIR_DIRECTIONS_DISAGREE);
+}
+
+/* The production policy takes nine samples per direction: the scheduler has to hold them and tell a wrong one from the
+ * majority (two of the eighteen samples are far off and are dropped as outliers, not averaged in). */
+static void test_nine_samples_per_direction_drop_the_outliers(void)
+{
+    const int32_t forward[] = { 3600, 3650, 3620, 3640, 3610, 9100, 3630, 3660, 3625 };
+    const int32_t reverse[] = { 3700, 3680, 3690, 3710, 120, 3695, 3705, 3685, 3700 };
+    const nrf_cs_pair_result_t pair = run_two_directions(9U, forward, reverse);
+
+    assert(pair.state == NRF_CS_PAIR_VALID);
+    assert(pair.valid_samples == 18U);
+    assert(pair.rejected_samples == 2U);
+    assert(pair.distance_mm > 3600 && pair.distance_mm < 3700);
+    assert(pair.direction_disagreement_mm <= 100);
+}
+
 static void test_abort_cycle_completes_pending_executions_with_timeout(void)
 {
     nrf_cs_scheduler_t scheduler;
@@ -579,6 +643,8 @@ int main(void)
     test_invalid_inputs_are_rejected();
     test_full_rotation_has_both_orders_in_canonical_sequence();
     test_full_rotation_pair_combine_and_direction_failures();
+    test_contradicting_directions_are_not_a_valid_pair();
+    test_nine_samples_per_direction_drop_the_outliers();
     test_abort_cycle_completes_pending_executions_with_timeout();
     return 0;
 }

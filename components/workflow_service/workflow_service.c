@@ -271,9 +271,11 @@ static BaseType_t workflow_service_receive_async(workflow_async_command_t *item)
  *    by the budget.
  * The budget is 1.5 times the longest attempt measured. The six pairs came out 1.49..2.05 m with confidence 1000, but the
  * two directions of a pair differed by 3, 16, 116, 164 and 1193 mm (two samples cannot tell which one is wrong), and the
- * geometry stayed unsolved for node 4 (geometry_unsolved:4): three samples per direction give a median that drops such
- * a sample. The slot of an execution is GO skew + (samples + attempts - 1) * (budget + gap) and the 12 slots run one
- * after another: 3 x 2550 + 300 = 7950 ms, about 95 s for the whole cycle.
+ * geometry stayed unsolved for node 4 (geometry_unsolved:4): several samples per direction give a median that drops
+ * such a sample. Three samples (15:56 run, 6 pairs) still left pairs whose directions differed by metres, so nine are
+ * taken (owner decision after the audit of that run). The slot of an execution
+ * is GO skew + (samples + attempts - 1) * (budget + gap) and the 12 slots run one after another:
+ * 9 x 2550 + 300 = 23250 ms, about 279 s for the whole cycle (95 s with three samples).
  */
 #define WORKFLOW_RANGING_PAIR_BUDGET_MS 2400U
 
@@ -281,7 +283,7 @@ static const nrf_cs_policy_t s_workflow_ranging_policy = {
     .pair_timeout_ms = WORKFLOW_RANGING_PAIR_BUDGET_MS,
     .max_attempts = 1U,
     .min_confidence = 500U,
-    .samples_per_pair = 3U,
+    .samples_per_pair = 9U,
     .full_rotation = true,
 };
 
@@ -973,6 +975,7 @@ static esp_err_t workflow_service_ranging_save(const nrf_topology_ranging_progre
             dest->valid = source->state == NRF_CS_PAIR_VALID;
             const char *pair_state = source->state == NRF_CS_PAIR_VALID ? "valid"
                 : source->state == NRF_CS_PAIR_CABLE_EXCEEDED ? "cable_exceeded"
+                : source->state == NRF_CS_PAIR_DIRECTIONS_DISAGREE ? "directions_disagree"
                 : source->state == NRF_CS_PAIR_RETRY_EXHAUSTED ? "retry_exhausted"
                 : source->state == NRF_CS_PAIR_PENDING ? "pending" : "missing";
             (void)snprintf(dest->state, sizeof(dest->state), "%s", pair_state);
@@ -995,6 +998,7 @@ static const char *workflow_service_pair_state_name(nrf_cs_pair_state_t state)
     case NRF_CS_PAIR_MISSING: return "missing";
     case NRF_CS_PAIR_RETRY_EXHAUSTED: return "retry_exhausted";
     case NRF_CS_PAIR_CABLE_EXCEEDED: return "cable_exceeded";
+    case NRF_CS_PAIR_DIRECTIONS_DISAGREE: return "directions_disagree";
     case NRF_CS_PAIR_UNKNOWN:
     default: return "unknown";
     }
@@ -1024,12 +1028,13 @@ static void workflow_service_log_ranging_result(const nrf_topology_ranging_progr
         const nrf_cs_pair_result_t *pair = &progress->pairs[i];
         ESP_LOGI(TAG,
             "RANGING_PAIR %u-%u state=%s distance_mm=%d confidence=%u valid_samples=%u attempts=%u rejected=%u "
-            "spread_mm=%d automatic_mm=%d",
+            "spread_mm=%d automatic_mm=%d disagreement_mm=%d single_direction=%u",
             (unsigned)pair->node_a, (unsigned)pair->node_b,
             workflow_service_pair_state_name(pair->state),
             (int)pair->distance_mm, (unsigned)pair->confidence, (unsigned)pair->valid_samples,
             (unsigned)pair->attempts, (unsigned)pair->rejected_samples, (int)pair->spread_mm,
-            (int)pair->automatic_distance_mm);
+            (int)pair->automatic_distance_mm, (int)pair->direction_disagreement_mm,
+            pair->single_direction ? 1U : 0U);
     }
     for (size_t i = 0U; i < progress->geometry.node_count && i < NRF_CS_MAX_NODES; ++i) {
         const nrf_topology_ranging_node_t *node = &progress->geometry.nodes[i];

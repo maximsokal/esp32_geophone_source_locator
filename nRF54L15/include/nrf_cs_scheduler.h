@@ -20,8 +20,18 @@ extern "C" {
  * executions per pair). Distance is the median of the samples that survive
  * a MAD outlier test, not the single first success.
  */
-#define NRF_CS_MAX_SAMPLES_PER_PAIR 16U
-#define NRF_CS_MAX_SAMPLES_PER_EXECUTION 8U
+#define NRF_CS_MAX_SAMPLES_PER_PAIR 24U
+#define NRF_CS_MAX_SAMPLES_PER_EXECUTION 12U   /* = NRF_CS_CYCLE_MAX_ATTEMPTS: samples + retries of one execution */
+
+/*
+ * The two directions of a pair measure the same distance, so their medians must agree. The bench scatter of one
+ * sample is 0.16..0.18 m (2026-11-02, nodes 10..20 cm apart); the median of 9 samples then scatters 0.055 m and the
+ * difference of two such medians 0.08 m, so 300 mm is about four sigma. Two pairs of the 15:56 run had a total
+ * spread (which includes the disagreement) of only 67 and 9 mm, so their directions agreed within that. A pair whose directions differ by more than this is
+ * not published as a distance (NRF_CS_PAIR_DIRECTIONS_DISAGREE), because averaging two contradicting values
+ * produces a plausible-looking number that is wrong.
+ */
+#define NRF_CS_DIRECTION_DISAGREEMENT_LIMIT_MM 300
 
 /* Samples within this band of the median are never rejected, so a very
  * tight cluster (MAD ~ 0) does not throw away millimetre-level jitter. */
@@ -50,6 +60,7 @@ typedef enum {
     NRF_CS_PAIR_MISSING,
     NRF_CS_PAIR_RETRY_EXHAUSTED,
     NRF_CS_PAIR_CABLE_EXCEEDED,
+    NRF_CS_PAIR_DIRECTIONS_DISAGREE,
 } nrf_cs_pair_state_t;
 
 typedef enum {

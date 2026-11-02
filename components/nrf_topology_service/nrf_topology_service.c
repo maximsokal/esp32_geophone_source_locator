@@ -3079,6 +3079,15 @@ static void service_ranging_process(nrf_topology_worker_state_t *worker)
             return;
         }
     }
+    for (size_t i = 0U; i < progress->pair_count; ++i) {
+        if (progress->pairs[i].state == NRF_CS_PAIR_DIRECTIONS_DISAGREE) {
+            char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
+            (void)snprintf(reason, sizeof(reason), "directions_disagree:%u-%u",
+                (unsigned)progress->pairs[i].node_a, (unsigned)progress->pairs[i].node_b);
+            service_ranging_finish(worker, false, reason, now_ms);
+            return;
+        }
+    }
     if (worker->ranging_pair_failure_seen) {
         char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
         (void)snprintf(
@@ -4569,7 +4578,8 @@ esp_err_t nrf_topology_service_ranging_set_manual(
             progress->success = false;
             if (progress->failure_reason[0] == '\0')
                 (void)snprintf(progress->failure_reason, sizeof(progress->failure_reason), "%s:%u-%u",
-                    pair->state == NRF_CS_PAIR_CABLE_EXCEEDED ? "cable_exceeded" : "pair_failed",
+                    pair->state == NRF_CS_PAIR_CABLE_EXCEEDED ? "cable_exceeded"
+                    : pair->state == NRF_CS_PAIR_DIRECTIONS_DISAGREE ? "directions_disagree" : "pair_failed",
                     (unsigned)pair->node_a, (unsigned)pair->node_b);
         }
     }

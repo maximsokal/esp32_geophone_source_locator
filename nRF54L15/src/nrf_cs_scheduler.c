@@ -344,6 +344,10 @@ static void nrf_cs_finalize_pair(nrf_cs_scheduler_t *scheduler, size_t pair_inde
                 pair->direction_disagreement_mm = disagreement > INT32_MAX
                     ? INT32_MAX
                     : (int32_t)disagreement;
+                if (disagreement > NRF_CS_DIRECTION_DISAGREEMENT_LIMIT_MM) {
+                    /* The mean of two contradicting values is not a measurement; the numbers stay for the log. */
+                    pair->state = NRF_CS_PAIR_DIRECTIONS_DISAGREE;
+                }
                 pair->rejected_samples = (uint8_t)(
                     first->rejected_samples + second->rejected_samples);
             } else {

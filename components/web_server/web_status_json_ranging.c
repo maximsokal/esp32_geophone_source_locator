@@ -13,6 +13,7 @@ static const char *pair_state_name(nrf_cs_pair_state_t state)
         case NRF_CS_PAIR_MISSING: return "missing";
         case NRF_CS_PAIR_RETRY_EXHAUSTED: return "retry_exhausted";
         case NRF_CS_PAIR_CABLE_EXCEEDED: return "cable_exceeded";
+        case NRF_CS_PAIR_DIRECTIONS_DISAGREE: return "directions_disagree";
         case NRF_CS_PAIR_UNKNOWN:
         default: return "unknown";
     }

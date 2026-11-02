@@ -417,9 +417,9 @@ esp_err_t nrf_topology_service_ranging_start_autonomous_limited(const nrf_cs_pol
 esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *policy)
 {
     if (policy == NULL) return ESP_ERR_INVALID_ARG;
-    /* The pair time budget measured on the bench (see s_workflow_ranging_policy): 2.4 s, three samples, no spare try. */
+    /* The pair time budget measured on the bench (see s_workflow_ranging_policy): 2.4 s, nine samples per direction, no spare try. */
     assert(policy->pair_timeout_ms == 2400U && policy->max_attempts == 1U);
-    assert(policy->samples_per_pair == 3U && policy->full_rotation);
+    assert(policy->samples_per_pair == 9U && policy->full_rotation);
     memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
     s_ranging_progress.active = true;
     s_ranging_progress.started_at_ms = s_now_ms;
@@ -1873,6 +1873,7 @@ static void test_ranging_result_is_logged_with_every_pair_and_node(void)
     s_ranging_progress.pairs[0] = (nrf_cs_pair_result_t){
         .node_a = 0U, .node_b = 1U, .state = NRF_CS_PAIR_VALID, .distance_mm = 2345, .confidence = 900U,
         .attempts = 7U, .valid_samples = 5U, .spread_mm = 12, .rejected_samples = 1U, .automatic_distance_mm = 2340,
+        .direction_disagreement_mm = 3152, .single_direction = false,
     };
     s_ranging_progress.pairs[1] = (nrf_cs_pair_result_t){
         .node_a = 0U, .node_b = 2U, .state = NRF_CS_PAIR_MISSING, .distance_mm = -1, .attempts = 3U,
@@ -1893,7 +1894,7 @@ static void test_ranging_result_is_logged_with_every_pair_and_node(void)
     assert(count_log_matches("RANGING_RESULT success=0 partial=1 reason=pair_failed:0-2 executions=10/12 pairs=2 "
         "residual_mm=74 max_residual_mm=74 inconsistent_pairs=1 main_reference_generation=9") == 1U);
     assert(count_log_matches("RANGING_PAIR 0-1 state=valid distance_mm=2345 confidence=900 valid_samples=5 attempts=7 "
-        "rejected=1 spread_mm=12 automatic_mm=2340") == 1U);
+        "rejected=1 spread_mm=12 automatic_mm=2340 disagreement_mm=3152 single_direction=0") == 1U);
     assert(count_log_matches("RANGING_PAIR 0-2 state=missing distance_mm=-1") == 1U);
     assert(count_log_matches("RANGING_NODE id=1 solved=1 x_mm=2345 y_mm=-120 z_mm=-180 residual_mm=74 "
         "uncertainty_mm=90") == 1U);

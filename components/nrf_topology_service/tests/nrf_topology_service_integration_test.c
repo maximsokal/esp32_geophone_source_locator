@@ -214,6 +214,7 @@ static unsigned s_status_reads_before_backoff;
 static bool s_cs_use_pair_distances;
 static int32_t s_cs_pair_distances[NRF_CS_MAX_PAIRS];
 static int32_t s_cs_fail_pair_index = -1;
+static int32_t s_cs_reverse_extra_mm;   /* added to the distance when the higher node id is the initiator */
 static device_status_snapshot_t s_device_status;
 static nrf_topology_ranging_progress_t s_seen_ranging_progress;
 static nrf_topology_ranging_result_t s_seen_frozen_ranging_result;
@@ -673,6 +674,7 @@ static nrf_cs_measurement_t sim_cycle_measure(const nrf_cs_step_t *step)
         return m;
     }
     m.distance_mm = s_cs_use_pair_distances ? s_cs_pair_distances[pair] : (int32_t)(1000U + pair);
+    if (step->initiator > step->reflector) m.distance_mm += s_cs_reverse_extra_mm;
 #else
     m.distance_mm = (int32_t)(1000U + pair);
 #endif
@@ -2770,6 +2772,40 @@ static void test_autonomous_individual_cable_limits(void)
     run_service();
 }
 
+static void request_plain_autonomous_ranging_for_test(void)
+{
+    assert(nrf_topology_service_ranging_start_autonomous(&k_autonomous_policy) == ESP_OK);
+    s_vtask_delay_hook = sim_cycle_tick_nodes;
+}
+
+static void assert_contradicting_directions_fail_the_ranging(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete && !s_seen_ranging_progress.success);
+    assert(strcmp(s_seen_ranging_progress.failure_reason, "directions_disagree:0-1") == 0);
+    for (size_t i = 0U; i < s_seen_ranging_progress.pair_count; ++i) {
+        const nrf_cs_pair_result_t *pair = &s_seen_ranging_progress.pairs[i];
+        assert(pair->state == NRF_CS_PAIR_DIRECTIONS_DISAGREE);
+        assert(pair->direction_disagreement_mm == 4000);
+    }
+}
+
+/* The two directions of every pair differ by 4 m: no distance is published, the reason names the first pair. */
+static void test_contradicting_directions_fail_the_ranging(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cs_reverse_extra_mm = 4000;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_plain_autonomous_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_contradicting_directions_fail_the_ranging);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
 static void unplug_during_cycle(TickType_t ticks)
 {
     s_nodes[1].present = false;
@@ -3288,6 +3324,7 @@ static void reset_world(void)
     s_status_reads_before_backoff = 0U;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
     s_cs_use_pair_distances = false;
+    s_cs_reverse_extra_mm = 0;
     memset(s_cs_pair_distances, 0, sizeof(s_cs_pair_distances));
     s_cs_fail_pair_index = -1;
     memset(&s_device_status, 0, sizeof(s_device_status));
@@ -4404,6 +4441,7 @@ int main(void)
     test_autonomous_ranging_failures();
     test_ranging_cancel();
     test_autonomous_individual_cable_limits();
+    test_contradicting_directions_fail_the_ranging();
     test_noisy_geometry_cannot_exceed_individual_cables();
     test_unplug_during_cs_rejoins_after_quiet_lease();
     test_inconsistent_solved_mesh_is_not_success();
