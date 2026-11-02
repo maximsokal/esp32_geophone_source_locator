@@ -15,6 +15,17 @@
       "libraries": ["m"]
     },
     {
+      "name": "nrf_geometry_triangles",
+      "sources": [
+        "components/nrf_geometry_solver/nrf_geometry_triangles.c",
+        "tests/host/nrf_geometry_triangles_test.c"
+      ],
+      "include_dirs": [
+        "components/nrf_geometry_solver/include",
+        "nRF54L15/include"
+      ]
+    },
+    {
       "name": "nrf_emergency_stop_policy",
       "sources": [
         "components/nrf_emergency_stop_monitor/nrf_emergency_stop_policy.c",

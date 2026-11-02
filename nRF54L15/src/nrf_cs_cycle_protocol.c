@@ -2,6 +2,9 @@
 
 #include <string.h>
 
+#include <stdio.h>
+
+#include "nrf_cs_distance_method.h"
 #include "nrf_upstream_protocol.h"
 
 #define MAGIC0 0x47U
@@ -350,4 +353,26 @@ void nrf_cs_cycle_record_to_measurement(const nrf_cs_cycle_record_t *record, nrf
     measurement->distance_mm = record->distance_mm;
     measurement->confidence = record->confidence;
     measurement->provider_quality_flags = record->provider_quality_flags;
+}
+
+static const char *outcome_text(uint8_t outcome)
+{
+    switch (outcome) {
+        case NRF_CS_OUTCOME_SUCCESS: return "SUCCESS";
+        case NRF_CS_OUTCOME_TIMEOUT: return "TIMEOUT";
+        case NRF_CS_OUTCOME_TRANSPORT_ERROR: return "TRANSPORT_ERROR";
+        case NRF_CS_OUTCOME_OUTLIER: return "OUTLIER";
+        default: return "?";
+    }
+}
+
+int nrf_cs_cycle_record_describe(const nrf_cs_cycle_record_t *record, char *line, size_t capacity)
+{
+    if (record == NULL || line == NULL || capacity == 0U) return -1;
+    /* Bits 1..3 are NRF_CS_PROVIDER_QUALITY_TONE_OK / PBR_VALID / RTT_VALID (nrf_cs_pair_runtime_zephyr.h). */
+    return snprintf(line, capacity, "exec=%u attempt=%u outcome=%s dist_mm=%d conf=%u method=%s tone_ok=%u pbr=%u rtt=%u",
+        (unsigned)record->execution, (unsigned)record->attempt, outcome_text(record->outcome), (int)record->distance_mm,
+        (unsigned)record->confidence, nrf_cs_distance_method_name(nrf_cs_distance_method_from_flags(record->provider_quality_flags)),
+        (unsigned)((record->provider_quality_flags >> 1U) & 1U), (unsigned)((record->provider_quality_flags >> 2U) & 1U),
+        (unsigned)((record->provider_quality_flags >> 3U) & 1U));
 }

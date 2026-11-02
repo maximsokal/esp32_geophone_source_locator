@@ -68,6 +68,20 @@ const char *nrf_cs_trace_outcome_name(uint8_t outcome)
     }
 }
 
+const char *nrf_cs_trace_status_reason(const char *event_label, uint8_t phase, int status)
+{
+    static const char *const security[] = {
+        "SECURITY_SUCCESS", "SECURITY_AUTH_FAIL", "SECURITY_PIN_OR_KEY_MISSING", "SECURITY_OOB_NOT_AVAILABLE",
+        "SECURITY_AUTH_REQUIREMENT", "SECURITY_PAIR_NOT_SUPPORTED", "SECURITY_PAIR_NOT_ALLOWED",
+        "SECURITY_INVALID_PARAM", "SECURITY_KEY_REJECTED", "SECURITY_UNSPECIFIED",
+    };
+    if (event_label == NULL || strcmp(event_label, "TRANSPORT_ERROR") != 0 || phase != NRF_CS_PAIR_PHASE_SECURING ||
+        status < 0 || (size_t)status >= sizeof(security) / sizeof(security[0])) {
+        return NULL;
+    }
+    return security[status];
+}
+
 /* " +123ms" when the attempt start is known, nothing otherwise. */
 static int append_elapsed(char *line, size_t capacity, int used, uint32_t elapsed_ms)
 {
@@ -100,11 +114,13 @@ int nrf_cs_trace_format(const nrf_cs_trace_entry_t *entry, char *line, size_t ca
                 (unsigned)(((uint32_t)entry->b >> 8U) & 0xffU), (unsigned)((uint32_t)entry->b & 0xffU),
                 (int)entry->a);
             return used;
-        case NRF_CS_TRACE_EVENT:
-            used = snprintf(line, capacity, "cs: t=%u a=%u ev=%s status=%d phase=%s",
+        case NRF_CS_TRACE_EVENT: {
+            const char *reason = nrf_cs_trace_status_reason(label, entry->phase, (int)entry->a);
+            used = snprintf(line, capacity, "cs: t=%u a=%u ev=%s status=%d phase=%s%s%s",
                 (unsigned)entry->t_ms, (unsigned)entry->attempt_id, label, (int)entry->a,
-                nrf_cs_trace_phase_name(entry->phase));
+                nrf_cs_trace_phase_name(entry->phase), reason != NULL ? " err=" : "", reason != NULL ? reason : "");
             break;
+        }
         case NRF_CS_TRACE_TIMEOUT:
             used = snprintf(line, capacity, "cs: t=%u a=%u TIMEOUT phase=%s budget=%dms",
                 (unsigned)entry->t_ms, (unsigned)entry->attempt_id, nrf_cs_trace_phase_name(entry->phase),
@@ -114,15 +130,25 @@ int nrf_cs_trace_format(const nrf_cs_trace_entry_t *entry, char *line, size_t ca
             used = snprintf(line, capacity, "cs: t=%u a=%u result=%s dist_mm=%d conf=%d phase=%s",
                 (unsigned)entry->t_ms, (unsigned)entry->attempt_id, label, (int)entry->a, (int)entry->b,
                 nrf_cs_trace_phase_name(entry->phase));
+            if (used >= 0 && (size_t)used < capacity && (entry->flags & NRF_CS_TRACE_FLAG_TIMING) != 0U) {
+                /* The distance was ready at "measured"; "cleanup" is the disconnect after it. */
+                const int more = snprintf(line + used, capacity - (size_t)used, " measured=%ums cleanup=%ums%s%s",
+                    (unsigned)entry->c, (unsigned)entry->d,
+                    (entry->flags & NRF_CS_TRACE_FLAG_OVER_BUDGET) != 0U ? " over_budget=1" : "",
+                    (entry->flags & NRF_CS_TRACE_FLAG_TIMEOUT_IN_CLEANUP) != 0U ? " timeout_in_cleanup=1" : "");
+                used = more < 0 ? -1 : used + more;
+            }
             break;
         case NRF_CS_TRACE_RF:
             return snprintf(line, capacity, "cs: t=%u a=%u rf signal=0x%08x quality=0x%08x",
                 (unsigned)entry->t_ms, (unsigned)entry->attempt_id, (unsigned)entry->a, (unsigned)entry->b);
         case NRF_CS_TRACE_ESTIMATES: {
             char ifft[16], phase[16], rtt[16], best[16];
-            return snprintf(line, capacity, "cs: t=%u a=%u est ifft_mm=%s phase_mm=%s rtt_mm=%s best_mm=%s",
+            /* "method" names the estimate that "best" was taken from (CS-ESTIMATOR-01). */
+            return snprintf(line, capacity, "cs: t=%u a=%u est ifft_mm=%s phase_mm=%s rtt_mm=%s best_mm=%s method=%s",
                 (unsigned)entry->t_ms, (unsigned)entry->attempt_id, distance_text(entry->a, ifft),
-                distance_text(entry->b, phase), distance_text(entry->c, rtt), distance_text(entry->d, best));
+                distance_text(entry->b, phase), distance_text(entry->c, rtt), distance_text(entry->d, best),
+                nrf_cs_distance_method_name(nrf_cs_distance_method_of(entry->a, entry->b, entry->c, entry->d)));
         }
         default:
             return -1;

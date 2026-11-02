@@ -119,10 +119,134 @@ static void test_lines_carry_the_stage_and_the_time_since_the_attempt_started(vo
     e.c = NRF_CS_TRACE_UNAVAILABLE;
     e.d = 1760;
     assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
-    assert(strcmp(line, "cs: t=68402 a=1 est ifft_mm=1760 phase_mm=220 rtt_mm=n/a best_mm=1760") == 0);
+    assert(strcmp(line, "cs: t=68402 a=1 est ifft_mm=1760 phase_mm=220 rtt_mm=n/a best_mm=1760 method=ifft") == 0);
 
     assert(nrf_cs_trace_format_dropped(7U, line, sizeof(line)) > 0);
     assert(strstr(line, "trace_dropped=7") != NULL);
+}
+
+/* CS-ESTIMATOR-01: every "est" line says which estimate "best" was taken from. The rows are attempts of the bench logs
+ * 2026-11-02 (MAIN 20:12 and REMOTE 20:22): the three methods disagree by metres and the line shows which one was used. */
+static void test_the_est_line_names_the_method_that_made_the_distance(void)
+{
+    static const struct {
+        int32_t ifft, phase, rtt, best;
+        const char *line;
+    } rows[] = {
+        { 6272, 8917, 9550, 6272, "cs: t=68402 a=1 est ifft_mm=6272 phase_mm=8917 rtt_mm=9550 best_mm=6272 method=ifft" },
+        { 3806, 9406, 3135, 3806, "cs: t=68402 a=1 est ifft_mm=3806 phase_mm=9406 rtt_mm=3135 best_mm=3806 method=ifft" },
+        { 3556, 3756, 933, 3556, "cs: t=68402 a=1 est ifft_mm=3556 phase_mm=3756 rtt_mm=933 best_mm=3556 method=ifft" },
+        { NRF_CS_TRACE_UNAVAILABLE, 4638, 3164, 4638,
+          "cs: t=68402 a=1 est ifft_mm=n/a phase_mm=4638 rtt_mm=3164 best_mm=4638 method=phase" },
+        { NRF_CS_TRACE_UNAVAILABLE, NRF_CS_TRACE_UNAVAILABLE, 933, 933,
+          "cs: t=68402 a=1 est ifft_mm=n/a phase_mm=n/a rtt_mm=933 best_mm=933 method=rtt" },
+        { NRF_CS_TRACE_UNAVAILABLE, NRF_CS_TRACE_UNAVAILABLE, NRF_CS_TRACE_UNAVAILABLE, NRF_CS_TRACE_UNAVAILABLE,
+          "cs: t=68402 a=1 est ifft_mm=n/a phase_mm=n/a rtt_mm=n/a best_mm=n/a method=none" },
+        /* "best" that is none of the three (a library that changed its rule) is never given a wrong name. */
+        { 3806, 9406, 3135, 5000, "cs: t=68402 a=1 est ifft_mm=3806 phase_mm=9406 rtt_mm=3135 best_mm=5000 method=none" },
+    };
+    char line[NRF_CS_TRACE_LINE_CAPACITY];
+
+    for (size_t i = 0U; i < sizeof(rows) / sizeof(rows[0]); ++i) {
+        nrf_cs_trace_entry_t e = entry(NRF_CS_TRACE_ESTIMATES, 1U);
+        e.a = rows[i].ifft;
+        e.b = rows[i].phase;
+        e.c = rows[i].rtt;
+        e.d = rows[i].best;
+        assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+        assert(strcmp(line, rows[i].line) == 0);
+    }
+}
+
+/* CS-SECURITY-01: status 9 of a TRANSPORT_ERROR in SECURING is Zephyr's BT_SECURITY_ERR_UNSPECIFIED (pairing failed, no
+ * reason given); the line says so, and only for that event in that phase. */
+static void test_a_security_failure_is_named_in_the_event_line(void)
+{
+    char line[NRF_CS_TRACE_LINE_CAPACITY];
+    nrf_cs_trace_entry_t e = entry(NRF_CS_TRACE_EVENT, 3U);
+
+    e.label = "TRANSPORT_ERROR";
+    e.a = 9;
+    e.phase = NRF_CS_PAIR_PHASE_SECURING;
+    e.elapsed_ms = 233U;
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strcmp(line, "cs: t=68402 a=3 ev=TRANSPORT_ERROR status=9 phase=SECURING err=SECURITY_UNSPECIFIED +233ms") == 0);
+
+    static const char *const names[] = {
+        "SECURITY_SUCCESS", "SECURITY_AUTH_FAIL", "SECURITY_PIN_OR_KEY_MISSING", "SECURITY_OOB_NOT_AVAILABLE",
+        "SECURITY_AUTH_REQUIREMENT", "SECURITY_PAIR_NOT_SUPPORTED", "SECURITY_PAIR_NOT_ALLOWED",
+        "SECURITY_INVALID_PARAM", "SECURITY_KEY_REJECTED", "SECURITY_UNSPECIFIED",
+    };
+    for (int status = 0; status < 10; ++status) {
+        const char *reason = nrf_cs_trace_status_reason("TRANSPORT_ERROR", NRF_CS_PAIR_PHASE_SECURING, status);
+        assert(reason != NULL && strcmp(reason, names[status]) == 0);
+    }
+    assert(nrf_cs_trace_status_reason("TRANSPORT_ERROR", NRF_CS_PAIR_PHASE_SECURING, 10) == NULL);
+    assert(nrf_cs_trace_status_reason("TRANSPORT_ERROR", NRF_CS_PAIR_PHASE_SECURING, -1) == NULL);
+    /* The same number in another phase is an HCI status, not a security error: no name is invented for it. */
+    assert(nrf_cs_trace_status_reason("TRANSPORT_ERROR", NRF_CS_PAIR_PHASE_CAPABILITIES, 9) == NULL);
+    assert(nrf_cs_trace_status_reason("TRANSPORT_ERROR", NRF_CS_PAIR_PHASE_CLEANUP, 9) == NULL);
+    assert(nrf_cs_trace_status_reason("DISCONNECTED", NRF_CS_PAIR_PHASE_SECURING, 9) == NULL);
+    assert(nrf_cs_trace_status_reason(NULL, NRF_CS_PAIR_PHASE_SECURING, 9) == NULL);
+    e.label = "SECURITY_READY";
+    e.a = 0;
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strstr(line, "err=") == NULL);
+}
+
+/* CS-TIME-01: a result that carries the timing says when the distance was ready and how long the cleanup took, and flags
+ * an attempt that ran past its budget (MAIN attempt 2 of the 20:12 log). */
+static void test_the_result_line_separates_the_measurement_from_the_cleanup(void)
+{
+    char line[NRF_CS_TRACE_LINE_CAPACITY];
+    nrf_cs_trace_entry_t e = entry(NRF_CS_TRACE_RESULT, 2U);
+
+    e.label = "SUCCESS";
+    e.a = 6194;
+    e.b = 755;
+    e.phase = NRF_CS_PAIR_PHASE_IDLE;
+    e.elapsed_ms = 5262U;
+    e.c = 1268;
+    e.d = 3994;
+    e.flags = NRF_CS_TRACE_FLAG_TIMING | NRF_CS_TRACE_FLAG_OVER_BUDGET | NRF_CS_TRACE_FLAG_TIMEOUT_IN_CLEANUP;
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strcmp(line, "cs: t=68402 a=2 result=SUCCESS dist_mm=6194 conf=755 phase=IDLE measured=1268ms cleanup=3994ms "
+                        "over_budget=1 timeout_in_cleanup=1 +5262ms") == 0);
+
+    /* A prompt cleanup: timing, no flags. */
+    e.c = 1428;
+    e.d = 53;
+    e.elapsed_ms = 1481U;
+    e.flags = NRF_CS_TRACE_FLAG_TIMING;
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strcmp(line, "cs: t=68402 a=2 result=SUCCESS dist_mm=6194 conf=755 phase=IDLE measured=1428ms cleanup=53ms "
+                        "+1481ms") == 0);
+
+    /* Only the over-budget flag, and only the cleanup-timer flag. */
+    e.flags = NRF_CS_TRACE_FLAG_TIMING | NRF_CS_TRACE_FLAG_OVER_BUDGET;
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strstr(line, " over_budget=1") != NULL && strstr(line, "timeout_in_cleanup") == NULL);
+    e.flags = NRF_CS_TRACE_FLAG_TIMING | NRF_CS_TRACE_FLAG_TIMEOUT_IN_CLEANUP;
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strstr(line, " timeout_in_cleanup=1") != NULL && strstr(line, "over_budget") == NULL);
+
+    /* Without the timing flag the line is the old one (a node whose adapter has no clock). */
+    e.flags = 0U;
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strcmp(line, "cs: t=68402 a=2 result=SUCCESS dist_mm=6194 conf=755 phase=IDLE +1481ms") == 0);
+
+    /* The longest result line still fits the buffer. */
+    e.t_ms = UINT32_MAX;
+    e.attempt_id = UINT32_MAX;
+    e.a = -2147483647;
+    e.b = 1000;
+    e.c = INT32_MAX;
+    e.d = INT32_MAX;
+    e.label = "TRANSPORT_ERROR";
+    e.elapsed_ms = UINT32_MAX - 1U;
+    e.flags = NRF_CS_TRACE_FLAG_TIMING | NRF_CS_TRACE_FLAG_OVER_BUDGET | NRF_CS_TRACE_FLAG_TIMEOUT_IN_CLEANUP;
+    const int length = nrf_cs_trace_format(&e, line, sizeof(line));
+    assert(length > 0 && (size_t)length < sizeof(line));
 }
 
 static void test_the_longest_line_fits_and_bad_arguments_are_refused(void)
@@ -156,6 +280,9 @@ int main(void)
     test_the_ring_keeps_order_and_counts_what_it_drops();
     test_names_cover_every_phase_and_outcome();
     test_lines_carry_the_stage_and_the_time_since_the_attempt_started();
+    test_the_est_line_names_the_method_that_made_the_distance();
+    test_a_security_failure_is_named_in_the_event_line();
+    test_the_result_line_separates_the_measurement_from_the_cleanup();
     test_the_longest_line_fits_and_bad_arguments_are_refused();
     return 0;
 }

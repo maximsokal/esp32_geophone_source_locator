@@ -40,6 +40,8 @@ extern "C" {
 #define NRF_CS_COORD_RETRY_PAUSE_MS 300U
 /* Extra time for collecting results after the cycle deadline. */
 #define NRF_CS_COORD_COLLECT_GRACE_MS 6000U
+/* Time per node for plan, GO, result reads and release on a healthy bus, with room for retries. */
+#define NRF_CS_COORD_NODE_OVERHEAD_MS 2500U
 /* Pause in the wait loop so an abort request is noticed quickly. */
 #define NRF_CS_COORD_SLEEP_SLICE_MS 100U
 

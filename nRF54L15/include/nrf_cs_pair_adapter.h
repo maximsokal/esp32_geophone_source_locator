@@ -45,8 +45,25 @@ typedef struct {
     int (*enable_cs_security)(void *context);
     int (*start_procedure)(void *context);
     int (*cleanup)(void *context);
+    /* Optional clock in ms (wraps like uint32). Without it the adapter reports no timing. */
+    uint32_t (*now_ms)(void *context);
     void *context;
 } nrf_cs_pair_adapter_ops_t;
+
+/*
+ * How the time of one attempt was spent. An attempt has two parts that the budget timer cannot tell apart: the
+ * measurement (until the outcome is known: a distance, an error, or the budget running out) and the cleanup (the BLE
+ * disconnect that follows). Bench 2026-11-02, attempt 2: the distance was ready at +1268 ms, the 2400 ms timer fired
+ * during cleanup and was ignored, the disconnect finished at +5262 ms and the attempt was reported SUCCESS.
+ */
+typedef struct {
+    bool valid;                     /* false when the adapter has no clock or no attempt has finished yet */
+    uint32_t measured_ms;           /* from execute() to the outcome */
+    uint32_t cleanup_ms;            /* from the outcome to the end of cleanup */
+    uint32_t total_ms;
+    bool budget_exceeded;           /* total_ms > the step timeout */
+    bool timeout_during_cleanup;    /* the budget timer fired while cleanup was still running (the timer is ignored then) */
+} nrf_cs_pair_adapter_timing_t;
 
 typedef void (*nrf_cs_pair_adapter_complete_cb_t)(
     const nrf_cs_step_t *step,
@@ -62,6 +79,10 @@ typedef struct {
     bool terminal_pending;
     nrf_cs_pair_adapter_complete_cb_t complete_cb;
     void *complete_context;
+    uint32_t started_ms;
+    uint32_t terminal_ms;
+    bool timeout_during_cleanup;
+    nrf_cs_pair_adapter_timing_t last_timing;
 } nrf_cs_pair_adapter_t;
 
 nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_init(
@@ -113,6 +134,9 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_timeout(
 nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_cleanup_complete(
     nrf_cs_pair_adapter_t *adapter,
     const nrf_cs_step_t *step);
+
+/* Timing of the attempt that finished last; valid from inside the completion callback on. */
+bool nrf_cs_pair_adapter_last_timing(const nrf_cs_pair_adapter_t *adapter, nrf_cs_pair_adapter_timing_t *out);
 
 bool nrf_cs_pair_adapter_is_active(const nrf_cs_pair_adapter_t *adapter);
 nrf_cs_pair_phase_t nrf_cs_pair_adapter_phase(const nrf_cs_pair_adapter_t *adapter);

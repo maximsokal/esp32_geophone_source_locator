@@ -4,9 +4,6 @@
 
 #include "nrf_cs_cycle_runtime.h"
 
-/* Time per node for plan, GO, result reads and release on a healthy bus, with room for retries. */
-#define COORD_NODE_OVERHEAD_MS 2500U
-
 typedef struct {
     const nrf_cs_cycle_coordinator_ops_t *ops;
     const nrf_cs_scheduler_t *scheduler;
@@ -25,7 +22,7 @@ uint32_t nrf_cs_cycle_coordinator_budget_ms(const nrf_cs_policy_t *policy, size_
     const uint32_t window = nrf_cs_cycle_window_ms(
         (uint16_t)policy->pair_timeout_ms, normalized_samples(policy), policy->max_attempts);
     return nrf_cs_cycle_run_ms((uint8_t)execution_count, window) + NRF_CS_CYCLE_TOTAL_MARGIN_MS +
-        NRF_CS_COORD_COLLECT_GRACE_MS + (uint32_t)node_count * COORD_NODE_OVERHEAD_MS;
+        NRF_CS_COORD_COLLECT_GRACE_MS + (uint32_t)node_count * NRF_CS_COORD_NODE_OVERHEAD_MS;
 }
 
 static uint32_t next_request_id(coord_t *coord)

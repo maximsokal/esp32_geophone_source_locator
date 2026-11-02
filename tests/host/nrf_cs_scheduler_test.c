@@ -496,7 +496,9 @@ static void test_full_rotation_pair_combine_and_direction_failures(void)
     assert(pair.confidence == 800U);
     assert(pair.valid_samples == 6U);
     assert(pair.direction_disagreement_mm == 200);
-    assert(pair.spread_mm == 215);
+    /* sigma of 10 mm MAD is 15 mm, below the floor of NRF_CS_MIN_SPREAD_MM per direction: (33 + 33 + 1) / 2 + 200 */
+    assert(NRF_CS_MIN_SPREAD_MM == 33);
+    assert(pair.spread_mm == 233);
     assert(!pair.single_direction);
 
     policy.samples_per_pair = 1U;
@@ -596,6 +598,190 @@ static void test_nine_samples_per_direction_drop_the_outliers(void)
     assert(pair.direction_disagreement_mm <= 100);
 }
 
+/* Runs pair 0 of three nodes with `forward_ok` / `reverse_ok` accepted samples in its two directions, every other
+ * attempt of that direction fails until the execution gives up. */
+static nrf_cs_pair_result_t run_pair_with_sample_counts(
+    bool full_rotation, uint8_t samples, uint8_t max_attempts, size_t forward_ok, size_t reverse_ok)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_policy_t policy = test_policy(max_attempts);
+    const nrf_cs_node_id_t nodes[] = { 0U, 1U, 2U };
+    const size_t wanted[2] = { forward_ok, reverse_ok };
+    size_t accepted[2] = { 0U, 0U };
+    nrf_cs_step_t step;
+
+    policy.full_rotation = full_rotation;
+    policy.samples_per_pair = samples;
+    assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, 3U) == NRF_CS_OK);
+    while (nrf_cs_scheduler_pair_at(&scheduler, 0U)->state == NRF_CS_PAIR_PENDING) {
+        assert(nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY);
+        assert(step.pair_index == 0U);
+        const size_t direction = step.initiator == 0U ? 0U : 1U;
+        nrf_cs_measurement_t measurement = failure_measurement(NRF_CS_OUTCOME_TRANSPORT_ERROR);
+        if (accepted[direction] < wanted[direction]) {
+            measurement = success_measurement(2000 + (int32_t)accepted[direction], 900U);
+            ++accepted[direction];
+        }
+        assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &measurement) == NRF_CS_OK);
+    }
+    return *nrf_cs_scheduler_pair_at(&scheduler, 0U);
+}
+
+/* CS-QUALITY-02. Bench 2026-11-02 19:55: the 0-4 pair reported spread_mm=0 although 4 of its samples had been rejected,
+ * because more than half of the samples were equal (MAD 0). A set of several samples never claims better than the floor. */
+static void test_spread_never_claims_zero_for_several_samples(void)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_policy_t policy = test_policy(1U);
+    const nrf_cs_node_id_t nodes[] = { 0U, 1U, 2U };           /* three nodes: one execution per pair */
+    const int32_t with_outliers[12] = { 2049, 2049, 2049, 2049, 2049, 2049, 2049, 2049, 3549, 3549, 549, 3949 };
+    nrf_cs_step_t step;
+
+    policy.samples_per_pair = 12U;
+    assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, 3U) == NRF_CS_OK);
+    for (size_t i = 0U; i < 12U; ++i) {
+        assert(nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY);
+        const nrf_cs_measurement_t measurement = success_measurement(with_outliers[i], 900U);
+        assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &measurement) == NRF_CS_OK);
+    }
+    nrf_cs_pair_result_t pair = *nrf_cs_scheduler_pair_at(&scheduler, 0U);
+    assert(pair.state == NRF_CS_PAIR_VALID);
+    assert(pair.distance_mm == 2049);
+    assert(pair.rejected_samples == 4U);                         /* the outliers were seen ... */
+    assert(pair.spread_mm == NRF_CS_MIN_SPREAD_MM);              /* ... and the spread is not 0 */
+    assert(pair.spread_mm > 0);
+
+    /* Equal samples without outliers: still resolution-limited, not perfect. */
+    const int32_t same[] = { 1000, 1000, 1000 };
+    pair = run_two_directions(3U, same, same);
+    assert(pair.state == NRF_CS_PAIR_VALID && pair.rejected_samples == 0U);
+    assert(pair.spread_mm == NRF_CS_MIN_SPREAD_MM);
+
+    /* One sample has no spread to speak of: that stays 0 (the legacy single-sample policy). */
+    pair = run_pair_with_sample_counts(false, 1U, 1U, 1U, 0U);
+    assert(pair.spread_mm == 0);
+
+    /* The floor is a floor: a wider set keeps its own spread. MAD 100 -> sigma 148. */
+    scheduler.policy.samples_per_pair = 5U;
+    const int32_t wide[] = { 1000, 1100, 900, 1200, 800 };
+    pair = run_two_directions(5U, wide, wide);
+    assert(pair.spread_mm == 148);
+}
+
+/* CS-QUALITY-03. The 1-4 pair of the 19:55 run was published as valid from 4 samples (2 per direction) of 6 attempts. A
+ * direction needs NRF_CS_MIN_SAMPLES_PER_DIRECTION accepted samples (the size whose median can drop one outlier). */
+static void test_a_direction_with_too_few_samples_is_left_out(void)
+{
+    assert(NRF_CS_MIN_SAMPLES_PER_DIRECTION == 3U);
+
+    /* 2 + 2 of the 1-4 pair: no usable direction at all. */
+    nrf_cs_pair_result_t pair = run_pair_with_sample_counts(true, 9U, 4U, 2U, 2U);
+    assert(pair.state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+    assert(pair.valid_samples == 0U && pair.distance_mm == 0);
+    assert(!pair.single_direction);
+
+    /* Exactly the minimum in both directions is a full pair. */
+    pair = run_pair_with_sample_counts(true, 9U, 4U, 3U, 3U);
+    assert(pair.state == NRF_CS_PAIR_VALID && !pair.single_direction);
+    assert(pair.valid_samples == 6U);
+
+    /* A good direction and a thin one: the thin one is left out, not averaged in, and the pair says so. */
+    pair = run_pair_with_sample_counts(true, 9U, 4U, 9U, 2U);
+    assert(pair.state == NRF_CS_PAIR_VALID);
+    assert(pair.single_direction);
+    assert(pair.valid_samples == 9U);
+    assert(pair.distance_mm == 2004);                            /* median of 2000..2008 only */
+    assert(pair.direction_disagreement_mm == 0);
+    assert((pair.scheduler_quality_flags & NRF_CS_QUALITY_PARTIAL) != 0U);
+
+    pair = run_pair_with_sample_counts(true, 9U, 4U, 0U, 3U);
+    assert(pair.state == NRF_CS_PAIR_VALID && pair.single_direction && pair.valid_samples == 3U);
+
+    /* Without the full rotation the one execution needs the minimum as well. */
+    pair = run_pair_with_sample_counts(false, 9U, 4U, 2U, 0U);
+    assert(pair.state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+    pair = run_pair_with_sample_counts(false, 9U, 4U, 3U, 0U);
+    assert(pair.state == NRF_CS_PAIR_VALID && pair.valid_samples == 3U);
+
+    /* A policy that asks for fewer samples than the minimum only needs what it asks for. */
+    pair = run_pair_with_sample_counts(true, 2U, 2U, 2U, 2U);
+    assert(pair.state == NRF_CS_PAIR_VALID && pair.valid_samples == 4U);
+    pair = run_pair_with_sample_counts(true, 2U, 2U, 1U, 1U);
+    assert(pair.state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+}
+
+/* Feeds one direction of pair 0 a script of outcomes ('S' accepted sample, 'F' failed attempt) and returns how many
+ * attempts the execution took before it ended; the other direction gets nine clean samples. */
+static nrf_cs_pair_result_t run_pair_with_script(uint8_t max_attempts, const char *script, size_t *attempts_used)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_policy_t policy = test_policy(max_attempts);
+    const nrf_cs_node_id_t nodes[] = { 0U, 1U, 2U };
+    nrf_cs_step_t step;
+    size_t at = 0U;
+    size_t other_samples = 0U;
+
+    policy.full_rotation = true;
+    policy.samples_per_pair = 9U;
+    assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, 3U) == NRF_CS_OK);
+    *attempts_used = 0U;
+    while (nrf_cs_scheduler_pair_at(&scheduler, 0U)->state == NRF_CS_PAIR_PENDING) {
+        assert(nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY);
+        assert(step.pair_index == 0U);
+        nrf_cs_measurement_t measurement;
+        if (step.initiator == 0U) {                              /* the scripted direction */
+            assert(script[at] != '\0');                          /* the script must cover every attempt that is made */
+            measurement = script[at] == 'S' ? success_measurement(3000 + (int32_t)at, 900U)
+                                            : failure_measurement(NRF_CS_OUTCOME_TRANSPORT_ERROR);
+            ++at;
+            ++*attempts_used;
+        } else {
+            measurement = success_measurement(3000 + (int32_t)other_samples++, 900U);
+        }
+        assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &measurement) == NRF_CS_OK);
+    }
+    return *nrf_cs_scheduler_pair_at(&scheduler, 0U);
+}
+
+/* Bench 2026-11-02: with max_attempts 1 the first TRANSPORT_ERROR (status 9 in SECURING, 4 of 24 attempts) ended the
+ * whole direction; 0->1 stopped after 2 samples, 0->4 after 5. With a retry budget a failure costs one attempt and the
+ * series goes on until the failures reach max_attempts or the nine samples are in. */
+static void test_a_failed_attempt_ends_the_series_only_when_the_retry_budget_is_spent(void)
+{
+    size_t used;
+    nrf_cs_pair_result_t pair;
+
+    /* No retry budget (production policy today): S S F ends the direction with 2 samples; 2 < 3, the direction is out. */
+    pair = run_pair_with_script(1U, "SSF", &used);
+    assert(used == 3U);
+    assert(pair.state == NRF_CS_PAIR_VALID && pair.single_direction && pair.valid_samples == 9U);   /* the clean direction */
+
+    /* Four tries: three failures are survived, the fourth ends it. */
+    pair = run_pair_with_script(4U, "SSFSSFSSFSSS", &used);
+    assert(used == 12U);                                        /* 9 samples + 3 failures = the 12 attempts the plan allows */
+    assert(pair.state == NRF_CS_PAIR_VALID && !pair.single_direction && pair.valid_samples == 18U);
+
+    pair = run_pair_with_script(4U, "SSFSFSFSSSSSS", &used);
+    assert(used == 12U);                                        /* three failures in a row of tries: the 4th is never reached */
+    assert(pair.state == NRF_CS_PAIR_VALID && !pair.single_direction && pair.valid_samples == 18U);
+    pair = run_pair_with_script(4U, "SSSFFFF", &used);
+    assert(used == 7U);                                         /* four failures end it with the 3 samples it has */
+    assert(pair.state == NRF_CS_PAIR_VALID && !pair.single_direction && pair.valid_samples == 12U);   /* 3 + 9 */
+
+    /* Two failures too many leave 2 samples: below the minimum, that direction is dropped. */
+    pair = run_pair_with_script(2U, "SSFF", &used);
+    assert(used == 4U);
+    assert(pair.state == NRF_CS_PAIR_VALID && pair.single_direction && pair.valid_samples == 9U);
+
+    /* The retry budget never lets a series exceed the samples asked for. */
+    pair = run_pair_with_script(4U, "SSSSSSSSSS", &used);
+    assert(used == 9U);
+    assert(pair.valid_samples == 18U);
+}
+
 static void test_abort_cycle_completes_pending_executions_with_timeout(void)
 {
     nrf_cs_scheduler_t scheduler;
@@ -645,6 +831,9 @@ int main(void)
     test_full_rotation_pair_combine_and_direction_failures();
     test_contradicting_directions_are_not_a_valid_pair();
     test_nine_samples_per_direction_drop_the_outliers();
+    test_spread_never_claims_zero_for_several_samples();
+    test_a_direction_with_too_few_samples_is_left_out();
+    test_a_failed_attempt_ends_the_series_only_when_the_retry_budget_is_spent();
     test_abort_cycle_completes_pending_executions_with_timeout();
     return 0;
 }

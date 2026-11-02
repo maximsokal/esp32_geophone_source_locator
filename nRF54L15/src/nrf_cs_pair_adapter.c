@@ -2,6 +2,11 @@
 
 #include <string.h>
 
+static uint32_t clock_ms(const nrf_cs_pair_adapter_t *adapter)
+{
+    return adapter->ops.now_ms != NULL ? adapter->ops.now_ms(adapter->ops.context) : 0U;
+}
+
 static bool step_matches(const nrf_cs_step_t *a, const nrf_cs_step_t *b)
 {
     return a != NULL && b != NULL &&
@@ -40,6 +45,7 @@ static nrf_cs_pair_adapter_result_t begin_terminal(
     }
     adapter->terminal_measurement = *measurement;
     adapter->terminal_pending = true;
+    adapter->terminal_ms = clock_ms(adapter);
     adapter->phase = NRF_CS_PAIR_PHASE_CLEANUP;
     if (adapter->ops.cleanup(adapter->ops.context) != 0) {
         adapter->terminal_measurement.outcome = NRF_CS_OUTCOME_TRANSPORT_ERROR;
@@ -117,6 +123,8 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_execute(
     adapter->complete_cb = complete_cb;
     adapter->complete_context = complete_context;
     adapter->terminal_pending = false;
+    adapter->timeout_during_cleanup = false;
+    adapter->started_ms = clock_ms(adapter);
     memset(&adapter->terminal_measurement, 0, sizeof(adapter->terminal_measurement));
 
     if (adapter->ops.connect(adapter->ops.context, step->reflector) != 0) {
@@ -242,8 +250,12 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_timeout(
     if (!adapter->active || !step_matches(&adapter->step, step)) {
         return NRF_CS_PAIR_ADAPTER_ERR_STALE;
     }
-    if (adapter->phase == NRF_CS_PAIR_PHASE_CLEANUP ||
-        adapter->phase == NRF_CS_PAIR_PHASE_IDLE) {
+    if (adapter->phase == NRF_CS_PAIR_PHASE_CLEANUP) {
+        /* The outcome is already known; only the disconnect is late. Keep the outcome, remember the lateness. */
+        adapter->timeout_during_cleanup = true;
+        return NRF_CS_PAIR_ADAPTER_ERR_STATE;
+    }
+    if (adapter->phase == NRF_CS_PAIR_PHASE_IDLE) {
         return NRF_CS_PAIR_ADAPTER_ERR_STATE;
     }
     memset(&measurement, 0, sizeof(measurement));
@@ -269,6 +281,16 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_cleanup_complete(
         return NRF_CS_PAIR_ADAPTER_ERR_STATE;
     }
 
+    memset(&adapter->last_timing, 0, sizeof(adapter->last_timing));
+    if (adapter->ops.now_ms != NULL) {
+        const uint32_t now = clock_ms(adapter);
+        adapter->last_timing.valid = true;
+        adapter->last_timing.measured_ms = adapter->terminal_ms - adapter->started_ms;
+        adapter->last_timing.cleanup_ms = now - adapter->terminal_ms;
+        adapter->last_timing.total_ms = now - adapter->started_ms;
+        adapter->last_timing.budget_exceeded = adapter->last_timing.total_ms > adapter->step.timeout_ms;
+        adapter->last_timing.timeout_during_cleanup = adapter->timeout_during_cleanup;
+    }
     completed_step = adapter->step;
     completed_measurement = adapter->terminal_measurement;
     callback = adapter->complete_cb;
@@ -282,6 +304,13 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_cleanup_complete(
 
     callback(&completed_step, &completed_measurement, callback_context);
     return NRF_CS_PAIR_ADAPTER_COMPLETED;
+}
+
+bool nrf_cs_pair_adapter_last_timing(const nrf_cs_pair_adapter_t *adapter, nrf_cs_pair_adapter_timing_t *out)
+{
+    if (adapter == NULL || out == NULL) return false;
+    *out = adapter->last_timing;
+    return adapter->last_timing.valid;
 }
 
 bool nrf_cs_pair_adapter_is_active(const nrf_cs_pair_adapter_t *adapter)

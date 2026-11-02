@@ -38,6 +38,22 @@ extern "C" {
 #define NRF_CS_MIN_OUTLIER_BAND_MM 100
 
 /*
+ * The band is 3 sigma, so the smallest spread a set of samples may claim is a third of it. Without this floor a set in
+ * which more than half of the samples are equal (the library gives equal IFFT values, 8490 twice in a row on
+ * 2026-11-02) has a MAD of 0 and reports spread 0 even when a third of its samples were rejected as outliers: the
+ * 0-4 pair of the 19:55 run had spread_mm=0 with 4 rejected samples (CS-QUALITY-02).
+ */
+#define NRF_CS_MIN_SPREAD_MM (NRF_CS_MIN_OUTLIER_BAND_MM / 3)
+
+/*
+ * Fewest accepted samples one direction needs to count (CS-QUALITY-03). Three is the smallest set whose median can drop
+ * one outlier, the size the owner accepted before the move to nine; with one or two samples the "median" is a single
+ * value or a mean and there is nothing to reject. The 1-4 pair of the 19:55 run was published as valid from 4 samples
+ * of 6 attempts. A policy that asks for fewer samples per pair than this needs only what it asks for.
+ */
+#define NRF_CS_MIN_SAMPLES_PER_DIRECTION 3U
+
+/*
  * Platform-neutral Channel Sounding cycle core. Bluetooth/NCS adapters feed
  * provider outcomes into this scheduler; the scheduler never owns a link.
  */

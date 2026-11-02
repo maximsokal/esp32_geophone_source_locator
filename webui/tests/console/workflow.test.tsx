@@ -19,6 +19,7 @@ import {
 import { workflowStatusPollDelay } from '../../src/features/workflow/workflowPolling';
 import { translate } from '../../src/i18n';
 import { en } from '../../src/i18n/catalog.en.gen';
+import { uk } from '../../src/i18n/catalog.uk.gen';
 import max460AllowedActions from '../fixtures/max460_workflow_allowed_actions.json';
 
 vi.mock('../../src/i18n', async (importOriginal) => {
@@ -799,6 +800,28 @@ it('keeps manual distance outcome unknown after a dropped reply and refreshes wi
   act(() => renderer.unmount());
 });
 
+
+it.each([
+  ['cable_exceeded:0-1', 'The distance of pair 0-1 is longer than the cable allows; measure again or enter it manually.'],
+  ['directions_disagree:1-4', 'Pair 1-4: the two directions measured different distances; measure again.'],
+  ['triangle_inconsistent:1-2-4',
+    'Distances between nodes 1-2-4 cannot form a triangle, so at least one of them is wrong; measure again.'],
+])('explains the ranging failure %s in plain words instead of an unknown reason', (reason, english) => {
+  const status = statusFor('RANGING_RESULT');
+  (status as unknown as { ranging: unknown }).ranging = { available: true, progress: { failure_reason: reason } };
+  const html = panelHtml(status);
+  expect(html).toContain(english);
+  expect(html).not.toContain(reason);
+});
+
+it('has the Ukrainian text of the new ranging failures', () => {
+  expect(uk['workflow.ranging.reason.directions_disagree'])
+    .toBe('Пара {pair}: два напрямки виміряли різні відстані; виміряйте ще раз.');
+  expect(uk['workflow.ranging.reason.triangle_inconsistent']).toContain('трикутник');
+  expect(uk['workflow.ranging.reason.triangle_inconsistent']).toContain('{nodes}');
+  expect(uk['workflow.ranging.reason.cable_exceeded']).toContain('кабелю');
+  expect(uk['workflow.ranging.reason.cable_exceeded']).toContain('{pair}');
+});
 
 it('explains the geometry consistency rejection instead of an unknown reason', () => {
   const status = statusFor('RANGING_RESULT');

@@ -274,12 +274,11 @@ static void only_failed_attempts_consume_the_retry_budget(void)
             .outcome = NRF_CS_OUTCOME_TIMEOUT}) == NRF_CS_OK);
     }
     const nrf_cs_pair_result_t *pair = nrf_cs_scheduler_pair_at(&second, step.pair_index);
-    /* One sample of the three requested is still a valid pair; only valid_samples
-     * (not the PARTIAL flag) tells the consumer the set is short. */
-    assert(pair->state == NRF_CS_PAIR_VALID && pair->valid_samples == 1U && pair->distance_mm == 2000);
+    /* One sample of the three requested is not a measurement (CS-QUALITY-03): the median of one value has nothing to
+     * reject, so the pair is exhausted instead of published as valid from a single sample. */
+    assert(pair->state == NRF_CS_PAIR_RETRY_EXHAUSTED && pair->valid_samples == 0U && pair->distance_mm == 0);
     assert((pair->scheduler_quality_flags & NRF_CS_QUALITY_HAD_RETRY) != 0U);
     assert((pair->scheduler_quality_flags & NRF_CS_QUALITY_TIMEOUT) != 0U);
-    assert((pair->scheduler_quality_flags & NRF_CS_QUALITY_PARTIAL) == 0U);
 
     /* Zero samples after the whole budget: exhausted, not valid. */
     nrf_cs_scheduler_t third;
@@ -435,7 +434,9 @@ static void outlier_statistics_match_an_independent_oracle(void)
         assert(kept_count >= (count + 1U) / 2U);
         assert(pair.distance_mm == oracle_median(kept, kept_count));
         assert(pair.rejected_samples == count - kept_count);
-        assert(pair.spread_mm == (count > 1U ? (int32_t)sigma : 0));
+        /* A set of several samples never claims a spread below a third of the minimum band (CS-QUALITY-02). */
+        const int64_t floor_spread = 100 / 3;
+        assert(pair.spread_mm == (count > 1U ? (int32_t)(sigma > floor_spread ? sigma : floor_spread) : 0));
         assert(pair.confidence == 800U);
     }
     CASE_PASS("CS.SCHEDULER.outlier_statistics");
@@ -462,7 +463,8 @@ static void extreme_distances_never_crash_or_discard_every_sample(void)
 
     const int32_t zero_only[] = {0, 0, 0, 0, 0, 0, 0, 0};
     pair = run_samples(zero_only, 8U, 900U);
-    assert(pair.distance_mm == 0 && pair.spread_mm == 0 && pair.rejected_samples == 0U);
+    assert(pair.distance_mm == 0 && pair.rejected_samples == 0U);
+    assert(pair.spread_mm == 33);       /* equal samples are resolution-limited, not perfect (CS-QUALITY-02) */
     CASE_PASS("CS.SCHEDULER.extreme_distances");
 }
 

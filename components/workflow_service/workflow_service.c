@@ -274,14 +274,19 @@ static BaseType_t workflow_service_receive_async(workflow_async_command_t *item)
  * geometry stayed unsolved for node 4 (geometry_unsolved:4): several samples per direction give a median that drops
  * such a sample. Three samples (15:56 run, 6 pairs) still left pairs whose directions differed by metres, so nine are
  * taken (owner decision after the audit of that run). The slot of an execution
- * is GO skew + (samples + attempts - 1) * (budget + gap) and the 12 slots run one after another:
- * 9 x 2550 + 300 = 23250 ms, about 279 s for the whole cycle (95 s with three samples).
+ * is GO skew + (samples + attempts - 1) * (budget + gap) and the slots run one after another.
+ * Bench 2026-11-02 (19:55 ESP32, 20:12 and 20:22 nRF): with no spare try the first failed attempt (4 of 24 were
+ * pairing failures, status 9 in SECURING; one had confidence 499 against the 500 limit) ended its whole direction,
+ * and only 1 series of 6 reached nine samples. One spare try (max_attempts 2, owner decision) is the most the bus
+ * allows with some margin: the I2C bus is silent for the whole cycle and sensor_bus_quiet_begin() refuses more than
+ * 600000 ms. Slot 300 + 10 x 2550 = 25800 ms; 4 nodes (12 executions) 329 s, 5 nodes (20 executions) 537.5 s. Three
+ * tries would leave 11 s on 5 nodes, four do not start at all.
  */
 #define WORKFLOW_RANGING_PAIR_BUDGET_MS 2400U
 
 static const nrf_cs_policy_t s_workflow_ranging_policy = {
     .pair_timeout_ms = WORKFLOW_RANGING_PAIR_BUDGET_MS,
-    .max_attempts = 1U,
+    .max_attempts = 2U,
     .min_confidence = 500U,
     .samples_per_pair = 9U,
     .full_rotation = true,

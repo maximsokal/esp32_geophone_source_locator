@@ -1980,10 +1980,41 @@ static void assert_ranging_geometry_failure(void)
 {
     assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
     assert(s_seen_ranging_progress.complete && !s_seen_ranging_progress.success);
-    assert(strcmp(s_seen_ranging_progress.failure_reason, "geometry_unsolved:2") == 0);
+    /* 1000 + 1000 < 5000 is not a triangle: the matrix is rejected before the solver tries to place node 2. */
+    assert(strcmp(s_seen_ranging_progress.failure_reason, "triangle_inconsistent:0-1-2") == 0);
     for (size_t pair = 0U; pair < s_seen_ranging_progress.pair_count; ++pair) {
         assert(s_seen_ranging_progress.pairs[pair].state == NRF_CS_PAIR_VALID);
     }
+}
+
+/* CS-GEO-01: a triangle whose sides do not close is reported even when one of its sides also exceeds the cable; the
+ * cable message used to hide the contradiction (bench 2026-11-02 19:55: cable_exceeded:0-1 over a 595 mm excess). */
+static void assert_triangle_contradiction_wins_over_the_cable(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete && !s_seen_ranging_progress.success);
+    assert(strcmp(s_seen_ranging_progress.failure_reason, "triangle_inconsistent:0-1-2") == 0);
+    assert(s_seen_ranging_progress.pairs[1].state == NRF_CS_PAIR_CABLE_EXCEEDED);   /* 3000 mm > the 1001 mm limit of node 2 */
+    assert(s_seen_ranging_progress.pairs[1].distance_mm == 3000);
+}
+
+/* A triangle that closes within the tolerance is only logged: the ranging is not failed by the triangle check. */
+static void assert_marginal_triangle_does_not_fail_the_ranging(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete);
+    assert(strncmp(s_seen_ranging_progress.failure_reason, "triangle_inconsistent", 21U) != 0);
+    for (size_t pair = 0U; pair < s_seen_ranging_progress.pair_count; ++pair) {
+        assert(s_seen_ranging_progress.pairs[pair].state == NRF_CS_PAIR_VALID);
+    }
+}
+
+/* Sides that close with room to spare: the check stays silent and the ranging succeeds as before. */
+static void assert_closing_triangle_succeeds(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete && s_seen_ranging_progress.success);
+    assert(s_seen_ranging_progress.failure_reason[0] == '\0');
 }
 
 static void assert_ranging_default_timeout_still_active(void)
@@ -2768,6 +2799,52 @@ static void test_autonomous_individual_cable_limits(void)
     script(EV_ACTION, 0U, clear_cycle_hook);
     script(EV_ACTION, 0U, assert_limited_ranging_for_test);
     script(EV_ACTION, 0U, correct_limited_ranging_for_test);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void test_triangle_consistency_of_the_distance_matrix(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cs_use_pair_distances = true;
+    s_cs_pair_distances[0] = 1000;
+    s_cs_pair_distances[1] = 3000;      /* 0-2 is also longer than the cable of node 2 (1001 mm) */
+    s_cs_pair_distances[2] = 1000;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_limited_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_triangle_contradiction_wins_over_the_cable);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cs_use_pair_distances = true;
+    s_cs_pair_distances[0] = 1000;
+    s_cs_pair_distances[1] = 1000;
+    s_cs_pair_distances[2] = 2500;      /* excess 500 mm: inside the 750 mm tolerance */
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_ranging_for_test);
+    script_waits(12U, 10U);
+    script(EV_ACTION, 0U, assert_marginal_triangle_does_not_fail_the_ranging);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cs_use_pair_distances = true;
+    s_cs_pair_distances[0] = 3000;
+    s_cs_pair_distances[1] = 4000;
+    s_cs_pair_distances[2] = 5000;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_ranging_for_test);
+    script_waits(12U, 10U);
+    script(EV_ACTION, 0U, assert_closing_triangle_succeeds);
     script(EV_STOP, 0U, NULL);
     run_service();
 }
@@ -4441,6 +4518,7 @@ int main(void)
     test_autonomous_ranging_failures();
     test_ranging_cancel();
     test_autonomous_individual_cable_limits();
+    test_triangle_consistency_of_the_distance_matrix();
     test_contradicting_directions_fail_the_ranging();
     test_noisy_geometry_cannot_exceed_individual_cables();
     test_unplug_during_cs_rejoins_after_quiet_lease();

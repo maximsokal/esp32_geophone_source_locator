@@ -93,3 +93,85 @@ def test_the_report_prints_the_accuracy_only_when_the_truth_is_given():
 
 def nl_join(lines):
     return chr(10).join(lines)
+
+
+# MAIN attempts of the bench log 2026-11-02 20:12 in the format of the firmware that names the method and the timing:
+# attempt 1 is a normal one, attempt 2 has the distance at +1268 ms but the disconnect only at +5262 ms with the budget
+# timer fired during cleanup, attempt 3 is a pairing that failed in SECURING (Zephyr status 9).
+METHOD_LOG = """\
+cs: t=153047 a=1 execute init=0 refl=1 try=1 pair=0 budget=2400ms
+cs: t=153433 a=1 est ifft_mm=6272 phase_mm=8917 rtt_mm=9550 best_mm=6272 method=ifft
+cs: t=153484 a=1 result=SUCCESS dist_mm=6272 conf=953 phase=IDLE measured=1428ms cleanup=53ms +1481ms
+cs: t=153652 a=2 execute init=0 refl=1 try=2 pair=0 budget=2400ms
+cs: t=154921 a=2 est ifft_mm=6194 phase_mm=8514 rtt_mm=10568 best_mm=6194 method=ifft
+cs: t=156052 a=2 TIMEOUT phase=CLEANUP budget=2400ms +2400ms
+cs: t=158914 a=2 result=SUCCESS dist_mm=6194 conf=755 phase=IDLE measured=1268ms cleanup=3994ms over_budget=1 timeout_in_cleanup=1 +5262ms
+cs: t=159107 a=3 execute init=0 refl=1 try=3 pair=0 budget=2400ms
+cs: t=159340 a=3 ev=TRANSPORT_ERROR status=9 phase=SECURING err=SECURITY_UNSPECIFIED +233ms
+cs: t=159340 a=3 result=TRANSPORT_ERROR dist_mm=0 conf=0 phase=IDLE measured=233ms cleanup=0ms +233ms
+cs: t=245010 a=6 execute init=0 refl=4 try=1 pair=4 budget=2400ms
+cs: t=246303 a=6 est ifft_mm=n/a phase_mm=4638 rtt_mm=3164 best_mm=4638 method=phase
+cs: t=246337 a=6 result=SUCCESS dist_mm=4638 conf=872 phase=IDLE measured=1300ms cleanup=34ms +1334ms
+"""
+
+
+def test_the_method_behind_every_distance_is_counted():
+    attempts, _ = tool.parse(METHOD_LOG)
+    assert attempts[1].method == "ifft" and attempts[6].method == "phase" and attempts[3].method is None
+    assert dict(tool.methods_used(attempts)) == {"ifft": 2, "phase": 1}      # the failed attempt has no est line
+    text = nl_join(tool.report("log", attempts, []))
+    assert "method used for the distance: ifft=2, phase=1" in text
+    # old firmware: no method= in the est line, the methods are "unknown", not guessed from the numbers
+    old_attempts, _ = tool.parse(ACCURACY_LOG)
+    assert dict(tool.methods_used(old_attempts)) == {"unknown": 3}
+
+
+def test_the_estimates_of_one_procedure_are_compared_with_each_other():
+    attempts, _ = tool.parse(METHOD_LOG)
+    # attempt 1: 9550-6272 = 3278; attempt 2: 10568-6194 = 4374; attempt 6: 4638-3164 = 1474 (ifft is not available)
+    assert sorted(tool.estimate_spans(attempts)) == [1474, 3278, 4374]
+    text = nl_join(tool.report("log", attempts, []))
+    assert "span between the estimates of one procedure: min=1474 median=3278 max=4374 mm; above 1000 mm in 3 of 3" in text
+    # one estimate alone cannot be compared with anything
+    single, _ = tool.parse(chr(10).join([
+        "cs: t=1 a=1 execute init=0 refl=1 try=1 pair=0 budget=2400ms",
+        "cs: t=2 a=1 est ifft_mm=100 phase_mm=n/a rtt_mm=n/a best_mm=100 method=ifft",
+    ]))
+    assert single[1].estimates == {"ifft": 100, "best": 100}
+    assert tool.estimate_spans(single) == []
+
+
+def test_a_late_cleanup_is_listed_apart_from_a_timeout():
+    attempts, _ = tool.parse(METHOD_LOG)
+    assert (attempts[1].measured_ms, attempts[1].cleanup_ms, attempts[1].over_budget) == (1428, 53, False)
+    assert (attempts[2].measured_ms, attempts[2].cleanup_ms) == (1268, 3994)
+    assert attempts[2].over_budget and attempts[2].timeout_in_cleanup and attempts[2].result == "SUCCESS"
+    assert not attempts[1].timeout_in_cleanup
+    text = nl_join(tool.report("log", attempts, []))
+    assert "attempts past their budget: 1 (budget timer fired during cleanup in 1), longest cleanup 3994 ms" in text
+    assert "cut in phase: CLEANUP=1" in text        # the stage list still sees the timer, the line above explains it
+
+
+def test_transport_errors_are_counted_by_the_reason_the_firmware_names():
+    attempts, _ = tool.parse(METHOD_LOG)
+    assert attempts[3].error_reasons == ["SECURITY_UNSPECIFIED"]
+    assert "transport errors by reason: SECURITY_UNSPECIFIED=1" in nl_join(tool.report("log", attempts, []))
+    clean = {k: v for k, v in attempts.items() if k != 3}
+    assert "transport errors by reason" not in nl_join(tool.report("log", clean, []))
+
+
+def test_the_scatter_of_each_pair_shows_the_noisy_links():
+    # 0->4 of the 20:12 log: 3.8 .. 8.5 m (sd 1.8 m) while 3->4 of the 20:22 log stays within 0.08 m
+    lines = []
+    for n, mm in enumerate((8175, 6148, 8490, 8490, 3806), start=1):
+        lines += [
+            f"cs: t={n} a={n} execute init=0 refl=4 try={n} pair=4 budget=2400ms",
+            f"cs: t={n} a={n} est ifft_mm={mm} phase_mm=9300 rtt_mm=4000 best_mm={mm} method=ifft",
+            f"cs: t={n} a={n} result=SUCCESS dist_mm={mm} conf=900 phase=IDLE",
+        ]
+    noisy = chr(10).join(lines)
+    attempts, _ = tool.parse(noisy)
+    groups = tool.per_pair_scatter(attempts)
+    assert groups == {(0, 4): [8175, 6148, 8490, 8490, 3806]}
+    text = nl_join(tool.report("log", attempts, []))
+    assert "pair 0-4: n=5 min=3806 max=8490 mean=7022 sd=1830 mm" in text

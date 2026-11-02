@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "nrf_cs_distance_method.h"
+
 /*
  * Channel Sounding trace for the UART console.
  *
@@ -18,7 +20,7 @@
  */
 
 #define NRF_CS_TRACE_CAPACITY 48U
-#define NRF_CS_TRACE_LINE_CAPACITY 128U
+#define NRF_CS_TRACE_LINE_CAPACITY 192U
 #define NRF_CS_TRACE_NO_ELAPSED UINT32_MAX
 
 typedef enum {
@@ -31,7 +33,12 @@ typedef enum {
 } nrf_cs_trace_kind_t;
 
 /* An estimate the library could not make (not finite, negative): printed as n/a. */
-#define NRF_CS_TRACE_UNAVAILABLE INT32_MIN
+#define NRF_CS_TRACE_UNAVAILABLE NRF_CS_DISTANCE_UNAVAILABLE
+
+/* nrf_cs_trace_entry_t.flags of a RESULT: c and d carry the timing of the attempt (CS-TIME-01). */
+#define NRF_CS_TRACE_FLAG_TIMING (1U << 0)              /* c = ms until the outcome was known, d = ms of cleanup */
+#define NRF_CS_TRACE_FLAG_OVER_BUDGET (1U << 1)         /* the whole attempt took longer than its budget */
+#define NRF_CS_TRACE_FLAG_TIMEOUT_IN_CLEANUP (1U << 2)  /* the budget timer fired during cleanup and was ignored */
 
 typedef struct {
     uint32_t t_ms;              /* uptime when the record was pushed */
@@ -40,10 +47,11 @@ typedef struct {
     const char *label;          /* a string literal: event name or outcome name */
     int32_t a;
     int32_t b;
-    int32_t c;                  /* ESTIMATES: rtt, in mm */
-    int32_t d;                  /* ESTIMATES: best, in mm */
+    int32_t c;                  /* ESTIMATES: rtt, in mm. RESULT with FLAG_TIMING: measured_ms */
+    int32_t d;                  /* ESTIMATES: best, in mm. RESULT with FLAG_TIMING: cleanup_ms */
     uint8_t kind;
     uint8_t phase;              /* nrf_cs_pair_phase_t */
+    uint8_t flags;              /* RESULT: NRF_CS_TRACE_FLAG_* */
 } nrf_cs_trace_entry_t;
 
 typedef struct {
@@ -62,6 +70,12 @@ uint32_t nrf_cs_trace_take_dropped(nrf_cs_trace_t *trace);
 
 const char *nrf_cs_trace_phase_name(uint8_t phase);
 const char *nrf_cs_trace_outcome_name(uint8_t outcome);
+/*
+ * The reason behind the status of a TRANSPORT_ERROR event, or NULL when it has no name. In SECURING the status is
+ * Zephyr's enum bt_security_err (NCS v3.4.0, zephyr/include/zephyr/bluetooth/conn.h): 9 is a pairing that failed for
+ * a reason the stack did not name, not a Channel Sounding timeout.
+ */
+const char *nrf_cs_trace_status_reason(const char *event_label, uint8_t phase, int status);
 
 /* One console line without the newline; the length, or -1 for a bad argument or an unknown kind. */
 int nrf_cs_trace_format(const nrf_cs_trace_entry_t *entry, char *line, size_t capacity);

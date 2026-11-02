@@ -127,6 +127,12 @@ function rangingReasonLabel(reason: string, t: (key: I18nKey, params?: Readonly<
   if (normalized === 'insufficient_nodes') return t('workflow.ranging.reason.insufficient_nodes');
   const pair = normalized.match(/^pair_failed:(.+)$/);
   if (pair !== null) return t('workflow.ranging.reason.pair_failed', { pair: pair[1] });
+  const cable = normalized.match(/^cable_exceeded:(.+)$/);
+  if (cable !== null) return t('workflow.ranging.reason.cable_exceeded', { pair: cable[1] });
+  const disagree = normalized.match(/^directions_disagree:(.+)$/);
+  if (disagree !== null) return t('workflow.ranging.reason.directions_disagree', { pair: disagree[1] });
+  const triangle = normalized.match(/^triangle_inconsistent:(.+)$/);
+  if (triangle !== null) return t('workflow.ranging.reason.triangle_inconsistent', { nodes: triangle[1] });
   const node = normalized.match(/^geometry_unsolved:(.+)$/);
   if (node !== null) return t('workflow.ranging.reason.geometry_unsolved', { node: node[1] });
   return t('workflow.reason.unknown', { reason: normalized || WORKFLOW_UNKNOWN });

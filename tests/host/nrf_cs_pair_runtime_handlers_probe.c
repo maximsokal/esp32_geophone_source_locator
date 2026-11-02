@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <math.h>
 #include "nrf_cs_measurement_quality.h"
+#include "nrf_cs_distance_method.h"
 #include "nrf_cs_pair_runtime_zephyr_bridge.h"
 #include "nrf_cs_pair_runtime_zephyr.h"
 #include "nrf_log_events.h"
@@ -96,6 +97,7 @@ static bool s_ras_skip,s_ras_malformed,s_ras_bad_paths;
 static unsigned s_de_calls;
 static unsigned s_de_scenario;
 static uint16_t s_confidence;
+static uint16_t s_provider_flags;
 static uint32_t s_rf_words[3];
 static unsigned s_rf_signal_events,s_rf_quality_events;
 static int s_reflector_procedure_active;
@@ -125,6 +127,7 @@ typedef int atomic_val_t;
 static void atomic_or(int *v,int n) { *v |= n; }
 static int atomic_get(const int *v) { return *v; }
 static int64_t k_uptime_get(void) { return (int64_t)s_now; }
+static uint32_t k_uptime_get_32(void) { return (uint32_t)s_now; }
 static int submit_cs_work(struct k_work *w) { (void)w;return 1; }
 static void bt_conn_unref(struct bt_conn *c) { (void)c; }
 static int k_msgq_get(int *q,runtime_event_t *e,int wait)
@@ -181,9 +184,13 @@ static void nrf_cs_trace_zephyr_event(const char *label,uint32_t id,int status,u
   ++s_trace_event_count; }
 static void nrf_cs_trace_zephyr_timeout(uint32_t id,uint8_t phase,uint32_t budget)
 { (void)id;++s_trace_timeout_count;s_trace_timeout_phase=phase;s_trace_timeout_budget=budget; }
-static void nrf_cs_trace_zephyr_result(uint32_t id,uint8_t outcome,int32_t dist,uint16_t conf,uint8_t phase)
+static bool s_trace_result_has_timing;
+static nrf_cs_pair_adapter_timing_t s_trace_result_timing;
+static void nrf_cs_trace_zephyr_result(uint32_t id,uint8_t outcome,int32_t dist,uint16_t conf,uint8_t phase,
+    const nrf_cs_pair_adapter_timing_t *timing)
 { (void)id;++s_trace_result_count;s_trace_result_outcome=outcome;s_trace_result_distance=dist;
-  s_trace_result_confidence=conf;s_trace_result_phase=phase; }
+  s_trace_result_confidence=conf;s_trace_result_phase=phase;
+  s_trace_result_has_timing=timing!=NULL;if(timing!=NULL)s_trace_result_timing=*timing; }
 static unsigned s_trace_estimates_count;
 static float s_trace_est[4];
 static void nrf_cs_trace_zephyr_estimates(uint32_t id,float ifft,float phase,float rtt,float best)
@@ -226,6 +233,7 @@ static cs_de_quality_t cs_de_calc(cs_de_report_t *report)
     if(s_de_scenario==2)report->distance_estimates[0].best=INFINITY;
     if(s_de_scenario==3)report->distance_estimates[0].best=-1;
     if(s_de_scenario==4){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=NAN;}
+    if(s_de_scenario==5){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].best=2;}
     return CS_DE_QUALITY_OK;
 }
 #include "estimate_measurement.inc"
@@ -244,8 +252,9 @@ static int secure_op(void *c) { (void)c;++s_secure_calls;return 0; }
 static int noop(void *c) { (void)c;return 0; }
 static int config_op(void *c,bool realtime) { (void)realtime;return noop(c); }
 static int cleanup_op(void *c) { (void)c;++s_cleanup_calls;return 0; }
+#include "op_now_ms.inc"
 static void completed(const nrf_cs_step_t *step,const nrf_cs_measurement_t *m,void *c)
-{ (void)step;(void)c;++s_callbacks;s_outcome=m->outcome;s_confidence=m->confidence; }
+{ (void)step;(void)c;++s_callbacks;s_outcome=m->outcome;s_confidence=m->confidence;s_provider_flags=m->provider_quality_flags; }
 static void deliver(runtime_event_type_t type,const nrf_cs_step_t *step)
 {
     s_count=1;s_taken=0;
@@ -257,7 +266,7 @@ static void start_queued(unsigned sync_delay,unsigned queue_delay)
     const nrf_cs_pair_adapter_ops_t ops={.connect=connect_op,.secure=secure_op,
         .exchange_mtu=noop,.discover_ras=noop,.read_features=noop,
         .configure_ranging_data=config_op,.exchange_capabilities=noop,
-        .create_config=noop,.enable_cs_security=noop,.start_procedure=noop,.cleanup=cleanup_op};
+        .create_config=noop,.enable_cs_security=noop,.start_procedure=noop,.cleanup=cleanup_op,.now_ms=op_now_ms};
     assert(nrf_cs_pair_adapter_init(&s_adapter,&ops)==0);
     s_now=0;s_connect_delay=sync_delay;s_callbacks=s_secure_calls=s_cleanup_calls=0;
     s_due=0;s_timer_armed=false;s_count=s_taken=0;runtime_reset_ranging();
@@ -438,6 +447,44 @@ int main(void)
     /* All three estimates of the library reach the trace, not only "best": the method is picked from them. */
     assert(s_trace_estimates_count==1 && s_trace_est[0]==1.0f && s_trace_est[1]==2.0f && s_trace_est[2]==1.0f && s_trace_est[3]==1.0f);
     assert(s_trace_result_confidence==s_confidence && s_trace_rf_count==1);
+    assert(s_trace_result_has_timing && s_trace_result_timing.valid);
+    assert(s_trace_result_timing.measured_ms==100 && s_trace_result_timing.cleanup_ms==0);
+    assert(s_trace_result_timing.total_ms==100 && !s_trace_result_timing.budget_exceeded);
+    /* Execute the production estimator and completion path for all three method choices. */
+    const unsigned scenarios[]={0,5,4,1};
+    const uint16_t expected_methods[]={0x10U,0x20U,0x40U,0U};
+    for(unsigned i=0;i<4;++i){
+        start(0);advance_to_procedure();s_de_scenario=scenarios[i];s_now=100;
+        s_local_steps.len=s_peer_owned.len=1;
+        deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+        s_now=120;cleanup_work_handler(NULL);
+        assert((s_provider_flags & 0x70U)==expected_methods[i]);
+        assert(s_outcome==(i==3?NRF_CS_OUTCOME_OUTLIER:NRF_CS_OUTCOME_SUCCESS));
+        assert(s_trace_result_has_timing && s_trace_result_timing.valid);
+        assert(s_trace_result_timing.measured_ms==100 && s_trace_result_timing.cleanup_ms==20);
+    }
+    /* A result before the deadline survives the actual timeout handler during delayed cleanup. */
+    start(0);advance_to_procedure();s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    s_now=500;timeout_work_handler(NULL);s_now=600;cleanup_work_handler(NULL);
+    assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_timing.valid);
+    assert(s_trace_result_timing.measured_ms==100 && s_trace_result_timing.cleanup_ms==500);
+    assert(s_trace_result_timing.total_ms==600 && s_trace_result_timing.budget_exceeded);
+    assert(s_trace_result_timing.timeout_during_cleanup);
+    /* Queue delay belongs to the same accepted-at deadline as the elapsed trace, including its exact boundary. */
+    const unsigned cleanup_at[]={500,501,550};
+    for(unsigned i=0;i<3;++i){
+        start_queued(0,80);advance_to_procedure();s_now=100;s_local_steps.len=s_peer_owned.len=1;
+        deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+        s_now=500;timeout_work_handler(NULL);s_now=cleanup_at[i];cleanup_work_handler(NULL);
+        printf("queued timing measured=%u cleanup=%u total=%u over_budget=%u\n",
+            (unsigned)s_trace_result_timing.measured_ms,(unsigned)s_trace_result_timing.cleanup_ms,
+            (unsigned)s_trace_result_timing.total_ms,s_trace_result_timing.budget_exceeded?1U:0U);
+        assert(s_trace_result_timing.measured_ms==100 && s_trace_result_timing.cleanup_ms==cleanup_at[i]-100);
+        assert(s_trace_result_timing.total_ms==cleanup_at[i]);
+        assert(s_trace_result_timing.budget_exceeded==(cleanup_at[i]>500));
+        assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_timing.timeout_during_cleanup);
+    }
     start(0);s_now=60;s_count=1;s_taken=0;                /* an error code of a late event shows in the trace too */
     s_events[0]=(runtime_event_t){.type=RUNTIME_EVENT_TRANSPORT_ERROR,.has_step=true,.step=s_timeout_step,.status=9};
     event_work_handler(NULL);

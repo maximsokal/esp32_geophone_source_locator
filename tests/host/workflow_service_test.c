@@ -417,9 +417,25 @@ esp_err_t nrf_topology_service_ranging_start_autonomous_limited(const nrf_cs_pol
 esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *policy)
 {
     if (policy == NULL) return ESP_ERR_INVALID_ARG;
-    /* The pair time budget measured on the bench (see s_workflow_ranging_policy): 2.4 s, nine samples per direction, no spare try. */
-    assert(policy->pair_timeout_ms == 2400U && policy->max_attempts == 1U);
+    /* The pair time budget measured on the bench (see s_workflow_ranging_policy): 2.4 s, nine samples per direction, one spare try. */
+    assert(policy->pair_timeout_ms == 2400U && policy->max_attempts == 2U);
     assert(policy->samples_per_pair == 9U && policy->full_rotation);
+    /* The ESP32 holds the I2C bus silent for the whole cycle and sensor_bus_quiet_begin() refuses more than
+     * SENSOR_BUS_QUIET_MAX_MS (600000). The production network is MAIN + 4 nodes: 5 nodes, 20 directed executions. A longer
+     * window per execution (more samples, a retry budget) that pushes this past the limit makes the cycle unstartable
+     * ("bus_unavailable") exactly on the real hardware, and a bench with 3 or 4 nodes would not show it. */
+    /* The budget formula of nrf_cs_cycle_coordinator_budget_ms (pinned in nrf_cs_cycle_coordinator_test): per execution
+     * 300 ms GO skew + (samples + attempts - 1) * (budget 2400 + gap 150); plus 3000 margin, 6000 collect grace and 2500
+     * per node. */
+    const uint32_t window_ms = 300U + ((uint32_t)policy->samples_per_pair + policy->max_attempts - 1U) *
+        ((uint32_t)policy->pair_timeout_ms + 150U);
+    assert(window_ms == 25800U);
+    for (unsigned nodes = 2U; nodes <= 5U; ++nodes) {
+        const uint32_t budget_ms = nodes * (nodes - 1U) * window_ms + 3000U + 6000U + nodes * 2500U;
+        assert(budget_ms < 600000U);
+        if (nodes == 5U) assert(budget_ms == 537500U);               /* 9 minutes of silent bus */
+        if (nodes == 4U) assert(budget_ms == 328600U);
+    }
     memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
     s_ranging_progress.active = true;
     s_ranging_progress.started_at_ms = s_now_ms;

@@ -10,6 +10,7 @@
 #include "nrf_link_readiness_policy.h"
 #include "nrf_topology_periods.h"
 #include "nrf_geometry_solver.h"
+#include "nrf_geometry_triangles.h"
 #include "sensor_bus_timeout.h"
 
 #if defined(ESP_PLATFORM) || defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
@@ -3010,6 +3011,67 @@ static void service_ranging_finish(
     service_ranging_publish_progress(worker);
 }
 
+/*
+ * CS-GEO-01: the triangle consistency of the finished distance matrix, before the failure reasons and the solver result
+ * are judged. Every complete triangle is logged with its excess; the sides that failed get the interval the good sides
+ * leave them. Returns true (and finishes the ranging) when a triangle is inconsistent: at least one of its three sides
+ * is wrong, and a layout solved from them would only look plausible.
+ */
+static bool service_ranging_check_triangles(nrf_topology_worker_state_t *worker, uint64_t now_ms)
+{
+    nrf_topology_ranging_progress_t *progress = &worker->ranging_progress;
+    nrf_geometry_triangle_report_t report;
+
+    if (!nrf_geometry_triangles_check(progress->pairs, progress->pair_count, &report)) {
+        return false;
+    }
+    for (size_t i = 0U; i < report.triangle_count; ++i) {
+        const nrf_geometry_triangle_t *t = &report.triangles[i];
+        ESP_LOGI(
+            TAG,
+            "RANGING_TRIANGLE %u-%u-%u d_ab=%d d_ac=%d d_bc=%d excess_mm=%d tolerance_mm=%d status=%s",
+            (unsigned)t->node_a, (unsigned)t->node_b, (unsigned)t->node_c, (int)t->distance_ab_mm,
+            (int)t->distance_ac_mm, (int)t->distance_bc_mm, (int)t->excess_mm, (int)t->tolerance_mm,
+            nrf_geometry_triangle_status_name(t->status));
+    }
+    for (size_t i = 0U; i < progress->pair_count; ++i) {
+        const nrf_cs_pair_result_t *pair = &progress->pairs[i];
+        nrf_geometry_edge_bounds_t bounds;
+        if (!nrf_geometry_triangle_pair_usable(pair) &&
+            nrf_geometry_triangle_bounds(
+                progress->pairs, progress->pair_count, &report, pair->node_a, pair->node_b, &bounds) &&
+            bounds.witnesses > 0U) {
+            ESP_LOGI(
+                TAG,
+                "RANGING_BOUND %u-%u lower_mm=%d upper_mm=%d witnesses=%u contradictory=%u",
+                (unsigned)pair->node_a, (unsigned)pair->node_b, (int)bounds.lower_mm, (int)bounds.upper_mm,
+                (unsigned)bounds.witnesses, bounds.contradictory ? 1U : 0U);
+        }
+    }
+    if (report.inconsistent_count == 0U) {
+        return false;
+    }
+    if (report.suspect_pair >= 0) {
+        const nrf_cs_pair_result_t *suspect = &progress->pairs[report.suspect_pair];
+        ESP_LOGW(
+            TAG,
+            "RANGING_TRIANGLE_SUSPECT %u-%u inconsistent_triangles=%u",
+            (unsigned)suspect->node_a, (unsigned)suspect->node_b,
+            (unsigned)report.pair_violations[report.suspect_pair]);
+    }
+    for (size_t i = 0U; i < report.triangle_count; ++i) {
+        const nrf_geometry_triangle_t *t = &report.triangles[i];
+        if (t->status == NRF_GEOMETRY_TRIANGLE_INCONSISTENT) {
+            char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
+            (void)snprintf(reason, sizeof(reason), "triangle_inconsistent:%u-%u-%u",
+                (unsigned)t->node_a, (unsigned)t->node_b, (unsigned)t->node_c);
+            service_ranging_finish(worker, false, reason, now_ms);
+            return true;
+        }
+    }
+    return false;
+}
+
 static void service_ranging_process(nrf_topology_worker_state_t *worker)
 {
     nrf_topology_ranging_progress_t *progress = &worker->ranging_progress;
@@ -3070,6 +3132,9 @@ static void service_ranging_process(nrf_topology_worker_state_t *worker)
         &progress->main_height_reference_generation);
     service_ranging_copy_cycle(worker);
     progress->topology_generation = worker->ranging_topology_generation;
+    if (service_ranging_check_triangles(worker, now_ms)) {
+        return;
+    }
     for (size_t i = 0U; i < progress->pair_count; ++i) {
         if (progress->pairs[i].state == NRF_CS_PAIR_CABLE_EXCEEDED) {
             char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
@@ -3250,6 +3315,18 @@ static void service_ranging_run_autonomous(nrf_topology_worker_state_t *worker)
         (unsigned)report.polls,
         (unsigned)report.waited_ms,
         (unsigned)report.main_state);
+
+    if (result >= 0) {
+        /* CS-ESTIMATOR-01: every attempt with the library estimate its distance came from. */
+        for (size_t n = 0U; n < s_cycle_collected.node_count; ++n) {
+            for (size_t i = 0U; i < s_cycle_collected.nodes[n].count; ++i) {
+                char sample[112];
+                if (nrf_cs_cycle_record_describe(&s_cycle_collected.nodes[n].records[i], sample, sizeof(sample)) > 0) {
+                    ESP_LOGI(TAG, "RANGING_SAMPLE node=%u %s", (unsigned)s_cycle_collected.nodes[n].node, sample);
+                }
+            }
+        }
+    }
 
     if (result == NRF_CS_COORD_ERR_PLAN) {
         service_ranging_abort_autonomous(worker, "plan_failed");

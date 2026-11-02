@@ -173,6 +173,12 @@ static int op_cleanup(void *context)
     return 0;
 }
 
+static uint32_t op_now_ms(void *context)
+{
+    ARG_UNUSED(context);
+    return k_uptime_get_32();
+}
+
 static const nrf_cs_pair_adapter_ops_t s_adapter_ops = {
     .connect = op_connect,
     .secure = op_secure,
@@ -185,6 +191,7 @@ static const nrf_cs_pair_adapter_ops_t s_adapter_ops = {
     .enable_cs_security = op_enable_cs_security,
     .start_procedure = op_start_procedure,
     .cleanup = op_cleanup,
+    .now_ms = op_now_ms,
     .context = NULL,
 };
 
@@ -215,8 +222,16 @@ static void runtime_adapter_complete(
     s_user_complete_cb = NULL;
     s_user_complete_context = NULL;
     if (step != NULL && measurement != NULL) {
+        nrf_cs_pair_adapter_timing_t timing;
+        const bool have_timing = nrf_cs_pair_adapter_last_timing(&s_adapter, &timing);
+        if (have_timing) {
+            /* The deadline and elapsed trace include work-queue wait; the adapter clock starts in execute_work. */
+            timing.total_ms = (uint32_t)(k_uptime_get() - (s_attempt_deadline_ms - step->timeout_ms));
+            timing.measured_ms = timing.total_ms - timing.cleanup_ms;
+            timing.budget_exceeded = timing.total_ms > step->timeout_ms;
+        }
         nrf_cs_trace_zephyr_result(step->attempt_id, (uint8_t)measurement->outcome, measurement->distance_mm,
-            measurement->confidence, (uint8_t)nrf_cs_pair_adapter_phase(&s_adapter));
+            measurement->confidence, (uint8_t)nrf_cs_pair_adapter_phase(&s_adapter), have_timing ? &timing : NULL);
     }
     runtime_emit_rf_diagnostics(step);
     runtime_reset_ranging();
@@ -444,6 +459,12 @@ static nrf_cs_measurement_t estimate_measurement(void)
         s_de_report.distance_estimates[0].phase_slope, s_de_report.distance_estimates[0].rtt,
         s_de_report.distance_estimates[0].best);
 
+    /* CS-ESTIMATOR-01: record which estimate "best" came from, in the attempt record the ESP32 reads. */
+    measurement.provider_quality_flags |= nrf_cs_distance_method_flag(nrf_cs_distance_method_of(
+        nrf_cs_distance_mm_from_m(s_de_report.distance_estimates[0].ifft),
+        nrf_cs_distance_mm_from_m(s_de_report.distance_estimates[0].phase_slope),
+        nrf_cs_distance_mm_from_m(s_de_report.distance_estimates[0].rtt),
+        nrf_cs_distance_mm_from_m(s_de_report.distance_estimates[0].best)));
     if (s_realtime_ras) {
         measurement.provider_quality_flags |= NRF_CS_PROVIDER_QUALITY_REALTIME_RAS;
     }

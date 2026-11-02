@@ -255,7 +255,7 @@ static bool nrf_cs_summarize_samples(
     summary->distance_mm = nrf_cs_sorted_median(kept, kept_count);
     summary->confidence = (uint16_t)(kept_confidence_sum / kept_count);
     summary->spread_mm = count > 1U
-        ? (sigma > INT32_MAX ? INT32_MAX : (int32_t)sigma)
+        ? (sigma > INT32_MAX ? INT32_MAX : (int32_t)(sigma < NRF_CS_MIN_SPREAD_MM ? NRF_CS_MIN_SPREAD_MM : sigma))
         : 0;
     summary->rejected_samples = (uint8_t)(count - kept_count);
     return true;
@@ -271,6 +271,8 @@ static void nrf_cs_finalize_pair(nrf_cs_scheduler_t *scheduler, size_t pair_inde
     size_t sample_count = 0U;
     nrf_cs_sample_summary_t directions[2];
     size_t direction_count = 0U;
+    const uint8_t target = nrf_cs_samples_target(&scheduler->policy);
+    const size_t required = target < NRF_CS_MIN_SAMPLES_PER_DIRECTION ? target : NRF_CS_MIN_SAMPLES_PER_DIRECTION;
 
     for (size_t i = 0U; i < scheduler->execution_count; ++i) {
         const nrf_cs_execution_t *execution = &scheduler->executions[i];
@@ -301,6 +303,10 @@ static void nrf_cs_finalize_pair(nrf_cs_scheduler_t *scheduler, size_t pair_inde
             if (execution->last_failure == NRF_CS_FAILURE_DISCONNECTED) {
                 any_disconnect = true;
             }
+        }
+        if (scheduler->policy.full_rotation && execution->successes < required) {
+            any_failure = true;     /* too few samples to trust: this direction is left out of the pair */
+            continue;
         }
         for (size_t sample = 0U; sample < execution->successes; ++sample) {
             distances[sample_count] = scheduler->sample_distance_mm[i][sample];
@@ -362,7 +368,7 @@ static void nrf_cs_finalize_pair(nrf_cs_scheduler_t *scheduler, size_t pair_inde
             }
             return;
         }
-    } else if (sample_count > 0U) {
+    } else if (sample_count >= required && sample_count > 0U) {
         nrf_cs_sample_summary_t summary;
         if (!nrf_cs_summarize_samples(distances, confidences, sample_count, &summary)) {
             return;

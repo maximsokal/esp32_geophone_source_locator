@@ -63,12 +63,19 @@ void nrf_cs_trace_zephyr_timeout(uint32_t attempt_id, uint8_t phase, uint32_t bu
 }
 
 void nrf_cs_trace_zephyr_result(uint32_t attempt_id, uint8_t outcome, int32_t distance_mm,
-    uint16_t confidence, uint8_t phase)
+    uint16_t confidence, uint8_t phase, const nrf_cs_pair_adapter_timing_t *timing)
 {
     nrf_cs_trace_entry_t entry = {
         .kind = NRF_CS_TRACE_RESULT, .attempt_id = attempt_id, .label = nrf_cs_trace_outcome_name(outcome),
         .a = distance_mm, .b = (int32_t)confidence, .phase = phase,
     };
+    if (timing != NULL && timing->valid) {
+        entry.flags = NRF_CS_TRACE_FLAG_TIMING |
+            (timing->budget_exceeded ? NRF_CS_TRACE_FLAG_OVER_BUDGET : 0U) |
+            (timing->timeout_during_cleanup ? NRF_CS_TRACE_FLAG_TIMEOUT_IN_CLEANUP : 0U);
+        entry.c = (int32_t)timing->measured_ms;
+        entry.d = (int32_t)timing->cleanup_ms;
+    }
     push_locked(&entry);
 }
 
@@ -80,17 +87,11 @@ void nrf_cs_trace_zephyr_rf(uint32_t attempt_id, uint32_t signal_word, uint32_t 
     push_locked(&entry);
 }
 
-static int32_t metres_to_mm(float metres)
-{
-    if (!isfinite(metres) || metres < 0.0f || metres > 2000000.0f) return NRF_CS_TRACE_UNAVAILABLE;
-    return (int32_t)(metres * 1000.0f + 0.5f);
-}
-
 void nrf_cs_trace_zephyr_estimates(uint32_t attempt_id, float ifft_m, float phase_slope_m, float rtt_m, float best_m)
 {
     nrf_cs_trace_entry_t entry = {
-        .kind = NRF_CS_TRACE_ESTIMATES, .attempt_id = attempt_id, .a = metres_to_mm(ifft_m),
-        .b = metres_to_mm(phase_slope_m), .c = metres_to_mm(rtt_m), .d = metres_to_mm(best_m),
+        .kind = NRF_CS_TRACE_ESTIMATES, .attempt_id = attempt_id, .a = nrf_cs_distance_mm_from_m(ifft_m),
+        .b = nrf_cs_distance_mm_from_m(phase_slope_m), .c = nrf_cs_distance_mm_from_m(rtt_m), .d = nrf_cs_distance_mm_from_m(best_m),
     };
     push_locked(&entry);
 }
@@ -139,9 +140,9 @@ void nrf_cs_trace_zephyr_timeout(uint32_t attempt_id, uint8_t phase, uint32_t bu
 }
 
 void nrf_cs_trace_zephyr_result(uint32_t attempt_id, uint8_t outcome, int32_t distance_mm,
-    uint16_t confidence, uint8_t phase)
+    uint16_t confidence, uint8_t phase, const nrf_cs_pair_adapter_timing_t *timing)
 {
-    (void)attempt_id; (void)outcome; (void)distance_mm; (void)confidence; (void)phase;
+    (void)attempt_id; (void)outcome; (void)distance_mm; (void)confidence; (void)phase; (void)timing;
 }
 
 void nrf_cs_trace_zephyr_rf(uint32_t attempt_id, uint32_t signal_word, uint32_t quality_word)

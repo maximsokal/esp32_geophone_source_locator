@@ -158,6 +158,13 @@ void nrf_cs_cycle_record_from_measurement(
     uint8_t execution, uint8_t attempt, const nrf_cs_measurement_t *measurement, nrf_cs_cycle_record_t *record);
 void nrf_cs_cycle_record_to_measurement(const nrf_cs_cycle_record_t *record, nrf_cs_measurement_t *measurement);
 
+/*
+ * One log line (no newline) for an attempt record: "exec=3 attempt=2 outcome=SUCCESS dist_mm=6194 conf=755 method=ifft
+ * tone_ok=1 pbr=1 rtt=1". The method is the library estimate the distance was taken from (CS-ESTIMATOR-01); it is "none"
+ * for an attempt without a distance. Returns the length like snprintf, or -1 for a bad argument.
+ */
+int nrf_cs_cycle_record_describe(const nrf_cs_cycle_record_t *record, char *line, size_t capacity);
+
 #ifdef __cplusplus
 }
 #endif

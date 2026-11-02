@@ -1,5 +1,6 @@
 #include "app_pod_status_bridge.h"
 #include "app_pod_status_inventory_policy.h"
+#include "app_build_identity.h"
 #include "app_shutdown.h"
 #include "app_startup.h"
 #include "board_config.h"
@@ -119,6 +120,8 @@ void app_main(void)
         TAG,
         "ESP32 Geophone Source Locator"
     );
+    /* Not the ESP-IDF "App version" line above: that one stays stale across incremental builds (CS-IDENTITY-01). */
+    ESP_LOGI(TAG, "FW_IDENTITY %s", app_build_identity);
 
     app_startup_run();
 
