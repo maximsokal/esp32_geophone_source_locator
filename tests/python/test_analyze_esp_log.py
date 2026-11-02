@@ -314,3 +314,24 @@ def test_render_profile_and_memory_facts_are_reported_and_decide_no_gate():
     assert "8.7 chunks/frame (max 12), 12.3 ms/chunk (max 20.0), 2123 px/chunk, 5785 ns/px" in text
     assert "MEM_WATCH 35.0s: dma_free 6071 -> 175 (-5896), 31 tasks" in text
     assert "flash_cycles_per_read=190" in text
+
+
+def test_the_memory_probe_under_the_ui_is_grouped_by_whether_the_acquisition_ran():
+    # Bench logs: a flush chunk costs 5.8 ms idle and 14 ms during the acquisition; is the memory itself slower then?
+    live = (
+        "I (20000) UI_LVGL: UI_MEM_PROBE_LIVE acq=0 cpu_mhz=160 flash_cycles_per_read=330 psram_cycles_per_read=83 "
+        "internal_cycles_per_read=10 region_bytes=65536\n"
+        "I (30000) UI_LVGL: UI_MEM_PROBE_LIVE acq=1 cpu_mhz=160 flash_cycles_per_read=700 psram_cycles_per_read=150 "
+        "internal_cycles_per_read=12 region_bytes=65536\n"
+        "I (40000) UI_LVGL: UI_MEM_PROBE_LIVE acq=1 cpu_mhz=160 flash_cycles_per_read=820 psram_cycles_per_read=140 "
+        "internal_cycles_per_read=11 region_bytes=65536\n"
+        "I (2179) UI_LVGL: UI_MEM_PROBE cpu_mhz=160 flash_cycles_per_read=329 psram_cycles_per_read=83 "
+        "internal_cycles_per_read=10 region_bytes=131072\n"
+    )
+    report = analyzer.analyze_text(healthy_log() + live)
+    assert report.mem_probe["flash_cycles_per_read"] == "329"       # the boot line, not a live one
+    assert report.mem_probe_live == {"0": {"n": 1, "flash": 330, "psram": 83, "internal": 10},
+                                     "1": {"n": 2, "flash": 820, "psram": 150, "internal": 12}}
+    text = analyzer.format_report(report)
+    assert "acquisition on (2 windows, worst): rodata 820, psram 150, internal 12 cycles per read" in text
+    assert analyzer.analyze_text(healthy_log()).mem_probe_live == {}

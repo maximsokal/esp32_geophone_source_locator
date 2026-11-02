@@ -492,6 +492,9 @@ static double main_barometer_window_centre_mm(const double *values, size_t count
 {
     double sorted[MAIN_HEIGHT_REFERENCE_MAX_SAMPLES];
     double deviation[MAIN_HEIGHT_REFERENCE_MAX_SAMPLES];
+    /* Never empty (the median indexes count / 2 - 1) and never past the arrays; -O2 cannot prove either. */
+    if (values == NULL || count == 0U) return 0.0;
+    if (count > MAIN_HEIGHT_REFERENCE_MAX_SAMPLES) count = MAIN_HEIGHT_REFERENCE_MAX_SAMPLES;
     for (size_t i = 0U; i < count; ++i) sorted[i] = values[i];
     for (size_t i = 1U; i < count; ++i) {
         const double key = sorted[i];

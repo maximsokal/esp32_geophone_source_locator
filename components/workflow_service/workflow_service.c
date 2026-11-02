@@ -261,11 +261,23 @@ static BaseType_t workflow_service_receive_async(workflow_async_command_t *item)
     return received;
 }
 
+/*
+ * MEASURING RUN of the time budget of one pair (bench logs 2026-11-02 12:55 MAIN and 12:57 REMOTE, UART `cs:` trace):
+ * with 500 ms per attempt all 18 of 18 attempts were cut in SECURING. The radio needed 171..484 ms (median 255) only
+ * to connect (passive scan for the reflector's advertising, then the connection), so the security procedure had
+ * 16..329 ms and never reached SECURITY_READY; no later stage (MTU, RAS discovery, CS configuration, the procedure
+ * itself) was ever reached, so their times are unknown. One attempt per pair with a budget far above any of them
+ * shows every stage's time in the trace; the production budget is then set from the longest stage times measured
+ * (plus margin), not guessed. One sample per pair and one attempt keep the run at about a minute (the slot of an
+ * execution is GO skew + (samples + attempts - 1) * (budget + gap) and the 12 slots run one after another).
+ */
+#define WORKFLOW_RANGING_PAIR_BUDGET_MS 4000U
+
 static const nrf_cs_policy_t s_workflow_ranging_policy = {
-    .pair_timeout_ms = 500U,
-    .max_attempts = 3U,
+    .pair_timeout_ms = WORKFLOW_RANGING_PAIR_BUDGET_MS,
+    .max_attempts = 1U,
     .min_confidence = 500U,
-    .samples_per_pair = 3U,
+    .samples_per_pair = 1U,
     .full_rotation = true,
 };
 

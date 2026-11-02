@@ -68,15 +68,19 @@ static esp_err_t ui_lvgl_drain_panel_io_locked(void);
 #define UI_MEM_PROBE_FLASH_PSRAM_BYTES 131072U
 #define UI_MEM_PROBE_INTERNAL_BYTES 16384U
 #define UI_MEM_PROBE_PASSES 3U
+/* The probe repeated while the UI runs: smaller (about 3 ms in the LVGL task) and one pass, no more. */
+#define UI_MEM_PROBE_LIVE_FLASH_PSRAM_BYTES 65536U
+#define UI_MEM_PROBE_LIVE_INTERNAL_BYTES 8192U
+#define UI_MEM_PROBE_LIVE_PASSES 1U
 
 extern const uint8_t _rodata_start[];
 extern const uint8_t _rodata_end[];
 static volatile uint32_t s_mem_probe_sink;
 
-static uint32_t ui_lvgl_probe_cycles_per_read(const volatile uint8_t *base, size_t bytes)
+static uint32_t ui_lvgl_probe_cycles_per_read(const volatile uint8_t *base, size_t bytes, unsigned passes)
 {
     uint32_t best = UINT32_MAX;
-    for (unsigned pass = 0U; pass < UI_MEM_PROBE_PASSES; ++pass) {
+    for (unsigned pass = 0U; pass < passes; ++pass) {
         uint32_t sum = 0U;
         const uint32_t started = esp_cpu_get_cycle_count();
         for (size_t offset = 0U; offset < bytes; offset += UI_MEM_PROBE_STRIDE_BYTES) sum += base[offset];
@@ -87,38 +91,61 @@ static uint32_t ui_lvgl_probe_cycles_per_read(const volatile uint8_t *base, size
     return best / (uint32_t)(bytes / UI_MEM_PROBE_STRIDE_BYTES);
 }
 
-static void ui_lvgl_log_memory_speed(void)
+/*
+ * `live` says the probe runs with the UI up: the same reads as at boot, repeated while the acquisition does or does not
+ * run, which shows whether the AD7606 path slows the memory the LVGL task depends on (bench log 2026-11-02: a flush
+ * chunk costs 5.8 ms idle and 14 ms during the acquisition). `flash_cycles_per_read` reads the read-only data of the
+ * firmware, which sits in flash or, with CONFIG_SPIRAM_RODATA, in PSRAM (`rodata_in`).
+ */
+static void ui_lvgl_log_memory_speed(bool live, bool acquisition_running)
 {
     uint32_t cpu_hz = 0U;
     (void)esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU, ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &cpu_hz);
 
+    const size_t region_bytes = live ? UI_MEM_PROBE_LIVE_FLASH_PSRAM_BYTES : UI_MEM_PROBE_FLASH_PSRAM_BYTES;
+    const size_t internal_bytes = live ? UI_MEM_PROBE_LIVE_INTERNAL_BYTES : UI_MEM_PROBE_INTERNAL_BYTES;
+    const unsigned passes = live ? UI_MEM_PROBE_LIVE_PASSES : UI_MEM_PROBE_PASSES;
     const size_t rodata_bytes = (size_t)(_rodata_end - _rodata_start);
-    const size_t flash_bytes = rodata_bytes < UI_MEM_PROBE_FLASH_PSRAM_BYTES ? rodata_bytes : UI_MEM_PROBE_FLASH_PSRAM_BYTES;
-    uint8_t *psram = heap_caps_malloc(UI_MEM_PROBE_FLASH_PSRAM_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    uint8_t *internal = heap_caps_malloc(UI_MEM_PROBE_INTERNAL_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (psram != NULL) memset(psram, 0x5A, UI_MEM_PROBE_FLASH_PSRAM_BYTES);
-    if (internal != NULL) memset(internal, 0x5A, UI_MEM_PROBE_INTERNAL_BYTES);
+    const size_t flash_bytes = rodata_bytes < region_bytes ? rodata_bytes : region_bytes;
+    uint8_t *psram = heap_caps_malloc(region_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *internal = heap_caps_malloc(internal_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (psram != NULL) memset(psram, 0x5A, region_bytes);
+    if (internal != NULL) memset(internal, 0x5A, internal_bytes);
 
+#ifdef CONFIG_SPIRAM_RODATA
+    const char *rodata_in = "psram";
+#else
+    const char *rodata_in = "flash";
+#endif
     ESP_LOGI(
         TAG,
-        "UI_MEM_PROBE cpu_mhz=%u icache_bytes=%u flash_mode=%s flash_mhz=%s psram_mhz=%u flash_cycles_per_read=%d psram_cycles_per_read=%d internal_cycles_per_read=%d region_bytes=%u",
+        "%s acq=%d cpu_mhz=%u icache_bytes=%u flash_mode=%s flash_mhz=%s psram_mhz=%u rodata_in=%s flash_cycles_per_read=%d psram_cycles_per_read=%d internal_cycles_per_read=%d region_bytes=%u",
+        live ? "UI_MEM_PROBE_LIVE" : "UI_MEM_PROBE",
+        acquisition_running ? 1 : 0,
         (unsigned)(cpu_hz / 1000000U),
         (unsigned)CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE,
         CONFIG_ESPTOOLPY_FLASHMODE,
         CONFIG_ESPTOOLPY_FLASHFREQ,
         (unsigned)CONFIG_SPIRAM_SPEED,
+        rodata_in,
         flash_bytes >= UI_MEM_PROBE_STRIDE_BYTES
-            ? (int)ui_lvgl_probe_cycles_per_read(_rodata_start, flash_bytes) : -1,
-        psram != NULL ? (int)ui_lvgl_probe_cycles_per_read(psram, UI_MEM_PROBE_FLASH_PSRAM_BYTES) : -1,
-        internal != NULL ? (int)ui_lvgl_probe_cycles_per_read(internal, UI_MEM_PROBE_INTERNAL_BYTES) : -1,
+            ? (int)ui_lvgl_probe_cycles_per_read(_rodata_start, flash_bytes, passes) : -1,
+        psram != NULL ? (int)ui_lvgl_probe_cycles_per_read(psram, region_bytes, passes) : -1,
+        internal != NULL ? (int)ui_lvgl_probe_cycles_per_read(internal, internal_bytes, passes) : -1,
         (unsigned)flash_bytes
     );
     heap_caps_free(psram);
     heap_caps_free(internal);
 }
+
+void ui_lvgl_log_memory_speed_live(bool acquisition_running)
+{
+    ui_lvgl_log_memory_speed(true, acquisition_running);
+}
 #else
 /* The native render and wait fixtures have no flash cache or PSRAM to probe. */
-static void ui_lvgl_log_memory_speed(void) {}
+static void ui_lvgl_log_memory_speed(bool live, bool acquisition_running) { (void)live; (void)acquisition_running; }
+void ui_lvgl_log_memory_speed_live(bool acquisition_running) { (void)acquisition_running; }
 #endif
 
 static void ui_lvgl_perf_event(lv_event_t *event)
@@ -291,6 +318,14 @@ esp_err_t ui_lvgl_init(void)
     port_config.task_max_sleep_ms =
         250;
 
+    /*
+     * The port ticks LVGL from an esp_timer callback (default every 5 ms, 200 wakeups a second at priority 22, each one
+     * running cold code), and the esp_timer task held 15 % of core 0 on the bench (log 2026-11-02 13:00). LVGL here
+     * redraws at 4..24 frames a second and animates nothing, so a 10 ms tick is plenty.
+     */
+    port_config.timer_period_ms =
+        10;
+
     esp_err_t err =
         lvgl_port_init(
             &port_config
@@ -395,7 +430,7 @@ esp_err_t ui_lvgl_init(void)
         (unsigned)(DISPLAY_WIDTH * UI_PERF_FLUSH_CHUNK_ROWS * sizeof(uint16_t))
     );
 
-    ui_lvgl_log_memory_speed();
+    ui_lvgl_log_memory_speed(false, false);
 
     return ESP_OK;
 }

@@ -181,6 +181,8 @@ ui_context_t *ui_context(void);
 
 /* LVGL/esp_lcd bridge lifecycle. */
 esp_err_t ui_lvgl_init(void);
+/* The memory-speed probe (UI_MEM_PROBE_LIVE) repeated while the UI runs; ~3 ms, call it from the LVGL task. */
+void ui_lvgl_log_memory_speed_live(bool acquisition_running);
 void ui_lvgl_deinit(void);
 
 

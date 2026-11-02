@@ -90,6 +90,7 @@ class Report:
     # Facts for the render and memory questions; they decide no gate.
     render_profile: dict[str, int] = field(default_factory=dict)
     mem_probe: dict[str, str] = field(default_factory=dict)
+    mem_probe_live: dict[str, dict[str, int]] = field(default_factory=dict)   # by acq=0/1: the probe under the running UI
     mem_watch: list[dict[str, int]] = field(default_factory=list)
 
     def gate_status(self, gate: str) -> str:
@@ -448,9 +449,27 @@ def _render_profile(entries: list[Entry]) -> dict[str, int]:
 
 def _mem_probe(entries: list[Entry]) -> dict[str, str]:
     for e in entries:
-        if e.tag == "UI_LVGL" and e.message.startswith("UI_MEM_PROBE"):
+        if e.tag == "UI_LVGL" and e.message.startswith("UI_MEM_PROBE "):
             return dict(re.findall(r"(\w+)=(\S+)", e.message))
     return {}
+
+
+def _mem_probe_live(entries: list[Entry]) -> dict[str, dict[str, int]]:
+    """The probe repeated while the UI runs, grouped by whether the acquisition ran: n and the largest read cost seen."""
+    groups: dict[str, dict[str, int]] = {}
+    for e in entries:
+        if e.tag != "UI_LVGL" or not e.message.startswith("UI_MEM_PROBE_LIVE "):
+            continue
+        fields = dict(re.findall(r"(\w+)=(\S+)", e.message))
+        try:
+            group = groups.setdefault(fields["acq"], {"n": 0, "flash": 0, "psram": 0, "internal": 0})
+            group["n"] += 1
+            for key, name in (("flash", "flash_cycles_per_read"), ("psram", "psram_cycles_per_read"),
+                              ("internal", "internal_cycles_per_read")):
+                group[key] = max(group[key], int(fields[name]))
+        except (KeyError, ValueError):
+            continue
+    return groups
 
 
 def _mem_watch(entries: list[Entry]) -> list[dict[str, int]]:
@@ -484,6 +503,7 @@ def analyze_text(text: str, path: str = "<memory>", *, min_fps_ratio: float = DE
     report.findings.append(_gate_g9(entries))
     report.render_profile = _render_profile(entries)
     report.mem_probe = _mem_probe(entries)
+    report.mem_probe_live = _mem_probe_live(entries)
     report.mem_watch = _mem_watch(entries)
     report.adc_words = _adc_words(entries, report.windows)
     report.adc_rate_channels = _adc_rate_channels(entries, report.windows)
@@ -516,6 +536,9 @@ def format_report(report: Report) -> str:
             f"{p['pixels_per_chunk']} px/chunk, {p['draw_ns_per_pixel']} ns/px, scene objects {p['scene_objects_max']}")
     if report.mem_probe:
         lines.append("   info memory probe (UI_MEM_PROBE): " + " ".join(f"{k}={v}" for k, v in report.mem_probe.items()))
+    for acq, group in sorted(report.mem_probe_live.items()):
+        lines.append(f"   info memory probe under the UI, acquisition {'on' if acq == '1' else 'off'} ({group['n']} windows, "
+                     f"worst): rodata {group['flash']}, psram {group['psram']}, internal {group['internal']} cycles per read")
     for event in report.mem_watch:
         lines.append(f"   info MEM_WATCH {event['t_ms'] / 1000:.1f}s: dma_free {event['from']} -> {event['to']} "
                      f"({event['to'] - event['from']:+d}), {event['tasks']} tasks")
@@ -547,7 +570,7 @@ def main(argv: list[str] | None = None) -> int:
             {"path": r.path, "windows": [asdict(w) for w in r.windows], "gates": r.gates(),
              "findings": [asdict(f) for f in r.findings], "adc_words": r.adc_words,
              "adc_rate_channels": r.adc_rate_channels, "render_profile": r.render_profile,
-             "mem_probe": r.mem_probe, "mem_watch": r.mem_watch}
+             "mem_probe": r.mem_probe, "mem_probe_live": r.mem_probe_live, "mem_watch": r.mem_watch}
             for r in reports], indent=2) + "\n", encoding="utf-8")
     codes = [r.exit_code() for r in reports]
     return 1 if 1 in codes else 0 if 0 in codes else 2

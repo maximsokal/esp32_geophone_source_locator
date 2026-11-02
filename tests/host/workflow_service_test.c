@@ -417,8 +417,9 @@ esp_err_t nrf_topology_service_ranging_start_autonomous_limited(const nrf_cs_pol
 esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *policy)
 {
     if (policy == NULL) return ESP_ERR_INVALID_ARG;
-    assert(policy->pair_timeout_ms == 500U && policy->max_attempts == 3U);
-    assert(policy->samples_per_pair == 3U && policy->full_rotation);
+    /* The measuring run of the pair time budget (see s_workflow_ranging_policy): one attempt, one sample, 4 s. */
+    assert(policy->pair_timeout_ms == 4000U && policy->max_attempts == 1U);
+    assert(policy->samples_per_pair == 1U && policy->full_rotation);
     memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
     s_ranging_progress.active = true;
     s_ranging_progress.started_at_ms = s_now_ms;

@@ -205,6 +205,7 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
                 (unsigned)profile.draw_ns_per_pixel,
                 (unsigned)ui_scene_object_count(lv_screen_active())
             );
+            ui_lvgl_log_memory_speed_live(acquisition_running);
         }
         ui_frame_scheduler_init(&s_frame_scheduler, now_us + UI_FRAME_MIN_PERIOD_US);
         s_perf_started_us = (int64_t)now_us;
