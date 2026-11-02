@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "nrf_cs_scheduler.h"
 
@@ -12,6 +13,7 @@ static nrf_cs_policy_t test_policy(uint8_t max_attempts)
     policy.min_confidence = 600U;
     policy.samples_per_pair = 1U;
     policy.full_rotation = false;
+    policy.relay_order = false;
     return policy;
 }
 
@@ -782,6 +784,110 @@ static void test_a_failed_attempt_ends_the_series_only_when_the_retry_budget_is_
     assert(pair.valid_samples == 18U);
 }
 
+/* Runs a whole cycle and records the directed executions in the order the scheduler hands them out. */
+static size_t relay_order_of(
+    const nrf_cs_node_id_t *nodes, size_t node_count, bool relay, nrf_cs_node_id_t *initiators,
+    nrf_cs_node_id_t *reflectors, uint8_t *pair_indexes, nrf_cs_pair_result_t *pairs_out)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_policy_t policy = test_policy(1U);
+    nrf_cs_step_t step;
+    size_t count = 0U;
+
+    policy.full_rotation = true;
+    policy.relay_order = relay;
+    assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, node_count) == NRF_CS_OK);
+    while (nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY) {
+        initiators[count] = step.initiator;
+        reflectors[count] = step.reflector;
+        pair_indexes[count] = step.pair_index;
+        ++count;
+        const nrf_cs_measurement_t measurement = success_measurement(1000, 900U);
+        assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &measurement) == NRF_CS_OK);
+    }
+    assert(nrf_cs_scheduler_is_complete(&scheduler));
+    for (size_t p = 0U; p < nrf_cs_scheduler_pair_count(&scheduler); ++p) pairs_out[p] = *nrf_cs_scheduler_pair_at(&scheduler, p);
+    return count;
+}
+
+/* Relay order: the reflector of one execution is the initiator of the next, so the node that has just been measured can
+ * start at once when the initiator lets go. An Eulerian circuit of the complete directed graph does that for any size. */
+static void test_relay_order_chains_every_execution_to_the_next(void)
+{
+    static const nrf_cs_node_id_t sets[4][5] = {
+        { 3U, 0U }, { 9U, 0U, 4U }, { 7U, 2U, 0U, 5U }, { 4U, 0U, 6U, 1U, 3U },
+    };
+    static const size_t counts[4] = { 2U, 3U, 4U, 5U };
+
+    for (size_t s = 0U; s < 4U; ++s) {
+        nrf_cs_node_id_t initiators[NRF_CS_MAX_EXECUTIONS], reflectors[NRF_CS_MAX_EXECUTIONS];
+        uint8_t pair_indexes[NRF_CS_MAX_EXECUTIONS];
+        nrf_cs_pair_result_t pairs[NRF_CS_MAX_PAIRS];
+        const size_t n = counts[s];
+        const size_t executions = relay_order_of(sets[s], n, true, initiators, reflectors, pair_indexes, pairs);
+
+        assert(executions == n * (n - 1U));
+        /* Every ordered pair of nodes exactly once. */
+        for (size_t a = 0U; a < n; ++a) {
+            for (size_t b = 0U; b < n; ++b) {
+                if (a == b) continue;
+                unsigned seen = 0U;
+                for (size_t e = 0U; e < executions; ++e) {
+                    if (initiators[e] == sets[s][a] && reflectors[e] == sets[s][b]) ++seen;
+                }
+                assert(seen == 1U);
+            }
+        }
+        /* The chain, and the circuit closes at the node it starts at: the smallest id, MAIN (0). */
+        for (size_t e = 0U; e + 1U < executions; ++e) assert(reflectors[e] == initiators[e + 1U]);
+        assert(initiators[0] == 0U && reflectors[executions - 1U] == 0U);
+        /* The pair index is the pair of the two nodes, whichever way they are ordered. */
+        for (size_t e = 0U; e < executions; ++e) {
+            const nrf_cs_pair_result_t *pair = &pairs[pair_indexes[e]];
+            assert((pair->node_a == initiators[e] && pair->node_b == reflectors[e]) ||
+                   (pair->node_a == reflectors[e] && pair->node_b == initiators[e]));
+        }
+        /* Every pair got both directions, so each is complete. */
+        for (size_t p = 0U; p < n * (n - 1U) / 2U; ++p) {
+            assert(pairs[p].state == NRF_CS_PAIR_VALID && !pairs[p].single_direction && pairs[p].valid_samples == 2U);
+        }
+        /* The order depends on the node set, not on the order the nodes were given in. */
+        nrf_cs_node_id_t shuffled[5];
+        for (size_t i = 0U; i < n; ++i) shuffled[i] = sets[s][n - 1U - i];
+        nrf_cs_node_id_t i2[NRF_CS_MAX_EXECUTIONS], r2[NRF_CS_MAX_EXECUTIONS];
+        uint8_t p2[NRF_CS_MAX_EXECUTIONS];
+        nrf_cs_pair_result_t pairs2[NRF_CS_MAX_PAIRS];
+        assert(relay_order_of(shuffled, n, true, i2, r2, p2, pairs2) == executions);
+        assert(memcmp(initiators, i2, executions) == 0 && memcmp(reflectors, r2, executions) == 0);
+        /* Each node initiates n - 1 times: nobody is measured more than the others. */
+        for (size_t a = 0U; a < n; ++a) {
+            unsigned initiated = 0U;
+            for (size_t e = 0U; e < executions; ++e) if (initiators[e] == sets[s][a]) ++initiated;
+            assert(initiated == n - 1U);
+        }
+    }
+
+    /* The three-node circuit written out: 0->1, 1->0 is not a chain start of a circuit; the algorithm gives this order. */
+    nrf_cs_node_id_t i3[6], r3[6];
+    uint8_t p3[6];
+    nrf_cs_pair_result_t pr3[3];
+    const nrf_cs_node_id_t three[] = { 0U, 1U, 2U };
+    assert(relay_order_of(three, 3U, true, i3, r3, p3, pr3) == 6U);
+    const nrf_cs_node_id_t expect_i[6] = { 0U, 1U, 0U, 2U, 1U, 2U };
+    const nrf_cs_node_id_t expect_r[6] = { 1U, 0U, 2U, 1U, 2U, 0U };
+    assert(memcmp(i3, expect_i, 6U) == 0 && memcmp(r3, expect_r, 6U) == 0);
+
+    /* Without the flag, or without the full rotation, the order stays as it was. */
+    nrf_cs_node_id_t ip[6], rp[6];
+    uint8_t pp[6];
+    nrf_cs_pair_result_t pr[3];
+    assert(relay_order_of(three, 3U, false, ip, rp, pp, pr) == 6U);
+    const nrf_cs_node_id_t pairwise_i[6] = { 0U, 1U, 0U, 2U, 1U, 2U };
+    const nrf_cs_node_id_t pairwise_r[6] = { 1U, 0U, 2U, 0U, 2U, 1U };
+    assert(memcmp(ip, pairwise_i, 6U) == 0 && memcmp(rp, pairwise_r, 6U) == 0);
+}
+
 static void test_abort_cycle_completes_pending_executions_with_timeout(void)
 {
     nrf_cs_scheduler_t scheduler;
@@ -834,6 +940,7 @@ int main(void)
     test_spread_never_claims_zero_for_several_samples();
     test_a_direction_with_too_few_samples_is_left_out();
     test_a_failed_attempt_ends_the_series_only_when_the_retry_budget_is_spent();
+    test_relay_order_chains_every_execution_to_the_next();
     test_abort_cycle_completes_pending_executions_with_timeout();
     return 0;
 }

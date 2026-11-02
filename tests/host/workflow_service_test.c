@@ -420,6 +420,7 @@ esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *p
     /* The pair time budget measured on the bench (see s_workflow_ranging_policy): 2.4 s, nine samples per direction, one spare try. */
     assert(policy->pair_timeout_ms == 2400U && policy->max_attempts == 2U);
     assert(policy->samples_per_pair == 9U && policy->full_rotation);
+    assert(policy->relay_order);       /* the chain order: the next execution starts when the previous one lets go */
     /* The ESP32 holds the I2C bus silent for the whole cycle and sensor_bus_quiet_begin() refuses more than
      * SENSOR_BUS_QUIET_MAX_MS (600000). The production network is MAIN + 4 nodes: 5 nodes, 20 directed executions. A longer
      * window per execution (more samples, a retry budget) that pushes this past the limit makes the cycle unstartable

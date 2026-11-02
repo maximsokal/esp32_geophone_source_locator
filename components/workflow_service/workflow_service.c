@@ -281,6 +281,10 @@ static BaseType_t workflow_service_receive_async(workflow_async_command_t *item)
  * allows with some margin: the I2C bus is silent for the whole cycle and sensor_bus_quiet_begin() refuses more than
  * 600000 ms. Slot 300 + 10 x 2550 = 25800 ms; 4 nodes (12 executions) 329 s, 5 nodes (20 executions) 537.5 s. Three
  * tries would leave 11 s on 5 nodes, four do not start at all.
+ * Those slots are the worst case, not the time the cycle takes: with relay_order the executions form a chain (each
+ * reflector is the next initiator), the initiator that finishes drops the link with a release reason, and the next one
+ * starts at once. The ESP32 stops waiting when MAIN, the last reflector, reports the end. A release that does not arrive
+ * only means that node waits for its slot.
  */
 #define WORKFLOW_RANGING_PAIR_BUDGET_MS 2400U
 
@@ -290,6 +294,8 @@ static const nrf_cs_policy_t s_workflow_ranging_policy = {
     .min_confidence = 500U,
     .samples_per_pair = 9U,
     .full_rotation = true,
+    /* Each execution starts as soon as the previous one lets go; the slots above are only the worst case. */
+    .relay_order = true,
 };
 
 static bool workflow_service_lock(void)

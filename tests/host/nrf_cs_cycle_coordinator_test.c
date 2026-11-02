@@ -58,6 +58,8 @@ static unsigned g_abort_after_polls;
 static unsigned g_abort_after_plan_writes;
 static nrf_cs_node_id_t g_main;
 static unsigned g_always_fail_mask; /* executions that never work */
+static uint64_t g_main_complete_seen_ms; /* when MAIN first answered a status read with COMPLETE */
+static bool g_relay_releases;       /* an initiator that ends its execution lets the reflector know (disconnect reason) */
 
 static uint64_t fake_now(void *context) { (void)context; return g_now; }
 
@@ -89,6 +91,8 @@ static nrf_cs_measurement_t scripted(unsigned execution, unsigned attempt)
 #endif
 }
 
+static sim_node_t *find(nrf_cs_node_id_t id);
+
 static void tick_nodes(void)
 {
     for (size_t n = 0U; n < g_node_count; ++n) {
@@ -104,8 +108,14 @@ static void tick_nodes(void)
         }
         if (sim->pending_measurement && g_now >= sim->complete_at_ms) {
             const nrf_cs_measurement_t outcome = scripted(sim->rt.window, sim->pending_step.attempt_number);
+            const uint8_t execution = sim->rt.window;
+            const bool final = g_relay_releases && nrf_cs_cycle_runtime_would_finish(&sim->rt, &outcome);
             assert(nrf_cs_cycle_runtime_step_done(&sim->rt, &sim->pending_step, &outcome) == 0);
             sim->pending_measurement = false;
+            if (final) {
+                sim_node_t *reflector = find(sim->rt.steps[execution].reflector);
+                if (reflector != NULL) nrf_cs_cycle_runtime_peer_released(&reflector->rt);
+            }
         }
     }
 }
@@ -220,6 +230,9 @@ static int fake_read(void *context, nrf_cs_node_id_t node, uint8_t *frame, size_
             status.state = NRF_CS_CYCLE_STATE_COMPLETE;
             status.pairs_done = status.pairs_total;
         }
+        if (node == g_main && status.state == NRF_CS_CYCLE_STATE_COMPLETE && g_main_complete_seen_ms == 0U) {
+            g_main_complete_seen_ms = g_now;
+        }
         assert(nrf_cs_cycle_encode_status(&status, frame) == 0);
         return 0;
     }
@@ -277,6 +290,8 @@ static void setup(size_t node_count, nrf_cs_node_id_t *ids)
     g_abort_after_polls = 0U;
     g_abort_after_plan_writes = 0U;
     g_always_fail_mask = 0U;
+    g_relay_releases = false;
+    g_main_complete_seen_ms = 0U;
     for (size_t n = 0U; n < node_count; ++n) {
         ids[n] = (nrf_cs_node_id_t)(10U * (n + 1U));
         g_nodes[n].id = ids[n];
@@ -405,6 +420,94 @@ static void test_happy_path_matches_live_scheduler(void)
     }
     /* Every node got a plan before anything was started. */
     for (size_t n = 0U; n < g_node_count; ++n) assert(g_nodes[n].plan_writes == 1U);
+}
+
+/* Relay: the same cycle, in the order where each reflector is the next initiator, ends when MAIN says so. */
+static void test_relay_cycle_ends_when_main_says_so_and_matches_the_live_scheduler(void)
+{
+    nrf_cs_scheduler_t scheduler, live;
+    nrf_cs_cycle_collected_t out;
+    nrf_cs_cycle_report_t report;
+    nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
+    nrf_cs_policy_t policy = k_policy;
+    policy.relay_order = true;
+
+    setup(4U, ids);
+    g_relay_releases = true;
+    g_ble_latency_ms = 300U;
+    g_always_fail_mask = 1U << 5;
+    start_scheduler(&scheduler, ids, 4U, &policy);
+    start_scheduler(&live, ids, 4U, &policy);
+
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 100U, &out, &report) == NRF_CS_COORD_OK);
+    assert(report.plan_mask == 0x0FU && report.go_mask == 0x0FU && report.collected_mask == 0x0FU);
+    assert(report.release_mask == 0x0FU);
+    assert(report.main_complete && report.relay_early);
+    assert(report.run_ms == 12U * 3550U);
+    /* 12 executions of about 3 x (300 + 150) ms instead of 12 slots of 3.55 s. */
+    assert(report.waited_ms < report.run_ms / 2U);
+    assert(report.waited_ms >= NRF_CS_COORD_RELAY_SETTLE_MS);
+    /* The results are read only a settle time after MAIN said it is over: the last initiator lets go a moment before it
+     * records its last attempt. */
+    assert(g_main_complete_seen_ms != 0U);
+    uint64_t first_read_ms = 0U;
+    for (size_t i = 0U; i < g_log_count && first_read_ms == 0U; ++i) {
+        if (g_log[i].is_write && g_log[i].type == NRF_CS_CYCLE_MESSAGE_RESULT_REQUEST && g_log[i].at_ms > last_go_end()) {
+            first_read_ms = g_log[i].at_ms;
+        }
+    }
+    assert(first_read_ms >= g_main_complete_seen_ms + NRF_CS_COORD_RELAY_SETTLE_MS);
+    assert(nrf_cs_cycle_replay(&scheduler, out.nodes, out.node_count) == 0);
+    run_live(&live);
+    assert(nrf_cs_scheduler_is_complete(&scheduler) && nrf_cs_scheduler_is_complete(&live));
+    assert_same_pairs(&scheduler, &live);
+    for (size_t n = 0U; n < g_node_count; ++n) assert(!nrf_cs_cycle_runtime_reply_active(&g_nodes[n].rt));
+}
+
+/* No release arrives (old firmware, lost disconnect): the plan still runs on its slots and is collected only after them. */
+static void test_relay_plan_without_releases_waits_for_the_slots(void)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_cycle_collected_t out;
+    nrf_cs_cycle_report_t report;
+    nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
+    nrf_cs_policy_t policy = k_policy;
+    policy.relay_order = true;
+
+    setup(4U, ids);
+    g_relay_releases = false;
+    g_ble_latency_ms = 300U;
+    start_scheduler(&scheduler, ids, 4U, &policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 100U, &out, &report) == NRF_CS_COORD_OK);
+    assert(!report.relay_early && report.collected_mask == 0x0FU);
+    assert(report.waited_ms >= report.run_ms);
+}
+
+/* Asking a node other than the one the circuit ends at proves nothing about the whole cycle: nothing is believed early. */
+static void test_early_answer_is_not_believed_from_a_node_that_does_not_end_the_cycle(void)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_cycle_collected_t out;
+    nrf_cs_cycle_report_t report;
+    nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
+    nrf_cs_policy_t policy = k_policy;
+    policy.relay_order = true;
+
+    setup(4U, ids);
+    g_relay_releases = true;
+    g_ble_latency_ms = 300U;
+    start_scheduler(&scheduler, ids, 4U, &policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, ids[1], 100U, &out, &report) == NRF_CS_COORD_OK);
+    assert(!report.relay_early);
+    assert(report.waited_ms >= report.run_ms);
+
+    /* The pair-by-pair order is no chain either: the old rule holds. */
+    setup(4U, ids);
+    g_relay_releases = true;
+    g_ble_latency_ms = 300U;
+    start_scheduler(&scheduler, ids, 4U, &k_policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 100U, &out, &report) == NRF_CS_COORD_OK);
+    assert(!report.relay_early && report.waited_ms >= report.run_ms);
 }
 
 static void test_bus_is_silent_while_nodes_range(void)
@@ -838,6 +941,9 @@ int main(void)
     for (size_t i = 0U; i < sizeof(rates) / sizeof(rates[0]); ++i) {
         g_bus_hz = rates[i];
         test_happy_path_matches_live_scheduler();
+        test_relay_cycle_ends_when_main_says_so_and_matches_the_live_scheduler();
+        test_relay_plan_without_releases_waits_for_the_slots();
+        test_early_answer_is_not_believed_from_a_node_that_does_not_end_the_cycle();
         test_bus_is_silent_while_nodes_range();
         test_early_main_completion_keeps_bus_quiet_until_all_windows_end();
         test_flaky_result_reads_are_retried();

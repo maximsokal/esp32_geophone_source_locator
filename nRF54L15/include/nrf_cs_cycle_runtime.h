@@ -30,6 +30,16 @@ extern "C" {
 #define NRF_CS_CYCLE_ATTEMPT_GAP_MS 150U
 /* GO reaches the nodes one after another; the first attempt of a window waits this long. */
 #define NRF_CS_CYCLE_GO_SKEW_MS 300U
+/*
+ * Relay (plan order from nrf_cs_policy_t.relay_order): the reflector of execution e is the initiator of e + 1. The
+ * initiator that finishes its execution disconnects with this reason instead of the ordinary one; the node on the other
+ * end then knows its turn has come and starts after RELAY_SETTLE_MS instead of waiting for its time slot. The reason is
+ * HCI "remote device terminated the connection due to power off", one of the few a Disconnect command may carry; here it
+ * only means "that was my last attempt of this execution". A release that never comes costs nothing but time: the node
+ * starts at its slot as before.
+ */
+#define NRF_CS_CYCLE_RELEASE_REASON 0x15U
+#define NRF_CS_CYCLE_RELAY_SETTLE_MS 150U
 /* Time after the last window before the ESP32 may stop waiting. */
 #define NRF_CS_CYCLE_TOTAL_MARGIN_MS 3000U
 /* The BLE side was busy when an attempt was due; try again after this long (not a failed attempt). */
@@ -93,6 +103,13 @@ typedef struct {
     uint32_t next_attempt_id;
     nrf_cs_step_t active_step;
 
+    /* Relay (see NRF_CS_CYCLE_RELEASE_REASON); all zero when the plan is not a chain. */
+    bool relay;                 /* every execution starts at the node the previous one measured */
+    uint8_t last_role;          /* last execution this node takes part in, either way; 0xFF if none */
+    uint32_t released_mask;     /* bit e: as reflector of e this node saw the initiator let go */
+    uint32_t closed_mask;       /* bit e: this node's own execution e is over */
+    uint64_t window_deadline_ms;
+
     uint16_t record_count;
     nrf_cs_cycle_record_t records[NRF_CS_CYCLE_MAX_RECORDS];
 } nrf_cs_cycle_runtime_t;
@@ -125,6 +142,19 @@ void nrf_cs_cycle_runtime_start_result(nrf_cs_cycle_runtime_t *rt, const nrf_cs_
 
 /* Outcome of the attempt started through ops->execute. Stale tokens are ignored (-1). */
 int nrf_cs_cycle_runtime_step_done(nrf_cs_cycle_runtime_t *rt, const nrf_cs_step_t *step, const nrf_cs_measurement_t *measurement);
+
+/*
+ * The initiator that was connected to this node disconnected with NRF_CS_CYCLE_RELEASE_REASON: the execution this node
+ * was the reflector of is over. Safe to call at any time; ignored when no cycle runs or it is not a relay plan.
+ */
+void nrf_cs_cycle_runtime_peer_released(nrf_cs_cycle_runtime_t *rt);
+
+/*
+ * Whether the attempt that is running now ends the execution if it finishes with `measurement` (the same stop rule as
+ * finish_attempt, plus "no room left in the window for another attempt"). The caller uses it to pick the disconnect
+ * reason; it never says true when more attempts will follow.
+ */
+bool nrf_cs_cycle_runtime_would_finish(const nrf_cs_cycle_runtime_t *rt, const nrf_cs_measurement_t *measurement);
 
 /* Stop a running cycle (state becomes FAILED with the given reason). */
 void nrf_cs_cycle_runtime_abort(nrf_cs_cycle_runtime_t *rt, uint8_t failure);

@@ -579,6 +579,22 @@ static void cycle_step_done(const nrf_cs_step_t *step, const nrf_cs_measurement_
     if (have_record) cs_log_measurement(step, &recorded);
 }
 
+/* Relay hooks for the Bluetooth side (see nrf_cs_pair_runtime_zephyr.h). */
+static bool cycle_final_hint(const nrf_cs_measurement_t *measurement)
+{
+    k_spinlock_key_t key = k_spin_lock(&s_cycle_lock);
+    const bool final = nrf_cs_cycle_runtime_would_finish(&s_cycle, measurement);
+    k_spin_unlock(&s_cycle_lock, key);
+    return final;
+}
+
+static void cycle_peer_released(void)
+{
+    k_spinlock_key_t key = k_spin_lock(&s_cycle_lock);
+    nrf_cs_cycle_runtime_peer_released(&s_cycle);
+    k_spin_unlock(&s_cycle_lock, key);
+}
+
 void nrf_bootstrap_runtime_zephyr_cs_cycle_tick(void)
 {
     nrf_cs_step_t step;
@@ -959,6 +975,7 @@ int nrf_bootstrap_runtime_zephyr_start(nrf_node_state_t *node_state)
         nrf_cs_cycle_runtime_init(&s_cycle,&cycle_ops);
         k_spin_unlock(&s_cycle_lock,cycle_key);
         s_cycle_reply_selected=false;
+        nrf_cs_pair_runtime_zephyr_set_relay_hooks(cycle_final_hint, cycle_peer_released);
     }
     k_msgq_purge(&s_assign_queue);k_msgq_purge(&s_cs_execute_queue);s_assign_sequence=0U;s_cs_execute_sequence=0U;
     s_assign_activation_retry_pending = false;

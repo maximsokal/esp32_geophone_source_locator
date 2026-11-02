@@ -8,6 +8,7 @@
 #include <math.h>
 #include "nrf_cs_measurement_quality.h"
 #include "nrf_cs_distance_method.h"
+#include "nrf_cs_cycle_runtime.h"
 #include "nrf_cs_pair_runtime_zephyr_bridge.h"
 #include "nrf_cs_pair_runtime_zephyr.h"
 #include "nrf_log_events.h"
@@ -81,6 +82,8 @@ struct bt_conn { int unused; };
 struct k_work { int unused; };
 struct k_work_delayable { struct k_work work; };
 #include "production_types.inc"
+static nrf_cs_pair_runtime_final_hint_cb_t s_relay_final_hint_cb;
+static nrf_cs_pair_runtime_released_cb_t s_relay_released_cb;
 
 static nrf_cs_pair_adapter_t s_adapter;
 static nrf_cs_step_t s_timeout_step;

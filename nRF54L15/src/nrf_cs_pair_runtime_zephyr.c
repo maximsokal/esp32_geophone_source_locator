@@ -34,10 +34,21 @@
 #include <zephyr/sys/util.h>
 
 #include "nrf_cs_pair_adapter.h"
+#include "nrf_cs_cycle_runtime.h"
 #include "nrf_cs_event_overflow.h"
 #include "nrf_log_events.h"
 #include "nrf_log_runtime_zephyr.h"
 #include "nrf_watchdog_zephyr.h"
+
+static nrf_cs_pair_runtime_final_hint_cb_t s_relay_final_hint_cb;
+static nrf_cs_pair_runtime_released_cb_t s_relay_released_cb;
+
+void nrf_cs_pair_runtime_zephyr_set_relay_hooks(
+    nrf_cs_pair_runtime_final_hint_cb_t final_hint, nrf_cs_pair_runtime_released_cb_t released)
+{
+    s_relay_final_hint_cb = final_hint;
+    s_relay_released_cb = released;
+}
 
 #include "nrf_cs_pair_runtime_zephyr_impl_1.inc"
 #include "nrf_cs_pair_runtime_zephyr_impl_2.inc"
@@ -70,6 +81,13 @@ int nrf_cs_pair_runtime_zephyr_execute(
     (void)complete_cb;
     (void)context;
     return -ENOTSUP;
+}
+
+void nrf_cs_pair_runtime_zephyr_set_relay_hooks(
+    nrf_cs_pair_runtime_final_hint_cb_t final_hint, nrf_cs_pair_runtime_released_cb_t released)
+{
+    (void)final_hint;
+    (void)released;
 }
 
 bool nrf_cs_pair_runtime_zephyr_is_busy(void)

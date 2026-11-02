@@ -93,8 +93,29 @@ int nrf_cs_cycle_runtime_go(nrf_cs_cycle_runtime_t *rt, const nrf_cs_cycle_go_t 
     rt->window = WINDOW_NONE;
     rt->record_count = 0U;
     rt->failure = NRF_CS_CYCLE_FAILURE_NONE;
+    rt->released_mask = 0U;
+    rt->closed_mask = 0U;
+    rt->last_role = WINDOW_NONE;
+    rt->relay = rt->step_count >= 2U;
+    for (uint8_t e = 0U; e < rt->step_count; ++e) {
+        if (rt->steps[e].initiator == rt->local_node || rt->steps[e].reflector == rt->local_node) rt->last_role = e;
+        if (e > 0U && rt->steps[e].initiator != rt->steps[e - 1U].reflector) rt->relay = false;
+    }
     rt->state = NRF_CS_CYCLE_STATE_RUNNING;
     return 0;
+}
+
+static uint32_t bit_of(uint8_t execution)
+{
+    return UINT32_C(1) << execution;
+}
+
+/* The window the node owns is over (its execution finished, ran out of room, or was cut): remember it. */
+static void mark_closed(nrf_cs_cycle_runtime_t *rt)
+{
+    if (rt->window != WINDOW_NONE && rt->steps[rt->window].initiator == rt->local_node) {
+        rt->closed_mask |= bit_of(rt->window);
+    }
 }
 
 static void add_record(nrf_cs_cycle_runtime_t *rt, uint8_t attempt, const nrf_cs_measurement_t *measurement)
@@ -118,11 +139,25 @@ static void finish_attempt(nrf_cs_cycle_runtime_t *rt, const nrf_cs_measurement_
     if (rt->successes >= rt->samples_per_pair ||
         (uint8_t)(rt->attempts - rt->successes) >= rt->max_attempts) {
         rt->execution_done = true;
+        mark_closed(rt);
     }
+}
+
+bool nrf_cs_cycle_runtime_would_finish(const nrf_cs_cycle_runtime_t *rt, const nrf_cs_measurement_t *measurement)
+{
+    if (rt == NULL || measurement == NULL || rt->state != NRF_CS_CYCLE_STATE_RUNNING || !rt->attempt_active) return false;
+    const bool accepted = measurement->outcome == NRF_CS_OUTCOME_SUCCESS && measurement->confidence >= rt->min_confidence;
+    const unsigned attempts = (unsigned)rt->attempts + 1U;
+    const unsigned successes = (unsigned)rt->successes + (accepted ? 1U : 0U);
+    if (successes >= rt->samples_per_pair || attempts - successes >= rt->max_attempts) return true;
+    /* The next attempt cannot start earlier than this, so if it does not fit now it never will. */
+    const uint64_t ready = now_ms(rt) + NRF_CS_CYCLE_ATTEMPT_GAP_MS;
+    return rt->window_deadline_ms < ready || rt->window_deadline_ms - ready < rt->pair_timeout_ms;
 }
 
 static void close_window(nrf_cs_cycle_runtime_t *rt)
 {
+    mark_closed(rt);
     if (rt->attempt_active) {
         rt->start_pending = false; /* an attempt that was never taken counts as timed out too */
         if (rt->ops.abort_attempt != NULL) rt->ops.abort_attempt(rt->ops.context);
@@ -132,16 +167,44 @@ static void close_window(nrf_cs_cycle_runtime_t *rt)
     }
 }
 
-static void open_window(nrf_cs_cycle_runtime_t *rt, uint8_t window)
+static void open_window(nrf_cs_cycle_runtime_t *rt, uint8_t window, uint64_t ready_ms)
 {
     rt->window = window;
+    rt->window_deadline_ms = rt->t0_ms + ((uint64_t)window + 1U) * rt->window_ms;
     rt->execution_done = false;
     rt->attempt_active = false;
     rt->start_pending = false;
     rt->window_exhausted = false;
     rt->attempts = 0U;
     rt->successes = 0U;
-    rt->attempt_ready_ms = 0U;
+    rt->attempt_ready_ms = ready_ms;
+}
+
+/* All of this node's own executions are over and it has no reflector duty left: nothing more to do in this cycle. */
+static bool duties_over(const nrf_cs_cycle_runtime_t *rt)
+{
+    if (!rt->relay || rt->last_role == WINDOW_NONE) return false;
+    for (uint8_t e = 0U; e < rt->step_count; ++e) {
+        if (rt->steps[e].initiator == rt->local_node && (rt->closed_mask & bit_of(e)) == 0U) return false;
+    }
+    return rt->steps[rt->last_role].initiator == rt->local_node || (rt->released_mask & bit_of(rt->last_role)) != 0U;
+}
+
+void nrf_cs_cycle_runtime_peer_released(nrf_cs_cycle_runtime_t *rt)
+{
+    if (rt == NULL || rt->state != NRF_CS_CYCLE_STATE_RUNNING || !rt->relay) return;
+    /* The chain is linear: the execution being served is the first reflector duty not yet released, from the window
+     * this node has reached on (a duty before it was passed over by time and its release was lost). */
+    for (uint8_t e = rt->window == WINDOW_NONE ? 0U : rt->window; e < rt->step_count; ++e) {
+        if (rt->steps[e].reflector != rt->local_node || (rt->released_mask & bit_of(e)) != 0U) continue;
+        rt->released_mask |= bit_of(e);
+        /* Its own window may already be open and waiting for the slot's start: shorten the wait. */
+        const uint64_t ready = now_ms(rt) + NRF_CS_CYCLE_RELAY_SETTLE_MS;
+        if ((uint8_t)(e + 1U) == rt->window && rt->attempts == 0U && !rt->attempt_active && ready < rt->attempt_ready_ms) {
+            rt->attempt_ready_ms = ready;
+        }
+        return;
+    }
 }
 
 static void start_attempt(nrf_cs_cycle_runtime_t *rt)
@@ -199,25 +262,48 @@ void nrf_cs_cycle_runtime_tick(nrf_cs_cycle_runtime_t *rt)
 
     const uint64_t elapsed = now >= rt->t0_ms ? now - rt->t0_ms : 0U;
 
+    /* Relay: everything this node had to do is done before the last slot ends. */
+    if (!rt->attempt_active && duties_over(rt)) {
+        if (rt->window != WINDOW_NONE) close_window(rt);
+        rt->finished_ms = now;
+        rt->state = NRF_CS_CYCLE_STATE_COMPLETE;
+        return;
+    }
     if (elapsed >= rt->run_ms) {
         if (rt->window != WINDOW_NONE) close_window(rt);
         rt->finished_ms = now;
         rt->state = NRF_CS_CYCLE_STATE_COMPLETE;
         return;
     }
-    const uint8_t window = (uint8_t)(elapsed / rt->window_ms);
+    uint8_t window = (uint8_t)(elapsed / rt->window_ms);
+    bool early = false;
+    if (rt->relay) {
+        /* The initiator before us let go: our execution may start now, ahead of its slot. */
+        for (uint8_t e = (uint8_t)(window + 1U); e < rt->step_count; ++e) {
+            if (rt->steps[e].initiator == rt->local_node && (rt->closed_mask & bit_of(e)) == 0U &&
+                (rt->released_mask & bit_of((uint8_t)(e - 1U))) != 0U) {
+                window = e;
+                early = true;
+            }
+        }
+    }
+    if (rt->window != WINDOW_NONE && window < rt->window) window = rt->window; /* never go back */
     if (window != rt->window) {
+        const uint64_t slot_ready = rt->t0_ms + (uint64_t)window * rt->window_ms + NRF_CS_CYCLE_GO_SKEW_MS;
+        const uint64_t relay_ready = now + NRF_CS_CYCLE_RELAY_SETTLE_MS;
+        const bool released = window > 0U && rt->steps[window].initiator == rt->local_node &&
+            (rt->released_mask & bit_of((uint8_t)(window - 1U))) != 0U;
         if (rt->window != WINDOW_NONE) close_window(rt);
-        open_window(rt, window);
+        open_window(rt, window, (early || released) && relay_ready < slot_ready ? relay_ready : slot_ready);
     }
     if (rt->steps[window].initiator != rt->local_node || rt->execution_done || rt->attempt_active ||
         rt->window_exhausted) {
         return;
     }
-    const uint32_t offset = (uint32_t)(elapsed - (uint64_t)window * rt->window_ms);
-    if (offset < NRF_CS_CYCLE_GO_SKEW_MS || now < rt->attempt_ready_ms) return;
-    if (rt->window_ms - offset < rt->pair_timeout_ms) {
+    if (now < rt->attempt_ready_ms) return;
+    if (rt->window_deadline_ms < now || rt->window_deadline_ms - now < rt->pair_timeout_ms) {
         rt->window_exhausted = true; /* no room for another full attempt */
+        mark_closed(rt);
         return;
     }
     start_attempt(rt);

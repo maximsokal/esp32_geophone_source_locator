@@ -22,6 +22,16 @@ int nrf_cs_pair_runtime_zephyr_set_node_id(nrf_cs_node_id_t node_id)
     return nrf_cs_pair_zephyr_stub_set_node_result;
 }
 
+nrf_cs_pair_runtime_final_hint_cb_t nrf_cs_pair_zephyr_stub_final_hint;
+nrf_cs_pair_runtime_released_cb_t nrf_cs_pair_zephyr_stub_released;
+
+void nrf_cs_pair_runtime_zephyr_set_relay_hooks(
+    nrf_cs_pair_runtime_final_hint_cb_t final_hint, nrf_cs_pair_runtime_released_cb_t released)
+{
+    nrf_cs_pair_zephyr_stub_final_hint = final_hint;
+    nrf_cs_pair_zephyr_stub_released = released;
+}
+
 bool nrf_cs_pair_zephyr_stub_radio_enabled;
 unsigned nrf_cs_pair_zephyr_stub_radio_changes;
 

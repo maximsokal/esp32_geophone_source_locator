@@ -157,22 +157,46 @@ static void poll_main(coord_t *coord, nrf_cs_node_id_t main_node)
     if (coord->ops->progress != NULL) coord->ops->progress(coord->ops->context, status.pairs_done, status.pairs_total);
 }
 
+/*
+ * A relay plan: consecutive executions chain, and the last one ends at MAIN. Then MAIN completes only when the last
+ * initiator has let go, i.e. when the whole cycle is over, so its answer can be believed before the last time slot ends.
+ * Any other plan keeps the rule that nothing is believed before the slots are over.
+ */
+static bool main_ends_the_cycle(const nrf_cs_scheduler_t *scheduler, nrf_cs_node_id_t main_node)
+{
+    if (scheduler->execution_count < 2U) return false;
+    for (size_t e = 1U; e < scheduler->execution_count; ++e) {
+        if (scheduler->executions[e].initiator != scheduler->executions[e - 1U].reflector) return false;
+    }
+    return scheduler->executions[scheduler->execution_count - 1U].reflector == main_node;
+}
+
 /* Returns true when MAIN reported the end of the cycle, false at the deadline. */
 static int wait_for_cycle(coord_t *coord, nrf_cs_node_id_t main_node, uint64_t go_done_ms, uint32_t run_ms)
 {
     const uint64_t run_end = go_done_ms + run_ms;
     const uint64_t deadline = run_end + NRF_CS_CYCLE_TOTAL_MARGIN_MS;
-    uint64_t next_poll = go_done_ms + NRF_CS_COORD_POLL_PERIOD_MS;
+    const bool relay = main_ends_the_cycle(coord->scheduler, main_node);
+    const uint32_t poll_period = relay ? NRF_CS_COORD_RELAY_POLL_MS : NRF_CS_COORD_POLL_PERIOD_MS;
+    uint64_t next_poll = go_done_ms + poll_period;
+    uint64_t main_complete_ms = 0U;
 
     for (;;) {
         uint64_t now = now_ms(coord);
         if (should_abort(coord)) return NRF_CS_COORD_ERR_ABORTED;
         if (now >= deadline || (coord->report->main_complete && now >= run_end)) return 0;
+        if (relay && coord->report->main_complete && main_complete_ms != 0U &&
+            now >= main_complete_ms + NRF_CS_COORD_RELAY_SETTLE_MS) {
+            coord->report->relay_early = true;
+            return 0;
+        }
         if (now >= next_poll) {
             poll_main(coord, main_node);
             now = now_ms(coord);
+            if (relay && coord->report->main_complete && main_complete_ms == 0U) main_complete_ms = now;
             next_poll = coord->report->main_complete && now < run_end
-                ? run_end : now + (now >= run_end ? NRF_CS_COORD_POLL_FAST_MS : NRF_CS_COORD_POLL_PERIOD_MS);
+                ? (relay ? now + NRF_CS_COORD_RELAY_SETTLE_MS : run_end)
+                : now + (now >= run_end ? NRF_CS_COORD_POLL_FAST_MS : poll_period);
             continue;
         }
         uint64_t until = next_poll < deadline ? next_poll : deadline;

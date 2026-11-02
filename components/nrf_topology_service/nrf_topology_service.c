@@ -3302,7 +3302,7 @@ static void service_ranging_run_autonomous(nrf_topology_worker_state_t *worker)
     sensor_bus_quiet_end();
     ESP_LOGI(
         TAG,
-        "RANGING_AUTONOMOUS result=%d plan=0x%02x go=0x%02x collected=0x%02x released=0x%02x pre_sent=0x%02x pre_ok=0x%02x abort_sent=0x%02x abort_ok=0x%02x polls=%u waited_ms=%u main_state=%u",
+        "RANGING_AUTONOMOUS result=%d plan=0x%02x go=0x%02x collected=0x%02x released=0x%02x pre_sent=0x%02x pre_ok=0x%02x abort_sent=0x%02x abort_ok=0x%02x polls=%u waited_ms=%u main_state=%u relay_early=%u",
         result,
         (unsigned)report.plan_mask,
         (unsigned)report.go_mask,
@@ -3314,7 +3314,8 @@ static void service_ranging_run_autonomous(nrf_topology_worker_state_t *worker)
         (unsigned)report.abort_release_mask,
         (unsigned)report.polls,
         (unsigned)report.waited_ms,
-        (unsigned)report.main_state);
+        (unsigned)report.main_state,
+        report.relay_early ? 1U : 0U);
 
     if (result >= 0) {
         /* CS-ESTIMATOR-01: every attempt with the library estimate its distance came from. */

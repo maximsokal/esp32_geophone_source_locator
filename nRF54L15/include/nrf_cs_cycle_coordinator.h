@@ -32,6 +32,13 @@ extern "C" {
 #define NRF_CS_COORD_POLL_PERIOD_MS 5000U
 /* Time between MAIN status reads once the cycle should be over. */
 #define NRF_CS_COORD_POLL_FAST_MS 500U
+/*
+ * Relay plan (the last execution ends at MAIN, see nrf_cs_policy_t.relay_order): the cycle is over as soon as MAIN says
+ * so, long before the last time slot. MAIN is polled this often meanwhile, and the other nodes get this long after MAIN's
+ * answer to record the end of their last attempt (the initiator of the last execution lets go a moment before it does).
+ */
+#define NRF_CS_COORD_RELAY_POLL_MS 2000U
+#define NRF_CS_COORD_RELAY_SETTLE_MS 1000U
 #define NRF_CS_COORD_WRITE_TRIES 3U
 #define NRF_CS_COORD_GO_TRIES 2U
 #define NRF_CS_COORD_PAGE_TRIES 6U
@@ -97,6 +104,7 @@ typedef struct {
     /* MAIN's last readable cycle status. */
     bool main_status_seen;
     bool main_complete;
+    bool relay_early;       /* the wait ended on MAIN's answer before the last time slot would have */
     uint8_t main_state;
     uint8_t main_failure;
     uint32_t polls;

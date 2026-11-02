@@ -597,8 +597,296 @@ static void test_late_success_cannot_escape_window_deadline(void)
     assert(nrf_cs_cycle_runtime_step_done(&sims[0].rt, &sims[0].step, &success) == -1);
 }
 
+/*
+ * Relay. The sim below is the firmware glue in miniature: when an attempt ends, the initiator asks would_finish() before
+ * it disconnects, and if the answer is yes the node on the other end gets peer_released() (the disconnect reason).
+ */
+typedef struct {
+    uint64_t finished_at[MAX_SIM_NODES];       /* when each node went COMPLETE, 0 while it runs */
+    uint64_t exec_first_start[NRF_CS_CYCLE_MAX_STEPS];
+    uint64_t exec_last_end[NRF_CS_CYCLE_MAX_STEPS];
+    unsigned releases_sent;
+    unsigned releases_dropped;
+    unsigned overlaps;
+    uint64_t cycle_end;
+} relay_run_t;
+
+static size_t node_index_of(const sim_node_t *sims, size_t count, nrf_cs_node_id_t id)
+{
+    for (size_t n = 0U; n < count; ++n) if (sims[n].id == id) return n;
+    assert(false);
+    return 0U;
+}
+
+/* drop_execution: the release of this execution is lost (the initiator vanished); -1 keeps all of them. */
+static void run_relay_cycle(sim_node_t *sims, size_t count, const nrf_cs_scheduler_t *planner, bool deliver_releases,
+    int drop_execution, relay_run_t *run)
+{
+    const uint32_t window = nrf_cs_cycle_window_ms((uint16_t)planner->policy.pair_timeout_ms,
+        planner->policy.samples_per_pair, planner->policy.max_attempts);
+    const uint32_t run_ms = nrf_cs_cycle_run_ms((uint8_t)planner->execution_count, window);
+    const uint64_t start = g_now;
+    bool sent[MAX_SIM_NODES] = {false};
+    size_t completed = 0U;
+    int running_execution = -1;     /* the one execution that has an attempt in the air (never two at once) */
+
+    memset(run, 0, sizeof(*run));
+    while (completed < count) {
+        for (size_t n = 0U; n < count; ++n) {
+            if (!sent[n] && g_now >= start + 20U * n) {
+                const nrf_cs_cycle_go_t go = {.request_id = 900U + (uint32_t)n, .cycle_id = planner->cycle_id,
+                    .total_timeout_ms = run_ms + NRF_CS_CYCLE_TOTAL_MARGIN_MS};
+                assert(nrf_cs_cycle_runtime_go(&sims[n].rt, &go) == 0);
+                sent[n] = true;
+            }
+        }
+        for (size_t n = 0U; n < count; ++n) {
+            if (!sent[n]) continue;
+            sim_node_t *sim = &sims[n];
+            if (sim->active && g_now >= sim->due_ms) {
+                const uint8_t e = sim->rt.window;
+                const bool final = nrf_cs_cycle_runtime_would_finish(&sim->rt, &sim->outcome);
+                sim->active = false;
+                sim->last_end_ms = g_now;
+                assert(nrf_cs_cycle_runtime_step_done(&sim->rt, &sim->step, &sim->outcome) == 0);
+                run->exec_last_end[e] = g_now;
+                running_execution = -1;
+                if (final) {                   /* the soundness of the prediction: the execution really is over */
+                    assert(sim->rt.execution_done || sim->rt.window_exhausted ||
+                           sim->rt.window_deadline_ms - (g_now + NRF_CS_CYCLE_ATTEMPT_GAP_MS) < sim->rt.pair_timeout_ms);
+                    if (deliver_releases && (int)e != drop_execution) {
+                        nrf_cs_cycle_runtime_peer_released(&sims[node_index_of(sims, count, sim->rt.steps[e].reflector)].rt);
+                        ++run->releases_sent;
+                    } else {
+                        ++run->releases_dropped;
+                    }
+                }
+            }
+            nrf_cs_step_t step;
+            nrf_cs_cycle_runtime_tick(&sim->rt);
+            if (nrf_cs_cycle_runtime_take_start(&sim->rt, &step)) {
+                const uint8_t e = sim->rt.window;
+                assert(step.initiator == sim->id && sim->rt.steps[e].initiator == sim->id);
+                assert(sim->last_end_ms == 0U || g_now >= sim->last_end_ms + NRF_CS_CYCLE_ATTEMPT_GAP_MS);
+                if (running_execution != -1 && running_execution != (int)e) ++run->overlaps;
+                running_execution = e;
+                if (run->exec_first_start[e] == 0U) run->exec_first_start[e] = g_now;
+                sim->active = true;
+                sim->step = step;
+                sim->due_ms = g_now + sim->latency_ms;
+                sim->outcome = (nrf_cs_measurement_t){.outcome = NRF_CS_OUTCOME_SUCCESS,
+                    .distance_mm = 1000 + 10 * (int32_t)e, .confidence = 900U};
+                nrf_cs_cycle_runtime_start_result(&sim->rt, &step, 0);
+            }
+        }
+        completed = 0U;
+        for (size_t n = 0U; n < count; ++n) {
+            if (sims[n].rt.state == NRF_CS_CYCLE_STATE_COMPLETE) {
+                ++completed;
+                if (run->finished_at[n] == 0U) run->finished_at[n] = g_now;
+            }
+        }
+        g_now += 25U;
+        assert(g_now - start < (uint64_t)run_ms + 10000U);
+    }
+    run->cycle_end = g_now - start;
+}
+
+static void relay_setup(sim_node_t *sims, size_t count, nrf_cs_scheduler_t *planner)
+{
+    static const nrf_cs_node_id_t ids[] = {0U, 1U, 2U, 3U, 4U};
+    const nrf_cs_policy_t policy = {
+        .pair_timeout_ms = 500U, .max_attempts = 2U, .min_confidence = 500U, .samples_per_pair = 3U,
+        .full_rotation = true, .relay_order = true,
+    };
+
+    g_now = 1000U;
+    assert(nrf_cs_scheduler_init(planner, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(planner, ids, count) == NRF_CS_OK);
+    for (size_t n = 0U; n < count; ++n) init_sim(&sims[n], ids[n]);
+    assert(send_plan(sims, count, planner, 10U) == planner->execution_count);
+}
+
+static void test_relay_hands_the_turn_on_without_waiting_for_the_slot(void)
+{
+    for (size_t count = 3U; count <= 5U; ++count) {
+        nrf_cs_scheduler_t planner, replay;
+        sim_node_t sims[MAX_SIM_NODES];
+        relay_run_t run;
+
+        relay_setup(sims, count, &planner);
+        const uint32_t window = nrf_cs_cycle_window_ms(500U, 3U, 2U);
+        const uint32_t run_ms = nrf_cs_cycle_run_ms((uint8_t)planner.execution_count, window);
+        run_relay_cycle(sims, count, &planner, true, -1, &run);
+        for (size_t n = 0U; n < count; ++n) assert(sims[n].rt.relay);          /* the plan is a chain */
+
+        /* Each execution is 3 attempts of 300 ms plus gaps: about 1.3 s instead of the 3.4 s slot. */
+        assert(run.cycle_end < run_ms / 2U);
+        assert(run.overlaps == 0U);
+        assert(run.releases_sent == planner.execution_count && run.releases_dropped == 0U);
+        for (size_t e = 1U; e < planner.execution_count; ++e) {
+            /* The next execution starts after the previous one let go, one settle time later, and well before its slot. */
+            assert(run.exec_first_start[e] >= run.exec_last_end[e - 1U] + NRF_CS_CYCLE_RELAY_SETTLE_MS);
+            assert(run.exec_first_start[e] <= run.exec_last_end[e - 1U] + NRF_CS_CYCLE_RELAY_SETTLE_MS + 100U);
+        }
+        /* MAIN (node 0) is the last reflector: it completes after the last execution ended, and nobody completes before
+         * the executions it takes part in are over. */
+        const size_t last = planner.execution_count - 1U;
+        assert(planner.executions[last].reflector == sims[0].id);
+        assert(run.finished_at[0] >= run.exec_last_end[last]);
+        for (size_t n = 0U; n < count; ++n) {
+            assert(sims[n].rt.state == NRF_CS_CYCLE_STATE_COMPLETE);
+            assert(run.finished_at[n] != 0U && run.finished_at[n] <= run.finished_at[0] + 100U);
+            assert(sims[n].rt.record_count == 3U * (count - 1U));              /* 3 samples for each of its executions */
+        }
+
+        /* The ESP32 side: replay the records read back and get the same pairs as if it had driven every step itself. */
+        static nrf_cs_cycle_record_t storage[MAX_SIM_NODES][NRF_CS_CYCLE_MAX_RECORDS];
+        nrf_cs_cycle_node_records_t nodes[MAX_SIM_NODES];
+        for (size_t n = 0U; n < count; ++n) {
+            nodes[n].node = sims[n].id;
+            nodes[n].records = storage[n];
+            nodes[n].count = collect_records(&sims[n], storage[n], NRF_CS_CYCLE_MAX_RECORDS);
+            assert(nodes[n].count == 3U * (count - 1U));
+        }
+        assert(nrf_cs_scheduler_init(&replay, &planner.policy) == NRF_CS_OK);
+        assert(nrf_cs_scheduler_start_cycle(&replay, (const nrf_cs_node_id_t[]){0U, 1U, 2U, 3U, 4U}, count) == NRF_CS_OK);
+        assert(nrf_cs_cycle_replay(&replay, nodes, count) == 0);
+        assert(nrf_cs_scheduler_is_complete(&replay));
+        for (size_t p = 0U; p < nrf_cs_scheduler_pair_count(&replay); ++p) {
+            const nrf_cs_pair_result_t *pair = nrf_cs_scheduler_pair_at(&replay, p);
+            assert(pair->state == NRF_CS_PAIR_VALID && pair->valid_samples == 6U && !pair->single_direction);
+        }
+    }
+}
+
+/* Without any release (a lost message, an old node) the cycle runs on the slots exactly as before. */
+static void test_relay_without_releases_falls_back_to_the_time_slots(void)
+{
+    nrf_cs_scheduler_t planner;
+    sim_node_t sims[MAX_SIM_NODES];
+    relay_run_t run;
+
+    relay_setup(sims, 4U, &planner);
+    const uint32_t window = nrf_cs_cycle_window_ms(500U, 3U, 2U);
+    const uint32_t run_ms = nrf_cs_cycle_run_ms((uint8_t)planner.execution_count, window);
+    run_relay_cycle(sims, 4U, &planner, false, -1, &run);
+
+    assert(run.overlaps == 0U && run.releases_sent == 0U);
+    assert(run.cycle_end >= run_ms);                                           /* nothing came early */
+    for (size_t e = 0U; e < planner.execution_count; ++e) {
+        const uint64_t slot = 1000U + (uint64_t)e * window;
+        assert(run.exec_first_start[e] >= slot + NRF_CS_CYCLE_GO_SKEW_MS);     /* never ahead of its slot */
+        assert(run.exec_first_start[e] <= slot + NRF_CS_CYCLE_GO_SKEW_MS + 200U + 20U * 4U);
+    }
+    for (size_t n = 0U; n < 4U; ++n) {
+        assert(sims[n].rt.state == NRF_CS_CYCLE_STATE_COMPLETE && sims[n].rt.record_count == 9U);
+    }
+}
+
+/* One lost release: the chain stalls until the slot of the next execution, then runs on early again. */
+static void test_a_lost_release_costs_only_the_wait_for_one_slot(void)
+{
+    nrf_cs_scheduler_t planner;
+    sim_node_t sims[MAX_SIM_NODES];
+    relay_run_t run;
+    const int lost = 3;
+
+    relay_setup(sims, 4U, &planner);
+    const uint32_t window = nrf_cs_cycle_window_ms(500U, 3U, 2U);
+    const uint32_t run_ms = nrf_cs_cycle_run_ms((uint8_t)planner.execution_count, window);
+    run_relay_cycle(sims, 4U, &planner, true, lost, &run);
+
+    assert(run.overlaps == 0U && run.releases_dropped == 1U);
+    const uint64_t slot = 1000U + (uint64_t)(lost + 1) * window + NRF_CS_CYCLE_GO_SKEW_MS;
+    assert(run.exec_first_start[lost + 1] >= slot);                            /* waited for its slot ... */
+    assert(run.exec_first_start[lost + 1] <= slot + 200U);
+    assert(run.exec_first_start[lost + 2] <= run.exec_last_end[lost + 1] + NRF_CS_CYCLE_RELAY_SETTLE_MS + 100U);   /* ... then early */
+    assert(run.cycle_end < run_ms);                                            /* still faster than all slots */
+    for (size_t n = 0U; n < 4U; ++n) assert(sims[n].rt.state == NRF_CS_CYCLE_STATE_COMPLETE && sims[n].rt.record_count == 9U);
+}
+
+/* would_finish() must never promise an end that does not come: a released node would start into a running execution. */
+static void test_would_finish_is_never_wrong_about_the_end(void)
+{
+    uint32_t seed = 12345U;
+    for (unsigned trial = 0U; trial < 400U; ++trial) {
+        nrf_cs_scheduler_t planner;
+        sim_node_t sims[MAX_SIM_NODES];
+
+        relay_setup(sims, 3U, &planner);
+        for (size_t n = 0U; n < 3U; ++n) sims[n].latency_ms = 100U + (seed >> 24U) % 5U * 100U;
+        const nrf_cs_cycle_go_t go = {.request_id = 7U, .cycle_id = planner.cycle_id,
+            .total_timeout_ms = 600000U};
+        for (size_t n = 0U; n < 3U; ++n) assert(nrf_cs_cycle_runtime_go(&sims[n].rt, &go) == 0);
+        /* One node, attempt after attempt with random outcomes: whenever the prediction says "final", no further attempt
+         * may be handed out for this window. */
+        sim_node_t *sim = &sims[0];
+        unsigned finals = 0U;
+        for (unsigned step = 0U; step < 400U && sim->rt.state == NRF_CS_CYCLE_STATE_RUNNING; ++step) {
+            nrf_cs_step_t s;
+            g_now += 25U;
+            nrf_cs_cycle_runtime_tick(&sim->rt);
+            if (!nrf_cs_cycle_runtime_take_start(&sim->rt, &s)) continue;
+            nrf_cs_cycle_runtime_start_result(&sim->rt, &s, 0);
+            seed = seed * 1664525U + 1013904223U;
+            nrf_cs_measurement_t m = {.outcome = NRF_CS_OUTCOME_SUCCESS, .distance_mm = 1000, .confidence = 900U};
+            const unsigned roll = (seed >> 16U) % 10U;
+            if (roll < 3U) m = (nrf_cs_measurement_t){.outcome = NRF_CS_OUTCOME_TRANSPORT_ERROR};
+            else if (roll < 4U) m.confidence = 100U;                           /* below min_confidence: a failure */
+            const uint8_t window = sim->rt.window;
+            const bool final = nrf_cs_cycle_runtime_would_finish(&sim->rt, &m);
+            g_now += 300U;
+            assert(nrf_cs_cycle_runtime_step_done(&sim->rt, &s, &m) == 0);
+            if (final) {
+                ++finals;
+                for (unsigned wait = 0U; wait < 200U; ++wait) {                 /* the rest of this window */
+                    g_now += 25U;
+                    nrf_cs_cycle_runtime_tick(&sim->rt);
+                    if (sim->rt.window != window || sim->rt.state != NRF_CS_CYCLE_STATE_RUNNING) break;
+                    assert(!nrf_cs_cycle_runtime_take_start(&sim->rt, &s));
+                }
+            }
+        }
+        (void)finals;
+    }
+}
+
+static void test_release_is_ignored_when_it_means_nothing(void)
+{
+    nrf_cs_scheduler_t planner;
+    sim_node_t sims[MAX_SIM_NODES];
+    nrf_cs_policy_t pairwise = {.pair_timeout_ms = 500U, .max_attempts = 2U, .min_confidence = 500U, .samples_per_pair = 3U,
+        .full_rotation = true};
+    static const nrf_cs_node_id_t ids[] = {0U, 1U, 2U};
+
+    relay_setup(sims, 3U, &planner);
+    nrf_cs_cycle_runtime_peer_released(&sims[0].rt);                          /* no cycle is running yet */
+    assert(sims[0].rt.released_mask == 0U);
+    nrf_cs_cycle_runtime_peer_released(NULL);
+    assert(!nrf_cs_cycle_runtime_would_finish(&sims[0].rt, &(nrf_cs_measurement_t){0}));  /* no attempt in progress */
+    assert(!nrf_cs_cycle_runtime_would_finish(NULL, &(nrf_cs_measurement_t){0}));
+
+    /* A pair-by-pair plan is not a chain: a release changes nothing and the cycle only ends with the last slot. */
+    assert(nrf_cs_scheduler_init(&planner, &pairwise) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&planner, ids, 3U) == NRF_CS_OK);
+    g_now = 1000U;
+    for (size_t n = 0U; n < 3U; ++n) init_sim(&sims[n], ids[n]);
+    assert(send_plan(sims, 3U, &planner, 10U) == planner.execution_count);
+    const nrf_cs_cycle_go_t go = {.request_id = 7U, .cycle_id = planner.cycle_id, .total_timeout_ms = 600000U};
+    assert(nrf_cs_cycle_runtime_go(&sims[1].rt, &go) == 0);
+    assert(!sims[1].rt.relay);
+    nrf_cs_cycle_runtime_peer_released(&sims[1].rt);
+    assert(sims[1].rt.released_mask == 0U);
+}
+
 int main(void)
 {
+    test_relay_hands_the_turn_on_without_waiting_for_the_slot();
+    test_relay_without_releases_falls_back_to_the_time_slots();
+    test_a_lost_release_costs_only_the_wait_for_one_slot();
+    test_would_finish_is_never_wrong_about_the_end();
+    test_release_is_ignored_when_it_means_nothing();
     test_late_success_cannot_escape_window_deadline();
     test_autonomous_cycle_matches_live_scheduler(3U);
     test_autonomous_cycle_matches_live_scheduler(4U);

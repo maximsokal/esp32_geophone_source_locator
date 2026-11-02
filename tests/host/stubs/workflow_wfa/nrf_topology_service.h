@@ -109,6 +109,7 @@ typedef struct {
     uint16_t min_confidence;
     uint8_t samples_per_pair;
     bool full_rotation;
+    bool relay_order;
 } nrf_cs_policy_t;
 
 #define NRF_CS_MAX_NODES 5U

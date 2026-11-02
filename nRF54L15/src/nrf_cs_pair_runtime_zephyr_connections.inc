@@ -42,8 +42,6 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
 {
     nrf_cs_step_t step;
 
-    ARG_UNUSED(reason);
-
     if (conn == s_outgoing_conn) {
         bool has_step = runtime_active_step(&step);
         bt_conn_unref(s_outgoing_conn);
@@ -61,7 +59,8 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
         bt_conn_unref(s_incoming_conn);
         s_incoming_conn = NULL;
         atomic_set(&s_reflector_procedure_active, 0);
-        runtime_post_event(RUNTIME_EVENT_INCOMING_DISCONNECTED, NULL, 0U, 0, NULL);
+        /* The reason is the initiator's: NRF_CS_CYCLE_RELEASE_REASON means "that was my last attempt here". */
+        runtime_post_event(RUNTIME_EVENT_INCOMING_DISCONNECTED, NULL, reason, (int)reason, NULL);
     }
 }
 

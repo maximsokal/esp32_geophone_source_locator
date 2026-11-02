@@ -137,6 +137,9 @@ static void event_work_handler(struct k_work *work)
             break;
         case RUNTIME_EVENT_INCOMING_DISCONNECTED:
             (void)runtime_start_advertising();
+            if (event.value == NRF_CS_CYCLE_RELEASE_REASON && s_relay_released_cb != NULL) {
+                s_relay_released_cb();
+            }
             break;
         case RUNTIME_EVENT_REFLECTOR_CONFIG:
             configure_reflector_procedure(event.conn, (uint8_t)event.value);

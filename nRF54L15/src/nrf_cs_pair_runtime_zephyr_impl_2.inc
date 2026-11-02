@@ -161,7 +161,13 @@ static int op_cleanup(void *context)
         return 0;
     }
 
-    err = bt_conn_disconnect(s_outgoing_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    /* begin_terminal() stored the outcome before calling us: if it also ends the execution, say so in the reason. */
+    uint8_t reason = BT_HCI_ERR_REMOTE_USER_TERM_CONN;
+    if (s_relay_final_hint_cb != NULL && s_adapter.terminal_pending &&
+        s_relay_final_hint_cb(&s_adapter.terminal_measurement)) {
+        reason = NRF_CS_CYCLE_RELEASE_REASON;
+    }
+    err = bt_conn_disconnect(s_outgoing_conn, reason);
     if (err == 0 || err == -EALREADY) {
         return 0;
     }

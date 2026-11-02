@@ -1672,6 +1672,74 @@ static nrf_cs_cycle_status_t cycle_read_status(void)
     return status;
 }
 
+extern bool (*nrf_cs_pair_zephyr_stub_final_hint)(const nrf_cs_measurement_t *measurement);
+extern void (*nrf_cs_pair_zephyr_stub_released)(void);
+
+/*
+ * Relay hooks: the Bluetooth side tells the cycle runtime two things, and both reach it. The plan below is a chain
+ * (this node measures the peer, then the peer measures this node), so once its own attempt is done the node only waits
+ * to be released as the peer's reflector; the release ends the cycle at once instead of at the end of the last slot.
+ */
+static void test_relay_hooks_reach_the_cycle_runtime(void)
+{
+    nrf_upstream_status_t node = read_status(NULL);
+    assert(node.role != NRF_UPSTREAM_ROLE_UNASSIGNED);
+    assert(nrf_cs_pair_zephyr_stub_final_hint != NULL && nrf_cs_pair_zephyr_stub_released != NULL);   /* registered at start */
+
+    const uint8_t self = node.node_id;
+    const uint8_t peer = (uint8_t)(self + 1U);
+    const uint32_t window = nrf_cs_cycle_window_ms(500U, 1U, 1U);
+    uint8_t plan_frame[NRF_CS_CYCLE_PLAN_LENGTH];
+    uint8_t steps_frame[NRF_CS_CYCLE_PLAN_STEPS_LENGTH];
+    uint8_t go_frame[NRF_CS_CYCLE_GO_LENGTH];
+    uint8_t request_frame[NRF_CS_CYCLE_RESULT_REQUEST_LENGTH];
+    const nrf_cs_cycle_plan_t plan = {
+        .request_id = 0x7201U, .cycle_id = 79U, .membership_generation = 1U, .pair_timeout_ms = 500U,
+        .max_attempts = 1U, .samples_per_pair = 1U, .min_confidence = 0U, .full_rotation = true,
+        .step_count = 2U, .node_count = 2U, .self_node = self,
+    };
+    nrf_cs_cycle_plan_steps_t steps = {.request_id = 0x7202U, .cycle_id = 79U, .first_step = 0U, .step_count = 2U};
+    const nrf_cs_cycle_go_t go = {.request_id = 0x7203U, .cycle_id = 79U, .total_timeout_ms = window * 2U + NRF_CS_CYCLE_TOTAL_MARGIN_MS};
+    steps.steps[0] = (nrf_cs_cycle_step_t){.initiator = self, .reflector = peer};
+    steps.steps[1] = (nrf_cs_cycle_step_t){.initiator = peer, .reflector = self};
+
+    /* No attempt is running: the hint never says "final", and a release is ignored. */
+    const nrf_cs_measurement_t ok = {.outcome = NRF_CS_OUTCOME_SUCCESS, .distance_mm = 1000, .confidence = 900U};
+    assert(!nrf_cs_pair_zephyr_stub_final_hint(&ok));
+    nrf_cs_pair_zephyr_stub_released();
+
+    assert(nrf_cs_cycle_encode_plan(&plan, plan_frame) == 0);
+    cycle_send(plan_frame, sizeof(plan_frame));
+    assert(nrf_cs_cycle_encode_plan_steps(&steps, steps_frame) == 0);
+    cycle_send(steps_frame, sizeof(steps_frame));
+    assert(nrf_cs_cycle_encode_go(&go, go_frame) == 0);
+    cycle_send(go_frame, sizeof(go_frame));
+    assert(cycle_read_status().state == NRF_CS_CYCLE_STATE_RUNNING);
+
+    /* Its own attempt runs and ends (the stub finishes it at once); the node still has its reflector duty. */
+    nrf_cs_pair_runtime_zephyr_stub_configure(0, NRF_CS_OUTCOME_SUCCESS);
+    const unsigned executes_before = nrf_cs_pair_zephyr_stub_execute_calls;
+    for (unsigned ticks = 0U; ticks < 20000U && nrf_cs_pair_zephyr_stub_execute_calls == executes_before; ++ticks) {
+        nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
+    }
+    assert(nrf_cs_pair_zephyr_stub_execute_calls == executes_before + 1U);          /* its own attempt ran */
+    for (unsigned ticks = 0U; ticks < 50U; ++ticks) nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
+    assert(cycle_read_status().state == NRF_CS_CYCLE_STATE_RUNNING);
+
+    /* The peer let go of its link to this node: the cycle is over for this node right away. */
+    nrf_cs_pair_zephyr_stub_released();
+    nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
+    const nrf_cs_cycle_status_t done = cycle_read_status();
+    assert(done.state == NRF_CS_CYCLE_STATE_COMPLETE && done.pairs_done == 2U);
+
+    const nrf_cs_cycle_result_request_t release = {.request_id = 0x7205U, .cycle_id = 79U, .page = NRF_CS_CYCLE_RESULT_RELEASE_PAGE};
+    uint32_t length = 0U;
+    assert(nrf_cs_cycle_encode_result_request(&release, request_frame) == 0);
+    cycle_send(request_frame, sizeof(request_frame));
+    uint8_t *frame = read_frame(&length);
+    assert(cycle_is_legacy_reply(frame, length));
+}
+
 static void test_autonomous_cs_cycle_messages(nrf_cs_outcome_t outcome)
 {
     nrf_upstream_status_t node = read_status(NULL);
@@ -2441,6 +2509,7 @@ int main(void)
     test_autonomous_cs_cycle_messages(NRF_CS_OUTCOME_SUCCESS);
     test_autonomous_cs_cycle_messages(NRF_CS_OUTCOME_TIMEOUT);
     test_autonomous_cs_cycle_messages(NRF_CS_OUTCOME_TRANSPORT_ERROR);
+    test_relay_hooks_reach_the_cycle_runtime();
     {
         const nrf_upstream_sensor_refresh_t request = {.request_id = 777U};
         uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_SCAN_LENGTH];

@@ -127,6 +127,10 @@ static void nrf_cs_add_pair(
 
     nrf_cs_pair_init(&scheduler->pairs[pair_index], left, right);
 
+    if (scheduler->policy.full_rotation && scheduler->policy.relay_order) {
+        return;     /* the executions are added in relay order once all pairs exist */
+    }
+
     if (scheduler->policy.full_rotation) {
         nrf_cs_add_execution(scheduler, (uint8_t)pair_index, left, right);
         nrf_cs_add_execution(scheduler, (uint8_t)pair_index, right, left);
@@ -149,6 +153,51 @@ static void nrf_cs_add_pair(
             (uint8_t)pair_index,
             left_initiates ? left : right,
             left_initiates ? right : left);
+    }
+}
+
+/*
+ * Eulerian circuit of the complete directed graph on the sorted nodes (Hierholzer, always the smallest unused edge
+ * first, so the result depends only on the node set). Consecutive executions chain: reflector(e) == initiator(e + 1),
+ * and the last reflector is the first initiator. The pair of an execution is the pair of its two nodes.
+ */
+static void nrf_cs_add_relay_executions(nrf_cs_scheduler_t *scheduler)
+{
+    const size_t n = scheduler->node_count;
+    bool used[NRF_CS_MAX_NODES][NRF_CS_MAX_NODES] = {{false}};
+    size_t next_to[NRF_CS_MAX_NODES] = {0U};
+    size_t stack[NRF_CS_MAX_EXECUTIONS + 1U];
+    size_t circuit[NRF_CS_MAX_EXECUTIONS + 1U];
+    size_t depth = 0U;
+    size_t length = 0U;
+
+    stack[depth++] = 0U;
+    while (depth > 0U) {
+        const size_t u = stack[depth - 1U];
+        while (next_to[u] < n && (next_to[u] == u || used[u][next_to[u]])) {
+            ++next_to[u];
+        }
+        if (next_to[u] < n) {
+            const size_t v = next_to[u];
+            used[u][v] = true;
+            stack[depth++] = v;
+        } else {
+            circuit[length++] = u;
+            --depth;
+        }
+    }
+    /* `circuit` holds the vertices in reverse order. */
+    for (size_t k = length - 1U; k > 0U; --k) {
+        const nrf_cs_node_id_t initiator = scheduler->nodes[circuit[k]];
+        const nrf_cs_node_id_t reflector = scheduler->nodes[circuit[k - 1U]];
+        for (size_t p = 0U; p < scheduler->pair_count; ++p) {
+            const nrf_cs_pair_result_t *pair = &scheduler->pairs[p];
+            if ((pair->node_a == initiator && pair->node_b == reflector) ||
+                (pair->node_a == reflector && pair->node_b == initiator)) {
+                nrf_cs_add_execution(scheduler, (uint8_t)p, initiator, reflector);
+                break;
+            }
+        }
     }
 }
 
@@ -474,6 +523,9 @@ nrf_cs_result_t nrf_cs_scheduler_start_cycle(
         for (j = i + 1U; j < node_count; ++j) {
             nrf_cs_add_pair(scheduler, i, j);
         }
+    }
+    if (scheduler->policy.full_rotation && scheduler->policy.relay_order && node_count >= 2U) {
+        nrf_cs_add_relay_executions(scheduler);
     }
 
     scheduler->cycle_started = true;

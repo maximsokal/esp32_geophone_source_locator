@@ -115,6 +115,13 @@ typedef struct {
     uint8_t samples_per_pair;
     /* Run both directed executions for every pair, in canonical pair order. */
     bool full_rotation;
+    /*
+     * With full_rotation: order the directed executions as an Eulerian circuit of the complete directed graph, so the
+     * reflector of every execution is the initiator of the next one (and the circuit ends at the node it starts at,
+     * the smallest id, MAIN). The node that has just been the reflector sees the initiator let go and starts at once
+     * instead of waiting for its time slot (nrf_cs_cycle_runtime.h, "relay"). Without it the order is pair by pair.
+     */
+    bool relay_order;
 } nrf_cs_policy_t;
 
 typedef struct {
