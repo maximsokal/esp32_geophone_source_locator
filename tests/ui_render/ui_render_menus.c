@@ -4,6 +4,7 @@
 #include <string.h>
 #include "ui_internal.h"
 #include "ui_perf_policy.h"
+#include "ui_fonts.h"
 #include "hw_inventory.h"
 #include "device_status.h"
 #include "app_events.h"
@@ -333,6 +334,73 @@ static void test_live_chart_update_dirties_only_what_changed(void)
     render_now_ms = clock_before_ms;
 }
 
+static int text_width_px(const char *text)
+{
+    lv_point_t size;
+    lv_text_get_size(&size, text, &ui_font_montserrat_14, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return (int)size.x;
+}
+
+/*
+ * Bench log 2026-11-02 10:36: the live screen had 6 (EN) to 11 (UK) labels wider than their boxes. A label that
+ * does not fit scrolls for ever (LV_LABEL_LONG_SCROLL_CIRCULAR) and every step redraws its strip, so LVGL drew 11
+ * flush chunks per pass at ~14 ms each with no new sample. The texts the screen shows are written to fit.
+ */
+static void test_the_strings_of_the_live_screen_fit_their_boxes(void)
+{
+    const ui_locale_t locale_before = ui_i18n_get_locale();
+    const ui_locale_t locales[2] = {UI_LOCALE_EN, UI_LOCALE_UK};
+    for (unsigned locale = 0U; locale < 2U; ++locale) {
+        ui_i18n_set_locale(locales[locale]);
+        assert(text_width_px(ui_tr(UI_I18N_KEY_MEASUREMENT_TITLE)) <= UI_HEADER_TITLE_WIDTH);
+        assert(text_width_px(ui_tr(UI_I18N_KEY_MEASUREMENT_FOOTER)) <= UI_FOOTER_LABEL_WIDTH);
+        assert(text_width_px(ui_tr(UI_I18N_KEY_MEASUREMENT_LINK_LEGEND)) <= UI_MEASUREMENT_LEGEND_LABEL_WIDTH);
+        const ui_i18n_key_t links[] = {
+            UI_I18N_KEY_MEASUREMENT_LINK_NOT_CONNECTED, UI_I18N_KEY_MEASUREMENT_LINK_CONNECTED,
+            UI_I18N_KEY_MEASUREMENT_LINK_READY, UI_I18N_KEY_MEASUREMENT_LINK_MEASURING,
+        };
+        for (size_t i = 0U; i < sizeof(links) / sizeof(links[0]); ++i) {
+            assert(text_width_px(ui_tr(links[i])) <= UI_MEASUREMENT_LINK_LABEL_WIDTH);
+        }
+        const double values_mv[] = {-99.99, -7.2, 0.04, 12.34, 99.99};
+        const ui_i18n_key_t kinds[] = {UI_I18N_KEY_MEASUREMENT_CHANNEL_FLAT, UI_I18N_KEY_MEASUREMENT_CHANNEL_VARIABLE};
+        for (size_t v = 0U; v < sizeof(values_mv) / sizeof(values_mv[0]); ++v) {
+            for (size_t k = 0U; k < 2U; ++k) {
+                char text[64];
+                (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_MEASUREMENT_CHANNEL_VALUE), 4U, values_mv[v], ui_tr(kinds[k]));
+                assert(text_width_px(text) <= UI_MEASUREMENT_CHANNEL_LABEL_WIDTH);
+            }
+        }
+    }
+    ui_i18n_set_locale(locale_before);
+}
+
+static void test_the_live_screen_runs_no_animation_of_its_own(void)
+{
+    const uint64_t clock_before_ms = render_now_ms;           /* later captures show the uptime */
+    const ui_locale_t locale_before = ui_i18n_get_locale();   /* the fixtures run once per locale */
+    const ui_locale_t locales[2] = {UI_LOCALE_EN, UI_LOCALE_UK};
+    for (unsigned locale = 0U; locale < 2U; ++locale) {
+        ui_i18n_set_locale(locales[locale]);
+        reset_menu(UI_SCREEN_MEASUREMENTS);
+        render_measurement.state = MEASUREMENT_SERVICE_LIVE;
+        render_measurement.active_object_present = true;
+        render_synth_waveform = true;
+        ui_render_measurements_locked();
+        lv_refr_now(lv_display_get_default());
+        assert(lv_anim_count_running() == 0U);
+        for (uint32_t step = 0U; step < 4U; ++step) {
+            render_now_ms += 1000U;
+            ui_measurements_refresh_locked();     /* values arrive: CHn +x.xxmV FLAT/VAR */
+            lv_refr_now(lv_display_get_default());
+            assert(lv_anim_count_running() == 0U);
+        }
+        render_synth_waveform = false;
+    }
+    ui_i18n_set_locale(locale_before);
+    render_now_ms = clock_before_ms;
+}
+
 static void capture_measurements(void)
 {
     for (measurement_service_state_t state = MEASUREMENT_SERVICE_LIVE; state <= MEASUREMENT_SERVICE_ERROR; ++state) {
@@ -361,6 +429,8 @@ static void capture_measurements(void)
         }
     }
     test_live_chart_update_dirties_only_what_changed();
+    test_the_strings_of_the_live_screen_fit_their_boxes();
+    test_the_live_screen_runs_no_animation_of_its_own();
     for (unsigned fault = 0U; fault < 6U; ++fault) {
         reset_menu(UI_SCREEN_MEASUREMENTS);
         render_acquisition_mode = fault;

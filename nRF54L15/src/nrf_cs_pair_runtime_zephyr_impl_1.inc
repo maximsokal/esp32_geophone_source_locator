@@ -40,6 +40,31 @@ typedef struct {
     struct bt_conn *conn;
 } runtime_event_t;
 
+/* The console trace (nrf_cs_trace.h) names every runtime event; the ESP32 log only shows how an attempt ended. */
+static const char *runtime_event_name(runtime_event_type_t type)
+{
+    switch (type) {
+        case RUNTIME_EVENT_CONNECTED: return "CONNECTED";
+        case RUNTIME_EVENT_SECURITY_READY: return "SECURITY_READY";
+        case RUNTIME_EVENT_MTU_READY: return "MTU_READY";
+        case RUNTIME_EVENT_DISCOVERY_READY: return "DISCOVERY_READY";
+        case RUNTIME_EVENT_FEATURES_READY: return "FEATURES_READY";
+        case RUNTIME_EVENT_CAPABILITIES_READY: return "CAPABILITIES_READY";
+        case RUNTIME_EVENT_CONFIG_READY: return "CONFIG_READY";
+        case RUNTIME_EVENT_CS_SECURITY_READY: return "CS_SECURITY_READY";
+        case RUNTIME_EVENT_TRANSPORT_ERROR: return "TRANSPORT_ERROR";
+        case RUNTIME_EVENT_DISCONNECTED: return "DISCONNECTED";
+        case RUNTIME_EVENT_LOCAL_COMPLETE: return "LOCAL_COMPLETE";
+        case RUNTIME_EVENT_PEER_COMPLETE: return "PEER_COMPLETE";
+        case RUNTIME_EVENT_RANGING_READY: return "RANGING_READY";
+        case RUNTIME_EVENT_PROCEDURE_ABORTED: return "PROCEDURE_ABORTED";
+        case RUNTIME_EVENT_INCOMING_CONNECTED: return "INCOMING_CONNECTED";
+        case RUNTIME_EVENT_INCOMING_DISCONNECTED: return "INCOMING_DISCONNECTED";
+        case RUNTIME_EVENT_REFLECTOR_CONFIG: return "REFLECTOR_CONFIG";
+        default: return "?";
+    }
+}
+
 K_MSGQ_DEFINE(
     s_event_queue,
     sizeof(runtime_event_t),

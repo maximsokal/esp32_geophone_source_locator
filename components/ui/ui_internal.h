@@ -214,6 +214,18 @@ void ui_render_current_locked(void);
 void ui_refresh_dynamic_locked(void);
 void ui_refresh_header_locked(void);
 
+/*
+ * Boxes of the texts of the live screen. A label wider than its box scrolls for ever, and every step of the scroll
+ * redraws the label's strip: bench log 2026-11-02 10:36 had 6 (EN) to 11 (UK) such labels on the live screen, so
+ * LVGL drew 11 flush chunks per pass at ~14 ms each without one new sample, and menus drew 19 frames a second
+ * while nothing changed. The strings of these boxes are written to fit (the render fixture measures them).
+ */
+#define UI_HEADER_TITLE_WIDTH 112
+#define UI_FOOTER_LABEL_WIDTH 304
+#define UI_MEASUREMENT_CHANNEL_LABEL_WIDTH 142
+#define UI_MEASUREMENT_LINK_LABEL_WIDTH 78
+#define UI_MEASUREMENT_LEGEND_LABEL_WIDTH 58
+
 lv_obj_t *ui_create_label_locked(
     lv_obj_t *parent,
     int x,

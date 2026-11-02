@@ -10,7 +10,8 @@ UI_TEST = Path("components/ui/tests/ui_node_link_status_test.c")
 TRANSPORT_TEST = Path("tests/host/nrf_sensor_transport_test.c")
 WEB_JSON_TEST = Path("tests/host/web_status_json_builder_test.c")
 STATUS_KEYS = {
-    "measurement.link_not_connected": "not connected",
+    # Shortened to fit the 78 px link box: a longer text scrolls for ever and keeps LVGL redrawing the live screen.
+    "measurement.link_not_connected": "offline",
     "measurement.link_connected": "connected",
     "measurement.link_ready": "ready",
     "measurement.link_measuring": "measuring",

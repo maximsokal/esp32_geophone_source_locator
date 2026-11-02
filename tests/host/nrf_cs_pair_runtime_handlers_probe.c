@@ -163,6 +163,29 @@ static void runtime_post_event(runtime_event_type_t t,const nrf_cs_step_t *s,uin
 static void maybe_request_on_demand_data(void) {}
 static void configure_reflector_connection(struct bt_conn *c) { (void)c; }
 static void configure_reflector_procedure(struct bt_conn *c,uint8_t id) { (void)c;(void)id; }
+/* The console trace hooks of nrf_cs_trace_zephyr.h, recorded so the probe can check what the handlers report. */
+typedef struct { const char *label; uint32_t attempt; int status; uint8_t phase; } probe_trace_event_t;
+static probe_trace_event_t s_trace_events[64];
+static unsigned s_trace_event_count,s_trace_execute_count,s_trace_timeout_count,s_trace_result_count,s_trace_rf_count;
+static uint32_t s_trace_execute_budget,s_trace_execute_attempt;
+static uint8_t s_trace_execute_initiator,s_trace_execute_reflector,s_trace_execute_try,s_trace_execute_pair;
+static uint8_t s_trace_timeout_phase,s_trace_result_outcome,s_trace_result_phase;
+static uint32_t s_trace_timeout_budget,s_trace_rf_signal,s_trace_rf_quality;
+static int32_t s_trace_result_distance;
+static uint16_t s_trace_result_confidence;
+static void nrf_cs_trace_zephyr_execute(uint32_t id,uint8_t i,uint8_t r,uint8_t t,uint8_t p,uint32_t b)
+{ ++s_trace_execute_count;s_trace_execute_attempt=id;s_trace_execute_initiator=i;s_trace_execute_reflector=r;
+  s_trace_execute_try=t;s_trace_execute_pair=p;s_trace_execute_budget=b; }
+static void nrf_cs_trace_zephyr_event(const char *label,uint32_t id,int status,uint8_t phase)
+{ if(s_trace_event_count<64)s_trace_events[s_trace_event_count]=(probe_trace_event_t){label,id,status,phase};
+  ++s_trace_event_count; }
+static void nrf_cs_trace_zephyr_timeout(uint32_t id,uint8_t phase,uint32_t budget)
+{ (void)id;++s_trace_timeout_count;s_trace_timeout_phase=phase;s_trace_timeout_budget=budget; }
+static void nrf_cs_trace_zephyr_result(uint32_t id,uint8_t outcome,int32_t dist,uint16_t conf,uint8_t phase)
+{ (void)id;++s_trace_result_count;s_trace_result_outcome=outcome;s_trace_result_distance=dist;
+  s_trace_result_confidence=conf;s_trace_result_phase=phase; }
+static void nrf_cs_trace_zephyr_rf(uint32_t id,uint32_t signal,uint32_t quality)
+{ (void)id;++s_trace_rf_count;s_trace_rf_signal=signal;s_trace_rf_quality=quality; }
 #include "runtime_emit_rf_diagnostics.inc"
 #include "runtime_adapter_complete.inc"
 #include "report_ranging_header.inc"
@@ -236,6 +259,7 @@ static void start_queued(unsigned sync_delay,unsigned queue_delay)
     s_due=0;s_timer_armed=false;s_count=s_taken=0;runtime_reset_ranging();
     s_error_events=0;s_last_error=0;
     s_rf_signal_events=s_rf_quality_events=0;memset(s_rf_words,0,sizeof(s_rf_words));
+    s_trace_event_count=s_trace_execute_count=s_trace_timeout_count=s_trace_result_count=s_trace_rf_count=0;
     s_outgoing_conn=&s_connection;s_incoming_conn=NULL;
     s_ras_skip=s_ras_malformed=s_ras_bad_paths=false;s_de_calls=s_de_scenario=0;
     s_confidence=0;memset(&s_cs_config,255,sizeof(s_cs_config));
@@ -387,6 +411,31 @@ int main(void)
     deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
     cleanup_work_handler(NULL);
     assert(s_outcome==NRF_CS_OUTCOME_OUTLIER && s_de_calls==0);
+    /* Console trace: what the handlers report for one attempt, so a UART log shows the time of every stage. */
+    start(0);
+    assert(s_trace_execute_count==1 && s_trace_execute_budget==500 && s_trace_execute_attempt==1);
+    assert(s_trace_execute_initiator==0 && s_trace_execute_reflector==1 && s_trace_execute_try==1 && s_trace_execute_pair==0);
+    assert(s_trace_event_count==1 && !strcmp(s_trace_events[0].label,"EXECUTE_WORK_STARTED"));  /* the queue wait */
+    advance_to_procedure();
+    assert(s_trace_event_count==9);                       /* the work start and the eight stages */
+    assert(!strcmp(s_trace_events[1].label,"CONNECTED") && s_trace_events[1].phase==NRF_CS_PAIR_PHASE_CONNECTING);
+    assert(!strcmp(s_trace_events[2].label,"SECURITY_READY") && s_trace_events[2].phase==NRF_CS_PAIR_PHASE_SECURING);
+    assert(!strcmp(s_trace_events[8].label,"CS_SECURITY_READY") && s_trace_events[8].phase==NRF_CS_PAIR_PHASE_CS_SECURITY);
+    assert(s_trace_events[2].attempt==1 && s_trace_events[2].status==0);
+    s_now=501;timeout_work_handler(NULL);
+    assert(s_trace_timeout_count==1 && s_trace_timeout_phase==NRF_CS_PAIR_PHASE_PROCEDURE && s_trace_timeout_budget==500);
+    cleanup_work_handler(NULL);
+    assert(s_trace_result_count==1 && s_trace_result_outcome==NRF_CS_OUTCOME_TIMEOUT && s_trace_rf_count==1);
+    start(0);advance_to_procedure();s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    cleanup_work_handler(NULL);
+    assert(s_trace_timeout_count==0 && s_trace_result_count==1 && s_trace_result_outcome==NRF_CS_OUTCOME_SUCCESS);
+    assert(s_trace_result_confidence==s_confidence && s_trace_rf_count==1);
+    start(0);s_now=60;s_count=1;s_taken=0;                /* an error code of a late event shows in the trace too */
+    s_events[0]=(runtime_event_t){.type=RUNTIME_EVENT_TRANSPORT_ERROR,.has_step=true,.step=s_timeout_step,.status=9};
+    event_work_handler(NULL);
+    assert(s_trace_event_count==2 && !strcmp(s_trace_events[1].label,"TRANSPORT_ERROR") && s_trace_events[1].status==9);
+    printf("console trace hooks verified\n");
     printf("PRODUCTION_HANDLER_ACCEPTANCE_GAPS=%u\n",gaps);
     return gaps?1:0;
 }

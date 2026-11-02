@@ -56,13 +56,13 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "FLAT", /* measurement.channel_flat */
     "CH%u INVALID %s", /* measurement.channel_invalid */
     "CH%u SERIAL? %s", /* measurement.channel_serial */
-    "CH%u %+6.2fmV %s", /* measurement.channel_value */
+    "CH%u%+6.2fmV %s", /* measurement.channel_value */
     "VAR", /* measurement.channel_variable */
     "DELETE FAILED", /* measurement.delete_failed */
     "DELETING SESSION...", /* measurement.deleting_session */
     "ADC DATA? DIGITAL  %s", /* measurement.digital_fault */
     "ERROR %s   OK RETRY", /* measurement.error_retry */
-    "UP/DOWN SCROLL/SELECT OK ACT LEFT BACK", /* measurement.footer */
+    "UP/DN SCROLL/SEL  OK ACT  LEFT BACK", /* measurement.footer */
     "TFT GRAPHS OFF  ADC+SD ON", /* measurement.graphs_off */
     "TFT GRAPHS OFF  %s", /* measurement.graphs_status */
     "OK START", /* measurement.health_start */
@@ -73,7 +73,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "connected", /* measurement.link_connected */
     "LINK", /* measurement.link_legend */
     "measuring", /* measurement.link_measuring */
-    "not connected", /* measurement.link_not_connected */
+    "offline", /* measurement.link_not_connected */
     "ready", /* measurement.link_ready */
     "LISTEN ONLY BEFORE RECORDING", /* measurement.listen_only */
     "NO SAVED SESSION TO PREVIEW", /* measurement.no_session_preview */
@@ -113,7 +113,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "STOPPING RECORDING...", /* measurement.stopping_recording */
     "LIVE --", /* measurement.summary_live */
     "OBJECT --", /* measurement.summary_object */
-    "MEASUREMENTS", /* measurement.title */
+    "SIGNALS", /* measurement.title */
     "ADC INVALID TRANSPORT  %s", /* measurement.transport_fault */
     "UNKNOWN", /* measurement.unknown */
     "PLEASE WAIT...", /* measurement.wait */
@@ -519,16 +519,16 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "> ЗБЕРЕГТИ   ВИДАЛИТИ   3D", /* measurement.action_save */
     "CH%u ЦИФР. ЗАВАДА", /* measurement.channel_digital */
     "CH%u  --", /* measurement.channel_empty */
-    "СТАЛИЙ", /* measurement.channel_flat */
+    "СТАЛ", /* measurement.channel_flat */
     "CH%u ЗБІЙ %s", /* measurement.channel_invalid */
     "CH%u SERIAL? %s", /* measurement.channel_serial */
-    "CH%u %+6.2fмВ %s", /* measurement.channel_value */
-    "ЗМІННИЙ", /* measurement.channel_variable */
+    "CH%u%+6.2fмВ %s", /* measurement.channel_value */
+    "ЗМІН", /* measurement.channel_variable */
     "НЕ ВДАЛОСЯ ВИДАЛИТИ", /* measurement.delete_failed */
     "ВИДАЛЕННЯ СЕАНСУ...", /* measurement.deleting_session */
     "ADC ЦИФР. ЗАВАДА  %s", /* measurement.digital_fault */
     "ПОМИЛКА %s   OK ПОВТОРИТИ", /* measurement.error_retry */
-    "UP/DOWN ОГЛЯД/ВИБІР OK ДІЯ LEFT НАЗАД", /* measurement.footer */
+    "UP/DN ОГЛЯД/ВИБ  OK ДІЯ  LEFT НАЗАД", /* measurement.footer */
     "ГРАФІКИ TFT ВИМК.  ADC+SD УВІМК.", /* measurement.graphs_off */
     "ГРАФІКИ TFT ВИМК.  %s", /* measurement.graphs_status */
     "OK ПОЧАТИ", /* measurement.health_start */
@@ -536,10 +536,10 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "НЕ ВДАЛОСЯ ЗБЕРЕГТИ СЕАНС", /* measurement.keep_failed */
     "НЕ ВДАЛОСЯ ЗАВЕРШИТИ ВИМІРЮВАННЯ", /* measurement.leave_failed */
     "ВИХІД ПІСЛЯ ЗАВЕРШЕННЯ ДІЇ...", /* measurement.leaving_after_operation */
-    "підключено", /* measurement.link_connected */
-    "ЗВ’ЯЗОК", /* measurement.link_legend */
-    "вимірювання", /* measurement.link_measuring */
-    "не підключено", /* measurement.link_not_connected */
+    "є зв’язок", /* measurement.link_connected */
+    "ЗВ’ЯЗ.", /* measurement.link_legend */
+    "вимірює", /* measurement.link_measuring */
+    "офлайн", /* measurement.link_not_connected */
     "готовий", /* measurement.link_ready */
     "ЛИШЕ ПРОСЛУХОВУВАННЯ ДО ЗАПИСУ", /* measurement.listen_only */
     "НЕМАЄ ЗБЕРЕЖЕНОГО СЕАНСУ ДЛЯ 3D ОГЛЯДУ", /* measurement.no_session_preview */
@@ -579,7 +579,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "ЗУПИНКА ЗАПИСУ...", /* measurement.stopping_recording */
     "НАЖИВО --", /* measurement.summary_live */
     "ОБ’ЄКТ --", /* measurement.summary_object */
-    "ВИМІРЮВАННЯ", /* measurement.title */
+    "СИГНАЛИ", /* measurement.title */
     "ADC ЗБІЙ ПЕРЕДАЧІ  %s", /* measurement.transport_fault */
     "НЕВІДОМО", /* measurement.unknown */
     "ЗАЧЕКАЙТЕ...", /* measurement.wait */

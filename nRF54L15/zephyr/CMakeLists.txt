@@ -21,6 +21,8 @@ include("${CMAKE_CURRENT_LIST_DIR}/../cmake/build_info.cmake")
 target_sources(app PRIVATE
     ../src/main.c
     ../src/nrf_boot_diagnostics_console_zephyr.c
+    ../src/nrf_cs_trace.c
+    ../src/nrf_cs_trace_zephyr.c
     ../src/nrf_node_state.c
     ../src/nrf_sensor_bus.c
     ../src/nrf_sensor_bus_zephyr.c

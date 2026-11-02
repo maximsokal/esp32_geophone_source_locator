@@ -30,8 +30,7 @@
 #define UI_MEASUREMENT_CHART_HEIGHT 42
 /* The channel value lines change with every sample; redrawing them at the chart rate doubles the dirty area. */
 #define UI_MEASUREMENT_LABEL_PERIOD_US 1000000U
-/* The channel value lines change with every sample; redrawing them at the chart rate doubles the dirty area. */
-#define UI_MEASUREMENT_LABEL_PERIOD_US 1000000U
+
 #define UI_MEASUREMENT_CHART_ROW_STEP 44
 #define UI_MEASUREMENT_CHART_LINK_TOP 21
 
@@ -359,7 +358,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
             card,
             5,
             0,
-            138,
+            UI_MEASUREMENT_CHANNEL_LABEL_WIDTH,
             label,
             UI_COLOR_TEXT
         );
@@ -367,7 +366,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
         card,
         65,
         UI_MEASUREMENT_CHART_LINK_TOP,
-        78,
+        UI_MEASUREMENT_LINK_LABEL_WIDTH,
         ui_tr(UI_I18N_KEY_MEASUREMENT_LINK_NOT_CONNECTED),
         UI_COLOR_MUTED
     );
@@ -729,7 +728,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
         card,
         5,
         2,
-        138,
+        UI_MEASUREMENT_CHANNEL_LABEL_WIDTH,
         label,
         UI_COLOR_TEXT
     );
@@ -737,7 +736,7 @@ static lv_obj_t *ui_measurements_create_chart_locked(
         card,
         65,
         UI_MEASUREMENT_CHART_LINK_TOP,
-        78,
+        UI_MEASUREMENT_LINK_LABEL_WIDTH,
         ui_tr(UI_I18N_KEY_MEASUREMENT_LINK_NOT_CONNECTED),
         UI_COLOR_MUTED
     );
@@ -1005,7 +1004,7 @@ void ui_render_measurements_locked(void)
         summary_card,
         234,
         1,
-        58,
+        UI_MEASUREMENT_LEGEND_LABEL_WIDTH,
         ui_tr(UI_I18N_KEY_MEASUREMENT_LINK_LEGEND),
         UI_COLOR_MUTED
     );

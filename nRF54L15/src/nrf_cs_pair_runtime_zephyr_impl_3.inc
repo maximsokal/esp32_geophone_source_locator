@@ -41,6 +41,9 @@ static void event_work_handler(struct k_work *work)
             }
             continue;
         }
+        /* Which event arrived in which phase, and when: the stage times the time budget of one pair is built from. */
+        nrf_cs_trace_zephyr_event(runtime_event_name(event.type), event.has_step ? event.step.attempt_id : 0U,
+            event.status, (uint8_t)nrf_cs_pair_adapter_phase(&s_adapter));
         if (event.has_step && event.status != 0) {
             nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_PAIR_PHASE,
                 event.step.attempt_id, (uint32_t)nrf_cs_pair_adapter_phase(&s_adapter));
@@ -387,6 +390,9 @@ static void execute_work_handler(struct k_work *work)
         runtime_adapter_complete(&s_timeout_step, &failure, NULL);
         return;
     }
+    /* The elapsed time of this line is how long the attempt waited for the work queue. */
+    nrf_cs_trace_zephyr_event("EXECUTE_WORK_STARTED", s_timeout_step.attempt_id, 0,
+        (uint8_t)nrf_cs_pair_adapter_phase(&s_adapter));
     nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_PAIR_CONTEXT,
         s_timeout_step.cycle_id, ((uint32_t)s_timeout_step.initiator << 24U) |
         ((uint32_t)s_timeout_step.reflector << 16U) |
@@ -499,6 +505,8 @@ int nrf_cs_pair_runtime_zephyr_execute(
     s_user_complete_context = context;
     s_timeout_step = *step;
     s_attempt_deadline_ms = k_uptime_get() + (int64_t)step->timeout_ms;
+    nrf_cs_trace_zephyr_execute(step->attempt_id, (uint8_t)step->initiator, (uint8_t)step->reflector,
+        (uint8_t)step->attempt_number, (uint8_t)step->pair_index, step->timeout_ms);
     atomic_set(&s_execute_pending, 1);
     submit_result = submit_cs_work(&s_execute_work);
     if (submit_result < 0) {

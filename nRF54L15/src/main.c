@@ -20,6 +20,7 @@
 #include "nrf_boot_failure_reason.h"
 #include "nrf_blue_led.h"
 #include "nrf_cs_pair_runtime_zephyr.h"
+#include "nrf_cs_trace_zephyr.h"
 #include "nrf_fault_record_zephyr.h"
 #include "nrf_reboot_intent_zephyr.h"
 #include "nrf_logger_led_zephyr.h"
@@ -473,6 +474,7 @@ int main(void)
         }
 
         nrf_boot_diagnostics_console_drain();
+        nrf_cs_trace_zephyr_console_drain();
         nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
         note_upstream_state();
 #if defined(CONFIG_APP_NRF_VERBOSE_LOG) && CONFIG_APP_NRF_VERBOSE_LOG

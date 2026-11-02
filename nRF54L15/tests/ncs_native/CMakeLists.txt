@@ -34,6 +34,8 @@ target_sources(app PRIVATE
     ../../src/nrf_cs_pair_adapter.c
     ../../src/nrf_cs_measurement_quality.c
     ../../src/nrf_cs_pair_runtime_zephyr.c
+    ../../src/nrf_cs_trace.c
+    ../../src/nrf_cs_trace_zephyr.c
 )
 
 if(CONFIG_BT_CHANNEL_SOUNDING)

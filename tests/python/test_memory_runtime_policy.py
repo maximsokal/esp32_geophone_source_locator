@@ -344,7 +344,10 @@ def test_tft_measurement_path_uses_envelope_arrays_without_point_updates():
     assert "#define UI_PERF_CHART_REFRESH_INTERVAL_MS 125U" in ui_perf_policy
     assert "ui_perf_policy_chart_refresh_due(" in measurements
     assert "ui_measurements_create_graph_container_locked" in measurements
-    assert "lv_obj_invalidate(context->measurement_graphs)" in measurements
+    # Only the four chart strips change when the series arrays are updated; invalidating the container of the four
+    # cards redrew 12 of the 30 flush chunks of the screen on every update (bench log 2026-11-01 21:46).
+    assert "lv_obj_invalidate(context->measurement_charts[channel])" in measurements
+    assert "lv_obj_invalidate(context->measurement_graphs)" not in measurements
     assert "lv_obj_invalidate(context->measurement_screen)" not in measurements
     assert "lv_chart_refresh(chart)" not in measurements
     assert "DIGITAL_INTERFERENCE" in measurements

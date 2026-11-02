@@ -2,6 +2,7 @@
 #include "nrf_cs_pair_runtime_zephyr_bridge.h"
 #include "nrf_cs_measurement_quality.h"
 #include "nrf_cs_rf_diagnostics.h"
+#include "nrf_cs_trace_zephyr.h"
 
 #include <errno.h>
 

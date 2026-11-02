@@ -8,9 +8,11 @@
 #include "spi_bus.h"
 #include "ui_perf_policy.h"
 
+#ifdef ESP_PLATFORM
 #include "esp_clk_tree.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
+#endif
 #include "esp_lcd_panel_io.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -61,6 +63,7 @@ static esp_err_t ui_lvgl_drain_panel_io_locked(void);
  * cache and reports the CPU cycles per read, so the log shows the speed of each memory that LVGL touches. The
  * reads of internal RAM include ~4 cycles of loop; flash and PSRAM numbers are what a cache miss costs.
  */
+#ifdef ESP_PLATFORM
 #define UI_MEM_PROBE_STRIDE_BYTES 64U
 #define UI_MEM_PROBE_FLASH_PSRAM_BYTES 131072U
 #define UI_MEM_PROBE_INTERNAL_BYTES 16384U
@@ -113,6 +116,10 @@ static void ui_lvgl_log_memory_speed(void)
     heap_caps_free(psram);
     heap_caps_free(internal);
 }
+#else
+/* The native render and wait fixtures have no flash cache or PSRAM to probe. */
+static void ui_lvgl_log_memory_speed(void) {}
+#endif
 
 static void ui_lvgl_perf_event(lv_event_t *event)
 {

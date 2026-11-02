@@ -192,10 +192,11 @@ static void runtime_emit_rf_diagnostics(const nrf_cs_step_t *step)
 {
     const uint32_t status = (uint32_t)atomic_get(&s_rf_status);
     const uint8_t flags = (uint8_t)atomic_get(&s_rf_flags) | s_rf_diagnostics.flags;
-    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_RF_SIGNAL, step->attempt_id,
-        nrf_cs_rf_signal_word(&s_rf_diagnostics, (int8_t)atomic_get(&s_rf_tx_power)));
-    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_RF_QUALITY, step->attempt_id,
-        nrf_cs_rf_quality_word(&s_rf_diagnostics, (uint8_t)(status & 15U), flags));
+    const uint32_t signal_word = nrf_cs_rf_signal_word(&s_rf_diagnostics, (int8_t)atomic_get(&s_rf_tx_power));
+    const uint32_t quality_word = nrf_cs_rf_quality_word(&s_rf_diagnostics, (uint8_t)(status & 15U), flags);
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_RF_SIGNAL, step->attempt_id, signal_word);
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_RF_QUALITY, step->attempt_id, quality_word);
+    nrf_cs_trace_zephyr_rf(step->attempt_id, signal_word, quality_word);
     if ((flags & (NRF_CS_RF_ABORTED | NRF_CS_RF_ANTENNA_MISMATCH)) != 0U) {
         nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_RF_STATUS, step->attempt_id, status);
     }
@@ -213,6 +214,10 @@ static void runtime_adapter_complete(
     (void)k_work_cancel_delayable(&s_timeout_work);
     s_user_complete_cb = NULL;
     s_user_complete_context = NULL;
+    if (step != NULL && measurement != NULL) {
+        nrf_cs_trace_zephyr_result(step->attempt_id, (uint8_t)measurement->outcome, measurement->distance_mm,
+            measurement->confidence, (uint8_t)nrf_cs_pair_adapter_phase(&s_adapter));
+    }
     runtime_emit_rf_diagnostics(step);
     runtime_reset_ranging();
     (void)runtime_start_advertising();
@@ -225,6 +230,8 @@ static void runtime_adapter_complete(
 static void timeout_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
+    nrf_cs_trace_zephyr_timeout(s_timeout_step.attempt_id, (uint8_t)nrf_cs_pair_adapter_phase(&s_adapter),
+        s_timeout_step.timeout_ms);
     nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_PAIR_PHASE,
         s_timeout_step.attempt_id, (uint32_t)nrf_cs_pair_adapter_phase(&s_adapter));
     (void)nrf_cs_pair_runtime_bridge_dispatch(

@@ -858,13 +858,13 @@
       "max_len": 27
     },
     "measurement.title": {
-      "en": "MEASUREMENTS",
-      "uk": "ВИМІРЮВАННЯ",
+      "en": "SIGNALS",
+      "uk": "СИГНАЛИ",
       "max_len": 12
     },
     "measurement.footer": {
-      "en": "UP/DOWN SCROLL/SELECT OK ACT LEFT BACK",
-      "uk": "UP/DOWN ОГЛЯД/ВИБІР OK ДІЯ LEFT НАЗАД",
+      "en": "UP/DN SCROLL/SEL  OK ACT  LEFT BACK",
+      "uk": "UP/DN ОГЛЯД/ВИБ  OK ДІЯ  LEFT НАЗАД",
       "max_len": 38
     },
     "measurement.channel_empty": {
@@ -888,18 +888,18 @@
       "max_len": 15
     },
     "measurement.channel_value": {
-      "en": "CH%u %+6.2fmV %s",
-      "uk": "CH%u %+6.2fмВ %s",
+      "en": "CH%u%+6.2fmV %s",
+      "uk": "CH%u%+6.2fмВ %s",
       "max_len": 16
     },
     "measurement.channel_flat": {
       "en": "FLAT",
-      "uk": "СТАЛИЙ",
+      "uk": "СТАЛ",
       "max_len": 6
     },
     "measurement.channel_variable": {
       "en": "VAR",
-      "uk": "ЗМІННИЙ",
+      "uk": "ЗМІН",
       "max_len": 7
     },
     "measurement.node_main": {
@@ -958,13 +958,13 @@
       "max_len": 6
     },
     "measurement.link_not_connected": {
-      "en": "not connected",
-      "uk": "не підключено",
+      "en": "offline",
+      "uk": "офлайн",
       "max_len": 13
     },
     "measurement.link_connected": {
       "en": "connected",
-      "uk": "підключено",
+      "uk": "є зв’язок",
       "max_len": 13
     },
     "measurement.link_ready": {
@@ -974,12 +974,12 @@
     },
     "measurement.link_measuring": {
       "en": "measuring",
-      "uk": "вимірювання",
+      "uk": "вимірює",
       "max_len": 13
     },
     "measurement.link_legend": {
       "en": "LINK",
-      "uk": "ЗВ’ЯЗОК",
+      "uk": "ЗВ’ЯЗ.",
       "max_len": 13
     },
     "measurement.state_live": {

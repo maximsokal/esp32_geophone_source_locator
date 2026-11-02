@@ -170,7 +170,7 @@ lv_obj_t *ui_create_screen_base_locked(
     lv_obj_set_style_pad_all(header, 0, 0);
 
     (void)ui_create_label_locked(
-        header, 10, 9, 112, title, UI_COLOR_TEXT
+        header, 10, 9, UI_HEADER_TITLE_WIDTH, title, UI_COLOR_TEXT
     );
 
     context->header_source = ui_create_label_locked(
@@ -212,7 +212,7 @@ lv_obj_t *ui_create_screen_base_locked(
             footer_bar,
             8,
             (24 - (int)ui_font_montserrat_14.line_height) / 2,
-            304,
+            UI_FOOTER_LABEL_WIDTH,
             footer,
             UI_COLOR_MUTED
         );

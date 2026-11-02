@@ -226,6 +226,11 @@
       "include_dirs": ["nRF54L15/include"]
     },
     {
+      "name": "nrf_cs_trace",
+      "sources": ["nRF54L15/src/nrf_cs_pair_adapter.c", "nRF54L15/src/nrf_cs_trace.c", "tests/host/nrf_cs_trace_test.c"],
+      "include_dirs": ["nRF54L15/include"]
+    },
+    {
       "name": "nrf_cs_cycle_coordinator",
       "sources": ["nRF54L15/src/nrf_upstream_protocol.c", "nRF54L15/src/nrf_cs_scheduler.c", "nRF54L15/src/nrf_cs_cycle_protocol.c", "nRF54L15/src/nrf_cs_cycle_runtime.c", "nRF54L15/src/nrf_cs_cycle_replay.c", "nRF54L15/src/nrf_cs_cycle_coordinator.c", "tests/host/nrf_cs_cycle_coordinator_test.c"],
       "include_dirs": ["nRF54L15/include"]
