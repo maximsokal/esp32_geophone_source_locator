@@ -440,6 +440,9 @@ static nrf_cs_measurement_t estimate_measurement(void)
     }
 
     quality = cs_de_calc(&s_de_report);
+    nrf_cs_trace_zephyr_estimates(s_timeout_step.attempt_id, s_de_report.distance_estimates[0].ifft,
+        s_de_report.distance_estimates[0].phase_slope, s_de_report.distance_estimates[0].rtt,
+        s_de_report.distance_estimates[0].best);
 
     if (s_realtime_ras) {
         measurement.provider_quality_flags |= NRF_CS_PROVIDER_QUALITY_REALTIME_RAS;

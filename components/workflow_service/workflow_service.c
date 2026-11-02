@@ -262,22 +262,26 @@ static BaseType_t workflow_service_receive_async(workflow_async_command_t *item)
 }
 
 /*
- * MEASURING RUN of the time budget of one pair (bench logs 2026-11-02 12:55 MAIN and 12:57 REMOTE, UART `cs:` trace):
- * with 500 ms per attempt all 18 of 18 attempts were cut in SECURING. The radio needed 171..484 ms (median 255) only
- * to connect (passive scan for the reflector's advertising, then the connection), so the security procedure had
- * 16..329 ms and never reached SECURITY_READY; no later stage (MTU, RAS discovery, CS configuration, the procedure
- * itself) was ever reached, so their times are unknown. One attempt per pair with a budget far above any of them
- * shows every stage's time in the trace; the production budget is then set from the longest stage times measured
- * (plus margin), not guessed. One sample per pair and one attempt keep the run at about a minute (the slot of an
- * execution is GO skew + (samples + attempts - 1) * (budget + gap) and the 12 slots run one after another).
+ * Time budget of one pair, from the bench logs of 2026-11-02:
+ *  - 500 ms per attempt (12:55 MAIN, 12:57 REMOTE): all 18 of 18 attempts were cut in SECURING; the radio needed
+ *    171..484 ms (median 255) just to connect, so security had 16..329 ms and never finished.
+ *  - 4000 ms per attempt, one attempt per direction (14:05 ESP log, nRF events): 11 of 12 attempts measured, and a whole
+ *    attempt (connect, security, MTU, RAS discovery, CS configuration, the procedure, the estimate) took 1277..1598 ms
+ *    (median 1324). The twelfth, node 1 -> node 2, failed by itself after 388 ms with a security error (status 9), not
+ *    by the budget.
+ * The budget is 1.5 times the longest attempt measured. The six pairs came out 1.49..2.05 m with confidence 1000, but the
+ * two directions of a pair differed by 3, 16, 116, 164 and 1193 mm (two samples cannot tell which one is wrong), and the
+ * geometry stayed unsolved for node 4 (geometry_unsolved:4): three samples per direction give a median that drops such
+ * a sample. The slot of an execution is GO skew + (samples + attempts - 1) * (budget + gap) and the 12 slots run one
+ * after another: 3 x 2550 + 300 = 7950 ms, about 95 s for the whole cycle.
  */
-#define WORKFLOW_RANGING_PAIR_BUDGET_MS 4000U
+#define WORKFLOW_RANGING_PAIR_BUDGET_MS 2400U
 
 static const nrf_cs_policy_t s_workflow_ranging_policy = {
     .pair_timeout_ms = WORKFLOW_RANGING_PAIR_BUDGET_MS,
     .max_attempts = 1U,
     .min_confidence = 500U,
-    .samples_per_pair = 1U,
+    .samples_per_pair = 3U,
     .full_rotation = true,
 };
 

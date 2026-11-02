@@ -27,7 +27,11 @@ typedef enum {
     NRF_CS_TRACE_TIMEOUT,       /* the attempt budget ran out in `phase` */
     NRF_CS_TRACE_RESULT,        /* the attempt ended: outcome, distance, confidence */
     NRF_CS_TRACE_RF,            /* the radio summary words of the attempt (decoded by the ESP32 log) */
+    NRF_CS_TRACE_ESTIMATES,     /* the three distance estimates of the library and the one picked as "best" */
 } nrf_cs_trace_kind_t;
+
+/* An estimate the library could not make (not finite, negative): printed as n/a. */
+#define NRF_CS_TRACE_UNAVAILABLE INT32_MIN
 
 typedef struct {
     uint32_t t_ms;              /* uptime when the record was pushed */
@@ -36,6 +40,8 @@ typedef struct {
     const char *label;          /* a string literal: event name or outcome name */
     int32_t a;
     int32_t b;
+    int32_t c;                  /* ESTIMATES: rtt, in mm */
+    int32_t d;                  /* ESTIMATES: best, in mm */
     uint8_t kind;
     uint8_t phase;              /* nrf_cs_pair_phase_t */
 } nrf_cs_trace_entry_t;

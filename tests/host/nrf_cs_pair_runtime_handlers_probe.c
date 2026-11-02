@@ -184,6 +184,10 @@ static void nrf_cs_trace_zephyr_timeout(uint32_t id,uint8_t phase,uint32_t budge
 static void nrf_cs_trace_zephyr_result(uint32_t id,uint8_t outcome,int32_t dist,uint16_t conf,uint8_t phase)
 { (void)id;++s_trace_result_count;s_trace_result_outcome=outcome;s_trace_result_distance=dist;
   s_trace_result_confidence=conf;s_trace_result_phase=phase; }
+static unsigned s_trace_estimates_count;
+static float s_trace_est[4];
+static void nrf_cs_trace_zephyr_estimates(uint32_t id,float ifft,float phase,float rtt,float best)
+{ (void)id;++s_trace_estimates_count;s_trace_est[0]=ifft;s_trace_est[1]=phase;s_trace_est[2]=rtt;s_trace_est[3]=best; }
 static void nrf_cs_trace_zephyr_rf(uint32_t id,uint32_t signal,uint32_t quality)
 { (void)id;++s_trace_rf_count;s_trace_rf_signal=signal;s_trace_rf_quality=quality; }
 #include "runtime_emit_rf_diagnostics.inc"
@@ -216,7 +220,7 @@ static void bt_ras_rreq_rd_subevent_data_parse(struct net_buf_simple *a,struct n
 static cs_de_quality_t cs_de_calc(cs_de_report_t *report)
 {
     ++s_de_calls;s_now+=s_estimate_delay;
-    report->distance_estimates[0].ifft=1;report->distance_estimates[0].phase_slope=1;
+    report->distance_estimates[0].ifft=1;report->distance_estimates[0].phase_slope=2;
     report->distance_estimates[0].rtt=1;report->distance_estimates[0].best=1;
     if(s_de_scenario==1)report->distance_estimates[0].best=NAN;
     if(s_de_scenario==2)report->distance_estimates[0].best=INFINITY;
@@ -260,6 +264,7 @@ static void start_queued(unsigned sync_delay,unsigned queue_delay)
     s_error_events=0;s_last_error=0;
     s_rf_signal_events=s_rf_quality_events=0;memset(s_rf_words,0,sizeof(s_rf_words));
     s_trace_event_count=s_trace_execute_count=s_trace_timeout_count=s_trace_result_count=s_trace_rf_count=0;
+    s_trace_estimates_count=0;
     s_outgoing_conn=&s_connection;s_incoming_conn=NULL;
     s_ras_skip=s_ras_malformed=s_ras_bad_paths=false;s_de_calls=s_de_scenario=0;
     s_confidence=0;memset(&s_cs_config,255,sizeof(s_cs_config));
@@ -430,6 +435,8 @@ int main(void)
     deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
     cleanup_work_handler(NULL);
     assert(s_trace_timeout_count==0 && s_trace_result_count==1 && s_trace_result_outcome==NRF_CS_OUTCOME_SUCCESS);
+    /* All three estimates of the library reach the trace, not only "best": the method is picked from them. */
+    assert(s_trace_estimates_count==1 && s_trace_est[0]==1.0f && s_trace_est[1]==2.0f && s_trace_est[2]==1.0f && s_trace_est[3]==1.0f);
     assert(s_trace_result_confidence==s_confidence && s_trace_rf_count==1);
     start(0);s_now=60;s_count=1;s_taken=0;                /* an error code of a late event shows in the trace too */
     s_events[0]=(runtime_event_t){.type=RUNTIME_EVENT_TRANSPORT_ERROR,.has_step=true,.step=s_timeout_step,.status=9};

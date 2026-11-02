@@ -76,6 +76,14 @@ static int append_elapsed(char *line, size_t capacity, int used, uint32_t elapse
     return written < 0 ? -1 : used + written;
 }
 
+/* A distance in mm, or "n/a" for an estimate the library did not make. */
+static const char *distance_text(int32_t mm, char buffer[16])
+{
+    if (mm == NRF_CS_TRACE_UNAVAILABLE) return "n/a";
+    (void)snprintf(buffer, 16U, "%d", (int)mm);
+    return buffer;
+}
+
 int nrf_cs_trace_format(const nrf_cs_trace_entry_t *entry, char *line, size_t capacity)
 {
     if (entry == NULL || line == NULL || capacity == 0U) return -1;
@@ -110,6 +118,12 @@ int nrf_cs_trace_format(const nrf_cs_trace_entry_t *entry, char *line, size_t ca
         case NRF_CS_TRACE_RF:
             return snprintf(line, capacity, "cs: t=%u a=%u rf signal=0x%08x quality=0x%08x",
                 (unsigned)entry->t_ms, (unsigned)entry->attempt_id, (unsigned)entry->a, (unsigned)entry->b);
+        case NRF_CS_TRACE_ESTIMATES: {
+            char ifft[16], phase[16], rtt[16], best[16];
+            return snprintf(line, capacity, "cs: t=%u a=%u est ifft_mm=%s phase_mm=%s rtt_mm=%s best_mm=%s",
+                (unsigned)entry->t_ms, (unsigned)entry->attempt_id, distance_text(entry->a, ifft),
+                distance_text(entry->b, phase), distance_text(entry->c, rtt), distance_text(entry->d, best));
+        }
         default:
             return -1;
     }

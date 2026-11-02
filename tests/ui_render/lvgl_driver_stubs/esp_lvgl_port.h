@@ -9,6 +9,7 @@ typedef struct {
     unsigned task_stack;
     int task_affinity;
     unsigned task_max_sleep_ms;
+    int timer_period_ms;
 } lvgl_port_cfg_t;
 
 #define ESP_LVGL_PORT_INIT_CONFIG() ((lvgl_port_cfg_t){0})

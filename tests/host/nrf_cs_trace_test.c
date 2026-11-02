@@ -113,6 +113,14 @@ static void test_lines_carry_the_stage_and_the_time_since_the_attempt_started(vo
     assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
     assert(strcmp(line, "cs: t=68402 a=1 rf signal=0xf804b0c4 quality=0x4023c032") == 0);
 
+    e = entry(NRF_CS_TRACE_ESTIMATES, 1U);                       /* all three methods of the library, and "best" */
+    e.a = 1760;
+    e.b = 220;
+    e.c = NRF_CS_TRACE_UNAVAILABLE;
+    e.d = 1760;
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strcmp(line, "cs: t=68402 a=1 est ifft_mm=1760 phase_mm=220 rtt_mm=n/a best_mm=1760") == 0);
+
     assert(nrf_cs_trace_format_dropped(7U, line, sizeof(line)) > 0);
     assert(strstr(line, "trace_dropped=7") != NULL);
 }

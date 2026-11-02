@@ -56,3 +56,40 @@ def test_a_budget_is_suggested_only_from_attempts_that_succeeded():
     text = "\n".join(tool.report("log", failed_only, []))
     assert "no attempt succeeded: no budget can be derived" in text
     assert 'no "cs:" lines' in "\n".join(tool.report("log", {}, []))
+
+
+# Three attempts at a pair 150 mm apart (the owner's bench 2026-11-02: nodes 10..20 cm apart, the library said 1.5..2 m):
+# the IFFT estimate sits ~1.6 m off, the phase slope is closer. The log says which method deserves trust.
+ACCURACY_LOG = """cs: t=100 a=1 execute init=4 refl=0 try=1 pair=5 budget=2400ms
+cs: t=900 a=1 est ifft_mm=1750 phase_mm=240 rtt_mm=n/a best_mm=1750
+cs: t=100 a=2 execute init=0 refl=4 try=1 pair=4 budget=2400ms
+cs: t=900 a=2 est ifft_mm=1790 phase_mm=100 rtt_mm=2200 best_mm=1790
+cs: t=100 a=3 execute init=1 refl=2 try=1 pair=1 budget=2400ms
+cs: t=900 a=3 est ifft_mm=1500 phase_mm=300 rtt_mm=n/a best_mm=1500
+"""
+
+
+def test_the_estimates_of_each_method_are_compared_with_the_true_distances():
+    attempts, _ = tool.parse(ACCURACY_LOG)
+    assert attempts[1].pair == (0, 4) and attempts[2].pair == (0, 4)       # the direction does not matter
+    assert attempts[1].estimates == {"ifft": 1750, "phase": 240, "best": 1750}   # "n/a" is no estimate
+    truth = tool.parse_truth("4-0=150,1-2=200")
+    assert truth == {(0, 4): 150, (1, 2): 200}
+    lines = tool.accuracy(attempts, truth)
+    by_method = {line.split()[0]: line for line in lines}
+    # errors: ifft 1600, 1640, 1300 (mean 1513); phase 90, -50, 100 (mean 47); rtt 2050 (one estimate)
+    assert "n=3" in by_method["ifft"] and "offset=    1513 mm" in by_method["ifft"]
+    assert "n=3" in by_method["phase"] and "offset=      47 mm" in by_method["phase"]
+    assert "n=1" in by_method["rtt"] and "offset=    2050 mm" in by_method["rtt"]
+    assert "worst after removing the offset +-97 mm" in by_method["phase"]     # |-50 - 47|
+    assert "no estimates at the given pairs" in "".join(tool.accuracy(attempts, {(5, 6): 100}))
+
+
+def test_the_report_prints_the_accuracy_only_when_the_truth_is_given():
+    attempts, links = tool.parse(ACCURACY_LOG)
+    assert "accuracy against" not in nl_join(tool.report("log", attempts, links))
+    assert "accuracy against" in nl_join(tool.report("log", attempts, links, tool.parse_truth("0-4=150")))
+
+
+def nl_join(lines):
+    return chr(10).join(lines)

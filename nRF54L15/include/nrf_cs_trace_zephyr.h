@@ -15,6 +15,8 @@ void nrf_cs_trace_zephyr_timeout(uint32_t attempt_id, uint8_t phase, uint32_t bu
 void nrf_cs_trace_zephyr_result(uint32_t attempt_id, uint8_t outcome, int32_t distance_mm,
     uint16_t confidence, uint8_t phase);
 void nrf_cs_trace_zephyr_rf(uint32_t attempt_id, uint32_t signal_word, uint32_t quality_word);
+/* The library's estimates in metres (NAN or negative = none): which of them is closest to the truth decides the method. */
+void nrf_cs_trace_zephyr_estimates(uint32_t attempt_id, float ifft_m, float phase_slope_m, float rtt_m, float best_m);
 void nrf_cs_trace_zephyr_console_drain(void);
 
 #endif

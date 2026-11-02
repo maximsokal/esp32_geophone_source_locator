@@ -32,7 +32,7 @@ def test_the_main_loop_prints_the_trace_and_the_ble_handlers_only_push_to_it():
 
     runtime = "".join(_read(f"nRF54L15/src/nrf_cs_pair_runtime_zephyr_impl_{i}.inc") for i in (1, 2, 3))
     for hook in ("nrf_cs_trace_zephyr_execute(", "nrf_cs_trace_zephyr_event(", "nrf_cs_trace_zephyr_timeout(",
-                 "nrf_cs_trace_zephyr_result(", "nrf_cs_trace_zephyr_rf("):
+                 "nrf_cs_trace_zephyr_result(", "nrf_cs_trace_zephyr_rf(", "nrf_cs_trace_zephyr_estimates("):
         assert hook in runtime, hook
     assert "printk" not in runtime
 

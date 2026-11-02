@@ -2,6 +2,8 @@
 
 #include "nrf_cs_trace.h"
 
+#include <math.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
@@ -78,6 +80,21 @@ void nrf_cs_trace_zephyr_rf(uint32_t attempt_id, uint32_t signal_word, uint32_t 
     push_locked(&entry);
 }
 
+static int32_t metres_to_mm(float metres)
+{
+    if (!isfinite(metres) || metres < 0.0f || metres > 2000000.0f) return NRF_CS_TRACE_UNAVAILABLE;
+    return (int32_t)(metres * 1000.0f + 0.5f);
+}
+
+void nrf_cs_trace_zephyr_estimates(uint32_t attempt_id, float ifft_m, float phase_slope_m, float rtt_m, float best_m)
+{
+    nrf_cs_trace_entry_t entry = {
+        .kind = NRF_CS_TRACE_ESTIMATES, .attempt_id = attempt_id, .a = metres_to_mm(ifft_m),
+        .b = metres_to_mm(phase_slope_m), .c = metres_to_mm(rtt_m), .d = metres_to_mm(best_m),
+    };
+    push_locked(&entry);
+}
+
 void nrf_cs_trace_zephyr_console_drain(void)
 {
     char line[NRF_CS_TRACE_LINE_CAPACITY];
@@ -130,6 +147,11 @@ void nrf_cs_trace_zephyr_result(uint32_t attempt_id, uint8_t outcome, int32_t di
 void nrf_cs_trace_zephyr_rf(uint32_t attempt_id, uint32_t signal_word, uint32_t quality_word)
 {
     (void)attempt_id; (void)signal_word; (void)quality_word;
+}
+
+void nrf_cs_trace_zephyr_estimates(uint32_t attempt_id, float ifft_m, float phase_slope_m, float rtt_m, float best_m)
+{
+    (void)attempt_id; (void)ifft_m; (void)phase_slope_m; (void)rtt_m; (void)best_m;
 }
 
 void nrf_cs_trace_zephyr_console_drain(void) {}
