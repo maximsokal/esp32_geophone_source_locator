@@ -76,6 +76,26 @@ runtime_health_reaction_t runtime_health_policy_reaction(
     bool hard_failure
 );
 
+/*
+ * Bench log 2026-11-01 21:46: the DMA-capable heap fell from 6 KB to 175 bytes between two once-a-minute memory
+ * lines and the log could not say when or what for. The watch compares each once-a-second sample with the last
+ * value that was reported; a change of `threshold` bytes or more is reported with the value it came from, so the
+ * moment lands next to the workflow step, screen or task start that caused it. Smaller swings (the storage
+ * manager's 1.5 KB reserve being taken and given back) stay quiet.
+ */
+typedef struct
+{
+    bool armed;
+    uint32_t reference_free;
+} runtime_memory_watch_t;
+
+bool runtime_memory_watch_update(
+    runtime_memory_watch_t *watch,
+    uint32_t free_now,
+    uint32_t threshold,
+    uint32_t *reported_from
+);
+
 runtime_health_task_set_result_t runtime_health_policy_check_task_set(
     const char *const *expected_names,
     size_t expected_count,

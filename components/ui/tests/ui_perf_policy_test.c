@@ -337,6 +337,40 @@ static void test_U2_flush_chunks_stay_under_5ms_and_yield_between(void)
 }
 
 
+/*
+ * Bench log 2026-11-01 21:46: a chunk of the live charts cost ~20 ms and nothing in the log said whether that was a
+ * few big chunks or many small ones, nor how much of it was per pixel. The profile of a window tells.
+ */
+static void test_U8_chunk_profile_splits_a_window_into_chunks_pixels_and_draw_time(void)
+{
+    (void)ui_perf_policy_stage_take();
+    ui_perf_profile_t empty = ui_perf_policy_profile(&(ui_perf_stage_metrics_t){0});
+    assert(empty.chunks_per_frame_x10 == 0U && empty.chunk_draw_avg_us == 0U && empty.draw_ns_per_pixel == 0U);
+    assert(ui_perf_policy_profile(NULL).pixels_per_chunk == 0U);
+
+    /* frame 1: five strips of 58x8 px at 2 ms; frame 2: twelve bands of 300x8 px at 14 ms */
+    for (unsigned i = 0U; i < 5U; ++i) ui_perf_policy_record_chunk_draw(2000U, 58U * 8U);
+    ui_perf_policy_record_frame_chunks(5U);
+    ui_perf_policy_record_render(10000U);
+    for (unsigned i = 0U; i < 12U; ++i) ui_perf_policy_record_chunk_draw(14000U, 300U * 8U);
+    ui_perf_policy_record_frame_chunks(12U);
+    ui_perf_policy_record_render(168000U);
+
+    const ui_perf_stage_metrics_t window = ui_perf_policy_stage_take();
+    const ui_perf_profile_t profile = ui_perf_policy_profile(&window);
+    assert(window.chunk_samples == 17U);
+    assert(profile.chunks_per_frame_x10 == 85U);                 /* 17 chunks over 2 frames */
+    assert(profile.chunks_per_frame_max == 12U);
+    assert(profile.chunk_draw_avg_us == 10470U);                 /* 178000 us over 17 chunks */
+    assert(profile.chunk_draw_max_us == 14000U);
+    assert(profile.pixels_per_chunk == 1830U);                   /* 31120 px over 17 chunks */
+    assert(profile.draw_ns_per_pixel == 5719U);                  /* 178000 us over 31120 px */
+
+    const ui_perf_stage_metrics_t after = ui_perf_policy_stage_take();   /* the window reset clears it */
+    assert(after.chunk_samples == 0U && after.frame_chunks_max == 0U && after.chunk_pixels_total == 0U);
+}
+
+
 static void test_U3_render_warning_boundary_is_strictly_over_50ms(void)
 {
     assert(!ui_perf_policy_render_warning(49000U));
@@ -412,6 +446,7 @@ static bool run_requested_test(const char *name)
     else if (strcmp(name, "U6") == 0) test_U6_preview_caps_and_chunk_size_boundaries();
     else if (strcmp(name, "U7") == 0) test_U7_a_costly_live_frame_is_followed_by_a_rest_that_leaves_core_time_to_others();
     else if (strcmp(name, "U7b") == 0) test_U7b_the_last_render_cost_is_the_one_recorded();
+    else if (strcmp(name, "U8") == 0) test_U8_chunk_profile_splits_a_window_into_chunks_pixels_and_draw_time();
     else return false;
     return true;
 }
@@ -434,5 +469,6 @@ int main(int argc, char **argv)
     test_U6_preview_caps_and_chunk_size_boundaries();
     test_U7_a_costly_live_frame_is_followed_by_a_rest_that_leaves_core_time_to_others();
     test_U7b_the_last_render_cost_is_the_one_recorded();
+    test_U8_chunk_profile_splits_a_window_into_chunks_pixels_and_draw_time();
     return 0;
 }

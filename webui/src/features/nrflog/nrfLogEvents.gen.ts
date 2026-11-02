@@ -30,4 +30,10 @@ export const NRF_LOG_EVENTS = {
   28: { name: "SENSOR_SCAN_WORD3", subsystem: "SENSOR", defaultSeverity: "INFO" },
   29: { name: "SENSOR_SCAN_DONE", subsystem: "SENSOR", defaultSeverity: "INFO" },
   30: { name: "SENSOR_BUS_FAULT", subsystem: "SENSOR", defaultSeverity: "ERROR" },
+  31: { name: "CS_PAIR_CONTEXT", subsystem: "CS", defaultSeverity: "INFO" },
+  32: { name: "CS_PAIR_PHASE", subsystem: "CS", defaultSeverity: "INFO" },
+  33: { name: "CS_PAIR_COMPLETE", subsystem: "CS", defaultSeverity: "INFO" },
+  34: { name: "CS_RF_SIGNAL", subsystem: "CS", defaultSeverity: "INFO" },
+  35: { name: "CS_RF_QUALITY", subsystem: "CS", defaultSeverity: "INFO" },
+  36: { name: "CS_RF_STATUS", subsystem: "CS", defaultSeverity: "WARN" },
 } as const;

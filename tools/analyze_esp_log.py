@@ -87,6 +87,10 @@ class Report:
     findings: list[Finding] = field(default_factory=list)
     adc_words: dict[str, dict[str, int]] = field(default_factory=dict)
     adc_rate_channels: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Facts for the render and memory questions; they decide no gate.
+    render_profile: dict[str, int] = field(default_factory=dict)
+    mem_probe: dict[str, str] = field(default_factory=dict)
+    mem_watch: list[dict[str, int]] = field(default_factory=list)
 
     def gate_status(self, gate: str) -> str:
         statuses = [f.status for f in self.findings if f.gate == gate]
@@ -412,6 +416,53 @@ def _gate_g9(entries: list[Entry]) -> Finding:
     return Finding("G9", f"ranging {t_ms / 1000:.1f}s", PASS if success else FAIL, measured, "success")
 
 
+def _render_profile(entries: list[Entry]) -> dict[str, int]:
+    """UI_PROFILE windows combined: what a frame is made of (chunks) and what a chunk costs (time, pixels)."""
+    frames = chunks_x10 = chunk_us = pixels = 0
+    reports = 0
+    out = {"chunks_per_frame_max": 0, "chunk_draw_max_us": 0, "scene_objects_max": 0}
+    for e in entries:
+        if e.tag != "UI" or not e.message.startswith("UI_PROFILE:"):
+            continue
+        f = {k: int(float(v)) for k, v in _fields(e.message).items()}
+        if not {"frames", "chunks_per_frame_x10", "chunk_draw_avg_us", "pixels_per_chunk"} <= f.keys() or f["frames"] <= 0:
+            continue
+        reports += 1
+        window_chunks_x10 = f["frames"] * f["chunks_per_frame_x10"]        # chunks * 10
+        frames += f["frames"]
+        chunks_x10 += window_chunks_x10
+        chunk_us += f["chunk_draw_avg_us"] * window_chunks_x10             # (us * chunks) * 10
+        pixels += f["pixels_per_chunk"] * window_chunks_x10
+        out["chunks_per_frame_max"] = max(out["chunks_per_frame_max"], f.get("chunks_per_frame_max", 0))
+        out["chunk_draw_max_us"] = max(out["chunk_draw_max_us"], f.get("chunk_draw_max_us", 0))
+        out["scene_objects_max"] = max(out["scene_objects_max"], f.get("scene_objects", 0))
+    if reports == 0 or chunks_x10 == 0:
+        return {}
+    out.update(reports=reports, frames=frames,
+               chunks_per_frame_x10=chunks_x10 // frames,
+               chunk_draw_avg_us=chunk_us // chunks_x10,
+               pixels_per_chunk=pixels // chunks_x10,
+               draw_ns_per_pixel=chunk_us * 1000 // pixels if pixels else 0)
+    return out
+
+
+def _mem_probe(entries: list[Entry]) -> dict[str, str]:
+    for e in entries:
+        if e.tag == "UI_LVGL" and e.message.startswith("UI_MEM_PROBE"):
+            return dict(re.findall(r"(\w+)=(\S+)", e.message))
+    return {}
+
+
+def _mem_watch(entries: list[Entry]) -> list[dict[str, int]]:
+    events = []
+    for e in entries:
+        match = re.match(r"MEM_WATCH dma_free=(\d+)->(\d+) .*?tasks=(\d+)", e.message) if e.tag == "RUNTIME_OBSERVABILITY" else None
+        if match:
+            events.append({"t_ms": e.t_ms, "from": int(match.group(1)), "to": int(match.group(2)),
+                           "tasks": int(match.group(3))})
+    return events
+
+
 def analyze_text(text: str, path: str = "<memory>", *, min_fps_ratio: float = DEFAULT_MIN_FPS_RATIO,
                  max_render_us: int = DEFAULT_MAX_RENDER_US, max_node_gap_ms: int = DEFAULT_MAX_NODE_GAP_MS,
                  min_idle1_share: float = DEFAULT_MIN_IDLE1_SHARE,
@@ -431,6 +482,9 @@ def analyze_text(text: str, path: str = "<memory>", *, min_fps_ratio: float = DE
     report.findings.extend(_gate_g5(entries, report.windows, min_idle1_share))
     report.findings.append(_gate_g8(entries, max_placement_ms))
     report.findings.append(_gate_g9(entries))
+    report.render_profile = _render_profile(entries)
+    report.mem_probe = _mem_probe(entries)
+    report.mem_watch = _mem_watch(entries)
     report.adc_words = _adc_words(entries, report.windows)
     report.adc_rate_channels = _adc_rate_channels(entries, report.windows)
     return report
@@ -453,6 +507,18 @@ def format_report(report: Report) -> str:
     for name, stats in report.adc_rate_channels.items():
         lines.append(f"   info {name} (AD7606_RATE): n={stats['n']} p2p={stats['p2p_min']}..{stats['p2p_max']} "
                      f"rms10<={stats['rms10_max']}")
+    p = report.render_profile
+    if p:
+        lines.append(
+            f"   info render (UI_PROFILE, {p['reports']} windows, {p['frames']} frames): "
+            f"{p['chunks_per_frame_x10'] / 10:.1f} chunks/frame (max {p['chunks_per_frame_max']}), "
+            f"{p['chunk_draw_avg_us'] / 1000:.1f} ms/chunk (max {p['chunk_draw_max_us'] / 1000:.1f}), "
+            f"{p['pixels_per_chunk']} px/chunk, {p['draw_ns_per_pixel']} ns/px, scene objects {p['scene_objects_max']}")
+    if report.mem_probe:
+        lines.append("   info memory probe (UI_MEM_PROBE): " + " ".join(f"{k}={v}" for k, v in report.mem_probe.items()))
+    for event in report.mem_watch:
+        lines.append(f"   info MEM_WATCH {event['t_ms'] / 1000:.1f}s: dma_free {event['from']} -> {event['to']} "
+                     f"({event['to'] - event['from']:+d}), {event['tasks']} tasks")
     lines.append("   gates: " + ", ".join(f"{g}={s}" for g, s in report.gates().items()))
     return "\n".join(lines)
 
@@ -480,7 +546,8 @@ def main(argv: list[str] | None = None) -> int:
         args.json.write_text(json.dumps([
             {"path": r.path, "windows": [asdict(w) for w in r.windows], "gates": r.gates(),
              "findings": [asdict(f) for f in r.findings], "adc_words": r.adc_words,
-             "adc_rate_channels": r.adc_rate_channels}
+             "adc_rate_channels": r.adc_rate_channels, "render_profile": r.render_profile,
+             "mem_probe": r.mem_probe, "mem_watch": r.mem_watch}
             for r in reports], indent=2) + "\n", encoding="utf-8")
     codes = [r.exit_code() for r in reports]
     return 1 if 1 in codes else 0 if 0 in codes else 2

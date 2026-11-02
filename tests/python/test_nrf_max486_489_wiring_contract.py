@@ -43,11 +43,13 @@ def test_wdt_configuration_and_progress_contract_are_wired():
     config = read("nRF54L15/zephyr/prj.conf")
     assert "CONFIG_WATCHDOG=y" in {line.strip() for line in config.splitlines()}
     runtime = read("nRF54L15/src/nrf_cs_pair_runtime_zephyr_impl_3.inc")
-    disconnect = runtime[runtime.index("static void disconnected_cb"):runtime.index("static void security_changed_cb")]
+    connections = read("nRF54L15/src/nrf_cs_pair_runtime_zephyr_connections.inc")
+    assert '#include "nrf_cs_pair_runtime_zephyr_connections.inc"' in runtime
+    disconnect = connections[connections.index("static void disconnected_cb"):]
     assert "nrf_watchdog_zephyr_checkin" not in disconnect
     assert "nrf_watchdog_zephyr_set_participant_active" not in disconnect
     assert "NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS" in runtime
-    event_work = runtime[runtime.index("static void event_work_handler"):runtime.index("static void connected_cb")]
+    event_work = runtime[runtime.index("static void event_work_handler"):runtime.index('#include "nrf_cs_pair_runtime_zephyr_connections.inc"')]
     assert "event.type != RUNTIME_EVENT_DISCONNECTED" in event_work
     assert "event.type != RUNTIME_EVENT_INCOMING_DISCONNECTED" in event_work
     _, watchdog = manifest_entry("nrf_watchdog_runtime_zephyr")

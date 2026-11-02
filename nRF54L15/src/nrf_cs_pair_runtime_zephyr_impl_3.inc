@@ -41,7 +41,22 @@ static void event_work_handler(struct k_work *work)
             }
             continue;
         }
-
+        if (event.has_step && event.status != 0) {
+            nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_PAIR_PHASE,
+                event.step.attempt_id, (uint32_t)nrf_cs_pair_adapter_phase(&s_adapter));
+            nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_EXECUTE_FAILED,
+                event.step.attempt_id, (uint32_t)event.status);
+        }
+        if (event.has_step && nrf_cs_pair_adapter_phase(&s_adapter) != NRF_CS_PAIR_PHASE_CLEANUP &&
+            k_uptime_get() >= s_attempt_deadline_ms) {
+            /* A busy HCI worker may receive data before its due timeout work runs. */
+            timeout_work_handler(NULL);
+        }
+        if (event.has_step && event.type != RUNTIME_EVENT_DISCONNECTED &&
+            nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_CLEANUP) {
+            if (event.conn != NULL) bt_conn_unref(event.conn);
+            continue;
+        }
         switch (event.type) {
         case RUNTIME_EVENT_CONNECTED:
             (void)nrf_cs_pair_runtime_bridge_dispatch(
@@ -137,66 +152,7 @@ static void event_work_handler(struct k_work *work)
     }
 }
 
-static void connected_cb(struct bt_conn *conn, uint8_t err)
-{
-    nrf_cs_step_t step;
-
-    if (conn == s_outgoing_conn) {
-        if (!runtime_active_step(&step)) {
-            return;
-        }
-        if (err != 0U) {
-            bt_conn_unref(s_outgoing_conn);
-            s_outgoing_conn = NULL;
-            s_outgoing_connected = false;
-            runtime_post_event(RUNTIME_EVENT_TRANSPORT_ERROR, &step, 0U, (int)err, NULL);
-            return;
-        }
-
-        s_outgoing_connected = true;
-        runtime_post_event(RUNTIME_EVENT_CONNECTED, &step, 0U, 0, NULL);
-        return;
-    }
-
-    if (err != 0U) {
-        return;
-    }
-    if (nrf_cs_pair_adapter_is_active(&s_adapter) || s_incoming_conn != NULL) {
-        (void)bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
-        return;
-    }
-
-    s_advertising = false;
-    s_incoming_conn = bt_conn_ref(conn);
-    runtime_post_event(RUNTIME_EVENT_INCOMING_CONNECTED, NULL, 0U, 0, conn);
-}
-
-static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
-{
-    nrf_cs_step_t step;
-
-    ARG_UNUSED(reason);
-
-    if (conn == s_outgoing_conn) {
-        bool has_step = runtime_active_step(&step);
-        bt_conn_unref(s_outgoing_conn);
-        s_outgoing_conn = NULL;
-        s_outgoing_connected = false;
-        if (has_step) {
-            runtime_post_event(RUNTIME_EVENT_DISCONNECTED, &step, 0U, 0, NULL);
-        } else {
-            (void)runtime_start_advertising();
-        }
-        return;
-    }
-
-    if (conn == s_incoming_conn) {
-        bt_conn_unref(s_incoming_conn);
-        s_incoming_conn = NULL;
-        atomic_set(&s_reflector_procedure_active, 0);
-        runtime_post_event(RUNTIME_EVENT_INCOMING_DISCONNECTED, NULL, 0U, 0, NULL);
-    }
-}
+#include "nrf_cs_pair_runtime_zephyr_connections.inc"
 
 static void security_changed_cb(
     struct bt_conn *conn,
@@ -297,6 +253,13 @@ static void procedure_enable_complete_cb(
 {
     nrf_cs_step_t step;
 
+    if ((conn == s_incoming_conn || conn == s_outgoing_conn) && status == BT_HCI_ERR_SUCCESS && params != NULL) {
+        atomic_set(&s_rf_tx_power, params->selected_tx_power);
+        if (params->tone_antenna_config_selection != BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1) {
+            atomic_or(&s_rf_flags, NRF_CS_RF_ANTENNA_MISMATCH);
+        }
+    }
+
     if (conn == s_incoming_conn) {
         if (status == BT_HCI_ERR_SUCCESS) {
             atomic_set(&s_reflector_procedure_active, 1);
@@ -325,6 +288,23 @@ static void subevent_data_cb(
 
     if (result == NULL) {
         return;
+    }
+    if (conn == s_incoming_conn || conn == s_outgoing_conn) {
+        const bool aborted = result->header.procedure_done_status == BT_CONN_LE_CS_PROCEDURE_ABORTED ||
+            result->header.subevent_done_status == BT_CONN_LE_CS_SUBEVENT_ABORTED;
+        const uint32_t rf_status = nrf_cs_rf_status_word(result->header.reference_power_level,
+            (int8_t)atomic_get(&s_rf_tx_power), result->header.num_antenna_paths,
+            result->header.procedure_done_status == BT_CONN_LE_CS_PROCEDURE_ABORTED ?
+                (uint8_t)result->header.procedure_abort_reason : 0U,
+            result->header.subevent_done_status == BT_CONN_LE_CS_SUBEVENT_ABORTED ?
+                (uint8_t)result->header.subevent_abort_reason : 0U, conn == s_incoming_conn);
+        atomic_set(&s_rf_status, (atomic_val_t)rf_status);
+        atomic_or(&s_rf_flags, NRF_CS_RF_METADATA | (aborted ? NRF_CS_RF_ABORTED : 0U) |
+            (result->header.num_antenna_paths > 1U ? NRF_CS_RF_ANTENNA_MISMATCH : 0U));
+        if (conn == s_incoming_conn && (aborted || result->header.num_antenna_paths > 1U)) {
+            nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_RF_STATUS,
+                result->header.procedure_counter, rf_status);
+        }
     }
     if (conn == s_incoming_conn) {
         nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
@@ -400,6 +380,23 @@ static void execute_work_handler(struct k_work *work)
     };
 
     ARG_UNUSED(work);
+    const int64_t remaining_ms = s_attempt_deadline_ms - k_uptime_get();
+    if (remaining_ms <= 0) {
+        failure.outcome = NRF_CS_OUTCOME_TIMEOUT;
+        atomic_set(&s_execute_pending, 0);
+        runtime_adapter_complete(&s_timeout_step, &failure, NULL);
+        return;
+    }
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_PAIR_CONTEXT,
+        s_timeout_step.cycle_id, ((uint32_t)s_timeout_step.initiator << 24U) |
+        ((uint32_t)s_timeout_step.reflector << 16U) |
+        ((uint32_t)s_timeout_step.attempt_number << 8U) | s_timeout_step.pair_index);
+    /* Queue wait and synchronous BLE setup consume the same accepted attempt budget. */
+    if (reschedule_cs_work(&s_timeout_work, K_MSEC((uint32_t)remaining_ms)) < 0) {
+        atomic_set(&s_execute_pending, 0);
+        runtime_adapter_complete(&s_timeout_step, &failure, NULL);
+        return;
+    }
     result = nrf_cs_pair_adapter_execute(
         &s_adapter,
         s_node_id,
@@ -412,7 +409,7 @@ static void execute_work_handler(struct k_work *work)
         return;
     }
 
-    (void)reschedule_cs_work(&s_timeout_work, K_MSEC(s_timeout_step.timeout_ms));
+    if (k_uptime_get() >= s_attempt_deadline_ms) timeout_work_handler(NULL);
 }
 
 int nrf_cs_pair_runtime_zephyr_start(void)
@@ -486,7 +483,7 @@ int nrf_cs_pair_runtime_zephyr_execute(
 {
     int submit_result;
 
-    if (!s_started || step == NULL || complete_cb == NULL ||
+    if (!s_started || step == NULL || complete_cb == NULL || step->timeout_ms == 0U ||
         s_node_id == 0xFFU) {
         return -EINVAL;
     }
@@ -501,6 +498,7 @@ int nrf_cs_pair_runtime_zephyr_execute(
     s_user_complete_cb = complete_cb;
     s_user_complete_context = context;
     s_timeout_step = *step;
+    s_attempt_deadline_ms = k_uptime_get() + (int64_t)step->timeout_ms;
     atomic_set(&s_execute_pending, 1);
     submit_result = submit_cs_work(&s_execute_work);
     if (submit_result < 0) {

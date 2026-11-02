@@ -1672,7 +1672,7 @@ static nrf_cs_cycle_status_t cycle_read_status(void)
     return status;
 }
 
-static void test_autonomous_cs_cycle_messages(void)
+static void test_autonomous_cs_cycle_messages(nrf_cs_outcome_t outcome)
 {
     nrf_upstream_status_t node = read_status(NULL);
     if (node.role == NRF_UPSTREAM_ROLE_UNASSIGNED) {
@@ -1761,6 +1761,7 @@ static void test_autonomous_cs_cycle_messages(void)
 
     /* The main loop ticks; only window 0 belongs to this node, so exactly one attempt starts. */
     const unsigned executes_before = nrf_cs_pair_zephyr_stub_execute_calls;
+    nrf_cs_pair_runtime_zephyr_stub_configure(0, outcome);
     nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
     assert(nrf_cs_pair_zephyr_stub_radio_enabled); /* GO opened the radio for the reflector role */
     unsigned ticks = 0U;
@@ -1776,6 +1777,14 @@ static void test_autonomous_cs_cycle_messages(void)
     assert(!nrf_cs_pair_zephyr_stub_radio_enabled);
     assert(nrf_cs_pair_zephyr_stub_radio_changes == radio_changes_before + 2U);
     assert(nrf_cs_pair_zephyr_stub_execute_calls == executes_before + 1U);
+    const nrf_log_record_t completion = find_log_event(NRF_LOG_EVENT_CS_PAIR_COMPLETE);
+    assert(completion.arg0 != 0U);
+    assert((completion.arg1 & 0xffU) == (uint32_t)outcome);
+    if (outcome == NRF_CS_OUTCOME_TIMEOUT) {
+        assert(find_log_event(NRF_LOG_EVENT_CS_TIMEOUT).arg0 == completion.arg0);
+    } else if (outcome != NRF_CS_OUTCOME_SUCCESS) {
+        assert(find_log_event(NRF_LOG_EVENT_CS_EXECUTE_FAILED).arg0 == completion.arg0);
+    }
 
     /* Results: one page with the single recorded attempt, through the real frame format. */
     const nrf_cs_cycle_result_request_t request = {.request_id = 0x7104U, .cycle_id = 77U, .page = 0U};
@@ -1787,7 +1796,7 @@ static void test_autonomous_cs_cycle_messages(void)
     assert(nrf_cs_cycle_decode_result(frame, length, &result) == 0);
     assert(result.cycle_id == 77U && result.record_total == 1U && result.record_count == 1U);
     assert(result.records[0].execution == 0U && result.records[0].attempt == 1U);
-    assert(result.records[0].outcome == NRF_CS_OUTCOME_SUCCESS);
+    assert(result.records[0].outcome == outcome);
     /* A request for another cycle or a page that does not exist is refused. */
     nrf_bootstrap_runtime_zephyr_get_twis_diagnostics(&diag);
     const uint32_t errors_results = diag.callback_error_count;
@@ -2429,7 +2438,9 @@ int main(void)
     test_twis_log_contract_never_leaves_the_target_without_a_response();
     test_twis_read_windows_continue_the_selected_response();
     test_twis_read_window_requests_are_validated_and_one_shot();
-    test_autonomous_cs_cycle_messages();
+    test_autonomous_cs_cycle_messages(NRF_CS_OUTCOME_SUCCESS);
+    test_autonomous_cs_cycle_messages(NRF_CS_OUTCOME_TIMEOUT);
+    test_autonomous_cs_cycle_messages(NRF_CS_OUTCOME_TRANSPORT_ERROR);
     {
         const nrf_upstream_sensor_refresh_t request = {.request_id = 777U};
         uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_SCAN_LENGTH];

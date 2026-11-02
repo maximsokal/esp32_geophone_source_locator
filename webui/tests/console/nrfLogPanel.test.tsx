@@ -192,6 +192,21 @@ describe('nRF log panel', () => {
     const argsCell = view.root.findAllByType('td').find((cell) => typeof cell.props.title === 'string');
     expect(argsCell?.props.title).toBe('Raw arg0: 7; arg1: 6');
   });
+  it('shows radio measurements and explicitly unavailable noise and antenna hardware state', async () => {
+    api.fetchNrfLogs.mockResolvedValue(okPage([
+      sample({ token: 'rf1', event_id: 34, subsystem: 5, arg0: 42, arg1: 0xf804b0c4 }),
+      sample({ token: 'rf2', seq: 2, event_id: 35, subsystem: 5, arg0: 42, arg1: 0x4223c032 }),
+      sample({ token: 'rf3', seq: 3, event_id: 36, subsystem: 5, arg0: 7, arg1: 0x804bf221 }),
+    ]));
+    const view = await mount();
+    const output = text(view.root);
+    expect(output).toContain('Local mean CS RSSI (dBm): -60');
+    expect(output).toContain('Peer selected CS TX (dBm): -8');
+    expect(output).toContain('Antenna configuration issue: Observed');
+    expect(output).toContain('Physical antenna health: Unknown');
+    expect(output).toContain('Measured noise floor (dBm): Not available');
+    expect(output).toContain('CS synchronization missing: 1');
+  });
 
   it('renders the four loss counters independently', async () => {
     api.fetchNrfLogs.mockResolvedValue(okPage([], {

@@ -34,6 +34,17 @@ ui_context_t *ui_context(void)
 }
 
 
+/* LVGL walks the whole object tree of the screen for every flush chunk, so the count is part of the chunk cost. */
+static uint32_t ui_scene_object_count(lv_obj_t *object)
+{
+    if (object == NULL) return 0U;
+    uint32_t count = 1U;
+    const uint32_t children = lv_obj_get_child_count(object);
+    for (uint32_t i = 0U; i < children; ++i) count += ui_scene_object_count(lv_obj_get_child(object, (int32_t)i));
+    return count;
+}
+
+
 static void ui_refresh_timer_callback(lv_timer_t *timer)
 {
     (void)timer;
@@ -181,6 +192,19 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
                 );
             }
 #undef UI_LOG_PERF
+            const ui_perf_profile_t profile = ui_perf_policy_profile(&stages);
+            ESP_LOGI(
+                TAG,
+                "UI_PROFILE: frames=%llu chunks_per_frame_x10=%u chunks_per_frame_max=%u chunk_draw_avg_us=%llu chunk_draw_max_us=%llu pixels_per_chunk=%u draw_ns_per_pixel=%u scene_objects=%u",
+                (unsigned long long)stages.render_samples,
+                (unsigned)profile.chunks_per_frame_x10,
+                (unsigned)profile.chunks_per_frame_max,
+                (unsigned long long)profile.chunk_draw_avg_us,
+                (unsigned long long)profile.chunk_draw_max_us,
+                (unsigned)profile.pixels_per_chunk,
+                (unsigned)profile.draw_ns_per_pixel,
+                (unsigned)ui_scene_object_count(lv_screen_active())
+            );
         }
         ui_frame_scheduler_init(&s_frame_scheduler, now_us + UI_FRAME_MIN_PERIOD_US);
         s_perf_started_us = (int64_t)now_us;

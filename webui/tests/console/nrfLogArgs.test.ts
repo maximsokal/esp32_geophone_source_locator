@@ -43,6 +43,9 @@ describe('nRF log event arguments', () => {
     ['IMU_CAL_REJECTED', 13, 34, 3, 'Request ID: 0x00000022, Calibration state: Rejected: gravity (3)'],
     ['CS_EXECUTE_FAILED', 14, 35, 2, 'Attempt ID: 0x00000023, Transport/outcome error: Transport error (2)'],
     ['CS_TIMEOUT', 15, 36, 2500, 'Attempt ID: 0x00000024, Timeout (ms): 2500'],
+    ['CS_PAIR_CONTEXT', 31, 77, 0x01020304, 'arg0: 77, arg1: 0x01020304'],
+    ['CS_PAIR_PHASE', 32, 36, 3, 'Attempt ID: 0x00000024, arg1: 3'],
+    ['CS_PAIR_COMPLETE', 33, 36, 0x38400, 'Attempt ID: 0x00000024, arg1: 0x00038400'],
     ['WATCHDOG_PARTICIPANT_STALE', 16, 1, 5000, 'Participant: System work queue (1), Allowed silence (ms): 5000'],
     ['LOG_TEST_EVENT', 17, 7, 100000, 'Test index: 7, Uptime (ms): 100000'],
     ['SENSOR_INIT_FAILED', 23, 1, 0xFFFFFFFB, 'Sensor: BMI160 (1), Driver initialization result: -5'],
@@ -116,5 +119,23 @@ describe('nRF log event arguments', () => {
       expect(en[key], `${key} English`).toBeTruthy();
       expect(uk[key], `${key} Ukrainian`).toBeTruthy();
     }
+  });
+  it('decodes signed RF powers and never presents unknown noise or antenna hardware as healthy', () => {
+    const signal = formatEventArgsText(formatEventArgs(34, 42, 0xf804b0c4), english);
+    expect(signal).toContain('Local mean CS RSSI (dBm): -60');
+    expect(signal).toContain('Peer selected CS TX (dBm): -8');
+    const unknown = formatEventArgsText(formatEventArgs(34, 42, 0x7f7f7f7f), english);
+    expect(unknown).toContain('Not available (127)');
+    const quality = formatEventArgsText(formatEventArgs(35, 42, 0x4023c032), english);
+    expect(quality).toContain('Local unusable tones (%): 50');
+    expect(quality).toContain('Physical antenna health: Unknown');
+    expect(quality).toContain('Measured noise floor (dBm): Not available');
+    expect(quality).toContain('Antenna configuration issue: None observed');
+    expect(formatEventArgsText(formatEventArgs(35, 42, 0x4223c032), english))
+      .toContain('Antenna configuration issue: Observed');
+    const status = formatEventArgsText(formatEventArgs(36, 7, 0x804bf221), english);
+    expect(status).toContain('BLE CS role: Reflector');
+    expect(status).toContain('CS synchronization missing: 1');
+    expect(status).toContain('CS reference power (dBm): -65');
   });
 });

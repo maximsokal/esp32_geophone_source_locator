@@ -188,6 +188,19 @@ static const nrf_cs_pair_adapter_ops_t s_adapter_ops = {
     .context = NULL,
 };
 
+static void runtime_emit_rf_diagnostics(const nrf_cs_step_t *step)
+{
+    const uint32_t status = (uint32_t)atomic_get(&s_rf_status);
+    const uint8_t flags = (uint8_t)atomic_get(&s_rf_flags) | s_rf_diagnostics.flags;
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_RF_SIGNAL, step->attempt_id,
+        nrf_cs_rf_signal_word(&s_rf_diagnostics, (int8_t)atomic_get(&s_rf_tx_power)));
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_RF_QUALITY, step->attempt_id,
+        nrf_cs_rf_quality_word(&s_rf_diagnostics, (uint8_t)(status & 15U), flags));
+    if ((flags & (NRF_CS_RF_ABORTED | NRF_CS_RF_ANTENNA_MISMATCH)) != 0U) {
+        nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_RF_STATUS, step->attempt_id, status);
+    }
+}
+
 static void runtime_adapter_complete(
     const nrf_cs_step_t *step,
     const nrf_cs_measurement_t *measurement,
@@ -200,6 +213,7 @@ static void runtime_adapter_complete(
     (void)k_work_cancel_delayable(&s_timeout_work);
     s_user_complete_cb = NULL;
     s_user_complete_context = NULL;
+    runtime_emit_rf_diagnostics(step);
     runtime_reset_ranging();
     (void)runtime_start_advertising();
 
@@ -211,6 +225,8 @@ static void runtime_adapter_complete(
 static void timeout_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_PAIR_PHASE,
+        s_timeout_step.attempt_id, (uint32_t)nrf_cs_pair_adapter_phase(&s_adapter));
     (void)nrf_cs_pair_runtime_bridge_dispatch(
         &s_adapter, NRF_CS_PAIR_BRIDGE_TIMEOUT, &s_timeout_step, false, NULL);
 }
@@ -231,7 +247,8 @@ static bool report_ranging_header(struct ras_ranging_header *header, void *user_
 {
     cs_de_report_t *report = user_data;
 
-    ARG_UNUSED(header);
+    s_rf_diagnostics.peer_tx_dbm = header->selected_tx_power;
+    if (header->antenna_paths_mask != 1U) s_rf_diagnostics.flags |= NRF_CS_RF_ANTENNA_MISMATCH;
     report->n_ap = 1U;
     report->role = BT_CONN_LE_CS_ROLE_INITIATOR;
     return true;
@@ -262,6 +279,8 @@ static void collect_pbr_step(
 
     local = (const struct bt_hci_le_cs_step_data_mode_2 *)local_step->data;
     peer = (const struct bt_hci_le_cs_step_data_mode_2 *)peer_step->data;
+    nrf_cs_rf_tone(&s_rf_diagnostics.local, local->tone_info[0].quality_indicator);
+    nrf_cs_rf_tone(&s_rf_diagnostics.peer, peer->tone_info[0].quality_indicator);
 
     if (local->tone_info[0].quality_indicator != BT_HCI_LE_CS_TONE_QUALITY_HIGH ||
         peer->tone_info[0].quality_indicator != BT_HCI_LE_CS_TONE_QUALITY_HIGH) {
@@ -296,6 +315,12 @@ static void collect_rtt_step(
         (const struct bt_hci_le_cs_step_data_mode_1 *)local_step->data;
     const struct bt_hci_le_cs_step_data_mode_1 *peer =
         (const struct bt_hci_le_cs_step_data_mode_1 *)peer_step->data;
+    nrf_cs_rf_packet(&s_rf_diagnostics.local, (int8_t)local->packet_rssi, local->packet_quality_aa_check);
+    nrf_cs_rf_packet(&s_rf_diagnostics.peer, (int8_t)peer->packet_rssi, peer->packet_quality_aa_check);
+    if ((local->packet_antenna != 1U && local->packet_antenna != 0xffU) ||
+        (peer->packet_antenna != 1U && peer->packet_antenna != 0xffU)) {
+        s_rf_diagnostics.flags |= NRF_CS_RF_ANTENNA_MISMATCH;
+    }
 
     if (local->packet_quality_aa_check != BT_HCI_LE_CS_PACKET_QUALITY_AA_CHECK_SUCCESSFUL ||
         peer->packet_quality_aa_check != BT_HCI_LE_CS_PACKET_QUALITY_AA_CHECK_SUCCESSFUL ||
@@ -321,11 +346,31 @@ static bool report_step_data(
     if (local_step == NULL || peer_step == NULL || report == NULL) {
         return false;
     }
+    size_t minimum = 0U;
+    if (local_step->mode == BT_HCI_OP_LE_CS_MAIN_MODE_2) {
+        minimum = sizeof(struct bt_hci_le_cs_step_data_mode_2) + sizeof(struct bt_hci_le_cs_step_data_tone_info);
+    } else if (local_step->mode == BT_HCI_OP_LE_CS_MAIN_MODE_1) {
+        minimum = sizeof(struct bt_hci_le_cs_step_data_mode_1);
+    } else if (local_step->mode == 0U) {
+        /* Initiator mode0 adds frequency offset after this common three-byte prefix. */
+        minimum = sizeof(struct bt_hci_le_cs_step_data_mode_0_reflector);
+    }
+    if (local_step->data == NULL || peer_step->data == NULL || minimum == 0U ||
+        local_step->mode != peer_step->mode || local_step->channel != peer_step->channel ||
+        local_step->data_len < minimum || peer_step->data_len < minimum) {
+        s_rf_diagnostics.flags |= NRF_CS_RF_MALFORMED;
+        return false;
+    }
 
     if (local_step->mode == BT_HCI_OP_LE_CS_MAIN_MODE_2) {
         collect_pbr_step(report, local_step, peer_step);
     } else if (local_step->mode == BT_HCI_OP_LE_CS_MAIN_MODE_1) {
         collect_rtt_step(report, local_step, peer_step);
+    } else {
+        const struct bt_hci_le_cs_step_data_mode_0_reflector *local = (const void *)local_step->data;
+        const struct bt_hci_le_cs_step_data_mode_0_reflector *peer = (const void *)peer_step->data;
+        nrf_cs_rf_packet(&s_rf_diagnostics.local, (int8_t)local->packet_rssi, local->packet_quality_aa_check);
+        nrf_cs_rf_packet(&s_rf_diagnostics.peer, (int8_t)peer->packet_rssi, peer->packet_quality_aa_check);
     }
     return true;
 }
@@ -377,8 +422,15 @@ static nrf_cs_measurement_t estimate_measurement(void)
         &s_de_report);
 
     const uint16_t good_tones = good_tone_channel_count();
+    s_rf_diagnostics.good_channels = (uint8_t)good_tones;
     s_de_report.tone_quality[0] =
         good_tones >= NRF_CS_TONE_OK_THRESHOLD ? CS_DE_TONE_QUALITY_OK : CS_DE_TONE_QUALITY_BAD;
+
+    /* A usable prefix must not hide a malformed tail or unsupported antenna mapping. */
+    if (((s_rf_diagnostics.flags | (uint8_t)atomic_get(&s_rf_flags)) &
+            (NRF_CS_RF_MALFORMED | NRF_CS_RF_ANTENNA_MISMATCH)) != 0U) {
+        return measurement;
+    }
 
     quality = cs_de_calc(&s_de_report);
 
@@ -466,5 +518,9 @@ static void maybe_complete_measurement(const nrf_cs_step_t *step)
         measurement = estimate_measurement();
     }
 
+    if (k_uptime_get() >= s_attempt_deadline_ms) {
+        timeout_work_handler(NULL);
+        return;
+    }
     (void)nrf_cs_pair_adapter_measurement_ready(&s_adapter, step, &measurement);
 }

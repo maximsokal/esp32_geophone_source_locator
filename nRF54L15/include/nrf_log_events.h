@@ -25,6 +25,17 @@ typedef enum {
  * IMU_CAL_REJECTED          request id                               rejected calibration-state enum
  * CS_EXECUTE_FAILED         attempt id                               transport/outcome error code
  * CS_TIMEOUT                attempt id                               timeout in milliseconds
+ * CS_PAIR_CONTEXT           cycle id                                 initiator:8, reflector:8, attempt:8, pair:8 (MSB first)
+ * CS_PAIR_PHASE             attempt id                               nrf_cs_pair_phase_t before timeout/error cleanup
+ * CS_PAIR_COMPLETE          attempt id                               outcome bits 0-7, confidence bits 8-23
+ * CS_RF_SIGNAL              attempt id                               signed dBm bytes: local RSSI, peer RSSI,
+ *                                                                    local selected TX, peer selected TX; 127 unavailable
+ * CS_RF_QUALITY             attempt id                               local unusable-tone % bits0-6, peer bits7-13,
+ *                                                                    good channels bits14-20 (127 unavailable), paths21-24,
+ *                                                                    NRF_CS_RF_* flags25-31; noise floor/SNR not measured
+ * CS_RF_STATUS              attempt id, or reflector procedure count  paths0-3, proc abort4-7, sub abort8-11,
+ *                                                                    reference dBm12-19, selected TX dBm20-27,
+ *                                                                    reflector bit31; antenna hardware health unknown
  * WATCHDOG_PARTICIPANT_STALE participant enum                        allowed silence in milliseconds
  * LOG_TEST_EVENT            monotonically increasing test index      uptime in milliseconds
  * FAULT_RECORD_WORD         fault-record word index                  little-endian word value

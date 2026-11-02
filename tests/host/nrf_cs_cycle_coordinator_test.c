@@ -69,6 +69,9 @@ static uint32_t transfer_ms(size_t length)
 
 static nrf_cs_measurement_t scripted(unsigned execution, unsigned attempt)
 {
+#if defined(NRF_CS_COORDINATOR_GOLDEN)
+    return golden_measurement(execution, attempt);
+#else
     nrf_cs_measurement_t m = {0};
     if ((g_always_fail_mask & (1U << execution)) != 0U) {
         m.outcome = NRF_CS_OUTCOME_TRANSPORT_ERROR;
@@ -83,6 +86,7 @@ static nrf_cs_measurement_t scripted(unsigned execution, unsigned attempt)
     m.confidence = 800U;
     m.provider_quality_flags = (uint16_t)(execution & 0x3U);
     return m;
+#endif
 }
 
 static void tick_nodes(void)

@@ -271,6 +271,51 @@ void ui_perf_policy_record_data_prep(uint64_t elapsed_us)
 }
 
 
+void ui_perf_policy_record_chunk_draw(uint64_t draw_us, uint32_t pixels)
+{
+    s_stage_metrics.chunk_draw_total_us += draw_us;
+    if (draw_us > s_stage_metrics.chunk_draw_max_us) {
+        s_stage_metrics.chunk_draw_max_us = draw_us;
+    }
+    s_stage_metrics.chunk_pixels_total += pixels;
+    if (s_stage_metrics.chunk_samples < UINT32_MAX) {
+        ++s_stage_metrics.chunk_samples;
+    }
+}
+
+
+void ui_perf_policy_record_frame_chunks(uint32_t chunks)
+{
+    if (chunks > s_stage_metrics.frame_chunks_max) {
+        s_stage_metrics.frame_chunks_max = chunks;
+    }
+}
+
+
+ui_perf_profile_t ui_perf_policy_profile(const ui_perf_stage_metrics_t *metrics)
+{
+    ui_perf_profile_t profile;
+    memset(&profile, 0, sizeof(profile));
+    if (metrics == NULL) return profile;
+
+    if (metrics->render_samples > 0U) {
+        const uint64_t x10 = (uint64_t)metrics->chunk_samples * 10U / metrics->render_samples;
+        profile.chunks_per_frame_x10 = x10 > UINT32_MAX ? UINT32_MAX : (uint32_t)x10;
+    }
+    profile.chunks_per_frame_max = metrics->frame_chunks_max;
+    profile.chunk_draw_max_us = metrics->chunk_draw_max_us;
+    if (metrics->chunk_samples > 0U) {
+        profile.chunk_draw_avg_us = metrics->chunk_draw_total_us / metrics->chunk_samples;
+        profile.pixels_per_chunk = (uint32_t)(metrics->chunk_pixels_total / metrics->chunk_samples);
+    }
+    if (metrics->chunk_pixels_total > 0U) {
+        const uint64_t ns = metrics->chunk_draw_total_us * 1000U / metrics->chunk_pixels_total;
+        profile.draw_ns_per_pixel = ns > UINT32_MAX ? UINT32_MAX : (uint32_t)ns;
+    }
+    return profile;
+}
+
+
 ui_perf_stage_metrics_t ui_perf_policy_stage_snapshot(void)
 {
     return s_stage_metrics;

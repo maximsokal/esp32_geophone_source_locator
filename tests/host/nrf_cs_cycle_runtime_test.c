@@ -569,8 +569,37 @@ static void test_status_progress_and_result_page_limits(void)
     assert(nrf_cs_cycle_runtime_result_page(&sims[1].rt, 1U, 9U, &page) != 0);  /* page beyond the records */
 }
 
+/* A callback can run before the next tick has closed its expired window. */
+static void test_late_success_cannot_escape_window_deadline(void)
+{
+    const nrf_cs_node_id_t ids[] = {0U, 1U, 2U};
+    const nrf_cs_policy_t policy = make_policy();
+    nrf_cs_scheduler_t planner;
+    sim_node_t sims[3];
+    g_now = 1000U;
+    assert(nrf_cs_scheduler_init(&planner, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&planner, ids, 3U) == NRF_CS_OK);
+    for (size_t n = 0; n < 3; ++n) init_sim(&sims[n], ids[n]);
+    send_plan(sims, 3U, &planner, 10U);
+    const nrf_cs_cycle_go_t go = {.request_id=50U, .cycle_id=planner.cycle_id,
+        .total_timeout_ms=120000U};
+    assert(nrf_cs_cycle_runtime_go(&sims[0].rt, &go) == 0);
+    g_now += NRF_CS_CYCLE_GO_SKEW_MS;
+    sim_tick(&sims[0]);
+    assert(sims[0].active);
+    const nrf_cs_measurement_t success = {.outcome=NRF_CS_OUTCOME_SUCCESS,
+        .distance_mm=1000, .confidence=900};
+    g_now = sims[0].rt.t0_ms + sims[0].rt.window_ms;
+    assert(nrf_cs_cycle_runtime_step_done(&sims[0].rt, &sims[0].step, &success) == 0);
+    assert(sims[0].rt.record_count == 1);
+    assert(sims[0].rt.records[0].outcome == NRF_CS_OUTCOME_TIMEOUT);
+    assert(sims[0].rt.records[0].confidence == 0);
+    assert(nrf_cs_cycle_runtime_step_done(&sims[0].rt, &sims[0].step, &success) == -1);
+}
+
 int main(void)
 {
+    test_late_success_cannot_escape_window_deadline();
     test_autonomous_cycle_matches_live_scheduler(3U);
     test_autonomous_cycle_matches_live_scheduler(4U);
     test_autonomous_cycle_matches_live_scheduler(5U);

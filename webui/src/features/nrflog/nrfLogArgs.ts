@@ -170,6 +170,12 @@ export const NRF_LOG_ARG_FORMATS = {
   IMU_CAL_REJECTED: [hex(key('request_id')), enumeration(key('calibration_state'), calibrationStates)],
   CS_EXECUTE_FAILED: [hex(key('attempt_id')), enumeration(key('transport_outcome_error'), csOutcomes)],
   CS_TIMEOUT: [hex(key('attempt_id')), number(key('timeout_ms'))],
+  CS_PAIR_CONTEXT: [number(key('arg0')), hex(key('arg1'))],
+  CS_PAIR_PHASE: [hex(key('attempt_id')), number(key('arg1'))],
+  CS_PAIR_COMPLETE: [hex(key('attempt_id')), hex(key('arg1'))],
+  CS_RF_SIGNAL: [hex(key('attempt_id')), hex(key('arg1'))],
+  CS_RF_QUALITY: [hex(key('attempt_id')), hex(key('arg1'))],
+  CS_RF_STATUS: [hex(key('attempt_id')), hex(key('arg1'))],
   WATCHDOG_PARTICIPANT_STALE: [enumeration(key('participant'), watchdogParticipants), number(key('allowed_silence_ms'))],
   LOG_TEST_EVENT: [number(key('test_index')), number(key('uptime_ms'))],
   FAULT_RECORD_WORD: [number(key('arg0')), hex(key('arg1'))],
@@ -218,6 +224,10 @@ export const NRF_LOG_ARG_I18N_KEYS: readonly I18nKey[] = (() => {
   for (const labelKey of ['bus_address', 'bus_cause', 'bus_errno', 'bus_lines', 'bus_failures']) keys.add(key(labelKey));
   for (const valueKey of [...Object.values(busFaultCauses), ...Object.values(busFaultLines)]) keys.add(valueKey);
   for (const valueKey of [...Object.values(logErrors), ...Object.values(upstreamResults)]) keys.add(valueKey);
+  for (const name of ['local_rssi', 'peer_rssi', 'local_tx', 'peer_tx', 'local_tones', 'peer_tones',
+    'good_channels', 'paths', 'config_issue', 'antenna_hw', 'noise_floor', 'snr', 'unavailable',
+    'unknown', 'observed', 'none_observed', 'packet_errors', 'aborted', 'malformed', 'procedure',
+    'role', 'initiator', 'reflector', 'proc_abort', 'sub_abort', 'no_sync', 'reference']) keys.add(key(`rf.${name}`));
   for (const [first, second] of Object.values(NRF_LOG_ARG_FORMATS)) {
     for (const spec of [first, second]) {
       keys.add(spec.labelKey);
@@ -292,6 +302,34 @@ function formatBusFault(value: number): FormattedArgument[] {
   ];
 }
 
+function rfNumber(label: string, value: number): FormattedArgument {
+  return value === 127 ? { labelKey: key(`rf.${label}`), valueKey: key('rf.unavailable'), raw: value }
+    : { labelKey: key(`rf.${label}`), valueText: String(value), raw: value };
+}
+
+function rfArgs(event: string, word: number): FormattedArgument[] {
+  const dbm = (shift: number) => ((word >>> shift) & 0xff) << 24 >> 24;
+  if (event === 'CS_RF_SIGNAL') {
+    return [rfNumber('local_rssi', dbm(0)), rfNumber('peer_rssi', dbm(8)),
+      rfNumber('local_tx', dbm(16)), rfNumber('peer_tx', dbm(24))];
+  }
+  const hardware: FormattedArgument = { labelKey: key('rf.antenna_hw'), valueKey: key('rf.unknown'), raw: 0 };
+  if (event === 'CS_RF_QUALITY') {
+    const flags = word >>> 25;
+    return [rfNumber('local_tones', word & 127), rfNumber('peer_tones', (word >>> 7) & 127),
+      rfNumber('good_channels', (word >>> 14) & 127), rfNumber('paths', (word >>> 21) & 15),
+      { labelKey: key('rf.config_issue'), valueKey: key(flags & 1 ? 'rf.observed' : flags & 32 ? 'rf.none_observed' : 'rf.unknown'), raw: flags },
+      { labelKey: key('rf.packet_errors'), valueText: `${Number((flags & 4) !== 0)}/${Number((flags & 8) !== 0)}`, raw: flags },
+      rfNumber('aborted', Number((flags & 2) !== 0)), rfNumber('malformed', Number((flags & 16) !== 0)),
+      { labelKey: key('rf.noise_floor'), valueKey: key('rf.unavailable'), raw: 127 },
+      { labelKey: key('rf.snr'), valueKey: key('rf.unavailable'), raw: 127 }, hardware];
+  }
+  return [{ labelKey: key('rf.role'), valueKey: key(word >>> 31 ? 'rf.reflector' : 'rf.initiator'), raw: word >>> 31 },
+    rfNumber('paths', word & 15), rfNumber('proc_abort', (word >>> 4) & 15),
+    rfNumber('sub_abort', (word >>> 8) & 15), rfNumber('no_sync', Number(((word >>> 8) & 15) === 2)),
+    rfNumber('reference', dbm(12)), rfNumber('local_tx', dbm(20)), hardware];
+}
+
 export function formatEventArgs(eventNameOrId: string | number, arg0: number, arg1: number): FormattedArgument[] {
   const eventName = typeof eventNameOrId === 'number'
     ? NRF_LOG_EVENTS[asUint32(eventNameOrId) as keyof typeof NRF_LOG_EVENTS]?.name
@@ -310,6 +348,11 @@ export function formatEventArgs(eventNameOrId: string | number, arg0: number, ar
   }
   if (eventName === 'SENSOR_BUS_FAULT') {
     return [formatArgument(specs[0], arg0), ...formatBusFault(arg1)];
+  }
+  if (eventName === 'CS_RF_SIGNAL' || eventName === 'CS_RF_QUALITY' || eventName === 'CS_RF_STATUS') {
+    const context = eventName === 'CS_RF_STATUS' && (asUint32(arg1) >>> 31)
+      ? formatArgument(number(key('rf.procedure')), arg0) : formatArgument(specs[0], arg0);
+    return [context, ...rfArgs(eventName, asUint32(arg1))];
   }
   return [formatArgument(specs[0], arg0), formatArgument(specs[1], arg1)];
 }

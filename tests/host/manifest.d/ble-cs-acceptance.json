@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "nrf_cs_cycle_geometry_golden",
+      "sources": [
+        "nRF54L15/src/nrf_upstream_protocol.c",
+        "nRF54L15/src/nrf_cs_scheduler.c",
+        "nRF54L15/src/nrf_cs_cycle_protocol.c",
+        "nRF54L15/src/nrf_cs_cycle_runtime.c",
+        "nRF54L15/src/nrf_cs_cycle_replay.c",
+        "nRF54L15/src/nrf_cs_cycle_coordinator.c",
+        "tests/host/nrf_cs_cycle_geometry_golden_test.c",
+        "components/nrf_geometry_solver/nrf_geometry_solver.c"
+      ],
+      "include_dirs": [
+        "nRF54L15/include",
+        "components/nrf_geometry_solver/include"
+      ],
+      "defines": [
+        "NRF_GEOMETRY_SOLVER_HOST_TEST=1"
+      ],
+      "libraries": [
+        "m"
+      ]
+    }
+  ]
+}

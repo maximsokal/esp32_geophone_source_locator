@@ -281,6 +281,19 @@ static bool remove_cs_execute_work_item(uint32_t sequence)
     return removed;
 }
 
+static void cs_log_measurement(const nrf_cs_step_t *step, const nrf_cs_measurement_t *measurement)
+{
+    if (step == NULL || measurement == NULL) return;
+    nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_PAIR_COMPLETE, step->attempt_id,
+        (uint32_t)measurement->outcome | ((uint32_t)measurement->confidence << 8U));
+    if (measurement->outcome == NRF_CS_OUTCOME_TIMEOUT) {
+        nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_TIMEOUT, step->attempt_id, step->timeout_ms);
+    } else if (measurement->outcome != NRF_CS_OUTCOME_SUCCESS) {
+        nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_EXECUTE_FAILED,
+            step->attempt_id, (uint32_t)measurement->outcome);
+    }
+}
+
 static void cs_runtime_complete(const nrf_cs_step_t *step,const nrf_cs_measurement_t *measurement,void *context)
 {
     k_spinlock_key_t key;
@@ -288,19 +301,7 @@ static void cs_runtime_complete(const nrf_cs_step_t *step,const nrf_cs_measureme
     key=k_spin_lock(&s_cs_lock);
     (void)nrf_cs_control_runtime_complete(&s_cs_control,step,measurement);
     k_spin_unlock(&s_cs_lock,key);
-    if (step != NULL && measurement != NULL && measurement->outcome != NRF_CS_OUTCOME_SUCCESS) {
-        if (measurement->outcome == NRF_CS_OUTCOME_TIMEOUT) {
-            nrf_log_runtime_zephyr_append_event(
-                NRF_LOG_EVENT_CS_TIMEOUT,
-                step->attempt_id,
-                step->timeout_ms);
-        } else {
-            nrf_log_runtime_zephyr_append_event(
-                NRF_LOG_EVENT_CS_EXECUTE_FAILED,
-                step->attempt_id,
-                (uint32_t)measurement->outcome);
-        }
-    }
+    cs_log_measurement(step, measurement);
 }
 
 static void cs_execute_work_handler(struct k_work *work)
@@ -566,8 +567,16 @@ static void cycle_step_done(const nrf_cs_step_t *step, const nrf_cs_measurement_
 {
     (void)context;
     k_spinlock_key_t key = k_spin_lock(&s_cycle_lock);
-    (void)nrf_cs_cycle_runtime_step_done(&s_cycle, step, measurement);
+    const uint16_t before = s_cycle.record_count;
+    const int result = nrf_cs_cycle_runtime_step_done(&s_cycle, step, measurement);
+    const bool have_record = result == 0 && s_cycle.record_count > before;
+    nrf_cs_measurement_t recorded = {0};
+    if (have_record) {
+        recorded.outcome = (nrf_cs_outcome_t)s_cycle.records[before].outcome;
+        recorded.confidence = s_cycle.records[before].confidence;
+    }
     k_spin_unlock(&s_cycle_lock, key);
+    if (have_record) cs_log_measurement(step, &recorded);
 }
 
 void nrf_bootstrap_runtime_zephyr_cs_cycle_tick(void)

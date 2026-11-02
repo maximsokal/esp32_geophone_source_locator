@@ -35,6 +35,8 @@ def test_event_definition_and_generated_typescript_are_current():
         "BOOT_FAILED", "CS_EVENT_QUEUE_OVERFLOW", "WATCHDOG_DEGRADED", "WATCHDOG_FEED_FAILED", "SENSOR_INIT_FAILED",
         "LOGGER_LATCH", "SENSOR_SCAN_WORD0", "SENSOR_SCAN_WORD1", "SENSOR_SCAN_WORD2",
         "SENSOR_SCAN_WORD3", "SENSOR_SCAN_DONE", "SENSOR_BUS_FAULT",
+        "CS_PAIR_CONTEXT", "CS_PAIR_PHASE", "CS_PAIR_COMPLETE",
+        "CS_RF_SIGNAL", "CS_RF_QUALITY", "CS_RF_STATUS",
     }
     parsed = events()
     assert {row[1] for row in parsed} == expected_names

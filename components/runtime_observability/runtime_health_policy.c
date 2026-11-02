@@ -135,3 +135,27 @@ runtime_health_task_set_result_t runtime_health_policy_check_task_set(
     }
     return RUNTIME_HEALTH_TASK_SET_COMPLETE;
 }
+
+
+bool runtime_memory_watch_update(
+    runtime_memory_watch_t *watch,
+    uint32_t free_now,
+    uint32_t threshold,
+    uint32_t *reported_from
+)
+{
+    if (watch == NULL) return false;
+    if (!watch->armed) {
+        watch->armed = true;
+        watch->reference_free = free_now;
+        return false;
+    }
+
+    const uint32_t reference = watch->reference_free;
+    const uint32_t change = free_now > reference ? free_now - reference : reference - free_now;
+    if (threshold == 0U || change < threshold) return false;
+
+    if (reported_from != NULL) *reported_from = reference;
+    watch->reference_free = free_now;
+    return true;
+}

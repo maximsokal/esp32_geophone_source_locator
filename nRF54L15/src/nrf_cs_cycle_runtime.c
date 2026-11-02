@@ -234,6 +234,13 @@ int nrf_cs_cycle_runtime_step_done(nrf_cs_cycle_runtime_t *rt, const nrf_cs_step
         (measurement->outcome == NRF_CS_OUTCOME_SUCCESS && measurement->distance_mm < 0)) {
         return -1;
     }
+    /* BLE callbacks may precede the main-loop tick that closes this window. */
+    const uint64_t window_end = rt->t0_ms + ((uint64_t)rt->window + 1U) * rt->window_ms;
+    if (now_ms(rt) >= window_end) {
+        const nrf_cs_measurement_t timed_out = {.outcome = NRF_CS_OUTCOME_TIMEOUT};
+        finish_attempt(rt, &timed_out);
+        return 0;
+    }
     finish_attempt(rt, measurement);
     return 0;
 }

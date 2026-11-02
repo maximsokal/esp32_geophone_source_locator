@@ -145,6 +145,39 @@ static void test_missing_expected_task_blocks_completeness(void)
 }
 
 
+static void test_memory_watch_reports_a_loss_with_the_value_it_came_from(void)
+{
+    runtime_memory_watch_t watch = {0};
+    uint32_t from = 0U;
+
+    assert(!runtime_memory_watch_update(&watch, 6071U, 2048U, &from));        /* the first sample only arms it */
+    assert(!runtime_memory_watch_update(&watch, 6071U, 2048U, &from));
+    assert(!runtime_memory_watch_update(&watch, 4600U, 2048U, &from));        /* the 1.5 KB reserve: quiet */
+    assert(!runtime_memory_watch_update(&watch, 4024U, 2048U, &from));        /* 2047 under the reference */
+    assert(runtime_memory_watch_update(&watch, 4023U, 2048U, &from));         /* exactly the threshold */
+    assert(from == 6071U);
+    assert(!runtime_memory_watch_update(&watch, 4023U, 2048U, &from));        /* reported once, not every second */
+
+    /* the 5.9 KB loss of the bench log, in two steps, and the return of the memory */
+    assert(runtime_memory_watch_update(&watch, 175U, 2048U, &from));
+    assert(from == 4023U);
+    assert(runtime_memory_watch_update(&watch, 5743U, 2048U, &from));
+    assert(from == 175U);
+}
+
+
+static void test_memory_watch_ignores_bad_arguments(void)
+{
+    runtime_memory_watch_t watch = {0};
+    uint32_t from = 77U;
+    assert(!runtime_memory_watch_update(NULL, 1U, 2048U, &from));
+    assert(!runtime_memory_watch_update(&watch, 6000U, 0U, &from));           /* arms */
+    assert(!runtime_memory_watch_update(&watch, 0U, 0U, &from));              /* a zero threshold reports nothing */
+    assert(from == 77U);
+    assert(runtime_memory_watch_update(&watch, 5000U, 1U, NULL));             /* the origin is optional */
+}
+
+
 int main(void)
 {
     test_live_heartbeat_does_not_hide_frozen_progress();
@@ -152,5 +185,7 @@ int main(void)
     test_progress_deadline_boundaries();
     test_reaction_order_and_hard_failure_gate();
     test_missing_expected_task_blocks_completeness();
+    test_memory_watch_reports_a_loss_with_the_value_it_came_from();
+    test_memory_watch_ignores_bad_arguments();
     return 0;
 }

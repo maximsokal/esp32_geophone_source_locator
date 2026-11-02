@@ -857,16 +857,43 @@ void runtime_observability_log_snapshot(const char *stage)
 }
 
 
+#define RUNTIME_MEMORY_WATCH_THRESHOLD_BYTES 2048U
+
+/* See runtime_memory_watch_t: reports a change of the DMA-capable internal heap the moment it happens. */
+static void runtime_observability_watch_memory(runtime_memory_watch_t *watch)
+{
+    const uint32_t dma_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA;
+    const uint32_t dma_free = (uint32_t)heap_caps_get_free_size(dma_caps);
+    uint32_t from = 0U;
+    if (!runtime_memory_watch_update(watch, dma_free, RUNTIME_MEMORY_WATCH_THRESHOLD_BYTES, &from)) return;
+
+    ESP_LOGI(
+        TAG,
+        "MEM_WATCH dma_free=%u->%u delta=%d dma_largest=%u dma_min_since_boot=%u internal_free=%u internal_min_since_boot=%u tasks=%u",
+        (unsigned)from,
+        (unsigned)dma_free,
+        (int)dma_free - (int)from,
+        (unsigned)heap_caps_get_largest_free_block(dma_caps),
+        (unsigned)heap_caps_get_minimum_free_size(dma_caps),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        (unsigned)uxTaskGetNumberOfTasks()
+    );
+}
+
+
 static void runtime_observability_task(void *argument)
 {
     (void)argument;
     uint32_t elapsed_ms = 0U;
+    runtime_memory_watch_t memory_watch = {0};
 
     for (;;) {
         const uint32_t notified = ulTaskNotifyTake(
             pdTRUE,
             pdMS_TO_TICKS(RUNTIME_HEALTH_MONITOR_INTERVAL_MS)
         );
+        runtime_observability_watch_memory(&memory_watch);
         char requested_stage[RUNTIME_OBSERVABILITY_STAGE_SIZE];
         if (runtime_take_requested_stage(requested_stage, sizeof(requested_stage))) {
             runtime_observability_log_snapshot(requested_stage);

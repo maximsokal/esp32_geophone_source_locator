@@ -11,6 +11,7 @@ RUNTIME_PARTS = [
     ROOT / "nRF54L15" / "src" / f"nrf_cs_pair_runtime_zephyr_impl_{index}.inc"
     for index in (1, 2, 3)
 ]
+RUNTIME_PARTS.append(ROOT / "nRF54L15" / "src" / "nrf_cs_pair_runtime_zephyr_connections.inc")
 SCHED_H = ROOT / "nRF54L15" / "include" / "nrf_cs_scheduler.h"
 BOOTSTRAP = ROOT / "nRF54L15" / "src" / "nrf_bootstrap_runtime_zephyr.c"
 MAIN = ROOT / "nRF54L15" / "src" / "main.c"

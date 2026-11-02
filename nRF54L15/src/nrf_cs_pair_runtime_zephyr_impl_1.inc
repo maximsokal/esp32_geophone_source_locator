@@ -71,6 +71,11 @@ static bool s_outgoing_connected;
 static struct bt_conn *s_incoming_conn;
 
 static nrf_cs_step_t s_timeout_step;
+static int64_t s_attempt_deadline_ms;
+static nrf_cs_rf_diagnostics_t s_rf_diagnostics;
+static atomic_t s_rf_tx_power = ATOMIC_INIT(NRF_CS_RF_UNAVAILABLE);
+static atomic_t s_rf_status;
+static atomic_t s_rf_flags;
 static nrf_cs_pair_runtime_complete_cb_t s_user_complete_cb;
 static void *s_user_complete_context;
 
@@ -226,6 +231,10 @@ static void runtime_stop_scan(void)
 
 static void runtime_reset_ranging(void)
 {
+    nrf_cs_rf_reset(&s_rf_diagnostics);
+    atomic_set(&s_rf_tx_power, NRF_CS_RF_UNAVAILABLE);
+    atomic_set(&s_rf_status, (atomic_val_t)nrf_cs_rf_status_word(127, 127, 0, 0, 0, false));
+    atomic_set(&s_rf_flags, 0);
     net_buf_simple_reset(&s_local_steps);
     net_buf_simple_reset(&s_peer_rx);
     net_buf_simple_reset(&s_peer_owned);

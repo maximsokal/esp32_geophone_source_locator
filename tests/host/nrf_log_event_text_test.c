@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "nrf_log_events.h"
 #include "nrf_log_event_text.h"
@@ -90,6 +91,39 @@ static void test_truncation_is_safe_and_reports_full_length(void)
     assert(small[0] == '\0');
 }
 
+static void test_rf_diagnostics_are_decoded_without_invented_noise_or_antenna_health(void)
+{
+    char line[512];
+    nrf_log_stored_record_t rf=record(NRF_LOG_EVENT_CS_RF_SIGNAL,NRF_LOG_SEVERITY_INFO,
+        NRF_LOG_SUBSYSTEM_CS,42U,UINT32_C(0xf804b0c4));
+    (void)nrf_log_event_text_format(line,sizeof(line),2,&rf);
+    assert(strstr(line,"local_rssi_dbm=-60 peer_rssi_dbm=-80 local_tx_dbm=4 peer_tx_dbm=-8"));
+    puts(line);
+    rf.arg1=UINT32_C(0x7f7f7f7f);
+    (void)nrf_log_event_text_format(line,sizeof(line),2,&rf);
+    assert(strstr(line,"local_rssi_dbm=unavailable"));
+    rf.event_id=NRF_LOG_EVENT_CS_RF_QUALITY;rf.arg1=UINT32_C(0x4023c032);
+    (void)nrf_log_event_text_format(line,sizeof(line),2,&rf);
+    assert(strstr(line,"unusable_tones_pct=50/0"));
+    assert(strstr(line,"noise_floor_dbm=unavailable rx_snr_db=unavailable"));
+    assert(strstr(line,"antenna_hw=unknown"));
+    assert(strstr(line,"ant_config_issue=none_observed"));
+    puts(line);
+    rf.arg1|=UINT32_C(0x02000000);
+    (void)nrf_log_event_text_format(line,sizeof(line),2,&rf);
+    assert(strstr(line,"ant_config_issue=observed"));
+    rf.event_id=NRF_LOG_EVENT_CS_RF_STATUS;rf.arg1=UINT32_C(0x804bf221);
+    (void)nrf_log_event_text_format(line,sizeof(line),2,&rf);
+    assert(strstr(line,"role=reflector"));
+    assert(strstr(line,"no_cs_sync=1"));
+    assert(strstr(line,"reference_power_dbm=-65 selected_tx_dbm=4"));
+    puts(line);
+    char small[12];
+    size_t n=nrf_log_event_text_format(line,sizeof(line),2,&rf);
+    assert(nrf_log_event_text_format(small,sizeof(small),2,&rf)==n);
+    assert(small[sizeof(small)-1]=='\0');
+}
+
 int main(void)
 {
     test_every_event_in_the_def_list_has_its_name();
@@ -97,5 +131,6 @@ int main(void)
     test_plain_and_reboot_marker_lines();
     test_unknown_latch_source_is_marked_not_crashed();
     test_truncation_is_safe_and_reports_full_length();
+    test_rf_diagnostics_are_decoded_without_invented_noise_or_antenna_health();
     return 0;
 }

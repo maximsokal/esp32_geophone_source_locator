@@ -60,7 +60,30 @@ typedef struct
     uint64_t data_prep_total_us;
     uint64_t data_prep_max_us;
     uint64_t data_prep_samples;
+    /* Per flush chunk: the time LVGL needed to draw it (without the transfer), and the pixels it covered. */
+    uint64_t chunk_draw_total_us;
+    uint64_t chunk_draw_max_us;
+    uint64_t chunk_pixels_total;
+    uint32_t chunk_samples;
+    uint32_t frame_chunks_max;
 } ui_perf_stage_metrics_t;
+
+
+/*
+ * What one log window says about where the render time goes. A frame costs (chunks per frame) x (cost of a chunk),
+ * and a chunk costs a fixed part (LVGL walks the whole object tree for every chunk) plus a part per pixel (blending,
+ * text). Few pixels per chunk with a high draw time points at the fixed part; a high ns per pixel with full-width
+ * chunks points at slow code or memory (flash cache misses, PSRAM).
+ */
+typedef struct
+{
+    uint32_t chunks_per_frame_x10;
+    uint32_t chunks_per_frame_max;
+    uint64_t chunk_draw_avg_us;
+    uint64_t chunk_draw_max_us;
+    uint32_t pixels_per_chunk;
+    uint32_t draw_ns_per_pixel;
+} ui_perf_profile_t;
 
 
 bool ui_perf_policy_should_log(
@@ -109,5 +132,8 @@ void ui_perf_policy_record_render(uint64_t elapsed_us);
 void ui_perf_policy_record_flush_submit(uint64_t elapsed_us);
 void ui_perf_policy_record_flush_wait(uint64_t elapsed_us, bool yielded);
 void ui_perf_policy_record_data_prep(uint64_t elapsed_us);
+void ui_perf_policy_record_chunk_draw(uint64_t draw_us, uint32_t pixels);
+void ui_perf_policy_record_frame_chunks(uint32_t chunks);
+ui_perf_profile_t ui_perf_policy_profile(const ui_perf_stage_metrics_t *metrics);
 ui_perf_stage_metrics_t ui_perf_policy_stage_snapshot(void);
 ui_perf_stage_metrics_t ui_perf_policy_stage_take(void);

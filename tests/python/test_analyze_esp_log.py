@@ -279,3 +279,38 @@ def test_ranging_gate_decides_from_the_result_line_of_the_firmware():
     retried = analyzer.analyze_text(ranging_lines(0, "timeout") + ranging_lines(1).replace("(180000)", "(260000)").replace("(180001)", "(260001)"))
     assert [f.status for f in retried.findings if f.gate == "G9"] == [analyzer.PASS]
     assert gates("I (1000) app_init: Project name: x\n")["G9"] == analyzer.NOT_APPLICABLE
+
+
+def test_render_profile_and_memory_facts_are_reported_and_decide_no_gate():
+    # Bench log 2026-11-01 21:46: "a chunk costs 20 ms" and "DMA fell to 175 bytes" had no numbers to explain them.
+    facts = (
+        "I (30000) UI: UI_PROFILE: frames=10 chunks_per_frame_x10=50 chunks_per_frame_max=12 chunk_draw_avg_us=2000 "
+        "chunk_draw_max_us=9000 pixels_per_chunk=464 draw_ns_per_pixel=4310 scene_objects=120\n"
+        "I (31000) UI: UI_PROFILE: frames=30 chunks_per_frame_x10=100 chunks_per_frame_max=12 chunk_draw_avg_us=14000 "
+        "chunk_draw_max_us=20000 pixels_per_chunk=2400 draw_ns_per_pixel=5833 scene_objects=130\n"
+        "W (31500) UI: UI_PROFILE: frames=0 chunks_per_frame_x10=0 chunks_per_frame_max=0 chunk_draw_avg_us=0 "
+        "chunk_draw_max_us=0 pixels_per_chunk=0 draw_ns_per_pixel=0 scene_objects=130\n"
+        "I (2179) UI_LVGL: UI_MEM_PROBE cpu_mhz=160 icache_bytes=16384 flash_mode=dio flash_mhz=80m psram_mhz=80 "
+        "flash_cycles_per_read=190 psram_cycles_per_read=120 internal_cycles_per_read=4 region_bytes=131072\n"
+        "I (35000) RUNTIME_OBSERVABILITY: MEM_WATCH dma_free=6071->175 delta=-5896 dma_largest=92 "
+        "dma_min_since_boot=100 internal_free=7799 internal_min_since_boot=7000 tasks=31\n"
+    )
+    plain = analyzer.analyze_text(healthy_log())
+    report = analyzer.analyze_text(healthy_log() + facts)
+    assert report.gates() == plain.gates()                              # facts, not gates
+    assert plain.render_profile == {} and plain.mem_probe == {} and plain.mem_watch == []
+
+    profile = report.render_profile
+    assert profile["reports"] == 2 and profile["frames"] == 40          # the empty window counts for nothing
+    assert profile["chunks_per_frame_x10"] == 87                        # (10*50 + 30*100) / 40
+    assert profile["chunk_draw_avg_us"] == 12285                        # weighted by chunks, not by windows
+    assert profile["pixels_per_chunk"] == 2123
+    assert profile["draw_ns_per_pixel"] == 5785
+    assert profile["chunk_draw_max_us"] == 20000 and profile["scene_objects_max"] == 130
+    assert report.mem_probe["flash_cycles_per_read"] == "190" and report.mem_probe["flash_mode"] == "dio"
+    assert report.mem_watch == [{"t_ms": 35000, "from": 6071, "to": 175, "tasks": 31}]
+
+    text = analyzer.format_report(report)
+    assert "8.7 chunks/frame (max 12), 12.3 ms/chunk (max 20.0), 2123 px/chunk, 5785 ns/px" in text
+    assert "MEM_WATCH 35.0s: dma_free 6071 -> 175 (-5896), 31 tasks" in text
+    assert "flash_cycles_per_read=190" in text

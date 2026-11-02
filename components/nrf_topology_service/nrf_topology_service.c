@@ -1767,7 +1767,8 @@ static void platform_log_report_records(void *context, uint8_t node_index,
     const nrf_log_stored_record_t *records, size_t count)
 {
     (void)context;
-    char line[160];
+    /* Only the topology worker invokes this mirror; keep diagnostics off its stack. */
+    static char line[512];
     for (size_t i = 0U; i < count; ++i) {
         (void)nrf_log_event_text_format(line, sizeof(line), node_index, &records[i]);
         if (records[i].severity >= NRF_LOG_SEVERITY_WARN) {

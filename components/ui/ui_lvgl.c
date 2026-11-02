@@ -1,12 +1,16 @@
 #include "ui_internal.h"
 
 #include <stdint.h>
+#include <string.h>
 
 #include "app_task_config.h"
 #include "display.h"
 #include "spi_bus.h"
 #include "ui_perf_policy.h"
 
+#include "esp_clk_tree.h"
+#include "esp_cpu.h"
+#include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
@@ -45,8 +49,70 @@ static uint64_t s_flush_wait_started_us;
 static uint64_t s_flush_submit_us;
 static uint64_t s_flush_wait_us;
 static bool s_flush_wait_yielded;
+static uint64_t s_draw_started_us;     /* LVGL starts drawing the next chunk when the previous transfer is done */
+static uint32_t s_frame_chunks;
 
 static esp_err_t ui_lvgl_drain_panel_io_locked(void);
+
+/*
+ * The cost of a flush chunk (~20 ms on the bench) is the time LVGL's code and data need, not the SPI transfer. This
+ * build runs the CPU at 160 MHz with a 16 KB instruction cache and DIO flash, so code and read-only data that miss
+ * the cache are slow, and PSRAM is slower again. The probe reads every cache line of a region larger than the data
+ * cache and reports the CPU cycles per read, so the log shows the speed of each memory that LVGL touches. The
+ * reads of internal RAM include ~4 cycles of loop; flash and PSRAM numbers are what a cache miss costs.
+ */
+#define UI_MEM_PROBE_STRIDE_BYTES 64U
+#define UI_MEM_PROBE_FLASH_PSRAM_BYTES 131072U
+#define UI_MEM_PROBE_INTERNAL_BYTES 16384U
+#define UI_MEM_PROBE_PASSES 3U
+
+extern const uint8_t _rodata_start[];
+extern const uint8_t _rodata_end[];
+static volatile uint32_t s_mem_probe_sink;
+
+static uint32_t ui_lvgl_probe_cycles_per_read(const volatile uint8_t *base, size_t bytes)
+{
+    uint32_t best = UINT32_MAX;
+    for (unsigned pass = 0U; pass < UI_MEM_PROBE_PASSES; ++pass) {
+        uint32_t sum = 0U;
+        const uint32_t started = esp_cpu_get_cycle_count();
+        for (size_t offset = 0U; offset < bytes; offset += UI_MEM_PROBE_STRIDE_BYTES) sum += base[offset];
+        const uint32_t cycles = esp_cpu_get_cycle_count() - started;
+        s_mem_probe_sink = sum;
+        if (cycles < best) best = cycles;        /* a pass that was preempted reads too slow; the best one is right */
+    }
+    return best / (uint32_t)(bytes / UI_MEM_PROBE_STRIDE_BYTES);
+}
+
+static void ui_lvgl_log_memory_speed(void)
+{
+    uint32_t cpu_hz = 0U;
+    (void)esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU, ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &cpu_hz);
+
+    const size_t rodata_bytes = (size_t)(_rodata_end - _rodata_start);
+    const size_t flash_bytes = rodata_bytes < UI_MEM_PROBE_FLASH_PSRAM_BYTES ? rodata_bytes : UI_MEM_PROBE_FLASH_PSRAM_BYTES;
+    uint8_t *psram = heap_caps_malloc(UI_MEM_PROBE_FLASH_PSRAM_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *internal = heap_caps_malloc(UI_MEM_PROBE_INTERNAL_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (psram != NULL) memset(psram, 0x5A, UI_MEM_PROBE_FLASH_PSRAM_BYTES);
+    if (internal != NULL) memset(internal, 0x5A, UI_MEM_PROBE_INTERNAL_BYTES);
+
+    ESP_LOGI(
+        TAG,
+        "UI_MEM_PROBE cpu_mhz=%u icache_bytes=%u flash_mode=%s flash_mhz=%s psram_mhz=%u flash_cycles_per_read=%d psram_cycles_per_read=%d internal_cycles_per_read=%d region_bytes=%u",
+        (unsigned)(cpu_hz / 1000000U),
+        (unsigned)CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE,
+        CONFIG_ESPTOOLPY_FLASHMODE,
+        CONFIG_ESPTOOLPY_FLASHFREQ,
+        (unsigned)CONFIG_SPIRAM_SPEED,
+        flash_bytes >= UI_MEM_PROBE_STRIDE_BYTES
+            ? (int)ui_lvgl_probe_cycles_per_read(_rodata_start, flash_bytes) : -1,
+        psram != NULL ? (int)ui_lvgl_probe_cycles_per_read(psram, UI_MEM_PROBE_FLASH_PSRAM_BYTES) : -1,
+        internal != NULL ? (int)ui_lvgl_probe_cycles_per_read(internal, UI_MEM_PROBE_INTERNAL_BYTES) : -1,
+        (unsigned)flash_bytes
+    );
+    heap_caps_free(psram);
+    heap_caps_free(internal);
+}
 
 static void ui_lvgl_perf_event(lv_event_t *event)
 {
@@ -58,6 +124,8 @@ static void ui_lvgl_perf_event(lv_event_t *event)
             s_render_started_us = now_us;
             s_render_flush_submit_us = s_flush_submit_us;
             s_render_flush_wait_us = s_flush_wait_us;
+            s_draw_started_us = now_us;
+            s_frame_chunks = 0U;
             break;
 
         case LV_EVENT_RENDER_READY:
@@ -68,12 +136,23 @@ static void ui_lvgl_perf_event(lv_event_t *event)
                     (s_flush_wait_us - s_render_flush_wait_us);
                 ui_perf_policy_record_render(elapsed_us > flush_us ? elapsed_us - flush_us : 0U);
             }
+            ui_perf_policy_record_frame_chunks(s_frame_chunks);
             s_render_started_us = 0U;
             break;
 
-        case LV_EVENT_FLUSH_START:
+        case LV_EVENT_FLUSH_START: {
+            /* The draw of this chunk ran from the end of the previous transfer (or the frame start) to here. */
+            const lv_area_t *area = lv_event_get_param(event);
+            const uint32_t pixels = area != NULL
+                ? (uint32_t)(area->x2 - area->x1 + 1) * (uint32_t)(area->y2 - area->y1 + 1)
+                : 0U;
+            if (s_draw_started_us != 0U && now_us >= s_draw_started_us) {
+                ui_perf_policy_record_chunk_draw(now_us - s_draw_started_us, pixels);
+            }
+            ++s_frame_chunks;
             s_flush_submit_started_us = now_us;
             break;
+        }
 
         case LV_EVENT_FLUSH_FINISH:
             if (s_flush_submit_started_us != 0U && now_us >= s_flush_submit_started_us) {
@@ -101,6 +180,7 @@ static void ui_lvgl_perf_event(lv_event_t *event)
             }
             s_flush_wait_started_us = 0U;
             s_flush_wait_yielded = false;
+            s_draw_started_us = now_us;
             break;
 
         default:
@@ -307,6 +387,8 @@ esp_err_t ui_lvgl_init(void)
         "DMA_RUNTIME owner=tft location=internal bytes=%u mode=lvgl_dma_buffer",
         (unsigned)(DISPLAY_WIDTH * UI_PERF_FLUSH_CHUNK_ROWS * sizeof(uint16_t))
     );
+
+    ui_lvgl_log_memory_speed();
 
     return ESP_OK;
 }
