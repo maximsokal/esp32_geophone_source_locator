@@ -893,7 +893,7 @@ static void workflow_service_calibration_cancel(void)
 
 static void workflow_service_ranging_done(bool success, bool partial, const char *reason)
 {
-    (void)partial;
+    (void)partial; /* Pair coverage is shown through ranging progress; success gates the accepted geometry. */
     const workflow_command_params_t params = {
         .has_ok = true,
         .ok = success,

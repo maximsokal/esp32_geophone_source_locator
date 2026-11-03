@@ -65,6 +65,9 @@ void workflow_service_host_fakes_reset(void)
     workflow_test_submitted_budget_ms = 0U;
     workflow_test_submitted_object_id[0] = '\0';
     workflow_test_submitted_session_id[0] = '\0';
+    workflow_test_saved_pairs_calls = 0U;
+    workflow_test_saved_pairs_result = ESP_OK;
+    memset(&workflow_test_saved_pairs, 0, sizeof(workflow_test_saved_pairs));
 }
 
 esp_err_t object_store_scan_present(const char *object_id, const char *session_id, bool *present_out)

@@ -107,4 +107,16 @@ it('says nothing extra for a cycle where every pair is valid or the device does 
   expect(html).not.toContain('data-pair-cause');
   expect(html).not.toContain('Measured but not used');
 });
+
+it('shows partial measurements even when the remaining geometry is usable', () => {
+  const status = statusFor('RANGING_RESULT');
+  (status as unknown as { ranging: unknown }).ranging = {
+    available: true,
+    progress: { complete: true, success: true, partial: true, pairs_done: 3, pairs_total: 3, pairs: BENCH_PAIRS },
+  };
+  const html = panelHtml(status);
+  expect(html).toContain(translate('en', 'workflow.ranging.partial'));
+  expect(html).not.toContain(translate('en', 'workflow.ranging.success'));
+  expect(html).toContain('data-valid-pairs="2"');
+});
 });

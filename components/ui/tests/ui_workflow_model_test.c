@@ -976,6 +976,10 @@ static void test_ranging_result_three_outcomes(void)
     ranging.partial = true;
     build(&snapshot, &state, &ranging, &model);
     assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_PARTIAL);
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM);
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_PARTIAL);
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_RETRY);
     ranging.partial = false;
     build(&snapshot, &state, &ranging, &model);
     assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_FAILED);

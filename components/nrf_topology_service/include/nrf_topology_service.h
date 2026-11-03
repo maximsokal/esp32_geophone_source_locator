@@ -90,8 +90,8 @@ typedef struct {
 typedef struct {
     bool active;
     bool complete;
-    bool success;
-    bool partial;
+    bool success; /* All participating positions passed geometry acceptance. */
+    bool partial; /* Retained measurements with incomplete coverage or geometry; may accompany success. */
     size_t pairs_done; /* Directed executions, despite the legacy field name. */
     size_t pairs_total;
     size_t pair_count;

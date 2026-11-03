@@ -78,6 +78,8 @@ typedef enum {
     NRF_CS_PAIR_DIRECTIONS_DISAGREE,
 } nrf_cs_pair_state_t;
 
+#define NRF_CS_QUALITY_MANUAL (1U << 6)
+
 typedef struct {
     uint8_t node_a;
     uint8_t node_b;

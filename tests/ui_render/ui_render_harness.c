@@ -555,14 +555,14 @@ static void test_calibration_result_selection_after_run(const char *language)
 
 static void test_ranging_result_screens(const char *language)
 {
-    static const char *outcomes[] = {"success", "partial", "failed", "cable_exceeded", "pair_diagnostics"};
-    static const char *reasons[] = {NULL, "pair_missing:0-4", "no_measurements", "cable_exceeded:0-4", "pair_failed:0-4"};
-    for (size_t outcome = 0U; outcome < 5U; ++outcome) {
+    static const char *outcomes[] = {"success", "partial", "failed", "cable_exceeded", "pair_diagnostics", "partial_usable"};
+    static const char *reasons[] = {NULL, "pair_missing:0-4", "no_measurements", "cable_exceeded:0-4", "pair_failed:0-4", NULL};
+    for (size_t outcome = 0U; outcome < sizeof(outcomes) / sizeof(outcomes[0]); ++outcome) {
         render_ranging_available = false;
         prepare(WORKFLOW_STEP_RANGING, 4U);
         memset(&render_ranging_progress, 0, sizeof(render_ranging_progress));
         render_ranging_available = true;
-        render_ranging_progress.partial = outcome == 1U || outcome == 3U || outcome == 4U;
+        render_ranging_progress.partial = outcome == 1U || outcome == 3U || outcome == 4U || outcome == 5U;
         render_ranging_progress.complete = true;
         render_ranging_progress.pair_count = UI_WORKFLOW_RANGING_MAX_PAIRS;
         render_ranging_progress.pairs_done = UI_WORKFLOW_RANGING_MAX_PAIRS;
@@ -576,7 +576,7 @@ static void test_ranging_result_screens(const char *language)
                 pair->node_b = b;
                 pair->state = outcome == 2U ? NRF_CS_PAIR_MISSING : NRF_CS_PAIR_VALID;
                 pair->distance_mm = outcome == 2U ? 0 : (int32_t)(1234U + index);
-                if (index == 3U && outcome == 1U) {
+                if (index == 3U && (outcome == 1U || outcome == 5U)) {
                     pair->state = NRF_CS_PAIR_MISSING;
                     pair->distance_mm = 0;
                 } else if (index == 3U && outcome == 3U) {
@@ -599,7 +599,7 @@ static void test_ranging_result_screens(const char *language)
         workflow_core_init(&core, true);
         core.step = WORKFLOW_STEP_RANGING;
         const workflow_command_params_t params = {
-            .has_ok = true, .ok = outcome == 0U, .reason = reasons[outcome],
+            .has_ok = true, .ok = outcome == 0U || outcome == 5U, .reason = reasons[outcome],
         };
         assert(workflow_core_apply(&core, WORKFLOW_COMMAND_RANGING_DONE, &params, 4U, true) ==
             WORKFLOW_COMMAND_RESULT_OK);

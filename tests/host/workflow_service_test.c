@@ -151,6 +151,12 @@ static uint64_t s_now_ms;
 static const char *s_fake_object_id = "object-a";
 static bool s_placement_ready;
 static nrf_topology_ranging_progress_t s_ranging_progress;
+static nrf_topology_ranging_progress_t s_manual_progress;
+static esp_err_t s_manual_result;
+static unsigned s_manual_calls;
+static uint64_t s_manual_started, s_manual_updated;
+static uint8_t s_manual_a, s_manual_b;
+static int32_t s_manual_distance;
 
 int64_t esp_timer_get_time(void)
 {
@@ -465,8 +471,12 @@ esp_err_t nrf_topology_service_ranging_cancel(void)
 esp_err_t nrf_topology_service_ranging_set_manual(uint64_t started, uint64_t updated,
     uint8_t a, uint8_t b, int32_t distance, const uint32_t *limits)
 {
-    (void)started; (void)updated; (void)a; (void)b; (void)distance; (void)limits;
-    return ESP_ERR_NOT_SUPPORTED;
+    ++s_manual_calls;
+    s_manual_started = started; s_manual_updated = updated;
+    s_manual_a = a; s_manual_b = b; s_manual_distance = distance;
+    assert(limits != NULL && limits[0] == 5000U);
+    if (s_manual_result == ESP_OK) s_ranging_progress = s_manual_progress;
+    return s_manual_result;
 }
 
 esp_err_t nrf_topology_service_get_leveling_summary(
@@ -577,6 +587,9 @@ static void reset_fakes(bool active_object, measurement_service_state_t state, s
     s_placement_ready = false;
     s_device_snapshot_result = ESP_OK;
     memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
+    memset(&s_manual_progress, 0, sizeof(s_manual_progress));
+    s_manual_result = ESP_ERR_NOT_SUPPORTED;
+    s_manual_calls = 0U;
     assert(workflow_service_init() == ESP_OK);
 }
 
@@ -1925,6 +1938,102 @@ static void test_ranging_result_is_logged_with_every_pair_and_node(void)
     workflow_service_shutdown();
 }
 
+static void prepare_partial_ranging_outcome(bool usable)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    enter_gps_choice();
+    assert(command(WORKFLOW_COMMAND_GPS_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    refresh_placement_gate();
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    s_ranging_progress.complete = true;
+    s_ranging_progress.active = false;
+    s_ranging_progress.success = usable;
+    s_ranging_progress.partial = true;
+    s_ranging_progress.updated_at_ms = s_ranging_progress.started_at_ms + 100U;
+    s_ranging_progress.pair_count = 2U;
+    s_ranging_progress.pairs[0] = (nrf_cs_pair_result_t){.node_a=0U, .node_b=1U,
+        .state=NRF_CS_PAIR_VALID, .distance_mm=2300, .automatic_distance_mm=6000,
+        .scheduler_quality_flags=NRF_CS_QUALITY_MANUAL};
+    s_ranging_progress.pairs[1] = (nrf_cs_pair_result_t){.node_a=3U, .node_b=4U,
+        .state=NRF_CS_PAIR_RETRY_EXHAUSTED, .distance_mm=-1};
+}
+
+static void test_partial_ranging_uses_geometry_success_and_preserves_evidence(void)
+{
+    for (unsigned usable = 0U; usable < 2U; ++usable) {
+        prepare_partial_ranging_outcome(usable != 0U);
+        assert(workflow_service_poll() == ESP_OK);
+        const workflow_snapshot_t snapshot = try_snapshot();
+        assert(snapshot.step == WORKFLOW_STEP_RANGING_RESULT);
+        assert(((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM)) != 0U) == (usable != 0U));
+        assert(workflow_test_saved_pairs_calls == 1U);
+        assert(workflow_test_saved_pairs.pair_count == 2U);
+        assert(workflow_test_saved_pairs.pairs[0].automatic_distance_mm == 6000);
+        assert((workflow_test_saved_pairs.pairs[0].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U);
+        assert(!workflow_test_saved_pairs.pairs[1].valid);
+        assert(strcmp(workflow_test_saved_pairs.pairs[1].state, "retry_exhausted") == 0);
+        if (usable) {
+            assert(command(WORKFLOW_COMMAND_CONFIRM, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+            assert(try_snapshot().step == WORKFLOW_STEP_SCAN_CHOICE);
+        }
+        workflow_service_shutdown();
+    }
+    prepare_partial_ranging_outcome(true);
+    workflow_test_saved_pairs_result = ESP_FAIL;
+    assert(workflow_service_poll() == ESP_OK);
+    const workflow_snapshot_t failed = try_snapshot();
+    assert(failed.step == WORKFLOW_STEP_RANGING_RESULT);
+    assert((failed.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM)) == 0U);
+    assert(strcmp(failed.reason, "ranging_save_failed") == 0);
+    workflow_service_shutdown();
+}
+
+static void test_manual_distance_async_persists_validated_partial_result(void)
+{
+    prepare_partial_ranging_outcome(false);
+    assert(workflow_service_poll() == ESP_OK);
+    workflow_snapshot_t snapshot = try_snapshot();
+    s_manual_progress = s_ranging_progress;
+    s_manual_progress.success = true;
+    s_manual_progress.pairs[0].distance_mm = 2400;
+    ++s_manual_progress.updated_at_ms;
+    s_manual_result = ESP_OK;
+    const workflow_command_params_t params = {.has_generation=true, .expected_generation=snapshot.generation,
+        .has_distance=true, .node_a=0U, .node_b=1U, .distance_mm=2400,
+        .ranging_started_at_ms=s_ranging_progress.started_at_ms, .ranging_updated_at_ms=s_ranging_progress.updated_at_ms};
+    uint32_t seq = 0U;
+    assert(workflow_service_set_distance_async(&params, &seq) == ESP_OK);
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.last_async.seq == seq && snapshot.last_async.result == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_manual_calls == 1U && s_manual_started == params.ranging_started_at_ms &&
+        s_manual_updated == params.ranging_updated_at_ms && s_manual_a == 0U && s_manual_b == 1U && s_manual_distance == 2400);
+    assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM)) != 0U);
+    assert(workflow_test_saved_pairs.pairs[0].distance_mm == 2400);
+    assert(workflow_test_saved_pairs.pairs[0].automatic_distance_mm == 6000);
+    assert(!workflow_test_saved_pairs.pairs[1].valid);
+    s_manual_result = ESP_ERR_INVALID_STATE;
+    workflow_command_params_t stale = params;
+    stale.expected_generation = snapshot.generation;
+    assert(workflow_service_set_distance_async(&stale, &seq) == ESP_OK);
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.last_async.result == WORKFLOW_COMMAND_RESULT_STALE);
+    const unsigned saves = workflow_test_saved_pairs_calls;
+    s_manual_result = ESP_OK;
+    workflow_test_saved_pairs_result = ESP_FAIL;
+    stale.expected_generation = snapshot.generation;
+    stale.ranging_updated_at_ms = s_ranging_progress.updated_at_ms;
+    assert(workflow_service_set_distance_async(&stale, &seq) == ESP_OK);
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(workflow_test_saved_pairs_calls == saves + 1U);
+    assert(snapshot.last_async.result == WORKFLOW_COMMAND_RESULT_UNAVAILABLE);
+    assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM)) == 0U);
+    assert(strcmp(snapshot.reason, "ranging_save_failed") == 0);
+    workflow_service_shutdown();
+}
+
 static void test_placement_becomes_stable_at_the_production_remote_refresh_cadence(void)
 {
     /*
@@ -2535,6 +2644,8 @@ int main(void)
     test_service_fsm_illegal_events_and_single_recording_lifecycle();
     test_new_workflow_steps_wait_for_explicit_commands();
     test_ranging_result_is_logged_with_every_pair_and_node();
+    test_partial_ranging_uses_geometry_success_and_preserves_evidence();
+    test_manual_distance_async_persists_validated_partial_result();
     test_one_and_two_connected_remotes_complete_initialization();
     test_rejected_imu_calibration_command_is_repeated_for_silent_nodes_only();
     test_placement_becomes_stable_at_the_production_remote_refresh_cadence();

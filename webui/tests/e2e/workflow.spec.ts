@@ -1,6 +1,50 @@
 import { test, expect, catalog } from './fixtures/device';
 import { gate, savedSnapshot, scenarioScreenshot, seismicResponses } from './fixtures/scenarios';
-import { workflowActions } from './fixtures/visual-states';
+import { prepareVisualState, workflowActions } from './fixtures/visual-states';
+
+test('usable partial geometry keeps the failed pair visible and permits confirmation', async ({ page, api }) => {
+  await prepareVisualState(page, api, { id: 'partial-geometry', locale: 'en', tier: 'critical',
+    section: 'workflow', width: 393, height: 852, step: 'RANGING_RESULT', variant: 'partial-usable' });
+  await expect(page.getByText(catalog.en['workflow.ranging.partial'], { exact: true })).toBeVisible();
+  await expect(page.locator('[data-valid-pairs="9"][data-total-pairs="10"]')).toBeVisible();
+  await expect(page.locator('[data-command="CONFIRM"]')).toBeEnabled();
+  await scenarioScreenshot(page, 'partial-geometry-ready');
+  api.once('POST /api/control', async route => {
+    const body = route.request().postDataJSON();
+    expect(body.command).toBe('CONFIRM');
+    Object.assign(api.status.workflow!, { step: 'SCAN_CHOICE', generation: api.status.workflow!.generation + 1,
+      allowed_actions: ['SCAN_START', 'SKIP_SCAN', 'BACK'] });
+    await route.fulfill({ json: { ok: true, workflow: api.status.workflow } });
+  });
+  await page.locator('[data-command="CONFIRM"]').click();
+  await expect(page.getByRole('heading', { name: catalog.en['workflow.title.scan_choice'], exact: true })).toBeVisible();
+  await scenarioScreenshot(page, 'partial-geometry-confirmed');
+});
+
+test('manual pair correction sends the current revision and displays its source', async ({ page, api }) => {
+  await prepareVisualState(page, api, { id: 'partial-manual', locale: 'en', tier: 'critical',
+    section: 'workflow', width: 393, height: 852, step: 'RANGING_RESULT', variant: 'partial-usable' });
+  const progress = api.status.ranging!.progress!;
+  const generation = api.status.workflow!.generation;
+  api.once('POST /api/control', async route => {
+    expect(route.request().postDataJSON()).toEqual({ action: 'workflow_command', command: 'SET_DISTANCE', generation,
+      node_a: 3, node_b: 4, distance_mm: 2500, ranging_started_at_ms: progress.started_at_ms,
+      ranging_updated_at_ms: progress.updated_at_ms });
+    Object.assign(progress.pairs![9], { state: 'valid', distance_mm: 2500, automatic_distance_mm: 0, manual: true });
+    progress.partial = false;
+    progress.updated_at_ms! += 1;
+    api.status.workflow!.generation += 1;
+    await route.fulfill({ json: { ok: true, workflow: api.status.workflow } });
+  });
+  await page.getByRole('button', { name: 'Enter distance manually: Nodes 3–4', exact: true }).click();
+  await page.getByRole('spinbutton').fill('2500');
+  await page.getByRole('button', { name: catalog.en['workflow.distance.save'], exact: true }).click();
+  await expect(page.getByText('Nodes 3–4: 250 cm (manual)', { exact: true })).toBeVisible();
+  await expect(page.getByText(catalog.en['workflow.ranging.success'], { exact: true })).toBeVisible();
+  await expect(page.locator('[data-command="CONFIRM"]')).toBeEnabled();
+  expect(api.controls).toHaveLength(1);
+  await scenarioScreenshot(page, 'partial-geometry-manual-correction');
+});
 
 test('one attached remote can enter the permitted initialization stage', async ({ page, api }) => {
   api.status.pods = [api.status.pods[0]];

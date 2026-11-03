@@ -2804,6 +2804,46 @@ static const nrf_topology_ranging_node_t *service_ranging_find_node(
     return NULL;
 }
 
+/* The <=5-node fixed-Z layout needs redundant edges and bounded position uncertainty. */
+static bool service_ranging_partial_supported(
+    const nrf_topology_ranging_geometry_t *geometry,
+    const nrf_cs_pair_result_t *pairs, size_t pair_count)
+{
+    if (geometry->node_count < 1U + NRF_GEOMETRY_MIN_REMOTE_COUNT_FOR_RECORDING ||
+        geometry->node_count > NRF_CS_MAX_NODES) return false;
+    for (size_t i = 0U; i < geometry->node_count; ++i) {
+        unsigned references = 0U;
+        if (!geometry->nodes[i].solved || geometry->nodes[i].uncertainty_mm < 0 ||
+            geometry->nodes[i].uncertainty_mm > NRF_GEOMETRY_CONSISTENCY_TOLERANCE_MM) return false;
+        for (size_t j = 0U; j < geometry->node_count; ++j) {
+            if (i == j) continue;
+            for (size_t p = 0U; p < pair_count; ++p) {
+                const nrf_cs_pair_result_t *pair = &pairs[p];
+                if (pair->state == NRF_CS_PAIR_VALID &&
+                    ((pair->node_a == geometry->nodes[i].node_id && pair->node_b == geometry->nodes[j].node_id) ||
+                     (pair->node_b == geometry->nodes[i].node_id && pair->node_a == geometry->nodes[j].node_id))) {
+                    ++references;
+                    break;
+                }
+            }
+        }
+        if (references < 3U) return false;
+    }
+    return true;
+}
+
+static bool service_ranging_valid_triangles_consistent(const nrf_cs_pair_result_t *pairs, size_t count)
+{
+    nrf_cs_pair_result_t usable[NRF_CS_MAX_PAIRS];
+    nrf_geometry_triangle_report_t report;
+    if (count > NRF_CS_MAX_PAIRS) return false;
+    memcpy(usable, pairs, count * sizeof(usable[0]));
+    for (size_t i = 0U; i < count; ++i) {
+        if (usable[i].state != NRF_CS_PAIR_VALID) usable[i].state = NRF_CS_PAIR_UNKNOWN;
+    }
+    return nrf_geometry_triangles_check(usable, count, &report) && report.inconsistent_count == 0U;
+}
+
 static bool service_ranging_geometry_solves_all_nodes(
     const nrf_topology_worker_state_t *worker)
 {
@@ -2974,7 +3014,11 @@ static void service_ranging_finish(
     progress->complete = true;
     progress->success = success;
     progress->partial = false;
-    if (!success) {
+    if (success) {
+        for (size_t i = 0U; i < progress->pair_count; ++i) {
+            if (progress->pairs[i].state != NRF_CS_PAIR_VALID) { progress->partial = true; break; }
+        }
+    } else {
         for (size_t i = 0U; i < progress->pair_count; ++i) {
             if (progress->pairs[i].state == NRF_CS_PAIR_VALID) { progress->partial = true; break; }
         }
@@ -3014,8 +3058,7 @@ static void service_ranging_finish(
 /*
  * CS-GEO-01: the triangle consistency of the finished distance matrix, before the failure reasons and the solver result
  * are judged. Every complete triangle is logged with its excess; the sides that failed get the interval the good sides
- * leave them. Returns true (and finishes the ranging) when a triangle is inconsistent: at least one of its three sides
- * is wrong, and a layout solved from them would only look plausible.
+ * leave them. Invalid edges remain diagnostic; only a sufficiently constrained valid graph may exclude them from admission.
  */
 static bool service_ranging_check_triangles(nrf_topology_worker_state_t *worker, uint64_t now_ms)
 {
@@ -3049,6 +3092,10 @@ static bool service_ranging_check_triangles(nrf_topology_worker_state_t *worker,
         }
     }
     if (report.inconsistent_count == 0U) {
+        return false;
+    }
+    if (service_ranging_partial_supported(&progress->geometry, progress->pairs, progress->pair_count) &&
+        service_ranging_valid_triangles_consistent(progress->pairs, progress->pair_count)) {
         return false;
     }
     if (report.suspect_pair >= 0) {
@@ -3100,9 +3147,15 @@ static void service_ranging_process(nrf_topology_worker_state_t *worker)
 
     service_ranging_copy_cycle(worker);
     progress->topology_generation = worker->ranging_topology_generation;
-    /* CS-GEO-01: a finished matrix that contradicts itself is rejected before the solver spends time on it. */
-    if (nrf_cs_scheduler_is_complete(&worker->authority.scheduler) && service_ranging_check_triangles(worker, now_ms)) {
-        return;
+    /* Preserve triangle rejection; a redundant partial graph can exclude invalid edges from admission. */
+    if (nrf_cs_scheduler_is_complete(&worker->authority.scheduler)) {
+        bool excluded = false;
+        for (size_t i = 0U; i < progress->pair_count; ++i)
+            excluded = excluded || progress->pairs[i].state != NRF_CS_PAIR_VALID;
+        if (excluded && progress->pair_count == NRF_CS_MAX_PAIRS)
+            (void)service_ranging_solve(worker, &progress->geometry, &progress->solution_residual_mm,
+                &progress->main_height_reference_generation);
+        if (service_ranging_check_triangles(worker, now_ms)) return;
     }
     for (size_t i = 0U; i < progress->pair_count; ++i) {
         const uint16_t bit = (uint16_t)(1U << i);
@@ -3136,6 +3189,14 @@ static void service_ranging_process(nrf_topology_worker_state_t *worker)
         &progress->main_height_reference_generation);
     service_ranging_copy_cycle(worker);
     progress->topology_generation = worker->ranging_topology_generation;
+    if (worker->ranging_pair_failure_seen &&
+        service_ranging_partial_supported(&progress->geometry, progress->pairs, progress->pair_count) &&
+        service_ranging_valid_triangles_consistent(progress->pairs, progress->pair_count) &&
+        nrf_geometry_metrics_consistent(progress->geometry.inconsistent_pair_count, progress->geometry.max_residual_mm) &&
+        service_ranging_geometry_solves_all_nodes(worker)) {
+        service_ranging_finish(worker, true, NULL, now_ms);
+        return;
+    }
     for (size_t i = 0U; i < progress->pair_count; ++i) {
         if (progress->pairs[i].state == NRF_CS_PAIR_CABLE_EXCEEDED) {
             char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
@@ -4639,6 +4700,7 @@ esp_err_t nrf_topology_service_ranging_set_manual(
 
     progress->success = true;
     progress->failure_reason[0] = '\0';
+    bool excluded = false;
     for (size_t i = 0U; i < result->pair_count; ++i) {
         nrf_cs_pair_result_t *pair = &result->pairs[i];
         uint64_t maximum = 0U;
@@ -4654,7 +4716,7 @@ esp_err_t nrf_topology_service_ranging_set_manual(
             pair->state = NRF_CS_PAIR_CABLE_EXCEEDED;
         }
         if (pair->state != NRF_CS_PAIR_VALID) {
-            progress->success = false;
+            excluded = true;
             if (progress->failure_reason[0] == '\0')
                 (void)snprintf(progress->failure_reason, sizeof(progress->failure_reason), "%s:%u-%u",
                     pair->state == NRF_CS_PAIR_CABLE_EXCEEDED ? "cable_exceeded"
@@ -4701,9 +4763,12 @@ esp_err_t nrf_topology_service_ranging_set_manual(
         if (!dest->solved) progress->success = false;
     }
     if (solution.node_count != result->membership_count) progress->success = false;
+    if (excluded && (!service_ranging_partial_supported(&result->geometry, result->pairs, result->pair_count) ||
+        !service_ranging_valid_triangles_consistent(result->pairs, result->pair_count))) progress->success = false;
+    if (progress->success) progress->failure_reason[0] = '\0';
     if (!progress->success && progress->failure_reason[0] == '\0')
         (void)snprintf(progress->failure_reason, sizeof(progress->failure_reason), "geometry_unsolved");
-    progress->partial = !progress->success;
+    progress->partial = excluded || !progress->success;
     progress->geometry = result->geometry;
     memcpy(progress->pairs, result->pairs, result->pair_count * sizeof(result->pairs[0]));
     progress->solution_residual_mm = solved == NRF_GEOMETRY_OK ? solution.max_residual_mm : INT32_MAX;

@@ -691,6 +691,46 @@ int main(void)
     assert(seismic_recorder_get_snapshot(&snapshot) == ESP_OK);
     assert(!snapshot.running && snapshot.stop_stage == SEISMIC_RECORDER_STOP_STAGE_ERROR);
     fake_health_deadline_armed = false;
+    /* Reuse an accepted 5-node partial mesh without replacing its missing edge. */
+    fake_topology.remotes[3] = fake_topology.remotes[2];
+    fake_topology.remotes[3].node_id = 4U;
+    fake_topology.remotes[3].mux_channel = 3U;
+    fake_topology.remotes[3].hardware_id[0] = 0xA3U;
+    fake_leveling.assigned_count = fake_leveling.accepted_count = 4U;
+    fake_sensor_cache[3] = fake_sensor_cache[0];
+    fake_placement_valid[4] = true;
+    fake_placement_height_mm[4] = 0;
+    const int32_t partial_distances[] = {3000,3000,4243,1803,4243,3000,1803,3000,2500,0};
+    fake_frozen_ranging.success = true;
+    fake_frozen_ranging.pair_count = 10U;
+    size_t edge = 0U;
+    for (uint8_t a = 0U; a < 4U; ++a) {
+        for (uint8_t b = a + 1U; b < 5U; ++b) {
+            fake_frozen_ranging.pairs[edge] = (nrf_cs_pair_result_t){.node_a=a,.node_b=b,
+                .state=edge == 9U ? NRF_CS_PAIR_RETRY_EXHAUSTED : NRF_CS_PAIR_VALID,
+                .distance_mm=partial_distances[edge],.confidence=900,.valid_samples=9U};
+            ++edge;
+        }
+    }
+    fake_frozen_ranging.pairs[0].scheduler_quality_flags = NRF_CS_QUALITY_MANUAL;
+    fake_frozen_ranging.pairs[0].automatic_distance_mm = 6000;
+    const unsigned before_partial = fake_autonomous_requests;
+    assert(seismic_recorder_start("OBJ_0008") == ESP_OK);
+    assert(fake_autonomous_requests == before_partial);
+    assert(seismic_recorder_read_session_cs_pairs("OBJ_0008", "S000001", &written_cs_pairs) == ESP_OK);
+    assert(written_cs_pairs.pair_count == 10U);
+    assert(!written_cs_pairs.pairs[9].valid && strcmp(written_cs_pairs.pairs[9].state, "retry_exhausted") == 0);
+    assert((written_cs_pairs.pairs[0].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U);
+    assert(written_cs_pairs.pairs[0].automatic_distance_mm == 6000);
+    assert(seismic_recorder_read_session_geometry("OBJ_0008", "S000001", &final_geometry) == ESP_OK);
+    for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) assert(final_geometry.pods[pod].computed);
+    assert(seismic_recorder_stop() == ESP_OK);
+    final_metadata_written = false;
+    if (setjmp(worker_finished) == 0) {
+        fake_recorder_task(NULL);
+        assert(false && "partial-mesh recorder worker should finish STOP metadata");
+    }
+    assert(final_metadata_written && strcmp(last_metadata_status, "complete") == 0);
     return 0;
 #endif
 }

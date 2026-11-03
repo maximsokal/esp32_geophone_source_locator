@@ -223,6 +223,15 @@ static void test_cs_pairs_write_close_reopen_round_trip(void)
     assert(after_ranging.ranging_pairs.pairs[0].scheduler_quality_flags == 1U << 6);
     assert(after_ranging.ranging_pairs.pairs[0].automatic_distance_mm == 3200);
     assert(after_ranging.geometry.pods[0].computed);
+    object_store_profile_cache_reset();
+    object_store_profile_t reloaded;
+    assert(object_store_get_profile("OBJ_0001", &reloaded) == ESP_OK);
+    assert_cs_pairs_equal(&pending, &reloaded.ranging_pairs);
+    assert(reloaded.ranging_pairs.pairs[0].scheduler_quality_flags == (1U << 6));
+    assert(reloaded.ranging_pairs.pairs[0].automatic_distance_mm == 3200);
+    assert(!reloaded.ranging_pairs.pairs[1].valid);
+    assert(strcmp(reloaded.ranging_pairs.pairs[1].state, "cable_exceeded") == 0);
+    assert(reloaded.ranging_pairs.pairs[1].distance_mm == 6001);
 }
 
 static void test_cs_pairs_clear_with_null(void)

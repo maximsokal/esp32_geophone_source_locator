@@ -212,9 +212,11 @@ static unsigned s_cycle_node_count;
 static unsigned s_status_reads_before_backoff;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
 static bool s_cs_use_pair_distances;
+static uint16_t s_cs_fail_pair_mask;
 static int32_t s_cs_pair_distances[NRF_CS_MAX_PAIRS];
 static int32_t s_cs_fail_pair_index = -1;
 static int32_t s_cs_reverse_extra_mm;   /* added to the distance when the higher node id is the initiator */
+static int32_t s_cs_reverse_extra_pair_index;
 static device_status_snapshot_t s_device_status;
 static nrf_topology_ranging_progress_t s_seen_ranging_progress;
 static nrf_topology_ranging_result_t s_seen_frozen_ranging_result;
@@ -668,13 +670,15 @@ static nrf_cs_measurement_t sim_cycle_measure(const nrf_cs_step_t *step)
         return m;
     }
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
-    if (s_cs_fail_pair_index == (int32_t)pair) {
+    if (s_cs_fail_pair_index == (int32_t)pair || (s_cs_fail_pair_mask & (1U << pair)) != 0U) {
         m.outcome = NRF_CS_OUTCOME_TRANSPORT_ERROR;
         m.confidence = 0U;
         return m;
     }
     m.distance_mm = s_cs_use_pair_distances ? s_cs_pair_distances[pair] : (int32_t)(1000U + pair);
-    if (step->initiator > step->reflector) m.distance_mm += s_cs_reverse_extra_mm;
+    if (step->initiator > step->reflector &&
+        (s_cs_reverse_extra_pair_index < 0 || s_cs_reverse_extra_pair_index == (int32_t)pair))
+        m.distance_mm += s_cs_reverse_extra_mm;
 #else
     m.distance_mm = (int32_t)(1000U + pair);
 #endif
@@ -825,7 +829,8 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
         result.measurement.confidence = 900U;
         result.measurement.provider_quality_flags = 0U;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
-        if (s_cs_fail_pair_index == (int32_t)result.step.pair_index) {
+        if (s_cs_fail_pair_index == (int32_t)result.step.pair_index ||
+            (s_cs_fail_pair_mask & (1U << result.step.pair_index)) != 0U) {
             result.state = NRF_CS_CONTROL_STATE_FAILED;
             result.command_result = NRF_CS_CONTROL_RESULT_INTERNAL_ERROR;
             result.measurement.outcome = NRF_CS_OUTCOME_TRANSPORT_ERROR;
@@ -2974,6 +2979,187 @@ static void test_inconsistent_solved_mesh_is_not_success(void)
     run_service();
 }
 
+static void assert_missing_edge_can_leave_a_complete_geometry(void)
+{
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.complete && progress.success && progress.partial);
+    assert(progress.geometry.node_count == 5U);
+    for (size_t i = 0U; i < progress.geometry.node_count; ++i) assert(progress.geometry.nodes[i].solved);
+    assert(progress.pairs[9].state != NRF_CS_PAIR_VALID);
+    assert(progress.failure_reason[0] == '\0');
+    const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {20000U, 20000U, 20000U, 20000U};
+    assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+        0U, 1U, 5000, limits) == ESP_OK);
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.success && progress.partial);
+    assert(progress.pairs[0].automatic_distance_mm == 5000);
+    assert((progress.pairs[0].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U);
+    assert(progress.pairs[9].state != NRF_CS_PAIR_VALID);
+    assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+        0U, 1U, 5001, limits) == ESP_OK);
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.success && progress.partial && progress.pairs[0].automatic_distance_mm == 5000);
+    assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+        0U, 1U, 12000, limits) == ESP_OK);
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(!progress.success && progress.partial && progress.pairs[0].automatic_distance_mm == 5000);
+    assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+        0U, 1U, 5001, limits) == ESP_OK);
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.success && progress.partial && progress.failure_reason[0] == '\0');
+    assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+        3U, 4U, 3421, limits) == ESP_OK);
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.success && !progress.partial && progress.pairs[9].state == NRF_CS_PAIR_VALID);
+}
+
+static void test_one_missing_edge_can_preserve_a_solved_geometry(void)
+{
+    reset_world(); s_tca_present = true; prepare_ranging_nodes(4U);
+    s_cs_use_pair_distances = true;
+    const int32_t distances[] = {5000, 6313, 3912, 3000, 4105, 6580, 3162, 5104, 3324, 3421};
+    memcpy(s_cs_pair_distances, distances, sizeof(distances));
+    s_cs_fail_pair_index = 9;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_inconsistent_mesh);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_missing_edge_can_leave_a_complete_geometry);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void assert_partial_geometry_usable(void)
+{
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.complete && progress.success && progress.partial);
+    assert(progress.geometry.node_count == 5U && progress.failure_reason[0] == '\0');
+    for (size_t i = 0U; i < progress.geometry.node_count; ++i) assert(progress.geometry.nodes[i].solved);
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_ranging_result_t frozen;
+    assert(nrf_topology_service_get_snapshot(&snapshot) == ESP_OK);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(&snapshot,
+        (uint64_t)esp_timer_get_time() / 1000U, 0U, &frozen) == ESP_OK);
+    assert(frozen.success && frozen.pair_count == 10U);
+}
+
+static void assert_partial_geometry_rejected(void)
+{
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.complete && !progress.success && progress.partial);
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_ranging_result_t frozen;
+    assert(nrf_topology_service_get_snapshot(&snapshot) == ESP_OK);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(&snapshot,
+        (uint64_t)esp_timer_get_time() / 1000U, 0U, &frozen) == ESP_ERR_NOT_FOUND);
+}
+
+static void test_partial_geometry_requires_redundant_non_degenerate_constraints(void)
+{
+    const int32_t normal[] = {5000, 6313, 3912, 3000, 4105, 6580, 3162, 5104, 3324, 3421};
+    const uint16_t masks[] = {(1U << 0) | (1U << 9), (1U << 8) | (1U << 9),
+        (1U << 3) | (1U << 6) | (1U << 8) | (1U << 9)};
+    for (size_t i = 0U; i < sizeof(masks) / sizeof(masks[0]); ++i) {
+        reset_world(); s_tca_present = true; prepare_ranging_nodes(4U);
+        s_cs_use_pair_distances = true;
+        memcpy(s_cs_pair_distances, normal, sizeof(normal));
+        s_cs_fail_pair_mask = masks[i];
+        script(EV_WAIT_MS, 10U, NULL);
+        script(EV_ACTION, 0U, request_inconsistent_mesh);
+        script(EV_WAIT_MS, 10U, NULL);
+        script(EV_ACTION, 0U, clear_cycle_hook);
+        script(EV_ACTION, 0U, i == 0U ? assert_partial_geometry_usable : assert_partial_geometry_rejected);
+        script(EV_STOP, 0U, NULL);
+        run_service();
+    }
+    reset_world(); s_tca_present = true; prepare_ranging_nodes(4U);
+    s_cs_use_pair_distances = true;
+    const int32_t line[] = {2000, 4000, 6000, 8000, 2000, 4000, 6000, 2000, 4000, 2000};
+    memcpy(s_cs_pair_distances, line, sizeof(line));
+    s_cs_fail_pair_index = 9;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_inconsistent_mesh);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_partial_geometry_rejected);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void request_partial_limited_mesh(void)
+{
+    const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {20000U, 20000U, 20000U, 20000U};
+    assert(nrf_topology_service_ranging_start_autonomous_limited(&k_autonomous_policy, limits) == ESP_OK);
+    s_vtask_delay_hook = sim_cycle_tick_nodes;
+}
+
+static void assert_excluded_cable_value_is_preserved(void)
+{
+    assert_partial_geometry_usable();
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.pairs[3].state == NRF_CS_PAIR_CABLE_EXCEEDED);
+    assert(progress.pairs[3].distance_mm == 50000);
+}
+
+static void test_partial_geometry_keeps_cable_diagnostics_but_rejects_valid_contradictions(void)
+{
+    const int32_t distances[] = {5000, 6313, 3912, 50000, 4105, 6580, 3162, 5104, 3324, 3421};
+    reset_world(); s_tca_present = true; prepare_ranging_nodes(4U);
+    s_cs_use_pair_distances = true;
+    memcpy(s_cs_pair_distances, distances, sizeof(distances));
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_partial_limited_mesh);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_excluded_cable_value_is_preserved);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    reset_world(); s_tca_present = true; prepare_ranging_nodes(4U);
+    s_cs_use_pair_distances = true;
+    memcpy(s_cs_pair_distances, distances, sizeof(distances));
+    s_cs_pair_distances[3] = 3000;
+    s_cs_pair_distances[4] = 12000;
+    s_cs_fail_pair_index = 9;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_inconsistent_mesh);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_partial_geometry_rejected);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void assert_direction_disagreement_remains_visible(void)
+{
+    assert_partial_geometry_usable();
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.pairs[9].state == NRF_CS_PAIR_DIRECTIONS_DISAGREE);
+    assert(progress.pairs[9].direction_disagreement_mm == 4000);
+}
+
+static void test_partial_geometry_can_exclude_one_disagreeing_pair(void)
+{
+    reset_world(); s_tca_present = true; prepare_ranging_nodes(4U);
+    s_cs_use_pair_distances = true;
+    const int32_t distances[] = {5000, 6313, 3912, 3000, 4105, 6580, 3162, 5104, 3324, 3421};
+    memcpy(s_cs_pair_distances, distances, sizeof(distances));
+    s_cs_reverse_extra_mm = 4000;
+    s_cs_reverse_extra_pair_index = 9;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_inconsistent_mesh);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_direction_disagreement_remains_visible);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
 static void test_autonomous_ranging_rejects_bad_requests(void)
 {
     nrf_cs_policy_t policy = k_autonomous_policy;
@@ -3408,7 +3594,9 @@ static void reset_world(void)
     s_status_reads_before_backoff = 0U;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
     s_cs_use_pair_distances = false;
+    s_cs_fail_pair_mask = 0U;
     s_cs_reverse_extra_mm = 0;
+    s_cs_reverse_extra_pair_index = -1;
     memset(s_cs_pair_distances, 0, sizeof(s_cs_pair_distances));
     s_cs_fail_pair_index = -1;
     memset(&s_device_status, 0, sizeof(s_device_status));
@@ -4530,6 +4718,10 @@ int main(void)
     test_noisy_geometry_cannot_exceed_individual_cables();
     test_unplug_during_cs_rejoins_after_quiet_lease();
     test_inconsistent_solved_mesh_is_not_success();
+    test_one_missing_edge_can_preserve_a_solved_geometry();
+    test_partial_geometry_requires_redundant_non_degenerate_constraints();
+    test_partial_geometry_keeps_cable_diagnostics_but_rejects_valid_contradictions();
+    test_partial_geometry_can_exclude_one_disagreeing_pair();
     test_autonomous_ranging_rejects_bad_requests();
 #endif
     test_mux_discovery_timeouts_escalate_and_rejoin();

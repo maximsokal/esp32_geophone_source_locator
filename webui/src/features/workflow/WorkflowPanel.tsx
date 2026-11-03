@@ -259,8 +259,8 @@ function RangingSection({ value, workflowReason, workflow, onSaved, onRefresh }:
       {value?.radio === 'pending' && <p role="status" className="workflow-ranging-wifi">{t('workflow.ranging.wifi_pending')}</p>}
       {value?.radio === 'off' && <p role="status" className="workflow-ranging-wifi">{t('workflow.ranging.wifi_off')}</p>}
       {value?.radio === 'resuming' && <p role="status" className="workflow-ranging-wifi">{t('workflow.ranging.wifi_back')}</p>}
-      {progress?.complete === true && <p role="status">{t(progress.success
-        ? 'workflow.ranging.success' : progress.partial ? 'workflow.ranging.partial' : 'workflow.ranging.failed')}</p>}
+      {progress?.complete === true && <p role="status">{t(progress.partial
+        ? 'workflow.ranging.partial' : progress.success ? 'workflow.ranging.success' : 'workflow.ranging.failed')}</p>}
       <p>{t('workflow.ranging.pairs')}: {workflowNumberText(done, locale)} / {workflowNumberText(total, locale)}
         {percent !== null && ` (${formatPercent(locale, percent / 100)})`}</p>
       <progress max={100} value={percent ?? undefined} aria-label={t('workflow.ranging.pairs')} />

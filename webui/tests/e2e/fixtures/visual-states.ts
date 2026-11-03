@@ -24,7 +24,7 @@ export interface VisualState {
   width: number;
   height: number;
   step?: WorkflowStep;
-  variant?: 'loading' | 'empty' | 'warning' | 'error' | 'disconnected' | 'confirmation' | 'long' | 'wifi-pending' | 'wifi-off' | 'wifi-back' | 'scan-refinement' | 'pair-failed';
+  variant?: 'loading' | 'empty' | 'warning' | 'error' | 'disconnected' | 'confirmation' | 'long' | 'wifi-pending' | 'wifi-off' | 'wifi-back' | 'scan-refinement' | 'pair-failed' | 'partial-usable';
 }
 
 export const visualStates: VisualState[] = [];
@@ -66,7 +66,7 @@ export async function prepareVisualState(page: Page, api: DeviceApi, state: Visu
   if (state.step) Object.assign(api.status.workflow!, { step: state.step, allowed_actions: workflowActions[state.step] });
   // Native indeterminate progress animates outside CSS animations; visual normal states use known API progress.
   if (state.step === 'CALCULATING') api.status.workflow!.progress = 37;
-  if (state.step === 'RANGING' || state.step === 'RANGING_RESULT') {
+  if ((state.step === 'RANGING' || state.step === 'RANGING_RESULT') && state.variant !== 'partial-usable') {
     const complete = state.step === 'RANGING_RESULT';
     Object.assign(api.status.ranging!.progress!, { active: !complete, complete, success: complete, pairs_done: complete ? 3 : 1, pairs_total: 3 });
   }
@@ -82,6 +82,22 @@ export async function prepareVisualState(page: Page, api: DeviceApi, state: Visu
     Object.assign(api.status.ranging!.progress!, { complete: true, success: false, partial: true, pairs_done: 3, pairs_total: 3,
       failure_reason: 'pair_failed:0-4',
       pairs: [pair(0, 1, 4977, 4977, 4977, [6, 9], [6, 9]), pair(0, 4, 0, 8845, 6421, [3, 10], [1, 9], true), pair(3, 4, 4099, 4099, 4099, [9, 9], [9, 9])] });
+  }
+  if (state.variant === 'partial-usable') {
+    const points = [[0, 0], [3000, 0], [0, 3000], [3000, 3000], [1500, 1000]];
+    const pairs = points.flatMap((a, i) => points.slice(i + 1).map((b, offset) => {
+      const j = i + offset + 1;
+      const failed = i === 3 && j === 4;
+      return { node_a: i, node_b: j, state: failed ? 'retry_exhausted' : 'valid',
+        distance_mm: failed ? 0 : Math.round(Math.hypot(a[0] - b[0], a[1] - b[1])),
+        spread_mm: 20, confidence: failed ? 0 : 900, valid_samples: failed ? 0 : 18,
+        attempts: 18, single_direction: false, direction_disagreement_mm: 0 };
+    }));
+    Object.assign(api.status.ranging!.progress!, { complete: true, success: true, partial: true,
+      pairs_done: 20, pairs_total: 20, failure_reason: '', pairs,
+      geometry: { nodes: points.map((p, node_id) => ({ node_id, solved: true, x_mm: p[0], y_mm: p[1],
+        z_mm: 0, node_residual_mm: 1, uncertainty_mm: 50 })), residual_mm: 1, max_residual_mm: 1 } });
+    api.status.workflow!.allowed_actions = ['CONFIRM', 'SET_DISTANCE', 'BACK'];
   }
   if (state.variant === 'scan-refinement') {
     installSavedScan(api, true);
@@ -138,11 +154,12 @@ export async function prepareVisualState(page: Page, api: DeviceApi, state: Visu
   }
   await page.evaluate(() => document.fonts.ready);
   if (state.step === 'RANGING' || state.step === 'RANGING_RESULT') {
-    const done = state.step === 'RANGING_RESULT' ? 3 : 1;
+    const total = state.variant === 'partial-usable' ? 20 : 3;
+    const done = state.step === 'RANGING_RESULT' ? total : 1;
     const percent = state.step === 'RANGING_RESULT' ? 100 : 33;
-    await expect(page.getByText(new RegExp(String.raw`${done} / 3 \(${percent}\s?%\)`))).toBeVisible();
+    await expect(page.getByText(new RegExp(String.raw`${done} / ${total} \(${percent}\s?%\)`))).toBeVisible();
     await expect(page.getByRole('progressbar', { name: t['workflow.ranging.pairs'] }))
-      .toHaveAttribute('value', String(done / 3 * 100));
+      .toHaveAttribute('value', String(done / total * 100));
   }
   if (state.variant === 'wifi-pending' || state.variant === 'wifi-off' || state.variant === 'wifi-back') {
     const key = state.variant === 'wifi-pending' ? 'workflow.ranging.wifi_pending' : state.variant === 'wifi-off' ? 'workflow.ranging.wifi_off' : 'workflow.ranging.wifi_back';

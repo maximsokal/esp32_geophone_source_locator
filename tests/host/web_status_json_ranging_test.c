@@ -136,6 +136,29 @@ static void test_unavailable_progress_and_result_json(void)
     assert(!web_status_json_add_ranging(NULL));
 }
 
+static void test_usable_partial_geometry_preserves_success_and_pair_failures(void)
+{
+    memset(&s_progress, 0, sizeof(s_progress));
+    s_progress.complete = true;
+    s_progress.success = true;
+    s_progress.partial = true;
+    s_progress.pair_count = 2U;
+    s_progress.pairs[0] = (nrf_cs_pair_result_t){.node_a=0U,.node_b=1U,.state=NRF_CS_PAIR_VALID,
+        .distance_mm=2300,.automatic_distance_mm=6000,.scheduler_quality_flags=NRF_CS_QUALITY_MANUAL};
+    s_progress.pairs[1] = (nrf_cs_pair_result_t){.node_a=3U,.node_b=4U,.state=NRF_CS_PAIR_RETRY_EXHAUSTED};
+    s_progress_error = ESP_OK;
+    s_result_error = ESP_ERR_NOT_FOUND;
+    cJSON *root = cJSON_CreateObject();
+    assert(root != NULL && web_status_json_add_ranging(root));
+    const cJSON *progress = item(item(root, "ranging"), "progress");
+    assert(cJSON_IsTrue(item(progress, "success")) && cJSON_IsTrue(item(progress, "partial")));
+    const cJSON *pairs = item(progress, "pairs");
+    assert(cJSON_IsTrue(item(cJSON_GetArrayItem(pairs, 0), "manual")));
+    assert(number(cJSON_GetArrayItem(pairs, 0), "automatic_distance_mm") == 6000);
+    assert(strcmp(item(cJSON_GetArrayItem(pairs, 1), "state")->valuestring, "retry_exhausted") == 0);
+    cJSON_Delete(root);
+}
+
 /* Bench 2026-11-03: a pair without a distance still reports what each direction measured, and why it has no distance. */
 static void test_a_failed_pair_reports_the_numbers_of_both_directions_and_its_cause(void)
 {
@@ -202,6 +225,7 @@ int main(void)
 {
     test_progress_and_frozen_result_json();
     test_unavailable_progress_and_result_json();
+    test_usable_partial_geometry_preserves_success_and_pair_failures();
     test_a_failed_pair_reports_the_numbers_of_both_directions_and_its_cause();
     test_the_radio_state_is_reported_in_every_phase();
     return 0;
