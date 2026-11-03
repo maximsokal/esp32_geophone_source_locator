@@ -146,10 +146,19 @@ int nrf_cs_trace_format(const nrf_cs_trace_entry_t *entry, char *line, size_t ca
             char ifft[16], phase[16], rtt[16], best[16];
             char tones[48] = "";
             char sharp[16] = "";
+            char stock[24] = "";
+            char why[32] = "";
             if (entry->peak_floor_x10 > 0U) {
                 /* How sharp the IFFT peak was: logged only, nothing is rejected on it (nrf_cs_ifft_quality.h). */
                 (void)snprintf(sharp, sizeof(sharp), " pf=%u.%u", (unsigned)(entry->peak_floor_x10 / 10U),
                     (unsigned)(entry->peak_floor_x10 % 10U));
+            }
+            if ((entry->flags & NRF_CS_TRACE_FLAG_STOCK_IFFT) != 0U && entry->e != NRF_CS_TRACE_UNAVAILABLE && entry->e != entry->a) {
+                /* The library's own IFFT, when the gap fill changed it: both are logged, the one in ifft_mm is the one used. */
+                (void)snprintf(stock, sizeof(stock), " stock_mm=%d", (int)entry->e);
+            }
+            if (entry->why != NULL) {
+                (void)snprintf(why, sizeof(why), " why=%s", entry->why);
             }
             if (entry->tones_planned > 0U) {
                 /* How complete the frequency set was: the IFFT sees every missing channel as a zero (CS-IFFT-GAP-01). */
@@ -158,10 +167,10 @@ int nrf_cs_trace_format(const nrf_cs_trace_entry_t *entry, char *line, size_t ca
                     (unsigned)entry->tones_tail);
             }
             /* "method" names the estimate that "best" was taken from (CS-ESTIMATOR-01). */
-            return snprintf(line, capacity, "cs: t=%u a=%u est ifft_mm=%s phase_mm=%s rtt_mm=%s best_mm=%s method=%s%s%s",
+            return snprintf(line, capacity, "cs: t=%u a=%u est ifft_mm=%s phase_mm=%s rtt_mm=%s best_mm=%s method=%s%s%s%s%s",
                 (unsigned)entry->t_ms, (unsigned)entry->attempt_id, distance_text(entry->a, ifft),
                 distance_text(entry->b, phase), distance_text(entry->c, rtt), distance_text(entry->d, best),
-                nrf_cs_distance_method_name(nrf_cs_distance_method_of(entry->a, entry->b, entry->c, entry->d)), tones, sharp);
+                nrf_cs_distance_method_name(nrf_cs_distance_method_of(entry->a, entry->b, entry->c, entry->d)), tones, sharp, stock, why);
         }
         default:
             return -1;

@@ -49,6 +49,59 @@ export function rangingPairQualityNotes(pair: {
   return notes;
 }
 
+export const RANGING_PAIR_CAUSES = [
+  'no_measurement', 'low_confidence', 'few_samples', 'directions_disagree', 'cable_exceeded', 'disconnected',
+] as const;
+export type RangingPairCause = typeof RANGING_PAIR_CAUSES[number];
+
+export interface RangingPairDiagnostics {
+  cause: RangingPairCause | null;
+  forward: { mm: number; accepted: number; samples: number } | null;
+  reverse: { mm: number; accepted: number; samples: number } | null;
+}
+
+type RangingPairDiagInput = {
+  state: string;
+  cause?: string;
+  diag_ab_mm?: number;
+  diag_ba_mm?: number;
+  diag_ab_samples?: number;
+  diag_ba_samples?: number;
+  diag_ab_accepted?: number;
+  diag_ba_accepted?: number;
+};
+
+function direction(mm: unknown, samples: unknown, accepted: unknown): RangingPairDiagnostics['forward'] {
+  return typeof samples === 'number' && Number.isFinite(samples) && samples > 0 && typeof mm === 'number' && Number.isFinite(mm)
+    ? { mm, samples, accepted: typeof accepted === 'number' && Number.isFinite(accepted) ? accepted : 0 }
+    : null;
+}
+
+/**
+ * What each direction of a pair measured, for a pair that is NOT valid (a pair without a distance used to show only "Not measured",
+ * although the numbers existed: bench 2026-11-03, MAIN-G4 8.8 m and 6.4 m). Null when there is nothing to show.
+ */
+export function rangingPairDiagnostics(pair: RangingPairDiagInput): RangingPairDiagnostics | null {
+  if (pair.state === 'valid') return null;
+  const forward = direction(pair.diag_ab_mm, pair.diag_ab_samples, pair.diag_ab_accepted);
+  const reverse = direction(pair.diag_ba_mm, pair.diag_ba_samples, pair.diag_ba_accepted);
+  const cause = (RANGING_PAIR_CAUSES as readonly string[]).includes(pair.cause ?? '') ? pair.cause as RangingPairCause : null;
+  return cause === null && forward === null && reverse === null ? null : { cause, forward, reverse };
+}
+
+/** "5 valid pairs of 6, failed: 0-4": told apart from "nothing was measured". */
+export function rangingPairsSummary(pairs: ReadonlyArray<RangingPairDiagInput & { node_a: number; node_b: number }>): {
+  valid: number;
+  total: number;
+  failed: Array<{ a: number; b: number; cause: RangingPairCause | null }>;
+} {
+  const decided = pairs.filter((pair) => pair.state !== 'pending' && pair.state !== 'unknown');
+  const failed = decided.filter((pair) => pair.state !== 'valid').map((pair) => ({
+    a: pair.node_a, b: pair.node_b, cause: rangingPairDiagnostics(pair)?.cause ?? null,
+  }));
+  return { valid: decided.length - failed.length, total: pairs.length, failed };
+}
+
 export function rangingUncertaintyMm(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value !== RANGING_UNKNOWN_UNCERTAINTY_MM
     ? value

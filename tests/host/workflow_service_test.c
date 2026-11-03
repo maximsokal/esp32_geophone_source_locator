@@ -1909,10 +1909,12 @@ static void test_ranging_result_is_logged_with_every_pair_and_node(void)
     s_ranging_progress.main_height_reference_generation = 9U;
     assert(workflow_service_poll() == ESP_OK);
 
-    assert(count_log_matches("RANGING_RESULT success=0 partial=1 reason=pair_failed:0-2 executions=10/12 pairs=2 "
-        "residual_mm=74 max_residual_mm=74 inconsistent_pairs=1 main_reference_generation=9") == 1U);
+    /* "1 valid pair of 2" is in the line; which pair failed and why comes from the scheduler (stubbed in this test, tested with it). */
+    assert(count_log_matches("RANGING_RESULT success=0 partial=1 reason=pair_failed:0-2 valid_pairs=1/2 failed_pairs=none "
+        "executions=10/12 pairs=2 residual_mm=74 max_residual_mm=74 inconsistent_pairs=1 main_reference_generation=9") == 1U);
     assert(count_log_matches("RANGING_PAIR 0-1 state=valid distance_mm=2345 confidence=900 valid_samples=5 attempts=7 "
-        "rejected=1 spread_mm=12 automatic_mm=2340 disagreement_mm=3152 single_direction=0") == 1U);
+        "rejected=1 spread_mm=12 automatic_mm=2340 disagreement_mm=3152 single_direction=0 cause=none diag_ab_mm=0 diag_ba_mm=0 "
+        "samples_ab=0/0 samples_ba=0/0") == 1U);
     assert(count_log_matches("RANGING_PAIR 0-2 state=missing distance_mm=-1") == 1U);
     assert(count_log_matches("RANGING_NODE id=1 solved=1 x_mm=2345 y_mm=-120 z_mm=-180 residual_mm=74 "
         "uncertainty_mm=90") == 1U);

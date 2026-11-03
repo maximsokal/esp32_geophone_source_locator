@@ -40,6 +40,8 @@ ESTIMATE = re.compile(r"(ifft|phase|rtt|best)_mm=(-?\d+)")
 METHOD = re.compile(r" method=(\w+)")
 TONES = re.compile(r" tones=(\d+)/(\d+) gap=(\d+)(?: lead=(\d+) tail=(\d+))?")
 PEAK_FLOOR = re.compile(r" pf=(\d+)\.(\d)")
+STOCK_IFFT = re.compile(r" stock_mm=(-?\d+)")
+WHY = re.compile(r" why=(\w+)")
 TIMING = re.compile(r" measured=(\d+)ms cleanup=(\d+)ms")
 ERROR_REASON = re.compile(r" err=(\w+)")
 MARGIN = 1.5
@@ -60,6 +62,8 @@ class Attempt:
     tones: tuple[int, int, int] | None = None                      # (usable, planned, longest hole) of the frequency set
     edges: tuple[int, int] | None = None                           # (hole at the start, hole at the end) of the 75 slots
     peak_floor: float | None = None                                # IFFT peak over the median bin (sharpness), None in old logs
+    stock_ifft: int | None = None                                  # the library's own IFFT in mm when the gap fill changed it
+    why: str | None = None                                         # what decided the confidence (rtt_missing, sharp_peak, ...)
     measured_ms: int | None = None                                 # until the outcome was known
     cleanup_ms: int | None = None                                  # the disconnect after it
     over_budget: bool = False
@@ -103,6 +107,12 @@ def parse(text: str) -> tuple[dict[int, Attempt], list[int]]:
             method = METHOD.search(rest)
             if method:
                 attempt.method = method.group(1)
+            stock = STOCK_IFFT.search(rest)
+            if stock:
+                attempt.stock_ifft = int(stock.group(1))
+            why = WHY.search(rest)
+            if why:
+                attempt.why = why.group(1)
             sharp = PEAK_FLOOR.search(rest)
             if sharp:
                 attempt.peak_floor = int(sharp.group(1)) + int(sharp.group(2)) / 10.0
@@ -313,6 +323,12 @@ def report(path: str, attempts: dict[int, Attempt], links: list[int],
     reasons = Counter(r for a in attempts.values() for r in a.error_reasons)
     if reasons:
         lines.append("   transport errors by reason: " + ", ".join(f"{k}={v}" for k, v in sorted(reasons.items())))
+    reasons = Counter(a.why for a in attempts.values() if a.why is not None and a.result is not None)
+    if reasons:
+        lines.append("   confidence decided by (why=): " + ", ".join(f"{k}={v}" for k, v in sorted(reasons.items())))
+        changed = [a for a in attempts.values() if a.stock_ifft is not None]
+        if changed:
+            lines.append(f"   gap fill changed the library's IFFT in {len(changed)} attempts (stock_mm= is in the log)")
     sharpness = sharpness_table(attempts, cable_mm)
     if sharpness:
         lines.append("   IFFT peak sharpness (peak over the median bin of the IFFT profile):")

@@ -5,6 +5,7 @@
       "name": "web_status_json_ranging",
       "sources": [
         "components/web_server/web_status_json_ranging.c",
+        "nRF54L15/src/nrf_cs_scheduler.c",
         "tests/host/stubs/ranging_radio_pause/ranging_radio_pause_stub.c",
         "components/ranging_radio_pause/ranging_radio_pause_core.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
@@ -64,7 +65,9 @@
         "CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1",
         "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     }
   ]
 }

@@ -252,6 +252,76 @@ static void test_the_wifi_choice_before_the_distance_measurement_is_explicit(voi
     assert(keep.type == UI_WORKFLOW_EVENT_SEND_COMMAND && keep.command == WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI);
 }
 
+static void set_pair(ui_workflow_ranging_t *ranging, size_t index, unsigned a, unsigned b, bool valid, bool cable, bool manual,
+    int32_t distance_mm, unsigned cause, unsigned ab_samples, unsigned ba_samples, int32_t ab_mm, int32_t ba_mm)
+{
+    memset(&ranging->pairs[index], 0, sizeof(ranging->pairs[index]));
+    ranging->pairs[index].node_a = (uint8_t)a;
+    ranging->pairs[index].node_b = (uint8_t)b;
+    ranging->pairs[index].valid = valid;
+    ranging->pairs[index].cable_exceeded = cable;
+    ranging->pairs[index].manual = manual;
+    ranging->pairs[index].distance_mm = distance_mm;
+    ranging->pairs[index].cause = (uint8_t)cause;
+    ranging->pairs[index].diag_ab_samples = (uint8_t)ab_samples;
+    ranging->pairs[index].diag_ba_samples = (uint8_t)ba_samples;
+    ranging->pairs[index].diag_ab_mm = ab_mm;
+    ranging->pairs[index].diag_ba_mm = ba_mm;
+}
+
+/*
+ * Bench 2026-11-03: MAIN-G4 had no distance and the screen showed "0-4: --" although MAIN->G4 had produced 8.8 m and G4->MAIN 6.4 m.
+ * The pair row now shows what each direction measured and a second row says why it was not used; valid pairs, a cable violation and a
+ * pair without any diagnostics keep the rows they had.
+ */
+static void test_a_ranging_pair_without_a_distance_shows_both_directions_and_the_cause(void)
+{
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_RANGING_RESULT);
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+
+    ranging.available = true;
+    ranging.pairs_done = ranging.pairs_total = 3U;
+    ranging.pair_count = 4U;
+    set_pair(&ranging, 0U, 0U, 1U, true, false, false, 4977, 0U, 0U, 0U, 0, 0);
+    set_pair(&ranging, 1U, 0U, 4U, false, false, false, 0, 2U, 3U, 10U, 8845, 6421);
+    set_pair(&ranging, 2U, 1U, 3U, false, false, false, 0, 1U, 0U, 9U, 0, 4630);
+    set_pair(&ranging, 3U, 3U, 4U, false, false, false, 0, 0U, 0U, 0U, 0, 0);                   /* an old device: nothing reported */
+    build(&snapshot, &state, &ranging, &model);
+
+    size_t diag_rows = 0U, cause_rows = 0U, plain_rows = 0U;
+    const ui_workflow_model_line_t *diag = NULL, *half = NULL;
+    for (size_t i = 0U; i < model.line_count; ++i) {
+        if (model.lines[i].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_PAIR_DIAG) {
+            if (diag == NULL) diag = &model.lines[i]; else half = &model.lines[i];
+            ++diag_rows;
+        } else if (model.lines[i].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_CAUSE_LOW_CONFIDENCE ||
+                   model.lines[i].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_CAUSE_NO_MEASUREMENT) {
+            ++cause_rows;
+        } else if (model.lines[i].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_DISTANCE) {
+            ++plain_rows;
+        }
+    }
+    assert(diag_rows == 2U && cause_rows == 2U);
+    assert(plain_rows == 2U);                       /* the valid pair and the pair that reported nothing keep the distance row */
+    assert(strcmp(diag->args[0], "0") == 0 && strcmp(diag->args[1], "4") == 0);
+    assert(strcmp(diag->args[2], "885") == 0 && strcmp(diag->args[3], "642") == 0);           /* cm, rounded */
+    assert(half != NULL && half->arg_keys[2] == UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);       /* the direction with no result */
+    assert(strcmp(half->args[3], "463") == 0);
+    for (size_t i = 0U; i + 1U < model.line_count; ++i) {                                      /* the cause row follows its pair row */
+        if (&model.lines[i] == diag) assert(model.lines[i + 1U].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_CAUSE_LOW_CONFIDENCE);
+        if (&model.lines[i] == half) assert(model.lines[i + 1U].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_CAUSE_NO_MEASUREMENT);
+    }
+
+    /* A cable violation keeps its row, even with diagnostics; so does a manual distance. */
+    ranging.pair_count = 2U;
+    set_pair(&ranging, 0U, 0U, 4U, false, true, false, 6000, 5U, 3U, 0U, 6000, 0);
+    set_pair(&ranging, 1U, 1U, 2U, true, false, true, 1500, 0U, 3U, 0U, 9000, 0);
+    build(&snapshot, &state, &ranging, &model);
+    for (size_t i = 0U; i < model.line_count; ++i) assert(model.lines[i].key != UI_I18N_KEY_TFT_WORKFLOW_RANGING_PAIR_DIAG);
+}
+
 static void test_sensor_counts(void)
 {
     static const ui_i18n_key_t expected[] = {
@@ -1205,6 +1275,7 @@ int main(void)
     test_max460_guided_step_content_and_placement_gate();
     test_max460_tft_action_set_matches_core_for_guided_steps();
     test_the_wifi_choice_before_the_distance_measurement_is_explicit();
+    test_a_ranging_pair_without_a_distance_shows_both_directions_and_the_cause();
     test_sensor_counts();
     test_remote_slot_layout_is_fixed();
     test_left_behavior_each_step();

@@ -10,6 +10,60 @@ research = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(research)
 
 
+def test_paired_phase_reversals_preserve_the_three_metre_response(native_sdk):
+    import math
+    # Opposite oscillator phase changes cancel within each paired exchange.
+    # Averaging each device first cancels the entire signal instead.
+    raw = bytearray()
+    counts = [0] * 75
+    for channel in range(2, 77):
+        if channel in (23, 24, 25):
+            continue
+        angle = -4.0 * math.pi * 1e6 * 3.0 * (channel - 2) / 299792458.0
+        re, im = round(1024 * math.cos(angle)), round(1024 * math.sin(angle))
+        for sign in (1, -1):
+            raw.extend(bytes([channel]) + research.pct_payload(sign * 1024, 0, 0)
+                       + research.pct_payload(sign * re, sign * im, 0))
+        counts[channel - 2] = 2
+    case = {"iq": [0.0] * 150, "counts": counts, "rtt": math.nan, "raw_steps": bytes(raw)}
+    (_, selected, _, _), = research.build_and_replay([case], workdir=research.BUILD / "test-paired-phase")[0]
+    assert abs(selected - 3.0) < 0.05, selected
+
+
+def test_coherent_products_reduce_real_wieme_error_tail_without_distance_offsets(native_sdk):
+    import json
+    import math
+    if not research.WIEME.exists():
+        pytest.skip("Optional Wieme data is absent")
+    cases = list(research.wieme_cases())
+    inputs = []
+    for case in cases:
+        # The imported IQ is the independent stock product of separate means.
+        inputs.extend((dict(case, raw_steps=b""), case))
+    results, _ = research.build_and_replay(inputs, workdir=research.BUILD / "test-coherent-wieme")
+    groups = {name: [[], []] for name in ("all", "LOS", "NLOS", "outdoor")}
+    for case, before, after in zip(cases, results[::2], results[1::2]):
+        if not all(math.isfinite(x) and x >= 0 for x in (before[1], after[1])):
+            continue
+        parts = case["file"].split("/")
+        category = "LOS" if "LOS" in parts else "NLOS" if "NLOS" in parts else "outdoor"
+        for group in (groups["all"], groups[category]):
+            group[0].append(abs(before[1] - case["truth_m"]))
+            group[1].append(abs(after[1] - case["truth_m"]))
+    def metrics(errors):
+        return {"n": len(errors), "mae_m": sum(errors) / len(errors),
+                "rmse_m": math.sqrt(sum(e*e for e in errors) / len(errors)),
+                "p95_m": research.percentile(errors, 0.95), "max_m": max(errors),
+                "over_1m": sum(e > 1.0 for e in errors), "over_2m": sum(e > 2.0 for e in errors)}
+    report = {name: {"before": metrics(pair[0]), "after": metrics(pair[1])} for name, pair in groups.items()}
+    (research.BUILD / "test-coherent-wieme/metrics.json").write_text(json.dumps(report, indent=2))
+    assert report["all"]["before"]["n"] > 21000
+    for category in groups:
+        old, new = report[category]["before"], report[category]["after"]
+        for metric in ("mae_m", "rmse_m", "p95_m", "max_m", "over_2m"):
+            assert new[metric] < old[metric], (category, metric, old, new)
+
+
 @pytest.fixture
 def native_sdk():
     import os

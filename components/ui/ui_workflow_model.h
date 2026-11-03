@@ -47,6 +47,10 @@ typedef struct {
         bool cable_exceeded;
         bool manual;
         int32_t distance_mm;
+        /* Why the pair has no distance and what each direction measured (nrf_cs_pair_cause_t; 0 = nothing to say). */
+        uint8_t cause;
+        uint8_t diag_ab_samples, diag_ba_samples;
+        int32_t diag_ab_mm, diag_ba_mm;
     } pairs[UI_WORKFLOW_RANGING_MAX_PAIRS];
 } ui_workflow_ranging_t;
 

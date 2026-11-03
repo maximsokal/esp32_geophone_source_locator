@@ -320,18 +320,21 @@ static void collect_pbr_step(
     peer_iq = bt_le_cs_parse_pct(peer->tone_info[0].phase_correction_term);
     count = ++s_iq_counts[channel_index];
 
+    /* Cancel each exchange's oscillator phase before averaging repeated tones.
+     * The SDK multiplies the two report sides: unity preserves the combined mean. */
+    const float combined_i = (float)local_iq.i * peer_iq.i - (float)local_iq.q * peer_iq.q;
+    const float combined_q = (float)local_iq.i * peer_iq.q + (float)local_iq.q * peer_iq.i;
+    report->iq_tones[0].i_remote[channel_index] = 1.0f;
+    report->iq_tones[0].q_remote[channel_index] = 0.0f;
+
     if (count == 1U) {
-        report->iq_tones[0].i_local[channel_index] = local_iq.i;
-        report->iq_tones[0].q_local[channel_index] = local_iq.q;
-        report->iq_tones[0].i_remote[channel_index] = peer_iq.i;
-        report->iq_tones[0].q_remote[channel_index] = peer_iq.q;
+        report->iq_tones[0].i_local[channel_index] = combined_i;
+        report->iq_tones[0].q_local[channel_index] = combined_q;
         return;
     }
 
-    accumulate_mean(&report->iq_tones[0].i_local[channel_index], local_iq.i, count);
-    accumulate_mean(&report->iq_tones[0].q_local[channel_index], local_iq.q, count);
-    accumulate_mean(&report->iq_tones[0].i_remote[channel_index], peer_iq.i, count);
-    accumulate_mean(&report->iq_tones[0].q_remote[channel_index], peer_iq.q, count);
+    accumulate_mean(&report->iq_tones[0].i_local[channel_index], combined_i, count);
+    accumulate_mean(&report->iq_tones[0].q_local[channel_index], combined_q, count);
 }
 
 static void collect_rtt_step(
@@ -474,7 +477,9 @@ static nrf_cs_measurement_t estimate_measurement(void)
     }
 
     quality = cs_de_calc(&s_de_report);
+    const float stock_ifft_m = s_de_report.distance_estimates[0].ifft;     /* the library's own, before the gap fill */
     uint16_t peak_floor_x10 = 0U;
+    float peak_floor_ratio = NAN;
     if (s_de_report.tone_quality[0] == CS_DE_TONE_QUALITY_OK &&
         isfinite(s_de_report.distance_estimates[0].ifft) &&
         s_de_report.distance_estimates[0].best == s_de_report.distance_estimates[0].ifft) {
@@ -490,6 +495,7 @@ static nrf_cs_measurement_t estimate_measurement(void)
         }
         const float ratio = nrf_cs_ifft_peak_to_floor(s_iq_ifft_scratch, CONFIG_BT_CS_DE_NFFT_SIZE);
         if (isfinite(ratio) && ratio > 0.0f) {
+            peak_floor_ratio = ratio;
             const float scaled = ratio * 10.0f + 0.5f;
             peak_floor_x10 = scaled >= 65535.0f ? UINT16_MAX : (uint16_t)scaled;
         }
@@ -506,11 +512,17 @@ static nrf_cs_measurement_t estimate_measurement(void)
         (!isfinite(s_de_report.distance_estimates[0].rtt) || s_de_report.distance_estimates[0].rtt <= 0.0f)) {
         s_de_report.distance_estimates[0].best = NAN;
     }
+    /* The factor that decides the confidence, in the log next to the estimates it is made of. */
+    const char *const why = nrf_cs_confidence_reason_name(nrf_cs_measurement_confidence_reason(
+        good_tones, NRF_CS_TONE_OK_THRESHOLD,
+        isfinite(s_de_report.distance_estimates[0].ifft) || isfinite(s_de_report.distance_estimates[0].phase_slope),
+        isfinite(s_de_report.distance_estimates[0].rtt) && s_de_report.distance_estimates[0].rtt > 0.0f,
+        s_de_report.distance_estimates[0].best, s_de_report.distance_estimates[0].rtt, peak_floor_ratio));
     const nrf_cs_tone_stats_t tone_stats = current_tone_stats();
     nrf_cs_trace_zephyr_estimates(s_timeout_step.attempt_id, s_de_report.distance_estimates[0].ifft,
         s_de_report.distance_estimates[0].phase_slope, s_de_report.distance_estimates[0].rtt,
         s_de_report.distance_estimates[0].best, tone_stats.planned, tone_stats.usable, tone_stats.longest_gap,
-        tone_stats.lead_gap, tone_stats.tail_gap, peak_floor_x10);
+        tone_stats.lead_gap, tone_stats.tail_gap, peak_floor_x10, stock_ifft_m, why);
 
     /* CS-ESTIMATOR-01: record which estimate "best" came from, in the attempt record the ESP32 reads. */
     measurement.provider_quality_flags |= nrf_cs_distance_method_flag(nrf_cs_distance_method_of(
@@ -546,13 +558,14 @@ static nrf_cs_measurement_t estimate_measurement(void)
     measurement.distance_mm = (int32_t)(mm + 0.5);
     /* MAX-206: evidence-based confidence (tone coverage, PBR/RTT agreement)
      * instead of a constant 1000 for every success. */
-    measurement.confidence = nrf_cs_measurement_confidence(
+    measurement.confidence = nrf_cs_measurement_confidence_with_peak(
         good_tones,
         NRF_CS_TONE_OK_THRESHOLD,
         (measurement.provider_quality_flags & NRF_CS_PROVIDER_QUALITY_PBR_VALID) != 0U,
         (measurement.provider_quality_flags & NRF_CS_PROVIDER_QUALITY_RTT_VALID) != 0U,
         best,
-        s_de_report.distance_estimates[0].rtt
+        s_de_report.distance_estimates[0].rtt,
+        peak_floor_ratio
     );
     return measurement;
 }

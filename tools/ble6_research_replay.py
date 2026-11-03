@@ -151,6 +151,11 @@ def owl_cases(path, stride=200):
 
 
 def build_and_replay(cases, workdir=BUILD):
+    """Return stock IFFT, production distance/phase, and plain confidence control.
+
+    Raw PCT records validate both the stock product of means and production mean
+    of paired products independently. Actual production confidence is in extra.bin.
+    """
     sdk = Path(os.environ.get("BLE6_NCS_ROOT", "C:/ncs/v3.4.0/nrf"))
     source = sdk / "subsys/bluetooth/cs_de/cs_de.c"
     if not source.is_file():
@@ -207,6 +212,7 @@ float cs_de_rtt(int32_t,uint8_t);float cs_de_phase_slope(float *);float cs_de_if
         "include_dirs": [workdir.relative_to(ROOT).as_posix(), "nRF54L15/include"], "libraries": ["m"]}]}
     manifest_path = workdir / "manifest.json"; manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     env = os.environ.copy(); env["BLE6_REPLAY_INPUT"] = str(input_path); env["BLE6_REPLAY_OUTPUT"] = str(output_path)
+    env["BLE6_REPLAY_EXTRA"] = str(workdir / "extra.bin")
     run = subprocess.run([sys.executable, "tools/run_host_tests.py", "--manifest", str(manifest_path),
                     "--build-dir", str(workdir / "native")], cwd=ROOT, env=env, check=False,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
@@ -217,6 +223,11 @@ float cs_de_rtt(int32_t,uint8_t);float cs_de_phase_slope(float *);float cs_de_if
     if len(results) != len(cases):
         raise ValueError(f"Replay length mismatch: {len(results)} / {len(cases)}")
     return results, source
+
+
+def confidence_extra(workdir=BUILD):
+    """Per procedure of the last build_and_replay(workdir): (IFFT peak over median bin, plain confidence, confidence with the peak, reason code)."""
+    return list(struct.iter_unpack("<4f", (workdir / "extra.bin").read_bytes()))
 
 
 def ocm_cases():
@@ -395,12 +406,16 @@ def main():
     for path in (OWL / "owl-indoor.parquet", OWL / "owl-outdoor.parquet"):
         cases.extend(owl_cases(path, args.owl_stride))
     results, source = build_and_replay(cases)
+    confidence_details = confidence_extra()
+    if len(confidence_details) != len(results):
+        raise ValueError("Confidence sidecar length does not match replay")
     grouped = {}
     orientation = {}
     findings = {}
     waves_results = []
     reference_errors = []
-    for case, (raw, filled, phase, confidence) in zip(cases, results):
+    for case, (raw, filled, phase, _plain_control), details in zip(cases, results, confidence_details):
+        confidence = details[2]
         if case["dataset"] == "OCMTEC" and math.isfinite(raw) and math.isfinite(case["author_ifft"]):
             reference_errors.append(abs(raw - case["author_ifft"]))
         if sum(n > 0 for n in case["counts"]) < 15 or not math.isfinite(filled) or filled < 0:
@@ -442,6 +457,7 @@ def main():
     sources.extend(sorted((XU / "GT").glob("*.csv"))); sources.extend(sorted((XU / "RangingFilter").glob("*.csv")))
     sources.extend(sorted((DATA / "BLE Channel Sounding phase-based ranging analysis tool/waves-main/waves-main/tests").glob("*.txt")))
     report = {"diagnostic_threshold_m": args.max_error_m, "owl_stride": args.owl_stride, "replayed": len(cases),
+              "confidence_policy": "production nrf_cs_measurement_confidence_with_peak (extra.bin)",
               "raw_pct_procedures": sum(bool(case.get("raw_steps")) for case in cases),
               "raw_pct_steps": sum(len(case.get("raw_steps", b"")) // 11 for case in cases),
               "collector_provenance": json.loads((BUILD / "collector-provenance.json").read_text(encoding="utf-8")),

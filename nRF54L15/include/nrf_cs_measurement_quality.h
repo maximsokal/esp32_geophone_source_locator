@@ -40,6 +40,64 @@ uint16_t nrf_cs_measurement_confidence(
     float rtt_m
 );
 
+/*
+ * The same, with the sharpness of the IFFT peak (peak over median bin, nrf_cs_ifft_quality.h; NAN = not known).
+ *
+ * Bench logs of 2026-11-03 (36 successful attempts, every one inside the 5 m cable bound, IFFT peak 26-137 times the median bin):
+ * the coarse RTT was missing (0) or 6-7 m away from the PBR answer on the 4 attempts that fell below the 500 production gate, and
+ * every one of them was a correct distance (4.68, 4.87, 4.95 and 5.01 m). All attempts of MAIN->G4 were among them, so the pair never
+ * got a sample and the whole ranging ended partial. A sharp peak is the evidence of a clean direct path that the RTT cannot give,
+ * so with enough tones and a peak above NRF_CS_IFFT_SHARP_PEAK_RATIO the confidence is at least NRF_CS_SHARP_PEAK_CONFIDENCE.
+ * A PBR answer more than NRF_CS_SHARP_PEAK_RTT_LIMIT_M from a valid RTT is still left to the plain rule. A sharp but wrong peak is
+ * not caught here: the direction, triangle and cable checks of the scheduler decide.
+ */
+#define NRF_CS_SHARP_PEAK_CONFIDENCE 600U
+#define NRF_CS_SHARP_PEAK_RTT_LIMIT_M (3.0f * NRF_CS_RTT_AGREEMENT_M)
+
+uint16_t nrf_cs_measurement_confidence_with_peak(
+    uint16_t good_tone_channels,
+    uint16_t tone_ok_threshold,
+    bool pbr_valid,
+    bool rtt_valid,
+    float best_m,
+    float rtt_m,
+    float peak_to_floor
+);
+
+/*
+ * The factor that decided the confidence of nrf_cs_measurement_confidence_with_peak(), for the log (`why=` of the est line):
+ *  NO_ESTIMATE      neither a PBR nor an RTT answer: confidence 0;
+ *  BAD_INPUT        a valid answer that is not a number: confidence 0;
+ *  TONES_LOW        too few good tones for the phase answer: confidence 0;
+ *  SHARP_PEAK       the confidence was lifted to NRF_CS_SHARP_PEAK_CONFIDENCE by a sharp IFFT peak (RTT missing or far off);
+ *  RTT_MISSING      the PBR answer stands alone (RTT absent or zero) and is capped at 0.4: below the 500 gate unless the peak is sharp;
+ *  RTT_DISAGREES    the PBR answer is farther from the RTT than NRF_CS_RTT_AGREEMENT_M and the confidence decays;
+ *  RTT_ONLY         only the coarse RTT answer exists (0.4);
+ *  OK               tone coverage (and the RTT where it exists) decided, nothing else.
+ */
+typedef enum {
+    NRF_CS_CONFIDENCE_REASON_UNKNOWN = 0,
+    NRF_CS_CONFIDENCE_REASON_OK,
+    NRF_CS_CONFIDENCE_REASON_NO_ESTIMATE,
+    NRF_CS_CONFIDENCE_REASON_BAD_INPUT,
+    NRF_CS_CONFIDENCE_REASON_TONES_LOW,
+    NRF_CS_CONFIDENCE_REASON_SHARP_PEAK,
+    NRF_CS_CONFIDENCE_REASON_RTT_MISSING,
+    NRF_CS_CONFIDENCE_REASON_RTT_DISAGREES,
+    NRF_CS_CONFIDENCE_REASON_RTT_ONLY,
+} nrf_cs_confidence_reason_t;
+
+nrf_cs_confidence_reason_t nrf_cs_measurement_confidence_reason(
+    uint16_t good_tone_channels,
+    uint16_t tone_ok_threshold,
+    bool pbr_valid,
+    bool rtt_valid,
+    float best_m,
+    float rtt_m,
+    float peak_to_floor
+);
+const char *nrf_cs_confidence_reason_name(nrf_cs_confidence_reason_t reason);
+
 #ifdef __cplusplus
 }
 #endif

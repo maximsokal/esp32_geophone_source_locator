@@ -221,6 +221,37 @@ static void test_the_est_line_reports_how_sharp_the_ifft_peak_was(void)
     assert(length > 0 && (size_t)length < sizeof(line) && strstr(line, " pf=6553.5") != NULL);
 }
 
+/* The library's own IFFT (before the gap fill) and the reason of the confidence are logged next to the estimates. */
+static void test_the_est_line_reports_the_stock_ifft_and_why_the_confidence_is_what_it_is(void)
+{
+    char line[NRF_CS_TRACE_LINE_CAPACITY];
+    nrf_cs_trace_entry_t e = entry(NRF_CS_TRACE_ESTIMATES, 1U);
+
+    e.a = 5007; e.b = 9336; e.c = NRF_CS_TRACE_UNAVAILABLE; e.d = 5007;
+    e.flags = NRF_CS_TRACE_FLAG_STOCK_IFFT;
+    e.e = 1090;                                                     /* the stock IFFT chose a false early peak; the filled set did not */
+    e.why = "rtt_missing";
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strcmp(line, "cs: t=68402 a=1 est ifft_mm=5007 phase_mm=9336 rtt_mm=n/a best_mm=5007 method=ifft stock_mm=1090 why=rtt_missing") == 0);
+    e.e = 5007;                                                     /* no difference: nothing extra, only the reason */
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strstr(line, "stock_mm=") == NULL && strstr(line, " why=rtt_missing") != NULL);
+    e.e = 1090; e.flags = 0U;                                       /* the stock value is not known: not printed */
+    e.why = NULL;
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strstr(line, "stock_mm=") == NULL && strstr(line, "why=") == NULL);
+    e.flags = NRF_CS_TRACE_FLAG_STOCK_IFFT;
+    e.e = NRF_CS_TRACE_UNAVAILABLE;                                 /* the library had no IFFT */
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0 && strstr(line, "stock_mm=") == NULL);
+
+    /* Every optional part at once, with the largest numbers, still fits the line. */
+    e.tones_planned = 255U; e.tones_usable = 255U; e.tones_gap = 255U; e.tones_lead = 255U; e.tones_tail = 255U;
+    e.peak_floor_x10 = UINT16_MAX; e.e = -2147483647; e.why = "rtt_disagrees"; e.t_ms = UINT32_MAX; e.attempt_id = UINT32_MAX;
+    e.a = e.b = e.c = e.d = -2147483647;
+    const int length = nrf_cs_trace_format(&e, line, sizeof(line));
+    assert(length > 0 && (size_t)length < sizeof(line) && strstr(line, " why=rtt_disagrees") != NULL);
+}
+
 /* CS-SECURITY-01: status 9 of a TRANSPORT_ERROR in SECURING is Zephyr's BT_SECURITY_ERR_UNSPECIFIED (pairing failed, no
  * reason given); the line says so, and only for that event in that phase. */
 static void test_a_security_failure_is_named_in_the_event_line(void)
@@ -346,6 +377,7 @@ int main(void)
     test_the_est_line_names_the_method_that_made_the_distance();
     test_the_est_line_reports_how_complete_the_frequency_set_was();
     test_the_est_line_reports_how_sharp_the_ifft_peak_was();
+    test_the_est_line_reports_the_stock_ifft_and_why_the_confidence_is_what_it_is();
     test_a_security_failure_is_named_in_the_event_line();
     test_the_result_line_separates_the_measurement_from_the_cleanup();
     test_the_longest_line_fits_and_bad_arguments_are_refused();

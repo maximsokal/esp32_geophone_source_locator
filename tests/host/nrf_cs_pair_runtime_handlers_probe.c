@@ -203,9 +203,11 @@ static unsigned s_trace_estimates_count;
 static float s_trace_est[4];
 static uint8_t s_trace_tones[3];
 static uint16_t s_trace_peak_floor_x10;
+static float s_trace_stock_ifft;
+static const char *s_trace_why;
 static void nrf_cs_trace_zephyr_estimates(uint32_t id,float ifft,float phase,float rtt,float best,
-    uint8_t planned,uint8_t usable,uint8_t gap,uint8_t lead,uint8_t tail,uint16_t peak_floor_x10)
-{ (void)id;(void)peak_floor_x10;s_trace_peak_floor_x10=peak_floor_x10;++s_trace_estimates_count;s_trace_est[0]=ifft;s_trace_est[1]=phase;s_trace_est[2]=rtt;s_trace_est[3]=best;
+    uint8_t planned,uint8_t usable,uint8_t gap,uint8_t lead,uint8_t tail,uint16_t peak_floor_x10,float stock_ifft,const char *why)
+{ (void)id;(void)peak_floor_x10;s_trace_peak_floor_x10=peak_floor_x10;s_trace_stock_ifft=stock_ifft;s_trace_why=why;++s_trace_estimates_count;s_trace_est[0]=ifft;s_trace_est[1]=phase;s_trace_est[2]=rtt;s_trace_est[3]=best;
   s_trace_tones[0]=planned;s_trace_tones[1]=usable;s_trace_tones[2]=gap;(void)lead;(void)tail; }
 static void nrf_cs_trace_zephyr_rf(uint32_t id,uint32_t signal,uint32_t quality)
 { (void)id;++s_trace_rf_count;s_trace_rf_signal=signal;s_trace_rf_quality=quality; }
@@ -258,7 +260,7 @@ static cs_de_quality_t cs_de_calc(cs_de_report_t *report)
 }
 static void cs_de_combined_iq_calculate(void *tones,float *iq)
 { (void)tones;for(unsigned i=0;i<75;i++){iq[2*i]=s_iq_counts[i]?1.0f:0.0f;iq[2*i+1]=0.0f;} }
-static float s_probe_profile_peak=30.0f;
+static float s_probe_profile_peak=3.0f;       /* not sharp unless a scenario says so */
 static float cs_de_ifft(float *iq)
 {
     assert(iq[14]==1.0f && iq[15]==0.0f);
@@ -469,15 +471,30 @@ int main(void)
     deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
     cleanup_work_handler(NULL);
     assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_distance==1500 && s_trace_est[0]==1.5f);
-    /* The peak sharpness of that IFFT (peak 30 over a floor of 1) reaches the trace as 30.0, in tenths. */
-    assert(s_trace_peak_floor_x10==300U);
-    /* Missing RTT must leave the raw PBR result visible but below the production 500 gate. */
+    /* The peak sharpness of that IFFT (peak 3 over a floor of 1) reaches the trace as 3.0, in tenths. */
+    assert(s_trace_peak_floor_x10==30U);
+    /* Both IFFTs are in the log: the library's own (1.0 m, what cs_de_calc returned) and the one with the gap filled (1.5 m, used). */
+    assert(s_trace_stock_ifft==1.0f && s_trace_est[0]==1.5f);
+    assert(strcmp(s_trace_why,"ok")==0);
+    /* Missing RTT must leave the raw PBR result visible but below the production 500 gate (the IFFT peak is not sharp). */
     start(0);advance_to_procedure();s_de_scenario=9;
     s_now=100;s_local_steps.len=s_peer_owned.len=1;
     deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
     cleanup_work_handler(NULL);
     assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_distance==1000 && s_confidence<500);
     assert((s_provider_flags & NRF_CS_PROVIDER_QUALITY_RTT_VALID)==0U);
+    assert(strcmp(s_trace_why,"rtt_missing")==0);            /* the log says what held the confidence down */
+    /* The same answer with a sharp IFFT peak (30 over the floor) is a clean direct path: above the gate, the peak in the trace.
+     * Bench 2026-11-03: MAIN->G4 was correct (4.95 and 5.01 m) and rejected for the missing RTT alone. */
+    s_probe_profile_peak=30.0f;
+    start(0);advance_to_procedure();s_de_scenario=9;
+    s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    cleanup_work_handler(NULL);
+    assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_distance==1000 && s_confidence==600U && s_trace_peak_floor_x10==300U);
+    assert(strcmp(s_trace_why,"sharp_peak")==0);
+    assert((s_provider_flags & NRF_CS_PROVIDER_QUALITY_RTT_VALID)==0U);
+    s_probe_profile_peak=3.0f;
     /* Nordic clamps nonpositive RTT timing to zero; it is not an independent range. */
     start(0);advance_to_procedure();s_de_scenario=10;
     s_now=100;s_local_steps.len=s_peer_owned.len=1;

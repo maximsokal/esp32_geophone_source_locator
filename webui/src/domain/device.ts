@@ -221,6 +221,14 @@ export interface RangingPairStatus {
   direction_disagreement_mm: number;
   manual?: boolean;
   automatic_distance_mm?: number;
+  /** Why a pair has no distance (scheduler cause) and what each direction measured, also when the pair is not valid. */
+  cause?: string;
+  diag_ab_mm?: number;
+  diag_ba_mm?: number;
+  diag_ab_samples?: number;
+  diag_ba_samples?: number;
+  diag_ab_accepted?: number;
+  diag_ba_accepted?: number;
 }
 
 export interface RangingNodeStatus {

@@ -136,6 +136,36 @@ static void test_unavailable_progress_and_result_json(void)
     assert(!web_status_json_add_ranging(NULL));
 }
 
+/* Bench 2026-11-03: a pair without a distance still reports what each direction measured, and why it has no distance. */
+static void test_a_failed_pair_reports_the_numbers_of_both_directions_and_its_cause(void)
+{
+    memset(&s_progress, 0, sizeof(s_progress));
+    s_progress.pair_count = 2U;
+    s_progress.pairs[0] = (nrf_cs_pair_result_t) {
+        .node_a = 0U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 3903, .valid_samples = 18U,
+        .diag_distance_mm = { 3918, 3889 }, .diag_samples = { 9U, 9U }, .diag_accepted = { 9U, 9U },
+    };
+    s_progress.pairs[1] = (nrf_cs_pair_result_t) {
+        .node_a = 0U, .node_b = 4U, .state = NRF_CS_PAIR_RETRY_EXHAUSTED, .attempts = 13U,
+        .diag_distance_mm = { 8845, 6421 }, .diag_samples = { 3U, 10U }, .diag_accepted = { 1U, 9U },
+    };
+    s_progress_error = ESP_OK;
+    s_result_error = ESP_ERR_NOT_FOUND;
+
+    cJSON *root = cJSON_CreateObject();
+    assert(root != NULL && web_status_json_add_ranging(root));
+    const cJSON *pairs = item(item(item(root, "ranging"), "progress"), "pairs");
+    const cJSON *valid = cJSON_GetArrayItem(pairs, 0);
+    const cJSON *failed = cJSON_GetArrayItem(pairs, 1);
+    assert(strcmp(item(valid, "cause")->valuestring, "none") == 0 && number(valid, "diag_ab_mm") == 3918);
+    assert(strcmp(item(failed, "state")->valuestring, "retry_exhausted") == 0 && number(failed, "distance_mm") == 0);
+    assert(strcmp(item(failed, "cause")->valuestring, "low_confidence") == 0);
+    assert(number(failed, "diag_ab_mm") == 8845 && number(failed, "diag_ba_mm") == 6421);
+    assert(number(failed, "diag_ab_samples") == 3 && number(failed, "diag_ab_accepted") == 1);
+    assert(number(failed, "diag_ba_samples") == 10 && number(failed, "diag_ba_accepted") == 9);
+    cJSON_Delete(root);
+}
+
 /* The Wi-Fi radio is off while the nodes range: the page is told what is going on, also while no progress exists yet. */
 static void test_the_radio_state_is_reported_in_every_phase(void)
 {
@@ -172,6 +202,7 @@ int main(void)
 {
     test_progress_and_frozen_result_json();
     test_unavailable_progress_and_result_json();
+    test_a_failed_pair_reports_the_numbers_of_both_directions_and_its_cause();
     test_the_radio_state_is_reported_in_every_phase();
     return 0;
 }

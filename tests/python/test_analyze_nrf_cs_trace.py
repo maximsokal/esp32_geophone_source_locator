@@ -252,6 +252,25 @@ def test_the_peak_sharpness_is_parsed_and_old_logs_without_it_still_parse():
     assert attempts[1].estimates["ifft"] == 3100 and attempts[1].tones == (70, 75, 2)       # the other fields are unaffected
 
 
+WHY_LOG = """cs: t=1 a=1 execute init=0 refl=4 try=1 pair=4 budget=2400ms
+cs: t=2 a=1 est ifft_mm=5007 phase_mm=9336 rtt_mm=n/a best_mm=5007 method=ifft tones=63/72 gap=7 pf=28.1 stock_mm=1090 why=sharp_peak
+cs: t=3 a=1 result=SUCCESS dist_mm=5007 conf=600 phase=IDLE
+cs: t=4 a=2 execute init=0 refl=4 try=2 pair=4 budget=2400ms
+cs: t=5 a=2 est ifft_mm=4954 phase_mm=9385 rtt_mm=n/a best_mm=4954 method=ifft tones=65/72 gap=3 pf=6.2 why=rtt_missing
+cs: t=6 a=2 result=SUCCESS dist_mm=4954 conf=400 phase=IDLE
+"""
+
+
+def test_the_reason_and_the_stock_ifft_are_parsed_and_counted():
+    attempts, links = tool.parse(WHY_LOG)
+    assert (attempts[1].why, attempts[1].stock_ifft, attempts[1].peak_floor) == ("sharp_peak", 1090, 28.1)
+    assert (attempts[2].why, attempts[2].stock_ifft) == ("rtt_missing", None)
+    report = chr(10).join(tool.report("log", attempts, links))
+    assert "confidence decided by (why=): rtt_missing=1, sharp_peak=1" in report
+    assert "gap fill changed the library's IFFT in 1 attempts" in report
+    assert "confidence decided by" not in chr(10).join(tool.report("log", tool.parse(BOUND_LOG)[0], []))     # old logs: nothing to say
+
+
 def test_the_sharpness_table_compares_sharp_and_other_attempts_against_the_cable_bound():
     attempts, links = tool.parse(SHARP_LOG)
     text = chr(10).join(tool.sharpness_table(attempts, 5000))

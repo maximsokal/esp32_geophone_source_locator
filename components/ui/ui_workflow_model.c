@@ -360,6 +360,20 @@ static void unknown_arg(ui_workflow_model_line_t *line, size_t index)
     set_key_arg(line, index, UI_I18N_KEY_TFT_WORKFLOW_VALUE_UNKNOWN);
 }
 
+/* nrf_cs_pair_cause_t numbers (kept free of the scheduler header here): the short reason under a pair without a distance. */
+static ui_i18n_key_t pair_cause_key(uint8_t cause)
+{
+    switch (cause) {
+        case 1U: return UI_I18N_KEY_TFT_WORKFLOW_RANGING_CAUSE_NO_MEASUREMENT;
+        case 2U: return UI_I18N_KEY_TFT_WORKFLOW_RANGING_CAUSE_LOW_CONFIDENCE;
+        case 3U: return UI_I18N_KEY_TFT_WORKFLOW_RANGING_CAUSE_FEW_SAMPLES;
+        case 4U: return UI_I18N_KEY_TFT_WORKFLOW_RANGING_CAUSE_DIRECTIONS_DISAGREE;
+        case 5U: return UI_I18N_KEY_TFT_WORKFLOW_RANGING_CAUSE_CABLE_EXCEEDED;
+        case 6U: return UI_I18N_KEY_TFT_WORKFLOW_RANGING_CAUSE_DISCONNECTED;
+        default: return UI_I18N_KEY_COUNT;
+    }
+}
+
 static const workflow_placement_node_t *placement_blocker(const workflow_snapshot_t *snapshot)
 {
     if (snapshot->placement.all_stable) return NULL;
@@ -916,13 +930,32 @@ void ui_workflow_model_build(
                     char a[4], b[4], distance[16];
                     (void)snprintf(a, sizeof(a), "%u", (unsigned)ranging->pairs[i].node_a);
                     (void)snprintf(b, sizeof(b), "%u", (unsigned)ranging->pairs[i].node_b);
-                    ui_workflow_model_line_t *row = add_line(model, ranging->pairs[i].manual
+                    /* A pair without a distance shows what each direction measured and why it was not used (bench 2026-11-03). */
+                    const bool has_diag = !ranging->pairs[i].valid && !ranging->pairs[i].cable_exceeded && !ranging->pairs[i].manual &&
+                        (ranging->pairs[i].diag_ab_samples > 0U || ranging->pairs[i].diag_ba_samples > 0U);
+                    ui_workflow_model_line_t *row = add_line(model, has_diag
+                        ? UI_I18N_KEY_TFT_WORKFLOW_RANGING_PAIR_DIAG
+                        : ranging->pairs[i].manual
                         ? UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_MANUAL
                         : ranging->pairs[i].cable_exceeded
                         ? UI_I18N_KEY_TFT_WORKFLOW_RANGING_CABLE_EXCEEDED
                         : UI_I18N_KEY_TFT_WORKFLOW_RANGING_DISTANCE);
                     set_arg(row, 0U, a);
                     set_arg(row, 1U, b);
+                    if (has_diag) {
+                        char forward[16], reverse[16];
+                        if (ranging->pairs[i].diag_ab_samples > 0U) {
+                            (void)snprintf(forward, sizeof(forward), "%lld", mm_to_cm_nearest((long long)ranging->pairs[i].diag_ab_mm));
+                            set_arg(row, 2U, forward);
+                        } else unknown_arg(row, 2U);
+                        if (ranging->pairs[i].diag_ba_samples > 0U) {
+                            (void)snprintf(reverse, sizeof(reverse), "%lld", mm_to_cm_nearest((long long)ranging->pairs[i].diag_ba_mm));
+                            set_arg(row, 3U, reverse);
+                        } else unknown_arg(row, 3U);
+                        const ui_i18n_key_t cause = pair_cause_key(ranging->pairs[i].cause);
+                        if (cause != UI_I18N_KEY_COUNT) (void)add_line(model, cause);
+                        continue;
+                    }
                     if (ranging->pairs[i].valid || ranging->pairs[i].cable_exceeded) {
                         (void)snprintf(distance, sizeof(distance), "%lld", mm_to_cm_nearest((long long)ranging->pairs[i].distance_mm));
                         set_arg(row, 2U, distance);

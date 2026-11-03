@@ -48,7 +48,16 @@ static bool add_pairs(cJSON *object, const nrf_cs_pair_result_t *pairs, size_t c
                 item,
                 "direction_disagreement_mm",
                 pair->direction_disagreement_mm
-            ) == NULL) {
+            ) == NULL ||
+            /* What each direction measured, also for a pair without a distance, and why it has none (bench 2026-11-03). */
+            cJSON_AddStringToObject(
+                item, "cause", nrf_cs_pair_cause_name(nrf_cs_pair_cause(pair, NRF_CS_MIN_SAMPLES_PER_DIRECTION))) == NULL ||
+            cJSON_AddNumberToObject(item, "diag_ab_mm", pair->diag_distance_mm[0]) == NULL ||
+            cJSON_AddNumberToObject(item, "diag_ba_mm", pair->diag_distance_mm[1]) == NULL ||
+            cJSON_AddNumberToObject(item, "diag_ab_samples", pair->diag_samples[0]) == NULL ||
+            cJSON_AddNumberToObject(item, "diag_ba_samples", pair->diag_samples[1]) == NULL ||
+            cJSON_AddNumberToObject(item, "diag_ab_accepted", pair->diag_accepted[0]) == NULL ||
+            cJSON_AddNumberToObject(item, "diag_ba_accepted", pair->diag_accepted[1]) == NULL) {
             return false;
         }
     }

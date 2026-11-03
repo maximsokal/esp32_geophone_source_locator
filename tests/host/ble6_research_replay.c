@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "nrf_cs_iq_gap_fill.h"
+#include "nrf_cs_ifft_quality.h"
 #include "nrf_cs_measurement_quality.h"
 typedef int arm_cfft_instance_f32;
 static const int arm_cfft_sR_f32_len512=0;
@@ -56,13 +57,19 @@ int main(void)
     const char *input = getenv("BLE6_REPLAY_INPUT"), *output = getenv("BLE6_REPLAY_OUTPUT");
     if (input == NULL || output == NULL) return 2;
     FILE *in = fopen(input, "rb"), *out = fopen(output, "wb");
-    if (in == NULL || out == NULL) return 3;
-    float src[150], buf[1024], rtt, result[4];
+    /* Optional second output: what the production confidence says about the same procedure (4 floats each):
+     * IFFT peak over median bin, plain confidence, confidence with the peak, reason code (nrf_cs_confidence_reason_t). */
+    const char *extra_path = getenv("BLE6_REPLAY_EXTRA");
+    FILE *extra = extra_path != NULL ? fopen(extra_path, "wb") : NULL;
+    if (in == NULL || out == NULL || (extra_path != NULL && extra == NULL)) return 3;
+    float src[150], stock[150], buf[1024], rtt, result[4];
     uint16_t counts[75];
     uint16_t steps;
     size_t procedures = 0U;
     while (fread(&steps, sizeof(steps), 1, in) == 1U) {
         cs_de_report_t report = {0};
+        double sums[300] = {0}, products[150] = {0};
+        uint16_t observed[75] = {0};
         memset(s_iq_counts, 0, sizeof(s_iq_counts));
         nrf_cs_rf_reset(&s_rf_diagnostics);
         for (uint16_t i = 0; i < steps; ++i) {
@@ -71,14 +78,34 @@ int main(void)
             const struct bt_le_cs_subevent_step local = {2, raw[0], 5, raw + 1};
             const struct bt_le_cs_subevent_step peer = {2, raw[0], 5, raw + 6};
             collect_pbr_step(&report, &local, &peer);
+            if (raw[0] >= 2U && raw[0] <= 76U && (raw[5] & 15U) == 0U && (raw[10] & 15U) == 0U) {
+                const size_t k = raw[0] - 2U;
+                const struct bt_le_cs_iq_sample a = bt_le_cs_parse_pct(raw + 2);
+                const struct bt_le_cs_iq_sample b = bt_le_cs_parse_pct(raw + 7);
+                ++observed[k];
+                sums[4*k] += a.i; sums[4*k+1] += a.q;
+                sums[4*k+2] += b.i; sums[4*k+3] += b.q;
+                products[2*k] += (double)a.i*b.i - (double)a.q*b.q;
+                products[2*k+1] += (double)a.i*b.q + (double)a.q*b.i;
+            }
         }
         if (fread(src, sizeof(src), 1, in) != 1U) return 4;
         if (fread(counts, sizeof(counts), 1, in) != 1U || fread(&rtt, sizeof(rtt), 1, in) != 1U) return 4;
+        memcpy(stock, src, sizeof(stock));
         if (steps > 0U) {
-            cs_de_combined_iq_calculate(&report.iq_tones[0], buf);
-            for (size_t i = 0; i < 75; ++i) assert(counts[i] == s_iq_counts[i]);
-            for (size_t i = 0; i < 150; ++i) {
+            /* Keep the independently reconstructed old product-of-means as the stock control. */
+            for (size_t k = 0; k < 75; ++k) {
+                assert(counts[k] == observed[k] && counts[k] == s_iq_counts[k]);
+                const double n = observed[k];
+                buf[2*k] = n > 0 ? (float)((sums[4*k]*sums[4*k+2] - sums[4*k+1]*sums[4*k+3])/(n*n)) : 0.0f;
+                buf[2*k+1] = n > 0 ? (float)((sums[4*k]*sums[4*k+3] + sums[4*k+1]*sums[4*k+2])/(n*n)) : 0.0f;
+            }
+            for (size_t i = 0; i < 150; ++i)
                 assert(fabsf(src[i] - buf[i]) <= 0.5f + 0.00001f * fabsf(src[i]));
+            cs_de_combined_iq_calculate(&report.iq_tones[0], buf);
+            for (size_t i = 0; i < 150; ++i) {
+                const float expected = observed[i/2] > 0 ? (float)(products[i]/observed[i/2]) : 0.0f;
+                assert(fabsf(expected - buf[i]) <= 0.5f + 0.00001f * fabsf(expected));
                 src[i] = buf[i];
             }
         }
@@ -86,23 +113,43 @@ int main(void)
         for (size_t i = 0; i < 75; ++i) good += counts[i] > 0U ? 1U : 0U;
         for (size_t i = 0; i < 1024; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
         result[2] = good >= 15U ? cs_de_phase_slope(buf) : NAN;
+        const float raw_ifft = good >= 15U ? cs_de_ifft(buf) : NAN;
+        for (size_t i = 0; i < 1024; ++i) buf[i] = i < 150 ? stock[i] : 0.0f;
         result[0] = good >= 15U ? cs_de_ifft(buf) : NAN;
         const float valid_rtt = isfinite(rtt) && rtt > 0.0f ? rtt : NAN;
-        result[1] = good >= 15U && isfinite(result[0]) ? result[0] :
+        result[1] = good >= 15U && isfinite(raw_ifft) ? raw_ifft :
             good >= 15U && isfinite(result[2]) ? result[2] : valid_rtt;
-        if (isfinite(result[0]) && result[0] >= 0.0f) {
+        if (isfinite(raw_ifft) && raw_ifft >= 0.0f) {
             for (size_t i = 0; i < 1024; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
             if (nrf_cs_iq_gap_fill(buf, counts, 75U) > 0U) {
                 float filled = cs_de_ifft(buf);
                 if (isfinite(filled) && filled >= 0.0f) result[1] = filled;
             }
         }
-        result[3] = (float)nrf_cs_measurement_confidence(good, 15U, isfinite(result[0]) || isfinite(result[2]),
+        result[3] = (float)nrf_cs_measurement_confidence(good, 15U, isfinite(raw_ifft) || isfinite(result[2]),
             isfinite(rtt) && rtt > 0.0f, result[1], rtt);
         if (fwrite(result, sizeof(result), 1, out) != 1U) return 5;
+        if (extra != NULL) {
+            /* The production order: the (filled) combined IQ goes through cs_de_ifft once more, which leaves the magnitude profile. */
+            float sharp = NAN, tail[4];
+            if (isfinite(raw_ifft) && raw_ifft >= 0.0f) {
+                for (size_t i = 0; i < 1024; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
+                (void)nrf_cs_iq_gap_fill(buf, counts, 75U);
+                (void)cs_de_ifft(buf);
+                sharp = nrf_cs_ifft_peak_to_floor(buf, CONFIG_BT_CS_DE_NFFT_SIZE);
+            }
+            const bool pbr = isfinite(raw_ifft) || isfinite(result[2]);
+            const bool rtt_ok = isfinite(rtt) && rtt > 0.0f;
+            tail[0] = sharp;
+            tail[1] = (float)nrf_cs_measurement_confidence(good, 15U, pbr, rtt_ok, result[1], rtt);
+            tail[2] = (float)nrf_cs_measurement_confidence_with_peak(good, 15U, pbr, rtt_ok, result[1], rtt, sharp);
+            tail[3] = (float)nrf_cs_measurement_confidence_reason(good, 15U, pbr, rtt_ok, result[1], rtt, sharp);
+            if (fwrite(tail, sizeof(tail), 1, extra) != 1U) return 5;
+        }
         ++procedures;
     }
     fclose(in); fclose(out);
+    if (extra != NULL) fclose(extra);
     printf("replayed=%zu\n", procedures);
     return 0;
 }

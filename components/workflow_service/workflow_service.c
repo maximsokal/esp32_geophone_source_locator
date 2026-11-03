@@ -1057,12 +1057,18 @@ static const char *workflow_service_pair_state_name(nrf_cs_pair_state_t state)
  */
 static void workflow_service_log_ranging_result(const nrf_topology_ranging_progress_t *progress)
 {
+    /* "5 valid pairs, 1 failed (0-4: low_confidence)" is not "no measurement": the line says which. */
+    char failed_pairs[96];
+    const size_t valid_pairs = nrf_cs_pairs_summary(progress->pairs,
+        progress->pair_count < NRF_CS_MAX_PAIRS ? progress->pair_count : NRF_CS_MAX_PAIRS,
+        NRF_CS_MIN_SAMPLES_PER_DIRECTION, failed_pairs, sizeof(failed_pairs));
     ESP_LOGI(TAG,
-        "RANGING_RESULT success=%u partial=%u reason=%s executions=%u/%u pairs=%u residual_mm=%d max_residual_mm=%d "
-        "inconsistent_pairs=%u main_reference_generation=%u",
+        "RANGING_RESULT success=%u partial=%u reason=%s valid_pairs=%u/%u failed_pairs=%s executions=%u/%u pairs=%u residual_mm=%d "
+        "max_residual_mm=%d inconsistent_pairs=%u main_reference_generation=%u",
         progress->success ? 1U : 0U,
         progress->partial ? 1U : 0U,
         progress->failure_reason[0] != '\0' ? progress->failure_reason : "none",
+        (unsigned)valid_pairs, (unsigned)progress->pair_count, failed_pairs[0] != '\0' ? failed_pairs : "none",
         (unsigned)progress->pairs_done,
         (unsigned)progress->pairs_total,
         (unsigned)progress->pair_count,
@@ -1074,13 +1080,18 @@ static void workflow_service_log_ranging_result(const nrf_topology_ranging_progr
         const nrf_cs_pair_result_t *pair = &progress->pairs[i];
         ESP_LOGI(TAG,
             "RANGING_PAIR %u-%u state=%s distance_mm=%d confidence=%u valid_samples=%u attempts=%u rejected=%u "
-            "spread_mm=%d automatic_mm=%d disagreement_mm=%d single_direction=%u",
+            "spread_mm=%d automatic_mm=%d disagreement_mm=%d single_direction=%u cause=%s diag_ab_mm=%d diag_ba_mm=%d "
+            "samples_ab=%u/%u samples_ba=%u/%u",
             (unsigned)pair->node_a, (unsigned)pair->node_b,
             workflow_service_pair_state_name(pair->state),
             (int)pair->distance_mm, (unsigned)pair->confidence, (unsigned)pair->valid_samples,
             (unsigned)pair->attempts, (unsigned)pair->rejected_samples, (int)pair->spread_mm,
             (int)pair->automatic_distance_mm, (int)pair->direction_disagreement_mm,
-            pair->single_direction ? 1U : 0U);
+            pair->single_direction ? 1U : 0U,
+            nrf_cs_pair_cause_name(nrf_cs_pair_cause(pair, NRF_CS_MIN_SAMPLES_PER_DIRECTION)),
+            (int)pair->diag_distance_mm[0], (int)pair->diag_distance_mm[1],
+            (unsigned)pair->diag_accepted[0], (unsigned)pair->diag_samples[0],
+            (unsigned)pair->diag_accepted[1], (unsigned)pair->diag_samples[1]);
     }
     for (size_t i = 0U; i < progress->geometry.node_count && i < NRF_CS_MAX_NODES; ++i) {
         const nrf_topology_ranging_node_t *node = &progress->geometry.nodes[i];

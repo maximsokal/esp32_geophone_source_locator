@@ -353,8 +353,15 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "OK twice: stop recording", /* tft.workflow.preview.stop_hint */
     "Stopping recording...", /* tft.workflow.preview.stop_pending */
     "%s-%s: %s cm > cable", /* tft.workflow.ranging.cable_exceeded */
+    "longer than the cable", /* tft.workflow.ranging.cause.cable_exceeded */
+    "the two ways disagree", /* tft.workflow.ranging.cause.directions_disagree */
+    "a node disconnected", /* tft.workflow.ranging.cause.disconnected */
+    "one way: too few results", /* tft.workflow.ranging.cause.few_samples */
+    "one way: low confidence", /* tft.workflow.ranging.cause.low_confidence */
+    "one way: no result", /* tft.workflow.ranging.cause.no_measurement */
     "%s-%s: %s cm", /* tft.workflow.ranging.distance */
     "Measurement failed", /* tft.workflow.ranging.failed */
+    "%s-%s: -- (%s / %s cm)", /* tft.workflow.ranging.pair_diag */
     "Pairs %s/%s residual %s cm", /* tft.workflow.ranging.pairs */
     "Partially measured", /* tft.workflow.ranging.partial */
     "%s sigma:%s cm", /* tft.workflow.ranging.sigma */
@@ -825,8 +832,15 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "OK двічі: зупинити запис", /* tft.workflow.preview.stop_hint */
     "Зупинення запису...", /* tft.workflow.preview.stop_pending */
     "%s-%s: %s см > кабель", /* tft.workflow.ranging.cable_exceeded */
+    "довше за кабель", /* tft.workflow.ranging.cause.cable_exceeded */
+    "напрямки не збігаються", /* tft.workflow.ranging.cause.directions_disagree */
+    "вузол від’єднався", /* tft.workflow.ranging.cause.disconnected */
+    "в один бік: замало результатів", /* tft.workflow.ranging.cause.few_samples */
+    "в один бік: низька довіра", /* tft.workflow.ranging.cause.low_confidence */
+    "в один бік: немає результату", /* tft.workflow.ranging.cause.no_measurement */
     "%s-%s: %s см", /* tft.workflow.ranging.distance */
     "Вимірювання не вдалося", /* tft.workflow.ranging.failed */
+    "%s-%s: -- (%s / %s см)", /* tft.workflow.ranging.pair_diag */
     "Пари %s/%s нев’язка %s см", /* tft.workflow.ranging.pairs */
     "Частково виміряно", /* tft.workflow.ranging.partial */
     "%s сигма:%s см", /* tft.workflow.ranging.sigma */

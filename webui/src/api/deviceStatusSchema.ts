@@ -628,6 +628,10 @@ function checkRangingPairs(value: unknown, path: string): void {
     requiredNumber(pair, 'direction_disagreement_mm', itemPath);
     if (pair.manual !== undefined) booleanValue(pair.manual, `${itemPath}.manual`);
     optionalNumber(pair, 'automatic_distance_mm', itemPath);
+    optionalString(pair, 'cause', itemPath);
+    for (const key of ['diag_ab_mm', 'diag_ba_mm', 'diag_ab_samples', 'diag_ba_samples', 'diag_ab_accepted', 'diag_ba_accepted']) {
+      optionalNumber(pair, key, itemPath);
+    }
   }
 }
 

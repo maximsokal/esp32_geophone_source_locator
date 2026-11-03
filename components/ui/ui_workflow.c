@@ -568,6 +568,11 @@ static void ui_workflow_build_ranging_view(ui_workflow_screen_state_t *state)
         state->ranging.pairs[i].cable_exceeded = progress->pairs[i].state == NRF_CS_PAIR_CABLE_EXCEEDED;
         state->ranging.pairs[i].manual = (progress->pairs[i].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U;
         state->ranging.pairs[i].distance_mm = progress->pairs[i].distance_mm;
+        state->ranging.pairs[i].cause = (uint8_t)nrf_cs_pair_cause(&progress->pairs[i], NRF_CS_MIN_SAMPLES_PER_DIRECTION);
+        state->ranging.pairs[i].diag_ab_samples = progress->pairs[i].diag_samples[0];
+        state->ranging.pairs[i].diag_ba_samples = progress->pairs[i].diag_samples[1];
+        state->ranging.pairs[i].diag_ab_mm = progress->pairs[i].diag_distance_mm[0];
+        state->ranging.pairs[i].diag_ba_mm = progress->pairs[i].diag_distance_mm[1];
     }
     state->ranging.node_count = progress->geometry.node_count;
     if (state->ranging.node_count > WORKFLOW_MAX_CALIBRATION_NODES) {

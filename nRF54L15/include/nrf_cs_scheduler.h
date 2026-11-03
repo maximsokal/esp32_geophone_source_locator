@@ -158,6 +158,15 @@ typedef struct {
     int32_t direction_disagreement_mm;
     /* Original radio value retained when an operator replaces the distance. */
     int32_t automatic_distance_mm;
+    /*
+     * What each direction measured, kept for EVERY state of the pair, also when it is not valid (RETRY_EXHAUSTED left the pair
+     * without a distance and the measured numbers disappeared; bench 2026-11-03, MAIN->G4 8.8 m and G4->MAIN 6.4 m).
+     * [0] = node_a -> node_b, [1] = node_b -> node_a: the median of all successful samples of that direction, those below
+     * min_confidence included; 0 with diag_samples 0. diag_accepted counts the ones that met min_confidence.
+     */
+    int32_t diag_distance_mm[2];
+    uint8_t diag_samples[2];
+    uint8_t diag_accepted[2];
 } nrf_cs_pair_result_t;
 
 /* A directed execution token for one undirected matrix cell. */
@@ -178,6 +187,7 @@ typedef struct {
     nrf_cs_node_id_t reflector;
     uint8_t attempts;
     uint8_t successes;
+    uint8_t diag_count;         /* successful samples of any confidence, in scheduler->diag_distance_mm */
     bool terminal;
     bool succeeded;
     nrf_cs_failure_reason_t last_failure;
@@ -195,6 +205,8 @@ typedef struct {
     nrf_cs_pair_result_t pairs[NRF_CS_MAX_PAIRS];
     int32_t sample_distance_mm[NRF_CS_MAX_EXECUTIONS][NRF_CS_MAX_SAMPLES_PER_EXECUTION];
     uint16_t sample_confidence[NRF_CS_MAX_EXECUTIONS][NRF_CS_MAX_SAMPLES_PER_EXECUTION];
+    /* Every successful sample, also those below min_confidence: diagnostics only, never part of a pair distance. */
+    int32_t diag_distance_mm[NRF_CS_MAX_EXECUTIONS][NRF_CS_MAX_SAMPLES_PER_EXECUTION];
     size_t pair_count;
     nrf_cs_execution_t executions[NRF_CS_MAX_EXECUTIONS];
     size_t execution_count;
@@ -240,6 +252,34 @@ const nrf_cs_pair_result_t *nrf_cs_scheduler_matrix_cell(
     const nrf_cs_scheduler_t *scheduler,
     nrf_cs_node_id_t node_a,
     nrf_cs_node_id_t node_b);
+
+/*
+ * Why a pair has no distance, told apart (RETRY_EXHAUSTED alone said "no distance" for all of these):
+ *  NO_MEASUREMENT      a direction produced no successful sample (transport errors, timeouts);
+ *  LOW_CONFIDENCE      a direction produced samples, but too few met min_confidence (they stay in diag_distance_mm);
+ *  FEW_SAMPLES         a direction produced fewer samples than the three it needs, with nothing rejected for confidence;
+ *  DIRECTIONS_DISAGREE both directions are good and contradict each other (the numbers stay in the pair);
+ *  CABLE_EXCEEDED, DISCONNECTED  as the state says.
+ * `required` is the number of accepted samples per direction the policy asks for (min(samples_per_pair, 3)).
+ */
+typedef enum {
+    NRF_CS_PAIR_CAUSE_NONE = 0,
+    NRF_CS_PAIR_CAUSE_NO_MEASUREMENT,
+    NRF_CS_PAIR_CAUSE_LOW_CONFIDENCE,
+    NRF_CS_PAIR_CAUSE_FEW_SAMPLES,
+    NRF_CS_PAIR_CAUSE_DIRECTIONS_DISAGREE,
+    NRF_CS_PAIR_CAUSE_CABLE_EXCEEDED,
+    NRF_CS_PAIR_CAUSE_DISCONNECTED,
+} nrf_cs_pair_cause_t;
+
+nrf_cs_pair_cause_t nrf_cs_pair_cause(const nrf_cs_pair_result_t *pair, uint8_t required);
+const char *nrf_cs_pair_cause_name(nrf_cs_pair_cause_t cause);
+
+/*
+ * "5 valid pairs, 1 failed" told apart from "no measurement at all": the number of valid pairs, and the failed ones as text,
+ * "0-4:low_confidence,1-3:no_measurement" (truncated with "..." when `capacity` is too small). Returns the number of valid pairs.
+ */
+size_t nrf_cs_pairs_summary(const nrf_cs_pair_result_t *pairs, size_t count, uint8_t required, char *failed, size_t capacity);
 
 #ifdef __cplusplus
 }

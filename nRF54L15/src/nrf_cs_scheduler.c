@@ -1,6 +1,7 @@
 #include "nrf_cs_scheduler.h"
 
 #include <limits.h>
+#include <stdio.h>
 #include <string.h>
 
 static bool nrf_cs_policy_valid(const nrf_cs_policy_t *policy)
@@ -310,6 +311,32 @@ static bool nrf_cs_summarize_samples(
     return true;
 }
 
+/* The numbers each direction produced, whatever became of the pair (see nrf_cs_pair_result_t.diag_distance_mm). */
+static void nrf_cs_record_pair_diagnostics(nrf_cs_scheduler_t *scheduler, size_t pair_index)
+{
+    nrf_cs_pair_result_t *pair = &scheduler->pairs[pair_index];
+
+    memset(pair->diag_distance_mm, 0, sizeof(pair->diag_distance_mm));
+    memset(pair->diag_samples, 0, sizeof(pair->diag_samples));
+    memset(pair->diag_accepted, 0, sizeof(pair->diag_accepted));
+    for (size_t i = 0U; i < scheduler->execution_count; ++i) {
+        const nrf_cs_execution_t *execution = &scheduler->executions[i];
+        int32_t sorted[NRF_CS_MAX_SAMPLES_PER_EXECUTION];
+        const size_t direction = execution->initiator == pair->node_a ? 0U : 1U;
+        const size_t count = execution->diag_count < NRF_CS_MAX_SAMPLES_PER_EXECUTION
+            ? execution->diag_count : NRF_CS_MAX_SAMPLES_PER_EXECUTION;
+
+        if (execution->pair_index != pair_index || count == 0U) {
+            continue;
+        }
+        memcpy(sorted, scheduler->diag_distance_mm[i], count * sizeof(sorted[0]));
+        nrf_cs_sort_i32(sorted, count);
+        pair->diag_distance_mm[direction] = nrf_cs_sorted_median(sorted, count);
+        pair->diag_samples[direction] = (uint8_t)count;
+        pair->diag_accepted[direction] = execution->successes < count ? execution->successes : (uint8_t)count;
+    }
+}
+
 static void nrf_cs_finalize_pair(nrf_cs_scheduler_t *scheduler, size_t pair_index)
 {
     nrf_cs_pair_result_t *pair = &scheduler->pairs[pair_index];
@@ -334,6 +361,7 @@ static void nrf_cs_finalize_pair(nrf_cs_scheduler_t *scheduler, size_t pair_inde
         }
     }
 
+    nrf_cs_record_pair_diagnostics(scheduler, pair_index);
     pair->valid_samples = 0U;
     pair->distance_mm = 0;
     pair->confidence = 0U;
@@ -605,6 +633,9 @@ nrf_cs_result_t nrf_cs_scheduler_complete_step(
     pair = &scheduler->pairs[pair_index];
     pair->provider_quality_flags |= measurement->provider_quality_flags;
 
+    if (measurement->outcome == NRF_CS_OUTCOME_SUCCESS && execution->diag_count < NRF_CS_MAX_SAMPLES_PER_EXECUTION) {
+        scheduler->diag_distance_mm[scheduler->active_execution_index][execution->diag_count++] = measurement->distance_mm;
+    }
     accepted_success = measurement->outcome == NRF_CS_OUTCOME_SUCCESS &&
                        measurement->confidence >= scheduler->policy.min_confidence;
     if (accepted_success) {
@@ -779,6 +810,83 @@ const nrf_cs_pair_result_t *nrf_cs_scheduler_pair_at(
         return NULL;
     }
     return &scheduler->pairs[pair_index];
+}
+
+nrf_cs_pair_cause_t nrf_cs_pair_cause(const nrf_cs_pair_result_t *pair, uint8_t required)
+{
+    if (pair == NULL) {
+        return NRF_CS_PAIR_CAUSE_NONE;
+    }
+    switch (pair->state) {
+        case NRF_CS_PAIR_VALID: return NRF_CS_PAIR_CAUSE_NONE;
+        case NRF_CS_PAIR_DIRECTIONS_DISAGREE: return NRF_CS_PAIR_CAUSE_DIRECTIONS_DISAGREE;
+        case NRF_CS_PAIR_CABLE_EXCEEDED: return NRF_CS_PAIR_CAUSE_CABLE_EXCEEDED;
+        case NRF_CS_PAIR_MISSING: return NRF_CS_PAIR_CAUSE_DISCONNECTED;
+        case NRF_CS_PAIR_RETRY_EXHAUSTED: break;
+        default: return NRF_CS_PAIR_CAUSE_NONE;
+    }
+    /* The direction that fell short; if both did, the one with nothing at all is named first. */
+    nrf_cs_pair_cause_t cause = NRF_CS_PAIR_CAUSE_NONE;
+    for (size_t direction = 0U; direction < 2U; ++direction) {
+        nrf_cs_pair_cause_t here = NRF_CS_PAIR_CAUSE_NONE;
+        if (pair->diag_samples[direction] == 0U) {
+            here = NRF_CS_PAIR_CAUSE_NO_MEASUREMENT;
+        } else if (pair->diag_accepted[direction] < required) {
+            here = pair->diag_samples[direction] > pair->diag_accepted[direction]
+                ? NRF_CS_PAIR_CAUSE_LOW_CONFIDENCE : NRF_CS_PAIR_CAUSE_FEW_SAMPLES;
+        }
+        if (here != NRF_CS_PAIR_CAUSE_NONE && (cause == NRF_CS_PAIR_CAUSE_NONE || here == NRF_CS_PAIR_CAUSE_NO_MEASUREMENT)) {
+            cause = here;
+        }
+    }
+    return cause == NRF_CS_PAIR_CAUSE_NONE ? NRF_CS_PAIR_CAUSE_FEW_SAMPLES : cause;
+}
+
+const char *nrf_cs_pair_cause_name(nrf_cs_pair_cause_t cause)
+{
+    switch (cause) {
+        case NRF_CS_PAIR_CAUSE_NO_MEASUREMENT: return "no_measurement";
+        case NRF_CS_PAIR_CAUSE_LOW_CONFIDENCE: return "low_confidence";
+        case NRF_CS_PAIR_CAUSE_FEW_SAMPLES: return "few_samples";
+        case NRF_CS_PAIR_CAUSE_DIRECTIONS_DISAGREE: return "directions_disagree";
+        case NRF_CS_PAIR_CAUSE_CABLE_EXCEEDED: return "cable_exceeded";
+        case NRF_CS_PAIR_CAUSE_DISCONNECTED: return "disconnected";
+        case NRF_CS_PAIR_CAUSE_NONE:
+        default: return "none";
+    }
+}
+
+size_t nrf_cs_pairs_summary(const nrf_cs_pair_result_t *pairs, size_t count, uint8_t required, char *failed, size_t capacity)
+{
+    size_t valid = 0U;
+    size_t used = 0U;
+    bool truncated = false;
+
+    if (failed != NULL && capacity > 0U) {
+        failed[0] = '\0';
+    }
+    for (size_t i = 0U; pairs != NULL && i < count; ++i) {
+        if (pairs[i].state == NRF_CS_PAIR_VALID) {
+            ++valid;
+            continue;
+        }
+        if (pairs[i].state == NRF_CS_PAIR_PENDING || pairs[i].state == NRF_CS_PAIR_UNKNOWN || failed == NULL || capacity == 0U) {
+            continue;
+        }
+        char item[40];
+        const int length = snprintf(item, sizeof(item), "%s%u-%u:%s", used > 0U ? "," : "", (unsigned)pairs[i].node_a,
+            (unsigned)pairs[i].node_b, nrf_cs_pair_cause_name(nrf_cs_pair_cause(&pairs[i], required)));
+        if (length < 0 || used + (size_t)length + 4U > capacity) {
+            truncated = true;
+            break;
+        }
+        memcpy(failed + used, item, (size_t)length + 1U);
+        used += (size_t)length;
+    }
+    if (truncated && failed != NULL && capacity > used + 4U) {
+        memcpy(failed + used, "...", 4U);
+    }
+    return valid;
 }
 
 const nrf_cs_pair_result_t *nrf_cs_scheduler_matrix_cell(

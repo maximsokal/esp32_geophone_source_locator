@@ -169,7 +169,8 @@ def test_distance_confidence_comes_from_measurement_evidence():
     assert "distance_estimates[0].best" in runtime
     assert "isfinite(best)" in runtime
     assert "measurement.confidence = 1000U" not in runtime
-    assert "measurement.confidence = nrf_cs_measurement_confidence(" in runtime
+    assert "measurement.confidence = nrf_cs_measurement_confidence_with_peak(" in runtime
+    assert "peak_floor_ratio" in runtime      # the sharpness of the IFFT peak is an input of the confidence (bench 2026-11-03)
     assert "good_tones" in runtime
     assert "distance_estimates[0].rtt" in runtime
     assert "NRF_CS_OUTCOME_OUTLIER" in runtime

@@ -1,0 +1,8 @@
+# What the same cycle reported (RANGING_PAIR lines): the scheduler replay must reproduce the state and the distance.
+a,b,state,distance_mm,confidence,valid_samples,attempts,rejected,spread_mm,automatic_mm,disagreement_mm,single_direction
+0,1,valid,4977,877,15,18,3,234,0,0,0
+0,3,valid,3903,1000,18,18,0,74,0,29,0
+0,4,retry_exhausted,0,0,0,13,0,0,0,0,0
+1,3,valid,4632,807,15,17,0,54,0,5,0
+1,4,valid,3887,1000,18,18,2,117,0,84,0
+3,4,valid,4099,996,18,18,0,33,0,0,0

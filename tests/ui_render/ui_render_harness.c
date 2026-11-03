@@ -555,14 +555,14 @@ static void test_calibration_result_selection_after_run(const char *language)
 
 static void test_ranging_result_screens(const char *language)
 {
-    static const char *outcomes[] = {"success", "partial", "failed", "cable_exceeded"};
-    static const char *reasons[] = {NULL, "pair_missing:0-4", "no_measurements", "cable_exceeded:0-4"};
-    for (size_t outcome = 0U; outcome < 4U; ++outcome) {
+    static const char *outcomes[] = {"success", "partial", "failed", "cable_exceeded", "pair_diagnostics"};
+    static const char *reasons[] = {NULL, "pair_missing:0-4", "no_measurements", "cable_exceeded:0-4", "pair_failed:0-4"};
+    for (size_t outcome = 0U; outcome < 5U; ++outcome) {
         render_ranging_available = false;
         prepare(WORKFLOW_STEP_RANGING, 4U);
         memset(&render_ranging_progress, 0, sizeof(render_ranging_progress));
         render_ranging_available = true;
-        render_ranging_progress.partial = outcome == 1U || outcome == 3U;
+        render_ranging_progress.partial = outcome == 1U || outcome == 3U || outcome == 4U;
         render_ranging_progress.complete = true;
         render_ranging_progress.pair_count = UI_WORKFLOW_RANGING_MAX_PAIRS;
         render_ranging_progress.pairs_done = UI_WORKFLOW_RANGING_MAX_PAIRS;
@@ -582,6 +582,13 @@ static void test_ranging_result_screens(const char *language)
                 } else if (index == 3U && outcome == 3U) {
                     pair->state = NRF_CS_PAIR_CABLE_EXCEEDED;
                     pair->distance_mm = 6001;
+                } else if (index == 3U && outcome == 4U) {
+                    /* Bench 2026-11-03: MAIN->G4 8.8 m (3 results, 1 above the limit), G4->MAIN 6.4 m (10 results, 9 accepted). */
+                    pair->state = NRF_CS_PAIR_RETRY_EXHAUSTED;
+                    pair->distance_mm = 0;
+                    pair->diag_distance_mm[0] = 8845; pair->diag_distance_mm[1] = 6421;
+                    pair->diag_samples[0] = 3U; pair->diag_samples[1] = 10U;
+                    pair->diag_accepted[0] = 1U; pair->diag_accepted[1] = 9U;
                 }
                 ++index;
             }
@@ -608,6 +615,7 @@ static void test_ranging_result_screens(const char *language)
         assert(s_workflow->model.actions[s_workflow->model.selected_action] != WORKFLOW_COMMAND_BACK);
 
         unsigned pair_mask = 0U;
+        bool both_directions_shown = false, cause_shown = false;
         size_t page = 0U;
         do {
             char name[96];
@@ -616,6 +624,8 @@ static void test_ranging_result_screens(const char *language)
             capture(name, true);
             for (size_t slot = 0U; slot < s_workflow->line_slots; ++slot) {
                 const char *text = lv_label_get_text(s_workflow->line_labels[slot]);
+                if (strstr(text, "885") != NULL && strstr(text, "642") != NULL) both_directions_shown = true;
+                if (strstr(text, ui_tr(UI_I18N_KEY_TFT_WORKFLOW_RANGING_CAUSE_LOW_CONFIDENCE)) != NULL) cause_shown = true;
                 for (size_t i = 0U; i < UI_WORKFLOW_RANGING_MAX_PAIRS; ++i) {
                     char expected[16];
                     (void)snprintf(expected, sizeof(expected), "%u-%u:",
@@ -629,6 +639,8 @@ static void test_ranging_result_screens(const char *language)
         } while (s_workflow->ranging_line_offset != 0U);
         assert(page > 1U);
         assert(pair_mask == (1U << UI_WORKFLOW_RANGING_MAX_PAIRS) - 1U);
+        /* The pair without a distance shows what each direction measured and why it was not used. */
+        assert((outcome == 4U) == both_directions_shown && (outcome == 4U) == cause_shown);
         if (outcome == 3U) test_ranging_manual_screens(language, &core);
     }
     render_ranging_available = false;

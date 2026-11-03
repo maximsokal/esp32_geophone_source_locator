@@ -20,7 +20,7 @@
  */
 
 #define NRF_CS_TRACE_CAPACITY 48U
-#define NRF_CS_TRACE_LINE_CAPACITY 192U
+#define NRF_CS_TRACE_LINE_CAPACITY 240U
 #define NRF_CS_TRACE_NO_ELAPSED UINT32_MAX
 
 typedef enum {
@@ -39,6 +39,8 @@ typedef enum {
 #define NRF_CS_TRACE_FLAG_TIMING (1U << 0)              /* c = ms until the outcome was known, d = ms of cleanup */
 #define NRF_CS_TRACE_FLAG_OVER_BUDGET (1U << 1)         /* the whole attempt took longer than its budget */
 #define NRF_CS_TRACE_FLAG_TIMEOUT_IN_CLEANUP (1U << 2)  /* the budget timer fired during cleanup and was ignored */
+/* nrf_cs_trace_entry_t.flags of an ESTIMATES: `e` holds the library's own IFFT (before the gap fill). */
+#define NRF_CS_TRACE_FLAG_STOCK_IFFT (1U << 3)
 
 typedef struct {
     uint32_t t_ms;              /* uptime when the record was pushed */
@@ -49,6 +51,7 @@ typedef struct {
     int32_t b;
     int32_t c;                  /* ESTIMATES: rtt, in mm. RESULT with FLAG_TIMING: measured_ms */
     int32_t d;                  /* ESTIMATES: best, in mm. RESULT with FLAG_TIMING: cleanup_ms */
+    int32_t e;                  /* ESTIMATES: the library's own IFFT before the gap fill, in mm; NRF_CS_TRACE_UNAVAILABLE = none */
     uint8_t kind;
     uint8_t phase;              /* nrf_cs_pair_phase_t */
     uint8_t flags;              /* RESULT: NRF_CS_TRACE_FLAG_* */
@@ -58,6 +61,7 @@ typedef struct {
     uint8_t tones_lead;         /* ESTIMATES: slots without a usable tone at the start of the array */
     uint8_t tones_tail;         /* ESTIMATES: the same at the end */
     uint16_t peak_floor_x10;    /* ESTIMATES: IFFT peak over the median bin, times 10; 0 = not known (see nrf_cs_ifft_quality.h) */
+    const char *why;            /* ESTIMATES: nrf_cs_confidence_reason_name() of the confidence (a string literal); NULL = not known */
 } nrf_cs_trace_entry_t;
 
 typedef struct {

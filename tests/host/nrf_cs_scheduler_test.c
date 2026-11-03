@@ -957,8 +957,147 @@ static void test_abort_cycle_completes_pending_executions_with_timeout(void)
 }
 
 
+/* Bench 2026-11-03: MAIN-G4 ended RETRY_EXHAUSTED and the measured numbers were gone. Every state keeps what each direction produced,
+ * and the cause of a missing distance is told apart: no sample at all, too few above min_confidence, too few of any kind, contradicting
+ * directions, a node that left. */
+typedef struct {
+    nrf_cs_outcome_t outcome;
+    int32_t distance_mm;
+    uint16_t confidence;
+} scripted_attempt_t;
+
+static nrf_cs_pair_result_t run_scripted_pair(const scripted_attempt_t *ab, size_t ab_count,
+    const scripted_attempt_t *ba, size_t ba_count, bool disconnect_before_reverse)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_policy_t policy = test_policy(2U);
+    const nrf_cs_node_id_t nodes[] = { 1U, 2U };
+    nrf_cs_step_t step;
+    size_t used_ab = 0U, used_ba = 0U;
+
+    policy.min_confidence = 500U;
+    policy.samples_per_pair = 9U;
+    policy.full_rotation = true;
+    policy.require_both_directions = true;
+    assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, 2U) == NRF_CS_OK);
+    while (nrf_cs_scheduler_next_step(&scheduler, &step) == NRF_CS_STEP_READY) {
+        const bool forward = step.initiator == 1U;
+        const scripted_attempt_t *list = forward ? ab : ba;
+        size_t *used = forward ? &used_ab : &used_ba;
+        nrf_cs_measurement_t measurement = failure_measurement(NRF_CS_OUTCOME_TIMEOUT);
+
+        if (!forward && disconnect_before_reverse) {
+            assert(nrf_cs_scheduler_disconnect(&scheduler, 2U) == NRF_CS_OK);
+            break;
+        }
+        if (*used < (forward ? ab_count : ba_count)) {
+            measurement.outcome = list[*used].outcome;
+            measurement.distance_mm = list[*used].distance_mm;
+            measurement.confidence = list[*used].confidence;
+            ++*used;
+        }
+        assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &measurement) == NRF_CS_OK);
+    }
+    return *nrf_cs_scheduler_pair_at(&scheduler, 0U);
+}
+
+static void test_a_pair_without_a_distance_keeps_the_numbers_and_the_cause(void)
+{
+    scripted_attempt_t good[9], contradicting[9], rejected[3], two_then_nothing[2], errors[2];
+    for (size_t i = 0U; i < 9U; ++i) {
+        good[i] = (scripted_attempt_t){ NRF_CS_OUTCOME_SUCCESS, 4000 + (int32_t)i * 4, 900U };
+        contradicting[i] = (scripted_attempt_t){ NRF_CS_OUTCOME_SUCCESS, 6400 + (int32_t)i * 4, 900U };
+    }
+    rejected[0] = (scripted_attempt_t){ NRF_CS_OUTCOME_SUCCESS, 8845, 902U };
+    rejected[1] = (scripted_attempt_t){ NRF_CS_OUTCOME_SUCCESS, 8811, 492U };
+    rejected[2] = (scripted_attempt_t){ NRF_CS_OUTCOME_SUCCESS, 8857, 358U };
+    two_then_nothing[0] = (scripted_attempt_t){ NRF_CS_OUTCOME_SUCCESS, 4100, 900U };
+    two_then_nothing[1] = (scripted_attempt_t){ NRF_CS_OUTCOME_SUCCESS, 4110, 900U };
+    errors[0] = errors[1] = (scripted_attempt_t){ NRF_CS_OUTCOME_TRANSPORT_ERROR, 0, 0U };
+
+    /* A valid pair: both directions complete, nothing to explain, the medians are there. */
+    nrf_cs_pair_result_t pair = run_scripted_pair(good, 9U, good, 9U, false);
+    assert(pair.state == NRF_CS_PAIR_VALID && nrf_cs_pair_cause(&pair, 3U) == NRF_CS_PAIR_CAUSE_NONE);
+    assert(pair.diag_distance_mm[0] == 4016 && pair.diag_distance_mm[1] == 4016);
+    assert(pair.diag_samples[0] == 9U && pair.diag_accepted[0] == 9U && pair.diag_samples[1] == 9U && pair.diag_accepted[1] == 9U);
+
+    /* The bench case: one direction produced three successes of which one met min_confidence, the other direction is complete. */
+    pair = run_scripted_pair(rejected, 3U, good, 9U, false);
+    assert(pair.state == NRF_CS_PAIR_RETRY_EXHAUSTED && pair.distance_mm == 0 && pair.valid_samples == 0U);
+    assert(pair.diag_distance_mm[0] == 8845 && pair.diag_samples[0] == 3U && pair.diag_accepted[0] == 1U);   /* median of all three */
+    assert(pair.diag_distance_mm[1] == 4016 && pair.diag_samples[1] == 9U && pair.diag_accepted[1] == 9U);
+    assert(nrf_cs_pair_cause(&pair, 3U) == NRF_CS_PAIR_CAUSE_LOW_CONFIDENCE);
+    assert(strcmp(nrf_cs_pair_cause_name(nrf_cs_pair_cause(&pair, 3U)), "low_confidence") == 0);
+
+    /* Nothing came back at all in one direction. */
+    pair = run_scripted_pair(errors, 2U, good, 9U, false);
+    assert(pair.state == NRF_CS_PAIR_RETRY_EXHAUSTED && pair.diag_samples[0] == 0U && pair.diag_distance_mm[0] == 0);
+    assert(nrf_cs_pair_cause(&pair, 3U) == NRF_CS_PAIR_CAUSE_NO_MEASUREMENT && pair.diag_samples[1] == 9U);
+
+    /* Two good samples and then nothing: fewer than the three needed, nothing rejected for confidence. */
+    pair = run_scripted_pair(two_then_nothing, 2U, good, 9U, false);
+    assert(pair.state == NRF_CS_PAIR_RETRY_EXHAUSTED && pair.diag_samples[0] == 2U && pair.diag_accepted[0] == 2U);
+    assert(nrf_cs_pair_cause(&pair, 3U) == NRF_CS_PAIR_CAUSE_FEW_SAMPLES);
+
+    /* Both directions complete and contradicting: the state says so, the numbers stay in the pair and in the diagnostics. */
+    pair = run_scripted_pair(good, 9U, contradicting, 9U, false);
+    assert(pair.state == NRF_CS_PAIR_DIRECTIONS_DISAGREE && pair.direction_disagreement_mm > NRF_CS_DIRECTION_DISAGREEMENT_LIMIT_MM);
+    assert(nrf_cs_pair_cause(&pair, 3U) == NRF_CS_PAIR_CAUSE_DIRECTIONS_DISAGREE);
+    assert(pair.diag_distance_mm[0] == 4016 && pair.diag_distance_mm[1] == 6416);
+
+    /* A node left between the directions. */
+    pair = run_scripted_pair(good, 9U, good, 9U, true);
+    assert(pair.state == NRF_CS_PAIR_MISSING && nrf_cs_pair_cause(&pair, 3U) == NRF_CS_PAIR_CAUSE_DISCONNECTED);
+    assert(pair.diag_samples[0] == 9U && pair.diag_samples[1] == 0U);
+
+    /* A nothing-yet pair, a missing argument and the names. */
+    nrf_cs_pair_result_t empty;
+    memset(&empty, 0, sizeof(empty));
+    empty.state = NRF_CS_PAIR_PENDING;
+    assert(nrf_cs_pair_cause(&empty, 3U) == NRF_CS_PAIR_CAUSE_NONE && nrf_cs_pair_cause(NULL, 3U) == NRF_CS_PAIR_CAUSE_NONE);
+    assert(strcmp(nrf_cs_pair_cause_name(NRF_CS_PAIR_CAUSE_CABLE_EXCEEDED), "cable_exceeded") == 0);
+    assert(strcmp(nrf_cs_pair_cause_name((nrf_cs_pair_cause_t)99), "none") == 0);
+}
+
+static void test_the_pair_summary_tells_failed_pairs_from_no_measurement_at_all(void)
+{
+    nrf_cs_pair_result_t pairs[4];
+    char text[96];
+
+    memset(pairs, 0, sizeof(pairs));
+    for (size_t i = 0U; i < 4U; ++i) {
+        pairs[i].node_a = 0U;
+        pairs[i].node_b = (nrf_cs_node_id_t)(i + 1U);
+        pairs[i].state = NRF_CS_PAIR_VALID;
+    }
+    assert(nrf_cs_pairs_summary(pairs, 4U, 3U, text, sizeof(text)) == 4U && text[0] == 0);       /* all valid: nothing failed */
+
+    pairs[3].state = NRF_CS_PAIR_RETRY_EXHAUSTED;
+    pairs[3].diag_samples[0] = 3U; pairs[3].diag_accepted[0] = 1U; pairs[3].diag_samples[1] = 9U; pairs[3].diag_accepted[1] = 9U;
+    pairs[1].state = NRF_CS_PAIR_DIRECTIONS_DISAGREE;
+    assert(nrf_cs_pairs_summary(pairs, 4U, 3U, text, sizeof(text)) == 2U);
+    assert(strcmp(text, "0-2:directions_disagree,0-4:low_confidence") == 0);
+
+    for (size_t i = 0U; i < 4U; ++i) {
+        pairs[i].state = NRF_CS_PAIR_RETRY_EXHAUSTED;
+        memset(pairs[i].diag_samples, 0, sizeof(pairs[i].diag_samples));
+    }
+    assert(nrf_cs_pairs_summary(pairs, 4U, 3U, text, sizeof(text)) == 0U);                         /* no measurement at all */
+    assert(strstr(text, "0-1:no_measurement") == text && strstr(text, "0-4:no_measurement") != NULL);
+
+    char tiny[8];
+    assert(nrf_cs_pairs_summary(pairs, 4U, 3U, tiny, sizeof(tiny)) == 0U && strcmp(tiny, "...") == 0);
+    assert(nrf_cs_pairs_summary(NULL, 4U, 3U, text, sizeof(text)) == 0U && text[0] == 0);
+    assert(nrf_cs_pairs_summary(pairs, 0U, 3U, NULL, 0U) == 0U);
+    pairs[0].state = NRF_CS_PAIR_PENDING;                                                           /* not decided yet: not a failure */
+    assert(nrf_cs_pairs_summary(pairs, 1U, 3U, text, sizeof(text)) == 0U && text[0] == 0);
+}
+
 int main(void)
 {
+    test_a_pair_without_a_distance_keeps_the_numbers_and_the_cause();
+    test_the_pair_summary_tells_failed_pairs_from_no_measurement_at_all();
     test_multi_sample_median_rejects_outlier();
     test_single_sample_policy_keeps_legacy_behaviour();
     test_samples_per_pair_is_bounded();

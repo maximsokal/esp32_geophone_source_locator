@@ -24,7 +24,7 @@ export interface VisualState {
   width: number;
   height: number;
   step?: WorkflowStep;
-  variant?: 'loading' | 'empty' | 'warning' | 'error' | 'disconnected' | 'confirmation' | 'long' | 'wifi-pending' | 'wifi-off' | 'wifi-back' | 'scan-refinement';
+  variant?: 'loading' | 'empty' | 'warning' | 'error' | 'disconnected' | 'confirmation' | 'long' | 'wifi-pending' | 'wifi-off' | 'wifi-back' | 'scan-refinement' | 'pair-failed';
 }
 
 export const visualStates: VisualState[] = [];
@@ -47,6 +47,8 @@ for (const locale of ['en', 'uk'] as const) {
   add('workflow-ranging-wifi-pending', 'workflow', 'wifi-pending', 393, 852, 'critical', 'RANGING');
   add('workflow-ranging-wifi-off', 'workflow', 'wifi-off', 393, 852, 'critical', 'RANGING');
   add('workflow-ranging-result-wifi-back', 'workflow', 'wifi-back', 393, 852, 'critical', 'RANGING_RESULT');
+  /* A cycle where five pairs are valid and one failed: the numbers of both directions and the cause are shown (bench 2026-11-03). */
+  add('workflow-ranging-result-pair-failed', 'workflow', 'pair-failed', 393, 852, 'critical', 'RANGING_RESULT');
   /* The scan information screen after the devices were scanned (the WebGL canvas is hidden: canvas pixels are separate coverage). */
   add('scan-distance-refinement', 'objects', 'scan-refinement', 393, 852, 'critical');
   add('objects-long', 'objects', 'long');
@@ -70,6 +72,16 @@ export async function prepareVisualState(page: Page, api: DeviceApi, state: Visu
   }
   if (state.variant === 'wifi-pending' || state.variant === 'wifi-off' || state.variant === 'wifi-back') {
     api.status.ranging!.radio = state.variant === 'wifi-pending' ? 'pending' : state.variant === 'wifi-off' ? 'off' : 'resuming';
+  }
+  if (state.variant === 'pair-failed') {
+    const pair = (a: number, b: number, distance: number, ab: number, ba: number, samples: [number, number], accepted: [number, number],
+      failed = false) => ({ node_a: a, node_b: b, state: failed ? 'retry_exhausted' : 'valid', distance_mm: distance, spread_mm: 40,
+      confidence: failed ? 0 : 900, valid_samples: failed ? 0 : 18, attempts: failed ? 13 : 18, single_direction: false,
+      direction_disagreement_mm: 0, cause: failed ? 'low_confidence' : 'none', diag_ab_mm: ab, diag_ba_mm: ba, diag_ab_samples: samples[0],
+      diag_ba_samples: samples[1], diag_ab_accepted: accepted[0], diag_ba_accepted: accepted[1] });
+    Object.assign(api.status.ranging!.progress!, { complete: true, success: false, partial: true, pairs_done: 3, pairs_total: 3,
+      failure_reason: 'pair_failed:0-4',
+      pairs: [pair(0, 1, 4977, 4977, 4977, [6, 9], [6, 9]), pair(0, 4, 0, 8845, 6421, [3, 10], [1, 9], true), pair(3, 4, 4099, 4099, 4099, [9, 9], [9, 9])] });
   }
   if (state.variant === 'scan-refinement') {
     installSavedScan(api, true);

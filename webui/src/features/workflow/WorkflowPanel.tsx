@@ -12,6 +12,8 @@ import {
   placementBlocker,
   placementReasonKey,
   rangingPairQualityNotes,
+  rangingPairDiagnostics,
+  rangingPairsSummary,
   rangingUncertaintyMm,
   resultFailureKey,
   workflowNumberText,
@@ -263,6 +265,15 @@ function RangingSection({ value, workflowReason, workflow, onSaved, onRefresh }:
         {percent !== null && ` (${formatPercent(locale, percent / 100)})`}</p>
       <progress max={100} value={percent ?? undefined} aria-label={t('workflow.ranging.pairs')} />
       <p>{t('workflow.ranging.residual')}: {cmText(residual, locale, 'nearest')}</p>
+      {(() => {
+        const summary = rangingPairsSummary(progress?.pairs ?? lastResult?.pairs ?? []);
+        return summary.total > 0 && summary.failed.length > 0 && (progress?.complete === true || lastResult !== undefined) && (
+          <p role="status" className="workflow-ranging-summary" data-valid-pairs={summary.valid} data-total-pairs={summary.total}>
+            {t('workflow.ranging.pairs_valid', { valid: workflowNumberText(summary.valid, locale), total: workflowNumberText(summary.total, locale) })}
+            {' '}{t('workflow.ranging.pairs_failed', { pairs: summary.failed.map((pair) => `${pair.a}\u2013${pair.b}`).join(', ') })}
+          </p>
+        );
+      })()}
       {(progress?.pairs ?? lastResult?.pairs ?? []).map((pair, index) => (
         <div key={`${pair.node_a}-${pair.node_b}-${index}`}><p>
           {t('workflow.ranging.pair_distance', { a: pair.node_a, b: pair.node_b })}:{' '}
@@ -272,6 +283,33 @@ function RangingSection({ value, workflowReason, workflow, onSaved, onRefresh }:
               ? cmText(pair.distance_mm, locale, 'nearest') : t('workflow.ranging.pair_unavailable')}
           {pair.manual === true && ` (${t('workflow.distance.manual')})`}
         </p>
+        {(() => {
+          const diagnostics = rangingPairDiagnostics(pair);
+          if (diagnostics === null) return null;
+          const side = (entry: typeof diagnostics.forward): string => entry === null
+            ? t('workflow.ranging.pair_diag_none')
+            : t('workflow.ranging.pair_diag_side', {
+              distance: cmText(entry.mm, locale, 'nearest'),
+              accepted: workflowNumberText(entry.accepted, locale),
+              samples: workflowNumberText(entry.samples, locale),
+            });
+          return (
+            <>
+              {diagnostics.cause !== null && (
+                <p className="workflow-ranging-quality" data-pair-cause={diagnostics.cause}>
+                  {t('workflow.ranging.pair_cause_label')}: {t(`workflow.ranging.pair_cause.${diagnostics.cause}` as I18nKey)}
+                </p>
+              )}
+              {(diagnostics.forward !== null || diagnostics.reverse !== null) && (
+                <p className="workflow-ranging-quality workflow-ranging-diag">
+                  {t('workflow.ranging.pair_diag', {
+                    a: pair.node_a, b: pair.node_b, forward: side(diagnostics.forward), reverse: side(diagnostics.reverse),
+                  })}
+                </p>
+              )}
+            </>
+          );
+        })()}
         {rangingPairQualityNotes(pair).map((note) => (
           <p key={note.key} className="workflow-ranging-quality">
             {note.key === 'workflow.ranging.pair_disagreement'
