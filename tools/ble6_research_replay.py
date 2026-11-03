@@ -150,12 +150,14 @@ def owl_cases(path, stride=200):
         offset += batch.num_rows
 
 
-def build_and_replay(cases, workdir=BUILD):
+def build_and_replay(cases, workdir=BUILD, nfft=512):
     """Return stock IFFT, production distance/phase, and plain confidence control.
 
     Raw PCT records validate both the stock product of means and production mean
     of paired products independently. Actual production confidence is in extra.bin.
     """
+    if nfft not in (512, 1024, 2048):
+        raise ValueError("Unsupported FFT size")
     sdk = Path(os.environ.get("BLE6_NCS_ROOT", "C:/ncs/v3.4.0/nrf"))
     source = sdk / "subsys/bluetooth/cs_de/cs_de.c"
     if not source.is_file():
@@ -177,7 +179,7 @@ typedef struct {float ifft,phase_slope,rtt,best;} cs_de_dist_estimates_t;
 typedef enum {CS_DE_QUALITY_OK,CS_DE_QUALITY_DO_NOT_USE} cs_de_quality_t;
 typedef struct {int role;uint8_t n_ap;cs_de_iq_tones_t iq_tones[1];cs_de_tone_quality_t tone_quality[1];cs_de_dist_estimates_t distance_estimates[1];int32_t rtt_accumulated_half_ns;uint8_t rtt_count;} cs_de_report_t;
 float cs_de_rtt(int32_t,uint8_t);float cs_de_phase_slope(float *);float cs_de_ifft(float *);
-""")
+""".replace("#define CONFIG_BT_CS_DE_NFFT_SIZE 512", f"#define CONFIG_BT_CS_DE_NFFT_SIZE {nfft}"))
     (workdir / "ble6_sdk_cs_de.c").write_text(f'#include "{source.as_posix()}"\n')
     # Compile unchanged production aggregation and installed Zephyr PCT decoding.
     provenance = []

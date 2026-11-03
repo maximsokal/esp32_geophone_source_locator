@@ -6,13 +6,20 @@
 #include "nrf_cs_iq_gap_fill.h"
 #include "nrf_cs_ifft_quality.h"
 #include "nrf_cs_measurement_quality.h"
+#include "bluetooth/cs_de.h"
 typedef int arm_cfft_instance_f32;
+#if CONFIG_BT_CS_DE_NFFT_SIZE == 512
 static const int arm_cfft_sR_f32_len512=0;
+#elif CONFIG_BT_CS_DE_NFFT_SIZE == 1024
+static const int arm_cfft_sR_f32_len1024=0;
+#elif CONFIG_BT_CS_DE_NFFT_SIZE == 2048
+static const int arm_cfft_sR_f32_len2048=0;
+#endif
 static void arm_sqrt_f32(float x,float *out){*out=sqrtf(x);}
 static void arm_max_f32(const float *a,uint32_t n,float *out,uint32_t *idx){*out=a[0];*idx=0;for(uint32_t i=1;i<n;i++)if(a[i]>*out){*out=a[i];*idx=i;}}
 static void arm_cfft_f32(const arm_cfft_instance_f32 *inst,float *a,int inv,int reverse)
 {
- (void)inst;(void)inv;(void)reverse;unsigned n=512;
+ (void)inst;(void)inv;(void)reverse;unsigned n=CONFIG_BT_CS_DE_NFFT_SIZE;
  for(unsigned i=1,j=0;i<n;i++){unsigned bit=n>>1;for(;j&bit;bit>>=1)j^=bit;j^=bit;if(i<j){float x=a[2*i],y=a[2*i+1];a[2*i]=a[2*j];a[2*i+1]=a[2*j+1];a[2*j]=x;a[2*j+1]=y;}}
  for(unsigned len=2;len<=n;len*=2){float ang=-6.2831853071795864769f/(float)len;float wr0=cosf(ang),wi0=sinf(ang);for(unsigned i=0;i<n;i+=len){float wr=1,wi=0;for(unsigned j=0;j<len/2;j++){unsigned u=2*(i+j),v=2*(i+j+len/2);float vr=a[v]*wr-a[v+1]*wi,vi=a[v]*wi+a[v+1]*wr;float ur=a[u],ui=a[u+1];a[u]=ur+vr;a[u+1]=ui+vi;a[v]=ur-vr;a[v+1]=ui-vi;float t=wr*wr0-wi*wi0;wi=wr*wi0+wi*wr0;wr=t;}}}
 }
@@ -62,7 +69,7 @@ int main(void)
     const char *extra_path = getenv("BLE6_REPLAY_EXTRA");
     FILE *extra = extra_path != NULL ? fopen(extra_path, "wb") : NULL;
     if (in == NULL || out == NULL || (extra_path != NULL && extra == NULL)) return 3;
-    float src[150], stock[150], buf[1024], rtt, result[4];
+    float src[150], stock[150], buf[2 * CONFIG_BT_CS_DE_NFFT_SIZE], rtt, result[4];
     uint16_t counts[75];
     uint16_t steps;
     size_t procedures = 0U;
@@ -111,16 +118,16 @@ int main(void)
         }
         uint16_t good = 0U;
         for (size_t i = 0; i < 75; ++i) good += counts[i] > 0U ? 1U : 0U;
-        for (size_t i = 0; i < 1024; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
+        for (size_t i = 0; i < 2 * CONFIG_BT_CS_DE_NFFT_SIZE; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
         result[2] = good >= 15U ? cs_de_phase_slope(buf) : NAN;
         const float raw_ifft = good >= 15U ? cs_de_ifft(buf) : NAN;
-        for (size_t i = 0; i < 1024; ++i) buf[i] = i < 150 ? stock[i] : 0.0f;
+        for (size_t i = 0; i < 2 * CONFIG_BT_CS_DE_NFFT_SIZE; ++i) buf[i] = i < 150 ? stock[i] : 0.0f;
         result[0] = good >= 15U ? cs_de_ifft(buf) : NAN;
         const float valid_rtt = isfinite(rtt) && rtt > 0.0f ? rtt : NAN;
         result[1] = good >= 15U && isfinite(raw_ifft) ? raw_ifft :
             good >= 15U && isfinite(result[2]) ? result[2] : valid_rtt;
         if (isfinite(raw_ifft) && raw_ifft >= 0.0f) {
-            for (size_t i = 0; i < 1024; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
+            for (size_t i = 0; i < 2 * CONFIG_BT_CS_DE_NFFT_SIZE; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
             if (nrf_cs_iq_gap_fill(buf, counts, 75U) > 0U) {
                 float filled = cs_de_ifft(buf);
                 if (isfinite(filled) && filled >= 0.0f) result[1] = filled;
@@ -133,7 +140,7 @@ int main(void)
             /* The production order: the (filled) combined IQ goes through cs_de_ifft once more, which leaves the magnitude profile. */
             float sharp = NAN, tail[4];
             if (isfinite(raw_ifft) && raw_ifft >= 0.0f) {
-                for (size_t i = 0; i < 1024; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
+                for (size_t i = 0; i < 2 * CONFIG_BT_CS_DE_NFFT_SIZE; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
                 (void)nrf_cs_iq_gap_fill(buf, counts, 75U);
                 (void)cs_de_ifft(buf);
                 sharp = nrf_cs_ifft_peak_to_floor(buf, CONFIG_BT_CS_DE_NFFT_SIZE);
