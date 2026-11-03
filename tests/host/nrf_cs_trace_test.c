@@ -158,6 +158,69 @@ static void test_the_est_line_names_the_method_that_made_the_distance(void)
     }
 }
 
+/* CS-IFFT-GAP-01: an est line that knows the frequency set says how complete it was. */
+static void test_the_est_line_reports_how_complete_the_frequency_set_was(void)
+{
+    char line[NRF_CS_TRACE_LINE_CAPACITY];
+    nrf_cs_trace_entry_t e = entry(NRF_CS_TRACE_ESTIMATES, 1U);
+
+    e.a = 7322;
+    e.b = 9378;
+    e.c = 10106;
+    e.d = 7322;
+    e.tones_planned = 75U;
+    e.tones_usable = 63U;
+    e.tones_gap = 5U;
+    e.tones_lead = 5U;
+    e.tones_tail = 0U;
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strcmp(line, "cs: t=68402 a=1 est ifft_mm=7322 phase_mm=9378 rtt_mm=10106 best_mm=7322 method=ifft "
+                        "tones=63/75 gap=5 lead=5 tail=0") == 0);
+    e.tones_planned = 0U;                                           /* not known: the line is the old one */
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strstr(line, "tones=") == NULL);
+    e.tones_planned = 255U;
+    e.tones_usable = 255U;
+    e.tones_gap = 255U;
+    e.tones_lead = 255U;
+    e.tones_tail = 255U;
+    e.t_ms = UINT32_MAX;
+    e.attempt_id = UINT32_MAX;
+    e.a = e.b = e.c = e.d = -2147483647;
+    const int length = nrf_cs_trace_format(&e, line, sizeof(line));
+    assert(length > 0 && (size_t)length < sizeof(line));
+}
+
+/* How sharp the IFFT peak was is logged with every estimate that knows it, in tenths, and is never invented. */
+static void test_the_est_line_reports_how_sharp_the_ifft_peak_was(void)
+{
+    char line[NRF_CS_TRACE_LINE_CAPACITY];
+    nrf_cs_trace_entry_t e = entry(NRF_CS_TRACE_ESTIMATES, 1U);
+
+    e.a = 7322; e.b = 9378; e.c = 10106; e.d = 7322;
+    e.tones_planned = 75U; e.tones_usable = 63U; e.tones_gap = 5U; e.tones_lead = 5U; e.tones_tail = 0U;
+    e.peak_floor_x10 = 123U;
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strcmp(line, "cs: t=68402 a=1 est ifft_mm=7322 phase_mm=9378 rtt_mm=10106 best_mm=7322 method=ifft "
+                        "tones=63/75 gap=5 lead=5 tail=0 pf=12.3") == 0);
+    e.peak_floor_x10 = 9U;                                          /* below 1.0: still printed, as 0.9 */
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strstr(line, " pf=0.9") != NULL);
+    e.tones_planned = 0U;                                           /* the tone fields are independent of it */
+    e.peak_floor_x10 = 300U;
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strstr(line, "tones=") == NULL && strstr(line, " pf=30.0") != NULL);
+    e.peak_floor_x10 = 0U;                                          /* not known: the line is the old one */
+    assert(nrf_cs_trace_format(&e, line, sizeof(line)) > 0);
+    assert(strstr(line, "pf=") == NULL);
+    e.tones_planned = 255U; e.tones_usable = 255U; e.tones_gap = 255U; e.tones_lead = 255U; e.tones_tail = 255U;
+    e.peak_floor_x10 = UINT16_MAX;
+    e.t_ms = UINT32_MAX; e.attempt_id = UINT32_MAX;
+    e.a = e.b = e.c = e.d = -2147483647;
+    const int length = nrf_cs_trace_format(&e, line, sizeof(line));
+    assert(length > 0 && (size_t)length < sizeof(line) && strstr(line, " pf=6553.5") != NULL);
+}
+
 /* CS-SECURITY-01: status 9 of a TRANSPORT_ERROR in SECURING is Zephyr's BT_SECURITY_ERR_UNSPECIFIED (pairing failed, no
  * reason given); the line says so, and only for that event in that phase. */
 static void test_a_security_failure_is_named_in_the_event_line(void)
@@ -281,6 +344,8 @@ int main(void)
     test_names_cover_every_phase_and_outcome();
     test_lines_carry_the_stage_and_the_time_since_the_attempt_started();
     test_the_est_line_names_the_method_that_made_the_distance();
+    test_the_est_line_reports_how_complete_the_frequency_set_was();
+    test_the_est_line_reports_how_sharp_the_ifft_peak_was();
     test_a_security_failure_is_named_in_the_event_line();
     test_the_result_line_separates_the_measurement_from_the_cleanup();
     test_the_longest_line_fits_and_bad_arguments_are_refused();

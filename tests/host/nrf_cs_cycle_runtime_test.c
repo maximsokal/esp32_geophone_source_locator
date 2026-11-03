@@ -880,8 +880,46 @@ static void test_release_is_ignored_when_it_means_nothing(void)
     assert(sims[1].rt.released_mask == 0U);
 }
 
+/* Low-confidence PBR stays in the attempt record but cannot satisfy the 500 gate. */
+static void test_unchecked_pbr_is_recorded_and_retried(void)
+{
+    sim_node_t sim;
+    nrf_cs_cycle_plan_t plan = {
+        .request_id = 1U, .cycle_id = 4U, .membership_generation = 1U, .pair_timeout_ms = 500U,
+        .max_attempts = 2U, .samples_per_pair = 1U, .min_confidence = 500U, .full_rotation = true,
+        .step_count = 2U, .node_count = 2U, .self_node = 0U,
+    };
+    nrf_cs_cycle_plan_steps_t chunk = {.request_id = 2U, .cycle_id = 4U, .first_step = 0U, .step_count = 2U};
+    const uint32_t window = nrf_cs_cycle_window_ms(500U, 1U, 2U);
+    const nrf_cs_cycle_go_t go = {.request_id = 3U, .cycle_id = 4U, .total_timeout_ms = window * 2U + NRF_CS_CYCLE_TOTAL_MARGIN_MS};
+    g_now = 300000U;
+    init_sim(&sim, 0U);
+    chunk.steps[0] = (nrf_cs_cycle_step_t){.initiator = 0U, .reflector = 1U};
+    chunk.steps[1] = (nrf_cs_cycle_step_t){.initiator = 1U, .reflector = 0U};
+    assert(nrf_cs_cycle_runtime_accept_plan(&sim.rt, 0U, &plan) == 0);
+    assert(nrf_cs_cycle_runtime_accept_steps(&sim.rt, &chunk) == 0);
+    assert(nrf_cs_cycle_runtime_go(&sim.rt, &go) == 0);
+    g_now += NRF_CS_CYCLE_GO_SKEW_MS;
+    sim_tick(&sim);
+    assert(sim.active);
+    const nrf_cs_measurement_t unchecked = {.outcome = NRF_CS_OUTCOME_SUCCESS, .distance_mm = 9369, .confidence = 400};
+    sim.active = false;
+    assert(nrf_cs_cycle_runtime_step_done(&sim.rt, &sim.step, &unchecked) == 0);
+    assert(sim.rt.successes == 0U && !sim.rt.execution_done && sim.rt.record_count == 1U);
+    assert(sim.rt.records[0].distance_mm == 9369 && sim.rt.records[0].confidence == 400U);
+    nrf_cs_cycle_result_t page = {.request_id = 8U, .cycle_id = 4U, .page = 0U, .page_count = 1U,
+                                  .record_total = 1U, .record_count = 1U};
+    nrf_cs_cycle_result_t decoded;
+    uint8_t frame[NRF_CS_CYCLE_RESULT_LENGTH];
+    page.records[0] = sim.rt.records[0];
+    assert(nrf_cs_cycle_encode_result(&page, frame) == 0);
+    assert(nrf_cs_cycle_decode_result(frame, sizeof(frame), &decoded) == 0);
+    assert(decoded.records[0].distance_mm == 9369 && decoded.records[0].confidence == 400U);
+}
+
 int main(void)
 {
+    test_unchecked_pbr_is_recorded_and_retried();
     test_relay_hands_the_turn_on_without_waiting_for_the_slot();
     test_relay_without_releases_falls_back_to_the_time_slots();
     test_a_lost_release_costs_only_the_wait_for_one_slot();

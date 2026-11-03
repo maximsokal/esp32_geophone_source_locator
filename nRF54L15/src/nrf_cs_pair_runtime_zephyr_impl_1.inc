@@ -139,6 +139,8 @@ static struct bt_conn_le_cs_config s_cs_config;
 
 static uint16_t s_iq_counts[CS_DE_NUM_CHANNELS];
 static cs_de_report_t s_de_report;
+/* Owned by the serialized CS work item; cs_de_ifft overwrites its input. */
+static float s_iq_ifft_scratch[2U * CONFIG_BT_CS_DE_NFFT_SIZE];
 
 static void runtime_post_event(
     runtime_event_type_t type,

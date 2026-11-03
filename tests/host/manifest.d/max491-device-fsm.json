@@ -9,7 +9,7 @@
       ],
       "include_dirs": [
         "tests/host/stubs/workflow_service",
-        "components/workflow_service/include"
+        "components/workflow_service/include", "tests/host/stubs/ranging_radio_pause", "components/ranging_radio_pause/include"
       ],
       "defines": [
         "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=0"
@@ -23,7 +23,7 @@
       ],
       "include_dirs": [
         "tests/host/stubs/workflow_service",
-        "components/workflow_service/include"
+        "components/workflow_service/include", "tests/host/stubs/ranging_radio_pause", "components/ranging_radio_pause/include"
       ],
       "defines": [
         "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"
@@ -33,7 +33,7 @@
       "name": "workflow_service_max491",
       "sources": [
         "components/workflow_service/workflow_core.c",
-        "components/workflow_service/workflow_service.c",
+        "components/workflow_service/workflow_service.c", "tests/host/stubs/ranging_radio_pause/ranging_radio_pause_stub.c",
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
         "components/localization_job/localization_config.c",
@@ -51,7 +51,7 @@
         "components/object_store/include",
         "tests/host/stubs/workflow_service",
         "tests/host/stubs/object_store_profile",
-        "components/workflow_service/include",
+        "components/workflow_service/include", "tests/host/stubs/ranging_radio_pause", "components/ranging_radio_pause/include",
         "components/recording_gate/include",
         "components/localization/include",
         "components/app_config/include",
@@ -85,7 +85,7 @@
         "components/seismic_recorder/include",
         "components/seismic_buffer/include",
         "tests/host/stubs/workflow_service",
-        "components/workflow_service/include",
+        "components/workflow_service/include", "tests/host/stubs/ranging_radio_pause", "components/ranging_radio_pause/include",
         "components/geophone_events/include",
         "components/ui_i18n/include",
         "components/result_view/include",

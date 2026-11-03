@@ -687,6 +687,12 @@ function checkRangingResult(result: StatusObject): void {
 
 function checkRanging(ranging: StatusObject): void {
   requiredBoolean(ranging, 'available', 'ranging');
+  const radio = ranging.radio;
+  if (radio !== undefined && radio !== 'idle' && radio !== 'pending' && radio !== 'off' && radio !== 'resuming') {
+    fail('ranging.radio', 'unknown radio state');
+  }
+  optionalBoolean(ranging, 'radio_stop_failed', 'ranging');
+  optionalBoolean(ranging, 'radio_resume_failed', 'ranging');
   const progressValue = ranging.progress;
   if (progressValue === undefined && ranging.available === true) {
     fail('ranging.progress', 'missing');

@@ -2,6 +2,14 @@
   "version": 1,
   "tests": [
     {
+      "name": "ranging_radio_pause_core",
+      "sources": [
+        "components/ranging_radio_pause/ranging_radio_pause_core.c",
+        "tests/host/ranging_radio_pause_core_test.c"
+      ],
+      "include_dirs": ["components/ranging_radio_pause/include"]
+    },
+    {
       "name": "storage_service_lifecycle",
       "sources": [
         "components/storage_service/storage_service.c",

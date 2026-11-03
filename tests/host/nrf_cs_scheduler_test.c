@@ -602,8 +602,8 @@ static void test_nine_samples_per_direction_drop_the_outliers(void)
 
 /* Runs pair 0 of three nodes with `forward_ok` / `reverse_ok` accepted samples in its two directions, every other
  * attempt of that direction fails until the execution gives up. */
-static nrf_cs_pair_result_t run_pair_with_sample_counts(
-    bool full_rotation, uint8_t samples, uint8_t max_attempts, size_t forward_ok, size_t reverse_ok)
+static nrf_cs_pair_result_t run_pair_with_sample_counts_policy(
+    bool full_rotation, bool both_directions, uint8_t samples, uint8_t max_attempts, size_t forward_ok, size_t reverse_ok)
 {
     nrf_cs_scheduler_t scheduler;
     nrf_cs_policy_t policy = test_policy(max_attempts);
@@ -613,6 +613,7 @@ static nrf_cs_pair_result_t run_pair_with_sample_counts(
     nrf_cs_step_t step;
 
     policy.full_rotation = full_rotation;
+    policy.require_both_directions = both_directions;
     policy.samples_per_pair = samples;
     assert(nrf_cs_scheduler_init(&scheduler, &policy) == NRF_CS_OK);
     assert(nrf_cs_scheduler_start_cycle(&scheduler, nodes, 3U) == NRF_CS_OK);
@@ -628,6 +629,44 @@ static nrf_cs_pair_result_t run_pair_with_sample_counts(
         assert(nrf_cs_scheduler_complete_step(&scheduler, &step, &measurement) == NRF_CS_OK);
     }
     return *nrf_cs_scheduler_pair_at(&scheduler, 0U);
+}
+
+static nrf_cs_pair_result_t run_pair_with_sample_counts(
+    bool full_rotation, uint8_t samples, uint8_t max_attempts, size_t forward_ok, size_t reverse_ok)
+{
+    return run_pair_with_sample_counts_policy(full_rotation, false, samples, max_attempts, forward_ok, reverse_ok);
+}
+
+/* CS-QUALITY-04. Bench 2026-11-03: 0-1 was published (cable_exceeded, 7.77 m, spread 33 mm) and 0-3 as valid (4.39 m) from ONE
+ * direction, the other having failed or ended with a single accepted sample. One direction has no second opinion; with the
+ * policy bit set such a pair is not a measurement. */
+static void test_a_pair_needs_both_directions_when_the_policy_says_so(void)
+{
+    /* Both directions with enough samples: valid either way. */
+    nrf_cs_pair_result_t pair = run_pair_with_sample_counts_policy(true, true, 9U, 2U, 9U, 9U);
+    assert(pair.state == NRF_CS_PAIR_VALID && !pair.single_direction && pair.valid_samples == 18U);
+    pair = run_pair_with_sample_counts_policy(true, true, 9U, 2U, 3U, 3U);
+    assert(pair.state == NRF_CS_PAIR_VALID && !pair.single_direction);
+
+    /* One good direction (the 0-3 pair of the bench) and the other with nothing, or with one sample, or with two. */
+    for (size_t other = 0U; other <= 2U; ++other) {
+        pair = run_pair_with_sample_counts_policy(true, true, 9U, 2U, 9U, other);
+        assert(pair.state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+        assert(pair.valid_samples == 0U && pair.distance_mm == 0 && !pair.single_direction);
+        pair = run_pair_with_sample_counts_policy(true, true, 9U, 2U, other, 9U);
+        assert(pair.state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+        /* The same data without the policy bit is still a one-sided valid pair, as before. */
+        pair = run_pair_with_sample_counts_policy(true, false, 9U, 2U, 9U, other);
+        assert(pair.state == NRF_CS_PAIR_VALID && pair.single_direction && pair.valid_samples == 9U);
+    }
+
+    /* Neither direction usable. */
+    pair = run_pair_with_sample_counts_policy(true, true, 9U, 2U, 2U, 2U);
+    assert(pair.state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+
+    /* The bit means nothing without the full rotation: a single execution per pair stays valid. */
+    pair = run_pair_with_sample_counts_policy(false, true, 9U, 2U, 9U, 0U);
+    assert(pair.state == NRF_CS_PAIR_VALID);
 }
 
 /* CS-QUALITY-02. Bench 2026-11-02 19:55: the 0-4 pair reported spread_mm=0 although 4 of its samples had been rejected,
@@ -941,6 +980,7 @@ int main(void)
     test_a_direction_with_too_few_samples_is_left_out();
     test_a_failed_attempt_ends_the_series_only_when_the_retry_budget_is_spent();
     test_relay_order_chains_every_execution_to_the_next();
+    test_a_pair_needs_both_directions_when_the_policy_says_so();
     test_abort_cycle_completes_pending_executions_with_timeout();
     return 0;
 }

@@ -28,6 +28,7 @@
 #include "nrf_topology_service.h"
 #include "object_service.h"
 #include "object_store.h"
+#include "ranging_radio_pause.h"
 #include "cJSON.h"
 
 #define WORKFLOW_CALIBRATION_TIMEOUT_MS 15000U
@@ -40,6 +41,9 @@
 #define WORKFLOW_CALIBRATION_IMU_RETRY_MS 3000U
 /* How long a new RANGING start waits for a cancelled run to wind down before it is reported as failed. */
 #define WORKFLOW_RANGING_RESTART_WAIT_MS 10000U
+/* The Wi-Fi radio is switched off before the nodes range (3 s of notice + the stop); if it does not go off by then the
+ * measurement starts anyway, with the radio on, rather than not at all. */
+#define WORKFLOW_RANGING_RADIO_WAIT_MS 25000U
 /* One sample per WORKFLOW_PLACEMENT_MIN_SAMPLE_GAP_MS at most, so the window can never hold more than this. */
 #define WORKFLOW_PLACEMENT_HISTORY_MAX_SAMPLES 32U
 _Static_assert(
@@ -139,8 +143,10 @@ typedef struct {
     bool active;
     bool orphaned;
     bool restart_pending;
+    bool radio_wait;            /* waiting for the Wi-Fi radio to go off; the nodes have not been started yet */
     uint64_t started_at_ms;
     uint64_t restart_deadline_ms;
+    uint64_t radio_deadline_ms;
 } workflow_ranging_run_t;
 
 typedef enum {
@@ -296,6 +302,8 @@ static const nrf_cs_policy_t s_workflow_ranging_policy = {
     .full_rotation = true,
     /* Each execution starts as soon as the previous one lets go; the slots above are only the worst case. */
     .relay_order = true,
+    /* A distance from one direction cannot be cross-checked; it is not published as a valid pair (CS-QUALITY-04). */
+    .require_both_directions = true,
 };
 
 static bool workflow_service_lock(void)
@@ -918,7 +926,7 @@ static esp_err_t workflow_service_ranging_load_limits(uint32_t limits[NRF_TOPOLO
     return err;
 }
 
-static void workflow_service_ranging_start(void)
+static void workflow_service_ranging_start_now(void)
 {
     if (s_assigned_remotes < 3U) {
         workflow_service_ranging_done(false, false, "insufficient_nodes");
@@ -953,6 +961,33 @@ static void workflow_service_ranging_start(void)
     (void)snprintf(reason, sizeof(reason), "start_failed:%s", esp_err_to_name(err));
     (void)nrf_topology_service_invalidate_ranging();
     workflow_service_ranging_done(false, false, reason);
+}
+
+/*
+ * Entering the measurement page: the Wi-Fi radio goes off first (the access point is 13 cm from the MAIN nRF on 2.4 GHz channel 1,
+ * over the first Channel Sounding channels), and the nodes are started when it is off. The page says so while it waits. The radio
+ * comes back by itself when no run is active any more (workflow_service_ranging_poll), however the run ends.
+ */
+static void workflow_service_ranging_start(void)
+{
+    if (s_assigned_remotes < 3U) {
+        workflow_service_ranging_done(false, false, "insufficient_nodes");
+        return;
+    }
+    if (s_core.ranging_keep_wifi) {         /* the user chose to measure with the radio on: it is never touched */
+        workflow_service_ranging_start_now();
+        return;
+    }
+    ranging_radio_pause_request_off();
+    if (ranging_radio_pause_ready()) {
+        workflow_service_ranging_start_now();
+        return;
+    }
+    s_ranging = (workflow_ranging_run_t){
+        .active = true,
+        .radio_wait = true,
+        .radio_deadline_ms = workflow_service_now_ms() + WORKFLOW_RANGING_RADIO_WAIT_MS,
+    };
 }
 
 static void workflow_service_step_changed(workflow_step_t previous, workflow_step_t next)
@@ -1058,7 +1093,20 @@ static void workflow_service_log_ranging_result(const nrf_topology_ranging_progr
 
 static void workflow_service_ranging_poll(void)
 {
-    if (!s_ranging.active) return;
+    if (!s_ranging.active) {
+        ranging_radio_pause_request_on();           /* idempotent: nothing is measuring, the radio belongs to the user */
+        return;
+    }
+    if (s_ranging.radio_wait) {
+        if (s_ranging.orphaned || s_core.step != WORKFLOW_STEP_RANGING) {
+            memset(&s_ranging, 0, sizeof(s_ranging));   /* left the page before the radio went off */
+            ranging_radio_pause_request_on();
+        } else if (ranging_radio_pause_ready() || workflow_service_now_ms() >= s_ranging.radio_deadline_ms) {
+            memset(&s_ranging, 0, sizeof(s_ranging));
+            workflow_service_ranging_start_now();
+        }
+        return;
+    }
     nrf_topology_ranging_progress_t *progress = &s_poll_scratch.ranging_progress;
     const bool finished = nrf_topology_service_ranging_get_progress(progress) == ESP_OK &&
         progress->started_at_ms == s_ranging.started_at_ms && progress->complete;

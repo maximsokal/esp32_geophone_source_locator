@@ -376,7 +376,7 @@ static void nrf_cs_finalize_pair(nrf_cs_scheduler_t *scheduler, size_t pair_inde
     }
 
     if (scheduler->policy.full_rotation) {
-        if (direction_count > 0U) {
+        if (direction_count > 0U && (!scheduler->policy.require_both_directions || direction_count == 2U)) {
             const nrf_cs_sample_summary_t *first = &directions[0];
             pair->state = NRF_CS_PAIR_VALID;
             pair->valid_samples = (uint8_t)sample_count;

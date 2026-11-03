@@ -48,6 +48,8 @@ import {
   SCAN_ANNOTATION_CAPACITY_ERROR,
 } from './xr/scanArtifact';
 import { buildSensorPlacementScene } from './xr/sensorPlacementScene';
+import { computeScanDistanceRefinement } from './xr/scanDistanceRefinement';
+import { ScanDistanceRefinementCard } from './components/ScanDistanceRefinementCard';
 import {
   CONTINUATION_TRANSIENT_BUDGET_BYTES,
   type ScanContinuationPhase,
@@ -1252,6 +1254,11 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
     () => buildSensorPlacementScene(durableViewport ? localizationGeometry : null, durableViewport ? registrationArtifact : null, registrationExpected),
     [durableViewport, localizationGeometry, registrationArtifact, registrationExpected],
   );
+  /* Distances between the devices recalculated from the scan: only from a registration that applies to the scan on screen. */
+  const distanceRefinement = useMemo(
+    () => computeScanDistanceRefinement(durableViewport ? localizationGeometry : null, viewerRegistration),
+    [durableViewport, localizationGeometry, viewerRegistration],
+  );
   const registrationStatusText = registrationStageView === 'pending' ? t('scan.registration.state.pending')
     : registrationStageView === 'saving' ? t('scan.registration.state.saving')
       : registrationStageView === 'failed' ? t('scan.registration.state.failed')
@@ -1537,6 +1544,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
                 {scanStoragePhase === 'deleting' ? t('scan.deleting') : t('scan.delete_saved')}
               </button>
             </section>
+            <ScanDistanceRefinementCard refinement={distanceRefinement} locale={locale} />
           </aside>
         </section>
       )}

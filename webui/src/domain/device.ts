@@ -268,8 +268,15 @@ export interface RangingLastResultStatus {
   geometry?: RangingGeometryStatus;
 }
 
+/** State of the Wi-Fi radio around the distance measurement: it is switched off while the nodes range and comes back by itself. */
+export type RangingRadioState = 'idle' | 'pending' | 'off' | 'resuming';
+
 export interface DeviceRangingStatus {
   available: boolean;
+  /** Absent in firmware that does not switch the radio off. */
+  radio?: RangingRadioState;
+  radio_stop_failed?: boolean;
+  radio_resume_failed?: boolean;
   progress?: RangingProgressStatus;
   last_result?: RangingLastResultStatus;
 }

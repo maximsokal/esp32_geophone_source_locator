@@ -275,3 +275,78 @@ describe('App registration ownership across scans (MAX-405, MAX-416)', () => {
     expect(decodeScanArtifact(device.scan!).pointCount).toBe(1);
   });
 });
+
+describe('App scan information: distances recalculated from the scan', () => {
+  const pods = [
+    { pod: 0, node_id: 0, computed: true, assigned: true, leveled: true, computed_at_ms: GEOMETRY_MS },
+    { pod: 1, node_id: 1, computed: true, assigned: true, leveled: true, x_mm: 3000, y_mm: 0, z_mm: 0, computed_at_ms: GEOMETRY_MS },
+    { pod: 2, node_id: 2, computed: true, assigned: true, leveled: true, x_mm: 0, y_mm: 4000, z_mm: 0, computed_at_ms: GEOMETRY_MS },
+  ];
+  const tag = (node: 'MAIN' | 'G1' | 'G2', tagId: number, position: [number, number, number]) =>
+    ({ tag_id: tagId, node, observation_count: 9, inlier_count: 8, position_scan_m: position, spread_m: 0.01 });
+  const scannedDevices = [tag('MAIN', 0, [0, 0, 0]), tag('G1', 1, [2.8, 0, 0]), tag('G2', 2, [0, 4.1, 0])];
+
+  function card(renderer: ReactTestRenderer) {
+    return renderer.root.findAll((node) => node.props['data-refinement-status'] !== undefined && typeof node.type === 'string');
+  }
+  const textOf = (node: { children: unknown[] }): string => node.children.map((child) =>
+    typeof child === 'string' ? child : textOf(child as { children: unknown[] })).join('');
+
+  beforeEach(() => {
+    h.fetchRuns.mockReset().mockResolvedValue({ object_id: 'OBJ', session_id: 'S', runs: [], geometry: { available: true, pods } });
+  });
+
+  it('shows the scanned devices, the recalculated pairs and the error reduction once the scan with tags has finished', async () => {
+    const renderer = await mountApp();
+    await finishScan('fresh', registration({ bindings: scannedDevices }));
+    const cards = card(renderer);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].props['data-refinement-status']).toBe('ok');
+    const text = textOf(cards[0]);
+    expect(text).toContain(translate('en', 'scan.refine.title'));
+    expect(text).toContain('MAIN, G1, G2');
+    for (const pair of ['MAIN–G1', 'MAIN–G2', 'G1–G2']) expect(text).toContain(pair);
+    const percent = renderer.root.findAll((node) => node.props['data-reduction-percent'] !== undefined)[0];
+    expect(Number(percent.props['data-reduction-percent'])).toBeGreaterThan(60);
+    expect(Number(percent.props['data-reduction-percent'])).toBeLessThan(75);
+    /* The scanned devices are also placed in the 3D scan canvas: one marker per tag, at a scan position. */
+    const markers = (h.viewportProps as { sensorMarkers: { node: string; tagId: number | null; positionScanM: unknown; source: string | null }[] }).sensorMarkers;
+    const byNode = Object.fromEntries(markers.map((marker) => [marker.node, marker]));
+    for (const [node, tagId] of [['MAIN', 0], ['G1', 1], ['G2', 2]] as const) {
+      expect(byNode[node]).toMatchObject({ tagId, source: 'apriltag' });
+      expect(byNode[node].positionScanM).not.toBeNull();
+    }
+  });
+
+  it('explains that no device was scanned when the scan has no tag result', async () => {
+    const renderer = await mountApp();
+    await finishScan('fresh', null);
+    const cards = card(renderer);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].props['data-refinement-status']).toBe('unavailable');
+    expect(textOf(cards[0])).toContain(translate('en', 'scan.refine.unavailable.no_registration'));
+  });
+
+  it('is shown again for a saved scan after a reload, from its saved registration', async () => {
+    device.scan = scanBytes();
+    const id = scanIdOf(device.scan);
+    device.occupancy = new Uint8Array([1]);
+    device.preview = new Uint8Array([1]);
+    h.loadReg.mockResolvedValue(encodeRegistrationArtifact(registration({ scan_frame_id: id, bindings: scannedDevices })));
+    const renderer = await mountApp();
+    const cards = card(renderer);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].props['data-refinement-status']).toBe('ok');
+  });
+
+  it('never shows distances from a registration that belongs to another scan', async () => {
+    device.scan = scanBytes();
+    device.occupancy = new Uint8Array([1]);
+    device.preview = new Uint8Array([1]);
+    h.loadReg.mockResolvedValue(encodeRegistrationArtifact(registration({ scan_frame_id: 'scan-crc32:deadbeef', bindings: scannedDevices })));
+    const renderer = await mountApp();
+    const cards = card(renderer);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].props['data-refinement-status']).toBe('unavailable');
+  });
+});

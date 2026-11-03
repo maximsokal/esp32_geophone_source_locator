@@ -254,6 +254,9 @@ function RangingSection({ value, workflowReason, workflow, onSaved, onRefresh }:
   const residual = progress?.solution_residual_mm ?? geometry?.residual_mm;
   return (
     <div className="workflow-ranging">
+      {value?.radio === 'pending' && <p role="status" className="workflow-ranging-wifi">{t('workflow.ranging.wifi_pending')}</p>}
+      {value?.radio === 'off' && <p role="status" className="workflow-ranging-wifi">{t('workflow.ranging.wifi_off')}</p>}
+      {value?.radio === 'resuming' && <p role="status" className="workflow-ranging-wifi">{t('workflow.ranging.wifi_back')}</p>}
       {progress?.complete === true && <p role="status">{t(progress.success
         ? 'workflow.ranging.success' : progress.partial ? 'workflow.ranging.partial' : 'workflow.ranging.failed')}</p>}
       <p>{t('workflow.ranging.pairs')}: {workflowNumberText(done, locale)} / {workflowNumberText(total, locale)}
@@ -395,7 +398,12 @@ function WorkflowSection({ section, status, onRangingSaved, onRefresh }: {
               : 'workflow.gps.choice';
       return <p role="status">{t(messageKey)}</p>;
     }
-    case 'layout': return <p role="status">{t(section.value.placement.all_stable ? 'workflow.layout.ready' : 'workflow.layout.waiting')}</p>;
+    case 'layout': return (
+      <>
+        <p role="status">{t(section.value.placement.all_stable ? 'workflow.layout.ready' : 'workflow.layout.waiting')}</p>
+        {section.value.placement.all_stable && <p className="workflow-layout-wifi">{t('workflow.layout.wifi_choice')}</p>}
+      </>
+    );
     case 'ranging': return (
       <>
         {status?.workflow?.step === 'RANGING' && <p role="status">{t('workflow.ranging.wait')}</p>}

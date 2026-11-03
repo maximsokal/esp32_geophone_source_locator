@@ -19,6 +19,7 @@ static const workflow_command_t s_action_order[] = {
     WORKFLOW_COMMAND_REQUEST_GPS,
     WORKFLOW_COMMAND_GPS_SKIP,
     WORKFLOW_COMMAND_CALCULATE_POSITIONS,
+    WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI,
     WORKFLOW_COMMAND_CONFIRM,
     WORKFLOW_COMMAND_START_RECORDING,
     WORKFLOW_COMMAND_STOP_RECORDING,
@@ -92,6 +93,7 @@ static ui_i18n_key_t action_key(workflow_command_t command)
         case WORKFLOW_COMMAND_SCAN_SKIP: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_SKIP;
         case WORKFLOW_COMMAND_SCAN_START: return UI_I18N_KEY_TFT_WORKFLOW_SCAN_PHONE;
         case WORKFLOW_COMMAND_CALCULATE_POSITIONS: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_CALCULATE_POSITIONS;
+        case WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_CALCULATE_POSITIONS_KEEP_WIFI;
         case WORKFLOW_COMMAND_CONFIRM: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_CONFIRM;
         case WORKFLOW_COMMAND_SET_DISTANCE: return UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_EDIT;
         case WORKFLOW_COMMAND_START_RECORDING: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_START_RECORDING;
@@ -812,9 +814,19 @@ void ui_workflow_model_build(
             (void)add_line(model, snapshot->placement.all_stable
                 ? UI_I18N_KEY_TFT_WORKFLOW_LAYOUT_READY
                 : UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_WAITING);
+            if (snapshot->placement.all_stable) {
+                /* The choice is made by the two actions below: Wi-Fi off during the measurement, or kept on. */
+                (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_LAYOUT_WIFI_HINT);
+                (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_LAYOUT_WIFI_PHONE);
+            }
             break;
         case WORKFLOW_STEP_RANGING: {
             char done[12], total[12], residual[20];
+            if (ranging != NULL && ranging->radio_state == UI_WORKFLOW_RADIO_PENDING) {
+                (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_WIFI_PENDING);
+            } else if (ranging != NULL && ranging->radio_state == UI_WORKFLOW_RADIO_OFF) {
+                (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_WIFI_OFF);
+            }
             if (ranging != NULL && ranging->available) {
                 (void)snprintf(done, sizeof(done), "%u", (unsigned)ranging->pairs_done);
                 (void)snprintf(total, sizeof(total), "%u", (unsigned)ranging->pairs_total);
@@ -882,6 +894,10 @@ void ui_workflow_model_build(
                 }
                 ui_workflow_model_line_t *reason = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_REASON);
                 set_arg(reason, 0U, snapshot->reason);
+            }
+            if (ranging != NULL && (ranging->radio_state == UI_WORKFLOW_RADIO_RESUMING ||
+                                    ranging->radio_state == UI_WORKFLOW_RADIO_OFF)) {
+                (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RANGING_WIFI_BACK);
             }
             if (ranging != NULL && ranging->available) {
                 char done[12], total[12], residual[20];

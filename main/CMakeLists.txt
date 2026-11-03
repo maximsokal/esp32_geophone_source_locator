@@ -58,6 +58,7 @@ idf_component_register(
         localization
         localization_job
         wifi_manager
+        ranging_radio_pause
         web_server
         ui
         ui_i18n

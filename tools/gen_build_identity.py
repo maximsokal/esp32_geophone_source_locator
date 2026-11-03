@@ -42,14 +42,14 @@ def identity(repo: Path) -> str:
     commit = head.stdout.decode("ascii", "replace").strip()[:COMMIT_CHARS]
     if len(commit) != COMMIT_CHARS:
         return "unknown"
-    status = _git(repo, "diff-index", "--quiet", "--ignore-submodules=untracked", "HEAD", "--")
-    if status is None or status.returncode not in (0, 1):
-        return "unknown"
-    if status.returncode == 0:
-        return commit
+    # Not `git diff-index --quiet`: it compares file stamps and line ends against the index without refreshing it, so a
+    # file that was only touched or re-saved with other line ends makes it say "dirty" while the diff is empty (bench
+    # 2026-11-03: "f8e8023b33d6+dirty.e3b0c442", the hash of nothing). The tree differs only if the diff has content.
     diff = _git(repo, "diff", "HEAD", "--binary", "--ignore-submodules=untracked")
     if diff is None or diff.returncode != 0:
         return f"{commit}+dirty.unknown"
+    if not diff.stdout.strip():
+        return commit
     return f"{commit}+dirty.{hashlib.sha256(diff.stdout).hexdigest()[:DIFF_CHARS]}"
 
 

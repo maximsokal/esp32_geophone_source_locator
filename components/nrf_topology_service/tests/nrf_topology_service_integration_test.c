@@ -1996,6 +1996,13 @@ static void assert_triangle_contradiction_wins_over_the_cable(void)
     assert(strcmp(s_seen_ranging_progress.failure_reason, "triangle_inconsistent:0-1-2") == 0);
     assert(s_seen_ranging_progress.pairs[1].state == NRF_CS_PAIR_CABLE_EXCEEDED);   /* 3000 mm > the 1001 mm limit of node 2 */
     assert(s_seen_ranging_progress.pairs[1].distance_mm == 3000);
+    /* The autonomous cycle hands the finished matrix over in one piece, and it was rejected before the solver saw it: no
+     * node besides MAIN was placed. (The stepwise mode solves pair by pair as they arrive, so it cannot do this.) */
+    for (size_t i = 0U; i < s_seen_ranging_progress.geometry.node_count; ++i) {
+        if (s_seen_ranging_progress.geometry.nodes[i].node_id != 0U) {
+            assert(!s_seen_ranging_progress.geometry.nodes[i].solved);
+        }
+    }
 }
 
 /* A triangle that closes within the tolerance is only logged: the ranging is not failed by the triangle check. */

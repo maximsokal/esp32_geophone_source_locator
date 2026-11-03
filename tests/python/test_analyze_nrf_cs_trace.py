@@ -175,3 +175,91 @@ def test_the_scatter_of_each_pair_shows_the_noisy_links():
     assert groups == {(0, 4): [8175, 6148, 8490, 8490, 3806]}
     text = nl_join(tool.report("log", attempts, []))
     assert "pair 0-4: n=5 min=3806 max=8490 mean=7022 sd=1830 mm" in text
+
+
+# The cable bound: every sensor hangs on a cable of 5 m from MAIN (node 0), so MAIN-to-sensor cannot exceed 5 m and sensor-to-
+# sensor 10 m. Estimates of the bench logs 2026-11-02/03: 0->1 read 6.3..10.1 m with all three methods, 0->3 IFFT inside.
+BOUND_LOG = """\
+cs: t=1 a=1 execute init=0 refl=1 try=1 pair=0 budget=2400ms
+cs: t=2 a=1 est ifft_mm=7322 phase_mm=9378 rtt_mm=10106 best_mm=7322 method=ifft tones=70/75 gap=2 lead=2 tail=0
+cs: t=3 a=1 result=SUCCESS dist_mm=7322 conf=900 phase=IDLE
+cs: t=4 a=2 execute init=0 refl=3 try=1 pair=2 budget=2400ms
+cs: t=5 a=2 est ifft_mm=3900 phase_mm=7315 rtt_mm=5908 best_mm=3900 method=ifft tones=60/75 gap=9
+cs: t=6 a=2 result=SUCCESS dist_mm=3900 conf=900 phase=IDLE
+cs: t=7 a=3 execute init=3 refl=4 try=1 pair=0 budget=2400ms
+cs: t=8 a=3 est ifft_mm=3565 phase_mm=3919 rtt_mm=1038 best_mm=3565 method=ifft tones=72/75 gap=1
+cs: t=9 a=3 result=SUCCESS dist_mm=3565 conf=900 phase=IDLE
+cs: t=10 a=4 execute init=0 refl=4 try=1 pair=4 budget=2400ms
+cs: t=11 a=4 est ifft_mm=10348 phase_mm=n/a rtt_mm=3465 best_mm=10348 method=ifft tones=40/75 gap=14 lead=14 tail=0
+cs: t=12 a=4 result=SUCCESS dist_mm=10348 conf=900 phase=IDLE
+"""
+
+
+def test_the_cable_bound_is_one_cable_with_main_and_two_between_sensors():
+    assert tool.pair_bound_mm((0, 1), 5000) == 5000
+    assert tool.pair_bound_mm((1, 0), 5000) == 5000
+    assert tool.pair_bound_mm((3, 4), 5000) == 10000
+
+
+def test_estimates_outside_the_cable_bound_are_counted_per_method():
+    attempts, links = tool.parse(BOUND_LOG)
+    lines = tool.bound_check(attempts, 5000)
+    text = chr(10).join(lines)
+    assert "pair 0-1 bound 5000 mm: ifft in=0/1 median=7322; phase in=0/1 median=9378; rtt in=0/1 median=10106" in text
+    assert "pair 0-3 bound 5000 mm: ifft in=1/1 median=3900; phase in=0/1 median=7315; rtt in=0/1 median=5908" in text
+    assert "pair 3-4 bound 10000 mm: ifft in=1/1 median=3565; phase in=1/1 median=3919; rtt in=1/1 median=1038" in text
+    assert "pair 0-4 bound 5000 mm: ifft in=0/1 median=10348; rtt in=1/1 median=3465" in text.replace("phase in=0/0 ", "")
+    report = chr(10).join(tool.report("log", attempts, links, None, 5000))
+    assert "estimates inside the cable bound (cable 5000 mm from MAIN)" in report
+    assert "estimates inside the cable bound" not in chr(10).join(tool.report("log", attempts, links))   # off without --cable-mm
+
+
+def test_the_holes_of_the_frequency_set_are_tabulated_against_the_cable_bound():
+    attempts, _ = tool.parse(BOUND_LOG)
+    assert attempts[1].tones == (70, 75, 2) and attempts[4].tones == (40, 75, 14)
+    table = chr(10).join(tool.gap_table(attempts, 5000))
+    # holes 1-2: attempts 1 (70 tones, ifft out of the bound) and 3 (72 tones, in); holes 6+: attempts 2 (60, in) and 4 (40, out)
+    assert "hole 1-2  n=2   usable tones median=72  ifft inside the cable bound 1/2" in table
+    assert "hole 6+   n=2   usable tones median=60  ifft inside the cable bound 1/2" in table
+    # the hole of attempt 4 (14 slots) sits at the start of the array, like a channel 1 access point would make it
+    assert "holes of 10+ slots at the start of the array: 1/2, at the end: 0/2" in table
+    assert attempts[4].edges == (14, 0) and attempts[2].edges is None
+    assert "hole 0 " not in table
+    without_bound = chr(10).join(tool.gap_table(attempts, 0))
+    assert "inside the cable bound" not in without_bound and "hole 1-2" in without_bound
+    old, _ = tool.parse(ACCURACY_LOG)                       # old firmware: no tones, no table
+    assert tool.gap_table(old, 5000) == []
+
+
+SHARP_LOG = """cs: t=1 a=1 execute init=0 refl=1 try=1 pair=0 budget=2400ms
+cs: t=2 a=1 est ifft_mm=3100 phase_mm=3300 rtt_mm=2900 best_mm=3100 method=ifft tones=70/75 gap=2 lead=2 tail=0 pf=14.2
+cs: t=3 a=1 result=SUCCESS dist_mm=3100 conf=900 phase=IDLE
+cs: t=4 a=2 execute init=0 refl=1 try=1 pair=0 budget=2400ms
+cs: t=5 a=2 est ifft_mm=8800 phase_mm=3300 rtt_mm=2900 best_mm=8800 method=ifft tones=70/75 gap=2 lead=2 tail=0 pf=3.5
+cs: t=6 a=2 result=SUCCESS dist_mm=8800 conf=900 phase=IDLE
+cs: t=7 a=3 execute init=0 refl=1 try=1 pair=0 budget=2400ms
+cs: t=8 a=3 est ifft_mm=3000 phase_mm=3300 rtt_mm=2900 best_mm=3000 method=ifft tones=70/75 gap=2 lead=2 tail=0 pf=10.0
+cs: t=9 a=3 result=SUCCESS dist_mm=3000 conf=900 phase=IDLE
+cs: t=10 a=4 execute init=0 refl=1 try=1 pair=0 budget=2400ms
+cs: t=11 a=4 est ifft_mm=3050 phase_mm=3300 rtt_mm=2900 best_mm=3050 method=ifft tones=70/75 gap=2 lead=2 tail=0
+cs: t=12 a=4 result=SUCCESS dist_mm=3050 conf=900 phase=IDLE
+"""
+
+
+def test_the_peak_sharpness_is_parsed_and_old_logs_without_it_still_parse():
+    attempts, _ = tool.parse(SHARP_LOG)
+    assert [attempts[i].peak_floor for i in (1, 2, 3, 4)] == [14.2, 3.5, 10.0, None]
+    assert attempts[1].estimates["ifft"] == 3100 and attempts[1].tones == (70, 75, 2)       # the other fields are unaffected
+
+
+def test_the_sharpness_table_compares_sharp_and_other_attempts_against_the_cable_bound():
+    attempts, links = tool.parse(SHARP_LOG)
+    text = chr(10).join(tool.sharpness_table(attempts, 5000))
+    assert "peak/floor sharp (>10) n=1    median ratio=14.2  ifft inside the cable bound 1/1" in text
+    assert "peak/floor not sharp  n=2    median ratio=10.0  ifft inside the cable bound 1/2" in text
+    assert "attempts with a sharp peak: 1/3" in text                                            # exactly 10.0 is not sharp
+    assert "inside the cable bound" not in chr(10).join(tool.sharpness_table(attempts, 0))     # off without --cable-mm
+    assert tool.sharpness_table(tool.parse(BOUND_LOG)[0], 5000) == []                           # old logs: nothing to say
+    report = chr(10).join(tool.report("log", attempts, links, None, 5000))
+    assert "IFFT peak sharpness" in report
+    assert "IFFT peak sharpness" not in chr(10).join(tool.report("log", tool.parse(BOUND_LOG)[0], []))

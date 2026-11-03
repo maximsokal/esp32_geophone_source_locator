@@ -51,7 +51,7 @@ const ACTIONS_BY_STEP: Record<WorkflowStep, readonly string[]> = {
   PLACEMENT: ['BACK'],
   GPS_CHOICE: ['REQUEST_GPS', 'GPS_SKIP', 'BACK'],
   GPS_PENDING: ['GPS_SKIP', 'BACK'],
-  LAYOUT_READY: ['CALCULATE_POSITIONS', 'BACK'],
+  LAYOUT_READY: ['CALCULATE_POSITIONS', 'CALCULATE_POSITIONS_KEEP_WIFI', 'BACK'],
   RANGING: ['BACK'],
   RANGING_RESULT: ['RETRY', 'BACK'],
   SCAN_CHOICE: ['SCAN_START', 'SCAN_SKIP', 'BACK'],
@@ -466,6 +466,49 @@ describe('workflow command API', () => {
   });
 });
 
+describe('Wi-Fi choice before the distance measurement', () => {
+  it('offers both buttons, explains the choice and sends exactly the pressed command', async () => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+    const next = workflow('RANGING', ['BACK'], { generation: 31 });
+    const sendCommand = vi.fn(async (_command: string, _generation: number) => ({ ok: true as const, workflow: next }));
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(createElement(WorkflowPanel, {
+        status: statusFor('LAYOUT_READY', ['CALCULATE_POSITIONS', 'CALCULATE_POSITIONS_KEEP_WIFI', 'BACK'], 4,
+          { generation: 30, gps_status: 'accepted', placement: { all_stable: true } as DeviceWorkflowStatus['placement'] }),
+        objectName: 'Quarry',
+        sendCommand,
+        onRefreshStatus: async () => true,
+        onWorkflowUpdate: () => undefined,
+        onOpenScanner: () => undefined,
+      }));
+    });
+    const buttons = renderer.root.findByProps({ className: 'console-actions' }).findAllByType('button');
+    expect(buttons.map((button) => button.props['data-command'])).toEqual(
+      ['CALCULATE_POSITIONS', 'CALCULATE_POSITIONS_KEEP_WIFI', 'BACK']);
+    expect(buttons.map((button) => button.children.join('')).slice(0, 2)).toEqual([
+      translate('en', 'workflow.action.calculate_positions'),
+      translate('en', 'workflow.action.calculate_positions_keep_wifi'),
+    ]);
+    expect(translate('en', 'workflow.action.calculate_positions')).toContain('Wi-Fi off');
+    expect(translate('en', 'workflow.action.calculate_positions_keep_wifi')).toContain('Wi-Fi on');
+    expect(JSON.stringify(renderer.toJSON())).toContain(translate('en', 'workflow.layout.wifi_choice'));
+
+    await act(async () => {
+      buttons.find((button) => button.props['data-command'] === 'CALCULATE_POSITIONS_KEEP_WIFI')?.props.onClick();
+      await Promise.resolve();
+    });
+    expect(sendCommand).toHaveBeenCalledTimes(1);
+    expect(sendCommand.mock.calls[0].slice(0, 2)).toEqual(['CALCULATE_POSITIONS_KEEP_WIFI', 30]);
+    act(() => renderer.unmount());
+  });
+
+  it('says nothing about Wi-Fi while the sensors are not stable yet', () => {
+    const html = panelHtml(statusFor('LAYOUT_READY', ['BACK'], 4, { placement: { all_stable: false } as DeviceWorkflowStatus['placement'] }));
+    expect(html).not.toContain(translate('en', 'workflow.layout.wifi_choice'));
+  });
+});
+
 describe('workflow operator actions', () => {
   it('requests a fresh phone fix, then reports permission denial with the pending generation', async () => {
     vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -821,6 +864,32 @@ it('has the Ukrainian text of the new ranging failures', () => {
   expect(uk['workflow.ranging.reason.triangle_inconsistent']).toContain('{nodes}');
   expect(uk['workflow.ranging.reason.cable_exceeded']).toContain('кабелю');
   expect(uk['workflow.ranging.reason.cable_exceeded']).toContain('{pair}');
+});
+
+it.each([
+  ['pending', 'Wi-Fi turns off in a few seconds for the distance measurement.'],
+  ['off', 'Wi-Fi is switched off while the distances are measured and comes back by itself.'],
+  ['resuming', 'Wi-Fi is turning back on.'],
+])('tells the user that the Wi-Fi radio is %s around the distance measurement', (radio, english) => {
+  const status = statusFor('RANGING');
+  (status as unknown as { ranging: unknown }).ranging = { available: false, radio };
+  const html = panelHtml(status);
+  expect(html).toContain(english);
+  expect(html).toContain('workflow-ranging-wifi');
+});
+
+it('says nothing about the Wi-Fi radio when it is idle or when the firmware does not report it', () => {
+  for (const ranging of [{ available: false, radio: 'idle' }, { available: false }]) {
+    const status = statusFor('RANGING');
+    (status as unknown as { ranging: unknown }).ranging = ranging;
+    expect(panelHtml(status)).not.toContain('workflow-ranging-wifi');
+  }
+});
+
+it('has the Ukrainian text of the Wi-Fi notices', () => {
+  expect(uk['workflow.ranging.wifi_pending']).toContain('Wi-Fi вимкнеться');
+  expect(uk['workflow.ranging.wifi_off']).toContain('Wi-Fi вимкнено');
+  expect(uk['workflow.ranging.wifi_back']).toContain('вмикається знову');
 });
 
 it('explains the geometry consistency rejection instead of an unknown reason', () => {

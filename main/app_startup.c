@@ -32,6 +32,7 @@
 #include "storage_manager.h"
 #include "storage_service.h"
 #include "ui.h"
+#include "ranging_radio_pause.h"
 #include "web_server.h"
 #include "wifi_manager.h"
 #include "runtime_observability.h"
@@ -482,6 +483,15 @@ static void app_startup_initialize_services(
     ESP_ERROR_CHECK(
         web_server_start()
     );
+
+    /* The distance measurement switches the Wi-Fi radio off and back on (the access point is next to the MAIN nRF). The radio
+     * runs normally without this task, so a failure to create it is reported, not fatal. */
+    {
+        const esp_err_t radio_pause_err = ranging_radio_pause_init();
+        if (radio_pause_err != ESP_OK) {
+            ESP_LOGW(TAG, "Wi-Fi pause for the distance measurement unavailable: %s", esp_err_to_name(radio_pause_err));
+        }
+    }
 
     /*
      * Tried and reverted (2026-09-20): running wifi_manager_init()/start()

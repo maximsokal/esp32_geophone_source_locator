@@ -10,6 +10,7 @@
 #include <assert.h>
 #include "freertos/task.h"
 #include "nrf_topology_service.h"
+#include "ranging_radio_pause.h"
 #include "localization_run_store.h"
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
@@ -272,6 +273,11 @@ esp_err_t nrf_topology_service_ranging_get_progress(nrf_topology_ranging_progres
     *out = render_ranging_progress;
     return ESP_OK;
 }
+/* The Wi-Fi radio around the distance measurement (ranging_radio_state_t), set by the scene. */
+ranging_radio_state_t render_radio_state = RANGING_RADIO_IDLE;
+ranging_radio_state_t ranging_radio_pause_state(void) { return render_radio_state; }
+bool ranging_radio_pause_stop_failed(void) { return false; }
+bool ranging_radio_pause_resume_failed(void) { return false; }
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *out)
 { (void)channel; memset(out, 0, sizeof(*out)); return ESP_ERR_NOT_FOUND; }
 esp_err_t nrf_topology_service_get_node_status_snapshot(uint8_t slot, nrf_node_link_status_input_t *out)

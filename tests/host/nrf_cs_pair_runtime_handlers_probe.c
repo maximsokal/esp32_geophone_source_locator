@@ -8,6 +8,9 @@
 #include <math.h>
 #include "nrf_cs_measurement_quality.h"
 #include "nrf_cs_distance_method.h"
+#include "nrf_cs_tone_stats.h"
+#include "nrf_cs_iq_gap_fill.h"
+#include "nrf_cs_ifft_quality.h"
 #include "nrf_cs_cycle_runtime.h"
 #include "nrf_cs_pair_runtime_zephyr_bridge.h"
 #include "nrf_cs_pair_runtime_zephyr.h"
@@ -21,6 +24,7 @@
 #define NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS 2
 #define NRF_CS_CHANNEL_INDEX_OFFSET 2U
 #define CS_DE_NUM_CHANNELS 75U
+#define CONFIG_BT_CS_DE_NFFT_SIZE 512U
 #define NRF_CS_TONE_OK_THRESHOLD 15U
 #define CS_DE_TONE_QUALITY_OK 0
 #define CS_DE_TONE_QUALITY_BAD 1
@@ -94,6 +98,7 @@ static struct net_buf_simple s_local_steps, s_peer_owned;
 static nrf_cs_rf_diagnostics_t s_rf_diagnostics;
 static int s_rf_tx_power,s_rf_status,s_rf_flags;
 static uint16_t s_iq_counts[CS_DE_NUM_CHANNELS];
+static float s_iq_ifft_scratch[2U * 512U];
 static cs_de_report_t s_de_report;
 static struct {uint8_t channel_map[10];} s_cs_config;
 static bool s_ras_skip,s_ras_malformed,s_ras_bad_paths;
@@ -196,8 +201,12 @@ static void nrf_cs_trace_zephyr_result(uint32_t id,uint8_t outcome,int32_t dist,
   s_trace_result_has_timing=timing!=NULL;if(timing!=NULL)s_trace_result_timing=*timing; }
 static unsigned s_trace_estimates_count;
 static float s_trace_est[4];
-static void nrf_cs_trace_zephyr_estimates(uint32_t id,float ifft,float phase,float rtt,float best)
-{ (void)id;++s_trace_estimates_count;s_trace_est[0]=ifft;s_trace_est[1]=phase;s_trace_est[2]=rtt;s_trace_est[3]=best; }
+static uint8_t s_trace_tones[3];
+static uint16_t s_trace_peak_floor_x10;
+static void nrf_cs_trace_zephyr_estimates(uint32_t id,float ifft,float phase,float rtt,float best,
+    uint8_t planned,uint8_t usable,uint8_t gap,uint8_t lead,uint8_t tail,uint16_t peak_floor_x10)
+{ (void)id;(void)peak_floor_x10;s_trace_peak_floor_x10=peak_floor_x10;++s_trace_estimates_count;s_trace_est[0]=ifft;s_trace_est[1]=phase;s_trace_est[2]=rtt;s_trace_est[3]=best;
+  s_trace_tones[0]=planned;s_trace_tones[1]=usable;s_trace_tones[2]=gap;(void)lead;(void)tail; }
 static void nrf_cs_trace_zephyr_rf(uint32_t id,uint32_t signal,uint32_t quality)
 { (void)id;++s_trace_rf_count;s_trace_rf_signal=signal;s_trace_rf_quality=quality; }
 #include "runtime_emit_rf_diagnostics.inc"
@@ -207,6 +216,7 @@ static void nrf_cs_trace_zephyr_rf(uint32_t id,uint32_t signal,uint32_t quality)
 #include "collect_pbr_step.inc"
 #include "collect_rtt_step.inc"
 #include "report_step_data.inc"
+#include "current_tone_stats.inc"
 #include "good_tone_channel_count.inc"
 static void bt_ras_rreq_rd_subevent_data_parse(struct net_buf_simple *a,struct net_buf_simple *b,
     unsigned role,bool (*header_cb)(struct ras_ranging_header *,void *),void *sub_cb,
@@ -219,6 +229,7 @@ static void bt_ras_rreq_rd_subevent_data_parse(struct net_buf_simple *a,struct n
     (void)header_cb(&h,context);
     uint8_t tone[5]={0};
     for(uint8_t i=2;i<18;++i){
+        if(s_de_scenario==8 && i==9)continue;
         struct bt_le_cs_subevent_step step={2,i,sizeof(tone),tone};
         if(!step_cb(&step,&step,context))return;
     }
@@ -237,7 +248,24 @@ static cs_de_quality_t cs_de_calc(cs_de_report_t *report)
     if(s_de_scenario==3)report->distance_estimates[0].best=-1;
     if(s_de_scenario==4){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=NAN;}
     if(s_de_scenario==5){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].best=2;}
+    if(s_de_scenario==6 || s_de_scenario==7){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=NAN;report->distance_estimates[0].best=NAN;}
+    if(s_de_scenario==7)report->distance_estimates[0].rtt=NAN;
+    if(s_de_scenario==9)report->distance_estimates[0].rtt=NAN;
+    if(s_de_scenario==10)report->distance_estimates[0].rtt=0.0f;
+    if(s_de_scenario==11){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=NAN;report->distance_estimates[0].best=NAN;report->distance_estimates[0].rtt=0.0f;}
+    if(s_de_scenario==12){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=NAN;report->distance_estimates[0].best=0.0f;report->distance_estimates[0].rtt=0.0f;}
     return CS_DE_QUALITY_OK;
+}
+static void cs_de_combined_iq_calculate(void *tones,float *iq)
+{ (void)tones;for(unsigned i=0;i<75;i++){iq[2*i]=s_iq_counts[i]?1.0f:0.0f;iq[2*i+1]=0.0f;} }
+static float s_probe_profile_peak=30.0f;
+static float cs_de_ifft(float *iq)
+{
+    assert(iq[14]==1.0f && iq[15]==0.0f);
+    /* Like the library, leave the IFFT magnitude profile in the first NFFT floats of the buffer. */
+    for(unsigned i=0;i<CONFIG_BT_CS_DE_NFFT_SIZE;i++)iq[i]=1.0f;
+    iq[100]=s_probe_profile_peak;
+    return 1.5f;
 }
 #include "estimate_measurement.inc"
 #include "timeout_work_handler.inc"
@@ -423,6 +451,52 @@ int main(void)
         else assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_confidence==400);
         printf("DE boundary case=%u outcome=%u confidence=%u\n",invalid,(unsigned)s_outcome,s_confidence);
     }
+    /* NCS 3.4: bad tone quality skips set_best_estimate even when RTT is finite. */
+    start(0);advance_to_procedure();s_ras_skip=true;s_de_scenario=6;
+    s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    cleanup_work_handler(NULL);
+    assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_confidence==400);
+    assert((s_provider_flags & 0x70U)==NRF_CS_PROVIDER_METHOD_RTT && s_trace_est[3]==1.0f);
+    start(0);advance_to_procedure();s_ras_skip=true;s_de_scenario=7;
+    s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    cleanup_work_handler(NULL);
+    assert(s_outcome==NRF_CS_OUTCOME_OUTLIER && (s_provider_flags & 0x70U)==0U);
+    /* Production estimator must feed a filled interior gap to Nordic IFFT. */
+    start(0);advance_to_procedure();s_de_scenario=8;
+    s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    cleanup_work_handler(NULL);
+    assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_distance==1500 && s_trace_est[0]==1.5f);
+    /* The peak sharpness of that IFFT (peak 30 over a floor of 1) reaches the trace as 30.0, in tenths. */
+    assert(s_trace_peak_floor_x10==300U);
+    /* Missing RTT must leave the raw PBR result visible but below the production 500 gate. */
+    start(0);advance_to_procedure();s_de_scenario=9;
+    s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    cleanup_work_handler(NULL);
+    assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_distance==1000 && s_confidence<500);
+    assert((s_provider_flags & NRF_CS_PROVIDER_QUALITY_RTT_VALID)==0U);
+    /* Nordic clamps nonpositive RTT timing to zero; it is not an independent range. */
+    start(0);advance_to_procedure();s_de_scenario=10;
+    s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    cleanup_work_handler(NULL);
+    assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_distance==1000 && s_confidence<500);
+    assert((s_provider_flags & NRF_CS_PROVIDER_QUALITY_RTT_VALID)==0U && s_trace_est[2]==0.0f);
+    start(0);advance_to_procedure();s_ras_skip=true;s_de_scenario=11;
+    s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    cleanup_work_handler(NULL);
+    assert(s_outcome==NRF_CS_OUTCOME_OUTLIER && (s_provider_flags & NRF_CS_PROVIDER_QUALITY_RTT_VALID)==0U);
+    /* The SDK can select clamped RTT=0 as best even when tone count is nominal. */
+    start(0);advance_to_procedure();s_de_scenario=12;
+    s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    cleanup_work_handler(NULL);
+    assert(s_outcome==NRF_CS_OUTCOME_OUTLIER && (s_provider_flags & NRF_CS_PROVIDER_METHOD_MASK)==0U);
+    assert(s_trace_est[2]==0.0f && isnan(s_trace_est[3]));
     start(0);advance_to_procedure();s_ras_bad_paths=true;
     s_now=100;s_local_steps.len=s_peer_owned.len=1;
     deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);

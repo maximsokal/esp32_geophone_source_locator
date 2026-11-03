@@ -30,7 +30,7 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
         (2, "runtime_emit_rf_diagnostics"), (2, "report_ranging_header"),
         (2, "accumulate_mean"), (2, "collect_pbr_step"),
         (2, "collect_rtt_step"), (2, "report_step_data"),
-        (2, "good_tone_channel_count"), (2, "estimate_measurement"),
+        (2, "current_tone_stats"), (2, "good_tone_channel_count"), (2, "estimate_measurement"),
         (2, "op_now_ms"), (2, "runtime_adapter_complete"), (2, "timeout_work_handler"),
         (2, "cleanup_work_handler"), (2, "maybe_complete_measurement"),
         (3, "event_work_handler"), (3, "execute_work_handler"),

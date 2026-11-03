@@ -19,6 +19,7 @@
 #include "localization_run_record.h"
 #include "localization_run_store.h"
 #include "nrf_topology_service.h"
+#include "ranging_radio_pause.h"
 #include "result_view.h"
 #include "seismic_recorder.h"
 #include "ui_measurements_internal.h"
@@ -544,9 +545,10 @@ static void ui_workflow_apply_result_waveform(ui_workflow_screen_state_t *state)
 static void ui_workflow_build_ranging_view(ui_workflow_screen_state_t *state)
 {
     memset(&state->ranging, 0, sizeof(state->ranging));
-    if ((state->snapshot.step != WORKFLOW_STEP_RANGING &&
-         state->snapshot.step != WORKFLOW_STEP_RANGING_RESULT) ||
-        nrf_topology_service_ranging_get_progress(&state->ranging_snapshot) != ESP_OK) return;
+    if (state->snapshot.step != WORKFLOW_STEP_RANGING && state->snapshot.step != WORKFLOW_STEP_RANGING_RESULT) return;
+    /* The radio state is shown also while there is no progress yet: the nodes wait for the Wi-Fi radio to go off. */
+    state->ranging.radio_state = (uint8_t)ranging_radio_pause_state();
+    if (nrf_topology_service_ranging_get_progress(&state->ranging_snapshot) != ESP_OK) return;
     const nrf_topology_ranging_progress_t *progress = &state->ranging_snapshot;
     state->ranging.available = true;
     state->ranging.partial = progress->partial;

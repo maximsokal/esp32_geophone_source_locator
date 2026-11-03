@@ -3,6 +3,7 @@ import type { WorkflowStep } from '../../../src/domain/device';
 import { catalog } from './device';
 import type { DeviceApi } from './api';
 import { openSection, type Locale, type Section } from '../helpers/layout';
+import { installSavedScan, openSavedSessionScan } from './saved-scan';
 import actions from '../../fixtures/max460_workflow_allowed_actions.json' with { type: 'json' };
 
 export const workflowActions: Record<WorkflowStep, string[]> = {
@@ -23,7 +24,7 @@ export interface VisualState {
   width: number;
   height: number;
   step?: WorkflowStep;
-  variant?: 'loading' | 'empty' | 'warning' | 'error' | 'disconnected' | 'confirmation' | 'long';
+  variant?: 'loading' | 'empty' | 'warning' | 'error' | 'disconnected' | 'confirmation' | 'long' | 'wifi-pending' | 'wifi-off' | 'wifi-back' | 'scan-refinement';
 }
 
 export const visualStates: VisualState[] = [];
@@ -42,6 +43,12 @@ for (const locale of ['en', 'uk'] as const) {
   add('home-error', 'home', 'error');
   add('sensors-disconnected', 'sensors', 'disconnected');
   add('workflow-confirmation', 'workflow', 'confirmation', 393, 852, 'critical', 'STOPPED');
+  /* The Wi-Fi radio goes off while the nodes range and comes back by itself: what the page says at each moment. */
+  add('workflow-ranging-wifi-pending', 'workflow', 'wifi-pending', 393, 852, 'critical', 'RANGING');
+  add('workflow-ranging-wifi-off', 'workflow', 'wifi-off', 393, 852, 'critical', 'RANGING');
+  add('workflow-ranging-result-wifi-back', 'workflow', 'wifi-back', 393, 852, 'critical', 'RANGING_RESULT');
+  /* The scan information screen after the devices were scanned (the WebGL canvas is hidden: canvas pixels are separate coverage). */
+  add('scan-distance-refinement', 'objects', 'scan-refinement', 393, 852, 'critical');
   add('objects-long', 'objects', 'long');
   add('objects-long', 'objects', 'long', 320, 568);
   add('sensors-disconnected', 'sensors', 'disconnected', 320, 568);
@@ -60,6 +67,24 @@ export async function prepareVisualState(page: Page, api: DeviceApi, state: Visu
   if (state.step === 'RANGING' || state.step === 'RANGING_RESULT') {
     const complete = state.step === 'RANGING_RESULT';
     Object.assign(api.status.ranging!.progress!, { active: !complete, complete, success: complete, pairs_done: complete ? 3 : 1, pairs_total: 3 });
+  }
+  if (state.variant === 'wifi-pending' || state.variant === 'wifi-off' || state.variant === 'wifi-back') {
+    api.status.ranging!.radio = state.variant === 'wifi-pending' ? 'pending' : state.variant === 'wifi-off' ? 'off' : 'resuming';
+  }
+  if (state.variant === 'scan-refinement') {
+    installSavedScan(api, true);
+    await page.setViewportSize({ width: state.width, height: state.height });
+    await page.goto('/');
+    await expect(page.locator('.device-dot')).toHaveClass(/online/);
+    await expect(page.locator('.locale-picker select')).toHaveAttribute('aria-busy', 'false');
+    await openSavedSessionScan(page, state.locale);
+    const card = page.locator('.scan-refinement');
+    await expect(card).toHaveAttribute('data-refinement-status', 'ok', { timeout: 30_000 });
+    await expect(card.getByText(t['scan.refine.title'], { exact: true })).toBeVisible();
+    await page.addStyleTag({ content: '.scan-webgl-canvas { visibility: hidden !important; }' });
+    await page.evaluate(() => document.fonts.ready);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    return;
   }
   if (state.variant === 'loading') api.holdStatus();
   if (state.variant === 'error') api.statusFailure = 'http';
@@ -106,6 +131,10 @@ export async function prepareVisualState(page: Page, api: DeviceApi, state: Visu
     await expect(page.getByText(new RegExp(String.raw`${done} / 3 \(${percent}\s?%\)`))).toBeVisible();
     await expect(page.getByRole('progressbar', { name: t['workflow.ranging.pairs'] }))
       .toHaveAttribute('value', String(done / 3 * 100));
+  }
+  if (state.variant === 'wifi-pending' || state.variant === 'wifi-off' || state.variant === 'wifi-back') {
+    const key = state.variant === 'wifi-pending' ? 'workflow.ranging.wifi_pending' : state.variant === 'wifi-off' ? 'workflow.ranging.wifi_off' : 'workflow.ranging.wifi_back';
+    await expect(page.locator('.workflow-ranging-wifi')).toHaveText(t[key]);
   }
   await expect(page.getByText(t['workflow.result.loading'], { exact: true })).toHaveCount(0);
   await page.evaluate(() => window.scrollTo(0, 0));

@@ -22,7 +22,14 @@ typedef struct {
     bool connected;
 } ui_workflow_remote_slot_t;
 
+/* State of the Wi-Fi radio around the distance measurement (ranging_radio_state_t, kept free of the component header). */
+#define UI_WORKFLOW_RADIO_IDLE 0U
+#define UI_WORKFLOW_RADIO_PENDING 1U       /* about to go off: the page says so for a few seconds */
+#define UI_WORKFLOW_RADIO_OFF 2U
+#define UI_WORKFLOW_RADIO_RESUMING 3U
+
 typedef struct {
+    uint8_t radio_state;    /* meaningful also while `available` is false: the page waits for the radio before the nodes start */
     bool available;
     bool partial;
     uint64_t started_at_ms, updated_at_ms;

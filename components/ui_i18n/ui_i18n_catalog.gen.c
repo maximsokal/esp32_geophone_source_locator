@@ -243,7 +243,8 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "NOT TESTED", /* tft.hw.state.unknown */
     "HARDWARE", /* tft.hw.title */
     "Back", /* tft.workflow.action.back */
-    "Calculate distances", /* tft.workflow.action.calculate_positions */
+    "Wi-Fi OFF, calculate", /* tft.workflow.action.calculate_positions */
+    "Wi-Fi ON, calculate", /* tft.workflow.action.calculate_positions_keep_wifi */
     "Calculate source", /* tft.workflow.action.calculate_sources */
     "Confirm", /* tft.workflow.action.confirm */
     "Delete recording", /* tft.workflow.action.delete_recording */
@@ -287,6 +288,8 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "UP/DOWN action OK select RIGHT more", /* tft.workflow.hint.ranging_pages */
     "Select an object", /* tft.workflow.idle.select_object */
     "Layout ready to calculate", /* tft.workflow.layout.ready */
+    "Wi-Fi off = better ranging", /* tft.workflow.layout.wifi_hint */
+    "Phone link returns itself", /* tft.workflow.layout.wifi_phone */
     "Set uncertainty (m/s)", /* tft.workflow.material.custom_sigma */
     "+/- %s m/s", /* tft.workflow.material.custom_sigma_value */
     "Set speed (m/s)", /* tft.workflow.material.custom_speed */
@@ -358,6 +361,9 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Distances measured", /* tft.workflow.ranging.success */
     "Ranging by radio, keep still", /* tft.workflow.ranging.wait */
     "Ranging %s%%, keep still", /* tft.workflow.ranging.wait_percent */
+    "Wi-Fi is turning back on", /* tft.workflow.ranging.wifi_back */
+    "Wi-Fi is off, it returns itself", /* tft.workflow.ranging.wifi_off */
+    "Wi-Fi turns off for measuring", /* tft.workflow.ranging.wifi_pending */
     "CS pair failed", /* tft.workflow.reason.cs_pair */
     "CS spread high", /* tft.workflow.reason.cs_spread */
     "operation failed", /* tft.workflow.reason.failed */
@@ -709,7 +715,8 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Не тестовано", /* tft.hw.state.unknown */
     "ОБЛАДНАННЯ", /* tft.hw.title */
     "Назад", /* tft.workflow.action.back */
-    "Розрахувати відстані", /* tft.workflow.action.calculate_positions */
+    "Wi-Fi ВИМК, розрахувати", /* tft.workflow.action.calculate_positions */
+    "Wi-Fi УВІМК, розрахувати", /* tft.workflow.action.calculate_positions_keep_wifi */
     "Визначити джерело", /* tft.workflow.action.calculate_sources */
     "Підтвердити", /* tft.workflow.action.confirm */
     "Видалити запис", /* tft.workflow.action.delete_recording */
@@ -753,6 +760,8 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "UP/DOWN дії OK вибір RIGHT далі", /* tft.workflow.hint.ranging_pages */
     "Виберіть об’єкт", /* tft.workflow.idle.select_object */
     "Схема готова до розрахунку", /* tft.workflow.layout.ready */
+    "Wi-Fi вимк. = точніше", /* tft.workflow.layout.wifi_hint */
+    "Звʼязок із телефоном повернеться", /* tft.workflow.layout.wifi_phone */
     "Задати невизначеність (м/с)", /* tft.workflow.material.custom_sigma */
     "+/- %s м/с", /* tft.workflow.material.custom_sigma_value */
     "Задати швидкість (м/с)", /* tft.workflow.material.custom_speed */
@@ -824,6 +833,9 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Відстані виміряно", /* tft.workflow.ranging.success */
     "Вимірювання по радіо, не чіпати", /* tft.workflow.ranging.wait */
     "Вимірювання %s%%, не чіпати", /* tft.workflow.ranging.wait_percent */
+    "Wi-Fi вмикається знову", /* tft.workflow.ranging.wifi_back */
+    "Wi-Fi вимкнено, увімкнеться саме", /* tft.workflow.ranging.wifi_off */
+    "Wi-Fi вимкнеться на час виміру", /* tft.workflow.ranging.wifi_pending */
     "помилка пари CS", /* tft.workflow.reason.cs_pair */
     "великий розкид CS", /* tft.workflow.reason.cs_spread */
     "операція не вдалася", /* tft.workflow.reason.failed */

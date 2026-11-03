@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,19 @@ def test_reverting_the_edit_gives_the_clean_identity_back(repo: Path):
     assert tool.identity(repo) != clean
     put(repo / "a.c", "int a;\n")
     assert tool.identity(repo) == clean
+
+
+def test_a_file_that_was_only_touched_or_resaved_is_not_dirty(repo: Path):
+    # Bench 2026-11-03: the firmware said "<commit>+dirty.e3b0c442" (the hash of an empty diff) because git diff-index reports
+    # a file whose stamp or line ends changed even though its content does not. The identity follows the diff.
+    clean = tool.identity(repo)
+    time.sleep(1.1)
+    (repo / "a.c").write_bytes((repo / "a.c").read_bytes())          # same bytes, new stamp
+    assert tool.identity(repo) == clean
+    git(repo, "config", "core.autocrlf", "true")
+    (repo / "a.c").write_bytes(b"int a;" + bytes([13, 10]))      # the same text with Windows line ends
+    assert tool.identity(repo) == clean
+    assert "e3b0c442" not in tool.identity(repo)
 
 
 def test_a_commit_changes_the_commit_part_and_clears_dirty(repo: Path):

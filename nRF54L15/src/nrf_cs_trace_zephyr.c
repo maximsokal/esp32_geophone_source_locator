@@ -87,11 +87,15 @@ void nrf_cs_trace_zephyr_rf(uint32_t attempt_id, uint32_t signal_word, uint32_t 
     push_locked(&entry);
 }
 
-void nrf_cs_trace_zephyr_estimates(uint32_t attempt_id, float ifft_m, float phase_slope_m, float rtt_m, float best_m)
+void nrf_cs_trace_zephyr_estimates(uint32_t attempt_id, float ifft_m, float phase_slope_m, float rtt_m, float best_m,
+    uint8_t tones_planned, uint8_t tones_usable, uint8_t tones_gap, uint8_t tones_lead, uint8_t tones_tail,
+    uint16_t peak_floor_x10)
 {
     nrf_cs_trace_entry_t entry = {
         .kind = NRF_CS_TRACE_ESTIMATES, .attempt_id = attempt_id, .a = nrf_cs_distance_mm_from_m(ifft_m),
         .b = nrf_cs_distance_mm_from_m(phase_slope_m), .c = nrf_cs_distance_mm_from_m(rtt_m), .d = nrf_cs_distance_mm_from_m(best_m),
+        .tones_planned = tones_planned, .tones_usable = tones_usable, .tones_gap = tones_gap,
+        .tones_lead = tones_lead, .tones_tail = tones_tail, .peak_floor_x10 = peak_floor_x10,
     };
     push_locked(&entry);
 }
@@ -150,9 +154,12 @@ void nrf_cs_trace_zephyr_rf(uint32_t attempt_id, uint32_t signal_word, uint32_t 
     (void)attempt_id; (void)signal_word; (void)quality_word;
 }
 
-void nrf_cs_trace_zephyr_estimates(uint32_t attempt_id, float ifft_m, float phase_slope_m, float rtt_m, float best_m)
+void nrf_cs_trace_zephyr_estimates(uint32_t attempt_id, float ifft_m, float phase_slope_m, float rtt_m, float best_m,
+    uint8_t tones_planned, uint8_t tones_usable, uint8_t tones_gap, uint8_t tones_lead, uint8_t tones_tail,
+    uint16_t peak_floor_x10)
 {
     (void)attempt_id; (void)ifft_m; (void)phase_slope_m; (void)rtt_m; (void)best_m;
+    (void)tones_planned; (void)tones_usable; (void)tones_gap; (void)tones_lead; (void)tones_tail; (void)peak_floor_x10;
 }
 
 void nrf_cs_trace_zephyr_console_drain(void) {}

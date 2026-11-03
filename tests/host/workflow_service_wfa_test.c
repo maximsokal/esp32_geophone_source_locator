@@ -13,6 +13,7 @@
 #include "workflow_service.h"
 #include "host_rtos.h"
 #include "workflow_service_host_fakes.h"
+#include "ranging_radio_pause.h"
 
 typedef struct { bool held; } fake_mutex_t;
 
@@ -706,14 +707,19 @@ static void enter_ready_placement(void)
     assert(get_workflow_snapshot().placement.all_stable);
 }
 
-static void start_ranging(void)
+static void start_ranging_with(workflow_command_t choice)
 {
     clear_ranging_calls();
     assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED) == WORKFLOW_COMMAND_RESULT_OK);
     assert(get_workflow_snapshot().step == WORKFLOW_STEP_GPS_CHOICE);
     assert(command(WORKFLOW_COMMAND_GPS_SKIP) == WORKFLOW_COMMAND_RESULT_OK);
     assert(get_workflow_snapshot().step == WORKFLOW_STEP_LAYOUT_READY);
-    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(choice) == WORKFLOW_COMMAND_RESULT_OK);
+}
+
+static void start_ranging(void)
+{
+    start_ranging_with(WORKFLOW_COMMAND_CALCULATE_POSITIONS);       /* "Wi-Fi off, calculate" */
 }
 
 static void test_ranging_start_is_invalidated_and_nonblocking(void)
@@ -734,6 +740,133 @@ static void test_ranging_start_is_invalidated_and_nonblocking(void)
     assert(s_ranging_policy.samples_per_pair == 9U);
     assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING);
     assert(s_ranging_progress_calls == 2U);
+    workflow_service_shutdown();
+}
+
+/*
+ * The Wi-Fi radio is off while the nodes range: entering the page asks for it, the nodes are started only when it is off, and it
+ * comes back by itself however the run ends.
+ */
+static void reset_radio(bool ready)
+{
+    g_radio_pause_ready = ready;
+    g_radio_pause_off_requests = 0U;
+    g_radio_pause_on_requests = 0U;
+    g_radio_pause_wants_off = false;
+}
+
+static void test_ranging_waits_for_the_radio_to_go_off_and_gives_it_back_afterwards(void)
+{
+    reset_fakes();
+    reset_radio(false);                 /* the radio is still on when the page is entered */
+    enter_ready_placement();
+    start_ranging();
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING);
+    assert(g_radio_pause_off_requests >= 1U && g_radio_pause_wants_off);
+    assert(s_ranging_start_calls == 0U);                    /* the nodes are not started while the radio is on */
+    const unsigned given_back_before = g_radio_pause_on_requests;   /* earlier polls (no run yet) asked for "on", harmlessly */
+
+    s_now_ms += 5000U;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(s_ranging_start_calls == 0U && get_workflow_snapshot().step == WORKFLOW_STEP_RANGING);
+    assert(g_radio_pause_on_requests == given_back_before); /* waiting is not "no run": the radio is not given back yet */
+
+    g_radio_pause_ready = true;                             /* the radio went off */
+    assert(workflow_service_poll() == ESP_OK);
+    assert(s_ranging_start_calls == 1U);
+    assert(g_radio_pause_wants_off);
+
+    s_ranging_progress.complete = true;                     /* the run ends */
+    s_ranging_progress.success = true;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(!g_radio_pause_wants_off && g_radio_pause_on_requests > given_back_before);   /* back on by itself */
+    workflow_service_shutdown();
+}
+
+/* "Wi-Fi ON, calculate": the user chose to measure with the radio on, so it is neither announced nor stopped nor waited for. */
+static void test_keeping_wifi_on_starts_at_once_and_never_touches_the_radio(void)
+{
+    reset_fakes();
+    reset_radio(false);                                     /* the radio is on and would not report "off" */
+    enter_ready_placement();
+    start_ranging_with(WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING);
+    assert(s_ranging_start_calls == 1U);                    /* started on the spot */
+    assert(g_radio_pause_off_requests == 0U && !g_radio_pause_wants_off);
+    s_now_ms += 60000U;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(g_radio_pause_off_requests == 0U);               /* not later either */
+
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = true;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(g_radio_pause_off_requests == 0U && !g_radio_pause_wants_off);
+    workflow_service_shutdown();
+}
+
+/* The choice belongs to one entry: going back and taking the other button switches the radio off after all. */
+static void test_the_wifi_choice_is_taken_anew_on_every_entry(void)
+{
+    reset_fakes();
+    reset_radio(false);
+    enter_ready_placement();
+    start_ranging_with(WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI);
+    assert(g_radio_pause_off_requests == 0U && s_ranging_start_calls == 1U);
+    assert(command(WORKFLOW_COMMAND_BACK) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(get_workflow_snapshot().step == WORKFLOW_STEP_LAYOUT_READY);
+    const int32_t heights[3] = { 100, 200, 300 };           /* the placement history is rebuilt after BACK */
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    publish_steady_placement(heights, upright, WORKFLOW_PLACEMENT_MIN_SAMPLES);
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(g_radio_pause_off_requests >= 1U && g_radio_pause_wants_off);
+    workflow_service_shutdown();
+}
+
+static void test_ranging_does_not_wait_longer_than_the_deadline_for_the_radio(void)
+{
+    reset_fakes();
+    reset_radio(false);
+    enter_ready_placement();
+    start_ranging();
+    s_now_ms += 24000U;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(s_ranging_start_calls == 0U);                    /* 24 s: still waiting */
+    s_now_ms += 2000U;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(s_ranging_start_calls == 1U);                    /* 26 s: the measurement goes ahead, radio or not */
+    workflow_service_shutdown();
+}
+
+static void test_leaving_the_page_while_waiting_for_the_radio_gives_it_back_and_measures_nothing(void)
+{
+    reset_fakes();
+    reset_radio(false);
+    enter_ready_placement();
+    start_ranging();
+    assert(g_radio_pause_wants_off && s_ranging_start_calls == 0U);
+    assert(command(WORKFLOW_COMMAND_BACK) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(!g_radio_pause_wants_off && g_radio_pause_on_requests >= 1U);
+    g_radio_pause_ready = true;                             /* even when the radio would have gone off a moment later */
+    assert(workflow_service_poll() == ESP_OK);
+    assert(s_ranging_start_calls == 0U);
+    workflow_service_shutdown();
+}
+
+static void test_a_failed_start_and_a_retry_also_go_through_the_radio(void)
+{
+    reset_fakes();
+    reset_radio(true);
+    enter_ready_placement();
+    s_ranging_start_result = ESP_ERR_NO_MEM;
+    start_ranging();                                        /* the start fails at once: the page shows the failure */
+    assert(g_radio_pause_off_requests >= 1U);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(!g_radio_pause_wants_off);                       /* ... and the radio is given back */
     workflow_service_shutdown();
 }
 
@@ -1685,6 +1818,12 @@ int main(void)
     test_calibration_back_cancels_pending_results();
     test_calibration_retry_changes_generation_and_ignores_stale_results();
     test_ranging_start_is_invalidated_and_nonblocking();
+    test_ranging_waits_for_the_radio_to_go_off_and_gives_it_back_afterwards();
+    test_keeping_wifi_on_starts_at_once_and_never_touches_the_radio();
+    test_the_wifi_choice_is_taken_anew_on_every_entry();
+    test_ranging_does_not_wait_longer_than_the_deadline_for_the_radio();
+    test_leaving_the_page_while_waiting_for_the_radio_gives_it_back_and_measures_nothing();
+    test_a_failed_start_and_a_retry_also_go_through_the_radio();
     test_max460_layout_success_failure_reason_retry_and_back();
     test_placement_entry_invalidates_back_and_move_sensors();
     test_placement_needs_a_full_window_of_samples_and_reports_their_mean();

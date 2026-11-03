@@ -95,7 +95,10 @@ static uint32_t workflow_core_actions(
             ADD_ACTION(WORKFLOW_COMMAND_BACK);
             break;
         case WORKFLOW_STEP_LAYOUT_READY:
-            if (placement_ready) ADD_ACTION(WORKFLOW_COMMAND_CALCULATE_POSITIONS);
+            if (placement_ready) {
+                ADD_ACTION(WORKFLOW_COMMAND_CALCULATE_POSITIONS);               /* Wi-Fi off during the measurement */
+                ADD_ACTION(WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI);     /* Wi-Fi stays on */
+            }
             ADD_ACTION(WORKFLOW_COMMAND_BACK);
             break;
         case WORKFLOW_STEP_RANGING:
@@ -173,6 +176,7 @@ void workflow_core_reset_object(
         core->calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
         core->calibration_ok = false;
         core->ranging_ok = false;
+        core->ranging_keep_wifi = false;
         core->calc_settings_ready = false;
         core->gps_status = WORKFLOW_GPS_STATUS_NONE;
         core->layout_result_valid = false;
@@ -345,11 +349,13 @@ workflow_command_result_t workflow_core_apply(
             }
             break;
         case WORKFLOW_COMMAND_CALCULATE_POSITIONS:
+        case WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI:
             if (core->step == WORKFLOW_STEP_LAYOUT_READY) {
                 if (!placement_ready) {
                     workflow_core_set_reason(core, "placement_not_ready");
                     return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
                 }
+                core->ranging_keep_wifi = command == WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI;
                 workflow_core_clear_layout_result(core);
                 next = WORKFLOW_STEP_RANGING;
             }
@@ -602,7 +608,7 @@ const char *workflow_core_command_name(workflow_command_t command)
         "CALCULATE_POSITIONS", "RANGING_DONE", "CONFIRM", "START_RECORDING", "STOP_RECORDING",
         "MOVE_SENSORS", "CALCULATE_SOURCES", "CALCULATION_DONE",
         "DELETE_RECORDING", "RECORD_AGAIN", "SCAN_START", "SCAN_SKIP",
-        "SCAN_COMPLETE", "BACK", "SET_DISTANCE"
+        "SCAN_COMPLETE", "BACK", "SET_DISTANCE", "CALCULATE_POSITIONS_KEEP_WIFI"
     };
     return command >= 0 && command < WORKFLOW_COMMAND_COUNT ? names[command] : "UNKNOWN";
 }

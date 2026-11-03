@@ -6,6 +6,9 @@
 
 #include "nrf_cs_cycle_protocol.h"
 #include "nrf_cs_distance_method.h"
+#include "nrf_cs_tone_stats.h"
+#include "nrf_cs_iq_gap_fill.h"
+#include "nrf_cs_ifft_quality.h"
 
 /* CS-ESTIMATOR-01. cs_de_calc() fills IFFT, phase slope and RTT and copies the first finite one into "best". The attempt
  * has to say which one, otherwise a wrong distance cannot be traced to the method that made it. */
@@ -144,8 +147,211 @@ static void test_the_method_bits_cross_the_result_frame(void)
     }
 }
 
+/* CS-IFFT-GAP-01: the numbers that tell whether the IFFT was fed a frequency set with holes. */
+static void test_tone_stats_count_usable_tones_and_the_longest_hole(void)
+{
+    bool planned[75];
+    bool usable[75];
+
+    for (size_t i = 0U; i < 75U; ++i) { planned[i] = true; usable[i] = true; }
+    nrf_cs_tone_stats_t s = nrf_cs_tone_stats(planned, usable, 75U);
+    assert(s.planned == 75U && s.usable == 75U && s.longest_gap == 0U);
+
+    /* Scattered single losses: 3 usable tones missing, no hole longer than one slot. */
+    usable[10] = usable[40] = usable[70] = false;
+    s = nrf_cs_tone_stats(planned, usable, 75U);
+    assert(s.usable == 72U && s.longest_gap == 1U);
+
+    /* One continuous hole of eight slots (the shape that produced a side lobe on DevZone) and two shorter ones. */
+    for (size_t i = 20U; i < 28U; ++i) usable[i] = false;
+    usable[50] = usable[51] = false;
+    s = nrf_cs_tone_stats(planned, usable, 75U);
+    assert(s.usable == 62U && s.longest_gap == 8U);
+
+    /* A hole at either end counts too: the first and last slots hold values as well. */
+    for (size_t i = 0U; i < 75U; ++i) usable[i] = true;
+    usable[0] = usable[1] = usable[2] = false;
+    assert(nrf_cs_tone_stats(planned, usable, 75U).longest_gap == 3U);
+    for (size_t i = 0U; i < 75U; ++i) usable[i] = true;
+    usable[73] = usable[74] = false;
+    assert(nrf_cs_tone_stats(planned, usable, 75U).longest_gap == 2U);
+
+    /* Channels outside the map are zeros as well: they extend a hole, but they are not "missing" tones. */
+    for (size_t i = 0U; i < 75U; ++i) { planned[i] = i < 60U; usable[i] = i < 60U; }
+    s = nrf_cs_tone_stats(planned, usable, 75U);
+    assert(s.planned == 60U && s.usable == 60U && s.longest_gap == 15U);
+    /* A tone that was good but sits on an unplanned channel does not count as usable. */
+    usable[70] = true;
+    assert(nrf_cs_tone_stats(planned, usable, 75U).usable == 60U);
+
+    /* Where the hole is: a Wi-Fi channel 1 access point covers the first ~20 slots, an edge hole, not a hole in the middle. */
+    for (size_t i = 0U; i < 75U; ++i) { planned[i] = true; usable[i] = i >= 20U; }
+    s = nrf_cs_tone_stats(planned, usable, 75U);
+    assert(s.longest_gap == 20U && s.lead_gap == 20U && s.tail_gap == 0U && s.usable == 55U);
+    for (size_t i = 0U; i < 75U; ++i) usable[i] = i < 60U;
+    s = nrf_cs_tone_stats(planned, usable, 75U);
+    assert(s.longest_gap == 15U && s.lead_gap == 0U && s.tail_gap == 15U);
+    for (size_t i = 0U; i < 75U; ++i) usable[i] = !(i >= 30U && i < 40U);
+    s = nrf_cs_tone_stats(planned, usable, 75U);
+    assert(s.longest_gap == 10U && s.lead_gap == 0U && s.tail_gap == 0U);          /* in the middle: neither end */
+
+    /* Nothing usable at all: the whole array is one hole. */
+    for (size_t i = 0U; i < 75U; ++i) { planned[i] = true; usable[i] = false; }
+    s = nrf_cs_tone_stats(planned, usable, 75U);
+    assert(s.usable == 0U && s.longest_gap == 75U && s.lead_gap == 75U && s.tail_gap == 75U);
+
+    s = nrf_cs_tone_stats(NULL, usable, 75U);
+    assert(s.planned == 0U && s.usable == 0U && s.longest_gap == 0U);
+    s = nrf_cs_tone_stats(planned, usable, 300U);                    /* more than the counters hold */
+    assert(s.planned == 0U);
+}
+
+/* Interior complex tones must follow phase through the +/-pi branch and geometric magnitude. */
+static void test_gap_fill_preserves_observations_and_leaves_edges_missing(void)
+{
+    float iq[14] = {0,0, -1.0f,0.0f, 0,0, 0,0, 0,-8.0f, 0,0, 0,0};
+    const uint16_t counts[7] = {0,1,0,0,1,0,0};
+    assert(nrf_cs_iq_gap_fill(iq, counts, 7U) == 2U);
+    assert(fabsf(iq[4] - (-1.7320508f)) < 0.0001f && fabsf(iq[5] - (-1.0f)) < 0.0001f);
+    assert(fabsf(iq[6] - (-2.0f)) < 0.0001f && fabsf(iq[7] - (-3.4641016f)) < 0.0001f);
+    assert(iq[0] == 0.0f && iq[1] == 0.0f && iq[10] == 0.0f && iq[13] == 0.0f);
+    assert(iq[2] == -1.0f && iq[3] == 0.0f && iq[8] == 0.0f && iq[9] == -8.0f);
+}
+
+/* Independent DFT check: a 20-tone hole creates an early lobe above Nordic's 40% threshold. */
+static void test_gap_fill_suppresses_synthetic_false_early_peak(void)
+{
+    const double pi = 3.14159265358979323846;
+    float iq[150];
+    uint16_t counts[75];
+    double spectrum[512];
+    for (size_t i = 0U; i < 75U; ++i) {
+        const double phase = -4.0 * pi * 1000000.0 * 3.0 * (double)i / 299792458.0;
+        counts[i] = i >= 25U && i < 45U ? 0U : 1U;
+        iq[2U*i] = counts[i] ? (float)cos(phase) : 0.0f;
+        iq[2U*i+1U] = counts[i] ? (float)sin(phase) : 0.0f;
+    }
+    for (unsigned pass = 0U; pass < 2U; ++pass) {
+        if (pass == 1U) assert(nrf_cs_iq_gap_fill(iq, counts, 75U) == 20U);
+        size_t strongest = 0U;
+        for (size_t k = 0U; k < 512U; ++k) {
+            double re = 0.0, im = 0.0;
+            for (size_t n = 0U; n < 75U; ++n) {
+                const double phase = 2.0 * pi * (double)(k*n) / 512.0;
+                re += iq[2U*n] * cos(phase) - iq[2U*n+1U] * sin(phase);
+                im += iq[2U*n] * sin(phase) + iq[2U*n+1U] * cos(phase);
+            }
+            spectrum[k] = hypot(re, im);
+            if (spectrum[k] > spectrum[strongest]) strongest = k;
+        }
+        assert(strongest == 10U);
+        bool early = false;
+        for (size_t k = 1U; k < strongest; ++k) {
+            if (spectrum[k] > spectrum[k-1U] && spectrum[k] > spectrum[k+1U] &&
+                spectrum[k] * 2.5 > spectrum[strongest]) early = true;
+        }
+        assert(early == (pass == 0U));
+    }
+}
+
+static void test_gap_fill_leaves_wide_holes_and_zero_endpoints(void)
+{
+    float iq[68] = {0}; uint16_t counts[34] = {0};
+    counts[0] = counts[31] = 1U; iq[0] = iq[62] = 1.0f;
+    assert(nrf_cs_iq_gap_fill(iq, counts, 34U) == 0U);
+    counts[31] = 0U; counts[2] = 1U; iq[4] = 0.0f;
+    assert(nrf_cs_iq_gap_fill(iq, counts, 34U) == 0U);
+    assert(nrf_cs_iq_gap_fill(NULL, counts, 34U) == 0U);
+}
+
+/* A ten-metre phase rotates by more than pi across a 20-channel hole. */
+static void test_gap_fill_uses_observed_slope_to_unwrap_a_wide_hole(void)
+{
+    const double pi = 3.14159265358979323846;
+    float iq[150]; uint16_t counts[75];
+    for (size_t i = 0U; i < 75U; ++i) {
+        const double phase = -4.0 * pi * 1000000.0 * 10.0 * (double)i / 299792458.0;
+        counts[i] = i >= 25U && i < 45U ? 0U : 1U;
+        iq[2U*i] = counts[i] ? (float)cos(phase) : 0.0f;
+        iq[2U*i+1U] = counts[i] ? (float)sin(phase) : 0.0f;
+    }
+    assert(nrf_cs_iq_gap_fill(iq, counts, 75U) == 20U);
+    for (size_t i = 25U; i < 45U; ++i) {
+        const double phase = -4.0 * pi * 1000000.0 * 10.0 * (double)i / 299792458.0;
+        assert(fabs(iq[2U*i] - cos(phase)) < 0.0001);
+        assert(fabs(iq[2U*i+1U] - sin(phase)) < 0.0001);
+    }
+}
+
+/* Real Wi-Fi max procedure 2712 has a 24-slot gap; do not leave it zero-filled. */
+static void test_gap_fill_handles_24_channel_wifi_hole(void)
+{
+    float iq[60] = {0}; uint16_t counts[30] = {0};
+    for (size_t i = 0U; i < 30U; ++i) {
+        if (i >= 3U && i <= 26U) continue;
+        counts[i] = 1U; iq[2U*i] = 1.0f;
+    }
+    assert(nrf_cs_iq_gap_fill(iq, counts, 30U) == 24U);
+    for (size_t i = 3U; i <= 26U; ++i) assert(fabsf(iq[2U*i] - 1.0f) < 0.0001f);
+}
+
+/* Peak over median of an IFFT magnitude profile: the sharpness the log reports for every attempt. */
+static void test_peak_to_floor_of_a_magnitude_profile(void)
+{
+    float flat[512];
+    for (size_t i = 0U; i < 512U; ++i) flat[i] = 1.0f;
+    flat[100] = 50.0f;
+    assert(fabsf(nrf_cs_ifft_peak_to_floor(flat, 512U) - 50.0f) < 1e-4f);
+
+    /* Two comparable paths: the ratio does not care where they are, only how much stronger the peak is than the floor. */
+    float two[512];
+    for (size_t i = 0U; i < 512U; ++i) two[i] = 2.0f;
+    two[20] = 30.0f; two[400] = 28.0f;
+    assert(fabsf(nrf_cs_ifft_peak_to_floor(two, 512U) - 15.0f) < 1e-4f);
+
+    /* An even count takes the mean of the two middle values, like the analysis the threshold comes from. */
+    float even[4] = {1.0f, 2.0f, 4.0f, 8.0f};
+    assert(fabsf(nrf_cs_ifft_peak_to_floor(even, 4U) - 8.0f / 3.0f) < 1e-5f);
+    float odd[5] = {9.0f, 1.0f, 5.0f, 3.0f, 7.0f};
+    assert(fabsf(nrf_cs_ifft_peak_to_floor(odd, 5U) - 9.0f / 5.0f) < 1e-5f);
+
+    /* The selection agrees with a full sort on awkward input: duplicates, descending, many equal values. */
+    float many[512];
+    for (size_t i = 0U; i < 512U; ++i) many[i] = (float)((i * 37U) % 7U) + (i == 311U ? 40.0f : 0.0f);
+    float sorted[512];
+    for (size_t i = 0U; i < 512U; ++i) sorted[i] = many[i];
+    for (size_t i = 1U; i < 512U; ++i) {
+        const float key = sorted[i]; size_t j = i;
+        while (j > 0U && sorted[j - 1U] > key) { sorted[j] = sorted[j - 1U]; --j; }
+        sorted[j] = key;
+    }
+    const float expected = sorted[511] / (0.5f * (sorted[255] + sorted[256]));
+    assert(fabsf(nrf_cs_ifft_peak_to_floor(many, 512U) - expected) < 1e-4f);
+    float descending[64];
+    for (size_t i = 0U; i < 64U; ++i) descending[i] = (float)(64U - i);
+    assert(fabsf(nrf_cs_ifft_peak_to_floor(descending, 64U) - 64.0f / 32.5f) < 1e-5f);
+
+    /* Nothing to measure: not a number, never a made-up ratio. */
+    float zero[8] = {0};
+    assert(isnan(nrf_cs_ifft_peak_to_floor(zero, 8U)));
+    float bad[8] = {1, 1, 1, NAN, 1, 1, 1, 1};
+    assert(isnan(nrf_cs_ifft_peak_to_floor(bad, 8U)));
+    float negative[8] = {1, 1, 1, -1, 1, 1, 1, 1};
+    assert(isnan(nrf_cs_ifft_peak_to_floor(negative, 8U)));
+    assert(isnan(nrf_cs_ifft_peak_to_floor(NULL, 8U)));
+    assert(isnan(nrf_cs_ifft_peak_to_floor(odd, 1U)));
+    assert(NRF_CS_IFFT_SHARP_PEAK_RATIO == 10.0f);
+}
+
 int main(void)
 {
+    test_gap_fill_preserves_observations_and_leaves_edges_missing();
+    test_gap_fill_suppresses_synthetic_false_early_peak();
+    test_gap_fill_handles_24_channel_wifi_hole();
+    test_gap_fill_uses_observed_slope_to_unwrap_a_wide_hole();
+    test_gap_fill_leaves_wide_holes_and_zero_endpoints();
+    test_tone_stats_count_usable_tones_and_the_longest_hole();
+    test_peak_to_floor_of_a_magnitude_profile();
     test_metres_become_millimetres_or_unavailable();
     test_the_method_follows_the_rule_of_the_library();
     test_the_method_survives_the_attempt_record();

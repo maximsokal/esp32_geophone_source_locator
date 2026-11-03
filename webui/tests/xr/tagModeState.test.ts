@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { fuseTagObservations } from '../../src/xr/fiducial/tagObservationFusion';
-import { registrationOutcome, tagChipStatuses } from '../../src/xr/fiducial/tagModeState';
+import { confirmedTagIds, newTagScanNotices, registrationOutcome, tagChipStatuses, tagScanNoticeText } from '../../src/xr/fiducial/tagModeState';
 import { formatNumber } from '../../src/i18n/format';
-import { translate, type I18nLocale } from '../../src/i18n';
+import { loadUkrainianCatalog, translate, type I18nLocale } from '../../src/i18n';
 
 describe('tag-mode status', () => {
   it.each(['en', 'uk'] as const)('maps fused observations to localized chip labels in %s', (locale: I18nLocale) => {
@@ -37,5 +37,43 @@ describe('tag-mode status', () => {
     expect(registrationOutcome({ valid: true, tier: 'full', reason: null }, locale)).toBe(translate(locale, 'xr.tag.registration.valid', { tier: translate(locale, 'xr.tag.tier.full') }));
     expect(registrationOutcome({ valid: false, tier: null, reason: 'too_few_remotes' }, locale)).toBe(translate(locale, 'xr.tag.registration.failed', { reason: translate(locale, 'xr.tag.reason.too_few_remotes') }));
     expect(registrationOutcome({ valid: false, tier: null, reason: 'future_reason' }, locale)).toBe(translate(locale, 'xr.tag.registration.failed', { reason: 'future_reason' }));
+  });
+});
+
+describe('live scan notices', () => {
+  beforeAll(loadUkrainianCatalog);
+  const confirmedTag = (tagId: number) => Array.from({ length: 5 }, (_, index) => ({
+    tagId, positionScan: [tagId + index * 0.001, 0, 0] as const, cameraPosition: [index * 0.3, 0, 0] as const, cameraForward: [0, 0, 1] as const,
+  }));
+
+  it('announces a device when its tag becomes confirmed, and names the pairs that are recalculated', () => {
+    const first = fuseTagObservations(confirmedTag(0));
+    expect(confirmedTagIds(first)).toEqual([0]);
+    const notices = newTagScanNotices([], first);
+    expect(notices).toEqual([{ tagId: 0, node: 'MAIN', others: [] }]);
+    expect(tagScanNoticeText(notices[0], 'en')).toBe(translate('en', 'xr.tag.notice.first', { node: 'MAIN' }));
+
+    const second = fuseTagObservations([...confirmedTag(0), ...confirmedTag(2)]);
+    const next = newTagScanNotices(confirmedTagIds(first), second);
+    expect(next).toEqual([{ tagId: 2, node: 'G2', others: ['MAIN'] }]);
+    expect(tagScanNoticeText(next[0], 'en')).toBe('G2 scanned. The distance between the devices is being recalculated: G2\u2013MAIN.');
+    expect(tagScanNoticeText(next[0], 'uk')).toContain('G2 відскановано');
+    expect(tagScanNoticeText(next[0], 'uk')).toContain('G2\u2013MAIN');
+  });
+
+  it('does not repeat a notice and ignores tags that are only seen, not confirmed', () => {
+    const seenOnly = fuseTagObservations([{ tagId: 1, positionScan: [1, 0, 0] }, { tagId: 1, positionScan: [1.001, 0, 0] }]);
+    expect(confirmedTagIds(seenOnly)).toEqual([]);
+    expect(newTagScanNotices([], seenOnly)).toEqual([]);
+    const confirmed = fuseTagObservations(confirmedTag(1));
+    expect(newTagScanNotices([1], confirmed)).toEqual([]);
+  });
+
+  it('announces two devices confirmed at once, each with the other', () => {
+    const both = fuseTagObservations([...confirmedTag(0), ...confirmedTag(1)]);
+    expect(newTagScanNotices([], both)).toEqual([
+      { tagId: 0, node: 'MAIN', others: ['G1'] },
+      { tagId: 1, node: 'G1', others: ['MAIN'] },
+    ]);
   });
 });

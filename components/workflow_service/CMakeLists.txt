@@ -19,6 +19,7 @@ idf_component_register(
         nrf_topology_service
         object_service
         object_store
+        ranging_radio_pause
         recording_gate
         seismic_recorder
         log

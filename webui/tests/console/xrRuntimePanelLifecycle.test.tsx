@@ -276,6 +276,30 @@ describe('XrRuntimePanel lifecycle',()=>{
     unmount(renderer);
   });
 
+  it('announces a scanned device in the scan record and names the pairs whose distance is recalculated',async()=>{
+    const renderer=await mountPanel({objectId:'OBJ_A',sessionId:'SESSION_A'});const runtime=panelHarness.runtimes[0];await startGeometry(runtime);
+    await act(async()=>{tagButton(renderer).props.onClick();await settleReact();});const worker=panelHarness.workers[0];
+    const notices=()=>renderer.root.findAll((node)=>node.props.className==='xr-overlay-hint xr-tag-notice');
+    const observe=async(tagId:number,count:number,firstIndex:number)=>{
+      for(let index=0;index<count;index+=1){runtime.emitTagFrame(tagFrame(firstIndex+index,[(firstIndex+index)*0.3,0,0]));await act(async()=>{emitTagDetection(worker,{tagId,positionX:tagId+1});await settleReact();});}
+    };
+    await observe(0,4,1);
+    expect(notices()).toHaveLength(0);                                      /* seen, not confirmed yet: nothing is announced */
+    await observe(0,1,5);
+    expect(notices().map(textOf)).toEqual([translate('en','xr.tag.notice.first',{node:'MAIN'})]);
+    expect(notices()[0].props['data-node']).toBe('MAIN');
+    await observe(2,5,10);
+    expect(notices().map(textOf)).toEqual([
+      translate('en','xr.tag.notice.first',{node:'MAIN'}),
+      translate('en','xr.tag.notice.recalculating',{node:'G2',pairs:'G2–MAIN'}),
+    ]);
+    const region=renderer.root.findAll((node)=>node.props.className==='xr-tag-notices')[0];
+    expect(region.props.role).toBe('status');expect(region.props['aria-live']).toBe('polite');
+    await observe(2,3,20);
+    expect(notices()).toHaveLength(2);                                      /* no repeat for a device that is already announced */
+    unmount(renderer);
+  });
+
   it('keeps panel fusion input and retained observations bounded through a long tag session',async()=>{
     const original=TagObservationStore.prototype.getObservations;const retainedCounts:number[]=[];
     vi.spyOn(TagObservationStore.prototype,'getObservations').mockImplementation(function(this:TagObservationStore,tagId?:number){

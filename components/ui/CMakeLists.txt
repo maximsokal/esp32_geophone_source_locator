@@ -49,6 +49,7 @@ idf_component_register(
         hw_inventory
         nrf_topology_service
         wifi_manager
+        ranging_radio_pause
         object_service
         object_store
         measurement_service

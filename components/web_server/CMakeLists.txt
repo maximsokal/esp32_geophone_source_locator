@@ -375,6 +375,7 @@ idf_component_register(
         seismic_recorder
         storage_manager
         wifi_manager
+        ranging_radio_pause
         esp_http_server
         esp_https_server
         esp_event

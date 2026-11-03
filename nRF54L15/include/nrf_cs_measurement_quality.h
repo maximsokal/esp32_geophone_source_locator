@@ -21,9 +21,10 @@ extern "C" {
  *   difference beyond NRF_CS_RTT_AGREEMENT_M (the coarse AA-only RTT's
  *   own error scale) decays the confidence as a Gaussian with that same
  *   scale; a phase-based answer many metres from the time-of-flight answer
- *   is the signature of a wrapped/multipath solution. Without an RTT value
- *   there is no cross-check and the tone factor stands alone; an RTT-only
- *   result is coarse and gets at most 0.4.
+ *   can indicate a wrapped/multipath solution. Without RTT the PBR score is
+ *   limited to the same 0.4 ceiling as a coarse RTT-only result: tone coverage
+ *   alone does not establish absolute accuracy. At the production threshold of
+ *   500 these results remain logged but are rejected for automatic geometry.
  *
  * The scale constants are a documented starting point to be calibrated by
  * the MAX-143 HIL study, not measured values.

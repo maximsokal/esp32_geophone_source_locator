@@ -52,6 +52,12 @@ typedef struct {
     uint8_t kind;
     uint8_t phase;              /* nrf_cs_pair_phase_t */
     uint8_t flags;              /* RESULT: NRF_CS_TRACE_FLAG_* */
+    uint8_t tones_planned;      /* ESTIMATES: channels in the map; 0 = not known, the tone fields are not printed */
+    uint8_t tones_usable;       /* ESTIMATES: planned channels with a good tone on both sides */
+    uint8_t tones_gap;          /* ESTIMATES: longest run of slots without a usable tone */
+    uint8_t tones_lead;         /* ESTIMATES: slots without a usable tone at the start of the array */
+    uint8_t tones_tail;         /* ESTIMATES: the same at the end */
+    uint16_t peak_floor_x10;    /* ESTIMATES: IFFT peak over the median bin, times 10; 0 = not known (see nrf_cs_ifft_quality.h) */
 } nrf_cs_trace_entry_t;
 
 typedef struct {

@@ -77,6 +77,7 @@ for (const locale of ['en', 'uk'] as const) {
               Object.assign(workflow, { gps_status: 'accepted' }); enter('LAYOUT_READY'); break;
             case 'GPS_SKIP': Object.assign(workflow, { gps_status: 'skipped' }); enter('LAYOUT_READY'); break;
             case 'CALCULATE_POSITIONS':
+            case 'CALCULATE_POSITIONS_KEEP_WIFI':
               Object.assign(api.status.ranging!.progress!, { active: true, complete: false, success: false, pairs_done: 0, pairs_total: 12 });
               enter('RANGING'); break;
             case 'CONFIRM': enter('SCAN_CHOICE'); break;
@@ -131,7 +132,11 @@ for (const locale of ['en', 'uk'] as const) {
         await expect(page.locator('[data-command="GPS_SKIP"]')).toBeVisible();
         await click(scan ? 'REQUEST_GPS' : 'GPS_SKIP', 'LAYOUT_READY');
         expect(workflow.gps_status).toBe(scan ? 'accepted' : 'skipped');
-        await click('CALCULATE_POSITIONS', 'RANGING');
+        // The user decides explicitly: Wi-Fi off during the measurement, or kept on. One branch of the journey takes each.
+        await expect(page.locator('[data-command="CALCULATE_POSITIONS"]')).toHaveText(t['workflow.action.calculate_positions']);
+        await expect(page.locator('[data-command="CALCULATE_POSITIONS_KEEP_WIFI"]')).toHaveText(t['workflow.action.calculate_positions_keep_wifi']);
+        await expect(page.getByText(t['workflow.layout.wifi_choice'], { exact: true })).toBeVisible();
+        await click(scan ? 'CALCULATE_POSITIONS' : 'CALCULATE_POSITIONS_KEEP_WIFI', 'RANGING');
         Object.assign(api.status.ranging!.progress!, { active: false, complete: true, success: true, pairs_done: 12 });
         Object.assign(workflow, { layout_result: true });
         enter('RANGING_RESULT', ['CONFIRM', 'SET_DISTANCE', 'BACK']); await stage('RANGING_RESULT');
@@ -160,7 +165,8 @@ for (const locale of ['en', 'uk'] as const) {
         await expect(page.getByText(t['workflow.result.success'], { exact: true })).toBeVisible();
         await expect(page.locator('[data-command="OPEN_RECORDINGS"]'), 'the result leads to this object recordings').toBeVisible();
         expect(commands).toEqual(['START_MEASUREMENT', 'GO_CALIBRATION', 'SENSORS_PLACED', 'PLACE_SENSORS',
-          'PLACEMENT_CONFIRMED', ...(scan ? ['REQUEST_GPS', 'GPS_ACCEPT'] : ['GPS_SKIP']), 'CALCULATE_POSITIONS',
+          'PLACEMENT_CONFIRMED', ...(scan ? ['REQUEST_GPS', 'GPS_ACCEPT'] : ['GPS_SKIP']),
+          scan ? 'CALCULATE_POSITIONS' : 'CALCULATE_POSITIONS_KEEP_WIFI',
           'CONFIRM', ...(scan ? ['SCAN_START', 'SCAN_COMPLETE'] : ['SCAN_SKIP']), 'START_RECORDING', 'STOP_RECORDING', 'CALCULATE_SOURCES']);
         expect(navigations, 'all steps stay connected without reload or direct stage navigation').toBe(1);
         await info.attach('goal-evidence', { contentType: 'application/json', body: JSON.stringify({

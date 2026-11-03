@@ -100,6 +100,8 @@ typedef enum {
     WORKFLOW_COMMAND_SCAN_COMPLETE,
     WORKFLOW_COMMAND_BACK,
     WORKFLOW_COMMAND_SET_DISTANCE,
+    /* Same as CALCULATE_POSITIONS, but the Wi-Fi radio stays on during the measurement (the user chose so on the page). */
+    WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI,
     WORKFLOW_COMMAND_COUNT
 } workflow_command_t;
 
@@ -282,6 +284,7 @@ typedef struct {
     workflow_calculation_class_t calculation_class;
     bool calibration_ok;
     bool ranging_ok;
+    bool ranging_keep_wifi;     /* the choice made on LAYOUT_READY: false = Wi-Fi goes off while the nodes range */
     bool calc_settings_ready;
     workflow_gps_status_t gps_status;
     bool layout_result_valid;

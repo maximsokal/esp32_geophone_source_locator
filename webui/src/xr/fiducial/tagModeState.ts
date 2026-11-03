@@ -31,6 +31,43 @@ export function tagChipStatuses(fusion: TagObservationFusion, locale: I18nLocale
   });
 }
 
+/** A device whose tag has just been confirmed by the live scan, and the devices it can now be paired with. */
+export interface TagScanNotice {
+  tagId: number;
+  node: string;
+  /** Other confirmed devices, in tag order; the distances to them are recalculated from the scan. */
+  others: string[];
+}
+
+export function confirmedTagIds(fusion: TagObservationFusion): number[] {
+  return Object.values(fusion.byTagId)
+    .filter((tag) => tag !== undefined && tag.confirmed)
+    .map((tag) => tag!.tagId)
+    .sort((a, b) => a - b);
+}
+
+/** One notice per tag that became confirmed since `previousConfirmed`, in tag order. */
+export function newTagScanNotices(
+  previousConfirmed: readonly number[],
+  fusion: TagObservationFusion,
+  bindings: readonly TagBinding[] = TAG_BINDINGS,
+): TagScanNotice[] {
+  const confirmed = confirmedTagIds(fusion);
+  return confirmed.filter((tagId) => !previousConfirmed.includes(tagId)).map((tagId) => ({
+    tagId,
+    node: tagNodeForId(tagId, bindings),
+    others: confirmed.filter((other) => other !== tagId).map((other) => tagNodeForId(other, bindings)),
+  }));
+}
+
+export function tagScanNoticeText(notice: TagScanNotice, locale: I18nLocale = 'en'): string {
+  if (notice.others.length === 0) return translate(locale, 'xr.tag.notice.first', { node: notice.node });
+  return translate(locale, 'xr.tag.notice.recalculating', {
+    node: notice.node,
+    pairs: notice.others.map((other) => `${notice.node}–${other}`).join(', '),
+  });
+}
+
 export function registrationOutcome(result: Pick<SensorToScanRegistration, 'valid' | 'tier' | 'reason'> | null, locale: I18nLocale = 'en'): string {
   if (result === null) return translate(locale, 'xr.tag.registration.none');
   if (result.valid) {

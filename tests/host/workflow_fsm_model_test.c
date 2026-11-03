@@ -38,6 +38,7 @@ static const model_transition_t s_transitions[] = {
     { WORKFLOW_STEP_GPS_PENDING, WORKFLOW_COMMAND_GPS_SKIP, WORKFLOW_STEP_LAYOUT_READY },
     { WORKFLOW_STEP_GPS_PENDING, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_GPS_CHOICE },
     { WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_CALCULATE_POSITIONS, WORKFLOW_STEP_RANGING },
+    { WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI, WORKFLOW_STEP_RANGING },
     { WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_GPS_CHOICE },
     { WORKFLOW_STEP_RANGING, WORKFLOW_COMMAND_RANGING_DONE, WORKFLOW_STEP_RANGING_RESULT },
     { WORKFLOW_STEP_RANGING, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_LAYOUT_READY },
@@ -72,6 +73,7 @@ typedef struct {
     uint8_t assigned_remotes;
     bool calibration_ok;
     bool ranging_ok;
+    bool ranging_keep_wifi;
     bool calc_settings_ready;
     workflow_calculation_class_t calculation_class;
     workflow_gps_status_t gps_status;
@@ -147,7 +149,8 @@ static workflow_command_result_t model_apply(
 
     workflow_step_t next = model_transition(state->step, command);
     if ((command == WORKFLOW_COMMAND_PLACEMENT_CONFIRMED && state->step == WORKFLOW_STEP_PLACEMENT) ||
-        (command == WORKFLOW_COMMAND_CALCULATE_POSITIONS && state->step == WORKFLOW_STEP_LAYOUT_READY)) {
+        ((command == WORKFLOW_COMMAND_CALCULATE_POSITIONS || command == WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI) &&
+         state->step == WORKFLOW_STEP_LAYOUT_READY)) {
         if (!placement_ready) return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
     }
     if (command == WORKFLOW_COMMAND_CALCULATE_SOURCES && state->step == WORKFLOW_STEP_STOPPED &&
@@ -208,7 +211,11 @@ static workflow_command_result_t model_apply(
             }
             break;
         case WORKFLOW_COMMAND_CALCULATE_POSITIONS:
-            if (state->step == WORKFLOW_STEP_LAYOUT_READY) state->layout_result_valid = state->layout_ok = false;
+        case WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI:
+            if (state->step == WORKFLOW_STEP_LAYOUT_READY) {
+                state->layout_result_valid = state->layout_ok = false;
+                state->ranging_keep_wifi = command == WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI;
+            }
             break;
         case WORKFLOW_COMMAND_RANGING_DONE:
             if (state->step == WORKFLOW_STEP_RANGING) {
@@ -319,6 +326,7 @@ static model_state_t model_from_core(const workflow_core_t *core)
         .assigned_remotes = core->assigned_remotes,
         .calibration_ok = core->calibration_ok,
         .ranging_ok = core->ranging_ok,
+        .ranging_keep_wifi = core->ranging_keep_wifi,
         .calc_settings_ready = core->calc_settings_ready,
         .calculation_class = core->calculation_class,
         .gps_status = core->gps_status,
@@ -336,6 +344,7 @@ static bool core_matches(const workflow_core_t *core, const model_state_t *model
         core->sensor_sufficiency == model->sensor_sufficiency &&
         core->assigned_remotes == model->assigned_remotes &&
         core->calibration_ok == model->calibration_ok && core->ranging_ok == model->ranging_ok &&
+        core->ranging_keep_wifi == model->ranging_keep_wifi &&
         core->calc_settings_ready == model->calc_settings_ready &&
         core->calculation_class == model->calculation_class && core->gps_status == model->gps_status &&
         core->layout_result_valid == model->layout_result_valid && core->layout_ok == model->layout_ok &&
@@ -546,7 +555,7 @@ static void assert_sequence_matches(action_t *actions, size_t count, uint32_t se
 static void test_all_state_command_pairs(void)
 {
     assert(WORKFLOW_STEP_COUNT == 19);
-    assert(WORKFLOW_COMMAND_COUNT == 26);
+    assert(WORKFLOW_COMMAND_COUNT == 27);
     for (int state = 0; state < WORKFLOW_STEP_COUNT; ++state) {
         for (int command = 0; command < WORKFLOW_COMMAND_COUNT; ++command) {
             workflow_core_t core;
@@ -578,6 +587,10 @@ static void test_guard_boundaries_and_generation(void)
     apply_case(WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_CALCULATE_POSITIONS, params, 4U, false,
         WORKFLOW_COMMAND_RESULT_NOT_ALLOWED, WORKFLOW_STEP_LAYOUT_READY);
     apply_case(WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_CALCULATE_POSITIONS, params, 4U, true,
+        WORKFLOW_COMMAND_RESULT_OK, WORKFLOW_STEP_RANGING);
+    apply_case(WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI, params, 4U, false,
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED, WORKFLOW_STEP_LAYOUT_READY);
+    apply_case(WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI, params, 4U, true,
         WORKFLOW_COMMAND_RESULT_OK, WORKFLOW_STEP_RANGING);
     apply_case_with_flags(WORKFLOW_STEP_CALIB_RESULT, WORKFLOW_COMMAND_RETRY, params, 4U, true,
         true, true, true, WORKFLOW_COMMAND_RESULT_NOT_ALLOWED, WORKFLOW_STEP_CALIB_RESULT);

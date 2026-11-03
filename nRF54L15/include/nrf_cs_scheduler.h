@@ -122,6 +122,12 @@ typedef struct {
      * instead of waiting for its time slot (nrf_cs_cycle_runtime.h, "relay"). Without it the order is pair by pair.
      */
     bool relay_order;
+    /*
+     * With full_rotation: a pair counts only when both directions gave enough samples. One direction alone has nothing to
+     * be checked against (no direction-disagreement test is possible), and bench 2026-11-03 published 7.77 m for a 5 m cable
+     * from one direction with a spread of 33 mm. The pair is then RETRY_EXHAUSTED (or MISSING after a disconnect).
+     */
+    bool require_both_directions;
 } nrf_cs_policy_t;
 
 typedef struct {

@@ -4,6 +4,8 @@
 
 #include "nrf_cs_scheduler.h"
 
+#define NRF_CS_SINGLE_METHOD_CONFIDENCE_FACTOR 0.4f
+
 
 uint16_t nrf_cs_measurement_confidence(
     uint16_t good_tone_channels,
@@ -28,7 +30,10 @@ uint16_t nrf_cs_measurement_confidence(
             (float)(good_tone_channels - tone_ok_threshold) / (2.0f * (float)tone_ok_threshold);
         factor = 0.6f + 0.4f * (extra > 1.0f ? 1.0f : extra);
 
-        if (rtt_valid) {
+        if (!rtt_valid) {
+            /* Tone count alone cannot distinguish a reflected path from the true distance. */
+            factor *= NRF_CS_SINGLE_METHOD_CONFIDENCE_FACTOR;
+        } else {
             const float excess = fabsf(best_m - rtt_m) - NRF_CS_RTT_AGREEMENT_M;
             if (excess > 0.0f) {
                 const float ratio = excess / NRF_CS_RTT_AGREEMENT_M;
@@ -36,7 +41,7 @@ uint16_t nrf_cs_measurement_confidence(
             }
         }
     } else if (rtt_valid) {
-        factor = 0.4f;
+        factor = NRF_CS_SINGLE_METHOD_CONFIDENCE_FACTOR;
     } else {
         return 0U;
     }

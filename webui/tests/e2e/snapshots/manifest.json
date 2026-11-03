@@ -18,7 +18,7 @@
     "deviceMemory": 8
   },
   "selection": {
-    "critical": 66,
+    "critical": 74,
     "extended": 20
   },
   "approval": {
@@ -148,8 +148,8 @@
         "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
       },
       "en-workflow-layout-ready-393x852.png": {
-        "sha256": "fba0d61af2cf3ceae3e7c5eae87168e3f47ef46acfc12c3e2759eabb15774470",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "70c860717fb0dfb6a10c0d2305dc5b780eb05cea6a20bea2c8cd6bc61de8ce9f",
+        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
       },
       "en-workflow-object-393x852.png": {
         "sha256": "0658128a58dfa02319aeb801629a2651514f99d943b2dc59ff16949e65256ca0",
@@ -320,8 +320,8 @@
         "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
       },
       "uk-workflow-layout-ready-393x852.png": {
-        "sha256": "96227da10933cef1d8cf45706f9833920038b242ea74be7bc9587c1bfde65e46",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "7c4331daa99b62e4f6f596b4b675932a741fc17f703bb69dbb2a22e9e7e2aebc",
+        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
       },
       "uk-workflow-object-393x852.png": {
         "sha256": "9cb563fa27a9fb2ff818ad8a5f2216c66343c6710612dc3d6b3cef42d7e50407",
@@ -366,6 +366,38 @@
       "uk-workflow-stopped-393x852.png": {
         "sha256": "f017299aa67379ed921db335d71fb2e2b6ed999bb7eb10225e727236e670ea9b",
         "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
+      },
+      "en-scan-distance-refinement-393x852.png": {
+        "sha256": "b36f727ea2d5d0fa85c256d9f8d1738fb55371014144301001dffa243084d5ec",
+        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
+      },
+      "en-workflow-ranging-result-wifi-back-393x852.png": {
+        "sha256": "54277c88f6ea94cda9fb2b1c3b56f7cfa9c470643138dbab851a7cecfe2a8877",
+        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
+      },
+      "en-workflow-ranging-wifi-off-393x852.png": {
+        "sha256": "4b4b528929a0cdae771adfc69cf26bbd9c8174925fb72248e216a1cb42fbf2db",
+        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
+      },
+      "en-workflow-ranging-wifi-pending-393x852.png": {
+        "sha256": "61e9c8c94cea2954c8c1eccd0597f71af2d38b47a139ec62325bd9f98a07847e",
+        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
+      },
+      "uk-scan-distance-refinement-393x852.png": {
+        "sha256": "7f6980d49b3fef42394df74f408ac1ebd6994fbd611717235084fca22e77af20",
+        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
+      },
+      "uk-workflow-ranging-result-wifi-back-393x852.png": {
+        "sha256": "131aad6475b4422996b0b80870fa73710a06d08e67906601cd873d8dad255dae",
+        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
+      },
+      "uk-workflow-ranging-wifi-off-393x852.png": {
+        "sha256": "eddb897b7eee95efa31889bf5423901d0b862a0f96bfe712d9406cadca1d830a",
+        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
+      },
+      "uk-workflow-ranging-wifi-pending-393x852.png": {
+        "sha256": "49c35640bff849fad1924422ccdb39e7457df59bf9ffe2121a2af9b91dc027aa",
+        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
       }
     }
   }

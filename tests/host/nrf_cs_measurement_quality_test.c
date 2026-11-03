@@ -9,11 +9,13 @@ static void test_tone_coverage_scales_confidence(void)
 {
     /* Below threshold: the phase estimate is not trusted. */
     assert(nrf_cs_measurement_confidence(14U, 15U, true, false, 3.0f, NAN) == 0U);
-    /* At threshold, no RTT cross-check: 0.6. */
-    assert(nrf_cs_measurement_confidence(15U, 15U, true, false, 3.0f, NAN) == 600U);
-    /* Three times the threshold or more: full tone factor. */
-    assert(nrf_cs_measurement_confidence(45U, 15U, true, false, 3.0f, NAN) == 1000U);
-    assert(nrf_cs_measurement_confidence(70U, 15U, true, false, 3.0f, NAN) == 1000U);
+    /* Without RTT the number of tones cannot certify absolute distance accuracy. */
+    assert(nrf_cs_measurement_confidence(15U, 15U, true, false, 3.0f, NAN) == 240U);
+    assert(nrf_cs_measurement_confidence(45U, 15U, true, false, 3.0f, NAN) == 400U);
+    assert(nrf_cs_measurement_confidence(70U, 15U, true, false, 3.0f, NAN) == 400U);
+    /* With RTT the existing tone scale remains in force. */
+    assert(nrf_cs_measurement_confidence(15U, 15U, true, true, 3.0f, 3.0f) == 600U);
+    assert(nrf_cs_measurement_confidence(45U, 15U, true, true, 3.0f, 3.0f) == 1000U);
 }
 
 

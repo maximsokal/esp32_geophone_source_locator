@@ -21,7 +21,9 @@ static void test_confidence_validity_and_number_classes(void)
                     assert(confidence == 0U);
                 } else if (!pbr_valid) {
                     assert(confidence == 400U);
-                } else if (!rtt_valid || pbr == rtt) {
+                } else if (!rtt_valid) {
+                    assert(confidence == 400U);
+                } else if (pbr == rtt) {
                     assert(confidence == 1000U);
                 }
             }
@@ -40,7 +42,7 @@ static void test_confidence_every_tone_count(void)
                 (uint16_t)tones, thresholds[threshold], true, false, 3.0f, NAN);
             assert(result >= previous && result <= NRF_CS_CONFIDENCE_MAX);
             if (thresholds[threshold] == 0U || tones < thresholds[threshold]) assert(result == 0U);
-            else assert(result >= 600U);
+            else assert(result >= 240U && result <= 400U);
             previous = result;
         }
     }

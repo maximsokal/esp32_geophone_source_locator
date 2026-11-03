@@ -73,6 +73,7 @@ static void test_actions_follow_allowed_mask(void)
         WORKFLOW_COMMAND_PLACEMENT_CONFIRMED,
         WORKFLOW_COMMAND_GPS_SKIP,
         WORKFLOW_COMMAND_CALCULATE_POSITIONS,
+        WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI,
         WORKFLOW_COMMAND_CONFIRM,
         WORKFLOW_COMMAND_START_RECORDING,
         WORKFLOW_COMMAND_STOP_RECORDING,
@@ -158,9 +159,13 @@ static void test_max460_guided_step_content_and_placement_gate(void)
     snapshot.placement.all_stable = true;
     build(&snapshot, &state, &ranging, &model);
     assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_LAYOUT_READY);
+    assert(model.line_count == 3U);                         /* the Wi-Fi choice below is explained on the page */
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_LAYOUT_WIFI_HINT);
+    assert(model.lines[2].key == UI_I18N_KEY_TFT_WORKFLOW_LAYOUT_WIFI_PHONE);
     snapshot.placement.all_stable = false;
     build(&snapshot, &state, &ranging, &model);
     assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_PLACEMENT_WAITING);
+    assert(model.line_count == 1U);                         /* nothing to choose yet */
 
     snapshot = make_snapshot(WORKFLOW_STEP_SCAN_CHOICE);
     build(&snapshot, &state, &ranging, &model);
@@ -212,6 +217,39 @@ static void test_max460_tft_action_set_matches_core_for_guided_steps(void)
         if (steps[step_index] == WORKFLOW_STEP_RANGING_RESULT) ++expected_count;
         assert(model.action_count == expected_count);
     }
+}
+
+/*
+ * Starting the distance measurement is an explicit choice made on the page: the first action turns Wi-Fi off, the second keeps it on,
+ * and OK sends exactly the highlighted one.
+ */
+static void test_the_wifi_choice_before_the_distance_measurement_is_explicit(void)
+{
+    workflow_core_t core;
+    workflow_core_init(&core, true);
+    core.step = WORKFLOW_STEP_LAYOUT_READY;
+    workflow_snapshot_t snapshot;
+    workflow_core_snapshot(&core, 4U, true, &snapshot);
+    snapshot.placement.all_stable = true;
+
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_model_t model;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.action_count == 3U);
+    assert(model.actions[0] == WORKFLOW_COMMAND_CALCULATE_POSITIONS);
+    assert(model.actions[1] == WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI);
+    assert(model.actions[2] == WORKFLOW_COMMAND_BACK);
+    assert(model.selected_action == 0U);
+
+    ui_workflow_event_t off = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_OK, 10U);
+    assert(off.type == UI_WORKFLOW_EVENT_SEND_COMMAND && off.command == WORKFLOW_COMMAND_CALCULATE_POSITIONS);
+
+    ui_workflow_model_state_t second = {0};
+    build(&snapshot, &second, &ranging, &model);
+    (void)ui_workflow_model_handle_key(&snapshot, &second, UI_WORKFLOW_KEY_DOWN, 20U);
+    ui_workflow_event_t keep = ui_workflow_model_handle_key(&snapshot, &second, UI_WORKFLOW_KEY_OK, 30U);
+    assert(keep.type == UI_WORKFLOW_EVENT_SEND_COMMAND && keep.command == WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI);
 }
 
 static void test_sensor_counts(void)
@@ -760,6 +798,59 @@ static void test_insufficient_nodes_results_use_existing_warning(void)
     assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_SENSOR_INSUFFICIENT);
 }
 
+/* The Wi-Fi radio is off while the nodes range: the page says so before it goes off, while it is off, and while it comes back. */
+static void test_ranging_page_says_what_the_wifi_radio_is_doing(void)
+{
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_RANGING);
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_model_t model;
+
+    /* Pending: the notice comes first, also while no progress exists (the nodes wait for the radio). */
+    ui_workflow_ranging_t ranging = {.radio_state = UI_WORKFLOW_RADIO_PENDING};
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.line_count >= 1U && model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_WIFI_PENDING);
+    ranging.radio_state = UI_WORKFLOW_RADIO_OFF;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_WIFI_OFF);
+    /* The ordinary lines are still there after it. */
+    bool saw_wait = false;
+    for (size_t i = 1U; i < model.line_count; ++i) {
+        saw_wait = saw_wait || model.lines[i].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_WAIT;
+    }
+    assert(saw_wait);
+
+    /* With progress the notice is still the first line. */
+    ranging.available = true;
+    ranging.pairs_total = 12U;
+    ranging.pairs_done = 3U;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_WIFI_OFF);
+
+    /* Idle, or no radio information at all: no Wi-Fi line, as before. */
+    ranging.radio_state = UI_WORKFLOW_RADIO_IDLE;
+    build(&snapshot, &state, &ranging, &model);
+    for (size_t i = 0U; i < model.line_count; ++i) {
+        assert(model.lines[i].key != UI_I18N_KEY_TFT_WORKFLOW_RANGING_WIFI_OFF);
+        assert(model.lines[i].key != UI_I18N_KEY_TFT_WORKFLOW_RANGING_WIFI_PENDING);
+        assert(model.lines[i].key != UI_I18N_KEY_TFT_WORKFLOW_RANGING_WIFI_BACK);
+    }
+    ranging.radio_state = UI_WORKFLOW_RADIO_RESUMING;       /* resuming is not shown on the measurement page itself */
+    build(&snapshot, &state, &ranging, &model);
+    for (size_t i = 0U; i < model.line_count; ++i) assert(model.lines[i].key != UI_I18N_KEY_TFT_WORKFLOW_RANGING_WIFI_BACK);
+
+    /* The result page: the radio comes back, and says so while it does. */
+    snapshot = make_snapshot(WORKFLOW_STEP_RANGING_RESULT);
+    ranging = (ui_workflow_ranging_t){.radio_state = UI_WORKFLOW_RADIO_RESUMING, .available = true, .pairs_total = 12U,
+        .pairs_done = 12U};
+    build(&snapshot, &state, &ranging, &model);
+    bool saw_back = false;
+    for (size_t i = 0U; i < model.line_count; ++i) saw_back = saw_back || model.lines[i].key == UI_I18N_KEY_TFT_WORKFLOW_RANGING_WIFI_BACK;
+    assert(saw_back);
+    ranging.radio_state = UI_WORKFLOW_RADIO_IDLE;
+    build(&snapshot, &state, &ranging, &model);
+    for (size_t i = 0U; i < model.line_count; ++i) assert(model.lines[i].key != UI_I18N_KEY_TFT_WORKFLOW_RANGING_WIFI_BACK);
+}
+
 static void test_ranging_manual_entry(void)
 {
     workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_RANGING_RESULT);
@@ -1097,6 +1188,7 @@ int main(void)
 #error "unknown MAX449_CASE for ui_workflow_model_test"
 #endif
 #else
+    test_ranging_page_says_what_the_wifi_radio_is_doing();
     test_ranging_manual_entry();
     test_ranging_result_three_outcomes();
     test_ranging_result_displays_pair_values();
@@ -1112,6 +1204,7 @@ int main(void)
     test_material_save_sequence_wrap_keeps_new_save_pending();
     test_max460_guided_step_content_and_placement_gate();
     test_max460_tft_action_set_matches_core_for_guided_steps();
+    test_the_wifi_choice_before_the_distance_measurement_is_explicit();
     test_sensor_counts();
     test_remote_slot_layout_is_fixed();
     test_left_behavior_each_step();

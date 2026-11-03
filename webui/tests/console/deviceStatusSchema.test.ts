@@ -425,6 +425,23 @@ describe('normalizeDeviceStatus', () => {
     expectInvalid(incompleteProgress, 'ranging.progress.failure_reason');
   });
 
+  it('accepts the Wi-Fi radio state around the distance measurement and rejects an unknown one', () => {
+    for (const radio of ['idle', 'pending', 'off', 'resuming']) {
+      const raw = freshRaw();
+      setAt(raw, 'ranging.radio', radio);
+      setAt(raw, 'ranging.radio_stop_failed', false);
+      setAt(raw, 'ranging.radio_resume_failed', true);
+      expect(normalizeDeviceStatus(raw)).toBe(raw);
+    }
+    const unknown = freshRaw();
+    setAt(unknown, 'ranging.radio', 'sleeping');
+    expectInvalid(unknown, 'ranging.radio');
+    const badFlag = freshRaw();
+    setAt(badFlag, 'ranging.radio_stop_failed', 'no');
+    expectInvalid(badFlag, 'ranging.radio_stop_failed');
+    expect(normalizeDeviceStatus(freshRaw())).toBeDefined();         // firmware that does not report it stays valid
+  });
+
   it('preserves explicit firmware nulls in workflow measurements', () => {
     const raw = freshRaw();
     setAt(raw, 'object_store.active_id', null);

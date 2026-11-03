@@ -36,6 +36,7 @@ static const transition_t allowed_transitions[] = {
     { WORKFLOW_STEP_GPS_PENDING, WORKFLOW_COMMAND_GPS_SKIP, WORKFLOW_STEP_LAYOUT_READY },
     { WORKFLOW_STEP_GPS_PENDING, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_GPS_CHOICE },
     { WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_CALCULATE_POSITIONS, WORKFLOW_STEP_RANGING },
+    { WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI, WORKFLOW_STEP_RANGING },
     { WORKFLOW_STEP_LAYOUT_READY, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_GPS_CHOICE },
     { WORKFLOW_STEP_RANGING, WORKFLOW_COMMAND_RANGING_DONE, WORKFLOW_STEP_RANGING_RESULT },
     { WORKFLOW_STEP_RANGING, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_LAYOUT_READY },
@@ -387,6 +388,59 @@ static void test_stale_generation_and_placement_guard(void)
     assert(core.step == WORKFLOW_STEP_RANGING);
 }
 
+/*
+ * The measurement page offers two explicit choices: the Wi-Fi radio goes off while the nodes range, or it stays on. The choice
+ * is remembered for the run, taken anew on every entry, and both are offered only when the placement is ready.
+ */
+static void test_wifi_choice_before_the_distance_measurement(void)
+{
+    workflow_core_t core;
+    workflow_command_params_t params = {0};
+
+    workflow_core_init(&core, true);
+    core.step = WORKFLOW_STEP_LAYOUT_READY;
+    assert(!core.ranging_keep_wifi);
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI, &params, 4U, false) ==
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(core.step == WORKFLOW_STEP_LAYOUT_READY && !core.ranging_keep_wifi);
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI, &params, 4U, true) ==
+        WORKFLOW_COMMAND_RESULT_OK);
+    assert(core.step == WORKFLOW_STEP_RANGING && core.ranging_keep_wifi);
+
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_BACK, &params, 4U, true) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(core.step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_CALCULATE_POSITIONS, &params, 4U, true) ==
+        WORKFLOW_COMMAND_RESULT_OK);
+    assert(core.step == WORKFLOW_STEP_RANGING && !core.ranging_keep_wifi);     /* the other choice replaces it */
+
+    /* Neither command exists anywhere but on the layout page. */
+    core.step = WORKFLOW_STEP_RANGING_RESULT;
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI, &params, 4U, true) ==
+        WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(core.step == WORKFLOW_STEP_RANGING_RESULT && !core.ranging_keep_wifi);
+
+    /* A new object starts from scratch: the old choice does not carry over. */
+    core.step = WORKFLOW_STEP_LAYOUT_READY;
+    assert(workflow_core_apply(&core, WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI, &params, 4U, true) ==
+        WORKFLOW_COMMAND_RESULT_OK && core.ranging_keep_wifi);
+    workflow_core_reset_object(&core, true, true);
+    assert(core.step == WORKFLOW_STEP_OBJECT && !core.ranging_keep_wifi);
+
+    workflow_snapshot_t snapshot;
+    workflow_core_init(&core, true);
+    core.step = WORKFLOW_STEP_LAYOUT_READY;
+    workflow_core_snapshot(&core, 4U, true, &snapshot);
+    assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CALCULATE_POSITIONS)) != 0U);
+    assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI)) != 0U);
+    workflow_core_snapshot(&core, 4U, false, &snapshot);
+    assert((snapshot.allowed_actions & (WORKFLOW_ACTION(WORKFLOW_COMMAND_CALCULATE_POSITIONS) |
+        WORKFLOW_ACTION(WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI))) == 0U);
+    assert(strcmp(workflow_core_command_name(WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI), "CALCULATE_POSITIONS_KEEP_WIFI") == 0);
+    workflow_command_t parsed = WORKFLOW_COMMAND_COUNT;
+    assert(workflow_core_command_from_name("CALCULATE_POSITIONS_KEEP_WIFI", &parsed) &&
+        parsed == WORKFLOW_COMMAND_CALCULATE_POSITIONS_KEEP_WIFI);
+}
+
 static void test_success_and_failure_result_routes(void)
 {
     workflow_core_t core;
@@ -493,6 +547,7 @@ int main(void)
     test_back_from_running_steps_records_cancellation_reason();
     test_sensor_count_guards_zero_through_five();
     test_stale_generation_and_placement_guard();
+    test_wifi_choice_before_the_distance_measurement();
     test_success_and_failure_result_routes();
     test_placement_reason_names_are_unique_and_known();
     return 0;

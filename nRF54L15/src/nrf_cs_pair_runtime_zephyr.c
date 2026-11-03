@@ -2,6 +2,9 @@
 #include "nrf_cs_pair_runtime_zephyr_bridge.h"
 #include "nrf_cs_measurement_quality.h"
 #include "nrf_cs_distance_method.h"
+#include "nrf_cs_tone_stats.h"
+#include "nrf_cs_iq_gap_fill.h"
+#include "nrf_cs_ifft_quality.h"
 #include "nrf_cs_rf_diagnostics.h"
 #include "nrf_cs_trace_zephyr.h"
 

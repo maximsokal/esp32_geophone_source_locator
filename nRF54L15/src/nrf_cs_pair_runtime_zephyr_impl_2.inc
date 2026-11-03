@@ -403,6 +403,19 @@ static bool report_step_data(
     return true;
 }
 
+/* Which of the 75 slots hold a usable tone, and how long the longest hole is (nrf_cs_tone_stats.h). */
+static nrf_cs_tone_stats_t current_tone_stats(void)
+{
+    bool planned[CS_DE_NUM_CHANNELS];
+    bool usable[CS_DE_NUM_CHANNELS];
+
+    for (uint8_t channel = 0U; channel < CS_DE_NUM_CHANNELS; ++channel) {
+        planned[channel] = BT_LE_CS_CHANNEL_BIT_GET(s_cs_config.channel_map, channel + NRF_CS_CHANNEL_INDEX_OFFSET);
+        usable[channel] = s_iq_counts[channel] > 0U;
+    }
+    return nrf_cs_tone_stats(planned, usable, CS_DE_NUM_CHANNELS);
+}
+
 static uint16_t good_tone_channel_count(void)
 {
     uint16_t count = 0U;
@@ -461,9 +474,43 @@ static nrf_cs_measurement_t estimate_measurement(void)
     }
 
     quality = cs_de_calc(&s_de_report);
+    uint16_t peak_floor_x10 = 0U;
+    if (s_de_report.tone_quality[0] == CS_DE_TONE_QUALITY_OK &&
+        isfinite(s_de_report.distance_estimates[0].ifft) &&
+        s_de_report.distance_estimates[0].best == s_de_report.distance_estimates[0].ifft) {
+        memset(s_iq_ifft_scratch, 0, sizeof(s_iq_ifft_scratch));
+        cs_de_combined_iq_calculate(&s_de_report.iq_tones[0], s_iq_ifft_scratch);
+        const bool gaps_filled = nrf_cs_iq_gap_fill(s_iq_ifft_scratch, s_iq_counts, CS_DE_NUM_CHANNELS) > 0U;
+        /* The call also leaves the IFFT magnitude profile in the first NFFT floats: the sharpness of the peak is one pass over it.
+         * The distance of a set without holes is the library's own, so only a filled set replaces it. */
+        const float checked_ifft = cs_de_ifft(s_iq_ifft_scratch);
+        if (gaps_filled && isfinite(checked_ifft) && checked_ifft >= 0.0f) {
+            s_de_report.distance_estimates[0].ifft = checked_ifft;
+            s_de_report.distance_estimates[0].best = checked_ifft;
+        }
+        const float ratio = nrf_cs_ifft_peak_to_floor(s_iq_ifft_scratch, CONFIG_BT_CS_DE_NFFT_SIZE);
+        if (isfinite(ratio) && ratio > 0.0f) {
+            const float scaled = ratio * 10.0f + 0.5f;
+            peak_floor_x10 = scaled >= 65535.0f ? UINT16_MAX : (uint16_t)scaled;
+        }
+    }
+    /* NCS 3.4 skips best selection when PBR tones are bad, even if RTT is available. */
+    if (quality == CS_DE_QUALITY_OK && s_de_report.tone_quality[0] == CS_DE_TONE_QUALITY_BAD &&
+        !isfinite(s_de_report.distance_estimates[0].best) && isfinite(s_de_report.distance_estimates[0].rtt) &&
+        s_de_report.distance_estimates[0].rtt > 0.0f) {
+        s_de_report.distance_estimates[0].best = s_de_report.distance_estimates[0].rtt;
+    }
+    /* The SDK can also choose its clamped zero RTT as best when both PBR methods failed. */
+    if (!isfinite(s_de_report.distance_estimates[0].ifft) &&
+        !isfinite(s_de_report.distance_estimates[0].phase_slope) &&
+        (!isfinite(s_de_report.distance_estimates[0].rtt) || s_de_report.distance_estimates[0].rtt <= 0.0f)) {
+        s_de_report.distance_estimates[0].best = NAN;
+    }
+    const nrf_cs_tone_stats_t tone_stats = current_tone_stats();
     nrf_cs_trace_zephyr_estimates(s_timeout_step.attempt_id, s_de_report.distance_estimates[0].ifft,
         s_de_report.distance_estimates[0].phase_slope, s_de_report.distance_estimates[0].rtt,
-        s_de_report.distance_estimates[0].best);
+        s_de_report.distance_estimates[0].best, tone_stats.planned, tone_stats.usable, tone_stats.longest_gap,
+        tone_stats.lead_gap, tone_stats.tail_gap, peak_floor_x10);
 
     /* CS-ESTIMATOR-01: record which estimate "best" came from, in the attempt record the ESP32 reads. */
     measurement.provider_quality_flags |= nrf_cs_distance_method_flag(nrf_cs_distance_method_of(
@@ -481,7 +528,8 @@ static nrf_cs_measurement_t estimate_measurement(void)
         isfinite(s_de_report.distance_estimates[0].phase_slope)) {
         measurement.provider_quality_flags |= NRF_CS_PROVIDER_QUALITY_PBR_VALID;
     }
-    if (isfinite(s_de_report.distance_estimates[0].rtt)) {
+    /* cs_de_rtt clamps nonpositive time-of-flight to zero, which cannot corroborate PBR. */
+    if (isfinite(s_de_report.distance_estimates[0].rtt) && s_de_report.distance_estimates[0].rtt > 0.0f) {
         measurement.provider_quality_flags |= NRF_CS_PROVIDER_QUALITY_RTT_VALID;
     }
 

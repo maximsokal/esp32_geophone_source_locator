@@ -26,6 +26,7 @@ extern workflow_snapshot_t render_snapshot;
 extern device_status_snapshot_t render_device_status;
 extern bool render_ranging_available;
 extern nrf_topology_ranging_progress_t render_ranging_progress;
+extern ranging_radio_state_t render_radio_state;
 extern workflow_command_params_t render_distance_params;
 extern unsigned render_distance_calls;
 extern nrf_node_link_status_input_t render_node_status[UI_WORKFLOW_REMOTE_SLOT_COUNT + 1U];
@@ -427,6 +428,51 @@ static void test_ranging_progress_scene(const char *language, const char *suffix
 }
 
 /*
+ * The Wi-Fi radio goes off while the nodes range and comes back by itself: the page says so before it goes off (the nodes wait for
+ * it), while it is off, and on the result page while the radio returns.
+ */
+static bool wifi_line_shown(void)
+{
+    for (size_t slot = 0U; slot < s_workflow->line_slots; ++slot) {
+        if (strstr(lv_label_get_text(s_workflow->line_labels[slot]), "Wi-Fi") != NULL) return true;
+    }
+    return false;
+}
+
+static void test_ranging_wifi_screens(const char *language)
+{
+    char name[96];
+
+    test_ranging_progress_scene(language, "_without_wifi_line", 5U, 3U);
+    assert(!wifi_line_shown());                                       /* the radio is on: the page says nothing about it */
+
+    prepare(WORKFLOW_STEP_RANGING, 4U);
+    s_workflow->ranging.radio_state = UI_WORKFLOW_RADIO_PENDING;      /* announced, the nodes have not started */
+    ui_workflow_update(s_workflow, render_now_ms);
+    assert(wifi_line_shown());
+    (void)snprintf(name, sizeof(name), "%s_ranging_wifi_pending", language);
+    capture(name, true);
+
+    prepare(WORKFLOW_STEP_RANGING, 4U);
+    s_workflow->ranging.available = true;
+    s_workflow->ranging.radio_state = UI_WORKFLOW_RADIO_OFF;
+    s_workflow->ranging.pairs_done = 3U;
+    s_workflow->ranging.pairs_total = 20U;
+    s_workflow->ranging.node_count = 5U;
+    ui_workflow_update(s_workflow, render_now_ms);
+    assert(wifi_line_shown());
+    (void)snprintf(name, sizeof(name), "%s_ranging_wifi_off", language);
+    capture(name, true);
+
+    prepare(WORKFLOW_STEP_RANGING_RESULT, 4U);
+    s_workflow->ranging.radio_state = UI_WORKFLOW_RADIO_RESUMING;
+    ui_workflow_update(s_workflow, render_now_ms);
+    assert(wifi_line_shown());
+    (void)snprintf(name, sizeof(name), "%s_ranging_wifi_back", language);
+    capture(name, true);
+}
+
+/*
  * 2026-10-31 bench: after a calibration run OK on the result screen walked BACK instead of to the placement
  * step. BACK is the only action while the run is in progress; the highlight stayed on it into the next step.
  */
@@ -723,6 +769,7 @@ int main(int argc, char **argv)
         test_ranging_progress_scene(language, "_3_nodes", 3U, 3U);   /* 3 of 6: 50% */
         test_ranging_progress_scene(language, "_4_nodes", 4U, 3U);   /* 3 of 12: 25% */
         test_ranging_progress_scene(language, "_5_nodes", 5U, 3U);   /* 3 of 20: 15% */
+        test_ranging_wifi_screens(language);
         test_calibration_result_selection_after_run(language);
         test_placement_blocked_screens(language);
         test_ranging_result_screens(language);

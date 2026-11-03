@@ -1,0 +1,108 @@
+#include <assert.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include "nrf_cs_iq_gap_fill.h"
+#include "nrf_cs_measurement_quality.h"
+typedef int arm_cfft_instance_f32;
+static const int arm_cfft_sR_f32_len512=0;
+static void arm_sqrt_f32(float x,float *out){*out=sqrtf(x);}
+static void arm_max_f32(const float *a,uint32_t n,float *out,uint32_t *idx){*out=a[0];*idx=0;for(uint32_t i=1;i<n;i++)if(a[i]>*out){*out=a[i];*idx=i;}}
+static void arm_cfft_f32(const arm_cfft_instance_f32 *inst,float *a,int inv,int reverse)
+{
+ (void)inst;(void)inv;(void)reverse;unsigned n=512;
+ for(unsigned i=1,j=0;i<n;i++){unsigned bit=n>>1;for(;j&bit;bit>>=1)j^=bit;j^=bit;if(i<j){float x=a[2*i],y=a[2*i+1];a[2*i]=a[2*j];a[2*i+1]=a[2*j+1];a[2*j]=x;a[2*j+1]=y;}}
+ for(unsigned len=2;len<=n;len*=2){float ang=-6.2831853071795864769f/(float)len;float wr0=cosf(ang),wi0=sinf(ang);for(unsigned i=0;i<n;i+=len){float wr=1,wi=0;for(unsigned j=0;j<len/2;j++){unsigned u=2*(i+j),v=2*(i+j+len/2);float vr=a[v]*wr-a[v+1]*wi,vi=a[v]*wi+a[v+1]*wr;float ur=a[u],ui=a[u+1];a[u]=ur+vr;a[u+1]=ui+vi;a[v]=ur-vr;a[v+1]=ui-vi;float t=wr*wr0-wi*wi0;wi=wr*wi0+wi*wr0;wr=t;}}}
+}
+#include "ble6_sdk_cs_de.c"
+#include "nrf_cs_rf_diagnostics.h"
+#define NRF_CS_CHANNEL_INDEX_OFFSET 2U
+#define BT_HCI_LE_CS_TONE_QUALITY_HIGH 0U
+#define BT_HCI_LE_CS_PCT_I_MASK 0xfffU
+#define BT_HCI_LE_CS_PCT_Q_MASK 0xfff000U
+#define BIT(n) (1U << (n))
+struct bt_le_cs_iq_sample { int16_t i, q; };
+struct bt_le_cs_subevent_step { uint8_t mode, channel, data_len; const uint8_t *data; };
+#pragma pack(push, 1)
+struct bt_hci_le_cs_step_data_tone_info {
+    uint8_t phase_correction_term[3];
+    uint8_t quality_indicator : 4, extension_indicator : 4;
+};
+struct bt_hci_le_cs_step_data_mode_2 {
+    uint8_t antenna_permutation_index;
+    struct bt_hci_le_cs_step_data_tone_info tone_info[1];
+};
+#pragma pack(pop)
+static uint16_t s_iq_counts[75];
+static nrf_cs_rf_diagnostics_t s_rf_diagnostics;
+static uint32_t sys_get_le24(const uint8_t *p)
+{ return (uint32_t)p[0] | ((uint32_t)p[1] << 8U) | ((uint32_t)p[2] << 16U); }
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4244)
+#endif
+#include "bt_le_cs_parse_pct.inc"
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+#include "accumulate_mean.inc"
+#include "collect_pbr_step.inc"
+int main(void)
+{
+    /* Nordic 3.4 clamps nonpositive accumulated timing to zero. */
+    assert(cs_de_rtt(-1, 1) == 0.0f && cs_de_rtt(0, 1) == 0.0f);
+    assert(cs_de_rtt(1, 1) > 0.0f && isnan(cs_de_rtt(0, 0)));
+    const char *input = getenv("BLE6_REPLAY_INPUT"), *output = getenv("BLE6_REPLAY_OUTPUT");
+    if (input == NULL || output == NULL) return 2;
+    FILE *in = fopen(input, "rb"), *out = fopen(output, "wb");
+    if (in == NULL || out == NULL) return 3;
+    float src[150], buf[1024], rtt, result[4];
+    uint16_t counts[75];
+    uint16_t steps;
+    size_t procedures = 0U;
+    while (fread(&steps, sizeof(steps), 1, in) == 1U) {
+        cs_de_report_t report = {0};
+        memset(s_iq_counts, 0, sizeof(s_iq_counts));
+        nrf_cs_rf_reset(&s_rf_diagnostics);
+        for (uint16_t i = 0; i < steps; ++i) {
+            uint8_t raw[11];
+            if (fread(raw, sizeof(raw), 1, in) != 1U) return 4;
+            const struct bt_le_cs_subevent_step local = {2, raw[0], 5, raw + 1};
+            const struct bt_le_cs_subevent_step peer = {2, raw[0], 5, raw + 6};
+            collect_pbr_step(&report, &local, &peer);
+        }
+        if (fread(src, sizeof(src), 1, in) != 1U) return 4;
+        if (fread(counts, sizeof(counts), 1, in) != 1U || fread(&rtt, sizeof(rtt), 1, in) != 1U) return 4;
+        if (steps > 0U) {
+            cs_de_combined_iq_calculate(&report.iq_tones[0], buf);
+            for (size_t i = 0; i < 75; ++i) assert(counts[i] == s_iq_counts[i]);
+            for (size_t i = 0; i < 150; ++i) {
+                assert(fabsf(src[i] - buf[i]) <= 0.5f + 0.00001f * fabsf(src[i]));
+                src[i] = buf[i];
+            }
+        }
+        uint16_t good = 0U;
+        for (size_t i = 0; i < 75; ++i) good += counts[i] > 0U ? 1U : 0U;
+        for (size_t i = 0; i < 1024; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
+        result[2] = good >= 15U ? cs_de_phase_slope(buf) : NAN;
+        result[0] = good >= 15U ? cs_de_ifft(buf) : NAN;
+        const float valid_rtt = isfinite(rtt) && rtt > 0.0f ? rtt : NAN;
+        result[1] = good >= 15U && isfinite(result[0]) ? result[0] :
+            good >= 15U && isfinite(result[2]) ? result[2] : valid_rtt;
+        if (isfinite(result[0]) && result[0] >= 0.0f) {
+            for (size_t i = 0; i < 1024; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
+            if (nrf_cs_iq_gap_fill(buf, counts, 75U) > 0U) {
+                float filled = cs_de_ifft(buf);
+                if (isfinite(filled) && filled >= 0.0f) result[1] = filled;
+            }
+        }
+        result[3] = (float)nrf_cs_measurement_confidence(good, 15U, isfinite(result[0]) || isfinite(result[2]),
+            isfinite(rtt) && rtt > 0.0f, result[1], rtt);
+        if (fwrite(result, sizeof(result), 1, out) != 1U) return 5;
+        ++procedures;
+    }
+    fclose(in); fclose(out);
+    printf("replayed=%zu\n", procedures);
+    return 0;
+}

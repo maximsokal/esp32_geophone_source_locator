@@ -1,6 +1,7 @@
 #include "cJSON.h"
 #include "esp_err.h"
 #include "nrf_topology_service.h"
+#include "ranging_radio_pause.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -150,6 +151,15 @@ bool web_status_json_add_ranging(cJSON *root)
     nrf_topology_ranging_progress_t progress = {0};
     const esp_err_t progress_error = nrf_topology_service_ranging_get_progress(&progress);
     if (cJSON_AddBoolToObject(object, "available", progress_error == ESP_OK) == NULL) {
+        return false;
+    }
+    /*
+     * The Wi-Fi radio is off while the nodes range. "pending" is the notice period (the page can still say that it is about to
+     * go off), "off" is only ever seen by a client that is still connected another way, "resuming" is the radio coming back.
+     */
+    if (cJSON_AddStringToObject(object, "radio", ranging_radio_state_name(ranging_radio_pause_state())) == NULL ||
+        cJSON_AddBoolToObject(object, "radio_stop_failed", ranging_radio_pause_stop_failed()) == NULL ||
+        cJSON_AddBoolToObject(object, "radio_resume_failed", ranging_radio_pause_resume_failed()) == NULL) {
         return false;
     }
     if (progress_error == ESP_OK) {

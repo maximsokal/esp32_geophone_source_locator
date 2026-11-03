@@ -3,6 +3,7 @@
 
 #include "cJSON.h"
 #include "esp_err.h"
+#include "ranging_radio_pause.h"
 #include "nrf_topology_service.h"
 
 static nrf_topology_ranging_progress_t s_progress;
@@ -135,9 +136,42 @@ static void test_unavailable_progress_and_result_json(void)
     assert(!web_status_json_add_ranging(NULL));
 }
 
+/* The Wi-Fi radio is off while the nodes range: the page is told what is going on, also while no progress exists yet. */
+static void test_the_radio_state_is_reported_in_every_phase(void)
+{
+    static const struct { ranging_radio_state_t state; const char *name; } phases[] = {
+        { RANGING_RADIO_IDLE, "idle" }, { RANGING_RADIO_PENDING, "pending" }, { RANGING_RADIO_OFF, "off" },
+        { RANGING_RADIO_RESUMING, "resuming" },
+    };
+    for (size_t i = 0U; i < sizeof(phases) / sizeof(phases[0]); ++i) {
+        for (int available = 0; available < 2; ++available) {
+            g_radio_pause_state = phases[i].state;
+            s_progress_error = available != 0 ? ESP_OK : ESP_ERR_INVALID_STATE;     /* no progress while the page waits for the radio */
+            cJSON *root = cJSON_CreateObject();
+            assert(root != NULL && web_status_json_add_ranging(root));
+            const cJSON *ranging = item(root, "ranging");
+            assert(strcmp(item(ranging, "radio")->valuestring, phases[i].name) == 0);
+            assert(!cJSON_IsTrue(item(ranging, "radio_stop_failed")) && !cJSON_IsTrue(item(ranging, "radio_resume_failed")));
+            cJSON_Delete(root);
+        }
+    }
+    g_radio_pause_state = RANGING_RADIO_RESUMING;
+    g_radio_pause_stop_failed = true;
+    g_radio_pause_resume_failed = true;
+    cJSON *root = cJSON_CreateObject();
+    assert(root != NULL && web_status_json_add_ranging(root));
+    assert(cJSON_IsTrue(item(item(root, "ranging"), "radio_stop_failed")));
+    assert(cJSON_IsTrue(item(item(root, "ranging"), "radio_resume_failed")));
+    cJSON_Delete(root);
+    g_radio_pause_state = RANGING_RADIO_IDLE;
+    g_radio_pause_stop_failed = false;
+    g_radio_pause_resume_failed = false;
+}
+
 int main(void)
 {
     test_progress_and_frozen_result_json();
     test_unavailable_progress_and_result_json();
+    test_the_radio_state_is_reported_in_every_phase();
     return 0;
 }

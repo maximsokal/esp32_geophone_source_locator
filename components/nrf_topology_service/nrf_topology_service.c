@@ -3100,6 +3100,10 @@ static void service_ranging_process(nrf_topology_worker_state_t *worker)
 
     service_ranging_copy_cycle(worker);
     progress->topology_generation = worker->ranging_topology_generation;
+    /* CS-GEO-01: a finished matrix that contradicts itself is rejected before the solver spends time on it. */
+    if (nrf_cs_scheduler_is_complete(&worker->authority.scheduler) && service_ranging_check_triangles(worker, now_ms)) {
+        return;
+    }
     for (size_t i = 0U; i < progress->pair_count; ++i) {
         const uint16_t bit = (uint16_t)(1U << i);
         const nrf_cs_pair_result_t *pair = &progress->pairs[i];
@@ -3132,9 +3136,6 @@ static void service_ranging_process(nrf_topology_worker_state_t *worker)
         &progress->main_height_reference_generation);
     service_ranging_copy_cycle(worker);
     progress->topology_generation = worker->ranging_topology_generation;
-    if (service_ranging_check_triangles(worker, now_ms)) {
-        return;
-    }
     for (size_t i = 0U; i < progress->pair_count; ++i) {
         if (progress->pairs[i].state == NRF_CS_PAIR_CABLE_EXCEEDED) {
             char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];

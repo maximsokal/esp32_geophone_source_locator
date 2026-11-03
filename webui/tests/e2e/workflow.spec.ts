@@ -293,6 +293,53 @@ for (const locale of ['en', 'uk'] as const) {
 
 
 // ESP32 exposes MAIN's execution counters; completed executions do not imply a successful result.
+/*
+ * The Wi-Fi radio is switched off while the nodes range and comes back by itself: the page says so before it goes off, keeps
+ * saying so while it is off, loses the link when the radio stops and reconnects on its own, without a single command from the user.
+ */
+for (const locale of ['en', 'uk'] as const) {
+  test.describe(`${locale} Wi-Fi pause around the distance measurement`, () => {
+    test.use({ appLocale: locale });
+    test('announces the pause, survives the dropped link and reconnects by itself', async ({ page, api }, testInfo) => {
+      const t = catalog[locale];
+      Object.assign(api.status.workflow!, { step: 'RANGING', allowed_actions: ['BACK'] });
+      Object.assign(api.status.ranging!.progress!, { active: true, complete: false, success: false, pairs_done: 0, pairs_total: 12, pairs: [] });
+      api.status.ranging!.radio = 'idle';
+      await page.goto('/');
+      await expect(page.getByText(t['workflow.ranging.wait'])).toBeVisible();
+      await expect(page.locator('.workflow-ranging-wifi')).toHaveCount(0);        /* radio on: nothing about it */
+
+      api.status.ranging!.radio = 'pending';                                       /* the notice, before the radio stops */
+      await expect(page.locator('.workflow-ranging-wifi')).toHaveText(t['workflow.ranging.wifi_pending'], { timeout: 15_000 });
+      await testInfo.attach(`wifi-pending-${locale}`, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+
+      api.status.ranging!.radio = 'off';
+      await expect(page.locator('.workflow-ranging-wifi')).toHaveText(t['workflow.ranging.wifi_off'], { timeout: 15_000 });
+
+      api.statusFailure = 'http';                                                  /* the radio is off: the phone loses the device */
+      await expect(page.locator('.device-dot')).toHaveClass(/offline/, { timeout: 20_000 });
+
+      api.statusFailure = null;                                                    /* the radio is back, the page reconnects */
+      api.status.ranging!.radio = 'idle';
+      Object.assign(api.status.workflow!, { step: 'RANGING_RESULT', allowed_actions: ['RETRY', 'BACK'] });
+      Object.assign(api.status.ranging!.progress!, { active: false, complete: true, success: true, pairs_done: 12 });
+      await expect(page.locator('.device-dot')).toHaveClass(/online/, { timeout: 20_000 });
+      await expect(page.getByText(t['workflow.ranging.success'], { exact: true })).toBeVisible();
+      await expect(page.locator('.workflow-ranging-wifi')).toHaveCount(0);
+      expect(api.controls).toHaveLength(0);                                        /* nothing was commanded by the page */
+    });
+
+    test('says that the radio is coming back on the result page', async ({ page, api }) => {
+      const t = catalog[locale];
+      Object.assign(api.status.workflow!, { step: 'RANGING_RESULT', allowed_actions: ['RETRY', 'BACK'] });
+      Object.assign(api.status.ranging!.progress!, { active: false, complete: true, success: true, pairs_done: 12, pairs_total: 12 });
+      api.status.ranging!.radio = 'resuming';
+      await page.goto('/');
+      await expect(page.locator('.workflow-ranging-wifi')).toHaveText(t['workflow.ranging.wifi_back']);
+    });
+  });
+}
+
 for (const locale of ['en', 'uk'] as const) {
   test.describe(`${locale} radio ranging percentage`, () => {
     test.use({ appLocale: locale });

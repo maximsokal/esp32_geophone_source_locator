@@ -25,7 +25,7 @@
       "name": "workflow_service_material_save",
       "sources": [
         "components/workflow_service/workflow_core.c",
-        "components/workflow_service/workflow_service.c",
+        "components/workflow_service/workflow_service.c", "tests/host/stubs/ranging_radio_pause/ranging_radio_pause_stub.c",
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
         "components/localization_job/localization_config.c",
@@ -44,7 +44,7 @@
         "tests/host/stubs/workflow_service",
         "tests/host/stubs/object_store_profile",
         "components/app_config/include",
-        "components/workflow_service/include",
+        "components/workflow_service/include", "tests/host/stubs/ranging_radio_pause", "components/ranging_radio_pause/include",
         "components/recording_gate/include",
         "components/localization/include",
         "components/web_server/tests/stubs",
