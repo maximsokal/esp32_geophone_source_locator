@@ -46,8 +46,8 @@ extern "C" {
 #define NRF_CS_CYCLE_BUSY_RETRY_MS 50U
 /*
  * A finished cycle keeps answering with CS_CYCLE_STATUS until the ESP32 releases it. If the ESP32
- * never does (reset mid-collection), the node forgets the cycle after this long so normal STATUS
- * reads work again.
+ * never does (reset mid-collection), the node forgets the cycle this long after the later of its
+ * local finish and the planned end of all execution windows, so normal STATUS reads work again.
  */
 #define NRF_CS_CYCLE_REPLY_HOLD_MS 120000U
 

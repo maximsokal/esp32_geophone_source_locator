@@ -305,7 +305,9 @@ static void test_autonomous_cycle_matches_live_scheduler(size_t node_count)
 
     /* A cycle nobody released frees itself, so normal STATUS reads come back on their own. */
     assert(nrf_cs_cycle_runtime_reply_active(&sims[1].rt));
-    g_now = sims[1].rt.finished_ms + NRF_CS_CYCLE_REPLY_HOLD_MS - 1U;
+    const uint64_t planned_end = sims[1].rt.t0_ms + sims[1].rt.run_ms;
+    const uint64_t hold_from = sims[1].rt.finished_ms > planned_end ? sims[1].rt.finished_ms : planned_end;
+    g_now = hold_from + NRF_CS_CYCLE_REPLY_HOLD_MS - 1U;
     nrf_cs_cycle_runtime_tick(&sims[1].rt);
     assert(nrf_cs_cycle_runtime_reply_active(&sims[1].rt));
     g_now += 1U;
@@ -917,8 +919,66 @@ static void test_unchecked_pbr_is_recorded_and_retried(void)
     assert(decoded.records[0].distance_mm == 9369 && decoded.records[0].confidence == 400U);
 }
 
+static void test_terminal_records_survive_until_global_collection_deadline(void)
+{
+    const nrf_cs_node_id_t ids[] = {0U, 1U, 2U, 3U, 4U};
+    const nrf_cs_policy_t policy = {.pair_timeout_ms=2400U,.max_attempts=2U,.min_confidence=500U,
+        .samples_per_pair=9U,.full_rotation=true,.relay_order=true,.require_both_directions=true};
+    for (unsigned late = 0U; late < 2U; ++late) {
+        nrf_cs_scheduler_t planner;
+        sim_node_t sim;
+        g_now = (uint64_t)UINT32_MAX - 1000U;
+        init_sim(&sim, 0U);
+        assert(nrf_cs_scheduler_init(&planner, &policy) == NRF_CS_OK);
+        assert(nrf_cs_scheduler_start_cycle(&planner, ids, 5U) == NRF_CS_OK);
+        (void)send_plan(&sim, 1U, &planner, 1U);
+        const nrf_cs_cycle_go_t go = {.request_id=900U,.cycle_id=planner.cycle_id,.total_timeout_ms=600000U};
+        assert(nrf_cs_cycle_runtime_go(&sim.rt, &go) == 0);
+        const uint64_t global_end = sim.rt.t0_ms + sim.rt.run_ms;
+        g_now += NRF_CS_CYCLE_GO_SKEW_MS;
+        sim_tick(&sim);
+        assert(sim.active);
+        sim.active = false;
+        const nrf_cs_step_t old_step = sim.step;
+        const nrf_cs_measurement_t measurement = {.outcome=NRF_CS_OUTCOME_SUCCESS,.distance_mm=1234,.confidence=900U};
+        assert(nrf_cs_cycle_runtime_step_done(&sim.rt, &sim.step, &measurement) == 0);
+        if (late) g_now = global_end + 100U;
+        nrf_cs_cycle_runtime_abort(&sim.rt, NRF_CS_CYCLE_FAILURE_ABORTED);
+        const uint64_t finished = sim.rt.finished_ms;
+        const uint64_t hold_from = finished > global_end ? finished : global_end;
+        if (!late) {
+            g_now = finished + NRF_CS_CYCLE_REPLY_HOLD_MS;
+            nrf_cs_cycle_runtime_tick(&sim.rt);
+            assert(nrf_cs_cycle_runtime_reply_active(&sim.rt));
+        }
+        g_now = hold_from + NRF_CS_CYCLE_REPLY_HOLD_MS - 1U;
+        nrf_cs_cycle_runtime_tick(&sim.rt);
+        nrf_cs_cycle_result_t page;
+        assert(nrf_cs_cycle_runtime_result_page(&sim.rt, 1000U, 0U, &page) == 0);
+        assert(page.record_total == 1U && page.records[0].distance_mm == 1234);
+        ++g_now;
+        nrf_cs_cycle_runtime_tick(&sim.rt);
+        assert(!nrf_cs_cycle_runtime_reply_active(&sim.rt) && sim.rt.record_count == 0U);
+        assert(nrf_cs_cycle_runtime_result_page(&sim.rt, 1001U, 0U, &page) == -1);
+        assert(nrf_cs_cycle_runtime_step_done(&sim.rt, &sim.step, &measurement) == -1);
+        assert(nrf_cs_scheduler_abort_cycle(&planner, NRF_CS_FAILURE_TRANSPORT) == NRF_CS_OK);
+        assert(nrf_cs_scheduler_start_cycle(&planner, ids, 5U) == NRF_CS_OK);
+        (void)send_plan(&sim, 1U, &planner, 2000U);
+        const nrf_cs_cycle_go_t next_go = {.request_id=2001U,.cycle_id=planner.cycle_id,.total_timeout_ms=600000U};
+        assert(nrf_cs_cycle_runtime_go(&sim.rt, &next_go) == 0);
+        g_now += NRF_CS_CYCLE_GO_SKEW_MS;
+        sim_tick(&sim);
+        assert(sim.active && sim.step.attempt_id > old_step.attempt_id);
+        assert(nrf_cs_cycle_runtime_step_done(&sim.rt, &old_step, &measurement) == -1);
+        assert(sim.rt.record_count == 0U);
+        nrf_cs_cycle_runtime_release(&sim.rt);
+        assert(!sim.active && !nrf_cs_cycle_runtime_reply_active(&sim.rt));
+    }
+}
+
 int main(void)
 {
+    test_terminal_records_survive_until_global_collection_deadline();
     test_unchecked_pbr_is_recorded_and_retried();
     test_relay_hands_the_turn_on_without_waiting_for_the_slot();
     test_relay_without_releases_falls_back_to_the_time_slots();

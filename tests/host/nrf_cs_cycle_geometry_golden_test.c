@@ -28,7 +28,8 @@ static nrf_cs_measurement_t golden_measurement(unsigned execution,unsigned attem
         .distance_mm=oracle_distance(step.initiator,step.reflector),.confidence=900};
 }
 
-static uint32_t scenario(size_t count,uint32_t rate,bool fail)
+static uint32_t scenario(size_t count,uint32_t rate,bool fail,const nrf_cs_policy_t *policy,
+    uint32_t latency_ms,bool releases)
 {
     nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
     nrf_cs_scheduler_t scheduler;
@@ -42,8 +43,9 @@ static uint32_t scenario(size_t count,uint32_t rate,bool fail)
     if(count==5){coords[1][2]=200;coords[2][2]=-100;coords[3][2]=300;}
     setup(count,ids);
     for(size_t i=0;i<count;++i){ids[i]=(nrf_cs_node_id_t)i;g_nodes[i].id=ids[i];}
-    g_main=0;g_bus_hz=rate;g_ble_latency_ms=100;all_timeout=fail;
-    start_scheduler(&scheduler,ids,count,&k_policy);
+    g_main=0;g_bus_hz=rate;g_ble_latency_ms=latency_ms;g_relay_releases=releases;all_timeout=fail;
+    start_scheduler(&scheduler,ids,count,policy);
+    const uint64_t started=g_now;
     assert(nrf_cs_cycle_coordinate(&g_ops,&scheduler,g_main,500,&result,&report)==NRF_CS_COORD_OK);
     assert(report.collected_mask==(1U<<count)-1U);
     assert(report.release_mask==(1U<<count)-1U);
@@ -63,7 +65,8 @@ static uint32_t scenario(size_t count,uint32_t rate,bool fail)
             digest=(digest^record->outcome)*16777619U;
         }
     }
-    for(size_t e=0;e<count*(count-1);++e)assert(directed[e]==3);
+    const unsigned expected_records=fail?policy->max_attempts:policy->samples_per_pair;
+    for(size_t e=0;e<count*(count-1);++e)assert(directed[e]==expected_records);
     for(size_t i=0;i<nrf_cs_scheduler_pair_count(&scheduler);++i){
         pairs[i]=*nrf_cs_scheduler_pair_at(&scheduler,i);
         if(!fail){
@@ -76,6 +79,7 @@ static uint32_t scenario(size_t count,uint32_t rate,bool fail)
     for(size_t i=0;i<count;++i)assert(solution.nodes[i].solved==(!fail || solution.nodes[i].node_id==0));
     if(!fail){
         assert(solution.inconsistent_pair_count==0 && solution.max_residual_mm<=5);
+        for(size_t i=0;i<count;++i)assert(nrf_geometry_position_uncertainty_acceptable(solution.nodes[i].uncertainty_mm));
         for(size_t a=0;a<count;++a)for(size_t b=a+1;b<count;++b){
             double dx=solution.nodes[a].x_mm-solution.nodes[b].x_mm;
             double dy=solution.nodes[a].y_mm-solution.nodes[b].y_mm;
@@ -83,9 +87,13 @@ static uint32_t scenario(size_t count,uint32_t rate,bool fail)
             assert(fabs(sqrt(dx*dx+dy*dy+dz*dz)-oracle_distance(solution.nodes[a].node_id,solution.nodes[b].node_id))<=5.0);
         }
     }
-    assert(count_ops(last_go_end()+1,last_go_end()+report.run_ms,true,0)==0);
-    printf("golden nodes=%u rate=%u directed=%u pairs=%u all_timeout=%u digest=%u\n",
-        (unsigned)count,rate,(unsigned)(count*(count-1)),(unsigned)nrf_cs_scheduler_pair_count(&scheduler),fail?1U:0U,digest);
+    if(releases)assert(report.relay_early);
+    const uint64_t quiet_end=report.relay_early?g_main_complete_seen_ms:last_go_end()+report.run_ms;
+    assert(count_ops(last_go_end()+1,quiet_end,true,0)==0);
+    assert(g_now-started<=nrf_cs_cycle_coordinator_budget_ms(policy,count*(count-1),count));
+    printf("golden nodes=%u rate=%u samples=%u releases=%u directed=%u pairs=%u records=%zu elapsed_ms=%llu all_timeout=%u digest=%u\n",
+        (unsigned)count,rate,policy->samples_per_pair,releases?1U:0U,(unsigned)(count*(count-1)),
+        (unsigned)nrf_cs_scheduler_pair_count(&scheduler),result.record_count,(unsigned long long)(g_now-started),fail?1U:0U,digest);
     return digest;
 }
 
@@ -93,9 +101,15 @@ int main(void)
 {
     const uint32_t rates[]={25000,50000,100000};
     for(size_t n=4;n<=5;++n)for(unsigned r=0;r<3;++r){
-        uint32_t first=scenario(n,rates[r],false);
-        assert(scenario(n,rates[r],false)==first);
-        (void)scenario(n,rates[r],true);
+        uint32_t first=scenario(n,rates[r],false,&k_policy,100U,false);
+        assert(scenario(n,rates[r],false,&k_policy,100U,false)==first);
+        (void)scenario(n,rates[r],true,&k_policy,100U,false);
+    }
+    const nrf_cs_policy_t workflow={.pair_timeout_ms=2400U,.max_attempts=2U,.min_confidence=500U,
+        .samples_per_pair=9U,.full_rotation=true,.relay_order=true,.require_both_directions=true};
+    for(unsigned r=0;r<3;++r){
+        const uint32_t first=scenario(5U,rates[r],false,&workflow,1300U,false);
+        assert(scenario(5U,rates[r],false,&workflow,1300U,true)==first);
     }
     return 0;
 }

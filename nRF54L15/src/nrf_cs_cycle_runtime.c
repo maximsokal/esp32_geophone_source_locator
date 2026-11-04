@@ -255,7 +255,11 @@ void nrf_cs_cycle_runtime_tick(nrf_cs_cycle_runtime_t *rt)
 
     const uint64_t now = now_ms(rt);
     if (rt->state == NRF_CS_CYCLE_STATE_COMPLETE || rt->state == NRF_CS_CYCLE_STATE_FAILED) {
-        if (now >= rt->finished_ms && now - rt->finished_ms >= NRF_CS_CYCLE_REPLY_HOLD_MS) forget_cycle(rt);
+        /* An early local finish must not discard records before the coordinator collects the global cycle. */
+        if (now >= rt->finished_ms && now - rt->finished_ms >= NRF_CS_CYCLE_REPLY_HOLD_MS &&
+            now >= rt->t0_ms && now - rt->t0_ms >= (uint64_t)rt->run_ms + NRF_CS_CYCLE_REPLY_HOLD_MS) {
+            forget_cycle(rt);
+        }
         return;
     }
     if (rt->state != NRF_CS_CYCLE_STATE_RUNNING) return;
