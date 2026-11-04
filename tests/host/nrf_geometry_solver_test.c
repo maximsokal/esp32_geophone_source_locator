@@ -728,6 +728,53 @@ static void test_joint_mirror_resolution_through_shared_pair(void)
     assert(iabs(d->x_mm - 3500) <= 5 && iabs(d->y_mm - 5000) <= 5);
 }
 
+static void test_zero_horizontal_first_remote_does_not_claim_rotation_axis(void)
+{
+    nrf_geometry_node_input_t vertical_inputs[2] = {{.node_id = 0U}, {.node_id = 1U, .z_mm = 1000}};
+    nrf_cs_pair_result_t vertical_pair = make_pair(0U, 1U, NRF_CS_PAIR_VALID, 1000);
+    nrf_geometry_solution_t vertical_solution;
+    assert(nrf_geometry_solver_solve_partial(vertical_inputs, 2U, &vertical_pair, 1U, &vertical_solution) == NRF_GEOMETRY_OK);
+    assert(find_node(&vertical_solution, 1U)->solved);
+    assert(find_node(&vertical_solution, 1U)->x_mm == 0 && find_node(&vertical_solution, 1U)->y_mm == 0);
+    const int32_t xy[5][2] = {{0, 0}, {0, 0}, {3000, 0}, {0, 4000}, {3000, 4000}};
+    for (int32_t height = -1000; height <= 1000; height += 1000) {
+        for (size_t n = 4U; n <= 5U; ++n) {
+            nrf_geometry_node_input_t inputs[5];
+            nrf_cs_pair_result_t pairs[NRF_CS_MAX_PAIRS];
+            size_t count = 0U;
+            for (size_t i = 0U; i < n; ++i) {
+                inputs[i] = (nrf_geometry_node_input_t){.node_id = (uint8_t)i, .z_mm = i == 1U ? height : 0};
+                for (size_t j = 0U; j < i; ++j) {
+                    const double dz = (double)inputs[i].z_mm - inputs[j].z_mm;
+                    const double d = hypot(hypot((double)xy[i][0] - xy[j][0], (double)xy[i][1] - xy[j][1]), dz);
+                    pairs[count++] = make_pair((uint8_t)j, (uint8_t)i, NRF_CS_PAIR_VALID, (int32_t)lround(d));
+                }
+            }
+            nrf_geometry_solution_t solution;
+            assert(nrf_geometry_solver_solve(inputs, n, pairs, count, &solution) == NRF_GEOMETRY_OK);
+            for (size_t i = 0U; i < n; ++i) {
+                const nrf_geometry_node_position_t *p = find_node(&solution, (uint8_t)i);
+                assert(p != NULL && p->solved);
+                assert(hypot((double)p->x_mm - xy[i][0], (double)p->y_mm - xy[i][1]) <= 5.0);
+                assert(nrf_geometry_position_uncertainty_acceptable(p->uncertainty_mm));
+            }
+            assert(solution.refined && solution.inconsistent_pair_count == 0U && solution.max_residual_mm <= 1);
+            const nrf_geometry_node_input_t main_input = inputs[0];
+            for (size_t i = 0U; i + 1U < n; ++i) inputs[i] = inputs[i + 1U];
+            inputs[n - 1U] = main_input;
+            assert(nrf_geometry_solver_solve(inputs, n, pairs, count, &solution) == NRF_GEOMETRY_OK);
+            const double reflection = find_node(&solution, 3U)->y_mm < 0 ? -1.0 : 1.0;
+            for (size_t i = 0U; i < n; ++i) {
+                const nrf_geometry_node_position_t *p = &solution.nodes[i];
+                assert(p->node_id == inputs[i].node_id && p->solved);
+                assert(hypot((double)p->x_mm - xy[p->node_id][0], reflection * p->y_mm - xy[p->node_id][1]) <= 5.0);
+                assert(nrf_geometry_position_uncertainty_acceptable(p->uncertainty_mm));
+            }
+            assert(solution.inconsistent_pair_count == 0U && solution.max_residual_mm <= 1);
+        }
+    }
+}
+
 int main(void)
 {
     assert(!nrf_geometry_position_uncertainty_acceptable(-1));
@@ -758,5 +805,6 @@ int main(void)
     test_refinement_with_missing_pairs();
     test_near_collinear_layout_reports_large_uncertainty();
     test_joint_mirror_resolution_through_shared_pair();
+    test_zero_horizontal_first_remote_does_not_claim_rotation_axis();
     return 0;
 }

@@ -68,7 +68,10 @@ int main(void)
      * IFFT peak over median bin, plain confidence, confidence with the peak, reason code (nrf_cs_confidence_reason_t). */
     const char *extra_path = getenv("BLE6_REPLAY_EXTRA");
     FILE *extra = extra_path != NULL ? fopen(extra_path, "wb") : NULL;
-    if (in == NULL || out == NULL || (extra_path != NULL && extra == NULL)) return 3;
+    const char *peak_path = getenv("BLE6_REPLAY_PEAK");
+    FILE *peak = peak_path != NULL ? fopen(peak_path, "wb") : NULL;
+    if (in == NULL || out == NULL || (extra_path != NULL && extra == NULL) ||
+        (peak_path != NULL && peak == NULL)) return 3;
     float src[150], stock[150], buf[2 * CONFIG_BT_CS_DE_NFFT_SIZE], rtt, result[4];
     uint16_t counts[75];
     uint16_t steps;
@@ -139,11 +142,20 @@ int main(void)
         if (extra != NULL) {
             /* The production order: the (filled) combined IQ goes through cs_de_ifft once more, which leaves the magnitude profile. */
             float sharp = NAN, tail[4];
+            float path_quality[5] = {NAN, NAN, NAN, NAN, NAN};
             if (isfinite(raw_ifft) && raw_ifft >= 0.0f) {
                 for (size_t i = 0; i < 2 * CONFIG_BT_CS_DE_NFFT_SIZE; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
                 (void)nrf_cs_iq_gap_fill(buf, counts, 75U);
                 (void)cs_de_ifft(buf);
+                const uint32_t selected = find_ifft_peak_index(buf);
+                float maximum = 0.0f;
+                for (size_t k = 0; k < CONFIG_BT_CS_DE_NFFT_SIZE; ++k)
+                    if (buf[k] > maximum) maximum = buf[k];
+                path_quality[0] = buf[selected];
+                path_quality[1] = maximum;
+                path_quality[2] = (float)selected;
                 sharp = nrf_cs_ifft_peak_to_floor(buf, CONFIG_BT_CS_DE_NFFT_SIZE);
+                if (maximum > 0.0f) path_quality[3] = sharp * path_quality[0] / maximum;
             }
             const bool pbr = isfinite(raw_ifft) || isfinite(result[2]);
             const bool rtt_ok = isfinite(rtt) && rtt > 0.0f;
@@ -151,12 +163,16 @@ int main(void)
             tail[1] = (float)nrf_cs_measurement_confidence(good, 15U, pbr, rtt_ok, result[1], rtt);
             tail[2] = (float)nrf_cs_measurement_confidence_with_peak(good, 15U, pbr, rtt_ok, result[1], rtt, sharp);
             tail[3] = (float)nrf_cs_measurement_confidence_reason(good, 15U, pbr, rtt_ok, result[1], rtt, sharp);
+            path_quality[4] = (float)nrf_cs_measurement_confidence_with_peak(
+                good, 15U, pbr, rtt_ok, result[1], rtt, path_quality[3]);
             if (fwrite(tail, sizeof(tail), 1, extra) != 1U) return 5;
+            if (peak != NULL && fwrite(path_quality, sizeof(path_quality), 1, peak) != 1U) return 5;
         }
         ++procedures;
     }
     fclose(in); fclose(out);
     if (extra != NULL) fclose(extra);
+    if (peak != NULL) fclose(peak);
     printf("replayed=%zu\n", procedures);
     return 0;
 }

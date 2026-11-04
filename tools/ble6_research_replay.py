@@ -215,6 +215,7 @@ float cs_de_rtt(int32_t,uint8_t);float cs_de_phase_slope(float *);float cs_de_if
     manifest_path = workdir / "manifest.json"; manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     env = os.environ.copy(); env["BLE6_REPLAY_INPUT"] = str(input_path); env["BLE6_REPLAY_OUTPUT"] = str(output_path)
     env["BLE6_REPLAY_EXTRA"] = str(workdir / "extra.bin")
+    env["BLE6_REPLAY_PEAK"] = str(workdir / "peak.bin")
     run = subprocess.run([sys.executable, "tools/run_host_tests.py", "--manifest", str(manifest_path),
                     "--build-dir", str(workdir / "native")], cwd=ROOT, env=env, check=False,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")

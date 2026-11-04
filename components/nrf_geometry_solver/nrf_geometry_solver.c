@@ -948,11 +948,25 @@ static nrf_geometry_result_t nrf_geometry_solver_solve_impl(
     /* Iteratively place every node reachable through valid CS pairs from
      * the already-solved set. Nodes with no such path stay unsolved. The
      * first node placed after MAIN defines +X (the refinement gauge). */
+    size_t first_index = 0U;
+    for (size_t i = 0U; i < solution->node_count; ++i) {
+        double slant_mm, horizontal_mm;
+        if ((int)i != main_index && find_pair_distance(pairs, pair_count,
+                solution->nodes[main_index].node_id, solution->nodes[i].node_id, &slant_mm) &&
+            horizontal_distance_mm(slant_mm,
+                (double)solution->nodes[i].z_mm - solution->nodes[main_index].z_mm, &horizontal_mm) &&
+            horizontal_mm >= 1.0) {
+            /* A coincident horizontal projection cannot define the rotation gauge. */
+            first_index = i;
+            break;
+        }
+    }
     int axis_index = -1;
     bool progress = true;
     while (progress) {
         progress = false;
-        for (size_t i = 0; i < solution->node_count; ++i) {
+        for (size_t offset = 0U; offset < solution->node_count; ++offset) {
+            const size_t i = (first_index + offset) % solution->node_count;
             if (solution->nodes[i].solved) {
                 continue;
             }

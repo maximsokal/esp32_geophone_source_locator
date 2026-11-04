@@ -8,14 +8,13 @@
 /*
  * How sharp the IFFT peak is: the strongest bin over the median bin of the same IFFT magnitude profile.
  *
- * cs_de_ifft() leaves its magnitude profile in the first NFFT floats of the buffer it was given, so this costs one pass and no extra
- * FFT. A clean direct path gives a high ratio; several comparable paths (multipath) or noise give a low one.
+ * cs_de_ifft() leaves its magnitude profile in the first NFFT floats of the buffer it was given. This helper reorders that profile.
+ * The strongest bin may belong to a later path than the SDK-selected distance. A coherent reflected path can also have a high
+ * ratio; this is spectral contrast, not evidence of a direct path or calibrated distance accuracy.
  *
- * Why it is logged: on the Wieme replay (records with every legal channel observed, line of sight, 1-5 m, files the threshold was
- * not chosen on) estimates whose ratio exceeds 10 had a median error of 0.12 m and a 95th percentile of 0.58 m after the constant
- * offset was removed, against 0.20 m and 2.35 m for all of them; 44% of the estimates passed. The replay is one dataset and one
- * hardware, so the threshold is a hypothesis for this board, and the ratio is only logged (NRF_CS_IFFT_SHARP_PEAK_RATIO is the
- * value the analysis used). Nothing is rejected on it yet.
+ * The confidence policy currently uses this ratio. Earlier 44% availability/accuracy claims predate paired-product averaging:
+ * current Wieme replay accepts 21297/21370 finite distances, including 3029 errors >2 m without an offset correction.
+ * See docs/testing/ble6-b5-confidence-diagnostics-2026-11-04.md. The threshold remains an unvalidated policy assumption.
  */
 #define NRF_CS_IFFT_SHARP_PEAK_RATIO 10.0f
 

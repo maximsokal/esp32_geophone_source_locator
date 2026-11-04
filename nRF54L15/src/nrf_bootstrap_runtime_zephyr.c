@@ -680,9 +680,12 @@ static bool handle_cycle_write(const uint8_t *frame, size_t length, int32_t *tra
         }
         if (request.page == NRF_CS_CYCLE_RESULT_RELEASE_PAGE) {
             key = k_spin_lock(&s_cycle_lock);
-            nrf_cs_cycle_runtime_release(&s_cycle);
+            /* A delayed RELEASE must not discard a newer plan or its measurements. */
+            if (s_cycle.cycle_id == 0U || s_cycle.cycle_id == request.cycle_id) {
+                nrf_cs_cycle_runtime_release(&s_cycle);
+                rc = 0;
+            }
             k_spin_unlock(&s_cycle_lock, key);
-            rc = 0;
             break;
         }
         nrf_cs_cycle_result_t page;

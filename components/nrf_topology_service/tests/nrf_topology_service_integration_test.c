@@ -20,6 +20,9 @@
 #include "nrf_bootstrap.h"
 #include "nrf_cs_control_protocol.h"
 #include "nrf_cs_cycle_runtime.h"
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+#include "nrf_geometry_solver.h"
+#endif
 #include "nrf_log_protocol.h"
 #include "nrf_node_state.h"
 #include "nrf_read_window.h"
@@ -3155,6 +3158,43 @@ static void request_partial_limited_mesh(void)
     s_vtask_delay_hook = sim_cycle_tick_nodes;
 }
 
+static void assert_vertical_first_mesh_is_reusable(void)
+{
+    const int32_t xyz[5][3] = {{0,0,0},{0,0,1000},{3000,0,0},{0,4000,0},{3000,4000,0}};
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.complete && progress.success && !progress.partial && progress.failure_reason[0] == '\0');
+    assert(progress.geometry.node_count == 5U && progress.geometry.max_residual_mm <= 1);
+    for (size_t i = 0U; i < 5U; ++i) {
+        const nrf_topology_ranging_node_t *node = &progress.geometry.nodes[i];
+        assert(node->node_id == i && node->solved);
+        assert(abs(node->x_mm - xyz[i][0]) <= 5 && abs(node->y_mm - xyz[i][1]) <= 5 && node->z_mm == xyz[i][2]);
+        assert(nrf_geometry_position_uncertainty_acceptable(node->uncertainty_mm));
+    }
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_ranging_result_t frozen;
+    assert(nrf_topology_service_get_snapshot(&snapshot) == ESP_OK);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(&snapshot,
+        (uint64_t)esp_timer_get_time() / 1000U, 0U, &frozen) == ESP_OK);
+    assert(frozen.success && frozen.pair_count == 10U && frozen.pairs[0].distance_mm == 1000);
+}
+
+static void test_vertical_first_remote_does_not_block_automatic_geometry(void)
+{
+    reset_world(); s_tca_present = true; prepare_ranging_nodes(4U);
+    s_nodes[1].relative_z_mm = 1000;
+    s_cs_use_pair_distances = true;
+    const int32_t distances[10] = {1000,3000,4000,5000,3162,4123,5099,5000,4000,3000};
+    memcpy(s_cs_pair_distances, distances, sizeof(distances));
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_partial_limited_mesh);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_vertical_first_mesh_is_reusable);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
 static void assert_excluded_cable_value_is_preserved(void)
 {
     assert_partial_geometry_usable();
@@ -4780,6 +4820,7 @@ int main(void)
     test_one_missing_edge_can_preserve_a_solved_geometry();
     test_partial_geometry_requires_redundant_non_degenerate_constraints();
     test_full_geometry_rejects_uncertainty_after_automatic_and_manual_solve();
+    test_vertical_first_remote_does_not_block_automatic_geometry();
     test_partial_geometry_keeps_cable_diagnostics_but_rejects_valid_contradictions();
     test_partial_geometry_can_exclude_one_disagreeing_pair();
     test_autonomous_ranging_rejects_bad_requests();

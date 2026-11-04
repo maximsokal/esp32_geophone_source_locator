@@ -750,6 +750,35 @@ int main(void)
         assert(false && "partial-mesh recorder worker should finish STOP metadata");
     }
     assert(final_metadata_written && strcmp(last_metadata_status, "complete") == 0);
+    /* A co-located first REMOTE must not prevent the other three from defining the frame. */
+    const int32_t coincident_distances[] = {0,3000,4000,5000,3000,4000,5000,5000,4000,3000};
+    edge = 0U;
+    for (uint8_t a = 0U; a < 4U; ++a) {
+        for (uint8_t b = a + 1U; b < 5U; ++b) {
+            fake_frozen_ranging.pairs[edge] = (nrf_cs_pair_result_t){.node_a=a,.node_b=b,
+                .state=NRF_CS_PAIR_VALID,.distance_mm=coincident_distances[edge],.confidence=900,.valid_samples=9U};
+            ++edge;
+        }
+    }
+    const unsigned before_coincident = fake_autonomous_requests;
+    assert(seismic_recorder_start("OBJ_0009") == ESP_OK);
+    assert(fake_autonomous_requests == before_coincident);
+    assert(seismic_recorder_read_session_geometry("OBJ_0009", "S000001", &final_geometry) == ESP_OK);
+    const int32_t coincident_xy[4][2] = {{0,0},{3000,0},{0,4000},{3000,4000}};
+    for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) {
+        assert(final_geometry.pods[pod].computed);
+        assert(abs(final_geometry.pods[pod].x_mm - coincident_xy[pod][0]) <= 5);
+        assert(abs(final_geometry.pods[pod].y_mm - coincident_xy[pod][1]) <= 5);
+    }
+    assert(seismic_recorder_read_session_cs_pairs("OBJ_0009", "S000001", &written_cs_pairs) == ESP_OK);
+    assert(written_cs_pairs.pair_count == 10U && written_cs_pairs.pairs[0].valid && written_cs_pairs.pairs[0].distance_mm == 0);
+    assert(seismic_recorder_stop() == ESP_OK);
+    final_metadata_written = false;
+    if (setjmp(worker_finished) == 0) {
+        fake_recorder_task(NULL);
+        assert(false && "coincident-mesh recorder worker should finish STOP metadata");
+    }
+    assert(final_metadata_written && strcmp(last_metadata_status, "complete") == 0);
     return 0;
 #endif
 }

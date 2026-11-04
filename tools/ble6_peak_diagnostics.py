@@ -4,7 +4,58 @@ import os
 import struct
 import subprocess
 import sys
+import math
 import ble6_research_replay as replay
+from ble6_series_benchmark import metrics
+
+
+def confidence_study():
+    """Compare the same confidence function with strongest/selected-path evidence, no fitted offset."""
+    cases = list(replay.ocm_cases()) + list(replay.wieme_cases())
+    for name in ('owl-indoor.parquet','owl-outdoor.parquet'):
+        cases.extend(replay.owl_cases(replay.OWL/name,200))
+    work = replay.BUILD/'selected-confidence'
+    results,source = replay.build_and_replay(cases,workdir=work)
+    extra = replay.confidence_extra(work)
+    peak = list(struct.iter_unpack('<5f',(work/'peak.bin').read_bytes()))
+    assert len(cases)==len(results)==len(extra)==len(peak)
+    groups,examples = {},[]
+    for case,result,tail,path in zip(cases,results,extra,peak):
+        best = result[1]
+        if not math.isfinite(best) or best<0 or case['truth_m'] is None:
+            continue
+        error = best-case['truth_m']
+        policies = {'plain':tail[1],'production':tail[2],'selected_peak':path[4]}
+        keys = [case['dataset']]
+        if case['dataset']=='Wieme':
+            keys.append('Wieme/NLOS' if 'NLOS' in case['file'].split('/') else 'Wieme/LOS')
+        for key in keys:
+            bucket = groups.setdefault(key,{'all':[],'plain':[],'production':[],'selected_peak':[],
+                'removed_good_1m':0,'removed_bad_2m':0})
+            bucket['all'].append(error)
+            for policy,confidence in policies.items():
+                if confidence>=500: bucket[policy].append(error)
+            removed = tail[2]>=500 and path[4]<500
+            bucket['removed_good_1m'] += removed and abs(error)<=1
+            bucket['removed_bad_2m'] += removed and abs(error)>2
+        if tail[2]>=500 and path[4]<500 and len(examples)<30:
+            examples.append({k:case[k] for k in ('dataset','file','row','truth_m')} |
+                {'estimate_m':best,'error_m':error,'global_ratio':tail[0],
+                 'selected_ratio':path[3],'production':tail[2],'selected_confidence':path[4]})
+    for bucket in groups.values():
+        for policy in ('all','plain','production','selected_peak'):
+            errors = bucket[policy]
+            bucket[policy] = metrics(errors) | {'good_1m':sum(abs(e)<=1 for e in errors)}
+        n = bucket['all']['n']
+        for policy in ('plain','production','selected_peak'):
+            bucket[policy]['coverage'] = bucket[policy]['n']/n
+    report = {'cases':len(cases),'groups':groups,'examples':examples,
+        'sdk_sha256':replay.sha256(source),'offset_m':0,
+        'limitations':['same previously inspected datasets, not new holdout','host FFT, not target RF',
+            'no complete synchronous geometry in single-link datasets','distance estimates unchanged']}
+    (work/'report.json').write_text(json.dumps(report,indent=2,allow_nan=False),encoding='utf-8')
+    print(json.dumps(groups,indent=2),flush=True)
+    print('REPORT',work/'report.json')
 
 
 def diagnose(case, size):
@@ -41,4 +92,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--confidence',action='store_true',help='compare strongest and selected-path confidence on public IQ')
+    args = parser.parse_args()
+    confidence_study() if args.confidence else main()

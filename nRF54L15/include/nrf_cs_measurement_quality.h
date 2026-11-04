@@ -45,11 +45,11 @@ uint16_t nrf_cs_measurement_confidence(
  *
  * Bench logs of 2026-11-03 (36 successful attempts, every one inside the 5 m cable bound, IFFT peak 26-137 times the median bin):
  * the coarse RTT was missing (0) or 6-7 m away from the PBR answer on the 4 attempts that fell below the 500 production gate, and
- * every one of them was a correct distance (4.68, 4.87, 4.95 and 5.01 m). All attempts of MAIN->G4 were among them, so the pair never
- * got a sample and the whole ranging ended partial. A sharp peak is the evidence of a clean direct path that the RTT cannot give,
- * so with enough tones and a peak above NRF_CS_IFFT_SHARP_PEAK_RATIO the confidence is at least NRF_CS_SHARP_PEAK_CONFIDENCE.
- * A PBR answer more than NRF_CS_SHARP_PEAK_RTT_LIMIT_M from a valid RTT is still left to the plain rule. A sharp but wrong peak is
- * not caught here: the direction, triangle and cable checks of the scheduler decide.
+ * these distances (4.68, 4.87, 4.95 and 5.01 m) were compatible with the cable bound, not independently proven correct.
+ * All attempts of MAIN->G4 were among them, so the pair never got a sample and the whole ranging ended partial. The current
+ * heuristic lifts confidence with enough tones and a peak above NRF_CS_IFFT_SHARP_PEAK_RATIO; this does not establish a direct path.
+ * A PBR answer more than NRF_CS_SHARP_PEAK_RTT_LIMIT_M from a valid RTT is left to the plain rule. Direction/triangle/cable checks
+ * cannot guarantee detection of coherent wrong distances either; see docs/testing/ble6-b5-confidence-diagnostics-2026-11-04.md.
  */
 #define NRF_CS_SHARP_PEAK_CONFIDENCE 600U
 #define NRF_CS_SHARP_PEAK_RTT_LIMIT_M (3.0f * NRF_CS_RTT_AGREEMENT_M)
