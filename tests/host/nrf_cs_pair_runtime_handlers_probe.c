@@ -43,6 +43,8 @@ typedef int cs_de_quality_t;
 #define BT_CONN_LE_CS_PROCEDURE_COMPLETE 0
 #define BT_CONN_LE_CS_PROCEDURE_ABORTED 15
 #define BT_CONN_LE_CS_SUBEVENT_ABORTED 15
+#define BT_CONN_LE_CS_PROCEDURES_DISABLED 0
+#define BT_CONN_LE_CS_PROCEDURES_ENABLED 1
 struct net_buf_simple { unsigned len; uint8_t data[128]; };
 struct bt_le_cs_subevent_step { uint8_t mode,channel,data_len; const uint8_t *data; };
 #pragma pack(push,1)
@@ -75,7 +77,7 @@ typedef struct {
     struct {float ifft,phase_slope,rtt,best;} distance_estimates[1];
 } cs_de_report_t;
 #define BT_CONN_LE_CS_ROLE_INITIATOR 0
-struct bt_conn_le_cs_procedure_enable_complete { int8_t selected_tx_power;unsigned tone_antenna_config_selection; };
+struct bt_conn_le_cs_procedure_enable_complete { int8_t selected_tx_power;unsigned tone_antenna_config_selection,state; };
 struct bt_conn_le_cs_subevent_result {
     struct {int8_t reference_power_level;uint8_t num_antenna_paths;
         unsigned procedure_done_status,subevent_done_status,procedure_abort_reason,subevent_abort_reason;
@@ -277,6 +279,7 @@ static float cs_de_ifft(float *iq)
 #include "execute_work_handler.inc"
 #include "nrf_cs_pair_runtime_zephyr_execute.inc"
 #include "procedure_enable_complete_cb.inc"
+#include "nrf_cs_pair_runtime_zephyr_is_progress_required.inc"
 #include "subevent_data_cb.inc"
 
 static int connect_op(void *c,nrf_cs_node_id_t id)
@@ -369,8 +372,31 @@ static void test_consecutive_attempts_do_not_reuse_cleanup_timing(void)
     s_schedule_fail=false;
 }
 
+static void test_procedure_disabled_is_not_an_enabled_reflector(void)
+{
+    s_incoming_conn=&s_connection;s_outgoing_conn=NULL;s_reflector_procedure_active=0;s_rf_flags=0;
+    struct bt_conn_le_cs_procedure_enable_complete enabled={.state=BT_CONN_LE_CS_PROCEDURES_ENABLED,
+        .selected_tx_power=4,.tone_antenna_config_selection=BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1};
+    procedure_enable_complete_cb(s_incoming_conn,0,&enabled);
+    assert(s_reflector_procedure_active==1 && s_rf_tx_power==4 && nrf_cs_pair_runtime_zephyr_is_progress_required());
+    struct bt_conn_le_cs_procedure_enable_complete disabled={.state=BT_CONN_LE_CS_PROCEDURES_DISABLED,
+        .selected_tx_power=127,.tone_antenna_config_selection=99};
+    procedure_enable_complete_cb(s_incoming_conn,0,&disabled);
+    printf("disabled reflector callback active=%d tx=%d flags=%d\n",s_reflector_procedure_active,s_rf_tx_power,s_rf_flags);
+    fflush(stdout);
+    assert(s_reflector_procedure_active==0);
+    assert(!nrf_cs_pair_runtime_zephyr_is_progress_required());
+    assert(s_rf_tx_power==4 && s_rf_flags==0);
+    procedure_enable_complete_cb(s_incoming_conn,0,NULL);
+    assert(s_reflector_procedure_active==0);
+    procedure_enable_complete_cb(s_incoming_conn,9,&enabled);
+    assert(s_reflector_procedure_active==0);
+    s_incoming_conn=NULL;
+}
+
 int main(void)
 {
+    test_procedure_disabled_is_not_an_enabled_reflector();
     unsigned gaps=0;
     const unsigned elapsed[]={499,500,501};
     for(unsigned i=0;i<3;++i) {
@@ -419,9 +445,13 @@ int main(void)
         if(!rejected)++gaps;
     }
     start(0);advance_to_procedure();
-    const struct bt_conn_le_cs_procedure_enable_complete power={.selected_tx_power=4,
+    const struct bt_conn_le_cs_procedure_enable_complete power={.state=BT_CONN_LE_CS_PROCEDURES_ENABLED,.selected_tx_power=4,
         .tone_antenna_config_selection=BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1};
     procedure_enable_complete_cb(s_outgoing_conn,0,(void *)&power);
+    const struct bt_conn_le_cs_procedure_enable_complete disabled_power={.state=BT_CONN_LE_CS_PROCEDURES_DISABLED,
+        .selected_tx_power=127,.tone_antenna_config_selection=99};
+    procedure_enable_complete_cb(s_outgoing_conn,0,(void *)&disabled_power);
+    assert(s_rf_tx_power==4 && s_rf_flags==0);
     cs_de_report_t report={0};
     struct ras_ranging_header header={.selected_tx_power=-8,.antenna_paths_mask=1};
     assert(report_ranging_header(&header,&report));

@@ -258,8 +258,10 @@ static void procedure_enable_complete_cb(
     struct bt_conn_le_cs_procedure_enable_complete *params)
 {
     nrf_cs_step_t step;
+    const bool enabled = status == BT_HCI_ERR_SUCCESS && params != NULL &&
+        params->state == BT_CONN_LE_CS_PROCEDURES_ENABLED;
 
-    if ((conn == s_incoming_conn || conn == s_outgoing_conn) && status == BT_HCI_ERR_SUCCESS && params != NULL) {
+    if ((conn == s_incoming_conn || conn == s_outgoing_conn) && enabled) {
         atomic_set(&s_rf_tx_power, params->selected_tx_power);
         if (params->tone_antenna_config_selection != BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1) {
             atomic_or(&s_rf_flags, NRF_CS_RF_ANTENNA_MISMATCH);
@@ -267,8 +269,8 @@ static void procedure_enable_complete_cb(
     }
 
     if (conn == s_incoming_conn) {
-        if (status == BT_HCI_ERR_SUCCESS) {
-            atomic_set(&s_reflector_procedure_active, 1);
+        if (status == BT_HCI_ERR_SUCCESS && params != NULL) {
+            atomic_set(&s_reflector_procedure_active, enabled ? 1 : 0);
             nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
         }
         return;

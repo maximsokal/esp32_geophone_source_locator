@@ -93,6 +93,10 @@ static nrf_cs_measurement_t scripted(unsigned execution, unsigned attempt)
 
 static sim_node_t *find(nrf_cs_node_id_t id);
 
+#ifndef NRF_CS_COORDINATOR_ATTEMPT_LATENCY
+#define NRF_CS_COORDINATOR_ATTEMPT_LATENCY(step, execution) g_ble_latency_ms
+#endif
+
 static void tick_nodes(void)
 {
     for (size_t n = 0U; n < g_node_count; ++n) {
@@ -103,7 +107,7 @@ static void tick_nodes(void)
             ++sim->executes;
             nrf_cs_cycle_runtime_start_result(&sim->rt, &step, 0);
             sim->pending_step = step;
-            sim->complete_at_ms = g_now + g_ble_latency_ms;
+            sim->complete_at_ms = g_now + NRF_CS_COORDINATOR_ATTEMPT_LATENCY(&step, sim->rt.window);
             sim->pending_measurement = true;
         }
         if (sim->pending_measurement && g_now >= sim->complete_at_ms) {

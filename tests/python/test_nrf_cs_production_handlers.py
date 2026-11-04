@@ -14,7 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context"])
+@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled"])
 def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutation):
     build_root = ROOT / ".test-build"
     build_root.mkdir(exist_ok=True)
@@ -36,6 +36,7 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
         (3, "event_work_handler"), (3, "execute_work_handler"),
         (3, "nrf_cs_pair_runtime_zephyr_execute"),
         (3, "procedure_enable_complete_cb"), (3, "subevent_data_cb"),
+        (3, "nrf_cs_pair_runtime_zephyr_is_progress_required"),
     ):
         source = sources[part - 1]
         point = source.index(name + "(")
@@ -65,6 +66,10 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
         if mutation == "stale-timing-context" and name == "runtime_adapter_complete":
             assert "if (context == &s_adapter) {" in body
             body = body.replace("if (context == &s_adapter) {", "if (context == &s_adapter || context == NULL) {")
+        if mutation == "disabled-is-enabled" and name == "procedure_enable_complete_cb":
+            condition = "params->state == BT_CONN_LE_CS_PROCEDURES_ENABLED"
+            assert condition in body
+            body = body.replace(condition, "true")
         line = source[:start].count("\n") + 1
         path = parts[part - 1].relative_to(ROOT).as_posix()
         provenance.append({"function": name, "path": path, "line": line,
@@ -91,7 +96,8 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
     if mutation != "production":
         expected = {"missing-rf-summary": "s_rf_signal_events", "missing-method": "s_provider_flags",
                     "missing-queue-timing": "s_trace_result_timing.measured_ms==100",
-                    "stale-timing-context": "s_trace_result_timing.cleanup_ms==0"}[mutation]
+                    "stale-timing-context": "s_trace_result_timing.cleanup_ms==0",
+                    "disabled-is-enabled": "s_reflector_procedure_active==0"}[mutation]
         assert result.returncode != 0 and "(run)" in result.stdout and expected in result.stdout, result.stdout
     else:
         assert result.returncode == 0, f"Production handler probe failed; artifacts: {output}\n{result.stdout}"
