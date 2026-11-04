@@ -62,6 +62,11 @@ typedef struct {
  */
 #define NRF_GEOMETRY_CONSISTENCY_TOLERANCE_MM 750
 
+static inline bool nrf_geometry_position_uncertainty_acceptable(int32_t uncertainty_mm)
+{
+    return uncertainty_mm >= 0 && uncertainty_mm <= NRF_GEOMETRY_CONSISTENCY_TOLERANCE_MM;
+}
+
 /* Shared by ranging acceptance and recording admission. */
 static inline bool nrf_geometry_metrics_consistent(size_t inconsistent_pair_count, int32_t max_residual_mm)
 {

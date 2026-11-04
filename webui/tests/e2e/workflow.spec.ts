@@ -2,6 +2,35 @@ import { test, expect, catalog } from './fixtures/device';
 import { gate, savedSnapshot, scenarioScreenshot, seismicResponses } from './fixtures/scenarios';
 import { prepareVisualState, workflowActions } from './fixtures/visual-states';
 
+for (const locale of ['en', 'uk'] as const) {
+  test.describe(`uncertain geometry locale ${locale}`, () => {
+    test.use({ appLocale: locale });
+    test(`uncertain full geometry blocks confirmation and retains manual recovery in ${locale}`, async ({ page, api }) => {
+    await prepareVisualState(page, api, { id: 'uncertain-full', locale, tier: 'critical',
+      section: 'workflow', width: 393, height: 852, step: 'RANGING_RESULT', variant: 'partial-usable' });
+    const progress = api.status.ranging!.progress!;
+    progress.success = false;
+    progress.failure_reason = 'geometry_uncertain:1';
+    for (const pair of progress.pairs!) {
+      Object.assign(pair, { state: 'valid', distance_mm: 1000 * Math.abs(pair.node_a - pair.node_b),
+        confidence: 900, valid_samples: 18 });
+    }
+    for (const node of progress.geometry!.nodes!) {
+      Object.assign(node, { x_mm: 1000 * node.node_id, y_mm: 0, node_residual_mm: 0 });
+    }
+    progress.geometry!.nodes![1].uncertainty_mm = 3137475;
+    api.status.workflow!.allowed_actions = ['RETRY', 'SET_DISTANCE', 'BACK'];
+    api.status.workflow!.reason = 'geometry_uncertain:1';
+    await page.reload();
+    await expect(page.getByRole('alert')).toContainText(catalog[locale]['workflow.ranging.reason.geometry_unsolved'].replace('{node}', '1'));
+    await expect(page.locator('[data-command="CONFIRM"]')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: `${catalog[locale]['workflow.distance.edit']}:`, exact: false }).first()).toBeEnabled();
+    await expect(page.locator('.workflow-ranging')).toContainText(catalog[locale]['workflow.ranging.partial']);
+    await scenarioScreenshot(page, `uncertain-full-geometry-${locale}`);
+    });
+  });
+}
+
 test('usable partial geometry keeps the failed pair visible and permits confirmation', async ({ page, api }) => {
   await prepareVisualState(page, api, { id: 'partial-geometry', locale: 'en', tier: 'critical',
     section: 'workflow', width: 393, height: 852, step: 'RANGING_RESULT', variant: 'partial-usable' });

@@ -430,6 +430,18 @@ static void test_solution_consistency_gate_and_residual_mapping(void)
         }
     }
 
+    memset(&solution, 0, sizeof(solution));
+    solution.node_count = 1U;
+    solution.nodes[0].solved = true;
+    const int32_t uncertainties[] = {-1, 0, 750, 751, INT32_MAX};
+    for (size_t i = 0U; i < sizeof(uncertainties) / sizeof(uncertainties[0]); ++i) {
+        solution.nodes[0].uncertainty_mm = uncertainties[i];
+        assert(seismic_recorder_geometry_solution_consistent(&solution) ==
+            (uncertainties[i] >= 0 && uncertainties[i] <= 750));
+    }
+    solution.node_count = NRF_GEOMETRY_MAX_NODES + 1U;
+    assert(!seismic_recorder_geometry_solution_consistent(&solution));
+
     nrf_topology_snapshot_t topology;
     memset(&topology, 0, sizeof(topology));
     topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;

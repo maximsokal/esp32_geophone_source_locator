@@ -20,8 +20,8 @@ function statusFor(step: string): DeviceStatus {
   return { workflow, pods: [] } as unknown as DeviceStatus;
 }
 
-function panelHtml(status: DeviceStatus): string {
-  return renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: 'en' }, createElement(WorkflowPanel, {
+function panelHtml(status: DeviceStatus, locale: 'en' | 'uk' = 'en'): string {
+  return renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale }, createElement(WorkflowPanel, {
     status, objectName: 'Quarry', sendCommand: vi.fn(), onRefreshStatus: async () => true, onWorkflowUpdate: () => undefined,
     onOpenScanner: () => undefined,
   })));
@@ -118,5 +118,22 @@ it('shows partial measurements even when the remaining geometry is usable', () =
   expect(html).toContain(translate('en', 'workflow.ranging.partial'));
   expect(html).not.toContain(translate('en', 'workflow.ranging.success'));
   expect(html).toContain('data-valid-pairs="2"');
+});
+
+it.each(['en', 'uk'] as const)('keeps valid ranges visible but blocks confirmation of uncertain geometry in %s', locale => {
+  const status = statusFor('RANGING_RESULT');
+  status.workflow!.allowed_actions = ['RETRY', 'SET_DISTANCE', 'BACK'];
+  status.workflow!.reason = 'geometry_uncertain:1';
+  (status as unknown as { ranging: unknown }).ranging = {
+    available: true,
+    progress: { complete: true, success: false, partial: true, pairs_done: 1, pairs_total: 1,
+      started_at_ms: 10, updated_at_ms: 20, failure_reason: 'geometry_uncertain:1', pairs: [BENCH_PAIRS[0]] },
+  };
+  const html = panelHtml(status, locale);
+  expect(html).toContain(translate(locale, 'workflow.ranging.reason.geometry_unsolved', { node: '1' }));
+  expect(html).toContain(translate(locale, 'workflow.ranging.partial'));
+  expect(html).not.toContain('geometry_uncertain:1');
+  expect(html).not.toContain('data-command="CONFIRM"');
+  expect(html).toContain(`aria-label="${translate(locale, 'workflow.distance.edit')}:`);
 });
 });

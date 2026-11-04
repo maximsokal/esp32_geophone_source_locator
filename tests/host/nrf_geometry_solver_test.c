@@ -730,6 +730,11 @@ static void test_joint_mirror_resolution_through_shared_pair(void)
 
 int main(void)
 {
+    assert(!nrf_geometry_position_uncertainty_acceptable(-1));
+    assert(nrf_geometry_position_uncertainty_acceptable(0));
+    assert(nrf_geometry_position_uncertainty_acceptable(750));
+    assert(!nrf_geometry_position_uncertainty_acceptable(751));
+    assert(!nrf_geometry_position_uncertainty_acceptable(INT32_MAX));
     test_rejects_missing_main_and_bad_arguments();
     test_main_alone_is_the_origin();
     test_less_than_three_remote_nodes_return_unsolved();

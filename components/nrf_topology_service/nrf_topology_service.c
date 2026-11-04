@@ -2813,8 +2813,8 @@ static bool service_ranging_partial_supported(
         geometry->node_count > NRF_CS_MAX_NODES) return false;
     for (size_t i = 0U; i < geometry->node_count; ++i) {
         unsigned references = 0U;
-        if (!geometry->nodes[i].solved || geometry->nodes[i].uncertainty_mm < 0 ||
-            geometry->nodes[i].uncertainty_mm > NRF_GEOMETRY_CONSISTENCY_TOLERANCE_MM) return false;
+        if (!geometry->nodes[i].solved ||
+            !nrf_geometry_position_uncertainty_acceptable(geometry->nodes[i].uncertainty_mm)) return false;
         for (size_t j = 0U; j < geometry->node_count; ++j) {
             if (i == j) continue;
             for (size_t p = 0U; p < pair_count; ++p) {
@@ -3228,6 +3228,15 @@ static void service_ranging_process(nrf_topology_worker_state_t *worker)
                    progress->geometry.max_residual_mm)) {
         service_ranging_finish(worker, false, "geometry_inconsistent", now_ms);
     } else if (service_ranging_geometry_solves_all_nodes(worker)) {
+        for (size_t i = 0U; i < progress->geometry.node_count; ++i) {
+            const nrf_topology_ranging_node_t *node = &progress->geometry.nodes[i];
+            if (!nrf_geometry_position_uncertainty_acceptable(node->uncertainty_mm)) {
+                char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
+                (void)snprintf(reason, sizeof(reason), "geometry_uncertain:%u", (unsigned)node->node_id);
+                service_ranging_finish(worker, false, reason, now_ms);
+                return;
+            }
+        }
         service_ranging_finish(worker, true, NULL, now_ms);
     } else {
         char reason[NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE];
@@ -4761,6 +4770,12 @@ esp_err_t nrf_topology_service_ranging_set_manual(
             }
         }
         if (!dest->solved) progress->success = false;
+        if (dest->solved && !nrf_geometry_position_uncertainty_acceptable(dest->uncertainty_mm)) {
+            progress->success = false;
+            if (progress->failure_reason[0] == '\0')
+                (void)snprintf(progress->failure_reason, sizeof(progress->failure_reason),
+                    "geometry_uncertain:%u", (unsigned)dest->node_id);
+        }
     }
     if (solution.node_count != result->membership_count) progress->success = false;
     if (excluded && (!service_ranging_partial_supported(&result->geometry, result->pairs, result->pair_count) ||

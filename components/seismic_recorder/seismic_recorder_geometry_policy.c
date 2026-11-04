@@ -291,7 +291,11 @@ bool seismic_recorder_geometry_solution_consistent(
     const nrf_geometry_solution_t *solution
 )
 {
-    return
-        solution != NULL &&
-        nrf_geometry_metrics_consistent(solution->inconsistent_pair_count, solution->max_residual_mm);
+    if (solution == NULL || solution->node_count > NRF_GEOMETRY_MAX_NODES ||
+        !nrf_geometry_metrics_consistent(solution->inconsistent_pair_count, solution->max_residual_mm)) return false;
+    for (size_t i = 0U; i < solution->node_count; ++i) {
+        if (solution->nodes[i].solved &&
+            !nrf_geometry_position_uncertainty_acceptable(solution->nodes[i].uncertainty_mm)) return false;
+    }
+    return true;
 }

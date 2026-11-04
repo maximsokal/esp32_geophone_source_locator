@@ -228,5 +228,19 @@ int main(void)
     test_usable_partial_geometry_preserves_success_and_pair_failures();
     test_a_failed_pair_reports_the_numbers_of_both_directions_and_its_cause();
     test_the_radio_state_is_reported_in_every_phase();
+    memset(&s_progress, 0, sizeof(s_progress));
+    s_progress_error = ESP_OK;
+    s_progress.complete = true;
+    s_progress.partial = true;
+    strcpy(s_progress.failure_reason, "geometry_uncertain:1");
+    s_progress.geometry.node_count = 1U;
+    s_progress.geometry.nodes[0] = (nrf_topology_ranging_node_t){.node_id=1U,.solved=true,.uncertainty_mm=3137475};
+    cJSON *root = cJSON_CreateObject();
+    assert(root != NULL && web_status_json_add_ranging(root));
+    const cJSON *progress = item(item(root, "ranging"), "progress");
+    assert(!cJSON_IsTrue(item(progress, "success")) && cJSON_IsTrue(item(progress, "partial")));
+    assert(strcmp(item(progress, "failure_reason")->valuestring, "geometry_uncertain:1") == 0);
+    assert(number(cJSON_GetArrayItem(item(item(progress, "geometry"), "nodes"), 0), "uncertainty_mm") == 3137475);
+    cJSON_Delete(root);
     return 0;
 }

@@ -1988,6 +1988,23 @@ static void test_partial_ranging_uses_geometry_success_and_preserves_evidence(vo
     workflow_service_shutdown();
 }
 
+static void test_uncertain_geometry_preserves_ranges_but_blocks_confirmation(void)
+{
+    prepare_partial_ranging_outcome(false);
+    s_ranging_progress.pair_count = 1U;
+    (void)snprintf(s_ranging_progress.failure_reason, sizeof(s_ranging_progress.failure_reason), "geometry_uncertain:1");
+    assert(workflow_service_poll() == ESP_OK);
+    const workflow_snapshot_t snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RANGING_RESULT);
+    assert(strcmp(snapshot.reason, "geometry_uncertain:1") == 0);
+    assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CONFIRM)) == 0U);
+    assert(command(WORKFLOW_COMMAND_CONFIRM, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(workflow_test_saved_pairs.pairs[0].valid);
+    assert(workflow_test_saved_pairs.pairs[0].distance_mm == 2300);
+    assert(workflow_test_saved_pairs.pairs[0].automatic_distance_mm == 6000);
+    workflow_service_shutdown();
+}
+
 static void test_manual_distance_async_persists_validated_partial_result(void)
 {
     prepare_partial_ranging_outcome(false);
@@ -2645,6 +2662,7 @@ int main(void)
     test_new_workflow_steps_wait_for_explicit_commands();
     test_ranging_result_is_logged_with_every_pair_and_node();
     test_partial_ranging_uses_geometry_success_and_preserves_evidence();
+    test_uncertain_geometry_preserves_ranges_but_blocks_confirmation();
     test_manual_distance_async_persists_validated_partial_result();
     test_one_and_two_connected_remotes_complete_initialization();
     test_rejected_imu_calibration_command_is_repeated_for_silent_nodes_only();

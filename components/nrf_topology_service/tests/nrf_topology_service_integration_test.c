@@ -3089,6 +3089,65 @@ static void test_partial_geometry_requires_redundant_non_degenerate_constraints(
     run_service();
 }
 
+static void assert_uncertain_full_geometry_rejected(void)
+{
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.complete && !progress.active && progress.geometry.node_count == 5U);
+    bool uncertain = false;
+    for (size_t i = 0U; i < progress.geometry.node_count; ++i) {
+        assert(progress.geometry.nodes[i].solved);
+        uncertain = uncertain || progress.geometry.nodes[i].uncertainty_mm > 750;
+    }
+    assert(uncertain && progress.geometry.max_residual_mm <= 750);
+    for (size_t i = 0U; i < progress.pair_count; ++i) assert(progress.pairs[i].state == NRF_CS_PAIR_VALID);
+    assert(!progress.success && progress.partial);
+    assert(strncmp(progress.failure_reason, "geometry_uncertain:", strlen("geometry_uncertain:")) == 0);
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_ranging_result_t frozen;
+    assert(nrf_topology_service_get_snapshot(&snapshot) == ESP_OK);
+    assert(nrf_topology_service_get_reusable_frozen_ranging_result(&snapshot,
+        (uint64_t)esp_timer_get_time() / 1000U, 0U, &frozen) == ESP_ERR_NOT_FOUND);
+}
+
+static void fill_last_collinear_edge_manually(void)
+{
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(!progress.success && progress.pairs[9].state != NRF_CS_PAIR_VALID);
+    const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {20000U, 20000U, 20000U, 20000U};
+    assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+        3U, 4U, 2000, limits) == ESP_OK);
+    assert_uncertain_full_geometry_rejected();
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert((progress.pairs[9].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U);
+    assert(progress.pairs[9].distance_mm == 2000);
+    assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+        0U, 1U, 2000, limits) == ESP_OK);
+    assert_uncertain_full_geometry_rejected();
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.pairs[0].automatic_distance_mm == 2000);
+}
+
+static void test_full_geometry_rejects_uncertainty_after_automatic_and_manual_solve(void)
+{
+    const int32_t line[] = {2000, 4000, 6000, 8000, 2000, 4000, 6000, 2000, 4000, 2000};
+    for (unsigned scenario = 0U; scenario < 2U; ++scenario) {
+        const bool manual = scenario == 0U;
+        reset_world(); s_tca_present = true; prepare_ranging_nodes(4U);
+        s_cs_use_pair_distances = true;
+        memcpy(s_cs_pair_distances, line, sizeof(line));
+        if (manual) s_cs_fail_pair_index = 9;
+        script(EV_WAIT_MS, 10U, NULL);
+        script(EV_ACTION, 0U, request_inconsistent_mesh);
+        script(EV_WAIT_MS, 10U, NULL);
+        script(EV_ACTION, 0U, clear_cycle_hook);
+        script(EV_ACTION, 0U, manual ? fill_last_collinear_edge_manually : assert_uncertain_full_geometry_rejected);
+        script(EV_STOP, 0U, NULL);
+        run_service();
+    }
+}
+
 static void request_partial_limited_mesh(void)
 {
     const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {20000U, 20000U, 20000U, 20000U};
@@ -4720,6 +4779,7 @@ int main(void)
     test_inconsistent_solved_mesh_is_not_success();
     test_one_missing_edge_can_preserve_a_solved_geometry();
     test_partial_geometry_requires_redundant_non_degenerate_constraints();
+    test_full_geometry_rejects_uncertainty_after_automatic_and_manual_solve();
     test_partial_geometry_keeps_cable_diagnostics_but_rejects_valid_contradictions();
     test_partial_geometry_can_exclude_one_disagreeing_pair();
     test_autonomous_ranging_rejects_bad_requests();

@@ -700,6 +700,25 @@ int main(void)
     fake_sensor_cache[3] = fake_sensor_cache[0];
     fake_placement_valid[4] = true;
     fake_placement_height_mm[4] = 0;
+    /* An old reusable result can claim success although its full mesh is ill-conditioned. */
+    const int32_t collinear_distances[] = {1000,2000,3000,4000,1000,2000,3000,1000,2000,1000};
+    fake_frozen_ranging.success = true;
+    fake_frozen_ranging.pair_count = 10U;
+    size_t collinear_edge = 0U;
+    for (uint8_t a = 0U; a < 4U; ++a) {
+        for (uint8_t b = a + 1U; b < 5U; ++b) {
+            fake_frozen_ranging.pairs[collinear_edge] = (nrf_cs_pair_result_t){.node_a=a,.node_b=b,
+                .state=NRF_CS_PAIR_VALID,.distance_mm=collinear_distances[collinear_edge],.confidence=900};
+            ++collinear_edge;
+        }
+    }
+    const unsigned before_uncertain = fake_autonomous_requests;
+    const unsigned metadata_before_uncertain = metadata_write_calls;
+    last_geometry_set = false;
+    assert(seismic_recorder_start("OBJ_0009") == ESP_ERR_INVALID_STATE);
+    assert(!last_geometry_set && metadata_write_calls == metadata_before_uncertain);
+    assert(fake_autonomous_requests == before_uncertain);
+    assert(fake_frozen_ranging.pairs[9].distance_mm == 1000);
     const int32_t partial_distances[] = {3000,3000,4243,1803,4243,3000,1803,3000,2500,0};
     fake_frozen_ranging.success = true;
     fake_frozen_ranging.pair_count = 10U;

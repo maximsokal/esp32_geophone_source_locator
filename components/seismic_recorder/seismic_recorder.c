@@ -1434,6 +1434,14 @@ static esp_err_t seismic_recorder_prepare_geometry(
     }
 
     if (!seismic_recorder_geometry_solution_consistent(&solution)) {
+        for (size_t i = 0U; i < solution.node_count && i < NRF_GEOMETRY_MAX_NODES; ++i) {
+            const nrf_geometry_node_position_t *node = &solution.nodes[i];
+            if (node->solved && !nrf_geometry_position_uncertainty_acceptable(node->uncertainty_mm)) {
+                ESP_LOGE(TAG, "START rejected: CS geometry uncertain node=%u uncertainty_mm=%" PRId32,
+                    (unsigned)node->node_id, node->uncertainty_mm);
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
         ESP_LOGE(
             TAG,
             "START rejected: CS geometry inconsistent max_residual_mm=%" PRId32 " inconsistent_pairs=%u",
