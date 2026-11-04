@@ -22,14 +22,15 @@ def _rows(name):
         return list(csv.DictReader(line for line in stream if not line.startswith("#")))
 
 
-def _run_replay(csv_path: Path):
+def _run_replay(csv_path: Path, samples=9):
     scratch = ROOT / ".test-build" / f"bench-replay-{uuid.uuid4().hex[:8]}"
     scratch.mkdir(parents=True)
     out = scratch / "out.txt"
     manifest = scratch / "manifest.json"
     manifest.write_text('{"version":1,"tests":[{"name":"bench_ranging_replay","sources":["nRF54L15/src/nrf_cs_scheduler.c",'
                         '"tests/host/bench_ranging_replay.c"],"include_dirs":["nRF54L15/include"]}]}', encoding="utf-8")
-    env = {**os.environ, "BENCH_RANGING_CSV": str(csv_path), "BENCH_RANGING_OUT": str(out)}
+    env = {**os.environ, "BENCH_RANGING_CSV": str(csv_path), "BENCH_RANGING_OUT": str(out),
+           "BENCH_RANGING_SAMPLES": str(samples)}
     run = subprocess.run([sys.executable, "tools/run_host_tests.py", "--manifest", str(manifest), "--build-dir", str(scratch / "build")],
                          cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
     assert run.returncode == 0, run.stdout + run.stderr
@@ -54,6 +55,16 @@ def _run_replay(csv_path: Path):
 @pytest.fixture(scope="module")
 def replay():
     return _run_replay(FIXTURES / "ranging_samples.csv")
+
+
+def test_three_sample_research_mode_consumes_only_the_actual_prefix_of_each_direction():
+    execs, pairs = _run_replay(FIXTURES / "ranging_samples.csv", samples=3)
+    assert sum(e["attempts"] for e in execs.values()) < 102
+    assert len(execs) == 12 and all(e["successes"] <= 3 for e in execs.values())
+    assert sum(e["rows_left"] for e in execs.values()) > 0
+    assert pairs['summary']['valid'] == '4/6'
+    assert pairs[(0, 1)]['state'] == 'directions_disagree'
+    assert pairs[(0, 1)]['disagreement'] == 586
 
 
 def test_the_scheduler_reproduces_what_the_device_reported_for_the_same_attempts(replay):

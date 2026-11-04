@@ -85,7 +85,7 @@ static row_t *next_row(unsigned exec)
 int main(int argc, char **argv)
 {
     static nrf_cs_scheduler_t scheduler;
-    const nrf_cs_policy_t policy = {
+    nrf_cs_policy_t policy = {
         .pair_timeout_ms = 2400U, .max_attempts = 2U, .min_confidence = 500U, .samples_per_pair = 9U,
         .full_rotation = true, .relay_order = true, .require_both_directions = true,
     };
@@ -94,6 +94,11 @@ int main(int argc, char **argv)
 
     const char *csv = argc >= 2 ? argv[1] : getenv("BENCH_RANGING_CSV");
     const char *out_path = getenv("BENCH_RANGING_OUT");
+    const char *samples = getenv("BENCH_RANGING_SAMPLES");
+    if (samples != NULL) {
+        if (strcmp(samples, "3") == 0) policy.samples_per_pair = 3U;
+        else if (strcmp(samples, "9") != 0) return 2;
+    }
     FILE *out = out_path != NULL ? fopen(out_path, "w") : stdout;
 
     if (csv == NULL || out == NULL || load(csv) != 0) return 2;
