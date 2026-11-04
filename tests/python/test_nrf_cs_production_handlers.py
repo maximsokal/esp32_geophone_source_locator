@@ -14,7 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled"])
+@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled", "unfrozen-local", "unfrozen-peer"])
 def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutation):
     build_root = ROOT / ".test-build"
     build_root.mkdir(exist_ok=True)
@@ -27,6 +27,7 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
     types = sources[0][sources[0].index("typedef enum {"):sources[0].index("K_MSGQ_DEFINE(")]
     (output / "production_types.inc").write_text(types, encoding="utf-8")
     for part, name in (
+        (1, "runtime_reset_ranging"), (1, "ranging_data_received_cb"),
         (2, "runtime_emit_rf_diagnostics"), (2, "report_ranging_header"),
         (2, "accumulate_mean"), (2, "collect_pbr_step"),
         (2, "collect_rtt_step"), (2, "report_step_data"),
@@ -52,6 +53,12 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
             end += 1
         body = source[start:end]
         original_digest = hashlib.sha256(body.encode()).hexdigest()
+        if mutation == "unfrozen-local" and name == "subevent_data_cb":
+            assert "atomic_get(&s_local_data_frozen) != 0" in body
+            body = body.replace("atomic_get(&s_local_data_frozen) != 0", "atomic_get(&s_local_data_frozen) < 0")
+        if mutation == "unfrozen-peer" and name == "ranging_data_received_cb":
+            assert "atomic_get(&s_peer_data_frozen) != 0" in body
+            body = body.replace("atomic_get(&s_peer_data_frozen) != 0", "atomic_get(&s_peer_data_frozen) < 0")
         if mutation == "missing-rf-summary" and name == "runtime_adapter_complete":
             assert "runtime_emit_rf_diagnostics(step);" in body
             body = body.replace("runtime_emit_rf_diagnostics(step);", "if (step == NULL) runtime_emit_rf_diagnostics(step);")
@@ -97,7 +104,9 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
         expected = {"missing-rf-summary": "s_rf_signal_events", "missing-method": "s_provider_flags",
                     "missing-queue-timing": "s_trace_result_timing.measured_ms==100",
                     "stale-timing-context": "s_trace_result_timing.cleanup_ms==0",
-                    "disabled-is-enabled": "s_reflector_procedure_active==0"}[mutation]
+                    "disabled-is-enabled": "s_reflector_procedure_active==0",
+                    "unfrozen-local": "s_local_steps.len==2",
+                    "unfrozen-peer": "s_peer_owned.len==2"}[mutation]
         assert result.returncode != 0 and "(run)" in result.stdout and expected in result.stdout, result.stdout
     else:
         assert result.returncode == 0, f"Production handler probe failed; artifacts: {output}\n{result.stdout}"

@@ -297,6 +297,9 @@ static void subevent_data_cb(
     if (result == NULL) {
         return;
     }
+    if (conn == s_outgoing_conn && atomic_get(&s_local_data_frozen) != 0) {
+        return;
+    }
     if (conn == s_incoming_conn || conn == s_outgoing_conn) {
         const bool aborted = result->header.procedure_done_status == BT_CONN_LE_CS_PROCEDURE_ABORTED ||
             result->header.subevent_done_status == BT_CONN_LE_CS_SUBEVENT_ABORTED;
@@ -341,6 +344,7 @@ static void subevent_data_cb(
         result->step_data_buf != NULL) {
         len = result->step_data_buf->len;
         if (len > net_buf_simple_tailroom(&s_local_steps)) {
+            atomic_set(&s_local_data_frozen, 1);
             runtime_post_event(
                 RUNTIME_EVENT_PROCEDURE_ABORTED,
                 &step,
@@ -353,6 +357,7 @@ static void subevent_data_cb(
     }
 
     if (result->header.procedure_done_status == BT_CONN_LE_CS_PROCEDURE_ABORTED) {
+        atomic_set(&s_local_data_frozen, 1);
         runtime_post_event(
             RUNTIME_EVENT_PROCEDURE_ABORTED,
             &step,
@@ -360,6 +365,7 @@ static void subevent_data_cb(
             -ECANCELED,
             NULL);
     } else if (result->header.procedure_done_status == BT_CONN_LE_CS_PROCEDURE_COMPLETE) {
+        atomic_set(&s_local_data_frozen, 1);
         runtime_post_event(
             RUNTIME_EVENT_LOCAL_COMPLETE,
             &step,

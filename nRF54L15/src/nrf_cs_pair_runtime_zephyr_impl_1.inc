@@ -131,6 +131,9 @@ static uint16_t s_peer_counter = NRF_CS_RANGING_COUNTER_NONE;
 static uint16_t s_ready_counter = NRF_CS_RANGING_COUNTER_NONE;
 static bool s_local_complete;
 static bool s_peer_complete;
+/* Completion events queue counters, while IQ buffers must survive until the worker consumes them. */
+static atomic_t s_local_data_frozen;
+static atomic_t s_peer_data_frozen;
 static bool s_realtime_ras;
 static bool s_on_demand_request_started;
 static atomic_t s_reflector_procedure_active;
@@ -270,6 +273,8 @@ static void runtime_reset_ranging(void)
     s_ready_counter = NRF_CS_RANGING_COUNTER_NONE;
     s_local_complete = false;
     s_peer_complete = false;
+    atomic_set(&s_local_data_frozen, 0);
+    atomic_set(&s_peer_data_frozen, 0);
     s_realtime_ras = false;
     s_on_demand_request_started = false;
     atomic_set(&s_reflector_procedure_active, 0);
@@ -513,6 +518,9 @@ static void ranging_data_received_cb(
     if (!runtime_active_step_for_conn(conn, &step)) {
         return;
     }
+    if (atomic_get(&s_peer_data_frozen) != 0) {
+        return;
+    }
     if (err != 0) {
         runtime_post_event(RUNTIME_EVENT_TRANSPORT_ERROR, &step, 0U, err, NULL);
         return;
@@ -525,6 +533,7 @@ static void ranging_data_received_cb(
         return;
     }
     net_buf_simple_add_mem(&s_peer_owned, s_peer_rx.data, len);
+    atomic_set(&s_peer_data_frozen, 1);
     runtime_post_event(RUNTIME_EVENT_PEER_COMPLETE, &step, ranging_counter, 0, NULL);
 }
 
