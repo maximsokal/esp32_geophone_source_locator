@@ -5,6 +5,7 @@ Source bodies are extracted unchanged; their digests remain beside the result.
 """
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -14,7 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled", "unfrozen-local", "unfrozen-peer", "missing-radio-stop", "missing-radio-disconnect"])
+@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled", "unfrozen-local", "unfrozen-peer", "missing-radio-stop", "missing-radio-disconnect", "missing-cancel", "foreign-cancel", "queued-cancel-starts", "cancel-not-submitted", "forget-live-disconnect", "cleanup-no-fallback", "no-disconnect-retry", "normal-disconnect-releases"])
 def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutation):
     build_root = ROOT / ".test-build"
     build_root.mkdir(exist_ok=True)
@@ -29,12 +30,14 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
     (output / "production_types.inc").write_text(types, encoding="utf-8")
     for part, name in (
         (1, "runtime_reset_ranging"), (1, "ranging_data_received_cb"),
+        (1, "runtime_take_cancel"), (1, "nrf_cs_pair_runtime_zephyr_cancel"),
         (4, "disconnected_cb"),
         (2, "runtime_emit_rf_diagnostics"), (2, "report_ranging_header"),
         (2, "accumulate_mean"), (2, "collect_pbr_step"),
         (2, "collect_rtt_step"), (2, "report_step_data"),
         (2, "current_tone_stats"), (2, "good_tone_channel_count"), (2, "estimate_measurement"),
         (2, "op_now_ms"), (2, "runtime_adapter_complete"), (2, "timeout_work_handler"),
+        (2, "op_cleanup"),
         (2, "cleanup_work_handler"), (2, "maybe_complete_measurement"),
         (3, "event_work_handler"), (3, "execute_work_handler"),
         (3, "nrf_cs_pair_runtime_zephyr_execute"),
@@ -43,9 +46,10 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
         (3, "nrf_cs_pair_runtime_zephyr_is_progress_required"),
     ):
         source = sources[part - 1]
-        point = source.index(name + "(")
-        start = source.rfind("\n", 0, point) + 1
-        brace = source.index("{", point)
+        definition = re.search(r"(?m)^(?:static\s+)?[\w* \t]+\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", source)
+        assert definition is not None, name
+        start = definition.start()
+        brace = definition.end() - 1
         depth, end = 1, brace + 1
         # These selected definitions contain balanced braces in their comments/strings.
         while depth:
@@ -56,6 +60,29 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
             end += 1
         body = source[start:end]
         original_digest = hashlib.sha256(body.encode()).hexdigest()
+        if mutation == "forget-live-disconnect" and name == "op_cleanup":
+            assert "err != -ENOTCONN" in body
+            body = body.replace("err != -ENOTCONN", "err != -ENOTCONN && err == -EINVAL")
+        if mutation == "cleanup-no-fallback" and name == "op_cleanup":
+            call = "if (submit_cs_work(&s_cleanup_work) < 0) cleanup_work_handler(NULL);"
+            assert call in body
+            body = body.replace(call, "(void)submit_cs_work(&s_cleanup_work);")
+        if mutation == "no-disconnect-retry" and name == "timeout_work_handler":
+            assert "atomic_cas(&s_disconnect_retry_pending, 1, 0)" in body
+            body = body.replace("atomic_cas(&s_disconnect_retry_pending, 1, 0)", "atomic_cas(&s_disconnect_retry_pending, 2, 0)")
+        if mutation == "normal-disconnect-releases" and name == "event_work_handler":
+            assert "event.value == NRF_CS_CYCLE_RELEASE_REASON" in body
+            body = body.replace("event.value == NRF_CS_CYCLE_RELEASE_REASON", "event.value != 0U")
+        if mutation == "cancel-not-submitted" and name == "nrf_cs_pair_runtime_zephyr_cancel":
+            body = body.replace("(void)submit_cs_work(&s_event_work);", "(void)s_event_work;")
+        if mutation == "missing-cancel" and name == "runtime_take_cancel":
+            body = body.replace("return cancelled;", "return cancelled && step == NULL;")
+        if mutation == "foreign-cancel" and name == "runtime_take_cancel":
+            body = body.replace("nrf_cs_pair_runtime_bridge_steps_equal(&s_cancel_step, step)", "step != NULL")
+        if mutation == "foreign-cancel" and name == "nrf_cs_pair_runtime_zephyr_cancel":
+            body = body.replace("!nrf_cs_pair_runtime_bridge_step_matches(&s_adapter, step)", "step == NULL")
+        if mutation == "queued-cancel-starts" and name == "execute_work_handler":
+            body = body.replace("runtime_take_cancel(&s_timeout_step)", "false")
         if mutation == "missing-radio-stop" and name == "nrf_cs_pair_runtime_zephyr_set_radio_enabled":
             call = "runtime_post_event(RUNTIME_EVENT_RADIO_DISABLED, NULL, 0U, 0, s_incoming_conn);"
             assert call in body
@@ -119,7 +146,15 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
                     "unfrozen-local": "s_local_steps.len==2",
                     "unfrozen-peer": "s_peer_owned.len==2",
                     "missing-radio-stop": "s_count==1 && s_disconnect_calls==0",
-                    "missing-radio-disconnect": "s_disconnect_calls==1"}[mutation]
+                    "missing-radio-disconnect": "s_disconnect_calls==1",
+                    "missing-cancel": "s_cleanup_calls==1",
+                    "foreign-cancel": "s_cleanup_calls==0",
+                    "queued-cancel-starts": "s_callbacks==2",
+                    "cancel-not-submitted": "s_event_submits==submits+1",
+                    "forget-live-disconnect": "s_outgoing_conn==&s_connection",
+                    "cleanup-no-fallback": "s_callbacks==1 && s_outcome==NRF_CS_OUTCOME_SUCCESS",
+                    "no-disconnect-retry": "s_disconnect_calls==2",
+                    "normal-disconnect-releases": "s_release_notifications=="}[mutation]
         assert result.returncode != 0 and "(run)" in result.stdout and expected in result.stdout, result.stdout
     else:
         assert result.returncode == 0, f"Production handler probe failed; artifacts: {output}\n{result.stdout}"

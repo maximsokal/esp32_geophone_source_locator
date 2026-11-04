@@ -171,19 +171,41 @@ static double max_reference_error(
     return worst;
 }
 
-/*
- * Two-or-more-reference placement: circle intersection on the most widely
- * separated reference pair (the best-conditioned baseline), mirror choice by
- * the other references. Returns the largest horizontal disagreement with any
- * of `refs`, or -1 when no position is determined (circles miss by more than
- * the tolerance, or a two-reference mirror ambiguity once the layout's
- * reflection is already fixed).
- */
+/* Test measured reference distances, not rounded placements that can distort a flat triangle. */
+static bool references_can_be_collinear(
+    const nrf_geometry_solution_t *solution, const reference_t *refs, size_t ref_count,
+    const nrf_cs_pair_result_t *pairs, size_t pair_count)
+{
+    if (ref_count != 3U) return false;
+    double low[3], high[3];
+    size_t side = 0U;
+    for (size_t a = 0U; a < 3U; ++a) for (size_t b = a + 1U; b < 3U; ++b) {
+        const nrf_geometry_node_position_t *na = &solution->nodes[refs[a].index];
+        const nrf_geometry_node_position_t *nb = &solution->nodes[refs[b].index];
+        double slant;
+        if (!find_pair_distance(pairs, pair_count, na->node_id, nb->node_id, &slant)) return false;
+        const double dz = fabs((double)na->z_mm - nb->z_mm);
+        /* Integer millimetre inputs represent half-mm intervals, including before removing Z. */
+        const double upper = slant + 0.5;
+        const double lower = fmax(slant - 0.5, 0.0);
+        if (upper < dz) return false;
+        low[side] = sqrt(fmax(lower * lower - dz * dz, 0.0));
+        high[side++] = sqrt(fmax(upper * upper - dz * dz, 0.0));
+    }
+    for (size_t longest = 0U; longest < 3U; ++longest) {
+        const size_t a = (longest + 1U) % 3U, b = (longest + 2U) % 3U;
+        if (high[longest] >= low[a] + low[b] && low[longest] <= high[a] + high[b]) return true;
+    }
+    return false;
+}
+
+/* Circle placement returns the worst reference error, or -1 for unresolved ambiguity. */
 static double place_from_references(
     const nrf_geometry_solution_t *solution,
     const reference_t *refs,
     size_t ref_count,
     size_t already_solved,
+    bool check_mirror_ambiguity,
     double *out_x,
     double *out_y)
 {
@@ -221,6 +243,18 @@ static double place_from_references(
     if (ref_count >= 3U) {
         const double e1 = max_reference_error(solution, refs, ref_count, best_a, best_b, p1x, p1y);
         const double e2 = max_reference_error(solution, refs, ref_count, best_a, best_b, p2x, p2y);
+        if (check_mirror_ambiguity && e1 <= TOLERANCE_MM && e2 <= TOLERANCE_MM) {
+            for (size_t i = 0U; i < solution->node_count; ++i) {
+                if (!solution->nodes[i].solved) continue;
+                bool reference = false;
+                for (size_t r = 0U; r < ref_count; ++r) reference = reference || refs[r].index == i;
+                if (reference) continue;
+                const double d1 = hypot(p1x - solution->nodes[i].x_mm, p1y - solution->nodes[i].y_mm);
+                const double d2 = hypot(p2x - solution->nodes[i].x_mm, p2y - solution->nodes[i].y_mm);
+                /* Three collinear references can still leave an independent mirror relative to another node. */
+                if (fabs(d1 - d2) > TOLERANCE_MM) return -1.0;
+            }
+        }
         if (e2 < e1) {
             x = p2x;
             y = p2y;
@@ -302,7 +336,9 @@ static bool solve_node_position(
 
     double x = 0.0;
     double y = 0.0;
-    double error = place_from_references(solution, refs, ref_count, already_solved, &x, &y);
+    const bool check_mirror = ref_count < already_solved &&
+        references_can_be_collinear(solution, refs, ref_count, pairs, pair_count);
+    double error = place_from_references(solution, refs, ref_count, already_solved, check_mirror, &x, &y);
 
     if (!(error >= 0.0 && error <= TOLERANCE_MM)) {
         /* MAX-144 outlier policy: with four or more references a single bad
@@ -327,7 +363,7 @@ static bool solve_node_position(
             double cx = 0.0;
             double cy = 0.0;
             const double candidate_error =
-                place_from_references(solution, remaining, remaining_count, already_solved, &cx, &cy);
+                place_from_references(solution, remaining, remaining_count, already_solved, false, &cx, &cy);
             if (candidate_error >= 0.0 && (best_error < 0.0 || candidate_error < best_error)) {
                 best_error = candidate_error;
                 x = cx;

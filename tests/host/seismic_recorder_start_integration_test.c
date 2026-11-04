@@ -719,6 +719,20 @@ int main(void)
     assert(!last_geometry_set && metadata_write_calls == metadata_before_uncertain);
     assert(fake_autonomous_requests == before_uncertain);
     assert(fake_frozen_ranging.pairs[9].distance_mm == 1000);
+    const int32_t mirrored_distances[]={2000,4000,1803,3354,2000,1803,1803,3354,1803,0};
+    size_t mirror_edge=0U;
+    for(uint8_t a=0;a<4;++a)for(uint8_t b=a+1;b<5;++b){
+        fake_frozen_ranging.pairs[mirror_edge]=(nrf_cs_pair_result_t){.node_a=a,.node_b=b,
+            .state=mirror_edge==9U?NRF_CS_PAIR_RETRY_EXHAUSTED:NRF_CS_PAIR_VALID,
+            .distance_mm=mirrored_distances[mirror_edge],.confidence=900,.valid_samples=9U};
+        ++mirror_edge;
+    }
+    const unsigned metadata_before_mirror=metadata_write_calls;
+    last_geometry_set=false;
+    assert(seismic_recorder_start("OBJ_0009")==ESP_ERR_INVALID_STATE);
+    assert(!last_geometry_set && metadata_write_calls==metadata_before_mirror);
+    assert(fake_autonomous_requests==before_uncertain);
+    assert(fake_frozen_ranging.pairs[3].distance_mm==3354 && fake_frozen_ranging.pairs[9].distance_mm==0);
     const int32_t partial_distances[] = {3000,3000,4243,1803,4243,3000,1803,3000,2500,0};
     fake_frozen_ranging.success = true;
     fake_frozen_ranging.pair_count = 10U;

@@ -157,7 +157,8 @@ static int op_cleanup(void *context)
     runtime_stop_scan();
 
     if (s_outgoing_conn == NULL) {
-        (void)submit_cs_work(&s_cleanup_work);
+        atomic_set(&s_disconnect_retry_pending, 0);
+        if (submit_cs_work(&s_cleanup_work) < 0) cleanup_work_handler(NULL);
         return 0;
     }
 
@@ -169,13 +170,21 @@ static int op_cleanup(void *context)
     }
     err = bt_conn_disconnect(s_outgoing_conn, reason);
     if (err == 0 || err == -EALREADY) {
+        atomic_set(&s_disconnect_retry_pending, 0);
         return 0;
+    }
+    if (err != -ENOTCONN) {
+        atomic_set(&s_disconnect_retry_pending, 1);
+        nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_EXECUTE_FAILED,
+            s_adapter.step.attempt_id, (uint32_t)err);
+        return err;
     }
 
     bt_conn_unref(s_outgoing_conn);
     s_outgoing_conn = NULL;
     s_outgoing_connected = false;
-    (void)submit_cs_work(&s_cleanup_work);
+    atomic_set(&s_disconnect_retry_pending, 0);
+    if (submit_cs_work(&s_cleanup_work) < 0) cleanup_work_handler(NULL);
     return 0;
 }
 
@@ -258,6 +267,11 @@ static void timeout_work_handler(struct k_work *work)
         s_timeout_step.attempt_id, (uint32_t)nrf_cs_pair_adapter_phase(&s_adapter));
     (void)nrf_cs_pair_runtime_bridge_dispatch(
         &s_adapter, NRF_CS_PAIR_BRIDGE_TIMEOUT, &s_timeout_step, false, NULL);
+    /* Retry a rejected disconnect once at the existing deadline; keep ownership if it still fails. */
+    if (nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_CLEANUP &&
+        atomic_cas(&s_disconnect_retry_pending, 1, 0)) {
+        (void)op_cleanup(NULL);
+    }
 }
 
 static void cleanup_work_handler(struct k_work *work)

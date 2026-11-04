@@ -21,12 +21,9 @@ typedef enum {
     NRF_CS_PAIR_BRIDGE_CLEANUP_COMPLETE,
 } nrf_cs_pair_runtime_bridge_event_t;
 
-static inline bool nrf_cs_pair_runtime_bridge_step_matches(
-    const nrf_cs_pair_adapter_t *adapter,
-    const nrf_cs_step_t *step)
+static inline bool nrf_cs_pair_runtime_bridge_steps_equal(
+    const nrf_cs_step_t *active, const nrf_cs_step_t *step)
 {
-    const nrf_cs_step_t *active = nrf_cs_pair_adapter_active_step(adapter);
-
     return step != NULL && active != NULL &&
            step->cycle_id == active->cycle_id &&
            step->membership_generation == active->membership_generation &&
@@ -35,6 +32,12 @@ static inline bool nrf_cs_pair_runtime_bridge_step_matches(
            step->attempt_number == active->attempt_number &&
            step->initiator == active->initiator &&
            step->reflector == active->reflector;
+}
+
+static inline bool nrf_cs_pair_runtime_bridge_step_matches(
+    const nrf_cs_pair_adapter_t *adapter, const nrf_cs_step_t *step)
+{
+    return nrf_cs_pair_runtime_bridge_steps_equal(nrf_cs_pair_adapter_active_step(adapter), step);
 }
 
 static inline nrf_cs_pair_adapter_result_t nrf_cs_pair_runtime_bridge_dispatch(

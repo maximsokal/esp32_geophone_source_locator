@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include "nrf_cs_scheduler.h"
+void nrf_cs_pair_runtime_zephyr_cancel(const nrf_cs_step_t *step);
 
 typedef void (*nrf_cs_pair_runtime_complete_cb_t)(
     const nrf_cs_step_t *step,

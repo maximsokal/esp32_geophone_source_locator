@@ -34,6 +34,12 @@ static void event_work_handler(struct k_work *work)
     runtime_event_t event;
 
     ARG_UNUSED(work);
+    nrf_cs_step_t cancelled_step;
+    if (runtime_active_step(&cancelled_step) && runtime_take_cancel(&cancelled_step)) {
+        nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_EXECUTE_FAILED,
+            cancelled_step.attempt_id, (uint32_t)-ECANCELED);
+        (void)nrf_cs_pair_adapter_transport_error(&s_adapter, &cancelled_step);
+    }
     while (k_msgq_get(&s_event_queue, &event, K_NO_WAIT) == 0) {
         if (event.has_step && !runtime_step_matches_active(&event.step)) {
             if (event.conn != NULL) {
@@ -407,6 +413,11 @@ static void execute_work_handler(struct k_work *work)
     };
 
     ARG_UNUSED(work);
+    if (runtime_take_cancel(&s_timeout_step)) {
+        atomic_set(&s_execute_pending, 0);
+        runtime_adapter_complete(&s_timeout_step, &failure, NULL);
+        return;
+    }
     const int64_t remaining_ms = s_attempt_deadline_ms - k_uptime_get();
     if (remaining_ms <= 0) {
         failure.outcome = NRF_CS_OUTCOME_TIMEOUT;
@@ -528,6 +539,11 @@ int nrf_cs_pair_runtime_zephyr_execute(
         return -EPERM;
     }
 
+    k_spinlock_key_t cancel_key = k_spin_lock(&s_cancel_lock);
+    if (s_cancel_pending && !nrf_cs_pair_runtime_bridge_steps_equal(&s_cancel_step, step)) {
+        s_cancel_pending = false;
+    }
+    k_spin_unlock(&s_cancel_lock, cancel_key);
     s_user_complete_cb = complete_cb;
     s_user_complete_context = context;
     s_timeout_step = *step;

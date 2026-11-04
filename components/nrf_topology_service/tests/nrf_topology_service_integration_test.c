@@ -3060,6 +3060,34 @@ static void assert_partial_geometry_rejected(void)
         (uint64_t)esp_timer_get_time() / 1000U, 0U, &frozen) == ESP_ERR_NOT_FOUND);
 }
 
+static void assert_independent_mirror_needs_the_missing_link(void)
+{
+    assert_partial_geometry_rejected();
+    nrf_topology_ranging_progress_t progress;
+    const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT]={20000,20000,20000,20000};
+    assert(nrf_topology_service_ranging_get_progress(&progress)==ESP_OK);
+    assert(progress.pairs[9].state!=NRF_CS_PAIR_VALID);
+    assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms,progress.updated_at_ms,
+        3U,4U,7211,limits)==ESP_OK);
+    assert(nrf_topology_service_ranging_get_progress(&progress)==ESP_OK);
+    assert(progress.success && !progress.partial && progress.geometry.max_residual_mm<=2);
+    assert(progress.pairs[9].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL);
+    assert(progress.pairs[9].automatic_distance_mm==0 && progress.pairs[9].distance_mm==7211);
+    const int32_t original[9]={4000,8000,3606,6708,4000,3606,3606,6708,3606};
+    for(size_t p=0;p<9;++p)assert(progress.pairs[p].distance_mm==original[p]);
+}
+
+static void test_three_collinear_references_do_not_admit_a_mirrored_partial(void)
+{
+    reset_world();s_tca_present=true;prepare_ranging_nodes(4U);s_cs_use_pair_distances=true;
+    const int32_t distances[10]={4000,8000,3606,6708,4000,3606,3606,6708,3606,7211};
+    memcpy(s_cs_pair_distances,distances,sizeof(distances));s_cs_fail_pair_index=9;
+    script(EV_WAIT_MS,10U,NULL);script(EV_ACTION,0U,request_inconsistent_mesh);
+    script(EV_WAIT_MS,10U,NULL);script(EV_ACTION,0U,clear_cycle_hook);
+    script(EV_ACTION,0U,assert_independent_mirror_needs_the_missing_link);
+    script(EV_STOP,0U,NULL);run_service();
+}
+
 static void test_partial_geometry_requires_redundant_non_degenerate_constraints(void)
 {
     const int32_t normal[] = {5000, 6313, 3912, 3000, 4105, 6580, 3162, 5104, 3324, 3421};
@@ -4819,6 +4847,7 @@ int main(void)
     test_inconsistent_solved_mesh_is_not_success();
     test_one_missing_edge_can_preserve_a_solved_geometry();
     test_partial_geometry_requires_redundant_non_degenerate_constraints();
+    test_three_collinear_references_do_not_admit_a_mirrored_partial();
     test_full_geometry_rejects_uncertainty_after_automatic_and_manual_solve();
     test_vertical_first_remote_does_not_block_automatic_geometry();
     test_partial_geometry_keeps_cable_diagnostics_but_rejects_valid_contradictions();

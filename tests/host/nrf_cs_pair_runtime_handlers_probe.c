@@ -116,7 +116,13 @@ static unsigned s_rf_signal_events,s_rf_quality_events;
 static int s_reflector_procedure_active;
 static int s_radio_enabled=1;
 static unsigned s_disconnect_calls,s_stop_advertising_calls;
+static int s_disconnect_result;
+static uint8_t s_last_disconnect_reason;
 static unsigned s_reflector_config_calls;
+static unsigned s_release_notifications;
+static bool s_final_hint;
+static bool final_hint(const nrf_cs_measurement_t *measurement) { (void)measurement;return s_final_hint; }
+static void released_hint(void) { ++s_release_notifications; }
 static struct bt_conn *s_disconnected_conn;
 static nrf_cs_pair_adapter_complete_cb_t s_user_complete_cb;
 static void *s_user_complete_context;
@@ -126,8 +132,23 @@ static bool s_started=true;
 static struct bt_conn *s_incoming_conn;
 static struct bt_conn *s_outgoing_conn;
 static bool s_outgoing_connected;
+static int s_disconnect_retry_pending;
 static struct bt_conn s_connection;
 static struct k_work s_execute_work;
+static struct k_work s_event_work;
+static struct k_work s_cleanup_work;
+static struct k_work *s_failed_submit;
+static bool s_use_production_cleanup;
+static struct k_spinlock {int unused;} s_cancel_lock;
+typedef unsigned k_spinlock_key_t;
+static unsigned s_cancel_lock_depth;
+static unsigned s_event_submits;
+static k_spinlock_key_t k_spin_lock(struct k_spinlock *lock)
+{ (void)lock;assert(s_cancel_lock_depth==0);++s_cancel_lock_depth;return 0; }
+static void k_spin_unlock(struct k_spinlock *lock,k_spinlock_key_t key)
+{ (void)lock;(void)key;assert(s_cancel_lock_depth==1);--s_cancel_lock_depth; }
+static nrf_cs_step_t s_cancel_step;
+static bool s_cancel_pending;
 static int64_t s_attempt_deadline_ms;
 static uint64_t s_now, s_due;
 static unsigned s_connect_delay, s_callbacks, s_secure_calls, s_cleanup_calls;
@@ -145,9 +166,11 @@ static void atomic_set(int *v,int n) { *v=n; }
 typedef int atomic_val_t;
 static void atomic_or(int *v,int n) { *v |= n; }
 static int atomic_get(const int *v) { return *v; }
+static bool atomic_cas(int *v,int old_value,int new_value)
+{ if(*v!=old_value)return false;*v=new_value;return true; }
 static int64_t k_uptime_get(void) { return (int64_t)s_now; }
 static uint32_t k_uptime_get_32(void) { return (uint32_t)s_now; }
-static int submit_cs_work(struct k_work *w) { (void)w;return 1; }
+static int submit_cs_work(struct k_work *w) { if(w==&s_event_work)++s_event_submits;return w==s_failed_submit?-EBUSY:1; }
 static struct bt_conn *bt_conn_ref(struct bt_conn *c) { ++c->refs;return c; }
 static void bt_conn_unref(struct bt_conn *c) { assert(c->refs>0);--c->refs; }
 static int k_msgq_get(int *q,runtime_event_t *e,int wait)
@@ -161,8 +184,10 @@ static void nrf_log_runtime_zephyr_append_event(uint16_t id,uint32_t a,uint32_t 
 static void nrf_watchdog_zephyr_checkin(int p) { (void)p; }
 static int runtime_start_advertising(void) { return 0; }
 static void runtime_stop_advertising(void) { ++s_stop_advertising_calls; }
+static void runtime_stop_scan(void) {}
 static int bt_conn_disconnect(struct bt_conn *conn,uint8_t reason)
-{ assert(reason==BT_HCI_ERR_REMOTE_USER_TERM_CONN);++s_disconnect_calls;s_disconnected_conn=conn;return 0; }
+{ assert(reason==BT_HCI_ERR_REMOTE_USER_TERM_CONN || reason==NRF_CS_CYCLE_RELEASE_REASON);
+  s_last_disconnect_reason=reason;++s_disconnect_calls;s_disconnected_conn=conn;return s_disconnect_result; }
 static void runtime_reset_ranging(void);
 static int k_work_cancel_delayable(struct k_work_delayable *w)
 { (void)w; s_timer_armed=false; return 0; }
@@ -185,6 +210,8 @@ static void runtime_post_event(runtime_event_type_t t,const nrf_cs_step_t *s,uin
 { if(s_capture_posts){assert(s_count<24);s_events[s_count++]=(runtime_event_t){
     .type=t,.has_step=s!=NULL,.step=s!=NULL?*s:(nrf_cs_step_t){0},.value=v,.status=e,.conn=c!=NULL?bt_conn_ref(c):NULL};} }
 #include "runtime_reset_ranging.inc"
+#include "runtime_take_cancel.inc"
+#include "nrf_cs_pair_runtime_zephyr_cancel.inc"
 #include "ranging_data_received_cb.inc"
 #include "disconnected_cb.inc"
 static void maybe_request_on_demand_data(void) {}
@@ -286,6 +313,8 @@ static float cs_de_ifft(float *iq)
     return 1.5f;
 }
 #include "estimate_measurement.inc"
+static void cleanup_work_handler(struct k_work *work);
+#include "op_cleanup.inc"
 #include "timeout_work_handler.inc"
 #include "cleanup_work_handler.inc"
 #include "maybe_complete_measurement.inc"
@@ -302,7 +331,8 @@ static int connect_op(void *c,nrf_cs_node_id_t id)
 static int secure_op(void *c) { (void)c;++s_secure_calls;return 0; }
 static int noop(void *c) { (void)c;return 0; }
 static int config_op(void *c,bool realtime) { (void)realtime;return noop(c); }
-static int cleanup_op(void *c) { (void)c;++s_cleanup_calls;return 0; }
+static int cleanup_op(void *c) { assert(s_cancel_lock_depth==0);++s_cleanup_calls;
+    return s_use_production_cleanup?op_cleanup(c):0; }
 #include "op_now_ms.inc"
 static void completed(const nrf_cs_step_t *step,const nrf_cs_measurement_t *m,void *c)
 { (void)step;(void)c;++s_callbacks;s_outcome=m->outcome;s_confidence=m->confidence;s_provider_flags=m->provider_quality_flags; }
@@ -440,6 +470,143 @@ static void test_radio_stop_closes_owned_reflector_on_worker(void)
         s_incoming_conn=NULL;s_radio_enabled=1;
     }
 }
+static void test_outgoing_cancellation_is_queued_and_token_scoped(void)
+{
+    for(unsigned phase=0;phase<4;++phase){
+        start(0);
+        if(phase==1U)deliver(RUNTIME_EVENT_CONNECTED,&s_timeout_step);
+        if(phase>=2U)advance_to_procedure();
+        if(phase==3U){
+            s_local_steps.len=s_peer_owned.len=1;s_now=100;
+            deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+        }
+        const unsigned before=s_cleanup_calls;s_now=100;
+        const unsigned submits=s_event_submits;
+        nrf_cs_pair_runtime_zephyr_cancel(&s_timeout_step);
+        assert(s_event_submits==submits+1);
+        assert(s_cleanup_calls==before && s_callbacks==0);
+        event_work_handler(NULL);
+        printf("cancel phase=%u cleanup=%u callbacks=%u\n",phase,s_cleanup_calls,s_callbacks);fflush(stdout);
+        assert(s_cleanup_calls==1 && nrf_cs_pair_adapter_phase(&s_adapter)==NRF_CS_PAIR_PHASE_CLEANUP);
+        s_now=120;cleanup_work_handler(NULL);
+        assert(s_callbacks==1 && s_outcome==(phase==3U?NRF_CS_OUTCOME_SUCCESS:NRF_CS_OUTCOME_TRANSPORT_ERROR));
+        event_work_handler(NULL);cleanup_work_handler(NULL);assert(s_callbacks==1);
+    }
+    for(unsigned field=0;field<7;++field){
+        start(0);advance_to_procedure();nrf_cs_step_t stale=s_timeout_step;
+        switch(field){case 0:++stale.cycle_id;break;case 1:++stale.membership_generation;break;
+            case 2:++stale.attempt_id;break;case 3:++stale.pair_index;break;
+            case 4:++stale.attempt_number;break;case 5:++stale.initiator;break;default:++stale.reflector;break;}
+        nrf_cs_pair_runtime_zephyr_cancel(&stale);event_work_handler(NULL);
+        assert(s_cleanup_calls==0 && nrf_cs_pair_adapter_phase(&s_adapter)==NRF_CS_PAIR_PHASE_PROCEDURE);
+        nrf_cs_pair_runtime_zephyr_cancel(&s_timeout_step);
+        nrf_cs_pair_runtime_zephyr_cancel(&stale); /* A late request cannot overwrite a valid pending cancel. */
+        event_work_handler(NULL);cleanup_work_handler(NULL);
+        assert(s_callbacks==1);
+    }
+    /* Cancellation can precede adapter_execute, including the take_start/execute handoff. */
+    for(unsigned before_accept=0;before_accept<2;++before_accept){
+        start(0);timeout_work_handler(NULL);cleanup_work_handler(NULL);
+        nrf_cs_step_t next=s_timeout_step;++next.attempt_id;
+        if(before_accept)nrf_cs_pair_runtime_zephyr_cancel(&next);
+        assert(nrf_cs_pair_runtime_zephyr_execute(&next,completed,NULL)==0);
+        if(!before_accept)nrf_cs_pair_runtime_zephyr_cancel(&next);
+        event_work_handler(NULL); /* Adapter idle: preserve cancellation for queued execute. */
+        const unsigned cleanups=s_cleanup_calls;
+        execute_work_handler(NULL);
+        assert(s_callbacks==2 && s_outcome==NRF_CS_OUTCOME_TRANSPORT_ERROR && s_cleanup_calls==cleanups);
+        assert(!nrf_cs_pair_adapter_is_active(&s_adapter) && s_execute_pending==0);
+    }
+}
+static void test_disconnect_failure_keeps_live_connection_owned(void)
+{
+    for(unsigned fault=0;fault<3;++fault){
+    start(0);advance_to_procedure();s_connection.refs=1;s_use_production_cleanup=true;
+    s_disconnect_result=fault==0U?-ENOMEM:-EIO;s_disconnect_calls=0;s_now=100;
+    s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    printf("disconnect error owned=%u refs=%u callbacks=%u\n",s_outgoing_conn==&s_connection,
+        s_connection.refs,s_callbacks);fflush(stdout);
+    assert(s_outgoing_conn==&s_connection && s_connection.refs==1 && s_callbacks==0);
+    if(fault!=2U)s_disconnect_result=0;
+    s_now=500;timeout_work_handler(NULL);
+    assert(s_disconnect_calls==2 && s_outgoing_conn==&s_connection && s_callbacks==0);
+    if(fault==2U){
+        nrf_cs_step_t next=s_timeout_step;++next.attempt_id;
+        assert(nrf_cs_pair_runtime_zephyr_execute(&next,completed,NULL)==-EBUSY);
+    }
+    s_capture_posts=true;disconnected_cb(&s_connection,BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    s_capture_posts=false;event_work_handler(NULL);
+    assert(s_callbacks==1 && s_outcome==NRF_CS_OUTCOME_TRANSPORT_ERROR && s_connection.refs==0);
+    s_use_production_cleanup=false;s_disconnect_result=0;
+    }
+}
+static void test_cleanup_submit_failure_has_no_connection_to_wait_for(void)
+{
+    for(unsigned owned=0;owned<2;++owned){
+        start(0);advance_to_procedure();s_connection.refs=1;
+        if(!owned)s_outgoing_conn=NULL;
+        s_use_production_cleanup=true;s_failed_submit=&s_cleanup_work;s_disconnect_result=-ENOTCONN;
+        s_now=100;s_local_steps.len=s_peer_owned.len=1;
+        deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+        assert(s_callbacks==1 && s_outcome==NRF_CS_OUTCOME_SUCCESS && !nrf_cs_pair_adapter_is_active(&s_adapter));
+        assert(s_outgoing_conn==NULL && s_connection.refs==(owned?0U:1U));
+        s_failed_submit=NULL;s_use_production_cleanup=false;s_disconnect_result=0;
+    }
+}
+static void test_disconnect_already_pending_waits_for_real_callback(void)
+{
+    start(0);advance_to_procedure();s_connection.refs=1;s_use_production_cleanup=true;
+    s_disconnect_result=-EALREADY;s_disconnect_calls=0;s_now=100;
+    s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    assert(s_outgoing_conn==&s_connection && s_connection.refs==1 && s_callbacks==0);
+    s_now=500;timeout_work_handler(NULL);
+    assert(s_disconnect_calls==1 && s_callbacks==0);
+    s_capture_posts=true;disconnected_cb(&s_connection,BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    s_capture_posts=false;event_work_handler(NULL);
+    assert(s_callbacks==1 && s_outcome==NRF_CS_OUTCOME_SUCCESS && s_connection.refs==0);
+    s_use_production_cleanup=false;s_disconnect_result=0;
+}
+static void test_release_reason_reaches_reflector_only_for_final_execution(void)
+{
+    for(unsigned scenario=0;scenario<3;++scenario){
+        start(0);advance_to_procedure();s_connection.refs=1;s_use_production_cleanup=true;
+        s_relay_final_hint_cb=final_hint;s_final_hint=scenario==0U;s_disconnect_result=0;s_now=100;
+        if(scenario==2U){nrf_cs_pair_runtime_zephyr_cancel(&s_timeout_step);event_work_handler(NULL);}
+        else {s_local_steps.len=s_peer_owned.len=1;
+            deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);}
+        const uint8_t reason=s_last_disconnect_reason;
+        assert(reason==(s_final_hint?NRF_CS_CYCLE_RELEASE_REASON:BT_HCI_ERR_REMOTE_USER_TERM_CONN));
+        s_capture_posts=true;disconnected_cb(&s_connection,reason);s_capture_posts=false;event_work_handler(NULL);
+        assert(s_callbacks==1 && s_connection.refs==0);
+        struct bt_conn peer={.refs=1};s_incoming_conn=&peer;s_reflector_procedure_active=1;
+        s_relay_released_cb=released_hint;s_release_notifications=0;
+        s_capture_posts=true;disconnected_cb(&peer,reason);s_capture_posts=false;event_work_handler(NULL);
+        assert(s_release_notifications==(scenario==0U?1U:0U) && peer.refs==0);
+        assert(!nrf_cs_pair_runtime_zephyr_is_progress_required());
+        s_use_production_cleanup=false;s_relay_final_hint_cb=NULL;s_relay_released_cb=NULL;
+    }
+}
+static void test_failed_cancel_submit_retains_request_or_deadline_fallback(void)
+{
+    for(unsigned via_timeout=0;via_timeout<2;++via_timeout){
+        start(0);advance_to_procedure();s_failed_submit=&s_event_work;
+        nrf_cs_pair_runtime_zephyr_cancel(&s_timeout_step);
+        assert(s_cancel_pending && s_cleanup_calls==0 && s_callbacks==0);
+        s_failed_submit=NULL;s_now=via_timeout?500U:100U;
+        if(via_timeout)timeout_work_handler(NULL);else event_work_handler(NULL);
+        cleanup_work_handler(NULL);
+        assert(s_callbacks==1 && s_outcome==(via_timeout?NRF_CS_OUTCOME_TIMEOUT:NRF_CS_OUTCOME_TRANSPORT_ERROR));
+        nrf_cs_step_t next=s_timeout_step;++next.attempt_id;
+        assert(nrf_cs_pair_runtime_zephyr_execute(&next,completed,NULL)==0);
+        assert(!s_cancel_pending);execute_work_handler(NULL);advance_to_procedure();
+        s_now+=100;s_local_steps.len=s_peer_owned.len=1;
+        deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+        cleanup_work_handler(NULL);
+        assert(s_callbacks==2 && s_outcome==NRF_CS_OUTCOME_SUCCESS);
+    }
+}
 static nrf_cs_outcome_t finish_at(unsigned delay,unsigned elapsed)
 {
     start(delay);advance_to_procedure();s_now=elapsed;
@@ -510,6 +677,12 @@ int main(void)
     test_completed_iq_buffers_survive_queued_callbacks();
     test_iq_partial_abort_overflow_and_mismatch();
     test_radio_stop_closes_owned_reflector_on_worker();
+    test_outgoing_cancellation_is_queued_and_token_scoped();
+    test_cleanup_submit_failure_has_no_connection_to_wait_for();
+    test_disconnect_already_pending_waits_for_real_callback();
+    test_disconnect_failure_keeps_live_connection_owned();
+    test_release_reason_reaches_reflector_only_for_final_execution();
+    test_failed_cancel_submit_retains_request_or_deadline_fallback();
     test_procedure_disabled_is_not_an_enabled_reflector();
     unsigned gaps=0;
     const unsigned elapsed[]={499,500,501};

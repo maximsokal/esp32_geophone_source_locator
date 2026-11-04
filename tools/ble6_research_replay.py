@@ -118,10 +118,14 @@ def wieme_cases():
                        "raw_steps": wieme_raw_steps(line)}
 
 
-def owl_cases(path, stride=200):
+def owl_cases(path, stride=200, include_diagnostics=False):
     import pyarrow.parquet as pq
     fields = ["technology", "status", "iq", "local_iq", "remote_iq", "tqi", "true_dist", "rtt", "ifft", "angle", "setup", "run_idx", "env"]
     file = pq.ParquetFile(path)
+    diagnostic_fields=('local_rpl','remote_rpl','local_tx','remote_tx','nak','crc','rx_to',
+                       'tone_RSSI','remote_tone_RSSI','median_RSSI','de_quality')
+    if include_diagnostics:
+        fields.extend(name for name in diagnostic_fields if name in file.schema_arrow.names)
     offset = 0
     for batch in file.iter_batches(batch_size=2000, columns=fields):
         selected = [i for i in range(batch.num_rows) if (offset + i) % stride == 0]
@@ -144,9 +148,13 @@ def owl_cases(path, stride=200):
                         raise ValueError("OWL combined IQ does not match local times remote")
                 counts.append(int(good)); iq.extend(value if good else (0.0, 0.0))
             rtt = row["rtt"] if row["rtt"] is not None and math.isfinite(row["rtt"]) and row["rtt"] > 0 else math.nan
-            yield {"dataset": "OWL", "file": path.name, "row": offset + local_index, "truth_m": float(row["true_dist"]),
+            case = {"dataset": "OWL", "file": path.name, "row": offset + local_index, "truth_m": float(row["true_dist"]),
                    "angle": row["angle"], "setup": row["setup"], "run_idx": row["run_idx"], "env": row["env"],
                    "recorded_ifft": row["ifft"], "iq": iq, "counts": counts, "rtt": rtt}
+            if include_diagnostics:
+                case['diagnostics']={name:row.get(name) for name in diagnostic_fields}
+                case['diagnostics']['tqi']=row['tqi']
+            yield case
         offset += batch.num_rows
 
 

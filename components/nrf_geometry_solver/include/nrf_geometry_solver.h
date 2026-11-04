@@ -126,6 +126,8 @@ typedef enum {
  *   - exactly two references, a genuine mirror ambiguity, and the layout's
  *     reflection is already fixed (the first two-reference placement defines
  *     +Y and is the only one resolved by convention);
+ *   - three or more references permit both mirror candidates, with different
+ *     relative shapes to a solved node having no usable reference edge;
  *   - reference circles that miss each other by more than the tolerance, or
  *     a placement that disagrees with any reference by more than it.
  */

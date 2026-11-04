@@ -33,7 +33,7 @@ def make_case(name, points, errors=None, manual_mask=0, missing_mask=0):
         'pairs': pairs, 'bad_mask': sum(1 << p for p,v in errors.items() if v), 'class': 'unspecified'}
 
 
-def native_solutions(cases, workdir):
+def native_solutions(cases, workdir, solver_source='components/nrf_geometry_solver/nrf_geometry_solver.c'):
     workdir.mkdir(parents=True,exist_ok=True)
     input_path, output = workdir/'input.txt', workdir/'output.csv'
     with input_path.open('w',encoding='ascii') as stream:
@@ -47,7 +47,7 @@ def native_solutions(cases, workdir):
                 p = case['pairs'][i] if i<len(case['pairs']) else {'distance':0,'spread':0,'flags':0,'state':0}
                 stream.write(f"{p['distance']} {p['spread']} {p['flags']} {p['state']}\n")
     entry = {'name':'ble6_geometry_orders','sources':['tests/host/ble6_geometry_orders.c',
-        'components/nrf_geometry_solver/nrf_geometry_solver.c','components/nrf_geometry_solver/nrf_geometry_triangles.c'],
+        str(solver_source),'components/nrf_geometry_solver/nrf_geometry_triangles.c'],
         'include_dirs':['components/nrf_geometry_solver/include','nRF54L15/include'],'libraries':['m'],
         'defines':['NRF_GEOMETRY_SOLVER_HOST_TEST=1']}
     manifest = workdir/'manifest.json'

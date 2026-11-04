@@ -560,7 +560,7 @@ static uint64_t cycle_now_ms(void *context)
 static void cycle_abort_attempt(void *context)
 {
     (void)context;
-    /* The step's own timeout (pair_timeout_ms) ends an attempt before its window closes. */
+    nrf_cs_pair_runtime_zephyr_cancel(&s_cycle.active_step);
 }
 
 static void cycle_step_done(const nrf_cs_step_t *step, const nrf_cs_measurement_t *measurement, void *context)

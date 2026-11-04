@@ -1972,6 +1972,51 @@ static void test_release_cannot_discard_another_cycle(void)
     }
 }
 
+void nrf_cs_pair_zephyr_stub_finish_held(void);
+static void test_release_requests_ble_cancellation(void)
+{
+    extern bool nrf_cs_pair_zephyr_stub_hold;
+    extern unsigned nrf_cs_pair_zephyr_stub_cancel_calls;
+    extern nrf_cs_step_t nrf_cs_pair_zephyr_stub_cancel_step;
+    const nrf_upstream_status_t node=read_status(NULL);
+    const nrf_cs_cycle_plan_t plan={.request_id=1,.cycle_id=200,.membership_generation=200,
+        .pair_timeout_ms=2400,.max_attempts=2,.samples_per_pair=9,.min_confidence=0,
+        .full_rotation=true,.step_count=2,.node_count=2,.self_node=node.node_id};
+    nrf_cs_cycle_plan_steps_t steps={.request_id=2,.cycle_id=200,.step_count=2};
+    steps.steps[0]=(nrf_cs_cycle_step_t){.initiator=node.node_id,.reflector=(uint8_t)(node.node_id+1)};
+    steps.steps[1]=(nrf_cs_cycle_step_t){.initiator=(uint8_t)(node.node_id+1),.reflector=node.node_id};
+    const nrf_cs_cycle_go_t go={.request_id=3,.cycle_id=200,
+        .total_timeout_ms=2*nrf_cs_cycle_window_ms(2400,9,2)+NRF_CS_CYCLE_TOTAL_MARGIN_MS};
+    uint8_t p[NRF_CS_CYCLE_PLAN_LENGTH],s[NRF_CS_CYCLE_PLAN_STEPS_LENGTH],g[NRF_CS_CYCLE_GO_LENGTH];
+    assert(nrf_cs_cycle_encode_plan(&plan,p)==0);cycle_send(p,sizeof(p));
+    assert(nrf_cs_cycle_encode_plan_steps(&steps,s)==0);cycle_send(s,sizeof(s));
+    assert(nrf_cs_cycle_encode_go(&go,g)==0);cycle_send(g,sizeof(g));
+    const unsigned executes=nrf_cs_pair_zephyr_stub_execute_calls,cancels=nrf_cs_pair_zephyr_stub_cancel_calls;
+    nrf_cs_pair_zephyr_stub_hold=true;
+    for(unsigned tick=0;tick<20000 && nrf_cs_pair_zephyr_stub_execute_calls==executes;++tick)
+        nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
+    assert(nrf_cs_pair_zephyr_stub_execute_calls==executes+1);
+    assert(cycle_send_release_checked(200,false));
+    assert(nrf_cs_pair_zephyr_stub_cancel_calls==cancels+1);
+    const nrf_cs_measurement_t late_measurement={.outcome=NRF_CS_OUTCOME_SUCCESS};
+    assert(!nrf_cs_pair_zephyr_stub_final_hint(&late_measurement));
+    assert(nrf_cs_pair_zephyr_stub_cancel_step.cycle_id==200 &&
+        nrf_cs_pair_zephyr_stub_cancel_step.membership_generation==200 &&
+        nrf_cs_pair_zephyr_stub_cancel_step.initiator==node.node_id);
+    uint32_t length;const uint8_t *reply=read_frame(&length);
+    assert(cycle_is_legacy_reply(reply,length));
+    nrf_cs_cycle_plan_t next=plan;next.cycle_id=201;next.membership_generation=201;
+    steps.cycle_id=201;
+    assert(nrf_cs_cycle_encode_plan(&next,p)==0);cycle_send(p,sizeof(p));
+    assert(nrf_cs_cycle_encode_plan_steps(&steps,s)==0);cycle_send(s,sizeof(s));
+    nrf_cs_cycle_go_t next_go=go;next_go.cycle_id=201;
+    assert(nrf_cs_cycle_encode_go(&next_go,g)==0);cycle_send(g,sizeof(g));
+    nrf_cs_pair_zephyr_stub_hold=false;nrf_cs_pair_zephyr_stub_finish_held();
+    assert(cycle_read_status().cycle_id==201 && cycle_read_status().state==NRF_CS_CYCLE_STATE_RUNNING);
+    assert(cycle_read_status().pairs_done==0);
+    assert(cycle_send_release_checked(201,false));
+}
+
 int main(void)
 {
     /* The MAX-494 wrapper keeps using the runtime after this main returns. */
@@ -2594,6 +2639,7 @@ int main(void)
     test_autonomous_cs_cycle_messages(NRF_CS_OUTCOME_TRANSPORT_ERROR);
     test_relay_hooks_reach_the_cycle_runtime();
     test_release_cannot_discard_another_cycle();
+    test_release_requests_ble_cancellation();
     {
         const nrf_upstream_sensor_refresh_t request = {.request_id = 777U};
         uint8_t frame[NRF_UPSTREAM_PROTOCOL_SENSOR_SCAN_LENGTH];

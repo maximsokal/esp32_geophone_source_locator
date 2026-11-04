@@ -95,9 +95,14 @@ static nrf_cs_node_id_t s_scan_target = 0xFFU;
 
 static struct bt_conn *s_outgoing_conn;
 static bool s_outgoing_connected;
+static atomic_t s_disconnect_retry_pending;
+static void cleanup_work_handler(struct k_work *work);
 static struct bt_conn *s_incoming_conn;
 
 static nrf_cs_step_t s_timeout_step;
+static struct k_spinlock s_cancel_lock;
+static nrf_cs_step_t s_cancel_step;
+static bool s_cancel_pending;
 static int64_t s_attempt_deadline_ms;
 static nrf_cs_rf_diagnostics_t s_rf_diagnostics;
 static atomic_t s_rf_tx_power = ATOMIC_INIT(NRF_CS_RF_UNAVAILABLE);
@@ -210,6 +215,30 @@ static bool runtime_step_matches_active(const nrf_cs_step_t *step)
     return nrf_cs_pair_runtime_bridge_step_matches(&s_adapter, step);
 }
 
+void nrf_cs_pair_runtime_zephyr_cancel(const nrf_cs_step_t *step)
+{
+    if (!s_started || step == NULL) return;
+    if (nrf_cs_pair_adapter_is_active(&s_adapter) &&
+        !nrf_cs_pair_runtime_bridge_step_matches(&s_adapter, step)) return;
+    if (atomic_get(&s_execute_pending) != 0 &&
+        !nrf_cs_pair_runtime_bridge_steps_equal(&s_timeout_step, step)) return;
+    k_spinlock_key_t key = k_spin_lock(&s_cancel_lock);
+    s_cancel_step = *step;
+    s_cancel_pending = true;
+    k_spin_unlock(&s_cancel_lock, key);
+    (void)submit_cs_work(&s_event_work);
+}
+
+static bool runtime_take_cancel(const nrf_cs_step_t *step)
+{
+    k_spinlock_key_t key = k_spin_lock(&s_cancel_lock);
+    const bool cancelled = s_cancel_pending &&
+        nrf_cs_pair_runtime_bridge_steps_equal(&s_cancel_step, step);
+    if (cancelled) s_cancel_pending = false;
+    k_spin_unlock(&s_cancel_lock, key);
+    return cancelled;
+}
+
 static int runtime_start_advertising(void)
 {
     int err;
@@ -275,6 +304,7 @@ static void runtime_reset_ranging(void)
     s_ready_counter = NRF_CS_RANGING_COUNTER_NONE;
     s_local_complete = false;
     s_peer_complete = false;
+    atomic_set(&s_disconnect_retry_pending, 0);
     atomic_set(&s_local_data_frozen, 0);
     atomic_set(&s_peer_data_frozen, 0);
     s_realtime_ras = false;

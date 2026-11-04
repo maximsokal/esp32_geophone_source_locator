@@ -28,6 +28,8 @@ int nrf_cs_pair_runtime_zephyr_set_node_id(nrf_cs_node_id_t node_id);
  * it runs. Call from the main loop, not from the TWIS callbacks.
  */
 int nrf_cs_pair_runtime_zephyr_set_radio_enabled(bool enabled);
+/* Nonblocking, may be called under the cycle lock; cancellation runs on the CS queue. */
+void nrf_cs_pair_runtime_zephyr_cancel(const nrf_cs_step_t *step);
 int nrf_cs_pair_runtime_zephyr_execute(
     const nrf_cs_step_t *step,
     nrf_cs_pair_runtime_complete_cb_t complete_cb,
