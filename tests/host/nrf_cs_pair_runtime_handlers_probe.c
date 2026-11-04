@@ -181,7 +181,7 @@ static unsigned s_trace_event_count,s_trace_execute_count,s_trace_timeout_count,
 static uint32_t s_trace_execute_budget,s_trace_execute_attempt;
 static uint8_t s_trace_execute_initiator,s_trace_execute_reflector,s_trace_execute_try,s_trace_execute_pair;
 static uint8_t s_trace_timeout_phase,s_trace_result_outcome,s_trace_result_phase;
-static uint32_t s_trace_timeout_budget,s_trace_rf_signal,s_trace_rf_quality;
+static uint32_t s_trace_timeout_budget,s_trace_rf_signal,s_trace_rf_quality,s_trace_result_attempt;
 static int32_t s_trace_result_distance;
 static uint16_t s_trace_result_confidence;
 static void nrf_cs_trace_zephyr_execute(uint32_t id,uint8_t i,uint8_t r,uint8_t t,uint8_t p,uint32_t b)
@@ -196,7 +196,7 @@ static bool s_trace_result_has_timing;
 static nrf_cs_pair_adapter_timing_t s_trace_result_timing;
 static void nrf_cs_trace_zephyr_result(uint32_t id,uint8_t outcome,int32_t dist,uint16_t conf,uint8_t phase,
     const nrf_cs_pair_adapter_timing_t *timing)
-{ (void)id;++s_trace_result_count;s_trace_result_outcome=outcome;s_trace_result_distance=dist;
+{ s_trace_result_attempt=id;++s_trace_result_count;s_trace_result_outcome=outcome;s_trace_result_distance=dist;
   s_trace_result_confidence=conf;s_trace_result_phase=phase;
   s_trace_result_has_timing=timing!=NULL;if(timing!=NULL)s_trace_result_timing=*timing; }
 static unsigned s_trace_estimates_count;
@@ -339,6 +339,36 @@ static nrf_cs_outcome_t finish_at(unsigned delay,unsigned elapsed)
     assert(s_callbacks==1 && !nrf_cs_pair_adapter_is_active(&s_adapter));
     printf("outcome=%u\n",(unsigned)s_outcome);return s_outcome;
 }
+static void test_consecutive_attempts_do_not_reuse_cleanup_timing(void)
+{
+    start(0);advance_to_procedure();s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    s_now=500;timeout_work_handler(NULL);s_now=700;cleanup_work_handler(NULL);
+    assert(s_callbacks==1 && s_trace_result_timing.cleanup_ms==600 && s_trace_result_timing.timeout_during_cleanup);
+    for(unsigned failure=0;failure<2;++failure) {
+        nrf_cs_step_t next=s_timeout_step;
+        ++next.attempt_id;
+        const unsigned elapsed=failure==0?500:20;
+        s_schedule_fail=failure!=0;
+        assert(nrf_cs_pair_runtime_zephyr_execute(&next,completed,NULL)==0);
+        s_now+=elapsed;
+        execute_work_handler(NULL);
+        printf("new queued attempt id=%u measured=%u cleanup=%u total=%u cleanup_timeout=%u\n",
+            (unsigned)next.attempt_id,(unsigned)s_trace_result_timing.measured_ms,
+            (unsigned)s_trace_result_timing.cleanup_ms,(unsigned)s_trace_result_timing.total_ms,
+            s_trace_result_timing.timeout_during_cleanup?1U:0U);
+        fflush(stdout);
+        assert(s_callbacks==2+failure && s_cleanup_calls==1);
+        assert(s_trace_result_attempt==next.attempt_id);
+        assert(s_outcome==(failure==0?NRF_CS_OUTCOME_TIMEOUT:NRF_CS_OUTCOME_TRANSPORT_ERROR));
+        assert(s_trace_result_has_timing && s_trace_result_timing.valid);
+        assert(s_trace_result_timing.cleanup_ms==0 && !s_trace_result_timing.timeout_during_cleanup);
+        assert(s_trace_result_timing.measured_ms==elapsed && s_trace_result_timing.total_ms==elapsed);
+        assert(!s_trace_result_timing.budget_exceeded && !nrf_cs_pair_adapter_is_active(&s_adapter));
+    }
+    s_schedule_fail=false;
+}
+
 int main(void)
 {
     unsigned gaps=0;
@@ -579,6 +609,7 @@ int main(void)
         assert(s_trace_result_timing.budget_exceeded==(cleanup_at[i]>500));
         assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_timing.timeout_during_cleanup);
     }
+    test_consecutive_attempts_do_not_reuse_cleanup_timing();
     start(0);s_now=60;s_count=1;s_taken=0;                /* an error code of a late event shows in the trace too */
     s_events[0]=(runtime_event_t){.type=RUNTIME_EVENT_TRANSPORT_ERROR,.has_step=true,.step=s_timeout_step,.status=9};
     event_work_handler(NULL);

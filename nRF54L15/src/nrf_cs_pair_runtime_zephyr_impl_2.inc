@@ -223,21 +223,22 @@ static void runtime_adapter_complete(
     nrf_cs_pair_runtime_complete_cb_t callback = s_user_complete_cb;
     void *callback_context = s_user_complete_context;
 
-    ARG_UNUSED(context);
     (void)k_work_cancel_delayable(&s_timeout_work);
     s_user_complete_cb = NULL;
     s_user_complete_context = NULL;
     if (step != NULL && measurement != NULL) {
-        nrf_cs_pair_adapter_timing_t timing;
-        const bool have_timing = nrf_cs_pair_adapter_last_timing(&s_adapter, &timing);
-        if (have_timing) {
-            /* The deadline and elapsed trace include work-queue wait; the adapter clock starts in execute_work. */
-            timing.total_ms = (uint32_t)(k_uptime_get() - (s_attempt_deadline_ms - step->timeout_ms));
-            timing.measured_ms = timing.total_ms - timing.cleanup_ms;
-            timing.budget_exceeded = timing.total_ms > step->timeout_ms;
+        nrf_cs_pair_adapter_timing_t timing = {0};
+        /* Early queue failures have no adapter timing; its cached result belongs to the previous attempt. */
+        if (context == &s_adapter) {
+            (void)nrf_cs_pair_adapter_last_timing(&s_adapter, &timing);
         }
+        timing.valid = true;
+        /* Include queue wait even when the attempt never reached adapter_execute. */
+        timing.total_ms = (uint32_t)(k_uptime_get() - (s_attempt_deadline_ms - step->timeout_ms));
+        timing.measured_ms = timing.total_ms - timing.cleanup_ms;
+        timing.budget_exceeded = timing.total_ms > step->timeout_ms;
         nrf_cs_trace_zephyr_result(step->attempt_id, (uint8_t)measurement->outcome, measurement->distance_mm,
-            measurement->confidence, (uint8_t)nrf_cs_pair_adapter_phase(&s_adapter), have_timing ? &timing : NULL);
+            measurement->confidence, (uint8_t)nrf_cs_pair_adapter_phase(&s_adapter), &timing);
     }
     runtime_emit_rf_diagnostics(step);
     runtime_reset_ranging();

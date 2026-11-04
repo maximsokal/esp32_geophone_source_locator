@@ -411,7 +411,7 @@ static void execute_work_handler(struct k_work *work)
         s_node_id,
         &s_timeout_step,
         runtime_adapter_complete,
-        NULL);
+        &s_adapter);
     atomic_set(&s_execute_pending, 0);
     if (result != NRF_CS_PAIR_ADAPTER_OK) {
         runtime_adapter_complete(&s_timeout_step, &failure, NULL);

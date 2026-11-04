@@ -14,7 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing"])
+@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context"])
 def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutation):
     build_root = ROOT / ".test-build"
     build_root.mkdir(exist_ok=True)
@@ -59,8 +59,12 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
             body = body.replace("measurement.outcome = NRF_CS_OUTCOME_SUCCESS;",
                                 "measurement.provider_quality_flags &= ~0x70U; measurement.outcome = NRF_CS_OUTCOME_SUCCESS;")
         if mutation == "missing-queue-timing" and name == "runtime_adapter_complete":
-            assert "if (have_timing) {" in body
-            body = body.replace("if (have_timing) {", "if (have_timing && false) {")
+            assignment = "timing.total_ms = (uint32_t)(k_uptime_get() - (s_attempt_deadline_ms - step->timeout_ms));"
+            assert assignment in body
+            body = body.replace(assignment, "timing.total_ms = timing.measured_ms + timing.cleanup_ms;")
+        if mutation == "stale-timing-context" and name == "runtime_adapter_complete":
+            assert "if (context == &s_adapter) {" in body
+            body = body.replace("if (context == &s_adapter) {", "if (context == &s_adapter || context == NULL) {")
         line = source[:start].count("\n") + 1
         path = parts[part - 1].relative_to(ROOT).as_posix()
         provenance.append({"function": name, "path": path, "line": line,
@@ -86,7 +90,8 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
     (output / "run.log").write_text(result.stdout, encoding="utf-8")
     if mutation != "production":
         expected = {"missing-rf-summary": "s_rf_signal_events", "missing-method": "s_provider_flags",
-                    "missing-queue-timing": "s_trace_result_timing.measured_ms==100"}[mutation]
+                    "missing-queue-timing": "s_trace_result_timing.measured_ms==100",
+                    "stale-timing-context": "s_trace_result_timing.cleanup_ms==0"}[mutation]
         assert result.returncode != 0 and "(run)" in result.stdout and expected in result.stdout, result.stdout
     else:
         assert result.returncode == 0, f"Production handler probe failed; artifacts: {output}\n{result.stdout}"
