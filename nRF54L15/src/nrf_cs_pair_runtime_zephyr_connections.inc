@@ -28,7 +28,8 @@ static void connected_cb(struct bt_conn *conn, uint8_t err)
     if (err != 0U) {
         return;
     }
-    if (nrf_cs_pair_adapter_is_active(&s_adapter) || s_incoming_conn != NULL) {
+    if (atomic_get(&s_radio_enabled) == 0 ||
+        nrf_cs_pair_adapter_is_active(&s_adapter) || s_incoming_conn != NULL) {
         (void)bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
         return;
     }

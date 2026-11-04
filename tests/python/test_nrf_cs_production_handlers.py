@@ -14,12 +14,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled", "unfrozen-local", "unfrozen-peer"])
+@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled", "unfrozen-local", "unfrozen-peer", "missing-radio-stop", "missing-radio-disconnect"])
 def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutation):
     build_root = ROOT / ".test-build"
     build_root.mkdir(exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="cs-handler-proof-", dir=build_root))
     parts = [ROOT / f"nRF54L15/src/nrf_cs_pair_runtime_zephyr_impl_{i}.inc" for i in (1, 2, 3)]
+    parts.append(ROOT / "nRF54L15/src/nrf_cs_pair_runtime_zephyr_connections.inc")
     sources = [p.read_text(encoding="utf-8") for p in parts]
     adapter_ops = sources[1].split("static const nrf_cs_pair_adapter_ops_t s_adapter_ops = {", 1)[1].split("};", 1)[0]
     assert ".now_ms = op_now_ms," in adapter_ops  # The target adapter must actually enable its clock.
@@ -28,6 +29,7 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
     (output / "production_types.inc").write_text(types, encoding="utf-8")
     for part, name in (
         (1, "runtime_reset_ranging"), (1, "ranging_data_received_cb"),
+        (4, "disconnected_cb"),
         (2, "runtime_emit_rf_diagnostics"), (2, "report_ranging_header"),
         (2, "accumulate_mean"), (2, "collect_pbr_step"),
         (2, "collect_rtt_step"), (2, "report_step_data"),
@@ -36,6 +38,7 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
         (2, "cleanup_work_handler"), (2, "maybe_complete_measurement"),
         (3, "event_work_handler"), (3, "execute_work_handler"),
         (3, "nrf_cs_pair_runtime_zephyr_execute"),
+        (3, "nrf_cs_pair_runtime_zephyr_set_radio_enabled"),
         (3, "procedure_enable_complete_cb"), (3, "subevent_data_cb"),
         (3, "nrf_cs_pair_runtime_zephyr_is_progress_required"),
     ):
@@ -53,6 +56,14 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
             end += 1
         body = source[start:end]
         original_digest = hashlib.sha256(body.encode()).hexdigest()
+        if mutation == "missing-radio-stop" and name == "nrf_cs_pair_runtime_zephyr_set_radio_enabled":
+            call = "runtime_post_event(RUNTIME_EVENT_RADIO_DISABLED, NULL, 0U, 0, s_incoming_conn);"
+            assert call in body
+            body = body.replace(call, "(void)s_incoming_conn;")
+        if mutation == "missing-radio-disconnect" and name == "event_work_handler":
+            call = "(void)bt_conn_disconnect(event.conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);"
+            assert call in body
+            body = body.replace(call, "(void)event.conn;")
         if mutation == "unfrozen-local" and name == "subevent_data_cb":
             assert "atomic_get(&s_local_data_frozen) != 0" in body
             body = body.replace("atomic_get(&s_local_data_frozen) != 0", "atomic_get(&s_local_data_frozen) < 0")
@@ -106,7 +117,9 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
                     "stale-timing-context": "s_trace_result_timing.cleanup_ms==0",
                     "disabled-is-enabled": "s_reflector_procedure_active==0",
                     "unfrozen-local": "s_local_steps.len==2",
-                    "unfrozen-peer": "s_peer_owned.len==2"}[mutation]
+                    "unfrozen-peer": "s_peer_owned.len==2",
+                    "missing-radio-stop": "s_count==1 && s_disconnect_calls==0",
+                    "missing-radio-disconnect": "s_disconnect_calls==1"}[mutation]
         assert result.returncode != 0 and "(run)" in result.stdout and expected in result.stdout, result.stdout
     else:
         assert result.returncode == 0, f"Production handler probe failed; artifacts: {output}\n{result.stdout}"

@@ -39,6 +39,7 @@ typedef int cs_de_quality_t;
 #define BT_HCI_LE_CS_PACKET_RSSI_NOT_AVAILABLE 127
 #define BT_HCI_LE_CS_TIME_DIFFERENCE_NOT_AVAILABLE INT16_MIN
 #define BT_HCI_ERR_SUCCESS 0
+#define BT_HCI_ERR_REMOTE_USER_TERM_CONN 0x13
 #define BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1 0
 #define BT_CONN_LE_CS_PROCEDURE_COMPLETE 0
 #define BT_CONN_LE_CS_PROCEDURE_ABORTED 15
@@ -84,7 +85,7 @@ struct bt_conn_le_cs_subevent_result {
         uint16_t procedure_counter;} header;
     struct net_buf_simple *step_data_buf;
 };
-struct bt_conn { int unused; };
+struct bt_conn { unsigned refs; };
 struct k_work { int unused; };
 struct k_work_delayable { struct k_work work; };
 #include "production_types.inc"
@@ -113,6 +114,10 @@ static uint16_t s_provider_flags;
 static uint32_t s_rf_words[3];
 static unsigned s_rf_signal_events,s_rf_quality_events;
 static int s_reflector_procedure_active;
+static int s_radio_enabled=1;
+static unsigned s_disconnect_calls,s_stop_advertising_calls;
+static unsigned s_reflector_config_calls;
+static struct bt_conn *s_disconnected_conn;
 static nrf_cs_pair_adapter_complete_cb_t s_user_complete_cb;
 static void *s_user_complete_context;
 static uint8_t s_node_id=0;
@@ -120,6 +125,7 @@ static int s_execute_pending;
 static bool s_started=true;
 static struct bt_conn *s_incoming_conn;
 static struct bt_conn *s_outgoing_conn;
+static bool s_outgoing_connected;
 static struct bt_conn s_connection;
 static struct k_work s_execute_work;
 static int64_t s_attempt_deadline_ms;
@@ -142,7 +148,8 @@ static int atomic_get(const int *v) { return *v; }
 static int64_t k_uptime_get(void) { return (int64_t)s_now; }
 static uint32_t k_uptime_get_32(void) { return (uint32_t)s_now; }
 static int submit_cs_work(struct k_work *w) { (void)w;return 1; }
-static void bt_conn_unref(struct bt_conn *c) { (void)c; }
+static struct bt_conn *bt_conn_ref(struct bt_conn *c) { ++c->refs;return c; }
+static void bt_conn_unref(struct bt_conn *c) { assert(c->refs>0);--c->refs; }
 static int k_msgq_get(int *q,runtime_event_t *e,int wait)
 { (void)q;(void)wait; if(s_taken==s_count)return -1;*e=s_events[s_taken++];return 0; }
 static void nrf_log_runtime_zephyr_append_event(uint16_t id,uint32_t a,uint32_t b)
@@ -153,6 +160,9 @@ static void nrf_log_runtime_zephyr_append_event(uint16_t id,uint32_t a,uint32_t 
 }
 static void nrf_watchdog_zephyr_checkin(int p) { (void)p; }
 static int runtime_start_advertising(void) { return 0; }
+static void runtime_stop_advertising(void) { ++s_stop_advertising_calls; }
+static int bt_conn_disconnect(struct bt_conn *conn,uint8_t reason)
+{ assert(reason==BT_HCI_ERR_REMOTE_USER_TERM_CONN);++s_disconnect_calls;s_disconnected_conn=conn;return 0; }
 static void runtime_reset_ranging(void);
 static int k_work_cancel_delayable(struct k_work_delayable *w)
 { (void)w; s_timer_armed=false; return 0; }
@@ -173,12 +183,13 @@ static void net_buf_simple_add_mem(struct net_buf_simple *b,const void *p,size_t
 static uint16_t bt_ras_rreq_get_ranging_counter(uint16_t c) { return c & 0xfffU; }
 static void runtime_post_event(runtime_event_type_t t,const nrf_cs_step_t *s,uint32_t v,int e,struct bt_conn *c)
 { if(s_capture_posts){assert(s_count<24);s_events[s_count++]=(runtime_event_t){
-    .type=t,.has_step=s!=NULL,.step=s!=NULL?*s:(nrf_cs_step_t){0},.value=v,.status=e,.conn=c};} }
+    .type=t,.has_step=s!=NULL,.step=s!=NULL?*s:(nrf_cs_step_t){0},.value=v,.status=e,.conn=c!=NULL?bt_conn_ref(c):NULL};} }
 #include "runtime_reset_ranging.inc"
 #include "ranging_data_received_cb.inc"
+#include "disconnected_cb.inc"
 static void maybe_request_on_demand_data(void) {}
-static void configure_reflector_connection(struct bt_conn *c) { (void)c; }
-static void configure_reflector_procedure(struct bt_conn *c,uint8_t id) { (void)c;(void)id; }
+static void configure_reflector_connection(struct bt_conn *c) { (void)c;++s_reflector_config_calls; }
+static void configure_reflector_procedure(struct bt_conn *c,uint8_t id) { (void)c;(void)id;++s_reflector_config_calls; }
 /* The console trace hooks of nrf_cs_trace_zephyr.h, recorded so the probe can check what the handlers report. */
 typedef struct { const char *label; uint32_t attempt; int status; uint8_t phase; } probe_trace_event_t;
 static probe_trace_event_t s_trace_events[64];
@@ -281,6 +292,7 @@ static float cs_de_ifft(float *iq)
 #include "event_work_handler.inc"
 #include "execute_work_handler.inc"
 #include "nrf_cs_pair_runtime_zephyr_execute.inc"
+#include "nrf_cs_pair_runtime_zephyr_set_radio_enabled.inc"
 #include "procedure_enable_complete_cb.inc"
 #include "nrf_cs_pair_runtime_zephyr_is_progress_required.inc"
 #include "subevent_data_cb.inc"
@@ -397,6 +409,37 @@ static void test_iq_partial_abort_overflow_and_mismatch(void)
         assert(s_callbacks==1 && s_outcome==NRF_CS_OUTCOME_OUTLIER && s_de_calls==0 && s_confidence==0);
     }
 }
+static void test_radio_stop_closes_owned_reflector_on_worker(void)
+{
+    for(unsigned scenario=0;scenario<5;++scenario){
+        struct bt_conn replacement={.refs=1};
+        start(0);advance_to_procedure();timeout_work_handler(NULL);cleanup_work_handler(NULL);
+        s_outgoing_conn=NULL;s_connection.refs=1;s_incoming_conn=&s_connection;
+        s_count=s_taken=0;s_capture_posts=true;s_radio_enabled=1;
+        s_disconnect_calls=s_stop_advertising_calls=s_reflector_config_calls=0;
+        if(scenario==3U){
+            runtime_post_event(RUNTIME_EVENT_INCOMING_CONNECTED,NULL,0,0,s_incoming_conn);
+            runtime_post_event(RUNTIME_EVENT_REFLECTOR_CONFIG,NULL,0,0,s_incoming_conn);
+        }
+        if(scenario==4U)s_incoming_conn=NULL;
+        assert(nrf_cs_pair_runtime_zephyr_set_radio_enabled(false)==0);
+        printf("radio stop scenario=%u queued=%u disconnect_inline=%u\n",scenario,s_count,s_disconnect_calls);fflush(stdout);
+        if(scenario==0U)assert(s_count==1 && s_disconnect_calls==0 && s_stop_advertising_calls==1);
+        if(scenario==1U)assert(nrf_cs_pair_runtime_zephyr_set_radio_enabled(true)==0);
+        if(scenario==2U)s_incoming_conn=&replacement;
+        s_capture_posts=false;event_work_handler(NULL);
+        if(scenario==0U)assert(s_disconnect_calls==1 && s_disconnected_conn==&s_connection);
+        else if(scenario==3U)assert(s_disconnect_calls==3 && s_reflector_config_calls==0);
+        else assert(s_disconnect_calls==0);
+        assert(s_connection.refs==1 && replacement.refs==1);
+        if(scenario==0U || scenario==3U){
+            disconnected_cb(&s_connection,BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+            assert(s_incoming_conn==NULL && s_connection.refs==0);
+            assert(!nrf_cs_pair_runtime_zephyr_is_progress_required());
+        } else bt_conn_unref(&s_connection);
+        s_incoming_conn=NULL;s_radio_enabled=1;
+    }
+}
 static nrf_cs_outcome_t finish_at(unsigned delay,unsigned elapsed)
 {
     start(delay);advance_to_procedure();s_now=elapsed;
@@ -466,6 +509,7 @@ int main(void)
 {
     test_completed_iq_buffers_survive_queued_callbacks();
     test_iq_partial_abort_overflow_and_mismatch();
+    test_radio_stop_closes_owned_reflector_on_worker();
     test_procedure_disabled_is_not_an_enabled_reflector();
     unsigned gaps=0;
     const unsigned elapsed[]={499,500,501};

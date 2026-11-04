@@ -60,6 +60,17 @@ static void event_work_handler(struct k_work *work)
             if (event.conn != NULL) bt_conn_unref(event.conn);
             continue;
         }
+        if (event.conn != NULL &&
+            (event.type == RUNTIME_EVENT_INCOMING_CONNECTED ||
+             event.type == RUNTIME_EVENT_REFLECTOR_CONFIG ||
+             event.type == RUNTIME_EVENT_RADIO_DISABLED) &&
+            (event.conn != s_incoming_conn || atomic_get(&s_radio_enabled) == 0)) {
+            if (event.conn == s_incoming_conn) {
+                (void)bt_conn_disconnect(event.conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+            }
+            bt_conn_unref(event.conn);
+            continue;
+        }
         switch (event.type) {
         case RUNTIME_EVENT_CONNECTED:
             (void)nrf_cs_pair_runtime_bridge_dispatch(
@@ -144,6 +155,8 @@ static void event_work_handler(struct k_work *work)
         case RUNTIME_EVENT_REFLECTOR_CONFIG:
             configure_reflector_procedure(event.conn, (uint8_t)event.value);
             break;
+        case RUNTIME_EVENT_RADIO_DISABLED:
+            break; /* Radio was enabled again before the queued stop was consumed. */
         default:
             break;
         }
@@ -488,8 +501,11 @@ int nrf_cs_pair_runtime_zephyr_set_radio_enabled(bool enabled)
     if (enabled) {
         return runtime_start_advertising();
     }
-    /* A scan or connection that is still winding down ends on its own timeout and cannot restart advertising. */
+    /* Outgoing attempts retain their timeout; close an owned reflector on the CS queue. */
     runtime_stop_advertising();
+    if (s_incoming_conn != NULL) {
+        runtime_post_event(RUNTIME_EVENT_RADIO_DISABLED, NULL, 0U, 0, s_incoming_conn);
+    }
     return 0;
 }
 

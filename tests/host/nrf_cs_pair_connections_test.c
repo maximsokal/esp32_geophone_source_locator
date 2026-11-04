@@ -9,6 +9,7 @@ struct bt_conn { unsigned refs; };
 static struct bt_conn *s_outgoing_conn, *s_incoming_conn;
 static bool s_outgoing_connected, s_advertising;
 static int s_reflector_procedure_active;
+static int s_radio_enabled=1;
 static nrf_cs_pair_adapter_t s_adapter;
 static unsigned s_completions, s_disconnects;
 static nrf_cs_outcome_t s_outcome;
@@ -24,6 +25,7 @@ static int bt_conn_disconnect(struct bt_conn *c, uint8_t reason)
 static int op_cleanup(void *context)
 { (void)context; return bt_conn_disconnect(s_outgoing_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN); }
 static void atomic_set(int *a, int b) { *a = b; }
+static int atomic_get(const int *a) { return *a; }
 static int runtime_start_advertising(void) { return 0; }
 static bool runtime_active_step(nrf_cs_step_t *s)
 {
@@ -72,6 +74,11 @@ static nrf_cs_step_t start(struct bt_conn *conn)
 int main(void)
 {
     struct bt_conn conn;
+    s_radio_enabled=0;conn.refs=1;
+    assert(atomic_get(&s_radio_enabled)==0);
+    connected_cb(&conn,0);
+    assert(s_disconnects==1 && s_incoming_conn==NULL && conn.refs==1);
+    s_radio_enabled=1;
     nrf_cs_step_t step = start(&conn);
     assert(nrf_cs_pair_adapter_timeout(&s_adapter, &step) == 0);
     connected_cb(&conn, 2); /* Zephyr reports create cancellation here, not disconnected. */
@@ -89,9 +96,19 @@ int main(void)
     assert(s_completions == 1 && s_outcome == NRF_CS_OUTCOME_TIMEOUT);
     assert(conn.refs == 0 && !nrf_cs_pair_adapter_is_active(&s_adapter));
 
-    (void)start(&conn);
+    step = start(&conn);
     connected_cb(&conn, 0x3e); /* Ordinary create failure still enters transport cleanup. */
     assert(nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_CLEANUP);
     assert(s_outgoing_conn == NULL && conn.refs == 0);
+    assert(nrf_cs_pair_adapter_cleanup_complete(&s_adapter,&step)==NRF_CS_PAIR_ADAPTER_COMPLETED);
+    conn.refs=1;
+    connected_cb(&conn,0); /* Radio-enabled idle reflector is still accepted. */
+    assert(s_incoming_conn==&conn && conn.refs==2);
+    disconnected_cb(&conn,0x13);
+    assert(s_incoming_conn==NULL && conn.refs==1);
+    s_radio_enabled=0;
+    const unsigned before=s_disconnects;
+    connected_cb(&conn,0x3e);
+    assert(s_disconnects==before && conn.refs==1 && s_incoming_conn==NULL);
     return 0;
 }

@@ -29,6 +29,7 @@ typedef enum {
     RUNTIME_EVENT_INCOMING_CONNECTED,
     RUNTIME_EVENT_INCOMING_DISCONNECTED,
     RUNTIME_EVENT_REFLECTOR_CONFIG,
+    RUNTIME_EVENT_RADIO_DISABLED,
 } runtime_event_type_t;
 
 typedef struct {
@@ -61,6 +62,7 @@ static const char *runtime_event_name(runtime_event_type_t type)
         case RUNTIME_EVENT_INCOMING_CONNECTED: return "INCOMING_CONNECTED";
         case RUNTIME_EVENT_INCOMING_DISCONNECTED: return "INCOMING_DISCONNECTED";
         case RUNTIME_EVENT_REFLECTOR_CONFIG: return "REFLECTOR_CONFIG";
+        case RUNTIME_EVENT_RADIO_DISABLED: return "RADIO_DISABLED";
         default: return "?";
     }
 }
