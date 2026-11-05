@@ -4826,11 +4826,18 @@ esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
     }
 
     portENTER_CRITICAL(&s_state_lock);
-    const bool valid = s_frozen_ranging_result_valid && s_frozen_ranging_result.success &&
+    bool valid = s_frozen_ranging_result_valid && s_frozen_ranging_result.success &&
         !s_frozen_ranging_result.invalidated &&
         now_ms >= s_frozen_ranging_result.timestamp_ms &&
         now_ms - s_frozen_ranging_result.timestamp_ms < max_age_ms &&
         service_ranging_membership_matches(&s_frozen_ranging_result, current_topology);
+    for (size_t i = 0U; valid && i < s_frozen_ranging_result.pair_count; ++i) {
+        const nrf_cs_pair_result_t *pair = &s_frozen_ranging_result.pairs[i];
+        if (pair->state == NRF_CS_PAIR_VALID && pair->single_direction &&
+            (pair->scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) == 0U) {
+            valid = false;
+        }
+    }
     if (valid) {
         *result = s_frozen_ranging_result;
     }

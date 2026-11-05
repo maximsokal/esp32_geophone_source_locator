@@ -64,6 +64,10 @@ esp_err_t seismic_recorder_geometry_build_inputs(
                 if (topology->remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) {
                     continue;
                 }
+                /* The caller checked the settled height against MAIN's reference generation. */
+                if (channels[channel].placement_height_valid) {
+                    continue;
+                }
                 if (!channels[channel].height_reference_valid ||
                     channels[channel].height_reference_generation == 0U) {
                     provenance->effective_policy = SEISMIC_RECORDER_GEOMETRY_Z_PLANAR;

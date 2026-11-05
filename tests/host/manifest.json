@@ -1809,7 +1809,11 @@
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
-        "tests/host/seismic_recorder_start_integration_test.c"
+        "tests/host/seismic_recorder_start_integration_test.c",
+        "nRF54L15/src/nrf_cs_scheduler.c",
+        "nRF54L15/src/nrf_cs_cycle_protocol.c",
+        "nRF54L15/src/nrf_cs_cycle_replay.c",
+        "nRF54L15/src/nrf_upstream_protocol.c"
       ],
       "include_dirs": [
         "components/cjson_alloc_guard/include",

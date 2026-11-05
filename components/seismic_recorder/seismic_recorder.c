@@ -46,15 +46,14 @@
 #define SEISMIC_RECORDER_MIN_WRITE_FRAMES         8U
 #define SEISMIC_RECORDER_BATCH_WAIT_MS            10U
 
-/* MAX-118: default CS ranging policy for the pre-record geometry cycle.
- * Not derived from a spec value -- a conservative, tunable default. */
-#define SEISMIC_RECORDER_GEOMETRY_CS_PAIR_TIMEOUT_MS 500U
-#define SEISMIC_RECORDER_GEOMETRY_CS_MAX_ATTEMPTS       3U
+/* Keep the fallback cycle at the approved workflow ranging policy. */
+#define SEISMIC_RECORDER_GEOMETRY_CS_PAIR_TIMEOUT_MS 2400U
+#define SEISMIC_RECORDER_GEOMETRY_CS_MAX_ATTEMPTS       2U
 #define SEISMIC_RECORDER_GEOMETRY_CS_MIN_CONFIDENCE   500U
 #define SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS            50U
 /* MAX-206: accepted samples per pair (median + MAD outlier rejection)
  * instead of trusting one procedure; the cycle budget scales with it. */
-#define SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR    3U
+#define SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR    9U
 
 #if defined(CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE)
 #define SEISMIC_RECORDER_GEOMETRY_Z_POLICY SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
@@ -1259,6 +1258,8 @@ static esp_err_t seismic_recorder_prepare_geometry(
         .min_confidence = SEISMIC_RECORDER_GEOMETRY_CS_MIN_CONFIDENCE,
         .samples_per_pair = SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR,
         .full_rotation = true,
+        .relay_order = true,
+        .require_both_directions = true,
     };
     uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {0};
     object_store_profile_t *cable_profile = malloc(sizeof(*cable_profile));
@@ -1449,6 +1450,20 @@ static esp_err_t seismic_recorder_prepare_geometry(
             (unsigned)solution.inconsistent_pair_count
         );
         return ESP_ERR_INVALID_STATE;
+    }
+
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+        const object_store_pod_geometry_t *pod = &geometry.pods[channel];
+        const double radius2 = (double)pod->x_mm * pod->x_mm +
+            (double)pod->y_mm * pod->y_mm + (double)pod->z_mm * pod->z_mm;
+        /* Match ranging's one-mm allowance for rounded XYZ, including absent MAIN edges. */
+        const double cable_bound_mm = (double)limits[channel] + 1.0;
+        if (radius2 > cable_bound_mm * cable_bound_mm) {
+            ESP_LOGE(TAG, "START rejected: CS geometry exceeds cable node=%u limit_mm=%" PRIu32,
+                (unsigned)topology.remotes[channel].node_id, limits[channel]);
+            return ESP_ERR_INVALID_STATE;
+        }
     }
 
     err = object_store_set_geometry(object_id, &geometry);

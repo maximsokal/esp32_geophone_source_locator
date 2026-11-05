@@ -182,6 +182,7 @@ esp_err_t nrf_topology_service_ranging_set_manual(
     const uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT]);
 esp_err_t nrf_topology_service_get_frozen_ranging_result(
     nrf_topology_ranging_result_t *result);
+/* Automatic VALID pairs require both directions; explicit manual corrections remain reusable. */
 esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
     const nrf_topology_snapshot_t *current_topology,
     uint64_t now_ms,
