@@ -5,6 +5,7 @@ Source bodies are extracted unchanged; their digests remain beside the result.
 """
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 import subprocess
@@ -15,7 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled", "unfrozen-local", "unfrozen-peer", "missing-radio-stop", "missing-radio-disconnect", "missing-cancel", "foreign-cancel", "queued-cancel-starts", "cancel-not-submitted", "forget-live-disconnect", "cleanup-no-fallback", "no-disconnect-retry", "normal-disconnect-releases", "lost-disconnect-no-deadline", "lost-disconnect-no-worker", "lost-incoming-no-mailbox", "lost-incoming-no-release", "lost-incoming-not-cleared", "lost-incoming-new-owner", "forget-advertising-stop", "scan-after-stop-error", "procedure-loses-config", "cold-reset-expects-zero", "local-counter-unchecked", "peer-counter-unchecked", "ready-counter-unchecked"])
+@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled", "unfrozen-local", "unfrozen-peer", "missing-radio-stop", "missing-radio-disconnect", "missing-cancel", "foreign-cancel", "queued-cancel-starts", "cancel-not-submitted", "forget-live-disconnect", "cleanup-no-fallback", "no-disconnect-retry", "normal-disconnect-releases", "lost-disconnect-no-deadline", "lost-disconnect-no-worker", "lost-incoming-no-mailbox", "lost-incoming-no-release", "lost-incoming-not-cleared", "lost-incoming-new-owner", "forget-advertising-stop", "scan-after-stop-error", "procedure-loses-config", "cold-reset-expects-zero", "local-counter-unchecked", "peer-counter-unchecked", "ready-counter-unchecked", "warm-reset-active", "warm-reset-unfrozen", "warm-reset-same-counter", "sdk-ras", "sdk-rx-reset", "sdk-early-idle", "sdk-ignore-get-error", "sdk-disconnect-no-free", "sdk-alloc-no-reset", "payload-counter-unchecked", "payload-config-unchecked", "local-config-unchecked", "enable-config-unchecked", "phase-check-bypass", "phase-local-bypass", "phase-enable-bypass", "phase-peer-bypass", "phase-ready-bypass", "phase-overwritten-bypass", "overflow-error-not-saved", "overflow-error-not-drained", "measurement-commit-error-bypass", "overflow-error-overwrite-first", "overflow-error-foreign", "overflow-error-no-wakeup"])
 def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutation):
     build_root = ROOT / ".test-build"
     build_root.mkdir(exist_ok=True)
@@ -25,14 +26,46 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
     sources = [p.read_text(encoding="utf-8") for p in parts]
     adapter_ops = sources[1].split("static const nrf_cs_pair_adapter_ops_t s_adapter_ops = {", 1)[1].split("};", 1)[0]
     assert ".now_ms = op_now_ms," in adapter_ops  # The target adapter must actually enable its clock.
+    sdk_ras = mutation in ("sdk-ras", "sdk-rx-reset", "sdk-early-idle", "sdk-ignore-get-error", "sdk-disconnect-no-free", "sdk-alloc-no-reset")
+    if sdk_ras:
+        sdk = Path(os.environ.get("BLE6_NCS_ROOT", "C:/ncs/v3.4.0/nrf"))
+        ras = sdk / "subsys/bluetooth/services/ras/rreq/ras_rreq.c"
+        if not ras.is_file():
+            pytest.skip("NCS RAS source unavailable")
+        sdk_source = ras.read_text(encoding="utf-8")
+        bodies = []
+        for name in ("store_ranging_data_segment", "data_receive_finished", "bt_ras_rreq_cp_get_ranging_data", "handle_rsp_code", "ras_rreq_find", "ras_rreq_alloc", "bt_ras_rreq_free", "disconnected"):
+            match = re.search(r"(?m)^(?:static\s+)?[\w* \t]+\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", sdk_source)
+            start, end, depth = match.start(), match.end(), 1
+            while depth:
+                depth += (sdk_source[end] == "{") - (sdk_source[end] == "}")
+                end += 1
+            bodies.append(sdk_source[start:end])
+        compiled_bodies = list(bodies)
+        if mutation == "sdk-early-idle":
+            call = "rreq->on_demand_rd.data_cb("
+            assert call in compiled_bodies[1]
+            compiled_bodies[1] = compiled_bodies[1].replace(call,
+                "rreq->on_demand_rd.data_get_in_progress = false; " + call)
+        if mutation == "sdk-disconnect-no-free":
+            assert "bt_ras_rreq_free(conn);" in compiled_bodies[7]
+            compiled_bodies[7] = compiled_bodies[7].replace("bt_ras_rreq_free(conn);", "(void)conn;")
+        if mutation == "sdk-alloc-no-reset":
+            assert "memset(rreq, 0, sizeof(struct bt_ras_rreq));" in compiled_bodies[5]
+            compiled_bodies[5] = compiled_bodies[5].replace("memset(rreq, 0, sizeof(struct bt_ras_rreq));", "(void)rreq;")
+        (output / "sdk_ras.inc").write_text("\n".join(compiled_bodies), encoding="utf-8")
+        (output / "sdk_ras_provenance.json").write_text(json.dumps({
+            "path": str(ras), "source_sha256": hashlib.sha256(ras.read_bytes()).hexdigest(),
+            "function_sha256": [hashlib.sha256(b.encode()).hexdigest() for b in bodies],
+            "compiled_sha256": [hashlib.sha256(b.encode()).hexdigest() for b in compiled_bodies]}, indent=2))
     provenance = []
     types = sources[0][sources[0].index("typedef enum {"):sources[0].index("K_MSGQ_DEFINE(")]
     (output / "production_types.inc").write_text(types, encoding="utf-8")
     for part, name in (
-        (1, "runtime_post_event"),
+        (1, "runtime_post_event"), (1, "runtime_take_overflow_error"), (1, "runtime_active_procedure_for_conn"),
         (1, "runtime_stop_advertising"), (1, "op_connect"),
         (1, "runtime_reset_procedure"), (1, "runtime_reset_ranging"), (1, "runtime_counter_matches"),
-        (1, "ranging_data_received_cb"), (1, "ranging_data_ready_cb"),
+        (1, "ranging_data_received_cb"), (1, "ranging_data_ready_cb"), (1, "ranging_data_overwritten_cb"),
         (1, "runtime_take_cancel"), (1, "nrf_cs_pair_runtime_zephyr_cancel"),
         (4, "connected_cb"), (4, "disconnected_cb"),
         (2, "runtime_emit_rf_diagnostics"), (2, "report_ranging_header"),
@@ -41,7 +74,7 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
         (2, "current_tone_stats"), (2, "good_tone_channel_count"), (2, "estimate_measurement"),
         (2, "op_now_ms"), (2, "runtime_adapter_complete"), (2, "timeout_work_handler"),
         (2, "op_cleanup"),
-        (2, "cleanup_work_handler"), (2, "maybe_complete_measurement"),
+        (2, "cleanup_work_handler"), (2, "maybe_complete_measurement"), (2, "maybe_request_on_demand_data"),
         (3, "event_work_handler"), (3, "execute_work_handler"),
         (3, "nrf_cs_pair_runtime_zephyr_execute"),
         (3, "nrf_cs_pair_runtime_zephyr_set_radio_enabled"),
@@ -64,6 +97,63 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
             end += 1
         body = source[start:end]
         original_digest = hashlib.sha256(body.encode()).hexdigest()
+        if name == "runtime_post_event":
+            if mutation == "overflow-error-not-saved":
+                condition = "recover_terminal && event.has_step &&"
+                assert condition in body
+                body = body.replace(condition, "recover_terminal && event.status == 0 && event.has_step &&")
+            if mutation == "overflow-error-overwrite-first":
+                condition = "!nrf_cs_pair_runtime_bridge_steps_equal(&s_overflow_error.step, &event.step)"
+                assert condition in body
+                body = body.replace(condition, "event.status != 0")
+            if mutation == "overflow-error-foreign":
+                condition = "nrf_cs_pair_runtime_bridge_step_matches(&s_adapter, &event.step)"
+                assert condition in body
+                body = body.replace(condition, "event.has_step")
+            if mutation == "overflow-error-no-wakeup":
+                condition = "type == RUNTIME_EVENT_INCOMING_DISCONNECTED || recover_terminal"
+                assert condition in body
+                body = body.replace(condition, "type == RUNTIME_EVENT_INCOMING_DISCONNECTED || (recover_terminal && event.status == 0)")
+        if name == "event_work_handler" and mutation == "overflow-error-not-drained":
+            condition = "runtime_take_overflow_error(&event) || k_msgq_get(&s_event_queue, &event, K_NO_WAIT) == 0"
+            assert condition in body
+            body = body.replace(condition, "(runtime_take_overflow_error(&event) && event.status == 0) || k_msgq_get(&s_event_queue, &event, K_NO_WAIT) == 0")
+        if name == "maybe_complete_measurement" and mutation == "measurement-commit-error-bypass":
+            condition = "atomic_cas(&s_measurement_state, RUNTIME_MEASUREMENT_OPEN, RUNTIME_MEASUREMENT_COMMITTED)"
+            assert condition in body
+            body = body.replace(condition, condition + " || atomic_get(&s_measurement_state) == RUNTIME_MEASUREMENT_FAILED")
+        if mutation == "phase-check-bypass" and name == "runtime_active_procedure_for_conn":
+            body = body.replace("== NRF_CS_PAIR_PHASE_PROCEDURE", "!= NRF_CS_PAIR_PHASE_IDLE")
+        phase_callback = {"phase-local-bypass": "subevent_data_cb", "phase-enable-bypass": "procedure_enable_complete_cb",
+                          "phase-peer-bypass": "ranging_data_received_cb", "phase-ready-bypass": "ranging_data_ready_cb",
+                          "phase-overwritten-bypass": "ranging_data_overwritten_cb"}.get(mutation)
+        if name == phase_callback:
+            assert "runtime_active_procedure_for_conn(conn, &step)" in body
+            body = body.replace("runtime_active_procedure_for_conn(conn, &step)", "runtime_active_step_for_conn(conn, &step)")
+        if name == "report_ranging_header" and mutation in ("payload-counter-unchecked", "payload-config-unchecked"):
+            condition = "header->ranging_counter != s_local_counter" if mutation == "payload-counter-unchecked" else "header->config_id != NRF_CS_CONFIG_ID"
+            assert condition in body
+            body = body.replace(condition, "(" + condition + " && s_local_counter == NRF_CS_RANGING_COUNTER_NONE)")
+        if mutation == "local-config-unchecked" and name == "subevent_data_cb":
+            condition = "result->header.config_id != NRF_CS_CONFIG_ID"
+            assert condition in body
+            body = body.replace(condition, condition + " && result->header.config_id == 255U")
+        if mutation == "enable-config-unchecked" and name == "procedure_enable_complete_cb":
+            condition = "params->config_id != NRF_CS_CONFIG_ID"
+            assert condition in body
+            body = body.replace(condition, condition + " && params->config_id == 255U")
+        if mutation == "sdk-ignore-get-error" and name == "maybe_request_on_demand_data":
+            assert "if (err != 0)" in body
+            body = body.replace("if (err != 0)", "if (err > 0)")
+        if mutation == "sdk-rx-reset" and name == "runtime_reset_procedure":
+            body = body.replace("net_buf_simple_reset(&s_local_steps);",
+                                "net_buf_simple_reset(&s_local_steps); net_buf_simple_reset(&s_peer_rx);")
+        if name == "runtime_reset_procedure" and mutation in ("warm-reset-active", "warm-reset-unfrozen", "warm-reset-same-counter"):
+            condition = {"warm-reset-active": "nrf_cs_pair_adapter_is_active(&s_adapter)",
+                         "warm-reset-unfrozen": "atomic_get(&s_local_data_frozen) == 0",
+                         "warm-reset-same-counter": "expected_counter == s_local_counter"}[mutation]
+            assert condition in body
+            body = body.replace(condition, "expected_counter == 65534U")
         if mutation == "procedure-loses-config" and name == "runtime_reset_procedure":
             assignment = "atomic_set(&s_expected_counter, expected_counter);"
             assert assignment in body
@@ -179,7 +269,7 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
         "name": "nrf_cs_production_handlers",
         "sources": ["nRF54L15/src/nrf_cs_pair_adapter.c", "nRF54L15/src/nrf_cs_measurement_quality.c", "nRF54L15/src/nrf_cs_event_overflow.c", "nRF54L15/src/nrf_cs_cycle_runtime.c", "nRF54L15/src/nrf_cs_cycle_protocol.c", "nRF54L15/src/nrf_cs_scheduler.c", "nRF54L15/src/nrf_upstream_protocol.c", "tests/host/nrf_cs_pair_runtime_handlers_probe.c"],
         "include_dirs": ["nRF54L15/include", output.relative_to(ROOT).as_posix()],
-        "libraries": ["m"],
+        "libraries": ["m"], "defines": ["PROBE_SDK_RAS"] if sdk_ras else [],
     }]}
     manifest_path = output / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -190,8 +280,19 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
         text=True, encoding="utf-8", errors="replace", check=False,
     )
     (output / "run.log").write_text(result.stdout, encoding="utf-8")
-    if mutation != "production":
-        expected = {"missing-rf-summary": "s_rf_signal_events", "missing-method": "s_provider_flags",
+    if mutation not in ("production", "sdk-ras"):
+        expected = {**{key: "s_callbacks==1U && s_outcome==NRF_CS_OUTCOME_TRANSPORT_ERROR && s_de_calls==1U"
+                       for key in ("overflow-error-not-saved", "overflow-error-not-drained", "measurement-commit-error-bypass")},
+                    "overflow-error-overwrite-first": "s_last_error==status && !s_overflow_error_pending",
+                    "overflow-error-foreign": "!s_overflow_error_pending",
+                    "overflow-error-no-wakeup": "s_event_queue_overflow_total==overflows+2U && s_event_submits==submits+2U",
+                    **{key: "s_local_steps.len==0U && s_peer_owned.len==0U && s_rf_flags==0 && s_count==0U"
+                       for key in ("phase-check-bypass", "phase-local-bypass", "phase-enable-bypass", "phase-peer-bypass", "phase-ready-bypass", "phase-overwritten-bypass")},
+                    "payload-counter-unchecked": "s_callbacks==1U && s_outcome==(fault==0U?NRF_CS_OUTCOME_SUCCESS:NRF_CS_OUTCOME_OUTLIER)",
+                    "payload-config-unchecked": "s_callbacks==1U && s_outcome==(fault==0U?NRF_CS_OUTCOME_SUCCESS:NRF_CS_OUTCOME_OUTLIER)",
+                    "local-config-unchecked": "s_count==0U && s_local_steps.len==0U && s_rf_flags==0",
+                    "enable-config-unchecked": "s_rf_flags==0 && s_rf_tx_power==NRF_CS_RF_UNAVAILABLE",
+                    "missing-rf-summary": "s_rf_signal_events", "missing-method": "s_provider_flags",
                     "missing-queue-timing": "s_trace_result_timing.measured_ms==100",
                     "stale-timing-context": "s_trace_result_timing.cleanup_ms==0",
                     "disabled-is-enabled": "s_reflector_procedure_active==0",
@@ -215,8 +316,16 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
                     "lost-incoming-new-owner": "s_incoming_conn==NULL && premature.refs==1",
                     "forget-advertising-stop": "result==faults[fault] && s_advertising",
                     "scan-after-stop-error": "result==faults[fault] && s_advertising",
+                    "sdk-disconnect-no-free": "slot.conn==NULL && s_connection.refs==0",
+                    "sdk-alloc-no-reset": "!slot.on_demand_rd.data_get_in_progress && slot.counter_in_progress==0U",
+                    "sdk-ignore-get-error": "s_count==1U && rreq.cp.state==BT_RAS_RREQ_CP_STATE_NONE",
+                    "sdk-early-idle": "s_reentrant_get==-EBUSY",
+                    "sdk-rx-reset": "s_peer_owned.len==8U && s_peer_owned.data[0]==8U",
+                    "warm-reset-active": "!runtime_reset_procedure(next)",
+                    "warm-reset-unfrozen": "!runtime_reset_procedure(next)",
+                    "warm-reset-same-counter": "!runtime_reset_procedure(next)",
                     "procedure-loses-config": "s_cs_config.channel_map[0]==0xa5 && s_realtime_ras",
-                    "cold-reset-expects-zero": "s_reflector_procedure_active==0 && s_expected_counter==NRF_CS_RANGING_COUNTER_NONE",
+                    "cold-reset-expects-zero": "Assertion failed: s_rf_tx_power==NRF_CS_RF_UNAVAILABLE && !s_local_data_frozen && !s_peer_data_frozen",
                     "local-counter-unchecked": "s_count==0 && s_local_steps.len==0",
                     "peer-counter-unchecked": "s_count==0 && s_local_steps.len==0",
                     "ready-counter-unchecked": "s_count==0 && s_local_steps.len==0"}[mutation]

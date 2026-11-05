@@ -28,6 +28,7 @@
 #define RAS_FEAT_REALTIME_RD 1U
 #define NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS 2
 #define NRF_CS_CHANNEL_INDEX_OFFSET 2U
+#define NRF_CS_CONFIG_ID 0U
 #define CS_DE_NUM_CHANNELS 75U
 #define CONFIG_BT_CS_DE_NFFT_SIZE 512U
 #define NRF_CS_TONE_OK_THRESHOLD 15U
@@ -51,7 +52,7 @@ typedef int cs_de_quality_t;
 #define BT_CONN_LE_CS_SUBEVENT_ABORTED 15
 #define BT_CONN_LE_CS_PROCEDURES_DISABLED 0
 #define BT_CONN_LE_CS_PROCEDURES_ENABLED 1
-struct net_buf_simple { unsigned len; uint8_t data[128]; };
+struct net_buf_simple { uint16_t len; uint8_t data[128]; };
 struct bt_le_cs_subevent_step { uint8_t mode,channel,data_len; const uint8_t *data; };
 #pragma pack(push,1)
 struct bt_hci_le_cs_step_data_mode_1 {
@@ -74,7 +75,8 @@ struct bt_hci_le_cs_step_data_mode_2 { uint8_t antenna_permutation_index; struct
 #pragma warning(pop)
 #endif
 #pragma pack(pop)
-struct ras_ranging_header { int8_t selected_tx_power; uint8_t antenna_paths_mask; };
+struct ras_ranging_header { uint16_t ranging_counter:12; uint16_t config_id:4;
+    int8_t selected_tx_power; uint8_t antenna_paths_mask; };
 struct bt_le_cs_iq_sample { int16_t i,q; };
 typedef struct {
     unsigned n_ap,role,rtt_count; int32_t rtt_accumulated_half_ns;
@@ -83,11 +85,11 @@ typedef struct {
     struct {float ifft,phase_slope,rtt,best;} distance_estimates[1];
 } cs_de_report_t;
 #define BT_CONN_LE_CS_ROLE_INITIATOR 0
-struct bt_conn_le_cs_procedure_enable_complete { int8_t selected_tx_power;unsigned tone_antenna_config_selection,state; };
+struct bt_conn_le_cs_procedure_enable_complete { int8_t selected_tx_power;unsigned tone_antenna_config_selection,state;uint8_t config_id; };
 struct bt_conn_le_cs_subevent_result {
     struct {int8_t reference_power_level;uint8_t num_antenna_paths;
         unsigned procedure_done_status,subevent_done_status,procedure_abort_reason,subevent_abort_reason;
-        uint16_t procedure_counter;} header;
+        uint16_t procedure_counter;uint8_t config_id;} header;
     struct net_buf_simple *step_data_buf;
 };
 struct bt_conn { unsigned refs; };
@@ -108,11 +110,15 @@ static int s_local_data_frozen,s_peer_data_frozen;
 static int s_expected_counter=NRF_CS_RANGING_COUNTER_NONE;
 static nrf_cs_rf_diagnostics_t s_rf_diagnostics;
 static int s_rf_tx_power,s_rf_status,s_rf_flags;
+static int s_measurement_state;
+static int s_procedure_accepted;
+static bool s_auto_accept_enable=true;
 static uint16_t s_iq_counts[CS_DE_NUM_CHANNELS];
 static float s_iq_ifft_scratch[2U * 512U];
 static cs_de_report_t s_de_report;
 static struct {uint8_t channel_map[10];} s_cs_config;
 static bool s_ras_skip,s_ras_malformed,s_ras_bad_paths;
+static bool s_ras_identity_from_payload;
 static unsigned s_de_calls;
 static unsigned s_de_scenario;
 static uint16_t s_confidence;
@@ -156,6 +162,8 @@ static bool s_use_production_cleanup;
 static struct k_spinlock {int unused;} s_cancel_lock;
 static struct k_spinlock s_event_queue_overflow_lock;
 static uint32_t s_event_queue_overflow_total;
+static runtime_event_t s_overflow_error;
+static bool s_overflow_error_pending;
 typedef unsigned k_spinlock_key_t;
 static unsigned s_cancel_lock_depth;
 static unsigned s_event_submits;
@@ -177,6 +185,15 @@ static nrf_cs_outcome_t s_outcome;
 static runtime_event_t s_events[24];
 static unsigned s_count, s_taken;
 static bool s_capture_posts;
+static unsigned s_error_during_dsp;
+static unsigned s_terminal_during_dsp;
+static bool s_fill_queue_during_terminal;
+static unsigned s_cancel_during_dsp;
+static unsigned s_cancel_at_commit;
+static bool s_fill_queue_during_cancel;
+static unsigned s_error_at_commit;
+static bool s_fill_queue_during_dsp;
+static void procedure_enable_complete_cb(struct bt_conn *,uint8_t,struct bt_conn_le_cs_procedure_enable_complete *);
 static bool s_worker_during_incoming_unref;
 static void event_work_handler(struct k_work *work);
 static int s_event_queue;
@@ -185,7 +202,19 @@ typedef int atomic_val_t;
 static void atomic_or(int *v,int n) { *v |= n; }
 static int atomic_get(const int *v) { return *v; }
 static bool atomic_cas(int *v,int old_value,int new_value)
-{ if(*v!=old_value)return false;*v=new_value;return true; }
+{
+    const unsigned inject=v==&s_measurement_state && new_value==RUNTIME_MEASUREMENT_COMMITTED?s_error_at_commit:0U;
+    const unsigned cancel=v==&s_measurement_state && new_value==RUNTIME_MEASUREMENT_COMMITTED?s_cancel_at_commit:0U;
+    if(cancel!=0U)s_cancel_at_commit=0U;
+    if(inject!=0U)s_error_at_commit=0U;
+    if(inject==1U)procedure_enable_complete_cb(s_outgoing_conn,9U,NULL);
+    if(cancel==1U)nrf_cs_pair_runtime_zephyr_cancel(&s_timeout_step);
+    if(*v!=old_value)return false;
+    *v=new_value;
+    if(inject==2U)procedure_enable_complete_cb(s_outgoing_conn,9U,NULL);
+    if(cancel==2U)nrf_cs_pair_runtime_zephyr_cancel(&s_timeout_step);
+    return true;
+}
 static int64_t k_uptime_get(void) { return (int64_t)s_now; }
 static uint32_t k_uptime_get_32(void) { return (uint32_t)s_now; }
 static int submit_cs_work(struct k_work *w) { if(w==&s_event_work)++s_event_submits;return w==s_failed_submit?-EBUSY:1; }
@@ -229,6 +258,8 @@ static int bt_conn_disconnect(struct bt_conn *conn,uint8_t reason)
 { assert(reason==BT_HCI_ERR_REMOTE_USER_TERM_CONN || reason==NRF_CS_CYCLE_RELEASE_REASON);
   s_last_disconnect_reason=reason;++s_disconnect_calls;s_disconnected_conn=conn;return s_disconnect_result; }
 static void runtime_reset_ranging(void);
+static bool runtime_reset_procedure(uint16_t expected_counter);
+static struct net_buf_simple *s_reset_during_copy;
 static int op_cleanup(void *context);
 static int k_work_cancel_delayable(struct k_work_delayable *w)
 { (void)w; s_timer_armed=false; return 0; }
@@ -240,14 +271,19 @@ static bool runtime_step_matches_active(const nrf_cs_step_t *s)
 { return nrf_cs_pair_runtime_bridge_step_matches(&s_adapter,s); }
 static bool runtime_active_step_for_conn(struct bt_conn *c,nrf_cs_step_t *s)
 { return c==s_outgoing_conn && runtime_active_step(s); }
+#include "runtime_active_procedure_for_conn.inc"
 static struct bt_le_cs_iq_sample bt_le_cs_parse_pct(const uint8_t *p)
 { (void)p;return (struct bt_le_cs_iq_sample){1,1}; }
 static void net_buf_simple_reset(struct net_buf_simple *b) { b->len=0; }
 static size_t net_buf_simple_tailroom(struct net_buf_simple *b) { return sizeof(b->data)-b->len; }
 static void net_buf_simple_add_mem(struct net_buf_simple *b,const void *p,size_t n)
-{ memcpy(b->data+b->len,p,n);b->len+=(unsigned)n; }
+{
+    if(b==s_reset_during_copy){s_reset_during_copy=NULL;assert(!runtime_reset_procedure(9U));}
+    memcpy(b->data+b->len,p,n);b->len=(uint16_t)(b->len+n);
+}
 static uint16_t bt_ras_rreq_get_ranging_counter(uint16_t c) { return c & 0xfffU; }
 #include "runtime_post_event.inc"
+#include "runtime_take_overflow_error.inc"
 #include "runtime_reset_procedure.inc"
 #include "runtime_reset_ranging.inc"
 #include "runtime_counter_matches.inc"
@@ -256,9 +292,22 @@ static uint16_t bt_ras_rreq_get_ranging_counter(uint16_t c) { return c & 0xfffU;
 #include "nrf_cs_pair_runtime_zephyr_cancel.inc"
 #include "ranging_data_received_cb.inc"
 #include "ranging_data_ready_cb.inc"
+#include "ranging_data_overwritten_cb.inc"
 #include "connected_cb.inc"
 #include "disconnected_cb.inc"
+#if defined(PROBE_SDK_RAS)
+typedef void (*bt_ras_rreq_ranging_data_received_t)(struct bt_conn *,uint16_t,int);
+static int bt_ras_rreq_cp_get_ranging_data(struct bt_conn *,struct net_buf_simple *,uint16_t,
+    void (*)(struct bt_conn *,uint16_t,int));
+static bool s_sdk_request_probe;
+#define maybe_request_on_demand_data sdk_maybe_request_on_demand_data
+#include "maybe_request_on_demand_data.inc"
+#undef maybe_request_on_demand_data
+static void maybe_request_on_demand_data(void)
+{ if(s_sdk_request_probe)sdk_maybe_request_on_demand_data(); }
+#else
 static void maybe_request_on_demand_data(void) {}
+#endif
 static void configure_reflector_connection(struct bt_conn *c) { (void)c;++s_reflector_config_calls; }
 static void configure_reflector_procedure(struct bt_conn *c,uint8_t id) { (void)c;(void)id;++s_reflector_config_calls; }
 /* The console trace hooks of nrf_cs_trace_zephyr.h, recorded so the probe can check what the handlers report. */
@@ -313,9 +362,13 @@ static void bt_ras_rreq_rd_subevent_data_parse(struct net_buf_simple *a,struct n
 {
     (void)a;(void)b;(void)role;(void)sub_cb;
     if(s_ras_skip)return;
-    struct ras_ranging_header h={.selected_tx_power=-8,.antenna_paths_mask=1};
+    struct ras_ranging_header h={.ranging_counter=(uint16_t)(s_local_counter&0xfffU),.selected_tx_power=-8,.antenna_paths_mask=1};
+    if(s_ras_identity_from_payload){
+        assert(a->len>=2U);const uint16_t raw=(uint16_t)(a->data[0]|((uint16_t)a->data[1]<<8));
+        h.ranging_counter=raw&0xfffU;h.config_id=(uint16_t)(raw>>12);
+    }
     if(s_ras_bad_paths)h.antenna_paths_mask=2;
-    (void)header_cb(&h,context);
+    if(!header_cb(&h,context))return;
     uint8_t tone[5]={0};
     for(uint8_t i=2;i<18;++i){
         if(s_de_scenario==8 && i==9)continue;
@@ -330,6 +383,35 @@ static void bt_ras_rreq_rd_subevent_data_parse(struct net_buf_simple *a,struct n
 static cs_de_quality_t cs_de_calc(cs_de_report_t *report)
 {
     ++s_de_calls;s_now+=s_estimate_delay;
+    if(s_terminal_during_dsp!=0U){
+        const unsigned terminal=s_terminal_during_dsp;s_terminal_during_dsp=0U;
+        if(s_fill_queue_during_terminal){
+            nrf_cs_step_t foreign=s_timeout_step;++foreign.attempt_id;
+            while(s_count<NRF_CS_EVENT_QUEUE_DEPTH)runtime_post_event(RUNTIME_EVENT_CONNECTED,&foreign,0,0,NULL);
+        }
+        if(terminal==1U)disconnected_cb(s_outgoing_conn,BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        else runtime_post_event(RUNTIME_EVENT_PROCEDURE_ABORTED,&s_timeout_step,8U,-ENODATA,NULL);
+    }
+    if(s_cancel_during_dsp!=0U){
+        const unsigned request=s_cancel_during_dsp;s_cancel_during_dsp=0U;
+        if(s_fill_queue_during_cancel){
+            nrf_cs_step_t foreign=s_timeout_step;++foreign.attempt_id;
+            while(s_count<NRF_CS_EVENT_QUEUE_DEPTH)runtime_post_event(RUNTIME_EVENT_CONNECTED,&foreign,0,0,NULL);
+        }
+        nrf_cs_step_t cancelled=s_timeout_step;
+        switch(request){case 2:++cancelled.cycle_id;break;case 3:++cancelled.membership_generation;break;
+        case 4:++cancelled.attempt_id;break;case 5:++cancelled.pair_index;break;
+        case 6:++cancelled.attempt_number;break;case 7:++cancelled.initiator;break;case 8:++cancelled.reflector;break;}
+        nrf_cs_pair_runtime_zephyr_cancel(&cancelled);
+    }
+    if(s_error_during_dsp!=0U){
+        const uint8_t error=(uint8_t)s_error_during_dsp;s_error_during_dsp=0U;
+        if(s_fill_queue_during_dsp){
+            nrf_cs_step_t foreign=s_timeout_step;++foreign.attempt_id;
+            while(s_count<NRF_CS_EVENT_QUEUE_DEPTH)runtime_post_event(RUNTIME_EVENT_CONNECTED,&foreign,0,0,NULL);
+        }
+        procedure_enable_complete_cb(s_outgoing_conn,error,NULL);
+    }
     report->distance_estimates[0].ifft=1;report->distance_estimates[0].phase_slope=2;
     report->distance_estimates[0].rtt=1;report->distance_estimates[0].best=1;
     if(s_de_scenario==1)report->distance_estimates[0].best=NAN;
@@ -374,7 +456,16 @@ static void cleanup_work_handler(struct k_work *work);
 static int connect_op(void *c,nrf_cs_node_id_t id)
 { (void)c;(void)id;s_now+=s_connect_delay;return 0; }
 static int secure_op(void *c) { (void)c;++s_secure_calls;return 0; }
-static int noop(void *c) { (void)c;return 0; }
+static int noop(void *c)
+{
+    (void)c;
+    if(s_auto_accept_enable && s_adapter.phase==NRF_CS_PAIR_PHASE_PROCEDURE){
+        struct bt_conn_le_cs_procedure_enable_complete accepted={.state=BT_CONN_LE_CS_PROCEDURES_ENABLED,
+            .selected_tx_power=NRF_CS_RF_UNAVAILABLE,.tone_antenna_config_selection=BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1};
+        procedure_enable_complete_cb(s_outgoing_conn,0,&accepted);
+    }
+    return 0;
+}
 static int config_op(void *c,bool realtime) { (void)realtime;return noop(c); }
 static int cleanup_op(void *c) { assert(s_cancel_lock_depth==0);++s_cleanup_calls;
     return s_use_production_cleanup?op_cleanup(c):0; }
@@ -389,6 +480,7 @@ static void deliver(runtime_event_type_t type,const nrf_cs_step_t *step)
 }
 static void start_queued(unsigned sync_delay,unsigned queue_delay)
 {
+    s_auto_accept_enable=true;
     const nrf_cs_pair_adapter_ops_t ops={.connect=connect_op,.secure=secure_op,
         .exchange_mtu=noop,.discover_ras=noop,.read_features=noop,
         .configure_ranging_data=config_op,.exchange_capabilities=noop,
@@ -396,12 +488,14 @@ static void start_queued(unsigned sync_delay,unsigned queue_delay)
     assert(nrf_cs_pair_adapter_init(&s_adapter,&ops)==0);
     s_now=0;s_connect_delay=sync_delay;s_callbacks=s_secure_calls=s_cleanup_calls=0;
     s_due=0;s_timer_armed=false;s_count=s_taken=0;runtime_reset_ranging();
+    assert(s_expected_counter==NRF_CS_RANGING_COUNTER_NONE);
     s_error_events=0;s_last_error=0;
     s_rf_signal_events=s_rf_quality_events=0;memset(s_rf_words,0,sizeof(s_rf_words));
     s_trace_event_count=s_trace_execute_count=s_trace_timeout_count=s_trace_result_count=s_trace_rf_count=0;
     s_trace_estimates_count=0;
     s_outgoing_conn=&s_connection;s_incoming_conn=NULL;
     s_ras_skip=s_ras_malformed=s_ras_bad_paths=false;s_de_calls=s_de_scenario=0;
+    s_ras_identity_from_payload=false;
     s_confidence=0;memset(&s_cs_config,255,sizeof(s_cs_config));
     s_timeout_step=(nrf_cs_step_t){.cycle_id=1,.membership_generation=1,
         .attempt_id=1,.pair_index=0,.attempt_number=1,.initiator=0,.reflector=1,.timeout_ms=500};
@@ -419,37 +513,111 @@ static void advance_to_procedure(void)
     for(unsigned i=0;i<8;++i)deliver(phases[i],&s_timeout_step);
     assert(nrf_cs_pair_adapter_phase(&s_adapter)==NRF_CS_PAIR_PHASE_PROCEDURE);
 }
+static void test_active_iq_copy_cannot_be_reset_as_a_prepared_procedure(void)
+{
+    for(unsigned side=0U;side<2U;++side){
+        start(0);advance_to_procedure();s_count=s_taken=0;s_capture_posts=true;
+        atomic_set(&s_expected_counter,8U);
+        struct net_buf_simple data={.len=2,.data={0x11,0x22}};
+        struct bt_conn_le_cs_subevent_result radio={.header={.num_antenna_paths=1,
+            .procedure_done_status=BT_CONN_LE_CS_PROCEDURE_COMPLETE,.procedure_counter=8U},.step_data_buf=&data};
+        s_peer_rx=(struct net_buf_simple){.len=2,.data={0x33,0x44}};
+        s_reset_during_copy=side==0U?&s_local_steps:&s_peer_owned;
+        if(side==0U)subevent_data_cb(s_outgoing_conn,&radio);
+        else ranging_data_received_cb(s_outgoing_conn,8U,0);
+        printf("active-copy side=%u expected=%u local=%u peer=%u\n",side,s_expected_counter,s_local_steps.len,s_peer_owned.len);fflush(stdout);
+        assert(s_expected_counter==8U && s_reset_during_copy==NULL);
+        assert(s_count==1 && (side==0U?s_local_steps.len:s_peer_owned.len)==2);
+        s_capture_posts=false;
+    }
+}
+
+/* Fake backend retains completed buffers; production still uses full connection cleanup. */
+static void finish_with_retained_buffers(void)
+{
+    s_count=s_taken=0;s_capture_posts=true;
+    s_adapter.complete_cb=completed;s_adapter.complete_context=NULL;
+    struct net_buf_simple data={.len=2,.data={0x11,0x22}};
+    struct bt_conn_le_cs_subevent_result radio={.header={.num_antenna_paths=1,
+        .procedure_done_status=BT_CONN_LE_CS_PROCEDURE_COMPLETE,.procedure_counter=7U},.step_data_buf=&data};
+    s_peer_rx=(struct net_buf_simple){.len=2,.data={0x33,0x44}};
+    subevent_data_cb(s_outgoing_conn,&radio);
+    ranging_data_received_cb(s_outgoing_conn,7U,0);
+    s_capture_posts=false;event_work_handler(NULL);cleanup_work_handler(NULL);
+    assert(!nrf_cs_pair_adapter_is_active(&s_adapter) && s_callbacks==1);
+    assert(s_local_complete && s_peer_complete && s_local_data_frozen && s_peer_data_frozen);
+}
+
 static void test_procedure_reset_keeps_prepared_connection_state(void)
 {
-    start(0);advance_to_procedure();
+    start(0);advance_to_procedure();finish_with_retained_buffers();
     memset(&s_cs_config,0xa5,sizeof(s_cs_config));s_realtime_ras=true;
     s_disconnect_retry_pending=1;s_reflector_procedure_active=1;
     s_local_steps.len=s_peer_rx.len=s_peer_owned.len=2;
     s_local_counter=7U;s_peer_counter=7U;s_ready_counter=7U;
     s_local_complete=s_peer_complete=s_on_demand_request_started=true;
     s_local_data_frozen=s_peer_data_frozen=1;s_rf_flags=NRF_CS_RF_ABORTED;
-    runtime_reset_procedure(8U);
+    assert(runtime_reset_procedure(8U));
     printf("procedure reset config=%u realtime=%u retry=%u\n",s_cs_config.channel_map[0],s_realtime_ras,s_disconnect_retry_pending);fflush(stdout);
     assert(s_cs_config.channel_map[0]==0xa5 && s_realtime_ras && s_disconnect_retry_pending==1);
     assert(s_reflector_procedure_active==1);
-    assert(s_local_steps.len==0 && s_peer_rx.len==0 && s_peer_owned.len==0);
+    assert(s_local_steps.len==0 && s_peer_rx.len==2 && s_peer_owned.len==0);
     assert(!s_local_complete && !s_peer_complete && !s_on_demand_request_started);
     assert(s_local_counter==NRF_CS_RANGING_COUNTER_NONE && s_peer_counter==NRF_CS_RANGING_COUNTER_NONE && s_ready_counter==NRF_CS_RANGING_COUNTER_NONE);
     assert(s_local_data_frozen==0 && s_peer_data_frozen==0 && s_rf_flags==0);
-    assert(s_expected_counter==8U);
+    assert(s_expected_counter==8U && !s_procedure_accepted);
     runtime_reset_ranging();
     assert(s_cs_config.channel_map[0]==0 && !s_realtime_ras && s_disconnect_retry_pending==0);
+    assert(s_peer_rx.len==0);
     assert(s_reflector_procedure_active==0 && s_expected_counter==NRF_CS_RANGING_COUNTER_NONE);
+}
+
+static void test_warm_reset_refuses_unowned_buffers_without_changes(void)
+{
+    for(unsigned fault=0U;fault<11U;++fault){
+        start(0);advance_to_procedure();finish_with_retained_buffers();
+        uint16_t next=8U;
+        switch(fault){
+        case 0: s_adapter.active=true;break;
+        case 1: s_local_complete=false;break;
+        case 2: s_peer_complete=false;break;
+        case 3: s_local_data_frozen=0;break;
+        case 4: s_peer_data_frozen=0;break;
+        case 5: s_local_counter=NRF_CS_RANGING_COUNTER_NONE;break;
+        case 6: s_peer_counter=6U;break;
+        case 7: next=7U;break;
+        case 8: next=4096U;break;
+        case 9: next=65534U;break;
+        case 10: s_adapter.active=true;s_adapter.phase=NRF_CS_PAIR_PHASE_CLEANUP;break;
+        }
+        s_rf_flags=NRF_CS_RF_ABORTED;s_ready_counter=7U;s_on_demand_request_started=true;
+        struct net_buf_simple local=s_local_steps,rx=s_peer_rx,peer=s_peer_owned;
+        const uint16_t local_counter=s_local_counter,peer_counter=s_peer_counter;
+        const bool local_complete=s_local_complete,peer_complete=s_peer_complete;
+        const int local_frozen=s_local_data_frozen,peer_frozen=s_peer_data_frozen;
+        assert(!runtime_reset_procedure(next));
+        assert(memcmp(&local,&s_local_steps,sizeof(local))==0 && memcmp(&rx,&s_peer_rx,sizeof(rx))==0);
+        assert(memcmp(&peer,&s_peer_owned,sizeof(peer))==0 && s_rf_flags==NRF_CS_RF_ABORTED);
+        assert(s_local_counter==local_counter && s_peer_counter==peer_counter && s_ready_counter==7U);
+        assert(s_local_complete==local_complete && s_peer_complete==peer_complete);
+        assert(s_local_data_frozen==local_frozen && s_peer_data_frozen==peer_frozen);
+        assert(s_expected_counter==NRF_CS_RANGING_COUNTER_NONE && s_on_demand_request_started);
+        printf("warm reset rejected fault=%u unchanged=1\n",fault);
+    }
 }
 
 static void test_expected_procedure_counter_filters_before_iq_and_rf_updates(void)
 {
     const uint16_t counters[]={8U,4096U,65535U,0U};
     for(unsigned mode=0U;mode<2U;++mode)for(unsigned index=0U;index<4U;++index)for(unsigned order=0U;order<2U;++order){
-        start(0);advance_to_procedure();s_now=100;
+        start(0);advance_to_procedure();finish_with_retained_buffers();s_now=100;
         memset(&s_cs_config,0xa5,sizeof(s_cs_config));s_realtime_ras=mode!=0U;
         const uint16_t expected=bt_ras_rreq_get_ranging_counter(counters[index]);
-        runtime_reset_procedure(expected);s_count=s_taken=0;s_capture_posts=true;
+        assert(runtime_reset_procedure(expected));
+        ++s_timeout_step.attempt_id;s_attempt_deadline_ms=s_now+s_timeout_step.timeout_ms;
+        assert(nrf_cs_pair_adapter_execute_prepared(&s_adapter,0,&s_timeout_step,
+            runtime_adapter_complete,&s_adapter)==NRF_CS_PAIR_ADAPTER_OK);
+        s_count=s_taken=0;s_capture_posts=true;
         struct net_buf_simple data={.len=2,.data={0x11,0x22}};
         struct bt_conn_le_cs_subevent_result radio={.header={.num_antenna_paths=2,
             .procedure_done_status=BT_CONN_LE_CS_PROCEDURE_ABORTED},.step_data_buf=&data};
@@ -474,13 +642,196 @@ static void test_expected_procedure_counter_filters_before_iq_and_rf_updates(voi
         assert(s_cs_config.channel_map[0]==0xa5 && s_realtime_ras==(mode!=0U));
         s_capture_posts=false;event_work_handler(NULL);
         assert(s_local_counter==expected && s_peer_counter==expected && s_ready_counter==expected);
-        assert(s_adapter.phase==NRF_CS_PAIR_PHASE_CLEANUP && s_callbacks==0);
+        assert(s_adapter.phase==NRF_CS_PAIR_PHASE_CLEANUP && s_callbacks==1);
         cleanup_work_handler(NULL);
-        assert(s_callbacks==1 && s_outcome==NRF_CS_OUTCOME_SUCCESS);
+        assert(s_callbacks==2 && s_outcome==NRF_CS_OUTCOME_SUCCESS);
         assert(s_expected_counter==NRF_CS_RANGING_COUNTER_NONE && s_cs_config.channel_map[0]==0);
         printf("expected IQ full=%u ras=%u order=%u realtime=%u accepted=1\n",counters[index],expected,order,mode);
     }
 }
+
+#if defined(PROBE_SDK_RAS)
+#define BIT(n) (1U << (n))
+#define BIT_MASK(n) (BIT(n)-1U)
+struct bt_ras_rreq {
+    struct bt_conn *conn;
+    struct { int state;struct {uint16_t value_handle;} subscribe_params; } cp;
+    struct { struct net_buf_simple *ranging_data_out;
+        void (*data_cb)(struct bt_conn *,uint16_t,int);bool data_get_in_progress;
+        struct {uint16_t value_handle;} subscribe_params; } real_time_rd,on_demand_rd;
+    struct {struct {uint16_t value_handle;} subscribe_params;} rd_ready,rd_overwritten;
+    uint16_t counter_in_progress;uint8_t next_expected_segment_counter;
+    bool last_segment_received;int data_error_status;bool realtime;
+};
+static void net_buf_simple_init_with_data(struct net_buf_simple *b,uint8_t *p,uint16_t n)
+{ assert(n<=sizeof(b->data));memcpy(b->data,p,n);b->len=n; }
+static uint8_t net_buf_simple_pull_u8(struct net_buf_simple *b)
+{ assert(b->len);uint8_t v=b->data[0];--b->len;memmove(b->data,b->data+1,b->len);return v; }
+static uint8_t *net_buf_simple_pull_mem(struct net_buf_simple *b,uint16_t n)
+{ assert(n==b->len);b->len=0;return b->data; }
+#define LOG_DBG(...) ((void)0)
+#define __ASSERT_NO_MSG(v) assert(v)
+#define BT_RAS_RREQ_CP_STATE_NONE 0
+#define BT_RAS_RREQ_CP_STATE_GET_RD_WRITTEN 1
+#define BT_RAS_RREQ_CP_STATE_ACK_RD_WRITTEN 2
+#define RASCP_RESPONSE_SUCCESS 1
+#define RASCP_RESPONSE_PROCEDURE_NOT_COMPLETED 6
+#define RASCP_CMD_OPCODE_LEN 1
+#define RASCP_OPCODE_GET_RD 0
+#define NET_BUF_SIMPLE_DEFINE(name,size) struct net_buf_simple name={0}
+static struct bt_ras_rreq *s_sdk_rreq;
+#define rreq_pool s_sdk_rreq
+/* One backing pool slot; the SDK's search/allocation bodies remain unchanged. */
+#define ARRAY_FOR_EACH_PTR(array,item) for(struct bt_ras_rreq *item=(array);item!=NULL;item=NULL)
+#define BT_CONN_STATE_CONNECTED 1
+struct bt_conn_info {int state;};
+static int s_sdk_info_error,s_sdk_info_state,s_sdk_unsubscribe_result;
+static unsigned s_sdk_unsubscribes;
+static int bt_conn_get_info(struct bt_conn *conn,struct bt_conn_info *info)
+{ (void)conn;info->state=s_sdk_info_state;return s_sdk_info_error; }
+static int bt_gatt_unsubscribe(struct bt_conn *conn,void *params)
+{ (void)conn;(void)params;++s_sdk_unsubscribes;return s_sdk_unsubscribe_result; }
+static int s_sdk_write_result,s_reentrant_get,s_sdk_callback_error;
+static unsigned s_sdk_writes;
+static struct bt_ras_rreq *ras_rreq_find(struct bt_conn *conn);
+static void net_buf_simple_add_u8(struct net_buf_simple *b,uint8_t v)
+{ assert(b->len<sizeof(b->data));b->data[b->len++]=v; }
+static void net_buf_simple_add_le16(struct net_buf_simple *b,uint16_t v)
+{ net_buf_simple_add_u8(b,(uint8_t)v);net_buf_simple_add_u8(b,(uint8_t)(v>>8)); }
+static int bt_gatt_write_without_response(struct bt_conn *conn,uint16_t handle,const void *p,
+    uint16_t len,bool sign)
+{ (void)handle;(void)sign;assert(conn==s_sdk_rreq->conn && len==3 && ((const uint8_t *)p)[0]==RASCP_OPCODE_GET_RD);
+  ++s_sdk_writes;return s_sdk_write_result; }
+#include "sdk_ras.inc"
+static unsigned s_sdk_disconnect_notifications;
+static void sdk_disconnect_received(struct bt_conn *conn,uint16_t counter,int err)
+{
+    assert(err==-ENOTCONN && counter==8U);
+    ++s_sdk_disconnect_notifications;
+    ranging_data_received_cb(conn,counter,err);
+}
+static void test_sdk_disconnect_releases_busy_context_before_reallocation(void)
+{
+    for(unsigned scenario=0U;scenario<8U;++scenario){
+        start(0);advance_to_procedure();s_connection.refs=1;
+        struct bt_ras_rreq slot={0};s_sdk_rreq=&slot;
+        s_sdk_info_error=0;s_sdk_info_state=0;s_sdk_unsubscribes=0;s_sdk_unsubscribe_result=0;
+        s_sdk_disconnect_notifications=0;s_sdk_writes=0;s_sdk_write_result=(scenario&4U)?-EIO:0;
+        assert(ras_rreq_alloc(s_outgoing_conn)==0 && s_connection.refs==2);
+        assert(ras_rreq_alloc(s_outgoing_conn)==-EALREADY);
+        struct bt_conn replacement={.refs=1};
+        assert(ras_rreq_alloc(&replacement)==-ENOMEM);
+        assert(bt_ras_rreq_cp_get_ranging_data(s_outgoing_conn,&s_peer_rx,8U,sdk_disconnect_received)==s_sdk_write_result);
+        assert(slot.on_demand_rd.data_get_in_progress);
+        s_count=s_taken=0;s_capture_posts=true;
+        if(scenario&1U)disconnected_cb(&s_connection,BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        else disconnected(&s_connection,BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        if(scenario&2U)event_work_handler(NULL);
+        if(scenario&1U)disconnected(&s_connection,BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        else disconnected_cb(&s_connection,BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        assert(slot.conn==NULL && s_connection.refs==0);
+        assert(s_sdk_disconnect_notifications==1U && s_sdk_unsubscribes==0U);
+        s_capture_posts=false;event_work_handler(NULL);cleanup_work_handler(NULL);
+        assert(s_callbacks==1U && s_cleanup_calls==1U && s_outcome==NRF_CS_OUTCOME_TRANSPORT_ERROR);
+        disconnected(&s_connection,BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        assert(s_sdk_disconnect_notifications==1U);
+        /* Reallocation, rather than free alone, clears the previous GET state. */
+        assert(ras_rreq_alloc(&replacement)==0 && replacement.refs==2);
+        assert(!slot.on_demand_rd.data_get_in_progress && slot.counter_in_progress==0U);
+        s_sdk_write_result=0;
+        assert(bt_ras_rreq_cp_get_ranging_data(&replacement,&s_peer_rx,8U,sdk_disconnect_received)==0);
+        disconnected(&replacement,BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        assert(slot.conn==NULL && replacement.refs==1 && s_sdk_disconnect_notifications==2U);
+        printf("SDK disconnect scenario=%u old_refs=0 new_get=1 callbacks=1 cleanup=1\n",scenario);
+        s_sdk_rreq=NULL;
+    }
+    for(unsigned branch=0U;branch<4U;++branch){
+        struct bt_conn conn={.refs=1};struct bt_ras_rreq slot={0};s_sdk_rreq=&slot;
+        assert(ras_rreq_alloc(&conn)==0);
+        s_sdk_info_error=branch==0U?-EIO:0;s_sdk_info_state=BT_CONN_STATE_CONNECTED;
+        s_sdk_unsubscribe_result=branch==2U?-EINVAL:(branch==3U?-EIO:0);s_sdk_unsubscribes=0;
+        bt_ras_rreq_free(&conn);
+        assert(conn.refs==1 && slot.conn==NULL && s_sdk_unsubscribes==(branch==0U?0U:5U));
+        printf("SDK free branch=%u refs=1 slot_free=1\n",branch);
+        s_sdk_rreq=NULL;
+    }
+    s_sdk_info_error=0;s_sdk_info_state=0;s_sdk_unsubscribe_result=0;
+}
+static void sdk_on_demand_received(struct bt_conn *conn,uint16_t counter,int err)
+{
+    s_sdk_callback_error=err;
+    s_reentrant_get=bt_ras_rreq_cp_get_ranging_data(conn,&s_peer_rx,9U,sdk_on_demand_received);
+    assert(s_reentrant_get==-EBUSY);
+    ranging_data_received_cb(conn,counter,err);
+}
+static void test_sdk_on_demand_lifetime_and_production_error_cleanup(void)
+{
+    for(unsigned fault=0U;fault<6U;++fault){
+        start(0);advance_to_procedure();s_now=100;
+        s_ras_identity_from_payload=true;
+        struct bt_ras_rreq rreq={.conn=s_outgoing_conn};s_sdk_rreq=&rreq;
+        s_sdk_writes=0;s_sdk_write_result=fault==4U?-EIO:0;s_reentrant_get=0;s_sdk_callback_error=0;
+        s_local_complete=true;s_local_data_frozen=1;s_local_counter=s_ready_counter=8U;
+        s_local_steps=(struct net_buf_simple){.len=2,.data={0x11,0x22}};
+        s_count=s_taken=0;s_capture_posts=true;s_sdk_request_probe=true;
+        maybe_request_on_demand_data();
+        assert(s_on_demand_request_started && s_sdk_writes==1U && rreq.on_demand_rd.data_get_in_progress);
+        assert(bt_ras_rreq_cp_get_ranging_data(s_outgoing_conn,&s_peer_rx,9U,sdk_on_demand_received)==-EBUSY);
+        maybe_request_on_demand_data();assert(s_sdk_writes==1U);
+        if(fault==4U){
+            assert(s_count==1U && rreq.cp.state==BT_RAS_RREQ_CP_STATE_NONE);
+            /* NCS leaves GET busy on write failure; the production error must tear down. */
+        }else{
+            rreq.on_demand_rd.data_cb=sdk_on_demand_received;
+            handle_rsp_code(fault==1U?2U:RASCP_RESPONSE_SUCCESS,&rreq);
+            if(fault!=1U){
+                const uint8_t first[]={1U,fault==5U?9U:8U,0U,0U,1U,0x11U,0x22U};
+                const uint8_t last[]={6U,0x33U,0x44U};
+                store_ranging_data_segment(&rreq,first,sizeof(first));
+                if(fault!=3U)store_ranging_data_segment(&rreq,last,sizeof(last));
+                if(fault==2U)handle_rsp_code(RASCP_RESPONSE_PROCEDURE_NOT_COMPLETED,&rreq);
+                else{rreq.cp.state=BT_RAS_RREQ_CP_STATE_ACK_RD_WRITTEN;handle_rsp_code(RASCP_RESPONSE_SUCCESS,&rreq);}
+            }
+            const int expected[]={0,-ENOENT,-EACCES,-ENODATA,0,0};
+            assert(s_sdk_callback_error==expected[fault] && !rreq.on_demand_rd.data_get_in_progress);
+            assert(s_reentrant_get==-EBUSY && s_count==1U && s_sdk_writes==1U);
+            if(fault==0U || fault==5U)assert(s_peer_owned.len==8U && s_peer_data_frozen);
+            else assert(s_peer_owned.len==0U && !s_peer_data_frozen);
+        }
+        s_capture_posts=false;s_sdk_request_probe=false;event_work_handler(NULL);
+        assert(s_adapter.phase==NRF_CS_PAIR_PHASE_CLEANUP && s_cleanup_calls==1U);
+        cleanup_work_handler(NULL);
+        assert(s_callbacks==1U && s_outcome==(fault==0U?NRF_CS_OUTCOME_SUCCESS:
+            (fault==5U?NRF_CS_OUTCOME_OUTLIER:NRF_CS_OUTCOME_TRANSPORT_ERROR)));
+        assert(s_de_calls==(fault==0U?1U:0U));
+        printf("SDK ondemand fault=%u error=%d reentrant=%d writes=%u cleanup=1\n",fault,
+            fault==4U?s_sdk_write_result:s_sdk_callback_error,s_reentrant_get,s_sdk_writes);
+        s_sdk_rreq=NULL;
+    }
+}
+static void test_warm_reset_preserves_sdk_segment_assembly(void)
+{
+    start(0);advance_to_procedure();finish_with_retained_buffers();
+    net_buf_simple_reset(&s_peer_rx);
+    struct bt_ras_rreq rreq={.conn=s_outgoing_conn,.realtime=true,
+        .real_time_rd={.ranging_data_out=&s_peer_rx,.data_cb=ranging_data_received_cb}};
+    const uint8_t first[]={1U,8U,0U,0U,1U,0x11U,0x22U};
+    const uint8_t last[]={6U,0x33U,0x44U};
+    store_ranging_data_segment(&rreq,first,sizeof(first));
+    assert(rreq.next_expected_segment_counter==1U && s_peer_rx.len==6U);
+    assert(runtime_reset_procedure(8U));
+    ++s_timeout_step.attempt_id;
+    assert(nrf_cs_pair_adapter_execute_prepared(&s_adapter,0,&s_timeout_step,
+        runtime_adapter_complete,&s_adapter)==NRF_CS_PAIR_ADAPTER_OK);
+    store_ranging_data_segment(&rreq,last,sizeof(last));
+    s_count=s_taken=0;s_capture_posts=true;
+    data_receive_finished(&rreq);
+    printf("SDK segmented RX owned=%u sdk_after_callback=%u\n",s_peer_owned.len,s_peer_rx.len);fflush(stdout);
+    assert(s_peer_owned.len==8U && s_peer_owned.data[0]==8U && s_peer_owned.data[7]==0x44U);
+    assert(s_peer_rx.len==0U && s_count==1U && rreq.next_expected_segment_counter==0U);
+    s_capture_posts=false;
+}
+#endif
 
 static void test_completed_iq_buffers_survive_queued_callbacks(void)
 {
@@ -903,15 +1254,313 @@ static void test_procedure_disabled_is_not_an_enabled_reflector(void)
     s_incoming_conn=NULL;
 }
 
+static void test_cs_data_callbacks_require_procedure_ownership(void)
+{
+    const runtime_event_type_t setup[]={RUNTIME_EVENT_CONNECTED,RUNTIME_EVENT_SECURITY_READY,
+        RUNTIME_EVENT_MTU_READY,RUNTIME_EVENT_DISCOVERY_READY,RUNTIME_EVENT_FEATURES_READY,
+        RUNTIME_EVENT_CAPABILITIES_READY,RUNTIME_EVENT_CONFIG_READY,RUNTIME_EVENT_CS_SECURITY_READY};
+    for(unsigned state=0U;state<10U;++state){
+        start(0);
+        if(state<8U){for(unsigned i=0U;i<state;++i)deliver(setup[i],&s_timeout_step);}
+        else{advance_to_procedure();timeout_work_handler(NULL);if(state==9U)cleanup_work_handler(NULL);}
+        const nrf_cs_pair_phase_t phase=s_adapter.phase;
+        assert(phase!=NRF_CS_PAIR_PHASE_PROCEDURE);
+        s_ready_counter=8U;s_count=s_taken=0;s_capture_posts=true;
+        struct net_buf_simple data={.len=2,.data={0xaa,0xbb}};
+        struct bt_conn_le_cs_subevent_result radio={.header={.num_antenna_paths=2,
+            .procedure_done_status=BT_CONN_LE_CS_PROCEDURE_COMPLETE,.procedure_counter=8U},.step_data_buf=&data};
+        subevent_data_cb(s_outgoing_conn,&radio);
+        struct bt_conn_le_cs_procedure_enable_complete enabled={.state=BT_CONN_LE_CS_PROCEDURES_ENABLED,
+            .selected_tx_power=4,.tone_antenna_config_selection=99};
+        procedure_enable_complete_cb(s_outgoing_conn,0,&enabled);
+        procedure_enable_complete_cb(s_outgoing_conn,9,NULL);
+        s_peer_rx=(struct net_buf_simple){.len=2,.data={0xcc,0xdd}};
+        ranging_data_received_cb(s_outgoing_conn,8U,0);
+        ranging_data_received_cb(s_outgoing_conn,8U,-EIO);
+        ranging_data_ready_cb(s_outgoing_conn,8U);
+        ranging_data_overwritten_cb(s_outgoing_conn,8U);
+        printf("phase ownership state=%u phase=%u local=%u peer=%u flags=%d events=%u\n",state,phase,s_local_steps.len,s_peer_owned.len,s_rf_flags,s_count);fflush(stdout);
+        assert(s_local_steps.len==0U && s_peer_owned.len==0U && s_rf_flags==0 && s_count==0U);
+        assert(s_rf_tx_power==NRF_CS_RF_UNAVAILABLE && !s_local_data_frozen && !s_peer_data_frozen);
+        s_capture_posts=false;
+        if(state<8U){
+            for(unsigned i=state;i<8U;++i)deliver(setup[i],&s_timeout_step);
+            s_count=s_taken=0;s_capture_posts=true;s_now=100;
+            radio.header.num_antenna_paths=1;
+            subevent_data_cb(s_outgoing_conn,&radio);ranging_data_received_cb(s_outgoing_conn,8U,0);
+            s_capture_posts=false;event_work_handler(NULL);cleanup_work_handler(NULL);
+            assert(s_callbacks==1U && s_outcome==NRF_CS_OUTCOME_SUCCESS);
+        }
+    }
+}
+
+static void test_payload_identity_matches_local_procedure_and_configuration(void)
+{
+    const uint16_t counters[]={8U,4095U,0U};
+    for(unsigned index=0U;index<3U;++index)for(unsigned fault=0U;fault<6U;++fault){
+        start(0);advance_to_procedure();s_now=100;s_ras_identity_from_payload=true;
+        const uint16_t local=counters[index];
+        const uint16_t payload=fault==1U?(uint16_t)((local+1U)&0xfffU):
+            (fault==2U?(uint16_t)((local+4095U)&0xfffU):local);
+        const uint16_t config=fault>=3U?(uint16_t)(fault-2U):0U;
+        const uint16_t raw=(uint16_t)(payload|(config<<12));
+        struct net_buf_simple data={.len=2,.data={0x11,0x22}};
+        struct bt_conn_le_cs_subevent_result radio={.header={.num_antenna_paths=1,
+            .procedure_done_status=BT_CONN_LE_CS_PROCEDURE_COMPLETE,.procedure_counter=local},.step_data_buf=&data};
+        s_peer_rx=(struct net_buf_simple){.len=8,.data={(uint8_t)raw,(uint8_t)(raw>>8),0,1,0x11,0x22,0x33,0x44}};
+        s_count=s_taken=0;s_capture_posts=true;
+        subevent_data_cb(s_outgoing_conn,&radio);
+        ranging_data_received_cb(s_outgoing_conn,local,0);
+        s_capture_posts=false;event_work_handler(NULL);cleanup_work_handler(NULL);
+        printf("payload identity local=%u payload=%u config=%u outcome=%u dsp=%u\n",local,payload,config,s_outcome,s_de_calls);fflush(stdout);
+        assert(s_callbacks==1U && s_outcome==(fault==0U?NRF_CS_OUTCOME_SUCCESS:NRF_CS_OUTCOME_OUTLIER));
+        assert(s_de_calls==(fault==0U?1U:0U));
+    }
+    for(uint8_t config=1U;config<=3U;++config){
+        start(0);advance_to_procedure();s_count=s_taken=0;s_capture_posts=true;
+        struct net_buf_simple data={.len=2,.data={0x11,0x22}};
+        struct bt_conn_le_cs_subevent_result radio={.header={.config_id=config,.num_antenna_paths=2,
+            .procedure_done_status=BT_CONN_LE_CS_PROCEDURE_COMPLETE,.procedure_counter=8U},.step_data_buf=&data};
+        subevent_data_cb(s_outgoing_conn,&radio);
+        assert(s_count==0U && s_local_steps.len==0U && s_rf_flags==0);
+        struct bt_conn_le_cs_procedure_enable_complete enabled={.config_id=config,
+            .state=BT_CONN_LE_CS_PROCEDURES_ENABLED,.selected_tx_power=4,.tone_antenna_config_selection=99};
+        procedure_enable_complete_cb(s_outgoing_conn,0,&enabled);
+        assert(s_rf_flags==0 && s_rf_tx_power==NRF_CS_RF_UNAVAILABLE);
+        s_capture_posts=false;
+        printf("foreign config=%u local_and_enable_ignored=1\n",config);
+    }
+}
+
+static void test_lost_enable_error_cannot_become_success(void)
+{
+    for(unsigned order=0U;order<2U;++order)for(unsigned code=0U;code<2U;++code){
+    start(0);advance_to_procedure();s_now=100;s_count=s_taken=0;s_capture_posts=true;
+    struct net_buf_simple data={.len=2,.data={0x11,0x22}};
+    struct bt_conn_le_cs_subevent_result radio={.header={.num_antenna_paths=1,
+        .procedure_done_status=BT_CONN_LE_CS_PROCEDURE_COMPLETE,.procedure_counter=8U},.step_data_buf=&data};
+    s_peer_rx=(struct net_buf_simple){.len=2,.data={0x33,0x44}};
+    if(order==0U)subevent_data_cb(s_outgoing_conn,&radio);
+    ranging_data_received_cb(s_outgoing_conn,8U,0);
+    if(order==1U)subevent_data_cb(s_outgoing_conn,&radio);
+    nrf_cs_step_t foreign=s_timeout_step;++foreign.attempt_id;
+    while(s_count<NRF_CS_EVENT_QUEUE_DEPTH)runtime_post_event(RUNTIME_EVENT_CONNECTED,&foreign,0,0,NULL);
+    const uint32_t overflows=s_event_queue_overflow_total;
+    const uint8_t status=code==0U?9U:26U;const unsigned submits=s_event_submits;
+    procedure_enable_complete_cb(s_outgoing_conn,status,NULL);
+    procedure_enable_complete_cb(s_outgoing_conn,(uint8_t)(status+1U),NULL);
+    assert(s_event_queue_overflow_total==overflows+2U && s_event_submits==submits+2U);
+    s_capture_posts=false;event_work_handler(NULL);cleanup_work_handler(NULL);
+    printf("lost Enable error order=%u status=%u outcome=%u dsp=%u callbacks=%u\n",order,status,s_outcome,s_de_calls,s_callbacks);fflush(stdout);
+    assert(s_callbacks==1U && s_outcome==NRF_CS_OUTCOME_TRANSPORT_ERROR && s_de_calls==0U);
+    assert(s_last_error==status && !s_overflow_error_pending);
+    }
+}
+
+static void test_error_during_dsp_cannot_commit_success(void)
+{
+    for(unsigned full=0U;full<2U;++full){
+        start(0);advance_to_procedure();s_now=100;s_count=s_taken=0;s_capture_posts=true;
+        s_error_during_dsp=9U;s_fill_queue_during_dsp=full!=0U;
+        struct net_buf_simple data={.len=2,.data={0x11,0x22}};
+        struct bt_conn_le_cs_subevent_result radio={.header={.num_antenna_paths=1,
+            .procedure_done_status=BT_CONN_LE_CS_PROCEDURE_COMPLETE,.procedure_counter=8U},.step_data_buf=&data};
+        s_peer_rx=(struct net_buf_simple){.len=2,.data={0x33,0x44}};
+        subevent_data_cb(s_outgoing_conn,&radio);ranging_data_received_cb(s_outgoing_conn,8U,0);
+        event_work_handler(NULL);s_capture_posts=false;cleanup_work_handler(NULL);
+        printf("error during DSP full=%u outcome=%u dsp=%u callbacks=%u\n",full,s_outcome,s_de_calls,s_callbacks);fflush(stdout);
+        assert(s_callbacks==1U && s_outcome==NRF_CS_OUTCOME_TRANSPORT_ERROR && s_de_calls==1U);
+        assert(s_confidence==0U && s_last_error==9U);
+    }
+    s_fill_queue_during_dsp=false;
+    for(unsigned boundary=1U;boundary<=2U;++boundary){
+        start(0);advance_to_procedure();s_now=100;s_count=s_taken=0;s_capture_posts=true;s_error_at_commit=boundary;
+        s_local_steps.len=s_peer_owned.len=1;
+        runtime_post_event(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step,8U,0,NULL);
+        runtime_post_event(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step,8U,0,NULL);
+        event_work_handler(NULL);s_capture_posts=false;cleanup_work_handler(NULL);
+        const nrf_cs_outcome_t expected=boundary==1U?NRF_CS_OUTCOME_TRANSPORT_ERROR:NRF_CS_OUTCOME_SUCCESS;
+        assert(s_callbacks==1U && s_outcome==expected && s_error_at_commit==0U);
+        printf("commit boundary=%u outcome=%u callbacks=1\n",boundary,s_outcome);
+    }
+}
+
+static void test_overflow_error_keeps_token_and_cleanup_boundaries(void)
+{
+    for(unsigned field=0U;field<7U;++field){
+        start(0);advance_to_procedure();s_count=s_taken=0;s_capture_posts=true;
+        nrf_cs_step_t foreign=s_timeout_step;
+        switch(field){case 0:++foreign.cycle_id;break;case 1:++foreign.membership_generation;break;
+        case 2:++foreign.attempt_id;break;case 3:++foreign.pair_index;break;
+        case 4:++foreign.attempt_number;break;case 5:++foreign.initiator;break;case 6:++foreign.reflector;break;}
+        while(s_count<NRF_CS_EVENT_QUEUE_DEPTH)runtime_post_event(RUNTIME_EVENT_CONNECTED,&foreign,0,0,NULL);
+        runtime_post_event(RUNTIME_EVENT_TRANSPORT_ERROR,&foreign,0,9,NULL);
+        assert(!s_overflow_error_pending);
+        s_capture_posts=false;event_work_handler(NULL);
+        assert(s_adapter.phase==NRF_CS_PAIR_PHASE_PROCEDURE && s_callbacks==0U);
+        s_now=100;s_local_steps.len=s_peer_owned.len=1;
+        deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+        cleanup_work_handler(NULL);assert(s_callbacks==1U && s_outcome==NRF_CS_OUTCOME_SUCCESS);
+        printf("overflow foreign field=%u ignored=1 success=1\n",field);
+    }
+    start(0);advance_to_procedure();s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    assert(s_adapter.phase==NRF_CS_PAIR_PHASE_CLEANUP);
+    s_count=s_taken=0;s_capture_posts=true;s_connection.refs=1;
+    nrf_cs_step_t foreign=s_timeout_step;++foreign.attempt_id;
+    while(s_count<NRF_CS_EVENT_QUEUE_DEPTH)runtime_post_event(RUNTIME_EVENT_CONNECTED,&foreign,0,0,NULL);
+    runtime_post_event(RUNTIME_EVENT_TRANSPORT_ERROR,&s_timeout_step,0,9,&s_connection);
+    assert(s_connection.refs==1 && s_overflow_error_pending && s_overflow_error.conn==NULL);
+    s_capture_posts=false;event_work_handler(NULL);cleanup_work_handler(NULL);
+    assert(s_callbacks==1U && s_outcome==NRF_CS_OUTCOME_SUCCESS && !s_overflow_error_pending);
+    assert(s_connection.refs==1);
+    printf("overflow cleanup success_preserved=1 refs_preserved=1\n");
+
+    start(0);advance_to_procedure();s_count=s_taken=0;s_capture_posts=true;
+    foreign=s_timeout_step;++foreign.attempt_id;
+    while(s_count<NRF_CS_EVENT_QUEUE_DEPTH)runtime_post_event(RUNTIME_EVENT_CONNECTED,&foreign,0,0,NULL);
+    runtime_post_event(RUNTIME_EVENT_TRANSPORT_ERROR,&s_timeout_step,0,9,NULL);
+    assert(s_overflow_error_pending);
+    const nrf_cs_step_t old=s_timeout_step;
+    s_capture_posts=false;timeout_work_handler(NULL);cleanup_work_handler(NULL);
+    assert(s_callbacks==1U);
+    s_count=s_taken=0;nrf_cs_step_t next=old;++next.attempt_id;
+    assert(nrf_cs_pair_runtime_zephyr_execute(&next,completed,NULL)==0);execute_work_handler(NULL);
+    event_work_handler(NULL);
+    assert(!s_overflow_error_pending && s_adapter.phase==NRF_CS_PAIR_PHASE_CONNECTING && s_callbacks==1U);
+    advance_to_procedure();s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    cleanup_work_handler(NULL);assert(s_callbacks==2U && s_outcome==NRF_CS_OUTCOME_SUCCESS);
+    printf("overflow stale fallback ignored=1 next_success=1\n");
+}
+
+static void test_cancel_during_dsp_prevents_result_publish(void)
+{
+    for(unsigned scenario=1U;scenario<=10U;++scenario){
+        const unsigned request=scenario<=8U?scenario:1U;
+        start(0);advance_to_procedure();s_now=100;s_cancel_during_dsp=request;s_count=s_taken=0;s_capture_posts=true;
+        s_fill_queue_during_cancel=scenario>=9U;s_failed_submit=scenario==10U?&s_event_work:NULL;
+        s_local_steps.len=s_peer_owned.len=1;
+        runtime_post_event(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step,8U,0,NULL);
+        runtime_post_event(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step,8U,0,NULL);
+        event_work_handler(NULL);s_capture_posts=false;cleanup_work_handler(NULL);
+        printf("cancel during DSP scenario=%u request=%u outcome=%u callbacks=%u\n",scenario,request,s_outcome,s_callbacks);fflush(stdout);
+        assert(s_callbacks==1U && s_outcome==(request==1U?NRF_CS_OUTCOME_TRANSPORT_ERROR:NRF_CS_OUTCOME_SUCCESS));
+        if(request==1U)assert(s_last_error==(uint32_t)-ECANCELED && s_confidence==0U && !s_cancel_pending);
+    }
+    s_failed_submit=NULL;s_fill_queue_during_cancel=false;
+    for(unsigned boundary=1U;boundary<=2U;++boundary){
+        start(0);advance_to_procedure();s_now=100;s_count=s_taken=0;s_capture_posts=true;s_cancel_at_commit=boundary;
+        s_local_steps.len=s_peer_owned.len=1;
+        runtime_post_event(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step,8U,0,NULL);
+        runtime_post_event(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step,8U,0,NULL);
+        event_work_handler(NULL);s_capture_posts=false;cleanup_work_handler(NULL);
+        assert(s_callbacks==1U && s_outcome==(boundary==1U?NRF_CS_OUTCOME_TRANSPORT_ERROR:NRF_CS_OUTCOME_SUCCESS));
+        assert(s_cancel_at_commit==0U && !s_cancel_pending);
+        printf("cancel commit boundary=%u outcome=%u callbacks=1\n",boundary,s_outcome);
+    }
+}
+
+static void test_disconnect_and_abort_during_dsp_prevent_publish(void)
+{
+    for(unsigned terminal=1U;terminal<=2U;++terminal)for(unsigned full=0U;full<2U;++full){
+        start(0);advance_to_procedure();s_now=100;s_count=s_taken=0;s_capture_posts=true;s_connection.refs=1;
+        s_terminal_during_dsp=terminal;s_fill_queue_during_terminal=full!=0U;
+        s_local_steps.len=s_peer_owned.len=1;
+        runtime_post_event(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step,8U,0,NULL);
+        runtime_post_event(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step,8U,0,NULL);
+        event_work_handler(NULL);s_capture_posts=false;cleanup_work_handler(NULL);
+        printf("terminal during DSP kind=%u full=%u outcome=%u callbacks=%u\n",terminal,full,s_outcome,s_callbacks);fflush(stdout);
+        assert(s_callbacks==1U && s_outcome==(terminal==1U?NRF_CS_OUTCOME_TRANSPORT_ERROR:NRF_CS_OUTCOME_OUTLIER));
+        assert(s_confidence==0U && !s_overflow_error_pending);
+        if(terminal==1U)assert(s_connection.refs==0 && s_outgoing_conn==NULL);
+    }
+    s_fill_queue_during_terminal=false;
+    for(unsigned complete=0U;complete<2U;++complete){
+        start(0);advance_to_procedure();s_now=100;s_count=s_taken=0;s_capture_posts=true;s_ready_counter=8U;
+        struct net_buf_simple data={.len=2,.data={0x11,0x22}};
+        struct bt_conn_le_cs_subevent_result radio={.header={.num_antenna_paths=1,
+            .procedure_done_status=BT_CONN_LE_CS_PROCEDURE_COMPLETE,.procedure_counter=8U},.step_data_buf=&data};
+        subevent_data_cb(s_outgoing_conn,&radio);s_capture_posts=false;event_work_handler(NULL);
+        s_count=s_taken=0;s_capture_posts=true;
+        if(complete){s_peer_rx=(struct net_buf_simple){.len=2,.data={0x33,0x44}};
+            ranging_data_received_cb(s_outgoing_conn,8U,0);}
+        ranging_data_overwritten_cb(s_outgoing_conn,8U);
+        assert(s_count==1U);
+        event_work_handler(NULL);s_capture_posts=false;cleanup_work_handler(NULL);
+        assert(s_callbacks==1U && s_outcome==(complete?NRF_CS_OUTCOME_SUCCESS:NRF_CS_OUTCOME_OUTLIER));
+        assert(s_de_calls==(complete?1U:0U));
+        printf("overwritten complete=%u outcome=%u dsp=%u preserved=1\n",complete,s_outcome,s_de_calls);
+    }
+}
+
+static void test_measurement_waits_for_accepted_enable(void)
+{
+    for(unsigned scenario=0U;scenario<8U;++scenario){
+        start(0);s_auto_accept_enable=false;advance_to_procedure();s_now=100;s_count=s_taken=0;s_capture_posts=true;
+        struct net_buf_simple data={.len=2,.data={0x11,0x22}};
+        struct bt_conn_le_cs_subevent_result radio={.header={.num_antenna_paths=1,
+            .procedure_done_status=BT_CONN_LE_CS_PROCEDURE_COMPLETE,.procedure_counter=8U},.step_data_buf=&data};
+        s_peer_rx=(struct net_buf_simple){.len=2,.data={0x33,0x44}};
+        subevent_data_cb(s_outgoing_conn,&radio);ranging_data_received_cb(s_outgoing_conn,8U,0);
+        event_work_handler(NULL);
+        assert(s_adapter.phase==NRF_CS_PAIR_PHASE_PROCEDURE && s_de_calls==0U && s_callbacks==0U);
+        assert(s_local_steps.len==2U && s_peer_owned.len==2U && s_local_data_frozen && s_peer_data_frozen);
+        struct bt_conn_le_cs_procedure_enable_complete accepted={.state=BT_CONN_LE_CS_PROCEDURES_ENABLED,
+            .selected_tx_power=4,.tone_antenna_config_selection=BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1};
+        if(scenario>=1U && scenario<=3U){
+            struct bt_conn_le_cs_procedure_enable_complete wrong=accepted;
+            if(scenario==1U)wrong.state=BT_CONN_LE_CS_PROCEDURES_DISABLED;
+            if(scenario==2U)wrong.config_id=1U;
+            procedure_enable_complete_cb(s_outgoing_conn,0,scenario==3U?NULL:&wrong);
+            if(scenario==3U){struct bt_conn foreign={.refs=1};procedure_enable_complete_cb(&foreign,0,&accepted);}
+            event_work_handler(NULL);
+            assert(!s_procedure_accepted && s_callbacks==0U && s_de_calls==0U);
+        }
+        if(scenario==4U)procedure_enable_complete_cb(s_outgoing_conn,9U,NULL);
+        else if(scenario==5U)s_now=(uint64_t)s_attempt_deadline_ms;
+        else{
+            if(scenario==6U)s_now=(uint64_t)s_attempt_deadline_ms;
+            if(scenario==7U){
+                nrf_cs_step_t foreign=s_timeout_step;++foreign.attempt_id;s_count=s_taken=0;
+                while(s_count<NRF_CS_EVENT_QUEUE_DEPTH)runtime_post_event(RUNTIME_EVENT_CONNECTED,&foreign,0,0,NULL);
+            }
+            const unsigned submits=s_event_submits;
+            procedure_enable_complete_cb(s_outgoing_conn,0,&accepted);
+            assert(s_procedure_accepted && s_event_submits==submits+1U);
+        }
+        event_work_handler(NULL);s_capture_posts=false;cleanup_work_handler(NULL);
+        const nrf_cs_outcome_t expected=scenario==4U?NRF_CS_OUTCOME_TRANSPORT_ERROR:
+            ((scenario==5U || scenario==6U)?NRF_CS_OUTCOME_TIMEOUT:NRF_CS_OUTCOME_SUCCESS);
+        assert(s_callbacks==1U && s_outcome==expected && !s_procedure_accepted);
+        assert(s_de_calls==(expected==NRF_CS_OUTCOME_SUCCESS?1U:0U));
+        printf("Enable acceptance scenario=%u outcome=%u dsp=%u retained_IQ=1\n",scenario,s_outcome,s_de_calls);
+    }
+}
+
 int main(void)
 {
+    test_cs_data_callbacks_require_procedure_ownership();
+    test_error_during_dsp_cannot_commit_success();
+    test_lost_enable_error_cannot_become_success();
+    test_overflow_error_keeps_token_and_cleanup_boundaries();
+    test_disconnect_and_abort_during_dsp_prevent_publish();
+    test_payload_identity_matches_local_procedure_and_configuration();
+    test_active_iq_copy_cannot_be_reset_as_a_prepared_procedure();
+#if defined(PROBE_SDK_RAS)
+    test_warm_reset_preserves_sdk_segment_assembly();
+    test_sdk_on_demand_lifetime_and_production_error_cleanup();
+    test_sdk_disconnect_releases_busy_context_before_reallocation();
+#endif
     test_procedure_reset_keeps_prepared_connection_state();
+    test_warm_reset_refuses_unowned_buffers_without_changes();
     test_expected_procedure_counter_filters_before_iq_and_rf_updates();
     test_failed_advertising_stop_keeps_role_before_scan();
     test_completed_iq_buffers_survive_queued_callbacks();
     test_iq_partial_abort_overflow_and_mismatch();
     test_radio_stop_closes_owned_reflector_on_worker();
     test_outgoing_cancellation_is_queued_and_token_scoped();
+    test_cancel_during_dsp_prevents_result_publish();
     test_cleanup_submit_failure_has_no_connection_to_wait_for();
     test_lost_disconnect_event_does_not_leave_cleanup_active();
     test_full_queue_does_not_lose_incoming_release();
@@ -978,6 +1627,7 @@ int main(void)
     assert(s_rf_tx_power==4 && s_rf_flags==0);
     cs_de_report_t report={0};
     struct ras_ranging_header header={.selected_tx_power=-8,.antenna_paths_mask=1};
+    s_local_counter=0U;
     assert(report_ranging_header(&header,&report));
     const uint8_t local_mode0[5]={0,(uint8_t)-60,1,0,0},peer_mode0[3]={0,(uint8_t)-80,1};
     struct bt_le_cs_subevent_step ml={0,0,sizeof(local_mode0),local_mode0};
@@ -1168,6 +1818,7 @@ int main(void)
     s_events[0]=(runtime_event_t){.type=RUNTIME_EVENT_TRANSPORT_ERROR,.has_step=true,.step=s_timeout_step,.status=9};
     event_work_handler(NULL);
     assert(s_trace_event_count==2 && !strcmp(s_trace_events[1].label,"TRANSPORT_ERROR") && s_trace_events[1].status==9);
+    test_measurement_waits_for_accepted_enable();
     printf("console trace hooks verified\n");
     printf("PRODUCTION_HANDLER_ACCEPTANCE_GAPS=%u\n",gaps);
     return gaps?1:0;

@@ -34,13 +34,15 @@ static void event_work_handler(struct k_work *work)
     runtime_event_t event;
 
     ARG_UNUSED(work);
-    nrf_cs_step_t cancelled_step;
-    if (runtime_active_step(&cancelled_step) && runtime_take_cancel(&cancelled_step)) {
-        nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_EXECUTE_FAILED,
-            cancelled_step.attempt_id, (uint32_t)-ECANCELED);
-        (void)nrf_cs_pair_adapter_transport_error(&s_adapter, &cancelled_step);
-    }
-    while (k_msgq_get(&s_event_queue, &event, K_NO_WAIT) == 0) {
+    for (;;) {
+        nrf_cs_step_t cancelled_step;
+        if (runtime_active_step(&cancelled_step) && runtime_take_cancel(&cancelled_step)) {
+            nrf_log_runtime_zephyr_append_event(NRF_LOG_EVENT_CS_EXECUTE_FAILED,
+                cancelled_step.attempt_id, (uint32_t)-ECANCELED);
+            (void)nrf_cs_pair_adapter_transport_error(&s_adapter, &cancelled_step);
+        }
+        const bool has_event = runtime_take_overflow_error(&event) || k_msgq_get(&s_event_queue, &event, K_NO_WAIT) == 0;
+        if (!has_event) break;
         if (event.has_step && !runtime_step_matches_active(&event.step)) {
             if (event.conn != NULL) {
                 bt_conn_unref(event.conn);
@@ -176,6 +178,11 @@ static void event_work_handler(struct k_work *work)
             nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
         }
     }
+    nrf_cs_step_t ready_step;
+    if (runtime_active_procedure_for_conn(s_outgoing_conn, &ready_step)) {
+        if (k_uptime_get() >= s_attempt_deadline_ms) timeout_work_handler(NULL);
+        else maybe_complete_measurement(&ready_step);
+    }
     const atomic_val_t incoming_disconnect = atomic_get(&s_incoming_disconnect_pending);
     if (incoming_disconnect != 0 && s_incoming_conn == NULL) {
         nrf_cs_trace_zephyr_event("INCOMING_DISCONNECTED", 0U, (int)incoming_disconnect - 1,
@@ -296,6 +303,12 @@ static void procedure_enable_complete_cb(
     const bool enabled = status == BT_HCI_ERR_SUCCESS && params != NULL &&
         params->state == BT_CONN_LE_CS_PROCEDURES_ENABLED;
 
+    if (conn == NULL || (conn != s_incoming_conn && !runtime_active_procedure_for_conn(conn, &step))) {
+        return;
+    }
+    if (conn == s_outgoing_conn && enabled && params->config_id != NRF_CS_CONFIG_ID) {
+        return;
+    }
     if ((conn == s_incoming_conn || conn == s_outgoing_conn) && enabled) {
         atomic_set(&s_rf_tx_power, params->selected_tx_power);
         if (params->tone_antenna_config_selection != BT_LE_CS_TONE_ANTENNA_CONFIGURATION_A1_B1) {
@@ -310,15 +323,15 @@ static void procedure_enable_complete_cb(
         }
         return;
     }
-    if (!runtime_active_step_for_conn(conn, &step)) {
-        return;
-    }
     if (status != BT_HCI_ERR_SUCCESS) {
         runtime_post_event(RUNTIME_EVENT_TRANSPORT_ERROR, &step, 0U, (int)status, NULL);
         return;
     }
 
-    ARG_UNUSED(params);
+    if (enabled) {
+        atomic_set(&s_procedure_accepted, 1);
+        (void)submit_cs_work(&s_event_work);
+    }
 }
 
 static void subevent_data_cb(
@@ -329,7 +342,13 @@ static void subevent_data_cb(
     uint16_t ranging_counter;
     size_t len;
 
-    if (result == NULL) {
+    if (result == NULL || conn == NULL) {
+        return;
+    }
+    if (conn != s_incoming_conn && !runtime_active_procedure_for_conn(conn, &step)) {
+        return;
+    }
+    if (conn == s_outgoing_conn && result->header.config_id != NRF_CS_CONFIG_ID) {
         return;
     }
     if (conn == s_outgoing_conn && atomic_get(&s_local_data_frozen) != 0) {
@@ -362,9 +381,6 @@ static void subevent_data_cb(
             result->header.procedure_done_status == BT_CONN_LE_CS_PROCEDURE_ABORTED) {
             atomic_set(&s_reflector_procedure_active, 0);
         }
-        return;
-    }
-    if (!runtime_active_step_for_conn(conn, &step)) {
         return;
     }
     nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);

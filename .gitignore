@@ -59,3 +59,21 @@ logs/nrf/
 
 # Downloaded third-party BLE Channel Sounding datasets
 /nRF54L15/tests/ble6/
+
+# AI staff
+.claude
+.github
+.kilo
+.vscode
+docs
+logs
+memory
+Microsoft
+reflection
+.mcp.json
+AGENTS.md
+apriltag_sheet.ai
+apriltag_sheet.pdf
+apriltag_sheet1.pdf
+CLAUDE.md
+kicad\esp32_geophone_source_locator\.history

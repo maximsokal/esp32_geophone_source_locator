@@ -297,6 +297,12 @@ static bool report_ranging_header(struct ras_ranging_header *header, void *user_
 {
     cs_de_report_t *report = user_data;
 
+    /* On-demand callback counter comes from GET; the payload must identify the same procedure. */
+    if (header == NULL || report == NULL || s_local_counter == NRF_CS_RANGING_COUNTER_NONE ||
+        header->ranging_counter != s_local_counter || header->config_id != NRF_CS_CONFIG_ID) {
+        s_rf_diagnostics.flags |= NRF_CS_RF_MALFORMED;
+        return false;
+    }
     s_rf_diagnostics.peer_tx_dbm = header->selected_tx_power;
     if (header->antenna_paths_mask != 1U) s_rf_diagnostics.flags |= NRF_CS_RF_ANTENNA_MISMATCH;
     report->n_ap = 1U;
@@ -623,7 +629,9 @@ static void maybe_complete_measurement(const nrf_cs_step_t *step)
 {
     nrf_cs_measurement_t measurement;
 
-    if (step == NULL || !s_local_complete || !s_peer_complete) {
+    if (step == NULL || !s_local_complete || !s_peer_complete ||
+        atomic_get(&s_procedure_accepted) == 0 ||
+        atomic_get(&s_measurement_state) != RUNTIME_MEASUREMENT_OPEN) {
         return;
     }
     if (s_local_counter != s_peer_counter ||
@@ -642,5 +650,8 @@ static void maybe_complete_measurement(const nrf_cs_step_t *step)
         timeout_work_handler(NULL);
         return;
     }
-    (void)nrf_cs_pair_adapter_measurement_ready(&s_adapter, step, &measurement);
+    /* Error detection and result commit compete atomically, before cleanup can block. */
+    if (atomic_cas(&s_measurement_state, RUNTIME_MEASUREMENT_OPEN, RUNTIME_MEASUREMENT_COMMITTED)) {
+        (void)nrf_cs_pair_adapter_measurement_ready(&s_adapter, step, &measurement);
+    }
 }

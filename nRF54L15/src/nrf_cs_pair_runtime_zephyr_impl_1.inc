@@ -41,6 +41,12 @@ typedef struct {
     struct bt_conn *conn;
 } runtime_event_t;
 
+enum {
+    RUNTIME_MEASUREMENT_OPEN,
+    RUNTIME_MEASUREMENT_FAILED,
+    RUNTIME_MEASUREMENT_COMMITTED,
+};
+
 /* The console trace (nrf_cs_trace.h) names every runtime event; the ESP32 log only shows how an attempt ended. */
 static const char *runtime_event_name(runtime_event_type_t type)
 {
@@ -78,6 +84,8 @@ static struct k_work s_cleanup_work;
 static struct k_work s_execute_work;
 static struct k_work_delayable s_timeout_work;
 static struct k_spinlock s_event_queue_overflow_lock;
+static runtime_event_t s_overflow_error;
+static bool s_overflow_error_pending;
 
 static nrf_cs_pair_adapter_t s_adapter;
 static bool s_started;
@@ -110,6 +118,8 @@ static nrf_cs_rf_diagnostics_t s_rf_diagnostics;
 static atomic_t s_rf_tx_power = ATOMIC_INIT(NRF_CS_RF_UNAVAILABLE);
 static atomic_t s_rf_status;
 static atomic_t s_rf_flags;
+static atomic_t s_measurement_state = ATOMIC_INIT(RUNTIME_MEASUREMENT_OPEN);
+static atomic_t s_procedure_accepted;
 static nrf_cs_pair_runtime_complete_cb_t s_user_complete_cb;
 static void *s_user_complete_context;
 
@@ -169,9 +179,19 @@ static void runtime_post_event(
         .status = status,
         .conn = conn != NULL ? bt_conn_ref(conn) : NULL,
     };
+    const bool invalidates_result = type == RUNTIME_EVENT_TRANSPORT_ERROR ||
+        type == RUNTIME_EVENT_DISCONNECTED || type == RUNTIME_EVENT_PROCEDURE_ABORTED;
+    const bool recover_terminal = type == RUNTIME_EVENT_TRANSPORT_ERROR ||
+        (invalidates_result && nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_PROCEDURE);
 
     if (step != NULL) {
         event.step = *step;
+    }
+
+    if (invalidates_result && event.has_step &&
+        nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_PROCEDURE &&
+        nrf_cs_pair_runtime_bridge_step_matches(&s_adapter, &event.step)) {
+        (void)atomic_cas(&s_measurement_state, RUNTIME_MEASUREMENT_OPEN, RUNTIME_MEASUREMENT_FAILED);
     }
 
     if (k_msgq_put(&s_event_queue, &event, K_NO_WAIT) != 0) {
@@ -184,18 +204,37 @@ static void runtime_post_event(
         key = k_spin_lock(&s_event_queue_overflow_lock);
         nrf_cs_event_overflow_increment(&s_event_queue_overflow_total);
         overflow_total = s_event_queue_overflow_total;
+        if (recover_terminal && event.has_step &&
+            nrf_cs_pair_runtime_bridge_step_matches(&s_adapter, &event.step) &&
+            (!s_overflow_error_pending || !nrf_cs_pair_runtime_bridge_steps_equal(&s_overflow_error.step, &event.step))) {
+            s_overflow_error = event;
+            s_overflow_error.conn = NULL;
+            s_overflow_error_pending = true;
+        }
         k_spin_unlock(&s_event_queue_overflow_lock, key);
         nrf_log_runtime_zephyr_append_event(
             NRF_LOG_EVENT_CS_EVENT_QUEUE_OVERFLOW,
             overflow_total,
             NRF_CS_EVENT_QUEUE_DEPTH);
         LOG_ERR("Channel Sounding event queue overflow");
-        if (type == RUNTIME_EVENT_INCOMING_DISCONNECTED) {
+        if (type == RUNTIME_EVENT_INCOMING_DISCONNECTED || recover_terminal) {
             (void)submit_cs_work(&s_event_work);
         }
         return;
     }
     (void)submit_cs_work(&s_event_work);
+}
+
+static bool runtime_take_overflow_error(runtime_event_t *event)
+{
+    k_spinlock_key_t key = k_spin_lock(&s_event_queue_overflow_lock);
+    const bool pending = s_overflow_error_pending;
+    if (pending) {
+        *event = s_overflow_error;
+        s_overflow_error_pending = false;
+    }
+    k_spin_unlock(&s_event_queue_overflow_lock, key);
+    return pending;
 }
 
 static bool runtime_active_step(nrf_cs_step_t *step_out)
@@ -221,6 +260,12 @@ static bool runtime_step_matches_active(const nrf_cs_step_t *step)
     return nrf_cs_pair_runtime_bridge_step_matches(&s_adapter, step);
 }
 
+static bool runtime_active_procedure_for_conn(struct bt_conn *conn, nrf_cs_step_t *step_out)
+{
+    return nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_PROCEDURE &&
+        runtime_active_step_for_conn(conn, step_out);
+}
+
 void nrf_cs_pair_runtime_zephyr_cancel(const nrf_cs_step_t *step)
 {
     if (!s_started || step == NULL) return;
@@ -231,6 +276,11 @@ void nrf_cs_pair_runtime_zephyr_cancel(const nrf_cs_step_t *step)
     k_spinlock_key_t key = k_spin_lock(&s_cancel_lock);
     s_cancel_step = *step;
     s_cancel_pending = true;
+    /* The worker may be inside DSP; block publish before it observes this mailbox. */
+    if (nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_PROCEDURE &&
+        nrf_cs_pair_runtime_bridge_step_matches(&s_adapter, step)) {
+        (void)atomic_cas(&s_measurement_state, RUNTIME_MEASUREMENT_OPEN, RUNTIME_MEASUREMENT_FAILED);
+    }
     k_spin_unlock(&s_cancel_lock, key);
     (void)submit_cs_work(&s_event_work);
 }
@@ -299,15 +349,25 @@ static void runtime_stop_scan(void)
 }
 
 /* Expected counter is in the 12-bit RAS domain; NONE keeps the cold-connection path. */
-static void runtime_reset_procedure(uint16_t expected_counter)
+static bool runtime_reset_procedure(uint16_t expected_counter)
 {
+    /* A warm reset belongs to the CS worker, after both callback buffers are immutable. */
+    if (expected_counter != NRF_CS_RANGING_COUNTER_NONE &&
+        (expected_counter > 0xFFFU || nrf_cs_pair_adapter_is_active(&s_adapter) ||
+         !s_local_complete || !s_peer_complete ||
+         atomic_get(&s_local_data_frozen) == 0 || atomic_get(&s_peer_data_frozen) == 0 ||
+         s_local_counter == NRF_CS_RANGING_COUNTER_NONE || s_local_counter != s_peer_counter ||
+         expected_counter == s_local_counter)) {
+        return false;
+    }
     atomic_set(&s_expected_counter, expected_counter);
+    atomic_set(&s_measurement_state, RUNTIME_MEASUREMENT_OPEN);
+    atomic_set(&s_procedure_accepted, 0);
     nrf_cs_rf_reset(&s_rf_diagnostics);
     atomic_set(&s_rf_tx_power, NRF_CS_RF_UNAVAILABLE);
     atomic_set(&s_rf_status, (atomic_val_t)nrf_cs_rf_status_word(127, 127, 0, 0, 0, false));
     atomic_set(&s_rf_flags, 0);
     net_buf_simple_reset(&s_local_steps);
-    net_buf_simple_reset(&s_peer_rx);
     net_buf_simple_reset(&s_peer_owned);
     s_local_counter = NRF_CS_RANGING_COUNTER_NONE;
     s_peer_counter = NRF_CS_RANGING_COUNTER_NONE;
@@ -317,11 +377,14 @@ static void runtime_reset_procedure(uint16_t expected_counter)
     atomic_set(&s_local_data_frozen, 0);
     atomic_set(&s_peer_data_frozen, 0);
     s_on_demand_request_started = false;
+    return true;
 }
 
 static void runtime_reset_ranging(void)
 {
-    runtime_reset_procedure(NRF_CS_RANGING_COUNTER_NONE);
+    (void)runtime_reset_procedure(NRF_CS_RANGING_COUNTER_NONE);
+    /* RAS owns segmented RX between callbacks; only full teardown may discard it here. */
+    net_buf_simple_reset(&s_peer_rx);
     atomic_set(&s_disconnect_retry_pending, 0);
     s_realtime_ras = false;
     atomic_set(&s_reflector_procedure_active, 0);
@@ -571,7 +634,7 @@ static void ranging_data_received_cb(
     nrf_cs_step_t step;
     size_t len;
 
-    if (!runtime_active_step_for_conn(conn, &step)) {
+    if (!runtime_active_procedure_for_conn(conn, &step)) {
         return;
     }
     if (!runtime_counter_matches(ranging_counter)) {
@@ -603,7 +666,7 @@ static void ranging_data_ready_cb(struct bt_conn *conn, uint16_t ranging_counter
     if (!runtime_counter_matches(ranging_counter)) {
         return;
     }
-    if (runtime_active_step_for_conn(conn, &step)) {
+    if (runtime_active_procedure_for_conn(conn, &step)) {
         runtime_post_event(RUNTIME_EVENT_RANGING_READY, &step, ranging_counter, 0, NULL);
     }
 }
@@ -612,8 +675,9 @@ static void ranging_data_overwritten_cb(struct bt_conn *conn, uint16_t ranging_c
 {
     nrf_cs_step_t step;
 
-    if (runtime_active_step_for_conn(conn, &step) &&
+    if (runtime_active_procedure_for_conn(conn, &step) &&
         s_ready_counter == ranging_counter &&
+        atomic_get(&s_peer_data_frozen) == 0 &&
         !s_peer_complete) {
         runtime_post_event(RUNTIME_EVENT_PROCEDURE_ABORTED, &step, ranging_counter, -ENODATA, NULL);
     }
