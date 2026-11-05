@@ -152,6 +152,7 @@ static unsigned s_scan_starts;
 static struct bt_conn *s_outgoing_conn;
 static bool s_outgoing_connected;
 static int s_disconnect_retry_pending;
+static int s_disconnect_retry_request;
 static int s_incoming_disconnect_pending;
 static struct bt_conn s_connection;
 static struct k_work s_execute_work;
@@ -1097,6 +1098,65 @@ static void test_disconnect_already_pending_waits_for_real_callback(void)
     assert(s_callbacks==1 && s_outcome==NRF_CS_OUTCOME_SUCCESS && s_connection.refs==0);
     s_use_production_cleanup=false;s_disconnect_result=0;
 }
+static void stick_in_cleanup_after_failed_disconnects(int fault)
+{
+    start(0);advance_to_procedure();s_connection.refs=1;s_use_production_cleanup=true;
+    s_disconnect_result=fault;s_disconnect_calls=0;s_now=100;
+    s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    s_now=500;timeout_work_handler(NULL); /* The one retry at the deadline also fails. */
+    assert(s_disconnect_calls==2 && s_outgoing_conn==&s_connection && s_callbacks==0);
+    assert(nrf_cs_pair_adapter_phase(&s_adapter)==NRF_CS_PAIR_PHASE_CLEANUP);
+}
+static void test_rejected_execute_retries_a_refused_disconnect_once(void)
+{
+    /* Both earlier attempts were refused; HCI recovers before the next execute is rejected as busy. */
+    stick_in_cleanup_after_failed_disconnects(-ENOMEM);
+    s_disconnect_result=0;
+    nrf_cs_step_t next=s_timeout_step;++next.attempt_id;
+    assert(nrf_cs_pair_runtime_zephyr_execute(&next,completed,NULL)==-EBUSY);
+    event_work_handler(NULL);
+    assert(s_disconnect_calls==3 && s_outgoing_conn==&s_connection && s_callbacks==0);
+    event_work_handler(NULL); /* One request buys one try only. */
+    assert(s_disconnect_calls==3);
+    s_capture_posts=true;disconnected_cb(&s_connection,BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    s_capture_posts=false;event_work_handler(NULL);
+    assert(s_callbacks==1 && s_outcome==NRF_CS_OUTCOME_TRANSPORT_ERROR && s_connection.refs==0);
+    assert(nrf_cs_pair_runtime_zephyr_execute(&next,completed,NULL)==0);
+    s_use_production_cleanup=false;s_disconnect_result=0;
+}
+static void test_permanent_disconnect_failure_costs_one_try_per_rejected_execute(void)
+{
+    stick_in_cleanup_after_failed_disconnects(-EIO);
+    nrf_cs_step_t next=s_timeout_step;++next.attempt_id;
+    for(unsigned i=0;i<5U;++i){
+        const unsigned before=s_disconnect_calls;
+        assert(nrf_cs_pair_runtime_zephyr_execute(&next,completed,NULL)==-EBUSY);
+        event_work_handler(NULL);event_work_handler(NULL);
+        assert(s_disconnect_calls==before+1U);
+        assert(s_outgoing_conn==&s_connection && s_connection.refs==1 && s_callbacks==0);
+    }
+    const unsigned settled=s_disconnect_calls;
+    event_work_handler(NULL);event_work_handler(NULL);
+    assert(s_disconnect_calls==settled); /* No retry without a new rejected execute. */
+    s_disconnect_result=0;s_use_production_cleanup=false;
+}
+static void test_accepted_disconnect_is_not_retried_by_a_rejected_execute(void)
+{
+    const int results[]={-EALREADY,0};
+    for(unsigned i=0;i<2U;++i){
+        start(0);advance_to_procedure();s_connection.refs=1;s_use_production_cleanup=true;
+        s_disconnect_result=results[i];s_disconnect_calls=0;s_now=100;
+        s_local_steps.len=s_peer_owned.len=1;
+        deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+        assert(s_disconnect_calls==1 && s_callbacks==0);
+        nrf_cs_step_t next=s_timeout_step;++next.attempt_id;
+        assert(nrf_cs_pair_runtime_zephyr_execute(&next,completed,NULL)==-EBUSY);
+        event_work_handler(NULL);
+        assert(s_disconnect_calls==1 && s_outgoing_conn==&s_connection && s_callbacks==0);
+        s_use_production_cleanup=false;s_disconnect_result=0;
+    }
+}
 static void test_release_reason_reaches_reflector_only_for_final_execution(void)
 {
     for(unsigned scenario=0;scenario<3;++scenario){
@@ -1567,6 +1627,9 @@ int main(void)
     test_worker_cannot_deliver_before_incoming_ownership_is_released();
     test_disconnect_already_pending_waits_for_real_callback();
     test_disconnect_failure_keeps_live_connection_owned();
+    test_rejected_execute_retries_a_refused_disconnect_once();
+    test_permanent_disconnect_failure_costs_one_try_per_rejected_execute();
+    test_accepted_disconnect_is_not_retried_by_a_rejected_execute();
     test_release_reason_reaches_reflector_only_for_final_execution();
     test_failed_cancel_submit_retains_request_or_deadline_fallback();
     test_procedure_disabled_is_not_an_enabled_reflector();

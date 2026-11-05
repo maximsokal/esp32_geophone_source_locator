@@ -16,7 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled", "unfrozen-local", "unfrozen-peer", "missing-radio-stop", "missing-radio-disconnect", "missing-cancel", "foreign-cancel", "queued-cancel-starts", "cancel-not-submitted", "forget-live-disconnect", "cleanup-no-fallback", "no-disconnect-retry", "normal-disconnect-releases", "lost-disconnect-no-deadline", "lost-disconnect-no-worker", "lost-incoming-no-mailbox", "lost-incoming-no-release", "lost-incoming-not-cleared", "lost-incoming-new-owner", "forget-advertising-stop", "scan-after-stop-error", "procedure-loses-config", "cold-reset-expects-zero", "local-counter-unchecked", "peer-counter-unchecked", "ready-counter-unchecked", "warm-reset-active", "warm-reset-unfrozen", "warm-reset-same-counter", "sdk-ras", "sdk-rx-reset", "sdk-early-idle", "sdk-ignore-get-error", "sdk-disconnect-no-free", "sdk-alloc-no-reset", "payload-counter-unchecked", "payload-config-unchecked", "local-config-unchecked", "enable-config-unchecked", "phase-check-bypass", "phase-local-bypass", "phase-enable-bypass", "phase-peer-bypass", "phase-ready-bypass", "phase-overwritten-bypass", "overflow-error-not-saved", "overflow-error-not-drained", "measurement-commit-error-bypass", "overflow-error-overwrite-first", "overflow-error-foreign", "overflow-error-no-wakeup"])
+@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled", "unfrozen-local", "unfrozen-peer", "missing-radio-stop", "missing-radio-disconnect", "missing-cancel", "foreign-cancel", "queued-cancel-starts", "cancel-not-submitted", "forget-live-disconnect", "cleanup-no-fallback", "no-disconnect-retry", "busy-execute-no-retry-request", "retry-request-not-consumed", "normal-disconnect-releases", "lost-disconnect-no-deadline", "lost-disconnect-no-worker", "lost-incoming-no-mailbox", "lost-incoming-no-release", "lost-incoming-not-cleared", "lost-incoming-new-owner", "forget-advertising-stop", "scan-after-stop-error", "procedure-loses-config", "cold-reset-expects-zero", "local-counter-unchecked", "peer-counter-unchecked", "ready-counter-unchecked", "warm-reset-active", "warm-reset-unfrozen", "warm-reset-same-counter", "sdk-ras", "sdk-rx-reset", "sdk-early-idle", "sdk-ignore-get-error", "sdk-disconnect-no-free", "sdk-alloc-no-reset", "payload-counter-unchecked", "payload-config-unchecked", "local-config-unchecked", "enable-config-unchecked", "phase-check-bypass", "phase-local-bypass", "phase-enable-bypass", "phase-peer-bypass", "phase-ready-bypass", "phase-overwritten-bypass", "overflow-error-not-saved", "overflow-error-not-drained", "measurement-commit-error-bypass", "overflow-error-overwrite-first", "overflow-error-foreign", "overflow-error-no-wakeup"])
 def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutation):
     build_root = ROOT / ".test-build"
     build_root.mkdir(exist_ok=True)
@@ -212,6 +212,12 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
         if mutation == "no-disconnect-retry" and name == "timeout_work_handler":
             assert "atomic_cas(&s_disconnect_retry_pending, 1, 0)" in body
             body = body.replace("atomic_cas(&s_disconnect_retry_pending, 1, 0)", "atomic_cas(&s_disconnect_retry_pending, 2, 0)")
+        if mutation == "busy-execute-no-retry-request" and name == "nrf_cs_pair_runtime_zephyr_execute":
+            assert "atomic_set(&s_disconnect_retry_request, 1);" in body
+            body = body.replace("atomic_set(&s_disconnect_retry_request, 1);", "(void)s_disconnect_retry_request;")
+        if mutation == "retry-request-not-consumed" and name == "event_work_handler":
+            assert "atomic_cas(&s_disconnect_retry_request, 1, 0)" in body
+            body = body.replace("atomic_cas(&s_disconnect_retry_request, 1, 0)", "atomic_get(&s_disconnect_retry_request) == 1")
         if mutation == "normal-disconnect-releases" and name == "event_work_handler":
             assert "event.value == NRF_CS_CYCLE_RELEASE_REASON" in body
             body = body.replace("event.value == NRF_CS_CYCLE_RELEASE_REASON", "event.value != 0U")
@@ -307,6 +313,8 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
                     "forget-live-disconnect": "s_outgoing_conn==&s_connection",
                     "cleanup-no-fallback": "s_callbacks==1 && s_outcome==NRF_CS_OUTCOME_SUCCESS",
                     "no-disconnect-retry": "s_disconnect_calls==2",
+                    "busy-execute-no-retry-request": "s_disconnect_calls==3 && s_outgoing_conn==&s_connection && s_callbacks==0",
+                    "retry-request-not-consumed": "s_disconnect_calls==before+1U",
                     "normal-disconnect-releases": "s_release_notifications==",
                     "lost-disconnect-no-deadline": "s_callbacks==1 && !nrf_cs_pair_adapter_is_active",
                     "lost-disconnect-no-worker": "s_callbacks==1 && !nrf_cs_pair_adapter_is_active",

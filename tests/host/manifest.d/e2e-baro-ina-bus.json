@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "e2e_baro_ina_bus",
+      "sources": [
+        "components/sensor_bus/sensor_bus.c",
+        "components/sensor_bus/sensor_bus_diag.c",
+        "components/sensor_bus/i2c_line_recovery.c",
+        "components/ina3221_monitor/ina3221_driver.c",
+        "components/ina3221_monitor/ina3221_policy.c",
+        "components/ina3221_monitor/ina3221_limits.c",
+        "components/ina3221_monitor/ina3221_low_battery.c",
+        "components/ina3221_monitor/ina3221_power_ux.c",
+        "components/ina3221_monitor/ina3221_soc.c",
+        "components/ina3221_monitor/ina3221_monitor.c",
+        "components/main_barometer/main_barometer.c",
+        "components/nrf_topology_service/nrf_topology_main_barometer.c",
+        "nRF54L15/src/nrf_baro_altitude.c",
+        "nRF54L15/src/nrf_ema_filter.c",
+        "tests/host/stubs/sensor_bus/sensor_bus_lines_fake.c",
+        "tests/host/e2e_baro_ina_bus_test.c"
+      ],
+      "include_dirs": [
+        "tests/host/stubs/e2e_baro_ina",
+        "tests/host/stubs/sensor_bus",
+        "components/sensor_bus/include",
+        "components/ina3221_monitor",
+        "components/ina3221_monitor/include",
+        "components/main_barometer/include",
+        "components/nrf_topology_service",
+        "components/device_status/include",
+        "components/app_config/include",
+        "nRF54L15/include"
+      ],
+      "libraries": [
+        "m",
+        "pthread"
+      ]
+    }
+  ]
+}

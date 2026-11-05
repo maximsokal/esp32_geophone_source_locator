@@ -104,6 +104,8 @@ static nrf_cs_node_id_t s_scan_target = 0xFFU;
 static struct bt_conn *s_outgoing_conn;
 static bool s_outgoing_connected;
 static atomic_t s_disconnect_retry_pending;
+/* A rejected execute() asks the CS worker for one more try at a disconnect the controller kept refusing. */
+static atomic_t s_disconnect_retry_request;
 /* Zero means none; reason+1 keeps incoming disconnect ownership until worker delivery. */
 static atomic_t s_incoming_disconnect_pending;
 static void cleanup_work_handler(struct k_work *work);
@@ -386,6 +388,7 @@ static void runtime_reset_ranging(void)
     /* RAS owns segmented RX between callbacks; only full teardown may discard it here. */
     net_buf_simple_reset(&s_peer_rx);
     atomic_set(&s_disconnect_retry_pending, 0);
+    atomic_set(&s_disconnect_retry_request, 0);
     s_realtime_ras = false;
     atomic_set(&s_reflector_procedure_active, 0);
     memset(&s_cs_config, 0, sizeof(s_cs_config));

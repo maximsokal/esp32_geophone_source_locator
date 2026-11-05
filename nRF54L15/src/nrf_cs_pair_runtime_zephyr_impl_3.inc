@@ -34,6 +34,12 @@ static void event_work_handler(struct k_work *work)
     runtime_event_t event;
 
     ARG_UNUSED(work);
+    /* One try per rejected execute(); op_cleanup() re-arms the pending flag if the controller refuses again. */
+    if (atomic_cas(&s_disconnect_retry_request, 1, 0) &&
+        nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_CLEANUP &&
+        s_outgoing_conn != NULL && atomic_cas(&s_disconnect_retry_pending, 1, 0)) {
+        (void)op_cleanup(NULL);
+    }
     for (;;) {
         nrf_cs_step_t cancelled_step;
         if (runtime_active_step(&cancelled_step) && runtime_take_cancel(&cancelled_step)) {
@@ -568,6 +574,12 @@ int nrf_cs_pair_runtime_zephyr_execute(
         return -EINVAL;
     }
     if (nrf_cs_pair_runtime_zephyr_is_busy()) {
+        /* A disconnect the controller refused twice leaves CLEANUP owning a live link: ask the worker for one more try. */
+        if (s_outgoing_conn != NULL && nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_CLEANUP &&
+            atomic_get(&s_disconnect_retry_pending) != 0) {
+            atomic_set(&s_disconnect_retry_request, 1);
+            (void)submit_cs_work(&s_event_work);
+        }
         return -EBUSY;
     }
     if (step->initiator != s_node_id) {
