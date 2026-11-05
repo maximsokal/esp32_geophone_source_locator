@@ -52,6 +52,8 @@ static bool status_equal(const device_main_status_t *a, const device_main_status
         a->bmp280_valid == b->bmp280_valid &&
         a->pressure_pa == b->pressure_pa &&
         a->temperature_mc == b->temperature_mc &&
+        a->barometer_sample_ms == b->barometer_sample_ms &&
+        a->barometer_filtered_altitude_mm == b->barometer_filtered_altitude_mm &&
         a->height_reference.state == b->height_reference.state &&
         a->height_reference.generation == b->height_reference.generation &&
         a->height_reference.relative_z_mm == b->height_reference.relative_z_mm;
@@ -71,6 +73,8 @@ static void publish(nrf_topology_main_barometer_t *state, uint32_t now_ms, esp_e
         .bmp280_valid = reading.bmp280_valid || (hold_allowed && sample_current),
         .pressure_pa = reading.pressure_pa,
         .temperature_mc = reading.temperature_mc,
+        .barometer_sample_ms = reading.last_sample_ms,
+        .barometer_filtered_altitude_mm = reading.filtered_altitude_mm,
         .height_reference = {
             .state = reference_state(reading.height_reference_state),
             .generation = reading.height_reference_generation,

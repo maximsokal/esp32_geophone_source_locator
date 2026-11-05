@@ -1423,8 +1423,11 @@ static void workflow_service_placement_poll(bool collect_samples)
     const bool main_reference_valid = device_valid &&
         device->main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
         device->main.height_reference.generation != 0U;
+    const uint32_t main_sample_age_ms = (uint32_t)now_ms - device->main.barometer_sample_ms;
     const bool main_baro_valid = device_valid && device->main.bmp280_valid &&
-        device->main.pressure_pa > 0U;
+        device->main.pressure_pa > 0U && device->main.barometer_sample_ms != 0U &&
+        main_sample_age_ms <= WORKFLOW_PLACEMENT_FRESH_MS && main_sample_age_ms <= now_ms;
+    const uint64_t main_sample_ms = main_baro_valid ? now_ms - main_sample_age_ms : now_ms;
     if (tracks_placement && main_baro_valid) {
         s_placement.main_baro_seen = true;
         s_placement.main_baro_last_valid_ms = now_ms;
@@ -1478,8 +1481,8 @@ static void workflow_service_placement_poll(bool collect_samples)
         main_node->vertical,
         main_height_valid,
         main_blocker,
-        0,
-        now_ms,
+        device_valid ? device->main.barometer_filtered_altitude_mm : 0,
+        main_sample_ms,
         now_ms,
         collect_now,
         &main_node->reason,
@@ -1509,14 +1512,33 @@ static void workflow_service_placement_poll(bool collect_samples)
             memset(cache, 0, sizeof(*cache));
             const bool cache_read =
                 nrf_topology_service_get_sensor_snapshot(channel, cache) == ESP_OK;
+            const uint64_t remote_now_ms = workflow_service_now_ms();
             const bool cache_current = cache_read && cache->identity_valid &&
                 cache->topology_current && cache->response_valid &&
                 cache->identity.node_id == remote->node_id &&
-                now_ms >= cache->esp_receipt_uptime_ms &&
-                now_ms - cache->esp_receipt_uptime_ms <= WORKFLOW_PLACEMENT_FRESH_MS;
+                remote_now_ms >= cache->esp_receipt_uptime_ms &&
+                remote_now_ms - cache->esp_receipt_uptime_ms <= WORKFLOW_PLACEMENT_FRESH_MS;
             const bool environment_valid = cache_current &&
                 (cache->sensor.valid_mask & NRF_UPSTREAM_SENSOR_VALID_ENV) != 0U &&
                 cache->sensor.pressure_pa > 0U;
+            const bool environment_missing = cache_current && !environment_valid &&
+                cache->sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED &&
+                cache->sensor.reference_state == NRF_UPSTREAM_REFERENCE_VALID &&
+                cache->sensor.reference_generation == main_generation;
+            workflow_placement_history_t *history = &s_placement.history[(size_t)channel + 1U];
+            if ((!cache_current || environment_missing) && main_reference_valid && history->node_valid &&
+                history->node_id == remote->node_id && history->generation == main_generation &&
+                (!cache_read || !cache->identity_valid || cache->identity.node_id == remote->node_id) &&
+                history->last_sample_valid && remote_now_ms >= history->last_sample_ms &&
+                remote_now_ms - history->last_sample_ms <= WORKFLOW_PLACEMENT_FRESH_MS) {
+                node->reason = environment_missing ? WORKFLOW_PLACEMENT_REASON_NODE_ENVIRONMENT :
+                    WORKFLOW_PLACEMENT_REASON_NODE_STALE;
+                node->range_mm = -1;
+                node->sample_count = (uint8_t)history->sample_count;
+                if (take_samples) workflow_service_placement_log_node(history, node, -1, 0U, log_due);
+                all_stable = false;
+                continue;
+            }
             node->vertical = cache_current &&
                 cache->sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
             const bool reference_matches = cache_current &&
@@ -1540,7 +1562,6 @@ static void workflow_service_placement_poll(bool collect_samples)
                 : !environment_valid ? WORKFLOW_PLACEMENT_REASON_NODE_ENVIRONMENT
                 : !reference_matches ? WORKFLOW_PLACEMENT_REASON_NODE_REFERENCE
                 : WORKFLOW_PLACEMENT_REASON_STABLE;
-            workflow_placement_history_t *history = &s_placement.history[(size_t)channel + 1U];
             node->stable = workflow_service_placement_update_node(
                 history,
                 remote->node_id,
@@ -1550,7 +1571,7 @@ static void workflow_service_placement_poll(bool collect_samples)
                 blocker,
                 node->height_rel_main_mm,
                 cache->esp_receipt_uptime_ms,
-                now_ms,
+                remote_now_ms,
                 collect_now && cache_current,
                 &node->reason,
                 &node->range_mm);
@@ -1560,8 +1581,8 @@ static void workflow_service_placement_poll(bool collect_samples)
             placed.node_id[channel] = remote->node_id;
             placed.height_rel_main_mm[channel] = (int32_t)node->height_rel_main_mm;
             if (take_samples) {
-                const uint64_t age = now_ms - cache->esp_receipt_uptime_ms;
-                const int32_t age_ms = cache_read && now_ms >= cache->esp_receipt_uptime_ms
+                const uint64_t age = remote_now_ms - cache->esp_receipt_uptime_ms;
+                const int32_t age_ms = cache_read && remote_now_ms >= cache->esp_receipt_uptime_ms
                     ? (int32_t)(age > INT32_MAX ? INT32_MAX : age)
                     : -1;
                 workflow_service_placement_log_node(

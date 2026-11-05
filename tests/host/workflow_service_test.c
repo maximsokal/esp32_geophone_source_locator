@@ -148,6 +148,10 @@ static uint16_t s_imu_request_generation;
 static bool s_cs_cycle_valid;
 static nrf_cs_cycle_snapshot_t s_cs_cycle;
 static uint64_t s_now_ms;
+static bool s_advance_g2_snapshot_time;
+static bool s_g2_snapshot_unavailable;
+static bool s_freeze_main_conversion;
+static uint32_t s_frozen_main_sample_ms;
 static const char *s_fake_object_id = "object-a";
 static bool s_placement_ready;
 static nrf_topology_ranging_progress_t s_ranging_progress;
@@ -396,6 +400,12 @@ esp_err_t nrf_topology_service_get_sensor_snapshot(
     if (channel >= NRF_TOPOLOGY_REMOTE_COUNT || snapshot == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (channel == 1U && s_g2_snapshot_unavailable) return ESP_ERR_TIMEOUT;
+    if (channel == 1U && s_advance_g2_snapshot_time) {
+        ++s_now_ms;
+        s_cache[channel].esp_receipt_uptime_ms = s_now_ms;
+        s_advance_g2_snapshot_time = false;
+    }
     *snapshot = s_cache[channel];
     return ESP_OK;
 }
@@ -539,6 +549,8 @@ esp_err_t device_status_try_get_snapshot(device_status_snapshot_t *snapshot)
     if (snapshot == NULL) return ESP_ERR_INVALID_ARG;
     if (s_device_snapshot_result != ESP_OK) return s_device_snapshot_result;
     *snapshot = s_device;
+    snapshot->main.barometer_sample_ms = s_freeze_main_conversion
+        ? s_frozen_main_sample_ms : (uint32_t)s_now_ms;
     return ESP_OK;
 }
 
@@ -584,6 +596,9 @@ static void reset_fakes(bool active_object, measurement_service_state_t state, s
     s_cs_cycle_valid = false;
     memset(&s_cs_cycle, 0, sizeof(s_cs_cycle));
     s_now_ms = 1000U;
+    s_advance_g2_snapshot_time = false;
+    s_g2_snapshot_unavailable = false;
+    s_freeze_main_conversion = false;
     s_placement_ready = false;
     s_device_snapshot_result = ESP_OK;
     memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
@@ -1877,6 +1892,135 @@ static const workflow_placement_node_t *placement_node(const workflow_snapshot_t
     return NULL;
 }
 
+static void test_remote_snapshot_arriving_during_poll_keeps_history(void)
+{
+    begin_placement_without_samples(3U);
+    const uint64_t origin = s_now_ms;
+    run_placement_polls(14000U, origin, 0);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G2")->sample_count == 7U);
+
+    s_now_ms += 2000U;
+    feed_remote_sensor_refresh(0);
+    s_advance_g2_snapshot_time = true;
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G2")->sample_count == 8U);
+    assert(placement_node(&snapshot, "G2")->stable);
+
+    s_cache[1].esp_receipt_uptime_ms = s_now_ms + 1000U;
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(!placement_node(&snapshot, "G2")->stable);
+    assert(placement_node(&snapshot, "G2")->reason == WORKFLOW_PLACEMENT_REASON_NODE_STALE);
+    workflow_service_shutdown();
+}
+
+static void test_remote_brief_outage_pauses_samples_until_fresh(void)
+{
+    begin_placement_without_samples(3U);
+    const uint64_t origin = s_now_ms;
+    run_placement_polls(14000U, origin, 0);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G2")->sample_count == 7U);
+    s_g2_snapshot_unavailable = true;
+    s_now_ms += 100U;
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(!placement_node(&snapshot, "G2")->stable);
+    assert(placement_node(&snapshot, "G2")->sample_count == 7U);
+    s_g2_snapshot_unavailable = false;
+    s_now_ms += 1900U;
+    feed_remote_sensor_refresh(0);
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G2")->sample_count == 8U);
+    assert(placement_node(&snapshot, "G2")->stable);
+    workflow_service_shutdown();
+}
+
+static void test_remote_history_resets_on_expiry_or_confirmed_change(void)
+{
+    for (unsigned scenario = 0U; scenario < 4U; ++scenario) {
+        begin_placement_without_samples(3U);
+        const uint64_t origin = s_now_ms;
+        run_placement_polls(14000U, origin, 0);
+        workflow_snapshot_t snapshot = try_snapshot();
+        assert(placement_node(&snapshot, "G2")->sample_count == 7U);
+        if (scenario == 0U) {
+            s_g2_snapshot_unavailable = true;
+            s_now_ms += 5001U;
+        } else if (scenario == 1U) {
+            s_cache[1].sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED - 1U;
+        } else if (scenario == 2U) {
+            s_topology.remotes[1].node_id = 4U;
+        } else {
+            ++s_device.main.height_reference.generation;
+        }
+        assert(workflow_service_poll() == ESP_OK);
+        snapshot = try_snapshot();
+        const workflow_placement_node_t *node = placement_node(&snapshot, scenario == 2U ? "G4" : "G2");
+        assert(!node->stable);
+        assert(node->sample_count == 0U);
+        s_g2_snapshot_unavailable = false;
+        workflow_service_shutdown();
+    }
+}
+
+static void test_remote_missing_environment_pauses_samples(void)
+{
+    begin_placement_without_samples(3U);
+    const uint64_t origin = s_now_ms;
+    run_placement_polls(14000U, origin, 0);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G2")->sample_count == 7U);
+    s_cache[1].sensor.valid_mask &= ~NRF_UPSTREAM_SENSOR_VALID_ENV;
+    s_now_ms += 100U;
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(!placement_node(&snapshot, "G2")->stable);
+    assert(placement_node(&snapshot, "G2")->sample_count == 7U);
+    s_now_ms += 1900U;
+    feed_remote_sensor_refresh(0);
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G2")->sample_count == 8U);
+    assert(placement_node(&snapshot, "G2")->stable);
+    workflow_service_shutdown();
+}
+
+static void test_main_does_not_count_repeated_cached_conversion(void)
+{
+    begin_placement_without_samples(3U);
+    const uint64_t origin = s_now_ms;
+    s_freeze_main_conversion = true;
+    s_frozen_main_sample_ms = (uint32_t)origin;
+    run_placement_polls(4000U, origin, 0);
+    const workflow_snapshot_t snapshot = try_snapshot();
+    const workflow_placement_node_t *main_node = placement_node(&snapshot, "MAIN");
+    assert(main_node->sample_count == 1U);
+    assert(!main_node->stable);
+    s_freeze_main_conversion = false;
+    workflow_service_shutdown();
+}
+
+static void test_main_pressure_instability_blocks_placement(void)
+{
+    begin_placement_without_samples(3U);
+    const uint64_t origin = s_now_ms;
+    for (unsigned i = 0U; i < 16U; ++i) {
+        s_device.main.barometer_filtered_altitude_mm = i % 2U ? 2000 : -2000;
+        run_placement_polls(1000U, origin, 0);
+    }
+    const workflow_snapshot_t snapshot = try_snapshot();
+    const workflow_placement_node_t *main_node = placement_node(&snapshot, "MAIN");
+    assert(main_node->sample_count >= 8U);
+    assert(!main_node->stable);
+    assert(main_node->reason == WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED);
+    assert(main_node->height_rel_main_mm == 0);
+    workflow_service_shutdown();
+}
+
 static unsigned count_log_matches(const char *needle)
 {
     unsigned matches = 0U;
@@ -2663,10 +2807,16 @@ int main(void)
     test_ranging_result_is_logged_with_every_pair_and_node();
     test_partial_ranging_uses_geometry_success_and_preserves_evidence();
     test_uncertain_geometry_preserves_ranges_but_blocks_confirmation();
+    test_main_pressure_instability_blocks_placement();
     test_manual_distance_async_persists_validated_partial_result();
     test_one_and_two_connected_remotes_complete_initialization();
     test_rejected_imu_calibration_command_is_repeated_for_silent_nodes_only();
     test_placement_becomes_stable_at_the_production_remote_refresh_cadence();
+    test_remote_snapshot_arriving_during_poll_keeps_history();
+    test_remote_brief_outage_pauses_samples_until_fresh();
+    test_remote_history_resets_on_expiry_or_confirmed_change();
+    test_remote_missing_environment_pauses_samples();
+    test_main_does_not_count_repeated_cached_conversion();
     test_placement_reports_why_each_node_is_not_stable_and_logs_the_readings();
     test_placement_survives_a_missed_device_status_read_but_not_a_long_outage();
     test_no_step_advances_without_a_command_fake_clock();
