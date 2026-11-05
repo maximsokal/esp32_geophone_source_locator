@@ -15,7 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled", "unfrozen-local", "unfrozen-peer", "missing-radio-stop", "missing-radio-disconnect", "missing-cancel", "foreign-cancel", "queued-cancel-starts", "cancel-not-submitted", "forget-live-disconnect", "cleanup-no-fallback", "no-disconnect-retry", "normal-disconnect-releases"])
+@pytest.mark.parametrize("mutation", ["production", "missing-rf-summary", "missing-method", "missing-queue-timing", "stale-timing-context", "disabled-is-enabled", "unfrozen-local", "unfrozen-peer", "missing-radio-stop", "missing-radio-disconnect", "missing-cancel", "foreign-cancel", "queued-cancel-starts", "cancel-not-submitted", "forget-live-disconnect", "cleanup-no-fallback", "no-disconnect-retry", "normal-disconnect-releases", "lost-disconnect-no-deadline", "lost-disconnect-no-worker", "lost-incoming-no-mailbox", "lost-incoming-no-release", "lost-incoming-not-cleared", "lost-incoming-new-owner", "forget-advertising-stop", "scan-after-stop-error", "procedure-loses-config", "cold-reset-expects-zero", "local-counter-unchecked", "peer-counter-unchecked", "ready-counter-unchecked"])
 def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutation):
     build_root = ROOT / ".test-build"
     build_root.mkdir(exist_ok=True)
@@ -29,9 +29,12 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
     types = sources[0][sources[0].index("typedef enum {"):sources[0].index("K_MSGQ_DEFINE(")]
     (output / "production_types.inc").write_text(types, encoding="utf-8")
     for part, name in (
-        (1, "runtime_reset_ranging"), (1, "ranging_data_received_cb"),
+        (1, "runtime_post_event"),
+        (1, "runtime_stop_advertising"), (1, "op_connect"),
+        (1, "runtime_reset_procedure"), (1, "runtime_reset_ranging"), (1, "runtime_counter_matches"),
+        (1, "ranging_data_received_cb"), (1, "ranging_data_ready_cb"),
         (1, "runtime_take_cancel"), (1, "nrf_cs_pair_runtime_zephyr_cancel"),
-        (4, "disconnected_cb"),
+        (4, "connected_cb"), (4, "disconnected_cb"),
         (2, "runtime_emit_rf_diagnostics"), (2, "report_ranging_header"),
         (2, "accumulate_mean"), (2, "collect_pbr_step"),
         (2, "collect_rtt_step"), (2, "report_step_data"),
@@ -44,6 +47,7 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
         (3, "nrf_cs_pair_runtime_zephyr_set_radio_enabled"),
         (3, "procedure_enable_complete_cb"), (3, "subevent_data_cb"),
         (3, "nrf_cs_pair_runtime_zephyr_is_progress_required"),
+        (3, "nrf_cs_pair_runtime_zephyr_is_busy"),
     ):
         source = sources[part - 1]
         definition = re.search(r"(?m)^(?:static\s+)?[\w* \t]+\b" + re.escape(name) + r"\s*\([^;{}]*\)\s*\{", source)
@@ -60,6 +64,54 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
             end += 1
         body = source[start:end]
         original_digest = hashlib.sha256(body.encode()).hexdigest()
+        if mutation == "procedure-loses-config" and name == "runtime_reset_procedure":
+            assignment = "atomic_set(&s_expected_counter, expected_counter);"
+            assert assignment in body
+            body = body.replace(assignment, assignment + " memset(&s_cs_config, 0, sizeof(s_cs_config));")
+        if mutation == "cold-reset-expects-zero" and name == "runtime_reset_ranging":
+            call = "runtime_reset_procedure(NRF_CS_RANGING_COUNTER_NONE);"
+            assert call in body
+            body = body.replace(call, "runtime_reset_procedure(0U);")
+        if mutation == "local-counter-unchecked" and name == "subevent_data_cb":
+            condition = "conn == s_outgoing_conn && !runtime_counter_matches("
+            assert condition in body
+            body = body.replace(condition, "conn == s_outgoing_conn && false && !runtime_counter_matches(")
+        if ((mutation == "peer-counter-unchecked" and name == "ranging_data_received_cb") or
+                (mutation == "ready-counter-unchecked" and name == "ranging_data_ready_cb")):
+            condition = "if (!runtime_counter_matches(ranging_counter))"
+            assert condition in body
+            body = body.replace(condition, "if (!runtime_counter_matches(ranging_counter) && ranging_counter == NRF_CS_RANGING_COUNTER_NONE)")
+        if mutation == "forget-advertising-stop" and name == "runtime_stop_advertising":
+            warning = 'LOG_WRN("RAS advertising stop failed: %d", err);'
+            assert warning in body
+            body = body.replace(warning, warning + " s_advertising = false;")
+        if mutation == "scan-after-stop-error" and name == "op_connect":
+            guard = "err = runtime_stop_advertising();\n    if (err != 0)"
+            assert guard in body
+            body = body.replace(guard, "err = runtime_stop_advertising();\n    if (err == 1)")
+        if mutation == "lost-incoming-no-mailbox" and name == "disconnected_cb":
+            assignment = "atomic_set(&s_incoming_disconnect_pending, (atomic_val_t)reason + 1);"
+            assert assignment in body
+            body = body.replace(assignment, "(void)s_incoming_disconnect_pending;")
+        if mutation == "lost-incoming-no-release" and name == "event_work_handler":
+            condition = "incoming_disconnect - 1 == NRF_CS_CYCLE_RELEASE_REASON"
+            assert condition in body
+            body = body.replace(condition, condition + " && false")
+        if mutation == "lost-incoming-not-cleared" and name == "event_work_handler":
+            assignment = "atomic_set(&s_incoming_disconnect_pending, 0);"
+            assert assignment in body
+            head, tail = body.rsplit(assignment, 1)
+            body = head + "(void)s_incoming_disconnect_pending;" + tail
+        if mutation == "lost-incoming-new-owner" and name == "connected_cb":
+            condition = "atomic_get(&s_incoming_disconnect_pending) != 0"
+            assert condition in body
+            body = body.replace(condition, condition + " && false")
+        if mutation == "lost-disconnect-no-deadline" and name == "timeout_work_handler":
+            assert "s_outgoing_conn == NULL" in body
+            body = body.replace("s_outgoing_conn == NULL", "s_outgoing_conn == NULL && false")
+        if mutation == "lost-disconnect-no-worker" and name == "event_work_handler":
+            assert "if (s_outgoing_conn == NULL &&" in body
+            body = body.replace("if (s_outgoing_conn == NULL &&", "if (s_outgoing_conn == NULL && false &&")
         if mutation == "forget-live-disconnect" and name == "op_cleanup":
             assert "err != -ENOTCONN" in body
             body = body.replace("err != -ENOTCONN", "err != -ENOTCONN && err == -EINVAL")
@@ -125,7 +177,7 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
     (output / "provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
     manifest = {"version": 1, "tests": [{
         "name": "nrf_cs_production_handlers",
-        "sources": ["nRF54L15/src/nrf_cs_pair_adapter.c", "nRF54L15/src/nrf_cs_measurement_quality.c", "tests/host/nrf_cs_pair_runtime_handlers_probe.c"],
+        "sources": ["nRF54L15/src/nrf_cs_pair_adapter.c", "nRF54L15/src/nrf_cs_measurement_quality.c", "nRF54L15/src/nrf_cs_event_overflow.c", "nRF54L15/src/nrf_cs_cycle_runtime.c", "nRF54L15/src/nrf_cs_cycle_protocol.c", "nRF54L15/src/nrf_cs_scheduler.c", "nRF54L15/src/nrf_upstream_protocol.c", "tests/host/nrf_cs_pair_runtime_handlers_probe.c"],
         "include_dirs": ["nRF54L15/include", output.relative_to(ROOT).as_posix()],
         "libraries": ["m"],
     }]}
@@ -154,7 +206,20 @@ def test_production_cs_handlers_enforce_deadline_and_reject_foreign_steps(mutati
                     "forget-live-disconnect": "s_outgoing_conn==&s_connection",
                     "cleanup-no-fallback": "s_callbacks==1 && s_outcome==NRF_CS_OUTCOME_SUCCESS",
                     "no-disconnect-retry": "s_disconnect_calls==2",
-                    "normal-disconnect-releases": "s_release_notifications=="}[mutation]
+                    "normal-disconnect-releases": "s_release_notifications==",
+                    "lost-disconnect-no-deadline": "s_callbacks==1 && !nrf_cs_pair_adapter_is_active",
+                    "lost-disconnect-no-worker": "s_callbacks==1 && !nrf_cs_pair_adapter_is_active",
+                    "lost-incoming-no-mailbox": "Assertion failed: nrf_cs_pair_runtime_zephyr_is_progress_required()",
+                    "lost-incoming-no-release": "s_release_notifications==(i%3U==0U?1U:0U)",
+                    "lost-incoming-not-cleared": "!nrf_cs_pair_runtime_zephyr_is_busy() &&",
+                    "lost-incoming-new-owner": "s_incoming_conn==NULL && premature.refs==1",
+                    "forget-advertising-stop": "result==faults[fault] && s_advertising",
+                    "scan-after-stop-error": "result==faults[fault] && s_advertising",
+                    "procedure-loses-config": "s_cs_config.channel_map[0]==0xa5 && s_realtime_ras",
+                    "cold-reset-expects-zero": "s_reflector_procedure_active==0 && s_expected_counter==NRF_CS_RANGING_COUNTER_NONE",
+                    "local-counter-unchecked": "s_count==0 && s_local_steps.len==0",
+                    "peer-counter-unchecked": "s_count==0 && s_local_steps.len==0",
+                    "ready-counter-unchecked": "s_count==0 && s_local_steps.len==0"}[mutation]
         assert result.returncode != 0 and "(run)" in result.stdout and expected in result.stdout, result.stdout
     else:
         assert result.returncode == 0, f"Production handler probe failed; artifacts: {output}\n{result.stdout}"

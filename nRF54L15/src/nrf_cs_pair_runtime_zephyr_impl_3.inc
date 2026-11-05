@@ -157,6 +157,7 @@ static void event_work_handler(struct k_work *work)
             if (event.value == NRF_CS_CYCLE_RELEASE_REASON && s_relay_released_cb != NULL) {
                 s_relay_released_cb();
             }
+            atomic_set(&s_incoming_disconnect_pending, 0);
             break;
         case RUNTIME_EVENT_REFLECTOR_CONFIG:
             configure_reflector_procedure(event.conn, (uint8_t)event.value);
@@ -174,6 +175,21 @@ static void event_work_handler(struct k_work *work)
             event.type != RUNTIME_EVENT_INCOMING_DISCONNECTED) {
             nrf_watchdog_zephyr_checkin(NRF_WATCHDOG_PARTICIPANT_BT_CS_PROGRESS);
         }
+    }
+    const atomic_val_t incoming_disconnect = atomic_get(&s_incoming_disconnect_pending);
+    if (incoming_disconnect != 0 && s_incoming_conn == NULL) {
+        nrf_cs_trace_zephyr_event("INCOMING_DISCONNECTED", 0U, (int)incoming_disconnect - 1,
+            (uint8_t)nrf_cs_pair_adapter_phase(&s_adapter));
+        if (incoming_disconnect - 1 == NRF_CS_CYCLE_RELEASE_REASON && s_relay_released_cb != NULL) {
+            s_relay_released_cb();
+        }
+        atomic_set(&s_incoming_disconnect_pending, 0);
+        (void)runtime_start_advertising();
+    }
+    /* DISCONNECTED may have overflowed after the deadline had already run. */
+    if (s_outgoing_conn == NULL &&
+        nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_CLEANUP) {
+        cleanup_work_handler(NULL);
     }
 }
 
@@ -317,6 +333,10 @@ static void subevent_data_cb(
         return;
     }
     if (conn == s_outgoing_conn && atomic_get(&s_local_data_frozen) != 0) {
+        return;
+    }
+    if (conn == s_outgoing_conn && !runtime_counter_matches(
+            bt_ras_rreq_get_ranging_counter(result->header.procedure_counter))) {
         return;
     }
     if (conn == s_incoming_conn || conn == s_outgoing_conn) {
@@ -531,8 +551,7 @@ int nrf_cs_pair_runtime_zephyr_execute(
         s_node_id == 0xFFU) {
         return -EINVAL;
     }
-    if (atomic_get(&s_execute_pending) != 0 || s_incoming_conn != NULL ||
-        nrf_cs_pair_adapter_is_active(&s_adapter)) {
+    if (nrf_cs_pair_runtime_zephyr_is_busy()) {
         return -EBUSY;
     }
     if (step->initiator != s_node_id) {
@@ -565,11 +584,11 @@ int nrf_cs_pair_runtime_zephyr_execute(
 bool nrf_cs_pair_runtime_zephyr_is_busy(void)
 {
     return atomic_get(&s_execute_pending) != 0 || nrf_cs_pair_adapter_is_active(&s_adapter) ||
-        s_incoming_conn != NULL;
+        s_incoming_conn != NULL || atomic_get(&s_incoming_disconnect_pending) != 0;
 }
 
 bool nrf_cs_pair_runtime_zephyr_is_progress_required(void)
 {
     return atomic_get(&s_execute_pending) != 0 || nrf_cs_pair_adapter_is_active(&s_adapter) ||
-        atomic_get(&s_reflector_procedure_active) != 0;
+        atomic_get(&s_reflector_procedure_active) != 0 || atomic_get(&s_incoming_disconnect_pending) != 0;
 }

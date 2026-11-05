@@ -6,6 +6,7 @@
 #include <string.h>
 #include "nrf_geometry_solver.h"
 #include "nrf_geometry_triangles.h"
+static nrf_geometry_triangle_report_t full_triangles;
 
 static unsigned bits(unsigned mask)
 {
@@ -71,6 +72,7 @@ static void print_solution(FILE *out,unsigned case_id,unsigned mask,unsigned ord
         const nrf_geometry_node_position_t *p=node(s,id);
         fprintf(out,",%d,%d,%d,%d",p?p->x_mm:0,p?p->y_mm:0,p?p->z_mm:0,p?p->uncertainty_mm:INT32_MAX);
     }
+    for(size_t p=0;p<NRF_CS_MAX_PAIRS;++p)fprintf(out,",%u",(unsigned)full_triangles.pair_violations[p]);
     fputc('\n',out);
 }
 
@@ -101,6 +103,7 @@ int main(void)
             ++count;
         }
         unsigned permutation[4]={1,2,3,4},order=0;
+        if(!nrf_geometry_triangles_check(pairs,count,&full_triangles))return 3;
         do{
             nrf_geometry_node_input_t inputs[5]={{.node_id=0U,.z_mm=z[0]}};
             for(unsigned i=1;i<n;++i)inputs[i]=(nrf_geometry_node_input_t){.node_id=(uint8_t)permutation[i-1U],.z_mm=z[permutation[i-1U]]};

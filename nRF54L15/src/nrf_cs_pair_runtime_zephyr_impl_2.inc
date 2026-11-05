@@ -267,6 +267,13 @@ static void timeout_work_handler(struct k_work *work)
         s_timeout_step.attempt_id, (uint32_t)nrf_cs_pair_adapter_phase(&s_adapter));
     (void)nrf_cs_pair_runtime_bridge_dispatch(
         &s_adapter, NRF_CS_PAIR_BRIDGE_TIMEOUT, &s_timeout_step, false, NULL);
+    /* A full event queue can lose DISCONNECTED after its callback already released the link. */
+    if (runtime_step_matches_active(&s_timeout_step) &&
+        nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_CLEANUP &&
+        s_outgoing_conn == NULL) {
+        cleanup_work_handler(NULL);
+        return;
+    }
     /* Retry a rejected disconnect once at the existing deadline; keep ownership if it still fails. */
     if (nrf_cs_pair_adapter_phase(&s_adapter) == NRF_CS_PAIR_PHASE_CLEANUP &&
         atomic_cas(&s_disconnect_retry_pending, 1, 0)) {

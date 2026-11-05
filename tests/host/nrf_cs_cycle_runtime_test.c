@@ -622,7 +622,7 @@ static size_t node_index_of(const sim_node_t *sims, size_t count, nrf_cs_node_id
 
 /* drop_execution: the release of this execution is lost (the initiator vanished); -1 keeps all of them. */
 static void run_relay_cycle(sim_node_t *sims, size_t count, const nrf_cs_scheduler_t *planner, bool deliver_releases,
-    int drop_execution, relay_run_t *run)
+    int drop_execution, int late_release_ms, relay_run_t *run)
 {
     const uint32_t window = nrf_cs_cycle_window_ms((uint16_t)planner->policy.pair_timeout_ms,
         planner->policy.samples_per_pair, planner->policy.max_attempts);
@@ -631,6 +631,9 @@ static void run_relay_cycle(sim_node_t *sims, size_t count, const nrf_cs_schedul
     bool sent[MAX_SIM_NODES] = {false};
     size_t completed = 0U;
     int running_execution = -1;     /* the one execution that has an attempt in the air (never two at once) */
+    bool late_pending=false;
+    size_t late_target=0U;
+    uint64_t late_due=0U;
 
     memset(run, 0, sizeof(*run));
     while (completed < count) {
@@ -657,8 +660,14 @@ static void run_relay_cycle(sim_node_t *sims, size_t count, const nrf_cs_schedul
                     assert(sim->rt.execution_done || sim->rt.window_exhausted ||
                            sim->rt.window_deadline_ms - (g_now + NRF_CS_CYCLE_ATTEMPT_GAP_MS) < sim->rt.pair_timeout_ms);
                     if (deliver_releases && (int)e != drop_execution) {
-                        nrf_cs_cycle_runtime_peer_released(&sims[node_index_of(sims, count, sim->rt.steps[e].reflector)].rt);
-                        ++run->releases_sent;
+                        const size_t target=node_index_of(sims,count,sim->rt.steps[e].reflector);
+                        if(e==0U && late_release_ms>=0){
+                            late_pending=true;late_target=target;
+                            late_due=sims[target].rt.t0_ms+window+(unsigned)late_release_ms;
+                        }else{
+                            nrf_cs_cycle_runtime_peer_released(&sims[target].rt);
+                            ++run->releases_sent;
+                        }
                     } else {
                         ++run->releases_dropped;
                     }
@@ -666,6 +675,12 @@ static void run_relay_cycle(sim_node_t *sims, size_t count, const nrf_cs_schedul
             }
             nrf_cs_step_t step;
             nrf_cs_cycle_runtime_tick(&sim->rt);
+            if(late_pending && n==late_target && g_now>=late_due){
+                assert(sim->rt.window==1U && sim->rt.attempts==0U && !sim->rt.attempt_active);
+                nrf_cs_cycle_runtime_peer_released(&sim->rt);
+                late_pending=false;++run->releases_sent;
+                nrf_cs_cycle_runtime_tick(&sim->rt);
+            }
             if (nrf_cs_cycle_runtime_take_start(&sim->rt, &step)) {
                 const uint8_t e = sim->rt.window;
                 assert(step.initiator == sim->id && sim->rt.steps[e].initiator == sim->id);
@@ -709,6 +724,98 @@ static void relay_setup(sim_node_t *sims, size_t count, nrf_cs_scheduler_t *plan
     assert(send_plan(sims, count, planner, 10U) == planner->execution_count);
 }
 
+static void test_late_release_before_first_own_attempt_does_not_credit_future_duty(void)
+{
+    const unsigned offsets[]={0U,149U,150U,299U};
+    for(size_t count=3U;count<=5U;++count)for(unsigned offset=0U;offset<4U;++offset){
+        nrf_cs_scheduler_t planner;
+        sim_node_t sims[MAX_SIM_NODES];
+        static const nrf_cs_node_id_t ids[]={0U,1U,2U,3U,4U};
+        const nrf_cs_policy_t policy={.pair_timeout_ms=2400U,.max_attempts=2U,.min_confidence=500U,
+            .samples_per_pair=9U,.full_rotation=true,.relay_order=true,.require_both_directions=true};
+        g_now=1000U;
+        assert(nrf_cs_scheduler_init(&planner,&policy)==NRF_CS_OK);
+        assert(nrf_cs_scheduler_start_cycle(&planner,ids,count)==NRF_CS_OK);
+        for(size_t n=0;n<count;++n)init_sim(&sims[n],ids[n]);
+        assert(send_plan(sims,count,&planner,10U)==planner.execution_count);
+        sim_node_t *sim=&sims[node_index_of(sims,count,planner.executions[0].reflector)];
+        const nrf_cs_cycle_go_t go={.request_id=77U,.cycle_id=planner.cycle_id,.total_timeout_ms=600000U};
+        assert(nrf_cs_cycle_runtime_go(&sim->rt,&go)==0);
+        g_now=sim->rt.t0_ms+sim->rt.window_ms+offsets[offset];
+        nrf_cs_cycle_runtime_tick(&sim->rt);
+        assert(sim->rt.window==1U && sim->rt.attempts==0U && !sim->rt.attempt_active);
+        const uint64_t slot_ready=sim->rt.attempt_ready_ms;
+        assert(slot_ready==g_now-offsets[offset]+NRF_CS_CYCLE_GO_SKEW_MS);
+        for(unsigned guard=0U;guard<3U;++guard){
+            nrf_cs_cycle_runtime_t control=sim->rt;
+            const uint64_t before=g_now;
+            if(guard==0U)control.attempts=1U;
+            else if(guard==1U)control.attempt_active=true;
+            else g_now=control.window_deadline_ms;
+            nrf_cs_cycle_runtime_peer_released(&control);
+            assert((control.released_mask & 1U)==0U && control.attempt_ready_ms==slot_ready);
+            g_now=before;
+        }
+        nrf_cs_cycle_runtime_peer_released(&sim->rt);
+        printf("late release nodes=%u offset=%u mask=%u ready=%llu slot_ready=%llu\n",(unsigned)count,
+            offsets[offset],(unsigned)sim->rt.released_mask,(unsigned long long)sim->rt.attempt_ready_ms,(unsigned long long)slot_ready);
+        fflush(stdout);
+        assert(sim->rt.released_mask==1U);
+        const uint64_t relay_ready=g_now+NRF_CS_CYCLE_RELAY_SETTLE_MS;
+        assert(sim->rt.attempt_ready_ms==(relay_ready<slot_ready?relay_ready:slot_ready));
+        nrf_cs_step_t step;
+        g_now=sim->rt.attempt_ready_ms-1U;nrf_cs_cycle_runtime_tick(&sim->rt);
+        assert(!nrf_cs_cycle_runtime_take_start(&sim->rt,&step));
+        ++g_now;nrf_cs_cycle_runtime_tick(&sim->rt);
+        assert(nrf_cs_cycle_runtime_take_start(&sim->rt,&step));
+        assert(sim->rt.window==1U && (sim->rt.closed_mask & 2U)==0U && step.pair_index==1U);
+        assert(step.initiator==sim->id && step.reflector==sim->rt.steps[1].reflector);
+    }
+}
+
+static void test_complete_matrix_survives_late_first_relay_release(void)
+{
+    for(size_t count=3U;count<=5U;++count){
+        nrf_cs_scheduler_t planner;
+        sim_node_t sims[MAX_SIM_NODES];relay_run_t run;
+        static const nrf_cs_node_id_t ids[]={0U,1U,2U,3U,4U};
+        const nrf_cs_policy_t policy={.pair_timeout_ms=2400U,.max_attempts=2U,.min_confidence=500U,
+            .samples_per_pair=9U,.full_rotation=true,.relay_order=true,.require_both_directions=true};
+        g_now=1000U;
+        assert(nrf_cs_scheduler_init(&planner,&policy)==NRF_CS_OK);
+        assert(nrf_cs_scheduler_start_cycle(&planner,ids,count)==NRF_CS_OK);
+        for(size_t n=0;n<count;++n)init_sim(&sims[n],ids[n]);
+        assert(send_plan(sims,count,&planner,10U)==planner.execution_count);
+        run_relay_cycle(sims,count,&planner,true,-1,0,&run);
+        unsigned records=0U;
+        for(size_t n=0;n<count;++n){
+            assert(sims[n].rt.state==NRF_CS_CYCLE_STATE_COMPLETE);
+            assert(sims[n].rt.record_count==(count-1U)*9U);
+            records+=sims[n].rt.record_count;
+        }
+        assert(run.overlaps==0U && run.releases_sent==planner.execution_count);
+        for(size_t e=0;e<planner.execution_count;++e)
+            assert(run.exec_first_start[e]!=0U && run.exec_last_end[e]>=run.exec_first_start[e]);
+        static nrf_cs_cycle_record_t storage[MAX_SIM_NODES][NRF_CS_CYCLE_MAX_RECORDS];
+        nrf_cs_cycle_node_records_t nodes[MAX_SIM_NODES];
+        for(size_t n=0;n<count;++n){
+            nodes[n].node=sims[n].id;
+            nodes[n].records=storage[n];
+            nodes[n].count=collect_records(&sims[n],storage[n],NRF_CS_CYCLE_MAX_RECORDS);
+        }
+        nrf_cs_scheduler_t replay;
+        assert(nrf_cs_scheduler_init(&replay,&policy)==NRF_CS_OK);
+        assert(nrf_cs_scheduler_start_cycle(&replay,ids,count)==NRF_CS_OK);
+        assert(nrf_cs_cycle_replay(&replay,nodes,count)==0 && nrf_cs_scheduler_is_complete(&replay));
+        for(size_t p=0;p<nrf_cs_scheduler_pair_count(&replay);++p){
+            const nrf_cs_pair_result_t *pair=nrf_cs_scheduler_pair_at(&replay,p);
+            assert(pair->state==NRF_CS_PAIR_VALID && pair->valid_samples==18U && !pair->single_direction);
+        }
+        printf("late full-cycle nodes=%u records=%u releases=%u overlaps=%u virtual_ms=%llu\n",
+            (unsigned)count,records,run.releases_sent,run.overlaps,(unsigned long long)run.cycle_end);
+    }
+}
+
 static void test_relay_hands_the_turn_on_without_waiting_for_the_slot(void)
 {
     for (size_t count = 3U; count <= 5U; ++count) {
@@ -719,7 +826,7 @@ static void test_relay_hands_the_turn_on_without_waiting_for_the_slot(void)
         relay_setup(sims, count, &planner);
         const uint32_t window = nrf_cs_cycle_window_ms(500U, 3U, 2U);
         const uint32_t run_ms = nrf_cs_cycle_run_ms((uint8_t)planner.execution_count, window);
-        run_relay_cycle(sims, count, &planner, true, -1, &run);
+        run_relay_cycle(sims, count, &planner, true, -1, -1, &run);
         for (size_t n = 0U; n < count; ++n) assert(sims[n].rt.relay);          /* the plan is a chain */
 
         /* Each execution is 3 attempts of 300 ms plus gaps: about 1.3 s instead of the 3.4 s slot. */
@@ -772,7 +879,7 @@ static void test_relay_without_releases_falls_back_to_the_time_slots(void)
     relay_setup(sims, 4U, &planner);
     const uint32_t window = nrf_cs_cycle_window_ms(500U, 3U, 2U);
     const uint32_t run_ms = nrf_cs_cycle_run_ms((uint8_t)planner.execution_count, window);
-    run_relay_cycle(sims, 4U, &planner, false, -1, &run);
+    run_relay_cycle(sims, 4U, &planner, false, -1, -1, &run);
 
     assert(run.overlaps == 0U && run.releases_sent == 0U);
     assert(run.cycle_end >= run_ms);                                           /* nothing came early */
@@ -797,7 +904,7 @@ static void test_a_lost_release_costs_only_the_wait_for_one_slot(void)
     relay_setup(sims, 4U, &planner);
     const uint32_t window = nrf_cs_cycle_window_ms(500U, 3U, 2U);
     const uint32_t run_ms = nrf_cs_cycle_run_ms((uint8_t)planner.execution_count, window);
-    run_relay_cycle(sims, 4U, &planner, true, lost, &run);
+    run_relay_cycle(sims, 4U, &planner, true, lost, -1, &run);
 
     assert(run.overlaps == 0U && run.releases_dropped == 1U);
     const uint64_t slot = 1000U + (uint64_t)(lost + 1) * window + NRF_CS_CYCLE_GO_SKEW_MS;
@@ -981,6 +1088,8 @@ int main(void)
     test_terminal_records_survive_until_global_collection_deadline();
     test_unchecked_pbr_is_recorded_and_retried();
     test_relay_hands_the_turn_on_without_waiting_for_the_slot();
+    test_late_release_before_first_own_attempt_does_not_credit_future_duty();
+    test_complete_matrix_survives_late_first_relay_release();
     test_relay_without_releases_falls_back_to_the_time_slots();
     test_a_lost_release_costs_only_the_wait_for_one_slot();
     test_would_finish_is_never_wrong_about_the_end();

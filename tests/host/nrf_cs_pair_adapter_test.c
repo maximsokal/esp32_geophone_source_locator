@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "nrf_cs_pair_adapter.h"
@@ -468,6 +469,97 @@ static void test_a_failure_in_securing_has_its_own_short_timing(void)
     assert(!fake.timing.budget_exceeded && !fake.timing.timeout_during_cleanup);
 }
 
+static void test_nine_procedures_need_only_one_preparation(void)
+{
+    for(unsigned prepared=0U;prepared<2U;++prepared){
+    fake_backend_t fake={0};fake.fail_call=-1;
+    nrf_cs_pair_adapter_t adapter=make_clocked_adapter(&fake);fake.adapter=&adapter;
+    const nrf_cs_measurement_t ok={.outcome=NRF_CS_OUTCOME_SUCCESS,.distance_mm=1500,.confidence=900U};
+    g_now_ms=UINT32_MAX-31U;
+    for(unsigned i=0U;i<9U;++i){
+        nrf_cs_step_t step=make_step(100U+i);step.timeout_ms=2400U;
+        if(i==0U || !prepared){
+            assert(nrf_cs_pair_adapter_execute(&adapter,3U,&step,completed,&fake)==NRF_CS_PAIR_ADAPTER_OK);
+            drive_to_procedure(&adapter,&step,true);
+        }else{
+            assert(nrf_cs_pair_adapter_execute_prepared(&adapter,3U,&step,completed,&fake)==NRF_CS_PAIR_ADAPTER_OK);
+        }
+        printf("prepared mode=%u procedure=%u phase=%u connect=%u start=%u\n",prepared,i,
+            (unsigned)adapter.phase,fake.calls[CALL_CONNECT],fake.calls[CALL_PROCEDURE]);fflush(stdout);
+        assert(adapter.phase==NRF_CS_PAIR_PHASE_PROCEDURE);
+        if(i>0U){
+            const nrf_cs_step_t old=make_step(99U+i);
+            assert(nrf_cs_pair_adapter_measurement_ready(&adapter,&old,&ok)==NRF_CS_PAIR_ADAPTER_ERR_STALE);
+            assert(nrf_cs_pair_adapter_connected(&adapter,&step)==NRF_CS_PAIR_ADAPTER_ERR_STATE);
+            for(unsigned field=0U;field<7U;++field){
+                nrf_cs_step_t foreign=step;
+                switch(field){
+                case 0U:++foreign.cycle_id;break;
+                case 1U:++foreign.membership_generation;break;
+                case 2U:++foreign.attempt_id;break;
+                case 3U:++foreign.pair_index;break;
+                case 4U:++foreign.attempt_number;break;
+                case 5U:++foreign.initiator;break;
+                default:++foreign.reflector;break;
+                }
+                assert(nrf_cs_pair_adapter_measurement_ready(&adapter,&foreign,&ok)==NRF_CS_PAIR_ADAPTER_ERR_STALE);
+                assert(nrf_cs_pair_adapter_timeout(&adapter,&foreign)==NRF_CS_PAIR_ADAPTER_ERR_STALE);
+                assert(nrf_cs_pair_adapter_cleanup_complete(&adapter,&foreign)==NRF_CS_PAIR_ADAPTER_ERR_STALE);
+                assert(adapter.phase==NRF_CS_PAIR_PHASE_PROCEDURE && fake.completions==i);
+            }
+        }
+        g_now_ms+=300U;
+        assert(nrf_cs_pair_adapter_measurement_ready(&adapter,&step,&ok)==NRF_CS_PAIR_ADAPTER_OK);
+        g_now_ms+=20U;
+        assert(nrf_cs_pair_adapter_cleanup_complete(&adapter,&step)==NRF_CS_PAIR_ADAPTER_COMPLETED);
+        assert(fake.timing.valid && fake.timing.measured_ms==300U && fake.timing.cleanup_ms==20U && fake.timing.total_ms==320U);
+        assert(fake.completions==i+1U && fake.completed_step.attempt_id==step.attempt_id);
+    }
+    for(unsigned call=CALL_CONNECT;call<CALL_PROCEDURE;++call)assert(fake.calls[call]==(prepared?1U:9U));
+    assert(fake.calls[CALL_PROCEDURE]==9U && fake.calls[CALL_CLEANUP]==9U);
+    }
+}
+
+static void test_prepared_entry_keeps_validation_and_terminal_contract(void)
+{
+    fake_backend_t invalid={0};invalid.fail_call=-1;
+    nrf_cs_pair_adapter_t adapter=make_adapter(&invalid);
+    nrf_cs_step_t step=make_step(200U);
+    assert(nrf_cs_pair_adapter_execute_prepared(NULL,3U,&step,completed,&invalid)==NRF_CS_PAIR_ADAPTER_ERR_ARGUMENT);
+    assert(nrf_cs_pair_adapter_execute_prepared(&adapter,3U,NULL,completed,&invalid)==NRF_CS_PAIR_ADAPTER_ERR_ARGUMENT);
+    assert(nrf_cs_pair_adapter_execute_prepared(&adapter,3U,&step,NULL,&invalid)==NRF_CS_PAIR_ADAPTER_ERR_ARGUMENT);
+    assert(nrf_cs_pair_adapter_execute_prepared(&adapter,4U,&step,completed,&invalid)==NRF_CS_PAIR_ADAPTER_ERR_ARGUMENT);
+    step.timeout_ms=0U;
+    assert(nrf_cs_pair_adapter_execute_prepared(&adapter,3U,&step,completed,&invalid)==NRF_CS_PAIR_ADAPTER_ERR_ARGUMENT);
+    step=make_step(200U);step.reflector=step.initiator;
+    assert(nrf_cs_pair_adapter_execute_prepared(&adapter,3U,&step,completed,&invalid)==NRF_CS_PAIR_ADAPTER_ERR_ARGUMENT);
+    for(unsigned c=0;c<CALL_COUNT;++c)assert(invalid.calls[c]==0U);
+    for(unsigned failure=0;failure<4U;++failure){
+        fake_backend_t fake={0};fake.fail_call=failure==0U?CALL_PROCEDURE:failure==1U?CALL_CLEANUP:-1;
+        adapter=make_clocked_adapter(&fake);fake.adapter=&adapter;step=make_step(201U+failure);
+        g_now_ms=1000U;
+        assert(nrf_cs_pair_adapter_execute_prepared(&adapter,3U,&step,completed,&fake)==NRF_CS_PAIR_ADAPTER_OK);
+        nrf_cs_step_t next=make_step(300U);
+        assert(nrf_cs_pair_adapter_execute_prepared(&adapter,3U,&next,completed,&fake)==NRF_CS_PAIR_ADAPTER_ERR_BUSY);
+        assert(fake.calls[CALL_PROCEDURE]==1U && fake.calls[CALL_CONNECT]==0U);
+        if(failure==1U){
+            const nrf_cs_measurement_t ok={.outcome=NRF_CS_OUTCOME_SUCCESS,.distance_mm=1500,.confidence=900U};
+            assert(nrf_cs_pair_adapter_measurement_ready(&adapter,&step,&ok)==NRF_CS_PAIR_ADAPTER_OK);
+        }else if(failure==2U){
+            g_now_ms+=step.timeout_ms;
+            assert(nrf_cs_pair_adapter_timeout(&adapter,&step)==NRF_CS_PAIR_ADAPTER_OK);
+        }else if(failure==3U){
+            assert(nrf_cs_pair_adapter_transport_error(&adapter,&step)==NRF_CS_PAIR_ADAPTER_OK);
+        }
+        assert(fake.completions==0U && adapter.phase==NRF_CS_PAIR_PHASE_CLEANUP);
+        ++g_now_ms;
+        assert(nrf_cs_pair_adapter_cleanup_complete(&adapter,&step)==NRF_CS_PAIR_ADAPTER_COMPLETED);
+        assert(fake.completions==1U && fake.calls[CALL_CLEANUP]==1U);
+        assert(fake.completed_measurement.outcome==(failure==2U?NRF_CS_OUTCOME_TIMEOUT:NRF_CS_OUTCOME_TRANSPORT_ERROR));
+        assert(nrf_cs_pair_adapter_cleanup_complete(&adapter,&step)==NRF_CS_PAIR_ADAPTER_ERR_STALE);
+    }
+}
+
 int main(void)
 {
     test_success_path_is_bounded_and_ordered();
@@ -481,5 +573,7 @@ int main(void)
     test_a_timeout_while_measuring_is_a_timeout_and_the_budget_edge_is_exact();
     test_timing_survives_the_clock_wrap_and_is_absent_without_a_clock();
     test_a_failure_in_securing_has_its_own_short_timing();
+    test_nine_procedures_need_only_one_preparation();
+    test_prepared_entry_keeps_validation_and_terminal_contract();
     return 0;
 }

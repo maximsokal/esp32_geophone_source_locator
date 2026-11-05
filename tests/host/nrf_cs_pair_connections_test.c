@@ -10,6 +10,8 @@ static struct bt_conn *s_outgoing_conn, *s_incoming_conn;
 static bool s_outgoing_connected, s_advertising;
 static int s_reflector_procedure_active;
 static int s_radio_enabled=1;
+static int s_incoming_disconnect_pending;
+typedef int atomic_val_t;
 static nrf_cs_pair_adapter_t s_adapter;
 static unsigned s_completions, s_disconnects;
 static nrf_cs_outcome_t s_outcome;
@@ -79,6 +81,10 @@ int main(void)
     connected_cb(&conn,0);
     assert(s_disconnects==1 && s_incoming_conn==NULL && conn.refs==1);
     s_radio_enabled=1;
+    s_incoming_disconnect_pending=1;
+    connected_cb(&conn,0);
+    assert(s_disconnects==2 && s_incoming_conn==NULL && conn.refs==1);
+    s_incoming_disconnect_pending=0;
     nrf_cs_step_t step = start(&conn);
     assert(nrf_cs_pair_adapter_timeout(&s_adapter, &step) == 0);
     connected_cb(&conn, 2); /* Zephyr reports create cancellation here, not disconnected. */
@@ -106,6 +112,8 @@ int main(void)
     assert(s_incoming_conn==&conn && conn.refs==2);
     disconnected_cb(&conn,0x13);
     assert(s_incoming_conn==NULL && conn.refs==1);
+    assert(s_incoming_disconnect_pending==0x14);
+    s_incoming_disconnect_pending=0; /* This fixture does not run the event worker. */
     s_radio_enabled=0;
     const unsigned before=s_disconnects;
     connected_cb(&conn,0x3e);

@@ -50,6 +50,14 @@ def test_noncollinear_partial_controls_are_not_classified_by_coarse_residual_tol
         assert geometry.node_error(r['baseline'],c['truth'])['max_mm']<5
 
 
+def test_two_disjoint_missing_edges_do_not_make_the_collinear_mirror_admissible():
+    points=[[0,0,0],[4000,0,0],[8000,0,0],[2000,3000,0],[6000,-3000,0]]
+    cases=[geometry.make_case(f'two-missing/{p}',points,missing_mask=(1<<9)|(1<<p)) for p in (0,1,4)]
+    for result in geometry.native_solutions(cases,geometry.BUILD/'test-two-missing-mirror'):
+        assert not result['baseline']['ok']
+        assert not any(s['mask']==0 for s in result['solutions'])
+
+
 def test_one_order_is_not_a_uniqueness_certificate():
     case = geometry.make_case('counterexample', geometry.REFERENCE, {1: 1000, 4: 1000})
     result = geometry.native_solutions([case], geometry.BUILD / 'test-order')[0]

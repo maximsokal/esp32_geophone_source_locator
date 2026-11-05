@@ -193,13 +193,22 @@ static bool duties_over(const nrf_cs_cycle_runtime_t *rt)
 void nrf_cs_cycle_runtime_peer_released(nrf_cs_cycle_runtime_t *rt)
 {
     if (rt == NULL || rt->state != NRF_CS_CYCLE_STATE_RUNNING || !rt->relay) return;
+    const uint64_t now = now_ms(rt);
+    uint8_t first = rt->window == WINDOW_NONE ? 0U : rt->window;
+    /* No later chain execution can finish before our first attempt in this still-open window. */
+    if (first > 0U && first < rt->step_count && rt->steps[first].initiator == rt->local_node &&
+        rt->steps[first - 1U].reflector == rt->local_node &&
+        (rt->released_mask & bit_of((uint8_t)(first - 1U))) == 0U &&
+        rt->attempts == 0U && !rt->attempt_active && now < rt->window_deadline_ms) {
+        --first;
+    }
     /* The chain is linear: the execution being served is the first reflector duty not yet released, from the window
      * this node has reached on (a duty before it was passed over by time and its release was lost). */
-    for (uint8_t e = rt->window == WINDOW_NONE ? 0U : rt->window; e < rt->step_count; ++e) {
+    for (uint8_t e = first; e < rt->step_count; ++e) {
         if (rt->steps[e].reflector != rt->local_node || (rt->released_mask & bit_of(e)) != 0U) continue;
         rt->released_mask |= bit_of(e);
         /* Its own window may already be open and waiting for the slot's start: shorten the wait. */
-        const uint64_t ready = now_ms(rt) + NRF_CS_CYCLE_RELAY_SETTLE_MS;
+        const uint64_t ready = now + NRF_CS_CYCLE_RELAY_SETTLE_MS;
         if ((uint8_t)(e + 1U) == rt->window && rt->attempts == 0U && !rt->attempt_active && ready < rt->attempt_ready_ms) {
             rt->attempt_ready_ms = ready;
         }

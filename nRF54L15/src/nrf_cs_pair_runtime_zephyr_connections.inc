@@ -28,7 +28,7 @@ static void connected_cb(struct bt_conn *conn, uint8_t err)
     if (err != 0U) {
         return;
     }
-    if (atomic_get(&s_radio_enabled) == 0 ||
+    if (atomic_get(&s_radio_enabled) == 0 || atomic_get(&s_incoming_disconnect_pending) != 0 ||
         nrf_cs_pair_adapter_is_active(&s_adapter) || s_incoming_conn != NULL) {
         (void)bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
         return;
@@ -57,6 +57,7 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
     }
 
     if (conn == s_incoming_conn) {
+        atomic_set(&s_incoming_disconnect_pending, (atomic_val_t)reason + 1);
         bt_conn_unref(s_incoming_conn);
         s_incoming_conn = NULL;
         atomic_set(&s_reflector_procedure_active, 0);

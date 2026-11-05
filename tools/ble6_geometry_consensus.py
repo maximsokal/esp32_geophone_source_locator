@@ -62,11 +62,16 @@ def native_solutions(cases, workdir, solver_source='components/nrf_geometry_solv
     with output.open(newline='',encoding='utf-8') as stream:
         for raw in csv.reader(stream):
             r = list(map(int,raw))
+            if len(r) != 36:
+                raise ValueError('Native geometry diagnostics require 36 CSV fields')
             n = len(cases[r[0]]['truth'])
             solution = {'mask':r[1],'order':r[2],'ok':bool(r[3]),'residual_mm':r[5],
                 'nodes':[r[6+4*i:9+4*i] for i in range(n)],'uncertainty_mm':[r[9+4*i] for i in range(n)]}
-            if r[4]: results[r[0]]['baseline'] = solution
-            else: results[r[0]]['solutions'].append(solution)
+            if r[4]:
+                results[r[0]]['violations'] = r[26:36]
+                results[r[0]]['baseline'] = solution
+            else:
+                results[r[0]]['solutions'].append(solution)
     assert all(r['baseline'] is not None for r in results)
     return results
 

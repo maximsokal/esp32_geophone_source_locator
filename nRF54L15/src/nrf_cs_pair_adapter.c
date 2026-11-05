@@ -101,12 +101,13 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_init(
     return NRF_CS_PAIR_ADAPTER_OK;
 }
 
-nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_execute(
+static nrf_cs_pair_adapter_result_t execute_attempt(
     nrf_cs_pair_adapter_t *adapter,
     nrf_cs_node_id_t local_node_id,
     const nrf_cs_step_t *step,
     nrf_cs_pair_adapter_complete_cb_t complete_cb,
-    void *complete_context)
+    void *complete_context,
+    bool prepared)
 {
     if (adapter == NULL || step == NULL || complete_cb == NULL ||
         step->timeout_ms == 0U || step->initiator == step->reflector ||
@@ -118,7 +119,7 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_execute(
     }
 
     adapter->active = true;
-    adapter->phase = NRF_CS_PAIR_PHASE_CONNECTING;
+    adapter->phase = prepared ? NRF_CS_PAIR_PHASE_PROCEDURE : NRF_CS_PAIR_PHASE_CONNECTING;
     adapter->step = *step;
     adapter->complete_cb = complete_cb;
     adapter->complete_context = complete_context;
@@ -127,10 +128,32 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_execute(
     adapter->started_ms = clock_ms(adapter);
     memset(&adapter->terminal_measurement, 0, sizeof(adapter->terminal_measurement));
 
-    if (adapter->ops.connect(adapter->ops.context, step->reflector) != 0) {
+    const int err = prepared ? adapter->ops.start_procedure(adapter->ops.context) :
+        adapter->ops.connect(adapter->ops.context, step->reflector);
+    if (err != 0) {
         return fail_transport(adapter);
     }
     return NRF_CS_PAIR_ADAPTER_OK;
+}
+
+nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_execute(
+    nrf_cs_pair_adapter_t *adapter,
+    nrf_cs_node_id_t local_node_id,
+    const nrf_cs_step_t *step,
+    nrf_cs_pair_adapter_complete_cb_t complete_cb,
+    void *complete_context)
+{
+    return execute_attempt(adapter, local_node_id, step, complete_cb, complete_context, false);
+}
+
+nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_execute_prepared(
+    nrf_cs_pair_adapter_t *adapter,
+    nrf_cs_node_id_t local_node_id,
+    const nrf_cs_step_t *step,
+    nrf_cs_pair_adapter_complete_cb_t complete_cb,
+    void *complete_context)
+{
+    return execute_attempt(adapter, local_node_id, step, complete_cb, complete_context, true);
 }
 
 nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_connected(

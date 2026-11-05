@@ -96,6 +96,15 @@ nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_execute(
     nrf_cs_pair_adapter_complete_cb_t complete_cb,
     void *complete_context);
 
+/* Caller owns a ready connection/RAS/config/security and its lifetime; this entry only starts an attempt.
+ * Cleanup still runs for every result. The backend must decide whether it retains or releases the connection. */
+nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_execute_prepared(
+    nrf_cs_pair_adapter_t *adapter,
+    nrf_cs_node_id_t local_node_id,
+    const nrf_cs_step_t *step,
+    nrf_cs_pair_adapter_complete_cb_t complete_cb,
+    void *complete_context);
+
 nrf_cs_pair_adapter_result_t nrf_cs_pair_adapter_connected(
     nrf_cs_pair_adapter_t *adapter,
     const nrf_cs_step_t *step);

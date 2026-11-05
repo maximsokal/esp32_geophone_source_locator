@@ -96,6 +96,8 @@ static nrf_cs_node_id_t s_scan_target = 0xFFU;
 static struct bt_conn *s_outgoing_conn;
 static bool s_outgoing_connected;
 static atomic_t s_disconnect_retry_pending;
+/* Zero means none; reason+1 keeps incoming disconnect ownership until worker delivery. */
+static atomic_t s_incoming_disconnect_pending;
 static void cleanup_work_handler(struct k_work *work);
 static struct bt_conn *s_incoming_conn;
 
@@ -141,6 +143,7 @@ static bool s_peer_complete;
 /* Completion events queue counters, while IQ buffers must survive until the worker consumes them. */
 static atomic_t s_local_data_frozen;
 static atomic_t s_peer_data_frozen;
+static atomic_t s_expected_counter = ATOMIC_INIT(NRF_CS_RANGING_COUNTER_NONE);
 static bool s_realtime_ras;
 static bool s_on_demand_request_started;
 static atomic_t s_reflector_procedure_active;
@@ -187,6 +190,9 @@ static void runtime_post_event(
             overflow_total,
             NRF_CS_EVENT_QUEUE_DEPTH);
         LOG_ERR("Channel Sounding event queue overflow");
+        if (type == RUNTIME_EVENT_INCOMING_DISCONNECTED) {
+            (void)submit_cs_work(&s_event_work);
+        }
         return;
     }
     (void)submit_cs_work(&s_event_work);
@@ -260,19 +266,21 @@ static int runtime_start_advertising(void)
     return err;
 }
 
-static void runtime_stop_advertising(void)
+static int runtime_stop_advertising(void)
 {
     int err;
 
     if (!s_advertising) {
-        return;
+        return 0;
     }
 
     err = bt_le_adv_stop();
     if (err != 0 && err != -EALREADY) {
         LOG_WRN("RAS advertising stop failed: %d", err);
+        return err;
     }
     s_advertising = false;
+    return 0;
 }
 
 static void runtime_stop_scan(void)
@@ -290,8 +298,10 @@ static void runtime_stop_scan(void)
     s_scanning = false;
 }
 
-static void runtime_reset_ranging(void)
+/* Expected counter is in the 12-bit RAS domain; NONE keeps the cold-connection path. */
+static void runtime_reset_procedure(uint16_t expected_counter)
 {
+    atomic_set(&s_expected_counter, expected_counter);
     nrf_cs_rf_reset(&s_rf_diagnostics);
     atomic_set(&s_rf_tx_power, NRF_CS_RF_UNAVAILABLE);
     atomic_set(&s_rf_status, (atomic_val_t)nrf_cs_rf_status_word(127, 127, 0, 0, 0, false));
@@ -304,13 +314,24 @@ static void runtime_reset_ranging(void)
     s_ready_counter = NRF_CS_RANGING_COUNTER_NONE;
     s_local_complete = false;
     s_peer_complete = false;
-    atomic_set(&s_disconnect_retry_pending, 0);
     atomic_set(&s_local_data_frozen, 0);
     atomic_set(&s_peer_data_frozen, 0);
-    s_realtime_ras = false;
     s_on_demand_request_started = false;
+}
+
+static void runtime_reset_ranging(void)
+{
+    runtime_reset_procedure(NRF_CS_RANGING_COUNTER_NONE);
+    atomic_set(&s_disconnect_retry_pending, 0);
+    s_realtime_ras = false;
     atomic_set(&s_reflector_procedure_active, 0);
     memset(&s_cs_config, 0, sizeof(s_cs_config));
+}
+
+static bool runtime_counter_matches(uint16_t counter)
+{
+    const atomic_val_t expected = atomic_get(&s_expected_counter);
+    return expected == NRF_CS_RANGING_COUNTER_NONE || counter == (uint16_t)expected;
 }
 
 typedef struct {
@@ -394,7 +415,10 @@ static int op_connect(void *context, nrf_cs_node_id_t reflector)
         return -EBUSY;
     }
 
-    runtime_stop_advertising();
+    err = runtime_stop_advertising();
+    if (err != 0) {
+        return err;
+    }
     runtime_reset_ranging();
     s_scan_target = reflector;
 
@@ -550,6 +574,9 @@ static void ranging_data_received_cb(
     if (!runtime_active_step_for_conn(conn, &step)) {
         return;
     }
+    if (!runtime_counter_matches(ranging_counter)) {
+        return;
+    }
     if (atomic_get(&s_peer_data_frozen) != 0) {
         return;
     }
@@ -573,6 +600,9 @@ static void ranging_data_ready_cb(struct bt_conn *conn, uint16_t ranging_counter
 {
     nrf_cs_step_t step;
 
+    if (!runtime_counter_matches(ranging_counter)) {
+        return;
+    }
     if (runtime_active_step_for_conn(conn, &step)) {
         runtime_post_event(RUNTIME_EVENT_RANGING_READY, &step, ranging_counter, 0, NULL);
     }
