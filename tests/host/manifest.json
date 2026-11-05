@@ -368,7 +368,11 @@
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
-        "tests/host/ad7606_recorder_start_integration_test.c"
+        "tests/host/ad7606_recorder_start_integration_test.c",
+        "nRF54L15/src/nrf_cs_scheduler.c",
+        "nRF54L15/src/nrf_cs_cycle_protocol.c",
+        "nRF54L15/src/nrf_cs_cycle_replay.c",
+        "nRF54L15/src/nrf_upstream_protocol.c"
       ],
       "include_dirs": [
         "components/cjson_alloc_guard/include",
@@ -2500,7 +2504,11 @@
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
         "components/seismic_buffer/seismic_buffer.c",
-        "components/seismic_recorder/tests/seismic_recorder_allocation_contract_test.c"
+        "components/seismic_recorder/tests/seismic_recorder_allocation_contract_test.c",
+        "nRF54L15/src/nrf_cs_scheduler.c",
+        "nRF54L15/src/nrf_cs_cycle_protocol.c",
+        "nRF54L15/src/nrf_cs_cycle_replay.c",
+        "nRF54L15/src/nrf_upstream_protocol.c"
       ],
       "include_dirs": [
         "components/cjson_alloc_guard/include",
@@ -2558,7 +2566,11 @@
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
         "components/seismic_buffer/seismic_buffer.c",
-        "components/seismic_recorder/tests/seismic_recorder_allocation_contract_test.c"
+        "components/seismic_recorder/tests/seismic_recorder_allocation_contract_test.c",
+        "nRF54L15/src/nrf_cs_scheduler.c",
+        "nRF54L15/src/nrf_cs_cycle_protocol.c",
+        "nRF54L15/src/nrf_cs_cycle_replay.c",
+        "nRF54L15/src/nrf_upstream_protocol.c"
       ],
       "include_dirs": [
         "components/cjson_alloc_guard/include",

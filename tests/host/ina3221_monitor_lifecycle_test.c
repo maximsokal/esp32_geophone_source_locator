@@ -64,6 +64,10 @@ static unsigned s_open_calls;
 static uint64_t s_open_times_ms[16];
 static unsigned s_read_calls;
 static unsigned s_close_calls;
+static int64_t s_quiet_start_us;
+static int64_t s_quiet_end_us;
+static bool s_quiet_on_next_read;
+static bool s_quiet_on_next_open;
 
 static unsigned s_classify_calls;
 static unsigned s_classifier_update_calls;
@@ -84,15 +88,32 @@ static float s_last_power_current;
 static bool s_fake_battery_present = true;
 static uint64_t s_fake_wait_advance_us = 1000000U;
 static unsigned s_busy_log_calls;
+static unsigned s_pause_log_calls;
+static unsigned s_resume_log_calls;
+static char s_resume_log[128];
 static char s_last_busy_log[128];
 static device_power_state_t s_power_state_at_busy;
 static ina3221_monitor_rail_t s_rail_at_busy;
 static device_power_state_t s_power_state_after_device_error;
 static ina3221_monitor_rail_t s_rail_after_device_error;
 
+bool sensor_bus_quiet_active(void)
+{
+    return s_quiet_end_us > s_quiet_start_us &&
+        s_fake_time_us >= s_quiet_start_us && s_fake_time_us < s_quiet_end_us;
+}
+
 void ina3221_test_log(const char *tag, const char *format, ...)
 {
     (void)tag;
+    if (format != NULL && strstr(format, "INA3221_PAUSED") != NULL) ++s_pause_log_calls;
+    if (format != NULL && strstr(format, "INA3221_RESUMED") != NULL) {
+        va_list args;
+        va_start(args, format);
+        (void)vsnprintf(s_resume_log, sizeof(s_resume_log), format, args);
+        va_end(args);
+        ++s_resume_log_calls;
+    }
     if (format == NULL || strstr(format, "INA3221_BUS_BUSY_SKIPPED") == NULL) {
         return;
     }
@@ -310,6 +331,12 @@ esp_err_t ina3221_driver_open(ina3221_driver_t *driver)
     assert(s_open_calls < sizeof(s_open_times_ms) / sizeof(s_open_times_ms[0]));
     s_open_times_ms[s_open_calls] = (uint64_t)(s_fake_time_us / 1000);
     ++s_open_calls;
+    if (s_quiet_on_next_open) {
+        s_quiet_on_next_open = false;
+        s_quiet_start_us = s_fake_time_us;
+        s_quiet_end_us = s_fake_time_us + INT64_C(2000000);
+        return SENSOR_BUS_ERR_MUTEX_BUSY;
+    }
     if (s_open_result == ESP_OK) {
         driver->ready = true;
     }
@@ -332,6 +359,12 @@ esp_err_t ina3221_driver_read_channels(
     assert(channels != NULL);
     assert(driver->ready);
     ++s_read_calls;
+    if (s_quiet_on_next_read) {
+        s_quiet_on_next_read = false;
+        s_quiet_start_us = s_fake_time_us;
+        s_quiet_end_us = s_fake_time_us + INT64_C(2000000);
+    }
+    if (sensor_bus_quiet_active()) return SENSOR_BUS_ERR_MUTEX_BUSY;
 
     esp_err_t read_result = s_read_result;
     if (s_read_result_index < s_read_result_count) {
@@ -485,6 +518,10 @@ static void reset_fakes(void)
     memset(s_open_times_ms, 0, sizeof(s_open_times_ms));
     s_read_calls = 0U;
     s_close_calls = 0U;
+    s_quiet_start_us = 0;
+    s_quiet_end_us = 0;
+    s_quiet_on_next_read = false;
+    s_quiet_on_next_open = false;
 
     s_classify_calls = 0U;
     s_classifier_update_calls = 0U;
@@ -504,6 +541,9 @@ static void reset_fakes(void)
     s_last_power_current = 0.0f;
     s_fake_battery_present = true;
     s_busy_log_calls = 0U;
+    s_pause_log_calls = 0U;
+    s_resume_log_calls = 0U;
+    s_resume_log[0] = '\0';
     s_last_busy_log[0] = '\0';
     s_power_state_at_busy = DEVICE_POWER_STATE_UNKNOWN;
     memset(&s_rail_at_busy, 0, sizeof(s_rail_at_busy));
@@ -1268,6 +1308,176 @@ static void test_idle_wait_is_the_sampling_period_only(void)
     assert(s_last_wait_ticks == pdMS_TO_TICKS(INA3221_MONITOR_PERIOD_MS));
 }
 
+static void test_quiet_pauses_reads_and_resumes_with_fresh_sample(void)
+{
+    reset_fakes();
+    s_quiet_start_us = INT64_C(1000000);
+    s_quiet_end_us = INT64_C(61000000);
+    s_stop_after_waits = 62U;
+    s_wait_hook = capture_power_state_during_busy;
+    s_wait_hook_at = 12U;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_worker_entry(s_worker_argument);
+    assert(s_pause_log_calls == 1U);
+    assert(s_resume_log_calls == 1U);
+    assert(strstr(s_resume_log, "skipped=60") != NULL);
+    assert(s_open_calls == 1U);
+    assert(s_read_calls == 2U);
+    assert(s_close_calls == 1U);
+    assert(s_busy_log_calls == 0U);
+    assert(s_rail_at_busy.available && !s_rail_at_busy.valid && s_rail_at_busy.stale);
+    assert(s_rail_at_busy.age_ms >= 10000U);
+    assert(s_power_state_at_busy == DEVICE_POWER_STATE_UNKNOWN);
+    ina3221_monitor_rail_t rail;
+    assert(ina3221_monitor_get_rail(INA3221_MONITOR_RAIL_BATTERY, &rail) == ESP_OK);
+    assert(rail.valid && rail.age_ms == 0U);
+    assert_lock_balanced();
+}
+
+static void start_quiet_during_next_read(void)
+{
+    s_quiet_on_next_read = true;
+}
+
+static void test_quiet_start_race_is_not_reported_as_contention(void)
+{
+    reset_fakes();
+    s_wait_hook = start_quiet_during_next_read;
+    s_wait_hook_at = 1U;
+    s_stop_after_waits = 4U;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_worker_entry(s_worker_argument);
+    assert(s_open_calls == 1U && s_read_calls == 3U && s_close_calls == 1U);
+    assert(s_busy_log_calls == 0U);
+    assert(s_pause_log_calls == 1U && s_resume_log_calls == 1U);
+    assert(strstr(s_resume_log, "skipped=2") != NULL);
+    assert_lock_balanced();
+}
+
+static void test_quiet_start_during_open_does_not_delay_recovery(void)
+{
+    reset_fakes();
+    s_quiet_on_next_open = true;
+    s_stop_after_waits = 3U;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_worker_entry(s_worker_argument);
+    assert(s_open_calls == 2U && s_read_calls == 1U);
+    assert(s_pause_log_calls == 1U && s_resume_log_calls == 1U);
+    assert(strstr(s_resume_log, "skipped=2") != NULL);
+    assert_lock_balanced();
+}
+
+static void test_critical_countdown_continues_during_quiet(void)
+{
+    reset_fakes();
+    ina3221_monitor_set_critical_battery_handler(critical_handler);
+    s_fake_source_state = INA3221_POWER_STATE_BATTERY;
+    s_fake_battery_v = 3.20f;
+    s_quiet_start_us = INT64_C(10000000);
+    s_quiet_end_us = INT64_C(30000000);
+    s_stop_after_waits = 25U;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_worker_entry(s_worker_argument);
+    assert(s_critical_handler_calls == 1U);
+    if (s_critical_handler_time_us != INT64_C(14000000))
+        fprintf(stderr, "quiet critical shutdown at %lld us, expected 14000000\n", (long long)s_critical_handler_time_us);
+    assert(s_critical_handler_time_us == INT64_C(14000000));
+    assert(s_status_low_battery == DEVICE_LOW_BATTERY_SHUTDOWN);
+    assert_lock_balanced();
+}
+
+static void hold_bus_during_next_read(void)
+{
+    s_read_result = SENSOR_BUS_ERR_MUTEX_BUSY;
+}
+
+static void test_critical_countdown_continues_during_bus_contention(void)
+{
+    reset_fakes();
+    ina3221_monitor_set_critical_battery_handler(critical_handler);
+    s_fake_source_state = INA3221_POWER_STATE_BATTERY;
+    s_fake_battery_v = 3.20f;
+    s_wait_hook = hold_bus_during_next_read;
+    s_wait_hook_at = 10U;
+    s_stop_after_waits = 25U;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_worker_entry(s_worker_argument);
+    assert(s_critical_handler_calls == 1U);
+    assert(s_critical_handler_time_us == INT64_C(14000000));
+    assert(s_status_low_battery == DEVICE_LOW_BATTERY_SHUTDOWN);
+    assert_lock_balanced();
+}
+
+static void test_critical_countdown_continues_during_device_retry_backoff(void)
+{
+    reset_fakes();
+    ina3221_monitor_set_critical_battery_handler(critical_handler);
+    s_fake_source_state = INA3221_POWER_STATE_BATTERY;
+    s_fake_battery_v = 3.20f;
+    s_wait_hook = fail_next_power_read;
+    s_wait_hook_at = 10U;
+    s_stop_after_waits = 25U;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_worker_entry(s_worker_argument);
+    assert(s_critical_handler_calls == 1U);
+    assert(s_critical_handler_time_us == INT64_C(14000000));
+    assert(s_status_low_battery == DEVICE_LOW_BATTERY_SHUTDOWN);
+    assert_lock_balanced();
+}
+
+static void test_fast_sampling_respects_quiet_and_recovers(void)
+{
+    reset_fakes();
+    s_fake_wait_advance_us = 20000U;
+    s_quiet_start_us = INT64_C(20000);
+    s_quiet_end_us = INT64_C(100000);
+    ina3221_monitor_request_fast_sampling(500U);
+    s_stop_after_waits = 6U;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_worker_entry(s_worker_argument);
+    assert(s_read_calls == 2U && s_open_calls == 1U);
+    assert(s_last_wait_ticks == pdMS_TO_TICKS(20U));
+    assert(s_pause_log_calls == 1U && s_resume_log_calls == 1U);
+    assert(strstr(s_resume_log, "skipped=4") != NULL);
+    assert_lock_balanced();
+}
+
+static void test_busy_and_hold_budget_are_logged_as_distinct_causes(void)
+{
+    reset_fakes();
+    const esp_err_t results[] = { ESP_OK, SENSOR_BUS_ERR_MUTEX_BUSY, SENSOR_BUS_ERR_OWNER_HOLD_BUDGET };
+    set_fake_read_results(results, sizeof(results) / sizeof(results[0]));
+    s_stop_after_waits = 3U;
+    assert(ina3221_monitor_start() == ESP_OK);
+    s_worker_entry(s_worker_argument);
+    assert(s_busy_log_calls == 2U);
+    assert(strstr(s_last_busy_log, "reason=owner_hold_budget") != NULL);
+    assert(s_open_calls == 1U && s_close_calls == 1U);
+    assert_lock_balanced();
+}
+
+static void release_busy_open(void)
+{
+    s_open_result = ESP_OK;
+}
+
+static void test_busy_during_open_retries_without_device_failure_backoff(void)
+{
+    const esp_err_t errors[] = { SENSOR_BUS_ERR_MUTEX_BUSY, SENSOR_BUS_ERR_OWNER_HOLD_BUDGET };
+    for (size_t i = 0U; i < sizeof(errors) / sizeof(errors[0]); ++i) {
+        reset_fakes();
+        s_open_result = errors[i];
+        s_wait_hook = release_busy_open;
+        s_wait_hook_at = 1U;
+        s_stop_after_waits = 2U;
+        assert(ina3221_monitor_start() == ESP_OK);
+        s_worker_entry(s_worker_argument);
+        assert(s_open_calls == 2U && s_read_calls == 1U);
+        assert(s_busy_log_calls == 1U);
+        assert_lock_balanced();
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2) {
@@ -1280,6 +1490,15 @@ int main(int argc, char **argv)
     test_stop_handles_delayed_worker_registration();
     test_stop_notifies_running_worker_once();
     test_idle_wait_is_the_sampling_period_only();
+    test_quiet_pauses_reads_and_resumes_with_fresh_sample();
+    test_quiet_start_race_is_not_reported_as_contention();
+    test_quiet_start_during_open_does_not_delay_recovery();
+    test_critical_countdown_continues_during_quiet();
+    test_critical_countdown_continues_during_bus_contention();
+    test_critical_countdown_continues_during_device_retry_backoff();
+    test_fast_sampling_respects_quiet_and_recovers();
+    test_busy_and_hold_budget_are_logged_as_distinct_causes();
+    test_busy_during_open_retries_without_device_failure_backoff();
     test_worker_publishes_normal_sample_and_cleans_up();
     test_open_failure_publishes_invalid_and_stops_on_notification();
     test_absent_ina_retries_at_least_five_seconds_apart();

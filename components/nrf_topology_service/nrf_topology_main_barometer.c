@@ -105,6 +105,16 @@ static void log_error(nrf_topology_main_barometer_t *state, esp_err_t err, uint3
     main_barometer_reading_t reading = {0};
     main_barometer_get_reading(&state->barometer, &reading);
     const uint8_t address = reading.bmp280_address;
+    if (reading.failure_stage == MAIN_BAROMETER_FAILURE_CONFIG_VERIFY ||
+        reading.failure_stage == MAIN_BAROMETER_FAILURE_COMPENSATION ||
+        reading.failure_stage == MAIN_BAROMETER_FAILURE_FILTER) {
+        ESP_LOGW(TAG, "MAIN_BARO_WARN addr=0x%02X stage=%s err=%s",
+                 (unsigned)address,
+                 reading.failure_stage == MAIN_BAROMETER_FAILURE_CONFIG_VERIFY ? "config_verify" :
+                 reading.failure_stage == MAIN_BAROMETER_FAILURE_COMPENSATION ? "compensation" : "filter_update",
+                 error_name(err));
+        return;
+    }
     if (address == 0U) {
         /* Not detected yet: both candidates were probed, so do not report a bogus 0x00. */
         ESP_LOGW(TAG,

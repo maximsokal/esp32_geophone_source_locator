@@ -276,6 +276,8 @@ static esp_err_t main_barometer_arm_bmp280(
             if (applied) {
                 barometer->bmp280_state = MAIN_BMP280_MEASURING;
                 barometer->bmp280_conversion_seen = (state[0] & 0x08U) != 0U;
+            } else {
+                barometer->reading.failure_stage = MAIN_BAROMETER_FAILURE_CONFIG_VERIFY;
             }
             return applied ? ESP_OK : ESP_ERR_INVALID_STATE;
         }
@@ -307,10 +309,12 @@ static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
                            (unsigned)addresses[i], esp_err_to_name(probe_err));
             if (probe_err != ESP_ERR_NOT_FOUND || last_error == ESP_ERR_NOT_FOUND) {
                 last_error = probe_err;
+                if (probe_err != ESP_ERR_NOT_FOUND) barometer->reading.failure_stage = MAIN_BAROMETER_FAILURE_OTHER;
             }
             continue;
         }
 
+        barometer->reading.failure_stage = MAIN_BAROMETER_FAILURE_OTHER;
         i2c_bus_device_handle_t candidate = NULL;
         esp_err_t create_err = sensor_bus_device_create(
             barometer->handles.bus, addresses[i], SENSOR_BUS_I2C_SPEED_HZ,
@@ -379,6 +383,7 @@ static esp_err_t main_barometer_init_bmp280(main_barometer_t *barometer)
         }
         const esp_err_t delete_err = sensor_bus_device_delete(&candidate);
         if (delete_err != ESP_OK) {
+            barometer->reading.failure_stage = MAIN_BAROMETER_FAILURE_OTHER;
             barometer->bmp280 = candidate;
             barometer->bmp280_state = MAIN_BMP280_RECOVER;
             return delete_err;
@@ -626,9 +631,18 @@ static esp_err_t main_barometer_read_bmp280(
     main_barometer_t *barometer,
     uint64_t now_ms)
 {
+    barometer->bmp280_read_timeout = false;
+    barometer->bmp280_data_timeout = false;
+    barometer->reading.failure_stage = MAIN_BAROMETER_FAILURE_OTHER;
     uint8_t bytes[6] = {0};
     esp_err_t err = ESP_OK;
     const uint8_t address = barometer->reading.bmp280_address;
+    if (barometer->bmp280_fast_retry_used) {
+        uint8_t chip_id = 0U;
+        err = main_barometer_read_regs(barometer->bmp280, address, BMP280_REG_CHIP_ID, &chip_id, 1U);
+        if (err != ESP_OK) return err;
+        if (chip_id != (barometer->bme280 ? BME280_CHIP_ID : BMP280_CHIP_ID)) return ESP_ERR_INVALID_RESPONSE;
+    }
     if (barometer->bmp280_forced && !barometer->bmp280_conversion_pending) {
         err = main_barometer_write_reg(barometer->bmp280, address, BMP280_REG_CTRL_MEAS,
                                        BMP280_CTRL_TEMP_X2_PRESS_X16_FORCED);
@@ -636,7 +650,10 @@ static esp_err_t main_barometer_read_bmp280(
         uint8_t ctrl = 0U;
         err = main_barometer_read_regs(barometer->bmp280, address, BMP280_REG_CTRL_MEAS, &ctrl, 1U);
         if (err != ESP_OK) return err;
-        if (ctrl != BMP280_CTRL_TEMP_X2_PRESS_X16_FORCED) return ESP_ERR_INVALID_STATE;
+        if (ctrl != BMP280_CTRL_TEMP_X2_PRESS_X16_FORCED) {
+            barometer->reading.failure_stage = MAIN_BAROMETER_FAILURE_CONFIG_VERIFY;
+            return ESP_ERR_INVALID_STATE;
+        }
         barometer->bmp280_conversion_pending = true;
         barometer->bmp280_conversion_seen = true;
         barometer->bmp280_conversion_ready_ms = now_ms + BMP280_FORCED_CONVERSION_MS;
@@ -653,7 +670,10 @@ static esp_err_t main_barometer_read_bmp280(
         return ESP_ERR_NOT_FINISHED;
     uint8_t state[3] = {0};
     err = main_barometer_read_regs(barometer->bmp280, address, BMP280_REG_STATUS, state, sizeof(state));
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        barometer->bmp280_read_timeout = err == ESP_ERR_TIMEOUT;
+        return err;
+    }
     const uint8_t expected_ctrl = barometer->bmp280_forced ? 0x54U : 0x57U;
     if ((state[1] & 0xFCU) != 0x54U || (state[2] & 0xFCU) != 0x30U) {
         /* Not a slow conversion: the sensor lost the oversampling/CONFIG written to it (2026-10-31 bench:
@@ -692,6 +712,7 @@ static esp_err_t main_barometer_read_bmp280(
         barometer->bmp280, barometer->reading.bmp280_address,
         BMP280_REG_DATA, bytes, sizeof(bytes));
     if (err != ESP_OK) {
+        barometer->bmp280_data_timeout = err == ESP_ERR_TIMEOUT;
         barometer->reading.bmp280_valid = false;
         return err;
     }
@@ -722,6 +743,7 @@ static esp_err_t main_barometer_read_bmp280(
             raw_pressure, raw_temperature, &barometer->calibration,
             &pressure_q8, &temperature_mc)) {
         barometer->reading.bmp280_valid = false;
+        barometer->reading.failure_stage = MAIN_BAROMETER_FAILURE_COMPENSATION;
         return ESP_ERR_INVALID_STATE;
     }
     /* The pressure keeps its fraction down to 0.01 Pa; only the reported integer is rounded. */
@@ -740,6 +762,7 @@ static esp_err_t main_barometer_read_bmp280(
             now_ms, &filtered_altitude_mm) !=
         NRF_EMA_FILTER_UPDATED) {
         barometer->reading.bmp280_valid = false;
+        barometer->reading.failure_stage = MAIN_BAROMETER_FAILURE_FILTER;
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -808,6 +831,18 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
         switch (barometer->bmp280_state) {
         case MAIN_BMP280_RECOVER:
             if (now_ms < barometer->bmp280_retry_after_ms) {
+                if (barometer->bmp280_fast_retry_pending) {
+                    barometer->bmp280_fast_retry_pending = false;
+                    barometer->bmp280_state = MAIN_BMP280_MEASURING;
+                    bmp_err = main_barometer_read_bmp280(barometer, now_ms);
+                    if (bmp_err == ESP_OK || bmp_err == ESP_ERR_NOT_FINISHED) break;
+                    if (main_barometer_retryable_bus_error(bmp_err) &&
+                        barometer->reading.failure_stage == MAIN_BAROMETER_FAILURE_OTHER &&
+                        barometer->reading.bmp280_bus_error_count < UINT16_MAX) {
+                        ++barometer->reading.bmp280_bus_error_count;
+                    }
+                    barometer->bmp280_state = MAIN_BMP280_RECOVER;
+                }
                 bmp_err = barometer->bmp280_retry_error;
                 bmp_retry_deferred = true;
                 break;
@@ -822,6 +857,7 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
             barometer->bmp280_state = MAIN_BMP280_PROBE;
             /* fall through */
         case MAIN_BMP280_PROBE:
+            barometer->reading.failure_stage = MAIN_BAROMETER_FAILURE_OTHER;
             bmp_err = main_barometer_init_bmp280(barometer);
             /* The first conversion finishes before the next poll. */
             bmp_just_initialized = (bmp_err == ESP_OK);
@@ -835,6 +871,8 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
             break;
         }
         if (bmp_err == ESP_OK) {
+            barometer->bmp280_fast_retry_used = false;
+            barometer->bmp280_fast_retry_pending = false;
             barometer->bmp280_retry_after_ms = 0U;
             barometer->bmp280_retry_error = ESP_OK;
             barometer->bmp280_yield_polls = 0U;
@@ -870,6 +908,14 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
                 }
             }
             const bool bus_yield = main_barometer_bus_yield_error(bmp_err);
+            const bool fast_retry = bmp_err == ESP_ERR_TIMEOUT && barometer->bmp280_read_timeout &&
+                !barometer->bmp280_fast_retry_used;
+            if (fast_retry) barometer->bmp280_fast_retry_used = true;
+            if (!bmp_retry_deferred && bmp_err == ESP_ERR_TIMEOUT && barometer->bmp280_data_timeout &&
+                !barometer->bmp280_fast_retry_used) {
+                barometer->bmp280_fast_retry_used = true;
+                barometer->bmp280_fast_retry_pending = true;
+            }
             if (bus_yield) {
                 if (barometer->bmp280_yield_polls < UINT8_MAX) {
                     ++barometer->bmp280_yield_polls;
@@ -878,9 +924,12 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
                 barometer->bmp280_yield_polls = 0U;
             }
             if (bmp_err != ESP_ERR_NOT_FINISHED && !bus_yield) {
-                if (!bmp_retry_deferred && barometer->reading.bmp280_bus_error_count < UINT16_MAX) {
+                if (!bmp_retry_deferred && barometer->reading.failure_stage == MAIN_BAROMETER_FAILURE_OTHER &&
+                    barometer->reading.bmp280_bus_error_count < UINT16_MAX) {
                     ++barometer->reading.bmp280_bus_error_count;
                 }
+            }
+            if (bmp_err != ESP_ERR_NOT_FINISHED && !bus_yield && !fast_retry) {
                 /* A bus-level failure: probe again before the next read. */
                 barometer->bmp280_state = MAIN_BMP280_RECOVER;
                 barometer->bmp280_conversion_pending = false;
@@ -895,7 +944,7 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
             }
             if (!bmp_retry_deferred) {
                 barometer->bmp280_retry_error = bmp_err;
-                if (main_barometer_retryable_bus_error(bmp_err)) {
+                if (main_barometer_retryable_bus_error(bmp_err) && !fast_retry) {
                     barometer->bmp280_retry_after_ms = now_ms +
                         (barometer->height_reference_capture_active
                             ? MAIN_BAROMETER_CAPTURE_RETRY_BACKOFF_MS

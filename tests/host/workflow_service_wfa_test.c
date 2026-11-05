@@ -413,6 +413,7 @@ static void publish_all_pass_results(void)
     const uint16_t generation = s_requested_generation;
     s_device.main.bmp280_valid = true;
     s_device.main.pressure_pa = 101325U;
+    s_device.main.barometer_sample_ms = (uint32_t)s_now_ms;
     s_device.main.height_reference = (device_main_height_reference_status_t){
         .state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID,
         .generation = generation,
@@ -648,6 +649,10 @@ static void publish_placement_sample_with_main(
     s_now_ms = timestamp_ms;
     s_device.main.bmp280_valid = s_main_barometer_reads;
     s_device.main.pressure_pa = 101325U;
+    if (s_main_barometer_reads) {
+        s_device.main.barometer_sample_ms = (uint32_t)timestamp_ms;
+        s_device.main.barometer_filtered_altitude_mm = main_z_mm;
+    }
     s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
     s_device.main.height_reference.generation = s_requested_generation;
     s_device.main.height_reference.relative_z_mm = main_z_mm;
@@ -1437,7 +1442,7 @@ static void test_placement_cancels_the_wander_of_the_main_barometer(void)
     const uint8_t upright[3] = { 2U, 2U, 2U };
     const int32_t main_z[8] = { -300, 250, -100, 400, -250, 150, 0, -350 };
 
-    /* Every node follows MAIN's wander (same air): the difference is constant. */
+    /* Remote differences remain stable, but MAIN's pressure itself is not stable. */
     reset_fakes();
     enter_placement();
     for (size_t i = 0U; i < 8U; ++i) {
@@ -1445,7 +1450,12 @@ static void test_placement_cancels_the_wander_of_the_main_barometer(void)
         publish_placement_sample_with_main(s_now_ms + PLACEMENT_REFRESH_MS, heights, upright, main_z[i]);
     }
     workflow_snapshot_t snapshot = get_workflow_snapshot();
-    assert(snapshot.placement.all_stable);
+    assert(!snapshot.placement.all_stable);
+    assert(!snapshot.placement.per_node[0].stable);
+    assert(snapshot.placement.per_node[0].reason == WORKFLOW_PLACEMENT_REASON_RANGE_EXCEEDED);
+    assert(snapshot.placement.per_node[1].stable);
+    assert(snapshot.placement.per_node[2].stable);
+    assert(snapshot.placement.per_node[3].stable);
     assert(snapshot.placement.per_node[1].height_rel_main_mm == 500);
     assert(snapshot.placement.per_node[2].height_rel_main_mm == 700);
     assert(snapshot.placement.per_node[3].height_rel_main_mm == 900);

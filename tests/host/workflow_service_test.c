@@ -2195,6 +2195,42 @@ static void test_manual_distance_async_persists_validated_partial_result(void)
     workflow_service_shutdown();
 }
 
+/* E1: workflow-level integration through the real placement FSM and ranging transition.
+ * The sensor transport is simulated here; INA quiet/bus arbitration is tested separately.
+ * An occasional missed ENV response must not require another full 8-sample window. */
+static void test_e1_remote_gap_recovers_and_ranging_starts(void)
+{
+    begin_placement_without_samples(3U);
+    const uint64_t origin_ms = s_now_ms;
+    run_placement_polls(14000U, origin_ms, 0); /* seven distinct 2 s refreshes */
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G2")->sample_count == 7U);
+
+    s_cache[1].response_valid = false; /* a lost sensor response, not confirmed movement */
+    run_placement_polls(100U, origin_ms, 0);
+    snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G2")->sample_count == 7U);
+    assert(!placement_node(&snapshot, "G2")->stable);
+    assert(!snapshot.placement.all_stable);
+
+    s_cache[1].response_valid = true; /* same old response is not a fresh sample */
+    run_placement_polls(100U, origin_ms, 0);
+    snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G2")->sample_count == 7U);
+
+    run_placement_polls(1800U, origin_ms, 0); /* next physical remote refresh at 16 s */
+    snapshot = try_snapshot();
+    assert(placement_node(&snapshot, "G2")->sample_count >= WORKFLOW_PLACEMENT_MIN_SAMPLES);
+    assert(snapshot.placement.all_stable);
+
+    assert(command(WORKFLOW_COMMAND_PLACEMENT_CONFIRMED, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_GPS_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_CALCULATE_POSITIONS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(command(WORKFLOW_COMMAND_RANGING_DONE, true, true) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_RANGING_RESULT);
+    workflow_service_shutdown();
+}
+
 static void test_placement_becomes_stable_at_the_production_remote_refresh_cadence(void)
 {
     /*
@@ -2812,6 +2848,7 @@ int main(void)
     test_one_and_two_connected_remotes_complete_initialization();
     test_rejected_imu_calibration_command_is_repeated_for_silent_nodes_only();
     test_placement_becomes_stable_at_the_production_remote_refresh_cadence();
+    test_e1_remote_gap_recovers_and_ranging_starts();
     test_remote_snapshot_arriving_during_poll_keeps_history();
     test_remote_brief_outage_pauses_samples_until_fresh();
     test_remote_history_resets_on_expiry_or_confirmed_change();

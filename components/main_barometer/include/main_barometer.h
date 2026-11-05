@@ -33,6 +33,13 @@ typedef enum {
     MAIN_BAROMETER_REFERENCE_SENSOR_INVALID,
 } main_barometer_reference_state_t;
 
+typedef enum {
+    MAIN_BAROMETER_FAILURE_OTHER = 0,
+    MAIN_BAROMETER_FAILURE_CONFIG_VERIFY,
+    MAIN_BAROMETER_FAILURE_COMPENSATION,
+    MAIN_BAROMETER_FAILURE_FILTER,
+} main_barometer_failure_stage_t;
+
 typedef struct {
     bool bmp280_present;
     bool bmp280_valid;
@@ -46,11 +53,12 @@ typedef struct {
     int32_t relative_z_mm;
     /* Times the sensor was found back in its reset state (CTRL_MEAS/CONFIG lost) and re-armed; saturating. */
     uint16_t config_lost_count;
-    /* Diagnostics for a failed MAIN calibration row (all saturating): sensor (re)probes that succeeded,
-     * bus-level failures that sent the driver back to probing, and the poll time of the last sample. */
+    /* Diagnostics for a failed MAIN calibration row (all saturating): successful (re)probes,
+     * bus-level failures, and the poll time of the last sample. */
     uint16_t bmp280_probe_count;
     uint16_t bmp280_bus_error_count;
     uint32_t last_sample_ms; /* 0 = no sample yet */
+    main_barometer_failure_stage_t failure_stage;
 } main_barometer_reading_t;
 
 typedef enum {
@@ -72,6 +80,10 @@ typedef struct {
     uint64_t bmp280_retry_after_ms;
     uint64_t bmp280_pending_count_due_ms;
     esp_err_t bmp280_retry_error;
+    bool bmp280_read_timeout;
+    bool bmp280_data_timeout;
+    bool bmp280_fast_retry_used;
+    bool bmp280_fast_retry_pending;
     /* Consecutive polls without a proven new sample. */
     uint8_t bmp280_pending_polls;
     /* Consecutive polls that found the sensor in its reset state; cleared by a fresh sample. */

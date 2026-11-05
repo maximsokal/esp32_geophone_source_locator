@@ -70,10 +70,13 @@ static void test_new_conversion_with_unchanged_pressure_is_published(void)
     g_main_barometer_fake.reading.bmp280_valid = true;
     g_main_barometer_fake.reading.pressure_pa = 100650U;
     g_main_barometer_fake.reading.last_sample_ms = 1000U;
+    g_main_barometer_fake.reading.filtered_altitude_mm = 1234;
     nrf_topology_main_barometer_step(&state, 1000U);
     g_main_barometer_fake.reading.last_sample_ms = 2000U;
     nrf_topology_main_barometer_step(&state, 2000U);
     assert(g_main_barometer_fake.set_main_calls == 2U);
+    assert(g_main_barometer_fake.last_main_status.barometer_sample_ms == 2000U);
+    assert(g_main_barometer_fake.last_main_status.barometer_filtered_altitude_mm == 1234);
 }
 
 static void test_height_reference_states_reach_device_status(void)
@@ -162,6 +165,26 @@ static void test_pending_conversion_is_not_logged_as_a_bus_error(void)
     assert(s_warnings == 1U);
     assert(strstr(s_last_warning, "I2C_BAROMETER_WARN") != NULL);
     assert(strstr(s_last_warning, "ESP_ERR_INVALID_STATE") != NULL);
+}
+
+static void test_compensation_failure_is_not_reported_as_i2c_failure(void)
+{
+    const main_barometer_failure_stage_t stages[] = {
+        MAIN_BAROMETER_FAILURE_COMPENSATION, MAIN_BAROMETER_FAILURE_FILTER,
+        MAIN_BAROMETER_FAILURE_CONFIG_VERIFY,
+    };
+    const char *names[] = { "stage=compensation", "stage=filter_update", "stage=config_verify" };
+    for (size_t i = 0U; i < sizeof(stages) / sizeof(stages[0]); ++i) {
+        nrf_topology_main_barometer_t state;
+        reset(&state);
+        g_main_barometer_fake.reading.bmp280_address = 0x76U;
+        g_main_barometer_fake.reading.failure_stage = stages[i];
+        g_main_barometer_fake.poll_result = ESP_ERR_INVALID_STATE;
+        nrf_topology_main_barometer_step(&state, 800000U + (uint32_t)i * 60000U);
+        assert(s_warnings == 1U);
+        assert(strstr(s_last_warning, names[i]) != NULL);
+        assert(strstr(s_last_warning, "I2C_BAROMETER_WARN") == NULL);
+    }
 }
 
 static void test_valid_flag_is_held_between_fresh_samples(void)
@@ -256,6 +279,7 @@ int main(void)
     test_rejected_publish_is_retried();
     test_poll_failures_are_logged_with_the_device_and_rate_limited();
     test_pending_conversion_is_not_logged_as_a_bus_error();
+    test_compensation_failure_is_not_reported_as_i2c_failure();
     test_valid_flag_is_held_between_fresh_samples();
     test_undetected_barometer_logs_both_candidate_addresses();
     test_wait_follows_the_next_poll_and_close_is_forwarded();

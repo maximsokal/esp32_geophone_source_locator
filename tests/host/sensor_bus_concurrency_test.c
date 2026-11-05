@@ -1519,6 +1519,60 @@ static void test_mutex_wait_and_transfer_timeouts_are_distinct_ms(void)
     test_quiet_lease_cannot_start_over_an_open_session();
 }
 
+/* D6/E1 transport integration: BMP280 (0x76), INA3221 (0x40), and the
+ * nRF downstream port share one real sensor_bus owner; only I2C peripherals
+ * are faked. This is not a complete production barometer/INA task test. */
+static void test_mixed_bmp_ina_tca_contend_quiet_and_resume(void)
+{
+    sensor_bus_handles_t handles = {0};
+    i2c_bus_device_handle_t remote = NULL;
+    i2c_bus_device_handle_t bmp = NULL;
+    tca9548a_mux_t mux = {0};
+    uint8_t bytes[2] = {0};
+    prepare_mux_fixture(&mux, &remote, &handles);
+    assert(sensor_bus_device_create(handles.bus, 0x76U, SENSOR_BUS_I2C_SPEED_HZ, &bmp) == ESP_OK);
+
+    assert(sensor_bus_read_bytes(bmp, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes) == ESP_OK);
+    assert(sensor_bus_read_bytes(handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes) == ESP_OK);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    assert(tca9548a_mux_select(&mux, 0U) == ESP_OK);
+    assert(sensor_bus_read_bytes(remote, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes) == ESP_OK);
+    assert(tca9548a_mux_close(&mux) == ESP_OK);
+    sensor_bus_owner_release();
+    assert(s_tca_control == 0U);
+
+    /* A timed-out BMP transfer must release the bus, not poison INA or TCA. */
+    atomic_store(&s_hang_next_receive, true);
+    assert(sensor_bus_read_bytes(bmp, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes) == ESP_ERR_TIMEOUT);
+    assert(sensor_bus_read_bytes(handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes) == ESP_OK);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    assert(tca9548a_mux_select(&mux, 1U) == ESP_OK);
+    assert(tca9548a_mux_close(&mux) == ESP_OK);
+    sensor_bus_owner_release();
+    assert(s_tca_control == 0U);
+
+    assert(sensor_bus_quiet_begin(1000U) == ESP_OK);
+    const unsigned transfers_before = atomic_load(&s_master_transfer_calls);
+    sensor_bus_handles_t bmp_as_client = handles;
+    bmp_as_client.ina3221 = bmp;
+    sensor_bus_handles_t remote_as_client = handles;
+    remote_as_client.ina3221 = remote;
+    quiet_bystander_t ina_blocked = run_bystander(&handles);
+    quiet_bystander_t bmp_blocked = run_bystander(&bmp_as_client);
+    quiet_bystander_t remote_blocked = run_bystander(&remote_as_client);
+    assert(ina_blocked.read_err == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(bmp_blocked.read_err == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(remote_blocked.read_err == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(atomic_load(&s_master_transfer_calls) == transfers_before);
+    sensor_bus_quiet_end();
+
+    assert(sensor_bus_read_bytes(bmp, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes) == ESP_OK);
+    assert(sensor_bus_read_bytes(handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes) == ESP_OK);
+    assert(sensor_bus_read_bytes(remote, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes) == ESP_OK);
+    assert(sensor_bus_device_delete(&bmp) == ESP_OK);
+    assert(sensor_bus_device_delete(&remote) == ESP_OK);
+}
+
 int main(void)
 {
     fake_lines_reset();
@@ -1546,6 +1600,7 @@ int main(void)
     test_default_transfer_timeout_covers_the_wire_time();
     test_segmented_transfers_raise_the_caller_priority_only_while_they_run();
     test_owner_session_runs_at_the_boosted_priority();
+    test_mixed_bmp_ina_tca_contend_quiet_and_resume();
     assert(sensor_bus_deinit() == ESP_OK);
 
     return 0;

@@ -64,6 +64,8 @@ int main(void)
         return 1;
     }
 
+    /* The shared fixture ends with a deliberately rejected 6 m node on a 5 m cable. */
+    fake_profile_cable_length_m = 6.0f;
     memset(&fake_acquisition, 0, sizeof(fake_acquisition));
     fake_acquisition.source_name = "AD7606";
     fake_acquisition.sample_rate_hz = 500U;

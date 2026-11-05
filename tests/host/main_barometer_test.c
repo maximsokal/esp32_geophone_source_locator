@@ -1112,6 +1112,153 @@ static void test_failed_rearm_is_a_bus_fault_that_reprobes(void)
     }
 }
 
+static void test_single_measurement_bus_timeout_recovers_without_reprobe(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    uint64_t now_ms;
+    arm_and_get_first_sample(&barometer, &now_ms);
+    const size_t probes_before = s_fake.address_probe_count;
+    const uint16_t errors_before = barometer.reading.bmp280_bus_error_count;
+    s_fake.bmp_fail_at = s_fake.bmp_transfer_count + 1U;
+    now_ms = barometer.next_bmp280_poll_ms;
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_TIMEOUT);
+    bool recovered = false;
+    for (unsigned i = 0U; i < 5U && !recovered; ++i) {
+        now_ms = barometer.next_bmp280_poll_ms;
+        recovered = main_barometer_poll(&barometer, now_ms) == ESP_OK && barometer.reading.bmp280_valid;
+    }
+    assert(recovered);
+    assert(s_fake.address_probe_count == probes_before);
+    assert(barometer.reading.bmp280_bus_error_count == errors_before + 1U);
+    main_barometer_close(&barometer);
+}
+
+static void test_transient_status_retry_rejects_changed_chip_identity(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    uint64_t now_ms;
+    arm_and_get_first_sample(&barometer, &now_ms);
+    s_fake.bmp_fail_at = s_fake.bmp_transfer_count + 1U;
+    now_ms = barometer.next_bmp280_poll_ms;
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_TIMEOUT);
+    s_fake.registers[0x76U][REG_CHIP_ID] = 0x42U;
+    for (unsigned i = 0U; i < 5U; ++i) {
+        now_ms = barometer.next_bmp280_poll_ms;
+        (void)main_barometer_poll(&barometer, now_ms);
+        assert(!barometer.reading.bmp280_valid);
+    }
+    main_barometer_close(&barometer);
+}
+
+static void test_single_data_timeout_recovers_after_identity_check(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    uint64_t now_ms;
+    arm_and_get_first_sample(&barometer, &now_ms);
+    const size_t probes_before = s_fake.address_probe_count;
+    s_fake.timeout_bmp_data = true;
+    now_ms = barometer.next_bmp280_poll_ms;
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_TIMEOUT);
+    s_fake.timeout_bmp_data = false;
+    bool recovered = false;
+    for (unsigned i = 0U; i < 5U && !recovered; ++i) {
+        if (i == 0U) s_fake.registers[0x76U][REG_STATUS] = 8U;
+        if (i == 1U) s_fake.registers[0x76U][REG_STATUS] = 0U;
+        now_ms = barometer.next_bmp280_poll_ms;
+        recovered = main_barometer_poll(&barometer, now_ms) == ESP_OK && barometer.reading.bmp280_valid;
+    }
+    assert(recovered);
+    assert(s_fake.address_probe_count == probes_before);
+    main_barometer_close(&barometer);
+}
+
+static void test_failed_data_retry_counts_second_bus_error_and_backs_off(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    uint64_t now_ms;
+    arm_and_get_first_sample(&barometer, &now_ms);
+    const uint16_t errors_before = barometer.reading.bmp280_bus_error_count;
+    s_fake.timeout_bmp_data = true;
+    now_ms = barometer.next_bmp280_poll_ms;
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_TIMEOUT);
+    s_fake.timeout_bmp_data = false;
+    s_fake.bmp_fail_at = s_fake.bmp_transfer_count + 1U;
+    now_ms = barometer.next_bmp280_poll_ms;
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_TIMEOUT);
+    assert(barometer.reading.bmp280_bus_error_count == errors_before + 2U);
+    assert(barometer.bmp280_state == MAIN_BMP280_RECOVER);
+    assert(barometer.bmp280_retry_after_ms > now_ms);
+    main_barometer_close(&barometer);
+}
+
+static void test_repeated_status_timeout_returns_to_bounded_backoff(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    uint64_t now_ms;
+    arm_and_get_first_sample(&barometer, &now_ms);
+    for (unsigned i = 0U; i < 2U; ++i) {
+        s_fake.bmp_fail_at = s_fake.bmp_transfer_count + 1U;
+        now_ms = barometer.next_bmp280_poll_ms;
+        assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_TIMEOUT);
+    }
+    assert(barometer.bmp280_state == MAIN_BMP280_RECOVER);
+    assert(barometer.bmp280_retry_after_ms >= now_ms + 5000U);
+    main_barometer_close(&barometer);
+}
+
+static void test_invalid_compensation_is_not_counted_as_bus_failure(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    uint64_t now_ms;
+    arm_and_get_first_sample(&barometer, &now_ms);
+    const uint16_t bus_errors = barometer.reading.bmp280_bus_error_count;
+    barometer.calibration.dig_p1 = 0U;
+    now_ms = barometer.next_bmp280_poll_ms;
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_INVALID_STATE);
+    assert(!barometer.reading.bmp280_valid);
+    assert(barometer.bmp280_state == MAIN_BMP280_RECOVER);
+    assert(barometer.reading.bmp280_bus_error_count == bus_errors);
+    assert(barometer.reading.failure_stage == MAIN_BAROMETER_FAILURE_COMPENSATION);
+    main_barometer_close(&barometer);
+}
+
+static void test_invalid_filter_update_is_not_counted_as_bus_failure(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    s_fake.bmp_model_sleep = true;
+    main_barometer_t barometer;
+    uint64_t now_ms;
+    arm_and_get_first_sample(&barometer, &now_ms);
+    const uint16_t bus_errors = barometer.reading.bmp280_bus_error_count;
+    barometer.pressure_filter.tau_ms = 0U;
+    now_ms = barometer.next_bmp280_poll_ms;
+    assert(main_barometer_poll(&barometer, now_ms) == ESP_ERR_INVALID_STATE);
+    assert(!barometer.reading.bmp280_valid);
+    assert(barometer.bmp280_state == MAIN_BMP280_RECOVER);
+    assert(barometer.reading.bmp280_bus_error_count == bus_errors);
+    assert(barometer.reading.failure_stage == MAIN_BAROMETER_FAILURE_FILTER);
+    main_barometer_close(&barometer);
+}
+
 static void test_rearm_that_is_not_applied_is_reported_not_swallowed(void)
 {
     for (unsigned forced = 0U; forced < 2U; ++forced) {
@@ -1485,6 +1632,39 @@ static void test_bmp280_that_acks_but_keeps_the_reset_state_is_not_started(void)
     main_barometer_close(&barometer);
 }
 
+static void test_acked_but_unapplied_config_is_not_a_bus_failure(void)
+{
+    reset_fake();
+    main_barometer_request_polling();
+    setup_bmp280(0x76U, BMP_ID);
+    s_fake.bmp_ignore_mode_writes = true;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_INVALID_STATE);
+    assert(!barometer.reading.bmp280_valid);
+    assert(barometer.bmp280_state == MAIN_BMP280_RECOVER);
+    assert(barometer.reading.bmp280_bus_error_count == 0U);
+    assert(barometer.reading.failure_stage == MAIN_BAROMETER_FAILURE_CONFIG_VERIFY);
+    main_barometer_close(&barometer);
+}
+
+static void test_later_probe_timeout_is_not_mislabelled_as_config_failure(void)
+{
+    reset_fake();
+    main_barometer_request_polling();
+    setup_bmp280(0x77U, BMP_ID);
+    s_fake.bmp_ignore_mode_writes = true;
+    s_fake.probe_timeout_enabled = true;
+    s_fake.probe_timeout_address = 0x76U;
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    assert(main_barometer_poll(&barometer, 0U) == ESP_ERR_TIMEOUT);
+    assert(!barometer.reading.bmp280_valid);
+    assert(barometer.reading.bmp280_bus_error_count == 1U);
+    assert(barometer.reading.failure_stage == MAIN_BAROMETER_FAILURE_OTHER);
+    main_barometer_close(&barometer);
+}
+
 static void test_normal_mode_that_never_converts_falls_back_to_forced_conversions(void)
 {
     reset_fake();
@@ -1706,6 +1886,45 @@ static void test_normal_sample_is_consumed_once(void)
     main_barometer_close(&barometer);
 }
 
+static void test_one_conversion_cannot_complete_reference_capture(void)
+{
+    reset_fake();
+    setup_bmp280(0x76U, 0x60U);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    main_barometer_request_polling();
+    assert(main_barometer_request_height_reference_capture(201U) == ESP_OK);
+    (void)main_barometer_poll(&barometer, 0U);
+    s_fake.bmp_no_conversion = true;
+    s_fake.registers[0x76U][REG_STATUS] = 0U;
+    assert(main_barometer_poll(&barometer, 200U) == ESP_OK);
+    for (uint64_t now_ms = 400U; now_ms <= 2800U; now_ms += 200U) {
+        (void)main_barometer_poll(&barometer, now_ms);
+        assert(barometer.reading.height_reference_state != MAIN_BAROMETER_REFERENCE_VALID);
+    }
+    main_barometer_close(&barometer);
+}
+
+static void test_new_reference_request_starts_with_new_generation_and_window(void)
+{
+    reset_fake();
+    setup_bmp280(0x77U, BMP_ID);
+    main_barometer_t barometer;
+    main_barometer_init(&barometer);
+    main_barometer_request_polling();
+    assert(main_barometer_request_height_reference_capture(202U) == ESP_OK);
+    poll_range(&barometer, 0U, 3000U);
+    assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID);
+    assert(main_barometer_request_height_reference_capture(203U) == ESP_OK);
+    (void)main_barometer_poll(&barometer, 3200U);
+    assert(barometer.reading.height_reference_generation == 203U);
+    assert(barometer.reading.height_reference_state != MAIN_BAROMETER_REFERENCE_VALID);
+    assert(barometer.height_reference_altitude_count <= 1U);
+    poll_range(&barometer, 3400U, 6200U);
+    assert(barometer.reading.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID);
+    main_barometer_close(&barometer);
+}
+
 static void test_forced_ack_without_applied_command_is_not_a_sample(void)
 {
     reset_fake();
@@ -1808,12 +2027,15 @@ static void test_unwitnessed_conversion_does_not_log_reset_bytes(void)
 int main(void)
 {
     test_boot_polling_does_not_touch_i2c_before_preflight();
+    test_invalid_filter_update_is_not_counted_as_bus_failure();
     test_reset_data_log_reports_actual_bytes_and_is_rate_limited();
     test_unwitnessed_conversion_does_not_log_reset_bytes();
     test_normal_conversion_schedule_avoids_busy_aliasing();
     test_valid_reference_survives_forced_fallback();
     test_forced_ack_without_applied_command_is_not_a_sample();
     test_normal_sample_is_consumed_once();
+    test_one_conversion_cannot_complete_reference_capture();
+    test_new_reference_request_starts_with_new_generation_and_window();
     test_forced_conversion_timeout_discards_state();
     test_normal_without_conversion_evidence_rejects_old_registers();
     test_fallback_preserves_capture_and_does_not_sleep();
@@ -1850,6 +2072,12 @@ int main(void)
     test_persistent_resets_invalidate_a_height_reference_capture_after_the_bound();
     test_a_good_sample_clears_the_reset_streak();
     test_failed_rearm_is_a_bus_fault_that_reprobes();
+    test_single_measurement_bus_timeout_recovers_without_reprobe();
+    test_transient_status_retry_rejects_changed_chip_identity();
+    test_single_data_timeout_recovers_after_identity_check();
+    test_failed_data_retry_counts_second_bus_error_and_backs_off();
+    test_repeated_status_timeout_returns_to_bounded_backoff();
+    test_invalid_compensation_is_not_counted_as_bus_failure();
     test_rearm_that_is_not_applied_is_reported_not_swallowed();
     test_reset_mid_conversion_drops_the_pending_forced_conversion();
     test_garbage_registers_are_treated_as_lost_configuration();
@@ -1859,6 +2087,8 @@ int main(void)
     test_permanently_pending_sensor_invalidates_capture_after_bound();
     test_bmp280_is_armed_through_sleep_and_verified();
     test_bmp280_that_acks_but_keeps_the_reset_state_is_not_started();
+    test_acked_but_unapplied_config_is_not_a_bus_failure();
+    test_later_probe_timeout_is_not_mislabelled_as_config_failure();
     test_normal_mode_that_never_converts_falls_back_to_forced_conversions();
     test_bus_busy_is_not_a_sensor_failure();
     test_bus_busy_does_not_kill_height_reference_capture();

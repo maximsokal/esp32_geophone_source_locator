@@ -306,6 +306,15 @@ static void ina3221_monitor_apply_power_state(
     );
 }
 
+static void ina3221_monitor_expire_blind_grace(uint64_t now_ms)
+{
+    if (s_low_battery.phase == INA3221_LOW_BATTERY_GRACE &&
+        now_ms >= s_low_battery.grace_started_ms &&
+        now_ms - s_low_battery.grace_started_ms >= s_low_battery.grace_ms) {
+        ina3221_monitor_apply_power_state(INA3221_POWER_STATE_UNKNOWN, NULL, false);
+    }
+}
+
 
 static void ina3221_monitor_load_limits(void)
 {
@@ -657,6 +666,9 @@ static void ina3221_monitor_worker(
     uint32_t consecutive_busy_count = 0U;
     uint32_t last_busy_log_ms = 0U;
     bool busy_log_started = false;
+    esp_err_t last_busy_reason = ESP_OK;
+    bool quiet_paused = false;
+    uint32_t quiet_skipped = 0U;
 
     bool hardware_available =
         false;
@@ -665,6 +677,7 @@ static void ina3221_monitor_worker(
         while (true) {
             const uint64_t now_ms =
                 (uint64_t)(esp_timer_get_time() / INT64_C(1000));
+            esp_err_t read_err = ESP_OK;
             sensor_bus_log_diag_summary((uint32_t)now_ms);
 
             if (
@@ -683,8 +696,16 @@ static void ina3221_monitor_worker(
                 );
             }
 
+            if (sensor_bus_quiet_active()) goto quiet_pause;
+            if (quiet_paused) {
+                ESP_LOGI(TAG, "INA3221_RESUMED reason=i2c_quiet skipped=%lu", (unsigned long)quiet_skipped);
+                quiet_paused = false;
+                quiet_skipped = 0U;
+            }
+
             if (!driver.ready) {
                 if (now_ms < next_retry_ms) {
+                    ina3221_monitor_expire_blind_grace(now_ms);
                     if (!has_last_good_sample || last_good_sample_expired) {
                         ina3221_monitor_publish_invalid();
                         if (has_last_good_sample) {
@@ -703,7 +724,15 @@ static void ina3221_monitor_worker(
                         &driver
                     );
 
+                if ((open_err == SENSOR_BUS_ERR_MUTEX_BUSY || open_err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) &&
+                    sensor_bus_quiet_active()) goto quiet_pause;
+                if (open_err == SENSOR_BUS_ERR_MUTEX_BUSY || open_err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) {
+                    read_err = open_err;
+                    goto bus_busy;
+                }
+
                 if (open_err != ESP_OK) {
+                    ina3221_monitor_expire_blind_grace(now_ms);
                     ++consecutive_device_errors;
                     if (ina3221_monitor_device_error_invalidates(
                             consecutive_device_errors,
@@ -789,32 +818,39 @@ static void ina3221_monitor_worker(
             ina3221_channel_sample_t
                 channels[INA3221_POLICY_CHANNEL_COUNT] = { 0 };
 
-            const esp_err_t read_err =
+            read_err =
                 ina3221_driver_read_channels(
                     &driver,
                     channels
                 );
 
+            if ((read_err == SENSOR_BUS_ERR_MUTEX_BUSY || read_err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) &&
+                sensor_bus_quiet_active()) goto quiet_pause;
+
             if (
                 read_err == SENSOR_BUS_ERR_MUTEX_BUSY ||
                 read_err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET
             ) {
+bus_busy:
+                ina3221_monitor_expire_blind_grace(now_ms);
                 consecutive_device_errors = 0U;
                 ++consecutive_busy_count;
                 const uint64_t age_ms = has_last_good_sample && now_ms >= last_good_sample_ms
                     ? now_ms - last_good_sample_ms
                     : UINT32_MAX;
                 if (
-                    !busy_log_started ||
+                    !busy_log_started || read_err != last_busy_reason ||
                     (uint32_t)now_ms - last_busy_log_ms >= INA3221_BUS_BUSY_LOG_INTERVAL_MS
                 ) {
                     ESP_LOGW(
                         TAG,
-                        "INA3221_BUS_BUSY_SKIPPED consecutive=%u age_ms=%u",
+                        "INA3221_BUS_BUSY_SKIPPED reason=%s consecutive=%u age_ms=%u",
+                        read_err == SENSOR_BUS_ERR_MUTEX_BUSY ? "owner_busy" : "owner_hold_budget",
                         (unsigned)consecutive_busy_count,
                         (unsigned)(age_ms > UINT32_MAX ? UINT32_MAX : age_ms)
                     );
                     last_busy_log_ms = (uint32_t)now_ms;
+                    last_busy_reason = read_err;
                     busy_log_started = true;
                 }
 
@@ -825,6 +861,7 @@ static void ina3221_monitor_worker(
             }
 
             if (read_err != ESP_OK) {
+                ina3221_monitor_expire_blind_grace(now_ms);
                 consecutive_busy_count = 0U;
                 ++consecutive_device_errors;
                 ESP_LOGW(
@@ -933,6 +970,16 @@ static void ina3221_monitor_worker(
             if (ina3221_monitor_wait_for_period_or_stop()) {
                 break;
             }
+            continue;
+
+quiet_pause:
+            ina3221_monitor_expire_blind_grace(now_ms);
+            if (!quiet_paused) {
+                ESP_LOGI(TAG, "INA3221_PAUSED reason=i2c_quiet");
+                quiet_paused = true;
+            }
+            if (quiet_skipped < UINT32_MAX) ++quiet_skipped;
+            if (ina3221_monitor_wait_for_period_or_stop()) break;
         }
     }
 
