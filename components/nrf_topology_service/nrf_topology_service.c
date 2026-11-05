@@ -2694,6 +2694,12 @@ static nrf_geometry_result_t service_ranging_solve(
         if (worker->snapshot.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) {
             continue;
         }
+        int32_t placed_mm = 0;
+        /* Settled placement heights belong to the reference, not the latest sensor response. */
+        if (main_reference_valid && nrf_topology_service_get_placement_height_mm(
+                worker->snapshot.remotes[channel].node_id, main_reference_generation, &placed_mm)) {
+            continue;
+        }
         const nrf_remote_sensor_cache_t *cache = &worker->cache[channel];
         if (!main_reference_valid || !cache->response_valid || !cache->topology_current ||
             cache->sensor.reference_state != NRF_UPSTREAM_REFERENCE_VALID ||

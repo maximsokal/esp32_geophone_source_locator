@@ -2089,18 +2089,32 @@ static void capture_ranging_z(void)
 }
 
 /* The sensors read `reading_mm` against MAIN at this instant; the placement settled `settled_mm` (if `settled`). */
-static void run_ranging_and_capture_z(bool settled, int32_t reading_mm, int32_t settled_mm)
+static void run_ranging_and_capture_z(bool settled, int32_t reading_mm, int32_t settled_mm,
+                                      bool live_valid, uint16_t generation, bool complete)
 {
     reset_world();
     s_tca_present = true;
     prepare_ranging_nodes(3U);
-    for (size_t index = 1U; index <= 3U; ++index) s_nodes[index].relative_z_mm = reading_mm;
+    for (size_t index = 1U; index <= 3U; ++index) {
+        s_nodes[index].relative_z_mm = reading_mm;
+        if (!live_valid) {
+            s_nodes[index].reference_state = NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED;
+            s_nodes[index].reference_generation = 0U;
+            s_nodes[index].relative_z_mm = 0;
+        }
+    }
     s_cs_use_pair_distances = true;
     const int32_t square_distances[6] = {1000, 1000, 1414, 1414, 1000, 1000};
     memcpy(s_cs_pair_distances, square_distances, sizeof(square_distances));
-    nrf_topology_placement_heights_t heights = { .valid = settled, .generation = 91U };
+    if (settled_mm == -600) {
+        /* A 1 m square with every remote 600 mm below MAIN; distances rounded to mm. */
+        s_cs_pair_distances[0] = 1166;
+        s_cs_pair_distances[1] = 1166;
+        s_cs_pair_distances[2] = 1536;
+    }
+    nrf_topology_placement_heights_t heights = { .valid = settled, .generation = generation };
     for (uint8_t channel = 0U; channel < 3U; ++channel) {
-        heights.node_valid[channel] = true;
+        heights.node_valid[channel] = complete || channel != 2U;
         heights.node_id[channel] = (nrf_cs_node_id_t)(channel + 1U);
         heights.height_rel_main_mm[channel] = settled_mm;
     }
@@ -2120,14 +2134,14 @@ static void run_ranging_and_capture_z(bool settled, int32_t reading_mm, int32_t 
 static void test_ranging_geometry_takes_z_from_the_placement_heights(void)
 {
     /* Without settled heights the geometry takes the reading of the instant: 300 mm for every remote. */
-    run_ranging_and_capture_z(false, 300, 0);
+    run_ranging_and_capture_z(false, 300, 0, true, 91U, true);
     assert(s_seen_ranging_z_count == 4U);
     size_t remotes_at_reading = 0U;
     for (size_t i = 0U; i < s_seen_ranging_z_count; ++i) if (s_seen_ranging_z_mm[i] == 300) ++remotes_at_reading;
     assert(remotes_at_reading == 3U);
 
     /* With them it takes the settled height, whatever the sensors read now. */
-    run_ranging_and_capture_z(true, 300, -120);
+    run_ranging_and_capture_z(true, 300, -120, true, 91U, true);
     assert(s_seen_ranging_z_count == 4U);
     size_t remotes_settled = 0U;
     for (size_t i = 0U; i < s_seen_ranging_z_count; ++i) {
@@ -2135,6 +2149,31 @@ static void test_ranging_geometry_takes_z_from_the_placement_heights(void)
         if (s_seen_ranging_z_mm[i] == -120) ++remotes_settled;
     }
     assert(remotes_settled == 3U);
+
+    /* Settled heights survive a transient loss of live reference validity. */
+    run_ranging_and_capture_z(true, 300, -600, false, 91U, true);
+    assert(s_seen_ranging_z_count == 4U);
+    assert(s_seen_frozen_ranging_result.main_height_reference_generation == 91U);
+    remotes_settled = 0U;
+    for (size_t i = 0U; i < s_seen_ranging_z_count; ++i) {
+        if (s_seen_ranging_z_mm[i] == -600) ++remotes_settled;
+    }
+    assert(remotes_settled == 3U);
+    for (size_t i = 1U; i < s_seen_ranging_z_count; ++i) {
+        const nrf_topology_ranging_node_t *node = &s_seen_frozen_ranging_result.geometry.nodes[i];
+        assert(node->solved);
+        assert(abs(node->x_mm - (i == 2U ? 0 : 1000)) <= 2);
+        assert(abs(abs(node->y_mm) - (i == 1U ? 0 : 1000)) <= 2);
+    }
+
+    /* A different reference or an incomplete snapshot cannot replace missing live heights. */
+    for (unsigned control = 0U; control < 2U; ++control) {
+        run_ranging_and_capture_z(true, 300, -600, false,
+                                  control == 0U ? 90U : 91U, control == 0U);
+        assert(s_seen_ranging_z_count == 4U);
+        assert(s_seen_frozen_ranging_result.main_height_reference_generation == 0U);
+        for (size_t i = 0U; i < s_seen_ranging_z_count; ++i) assert(s_seen_ranging_z_mm[i] == 0);
+    }
 }
 
 static void test_placement_heights_are_checked_against_the_reference_generation(void)

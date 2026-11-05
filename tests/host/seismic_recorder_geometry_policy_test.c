@@ -131,14 +131,25 @@ static void test_build_inputs_prefers_the_height_the_placement_settled(void)
     assert(inputs[2].node_id == 2U && inputs[2].z_mm == -250);   /* settled, not -200 - 100 = -300 */
     assert(inputs[3].node_id == 3U && inputs[3].z_mm == 100);    /* nothing settled: the instantaneous reading */
 
+    /* A checked placement height survives an unavailable or replaced live reference. */
+    channels[0].height_reference_valid = false;
+    channels[0].height_reference_generation = 0U;
+    channels[1].height_reference_generation = 2U;
+    assert(seismic_recorder_geometry_build_inputs(
+        &topology, channels, &main_reference, SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE,
+        inputs, NRF_GEOMETRY_MAX_NODES, &count, &provenance) == ESP_OK);
+    assert(provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE);
+    assert(provenance.fallback_reason[0] == '\0');
+    assert(inputs[1].z_mm == 120 && inputs[2].z_mm == -250 && inputs[3].z_mm == 100);
+
     /* A planar policy ignores every height, including the settled ones. */
     assert(seismic_recorder_geometry_build_inputs(
         &topology, channels, &main_reference, SEISMIC_RECORDER_GEOMETRY_Z_PLANAR,
         inputs, NRF_GEOMETRY_MAX_NODES, &count, &provenance) == ESP_OK);
     assert(inputs[1].z_mm == 0 && inputs[2].z_mm == 0 && inputs[3].z_mm == 0);
 
-    /* A missing reference generation falls back to planar before any height is looked at. */
-    channels[1].height_reference_generation = 2U;
+    /* Without a settled height the mismatching live generation still forces planar fallback. */
+    channels[1].placement_height_valid = false;
     assert(seismic_recorder_geometry_build_inputs(
         &topology, channels, &main_reference, SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE,
         inputs, NRF_GEOMETRY_MAX_NODES, &count, &provenance) == ESP_OK);
