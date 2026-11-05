@@ -1465,6 +1465,41 @@ static void test_quiet_lease_silences_other_tasks_only(void)
     sensor_bus_quiet_end(); /* ending twice is harmless */
 }
 
+/* D3: an intended administrative pause must not flood the log with one
+ * I2C_TIMEOUT_DIAG mutex_busy warning per refused client, yet the number of
+ * refused transactions must still be reported exactly when the lease ends. */
+static void test_quiet_lease_refusals_are_counted_not_logged(void)
+{
+    sensor_bus_handles_t handles = {0};
+    assert(sensor_bus_get_handles(&handles) == ESP_OK);
+
+    assert(sensor_bus_quiet_begin(1000U) == ESP_OK);
+    const unsigned logs_before = g_fake_lines.log_calls;
+    for (unsigned i = 0U; i < 20U; ++i) {
+        /* Each bystander run refuses owner_acquire, read, and a second read. */
+        quiet_bystander_t refused = run_bystander(&handles);
+        assert(refused.acquire_err == SENSOR_BUS_ERR_MUTEX_BUSY);
+        assert(refused.read_err == SENSOR_BUS_ERR_MUTEX_BUSY);
+        assert(refused.end_then_read_err == SENSOR_BUS_ERR_MUTEX_BUSY);
+    }
+    assert(g_fake_lines.log_calls == logs_before);   /* 60 refusals, no log line */
+
+    sensor_bus_quiet_end();
+    assert(strstr(g_fake_lines.last_log, "I2C_BUS_QUIET end") != NULL);
+    assert(strstr(g_fake_lines.last_log, "skipped=60") != NULL);
+
+    /* A genuine owner-held bus is still reported as contention. */
+    atomic_store(&s_owner_hold_started, false);
+    test_thread_t owner = test_thread_start(long_owner_fn, NULL);
+    while (!atomic_load(&s_owner_hold_started)) test_sleep_ms(1U);
+    const unsigned contention_before = g_fake_lines.log_calls;
+    quiet_bystander_t contended = run_bystander(&handles);
+    assert(contended.read_err == SENSOR_BUS_ERR_MUTEX_BUSY ||
+           contended.acquire_err == SENSOR_BUS_ERR_MUTEX_BUSY);
+    assert(g_fake_lines.log_calls > contention_before);
+    test_thread_join(owner);
+}
+
 /* A task that never ends its lease must not silence the bus forever. */
 static void test_quiet_lease_expires_by_itself(void)
 {
@@ -1515,6 +1550,7 @@ static void test_mutex_wait_and_transfer_timeouts_are_distinct_ms(void)
     test_owner_release_is_quiet_unless_anomalous();
     test_owner_summary_aggregates_sessions_once_per_second();
     test_quiet_lease_silences_other_tasks_only();
+    test_quiet_lease_refusals_are_counted_not_logged();
     test_quiet_lease_expires_by_itself();
     test_quiet_lease_cannot_start_over_an_open_session();
 }
@@ -1550,6 +1586,22 @@ static void test_mixed_bmp_ina_tca_contend_quiet_and_resume(void)
     assert(tca9548a_mux_close(&mux) == ESP_OK);
     sensor_bus_owner_release();
     assert(s_tca_control == 0U);
+    /* A different task can take the bus: the failed transfer left no owner behind. */
+    quiet_bystander_t after_bmp_timeout = run_bystander(&handles);
+    assert(after_bmp_timeout.acquire_err == ESP_OK && after_bmp_timeout.read_err == ESP_OK);
+
+    /* The mirror case: a timed-out INA transfer must not poison BMP, TCA, or other tasks. */
+    atomic_store(&s_hang_next_receive, true);
+    assert(sensor_bus_read_bytes(handles.ina3221, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes) == ESP_ERR_TIMEOUT);
+    assert(sensor_bus_read_bytes(bmp, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes) == ESP_OK);
+    assert(sensor_bus_owner_acquire() == ESP_OK);
+    assert(tca9548a_mux_select(&mux, 2U) == ESP_OK);
+    assert(sensor_bus_read_bytes(remote, NULL_I2C_MEM_ADDR, sizeof(bytes), bytes) == ESP_OK);
+    assert(tca9548a_mux_close(&mux) == ESP_OK);
+    sensor_bus_owner_release();
+    assert(s_tca_control == 0U);
+    quiet_bystander_t after_ina_timeout = run_bystander(&handles);
+    assert(after_ina_timeout.acquire_err == ESP_OK && after_ina_timeout.read_err == ESP_OK);
 
     assert(sensor_bus_quiet_begin(1000U) == ESP_OK);
     const unsigned transfers_before = atomic_load(&s_master_transfer_calls);

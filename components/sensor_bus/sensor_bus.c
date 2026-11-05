@@ -372,14 +372,18 @@ static bool s_quiet_active;
 static TaskHandle_t s_quiet_owner;
 static int64_t s_quiet_started_us;
 static int64_t s_quiet_deadline_us;
+/* Transactions refused during the current lease; reported once when it ends. */
+static uint32_t s_quiet_skipped;
 
-/* True when the lease is active for another task. An expired lease is cleared here. */
-static bool sensor_bus_quiet_blocks_current_task(void)
+/* True when the lease is active for another task. An expired lease is cleared here.
+ * count_skip is set only by a real transaction attempt, not by a log-suppression check. */
+static bool sensor_bus_quiet_blocks_current_task(bool count_skip)
 {
     const TaskHandle_t current_task = xTaskGetCurrentTaskHandle();
     const int64_t now_us = sensor_bus_lines_now_us();
     bool blocks = false;
     bool expired = false;
+    uint32_t skipped = 0U;
 
     portENTER_CRITICAL(&s_owner_stats_lock);
     if (s_quiet_active) {
@@ -387,13 +391,18 @@ static bool sensor_bus_quiet_blocks_current_task(void)
             s_quiet_active = false;
             s_quiet_owner = NULL;
             expired = true;
+            skipped = s_quiet_skipped;
         } else {
             blocks = s_quiet_owner != current_task;
+            if (blocks && count_skip && s_quiet_skipped < UINT32_MAX) {
+                ++s_quiet_skipped;
+            }
         }
     }
     portEXIT_CRITICAL(&s_owner_stats_lock);
     if (expired) {
-        ESP_LOGW(TAG, "I2C_BUS_QUIET expired without sensor_bus_quiet_end; bus released");
+        ESP_LOGW(TAG, "I2C_BUS_QUIET expired without sensor_bus_quiet_end; bus released skipped=%lu",
+                 (unsigned long)skipped);
     }
     return blocks;
 }
@@ -411,7 +420,7 @@ static esp_err_t sensor_bus_lock_with_timeout(
         return ESP_ERR_INVALID_STATE;
     }
     /* Not counted as a busy miss: a quiet bus is intended, not contention. */
-    if (sensor_bus_quiet_blocks_current_task()) {
+    if (sensor_bus_quiet_blocks_current_task(true)) {
         if (waited_for_mutex_us != NULL) {
             *waited_for_mutex_us = 0U;
         }
@@ -575,6 +584,8 @@ static void sensor_bus_log_mutex_busy(uint64_t waited_us)
 {
     sensor_bus_owner_stats_t stats = {0};
     char waiter_name[SENSOR_BUS_TASK_NAME_SIZE];
+    /* A quiet lease refuses on purpose: counted in the I2C_BUS_QUIET end summary, not warned per client. */
+    if (sensor_bus_quiet_blocks_current_task(false)) return;
     (void)sensor_bus_get_owner_stats(&stats);
     /* Runs in the waiter's own task; last_waiter_task is overwritten by every
      * successful take, so it may already name someone else. */
@@ -872,6 +883,7 @@ esp_err_t sensor_bus_quiet_begin(uint32_t max_ms)
     s_quiet_owner = current_task;
     s_quiet_started_us = now_us;
     s_quiet_deadline_us = now_us + (int64_t)max_ms * 1000;
+    s_quiet_skipped = 0U;
     portEXIT_CRITICAL(&s_owner_stats_lock);
     sensor_bus_unlock();
     ESP_LOGI(TAG, "I2C_BUS_QUIET begin max_ms=%lu", (unsigned long)max_ms);
@@ -884,18 +896,21 @@ void sensor_bus_quiet_end(void)
     const int64_t now_us = sensor_bus_lines_now_us();
     bool ended = false;
     int64_t started_us = 0;
+    uint32_t skipped = 0U;
 
     portENTER_CRITICAL(&s_owner_stats_lock);
     if (s_quiet_active && s_quiet_owner == current_task) {
         started_us = s_quiet_started_us;
+        skipped = s_quiet_skipped;
         s_quiet_active = false;
         s_quiet_owner = NULL;
         ended = true;
     }
     portEXIT_CRITICAL(&s_owner_stats_lock);
     if (ended) {
-        ESP_LOGI(TAG, "I2C_BUS_QUIET end quiet_ms=%llu",
-                 (unsigned long long)(now_us >= started_us ? (now_us - started_us) / 1000 : 0));
+        ESP_LOGI(TAG, "I2C_BUS_QUIET end quiet_ms=%llu skipped=%lu",
+                 (unsigned long long)(now_us >= started_us ? (now_us - started_us) / 1000 : 0),
+                 (unsigned long)skipped);
     }
 }
 
@@ -1463,6 +1478,8 @@ static void sensor_bus_log_timeout_diag(
     char holder_name[SENSOR_BUS_TASK_NAME_SIZE];
     const char *source = address != 0U
         ? sensor_bus_default_diag_source(address, false) : "bus_owner";
+    /* See sensor_bus_log_mutex_busy(): a quiet-lease refusal is not contention. */
+    if (mutex_busy && sensor_bus_quiet_blocks_current_task(false)) return;
     (void)sensor_bus_get_owner_stats(&stats);
     if (mutex_busy) {
         (void)strncpy(holder_name, stats.holder_task, sizeof(holder_name) - 1U);
