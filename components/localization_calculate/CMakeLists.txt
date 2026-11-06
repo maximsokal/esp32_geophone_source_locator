@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "localization_calculate_policy.c"
+        "localization_event_rank.c"
         "localization_calculate.c"
 
     INCLUDE_DIRS

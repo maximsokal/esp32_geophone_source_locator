@@ -96,6 +96,23 @@ bool geophone_event_sta_lta_detect_after(
     geophone_sta_lta_result_t *result
 );
 
+typedef struct
+{
+    size_t trigger_index;
+    size_t next_trigger_index;
+    bool complete;
+} geophone_sta_lta_episode_t;
+
+/* Find one contiguous threshold-crossing region. An incomplete region
+ * reaches the end of the supplied buffer and needs more samples. */
+bool geophone_event_sta_lta_episode_after(
+    const float *samples,
+    size_t sample_count,
+    const geophone_sta_lta_config_t *config,
+    size_t minimum_trigger_index,
+    geophone_sta_lta_episode_t *result
+);
+
 
 /* ---- First-arrival refinement around a coarse trigger ------------------- */
 
@@ -267,6 +284,26 @@ typedef struct
     size_t uncertainty_samples; /* pick resolution proxy: the refine search span */
 
 } geophone_channel_pick_t;
+
+
+typedef struct
+{
+    geophone_channel_pick_t pick;
+    size_t next_trigger_index;
+    float peak_abs;
+    bool complete;
+} geophone_event_candidate_t;
+
+/* A candidate is a per-channel trigger, not a confirmed multi-channel event.
+ * Incomplete candidates need more context before they can be ranked. */
+bool geophone_event_pick_candidate_after(
+    const float *samples,
+    size_t sample_count,
+    uint32_t sample_rate_hz,
+    const geophone_channel_pick_config_t *config,
+    size_t minimum_trigger_index,
+    geophone_event_candidate_t *result
+);
 
 
 /*

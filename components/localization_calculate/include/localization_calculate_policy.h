@@ -673,6 +673,12 @@ void localization_calculate_set_rejection(
     localization_failure_class_t failure_class
 );
 
+/*
+ * Contradicting methods (localization_comparison joint_conflict) are not a found source even though each of them solved:
+ * the session recommendation becomes "record again" with the reason, never a success. The individual runs stay stored.
+ */
+void localization_calculate_mark_joint_conflict(localization_recommendation_t *recommendation);
+
 /* Aggregates the newest run set and its matching pick record into the
  * session-level operator recommendation. */
 void localization_calculate_recommendation(

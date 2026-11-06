@@ -1,5 +1,6 @@
 #include "geophone_events.h"
 
+#include <math.h>
 #include <stdint.h>
 
 
@@ -14,6 +15,76 @@ enum
 static size_t saturating_add_size(size_t left, size_t right)
 {
     return left > SIZE_MAX - right ? SIZE_MAX : left + right;
+}
+
+
+bool geophone_event_pick_candidate_after(
+    const float *samples,
+    size_t sample_count,
+    uint32_t sample_rate_hz,
+    const geophone_channel_pick_config_t *config,
+    size_t minimum_trigger_index,
+    geophone_event_candidate_t *result
+)
+{
+    if (result == NULL) return false;
+    *result = (geophone_event_candidate_t) { 0 };
+    result->pick.status = GEOPHONE_PICK_REJECTED_NO_TRIGGER;
+    if (samples == NULL || config == NULL || sample_rate_hz == 0U ||
+        config->noise_window_samples == 0U || config->snr_signal_window_samples == 0U ||
+        !isfinite(config->minimum_snr) || config->minimum_snr < 0.0f ||
+        !isfinite(config->refine_amplitude_fraction) ||
+        config->refine_amplitude_fraction <= 0.0f || config->refine_amplitude_fraction > 1.0f) return false;
+
+    const geophone_sta_lta_config_t detector = {
+        .sta_window_samples = config->sta_window_samples,
+        .lta_window_samples = config->lta_window_samples,
+        .trigger_ratio = config->sta_lta_trigger_ratio
+    };
+    geophone_sta_lta_episode_t episode;
+    if (!geophone_event_sta_lta_episode_after(
+            samples, sample_count, &detector, minimum_trigger_index, &episode)) return false;
+    result->next_trigger_index = episode.next_trigger_index;
+    result->pick.status = GEOPHONE_PICK_REJECTED_NO_REFINEMENT;
+    result->pick.method = GEOPHONE_PICK_METHOD_STA_LTA_REFINED;
+    result->pick.uncertainty_samples = saturating_add_size(
+        config->refine_lookback_samples, config->refine_lookahead_samples
+    );
+    if (!episode.complete || episode.trigger_index < config->refine_lookback_samples ||
+        config->refine_lookahead_samples >= sample_count - episode.trigger_index) return true;
+
+    const geophone_arrival_refine_config_t refine = {
+        .lookback_samples = config->refine_lookback_samples,
+        .lookahead_samples = config->refine_lookahead_samples,
+        .amplitude_fraction = config->refine_amplitude_fraction
+    };
+    geophone_arrival_refine_result_t arrival;
+    if (!geophone_event_refine_arrival(samples, sample_count, episode.trigger_index, &refine, &arrival)) {
+        result->complete = true;
+        return true;
+    }
+    result->pick.arrival_sample_index = arrival.refined_index;
+    result->pick.arrival_subsample_offset = arrival.refined_fraction;
+    result->pick.arrival_time_s = (float)(
+        ((double)arrival.refined_index + (double)arrival.refined_fraction) / (double)sample_rate_hz
+    );
+    if (arrival.refined_index < config->noise_window_samples ||
+        config->snr_signal_window_samples > sample_count - arrival.refined_index) return true;
+
+    const size_t noise_start = arrival.refined_index - config->noise_window_samples;
+    result->pick.snr = geophone_event_compute_snr(
+        samples + noise_start, sample_count - noise_start, config->noise_window_samples,
+        config->noise_window_samples, config->snr_signal_window_samples
+    );
+    for (size_t i = 0U; i < config->snr_signal_window_samples; ++i) {
+        const float magnitude = fabsf(samples[arrival.refined_index + i]);
+        if (magnitude > result->peak_abs) result->peak_abs = magnitude;
+    }
+    const geophone_pick_quality_config_t quality = { .minimum_snr = config->minimum_snr };
+    result->pick.status = geophone_event_pick_is_acceptable(result->pick.snr, &quality)
+        ? GEOPHONE_PICK_ACCEPTED : GEOPHONE_PICK_REJECTED_LOW_SNR;
+    result->complete = true;
+    return true;
 }
 
 

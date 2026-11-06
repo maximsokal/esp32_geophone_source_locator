@@ -69,6 +69,7 @@
         "components/scan_occupancy/scan_occupancy.c",
         "components/seismic_dsp/seismic_dsp.c",
         "components/seismic_buffer/seismic_buffer.c",
+        "tests/host/stubs/recorder_scan_session_via_range_ex_stub.c",
         "tests/host/stubs/max132_recorder_range_ex_stub.c",
         "tests/host/stubs/localization_calculate_run/psram_model.c",
         "tests/host/stubs/object_store_profile/cJSON.c",

@@ -476,7 +476,29 @@ static void build_result_lines(
         return;
     }
 
-    (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_SUCCESS);
+    /*
+     * A known source is named by its coordinates (metres, local axes of the saved geometry). With fewer than 4 computed
+     * geophones the depth is not determined, so the line says 2D and shows no Z; the success line stays when no source
+     * is known.
+     */
+    {
+        size_t computed_pods = 0U;
+        for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+            if (state->result_geometry.pods[i].computed) ++computed_pods;
+        }
+        if (state->result_data_ready && !state->result_load_failed && state->result_source_valid) {
+            const bool depth_known = computed_pods >= OBJECT_STORE_POD_COUNT;
+            ui_workflow_model_line_t *line = add_line(
+                model, depth_known ? UI_I18N_KEY_TFT_WORKFLOW_RESULT_SOURCE_XYZ : UI_I18N_KEY_TFT_WORKFLOW_RESULT_SOURCE_2D);
+            char coordinate[UI_WORKFLOW_MODEL_ARG_SIZE];
+            for (size_t axis = 0U; axis < (depth_known ? 3U : 2U); ++axis) {
+                (void)snprintf(coordinate, sizeof(coordinate), "%.1f", state->result_source_m[axis]);
+                set_arg(line, axis, coordinate);
+            }
+        } else {
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_SUCCESS);
+        }
+    }
     if (!state->result_data_ready) {
         (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_LOADING);
         return;

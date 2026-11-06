@@ -67,7 +67,8 @@ export type EvidenceDiagnostic =
   | { kind: 'gate_bypassed' }
   | { kind: 'partial_geometry'; pairs: string[] }
   | { kind: 'source_suspicious' }
-  | { kind: 'source_unhealthy' };
+  | { kind: 'source_unhealthy' }
+  | { kind: 'source_fault_at_stop' };
 
 function diagnosticsOf(listing: LocalizationRunListing | null): EvidenceDiagnostic[] {
   const diagnostic = listing?.diagnostic;
@@ -77,6 +78,7 @@ function diagnosticsOf(listing: LocalizationRunListing | null): EvidenceDiagnost
   if (diagnostic.partial_geometry === true) found.push({ kind: 'partial_geometry', pairs: diagnostic.excluded_pairs ?? [] });
   if (diagnostic.source_suspicious === true) found.push({ kind: 'source_suspicious' });
   if (diagnostic.source_unhealthy === true) found.push({ kind: 'source_unhealthy' });
+  if (diagnostic.source_fault_at_stop === true) found.push({ kind: 'source_fault_at_stop' });
   return found;
 }
 

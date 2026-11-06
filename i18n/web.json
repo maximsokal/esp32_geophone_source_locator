@@ -489,6 +489,7 @@
     "evidence.diagnostic.partial_geometry": { "en": "Partial geometry: pairs not measured: {pairs}.", "uk": "Часткова геометрія: пари не виміряно: {pairs}." },
     "evidence.diagnostic.source_suspicious": { "en": "The AD7606 data stream looked suspicious at the start of this recording.", "uk": "Потік даних AD7606 на початку цього запису виглядав підозріло." },
     "evidence.diagnostic.source_unhealthy": { "en": "The AD7606 was not confirmed present at the start of this recording.", "uk": "Наявність AD7606 на початку цього запису не підтверджено." },
+    "evidence.diagnostic.source_fault_at_stop": { "en": "The AD7606 looked faulty when this recording ended.", "uk": "Наприкінці цього запису AD7606 виглядав несправним." },
     "scan.storage.loading": { "en": "Loading saved 3D scan · {object}", "uk": "Завантаження збереженого 3D-скану · {object}" },
     "scan.storage.reading": { "en": "Reading saved scan…", "uk": "Читання збереженого скану…" },
     "scan.storage.none": { "en": "No saved 3D scan · {object}", "uk": "Збереженого 3D-скану немає · {object}" },

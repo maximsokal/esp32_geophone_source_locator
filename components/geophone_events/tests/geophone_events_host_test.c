@@ -365,6 +365,33 @@ static void test_geophone_math_rejects_window_overflow_and_clamps_edges(void)
 /* STA/LTA adaptive onset detector                                   */
 /* ---------------------------------------------------------------- */
 
+static void test_sta_lta_enumerates_separate_trigger_regions(void)
+{
+    float samples[600];
+    for (size_t i = 0U; i < 600U; ++i) samples[i] = (i % 2U) ? 0.01f : -0.01f;
+    insert_rect_pulse(samples, 200U, 15U, 1.0f);
+    insert_rect_pulse(samples, 420U, 15U, 2.0f);
+    const geophone_sta_lta_config_t config = {
+        .sta_window_samples = 10U, .lta_window_samples = 100U, .trigger_ratio = 3.0f
+    };
+    geophone_sta_lta_episode_t first;
+    geophone_sta_lta_episode_t second;
+    assert(geophone_event_sta_lta_episode_after(samples, 600U, &config, 0U, &first));
+    assert(first.complete && first.trigger_index >= 190U && first.trigger_index <= 210U);
+    assert(geophone_event_sta_lta_episode_after(
+        samples, 600U, &config, first.next_trigger_index, &second
+    ));
+    assert(second.complete && second.trigger_index >= 410U && second.trigger_index <= 430U);
+    assert(!geophone_event_sta_lta_episode_after(
+        samples, 600U, &config, second.next_trigger_index, &first
+    ));
+    assert(geophone_event_sta_lta_episode_after(samples, 205U, &config, 0U, &first));
+    assert(!first.complete);
+    samples[0] = NAN;
+    assert(!geophone_event_sta_lta_episode_after(samples, 600U, &config, 0U, &first));
+}
+
+
 static void test_sta_lta_finds_impulse_over_quiet_background(void)
 {
     float samples[300] = { 0 };
@@ -670,6 +697,41 @@ static geophone_channel_pick_config_t default_pick_config(void)
         .snr_signal_window_samples = 20u,
         .minimum_snr = 5.0f
     };
+}
+
+
+static void test_separate_candidates_use_their_own_noise_baseline(void)
+{
+    float samples[1000];
+    for (size_t i = 0U; i < 1000U; ++i) {
+        const float magnitude = i < 50U ? 0.2f : 0.01f;
+        samples[i] = (i % 2U) ? magnitude : -magnitude;
+    }
+    insert_rect_pulse(samples, 200U, 20U, 1.0f);
+    insert_rect_pulse(samples, 600U, 20U, 0.15f);
+    const geophone_channel_pick_config_t config = default_pick_config();
+    geophone_event_candidate_t first;
+    geophone_event_candidate_t second;
+    assert(geophone_event_pick_candidate_after(samples, 1000U, 500U, &config, 0U, &first));
+    assert(first.complete && first.pick.status == GEOPHONE_PICK_ACCEPTED);
+    assert(first.pick.arrival_sample_index == 200U && first.peak_abs == 1.0f);
+    assert(geophone_event_pick_candidate_after(
+        samples, 1000U, 500U, &config, first.next_trigger_index, &second
+    ));
+    assert(second.complete && second.pick.status == GEOPHONE_PICK_ACCEPTED);
+    assert(second.pick.arrival_sample_index == 600U && second.peak_abs == 0.15f);
+    assert(second.pick.snr > config.minimum_snr);
+    assert(!geophone_event_pick_candidate_after(
+        samples, 1000U, 500U, &config, second.next_trigger_index, &first
+    ));
+    assert(geophone_event_pick_candidate_after(samples, 205U, 500U, &config, 0U, &first));
+    assert(!first.complete);
+    geophone_channel_pick_config_t strict = config;
+    strict.minimum_snr = 1000.0f;
+    assert(geophone_event_pick_candidate_after(samples, 1000U, 500U, &strict, 0U, &first));
+    assert(first.complete && first.pick.status == GEOPHONE_PICK_REJECTED_LOW_SNR);
+    strict.refine_amplitude_fraction = NAN;
+    assert(!geophone_event_pick_candidate_after(samples, 1000U, 500U, &strict, 0U, &first));
 }
 
 
@@ -1151,6 +1213,7 @@ int main(void)
     test_geophone_math_rejects_nonfinite_inputs();
     test_geophone_math_rejects_window_overflow_and_clamps_edges();
 
+    test_sta_lta_enumerates_separate_trigger_regions();
     test_sta_lta_finds_impulse_over_quiet_background();
     test_sta_lta_missing_channel_never_triggers();
     test_sta_lta_picks_earliest_arrival_not_the_larger_echo();
@@ -1168,6 +1231,7 @@ int main(void)
     test_snr_degenerate_all_zero_is_zero_not_nan();
     test_pick_is_acceptable_gate();
 
+    test_separate_candidates_use_their_own_noise_baseline();
     test_pick_channel_arrival_accepts_a_clean_event();
     test_pick_channel_arrival_rejects_missing_channel();
     test_pick_channel_arrival_rejects_low_snr_gate();

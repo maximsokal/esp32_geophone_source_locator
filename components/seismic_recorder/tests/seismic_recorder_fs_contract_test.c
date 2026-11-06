@@ -38,6 +38,7 @@
 #include "seismic_buffer.h"
 #include "object_store.h"
 #include "storage_manager.h"
+#include "storage_bulk_admission.h"
 #include "seismic_recorder_cache.h"
 #include "workflow_core.h"
 
@@ -50,6 +51,9 @@ size_t strnlen(const char *string, size_t max_length);
 static unsigned storage_begin_calls;
 static unsigned storage_end_calls;
 static esp_err_t storage_begin_error;
+static bool storage_bulk_protected;
+static unsigned storage_bulk_run_chunk_calls;
+static unsigned storage_bulk_rejected_chunk_calls;
 static bool fail_create_directory;
 static unsigned exclusive_directory_calls;
 static unsigned remove_tree_calls;
@@ -371,6 +375,35 @@ void storage_manager_operation_end(void)
     ++storage_end_calls;
 }
 
+esp_err_t storage_bulk_admission_enter_protected(void)
+{
+    storage_bulk_protected = true;
+    return ESP_OK;
+}
+
+void storage_bulk_admission_exit_protected(void)
+{
+    storage_bulk_protected = false;
+}
+
+bool storage_bulk_admission_is_protected(void)
+{
+    return storage_bulk_protected;
+}
+
+esp_err_t storage_bulk_admission_run_chunk(esp_err_t (*fn)(void *), void *ctx)
+{
+    ++storage_bulk_run_chunk_calls;
+    if (fn == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (storage_bulk_protected) {
+        ++storage_bulk_rejected_chunk_calls;
+        return ESP_ERR_INVALID_STATE;
+    }
+    return fn(ctx);
+}
+
 esp_err_t storage_manager_create_directory(const char *path)
 {
     if (fail_create_directory) {
@@ -531,7 +564,9 @@ static int recorder_test_fclose(FILE *stream)
 #include "../seismic_recorder_samples.c"
 #undef SEISMIC_RECORDER_SAMPLES_HOST_TEST
 #include "../seismic_recorder_fs.c"
+#define SEISMIC_RECORDER_TEST_BULK_ADMISSION 1
 #include "../seismic_recorder_reader.c"
+#undef SEISMIC_RECORDER_TEST_BULK_ADMISSION
 #undef fwrite
 #undef fflush
 #ifdef _WIN32
@@ -775,6 +810,337 @@ static void test_session_range_v2_seeks_blocks_and_preserves_gaps(void)
         "OBJ_0001", session, 0U, 1U, frames, indices, gaps, &count, NULL
     ) == ESP_OK);
     assert(count == 1U && indices[0] == 0U && !gaps[0]);
+
+    fake_summary_override_active = false;
+    fake_summary_error = ESP_FAIL;
+    remove_layout();
+}
+
+
+typedef struct
+{
+    const seismic_frame_t *expected_frames;
+    const uint64_t *expected_indices;
+    size_t expected_total;
+    size_t capacity;
+    size_t seen;
+    size_t calls;
+    size_t maximum_count;
+    size_t gap_callbacks;
+    esp_err_t return_error;
+} scan_session_test_context_t;
+
+
+static esp_err_t check_scan_session_chunk(
+    const seismic_frame_t *frames,
+    size_t count,
+    uint64_t first_source_index,
+    bool gap_before,
+    void *opaque
+)
+{
+    scan_session_test_context_t *context = opaque;
+    assert(context != NULL && frames != NULL && count > 0U);
+    assert(count <= context->capacity);
+    assert(context->seen + count <= context->expected_total);
+    assert(first_source_index == context->expected_indices[context->seen]);
+    const bool expected_gap = context->seen > 0U &&
+        context->expected_indices[context->seen] >
+            context->expected_indices[context->seen - 1U] + 1U;
+    assert(gap_before == expected_gap);
+    if (gap_before) {
+        assert(context->seen == 258U);
+        ++context->gap_callbacks;
+    }
+
+    const float scale_uv_per_lsb = 5000000.0f / 32768.0f;
+    for (size_t i = 0U; i < count; ++i) {
+        const size_t logical = context->seen + i;
+        assert(frames[i].timestamp_us == context->expected_frames[logical].timestamp_us);
+        for (size_t ch = 0U; ch < SEISMIC_CHANNEL_COUNT; ++ch) {
+            assert(fabsf(
+                frames[i].channel_uv[ch] - context->expected_frames[logical].channel_uv[ch]
+            ) <= scale_uv_per_lsb * 0.5f + 0.01f);
+        }
+    }
+
+    context->seen += count;
+    ++context->calls;
+    if (count > context->maximum_count) {
+        context->maximum_count = count;
+    }
+    return context->return_error;
+}
+
+typedef struct
+{
+    size_t calls;
+} scan_admission_callback_context_t;
+
+
+static esp_err_t enable_protection_after_scan_callback(
+    const seismic_frame_t *frames,
+    size_t count,
+    uint64_t first_source_index,
+    bool gap_before,
+    void *opaque
+)
+{
+    scan_admission_callback_context_t *context = opaque;
+    assert(context != NULL && frames != NULL && count > 0U);
+    assert(first_source_index == 0U && !gap_before);
+    ++context->calls;
+    if (context->calls == 1U) {
+        storage_bulk_protected = true; /* Simulates recording admission between reads. */
+    }
+    return ESP_OK;
+}
+
+
+static void test_scan_session_v2_streams_bounded_chunks_and_propagates_errors(void)
+{
+    remove_layout();
+    make_layout();
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *samples = NULL;
+    uint16_t version = 0U;
+    assert(test_fs_create_ad7606_session(session, &samples, &version) == ESP_OK);
+    assert(version == SEISMIC_RECORDER_BINARY_VERSION_V2);
+    const size_t total = 262U;
+    seismic_frame_t written[262] = {0};
+    uint64_t source_indices[262] = {0};
+    for (size_t i = 0U; i < total; ++i) {
+        source_indices[i] = i < 258U ? (uint64_t)i : (uint64_t)i + 3U;
+        written[i].timestamp_us = (int64_t)source_indices[i] * 2000LL;
+        written[i].channel_uv[0] = (float)(int)(i % 100U);
+    }
+    size_t frames_written = 0U;
+    assert(test_fs_write_frames_with_source_indices(
+        samples, written, source_indices, total, &frames_written
+    ) == ESP_OK);
+    assert(frames_written == total);
+    assert(seismic_recorder_fs_close(samples) == ESP_OK);
+    set_fake_range_summary(session, version, total);
+
+    seismic_frame_t buffer[258] = {0};
+    scan_session_test_context_t context = {
+        .expected_frames = written,
+        .expected_indices = source_indices,
+        .expected_total = total,
+        .capacity = 258U,
+    };
+    assert(seismic_recorder_scan_session(
+        "OBJ_0001", session, buffer, context.capacity, check_scan_session_chunk, &context
+    ) == ESP_OK);
+    assert(context.seen == total && context.calls > 1U);
+    assert(context.gap_callbacks == 1U);
+
+    memset(&context, 0, sizeof(context));
+    context.expected_frames = written;
+    context.expected_indices = source_indices;
+    context.expected_total = total;
+    context.capacity = 17U;
+    assert(seismic_recorder_scan_session(
+        "OBJ_0001", session, buffer, context.capacity, check_scan_session_chunk, &context
+    ) == ESP_OK);
+    assert(context.seen == total && context.calls > 1U);
+    assert(context.maximum_count <= context.capacity);
+    assert(context.gap_callbacks == 1U);
+
+    memset(&context, 0, sizeof(context));
+    context.expected_frames = written;
+    context.expected_indices = source_indices;
+    context.expected_total = total;
+    context.capacity = 17U;
+    context.return_error = ESP_ERR_INVALID_STATE;
+    assert(seismic_recorder_scan_session(
+        "OBJ_0001", session, buffer, context.capacity, check_scan_session_chunk, &context
+    ) == ESP_ERR_INVALID_STATE);
+    assert(context.calls == 1U && context.seen <= context.capacity);
+
+    storage_bulk_protected = false;
+    storage_bulk_run_chunk_calls = 0U;
+    storage_bulk_rejected_chunk_calls = 0U;
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    assert(storage_bulk_admission_enter_protected() == ESP_OK);
+    memset(&context, 0, sizeof(context));
+    context.expected_frames = written;
+    context.expected_indices = source_indices;
+    context.expected_total = total;
+    context.capacity = 17U;
+    assert(seismic_recorder_scan_session(
+        "OBJ_0001", session, buffer, context.capacity, check_scan_session_chunk, &context
+    ) == ESP_ERR_INVALID_STATE);
+    assert(context.calls == 0U);
+    assert(storage_begin_calls == 0U);
+    storage_bulk_admission_exit_protected();
+
+    storage_bulk_run_chunk_calls = 0U;
+    storage_bulk_rejected_chunk_calls = 0U;
+    scan_admission_callback_context_t admission_context = {0};
+    assert(seismic_recorder_scan_session(
+        "OBJ_0001", session, buffer, 17U,
+        enable_protection_after_scan_callback, &admission_context
+    ) == ESP_ERR_INVALID_STATE);
+    assert(admission_context.calls == 1U);
+    assert(storage_bulk_rejected_chunk_calls > 0U);
+    storage_bulk_admission_exit_protected();
+
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    storage_begin_error = ESP_ERR_INVALID_STATE;
+    memset(&context, 0, sizeof(context));
+    context.expected_frames = written;
+    context.expected_indices = source_indices;
+    context.expected_total = total;
+    context.capacity = 17U;
+    assert(seismic_recorder_scan_session(
+        "OBJ_0001", session, buffer, context.capacity, check_scan_session_chunk, &context
+    ) == ESP_ERR_INVALID_STATE);
+    assert(context.calls == 0U);
+    assert(storage_begin_calls == 1U && storage_end_calls == 0U);
+
+    storage_begin_error = ESP_OK;
+    storage_begin_calls = 0U;
+    storage_end_calls = 0U;
+    char path[SEISMIC_RECORDER_PATH_SIZE];
+    assert(seismic_recorder_fs_build_session_path(
+        "OBJ_0001", session, path, sizeof(path)
+    ) == ESP_OK);
+    const size_t path_length = strlen(path);
+    assert(path_length + sizeof("/samples.bin") <= sizeof(path));
+    memcpy(path + path_length, "/samples.bin", sizeof("/samples.bin"));
+    assert(remove(path) == 0);
+    memset(&context, 0, sizeof(context));
+    context.expected_frames = written;
+    context.expected_indices = source_indices;
+    context.expected_total = total;
+    context.capacity = 17U;
+    assert(seismic_recorder_scan_session(
+        "OBJ_0001", session, buffer, context.capacity, check_scan_session_chunk, &context
+    ) == ESP_ERR_NOT_FOUND);
+    assert(context.calls == 0U);
+    assert(storage_begin_calls == storage_end_calls);
+
+    fake_summary_override_active = false;
+    fake_summary_error = ESP_FAIL;
+    remove_layout();
+}
+
+
+static void test_scan_session_v1_preserves_timestamps_and_unknown_continuity(void)
+{
+    remove_layout();
+    make_layout();
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *samples = NULL;
+    const size_t total = 2050U;
+    assert(test_fs_create_session(
+        "OBJ_0001", 500U, SEISMIC_CHANNEL_COUNT, session, &samples
+    ) == ESP_OK);
+    seismic_frame_t *written = calloc(total, sizeof(*written));
+    uint64_t *write_indices = malloc(total * sizeof(*write_indices));
+    uint64_t *logical_indices = malloc(total * sizeof(*logical_indices));
+    seismic_frame_t *buffer = calloc(4096U, sizeof(*buffer));
+    assert(written != NULL && write_indices != NULL && logical_indices != NULL && buffer != NULL);
+    for (size_t i = 0U; i < total; ++i) {
+        write_indices[i] = i < 1024U ? (uint64_t)i : (uint64_t)i + 3U;
+        logical_indices[i] = (uint64_t)i;
+        written[i].timestamp_us = (int64_t)write_indices[i] * 2000LL;
+        written[i].channel_uv[0] = (float)(i % 100U);
+    }
+    size_t frames_written = 0U;
+    assert(test_fs_write_frames_with_source_indices(
+        samples, written, write_indices, total, &frames_written
+    ) == ESP_OK);
+    assert(frames_written == total);
+    assert(seismic_recorder_fs_close(samples) == ESP_OK);
+    set_fake_range_summary(session, SEISMIC_RECORDER_BINARY_VERSION_V1, total);
+
+    scan_session_test_context_t context = {
+        .expected_frames = written,
+        .expected_indices = logical_indices,
+        .expected_total = total,
+        .capacity = 4096U,
+    };
+    assert(seismic_recorder_scan_session(
+        "OBJ_0001", session, buffer, context.capacity, check_scan_session_chunk, &context
+    ) == ESP_OK);
+    assert(context.seen == total && context.calls >= 3U);
+    assert(context.maximum_count <= 1024U);
+    assert(context.gap_callbacks == 0U);
+
+    free(buffer);
+    free(logical_indices);
+    free(write_indices);
+    free(written);
+    fake_summary_override_active = false;
+    fake_summary_error = ESP_FAIL;
+    remove_layout();
+}
+
+
+static void test_scan_session_v2_reports_corruption_after_partial_callbacks(void)
+{
+    remove_layout();
+    make_layout();
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *samples = NULL;
+    uint16_t version = 0U;
+    assert(test_fs_create_ad7606_session(session, &samples, &version) == ESP_OK);
+    const size_t total = 262U;
+    seismic_frame_t written[262] = {0};
+    uint64_t source_indices[262] = {0};
+    for (size_t i = 0U; i < total; ++i) {
+        source_indices[i] = i < 258U ? (uint64_t)i : (uint64_t)i + 3U;
+        written[i].timestamp_us = (int64_t)source_indices[i] * 2000LL;
+        written[i].channel_uv[0] = (float)(int)(i % 100U);
+    }
+    size_t frames_written = 0U;
+    assert(test_fs_write_frames_with_source_indices(
+        samples, written, source_indices, total, &frames_written
+    ) == ESP_OK);
+    assert(frames_written == total);
+    assert(seismic_recorder_fs_close(samples) == ESP_OK);
+    set_fake_range_summary(session, version, total);
+
+    char path[SEISMIC_RECORDER_PATH_SIZE];
+    assert(seismic_recorder_fs_build_session_path(
+        "OBJ_0001", session, path, sizeof(path)
+    ) == ESP_OK);
+    const size_t path_length = strlen(path);
+    assert(path_length + sizeof("/samples.bin") <= sizeof(path));
+    memcpy(path + path_length, "/samples.bin", sizeof("/samples.bin"));
+    FILE *corrupt = fopen(path, "r+b");
+    assert(corrupt != NULL);
+    const long final_block_header_offset = (long)(
+        sizeof(seismic_recorder_binary_header_t) +
+        sizeof(seismic_recorder_binary_v2_metadata_t) +
+        SEISMIC_RECORDER_V2_BLOCK_HEADER_BYTES +
+        SEISMIC_RECORDER_WRITE_STAGING_FRAMES * SEISMIC_RECORDER_BINARY_I16_FRAME_BYTES +
+        SEISMIC_RECORDER_V2_BLOCK_HEADER_BYTES +
+        2U * SEISMIC_RECORDER_BINARY_I16_FRAME_BYTES
+    );
+    assert(fseek(corrupt, final_block_header_offset + 16L, SEEK_SET) == 0);
+    const uint16_t invalid_frame_count = 0U;
+    assert(fwrite(&invalid_frame_count, sizeof(invalid_frame_count), 1U, corrupt) == 1U);
+    assert(fclose(corrupt) == 0);
+
+    seismic_frame_t buffer[17] = {0};
+    scan_session_test_context_t context = {
+        .expected_frames = written,
+        .expected_indices = source_indices,
+        .expected_total = total,
+        .capacity = 17U,
+    };
+    assert(seismic_recorder_scan_session(
+        "OBJ_0001", session, buffer, context.capacity, check_scan_session_chunk, &context
+    ) == ESP_ERR_INVALID_RESPONSE);
+    assert(context.calls > 0U && context.seen < total);
 
     fake_summary_override_active = false;
     fake_summary_error = ESP_FAIL;
@@ -3186,5 +3552,8 @@ int main(void)
 #endif
     test_session_range_v1_preserves_timestamps_and_bounds();
     test_session_range_v2_seeks_blocks_and_preserves_gaps();
+    test_scan_session_v2_streams_bounded_chunks_and_propagates_errors();
+    test_scan_session_v1_preserves_timestamps_and_unknown_continuity();
+    test_scan_session_v2_reports_corruption_after_partial_callbacks();
     return 0;
 }

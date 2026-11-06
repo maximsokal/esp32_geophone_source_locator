@@ -762,6 +762,21 @@ static void test_result_routing_and_distances(void)
     state.result_geometry.pods[1].computed = true;
     state.result_geometry.pods[1].z_mm = 2000;
     build(&snapshot, &state, &ranging, &model);
+    /* A known source is named by its coordinates, not by a generic success line. */
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RESULT_SOURCE_2D);   /* two computed geophones: no depth */
+    assert(strcmp(model.lines[0].args[0], "0.0") == 0 && strcmp(model.lines[0].args[1], "0.0") == 0);
+    {
+        ui_workflow_model_state_t full = state;
+        for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) full.result_geometry.pods[i].computed = true;
+        full.result_source_m[0] = 1.2;
+        full.result_source_m[1] = -0.7;
+        full.result_source_m[2] = -2.5;
+        build(&snapshot, &full, &ranging, &model);
+        assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RESULT_SOURCE_XYZ);
+        assert(strcmp(model.lines[0].args[0], "1.2") == 0 && strcmp(model.lines[0].args[1], "-0.7") == 0 &&
+            strcmp(model.lines[0].args[2], "-2.5") == 0);
+        build(&snapshot, &state, &ranging, &model);
+    }
 
     result_view_distance_t distances[OBJECT_STORE_POD_COUNT] = {0};
     assert(result_view_source_distances(state.result_source_m, state.result_geometry.pods,

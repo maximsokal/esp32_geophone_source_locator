@@ -600,8 +600,9 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
             );
         }
         web_json_writer_printf(
-            &writer, "],\"source_suspicious\":%s,\"source_unhealthy\":%s",
-            diagnostic->source_suspicious ? "true" : "false", diagnostic->source_unhealthy ? "true" : "false"
+            &writer, "],\"source_suspicious\":%s,\"source_unhealthy\":%s,\"source_fault_at_stop\":%s",
+            diagnostic->source_suspicious ? "true" : "false", diagnostic->source_unhealthy ? "true" : "false",
+            diagnostic->source_fault_at_stop ? "true" : "false"
         );
     }
     web_json_writer_write(&writer, "},");

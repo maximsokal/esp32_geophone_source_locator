@@ -46,6 +46,23 @@ int render_preview_status(void) { return (int)s_state.status; }
 #ifdef UI_NATIVE_FULL_SCREENS
 #include "ui_navigation_fixture.h"
 bool render_preview_open(void) { return s_state_initialized && s_state.open; }
+extern bool render_fake_storage_enabled;
+void render_preview_load_for_test(bool *ready, bool *fallback, size_t *sensors, size_t *sources)
+{
+    preview_request_t request = {.generation = s_state.generation};
+    (void)snprintf(request.object_id, sizeof(request.object_id), "O0");
+    (void)snprintf(request.session_id, sizeof(request.session_id), "S0");
+    preview_result_t result;
+    memset(&result, 0, sizeof(result));
+    render_fake_storage_enabled = true;
+    load_session(&request, &result);
+    render_fake_storage_enabled = false;
+    *ready = result.status == SCAN_PREVIEW_SCREEN_READY;
+    *fallback = result.sensor_estimates_fallback;
+    *sensors = geometry_sensor_count(&result.geometry);
+    *sources = result.source_count;
+    release_result(&result);
+}
 void render_preview_complete(bool stale)
 {
     const uint32_t generation = s_state.generation;

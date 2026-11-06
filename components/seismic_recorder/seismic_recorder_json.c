@@ -562,7 +562,8 @@ static bool seismic_recorder_json_add_diagnostic(
         cJSON_AddItemToArray(excluded, item);
     }
     return cJSON_AddBoolToObject(diagnostic, "source_suspicious", metadata->source_suspicious) != NULL &&
-        cJSON_AddBoolToObject(diagnostic, "source_unhealthy", metadata->source_unhealthy) != NULL;
+        cJSON_AddBoolToObject(diagnostic, "source_unhealthy", metadata->source_unhealthy) != NULL &&
+        cJSON_AddBoolToObject(diagnostic, "source_fault_at_stop", metadata->source_fault_at_stop) != NULL;
 }
 
 
@@ -1409,6 +1410,9 @@ static void seismic_recorder_json_parse_participation(
             participation->diagnostic.partial_geometry = cJSON_IsTrue(partial);
             participation->diagnostic.source_suspicious = cJSON_IsTrue(suspicious);
             participation->diagnostic.source_unhealthy = cJSON_IsTrue(unhealthy);
+            /* Absent in sessions written before STOP read the source: that is "no fault recorded". */
+            participation->diagnostic.source_fault_at_stop =
+                cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(diagnostic, "source_fault_at_stop"));
             participation->diagnostic.excluded_pair_count = 0U;
             const int size = cJSON_GetArraySize(excluded);
             for (int i = 0; i < size && participation->diagnostic.excluded_pair_count <

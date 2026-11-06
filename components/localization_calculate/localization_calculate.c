@@ -605,6 +605,181 @@ static void localization_calculate_persist_memory_failure(
 }
 
 
+/*
+ * Event search over a recording longer than one analysis window. The whole session is visited once, in chunks, through a
+ * rolling window of the analysis size; every half window the pick stage is run on it (DC removal, one pick per channel,
+ * the same cross-channel physical consistency gate as the analysis) and the window whose consistent picks are most
+ * numerous (then strongest, then earliest) is the one analysed in full. Only the window and its per-channel copies are
+ * in PSRAM, never the recording. A gap or a non-monotonic timestamp anywhere rejects the recording, as it does for the
+ * first window.
+ */
+typedef struct
+{
+    const localization_calculate_config_t *config;
+    const object_store_geometry_t *geometry;
+    uint32_t sample_rate_hz;
+    size_t window_frames;
+    size_t hop_frames;
+    seismic_frame_t *window;
+    float *channel[OBJECT_STORE_POD_COUNT];
+    size_t filled;
+    size_t unscored;
+    uint64_t window_first_index;
+    uint64_t next_index;
+    uint64_t total_frames;
+    int64_t epoch_us;
+    int64_t last_timestamp_us;
+    const char *problem;
+    bool best_valid;
+    uint64_t best_start;
+    uint64_t best_first_pick;   /* absolute index of the earliest consistent pick of the best window */
+    size_t best_count;
+    double best_snr;
+    esp_err_t err;
+} localization_event_search_t;
+
+
+static esp_err_t localization_event_search_score(localization_event_search_t *search, bool recording_end)
+{
+    const size_t n = search->filled;
+    search->unscored = 0U;
+    if (n == 0U) {
+        return ESP_OK;
+    }
+    double arrival_s[OBJECT_STORE_POD_COUNT] = { 0 };
+    localization_point3d_t positions[OBJECT_STORE_POD_COUNT];
+    memset(positions, 0, sizeof(positions));
+    uint32_t accepted_mask = 0U;
+    double snr_sum = 0.0;
+    size_t arrival_index[OBJECT_STORE_POD_COUNT] = { 0 };
+
+    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        if (!search->geometry->pods[ch].computed) {
+            continue;
+        }
+        positions[ch] = localization_calculate_sensor_position(&search->geometry->pods[ch]);
+        float *samples = search->channel[ch];
+        for (size_t i = 0U; i < n; ++i) {
+            samples[i] = search->window[i].channel_uv[ch];
+        }
+        const seismic_dsp_config_t dsp_config = {
+            .sample_rate_hz = search->sample_rate_hz,
+            .requested_stages = SEISMIC_DSP_STAGE_DC_REMOVAL,
+        };
+        esp_err_t err = seismic_dsp_init(&dsp_config);
+        seismic_dsp_result_t dsp_result;
+        if (err == ESP_OK) {
+            err = seismic_dsp_process_block(samples, n, false, &dsp_result);
+        }
+        if (err != ESP_OK) {
+            return err;
+        }
+        geophone_channel_pick_t pick;
+        memset(&pick, 0, sizeof(pick));
+        pick.status = GEOPHONE_PICK_REJECTED_NO_TRIGGER;
+        geophone_event_pick_channel_arrival_with_saturation(
+            samples, n, search->sample_rate_hz, &search->config->pick_config, false, &pick
+        );
+        /* An arrival at the very end of the window has no samples after it for the SNR window and the refinement: such
+         * a window holds a cut-off event, the next (overlapping) one holds it whole. The end of the recording has no
+         * next window, so there it counts. */
+        const size_t after_arrival = search->config->pick_config.snr_signal_window_samples +
+            search->config->pick_config.refine_lookahead_samples;
+        if (pick.status == GEOPHONE_PICK_ACCEPTED && (recording_end || pick.arrival_sample_index + after_arrival <= n)) {
+            arrival_s[ch] = localization_calculate_pick_sample_position(&pick) / (double)search->sample_rate_hz;
+            accepted_mask |= (1U << ch);
+            snr_sum += pick.snr;
+            arrival_index[ch] = pick.arrival_sample_index;
+        }
+    }
+
+    const double tolerance_s =
+        3.0 * search->config->timing_uncertainty_us / 1.0e6 + 1.0 / (double)search->sample_rate_hz;
+    const uint32_t consistent_mask = localization_calculate_consistent_pick_mask(
+        arrival_s, positions, OBJECT_STORE_POD_COUNT, accepted_mask,
+        localization_calculate_gate_min_speed_mps(search->config), 0.0, tolerance_s
+    );
+    size_t consistent_count = 0U;
+    size_t first_pick = SIZE_MAX;
+    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        if ((consistent_mask & (1U << ch)) != 0U) {
+            ++consistent_count;
+            if (arrival_index[ch] < first_pick) {
+                first_pick = arrival_index[ch];
+            }
+        }
+    }
+    /* Fewer than three consistent channels is noise or one channel's glitch, never an event. A window must beat the
+     * best so far strictly, so of two equal events the earlier one stays. */
+    if (consistent_count >= 3U && (
+            !search->best_valid || consistent_count > search->best_count ||
+            (consistent_count == search->best_count && snr_sum > search->best_snr))) {
+        search->best_valid = true;
+        search->best_start = search->window_first_index;
+        search->best_first_pick = search->window_first_index + (uint64_t)first_pick;
+        search->best_count = consistent_count;
+        search->best_snr = snr_sum;
+    }
+    return ESP_OK;
+}
+
+
+static esp_err_t localization_event_search_chunk(
+    const seismic_frame_t *frames,
+    size_t count,
+    uint64_t first_source_index,
+    bool gap_before,
+    void *context
+)
+{
+    localization_event_search_t *search = context;
+    if (search->problem != NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (search->total_frames == 0U) {
+        search->epoch_us = frames[0].timestamp_us;
+    }
+    if (gap_before || (search->total_frames > 0U && first_source_index != search->next_index)) {
+        search->problem = LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP;
+        return ESP_ERR_INVALID_STATE;
+    }
+    for (size_t i = 0U; i < count; ++i) {
+        const int64_t previous = i > 0U ? frames[i - 1U].timestamp_us : search->last_timestamp_us;
+        if ((i > 0U || search->total_frames > 0U) && frames[i].timestamp_us <= previous) {
+            search->problem = LOCALIZATION_RUN_REJECTION_REASON_TIMESTAMP_NON_MONOTONIC;
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+
+    size_t offset = 0U;
+    while (offset < count) {
+        const size_t space = search->window_frames - search->filled;
+        const size_t take = count - offset < space ? count - offset : space;
+        memcpy(&search->window[search->filled], &frames[offset], take * sizeof(*frames));
+        search->filled += take;
+        search->unscored += take;
+        offset += take;
+        if (search->filled == search->window_frames) {
+            const esp_err_t err = localization_event_search_score(search, false);
+            if (err != ESP_OK) {
+                search->err = err;
+                return err;
+            }
+            memmove(
+                search->window, &search->window[search->hop_frames],
+                (search->window_frames - search->hop_frames) * sizeof(*search->window)
+            );
+            search->filled = search->window_frames - search->hop_frames;
+            search->window_first_index += search->hop_frames;
+        }
+    }
+    search->total_frames += count;
+    search->next_index = first_source_index + count;
+    search->last_timestamp_us = frames[count - 1U].timestamp_us;
+    return ESP_OK;
+}
+
+
 esp_err_t localization_calculate_run(
     const char *object_id,
     const char *session_id,
@@ -732,6 +907,68 @@ esp_err_t localization_calculate_run(
         return ESP_ERR_INVALID_SIZE;
     }
 
+    /* A recording longer than one window: find the event over the whole of it first (see the search above). The search
+     * buffers are released before the analysis buffers exist, so the two never share the PSRAM budget. */
+    uint64_t analysis_start_frame = 0U;
+    bool search_epoch_known = false;
+    int64_t search_epoch_us = 0;
+    if (session_summary.samples_written > (uint64_t)frame_capacity) {
+        localization_event_search_t search;
+        memset(&search, 0, sizeof(search));
+        search.config = config;
+        search.geometry = &geometry;
+        search.sample_rate_hz = session_summary.sample_rate_hz;
+        search.window_frames = frame_capacity;
+        search.hop_frames = frame_capacity / 2U > 0U ? frame_capacity / 2U : 1U;
+        search.window = heap_caps_malloc(sizeof(*search.window) * frame_capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        const size_t chunk_capacity = frame_capacity < 1024U ? frame_capacity : 1024U;
+        seismic_frame_t *chunk = heap_caps_malloc(sizeof(*chunk) * chunk_capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        bool search_alloc_ok = search.window != NULL && chunk != NULL;
+        for (size_t ch = 0U; search_alloc_ok && ch < OBJECT_STORE_POD_COUNT; ++ch) {
+            if (!geometry.pods[ch].computed) {
+                continue;
+            }
+            search.channel[ch] = heap_caps_malloc(sizeof(float) * frame_capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            search_alloc_ok = search.channel[ch] != NULL;
+        }
+        if (!search_alloc_ok) {
+            free_channel_buffers(search.channel);
+            heap_caps_free(search.window);
+            heap_caps_free(chunk);
+            return ESP_ERR_NO_MEM;
+        }
+        err = seismic_recorder_scan_session(
+            object_id, session_id, chunk, chunk_capacity, localization_event_search_chunk, &search
+        );
+        if (err == ESP_OK && search.problem == NULL && search.unscored > 0U) {
+            err = localization_event_search_score(&search, true);
+        }
+        free_channel_buffers(search.channel);
+        heap_caps_free(search.window);
+        heap_caps_free(chunk);
+        if (search.problem != NULL) {
+            return localization_calculate_persist_trace_rejection(
+                object_id, session_id, config, &geometry, all_channel_mask,
+                dimensionality, computed_at_ms, (size_t)search.total_frames, search.epoch_us,
+                search.problem, summary_out
+            );
+        }
+        if (err != ESP_OK) {
+            return err;
+        }
+        search_epoch_known = search.total_frames > 0U;
+        search_epoch_us = search.epoch_us;
+        if (search.best_valid) {
+            /* Analyse from a lead-in before the first consistent arrival (the pick stage's own noise and LTA windows),
+             * not from the search window's edge: an earlier, unrelated bump in the window must not become the trigger. */
+            const uint64_t lead_in = (uint64_t)config->pick_config.noise_window_samples +
+                2ULL * (uint64_t)config->pick_config.lta_window_samples;
+            /* An event inside the first window keeps the long-standing analysis of the recording's start. */
+            analysis_start_frame = search.best_start == 0U ? 0U
+                : search.best_first_pick > lead_in ? search.best_first_pick - lead_in : 0U;
+        }
+    }
+
     seismic_frame_t *frames = heap_caps_malloc(
         sizeof(*frames) * frame_capacity,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
@@ -754,7 +991,7 @@ esp_err_t localization_calculate_run(
     size_t frame_count = 0U;
     seismic_recorder_raw_window_stats_t raw_window_stats;
     err = seismic_recorder_read_session_range_ex(
-        object_id, session_id, 0U, frame_capacity, frames,
+        object_id, session_id, analysis_start_frame, frame_capacity, frames,
         source_sample_indices, gap_before, &frame_count, NULL, &raw_window_stats
     );
     if (err != ESP_OK) {
@@ -769,7 +1006,7 @@ esp_err_t localization_calculate_run(
         heap_caps_free(gap_before);
         return ESP_ERR_INVALID_STATE;
     }
-    const int64_t session_epoch_timestamp_us = frames[0].timestamp_us;
+    const int64_t session_epoch_timestamp_us = search_epoch_known ? search_epoch_us : frames[0].timestamp_us;
     const bool analysis_window_truncated =
         session_summary.samples_written > (uint64_t)frame_count;
     const bool analysis_window_memory_limited =
@@ -827,7 +1064,7 @@ esp_err_t localization_calculate_run(
                     trace_rejection_reason = LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP;
                 }
                 if (trace_rejection_reason != NULL) {
-                    const int64_t epoch_timestamp_us = frames[0].timestamp_us;
+                    const int64_t epoch_timestamp_us = session_epoch_timestamp_us;
                     free_channel_buffers(channel_samples);
                     heap_caps_free(frames);
                     heap_caps_free(source_sample_indices);
@@ -1448,6 +1685,22 @@ esp_err_t localization_calculate_run(
         )
     );
     localization_calculate_budget_end(&budget, &records[record_count]);
+    /* The picks were made inside the analysis window; the stored evidence names absolute recording indices. */
+    for (size_t ch = 0U; analysis_start_frame > 0U && ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        geophone_channel_pick_t *stored = &pick_record->channels[ch].pick;
+        if (stored->status == GEOPHONE_PICK_ACCEPTED) {
+            stored->arrival_sample_index += (size_t)analysis_start_frame;
+            stored->arrival_time_s = (float)(((double)stored->arrival_sample_index +
+                (double)stored->arrival_subsample_offset) / (double)session_summary.sample_rate_hz);
+        }
+        localization_pick_phase_t *s_phase = &pick_record->channels[ch].s_pick;
+        if (s_phase->present && (s_phase->fields_present & LOCALIZATION_PICK_PHASE_FIELD_SAMPLE_INDEX) != 0U) {
+            s_phase->sample_index += (size_t)analysis_start_frame;
+            s_phase->arrival_time_us = (double)localization_calculate_arrival_time_us(
+                s_phase->sample_index, session_summary.sample_rate_hz
+            );
+        }
+    }
     pick_write_err = localization_calculate_write_picks_retry(
         object_id, session_id, pick_record
     );
@@ -2275,7 +2528,7 @@ esp_err_t localization_calculate_run(
         }
         if (analysis_window_truncated) {
             records[i].analysis_window_truncated = true;
-            records[i].analysis_window_start_index = 0U;
+            records[i].analysis_window_start_index = analysis_start_frame;
             records[i].analysis_window_frames = frame_count;
             if (analysis_window_memory_limited) {
                 snprintf(
@@ -2324,7 +2577,7 @@ esp_err_t localization_calculate_run(
     );
     if (analysis_window_truncated) {
         joint_record->analysis_window_truncated = true;
-        joint_record->analysis_window_start_index = 0U;
+        joint_record->analysis_window_start_index = analysis_start_frame;
         joint_record->analysis_window_frames = frame_count;
         if (analysis_window_memory_limited) {
             snprintf(
@@ -2341,6 +2594,9 @@ esp_err_t localization_calculate_run(
     localization_calculate_recommendation(
         records, record_count, &workspace->pick_record, 1U, &summary_out->recommendation
     );
+    if (comparison_err == ESP_OK && comparison_result->joint_conflict) {
+        localization_calculate_mark_joint_conflict(&summary_out->recommendation);
+    }
 
     if (!record_has_rejection_class(joint_record)) {
         first_write_err = ESP_ERR_INVALID_STATE;

@@ -405,6 +405,23 @@ static void test_joint_adapter_averages_bounded_quality(void)
 }
 
 
+/* R6.4: a conflicted joint is stored as a rejected record, so no screen can take it as the primary source. */
+static void test_conflicted_joint_is_stored_rejected_and_never_primary(void)
+{
+    const localization_calculate_run_context_t context = make_context();
+    localization_comparison_result_t result;
+    memset(&result, 0, sizeof(result));
+    result.joint_conflict = true;
+    result.joint_found = false;
+    result.max_pairwise_disagreement_m = 30.0;
+    localization_run_record_t record;
+    localization_calculate_joint_to_run_record(&context, &result, 0x0FU, 0U, 1U, &record);
+    assert(!record.solved);
+    assert(strstr(record.rejection_reason, "disagree") != NULL);
+    assert(!localization_run_record_is_primary_candidate(&record));
+}
+
+
 static void test_joint_adapter_not_found_is_unsolved(void)
 {
     const localization_calculate_run_context_t context = make_context();
@@ -1426,8 +1443,24 @@ static void test_extended_bounds_copy_the_search_box(void)
 }
 
 
+/* Two methods that solved but contradict each other are never reported as a found source. */
+static void test_joint_conflict_turns_a_success_into_record_again(void)
+{
+    localization_recommendation_t recommendation;
+    memset(&recommendation, 0, sizeof(recommendation));
+    recommendation.successful = true;
+    localization_calculate_mark_joint_conflict(&recommendation);
+    assert(!recommendation.successful);
+    assert(recommendation.action == LOCALIZATION_RECOMMENDATION_RECORD_AGAIN);
+    assert(strstr(recommendation.reason_summary, "disagree") != NULL);
+    localization_calculate_mark_joint_conflict(NULL);   /* must not crash */
+}
+
+
 int main(void)
 {
+    test_conflicted_joint_is_stored_rejected_and_never_primary();
+    test_joint_conflict_turns_a_success_into_record_again();
     test_scan_candidate_filter_rejects_free_and_outside();
     test_quality_from_residual_matches_the_gaussian_formula();
     test_quality_from_residual_fails_closed_not_nan();

@@ -84,6 +84,25 @@ static void test_conflicting_methods_do_not_make_a_joint_position(void)
 }
 
 
+/* R6.2: two correlated methods agreeing with each other are one piece of evidence; an independent method that
+ * contradicts them is a conflict, not a 2-against-1 consensus. */
+static void test_correlated_pair_against_an_independent_method_is_a_conflict(void)
+{
+    localization_comparison_method_result_t methods[3] = {
+        solved_method("tdoa_gauss_newton", (localization_point3d_t) { 0.0, 0.0, 0.0 }, 0.8),
+        solved_method("traveltime_inversion", (localization_point3d_t) { 0.2, 0.0, 0.0 }, 0.7),
+        solved_method("semblance", (localization_point3d_t) { 25.0, 0.0, 0.0 }, 0.6)
+    };
+    methods[0].evidence_group = methods[1].evidence_group = 1u;
+    for (size_t i = 0u; i < 3u; ++i) methods[i].position_sigma_m = 0.5;
+    localization_comparison_result_t result;
+    assert(localization_comparison_fuse(methods, 3u, &result) == ESP_OK);
+    assert(result.joint_conflict);
+    assert(!result.joint_found);
+    assert(result.method_count == 3u);                /* every method stays visible */
+}
+
+
 static void test_equal_quality_methods_fuse_to_the_midpoint(void)
 {
     const localization_comparison_method_result_t methods[2] = {
@@ -341,6 +360,7 @@ static void test_correlated_evidence_group_counts_once(void)
 int main(void)
 {
     test_conflicting_methods_do_not_make_a_joint_position();
+    test_correlated_pair_against_an_independent_method_is_a_conflict();
     test_equal_quality_methods_fuse_to_the_midpoint();
     test_correlated_evidence_group_counts_once();
     test_a_low_quality_method_cannot_dominate_the_joint_result();

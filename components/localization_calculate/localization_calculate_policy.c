@@ -537,6 +537,20 @@ void localization_calculate_joint_to_run_record(
 }
 
 
+void localization_calculate_mark_joint_conflict(localization_recommendation_t *recommendation)
+{
+    if (recommendation == NULL) {
+        return;
+    }
+    recommendation->successful = false;
+    recommendation->action = LOCALIZATION_RECOMMENDATION_RECORD_AGAIN;
+    snprintf(
+        recommendation->reason_summary, sizeof(recommendation->reason_summary),
+        "methods disagree beyond their uncertainties: check the setup and record again"
+    );
+}
+
+
 void localization_calculate_run_record_to_comparison_method(
     const localization_run_record_t *record,
     localization_comparison_method_result_t *method_out

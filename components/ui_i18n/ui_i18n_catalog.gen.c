@@ -103,6 +103,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "STOPPED", /* measurement.state_complete */
     "DELETING", /* measurement.state_deleting */
     "ERROR", /* measurement.state_error */
+    "LISTEN", /* measurement.state_listen */
     "LIVE", /* measurement.state_live */
     "REC", /* measurement.state_recording */
     "STARTING", /* measurement.state_starting */
@@ -389,6 +390,8 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Move sensors", /* tft.workflow.result.move_sensors */
     "Details: %s", /* tft.workflow.result.reason */
     "Record again", /* tft.workflow.result.record_again */
+    "Source X%s Y%s m, 2D, no Z", /* tft.workflow.result.source_2d */
+    "Source X%s Y%s Z%s m", /* tft.workflow.result.source_xyz */
     "Source calculated successfully", /* tft.workflow.result.success */
     "Waveform segment unavailable", /* tft.workflow.result.waveform_unavailable */
     "Scan on phone", /* tft.workflow.scan.phone */
@@ -584,6 +587,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "ЗАВЕРШЕНО", /* measurement.state_complete */
     "ВИДАЛЕННЯ", /* measurement.state_deleting */
     "ПОМИЛКА", /* measurement.state_error */
+    "СЛУХ", /* measurement.state_listen */
     "НАЖИВО", /* measurement.state_live */
     "ЗАПИС", /* measurement.state_recording */
     "ЗАПУСК", /* measurement.state_starting */
@@ -870,6 +874,8 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Перемістіть датчики", /* tft.workflow.result.move_sensors */
     "Деталі: %s", /* tft.workflow.result.reason */
     "Запишіть ще раз", /* tft.workflow.result.record_again */
+    "Джерело X%s Y%s м, 2D, без Z", /* tft.workflow.result.source_2d */
+    "Джерело X%s Y%s Z%s м", /* tft.workflow.result.source_xyz */
     "Джерело успішно визначено", /* tft.workflow.result.success */
     "Фрагмент хвильової форми недоступний", /* tft.workflow.result.waveform_unavailable */
     "Скануйте на телефоні", /* tft.workflow.scan.phone */

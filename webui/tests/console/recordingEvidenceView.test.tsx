@@ -56,7 +56,7 @@ describe('RecordingEvidenceView', () => {
       cs_pairs: { available: false, pairs: [] }, picks: [], runs: [],
       diagnostic: {
         available: true, gate_bypassed: true, partial_geometry: true, excluded_pairs: ['0-1'],
-        source_suspicious: true, source_unhealthy: false,
+        source_suspicious: true, source_unhealthy: false, source_fault_at_stop: true,
       },
     };
     const render = (value: typeof listing) => renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale },
@@ -65,6 +65,7 @@ describe('RecordingEvidenceView', () => {
     expect(html).toContain(gate);
     expect(html).toContain(partial);
     expect(html).toContain(suspicious);
+    expect(html).toContain(locale === 'en' ? 'looked faulty when this recording ended' : 'виглядав несправним');
     expect(html).not.toContain(locale === 'en' ? 'not confirmed present' : 'не підтверджено');
     /* A recording that was not doubtful shows no diagnostic line. */
     const quiet = render({ ...listing, diagnostic: { ...listing.diagnostic, gate_bypassed: false, partial_geometry: false,

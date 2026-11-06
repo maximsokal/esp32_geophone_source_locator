@@ -987,6 +987,11 @@
       "uk": "НАЖИВО",
       "max_len": 6
     },
+    "measurement.state_listen": {
+      "en": "LISTEN",
+      "uk": "СЛУХ",
+      "max_len": 6
+    },
     "measurement.state_starting": {
       "en": "STARTING",
       "uk": "ЗАПУСК",
@@ -1456,6 +1461,8 @@
     "tft.workflow.stopped.settings_missing": { "en": "Calculation parameters not set for this object", "uk": "Для цього об’єкта не задано параметри розрахунку", "max_len": 52 },
     "tft.workflow.calculating.progress": {"en": "Progress %s%%", "uk": "Виконано %s%%", "max_len": 15},
     "tft.workflow.result.success": { "en": "Source calculated successfully", "uk": "Джерело успішно визначено", "max_len": 30 },
+    "tft.workflow.result.source_xyz": { "en": "Source X%s Y%s Z%s m", "uk": "Джерело X%s Y%s Z%s м", "max_len": 36 },
+    "tft.workflow.result.source_2d": { "en": "Source X%s Y%s m, 2D, no Z", "uk": "Джерело X%s Y%s м, 2D, без Z", "max_len": 36 },
     "tft.workflow.result.record_again": { "en": "Record again", "uk": "Запишіть ще раз", "max_len": 17 },
     "tft.workflow.result.move_sensors": { "en": "Move sensors", "uk": "Перемістіть датчики", "max_len": 21 },
     "tft.workflow.result.internal": { "en": "Internal error", "uk": "Внутрішня помилка", "max_len": 18 },

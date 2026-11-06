@@ -1436,6 +1436,8 @@ export interface LocalizationSessionDiagnostic {
   excluded_pairs?: string[];
   source_suspicious?: boolean;
   source_unhealthy?: boolean;
+  /** The AD7606 looked suspicious or stale when the recording ended. */
+  source_fault_at_stop?: boolean;
 }
 
 export interface LocalizationRunListing {

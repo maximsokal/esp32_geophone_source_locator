@@ -208,6 +208,13 @@ static void entry_routes(void)
     snapshot(WORKFLOW_STEP_RANGING_RESULT, 3U, true);
     enter(UI_SCREEN_MEASUREMENTS);
     assert(render_context.screen == UI_SCREEN_MEASUREMENTS && render_context.measurement_listen_only);
+    /* R9.2: the listening view says it is listening, never the recording-style "LIVE". */
+    assert(render_context.measurement_summary != NULL);
+    {
+        const char *summary = lv_label_get_text(render_context.measurement_summary);
+        assert(strstr(summary, "LISTEN") != NULL || strstr(summary, "СЛУХ") != NULL);
+        assert(strstr(summary, "LIVE") == NULL && strstr(summary, "НАЖИВО") == NULL);
+    }
     /* OK on the listen-only view is not a recording and not a dead key: it hands back to the step where the
      * geometry is confirmed (no start, no skipped gate). */
     key(KEYPAD_KEY_OK);
@@ -302,6 +309,57 @@ static void preview_routes(void)
     checkpoint("measurement_preview");
     key(KEYPAD_KEY_LEFT);
     assert(render_context.screen == UI_SCREEN_HOME);
+}
+
+/*
+ * P8.2-P8.4 through the real routing and the real preview loader, with no scan file at all (after SCAN_SKIP): RIGHT on
+ * the result opens the preview, the loader shows the saved sensors and the source as estimates, LEFT returns to the same
+ * result without any command, and without saved geometry nothing is invented.
+ */
+static void preview_without_scan(void)
+{
+    snapshot(WORKFLOW_STEP_RESULT, 4U, true);
+    render_snapshot.has_scan = false;
+    enter(UI_SCREEN_MEASUREMENTS);
+    assert(render_context.screen == UI_SCREEN_WORKFLOW);
+    const uint32_t result_generation = render_workflow_result_generation();
+    const unsigned commands = render_command_count;
+    key(KEYPAD_KEY_RIGHT);
+    assert(render_context.screen == UI_SCREEN_SCAN_PREVIEW && render_workflow_exists());
+
+    bool ready = false, fallback = false;
+    size_t sensors = 0U, sources = 0U;
+    memset(&render_fake_geometry, 0, sizeof(render_fake_geometry));
+    for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) {
+        render_fake_geometry.pods[pod].computed = true;
+        render_fake_geometry.pods[pod].x_mm = (int32_t)(pod * 2000U);
+        render_fake_geometry.pods[pod].y_mm = (int32_t)((pod % 2U) * 3000U);
+    }
+    render_fake_geometry_present = true;
+    memset(render_fake_runs, 0, sizeof(render_fake_runs));
+    render_fake_runs[0].solved = true;
+    render_fake_runs[0].kind = LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD;
+    (void)snprintf(render_fake_runs[0].method_name, sizeof(render_fake_runs[0].method_name), "tdoa_gauss_newton");
+    render_fake_runs[0].confidence_score = 0.8;
+    render_fake_runs[0].computed_at_ms = 1000U;
+    render_fake_runs[0].source_position.x_m = 1.0;
+    render_fake_runs[0].source_position.y_m = 2.0;
+    render_fake_runs[0].source_position.z_m = -1.0;
+    render_fake_run_count = 1U;
+    render_preview_load_for_test(&ready, &fallback, &sensors, &sources);
+    assert(ready && fallback && sensors == OBJECT_STORE_POD_COUNT && sources == 1U);   /* P8.2 */
+
+    render_fake_geometry_present = false;
+    render_fake_run_count = 0U;
+    render_preview_load_for_test(&ready, &fallback, &sensors, &sources);
+    assert(!ready && !fallback && sensors == 0U && sources == 0U);                      /* P8.4 */
+
+    render_preview_complete(true);
+    render_preview_complete(false);
+    key(KEYPAD_KEY_LEFT);
+    assert(render_context.screen == UI_SCREEN_WORKFLOW);
+    assert(render_workflow_result_generation() == result_generation && render_command_count == commands);   /* P8.3 */
+    home();
 }
 
 static void close_during_result(void) { home(); }
@@ -466,7 +524,7 @@ int main(int argc, char **argv)
         if (strcmp(scenario, "entry") == 0) { entry_routes(); workflow_memory_failure(); }
         else if (strcmp(scenario, "picker") == 0) picker_route();
         else if (strcmp(scenario, "activation") == 0) activation_route();
-        else if (strcmp(scenario, "preview") == 0) preview_routes();
+        else if (strcmp(scenario, "preview") == 0) { preview_routes(); preview_without_scan(); }
         else if (strcmp(scenario, "result") == 0) result_ownership();
         else if (strcmp(scenario, "confirm") == 0) confirmations();
         else if (strcmp(scenario, "lifecycle") == 0) repeated_lifecycle();

@@ -530,6 +530,14 @@ static void seismic_recorder_stop_step(void)
                 SEISMIC_RECORDER_STOP_STAGE_METADATA;
             seismic_recorder_unlock();
 
+            /* What the AD7606 looks like when the recording ends: shown to the operator, never blocking. */
+            seismic_acquisition_snapshot_t stop_acquisition;
+            if (final_participation.diagnostic.available &&
+                seismic_acquisition_get_snapshot(&stop_acquisition) == ESP_OK) {
+                final_participation.diagnostic.source_fault_at_stop =
+                    stop_acquisition.serial_suspicious || !stop_acquisition.source_healthy;
+            }
+
             const char *status =
                 final_snapshot.last_error == ESP_OK
                     ? "complete"

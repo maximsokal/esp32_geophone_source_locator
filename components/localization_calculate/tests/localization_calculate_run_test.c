@@ -77,6 +77,7 @@ static esp_err_t g_fixture_raw_err;
 static size_t g_geometry_read_calls;
 static size_t g_summary_read_calls;
 static size_t g_range_read_calls;
+static size_t g_range_read_max_frames;
 
 esp_err_t seismic_recorder_read_session_geometry(
     const char *object_id,
@@ -129,6 +130,7 @@ esp_err_t seismic_recorder_read_session_range_ex(
     (void)object_id;
     (void)session_id;
     ++g_range_read_calls;
+    g_range_read_max_frames = max_frames;
     if (g_fixture_raw_err != ESP_OK) {
         return g_fixture_raw_err;
     }
@@ -163,6 +165,35 @@ esp_err_t seismic_recorder_read_session_range_ex(
     }
     if (summary_out != NULL) {
         *summary_out = g_fixture_summary;
+    }
+    return ESP_OK;
+}
+
+
+esp_err_t seismic_recorder_scan_session(
+    const char *object_id, const char *session_id, seismic_frame_t *buffer,
+    size_t capacity, seismic_recorder_scan_callback_t callback, void *context
+)
+{
+    (void)object_id;
+    (void)session_id;
+    if (g_fixture_raw_err != ESP_OK) return g_fixture_raw_err;
+    if (buffer == NULL || capacity == 0U || callback == NULL) return ESP_ERR_INVALID_ARG;
+    for (size_t start = 0U; start < g_fixture_frame_count;) {
+        size_t count = g_fixture_frame_count - start;
+        if (count > capacity) count = capacity;
+        if (g_fixture_gap_index > start && g_fixture_gap_index - start < count) {
+            count = g_fixture_gap_index - start;
+        }
+        memcpy(buffer, g_fixture_frames + start, count * sizeof(*buffer));
+        if (g_fixture_nonmonotonic_index >= start &&
+            g_fixture_nonmonotonic_index - start < count && g_fixture_nonmonotonic_index > 0U) {
+            const size_t i = g_fixture_nonmonotonic_index - start;
+            buffer[i].timestamp_us = g_fixture_frames[g_fixture_nonmonotonic_index - 1U].timestamp_us - 1;
+        }
+        const esp_err_t err = callback(buffer, count, (uint64_t)start, start == g_fixture_gap_index, context);
+        if (err != ESP_OK) return err;
+        start += count;
     }
     return ESP_OK;
 }
@@ -223,6 +254,7 @@ static void reset_fakes(void)
     g_geometry_read_calls = 0U;
     g_summary_read_calls = 0U;
     g_range_read_calls = 0U;
+    g_range_read_max_frames = 0U;
     g_fixture_gap_index = SIZE_MAX;
     g_fixture_nonmonotonic_index = SIZE_MAX;
     memset(g_fixture_rail_counts, 0, sizeof(g_fixture_rail_counts));
@@ -1234,6 +1266,141 @@ static void test_time_budget_exhausted_skips_remaining_methods(void)
 }
 
 
+static void prepare_recording_with_event(uint32_t duration_s, double event_time_s)
+{
+    const uint32_t sample_rate_hz = 500U;
+    const size_t recording_frames = (size_t)duration_s * sample_rate_hz;
+
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 0.0f, 0.0f, false);
+    extend_fixture_frames(recording_frames);
+    g_fixture_summary.sample_rate_hz = sample_rate_hz;
+
+    for (size_t i = 0U; i < recording_frames; ++i) {
+        g_fixture_frames[i].timestamp_us = 5000000LL + (int64_t)i * 2000LL;
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+            g_fixture_frames[i].channel_uv[ch] = next_noise_sample(0.02f);
+        }
+    }
+    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        const double dx = s_source.x_m - s_pod_positions[ch].x_m;
+        const double dy = s_source.y_m - s_pod_positions[ch].y_m;
+        const double dz = s_source.z_m - s_pod_positions[ch].z_m;
+        const double arrival_s = event_time_s +
+            sqrt(dx * dx + dy * dy + dz * dz) / TEST_SPEED_MPS;
+        const size_t arrival = (size_t)llround(arrival_s * (double)sample_rate_hz);
+        add_ramp_pulse_to_channel(ch, arrival, 20U, 1.0f);
+    }
+}
+
+static void run_late_event_case(uint32_t duration_s, double event_time_s, bool constrain_psram)
+{
+    const uint32_t sample_rate_hz = 500U;
+    const size_t recording_frames = (size_t)duration_s * sample_rate_hz;
+    reset_fakes();
+    prepare_recording_with_event(duration_s, event_time_s);
+    if (constrain_psram) {
+        localization_test_psram_model_set_reserved(8U * 1024U * 1024U - 4U * 1024U * 1024U);
+    }
+    localization_calculate_config_t config = default_test_config();
+    config.sample_rate_hz = sample_rate_hz;
+    config.pick_config.noise_window_samples = 25U;
+    config.pick_config.sta_window_samples = 5U;
+    config.pick_config.lta_window_samples = 50U;
+    config.pick_config.refine_lookback_samples = 5U;
+    config.pick_config.refine_lookahead_samples = 5U;
+    config.pick_config.snr_signal_window_samples = 20U;
+
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run(
+        "OBJ01", "S000022", &config, 52000ULL, &summary
+    ) == ESP_OK);
+    assert(g_fixture_summary.samples_written == recording_frames);
+    if (constrain_psram) {
+        assert(g_range_read_max_frames < recording_frames);
+        assert(localization_test_psram_model_allocated_bytes() == 0U);
+        localization_test_psram_model_reset();
+    }
+    assert(summary.recommendation.action != LOCALIZATION_RECOMMENDATION_RECORD_AGAIN);
+    const localization_run_record_t *tdoa = find_record("tdoa_gauss_newton");
+    assert(tdoa != NULL);
+    assert(tdoa->analysis_window_start_index > 0U);
+    assert(tdoa->solved);
+    assert(g_pick_record.session_epoch_known);
+    assert(g_pick_record.session_epoch_timestamp_us == 5000000LL);
+    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        const geophone_channel_pick_t *pick = &g_pick_record.channels[ch].pick;
+        assert(pick->status == GEOPHONE_PICK_ACCEPTED);
+        assert(pick->arrival_sample_index >= (size_t)(event_time_s * sample_rate_hz));
+        assert(pick->arrival_sample_index < (size_t)((event_time_s + 0.1) * sample_rate_hz));
+    }
+    free_fixture_frames();
+}
+
+static void test_late_event_in_full_recording_is_localized(void)
+{
+    run_late_event_case(30U, 22.0, false);
+    puts("  late event at 22 s in a 30 s recording is localized -- OK");
+}
+
+/* R5.2: an event straddling the end of the first search window (10 s) is found once, in a window that holds it whole. */
+static void test_event_across_the_search_window_boundary_is_found_once(void)
+{
+    run_late_event_case(30U, 9.97, false);
+    puts("  event straddling the 10 s window boundary is localized once -- OK");
+}
+
+
+static void test_event_after_45_seconds_preserves_absolute_tdoa(void)
+{
+    run_late_event_case(60U, 50.0, false);
+    puts("  event after 45 s preserves absolute picks and epoch -- OK");
+}
+
+static void test_quiet_prefix_does_not_false_fail_late_event(void)
+{
+    run_late_event_case(25U, 15.0, false);
+    puts("  quiet first 10 s does not reject event at 15 s -- OK");
+}
+
+static void test_five_minute_late_event_stays_within_psram_window(void)
+{
+    run_late_event_case(300U, 270.0, true);
+    puts("  five-minute recording keeps bounded PSRAM and finds event at 270 s -- OK");
+}
+
+static void test_gap_at_four_seconds_rejects_whole_recording(void)
+{
+    reset_fakes();
+    prepare_recording_with_event(30U, 25.0);
+    g_fixture_gap_index = 4U * 500U;
+    localization_calculate_config_t config = default_test_config();
+    config.sample_rate_hz = 500U;
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run("OBJ01", "S000052", &config, 52052ULL, &summary) == ESP_OK);
+    assert(g_recorded_count == 1U && g_pick_write_calls == 0U);
+    assert(strcmp(g_recorded[0].rejection_reason, LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP) == 0);
+    free_fixture_frames();
+    puts("  known gap at 4 s rejects recording before late event picks -- OK");
+}
+
+static void test_gap_after_prefix_rejects_whole_recording(void)
+{
+    reset_fakes();
+    prepare_recording_with_event(30U, 5.0);
+    g_fixture_gap_index = 12U * 500U;
+    localization_calculate_config_t config = default_test_config();
+    config.sample_rate_hz = 500U;
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run("OBJ01", "S000053", &config, 52053ULL, &summary) == ESP_OK);
+    const localization_run_record_t *analysis = find_record("localization_analysis");
+    assert(analysis != NULL);
+    assert(strcmp(analysis->rejection_reason, LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP) == 0);
+    assert(g_pick_write_calls == 0U);
+    free_fixture_frames();
+    puts("  known gap at 12 s rejects whole recording despite early event -- OK");
+}
+
+
 /* Portable best-effort recursive mkdir for the handful of fixed segments
  * this test needs under the fake STORAGE_MANAGER_OBJECTS_PATH root. */
 static void ensure_dir(const char *path)
@@ -1567,6 +1734,29 @@ static void test_unusable_scan_reports_constraint_not_applied(void)
 
 int main(void)
 {
+    const char *p5_scenario = getenv("P5_SCENARIO");
+    if (p5_scenario != NULL) {
+        if (strcmp(p5_scenario, "r5_1") == 0) {
+            test_late_event_in_full_recording_is_localized();
+        } else if (strcmp(p5_scenario, "r5_2") == 0) {
+            test_event_across_the_search_window_boundary_is_found_once();
+        } else if (strcmp(p5_scenario, "r5_3") == 0) {
+            test_event_after_45_seconds_preserves_absolute_tdoa();
+        } else if (strcmp(p5_scenario, "r5_4") == 0) {
+            test_quiet_prefix_does_not_false_fail_late_event();
+        } else if (strcmp(p5_scenario, "r5_5_gap_inside") == 0) {
+            test_gap_at_four_seconds_rejects_whole_recording();
+        } else if (strcmp(p5_scenario, "r5_5_gap_after_prefix") == 0) {
+            test_gap_after_prefix_rejects_whole_recording();
+        } else if (strcmp(p5_scenario, "r5_6") == 0) {
+            test_five_minute_late_event_stays_within_psram_window();
+        } else {
+            fprintf(stderr, "unknown P5_SCENARIO: %s\n", p5_scenario);
+            return 2;
+        }
+        return 0;
+    }
+
     test_non_finite_velocity_is_rejected_before_io();
     test_sample_windows_rescale_across_session_rates();
     test_run_revalidates_windows_against_session_rate();
@@ -1584,6 +1774,13 @@ int main(void)
     test_read_failures_propagate_with_no_partial_writes();
     test_run_store_write_failure_midway_contract();
     test_time_budget_exhausted_skips_remaining_methods();
+    test_late_event_in_full_recording_is_localized();
+    test_event_across_the_search_window_boundary_is_found_once();
+    test_event_after_45_seconds_preserves_absolute_tdoa();
+    test_quiet_prefix_does_not_false_fail_late_event();
+    test_gap_at_four_seconds_rejects_whole_recording();
+    test_gap_after_prefix_rejects_whole_recording();
+    test_five_minute_late_event_stays_within_psram_window();
     test_scan_identity_mismatch_and_unavailable_fail_closed();
     test_unusable_scan_reports_constraint_not_applied();
     test_record_stop_then_localize_with_reserved_psram();

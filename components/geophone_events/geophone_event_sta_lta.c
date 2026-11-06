@@ -104,3 +104,53 @@ bool geophone_event_sta_lta_detect(
         samples, sample_count, config, 0u, result
     );
 }
+
+
+bool geophone_event_sta_lta_episode_after(
+    const float *samples,
+    size_t sample_count,
+    const geophone_sta_lta_config_t *config,
+    size_t minimum_trigger_index,
+    geophone_sta_lta_episode_t *result
+)
+{
+    if (result == NULL) return false;
+    *result = (geophone_sta_lta_episode_t) { 0 };
+    if (samples == NULL || config == NULL || config->sta_window_samples == 0U ||
+        config->lta_window_samples <= config->sta_window_samples ||
+        !isfinite(config->trigger_ratio) || config->trigger_ratio <= 0.0f ||
+        sample_count < config->lta_window_samples ||
+        !samples_are_finite(samples, sample_count)) return false;
+
+    const size_t sta = config->sta_window_samples;
+    const size_t lta = config->lta_window_samples;
+    double lta_sum = 0.0;
+    double sta_sum = 0.0;
+    for (size_t i = 0U; i < lta; ++i) {
+        const double square = (double)samples[i] * (double)samples[i];
+        lta_sum += square;
+        if (i >= lta - sta) sta_sum += square;
+    }
+
+    bool active = false;
+    for (size_t end = lta; ; ++end) {
+        const size_t index = end - sta;
+        const double lta_mean = lta_sum / (double)lta;
+        const bool triggered = lta_mean > 0.0 &&
+            (sta_sum / (double)sta) / lta_mean >= (double)config->trigger_ratio;
+        if (!active && triggered && index >= minimum_trigger_index) {
+            active = true;
+            result->trigger_index = index;
+        } else if (active && !triggered) {
+            result->next_trigger_index = index;
+            result->complete = true;
+            return true;
+        }
+        if (end >= sample_count) break;
+        const double incoming = (double)samples[end] * (double)samples[end];
+        lta_sum += incoming - (double)samples[end - lta] * (double)samples[end - lta];
+        sta_sum += incoming - (double)samples[end - sta] * (double)samples[end - sta];
+    }
+    if (active) result->next_trigger_index = sample_count - sta + 1U;
+    return active;
+}

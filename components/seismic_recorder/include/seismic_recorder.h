@@ -269,6 +269,8 @@ typedef struct
     uint8_t excluded_pairs[SEISMIC_RECORDER_DIAGNOSTIC_MAX_EXCLUDED_PAIRS][2];
     bool source_suspicious;
     bool source_unhealthy;
+    /* The AD7606 looked suspicious or its presence stale when the recording ended (read at STOP, not at START). */
+    bool source_fault_at_stop;
 } seismic_recorder_diagnostic_metadata_t;
 
 
@@ -468,6 +470,27 @@ esp_err_t seismic_recorder_read_session_range_ex(
     size_t *frame_count_out,
     seismic_recorder_session_summary_t *summary_out,
     seismic_recorder_raw_window_stats_t *raw_stats_out
+);
+
+/* A callback sees one contiguous source-index run in the caller's buffer. */
+typedef esp_err_t (*seismic_recorder_scan_callback_t)(
+    const seismic_frame_t *frames,
+    size_t count,
+    uint64_t first_source_index,
+    bool gap_before,
+    void *context
+);
+
+/* Sequentially visit the complete session without rescanning earlier blocks.
+ * Run from a worker task, not a UI callback. Callback errors stop the scan;
+ * results are valid only if the scan succeeds. */
+esp_err_t seismic_recorder_scan_session(
+    const char *object_id,
+    const char *session_id,
+    seismic_frame_t *buffer,
+    size_t capacity,
+    seismic_recorder_scan_callback_t callback,
+    void *context
 );
 
 

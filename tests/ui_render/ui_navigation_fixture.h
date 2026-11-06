@@ -2,6 +2,8 @@
 #include "ui_internal.h"
 #include "workflow_service.h"
 #include "hw_inventory.h"
+#include "localization_run_record.h"
+#include "object_store.h"
 
 extern ui_context_t render_context;
 extern workflow_snapshot_t render_snapshot;
@@ -29,4 +31,10 @@ uint32_t render_workflow_result_generation(void);
 size_t render_workflow_action_count(void);
 bool render_preview_open(void);
 void render_preview_complete(bool stale);
+/* Runs the real preview loader on the fake saved session: ready, sensor-estimates fallback, sensors, sources. */
+void render_preview_load_for_test(bool *ready, bool *fallback, size_t *sensors, size_t *sources);
+extern bool render_fake_geometry_present;
+extern object_store_geometry_t render_fake_geometry;
+extern localization_run_record_t render_fake_runs[4];
+extern size_t render_fake_run_count;
 void render_run_task(const char *name, void (*before_completion)(void));

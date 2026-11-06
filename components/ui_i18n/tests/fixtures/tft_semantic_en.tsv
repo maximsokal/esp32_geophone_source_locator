@@ -20,7 +20,7 @@ result_unavailable.body.4	G3: —
 result_unavailable.body.5	G4: —
 result_zero.title	RESULT
 result_zero.hint	UP/DOWN select OK run LEFT back RIGHT 3D
-result_zero.body.0	Source calculated successfully
+result_zero.body.0	Source X0.0 Y0.0 Z0.0 m
 result_zero.body.1	G1: 0.0 m
 result_zero.body.2	G2: 0.0 m
 result_zero.body.3	G3: 0.0 m

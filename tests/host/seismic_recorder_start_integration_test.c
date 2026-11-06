@@ -1067,12 +1067,19 @@ int main(void)
         else assert(final_geometry.pods[0].x_mm == 0 && final_geometry.pods[0].y_mm == 6000);
         assert(final_geometry.pods[0].z_mm == 0);
         assert(seismic_recorder_stop() == ESP_OK);
+        /* The AD7606 looking faulty when the recording ends is recorded in the final metadata (shown, not blocking). */
+        fake_acquisition.serial_suspicious = cable_control == 1U;
+        fake_acquisition.source_healthy = true;   /* the fixture's presence is stale elsewhere; here only the stream matters */
         final_metadata_written = false;
         if (setjmp(worker_finished) == 0) {
             fake_recorder_task(NULL);
             assert(false && "cable control recorder worker should finish STOP metadata");
         }
         assert(final_metadata_written && strcmp(last_metadata_status, "complete") == 0);
+        assert(strstr(persisted_session_json, cable_control == 1U ? "\"source_fault_at_stop\":true"
+                                                                  : "\"source_fault_at_stop\":false") != NULL);
+        fake_acquisition.serial_suspicious = false;
+        fake_acquisition.source_healthy = false;
     }
     /* Without the MAIN edge there is nothing that explains a position past the cable: only the rounding mm applies. */
     fake_frozen_ranging.pairs[0].state = NRF_CS_PAIR_RETRY_EXHAUSTED;

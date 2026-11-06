@@ -2,6 +2,17 @@
   "version": 1,
   "tests": [
     {
+      "name": "localization_event_rank",
+      "sources": [
+        "components/localization_calculate/localization_event_rank.c",
+        "components/localization_calculate/tests/localization_event_rank_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder/tests/stubs",
+        "components/localization_calculate/include"
+      ]
+    },
+    {
       "name": "app_events",
       "sources": [
         "components/app_events/app_events.c",

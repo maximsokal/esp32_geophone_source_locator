@@ -296,12 +296,28 @@ esp_err_t seismic_recorder_read_session(const char *object, const char *session,
     (void)object; (void)session; (void)start; (void)frames; (void)maximum;
     (void)out; (void)capacity; (void)info; return ESP_ERR_NOT_FOUND;
 }
+/* Saved session data the real preview loader reads; absent (NOT_FOUND) unless a test provides it. */
+bool render_fake_geometry_present, render_fake_storage_enabled;
+object_store_geometry_t render_fake_geometry;
+localization_run_record_t render_fake_runs[4];
+size_t render_fake_run_count;
 esp_err_t seismic_recorder_read_session_geometry(const char *object, const char *session,
     object_store_geometry_t *out)
-{ (void)object; (void)session; memset(out, 0, sizeof(*out)); return ESP_ERR_NOT_FOUND; }
+{
+    (void)object; (void)session;
+    if (!render_fake_geometry_present) { memset(out, 0, sizeof(*out)); return ESP_ERR_NOT_FOUND; }
+    *out = render_fake_geometry;
+    return ESP_OK;
+}
 esp_err_t localization_run_store_list(const char *object, const char *session,
     localization_run_record_t *out, size_t maximum, size_t *count)
-{ (void)object; (void)session; (void)out; (void)maximum; *count = 0U; return ESP_ERR_NOT_FOUND; }
+{
+    (void)object; (void)session;
+    if (render_fake_run_count == 0U) { *count = 0U; return ESP_ERR_NOT_FOUND; }
+    *count = render_fake_run_count < maximum ? render_fake_run_count : maximum;
+    memcpy(out, render_fake_runs, *count * sizeof(*out));
+    return ESP_OK;
+}
 esp_err_t localization_run_store_list_picks(const char *object, const char *session,
     localization_pick_record_t *out, size_t maximum, size_t *count)
 { (void)object; (void)session; (void)out; (void)maximum; *count = 0U; return ESP_ERR_NOT_FOUND; }
@@ -397,6 +413,16 @@ esp_err_t esp_lcd_panel_io_tx_param(esp_lcd_panel_io_handle_t io, int command, c
 { (void)io; (void)command; (void)data; (void)size; assert(false); return ESP_FAIL; }
 bool storage_bulk_admission_is_protected(void) { return false; }
 esp_err_t storage_bulk_admission_run_chunk(esp_err_t (*callback)(void *), void *context)
-{ (void)callback; (void)context; assert(false); return ESP_ERR_INVALID_STATE; }
-esp_err_t storage_manager_operation_begin(void) { assert(false); return ESP_ERR_INVALID_STATE; }
-void storage_manager_operation_end(void) { assert(false); }
+{
+    /* Only a test that calls the real preview loader enables storage; anywhere else a read is a bug. */
+    if (render_fake_storage_enabled) return callback(context);
+    assert(false);
+    return ESP_ERR_INVALID_STATE;
+}
+esp_err_t storage_manager_operation_begin(void)
+{
+    if (render_fake_storage_enabled) return ESP_OK;   /* the real loader brackets its reads */
+    assert(false);
+    return ESP_ERR_INVALID_STATE;
+}
+void storage_manager_operation_end(void) { assert(render_fake_storage_enabled); }

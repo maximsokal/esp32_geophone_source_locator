@@ -804,7 +804,9 @@ static const char *ui_measurements_state_name(
 {
     switch (state) {
         case MEASUREMENT_SERVICE_LIVE:
-            return ui_tr(UI_I18N_KEY_MEASUREMENT_STATE_LIVE);
+            /* The listen-only view (before recording, opened from the ranging result) says it is not a recording. */
+            return ui_tr(ui_context()->measurement_listen_only
+                ? UI_I18N_KEY_MEASUREMENT_STATE_LISTEN : UI_I18N_KEY_MEASUREMENT_STATE_LIVE);
         case MEASUREMENT_SERVICE_STARTING:
             return ui_tr(UI_I18N_KEY_MEASUREMENT_STATE_STARTING);
         case MEASUREMENT_SERVICE_RECORDING:

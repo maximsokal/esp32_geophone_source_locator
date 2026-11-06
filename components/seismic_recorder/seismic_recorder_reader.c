@@ -9,6 +9,9 @@
 #include "esp_heap_caps.h"
 #include "seismic_recorder_lod_reader.h"
 #include "storage_manager.h"
+#if defined(ESP_PLATFORM) || defined(SEISMIC_RECORDER_TEST_BULK_ADMISSION)
+#include "storage_bulk_admission.h"
+#endif
 
 #ifdef ESP_PLATFORM
 #include "app_task_config.h"
@@ -1207,5 +1210,133 @@ esp_err_t seismic_recorder_read_session_range_ex(
             *summary_out = summary;
         }
     }
+    return err;
+}
+
+
+typedef struct
+{
+    const char *object_id;
+    const char *session_id;
+    char *path;
+    seismic_recorder_session_summary_t *summary;
+    uint64_t *file_size;
+} seismic_recorder_scan_prepare_t;
+
+
+static esp_err_t seismic_recorder_scan_prepare(void *context)
+{
+    seismic_recorder_scan_prepare_t *prepare = context;
+    esp_err_t err = seismic_recorder_get_session_summary(
+        prepare->object_id, prepare->session_id, prepare->summary
+    );
+    if (err == ESP_OK && !prepare->summary->readable && !prepare->summary->complete) {
+        err = ESP_ERR_INVALID_STATE;
+    }
+    if (err == ESP_OK) {
+        err = seismic_recorder_fs_build_session_path(
+            prepare->object_id, prepare->session_id, prepare->path, SEISMIC_RECORDER_PATH_SIZE
+        );
+    }
+    if (err == ESP_OK) {
+        err = seismic_recorder_reader_append_suffix(
+            prepare->path, SEISMIC_RECORDER_PATH_SIZE, "/samples.bin"
+        );
+    }
+    if (err == ESP_OK) err = seismic_recorder_reader_file_size(prepare->path, prepare->file_size);
+    return err;
+}
+
+
+typedef struct
+{
+    void *reader;
+    uint64_t offset;
+    void *buffer;
+    size_t size;
+} seismic_recorder_scan_read_t;
+
+
+static esp_err_t seismic_recorder_scan_read_chunk(void *context)
+{
+    seismic_recorder_scan_read_t *read = context;
+    return seismic_recorder_reader_read_at(read->reader, read->offset, read->buffer, read->size);
+}
+
+
+static esp_err_t seismic_recorder_scan_admit(esp_err_t (*fn)(void *), void *context)
+{
+#if defined(ESP_PLATFORM) || defined(SEISMIC_RECORDER_TEST_BULK_ADMISSION)
+    return storage_bulk_admission_run_chunk(fn, context);
+#else
+    return fn(context);
+#endif
+}
+
+
+static esp_err_t seismic_recorder_scan_read_at(
+    void *context, uint64_t offset, void *buffer, size_t size
+)
+{
+    seismic_recorder_scan_read_t read = { context, offset, buffer, size };
+    return seismic_recorder_scan_admit(seismic_recorder_scan_read_chunk, &read);
+}
+
+
+esp_err_t seismic_recorder_scan_session(
+    const char *object_id,
+    const char *session_id,
+    seismic_frame_t *buffer,
+    size_t capacity,
+    seismic_recorder_scan_callback_t callback,
+    void *context
+)
+{
+    if (object_id == NULL || session_id == NULL || buffer == NULL ||
+        capacity == 0U || callback == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char *path = malloc(SEISMIC_RECORDER_PATH_SIZE);
+    if (path == NULL) return ESP_ERR_NO_MEM;
+    seismic_recorder_session_summary_t summary;
+    uint64_t file_size = 0U;
+    seismic_recorder_scan_prepare_t prepare = { object_id, session_id, path, &summary, &file_size };
+    esp_err_t err = seismic_recorder_scan_admit(seismic_recorder_scan_prepare, &prepare);
+    seismic_recorder_bounded_reader_t raw_reader = { .path = path };
+    seismic_recorder_samples_reader_t reader = {0};
+    if (err == ESP_OK) {
+        err = seismic_recorder_samples_reader_open(
+            seismic_recorder_scan_read_at, &raw_reader, file_size, &summary, &reader
+        );
+    }
+
+#ifdef ESP_PLATFORM
+    seismic_recorder_reader_priority_guard_t priority_guard = {0};
+    if (err == ESP_OK) priority_guard = seismic_recorder_reader_priority_enter();
+#endif
+    while (err == ESP_OK && reader.logical_frame_position < reader.logical_frame_count) {
+        size_t count = 0U;
+        uint64_t first_source_index = 0U;
+        bool gap_before = false;
+        const size_t chunk_capacity = capacity < SEISMIC_RECORDER_READ_STAGING_FRAMES
+            ? capacity : SEISMIC_RECORDER_READ_STAGING_FRAMES;
+        err = seismic_recorder_samples_reader_next(
+            seismic_recorder_scan_read_at, &raw_reader, &reader, buffer, chunk_capacity,
+            &count, &first_source_index, &gap_before
+        );
+        if (err == ESP_OK && count == 0U) err = ESP_ERR_INVALID_RESPONSE;
+        if (err == ESP_OK) err = callback(buffer, count, first_source_index, gap_before, context);
+#ifdef ESP_PLATFORM
+        if (err == ESP_OK) vTaskDelay(1);
+#endif
+    }
+    if (err == ESP_OK) {
+        err = seismic_recorder_samples_reader_finish(seismic_recorder_scan_read_at, &raw_reader, &reader);
+    }
+#ifdef ESP_PLATFORM
+    if (priority_guard.changed) seismic_recorder_reader_priority_leave(priority_guard);
+#endif
+    free(path);
     return err;
 }
