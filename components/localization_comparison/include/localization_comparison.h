@@ -49,6 +49,8 @@
 #define LOCALIZATION_COMPARISON_MAX_METHODS 16U
 #define LOCALIZATION_COMPARISON_METHOD_NAME_SIZE 32U
 #define LOCALIZATION_COMPARISON_REJECTION_REASON_SIZE 96U
+/* Two methods disagree when their positions differ by more than this many combined 1-sigma uncertainties. */
+#define LOCALIZATION_COMPARISON_CONFLICT_SIGMAS 3.0
 
 
 typedef struct
@@ -81,6 +83,13 @@ typedef struct
      */
     unsigned evidence_group;
 
+    /*
+     * 1-sigma size of this method's own position uncertainty in metres, caller-supplied; <= 0 = not known (never a
+     * guessed zero). Two contributing methods are in conflict when they are farther apart than
+     * LOCALIZATION_COMPARISON_CONFLICT_SIGMAS combined sigmas; a pair with an unknown sigma cannot be called either way.
+     */
+    double position_sigma_m;
+
     /* Valid only if !solved -- never left blank for an unsolved method. */
     char rejection_reason[LOCALIZATION_COMPARISON_REJECTION_REASON_SIZE];
 
@@ -96,6 +105,15 @@ typedef struct
     localization_point3d_t joint_position; /* quality-weighted average of every solved method */
     double joint_total_quality;            /* sum of the weights actually used; 0 if joint_found is false */
     size_t joint_methods_used_count;
+
+    /*
+     * True when two contributing methods, both with a known sigma, disagree beyond the gate above: then there is NO
+     * joint position (joint_found is false) -- an average of opposite estimates is not a location. The individual
+     * methods stay in methods[]. joint_unverified is true when a joint position exists but at least one contributing
+     * pair has an unknown sigma, so its agreement was not checked.
+     */
+    bool joint_conflict;
+    bool joint_unverified;
 
     /*
      * Largest distance between any two SOLVED methods' positions

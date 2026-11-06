@@ -406,8 +406,10 @@ static void test_right_preview_matrix(void)
             snapshot.has_scan = has_scan != 0U;
             const ui_workflow_event_t event = ui_workflow_model_handle_key(
                 &snapshot, &state, UI_WORKFLOW_KEY_RIGHT, 100U);
-            const bool available = snapshot.has_scan && (step == WORKFLOW_STEP_RECORD_READY ||
-                step == WORKFLOW_STEP_RECORDING || step == WORKFLOW_STEP_RESULT);
+            /* The sensors (and the source) can be shown from the saved geometry even after SCAN_SKIP, so RESULT opens
+             * the preview without a scan; the preview itself says "no geometry" when there is none. */
+            const bool available = (snapshot.has_scan && (step == WORKFLOW_STEP_RECORD_READY ||
+                step == WORKFLOW_STEP_RECORDING || step == WORKFLOW_STEP_RESULT)) || step == WORKFLOW_STEP_RESULT;
             assert((event.type == UI_WORKFLOW_EVENT_OPEN_PREVIEW) == available);
         }
     }

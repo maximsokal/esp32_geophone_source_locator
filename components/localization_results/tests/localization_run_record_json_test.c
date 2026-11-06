@@ -988,8 +988,34 @@ static void test_inconsistent_run_is_not_a_primary_candidate(void)
 }
 
 
+/* TFT and 3D pick the same primary: a usable joint fusion beats a more confident single method; no conflict, no joint. */
+static void test_primary_selection_prefers_a_usable_joint_fusion(void)
+{
+    localization_run_record_t runs[3] = {solved_record(), solved_record(), solved_record()};
+    runs[0].kind = LOCALIZATION_RUN_KIND_JOINT_FUSION;
+    runs[0].confidence_score = 0.70;
+    runs[0].source_position.x_m = 2.0;
+    runs[1].kind = LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD;
+    runs[1].confidence_score = 0.95;
+    runs[1].source_position.x_m = 10.0;
+    runs[2].kind = LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD;
+    runs[2].confidence_score = 0.60;
+    const localization_run_record_t *primary = localization_run_record_select_primary(runs, 3U, false, 0U);
+    assert(primary == &runs[0]);
+    runs[0].uncertainty_too_high = true;                       /* too uncertain: fall back to the best method */
+    assert(localization_run_record_select_primary(runs, 3U, false, 0U) == &runs[1]);
+    runs[1].velocity_status = LOCALIZATION_RUN_VELOCITY_STATUS_INCONSISTENT;   /* never primary */
+    assert(localization_run_record_select_primary(runs, 3U, false, 0U) == &runs[2]);
+    runs[2].computed_at_ms = 99U;                              /* only the calculation generation counts */
+    assert(localization_run_record_select_primary(runs, 3U, true, 5U) == NULL);
+    assert(localization_run_record_select_primary(runs, 3U, true, 99U) == &runs[2]);
+    assert(localization_run_record_select_primary(NULL, 0U, false, 0U) == NULL);
+}
+
+
 int main(void)
 {
+    test_primary_selection_prefers_a_usable_joint_fusion();
     test_integer_fields_reject_fractional_negative_and_oversized_numbers();
     test_inconsistent_run_is_not_a_primary_candidate();
     test_velocity_range_and_status_round_trip_in_v7();

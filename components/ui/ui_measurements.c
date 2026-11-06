@@ -1463,8 +1463,9 @@ void ui_handle_measurements_key_locked(
         case MEASUREMENT_SERVICE_LIVE:
         case MEASUREMENT_SERVICE_ERROR:
             if (context->measurement_listen_only) {
-                ui_set_notice_locked(ui_tr(UI_I18N_KEY_MEASUREMENT_LISTEN_ONLY));
-                ui_measurements_refresh_locked();
+                /* Listening is not recording: OK hands back to the workflow step where the geometry is confirmed.
+                 * It starts nothing and skips no gate; sampling goes on and no session is created. */
+                ui_screen_open_locked(UI_SCREEN_WORKFLOW);
                 return;
             }
             if (!snapshot.active_object_present) {

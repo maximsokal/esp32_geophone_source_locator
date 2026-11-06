@@ -516,6 +516,15 @@ static bool step_can_preview(workflow_step_t step)
         step == WORKFLOW_STEP_RESULT;
 }
 
+/*
+ * The preview shows the saved sensor positions and the source even without a 3D scan (after SCAN_SKIP), and says
+ * "no geometry" itself when there are none; so the RESULT screen always offers it, the other steps need a scan.
+ */
+static bool preview_available(const workflow_snapshot_t *snapshot)
+{
+    return snapshot->step == WORKFLOW_STEP_RESULT || (snapshot->has_scan && step_can_preview(snapshot->step));
+}
+
 static void add_material_speed_line(
     ui_workflow_model_t *model,
     uint32_t speed_mps,
@@ -653,7 +662,7 @@ void ui_workflow_model_build(
     model->title_key = title_key(snapshot->step);
     model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_HINT_NAVIGATION;
     model->notice_key = UI_I18N_KEY_COUNT;
-    model->show_3d_hint = snapshot->has_scan && step_can_preview(snapshot->step);
+    model->show_3d_hint = preview_available(snapshot);
     if (model->show_3d_hint) model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_HINT_3D;
     model->show_delete_confirm = state->delete_confirm;
     if (state->delete_confirm) model->hint_key = UI_I18N_KEY_TFT_WORKFLOW_CONFIRM_DELETE;
@@ -1318,7 +1327,7 @@ ui_workflow_event_t ui_workflow_model_handle_key(
             }
             break;
         case UI_WORKFLOW_KEY_RIGHT:
-            if (snapshot->has_scan && step_can_preview(snapshot->step)) event.type = UI_WORKFLOW_EVENT_OPEN_PREVIEW;
+            if (preview_available(snapshot)) event.type = UI_WORKFLOW_EVENT_OPEN_PREVIEW;
             break;
         case UI_WORKFLOW_KEY_OK:
         {

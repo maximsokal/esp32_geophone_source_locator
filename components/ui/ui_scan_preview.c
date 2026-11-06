@@ -261,7 +261,8 @@ static void load_sources(const preview_request_t *request, preview_result_t *res
                     .vertical_std_m = run->uncertainty.std_m.z_m,
                     .geometry_computed_at_ms = run->geometry_computed_at_ms,
                     .joint_fusion = run->kind == LOCALIZATION_RUN_KIND_JOINT_FUSION,
-                    .solved = run->solved,
+                    /* The same eligibility as the TFT: a run whose arrivals contradict the velocity range is never shown as a source. */
+                    .solved = localization_run_record_is_primary_candidate(run),
                     .uncertainty_too_high = run->uncertainty_too_high,
                     .uncertainty_valid = run->uncertainty.credible_level > 0.0,
                 };

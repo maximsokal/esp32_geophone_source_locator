@@ -510,6 +510,13 @@ void localization_calculate_joint_to_run_record(
         method_version, channel_mask_used, channel_mask_rejected, record_out
     );
 
+    if (result != NULL && result->joint_conflict) {
+        /* Contradicting estimates are kept as separate runs; there is no fused location to show. */
+        localization_calculate_set_rejection(
+            record_out, "methods disagree beyond their uncertainties: no joint position", LOCALIZATION_FAILURE_CLASS_INTERNAL
+        );
+        return;
+    }
     if (result == NULL || !result->joint_found) {
         localization_calculate_set_rejection(
             record_out, "no individual method solved with usable quality", LOCALIZATION_FAILURE_CLASS_INTERNAL
@@ -542,6 +549,13 @@ void localization_calculate_run_record_to_comparison_method(
     if (record->solved) {
         method_out->position = record->source_position;
         method_out->quality = record->confidence_score;
+        /* The method's own 1-sigma position uncertainty when it reported a credible region; otherwise unknown (0). */
+        if (record->uncertainty.credible_level > 0.0) {
+            const double sx = record->uncertainty.std_m.x_m, sy = record->uncertainty.std_m.y_m,
+                sz = record->uncertainty.std_m.z_m;
+            const double sigma = sqrt(sx * sx + sy * sy + sz * sz);
+            if (isfinite(sigma) && sigma > 0.0) method_out->position_sigma_m = sigma;
+        }
         /* MAX-212: TDOA, traveltime inversion, the velocity-free methods
          * and the extended ones all fit the same P arrivals -- correlated,
          * not independent, evidence (PSAFUVS / PSP add S picks but share

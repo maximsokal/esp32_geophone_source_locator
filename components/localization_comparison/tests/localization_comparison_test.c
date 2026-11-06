@@ -48,6 +48,42 @@ static localization_comparison_method_result_t unsolved_method(
 }
 
 
+/* Two confident methods far apart (beyond their own uncertainties) must not be averaged into a location. */
+static void test_conflicting_methods_do_not_make_a_joint_position(void)
+{
+    localization_comparison_method_result_t methods[2] = {
+        solved_method("tdoa_gauss_newton", (localization_point3d_t) { 0.0, 0.0, 0.0 }, 0.9),
+        solved_method("semblance", (localization_point3d_t) { 30.0, 0.0, 0.0 }, 0.9)
+    };
+    methods[0].position_sigma_m = 0.5;
+    methods[1].position_sigma_m = 0.5;
+    localization_comparison_result_t result;
+    assert(localization_comparison_fuse(methods, 2u, &result) == ESP_OK);
+    assert(result.joint_conflict);
+    assert(!result.joint_found);
+    assert(result.joint_methods_used_count == 0u);
+    assert(result.method_count == 2u);                       /* both stay visible */
+    assert(fabs(result.max_pairwise_disagreement_m - 30.0) < 1e-9);
+
+    /* Wide uncertainties make the same positions compatible: fusion works and is verified. */
+    methods[0].position_sigma_m = 10.0;
+    methods[1].position_sigma_m = 10.0;
+    assert(localization_comparison_fuse(methods, 2u, &result) == ESP_OK);
+    assert(!result.joint_conflict && result.joint_found && !result.joint_unverified);
+
+    /* Unknown sigma: no conflict can be claimed, the joint is flagged unverified. */
+    methods[1].position_sigma_m = 0.0;
+    assert(localization_comparison_fuse(methods, 2u, &result) == ESP_OK);
+    assert(!result.joint_conflict && result.joint_found && result.joint_unverified);
+
+    /* Correlated evidence (one group) is counted once: no pair, so no conflict. */
+    methods[0].position_sigma_m = methods[1].position_sigma_m = 0.5;
+    methods[0].evidence_group = methods[1].evidence_group = 1u;
+    assert(localization_comparison_fuse(methods, 2u, &result) == ESP_OK);
+    assert(!result.joint_conflict && result.joint_found);
+}
+
+
 static void test_equal_quality_methods_fuse_to_the_midpoint(void)
 {
     const localization_comparison_method_result_t methods[2] = {
@@ -304,6 +340,7 @@ static void test_correlated_evidence_group_counts_once(void)
 
 int main(void)
 {
+    test_conflicting_methods_do_not_make_a_joint_position();
     test_equal_quality_methods_fuse_to_the_midpoint();
     test_correlated_evidence_group_counts_once();
     test_a_low_quality_method_cannot_dominate_the_joint_result();

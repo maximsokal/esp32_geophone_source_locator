@@ -327,19 +327,11 @@ static esp_err_t ui_workflow_load_session_result(
             latest_picks = &pick_records[i];
         }
     }
-    const localization_run_record_t *source = NULL;
-    for (size_t i = 0U; i < run_count; ++i) {
-        const localization_run_record_t *candidate = &run_records[i];
-        if (!localization_run_record_is_primary_candidate(candidate) ||
-            (latest_picks != NULL && candidate->computed_at_ms != latest_picks->computed_at_ms)) continue;
-        if (source == NULL || candidate->confidence_score > source->confidence_score) source = candidate;
-    }
+    /* The same rule the 3D preview uses (a usable joint fusion first), so both screens show one source. */
+    const localization_run_record_t *source = localization_run_record_select_primary(
+        run_records, run_count, latest_picks != NULL, latest_picks != NULL ? latest_picks->computed_at_ms : 0U);
     if (source == NULL && latest_picks != NULL) {
-        for (size_t i = 0U; i < run_count; ++i) {
-            const localization_run_record_t *candidate = &run_records[i];
-            if (localization_run_record_is_primary_candidate(candidate) &&
-                (source == NULL || candidate->computed_at_ms > source->computed_at_ms)) source = candidate;
-        }
+        source = localization_run_record_select_primary(run_records, run_count, false, 0U);
     }
     if (source != NULL) {
         result->source_valid = true;

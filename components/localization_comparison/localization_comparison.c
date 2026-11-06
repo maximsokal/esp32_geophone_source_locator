@@ -96,6 +96,35 @@ esp_err_t localization_comparison_fuse(
             continue;
         }
 
+        /* Independent contributors must agree within their own uncertainties; an unknown sigma cannot be judged. */
+        for (size_t j = 0u; j < i; ++j) {
+            if (!methods[j].solved || methods[j].quality <= 0.0) {
+                continue;
+            }
+            bool j_superseded = false;
+            for (size_t k = 0u; methods[j].evidence_group != 0u && k < method_count; ++k) {
+                if (k != j && methods[k].evidence_group == methods[j].evidence_group && methods[k].solved &&
+                    (methods[k].quality > methods[j].quality ||
+                     (methods[k].quality == methods[j].quality && k < j))) {
+                    j_superseded = true;
+                    break;
+                }
+            }
+            if (j_superseded) {
+                continue;
+            }
+            if (methods[i].position_sigma_m > 0.0 && methods[j].position_sigma_m > 0.0) {
+                const double gate = LOCALIZATION_COMPARISON_CONFLICT_SIGMAS * sqrt(
+                    methods[i].position_sigma_m * methods[i].position_sigma_m +
+                    methods[j].position_sigma_m * methods[j].position_sigma_m);
+                if (distance_m(methods[i].position, methods[j].position) > gate) {
+                    result->joint_conflict = true;
+                }
+            } else {
+                result->joint_unverified = true;
+            }
+        }
+
         const double weight = methods[i].quality;
         sum_weight += weight;
         sum_weighted_x += weight * methods[i].position.x_m;
@@ -104,7 +133,11 @@ esp_err_t localization_comparison_fuse(
         ++result->joint_methods_used_count;
     }
 
-    if (sum_weight > 0.0) {
+    if (result->joint_conflict) {
+        /* No average of estimates that contradict each other: the individual methods stay in methods[]. */
+        result->joint_methods_used_count = 0u;
+        result->joint_unverified = false;
+    } else if (sum_weight > 0.0) {
         result->joint_found = true;
         result->joint_position = (localization_point3d_t) {
             .x_m = sum_weighted_x / sum_weight,

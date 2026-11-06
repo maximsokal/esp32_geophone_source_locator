@@ -297,3 +297,37 @@ static inline bool localization_run_record_is_primary_candidate(
     return record != NULL && record->solved &&
         record->velocity_status != LOCALIZATION_RUN_VELOCITY_STATUS_INCONSISTENT;
 }
+
+
+/*
+ * The one rule for "the" primary run of a calculation, shared by the TFT RESULT screen and the 3D preview so that both
+ * show the same source: among the primary candidates (optionally only those of one calculation, computed_at_ms ==
+ * generation_ms) the latest joint fusion that is not too uncertain wins; without one, the most confident single method
+ * (the later run on a tie). NULL when nothing qualifies: no source is invented.
+ */
+static inline const localization_run_record_t *localization_run_record_select_primary(
+    const localization_run_record_t *runs,
+    size_t count,
+    bool only_generation,
+    uint64_t generation_ms
+)
+{
+    const localization_run_record_t *joint = NULL;
+    const localization_run_record_t *method = NULL;
+    for (size_t i = 0U; runs != NULL && i < count; ++i) {
+        const localization_run_record_t *candidate = &runs[i];
+        if (!localization_run_record_is_primary_candidate(candidate) ||
+            (only_generation && candidate->computed_at_ms != generation_ms)) continue;
+        if (candidate->kind == LOCALIZATION_RUN_KIND_JOINT_FUSION) {
+            if (!candidate->uncertainty_too_high &&
+                (joint == NULL || candidate->computed_at_ms > joint->computed_at_ms ||
+                 (candidate->computed_at_ms == joint->computed_at_ms &&
+                  candidate->confidence_score > joint->confidence_score))) joint = candidate;
+        } else if (method == NULL || candidate->confidence_score > method->confidence_score ||
+                   (candidate->confidence_score == method->confidence_score &&
+                    candidate->computed_at_ms > method->computed_at_ms)) {
+            method = candidate;
+        }
+    }
+    return joint != NULL ? joint : method;
+}

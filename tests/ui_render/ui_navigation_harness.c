@@ -208,6 +208,12 @@ static void entry_routes(void)
     snapshot(WORKFLOW_STEP_RANGING_RESULT, 3U, true);
     enter(UI_SCREEN_MEASUREMENTS);
     assert(render_context.screen == UI_SCREEN_MEASUREMENTS && render_context.measurement_listen_only);
+    /* OK on the listen-only view is not a recording and not a dead key: it hands back to the step where the
+     * geometry is confirmed (no start, no skipped gate). */
+    key(KEYPAD_KEY_OK);
+    assert(render_context.screen == UI_SCREEN_WORKFLOW);
+    enter(UI_SCREEN_MEASUREMENTS);
+    assert(render_context.screen == UI_SCREEN_MEASUREMENTS && render_context.measurement_listen_only);
     key(KEYPAD_KEY_LEFT);
     assert(render_context.screen == UI_SCREEN_WORKFLOW);
     home();
