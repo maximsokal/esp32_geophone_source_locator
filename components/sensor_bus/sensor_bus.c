@@ -1773,6 +1773,11 @@ esp_err_t sensor_bus_classify_transfer_error_with_context(
         sensor_bus_record_result(address, source, channel, ESP_OK, false, false);
         return ESP_OK;
     }
+    /* A refused lock (contention or quiet lease) or an exhausted owner budget never addressed the device: it is
+     * not a transfer result, and counting it would show healthy devices as failing (INA3221 "other=3 scl=0"). */
+    if (transfer_err == SENSOR_BUS_ERR_MUTEX_BUSY || transfer_err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) {
+        return transfer_err;
+    }
     if (transfer_err != ESP_ERR_INVALID_STATE) {
         const esp_err_t classified_err = transfer_err == ESP_FAIL
             ? ESP_ERR_NOT_FOUND : transfer_err;

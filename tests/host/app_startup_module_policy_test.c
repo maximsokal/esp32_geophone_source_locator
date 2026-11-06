@@ -89,8 +89,31 @@ static void assert_incomplete_input_disallows_services(void)
     assert(!partial.storage_allowed);
 }
 
+/* 2026-11-05 hardware log: the barometer was reported "absent: no response" 7 s after boot although the BMP280 answered
+ * at 12.5 s. Polling starts with the sensor check, so before that no answer is not an absence. */
+static void assert_barometer_inventory_distinguishes_unpolled_from_absent(void)
+{
+    app_startup_barometer_verdict_t verdict = app_startup_barometer_inventory(false, false, false);
+    assert(verdict.state == HW_STATE_UNKNOWN);
+    assert(verdict.reason != NULL && verdict.reason[0] != '\0');
+
+    verdict = app_startup_barometer_inventory(true, false, false);
+    assert(verdict.state == HW_STATE_ABSENT);                 /* polled and silent: really absent */
+
+    verdict = app_startup_barometer_inventory(true, true, true);
+    assert(verdict.state == HW_STATE_PRESENT);
+    verdict = app_startup_barometer_inventory(true, true, false);
+    assert(verdict.state == HW_STATE_FAULT);
+    /* A sensor that already answered is reported as such whether or not the request flag is still visible. */
+    verdict = app_startup_barometer_inventory(false, true, true);
+    assert(verdict.state == HW_STATE_PRESENT);
+    verdict = app_startup_barometer_inventory(false, true, false);
+    assert(verdict.state == HW_STATE_FAULT);
+}
+
 int main(void)
 {
+    assert_barometer_inventory_distinguishes_unpolled_from_absent();
     assert_every_module_state_combination();
     assert_incomplete_input_disallows_services();
     return 0;

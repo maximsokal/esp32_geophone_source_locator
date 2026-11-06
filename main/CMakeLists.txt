@@ -48,6 +48,7 @@ idf_component_register(
         keypad
         device_status
         sensor_bus
+        main_barometer
         ina3221_monitor
         nrf_emergency_stop_monitor
         nrf_topology_service

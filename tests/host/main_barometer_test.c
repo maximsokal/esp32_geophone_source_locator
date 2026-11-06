@@ -798,9 +798,12 @@ static void test_boot_polling_does_not_touch_i2c_before_preflight(void)
         assert(s_fake.address_probe_count == 0U);
         assert(s_fake.read_count == 0U);
         assert(!barometer.reading.bmp280_present);
+        /* Boot inventory reads this: an unpolled sensor is "not asked yet", never "absent". */
+        assert(!main_barometer_polling_requested());
     }
     main_barometer_request_polling();
     main_barometer_request_polling();
+    assert(main_barometer_polling_requested());
     assert(s_fake.get_handles_calls == 0U);
     assert(s_fake.address_probe_count == 0U);
     assert(s_fake.read_count == 0U);

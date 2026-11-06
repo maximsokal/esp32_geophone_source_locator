@@ -1018,6 +1018,11 @@ static void phase_owner_contention(void)
     sim_run_ms(2500U);
     assert(ina_measurements() > ina_before);
     assert(rail(INA3221_MONITOR_RAIL_BATTERY).valid && rail(INA3221_MONITOR_RAIL_BATTERY).age_ms <= 1200U);
+
+    /* The per-address bus statistics must not turn the skipped reads into INA3221 device failures
+     * (2026-11-05 hardware log: "addr=0x40 ... other=3 last_err=ERROR" after three owner-busy skips). */
+    sim_run_ms(12000U);
+    assert(log_count_since(log_mark, "I2C_BUS_SUMMARY addr=0x40") == 0U);
 }
 
 /* 5. BLE ranging: the topology task takes the quiet lease for 20 s. */

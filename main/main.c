@@ -3,6 +3,8 @@
 #include "app_build_identity.h"
 #include "app_shutdown.h"
 #include "app_startup.h"
+#include "app_startup_module_policy.h"
+#include "main_barometer.h"
 #include "board_config.h"
 #include "device_status.h"
 #include "hw_inventory.h"
@@ -61,26 +63,12 @@ static void app_main_report_topology_inventory(esp_err_t topology_start_err)
                 device_status_snapshot_t status;
                 if (device_status_get_snapshot(&status) == ESP_OK) {
                     const device_main_status_t *main_status = &status.main;
-                    const bool sensor_present = main_status->bmp280_present;
-                    const bool sensor_valid =
-                        main_status->bmp280_present && main_status->bmp280_valid;
-
-                    if (sensor_valid) {
-                        hw_inventory_report(
-                            HW_MODULE_BAROMETER,
-                            HW_STATE_PRESENT,
-                            "sensor ok");
-                    } else if (sensor_present) {
-                        hw_inventory_report(
-                            HW_MODULE_BAROMETER,
-                            HW_STATE_FAULT,
-                            "sensor invalid");
-                    } else {
-                        hw_inventory_report(
-                            HW_MODULE_BAROMETER,
-                            HW_STATE_ABSENT,
-                            "no response");
-                    }
+                    const app_startup_barometer_verdict_t verdict =
+                        app_startup_barometer_inventory(
+                            main_barometer_polling_requested(),
+                            main_status->bmp280_present,
+                            main_status->bmp280_present && main_status->bmp280_valid);
+                    hw_inventory_report(HW_MODULE_BAROMETER, verdict.state, verdict.reason);
                 }
             }
         }

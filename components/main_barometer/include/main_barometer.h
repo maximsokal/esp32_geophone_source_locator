@@ -126,6 +126,9 @@ void main_barometer_init(main_barometer_t *barometer);
 /* Thread-safe, idempotent request; the existing worker polls from the next
  * cycle onward. Until requested, poll performs no I2C. */
 void main_barometer_request_polling(void);
+/* True once polling was requested (the workflow's sensor check or a height-reference capture). Before that the driver
+ * performs no I2C, so a status that reads "not present" says nothing about the sensor. */
+bool main_barometer_polling_requested(void);
 esp_err_t main_barometer_request_height_reference_capture(uint16_t generation);
 esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms);
 /* How long the polling task may sleep before the next poll is due, capped at

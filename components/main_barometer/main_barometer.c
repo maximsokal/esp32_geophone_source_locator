@@ -416,6 +416,11 @@ void main_barometer_request_polling(void)
     atomic_store_explicit(&s_polling_requested, true, memory_order_release);
 }
 
+bool main_barometer_polling_requested(void)
+{
+    return atomic_load_explicit(&s_polling_requested, memory_order_acquire);
+}
+
 esp_err_t main_barometer_request_height_reference_capture(uint16_t generation)
 {
     if (generation == 0U) {

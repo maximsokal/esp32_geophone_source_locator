@@ -1500,6 +1500,55 @@ static void test_quiet_lease_refusals_are_counted_not_logged(void)
     test_thread_join(owner);
 }
 
+static char s_summary_capture[4096];
+
+static void summary_capture_observer(const char *line)
+{
+    const size_t used = strlen(s_summary_capture);
+    (void)snprintf(s_summary_capture + used, sizeof(s_summary_capture) - used, "%s\n", line);
+}
+
+/* One statistics window: failures are recorded 9.9 s after the previous summary and summarised at 10.1 s. */
+static void run_summary_window(void (*record_failures)(void))
+{
+    const uint32_t flush_ms = (uint32_t)(sensor_bus_lines_now_us() / 1000);
+    sensor_bus_log_diag_summary(flush_ms);
+    sensor_bus_lines_delay_us(9900000U);
+    record_failures();
+    sensor_bus_lines_delay_us(200000U);
+    s_summary_capture[0] = '\0';
+    g_fake_lines.log_observer = summary_capture_observer;
+    sensor_bus_log_diag_summary((uint32_t)(sensor_bus_lines_now_us() / 1000));
+    g_fake_lines.log_observer = NULL;
+}
+
+static void record_lock_refusals(void)
+{
+    for (unsigned i = 0U; i < 3U; ++i) {
+        assert(sensor_bus_classify_transfer_error(0x40U, SENSOR_BUS_ERR_MUTEX_BUSY) == SENSOR_BUS_ERR_MUTEX_BUSY);
+        assert(sensor_bus_classify_transfer_error(0x40U, SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET);
+    }
+}
+
+static void record_real_timeout(void)
+{
+    assert(sensor_bus_classify_transfer_error(0x40U, ESP_ERR_TIMEOUT) == ESP_ERR_TIMEOUT);
+}
+
+/* A refused lock or an exhausted owner budget never addressed the device: it must not show up as a device failure
+ * (2026-11-05 hardware log: INA3221 "other=3 last_err=ERROR scl=0" were three owner-busy skips). */
+static void test_lock_refusals_are_not_device_failures_in_bus_statistics(void)
+{
+    run_summary_window(record_lock_refusals);
+    assert(strstr(s_summary_capture, "addr=0x40") == NULL);
+    assert(strstr(s_summary_capture, "other=") == NULL);
+
+    run_summary_window(record_real_timeout);    /* a genuine timeout is still reported */
+    assert(strstr(s_summary_capture, "addr=0x40") != NULL);
+    assert(strstr(s_summary_capture, " other=0 ") != NULL);        /* the refusals above never became "other" */
+    assert(strstr(s_summary_capture, "last_err=ESP_ERR_TIMEOUT") != NULL);
+}
+
 /* A task that never ends its lease must not silence the bus forever. */
 static void test_quiet_lease_expires_by_itself(void)
 {
@@ -1553,6 +1602,7 @@ static void test_mutex_wait_and_transfer_timeouts_are_distinct_ms(void)
     test_quiet_lease_refusals_are_counted_not_logged();
     test_quiet_lease_expires_by_itself();
     test_quiet_lease_cannot_start_over_an_open_session();
+    test_lock_refusals_are_not_device_failures_in_bus_statistics(); /* last: it moves the fake clock by 20 s */
 }
 
 /* D6/E1 transport integration: BMP280 (0x76), INA3221 (0x40), and the
