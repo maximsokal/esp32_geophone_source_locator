@@ -4961,7 +4961,6 @@ esp_err_t nrf_topology_service_get_accepted_ranging_result(
         s_ranging_progress.updated_at_ms == s_accepted_ranging_revision && !s_ranging_active &&
         !s_cs_request_pending && now_ms >= s_frozen_ranging_result.timestamp_ms &&
         s_frozen_ranging_result.pair_count <= NRF_CS_MAX_PAIRS && s_snapshot_valid &&
-        !s_snapshot.stale && !current_topology->stale &&
         service_ranging_membership_matches(&s_frozen_ranging_result, current_topology) &&
         service_ranging_membership_matches(&s_frozen_ranging_result, &s_snapshot);
     for (size_t i = 0U; valid && i < s_frozen_ranging_result.pair_count; ++i) {
@@ -4969,12 +4968,15 @@ esp_err_t nrf_topology_service_get_accepted_ranging_result(
         if (pair->state == NRF_CS_PAIR_VALID && pair->single_direction &&
             (pair->scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) == 0U) valid = false;
     }
-    if (valid) {
+    /* A bus error leaves the last snapshot in place marked stale: nothing proves the setup changed, so say "not now". */
+    const bool stale = s_snapshot.stale || current_topology->stale;
+    if (valid && !stale) {
         *result = s_frozen_ranging_result;
         result->accepted_revision_ms = s_accepted_ranging_revision;
     }
     portEXIT_CRITICAL(&s_state_lock);
-    return valid ? ESP_OK : ESP_ERR_NOT_FOUND;
+    if (!valid) return ESP_ERR_NOT_FOUND;
+    return stale ? ESP_ERR_TIMEOUT : ESP_OK;
 }
 
 esp_err_t nrf_topology_service_invalidate_ranging(void)

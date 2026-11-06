@@ -35,7 +35,7 @@ recording.body.0	Тривалість 01:05
 recording.action.0	Зупинити запис
 ranging_unknown.title	Вимірювання дальності
 ranging_unknown.hint	UP/DOWN дії  OK вибір  LEFT назад
-ranging_unknown.body.0	Пари —/— нев’язка — см
+ranging_unknown.body.0	Виміри —/— нев’язка — см
 ranging_unknown.body.1	Вимірювання по радіо, не чіпати
 localization_solved.text	G1 X0.0m Y0.0m РІВНО РОЗВ
 localization_unverified.text	G1 XНЕВІДОМО YНЕВІДОМО Н/Д НЕРОЗВ

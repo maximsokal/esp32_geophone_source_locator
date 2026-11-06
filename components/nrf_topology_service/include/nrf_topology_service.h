@@ -239,6 +239,11 @@ esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
 /* Bind the current completed ranging revision to the operator-confirmed object. */
 esp_err_t nrf_topology_service_accept_ranging_result(
     const char *object_id, const nrf_topology_snapshot_t *current_topology, uint64_t expected_updated_at_ms);
+/*
+ * ESP_OK: the confirmed result is valid for this object and membership. ESP_ERR_NOT_FOUND: it is gone or the setup
+ * changed (membership, object, invalidated). ESP_ERR_TIMEOUT: it is still the confirmed one but the topology
+ * snapshot is stale (bus error); try again, do not treat it as a change.
+ */
 esp_err_t nrf_topology_service_get_accepted_ranging_result(
     const char *object_id, const nrf_topology_snapshot_t *current_topology, uint64_t now_ms,
     nrf_topology_ranging_result_t *result);

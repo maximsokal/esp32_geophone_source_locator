@@ -1993,16 +1993,55 @@ esp_err_t workflow_service_shutdown(void)
     return ESP_OK;
 }
 
+/* When each remote began showing MOVING and when its last MOVING frame arrived (ESP receipt time); 0 = not moving. */
+static uint64_t s_confirmed_motion_since_ms[NRF_TOPOLOGY_REMOTE_COUNT];
+static uint64_t s_confirmed_motion_last_ms[NRF_TOPOLOGY_REMOTE_COUNT];
+
+static void workflow_service_confirmed_motion_reset(void)
+{
+    memset(s_confirmed_motion_since_ms, 0, sizeof(s_confirmed_motion_since_ms));
+    memset(s_confirmed_motion_last_ms, 0, sizeof(s_confirmed_motion_last_ms));
+}
+
+/* True once a node has shown MOVING without a gap for WORKFLOW_CONFIRMED_MOTION_HOLD_MS. */
+static bool workflow_service_confirmed_motion_observe(uint8_t channel, uint64_t receipt_ms, uint8_t orientation_state)
+{
+    if (orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED) {
+        s_confirmed_motion_since_ms[channel] = 0U;
+        s_confirmed_motion_last_ms[channel] = 0U;
+        return false;
+    }
+    if (orientation_state != NRF_UPSTREAM_ORIENTATION_STATE_MOVING) return false;
+    const uint64_t last = s_confirmed_motion_last_ms[channel];
+    if (s_confirmed_motion_since_ms[channel] == 0U || receipt_ms < last ||
+        receipt_ms - last > WORKFLOW_PLACEMENT_FRESH_MS) {
+        s_confirmed_motion_since_ms[channel] = receipt_ms;
+    }
+    s_confirmed_motion_last_ms[channel] = receipt_ms;
+    return receipt_ms - s_confirmed_motion_since_ms[channel] >= WORKFLOW_CONFIRMED_MOTION_HOLD_MS;
+}
+
+/*
+ * ESP_OK: the confirmed setup holds. ESP_ERR_INVALID_STATE: something proves it changed (membership, sustained motion,
+ * a new height reference), so the confirmation is dropped for good. ESP_ERR_TIMEOUT or another code: it cannot be
+ * checked right now (stale snapshot after a bus error, quiet barometer); nothing moved, so the confirmation stays and
+ * only START waits.
+ */
 static esp_err_t workflow_service_confirmed_setup_status(void)
 {
     nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
     nrf_topology_ranging_result_t *accepted = &s_poll_scratch.accepted_ranging;
     device_status_snapshot_t *device = &s_poll_scratch.device;
-    if (nrf_topology_service_get_snapshot(topology) != ESP_OK ||
-        nrf_topology_service_get_accepted_ranging_result(
-            s_active_object_id, topology, workflow_service_now_ms(), accepted) != ESP_OK)
+    if (nrf_topology_service_get_snapshot(topology) != ESP_OK) return ESP_ERR_TIMEOUT;
+    const esp_err_t accepted_err = nrf_topology_service_get_accepted_ranging_result(
+        s_active_object_id, topology, workflow_service_now_ms(), accepted);
+    if (accepted_err == ESP_ERR_TIMEOUT) return ESP_ERR_TIMEOUT;
+    if (accepted_err != ESP_OK) {
+        workflow_service_confirmed_motion_reset();
         return ESP_ERR_INVALID_STATE;
+    }
     const uint64_t now_ms = workflow_service_now_ms();
+    bool moved = false;
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         const nrf_topology_node_snapshot_t *remote = &topology->remotes[channel];
         nrf_remote_sensor_cache_t *cache = &s_poll_scratch.remote_sensor;
@@ -2012,15 +2051,23 @@ static esp_err_t workflow_service_confirmed_setup_status(void)
             cache->identity.node_id == remote->node_id && cache->esp_receipt_uptime_ms > accepted->timestamp_ms &&
             cache->esp_receipt_uptime_ms <= now_ms &&
             now_ms - cache->esp_receipt_uptime_ms <= WORKFLOW_PLACEMENT_FRESH_MS &&
-            cache->sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_MOVING)
-            return ESP_ERR_INVALID_STATE;
+            workflow_service_confirmed_motion_observe(
+                channel, cache->esp_receipt_uptime_ms, cache->sensor.orientation_state)) {
+            moved = true;
+        }
+    }
+    if (moved) {
+        workflow_service_confirmed_motion_reset();
+        return ESP_ERR_INVALID_STATE;
     }
     if (accepted->main_height_reference_generation == 0U) return ESP_OK;
     const esp_err_t err = device_status_try_get_snapshot(device);
     if (err != ESP_OK) return err;
-    return device->main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
-        device->main.height_reference.generation == accepted->main_height_reference_generation
-        ? ESP_OK : ESP_ERR_INVALID_STATE;
+    if (device->main.height_reference.generation != accepted->main_height_reference_generation) return ESP_ERR_INVALID_STATE;
+    if (device->main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID) return ESP_OK;
+    /* A barometer that went quiet keeps the reference it had and returns to VALID with the next good sample. */
+    return device->main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_SENSOR_INVALID
+        ? ESP_ERR_TIMEOUT : ESP_ERR_INVALID_STATE;
 }
 
 static void workflow_service_snapshot_locked(workflow_snapshot_t *snapshot)
@@ -2186,6 +2233,7 @@ static workflow_command_result_t workflow_service_command_locked(
     if (result != WORKFLOW_COMMAND_RESULT_OK) return result;
 
     if (command == WORKFLOW_COMMAND_CONFIRM && previous.step == WORKFLOW_STEP_RANGING_RESULT) {
+        workflow_service_confirmed_motion_reset();
         nrf_topology_snapshot_t topology;
         nrf_topology_ranging_progress_t *progress = &s_poll_scratch.ranging_progress;
         if (s_active_object_id[0] == '\0' || nrf_topology_service_get_snapshot(&topology) != ESP_OK ||

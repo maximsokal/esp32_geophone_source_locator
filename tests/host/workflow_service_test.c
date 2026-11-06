@@ -156,6 +156,9 @@ static const char *s_fake_object_id = "object-a";
 static bool s_placement_ready;
 static nrf_topology_ranging_progress_t s_ranging_progress;
 static bool s_accepted_setup_available;
+static bool s_accepted_setup_stale;
+static uint16_t s_accepted_main_generation;
+static unsigned s_invalidate_ranging_calls;
 static nrf_topology_ranging_progress_t s_manual_progress;
 static esp_err_t s_manual_result;
 static unsigned s_manual_calls;
@@ -471,6 +474,7 @@ esp_err_t nrf_topology_service_ranging_get_progress(
 
 esp_err_t nrf_topology_service_invalidate_ranging(void)
 {
+    ++s_invalidate_ranging_calls;
     return ESP_OK;
 }
 
@@ -487,6 +491,8 @@ esp_err_t nrf_topology_service_get_accepted_ranging_result(
 {
     (void)object_id; (void)topology; (void)now_ms;
     memset(result, 0, sizeof(*result));
+    result->main_height_reference_generation = s_accepted_main_generation;
+    if (s_accepted_setup_available && s_accepted_setup_stale) return ESP_ERR_TIMEOUT;
     return s_accepted_setup_available ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
@@ -580,6 +586,9 @@ static bool placement_ready(void *context)
 static void reset_fakes(bool active_object, measurement_service_state_t state, size_t assigned)
 {
     s_accepted_setup_available = true;
+    s_accepted_setup_stale = false;
+    s_accepted_main_generation = 0U;
+    s_invalidate_ranging_calls = 0U;
     workflow_service_shutdown();
     workflow_host_rtos_reset_ticks();
     workflow_service_host_fakes_reset();
@@ -1159,23 +1168,146 @@ static void enter_record_ready(void)
     assert(command(WORKFLOW_COMMAND_SCAN_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
 }
 
-static void test_detected_motion_invalidates_confirmed_setup(void)
+static void set_remote_orientation_frame(uint8_t orientation_state, uint64_t receipt_ms)
 {
-    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
-    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
-    enter_record_ready();
-    s_now_ms += 2000U;
     s_cache[0].identity_valid = true;
     s_cache[0].identity.node_id = s_topology.remotes[0].node_id;
     s_cache[0].topology_current = true;
     s_cache[0].response_valid = true;
-    s_cache[0].esp_receipt_uptime_ms = s_now_ms;
-    s_cache[0].sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_MOVING;
-    workflow_snapshot_t snapshot;
-    assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
-    assert(snapshot.step == WORKFLOW_STEP_LAYOUT_READY);
+    s_cache[0].esp_receipt_uptime_ms = receipt_ms;
+    s_cache[0].sensor.orientation_state = orientation_state;
+}
+
+static void enter_confirmed_record_ready(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    enter_record_ready();
+    assert(try_snapshot().step == WORKFLOW_STEP_RECORD_READY);
+    s_accepted_main_generation = s_height_generation;
+    s_invalidate_ranging_calls = 0U;   /* count only what happens after the setup is confirmed */
+}
+
+/* A node that keeps moving for 3 s or more is a real change; the nRF shows MOVING 750 ms after a stop, so less is not. */
+static void test_detected_motion_invalidates_confirmed_setup(void)
+{
+    enter_confirmed_record_ready();
+    s_now_ms += 2000U;
+    set_remote_orientation_frame(NRF_UPSTREAM_ORIENTATION_STATE_MOVING, s_now_ms);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_RECORD_READY);
+    s_now_ms += 3000U;
+    set_remote_orientation_frame(NRF_UPSTREAM_ORIENTATION_STATE_MOVING, s_now_ms);
+    assert(workflow_service_poll() == ESP_OK);
+    workflow_snapshot_t snapshot = try_snapshot();
     assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_START_RECORDING)) == 0U);
     assert(s_start_calls == 0U);
+    assert(snapshot.step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(strcmp(snapshot.reason, "geometry_changed") == 0);
+    assert(s_invalidate_ranging_calls == 1U);
+    workflow_service_shutdown();
+}
+
+/* One MOVING frame is a bump or a pause between IMU samples (an I2C hiccup), not a move. */
+static void test_single_moving_frame_does_not_invalidate_confirmed_setup(void)
+{
+    enter_confirmed_record_ready();
+    s_now_ms += 2000U;
+    set_remote_orientation_frame(NRF_UPSTREAM_ORIENTATION_STATE_MOVING, s_now_ms);
+    assert(workflow_service_poll() == ESP_OK);
+    s_now_ms += 1000U;
+    set_remote_orientation_frame(NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED, s_now_ms);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_RECORD_READY);
+    assert(s_invalidate_ranging_calls == 0U);
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_start_calls == 1U);
+    workflow_service_shutdown();
+}
+
+static void test_moving_then_stable_resets_the_motion_timer(void)
+{
+    enter_confirmed_record_ready();
+    s_now_ms += 2000U;
+    set_remote_orientation_frame(NRF_UPSTREAM_ORIENTATION_STATE_MOVING, s_now_ms);
+    assert(workflow_service_poll() == ESP_OK);
+    s_now_ms += 2000U;
+    set_remote_orientation_frame(NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED, s_now_ms);
+    assert(workflow_service_poll() == ESP_OK);
+    s_now_ms += 2000U;
+    set_remote_orientation_frame(NRF_UPSTREAM_ORIENTATION_STATE_MOVING, s_now_ms);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_RECORD_READY);
+    assert(s_invalidate_ranging_calls == 0U);
+    workflow_service_shutdown();
+}
+
+/* Frames that stop arriving (a bus outage) do not add up to a sustained move. */
+static void test_moving_frames_across_a_silent_gap_are_not_sustained_motion(void)
+{
+    enter_confirmed_record_ready();
+    s_now_ms += 2000U;
+    set_remote_orientation_frame(NRF_UPSTREAM_ORIENTATION_STATE_MOVING, s_now_ms);
+    assert(workflow_service_poll() == ESP_OK);
+    s_now_ms += 20000U;
+    assert(workflow_service_poll() == ESP_OK);
+    s_now_ms += 1000U;
+    set_remote_orientation_frame(NRF_UPSTREAM_ORIENTATION_STATE_MOVING, s_now_ms);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_RECORD_READY);
+    assert(s_invalidate_ranging_calls == 0U);
+    workflow_service_shutdown();
+}
+
+/* A bus error makes the topology snapshot stale: nothing moved, the confirmation must stay. */
+static void test_stale_topology_snapshot_does_not_invalidate_confirmed_setup(void)
+{
+    enter_confirmed_record_ready();
+    s_accepted_setup_stale = true;
+    s_now_ms += 2000U;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_RECORD_READY);
+    assert(s_invalidate_ranging_calls == 0U);
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(s_start_calls == 0U);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RECORD_READY);
+    assert(strcmp(snapshot.reason, "geometry_changed") != 0);
+    s_accepted_setup_stale = false;
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_start_calls == 1U);
+    workflow_service_shutdown();
+}
+
+/* A MAIN barometer that went quiet keeps its reference generation; a drift or an outage is not a new calibration. */
+static void test_barometer_sensor_invalid_same_generation_does_not_invalidate(void)
+{
+    enter_confirmed_record_ready();
+    s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_SENSOR_INVALID;
+    s_now_ms += 2000U;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_RECORD_READY);
+    assert(s_invalidate_ranging_calls == 0U);
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(s_start_calls == 0U);
+    assert(try_snapshot().step == WORKFLOW_STEP_RECORD_READY);
+    s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_start_calls == 1U);
+    workflow_service_shutdown();
+}
+
+/* Preservation: a new height-reference capture is a real change of the setup. */
+static void test_new_height_reference_generation_still_invalidates_confirmed_setup(void)
+{
+    enter_confirmed_record_ready();
+    ++s_device.main.height_reference.generation;
+    s_now_ms += 2000U;
+    assert(workflow_service_poll() == ESP_OK);
+    const workflow_snapshot_t snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(strcmp(snapshot.reason, "geometry_changed") == 0);
+    assert(s_invalidate_ranging_calls == 1U);
     workflow_service_shutdown();
 }
 
@@ -3078,8 +3210,17 @@ static void test_workflow_poll_overrun_skips_expired_slots(void)
 
 int main(void)
 {
-    if (getenv("P2_MOTION") != NULL) {
-        test_detected_motion_invalidates_confirmed_setup();
+    if (getenv("P2A_CASE") != NULL) {
+        switch (strtoul(getenv("P2A_CASE"), NULL, 10)) {
+            case 1: test_single_moving_frame_does_not_invalidate_confirmed_setup(); break;
+            case 2: test_moving_then_stable_resets_the_motion_timer(); break;
+            case 3: test_detected_motion_invalidates_confirmed_setup(); break;
+            case 4: test_stale_topology_snapshot_does_not_invalidate_confirmed_setup(); break;
+            case 5: test_barometer_sensor_invalid_same_generation_does_not_invalidate(); break;
+            case 6: test_new_height_reference_generation_still_invalidates_confirmed_setup(); break;
+            case 7: test_moving_frames_across_a_silent_gap_are_not_sustained_motion(); break;
+            default: assert(!"unknown P2A_CASE");
+        }
         return 0;
     }
     if (getenv("P2_CHANGED_SETUP") != NULL) {
@@ -3110,6 +3251,12 @@ int main(void)
     test_stop_flush_gate(3U);
     test_stop_flush_gate(4U);
     test_detected_motion_invalidates_confirmed_setup();
+    test_single_moving_frame_does_not_invalidate_confirmed_setup();
+    test_moving_then_stable_resets_the_motion_timer();
+    test_moving_frames_across_a_silent_gap_are_not_sustained_motion();
+    test_stale_topology_snapshot_does_not_invalidate_confirmed_setup();
+    test_barometer_sensor_invalid_same_generation_does_not_invalidate();
+    test_new_height_reference_generation_still_invalidates_confirmed_setup();
     test_changed_setup_is_rejected_before_recording_start();
     test_sensor_check_requests_barometer_before_calibration();
     test_phone_and_tft_workflow_views_share_step_and_generation();

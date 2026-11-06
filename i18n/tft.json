@@ -1417,7 +1417,7 @@
     "tft.workflow.layout.wifi_hint": { "en": "Wi-Fi off = better ranging", "uk": "Wi-Fi вимк. = точніше", "max_len": 34 },
     "tft.workflow.layout.wifi_phone": { "en": "Phone link returns itself", "uk": "Звʼязок із телефоном повернеться", "max_len": 34 },
     "tft.workflow.scan.phone": { "en": "Scan on phone", "uk": "Скануйте на телефоні", "max_len": 21 },
-    "tft.workflow.ranging.pairs": {"en": "Pairs %s/%s residual %s cm", "uk": "Пари %s/%s нев’язка %s см", "max_len": 40},
+    "tft.workflow.ranging.pairs": {"en": "Measurements %s/%s residual %s cm", "uk": "Виміри %s/%s нев’язка %s см", "max_len": 40},
     "tft.workflow.distance.edit": {"en": "Enter distances", "uk": "Ввести відстані", "max_len": 24},
     "tft.workflow.distance.pair": {"en": "Pair %s-%s", "uk": "Пара %s-%s", "max_len": 20},
     "tft.workflow.distance.value": {"en": "Distance: %s mm", "uk": "Відстань: %s мм", "max_len": 28},

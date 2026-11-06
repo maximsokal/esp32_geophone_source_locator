@@ -198,6 +198,8 @@ def test_ranging_progress_percent_grows_with_the_number_of_nodes(screens, locale
     assert (ROOT / "tests/ui_render/golden" / (frame["name"] + ".png")).is_file()
     lines = [node["text"] for node in _visible(frame) if node["role"].startswith("line_")]
     assert entries["tft.workflow.ranging.pairs"][locale] % (str(done), str(total), _cm(12)) == lines[0]
+    # The plan holds one execution per direction, so n*(n-1) counts measurements; the pairs are n*(n-1)/2.
+    assert lines[0].startswith("Measurements " if locale == "en" else "Виміри "), lines[0]
     assert entries["tft.workflow.ranging.wait_percent"][locale] % percent == lines[1]
     assert entries["tft.workflow.ranging.wait"][locale] not in lines
     assert next(node for node in frame["widgets"] if node["role"] == "progress")["hidden"] is False

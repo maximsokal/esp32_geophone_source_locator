@@ -1929,6 +1929,13 @@ static void assert_ranging_success_frozen(void)
     assert(nrf_topology_service_get_accepted_ranging_result(
         "OBJ_0001", &same_membership, frozen_at + 660000U, &reusable) == ESP_OK);
     assert(reusable.timestamp_ms == frozen_at && reusable.pair_count == 6U);
+    /* A stale snapshot (a bus error) is "not now", never "the setup changed": the confirmation must survive it. */
+    nrf_topology_snapshot_t stale_topology = same_membership;
+    stale_topology.stale = true;
+    assert(nrf_topology_service_get_accepted_ranging_result(
+        "OBJ_0001", &stale_topology, frozen_at + 660000U, &reusable) == ESP_ERR_TIMEOUT);
+    assert(nrf_topology_service_get_accepted_ranging_result(
+        "OBJ_0001", &same_membership, frozen_at + 660000U, &reusable) == ESP_OK);
     assert(nrf_topology_service_get_accepted_ranging_result(
         "OBJ_0002", &same_membership, frozen_at + 660000U, &reusable) == ESP_ERR_NOT_FOUND);
     assert(nrf_topology_service_get_reusable_frozen_ranging_result(

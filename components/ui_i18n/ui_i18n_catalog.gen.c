@@ -362,7 +362,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "%s-%s: %s cm", /* tft.workflow.ranging.distance */
     "Measurement failed", /* tft.workflow.ranging.failed */
     "%s-%s: -- (%s / %s cm)", /* tft.workflow.ranging.pair_diag */
-    "Pairs %s/%s residual %s cm", /* tft.workflow.ranging.pairs */
+    "Measurements %s/%s residual %s cm", /* tft.workflow.ranging.pairs */
     "Partially measured", /* tft.workflow.ranging.partial */
     "%s sigma:%s cm", /* tft.workflow.ranging.sigma */
     "Distances measured", /* tft.workflow.ranging.success */
@@ -841,7 +841,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "%s-%s: %s см", /* tft.workflow.ranging.distance */
     "Вимірювання не вдалося", /* tft.workflow.ranging.failed */
     "%s-%s: -- (%s / %s см)", /* tft.workflow.ranging.pair_diag */
-    "Пари %s/%s нев’язка %s см", /* tft.workflow.ranging.pairs */
+    "Виміри %s/%s нев’язка %s см", /* tft.workflow.ranging.pairs */
     "Частково виміряно", /* tft.workflow.ranging.partial */
     "%s сигма:%s см", /* tft.workflow.ranging.sigma */
     "Відстані виміряно", /* tft.workflow.ranging.success */

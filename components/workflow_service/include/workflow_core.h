@@ -22,6 +22,11 @@
 /* A node whose newest sensor snapshot is older than this is not current (two refresh periods plus margin). */
 #define WORKFLOW_PLACEMENT_FRESH_MS 5000U
 /*
+ * A confirmed setup is changed by a node that keeps showing MOVING for this long (frames at most FRESH_MS apart). The nRF
+ * reports MOVING for 750 ms after a stop and after a pause between IMU samples (an I2C hiccup), so a single frame is not a move.
+ */
+#define WORKFLOW_CONFIRMED_MOTION_HOLD_MS 3000U
+/*
  * The height of a node is the centre of the window, not the last sample: a barometer reports whole pascals
  * (about 83 mm each on the 12 Pa/m model), the MAIN reading wanders by a few pascals (bench log 2026-11-01
  * 18:16: 70..130 mm per node) and single readings are outliers. The centre is the mean of the samples left by a

@@ -151,7 +151,7 @@
     "workflow.ranging.wifi_pending": { "en": "Wi-Fi turns off in a few seconds for the distance measurement. This page loses the connection and reconnects by itself when the measurement ends.", "uk": "Wi-Fi вимкнеться за кілька секунд на час вимірювання відстаней. Ця сторінка втратить з’єднання і підключиться сама, коли вимірювання завершиться." },
     "workflow.ranging.wifi_off": { "en": "Wi-Fi is switched off while the distances are measured and comes back by itself. If this page lost the connection, wait: it reconnects on its own.", "uk": "Wi-Fi вимкнено на час вимірювання відстаней, воно ввімкнеться саме. Якщо ця сторінка втратила з’єднання, зачекайте: вона підключиться сама." },
     "workflow.ranging.wifi_back": { "en": "Wi-Fi is turning back on.", "uk": "Wi-Fi вмикається знову." },
-    "workflow.ranging.pairs": { "en": "Pairs completed", "uk": "Виконано пар" },
+    "workflow.ranging.pairs": { "en": "Measurements completed", "uk": "Виконано вимірювань" },
     "workflow.ranging.residual": { "en": "Solution residual", "uk": "Нев’язка розв’язку" },
     "workflow.ranging.failure_reason": { "en": "Failure reason", "uk": "Причина невдачі" },
     "workflow.ranging.reason.timeout": { "en": "Bluetooth ranging timed out.", "uk": "Час вимірювання Bluetooth вичерпано." },
