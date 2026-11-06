@@ -1619,15 +1619,25 @@ static void workflow_service_placement_poll(bool collect_samples)
     }
 }
 
+/* Assigned remotes that have not reported "level"; refreshed together with the assigned count. */
+static uint8_t s_unleveled_remotes;
+
 static uint8_t workflow_service_assigned_remote_count(void)
 {
     nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
     if (nrf_topology_service_get_snapshot(topology) != ESP_OK) return 0U;
 
     size_t count = 0U;
+    size_t unleveled = 0U;
     for (size_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
-        if (topology->remotes[i].state == NRF_TOPOLOGY_NODE_ASSIGNED) ++count;
+        if (topology->remotes[i].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+        ++count;
+        nrf_remote_sensor_cache_t *cache = &s_poll_scratch.remote_sensor;
+        if (nrf_topology_service_get_sensor_snapshot((uint8_t)i, cache) != ESP_OK ||
+            !cache->response_valid || !cache->topology_current ||
+            cache->sensor.orientation_state != NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED) ++unleveled;
     }
+    s_unleveled_remotes = unleveled > UINT8_MAX ? UINT8_MAX : (uint8_t)unleveled;
     return count > UINT8_MAX ? UINT8_MAX : (uint8_t)count;
 }
 
@@ -1843,6 +1853,11 @@ static void workflow_service_calculation_poll_locked(void)
         }
         if (status->state == LOCALIZATION_JOB_FAILED && status->error != ESP_OK) {
             reason = esp_err_to_name(status->error);
+            /* localization_calculate refuses a session with fewer than 3 participating geophones (a recording made
+             * with the remote-count gate bypassed has no geometry): say that instead of the bare error name. */
+            if (status->error == ESP_ERR_INVALID_STATE && status->summary.participating_channel_count < 3U) {
+                reason = "insufficient_geophones";
+            }
         }
         if (reason == NULL || reason[0] == '\0') reason = "calculation_failed";
     }
@@ -1971,6 +1986,7 @@ esp_err_t workflow_service_shutdown(void)
     }
     s_recorder_reconciliation_armed = false;
     s_assigned_remotes = 0U;
+    s_unleveled_remotes = 0U;
     s_active_object_id[0] = '\0';
     s_session_id[0] = '\0';
     s_calculation_job_id = 0U;
@@ -2074,6 +2090,7 @@ static void workflow_service_snapshot_locked(workflow_snapshot_t *snapshot)
 {
     workflow_core_snapshot(
         &s_core, s_assigned_remotes, s_placement_ready, snapshot);
+    snapshot->unleveled_remotes = s_unleveled_remotes;
     if (!s_scan_storage_available || s_active_object_id[0] == '\0') {
         snapshot->allowed_actions &= ~WORKFLOW_ACTION(WORKFLOW_COMMAND_SCAN_START);
     }

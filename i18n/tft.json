@@ -1449,6 +1449,8 @@
     "tft.workflow.ranging.wifi_off": {"en": "Wi-Fi is off, it returns itself", "uk": "Wi-Fi вимкнено, увімкнеться саме", "max_len": 34},
     "tft.workflow.ranging.wifi_back": {"en": "Wi-Fi is turning back on", "uk": "Wi-Fi вмикається знову", "max_len": 34},
     "tft.workflow.record_ready.instruction": { "en": "Sensors are ready to record", "uk": "Датчики готові до запису", "max_len": 28 },
+    "tft.workflow.insufficient_geophones": { "en": "Under 3 geophones: no localization", "uk": "Менше 3 геофонів: джерело не знайти", "max_len": 38 },
+    "tft.workflow.unleveled_geophones": { "en": "Not all leveled: no localization", "uk": "Не всі вирівняні: без локалізації", "max_len": 38 },
     "tft.workflow.recording.elapsed": {"en": "Elapsed %s", "uk": "Тривалість %s", "max_len": 22},
     "tft.workflow.stopped.instruction": { "en": "Recording stopped", "uk": "Запис зупинено", "max_len": 19 },
     "tft.workflow.stopped.settings_missing": { "en": "Calculation parameters not set for this object", "uk": "Для цього об’єкта не задано параметри розрахунку", "max_len": 52 },

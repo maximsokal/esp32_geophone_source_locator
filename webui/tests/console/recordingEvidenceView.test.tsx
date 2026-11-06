@@ -43,6 +43,36 @@ describe('RecordingEvidenceView', () => {
     expect(html).toContain(formatDistance('en', 0.03));
   });
 
+  it.each([
+    ['en', 'Diagnostic recording', 'not measured: 0-1', 'looked suspicious'],
+    ['uk', 'Діагностичний запис', 'не виміряно: 0-1', 'виглядав підозріло'],
+  ] as const)('shows what was doubtful at the start of the recording, without blocking, in %s', (locale, gate, partial, suspicious) => {
+    const listing = {
+      object_id: 'o', session_id: 's',
+      geometry: { available: true, pods: [
+        { pod: 0, computed: true, leveled: true, x_mm: 0, y_mm: 0, z_mm: 0 },
+        { pod: 1, computed: true, leveled: true, x_mm: 4000, y_mm: 0, z_mm: 0 },
+      ] },
+      cs_pairs: { available: false, pairs: [] }, picks: [], runs: [],
+      diagnostic: {
+        available: true, gate_bypassed: true, partial_geometry: true, excluded_pairs: ['0-1'],
+        source_suspicious: true, source_unhealthy: false,
+      },
+    };
+    const render = (value: typeof listing) => renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: locale },
+      createElement(RecordingEvidenceView, { evidence: buildRecordingEvidence(value as never, null, null) })));
+    const html = render(listing);
+    expect(html).toContain(gate);
+    expect(html).toContain(partial);
+    expect(html).toContain(suspicious);
+    expect(html).not.toContain(locale === 'en' ? 'not confirmed present' : 'не підтверджено');
+    /* A recording that was not doubtful shows no diagnostic line. */
+    const quiet = render({ ...listing, diagnostic: { ...listing.diagnostic, gate_bypassed: false, partial_geometry: false,
+      excluded_pairs: [], source_suspicious: false } });
+    expect(quiet).not.toContain(gate);
+    expect(quiet).not.toContain(partial);
+  });
+
   it('says unknown while nothing has loaded', () => {
     const html = renderToStaticMarkup(createElement(LocaleProvider, { initialLocale: 'en' },
       createElement(RecordingEvidenceView, { evidence: buildRecordingEvidence(null, null, null) })));

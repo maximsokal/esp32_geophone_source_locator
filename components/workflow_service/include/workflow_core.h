@@ -265,6 +265,8 @@ typedef struct {
     uint32_t allowed_actions;
     workflow_sensor_sufficiency_t sensor_sufficiency;
     uint8_t assigned_remotes;
+    /* Assigned remotes that have not reported "level" (verticality ACCEPTED): a recording may start, but is diagnostic. */
+    uint8_t unleveled_remotes;
     char reason[WORKFLOW_REASON_MAX];
     int progress;
     workflow_calculation_class_t calculation_class;

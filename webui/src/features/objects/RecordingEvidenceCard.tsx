@@ -53,6 +53,14 @@ export function RecordingEvidenceView({ evidence }: { evidence: RecordingEvidenc
   const { locale } = useLocale();
   const localizationStatus = localizationSemanticStatus(evidence.localization);
   return (
+    <>
+      {evidence.diagnostics.map((item) => (
+        <p key={item.kind} className="console-alert warning" role="status" data-diagnostic={item.kind}>
+          {item.kind === 'partial_geometry'
+            ? t('evidence.diagnostic.partial_geometry', { pairs: item.pairs.join(', ') })
+            : t(`evidence.diagnostic.${item.kind}` as 'evidence.diagnostic.gate_bypassed')}
+        </p>
+      ))}
     <dl className="console-dl evidence-dl">
       <div><dt>{t('evidence.remote_nodes')}</dt><dd>{evidence.remoteCount === null ? t('evidence.policy.unknown') : t('report.remote_count', { count: formatNumber(locale, evidence.remoteCount) })}{evidence.remotes.length > 0 ? ` (${evidence.remotes.map((pod) => t('report.remote_node', { number: formatNumber(locale, pod) })).join(', ')})` : ''}</dd></div>
       <div><dt>{t('evidence.localization_policy')}</dt><dd>{t(POLICY_LABEL[evidence.policy])}</dd></div>
@@ -66,6 +74,7 @@ export function RecordingEvidenceView({ evidence }: { evidence: RecordingEvidenc
       <div><dt>{t('evidence.apriltag_anchor')}</dt><dd>{anchorLabel(evidence, t)}</dd></div>
       <div><dt>{t('evidence.localization')}</dt><dd data-localization-state={localizationStatus.state} data-severity={localizationStatus.severity}>{t(LOCALIZATION_LABEL[evidence.localization])}{evidence.solvedMethods.length > 0 ? `: ${evidence.solvedMethods.join(', ')}` : ''}{evidence.failedMethods.length > 0 ? ` · ${t('evidence.failed_methods', { methods: evidence.failedMethods.join(', ') })}` : ''}</dd></div>
     </dl>
+    </>
   );
 }
 

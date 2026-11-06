@@ -255,12 +255,30 @@ typedef struct
 } seismic_recorder_gate_metadata_t;
 
 
+#define SEISMIC_RECORDER_DIAGNOSTIC_MAX_EXCLUDED_PAIRS 10U
+
+/*
+ * What was doubtful when the recording started. It is shown to the operator and never blocks a recording: a confirmed
+ * geometry that excludes some CS pairs, and an AD7606 whose serial stream looked suspicious or whose presence was stale.
+ */
+typedef struct
+{
+    bool available;
+    bool partial_geometry;
+    uint8_t excluded_pair_count;
+    uint8_t excluded_pairs[SEISMIC_RECORDER_DIAGNOSTIC_MAX_EXCLUDED_PAIRS][2];
+    bool source_suspicious;
+    bool source_unhealthy;
+} seismic_recorder_diagnostic_metadata_t;
+
+
 typedef struct
 {
     seismic_recorder_pod_participation_t pods[OBJECT_STORE_POD_COUNT];
     seismic_recorder_geometry_z_provenance_t z_provenance;
     seismic_recorder_geometry_provenance_t geometry_provenance;
     seismic_recorder_gate_metadata_t recording_gate;
+    seismic_recorder_diagnostic_metadata_t diagnostic;
 } seismic_recorder_session_participation_t;
 
 

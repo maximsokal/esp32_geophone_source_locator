@@ -1256,6 +1256,39 @@ static void test_live_signals_open_from_the_ranging_result_without_a_workflow_co
     assert(!state.has_pending);
 }
 
+static void test_record_ready_warns_below_three_geophones_and_names_the_failed_calculation(void)
+{
+    ui_workflow_model_state_t state = {0};
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    /* A recording with fewer than 3 geophones can start but cannot locate a source: say so before START. */
+    for (int sufficiency = WORKFLOW_SENSOR_INSUFFICIENT; sufficiency <= WORKFLOW_SENSOR_CAPABLE_3D; ++sufficiency) {
+        workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_RECORD_READY);
+        snapshot.sensor_sufficiency = (workflow_sensor_sufficiency_t)sufficiency;
+        build(&snapshot, &state, &ranging, &model);
+        assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RECORD_READY_INSTRUCTION);
+        assert(model.line_count == (sufficiency == WORKFLOW_SENSOR_INSUFFICIENT ? 2U : 1U));
+    }
+    /* Enough geophones but not all leveled: the recording is allowed (diagnostic), a source cannot be located. */
+    {
+        workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_RECORD_READY);
+        snapshot.sensor_sufficiency = WORKFLOW_SENSOR_CAPABLE_3D;
+        snapshot.unleveled_remotes = 1U;
+        build(&snapshot, &state, &ranging, &model);
+        assert(model.line_count == 2U);
+        snapshot.unleveled_remotes = 0U;
+        build(&snapshot, &state, &ranging, &model);
+        assert(model.line_count == 1U);
+    }
+    /* A calculation that failed for the same reason names it in words, not as a raw token. */
+    workflow_snapshot_t result = make_snapshot(WORKFLOW_STEP_RESULT);
+    result.calculation_class = WORKFLOW_CALCULATION_CLASS_INTERNAL;
+    (void)snprintf(result.reason, sizeof(result.reason), "%s", "insufficient_geophones");
+    build(&result, &state, &ranging, &model);
+    assert(model.line_count >= 2U);
+    assert(model.lines[1].key != UI_I18N_KEY_TFT_WORKFLOW_RESULT_REASON);
+}
+
 int main(void)
 {
 #ifdef MAX449_CASE
@@ -1304,6 +1337,7 @@ int main(void)
     test_sensor_check_action_and_warning_for_low_remote_counts();
     test_workflow_start_and_preview_regressions();
     test_insufficient_nodes_results_use_existing_warning();
+    test_record_ready_warns_below_three_geophones_and_names_the_failed_calculation();
     return 0;
 #endif
 }

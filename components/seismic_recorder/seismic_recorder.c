@@ -1523,6 +1523,18 @@ static esp_err_t seismic_recorder_prepare_geometry(
         ESP_LOGW(TAG, "Could not persist CS pair evidence err=%s", esp_err_to_name(cs_pairs_err));
     }
 
+    /* Set last: seismic_recorder_geometry_build_participation() above starts from a clean struct.
+     * A confirmed geometry may exclude pairs the solver did not need; the session says which (shown, never blocking). */
+    participation->diagnostic.excluded_pair_count = 0U;
+    for (size_t i = 0U; i < cycle.pair_count; ++i) {
+        if (cycle.pairs[i].state == NRF_CS_PAIR_VALID ||
+            participation->diagnostic.excluded_pair_count >= SEISMIC_RECORDER_DIAGNOSTIC_MAX_EXCLUDED_PAIRS) continue;
+        participation->diagnostic.excluded_pairs[participation->diagnostic.excluded_pair_count][0] = cycle.pairs[i].node_a;
+        participation->diagnostic.excluded_pairs[participation->diagnostic.excluded_pair_count][1] = cycle.pairs[i].node_b;
+        ++participation->diagnostic.excluded_pair_count;
+    }
+    participation->diagnostic.partial_geometry = participation->diagnostic.excluded_pair_count > 0U;
+
     return ESP_OK;
 }
 
@@ -1624,6 +1636,9 @@ esp_err_t seismic_recorder_start(
         return err;
     }
 
+    participation.diagnostic.available = true;
+    participation.diagnostic.source_suspicious = acquisition.serial_suspicious;
+    participation.diagnostic.source_unhealthy = !acquisition.source_healthy;
     participation.recording_gate.available = true;
     participation.recording_gate.gate_bypassed = recording_gate.bypassed;
     participation.recording_gate.assigned_remote_count =

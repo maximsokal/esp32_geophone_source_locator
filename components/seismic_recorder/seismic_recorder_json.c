@@ -531,6 +531,41 @@ static const char *seismic_recorder_json_leveling_state_name(
 }
 
 
+/* "diagnostic": what was doubtful at START (partial geometry with its excluded pairs, AD7606 stream/presence). */
+static bool seismic_recorder_json_add_diagnostic(
+    cJSON *root,
+    const seismic_recorder_diagnostic_metadata_t *metadata
+)
+{
+    if (metadata == NULL || !metadata->available) {
+        return true;
+    }
+    cJSON *diagnostic = cJSON_AddObjectToObject(root, "diagnostic");
+    if (diagnostic == NULL ||
+        cJSON_AddBoolToObject(diagnostic, "partial_geometry", metadata->partial_geometry) == NULL) {
+        return false;
+    }
+    cJSON *excluded = cJSON_AddArrayToObject(diagnostic, "excluded_pairs");
+    if (excluded == NULL) {
+        return false;
+    }
+    const size_t count = metadata->excluded_pair_count < SEISMIC_RECORDER_DIAGNOSTIC_MAX_EXCLUDED_PAIRS
+        ? metadata->excluded_pair_count : SEISMIC_RECORDER_DIAGNOSTIC_MAX_EXCLUDED_PAIRS;
+    for (size_t i = 0U; i < count; ++i) {
+        char pair[12];
+        (void)snprintf(pair, sizeof(pair), "%u-%u",
+            (unsigned)metadata->excluded_pairs[i][0], (unsigned)metadata->excluded_pairs[i][1]);
+        cJSON *item = cJSON_CreateString(pair);
+        if (item == NULL) {
+            return false;
+        }
+        cJSON_AddItemToArray(excluded, item);
+    }
+    return cJSON_AddBoolToObject(diagnostic, "source_suspicious", metadata->source_suspicious) != NULL &&
+        cJSON_AddBoolToObject(diagnostic, "source_unhealthy", metadata->source_unhealthy) != NULL;
+}
+
+
 static bool seismic_recorder_json_add_recording_gate(
     cJSON *root,
     const seismic_recorder_gate_metadata_t *metadata
@@ -815,6 +850,9 @@ esp_err_t seismic_recorder_json_write_metadata(
         ok = seismic_recorder_json_add_recording_gate(
             root, &participation->recording_gate
         );
+    }
+    if (ok) {
+        ok = seismic_recorder_json_add_diagnostic(root, &participation->diagnostic);
     }
     if (ok) {
         ok = seismic_recorder_json_add_cs_pairs(root, &profile->cs_pairs);
@@ -1355,6 +1393,35 @@ static void seismic_recorder_json_parse_participation(
                 participation->recording_gate.accepted_remote_count =
                     (uint8_t)accepted_count_value;
                 participation->recording_gate.leveling_state = parsed_state;
+            }
+        }
+    }
+
+    /* Older sessions have no "diagnostic" block: it stays unavailable. A malformed block is ignored as a whole. */
+    const cJSON *diagnostic = cJSON_GetObjectItemCaseSensitive(root, "diagnostic");
+    if (cJSON_IsObject(diagnostic)) {
+        const cJSON *partial = cJSON_GetObjectItemCaseSensitive(diagnostic, "partial_geometry");
+        const cJSON *excluded = cJSON_GetObjectItemCaseSensitive(diagnostic, "excluded_pairs");
+        const cJSON *suspicious = cJSON_GetObjectItemCaseSensitive(diagnostic, "source_suspicious");
+        const cJSON *unhealthy = cJSON_GetObjectItemCaseSensitive(diagnostic, "source_unhealthy");
+        if (cJSON_IsBool(partial) && cJSON_IsBool(suspicious) && cJSON_IsBool(unhealthy) && cJSON_IsArray(excluded)) {
+            participation->diagnostic.available = true;
+            participation->diagnostic.partial_geometry = cJSON_IsTrue(partial);
+            participation->diagnostic.source_suspicious = cJSON_IsTrue(suspicious);
+            participation->diagnostic.source_unhealthy = cJSON_IsTrue(unhealthy);
+            participation->diagnostic.excluded_pair_count = 0U;
+            const int size = cJSON_GetArraySize(excluded);
+            for (int i = 0; i < size && participation->diagnostic.excluded_pair_count <
+                 SEISMIC_RECORDER_DIAGNOSTIC_MAX_EXCLUDED_PAIRS; ++i) {
+                const cJSON *item = cJSON_GetArrayItem(excluded, i);
+                unsigned a = 0U, b = 0U;
+                if (cJSON_IsString(item) && item->valuestring != NULL &&
+                    sscanf(item->valuestring, "%u-%u", &a, &b) == 2 && a <= UINT8_MAX && b <= UINT8_MAX) {
+                    uint8_t *slot = participation->diagnostic.excluded_pairs[participation->diagnostic.excluded_pair_count];
+                    slot[0] = (uint8_t)a;
+                    slot[1] = (uint8_t)b;
+                    ++participation->diagnostic.excluded_pair_count;
+                }
             }
         }
     }

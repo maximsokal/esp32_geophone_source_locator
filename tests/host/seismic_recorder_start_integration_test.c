@@ -52,7 +52,7 @@ static bool last_geometry_set;
 static object_store_cs_pairs_t last_cs_pairs;
 static bool last_cs_pairs_set;
 static bool fail_cs_pairs_write;
-static char persisted_session_json[8192];
+static char persisted_session_json[16384];
 static unsigned metadata_write_calls;
 static char last_metadata_status[24];
 static TaskFunction_t fake_recorder_task;
@@ -669,6 +669,13 @@ int main(void)
     fake_placement_height_mm[1] = fake_placement_height_mm[2] = fake_placement_height_mm[3] = 0;
     fake_confirm_current_geometry();
     assert(seismic_recorder_start("OBJ_0005") == ESP_OK);
+    /* The session records what was doubtful at START, shown but never blocking: no excluded pair here, and the
+     * AD7606 presence was stale in this fixture. */
+    assert(strstr(persisted_session_json, "\"diagnostic\":{") != NULL);
+    assert(strstr(persisted_session_json, "\"partial_geometry\":false") != NULL);
+    assert(strstr(persisted_session_json, "\"excluded_pairs\":[]") != NULL);
+    assert(strstr(persisted_session_json, "\"source_suspicious\":false") != NULL);
+    assert(strstr(persisted_session_json, "\"source_unhealthy\":true") != NULL);
     fake_requested_policy = (nrf_cs_policy_t){.pair_timeout_ms = 2400U, .max_attempts = 2U,
         .min_confidence = 500U, .samples_per_pair = 9U, .full_rotation = true,
         .relay_order = true, .require_both_directions = true};
@@ -1042,7 +1049,17 @@ int main(void)
             fake_frozen_ranging.pairs[0].distance_mm = 6001;
         }
         fake_confirm_current_geometry();
+        fake_acquisition.serial_suspicious = cable_control == 0U;
         assert(seismic_recorder_start("OBJ_0011") == ESP_OK);
+        /* Edge 0-1 is excluded for the first two cable cases (a partial but accepted geometry) and measured in the third. */
+        if (cable_control < 2U) {
+            assert(strstr(persisted_session_json, "\"partial_geometry\":true") != NULL);
+            assert(strstr(persisted_session_json, "\"excluded_pairs\":[\"0-1\"]") != NULL);
+        } else {
+            assert(strstr(persisted_session_json, "\"partial_geometry\":false") != NULL);
+        }
+        assert(strstr(persisted_session_json, cable_control == 0U ? "\"source_suspicious\":true" : "\"source_suspicious\":false") != NULL);
+        fake_acquisition.serial_suspicious = false;
         assert(seismic_recorder_read_session_geometry("OBJ_0011", "S000001", &final_geometry) == ESP_OK);
         assert(final_geometry.pods[0].computed);
         /* A measured MAIN edge defines the x axis; without it node 1 is placed by the other edges. */

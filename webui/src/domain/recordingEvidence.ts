@@ -59,6 +59,25 @@ export interface RecordingEvidence {
   solvedMethods: string[];
   failedMethods: string[];
   lastCalculatedAtMs: number | null;
+  /** What was doubtful at the start of this recording (empty = nothing or an older session). */
+  diagnostics: EvidenceDiagnostic[];
+}
+
+export type EvidenceDiagnostic =
+  | { kind: 'gate_bypassed' }
+  | { kind: 'partial_geometry'; pairs: string[] }
+  | { kind: 'source_suspicious' }
+  | { kind: 'source_unhealthy' };
+
+function diagnosticsOf(listing: LocalizationRunListing | null): EvidenceDiagnostic[] {
+  const diagnostic = listing?.diagnostic;
+  if (diagnostic === undefined || diagnostic.available !== true) return [];
+  const found: EvidenceDiagnostic[] = [];
+  if (diagnostic.gate_bypassed === true) found.push({ kind: 'gate_bypassed' });
+  if (diagnostic.partial_geometry === true) found.push({ kind: 'partial_geometry', pairs: diagnostic.excluded_pairs ?? [] });
+  if (diagnostic.source_suspicious === true) found.push({ kind: 'source_suspicious' });
+  if (diagnostic.source_unhealthy === true) found.push({ kind: 'source_unhealthy' });
+  return found;
 }
 
 function policyFor(remotes: number): PolicyState {
@@ -134,5 +153,6 @@ export function buildRecordingEvidence(
     solvedMethods: solved,
     failedMethods: failed,
     lastCalculatedAtMs: runs.length === 0 ? null : Math.max(...runs.map((run) => run.computed_at_ms)),
+    diagnostics: diagnosticsOf(listing),
   };
 }

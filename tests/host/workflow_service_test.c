@@ -2950,6 +2950,41 @@ static void test_calculation_success_progress_failure_classes_and_submit_errors(
     workflow_service_shutdown();
 }
 
+/* The count of assigned remotes that have not reported "level" (verticality ACCEPTED) reaches the snapshot. */
+static void test_snapshot_counts_remotes_that_are_not_leveled(void)
+{
+    enter_confirmed_record_ready();
+    s_now_ms += 2000U;
+    set_remote_orientation_frame(NRF_UPSTREAM_ORIENTATION_STATE_MOVING, s_now_ms);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(try_snapshot().unleveled_remotes >= 1U);
+    s_now_ms += 1000U;
+    set_remote_orientation_frame(NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED, s_now_ms);
+    assert(workflow_service_poll() == ESP_OK);
+    const uint8_t after = try_snapshot().unleveled_remotes;
+    assert(after < 4U);
+    workflow_service_shutdown();
+}
+
+/* Fewer than 3 geophones took part: the failure says so; the same error with enough of them keeps its own name. */
+static void test_calculation_without_enough_geophones_reports_a_clear_reason(void)
+{
+    const size_t participating[] = {2U, 4U};
+    const char *expected[] = {"insufficient_geophones", "ESP_ERR_INVALID_STATE"};
+    for (size_t i = 0U; i < 2U; ++i) {
+        enter_stopped();
+        (void)begin_calculation();
+        set_job_result(LOCALIZATION_RECOMMENDATION_NONE, false);
+        workflow_test_job_status.error = ESP_ERR_INVALID_STATE;
+        workflow_test_job_status.summary.participating_channel_count = participating[i];
+        assert(workflow_service_poll() == ESP_OK);
+        const workflow_snapshot_t snapshot = try_snapshot();
+        assert(snapshot.step == WORKFLOW_STEP_RESULT);
+        assert(strcmp(snapshot.reason, expected[i]) == 0);
+        workflow_service_shutdown();
+    }
+}
+
 static void test_invalid_settings_at_submit_and_orphaned_job_completion(void)
 {
     enter_stopped();
@@ -3301,6 +3336,8 @@ int main(void)
     test_the_sd_card_is_left_alone_from_calibration_to_the_ranging_result();
     test_calc_settings_readiness_gates_calculate_and_save_invalidates_cache();
     test_calculation_success_progress_failure_classes_and_submit_errors();
+    test_calculation_without_enough_geophones_reports_a_clear_reason();
+    test_snapshot_counts_remotes_that_are_not_leveled();
     test_invalid_settings_at_submit_and_orphaned_job_completion();
     test_second_calculation_while_orphaned_is_busy_without_duplicate_submit();
     test_material_save_runs_in_poll_and_refreshes_settings_ready();

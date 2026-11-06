@@ -582,6 +582,30 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
     }
     web_json_writer_write(&writer, "]},");
 
+    /* What was doubtful when the recording started: shown to the operator, never blocking; unavailable for older sessions. */
+    const bool diagnostic_available = participation_available && participation.diagnostic.available;
+    web_json_writer_printf(&writer, "\"diagnostic\":{\"available\":%s", diagnostic_available ? "true" : "false");
+    if (diagnostic_available) {
+        const seismic_recorder_diagnostic_metadata_t *diagnostic = &participation.diagnostic;
+        web_json_writer_printf(
+            &writer, ",\"gate_bypassed\":%s,\"partial_geometry\":%s,\"excluded_pairs\":[",
+            participation.recording_gate.available && participation.recording_gate.gate_bypassed ? "true" : "false",
+            diagnostic->partial_geometry ? "true" : "false"
+        );
+        for (size_t i = 0U; i < diagnostic->excluded_pair_count &&
+             i < SEISMIC_RECORDER_DIAGNOSTIC_MAX_EXCLUDED_PAIRS; ++i) {
+            web_json_writer_printf(
+                &writer, "%s\"%u-%u\"", i > 0U ? "," : "",
+                (unsigned)diagnostic->excluded_pairs[i][0], (unsigned)diagnostic->excluded_pairs[i][1]
+            );
+        }
+        web_json_writer_printf(
+            &writer, "],\"source_suspicious\":%s,\"source_unhealthy\":%s",
+            diagnostic->source_suspicious ? "true" : "false", diagnostic->source_unhealthy ? "true" : "false"
+        );
+    }
+    web_json_writer_write(&writer, "},");
+
     /*
      * MAX-148: CS pair placement-confidence evidence frozen alongside the
      * geometry above -- same best-effort contract (cs_pairs_available ==

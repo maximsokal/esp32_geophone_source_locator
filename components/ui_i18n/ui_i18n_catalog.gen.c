@@ -287,6 +287,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "UP/DOWN actions  OK run  LEFT back", /* tft.workflow.hint.navigation */
     "UP/DOWN action OK select RIGHT more", /* tft.workflow.hint.ranging_pages */
     "Select an object", /* tft.workflow.idle.select_object */
+    "Under 3 geophones: no localization", /* tft.workflow.insufficient_geophones */
     "Layout ready to calculate", /* tft.workflow.layout.ready */
     "Wi-Fi off = better ranging", /* tft.workflow.layout.wifi_hint */
     "Phone link returns itself", /* tft.workflow.layout.wifi_phone */
@@ -425,6 +426,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "SCANNING", /* tft.workflow.title.scanning */
     "SENSOR CHECK", /* tft.workflow.title.sensor_check */
     "RECORDING STOPPED", /* tft.workflow.title.stopped */
+    "Not all leveled: no localization", /* tft.workflow.unleveled_geophones */
     "FAIL", /* tft.workflow.value.fail */
     "X", /* tft.workflow.value.no */
     "OK", /* tft.workflow.value.ok */
@@ -766,6 +768,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "UP/DOWN дії  OK вибір  LEFT назад", /* tft.workflow.hint.navigation */
     "UP/DOWN дії OK вибір RIGHT далі", /* tft.workflow.hint.ranging_pages */
     "Виберіть об’єкт", /* tft.workflow.idle.select_object */
+    "Менше 3 геофонів: джерело не знайти", /* tft.workflow.insufficient_geophones */
     "Схема готова до розрахунку", /* tft.workflow.layout.ready */
     "Wi-Fi вимк. = точніше", /* tft.workflow.layout.wifi_hint */
     "Звʼязок із телефоном повернеться", /* tft.workflow.layout.wifi_phone */
@@ -904,6 +907,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "СКАНУВАННЯ", /* tft.workflow.title.scanning */
     "Перевірка датчиків", /* tft.workflow.title.sensor_check */
     "Запис зупинено", /* tft.workflow.title.stopped */
+    "Не всі вирівняні: без локалізації", /* tft.workflow.unleveled_geophones */
     "НЕВДАЛО", /* tft.workflow.value.fail */
     "Ні", /* tft.workflow.value.no */
     "OK", /* tft.workflow.value.ok */

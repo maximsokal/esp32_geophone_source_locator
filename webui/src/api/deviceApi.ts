@@ -1427,11 +1427,23 @@ export interface LocalizationPickRecord {
   channels: LocalizationPickChannel[];
 }
 
+/** What was doubtful when the recording started; shown to the operator, never blocking (absent in older sessions). */
+export interface LocalizationSessionDiagnostic {
+  available: boolean;
+  gate_bypassed?: boolean;
+  partial_geometry?: boolean;
+  /** Node pairs the confirmed geometry left out, as "a-b". */
+  excluded_pairs?: string[];
+  source_suspicious?: boolean;
+  source_unhealthy?: boolean;
+}
+
 export interface LocalizationRunListing {
   object_id: string;
   session_id: string;
   geometry: LocalizationSessionGeometry;
   cs_pairs: LocalizationSessionCsPairs;
+  diagnostic?: LocalizationSessionDiagnostic;
   partial_error: boolean;
   partial_errors: LocalizationPartialErrorCode[];
   picks: LocalizationPickRecord[];

@@ -467,7 +467,9 @@ static void build_result_lines(
             key = UI_I18N_KEY_TFT_WORKFLOW_RESULT_MOVE_SENSORS;
         }
         (void)add_line(model, key);
-        if (snapshot->reason[0] != '\0') {
+        if (strcmp(snapshot->reason, "insufficient_geophones") == 0) {
+            (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_INSUFFICIENT_GEOPHONES);
+        } else if (snapshot->reason[0] != '\0') {
             ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_REASON);
             set_arg(line, 0U, snapshot->reason);
         }
@@ -982,6 +984,12 @@ void ui_workflow_model_build(
             break;
         case WORKFLOW_STEP_RECORD_READY:
             (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RECORD_READY_INSTRUCTION);
+            /* Recording with fewer than 3 geophones is allowed (diagnostic), but no source can be located from it. */
+            if (snapshot->sensor_sufficiency == WORKFLOW_SENSOR_INSUFFICIENT) {
+                (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_INSUFFICIENT_GEOPHONES);
+            } else if (snapshot->unleveled_remotes > 0U) {
+                (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_UNLEVELED_GEOPHONES);
+            }
             break;
         case WORKFLOW_STEP_STOPPING:
             (void)add_line(model, UI_I18N_KEY_MEASUREMENT_STOPPING_RECORDING);
