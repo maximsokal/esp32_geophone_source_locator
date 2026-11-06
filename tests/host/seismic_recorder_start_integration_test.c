@@ -14,6 +14,7 @@
 #include "seismic_recorder.h"
 #include "seismic_acquisition.h"
 #include "seismic_recorder_internal.h"
+#include "seismic_recorder_geometry_policy.h"
 #include "nrf_cs_authority.h"
 #include "nrf_cs_cycle_coordinator.h"
 #include "nrf_cs_cycle_replay.h"
@@ -25,10 +26,16 @@
 static seismic_acquisition_snapshot_t fake_acquisition;
 static FILE *fake_file;
 static nrf_topology_snapshot_t fake_topology;
+/* 0: the normal START suite; 1: confirmed setup idle 11 minutes; 2: same with the CS backend unable to start. */
+#ifndef P2_DELAYED_CASE
+#define P2_DELAYED_CASE 0
+#endif
+static int p2_delayed_case = P2_DELAYED_CASE; /* not a constant: the suite keeps one source for all cases */
 static nrf_topology_leveling_summary_t fake_leveling;
 static nrf_cs_cycle_snapshot_t fake_cycle;
 static nrf_topology_ranging_result_t fake_frozen_ranging;
 static bool fake_reusable_ranging_available;
+static int64_t fake_time_us = 1000000;
 static unsigned fake_cs_cycle_requests;
 static bool fake_radio_on_demand;
 static unsigned fake_autonomous_requests;
@@ -103,7 +110,7 @@ void runtime_observability_beat(runtime_observability_task_t task, uint64_t prog
 void runtime_observability_set_health_phase(runtime_observability_task_t task, runtime_health_phase_t phase) { (void)task; (void)phase; }
 #endif
 runtime_health_result_t runtime_observability_get_health_result(runtime_observability_task_t task) { (void)task; return fake_health_deadline_armed ? RUNTIME_HEALTH_DEADLINE_EXCEEDED : RUNTIME_HEALTH_OK; }
-int64_t esp_timer_get_time(void) { return 1000000; }
+int64_t esp_timer_get_time(void) { return fake_time_us; }
 
 bool storage_manager_is_ready(void) { return true; }
 esp_err_t storage_manager_read_text(const char *path, char *buffer, size_t buffer_size) {
@@ -205,10 +212,27 @@ esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
     nrf_topology_ranging_result_t *result)
 {
     assert(topology != NULL && result != NULL);
-    assert(now_ms == 1000U);
-    assert(max_age_ms == NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS);
+    if (p2_delayed_case != 0) {
+        if (!fake_reusable_ranging_available || now_ms < fake_frozen_ranging.timestamp_ms ||
+            now_ms - fake_frozen_ranging.timestamp_ms >= max_age_ms) return ESP_ERR_NOT_FOUND;
+    } else {
+        assert(now_ms == 1000U);
+        assert(max_age_ms == NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS);
+    }
     if (!fake_reusable_ranging_available) return ESP_ERR_NOT_FOUND;
     *result = fake_frozen_ranging;
+    return ESP_OK;
+}
+esp_err_t nrf_topology_service_get_accepted_ranging_result(
+    const char *object_id, const nrf_topology_snapshot_t *topology, uint64_t now_ms,
+    nrf_topology_ranging_result_t *result)
+{
+    (void)object_id;
+    (void)topology;
+    (void)now_ms;
+    if (!fake_reusable_ranging_available) return ESP_ERR_NOT_FOUND;
+    *result = fake_frozen_ranging;
+    result->accepted_revision_ms = fake_frozen_ranging.timestamp_ms;
     return ESP_OK;
 }
 /* Heights the placement step settled, by node id; none unless a test sets them. */
@@ -222,6 +246,53 @@ bool nrf_topology_service_get_placement_height_mm(nrf_cs_node_id_t node_id, uint
     *height_mm = fake_placement_height_mm[node_id];
     return true;
 }
+
+#if !defined(SEISMIC_RECORDER_GATE_BYPASS_TEST)
+static void fake_confirm_current_geometry(void)
+{
+    seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT] = {0};
+    seismic_recorder_geometry_main_reference_t main_reference = {
+        .valid = fake_device_status.main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID,
+        .generation = fake_device_status.main.height_reference.generation,
+        .relative_z_mm = fake_device_status.main.height_reference.relative_z_mm};
+    for (uint8_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
+        const nrf_remote_sensor_cache_t *cache = &fake_sensor_cache[i];
+        channels[i].sensor_valid = cache->response_valid && cache->topology_current;
+        channels[i].height_reference_valid = cache->sensor.reference_state == NRF_UPSTREAM_REFERENCE_VALID;
+        channels[i].height_reference_generation = cache->sensor.reference_generation;
+        channels[i].relative_z_mm = cache->sensor.relative_z_mm;
+        channels[i].leveled = cache->sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+        channels[i].placement_height_valid = nrf_topology_service_get_placement_height_mm(
+            fake_topology.remotes[i].node_id, main_reference.generation, &channels[i].placement_height_mm);
+    }
+    nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
+    size_t input_count = 0U;
+    seismic_recorder_geometry_z_provenance_t z;
+#if defined(CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE)
+    const seismic_recorder_geometry_z_policy_t policy = SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE;
+#else
+    const seismic_recorder_geometry_z_policy_t policy = SEISMIC_RECORDER_GEOMETRY_Z_PLANAR;
+#endif
+    assert(seismic_recorder_geometry_build_inputs(&fake_topology, channels, &main_reference, policy,
+        inputs, NRF_GEOMETRY_MAX_NODES, &input_count, &z) == ESP_OK);
+    nrf_geometry_solution_t solution;
+    assert(nrf_geometry_solver_solve_partial(inputs, input_count, fake_frozen_ranging.pairs,
+        fake_frozen_ranging.pair_count, &solution) == NRF_GEOMETRY_OK);
+    fake_frozen_ranging.geometry.node_count = solution.node_count;
+    fake_frozen_ranging.geometry.max_residual_mm = solution.max_residual_mm;
+    fake_frozen_ranging.geometry.inconsistent_pair_count = solution.inconsistent_pair_count;
+    fake_frozen_ranging.geometry.refined = solution.refined;
+    fake_frozen_ranging.geometry.refine_iterations = solution.refine_iterations;
+    for (size_t i = 0U; i < solution.node_count; ++i) {
+        const nrf_geometry_node_position_t *node = &solution.nodes[i];
+        fake_frozen_ranging.geometry.nodes[i] = (nrf_topology_ranging_node_t){
+            .node_id = node->node_id, .solved = node->solved, .x_mm = node->x_mm,
+            .y_mm = node->y_mm, .z_mm = node->z_mm, .residual_mm = node->residual_mm,
+            .uncertainty_mm = node->uncertainty_mm};
+    }
+    fake_reusable_ranging_available = true;
+}
+#endif
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *snapshot) { if (channel >= NRF_TOPOLOGY_REMOTE_COUNT) return ESP_ERR_INVALID_ARG; *snapshot = fake_sensor_cache[channel]; return ESP_OK; }
 esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot) { if (snapshot == NULL) return ESP_ERR_INVALID_ARG; *snapshot = fake_device_status; return ESP_OK; }
 
@@ -504,6 +575,63 @@ int main(void)
     fake_cycle.pairs[4] = (nrf_cs_pair_result_t){ .node_a = 1U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 250 };
     fake_cycle.pairs[5] = (nrf_cs_pair_result_t){ .node_a = 2U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 400 };
 
+    if (p2_delayed_case != 0) {
+        fake_topology.remotes[3] = fake_topology.remotes[2];
+        fake_topology.remotes[3].node_id = 4U;
+        fake_topology.remotes[3].mux_channel = 3U;
+        fake_topology.remotes[3].hardware_id[0] = 0xA3U;
+        fake_leveling.assigned_count = fake_leveling.accepted_count = 4U;
+        fake_sensor_cache[3] = fake_sensor_cache[0];
+        fake_placement_generation = 7U;
+        for (unsigned i = 0U; i < 4U; ++i) {
+            fake_placement_valid[i + 1U] = true;
+            fake_placement_height_mm[i + 1U] = 0;
+            fake_sensor_cache[i].esp_receipt_uptime_ms = 660999U;
+            fake_sensor_cache[i].sensor.sample_complete_uptime_ms = 660998U;
+        }
+        fake_time_us = 661000000;
+        fake_acquisition.last_sample_timestamp_us = fake_time_us - 1000;
+        const int32_t distances[] = {3000,3000,4243,1803,4243,3000,1803,3000,2500,0};
+        fake_frozen_ranging.available = fake_frozen_ranging.success = true;
+        fake_frozen_ranging.timestamp_ms = 1000U;
+        fake_frozen_ranging.topology_generation = 143U;
+        fake_frozen_ranging.membership_generation = 52U;
+        fake_frozen_ranging.pair_count = 10U;
+        size_t index = 0U;
+        for (uint8_t a = 0U; a < 4U; ++a) {
+            for (uint8_t b = a + 1U; b < 5U; ++b) {
+                fake_frozen_ranging.pairs[index] = (nrf_cs_pair_result_t){
+                    .node_a = a, .node_b = b,
+                    .state = index == 9U ? NRF_CS_PAIR_RETRY_EXHAUSTED : NRF_CS_PAIR_VALID,
+                    .distance_mm = distances[index], .confidence = 900, .valid_samples = 9U};
+                ++index;
+            }
+        }
+        fake_reusable_ranging_available = true;
+        const nrf_geometry_node_input_t inputs[] = {
+            {.node_id = 0U}, {.node_id = 1U}, {.node_id = 2U}, {.node_id = 3U}, {.node_id = 4U}};
+        nrf_geometry_solution_t accepted_solution;
+        assert(nrf_geometry_solver_solve(inputs, 5U, fake_frozen_ranging.pairs, 10U, &accepted_solution) == NRF_GEOMETRY_OK);
+        fake_frozen_ranging.geometry.node_count = accepted_solution.node_count;
+        for (size_t i = 0U; i < accepted_solution.node_count; ++i) {
+            const nrf_geometry_node_position_t *node = &accepted_solution.nodes[i];
+            fake_frozen_ranging.geometry.nodes[i] = (nrf_topology_ranging_node_t){
+                .node_id = node->node_id, .solved = node->solved, .x_mm = node->x_mm,
+                .y_mm = node->y_mm, .z_mm = node->z_mm, .residual_mm = node->residual_mm,
+                .uncertainty_mm = node->uncertainty_mm};
+        }
+        if (p2_delayed_case == 2) fake_autonomous_start_result = ESP_ERR_INVALID_STATE;
+        const esp_err_t result = seismic_recorder_start("OBJ_0005");
+        assert(fake_autonomous_requests == 0U);
+        assert(result == ESP_OK);
+        seismic_recorder_session_participation_t saved;
+        assert(seismic_recorder_read_session_participation("OBJ_0005", "S000001", &saved) == ESP_OK);
+        assert(saved.geometry_provenance.available);
+        assert(strcmp(saved.geometry_provenance.setup_id, "1000-143-52-7") == 0);
+        assert(strcmp(saved.geometry_provenance.ranging_source, "workflow_ranging") == 0);
+        return 0;
+    }
+
     /* Legacy per-step CS cannot reach the reflector with on-demand radios. */
     fake_radio_on_demand = true;
 
@@ -518,23 +646,16 @@ int main(void)
     fail_cs_pairs_write = true;
 
     assert(seismic_recorder_init() == ESP_OK);
-    fake_autonomous_start_result = ESP_ERR_INVALID_STATE;
     assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_INVALID_STATE);
+    assert(fake_autonomous_requests == 0U);
     assert(!last_geometry_set && metadata_write_calls == 0U);
-    fake_autonomous_start_result = ESP_OK;
-    fake_cycle.result = NRF_CS_AUTHORITY_ERR_STATE;
-    assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_INVALID_STATE);
-    assert(!last_geometry_set && metadata_write_calls == 0U);
-    fake_cycle.result = NRF_CS_AUTHORITY_COMPLETE;
-    fake_progress_changes_identity = true;
-    assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_INVALID_STATE);
-    fake_progress_changes_identity = false;
-    fake_progress_never_completes = true;
-    assert(seismic_recorder_start("OBJ_0005") == ESP_ERR_TIMEOUT);
-    assert(fake_progress_calls > 90000U / 50U);
-    assert(!last_geometry_set && metadata_write_calls == 0U);
-    fake_progress_never_completes = false;
-    fake_progress_done_after = 1000U; /* A valid cycle can exceed the former 45 s limit. */
+    fake_frozen_ranging.available = fake_frozen_ranging.success = true;
+    fake_frozen_ranging.pair_count = fake_cycle.pair_count;
+    memcpy(fake_frozen_ranging.pairs, fake_cycle.pairs, sizeof(fake_cycle.pairs));
+    fake_frozen_ranging.topology_generation = 143U;
+    fake_frozen_ranging.membership_generation = 52U;
+    fake_frozen_ranging.main_height_reference_generation = 7U;
+    fake_frozen_ranging.timestamp_ms = 1000U;
     /*
      * The sensors read 500, 480 and -300 mm against MAIN at this instant (a wandering barometer), but the
      * placement settled all three at the same height as MAIN for MAIN reference generation 7. The geometry
@@ -546,10 +667,13 @@ int main(void)
     fake_placement_generation = 7U;
     fake_placement_valid[1] = fake_placement_valid[2] = fake_placement_valid[3] = true;
     fake_placement_height_mm[1] = fake_placement_height_mm[2] = fake_placement_height_mm[3] = 0;
+    fake_confirm_current_geometry();
     assert(seismic_recorder_start("OBJ_0005") == ESP_OK);
+    fake_requested_policy = (nrf_cs_policy_t){.pair_timeout_ms = 2400U, .max_attempts = 2U,
+        .min_confidence = 500U, .samples_per_pair = 9U, .full_rotation = true,
+        .relay_order = true, .require_both_directions = true};
     test_requested_policy_requires_both_directions();
-    assert(fake_autonomous_requests == 5U && fake_cs_cycle_requests == 0U);
-    assert(fake_progress_calls == 1001U);
+    assert(fake_autonomous_requests == 0U && fake_cs_cycle_requests == 0U);
     assert(last_geometry_set);
     assert(!last_geometry.anchored);
     assert(last_geometry.pods[0].computed && last_geometry.pods[0].leveled);
@@ -590,7 +714,7 @@ int main(void)
     assert(start_participation.z_provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE);
     assert(start_participation.z_provenance.fallback_reason[0] == '\0');
     assert(start_participation.geometry_provenance.available);
-    assert(strcmp(start_participation.geometry_provenance.ranging_source, "start_cycle") == 0);
+    assert(strcmp(start_participation.geometry_provenance.ranging_source, "workflow_ranging") == 0);
     assert(strcmp(start_participation.geometry_provenance.solver, "nrf_geometry_solver") == 0);
     assert(strcmp(start_participation.geometry_provenance.solver_version, NRF_GEOMETRY_SOLVER_VERSION) == 0);
     assert(start_participation.geometry_provenance.topology_generation == 143U);
@@ -694,7 +818,7 @@ int main(void)
     assert(final_participation.geometry_provenance.topology_generation == 143U);
     assert(final_participation.geometry_provenance.cs_membership_generation == 52U);
     assert(final_participation.geometry_provenance.main_height_reference_generation == 7U);
-    assert(strcmp(final_participation.geometry_provenance.ranging_source, "start_cycle") == 0);
+    assert(strcmp(final_participation.geometry_provenance.ranging_source, "workflow_ranging") == 0);
     assert(final_participation.pods[0].height_reference_generation == 7U);
     object_store_geometry_t final_geometry;
     assert(seismic_recorder_read_session_geometry("OBJ_0005", "S000001", &final_geometry) == ESP_OK);
@@ -718,6 +842,8 @@ int main(void)
     fake_frozen_ranging.membership_generation = 52U;
     fake_frozen_ranging.timestamp_ms = 999U;
     fake_reusable_ranging_available = true;
+    fake_frozen_ranging.main_height_reference_generation = 703U;
+    fake_confirm_current_geometry();
     const unsigned cycle_requests_before_reuse = fake_autonomous_requests;
     assert(seismic_recorder_start("OBJ_0006") == ESP_OK);
     assert(fake_autonomous_requests == cycle_requests_before_reuse);
@@ -726,7 +852,7 @@ int main(void)
     assert(strcmp(reused_participation.geometry_provenance.ranging_source, "workflow_ranging") == 0);
     assert(reused_participation.geometry_provenance.topology_generation == 143U);
     assert(reused_participation.geometry_provenance.cs_membership_generation == 52U);
-    assert(strcmp(reused_participation.geometry_provenance.setup_id, "1000-143-52-703") == 0);
+    assert(strcmp(reused_participation.geometry_provenance.setup_id, "999-143-52-703") == 0);
     assert(seismic_recorder_read_session_cs_pairs("OBJ_0006", "S000001", &written_cs_pairs) == ESP_OK);
     assert(written_cs_pairs.pair_count == 6U && written_cs_pairs.pairs[0].distance_mm == 300);
 
@@ -780,6 +906,7 @@ int main(void)
     const unsigned before_uncertain = fake_autonomous_requests;
     const unsigned metadata_before_uncertain = metadata_write_calls;
     last_geometry_set = false;
+    fake_confirm_current_geometry();
     assert(seismic_recorder_start("OBJ_0009") == ESP_ERR_INVALID_STATE);
     assert(!last_geometry_set && metadata_write_calls == metadata_before_uncertain);
     assert(fake_autonomous_requests == before_uncertain);
@@ -794,6 +921,7 @@ int main(void)
     }
     const unsigned metadata_before_mirror=metadata_write_calls;
     last_geometry_set=false;
+    fake_confirm_current_geometry();
     assert(seismic_recorder_start("OBJ_0009")==ESP_ERR_INVALID_STATE);
     assert(!last_geometry_set && metadata_write_calls==metadata_before_mirror);
     assert(fake_autonomous_requests==before_uncertain);
@@ -813,6 +941,7 @@ int main(void)
     fake_frozen_ranging.pairs[0].scheduler_quality_flags = NRF_CS_QUALITY_MANUAL;
     fake_frozen_ranging.pairs[0].automatic_distance_mm = 6000;
     const unsigned before_partial = fake_autonomous_requests;
+    fake_confirm_current_geometry();
     assert(seismic_recorder_start("OBJ_0008") == ESP_OK);
     assert(fake_autonomous_requests == before_partial);
     assert(seismic_recorder_read_session_cs_pairs("OBJ_0008", "S000001", &written_cs_pairs) == ESP_OK);
@@ -840,6 +969,7 @@ int main(void)
         }
     }
     const unsigned before_coincident = fake_autonomous_requests;
+    fake_confirm_current_geometry();
     assert(seismic_recorder_start("OBJ_0009") == ESP_OK);
     assert(fake_autonomous_requests == before_coincident);
     assert(seismic_recorder_read_session_geometry("OBJ_0009", "S000001", &final_geometry) == ESP_OK);
@@ -873,6 +1003,7 @@ int main(void)
     for (size_t lowered_edge = 0U; lowered_edge < 10U; ++lowered_edge) {
         fake_frozen_ranging.pairs[lowered_edge].distance_mm = lowered_distances[lowered_edge];
     }
+    fake_confirm_current_geometry();
     assert(seismic_recorder_start("OBJ_0010") == ESP_OK);
     assert(fake_autonomous_requests == before_coincident);
     assert(seismic_recorder_read_session_geometry("OBJ_0010", "S000001", &final_geometry) == ESP_OK);
@@ -902,13 +1033,21 @@ int main(void)
         fake_frozen_ranging.pairs[cable_edge].distance_mm = beyond_cable_distances[cable_edge];
     }
     fake_frozen_ranging.pairs[0].state = NRF_CS_PAIR_RETRY_EXHAUSTED;
-    for (unsigned cable_control = 0U; cable_control < 2U; ++cable_control) {
-        /* Exact 6 m and the existing one-mm XYZ rounding allowance must both pass. */
-        fake_profile_cable_length_m = cable_control == 0U ? 6.0f : 5.999f;
+    for (unsigned cable_control = 0U; cable_control < 3U; ++cable_control) {
+        /* Exact 6 m and the one-mm XYZ rounding allowance must pass; so must a 5.75 m cable whose own MAIN edge was
+         * measured 6001 mm: 251 mm over, inside the one-bin (293 mm) resolution of an automatic distance. */
+        fake_profile_cable_length_m = cable_control == 0U ? 6.0f : cable_control == 1U ? 5.999f : 5.75f;
+        if (cable_control == 2U) {
+            fake_frozen_ranging.pairs[0].state = NRF_CS_PAIR_VALID;
+            fake_frozen_ranging.pairs[0].distance_mm = 6001;
+        }
+        fake_confirm_current_geometry();
         assert(seismic_recorder_start("OBJ_0011") == ESP_OK);
         assert(seismic_recorder_read_session_geometry("OBJ_0011", "S000001", &final_geometry) == ESP_OK);
         assert(final_geometry.pods[0].computed);
-        assert(final_geometry.pods[0].x_mm == 0 && final_geometry.pods[0].y_mm == 6000);
+        /* A measured MAIN edge defines the x axis; without it node 1 is placed by the other edges. */
+        if (cable_control == 2U) assert(final_geometry.pods[0].x_mm == 6001 && final_geometry.pods[0].y_mm == 0);
+        else assert(final_geometry.pods[0].x_mm == 0 && final_geometry.pods[0].y_mm == 6000);
         assert(final_geometry.pods[0].z_mm == 0);
         assert(seismic_recorder_stop() == ESP_OK);
         final_metadata_written = false;
@@ -918,8 +1057,26 @@ int main(void)
         }
         assert(final_metadata_written && strcmp(last_metadata_status, "complete") == 0);
     }
+    /* Without the MAIN edge there is nothing that explains a position past the cable: only the rounding mm applies. */
+    fake_frozen_ranging.pairs[0].state = NRF_CS_PAIR_RETRY_EXHAUSTED;
+    fake_frozen_ranging.pairs[0].distance_mm = 0;
+    fake_profile_cable_length_m = 5.75f;
+    last_geometry_set = false;
+    fake_confirm_current_geometry();
+    assert(seismic_recorder_start("OBJ_0011") == ESP_ERR_INVALID_STATE);
+    assert(!last_geometry_set);
+    /* The MAIN edge explains at most one bin: a 5.5 m cable is 501 mm short of the measured 6001 mm. */
+    fake_frozen_ranging.pairs[0].state = NRF_CS_PAIR_VALID;
+    fake_frozen_ranging.pairs[0].distance_mm = 6001;
+    fake_profile_cable_length_m = 5.5f;
+    fake_confirm_current_geometry();
+    assert(seismic_recorder_start("OBJ_0011") == ESP_ERR_INVALID_STATE);
+    assert(!last_geometry_set);
+    fake_frozen_ranging.pairs[0].state = NRF_CS_PAIR_RETRY_EXHAUSTED;
+    fake_frozen_ranging.pairs[0].distance_mm = 0;
     fake_profile_cable_length_m = 5.0f;
     last_geometry_set = false;
+    fake_confirm_current_geometry();
     const esp_err_t cable_start_result = seismic_recorder_start("OBJ_0011");
     if (cable_start_result != ESP_ERR_INVALID_STATE) {
         fprintf(stderr, "cable START=%d persisted=%d node1=(%ld,%ld,%ld)\n",

@@ -176,6 +176,7 @@ typedef struct {
     nrf_topology_snapshot_t topology;
     nrf_remote_sensor_cache_t remote_sensor;
     nrf_topology_ranging_progress_t ranging_progress;
+    nrf_topology_ranging_result_t accepted_ranging;
     object_store_profile_t ranging_object;
     object_store_cs_pairs_t ranging_pairs;
     workflow_calibration_node_t old_calibration_nodes[WORKFLOW_MAX_CALIBRATION_NODES];
@@ -394,7 +395,8 @@ static uint64_t workflow_service_now_ms(void)
 
 static bool workflow_service_step_has_session(workflow_step_t step)
 {
-    return step == WORKFLOW_STEP_RECORDING || step == WORKFLOW_STEP_STOPPED ||
+    return step == WORKFLOW_STEP_RECORDING || step == WORKFLOW_STEP_STOPPING ||
+        step == WORKFLOW_STEP_RECORD_ERROR || step == WORKFLOW_STEP_STOPPED ||
         step == WORKFLOW_STEP_CALCULATING || step == WORKFLOW_STEP_RESULT;
 }
 
@@ -477,7 +479,8 @@ static void workflow_service_refresh_calc_settings_locked(uint64_t now_ms)
  */
 static bool workflow_service_step_leaves_the_sd_card_alone(workflow_step_t step)
 {
-    return step >= WORKFLOW_STEP_CALIB_PREP && step <= WORKFLOW_STEP_RANGING_RESULT;
+    return (step >= WORKFLOW_STEP_CALIB_PREP && step <= WORKFLOW_STEP_RANGING_RESULT) ||
+        step == WORKFLOW_STEP_STOPPING;
 }
 
 static void workflow_service_refresh_presence_locked(void)
@@ -1291,9 +1294,15 @@ static bool workflow_service_placement_update_node(
         return false;
     }
 
-    while (history->sample_count > 0U &&
-           now_ms - history->samples[0].timestamp_ms -
-               (history->blind_total_ms - history->samples[0].blind_at_insert_ms) > WORKFLOW_PLACEMENT_WINDOW_MS) {
+    while (history->sample_count > 0U) {
+        const uint64_t oldest_age_ms = now_ms - history->samples[0].timestamp_ms -
+            (history->blind_total_ms - history->samples[0].blind_at_insert_ms);
+        if (oldest_age_ms <= WORKFLOW_PLACEMENT_WINDOW_MS) break;
+        /* Sparse readings: the newest MIN_SAMPLES stay while they are inside the hard bound. */
+        if (history->sample_count <= WORKFLOW_PLACEMENT_MIN_SAMPLES &&
+            oldest_age_ms <= WORKFLOW_PLACEMENT_HARD_WINDOW_MS) {
+            break;
+        }
         --history->sample_count;
         memmove(
             &history->samples[0],
@@ -1651,6 +1660,7 @@ static void workflow_service_reconcile_locked(void)
     if (workflow_service_active_object(object_id, &active_object_present) == ESP_OK &&
         strcmp(object_id, s_active_object_id) != 0) {
         workflow_service_calibration_cancel();
+        (void)nrf_topology_service_invalidate_ranging();
         if (s_core.step == WORKFLOW_STEP_CALCULATING) {
             workflow_service_mark_calculation_orphaned_locked();
         }
@@ -1686,17 +1696,26 @@ static void workflow_service_reconcile_locked(void)
         return;
     }
 
-    if (measurement.state == MEASUREMENT_SERVICE_STARTING ||
-        measurement.state == MEASUREMENT_SERVICE_RECORDING) {
+    if ((measurement.state == MEASUREMENT_SERVICE_STARTING ||
+        measurement.state == MEASUREMENT_SERVICE_RECORDING) && s_core.step != WORKFLOW_STEP_STOPPING) {
         workflow_core_reconcile(&s_core, WORKFLOW_STEP_RECORDING, NULL);
     }
+    else if (measurement.state == MEASUREMENT_SERVICE_STOPPING && s_core.step == WORKFLOW_STEP_RECORDING) {
+        workflow_core_reconcile(&s_core, WORKFLOW_STEP_STOPPING, NULL);
+    }
     else if (measurement.state == MEASUREMENT_SERVICE_REVIEW &&
-        s_core.step == WORKFLOW_STEP_RECORDING) {
+        (s_core.step == WORKFLOW_STEP_RECORDING || s_core.step == WORKFLOW_STEP_STOPPING)) {
         workflow_core_reconcile(&s_core, WORKFLOW_STEP_STOPPED, NULL);
     }
     else if (measurement.state == MEASUREMENT_SERVICE_ERROR &&
-        (s_core.step == WORKFLOW_STEP_RECORDING || s_core.step == WORKFLOW_STEP_STOPPED)) {
-        workflow_core_reconcile(&s_core, WORKFLOW_STEP_STOPPED, "recording_error");
+        (s_core.step == WORKFLOW_STEP_RECORDING || s_core.step == WORKFLOW_STEP_STOPPING ||
+         s_core.step == WORKFLOW_STEP_STOPPED)) {
+        char reason[sizeof(s_core.reason)];
+        const esp_err_t error = measurement.stop_stage_error != ESP_OK
+            ? measurement.stop_stage_error : measurement.last_error;
+        if (error != ESP_OK) (void)snprintf(reason, sizeof(reason), "recording_error:%s", esp_err_to_name(error));
+        else (void)snprintf(reason, sizeof(reason), "%s", "recording_error");
+        workflow_core_reconcile(&s_core, WORKFLOW_STEP_RECORD_ERROR, reason);
     }
     workflow_service_update_session_locked(measurement_err, &measurement);
     workflow_service_step_changed(previous_step, s_core.step);
@@ -1974,6 +1993,36 @@ esp_err_t workflow_service_shutdown(void)
     return ESP_OK;
 }
 
+static esp_err_t workflow_service_confirmed_setup_status(void)
+{
+    nrf_topology_snapshot_t *topology = &s_poll_scratch.topology;
+    nrf_topology_ranging_result_t *accepted = &s_poll_scratch.accepted_ranging;
+    device_status_snapshot_t *device = &s_poll_scratch.device;
+    if (nrf_topology_service_get_snapshot(topology) != ESP_OK ||
+        nrf_topology_service_get_accepted_ranging_result(
+            s_active_object_id, topology, workflow_service_now_ms(), accepted) != ESP_OK)
+        return ESP_ERR_INVALID_STATE;
+    const uint64_t now_ms = workflow_service_now_ms();
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        const nrf_topology_node_snapshot_t *remote = &topology->remotes[channel];
+        nrf_remote_sensor_cache_t *cache = &s_poll_scratch.remote_sensor;
+        if (remote->state != NRF_TOPOLOGY_NODE_ASSIGNED ||
+            nrf_topology_service_get_sensor_snapshot(channel, cache) != ESP_OK) continue;
+        if (cache->identity_valid && cache->topology_current && cache->response_valid &&
+            cache->identity.node_id == remote->node_id && cache->esp_receipt_uptime_ms > accepted->timestamp_ms &&
+            cache->esp_receipt_uptime_ms <= now_ms &&
+            now_ms - cache->esp_receipt_uptime_ms <= WORKFLOW_PLACEMENT_FRESH_MS &&
+            cache->sensor.orientation_state == NRF_UPSTREAM_ORIENTATION_STATE_MOVING)
+            return ESP_ERR_INVALID_STATE;
+    }
+    if (accepted->main_height_reference_generation == 0U) return ESP_OK;
+    const esp_err_t err = device_status_try_get_snapshot(device);
+    if (err != ESP_OK) return err;
+    return device->main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
+        device->main.height_reference.generation == accepted->main_height_reference_generation
+        ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
 static void workflow_service_snapshot_locked(workflow_snapshot_t *snapshot)
 {
     workflow_core_snapshot(
@@ -2011,6 +2060,12 @@ esp_err_t workflow_service_poll(void)
     workflow_service_calibration_poll();
     workflow_service_ranging_poll();
     workflow_service_placement_poll(true);
+    if ((s_core.step == WORKFLOW_STEP_SCAN_CHOICE || s_core.step == WORKFLOW_STEP_SCANNING ||
+         s_core.step == WORKFLOW_STEP_RECORD_READY) &&
+        workflow_service_confirmed_setup_status() == ESP_ERR_INVALID_STATE) {
+        (void)nrf_topology_service_invalidate_ranging();
+        workflow_core_reconcile(&s_core, WORKFLOW_STEP_LAYOUT_READY, "geometry_changed");
+    }
     s_placement_ready = workflow_service_placement_ready();
     workflow_service_refresh_presence_locked();
     workflow_service_calculation_poll_locked();
@@ -2110,6 +2165,18 @@ static workflow_command_result_t workflow_service_command_locked(
     if (command == WORKFLOW_COMMAND_GPS_ACCEPT && s_active_object_id[0] == '\0') {
         return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
     }
+    if (command == WORKFLOW_COMMAND_START_RECORDING && s_core.step == WORKFLOW_STEP_RECORD_READY) {
+        if (params->has_generation && params->expected_generation != s_core.generation)
+            return WORKFLOW_COMMAND_RESULT_STALE;
+        const esp_err_t setup_status = workflow_service_confirmed_setup_status();
+        if (setup_status != ESP_OK) {
+            if (setup_status == ESP_ERR_INVALID_STATE) {
+                (void)nrf_topology_service_invalidate_ranging();
+                workflow_core_reconcile(&s_core, WORKFLOW_STEP_LAYOUT_READY, "geometry_changed");
+            }
+            return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+        }
+    }
 
     const workflow_core_t previous = s_core;
     char previous_session[SEISMIC_RECORDER_SESSION_ID_SIZE];
@@ -2117,6 +2184,17 @@ static workflow_command_result_t workflow_service_command_locked(
     const workflow_command_result_t result = workflow_core_apply(
         &s_core, command, &applied_params, s_assigned_remotes, s_placement_ready);
     if (result != WORKFLOW_COMMAND_RESULT_OK) return result;
+
+    if (command == WORKFLOW_COMMAND_CONFIRM && previous.step == WORKFLOW_STEP_RANGING_RESULT) {
+        nrf_topology_snapshot_t topology;
+        nrf_topology_ranging_progress_t *progress = &s_poll_scratch.ranging_progress;
+        if (s_active_object_id[0] == '\0' || nrf_topology_service_get_snapshot(&topology) != ESP_OK ||
+            nrf_topology_service_ranging_get_progress(progress) != ESP_OK ||
+            nrf_topology_service_accept_ranging_result(s_active_object_id, &topology, progress->updated_at_ms) != ESP_OK) {
+            s_core = previous;
+            return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+        }
+    }
 
     if (command == WORKFLOW_COMMAND_GPS_ACCEPT) {
         object_store_location_t location = {0};
@@ -2163,7 +2241,7 @@ static workflow_command_result_t workflow_service_command_locked(
         s_scan_cache_valid = false;
         measurement_err = measurement_service_start_async();
         if (measurement_err == ESP_OK) s_recorder_reconciliation_armed = true;
-    } else if (command == WORKFLOW_COMMAND_STOP_RECORDING) {
+    } else if (command == WORKFLOW_COMMAND_STOP_RECORDING && previous.step != WORKFLOW_STEP_STOPPING) {
         measurement_err = measurement_service_stop_async();
     } else if (command == WORKFLOW_COMMAND_DELETE_RECORDING) {
         measurement_err = measurement_service_delete_async();

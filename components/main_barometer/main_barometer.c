@@ -106,6 +106,14 @@ static bool main_barometer_bus_yield_error(esp_err_t err)
            err == SENSOR_BUS_ERR_OWNER_HOLD_BUDGET;
 }
 
+/* One failed transfer of an address that still answers: a timeout, or ESP_ERR_INVALID_STATE which sensor_bus returns
+ * when the controller failed the transfer but the probe ACKs (a NACK would have become NOT_FOUND). Both get one quick
+ * re-read; a sensor that does not answer is NOT_FOUND and keeps the long re-probe backoff. */
+static bool main_barometer_transient_transfer_error(esp_err_t err)
+{
+    return err == ESP_ERR_TIMEOUT || err == ESP_ERR_INVALID_STATE;
+}
+
 static bool main_barometer_retryable_bus_error(esp_err_t err)
 {
     return err == ESP_ERR_NOT_FOUND || err == ESP_ERR_TIMEOUT ||
@@ -676,7 +684,7 @@ static esp_err_t main_barometer_read_bmp280(
     uint8_t state[3] = {0};
     err = main_barometer_read_regs(barometer->bmp280, address, BMP280_REG_STATUS, state, sizeof(state));
     if (err != ESP_OK) {
-        barometer->bmp280_read_timeout = err == ESP_ERR_TIMEOUT;
+        barometer->bmp280_read_timeout = main_barometer_transient_transfer_error(err);
         return err;
     }
     const uint8_t expected_ctrl = barometer->bmp280_forced ? 0x54U : 0x57U;
@@ -717,7 +725,7 @@ static esp_err_t main_barometer_read_bmp280(
         barometer->bmp280, barometer->reading.bmp280_address,
         BMP280_REG_DATA, bytes, sizeof(bytes));
     if (err != ESP_OK) {
-        barometer->bmp280_data_timeout = err == ESP_ERR_TIMEOUT;
+        barometer->bmp280_data_timeout = main_barometer_transient_transfer_error(err);
         barometer->reading.bmp280_valid = false;
         return err;
     }
@@ -913,10 +921,10 @@ esp_err_t main_barometer_poll(main_barometer_t *barometer, uint64_t now_ms)
                 }
             }
             const bool bus_yield = main_barometer_bus_yield_error(bmp_err);
-            const bool fast_retry = bmp_err == ESP_ERR_TIMEOUT && barometer->bmp280_read_timeout &&
+            const bool fast_retry = main_barometer_transient_transfer_error(bmp_err) && barometer->bmp280_read_timeout &&
                 !barometer->bmp280_fast_retry_used;
             if (fast_retry) barometer->bmp280_fast_retry_used = true;
-            if (!bmp_retry_deferred && bmp_err == ESP_ERR_TIMEOUT && barometer->bmp280_data_timeout &&
+            if (!bmp_retry_deferred && main_barometer_transient_transfer_error(bmp_err) && barometer->bmp280_data_timeout &&
                 !barometer->bmp280_fast_retry_used) {
                 barometer->bmp280_fast_retry_used = true;
                 barometer->bmp280_fast_retry_pending = true;

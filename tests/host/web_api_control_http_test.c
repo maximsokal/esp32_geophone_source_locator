@@ -922,6 +922,21 @@ static const char *const CALCULATE_SOURCE_BODY =
     "\"refine_amplitude_fraction\":0.5,\"snr_signal_window_samples\":50,\"minimum_snr\":2.0,"
     "\"semblance_window_half_span_samples\":25}";
 
+static void test_calculate_source_rejects_active_or_failed_recording(void)
+{
+    const int states[] = {MEASUREMENT_SERVICE_STOPPING, MEASUREMENT_SERVICE_STARTING,
+        MEASUREMENT_SERVICE_RECORDING, MEASUREMENT_SERVICE_ERROR};
+    for (size_t i = 0U; i < sizeof(states) / sizeof(states[0]); ++i) {
+        char response[512] = {0};
+        reset_fakes();
+        s_measurement_state = states[i];
+        httpd_req_t request = make_request(CALCULATE_SOURCE_BODY, response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(s_calculate_calls == 0U);
+        assert(request.response_status != NULL && strcmp(request.response_status, "409 Conflict") == 0);
+    }
+}
+
 static void test_calculate_source_action_submits_a_background_job(void)
 {
     reset_fakes();
@@ -1541,6 +1556,7 @@ static void test_workflow_command_rejects_internal_completion_commands(void)
 int main(void)
 {
     assert(storage_bulk_admission_initialize() == ESP_OK);
+    test_calculate_source_rejects_active_or_failed_recording();
     test_scan_recording_gate_precedes_object_lease();
     test_measurement_start_requires_workflow_step();
     test_measurement_start_rejects_acquisition_failures();

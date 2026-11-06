@@ -36,6 +36,8 @@ static void connected_cb(struct bt_conn *conn, uint8_t err)
 
     s_advertising = false;
     s_incoming_conn = bt_conn_ref(conn);
+    atomic_set(&s_incoming_activity_ms, (atomic_val_t)k_uptime_get_32());
+    atomic_set(&s_incoming_activity_seen, 1);
     runtime_post_event(RUNTIME_EVENT_INCOMING_CONNECTED, NULL, 0U, 0, conn);
 }
 
@@ -58,6 +60,7 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
 
     if (conn == s_incoming_conn) {
         atomic_set(&s_incoming_disconnect_pending, (atomic_val_t)reason + 1);
+        atomic_set(&s_incoming_activity_ms, (atomic_val_t)k_uptime_get_32());
         bt_conn_unref(s_incoming_conn);
         s_incoming_conn = NULL;
         atomic_set(&s_reflector_procedure_active, 0);

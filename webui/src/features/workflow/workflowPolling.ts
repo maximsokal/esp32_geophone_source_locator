@@ -1,6 +1,6 @@
 import type { WorkflowStep } from '../../domain/device';
 
-const FAST_STEPS = new Set(['CALIBRATING', 'PLACEMENT', 'RANGING', 'RECORDING', 'CALCULATING']);
+const FAST_STEPS = new Set(['CALIBRATING', 'PLACEMENT', 'RANGING', 'RECORDING', 'STOPPING', 'CALCULATING']);
 
 export function workflowStatusPollDelay(step: WorkflowStep | string | undefined, succeeded: boolean, failures: number): number {
   if (!succeeded) return Math.min(30000, 5000 * (2 ** Math.min(Math.max(failures, 0), 4)));

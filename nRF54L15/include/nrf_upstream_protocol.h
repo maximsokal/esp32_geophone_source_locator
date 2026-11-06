@@ -86,7 +86,8 @@ typedef enum {
 #define NRF_UPSTREAM_ORIENTATION_STATE_MAX 3U
 #define NRF_UPSTREAM_ORIENTATION_BLINK_MAX 3U
 
-/* Mirrors nrf_orientation_state_t's NRF_ORIENTATION_STATE_ACCEPTED (2). */
+/* Mirror nrf_orientation_state_t values used by the ESP32. */
+#define NRF_UPSTREAM_ORIENTATION_STATE_MOVING 1U
 #define NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED 2U
 
 typedef enum {

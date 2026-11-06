@@ -53,7 +53,9 @@ static const model_transition_t s_transitions[] = {
     { WORKFLOW_STEP_RECORD_READY, WORKFLOW_COMMAND_START_RECORDING, WORKFLOW_STEP_RECORDING },
     { WORKFLOW_STEP_RECORD_READY, WORKFLOW_COMMAND_MOVE_SENSORS, WORKFLOW_STEP_PLACEMENT },
     { WORKFLOW_STEP_RECORD_READY, WORKFLOW_COMMAND_BACK, WORKFLOW_STEP_SCAN_CHOICE },
-    { WORKFLOW_STEP_RECORDING, WORKFLOW_COMMAND_STOP_RECORDING, WORKFLOW_STEP_STOPPED },
+    { WORKFLOW_STEP_RECORDING, WORKFLOW_COMMAND_STOP_RECORDING, WORKFLOW_STEP_STOPPING },
+    { WORKFLOW_STEP_STOPPING, WORKFLOW_COMMAND_STOP_RECORDING, WORKFLOW_STEP_STOPPING },
+    { WORKFLOW_STEP_RECORD_ERROR, WORKFLOW_COMMAND_RECORD_AGAIN, WORKFLOW_STEP_RECORD_READY },
     { WORKFLOW_STEP_STOPPED, WORKFLOW_COMMAND_CALCULATE_SOURCES, WORKFLOW_STEP_CALCULATING },
     { WORKFLOW_STEP_STOPPED, WORKFLOW_COMMAND_DELETE_RECORDING, WORKFLOW_STEP_RECORD_READY },
     { WORKFLOW_STEP_STOPPED, WORKFLOW_COMMAND_RECORD_AGAIN, WORKFLOW_STEP_RECORD_READY },
@@ -306,9 +308,11 @@ static workflow_command_result_t model_apply(
     }
 
     if (next == WORKFLOW_STEP_COUNT) return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
+    if (state->step != next) {
+        state->progress = WORKFLOW_PROGRESS_UNKNOWN;
+        state->calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
+    }
     state->step = next;
-    state->progress = WORKFLOW_PROGRESS_UNKNOWN;
-    state->calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
     model_advance_generation(state);
     if (command == WORKFLOW_COMMAND_CALCULATION_DONE) {
         state->calculation_class = params->ok
@@ -554,7 +558,7 @@ static void assert_sequence_matches(action_t *actions, size_t count, uint32_t se
 /* MAX-491 mutation-only: independent oracle covers every state/command pair. */
 static void test_all_state_command_pairs(void)
 {
-    assert(WORKFLOW_STEP_COUNT == 19);
+    assert(WORKFLOW_STEP_COUNT == 21);
     assert(WORKFLOW_COMMAND_COUNT == 27);
     for (int state = 0; state < WORKFLOW_STEP_COUNT; ++state) {
         for (int command = 0; command < WORKFLOW_COMMAND_COUNT; ++command) {

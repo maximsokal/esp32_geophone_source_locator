@@ -285,6 +285,22 @@ esp_err_t nrf_topology_service_invalidate_ranging(void)
     return ESP_OK;
 }
 
+esp_err_t nrf_topology_service_accept_ranging_result(
+    const char *object_id, const nrf_topology_snapshot_t *topology, uint64_t updated_at_ms)
+{
+    (void)updated_at_ms;
+    return object_id != NULL && topology != NULL ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t nrf_topology_service_get_accepted_ranging_result(
+    const char *object_id, const nrf_topology_snapshot_t *topology, uint64_t now_ms,
+    nrf_topology_ranging_result_t *result)
+{
+    (void)object_id; (void)topology; (void)now_ms;
+    memset(result, 0, sizeof(*result));
+    return ESP_OK;
+}
+
 esp_err_t nrf_topology_service_ranging_cancel(void)
 {
     ++s_ranging_cancel_calls;

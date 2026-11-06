@@ -39,6 +39,9 @@ static int64_t s_ina_max_wait_us;
 static unsigned s_ina_accesses_before_log_completion;
 static unsigned s_firmware_lines;
 static unsigned s_rx_lines;
+static unsigned s_nrf_log_busy_diag_lines;
+static unsigned s_tca_fault_skipped_lines;
+static unsigned s_rx_lines_at_hold;
 static unsigned s_log_requests;
 static unsigned s_log_requests_at_stale;
 static bool s_corrupt_log_block;
@@ -301,6 +304,8 @@ static void log_test_ina_monitor(TickType_t ticks)
 
 static void log_test_record(const char *line)
 {
+    if (strstr(line, "I2C_TIMEOUT_DIAG src=nrf_log") != NULL) ++s_nrf_log_busy_diag_lines;
+    if (strstr(line, "TCA_FAULT_SKIPPED reason=mutex_busy") != NULL) ++s_tca_fault_skipped_lines;
     if (strstr(line, "NRF_LOG_RX node=") != NULL || strstr(line, "NRF_FIRMWARE node=") != NULL) {
         log_test_mux_write();
         assert(s_tca_control == 0U);
@@ -324,6 +329,18 @@ static void log_test_record(const char *line)
     }
 }
 
+/* Another task owns the shared bus: every lock attempt of the topology task fails at once. */
+static void other_task_takes_the_bus(void)
+{
+    s_rx_lines_at_hold = s_rx_lines;
+    s_fail_recursive_lock_attempts = 1000U;
+}
+
+static void other_task_releases_the_bus(void)
+{
+    s_fail_recursive_lock_attempts = 0U;
+}
+
 static void start_log_world(bool with_mux)
 {
     reset_world();
@@ -339,6 +356,8 @@ static void start_log_world(bool with_mux)
     s_ina_accesses_before_log_completion = 0U;
     s_firmware_lines = 0U;
     s_rx_lines = 0U;
+    s_nrf_log_busy_diag_lines = 0U;
+    s_tca_fault_skipped_lines = 0U;
     s_log_requests = 0U;
     s_corrupt_log_block = false;
     s_corrupt_log_status = false;
@@ -456,6 +475,22 @@ int main(void)
     assert(!s_ina_monitor_waiting && s_ina_max_wait_us > 0 && s_ina_max_wait_us <= 50000);
     assert(s_max_bus_owner_hold_ms <= SENSOR_BUS_OWNER_MAX_HOLD_MS);
     assert(s_collisions == 0U && s_tca_control == 0U);
+
+    /* The log collector only tries the shared bus: a busy bus is a skipped turn, not a timeout. 2026-11-05 hardware log:
+     * "I2C_TIMEOUT_DIAG src=nrf_log ... err=mutex_busy waited_for_mutex_us=13" next to TCA_FAULT_SKIPPED: a 13 us
+     * non-blocking miss reported at timeout level (and counted by anyone grepping timeouts). */
+    start_log_world(false);
+    s_queue_calibration = false;
+    script_waits(4U, 10U);
+    script(EV_ACTION, 0U, other_task_takes_the_bus);
+    script(EV_WAIT_MS, 1100U, NULL);               /* one log period passes while the bus is taken */
+    script(EV_ACTION, 0U, other_task_releases_the_bus);
+    script(EV_WAIT_MS, 1100U, NULL);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_tca_fault_skipped_lines >= 1U);       /* the busy turn really happened ... */
+    assert(s_nrf_log_busy_diag_lines == 0U);       /* ... and is not reported as a bus timeout */
+    assert(s_rx_lines > s_rx_lines_at_hold);       /* the collector resumes by itself once the bus is free */
 
     start_log_world(false);
     s_queue_calibration = false;

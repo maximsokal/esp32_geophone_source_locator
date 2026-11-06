@@ -20,6 +20,8 @@ typedef struct {
     measurement_service_state_t state;
     char object_id[16];
     char session_id[16];
+    esp_err_t last_error;
+    esp_err_t stop_stage_error;
 } measurement_service_snapshot_t;
 
 esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snapshot);

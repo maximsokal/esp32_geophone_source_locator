@@ -268,8 +268,22 @@ static void configure_valid_start(void)
 #if !CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING
     fake_leveling.assigned_count = 2U;
     fake_leveling.accepted_count = 2U;
-#endif
     fake_reusable_ranging_available = false;
+#else
+    memset(&fake_frozen_ranging, 0, sizeof(fake_frozen_ranging));
+    fake_frozen_ranging.available = fake_frozen_ranging.success = true;
+    fake_frozen_ranging.timestamp_ms = 1000U;
+    fake_frozen_ranging.topology_generation = 143U;
+    fake_frozen_ranging.membership_generation = 52U;
+    fake_frozen_ranging.main_height_reference_generation = 7U;
+    fake_frozen_ranging.pair_count = fake_cycle.pair_count;
+    memcpy(fake_frozen_ranging.pairs, fake_cycle.pairs, sizeof(fake_cycle.pairs));
+    fake_placement_generation = 7U;
+    memset(fake_placement_valid, 0, sizeof(fake_placement_valid));
+    memset(fake_placement_height_mm, 0, sizeof(fake_placement_height_mm));
+    for (size_t i = 1U; i <= 3U; ++i) fake_placement_valid[i] = true;
+    fake_confirm_current_geometry();
+#endif
     fake_health_deadline_armed = false;
     fake_ring_frame_count = 0U;
     fake_ring_total_frames = 0U;
@@ -425,7 +439,7 @@ static void test_early_failures_preserve_public_state(void)
     s_fail_topology_snapshot = true;
     assert(seismic_recorder_start("OBJ_0491") == ESP_ERR_NOT_FOUND);
     s_fail_topology_snapshot = false;
-    assert(s_topology_snapshot_calls >= 2U);
+    assert(s_topology_snapshot_calls == 1U);
     after = current_snapshot();
     assert(memcmp(&after, &before, sizeof(before)) == 0);
     assert_failure_not_accepted();

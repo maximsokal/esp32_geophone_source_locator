@@ -1,5 +1,6 @@
 #include "nrf_geometry_triangles.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "nrf_geometry_solver.h"
@@ -155,6 +156,149 @@ bool nrf_geometry_triangles_check(
     }
     if (best < 2U || tie) report->suspect_pair = -1;
     return true;
+}
+
+void nrf_geometry_edge_bounds_cap(nrf_geometry_edge_bounds_t *bounds, int32_t cap_mm)
+{
+    if (bounds == NULL || cap_mm < 0) return;
+    if (bounds->upper_mm > cap_mm) bounds->upper_mm = cap_mm;
+    bounds->contradictory = bounds->lower_mm > bounds->upper_mm;
+}
+
+#define HULL_MAX_POINTS 16U
+#define HULL_MAX_FACES 64U
+/* A point nearer than this to a plane (mm) is on it: well below the 1 mm of the positions, far above double rounding. */
+#define HULL_ON_PLANE_MM 1e-4
+
+typedef struct {
+    double x, y, z;
+} vec3_t;
+
+static vec3_t vec_sub(vec3_t a, vec3_t b)
+{
+    return (vec3_t){a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+static vec3_t vec_cross(vec3_t a, vec3_t b)
+{
+    return (vec3_t){a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+static double vec_dot(vec3_t a, vec3_t b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+static double plane_cross(const double *u, const double *v, size_t o, size_t a, size_t b)
+{
+    return (u[a] - u[o]) * (v[b] - v[o]) - (v[a] - v[o]) * (u[b] - u[o]);
+}
+
+/* Area of the convex hull of points given in a plane (Andrew's monotone chain). */
+static double hull_area_2d(const double *u, const double *v, size_t count)
+{
+    size_t order[HULL_MAX_POINTS];
+    size_t hull[2U * HULL_MAX_POINTS];
+    size_t size = 0U;
+
+    for (size_t i = 0U; i < count; ++i) order[i] = i;
+    for (size_t i = 1U; i < count; ++i) {            /* insertion sort by u, then v */
+        const size_t value = order[i];
+        size_t at = i;
+        while (at > 0U && (u[order[at - 1U]] > u[value] || (u[order[at - 1U]] == u[value] && v[order[at - 1U]] > v[value]))) {
+            order[at] = order[at - 1U];
+            --at;
+        }
+        order[at] = value;
+    }
+    for (size_t i = 0U; i < count; ++i) {
+        while (size >= 2U && plane_cross(u, v, hull[size - 2U], hull[size - 1U], order[i]) <= 0.0) --size;
+        hull[size++] = order[i];
+    }
+    const size_t lower = size + 1U;
+    for (size_t i = count - 1U; i > 0U; --i) {
+        while (size >= lower && plane_cross(u, v, hull[size - 2U], hull[size - 1U], order[i - 1U]) <= 0.0) --size;
+        hull[size++] = order[i - 1U];
+    }
+    --size;                                           /* the first point is repeated at the end */
+    if (size < 3U) return 0.0;
+    double twice = 0.0;
+    for (size_t i = 0U; i < size; ++i) {
+        const size_t a = hull[i], b = hull[(i + 1U) % size];
+        twice += u[a] * v[b] - u[b] * v[a];
+    }
+    return (twice < 0.0 ? -twice : twice) / 2.0;
+}
+
+int64_t nrf_geometry_hull_surface_area_mm2(const int32_t *x_mm, const int32_t *y_mm, const int32_t *z_mm, size_t count)
+{
+    if (x_mm == NULL || y_mm == NULL || z_mm == NULL || count < 3U || count > HULL_MAX_POINTS) return 0;
+
+    vec3_t p[HULL_MAX_POINTS];
+    for (size_t i = 0U; i < count; ++i) p[i] = (vec3_t){(double)x_mm[i], (double)y_mm[i], (double)z_mm[i]};
+
+    /* Every face of the hull lies in a plane through three of the points with all the others on one side of it. Each such
+     * plane is taken once, however many points it holds, and its polygon is the hull of those points in the plane. */
+    vec3_t face_normal[HULL_MAX_FACES];
+    double face_offset[HULL_MAX_FACES];
+    size_t faces = 0U;
+    double total = 0.0;
+    for (size_t i = 0U; i + 2U < count; ++i) {
+        for (size_t j = i + 1U; j + 1U < count; ++j) {
+            for (size_t k = j + 1U; k < count; ++k) {
+                vec3_t normal = vec_cross(vec_sub(p[j], p[i]), vec_sub(p[k], p[i]));
+                const double length = sqrt(vec_dot(normal, normal));
+                if (length < 1.0) continue;            /* collinear: integer positions give 0 or at least 1 mm^2 */
+                normal = (vec3_t){normal.x / length, normal.y / length, normal.z / length};
+                if (normal.x < 0.0 || (normal.x == 0.0 && (normal.y < 0.0 || (normal.y == 0.0 && normal.z < 0.0)))) {
+                    normal = (vec3_t){-normal.x, -normal.y, -normal.z};   /* one orientation per plane */
+                }
+                const double offset = vec_dot(normal, p[i]);
+                bool above = false, below = false;
+                size_t on_plane = 0U;
+                for (size_t m = 0U; m < count; ++m) {
+                    const double side = vec_dot(normal, p[m]) - offset;
+                    if (side > HULL_ON_PLANE_MM) above = true;
+                    else if (side < -HULL_ON_PLANE_MM) below = true;
+                    else ++on_plane;
+                }
+                if (above && below) continue;          /* the plane cuts the layout: not a face */
+                bool known = false;
+                for (size_t f = 0U; f < faces && !known; ++f) {
+                    known = fabs(vec_dot(face_normal[f], normal) - 1.0) < 1e-9 && fabs(face_offset[f] - offset) < HULL_ON_PLANE_MM;
+                }
+                if (known || faces >= HULL_MAX_FACES) continue;
+                face_normal[faces] = normal;
+                face_offset[faces++] = offset;
+
+                /* The polygon of the points in that plane, measured in the coordinate plane that sees it best. */
+                double u[HULL_MAX_POINTS], v[HULL_MAX_POINTS];
+                size_t held = 0U;
+                const double ax = fabs(normal.x), ay = fabs(normal.y), az = fabs(normal.z);
+                const double major = ax >= ay && ax >= az ? ax : (ay >= az ? ay : az);
+                for (size_t m = 0U; m < count; ++m) {
+                    if (fabs(vec_dot(normal, p[m]) - offset) > HULL_ON_PLANE_MM) continue;
+                    if (major == ax) { u[held] = p[m].y; v[held] = p[m].z; }
+                    else if (major == ay) { u[held] = p[m].x; v[held] = p[m].z; }
+                    else { u[held] = p[m].x; v[held] = p[m].y; }
+                    ++held;
+                }
+                const double area = hull_area_2d(u, v, held) / major;
+                total += on_plane == count ? 2.0 * area : area;   /* a flat layout shows both faces */
+            }
+        }
+    }
+    return total >= 9.2e18 ? INT64_MAX : (int64_t)(total + 0.5);
+}
+
+int64_t nrf_geometry_max_hull_surface_area_mm2(size_t vertex_count, int32_t radius_mm)
+{
+    /* In units of R^2: flat triangle, regular tetrahedron, triangular bipyramid, octahedron; then the whole sphere. */
+    static const double inscribed[] = {2.5980762113533160, 4.6188021535170060, 5.8094750193111250, 6.9282032302755090};
+    if (vertex_count < 3U || radius_mm <= 0) return 0;
+    const double r2 = (double)radius_mm * (double)radius_mm;
+    const double factor = vertex_count <= 6U ? inscribed[vertex_count - 3U] : 4.0 * 3.14159265358979323846;
+    return (int64_t)(factor * r2 + 0.5);
 }
 
 bool nrf_geometry_triangle_bounds(

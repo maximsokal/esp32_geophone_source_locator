@@ -49,11 +49,13 @@ static void test_all_steps(void)
         UI_I18N_KEY_TFT_WORKFLOW_TITLE_STOPPED,
         UI_I18N_KEY_TFT_WORKFLOW_TITLE_CALCULATING,
         UI_I18N_KEY_TFT_WORKFLOW_TITLE_RESULT,
+        UI_I18N_KEY_MEASUREMENT_STATE_STOPPING,
+        UI_I18N_KEY_MEASUREMENT_STATE_ERROR,
     };
     ui_workflow_model_state_t state = {0};
     ui_workflow_ranging_t ranging = {0};
     ui_workflow_model_t model;
-    assert(WORKFLOW_STEP_COUNT == 19);
+    assert(WORKFLOW_STEP_COUNT == 21);
     for (workflow_step_t step = WORKFLOW_STEP_IDLE; step < WORKFLOW_STEP_COUNT; ++step) {
         workflow_snapshot_t snapshot = make_snapshot(step);
         build(&snapshot, &state, &ranging, &model);

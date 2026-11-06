@@ -11,6 +11,9 @@ static bool s_outgoing_connected, s_advertising;
 static int s_reflector_procedure_active;
 static int s_radio_enabled=1;
 static int s_incoming_disconnect_pending;
+static int s_incoming_activity_ms, s_incoming_activity_seen;
+static uint32_t s_now_ms;
+static uint32_t k_uptime_get_32(void) { return s_now_ms; }
 typedef int atomic_val_t;
 static nrf_cs_pair_adapter_t s_adapter;
 static unsigned s_completions, s_disconnects;
@@ -78,8 +81,9 @@ int main(void)
     struct bt_conn conn;
     s_radio_enabled=0;conn.refs=1;
     assert(atomic_get(&s_radio_enabled)==0);
-    connected_cb(&conn,0);
+    s_now_ms=500;connected_cb(&conn,0);
     assert(s_disconnects==1 && s_incoming_conn==NULL && conn.refs==1);
+    assert(s_incoming_activity_seen==0);                /* a refused link is not activity of the duty */
     s_radio_enabled=1;
     s_incoming_disconnect_pending=1;
     connected_cb(&conn,0);
@@ -108,10 +112,11 @@ int main(void)
     assert(s_outgoing_conn == NULL && conn.refs == 0);
     assert(nrf_cs_pair_adapter_cleanup_complete(&s_adapter,&step)==NRF_CS_PAIR_ADAPTER_COMPLETED);
     conn.refs=1;
-    connected_cb(&conn,0); /* Radio-enabled idle reflector is still accepted. */
+    s_now_ms=1000;connected_cb(&conn,0); /* Radio-enabled idle reflector is still accepted. */
     assert(s_incoming_conn==&conn && conn.refs==2);
-    disconnected_cb(&conn,0x13);
-    assert(s_incoming_conn==NULL && conn.refs==1);
+    assert(s_incoming_activity_seen==1 && s_incoming_activity_ms==1000);
+    s_now_ms=1700;disconnected_cb(&conn,0x13);
+    assert(s_incoming_conn==NULL && conn.refs==1 && s_incoming_activity_ms==1700);
     assert(s_incoming_disconnect_pending==0x14);
     s_incoming_disconnect_pending=0; /* This fixture does not run the event worker. */
     s_radio_enabled=0;

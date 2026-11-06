@@ -1252,15 +1252,6 @@ static esp_err_t seismic_recorder_prepare_geometry(
         ESP_LOGW(TAG, "START: %s", recording_gate_planar_warning(gate.decision));
     }
 
-    const nrf_cs_policy_t policy = {
-        .pair_timeout_ms = SEISMIC_RECORDER_GEOMETRY_CS_PAIR_TIMEOUT_MS,
-        .max_attempts = SEISMIC_RECORDER_GEOMETRY_CS_MAX_ATTEMPTS,
-        .min_confidence = SEISMIC_RECORDER_GEOMETRY_CS_MIN_CONFIDENCE,
-        .samples_per_pair = SEISMIC_RECORDER_GEOMETRY_CS_SAMPLES_PER_PAIR,
-        .full_rotation = true,
-        .relay_order = true,
-        .require_both_directions = true,
-    };
     uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {0};
     object_store_profile_t *cable_profile = malloc(sizeof(*cable_profile));
     if (cable_profile == NULL) return ESP_ERR_NO_MEM;
@@ -1282,61 +1273,19 @@ static esp_err_t seismic_recorder_prepare_geometry(
     nrf_topology_ranging_result_t frozen_ranging = {0};
     nrf_cs_cycle_snapshot_t cycle;
     memset(&cycle, 0, sizeof(cycle));
-    bool reused_frozen_ranging = false;
-    if (nrf_topology_service_get_snapshot(&topology) == ESP_OK &&
-        nrf_topology_service_get_reusable_frozen_ranging_result(
-            &topology,
-            start_uptime_ms,
-            NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
-            &frozen_ranging) == ESP_OK) {
-        reused_frozen_ranging = true;
-        cycle.complete = true;
-        cycle.result = NRF_CS_AUTHORITY_COMPLETE;
-        cycle.membership_generation = frozen_ranging.membership_generation;
-        cycle.pair_count = frozen_ranging.pair_count;
-        memcpy(cycle.pairs, frozen_ranging.pairs, cycle.pair_count * sizeof(cycle.pairs[0]));
-    } else {
-        err = nrf_topology_service_ranging_start_autonomous_limited(&policy, limits);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "START rejected: could not request CS geometry cycle err=%s", esp_err_to_name(err));
-            return err;
-        }
-
-        nrf_topology_ranging_progress_t progress;
-        err = nrf_topology_service_ranging_get_progress(&progress);
-        if (err != ESP_OK) return err;
-        const uint64_t started_at_ms = progress.started_at_ms;
-        const uint32_t timeout_ms = nrf_cs_cycle_coordinator_budget_ms(
-            &policy, NRF_CS_MAX_EXECUTIONS, NRF_CS_MAX_NODES);
-        uint32_t waited_ms = 0U;
-        for (;;) {
-            if (progress.started_at_ms != started_at_ms) return ESP_ERR_INVALID_STATE;
-            if (progress.complete) break;
-            if (waited_ms >= timeout_ms) {
-                ESP_LOGE(TAG, "START rejected: CS geometry cycle did not complete in time");
-                return ESP_ERR_TIMEOUT;
-            }
-            vTaskDelay(pdMS_TO_TICKS(SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS));
-            waited_ms += SEISMIC_RECORDER_GEOMETRY_CS_POLL_MS;
-            err = nrf_topology_service_ranging_get_progress(&progress);
-            if (err != ESP_OK) return err;
-        }
-        if (!progress.success || progress.pair_count > NRF_CS_MAX_PAIRS) {
-            ESP_LOGE(TAG, "START rejected: CS geometry cycle failed reason=%s", progress.failure_reason);
-            return ESP_ERR_INVALID_STATE;
-        }
-        cycle.complete = true;
-        cycle.result = NRF_CS_AUTHORITY_COMPLETE;
-        cycle.membership_generation = progress.membership_generation;
-        cycle.pair_count = progress.pair_count;
-        memcpy(cycle.pairs, progress.pairs, cycle.pair_count * sizeof(cycle.pairs[0]));
-
-        err = nrf_topology_service_get_snapshot(&topology);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "START rejected: topology snapshot unavailable err=%s", esp_err_to_name(err));
-            return err;
-        }
+    err = nrf_topology_service_get_snapshot(&topology);
+    if (err != ESP_OK) return err;
+    if (nrf_topology_service_get_accepted_ranging_result(
+            object_id, &topology, start_uptime_ms, &frozen_ranging) != ESP_OK) {
+        ESP_LOGE(TAG, "START rejected: confirmed geometry unavailable or changed");
+        return ESP_ERR_INVALID_STATE;
     }
+    if (frozen_ranging.pair_count > NRF_CS_MAX_PAIRS) return ESP_ERR_INVALID_STATE;
+    cycle.complete = true;
+    cycle.result = NRF_CS_AUTHORITY_COMPLETE;
+    cycle.membership_generation = frozen_ranging.membership_generation;
+    cycle.pair_count = frozen_ranging.pair_count;
+    memcpy(cycle.pairs, frozen_ranging.pairs, cycle.pair_count * sizeof(cycle.pairs[0]));
 
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         if (topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
@@ -1346,7 +1295,10 @@ static esp_err_t seismic_recorder_prepare_geometry(
             if (pair->state != NRF_CS_PAIR_VALID) continue;
             if (((pair->node_a == topology.main.node_id && pair->node_b == topology.remotes[channel].node_id) ||
                  (pair->node_b == topology.main.node_id && pair->node_a == topology.remotes[channel].node_id)) &&
-                pair->distance_mm > 0 && (uint32_t)pair->distance_mm > limits[channel]) return ESP_ERR_INVALID_STATE;
+                pair->distance_mm > 0 &&
+                nrf_topology_pair_exceeds_cable(pair->distance_mm, limits[channel], pair->scheduler_quality_flags)) {
+                return ESP_ERR_INVALID_STATE;
+            }
         }
     }
 
@@ -1382,6 +1334,11 @@ static esp_err_t seismic_recorder_prepare_geometry(
         main_reference.generation = device_status.main.height_reference.generation;
         main_reference.relative_z_mm = device_status.main.height_reference.relative_z_mm;
     }
+    if (frozen_ranging.main_height_reference_generation != 0U &&
+        (!main_reference.valid || main_reference.generation != frozen_ranging.main_height_reference_generation)) {
+        ESP_LOGE(TAG, "START rejected: confirmed height reference changed");
+        return ESP_ERR_INVALID_STATE;
+    }
 
     /* Z comes from the heights the placement step settled, where it settled them for this MAIN reference. */
     if (main_reference.valid) {
@@ -1408,12 +1365,30 @@ static esp_err_t seismic_recorder_prepare_geometry(
         ESP_LOGW(TAG, "barometric-relative Z fell back to planar: %s", z_provenance.fallback_reason);
     }
 
-    nrf_geometry_solution_t solution;
-    const nrf_geometry_result_t solve_result = nrf_geometry_solver_solve(
-        inputs, input_count, cycle.pairs, cycle.pair_count, &solution);
-    if (solve_result != NRF_GEOMETRY_OK) {
-        ESP_LOGE(TAG, "START rejected: geometry solve failed result=%d", (int)solve_result);
+    nrf_geometry_solution_t solution = {0};
+    if (input_count != frozen_ranging.geometry.node_count || input_count > NRF_GEOMETRY_MAX_NODES)
         return ESP_ERR_INVALID_STATE;
+    solution.node_count = input_count;
+    solution.max_residual_mm = frozen_ranging.geometry.max_residual_mm;
+    solution.inconsistent_pair_count = frozen_ranging.geometry.inconsistent_pair_count;
+    solution.refined = frozen_ranging.geometry.refined;
+    solution.refine_iterations = frozen_ranging.geometry.refine_iterations;
+    for (size_t i = 0U; i < input_count; ++i) {
+        const nrf_topology_ranging_node_t *accepted = NULL;
+        for (size_t j = 0U; j < frozen_ranging.geometry.node_count; ++j) {
+            if (frozen_ranging.geometry.nodes[j].node_id == inputs[i].node_id) {
+                if (accepted != NULL) return ESP_ERR_INVALID_STATE;
+                accepted = &frozen_ranging.geometry.nodes[j];
+            }
+        }
+        if (accepted == NULL || accepted->z_mm != inputs[i].z_mm) {
+            ESP_LOGE(TAG, "START rejected: confirmed geometry heights changed");
+            return ESP_ERR_INVALID_STATE;
+        }
+        solution.nodes[i] = (nrf_geometry_node_position_t){
+            .node_id = accepted->node_id, .solved = accepted->solved,
+            .x_mm = accepted->x_mm, .y_mm = accepted->y_mm, .z_mm = accepted->z_mm,
+            .residual_mm = accepted->residual_mm, .uncertainty_mm = accepted->uncertainty_mm};
     }
 
     ESP_LOGI(
@@ -1424,7 +1399,7 @@ static esp_err_t seismic_recorder_prepare_geometry(
         solution.max_residual_mm
     );
 
-    const uint64_t computed_at_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    const uint64_t computed_at_ms = frozen_ranging.accepted_revision_ms;
     object_store_geometry_t geometry;
     seismic_recorder_geometry_apply_solution(
         &solution, &topology, channels, computed_at_ms, &geometry);
@@ -1457,8 +1432,10 @@ static esp_err_t seismic_recorder_prepare_geometry(
         const object_store_pod_geometry_t *pod = &geometry.pods[channel];
         const double radius2 = (double)pod->x_mm * pod->x_mm +
             (double)pod->y_mm * pod->y_mm + (double)pod->z_mm * pod->z_mm;
-        /* Match ranging's one-mm allowance for rounded XYZ, including absent MAIN edges. */
-        const double cable_bound_mm = (double)limits[channel] + 1.0;
+        /* Match ranging: one mm for rounded XYZ plus what the node's own measured MAIN edge exceeded the cable by
+         * (absent MAIN edges get the rounding millimetre only). */
+        const double cable_bound_mm = (double)limits[channel] + (double)nrf_topology_cable_radius_allowance_mm(
+            cycle.pairs, cycle.pair_count, NRF_TOPOLOGY_MAIN_NODE_ID, topology.remotes[channel].node_id, limits[channel]);
         if (radius2 > cable_bound_mm * cable_bound_mm) {
             ESP_LOGE(TAG, "START rejected: CS geometry exceeds cable node=%u limit_mm=%" PRIu32,
                 (unsigned)topology.remotes[channel].node_id, limits[channel]);
@@ -1494,9 +1471,7 @@ static esp_err_t seismic_recorder_prepare_geometry(
     );
     solver_provenance->refined = solution.refined;
     solver_provenance->refine_iterations = solution.refine_iterations;
-    const uint32_t ranging_topology_generation = reused_frozen_ranging
-        ? frozen_ranging.topology_generation
-        : topology.generation;
+    const uint32_t ranging_topology_generation = frozen_ranging.topology_generation;
     solver_provenance->topology_generation = ranging_topology_generation;
     solver_provenance->cs_membership_generation = cycle.membership_generation;
     solver_provenance->main_height_reference_generation =
@@ -1504,7 +1479,7 @@ static esp_err_t seismic_recorder_prepare_geometry(
     snprintf(
         solver_provenance->ranging_source,
         sizeof(solver_provenance->ranging_source),
-        reused_frozen_ranging ? "workflow_ranging" : "start_cycle"
+        "workflow_ranging"
     );
     solver_provenance->start_uptime_ms = start_uptime_ms;
     const int setup_id_length = snprintf(

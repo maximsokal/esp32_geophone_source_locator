@@ -117,7 +117,7 @@ def test_actions_match_main_menu(screens, locale):
             assert row["bounds"][3] - row["bounds"][1] + 1 == height, (frame["name"], row)
             expected = 0x21C7D9 if row["border"] == 2 else 0x1B2D46
             assert row["border_color"] & 0xFFFFFF == expected, (frame["name"], row)
-    assert steps == set(range(19))
+    assert steps == set(range(21))
 
 
 @pytest.mark.parametrize("locale", ["en", "uk"])

@@ -603,6 +603,11 @@ static void test_late_success_cannot_escape_window_deadline(void)
  * Relay. The sim below is the firmware glue in miniature: when an attempt ends, the initiator asks would_finish() before
  * it disconnects, and if the answer is yes the node on the other end gets peer_released() (the disconnect reason).
  */
+/* Inference from silence: what the firmware glue reads from the incoming link of each reflector. */
+static bool g_infer_silence;
+static bool g_link_up[MAX_SIM_NODES];
+static uint64_t g_link_end[MAX_SIM_NODES];
+
 typedef struct {
     uint64_t finished_at[MAX_SIM_NODES];       /* when each node went COMPLETE, 0 while it runs */
     uint64_t exec_first_start[NRF_CS_CYCLE_MAX_STEPS];
@@ -636,6 +641,8 @@ static void run_relay_cycle(sim_node_t *sims, size_t count, const nrf_cs_schedul
     uint64_t late_due=0U;
 
     memset(run, 0, sizeof(*run));
+    memset(g_link_up, 0, sizeof(g_link_up));
+    memset(g_link_end, 0, sizeof(g_link_end));
     while (completed < count) {
         for (size_t n = 0U; n < count; ++n) {
             if (!sent[n] && g_now >= start + 20U * n) {
@@ -656,6 +663,11 @@ static void run_relay_cycle(sim_node_t *sims, size_t count, const nrf_cs_schedul
                 assert(nrf_cs_cycle_runtime_step_done(&sim->rt, &sim->step, &sim->outcome) == 0);
                 run->exec_last_end[e] = g_now;
                 running_execution = -1;
+                {
+                    const size_t link = node_index_of(sims, count, sim->rt.steps[e].reflector);
+                    g_link_up[link] = false;
+                    g_link_end[link] = g_now;
+                }
                 if (final) {                   /* the soundness of the prediction: the execution really is over */
                     assert(sim->rt.execution_done || sim->rt.window_exhausted ||
                            sim->rt.window_deadline_ms - (g_now + NRF_CS_CYCLE_ATTEMPT_GAP_MS) < sim->rt.pair_timeout_ms);
@@ -674,6 +686,9 @@ static void run_relay_cycle(sim_node_t *sims, size_t count, const nrf_cs_schedul
                 }
             }
             nrf_cs_step_t step;
+            if (g_infer_silence && !g_link_up[n] && g_link_end[n] != 0U) {
+                nrf_cs_cycle_runtime_peer_silent(&sim->rt, (uint32_t)(g_now - g_link_end[n]));
+            }
             nrf_cs_cycle_runtime_tick(&sim->rt);
             if(late_pending && n==late_target && g_now>=late_due){
                 assert(sim->rt.window==1U && sim->rt.attempts==0U && !sim->rt.attempt_active);
@@ -687,6 +702,7 @@ static void run_relay_cycle(sim_node_t *sims, size_t count, const nrf_cs_schedul
                 assert(sim->last_end_ms == 0U || g_now >= sim->last_end_ms + NRF_CS_CYCLE_ATTEMPT_GAP_MS);
                 if (running_execution != -1 && running_execution != (int)e) ++run->overlaps;
                 running_execution = e;
+                g_link_up[node_index_of(sims, count, step.reflector)] = true;
                 if (run->exec_first_start[e] == 0U) run->exec_first_start[e] = g_now;
                 sim->active = true;
                 sim->step = step;
@@ -915,6 +931,130 @@ static void test_a_lost_release_costs_only_the_wait_for_one_slot(void)
     for (size_t n = 0U; n < 4U; ++n) assert(sims[n].rt.state == NRF_CS_CYCLE_STATE_COMPLETE && sims[n].rt.record_count == 9U);
 }
 
+static void production_relay_setup(sim_node_t *sims, size_t count, nrf_cs_scheduler_t *planner)
+{
+    static const nrf_cs_node_id_t ids[] = {0U, 1U, 2U, 3U, 4U};
+    const nrf_cs_policy_t policy = {
+        .pair_timeout_ms = 2400U, .max_attempts = 2U, .min_confidence = 500U, .samples_per_pair = 9U,
+        .full_rotation = true, .relay_order = true, .require_both_directions = true,
+    };
+
+    g_now = 1000U;
+    assert(nrf_cs_scheduler_init(planner, &policy) == NRF_CS_OK);
+    assert(nrf_cs_scheduler_start_cycle(planner, ids, count) == NRF_CS_OK);
+    for (size_t n = 0U; n < count; ++n) init_sim(&sims[n], ids[n]);
+    assert(send_plan(sims, count, planner, 10U) == planner->execution_count);
+}
+
+/*
+ * A failed last attempt (the peer dropped the link during pairing) cannot carry the release reason. Measured on a
+ * 4-node cycle: each such execution cost the next node a full 25.8 s slot wait instead of ~0.5 s. The reflector now
+ * infers the end from the silence of its incoming link.
+ */
+static void test_a_release_that_cannot_be_sent_is_inferred_from_silence(void)
+{
+    const int lost = 3;
+    relay_run_t slot_run = {0}, silent_run = {0};
+    uint32_t records[2][MAX_SIM_NODES] = {{0U}};
+
+    for (unsigned infer = 0U; infer < 2U; ++infer) {
+        nrf_cs_scheduler_t planner;
+        sim_node_t sims[MAX_SIM_NODES];
+        production_relay_setup(sims, 4U, &planner);
+        g_infer_silence = infer != 0U;
+        run_relay_cycle(sims, 4U, &planner, true, lost, -1, infer != 0U ? &silent_run : &slot_run);
+        g_infer_silence = false;
+        for (size_t n = 0U; n < 4U; ++n) {
+            assert(sims[n].rt.state == NRF_CS_CYCLE_STATE_COMPLETE);
+            records[infer][n] = sims[n].rt.record_count;
+        }
+    }
+    const uint32_t window = nrf_cs_cycle_window_ms(2400U, 9U, 2U);
+    const uint32_t limit = nrf_cs_cycle_silence_ms(2400U);
+    printf("silence: slot start %llu, silent start %llu, last end %llu, limit %u, cycle %llu -> %llu\n",
+        (unsigned long long)slot_run.exec_first_start[lost + 1], (unsigned long long)silent_run.exec_first_start[lost + 1],
+        (unsigned long long)silent_run.exec_last_end[lost], limit,
+        (unsigned long long)slot_run.cycle_end, (unsigned long long)silent_run.cycle_end);
+    fflush(stdout);
+    assert(slot_run.overlaps == 0U && silent_run.overlaps == 0U && silent_run.releases_dropped == 1U);
+    /* control: without inference the next node waits for its slot */
+    assert(slot_run.exec_first_start[lost + 1] >= 1000U + (uint64_t)(lost + 1) * window + NRF_CS_CYCLE_GO_SKEW_MS);
+    /* with inference it starts once the link has been silent for the limit, not earlier and not much later */
+    assert(silent_run.exec_first_start[lost + 1] >= silent_run.exec_last_end[lost] + limit);
+    assert(silent_run.exec_first_start[lost + 1] <=
+           silent_run.exec_last_end[lost] + limit + NRF_CS_CYCLE_RELAY_SETTLE_MS + 100U);
+    assert(silent_run.cycle_end + window / 2U < slot_run.cycle_end);
+    for (size_t n = 0U; n < 4U; ++n) assert(records[0][n] == records[1][n]);
+}
+
+/* Without any release the whole chain hands over by silence; healthy releases are not disturbed by the inference. */
+static void test_silence_inference_never_starts_a_node_into_a_running_execution(void)
+{
+    for (unsigned mode = 0U; mode < 3U; ++mode) {      /* 0: all releases, 1: none, 2: one lost */
+        for (size_t count = 3U; count <= 5U; ++count) {
+            nrf_cs_scheduler_t planner;
+            sim_node_t sims[MAX_SIM_NODES];
+            relay_run_t plain = {0}, inferred = {0};
+            for (unsigned infer = 0U; infer < 2U; ++infer) {
+                production_relay_setup(sims, count, &planner);
+                g_infer_silence = infer != 0U;
+                run_relay_cycle(sims, count, &planner, mode != 1U, mode == 2U ? 2 : -1, -1, infer != 0U ? &inferred : &plain);
+                g_infer_silence = false;
+                for (size_t n = 0U; n < count; ++n) assert(sims[n].rt.state == NRF_CS_CYCLE_STATE_COMPLETE);
+            }
+            const uint32_t limit = nrf_cs_cycle_silence_ms(2400U);
+            assert(inferred.overlaps == 0U);
+            for (size_t e = 1U; e < planner.execution_count; ++e) {
+                assert(inferred.exec_first_start[e] > inferred.exec_last_end[e - 1U]);   /* never into a running one */
+                if (mode == 0U) assert(inferred.exec_first_start[e] == plain.exec_first_start[e]);
+                if (mode == 1U) assert(inferred.exec_first_start[e] >= inferred.exec_last_end[e - 1U] + limit);
+            }
+            assert(inferred.cycle_end <= plain.cycle_end);
+            if (mode == 1U) assert(inferred.cycle_end < plain.cycle_end);
+        }
+    }
+}
+
+static void test_silence_releases_only_a_duty_whose_link_was_seen_after_the_last_release(void)
+{
+    nrf_cs_scheduler_t planner;
+    sim_node_t sims[MAX_SIM_NODES];
+    production_relay_setup(sims, 3U, &planner);
+    sim_node_t *sim = &sims[node_index_of(sims, 3U, planner.executions[0].reflector)];
+    const nrf_cs_cycle_go_t go = {.request_id = 77U, .cycle_id = planner.cycle_id, .total_timeout_ms = 600000U};
+    const uint32_t limit = nrf_cs_cycle_silence_ms(2400U);
+    nrf_cs_cycle_runtime_t idle = sim->rt;
+
+    nrf_cs_cycle_runtime_peer_silent(&idle, limit + 1000U);                 /* no cycle yet */
+    assert(idle.released_mask == 0U);
+    assert(nrf_cs_cycle_runtime_go(&sim->rt, &go) == 0);
+    g_now = sim->rt.t0_ms + 10000U;
+    nrf_cs_cycle_runtime_tick(&sim->rt);
+
+    nrf_cs_cycle_runtime_t probe = sim->rt;
+    nrf_cs_cycle_runtime_peer_silent(&probe, limit - 1U);                   /* one millisecond short */
+    assert(probe.released_mask == 0U);
+    probe = sim->rt;
+    nrf_cs_cycle_runtime_peer_silent(&probe, 10000U);                       /* activity at GO: before any duty began */
+    assert(probe.released_mask == 0U);
+    probe = sim->rt;
+    nrf_cs_cycle_runtime_peer_silent(&probe, 10001U + 1000000U);            /* idle longer than the cycle has run */
+    assert(probe.released_mask == 0U);
+    probe = sim->rt;
+    nrf_cs_cycle_runtime_peer_silent(&probe, limit);                        /* exactly the limit */
+    assert(probe.released_mask == 1U);
+
+    nrf_cs_cycle_runtime_peer_silent(&sim->rt, 9999U);
+    assert(sim->rt.released_mask == 1U);
+    nrf_cs_cycle_runtime_peer_silent(&sim->rt, 9999U);                      /* the same old link must not release the next duty */
+    assert(sim->rt.released_mask == 1U);
+    nrf_cs_cycle_runtime_peer_silent(&sim->rt, 5000U);                      /* seen before the release: still no */
+    assert(sim->rt.released_mask == 1U);
+    g_now += 20000U;
+    nrf_cs_cycle_runtime_peer_silent(&sim->rt, 5000U);                      /* a link seen after the release does */
+    assert(sim->rt.released_mask != 1U && (sim->rt.released_mask & 1U) != 0U);
+}
+
 /* would_finish() must never promise an end that does not come: a released node would start into a running execution. */
 static void test_would_finish_is_never_wrong_about_the_end(void)
 {
@@ -1092,6 +1232,9 @@ int main(void)
     test_complete_matrix_survives_late_first_relay_release();
     test_relay_without_releases_falls_back_to_the_time_slots();
     test_a_lost_release_costs_only_the_wait_for_one_slot();
+    test_a_release_that_cannot_be_sent_is_inferred_from_silence();
+    test_silence_inference_never_starts_a_node_into_a_running_execution();
+    test_silence_releases_only_a_duty_whose_link_was_seen_after_the_last_release();
     test_would_finish_is_never_wrong_about_the_end();
     test_release_is_ignored_when_it_means_nothing();
     test_late_success_cannot_escape_window_deadline();

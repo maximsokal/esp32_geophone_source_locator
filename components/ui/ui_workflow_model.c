@@ -296,6 +296,8 @@ static ui_i18n_key_t title_key(workflow_step_t step)
         case WORKFLOW_STEP_SCANNING: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_SCANNING;
         case WORKFLOW_STEP_RECORD_READY: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_RECORD_READY;
         case WORKFLOW_STEP_RECORDING: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_RECORDING;
+        case WORKFLOW_STEP_STOPPING: return UI_I18N_KEY_MEASUREMENT_STATE_STOPPING;
+        case WORKFLOW_STEP_RECORD_ERROR: return UI_I18N_KEY_MEASUREMENT_STATE_ERROR;
         case WORKFLOW_STEP_STOPPED: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_STOPPED;
         case WORKFLOW_STEP_CALCULATING: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_CALCULATING;
         case WORKFLOW_STEP_RESULT: return UI_I18N_KEY_TFT_WORKFLOW_TITLE_RESULT;
@@ -980,6 +982,14 @@ void ui_workflow_model_build(
             break;
         case WORKFLOW_STEP_RECORD_READY:
             (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RECORD_READY_INSTRUCTION);
+            break;
+        case WORKFLOW_STEP_STOPPING:
+            (void)add_line(model, UI_I18N_KEY_MEASUREMENT_STOPPING_RECORDING);
+            model->hint_key = UI_I18N_KEY_MEASUREMENT_WAIT;
+            break;
+        case WORKFLOW_STEP_RECORD_ERROR:
+            (void)add_line(model, UI_I18N_KEY_MEASUREMENT_SAVE_FAILED);
+            add_reason(model, snapshot->reason);
             break;
         case WORKFLOW_STEP_RECORDING: {
             char elapsed[16];

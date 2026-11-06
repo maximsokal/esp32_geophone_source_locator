@@ -9,6 +9,12 @@
 #define NRF_TOPOLOGY_REMOTE_COUNT 8U
 #define NRF_TOPOLOGY_MAIN_NODE_ID 0U
 #define NRF_TOPOLOGY_DEFAULT_CONFIRM_TIMEOUT_MS 500U
+/*
+ * An automatic Channel Sounding distance is quantized by one bin of the FFT-512 IFFT, c / (2 * 512 * 1 MHz) = 292.8 mm
+ * (the bench cycle of 2026-11-05 shows only multiples of 292.75 mm). A distance that exceeds a cable by less than one
+ * bin therefore does not show that the node is beyond it. Manual distances are exact and get no allowance.
+ */
+#define NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM 293U
 #define NRF_TOPOLOGY_DEFAULT_POLL_INTERVAL_MS 10U
 
 typedef enum {

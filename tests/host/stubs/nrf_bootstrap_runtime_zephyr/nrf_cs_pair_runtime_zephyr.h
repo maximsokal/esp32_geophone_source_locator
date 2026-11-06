@@ -2,6 +2,7 @@
 #define NRF_CS_PAIR_RUNTIME_ZEPHYR_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "nrf_cs_scheduler.h"
 void nrf_cs_pair_runtime_zephyr_cancel(const nrf_cs_step_t *step);
 
@@ -22,5 +23,6 @@ int nrf_cs_pair_runtime_zephyr_execute(
     nrf_cs_pair_runtime_complete_cb_t complete_cb,
     void *context);
 bool nrf_cs_pair_runtime_zephyr_is_busy(void);
+bool nrf_cs_pair_runtime_zephyr_incoming_idle_ms(uint32_t *idle_ms);
 
 #endif

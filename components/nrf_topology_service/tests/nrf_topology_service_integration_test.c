@@ -1920,6 +1920,17 @@ static void assert_ranging_success_frozen(void)
     ++same_membership.generation;
     const uint64_t frozen_at = s_seen_frozen_ranging_result.timestamp_ms;
     assert(frozen_at > 0U);
+    assert(nrf_topology_service_get_accepted_ranging_result(
+        "OBJ_0001", &same_membership, frozen_at + 660000U, &reusable) == ESP_ERR_NOT_FOUND);
+    assert(nrf_topology_service_accept_ranging_result(
+        "OBJ_0001", &same_membership, s_seen_ranging_progress.updated_at_ms + 1U) == ESP_ERR_INVALID_STATE);
+    assert(nrf_topology_service_accept_ranging_result(
+        "OBJ_0001", &same_membership, s_seen_ranging_progress.updated_at_ms) == ESP_OK);
+    assert(nrf_topology_service_get_accepted_ranging_result(
+        "OBJ_0001", &same_membership, frozen_at + 660000U, &reusable) == ESP_OK);
+    assert(reusable.timestamp_ms == frozen_at && reusable.pair_count == 6U);
+    assert(nrf_topology_service_get_accepted_ranging_result(
+        "OBJ_0002", &same_membership, frozen_at + 660000U, &reusable) == ESP_ERR_NOT_FOUND);
     assert(nrf_topology_service_get_reusable_frozen_ranging_result(
         &same_membership,
         frozen_at + NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS - 1U,
@@ -1946,6 +1957,8 @@ static void assert_ranging_success_frozen(void)
 
     nrf_topology_snapshot_t changed = same_membership;
     changed.remotes[0].hardware_id[0] ^= 1U;
+    assert(nrf_topology_service_get_accepted_ranging_result(
+        "OBJ_0001", &changed, frozen_at + 660000U, &reusable) == ESP_ERR_NOT_FOUND);
     assert(nrf_topology_service_get_reusable_frozen_ranging_result(
         &changed, frozen_at, NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
         &reusable) == ESP_ERR_NOT_FOUND);
@@ -1965,6 +1978,8 @@ static void assert_ranging_success_frozen(void)
         &reusable) == ESP_ERR_NOT_FOUND);
 
     assert(nrf_topology_service_invalidate_ranging() == ESP_OK);
+    assert(nrf_topology_service_get_accepted_ranging_result(
+        "OBJ_0001", &same_membership, frozen_at + 660000U, &reusable) == ESP_ERR_NOT_FOUND);
     assert(nrf_topology_service_get_reusable_frozen_ranging_result(
         &same_membership, frozen_at, NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS,
         &reusable) == ESP_ERR_NOT_FOUND);
@@ -2848,7 +2863,7 @@ static void assert_limited_ranging_for_test(void)
     assert(s_seen_ranging_progress.pairs[0].state == NRF_CS_PAIR_VALID);
     assert(s_seen_ranging_progress.pairs[0].distance_mm == 1000);
     assert(s_seen_ranging_progress.pairs[1].state == NRF_CS_PAIR_CABLE_EXCEEDED);
-    assert(s_seen_ranging_progress.pairs[1].distance_mm == 1002);
+    assert(s_seen_ranging_progress.pairs[1].distance_mm == 1001 + (int32_t)NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM + 1);
     assert(s_seen_ranging_progress.pairs[2].state == NRF_CS_PAIR_VALID);
 }
 
@@ -2874,7 +2889,7 @@ static void correct_limited_ranging_for_test(void)
     assert(after.success && !after.partial && after.complete);
     assert(after.updated_at_ms > before.updated_at_ms);
     assert(after.pairs[1].state == NRF_CS_PAIR_VALID && after.pairs[1].distance_mm == 1000);
-    assert(after.pairs[1].automatic_distance_mm == 1002);
+    assert(after.pairs[1].automatic_distance_mm == 1001 + (int32_t)NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM + 1);
     assert((after.pairs[1].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U);
     assert(after.geometry.node_count == 3U);
     for (size_t i = 0U; i < after.geometry.node_count; ++i) assert(after.geometry.nodes[i].solved);
@@ -2892,7 +2907,7 @@ static void test_autonomous_individual_cable_limits(void)
     prepare_ranging_nodes(2U);
     s_cs_use_pair_distances = true;
     s_cs_pair_distances[0] = 1000;
-    s_cs_pair_distances[1] = 1002;
+    s_cs_pair_distances[1] = 1001 + (int32_t)NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM + 1;   /* first value past the allowance */
     s_cs_pair_distances[2] = 500;
     script(EV_WAIT_MS, 10U, NULL);
     script(EV_ACTION, 0U, request_limited_ranging_for_test);
@@ -2902,6 +2917,56 @@ static void test_autonomous_individual_cable_limits(void)
     script(EV_ACTION, 0U, correct_limited_ranging_for_test);
     script(EV_STOP, 0U, NULL);
     run_service();
+}
+
+static void assert_one_measurement_bin_over_the_cable_is_accepted(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete && s_seen_ranging_progress.success && !s_seen_ranging_progress.partial);
+    assert(s_seen_ranging_progress.failure_reason[0] == '\0');
+    assert(s_seen_ranging_progress.pairs[0].state == NRF_CS_PAIR_VALID);
+    assert(s_seen_ranging_progress.pairs[1].state == NRF_CS_PAIR_VALID);
+    assert(s_seen_ranging_progress.pairs[0].distance_mm == 1000 + (int32_t)NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM);
+    assert(s_seen_ranging_progress.pairs[1].distance_mm == 1001 + (int32_t)NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM);
+    assert(s_seen_ranging_progress.geometry.node_count == 3U);
+    for (size_t i = 0U; i < s_seen_ranging_progress.geometry.node_count; ++i)
+        assert(s_seen_ranging_progress.geometry.nodes[i].solved);
+}
+
+/*
+ * Bench 2026-11-05: MAIN-node 4 measured 5855 mm one way and 6148 mm the other (one 292.75 mm bin apart), mean 6001 mm,
+ * and the edge was rejected as cable_exceeded for 1 mm over a 6000 mm cable. Up to one bin over is the resolution of the
+ * measurement, not proof that the node is beyond the cable; one mm past the bin still is.
+ */
+static void test_a_distance_one_measurement_bin_over_the_cable_is_not_a_violation(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cs_use_pair_distances = true;
+    s_cs_pair_distances[0] = 1000 + (int32_t)NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM;   /* the limits are 1000 and 1001 mm */
+    s_cs_pair_distances[1] = 1001 + (int32_t)NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM;
+    s_cs_pair_distances[2] = 500;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_limited_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_one_measurement_bin_over_the_cable_is_accepted);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+/* The bound of a missing edge from the cables: MAIN edge = its cable + one bin, device-device = both. */
+static void test_cable_cap_of_an_edge(void)
+{
+    const int64_t bin = NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM;
+
+    assert(nrf_topology_edge_cable_cap_mm(true, false, 0U, 6000U) == 6000 + bin);     /* 0-3 of the bench: 6 m cable */
+    assert(nrf_topology_edge_cable_cap_mm(false, true, 6000U, 0U) == 6000 + bin);     /* either order */
+    assert(nrf_topology_edge_cable_cap_mm(false, false, 6000U, 5000U) == 11000 + 2 * bin);
+    assert(nrf_topology_edge_cable_cap_mm(true, false, 0U, 0U) == -1);                /* unknown cable */
+    assert(nrf_topology_edge_cable_cap_mm(false, false, 6000U, 0U) == -1);
+    assert(nrf_topology_edge_cable_cap_mm(true, true, 0U, 0U) == -1);
 }
 
 static void test_triangle_consistency_of_the_distance_matrix(void)
@@ -4928,6 +4993,8 @@ int main(void)
     test_autonomous_ranging_failures();
     test_ranging_cancel();
     test_autonomous_individual_cable_limits();
+    test_a_distance_one_measurement_bin_over_the_cable_is_not_a_violation();
+    test_cable_cap_of_an_edge();
     test_triangle_consistency_of_the_distance_matrix();
     test_contradicting_directions_fail_the_ranging();
     test_noisy_geometry_cannot_exceed_individual_cables();

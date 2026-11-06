@@ -154,6 +154,8 @@ static bool s_outgoing_connected;
 static int s_disconnect_retry_pending;
 static int s_disconnect_retry_request;
 static int s_incoming_disconnect_pending;
+static int s_incoming_activity_ms;
+static int s_incoming_activity_seen;
 static struct bt_conn s_connection;
 static struct k_work s_execute_work;
 static struct k_work s_event_work;
@@ -452,6 +454,7 @@ static void cleanup_work_handler(struct k_work *work);
 #include "procedure_enable_complete_cb.inc"
 #include "nrf_cs_pair_runtime_zephyr_is_progress_required.inc"
 #include "nrf_cs_pair_runtime_zephyr_is_busy.inc"
+#include "nrf_cs_pair_runtime_zephyr_incoming_idle_ms.inc"
 #include "subevent_data_cb.inc"
 
 static int connect_op(void *c,nrf_cs_node_id_t id)
@@ -1157,6 +1160,47 @@ static void test_accepted_disconnect_is_not_retried_by_a_rejected_execute(void)
         s_use_production_cleanup=false;s_disconnect_result=0;
     }
 }
+static void test_incoming_link_silence_counts_from_the_last_accepted_link(void)
+{
+    const nrf_cs_pair_adapter_ops_t ops={.connect=connect_op,.secure=secure_op,
+        .exchange_mtu=noop,.discover_ras=noop,.read_features=noop,
+        .configure_ranging_data=config_op,.exchange_capabilities=noop,
+        .create_config=noop,.enable_cs_security=noop,.start_procedure=noop,.cleanup=cleanup_op,.now_ms=op_now_ms};
+    assert(nrf_cs_pair_adapter_init(&s_adapter,&ops)==0);
+    s_outgoing_conn=NULL;s_incoming_conn=NULL;s_incoming_disconnect_pending=0;s_incoming_activity_seen=0;
+    s_incoming_activity_ms=0;s_radio_enabled=1;s_count=s_taken=0;
+    uint32_t idle=12345U;
+    assert(!nrf_cs_pair_runtime_zephyr_incoming_idle_ms(&idle) && idle==12345U);   /* nothing accepted yet */
+    assert(!nrf_cs_pair_runtime_zephyr_incoming_idle_ms(NULL));
+
+    struct bt_conn first={.refs=1};
+    s_now=1000;s_capture_posts=true;connected_cb(&first,0);s_capture_posts=false;s_count=s_taken=0;
+    assert(s_incoming_conn==&first);
+    s_now=1200;
+    assert(!nrf_cs_pair_runtime_zephyr_incoming_idle_ms(&idle));                   /* the link is up */
+
+    s_now=1500;s_capture_posts=true;disconnected_cb(&first,BT_HCI_ERR_REMOTE_USER_TERM_CONN);s_capture_posts=false;
+    s_now=1600;
+    assert(!nrf_cs_pair_runtime_zephyr_incoming_idle_ms(&idle));                   /* its disconnect is still queued */
+    event_work_handler(NULL);
+    s_now=2000;
+    assert(nrf_cs_pair_runtime_zephyr_incoming_idle_ms(&idle) && idle==500U);      /* counted from the disconnect */
+
+    struct bt_conn refused={.refs=1};                                              /* a refused link is not this duty */
+    s_radio_enabled=0;s_now=5000;connected_cb(&refused,0);s_radio_enabled=1;
+    assert(s_incoming_conn==NULL && nrf_cs_pair_runtime_zephyr_incoming_idle_ms(&idle) && idle==3500U);
+
+    struct bt_conn second={.refs=1};                                               /* a new accepted link restarts it */
+    s_now=6000;s_capture_posts=true;connected_cb(&second,0);s_capture_posts=false;s_count=s_taken=0;
+    assert(!nrf_cs_pair_runtime_zephyr_incoming_idle_ms(&idle));
+    s_now=6400;s_capture_posts=true;disconnected_cb(&second,NRF_CS_CYCLE_RELEASE_REASON);s_capture_posts=false;
+    event_work_handler(NULL);
+    s_now=6410;
+    assert(nrf_cs_pair_runtime_zephyr_incoming_idle_ms(&idle) && idle==10U);
+
+    s_now=(int64_t)UINT32_MAX+1000;                                                /* the 32-bit clock wraps */
+    assert(nrf_cs_pair_runtime_zephyr_incoming_idle_ms(&idle) && idle==(uint32_t)((uint32_t)s_now-6400U));
+}
 static void test_release_reason_reaches_reflector_only_for_final_execution(void)
 {
     for(unsigned scenario=0;scenario<3;++scenario){
@@ -1630,6 +1674,7 @@ int main(void)
     test_rejected_execute_retries_a_refused_disconnect_once();
     test_permanent_disconnect_failure_costs_one_try_per_rejected_execute();
     test_accepted_disconnect_is_not_retried_by_a_rejected_execute();
+    test_incoming_link_silence_counts_from_the_last_accepted_link();
     test_release_reason_reaches_reflector_only_for_final_execution();
     test_failed_cancel_submit_retains_request_or_deadline_fallback();
     test_procedure_disabled_is_not_an_enabled_reflector();

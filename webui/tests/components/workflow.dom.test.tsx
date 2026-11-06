@@ -27,6 +27,23 @@ function panelProps(step: string, actions: string[]): Props {
 describe.each(['en', 'uk'] as const)('workflow DOM %s', (locale) => {
   const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
 
+  it('shows saving without calculation or a saved-recording message', () => {
+    renderUi(<WorkflowPanel {...panelProps('STOPPING', [])} />, locale);
+    expect(screen.getByText(t('workflow.title.stopping'))).toBeTruthy();
+    expect(screen.getByText(t('workflow.stopping.instruction'))).toBeTruthy();
+    expect(screen.queryByText(t('workflow.title.stopped'))).toBeNull();
+    expect(screen.queryByRole('button', { name: t('workflow.action.calculate_sources') })).toBeNull();
+  });
+
+  it('shows a recording error and offers recovery without calculation', () => {
+    const props = panelProps('RECORD_ERROR', ['RECORD_AGAIN']);
+    props.status!.workflow!.reason = 'recording_error';
+    renderUi(<WorkflowPanel {...props} />, locale);
+    expect(screen.getByText(t('workflow.title.record_error'))).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('recording_error');
+    expect(screen.queryByRole('button', { name: t('workflow.action.calculate_sources') })).toBeNull();
+  });
+
   function placementProps(allowed: string[], allStable: boolean): Props {
     const props = panelProps('PLACEMENT', allowed);
     props.status!.workflow!.placement = {

@@ -85,7 +85,55 @@ typedef struct {
     uint32_t membership_generation;
     uint16_t main_height_reference_generation;
     uint64_t timestamp_ms;
+    uint64_t accepted_revision_ms;
 } nrf_topology_ranging_result_t;
+
+/*
+ * The longest distance an edge can show from the cables alone, for the bounds the triangles give a missing edge: a node
+ * is at most its cable plus one measurement bin from MAIN, so a MAIN edge is that long and an edge between two devices
+ * at most both together. -1 when a cable is unknown (limit 0) or both ends are MAIN.
+ */
+static inline int64_t nrf_topology_edge_cable_cap_mm(bool a_is_main, bool b_is_main, uint32_t limit_a_mm, uint32_t limit_b_mm)
+{
+    const int64_t bin = NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM;
+    if (a_is_main && b_is_main) return -1;
+    if (a_is_main) return limit_b_mm == 0U ? -1 : (int64_t)limit_b_mm + bin;
+    if (b_is_main) return limit_a_mm == 0U ? -1 : (int64_t)limit_a_mm + bin;
+    if (limit_a_mm == 0U || limit_b_mm == 0U) return -1;
+    return (int64_t)limit_a_mm + (int64_t)limit_b_mm + 2 * bin;
+}
+
+/* Whether a distance is beyond a cable. An automatic one is quantized by a measurement bin and gets that much slack; a
+ * manual one is exact and gets none. A negative distance never fits. */
+static inline bool nrf_topology_pair_exceeds_cable(int32_t distance_mm, uint64_t limit_mm, uint32_t quality_flags)
+{
+    const uint64_t slack = (quality_flags & NRF_CS_QUALITY_MANUAL) != 0U ? 0U : NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM;
+    return distance_mm < 0 || (uint64_t)distance_mm > limit_mm + slack;
+}
+
+/*
+ * How far past its cable a fitted position may lie: one mm for the rounded XYZ, plus as much as the measured MAIN edge of
+ * that node itself exceeded the cable (an automatic distance can, by less than one measurement bin, see
+ * NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM). A node whose MAIN edge is within the cable, missing, or manual gets only the
+ * rounding millimetre, so a fit that pushes a node outward against its measured distance is still rejected.
+ */
+static inline uint32_t nrf_topology_cable_radius_allowance_mm(
+    const nrf_cs_pair_result_t *pairs, size_t pair_count, uint8_t main_node_id, uint8_t node_id, uint32_t limit_mm)
+{
+    uint32_t allowance = 1U;
+    for (size_t i = 0U; pairs != NULL && i < pair_count; ++i) {
+        const nrf_cs_pair_result_t *pair = &pairs[i];
+        const bool main_edge = (pair->node_a == main_node_id && pair->node_b == node_id) ||
+            (pair->node_b == main_node_id && pair->node_a == node_id);
+        if (!main_edge || pair->state != NRF_CS_PAIR_VALID || (pair->scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U ||
+            pair->distance_mm <= 0 || (uint32_t)pair->distance_mm <= limit_mm) {
+            continue;
+        }
+        const uint32_t over = (uint32_t)pair->distance_mm - limit_mm;
+        allowance += over < NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM ? over : NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM;
+    }
+    return allowance;
+}
 
 typedef struct {
     bool active;
@@ -187,6 +235,12 @@ esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
     const nrf_topology_snapshot_t *current_topology,
     uint64_t now_ms,
     uint64_t max_age_ms,
+    nrf_topology_ranging_result_t *result);
+/* Bind the current completed ranging revision to the operator-confirmed object. */
+esp_err_t nrf_topology_service_accept_ranging_result(
+    const char *object_id, const nrf_topology_snapshot_t *current_topology, uint64_t expected_updated_at_ms);
+esp_err_t nrf_topology_service_get_accepted_ranging_result(
+    const char *object_id, const nrf_topology_snapshot_t *current_topology, uint64_t now_ms,
     nrf_topology_ranging_result_t *result);
 esp_err_t nrf_topology_service_invalidate_ranging(void);
 /* Abort the running or queued ranging cycle. Best effort and idempotent: ESP_OK when nothing runs. */

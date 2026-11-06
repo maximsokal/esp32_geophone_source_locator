@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "nrf_geometry_solver.h"
@@ -374,6 +375,108 @@ static void test_the_largest_network_fits_the_report(void)
     assert(report.triangle_count == NRF_GEOMETRY_MAX_TRIANGLES && report.inconsistent_count == 0U);
 }
 
+static void test_the_cable_cuts_the_upper_end_of_an_interval(void)
+{
+    nrf_geometry_edge_bounds_t bounds = {.lower_mm = 1902, .upper_mm = 8353, .witnesses = 2U, .contradictory = false};
+
+    nrf_geometry_edge_bounds_cap(&bounds, 6293);                 /* a 6000 mm cable plus one bin */
+    assert(bounds.lower_mm == 1902 && bounds.upper_mm == 6293 && bounds.witnesses == 2U && !bounds.contradictory);
+    nrf_geometry_edge_bounds_cap(&bounds, 9000);                 /* never raises it */
+    assert(bounds.upper_mm == 6293);
+    nrf_geometry_edge_bounds_cap(&bounds, -1);                   /* no limit */
+    assert(bounds.upper_mm == 6293 && !bounds.contradictory);
+    nrf_geometry_edge_bounds_cap(&bounds, 1902);                 /* exactly the lower end still fits */
+    assert(bounds.upper_mm == 1902 && !bounds.contradictory);
+    nrf_geometry_edge_bounds_cap(&bounds, 1901);                 /* the witnesses and the cable disagree */
+    assert(bounds.upper_mm == 1901 && bounds.contradictory);
+
+    nrf_geometry_edge_bounds_t unbounded = {.lower_mm = 0, .upper_mm = INT32_MAX, .witnesses = 0U, .contradictory = false};
+    nrf_geometry_edge_bounds_cap(&unbounded, 5000);              /* the cable bounds an edge nothing else bounds */
+    assert(unbounded.upper_mm == 5000 && !unbounded.contradictory);
+    nrf_geometry_edge_bounds_cap(NULL, 5000);                    /* harmless */
+}
+
+static int64_t hull3(const int32_t *x, const int32_t *y, const int32_t *z, size_t n)
+{
+    return nrf_geometry_hull_surface_area_mm2(x, y, z, n);
+}
+
+/* The size of a layout in 3D: the surface of the hull of the positions, X/Y from Bluetooth and Z from the barometers. */
+static void test_the_hull_surface_is_measured_in_three_dimensions(void)
+{
+    const int32_t sx[] = {0, 5000, 5000, 0, 2500}, sy[] = {0, 0, 5000, 5000, 2500}, sz[] = {0, 0, 0, 0, 0};
+
+    assert(hull3(sx, sy, sz, 4U) == 50000000);                                  /* a flat 5 m square shows both faces */
+    assert(hull3(sx, sy, sz, 5U) == 50000000);                                  /* an interior point changes nothing */
+    const int32_t jx[] = {0, 5000, 5000, 0}, jy[] = {0, 0, 5000, 5000}, jz[] = {0, 1, -1, 0};
+    assert(llabs(hull3(jx, jy, jz, 4U) - 50000000) < 20000);                    /* a millimetre of barometer noise is no jump */
+    const int32_t tx[] = {0, 5000, 0}, ty[] = {0, 0, 5000}, tz[] = {0, 0, 0};
+    assert(hull3(tx, ty, tz, 3U) == 25000000);                                  /* a flat triangle: 2 x 12.5 m^2 */
+    const int32_t ox[] = {5000, 0, 0}, oy[] = {0, 5000, 0}, oz[] = {0, 0, 0};
+    assert(hull3(ox, oy, oz, 3U) == 25000000);                                  /* whatever the order */
+
+    /* A corner of a cube: three right triangles and the equilateral face of side 5000 * sqrt 2. */
+    const int32_t cx[] = {0, 5000, 0, 0}, cy[] = {0, 0, 5000, 0}, cz[] = {0, 0, 0, 5000};
+    assert(llabs(hull3(cx, cy, cz, 4U) - (37500000 + 21650635)) <= 2);
+    /* Heights count: the same four points lifted by 3 m at one corner span a different body than the flat square. */
+    const int32_t lz[] = {0, 0, 0, 3000};
+    assert(hull3(jx, jy, lz, 4U) > 50000000);
+    /* A cube: six faces of four points each, every face counted once. */
+    const int32_t qx[] = {0, 1000, 0, 1000, 0, 1000, 0, 1000}, qy[] = {0, 0, 1000, 1000, 0, 0, 1000, 1000};
+    const int32_t qz[] = {0, 0, 0, 0, 1000, 1000, 1000, 1000};
+    assert(hull3(qx, qy, qz, 8U) == 6000000);
+
+    const int32_t lx[] = {0, 1000, 3000, 7000}, lzz[] = {0, 1000, 3000, 7000};
+    assert(hull3(lx, lx, lzz, 4U) == 0);                                        /* collinear */
+    assert(hull3(sx, sy, sz, 2U) == 0 && hull3(sx, sy, sz, 0U) == 0);
+    assert(hull3(NULL, sy, sz, 4U) == 0 && hull3(sx, NULL, sz, 4U) == 0 && hull3(sx, sy, NULL, 4U) == 0);
+    const int32_t hx[] = {-INT32_MAX, INT32_MAX, INT32_MAX, -INT32_MAX}, hy[] = {-INT32_MAX, -INT32_MAX, INT32_MAX, INT32_MAX};
+    assert(hull3(hx, hy, sz, 4U) > 0);                                          /* no overflow */
+}
+
+static void test_the_largest_hull_surface_of_devices_within_a_cable(void)
+{
+    const double r2 = 5000.0 * 5000.0;
+    assert(llabs(nrf_geometry_max_hull_surface_area_mm2(3U, 5000) - (int64_t)(2.598076 * r2)) < 200);
+    assert(llabs(nrf_geometry_max_hull_surface_area_mm2(4U, 5000) - (int64_t)(4.618802 * r2)) < 200);   /* the tetrahedron */
+    assert(llabs(nrf_geometry_max_hull_surface_area_mm2(5U, 5000) - (int64_t)(5.809475 * r2)) < 200);   /* the bipyramid */
+    assert(llabs(nrf_geometry_max_hull_surface_area_mm2(6U, 5000) - (int64_t)(6.928203 * r2)) < 200);   /* the octahedron */
+    assert(nrf_geometry_max_hull_surface_area_mm2(9U, 5000) == (int64_t)(4.0 * 3.14159265358979 * r2 + 0.5));
+    assert(nrf_geometry_max_hull_surface_area_mm2(2U, 5000) == 0 && nrf_geometry_max_hull_surface_area_mm2(0U, 5000) == 0);
+    assert(nrf_geometry_max_hull_surface_area_mm2(4U, 0) == 0 && nrf_geometry_max_hull_surface_area_mm2(4U, -5) == 0);
+    for (size_t n = 4U; n < 8U; ++n) {      /* strictly growing up to the sphere, which more than 6 points all share */
+        assert(nrf_geometry_max_hull_surface_area_mm2(n, 5000) > nrf_geometry_max_hull_surface_area_mm2(n - 1U, 5000));
+    }
+    /* The user's bench case: MAIN and four devices on a flat 5 m square around it (3.54 m from MAIN) is far below the limit. */
+    assert(2 * 25000000 < nrf_geometry_max_hull_surface_area_mm2(5U, 3536) + 1);
+}
+
+/* The bound holds for any layout: points inside the sphere never span a hull larger than the best inscribed polyhedron. */
+static void test_no_layout_within_the_cable_exceeds_the_largest_hull_surface(void)
+{
+    uint32_t seed = 20261105U;
+    for (unsigned trial = 0U; trial < 6000U; ++trial) {
+        const size_t n = 3U + trial % 3U;                      /* MAIN plus up to four devices */
+        const int32_t radius = 5000;
+        int32_t x[8], y[8], z[8];
+        for (size_t i = 0U; i < n; ++i) {
+            do {
+                for (unsigned axis = 0U; axis < 3U; ++axis) {
+                    seed = seed * 1664525U + 1013904223U;
+                    const int32_t value = (int32_t)(seed >> 8U) % (2 * radius + 1) - radius;
+                    if (axis == 0U) x[i] = value; else if (axis == 1U) y[i] = value; else z[i] = value;
+                }
+            } while ((int64_t)x[i] * x[i] + (int64_t)y[i] * y[i] + (int64_t)z[i] * z[i] > (int64_t)radius * radius);
+        }
+        const int64_t bound = nrf_geometry_max_hull_surface_area_mm2(n, radius);
+        assert(hull3(x, y, z, n) <= bound + bound / 1000000 + 10);
+    }
+    /* and the bound is reached by the inscribed bodies themselves (positions rounded to whole mm) */
+    const int32_t tx[] = {2887, 2887, -2887, -2887}, ty[] = {2887, -2887, 2887, -2887}, tz[] = {2887, -2887, -2887, 2887};
+    const int64_t tetra = hull3(tx, ty, tz, 4U), limit = nrf_geometry_max_hull_surface_area_mm2(4U, 5000);
+    assert(tetra <= limit + limit / 1000 && tetra >= limit - limit / 100);
+}
+
 int main(void)
 {
     test_the_bench_triple_is_measured_not_dismissed();
@@ -386,5 +489,9 @@ int main(void)
     test_only_pairs_with_a_measured_distance_take_part();
     test_bad_arguments_and_extreme_values_are_safe();
     test_the_largest_network_fits_the_report();
+    test_the_cable_cuts_the_upper_end_of_an_interval();
+    test_the_hull_surface_is_measured_in_three_dimensions();
+    test_the_largest_hull_surface_of_devices_within_a_cable();
+    test_no_layout_within_the_cable_exceeds_the_largest_hull_surface();
     return 0;
 }

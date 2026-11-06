@@ -39,6 +39,13 @@
 /* The Hampel filter never trusts a spread below this: whole-pascal steps are about 83 mm apart. */
 #define WORKFLOW_PLACEMENT_SIGMA_FLOOR_MM 40.0
 #define WORKFLOW_PLACEMENT_MIN_SAMPLES 8U
+/*
+ * The window evicts by age, but the newest WORKFLOW_PLACEMENT_MIN_SAMPLES are kept while they are younger than this:
+ * the 8 readings of a node that is still current (snapshot at most FRESH_MS old) can be FRESH_MS apart. Without it a
+ * node refreshing slower than window / 7 gaps (about 2.9 s) never reached 8, and one at about 2.4 s flapped between
+ * 7 and 9 (2026-11-05: 7/8 fell back to 5/8). At the nominal 2 s refresh the 20 s window binds first, as before.
+ */
+#define WORKFLOW_PLACEMENT_HARD_WINDOW_MS ((WORKFLOW_PLACEMENT_MIN_SAMPLES - 1U) * WORKFLOW_PLACEMENT_FRESH_MS)
 #define WORKFLOW_PLACEMENT_RECENT_SAMPLES 4U
 /* Samples of one node are stored at most this often, so a 20 s window holds 21 of them at most. */
 #define WORKFLOW_PLACEMENT_MIN_SAMPLE_GAP_MS 1000U
@@ -70,6 +77,8 @@ typedef enum {
     WORKFLOW_STEP_STOPPED,
     WORKFLOW_STEP_CALCULATING,
     WORKFLOW_STEP_RESULT,
+    WORKFLOW_STEP_STOPPING,
+    WORKFLOW_STEP_RECORD_ERROR,
     WORKFLOW_STEP_COUNT
 } workflow_step_t;
 

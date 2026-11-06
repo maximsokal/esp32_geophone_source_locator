@@ -72,6 +72,22 @@ def test_production_build_uses_permanent_max51_channel_sounding_config():
         assert required in cfg
 
 
+def test_pairing_key_pool_covers_every_peer_a_node_can_meet():
+    """
+    Bench 2026-11-05: every one of the 18 observed Channel Sounding transport errors was a Security failure with
+    BT_SECURITY_ERR_UNSPECIFIED, the link dropped ~100 ms after it came up. NCS 3.4.0 smp.c answers a pairing with
+    BT_SMP_ERR_UNSPECIFIED whenever bt_keys_get_addr() cannot give the connection a key slot (smp_pairing_req and
+    bt_smp_encrypt_change), and keys.c only recycles a slot of another peer with BT_KEYS_OVERWRITE_OLDEST. The resolved
+    production config had BT_MAX_PAIRED=1: one slot for up to four other nodes, none of them bonded.
+    """
+    cfg = config_lines(BASE_CONF)
+    nodes = int(re.search(r"#define\s+NRF_CS_MAX_NODES\s+(\d+)U", text(ROOT / "nRF54L15" / "include" / "nrf_cs_scheduler.h")).group(1))
+    paired = [int(line.split("=")[1]) for line in cfg if line.startswith("CONFIG_BT_MAX_PAIRED=")]
+    assert paired and paired[0] >= nodes
+    assert "CONFIG_BT_KEYS_OVERWRITE_OLDEST=y" in cfg
+    assert "CONFIG_BT_BONDABLE=n" in cfg    # still no bonding: the slots only hold the keys of the live connection
+
+
 def test_canonical_flash_is_explicit_ncs_hardware_action():
     source = text(NCS)
     flash_case = source[source.index('"flash" {'):source.index('"cs-proof" {')]

@@ -88,3 +88,13 @@ bool nrf_cs_pair_runtime_zephyr_is_busy(void)
 {
     return false;
 }
+
+bool nrf_cs_pair_zephyr_stub_idle_valid;
+uint32_t nrf_cs_pair_zephyr_stub_idle_ms;
+
+bool nrf_cs_pair_runtime_zephyr_incoming_idle_ms(uint32_t *idle_ms)
+{
+    if (idle_ms == NULL || !nrf_cs_pair_zephyr_stub_idle_valid) return false;
+    *idle_ms = nrf_cs_pair_zephyr_stub_idle_ms;
+    return true;
+}

@@ -44,7 +44,7 @@ def test_max491_manifest_registers_model_service_ui_job_and_recorder_tests():
         assert "malloc=seismic_recorder_fault_malloc" in tests[name]["defines"]
 
     model = (ROOT / "tests/host/workflow_fsm_model_test.c").read_text(encoding="utf-8")
-    assert "assert(WORKFLOW_STEP_COUNT == 19);" in model
+    assert "assert(WORKFLOW_STEP_COUNT == 21);" in model
     assert "assert(WORKFLOW_COMMAND_COUNT == 27);" in model
     assert "static void test_all_state_command_pairs(void)" in model
     assert "static void test_seeded_action_sequences(void)" in model

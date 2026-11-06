@@ -98,6 +98,8 @@ export type MeasurementServiceState =
   | 'STARTING'
   | 'RECORDING'
   | 'STOPPING'
+  | 'RECORD_ERROR'
+  | 'STOPPING'
   | 'REVIEW'
   | 'DELETING'
   | 'ERROR';

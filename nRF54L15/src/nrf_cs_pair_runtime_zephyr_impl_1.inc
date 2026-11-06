@@ -108,6 +108,10 @@ static atomic_t s_disconnect_retry_pending;
 static atomic_t s_disconnect_retry_request;
 /* Zero means none; reason+1 keeps incoming disconnect ownership until worker delivery. */
 static atomic_t s_incoming_disconnect_pending;
+/* Last time an accepted incoming link came up or went down (uptime ms); the cycle runtime infers a release it never got
+ * (nrf_cs_cycle_runtime_peer_silent) from how long this has been quiet. */
+static atomic_t s_incoming_activity_ms;
+static atomic_t s_incoming_activity_seen;
 static void cleanup_work_handler(struct k_work *work);
 static struct bt_conn *s_incoming_conn;
 

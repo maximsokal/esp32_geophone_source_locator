@@ -460,6 +460,8 @@ function WorkflowSection({ section, status, onRangingSaved, onRefresh }: {
     case 'record_ready': return <p>{t('workflow.record_ready.instruction')}</p>;
     case 'recording': return <RecordingSection value={section.value} />;
     case 'stopped': return <p>{t('workflow.stopped.instruction')}</p>;
+    case 'stopping': return <p>{t('workflow.stopping.instruction')}</p>;
+    case 'record_error': return <p role="alert">{t('workflow.record_error.instruction')} {section.reason}</p>;
     case 'calculating': return (
       <div>
         <p>{t('workflow.calculating.progress')}: {workflowNumberText(section.progress, locale)}{section.progress === null ? '' : '%'}</p>

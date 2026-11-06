@@ -123,6 +123,8 @@ export type WorkflowBodySection =
   | { kind: 'record_ready' }
   | { kind: 'recording'; value: DeviceStatus | null }
   | { kind: 'stopped' }
+  | { kind: 'stopping' }
+  | { kind: 'record_error'; reason: string | null }
   | { kind: 'calculating'; progress: number | null }
   | { kind: 'result'; success: boolean; calculationClass: WorkflowCalculationClass; reason: string | null }
   | { kind: 'idle' }
@@ -238,6 +240,8 @@ const STEP_TITLES: Record<string, I18nKey> = {
   SCANNING: 'workflow.title.scanning',
   RECORD_READY: 'workflow.title.record_ready',
   RECORDING: 'workflow.title.recording',
+  STOPPING: 'workflow.title.stopping',
+  RECORD_ERROR: 'workflow.title.record_error',
   STOPPED: 'workflow.title.stopped',
   CALCULATING: 'workflow.title.calculating',
   RESULT: 'workflow.title.result',
@@ -334,6 +338,8 @@ export function workflowViewModel(status: DeviceStatus | null, objectName: strin
     case 'SCANNING': sections.push({ kind: 'scan', value: workflow, scanning: workflow.step === 'SCANNING' }); break;
     case 'RECORD_READY': sections.push({ kind: 'record_ready' }); break;
     case 'RECORDING': sections.push({ kind: 'recording', value: status }); break;
+    case 'STOPPING': sections.push({ kind: 'stopping' }); break;
+    case 'RECORD_ERROR': sections.push({ kind: 'record_error', reason: workflow.reason ?? null }); break;
     case 'STOPPED': sections.push({ kind: 'stopped' }); break;
     case 'CALCULATING': sections.push({ kind: 'calculating', progress: workflow.progress }); break;
     case 'RESULT': {

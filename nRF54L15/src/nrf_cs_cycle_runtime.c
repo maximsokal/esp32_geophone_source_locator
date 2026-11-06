@@ -94,6 +94,7 @@ int nrf_cs_cycle_runtime_go(nrf_cs_cycle_runtime_t *rt, const nrf_cs_cycle_go_t 
     rt->record_count = 0U;
     rt->failure = NRF_CS_CYCLE_FAILURE_NONE;
     rt->released_mask = 0U;
+    rt->release_floor_ms = rt->t0_ms;
     rt->closed_mask = 0U;
     rt->last_role = WINDOW_NONE;
     rt->relay = rt->step_count >= 2U;
@@ -207,6 +208,7 @@ void nrf_cs_cycle_runtime_peer_released(nrf_cs_cycle_runtime_t *rt)
     for (uint8_t e = first; e < rt->step_count; ++e) {
         if (rt->steps[e].reflector != rt->local_node || (rt->released_mask & bit_of(e)) != 0U) continue;
         rt->released_mask |= bit_of(e);
+        rt->release_floor_ms = now;
         /* Its own window may already be open and waiting for the slot's start: shorten the wait. */
         const uint64_t ready = now + NRF_CS_CYCLE_RELAY_SETTLE_MS;
         if ((uint8_t)(e + 1U) == rt->window && rt->attempts == 0U && !rt->attempt_active && ready < rt->attempt_ready_ms) {
@@ -214,6 +216,17 @@ void nrf_cs_cycle_runtime_peer_released(nrf_cs_cycle_runtime_t *rt)
         }
         return;
     }
+}
+
+void nrf_cs_cycle_runtime_peer_silent(nrf_cs_cycle_runtime_t *rt, uint32_t idle_ms)
+{
+    if (rt == NULL || rt->state != NRF_CS_CYCLE_STATE_RUNNING || !rt->relay) return;
+    if (idle_ms < nrf_cs_cycle_silence_ms(rt->pair_timeout_ms)) return;
+    const uint64_t now = now_ms(rt);
+    /* Only a link seen after the last release (or GO) belongs to a duty that is still open; an older one was already
+     * answered, and silence since then says nothing about the initiator of the next duty. */
+    if (idle_ms > now || now - idle_ms <= rt->release_floor_ms) return;
+    nrf_cs_cycle_runtime_peer_released(rt);
 }
 
 static void start_attempt(nrf_cs_cycle_runtime_t *rt)

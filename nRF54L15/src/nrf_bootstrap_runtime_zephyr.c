@@ -598,7 +598,11 @@ static void cycle_peer_released(void)
 void nrf_bootstrap_runtime_zephyr_cs_cycle_tick(void)
 {
     nrf_cs_step_t step;
+    uint32_t link_idle_ms = 0U;
+    /* False while an incoming link is up (or none was seen): then no release is missing. */
+    const bool link_silent = nrf_cs_pair_runtime_zephyr_incoming_idle_ms(&link_idle_ms);
     k_spinlock_key_t key = k_spin_lock(&s_cycle_lock);
+    if (link_silent) nrf_cs_cycle_runtime_peer_silent(&s_cycle, link_idle_ms);
     nrf_cs_cycle_runtime_tick(&s_cycle);
     const bool running = nrf_cs_cycle_runtime_running(&s_cycle);
     const bool start = nrf_cs_cycle_runtime_take_start(&s_cycle, &step);

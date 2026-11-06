@@ -125,6 +125,11 @@ static uint32_t workflow_core_actions(
         case WORKFLOW_STEP_RECORDING:
             ADD_ACTION(WORKFLOW_COMMAND_STOP_RECORDING);
             break;
+        case WORKFLOW_STEP_STOPPING:
+            break;
+        case WORKFLOW_STEP_RECORD_ERROR:
+            ADD_ACTION(WORKFLOW_COMMAND_RECORD_AGAIN);
+            break;
         case WORKFLOW_STEP_STOPPED:
             if (calc_settings_ready) ADD_ACTION(WORKFLOW_COMMAND_CALCULATE_SOURCES);
             ADD_ACTION(WORKFLOW_COMMAND_DELETE_RECORDING);
@@ -419,7 +424,8 @@ workflow_command_result_t workflow_core_apply(
             if (core->step == WORKFLOW_STEP_RECORD_READY) next = WORKFLOW_STEP_RECORDING;
             break;
         case WORKFLOW_COMMAND_STOP_RECORDING:
-            if (core->step == WORKFLOW_STEP_RECORDING) next = WORKFLOW_STEP_STOPPED;
+            if (core->step == WORKFLOW_STEP_RECORDING || core->step == WORKFLOW_STEP_STOPPING)
+                next = WORKFLOW_STEP_STOPPING;
             break;
         case WORKFLOW_COMMAND_MOVE_SENSORS:
             if (core->step == WORKFLOW_STEP_RECORD_READY ||
@@ -466,7 +472,7 @@ workflow_command_result_t workflow_core_apply(
             if (core->step == WORKFLOW_STEP_STOPPED) next = WORKFLOW_STEP_RECORD_READY;
             break;
         case WORKFLOW_COMMAND_RECORD_AGAIN:
-            if (core->step == WORKFLOW_STEP_STOPPED ||
+            if (core->step == WORKFLOW_STEP_STOPPED || core->step == WORKFLOW_STEP_RECORD_ERROR ||
                 (core->step == WORKFLOW_STEP_RESULT &&
                     core->calculation_class != WORKFLOW_CALCULATION_CLASS_NONE)) {
                 next = WORKFLOW_STEP_RECORD_READY;
@@ -594,7 +600,7 @@ const char *workflow_core_step_name(workflow_step_t step)
         "IDLE", "OBJECT", "SENSOR_CHECK", "CALIB_PREP", "CALIBRATING",
         "CALIB_RESULT", "PLACEMENT", "GPS_CHOICE", "GPS_PENDING", "LAYOUT_READY",
         "RANGING", "RANGING_RESULT", "SCAN_CHOICE", "SCANNING", "RECORD_READY",
-        "RECORDING", "STOPPED", "CALCULATING", "RESULT"
+        "RECORDING", "STOPPED", "CALCULATING", "RESULT", "STOPPING", "RECORD_ERROR"
     };
     return step >= 0 && step < WORKFLOW_STEP_COUNT ? names[step] : "UNKNOWN";
 }

@@ -98,6 +98,12 @@ bool nrf_cs_pair_runtime_zephyr_is_busy(void)
     return false;
 }
 
+bool nrf_cs_pair_runtime_zephyr_incoming_idle_ms(uint32_t *idle_ms)
+{
+    (void)idle_ms;
+    return false;
+}
+
 bool nrf_cs_pair_runtime_zephyr_is_progress_required(void)
 {
     return false;

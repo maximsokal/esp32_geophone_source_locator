@@ -596,6 +596,11 @@ static bool web_control_pod_index(double value, size_t *pod_index)
 static esp_err_t web_control_calculate_source(cJSON *root, const char *object_id)
 {
     if (object_id == NULL) return ESP_ERR_INVALID_ARG;
+    measurement_service_snapshot_t measurement;
+    const esp_err_t measurement_err = measurement_service_get_snapshot(&measurement);
+    if (measurement_err != ESP_OK) return measurement_err;
+    if (measurement.state != MEASUREMENT_SERVICE_LIVE && measurement.state != MEASUREMENT_SERVICE_REVIEW)
+        return ESP_ERR_INVALID_STATE;
     const char *session_id = web_control_string(root, "session_id");
     if (session_id == NULL) return ESP_ERR_INVALID_ARG;
     localization_calculate_config_t config;

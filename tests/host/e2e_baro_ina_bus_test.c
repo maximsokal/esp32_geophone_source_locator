@@ -87,7 +87,7 @@ static void clock_advance_to(int64_t target_us)
     }
 }
 
-#define LOG_CAPACITY 8000U
+#define LOG_CAPACITY 60000U
 #define LOG_LINE 200U
 static char (*s_logs)[LOG_LINE];
 static size_t s_log_count;
@@ -321,7 +321,7 @@ typedef struct {
     int64_t at_us;
 } main_record_t;
 
-#define MAIN_RECORDS 2048U
+#define MAIN_RECORDS 24000U
 static main_record_t s_main_records[MAIN_RECORDS];
 static size_t s_main_record_count;
 
@@ -427,7 +427,8 @@ esp_err_t app_events_post_best_effort(app_event_type_t type, int32_t value)
 
 static unsigned s_transfers[2];       /* per task: 0 = topology/test thread, 1 = INA3221 worker */
 static unsigned s_addr_transfers[128];
-static int s_timeout_faults[128];     /* >0: that many transfers time out; <0: always */
+static int s_timeout_faults[128];     /* >0: that many transfers fail; <0: always */
+static esp_err_t s_fault_code[128];   /* what they fail with; 0 = ESP_ERR_TIMEOUT. ESP_ERR_INVALID_STATE with an ACKing address is the IDF 5.5 "transfer failed" case */
 
 /* INA3221 */
 static uint16_t s_ina_config = 0x7127U;
@@ -483,7 +484,7 @@ static struct {
     unsigned data_reads;
     unsigned duplicate_reads;
     unsigned forced_writes;
-    uint64_t ids[4096];
+    uint64_t ids[16384];
     size_t id_count;
 } s_bmp;
 
@@ -665,6 +666,10 @@ static esp_err_t begin_transfer(fake_master_device_t *device, int timeout_ms)
     int *fault = &s_timeout_faults[device->address];
     if (*fault != 0) {
         if (*fault > 0) --*fault;
+        if (s_fault_code[device->address] == ESP_ERR_INVALID_STATE) {
+            sensor_bus_lines_delay_us(TRANSFER_US);
+            return ESP_ERR_INVALID_STATE;
+        }
         sensor_bus_lines_delay_us((uint32_t)timeout_ms * 1000U);
         return ESP_ERR_TIMEOUT;
     }
@@ -992,6 +997,45 @@ static void phase_ina_transient_fault(void)
     assert(log_count_since(log_mark, "I2C_BAROMETER_WARN") == 0U);
 }
 
+/* 3b. The same single failure as the IDF 5.5 controller reports it when the bus was busy right after another task
+ * (2026-11-05, 15.7 s after boot, core 0 saturated): ESP_ERR_INVALID_STATE while the address still ACKs. Both devices
+ * must come back within a poll or two, not after the 5 s re-probe / re-open backoff that only a really absent device
+ * deserves. */
+static void phase_transient_invalid_state_recovers_quickly(void)
+{
+    {   /* BMP280 */
+        const size_t record_mark = s_main_record_count;
+        const main_barometer_reading_t before = baro_reading();
+        s_fault_code[BMP_ADDR] = ESP_ERR_INVALID_STATE;
+        s_timeout_faults[BMP_ADDR] = 1;
+        sim_run_ms(4000U);
+        s_fault_code[BMP_ADDR] = 0;
+        const main_barometer_reading_t after = baro_reading();
+        assert(s_timeout_faults[BMP_ADDR] == 0);
+        assert(after.bmp280_bus_error_count == before.bmp280_bus_error_count + 1U);
+        assert(after.bmp280_probe_count == before.bmp280_probe_count);       /* no re-probe for one failed transfer */
+        assert(max_sample_gap_ms(record_mark) <= 1000U);                     /* not the 5 s backoff */
+        assert(distinct_samples_since(record_mark) >= 10U);                  /* 4 s of ~0.2 s polls minus the failed one */
+        assert(NOW_MS() - after.last_sample_ms <= 1000U);                    /* and it is still converting at the end */
+    }
+    {   /* INA3221: its re-open backoff after a failed read is the MAX-440 contract (5 s, test I3), so the power data
+         * is blind for about 5 s here; the point is that it never goes invalid (stale limit 10 s) and comes back. */
+        const size_t log_mark = s_log_count;
+        const int64_t fault_at_us = NOW_US();
+        s_fault_code[INA_ADDR] = ESP_ERR_INVALID_STATE;
+        s_timeout_faults[INA_ADDR] = 1;
+        const unsigned invalid_before = s_power_invalid_calls;
+        sim_run_ms(7000U);
+        s_fault_code[INA_ADDR] = 0;
+        assert(s_timeout_faults[INA_ADDR] == 0);
+        assert(log_count_since(log_mark, "INA3221 read failed") == 1U);
+        assert(s_power_invalid_calls == invalid_before);                     /* never published as invalid */
+        const ina3221_monitor_rail_t battery = rail(INA3221_MONITOR_RAIL_BATTERY);
+        assert(battery.valid && battery.age_ms <= 1200U && battery.sampled_at_us > fault_at_us);
+        assert(s_lock.owner == NULL);
+    }
+}
+
 /* 4. The topology task holds a long bus session: INA3221 reports contention, not a dead sensor. */
 static void phase_owner_contention(void)
 {
@@ -1022,7 +1066,9 @@ static void phase_owner_contention(void)
     /* The per-address bus statistics must not turn the skipped reads into INA3221 device failures
      * (2026-11-05 hardware log: "addr=0x40 ... other=3 last_err=ERROR" after three owner-busy skips). */
     sim_run_ms(12000U);
-    assert(log_count_since(log_mark, "I2C_BUS_SUMMARY addr=0x40") == 0U);
+    for (size_t i = log_mark; i < s_log_count; ++i) {
+        if (strstr(s_logs[i], "I2C_BUS_SUMMARY addr=0x40") != NULL) assert(strstr(s_logs[i], " other=0 ") != NULL);
+    }
 }
 
 /* 5. BLE ranging: the topology task takes the quiet lease for 20 s. */
@@ -1148,7 +1194,100 @@ static void phase_recalibration(void)
     assert(s_bmp.duplicate_reads == 0U);
 }
 
-/* 7. Shutdown: the worker leaves cleanly, no deadlock, the bus is released. */
+/* 7. Thirty minutes of the operator's routine: calibrate, wait, range (quiet lease), with a bus fault of each kind in
+ * every round. Everything the earlier phases proved has to keep holding, and nothing may grow with the run time. */
+static void phase_thirty_minutes(void)
+{
+    const main_barometer_reading_t before = baro_reading();
+    const unsigned data_reads_before = s_bmp.data_reads;
+    unsigned lines_per_round[18];
+    uint16_t generation = 100U;
+    for (unsigned round = 0U; round < 18U; ++round) {          /* 18 x 100 s */
+        const size_t round_mark = s_log_count;
+        sim_run_ms(30000U);                                        /* idle in the measurement menu */
+        s_timeout_faults[BMP_ADDR] = 1;
+        sim_run_ms(10000U);
+        assert(s_timeout_faults[BMP_ADDR] == 0);
+        s_timeout_faults[INA_ADDR] = 1;
+        sim_run_ms(15000U);
+        assert(s_timeout_faults[INA_ADDR] == 0);
+        assert(main_barometer_request_height_reference_capture(++generation) == ESP_OK);   /* calibration */
+        sim_run_ms(10000U);
+        assert(sensor_bus_quiet_begin(30000U) == ESP_OK);          /* ranging */
+        s_topology_enabled = false;
+        sim_run_ms(15000U);
+        sensor_bus_quiet_end();
+        s_topology_enabled = true;
+        s_topo_next_us = NOW_US();
+        sim_run_ms(20000U);
+
+        const ina3221_monitor_rail_t battery = rail(INA3221_MONITOR_RAIL_BATTERY);
+        assert(battery.valid && battery.age_ms <= 1200U);
+        assert(s_lock.owner == NULL);
+        const main_barometer_reading_t now = baro_reading();
+        assert(now.height_reference_state == MAIN_BAROMETER_REFERENCE_VALID);
+        assert(now.height_reference_generation == generation);
+        assert(NOW_MS() - now.last_sample_ms <= 1000U);
+        assert(log_count_since(round_mark, "INA3221_PAUSED reason=i2c_quiet") == 1U);
+        assert(log_count_since(round_mark, "INA3221_RESUMED reason=i2c_quiet") == 1U);
+        assert(log_count_since(round_mark, "I2C_TIMEOUT_DIAG src=bus_owner") == 0U);
+        lines_per_round[round] = (unsigned)(s_log_count - round_mark);
+    }
+    const main_barometer_reading_t after = baro_reading();
+    assert(after.bmp280_bus_error_count == before.bmp280_bus_error_count + 18U);   /* exactly the injected timeouts */
+    assert(after.bmp280_probe_count == before.bmp280_probe_count);                 /* never re-probed */
+    assert(after.config_lost_count == before.config_lost_count);
+    assert(s_bmp.duplicate_reads == 0U && s_bmp.forced_writes == 0U);
+    assert(s_bmp.data_reads - data_reads_before > 4000U);          /* it really kept converting for 30 minutes */
+    assert(s_log_count < LOG_CAPACITY / 2U);                       /* the log did not run away */
+    /* Nothing grows with the run time: the last round is as quiet as the first. */
+    assert(lines_per_round[17] <= lines_per_round[0] + lines_per_round[0] / 2U + 10U);
+    printf("E2E 30 min: rounds=18 log_lines_first=%u last=%u bmp_data_reads=%u bus_errors=%u\n",
+           lines_per_round[0], lines_per_round[17], s_bmp.data_reads - data_reads_before,
+           (unsigned)after.bmp280_bus_error_count);
+}
+
+/* 8. Battery pack, BLE ranging: the quiet lease blinds the software power monitor. The cell sags below the critical
+ * level during the lease; nothing can react until the monitor reads again, then the existing confirm + grace runs.
+ * This is the documented limit (the owner allowed quiet with stale power data): the test pins its size. */
+static unsigned s_critical_calls;
+static int64_t s_critical_at_us;
+static void critical_battery_handler(void)
+{
+    ++s_critical_calls;
+    s_critical_at_us = NOW_US();
+}
+
+static void phase_battery_quiet_blind_window(void)
+{
+    const unsigned alerts_before = s_power_alerts;
+    ina3221_monitor_set_critical_battery_handler(critical_battery_handler);
+    sim_run_ms(20000U);
+    assert(s_critical_calls == 0U && s_power_alerts == alerts_before);     /* healthy pack: nothing */
+
+    assert(sensor_bus_quiet_begin(120000U) == ESP_OK);
+    s_topology_enabled = false;
+    sim_run_ms(30000U);
+    s_ina_bus_raw[0] = ina_bus_raw_from_volts(3.20f);                  /* the cell sags below 3.30 V mid-lease */
+    sim_run_ms(60000U);
+    assert(s_critical_calls == 0U);                                    /* blind: nothing can have been noticed */
+    assert(s_power_alerts == alerts_before);
+    sensor_bus_quiet_end();
+    const int64_t lease_end_us = NOW_US();
+    s_topology_enabled = true;
+    s_topo_next_us = NOW_US();
+    sim_run_ms(30000U);
+
+    /* First reading <= 1 s after the lease, 5 samples to confirm, then the 10 s grace: ~15 s, never longer than 20. */
+    assert(s_critical_calls == 1U);
+    assert(s_critical_at_us > lease_end_us + INT64_C(10000000));
+    assert(s_critical_at_us <= lease_end_us + INT64_C(20000000));
+    assert(s_power_alerts == alerts_before + 2U);                      /* CRITICAL_GRACE, then SHUTDOWN */
+    printf("E2E battery quiet: blind %d s, shutdown requested %d ms after the lease ended\n",
+           90, (int)((s_critical_at_us - lease_end_us) / 1000));
+}
+
+/* 9. Shutdown: the worker leaves cleanly, no deadlock, the bus is released. */
 static void phase_shutdown(void)
 {
     s_topology_enabled = false;
@@ -1159,7 +1298,7 @@ static void phase_shutdown(void)
     nrf_topology_main_barometer_close(&s_topology);
     assert(sensor_bus_device_delete(&s_remote) == ESP_OK);
     assert(sensor_bus_deinit() == ESP_OK);
-    assert(s_power_alerts == 0U);                    /* a healthy pack never raised a power alert */
+    assert(s_power_alerts == 2U);                    /* only the two alerts of the battery phase */
 }
 
 int main(void)
@@ -1168,9 +1307,12 @@ int main(void)
     phase_normal_operation_and_calibration();
     phase_bmp_transient_fault();
     phase_ina_transient_fault();
+    phase_transient_invalid_state_recovers_quickly();
     phase_owner_contention();
     phase_quiet_lease();
     phase_recalibration();
+    phase_thirty_minutes();
+    phase_battery_quiet_blind_window();
     phase_shutdown();
     free(s_logs);
     printf("E2E baro+INA3221+bus: PASS (bmp_data_reads=%u duplicate_reads=%u ina_measurements=%u)\n",

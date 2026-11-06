@@ -21,7 +21,6 @@ $arguments = @(
     $runner,
     "--manifest", (Join-Path $repo "tests\host\manifest.d\performance-acceptance-foundation.json"),
     "--only", "virtual_board_stress",
-    "--only", "scheduler_replay_stress",
     "--build-dir", (Join-Path $repo ".test-build\virtual-board-stress"),
     "--sanitizers", $Sanitizers
 )

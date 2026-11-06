@@ -317,6 +317,21 @@ static void prepare_successful_recording_fixture(void)
         .node_a = 2U, .node_b = 3U, .state = NRF_CS_PAIR_VALID,
         .distance_mm = 400,
     };
+
+    /* START takes the geometry the operator confirmed; it no longer measures one. */
+    memset(&fake_frozen_ranging, 0, sizeof(fake_frozen_ranging));
+    fake_frozen_ranging.available = fake_frozen_ranging.success = true;
+    fake_frozen_ranging.timestamp_ms = 1000U;
+    fake_frozen_ranging.topology_generation = 143U;
+    fake_frozen_ranging.membership_generation = 52U;
+    fake_frozen_ranging.main_height_reference_generation = 7U;
+    fake_frozen_ranging.pair_count = fake_cycle.pair_count;
+    memcpy(fake_frozen_ranging.pairs, fake_cycle.pairs, sizeof(fake_cycle.pairs));
+    fake_placement_generation = 7U;
+    memset(fake_placement_valid, 0, sizeof(fake_placement_valid));
+    memset(fake_placement_height_mm, 0, sizeof(fake_placement_height_mm));
+    for (size_t i = 1U; i <= 3U; ++i) fake_placement_valid[i] = true;
+    fake_confirm_current_geometry();
 }
 
 static void assert_start_failure_is_clean(void)

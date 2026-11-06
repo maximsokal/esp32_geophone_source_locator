@@ -48,6 +48,12 @@ typedef void (*nrf_cs_pair_runtime_released_cb_t)(void);
 void nrf_cs_pair_runtime_zephyr_set_relay_hooks(
     nrf_cs_pair_runtime_final_hint_cb_t final_hint, nrf_cs_pair_runtime_released_cb_t released);
 bool nrf_cs_pair_runtime_zephyr_is_busy(void);
+/*
+ * How long the incoming (reflector) link has been down, counted from its last activity. False while a link is up, while
+ * its disconnect is still being handled, or when none was ever accepted. The cycle runtime uses it to infer the end of
+ * an execution whose initiator could not send the release reason (nrf_cs_cycle_runtime_peer_silent).
+ */
+bool nrf_cs_pair_runtime_zephyr_incoming_idle_ms(uint32_t *idle_ms);
 bool nrf_cs_pair_runtime_zephyr_is_progress_required(void);
 
 #ifdef __cplusplus

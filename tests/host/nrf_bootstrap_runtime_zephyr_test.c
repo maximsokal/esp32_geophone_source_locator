@@ -1740,6 +1740,77 @@ static void test_relay_hooks_reach_the_cycle_runtime(void)
     assert(cycle_is_legacy_reply(frame, length));
 }
 
+extern bool nrf_cs_pair_zephyr_stub_idle_valid;
+extern uint32_t nrf_cs_pair_zephyr_stub_idle_ms;
+
+/*
+ * The Bluetooth side reports how long the incoming link has been down. A peer whose last attempt failed at pairing could
+ * not send the release reason; the cycle runtime must then end this node's duty from the silence, once it is long enough
+ * and only while no link is up.
+ */
+static void test_link_silence_reaches_the_cycle_runtime(void)
+{
+    nrf_upstream_status_t node = read_status(NULL);
+    assert(node.role != NRF_UPSTREAM_ROLE_UNASSIGNED);
+    const uint8_t self = node.node_id;
+    const uint8_t peer = (uint8_t)(self + 1U);
+    const uint32_t window = nrf_cs_cycle_window_ms(1000U, 1U, 1U);
+    uint8_t plan_frame[NRF_CS_CYCLE_PLAN_LENGTH];
+    uint8_t steps_frame[NRF_CS_CYCLE_PLAN_STEPS_LENGTH];
+    uint8_t go_frame[NRF_CS_CYCLE_GO_LENGTH];
+    uint8_t request_frame[NRF_CS_CYCLE_RESULT_REQUEST_LENGTH];
+    const nrf_cs_cycle_plan_t plan = {
+        .request_id = 0x7211U, .cycle_id = 83U, .membership_generation = 1U, .pair_timeout_ms = 1000U,
+        .max_attempts = 1U, .samples_per_pair = 1U, .min_confidence = 0U, .full_rotation = true,
+        .step_count = 2U, .node_count = 2U, .self_node = self,
+    };
+    nrf_cs_cycle_plan_steps_t steps = {.request_id = 0x7212U, .cycle_id = 83U, .first_step = 0U, .step_count = 2U};
+    const nrf_cs_cycle_go_t go = {.request_id = 0x7213U, .cycle_id = 83U, .total_timeout_ms = window * 2U + NRF_CS_CYCLE_TOTAL_MARGIN_MS};
+    const uint32_t limit = nrf_cs_cycle_silence_ms(1000U);
+    steps.steps[0] = (nrf_cs_cycle_step_t){.initiator = self, .reflector = peer};
+    steps.steps[1] = (nrf_cs_cycle_step_t){.initiator = peer, .reflector = self};
+
+    assert(nrf_cs_cycle_encode_plan(&plan, plan_frame) == 0);
+    cycle_send(plan_frame, sizeof(plan_frame));
+    assert(nrf_cs_cycle_encode_plan_steps(&steps, steps_frame) == 0);
+    cycle_send(steps_frame, sizeof(steps_frame));
+    assert(nrf_cs_cycle_encode_go(&go, go_frame) == 0);
+    cycle_send(go_frame, sizeof(go_frame));
+    assert(cycle_read_status().state == NRF_CS_CYCLE_STATE_RUNNING);
+
+    nrf_cs_pair_runtime_zephyr_stub_configure(0, NRF_CS_OUTCOME_SUCCESS);
+    const unsigned executes_before = nrf_cs_pair_zephyr_stub_execute_calls;
+    for (unsigned ticks = 0U; ticks < 20000U && nrf_cs_pair_zephyr_stub_execute_calls == executes_before; ++ticks) {
+        nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
+    }
+    assert(nrf_cs_pair_zephyr_stub_execute_calls == executes_before + 1U);          /* its own attempt ran */
+    s_uptime += 1400;                                                               /* the link was last seen long ago, inside the run */
+
+    nrf_cs_pair_zephyr_stub_idle_valid = true;
+    nrf_cs_pair_zephyr_stub_idle_ms = limit - 1U;                                   /* not silent long enough */
+    for (unsigned ticks = 0U; ticks < 20U; ++ticks) nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
+    assert(cycle_read_status().state == NRF_CS_CYCLE_STATE_RUNNING);
+
+    nrf_cs_pair_zephyr_stub_idle_valid = false;                                     /* a link is up: nothing to infer */
+    nrf_cs_pair_zephyr_stub_idle_ms = limit + 4000U;
+    for (unsigned ticks = 0U; ticks < 20U; ++ticks) nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
+    assert(cycle_read_status().state == NRF_CS_CYCLE_STATE_RUNNING);
+
+    nrf_cs_pair_zephyr_stub_idle_valid = true;
+    nrf_cs_pair_zephyr_stub_idle_ms = limit;                                        /* silent for the limit */
+    nrf_bootstrap_runtime_zephyr_cs_cycle_tick();
+    const nrf_cs_cycle_status_t done = cycle_read_status();
+    assert(done.state == NRF_CS_CYCLE_STATE_COMPLETE && done.pairs_done == 2U);
+    nrf_cs_pair_zephyr_stub_idle_valid = false;
+
+    const nrf_cs_cycle_result_request_t release = {.request_id = 0x7215U, .cycle_id = 83U, .page = NRF_CS_CYCLE_RESULT_RELEASE_PAGE};
+    uint32_t length = 0U;
+    assert(nrf_cs_cycle_encode_result_request(&release, request_frame) == 0);
+    cycle_send(request_frame, sizeof(request_frame));
+    uint8_t *frame = read_frame(&length);
+    assert(cycle_is_legacy_reply(frame, length));
+}
+
 static void test_autonomous_cs_cycle_messages(nrf_cs_outcome_t outcome)
 {
     nrf_upstream_status_t node = read_status(NULL);
@@ -2638,6 +2709,7 @@ int main(void)
     test_autonomous_cs_cycle_messages(NRF_CS_OUTCOME_TIMEOUT);
     test_autonomous_cs_cycle_messages(NRF_CS_OUTCOME_TRANSPORT_ERROR);
     test_relay_hooks_reach_the_cycle_runtime();
+    test_link_silence_reaches_the_cycle_runtime();
     test_release_cannot_discard_another_cycle();
     test_release_requests_ble_cancellation();
     {

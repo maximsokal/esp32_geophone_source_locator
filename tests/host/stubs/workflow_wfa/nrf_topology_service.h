@@ -11,6 +11,7 @@
 #define NRF_CS_MAX_PAIRS 10U
 #define NRF_UPSTREAM_SENSOR_VALID_ENV 0x02U
 #define NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED 2U
+#define NRF_UPSTREAM_ORIENTATION_STATE_MOVING 1U
 #define NRF_TOPOLOGY_RANGING_DEFAULT_TIMEOUT_MS 30000U
 #define NRF_TOPOLOGY_RANGING_FAILURE_REASON_SIZE 48U
 
@@ -144,6 +145,11 @@ typedef struct {
 typedef uint8_t nrf_cs_node_id_t;
 
 typedef struct {
+    uint16_t main_height_reference_generation;
+    uint64_t timestamp_ms;
+} nrf_topology_ranging_result_t;
+
+typedef struct {
     nrf_cs_node_id_t node_id;
     bool solved;
     int32_t x_mm;
@@ -192,6 +198,11 @@ esp_err_t nrf_topology_service_ranging_start_autonomous_limited(const nrf_cs_pol
 esp_err_t nrf_topology_service_ranging_get_progress(
     nrf_topology_ranging_progress_t *progress);
 esp_err_t nrf_topology_service_invalidate_ranging(void);
+esp_err_t nrf_topology_service_accept_ranging_result(
+    const char *object_id, const nrf_topology_snapshot_t *topology, uint64_t updated_at_ms);
+esp_err_t nrf_topology_service_get_accepted_ranging_result(
+    const char *object_id, const nrf_topology_snapshot_t *topology, uint64_t now_ms,
+    nrf_topology_ranging_result_t *result);
 esp_err_t nrf_topology_service_ranging_cancel(void);
 esp_err_t nrf_topology_service_ranging_set_manual(uint64_t started, uint64_t updated,
     uint8_t a, uint8_t b, int32_t distance, const uint32_t *limits);

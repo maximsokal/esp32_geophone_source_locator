@@ -93,6 +93,30 @@ bool nrf_geometry_triangle_bounds(
     nrf_cs_node_id_t node_b,
     nrf_geometry_edge_bounds_t *bounds);
 
+/*
+ * Cuts the upper end of an interval with a limit that does not come from the triangles, for instance a cable: the side
+ * cannot be longer than the cable plus the measurement resolution however loosely the witnesses bound it. A negative
+ * cap is no limit. The interval turns contradictory when the lower end now lies above the upper one.
+ */
+void nrf_geometry_edge_bounds_cap(nrf_geometry_edge_bounds_t *bounds, int32_t cap_mm);
+
+/*
+ * Size of a layout in 3D: the surface area of the convex hull of the solved positions, in mm^2 - the sum of the areas of the
+ * triangles that close the body the devices span. X and Y come from the Bluetooth distances, Z from the barometers. A flat
+ * layout counts both of its faces, so a 5 m square is 2 * 25 m^2. Fewer than three points, or points on one line, give 0.
+ * Interior points do not matter. Saturates at INT64_MAX.
+ */
+int64_t nrf_geometry_hull_surface_area_mm2(const int32_t *x_mm, const int32_t *y_mm, const int32_t *z_mm, size_t count);
+
+/*
+ * The largest value of that area for `vertex_count` points (MAIN included) that all lie within `radius_mm` of the MAIN node:
+ * the best polyhedron inscribed in the sphere of that radius, which for 3, 4, 5, 6 vertices is the flat triangle
+ * (2.598 R^2), the regular tetrahedron (4.619 R^2), the triangular bipyramid (5.809 R^2) and the octahedron (6.928 R^2).
+ * More points cannot beat the sphere itself, 4 pi R^2. The hull of points in a ball is inside the ball and so is its surface
+ * (Cauchy), and moving a vertex outward only grows it, so no layout within the cables can exceed the value.
+ */
+int64_t nrf_geometry_max_hull_surface_area_mm2(size_t vertex_count, int32_t radius_mm);
+
 const char *nrf_geometry_triangle_status_name(nrf_geometry_triangle_status_t status);
 
 #ifdef __cplusplus

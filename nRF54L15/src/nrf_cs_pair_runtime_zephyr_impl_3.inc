@@ -609,6 +609,18 @@ int nrf_cs_pair_runtime_zephyr_execute(
     return 0;
 }
 
+bool nrf_cs_pair_runtime_zephyr_incoming_idle_ms(uint32_t *idle_ms)
+{
+    /* Only a link that is down and fully handled counts as silent; while one is up, or its disconnect is still queued
+     * for the worker, the release reason may yet arrive. */
+    if (idle_ms == NULL || atomic_get(&s_incoming_activity_seen) == 0 || s_incoming_conn != NULL ||
+        atomic_get(&s_incoming_disconnect_pending) != 0) {
+        return false;
+    }
+    *idle_ms = k_uptime_get_32() - (uint32_t)atomic_get(&s_incoming_activity_ms);
+    return true;
+}
+
 bool nrf_cs_pair_runtime_zephyr_is_busy(void)
 {
     return atomic_get(&s_execute_pending) != 0 || nrf_cs_pair_adapter_is_active(&s_adapter) ||

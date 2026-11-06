@@ -155,6 +155,7 @@ static uint32_t s_frozen_main_sample_ms;
 static const char *s_fake_object_id = "object-a";
 static bool s_placement_ready;
 static nrf_topology_ranging_progress_t s_ranging_progress;
+static bool s_accepted_setup_available;
 static nrf_topology_ranging_progress_t s_manual_progress;
 static esp_err_t s_manual_result;
 static unsigned s_manual_calls;
@@ -473,6 +474,22 @@ esp_err_t nrf_topology_service_invalidate_ranging(void)
     return ESP_OK;
 }
 
+esp_err_t nrf_topology_service_accept_ranging_result(
+    const char *object_id, const nrf_topology_snapshot_t *topology, uint64_t updated_at_ms)
+{
+    (void)updated_at_ms;
+    return object_id != NULL && topology != NULL ? ESP_OK : ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t nrf_topology_service_get_accepted_ranging_result(
+    const char *object_id, const nrf_topology_snapshot_t *topology, uint64_t now_ms,
+    nrf_topology_ranging_result_t *result)
+{
+    (void)object_id; (void)topology; (void)now_ms;
+    memset(result, 0, sizeof(*result));
+    return s_accepted_setup_available ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t nrf_topology_service_ranging_cancel(void)
 {
     return ESP_OK;
@@ -562,6 +579,7 @@ static bool placement_ready(void *context)
 
 static void reset_fakes(bool active_object, measurement_service_state_t state, size_t assigned)
 {
+    s_accepted_setup_available = true;
     workflow_service_shutdown();
     workflow_host_rtos_reset_ticks();
     workflow_service_host_fakes_reset();
@@ -1141,6 +1159,91 @@ static void enter_record_ready(void)
     assert(command(WORKFLOW_COMMAND_SCAN_SKIP, false, false) == WORKFLOW_COMMAND_RESULT_OK);
 }
 
+static void test_detected_motion_invalidates_confirmed_setup(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    enter_record_ready();
+    s_now_ms += 2000U;
+    s_cache[0].identity_valid = true;
+    s_cache[0].identity.node_id = s_topology.remotes[0].node_id;
+    s_cache[0].topology_current = true;
+    s_cache[0].response_valid = true;
+    s_cache[0].esp_receipt_uptime_ms = s_now_ms;
+    s_cache[0].sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_MOVING;
+    workflow_snapshot_t snapshot;
+    assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
+    assert(snapshot.step == WORKFLOW_STEP_LAYOUT_READY);
+    assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_START_RECORDING)) == 0U);
+    assert(s_start_calls == 0U);
+    workflow_service_shutdown();
+}
+
+static void test_changed_setup_is_rejected_before_recording_start(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    enter_record_ready();
+    s_accepted_setup_available = false;
+    workflow_snapshot_t before = try_snapshot();
+    workflow_command_params_t stale = {.has_generation = true, .expected_generation = before.generation - 1U};
+    assert(command_with_params(WORKFLOW_COMMAND_START_RECORDING, &stale) == WORKFLOW_COMMAND_RESULT_STALE);
+    assert(try_snapshot().step == WORKFLOW_STEP_RECORD_READY);
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(s_start_calls == 0U);
+    const workflow_snapshot_t snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_LAYOUT_READY);
+    assert(strcmp(snapshot.reason, "geometry_changed") == 0);
+    workflow_service_shutdown();
+}
+
+static void test_stop_flush_gate(unsigned scenario)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    enter_record_ready();
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(command(WORKFLOW_COMMAND_STOP_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_measurement.state == MEASUREMENT_SERVICE_STOPPING);
+    if (scenario == 3U) {
+        s_measurement.state = MEASUREMENT_SERVICE_ERROR;
+        s_measurement.stop_stage_error = ESP_ERR_INVALID_STATE;
+        assert(workflow_service_poll() == ESP_OK);
+    }
+    const workflow_snapshot_t snapshot = try_snapshot();
+    if (scenario == 1U) {
+        assert(snapshot.step == WORKFLOW_STEP_STOPPING);
+        assert(strcmp(snapshot.session_id, "session-1") == 0);
+        assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CALCULATE_SOURCES)) == 0U);
+        assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+        assert(command(WORKFLOW_COMMAND_RECORD_AGAIN, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+        assert(command(WORKFLOW_COMMAND_DELETE_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+        assert(command(WORKFLOW_COMMAND_MOVE_SENSORS, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+        assert(command(WORKFLOW_COMMAND_STOP_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+        assert(s_stop_calls == 1U);
+        s_measurement.state = MEASUREMENT_SERVICE_REVIEW;
+        assert(workflow_service_poll() == ESP_OK);
+        const workflow_snapshot_t finished = try_snapshot();
+        assert(finished.step == WORKFLOW_STEP_STOPPED);
+        assert(strcmp(finished.session_id, "session-1") == 0);
+        assert((finished.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CALCULATE_SOURCES)) != 0U);
+    } else if (scenario == 2U) {
+        assert(snapshot.calc_settings_ready);
+        assert(command(WORKFLOW_COMMAND_CALCULATE_SOURCES, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+        assert(workflow_test_job_submit_calls == 0U);
+    } else if (scenario == 3U) {
+        assert(snapshot.step == WORKFLOW_STEP_RECORD_ERROR);
+        assert(strcmp(snapshot.reason, "recording_error:ESP_ERR_INVALID_STATE") == 0);
+        assert((snapshot.allowed_actions & WORKFLOW_ACTION(WORKFLOW_COMMAND_CALCULATE_SOURCES)) == 0U);
+    } else {
+        const unsigned scan_calls = workflow_test_scan_calls;
+        assert(workflow_service_poll() == ESP_OK);
+        assert(workflow_test_scan_calls == scan_calls);
+    }
+    workflow_service_shutdown();
+}
+
 static void test_reconciliation_review_error_and_async_recording_commands(void)
 {
     reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
@@ -1172,7 +1275,7 @@ static void test_reconciliation_review_error_and_async_recording_commands(void)
     assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
     s_measurement.state = MEASUREMENT_SERVICE_ERROR;
     assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
-    assert(snapshot.step == WORKFLOW_STEP_STOPPED);
+    assert(snapshot.step == WORKFLOW_STEP_RECORD_ERROR);
     assert(strcmp(snapshot.reason, "recording_error") == 0);
 
     assert(command(WORKFLOW_COMMAND_RECORD_AGAIN, false, false) == WORKFLOW_COMMAND_RESULT_OK);
@@ -1180,15 +1283,18 @@ static void test_reconciliation_review_error_and_async_recording_commands(void)
     assert(command(WORKFLOW_COMMAND_STOP_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
     assert(s_stop_calls == 1U);
     assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
-    assert(snapshot.step == WORKFLOW_STEP_STOPPED);
+    assert(snapshot.step == WORKFLOW_STEP_STOPPING);
     assert(s_measurement.state == MEASUREMENT_SERVICE_STOPPING);
+    assert(command(WORKFLOW_COMMAND_STOP_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_stop_calls == 1U);
     s_measurement.state = MEASUREMENT_SERVICE_ERROR;
     assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
-    assert(snapshot.step == WORKFLOW_STEP_STOPPED);
+    assert(snapshot.step == WORKFLOW_STEP_RECORD_ERROR);
     assert(strcmp(snapshot.reason, "recording_error") == 0);
 
-    assert(command(WORKFLOW_COMMAND_DELETE_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
-    assert(s_delete_calls == 1U);
+    assert(command(WORKFLOW_COMMAND_DELETE_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(s_delete_calls == 0U);
+    assert(command(WORKFLOW_COMMAND_RECORD_AGAIN, false, false) == WORKFLOW_COMMAND_RESULT_OK);
     assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
     assert(snapshot.step == WORKFLOW_STEP_RECORD_READY);
     workflow_service_shutdown();
@@ -1937,6 +2043,169 @@ static void test_remote_brief_outage_pauses_samples_until_fresh(void)
     assert(placement_node(&snapshot, "G2")->sample_count == 8U);
     assert(placement_node(&snapshot, "G2")->stable);
     workflow_service_shutdown();
+}
+
+typedef struct {
+    unsigned max_count;
+    unsigned first_stable_ms;
+    unsigned polls_after_first_stable;
+    unsigned unstable_polls_after_first_stable;
+    unsigned min_count_after_first_stable;
+    unsigned resets;
+} cadence_result_t;
+
+/* The remotes refresh with the given gaps (repeated); G2 can be lifted by `step_mm` at `step_at_ms`. */
+static cadence_result_t run_remote_cadence(
+    const unsigned *gaps, size_t gap_count, unsigned duration_ms, unsigned step_at_ms, int32_t step_mm,
+    unsigned *count_after_step_out, bool *stable_right_after_step_out)
+{
+    begin_placement_without_samples(3U);
+    cadence_result_t result = {.min_count_after_first_stable = UINT32_MAX};
+    uint64_t next_refresh = s_now_ms + gaps[0];
+    size_t gap_index = 0U;
+    unsigned previous_count = 0U;
+    const uint64_t origin = s_now_ms;
+    int32_t offset_mm = 0;
+    for (unsigned elapsed = 0U; elapsed < duration_ms; elapsed += 100U) {
+        s_now_ms += 100U;
+        if (step_at_ms != 0U && elapsed == step_at_ms) offset_mm = step_mm;
+        if (s_now_ms >= next_refresh) {
+            feed_remote_sensor_refresh(offset_mm);
+            gap_index = (gap_index + 1U) % gap_count;
+            next_refresh = s_now_ms + gaps[gap_index];
+        }
+        assert(workflow_service_poll() == ESP_OK);
+        const workflow_snapshot_t snapshot = try_snapshot();
+        const workflow_placement_node_t *node = placement_node(&snapshot, "G2");
+        if (node->sample_count > result.max_count) result.max_count = node->sample_count;
+        if (node->sample_count == 0U && previous_count > 0U) ++result.resets;
+        if (result.first_stable_ms == 0U && node->stable) result.first_stable_ms = elapsed + 100U;
+        if (result.first_stable_ms != 0U && elapsed + 100U > result.first_stable_ms) {
+            ++result.polls_after_first_stable;
+            if (!node->stable) ++result.unstable_polls_after_first_stable;
+            if (node->sample_count < result.min_count_after_first_stable) {
+                result.min_count_after_first_stable = node->sample_count;
+            }
+        }
+        if (step_at_ms != 0U && elapsed == step_at_ms) {
+            if (count_after_step_out != NULL) *count_after_step_out = node->sample_count;
+            if (stable_right_after_step_out != NULL) *stable_right_after_step_out = node->stable;
+        }
+        previous_count = node->sample_count;
+    }
+    workflow_service_shutdown();
+    return result;
+}
+
+/* 2026-11-05 hardware: 7/8 fell back to 5/8 minutes after the start. The 20 s window evicted samples by age alone,
+ * so a node refreshing slower than window / 7 gaps (about 2.9 s) could never collect 8 and one refreshing at about
+ * 2.4 s flapped between 7 and 9 samples. The newest 8 are kept while the node is still current. */
+static void test_slow_remote_refresh_still_collects_eight_samples(void)
+{
+    const unsigned gaps_3s[] = {3000U};
+    const cadence_result_t slow = run_remote_cadence(gaps_3s, 1U, 180000U, 0U, 0, NULL, NULL);
+    assert(slow.max_count >= 8U);
+    assert(slow.first_stable_ms != 0U && slow.first_stable_ms <= 30000U);
+    assert(slow.unstable_polls_after_first_stable == 0U);
+    assert(slow.min_count_after_first_stable >= 8U);
+    assert(slow.resets == 0U);
+
+    const unsigned gaps_4s[] = {4000U};   /* 7 gaps = 28 s, still inside the bound of a node refreshed every <= 5 s */
+    const cadence_result_t slower = run_remote_cadence(gaps_4s, 1U, 180000U, 0U, 0, NULL, NULL);
+    assert(slower.max_count >= 8U && slower.first_stable_ms != 0U);
+    assert(slower.unstable_polls_after_first_stable == 0U);
+}
+
+static void test_uneven_remote_refresh_does_not_flap_the_sample_count(void)
+{
+    const unsigned mixed[] = {2000U, 2000U, 2000U, 2000U, 4500U};
+    const cadence_result_t result = run_remote_cadence(mixed, 5U, 240000U, 0U, 0, NULL, NULL);
+    assert(result.first_stable_ms != 0U);
+    assert(result.min_count_after_first_stable >= 8U);          /* never 7/8 or 5/8 again with unchanged data */
+    assert(result.unstable_polls_after_first_stable == 0U);
+    assert(result.resets == 0U);
+}
+
+/* Keeping old samples must not hide a real movement: a 300 mm lift at the slow cadence is not stable at once. */
+static void test_slow_remote_refresh_still_notices_a_real_movement(void)
+{
+    const unsigned gaps_3s[] = {3000U};
+    unsigned count_after_step = 0U;
+    bool stable_after_step = true;
+    unsigned recovered_at = 0U;
+    (void)recovered_at;
+    const cadence_result_t result = run_remote_cadence(gaps_3s, 1U, 180000U, 60000U, 300, &count_after_step, &stable_after_step);
+    assert(result.first_stable_ms != 0U && result.first_stable_ms < 60000U);
+    /* Right after the lift the window is still full of the old height: the new reading must break the stability. */
+    assert(count_after_step >= 8U);
+    assert(result.unstable_polls_after_first_stable > 0U);
+    assert(result.unstable_polls_after_first_stable < result.polls_after_first_stable);   /* and it settles again */
+}
+
+typedef struct {
+    unsigned detected_ms;            /* lift -> first non-stable poll */
+    unsigned restable_ms;            /* lift -> stable again */
+    bool wrong_height_reported_stable;
+    int32_t final_centre_mm;
+    bool stable_at_end;
+} lift_result_t;
+
+/* G2 is moved by `step_mm` at 40 s into a placement that has been stable since ~16 s, at the nominal 2 s refresh. */
+static lift_result_t run_remote_lift(int32_t step_mm, int32_t noise_mm)
+{
+    begin_placement_without_samples(3U);
+    s_feed_noise_amplitude_mm = noise_mm;
+    uint64_t next_refresh = s_now_ms + 2000U;
+    int32_t offset_mm = 0;
+    const unsigned lift_at = 40000U;
+    lift_result_t result = {0};
+    bool was_stable = false;
+    for (unsigned elapsed = 0U; elapsed < 100000U; elapsed += 100U) {
+        s_now_ms += 100U;
+        if (elapsed == lift_at) offset_mm = step_mm;
+        if (s_now_ms >= next_refresh) {
+            feed_remote_sensor_refresh(offset_mm);
+            next_refresh = s_now_ms + 2000U;
+        }
+        assert(workflow_service_poll() == ESP_OK);
+        const workflow_snapshot_t snapshot = try_snapshot();
+        const workflow_placement_node_t *node = placement_node(&snapshot, "G2");
+        if (elapsed < lift_at) {
+            was_stable = node->stable;
+            continue;
+        }
+        assert(was_stable);                                   /* it was stable before the lift */
+        const unsigned since = elapsed - lift_at;
+        if (result.detected_ms == 0U && !node->stable) result.detected_ms = since;
+        if (result.detected_ms != 0U && result.restable_ms == 0U && node->stable) result.restable_ms = since;
+        const int32_t true_mm = 200 + step_mm;                /* G2 reads 200 mm above MAIN, plus the lift */
+        const int32_t error_mm = node->height_rel_main_mm - true_mm;
+        /* Once the move was noticed, a stable verdict must carry the new height. */
+        if (result.detected_ms != 0U && node->stable && (error_mm > 100 || error_mm < -100)) {
+            result.wrong_height_reported_stable = true;
+        }
+        result.final_centre_mm = node->height_rel_main_mm;
+        result.stable_at_end = node->stable;
+    }
+    s_feed_noise_amplitude_mm = 0;
+    workflow_service_shutdown();
+    return result;
+}
+
+/* Operator lifts one REMOTE by 0.5 m and then 1 m (and lowers it): the move is noticed within two refresh periods,
+ * the node is never reported stable at a height that is off by more than 0.1 m after that, and it settles on the new
+ * height once the window holds the new readings. */
+static void test_remote_lift_is_noticed_and_resettles_on_the_new_height(void)
+{
+    const int32_t steps[] = {500, 1000, -500};
+    for (size_t i = 0U; i < sizeof(steps) / sizeof(steps[0]); ++i) {
+        const lift_result_t r = run_remote_lift(steps[i], 30);
+        assert(r.detected_ms != 0U && r.detected_ms <= 4500U);
+        assert(!r.wrong_height_reported_stable);
+        assert(r.restable_ms != 0U && r.restable_ms <= 30000U);
+        assert(r.stable_at_end);
+        assert(r.final_centre_mm > 200 + steps[i] - 60 && r.final_centre_mm < 200 + steps[i] + 60);
+    }
 }
 
 static void test_remote_history_resets_on_expiry_or_confirmed_change(void)
@@ -2809,6 +3078,19 @@ static void test_workflow_poll_overrun_skips_expired_slots(void)
 
 int main(void)
 {
+    if (getenv("P2_MOTION") != NULL) {
+        test_detected_motion_invalidates_confirmed_setup();
+        return 0;
+    }
+    if (getenv("P2_CHANGED_SETUP") != NULL) {
+        test_changed_setup_is_rejected_before_recording_start();
+        return 0;
+    }
+    const char *flush_scenario = getenv("P1_FLUSH_SCENARIO");
+    if (flush_scenario != NULL) {
+        test_stop_flush_gate((unsigned)strtoul(flush_scenario, NULL, 10));
+        return 0;
+    }
 #ifdef MAX449_CASE
 #if MAX449_CASE == 4
     test_low_remote_calibration_timeout_and_pair_counts();
@@ -2823,6 +3105,12 @@ int main(void)
 #error "unknown MAX449_CASE for workflow_service_test"
 #endif
 #else
+    test_stop_flush_gate(1U);
+    test_stop_flush_gate(2U);
+    test_stop_flush_gate(3U);
+    test_stop_flush_gate(4U);
+    test_detected_motion_invalidates_confirmed_setup();
+    test_changed_setup_is_rejected_before_recording_start();
     test_sensor_check_requests_barometer_before_calibration();
     test_phone_and_tft_workflow_views_share_step_and_generation();
     test_tft_custom_range_is_persisted_and_auto_omits_it();
@@ -2852,6 +3140,10 @@ int main(void)
     test_remote_snapshot_arriving_during_poll_keeps_history();
     test_remote_brief_outage_pauses_samples_until_fresh();
     test_remote_history_resets_on_expiry_or_confirmed_change();
+    test_slow_remote_refresh_still_collects_eight_samples();
+    test_uneven_remote_refresh_does_not_flap_the_sample_count();
+    test_slow_remote_refresh_still_notices_a_real_movement();
+    test_remote_lift_is_noticed_and_resettles_on_the_new_height();
     test_remote_missing_environment_pauses_samples();
     test_main_does_not_count_repeated_cached_conversion();
     test_placement_reports_why_each_node_is_not_stable_and_logs_the_readings();

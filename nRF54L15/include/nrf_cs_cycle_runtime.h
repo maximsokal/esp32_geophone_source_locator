@@ -40,6 +40,14 @@ extern "C" {
  */
 #define NRF_CS_CYCLE_RELEASE_REASON 0x15U
 #define NRF_CS_CYCLE_RELAY_SETTLE_MS 150U
+/*
+ * A release that cannot be sent: an attempt that fails because the peer drops the link (a refused or aborted pairing)
+ * leaves the initiator nothing to carry NRF_CS_CYCLE_RELEASE_REASON on. The node on the other end then infers the end
+ * of the execution from silence: no initiator can be mid-attempt for longer than one pair timeout plus the pause
+ * between attempts, so a link that stays down this much longer than that (plus this margin for tick jitter) is not
+ * followed by another attempt of the same execution.
+ */
+#define NRF_CS_CYCLE_SILENCE_MARGIN_MS 500U
 /* Time after the last window before the ESP32 may stop waiting. */
 #define NRF_CS_CYCLE_TOTAL_MARGIN_MS 3000U
 /* The BLE side was busy when an attempt was due; try again after this long (not a failed attempt). */
@@ -50,6 +58,12 @@ extern "C" {
  * local finish and the planned end of all execution windows, so normal STATUS reads work again.
  */
 #define NRF_CS_CYCLE_REPLY_HOLD_MS 120000U
+
+/* How long an incoming link must stay down before the end of the execution is inferred (see above). */
+static inline uint32_t nrf_cs_cycle_silence_ms(uint32_t pair_timeout_ms)
+{
+    return pair_timeout_ms + NRF_CS_CYCLE_ATTEMPT_GAP_MS + NRF_CS_CYCLE_SILENCE_MARGIN_MS;
+}
 
 /* Length of one execution window for a policy; ESP32 and nodes must agree on it. */
 static inline uint32_t nrf_cs_cycle_window_ms(uint16_t pair_timeout_ms, uint8_t samples_per_pair, uint8_t max_attempts)
@@ -107,6 +121,7 @@ typedef struct {
     bool relay;                 /* every execution starts at the node the previous one measured */
     uint8_t last_role;          /* last execution this node takes part in, either way; 0xFF if none */
     uint32_t released_mask;     /* bit e: as reflector of e this node saw the initiator let go */
+    uint64_t release_floor_ms;  /* GO, or the last release: link activity up to here belongs to a closed duty */
     uint32_t closed_mask;       /* bit e: this node's own execution e is over */
     uint64_t window_deadline_ms;
 
@@ -148,6 +163,14 @@ int nrf_cs_cycle_runtime_step_done(nrf_cs_cycle_runtime_t *rt, const nrf_cs_step
  * was the reflector of is over. Safe to call at any time; ignored when no cycle runs or it is not a relay plan.
  */
 void nrf_cs_cycle_runtime_peer_released(nrf_cs_cycle_runtime_t *rt);
+
+/*
+ * The incoming link of this node has been down for idle_ms, counted from its last activity, and nothing connected since.
+ * When that is longer than nrf_cs_cycle_silence_ms() and the activity came after the last release (so it belongs to the duty
+ * that is still open), the initiator will not be back: the release it could not send is inferred and handled exactly like
+ * nrf_cs_cycle_runtime_peer_released(). Safe to call every tick; ignored when no relay cycle runs.
+ */
+void nrf_cs_cycle_runtime_peer_silent(nrf_cs_cycle_runtime_t *rt, uint32_t idle_ms);
 
 /*
  * Whether the attempt that is running now ends the execution if it finishes with `measurement` (the same stop rule as

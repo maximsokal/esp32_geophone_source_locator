@@ -230,6 +230,8 @@ static bool s_ranging_progress_valid = false;
 static EXT_RAM_BSS_ATTR nrf_topology_ranging_progress_t s_ranging_progress;
 static bool s_frozen_ranging_result_valid = false;
 static EXT_RAM_BSS_ATTR nrf_topology_ranging_result_t s_frozen_ranging_result;
+static char s_accepted_ranging_object[32];
+static uint64_t s_accepted_ranging_revision;
 static nrf_topology_worker_state_t s_worker_state;
 static EXT_RAM_BSS_ATTR nrf_cs_cycle_collected_t s_cycle_collected;
 static nrf_topology_log_state_t s_topology_log_state;
@@ -1436,7 +1438,9 @@ static esp_err_t platform_log_begin_node(void *context, uint8_t node_index)
         sensor_bus_probe_diag_defer_output();
     } else {
         platform->log_node_active = false;
-        if (err == SENSOR_BUS_ERR_MUTEX_BUSY) platform_log_owner_busy(platform, "nrf_log");
+        /* try_acquire never waits: a taken bus is a skipped turn (rate-limited TCA_FAULT_SKIPPED), not a timeout.
+         * platform_log_owner_busy() reports it as an I2C_TIMEOUT_DIAG, which this non-blocking attempt is not. */
+        if (err == SENSOR_BUS_ERR_MUTEX_BUSY) platform_log_tca_state(platform, true);
         return err;
     }
     if (node_index == 0U) {
@@ -2589,7 +2593,8 @@ static void cs_publish(nrf_topology_worker_state_t *worker, bool active, int res
             if (limit == 0U || remote->state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
             if (((out->node_a == worker->snapshot.main.node_id && out->node_b == remote->node_id) ||
                  (out->node_b == worker->snapshot.main.node_id && out->node_a == remote->node_id)) &&
-                out->distance_mm > 0 && (uint32_t)out->distance_mm > limit) {
+                out->distance_mm > 0 &&
+                nrf_topology_pair_exceeds_cable(out->distance_mm, limit, out->scheduler_quality_flags)) {
                 out->state = NRF_CS_PAIR_CABLE_EXCEEDED;
             }
         }
@@ -2770,8 +2775,11 @@ static nrf_geometry_result_t service_ranging_solve(
             const nrf_topology_ranging_node_t *node = &geometry->nodes[i];
             const double radius2 = (double)node->x_mm * node->x_mm +
                 (double)node->y_mm * node->y_mm + (double)node->z_mm * node->z_mm;
-            /* XYZ is rounded to integer mm; allow at most one mm of norm rounding. */
-            if (radius2 > ((double)limit + 1.0) * ((double)limit + 1.0)) {
+            /* XYZ is rounded to integer mm; a node may also lie as far past the cable as its own measured MAIN edge. */
+            const double bound = (double)limit + (double)nrf_topology_cable_radius_allowance_mm(
+                worker->cs_cycle_snapshot.pairs, worker->cs_cycle_snapshot.pair_count,
+                NRF_TOPOLOGY_MAIN_NODE_ID, node->node_id, limit);
+            if (radius2 > bound * bound) {
                 geometry->nodes[i].solved = false;
                 geometry->nodes[i].uncertainty_mm = INT32_MAX;
             }
@@ -3056,6 +3064,7 @@ static void service_ranging_finish(
         portENTER_CRITICAL(&s_state_lock);
         s_frozen_ranging_result = result;
         s_frozen_ranging_result_valid = true;
+        s_accepted_ranging_object[0] = '\0';
         portEXIT_CRITICAL(&s_state_lock);
     }
     service_ranging_publish_progress(worker);
@@ -3066,6 +3075,58 @@ static void service_ranging_finish(
  * are judged. Every complete triangle is logged with its excess; the sides that failed get the interval the good sides
  * leave them. Invalid edges remain diagnostic; only a sufficiently constrained valid graph may exclude them from admission.
  */
+/* The cable of an assigned remote in mm, 0 when the node is MAIN, unknown, or has no cable limit in this cycle. */
+static uint32_t service_node_cable_limit_mm(const nrf_topology_worker_state_t *worker, uint8_t node_id)
+{
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (worker->snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED &&
+            worker->snapshot.remotes[channel].node_id == node_id) {
+            return worker->ranging_cable_limits_mm[channel];
+        }
+    }
+    return 0U;
+}
+
+/*
+ * Diagnostic only: the size of the solved layout in 3D (X and Y from the Bluetooth distances, Z from the barometers) against
+ * the largest one the cables allow. It is the surface of the convex hull of the positions, the sum of the areas of the
+ * triangles closing the body; a flat layout counts both faces. Every point is at most its cable from MAIN, so the hull lies
+ * in the sphere of the longest cable and cannot exceed the best polyhedron inscribed in it (4 points: the tetrahedron,
+ * 4.62 R^2; 5 points: the bipyramid, 5.81 R^2). Nothing is rejected here; a layout beyond it points at a wrong edge or a
+ * wrong cable length, which the per-node cable check already names.
+ */
+static void service_ranging_log_footprint(const nrf_topology_worker_state_t *worker)
+{
+    const nrf_topology_ranging_progress_t *progress = &worker->ranging_progress;
+    int32_t x[NRF_GEOMETRY_MAX_NODES], y[NRF_GEOMETRY_MAX_NODES], z[NRF_GEOMETRY_MAX_NODES];
+    size_t count = 0U, remotes = 0U;
+    uint32_t longest_cable_mm = 0U;
+
+    for (size_t i = 0U; i < progress->geometry.node_count && count < NRF_GEOMETRY_MAX_NODES; ++i) {
+        const nrf_topology_ranging_node_t *node = &progress->geometry.nodes[i];
+        if (!node->solved) continue;
+        x[count] = node->x_mm;
+        y[count] = node->y_mm;
+        z[count] = node->z_mm;
+        ++count;
+        if (node->node_id != worker->snapshot.main.node_id) {
+            ++remotes;
+            const uint32_t cable = service_node_cable_limit_mm(worker, node->node_id);
+            if (cable > longest_cable_mm) longest_cable_mm = cable;
+        }
+    }
+    if (remotes < 2U || longest_cable_mm == 0U) return;
+    const int32_t radius_mm = (int32_t)(longest_cable_mm > (uint32_t)(INT32_MAX - 1 - (int32_t)NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM)
+        ? (uint32_t)(INT32_MAX - 1 - (int32_t)NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM)
+        : longest_cable_mm) + 1 + (int32_t)NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM;
+    const int64_t area_mm2 = nrf_geometry_hull_surface_area_mm2(x, y, z, count);
+    const int64_t max_mm2 = nrf_geometry_max_hull_surface_area_mm2(count, radius_mm);
+    ESP_LOGI(
+        TAG,
+        "RANGING_AREA nodes=%u area3d_mm2=%lld max3d_mm2=%lld radius_mm=%d within=%u",
+        (unsigned)count, (long long)area_mm2, (long long)max_mm2, (int)radius_mm, area_mm2 <= max_mm2 ? 1U : 0U);
+}
+
 static bool service_ranging_check_triangles(nrf_topology_worker_state_t *worker, uint64_t now_ms)
 {
     nrf_topology_ranging_progress_t *progress = &worker->ranging_progress;
@@ -3088,8 +3149,15 @@ static bool service_ranging_check_triangles(nrf_topology_worker_state_t *worker,
         nrf_geometry_edge_bounds_t bounds;
         if (!nrf_geometry_triangle_pair_usable(pair) &&
             nrf_geometry_triangle_bounds(
-                progress->pairs, progress->pair_count, &report, pair->node_a, pair->node_b, &bounds) &&
-            bounds.witnesses > 0U) {
+                progress->pairs, progress->pair_count, &report, pair->node_a, pair->node_b, &bounds)) {
+            /* The cables bound an edge as well: a device is at most its cable (plus one bin) from MAIN. */
+            const int64_t cable_cap = nrf_topology_edge_cable_cap_mm(
+                pair->node_a == worker->snapshot.main.node_id, pair->node_b == worker->snapshot.main.node_id,
+                service_node_cable_limit_mm(worker, pair->node_a), service_node_cable_limit_mm(worker, pair->node_b));
+            if (cable_cap >= 0) {
+                nrf_geometry_edge_bounds_cap(&bounds, cable_cap > INT32_MAX ? INT32_MAX : (int32_t)cable_cap);
+            }
+            if (bounds.witnesses == 0U && cable_cap < 0) continue;
             ESP_LOGI(
                 TAG,
                 "RANGING_BOUND %u-%u lower_mm=%d upper_mm=%d witnesses=%u contradictory=%u",
@@ -3097,6 +3165,7 @@ static bool service_ranging_check_triangles(nrf_topology_worker_state_t *worker,
                 (unsigned)bounds.witnesses, bounds.contradictory ? 1U : 0U);
         }
     }
+    service_ranging_log_footprint(worker);
     if (report.inconsistent_count == 0U) {
         return false;
     }
@@ -3819,6 +3888,7 @@ esp_err_t nrf_topology_service_start(void)
     s_cs_disabled = false;
     s_ranging_progress_valid = false;
     s_frozen_ranging_result_valid = false;
+    s_accepted_ranging_object[0] = '\0';
     memset(&s_snapshot, 0, sizeof(s_snapshot));
     memset(s_sensor_cache, 0, sizeof(s_sensor_cache));
     memset(&s_main_status_cache, 0, sizeof(s_main_status_cache));
@@ -4726,7 +4796,8 @@ esp_err_t nrf_topology_service_ranging_set_manual(
             }
         }
         if (matched != 2U || (pair->state == NRF_CS_PAIR_VALID &&
-            (pair->distance_mm < 0 || (uint64_t)pair->distance_mm > maximum))) {
+            (pair->distance_mm < 0 ||
+             nrf_topology_pair_exceeds_cable(pair->distance_mm, maximum, pair->scheduler_quality_flags)))) {
             if (pair == edited) { free(scratch); return ESP_ERR_INVALID_ARG; }
             pair->state = NRF_CS_PAIR_CABLE_EXCEEDED;
         }
@@ -4767,7 +4838,9 @@ esp_err_t nrf_topology_service_ranging_set_manual(
             if (node->node_id != NRF_TOPOLOGY_MAIN_NODE_ID && inputs[n].node_id == node->node_id) {
                 const double radius2 = (double)node->x_mm * node->x_mm +
                     (double)node->y_mm * node->y_mm + (double)node->z_mm * node->z_mm;
-                if (radius2 > ((double)node_limits[n] + 1.0) * ((double)node_limits[n] + 1.0)) {
+                const double bound = (double)node_limits[n] + (double)nrf_topology_cable_radius_allowance_mm(
+                    result->pairs, result->pair_count, NRF_TOPOLOGY_MAIN_NODE_ID, node->node_id, node_limits[n]);
+                if (radius2 > bound * bound) {
                     dest->solved = false;
                     dest->uncertainty_mm = INT32_MAX;
                     (void)snprintf(progress->failure_reason, sizeof(progress->failure_reason),
@@ -4802,6 +4875,7 @@ esp_err_t nrf_topology_service_ranging_set_manual(
     if (unchanged) {
         s_frozen_ranging_result = *result;
         s_ranging_progress = *progress;
+        s_accepted_ranging_object[0] = '\0';
     }
     portEXIT_CRITICAL(&s_state_lock);
     free(scratch);
@@ -4845,9 +4919,68 @@ esp_err_t nrf_topology_service_get_reusable_frozen_ranging_result(
     return valid ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
+esp_err_t nrf_topology_service_accept_ranging_result(
+    const char *object_id, const nrf_topology_snapshot_t *current_topology, uint64_t expected_updated_at_ms)
+{
+    if (object_id == NULL || object_id[0] == '\0' ||
+        strlen(object_id) >= sizeof(s_accepted_ranging_object) || current_topology == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const size_t object_id_length = strlen(object_id);
+    portENTER_CRITICAL(&s_state_lock);
+    bool valid = s_frozen_ranging_result_valid && s_frozen_ranging_result.success &&
+        !s_frozen_ranging_result.invalidated && s_ranging_progress_valid &&
+        s_ranging_progress.complete && s_ranging_progress.success && !s_ranging_active &&
+        !s_cs_request_pending && s_ranging_progress.updated_at_ms == expected_updated_at_ms &&
+        s_frozen_ranging_result.pair_count <= NRF_CS_MAX_PAIRS && s_snapshot_valid &&
+        !s_snapshot.stale && !current_topology->stale &&
+        service_ranging_membership_matches(&s_frozen_ranging_result, current_topology) &&
+        service_ranging_membership_matches(&s_frozen_ranging_result, &s_snapshot);
+    for (size_t i = 0U; valid && i < s_frozen_ranging_result.pair_count; ++i) {
+        const nrf_cs_pair_result_t *pair = &s_frozen_ranging_result.pairs[i];
+        if (pair->state == NRF_CS_PAIR_VALID && pair->single_direction &&
+            (pair->scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) == 0U) valid = false;
+    }
+    if (valid) {
+        memcpy(s_accepted_ranging_object, object_id, object_id_length + 1U);
+        s_accepted_ranging_revision = expected_updated_at_ms;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t nrf_topology_service_get_accepted_ranging_result(
+    const char *object_id, const nrf_topology_snapshot_t *current_topology, uint64_t now_ms,
+    nrf_topology_ranging_result_t *result)
+{
+    if (object_id == NULL || current_topology == NULL || result == NULL) return ESP_ERR_INVALID_ARG;
+    portENTER_CRITICAL(&s_state_lock);
+    bool valid = s_accepted_ranging_object[0] != '\0' && strcmp(s_accepted_ranging_object, object_id) == 0 &&
+        s_frozen_ranging_result_valid && s_frozen_ranging_result.success && !s_frozen_ranging_result.invalidated &&
+        s_ranging_progress_valid && s_ranging_progress.complete && s_ranging_progress.success &&
+        s_ranging_progress.updated_at_ms == s_accepted_ranging_revision && !s_ranging_active &&
+        !s_cs_request_pending && now_ms >= s_frozen_ranging_result.timestamp_ms &&
+        s_frozen_ranging_result.pair_count <= NRF_CS_MAX_PAIRS && s_snapshot_valid &&
+        !s_snapshot.stale && !current_topology->stale &&
+        service_ranging_membership_matches(&s_frozen_ranging_result, current_topology) &&
+        service_ranging_membership_matches(&s_frozen_ranging_result, &s_snapshot);
+    for (size_t i = 0U; valid && i < s_frozen_ranging_result.pair_count; ++i) {
+        const nrf_cs_pair_result_t *pair = &s_frozen_ranging_result.pairs[i];
+        if (pair->state == NRF_CS_PAIR_VALID && pair->single_direction &&
+            (pair->scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) == 0U) valid = false;
+    }
+    if (valid) {
+        *result = s_frozen_ranging_result;
+        result->accepted_revision_ms = s_accepted_ranging_revision;
+    }
+    portEXIT_CRITICAL(&s_state_lock);
+    return valid ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
 esp_err_t nrf_topology_service_invalidate_ranging(void)
 {
     portENTER_CRITICAL(&s_state_lock);
+    s_accepted_ranging_object[0] = '\0';
     if (s_frozen_ranging_result_valid) {
         s_frozen_ranging_result.invalidated = true;
     }
