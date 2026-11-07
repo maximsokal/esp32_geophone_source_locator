@@ -34,6 +34,8 @@ const LIVE_SIGNAL_STEPS = new Set(['RANGING_RESULT']);
 
 interface Props {
   status: DeviceStatus | null;
+  /** Last status fetch failed: link states shown on Live are the last known. */
+  statusStale?: boolean;
   objectName: string | null;
   sendCommand: (command: string, generation: number, location?: PhoneLocationInput) => Promise<WorkflowCommandResult>;
   onRefreshStatus: () => Promise<boolean>;
@@ -509,6 +511,7 @@ function ActionButton({ action, pending, deleteArmed, onClick }: {
 
 export default function WorkflowPanel({
   status,
+  statusStale,
   objectName,
   sendCommand,
   onRefreshStatus,
@@ -693,7 +696,7 @@ export default function WorkflowPanel({
           status?.acquisition.running === true
             ? (
               <Suspense fallback={<p>{t('workflow.live.starting')}</p>}>
-                <LiveSeismicPanel />
+                <LiveSeismicPanel nodeLinks={status?.node_links} statusStale={statusStale} />
               </Suspense>
             )
             : <p role="status">{t('workflow.live.starting')}</p>

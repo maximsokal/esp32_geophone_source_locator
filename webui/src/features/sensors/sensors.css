@@ -9,7 +9,7 @@
   justify-content: space-between;
   gap: 1rem;
   padding: 0.65rem 0.8rem;
-  border: 1px solid var(--line, #d7dce2);
+  border: 1px solid var(--ui-panel-alt);
   border-radius: 0.55rem;
 }
 
@@ -18,21 +18,21 @@
 }
 
 .node-link-status--not-connected {
-  color: #b42318;
+  color: var(--ui-error);
 }
 
 .node-link-status--connected {
-  color: #a15c00;
+  color: var(--ui-warning);
 }
 
 .node-link-status--ready {
-  color: #18794e;
+  color: var(--ui-good);
 }
 
 .node-link-status--measuring {
-  color: #175cd3;
+  color: var(--ui-link-measuring);
 }
 
 .node-link-status--unknown {
-  color: #667085;
+  color: var(--ui-muted);
 }

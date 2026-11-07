@@ -87,9 +87,9 @@ function createProgram(gl: GlContext): WebGLProgram {
       bool manual = v_confidence > 1.5;
       float t = clamp(v_confidence, 0.0, 1.0);
       vec3 coverageColor = t < 0.42
-        ? vec3(1.00, 0.20, 0.10)
-        : (t < 0.72 ? vec3(1.00, 0.82, 0.08) : vec3(0.12, 1.00, 0.55));
-      vec3 manualColor = radius < 0.13 ? vec3(1.0) : vec3(0.95, 0.18, 1.00);
+        ? vec3(0.941, 0.353, 0.404)
+        : (t < 0.72 ? vec3(0.953, 0.722, 0.294) : vec3(0.298, 0.839, 0.506));
+      vec3 manualColor = radius < 0.13 ? vec3(0.953, 0.969, 0.984) : vec3(0.129, 0.780, 0.851);
       vec3 color = manual ? manualColor : coverageColor;
       float edge = 1.0 - smoothstep(0.32, 0.50, radius);
       float alpha = manual ? max(0.86, edge) : mix(0.48, 0.96, t) * edge;

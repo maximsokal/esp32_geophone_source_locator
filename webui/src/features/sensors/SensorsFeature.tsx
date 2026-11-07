@@ -5,6 +5,7 @@ import '../nrflog/NrfLogPanel.css';
 import './sensors.css';
 import { useLocale, useT } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
+import { NODE_LINK_STATUS_KEYS, nodeLinkClass } from './nodeLinkStatus';
 
 const NrfLogPanel = lazy(() => import('../nrflog/NrfLogPanel'));
 
@@ -12,6 +13,8 @@ interface Props {
   status: DeviceStatus | null;
   object: ObjectProfile | null;
   error: string | null;
+  /** Last status fetch failed: link and pod states are the last known, not fresh. */
+  statusStale?: boolean;
   onCalibrateHeights: () => Promise<boolean>;
 }
 
@@ -26,23 +29,7 @@ const POD_STATE_KEYS: Record<string, 'sensors.pod_state.disconnected' | 'sensors
   ERROR: 'sensors.pod_state.error',
 };
 
-const NODE_LINK_STATUS_KEYS: Record<string, 'sensors.node_link.not_connected' | 'sensors.node_link.connected' | 'sensors.node_link.ready' | 'sensors.node_link.measuring' | 'sensors.node_link.stale'> = {
-  STALE: 'sensors.node_link.stale',
-  NOT_CONNECTED: 'sensors.node_link.not_connected',
-  CONNECTED: 'sensors.node_link.connected',
-  READY: 'sensors.node_link.ready',
-  MEASURING: 'sensors.node_link.measuring',
-};
-
-const NODE_LINK_STATUS_CLASSES: Record<string, string> = {
-  STALE: 'connected',
-  NOT_CONNECTED: 'not-connected',
-  CONNECTED: 'connected',
-  READY: 'ready',
-  MEASURING: 'measuring',
-};
-
-export default function SensorsFeature({ status, object, error, onCalibrateHeights }: Props) {
+export default function SensorsFeature({ status, object, error, statusStale = false, onCalibrateHeights }: Props) {
   const t = useT();
   const { locale } = useLocale();
   const pods = status?.pods ?? [];
@@ -153,6 +140,8 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
 
       <LevelingCard gate={status?.recording_gate} main={status?.main} pods={pods} onCalibrateHeights={onCalibrateHeights} />
 
+      {statusStale && <p className="console-alert warning" role="status">{t('sensors.status_last_known')}</p>}
+
       {(nodeLinks.length > 0 || status?.topology?.stale === true) && (
         <article className="console-card wide-card node-link-card">
           <div className="card-heading">
@@ -166,7 +155,7 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
           <div className="node-link-grid">
             {nodeLinks.map((link) => {
               const statusKey = NODE_LINK_STATUS_KEYS[link.status];
-              const statusClass = NODE_LINK_STATUS_CLASSES[link.status] ?? 'unknown';
+              const statusClass = nodeLinkClass(link.status, statusStale);
               return (
                 <div className="node-link-row" key={`${link.channel}-${link.node}`}>
                   <strong>{t('sensors.node_link.channel', { channel: link.channel })} → {link.node}</strong>
@@ -195,7 +184,7 @@ export default function SensorsFeature({ status, object, error, onCalibrateHeigh
             <article className="console-card pod-card" key={index}>
               <div className="card-heading">
                 <h2>{t('sensors.pod', { number: formatNumber(locale, index + 1) })}</h2>
-                <span className={`state-pill ${stale ? 'warning' : connected ? 'ready' : 'offline'}`}>
+                <span className={`state-pill ${stale ? 'warning' : connected && !statusStale ? 'ready' : 'offline'}`}>
                   {stale ? t('sensors.node_link.stale') : podStateKey === undefined
                     ? t('sensors.pod_state.unknown', { state: podState })
                     : t(podStateKey)}

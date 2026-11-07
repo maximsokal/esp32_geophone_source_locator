@@ -12,6 +12,7 @@
     "test:ui:visual:capture": "node scripts/run-ui-visual.mjs capture",
     "test:ui:visual:tools": "node --test tests/visual-tools.test.mjs",
     "test:ui:tft": "python ../tools/run_ui_render_tests.py --build-dir ../.test-build/ui-render/native --output-dir ../.test-build/ui-render/latest && node ./node_modules/@playwright/test/cli.js test --config playwright.tft.config.ts",
+    "test:ui:theme-surfaces": "node ./node_modules/@playwright/test/cli.js test --config playwright.theme-surfaces.config.ts",
     "test:ui:layout": "node ./node_modules/@playwright/test/cli.js test --config playwright.layout.config.ts",
     "typecheck:tests": "node ./node_modules/typescript/bin/tsc --noEmit --project tsconfig.test.json",
     "test:components": "node ./node_modules/vitest/vitest.mjs run --config vitest.dom.config.ts",

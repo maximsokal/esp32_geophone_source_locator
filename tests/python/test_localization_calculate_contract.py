@@ -134,7 +134,7 @@ def test_max_frames_bound_is_documented_not_guessed():
     assert '"insufficient_memory"' in source
     assert '"memory"' in source
     assert "session_summary.samples_written > (uint64_t)frame_count" in source
-    assert "records[i].analysis_window_start_index = 0U" in source
+    assert "records[i].analysis_window_start_index = analysis_start_frame" in source
     assert "LOCALIZATION_ANALYSIS_PSRAM_SAFETY_RESERVE_BYTES (3072U * 1024U)" in source
     assert "max_window_frames < minimum_useful_frames" in source
 

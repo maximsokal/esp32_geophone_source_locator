@@ -1,7 +1,7 @@
 :root {
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #e2e8f0;
-  background: #050a12;
+  color: var(--ui-text);
+  background: var(--ui-bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -16,13 +16,11 @@ body,
   min-width: 320px;
   min-height: 100%;
   margin: 0;
+  background: var(--ui-bg);
 }
 
 body {
   min-height: 100vh;
-  background:
-    radial-gradient(circle at 20% 0%, rgba(14, 116, 144, 0.12), transparent 34rem),
-    #050a12;
 }
 
 button {
@@ -47,7 +45,7 @@ button {
 
 .eyebrow {
   margin-bottom: 5px;
-  color: #38bdf8;
+  color: var(--ui-accent);
   font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.14em;
@@ -62,7 +60,7 @@ h1 {
 .app-header p {
   max-width: 760px;
   margin: 8px 0 0;
-  color: #94a3b8;
+  color: var(--ui-muted);
   line-height: 1.45;
 }
 
@@ -75,10 +73,10 @@ h1 {
 }
 
 .badge {
-  border: 1px solid #334155;
+  border: 1px solid var(--ui-panel-alt);
   border-radius: 999px;
   padding: 7px 10px;
-  background: #0f172a;
+  background: var(--ui-panel);
   font-size: 0.68rem;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -88,13 +86,13 @@ h1 {
 }
 
 .badge.good {
-  border-color: rgba(34, 197, 94, 0.45);
-  color: #86efac;
+  border-color: rgba(76, 214, 129, 0.45);
+  color: var(--ui-good);
 }
 
 .badge.warning {
-  border-color: rgba(250, 204, 21, 0.45);
-  color: #fde047;
+  border-color: rgba(243, 184, 75, 0.45);
+  color: var(--ui-warning);
 }
 
 .toolbar {
@@ -103,28 +101,28 @@ h1 {
   gap: 8px;
   margin-bottom: 10px;
   padding: 9px;
-  border: 1px solid #1e293b;
+  border: 1px solid var(--ui-panel-alt);
   border-radius: 12px;
-  background: rgba(15, 23, 42, 0.86);
+  background: rgba(14, 26, 43, 0.86);
 }
 
 .toolbar button {
-  border: 1px solid #334155;
+  border: 1px solid var(--ui-panel-alt);
   border-radius: 8px;
   padding: 8px 12px;
-  color: #e2e8f0;
-  background: #111c2e;
+  color: var(--ui-text);
+  background: var(--ui-panel);
   cursor: pointer;
 }
 
 .toolbar button:hover {
-  border-color: #38bdf8;
-  background: #16243a;
+  border-color: var(--ui-accent);
+  background: var(--ui-panel);
 }
 
 .toolbar-note {
   margin-left: auto;
-  color: #64748b;
+  color: var(--ui-muted);
   font-size: 0.8rem;
 }
 
@@ -137,9 +135,9 @@ h1 {
 
 .viewport-shell,
 .side-panel {
-  border: 1px solid #1e293b;
+  border: 1px solid var(--ui-panel-alt);
   border-radius: 14px;
-  background: #08101d;
+  background: var(--ui-bg);
   overflow: hidden;
 }
 
@@ -156,11 +154,11 @@ h1 {
   position: absolute;
   left: 12px;
   bottom: 12px;
-  border: 1px solid rgba(71, 85, 105, 0.8);
+  border: 1px solid rgba(148, 167, 188, 0.8);
   border-radius: 8px;
   padding: 6px 9px;
-  color: #94a3b8;
-  background: rgba(8, 16, 29, 0.84);
+  color: var(--ui-muted);
+  background: rgba(14, 26, 43, 0.84);
   font-size: 0.72rem;
   pointer-events: none;
 }
@@ -174,10 +172,10 @@ h1 {
 }
 
 .panel-card {
-  border: 1px solid #1e293b;
+  border: 1px solid var(--ui-panel-alt);
   border-radius: 10px;
   padding: 12px;
-  background: #0b1423;
+  background: var(--ui-bg);
 }
 
 .panel-card.grow {
@@ -186,7 +184,7 @@ h1 {
 
 .panel-title {
   margin-bottom: 10px;
-  color: #cbd5e1;
+  color: var(--ui-text);
   font-size: 0.76rem;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -206,12 +204,12 @@ h1 {
 }
 
 .status-list dt {
-  color: #64748b;
+  color: var(--ui-muted);
 }
 
 .status-list dd {
   margin: 0;
-  color: #e2e8f0;
+  color: var(--ui-text);
   font-weight: 700;
 }
 
@@ -226,36 +224,36 @@ h1 {
   align-items: center;
   gap: 10px;
   width: 100%;
-  border: 1px solid #1e293b;
+  border: 1px solid var(--ui-panel-alt);
   border-radius: 9px;
   padding: 10px;
-  color: #cbd5e1;
-  background: #0b1423;
+  color: var(--ui-text);
+  background: var(--ui-bg);
   text-align: left;
   cursor: pointer;
 }
 
 .sensor-row:hover,
 .sensor-row.selected {
-  border-color: #475569;
-  background: #111d30;
+  border-color: var(--ui-panel-alt);
+  background: var(--ui-panel);
 }
 
 .sensor-row.selected {
-  box-shadow: inset 3px 0 0 #fb923c;
+  box-shadow: inset 3px 0 0 var(--ui-warning);
 }
 
 .sensor-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #facc15;
-  box-shadow: 0 0 12px rgba(250, 204, 21, 0.35);
+  background: var(--ui-warning);
+  box-shadow: 0 0 12px rgba(243, 184, 75, 0.35);
 }
 
 .sensor-dot.main {
-  background: #38bdf8;
-  box-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
+  background: var(--ui-accent);
+  box-shadow: 0 0 12px rgba(33, 199, 217, 0.4);
 }
 
 .sensor-name {
@@ -268,7 +266,7 @@ h1 {
 }
 
 .sensor-name small {
-  color: #64748b;
+  color: var(--ui-muted);
   font-size: 0.61rem;
   letter-spacing: 0.05em;
 }
@@ -277,7 +275,7 @@ h1 {
   display: grid;
   grid-template-columns: repeat(3, auto);
   gap: 8px;
-  color: #94a3b8;
+  color: var(--ui-muted);
   font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 0.68rem;
 }
@@ -290,28 +288,28 @@ h1 {
 }
 
 .selection-grid span {
-  color: #64748b;
+  color: var(--ui-muted);
 }
 
 .selection-grid strong {
-  color: #cbd5e1;
+  color: var(--ui-text);
   font-size: 0.78rem;
   overflow-wrap: anywhere;
 }
 
 .app-footer {
   padding: 12px 2px 2px;
-  color: #64748b;
+  color: var(--ui-muted);
   font-size: 0.78rem;
   line-height: 1.5;
 }
 
 .xr-runtime-card {
   margin-bottom: 10px;
-  border: 1px solid #1e293b;
+  border: 1px solid var(--ui-panel-alt);
   border-radius: 14px;
   padding: 14px;
-  background: rgba(8, 16, 29, 0.94);
+  background: rgba(14, 26, 43, 0.94);
 }
 
 .xr-runtime-heading {
@@ -327,16 +325,16 @@ h1 {
 }
 
 .xr-runtime-heading strong {
-  color: #e2e8f0;
+  color: var(--ui-text);
   font-size: 1rem;
 }
 
 .xr-phase {
-  border: 1px solid #334155;
+  border: 1px solid var(--ui-panel-alt);
   border-radius: 999px;
   padding: 6px 9px;
-  color: #94a3b8;
-  background: #0f172a;
+  color: var(--ui-muted);
+  background: var(--ui-panel);
   font-size: 0.67rem;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -344,13 +342,13 @@ h1 {
 }
 
 .xr-phase.good {
-  border-color: rgba(34, 197, 94, 0.5);
-  color: #86efac;
+  border-color: rgba(76, 214, 129, 0.5);
+  color: var(--ui-good);
 }
 
 .xr-phase.bad {
-  border-color: rgba(248, 113, 113, 0.5);
-  color: #fca5a5;
+  border-color: rgba(240, 90, 103, 0.5);
+  color: var(--ui-error);
 }
 
 .xr-capability-grid {
@@ -363,14 +361,14 @@ h1 {
   display: grid;
   gap: 4px;
   min-width: 0;
-  border: 1px solid #1e293b;
+  border: 1px solid var(--ui-panel-alt);
   border-radius: 9px;
   padding: 9px 10px;
-  background: #0b1423;
+  background: var(--ui-bg);
 }
 
 .xr-capability span {
-  color: #64748b;
+  color: var(--ui-muted);
   font-size: 0.67rem;
 }
 
@@ -380,15 +378,15 @@ h1 {
 }
 
 .xr-capability.good strong {
-  color: #86efac;
+  color: var(--ui-good);
 }
 
 .xr-capability.bad strong {
-  color: #fca5a5;
+  color: var(--ui-error);
 }
 
 .xr-capability.neutral strong {
-  color: #fde047;
+  color: var(--ui-warning);
 }
 
 .xr-runtime-controls {
@@ -400,10 +398,10 @@ h1 {
 
 .xr-runtime-controls button,
 .xr-overlay-card button {
-  border: 1px solid #334155;
+  border: 1px solid var(--ui-panel-alt);
   border-radius: 9px;
   padding: 10px 13px;
-  color: #f8fafc;
+  color: var(--ui-text);
   cursor: pointer;
 }
 
@@ -413,18 +411,18 @@ h1 {
 }
 
 .xr-start-button {
-  border-color: rgba(14, 165, 233, 0.7) !important;
-  background: #0369a1;
+  border-color: rgba(33, 199, 217, 0.7) !important;
+  background: var(--ui-panel-alt);
 }
 
 .xr-stop-button {
-  background: #172033;
+  background: var(--ui-panel);
 }
 
 .xr-runtime-note {
   margin-left: auto;
   max-width: 620px;
-  color: #64748b;
+  color: var(--ui-muted);
   font-size: 0.73rem;
   line-height: 1.4;
   text-align: right;
@@ -439,7 +437,7 @@ h1 {
 
 .xr-runtime-values div {
   min-width: 0;
-  border-top: 1px solid #1e293b;
+  border-top: 1px solid var(--ui-panel-alt);
   padding-top: 8px;
 }
 
@@ -448,14 +446,14 @@ h1 {
 }
 
 .xr-runtime-values dt {
-  color: #64748b;
+  color: var(--ui-muted);
   font-size: 0.65rem;
   overflow-wrap: anywhere;
 }
 
 .xr-runtime-values dd {
   margin: 4px 0 0;
-  color: #cbd5e1;
+  color: var(--ui-text);
   font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 0.72rem;
   font-weight: 700;
@@ -464,11 +462,11 @@ h1 {
 
 .xr-runtime-error {
   margin-top: 10px;
-  border: 1px solid rgba(248, 113, 113, 0.45);
+  border: 1px solid rgba(240, 90, 103, 0.45);
   border-radius: 9px;
   padding: 9px 11px;
-  color: #fecaca;
-  background: rgba(127, 29, 29, 0.2);
+  color: var(--ui-error);
+  background: rgba(14, 26, 43, 0.2);
   font-size: 0.78rem;
 }
 
@@ -479,7 +477,7 @@ h1 {
 html.xr-session-active,
 html.xr-session-active body,
 html.xr-session-active #root {
-  background: #050a12 !important;
+  background: var(--ui-bg) !important;
 }
 
 /* Only passthrough sessions composite the camera behind the DOM overlay. */
@@ -519,11 +517,11 @@ html.xr-session-active .xr-immersive-overlay {
   max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - 2.75rem - 12px - max(16px, env(safe-area-inset-bottom)));
   overflow-y: auto;
   overscroll-behavior: contain;
-  border: 1px solid rgba(148, 163, 184, 0.55);
+  border: 1px solid rgba(148, 167, 188, 0.55);
   border-radius: 16px;
   padding: 14px;
-  color: #f8fafc;
-  background: rgba(8, 16, 29, 0.82);
+  color: var(--ui-text);
+  background: rgba(14, 26, 43, 0.82);
   backdrop-filter: blur(10px);
   box-shadow: 0 14px 50px rgba(0, 0, 0, 0.35);
   pointer-events: auto;
@@ -536,7 +534,7 @@ html.xr-session-active .xr-immersive-overlay {
 
 .xr-overlay-card p {
   margin: 0 0 8px;
-  color: #cbd5e1;
+  color: var(--ui-text);
   font-size: 0.78rem;
 }
 
@@ -547,7 +545,7 @@ html.xr-session-active .xr-immersive-overlay {
 }
 
 .xr-overlay-pose span {
-  color: #94a3b8;
+  color: var(--ui-muted);
   font-size: 0.65rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -560,7 +558,7 @@ html.xr-session-active .xr-immersive-overlay {
 
 .xr-overlay-card button {
   width: 100%;
-  background: #7f1d1d;
+  background: var(--ui-panel-alt);
 }
 
 @media (max-width: 1100px) {

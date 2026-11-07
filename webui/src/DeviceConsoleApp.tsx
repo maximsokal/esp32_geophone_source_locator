@@ -734,6 +734,7 @@ export default function DeviceConsoleApp() {
       {screen === 'objects' && (
         <ObjectsFeature
           status={status}
+          statusStale={status !== null && linkError !== null}
           store={objects}
           sessions={sessions}
           selectedId={selectedId}
@@ -778,6 +779,7 @@ export default function DeviceConsoleApp() {
           status={status}
           object={selectedObject}
           error={pageError}
+          statusStale={status !== null && linkError !== null}
           onCalibrateHeights={() => runControl('calibrate_heights')}
         />
       )}
@@ -785,6 +787,7 @@ export default function DeviceConsoleApp() {
       {screen === 'workflow' && (
         <WorkflowPanel
           status={status}
+          statusStale={status !== null && linkError !== null}
           objectName={selectedObject?.name ?? null}
           sendCommand={(command, generation, location) => sendWorkflowCommand(command, generation, {}, location)}
           onRefreshStatus={refreshStatus}

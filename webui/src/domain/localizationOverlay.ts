@@ -6,6 +6,7 @@ import type {
 import type { I18nLocale } from '../i18n';
 import { translate } from '../i18n';
 import { formatNumber, formatPercent } from '../i18n/format';
+import { mixHex, uiTheme } from '../theme';
 
 /**
  * MAX-161: compare localization methods of ONE saved recording in one scene.
@@ -118,30 +119,53 @@ export const NOMINAL_SECTOR_RADIUS_M = 0.25;
 const MIN_SECTOR_RADIUS_M = 0.05;
 const MAX_SECTOR_RADIUS_M = 50;
 
-const METHOD_COLORS: Record<string, string> = {
-  energy_baseline: '#f59e0b',
-  gauss_newton_tdoa: '#38bdf8',
-  traveltime_inversion: '#a78bfa',
-  semblance_scan: '#34d399',
-  traveltime_scan_constrained: '#c084fc',
-  semblance_scan_constrained: '#6ee7b7',
-  tdcas: '#22d3ee',
-  tdcas_scan_constrained: '#67e8f9',
-  psafuvs: '#fb923c',
-  psafuvs_scan_constrained: '#fdba74',
-  suea: '#a3e635',
-  suea_scan_voids: '#d9f99d',
-  xcorr_tdoa: '#2dd4bf',
-  robust_tdoa: '#818cf8',
-  psp_joint: '#fbbf24',
-  eikonal_fmm: '#f87171',
-  eikonal_scan_voids: '#fca5a5',
-  semblance_eikonal_voids: '#10b981',
-  bayesian: '#e879f9',
-  bayesian_scan_voids: '#f0abfc',
-  joint_fusion: '#f472b6',
+/*
+ * Method colours are built only from the 11 base UI roles: a hue role (accent,
+ * good, warning, error, link) in one of three bright tones, plus MUTED/TEXT for
+ * the baseline and the joint fusion. Related methods share a hue and differ by
+ * tone, so each of them still has its own colour.
+ */
+type MethodHue = 'accent' | 'good' | 'warning' | 'error' | 'linkMeasuring' | 'muted' | 'text';
+type MethodTone = 'base' | 'light' | 'lighter' | 'soft' | 'deep';
+
+const METHOD_STYLES: Record<string, readonly [MethodHue, MethodTone]> = {
+  energy_baseline: ['muted', 'base'],
+  gauss_newton_tdoa: ['linkMeasuring', 'base'],
+  robust_tdoa: ['linkMeasuring', 'light'],
+  xcorr_tdoa: ['linkMeasuring', 'soft'],
+  traveltime_inversion: ['accent', 'base'],
+  traveltime_scan_constrained: ['accent', 'light'],
+  tdcas: ['accent', 'soft'],
+  tdcas_scan_constrained: ['accent', 'lighter'],
+  semblance_scan: ['good', 'base'],
+  semblance_scan_constrained: ['good', 'light'],
+  semblance_eikonal_voids: ['good', 'soft'],
+  psafuvs: ['warning', 'base'],
+  psafuvs_scan_constrained: ['warning', 'light'],
+  psp_joint: ['warning', 'soft'],
+  suea: ['warning', 'lighter'],
+  suea_scan_voids: ['muted', 'light'],
+  eikonal_fmm: ['error', 'base'],
+  eikonal_scan_voids: ['error', 'light'],
+  bayesian: ['error', 'soft'],
+  bayesian_scan_voids: ['error', 'lighter'],
+  joint_fusion: ['text', 'base'],
 };
-const FALLBACK_COLORS = ['#fb7185', '#facc15', '#60a5fa', '#4ade80'];
+
+function tone(hue: MethodHue, level: MethodTone): string {
+  const base = uiTheme[hue];
+  if (level === 'light') return mixHex(base, uiTheme.text, 0.35);
+  if (level === 'lighter') return mixHex(base, uiTheme.text, 0.6);
+  if (level === 'soft') return mixHex(base, uiTheme.muted, 0.55);
+  if (level === 'deep') return mixHex(base, uiTheme.background, 0.15);
+  return base;
+}
+
+const METHOD_COLORS: Record<string, string> = Object.fromEntries(
+  Object.entries(METHOD_STYLES).map(([name, [hue, level]]) => [name, tone(hue, level)]),
+);
+/** Unknown method names: the same hues in a tone no known method uses, picked by position. */
+const FALLBACK_COLORS = (['error', 'warning', 'linkMeasuring', 'good'] as const).map((hue) => tone(hue, 'deep'));
 
 export function methodColor(method: string, index: number): string {
   return METHOD_COLORS[method] ?? FALLBACK_COLORS[index % FALLBACK_COLORS.length];

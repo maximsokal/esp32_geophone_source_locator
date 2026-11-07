@@ -1,0 +1,18 @@
+/*
+ * Stage S02: single source of truth for the 11 base UI roles from
+ * components/ui/ui_theme.h. Read-only native side; web mirrors it here.
+ * No runtime asset requests, no webfonts, no Tailwind, no CSS-in-JS.
+ */
+:root {
+  --ui-bg: #08111F;
+  --ui-header: #0E1A2B;
+  --ui-panel: #132238;
+  --ui-panel-alt: #1B2D46;
+  --ui-accent: #21C7D9;
+  --ui-good: #4CD681;
+  --ui-warning: #F3B84B;
+  --ui-error: #F05A67;
+  --ui-link-measuring: #4A90E2;
+  --ui-text: #F3F7FB;
+  --ui-muted: #94A7BC;
+}

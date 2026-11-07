@@ -105,6 +105,12 @@ function workflowHtml(status: DeviceStatus, locale: I18nLocale): string {
   }));
 }
 
+/* State-pill classes of the four pod cards only (other cards use state-pill too). */
+function podPills(html: string): string[] {
+  return [...html.matchAll(/<article class="console-card pod-card"[^>]*><div class="card-heading"><h2>[^<]*<\/h2><span class="state-pill (\w+)">/g)]
+    .map((match) => match[1]);
+}
+
 function sensorsHtml(status: DeviceStatus, locale: I18nLocale): string {
   return render(locale, createElement(SensorsFeature, {
     status, object: null, error: null, onCalibrateHeights: async () => true,
@@ -229,6 +235,32 @@ describe('MAX-452 recording bypass and sensor status display', () => {
     expect(html).not.toContain('node-link-status--ready');
     expect(html).not.toContain('node-link-status--not-connected');
     expect(html).toContain(`<span class="state-pill warning">${translate(locale, 'sensors.node_link.stale')}</span>`);
+  });
+
+  it.each(['en', 'uk'] as const)('does not present a last-known READY/MEASURING link as fresh after a failed status fetch in %s', (locale) => {
+    const status = statusFor('RECORD_READY');
+    status.node_links = [
+      { channel: 1, node: 'MAIN', status: 'NOT_CONNECTED' },
+      { channel: 2, node: 'G1', status: 'READY' },
+      { channel: 3, node: 'G2', status: 'MEASURING' },
+      { channel: 4, node: 'G3', status: 'BOGUS' },
+    ];
+    status.pods[0].state = 'READY';
+    const fresh = sensorsHtml(status, locale);
+    expect(fresh).toContain('node-link-status--ready');
+    expect(podPills(fresh)[0]).toBe('ready');
+    expect(fresh).not.toContain(translate(locale, 'sensors.status_last_known'));
+
+    const stale = render(locale, createElement(SensorsFeature, {
+      status, object: null, error: null, statusStale: true, onCalibrateHeights: async () => true,
+    }));
+    expect(stale).toContain(translate(locale, 'sensors.status_last_known'));
+    expect(stale).not.toContain('node-link-status--ready');
+    expect(stale).not.toContain('node-link-status--measuring');
+    expect(podPills(stale)).not.toContain('ready');
+    expect(stale).toContain('node-link-status--not-connected');
+    expect(stale).toContain(translate(locale, 'sensors.node_link.ready'));
+    expect(stale).toContain(translate(locale, 'sensors.node_link.unknown', { status: 'BOGUS' }));
   });
 
   it.each(['en', 'uk'] as const)('marks stale power and topology snapshots in %s', (locale) => {

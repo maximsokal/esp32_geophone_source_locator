@@ -28,6 +28,7 @@ import type { SourceHighlightScene } from '../../src/xr/sourceHighlight';
 import type { SolverCandidateVolume } from '../../src/xr/candidateVolume';
 import { formatDistance, formatNumber } from '../../src/i18n/format';
 import { translate, type I18nLocale } from '../../src/i18n';
+import { uiTheme } from '../../src/theme';
 
 /*
  * The 3D result viewport: which scanned data types (stable/tentative
@@ -134,10 +135,10 @@ describe('scan viewport layers per data type and mode', () => {
     expect(ids.indexOf('free-air')).toBeLessThan(ids.indexOf('stable-surface-stable'));
     const unknown = plan.find((layer) => layer.id === 'unknown-space');
     const free = plan.find((layer) => layer.id === 'free-air');
-    expect(unknown).toMatchObject({ kind: 'points', depthTest: false, renderOrder: 1, color: '#f59e0b' });
-    expect(free).toMatchObject({ kind: 'points', depthTest: false, renderOrder: 2, color: '#38bdf8' });
+    expect(unknown).toMatchObject({ kind: 'points', depthTest: false, renderOrder: 1, color: uiTheme.muted });
+    expect(free).toMatchObject({ kind: 'points', depthTest: false, renderOrder: 2, color: uiTheme.linkMeasuring });
     const colors = new Set(plan.filter((layer) => layer.kind === 'points').map((layer) => (layer.kind === 'points' ? layer.color : '')));
-    expect(colors.has('#ff3d28') && colors.has('#facc15') && colors.has('#2ee6a6')).toBe(true);
+    expect(colors.has(uiTheme.error) && colors.has(uiTheme.warning) && colors.has(uiTheme.good)).toBe(true);
     // Tentative surfels are drawn fainter than stable ones.
     const quality = scanLayerPlan(prepareScanScene(source()), displayForScanMode('quality'), MESH, false);
     const tentativeWeak = quality.find((layer) => layer.id === 'tentative-surface-weak');

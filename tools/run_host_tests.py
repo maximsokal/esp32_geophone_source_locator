@@ -77,6 +77,7 @@ def load_manifest(path: Path, repo_root: Path) -> list[dict[str, Any]]:
         include_dirs = entry.get("include_dirs", [])
         defines = entry.get("defines", [])
         libraries = entry.get("libraries", [])
+        timeout_seconds = entry.get("timeout_seconds")
         if not isinstance(name, str) or not TEST_NAME.fullmatch(name):
             raise RunnerError(f"manifest test {index} has invalid name: {name!r}")
         if name in names:
@@ -89,6 +90,10 @@ def load_manifest(path: Path, repo_root: Path) -> list[dict[str, Any]]:
             raise RunnerError(f"manifest test {name} defines must be an array")
         if not isinstance(libraries, list) or not all(isinstance(item, str) for item in libraries):
             raise RunnerError(f"manifest test {name} libraries must be an array")
+        if timeout_seconds is not None and (
+            isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0
+        ):
+            raise RunnerError(f"manifest test {name} timeout_seconds must be a positive number")
 
         resolved_sources = [resolve_repo_path(repo_root, item, f"source for {name}") for item in sources]
         resolved_includes = [
@@ -108,6 +113,7 @@ def load_manifest(path: Path, repo_root: Path) -> list[dict[str, Any]]:
                 "include_dirs": resolved_includes,
                 "defines": defines,
                 "libraries": libraries,
+                "timeout_seconds": timeout_seconds,
             }
         )
     return validated
@@ -383,7 +389,10 @@ def main() -> int:
                 try:
                     test_result = run_command(
                         [str(output)],
-                        run_timeout_seconds(args.sanitizers, args.coverage),
+                        max(
+                            run_timeout_seconds(args.sanitizers, args.coverage),
+                            float(entry.get("timeout_seconds") or 0.0),
+                        ),
                         cwd=entry_dir,
                         environment=compiler_environment,
                     )

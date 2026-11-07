@@ -47,6 +47,7 @@ import type { SparseTsdfMesh } from '../xr/sparseTsdf';
 import { MESH_MIN_POINTS } from '../xr/surfaceComponents';
 import type { ScanPointCloudSnapshot } from '../xr/webxrRuntime';
 import { SceneViewport, type ViewCommand } from './SceneViewport';
+import { uiTheme } from '../theme';
 import {
   resultViewportIdentityKey,
   VIEWPORT_FAILURE_MAX_ATTEMPTS,
@@ -139,11 +140,11 @@ function labelTexture(label: string): THREE.CanvasTexture | null {
   canvas.height = 64;
   const context = canvas.getContext('2d');
   if (context !== null) {
-    context.fillStyle = 'rgba(8, 16, 29, 0.92)';
+    context.fillStyle = uiTheme.header;
     context.fillRect(2, 2, 252, 60);
-    context.strokeStyle = '#94a3b8';
+    context.strokeStyle = uiTheme.muted;
     context.strokeRect(2, 2, 252, 60);
-    context.fillStyle = '#f8fafc';
+    context.fillStyle = uiTheme.text;
     context.font = '700 28px system-ui, sans-serif';
     context.textAlign = 'center';
     context.textBaseline = 'middle';
@@ -164,7 +165,7 @@ function PointLayer({ positions, color, size, opacity, depthTest = true, renderO
 function SurfaceMesh({ positions, wireframe }: { positions: Float32Array; wireframe: boolean }) {
   const geometry = useMemo(() => { const next = new THREE.BufferGeometry(); next.setAttribute('position', new THREE.BufferAttribute(positions, 3)); next.computeVertexNormals(); return next; }, [positions]);
   useEffect(() => () => geometry.dispose(), [geometry]); if (positions.length === 0) return null;
-  return <group><mesh geometry={geometry} renderOrder={4}><meshBasicMaterial color="#38cfd2" transparent opacity={wireframe ? 0.30 : 0.22} side={THREE.DoubleSide} depthWrite={false} /></mesh>{wireframe && <mesh geometry={geometry} renderOrder={5}><meshBasicMaterial color="#a5f3fc" transparent opacity={0.22} wireframe side={THREE.DoubleSide} depthWrite={false} /></mesh>}</group>;
+  return <group><mesh geometry={geometry} renderOrder={4}><meshBasicMaterial color={uiTheme.accent} transparent opacity={wireframe ? 0.30 : 0.22} side={THREE.DoubleSide} depthWrite={false} /></mesh>{wireframe && <mesh geometry={geometry} renderOrder={5}><meshBasicMaterial color={uiTheme.text} transparent opacity={0.22} wireframe side={THREE.DoubleSide} depthWrite={false} /></mesh>}</group>;
 }
 
 function LineLayer({ positions, color, opacity, renderOrder }: { positions: Float32Array; color: string; opacity: number; renderOrder: number }) {
@@ -175,7 +176,7 @@ function LineLayer({ positions, color, opacity, renderOrder }: { positions: Floa
 
 function ManualPin({ position, extent, id }: { position: readonly [number, number, number]; extent: number; id: number }) {
   const radius = clamp(extent * 0.022, 0.035, 0.10);
-  return <group position={[position[0], position[1], position[2]]} renderOrder={50}><mesh renderOrder={50}><sphereGeometry args={[radius,18,12]} /><meshBasicMaterial color="#f05cff" depthTest={false} /></mesh><mesh rotation={[Math.PI/2,0,0]} renderOrder={51}><torusGeometry args={[radius*1.8,radius*0.18,8,28]} /><meshBasicMaterial color="#ffffff" depthTest={false} /></mesh><sprite position={[0,radius*3.1,0]} scale={[radius*4.5,radius*2,1]} renderOrder={52}><spriteMaterial color="#f05cff" depthTest={false} /></sprite><mesh position={[0,radius*3.1,0]} visible={false} name={`manual-pin-${id}`} /></group>;
+  return <group position={[position[0], position[1], position[2]]} renderOrder={50}><mesh renderOrder={50}><sphereGeometry args={[radius,18,12]} /><meshBasicMaterial color={uiTheme.accent} depthTest={false} /></mesh><mesh rotation={[Math.PI/2,0,0]} renderOrder={51}><torusGeometry args={[radius*1.8,radius*0.18,8,28]} /><meshBasicMaterial color={uiTheme.text} depthTest={false} /></mesh><sprite position={[0,radius*3.1,0]} scale={[radius*4.5,radius*2,1]} renderOrder={52}><spriteMaterial color={uiTheme.accent} depthTest={false} /></sprite><mesh position={[0,radius*3.1,0]} visible={false} name={`manual-pin-${id}`} /></group>;
 }
 
 function SensorMarkerLayer({ layer, extent, selectedNode, onSelect }: {
@@ -196,20 +197,20 @@ function SourceHighlightLayer({ layer }: { layer: SourceHighlightLayerSpec }) {
   return <group>
     {layer.uncertaintyVoxels.map((position, index) => <mesh key={`uncertainty-${index}`} position={position} renderOrder={79}>
       <boxGeometry args={[size * 0.96, size * 0.96, size * 0.96]} />
-      <meshBasicMaterial color="#a78bfa" transparent opacity={0.22} depthTest={false} depthWrite={false} />
+      <meshBasicMaterial color={uiTheme.linkMeasuring} transparent opacity={0.22} depthTest={false} depthWrite={false} />
     </mesh>)}
     {layer.primaryVoxel !== null && <mesh position={layer.primaryVoxel} renderOrder={81}>
       <boxGeometry args={[size * 0.98, size * 0.98, size * 0.98]} />
-      <meshBasicMaterial color="#f472b6" transparent opacity={0.78} depthTest={false} depthWrite={false} />
+      <meshBasicMaterial color={uiTheme.error} transparent opacity={0.78} depthTest={false} depthWrite={false} />
     </mesh>}
     {layer.markers.map(({ positionViewport, primary, edge }, index) => <group key={`source-${index}`} position={positionViewport} renderOrder={82}>
       <mesh renderOrder={82}>
         <sphereGeometry args={[markerSize * (primary ? 1.35 : 0.7), 12, 8]} />
-        <meshBasicMaterial color={edge ? '#facc15' : '#f8fafc'} depthTest={false} />
+        <meshBasicMaterial color={edge ? uiTheme.warning : uiTheme.text} depthTest={false} />
       </mesh>
       {edge && <mesh rotation={[Math.PI / 2, 0, 0]} renderOrder={83}>
         <torusGeometry args={[markerSize * 2, markerSize * 0.18, 6, 16]} />
-        <meshBasicMaterial color="#facc15" depthTest={false} />
+        <meshBasicMaterial color={uiTheme.warning} depthTest={false} />
       </mesh>}
     </group>)}
   </group>;
@@ -224,7 +225,7 @@ function SensorMarker({ marker, position, extent, selected, onSelect }: {
 }) {
   const texture = useMemo(() => labelTexture(`${marker.node} · ${marker.status.replace('_', ' ')}`), [marker.node, marker.status]);
   useEffect(() => () => texture?.dispose(), [texture]);
-  const color = selected ? '#fb923c' : marker.status === 'anchored' ? '#34d399' : marker.status === 'cs_projected' ? '#38bdf8' : '#facc15';
+  const color = selected ? uiTheme.accent : marker.status === 'anchored' ? uiTheme.good : marker.status === 'cs_projected' ? uiTheme.linkMeasuring : uiTheme.warning;
   const size = clamp(extent * 0.018, 0.035, 0.09);
   // Cap large 1-sigma regions at 25% of scan extent (with a 5 cm minimum cap) so they remain visible without swallowing the scan.
   const uncertaintyRadius = marker.uncertaintyM === null ? 0 : Math.min(marker.uncertaintyM, Math.max(0.05, extent * 0.25));
@@ -304,7 +305,7 @@ function SceneLayers({ prepared, display, meshPositions, wireframe, sensorMarker
   const baseLayers = layers.filter((layer) => !isOverlayLayer(layer));
   const overlayLayers = layers.filter(isOverlayLayer);
   return <>
-    <color attach="background" args={['#07101a']} />
+    <color attach="background" args={[uiTheme.background]} />
     {baseLayers.map((layer) => <LayerView key={layer.id} layer={layer} extent={prepared.extent} selectedNode={selectedNode} onSensorSelect={onSensorSelect} />)}
     <ViewportFailureBoundary
       key={identityKey}

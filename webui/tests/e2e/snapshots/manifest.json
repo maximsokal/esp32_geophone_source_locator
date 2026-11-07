@@ -24,388 +24,388 @@
   "approval": {
     "files": {
       "en-home-360x800.png": {
-        "sha256": "844ff3e1138fe63b810cd49d0f368a09a8aa40da0984503b932d7fa2237a7327",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "20f527f9c2a5dfb041585f5c95029f4a8b7e5889cfa51e43fdc213d18baec167",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-home-393x852.png": {
-        "sha256": "34d0fa1c4d2d7ae438ce505d31f4b8a5f1f313e2dc78f5de6fab3f5e002878c2",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "d5f232b1d8d89311dda7951acbe0b05408f4348bf31b99e832d75d2724573e6c",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-home-412x915.png": {
-        "sha256": "0f6e000bdcd5b371ee38d4c08beb07536b85da9d989f10f11bd1acd26a8f1649",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "e2bd78f9dd4dde8b403ab0dae4366ff5109b8fc34ca20dafef44b100aa0ac52c",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-home-430x932.png": {
-        "sha256": "b7e4e1ed028377ee779051d2078f4d4ba65bf25c4b507c3a13a542137179bd02",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "c2ffa12341aff59ee575f57d2bce87dde4d4ffc0611aa86496a7f7737311277f",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-home-768x1024.png": {
-        "sha256": "fb36cc1b7ff83a70aaf8856e9419bf5ce9ea445ac1fca793c23a40a36ee48be7",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "bbfd6f2c7d5f490541069b76a8824eed789a61ace8b0ee87e2a741317e92ecbe",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-home-844x390.png": {
-        "sha256": "508be9bb5ba0539c157c92ea6178da1925f8a81ee782f6864b3a3b5ff65dad6c",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "4a4727584068e46d0e75634d22a72848f9481de73a3c11caf07025c957f9bc30",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-home-error-393x852.png": {
-        "sha256": "7c70a8616cfbf5cfbbd12cf8371d6dd6f82cb02c397f693357e6ad1eddec3f64",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "c4af2344cb45467fd1ae6c517abc3f0d727555c09828fc2a7088c38a9541839d",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-home-loading-393x852.png": {
-        "sha256": "be7a228fbf8245ce7961c60995d811dc3eb42643e50ae97d62461e4d82f52e91",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "9cc0c5e3f67f92ed71a497eec2f5a1e9f669ae65b69eb87ea0de46e0e577ba9c",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-objects-393x852.png": {
-        "sha256": "e017a6a7766d83b481d6876c15c5bae814369455a0f78fba9fac3d6fa574c7bb",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "fd76629f5f689ae08f4bd35da6d4ca44756cd3c3046a0ae438a09810ba58fd94",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-objects-empty-393x852.png": {
-        "sha256": "a1953d87dabf713fea7b56fa3f2ddaab943c24f1a539cccacb4f8ce500d68d0c",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "72444acc922cad1fcf2a17996a4083796b6ea951338e5c215d96badeb25cd33f",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-objects-long-320x568.png": {
-        "sha256": "73a2e962b9dec67d939d9300fc37a2fc58e52c735c616aef6d252cebeada8c09",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "ff01ed0e3c41426d7cca87ee41112088506ff8eebf476af8c2f0bb9d8115619d",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-objects-long-393x852.png": {
-        "sha256": "eed5e42c62a0870469475a5d6230e38b0ea647e2935f544df2abf4617eee7ae3",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "9b084cd7ac156c995c7451580e21a6b66f422976ee2002dfbc2b835cfb422713",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-scanner-320x568.png": {
-        "sha256": "eb3877982c81b1e9eba1f483847bc006405f0ef765bd2d1aa5c4109649801aa0",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "a1aea180276f5d30e58d3259acced6a27b0905390da7b1f0cb051ae736dcbf1b",
+        "candidateId": "4760bf734fdbf2b6ebe5d6127b1578a9f983d872dadf57b1e538532a7ef65f6b"
       },
       "en-scanner-393x852.png": {
-        "sha256": "45cc946cfd7e179dbd5d35b0a54ad27a7a697f8a791041d46145156dfc241e73",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "c32e43df0becbc2d9f49f4b5b04ca5ad96d23b403b34725d82179705ec4f97a4",
+        "candidateId": "4760bf734fdbf2b6ebe5d6127b1578a9f983d872dadf57b1e538532a7ef65f6b"
       },
       "en-sensors-393x852.png": {
-        "sha256": "266cc61ff809e395e7a50b67294a71479daa7cdd7003fdd7604916d458e23291",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "49002bcf22280e60c8d6121b95368096daca24089d77c0819171229bd6ee82a4",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-sensors-disconnected-320x568.png": {
-        "sha256": "347763c5c15a5c35c8c62eab1fbbc6bc995976b7764e8353f77f9f979d7e9e62",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "a069c71db97419b6a45e2fb0a4fcf811cac585ca262a010045e9f46668ce97fc",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-sensors-disconnected-393x852.png": {
-        "sha256": "f88192e94a3bccb00b1bacae63419b588aa3f350394fee326dd3c1e83a93a5e7",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "5e358e6e1b933307449e98039a6111c7179d5fcbcf5c05d96d7fbc47355677ac",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-sensors-warning-360x800.png": {
-        "sha256": "20e21e25796b13deb1fd5793cd8ac186deefba96b62e1e648cd22ec76b3c2a34",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "7bd3b81ef1a4c7dbb333b4f183f820b583bbabff6419bfa009b742df7584d1b2",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-sensors-warning-393x852.png": {
-        "sha256": "983cafb691127bd2efa502862096392815e738a93d36cd19cc67e3cdf95058dd",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "0c6738011be3e2714403108eb67cd814d0f56902a71a41a3df700c5726b7dfd9",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-sensors-warning-412x915.png": {
-        "sha256": "0d07ba956408f753a9469619a81fca4d7858299a61fb079c84287c33f6d7469f",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "89b2bbfd919a7eacd45b5369ca4ed884381a888b10933dc08ede8d67aa08ebb2",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-sensors-warning-430x932.png": {
-        "sha256": "08fc7e648b7cb021f8dac02029ee9d997f8dc7a61090de5d1470677bf3d7f733",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "83a091a15c817193fdd6e446d7e8af82b4e2ef782315d8274c32e1bc4a017731",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-sensors-warning-768x1024.png": {
-        "sha256": "acd53a2bc74b5180539f7b9aea1f9a168f47da40ecbe688b42c910e71b2431c9",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "aadfb96303b5a4cb3a9fc2c62e28b8ad81920b7b4bfad8a26b4bfeb8097c2bd2",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-sensors-warning-844x390.png": {
-        "sha256": "e8ab426ad3b5165b1107c57687c777daeac6db91656551bc8198a1cdf53dbf37",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "193d5b290a50332b54a67131736833da64a2dd35b1a5a5d7b1680ce808be2fd1",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-calculating-393x852.png": {
-        "sha256": "dfa9042d3c8e4e984ba823861d06544e087ae6dfe5f269d1f561b4672f58a73d",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "39d3a72896e3b9c8fc6e803ec091fba45c39b43e51b2ad18c9d1068ae784aeb4",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-calib-prep-393x852.png": {
-        "sha256": "57ef1631dd65ca3a1955e08ffaf4fbb18a60f33bdf7c8bb77e7737833a0a3ee5",
-        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
+        "sha256": "a6c5c19a14e2d6dcefb1a272ada6d9615638ebe0a5ab7fa897dbff5c91530711",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-calib-result-393x852.png": {
-        "sha256": "06a08bbb7b89dbc26f7c9ffbbb4d4310516f9bb9020b57f9575c7596de3df733",
-        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
+        "sha256": "58882e55ec0fbb743ef626d86b263569b240582098efc8b79f367baa4371f9dc",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-calibrating-393x852.png": {
-        "sha256": "c59c53ca6ba99658579b1b09260e670fd651d543fa9f81c9af4ee999a36931ae",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "62a5d4b68a0cf2cb5cd3a20f8b6b89b0cdbb267a57e9d132a2f4272fce64913b",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-confirmation-393x852.png": {
-        "sha256": "7db3bd5f4a903e224eb7d092cab18eb12e5460434b1c1edcfc2d5eee79b7004c",
-        "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
+        "sha256": "ea1fd2127b48520899dcc642b233858a153b36858362334a54c3542ab5e1e1ab",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-gps-choice-393x852.png": {
-        "sha256": "ea05e5abf52b2b40382823355ae911f3c742820436e888ded048d41adf394c1a",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "16a30b1afb8bf43b7573cf25302bc7dbf59e5ead057a2d7ba831d4b3481d2b10",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-gps-pending-393x852.png": {
-        "sha256": "49f5adc62a57240609c366d4f9f5d0dc391f9ddade581a941a01e88da418e92d",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "1e7ddc697e419dd963a58215aebfc9ce6d66a8479c6e558a3984d435bb3457c7",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-idle-393x852.png": {
-        "sha256": "f6e752b5b790e248c834b5ae629922526eba5532eb138f947df0fc17a8d6504a",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "5cabcd0ab379c8ff82465bf199da6eea79a5b6d04a445ed939ece32510229a3a",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-layout-ready-393x852.png": {
-        "sha256": "70c860717fb0dfb6a10c0d2305dc5b780eb05cea6a20bea2c8cd6bc61de8ce9f",
-        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
+        "sha256": "590441f8725be24a5cb43ea0494a3c3d9eb9d718ce5631c65eccf04cc568c9c5",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-object-393x852.png": {
-        "sha256": "0658128a58dfa02319aeb801629a2651514f99d943b2dc59ff16949e65256ca0",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "3352337c77985708e0435e87d43ce9ef9df31eb24521e0f9853100528dba00be",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-placement-393x852.png": {
-        "sha256": "1fb6d1e4a7b0cb6def2c219ca7b4f7e38d7bb4ccff5b6620b6d2000e4ab20f61",
-        "candidateId": "08ca420415d3284252f1c3a42db335603db51dbaa7ab52a651e44e20c6d0f71f"
+        "sha256": "7e41128a0a0b9c891a5e19b1a1fd86919aa8d30fd3afd28e52adb314c2059670",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-ranging-393x852.png": {
-        "sha256": "2037bc6ed8695a3b38d37c7264a5384cfa1541f276fdbab73e8ed0f6caeab8c5",
-        "candidateId": "9d0b9709f4cb17252c594e3fe3bb0274887d38cbda276ff129fcd6ed6c87bdf7"
+        "sha256": "3e366a3c744aab6be9113891f7c4dd119be7eae2edb8e5c1544142cff95adc4d",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-ranging-result-393x852.png": {
-        "sha256": "a9a8afe3204940215433e42962b2236a0ebeb103646287d41d2f0dc9fab2b42e",
-        "candidateId": "9d0b9709f4cb17252c594e3fe3bb0274887d38cbda276ff129fcd6ed6c87bdf7"
+        "sha256": "27b19f8a880d594437763289de95033008be688b9fc1ef7dd433bd73b8a17160",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-record-ready-393x852.png": {
-        "sha256": "f117ba0f80593dc693813c1854eeac047457c84f40cdb212c2a3e3d5fb75c932",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "9dde5ddcdab7c084b14c62102aab6ff71ab2370aa164af9a723115187e1043c8",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-recording-393x852.png": {
-        "sha256": "81414f98c404038a823200fbc1953715dc01f1c319b82bcf8ab6b5efb879df2d",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "1f3775d0a144328fb13967f47f1476df6fbd8f85423d0c3cba680ae9b68ccf57",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-result-393x852.png": {
-        "sha256": "f7156545cc0be3bc6802d6acf60d364da11c553b51000dadc421127f5dec6b9e",
-        "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
+        "sha256": "bbc47630041298e6f381c5a434e91bfc7e9e89bd5370224ce43cf7fac1337cde",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-scan-choice-393x852.png": {
-        "sha256": "f4a3383661befecd08aba073068f9dce7d489a9beb8419a5d01cd5309e8fb392",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "23858d8052b2c339b7554e6859d65801cea016cc8372577b13ec1d2489a32b88",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-scanning-393x852.png": {
-        "sha256": "45cc946cfd7e179dbd5d35b0a54ad27a7a697f8a791041d46145156dfc241e73",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "c32e43df0becbc2d9f49f4b5b04ca5ad96d23b403b34725d82179705ec4f97a4",
+        "candidateId": "4760bf734fdbf2b6ebe5d6127b1578a9f983d872dadf57b1e538532a7ef65f6b"
       },
       "en-workflow-sensor-check-393x852.png": {
-        "sha256": "02b2c1513eccdbc6ff30213a948971979476f8c2f60be6793f4fc7a10caebe4e",
-        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
+        "sha256": "b750ce97b696e0bfd0f1b5346e0c00e147700802cbb8910555e07102ce6622b0",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-stopped-393x852.png": {
-        "sha256": "8c174a2181748f4b431d1963aa2ee66e6203c757adcca8ef5ca35f2930b13f26",
-        "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
+        "sha256": "c7b55284597b1fbb26737d8976de8da7e2684a2a33b88a1992814965d4436d95",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-home-360x800.png": {
-        "sha256": "bca90cc2f2159a6d0b9db7fa4d5d0227eb0d11af648457eaf32723a1323b611b",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "ef4c5ba9a7db9b28d347d0dcee0d3e575d745b010e05ef59a7e4f2f9dc76e217",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-home-393x852.png": {
-        "sha256": "67e9b273ea86f4fac38351a07b5dff7edbedbae4184d11d8d51556046f9b3159",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "7ace2edd0c2ed62f27ca5d3d17ccaba536fee24462a4001c0340c0b5562650e4",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-home-412x915.png": {
-        "sha256": "263d030b7a16c7c120096ef4eba253f0de068e4d1acd5c40a4d45c37d5d25d3d",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "b10c52e8446688db4bdf457b7a7260f8a0786b8073aa7215c1077c1c8c9f8159",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-home-430x932.png": {
-        "sha256": "242b59691d0ffedf3e63c10df00198fe34c40c819738e611a313f11083f428e1",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "9f7e3c38b3f723fe68589d41e9a5906345ae303bf7e00a32e64d1592aef74cc0",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-home-768x1024.png": {
-        "sha256": "61d758ef9aba56debd08f8c2524760398243e5efb5f070cc8ce10f50581acc5b",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "17a771971becfadca83672f04bea3aae77dfd00c6217fa3fdbfa79c64231aab5",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-home-844x390.png": {
-        "sha256": "6a7110f7fa322ffda676d2636d014fe0a577e72a07b40181201d85033b08e97f",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "fdbe8e5bc095002048ce71e796b3611322d606ad975e88ff890eb43e8e9bf6cf",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-home-error-393x852.png": {
-        "sha256": "ac5c9e8f2e0d14bd22e7ec95cf7c5252f8c879a0b9bed0945d2601e43ab26638",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "8a5e61df9d8a190737654956124c724f5664b40c4d60f224f910cf32a413da1a",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-home-loading-393x852.png": {
-        "sha256": "0097835774fde4f7f0a05a6b214a471e552c0030e84e83a63b20d709a6fc437e",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "621a644b177540ee9f0866b9e61af62496fa73ebdce8979dc5266baeef088dc5",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-objects-393x852.png": {
-        "sha256": "6eca2b3fe7c31848a858cdcc90813adadf4cfb6daed347a9c446fe186a588048",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "a47b2f3157992b06c7edffe274740816904dda1084cab90a408c502aaab2b79f",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-objects-empty-393x852.png": {
-        "sha256": "5b7e2ec584750a902076243a32cc8523a5489ef964652914bc63e2a6a6d74e51",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "9a98384a3138715e61b05803d9b9929291e961c9dab2ec55990bbdc07bc84498",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-objects-long-320x568.png": {
-        "sha256": "0e07bb4c2db704d70bed44f14612fe26721d5cd4525f67ea1a1f31aee9a69147",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "8630b43743cf4e934b5c9ee325bf2be5bdf8b193c1e950f3bed6fc30a7087d92",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-objects-long-393x852.png": {
-        "sha256": "2d237fb4bd22980d7493a129c523b617bd8f3f49d6c9ad16c9425a28535d76cb",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "494ce6a08909fbbb138c1c4fdc22bb9ab6e17a3a1b12383aa991099b22b5a93d",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-scanner-320x568.png": {
-        "sha256": "036de1c6451f09d4c6b1c3572b7183ad5ec113972cdc9397cdb2feb3dfddaea0",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "571af037e6cff221cb80264a963230d58d7e55800758152dcbe3d902f930a2b9",
+        "candidateId": "4760bf734fdbf2b6ebe5d6127b1578a9f983d872dadf57b1e538532a7ef65f6b"
       },
       "uk-scanner-393x852.png": {
-        "sha256": "f170e7294e88c4baefe831862602a2b03a3b7b0dece8000b774a893395615904",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "efd454b093b90e4f71221f4ae8db30ae97ea6f810fd022a8ded6047ee043074c",
+        "candidateId": "4760bf734fdbf2b6ebe5d6127b1578a9f983d872dadf57b1e538532a7ef65f6b"
       },
       "uk-sensors-393x852.png": {
-        "sha256": "466cf1869a012b50e1ade620b2e06ee4bb0301520a8bdff7fe8035e31fd1b54c",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "99c61be5e33d53eb03c7d1be9261c518b7356c1722f7d7c1488810a8d0afa1c8",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-sensors-disconnected-320x568.png": {
-        "sha256": "fc0f5bc1af0e100372b2ed450538263e4b2a58c1dc0e34e8948e7ec6b1906ea0",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "f3b6f495299c3b4e2f03d8255beb8a33c747318ce0fc34509160f61b743c4e6f",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-sensors-disconnected-393x852.png": {
-        "sha256": "b8f5a9be4bd30cdb0f0946cd6194965e56824945e5ac91e90934027c5827943e",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "c5a70add1cf7d6c26330cfd4fe08897012d90dae64caef0910bc34d09313dbe3",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-sensors-warning-360x800.png": {
-        "sha256": "9803e8497dfd1b46b00db8e66a172353463c8de6a7a41b359a06062d7add6a4c",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "21080e90adf7b8cb140919fd9e03fb9c0da9be51101c7db6b1aa5f09f41ebf71",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-sensors-warning-393x852.png": {
-        "sha256": "601a7455b191acc6a469e123ca5db800f5eeb72d500a8828d14a10c56a656678",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "dec630bfe2c95d8ba3f572c21f2fa87eb274e4f7f9c318698fde8ab1fba6fbef",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-sensors-warning-412x915.png": {
-        "sha256": "77fbdeeffa2da34ce547e698c2a74eea894de79c169de904757116c56a7a3ebc",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "df828107df578a776a0a00020b6e5eae88e3d145cdafe965d4a113ee23e3766a",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-sensors-warning-430x932.png": {
-        "sha256": "7f1766c7bae17e937b759664a165f10e41d5118c78e3a504c3370038a50e98ef",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "783a1085dfec4d93b37f8990a12d086aa717a90eb05773e61438af4820a0ff99",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-sensors-warning-768x1024.png": {
-        "sha256": "fd268b341efbab5f8d3419af87c0521c57aed93820e06c6b0df3ed60fd6d5a77",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "7e33da2f00c018c3668ccf1fecf40606bb741fecee3e520427fd9728fd73d645",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-sensors-warning-844x390.png": {
-        "sha256": "73eec377859db440be14f2a29b392d7555375021d6dafaef8923839d256825f2",
-        "candidateId": "daaf6071aea9d137b118744169bf5c67c91d5d6247e9b964dc338245a9532f8e"
+        "sha256": "18d366364d8a0726d7968d124dd05e008fbd834f99af6ffe3adbe03d7a265593",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-calculating-393x852.png": {
-        "sha256": "68df26cb193621466bd9bee5e18e23390f32220f6811cd7c82a56224c2647342",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "24e812e65fbae328d8abaa3d40e0158845529f2e96140000f3d72a7f517f19f1",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-calib-prep-393x852.png": {
-        "sha256": "124ef9482494585a43717837609049aea84c7e4837dcbee77f576bde3af8c583",
-        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
+        "sha256": "7cd840c65a6ea720a1c002fb25589bb0a66022e95819b4ef0b5a28fe0b870b36",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-calib-result-393x852.png": {
-        "sha256": "80287eddf42ab02697ef3c38d82c687242e88273721d838220ab935cf868e33b",
-        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
+        "sha256": "1ac92acd17c764bf55e3a7bb422b02f44d9eb5a021c67967d460c82c00f73a6a",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-calibrating-393x852.png": {
-        "sha256": "368b69f19ce003cff5034e7a6dab7e4878b8cf15894a0276516e78831db0d98c",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "a01dda59fc24f068638e62c225bdda3ea077d28f0ad67da73452113b746c442d",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-confirmation-393x852.png": {
-        "sha256": "39823e9fc7bb974b4b9775f8406b63fc223ce81b366b63605e9cf6fb43d06f3d",
-        "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
+        "sha256": "80d16c0f551cb03811aebbd8c58b89cadc7018975431be2ec6f793f5d8ea473c",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-gps-choice-393x852.png": {
-        "sha256": "213d7f42184490a01432e27b2a73c2b475a5d5ec1eab066f54c09a26f24fa1f9",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "0a45f5028f0c2a4bbb8bb2c4c5676833e814b9e271346c1006ba8e5a4e94da8a",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-gps-pending-393x852.png": {
-        "sha256": "6a9bfa5f717c6f30b2cf3b1da0cb52b327d9c1c94f52a08cbe2fd078d6e98fa0",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "9a103000ee7eb54a3b04a56279bbdd657fc04e51b4c3619de3ebbdd901913132",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-idle-393x852.png": {
-        "sha256": "fb1cfced94dab435c0c900a8d7c42317af3560be5fa88fad37391c3ae9e6d019",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "3d6aa279caaea19b787fa570654e3f12ea5ed9769becb9696bbc23b4e0cd0334",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-layout-ready-393x852.png": {
-        "sha256": "7c4331daa99b62e4f6f596b4b675932a741fc17f703bb69dbb2a22e9e7e2aebc",
-        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
+        "sha256": "476a40b289af38be33989c206d0abcfdb0cb15bc0ee2fa5459e4933391bb90f9",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-object-393x852.png": {
-        "sha256": "9cb563fa27a9fb2ff818ad8a5f2216c66343c6710612dc3d6b3cef42d7e50407",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "cca2a2876ff2e121dbd33809e57355c68a9a54c6ed7bd919dd201bf5f4747d9b",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-placement-393x852.png": {
-        "sha256": "cc0067f2d97c6e67b34a12d2cd1933fa5e18ad6f12e9f62267b8b1d6bc2c2340",
-        "candidateId": "08ca420415d3284252f1c3a42db335603db51dbaa7ab52a651e44e20c6d0f71f"
+        "sha256": "e3e9cf97feca16510db180675dca3cc0436b63a5d8a02d1f61b01d628f6e9b52",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-ranging-393x852.png": {
-        "sha256": "11c2526d18eb36dd2acd4f78d7dba95b484c95de6439c7a8e28ddaeb76835ea8",
-        "candidateId": "9d0b9709f4cb17252c594e3fe3bb0274887d38cbda276ff129fcd6ed6c87bdf7"
+        "sha256": "808aa1b8e0ca73de785b6e80c5481068235cde626cd2c00cebfe47680342eb20",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-ranging-result-393x852.png": {
-        "sha256": "0d053e576331363f096c2b635d8a7284efacae5c7672d34e38008e4ab30c0474",
-        "candidateId": "9d0b9709f4cb17252c594e3fe3bb0274887d38cbda276ff129fcd6ed6c87bdf7"
+        "sha256": "e650f2a9232edf11f16e07bacde95670eb1baab509681da93b940c5ce2abdf2a",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-record-ready-393x852.png": {
-        "sha256": "e6fe0e95f178fb292261f98b8ae8c6d9108735c774a732176a3ed7457ea4ac09",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "2d18f7ccd4b0be00099e422e01157bb054c9f1b2abd7fdb1ca4e5f359ec3cf72",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-recording-393x852.png": {
-        "sha256": "39bd337c36046db50afe5116a55aee218c66280738e62f92741098bb822aa63e",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "0bb62d4c2bdb6483b66c71cf6632b4259ca741aadab526fa6b58a7dd8a9c8fb8",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-result-393x852.png": {
-        "sha256": "2872d0df567dacc035710458a3fc2d2241cb805ed1d22eeb707a734a5deb65cd",
-        "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
+        "sha256": "0b64c8ca057bd65e3237d54ee994bb550b5ddd59ce4cba7336f4b48ce36fba2f",
+        "candidateId": "4760bf734fdbf2b6ebe5d6127b1578a9f983d872dadf57b1e538532a7ef65f6b"
       },
       "uk-workflow-scan-choice-393x852.png": {
-        "sha256": "99be71e72b9886b6849cdb97228d1d5d08b1d65681ad7fd16bc3c59576ffd527",
-        "candidateId": "c34644dc870bf8edc93d0ecd3267896884024abc93c80626800560ef42359826"
+        "sha256": "9f1cf62bf4539111074d252a0efde8a884be4056ef9d3152f6b81112858a6339",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-scanning-393x852.png": {
-        "sha256": "f170e7294e88c4baefe831862602a2b03a3b7b0dece8000b774a893395615904",
-        "candidateId": "9b514e8f425fe4fef7d79144a6aa5a29d10fcd9c7e6ac1e1a57b4953190b2206"
+        "sha256": "efd454b093b90e4f71221f4ae8db30ae97ea6f810fd022a8ded6047ee043074c",
+        "candidateId": "4760bf734fdbf2b6ebe5d6127b1578a9f983d872dadf57b1e538532a7ef65f6b"
       },
       "uk-workflow-sensor-check-393x852.png": {
-        "sha256": "ca708d718572cec8a280b42881ecd1b55602d8f282524efa9ef205ad6c936051",
-        "candidateId": "38a37f1bdf6fcc1685ded107a70c5d58473bad918c0b7db94d6ec00aaf19f121"
+        "sha256": "b32f12ea6dec13a496a6f8d2128cc087fcdf78b50f1fe0360975f47ee657e70f",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-stopped-393x852.png": {
-        "sha256": "f017299aa67379ed921db335d71fb2e2b6ed999bb7eb10225e727236e670ea9b",
-        "candidateId": "9f0c86c93a37ea8f299f4aa747a37823aa6000096e3325977d436fb234e7fd3b"
+        "sha256": "032c9a9976cf415f9873d70e63cad6f3e5340f53d34b23b3e64d2d9f2a9d70c1",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-scan-distance-refinement-393x852.png": {
-        "sha256": "b36f727ea2d5d0fa85c256d9f8d1738fb55371014144301001dffa243084d5ec",
-        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
+        "sha256": "afa573fc0e5dc0e734eb1e83ab6aced8032eef7b438ff28b97cc87fef45cf182",
+        "candidateId": "4760bf734fdbf2b6ebe5d6127b1578a9f983d872dadf57b1e538532a7ef65f6b"
       },
       "en-workflow-ranging-result-wifi-back-393x852.png": {
-        "sha256": "c732a9506b6b6c3996e5011ebfa173f609b03ef356171322678dc47ae528753a",
-        "candidateId": "9d0b9709f4cb17252c594e3fe3bb0274887d38cbda276ff129fcd6ed6c87bdf7"
+        "sha256": "f8cbc355d8f0c531c92bee5d6c562d2d3ce46de220cc5f57c4cc23710daddc83",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-ranging-wifi-off-393x852.png": {
-        "sha256": "27e18660637ce4f77681b8b98e0c246e0009dfd4098c780740d25b28f2bc9d52",
-        "candidateId": "9d0b9709f4cb17252c594e3fe3bb0274887d38cbda276ff129fcd6ed6c87bdf7"
+        "sha256": "7ded83ced21aeaad5150541d26000137e395d6df5dd1a669b413e0379261d2ac",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-ranging-wifi-pending-393x852.png": {
-        "sha256": "28a74f306fe1a6325b3de6e6b8cd1bbe8cd406d25652cc06d78241dcec5462f7",
-        "candidateId": "9d0b9709f4cb17252c594e3fe3bb0274887d38cbda276ff129fcd6ed6c87bdf7"
+        "sha256": "d830498cac14e7e9bc507ff799ac82f2f69f768dc5f617ac343213f91a9cfe7c",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-scan-distance-refinement-393x852.png": {
-        "sha256": "7f6980d49b3fef42394df74f408ac1ebd6994fbd611717235084fca22e77af20",
-        "candidateId": "0e9f275ec88bf1ac7648513a58d8d1b4e1d36d6cc73b05e8510a580b948119d1"
+        "sha256": "2b91d43a0d4fd7f5f49092a0fc5713c26e36bef915a63dbd02954e2e04888ef7",
+        "candidateId": "4760bf734fdbf2b6ebe5d6127b1578a9f983d872dadf57b1e538532a7ef65f6b"
       },
       "uk-workflow-ranging-result-wifi-back-393x852.png": {
-        "sha256": "5460ed37b8d25d2cd2d0d8cdcaa626074e9eda4b6de613d469078a16a5bf6a64",
-        "candidateId": "9d0b9709f4cb17252c594e3fe3bb0274887d38cbda276ff129fcd6ed6c87bdf7"
+        "sha256": "6929b72bc264826664895c76ab3119511c8a41c86a109ea55bbe1b9c9deb6c39",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-ranging-wifi-off-393x852.png": {
-        "sha256": "5153b52577dc7ae7a2ea4e60a1dfddee984803724704016127f398154aa46dd3",
-        "candidateId": "9d0b9709f4cb17252c594e3fe3bb0274887d38cbda276ff129fcd6ed6c87bdf7"
+        "sha256": "11b46bd8f60a1f8a7724a49e3d08b7bffff23ed52612850134eb21d2f76f1fb8",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-ranging-wifi-pending-393x852.png": {
-        "sha256": "51d91f0b291220104b63ae871a07f0d5f6eb3ad8e5d423d24b00679f17d25949",
-        "candidateId": "9d0b9709f4cb17252c594e3fe3bb0274887d38cbda276ff129fcd6ed6c87bdf7"
+        "sha256": "2d35751729af222a08e68c9dc5e7c09de2d042df7a1e0dc4e5f3dd3e8084d495",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "en-workflow-ranging-result-pair-failed-393x852.png": {
-        "sha256": "a1e5e1fec295a132ef85f142a60a82afff1fd6535744095edd1b23bb34fd0080",
-        "candidateId": "9d0b9709f4cb17252c594e3fe3bb0274887d38cbda276ff129fcd6ed6c87bdf7"
+        "sha256": "4b04ae6e78958fa696d7e8ac8141e61749158715be8d19a0788f67adbe709bd5",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       },
       "uk-workflow-ranging-result-pair-failed-393x852.png": {
-        "sha256": "1b0ee0585f6f744bd01e76585c6aef26642ce872da1bd1346341b9848c63c21c",
-        "candidateId": "9d0b9709f4cb17252c594e3fe3bb0274887d38cbda276ff129fcd6ed6c87bdf7"
+        "sha256": "fc34f3e8bd2f79e7ef8c9ac4365cebe6c775760797c2234ecb39138cdf1076fd",
+        "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
       }
     }
   }

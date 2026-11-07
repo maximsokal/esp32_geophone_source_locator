@@ -1239,6 +1239,7 @@ export const en: Record<I18nKey, string> = {
   "sensors.serial_streak": "Serial streak",
   "sensors.serial_stream": "Serial stream",
   "sensors.signal_quality": "Signal quality",
+  "sensors.status_last_known": "Connection to the device is lost. Link and pod states below are the last known and may be outdated.",
   "sensors.stopped": "stopped",
   "sensors.stream_state": "Stream state",
   "sensors.temperature": "Temperature",

@@ -19,7 +19,7 @@ for (const locale of ['en', 'uk'] as const) {
         for (const enlarged of [false, true]) {
           if (enlarged) await page.addStyleTag({ content: 'html { font-size: 200%; }' });
           for (const selector of ['html', 'body', '#root']) {
-            await expect(page.locator(selector), 'opaque XR must not expose the browser white canvas').toHaveCSS('background-color', 'rgb(5, 10, 18)');
+            await expect(page.locator(selector), 'opaque XR must not expose the browser white canvas').toHaveCSS('background-color', 'rgb(8, 17, 31)');
           }
           const geometry = await page.evaluate(() => {
             const card = document.querySelector('.xr-overlay-card')!;
@@ -38,7 +38,7 @@ for (const locale of ['en', 'uk'] as const) {
           expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.width);
           expect(geometry.overflow, 'short viewports must allow controls to scroll').toBe('auto');
           await expect(page.locator('.xr-finish-button')).toHaveCSS('background-color', 'rgb(153, 27, 27)');
-          await expect(page.locator('.xr-overlay-actions button').first()).toHaveCSS('color', 'rgb(248, 250, 252)');
+          await expect(page.locator('.xr-overlay-actions button').first()).toHaveCSS('color', 'rgb(243, 247, 251)');
           const clipped = await page.locator('.xr-overlay-card button').evaluateAll(buttons => buttons.filter(button => {
             const rect = button.getBoundingClientRect();
             return rect.width < 44 || rect.height < 44 || button.scrollWidth > button.clientWidth + 1 || button.scrollHeight > button.clientHeight + 1;
@@ -53,7 +53,7 @@ for (const locale of ['en', 'uk'] as const) {
         await expect(page.locator('.xr-start-button')).toBeEnabled();
         await page.getByRole('button', { name: t['console.back_object'], exact: true }).click();
         await expect(page.locator('.workflow-page')).toBeVisible();
-        await expect(page.locator('.device-console-shell')).toHaveCSS('background-color', 'rgb(7, 16, 24)');
+        await expect(page.locator('.device-console-shell')).toHaveCSS('background-color', 'rgb(8, 17, 31)');
         await scenarioScreenshot(page, `${locale}-restored-${width}x${height}`);
       });
     }

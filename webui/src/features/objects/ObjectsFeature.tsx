@@ -27,6 +27,8 @@ const LocalizationCalculatePanel = lazy(() => import('./LocalizationCalculatePan
 
 interface Props {
   status: DeviceStatus | null;
+  /** Last status fetch failed: link states shown on Live are the last known. */
+  statusStale?: boolean;
   store: ObjectStoreState | null;
   sessions: RecordingSessionCollection | null;
   selectedId: string | null;
@@ -494,7 +496,7 @@ export default function ObjectsFeature(props: Props) {
 
             {showLive && liveAvailable && recordingWorkflowAllowed && (
               <Suspense fallback={<div className="console-card">{t('objects.loading_waveform')}</div>}>
-                <LiveSeismicPanel />
+                <LiveSeismicPanel nodeLinks={status?.node_links} statusStale={props.statusStale} />
               </Suspense>
             )}
           </>

@@ -1,6 +1,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useEffect } from 'react';
 import * as THREE from 'three';
+import { uiTheme } from '../../theme';
 import { useOrbitControlsOwner, useOwnedOrbitControls, type OrbitControlsRef } from '../../components/useOrbitControls';
 
 import { isPlanarSector, type LocalizationOverlayModel } from '../../domain/localizationOverlay';
@@ -50,13 +51,13 @@ export default function LocalizationOverlayScene({ model }: Props) {
     <Canvas className="localization-overlay-canvas" camera={{ fov: 45, near: 0.05, far: extent * 20 }}>
       <ambientLight intensity={0.7} />
       <directionalLight position={[5, 10, 5]} intensity={0.8} />
-      <gridHelper args={[Math.ceil(extent * 2.5), Math.ceil(extent * 2.5), '#35546a', '#1c3444']} />
+      <gridHelper args={[Math.ceil(extent * 2.5), Math.ceil(extent * 2.5), uiTheme.muted, uiTheme.panelAlt]} />
       <Controls extent={extent} controlsRef={controlsOwner} />
 
       {model.sensors.map((sensor) => (
         <mesh key={`sensor-${sensor.pod}`} position={toThree(sensor.position.x_m, sensor.position.y_m, sensor.position.z_m)}>
           <boxGeometry args={[0.18, 0.18, 0.18]} />
-          <meshStandardMaterial color={sensor.pod === 0 ? '#e2e8f0' : '#94a3b8'} />
+          <meshStandardMaterial color={sensor.pod === 0 ? uiTheme.text : uiTheme.muted} />
         </mesh>
       ))}
 

@@ -289,6 +289,7 @@
     "sensors.node_link.measuring": { "en": "Measuring", "uk": "Вимірює" },
     "sensors.node_link.unknown": { "en": "Unknown status: {status}", "uk": "Невідомий стан: {status}" },
     "sensors.power_snapshot_stale": { "en": "Power channel {channel} data is stale ({age} ms old).", "uk": "Дані каналу живлення {channel} застаріли ({age} мс)." },
+    "sensors.status_last_known": { "en": "Connection to the device is lost. Link and pod states below are the last known and may be outdated.", "uk": "Зв’язок із пристроєм втрачено. Стани зв’язку та модулів нижче — останні відомі й можуть бути застарілими." },
     "sensors.topology_snapshot_stale": { "en": "Node topology is stale ({age} ms old).", "uk": "Дані топології вузлів застаріли ({age} мс)." },
     "sensors.pod_state.disconnected": { "en": "Not connected", "uk": "Не підключено" },
     "sensors.pod_state.ready": { "en": "Ready", "uk": "Готовий" },

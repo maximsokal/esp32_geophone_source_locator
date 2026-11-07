@@ -4,13 +4,13 @@
   "locales": ["en", "uk"],
   "geometry": { "roundingPx": 1, "controlMinPx": 44, "sectionGapPx": 16, "actionGapPx": 8 },
   "theme": {
-    "primary": { "backgroundColor": "rgb(25, 100, 138)", "color": "rgb(255, 255, 255)" },
-    "secondary": { "backgroundColor": "rgb(23, 46, 61)" },
-    "danger": { "backgroundColor": "rgb(109, 40, 48)" },
-    "ready": { "backgroundColor": "rgb(20, 58, 43)", "color": "rgb(114, 238, 176)" },
-    "offline": { "backgroundColor": "rgb(28, 45, 55)", "color": "rgb(155, 176, 189)" },
-    "warning": { "backgroundColor": "rgb(74, 58, 18)", "color": "rgb(253, 224, 71)" },
-    "error": { "backgroundColor": "rgb(76, 36, 40)", "color": "rgb(255, 213, 216)" }
+    "primary": { "backgroundColor": "rgb(27, 45, 70)", "color": "rgb(243, 247, 251)", "borderTopColor": "rgb(33, 199, 217)" },
+    "secondary": { "backgroundColor": "rgb(19, 34, 56)", "color": "rgb(243, 247, 251)" },
+    "danger": { "backgroundColor": "rgb(240, 90, 103)", "color": "rgb(14, 26, 43)" },
+    "ready": { "backgroundColor": "rgb(27, 45, 70)", "color": "rgb(76, 214, 129)" },
+    "offline": { "backgroundColor": "rgb(27, 45, 70)", "color": "rgb(148, 167, 188)" },
+    "warning": { "backgroundColor": "rgb(27, 45, 70)", "color": "rgb(243, 184, 75)" },
+    "error": { "backgroundColor": "rgb(27, 45, 70)", "color": "rgb(243, 247, 251)" }
   },
   "exceptions": {
     "nrfLogTable": "Only .nrf-log-table-wrap intentionally scrolls a wide log table; its wrapper must fit the page and expose the last column.",

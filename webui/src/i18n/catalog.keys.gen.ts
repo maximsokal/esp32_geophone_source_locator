@@ -1237,6 +1237,7 @@ export const i18nKeys = [
   "sensors.serial_streak",
   "sensors.serial_stream",
   "sensors.signal_quality",
+  "sensors.status_last_known",
   "sensors.stopped",
   "sensors.stream_state",
   "sensors.temperature",

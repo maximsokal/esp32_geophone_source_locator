@@ -6,6 +6,7 @@ import { useOrbitControlsOwner, useOwnedOrbitControls, type OrbitControlsRef } f
 
 import type { SceneModel, SensorPlacement, TriangleMesh, Vec3 } from '../domain/scene';
 import { useT } from '../i18n';
+import { uiTheme } from '../theme';
 
 export type ViewPreset = 'perspective' | 'top' | 'front';
 
@@ -34,12 +35,12 @@ function makeLabelTexture(label: string): THREE.CanvasTexture {
   const context = canvas.getContext('2d');
   if (context !== null) {
     context.clearRect(0, 0, canvas.width, canvas.height);
-    context.fillStyle = 'rgba(11, 18, 32, 0.92)';
+    context.fillStyle = uiTheme.header;
     context.fillRect(12, 10, 232, 76);
-    context.strokeStyle = 'rgba(148, 163, 184, 0.7)';
+    context.strokeStyle = uiTheme.muted;
     context.lineWidth = 3;
     context.strokeRect(12, 10, 232, 76);
-    context.fillStyle = '#f8fafc';
+    context.fillStyle = uiTheme.text;
     context.font = '700 40px system-ui, sans-serif';
     context.textAlign = 'center';
     context.textBaseline = 'middle';
@@ -119,7 +120,7 @@ function Surface({ mesh }: { mesh: TriangleMesh }) {
     <group>
       <mesh geometry={geometry} receiveShadow>
         <meshStandardMaterial
-          color="#475569"
+          color={uiTheme.panelAlt}
           roughness={0.92}
           metalness={0.02}
           transparent
@@ -129,7 +130,7 @@ function Surface({ mesh }: { mesh: TriangleMesh }) {
       </mesh>
       <mesh geometry={geometry} position={[0, 0.004, 0]}>
         <meshBasicMaterial
-          color="#94a3b8"
+          color={uiTheme.muted}
           transparent
           opacity={0.16}
           wireframe
@@ -154,10 +155,10 @@ function SensorMarker({
 
   const [x, y, z] = toThree(sensor.position);
   const markerColor = selected
-    ? '#fb923c'
+    ? uiTheme.accent
     : sensor.role === 'main'
-      ? '#38bdf8'
-      : '#facc15';
+      ? uiTheme.linkMeasuring
+      : uiTheme.warning;
 
   return (
     <group position={[x, y, z]}>
@@ -194,12 +195,12 @@ function SceneContents({
 }: SceneViewportProps & { controlsRef: OrbitControlsRef }) {
   return (
     <>
-      <color attach="background" args={['#08101d']} />
-      <fog attach="fog" args={['#08101d', 14, 28]} />
+      <color attach="background" args={[uiTheme.background]} />
+      <fog attach="fog" args={[uiTheme.background, 14, 28]} />
       <ambientLight intensity={0.75} />
       <directionalLight position={[4, 8, 5]} intensity={1.5} castShadow />
 
-      <gridHelper args={[12, 24, '#334155', '#1e293b']} position={[0, 0, 0]} />
+      <gridHelper args={[12, 24, uiTheme.muted, uiTheme.panelAlt]} position={[0, 0, 0]} />
       <axesHelper args={[1.4]} />
 
       {scene.surface !== undefined && <Surface mesh={scene.surface} />}

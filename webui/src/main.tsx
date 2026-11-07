@@ -5,6 +5,7 @@ import DeviceConsoleApp from './DeviceConsoleApp';
 import { installClientDiagnostics } from './data/clientDiagnostics';
 import { LocaleProvider } from './i18n';
 import './styles.css';
+import './theme.css';
 /*
  * The scanner itself is code-split, but its styles must not be. ESP32 serves a
  * tiny flash-authoritative asset set and a missed lazy CSS chunk makes a valid

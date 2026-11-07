@@ -7,6 +7,7 @@ import type { I18nLocale } from '../i18n';
 import type { ScanSceneMaterializationNeeds } from './postScanAdmission';
 import { formatDistance, formatNumber } from '../i18n/format';
 import { translate } from '../i18n';
+import { uiTheme } from '../theme';
 
 /**
  * Pure scene preparation for ScanPointCloudViewport: which scanned data
@@ -328,13 +329,13 @@ export interface SourceHighlightLayerSpec extends LayerBase {
 export type ScanLayerSpec = PointLayerSpec | MeshLayerSpec | LineLayerSpec | PinLayerSpec | SensorMarkerLayerSpec | SourceHighlightLayerSpec;
 
 export const SCAN_LAYER_COLORS = {
-  unknownSpace: '#f59e0b',
-  freeAir: '#38bdf8',
-  weak: '#ff3d28',
-  improving: '#facc15',
-  stable: '#2ee6a6',
-  operatorEdges: '#f05cff',
-  bounds: '#dbeafe',
+  unknownSpace: uiTheme.muted,
+  freeAir: uiTheme.linkMeasuring,
+  weak: uiTheme.error,
+  improving: uiTheme.warning,
+  stable: uiTheme.good,
+  operatorEdges: uiTheme.accent,
+  bounds: uiTheme.text,
 } as const;
 
 function qualityBandLayers(

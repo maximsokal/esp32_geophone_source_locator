@@ -1239,6 +1239,7 @@ export const uk: Record<I18nKey, string> = {
   "sensors.serial_streak": "Послідовність помилок потоку",
   "sensors.serial_stream": "Послідовний потік",
   "sensors.signal_quality": "Якість сигналу",
+  "sensors.status_last_known": "Зв’язок із пристроєм втрачено. Стани зв’язку та модулів нижче — останні відомі й можуть бути застарілими.",
   "sensors.stopped": "зупинено",
   "sensors.stream_state": "Стан потоку",
   "sensors.temperature": "Температура",

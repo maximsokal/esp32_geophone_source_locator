@@ -153,6 +153,7 @@
                   },
                   {
                       "name":  "max132_failure_sweep_101_200",
+                      "timeout_seconds":  180,
                       "defines":  [
                                       "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072",
                                       "malloc=max132_test_malloc",
@@ -236,6 +237,7 @@
                   },
                   {
                       "name":  "max132_failure_sweep_201_300",
+                      "timeout_seconds":  180,
                       "defines":  [
                                       "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072",
                                       "malloc=max132_test_malloc",
@@ -319,6 +321,7 @@
                   },
                   {
                       "name":  "max132_failure_sweep_301_400",
+                      "timeout_seconds":  180,
                       "defines":  [
                                       "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072",
                                       "malloc=max132_test_malloc",
@@ -402,6 +405,7 @@
                   },
                   {
                       "name":  "max132_failure_sweep_401_500",
+                      "timeout_seconds":  180,
                       "defines":  [
                                       "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072",
                                       "malloc=max132_test_malloc",
@@ -485,6 +489,7 @@
                   },
                   {
                       "name":  "max132_failure_sweep_501_600",
+                      "timeout_seconds":  180,
                       "defines":  [
                                       "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072",
                                       "malloc=max132_test_malloc",
@@ -568,6 +573,7 @@
                   },
                   {
                       "name":  "max132_failure_sweep_601_700",
+                      "timeout_seconds":  180,
                       "defines":  [
                                       "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072",
                                       "malloc=max132_test_malloc",
@@ -651,6 +657,7 @@
                   },
                   {
                       "name":  "max132_failure_sweep_701_800",
+                      "timeout_seconds":  180,
                       "defines":  [
                                       "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072",
                                       "malloc=max132_test_malloc",
@@ -734,6 +741,7 @@
                   },
                   {
                       "name":  "max132_failure_sweep_801_900",
+                      "timeout_seconds":  180,
                       "defines":  [
                                       "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072",
                                       "malloc=max132_test_malloc",
@@ -817,6 +825,7 @@
                   },
                   {
                       "name":  "max132_failure_sweep_901_1000",
+                      "timeout_seconds":  180,
                       "defines":  [
                                       "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072",
                                       "malloc=max132_test_malloc",
@@ -900,6 +909,7 @@
                   },
                   {
                       "name":  "max132_failure_sweep_1001_1100",
+                      "timeout_seconds":  180,
                       "defines":  [
                                       "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072",
                                       "malloc=max132_test_malloc",
@@ -983,6 +993,7 @@
                   },
                   {
                       "name":  "max132_failure_sweep_1101_1212",
+                      "timeout_seconds":  180,
                       "defines":  [
                                       "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072",
                                       "malloc=max132_test_malloc",
