@@ -32,3 +32,19 @@ const char *nrf_topology_mode_name(nrf_topology_mode_t mode)
     }
     return "UNCERTAIN";
 }
+
+bool nrf_topology_select_status_node(
+    bool main_assigned, nrf_cs_node_id_t main_node_id, const nrf_cs_node_id_t *nodes, size_t node_count,
+    nrf_cs_node_id_t *status_node)
+{
+    if (nodes == NULL || node_count == 0U || status_node == NULL) return false;
+
+    nrf_cs_node_id_t lowest = nodes[0];
+    bool main_in_cycle = false;
+    for (size_t i = 0U; i < node_count; ++i) {
+        if (nodes[i] < lowest) lowest = nodes[i];
+        if (nodes[i] == main_node_id) main_in_cycle = true;
+    }
+    *status_node = main_assigned && main_in_cycle ? main_node_id : lowest;
+    return true;
+}

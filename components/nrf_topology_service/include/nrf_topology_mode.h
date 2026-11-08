@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "nrf_cs_scheduler.h"
 #include "nrf_topology.h"
 
 /*
@@ -35,3 +36,16 @@ typedef struct {
 
 nrf_topology_mode_info_t nrf_topology_classify_mode(const nrf_topology_snapshot_t *snapshot);
 const char *nrf_topology_mode_name(nrf_topology_mode_t mode);
+
+/*
+ * Which node of a Channel Sounding cycle the coordinator asks for status while the nodes range over Bluetooth.
+ * MAIN_PRESENT keeps the physical MAIN (only if it is assigned and part of the cycle). Otherwise the lowest node id of the
+ * cycle is used: a real, assigned REMOTE (G1 when it is present), never a stand-in MAIN and never node 0 by default.
+ * It has no extra Bluetooth role; the initiators keep rotating as the scheduler plans. Returns false for an empty cycle.
+ */
+bool nrf_topology_select_status_node(
+    bool main_assigned,
+    nrf_cs_node_id_t main_node_id,
+    const nrf_cs_node_id_t *nodes,
+    size_t node_count,
+    nrf_cs_node_id_t *status_node);

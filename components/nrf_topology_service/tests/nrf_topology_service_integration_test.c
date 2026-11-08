@@ -19,6 +19,7 @@
 #include "i2c_bus.h"
 #include "nrf_bootstrap.h"
 #include "nrf_cs_control_protocol.h"
+#include "nrf_cs_cycle_coordinator.h"
 #include "nrf_cs_cycle_runtime.h"
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
 #include "nrf_geometry_solver.h"
@@ -203,6 +204,7 @@ typedef struct {
     uint8_t address;
     bool is_write;
     uint8_t type; /* first cycle frame type, 0 otherwise */
+    uint8_t value; /* first payload byte of a write: the TCA control byte for the mux */
 } wire_op_t;
 static wire_op_t s_wire_log[4096];
 static size_t s_wire_log_count;
@@ -212,6 +214,7 @@ static int s_cycle_drop_plan_channel = -1;
 static int s_cycle_drop_release_channel = -1;
 static unsigned s_cycle_quiet_checks;
 static unsigned s_cycle_node_count;
+static unsigned s_cycle_id_base; /* lowest node id of the simulated cycle: 0 with MAIN, 1 without (G1 = node 1) */
 static unsigned s_status_reads_before_backoff;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
 static bool s_cs_use_pair_distances;
@@ -238,6 +241,7 @@ esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot)
 #endif
 
 static void reset_world(void);
+static void wire_log(uint8_t address, bool is_write, uint8_t type, uint8_t value);
 static void run_service(void);
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR)
 static void log_test_record(const char *line);
@@ -581,6 +585,7 @@ esp_err_t i2c_bus_write_byte(i2c_bus_device_handle_t device, uint8_t mem_address
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR)
     log_test_mux_write();
 #endif
+    wire_log(TCA_ADDRESS, true, 0U, data); /* the mux control byte: which channel a quiet-run poll opened */
     s_tca_control = data;
     ++s_tca_writes;
     return ESP_OK;
@@ -647,10 +652,10 @@ static void fake_window_write(sim_node_t *node, const uint8_t *data, size_t leng
     assert(nrf_read_window_target_arm(&node->window, window.offset)); /* the master asks only inside the response */
 }
 
-static void wire_log(uint8_t address, bool is_write, uint8_t type)
+static void wire_log(uint8_t address, bool is_write, uint8_t type, uint8_t value)
 {
     if (s_wire_log_enabled && s_wire_log_count < sizeof(s_wire_log) / sizeof(s_wire_log[0])) {
-        s_wire_log[s_wire_log_count++] = (wire_op_t){esp_timer_get_time(), address, is_write, type};
+        s_wire_log[s_wire_log_count++] = (wire_op_t){esp_timer_get_time(), address, is_write, type, value};
     }
 }
 
@@ -664,7 +669,7 @@ static unsigned sim_pair_index(unsigned a, unsigned b, unsigned n)
 static nrf_cs_measurement_t sim_cycle_measure(const nrf_cs_step_t *step)
 {
     nrf_cs_measurement_t m = {.outcome = NRF_CS_OUTCOME_SUCCESS, .confidence = 900U};
-    const unsigned pair = sim_pair_index(step->initiator, step->reflector, s_cycle_node_count);
+    const unsigned pair = sim_pair_index(step->initiator - s_cycle_id_base, step->reflector - s_cycle_id_base, s_cycle_node_count);
     bool reflector_present = false;
     for (size_t i = 0U; i < MAX_NODES; ++i)
         reflector_present |= s_nodes[i].present && s_nodes[i].bootstrap.node_id == step->reflector;
@@ -770,7 +775,7 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
 {
     sim_device_t *d = device_of(device);
     assert(mem_address == NULL_I2C_MEM_ADDR);
-    wire_log(d->address, false, 0U);
+    wire_log(d->address, false, 0U, 0U);
     if (d->address == BOARD_INA3221_I2C_ADDRESS) {
         assert(s_tca_control == 0U);
         memset(data, 0, data_len);
@@ -935,7 +940,8 @@ esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t device, uint8_t mem_addres
         d->address <= NRF_UPSTREAM_ADDRESS_REMOTE) {
         ++s_direct_nrf_write_calls;
     }
-    wire_log(d->address, true, data_len > 3U && data[0] == 'G' && data[1] == 'S' ? data[3] : 0U);
+    wire_log(d->address, true, data_len > 3U && data[0] == 'G' && data[1] == 'S' ? data[3] : 0U,
+             data_len > 0U ? data[0] : 0U);
     sim_node_t *node = node_at(d->address);
     if (node == NULL) {
         return ESP_ERR_INVALID_STATE;
@@ -3710,6 +3716,140 @@ static void test_no_topology_fails_bounded(void)
     assert(s_cs_execute_count == 0U);
 }
 
+/* ---- REMOTE_ONLY autonomous cycle (stage 3): the status node is the lowest REMOTE, G1 ---- */
+
+static nrf_topology_ranging_progress_t s_ro_progress;
+static nrf_topology_ranging_result_t s_ro_frozen;
+
+static void capture_remote_only_autonomous(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_ro_progress) == ESP_OK);
+    if (nrf_topology_service_get_frozen_ranging_result(&s_ro_frozen) != ESP_OK) {
+        memset(&s_ro_frozen, 0, sizeof(s_ro_frozen));
+    }
+}
+
+static void lose_g1_after_go_hook(TickType_t ticks)
+{
+    sim_cycle_tick_nodes(ticks);
+    if (s_nodes[0].present && cycle_last_write_us(NRF_CS_CYCLE_MESSAGE_GO) != 0U) {
+        s_nodes[0].present = false; /* the status node (G1) drops off the bus during the quiet run */
+    }
+}
+
+static void request_autonomous_then_lose_g1(void)
+{
+    request_autonomous_ranging_for_test();
+    s_vtask_delay_hook = lose_g1_after_go_hook;
+}
+
+static void run_remote_only_autonomous(void (*request)(void))
+{
+    static const int32_t distances[6] = {1000, 1414, 1000, 1000, 1414, 1000};
+    reset_world();
+    s_tca_present = true;
+    prepare_remote_only_nodes(4U);
+    s_cycle_id_base = 1U;
+    s_cs_use_pair_distances = true;
+    memcpy(s_cs_pair_distances, distances, sizeof(distances));
+    memset(&s_ro_progress, 0, sizeof(s_ro_progress));
+    memset(&s_ro_frozen, 0, sizeof(s_ro_frozen));
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request);
+    script(EV_WAIT_MS, 10U, NULL); /* the worker runs the whole cycle inside this wait */
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, capture_remote_only_autonomous);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+/* Quiet run through the mux: only the status node channel is ever opened and only 0x32 is read. */
+static void assert_remote_only_status_polling(unsigned nodes, uint8_t status_control)
+{
+    const unsigned executions = nodes * (nodes - 1U);
+    const uint64_t window_us = (300U + 650U) * 1000ULL;
+    const uint64_t go_end = cycle_last_write_us(NRF_CS_CYCLE_MESSAGE_GO);
+    const uint64_t run_end = go_end + (uint64_t)executions * window_us;
+    unsigned selects = 0U, status_reads = 0U;
+    assert(go_end != 0U);
+    for (size_t i = 0U; i < s_wire_log_count; ++i) {
+        const wire_op_t *op = &s_wire_log[i];
+        if ((uint64_t)op->at_us <= go_end || (uint64_t)op->at_us >= run_end) continue;
+        assert(op->address != NRF_UPSTREAM_ADDRESS_MAIN && op->address != NRF_UPSTREAM_ADDRESS_DISCOVERY);
+        if (op->is_write) {
+            assert(op->address == TCA_ADDRESS);
+            assert(op->value == status_control || op->value == 0U);
+            selects += op->value == status_control ? 1U : 0U;
+        } else {
+            assert(op->address == NRF_UPSTREAM_ADDRESS_REMOTE || op->address == TCA_ADDRESS);
+            status_reads += op->address == NRF_UPSTREAM_ADDRESS_REMOTE ? 1U : 0U;
+        }
+    }
+    assert(selects >= 1U && status_reads >= 1U);
+    assert(selects <= executions * 950U / 5000U + 2U);
+}
+
+static void test_coordinator_status_node_is_g1_without_main(void)
+{
+    run_remote_only_autonomous(request_autonomous_ranging_for_test);
+    assert(!sensor_bus_quiet_active());
+    assert(strcmp(s_ro_progress.failure_reason, "aborted") != 0);
+    assert(strcmp(s_ro_progress.failure_reason, "plan_failed") != 0);
+    assert_remote_only_status_polling(4U, 0x01U); /* G1 sits on mux channel 0 */
+}
+
+static void test_remote_initiator_rotation_full(void)
+{
+    run_remote_only_autonomous(request_autonomous_ranging_for_test);
+    assert(total_cycle_ble_attempts() == 12U);
+    for (int i = 0; i < 4; ++i) assert(s_nodes[i].cycle_ble_attempts == 3U); /* each REMOTE initiates against the other three */
+    assert(s_cs_execute_count == 0U);
+}
+
+static void test_remote_only_plan_go_collect_release_all(void)
+{
+    run_remote_only_autonomous(request_autonomous_ranging_for_test);
+    for (int i = 0; i < 4; ++i) {
+        assert(s_nodes[i].cycle_plan_writes == 1U && s_nodes[i].cycle_go_writes == 1U);
+        assert(!nrf_cs_cycle_runtime_reply_active(&s_nodes[i].cycle)); /* collected and released */
+    }
+    assert(s_ro_frozen.available && s_ro_frozen.pair_count == 6U);
+    for (size_t i = 0U; i < 6U; ++i) {
+        assert(s_ro_frozen.pairs[i].state == NRF_CS_PAIR_VALID && !s_ro_frozen.pairs[i].single_direction);
+        assert(s_ro_frozen.pairs[i].node_a >= 1U && s_ro_frozen.pairs[i].node_b <= 4U);
+    }
+}
+
+static void test_remote_only_controller_loss_timeout_is_bounded(void)
+{
+    run_remote_only_autonomous(request_autonomous_then_lose_g1);
+    assert(!sensor_bus_quiet_active());
+    assert(s_ro_progress.complete && !s_ro_progress.active);
+    const uint32_t budget_ms = nrf_cs_cycle_coordinator_budget_ms(&k_autonomous_policy, 12U, 4U);
+    assert(budget_ms != 0U);
+    assert(s_ro_progress.updated_at_ms - s_ro_progress.started_at_ms <= budget_ms);
+    /* G1 is gone: its own pairs cannot be valid, everything the others measured among themselves is kept. */
+    assert(s_ro_frozen.available && s_ro_frozen.pair_count == 6U);
+    for (size_t i = 0U; i < 6U; ++i) {
+        const nrf_cs_pair_result_t *pair = &s_ro_frozen.pairs[i];
+        if (pair->node_a == 1U || pair->node_b == 1U) assert(pair->state != NRF_CS_PAIR_VALID);
+        else assert(pair->state == NRF_CS_PAIR_VALID);
+    }
+    for (int i = 1; i < 4; ++i) assert(!nrf_cs_cycle_runtime_reply_active(&s_nodes[i].cycle));
+}
+
+static void test_cancel_during_plan_go_collect_releases(void)
+{
+    s_cancel_hook_fired = false;
+    run_remote_only_autonomous(request_autonomous_ranging_cancelled_mid_cycle);
+    assert(s_cancel_hook_fired);
+    assert(s_ro_progress.complete && !s_ro_progress.active && !s_ro_progress.success);
+    assert(strcmp(s_ro_progress.failure_reason, "cancelled") == 0);
+    assert(!sensor_bus_quiet_active());
+    assert(total_cycle_ble_attempts() < 12U);
+    assert_cancel_freed_every_node();
+}
+
 #endif
 
 static void add_three_remotes_and_refresh(void)
@@ -4077,6 +4217,7 @@ static void reset_world(void)
     s_cycle_drop_release_channel = -1;
     s_cycle_quiet_checks = 0U;
     s_cycle_node_count = 0U;
+    s_cycle_id_base = 0U;
     s_status_reads_before_backoff = 0U;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
     s_cs_use_pair_distances = false;
@@ -5168,6 +5309,12 @@ static int run_selected_remote_only_case(const char *name)
         {"uncertain_main_never_starts_remote_only_ranging", test_uncertain_main_never_starts_remote_only_ranging},
         {"no_topology_fails_bounded", test_no_topology_fails_bounded},
         {"ranging_needs_two_nodes_without_main", test_ranging_needs_two_nodes_without_main},
+        {"coordinator_status_node_is_g1_without_main", test_coordinator_status_node_is_g1_without_main},
+        {"remote_initiator_rotation_full", test_remote_initiator_rotation_full},
+        {"remote_only_plan_go_collect_release_all", test_remote_only_plan_go_collect_release_all},
+        {"remote_only_controller_loss_timeout_is_bounded", test_remote_only_controller_loss_timeout_is_bounded},
+        {"cancel_during_plan_go_collect_releases", test_cancel_during_plan_go_collect_releases},
+        {"old_main_status_node_unchanged", test_autonomous_ranging_full_rotation},
     };
     for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         if (strcmp(name, cases[i].name) == 0) { cases[i].run(); return 0; }
@@ -5228,6 +5375,11 @@ int main(int argc, char **argv)
     test_legacy_five_nodes_ten_pairs();
     test_uncertain_main_never_starts_remote_only_ranging();
     test_no_topology_fails_bounded();
+    test_coordinator_status_node_is_g1_without_main();
+    test_remote_initiator_rotation_full();
+    test_remote_only_plan_go_collect_release_all();
+    test_remote_only_controller_loss_timeout_is_bounded();
+    test_cancel_during_plan_go_collect_releases();
     test_autonomous_ranging_full_rotation();
     test_autonomous_ranging_failures();
     test_ranging_cancel();

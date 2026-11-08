@@ -937,6 +937,86 @@ static void test_workflow_policy_with_phase_latency(void)
     }
 }
 
+/*
+ * REMOTE_ONLY ids (4 REMOTE, no nRF MAIN): the nodes are 1..4 and the status node is the lowest of them. These are
+ * regression guards for the coordinator's contract, not new behaviour: it already takes any node of the cycle as the
+ * status node, and refuses one that is not in the cycle (a MAIN stand-in).
+ */
+static void use_remote_only_ids(nrf_cs_node_id_t *ids)
+{
+    for (size_t n = 0U; n < g_node_count; ++n) {
+        ids[n] = (nrf_cs_node_id_t)(n + 1U);
+        g_nodes[n].id = ids[n];
+    }
+    g_main = ids[0];
+}
+
+static void test_remote_only_ids_with_the_lowest_node_as_status_node(void)
+{
+    nrf_cs_scheduler_t scheduler, live;
+    nrf_cs_cycle_collected_t out;
+    nrf_cs_cycle_report_t report;
+    nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
+
+    setup(4U, ids);
+    use_remote_only_ids(ids);
+    start_scheduler(&scheduler, ids, 4U, &k_policy);
+    start_scheduler(&live, ids, 4U, &k_policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, 0U, 100U, &out, &report) == NRF_CS_COORD_ERR_ARGUMENT);
+    assert(g_log_count == 0U); /* a node that is not in the cycle never reaches the bus */
+
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, ids[0], 100U, &out, &report) == NRF_CS_COORD_OK);
+    assert(report.plan_mask == 0x0FU && report.go_mask == 0x0FU && report.collected_mask == 0x0FU);
+    assert(report.release_mask == 0x0FU);
+    assert(report.main_status_seen); /* the status node answered */
+    const uint64_t go_end = last_go_end();
+    /* While the nodes range, only the status node is read and nothing is written. */
+    assert(count_ops(go_end + 1U, go_end + report.run_ms, true, 0U) == 0U);
+    assert(count_ops(go_end + 1U, go_end + report.run_ms, false, ids[0]) == 0U);
+    assert(count_ops(go_end + 1U, go_end + report.run_ms, false, 0U) >= 1U);
+    assert(nrf_cs_cycle_replay(&scheduler, out.nodes, out.node_count) == 0);
+    run_live(&live);
+    assert_same_pairs(&scheduler, &live);
+    for (size_t n = 0U; n < g_node_count; ++n) {
+        assert(g_nodes[n].executes > 0U);
+        assert(!nrf_cs_cycle_runtime_reply_active(&g_nodes[n].rt));
+    }
+}
+
+static void test_remote_only_status_node_loss_is_bounded_and_collects_the_rest(void)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_cycle_collected_t out;
+    nrf_cs_cycle_report_t report;
+    nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
+
+    setup(4U, ids);
+    use_remote_only_ids(ids);
+    g_main_unreadable = true; /* the status node never answers a status read */
+    start_scheduler(&scheduler, ids, 4U, &k_policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 100U, &out, &report) == NRF_CS_COORD_OK);
+    assert(!report.main_status_seen && !report.main_complete);
+    assert(report.waited_ms <= report.run_ms + NRF_CS_CYCLE_TOTAL_MARGIN_MS + NRF_CS_COORD_SLEEP_SLICE_MS);
+    assert(report.collected_mask == 0x0FU && report.release_mask == 0x0FU);
+    assert(nrf_cs_cycle_replay(&scheduler, out.nodes, out.node_count) == 0);
+}
+
+static void test_remote_only_status_from_another_cycle_is_ignored(void)
+{
+    nrf_cs_scheduler_t scheduler;
+    nrf_cs_cycle_collected_t out;
+    nrf_cs_cycle_report_t report;
+    nrf_cs_node_id_t ids[NRF_CS_MAX_NODES];
+
+    setup(4U, ids);
+    use_remote_only_ids(ids);
+    g_nodes[0].stale_cycle_id = true;
+    start_scheduler(&scheduler, ids, 4U, &k_policy);
+    assert(nrf_cs_cycle_coordinate(&g_ops, &scheduler, g_main, 100U, &out, &report) == NRF_CS_COORD_OK);
+    assert(!report.main_status_seen && !report.main_complete);
+    assert(report.waited_ms >= report.run_ms + NRF_CS_CYCLE_TOTAL_MARGIN_MS);
+}
+
 int main(void)
 {
     test_budget_and_arguments();
@@ -963,6 +1043,9 @@ int main(void)
     test_acknowledged_release_is_not_a_confirmed_release();
     test_release_that_needs_a_second_try_is_confirmed();
     test_five_nodes_all_pairs();
+    test_remote_only_ids_with_the_lowest_node_as_status_node();
+    test_remote_only_status_node_loss_is_bounded_and_collects_the_rest();
+    test_remote_only_status_from_another_cycle_is_ignored();
     puts("nrf_cs_cycle_coordinator tests passed");
     return 0;
 }

@@ -3438,18 +3438,27 @@ static void service_ranging_run_autonomous(nrf_topology_worker_state_t *worker)
         &authority->scheduler.policy,
         authority->scheduler.execution_count,
         authority->scheduler.node_count);
+    nrf_cs_node_id_t status_node = 0U;
     int result;
 
+    /* The physical MAIN when it is a node of this cycle, else the lowest REMOTE (never a stand-in node 0). */
+    if (!nrf_topology_select_status_node(
+            worker->snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED, worker->snapshot.main.node_id,
+            authority->scheduler.nodes, authority->scheduler.node_count, &status_node)) {
+        service_ranging_abort_autonomous(worker, "aborted");
+        return;
+    }
     if (sensor_bus_quiet_begin(budget_ms) != ESP_OK) {
         service_ranging_abort_autonomous(worker, "bus_unavailable");
         return;
     }
     result = nrf_cs_cycle_coordinate(
-        &ops, &authority->scheduler, worker->snapshot.main.node_id, esp_random(), &s_cycle_collected, &report);
+        &ops, &authority->scheduler, status_node, esp_random(), &s_cycle_collected, &report);
     sensor_bus_quiet_end();
     ESP_LOGI(
         TAG,
-        "RANGING_AUTONOMOUS result=%d plan=0x%02x go=0x%02x collected=0x%02x released=0x%02x pre_sent=0x%02x pre_ok=0x%02x abort_sent=0x%02x abort_ok=0x%02x polls=%u waited_ms=%u main_state=%u relay_early=%u",
+        "RANGING_AUTONOMOUS status_node=%u result=%d plan=0x%02x go=0x%02x collected=0x%02x released=0x%02x pre_sent=0x%02x pre_ok=0x%02x abort_sent=0x%02x abort_ok=0x%02x polls=%u waited_ms=%u main_state=%u relay_early=%u",
+        (unsigned)status_node,
         result,
         (unsigned)report.plan_mask,
         (unsigned)report.go_mask,

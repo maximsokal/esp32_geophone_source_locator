@@ -332,6 +332,46 @@ static void unknown_remotes_not_retained_when_main_read_fails(void)
     assert(nrf_topology_classify_mode(&second).mode == NRF_TOPOLOGY_MODE_UNCERTAIN);
 }
 
+/* ---- stage 3: the status node of an autonomous cycle ---- */
+
+static void status_node_main_present_keeps_the_physical_main(void)
+{
+    const nrf_cs_node_id_t nodes[] = {1U, 0U, 3U, 2U, 4U};
+    nrf_cs_node_id_t status = 0xEEU;
+    assert(nrf_topology_select_status_node(true, NRF_TOPOLOGY_MAIN_NODE_ID, nodes, 5U, &status));
+    assert(status == NRF_TOPOLOGY_MAIN_NODE_ID);
+    /* An assigned MAIN that is not in this cycle is not asked. */
+    const nrf_cs_node_id_t remotes[] = {2U, 3U};
+    assert(nrf_topology_select_status_node(true, NRF_TOPOLOGY_MAIN_NODE_ID, remotes, 2U, &status));
+    assert(status == 2U);
+}
+
+static void status_node_without_main_is_the_lowest_real_node(void)
+{
+    const nrf_cs_node_id_t four[] = {3U, 1U, 4U, 2U};
+    nrf_cs_node_id_t status = 0xEEU;
+    assert(nrf_topology_select_status_node(false, NRF_UPSTREAM_NODE_ID_UNASSIGNED, four, 4U, &status));
+    assert(status == 1U); /* G1 */
+    /* G1 not present: the lowest node that is, not a made-up G1. */
+    const nrf_cs_node_id_t without_g1[] = {4U, 2U, 3U};
+    assert(nrf_topology_select_status_node(false, NRF_UPSTREAM_NODE_ID_UNASSIGNED, without_g1, 3U, &status));
+    assert(status == 2U);
+    /* An ABSENT MAIN reports the unassigned id; it must not leak into the choice. */
+    const nrf_cs_node_id_t one[] = {7U};
+    assert(nrf_topology_select_status_node(false, NRF_UPSTREAM_NODE_ID_UNASSIGNED, one, 1U, &status));
+    assert(status == 7U);
+}
+
+static void status_node_rejects_an_empty_cycle(void)
+{
+    nrf_cs_node_id_t status = 0x55U;
+    const nrf_cs_node_id_t one[] = {1U};
+    assert(!nrf_topology_select_status_node(false, NRF_UPSTREAM_NODE_ID_UNASSIGNED, NULL, 0U, &status));
+    assert(!nrf_topology_select_status_node(false, NRF_UPSTREAM_NODE_ID_UNASSIGNED, one, 1U, NULL));
+    assert(!nrf_topology_select_status_node(false, NRF_UPSTREAM_NODE_ID_UNASSIGNED, NULL, 1U, &status));
+    assert(status == 0x55U); /* untouched on failure */
+}
+
 typedef struct { const char *name; void (*run)(void); } test_case_t;
 
 #define CASE(fn) {#fn, fn}
@@ -350,6 +390,9 @@ int main(int argc, char **argv)
         CASE(mainless_unknown_remotes_dropped_after_stale_limit),
         CASE(legacy_main_assigned_retention_unchanged),
         CASE(unknown_remotes_not_retained_when_main_read_fails),
+        CASE(status_node_main_present_keeps_the_physical_main),
+        CASE(status_node_without_main_is_the_lowest_real_node),
+        CASE(status_node_rejects_an_empty_cycle),
     };
     bool ran = false;
     for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
