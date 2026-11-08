@@ -1,3 +1,4 @@
+import type { RegistrationGeophonePositions } from './registrationArtifact';
 import type { FusedRegistrationTag, FusedTagsById } from './rigidRegistration';
 import { TAG_BINDINGS, type TagBinding } from './tagBindings.gen';
 
@@ -152,4 +153,42 @@ export function bleVsTagResiduals(positions: GeophonePositionsResult, ble: reado
     }
   }
   return residuals;
+}
+
+/** `0 - x` keeps a zero at +0: plain negation would write -0 into the artifact bytes. */
+function millimetres(metres: number): number {
+  return Math.round(metres * 1000) + 0;
+}
+
+/**
+ * The block registration-v1.json carries for a REMOTE_ONLY session: the accepted tag centres converted from WebXR
+ * local-floor (+Y up, metres) to the project frame (+Z up, millimetres), `[x, -z, y]`, no offset. Null when no geophone has a
+ * position: nothing is written then, never an empty or zero-filled block.
+ */
+export function geophonePositionsRegistrationBlock(
+  result: GeophonePositionsResult,
+  residuals: readonly PairResidual[] = [],
+): RegistrationGeophonePositions | null {
+  if (result.positions.length === 0) return null;
+  const nodeId = (node: GeophoneNode): 1 | 2 | 3 | 4 => (GEOPHONE_NODES.indexOf(node) + 1) as 1 | 2 | 3 | 4;
+  const block: RegistrationGeophonePositions = {
+    source: GEOPHONE_POSITION_SOURCE,
+    frame: 'project_z_up_mm',
+    positions: result.positions.map((position) => ({
+      node_id: nodeId(position.node),
+      tag_id: nodeId(position.node),
+      x_mm: millimetres(position.positionScan[0]),
+      y_mm: millimetres(0 - position.positionScan[2]),
+      z_mm: millimetres(position.positionScan[1]),
+    })),
+  };
+  if (residuals.length > 0) {
+    block.ble_residuals = residuals.map((entry) => ({
+      node_a: nodeId(entry.nodeA), node_b: nodeId(entry.nodeB),
+      tag_distance_mm: Math.round(entry.tagDistanceMm * 10) / 10,
+      ble_distance_mm: entry.bleDistanceMm,
+      residual_mm: entry.residualMm === null ? null : Math.round(entry.residualMm * 10) / 10,
+    }));
+  }
+  return block;
 }

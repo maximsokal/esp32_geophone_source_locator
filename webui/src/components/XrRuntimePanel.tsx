@@ -34,6 +34,7 @@ import { estimateTagPose } from '../xr/fiducial/tagPose';
 import { fuseTagObservations, type TagObservationFusion } from '../xr/fiducial/tagObservationFusion';
 import { TagObservationStore } from '../xr/fiducial/tagObservationStore';
 import { registerSensorToScan } from '../xr/fiducial/rigidRegistration';
+import { geophonePositionsFromTags, geophonePositionsRegistrationBlock } from '../xr/fiducial/geophonePositions';
 import { confirmedTagIds, newTagScanNotices, registrationArtifactFromResult, registrationOutcome, tagChipStatuses, tagModeErrorLabel, tagScanNoticeText, TAG_FINALIZE_WINDOW_MS, type TagScanNotice } from '../xr/fiducial/tagModeState';
 import { registrationApplicability, REGISTRATION_INAPPLICABLE_KEYS, type RegistrationInapplicableReason } from '../xr/registrationApplicability';
 import {
@@ -234,7 +235,9 @@ export function XrRuntimePanel({
     tagObservationsRef.current.recordOutliers(fusion.rejectedCount);setTagFusion(fusion);
     clientDiagnostics.info('XR_TAG_OBSERVATION_STORE_FINALIZED',{retained:tagObservationsRef.current.retainedCount,rejected:tagObservationsRef.current.rejectedCount,outliers:tagObservationsRef.current.outlierCount,evicted:tagObservationsRef.current.evictedCount});void clientDiagnostics.flush();
     const result=registerSensorToScan({tags:fusion.byTagId,geometry:bound.geometry,geometryComputedAtMs:bound.geometryComputedAtMs});
-    const artifact=registrationArtifactFromResult(result,fusion,defaultRegistrationTagSizes(),bound.geometryComputedAtMs,Date.now());
+    /* A REMOTE_ONLY session has no MAIN tag to fit against: the geophones' own tag centres are their positions (no offset). */
+    const geophoneBlock=bound.geometry.provenance?.topology_mode==='remote_only'?geophonePositionsRegistrationBlock(geophonePositionsFromTags({tags:fusion.byTagId})):null;
+    const artifact=registrationArtifactFromResult(result,fusion,defaultRegistrationTagSizes(),bound.geometryComputedAtMs,Date.now(),null,undefined,geophoneBlock);
     /* Persistence is a separate stage owned by the parent after the scan commit (it needs the committed scan id). */
     try{encodeRegistrationArtifact(artifact);}catch{setTagModeError('Registration artifact was not accepted.');return null;}
     setTagRegistrationLabel(result);setTagModeError(null);

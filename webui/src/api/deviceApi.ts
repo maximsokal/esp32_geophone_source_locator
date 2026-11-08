@@ -1360,6 +1360,10 @@ export interface LocalizationGeometryProvenance {
   main_height_reference_generation?: number;
   setup_id?: string;
   start_uptime_ms?: number;
+  /** The topology the geometry was made on; absent for a session recorded before it was kept (the MAIN-origin kind). */
+  topology_mode?: 'main_present' | 'remote_only';
+  /** The node at the origin of a REMOTE_ONLY layout (the lowest REMOTE); never node 0. */
+  anchor_node_id?: number;
 }
 
 export interface LocalizationSessionGeometry {

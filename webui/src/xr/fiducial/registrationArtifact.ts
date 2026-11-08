@@ -40,6 +40,36 @@ export interface RegistrationArtifactNode {
   status: RegistrationNodeStatus;
 }
 
+/**
+ * REMOTE_ONLY (no nRF MAIN): the centre of each geophone's AprilTag in the project frame (millimetres, +Z up), taken as the
+ * geophone position with no offset. The firmware reads this block out of registration-v1.json and, for a session recorded
+ * in REMOTE_ONLY and bound to the same geometry (`geometry_computed_at_ms`), uses it as the localization geometry. The
+ * node id is the REMOTE's CS node id (G<k> = node k) and the tag is tag k.
+ */
+export interface RegistrationGeophonePosition {
+  node_id: 1 | 2 | 3 | 4;
+  tag_id: 1 | 2 | 3 | 4;
+  x_mm: number;
+  y_mm: number;
+  z_mm: number;
+}
+
+/** What the tag centres say against what Channel Sounding measured, per pair (a report; nothing is corrected by it). */
+export interface RegistrationBleResidual {
+  node_a: 1 | 2 | 3 | 4;
+  node_b: 1 | 2 | 3 | 4;
+  tag_distance_mm: number;
+  ble_distance_mm: number | null;
+  residual_mm: number | null;
+}
+
+export interface RegistrationGeophonePositions {
+  source: 'APRILTAG_CENTER_APPROX';
+  frame: 'project_z_up_mm';
+  positions: RegistrationGeophonePosition[];
+  ble_residuals?: RegistrationBleResidual[];
+}
+
 export interface RegistrationArtifact {
   schema: 1;
   /** Missing only on legacy files; those matrices are WebXR local-floor. */
@@ -63,6 +93,8 @@ export interface RegistrationArtifact {
   tier: RegistrationTier | null;
   valid: boolean;
   reason: string | null;
+  /** Present only for a REMOTE_ONLY registration; an artifact without it is the MAIN-based kind and is unchanged. */
+  geophone_positions?: RegistrationGeophonePositions;
 }
 
 const ROOT_KEYS = ['schema', 'frame', 'scan_frame_id', 'source', 'family', 'geometry_computed_at_ms', 'created_at_ms', 'tag_size_m', 'bindings', 'sensor_to_scan', 'mirrored', 'residual_rms_m', 'threshold_m', 'per_node', 'tier', 'valid', 'reason'];
@@ -93,6 +125,55 @@ function nodeForTagId(tagId: number): RegistrationNode {
   return tagNodeForId(tagId);
 }
 
+const MAX_GEOPHONE_COORDINATE_MM = 1_000_000;
+
+function geophoneNodeId(value: unknown, label: string): 1 | 2 | 3 | 4 {
+  const id = integer(value, label);
+  if (id < 1 || id > 4) throw new Error(`${label} must be between 1 and 4.`);
+  return id as 1 | 2 | 3 | 4;
+}
+
+function validateGeophonePositions(value: unknown): RegistrationGeophonePositions {
+  if (!record(value)) throw new Error('geophone_positions must be an object.');
+  exactKeys(value, ['source', 'frame', 'positions', ...(Object.prototype.hasOwnProperty.call(value, 'ble_residuals') ? ['ble_residuals'] : [])], 'geophone_positions');
+  if (value.source !== 'APRILTAG_CENTER_APPROX') throw new Error('Unknown geophone position source.');
+  if (value.frame !== 'project_z_up_mm') throw new Error('Unknown geophone position frame.');
+  if (!Array.isArray(value.positions) || value.positions.length < 1 || value.positions.length > 4) throw new Error('geophone_positions.positions must hold one to four entries.');
+  const seen = new Set<number>();
+  const positions = value.positions.map((item): RegistrationGeophonePosition => {
+    if (!record(item)) throw new Error('Each geophone position must be an object.');
+    exactKeys(item, ['node_id', 'tag_id', 'x_mm', 'y_mm', 'z_mm'], 'geophone position');
+    const nodeId = geophoneNodeId(item.node_id, 'geophone position node_id');
+    const tagId = geophoneNodeId(item.tag_id, 'geophone position tag_id');
+    if (tagId !== nodeId) throw new Error('A geophone position must come from its own tag.');
+    if (seen.has(nodeId)) throw new Error('Duplicate geophone node ids are not allowed.');
+    seen.add(nodeId);
+    const coordinate = (key: 'x_mm' | 'y_mm' | 'z_mm'): number => {
+      const result = integer(item[key], `geophone position ${key}`);
+      if (Math.abs(result) > MAX_GEOPHONE_COORDINATE_MM) throw new Error(`geophone position ${key} is out of range.`);
+      return result;
+    };
+    return { node_id: nodeId, tag_id: tagId, x_mm: coordinate('x_mm'), y_mm: coordinate('y_mm'), z_mm: coordinate('z_mm') };
+  });
+  const block: RegistrationGeophonePositions = { source: 'APRILTAG_CENTER_APPROX', frame: 'project_z_up_mm', positions };
+  if (Object.prototype.hasOwnProperty.call(value, 'ble_residuals')) {
+    if (!Array.isArray(value.ble_residuals) || value.ble_residuals.length > 6) throw new Error('ble_residuals must hold at most six pairs.');
+    block.ble_residuals = value.ble_residuals.map((item): RegistrationBleResidual => {
+      if (!record(item)) throw new Error('Each BLE residual must be an object.');
+      exactKeys(item, ['node_a', 'node_b', 'tag_distance_mm', 'ble_distance_mm', 'residual_mm'], 'BLE residual');
+      const nullable = (entry: unknown, label: string): number | null => (entry === null ? null : finite(entry, label));
+      const ble = nullable(item.ble_distance_mm, 'ble_distance_mm');
+      const residual = nullable(item.residual_mm, 'residual_mm');
+      if ((ble === null) !== (residual === null)) throw new Error('A residual exists exactly when the BLE distance does.');
+      return {
+        node_a: geophoneNodeId(item.node_a, 'BLE residual node_a'), node_b: geophoneNodeId(item.node_b, 'BLE residual node_b'),
+        tag_distance_mm: finite(item.tag_distance_mm, 'tag_distance_mm'), ble_distance_mm: ble, residual_mm: residual,
+      };
+    });
+  }
+  return block;
+}
+
 function validateMatrix(value: unknown): number[] | null {
   if (value === null) return null;
   if (!Array.isArray(value) || value.length !== 16) throw new Error('sensor_to_scan must be null or a 16-value row-major matrix.');
@@ -105,7 +186,11 @@ function validateArtifact(value: unknown): RegistrationArtifact {
   if (!record(value)) throw new Error('Registration artifact must be a JSON object.');
   const hasFrame = Object.prototype.hasOwnProperty.call(value, 'frame');
   const hasScanFrameId = Object.prototype.hasOwnProperty.call(value, 'scan_frame_id');
-  exactKeys(value, ROOT_KEYS.filter((key) => (hasFrame || key !== 'frame') && (hasScanFrameId || key !== 'scan_frame_id')), 'Registration artifact');
+  const hasGeophonePositions = Object.prototype.hasOwnProperty.call(value, 'geophone_positions');
+  exactKeys(value, [
+    ...ROOT_KEYS.filter((key) => (hasFrame || key !== 'frame') && (hasScanFrameId || key !== 'scan_frame_id')),
+    ...(hasGeophonePositions ? ['geophone_positions'] : []),
+  ], 'Registration artifact');
   if (hasFrame && value.frame !== 'webxr_local_floor') {
     throw new Error('Unknown registration frame marker; expected webxr_local_floor.');
   }
@@ -198,6 +283,7 @@ function validateArtifact(value: unknown): RegistrationArtifact {
     tag_size_m: tagSizes, bindings, sensor_to_scan: matrix,
     mirrored: value.mirrored, residual_rms_m: residual, threshold_m: threshold,
     per_node: perNode, tier: value.tier, valid: value.valid, reason: value.reason,
+    ...(hasGeophonePositions ? { geophone_positions: validateGeophonePositions(value.geophone_positions) } : {}),
   };
 }
 

@@ -1,5 +1,5 @@
 import type { TagObservationFusion } from './tagObservationFusion';
-import type { RegistrationArtifact } from './registrationArtifact';
+import type { RegistrationArtifact, RegistrationGeophonePositions } from './registrationArtifact';
 import type { SensorToScanRegistration } from './rigidRegistration';
 import { formatErrorText, translate, type I18nKey, type I18nLocale } from '../../i18n';
 import { formatNumber } from '../../i18n/format';
@@ -111,6 +111,7 @@ export function registrationArtifactFromResult(
   createdAtMs: number,
   scanFrameId: string | null = null,
   tagBindings: readonly TagBinding[] = TAG_BINDINGS,
+  geophonePositions: RegistrationGeophonePositions | null = null,
 ): RegistrationArtifact {
   const bindings = Object.values(fusion.byTagId).filter((tag) => tag !== undefined).map((tag) => ({
     tag_id: tag.tagId,
@@ -138,5 +139,6 @@ export function registrationArtifactFromResult(
     tier: result.tier,
     valid: result.valid,
     reason: result.reason,
+    ...(geophonePositions === null ? {} : { geophone_positions: geophonePositions }),
   };
 }
