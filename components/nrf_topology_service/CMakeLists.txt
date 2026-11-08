@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "nrf_topology.c"
+        "nrf_topology_mode.c"
         "nrf_topology_bus_recovery.c"
         "nrf_link_readiness_policy.c"
         "nrf_sensor_transport.c"

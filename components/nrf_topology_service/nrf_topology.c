@@ -711,12 +711,18 @@ static void reconcile_transient_remote_failures(
         return;
     }
 
+    /*
+     * A channel left UNKNOWN because the scan was cut short is only kept when MAIN's own state was settled this pass:
+     * ASSIGNED, or confirmed ABSENT (REMOTE_ONLY). A MAIN read that failed leaves the channels unscanned for a reason that
+     * says nothing about them, so they are not revived. Retention stays bounded by NRF_TOPOLOGY_STALE_LIMIT_MS below.
+     */
+    const bool main_settled = snapshot->main.state == NRF_TOPOLOGY_NODE_ASSIGNED ||
+        snapshot->main.state == NRF_TOPOLOGY_NODE_ABSENT;
     for (size_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) {
         nrf_topology_node_snapshot_t *const remote = &snapshot->remotes[i];
         if ((remote->state == NRF_TOPOLOGY_NODE_TRANSPORT_ERROR ||
              remote->state == NRF_TOPOLOGY_NODE_PROTOCOL_ERROR ||
-             (remote->state == NRF_TOPOLOGY_NODE_UNKNOWN &&
-              snapshot->main.state == NRF_TOPOLOGY_NODE_ASSIGNED)) &&
+             (remote->state == NRF_TOPOLOGY_NODE_UNKNOWN && main_settled)) &&
             controller->remote_confirmed_valid[i] &&
             now_ms >= controller->remote_confirmed_at_ms[i] &&
             now_ms - controller->remote_confirmed_at_ms[i] < NRF_TOPOLOGY_STALE_LIMIT_MS) {
