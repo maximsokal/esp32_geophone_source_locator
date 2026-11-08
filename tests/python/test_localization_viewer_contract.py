@@ -6,6 +6,7 @@ the persistence paths that freeze CS pairs into object_store/session.json
 alongside the existing geometry freeze, and pick evidence into its own
 computed_at_ms-versioned record per "Calculate source" invocation."""
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -38,8 +39,12 @@ def run_store_header() -> str:
 def test_geometry_read_never_uses_object_live_topology():
     source = handler_source()
     # Must reuse the same session-scoped reader localization_calculate_run()
-    # already uses -- never the object's current live geometry.
-    assert "seismic_recorder_read_session_geometry(object_id, session_id, &geometry)" in source
+    # already uses (the frozen layout, or the registered AprilTag centres of a
+    # REMOTE_ONLY session) -- never the object's current live geometry.
+    assert re.search(
+        r"seismic_recorder_read_session_localization_geometry\(\s*object_id, session_id, &geometry,",
+        source,
+    )
 
 
 def test_geometry_read_failure_does_not_fail_the_request():
@@ -48,7 +53,7 @@ def test_geometry_read_failure_does_not_fail_the_request():
     # The real call site (not the header doc comment mentioning the same
     # function name earlier in the file).
     read_index = source.index(
-        "seismic_recorder_read_session_geometry(object_id, session_id, &geometry)"
+        "seismic_recorder_read_session_localization_geometry("
     )
 
     # The handler must not return early / send an error response based on
