@@ -677,6 +677,32 @@ static void test_unknown_provenance_is_omitted_and_source_age_is_null(void)
     assert(strstr(response, "\"source_age_ms_at_start\":null") != NULL);
 }
 
+/* REMOTE_ONLY (no nRF MAIN): the response says which topology the layout was made on, its origin node and the tag of a pod. */
+static void test_remote_only_session_reports_topology_anchor_and_tag(void)
+{
+    reset_fakes();
+    snprintf(s_participation.geometry_provenance.topology_mode, sizeof(s_participation.geometry_provenance.topology_mode),
+        "remote_only");
+    s_participation.geometry_provenance.anchor_known = true;
+    s_participation.geometry_provenance.anchor_node_id = 1U;
+    s_participation.pods[0].position_source = SEISMIC_RECORDER_POSITION_SOURCE_APRILTAG_CENTER_APPROX;
+    s_participation.pods[0].tag_id_known = true;
+    s_participation.pods[0].tag_id = 1U;
+    char response[8192] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(strstr(response, "\"topology_mode\":\"remote_only\",\"anchor_node_id\":1") != NULL);
+    assert(strstr(response, "\"position_source\":\"apriltag_center_approx\",\"tag_id\":1") != NULL);
+
+    /* A session of the old kind reports neither: no mode is invented for it. */
+    reset_fakes();
+    memset(response, 0, sizeof(response));
+    request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(strstr(response, "topology_mode") == NULL && strstr(response, "anchor_node_id") == NULL);
+    assert(strstr(response, "tag_id") == NULL);
+}
+
 static void test_runs_listing_requires_both_query_parameters(void)
 {
     reset_fakes();
@@ -886,6 +912,7 @@ int main(void)
     test_participation_read_failure_keeps_geometry_response();
     test_runs_listing_includes_planar_fallback_reason();
     test_unknown_provenance_is_omitted_and_source_age_is_null();
+    test_remote_only_session_reports_topology_anchor_and_tag();
     test_runs_listing_requires_both_query_parameters();
     test_runs_listing_surfaces_not_found_as_404();
     test_absent_picks_directory_is_empty_without_partial_error();

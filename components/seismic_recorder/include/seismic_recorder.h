@@ -529,6 +529,28 @@ esp_err_t seismic_recorder_read_session_participation(
 );
 
 
+typedef enum
+{
+    SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING = 0,
+    SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED,
+} seismic_recorder_localization_geometry_source_t;
+
+/*
+ * The geometry a localization of this session works with: the frozen Channel Sounding layout, or - for a session recorded in
+ * REMOTE_ONLY whose registration carries valid positions made for exactly that layout - the registered AprilTag-centre
+ * positions. Any reason the positions cannot be used leaves the Channel Sounding layout and is reported in
+ * `registered_status` (may be NULL); only a failure to read the layout itself is an error. See
+ * seismic_recorder_localization_geometry.h for the registration block.
+ */
+esp_err_t seismic_recorder_read_session_localization_geometry(
+    const char *object_id,
+    const char *session_id,
+    object_store_geometry_t *geometry,
+    seismic_recorder_localization_geometry_source_t *source,
+    esp_err_t *registered_status
+);
+
+
 /*
  * MAX-148: read back the CS pair evidence frozen into this session
  * alongside its geometry -- never the object's current live topology. Stays

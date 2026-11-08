@@ -75,6 +75,7 @@ static size_t g_fixture_rail_counts[OBJECT_STORE_POD_COUNT];
 static esp_err_t g_fixture_geometry_err;
 static esp_err_t g_fixture_raw_err;
 static size_t g_geometry_read_calls;
+static size_t g_localization_geometry_calls; /* the run must read its geometry through the localization one */
 static size_t g_summary_read_calls;
 static size_t g_range_read_calls;
 static size_t g_range_read_max_frames;
@@ -93,6 +94,20 @@ esp_err_t seismic_recorder_read_session_geometry(
     }
     *geometry = g_fixture_geometry;
     return ESP_OK;
+}
+
+esp_err_t seismic_recorder_read_session_localization_geometry(
+    const char *object_id,
+    const char *session_id,
+    object_store_geometry_t *geometry,
+    seismic_recorder_localization_geometry_source_t *source,
+    esp_err_t *registered_status
+)
+{
+    ++g_localization_geometry_calls;
+    if (source != NULL) *source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
+    if (registered_status != NULL) *registered_status = ESP_OK;
+    return seismic_recorder_read_session_geometry(object_id, session_id, geometry);
 }
 
 esp_err_t seismic_recorder_get_session_summary(
@@ -252,6 +267,7 @@ static void reset_fakes(void)
     g_fixture_geometry_err = ESP_OK;
     g_fixture_raw_err = ESP_OK;
     g_geometry_read_calls = 0U;
+    g_localization_geometry_calls = 0U;
     g_summary_read_calls = 0U;
     g_range_read_calls = 0U;
     g_range_read_max_frames = 0U;
@@ -457,6 +473,7 @@ static void test_non_finite_velocity_is_rejected_before_io(void)
     localization_calculate_summary_t summary;
     config.propagation_speed_mps = INFINITY;
     g_geometry_read_calls = 0U;
+    g_localization_geometry_calls = 0U;
     assert(localization_calculate_run("OBJ_0001", "S000001", &config, 1U, &summary) == ESP_ERR_INVALID_ARG);
     assert(g_geometry_read_calls == 0U);
 
@@ -638,7 +655,7 @@ static void test_run_revalidates_windows_against_session_rate(void)
     );
     assert(err == ESP_ERR_INVALID_ARG); /* 1/2 samples collapse to 1/1 at 500 Hz */
     assert(
-        g_geometry_read_calls == 1U && g_summary_read_calls == 1U &&
+        g_geometry_read_calls == 1U && g_localization_geometry_calls == 1U && g_summary_read_calls == 1U &&
         g_range_read_calls == 0U
     );
     assert(g_write_call_count == 0U && g_pick_write_calls == 0U);

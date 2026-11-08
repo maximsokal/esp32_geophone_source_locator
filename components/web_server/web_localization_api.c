@@ -474,9 +474,19 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
         web_json_writer_printf(&writer, "\"setup_id\":\"%s\",", provenance->setup_id);
         web_json_writer_printf(
             &writer,
-            "\"start_uptime_ms\":%" PRIu64 "}",
+            "\"start_uptime_ms\":%" PRIu64,
             provenance->start_uptime_ms
         );
+        /* Only a REMOTE_ONLY layout says so; a session of the old kind reads as the MAIN-origin geometry. */
+        if (provenance->anchor_known && provenance->topology_mode[0] != '\0') {
+            web_json_writer_printf(
+                &writer,
+                ",\"topology_mode\":\"%s\",\"anchor_node_id\":%u",
+                provenance->topology_mode,
+                (unsigned)provenance->anchor_node_id
+            );
+        }
+        web_json_writer_write(&writer, "}");
     }
     web_json_writer_write(&writer, ",\"pods\":[");
     for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) {

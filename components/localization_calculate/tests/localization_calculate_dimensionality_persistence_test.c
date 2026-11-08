@@ -145,6 +145,19 @@ esp_err_t seismic_recorder_read_session_geometry(
     return ESP_OK;
 }
 
+esp_err_t seismic_recorder_read_session_localization_geometry(
+    const char *object_id,
+    const char *session_id,
+    object_store_geometry_t *geometry,
+    seismic_recorder_localization_geometry_source_t *source,
+    esp_err_t *registered_status
+)
+{
+    if (source != NULL) *source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
+    if (registered_status != NULL) *registered_status = ESP_OK;
+    return seismic_recorder_read_session_geometry(object_id, session_id, geometry);
+}
+
 esp_err_t seismic_recorder_get_session_summary(
     const char *object_id,
     const char *session_id,

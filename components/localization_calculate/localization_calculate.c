@@ -828,7 +828,8 @@ esp_err_t localization_calculate_run(
 
     object_store_geometry_t geometry;
     memset(&geometry, 0, sizeof(geometry));
-    esp_err_t err = seismic_recorder_read_session_geometry(object_id, session_id, &geometry);
+    /* The frozen layout, or for a REMOTE_ONLY session with valid registered positions the AprilTag centres. */
+    esp_err_t err = seismic_recorder_read_session_localization_geometry(object_id, session_id, &geometry, NULL, NULL);
     if (err != ESP_OK) {
         return err;
     }

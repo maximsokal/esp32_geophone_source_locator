@@ -94,6 +94,35 @@
         "tests/host/stubs/seismic_recorder_start"
       ],
       "libraries": ["m"]
+    },
+    {
+      "name": "seismic_recorder_localization_geometry",
+      "sources": [
+        "components/seismic_recorder/seismic_recorder_localization_geometry.c",
+        "components/seismic_recorder/seismic_recorder_geometry_policy.c",
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "tests/host/stubs/object_store_profile/cJSON.c",
+        "tests/host/seismic_recorder_localization_geometry_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_recorder",
+        "components/seismic_recorder/include",
+        "components/nrf_geometry_solver/include",
+        "components/nrf_topology_service/include",
+        "components/object_store/include",
+        "components/object_format/include",
+        "components/seismic_buffer/include",
+        "components/storage_manager/include",
+        "components/seismic_acquisition/include",
+        "components/ad7606_acquisition/include",
+        "components/ad7606_driver/include",
+        "components/app_config/include",
+        "components/device_status/include",
+        "nRF54L15/include",
+        "tests/host/stubs/seismic_recorder_start",
+        "tests/host/stubs/object_store_profile"
+      ],
+      "libraries": ["m"]
     }
   ]
 }
