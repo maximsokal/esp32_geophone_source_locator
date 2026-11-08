@@ -5,6 +5,7 @@
       "name": "web_status_json_ranging",
       "sources": [
         "components/web_server/web_status_json_ranging.c",
+        "components/nrf_topology_service/nrf_topology_mode.c",
         "nRF54L15/src/nrf_cs_scheduler.c",
         "tests/host/stubs/ranging_radio_pause/ranging_radio_pause_stub.c",
         "components/ranging_radio_pause/ranging_radio_pause_core.c",

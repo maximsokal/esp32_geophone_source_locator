@@ -20,6 +20,20 @@ static const char *pair_state_name(nrf_cs_pair_state_t state)
     }
 }
 
+/*
+ * Which topology the geometry belongs to and which node is its origin. A result recorded before the mode existed has none:
+ * it is reported as UNRECORDED with no anchor, never guessed (the reader applies the old scheme itself).
+ */
+static bool add_mode(cJSON *object, nrf_topology_mode_t mode, nrf_cs_node_id_t anchor_node_id)
+{
+    const bool recorded = mode == NRF_TOPOLOGY_MODE_MAIN_PRESENT || mode == NRF_TOPOLOGY_MODE_REMOTE_ONLY;
+    if (cJSON_AddStringToObject(object, "topology_mode", recorded ? nrf_topology_mode_name(mode) : "UNRECORDED") == NULL) {
+        return false;
+    }
+    return recorded ? cJSON_AddNumberToObject(object, "anchor_node_id", anchor_node_id) != NULL
+                    : cJSON_AddNullToObject(object, "anchor_node_id") != NULL;
+}
+
 static bool add_pairs(cJSON *object, const nrf_cs_pair_result_t *pairs, size_t count)
 {
     if (count > NRF_CS_MAX_PAIRS) return false;
@@ -37,6 +51,8 @@ static bool add_pairs(cJSON *object, const nrf_cs_pair_result_t *pairs, size_t c
             cJSON_AddNumberToObject(item, "node_b", pair->node_b) == NULL ||
             cJSON_AddStringToObject(item, "state", pair_state_name(pair->state)) == NULL ||
             cJSON_AddNumberToObject(item, "distance_mm", pair->distance_mm) == NULL ||
+            /* distance_mm of a pair that was not measured is 0, not a reading: only a valid pair has a distance. */
+            cJSON_AddBoolToObject(item, "distance_valid", pair->state == NRF_CS_PAIR_VALID) == NULL ||
             cJSON_AddBoolToObject(item, "manual", (pair->scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U) == NULL ||
             cJSON_AddNumberToObject(item, "automatic_distance_mm", pair->automatic_distance_mm) == NULL ||
             cJSON_AddNumberToObject(item, "spread_mm", pair->spread_mm) == NULL ||
@@ -119,6 +135,7 @@ static bool add_progress(cJSON *root, const nrf_topology_ranging_progress_t *pro
         cJSON_AddNumberToObject(object, "updated_at_ms", (double)progress->updated_at_ms) == NULL ||
         cJSON_AddStringToObject(object, "failure_reason", progress->failure_reason) == NULL ||
         cJSON_AddNumberToObject(object, "solution_residual_mm", progress->solution_residual_mm) == NULL ||
+        !add_mode(object, progress->topology_mode, progress->anchor_node_id) ||
         !add_pairs(object, progress->pairs, progress->pair_count) ||
         !add_geometry(object, &progress->geometry, progress->solution_residual_mm)) {
         return false;
@@ -144,6 +161,7 @@ static bool add_result(cJSON *root, const nrf_topology_ranging_result_t *result)
             result->main_height_reference_generation
         ) == NULL ||
         cJSON_AddNumberToObject(object, "timestamp_ms", (double)result->timestamp_ms) == NULL ||
+        !add_mode(object, result->topology_mode, result->anchor_node_id) ||
         !add_pairs(object, result->pairs, result->pair_count) ||
         !add_geometry(object, &result->geometry, result->geometry.max_residual_mm)) {
         return false;
