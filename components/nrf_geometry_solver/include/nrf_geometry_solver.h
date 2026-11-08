@@ -96,6 +96,8 @@ typedef struct {
      * sequential layout (false = sequential layout kept). */
     bool refined;
     uint8_t refine_iterations;
+    /* The node fixed at the origin: 0 (MAIN) for solve()/solve_partial(), the caller's anchor otherwise. */
+    nrf_cs_node_id_t anchor_node_id;
 } nrf_geometry_solution_t;
 
 typedef enum {
@@ -103,6 +105,8 @@ typedef enum {
     NRF_GEOMETRY_UNS_INSUFFICIENT_NODES = 1,
     NRF_GEOMETRY_ERR_ARGUMENT = -1,
     NRF_GEOMETRY_ERR_NO_MAIN = -2,
+    /* The explicit anchor of a *_with_anchor() call is not one of the input nodes. */
+    NRF_GEOMETRY_ERR_NO_ANCHOR = -3,
 } nrf_geometry_result_t;
 
 /*
@@ -145,6 +149,30 @@ nrf_geometry_result_t nrf_geometry_solver_solve_partial(
     size_t input_count,
     const nrf_cs_pair_result_t *pairs,
     size_t pair_count,
+    nrf_geometry_solution_t *solution);
+
+/*
+ * REMOTE_ONLY (no nRF MAIN): the same solve with an explicit anchor. `anchor_node_id` must be one of the input nodes
+ * (NRF_GEOMETRY_ERR_NO_ANCHOR otherwise); it keeps its real id, sits at x = y = 0 and, like MAIN before, only fixes the
+ * origin. Nothing else about the mesh changes: rotation and mirror stay undefined until an absolute reference (AprilTag)
+ * binds them, weighting/refinement, the consistency tolerance and the missing-pair rules are the legacy ones. The input
+ * z_mm of every node, the anchor included, is used as given (the anchor is not forced to z = 0). solve() and
+ * solve_partial() are these functions with anchor 0.
+ */
+nrf_geometry_result_t nrf_geometry_solver_solve_with_anchor(
+    const nrf_geometry_node_input_t *inputs,
+    size_t input_count,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    nrf_cs_node_id_t anchor_node_id,
+    nrf_geometry_solution_t *solution);
+
+nrf_geometry_result_t nrf_geometry_solver_solve_partial_with_anchor(
+    const nrf_geometry_node_input_t *inputs,
+    size_t input_count,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    nrf_cs_node_id_t anchor_node_id,
     nrf_geometry_solution_t *solution);
 
 #ifdef __cplusplus

@@ -1547,6 +1547,20 @@
       ]
     },
     {
+      "name": "nrf_geometry_solver_anchor",
+      "sources": [
+        "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "tests/host/nrf_geometry_solver_anchor_test.c"
+      ],
+      "include_dirs": [
+        "components/nrf_geometry_solver/include",
+        "nRF54L15/include"
+      ],
+      "libraries": [
+        "m"
+      ]
+    },
+    {
       "name": "nrf_geometry_solver",
       "sources": [
         "components/nrf_geometry_solver/nrf_geometry_solver.c",

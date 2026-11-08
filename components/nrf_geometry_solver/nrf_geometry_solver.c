@@ -926,7 +926,8 @@ static nrf_geometry_result_t nrf_geometry_solver_solve_impl(
     const nrf_cs_pair_result_t *pairs,
     size_t pair_count,
     nrf_geometry_solution_t *solution,
-    bool enforce_recording_minimum)
+    bool enforce_recording_minimum,
+    nrf_cs_node_id_t anchor_node_id)
 {
     if (inputs == NULL || solution == NULL ||
         input_count == 0 || input_count > NRF_GEOMETRY_MAX_NODES ||
@@ -953,15 +954,16 @@ static nrf_geometry_result_t nrf_geometry_solver_solve_impl(
 
     memset(solution, 0, sizeof(*solution));
     solution->node_count = input_count;
+    solution->anchor_node_id = anchor_node_id;
 
-    int main_index = -1;
+    int main_index = -1; /* index of the anchor: MAIN (id 0) for the legacy calls */
     for (size_t i = 0; i < input_count; ++i) {
         solution->nodes[i].node_id = inputs[i].node_id;
         solution->nodes[i].z_mm = inputs[i].z_mm;
         solution->nodes[i].solved = false;
         solution->nodes[i].x_mm = 0;
         solution->nodes[i].y_mm = 0;
-        if (inputs[i].node_id == 0U) {
+        if (inputs[i].node_id == anchor_node_id) {
             if (main_index >= 0) {
                 return NRF_GEOMETRY_ERR_ARGUMENT;
             }
@@ -1050,7 +1052,7 @@ nrf_geometry_result_t nrf_geometry_solver_solve(
     nrf_geometry_solution_t *solution)
 {
     return nrf_geometry_solver_solve_impl(
-        inputs, input_count, pairs, pair_count, solution, true
+        inputs, input_count, pairs, pair_count, solution, true, 0U
     );
 }
 
@@ -1063,6 +1065,40 @@ nrf_geometry_result_t nrf_geometry_solver_solve_partial(
     nrf_geometry_solution_t *solution)
 {
     return nrf_geometry_solver_solve_impl(
-        inputs, input_count, pairs, pair_count, solution, false
+        inputs, input_count, pairs, pair_count, solution, false, 0U
     );
+}
+
+
+/* The legacy "no node 0" answer is NO_MAIN; with an explicit anchor the same condition is NO_ANCHOR. */
+static nrf_geometry_result_t anchored_result(nrf_geometry_result_t result)
+{
+    return result == NRF_GEOMETRY_ERR_NO_MAIN ? NRF_GEOMETRY_ERR_NO_ANCHOR : result;
+}
+
+nrf_geometry_result_t nrf_geometry_solver_solve_with_anchor(
+    const nrf_geometry_node_input_t *inputs,
+    size_t input_count,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    nrf_cs_node_id_t anchor_node_id,
+    nrf_geometry_solution_t *solution)
+{
+    return anchored_result(nrf_geometry_solver_solve_impl(
+        inputs, input_count, pairs, pair_count, solution, true, anchor_node_id
+    ));
+}
+
+
+nrf_geometry_result_t nrf_geometry_solver_solve_partial_with_anchor(
+    const nrf_geometry_node_input_t *inputs,
+    size_t input_count,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    nrf_cs_node_id_t anchor_node_id,
+    nrf_geometry_solution_t *solution)
+{
+    return anchored_result(nrf_geometry_solver_solve_impl(
+        inputs, input_count, pairs, pair_count, solution, false, anchor_node_id
+    ));
 }
