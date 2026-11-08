@@ -223,10 +223,13 @@ esp_err_t seismic_recorder_geometry_build_participation(
         const nrf_topology_node_snapshot_t *remote = &topology->remotes[i];
         seismic_recorder_pod_participation_t *pod = &participation->pods[i];
         pod->assigned = remote->state == NRF_TOPOLOGY_NODE_ASSIGNED;
+        /* `anchored` is only ever set by the registered-positions step: the layout then is the scan, not Channel Sounding. */
         pod->position_source = geometry->pods[i].computed
-            ? provenance->effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
-                ? SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO
-                : SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
+            ? geometry->anchored
+                ? SEISMIC_RECORDER_POSITION_SOURCE_APRILTAG_CENTER_APPROX
+                : provenance->effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE
+                    ? SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO
+                    : SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
             : SEISMIC_RECORDER_POSITION_SOURCE_NONE;
 
         if (!pod->assigned) {
@@ -406,5 +409,70 @@ esp_err_t seismic_recorder_geometry_check_cable_radius(
             return ESP_ERR_INVALID_STATE;
         }
     }
+    return ESP_OK;
+}
+
+
+esp_err_t seismic_recorder_geometry_apply_registered_positions(
+    const seismic_recorder_session_participation_t *participation,
+    const seismic_recorder_registered_positions_t *registered,
+    object_store_geometry_t *geometry
+)
+{
+    if (participation == NULL || registered == NULL || geometry == NULL) return ESP_ERR_INVALID_ARG;
+    if (!registered->available) return ESP_ERR_NOT_FOUND;
+    /* Only a session recorded in REMOTE_ONLY: with MAIN present (or a session older than the field) the Channel Sounding
+     * layout is the geometry, as before. */
+    const seismic_recorder_geometry_provenance_t *provenance = &participation->geometry_provenance;
+    if (!provenance->available || !provenance->anchor_known || strcmp(provenance->topology_mode, "remote_only") != 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* The positions were made for one frozen geometry; a recomputed one is another layout. */
+    uint64_t computed_at_ms = 0U;
+    bool any_computed = false;
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        if (geometry->pods[i].computed) {
+            if (geometry->pods[i].computed_at_ms > computed_at_ms) computed_at_ms = geometry->pods[i].computed_at_ms;
+            any_computed = true;
+        }
+    }
+    if (!any_computed || registered->geometry_computed_at_ms != computed_at_ms) return ESP_ERR_INVALID_STATE;
+
+    size_t computed = 0U;
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        if (!geometry->pods[i].computed) continue;
+        const seismic_recorder_registered_position_t *position = &registered->nodes[i];
+        if (!position->valid) return ESP_ERR_NOT_FOUND;
+        /* The position must be this pod's own: its node id, and the tag bound to that node (G<k> <-> tag k). */
+        if (!participation->pods[i].assigned || !participation->pods[i].node_id_known ||
+            position->node_id != participation->pods[i].node_id || position->tag_id != participation->pods[i].node_id) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        ++computed;
+    }
+    if (computed < 2U) return ESP_ERR_NOT_FOUND;
+
+    /* Two geophones cannot share a place: such a pair is a mix-up of tags, not a layout. */
+    for (size_t a = 0U; a < OBJECT_STORE_POD_COUNT; ++a) {
+        if (!geometry->pods[a].computed) continue;
+        for (size_t b = a + 1U; b < OBJECT_STORE_POD_COUNT; ++b) {
+            if (!geometry->pods[b].computed) continue;
+            const double dx = (double)registered->nodes[a].x_mm - registered->nodes[b].x_mm;
+            const double dy = (double)registered->nodes[a].y_mm - registered->nodes[b].y_mm;
+            const double dz = (double)registered->nodes[a].z_mm - registered->nodes[b].z_mm;
+            if (dx * dx + dy * dy + dz * dz < 100.0) return ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        if (!geometry->pods[i].computed) continue;
+        object_store_pod_geometry_t *pod = &geometry->pods[i];
+        pod->x_mm = registered->nodes[i].x_mm; /* `leveled` and `computed_at_ms` stay: the sensor's state, the geometry's identity */
+        pod->y_mm = registered->nodes[i].y_mm;
+        pod->z_mm = registered->nodes[i].z_mm;
+        pod->residual_mm = 0;
+        pod->uncertainty_mm = 0; /* not determined: the tag-to-sensor offset is accepted, not measured */
+    }
+    geometry->anchored = true;
     return ESP_OK;
 }

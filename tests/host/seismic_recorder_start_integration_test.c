@@ -575,6 +575,83 @@ int main(void)
     fake_cycle.pairs[4] = (nrf_cs_pair_result_t){ .node_a = 1U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 250 };
     fake_cycle.pairs[5] = (nrf_cs_pair_result_t){ .node_a = 2U, .node_b = 3U, .state = NRF_CS_PAIR_VALID, .distance_mm = 400 };
 
+    if (p2_delayed_case == 3) {
+        /*
+         * REMOTE_ONLY (stage 9): four REMOTEs on mux channels 0..3, no nRF MAIN. START rests on the accepted ranging of
+         * exactly that mesh: no node 0 anywhere, G1 the origin, the cables bounding pairs by their sum. The recording gate
+         * asks for REMOTEs and leveling only, never for a MAIN.
+         */
+        fake_topology.main.state = NRF_TOPOLOGY_NODE_ABSENT;
+        fake_topology.main.node_id = NRF_UPSTREAM_NODE_ID_UNASSIGNED;
+        fake_topology.remotes[3] = fake_topology.remotes[2];
+        fake_topology.remotes[3].node_id = 4U;
+        fake_topology.remotes[3].mux_channel = 3U;
+        fake_topology.remotes[3].hardware_id[0] = 0xA3U;
+        fake_leveling.assigned_count = fake_leveling.accepted_count = 4U;
+        fake_sensor_cache[3] = fake_sensor_cache[0];
+        fake_time_us = 661000000;
+        fake_acquisition.last_sample_timestamp_us = fake_time_us - 1000;
+        for (unsigned i = 0U; i < 4U; ++i) {
+            fake_sensor_cache[i].esp_receipt_uptime_ms = 660999U;
+            fake_sensor_cache[i].sensor.sample_complete_uptime_ms = 660998U;
+        }
+        /* A 3 m square over nodes 1..4: pairs (1,2)(1,3)(1,4)(2,3)(2,4)(3,4). */
+        const int32_t distances[] = {3000, 4243, 3000, 3000, 4243, 3000};
+        memset(&fake_frozen_ranging, 0, sizeof(fake_frozen_ranging));
+        fake_frozen_ranging.available = fake_frozen_ranging.success = true;
+        fake_frozen_ranging.timestamp_ms = 1000U;
+        fake_frozen_ranging.topology_generation = 143U;
+        fake_frozen_ranging.membership_generation = 52U;
+        fake_frozen_ranging.topology_mode = NRF_TOPOLOGY_MODE_REMOTE_ONLY;
+        fake_frozen_ranging.anchor_node_id = 1U;
+        fake_frozen_ranging.pair_count = 6U;
+        size_t index = 0U;
+        for (uint8_t a = 1U; a <= 3U; ++a) {
+            for (uint8_t b = (uint8_t)(a + 1U); b <= 4U; ++b) {
+                fake_frozen_ranging.pairs[index] = (nrf_cs_pair_result_t){
+                    .node_a = a, .node_b = b, .state = NRF_CS_PAIR_VALID,
+                    .distance_mm = distances[index], .confidence = 900, .valid_samples = 9U};
+                ++index;
+            }
+        }
+        fake_reusable_ranging_available = true;
+        const nrf_geometry_node_input_t inputs[] = {{.node_id = 1U}, {.node_id = 2U}, {.node_id = 3U}, {.node_id = 4U}};
+        nrf_geometry_solution_t accepted_solution;
+        assert(nrf_geometry_solver_solve_with_anchor(inputs, 4U, fake_frozen_ranging.pairs, 6U, 1U, &accepted_solution) ==
+               NRF_GEOMETRY_OK);
+        fake_frozen_ranging.geometry.node_count = accepted_solution.node_count;
+        for (size_t i = 0U; i < accepted_solution.node_count; ++i) {
+            const nrf_geometry_node_position_t *node = &accepted_solution.nodes[i];
+            fake_frozen_ranging.geometry.nodes[i] = (nrf_topology_ranging_node_t){
+                .node_id = node->node_id, .solved = node->solved, .x_mm = node->x_mm,
+                .y_mm = node->y_mm, .z_mm = node->z_mm, .residual_mm = node->residual_mm,
+                .uncertainty_mm = node->uncertainty_mm};
+        }
+        assert(seismic_recorder_start("OBJ_0005") == ESP_OK);
+        assert(fake_autonomous_requests == 0U);
+        seismic_recorder_session_participation_t saved;
+        assert(seismic_recorder_read_session_participation("OBJ_0005", "S000001", &saved) == ESP_OK);
+        assert(saved.geometry_provenance.available);
+        /* The session says it is a REMOTE_ONLY geometry and which REMOTE is its origin. */
+        assert(strcmp(saved.geometry_provenance.topology_mode, "remote_only") == 0);
+        assert(saved.geometry_provenance.anchor_known && saved.geometry_provenance.anchor_node_id == 1U);
+        for (unsigned i = 0U; i < 4U; ++i) {
+            assert(saved.pods[i].assigned && saved.pods[i].node_id_known && saved.pods[i].node_id == i + 1U);
+            assert(saved.pods[i].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING ||
+                   saved.pods[i].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO);
+        }
+        /* The layout that was frozen has G1 at the origin and no node 0 among the pods. */
+        assert(last_geometry_set);
+        assert(last_geometry.pods[0].computed && last_geometry.pods[0].x_mm == 0 && last_geometry.pods[0].y_mm == 0);
+        for (unsigned i = 0U; i < 4U; ++i) assert(last_geometry.pods[i].computed);
+
+        /* The gate still guards the recording itself: a dead acquisition source is refused, MAIN or not. */
+        fake_acquisition.running = false;
+        assert(seismic_recorder_init() == ESP_OK);
+        assert(seismic_recorder_start("OBJ_0005") != ESP_OK);
+        return 0;
+    }
+
     if (p2_delayed_case != 0) {
         fake_topology.remotes[3] = fake_topology.remotes[2];
         fake_topology.remotes[3].node_id = 4U;

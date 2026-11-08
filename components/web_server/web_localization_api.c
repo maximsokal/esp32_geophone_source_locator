@@ -557,8 +557,13 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
                     ? "channel_sounding"
                     : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO
                         ? "channel_sounding_baro"
-                        : "none"
+                        : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_APRILTAG_CENTER_APPROX
+                            ? "apriltag_center_approx"
+                            : "none"
             );
+            if (pod_participation->tag_id_known) {
+                web_json_writer_printf(&writer, ",\"tag_id\":%u", (unsigned)pod_participation->tag_id);
+            }
             web_json_writer_printf(
                 &writer,
                 ",\"source_sample_uptime_ms\":%" PRIu64 ","

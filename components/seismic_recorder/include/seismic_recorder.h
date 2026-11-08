@@ -182,6 +182,8 @@ typedef enum
     SEISMIC_RECORDER_POSITION_SOURCE_NONE = 0,
     SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING,
     SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO,
+    /* REMOTE_ONLY: the centre of the geophone's AprilTag in the registered scan, taken as the sensor position (no offset). */
+    SEISMIC_RECORDER_POSITION_SOURCE_APRILTAG_CENTER_APPROX,
 } seismic_recorder_position_source_t;
 
 typedef enum
@@ -195,6 +197,7 @@ typedef enum
 #define SEISMIC_RECORDER_SOLVER_VERSION_SIZE 8U
 #define SEISMIC_RECORDER_GEOMETRY_SETUP_ID_SIZE 64U
 #define SEISMIC_RECORDER_RANGING_SOURCE_SIZE 24U
+#define SEISMIC_RECORDER_TOPOLOGY_MODE_SIZE 16U
 
 typedef struct
 {
@@ -217,6 +220,14 @@ typedef struct
     char setup_id[SEISMIC_RECORDER_GEOMETRY_SETUP_ID_SIZE];
     uint64_t start_uptime_ms;
     char ranging_source[SEISMIC_RECORDER_RANGING_SOURCE_SIZE];
+    /*
+     * The topology the geometry was made on: "main_present" or "remote_only"; empty for a session recorded before this
+     * field existed (read by the old scheme: a MAIN-origin geometry). With REMOTE_ONLY, `anchor_node_id` is the node at the
+     * origin of the Channel Sounding layout (the lowest REMOTE), never node 0.
+     */
+    char topology_mode[SEISMIC_RECORDER_TOPOLOGY_MODE_SIZE];
+    bool anchor_known;
+    uint8_t anchor_node_id;
 } seismic_recorder_geometry_provenance_t;
 
 
@@ -228,6 +239,9 @@ typedef struct
     uint8_t hardware_id_length;
     uint8_t hardware_id[SEISMIC_RECORDER_HARDWARE_ID_MAX];
     seismic_recorder_position_source_t position_source;
+    /* The AprilTag whose centre gave the position (APRILTAG_CENTER_APPROX only). */
+    bool tag_id_known;
+    uint8_t tag_id;
     uint64_t source_sample_uptime_ms;
     uint64_t esp_receipt_uptime_ms;
     bool source_age_at_start_known;

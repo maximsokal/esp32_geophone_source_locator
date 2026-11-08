@@ -22,6 +22,7 @@ static seismic_recorder_recovery_request_callback_t s_recovery_request_callback 
 static void *s_recovery_request_context = NULL;
 
 static bool seismic_recorder_json_z_fallback_reason_known(const char *reason);
+static bool seismic_recorder_json_topology_mode_known(const char *mode);
 
 static bool seismic_recorder_json_cs_pair_state_known(const char *state)
 {
@@ -388,6 +389,18 @@ static bool seismic_recorder_json_add_geometry(
         ) {
             return false;
         }
+        /* Topology the geometry was made on; the mode and the anchor go together or not at all. */
+        const bool has_mode = solver->topology_mode[0] != '\0';
+        if (has_mode != solver->anchor_known ||
+            (has_mode && !seismic_recorder_json_topology_mode_known(solver->topology_mode)) ||
+            strnlen(solver->topology_mode, sizeof(solver->topology_mode)) >= sizeof(solver->topology_mode)) {
+            return false;
+        }
+        if (has_mode &&
+            (cJSON_AddStringToObject(provenance, "topology_mode", solver->topology_mode) == NULL ||
+             cJSON_AddNumberToObject(provenance, "anchor_node_id", solver->anchor_node_id) == NULL)) {
+            return false;
+        }
     }
 
     cJSON *pods = cJSON_AddArrayToObject(object, "pods");
@@ -466,15 +479,23 @@ static bool seismic_recorder_json_add_geometry(
                 ? "channel_sounding"
                 : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO
                     ? "channel_sounding_baro"
-                    : "none";
+                    : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_APRILTAG_CENTER_APPROX
+                        ? "apriltag_center_approx"
+                        : "none";
         if (
             pod_participation->position_source != SEISMIC_RECORDER_POSITION_SOURCE_NONE &&
             pod_participation->position_source != SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING &&
-            pod_participation->position_source != SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO
+            pod_participation->position_source != SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO &&
+            pod_participation->position_source != SEISMIC_RECORDER_POSITION_SOURCE_APRILTAG_CENTER_APPROX
         ) {
             return false;
         }
         if (cJSON_AddStringToObject(pod_object, "position_source", position_source) == NULL) {
+            return false;
+        }
+        /* Written only when known, so a session of the old kind is byte-for-byte what it was. */
+        if (pod_participation->tag_id_known &&
+            cJSON_AddNumberToObject(pod_object, "tag_id", pod_participation->tag_id) == NULL) {
             return false;
         }
         if (
@@ -1102,6 +1123,12 @@ static bool seismic_recorder_json_read_cadence(
 }
 
 
+static bool seismic_recorder_json_topology_mode_known(const char *mode)
+{
+    return mode != NULL && (strcmp(mode, "main_present") == 0 || strcmp(mode, "remote_only") == 0);
+}
+
+
 static int seismic_recorder_json_hex_nibble(char value)
 {
     if (value >= '0' && value <= '9') return value - '0';
@@ -1172,8 +1199,20 @@ static bool seismic_recorder_json_participation_pod_v2(
         parsed.position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING;
     } else if (strcmp(position_source->valuestring, "channel_sounding_baro") == 0) {
         parsed.position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO;
+    } else if (strcmp(position_source->valuestring, "apriltag_center_approx") == 0) {
+        parsed.position_source = SEISMIC_RECORDER_POSITION_SOURCE_APRILTAG_CENTER_APPROX;
     } else {
         return false;
+    }
+
+    const cJSON *tag_id = cJSON_GetObjectItemCaseSensitive(pod_json, "tag_id");
+    if (tag_id != NULL && !cJSON_IsNull(tag_id)) {
+        if (!cJSON_IsNumber(tag_id) || !isfinite(tag_id->valuedouble) || tag_id->valuedouble < 0.0 ||
+            tag_id->valuedouble > UINT8_MAX || floor(tag_id->valuedouble) != tag_id->valuedouble) {
+            return false;
+        }
+        parsed.tag_id_known = true;
+        parsed.tag_id = (uint8_t)tag_id->valuedouble;
     }
 
     uint64_t source_sample_uptime_ms = 0U;
@@ -1283,6 +1322,19 @@ static bool seismic_recorder_json_parse_geometry_provenance(
         return false;
     }
 
+    /* Optional: absent in a session recorded before the topology was kept (read by the old scheme). */
+    const cJSON *topology_mode = cJSON_GetObjectItemCaseSensitive(object, "topology_mode");
+    const cJSON *anchor_node_id = cJSON_GetObjectItemCaseSensitive(object, "anchor_node_id");
+    uint16_t anchor_value = 0U;
+    if ((topology_mode == NULL) != (anchor_node_id == NULL)) {
+        return false;
+    }
+    if (topology_mode != NULL &&
+        (!cJSON_IsString(topology_mode) || !seismic_recorder_json_topology_mode_known(topology_mode->valuestring) ||
+         !seismic_recorder_json_number_uint16(anchor_node_id, &anchor_value) || anchor_value > UINT8_MAX)) {
+        return false;
+    }
+
     uint64_t computed_at_ms = 0U;
     bool computed_at_found = false;
     if (geometry_data != NULL) {
@@ -1334,6 +1386,11 @@ static bool seismic_recorder_json_parse_geometry_provenance(
         "%s",
         ranging_source == NULL ? "start_cycle" : ranging_source->valuestring
     );
+    if (topology_mode != NULL) {
+        snprintf(provenance->topology_mode, sizeof(provenance->topology_mode), "%s", topology_mode->valuestring);
+        provenance->anchor_known = true;
+        provenance->anchor_node_id = (uint8_t)anchor_value;
+    }
     return true;
 }
 

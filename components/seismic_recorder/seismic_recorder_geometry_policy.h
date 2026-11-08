@@ -154,3 +154,45 @@ esp_err_t seismic_recorder_geometry_check_cable_radius(
     const uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT],
     nrf_cs_node_id_t *bad_node
 );
+
+
+/*
+ * REMOTE_ONLY registration: the position of each geophone in the registered scan, in the project frame (millimetres, +Z
+ * up), taken from the centre of its AprilTag without any offset. Indexed by pod (= mux channel). `node_id` and `tag_id`
+ * are the REMOTE's CS node id (= channel + 1) and the tag bound to it (G<k> <-> tag k). The scan is registered after the
+ * recording, so the positions are bound to the frozen geometry they were made for by `geometry_computed_at_ms`.
+ */
+typedef struct
+{
+    bool valid;
+    uint8_t node_id;
+    uint8_t tag_id;
+    int32_t x_mm;
+    int32_t y_mm;
+    int32_t z_mm;
+} seismic_recorder_registered_position_t;
+
+typedef struct
+{
+    bool available;
+    uint64_t geometry_computed_at_ms;
+    seismic_recorder_registered_position_t nodes[OBJECT_STORE_POD_COUNT];
+} seismic_recorder_registered_positions_t;
+
+/*
+ * The localization geometry of a REMOTE_ONLY session: the Channel Sounding layout of `geometry` replaced by the registered
+ * scan positions, all or nothing. It applies only to a session recorded in REMOTE_ONLY (`participation` says so) and only to
+ * the very geometry the positions were made for. Every computed pod needs a valid position for its own node and tag,
+ * positions must be finite and apart. On any refusal `geometry` is left untouched (the Channel Sounding layout stays):
+ *  ESP_ERR_NOT_FOUND     nothing registered, or a computed pod has no valid position;
+ *  ESP_ERR_INVALID_STATE not a REMOTE_ONLY session, positions made for another geometry, or a position that does not
+ *                        belong to its pod;
+ *  ESP_ERR_INVALID_ARG   NULL argument, or two positions closer than 10 mm.
+ * On success the computed pods carry the scan coordinates, `uncertainty_mm` 0 (not determined: the tag-to-sensor offset is
+ * accepted, not measured), `residual_mm` 0, their `computed_at_ms` is kept, and `geometry->anchored` is true.
+ */
+esp_err_t seismic_recorder_geometry_apply_registered_positions(
+    const seismic_recorder_session_participation_t *participation,
+    const seismic_recorder_registered_positions_t *registered,
+    object_store_geometry_t *geometry
+);

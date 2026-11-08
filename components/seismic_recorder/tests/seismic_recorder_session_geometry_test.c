@@ -790,6 +790,120 @@ static void test_recording_gate_metadata_round_trips(void)
 }
 
 
+static seismic_recorder_session_participation_t remote_only_participation(void)
+{
+    seismic_recorder_session_participation_t participation = {0};
+    participation.z_provenance.available = true;
+    participation.z_provenance.effective_policy = SEISMIC_RECORDER_GEOMETRY_Z_PLANAR;
+    snprintf(participation.z_provenance.fallback_reason, sizeof(participation.z_provenance.fallback_reason),
+        "main_reference_invalid");
+    participation.geometry_provenance = (seismic_recorder_geometry_provenance_t) {
+        .available = true, .solver = "nrf_geometry_solver", .solver_version = "1", .refined = true,
+        .refine_iterations = 3U, .topology_generation = 12U, .cs_membership_generation = 5U,
+        .main_height_reference_generation = 0U, .setup_id = "4000-12-5-0", .start_uptime_ms = 4100U,
+        .ranging_source = "workflow_ranging", .topology_mode = "remote_only", .anchor_known = true, .anchor_node_id = 1U,
+    };
+    for (unsigned i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        participation.pods[i] = (seismic_recorder_pod_participation_t) {
+            .assigned = true, .node_id_known = true, .node_id = (uint8_t)(i + 1U),
+            .hardware_id_length = 4U, .hardware_id = {0xB0U, (uint8_t)i, 0x00U, 0x02U},
+            .position_source = SEISMIC_RECORDER_POSITION_SOURCE_APRILTAG_CENTER_APPROX,
+            .tag_id_known = true, .tag_id = (uint8_t)(i + 1U),
+        };
+    }
+    return participation;
+}
+
+static object_store_profile_t remote_only_profile(void)
+{
+    object_store_profile_t profile = {0};
+    snprintf(profile.summary.name, sizeof(profile.summary.name), "REMOTE_ONLY test");
+    profile.geometry.anchored = true;
+    for (unsigned i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        profile.geometry.pods[i] = (object_store_pod_geometry_t) {
+            .computed = true, .leveled = true, .x_mm = (int32_t)(100 + 1000 * (i % 2U)), .y_mm = (int32_t)(200 + 1000 * (i / 2U)),
+            .z_mm = 20, .computed_at_ms = 4000U,
+        };
+    }
+    return profile;
+}
+
+static seismic_recorder_snapshot_t remote_only_snapshot(void)
+{
+    seismic_recorder_snapshot_t snapshot = {0};
+    snprintf(snapshot.object_id, sizeof(snapshot.object_id), "OBJ_0001");
+    snprintf(snapshot.session_id, sizeof(snapshot.session_id), "S000001");
+    snprintf(snapshot.source_name, sizeof(snapshot.source_name), "AD7606");
+    snapshot.sample_rate_hz = 500U;
+    snapshot.channel_count = SEISMIC_CHANNEL_COUNT;
+    return snapshot;
+}
+
+static void test_remote_only_session_round_trip(void)
+{
+    object_store_profile_t profile = remote_only_profile();
+    seismic_recorder_session_participation_t participation = remote_only_participation();
+    seismic_recorder_snapshot_t snapshot = remote_only_snapshot();
+    assert(seismic_recorder_json_write_metadata(&profile, &snapshot, "recording", &participation) == ESP_OK);
+    assert(strstr(s_persisted_json, "\"position_source\":\"apriltag_center_approx\"") != NULL);
+    assert(strstr(s_persisted_json, "\"tag_id\":4") != NULL);
+    assert(strstr(s_persisted_json, "\"topology_mode\":\"remote_only\"") != NULL);
+    assert(strstr(s_persisted_json, "\"anchor_node_id\":1") != NULL);
+    assert(strstr(s_persisted_json, "\"hardware_id\":\"b0010002\"") != NULL);
+
+    seismic_recorder_session_participation_t readback;
+    assert(seismic_recorder_read_session_participation("OBJ_0001", "S000001", &readback) == ESP_OK);
+    for (unsigned i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        assert(readback.pods[i].position_source == SEISMIC_RECORDER_POSITION_SOURCE_APRILTAG_CENTER_APPROX);
+        assert(readback.pods[i].tag_id_known && readback.pods[i].tag_id == i + 1U);
+        assert(readback.pods[i].node_id_known && readback.pods[i].node_id == i + 1U);
+        assert(readback.pods[i].hardware_id_length == 4U && readback.pods[i].hardware_id[1] == i);
+    }
+    assert(readback.geometry_provenance.available);
+    assert(strcmp(readback.geometry_provenance.topology_mode, "remote_only") == 0);
+    assert(readback.geometry_provenance.anchor_known && readback.geometry_provenance.anchor_node_id == 1U);
+}
+
+static void test_session_without_topology_fields_reads_as_legacy(void)
+{
+    object_store_profile_t profile = remote_only_profile();
+    profile.geometry.anchored = false;
+    seismic_recorder_session_participation_t participation = remote_only_participation();
+    participation.geometry_provenance.topology_mode[0] = '\0';
+    participation.geometry_provenance.anchor_known = false;
+    for (unsigned i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        participation.pods[i].position_source = SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING;
+        participation.pods[i].tag_id_known = false;
+    }
+    seismic_recorder_snapshot_t snapshot = remote_only_snapshot();
+    assert(seismic_recorder_json_write_metadata(&profile, &snapshot, "recording", &participation) == ESP_OK);
+    /* A session of the old kind is written exactly as before: the new keys are not there to be misread. */
+    assert(strstr(s_persisted_json, "topology_mode") == NULL && strstr(s_persisted_json, "anchor_node_id") == NULL);
+    assert(strstr(s_persisted_json, "tag_id") == NULL);
+    seismic_recorder_session_participation_t readback;
+    assert(seismic_recorder_read_session_participation("OBJ_0001", "S000001", &readback) == ESP_OK);
+    assert(readback.geometry_provenance.available);
+    assert(readback.geometry_provenance.topology_mode[0] == '\0' && !readback.geometry_provenance.anchor_known);
+    for (unsigned i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        assert(readback.pods[i].position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING);
+        assert(!readback.pods[i].tag_id_known);
+    }
+}
+
+static void test_unknown_topology_mode_is_refused_not_guessed(void)
+{
+    object_store_profile_t profile = remote_only_profile();
+    seismic_recorder_session_participation_t participation = remote_only_participation();
+    snprintf(participation.geometry_provenance.topology_mode, sizeof(participation.geometry_provenance.topology_mode),
+        "main_absent");
+    seismic_recorder_snapshot_t snapshot = remote_only_snapshot();
+    assert(seismic_recorder_json_write_metadata(&profile, &snapshot, "recording", &participation) != ESP_OK);
+    /* An anchor without a mode (or the reverse) is not a coherent record either. */
+    participation = remote_only_participation();
+    participation.geometry_provenance.topology_mode[0] = '\0';
+    assert(seismic_recorder_json_write_metadata(&profile, &snapshot, "recording", &participation) != ESP_OK);
+}
+
 int main(void)
 {
     test_valid_geometry_round_trips();
@@ -807,6 +921,9 @@ int main(void)
     test_unsupported_schema_versions_are_rejected();
     test_summary_reader_accepts_v1_v2_and_rejects_unsupported_versions();
     test_recording_gate_metadata_round_trips();
+    test_remote_only_session_round_trip();
+    test_session_without_topology_fields_reads_as_legacy();
+    test_unknown_topology_mode_is_refused_not_guessed();
     puts("seismic recorder session geometry tests passed");
     return 0;
 }

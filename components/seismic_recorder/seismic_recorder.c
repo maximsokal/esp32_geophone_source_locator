@@ -1471,6 +1471,12 @@ static esp_err_t seismic_recorder_prepare_geometry(
         sizeof(solver_provenance->ranging_source),
         "workflow_ranging"
     );
+    /* Kept only for REMOTE_ONLY: a MAIN session is written exactly as before and reads as the old MAIN-origin geometry. */
+    if (frozen_ranging.topology_mode == NRF_TOPOLOGY_MODE_REMOTE_ONLY) {
+        snprintf(solver_provenance->topology_mode, sizeof(solver_provenance->topology_mode), "remote_only");
+        solver_provenance->anchor_known = true;
+        solver_provenance->anchor_node_id = frozen_ranging.anchor_node_id;
+    }
     solver_provenance->start_uptime_ms = start_uptime_ms;
     const int setup_id_length = snprintf(
         solver_provenance->setup_id,
