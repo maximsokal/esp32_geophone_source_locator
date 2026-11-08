@@ -3860,6 +3860,7 @@ typedef struct {
     uint16_t node_generation[4];    /* reference generation each REMOTE reports */
     bool limited;
     uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT];
+    void (*after)(void); /* runs inside the service after the result was captured, before it stops */
 } ro_geometry_cfg_t;
 
 static ro_geometry_cfg_t s_ro_cfg;
@@ -3917,6 +3918,7 @@ static void run_remote_only_geometry(const ro_geometry_cfg_t *cfg)
     script(EV_WAIT_MS, 10U, NULL);
     script(EV_ACTION, 0U, clear_cycle_hook);
     script(EV_ACTION, 0U, capture_remote_only_autonomous);
+    if (cfg->after != NULL) script(EV_ACTION, 0U, cfg->after);
     script(EV_STOP, 0U, NULL);
     run_service();
 }
@@ -4036,6 +4038,163 @@ static void test_pair_cable_sum_boundaries(void)
     assert(!nrf_topology_pair_exceeds_cable_sum(900000, 0U, 400U, 0U));
     assert(!nrf_topology_pair_exceeds_cable_sum(900000, 600U, 0U, 0U));
     assert(nrf_topology_pair_exceeds_cable_sum(-1, 600U, 400U, 0U));
+}
+
+/* ---- frozen ranging result without MAIN (stage 6) ---- */
+
+static esp_err_t s_chk_reuse, s_chk_accept, s_chk_get_accepted, s_chk_changed_hw, s_chk_swapped_ports, s_chk_main_appears,
+    s_chk_main_unknown, s_chk_too_old, s_chk_wrong_revision, s_chk_after_invalidate;
+
+static esp_err_t reusable_for(const nrf_topology_snapshot_t *topology, uint64_t now_ms)
+{
+    nrf_topology_ranging_result_t scratch;
+    return nrf_topology_service_get_reusable_frozen_ranging_result(topology, now_ms, 0U, &scratch);
+}
+
+static void exercise_remote_only_frozen_result(void)
+{
+    nrf_topology_snapshot_t topology, variant;
+    nrf_topology_ranging_result_t scratch;
+    nrf_topology_ranging_progress_t progress;
+    const uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    assert(nrf_topology_service_get_snapshot(&topology) == ESP_OK);
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+
+    s_chk_reuse = reusable_for(&topology, now_ms);
+    s_chk_accept = nrf_topology_service_accept_ranging_result("object-1", &topology, progress.updated_at_ms);
+    s_chk_get_accepted = nrf_topology_service_get_accepted_ranging_result("object-1", &topology, now_ms, &scratch);
+    s_chk_wrong_revision = nrf_topology_service_accept_ranging_result("object-2", &topology, progress.updated_at_ms + 1U);
+
+    variant = topology;
+    variant.remotes[0].hardware_id[0] ^= 1U; /* another board answers as G1 */
+    s_chk_changed_hw = reusable_for(&variant, now_ms);
+
+    variant = topology;
+    variant.remotes[0] = topology.remotes[3]; /* G1 and G4 traded places on the mux */
+    variant.remotes[3] = topology.remotes[0];
+    s_chk_swapped_ports = reusable_for(&variant, now_ms);
+
+    variant = topology;
+    variant.main.state = NRF_TOPOLOGY_NODE_ASSIGNED; /* a MAIN appeared */
+    variant.main.node_id = NRF_TOPOLOGY_MAIN_NODE_ID;
+    variant.main.hardware_id_length = 4U;
+    variant.main.hardware_id[0] = 0xA0U;
+    s_chk_main_appears = reusable_for(&variant, now_ms);
+
+    variant = topology;
+    variant.main.state = NRF_TOPOLOGY_NODE_UNKNOWN; /* MAIN no longer confirmed absent */
+    s_chk_main_unknown = reusable_for(&variant, now_ms);
+
+    s_chk_too_old = reusable_for(&topology, now_ms + NRF_TOPOLOGY_RANGING_DEFAULT_REUSE_MAX_AGE_MS + 1U);
+
+    assert(nrf_topology_service_invalidate_ranging() == ESP_OK);
+    s_chk_after_invalidate = reusable_for(&topology, now_ms);
+}
+
+static void test_frozen_remote_only_contains_anchor(void)
+{
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    run_remote_only_geometry(&cfg);
+    assert(s_ro_progress.topology_mode == NRF_TOPOLOGY_MODE_REMOTE_ONLY && s_ro_progress.anchor_node_id == 1U);
+    assert(s_ro_frozen.available && s_ro_frozen.success);
+    assert(s_ro_frozen.topology_mode == NRF_TOPOLOGY_MODE_REMOTE_ONLY);
+    assert(s_ro_frozen.anchor_node_id == 1U); /* G1: a real REMOTE, never node 0 */
+    assert(s_ro_frozen.membership_identity_valid && s_ro_frozen.membership_count == 4U);
+    for (size_t i = 0U; i < 4U; ++i) {
+        const nrf_topology_ranging_member_identity_t *member = &s_ro_frozen.membership[i];
+        assert(member->channel == i && member->node_id == i + 1U); /* mux channel i holds node i + 1 */
+        assert(member->hardware_id_length == 4U);
+    }
+}
+
+static void test_frozen_missing_main_valid_with_four_remotes(void)
+{
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    cfg.after = exercise_remote_only_frozen_result;
+    run_remote_only_geometry(&cfg);
+    assert(s_chk_reuse == ESP_OK);
+    assert(s_chk_accept == ESP_OK);
+    assert(s_chk_get_accepted == ESP_OK);
+}
+
+static void test_frozen_rejects_changed_hwid_or_channel(void)
+{
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    cfg.after = exercise_remote_only_frozen_result;
+    run_remote_only_geometry(&cfg);
+    assert(s_chk_reuse == ESP_OK); /* the same setup is accepted, so the refusals below are about the change */
+    assert(s_chk_changed_hw == ESP_ERR_NOT_FOUND);
+    assert(s_chk_swapped_ports == ESP_ERR_NOT_FOUND);
+}
+
+static void test_frozen_rejects_mode_change(void)
+{
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    cfg.after = exercise_remote_only_frozen_result;
+    run_remote_only_geometry(&cfg);
+    assert(s_chk_reuse == ESP_OK);
+    assert(s_chk_main_appears == ESP_ERR_NOT_FOUND);
+    assert(s_chk_main_unknown == ESP_ERR_NOT_FOUND);
+}
+
+static void test_frozen_rejects_stale_generation(void)
+{
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    cfg.after = exercise_remote_only_frozen_result;
+    run_remote_only_geometry(&cfg);
+    assert(s_chk_reuse == ESP_OK);
+    assert(s_chk_too_old == ESP_ERR_NOT_FOUND);
+    assert(s_chk_wrong_revision == ESP_ERR_INVALID_STATE);
+    assert(s_chk_after_invalidate == ESP_ERR_NOT_FOUND);
+}
+
+static esp_err_t s_chk_legacy, s_chk_real_main_present, s_chk_inconsistent_mode, s_chk_inconsistent_anchor;
+
+static void exercise_legacy_frozen_result(void)
+{
+    nrf_topology_snapshot_t topology;
+    nrf_topology_ranging_result_t real, variant;
+    const uint64_t now_ms = (uint64_t)(esp_timer_get_time() / 1000);
+    assert(nrf_topology_service_get_snapshot(&topology) == ESP_OK);
+    assert(nrf_topology_service_get_frozen_ranging_result(&real) == ESP_OK);
+    s_chk_real_main_present = reusable_for(&topology, now_ms);
+
+    variant = real; /* what an older firmware produced: no mode, no anchor */
+    variant.topology_mode = NRF_TOPOLOGY_MODE_UNCERTAIN;
+    variant.anchor_node_id = 0xABU;
+    assert(nrf_topology_service_test_set_frozen_result(&variant) == ESP_OK);
+    s_chk_legacy = reusable_for(&topology, now_ms);
+
+    variant = real; /* claims REMOTE_ONLY but its membership holds a MAIN */
+    variant.topology_mode = NRF_TOPOLOGY_MODE_REMOTE_ONLY;
+    assert(nrf_topology_service_test_set_frozen_result(&variant) == ESP_OK);
+    s_chk_inconsistent_mode = reusable_for(&topology, now_ms);
+
+    variant = real; /* claims MAIN_PRESENT with an anchor that is not MAIN */
+    variant.anchor_node_id = 2U;
+    assert(nrf_topology_service_test_set_frozen_result(&variant) == ESP_OK);
+    s_chk_inconsistent_anchor = reusable_for(&topology, now_ms);
+}
+
+static void test_legacy_frozen_roundtrip(void)
+{
+    static const int32_t distances[6] = {1000, 1000, 1414, 1414, 1000, 1000};
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(3U);
+    s_cs_use_pair_distances = true;
+    memcpy(s_cs_pair_distances, distances, sizeof(distances));
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_autonomous_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, exercise_legacy_frozen_result);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_chk_real_main_present == ESP_OK);
+    assert(s_chk_legacy == ESP_OK); /* read by the legacy scheme: MAIN in the membership means MAIN_PRESENT */
+    assert(s_chk_inconsistent_mode == ESP_ERR_NOT_FOUND);
+    assert(s_chk_inconsistent_anchor == ESP_ERR_NOT_FOUND);
 }
 
 #endif
@@ -5512,6 +5671,12 @@ static int run_selected_remote_only_case(const char *name)
         {"remote_only_radius_check_not_applied", test_remote_only_radius_check_not_applied},
         {"main_mode_height_regression", test_ranging_geometry_takes_z_from_the_placement_heights},
         {"pair_cable_sum_boundaries", test_pair_cable_sum_boundaries},
+        {"frozen_remote_only_contains_anchor", test_frozen_remote_only_contains_anchor},
+        {"frozen_missing_main_valid_with_four_remotes", test_frozen_missing_main_valid_with_four_remotes},
+        {"frozen_rejects_changed_hwid_or_channel", test_frozen_rejects_changed_hwid_or_channel},
+        {"frozen_rejects_mode_change", test_frozen_rejects_mode_change},
+        {"frozen_rejects_stale_generation", test_frozen_rejects_stale_generation},
+        {"legacy_frozen_roundtrip", test_legacy_frozen_roundtrip},
     };
     for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         if (strcmp(name, cases[i].name) == 0) { cases[i].run(); return 0; }
@@ -5585,6 +5750,12 @@ int main(int argc, char **argv)
     test_remote_only_pair_cable_sum_flags_exceeded();
     test_remote_only_radius_check_not_applied();
     test_pair_cable_sum_boundaries();
+    test_frozen_remote_only_contains_anchor();
+    test_frozen_missing_main_valid_with_four_remotes();
+    test_frozen_rejects_changed_hwid_or_channel();
+    test_frozen_rejects_mode_change();
+    test_frozen_rejects_stale_generation();
+    test_legacy_frozen_roundtrip();
     test_autonomous_ranging_full_rotation();
     test_autonomous_ranging_failures();
     test_ranging_cancel();

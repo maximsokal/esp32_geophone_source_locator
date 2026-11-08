@@ -11,6 +11,7 @@
 #include "nrf_sensor_cache.h"
 #include "nrf_topology_leveling_policy.h"
 #include "nrf_topology.h"
+#include "nrf_topology_mode.h"
 
 typedef struct {
     bool active;
@@ -84,6 +85,13 @@ typedef struct {
     uint32_t topology_generation;
     uint32_t membership_generation;
     uint16_t main_height_reference_generation;
+    /*
+     * The topology the ranging ran on and the node that is the origin of its geometry: MAIN_PRESENT with MAIN's id, or
+     * REMOTE_ONLY with the lowest REMOTE. NRF_TOPOLOGY_MODE_UNCERTAIN means "not recorded": a result older than these
+     * fields, read by the legacy scheme (a membership entry without a mux channel is MAIN, so MAIN_PRESENT).
+     */
+    nrf_topology_mode_t topology_mode;
+    nrf_cs_node_id_t anchor_node_id;
     uint64_t timestamp_ms;
     uint64_t accepted_revision_ms;
 } nrf_topology_ranging_result_t;
@@ -165,6 +173,13 @@ typedef struct {
     uint32_t topology_generation;
     uint32_t membership_generation;
     uint16_t main_height_reference_generation;
+    /*
+     * The topology the ranging ran on and the node that is the origin of its geometry: MAIN_PRESENT with MAIN's id, or
+     * REMOTE_ONLY with the lowest REMOTE. NRF_TOPOLOGY_MODE_UNCERTAIN means "not recorded": a result older than these
+     * fields, read by the legacy scheme (a membership entry without a mux channel is MAIN, so MAIN_PRESENT).
+     */
+    nrf_topology_mode_t topology_mode;
+    nrf_cs_node_id_t anchor_node_id;
     uint64_t started_at_ms;
     uint64_t updated_at_ms;
 } nrf_topology_ranging_progress_t;
@@ -298,4 +313,6 @@ esp_err_t nrf_topology_service_test_publish_state(
     const nrf_topology_snapshot_t *topology,
     bool sensor_cache_valid,
     const nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT]);
+/* Test-only: replaces the frozen ranging result (a legacy or a deliberately inconsistent one). */
+esp_err_t nrf_topology_service_test_set_frozen_result(const nrf_topology_ranging_result_t *result);
 #endif

@@ -2957,28 +2957,53 @@ static bool ranging_member_precedes(
     return left->hardware_id_length < right->hardware_id_length;
 }
 
+/*
+ * The mode and origin node of a ranging on this snapshot: MAIN_PRESENT with MAIN's id, REMOTE_ONLY with the lowest assigned
+ * REMOTE (MAIN confirmed absent), otherwise UNCERTAIN: no result is recorded as either.
+ */
+static void service_ranging_mode_and_anchor(
+    const nrf_topology_snapshot_t *topology, nrf_topology_mode_t *mode, nrf_cs_node_id_t *anchor)
+{
+    *mode = NRF_TOPOLOGY_MODE_UNCERTAIN;
+    *anchor = NRF_UPSTREAM_NODE_ID_UNASSIGNED;
+    if (topology->main.state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+        *mode = NRF_TOPOLOGY_MODE_MAIN_PRESENT;
+        *anchor = topology->main.node_id;
+    } else if (topology->main.state == NRF_TOPOLOGY_NODE_ABSENT) {
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            const nrf_topology_node_snapshot_t *remote = &topology->remotes[channel];
+            if (remote->state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+            if (*mode == NRF_TOPOLOGY_MODE_UNCERTAIN || remote->node_id < *anchor) *anchor = remote->node_id;
+            *mode = NRF_TOPOLOGY_MODE_REMOTE_ONLY;
+        }
+    }
+}
+
 static bool service_ranging_capture_membership(
     const nrf_topology_snapshot_t *topology,
     nrf_topology_ranging_member_identity_t membership[NRF_CS_MAX_NODES],
     size_t *membership_count)
 {
+    /* MAIN is a member only when it is assigned; confirmed absent it is simply not part of the mesh. */
     if (topology == NULL || membership == NULL || membership_count == NULL ||
-        topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+        (topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED && topology->main.state != NRF_TOPOLOGY_NODE_ABSENT)) {
         return false;
     }
 
     size_t count = 0U;
     const nrf_topology_node_snapshot_t *node = &topology->main;
-    if (node->hardware_id_length == 0U ||
-        node->hardware_id_length > NRF_UPSTREAM_PROTOCOL_HW_ID_MAX) {
-        return false;
+    if (topology->main.state == NRF_TOPOLOGY_NODE_ASSIGNED) {
+        if (node->hardware_id_length == 0U ||
+            node->hardware_id_length > NRF_UPSTREAM_PROTOCOL_HW_ID_MAX) {
+            return false;
+        }
+        membership[count++] = (nrf_topology_ranging_member_identity_t) {
+            .channel = NRF_UPSTREAM_MUX_CHANNEL_NONE,
+            .node_id = node->node_id,
+            .hardware_id_length = node->hardware_id_length,
+        };
+        memcpy(membership[0].hardware_id, node->hardware_id, node->hardware_id_length);
     }
-    membership[count++] = (nrf_topology_ranging_member_identity_t) {
-        .channel = NRF_UPSTREAM_MUX_CHANNEL_NONE,
-        .node_id = node->node_id,
-        .hardware_id_length = node->hardware_id_length,
-    };
-    memcpy(membership[0].hardware_id, node->hardware_id, node->hardware_id_length);
 
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         node = &topology->remotes[channel];
@@ -3006,7 +3031,41 @@ static bool service_ranging_capture_membership(
         membership[j] = value;
     }
     *membership_count = count;
-    return true;
+    return count > 0U;
+}
+
+/*
+ * A frozen result must agree with itself: MAIN_PRESENT has MAIN (the entry without a mux channel) as its origin;
+ * REMOTE_ONLY has none and its origin is the lowest member. A result recorded before these fields existed carries no mode
+ * (UNCERTAIN) and is read by the old scheme: MAIN in the membership means MAIN_PRESENT with MAIN as the origin; a legacy
+ * membership without MAIN is not a result the old firmware could have produced and is refused.
+ */
+static bool service_ranging_result_mode_consistent(const nrf_topology_ranging_result_t *result)
+{
+    bool has_main = false;
+    nrf_cs_node_id_t main_id = 0U, lowest = 0U;
+    size_t remotes = 0U;
+    for (size_t i = 0U; i < result->membership_count; ++i) {
+        const nrf_topology_ranging_member_identity_t *member = &result->membership[i];
+        if (member->channel == NRF_UPSTREAM_MUX_CHANNEL_NONE) {
+            if (has_main) return false;
+            has_main = true;
+            main_id = member->node_id;
+            continue;
+        }
+        if (remotes == 0U || member->node_id < lowest) lowest = member->node_id;
+        ++remotes;
+    }
+    nrf_topology_mode_t mode = result->topology_mode;
+    nrf_cs_node_id_t anchor = result->anchor_node_id;
+    if (mode == NRF_TOPOLOGY_MODE_UNCERTAIN) {
+        if (!has_main) return false;
+        mode = NRF_TOPOLOGY_MODE_MAIN_PRESENT;
+        anchor = main_id;
+    }
+    if (mode == NRF_TOPOLOGY_MODE_MAIN_PRESENT) return has_main && anchor == main_id;
+    if (mode == NRF_TOPOLOGY_MODE_REMOTE_ONLY) return !has_main && remotes >= 2U && anchor == lowest;
+    return false;
 }
 
 static bool service_ranging_membership_matches(
@@ -3016,7 +3075,7 @@ static bool service_ranging_membership_matches(
     nrf_topology_ranging_member_identity_t current[NRF_CS_MAX_NODES] = {0};
     size_t current_count = 0U;
     if (result == NULL || !result->membership_identity_valid ||
-        result->membership_count > NRF_CS_MAX_NODES ||
+        result->membership_count > NRF_CS_MAX_NODES || !service_ranging_result_mode_consistent(result) ||
         !service_ranging_capture_membership(topology, current, &current_count) ||
         current_count != result->membership_count) {
         return false;
@@ -3082,6 +3141,8 @@ static void service_ranging_finish(
         result.topology_generation = progress->topology_generation;
         result.membership_generation = progress->membership_generation;
         result.main_height_reference_generation = progress->main_height_reference_generation;
+        result.topology_mode = progress->topology_mode;
+        result.anchor_node_id = progress->anchor_node_id;
         result.timestamp_ms = now_ms;
         result.membership_identity_valid = service_ranging_capture_membership(
             &worker->snapshot,
@@ -3747,6 +3808,9 @@ static void service_worker(void *context)
                     worker->ranging_progress.active = true;
                     worker->ranging_progress.started_at_ms = ranging_started_at_ms;
                     worker->ranging_progress.topology_generation = worker->snapshot.generation;
+                    service_ranging_mode_and_anchor(
+                        &worker->snapshot, &worker->ranging_progress.topology_mode,
+                        &worker->ranging_progress.anchor_node_id);
                     service_ranging_copy_cycle(worker);
                     (void)service_ranging_solve(
                         worker,
@@ -4534,6 +4598,16 @@ esp_err_t nrf_topology_service_test_publish_state(
     portEXIT_CRITICAL(&s_state_lock);
     return ESP_OK;
 }
+
+esp_err_t nrf_topology_service_test_set_frozen_result(const nrf_topology_ranging_result_t *result)
+{
+    if (result == NULL) return ESP_ERR_INVALID_ARG;
+    portENTER_CRITICAL(&s_state_lock);
+    s_frozen_ranging_result = *result;
+    s_frozen_ranging_result_valid = true;
+    portEXIT_CRITICAL(&s_state_lock);
+    return ESP_OK;
+}
 #endif
 
 esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
@@ -4681,6 +4755,8 @@ static esp_err_t service_ranging_request(
     memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
     s_ranging_progress.active = true;
     s_ranging_progress.topology_generation = s_snapshot.generation;
+    s_ranging_progress.topology_mode = topology_mode.mode;
+    s_ranging_progress.anchor_node_id = nodes[0]; /* sorted: MAIN's id 0 with MAIN, else the lowest REMOTE */
     s_ranging_progress.pairs_total = node_count * (node_count - 1U);
     s_ranging_progress.started_at_ms = s_cs_requested_ranging_started_ms;
     s_ranging_progress.updated_at_ms = s_cs_requested_ranging_started_ms;
