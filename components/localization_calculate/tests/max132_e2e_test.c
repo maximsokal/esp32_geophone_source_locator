@@ -49,6 +49,7 @@
 #include "seismic_buffer.h"
 #include "seismic_dsp.h"
 #include "seismic_recorder.h"
+#include "seismic_recorder_geometry_policy.h"
 #include "storage_manager.h"
 #include "web_server_internal.h"
 
@@ -69,6 +70,9 @@
 #define E2E_OBJECT_ID "OBJ_0132"
 #define E2E_SESSION_ID "S013212"
 #define E2E_PLANAR_MATRIX_SESSION_ID "S013213"
+#define E2E_REMOTE_ONLY_SESSION_ID "S013214"
+#define E2E_REMOTE_ONLY_CONTROL_SESSION_ID "S013215"
+#define E2E_REMOTE_ONLY_TOLERANCE_M 0.10
 #define E2E_COMPUTED_AT_MS UINT64_C(132012)
 #define E2E_P_SPEED_MPS 340.0
 #define E2E_S_SPEED_MPS 190.0
@@ -94,6 +98,8 @@ static const localization_point3d_t s_e2e_sensor_positions[AD7606_CHANNEL_COUNT]
 };
 
 static const localization_point3d_t s_e2e_source_position = { 0.70, 0.75, 0.80 };
+/* The layout the fixture builder places the sensors on: the fixed one, or the scan-frame one of the REMOTE_ONLY pass. */
+static const localization_point3d_t *s_e2e_layout = s_e2e_sensor_positions;
 
 typedef struct {
     const char *name;
@@ -206,6 +212,20 @@ esp_err_t seismic_recorder_read_session_geometry(
     return ESP_OK;
 }
 
+/*
+ * REMOTE_ONLY pass: the layout Channel Sounding froze (in its own, arbitrary frame) and the AprilTag-centre positions the
+ * scan registered. The real policy decides which one the localization gets, exactly as the firmware does.
+ */
+typedef enum {
+    E2E_GEOMETRY_AS_FIXTURE = 0,
+    E2E_GEOMETRY_CHANNEL_SOUNDING_ONLY,
+    E2E_GEOMETRY_REGISTERED_OVER_CHANNEL_SOUNDING,
+} e2e_geometry_mode_t;
+
+static e2e_geometry_mode_t s_e2e_geometry_mode = E2E_GEOMETRY_AS_FIXTURE;
+static object_store_geometry_t s_e2e_channel_sounding_layout;
+static seismic_recorder_registered_positions_t s_e2e_registered_positions;
+
 esp_err_t seismic_recorder_read_session_localization_geometry(
     const char *object_id,
     const char *session_id,
@@ -216,7 +236,28 @@ esp_err_t seismic_recorder_read_session_localization_geometry(
 {
     if (source != NULL) *source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
     if (registered_status != NULL) *registered_status = ESP_OK;
-    return seismic_recorder_read_session_geometry(object_id, session_id, geometry);
+    if (s_e2e_geometry_mode == E2E_GEOMETRY_AS_FIXTURE) {
+        return seismic_recorder_read_session_geometry(object_id, session_id, geometry);
+    }
+    if (geometry == NULL) return ESP_ERR_INVALID_ARG;
+    *geometry = s_e2e_channel_sounding_layout;
+    if (s_e2e_geometry_mode == E2E_GEOMETRY_REGISTERED_OVER_CHANNEL_SOUNDING) {
+        seismic_recorder_session_participation_t session;
+        memset(&session, 0, sizeof(session));
+        session.geometry_provenance.available = true;
+        snprintf(session.geometry_provenance.topology_mode, sizeof(session.geometry_provenance.topology_mode), "remote_only");
+        session.geometry_provenance.anchor_known = true;
+        session.geometry_provenance.anchor_node_id = 1U;
+        for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+            session.pods[i] = (seismic_recorder_pod_participation_t){
+                .assigned = true, .node_id_known = true, .node_id = (uint8_t)(i + 1U) };
+        }
+        const esp_err_t applied = seismic_recorder_geometry_apply_registered_positions(
+            &session, &s_e2e_registered_positions, geometry);
+        if (registered_status != NULL) *registered_status = applied;
+        if (applied == ESP_OK && source != NULL) *source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED;
+    }
+    return ESP_OK;
 }
 
 esp_err_t seismic_recorder_get_session_summary(
@@ -587,15 +628,15 @@ static void e2e_build_geometry_and_raw_fixture(
         object_store_pod_geometry_t *pod = &s_e2e_geometry.pods[channel];
         pod->computed = channel < active_sensor_count;
         pod->leveled = channel < active_sensor_count;
-        pod->x_mm = (int32_t)llround(s_e2e_sensor_positions[channel].x_m * 1000.0);
-        pod->y_mm = (int32_t)llround(s_e2e_sensor_positions[channel].y_m * 1000.0);
-        pod->z_mm = (int32_t)llround(s_e2e_sensor_positions[channel].z_m * 1000.0);
+        pod->x_mm = (int32_t)llround(s_e2e_layout[channel].x_m * 1000.0);
+        pod->y_mm = (int32_t)llround(s_e2e_layout[channel].y_m * 1000.0);
+        pod->z_mm = (int32_t)llround(s_e2e_layout[channel].z_m * 1000.0);
         pod->computed_at_ms = UINT64_C(132000) + (uint64_t)channel;
 
         /* Independent Euclidean geometry and travel-time oracle for this fixture. */
-        const double dx = source_position.x_m - s_e2e_sensor_positions[channel].x_m;
-        const double dy = source_position.y_m - s_e2e_sensor_positions[channel].y_m;
-        const double dz = source_position.z_m - s_e2e_sensor_positions[channel].z_m;
+        const double dx = source_position.x_m - s_e2e_layout[channel].x_m;
+        const double dy = source_position.y_m - s_e2e_layout[channel].y_m;
+        const double dz = source_position.z_m - s_e2e_layout[channel].z_m;
         const double distance_m = sqrt(dx * dx + dy * dy + dz * dz);
         p_truth_s[channel] = E2E_EMISSION_TIME_S + distance_m / E2E_P_SPEED_MPS;
     }
@@ -612,9 +653,9 @@ static void e2e_build_geometry_and_raw_fixture(
     s_e2e_rng_state = UINT32_C(0x13212E2E);
     size_t s_centers[AD7606_CHANNEL_COUNT];
     for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
-        const double dx = source_position.x_m - s_e2e_sensor_positions[channel].x_m;
-        const double dy = source_position.y_m - s_e2e_sensor_positions[channel].y_m;
-        const double dz = source_position.z_m - s_e2e_sensor_positions[channel].z_m;
+        const double dx = source_position.x_m - s_e2e_layout[channel].x_m;
+        const double dy = source_position.y_m - s_e2e_layout[channel].y_m;
+        const double dz = source_position.z_m - s_e2e_layout[channel].z_m;
         const double distance_m = sqrt(dx * dx + dy * dy + dz * dz);
         const double s_truth_s = E2E_EMISSION_TIME_S + distance_m / E2E_S_SPEED_MPS;
         const size_t p_center = (size_t)llround(p_truth_s[channel] * (double)E2E_SAMPLE_RATE_HZ);
@@ -1184,6 +1225,102 @@ static void e2e_assert_golden_json(void)
     cJSON_Delete(actual_tree);
 }
 
+/* One full run of the production localization; the source the plain TDOA method placed (or "not solved"). */
+static bool e2e_run_and_read_tdoa_source(const char *session_id, uint64_t computed_at_ms, localization_point3d_t *source)
+{
+    localization_calculate_config_t config = e2e_calculation_config();
+    localization_calculate_summary_t summary;
+    memset(&summary, 0, sizeof(summary));
+    e2e_require(
+        localization_calculate_run(E2E_OBJECT_ID, session_id, &config, computed_at_ms, &summary) == ESP_OK,
+        "REMOTE_ONLY registered positions", "production localization_calculate_run did not complete");
+    localization_run_record_t records[LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION];
+    size_t count = 0U;
+    e2e_require(
+        localization_run_store_list(E2E_OBJECT_ID, session_id, records, LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION, &count) == ESP_OK &&
+            count > 0U,
+        "REMOTE_ONLY registered positions", "run store did not reload the records");
+    const localization_run_record_t *tdoa = e2e_find_run(records, count, "tdoa_gauss_newton");
+    e2e_require(tdoa != NULL, "REMOTE_ONLY registered positions", "TDOA record is absent");
+    if (tdoa->solved) *source = tdoa->source_position;
+    return tdoa->solved;
+}
+
+static double e2e_distance_m(const localization_point3d_t *a, const localization_point3d_t *b)
+{
+    return sqrt((a->x_m - b->x_m) * (a->x_m - b->x_m) + (a->y_m - b->y_m) * (a->y_m - b->y_m) + (a->z_m - b->z_m) * (a->z_m - b->z_m));
+}
+
+/*
+ * REMOTE_ONLY end to end: the sensors and the source are rotated and shifted into a "scan frame" that Channel Sounding does not
+ * know. The signals come from that truth. With the registered tag-centre positions the production pipeline (no MAIN, no tag 0
+ * anywhere) places the source there; with only the Channel Sounding layout (the old frame) it cannot.
+ */
+static void e2e_assert_remote_only_registered_positions(void)
+{
+    static localization_point3d_t scan_layout[AD7606_CHANNEL_COUNT];
+    const double yaw_rad = 37.0 * 3.14159265358979323846 / 180.0;
+    const double c = cos(yaw_rad), sn = sin(yaw_rad);
+    const double tx = 3.2, ty = -1.1, tz = 0.4;
+    for (size_t i = 0U; i < AD7606_CHANNEL_COUNT; ++i) {
+        scan_layout[i] = (localization_point3d_t){
+            c * s_e2e_sensor_positions[i].x_m - sn * s_e2e_sensor_positions[i].y_m + tx,
+            sn * s_e2e_sensor_positions[i].x_m + c * s_e2e_sensor_positions[i].y_m + ty,
+            s_e2e_sensor_positions[i].z_m + tz };
+    }
+    const localization_point3d_t scan_source = {
+        c * s_e2e_source_position.x_m - sn * s_e2e_source_position.y_m + tx,
+        sn * s_e2e_source_position.x_m + c * s_e2e_source_position.y_m + ty,
+        s_e2e_source_position.z_m + tz };
+
+    /* The signals of the scan-frame truth; s_e2e_geometry is then that same scan-frame layout. */
+    double p_truth_s[AD7606_CHANNEL_COUNT] = { 0.0 };
+    s_e2e_layout = scan_layout;
+    e2e_build_geometry_and_raw_fixture(p_truth_s, AD7606_CHANNEL_COUNT, scan_source);
+    s_e2e_layout = s_e2e_sensor_positions;
+
+    memset(&s_e2e_registered_positions, 0, sizeof(s_e2e_registered_positions));
+    s_e2e_registered_positions.available = true;
+    uint64_t geometry_computed_at_ms = 0U;
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        s_e2e_registered_positions.nodes[i] = (seismic_recorder_registered_position_t){
+            .valid = true, .node_id = (uint8_t)(i + 1U), .tag_id = (uint8_t)(i + 1U),
+            .x_mm = s_e2e_geometry.pods[i].x_mm, .y_mm = s_e2e_geometry.pods[i].y_mm, .z_mm = s_e2e_geometry.pods[i].z_mm };
+        if (s_e2e_geometry.pods[i].computed_at_ms > geometry_computed_at_ms) geometry_computed_at_ms = s_e2e_geometry.pods[i].computed_at_ms;
+    }
+    s_e2e_registered_positions.geometry_computed_at_ms = geometry_computed_at_ms;
+
+    /* What Channel Sounding froze: the same four sensors in the unrotated frame of the fixed layout. */
+    s_e2e_channel_sounding_layout = s_e2e_geometry;
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        s_e2e_channel_sounding_layout.pods[i].x_mm = (int32_t)llround(s_e2e_sensor_positions[i].x_m * 1000.0);
+        s_e2e_channel_sounding_layout.pods[i].y_mm = (int32_t)llround(s_e2e_sensor_positions[i].y_m * 1000.0);
+        s_e2e_channel_sounding_layout.pods[i].z_mm = (int32_t)llround(s_e2e_sensor_positions[i].z_m * 1000.0);
+    }
+
+    localization_point3d_t placed = { 0.0, 0.0, 0.0 };
+    s_e2e_geometry_mode = E2E_GEOMETRY_REGISTERED_OVER_CHANNEL_SOUNDING;
+    e2e_prepare_run_store(E2E_REMOTE_ONLY_SESSION_ID);
+    e2e_require(e2e_run_and_read_tdoa_source(E2E_REMOTE_ONLY_SESSION_ID, E2E_COMPUTED_AT_MS + 2U, &placed),
+        "REMOTE_ONLY registered positions", "the registered positions did not give a TDOA solution");
+    const double registered_error_m = e2e_distance_m(&placed, &scan_source);
+    (void)printf("[MAX-132 E2E] REMOTE_ONLY registered positions: source error %.4f m in the scan frame\n", registered_error_m);
+
+    localization_point3d_t unplaced = { 0.0, 0.0, 0.0 };
+    s_e2e_geometry_mode = E2E_GEOMETRY_CHANNEL_SOUNDING_ONLY;
+    e2e_prepare_run_store(E2E_REMOTE_ONLY_CONTROL_SESSION_ID);
+    const bool control_solved = e2e_run_and_read_tdoa_source(E2E_REMOTE_ONLY_CONTROL_SESSION_ID, E2E_COMPUTED_AT_MS + 3U, &unplaced);
+    const double control_error_m = control_solved ? e2e_distance_m(&unplaced, &scan_source) : INFINITY;
+    (void)printf("[MAX-132 E2E] REMOTE_ONLY control (Channel Sounding frame only): %s, error %.4f m\n",
+        control_solved ? "solved" : "not solved", control_error_m);
+    s_e2e_geometry_mode = E2E_GEOMETRY_AS_FIXTURE;
+
+    e2e_require(registered_error_m < E2E_REMOTE_ONLY_TOLERANCE_M, "REMOTE_ONLY registered positions",
+        "the source is not where the scan-frame truth puts it");
+    e2e_require(control_error_m > 10.0 * E2E_REMOTE_ONLY_TOLERANCE_M, "REMOTE_ONLY registered positions",
+        "the control run (wrong frame) is not clearly worse, so the registered positions prove nothing");
+}
+
 int main(void)
 {
     double p_truth_s[AD7606_CHANNEL_COUNT] = { 0.0 };
@@ -1211,6 +1348,7 @@ int main(void)
     e2e_assert_http_json(record_count, records);
     e2e_assert_golden_json();
     e2e_assert_three_sensor_method_matrix();
+    e2e_assert_remote_only_registered_positions();
 
     free(s_e2e_raw_frames);
     free(s_e2e_decoded_frames);

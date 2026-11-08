@@ -189,6 +189,35 @@ static void cable_radius_applies_only_with_main(void)
     assert(bad == 0xEEU);
 }
 
+/*
+ * What the firmware assumes about the geophones (WIRING_MAPPING_UNVERIFIED: the repository does not record which AD7606
+ * channel each geophone is wired to, so this pins the code's own convention and nothing about the copper): G<k> is the
+ * REMOTE on mux channel k-1, its CS node id is k, and its pod - the index the localization uses as the AD7606 channel - is
+ * k-1. A REMOTE alone on mux channel 2 is node 3 and fills pod 2, never pod 0.
+ */
+static void pod_index_is_the_mux_channel_and_node_is_channel_plus_one(void)
+{
+    nrf_topology_snapshot_t topology = remote_only_topology(0U);
+    set_assigned(&topology, 2U); /* G3 only */
+    nrf_geometry_solution_t solution;
+    memset(&solution, 0, sizeof(solution));
+    solution.node_count = 1U;
+    solution.nodes[0] = (nrf_geometry_node_position_t){.node_id = 3U, .solved = true, .x_mm = 1500, .y_mm = -700, .z_mm = 40};
+    seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT];
+    memset(channels, 0, sizeof(channels));
+    object_store_geometry_t geometry;
+    seismic_recorder_geometry_apply_solution(&solution, &topology, channels, 777U, &geometry);
+    for (unsigned pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) assert(geometry.pods[pod].computed == (pod == 2U));
+    assert(geometry.pods[2].x_mm == 1500 && geometry.pods[2].y_mm == -700);
+
+    seismic_recorder_geometry_z_provenance_t provenance;
+    seismic_recorder_session_participation_t participation;
+    memset(&provenance, 0, sizeof(provenance));
+    assert(seismic_recorder_geometry_build_participation(&topology, &geometry, &provenance, &participation) == ESP_OK);
+    for (unsigned pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) assert(participation.pods[pod].assigned == (pod == 2U));
+    assert(participation.pods[2].node_id_known && participation.pods[2].node_id == 3U);
+}
+
 /* No argument runs everything; one argument runs the named case (to show a single RED/GREEN case). */
 int main(int argc, char **argv)
 {
@@ -200,6 +229,7 @@ int main(int argc, char **argv)
          remote_only_cable_admission_bounds_a_pair_by_the_sum_of_its_cables},
         {"main_present_cable_admission_keeps_the_main_edge_rule", main_present_cable_admission_keeps_the_main_edge_rule},
         {"cable_radius_applies_only_with_main", cable_radius_applies_only_with_main},
+        {"pod_index_is_the_mux_channel_and_node_is_channel_plus_one", pod_index_is_the_mux_channel_and_node_is_channel_plus_one},
     };
     bool ran = false;
     for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
