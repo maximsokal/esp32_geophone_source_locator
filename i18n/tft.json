@@ -1386,6 +1386,7 @@
     "tft.workflow.object.select": { "en": "Select object for measurement", "uk": "Виберіть об’єкт для вимірювання", "max_len": 34 },
     "tft.workflow.sensor.remote_count": {"en": "REMOTE:%s N:nRF I:IMU B:baro C:cal", "uk": "REMOTE:%s N:nRF I:IMU B:баро C:кал", "max_len": 40},
     "tft.workflow.sensor.main": {"en": "ADC:%s MAIN N%s B%s INA:%s %sV", "uk": "ADC:%s MAIN N%s B%s INA:%s %sV", "max_len": 48},
+    "tft.workflow.sensor.main_absent": {"en": "ADC:%s MAIN nRF: absent (4 REMOTE mode) B%s INA:%s %sV", "uk": "ADC:%s MAIN nRF: відсутній (режим 4 REMOTE) B%s INA:%s %sV", "max_len": 60},
     "tft.workflow.sensor.values_legend": {"en": "hPa / °C / gyro °/s | MAIN %s %s", "uk": "гПа / °C / гіро °/с | MAIN %s %s", "max_len": 44},
     "tft.workflow.sensor.node": {"en": "%s N%s I%s B%s C%s", "uk": "%s N%s I%s B%s C%s", "max_len": 24},
     "tft.workflow.sensor.ok": {"en": "OK", "uk": "OK", "max_len": 2},

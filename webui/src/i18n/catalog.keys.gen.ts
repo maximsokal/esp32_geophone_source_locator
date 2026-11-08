@@ -1463,6 +1463,7 @@ export const i18nKeys = [
   "tft.workflow.scan.phone",
   "tft.workflow.sensor.insufficient",
   "tft.workflow.sensor.main",
+  "tft.workflow.sensor.main_absent",
   "tft.workflow.sensor.node",
   "tft.workflow.sensor.ok",
   "tft.workflow.sensor.planar",

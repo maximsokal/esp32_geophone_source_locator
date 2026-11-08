@@ -1465,6 +1465,7 @@ export const uk: Record<I18nKey, string> = {
   "tft.workflow.scan.phone": "Скануйте на телефоні",
   "tft.workflow.sensor.insufficient": "Менше 3: позиція обмежена; калібрування триває",
   "tft.workflow.sensor.main": "ADC:%s MAIN N%s B%s INA:%s %sV",
+  "tft.workflow.sensor.main_absent": "ADC:%s MAIN nRF: відсутній (режим 4 REMOTE) B%s INA:%s %sV",
   "tft.workflow.sensor.node": "%s N%s I%s B%s C%s",
   "tft.workflow.sensor.ok": "OK",
   "tft.workflow.sensor.planar": "Можливе 2D; для 3D підключіть щонайменше 4",

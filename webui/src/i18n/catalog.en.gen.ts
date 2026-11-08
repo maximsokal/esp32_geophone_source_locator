@@ -1465,6 +1465,7 @@ export const en: Record<I18nKey, string> = {
   "tft.workflow.scan.phone": "Scan on phone",
   "tft.workflow.sensor.insufficient": "Under 3: limited position; calibration can continue",
   "tft.workflow.sensor.main": "ADC:%s MAIN N%s B%s INA:%s %sV",
+  "tft.workflow.sensor.main_absent": "ADC:%s MAIN nRF: absent (4 REMOTE mode) B%s INA:%s %sV",
   "tft.workflow.sensor.node": "%s N%s I%s B%s C%s",
   "tft.workflow.sensor.ok": "OK",
   "tft.workflow.sensor.planar": "2D possible; connect >=4 for 3D",

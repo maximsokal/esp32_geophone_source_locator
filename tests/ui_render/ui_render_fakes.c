@@ -98,6 +98,8 @@ ui_context_t render_context;
 workflow_snapshot_t render_snapshot;
 device_status_snapshot_t render_device_status;
 nrf_node_link_status_input_t render_node_status[UI_WORKFLOW_REMOTE_SLOT_COUNT + 1U];
+/* The topology mode the screens see; MAIN_PRESENT unless a scene sets REMOTE_ONLY (no nRF MAIN). */
+nrf_topology_mode_t render_topology_mode = NRF_TOPOLOGY_MODE_MAIN_PRESENT;
 uint64_t render_now_ms = 1000U;
 workflow_command_t render_last_command = WORKFLOW_COMMAND_COUNT;
 unsigned render_command_count;
@@ -280,6 +282,12 @@ bool ranging_radio_pause_stop_failed(void) { return false; }
 bool ranging_radio_pause_resume_failed(void) { return false; }
 esp_err_t nrf_topology_service_get_sensor_snapshot(uint8_t channel, nrf_remote_sensor_cache_t *out)
 { (void)channel; memset(out, 0, sizeof(*out)); return ESP_ERR_NOT_FOUND; }
+esp_err_t nrf_topology_service_get_mode(nrf_topology_mode_info_t *info)
+{
+    if (info == NULL) return ESP_ERR_INVALID_ARG;
+    *info = (nrf_topology_mode_info_t){ .mode = render_topology_mode };
+    return ESP_OK;
+}
 esp_err_t nrf_topology_service_get_node_status_snapshot(uint8_t slot, nrf_node_link_status_input_t *out)
 {
     if (slot > UI_WORKFLOW_REMOTE_SLOT_COUNT || out == NULL) return ESP_ERR_INVALID_ARG;

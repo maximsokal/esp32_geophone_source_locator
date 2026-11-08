@@ -30,6 +30,7 @@ extern ranging_radio_state_t render_radio_state;
 extern workflow_command_params_t render_distance_params;
 extern unsigned render_distance_calls;
 extern nrf_node_link_status_input_t render_node_status[UI_WORKFLOW_REMOTE_SLOT_COUNT + 1U];
+extern nrf_topology_mode_t render_topology_mode;
 extern uint64_t render_now_ms;
 extern workflow_command_t render_last_command;
 extern unsigned render_command_count;
@@ -905,6 +906,22 @@ int main(int argc, char **argv)
             render_now_ms = status_page_ms;
             ui_workflow_update(s_workflow, render_now_ms);
             assert(strstr(lv_label_get_text(s_workflow->remote_slot_labels[0]), "N+ I+ B+ C-") != NULL);
+            assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN N+") != NULL);
+
+            /*
+             * No nRF MAIN (4 REMOTE mode): the footer says so instead of a "not connected" mark for a part that is not
+             * fitted. Anything uncertain keeps the usual MAIN link mark; MAIN present is unchanged.
+             */
+            render_topology_mode = NRF_TOPOLOGY_MODE_REMOTE_ONLY;
+            ui_workflow_update(s_workflow, render_now_ms);
+            assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN nRF:") != NULL);
+            assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN N") == NULL);
+            assert(strstr(lv_label_get_text(render_context.footer_label), "INA:") != NULL);
+            render_topology_mode = NRF_TOPOLOGY_MODE_UNCERTAIN;
+            ui_workflow_update(s_workflow, render_now_ms);
+            assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN N+") != NULL);
+            render_topology_mode = NRF_TOPOLOGY_MODE_MAIN_PRESENT;
+            ui_workflow_update(s_workflow, render_now_ms);
             assert(strstr(lv_label_get_text(render_context.footer_label), "MAIN N+") != NULL);
 
             /* Three nodes: full, partial (no gyroscope) and none. */

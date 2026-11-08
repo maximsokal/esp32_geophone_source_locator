@@ -213,6 +213,8 @@ esp_err_t nrf_topology_service_start(void);
 void nrf_topology_service_stop(void);
 esp_err_t nrf_topology_service_request_refresh(void);
 esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot);
+/* The mode (MAIN_PRESENT, REMOTE_ONLY, UNCERTAIN) of the latest snapshot; ESP_ERR_INVALID_STATE before the first one. */
+esp_err_t nrf_topology_service_get_mode(nrf_topology_mode_info_t *info);
 esp_err_t nrf_topology_service_request_sensor_refresh(uint8_t channel);
 esp_err_t nrf_topology_service_request_sensor_scan(uint8_t channel, uint32_t *request_id);
 esp_err_t nrf_topology_service_get_sensor_scan_dispatch(uint32_t request_id, bool *pending, esp_err_t *result);

@@ -64,6 +64,8 @@ typedef struct {
     ui_i18n_key_t preflight_barometer;
     ui_i18n_key_t preflight_power;
     nrf_node_link_status_t preflight_links[UI_WORKFLOW_REMOTE_SLOT_COUNT + 1U];
+    /* No nRF MAIN is fitted and the REMOTEs behind the mux are the whole mesh (4 REMOTE mode). */
+    bool preflight_remote_only;
     char preflight_rail_v[12];
     char preflight_main_hpa[12];
     char preflight_main_temperature[12];
@@ -644,6 +646,9 @@ static void ui_workflow_refresh_remote_slots(ui_workflow_screen_state_t *state)
                 (unsigned)input.polling_deferred, (int)err);
         }
     }
+    nrf_topology_mode_info_t mode = {0};
+    state->preflight_remote_only = nrf_topology_service_get_mode(&mode) == ESP_OK &&
+        mode.mode == NRF_TOPOLOGY_MODE_REMOTE_ONLY;
     hw_module_info_t adc = {0};
     (void)hw_inventory_get(HW_MODULE_AD7606, &adc);
     state->preflight_adc = adc.state == HW_STATE_PRESENT ? UI_I18N_KEY_TFT_WORKFLOW_SENSOR_OK
@@ -995,6 +1000,11 @@ static void ui_workflow_update_lines(ui_workflow_screen_state_t *state)
         if (ui_workflow_sensor_values_page((uint64_t)(esp_timer_get_time() / 1000))) {
             (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_SENSOR_VALUES_LEGEND),
                 state->preflight_main_hpa, state->preflight_main_temperature);
+        } else if (state->preflight_remote_only) {
+            /* There is no MAIN link to show: say why instead of a "not connected" mark that reads as a fault. */
+            (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_SENSOR_MAIN_ABSENT),
+                ui_tr(state->preflight_adc), ui_tr(state->preflight_barometer),
+                ui_tr(state->preflight_power), state->preflight_rail_v);
         } else {
             (void)ui_utf8_format(text, sizeof(text), ui_tr(UI_I18N_KEY_TFT_WORKFLOW_SENSOR_MAIN),
                 ui_tr(state->preflight_adc), ui_workflow_nrf_indicator(state->preflight_links[0]),

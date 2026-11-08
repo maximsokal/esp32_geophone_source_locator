@@ -397,6 +397,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Scan on phone", /* tft.workflow.scan.phone */
     "Under 3: limited position; calibration can continue", /* tft.workflow.sensor.insufficient */
     "ADC:%s MAIN N%s B%s INA:%s %sV", /* tft.workflow.sensor.main */
+    "ADC:%s MAIN nRF: absent (4 REMOTE mode) B%s INA:%s %sV", /* tft.workflow.sensor.main_absent */
     "%s N%s I%s B%s C%s", /* tft.workflow.sensor.node */
     "OK", /* tft.workflow.sensor.ok */
     "2D possible; connect >=4 for 3D", /* tft.workflow.sensor.planar */
@@ -881,6 +882,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Скануйте на телефоні", /* tft.workflow.scan.phone */
     "Менше 3: позиція обмежена; калібрування триває", /* tft.workflow.sensor.insufficient */
     "ADC:%s MAIN N%s B%s INA:%s %sV", /* tft.workflow.sensor.main */
+    "ADC:%s MAIN nRF: відсутній (режим 4 REMOTE) B%s INA:%s %sV", /* tft.workflow.sensor.main_absent */
     "%s N%s I%s B%s C%s", /* tft.workflow.sensor.node */
     "OK", /* tft.workflow.sensor.ok */
     "Можливе 2D; для 3D підключіть щонайменше 4", /* tft.workflow.sensor.planar */

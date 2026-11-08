@@ -4137,6 +4137,20 @@ esp_err_t nrf_topology_service_get_snapshot(nrf_topology_snapshot_t *snapshot)
     return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
+esp_err_t nrf_topology_service_get_mode(nrf_topology_mode_info_t *info)
+{
+    if (info == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    nrf_topology_snapshot_t snapshot;
+    const esp_err_t err = nrf_topology_service_get_snapshot(&snapshot);
+    if (err != ESP_OK) {
+        return err;
+    }
+    *info = nrf_topology_classify_mode(&snapshot);
+    return ESP_OK;
+}
+
 esp_err_t nrf_topology_service_request_sensor_refresh(uint8_t channel)
 {
     TaskHandle_t task;
