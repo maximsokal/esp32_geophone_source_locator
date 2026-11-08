@@ -1295,20 +1295,9 @@ static esp_err_t seismic_recorder_prepare_geometry(
     cycle.pair_count = frozen_ranging.pair_count;
     memcpy(cycle.pairs, frozen_ranging.pairs, cycle.pair_count * sizeof(cycle.pairs[0]));
 
-    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
-        if (topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
-        if (limits[channel] == 0U) return ESP_ERR_INVALID_ARG;
-        for (size_t i = 0U; i < cycle.pair_count; ++i) {
-            const nrf_cs_pair_result_t *pair = &cycle.pairs[i];
-            if (pair->state != NRF_CS_PAIR_VALID) continue;
-            if (((pair->node_a == topology.main.node_id && pair->node_b == topology.remotes[channel].node_id) ||
-                 (pair->node_b == topology.main.node_id && pair->node_a == topology.remotes[channel].node_id)) &&
-                pair->distance_mm > 0 &&
-                nrf_topology_pair_exceeds_cable(pair->distance_mm, limits[channel], pair->scheduler_quality_flags)) {
-                return ESP_ERR_INVALID_STATE;
-            }
-        }
-    }
+    /* With MAIN: every MAIN edge within its cable. Without MAIN (REMOTE_ONLY): every pair within the sum of its two cables. */
+    err = seismic_recorder_geometry_check_cable_pairs(&topology, cycle.pairs, cycle.pair_count, limits);
+    if (err != ESP_OK) return err;
 
     seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT];
     memset(channels, 0, sizeof(channels));
@@ -1435,20 +1424,13 @@ static esp_err_t seismic_recorder_prepare_geometry(
         return ESP_ERR_INVALID_STATE;
     }
 
-    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
-        if (topology.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
-        const object_store_pod_geometry_t *pod = &geometry.pods[channel];
-        const double radius2 = (double)pod->x_mm * pod->x_mm +
-            (double)pod->y_mm * pod->y_mm + (double)pod->z_mm * pod->z_mm;
-        /* Match ranging: one mm for rounded XYZ plus what the node's own measured MAIN edge exceeded the cable by
-         * (absent MAIN edges get the rounding millimetre only). */
-        const double cable_bound_mm = (double)limits[channel] + (double)nrf_topology_cable_radius_allowance_mm(
-            cycle.pairs, cycle.pair_count, NRF_TOPOLOGY_MAIN_NODE_ID, topology.remotes[channel].node_id, limits[channel]);
-        if (radius2 > cable_bound_mm * cable_bound_mm) {
-            ESP_LOGE(TAG, "START rejected: CS geometry exceeds cable node=%u limit_mm=%" PRIu32,
-                (unsigned)topology.remotes[channel].node_id, limits[channel]);
-            return ESP_ERR_INVALID_STATE;
-        }
+    /* Match ranging: the radius from MAIN is bounded by the cable; without MAIN the origin is a REMOTE and there is none. */
+    nrf_cs_node_id_t cable_bad_node = 0U;
+    err = seismic_recorder_geometry_check_cable_radius(
+        &topology, &geometry, cycle.pairs, cycle.pair_count, limits, &cable_bad_node);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "START rejected: CS geometry exceeds cable node=%u", (unsigned)cable_bad_node);
+        return ESP_ERR_INVALID_STATE;
     }
 
     err = object_store_set_geometry(object_id, &geometry);

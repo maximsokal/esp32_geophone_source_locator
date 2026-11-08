@@ -8,6 +8,7 @@
 #include "nrf_cs_scheduler.h"
 #include "nrf_geometry_solver.h"
 #include "nrf_topology.h"
+#include "nrf_topology_service.h"
 #include "object_store.h"
 #include "seismic_recorder.h"
 
@@ -126,4 +127,30 @@ void seismic_recorder_geometry_apply_cs_pairs(
  */
 bool seismic_recorder_geometry_solution_consistent(
     const nrf_geometry_solution_t *solution
+);
+
+
+/*
+ * Cable admission of a frozen ranging at START. `limits_mm` is per mux channel and every ASSIGNED REMOTE needs one
+ * (ESP_ERR_INVALID_ARG otherwise).
+ *  - MAIN assigned: a REMOTE is at most its cable (plus the measurement bin of an automatic distance) from MAIN, so a
+ *    valid MAIN edge beyond it is refused, and after the solve so is a node whose radius from the origin exceeds it.
+ *  - MAIN confirmed absent (REMOTE_ONLY): the origin is a REMOTE, not the housing, so there is no radius and no MAIN edge;
+ *    a valid pair is refused when it exceeds the sum of its two cables (nrf_topology_pair_exceeds_cable_sum).
+ * ESP_ERR_INVALID_STATE for a refusal; `bad_node` (may be NULL) names the node of a refused radius.
+ */
+esp_err_t seismic_recorder_geometry_check_cable_pairs(
+    const nrf_topology_snapshot_t *topology,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    const uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT]
+);
+
+esp_err_t seismic_recorder_geometry_check_cable_radius(
+    const nrf_topology_snapshot_t *topology,
+    const object_store_geometry_t *geometry,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    const uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT],
+    nrf_cs_node_id_t *bad_node
 );

@@ -44,8 +44,17 @@ esp_err_t seismic_recorder_geometry_build_inputs(
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED) {
-        return ESP_ERR_INVALID_STATE;
+    /* MAIN assigned: the legacy mesh. MAIN confirmed absent: the REMOTEs are the whole mesh (REMOTE_ONLY). Anything else is
+     * not a topology a geometry may be built on. */
+    const bool main_is_node = topology->main.state == NRF_TOPOLOGY_NODE_ASSIGNED;
+    if (!main_is_node) {
+        bool any_remote = false;
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            any_remote = any_remote || topology->remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED;
+        }
+        if (topology->main.state != NRF_TOPOLOGY_NODE_ABSENT || !any_remote) {
+            return ESP_ERR_INVALID_STATE;
+        }
     }
 
     if (max_inputs < 1U) {
@@ -84,9 +93,11 @@ esp_err_t seismic_recorder_geometry_build_inputs(
     }
 
     size_t count = 0U;
-    inputs[count].node_id = topology->main.node_id;
-    inputs[count].z_mm = 0;
-    ++count;
+    if (main_is_node) {
+        inputs[count].node_id = topology->main.node_id;
+        inputs[count].z_mm = 0;
+        ++count;
+    }
 
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         if (topology->remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) {
@@ -302,4 +313,98 @@ bool seismic_recorder_geometry_solution_consistent(
             !nrf_geometry_position_uncertainty_acceptable(solution->nodes[i].uncertainty_mm)) return false;
     }
     return true;
+}
+
+
+static const nrf_topology_node_snapshot_t *remote_of_node(const nrf_topology_snapshot_t *topology, nrf_cs_node_id_t node)
+{
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (topology->remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED && topology->remotes[channel].node_id == node) {
+            return &topology->remotes[channel];
+        }
+    }
+    return NULL;
+}
+
+static uint32_t limit_of_node(
+    const nrf_topology_snapshot_t *topology, const uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT], nrf_cs_node_id_t node)
+{
+    const nrf_topology_node_snapshot_t *remote = remote_of_node(topology, node);
+    return remote != NULL && remote->mux_channel < NRF_TOPOLOGY_REMOTE_COUNT ? limits_mm[remote->mux_channel] : 0U;
+}
+
+
+esp_err_t seismic_recorder_geometry_check_cable_pairs(
+    const nrf_topology_snapshot_t *topology,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    const uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT]
+)
+{
+    if (topology == NULL || limits_mm == NULL || (pairs == NULL && pair_count != 0U)) return ESP_ERR_INVALID_ARG;
+    const bool with_main = topology->main.state == NRF_TOPOLOGY_NODE_ASSIGNED;
+    if (!with_main && topology->main.state != NRF_TOPOLOGY_NODE_ABSENT) return ESP_ERR_INVALID_STATE;
+
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (topology->remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+        if (limits_mm[channel] == 0U) return ESP_ERR_INVALID_ARG;
+        if (!with_main) continue;
+        for (size_t i = 0U; i < pair_count; ++i) {
+            const nrf_cs_pair_result_t *pair = &pairs[i];
+            if (pair->state != NRF_CS_PAIR_VALID) continue;
+            const nrf_cs_node_id_t node = topology->remotes[channel].node_id;
+            if (((pair->node_a == topology->main.node_id && pair->node_b == node) ||
+                 (pair->node_b == topology->main.node_id && pair->node_a == node)) &&
+                pair->distance_mm > 0 &&
+                nrf_topology_pair_exceeds_cable(pair->distance_mm, limits_mm[channel], pair->scheduler_quality_flags)) {
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+    }
+    if (with_main) return ESP_OK;
+
+    /* No MAIN: a valid pair is bounded by the two cables together. */
+    for (size_t i = 0U; i < pair_count; ++i) {
+        const nrf_cs_pair_result_t *pair = &pairs[i];
+        if (pair->state != NRF_CS_PAIR_VALID || pair->distance_mm <= 0) continue;
+        if (nrf_topology_pair_exceeds_cable_sum(
+                pair->distance_mm, limit_of_node(topology, limits_mm, pair->node_a),
+                limit_of_node(topology, limits_mm, pair->node_b), pair->scheduler_quality_flags)) {
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+    return ESP_OK;
+}
+
+
+esp_err_t seismic_recorder_geometry_check_cable_radius(
+    const nrf_topology_snapshot_t *topology,
+    const object_store_geometry_t *geometry,
+    const nrf_cs_pair_result_t *pairs,
+    size_t pair_count,
+    const uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT],
+    nrf_cs_node_id_t *bad_node
+)
+{
+    if (topology == NULL || geometry == NULL || limits_mm == NULL || (pairs == NULL && pair_count != 0U)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (topology->main.state == NRF_TOPOLOGY_NODE_ABSENT) return ESP_OK; /* the origin is a REMOTE: no radius from the housing */
+    if (topology->main.state != NRF_TOPOLOGY_NODE_ASSIGNED) return ESP_ERR_INVALID_STATE;
+
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT && channel < OBJECT_STORE_POD_COUNT; ++channel) {
+        if (topology->remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+        const object_store_pod_geometry_t *pod = &geometry->pods[channel];
+        const double radius2 = (double)pod->x_mm * pod->x_mm +
+            (double)pod->y_mm * pod->y_mm + (double)pod->z_mm * pod->z_mm;
+        /* Match ranging: one mm for rounded XYZ plus what the node's own measured MAIN edge exceeded the cable by
+         * (absent MAIN edges get the rounding millimetre only). */
+        const double cable_bound_mm = (double)limits_mm[channel] + (double)nrf_topology_cable_radius_allowance_mm(
+            pairs, pair_count, topology->main.node_id, topology->remotes[channel].node_id, limits_mm[channel]);
+        if (radius2 > cable_bound_mm * cable_bound_mm) {
+            if (bad_node != NULL) *bad_node = topology->remotes[channel].node_id;
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+    return ESP_OK;
 }
