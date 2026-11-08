@@ -362,9 +362,12 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
         );
     }
 
+    /* The layout this session's localizations worked with: the frozen one, or the registered AprilTag centres. */
     object_store_geometry_t geometry;
-    const bool geometry_available =
-        seismic_recorder_read_session_geometry(object_id, session_id, &geometry) == ESP_OK;
+    seismic_recorder_localization_geometry_source_t geometry_source =
+        SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
+    const bool geometry_available = seismic_recorder_read_session_localization_geometry(
+        object_id, session_id, &geometry, &geometry_source, NULL) == ESP_OK;
 
     seismic_recorder_session_participation_t participation;
     const bool participation_available =
@@ -533,6 +536,9 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
             static const char hex[] = "0123456789abcdef";
             const seismic_recorder_pod_participation_t *pod_participation =
                 &participation.pods[pod];
+            /* A pod placed from the registered tag centres says so, whatever the recording's own metadata recorded. */
+            const bool registered_pod = geometry_available && geometry.anchored && geometry.pods[pod].computed &&
+                geometry_source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED;
             const size_t hardware_id_length =
                 pod_participation->hardware_id_length > SEISMIC_RECORDER_HARDWARE_ID_MAX
                     ? SEISMIC_RECORDER_HARDWARE_ID_MAX
@@ -563,15 +569,19 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
             web_json_writer_printf(
                 &writer,
                 ",\"position_source\":\"%s\"",
-                pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
-                    ? "channel_sounding"
-                    : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO
-                        ? "channel_sounding_baro"
-                        : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_APRILTAG_CENTER_APPROX
-                            ? "apriltag_center_approx"
-                            : "none"
+                registered_pod
+                    ? "apriltag_center_approx"
+                    : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING
+                        ? "channel_sounding"
+                        : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_CHANNEL_SOUNDING_BARO
+                            ? "channel_sounding_baro"
+                            : pod_participation->position_source == SEISMIC_RECORDER_POSITION_SOURCE_APRILTAG_CENTER_APPROX
+                                ? "apriltag_center_approx"
+                                : "none"
             );
-            if (pod_participation->tag_id_known) {
+            if (registered_pod) {
+                web_json_writer_printf(&writer, ",\"tag_id\":%u", (unsigned)(pod + 1U)); /* G<k> is tag k */
+            } else if (pod_participation->tag_id_known) {
                 web_json_writer_printf(&writer, ",\"tag_id\":%u", (unsigned)pod_participation->tag_id);
             }
             web_json_writer_printf(

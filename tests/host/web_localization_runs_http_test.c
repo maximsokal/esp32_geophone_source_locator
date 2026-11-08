@@ -141,6 +141,34 @@ esp_err_t seismic_recorder_read_session_geometry(
 }
 
 
+static bool s_registered_positions;
+static unsigned s_localization_geometry_calls;
+
+/* The geometry the localization of this session worked with: the frozen layout, or the registered tag centres. */
+esp_err_t seismic_recorder_read_session_localization_geometry(
+    const char *object_id,
+    const char *session_id,
+    object_store_geometry_t *geometry,
+    seismic_recorder_localization_geometry_source_t *source,
+    esp_err_t *registered_status
+)
+{
+    ++s_localization_geometry_calls;
+    if (source != NULL) *source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
+    if (registered_status != NULL) *registered_status = ESP_OK;
+    const esp_err_t err = seismic_recorder_read_session_geometry(object_id, session_id, geometry);
+    if (err == ESP_OK && s_registered_positions) {
+        geometry->anchored = true;
+        geometry->pods[0].x_mm = 4100; /* scan-frame coordinates, not the frozen layout's */
+        geometry->pods[0].y_mm = -2200;
+        geometry->pods[1].x_mm = -4100;
+        geometry->pods[1].y_mm = 2200;
+        if (source != NULL) *source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED;
+    }
+    return err;
+}
+
+
 esp_err_t seismic_recorder_read_session_participation(
     const char *object_id,
     const char *session_id,
@@ -703,6 +731,34 @@ static void test_remote_only_session_reports_topology_anchor_and_tag(void)
     assert(strstr(response, "tag_id") == NULL);
 }
 
+/* The sensor positions the response shows are the ones the localization used, and it says where they came from. */
+static void test_response_geometry_is_the_localization_geometry_with_its_source(void)
+{
+    reset_fakes();
+    s_registered_positions = true;
+    s_localization_geometry_calls = 0U;
+    s_participation.pods[0].node_id_known = true;
+    s_participation.pods[0].node_id = 1U;
+    char response[8192] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(s_localization_geometry_calls == 1U);
+    assert(strstr(response, "\"x_mm\":4100,\"y_mm\":-2200") != NULL);
+    assert(strstr(response, "\"position_source\":\"apriltag_center_approx\",\"tag_id\":1") != NULL);
+    /* Every computed pod was placed from its tag: the second one says so too. */
+    assert(strstr(response, "\"x_mm\":-4100,\"y_mm\":2200") != NULL);
+    assert(strstr(strstr(response, "apriltag_center_approx") + 1, "apriltag_center_approx") != NULL);
+
+    /* Without registered positions nothing changes: the frozen layout and the session's recorded source. */
+    reset_fakes();
+    s_registered_positions = false;
+    memset(response, 0, sizeof(response));
+    request = make_request("object_id=OBJ_0001&session_id=S000001", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(strstr(response, "\"x_mm\":300,\"y_mm\":-150") != NULL);
+    assert(strstr(response, "apriltag_center_approx") == NULL);
+}
+
 static void test_runs_listing_requires_both_query_parameters(void)
 {
     reset_fakes();
@@ -913,6 +969,7 @@ int main(void)
     test_runs_listing_includes_planar_fallback_reason();
     test_unknown_provenance_is_omitted_and_source_age_is_null();
     test_remote_only_session_reports_topology_anchor_and_tag();
+    test_response_geometry_is_the_localization_geometry_with_its_source();
     test_runs_listing_requires_both_query_parameters();
     test_runs_listing_surfaces_not_found_as_404();
     test_absent_picks_directory_is_empty_without_partial_error();
