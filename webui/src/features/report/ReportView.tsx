@@ -150,7 +150,7 @@ export default function ReportView({ report }: { report: RecordingReport }) {
       <section>
         <h2>{tr('report.coordinate_frames')}</h2>
         {(() => {
-          const frames = describeFrames(location, report.scanPoints.length > 0, locale);
+          const frames = describeFrames(location, report.scanPoints.length > 0, locale, evidence.positionSource);
           return (
             <>
               <p>{frames.axisConvention} {tr('report.frames_heading_note')}</p>
@@ -197,6 +197,26 @@ export default function ReportView({ report }: { report: RecordingReport }) {
               ))}
             </tbody>
           </table>
+        )}
+        {evidence.positionSource === 'apriltag_center_approx' && (
+          <>
+            <p className="report-note" data-position-source="apriltag_center_approx">{tr('report.position_source.apriltag')}</p>
+            <h3>{tr('report.tag_residuals.heading')}</h3>
+            <table>
+              <thead><tr><th>{tr('report.tag_residuals.pair')}</th><th>{tr('report.tag_residuals.tag_distance')}</th><th>{tr('report.tag_residuals.ble_distance')}</th><th>{tr('report.tag_residuals.difference')}</th></tr></thead>
+              <tbody>
+                {evidence.tagResiduals.map((entry) => (
+                  <tr key={`${entry.nodeA}-${entry.nodeB}`}>
+                    <td>{tr('report.remote_node', { number: formatNumber(locale, entry.nodeA) })} – {tr('report.remote_node', { number: formatNumber(locale, entry.nodeB) })}</td>
+                    <td>{formatDistance(locale, entry.tagDistanceM)}</td>
+                    <td>{entry.bleDistanceM === null ? '—' : formatDistance(locale, entry.bleDistanceM)}</td>
+                    <td>{entry.residualM === null ? '—' : formatDistance(locale, entry.residualM)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="report-note">{tr('report.tag_residuals.note')}</p>
+          </>
         )}
         <p className="report-note">
           {tr('report.worst_cs_residual')}: {evidence.worstResidualM === null ? '—' : formatDistance(locale, evidence.worstResidualM)} ·

@@ -240,7 +240,7 @@ export function XrRuntimePanel({
     const artifact=registrationArtifactFromResult(result,fusion,defaultRegistrationTagSizes(),bound.geometryComputedAtMs,Date.now(),null,undefined,geophoneBlock);
     /* Persistence is a separate stage owned by the parent after the scan commit (it needs the committed scan id). */
     try{encodeRegistrationArtifact(artifact);}catch{setTagModeError('Registration artifact was not accepted.');return null;}
-    setTagRegistrationLabel(result);setTagModeError(null);
+    setTagRegistrationLabel(geophoneBlock===null?result:{...result,geophone_positions:geophoneBlock});setTagModeError(null);
     return artifact;
   };
 

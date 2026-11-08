@@ -41,6 +41,8 @@ function scanLabel(evidence: RecordingEvidence, locale: 'en' | 'uk', t: (key: I1
 }
 
 function anchorLabel(evidence: RecordingEvidence, t: (key: I18nKey, params?: Readonly<Record<string, string | number>>) => string): string {
+  /* REMOTE_ONLY has no MAIN tag to fit against: the geophones' own tag centres are the anchor. */
+  if (evidence.positionSource === 'apriltag_center_approx') return t('evidence.anchor_tag_centres', { count: evidence.positions.length });
   if (evidence.scanRegistered) return t('evidence.anchor_valid_tier', { tier: evidence.registrationTier ?? 'unknown' });
   return evidence.registrationReason === null
     ? t('evidence.anchor_none')
@@ -70,6 +72,12 @@ export function RecordingEvidenceView({ evidence }: { evidence: RecordingEvidenc
       <div><dt>{t('evidence.worst_position_uncertainty')}</dt><dd>{metres(evidence.worstUncertaintyM, locale)}{evidence.undeterminedPods.length > 0 ? ` · ${t('evidence.undetermined', { nodes: evidence.undeterminedPods.join(', ') })}` : ''}</dd></div>
       <div><dt>{t('evidence.positions')}</dt><dd>{evidence.positions.length === 0 ? '—' : evidence.positions.map((p) =>
         `${p.pod === 0 ? 'MAIN' : t('report.remote_node', { number: formatNumber(locale, p.pod) })} ${formatNumber(locale, p.position.x_m, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}/${formatNumber(locale, p.position.y_m, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}/${p.position.z_m === null ? t('evidence.policy.unknown') : formatNumber(locale, p.position.z_m, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`).join(' · ')}</dd></div>
+      {evidence.positionSource === 'apriltag_center_approx' && (
+        <>
+          <div><dt>{t('evidence.position_source')}</dt><dd>{t('evidence.position_source.apriltag')}</dd></div>
+          <div><dt>{t('evidence.tag_residual_worst')}</dt><dd>{metres(evidence.worstTagResidualM, locale)}</dd></div>
+        </>
+      )}
       <div><dt>{t('evidence.scan')}</dt><dd>{scanLabel(evidence, locale, t)}</dd></div>
       <div><dt>{t('evidence.apriltag_anchor')}</dt><dd>{anchorLabel(evidence, t)}</dd></div>
       <div><dt>{t('evidence.localization')}</dt><dd data-localization-state={localizationStatus.state} data-severity={localizationStatus.severity}>{t(LOCALIZATION_LABEL[evidence.localization])}{evidence.solvedMethods.length > 0 ? `: ${evidence.solvedMethods.join(', ')}` : ''}{evidence.failedMethods.length > 0 ? ` · ${t('evidence.failed_methods', { methods: evidence.failedMethods.join(', ') })}` : ''}</dd></div>

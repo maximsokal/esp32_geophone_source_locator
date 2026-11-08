@@ -68,8 +68,19 @@ export function tagScanNoticeText(notice: TagScanNotice, locale: I18nLocale = 'e
   });
 }
 
-export function registrationOutcome(result: Pick<SensorToScanRegistration, 'valid' | 'tier' | 'reason'> | null, locale: I18nLocale = 'en'): string {
+export function registrationOutcome(
+  result: (Pick<SensorToScanRegistration, 'valid' | 'tier' | 'reason'> & { geophone_positions?: RegistrationGeophonePositions }) | null,
+  locale: I18nLocale = 'en',
+): string {
   if (result === null) return translate(locale, 'xr.tag.registration.none');
+  /* REMOTE_ONLY: there is no MAIN tag to fit against, so the outcome is how many geophone tag centres were taken. */
+  if (result.geophone_positions !== undefined) {
+    const taken = new Set(result.geophone_positions.positions.map((position) => position.node_id));
+    const missing = ([1, 2, 3, 4] as const).filter((id) => !taken.has(id)).map((id) => `G${id}`);
+    return missing.length === 0
+      ? translate(locale, 'xr.tag.geophones.complete', { count: taken.size })
+      : translate(locale, 'xr.tag.geophones.partial', { count: taken.size, missing: missing.join(', ') });
+  }
   if (result.valid) {
     const tierKey = result.tier === 'full' ? 'xr.tag.tier.full' : result.tier === 'minimum' ? 'xr.tag.tier.minimum' : 'xr.tag.tier.unknown';
     return translate(locale, 'xr.tag.registration.valid', { tier: translate(locale, tierKey) });

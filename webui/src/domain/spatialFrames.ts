@@ -33,7 +33,14 @@ export interface FrameSummary {
   transforms: FrameTransform[];
 }
 
-export function describeFrames(location: ObjectLocation | undefined, scanAvailable: boolean, locale: I18nLocale = 'en'): FrameSummary {
+export function describeFrames(
+  location: ObjectLocation | undefined,
+  scanAvailable: boolean,
+  locale: I18nLocale = 'en',
+  /** apriltag_center_approx: the sensor positions of this recording ARE the AprilTag centres in the scan frame. */
+  positionSource: 'unknown' | 'channel_sounding' | 'apriltag_center_approx' = 'unknown',
+): FrameSummary {
+  const tagCentres = positionSource === 'apriltag_center_approx';
   const gpsValid = location !== undefined && location.valid &&
     Number.isFinite(location.latitude) && Number.isFinite(location.longitude);
   return {
@@ -53,7 +60,18 @@ export function describeFrames(location: ObjectLocation | undefined, scanAvailab
           ? translate(locale, 'report.frame.sensor_to_gps_measured')
           : translate(locale, 'report.frame.sensor_to_gps_unknown'),
       },
-      {
+      tagCentres
+        ? {
+          from: 'scan',
+          to: 'sensor',
+          status: 'identity',
+          source: translate(locale, 'report.frame.tag_centres'),
+          timestampMs: null,
+          translationUncertaintyM: null, /* the tag-to-sensor offset is accepted, not measured */
+          rotationUncertaintyDeg: null,
+          note: translate(locale, 'report.frame.scan_to_sensor_tag_centres'),
+        }
+        : {
         from: 'scan',
         to: 'sensor',
         status: 'unknown',

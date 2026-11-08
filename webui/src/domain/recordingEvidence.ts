@@ -33,6 +33,20 @@ export interface EvidencePosition {
   leveled: boolean;
 }
 
+/** Where the geophone positions of a recording come from. */
+export type PositionSource = 'unknown' | 'channel_sounding' | 'apriltag_center_approx';
+
+/** One pair of geophones: the distance between their tag centres against what Channel Sounding measured. */
+export interface TagResidual {
+  nodeA: number;
+  nodeB: number;
+  tagDistanceM: number;
+  /** null when the pair has no valid Channel Sounding distance. */
+  bleDistanceM: number | null;
+  /** Tag-centre distance minus the BLE distance; null when there is no BLE distance (never 0). */
+  residualM: number | null;
+}
+
 export interface RecordingEvidence {
   geometryAvailable: boolean;
   /** Computed REMOTE pods (1..4) in this recording's frozen geometry. */
@@ -48,6 +62,11 @@ export interface RecordingEvidence {
   /** Pods whose position the CS mesh could not determine. */
   undeterminedPods: number[];
   geometryComputedAtMs: number | null;
+  /** apriltag_center_approx: REMOTE_ONLY, the positions are the tag centres (approximate, no offset). */
+  positionSource: PositionSource;
+  /** Only for apriltag_center_approx: all pairs of positioned geophones, reported not corrected. */
+  tagResiduals: TagResidual[];
+  worstTagResidualM: number | null;
   scan: ScanState;
   scanBytes: number;
   occupancy: ScanState;
@@ -92,6 +111,36 @@ function scanState(info: ScanArtifactInfo | null | undefined): ScanState {
   return info.present ? 'available' : 'absent';
 }
 
+function positionSourceOf(pods: ReadonlyArray<{ position_source?: string }>): PositionSource {
+  if (pods.length === 0) return 'unknown';
+  if (pods.every((pod) => pod.position_source === 'apriltag_center_approx')) return 'apriltag_center_approx';
+  return pods.some((pod) => pod.position_source === 'channel_sounding' || pod.position_source === 'channel_sounding_baro')
+    ? 'channel_sounding' : 'unknown';
+}
+
+function tagResidualsOf(
+  pods: ReadonlyArray<{ pod: number; x_mm?: number; y_mm?: number; z_mm?: number }>,
+  csPairs: LocalizationRunListing['cs_pairs'] | undefined,
+): TagResidual[] {
+  const remotes = pods.filter((pod) => pod.pod >= 1 && pod.pod <= REMOTE_PODS).sort((a, b) => a.pod - b.pod);
+  const result: TagResidual[] = [];
+  for (let i = 0; i < remotes.length; i += 1) {
+    for (let j = i + 1; j < remotes.length; j += 1) {
+      const a = remotes[i];
+      const b = remotes[j];
+      const tagDistanceM = Math.hypot(
+        ((a.x_mm ?? 0) - (b.x_mm ?? 0)) / 1000, ((a.y_mm ?? 0) - (b.y_mm ?? 0)) / 1000, ((a.z_mm ?? 0) - (b.z_mm ?? 0)) / 1000);
+      const measured = csPairs?.available === true
+        ? csPairs.pairs.find((pair) => pair.valid && pair.distance_mm > 0 &&
+            ((pair.node_a === a.pod && pair.node_b === b.pod) || (pair.node_a === b.pod && pair.node_b === a.pod)))
+        : undefined;
+      const bleDistanceM = measured === undefined ? null : measured.distance_mm / 1000;
+      result.push({ nodeA: a.pod, nodeB: b.pod, tagDistanceM, bleDistanceM, residualM: bleDistanceM === null ? null : tagDistanceM - bleDistanceM });
+    }
+  }
+  return result;
+}
+
 function latestRuns(runs: LocalizationRun[]): LocalizationRun[] {
   const latest = new Map<string, LocalizationRun>();
   for (const run of runs) {
@@ -119,6 +168,10 @@ export function buildRecordingEvidence(
     .filter((v): v is number => v !== undefined && v > 0 && v < UNDETERMINED_UNCERTAINTY_MM);
   const computedAt = computed.map((pod) => pod.computed_at_ms).filter((v): v is number => v !== undefined && v > 0);
 
+  const positionSource = geometry?.available === true ? positionSourceOf(computed) : 'unknown';
+  const tagResiduals = positionSource === 'apriltag_center_approx' ? tagResidualsOf(computed, listing?.cs_pairs) : [];
+  const measuredResiduals = tagResiduals.flatMap((entry) => entry.residualM === null ? [] : [Math.abs(entry.residualM)]);
+
   const runs = listing === null ? [] : latestRuns(listing.runs);
   const solved = runs.filter((run) => run.solved && run.source_position !== undefined).map((run) => run.method_name).sort();
   const failed = runs.filter((run) => !(run.solved && run.source_position !== undefined)).map((run) => run.method_name).sort();
@@ -145,6 +198,9 @@ export function buildRecordingEvidence(
     worstUncertaintyM: uncertainties.length === 0 ? null : Math.max(...uncertainties) / 1000,
     undeterminedPods: computed.filter((pod) => pod.uncertainty_mm === UNDETERMINED_UNCERTAINTY_MM).map((pod) => pod.pod),
     geometryComputedAtMs: computedAt.length === 0 ? null : Math.max(...computedAt),
+    positionSource,
+    tagResiduals,
+    worstTagResidualM: measuredResiduals.length === 0 ? null : Math.max(...measuredResiduals),
     scan: scanState(scan),
     scanBytes: scan?.present ? scan.bytes : 0,
     occupancy: scanState(occupancy),

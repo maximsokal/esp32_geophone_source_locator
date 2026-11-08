@@ -1,4 +1,4 @@
-import type { RegistrationArtifact } from './fiducial/registrationArtifact';
+import type { RegistrationArtifact, RegistrationGeophonePositions } from './fiducial/registrationArtifact';
 import type { RigidTransform } from './scanContinuation';
 
 /*
@@ -144,6 +144,51 @@ export function compareRegistrations(composed: RegistrationArtifact, base: Regis
   };
 }
 
+/** `+ 0` turns a negative zero into +0 so it never reaches the artifact bytes. */
+function wholeMillimetres(value: number): number {
+  return Math.round(value) + 0;
+}
+
+/**
+ * The geophone tag centres of an extension (project frame of its own session B, mm) moved into the base frame A by
+ * T_BA (yaw about +Z, then translation in metres). Null when the transform cannot move anything.
+ */
+function geophonePositionsToBase(
+  block: RegistrationGeophonePositions | undefined,
+  extensionToBase: RigidTransform,
+): RegistrationGeophonePositions | undefined {
+  if (block === undefined || !transformFinite(extensionToBase)) return undefined;
+  const c = Math.cos(extensionToBase.yaw);
+  const s = Math.sin(extensionToBase.yaw);
+  return {
+    source: block.source,
+    frame: block.frame,
+    positions: block.positions.map((position) => ({
+      ...position,
+      x_mm: wholeMillimetres(c * position.x_mm - s * position.y_mm + extensionToBase.tx * 1000),
+      y_mm: wholeMillimetres(s * position.x_mm + c * position.y_mm + extensionToBase.ty * 1000),
+      z_mm: wholeMillimetres(position.z_mm + extensionToBase.tz * 1000),
+    })),
+    /* The Channel Sounding differences are derived when read; those of one side would be stale for the merged scan. */
+  };
+}
+
+/** The base positions win; a geophone only the extension saw is added. Undefined when neither side has any. */
+function mergeGeophonePositions(
+  base: RegistrationGeophonePositions | undefined,
+  moved: RegistrationGeophonePositions | undefined,
+): RegistrationGeophonePositions | undefined {
+  if (base === undefined && moved === undefined) return undefined;
+  const byNode = new Map<number, RegistrationGeophonePositions['positions'][number]>();
+  for (const position of base?.positions ?? []) byNode.set(position.node_id, position);
+  for (const position of moved?.positions ?? []) if (!byNode.has(position.node_id)) byNode.set(position.node_id, position);
+  return {
+    source: 'APRILTAG_CENTER_APPROX',
+    frame: 'project_z_up_mm',
+    positions: [...byNode.values()].sort((a, b) => a.node_id - b.node_id),
+  };
+}
+
 export type ContinuationRegistrationDecision =
   /** Nothing to persist: no applicable base registration and no valid tag result in the extension. */
   | { kind: 'none' }
@@ -166,8 +211,40 @@ export function decideContinuationRegistration(input: {
   mergedScanFrameId: string;
 }): ContinuationRegistrationDecision {
   const composed = composeContinuationRegistration(input.artifactB, input.extensionToBase, input.mergedScanFrameId);
-  if (input.base === null) return composed === null ? { kind: 'none' } : { kind: 'composed', artifact: composed };
-  const kept = bindRegistrationToScan(input.base, input.mergedScanFrameId);
+  /* REMOTE_ONLY: the tag centres do not depend on a MAIN fit, so they join the base ones whatever the fit says. */
+  const geophones = mergeGeophonePositions(
+    input.base?.geophone_positions,
+    geophonePositionsToBase(input.artifactB?.geophone_positions, input.extensionToBase),
+  );
+  const withGeophones = <T extends RegistrationArtifact>(artifact: T): T =>
+    geophones === undefined ? artifact : { ...artifact, geophone_positions: geophones };
+  if (input.base === null) {
+    if (composed !== null) return { kind: 'composed', artifact: withGeophones(composed) };
+    if (geophones === undefined || input.artifactB === null) return { kind: 'none' };
+    const moved = geophonePositionsToBase(input.artifactB.geophone_positions, input.extensionToBase);
+    if (moved === undefined) return { kind: 'none' };
+    const conjugated = localFloorBToA(input.extensionToBase);
+    return {
+      kind: 'composed',
+      artifact: {
+        ...input.artifactB,
+        scan_frame_id: input.mergedScanFrameId,
+        bindings: input.artifactB.bindings.map((binding) => {
+          const q = binding.position_scan_m;
+          return {
+            ...binding,
+            position_scan_m: [
+              conjugated[0] * q[0] + conjugated[1] * q[1] + conjugated[2] * q[2] + conjugated[3] + 0,
+              conjugated[4] * q[0] + conjugated[5] * q[1] + conjugated[6] * q[2] + conjugated[7] + 0,
+              conjugated[8] * q[0] + conjugated[9] * q[1] + conjugated[10] * q[2] + conjugated[11] + 0,
+            ] as [number, number, number],
+          };
+        }),
+        geophone_positions: geophones,
+      },
+    };
+  }
+  const kept = withGeophones(bindRegistrationToScan(input.base, input.mergedScanFrameId));
   if (composed === null) return { kind: 'kept_base', artifact: kept, agreement: null };
   const agreement = compareRegistrations(composed, input.base);
   return agreement.withinTolerance
