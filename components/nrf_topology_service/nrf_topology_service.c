@@ -9,6 +9,7 @@
 #include "nrf_read_window.h"
 #include "nrf_link_readiness_policy.h"
 #include "nrf_topology_periods.h"
+#include "nrf_topology_mode.h"
 #include "nrf_geometry_solver.h"
 #include "nrf_geometry_triangles.h"
 #include "sensor_bus_timeout.h"
@@ -4576,11 +4577,15 @@ static esp_err_t service_ranging_request(
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
     }
-    if (s_snapshot.main.state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+    /* MAIN is a node only when it answers. A confirmed-absent MAIN with REMOTEs behind the mux is REMOTE_ONLY; anything
+     * unsettled (timeout, conflict, unknown, TCA fault, nobody at all) is refused rather than guessed. */
+    const nrf_topology_mode_info_t topology_mode = nrf_topology_classify_mode(&s_snapshot);
+    if (topology_mode.mode == NRF_TOPOLOGY_MODE_UNCERTAIN) {
         portEXIT_CRITICAL(&s_state_lock);
         return ESP_ERR_INVALID_STATE;
     }
-    ++node_count;
+    const bool main_is_node = topology_mode.mode == NRF_TOPOLOGY_MODE_MAIN_PRESENT;
+    node_count += main_is_node ? 1U : 0U;
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         node_count += s_snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED ? 1U : 0U;
     }
@@ -4607,7 +4612,7 @@ static esp_err_t service_ranging_request(
     }
 
     node_count = 0U;
-    nodes[node_count++] = s_snapshot.main.node_id;
+    if (main_is_node) nodes[node_count++] = s_snapshot.main.node_id;
     for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
         if (s_snapshot.remotes[channel].state == NRF_TOPOLOGY_NODE_ASSIGNED) {
             nodes[node_count++] = s_snapshot.remotes[channel].node_id;
@@ -4647,7 +4652,7 @@ static esp_err_t service_ranging_request(
     s_ranging_progress.pair_count = node_count * (node_count - 1U) / 2U;
     s_ranging_progress.geometry.node_count = node_count;
     for (size_t i = 0U; i < node_count; ++i) {
-        const bool is_main = nodes[i] == s_snapshot.main.node_id;
+        const bool is_main = main_is_node && nodes[i] == s_snapshot.main.node_id;
         s_ranging_progress.geometry.nodes[i].node_id = nodes[i];
         s_ranging_progress.geometry.nodes[i].solved = is_main;
         s_ranging_progress.geometry.nodes[i].uncertainty_mm = is_main ? 0 : INT32_MAX;

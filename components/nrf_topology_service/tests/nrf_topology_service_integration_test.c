@@ -1805,10 +1805,14 @@ static void request_full_ranging_for_test(void)
     assert(s_seen_ranging_progress.solution_residual_mm == INT32_MAX);
 }
 
-static void assert_ranging_rejects_missing_main(void)
+/*
+ * Superseded by REMOTE_ONLY (stage 2): a confirmed-absent MAIN no longer refuses ranging by itself. One lone REMOTE is
+ * still not enough to range, and that is the ordinary "not enough nodes" answer, not an invalid state.
+ */
+static void assert_ranging_rejects_a_lone_remote_without_main(void)
 {
     const nrf_cs_policy_t policy = ranging_test_policy();
-    assert(nrf_topology_service_ranging_start(&policy, 1000U) == ESP_ERR_INVALID_STATE);
+    assert(nrf_topology_service_ranging_start(&policy, 1000U) == ESP_ERR_NOT_FOUND);
 }
 
 static void assert_ranging_first_direction_progress(void)
@@ -3498,17 +3502,214 @@ static void test_noisy_geometry_cannot_exceed_individual_cables(void)
     run_service();
 }
 
-static void test_ranging_requires_assigned_main(void)
+static void test_ranging_needs_two_nodes_without_main(void)
 {
     reset_world();
     s_tca_present = true;
     node_boot(&s_nodes[1], 0U, 0x22U);
     script(EV_WAIT_MS, 10U, NULL);
-    script(EV_ACTION, 0U, assert_ranging_rejects_missing_main);
+    script(EV_ACTION, 0U, assert_ranging_rejects_a_lone_remote_without_main);
     script(EV_STOP, 0U, NULL);
     run_service();
     assert(s_cs_execute_count == 0U);
 }
+/* ---- REMOTE_ONLY ranging (stage 2): 4 REMOTE behind the TCA, no nRF MAIN, no node 0 anywhere ---- */
+
+static void prepare_remote_only_nodes(size_t remote_count)
+{
+    for (size_t index = 0U; index < remote_count; ++index) {
+        node_boot(&s_nodes[index], (uint8_t)index, (uint8_t)(0x22U + index));
+        s_nodes[index].snapshot_result = NRF_UPSTREAM_SENSOR_RESULT_OK;
+        s_nodes[index].reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+        s_nodes[index].reference_generation = 91U;
+    }
+    s_device_status.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
+    s_device_status.main.height_reference.generation = 91U;
+    s_device_status.main.height_reference.relative_z_mm = 0;
+}
+
+static nrf_topology_ranging_progress_t s_remote_only_start;
+static nrf_topology_ranging_result_t s_remote_only_frozen;
+static esp_err_t s_remote_only_start_result;
+
+static void request_remote_only_ranging(void)
+{
+    const nrf_cs_policy_t policy = ranging_test_policy();
+    s_remote_only_start_result = nrf_topology_service_ranging_start(&policy, 600000U);
+    if (s_remote_only_start_result == ESP_OK) {
+        assert(nrf_topology_service_ranging_get_progress(&s_remote_only_start) == ESP_OK);
+    }
+}
+
+static void capture_remote_only_frozen(void)
+{
+    /* No assertion here: when the start was refused there is no result and the test's own start check reports it. */
+    if (nrf_topology_service_get_frozen_ranging_result(&s_remote_only_frozen) != ESP_OK) {
+        memset(&s_remote_only_frozen, 0, sizeof(s_remote_only_frozen));
+    }
+}
+
+/* Square of side 1000 mm over nodes 1..4: pairs (1,2)(1,3)(1,4)(2,3)(2,4)(3,4). */
+static void run_remote_only_ranging(size_t remote_count)
+{
+    static const int32_t distances[6] = {1000, 1414, 1000, 1000, 1414, 1000};
+    reset_world();
+    s_tca_present = true;
+    prepare_remote_only_nodes(remote_count);
+    s_cs_use_pair_distances = true;
+    memcpy(s_cs_pair_distances, distances, sizeof(distances));
+    memset(&s_remote_only_start, 0, sizeof(s_remote_only_start));
+    memset(&s_remote_only_frozen, 0, sizeof(s_remote_only_frozen));
+    s_remote_only_start_result = ESP_FAIL;
+
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_remote_only_ranging);
+    script_waits(120U, 10U);
+    script(EV_ACTION, 0U, capture_remote_only_frozen);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void test_remote_only_ranging_start_accepts_node_ids_1_2_3_4(void)
+{
+    run_remote_only_ranging(4U);
+    assert(s_remote_only_start_result == ESP_OK);
+    assert(s_remote_only_start.active && !s_remote_only_start.complete);
+    assert(s_remote_only_start.geometry.node_count == 4U);
+    for (size_t i = 0U; i < 4U; ++i) {
+        assert(s_remote_only_start.geometry.nodes[i].node_id == i + 1U);
+        /* Nobody is placed before the solver ran: the origin is not MAIN and no node is pre-solved. */
+        assert(!s_remote_only_start.geometry.nodes[i].solved);
+        assert(s_remote_only_start.geometry.nodes[i].uncertainty_mm == INT32_MAX);
+    }
+}
+
+static void test_remote_only_pairs_are_six_and_directions_twelve(void)
+{
+    run_remote_only_ranging(4U);
+    assert(s_remote_only_start_result == ESP_OK);
+    assert(s_remote_only_start.pairs_total == 12U);
+    assert(s_remote_only_start.pair_count == 6U);
+    assert(s_cs_execute_count == 12U);
+
+    assert(s_remote_only_frozen.available);
+    assert(s_remote_only_frozen.pair_count == 6U);
+    unsigned seen = 0U;
+    for (size_t i = 0U; i < 6U; ++i) {
+        const nrf_cs_pair_result_t *pair = &s_remote_only_frozen.pairs[i];
+        assert(pair->state == NRF_CS_PAIR_VALID);
+        assert(pair->node_a >= 1U && pair->node_b <= 4U && pair->node_a < pair->node_b);
+        const unsigned bit = 1U << ((pair->node_a - 1U) * 4U + (pair->node_b - 1U));
+        assert((seen & bit) == 0U); /* no duplicated pair */
+        seen |= bit;
+    }
+}
+
+static void test_remote_only_no_zero_node(void)
+{
+    run_remote_only_ranging(4U);
+    assert(s_remote_only_start_result == ESP_OK);
+    for (size_t i = 0U; i < s_remote_only_start.pair_count; ++i) {
+        assert(s_remote_only_start.pairs[i].node_a != 0U && s_remote_only_start.pairs[i].node_b != 0U);
+    }
+    for (size_t i = 0U; i < s_remote_only_start.geometry.node_count; ++i) {
+        assert(s_remote_only_start.geometry.nodes[i].node_id != 0U);
+    }
+    assert(s_remote_only_frozen.available);
+    for (size_t i = 0U; i < s_remote_only_frozen.pair_count; ++i) {
+        assert(s_remote_only_frozen.pairs[i].node_a != 0U && s_remote_only_frozen.pairs[i].node_b != 0U);
+    }
+}
+
+static void test_legacy_five_nodes_ten_pairs(void)
+{
+    static const int32_t distances[10] = {1000, 1000, 1000, 1000, 1414, 1414, 1000, 1000, 1414, 1000};
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(4U);
+    s_cs_use_pair_distances = true;
+    memcpy(s_cs_pair_distances, distances, sizeof(distances));
+    memset(&s_remote_only_start, 0, sizeof(s_remote_only_start));
+    s_remote_only_start_result = ESP_FAIL;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_remote_only_ranging);
+    script_waits(200U, 10U);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+
+    assert(s_remote_only_start_result == ESP_OK);
+    assert(s_remote_only_start.pairs_total == 20U);
+    assert(s_remote_only_start.pair_count == 10U);
+    assert(s_remote_only_start.geometry.node_count == 5U);
+    assert(s_remote_only_start.geometry.nodes[0].node_id == 0U);
+    assert(s_remote_only_start.geometry.nodes[0].solved);
+    assert(s_remote_only_start.geometry.nodes[0].uncertainty_mm == 0);
+    for (size_t i = 1U; i < 5U; ++i) {
+        assert(s_remote_only_start.geometry.nodes[i].node_id == i);
+        assert(!s_remote_only_start.geometry.nodes[i].solved);
+    }
+    assert(s_cs_execute_count == 20U);
+}
+
+
+static void assert_ranging_refused_for_uncertain_main(nrf_topology_node_state_t main_state)
+{
+    const nrf_cs_policy_t policy = ranging_test_policy();
+    nrf_topology_snapshot_t topology;
+    assert(nrf_topology_service_get_snapshot(&topology) == ESP_OK);
+    assert(assigned_node_count(&topology) == 4U);
+    topology.main.state = main_state;
+    assert(nrf_topology_service_test_publish_state(true, &topology, false, NULL) == ESP_OK);
+    assert(nrf_topology_service_ranging_start(&policy, 1000U) == ESP_ERR_INVALID_STATE);
+}
+
+static void refuse_ranging_main_conflict(void) { assert_ranging_refused_for_uncertain_main(NRF_TOPOLOGY_NODE_CONFLICT); }
+static void refuse_ranging_main_unknown(void) { assert_ranging_refused_for_uncertain_main(NRF_TOPOLOGY_NODE_UNKNOWN); }
+static void refuse_ranging_main_transport_error(void)
+{
+    assert_ranging_refused_for_uncertain_main(NRF_TOPOLOGY_NODE_TRANSPORT_ERROR);
+}
+static void refuse_ranging_main_protocol_error(void)
+{
+    assert_ranging_refused_for_uncertain_main(NRF_TOPOLOGY_NODE_PROTOCOL_ERROR);
+}
+
+/* Four REMOTEs behind the mux, but MAIN is not confirmed absent: never a REMOTE_ONLY measurement. */
+static void test_uncertain_main_never_starts_remote_only_ranging(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_remote_only_nodes(4U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, refuse_ranging_main_conflict);
+    script(EV_ACTION, 0U, refuse_ranging_main_unknown);
+    script(EV_ACTION, 0U, refuse_ranging_main_transport_error);
+    script(EV_ACTION, 0U, refuse_ranging_main_protocol_error);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_cs_execute_count == 0U);
+}
+
+static void assert_no_topology_start_is_refused_and_idle(void)
+{
+    const nrf_cs_policy_t policy = ranging_test_policy();
+    assert(nrf_topology_service_ranging_start(&policy, 1000U) == ESP_ERR_INVALID_STATE);
+    assert(nrf_topology_service_ranging_start_autonomous(&policy) == ESP_ERR_INVALID_STATE);
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) != ESP_OK || !progress.active);
+}
+
+static void test_no_topology_fails_bounded(void)
+{
+    reset_world();
+    s_tca_present = true; /* TCA only: MAIN absent, no REMOTE at all */
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, assert_no_topology_start_is_refused_and_idle);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_cs_execute_count == 0U);
+}
+
 #endif
 
 static void add_three_remotes_and_refresh(void)
@@ -4955,8 +5156,33 @@ static void test_mux_discovery_timeouts_escalate_and_rejoin(void)
     assert(s_collisions == 0U);
 }
 
-int main(void)
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+/* One argument runs only the named REMOTE_ONLY case (to show a single RED/GREEN case); no argument runs everything. */
+static int run_selected_remote_only_case(const char *name)
 {
+    static const struct { const char *name; void (*run)(void); } cases[] = {
+        {"remote_only_ranging_start_accepts_node_ids_1_2_3_4", test_remote_only_ranging_start_accepts_node_ids_1_2_3_4},
+        {"remote_only_pairs_are_six_and_directions_twelve", test_remote_only_pairs_are_six_and_directions_twelve},
+        {"remote_only_no_zero_node", test_remote_only_no_zero_node},
+        {"legacy_five_nodes_ten_pairs", test_legacy_five_nodes_ten_pairs},
+        {"uncertain_main_never_starts_remote_only_ranging", test_uncertain_main_never_starts_remote_only_ranging},
+        {"no_topology_fails_bounded", test_no_topology_fails_bounded},
+        {"ranging_needs_two_nodes_without_main", test_ranging_needs_two_nodes_without_main},
+    };
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        if (strcmp(name, cases[i].name) == 0) { cases[i].run(); return 0; }
+    }
+    return 2;
+}
+#endif
+
+int main(int argc, char **argv)
+{
+#if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+    if (argc > 1) return run_selected_remote_only_case(argv[1]);
+#else
+    (void)argc; (void)argv;
+#endif
     test_api_guards_when_stopped();
     test_lifecycle_failures_mid_reconcile_and_repeated_restart();
     test_stale_log_response_reselects_status();
@@ -4995,7 +5221,13 @@ int main(void)
     test_placement_heights_are_checked_against_the_reference_generation();
     test_ranging_failure_reasons();
     test_ranging_default_timeout_is_30_seconds();
-    test_ranging_requires_assigned_main();
+    test_ranging_needs_two_nodes_without_main();
+    test_remote_only_ranging_start_accepts_node_ids_1_2_3_4();
+    test_remote_only_pairs_are_six_and_directions_twelve();
+    test_remote_only_no_zero_node();
+    test_legacy_five_nodes_ten_pairs();
+    test_uncertain_main_never_starts_remote_only_ranging();
+    test_no_topology_fails_bounded();
     test_autonomous_ranging_full_rotation();
     test_autonomous_ranging_failures();
     test_ranging_cancel();
