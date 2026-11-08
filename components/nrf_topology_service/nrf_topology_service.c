@@ -3420,11 +3420,16 @@ static void service_ranging_fail_start(nrf_topology_worker_state_t *worker)
     worker->ranging_progress.active = false;
     worker->ranging_progress.complete = true;
     worker->ranging_progress.success = false;
+    /* The origin of the topology that was asked for: MAIN's id 0 with MAIN, the lowest REMOTE without it. */
+    nrf_topology_mode_t mode = NRF_TOPOLOGY_MODE_UNCERTAIN;
+    nrf_cs_node_id_t origin = NRF_TOPOLOGY_MAIN_NODE_ID;
+    service_ranging_mode_and_anchor(&worker->snapshot, &mode, &origin);
+    if (mode == NRF_TOPOLOGY_MODE_UNCERTAIN) origin = NRF_TOPOLOGY_MAIN_NODE_ID;
     snprintf(
         worker->ranging_progress.failure_reason,
         sizeof(worker->ranging_progress.failure_reason),
         "geometry_unsolved:%u",
-        (unsigned)NRF_TOPOLOGY_MAIN_NODE_ID);
+        (unsigned)origin);
     service_ranging_publish_progress(worker);
 }
 
@@ -4887,6 +4892,9 @@ esp_err_t nrf_topology_service_ranging_set_manual(
             free(scratch); return ESP_ERR_INVALID_ARG;
         }
     }
+    /* A REMOTE_ONLY result has no MAIN: its origin is the recorded anchor and a pair is bounded by its two cables together. */
+    const bool remote_only = result->topology_mode == NRF_TOPOLOGY_MODE_REMOTE_ONLY;
+    const nrf_cs_node_id_t anchor_node_id = remote_only ? result->anchor_node_id : (nrf_cs_node_id_t)NRF_TOPOLOGY_MAIN_NODE_ID;
     nrf_cs_pair_result_t *edited = NULL;
     for (size_t i = 0U; i < result->pair_count; ++i) {
         nrf_cs_pair_result_t *pair = &result->pairs[i];
@@ -4906,15 +4914,20 @@ esp_err_t nrf_topology_service_ranging_set_manual(
     for (size_t i = 0U; i < result->pair_count; ++i) {
         nrf_cs_pair_result_t *pair = &result->pairs[i];
         uint64_t maximum = 0U;
+        uint32_t first_limit = 0U, second_limit = 0U;
         size_t matched = 0U;
         for (size_t n = 0U; n < result->membership_count; ++n) {
             if (inputs[n].node_id == pair->node_a || inputs[n].node_id == pair->node_b) {
-                maximum += node_limits[n]; ++matched;
+                maximum += node_limits[n];
+                if (matched == 0U) first_limit = node_limits[n]; else second_limit = node_limits[n];
+                ++matched;
             }
         }
         if (matched != 2U || (pair->state == NRF_CS_PAIR_VALID &&
             (pair->distance_mm < 0 ||
-             nrf_topology_pair_exceeds_cable(pair->distance_mm, maximum, pair->scheduler_quality_flags)))) {
+             (remote_only
+                 ? nrf_topology_pair_exceeds_cable_sum(pair->distance_mm, first_limit, second_limit, pair->scheduler_quality_flags)
+                 : nrf_topology_pair_exceeds_cable(pair->distance_mm, maximum, pair->scheduler_quality_flags))))) {
             if (pair == edited) { free(scratch); return ESP_ERR_INVALID_ARG; }
             pair->state = NRF_CS_PAIR_CABLE_EXCEEDED;
         }
@@ -4929,8 +4942,8 @@ esp_err_t nrf_topology_service_ranging_set_manual(
     }
 
     nrf_geometry_solution_t solution = {0};
-    const nrf_geometry_result_t solved = nrf_geometry_solver_solve_partial(
-        inputs, result->membership_count, result->pairs, result->pair_count, &solution);
+    const nrf_geometry_result_t solved = nrf_geometry_solver_solve_partial_with_anchor(
+        inputs, result->membership_count, result->pairs, result->pair_count, anchor_node_id, &solution);
     memset(&result->geometry, 0, sizeof(result->geometry));
     result->geometry.node_count = solution.node_count;
     result->geometry.max_residual_mm = solution.max_residual_mm;
@@ -4951,7 +4964,7 @@ esp_err_t nrf_topology_service_ranging_set_manual(
             .x_mm = node->x_mm, .y_mm = node->y_mm, .z_mm = node->z_mm,
             .residual_mm = node->residual_mm, .uncertainty_mm = node->uncertainty_mm,
         };
-        for (size_t n = 0U; n < result->membership_count; ++n) {
+        for (size_t n = 0U; !remote_only && n < result->membership_count; ++n) {
             if (node->node_id != NRF_TOPOLOGY_MAIN_NODE_ID && inputs[n].node_id == node->node_id) {
                 const double radius2 = (double)node->x_mm * node->x_mm +
                     (double)node->y_mm * node->y_mm + (double)node->z_mm * node->z_mm;

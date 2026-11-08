@@ -3860,6 +3860,7 @@ typedef struct {
     uint16_t node_generation[4];    /* reference generation each REMOTE reports */
     bool limited;
     uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT];
+    int32_t fail_pair_index; /* -1: every pair measures; else this scheduler pair never does */
     void (*after)(void); /* runs inside the service after the result was captured, before it stops */
 } ro_geometry_cfg_t;
 
@@ -3870,6 +3871,7 @@ static ro_geometry_cfg_t ro_default_cfg(void)
     ro_geometry_cfg_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.main_reference_valid = true;
+    cfg.fail_pair_index = -1;
     for (size_t i = 0U; i < 4U; ++i) cfg.node_generation[i] = 91U;
     return cfg;
 }
@@ -3903,6 +3905,7 @@ static void run_remote_only_geometry(const ro_geometry_cfg_t *cfg)
         s_nodes[i].reference_generation = cfg->node_generation[i];
     }
     s_cs_use_pair_distances = true;
+    s_cs_fail_pair_index = cfg->fail_pair_index;
     size_t pair = 0U;
     for (size_t a = 0U; a < 4U; ++a) {
         for (size_t b = a + 1U; b < 4U; ++b) {
@@ -4195,6 +4198,60 @@ static void test_legacy_frozen_roundtrip(void)
     assert(s_chk_legacy == ESP_OK); /* read by the legacy scheme: MAIN in the membership means MAIN_PRESENT */
     assert(s_chk_inconsistent_mode == ESP_ERR_NOT_FOUND);
     assert(s_chk_inconsistent_anchor == ESP_ERR_NOT_FOUND);
+}
+
+/* ---- manual distance of an unmeasured pair, REMOTE_ONLY (no nRF MAIN) ---- */
+
+static esp_err_t s_manual_too_long, s_manual_no_cable, s_manual_ok;
+static nrf_topology_ranging_progress_t s_manual_before, s_manual_after;
+static nrf_topology_ranging_result_t s_manual_frozen;
+
+static void exercise_remote_only_manual_distance(void)
+{
+    const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {2000U, 2000U, 2000U, 2000U, 0U, 0U, 0U, 0U};
+    const uint32_t missing_cable[NRF_TOPOLOGY_REMOTE_COUNT] = {2000U, 2000U, 0U, 2000U, 0U, 0U, 0U, 0U};
+    assert(nrf_topology_service_ranging_get_progress(&s_manual_before) == ESP_OK);
+    /* Pair 1-2 never measured. A manual distance is exact: two 2 m cables cannot span 4001 mm. */
+    s_manual_too_long = nrf_topology_service_ranging_set_manual(
+        s_manual_before.started_at_ms, s_manual_before.updated_at_ms, 1U, 2U, 4001, limits);
+    s_manual_no_cable = nrf_topology_service_ranging_set_manual(
+        s_manual_before.started_at_ms, s_manual_before.updated_at_ms, 1U, 2U, 1000, missing_cable);
+    s_manual_ok = nrf_topology_service_ranging_set_manual(
+        s_manual_before.started_at_ms, s_manual_before.updated_at_ms, 1U, 2U, 1000, limits);
+    assert(nrf_topology_service_ranging_get_progress(&s_manual_after) == ESP_OK);
+    if (nrf_topology_service_get_frozen_ranging_result(&s_manual_frozen) != ESP_OK) {
+        memset(&s_manual_frozen, 0, sizeof(s_manual_frozen));
+    }
+}
+
+static void test_remote_only_manual_distance_completes_the_geometry(void)
+{
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    cfg.fail_pair_index = 0; /* scheduler pair 0 is (1,2) */
+    cfg.after = exercise_remote_only_manual_distance;
+    run_remote_only_geometry(&cfg);
+
+    /* Before the correction the unmeasured pair left the geometry unsolved. */
+    assert(s_manual_before.complete && !s_manual_before.success);
+    assert(s_manual_before.pairs[0].state != NRF_CS_PAIR_VALID);
+    assert(s_manual_too_long == ESP_ERR_INVALID_ARG);
+    assert(s_manual_no_cable == ESP_ERR_INVALID_ARG);
+    assert(s_manual_ok == ESP_OK);
+
+    assert(s_manual_after.complete && s_manual_after.success && s_manual_after.failure_reason[0] == '\0');
+    assert(s_manual_after.pairs[0].state == NRF_CS_PAIR_VALID && s_manual_after.pairs[0].distance_mm == 1000);
+    assert((s_manual_after.pairs[0].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U);
+    assert(s_manual_after.geometry.node_count == 4U);
+    for (nrf_cs_node_id_t id = 1U; id <= 4U; ++id) {
+        const nrf_topology_ranging_node_t *node = NULL;
+        for (size_t i = 0U; i < s_manual_after.geometry.node_count; ++i)
+            if (s_manual_after.geometry.nodes[i].node_id == id) node = &s_manual_after.geometry.nodes[i];
+        assert(node != NULL && node->solved);
+        if (id == 1U) assert(node->x_mm == 0 && node->y_mm == 0); /* the origin is still the real G1 */
+    }
+    /* The corrected result is the same kind of result as before: REMOTE_ONLY, origin G1, and it is frozen as a success. */
+    assert(s_manual_frozen.available && s_manual_frozen.success);
+    assert(s_manual_frozen.topology_mode == NRF_TOPOLOGY_MODE_REMOTE_ONLY && s_manual_frozen.anchor_node_id == 1U);
 }
 
 #endif
@@ -5671,6 +5728,7 @@ static int run_selected_remote_only_case(const char *name)
         {"remote_only_radius_check_not_applied", test_remote_only_radius_check_not_applied},
         {"main_mode_height_regression", test_ranging_geometry_takes_z_from_the_placement_heights},
         {"pair_cable_sum_boundaries", test_pair_cable_sum_boundaries},
+        {"remote_only_manual_distance_completes_the_geometry", test_remote_only_manual_distance_completes_the_geometry},
         {"frozen_remote_only_contains_anchor", test_frozen_remote_only_contains_anchor},
         {"frozen_missing_main_valid_with_four_remotes", test_frozen_missing_main_valid_with_four_remotes},
         {"frozen_rejects_changed_hwid_or_channel", test_frozen_rejects_changed_hwid_or_channel},
@@ -5750,6 +5808,7 @@ int main(int argc, char **argv)
     test_remote_only_pair_cable_sum_flags_exceeded();
     test_remote_only_radius_check_not_applied();
     test_pair_cable_sum_boundaries();
+    test_remote_only_manual_distance_completes_the_geometry();
     test_frozen_remote_only_contains_anchor();
     test_frozen_missing_main_valid_with_four_remotes();
     test_frozen_rejects_changed_hwid_or_channel();
