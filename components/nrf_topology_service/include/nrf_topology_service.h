@@ -112,6 +112,21 @@ static inline bool nrf_topology_pair_exceeds_cable(int32_t distance_mm, uint64_t
 }
 
 /*
+ * REMOTE_ONLY (no nRF MAIN): the housing is not a node, so a cable bounds a pair only through the two cables together. A pair
+ * is beyond them when its distance exceeds both limits; an automatic one is quantized by a measurement bin and gets the
+ * allowance of nrf_topology_edge_cable_cap_mm() (one bin per node), a manual one is exact. An unknown cable (limit 0) cannot
+ * be checked and never exceeds.
+ */
+static inline bool nrf_topology_pair_exceeds_cable_sum(
+    int32_t distance_mm, uint32_t limit_a_mm, uint32_t limit_b_mm, uint32_t quality_flags)
+{
+    if (limit_a_mm == 0U || limit_b_mm == 0U) return false;
+    if (distance_mm < 0) return true;
+    const uint64_t slack = (quality_flags & NRF_CS_QUALITY_MANUAL) != 0U ? 0U : 2U * NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM;
+    return (uint64_t)distance_mm > (uint64_t)limit_a_mm + (uint64_t)limit_b_mm + slack;
+}
+
+/*
  * How far past its cable a fitted position may lie: one mm for the rounded XYZ, plus as much as the measured MAIN edge of
  * that node itself exceeded the cable (an automatic distance can, by less than one measurement bin, see
  * NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM). A node whose MAIN edge is within the cable, missing, or manual gets only the

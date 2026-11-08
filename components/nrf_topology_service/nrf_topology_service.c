@@ -2570,6 +2570,8 @@ static int cs_poll_result(void *context, const nrf_cs_control_request_t *request
 
 static uint64_t cs_now_ms(void *context){return platform_now_ms(((nrf_cs_platform_context_t *)context)->platform);}
 
+static uint32_t service_node_cable_limit_mm(const nrf_topology_worker_state_t *worker, uint8_t node_id);
+
 static void cs_publish(nrf_topology_worker_state_t *worker, bool active, int result)
 {
     nrf_cs_cycle_snapshot_t *snapshot = &worker->cs_cycle_snapshot;
@@ -2588,6 +2590,15 @@ static void cs_publish(nrf_topology_worker_state_t *worker, bool active, int res
         if (pair != NULL) snapshot->pairs[i] = *pair;
         nrf_cs_pair_result_t *out = &snapshot->pairs[i];
         if (!worker->ranging_active || out->state != NRF_CS_PAIR_VALID) continue;
+        if (worker->snapshot.main.state != NRF_TOPOLOGY_NODE_ASSIGNED) {
+            /* No MAIN edge to check: a pair is bounded by the sum of its two cables. */
+            if (out->distance_mm > 0 && nrf_topology_pair_exceeds_cable_sum(
+                    out->distance_mm, service_node_cable_limit_mm(worker, out->node_a),
+                    service_node_cable_limit_mm(worker, out->node_b), out->scheduler_quality_flags)) {
+                out->state = NRF_CS_PAIR_CABLE_EXCEEDED;
+            }
+            continue;
+        }
         for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
             const nrf_topology_node_snapshot_t *remote = &worker->snapshot.remotes[channel];
             const uint32_t limit = worker->ranging_cable_limits_mm[channel];
@@ -2679,14 +2690,26 @@ static nrf_geometry_result_t service_ranging_solve(
     memset(geometry, 0, sizeof(*geometry));
     *residual_mm = INT32_MAX;
     *main_height_reference_generation = 0U;
-    if (worker->snapshot.main.state != NRF_TOPOLOGY_NODE_ASSIGNED) {
-        return NRF_GEOMETRY_ERR_NO_MAIN;
+    /* MAIN assigned: the legacy mesh, MAIN is the origin. MAIN confirmed absent: the REMOTEs are the mesh and the lowest
+     * of them (G1) is the origin. Anything else is not a topology this solve may guess about. */
+    const bool main_is_node = worker->snapshot.main.state == NRF_TOPOLOGY_NODE_ASSIGNED;
+    nrf_cs_node_id_t anchor_node_id = worker->snapshot.main.node_id;
+    if (main_is_node) {
+        inputs[input_count++] = (nrf_geometry_node_input_t) {
+            .node_id = worker->snapshot.main.node_id,
+            .z_mm = 0,
+        };
+    } else {
+        bool have_remote = false;
+        if (worker->snapshot.main.state != NRF_TOPOLOGY_NODE_ABSENT) return NRF_GEOMETRY_ERR_NO_MAIN;
+        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            const nrf_topology_node_snapshot_t *remote = &worker->snapshot.remotes[channel];
+            if (remote->state != NRF_TOPOLOGY_NODE_ASSIGNED) continue;
+            if (!have_remote || remote->node_id < anchor_node_id) anchor_node_id = remote->node_id;
+            have_remote = true;
+        }
+        if (!have_remote) return NRF_GEOMETRY_ERR_NO_MAIN;
     }
-
-    inputs[input_count++] = (nrf_geometry_node_input_t) {
-        .node_id = worker->snapshot.main.node_id,
-        .z_mm = 0,
-    };
     if (device_status_get_snapshot(&device_status) == ESP_OK &&
         device_status.main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID &&
         device_status.main.height_reference.generation != 0U) {
@@ -2738,11 +2761,12 @@ static nrf_geometry_result_t service_ranging_solve(
         };
     }
 
-    const nrf_geometry_result_t result = nrf_geometry_solver_solve_partial(
+    const nrf_geometry_result_t result = nrf_geometry_solver_solve_partial_with_anchor(
         inputs,
         input_count,
         worker->cs_cycle_snapshot.pairs,
         worker->cs_cycle_snapshot.pair_count,
+        anchor_node_id,
         &solution);
     if (result != NRF_GEOMETRY_OK) {
         return result;
@@ -2769,7 +2793,8 @@ static nrf_geometry_result_t service_ranging_solve(
                 ? solution.nodes[i].uncertainty_mm
                 : INT32_MAX,
         };
-        for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        for (uint8_t channel = 0U; main_is_node && channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+            /* The cable radius is measured from MAIN; without it the pair check in cs_publish() bounds the cables. */
             const uint32_t limit = worker->ranging_cable_limits_mm[channel];
             if (limit == 0U || worker->snapshot.remotes[channel].state != NRF_TOPOLOGY_NODE_ASSIGNED ||
                 worker->snapshot.remotes[channel].node_id != geometry->nodes[i].node_id) continue;
@@ -3100,6 +3125,8 @@ static void service_ranging_log_footprint(const nrf_topology_worker_state_t *wor
 {
     const nrf_topology_ranging_progress_t *progress = &worker->ranging_progress;
     int32_t x[NRF_GEOMETRY_MAX_NODES], y[NRF_GEOMETRY_MAX_NODES], z[NRF_GEOMETRY_MAX_NODES];
+    /* The bound is a sphere of the longest cable around MAIN; without MAIN there is no such centre. */
+    if (worker->snapshot.main.state != NRF_TOPOLOGY_NODE_ASSIGNED) return;
     size_t count = 0U, remotes = 0U;
     uint32_t longest_cable_mm = 0U;
 

@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <limits.h>
+#include <math.h>
 #include <stdarg.h>
 #include <setjmp.h>
 #include <stdbool.h>
@@ -3850,6 +3851,193 @@ static void test_cancel_during_plan_go_collect_releases(void)
     assert_cancel_freed_every_node();
 }
 
+/* ---- REMOTE_ONLY geometry (stage 5): anchor = lowest REMOTE, heights from the ESP32 housing barometer ---- */
+
+typedef struct {
+    int32_t reading_z_mm[4];        /* relative_z_mm each REMOTE reports */
+    bool main_reference_valid;      /* the housing barometer reference (not the nRF MAIN) */
+    int32_t main_reference_z_mm;
+    uint16_t node_generation[4];    /* reference generation each REMOTE reports */
+    bool limited;
+    uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT];
+} ro_geometry_cfg_t;
+
+static ro_geometry_cfg_t s_ro_cfg;
+
+static ro_geometry_cfg_t ro_default_cfg(void)
+{
+    ro_geometry_cfg_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.main_reference_valid = true;
+    for (size_t i = 0U; i < 4U; ++i) cfg.node_generation[i] = 91U;
+    return cfg;
+}
+
+static void request_remote_only_geometry_cycle(void)
+{
+    s_wire_log_enabled = true;
+    if (s_ro_cfg.limited) {
+        assert(nrf_topology_service_ranging_start_autonomous_limited(&k_autonomous_policy, s_ro_cfg.limits_mm) == ESP_OK);
+    } else {
+        assert(nrf_topology_service_ranging_start_autonomous(&k_autonomous_policy) == ESP_OK);
+    }
+    s_vtask_delay_hook = sim_cycle_tick_nodes;
+}
+
+/* 1 m square over nodes 1..4 with the heights above; distances are the true 3D ones. */
+static void run_remote_only_geometry(const ro_geometry_cfg_t *cfg)
+{
+    static const int32_t xy[4][2] = {{0, 0}, {1000, 0}, {1000, 1000}, {0, 1000}};
+    s_ro_cfg = *cfg;
+    reset_world();
+    s_tca_present = true;
+    prepare_remote_only_nodes(4U);
+    s_cycle_id_base = 1U;
+    s_device_status.main.height_reference.state =
+        cfg->main_reference_valid ? DEVICE_MAIN_HEIGHT_REFERENCE_VALID : DEVICE_MAIN_HEIGHT_REFERENCE_NOT_ESTABLISHED;
+    s_device_status.main.height_reference.generation = cfg->main_reference_valid ? 91U : 0U;
+    s_device_status.main.height_reference.relative_z_mm = cfg->main_reference_z_mm;
+    for (size_t i = 0U; i < 4U; ++i) {
+        s_nodes[i].relative_z_mm = cfg->reading_z_mm[i];
+        s_nodes[i].reference_generation = cfg->node_generation[i];
+    }
+    s_cs_use_pair_distances = true;
+    size_t pair = 0U;
+    for (size_t a = 0U; a < 4U; ++a) {
+        for (size_t b = a + 1U; b < 4U; ++b) {
+            const double dz = (double)(cfg->reading_z_mm[a] - cfg->reading_z_mm[b]);
+            s_cs_pair_distances[pair++] = (int32_t)lround(
+                hypot(hypot((double)(xy[a][0] - xy[b][0]), (double)(xy[a][1] - xy[b][1])), dz));
+        }
+    }
+    memset(&s_ro_progress, 0, sizeof(s_ro_progress));
+    memset(&s_ro_frozen, 0, sizeof(s_ro_frozen));
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_remote_only_geometry_cycle);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, capture_remote_only_autonomous);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static const nrf_topology_ranging_node_t *frozen_node(nrf_cs_node_id_t id)
+{
+    for (size_t i = 0U; i < s_ro_frozen.geometry.node_count; ++i)
+        if (s_ro_frozen.geometry.nodes[i].node_id == id) return &s_ro_frozen.geometry.nodes[i];
+    return NULL;
+}
+
+static void test_remote_only_geometry_solves_with_anchor_g1(void)
+{
+    const ro_geometry_cfg_t cfg = ro_default_cfg();
+    run_remote_only_geometry(&cfg);
+    assert(s_ro_progress.complete && s_ro_progress.success);
+    assert(s_ro_progress.failure_reason[0] == '\0');
+    assert(s_ro_frozen.available && s_ro_frozen.success);
+    assert(s_ro_frozen.geometry.node_count == 4U);
+    for (nrf_cs_node_id_t id = 1U; id <= 4U; ++id) {
+        const nrf_topology_ranging_node_t *node = frozen_node(id);
+        assert(node != NULL && node->solved);
+        assert(nrf_geometry_position_uncertainty_acceptable(node->uncertainty_mm));
+    }
+    assert(frozen_node(0U) == NULL);
+    const nrf_topology_ranging_node_t *g1 = frozen_node(1U);
+    assert(g1->x_mm == 0 && g1->y_mm == 0 && g1->uncertainty_mm == 0); /* the origin is the real G1 */
+    /* The 1 m square is reproduced (rotation and mirror stay undefined, so compare distances). */
+    const nrf_topology_ranging_node_t *g2 = frozen_node(2U), *g3 = frozen_node(3U);
+    assert(abs((int)lround(hypot(g2->x_mm, g2->y_mm)) - 1000) <= 3);
+    assert(abs((int)lround(hypot(g3->x_mm, g3->y_mm)) - 1414) <= 3);
+    assert(abs((int)lround(hypot(g3->x_mm - g2->x_mm, g3->y_mm - g2->y_mm)) - 1000) <= 3);
+}
+
+static void test_remote_only_no_height_reference_planar(void)
+{
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    cfg.main_reference_valid = false;
+    for (size_t i = 0U; i < 4U; ++i) cfg.reading_z_mm[i] = 120 * (int32_t)i; /* readings exist but have no reference */
+    run_remote_only_geometry(&cfg);
+    assert(s_ro_frozen.available);
+    for (nrf_cs_node_id_t id = 1U; id <= 4U; ++id) assert(frozen_node(id) != NULL && frozen_node(id)->z_mm == 0);
+    assert(s_ro_frozen.main_height_reference_generation == 0U); /* 0 = planar, heights not measured */
+}
+
+static void test_remote_only_real_heights_used_when_valid(void)
+{
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    const int32_t readings[4] = {250, -100, 40, 600};
+    memcpy(cfg.reading_z_mm, readings, sizeof(readings));
+    cfg.main_reference_z_mm = 50; /* the housing barometer sits 50 mm above the common zero */
+    run_remote_only_geometry(&cfg);
+    assert(s_ro_progress.complete && s_ro_progress.success);
+    assert(s_ro_frozen.main_height_reference_generation == 91U);
+    /* Every REMOTE, the anchor G1 included, is placed at its reading minus the housing reference. */
+    for (nrf_cs_node_id_t id = 1U; id <= 4U; ++id) {
+        assert(frozen_node(id) != NULL && frozen_node(id)->solved);
+        assert(frozen_node(id)->z_mm == readings[id - 1U] - 50);
+    }
+}
+
+static void test_main_nrf_absent_main_barometer_still_works(void)
+{
+    /* The housing barometer is not the nRF MAIN: with no MAIN nRF its reference still anchors the heights. */
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    const int32_t readings[4] = {100, 100, 100, 100};
+    memcpy(cfg.reading_z_mm, readings, sizeof(readings));
+    run_remote_only_geometry(&cfg);
+    assert(s_ro_frozen.main_height_reference_generation == 91U);
+    for (nrf_cs_node_id_t id = 1U; id <= 4U; ++id) assert(frozen_node(id)->z_mm == 100);
+}
+
+static void test_stale_height_generation_rejected(void)
+{
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    const int32_t readings[4] = {250, -100, 40, 600};
+    memcpy(cfg.reading_z_mm, readings, sizeof(readings));
+    cfg.node_generation[2] = 90U; /* G3 was referenced against another generation: nobody's height is trusted */
+    run_remote_only_geometry(&cfg);
+    assert(s_ro_frozen.available);
+    assert(s_ro_frozen.main_height_reference_generation == 0U);
+    for (nrf_cs_node_id_t id = 1U; id <= 4U; ++id) assert(frozen_node(id) != NULL && frozen_node(id)->z_mm == 0);
+}
+
+static void test_remote_only_pair_cable_sum_flags_exceeded(void)
+{
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    cfg.limited = true;
+    for (size_t channel = 0U; channel < 4U; ++channel) cfg.limits_mm[channel] = 100U; /* 100 + 100 + 2 bins < 1000 */
+    run_remote_only_geometry(&cfg);
+    assert(s_ro_progress.complete && !s_ro_progress.success);
+    assert(strcmp(s_ro_progress.failure_reason, "cable_exceeded:1-2") == 0);
+}
+
+static void test_remote_only_radius_check_not_applied(void)
+{
+    /* Each REMOTE is 1000..1414 mm from G1, the origin; its cable is 800 mm. From G1 that looks like "too far", but G1 is not
+     * the housing: only the sum of two cables (1600 mm) bounds a pair, and every pair is shorter. */
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    cfg.limited = true;
+    for (size_t channel = 0U; channel < 4U; ++channel) cfg.limits_mm[channel] = 800U;
+    run_remote_only_geometry(&cfg);
+    assert(s_ro_progress.complete && s_ro_progress.success);
+    for (nrf_cs_node_id_t id = 1U; id <= 4U; ++id) assert(frozen_node(id) != NULL && frozen_node(id)->solved);
+}
+
+static void test_pair_cable_sum_boundaries(void)
+{
+    const uint32_t allowance = 2U * NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM;
+    /* Automatic: up to the two cables plus one bin per node is not a violation, one mm more is. */
+    assert(!nrf_topology_pair_exceeds_cable_sum(1000 + (int32_t)allowance, 600U, 400U, 0U));
+    assert(nrf_topology_pair_exceeds_cable_sum(1001 + (int32_t)allowance, 600U, 400U, 0U));
+    /* Manual: exact, no allowance. */
+    assert(!nrf_topology_pair_exceeds_cable_sum(1000, 600U, 400U, NRF_CS_QUALITY_MANUAL));
+    assert(nrf_topology_pair_exceeds_cable_sum(1001, 600U, 400U, NRF_CS_QUALITY_MANUAL));
+    /* An unknown cable cannot be checked; a negative distance never fits. */
+    assert(!nrf_topology_pair_exceeds_cable_sum(900000, 0U, 400U, 0U));
+    assert(!nrf_topology_pair_exceeds_cable_sum(900000, 600U, 0U, 0U));
+    assert(nrf_topology_pair_exceeds_cable_sum(-1, 600U, 400U, 0U));
+}
+
 #endif
 
 static void add_three_remotes_and_refresh(void)
@@ -5315,6 +5503,15 @@ static int run_selected_remote_only_case(const char *name)
         {"remote_only_controller_loss_timeout_is_bounded", test_remote_only_controller_loss_timeout_is_bounded},
         {"cancel_during_plan_go_collect_releases", test_cancel_during_plan_go_collect_releases},
         {"old_main_status_node_unchanged", test_autonomous_ranging_full_rotation},
+        {"remote_only_geometry_solves_with_anchor_g1", test_remote_only_geometry_solves_with_anchor_g1},
+        {"remote_only_no_height_reference_planar", test_remote_only_no_height_reference_planar},
+        {"remote_only_real_heights_used_when_valid", test_remote_only_real_heights_used_when_valid},
+        {"main_nrf_absent_main_barometer_still_works", test_main_nrf_absent_main_barometer_still_works},
+        {"stale_height_generation_rejected", test_stale_height_generation_rejected},
+        {"remote_only_pair_cable_sum_flags_exceeded", test_remote_only_pair_cable_sum_flags_exceeded},
+        {"remote_only_radius_check_not_applied", test_remote_only_radius_check_not_applied},
+        {"main_mode_height_regression", test_ranging_geometry_takes_z_from_the_placement_heights},
+        {"pair_cable_sum_boundaries", test_pair_cable_sum_boundaries},
     };
     for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         if (strcmp(name, cases[i].name) == 0) { cases[i].run(); return 0; }
@@ -5380,6 +5577,14 @@ int main(int argc, char **argv)
     test_remote_only_plan_go_collect_release_all();
     test_remote_only_controller_loss_timeout_is_bounded();
     test_cancel_during_plan_go_collect_releases();
+    test_remote_only_geometry_solves_with_anchor_g1();
+    test_remote_only_no_height_reference_planar();
+    test_remote_only_real_heights_used_when_valid();
+    test_main_nrf_absent_main_barometer_still_works();
+    test_stale_height_generation_rejected();
+    test_remote_only_pair_cable_sum_flags_exceeded();
+    test_remote_only_radius_check_not_applied();
+    test_pair_cable_sum_boundaries();
     test_autonomous_ranging_full_rotation();
     test_autonomous_ranging_failures();
     test_ranging_cancel();
