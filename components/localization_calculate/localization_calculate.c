@@ -836,7 +836,9 @@ esp_err_t localization_calculate_run(
     object_store_geometry_t geometry;
     memset(&geometry, 0, sizeof(geometry));
     /* The frozen layout, or for a REMOTE_ONLY session with valid registered positions the AprilTag centres. */
-    esp_err_t err = seismic_recorder_read_session_localization_geometry(object_id, session_id, &geometry, NULL, NULL);
+    seismic_recorder_localization_geometry_source_t geometry_source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
+    esp_err_t err = seismic_recorder_read_session_localization_geometry(
+        object_id, session_id, &geometry, &geometry_source, NULL);
     if (err != ESP_OK) {
         return err;
     }
@@ -2088,6 +2090,15 @@ esp_err_t localization_calculate_run(
             ? scan_occupancy_registration_reason(&occupancy, geometry_computed_at_ms)
             : NULL;
         const bool usable = scan_identity_matches && registration_reason == NULL;
+        if (usable && geometry_source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED) {
+            /*
+             * The registered AprilTag centres are already positions in the scan's project frame (Z up): the sensor ->
+             * scan transform maps the Channel Sounding layout there and must not be applied a second time to points
+             * of this geometry, or every candidate is classified somewhere else in the scan.
+             */
+            static const double identity[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+            memcpy(occupancy.registration.sensor_to_scan, identity, sizeof(identity));
+        }
         const char *not_applied_reason = occupancy_err != ESP_OK
             ? "scan occupancy artifact unreadable or invalid: constraint not applied"
             : (scan_identity_err != ESP_OK

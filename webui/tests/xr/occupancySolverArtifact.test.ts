@@ -7,6 +7,9 @@ import {
   decodeOccupancySolverArtifact,
   encodeOccupancySolverArtifact,
   occupancyCrc32,
+  buildSessionOccupancyArtifact,
+  coarsenOccupancyForSolver,
+  OCCUPANCY_SOLVER_MIN_VOXEL_SIZE_METERS,
 } from '../../src/xr/occupancySolverArtifact';
 import { createProjectFrameRegistration, projectRegistrationSnapshot } from './support/projectFrameRegistration';
 
@@ -203,5 +206,86 @@ describe('compact occupancy solver artifact (MAX-162)', () => {
   it('keeps registration null until a real registration exists', () => {
     const bytes = encodeOccupancySolverArtifact(goldenSnapshot(), { frameId: 'f', createdAtMs: 1 });
     expect(decodeOccupancySolverArtifact(bytes).header.registration).toBeNull();
+  });
+});
+
+/*
+ * The grid the ESP32 receives: never finer than 0.25 m (the source is searched within ~2 cubic metres), and coarsened
+ * without inventing empty space -- FREE removes source candidates on the device, UNKNOWN never does.
+ */
+describe('solver occupancy grid for the ESP32', () => {
+  const fineSnapshot = (free: number[], occupied: number[], fine = 0.05) => ({
+    freeAirPositions: new Float32Array(free),
+    occupiedSurfacePositions: new Float32Array(occupied),
+    occupancyEnvelopeBounds: { min: [-2, -2, -2] as [number, number, number], max: [2, 2, 2] as [number, number, number] },
+    occupancySolverCandidateBelowSurfaceMeters: 1,
+    occupancyCellsSaturated: false,
+    occupancyFineVoxelSizeMeters: fine,
+    occupancyVoxelSizeMeters: fine,
+  });
+  /* Centres of every fine cell of [x0, x0 + span) x [y0, ..) x [z0, ..). */
+  const block = (x0: number, y0: number, z0: number, span: number, fine: number) => {
+    const out: number[] = [];
+    const n = Math.round(span / fine);
+    for (let i = 0; i < n; i += 1) for (let j = 0; j < n; j += 1) for (let k = 0; k < n; k += 1) {
+      out.push(x0 + (i + 0.5) * fine, y0 + (j + 0.5) * fine, z0 + (k + 0.5) * fine);
+    }
+    return out;
+  };
+  const cells = (values: Float32Array, size: number) => {
+    const set = new Set<string>();
+    for (let i = 0; i < values.length; i += 3) {
+      set.add([0, 1, 2].map((axis) => Math.floor(values[i + axis] / size)).join(':'));
+    }
+    return set;
+  };
+
+  it('a fully observed empty 0.25 m cell stays FREE, a partly observed one becomes UNKNOWN', () => {
+    const fine = 0.05;
+    const full = block(0, 0, 0, 0.25, fine);                    /* cell (0,0,0): every fine cell FREE */
+    const partial = block(0.25, 0, 0, 0.25, fine).slice(0, -3); /* cell (1,0,0): one fine cell never seen */
+    const coarse = coarsenOccupancyForSolver(fineSnapshot([...full, ...partial], []));
+    expect(coarse.occupancyFineVoxelSizeMeters).toBe(OCCUPANCY_SOLVER_MIN_VOXEL_SIZE_METERS);
+    expect([...cells(coarse.freeAirPositions, 0.25)]).toEqual(['0:0:0']);
+  });
+
+  it('a cell holding any OCCUPIED evidence is OCCUPIED, never FREE', () => {
+    const fine = 0.05;
+    const free = block(0, 0, 0, 0.25, fine);
+    const coarse = coarsenOccupancyForSolver(fineSnapshot(free.slice(3), [0.025, 0.025, 0.025]));
+    expect(cells(coarse.freeAirPositions, 0.25).size).toBe(0);
+    expect([...cells(coarse.occupiedSurfacePositions, 0.25)]).toEqual(['0:0:0']);
+  });
+
+  it('non-nesting 0.18 m evidence is FREE at 0.25 m only where every overlapping fine cell is FREE', () => {
+    const fine = 0.18;
+    const free = block(-0.36, -0.36, -0.36, 1.08, fine); /* fine cells -2..3 per axis: covers coarse cells -1..2 fully */
+    const coarse = coarsenOccupancyForSolver(fineSnapshot(free, [], fine));
+    const result = cells(coarse.freeAirPositions, 0.25);
+    expect(result.has('0:0:0')).toBe(true);
+    expect(result.has('1:1:1')).toBe(true);
+    /* Coarse cell 2 per axis spans [0.50, 0.75): fine cell 4 ([0.72, 0.90)) was never observed. */
+    expect(result.has('2:0:0')).toBe(false);
+    for (const key of result) {
+      const [cx, cy, cz] = key.split(':').map(Number);
+      for (const c of [cx, cy, cz]) {
+        expect(c * 0.25).toBeGreaterThanOrEqual(-0.36);
+        expect((c + 1) * 0.25).toBeLessThanOrEqual(0.72 + 1e-9);
+      }
+    }
+  });
+
+  it('evidence already 0.25 m or coarser is sent unchanged', () => {
+    const snapshot = fineSnapshot([0.15, 0.15, 0.15], [0.15, 0.45, 0.15], 0.3);
+    expect(coarsenOccupancyForSolver(snapshot)).toBe(snapshot);
+  });
+
+  it('the session artifact carries 0.25 m voxels built from the phone fine 0.18 m evidence', () => {
+    const fine = 0.18;
+    const snapshot = fineSnapshot(block(-0.36, -0.36, -0.36, 1.08, fine), [0.09, 0.09, -0.27], fine);
+    const decoded = decodeOccupancySolverArtifact(buildSessionOccupancyArtifact(snapshot, new Uint8Array([1, 2, 3]), 1));
+    expect(decoded.header.voxel_size_m).toBe(0.25);
+    expect(decoded.header.free_count).toBeGreaterThan(0);
+    expect(decoded.header.occupied_count).toBe(1);
   });
 });

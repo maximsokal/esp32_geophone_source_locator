@@ -111,6 +111,7 @@ function expectOccupancyOfLastScan(uploads: Upload[]) {
   expect(last.scanId).toBe(frameId);
   expect(decoded.free.length / 3).toBeGreaterThan(0);
   expect(decoded.occupied.length / 3).toBeGreaterThan(0);
+  expect(decoded.header.voxel_size_m, 'the ESP32 gets voxels no finer than 0.25 m').toBeGreaterThanOrEqual(0.25);
   return frameId;
 }
 

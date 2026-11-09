@@ -96,6 +96,10 @@ esp_err_t seismic_recorder_read_session_geometry(
     return ESP_OK;
 }
 
+/* Which layout the fake hands the localization: the Channel Sounding one, or registered AprilTag centres. */
+static seismic_recorder_localization_geometry_source_t g_fixture_geometry_source =
+    SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
+
 esp_err_t seismic_recorder_read_session_localization_geometry(
     const char *object_id,
     const char *session_id,
@@ -105,7 +109,7 @@ esp_err_t seismic_recorder_read_session_localization_geometry(
 )
 {
     ++g_localization_geometry_calls;
-    if (source != NULL) *source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
+    if (source != NULL) *source = g_fixture_geometry_source;
     if (registered_status != NULL) *registered_status = ESP_OK;
     return seismic_recorder_read_session_geometry(object_id, session_id, geometry);
 }
@@ -1869,7 +1873,8 @@ static void test_search_without_an_event_analyses_the_start(void)
  * voxel indices, FREE first, CRC32 over both. Identity registration against the fixture geometry (computed at 1000). */
 static void write_test_occupancy_voxels(
     const char *object_id, const char *session_id, const char *frame_id, double voxel_size_m,
-    const int16_t (*free_cells)[3], size_t free_count, const int16_t (*occupied_cells)[3], size_t occupied_count)
+    const int16_t (*free_cells)[3], size_t free_count, const int16_t (*occupied_cells)[3], size_t occupied_count,
+    const char *sensor_to_scan)
 {
     char path[256];
     const int path_written = snprintf(path, sizeof(path), "%s/%s/sessions/%s/occupancy-v1.bin",
@@ -1881,8 +1886,8 @@ static void write_test_occupancy_voxels(
         "{\"schema\":2,\"frame_id\":\"%s\",\"voxel_size_m\":%.3f,\"below_surface_m\":1,"
         "\"free_count\":%u,\"occupied_count\":%u,\"created_at_ms\":345678,"
         "\"registration\":{\"source\":\"test\",\"frame\":\"project_z_up\",\"geometry_computed_at_ms\":1000,"
-        "\"residual_m\":0.01,\"threshold_m\":0.05,\"sensor_to_scan\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}}",
-        frame_id, voxel_size_m, (unsigned)free_count, (unsigned)occupied_count);
+        "\"residual_m\":0.01,\"threshold_m\":0.05,\"sensor_to_scan\":%s}}",
+        frame_id, voxel_size_m, (unsigned)free_count, (unsigned)occupied_count, sensor_to_scan);
     assert(header_written > 0 && (size_t)header_written < sizeof(header));
     const size_t header_length = (size_t)header_written;
     const size_t payload_length = 6U * (free_count + occupied_count);
@@ -1949,7 +1954,8 @@ static double distance_m(const localization_point3d_t *a, const localization_poi
     return sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-static void run_with_void_block(const char *session_id, int16_t x0, int16_t y0, int16_t z0)
+static void run_with_void_block_registered(
+    const char *session_id, int16_t x0, int16_t y0, int16_t z0, const char *sensor_to_scan)
 {
     const size_t scan_length = 4096U;
     uint8_t *scan = malloc(scan_length);
@@ -1966,12 +1972,42 @@ static void run_with_void_block(const char *session_id, int16_t x0, int16_t y0, 
     write_test_scan_file("OBJVOXEL", session_id, scan, scan_length);
     write_test_occupancy_voxels("OBJVOXEL", session_id, frame_id, 0.2,
                                 (const int16_t (*)[3])free_cells, free_count,
-                                (const int16_t (*)[3])occupied_cells, 100U);
+                                (const int16_t (*)[3])occupied_cells, 100U, sensor_to_scan);
     localization_calculate_config_t config = default_test_config();
     localization_calculate_summary_t summary;
     assert(localization_calculate_run("OBJVOXEL", session_id, &config, 52070ULL, &summary) == ESP_OK);
     remove_test_scan_artifacts("OBJVOXEL", session_id);
     free(scan);
+}
+
+static void run_with_void_block(const char *session_id, int16_t x0, int16_t y0, int16_t z0)
+{
+    run_with_void_block_registered(session_id, x0, y0, z0, "[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]");
+}
+
+/*
+ * REMOTE_ONLY with registered AprilTag positions: the localization geometry IS the scan's project frame (the tag
+ * centres), while the occupancy registration still maps the Channel Sounding layout into it (here a 10 m shift). The
+ * voids must be read at the geometry's own coordinates; applying the shift again put every candidate 10 m away, outside
+ * every scanned voxel, so the scan never constrained a REMOTE_ONLY localization.
+ */
+static void test_apriltag_geometry_reads_voxels_without_a_second_transform(void)
+{
+    g_fixture_geometry_source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED;
+    run_with_void_block_registered("S098072", 0, 1, 0, "[1,0,0,10,0,1,0,0,0,0,1,0,0,0,0,1]");
+    g_fixture_geometry_source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
+    const localization_run_record_t *free_run = find_record("traveltime_inversion");
+    const localization_run_record_t *scan_run = find_record("traveltime_scan_constrained");
+    assert(free_run != NULL && scan_run != NULL);
+    printf("  [VOXEL] AprilTag geometry: %s (%.2f, %.2f, %.2f) -> constrained (%.2f, %.2f, %.2f) applied %d\n",
+           free_run->solved ? "solved" : "unsolved", free_run->source_position.x_m, free_run->source_position.y_m,
+           free_run->source_position.z_m, scan_run->source_position.x_m, scan_run->source_position.y_m,
+           scan_run->source_position.z_m, (int)scan_run->scan_constraint_applied);
+    fflush(stdout);
+    assert(free_run->solved && scan_run->solved && scan_run->scan_constraint_applied);
+    assert(in_void_block(&free_run->source_position, 0, 1, 0));
+    assert(!in_void_block(&scan_run->source_position, 0, 1, 0));
+    puts("  AprilTag geometry: the voids constrain the run at the tag-centre coordinates -- OK");
 }
 
 /*
@@ -2032,6 +2068,8 @@ int main(void)
     test_search_without_an_event_analyses_the_start();
 #elif SEARCH_SCENARIO == 4
     test_full_run_feeds_free_and_occupied_voxels_to_the_math();
+#elif SEARCH_SCENARIO == 5
+    test_apriltag_geometry_reads_voxels_without_a_second_transform();
 #endif
     free_fixture_frames();
     return 0;
@@ -2090,6 +2128,7 @@ int main(void)
     test_search_tie_goes_to_the_stronger_event_not_to_a_glitch();
     test_search_without_an_event_analyses_the_start();
     test_full_run_feeds_free_and_occupied_voxels_to_the_math();
+    test_apriltag_geometry_reads_voxels_without_a_second_transform();
 
     free_fixture_frames();
     puts("localization_calculate_run integration tests passed");

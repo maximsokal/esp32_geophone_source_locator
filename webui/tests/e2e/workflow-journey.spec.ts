@@ -187,6 +187,7 @@ for (const locale of ['en', 'uk'] as const) {
           expect(decoded.occupied.length / 3, 'scanned-solid voxels reach the device').toBeGreaterThan(0);
           expect(decoded.header.free_count).toBe(decoded.free.length / 3);
           expect(decoded.header.occupied_count).toBe(decoded.occupied.length / 3);
+          expect(decoded.header.voxel_size_m, 'the ESP32 gets voxels no finer than 0.25 m').toBeGreaterThanOrEqual(0.25);
           occupancyEvidence = { free: decoded.header.free_count, occupied: decoded.header.occupied_count, frameId };
         } else {
           expect(occupancyBytes, 'a skipped scan uploads no occupancy').toBeNull();

@@ -38,6 +38,13 @@ export const MAX_OCCUPANCY_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_OCCUPANCY_VOXEL_SIZE_METERS = 10;
 const INT16_MIN = -32768;
 const INT16_MAX = 32767;
+/*
+ * The smallest voxel the ESP32 source calculation receives. The search targets a source within about 2 cubic metres
+ * (a cube of ~1.26 m): 0.25 m cells still split that into five per axis, while the phone's finer evidence (0.18 m by
+ * default) would only multiply the cells the device parses and looks up per candidate. The phone keeps its fine grid
+ * for display; only the solver artifact is coarsened (see coarsenOccupancyForSolver).
+ */
+export const OCCUPANCY_SOLVER_MIN_VOXEL_SIZE_METERS = 0.25;
 
 export interface OccupancyRegistration {
   /** Omitted only by legacy in-memory callers; those matrices are local-floor. */
@@ -297,6 +304,67 @@ export function occupancyFrameIdForScan(scanArtifact: Uint8Array, identity?: Sca
   return identity?.frameId ?? createScanIdentity(scanArtifact).frameId;
 }
 
+type OccupancyGridSnapshot = Pick<ScanPointCloudSnapshot,
+  'freeAirPositions' | 'occupiedSurfacePositions' | 'occupancyEnvelopeBounds' |
+  'occupancySolverCandidateBelowSurfaceMeters' | 'occupancyCellsSaturated' |
+  'occupancyFineVoxelSizeMeters' | 'occupancyVoxelSizeMeters'>;
+
+function cellKey(ix: number, iy: number, iz: number): string {
+  return `${ix},${iy},${iz}`;
+}
+
+function cellSet(positions: Float32Array, size: number): Set<string> {
+  const result = new Set<string>();
+  for (let index = 0; index + 2 < positions.length; index += 3) {
+    result.add(cellKey(Math.floor(positions[index] / size), Math.floor(positions[index + 1] / size),
+      Math.floor(positions[index + 2] / size)));
+  }
+  return result;
+}
+
+/*
+ * Re-grids the FREE / OCCUPIED evidence at `targetSize` without ever inventing empty space: FREE excludes source
+ * candidates on the ESP32, so a coarse cell is FREE only when every fine cell overlapping it was observed FREE (and none
+ * of them is OCCUPIED). A coarse cell holding any OCCUPIED fine centre is OCCUPIED; every other cell stays UNKNOWN,
+ * which the device never treats as empty. Fine and coarse grids need not nest (0.18 m into 0.25 m).
+ */
+export function coarsenOccupancyForSolver<T extends OccupancyGridSnapshot>(snapshot: T, targetSize = OCCUPANCY_SOLVER_MIN_VOXEL_SIZE_METERS): T {
+  const fine = snapshot.occupancyFineVoxelSizeMeters ?? snapshot.occupancyVoxelSizeMeters;
+  if (!(fine > 0) || !(targetSize > 0) || fine >= targetSize) return snapshot;
+  const fineFree = cellSet(snapshot.freeAirPositions, fine);
+  const coarseOccupied = cellSet(snapshot.occupiedSurfacePositions, targetSize);
+  const candidates = cellSet(snapshot.freeAirPositions, targetSize);
+  const epsilon = fine * 1e-6;
+  const free: number[] = [];
+  for (const key of candidates) {
+    if (coarseOccupied.has(key)) continue;
+    const [cx, cy, cz] = key.split(',').map(Number);
+    const low = [cx, cy, cz].map((cell) => Math.floor((cell * targetSize + epsilon) / fine));
+    const high = [cx, cy, cz].map((cell) => Math.floor(((cell + 1) * targetSize - epsilon) / fine));
+    let covered = true;
+    for (let ix = low[0]; covered && ix <= high[0]; ix += 1) {
+      for (let iy = low[1]; covered && iy <= high[1]; iy += 1) {
+        for (let iz = low[2]; covered && iz <= high[2]; iz += 1) {
+          if (!fineFree.has(cellKey(ix, iy, iz))) covered = false;
+        }
+      }
+    }
+    if (covered) free.push((cx + 0.5) * targetSize, (cy + 0.5) * targetSize, (cz + 0.5) * targetSize);
+  }
+  const occupied: number[] = [];
+  for (const key of coarseOccupied) {
+    const [cx, cy, cz] = key.split(',').map(Number);
+    occupied.push((cx + 0.5) * targetSize, (cy + 0.5) * targetSize, (cz + 0.5) * targetSize);
+  }
+  return {
+    ...snapshot,
+    freeAirPositions: new Float32Array(free),
+    occupiedSurfacePositions: new Float32Array(occupied),
+    occupancyFineVoxelSizeMeters: targetSize,
+    occupancyVoxelSizeMeters: targetSize,
+  };
+}
+
 /**
  * MAX-162: the compact occupancy saved beside a session's scan, bound to
  * exactly that scan by its CRC. Until an AprilTag sensor<->scan
@@ -311,7 +379,7 @@ export function buildSessionOccupancyArtifact(
   identity?: ScanIdentity,
 ): Uint8Array {
   const scanIdentity = scanArtifact instanceof Uint8Array ? identity ?? createScanIdentity(scanArtifact) : scanArtifact;
-  return encodeOccupancySolverArtifact(snapshot, {
+  return encodeOccupancySolverArtifact(coarsenOccupancyForSolver(snapshot), {
     frameId: scanIdentity.frameId,
     createdAtMs,
     registration,

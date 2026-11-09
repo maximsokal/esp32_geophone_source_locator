@@ -210,11 +210,13 @@ describe('3D scan empty/filled sectors -> ESP32', () => {
         present: true, bytes: scan.byteLength, id: scanId, sourceId: null,
       });
 
-      // What the ESP32 holds decodes to exactly the scan's sectors.
+      // What the ESP32 holds decodes to the scan's sectors on the 0.25 m solver grid: two isolated 0.18 m FREE cells
+      // cannot prove any 0.25 m cell empty (FREE removes candidates), so none is FREE; the OCCUPIED one carries over.
       const stored = esp.files.get('OBJ_0003/sessions/S000002/occupancy-v1.bin');
       expect(stored).toBeDefined();
       const decoded = decodeOccupancySolverArtifact(stored as Uint8Array);
-      expect(Array.from(decoded.free)).toEqual([0, 0, 1, 1, 0, 1]);
+      expect(decoded.header.voxel_size_m).toBe(0.25);
+      expect(Array.from(decoded.free)).toEqual([]);
       expect(Array.from(decoded.occupied)).toEqual([0, 0, -1]);
       expect(decoded.header.below_surface_m).toBe(1.5);
       expect(decoded.header.frame_id).toBe(occupancyFrameIdForScan(scan));
@@ -308,18 +310,19 @@ describe('3D scan empty/filled sectors -> ESP32', () => {
 
   it('the encoder refuses an artifact the ESP32 could not store', () => {
     expect(MAX_OCCUPANCY_ARTIFACT_BYTES).toBe(OCCUPANCY_MAX_BYTES);
-    // 56^3 = 175,616 FREE cells x 6 bytes > 1 MiB, all within int16 indices.
-    const side = 56;
+    // 72^3 = 373,248 FREE cells of the 0.25 m solver grid x 6 bytes > 1 MiB, all within int16 indices.
+    const side = 72;
     const free = new Float32Array(side * side * side * 3);
     let write = 0;
     for (let ix = 0; ix < side; ix += 1) {
       for (let iy = 0; iy < side; iy += 1) {
         for (let iz = 0; iz < side; iz += 1) {
-          free[write++] = (ix + 0.5) * 0.18; free[write++] = (iy + 0.5) * 0.18; free[write++] = (iz + 0.5) * 0.18;
+          free[write++] = (ix + 0.5) * 0.25; free[write++] = (iy + 0.5) * 0.25; free[write++] = (iz + 0.5) * 0.25;
         }
       }
     }
-    expect(() => buildSessionOccupancyArtifact({ ...scanSnapshot(), freeAirPositions: free }, new Uint8Array([1]), 1))
+    const grid = { occupancyFineVoxelSizeMeters: 0.25, occupancyVoxelSizeMeters: 0.25 };
+    expect(() => buildSessionOccupancyArtifact({ ...scanSnapshot(), ...grid, freeAirPositions: free }, new Uint8Array([1]), 1))
       .toThrow(/too large/);
   });
 });
