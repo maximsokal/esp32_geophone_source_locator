@@ -3857,6 +3857,9 @@ typedef struct {
     int32_t reading_z_mm[4];        /* relative_z_mm each REMOTE reports */
     bool main_reference_valid;      /* the housing barometer reference (not the nRF MAIN) */
     int32_t main_reference_z_mm;
+    bool main_air_valid;            /* the housing BMP280 p/T the heights are scaled with */
+    uint32_t main_pressure_pa;
+    int32_t main_temperature_mc;
     uint16_t node_generation[4];    /* reference generation each REMOTE reports */
     bool limited;
     uint32_t limits_mm[NRF_TOPOLOGY_REMOTE_COUNT];
@@ -3900,6 +3903,14 @@ static void run_remote_only_geometry(const ro_geometry_cfg_t *cfg)
         cfg->main_reference_valid ? DEVICE_MAIN_HEIGHT_REFERENCE_VALID : DEVICE_MAIN_HEIGHT_REFERENCE_NOT_ESTABLISHED;
     s_device_status.main.height_reference.generation = cfg->main_reference_valid ? 91U : 0U;
     s_device_status.main.height_reference.relative_z_mm = cfg->main_reference_z_mm;
+    s_device_status.main.bmp280_valid = cfg->main_air_valid;
+    s_device_status.main.pressure_pa = cfg->main_pressure_pa;
+    s_device_status.main.temperature_mc = cfg->main_temperature_mc;
+    /* The true height differences are the linear readings scaled by 12 R_d T / (p g) (1 when no air is given). */
+    const double true_z_scale = cfg->main_air_valid
+        ? 12.0 * 287.05 * ((double)cfg->main_temperature_mc / 1000.0 + 273.15) /
+              ((double)cfg->main_pressure_pa * 9.80665)
+        : 1.0;
     for (size_t i = 0U; i < 4U; ++i) {
         s_nodes[i].relative_z_mm = cfg->reading_z_mm[i];
         s_nodes[i].reference_generation = cfg->node_generation[i];
@@ -3909,7 +3920,7 @@ static void run_remote_only_geometry(const ro_geometry_cfg_t *cfg)
     size_t pair = 0U;
     for (size_t a = 0U; a < 4U; ++a) {
         for (size_t b = a + 1U; b < 4U; ++b) {
-            const double dz = (double)(cfg->reading_z_mm[a] - cfg->reading_z_mm[b]);
+            const double dz = true_z_scale * (double)(cfg->reading_z_mm[a] - cfg->reading_z_mm[b]);
             s_cs_pair_distances[pair++] = (int32_t)lround(
                 hypot(hypot((double)(xy[a][0] - xy[b][0]), (double)(xy[a][1] - xy[b][1])), dz));
         }
@@ -3980,6 +3991,34 @@ static void test_remote_only_real_heights_used_when_valid(void)
     for (nrf_cs_node_id_t id = 1U; id <= 4U; ++id) {
         assert(frozen_node(id) != NULL && frozen_node(id)->solved);
         assert(frozen_node(id)->z_mm == readings[id - 1U] - 50);
+    }
+}
+
+/*
+ * The CS solver's Z of each REMOTE is a barometric height difference against the housing barometer. Pressure falls
+ * by rho g per metre with rho = p / (R_d T) (hydrostatic equation and the ideal gas law; over a few metres the
+ * hypsometric equation reduces to it), so a linear 12 Pa/m reading is turned into metres with 12 R_d T / (p g)
+ * measured at the housing. At -10 C / 100 kPa that is 0.9228: a 1250 mm linear difference is 1153 mm of real air.
+ */
+static void test_remote_only_heights_corrected_for_air_density(void)
+{
+    ro_geometry_cfg_t cfg = ro_default_cfg();
+    const int32_t readings[4] = {1300, -1150, 450, 2050};
+    memcpy(cfg.reading_z_mm, readings, sizeof(readings));
+    cfg.main_reference_z_mm = 50;
+    cfg.main_air_valid = true;
+    cfg.main_pressure_pa = 100000U;
+    cfg.main_temperature_mc = -10000;
+    run_remote_only_geometry(&cfg);
+    assert(s_ro_progress.complete && s_ro_progress.success);
+    assert(s_ro_frozen.main_height_reference_generation == 91U);
+    const double k = 12.0 * 287.05 * 263.15 / (100000.0 * 9.80665);
+    for (nrf_cs_node_id_t id = 1U; id <= 4U; ++id) {
+        const double hydrostatic_mm = k * (double)(readings[id - 1U] - 50);
+        printf("[TOPO-BARO] G%u linear %+d mm -> z %+d mm (hydrostatic %+.1f mm)\n",
+               (unsigned)id, (int)(readings[id - 1U] - 50), (int)frozen_node(id)->z_mm, hydrostatic_mm);
+        assert(frozen_node(id) != NULL && frozen_node(id)->solved);
+        assert(fabs((double)frozen_node(id)->z_mm - hydrostatic_mm) <= 1.0);
     }
 }
 
@@ -5722,6 +5761,7 @@ static int run_selected_remote_only_case(const char *name)
         {"remote_only_geometry_solves_with_anchor_g1", test_remote_only_geometry_solves_with_anchor_g1},
         {"remote_only_no_height_reference_planar", test_remote_only_no_height_reference_planar},
         {"remote_only_real_heights_used_when_valid", test_remote_only_real_heights_used_when_valid},
+        {"remote_only_heights_corrected_for_air_density", test_remote_only_heights_corrected_for_air_density},
         {"main_nrf_absent_main_barometer_still_works", test_main_nrf_absent_main_barometer_still_works},
         {"stale_height_generation_rejected", test_stale_height_generation_rejected},
         {"remote_only_pair_cable_sum_flags_exceeded", test_remote_only_pair_cable_sum_flags_exceeded},
@@ -5802,6 +5842,7 @@ int main(int argc, char **argv)
     test_cancel_during_plan_go_collect_releases();
     test_remote_only_geometry_solves_with_anchor_g1();
     test_remote_only_no_height_reference_planar();
+    test_remote_only_heights_corrected_for_air_density();
     test_remote_only_real_heights_used_when_valid();
     test_main_nrf_absent_main_barometer_still_works();
     test_stale_height_generation_rejected();

@@ -40,6 +40,7 @@
       "sources": [
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "nRF54L15/src/nrf_baro_altitude.c",
         "tests/host/seismic_recorder_geometry_policy_test.c"
       ],
       "include_dirs": [

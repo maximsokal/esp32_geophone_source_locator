@@ -43,6 +43,11 @@ typedef struct
     bool valid;
     uint16_t generation;
     int32_t relative_z_mm;
+    /* MAIN's barometer reading of the moment: the air density that turns a pressure difference into metres
+     * (nrf_baro_density_corrected_height_mm). Without it the linear 12 Pa/m height is used. */
+    bool environment_valid;
+    uint32_t pressure_pa;
+    int32_t temperature_mc;
 } seismic_recorder_geometry_main_reference_t;
 
 

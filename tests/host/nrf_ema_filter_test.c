@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "nrf_ema_filter.h"
 #include "nrf_orientation.h"
@@ -17,7 +18,50 @@ static void test_timestamp_alpha_and_seed(void)
     assert(value == 0.0);
     assert(nrf_ema_filter_update(&filter, 10.0, 200U, &value) ==
            NRF_EMA_FILTER_UPDATED);
-    assert(value == 5.0);
+    /* dt = tau: the exact step response 10 (1 - e^-1). */
+    assert(fabs(value - 10.0 * (1.0 - exp(-1.0))) < 1.0e-12);
+}
+
+/*
+ * A first-order low-pass y' = (x - y) / tau driven by a step of height A
+ * from y = 0 has the closed-form response y(t) = A (1 - e^(-t/tau))
+ * (time constant: 63.2 % at t = tau). Its exact zero-order-hold
+ * discretisation, G(z) = (1 - e^(-T/tau)) / (z - e^(-T/tau)), is the
+ * recursion y += (1 - e^(-dt/tau)) (x - y). The filter samples it: whatever the spacing of the samples, regular or
+ * not, the value at t must be that response, and two half steps must equal
+ * one whole step. An implicit-Euler alpha = dt / (tau + dt) gives 5.0 for
+ * dt = tau instead of 6.32 and depends on the sample spacing.
+ */
+static double step_response_at(const uint64_t *offsets_ms, size_t count, uint32_t tau_ms)
+{
+    nrf_ema_filter_t filter;
+    double value = 0.0;
+    assert(nrf_ema_filter_init(&filter, tau_ms, -100.0, 100.0));
+    assert(nrf_ema_filter_update(&filter, 0.0, 1000U, &value) == NRF_EMA_FILTER_UPDATED);
+    for (size_t i = 0U; i < count; ++i) {
+        assert(nrf_ema_filter_update(&filter, 10.0, 1000U + offsets_ms[i], &value) ==
+               NRF_EMA_FILTER_UPDATED);
+    }
+    return value;
+}
+
+static void test_step_response_is_the_exponential_whatever_the_sample_spacing(void)
+{
+    const uint32_t tau_ms = 1000U;
+    /* MAIN barometer: 200 ms polls; REMOTE: 2 s refreshes; a late, irregular poll sequence. */
+    static const uint64_t main_polls[] = { 200U, 400U, 600U, 800U, 1000U, 1200U, 1400U, 1600U, 1800U, 2000U };
+    static const uint64_t remote_refresh[] = { 2000U };
+    static const uint64_t irregular[] = { 130U, 610U, 700U, 1490U, 2000U };
+    const double expected = 10.0 * (1.0 - exp(-2000.0 / (double)tau_ms));
+
+    const double main_value = step_response_at(main_polls, sizeof(main_polls) / sizeof(main_polls[0]), tau_ms);
+    const double remote_value = step_response_at(remote_refresh, 1U, tau_ms);
+    const double irregular_value = step_response_at(irregular, sizeof(irregular) / sizeof(irregular[0]), tau_ms);
+    printf("[EMA] y(2 tau): exact %.9f main %.9f remote %.9f irregular %.9f\n",
+           expected, main_value, remote_value, irregular_value);
+    assert(fabs(main_value - expected) < 1.0e-9);
+    assert(fabs(remote_value - expected) < 1.0e-9);
+    assert(fabs(irregular_value - expected) < 1.0e-9);
 }
 
 static void test_invalid_values_and_timestamps_do_not_change_state(void)
@@ -183,6 +227,7 @@ int main(void)
     nrf_ema_filter_t invalid_config;
     assert(!nrf_ema_filter_init(&invalid_config, 0U, 0.0, 1.0));
     assert(!nrf_ema_filter_init(&invalid_config, 1U, 2.0, 1.0));
+    test_step_response_is_the_exponential_whatever_the_sample_spacing();
     test_timestamp_alpha_and_seed();
     test_invalid_values_and_timestamps_do_not_change_state();
     test_noise_attenuation_and_gap_reseed();

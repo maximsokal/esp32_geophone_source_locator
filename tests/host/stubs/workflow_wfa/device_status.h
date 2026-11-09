@@ -21,6 +21,7 @@ typedef struct {
 typedef struct {
     bool bmp280_valid;
     uint32_t pressure_pa;
+    int32_t temperature_mc;
     uint32_t barometer_sample_ms;
     int32_t barometer_filtered_altitude_mm;
     device_main_height_reference_status_t height_reference;

@@ -77,32 +77,52 @@ static void evaluate_candidate(
     const double ref_dz = candidate.z_m - used[ref_index].sensor_position.z_m;
     const double ref_distance = sqrt(ref_dx * ref_dx + ref_dy * ref_dy + ref_dz * ref_dz);
 
+    /*
+     * e_i is pick i's differential residual against the reference pick
+     * (e_ref = 0). Every e_i carries the reference pick's own error, so the
+     * differences are correlated and sum(e_i^2) is not their chi-square.
+     * Each pick's variance is sigma^2 / w_i (the weight is a precision
+     * multiplier, as in the Bayesian and eikonal backends fed the same
+     * weights); eliminating the origin time from the absolute-time
+     * likelihood (d chi^2 / d t0 = 0, as in NonLinLoc, Lomax et al. 2000;
+     * the same weighting as C^-1 for reference-differenced times, Chan &
+     * Ho 1994 / arXiv:2502.19354 eq. 10) gives
+     *   chi^2 = sum_i w_i (e_i - e_w)^2 / sigma^2,  e_w = sum w_i e_i / sum w_i,
+     * which is the same for any choice of reference pick.
+     */
+    double residual_us[LOCALIZATION_TRAVELTIME_MAX_PICKS];
     double sum_sq_unweighted = 0.0;
-    double sum_sq_weighted = 0.0;
+    double weight_sum = 0.0;
+    double weighted_residual_sum_us = 0.0;
     size_t diff_count = 0u;
 
     for (size_t i = 0u; i < used_count; ++i) {
-        if (i == ref_index) {
-            continue;
+        residual_us[i] = 0.0;
+        if (i != ref_index) {
+            const double dx = candidate.x_m - used[i].sensor_position.x_m;
+            const double dy = candidate.y_m - used[i].sensor_position.y_m;
+            const double dz = candidate.z_m - used[i].sensor_position.z_m;
+            const double distance = sqrt(dx * dx + dy * dy + dz * dz);
+
+            const double predicted_diff_us =
+                (distance - ref_distance) / propagation_speed_mps * 1.0e6;
+            const double observed_diff_us =
+                (double)used[i].arrival_time_us -
+                (double)used[ref_index].arrival_time_us;
+            residual_us[i] = observed_diff_us - predicted_diff_us;
+
+            sum_sq_unweighted += residual_us[i] * residual_us[i];
+            ++diff_count;
         }
+        weight_sum += weights[i];
+        weighted_residual_sum_us += weights[i] * residual_us[i];
+    }
 
-        const double dx = candidate.x_m - used[i].sensor_position.x_m;
-        const double dy = candidate.y_m - used[i].sensor_position.y_m;
-        const double dz = candidate.z_m - used[i].sensor_position.z_m;
-        const double distance = sqrt(dx * dx + dy * dy + dz * dz);
-
-        const double predicted_diff_us =
-            (distance - ref_distance) / propagation_speed_mps * 1.0e6;
-        const double observed_diff_us =
-            (double)used[i].arrival_time_us -
-            (double)used[ref_index].arrival_time_us;
-        const double residual_us = observed_diff_us - predicted_diff_us;
-
-        sum_sq_unweighted += residual_us * residual_us;
-
-        const double weighted_term = weights[i] * residual_us / timing_uncertainty_us;
-        sum_sq_weighted += weighted_term * weighted_term;
-        ++diff_count;
+    const double origin_offset_us = weighted_residual_sum_us / weight_sum;
+    double sum_sq_weighted = 0.0;
+    for (size_t i = 0u; i < used_count; ++i) {
+        const double centred = (residual_us[i] - origin_offset_us) / timing_uncertainty_us;
+        sum_sq_weighted += weights[i] * centred * centred;
     }
 
     *out_residual_rms_us = sqrt(sum_sq_unweighted / (double)diff_count);

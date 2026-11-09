@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +17,12 @@
 #include "ranging_radio_pause.h"
 
 typedef struct { bool held; } fake_mutex_t;
+
+/* Air in which the linear 12 Pa/m altitude model is exact at 101325 Pa (T = p g / (12 R_d) = 15.32 C):
+ * these tests exercise placement statistics, not the barometric density correction. */
+#define WORKFLOW_TEST_LINEAR_MODEL_AIR_MC 15319
+/* MAIN's air temperature in the published samples (default: the air of the linear model). */
+static int32_t s_main_air_mc = WORKFLOW_TEST_LINEAR_MODEL_AIR_MC;
 
 static measurement_service_snapshot_t s_measurement;
 static object_service_summary_t s_object;
@@ -361,6 +368,7 @@ static void reset_fakes(void)
 {
     workflow_service_shutdown();
     workflow_service_host_fakes_reset();
+    s_main_air_mc = WORKFLOW_TEST_LINEAR_MODEL_AIR_MC;
     memset(&s_measurement, 0, sizeof(s_measurement));
     s_measurement.state = MEASUREMENT_SERVICE_LIVE;
     memset(&s_object, 0, sizeof(s_object));
@@ -429,6 +437,7 @@ static void publish_all_pass_results(void)
     const uint16_t generation = s_requested_generation;
     s_device.main.bmp280_valid = true;
     s_device.main.pressure_pa = 101325U;
+    s_device.main.temperature_mc = WORKFLOW_TEST_LINEAR_MODEL_AIR_MC;
     s_device.main.barometer_sample_ms = (uint32_t)s_now_ms;
     s_device.main.height_reference = (device_main_height_reference_status_t){
         .state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID,
@@ -665,6 +674,7 @@ static void publish_placement_sample_with_main(
     s_now_ms = timestamp_ms;
     s_device.main.bmp280_valid = s_main_barometer_reads;
     s_device.main.pressure_pa = 101325U;
+    s_device.main.temperature_mc = s_main_air_mc;
     if (s_main_barometer_reads) {
         s_device.main.barometer_sample_ms = (uint32_t)timestamp_ms;
         s_device.main.barometer_filtered_altitude_mm = main_z_mm;
@@ -1305,6 +1315,32 @@ static void publish_series(const int32_t series[][3], size_t count)
     }
 }
 
+/*
+ * The placement height is a height, not a pressure difference in 12 Pa/m units: at -10 C and 101325 Pa the air is
+ * denser (rho = p / (R_d T) = 1.341 kg/m^3, rho g = 13.15 Pa/m), so a REMOTE whose linear relative Z reads 1096 mm
+ * above MAIN is 1000 mm above it (hydrostatic equation dp = -rho g dz). The settled height must carry that scale.
+ */
+static void test_placement_height_is_corrected_for_air_density(void)
+{
+    reset_fakes();
+    s_main_air_mc = -10000;
+    enter_placement();
+    const int32_t linear_mm[3] = { 1096, 2192, -1644 };
+    const uint8_t upright[3] = { 2U, 2U, 2U };
+    publish_steady_placement(linear_mm, upright, WORKFLOW_PLACEMENT_MIN_SAMPLES);
+    const workflow_snapshot_t snapshot = get_workflow_snapshot();
+    assert(snapshot.placement.all_stable);
+    const double rho_g = 101325.0 / (287.05 * 263.15) * 9.80665;
+    for (size_t node = 0U; node < 3U; ++node) {
+        const double true_mm = (double)linear_mm[node] * 12.0 / rho_g;
+        const int64_t settled = snapshot.placement.per_node[node + 1U].height_rel_main_mm;
+        printf("[BARO-WF] linear %+5d mm -> settled %+5lld mm (hydrostatic %+7.1f mm)\n",
+               (int)linear_mm[node], (long long)settled, true_mm);
+        assert(llabs(settled - (int64_t)llround(true_mm)) <= 1);
+    }
+    workflow_service_shutdown();
+}
+
 static void test_placement_needs_a_full_window_of_samples_and_reports_their_mean(void)
 {
     reset_fakes();
@@ -1852,6 +1888,7 @@ int main(void)
     test_a_failed_start_and_a_retry_also_go_through_the_radio();
     test_max460_layout_success_failure_reason_retry_and_back();
     test_placement_entry_invalidates_back_and_move_sensors();
+    test_placement_height_is_corrected_for_air_density();
     test_placement_needs_a_full_window_of_samples_and_reports_their_mean();
     test_placement_reports_the_window_mean_not_the_last_reading();
     test_placement_uncertainty_of_the_mean_is_bounded_at_100_mm();

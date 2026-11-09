@@ -75,6 +75,10 @@ const char *nrf_topology_leveling_node_state_name(nrf_topology_leveling_node_sta
 #define ESP_FAIL (-1)
 
 
+/* Air in which the linear 12 Pa/m altitude model is exact at 101325 Pa (T = p g / (12 R_d) = 15.32 C):
+ * these tests exercise placement statistics, not the barometric density correction. */
+#define WORKFLOW_TEST_LINEAR_MODEL_AIR_MC 15319
+
 static const char s_deep_nested_settings_json[] =
     "{\"propagation_speed_mps\":340,\"propagation_speed_uncertainty_mps\":5,"
     "\"timing_uncertainty_us\":2000,\"noise_window_samples\":50,"
@@ -666,6 +670,7 @@ static void enter_stable_placement(void)
     s_placement_ready = true;
     s_device.main.bmp280_valid = true;
     s_device.main.pressure_pa = 101325U;
+    s_device.main.temperature_mc = WORKFLOW_TEST_LINEAR_MODEL_AIR_MC;
     s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
     s_device.main.height_reference.generation = s_height_generation;
     for (unsigned sample = 0U; sample < WORKFLOW_PLACEMENT_MIN_SAMPLES; ++sample) {
@@ -1134,6 +1139,7 @@ static void enter_record_ready(void)
         s_now_ms += 2000U;
         s_device.main.bmp280_valid = true;
         s_device.main.pressure_pa = 101325U;
+        s_device.main.temperature_mc = WORKFLOW_TEST_LINEAR_MODEL_AIR_MC;
         s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
         s_device.main.height_reference.generation = s_height_generation;
         for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
@@ -2030,6 +2036,7 @@ static void test_low_remote_placement_and_ranging_finish(void)
             s_now_ms += 2000U;      /* the production refresh period: readings closer than 1 s are not counted */
             s_device.main.bmp280_valid = true;
             s_device.main.pressure_pa = 101325U;
+            s_device.main.temperature_mc = WORKFLOW_TEST_LINEAR_MODEL_AIR_MC;
             s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
             s_device.main.height_reference.generation = s_height_generation;
             for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
@@ -2107,6 +2114,7 @@ static void begin_placement_without_samples(size_t remotes)
     s_placement_ready = true;
     s_device.main.bmp280_valid = true;
     s_device.main.pressure_pa = 101325U;
+    s_device.main.temperature_mc = WORKFLOW_TEST_LINEAR_MODEL_AIR_MC;
     s_device.main.height_reference.state = DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
     s_device.main.height_reference.generation = s_height_generation;
 }

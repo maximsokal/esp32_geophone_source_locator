@@ -102,6 +102,23 @@ static struct {
 static nrf_ema_filter_t s_altitude_filter;
 static double s_filtered_altitude_mm;
 static bool s_altitude_filter_initialized;
+/* The altitude window was emptied because the node moved: until three fresh altitudes exist it describes no position. */
+static bool s_altitude_window_settling;
+/* The last refresh lost its IMU / ENV sample to a transient read error (the sensor is still ready). */
+static bool s_refresh_imu_missed;
+static bool s_refresh_env_missed;
+/* A height-reference capture that waits for the node to settle. */
+static struct {
+    bool active;
+    uint16_t generation;
+    uint32_t request_id;
+    uint64_t started_ms;
+} s_height_capture;
+/* The node's own barometer sampling while a capture waits (NRF_HEIGHT_REFERENCE_CAPTURE_SAMPLE_PERIOD_MS). */
+static struct {
+    bool converting;
+    uint64_t next_ms;
+} s_capture_env;
 static uint64_t s_next_orientation_due_ms;
 static bool s_orientation_config_set;
 static bool s_started;
@@ -308,6 +325,14 @@ static bool filter_altitude_sample(int32_t altitude_mm, uint64_t timestamp_ms)
             --s_altitude_ring_count;
         }
         s_altitude_ring_mm[s_altitude_ring_count++] = altitude_mm;
+        /* Two consistent altitudes of a new level: the node was moved (also straight up, unseen by the gyro). */
+        if (nrf_height_reference_window_step(s_altitude_ring_mm, s_altitude_ring_count)) {
+            s_altitude_ring_mm[0] = s_altitude_ring_mm[s_altitude_ring_count - 2U];
+            s_altitude_ring_mm[1] = s_altitude_ring_mm[s_altitude_ring_count - 1U];
+            s_altitude_ring_count = 2U;
+            s_altitude_window_settling = true;
+        }
+        if (s_altitude_ring_count >= 3U) s_altitude_window_settling = false;
     }
     return s_altitude_filter_initialized;
 }
@@ -599,6 +624,18 @@ static void orientation_feed_sample(
     nrf_blue_led_zephyr_update(
         s_verticality_estimator.state,
         sample_uptime_ms);
+    /*
+     * The node is moving (the filtered gyro motion verticality also judges by): the altitudes recorded so far belong
+     * to where it was, not to where it will stand. Keeping them made a capture right after a 1 m move take the old
+     * position (the new altitude was the window's single outlier) or the mean of both. Only the capture window is
+     * dropped; the reported altitude keeps its EMA, which follows the new place within a few tau (1 s).
+     */
+    if (sample_valid && s_imu_filters.gyro_motion.initialized &&
+        s_imu_filters.gyro_motion.value >= (double)s_verticality_config.gyro_motion_threshold_mdps &&
+        s_altitude_ring_count != 0U) {
+        s_altitude_ring_count = 0U;
+        s_altitude_window_settling = true;
+    }
     orientation_advance_deadline(sample_uptime_ms);
     if (calibration_completed) {
         s_imu_calibration_completed_request_id = s_imu_calibration_request_id;
@@ -812,6 +849,10 @@ static k_timeout_t sensor_worker_wait_timeout(void)
         const uint64_t remaining = now >= s_pending_refresh.next_poll_ms
             ? 0U : s_pending_refresh.next_poll_ms - now;
         if (remaining < wait_ms) wait_ms = remaining;
+    } else if (s_height_capture.active) {
+        const uint64_t due = s_capture_env.converting ? s_runtime.bme280.conversion_ready_ms : s_capture_env.next_ms;
+        const uint64_t remaining = now >= due ? 0U : due - now;
+        if (remaining < wait_ms) wait_ms = remaining;
     }
     const uint64_t retry = sensor_retry_deadline();
     if (retry != UINT64_MAX) {
@@ -857,6 +898,24 @@ static bool orientation_due(uint64_t now)
            now >= s_next_orientation_due_ms;
 }
 
+/*
+ * A failed read of a sensor that is still ready -- fewer than NRF_REMOTE_SENSOR_REINIT_AFTER_FAILURES in a row,
+ * the point where the runtime declares it lost and re-initialises it -- is a missed sample, not a dead sensor: one
+ * corrupted I2C transfer used to put verticality into FAULT (and its 750 ms dwell over again), reseed every IMU
+ * filter, end an IMU calibration capture as SENSOR_INVALID and wipe the barometer window a height reference is
+ * captured from. A missed sample changes nothing; staleness is already bounded by time where it matters: the
+ * verticality gap (max_sample_gap_ms), the EMA reseed after 5 tau, the calibration timeout, the Z hold.
+ */
+static bool imu_read_missed(bool bus_fault)
+{
+    return bus_fault && s_runtime.core.imu_ready;
+}
+
+static bool env_read_missed(bool bus_fault)
+{
+    return bus_fault && s_runtime.core.env_ready;
+}
+
 static void orientation_periodic_read(void)
 {
     nrf_imu_sample_t sample;
@@ -875,6 +934,10 @@ static void orientation_periodic_read(void)
     }
     nrf_remote_sensor_runtime_zephyr_note_imu_read(&s_runtime, result != 0);
     completion_uptime_ms = runtime_uptime_ms();
+    if (imu_read_missed(result != 0)) {
+        orientation_advance_deadline(completion_uptime_ms);
+        return;
+    }
     if (result == 0) {
         result = filter_imu_sample(&sample, completion_uptime_ms, &filtered_sample)
             ? 0
@@ -899,6 +962,12 @@ static void orientation_consume_aggregate_refresh(bool did_refresh)
     const uint64_t completion_uptime_ms = runtime_uptime_ms();
     const bool imu_pending = did_refresh &&
         ((s_runtime.core.snapshot.valid_mask | s_runtime.core.snapshot.fault_mask) & NRF_SENSOR_VALID_IMU) == 0U;
+    const bool imu_missed = did_refresh &&
+        imu_read_missed((s_runtime.core.snapshot.fault_mask & NRF_SENSOR_VALID_IMU) != 0U);
+    const bool env_missed = did_refresh &&
+        env_read_missed((s_runtime.core.snapshot.fault_mask & NRF_SENSOR_VALID_ENV) != 0U);
+    s_refresh_imu_missed = imu_missed;
+    s_refresh_env_missed = env_missed;
 
     if (imu_valid) {
         nrf_imu_sample_t filtered;
@@ -913,7 +982,7 @@ static void orientation_consume_aggregate_refresh(bool did_refresh)
     if (!imu_valid && !imu_pending) {
         s_runtime.core.snapshot.valid_mask &= ~NRF_SENSOR_VALID_IMU;
         s_runtime.core.snapshot.fault_mask |= NRF_SENSOR_VALID_IMU;
-        imu_filters_reset();
+        if (!imu_missed) imu_filters_reset();
     }
     if (did_refresh &&
         (s_runtime.core.snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U) {
@@ -922,53 +991,101 @@ static void orientation_consume_aggregate_refresh(bool did_refresh)
             s_runtime.core.snapshot.valid_mask &= ~NRF_SENSOR_VALID_ENV;
             s_runtime.core.snapshot.fault_mask |= NRF_SENSOR_VALID_ENV;
         }
-    } else {
+    } else if (!env_missed) {
         altitude_filter_reset();
     }
 
-    if (!imu_pending)
+    if (!imu_pending && !imu_missed)
         orientation_feed_sample(
             &s_runtime.core.snapshot.imu,
             imu_valid,
             completion_uptime_ms);
 }
 
+static void log_height_reference_rejection(nrf_upstream_reference_state_t previous_state, uint32_t request_id)
+{
+    if (previous_state != s_height_reference.state &&
+        s_height_reference.state == NRF_UPSTREAM_REFERENCE_REJECTED_MOVING) {
+        nrf_log_runtime_zephyr_append_event(
+            NRF_LOG_EVENT_HEIGHT_REF_REJECTED,
+            request_id,
+            (uint32_t)s_height_reference.state);
+    }
+}
+
+/*
+ * A capture is decided on what the node knows, not on the single sample of the instant:
+ *  - a sample lost to a transient read error (the sensor is still ready) does not void the capture: the IMU state is
+ *    held, and the altitude comes from the window of the last refreshes when that window has settled;
+ *  - a node that moves, or whose window still mixes two positions, is waited for (NOT_ESTABLISHED under the requested
+ *    generation) until it settles or NRF_HEIGHT_REFERENCE_SETTLE_TIMEOUT_MS ends it as REJECTED_MOVING;
+ *  - a lost sensor (not ready, or no sample without a transient cause) is SENSOR_INVALID at once.
+ */
 static void apply_height_reference_request(
     const nrf_upstream_height_reference_t *request,
     bool have_sensor_sample)
 {
+    const uint64_t now = runtime_uptime_ms();
+    const bool window_settled = !s_altitude_window_settling &&
+        (s_altitude_ring_count < 3U /* a node that has just started: the EMA stands in, as before */ ||
+         (nrf_height_reference_window_settled(s_altitude_ring_mm, s_altitude_ring_count) &&
+          !nrf_height_reference_window_newest_is_outlier(s_altitude_ring_mm, s_altitude_ring_count)));
     const bool imu_valid = have_sensor_sample &&
-        (s_runtime.core.snapshot.valid_mask & NRF_SENSOR_VALID_IMU) != 0U;
+        ((s_runtime.core.snapshot.valid_mask & NRF_SENSOR_VALID_IMU) != 0U || s_refresh_imu_missed);
     const bool env_valid = have_sensor_sample &&
-        (s_runtime.core.snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U;
+        ((s_runtime.core.snapshot.valid_mask & NRF_SENSOR_VALID_ENV) != 0U ||
+         (s_refresh_env_missed && s_altitude_ring_count >= 3U && window_settled));
     const uint32_t gyro_motion_mdps = s_imu_filters.gyro_motion.initialized
         ? (uint32_t)rounded_i32(s_imu_filters.gyro_motion.value)
         : 0U;
     const bool stationary =
         s_verticality_estimator.state != NRF_VERTICALITY_STABILIZING &&
-        gyro_motion_mdps < s_verticality_config.gyro_motion_threshold_mdps;
+        gyro_motion_mdps < s_verticality_config.gyro_motion_threshold_mdps &&
+        window_settled;
+    const nrf_upstream_reference_state_t previous_state = s_height_reference.state;
 
     if (request != NULL) {
-        const nrf_upstream_reference_state_t previous_state = s_height_reference.state;
-        bool applied;
-
-        applied = nrf_height_reference_apply(
-            &s_height_reference,
-            request->action,
-            request->generation,
-            imu_valid,
-            env_valid,
-            stationary,
-            reported_altitude_mm());
-        if (applied &&
-            previous_state != s_height_reference.state &&
-            s_height_reference.state == NRF_UPSTREAM_REFERENCE_REJECTED_MOVING) {
-            nrf_log_runtime_zephyr_append_event(
-                NRF_LOG_EVENT_HEIGHT_REF_REJECTED,
-                request->request_id,
-                (uint32_t)s_height_reference.state);
+        s_height_capture.active = false;
+        if (request->action == NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE && imu_valid && env_valid && !stationary) {
+            nrf_height_reference_begin_pending(&s_height_reference, request->generation);
+            s_height_capture.active = true;
+            s_height_capture.generation = request->generation;
+            s_height_capture.request_id = request->request_id;
+            s_height_capture.started_ms = now;
+            s_capture_env.converting = false;
+            s_capture_env.next_ms = now + NRF_HEIGHT_REFERENCE_CAPTURE_SAMPLE_PERIOD_MS;
+            return;
         }
+        if (nrf_height_reference_apply(
+                &s_height_reference,
+                request->action,
+                request->generation,
+                imu_valid,
+                env_valid,
+                stationary,
+                reported_altitude_mm())) {
+            log_height_reference_rejection(previous_state, request->request_id);
+        }
+        return;
     }
+    if (!s_height_capture.active || !have_sensor_sample) {
+        return;
+    }
+    const bool expired = now >= s_height_capture.started_ms &&
+        now - s_height_capture.started_ms >= NRF_HEIGHT_REFERENCE_SETTLE_TIMEOUT_MS;
+    if (imu_valid && env_valid && !stationary && !expired) {
+        return;
+    }
+    s_height_capture.active = false;
+    (void)nrf_height_reference_apply(
+        &s_height_reference,
+        NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE,
+        s_height_capture.generation,
+        imu_valid,
+        env_valid,
+        stationary,
+        reported_altitude_mm());
+    log_height_reference_rejection(previous_state, s_height_capture.request_id);
 }
 
 static void handle_imu_calibration_request(
@@ -1161,6 +1278,36 @@ static void publish_refresh(
     complete_refresh(request_id, height_reference_request, prepare_result);
 }
 
+/*
+ * A waiting capture samples the barometer itself: one forced conversion each NRF_HEIGHT_REFERENCE_CAPTURE_SAMPLE_PERIOD_MS
+ * fed into the altitude window, then the capture is judged again. An ESP refresh that arrives meanwhile takes over the
+ * conversion in flight (it would wait for the same one) and feeds the window itself.
+ */
+static void poll_capture_altitude(uint64_t now_ms)
+{
+    if (!s_height_capture.active || s_pending_refresh.active || !s_runtime.core.env_ready) {
+        s_capture_env.converting = false;
+        return;
+    }
+    if (!s_capture_env.converting) {
+        if (now_ms < s_capture_env.next_ms) return;
+        s_capture_env.next_ms = now_ms + NRF_HEIGHT_REFERENCE_CAPTURE_SAMPLE_PERIOD_MS;
+        if (nrf_remote_sensor_runtime_zephyr_begin_env(&s_worker_node_state, &s_runtime, now_ms) == NRF_BME280_PENDING) {
+            s_capture_env.converting = true;
+        } else {
+            s_runtime.env_prepared = false;
+        }
+        return;
+    }
+    if (nrf_remote_sensor_runtime_zephyr_poll_env(&s_runtime, now_ms) == NRF_BME280_PENDING) return;
+    s_capture_env.converting = false;
+    const bool sampled = s_runtime.env_prepared && s_runtime.prepared_env_result == NRF_BME280_OK;
+    s_runtime.env_prepared = false;
+    if (sampled && filter_altitude_sample(env_altitude_mm(&s_runtime.prepared_env), now_ms)) {
+        apply_height_reference_request(NULL, true);
+    }
+}
+
 static void poll_pending_refresh(uint64_t now_ms)
 {
     if (!s_pending_refresh.active || now_ms < s_pending_refresh.next_poll_ms) return;
@@ -1272,6 +1419,7 @@ static void sensor_worker(void *arg1, void *arg2, void *arg3)
             }
         }
         poll_pending_refresh(runtime_uptime_ms());
+        poll_capture_altitude(runtime_uptime_ms());
         if (s_imu_calibration.capturing &&
             nrf_imu_calibration_expire(&s_imu_calibration, runtime_uptime_ms())) {
             /* The samples that drive a capture stopped: answer the ESP instead of staying pending. */
@@ -1392,6 +1540,11 @@ int nrf_sensor_upstream_runtime_zephyr_start(void)
 
     nrf_sensor_session_init(&s_session);
     nrf_height_reference_init(&s_height_reference);
+    memset(&s_height_capture, 0, sizeof(s_height_capture));
+    memset(&s_capture_env, 0, sizeof(s_capture_env));
+    s_altitude_window_settling = false;
+    s_refresh_imu_missed = false;
+    s_refresh_env_missed = false;
     nrf_imu_calibration_init(&s_imu_calibration);
     s_imu_calibration_request_id = 0U;
     s_imu_calibration_completed_request_id = 0U;

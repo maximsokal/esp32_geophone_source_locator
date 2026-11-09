@@ -11,11 +11,13 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/kernel.h>
 
 #include "nrf_blue_led.h"
+#include "nrf_height_reference.h"
 #include "nrf_logger_led_zephyr.h"
 #include "nrf_log_events.h"
 #include "nrf_log_runtime_zephyr.h"
@@ -93,6 +95,10 @@ static unsigned s_empty_worker_returns_remaining;
 static bool s_include_env;
 static bool s_force_stationary;
 static bool s_fail_imu_reads;
+/* Nonzero: only the read with this call number fails (one corrupted transfer). */
+static unsigned s_fail_imu_read_at;
+/* Forced BME280 conversions the fake completed (refresh and the node's own capture sampling alike). */
+static unsigned s_env_conversions;
 static bool s_async_env;
 static bool s_force_moving;
 static bool s_override_gravity;
@@ -391,6 +397,7 @@ static int fake_read_imu(void *context, nrf_imu_sample_t *sample)
     ++s_imu_read_calls;
     memset(sample, 0, sizeof(*sample));
     if (s_fail_imu_reads) return -EIO;
+    if (s_fail_imu_read_at != 0U && s_imu_read_calls == s_fail_imu_read_at) return -EIO;
     sample->gyro_mdps[0] = s_fake_gyro_bias_mdps;
     if (s_force_moving) {
         sample->gyro_mdps[0] = 120000;
@@ -464,6 +471,13 @@ nrf_bme280_result_t nrf_remote_sensor_runtime_zephyr_poll_env(
 {
     if (now_ms < runtime->bme280.conversion_ready_ms) return NRF_BME280_PENDING;
     runtime->bme280.conversion_pending = false;
+    /* Like the real driver: the finished conversion is the prepared sample. */
+    memset(&runtime->prepared_env, 0, sizeof(runtime->prepared_env));
+    runtime->prepared_env.pressure_pa = s_change_pressure ? s_fake_pressure_pa : 101205U;
+    runtime->prepared_env.temperature_milli_c = 21500;
+    runtime->prepared_env_result = NRF_BME280_OK;
+    runtime->env_prepared = true;
+    ++s_env_conversions;
     return NRF_BME280_OK;
 }
 
@@ -936,6 +950,335 @@ NRF_TEST_MAYBE_UNUSED static void process_imu_calibration_request(
         assert(s_imu_read_calls == reads_before + 1U);
     }
 }
+
+
+#if !defined(NRF_MAIN_LOGGER_TEST) && !defined(NRF_REAL_SENSOR_WORKER_TEST)
+static uint8_t verticality_now(void)
+{
+    nrf_sensor_upstream_runtime_zephyr_diagnostics_t diagnostics = {0};
+    assert(nrf_sensor_upstream_runtime_zephyr_get_diagnostics(&diagnostics));
+    return diagnostics.verticality_state;
+}
+
+/*
+ * One failed read of a sensor the runtime still holds ready (it declares a sensor lost only after
+ * NRF_REMOTE_SENSOR_REINIT_AFTER_FAILURES failures in a row) is a missed sample. Every estimator here already
+ * bounds staleness by time: verticality leaves ACCEPTED only after a sample gap longer than max_sample_gap_ms
+ * (300 ms; one missed 100 ms poll is a 200 ms gap), the IMU calibration needs >= 1000 ms and >= 8 samples and
+ * has a 5 s timeout, the height reference is captured from the centre of the last 5 altitudes (Hampel filter).
+ */
+static void transient_scenario_setup(void)
+{
+    s_force_moving = false;
+    s_force_stationary = true;
+    s_test_fault_mask = 0U;
+    s_async_env = false;
+    s_include_env = true;
+}
+
+static void transient_verticality_survives_one_missed_read(void)
+{
+    nrf_upstream_sensor_snapshot_t snapshot;
+    transient_scenario_setup();
+    /* 1. Verticality settled at ACCEPTED survives one failed periodic read and one faulted refresh. */
+    process_imu_calibration_request(NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE, 3000U, 300U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+    run_worker_advancing(1500U);
+    assert(verticality_now() == (uint8_t)NRF_VERTICALITY_ACCEPTED);
+    s_fail_imu_read_at = s_imu_read_calls + 1U;
+    run_worker_advancing(350U);
+    assert(s_imu_read_calls > s_fail_imu_read_at);
+    printf("[TRANSIENT] verticality after one failed periodic read: %u (accepted %u)\n",
+           (unsigned)verticality_now(), (unsigned)NRF_VERTICALITY_ACCEPTED);
+    assert(verticality_now() == (uint8_t)NRF_VERTICALITY_ACCEPTED);
+    s_fail_imu_read_at = 0U;
+    s_test_fault_mask = NRF_SENSOR_VALID_IMU;
+    process_refresh_request(3001U);
+    s_test_fault_mask = 0U;
+    run_worker_advancing(250U);
+    printf("[TRANSIENT] verticality after one IMU-faulted refresh: %u\n", (unsigned)verticality_now());
+    assert(verticality_now() == (uint8_t)NRF_VERTICALITY_ACCEPTED);
+}
+
+static void transient_calibration_survives_one_missed_read(void)
+{
+    nrf_upstream_sensor_snapshot_t snapshot;
+    transient_scenario_setup();
+    /* 2. An IMU calibration capture keeps its samples over one failed read: 10 of the 11 still make >= 8. */
+    {
+        const nrf_upstream_imu_calibrate_t request = {
+            .action = NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE, .request_id = 3010U, .generation = 310U,
+        };
+        s_test_uptime_ms += 100;
+        assert(nrf_sensor_upstream_runtime_zephyr_request_imu_calibration(&request) == 0);
+        s_fail_imu_read_at = s_imu_read_calls + 4U;
+        run_worker_advancing(2000U);
+        assert(s_imu_read_calls > s_fail_imu_read_at);
+        s_fail_imu_read_at = 0U;
+        assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+        printf("[TRANSIENT] calibration with one failed read: state %u generation %u\n",
+               (unsigned)snapshot.imu_cal_state, (unsigned)snapshot.imu_cal_generation);
+        assert(snapshot.imu_cal_generation == 310U);
+        assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
+    }
+}
+
+static void transient_altitude_window_survives_one_env_error(void)
+{
+    nrf_upstream_sensor_snapshot_t snapshot;
+    transient_scenario_setup();
+    /*
+     * 3. One barometer read error keeps the altitude window: a reference captured just after it is the window
+     * centre, not the single sample of that instant. 101217 Pa is a 12 Pa (1 m) outlier against 101205 Pa.
+     */
+    s_change_pressure = true;
+    s_fake_pressure_pa = 101205U;
+    for (uint32_t i = 0U; i < 6U; ++i) process_refresh_request(3020U + i);
+    s_test_fault_mask = NRF_SENSOR_VALID_ENV;
+    process_refresh_request(3030U);
+    s_test_fault_mask = 0U;
+    s_fake_pressure_pa = 101217U;
+    process_height_reference_request(NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 3031U, 330U);
+    s_fake_pressure_pa = 101205U;
+    for (uint32_t i = 0U; i < 5U; ++i) process_refresh_request(3040U + i);
+    /* The capture refresh read the 1 m outlier itself: it waited one refresh to tell a glitch from a move. */
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID && snapshot.reference_generation == 330U);
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    printf("[TRANSIENT] relative Z at the steady pressure after a capture past one ENV error: %d mm\n",
+           (int)snapshot.relative_z_mm);
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
+    assert(abs(snapshot.relative_z_mm) <= 20);
+    s_change_pressure = false;
+}
+
+/* Six refreshes at one pressure: the altitude window holds five samples of one position. */
+static void fill_altitude_window(uint32_t pressure_pa, uint32_t first_request_id)
+{
+    s_change_pressure = true;
+    s_fake_pressure_pa = pressure_pa;
+    for (uint32_t i = 0U; i < 6U; ++i) process_refresh_request(first_request_id + i);
+}
+
+static void assert_height_state(uint8_t state, uint16_t generation, const char *what)
+{
+    nrf_upstream_sensor_snapshot_t snapshot;
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    printf("[CAPTURE] %s: state %u generation %u relative_z %d mm\n",
+           what, (unsigned)snapshot.reference_state, (unsigned)snapshot.reference_generation,
+           (int)snapshot.relative_z_mm);
+    assert(snapshot.reference_state == state);
+    assert(snapshot.reference_generation == generation);
+}
+
+static int32_t relative_z_now(void)
+{
+    nrf_upstream_sensor_snapshot_t snapshot;
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    return snapshot.relative_z_mm;
+}
+
+/* 4. A capture whose refresh lost the barometer sample to one read error takes the settled window instead. */
+static void capture_survives_a_barometer_read_error(void)
+{
+    transient_scenario_setup();
+    run_worker_advancing(1500U);
+    fill_altitude_window(101205U, 3100U);
+    s_test_fault_mask = NRF_SENSOR_VALID_ENV;
+    process_height_reference_request(NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 3110U, 350U);
+    s_test_fault_mask = 0U;
+    assert_height_state(NRF_UPSTREAM_REFERENCE_VALID, 350U, "capture during an ENV read error");
+    process_refresh_request(3111U);
+    assert(abs(relative_z_now()) <= 20);
+    s_change_pressure = false;
+}
+
+/* 5. The same for the IMU: one failed IMU read in the capture refresh does not make the capture SENSOR_INVALID. */
+static void capture_survives_an_imu_read_error(void)
+{
+    transient_scenario_setup();
+    run_worker_advancing(1500U);
+    fill_altitude_window(101205U, 3120U);
+    s_test_fault_mask = NRF_SENSOR_VALID_IMU;
+    process_height_reference_request(NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 3130U, 360U);
+    s_test_fault_mask = 0U;
+    assert_height_state(NRF_UPSTREAM_REFERENCE_VALID, 360U, "capture during an IMU read error");
+    s_change_pressure = false;
+}
+
+/*
+ * 6. Small inaccuracies are not motion: altitude noise of +-1 Pa (+-83 mm, inside 3 sigma_r) and one barometer
+ * glitch of 12 Pa in the window leave the capture immediate, at the centre of the steady samples.
+ */
+static void capture_ignores_noise_and_one_glitch(void)
+{
+    static const uint32_t pressures[6] = {101205U, 101206U, 101204U, 101217U, 101205U, 101206U};
+    transient_scenario_setup();
+    run_worker_advancing(1500U);
+    s_change_pressure = true;
+    for (uint32_t i = 0U; i < 6U; ++i) {
+        s_fake_pressure_pa = pressures[i];
+        process_refresh_request(3140U + i);
+    }
+    s_fake_pressure_pa = 101204U;
+    process_height_reference_request(NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 3150U, 370U);
+    assert_height_state(NRF_UPSTREAM_REFERENCE_VALID, 370U, "capture with noise and one glitch");
+    s_fake_pressure_pa = 101205U;
+    for (uint32_t i = 0U; i < 5U; ++i) process_refresh_request(3151U + i);
+    assert(abs(relative_z_now()) <= 100);
+    s_change_pressure = false;
+}
+
+/*
+ * 7. A node lifted by one metre (12 Pa less) is in motion: the gyro sees the move, the window of the old place is
+ * dropped, and a capture right after it waits (NOT_ESTABLISHED, requested generation) until three altitudes of the new
+ * place exist. The reference is then the new place: its relative Z is 0, not the 1000 mm of the old one.
+ */
+static void capture_after_a_one_metre_move_waits_for_the_new_place(void)
+{
+    transient_scenario_setup();
+    run_worker_advancing(1500U);
+    fill_altitude_window(101205U, 3160U);
+    s_force_stationary = false;
+    s_force_moving = true;
+    run_worker_advancing(500U);
+    s_force_moving = false;
+    s_force_stationary = true;
+    run_worker_advancing(2000U);
+    s_fake_pressure_pa = 101193U;
+    process_height_reference_request(NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 3170U, 380U);
+    assert_height_state(NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED, 380U, "capture right after a 1 m move");
+    process_refresh_request(3171U);
+    process_refresh_request(3172U);
+    assert_height_state(NRF_UPSTREAM_REFERENCE_VALID, 380U, "after three altitudes of the new place");
+    process_refresh_request(3173U);
+    process_refresh_request(3174U);
+    printf("[CAPTURE] relative Z at the new place: %d mm\n", (int)relative_z_now());
+    assert(abs(relative_z_now()) <= 20);
+    s_change_pressure = false;
+}
+
+/*
+ * 8. A node lifted straight up by one metre: no rotation, so the gyro sees nothing. The first altitude of the new level
+ * is a lone outlier (a glitch or a move: unknown), so the capture waits; the second consistent one makes it a step and
+ * the old place leaves the window; with the third the reference is the new place.
+ */
+static void capture_after_a_translation_without_rotation(void)
+{
+    transient_scenario_setup();
+    run_worker_advancing(1500U);
+    fill_altitude_window(101205U, 3180U);
+    s_fake_pressure_pa = 101193U;
+    process_height_reference_request(NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 3190U, 390U);
+    assert_height_state(NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED, 390U, "capture right after a lift without rotation");
+    process_refresh_request(3191U);
+    assert_height_state(NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED, 390U, "second altitude of the new level");
+    process_refresh_request(3192U);
+    assert_height_state(NRF_UPSTREAM_REFERENCE_VALID, 390U, "third altitude of the new level");
+    process_refresh_request(3193U);
+    printf("[CAPTURE] relative Z after the lift: %d mm\n", (int)relative_z_now());
+    assert(abs(relative_z_now()) <= 20);
+    s_change_pressure = false;
+}
+
+/* 9. A glitch in the capture refresh itself costs one refresh, then the reference is the steady place. */
+static void capture_with_a_glitch_in_its_own_refresh(void)
+{
+    transient_scenario_setup();
+    run_worker_advancing(1500U);
+    fill_altitude_window(101205U, 3200U);
+    s_fake_pressure_pa = 101217U;
+    process_height_reference_request(NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 3210U, 400U);
+    s_fake_pressure_pa = 101205U;
+    process_refresh_request(3211U);
+    assert_height_state(NRF_UPSTREAM_REFERENCE_VALID, 400U, "one refresh after a glitch at the capture");
+    for (uint32_t i = 0U; i < 5U; ++i) process_refresh_request(3212U + i);
+    assert(abs(relative_z_now()) <= 20);
+    s_change_pressure = false;
+}
+
+static void refresh_async(uint32_t request_id)
+{
+    const nrf_upstream_sensor_refresh_t request = {.request_id = request_id};
+    s_test_uptime_ms += 100;
+    assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == 0);
+    run_worker_until_empty();
+    run_worker_advancing(60U);
+}
+
+/*
+ * 10. The ESP refreshes rarely (here: once, 4 s after the capture). A capture after a lift without rotation must not
+ * depend on it: the node samples its barometer itself while the capture waits, so the one refresh already reports the
+ * reference of the new place. Without that sampling the window would hold two altitudes of the new level at that point.
+ */
+static void capture_settles_with_rare_esp_refreshes(void)
+{
+    transient_scenario_setup();
+    run_worker_advancing(1500U);
+    s_async_env = true;
+    s_change_pressure = true;
+    s_fake_pressure_pa = 101205U;
+    for (uint32_t i = 0U; i < 6U; ++i) refresh_async(3220U + i);
+    s_fake_pressure_pa = 101193U;
+    {
+        const nrf_upstream_height_reference_t capture = {
+            .action = NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, .request_id = 3230U, .generation = 410U,
+        };
+        s_test_uptime_ms += 100;
+        assert(nrf_sensor_upstream_runtime_zephyr_request_height_reference(&capture) == 0);
+        run_worker_until_empty();
+        run_worker_advancing(60U);
+    }
+    assert_height_state(NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED, 410U, "capture right after a lift, rare refreshes");
+    const unsigned conversions_before = s_env_conversions;
+    run_worker_advancing(4000U);
+    printf("[CAPTURE] own barometer conversions while waiting: %u\n", s_env_conversions - conversions_before);
+    /* The first own sample completes the step (capture sample + it), the second is the third altitude: then it stops. */
+    assert(s_env_conversions - conversions_before >= 2U);
+    refresh_async(3231U);
+    assert_height_state(NRF_UPSTREAM_REFERENCE_VALID, 410U, "first ESP refresh 4 s later");
+    refresh_async(3232U);
+    assert(abs(relative_z_now()) <= 20);
+    s_async_env = false;
+    s_change_pressure = false;
+}
+
+/* TRANSIENT_SCENARIO=1..10 runs one of them alone (to show each fail on the old runtime). */
+static void test_transient_read_errors_keep_stable_sensor_state(void)
+{
+#if !defined(TRANSIENT_SCENARIO) || TRANSIENT_SCENARIO == 1
+    transient_verticality_survives_one_missed_read();
+#endif
+#if !defined(TRANSIENT_SCENARIO) || TRANSIENT_SCENARIO == 2
+    transient_calibration_survives_one_missed_read();
+#endif
+#if !defined(TRANSIENT_SCENARIO) || TRANSIENT_SCENARIO == 3
+    transient_altitude_window_survives_one_env_error();
+#endif
+#if !defined(TRANSIENT_SCENARIO) || TRANSIENT_SCENARIO == 4
+    capture_survives_a_barometer_read_error();
+#endif
+#if !defined(TRANSIENT_SCENARIO) || TRANSIENT_SCENARIO == 5
+    capture_survives_an_imu_read_error();
+#endif
+#if !defined(TRANSIENT_SCENARIO) || TRANSIENT_SCENARIO == 6
+    capture_ignores_noise_and_one_glitch();
+#endif
+#if !defined(TRANSIENT_SCENARIO) || TRANSIENT_SCENARIO == 7
+    capture_after_a_one_metre_move_waits_for_the_new_place();
+#endif
+#if !defined(TRANSIENT_SCENARIO) || TRANSIENT_SCENARIO == 8
+    capture_after_a_translation_without_rotation();
+#endif
+#if !defined(TRANSIENT_SCENARIO) || TRANSIENT_SCENARIO == 9
+    capture_with_a_glitch_in_its_own_refresh();
+#endif
+#if !defined(TRANSIENT_SCENARIO) || TRANSIENT_SCENARIO == 10
+    capture_settles_with_rare_esp_refreshes();
+#endif
+}
+#endif
 
 #if defined(NRF_MAIN_LOGGER_TEST)
 static void test_main_logger_without_remote_activation(void)
@@ -1523,8 +1866,9 @@ int main(void)
     assert(snapshot.altitude_mm == 10000);
     assert(snapshot.relative_z_mm == 0);
     assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
-    assert(snapshot.accel_mg[0] == 100);
-    assert(snapshot.gyro_mdps[0] == 10000);
+    /* Exact first-order step, alpha = 1 - e^(-dt/tau), dt = 100 ms, tau = 200 ms: 300 * 0.3935 = 118.04. */
+    assert(snapshot.accel_mg[0] == 118);
+    assert(snapshot.gyro_mdps[0] == 11804);
     assert(nrf_sensor_upstream_runtime_zephyr_get_orientation(&orientation));
     assert(orientation.filtered_accel_mg[0] == snapshot.accel_mg[0]);
     assert(orientation.filtered_accel_mg[2] == snapshot.accel_mg[2]);
@@ -1538,7 +1882,7 @@ int main(void)
     assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_SAMPLE_AVAILABLE);
     assert(snapshot.flags & NRF_UPSTREAM_SENSOR_FLAG_FILTERED);
 
-    /* Subsequent samples use dt/(tau+dt): IMU tau=200ms, altitude tau=1s. */
+    /* Subsequent samples use alpha = 1 - e^(-dt/tau): IMU tau=200ms, altitude tau=1s. */
     request.request_id = 21U;
     s_test_uptime_ms += 100;
     assert(nrf_sensor_upstream_runtime_zephyr_request_refresh(&request) == 0);
@@ -1552,9 +1896,10 @@ int main(void)
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
     assert(snapshot.request_id == request.request_id);
     assert(snapshot.pressure_pa == 101085U);
-    assert(snapshot.altitude_mm == 10909);
-    assert(snapshot.accel_mg[0] == 167);
-    assert(snapshot.gyro_mdps[0] == 16667);
+    /* 10000 + (1 - e^-0.1) * 10000 = 10951.6; 118.04 + (1 - e^-0.5) * (300 - 118.04) = 189.64. */
+    assert(snapshot.altitude_mm == 10952);
+    assert(snapshot.accel_mg[0] == 190);
+    assert(snapshot.gyro_mdps[0] == 18964);
 
     /* Stable worker samples satisfy the verticality dwell before capture. */
     s_force_stationary = true;
@@ -1603,13 +1948,25 @@ int main(void)
         assert(snapshot.relative_z_mm != 0);
     }
 
+#if !defined(TRANSIENT_SCENARIO) /* a single-scenario build (run on the old runtime too) skips to its scenario */
     s_force_stationary = false;
     s_force_moving = true;
     process_height_reference_request(
         NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 44U, 43U);
+    /* A moving node is waited for under the requested generation, not rejected on the spot ... */
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+    assert(snapshot.reference_generation == 43U);
+    assert(snapshot.relative_z_mm == 0);
+    assert(log_event_count(NRF_LOG_EVENT_HEIGHT_REF_REJECTED) == 0U);
+    /* ... and one that never settles is REJECTED_MOVING once the settle time is over, still under generation 43. */
+    for (uint32_t waited_ms = 0U; waited_ms <= NRF_HEIGHT_REFERENCE_SETTLE_TIMEOUT_MS; waited_ms += 2000U) {
+        run_worker_advancing(1900U);
+        process_refresh_request(4400U + waited_ms / 2000U);
+    }
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
     assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_REJECTED_MOVING);
-    assert(snapshot.reference_generation == 42U);
+    assert(snapshot.reference_generation == 43U);
     assert(snapshot.relative_z_mm == 0);
     assert(log_event_count(NRF_LOG_EVENT_HEIGHT_REF_REJECTED) == 1U);
     assert_last_log_event(
@@ -1627,8 +1984,9 @@ int main(void)
         NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 45U, 44U);
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
     assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
-    assert(snapshot.reference_generation == 42U);
+    assert(snapshot.reference_generation == 44U);
     assert(snapshot.relative_z_mm == 0);
+#endif
 
     process_height_reference_request(
         NRF_UPSTREAM_HEIGHT_REFERENCE_CLEAR, 46U, 45U);
@@ -1709,6 +2067,12 @@ int main(void)
     s_force_moving = false;
     process_imu_calibration_request(NRF_UPSTREAM_IMU_CALIBRATE_CAPTURE, 1000U, 100U);
     process_height_reference_request(NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 1001U, 101U);
+#if !defined(TRANSIENT_SCENARIO)
+    /* The node moved earlier in this run: two fresh altitudes exist, the capture waits for the third. */
+    assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
+    assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED && snapshot.reference_generation == 101U);
+    process_refresh_request(9001U);
+#endif
     assert(nrf_sensor_upstream_runtime_zephyr_get_snapshot(&snapshot));
     assert(snapshot.imu_cal_state == NRF_UPSTREAM_IMU_CALIBRATION_CALIBRATED);
     assert(snapshot.reference_state == NRF_UPSTREAM_REFERENCE_VALID);
@@ -1815,6 +2179,7 @@ int main(void)
         assert(nrf_sensor_upstream_runtime_zephyr_notify_remote_assignment(&conflicting) == -EALREADY);
         assert(s_queue_put_calls == queue_calls_before);
     }
+    test_transient_read_errors_keep_stable_sensor_state();
     return 0;
 #endif
 }

@@ -33,17 +33,18 @@ static void test_capture_requires_valid_stationary_sources(void)
         &reference, NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 3U,
         false, true, true, 9000));
     assert(reference.state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
-    assert(reference.generation == 0U);
+    /* Every outcome answers the request it belongs to: the ESP matches reference_generation to its request. */
+    assert(reference.generation == 3U);
     assert(nrf_height_reference_apply(
         &reference, NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 4U,
         true, false, true, 9000));
     assert(reference.state == NRF_UPSTREAM_REFERENCE_SENSOR_INVALID);
-    assert(reference.generation == 0U);
+    assert(reference.generation == 4U);
     assert(nrf_height_reference_apply(
         &reference, NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 5U,
         true, true, false, 9000));
     assert(reference.state == NRF_UPSTREAM_REFERENCE_REJECTED_MOVING);
-    assert(reference.generation == 0U);
+    assert(reference.generation == 5U);
     assert(reference.altitude_mm == 0);
 }
 
@@ -60,7 +61,7 @@ static void test_capture_clear_and_failure_state_semantics(void)
         &reference, NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 11U,
         true, true, false, 13000));
     assert(reference.state == NRF_UPSTREAM_REFERENCE_REJECTED_MOVING);
-    assert(reference.generation == 10U);
+    assert(reference.generation == 11U);
     assert(nrf_height_reference_relative_z_mm(&reference, true, 13000) == 0);
     assert(nrf_height_reference_apply(
         &reference, NRF_UPSTREAM_HEIGHT_REFERENCE_CLEAR, 12U,
@@ -279,8 +280,74 @@ static void test_window_centre_uses_only_the_newest_samples(void)
     assert(nrf_height_reference_window_centre_mm(many, 7U, 0) == 1000);
 }
 
+/*
+ * A window is one position when no more samples lie beyond 3 sigma_r of the median than the centre may drop (one of
+ * five). Barometer noise (BMP280 x16 with IIR 16: about 0.2 Pa RMS, 2 cm) and a single glitch are within that; a node
+ * moved by one metre (12 Pa) leaves two or more samples of its old place 25 sigma_r away.
+ */
+#if !defined(OLD_API) /* OLD_API: build against the previous module, which has neither function */
+static void test_window_settled_tells_noise_from_a_move(void)
+{
+    static const int32_t quiet[5] = {10000, 10030, 9980, 10010, 9990};
+    static const int32_t one_glitch[5] = {10000, 10030, 11000, 10010, 9990};
+    static const int32_t moved_two_ago[5] = {10000, 10010, 9990, 11000, 11010};
+    static const int32_t moved_three_ago[5] = {10000, 10010, 11000, 11010, 10990};
+    static const int32_t fresh_after_move[3] = {11000, 11010, 10990};
+    assert(nrf_height_reference_window_settled(quiet, 5U));
+    assert(nrf_height_reference_window_settled(one_glitch, 5U));
+    assert(!nrf_height_reference_window_settled(moved_two_ago, 5U));
+    assert(!nrf_height_reference_window_settled(moved_three_ago, 5U));
+    assert(nrf_height_reference_window_settled(fresh_after_move, 3U));
+    assert(!nrf_height_reference_window_settled(fresh_after_move, 2U));
+    assert(!nrf_height_reference_window_settled(NULL, 5U));
+}
+
+/*
+ * A move the gyro does not see (lifted straight up) shows in the barometer alone: one new altitude is a suspect (glitch
+ * or move), two consistent ones of a new level are a step. Noise and a glitch that went back are neither.
+ */
+static void test_window_tells_a_step_from_a_glitch(void)
+{
+    static const int32_t quiet[5] = {10000, 10030, 9980, 10010, 9990};
+    static const int32_t newest_up[5] = {10000, 10030, 9980, 10010, 11000};
+    static const int32_t glitch_back[5] = {10030, 9980, 10010, 11000, 10000};
+    static const int32_t step_two[5] = {10030, 9980, 10010, 11000, 11010};
+    static const int32_t step_down[4] = {10000, 10010, 9000, 9020};
+    static const int32_t diverging[5] = {10030, 9980, 10010, 11000, 12000};
+    assert(!nrf_height_reference_window_newest_is_outlier(quiet, 5U));
+    assert(nrf_height_reference_window_newest_is_outlier(newest_up, 5U));
+    assert(!nrf_height_reference_window_newest_is_outlier(glitch_back, 5U));
+    assert(!nrf_height_reference_window_step(quiet, 5U));
+    assert(!nrf_height_reference_window_step(newest_up, 5U));
+    assert(!nrf_height_reference_window_step(glitch_back, 5U));
+    assert(nrf_height_reference_window_step(step_two, 5U));
+    assert(nrf_height_reference_window_step(step_down, 4U));
+    assert(!nrf_height_reference_window_step(diverging, 5U));
+    assert(!nrf_height_reference_window_step(step_two, 2U));
+}
+
+static void test_pending_capture_answers_under_the_requested_generation(void)
+{
+    nrf_height_reference_t reference;
+    nrf_height_reference_init(&reference);
+    assert(nrf_height_reference_apply(
+        &reference, NRF_UPSTREAM_HEIGHT_REFERENCE_CAPTURE, 20U, true, true, true, 5000));
+    nrf_height_reference_begin_pending(&reference, 21U);
+    assert(reference.state == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+    assert(reference.generation == 21U && reference.altitude_mm == 0);
+    int32_t z = 7;
+    assert(nrf_height_reference_sample(&reference, true, 6000, 1000U, &z) == NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED);
+    assert(z == 0);
+}
+#endif
+
 int main(void)
 {
+#if !defined(OLD_API)
+    test_window_settled_tells_noise_from_a_move();
+    test_window_tells_a_step_from_a_glitch();
+    test_pending_capture_answers_under_the_requested_generation();
+#endif
     test_relative_altitude_math();
     test_capture_requires_valid_stationary_sources();
     test_capture_clear_and_failure_state_semantics();

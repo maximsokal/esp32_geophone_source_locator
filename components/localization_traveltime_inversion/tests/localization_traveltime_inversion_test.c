@@ -240,7 +240,11 @@ static void test_down_weighted_bad_pick_is_excluded_from_hijacking_the_estimate(
             .observation = observation, .weight = 1.0
         };
         down_weighted_picks[i] = (localization_traveltime_pick_t) {
-            .observation = observation, .weight = (i == 3u) ? 0.001 : 1.0
+            /* The weight is a precision multiplier (sigma^2 / w): 1e-6
+             * puts this 100-sigma pick at 0.1 sigma, i.e. effectively
+             * excluded. (The former 0.001 had the same effect only while
+             * the weight was wrongly squared.) */
+            .observation = observation, .weight = (i == 3u) ? 1.0e-6 : 1.0
         };
     }
 
@@ -717,8 +721,221 @@ static void test_candidate_filter_constrains_the_answer(void)
 }
 
 
+/*
+ * Maximum-likelihood structure of the chi-square. Production-like planar
+ * layout: 4 geophones on the ground, 2D search -- unknowns x, y and the
+ * origin time, so 4 picks over-determine it. Deterministic noise in whole
+ * microseconds.
+ */
+#define ML_PICKS 4u
+
+static const localization_point3d_t s_ml_sensors[ML_PICKS] = {
+    { 0.0, 0.0, 0.0 }, { 4.0, 0.0, 0.0 }, { 0.0, 4.0, 0.0 }, { 4.0, 4.0, 0.0 }
+};
+static const int64_t s_ml_noise_us[ML_PICKS] = { 40, -25, 10, -35 };
+/* Wide enough that dozens of 0.25 m cells keep L > 1e-200 to compare. */
+static const double s_ml_wide_sigma_us = 400.0;
+static const localization_point3d_t s_ml_source = { 1.3, 2.2, 0.0 };
+static const localization_traveltime_search_bounds_t s_ml_bounds = {
+    .min_corner = { 0.0, 0.0, 0.0 },
+    .max_corner = { 4.0, 4.0, 0.0 },
+    .step_m = 0.25
+};
+
+
+static localization_traveltime_pick_t ml_pick(size_t sensor, double weight)
+{
+    return (localization_traveltime_pick_t) {
+        .observation = {
+            .sensor_position = s_ml_sensors[sensor],
+            .arrival_time_us = true_arrival_time_us(
+                s_ml_sensors[sensor], s_ml_source, s_speed_mps, s_emission_time_us
+            ) + s_ml_noise_us[sensor]
+        },
+        .weight = weight
+    };
+}
+
+
+static localization_traveltime_config_t ml_config(double timing_uncertainty_us)
+{
+    return (localization_traveltime_config_t) {
+        .propagation_speed_mps = s_speed_mps,
+        .timing_uncertainty_us = timing_uncertainty_us,
+        .refine_divisor = 10u,
+        .retain_surface = true
+    };
+}
+
+
+static void assert_same_surface(
+    const localization_traveltime_result_t *a,
+    const localization_traveltime_result_t *b,
+    const char *label
+)
+{
+    assert(a->status == LOCALIZATION_TRAVELTIME_SOLVED && b->status == LOCALIZATION_TRAVELTIME_SOLVED);
+    assert(a->surface_count == b->surface_count && a->surface_count > 0u);
+    /* Compared as -2 ln L (chi^2 above the best), where a misweighted
+     * likelihood shows up at unit scale instead of vanishing in L ~ 0. */
+    double worst = 0.0;
+    size_t compared = 0u;
+    for (size_t i = 0u; i < a->surface_count; ++i) {
+        assert(a->surface[i].position.x_m == b->surface[i].position.x_m);
+        assert(a->surface[i].position.y_m == b->surface[i].position.y_m);
+        const double la = a->surface[i].relative_likelihood;
+        const double lb = b->surface[i].relative_likelihood;
+        if (!(la > 1.0e-200) && !(lb > 1.0e-200)) {
+            continue;
+        }
+        const double ca = la > 1.0e-200 ? -2.0 * log(la) : 920.0;
+        const double cb = lb > 1.0e-200 ? -2.0 * log(lb) : 920.0;
+        worst = fmax(worst, fabs(ca - cb));
+        ++compared;
+    }
+    const double moved_m = position_error_m(a->best_position, b->best_position);
+    TEST_PRINTF(
+        "[TT-ML] %s: %zu cells, max |d chi^2| = %.3e, best position moved %.3e m\n",
+        label, compared, worst, moved_m
+    );
+    assert(compared >= 20u);
+    assert(worst < 1.0e-6);
+    assert(moved_m < 1.0e-9);
+}
+
+
+/*
+ * Every differential residual against the reference pick carries that
+ * pick's own error; the correct likelihood eliminates the origin time
+ * (d chi^2 / d t0 = 0; NonLinLoc, Lomax et al. 2000; equivalently the
+ * C^-1 weight of Chan & Ho 1994, arXiv:2502.19354 eq. 10) and is the same
+ * whichever pick is the reference. With equal weights the reference is the
+ * first pick, so listing the same picks in another order must leave the
+ * surface and the estimate unchanged.
+ */
+static void test_likelihood_does_not_depend_on_reference_pick(void)
+{
+    static const size_t orders[2][ML_PICKS] = { { 0u, 1u, 2u, 3u }, { 3u, 2u, 0u, 1u } };
+    const localization_traveltime_config_t config = ml_config(s_ml_wide_sigma_us);
+    localization_traveltime_result_t results[2];
+    for (size_t o = 0u; o < 2u; ++o) {
+        localization_traveltime_pick_t picks[ML_PICKS];
+        for (size_t k = 0u; k < ML_PICKS; ++k) {
+            picks[k] = ml_pick(orders[o][k], 1.0);
+        }
+        assert(localization_traveltime_search(picks, ML_PICKS, &s_ml_bounds, &config, &results[o]) == ESP_OK);
+    }
+    assert_same_surface(&results[0], &results[1], "reference pick 0 vs 3");
+    free(results[0].surface);
+    free(results[1].surface);
+}
+
+
+/*
+ * The surface must be exp(-chi^2 / 2) of the origin-time-free misfit
+ * (NonLinLoc L2 likelihood, Lomax et al. 2000, with t0 from d chi^2/d t0 = 0):
+ *   r_i = t_i - |x - s_i| / v,  t0 = sum w_i r_i / sum w_i,
+ *   chi^2(x) = sum_i w_i (r_i - t0)^2 / sigma^2,  sigma_i^2 = sigma^2 / w_i.
+ * relative_likelihood is normalised to the global best, so the check is on
+ * ratios: -2 ln(L_a / L_b) = chi^2(a) - chi^2(b).
+ */
+static double origin_free_chi_square(
+    const localization_traveltime_pick_t *picks,
+    size_t count,
+    localization_point3d_t x,
+    double sigma_us
+)
+{
+    double r[ML_PICKS];
+    double weight_sum = 0.0;
+    double t0 = 0.0;
+    for (size_t i = 0u; i < count; ++i) {
+        r[i] = (double)(picks[i].observation.arrival_time_us - picks[0].observation.arrival_time_us) -
+            position_error_m(x, picks[i].observation.sensor_position) / s_speed_mps * 1.0e6;
+        weight_sum += picks[i].weight;
+        t0 += picks[i].weight * r[i];
+    }
+    t0 /= weight_sum;
+    double chi_square = 0.0;
+    for (size_t i = 0u; i < count; ++i) {
+        chi_square += picks[i].weight * (r[i] - t0) * (r[i] - t0) / (sigma_us * sigma_us);
+    }
+    return chi_square;
+}
+
+
+static void test_surface_is_origin_time_free_gaussian_likelihood(void)
+{
+    const double sigma_us = 200.0;
+    static const double weights[ML_PICKS] = { 1.0, 2.0, 1.0, 0.5 };
+    localization_traveltime_pick_t picks[ML_PICKS];
+    for (size_t k = 0u; k < ML_PICKS; ++k) {
+        picks[k] = ml_pick(k, weights[k]);
+    }
+    const localization_traveltime_config_t config = ml_config(sigma_us);
+    localization_traveltime_result_t result;
+    assert(localization_traveltime_search(picks, ML_PICKS, &s_ml_bounds, &config, &result) == ESP_OK);
+    assert(result.status == LOCALIZATION_TRAVELTIME_SOLVED);
+
+    size_t best = 0u;
+    for (size_t i = 1u; i < result.surface_count; ++i) {
+        if (result.surface[i].relative_likelihood > result.surface[best].relative_likelihood) {
+            best = i;
+        }
+    }
+    const double chi_best = origin_free_chi_square(picks, ML_PICKS, result.surface[best].position, sigma_us);
+    size_t checked = 0u;
+    double worst = 0.0;
+    for (size_t i = 0u; i < result.surface_count; ++i) {
+        const double likelihood = result.surface[i].relative_likelihood;
+        if (!(likelihood > 1.0e-200)) {
+            continue;
+        }
+        const double measured = -2.0 * log(likelihood / result.surface[best].relative_likelihood);
+        const double expected =
+            origin_free_chi_square(picks, ML_PICKS, result.surface[i].position, sigma_us) - chi_best;
+        worst = fmax(worst, fabs(measured - expected) / fmax(1.0, fabs(expected)));
+        ++checked;
+    }
+    TEST_PRINTF("[TT-ML] chi^2 vs origin-free misfit: %zu cells, worst rel. error %.3e\n", checked, worst);
+    assert(checked >= 20u);
+    assert(worst < 1.0e-6);
+    free(result.surface);
+}
+
+
+/*
+ * A Gaussian pick of precision w adds w r^2 / sigma^2 to chi^2, so a pick
+ * of weight 2 must be indistinguishable from the same pick recorded twice
+ * at weight 1 (precisions add). Squaring the weight would make it count as
+ * four picks.
+ */
+static void test_pick_weight_is_a_precision(void)
+{
+    localization_traveltime_pick_t weighted[ML_PICKS];
+    localization_traveltime_pick_t duplicated[ML_PICKS + 1u];
+    for (size_t k = 0u; k < ML_PICKS; ++k) {
+        weighted[k] = ml_pick(k, k == 1u ? 2.0 : 1.0);
+        duplicated[k] = ml_pick(k, 1.0);
+    }
+    duplicated[ML_PICKS] = ml_pick(1u, 1.0);
+
+    const localization_traveltime_config_t config = ml_config(s_ml_wide_sigma_us);
+    localization_traveltime_result_t a;
+    localization_traveltime_result_t b;
+    assert(localization_traveltime_search(weighted, ML_PICKS, &s_ml_bounds, &config, &a) == ESP_OK);
+    assert(localization_traveltime_search(duplicated, ML_PICKS + 1u, &s_ml_bounds, &config, &b) == ESP_OK);
+    assert_same_surface(&a, &b, "weight 2 vs duplicated pick");
+    free(a.surface);
+    free(b.surface);
+}
+
+
 int main(void)
 {
+    test_likelihood_does_not_depend_on_reference_pick();
+    test_surface_is_origin_time_free_gaussian_likelihood();
+    test_pick_weight_is_a_precision();
     test_candidate_filter_constrains_the_answer();
     test_realistic_3d_grid_streams_within_budget();
     test_retained_surface_is_capped();

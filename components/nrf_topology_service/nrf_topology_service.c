@@ -12,6 +12,7 @@
 #include "nrf_topology_mode.h"
 #include "nrf_geometry_solver.h"
 #include "nrf_geometry_triangles.h"
+#include "nrf_baro_altitude.h"
 #include "sensor_bus_timeout.h"
 
 #if defined(ESP_PLATFORM) || defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
@@ -2664,13 +2665,6 @@ static void service_ranging_publish_progress(nrf_topology_worker_state_t *worker
 }
 
 #if NRF_TOPOLOGY_HAS_RANGING_SOLVER
-static int32_t ranging_saturate_i32(int64_t value)
-{
-    if (value > INT32_MAX) return INT32_MAX;
-    if (value < INT32_MIN) return INT32_MIN;
-    return (int32_t)value;
-}
-
 static nrf_geometry_result_t service_ranging_solve(
     nrf_topology_worker_state_t *worker,
     nrf_topology_ranging_geometry_t *geometry,
@@ -2752,8 +2746,11 @@ static nrf_geometry_result_t service_ranging_solve(
         const int32_t z_mm = placed
             ? placed_mm
             : use_barometric_z
-                ? ranging_saturate_i32(
-                      (int64_t)cache->sensor.relative_z_mm - main_relative_z_mm)
+                ? nrf_baro_density_corrected_height_mm(
+                      (int64_t)cache->sensor.relative_z_mm - main_relative_z_mm,
+                      device_status.main.bmp280_valid,
+                      device_status.main.pressure_pa,
+                      device_status.main.temperature_mc)
                 : 0;
         inputs[input_count++] = (nrf_geometry_node_input_t) {
             .node_id = worker->snapshot.remotes[channel].node_id,

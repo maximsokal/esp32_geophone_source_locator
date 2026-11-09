@@ -469,6 +469,24 @@ esp_err_t localization_tdoa_solve(
     const localization_point3d_t reference_sensor =
         observations[0].sensor_position;
 
+    /*
+     * The N-1 differences d_i = t_i - t_0 all contain the reference pick's
+     * own error, so with i.i.d. pick noise their covariance is
+     * sigma^2 (I + 1 1^T), not sigma^2 I (Chan & Ho 1994, IEEE TSP 42(8),
+     * doi:10.1109/78.301830; written out as C = diag(sigma_i^2) +
+     * sigma_1^2 1 1^T with the WNLS weight C^-1 in arXiv:2502.19354,
+     * eqs. 10 and 71). The maximum-
+     * likelihood step therefore weights the normal equations with
+     * Q^-1 = I - 1 1^T / N (Sherman-Morrison): J^T Q^-1 J and J^T Q^-1 r,
+     * built below from the plain sums and the sums of J_i and r_i. With an
+     * identity weight the answer of an over-determined layout depends on
+     * which sensor happens to be listed first; with Q^-1 it is the same as
+     * eliminating the origin time from the absolute-time likelihood
+     * (d chi^2 / d t0 = 0, as in probabilistic event location, e.g.
+     * NonLinLoc) and independent of the reference.
+     */
+    const double inverse_sensor_count = 1.0 / (double)observation_count;
+
     for (
         uint8_t iteration = 0;
         iteration < config->max_iterations;
@@ -476,6 +494,8 @@ esp_err_t localization_tdoa_solve(
     ) {
         double normal[3][3] = {{0}};
         double gradient[3] = {0};
+        double jacobian_sum[3] = {0};
+        double residual_sum_m = 0.0;
 
         const double d0 = point_distance(estimate, reference_sensor);
         if (d0 <= LOCALIZATION_DISTANCE_EPSILON_M) {
@@ -517,13 +537,26 @@ esp_err_t localization_tdoa_solve(
                 delta.z_m / distance - delta0.z_m / d0,
             };
 
+            residual_sum_m += residual_m;
+
             for (size_t row = 0; row < 3; ++row) {
                 gradient[row] += jacobian[row] * residual_m;
+                jacobian_sum[row] += jacobian[row];
 
                 for (size_t column = 0; column < 3; ++column) {
                     normal[row][column] +=
                         jacobian[row] * jacobian[column];
                 }
+            }
+        }
+
+        for (size_t row = 0; row < 3; ++row) {
+            gradient[row] -=
+                inverse_sensor_count * jacobian_sum[row] * residual_sum_m;
+
+            for (size_t column = 0; column < 3; ++column) {
+                normal[row][column] -=
+                    inverse_sensor_count * jacobian_sum[row] * jacobian_sum[column];
             }
         }
 

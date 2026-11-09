@@ -48,10 +48,11 @@ typedef struct
     localization_observation_t observation;
 
     /* <= 0 excludes this pick from the inversion entirely (a bad/missing
-     * arrival). Otherwise a relative confidence weight; 1.0 is a normal
-     * pick. The most-trusted (highest-weight) included pick is used as the
-     * differential-time reference, so its own noise affects every residual
-     * least. */
+     * arrival). Otherwise a precision multiplier: the pick's timing sigma
+     * is timing_uncertainty_us / sqrt(weight); 1.0 is a normal pick. The
+     * chi-square eliminates the origin time, so it does not depend on
+     * which pick is the differential-time reference (the highest-weight
+     * one, used only for residual_rms_us). */
     double weight;
 
 } localization_traveltime_pick_t;

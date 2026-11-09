@@ -1,5 +1,4 @@
 #pragma once
 
-#include <stdint.h>
-
-int32_t nrf_baro_pressure_to_altitude_mm(uint32_t pressure_pa);
+/* The real conversions and the density correction (header-only); the .c is linked where needed. */
+#include "../../../../nRF54L15/include/nrf_baro_altitude.h"

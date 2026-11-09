@@ -1330,6 +1330,9 @@ static esp_err_t seismic_recorder_prepare_geometry(
             device_status.main.height_reference.state == DEVICE_MAIN_HEIGHT_REFERENCE_VALID;
         main_reference.generation = device_status.main.height_reference.generation;
         main_reference.relative_z_mm = device_status.main.height_reference.relative_z_mm;
+        main_reference.environment_valid = device_status.main.bmp280_valid;
+        main_reference.pressure_pa = device_status.main.pressure_pa;
+        main_reference.temperature_mc = device_status.main.temperature_mc;
     }
     if (frozen_ranging.main_height_reference_generation != 0U &&
         (!main_reference.valid || main_reference.generation != frozen_ranging.main_height_reference_generation)) {

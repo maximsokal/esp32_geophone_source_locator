@@ -3,22 +3,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "nrf_baro_altitude.h"
+
 
 #if SEISMIC_RECORDER_HARDWARE_ID_MAX != NRF_UPSTREAM_PROTOCOL_HW_ID_MAX
 #error "seismic recorder hardware ID capacity must match the topology protocol"
 #endif
-
-
-static int32_t saturate_i32(int64_t value)
-{
-    if (value > (int64_t)INT32_MAX) {
-        return INT32_MAX;
-    }
-    if (value < (int64_t)INT32_MIN) {
-        return INT32_MIN;
-    }
-    return (int32_t)value;
-}
 
 
 esp_err_t seismic_recorder_geometry_build_inputs(
@@ -115,9 +105,12 @@ esp_err_t seismic_recorder_geometry_build_inputs(
             ? 0
             : channels[channel].placement_height_valid
                 ? channels[channel].placement_height_mm
-                : saturate_i32(
+                : nrf_baro_density_corrected_height_mm(
                       (int64_t)channels[channel].relative_z_mm -
-                      (int64_t)main_reference->relative_z_mm
+                          (int64_t)main_reference->relative_z_mm,
+                      main_reference->environment_valid,
+                      main_reference->pressure_pa,
+                      main_reference->temperature_mc
                   );
         ++count;
     }

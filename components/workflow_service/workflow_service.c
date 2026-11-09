@@ -1556,9 +1556,12 @@ static void workflow_service_placement_poll(bool collect_samples)
             node->height_rel_main_mm_valid = main_height_valid && environment_valid &&
                 reference_matches;
             if (node->height_rel_main_mm_valid) {
-                node->height_rel_main_mm =
+                node->height_rel_main_mm = nrf_baro_density_corrected_height_mm(
                     (int64_t)cache->sensor.relative_z_mm -
-                    (int64_t)device->main.height_reference.relative_z_mm;
+                        (int64_t)device->main.height_reference.relative_z_mm,
+                    device->main.bmp280_valid,
+                    device->main.pressure_pa,
+                    device->main.temperature_mc);
             }
             node->altitude_asl_m_valid = environment_valid;
             if (environment_valid) {

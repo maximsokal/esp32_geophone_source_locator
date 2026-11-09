@@ -1,6 +1,9 @@
 #include <assert.h>
+#include <math.h>
+#include <stdio.h>
 #include <string.h>
 
+#include "nrf_baro_altitude.h"
 #include "seismic_recorder_geometry_policy.h"
 
 
@@ -472,8 +475,76 @@ static void test_solution_consistency_gate_and_residual_mapping(void)
     assert(geometry.pods[0].uncertainty_mm == 180);
 }
 
+/*
+ * Hydrostatic equation dp/dz = -rho g with the ideal gas law rho = p / (R_d T): over an isothermal layer
+ * p(z) = p0 exp(-g z / (R_d T)) -- the hypsometric equation z = (R_d T / g) ln(p0 / p). Every node captured its
+ * reference beside MAIN (same pressure p_ref); since then the weather moved all pressures by `drift_pa` and the
+ * REMOTEs were carried to their heights. The firmware turns each pressure into a linear altitude (12 Pa/m) and the
+ * recorder gets rel_node - rel_MAIN; with MAIN's pressure and temperature it must recover the true height, at any
+ * air temperature. A plain 12 Pa/m difference reads 2 m as 2.163 m at -10 C and 1.829 m at 35 C.
+ */
+static int32_t linear_altitude_mm(double pressure_pa)
+{
+    return nrf_baro_pressure_x100_to_altitude_mm((uint32_t)llround(pressure_pa * 100.0));
+}
+
+static void test_barometric_height_follows_the_hypsometric_equation(void)
+{
+    static const struct { double temperature_c; double p_ref_pa; } air[] = {
+        { -10.0, 100000.0 }, { 0.0, 101000.0 }, { 20.0, 99000.0 }, { 35.0, 99000.0 }, { 20.0, 95000.0 },
+    };
+    static const double heights_m[3] = { 2.0, -1.5, 0.6 };
+    const double drift_pa = 40.0;
+
+    for (size_t a = 0U; a < sizeof(air) / sizeof(air[0]); ++a) {
+        const double temperature_k = air[a].temperature_c + 273.15;
+        const double p_main = air[a].p_ref_pa + drift_pa;
+
+        nrf_topology_snapshot_t topology;
+        memset(&topology, 0, sizeof(topology));
+        topology.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
+        topology.main.node_id = 0U;
+        seismic_recorder_geometry_channel_status_t channels[NRF_TOPOLOGY_REMOTE_COUNT];
+        memset(channels, 0, sizeof(channels));
+        for (uint8_t c = 0U; c < 3U; ++c) {
+            set_assigned(&topology, c, (uint8_t)(c + 1U));
+            const double p_node = p_main * exp(-9.80665 * heights_m[c] / (287.05 * temperature_k));
+            channels[c].sensor_valid = true;
+            channels[c].height_reference_valid = true;
+            channels[c].height_reference_generation = 7U;
+            channels[c].relative_z_mm = linear_altitude_mm(p_node) - linear_altitude_mm(air[a].p_ref_pa);
+        }
+        const seismic_recorder_geometry_main_reference_t main_reference = {
+            .valid = true,
+            .generation = 7U,
+            .relative_z_mm = linear_altitude_mm(p_main) - linear_altitude_mm(air[a].p_ref_pa),
+            .environment_valid = true,
+            .pressure_pa = (uint32_t)llround(p_main),
+            .temperature_mc = (int32_t)llround(air[a].temperature_c * 1000.0),
+        };
+
+        nrf_geometry_node_input_t inputs[NRF_GEOMETRY_MAX_NODES];
+        size_t count = 0U;
+        seismic_recorder_geometry_z_provenance_t provenance;
+        assert(seismic_recorder_geometry_build_inputs(
+                   &topology, channels, &main_reference, SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE,
+                   inputs, NRF_GEOMETRY_MAX_NODES, &count, &provenance) == ESP_OK);
+        assert(provenance.effective_policy == SEISMIC_RECORDER_GEOMETRY_Z_BAROMETRIC_RELATIVE);
+        assert(count == 4U);
+        for (size_t c = 0U; c < 3U; ++c) {
+            const double expected_mm = heights_m[c] * 1000.0;
+            const double error_mm = (double)inputs[c + 1U].z_mm - expected_mm;
+            printf("[BARO] T=%5.1f C p=%6.0f Pa: true %+6.0f mm, recorder Z %+6d mm (error %+5.1f mm)\n",
+                   air[a].temperature_c, air[a].p_ref_pa, expected_mm, (int)inputs[c + 1U].z_mm, error_mm);
+            /* 0.01 Pa pressure steps are 0.8 mm; the linearisation over 2 m is 2 m / 8 km scale height. */
+            assert(fabs(error_mm) <= 5.0);
+        }
+    }
+}
+
 int main(void)
 {
+    test_barometric_height_follows_the_hypsometric_equation();
     test_build_inputs_requires_main();
     test_build_inputs_skips_unassigned_and_invalid_sensor_snapshot();
     test_build_inputs_prefers_the_height_the_placement_settled();

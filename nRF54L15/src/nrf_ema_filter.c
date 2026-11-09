@@ -62,8 +62,15 @@ nrf_ema_filter_result_t nrf_ema_filter_update(
     if (dt_ms > (uint64_t)filter->tau_ms * 5U) {
         filter->value = sample;
     } else {
-        const double alpha = (double)dt_ms /
-            ((double)filter->tau_ms + (double)dt_ms);
+        /*
+         * Exact first-order low-pass y' = (x - y) / tau over a step with the
+         * input held: y += (1 - exp(-dt / tau)) (x - y). The former
+         * dt / (tau + dt) is the implicit-Euler step: its time constant
+         * depends on the sample spacing (1.10 tau at dt = tau / 5, 1.82 tau
+         * at dt = 2 tau), so MAIN (200 ms polls) and a REMOTE (2 s refreshes)
+         * with the same tau filtered altitude differently.
+         */
+        const double alpha = -expm1(-(double)dt_ms / (double)filter->tau_ms);
         filter->value += alpha * (sample - filter->value);
     }
     filter->timestamp_ms = timestamp_ms;

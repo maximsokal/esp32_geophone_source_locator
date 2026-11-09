@@ -1,6 +1,8 @@
 #include <assert.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "esp_err.h"
 #include "localization.h"
@@ -264,8 +266,139 @@ static void test_positions_resolve_depth_is_order_independent(void)
     assert(!localization_positions_resolve_depth(NULL, 4U));
 }
 
+/*
+ * Over-determined layout (6 sensors, 3 unknowns) with noisy picks, shared by
+ * the two maximum-likelihood tests below. Noise is deterministic (whole
+ * microseconds), |n| <= 40 us at 300 m/s.
+ */
+#define ML_SENSOR_COUNT 6U
+
+static const localization_point3d_t g_ml_sensors[ML_SENSOR_COUNT] = {
+    { 0.0, 0.0, 0.0 }, { 4.0, 0.0, 0.0 }, { 0.0, 4.0, 0.0 },
+    { 4.0, 4.0, 0.3 }, { 2.0, 2.0, 2.5 }, { 0.5, 3.5, 1.2 },
+};
+static const int64_t g_ml_noise_us[ML_SENSOR_COUNT] = { 40, -25, 10, -35, 30, -15 };
+static const localization_point3d_t g_ml_source = { 1.3, 2.2, 1.0 };
+static const double g_ml_speed_mps = 300.0;
+
+static void ml_observations(
+    const size_t *order,
+    localization_observation_t observations[ML_SENSOR_COUNT]
+)
+{
+    for (size_t k = 0U; k < ML_SENSOR_COUNT; ++k) {
+        const size_t i = order[k];
+        observations[k].sensor_position = g_ml_sensors[i];
+        observations[k].arrival_time_us =
+            arrival_us(g_ml_source, g_ml_sensors[i], 0.010, g_ml_speed_mps) + g_ml_noise_us[i];
+    }
+}
+
+static localization_config_t ml_config(void)
+{
+    localization_config_t config = localization_default_config();
+    config.propagation_speed_mps = g_ml_speed_mps;
+    config.max_iterations = 100U;
+    config.convergence_m = 1.0e-10;
+    return config;
+}
+
+/*
+ * Chan & Ho (1994), IEEE Trans. Signal Process. 42(8):1905-1915,
+ * doi:10.1109/78.301830 (covariance and C^-1 weight written out in
+ * arXiv:2502.19354, eqs. 10 and 71): differences formed
+ * against a reference sensor share that sensor's arrival-time error, so for
+ * i.i.d. pick noise their covariance is Q = sigma^2 (I + 1 1^T) and the
+ * maximum-likelihood estimate minimises r^T Q^-1 r. That objective is a
+ * property of the picks, not of the order they are listed in: renaming the
+ * reference sensor must not move the estimate. An identity weight
+ * (r^T r) moves it by millimetres here.
+ */
+static void test_overdetermined_solution_does_not_depend_on_reference_sensor(void)
+{
+    static const size_t orders[3][ML_SENSOR_COUNT] = {
+        { 0U, 1U, 2U, 3U, 4U, 5U },
+        { 3U, 0U, 1U, 2U, 4U, 5U },
+        { 5U, 1U, 2U, 3U, 4U, 0U },
+    };
+    const localization_config_t config = ml_config();
+    localization_result_t results[3];
+
+    for (size_t o = 0U; o < 3U; ++o) {
+        localization_observation_t observations[ML_SENSOR_COUNT];
+        ml_observations(orders[o], observations);
+        assert(localization_tdoa_solve(observations, ML_SENSOR_COUNT, &config, NULL, &results[o]) == ESP_OK);
+        assert(results[o].converged);
+    }
+
+    for (size_t o = 1U; o < 3U; ++o) {
+        const double dx = results[o].source_position.x_m - results[0].source_position.x_m;
+        const double dy = results[o].source_position.y_m - results[0].source_position.y_m;
+        const double dz = results[o].source_position.z_m - results[0].source_position.z_m;
+        const double shift_m = sqrt(dx * dx + dy * dy + dz * dz);
+        printf("[TDOA-ML] reference sensor %zu vs 0: estimate moved %.3e m\n", orders[o][0], shift_m);
+        assert(shift_m < 1.0e-6);
+    }
+}
+
+/*
+ * Origin-time elimination of probabilistic event location (NonLinLoc,
+ * Lomax et al. 2000, doi:10.1007/978-94-015-9536-0_5): with Gaussian
+ * pick errors d chi^2 / d t0 = 0 eliminates the origin time analytically, t0 = mean_i(t_i - D_i / v), leaving
+ *   chi^2(x) = sum_i (r_i - mean r)^2,   r_i = v t_i - |x - s_i|.
+ * Its maximum-likelihood point is a stationary point:
+ *   grad chi^2 / 2 = -sum_i (r_i - mean r) (x - s_i) / |x - s_i| = 0.
+ * The solver's answer must satisfy that equation, and its emission time
+ * must be the eliminated t0 at that point.
+ */
+static void test_overdetermined_solution_is_stationary_point_of_origin_free_likelihood(void)
+{
+    static const size_t order[ML_SENSOR_COUNT] = { 0U, 1U, 2U, 3U, 4U, 5U };
+    const localization_config_t config = ml_config();
+    localization_observation_t observations[ML_SENSOR_COUNT];
+    ml_observations(order, observations);
+
+    localization_result_t result;
+    assert(localization_tdoa_solve(observations, ML_SENSOR_COUNT, &config, NULL, &result) == ESP_OK);
+    assert(result.converged);
+
+    const localization_point3d_t x = result.source_position;
+    double r[ML_SENSOR_COUNT];
+    double u[ML_SENSOR_COUNT][3];
+    double mean_r = 0.0;
+    double mean_t0_us = 0.0;
+    for (size_t i = 0U; i < ML_SENSOR_COUNT; ++i) {
+        const double dx = x.x_m - observations[i].sensor_position.x_m;
+        const double dy = x.y_m - observations[i].sensor_position.y_m;
+        const double dz = x.z_m - observations[i].sensor_position.z_m;
+        const double d = sqrt(dx * dx + dy * dy + dz * dz);
+        /* Times relative to the first pick keep v t_i at metre scale. */
+        const double t_s = (double)(observations[i].arrival_time_us - observations[0].arrival_time_us) * 1.0e-6;
+        r[i] = g_ml_speed_mps * t_s - d;
+        u[i][0] = dx / d;
+        u[i][1] = dy / d;
+        u[i][2] = dz / d;
+        mean_r += r[i] / (double)ML_SENSOR_COUNT;
+        mean_t0_us += ((double)observations[i].arrival_time_us - d / g_ml_speed_mps * 1.0e6) /
+            (double)ML_SENSOR_COUNT;
+    }
+    double gradient[3] = { 0.0, 0.0, 0.0 };
+    for (size_t i = 0U; i < ML_SENSOR_COUNT; ++i) {
+        for (size_t a = 0U; a < 3U; ++a) {
+            gradient[a] -= (r[i] - mean_r) * u[i][a];
+        }
+    }
+    const double gradient_norm_m =
+        sqrt(gradient[0] * gradient[0] + gradient[1] * gradient[1] + gradient[2] * gradient[2]);
+    printf("[TDOA-ML] |grad chi^2/2| at the estimate = %.3e m\n", gradient_norm_m);
+    assert(gradient_norm_m < 1.0e-8);
+    assert(llabs(result.emission_time_us - (int64_t)llround(mean_t0_us)) <= 1);
+}
+
 int main(void)
 {
+    test_overdetermined_solution_does_not_depend_on_reference_sensor();
+    test_overdetermined_solution_is_stationary_point_of_origin_free_likelihood();
     test_synthetic_ground_truth();
     test_four_sensor_offset_noise_and_iteration_contracts();
     test_validation_and_geometry_contracts();

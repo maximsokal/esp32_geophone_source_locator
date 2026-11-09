@@ -3,18 +3,16 @@
 #include <limits.h>
 #include <stddef.h>
 
-int32_t nrf_height_reference_window_centre_mm(
-    const int32_t *altitudes_mm,
-    size_t count,
-    int32_t fallback_mm)
+typedef struct {
+    double median;
+    double sigma_r;
+    size_t outliers;
+    size_t allowed;
+} window_stats_t;
+
+static window_stats_t window_stats(const int32_t *altitudes_mm, size_t count)
 {
-    if (altitudes_mm == NULL || count < 3U) {
-        return fallback_mm;
-    }
-    if (count > NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES) {
-        altitudes_mm += count - NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES;
-        count = NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES;
-    }
+    window_stats_t stats = {0};
     double sorted[NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES];
     double deviation[NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES];
     for (size_t i = 0U; i < count; ++i) {
@@ -29,10 +27,10 @@ int32_t nrf_height_reference_window_centre_mm(
         }
         sorted[j] = key;
     }
-    const double median = (count % 2U) == 1U
+    stats.median = (count % 2U) == 1U
         ? sorted[count / 2U] : 0.5 * (sorted[count / 2U - 1U] + sorted[count / 2U]);
     for (size_t i = 0U; i < count; ++i) {
-        const double d = (double)altitudes_mm[i] - median;
+        const double d = (double)altitudes_mm[i] - stats.median;
         deviation[i] = d < 0.0 ? -d : d;
     }
     for (size_t i = 1U; i < count; ++i) {
@@ -46,18 +44,89 @@ int32_t nrf_height_reference_window_centre_mm(
     }
     const double mad = (count % 2U) == 1U
         ? deviation[count / 2U] : 0.5 * (deviation[count / 2U - 1U] + deviation[count / 2U]);
-    double sigma_r = 1.4826 * mad;
-    if (sigma_r < 40.0) {
-        sigma_r = 40.0;
+    stats.sigma_r = 1.4826 * mad;
+    if (stats.sigma_r < 40.0) {
+        stats.sigma_r = 40.0;
     }
-    size_t outliers = 0U;
     for (size_t i = 0U; i < count; ++i) {
-        const double d = (double)altitudes_mm[i] - median;
-        if ((d < 0.0 ? -d : d) > 3.0 * sigma_r) {
-            ++outliers;
+        const double d = (double)altitudes_mm[i] - stats.median;
+        if ((d < 0.0 ? -d : d) > 3.0 * stats.sigma_r) {
+            ++stats.outliers;
         }
     }
-    const size_t allowed = count / 8U > 1U ? count / 8U : 1U;
+    stats.allowed = count / 8U > 1U ? count / 8U : 1U;
+    return stats;
+}
+
+bool nrf_height_reference_window_settled(const int32_t *altitudes_mm, size_t count)
+{
+    if (altitudes_mm == NULL || count < 3U) {
+        return false;
+    }
+    if (count > NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES) {
+        altitudes_mm += count - NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES;
+        count = NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES;
+    }
+    const window_stats_t stats = window_stats(altitudes_mm, count);
+    return stats.outliers <= stats.allowed;
+}
+
+static double absolute(double value)
+{
+    return value < 0.0 ? -value : value;
+}
+
+bool nrf_height_reference_window_newest_is_outlier(const int32_t *altitudes_mm, size_t count)
+{
+    if (altitudes_mm == NULL || count < 3U) {
+        return false;
+    }
+    if (count > NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES) {
+        altitudes_mm += count - NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES;
+        count = NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES;
+    }
+    const window_stats_t stats = window_stats(altitudes_mm, count);
+    return absolute((double)altitudes_mm[count - 1U] - stats.median) > 3.0 * stats.sigma_r;
+}
+
+bool nrf_height_reference_window_step(const int32_t *altitudes_mm, size_t count)
+{
+    if (altitudes_mm == NULL || count < 3U) {
+        return false;
+    }
+    if (count > NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES) {
+        altitudes_mm += count - NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES;
+        count = NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES;
+    }
+    const int32_t newest = altitudes_mm[count - 1U];
+    const int32_t previous = altitudes_mm[count - 2U];
+    /* The two newest agree within the noise bound the window itself uses (3 x the 40 mm sigma floor) ... */
+    if (absolute((double)newest - (double)previous) > 3.0 * 40.0) {
+        return false;
+    }
+    /* ... and both lie beyond 3 sigma_r of the samples before them. */
+    const window_stats_t before = window_stats(altitudes_mm, count - 2U);
+    return absolute((double)newest - before.median) > 3.0 * before.sigma_r &&
+           absolute((double)previous - before.median) > 3.0 * before.sigma_r;
+}
+
+int32_t nrf_height_reference_window_centre_mm(
+    const int32_t *altitudes_mm,
+    size_t count,
+    int32_t fallback_mm)
+{
+    if (altitudes_mm == NULL || count < 3U) {
+        return fallback_mm;
+    }
+    if (count > NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES) {
+        altitudes_mm += count - NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES;
+        count = NRF_HEIGHT_REFERENCE_WINDOW_SAMPLES;
+    }
+    const window_stats_t stats = window_stats(altitudes_mm, count);
+    const double median = stats.median;
+    const double sigma_r = stats.sigma_r;
+    const size_t outliers = stats.outliers;
+    const size_t allowed = stats.allowed;
     const bool drop = outliers <= allowed;
     double sum = 0.0;
     size_t used = 0U;
@@ -110,16 +179,33 @@ bool nrf_height_reference_apply(
     reference->altitude_mm = 0;
     reference->has_last_good = false;
     reference->last_relative_z_mm = 0;
+    /*
+     * Every outcome carries the generation of the request: the ESP accepts a height state only when
+     * reference_generation is the one it asked for (the IMU calibration does the same). A rejection under the
+     * previous generation was invisible to it, and the calibration row ended as "timeout" 15 s later.
+     */
+    reference->generation = generation;
     if (!imu_valid || !env_valid) {
         reference->state = NRF_UPSTREAM_REFERENCE_SENSOR_INVALID;
     } else if (!stationary) {
         reference->state = NRF_UPSTREAM_REFERENCE_REJECTED_MOVING;
     } else {
         reference->altitude_mm = filtered_altitude_mm;
-        reference->generation = generation;
         reference->state = NRF_UPSTREAM_REFERENCE_VALID;
     }
     return true;
+}
+
+void nrf_height_reference_begin_pending(nrf_height_reference_t *reference, uint16_t generation)
+{
+    if (reference == NULL) {
+        return;
+    }
+    reference->altitude_mm = 0;
+    reference->has_last_good = false;
+    reference->last_relative_z_mm = 0;
+    reference->generation = generation;
+    reference->state = NRF_UPSTREAM_REFERENCE_NOT_ESTABLISHED;
 }
 
 int32_t nrf_height_reference_relative_z_mm(
