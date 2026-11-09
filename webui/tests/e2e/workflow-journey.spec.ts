@@ -4,6 +4,7 @@ import { workflowActions } from './fixtures/visual-states';
 import { driveJourneyXr, installJourneyXr, journeyXrState } from './fixtures/xr-session';
 import { decodeScanArtifact } from '../../src/xr/scanArtifact';
 import { createScanIdentity } from '../../src/xr/scanIdentity';
+import { decodeOccupancySolverArtifact } from '../../src/xr/occupancySolverArtifact';
 import type { WorkflowStep } from '../../src/domain/device';
 
 for (const locale of ['en', 'uk'] as const) {
@@ -31,6 +32,8 @@ for (const locale of ['en', 'uk'] as const) {
         enter('OBJECT');
         let scanBytes: Uint8Array | null = null;
         let savedPoints = 0;
+        let occupancyBytes: Uint8Array | null = null;
+        let occupancyScanId: string | null = null;
         const commands: string[] = [];
         api.overrides.set('POST /api/control', async route => {
           const query = new URL(route.request().url()).searchParams;
@@ -53,6 +56,9 @@ for (const locale of ['en', 'uk'] as const) {
                 expect(savedPoints, 'Finish must upload actual fused points, not an empty successful fixture').toBeGreaterThan(0);
                 await info.attach('captured-scan', { body: bytes, contentType: 'application/octet-stream' });
                 Object.assign(workflow, { has_scan: true, scan_upload_status: 'verified' });
+              } else if (kind === 'occupancy') {
+                occupancyBytes = new Uint8Array(bytes);
+                occupancyScanId = query.get('scan_id');
               }
               await route.fulfill({ json: { ok: true } });
             }
@@ -169,9 +175,25 @@ for (const locale of ['en', 'uk'] as const) {
           scan ? 'CALCULATE_POSITIONS' : 'CALCULATE_POSITIONS_KEEP_WIFI',
           'CONFIRM', ...(scan ? ['SCAN_START', 'SCAN_COMPLETE'] : ['SCAN_SKIP']), 'START_RECORDING', 'STOP_RECORDING', 'CALCULATE_SOURCES']);
         expect(navigations, 'all steps stay connected without reload or direct stage navigation').toBe(1);
+        let occupancyEvidence: { free: number; occupied: number; frameId: string } | null = null;
+        if (scan) {
+          /* The solver input: the scan's FREE and OCCUPIED voxels, bound to exactly the uploaded scan. */
+          await expect.poll(() => occupancyBytes !== null, { message: 'the occupancy artifact is uploaded with the scan' }).toBe(true);
+          const decoded = decodeOccupancySolverArtifact(occupancyBytes!);
+          const frameId = createScanIdentity(scanBytes!).frameId;
+          expect(decoded.header.frame_id, 'occupancy is bound to the uploaded scan').toBe(frameId);
+          expect(occupancyScanId, 'the upload names the scan it belongs to').toBe(frameId);
+          expect(decoded.free.length / 3, 'scanned-empty voxels reach the device').toBeGreaterThan(0);
+          expect(decoded.occupied.length / 3, 'scanned-solid voxels reach the device').toBeGreaterThan(0);
+          expect(decoded.header.free_count).toBe(decoded.free.length / 3);
+          expect(decoded.header.occupied_count).toBe(decoded.occupied.length / 3);
+          occupancyEvidence = { free: decoded.header.free_count, occupied: decoded.header.occupied_count, frameId };
+        } else {
+          expect(occupancyBytes, 'a skipped scan uploads no occupancy').toBeNull();
+        }
         await info.attach('goal-evidence', { contentType: 'application/json', body: JSON.stringify({
           goal: scan ? 'GPS + captured 3D + measurement result' : 'explicit bypass + measurement result',
-          commands, savedPoints, gps: workflow.gps_status, navigations,
+          commands, savedPoints, occupancy: occupancyEvidence, gps: workflow.gps_status, navigations,
           boundary: 'Synthetic GPS/XR and HTTP device; actual production UI, fusion, encoding and WebGL; no physical ESP32/phone',
         }, null, 2) });
       });

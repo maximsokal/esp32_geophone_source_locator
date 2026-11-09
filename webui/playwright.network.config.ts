@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 import base from './playwright.config';
 
 export default defineConfig(base, {
-  testMatch: ['network.spec.ts', 'objects-workflow.spec.ts', 'seismic.spec.ts', 'workflow.spec.ts', 'workflow-journey.spec.ts', 'scan-distance-refinement.spec.ts', 'scanner-loading.spec.ts'],
+  testMatch: ['network.spec.ts', 'objects-workflow.spec.ts', 'seismic.spec.ts', 'workflow.spec.ts', 'workflow-journey.spec.ts', 'workflow-scan-paths.spec.ts', 'scan-distance-refinement.spec.ts', 'scanner-loading.spec.ts'],
   timeout: 45_000,
   use: { ...base.use, screenshot: { mode: 'on', fullPage: true } },
   outputDir: '../.test-build/ui-network/results',

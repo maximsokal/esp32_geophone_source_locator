@@ -209,6 +209,16 @@ function scanStorageLabel(phase: ScanStoragePhase, objectId: string | null, loca
   });
 }
 
+/*
+ * The measurement workflow leaves the scanner only once the solver input is on the device: the occupancy (the scan's
+ * FREE and OCCUPIED voxels) is saved, or it cannot exist for this scan (unavailable). A transport failure -- Wi-Fi
+ * dropping during that upload -- keeps the operator here with the retry; leaving used to record the session without its
+ * voxels, so the source calculation silently ran unconstrained.
+ */
+function workflowScanSettled(persistence: ScanPersistenceState): boolean {
+  return persistence.scan === 'saved' && (persistence.occupancy === 'ready' || persistence.occupancy === 'unavailable');
+}
+
 function occupancyStatusLabel(persistence: ScanPersistenceState | null, locale: I18nLocale): string {
   if (persistence?.scan !== 'saved' && persistence?.scan !== 'derived_stale') return translate(locale, 'scan.occupancy.checking');
   const keys = {
@@ -1147,7 +1157,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
           operatorEdges: snapshot.operatorEdges.length,
         });
         void clientDiagnostics.flush();
-        if (sessionId === null) void onScanSaved?.();
+        if (sessionId === null && workflowScanSettled(state)) void onScanSaved?.();
         if (state.occupancy === 'ready') {
           clientDiagnostics.info('SCAN_OCCUPANCY_SAVED', { objectId, sessionId: scanSessionId });
         } else if (state.occupancy === 'failed' || state.occupancy === 'unavailable' || state.occupancy === 'stale') {
@@ -1178,6 +1188,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
         setScanStorageError(null);
         scanIntent.current = 'fresh';
         continuationBase.current = null;
+        if (sessionId === null && workflowScanSettled(state)) void onScanSaved?.();
       } else if (state.scan === 'blocked_recording') {
         setScanStorageError(state.scanError ?? SCAN_STORAGE_BLOCKED_MESSAGE);
       } else if (state.scan === 'error') {
@@ -1197,7 +1208,7 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       clientDiagnostics.info(event, { objectId, sessionId: scanSessionId, occupancyError: state.occupancyError, previewError: state.previewError });
       void clientDiagnostics.flush();
     });
-  }, [objectId, scanSessionId, persistenceController, storageActionsDisabled]);
+  }, [objectId, sessionId, scanSessionId, persistenceController, storageActionsDisabled, onScanSaved]);
 
   const deleteSavedScan = useCallback((): void => {
     if (storageActionsDisabled) return;

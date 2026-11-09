@@ -1749,8 +1749,293 @@ static void test_unusable_scan_reports_constraint_not_applied(void)
 }
 
 
+/* ---- Event search: which part of a long recording is analysed --------------------------------------------------- */
+
+/* duration_s of noise at 500 Hz on the tetrahedron fixture, no event yet. */
+static void prepare_quiet_recording(uint32_t duration_s)
+{
+    const uint32_t sample_rate_hz = 500U;
+    const size_t recording_frames = (size_t)duration_s * sample_rate_hz;
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 0.0f, 0.0f, false);
+    extend_fixture_frames(recording_frames);
+    g_fixture_summary.sample_rate_hz = sample_rate_hz;
+    for (size_t i = 0U; i < recording_frames; ++i) {
+        g_fixture_frames[i].timestamp_us = 5000000LL + (int64_t)i * 2000LL;
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+            g_fixture_frames[i].channel_uv[ch] = next_noise_sample(0.02f);
+        }
+    }
+}
+
+/* An event of the fixture source emitted at event_time_s, seen by each channel with its own amplitude (0: not seen). */
+static void add_event(double event_time_s, const float amplitude[OBJECT_STORE_POD_COUNT])
+{
+    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        if (amplitude[ch] == 0.0f) continue;
+        const double dx = s_source.x_m - s_pod_positions[ch].x_m;
+        const double dy = s_source.y_m - s_pod_positions[ch].y_m;
+        const double dz = s_source.z_m - s_pod_positions[ch].z_m;
+        const double arrival_s = event_time_s + sqrt(dx * dx + dy * dy + dz * dz) / TEST_SPEED_MPS;
+        add_ramp_pulse_to_channel(ch, (size_t)llround(arrival_s * 500.0), 20U, amplitude[ch]);
+    }
+}
+
+static localization_calculate_config_t search_test_config(void)
+{
+    localization_calculate_config_t config = default_test_config();
+    config.sample_rate_hz = 500U;
+    config.pick_config.noise_window_samples = 25U;
+    config.pick_config.sta_window_samples = 5U;
+    config.pick_config.lta_window_samples = 50U;
+    config.pick_config.refine_lookback_samples = 5U;
+    config.pick_config.refine_lookahead_samples = 5U;
+    config.pick_config.snr_signal_window_samples = 20U;
+    return config;
+}
+
+/* Every accepted analysed pick lies in [t, t + 0.1 s): the analysis window holds the event at t. */
+static void assert_analysed_event_at(double t_s, size_t expected_accepted)
+{
+    size_t accepted = 0U;
+    for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+        const geophone_channel_pick_t *pick = &g_pick_record.channels[ch].pick;
+        if (pick->status != GEOPHONE_PICK_ACCEPTED) continue;
+        ++accepted;
+        printf("  [SEARCH] ch%u pick at %.3f s (expected the event at %.3f s)\n",
+               (unsigned)ch, (double)pick->arrival_sample_index / 500.0, t_s);
+        assert(pick->arrival_sample_index >= (size_t)(t_s * 500.0));
+        assert(pick->arrival_sample_index < (size_t)((t_s + 0.1) * 500.0));
+    }
+    assert(accepted == expected_accepted);
+}
+
+/* Two events: the one more channels agree on is analysed, even when it is the weaker one. */
+static void test_search_prefers_the_event_more_channels_agree_on(void)
+{
+    static const float three_strong[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
+    static const float four_weak[4] = { 0.4f, 0.4f, 0.4f, 0.4f };
+    reset_fakes();
+    prepare_quiet_recording(30U);
+    add_event(6.0, three_strong);
+    add_event(17.0, four_weak);
+    localization_calculate_config_t config = search_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run("OBJ01", "S000061", &config, 52061ULL, &summary) == ESP_OK);
+    assert_analysed_event_at(17.0, 4U);
+    free_fixture_frames();
+    puts("  search: the event four channels agree on beats a stronger three-channel one -- OK");
+}
+
+/*
+ * Two events seen by the same three channels: the stronger is analysed. A spike on the fourth channel 1.2 s before the
+ * weaker event (in both of its search windows) is no arrival of it (the consistency gate rejects it) and must not lend that window its SNR.
+ */
+static void test_search_tie_goes_to_the_stronger_event_not_to_a_glitch(void)
+{
+    static const float strong[4] = { 1.0f, 1.0f, 1.0f, 0.0f };
+    static const float weak[4] = { 0.5f, 0.5f, 0.5f, 0.0f };
+    reset_fakes();
+    prepare_quiet_recording(30U);
+    add_event(6.0, strong);
+    add_event(17.0, weak);
+    add_ramp_pulse_to_channel(3U, (size_t)(15.8 * 500.0), 20U, 2.5f);
+    localization_calculate_config_t config = search_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run("OBJ01", "S000062", &config, 52062ULL, &summary) == ESP_OK);
+    assert_analysed_event_at(6.0, 3U);
+    free_fixture_frames();
+    puts("  search: equal channel counts -> the stronger event, a glitch adds no strength -- OK");
+}
+
+/* A long recording without any event: the analysis keeps the recording's start and solves nothing. */
+static void test_search_without_an_event_analyses_the_start(void)
+{
+    reset_fakes();
+    prepare_quiet_recording(30U);
+    localization_calculate_config_t config = search_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run("OBJ01", "S000063", &config, 52063ULL, &summary) == ESP_OK);
+    const localization_run_record_t *tdoa = find_record("tdoa_gauss_newton");
+    assert(tdoa != NULL);
+    assert(tdoa->analysis_window_start_index == 0U);
+    assert(!tdoa->solved);
+    free_fixture_frames();
+    puts("  search: no event anywhere -> the start is analysed and nothing is solved -- OK");
+}
+
+/* ---- A full run with a scan of real FREE / OCCUPIED voxels ------------------------------------------------------ */
+
+/* An occupancy artifact in the WebUI encoder's layout (tests/vectors/scan_occupancy_*): header JSON, then int16 x/y/z
+ * voxel indices, FREE first, CRC32 over both. Identity registration against the fixture geometry (computed at 1000). */
+static void write_test_occupancy_voxels(
+    const char *object_id, const char *session_id, const char *frame_id, double voxel_size_m,
+    const int16_t (*free_cells)[3], size_t free_count, const int16_t (*occupied_cells)[3], size_t occupied_count)
+{
+    char path[256];
+    const int path_written = snprintf(path, sizeof(path), "%s/%s/sessions/%s/occupancy-v1.bin",
+                                      STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id);
+    assert(path_written > 0 && (size_t)path_written < sizeof(path));
+    char header[1024];
+    const int header_written = snprintf(
+        header, sizeof(header),
+        "{\"schema\":2,\"frame_id\":\"%s\",\"voxel_size_m\":%.3f,\"below_surface_m\":1,"
+        "\"free_count\":%u,\"occupied_count\":%u,\"created_at_ms\":345678,"
+        "\"registration\":{\"source\":\"test\",\"frame\":\"project_z_up\",\"geometry_computed_at_ms\":1000,"
+        "\"residual_m\":0.01,\"threshold_m\":0.05,\"sensor_to_scan\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}}",
+        frame_id, voxel_size_m, (unsigned)free_count, (unsigned)occupied_count);
+    assert(header_written > 0 && (size_t)header_written < sizeof(header));
+    const size_t header_length = (size_t)header_written;
+    const size_t payload_length = 6U * (free_count + occupied_count);
+    const size_t artifact_length = 20U + header_length + payload_length;
+    uint8_t *artifact = calloc(artifact_length, 1U);
+    assert(artifact != NULL);
+    memcpy(artifact, "GOCCUPY1", 8U);
+    test_write_u32_le(artifact, 8U, (uint32_t)header_length);
+    test_write_u32_le(artifact, 12U, (uint32_t)payload_length);
+    memcpy(artifact + 20U, header, header_length);
+    uint8_t *cell = artifact + 20U + header_length;
+    for (size_t list = 0U; list < 2U; ++list) {
+        const int16_t (*cells)[3] = list == 0U ? free_cells : occupied_cells;
+        const size_t count = list == 0U ? free_count : occupied_count;
+        for (size_t i = 0U; i < count; ++i, cell += 6U) {
+            for (size_t axis = 0U; axis < 3U; ++axis) {
+                cell[2U * axis] = (uint8_t)((uint16_t)cells[i][axis] & 0xFFU);
+                cell[2U * axis + 1U] = (uint8_t)((uint16_t)cells[i][axis] >> 8U);
+            }
+        }
+    }
+    test_write_u32_le(artifact, 16U, test_crc32(artifact + 20U, header_length + payload_length));
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(artifact, 1U, artifact_length, file) == artifact_length);
+    assert(fclose(file) == 0);
+    free(artifact);
+}
+
+/* A 3x3x3 block of 0.2 m FREE voxels starting at cell (x0, y0, z0); a 10x10 OCCUPIED slab just below z = 0. */
+static size_t make_void_block(int16_t x0, int16_t y0, int16_t z0, int16_t free_cells[27][3], int16_t occupied_cells[100][3])
+{
+    size_t n = 0U;
+    for (int16_t x = 0; x < 3; ++x) {
+        for (int16_t y = 0; y < 3; ++y) {
+            for (int16_t z = 0; z < 3; ++z, ++n) {
+                free_cells[n][0] = (int16_t)(x0 + x);
+                free_cells[n][1] = (int16_t)(y0 + y);
+                free_cells[n][2] = (int16_t)(z0 + z);
+            }
+        }
+    }
+    for (int16_t i = 0; i < 100; ++i) {
+        occupied_cells[i][0] = (int16_t)(i % 10);
+        occupied_cells[i][1] = (int16_t)(i / 10);
+        occupied_cells[i][2] = -1;
+    }
+    return n;
+}
+
+static bool in_void_block(const localization_point3d_t *p, int x0, int y0, int z0)
+{
+    const int cx = (int)floor(p->x_m / 0.2);
+    const int cy = (int)floor(p->y_m / 0.2);
+    const int cz = (int)floor(p->z_m / 0.2);
+    return cx >= x0 && cx < x0 + 3 && cy >= y0 && cy < y0 + 3 && cz >= z0 && cz < z0 + 3;
+}
+
+static double distance_m(const localization_point3d_t *a, const localization_point3d_t *b)
+{
+    const double dx = a->x_m - b->x_m;
+    const double dy = a->y_m - b->y_m;
+    const double dz = a->z_m - b->z_m;
+    return sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+static void run_with_void_block(const char *session_id, int16_t x0, int16_t y0, int16_t z0)
+{
+    const size_t scan_length = 4096U;
+    uint8_t *scan = malloc(scan_length);
+    assert(scan != NULL);
+    for (size_t i = 0U; i < scan_length; ++i) scan[i] = (uint8_t)(i * 7U + (size_t)x0);
+    char frame_id[32];
+    test_scan_frame_id(scan, scan_length, frame_id);
+    int16_t free_cells[27][3];
+    int16_t occupied_cells[100][3];
+    const size_t free_count = make_void_block(x0, y0, z0, free_cells, occupied_cells);
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    prepare_session_directory("OBJVOXEL", session_id);
+    write_test_scan_file("OBJVOXEL", session_id, scan, scan_length);
+    write_test_occupancy_voxels("OBJVOXEL", session_id, frame_id, 0.2,
+                                (const int16_t (*)[3])free_cells, free_count,
+                                (const int16_t (*)[3])occupied_cells, 100U);
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run("OBJVOXEL", session_id, &config, 52070ULL, &summary) == ESP_OK);
+    remove_test_scan_artifacts("OBJVOXEL", session_id);
+    free(scan);
+}
+
+/*
+ * The scan's voxels reach the math in a full run, not only its "applied" flag: a FREE (scanned empty) block over the
+ * true source pushes every candidate-filtered method out of it, while the same block elsewhere leaves them where the
+ * unconstrained search is. The earlier full-run scan test carried zero voxels.
+ */
+static void test_full_run_feeds_free_and_occupied_voxels_to_the_math(void)
+{
+    static const char *const filtered_pairs[][2] = {
+        { "traveltime_inversion", "traveltime_scan_constrained" },
+        { "semblance", "semblance_scan_constrained" },
+    };
+    /* The source (0.25, 0.40, 0.30) is in cell (1, 2, 1): the block from (0, 1, 0) contains it. */
+    run_with_void_block("S098070", 0, 1, 0);
+    for (size_t i = 0U; i < 2U; ++i) {
+        const localization_run_record_t *free_run = find_record(filtered_pairs[i][0]);
+        const localization_run_record_t *scan_run = find_record(filtered_pairs[i][1]);
+        assert(free_run != NULL && scan_run != NULL);
+        printf("  [VOXEL] %s solved %d (%.2f, %.2f, %.2f) -> %s solved %d applied %d (%.2f, %.2f, %.2f)\n",
+               filtered_pairs[i][0], (int)free_run->solved, free_run->source_position.x_m,
+               free_run->source_position.y_m, free_run->source_position.z_m, filtered_pairs[i][1],
+               (int)scan_run->solved, (int)scan_run->scan_constraint_applied, scan_run->source_position.x_m,
+               scan_run->source_position.y_m, scan_run->source_position.z_m);
+        fflush(stdout);
+        assert(free_run->solved && scan_run->solved && scan_run->scan_constraint_applied);
+        /* No constrained result is ever inside scanned-empty space. */
+        assert(!in_void_block(&scan_run->source_position, 0, 1, 0));
+        if (i == 0U) {
+            /* Traveltime solves at the source without the scan, so the void must move it. (Semblance focuses
+             * elsewhere on this small fixture with or without the scan.) */
+            assert(in_void_block(&free_run->source_position, 0, 1, 0));
+            assert(distance_m(&free_run->source_position, &scan_run->source_position) >= 0.1);
+        }
+    }
+    const localization_run_record_t *suea_voids = find_record("suea_scan_voids");
+    assert(suea_voids != NULL && suea_voids->scan_constraint_applied);
+
+    /* The same block far from the source changes nothing. */
+    run_with_void_block("S098071", 6, 6, 6);
+    for (size_t i = 0U; i < 2U; ++i) {
+        const localization_run_record_t *free_run = find_record(filtered_pairs[i][0]);
+        const localization_run_record_t *scan_run = find_record(filtered_pairs[i][1]);
+        assert(free_run != NULL && scan_run != NULL && scan_run->solved && scan_run->scan_constraint_applied);
+        assert(distance_m(&free_run->source_position, &scan_run->source_position) < 1.0e-9);
+    }
+    puts("  full run: FREE voxels over the source move the constrained results out, elsewhere they do not -- OK");
+}
+
 int main(void)
 {
+#if defined(SEARCH_SCENARIO) /* one of the new cases alone (run against the previous source too) */
+#if SEARCH_SCENARIO == 1
+    test_search_prefers_the_event_more_channels_agree_on();
+#elif SEARCH_SCENARIO == 2
+    test_search_tie_goes_to_the_stronger_event_not_to_a_glitch();
+#elif SEARCH_SCENARIO == 3
+    test_search_without_an_event_analyses_the_start();
+#elif SEARCH_SCENARIO == 4
+    test_full_run_feeds_free_and_occupied_voxels_to_the_math();
+#endif
+    free_fixture_frames();
+    return 0;
+#else
     const char *p5_scenario = getenv("P5_SCENARIO");
     if (p5_scenario != NULL) {
         if (strcmp(p5_scenario, "r5_1") == 0) {
@@ -1801,8 +2086,13 @@ int main(void)
     test_scan_identity_mismatch_and_unavailable_fail_closed();
     test_unusable_scan_reports_constraint_not_applied();
     test_record_stop_then_localize_with_reserved_psram();
+    test_search_prefers_the_event_more_channels_agree_on();
+    test_search_tie_goes_to_the_stronger_event_not_to_a_glitch();
+    test_search_without_an_event_analyses_the_start();
+    test_full_run_feeds_free_and_occupied_voxels_to_the_math();
 
     free_fixture_frames();
     puts("localization_calculate_run integration tests passed");
     return 0;
+#endif
 }

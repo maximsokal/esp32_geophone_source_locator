@@ -650,7 +650,7 @@ static esp_err_t localization_event_search_score(localization_event_search_t *se
     localization_point3d_t positions[OBJECT_STORE_POD_COUNT];
     memset(positions, 0, sizeof(positions));
     uint32_t accepted_mask = 0U;
-    double snr_sum = 0.0;
+    double snr[OBJECT_STORE_POD_COUNT] = { 0 };
     size_t arrival_index[OBJECT_STORE_POD_COUNT] = { 0 };
 
     for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
@@ -688,7 +688,7 @@ static esp_err_t localization_event_search_score(localization_event_search_t *se
         if (pick.status == GEOPHONE_PICK_ACCEPTED && (recording_end || pick.arrival_sample_index + after_arrival <= n)) {
             arrival_s[ch] = localization_calculate_pick_sample_position(&pick) / (double)search->sample_rate_hz;
             accepted_mask |= (1U << ch);
-            snr_sum += pick.snr;
+            snr[ch] = pick.snr;
             arrival_index[ch] = pick.arrival_sample_index;
         }
     }
@@ -701,9 +701,16 @@ static esp_err_t localization_event_search_score(localization_event_search_t *se
     );
     size_t consistent_count = 0U;
     size_t first_pick = SIZE_MAX;
+    /*
+     * The strength of a window's event is the SNR of the picks that belong to it: a glitch on another channel that the
+     * consistency gate rejected used to add its SNR too, so of two events seen by the same number of channels the
+     * weaker one won when a spike happened to sit in its window.
+     */
+    double snr_sum = 0.0;
     for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
         if ((consistent_mask & (1U << ch)) != 0U) {
             ++consistent_count;
+            snr_sum += snr[ch];
             if (arrival_index[ch] < first_pick) {
                 first_pick = arrival_index[ch];
             }
