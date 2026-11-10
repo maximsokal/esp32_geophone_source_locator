@@ -349,7 +349,7 @@ static void test_ranging_manual_screens(const char *language, workflow_core_t *c
     capture(name, true);
     const unsigned calls = render_distance_calls;
     ui_workflow_screen_handle_key_locked(KEYPAD_KEY_OK);
-    assert(render_distance_calls == calls + 1U && render_distance_params.distance_mm == 6001);
+    assert(render_distance_calls == calls + 1U && render_distance_params.distance_mm == 6000);
     render_snapshot.last_async = (workflow_last_async_t){
         .seq = s_workflow->model_state.pending_seq, .command = WORKFLOW_COMMAND_SET_DISTANCE,
         .result = WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT,
@@ -359,14 +359,10 @@ static void test_ranging_manual_screens(const char *language, workflow_core_t *c
     assert(s_workflow->model_state.distance_view == UI_WORKFLOW_DISTANCE_VALUE);
     (void)snprintf(name, sizeof(name), "%s_ranging_manual_rejected", language);
     capture(name, true);
-    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_RIGHT);
-    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_RIGHT);
+    /* 6.0 m -> 1.5 m: five steps down on metres, then five steps up on tenths. */
     for (unsigned i = 0U; i < 5U; ++i) ui_workflow_screen_handle_key_locked(KEYPAD_KEY_DOWN);
     ui_workflow_screen_handle_key_locked(KEYPAD_KEY_RIGHT);
     for (unsigned i = 0U; i < 5U; ++i) ui_workflow_screen_handle_key_locked(KEYPAD_KEY_UP);
-    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_RIGHT);
-    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_RIGHT);
-    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_DOWN);
     assert(s_workflow->model_state.distance_mm == 1500U);
     ui_workflow_screen_handle_key_locked(KEYPAD_KEY_OK);
     assert(render_distance_calls == calls + 2U);
@@ -389,6 +385,12 @@ static void test_ranging_manual_screens(const char *language, workflow_core_t *c
     render_ranging_progress.success = true;
     render_ranging_progress.partial = false;
     ++render_ranging_progress.updated_at_ms;
+    s_workflow->last_snapshot_ms = 0U;
+    ui_workflow_screen_refresh_locked();
+    /* An accepted save returns to the pair with a confirmation; LEFT then leaves the editor. */
+    assert(s_workflow->model_state.distance_view == UI_WORKFLOW_DISTANCE_PAIR);
+    assert(s_workflow->model_state.distance_mm == 1500U);
+    ui_workflow_screen_handle_key_locked(KEYPAD_KEY_LEFT);
     s_workflow->last_snapshot_ms = 0U;
     ui_workflow_screen_refresh_locked();
     assert(s_workflow->model_state.distance_view == UI_WORKFLOW_DISTANCE_CLOSED);

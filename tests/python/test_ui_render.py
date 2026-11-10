@@ -257,7 +257,7 @@ def test_manual_distance_entry_rejection_saving_and_completed_pages(screens, loc
     def texts(frame):
         return [node.get("text", "") for node in _visible(frame)]
     assert entries["tft.workflow.distance.pair"][locale] % ("0", "4") in texts(captures[f"{locale}_ranging_manual_pair"])
-    assert entries["tft.workflow.distance.value"][locale] % "006001" in texts(captures[f"{locale}_ranging_manual_value"])
+    assert entries["tft.workflow.distance.value"][locale] % "6.0" in texts(captures[f"{locale}_ranging_manual_value"])
     assert entries["tft.workflow.distance.rejected"][locale] in texts(captures[f"{locale}_ranging_manual_rejected"])
     assert entries["tft.workflow.distance.saving"][locale] in texts(captures[f"{locale}_ranging_manual_saving"])
     saved = [frame for name, frame in captures.items() if "_saved_page" in name]

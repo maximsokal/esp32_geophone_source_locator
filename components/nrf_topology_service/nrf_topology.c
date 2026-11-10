@@ -525,6 +525,54 @@ static main_verify_t verify_known_main(
     return MAIN_VERIFY_OK;
 }
 
+uint64_t nrf_topology_channel_quarantine_remaining_ms(
+    const nrf_topology_controller_t *controller,
+    uint8_t channel,
+    uint64_t now_ms)
+{
+    if (controller == NULL || channel >= NRF_TOPOLOGY_REMOTE_COUNT ||
+        controller->channel_quarantined_until_ms[channel] <= now_ms) {
+        return 0U;
+    }
+    return controller->channel_quarantined_until_ms[channel] - now_ms;
+}
+
+/* See NRF_TOPOLOGY_CHANNEL_QUARANTINE_BASE_MS. */
+static void channel_select_failed(
+    nrf_topology_controller_t *controller,
+    uint8_t channel,
+    uint64_t now_ms)
+{
+    if (controller->channel_select_failures[channel] < UINT8_MAX) {
+        controller->channel_select_failures[channel]++;
+    }
+    const uint8_t threshold = controller->remote_confirmed_valid[channel] ? 2U : 1U;
+    const uint8_t failures = controller->channel_select_failures[channel];
+    if (failures < threshold) {
+        return;
+    }
+    const unsigned doublings = (unsigned)(failures - threshold);
+    uint64_t quarantine_ms = NRF_TOPOLOGY_CHANNEL_QUARANTINE_MAX_MS;
+    if (doublings < 16U &&
+        ((uint64_t)NRF_TOPOLOGY_CHANNEL_QUARANTINE_BASE_MS << doublings) <
+            NRF_TOPOLOGY_CHANNEL_QUARANTINE_MAX_MS) {
+        quarantine_ms = (uint64_t)NRF_TOPOLOGY_CHANNEL_QUARANTINE_BASE_MS << doublings;
+    }
+    /* Remember whether a node is being cut off. The answer is kept until a select succeeds, because the
+     * retained identity expires long before a long quarantine does. */
+    if (controller->remote_confirmed_valid[channel]) {
+        controller->channel_quarantined_with_node[channel] = true;
+    }
+    controller->channel_quarantined_until_ms[channel] = now_ms + quarantine_ms;
+}
+
+static void channel_select_succeeded(nrf_topology_controller_t *controller, uint8_t channel)
+{
+    controller->channel_select_failures[channel] = 0U;
+    controller->channel_quarantined_until_ms[channel] = 0U;
+    controller->channel_quarantined_with_node[channel] = false;
+}
+
 static bool close_mux_or_fault(const nrf_topology_io_t *io, nrf_topology_snapshot_t *snapshot)
 {
     if (!io->tca_available) {
@@ -566,12 +614,15 @@ static void scan_remote_channel(
             *continue_scan = false;
             return;
         }
+        /* The select itself failed: this socket may be holding the bus. Do not come back to it at once. */
+        channel_select_failed(controller, channel, io->now_ms(io->context));
         node->state = NRF_TOPOLOGY_NODE_TRANSPORT_ERROR;
         if (!close_mux_or_fault(io, snapshot) || snapshot->bus_busy) {
             *continue_scan = false;
         }
         return;
     }
+    channel_select_succeeded(controller, channel);
 
     const main_verify_t main_verdict = main_assigned
         ? verify_known_main(io, &snapshot->main, &snapshot->bus_busy)
@@ -832,6 +883,19 @@ esp_err_t nrf_topology_reconcile(
     for (channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT && continue_scan; ++channel) {
         if (topology_abort_requested(io)) {
             break;
+        }
+        if (nrf_topology_channel_quarantine_remaining_ms(
+                controller, (uint8_t)channel, io->now_ms(io->context)) != 0U) {
+            /*
+             * Not selected, so nothing is known about it in this pass. A channel that had a confirmed node is a
+             * transport error (its identity is retained for the usual bounded window); a channel that never had
+             * one is reported as an empty socket, which is what it is for every consumer.
+             */
+            snapshot->quarantined_channels |= (uint8_t)(1U << channel);
+            snapshot->remotes[channel].state = controller->channel_quarantined_with_node[channel]
+                ? NRF_TOPOLOGY_NODE_TRANSPORT_ERROR
+                : NRF_TOPOLOGY_NODE_ABSENT;
+            continue;
         }
         if (!main_result.assigned && snapshot->main.state == NRF_TOPOLOGY_NODE_ABSENT) {
             /*

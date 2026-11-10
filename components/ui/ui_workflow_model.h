@@ -17,6 +17,18 @@
 #define UI_WORKFLOW_REMOTE_SLOT_COUNT 4U
 #define UI_WORKFLOW_RANGING_MAX_PAIRS 10U
 
+/*
+ * The distance editor works in metres with one decimal: three digits, tens of metres, metres and tenths (10 cm is
+ * the precision of a manual entry; the value is still stored and sent in millimetres). It used to show six digits of
+ * millimetres with the cursor on the first one, so one press of UP or DOWN made a value like 101000 or 901000 mm,
+ * which the cable check rejects (board log 2026-11-10 17:27: nine rejected saves in a row). The cursor starts on
+ * the metres digit.
+ */
+#define UI_WORKFLOW_DISTANCE_DIGITS 3U
+#define UI_WORKFLOW_DISTANCE_START_DIGIT 1U
+#define UI_WORKFLOW_DISTANCE_STEP_MM 100U
+#define UI_WORKFLOW_DISTANCE_MAX_MM 99900U
+
 typedef struct {
     bool visible;
     bool connected;
@@ -107,7 +119,9 @@ typedef struct {
     ui_workflow_distance_view_t distance_view;
     size_t distance_pair;
     uint32_t distance_mm;
-    unsigned distance_digit;
+    unsigned distance_digit;    /* 0 = tens of metres, 1 = metres, 2 = tenths; see UI_WORKFLOW_DISTANCE_START_DIGIT */
+    /* A save was accepted: the editor stays on the pair and follows the new workflow generation and ranging result. */
+    bool distance_resync;
     uint32_t distance_generation;
     uint64_t distance_started_at_ms, distance_updated_at_ms;
 

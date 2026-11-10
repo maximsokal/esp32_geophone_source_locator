@@ -22,6 +22,8 @@
 #define LOG_ERR(...) ((void)0)
 #define LOG_WRN(...) ((void)0)
 #define BT_LE_SCAN_PASSIVE NULL
+#define BT_LE_SCAN_PASSIVE_CONTINUOUS NULL
+#define NRF_CS_INITIATOR_SCAN_PARAM BT_LE_SCAN_PASSIVE_CONTINUOUS
 #define NRF_CS_EVENT_QUEUE_DEPTH 24U
 #define K_NO_WAIT 0
 #define K_MSEC(x) (x)

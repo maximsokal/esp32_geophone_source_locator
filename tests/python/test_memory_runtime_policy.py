@@ -122,7 +122,16 @@ def test_realtime_and_recorder_stacks_remain_on_original_path():
     recorder = read("components/seismic_recorder/seismic_recorder.c")
     acquisition = read("components/ad7606_acquisition/ad7606_acquisition.c")
     assert "xTaskCreatePinnedToCoreWithCaps(" not in recorder
-    assert "xTaskCreatePinnedToCoreWithCaps(" not in acquisition
+    # The AD7606 worker asks for an internal stack first. PSRAM is only the fallback for the case
+    # that used to end in ESP_ERR_NO_MEM and no acquisition at all (board log 2026-11-10 17:27:
+    # largest free internal block 3584 B against a 4096 B stack), and the start says so in the log.
+    internal = acquisition.index("xTaskCreatePinnedToCore(")
+    # The only call is the last mention; the one before it is the comment on the worker's exit.
+    fallback = acquisition.rindex("xTaskCreatePinnedToCoreWithCaps(")
+    assert internal < fallback
+    assert acquisition.count("xTaskCreatePinnedToCoreWithCaps(") == 2
+    assert "if (task_result != pdPASS) {" in acquisition[internal:fallback]
+    assert "AD7606_WORKER_STACK location=psram" in acquisition[internal:fallback]
 
 
 def test_https_and_tft_policies_preserve_payload_and_dma_safety():

@@ -14,6 +14,7 @@
 #include "freertos/task.h"
 
 #include "spi_bus.h"
+#include "spi_bus_timing_log.h"
 #include "storage_manager_internal.h"
 #include "storage_manager_slow_op_policy.h"
 
@@ -41,6 +42,14 @@ static const char *TAG =
 #define STORAGE_MANAGER_DMA_RESERVE_BYTES  1536U
 #define STORAGE_MANAGER_DMA_REQUIRED_BYTES  512U
 
+/*
+ * Longest wait for another task's storage operation before this one fails
+ * with ESP_ERR_TIMEOUT. Legitimate operations are bounded (bulk work is
+ * admitted in windows), so a holder stuck for this long is a fault; the
+ * caller gets an error it already handles instead of blocking for ever.
+ */
+#define STORAGE_MANAGER_OPERATION_WAIT_MS  30000U
+
 
 static SemaphoreHandle_t s_operation_mutex =
     NULL;
@@ -67,6 +76,11 @@ static int64_t s_outer_tft_quiesce_us =
 /* Concurrent callers may occasionally duplicate or suppress a diagnostic;
  * each fixed-size scalar slot remains valid without a lock or heap storage. */
 static storage_manager_slow_op_state_t s_slow_op_state;
+
+/* Same policy as STORAGE_SPI_TIMING (spi_bus_timing_log.h); guarded by s_operation_mutex. */
+static app_spi_bus_timing_log_t s_timing_log;
+/* True while the outermost operation in progress prints its begin/end lines. */
+static bool s_outer_operation_logged;
 
 
 enum
@@ -118,9 +132,14 @@ static void storage_manager_log_dma_headroom(
     const size_t largest_dma =
         heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
 
+    /* Below two sector buffers the next SD command may fail: always say so.
+     * Merely tight headroom is reported with the operations that are printed
+     * anyway, not on every operation. */
     if (
         !force &&
-        largest_dma >= 2048U
+        (largest_dma >= 2048U ||
+         (largest_dma >= 2U * STORAGE_MANAGER_DMA_REQUIRED_BYTES &&
+          !s_outer_operation_logged))
     ) {
         return;
     }
@@ -413,10 +432,20 @@ esp_err_t storage_manager_operation_begin(void)
     const int64_t operation_started_us =
         esp_timer_get_time();
 
-    xSemaphoreTakeRecursive(
-        s_operation_mutex,
-        portMAX_DELAY
-    );
+    /* A holder that never finishes must fail this operation, not hang its task for good. */
+    if (xSemaphoreTakeRecursive(
+            s_operation_mutex,
+            pdMS_TO_TICKS(STORAGE_MANAGER_OPERATION_WAIT_MS)
+        ) != pdTRUE) {
+        ESP_LOGE(
+            TAG,
+            "STORAGE_OP_TIMING stage=begin-failed mutex_wait_us=%lld tft_quiesce_us=0 depth=0 result=%d elapsed_us=%lld",
+            (long long)(esp_timer_get_time() - operation_started_us),
+            (int)ESP_ERR_TIMEOUT,
+            (long long)(esp_timer_get_time() - operation_started_us)
+        );
+        return ESP_ERR_TIMEOUT;
+    }
 
     const int64_t mutex_wait_us =
         esp_timer_get_time() - operation_started_us;
@@ -456,6 +485,9 @@ esp_err_t storage_manager_operation_begin(void)
             const unsigned logged_depth =
                 s_operation_depth;
             s_outer_operation_started_us = 0;
+            (void)app_spi_bus_timing_begin(
+                &s_timing_log, esp_timer_get_time(),
+                logged_mutex_wait_us, logged_tft_quiesce_us, true);
             xSemaphoreGiveRecursive(
                 s_operation_mutex
             );
@@ -503,6 +535,9 @@ esp_err_t storage_manager_operation_begin(void)
             const unsigned logged_depth =
                 s_operation_depth;
             s_outer_operation_started_us = 0;
+            (void)app_spi_bus_timing_begin(
+                &s_timing_log, esp_timer_get_time(),
+                logged_mutex_wait_us, logged_tft_quiesce_us, true);
             xSemaphoreGiveRecursive(s_operation_mutex);
             storage_manager_log_slow_op(
                 STORAGE_MANAGER_SLOW_OP_SOURCE_BEGIN_FAILED,
@@ -521,6 +556,10 @@ esp_err_t storage_manager_operation_begin(void)
             return ESP_ERR_NO_MEM;
         }
 
+        s_outer_operation_logged = app_spi_bus_timing_begin(
+            &s_timing_log, esp_timer_get_time(),
+            s_outer_mutex_wait_us, s_outer_tft_quiesce_us, false);
+
         storage_manager_log_dma_headroom(
             "sd-operation-begin",
             false
@@ -529,7 +568,7 @@ esp_err_t storage_manager_operation_begin(void)
 
     s_operation_depth++;
 
-    if (outermost) {
+    if (outermost && s_outer_operation_logged) {
         ESP_LOGI(
             TAG,
             "STORAGE_OP_TIMING stage=begin mutex_wait_us=%lld tft_quiesce_us=%lld depth=%u elapsed_us=%lld",
@@ -629,6 +668,12 @@ void storage_manager_operation_end(void)
             s_outer_mutex_wait_us;
         const unsigned logged_depth =
             s_operation_depth;
+        bool summary_due = false;
+        app_spi_bus_timing_summary_t summary = {0};
+        const bool log_end = app_spi_bus_timing_end(
+            &s_timing_log, esp_timer_get_time(), resume_us, elapsed_us,
+            &summary_due, &summary);
+        s_outer_operation_logged = false;
 
         storage_manager_log_owner_priority_before_release(
             elapsed_us
@@ -644,14 +689,29 @@ void storage_manager_operation_end(void)
             "end",
             elapsed_us
         );
-        ESP_LOGI(
-            TAG,
-            "STORAGE_OP_TIMING stage=end mutex_wait_us=%lld tft_resume_us=%lld depth=%u elapsed_us=%lld",
-            (long long)logged_mutex_wait_us,
-            (long long)resume_us,
-            logged_depth,
-            (long long)elapsed_us
-        );
+        if (log_end) {
+            ESP_LOGI(
+                TAG,
+                "STORAGE_OP_TIMING stage=end mutex_wait_us=%lld tft_resume_us=%lld depth=%u elapsed_us=%lld",
+                (long long)logged_mutex_wait_us,
+                (long long)resume_us,
+                logged_depth,
+                (long long)elapsed_us
+            );
+        }
+        if (summary_due) {
+            ESP_LOGI(
+                TAG,
+                "STORAGE_OP_SUMMARY ops=%u failed=%u window_ms=%lld max_mutex_wait_us=%lld max_tft_quiesce_us=%lld max_tft_resume_us=%lld max_elapsed_us=%lld",
+                (unsigned)summary.operations,
+                (unsigned)summary.failures,
+                (long long)(summary.window_us / 1000LL),
+                (long long)summary.max_mutex_wait_us,
+                (long long)summary.max_quiesce_us,
+                (long long)summary.max_resume_us,
+                (long long)summary.max_elapsed_us
+            );
+        }
         return;
     }
 

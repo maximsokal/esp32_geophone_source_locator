@@ -229,7 +229,7 @@ esp_err_t nrf_topology_service_get_sensor_snapshot(
 esp_err_t nrf_topology_service_request_cs_cycle(const nrf_cs_policy_t *policy)
 {
     assert(policy != NULL);
-    assert(policy->pair_timeout_ms == 2400U);     /* 1.5 x the longest attempt measured on the bench */
+    assert(policy->pair_timeout_ms == 2400U || policy->pair_timeout_ms == 4000U);     /* 1.5 x the longest attempt measured on the bench */
     assert(policy->max_attempts == 2U);
     assert(policy->min_confidence == 500U);
     assert(policy->samples_per_pair == 9U);
@@ -765,7 +765,8 @@ static void test_ranging_start_is_invalidated_and_nonblocking(void)
     assert(s_ranging_calls[1] == RANGING_CALL_START);
     assert(s_ranging_calls[2] == RANGING_CALL_PROGRESS);
     assert(s_ranging_policy.full_rotation);
-    assert(s_ranging_policy.pair_timeout_ms == 2400U);
+    /* Three remotes: the cycle is short enough for the relaxed 4 s attempt budget (workflow_ranging_budget.h). */
+    assert(s_ranging_policy.pair_timeout_ms == 4000U);
     assert(s_ranging_policy.max_attempts == 2U);
     assert(s_ranging_policy.min_confidence == 500U);
     assert(s_ranging_policy.samples_per_pair == 9U);

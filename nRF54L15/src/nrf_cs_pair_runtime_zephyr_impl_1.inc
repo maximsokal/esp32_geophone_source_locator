@@ -140,12 +140,31 @@ static const struct bt_data s_ad[] = {
     BT_DATA(BT_DATA_SVC_DATA16, s_service_data, sizeof(s_service_data)),
 };
 
+/*
+ * How long a link may stay silent before the controller gives it up. The disconnect at the end of an attempt
+ * is normally acknowledged at once; when the peer has already gone, the initiator waits for this timeout
+ * before it can report the attempt and start the next one. With 4 s one lost link cost more than a whole
+ * attempt budget (node log 2026-11-10 17:52: cleanup=3991ms, over_budget=1, timeout_in_cleanup=1). The link
+ * runs at a 20 ms interval, so one second is fifty missed connection events: a link that silent is gone.
+ */
+#define NRF_CS_LINK_SUPERVISION_TIMEOUT_MS 1000
+
 static const struct bt_le_conn_param s_conn_param = {
     .interval_min = 0x0010,
     .interval_max = 0x0010,
     .latency = 0,
-    .timeout = BT_GAP_MS_TO_CONN_TIMEOUT(4000),
+    .timeout = BT_GAP_MS_TO_CONN_TIMEOUT(NRF_CS_LINK_SUPERVISION_TIMEOUT_MS),
 };
+
+/*
+ * Finding the reflector is part of every attempt and comes out of its time budget. The reflector used to
+ * advertise every 100-150 ms and the initiator listened for 30 ms out of every 60, so the connect took
+ * anything from 138 ms to 1078 ms (same log), and the 1078 ms one ran the attempt out of its budget. The
+ * reflector now advertises every 30-60 ms and the initiator listens without gaps. Both are only active for
+ * the seconds of a ranging cycle (radio_on_demand), so the extra radio time does not cost battery at rest.
+ */
+#define NRF_CS_REFLECTOR_ADV_PARAM BT_LE_ADV_CONN_FAST_1
+#define NRF_CS_INITIATOR_SCAN_PARAM BT_LE_SCAN_PASSIVE_CONTINUOUS
 
 NET_BUF_SIMPLE_DEFINE_STATIC(s_local_steps, NRF_CS_LOCAL_PROCEDURE_MEM);
 NET_BUF_SIMPLE_DEFINE_STATIC(s_peer_rx, BT_RAS_PROCEDURE_MEM);
@@ -312,7 +331,7 @@ static int runtime_start_advertising(void)
     }
 
     s_service_data[2] = s_node_id;
-    err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_2, s_ad, ARRAY_SIZE(s_ad), NULL, 0);
+    err = bt_le_adv_start(NRF_CS_REFLECTOR_ADV_PARAM, s_ad, ARRAY_SIZE(s_ad), NULL, 0);
     if (err == 0 || err == -EALREADY) {
         s_advertising = true;
         return 0;
@@ -492,7 +511,7 @@ static int op_connect(void *context, nrf_cs_node_id_t reflector)
     runtime_reset_ranging();
     s_scan_target = reflector;
 
-    err = bt_le_scan_start(BT_LE_SCAN_PASSIVE, scan_device_found);
+    err = bt_le_scan_start(NRF_CS_INITIATOR_SCAN_PARAM, scan_device_found);
     if (err != 0) {
         return err;
     }

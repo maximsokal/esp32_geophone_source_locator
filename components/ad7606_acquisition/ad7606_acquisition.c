@@ -34,6 +34,9 @@
 #include "driver/pulse_cnt.h"
 
 #include "freertos/FreeRTOS.h"
+#if !defined(AD7606_ACQUISITION_HOST_TEST)
+#include "freertos/idf_additions.h"
+#endif
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
@@ -87,6 +90,16 @@ static const char *DIAG_TAG =
 
 static TaskHandle_t s_task =
     NULL;
+
+/*
+ * Where the worker's stack lives. It is internal RAM whenever a block is free: the worker is the
+ * realtime task. On this board the largest free internal block at runtime is about 3.5 KB (board
+ * log 2026-11-10 17:27: internal_largest=3584), less than the 4 KB stack, so the plain task create
+ * failed with ESP_ERR_NO_MEM and live preview and recording could not start at all. The stack then
+ * comes from PSRAM instead; the start says so in the log, and AD7606_RATE shows what it costs.
+ * Written by start() before the worker exists, read by the worker when it ends.
+ */
+static bool s_worker_stack_external;
 
 /* Keep task handles alive until every ISR/task notification drops its ref. */
 static portMUX_TYPE s_lifecycle_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -147,6 +160,52 @@ static volatile uint32_t s_isr_cycles_max;
 static ad7606_rate_report_t s_rate_report;
 static bool s_rate_report_fresh;
 static uint32_t s_rate_sequence;
+
+/*
+ * Diagnostics the worker hands to the service core for printing. The worker itself never
+ * prints: the console UART is blocking, 500 characters at 115200 baud hold the caller for
+ * about 43 ms, and the AD7606 has no FIFO, so every conversion finished meanwhile is lost
+ * (board log 2026-11-05: one stall and 18-58 missing samples per second at 500 Hz).
+ * All fields are guarded by s_status_lock; a report not printed in time is overwritten and
+ * counted, never queued.
+ */
+#define AD7606_DIAG_LOG_EVERY_WINDOWS 10U
+
+typedef enum
+{
+    AD7606_DIAG_STATE_NONE = 0,
+    AD7606_DIAG_STATE_EMPTY,
+    AD7606_DIAG_STATE_VAR,
+    AD7606_DIAG_STATE_FLAT,
+    AD7606_DIAG_STATE_CLIP,
+} ad7606_diag_state_code_t;
+
+typedef struct
+{
+    bool fresh;
+    uint32_t overwritten;
+    uint64_t sample_index;
+    ad7606_diag_channel_t channels[AD7606_CHANNEL_COUNT];
+    /* What the last printed block said, and how many windows went by unprinted since. */
+    uint8_t logged_state[AD7606_CHANNEL_COUNT];
+    uint32_t windows_since_log;
+} ad7606_diag_window_report_t;
+
+typedef struct
+{
+    bool fresh;
+    uint32_t overwritten;
+    uint64_t samples;
+    int busy_level;
+    uint8_t rx[AD7606_SERIAL_RX_BYTES];
+    ad7606_serial_diag_state_t diag;
+} ad7606_serial_report_t;
+
+static ad7606_diag_window_report_t s_diag_report;
+static ad7606_serial_report_t s_serial_report;
+/* Failures seen by the worker in this run; only the first and every rate-th one is printed. */
+static uint32_t s_publish_failures;
+static uint32_t s_unpublished_samples;
 
 #if defined(AD7606_ACQUISITION_HOST_TEST)
 static ad7606_acquisition_test_log_sink_t s_test_log_sink;
@@ -361,6 +420,18 @@ static void ad7606_lifecycle_finish_worker(void)
 static void ad7606_busy_isr(void *argument);
 
 
+/* A task whose stack came from xTaskCreatePinnedToCoreWithCaps() has to be deleted the same way. */
+static void ad7606_worker_exit(void)
+{
+    if (s_worker_stack_external) {
+        vTaskDeleteWithCaps(NULL);
+    }
+    else {
+        vTaskDelete(NULL);
+    }
+}
+
+
 #if defined(AD7606_ACQUISITION_HOST_TEST)
 void ad7606_acquisition_test_seed_lifecycle(TaskHandle_t task, bool running)
 {
@@ -451,6 +522,22 @@ static const char *ad7606_diag_state(
 }
 
 
+static ad7606_diag_state_code_t ad7606_diag_state_code(
+    const ad7606_diag_channel_t *diag
+)
+{
+    if (diag->count == 0U) {
+        return AD7606_DIAG_STATE_EMPTY;
+    }
+    if (diag->saturation_count > 0U) {
+        return AD7606_DIAG_STATE_CLIP;
+    }
+    return diag->min_raw == diag->max_raw
+        ? AD7606_DIAG_STATE_FLAT
+        : AD7606_DIAG_STATE_VAR;
+}
+
+
 static ad7606_diag_metrics_t ad7606_diag_measure(
     const ad7606_diag_channel_t *diag
 )
@@ -480,11 +567,80 @@ static ad7606_diag_metrics_t ad7606_diag_measure(
 }
 
 
-static void ad7606_diag_log_and_reset(uint64_t sample_index)
+/* Worker side of the per-window channel report: hand the finished window over and start the next. */
+static void ad7606_diag_publish_and_reset(uint64_t sample_index)
 {
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
+    portENTER_CRITICAL(&s_status_lock);
+    if (s_diag_report.fresh) {
+        s_diag_report.overwritten =
+            ad7606_acquisition_saturating_add_u32(s_diag_report.overwritten, 1U);
+    }
+    memcpy(s_diag_report.channels, s_diag, sizeof(s_diag_report.channels));
+    s_diag_report.sample_index = sample_index;
+    s_diag_report.fresh = true;
+    portEXIT_CRITICAL(&s_status_lock);
+
+    ad7606_diag_reset();
+}
+
+
+/*
+ * Service side: prints the CH1..CH4 block for the first window, whenever a channel changes
+ * between VAR, FLAT, CLIP and EMPTY, and otherwise every AD7606_DIAG_LOG_EVERY_WINDOWS-th
+ * window. The per-second AD7606_RATE line already carries p2p, RMS, mean and saturation per
+ * channel, so the unchanged windows in between add no information.
+ */
+static void ad7606_diag_log_pending(void)
+{
+    ad7606_diag_channel_t channels[AD7606_CHANNEL_COUNT];
+    uint64_t sample_index = 0U;
+    uint32_t overwritten = 0U;
+    bool print = false;
+
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
+    portENTER_CRITICAL(&s_status_lock);
+    if (s_diag_report.fresh) {
+        s_diag_report.fresh = false;
+        bool changed = false;
+        for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+            if ((uint8_t)ad7606_diag_state_code(&s_diag_report.channels[channel]) !=
+                s_diag_report.logged_state[channel]) {
+                changed = true;
+            }
+        }
+        s_diag_report.windows_since_log =
+            ad7606_acquisition_saturating_add_u32(s_diag_report.windows_since_log, 1U);
+        if (changed || s_diag_report.windows_since_log >= AD7606_DIAG_LOG_EVERY_WINDOWS) {
+            print = true;
+            memcpy(channels, s_diag_report.channels, sizeof(channels));
+            sample_index = s_diag_report.sample_index;
+            overwritten = s_diag_report.overwritten;
+            s_diag_report.overwritten = 0U;
+            s_diag_report.windows_since_log = 0U;
+            for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
+                s_diag_report.logged_state[channel] =
+                    (uint8_t)ad7606_diag_state_code(&channels[channel]);
+            }
+        }
+    }
+    portEXIT_CRITICAL(&s_status_lock);
+
+    if (!print) {
+        return;
+    }
 #if !defined(AD7606_ACQUISITION_HOST_TEST)
     (void)sample_index;
 #endif
+    if (overwritten > 0U) {
+        ESP_LOGW(DIAG_TAG, "AD7606_DIAG_SKIPPED windows=%u (report not collected in time)",
+            (unsigned)overwritten);
+    }
+
     /* One raw ADC code in millivolts for the configured bipolar range. */
     const double lsb_mv =
         (double)ad7606_raw_to_uv(1) /
@@ -495,7 +651,7 @@ static void ad7606_diag_log_and_reset(uint64_t sample_index)
         channel < AD7606_CHANNEL_COUNT;
         ++channel
     ) {
-        const ad7606_diag_channel_t *diag = &s_diag[channel];
+        const ad7606_diag_channel_t *diag = &channels[channel];
 
         if (diag->count == 0U) {
 #if defined(AD7606_ACQUISITION_HOST_TEST)
@@ -542,15 +698,13 @@ static void ad7606_diag_log_and_reset(uint64_t sample_index)
             state
         );
     }
-
-    ad7606_diag_reset();
 }
 
 
 static void ad7606_diag_finish_sample(uint64_t sample_index)
 {
     if ((sample_index + 1U) % CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 0U) {
-        ad7606_diag_log_and_reset(sample_index);
+        ad7606_diag_publish_and_reset(sample_index);
     }
 }
 
@@ -559,6 +713,9 @@ static void ad7606_diag_finish_sample(uint64_t sample_index)
 void ad7606_acquisition_test_diag_reset(void)
 {
     ad7606_diag_reset();
+    portENTER_CRITICAL(&s_status_lock);
+    memset(&s_diag_report, 0, sizeof(s_diag_report));
+    portEXIT_CRITICAL(&s_status_lock);
 }
 
 void ad7606_acquisition_test_diag_record(const ad7606_sample_t *sample)
@@ -1223,7 +1380,13 @@ static esp_err_t ad7606_publish_sample(
     );
     if (err != ESP_OK) {
         ad7606_status_record_gaps(1U);
-        ESP_LOGE(TAG, "Seismic buffer push failed: %s", esp_err_to_name(err));
+        /* A failing ring would otherwise print on every sample and stall this task. */
+        s_publish_failures = ad7606_acquisition_saturating_add_u32(s_publish_failures, 1U);
+        if (s_publish_failures == 1U ||
+            s_publish_failures % CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 0U) {
+            ESP_LOGE(TAG, "Seismic buffer push failed: %s (failures=%" PRIu32 ")",
+                esp_err_to_name(err), s_publish_failures);
+        }
         return err;
     }
 
@@ -1292,32 +1455,73 @@ static void ad7606_serial_diag_log_frame(
         return;
     }
 
+    /* Hand the frame and counters to the service core; see s_serial_report. */
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
+    portENTER_CRITICAL(&s_status_lock);
+    if (s_serial_report.fresh) {
+        s_serial_report.overwritten =
+            ad7606_acquisition_saturating_add_u32(s_serial_report.overwritten, 1U);
+    }
+    memcpy(s_serial_report.rx, observation->rx, sizeof(s_serial_report.rx));
+    s_serial_report.diag = *serial_diag;
+    s_serial_report.diag.quality_window_flags = NULL;
+    s_serial_report.busy_level = observation->busy_level;
+    s_serial_report.samples = samples;
+    s_serial_report.fresh = true;
+    portEXIT_CRITICAL(&s_status_lock);
+
+    s_serial_diag_last_log_sample = samples;
+    s_serial_diag_log_pending = false;
+}
+
+
+/* Service side of AD7606_SERIAL_DIAG: prints the newest frame the worker captured. */
+static void ad7606_serial_diag_log_pending(void)
+{
+    ad7606_serial_report_t report;
+
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
+    portENTER_CRITICAL(&s_status_lock);
+    report = s_serial_report;
+    s_serial_report.fresh = false;
+    s_serial_report.overwritten = 0U;
+    portEXIT_CRITICAL(&s_status_lock);
+
+    if (!report.fresh) {
+        return;
+    }
+
+    const ad7606_serial_diag_state_t *serial_diag = &report.diag;
     int16_t words[AD7606_SERIAL_WORD_COUNT] = {0};
     (void)ad7606_serial_decode_frame(
-        observation->rx,
+        report.rx,
         words
     );
 
 #if defined(AD7606_ACQUISITION_HOST_TEST)
     ad7606_test_log_event(
         AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG,
-        samples - 1U,
+        report.samples - 1U,
         SIZE_MAX,
-        0U,
+        report.overwritten,
         serial_diag->serial_suspicious ? "SUSPICIOUS" : "NORMAL"
     );
 #endif
     ESP_LOGI(
         DIAG_TAG,
-        "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d] class=%s transport_quality=%s signal_quality=%s stream_state=%s stream_stuck=%s busy=%d samples=%" PRIu64 " streak=%u repeated_streak=%u all_zero=%u all_ff=%u identical=%u varied=%u digital_interference=%u signal_rail_hits=%u signal_clips=%u window=%u transport_bad=%u all_zero=%u all_ff=%u identical=%u repeated=%u digital=%u signal_rail=%u signal_clip=%u serial_suspicious=%s",
-        observation->rx[0],
-        observation->rx[1],
-        observation->rx[2],
-        observation->rx[3],
-        observation->rx[4],
-        observation->rx[5],
-        observation->rx[6],
-        observation->rx[7],
+        "AD7606_SERIAL_DIAG: rx=%02X %02X %02X %02X %02X %02X %02X %02X words=[%d,%d,%d,%d] class=%s transport_quality=%s signal_quality=%s stream_state=%s stream_stuck=%s busy=%d samples=%" PRIu64 " streak=%u repeated_streak=%u all_zero=%u all_ff=%u identical=%u varied=%u digital_interference=%u signal_rail_hits=%u signal_clips=%u window=%u transport_bad=%u all_zero=%u all_ff=%u identical=%u repeated=%u digital=%u signal_rail=%u signal_clip=%u serial_suspicious=%s coalesced=%u",
+        report.rx[0],
+        report.rx[1],
+        report.rx[2],
+        report.rx[3],
+        report.rx[4],
+        report.rx[5],
+        report.rx[6],
+        report.rx[7],
         words[0],
         words[1],
         words[2],
@@ -1329,8 +1533,8 @@ static void ad7606_serial_diag_log_frame(
         ad7606_signal_quality_name(serial_diag->signal_quality),
         ad7606_serial_stream_state_name(serial_diag->stream_state),
         serial_diag->stream_stuck ? "yes" : "no",
-        observation->busy_level,
-        samples,
+        report.busy_level,
+        report.samples,
         (unsigned)serial_diag->suspicious_streak,
         (unsigned)serial_diag->repeated_frame_streak,
         (unsigned)serial_diag->all_zero_frames,
@@ -1349,11 +1553,9 @@ static void ad7606_serial_diag_log_frame(
         (unsigned)serial_diag->quality_window_digital_interference_frames,
         (unsigned)serial_diag->signal_quality_window_rail_hit_frames,
         (unsigned)serial_diag->signal_quality_window_clip_frames,
-        serial_diag->serial_suspicious ? "yes" : "no"
+        serial_diag->serial_suspicious ? "yes" : "no",
+        (unsigned)report.overwritten
     );
-
-    s_serial_diag_last_log_sample = samples;
-    s_serial_diag_log_pending = false;
 }
 
 
@@ -1877,6 +2079,15 @@ static esp_err_t ad7606_worker_initialize(void)
     ad7606_diag_reset();
     s_serial_diag_last_log_sample = 0U;
     s_serial_diag_log_pending = false;
+    s_publish_failures = 0U;
+    s_unpublished_samples = 0U;
+#if defined(AD7606_ACQUISITION_HOST_TEST)
+    ++s_test_counters.status_critical_entries;
+#endif
+    portENTER_CRITICAL(&s_status_lock);
+    memset(&s_diag_report, 0, sizeof(s_diag_report));
+    memset(&s_serial_report, 0, sizeof(s_serial_report));
+    portEXIT_CRITICAL(&s_status_lock);
     ad7606_rate_reset(AD7606_CYCLES());
 
     err = ad7606_counter_init();
@@ -1961,7 +2172,7 @@ static void ad7606_worker(
         ad7606_lifecycle_finish_worker();
         start_context->result = ESP_ERR_INVALID_STATE;
         xSemaphoreGive(start_context->ready);
-        vTaskDelete(NULL);
+        ad7606_worker_exit();
         return;
     }
 
@@ -1973,7 +2184,7 @@ static void ad7606_worker(
         ad7606_lifecycle_finish_worker();
         start_context->result = startup_err;
         xSemaphoreGive(start_context->ready);
-        vTaskDelete(NULL);
+        ad7606_worker_exit();
         return;
     }
 
@@ -2111,8 +2322,13 @@ static void ad7606_worker(
                 &s_rate_acc.publish_cycles_total, &s_rate_acc.publish_cycles_max,
                 AD7606_CYCLES() - publish_start);
             if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-                ESP_LOGW(TAG, "Sample %" PRIu64 " not published: %s",
-                    sample_index, esp_err_to_name(err));
+                s_unpublished_samples =
+                    ad7606_acquisition_saturating_add_u32(s_unpublished_samples, 1U);
+                if (s_unpublished_samples == 1U || s_unpublished_samples %
+                    CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 0U) {
+                    ESP_LOGW(TAG, "Sample %" PRIu64 " not published: %s (count=%" PRIu32 ")",
+                        sample_index, esp_err_to_name(err), s_unpublished_samples);
+                }
             }
         }
         else {
@@ -2138,7 +2354,7 @@ static void ad7606_worker(
     );
     ad7606_lifecycle_finish_worker();
     ESP_LOGI(TAG, "Stopped");
-    vTaskDelete(NULL);
+    ad7606_worker_exit();
 }
 
 
@@ -2251,6 +2467,7 @@ esp_err_t ad7606_acquisition_start(void)
     }
 
     TaskHandle_t created_task = NULL;
+    s_worker_stack_external = false;
     BaseType_t task_result =
         xTaskCreatePinnedToCore(
             ad7606_worker,
@@ -2263,6 +2480,26 @@ esp_err_t ad7606_acquisition_start(void)
         );
 
     if (task_result != pdPASS) {
+        /* See s_worker_stack_external: no internal block for the stack, take it from PSRAM. */
+        s_worker_stack_external = true;
+        ESP_LOGW(TAG,
+            "AD7606_WORKER_STACK location=psram bytes=%u reason=no_internal_block",
+            (unsigned)APP_TASK_STACK_AD7606);
+        task_result =
+            xTaskCreatePinnedToCoreWithCaps(
+                ad7606_worker,
+                "ad7606_acq",
+                APP_TASK_STACK_AD7606,
+                &start_context,
+                APP_TASK_PRIORITY_AD7606,
+                &created_task,
+                APP_TASK_CORE_REALTIME,
+                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+            );
+    }
+
+    if (task_result != pdPASS) {
+        s_worker_stack_external = false;
         vSemaphoreDelete(
             start_context.ready
         );
@@ -2348,7 +2585,7 @@ bool ad7606_acquisition_take_rate_report(ad7606_rate_report_t *report)
 }
 
 
-void ad7606_acquisition_log_rate_report(void)
+static void ad7606_rate_log_pending(void)
 {
     ad7606_rate_report_t report;
     if (!ad7606_acquisition_take_rate_report(&report)) {
@@ -2377,6 +2614,14 @@ void ad7606_acquisition_log_rate_report(void)
         report.ch_rms_raw_x10[0], report.ch_rms_raw_x10[1], report.ch_rms_raw_x10[2], report.ch_rms_raw_x10[3],
         report.ch_mean_raw[0], report.ch_mean_raw[1], report.ch_mean_raw[2], report.ch_mean_raw[3],
         report.ch_saturated[0], report.ch_saturated[1], report.ch_saturated[2], report.ch_saturated[3]);
+}
+
+
+void ad7606_acquisition_log_rate_report(void)
+{
+    ad7606_rate_log_pending();
+    ad7606_diag_log_pending();
+    ad7606_serial_diag_log_pending();
 }
 
 #if defined(AD7606_ACQUISITION_HOST_TEST)

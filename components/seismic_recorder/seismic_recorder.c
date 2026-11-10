@@ -30,6 +30,7 @@
 #include "seismic_recorder_cadence.h"
 #include "seismic_recorder_geometry_policy.h"
 #include "seismic_recorder_internal.h"
+#include "seismic_recorder_pacing.h"
 #include "seismic_recorder_start_policy.h"
 #include "storage_manager.h"
 
@@ -803,6 +804,7 @@ static void seismic_recorder_task(void *argument)
 
         bool did_ingest = false;
         bool cache_full = false;
+        size_t ingested_frames = 0U;
         seismic_buffer_info_t info = {0};
         uint64_t reported_dropped = 0U;
 
@@ -892,6 +894,7 @@ static void seismic_recorder_task(void *argument)
                     s_snapshot.dropped_frames += effective_dropped;
                     s_snapshot.source_gap_samples = s_cache.source_gap_samples;
                     did_ingest = true;
+                    ingested_frames = allowed_count;
                 }
                 seismic_recorder_unlock();
             }
@@ -1053,7 +1056,20 @@ static void seismic_recorder_task(void *argument)
 
         if (did_ingest || did_write) {
             seismic_recorder_observe();
-            taskYIELD();
+            /* See seismic_recorder_pacing.h: repeat at once only for a real backlog,
+             * otherwise block for a tick so lower-priority service tasks and IDLE0 run. */
+            if (seismic_recorder_pass_may_repeat_without_blocking(
+                    stop_requested,
+                    cache_full,
+                    ingested_frames,
+                    SEISMIC_RECORDER_BATCH_FRAMES,
+                    cache_info.dirty_frames,
+                    target_batch)) {
+                taskYIELD();
+            }
+            else {
+                vTaskDelay(1U);
+            }
             continue;
         }
 

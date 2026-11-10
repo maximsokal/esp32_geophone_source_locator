@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #include "board_config.h"
+#include "spi_bus_timing_log.h"
 
 #include "driver/gpio.h"
 
@@ -28,6 +29,10 @@ static app_spi_bus_resume_callback_t s_display_resume =
 
 static void *s_display_guard_context =
     NULL;
+
+/* Guarded by s_runtime_mutex: touched only between a successful take and its give. */
+static app_spi_bus_timing_log_t s_timing_log;
+static int64_t s_operation_started_us;
 
 
 static esp_err_t app_spi_bus_create_runtime_mutex(void)
@@ -346,21 +351,34 @@ esp_err_t app_spi_bus_sd_operation_begin(void)
     const int64_t started_us =
         esp_timer_get_time();
 
-    xSemaphoreTakeRecursive(
-        s_runtime_mutex,
-        portMAX_DELAY
-    );
+    /* A holder that never releases SPI2 must fail this operation, not hang its task for good. */
+    if (xSemaphoreTakeRecursive(
+            s_runtime_mutex,
+            pdMS_TO_TICKS(APP_SPI_BUS_SD_MUTEX_WAIT_MS)
+        ) != pdTRUE) {
+        ESP_LOGE(
+            TAG,
+            "STORAGE_SPI_TIMING stage=begin mutex_wait_us=%lld tft_quiesce_us=0 result=%d",
+            (long long)(esp_timer_get_time() - started_us),
+            (int)ESP_ERR_TIMEOUT
+        );
+        return ESP_ERR_TIMEOUT;
+    }
 
     const int64_t mutex_wait_us =
         esp_timer_get_time() - started_us;
 
     if (s_display_quiesce == NULL) {
-        ESP_LOGI(
-            TAG,
-            "STORAGE_SPI_TIMING stage=begin mutex_wait_us=%lld tft_quiesce_us=0 result=%d",
-            (long long)mutex_wait_us,
-            (int)ESP_OK
-        );
+        s_operation_started_us = started_us;
+        if (app_spi_bus_timing_begin(
+                &s_timing_log, esp_timer_get_time(), mutex_wait_us, 0, false)) {
+            ESP_LOGI(
+                TAG,
+                "STORAGE_SPI_TIMING stage=begin mutex_wait_us=%lld tft_quiesce_us=0 result=%d",
+                (long long)mutex_wait_us,
+                (int)ESP_OK
+            );
+        }
         (void)mutex_wait_us;
         return ESP_OK;
     }
@@ -374,6 +392,10 @@ esp_err_t app_spi_bus_sd_operation_begin(void)
     const int64_t quiesce_us =
         esp_timer_get_time() - quiesce_started_us;
 
+    s_operation_started_us = started_us;
+    const bool log_begin = app_spi_bus_timing_begin(
+        &s_timing_log, esp_timer_get_time(), mutex_wait_us, quiesce_us, err != ESP_OK);
+
     if (err != ESP_OK) {
         ESP_LOGE(
             TAG,
@@ -386,13 +408,15 @@ esp_err_t app_spi_bus_sd_operation_begin(void)
         );
     }
 
-    ESP_LOGI(
-        TAG,
-        "STORAGE_SPI_TIMING stage=begin mutex_wait_us=%lld tft_quiesce_us=%lld result=%d",
-        (long long)mutex_wait_us,
-        (long long)quiesce_us,
-        (int)err
-    );
+    if (log_begin) {
+        ESP_LOGI(
+            TAG,
+            "STORAGE_SPI_TIMING stage=begin mutex_wait_us=%lld tft_quiesce_us=%lld result=%d",
+            (long long)mutex_wait_us,
+            (long long)quiesce_us,
+            (int)err
+        );
+    }
     (void)mutex_wait_us;
     (void)quiesce_us;
 
@@ -413,18 +437,42 @@ void app_spi_bus_sd_operation_end(void)
             s_display_guard_context
         );
     }
+    const int64_t finished_us =
+        esp_timer_get_time();
     const int64_t resume_us =
-        esp_timer_get_time() - started_us;
+        finished_us - started_us;
+    /* elapsed_us keeps its meaning (the end stage); the summary reports the whole operation. */
+    const int64_t operation_us =
+        finished_us - s_operation_started_us;
+    bool summary_due = false;
+    app_spi_bus_timing_summary_t summary = {0};
+    const bool log_end = app_spi_bus_timing_end(
+        &s_timing_log, finished_us, resume_us, operation_us, &summary_due, &summary);
 
     xSemaphoreGiveRecursive(
         s_runtime_mutex
     );
 
-    ESP_LOGI(
-        TAG,
-        "STORAGE_SPI_TIMING stage=end tft_resume_us=%lld elapsed_us=%lld",
-        (long long)resume_us,
-        (long long)(esp_timer_get_time() - started_us)
-    );
+    if (log_end) {
+        ESP_LOGI(
+            TAG,
+            "STORAGE_SPI_TIMING stage=end tft_resume_us=%lld elapsed_us=%lld",
+            (long long)resume_us,
+            (long long)(esp_timer_get_time() - started_us)
+        );
+    }
+    if (summary_due) {
+        ESP_LOGI(
+            TAG,
+            "STORAGE_SPI_SUMMARY ops=%u failed=%u window_ms=%lld max_mutex_wait_us=%lld max_tft_quiesce_us=%lld max_tft_resume_us=%lld max_operation_us=%lld",
+            (unsigned)summary.operations,
+            (unsigned)summary.failures,
+            (long long)(summary.window_us / 1000LL),
+            (long long)summary.max_mutex_wait_us,
+            (long long)summary.max_quiesce_us,
+            (long long)summary.max_resume_us,
+            (long long)summary.max_elapsed_us
+        );
+    }
     (void)resume_us;
 }

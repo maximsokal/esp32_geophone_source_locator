@@ -6,6 +6,7 @@
 #include "driver/spi_master.h"
 #include "freertos/FreeRTOS.h"
 #include "spi_bus.h"
+#include "spi_bus_timing_log.h"
 
 static unsigned gpio_config_calls;
 static unsigned gpio_set_calls;
@@ -27,6 +28,8 @@ static unsigned resume_calls;
 static esp_err_t quiesce_result;
 static int callback_context;
 static SemaphoreHandle_t fake_mutex = (SemaphoreHandle_t)&callback_context;
+static BaseType_t mutex_take_result = pdTRUE;
+static TickType_t last_mutex_timeout;
 
 esp_err_t gpio_config(const gpio_config_t *config)
 {
@@ -70,9 +73,9 @@ SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void)
 BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t semaphore, TickType_t timeout)
 {
     assert(semaphore == fake_mutex);
-    (void)timeout;
+    last_mutex_timeout = timeout;
     ++mutex_take_calls;
-    return pdTRUE;
+    return mutex_take_result;
 }
 
 BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t semaphore)
@@ -183,10 +186,109 @@ static void test_quiesce_failure_releases_mutex_without_resume(void)
     app_spi_bus_unregister_display_guard();
 }
 
+static void test_busy_bus_fails_the_operation_instead_of_hanging(void)
+{
+    reset_counters();
+    assert(app_spi_bus_register_display_guard(quiesce, resume, &callback_context) == ESP_OK);
+
+    /* The SD path waits a bounded time, never for ever. */
+    assert(app_spi_bus_sd_operation_begin() == ESP_OK);
+    assert(last_mutex_timeout != portMAX_DELAY);
+    assert(last_mutex_timeout == pdMS_TO_TICKS(APP_SPI_BUS_SD_MUTEX_WAIT_MS));
+    app_spi_bus_sd_operation_end();
+
+    /* The holder never lets go: the operation fails without touching the display or the mutex. */
+    const unsigned gives_before = mutex_give_calls;
+    const unsigned quiesce_before = quiesce_calls;
+    mutex_take_result = pdFALSE;
+    assert(app_spi_bus_sd_operation_begin() == ESP_ERR_TIMEOUT);
+    assert(quiesce_calls == quiesce_before);
+    assert(resume_calls == 1U);
+    assert(mutex_give_calls == gives_before);
+    mutex_take_result = pdTRUE;
+
+    /* The bus works again once it is free. */
+    assert(app_spi_bus_sd_operation_begin() == ESP_OK);
+    app_spi_bus_sd_operation_end();
+    assert(quiesce_calls == quiesce_before + 1U);
+    assert(resume_calls == 2U);
+    app_spi_bus_unregister_display_guard();
+}
+
+static void test_timing_lines_are_printed_only_when_they_say_something(void)
+{
+    const int64_t second = 1000000LL;
+    app_spi_bus_timing_log_t log = {0};
+    app_spi_bus_timing_summary_t summary = {0};
+    bool summary_due = false;
+
+    /* The first operation is the first sample: begin and end are printed, with an empty summary. */
+    assert(app_spi_bus_timing_begin(&log, 10 * second, 5, 30, false));
+    assert(app_spi_bus_timing_end(&log, 10 * second + 4000, 40, 4000, &summary_due, &summary));
+    assert(summary_due);
+    assert(summary.operations == 1U && summary.failures == 0U);
+    assert(summary.window_us == 0);
+    assert(summary.max_mutex_wait_us == 5 && summary.max_quiesce_us == 30);
+    assert(summary.max_resume_us == 40 && summary.max_elapsed_us == 4000);
+
+    /* Ordinary operations inside the period print nothing: this is the recorder's write path. */
+    for (int op = 1; op <= 20; ++op) {
+        const int64_t now = 10 * second + op * 100000LL;
+        assert(!app_spi_bus_timing_begin(&log, now, 6 + op, 300, false));
+        summary_due = true;
+        assert(!app_spi_bus_timing_end(&log, now + 9000, 50, 9000, &summary_due, &summary));
+        assert(!summary_due);
+    }
+
+    /* A long wait for the display is printed at once, but does not restart the summary window. */
+    assert(app_spi_bus_timing_begin(&log, 13 * second, 7, APP_SPI_BUS_TIMING_NOTABLE_WAIT_US, false));
+    assert(!app_spi_bus_timing_end(&log, 13 * second + 9000, 50, 9000, &summary_due, &summary));
+    assert(!summary_due);
+    assert(!app_spi_bus_timing_begin(&log, 13 * second + 20000, 7, APP_SPI_BUS_TIMING_NOTABLE_WAIT_US - 1, false));
+    /* A slow operation or a slow display resume is printed at its end. */
+    assert(app_spi_bus_timing_end(
+        &log, 13 * second + 400000, 50, APP_SPI_BUS_TIMING_NOTABLE_ELAPSED_US, &summary_due, &summary));
+    assert(!summary_due);
+    assert(!app_spi_bus_timing_begin(&log, 14 * second, 7, 300, false));
+    assert(app_spi_bus_timing_end(
+        &log, 14 * second + 60000, APP_SPI_BUS_TIMING_NOTABLE_WAIT_US, 60000, &summary_due, &summary));
+    assert(!summary_due);
+
+    /* A failed begin is always printed, is counted, and is never the sampled operation. */
+    assert(app_spi_bus_timing_begin(&log, 16 * second, 9, 0, true));
+    assert(!log.sampled_operation);
+
+    /* One period after the previous sample the next operation is printed with the summary
+     * of everything in between: 20 quiet, 3 printed, 1 failed, 1 just short of the period, and itself. */
+    assert(!app_spi_bus_timing_begin(&log, 10 * second + 4000 + APP_SPI_BUS_TIMING_SUMMARY_PERIOD_US - 1, 1, 1, false));
+    assert(!app_spi_bus_timing_end(&log, 15 * second + 4000, 1, 1, &summary_due, &summary));
+    assert(app_spi_bus_timing_begin(&log, 10 * second + 4000 + APP_SPI_BUS_TIMING_SUMMARY_PERIOD_US, 2, 2, false));
+    assert(app_spi_bus_timing_end(&log, 15 * second + 9000, 3, 5000, &summary_due, &summary));
+    assert(summary_due);
+    assert(summary.operations == 26U);
+    assert(summary.failures == 1U);
+    assert(summary.window_us == 5 * second + 5000);
+    assert(summary.max_mutex_wait_us == 26);
+    assert(summary.max_quiesce_us == APP_SPI_BUS_TIMING_NOTABLE_WAIT_US);
+    assert(summary.max_resume_us == APP_SPI_BUS_TIMING_NOTABLE_WAIT_US);
+    assert(summary.max_elapsed_us == APP_SPI_BUS_TIMING_NOTABLE_ELAPSED_US);
+
+    /* The window starts again from zero. */
+    assert(!app_spi_bus_timing_begin(&log, 15 * second + 10000, 1, 1, false));
+    assert(log.operations == 1U && log.failures == 0U && log.max_quiesce_us == 1);
+
+    /* Without state every line is printed, as before. */
+    assert(app_spi_bus_timing_begin(NULL, 0, 0, 0, false));
+    assert(app_spi_bus_timing_end(NULL, 0, 0, 0, &summary_due, &summary));
+    assert(!summary_due);
+}
+
 int main(void)
 {
     test_init_sets_safe_levels_and_bus_config();
     test_guard_pairs_quiesce_and_resume();
     test_quiesce_failure_releases_mutex_without_resume();
+    test_busy_bus_fails_the_operation_instead_of_hanging();
+    test_timing_lines_are_printed_only_when_they_say_something();
     return 0;
 }

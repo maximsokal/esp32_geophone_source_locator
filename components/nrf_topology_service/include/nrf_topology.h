@@ -17,6 +17,23 @@
 #define NRF_TOPOLOGY_CABLE_MEASUREMENT_SLACK_MM 293U
 #define NRF_TOPOLOGY_DEFAULT_POLL_INTERVAL_MS 10U
 
+/*
+ * Channel quarantine.
+ *
+ * Selecting a TCA9548A channel connects that socket's wires to the shared bus. A socket whose wiring holds a line
+ * (board log 2026-11-10: the empty socket on channel 1) makes the select time out; the mux then cannot be told to
+ * close, and once it has latched the channel the whole bus, with INA3221 and the MAIN barometer on it, stays dead
+ * until the mux is power-cycled. Discovery used to select every channel on every pass, so such a socket was hit
+ * about every 8 s and the sixth hit was the fatal one.
+ *
+ * A channel whose select failed is therefore left alone for a while: 60 s after the failure that triggers the
+ * quarantine, doubling with each further failure up to one hour. A channel that carried a confirmed node is given
+ * one retry first (the shared bus does time out now and then); an unconfirmed channel is quarantined at once. One
+ * successful select ends it. The quarantine is not stored: a reboot probes every channel once again.
+ */
+#define NRF_TOPOLOGY_CHANNEL_QUARANTINE_BASE_MS 60000U
+#define NRF_TOPOLOGY_CHANNEL_QUARANTINE_MAX_MS 3600000U
+
 typedef enum {
     NRF_TOPOLOGY_NODE_UNKNOWN = 0,
     NRF_TOPOLOGY_NODE_ABSENT,
@@ -63,6 +80,8 @@ typedef struct {
     bool tca_fault;
     bool bus_busy;
     bool stale;
+    /* Bit N set: channel N was not selected in this pass because it is quarantined (diagnostics only). */
+    uint8_t quarantined_channels;
     nrf_topology_node_snapshot_t main;
     nrf_topology_node_snapshot_t remotes[NRF_TOPOLOGY_REMOTE_COUNT];
 } nrf_topology_snapshot_t;
@@ -119,7 +138,18 @@ typedef struct {
     nrf_topology_node_snapshot_t last_confirmed_remotes[NRF_TOPOLOGY_REMOTE_COUNT];
     uint64_t remote_confirmed_at_ms[NRF_TOPOLOGY_REMOTE_COUNT];
     bool remote_confirmed_valid[NRF_TOPOLOGY_REMOTE_COUNT];
+    /* Channel quarantine: consecutive select failures and the time the channel may be selected again. */
+    uint8_t channel_select_failures[NRF_TOPOLOGY_REMOTE_COUNT];
+    uint64_t channel_quarantined_until_ms[NRF_TOPOLOGY_REMOTE_COUNT];
+    /* The channel carried a confirmed node when it was quarantined: it is reported as an error, not as empty. */
+    bool channel_quarantined_with_node[NRF_TOPOLOGY_REMOTE_COUNT];
 } nrf_topology_controller_t;
+
+/* Milliseconds until the channel may be selected again; 0 when it is not quarantined. */
+uint64_t nrf_topology_channel_quarantine_remaining_ms(
+    const nrf_topology_controller_t *controller,
+    uint8_t channel,
+    uint64_t now_ms);
 
 esp_err_t nrf_topology_controller_init(
     nrf_topology_controller_t *controller,

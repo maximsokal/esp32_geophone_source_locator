@@ -1893,7 +1893,27 @@ static esp_err_t platform_mux_close(void *context)
     if (platform == NULL || !platform->mux_bound) {
         return ESP_ERR_INVALID_STATE;
     }
-    const esp_err_t err = platform_close_selected_mux(platform, false);
+    esp_err_t err = platform_close_selected_mux(platform, false);
+    if (err != ESP_OK && err != SENSOR_BUS_ERR_MUTEX_BUSY &&
+        err != SENSOR_BUS_ERR_OWNER_HOLD_BUDGET) {
+        /*
+         * The mux did not take the close, so a channel may still be open onto a socket that holds a line
+         * (board log 2026-11-10: from then on every close was only repeated and the bus stayed dead). Free
+         * the lines and close once more. sensor_bus_recover() applies its own backoff; a refusal is silent.
+         */
+        i2c_line_result_t lines = I2C_LINES_IDLE;
+        const esp_err_t recover_err = sensor_bus_recover(&lines);
+        if (recover_err != ESP_ERR_INVALID_STATE) {
+            esp_err_t retry_err = err;
+            if (recover_err == ESP_OK) {
+                retry_err = platform_close_selected_mux(platform, false);
+            }
+            ESP_LOGW(TAG, "TCA_CLOSE_RECOVERY close_err=%s lines=%d recover=%s retry=%s",
+                     esp_err_to_name(err), (int)lines, esp_err_to_name(recover_err),
+                     esp_err_to_name(retry_err));
+            err = retry_err;
+        }
+    }
     sensor_bus_record_transfer_result_with_context(
         platform->tca_address, err, "tca9548a", -1);
     platform->selected_mux_channel_valid = false;
@@ -2197,6 +2217,37 @@ static void service_log_snapshot(const nrf_topology_snapshot_t *snapshot)
         (unsigned long)snapshot->age_ms);
 }
 
+/* Says once, on every change, which mux channels are left unselected and for how long. */
+static void service_log_channel_quarantine(
+    const nrf_topology_controller_t *controller,
+    const nrf_topology_snapshot_t *snapshot)
+{
+    static uint8_t s_logged_mask;
+    if (snapshot->quarantined_channels == s_logged_mask) {
+        return;
+    }
+    s_logged_mask = snapshot->quarantined_channels;
+    if (snapshot->quarantined_channels == 0U) {
+        ESP_LOGI(TAG, "TCA_CHANNEL_QUARANTINE mask=0x00 (all channels are scanned again)");
+        return;
+    }
+    const uint64_t now_ms = platform_now_ms(NULL);
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if ((snapshot->quarantined_channels & (uint8_t)(1U << channel)) == 0U) {
+            continue;
+        }
+        ESP_LOGW(TAG,
+                 "TCA_CHANNEL_QUARANTINE mask=0x%02X ch=%u select_failures=%u had_node=%u retry_in_s=%lu "
+                 "(selecting this channel hung the I2C bus; it is not selected until the retry)",
+                 (unsigned)snapshot->quarantined_channels,
+                 (unsigned)channel,
+                 (unsigned)controller->channel_select_failures[channel],
+                 controller->channel_quarantined_with_node[channel] ? 1U : 0U,
+                 (unsigned long)(nrf_topology_channel_quarantine_remaining_ms(
+                     controller, channel, now_ms) / 1000U));
+    }
+}
+
 static void service_snapshot_set_nodes_unknown(nrf_topology_snapshot_t *snapshot)
 {
     memset(&snapshot->main, 0, sizeof(snapshot->main));
@@ -2365,6 +2416,7 @@ static bool service_run_topology_reconcile(
     const uint8_t initial_mask = nrf_sensor_cache_reconcile_topology(snapshot, cache);
     service_publish_state(snapshot, cache, &platform->main_status_cache);
     service_queue_sensor_mask(initial_mask, false);
+    service_log_channel_quarantine(controller, snapshot);
     service_log_snapshot(snapshot);
     return true;
 }

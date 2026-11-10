@@ -946,20 +946,52 @@ static void test_ranging_manual_entry(void)
     ui_workflow_model_state_t state = {0};
     ui_workflow_ranging_t ranging = {.available = true, .pair_count = 2U, .started_at_ms = 10U, .updated_at_ms = 20U};
     ranging.pairs[0].node_a = 0U; ranging.pairs[0].node_b = 1U; ranging.pairs[0].valid = true;
+    ranging.pairs[0].distance_mm = 3649;
     ranging.pairs[1].node_a = 0U; ranging.pairs[1].node_b = 2U;
     ranging.pairs[1].cable_exceeded = true; ranging.pairs[1].distance_mm = 6001;
     ui_workflow_distance_open(&snapshot, &ranging, &state);
     assert(state.distance_view == UI_WORKFLOW_DISTANCE_PAIR && state.distance_pair == 1U);
     ui_workflow_event_t event = ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_UP, 100U);
     assert(event.type == UI_WORKFLOW_EVENT_NONE && state.distance_pair == 0U);
+    assert(state.distance_mm == 3600U);     /* 3649 mm to the nearest 10 cm */
     (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_DOWN, 100U);
     (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_OK, 100U);
     assert(state.distance_view == UI_WORKFLOW_DISTANCE_VALUE);
+
+    /* Metres with one decimal; the cursor starts on metres, so the first press changes the value by 1 m. */
+    assert(state.distance_digit == 1U && state.distance_mm == 6000U);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_UP, 100U);
+    assert(state.distance_mm == 7000U);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_DOWN, 100U);
+    assert(state.distance_mm == 6000U);
+    /* RIGHT: tenths, 10 cm per press, each digit wraps on its own. */
     (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_RIGHT, 100U);
+    assert(state.distance_digit == 2U);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_UP, 100U);
+    assert(state.distance_mm == 6100U);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_DOWN, 100U);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_DOWN, 100U);
+    assert(state.distance_mm == 6900U);
+    /* RIGHT from the last digit wraps to tens of metres; no digit finer than 10 cm exists. */
     (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_RIGHT, 100U);
-    for (unsigned i = 0U; i < 5U; ++i)
-        (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_DOWN, 100U);
-    assert(state.distance_mm == 1001U);
+    assert(state.distance_digit == 0U);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_UP, 100U);
+    assert(state.distance_mm == 16900U);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_DOWN, 100U);
+    assert(state.distance_mm == 6900U);
+    /* The whole range of the editor stays a multiple of 10 cm and below 100 m. */
+    for (unsigned presses = 0U; presses < 30U; ++presses) {
+        (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state,
+            presses % 3U == 0U ? UI_WORKFLOW_KEY_RIGHT : UI_WORKFLOW_KEY_UP, 100U);
+        assert(state.distance_mm % 100U == 0U && state.distance_mm <= 99900U);
+    }
+    /* LEFT from the first digit leaves the value for the pair choice. */
+    state.distance_digit = 0U;
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_LEFT, 100U);
+    assert(state.distance_view == UI_WORKFLOW_DISTANCE_PAIR);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_OK, 100U);
+    assert(state.distance_view == UI_WORKFLOW_DISTANCE_VALUE);
+
     state.distance_mm = 0U;
     event = ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_OK, 100U);
     assert(event.type == UI_WORKFLOW_EVENT_NONE && state.distance_view == UI_WORKFLOW_DISTANCE_VALUE);
@@ -972,6 +1004,44 @@ static void test_ranging_manual_entry(void)
     assert(state.distance_view == UI_WORKFLOW_DISTANCE_SAVING);
     event = ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_OK, 100U);
     assert(event.type == UI_WORKFLOW_EVENT_NONE);
+
+    /* The save is accepted: the workflow generation moves on first, the new ranging result arrives a moment later.
+     * The editor returns to the same pair with the saved value and says so; it is not closed as "state changed". */
+    ui_workflow_model_t model;
+    ++snapshot.generation;
+    snapshot.last_async.result = WORKFLOW_COMMAND_RESULT_OK;
+    ui_workflow_model_build(&snapshot, &ranging, &state, 200U, &model);
+    assert(state.distance_view == UI_WORKFLOW_DISTANCE_PAIR && state.distance_pair == 1U);
+    assert(state.distance_mm == 1500U);
+    assert(model.notice_key == UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_SAVED);
+    assert(model.distance_picker_visible);
+    assert(state.distance_generation == snapshot.generation);
+    ranging.pairs[1].distance_mm = 1500; ranging.pairs[1].valid = true; ranging.pairs[1].cable_exceeded = false;
+    ++ranging.updated_at_ms;
+    ui_workflow_model_build(&snapshot, &ranging, &state, 300U, &model);
+    assert(state.distance_view == UI_WORKFLOW_DISTANCE_PAIR && !state.distance_resync);
+    assert(state.distance_updated_at_ms == ranging.updated_at_ms);
+    assert(model.notice_key == UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_SAVED);
+    /* The confirmation goes away by itself; the next pair can be chosen and edited straight away. */
+    ui_workflow_model_build(&snapshot, &ranging, &state, 200U + 4000U, &model);
+    assert(model.notice_key == UI_I18N_KEY_COUNT);
+    event = ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_UP, 4300U);
+    assert(state.distance_view == UI_WORKFLOW_DISTANCE_PAIR && state.distance_pair == 0U && state.distance_mm == 3600U);
+    /* From now on a change made by somebody else closes the editor again. */
+    ++ranging.updated_at_ms;
+    ui_workflow_model_build(&snapshot, &ranging, &state, 4400U, &model);
+    assert(state.distance_view == UI_WORKFLOW_DISTANCE_CLOSED);
+
+    /* A refused save stays on the value and says it was rejected. */
+    ui_workflow_distance_open(&snapshot, &ranging, &state);
+    (void)ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_OK, 5000U);
+    event = ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_OK, 5000U);
+    assert(event.type == UI_WORKFLOW_EVENT_SAVE_DISTANCE && state.distance_view == UI_WORKFLOW_DISTANCE_SAVING);
+    snapshot.last_async.result = WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
+    ui_workflow_model_build(&snapshot, &ranging, &state, 5100U, &model);
+    assert(state.distance_view == UI_WORKFLOW_DISTANCE_VALUE && !state.distance_resync);
+    assert(model.notice_key == UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_REJECTED);
+
     state.distance_view = UI_WORKFLOW_DISTANCE_CLOSED;
     ui_workflow_distance_open(&snapshot, &ranging, &state);
     event = ui_workflow_distance_handle_key(&snapshot, &ranging, &state, UI_WORKFLOW_KEY_LEFT, 100U);

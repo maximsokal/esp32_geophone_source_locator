@@ -672,6 +672,16 @@ static void build_material_picker(
     }
 }
 
+/* What the editor starts from for a pair: its distance to the nearest 10 cm, or 1.0 m when there is none. */
+static uint32_t distance_editor_value(int32_t distance_mm)
+{
+    if (distance_mm <= 0) return 1000U;
+    uint32_t rounded = ((uint32_t)distance_mm + UI_WORKFLOW_DISTANCE_STEP_MM / 2U) /
+        UI_WORKFLOW_DISTANCE_STEP_MM * UI_WORKFLOW_DISTANCE_STEP_MM;
+    if (rounded == 0U) rounded = UI_WORKFLOW_DISTANCE_STEP_MM;
+    return rounded > UI_WORKFLOW_DISTANCE_MAX_MM ? 1000U : rounded;
+}
+
 void ui_workflow_model_build(
     const workflow_snapshot_t *snapshot,
     const ui_workflow_ranging_t *ranging,
@@ -693,11 +703,33 @@ void ui_workflow_model_build(
     resolve_material_save(state, snapshot, now_ms);
     if (state->distance_view == UI_WORKFLOW_DISTANCE_SAVING && !state->has_pending) {
         if (snapshot->last_async.result == WORKFLOW_COMMAND_RESULT_OK) {
-            state->distance_view = UI_WORKFLOW_DISTANCE_CLOSED;
+            /* Back to the pair that was just saved, with its value still on screen and a confirmation: the operator
+             * sees what was stored for which pair and can go on to the next one. */
+            state->distance_view = UI_WORKFLOW_DISTANCE_PAIR;
+            state->distance_digit = UI_WORKFLOW_DISTANCE_START_DIGIT;
+            state->distance_resync = true;
+            state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_SAVED;
+            state->notice_until_ms = now_ms + 4000U;
         } else {
             state->distance_view = UI_WORKFLOW_DISTANCE_VALUE;
             state->notice_key = UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_REJECTED;
             state->notice_until_ms = now_ms + 4000U;
+        }
+    }
+    if (state->distance_resync) {
+        /* The accepted save changed the workflow generation and the ranging result; the editor follows them
+         * instead of closing as "state changed". It stops following once the new ranging result has arrived. */
+        if (state->distance_view == UI_WORKFLOW_DISTANCE_CLOSED ||
+            snapshot->step != WORKFLOW_STEP_RANGING_RESULT || ranging == NULL || !ranging->available) {
+            state->distance_resync = false;
+        } else {
+            if (ranging->started_at_ms != state->distance_started_at_ms ||
+                ranging->updated_at_ms != state->distance_updated_at_ms) {
+                state->distance_resync = false;
+            }
+            state->distance_generation = snapshot->generation;
+            state->distance_started_at_ms = ranging->started_at_ms;
+            state->distance_updated_at_ms = ranging->updated_at_ms;
         }
     }
     if (state->distance_view != UI_WORKFLOW_DISTANCE_CLOSED &&
@@ -734,13 +766,16 @@ void ui_workflow_model_build(
         (void)snprintf(b, sizeof(b), "%u", (unsigned)ranging->pairs[state->distance_pair].node_b);
         ui_workflow_model_line_t *pair = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_PAIR);
         set_arg(pair, 0U, a); set_arg(pair, 1U, b);
-        (void)snprintf(value, sizeof(value), "%06lu", (unsigned long)state->distance_mm);
+        (void)snprintf(value, sizeof(value), "%lu.%lu", (unsigned long)(state->distance_mm / 1000U),
+            (unsigned long)(state->distance_mm % 1000U / UI_WORKFLOW_DISTANCE_STEP_MM));
         ui_workflow_model_line_t *distance = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_VALUE);
         set_arg(distance, 0U, value);
         if (state->distance_view == UI_WORKFLOW_DISTANCE_PAIR) {
             (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_CHOOSE);
         } else {
-            (void)snprintf(digit, sizeof(digit), "%u", state->distance_digit + 1U);
+            /* The size of one UP/DOWN step at the cursor, in metres. */
+            (void)snprintf(digit, sizeof(digit), "%s",
+                state->distance_digit == 0U ? "10" : state->distance_digit == 1U ? "1" : "0.1");
             set_arg(add_line(model, UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_DIGIT), 0U, digit);
         }
         add_action(model, WORKFLOW_COMMAND_SET_DISTANCE);
@@ -1112,9 +1147,9 @@ void ui_workflow_distance_open(const workflow_snapshot_t *snapshot,
     for (size_t i = 0U; i < ranging->pair_count; ++i) {
         if (!ranging->pairs[i].valid) { state->distance_pair = i; break; }
     }
-    const int32_t value = ranging->pairs[state->distance_pair].distance_mm;
-    state->distance_mm = value > 0 && value <= 999999 ? (uint32_t)value : 1000U;
-    state->distance_digit = 0U;
+    state->distance_mm = distance_editor_value(ranging->pairs[state->distance_pair].distance_mm);
+    state->distance_digit = UI_WORKFLOW_DISTANCE_START_DIGIT;
+    state->distance_resync = false;
     state->distance_generation = snapshot->generation;
     state->distance_started_at_ms = ranging->started_at_ms;
     state->distance_updated_at_ms = ranging->updated_at_ms;
@@ -1138,20 +1173,27 @@ ui_workflow_event_t ui_workflow_distance_handle_key(
         return event;
     }
     if (state->distance_view == UI_WORKFLOW_DISTANCE_PAIR) {
-        if (key == UI_WORKFLOW_KEY_LEFT) state->distance_view = UI_WORKFLOW_DISTANCE_CLOSED;
+        if (key == UI_WORKFLOW_KEY_LEFT) {
+            state->distance_view = UI_WORKFLOW_DISTANCE_CLOSED;
+            /* "Saved. Next pair, or LEFT" belongs to the editor; it must not stay on the result list. */
+            if (state->notice_key == UI_I18N_KEY_TFT_WORKFLOW_DISTANCE_SAVED) {
+                state->notice_key = UI_I18N_KEY_COUNT;
+                state->notice_until_ms = 0U;
+            }
+        }
         else if (key == UI_WORKFLOW_KEY_OK) state->distance_view = UI_WORKFLOW_DISTANCE_VALUE;
         else if (key == UI_WORKFLOW_KEY_UP || key == UI_WORKFLOW_KEY_DOWN) {
             state->distance_pair = key == UI_WORKFLOW_KEY_DOWN
                 ? (state->distance_pair + 1U) % ranging->pair_count
                 : (state->distance_pair + ranging->pair_count - 1U) % ranging->pair_count;
-            const int32_t value = ranging->pairs[state->distance_pair].distance_mm;
-            state->distance_mm = value > 0 && value <= 999999 ? (uint32_t)value : 1000U;
+            state->distance_mm = distance_editor_value(ranging->pairs[state->distance_pair].distance_mm);
         }
         return event;
     }
-    static const uint32_t places[] = {100000U, 10000U, 1000U, 100U, 10U, 1U};
+    static const uint32_t places[UI_WORKFLOW_DISTANCE_DIGITS] = {10000U, 1000U, UI_WORKFLOW_DISTANCE_STEP_MM};
+    if (state->distance_digit >= UI_WORKFLOW_DISTANCE_DIGITS) state->distance_digit = UI_WORKFLOW_DISTANCE_START_DIGIT;
     const uint32_t place = places[state->distance_digit];
-    if (key == UI_WORKFLOW_KEY_RIGHT) state->distance_digit = (state->distance_digit + 1U) % 6U;
+    if (key == UI_WORKFLOW_KEY_RIGHT) state->distance_digit = (state->distance_digit + 1U) % UI_WORKFLOW_DISTANCE_DIGITS;
     else if (key == UI_WORKFLOW_KEY_LEFT) {
         if (state->distance_digit == 0U) state->distance_view = UI_WORKFLOW_DISTANCE_PAIR;
         else --state->distance_digit;

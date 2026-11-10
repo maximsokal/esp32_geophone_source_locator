@@ -30,5 +30,15 @@ esp_err_t app_spi_bus_register_display_guard(
 
 void app_spi_bus_unregister_display_guard(void);
 
+/*
+ * Longest wait for the SPI2 arbitration mutex before an SD operation fails
+ * with ESP_ERR_TIMEOUT. It matches the FatFs lock timeout
+ * (CONFIG_FATFS_TIMEOUT_MS): a holder stuck for longer is a fault, and the
+ * caller gets an error it already handles instead of blocking for ever.
+ */
+#define APP_SPI_BUS_SD_MUTEX_WAIT_MS 10000U
+
+/* ESP_ERR_TIMEOUT when the bus stays busy, or the display guard's error; pair
+ * every ESP_OK with app_spi_bus_sd_operation_end(). */
 esp_err_t app_spi_bus_sd_operation_begin(void);
 void app_spi_bus_sd_operation_end(void);

@@ -17,6 +17,7 @@
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "driver/pulse_cnt.h"
+#include "esp_heap_caps.h"
 #include "esp_rom_sys.h"
 #include "app_task_config.h"
 #include "esp_timer.h"
@@ -87,6 +88,12 @@ static int s_task_token;
 
 /* Recorded behaviour. */
 static unsigned s_task_creates;
+static bool s_fail_internal_stack;
+static bool s_fail_external_stack;
+static unsigned s_task_creates_with_caps;
+static unsigned s_task_stack_caps;
+static unsigned s_task_deletes;
+static unsigned s_task_deletes_with_caps;
 static BaseType_t s_task_core;
 static UBaseType_t s_task_priority;
 static unsigned s_driver_inits;
@@ -232,6 +239,12 @@ static void reset_world(void)
     s_in_worker = false;
     s_stop_waiting = false;
     s_task_creates = 0U;
+    s_fail_internal_stack = false;
+    s_fail_external_stack = false;
+    s_task_creates_with_caps = 0U;
+    s_task_stack_caps = 0U;
+    s_task_deletes = 0U;
+    s_task_deletes_with_caps = 0U;
     s_driver_inits = 0U;
     s_driver_init_in_worker = false;
     s_driver_deinits = 0U;
@@ -571,9 +584,32 @@ BaseType_t xTaskCreatePinnedToCore(
     (void)name;
     (void)stack_depth;
     ++s_task_creates;
+    if (s_fail_internal_stack) {
+        return pdFAIL;      /* no free internal block as large as the stack */
+    }
     s_task_core = core_id;
     s_task_priority = priority;
     /* FreeRTOS publishes the handle before the task first runs. */
+    *created_task = &s_task_token;
+    s_in_worker = true;
+    entry(parameters);
+    s_in_worker = false;
+    return pdPASS;
+}
+
+BaseType_t xTaskCreatePinnedToCoreWithCaps(
+    TaskFunction_t entry, const char *name, uint32_t stack_depth, void *parameters,
+    UBaseType_t priority, TaskHandle_t *created_task, BaseType_t core_id, UBaseType_t memory_caps)
+{
+    (void)name;
+    (void)stack_depth;
+    ++s_task_creates_with_caps;
+    s_task_stack_caps = (unsigned)memory_caps;
+    if (s_fail_external_stack) {
+        return pdFAIL;
+    }
+    s_task_core = core_id;
+    s_task_priority = priority;
     *created_task = &s_task_token;
     s_in_worker = true;
     entry(parameters);
@@ -585,6 +621,14 @@ void vTaskDelete(TaskHandle_t task)
 {
     assert(task == NULL);
     assert(s_in_worker);
+    ++s_task_deletes;
+}
+
+void vTaskDeleteWithCaps(TaskHandle_t task)
+{
+    assert(task == NULL);
+    assert(s_in_worker);
+    ++s_task_deletes_with_caps;
 }
 
 TaskHandle_t xTaskGetCurrentTaskHandle(void)
@@ -1871,6 +1915,66 @@ static void test_startup_failures_clean_up(void)
     }
 }
 
+static void test_worker_stack_falls_back_to_psram_when_internal_ram_has_no_block(void)
+{
+    /* The normal case: an internal stack, an ordinary delete. */
+    reset_world();
+    for (unsigned i = 0U; i < 3U; ++i) script(EV_TICK, 1U);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(s_task_creates == 1U && s_task_creates_with_caps == 0U);
+    assert(s_task_deletes == 1U && s_task_deletes_with_caps == 0U);
+
+    /* Board log 2026-11-10 17:27: the largest free internal block (3584 B) is smaller than the
+     * 4096 B stack. Acquisition must still start, on a PSRAM stack, and sample as usual. */
+    reset_world();
+    s_fail_internal_stack = true;
+    for (unsigned i = 0U; i < 3U; ++i) script(EV_TICK, 1U);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(s_task_creates == 1U);                       /* internal RAM is tried first */
+    assert(s_task_creates_with_caps == 1U);
+    assert(s_task_stack_caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    assert(s_task_core == APP_TASK_CORE_REALTIME);
+    assert(s_task_priority == APP_TASK_PRIORITY_AD7606);
+    assert(s_pushes == 3U);
+    assert(s_task_deletes == 0U);                       /* a WithCaps task is never deleted the plain way */
+    assert(s_task_deletes_with_caps == 1U);
+    assert_fully_released();
+
+    /* The next start decides again: internal RAM is back, so is the internal stack. */
+    reset_world();
+    script(EV_TICK, 1U);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(s_task_creates_with_caps == 0U);
+    assert(s_task_deletes == 1U && s_task_deletes_with_caps == 0U);
+
+    /* A failed driver init on the PSRAM stack also leaves through the WithCaps delete. */
+    reset_world();
+    s_fail_internal_stack = true;
+    s_driver_init_result = ESP_ERR_NOT_FOUND;
+    assert(ad7606_acquisition_start() == ESP_ERR_NOT_FOUND);
+    assert(s_task_deletes == 0U && s_task_deletes_with_caps == 1U);
+    assert_fully_released();
+
+    /* No memory anywhere: a clean error, nothing left running, and the next start works. */
+    reset_world();
+    s_fail_internal_stack = true;
+    s_fail_external_stack = true;
+    assert(ad7606_acquisition_start() == ESP_ERR_NO_MEM);
+    assert(s_task_creates == 1U && s_task_creates_with_caps == 1U);
+    assert(s_task_deletes == 0U && s_task_deletes_with_caps == 0U);
+    assert(s_driver_inits == 0U);
+    assert(!ad7606_acquisition_test_task_published());
+    s_fail_internal_stack = false;
+    s_fail_external_stack = false;
+    script(EV_TICK, 1U);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(s_pushes == 1U);
+}
+
 static void test_restart_resets_cadence_counters(void)
 {
     reset_world();
@@ -2403,6 +2507,14 @@ static void reset_log_capture(void)
     ad7606_acquisition_test_log_sink_set(fake_log_sink);
 }
 
+/* The service core's periodic call: the only place where AD7606 reports are printed. */
+static void service_prints_pending_reports(void)
+{
+    s_fake_diag_log_cost_us = 0U;
+    s_fake_serial_log_cost_us = 0U;
+    ad7606_acquisition_log_rate_report();
+}
+
 static void assert_diag_window_report(
     uint64_t sample_index,
     uint32_t count,
@@ -2437,6 +2549,7 @@ static void test_diag_window_report_semantics(void)
         "CLIP", "VAR", "VAR", "VAR",
     };
 
+    ad7606_acquisition_log_rate_report(); /* drop reports left over from earlier tests */
     reset_log_capture();
     diag_reset_both();
     for (uint32_t sample = 0U; sample < rate; ++sample) {
@@ -2446,6 +2559,8 @@ static void test_diag_window_report_semantics(void)
     }
     diag_compare_with_reference();
     ad7606_acquisition_test_diag_finish_sample(rate - 1U);
+    assert(s_log_record_count == 0U); /* closing the window prints nothing in the worker */
+    service_prints_pending_reports();
     assert_diag_window_report(rate - 1U, rate, varied_states);
 
     ad7606_diag_channel_t actual[AD7606_CHANNEL_COUNT];
@@ -2467,6 +2582,8 @@ static void test_diag_window_report_semantics(void)
     }
     diag_compare_with_reference();
     ad7606_acquisition_test_diag_finish_sample(rate - 1U);
+    assert(s_log_record_count == 0U);
+    service_prints_pending_reports();
     assert_diag_window_report(rate - 1U, rate, flat_states);
 
     reset_log_capture();
@@ -2478,7 +2595,69 @@ static void test_diag_window_report_semantics(void)
     }
     diag_compare_with_reference();
     ad7606_acquisition_test_diag_finish_sample(rate - 1U);
+    assert(s_log_record_count == 0U);
+    service_prints_pending_reports();
     assert_diag_window_report(rate - 1U, rate, clipped_states);
+
+    ad7606_acquisition_test_log_sink_set(NULL);
+}
+
+static void close_diag_window(uint32_t window, int16_t low, int16_t high)
+{
+    const uint32_t rate = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ;
+    for (uint32_t sample = 0U; sample < rate; ++sample) {
+        const int16_t value = (sample & 1U) != 0U ? high : low;
+        diag_push_values(value, value, value, value);
+    }
+    ad7606_acquisition_test_diag_finish_sample((uint64_t)window * rate - 1U);
+}
+
+static void test_diag_block_is_printed_on_change_and_every_tenth_window(void)
+{
+    const uint32_t rate = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ;
+    ad7606_acquisition_log_rate_report();
+    reset_log_capture();
+    diag_reset_both();
+
+    /* Window 1 is the first evidence of each channel: printed. */
+    close_diag_window(1U, -5, 5);
+    service_prints_pending_reports();
+    assert(s_log_record_count == AD7606_CHANNEL_COUNT);
+    assert(s_log_records[0].sample_index == rate - 1U);
+    assert(strcmp(s_log_records[0].state, "VAR") == 0);
+
+    /* Windows 2..10 say the same thing: the per-second AD7606_RATE line covers them. */
+    for (uint32_t window = 2U; window <= 10U; ++window) {
+        close_diag_window(window, -5, 5);
+        service_prints_pending_reports();
+        assert(s_log_record_count == AD7606_CHANNEL_COUNT);
+    }
+
+    /* The tenth unprinted window is printed even without a change. */
+    close_diag_window(11U, -5, 5);
+    service_prints_pending_reports();
+    assert(s_log_record_count == 2U * AD7606_CHANNEL_COUNT);
+    assert(s_log_records[AD7606_CHANNEL_COUNT].sample_index == 11U * (uint64_t)rate - 1U);
+    assert(s_log_records[AD7606_CHANNEL_COUNT].count == rate);
+
+    /* A channel that goes flat is reported in the very next window. */
+    close_diag_window(12U, 7, 7);
+    service_prints_pending_reports();
+    assert(s_log_record_count == 3U * AD7606_CHANNEL_COUNT);
+    assert(s_log_records[2U * AD7606_CHANNEL_COUNT].sample_index == 12U * (uint64_t)rate - 1U);
+    assert(strcmp(s_log_records[2U * AD7606_CHANNEL_COUNT].state, "FLAT") == 0);
+
+    /* Nothing pending: another service call prints nothing. */
+    service_prints_pending_reports();
+    assert(s_log_record_count == 3U * AD7606_CHANNEL_COUNT);
+
+    /* Two windows closed between service calls: the newer one replaces the older, one block. */
+    close_diag_window(13U, -9, 9);
+    close_diag_window(14U, INT16_MIN, 9);
+    service_prints_pending_reports();
+    assert(s_log_record_count == 4U * AD7606_CHANNEL_COUNT);
+    assert(s_log_records[3U * AD7606_CHANNEL_COUNT].sample_index == 14U * (uint64_t)rate - 1U);
+    assert(strcmp(s_log_records[3U * AD7606_CHANNEL_COUNT].state, "CLIP") == 0);
 
     ad7606_acquisition_test_log_sink_set(NULL);
 }
@@ -2525,13 +2704,15 @@ static uint64_t worker_iteration_us(uint64_t sample_index)
     return s_worker_iteration_duration_us[sample_index];
 }
 
-static void test_diag_logging_virtual_time_characterization(void)
+static void test_diag_window_report_costs_the_worker_nothing(void)
 {
     const uint32_t rate = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ;
     const uint32_t injected_cost_us = 2390U;
     reset_world();
     reset_log_capture();
+    /* A print would cost more than one sample period; the worker must never reach the sink. */
     s_fake_diag_log_cost_us = injected_cost_us;
+    s_fake_serial_log_cost_us = injected_cost_us;
     s_fake_serial_fixed_from_conversion = 1U;
     append_sample_ticks(rate);
     script(EV_STOP, 0U);
@@ -2542,33 +2723,32 @@ static void test_diag_logging_virtual_time_characterization(void)
     assert(ad7606_acquisition_test_heap_caps_allocations() ==
         allocations_before + 1U); /* only the serial quality-window buffer */
 
-    const uint64_t ordinary_iteration_us = worker_iteration_us(10U);
-    const uint64_t before_boundary_iteration_us = worker_iteration_us(rate - 2U);
-    const uint64_t boundary_iteration_us = worker_iteration_us(rate - 1U);
-    assert(ordinary_iteration_us == 0U);
-    assert(before_boundary_iteration_us == 0U);
-    /* CHARACTERIZATION: current Core-1 logging consumes the exact injected cost.
-     * A MAX-366 deferral changes this baseline to zero boundary cost and no collapse. */
-    assert(boundary_iteration_us == 4U * injected_cost_us);
-    assert(boundary_iteration_us - ordinary_iteration_us == 9560U);
-    assert(s_push_recorded_by_sample[10U]);
-    assert(s_push_recorded_by_sample[11U]);
-    assert(s_push_wall_by_sample[11U] - s_push_wall_by_sample[10U] == PERIOD_US);
-    assert(s_push_recorded_by_sample[rate - 2U]);
-    assert(s_push_recorded_by_sample[rate - 1U]);
+    /* MAX-366: the window boundary costs the worker exactly as much as any other sample. */
+    assert(worker_iteration_us(10U) == 0U);
+    assert(worker_iteration_us(rate - 2U) == 0U);
+    assert(worker_iteration_us(rate - 1U) == 0U);
+    assert(s_max_synthetic_notification_batch == 1U); /* no conversion piled up behind a print */
+    assert(s_pushes == rate);
+    assert(s_last_push_sample_index == rate - 1U);
+    assert(s_script_pos == rate + 1U);
     assert(s_push_wall_by_sample[rate - 1U] -
         s_push_wall_by_sample[rate - 2U] == PERIOD_US);
-    assert(s_last_synthetic_notification_batch == 4U);
-    assert(s_pushes == rate + 1U);
-    assert(s_last_push_sample_index == rate + 3U);
-    assert(s_script_pos == rate + 1U);
+    assert(s_log_record_count == 0U); /* nothing printed while the worker ran */
 
+    ad7606_acquisition_status_t status;
+    assert(ad7606_acquisition_get_status(&status) == ESP_OK);
+    assert(status.collapsed_periods == 0U);
+    assert(status.samples == rate);
+    assert(!status.running);
+
+    /* The finished window is still reported, by the service core. */
+    service_prints_pending_reports();
     const char *varied_states[AD7606_CHANNEL_COUNT] = {
         "VAR", "VAR", "VAR", "VAR",
     };
     assert_diag_window_report(rate - 1U, rate, varied_states);
     assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL) ==
-        AD7606_CHANNEL_COUNT); /* one report in this one-second window */
+        AD7606_CHANNEL_COUNT);
     const test_log_record_t *boundary_log = find_log_record(
         AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL,
         rate - 1U
@@ -2577,31 +2757,16 @@ static void test_diag_logging_virtual_time_characterization(void)
     assert(boundary_log->pushed_sample_index == rate - 1U);
     assert(boundary_log->pushed_timestamp_us ==
         s_push_timestamp_by_sample[0U] + (int64_t)(rate - 1U) * PERIOD_US);
-    assert(boundary_log->wall_time_us == boundary_log->pushed_wall_time_us);
-    assert(s_push_timestamp_by_sample[rate + 3U] ==
-        s_push_timestamp_by_sample[0U] + (int64_t)(rate + 3U) * PERIOD_US);
 
     ad7606_diag_channel_t actual[AD7606_CHANNEL_COUNT];
     ad7606_acquisition_test_diag_snapshot(actual);
     for (size_t channel = 0U; channel < AD7606_CHANNEL_COUNT; ++channel) {
-        assert(actual[channel].count == 1U);
-        assert(actual[channel].min_raw == raw_for((unsigned)(rate + 4U),
-            (unsigned)channel));
-        assert(actual[channel].max_raw == actual[channel].min_raw);
+        assert(actual[channel].count == 0U); /* the next window started empty */
     }
-
-    ad7606_acquisition_status_t status;
-    assert(ad7606_acquisition_get_status(&status) == ESP_OK);
-    assert(status.collapsed_periods == 3U);
-    assert(!status.running);
     printf(
-        "MAX-366 virtual us: ordinary_iteration=%llu pre_boundary_iteration=%llu "
-        "diag_boundary_iteration=%llu boundary_minus_steady=%llu "
-        "notifications_coalesced=4 collapsed_conversions=3\n",
-        (unsigned long long)ordinary_iteration_us,
-        (unsigned long long)before_boundary_iteration_us,
-        (unsigned long long)boundary_iteration_us,
-        (unsigned long long)(boundary_iteration_us - ordinary_iteration_us)
+        "MAX-366 virtual us: diag_boundary_iteration=%llu collapsed_conversions=%llu\n",
+        (unsigned long long)worker_iteration_us(rate - 1U),
+        (unsigned long long)status.collapsed_periods
     );
 }
 
@@ -2613,7 +2778,9 @@ static void test_serial_diag_rate_limit_boundary(void)
     reset_log_capture();
     s_fake_serial_clocklike_from_conversion = 2U;
     s_fake_serial_log_cost_us = injected_cost_us;
-    append_sample_ticks(rate);
+    s_fake_diag_log_cost_us = injected_cost_us;
+    /* rate + 1 samples: the report captured on sample 0 may be followed by one on sample `rate`. */
+    append_sample_ticks(rate + 1U);
     script(EV_STOP, 0U);
 
     const uint32_t allocations_before =
@@ -2622,18 +2789,20 @@ static void test_serial_diag_rate_limit_boundary(void)
     assert(ad7606_acquisition_test_heap_caps_allocations() ==
         allocations_before + 1U);
 
-    assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG) == 2U);
-    const test_log_record_t *first_serial = find_log_record(
-        AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG,
-        0U
+    printf(
+        "MAX-366 serial capture: suppressed=%llu coalesced=%llu first=%llu second=%llu last=%llu\n",
+        (unsigned long long)s_log_suppressed_count,
+        (unsigned long long)s_log_coalesced_count,
+        (unsigned long long)s_log_coalesced_first_sample,
+        (unsigned long long)s_log_coalesced_samples[1],
+        (unsigned long long)s_log_coalesced_last_sample
     );
-    const test_log_record_t *boundary_serial = find_log_record(
-        AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG,
-        rate
-    );
-    assert(strcmp(first_serial->state, "NORMAL") == 0);
-    assert(strcmp(boundary_serial->state, "SUSPICIOUS") == 0);
-    assert(boundary_serial->pushed_sample_index == rate - 1U);
+    /* The worker captured twice (samples 0 and `rate`) and printed nothing itself. */
+    assert(s_log_record_count == 0U);
+    assert(worker_iteration_us(0U) == 0U);
+    assert(worker_iteration_us(rate - 1U) == 0U);
+    assert(worker_iteration_us(rate) == 0U);
+    assert(s_max_synthetic_notification_batch == 1U);
     assert(s_log_suppressed_count == rate - 1U);
     assert(s_log_coalesced_count == 3U);
     assert(s_log_coalesced_first_sample == 9U);
@@ -2641,30 +2810,35 @@ static void test_serial_diag_rate_limit_boundary(void)
     assert(s_log_coalesced_last_sample == rate);
     assert(!ad7606_acquisition_test_serial_diag_pending());
     assert(ad7606_acquisition_test_serial_diag_last_log_sample() == rate + 1U);
-    assert(worker_iteration_us(0U) == injected_cost_us);
-    assert(worker_iteration_us(rate - 1U) == 0U);
-    assert(worker_iteration_us(rate) == injected_cost_us);
-    assert(s_last_synthetic_notification_batch == 1U);
 
-    const char *varied_states[AD7606_CHANNEL_COUNT] = {
-        "VAR", "VAR", "VAR", "VAR",
-    };
-    assert_diag_window_report(rate - 1U, rate, varied_states);
     ad7606_acquisition_status_t status;
     assert(ad7606_acquisition_get_status(&status) == ESP_OK);
     assert(status.serial_suspicious);
     assert(status.collapsed_periods == 0U);
     assert(!status.running);
-    printf(
-        "MAX-366 virtual us: serial_diag_boundary_iteration=%llu "
-        "suppressed=%llu coalesced=%llu reports=2\n",
-        (unsigned long long)worker_iteration_us(rate),
-        (unsigned long long)s_log_suppressed_count,
-        (unsigned long long)s_log_coalesced_count
+
+    /* The service prints the newest capture and says one older capture was replaced. */
+    service_prints_pending_reports();
+    assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG) == 1U);
+    const test_log_record_t *boundary_serial = find_log_record(
+        AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG,
+        rate
     );
+    assert(strcmp(boundary_serial->state, "SUSPICIOUS") == 0);
+    assert(boundary_serial->count == 1U);
+
+    const char *varied_states[AD7606_CHANNEL_COUNT] = {
+        "VAR", "VAR", "VAR", "VAR",
+    };
+    assert_diag_window_report(rate - 1U, rate, varied_states);
+
+    service_prints_pending_reports(); /* consumed: nothing is printed twice */
+    assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG) == 1U);
+    assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL) ==
+        AD7606_CHANNEL_COUNT);
 }
 
-static void test_stop_leaves_pending_serial_report_unflushed(void)
+static void test_stop_keeps_the_captured_serial_report_for_the_service(void)
 {
     reset_world();
     reset_log_capture();
@@ -2678,8 +2852,8 @@ static void test_stop_leaves_pending_serial_report_unflushed(void)
     assert(ad7606_acquisition_test_heap_caps_allocations() ==
         allocations_before + 1U);
 
-    /* Current behavior: STOP drops no additional log and retains pending until next START. */
-    assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG) == 1U);
+    /* STOP prints nothing and the rate-limited follow-up stays pending until the next START. */
+    assert(s_log_record_count == 0U);
     assert(ad7606_acquisition_test_serial_diag_pending());
     assert(ad7606_acquisition_test_serial_diag_last_log_sample() == 1U);
     assert(s_log_suppressed_count == 11U);
@@ -2687,6 +2861,18 @@ static void test_stop_leaves_pending_serial_report_unflushed(void)
     assert(s_log_coalesced_samples[0] == 9U);
     assert(!s_driver_live);
     assert(s_driver_deinits == 1U);
+
+    /* The frame captured on sample 0 survives the stop and is printed once. */
+    service_prints_pending_reports();
+    assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG) == 1U);
+    const test_log_record_t *first_serial = find_log_record(
+        AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG,
+        0U
+    );
+    assert(strcmp(first_serial->state, "NORMAL") == 0);
+    assert(first_serial->count == 0U);
+    service_prints_pending_reports();
+    assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG) == 1U);
 }
 
 static void test_combined_diagnostic_boundary_and_slow_sink_completion(void)
@@ -2711,6 +2897,21 @@ static void test_combined_diagnostic_boundary_and_slow_sink_completion(void)
     assert(ad7606_acquisition_test_heap_caps_allocations() ==
         allocations_before + 1U);
 
+    /* Both reports fall on the same sample and neither delays the worker. */
+    assert(s_log_record_count == 0U);
+    assert(worker_iteration_us(rate - 1U) == 0U);
+    assert(s_max_synthetic_notification_batch == 1U);
+    assert(s_pushes == 1U);
+    assert(s_last_push_sample_index == rate - 1U);
+
+    ad7606_acquisition_status_t status;
+    assert(ad7606_acquisition_get_status(&status) == ESP_OK);
+    /* Only the rate - 1 intentionally invalid observations; no log-time collapses. */
+    assert(status.collapsed_periods == rate - 1U);
+    assert(!status.running);
+    assert(!s_driver_live);
+
+    service_prints_pending_reports();
     assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG) == 1U);
     assert(log_record_count(AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL) ==
         AD7606_CHANNEL_COUNT);
@@ -2718,7 +2919,7 @@ static void test_combined_diagnostic_boundary_and_slow_sink_completion(void)
         AD7606_ACQUISITION_TEST_LOG_SERIAL_DIAG,
         rate - 1U
     );
-    assert(serial->pushed_sample_index == 0U);
+    assert(serial->count == 0U);
     assert_diag_window_report(rate - 1U, 1U, flat_states);
     const test_log_record_t *diag = find_log_record(
         AD7606_ACQUISITION_TEST_LOG_DIAG_CHANNEL,
@@ -2726,23 +2927,10 @@ static void test_combined_diagnostic_boundary_and_slow_sink_completion(void)
     );
     assert(diag->pushed_sample_index == rate - 1U);
     assert(diag->pushed_timestamp_us == s_push_timestamp_by_sample[rate - 1U]);
-    assert(worker_iteration_us(rate - 1U) == 5U * injected_cost_us);
-    assert(s_last_synthetic_notification_batch == 5U);
-    assert(s_last_push_sample_index == rate + 4U);
-    assert(s_log_record_count == AD7606_CHANNEL_COUNT + 1U);
-
-    ad7606_acquisition_status_t status;
-    assert(ad7606_acquisition_get_status(&status) == ESP_OK);
-    /* Includes 499 intentional invalid observations plus 4 log-time collapses. */
-    assert(status.collapsed_periods == rate - 1U + 4U);
-    assert(!status.running);
-    assert(!s_driver_live);
     printf(
-        "MAX-366 virtual us: combined_boundary_iteration=%llu "
-        "boundary_minus_steady=%llu notifications_coalesced=5 "
-        "collapsed_conversions=4\n",
+        "MAX-366 virtual us: combined_boundary_iteration=%llu collapsed_conversions=%llu\n",
         (unsigned long long)worker_iteration_us(rate - 1U),
-        (unsigned long long)worker_iteration_us(rate - 1U)
+        (unsigned long long)status.collapsed_periods
     );
 }
 
@@ -2759,10 +2947,14 @@ static void test_unavailable_log_sink_does_not_block_stop(void)
     assert(ad7606_acquisition_start() == ESP_OK);
     assert(ad7606_acquisition_test_heap_caps_allocations() ==
         allocations_before + 1U);
-    assert(s_log_sink_unavailable_count == 1U);
+    assert(s_log_sink_unavailable_count == 0U); /* the worker never calls the sink */
     assert(s_pushes == 2U);
     assert(!s_driver_live);
     assert(s_driver_deinits == 1U);
+
+    /* An unavailable sink costs the service only the lost lines. */
+    ad7606_acquisition_log_rate_report();
+    assert(s_log_sink_unavailable_count >= 1U);
 }
 
 static void test_diag_fixed_seed_random_stream(void)
@@ -2788,6 +2980,7 @@ static void test_diag_integer_accumulator_contract(void)
     test_diag_supported_rate_windows_and_overflow_bound();
     test_diag_report_reset_boundary();
     test_diag_window_report_semantics();
+    test_diag_block_is_printed_on_change_and_every_tenth_window();
     test_diag_fixed_seed_random_stream();
     diag_reset_both();
     diag_compare_with_reference();
@@ -2804,9 +2997,9 @@ int main(void)
     test_safe_os2_mismatch_runs_and_is_reported();
     test_repeated_start_stop_and_error_cycles_release_everything();
     test_diag_integer_accumulator_contract();
-    test_diag_logging_virtual_time_characterization();
+    test_diag_window_report_costs_the_worker_nothing();
     test_serial_diag_rate_limit_boundary();
-    test_stop_leaves_pending_serial_report_unflushed();
+    test_stop_keeps_the_captured_serial_report_for_the_service();
     test_combined_diagnostic_boundary_and_slow_sink_completion();
     test_unavailable_log_sink_does_not_block_stop();
     test_run_samples_then_stop_releases_everything();
@@ -2827,6 +3020,7 @@ int main(void)
     test_single_low_reading_does_not_stop();
     test_read_errors_are_counted_and_not_pushed();
     test_startup_failures_clean_up();
+    test_worker_stack_falls_back_to_psram_when_internal_ram_has_no_block();
     test_restart_resets_cadence_counters();
     test_restart_clears_a_latched_fault();
     test_overcurrent_stops_and_latches();

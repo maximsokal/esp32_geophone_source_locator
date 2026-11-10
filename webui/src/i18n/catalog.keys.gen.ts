@@ -1346,6 +1346,7 @@ export const i18nKeys = [
   "tft.workflow.distance.pair_hint",
   "tft.workflow.distance.rejected",
   "tft.workflow.distance.save",
+  "tft.workflow.distance.saved",
   "tft.workflow.distance.saving",
   "tft.workflow.distance.value",
   "tft.workflow.distance.value_hint",

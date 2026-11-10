@@ -10,7 +10,16 @@
  * before registering any GPIO ISR. ESP-IDF cannot report the flags of a
  * service installed elsewhere, so ESP_ERR_INVALID_STATE is accepted under
  * the source-level sole-owner rule: no other code may install this service.
+ *
+ * The service, and so every GPIO handler, runs on BOARD_GPIO_ISR_CORE whatever
+ * core the caller is on. The only GPIO interrupts in this firmware are the
+ * AD7606 BUSY edges (acquisition and presence monitor); they belong on the
+ * realtime core next to the acquisition task, not on the service core, where
+ * Wi-Fi, LVGL and storage critical sections would delay every sample wake-up.
+ * Must be called from a task with the scheduler running.
  */
+#define BOARD_GPIO_ISR_CORE 1
+
 esp_err_t board_gpio_isr_service_install(void);
 
 

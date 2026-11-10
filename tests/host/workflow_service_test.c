@@ -442,7 +442,8 @@ esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *p
 {
     if (policy == NULL) return ESP_ERR_INVALID_ARG;
     /* The pair time budget measured on the bench (see s_workflow_ranging_policy): 2.4 s, nine samples per direction, one spare try. */
-    assert(policy->pair_timeout_ms == 2400U && policy->max_attempts == 2U);
+    /* 2.4 s for MAIN + 4 nodes, 4 s for a smaller network that can afford it (workflow_ranging_budget_test). */
+    assert((policy->pair_timeout_ms == 2400U || policy->pair_timeout_ms == 4000U) && policy->max_attempts == 2U);
     assert(policy->samples_per_pair == 9U && policy->full_rotation);
     assert(policy->require_both_directions);
     assert(policy->relay_order);       /* the chain order: the next execution starts when the previous one lets go */
@@ -455,12 +456,14 @@ esp_err_t nrf_topology_service_ranging_start_autonomous(const nrf_cs_policy_t *p
      * per node. */
     const uint32_t window_ms = 300U + ((uint32_t)policy->samples_per_pair + policy->max_attempts - 1U) *
         ((uint32_t)policy->pair_timeout_ms + 150U);
-    assert(window_ms == 25800U);
-    for (unsigned nodes = 2U; nodes <= 5U; ++nodes) {
+    assert(window_ms == (policy->pair_timeout_ms == 2400U ? 25800U : 41800U));
+    /* The relaxed 4 s budget is only ever chosen for networks of up to four nodes; 2.4 s has to fit all five. */
+    const unsigned max_nodes = policy->pair_timeout_ms == 2400U ? 5U : 4U;
+    for (unsigned nodes = 2U; nodes <= max_nodes; ++nodes) {
         const uint32_t budget_ms = nodes * (nodes - 1U) * window_ms + 3000U + 6000U + nodes * 2500U;
         assert(budget_ms < 600000U);
         if (nodes == 5U) assert(budget_ms == 537500U);               /* 9 minutes of silent bus */
-        if (nodes == 4U) assert(budget_ms == 328600U);
+        if (nodes == 4U) assert(budget_ms == (policy->pair_timeout_ms == 2400U ? 328600U : 520600U));
     }
     memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
     s_ranging_progress.active = true;

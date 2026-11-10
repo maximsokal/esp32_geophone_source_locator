@@ -31,3 +31,14 @@ BaseType_t xTaskNotifyFromISR(
     eNotifyAction action,
     BaseType_t *higher_priority_task_woken);
 void vTaskDelete(TaskHandle_t task);
+BaseType_t xTaskCreatePinnedToCoreWithCaps(
+    TaskFunction_t task,
+    const char *name,
+    unsigned stack_size,
+    void *argument,
+    unsigned priority,
+    TaskHandle_t *task_handle,
+    int core_id,
+    unsigned memory_caps
+);
+void vTaskDeleteWithCaps(TaskHandle_t task);

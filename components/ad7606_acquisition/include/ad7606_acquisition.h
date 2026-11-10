@@ -157,5 +157,11 @@ typedef struct
 /* Returns true once per new report; safe from any task. */
 bool ad7606_acquisition_take_rate_report(ad7606_rate_report_t *report);
 
-/* Logs the pending report (AD7606_RATE) from the caller's context, never from the worker. */
+/*
+ * Prints whatever the worker has handed over since the last call, from the caller's
+ * context and never from the worker: the per-second AD7606_RATE line, the AD7606_DIAG
+ * CH1..CH4 block (first window, on a VAR/FLAT/CLIP/EMPTY change, otherwise every tenth
+ * window) and the newest AD7606_SERIAL_DIAG frame. Call it about once per second from a
+ * service-core task; a report that is not collected in time is replaced by the next one.
+ */
 void ad7606_acquisition_log_rate_report(void);

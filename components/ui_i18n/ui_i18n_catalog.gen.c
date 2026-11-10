@@ -272,7 +272,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Calibration: %s", /* tft.workflow.calibration.status */
     "Delete recording? OK = yes, LEFT = no", /* tft.workflow.confirm.delete */
     "Choose the pair to correct", /* tft.workflow.distance.choose */
-    "Editing digit %s of 6", /* tft.workflow.distance.digit */
+    "UP/DOWN step: %s m", /* tft.workflow.distance.digit */
     "Enter distances", /* tft.workflow.distance.edit */
     "Edit this pair", /* tft.workflow.distance.enter */
     "%s-%s: %s cm (manual)", /* tft.workflow.distance.manual */
@@ -280,8 +280,9 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "UP/DOWN pair OK edit LEFT cancel", /* tft.workflow.distance.pair_hint */
     "Rejected: check distance and cable", /* tft.workflow.distance.rejected */
     "Save and recalculate", /* tft.workflow.distance.save */
+    "Saved. Next pair, or LEFT to finish", /* tft.workflow.distance.saved */
     "Saving and recalculating...", /* tft.workflow.distance.saving */
-    "Distance: %s mm", /* tft.workflow.distance.value */
+    "Distance: %s m", /* tft.workflow.distance.value */
     "UP/DOWN digit L/R move OK save", /* tft.workflow.distance.value_hint */
     "Waiting for phone GPS", /* tft.workflow.gps.waiting */
     "UP/DOWN select OK run LEFT back RIGHT 3D", /* tft.workflow.hint.3d */
@@ -757,7 +758,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Калібрування: %s", /* tft.workflow.calibration.status */
     "Видалити запис? OK = так, LEFT = ні", /* tft.workflow.confirm.delete */
     "Оберіть пару для виправлення", /* tft.workflow.distance.choose */
-    "Редагування цифри %s із 6", /* tft.workflow.distance.digit */
+    "Крок UP/DOWN: %s м", /* tft.workflow.distance.digit */
     "Ввести відстані", /* tft.workflow.distance.edit */
     "Редагувати цю пару", /* tft.workflow.distance.enter */
     "%s-%s: %s см (вручну)", /* tft.workflow.distance.manual */
@@ -765,8 +766,9 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "UP/DOWN пара OK ввід LEFT скасувати", /* tft.workflow.distance.pair_hint */
     "Відхилено: перевірте відстань і кабель", /* tft.workflow.distance.rejected */
     "Зберегти й перерахувати", /* tft.workflow.distance.save */
+    "Збережено. Далі пара або LEFT", /* tft.workflow.distance.saved */
     "Збереження й перерахунок...", /* tft.workflow.distance.saving */
-    "Відстань: %s мм", /* tft.workflow.distance.value */
+    "Відстань: %s м", /* tft.workflow.distance.value */
     "UP/DOWN цифра L/R зсув OK зберегти", /* tft.workflow.distance.value_hint */
     "Очікування GPS телефона", /* tft.workflow.gps.waiting */
     "UP/DOWN вибір OK дія LEFT назад RIGHT 3D", /* tft.workflow.hint.3d */

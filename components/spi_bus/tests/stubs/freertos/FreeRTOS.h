@@ -7,3 +7,4 @@ typedef void *SemaphoreHandle_t;
 #define pdTRUE        1U
 #define pdFALSE       0U
 #define portMAX_DELAY ((TickType_t)~0U)
+#define pdMS_TO_TICKS(ms) ((TickType_t)((ms) / 10U))

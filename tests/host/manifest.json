@@ -1823,6 +1823,16 @@
       ]
     },
     {
+      "name": "workflow_ranging_budget",
+      "sources": [
+        "tests/host/workflow_ranging_budget_test.c"
+      ],
+      "include_dirs": [
+        "components/workflow_service/include",
+        "nRF54L15/include"
+      ]
+    },
+    {
       "name": "seismic_recorder_start_policy",
       "sources": [
         "components/seismic_recorder/seismic_recorder_start_policy.c",
@@ -2155,7 +2165,8 @@
       "include_dirs": [
         "components/storage_manager/tests/stubs",
         "components/storage_manager",
-        "components/storage_manager/include"
+        "components/storage_manager/include",
+        "components/spi_bus/include"
       ]
     },
     {

@@ -26,6 +26,7 @@
 #include "measurement_service.h"
 #include "nrf_baro_altitude.h"
 #include "nrf_topology_service.h"
+#include "workflow_ranging_budget.h"
 #include "object_service.h"
 #include "object_store.h"
 #include "ranging_radio_pause.h"
@@ -293,8 +294,8 @@ static BaseType_t workflow_service_receive_async(workflow_async_command_t *item)
  * starts at once. The ESP32 stops waiting when MAIN, the last reflector, reports the end. A release that does not arrive
  * only means that node waits for its slot.
  */
-#define WORKFLOW_RANGING_PAIR_BUDGET_MS 2400U
 
+/* WORKFLOW_RANGING_PAIR_BUDGET_MS and the relaxed budget for smaller networks: see workflow_ranging_budget.h. */
 static const nrf_cs_policy_t s_workflow_ranging_policy = {
     .pair_timeout_ms = WORKFLOW_RANGING_PAIR_BUDGET_MS,
     .max_attempts = 2U,
@@ -939,7 +940,14 @@ static void workflow_service_ranging_start_now(void)
     uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT];
     esp_err_t err = workflow_service_ranging_load_limits(limits);
     if (err == ESP_OK) {
-        err = nrf_topology_service_ranging_start_autonomous_limited(&s_workflow_ranging_policy, limits);
+        /* MAIN is counted even when it is absent: the budget must fit whichever nodes answer at the start. */
+        nrf_cs_policy_t policy = s_workflow_ranging_policy;
+        policy.pair_timeout_ms = workflow_ranging_pair_budget_ms(
+            s_assigned_remotes + 1U, policy.samples_per_pair, policy.max_attempts);
+        ESP_LOGI(TAG, "RANGING_POLICY remotes=%u pair_budget_ms=%u samples=%u max_attempts=%u",
+            (unsigned)s_assigned_remotes, (unsigned)policy.pair_timeout_ms,
+            (unsigned)policy.samples_per_pair, (unsigned)policy.max_attempts);
+        err = nrf_topology_service_ranging_start_autonomous_limited(&policy, limits);
         if (err == ESP_ERR_INVALID_STATE && s_ranging.active && s_ranging.orphaned) {
             /* The run cancelled by BACK is still winding down; poll starts this one once it has stopped. */
             s_ranging.restart_pending = true;
@@ -2195,6 +2203,16 @@ static workflow_command_result_t workflow_service_command_locked(
         if (err == ESP_OK) err = nrf_topology_service_ranging_set_manual(
             params->ranging_started_at_ms, params->ranging_updated_at_ms,
             params->node_a, params->node_b, params->distance_mm, limits);
+        if (err != ESP_OK) {
+            /* A refused manual distance used to leave no trace: say which pair, which value and why. */
+            ESP_LOGW(TAG, "RANGING_MANUAL_REJECTED pair=%u-%u distance_mm=%ld err=%s (%s)",
+                (unsigned)params->node_a, (unsigned)params->node_b, (long)params->distance_mm,
+                esp_err_to_name(err),
+                err == ESP_ERR_INVALID_ARG ? "longer than the cables allow, or a cable length is not set"
+                : err == ESP_ERR_NOT_FOUND ? "no such pair in the ranging result"
+                : err == ESP_ERR_INVALID_STATE ? "the ranging result changed meanwhile"
+                : "not available");
+        }
         if (err == ESP_ERR_INVALID_ARG || err == ESP_ERR_NOT_FOUND) return WORKFLOW_COMMAND_RESULT_INVALID_ARGUMENT;
         if (err == ESP_ERR_INVALID_STATE) return WORKFLOW_COMMAND_RESULT_STALE;
         if (err != ESP_OK) return WORKFLOW_COMMAND_RESULT_UNAVAILABLE;

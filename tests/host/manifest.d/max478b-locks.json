@@ -29,7 +29,8 @@
       "include_dirs": [
         "components/storage_manager/tests/stubs",
         "components/storage_manager",
-        "components/storage_manager/include"
+        "components/storage_manager/include",
+        "components/spi_bus/include"
       ]
     }
   ]
