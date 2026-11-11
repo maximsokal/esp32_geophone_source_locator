@@ -2,6 +2,8 @@
 #define NRF_CS_DISTANCE_METHOD_H
 
 #include <math.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /*
@@ -63,6 +65,38 @@ static inline uint16_t nrf_cs_distance_method_flag(nrf_cs_distance_method_t meth
         case NRF_CS_DISTANCE_METHOD_PHASE: return NRF_CS_PROVIDER_METHOD_PHASE;
         case NRF_CS_DISTANCE_METHOD_RTT: return NRF_CS_PROVIDER_METHOD_RTT;
         default: return 0U;
+    }
+}
+
+/*
+ * Constant excess of the phase-based distance (IFFT, phase slope) on the Seeed XIAO nRF54L15 with the external antenna.
+ * Evidence: two bench pairs of true distance 2.0 m read 3.65 m and 3.94 m (bench logs 2026-11-05, +1.65 m and +1.94 m),
+ * and the Seeed reference ras_initiator subtracts a similar offset ("~1.75m offset at short range"; DevZone 125048).
+ * The value comes from those two pairs and that note: it is board and antenna specific, not a calibrated study.
+ */
+#define NRF_CS_PBR_DISTANCE_OFFSET_MM 1800
+
+/*
+ * The distance to report from the raw distance of one method. Phase-based methods lose the offset; a raw value that is not
+ * longer than the offset cannot be a real measurement. RTT has its own, unmeasured offset and is passed through. Returns
+ * false (output untouched) when there is no usable distance.
+ */
+static inline bool nrf_cs_distance_calibrate_mm(
+    int32_t raw_mm, nrf_cs_distance_method_t method, int32_t *calibrated_mm)
+{
+    if (calibrated_mm == NULL) return false;
+    switch (method) {
+        case NRF_CS_DISTANCE_METHOD_IFFT:
+        case NRF_CS_DISTANCE_METHOD_PHASE:
+            if (raw_mm <= NRF_CS_PBR_DISTANCE_OFFSET_MM) return false;
+            *calibrated_mm = raw_mm - NRF_CS_PBR_DISTANCE_OFFSET_MM;
+            return true;
+        case NRF_CS_DISTANCE_METHOD_RTT:
+            if (raw_mm < 0) return false;
+            *calibrated_mm = raw_mm;
+            return true;
+        default:
+            return false;
     }
 }
 

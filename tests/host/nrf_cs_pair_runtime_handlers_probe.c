@@ -120,6 +120,7 @@ static float s_iq_ifft_scratch[2U * 512U];
 static cs_de_report_t s_de_report;
 static struct {uint8_t channel_map[10];} s_cs_config;
 static bool s_ras_skip,s_ras_malformed,s_ras_bad_paths;
+static bool s_ras_full_coverage;    /* a tone on every one of the 75 slots instead of the 16 lowest (no wide hole) */
 static bool s_ras_identity_from_payload;
 static unsigned s_de_calls;
 static unsigned s_de_scenario;
@@ -375,7 +376,7 @@ static void bt_ras_rreq_rd_subevent_data_parse(struct net_buf_simple *a,struct n
     if(s_ras_bad_paths)h.antenna_paths_mask=2;
     if(!header_cb(&h,context))return;
     uint8_t tone[5]={0};
-    for(uint8_t i=2;i<18;++i){
+    for(uint8_t i=2;i<(s_ras_full_coverage?77:18);++i){
         if(s_de_scenario==8 && i==9)continue;
         struct bt_le_cs_subevent_step step={2,i,sizeof(tone),tone};
         if(!step_cb(&step,&step,context))return;
@@ -417,19 +418,26 @@ static cs_de_quality_t cs_de_calc(cs_de_report_t *report)
         }
         procedure_enable_complete_cb(s_outgoing_conn,error,NULL);
     }
-    report->distance_estimates[0].ifft=1;report->distance_estimates[0].phase_slope=2;
-    report->distance_estimates[0].rtt=1;report->distance_estimates[0].best=1;
+    /* Raw library estimates. The phase-based ones (ifft, phase slope, and best taken from them) carry the 1.8 m excess that
+     * the production code subtracts (NRF_CS_PBR_DISTANCE_OFFSET_MM): raw 2.8 m reports as 1000 mm. The RTT is not corrected. */
+    report->distance_estimates[0].ifft=2.8f;report->distance_estimates[0].phase_slope=3.8f;
+    report->distance_estimates[0].rtt=1.0f;report->distance_estimates[0].best=2.8f;
     if(s_de_scenario==1)report->distance_estimates[0].best=NAN;
     if(s_de_scenario==2)report->distance_estimates[0].best=INFINITY;
     if(s_de_scenario==3)report->distance_estimates[0].best=-1;
-    if(s_de_scenario==4){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=NAN;}
-    if(s_de_scenario==5){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].best=2;}
+    /* Only RTT is left, and "best" is the RTT: reported without the phase-based offset (1.0 m is below it). */
+    if(s_de_scenario==4){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=NAN;report->distance_estimates[0].best=1.0f;}
+    if(s_de_scenario==5){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].best=3.8f;}
     if(s_de_scenario==6 || s_de_scenario==7){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=NAN;report->distance_estimates[0].best=NAN;}
     if(s_de_scenario==7)report->distance_estimates[0].rtt=NAN;
     if(s_de_scenario==9)report->distance_estimates[0].rtt=NAN;
     if(s_de_scenario==10)report->distance_estimates[0].rtt=0.0f;
     if(s_de_scenario==11){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=NAN;report->distance_estimates[0].best=NAN;report->distance_estimates[0].rtt=0.0f;}
     if(s_de_scenario==12){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=NAN;report->distance_estimates[0].best=0.0f;report->distance_estimates[0].rtt=0.0f;}
+    /* Real bench numbers (2.0 m pair, 2026-11-05): phase-based answers 1.65 m too long. */
+    if(s_de_scenario==13){report->distance_estimates[0].ifft=3.650f;report->distance_estimates[0].phase_slope=3.552f;report->distance_estimates[0].rtt=2.996f;report->distance_estimates[0].best=3.650f;}
+    /* Phase slope only, raw 1.464 m: not longer than the offset, so not a measurement. */
+    if(s_de_scenario==14){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=1.464f;report->distance_estimates[0].best=1.464f;}
     return CS_DE_QUALITY_OK;
 }
 static void cs_de_combined_iq_calculate(void *tones,float *iq)
@@ -441,7 +449,7 @@ static float cs_de_ifft(float *iq)
     /* Like the library, leave the IFFT magnitude profile in the first NFFT floats of the buffer. */
     for(unsigned i=0;i<CONFIG_BT_CS_DE_NFFT_SIZE;i++)iq[i]=1.0f;
     iq[100]=s_probe_profile_peak;
-    return 1.5f;
+    return 3.3f;    /* raw, like the estimates of cs_de_calc: 1.5 m after the 1.8 m offset */
 }
 #include "estimate_measurement.inc"
 static void cleanup_work_handler(struct k_work *work);
@@ -500,7 +508,7 @@ static void start_queued(unsigned sync_delay,unsigned queue_delay)
     s_trace_event_count=s_trace_execute_count=s_trace_timeout_count=s_trace_result_count=s_trace_rf_count=0;
     s_trace_estimates_count=0;
     s_outgoing_conn=&s_connection;s_incoming_conn=NULL;
-    s_ras_skip=s_ras_malformed=s_ras_bad_paths=false;s_de_calls=s_de_scenario=0;
+    s_ras_skip=s_ras_malformed=s_ras_bad_paths=s_ras_full_coverage=false;s_de_calls=s_de_scenario=0;
     s_ras_identity_from_payload=false;
     s_confidence=0;memset(&s_cs_config,255,sizeof(s_cs_config));
     s_timeout_step=(nrf_cs_step_t){.cycle_id=1,.membership_generation=1,
@@ -1804,6 +1812,7 @@ int main(void)
     cleanup_work_handler(NULL);
     assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_confidence==400);
     assert((s_provider_flags & 0x70U)==NRF_CS_PROVIDER_METHOD_RTT && s_trace_est[3]==1.0f);
+    assert(s_trace_result_distance==1000);                   /* RTT-sourced: no phase-based offset subtracted */
     start(0);advance_to_procedure();s_ras_skip=true;s_de_scenario=7;
     s_now=100;s_local_steps.len=s_peer_owned.len=1;
     deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
@@ -1814,11 +1823,11 @@ int main(void)
     s_now=100;s_local_steps.len=s_peer_owned.len=1;
     deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
     cleanup_work_handler(NULL);
-    assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_distance==1500 && s_trace_est[0]==1.5f);
+    assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_distance==1500 && s_trace_est[0]==3.3f);   /* raw 3.3 m, reported 1500 mm */
     /* The peak sharpness of that IFFT (peak 3 over a floor of 1) reaches the trace as 3.0, in tenths. */
     assert(s_trace_peak_floor_x10==30U);
-    /* Both IFFTs are in the log: the library's own (1.0 m, what cs_de_calc returned) and the one with the gap filled (1.5 m, used). */
-    assert(s_trace_stock_ifft==1.0f && s_trace_est[0]==1.5f);
+    /* Both IFFTs are in the log: the library's own (raw 2.8 m, what cs_de_calc returned) and the one with the gap filled (raw 3.3 m, used). */
+    assert(s_trace_stock_ifft==2.8f && s_trace_est[0]==3.3f);
     assert(strcmp(s_trace_why,"ok")==0);
     /* Missing RTT must leave the raw PBR result visible but below the production 500 gate (the IFFT peak is not sharp). */
     start(0);advance_to_procedure();s_de_scenario=9;
@@ -1831,14 +1840,15 @@ int main(void)
     /* The same answer with a sharp IFFT peak (30 over the floor) is a clean direct path: above the gate, the peak in the trace.
      * Bench 2026-11-03: MAIN->G4 was correct (4.95 and 5.01 m) and rejected for the missing RTT alone. */
     s_probe_profile_peak=30.0f;
-    start(0);advance_to_procedure();s_de_scenario=9;
+    /* start() resets the flag; a hole of 30 slots or more would hold the answer at its plain confidence (wide_gap) */
+    start(0);advance_to_procedure();s_de_scenario=9;s_ras_full_coverage=true;
     s_now=100;s_local_steps.len=s_peer_owned.len=1;
     deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
     cleanup_work_handler(NULL);
     assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_distance==1000 && s_confidence==600U && s_trace_peak_floor_x10==300U);
     assert(strcmp(s_trace_why,"sharp_peak")==0);
     assert((s_provider_flags & NRF_CS_PROVIDER_QUALITY_RTT_VALID)==0U);
-    s_probe_profile_peak=3.0f;
+    s_probe_profile_peak=3.0f;s_ras_full_coverage=false;
     /* Nordic clamps nonpositive RTT timing to zero; it is not an independent range. */
     start(0);advance_to_procedure();s_de_scenario=10;
     s_now=100;s_local_steps.len=s_peer_owned.len=1;
@@ -1858,6 +1868,23 @@ int main(void)
     cleanup_work_handler(NULL);
     assert(s_outcome==NRF_CS_OUTCOME_OUTLIER && (s_provider_flags & NRF_CS_PROVIDER_METHOD_MASK)==0U);
     assert(s_trace_est[2]==0.0f && isnan(s_trace_est[3]));
+    /* The real bench numbers (raw IFFT 3.650 m, phase slope 3.552 m, RTT 2.996 m) report raw minus 1800 mm. The IFFT is
+     * 12.47 bins (not on the grid), 0.098 m from the phase slope and 0.654 m from the RTT, so nothing caps the confidence. */
+    start(0);advance_to_procedure();s_de_scenario=13;
+    s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    cleanup_work_handler(NULL);
+    assert(s_outcome==NRF_CS_OUTCOME_SUCCESS && s_trace_result_distance==1850 && s_confidence==613U);
+    assert((s_provider_flags & 0x70U)==NRF_CS_PROVIDER_METHOD_IFFT);
+    assert(s_trace_est[0]==3.650f && s_trace_est[1]==3.552f && s_trace_est[2]==2.996f && s_trace_est[3]==3.650f);   /* the trace stays raw */
+    assert(strcmp(s_trace_why,"ok")==0);
+    /* A raw phase-based distance of 1.464 m is shorter than the offset: an outlier without distance or confidence. */
+    start(0);advance_to_procedure();s_de_scenario=14;
+    s_now=100;s_local_steps.len=s_peer_owned.len=1;
+    deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
+    cleanup_work_handler(NULL);
+    assert(s_outcome==NRF_CS_OUTCOME_OUTLIER && s_trace_result_distance==0 && s_confidence==0U);
+    assert((s_provider_flags & 0x70U)==NRF_CS_PROVIDER_METHOD_PHASE && s_trace_est[1]==1.464f);
     start(0);advance_to_procedure();s_ras_bad_paths=true;
     s_now=100;s_local_steps.len=s_peer_owned.len=1;
     deliver(RUNTIME_EVENT_LOCAL_COMPLETE,&s_timeout_step);deliver(RUNTIME_EVENT_PEER_COMPLETE,&s_timeout_step);
@@ -1883,7 +1910,7 @@ int main(void)
     cleanup_work_handler(NULL);
     assert(s_trace_timeout_count==0 && s_trace_result_count==1 && s_trace_result_outcome==NRF_CS_OUTCOME_SUCCESS);
     /* All three estimates of the library reach the trace, not only "best": the method is picked from them. */
-    assert(s_trace_estimates_count==1 && s_trace_est[0]==1.0f && s_trace_est[1]==2.0f && s_trace_est[2]==1.0f && s_trace_est[3]==1.0f);
+    assert(s_trace_estimates_count==1 && s_trace_est[0]==2.8f && s_trace_est[1]==3.8f && s_trace_est[2]==1.0f && s_trace_est[3]==2.8f);
     assert(s_trace_result_confidence==s_confidence && s_trace_rf_count==1);
     assert(s_trace_result_has_timing && s_trace_result_timing.valid);
     assert(s_trace_result_timing.measured_ms==100 && s_trace_result_timing.cleanup_ms==0);

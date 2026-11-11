@@ -558,11 +558,12 @@ static nrf_cs_measurement_t estimate_measurement(void)
         tone_stats.lead_gap, tone_stats.tail_gap, peak_floor_x10, stock_ifft_m, why);
 
     /* CS-ESTIMATOR-01: record which estimate "best" came from, in the attempt record the ESP32 reads. */
-    measurement.provider_quality_flags |= nrf_cs_distance_method_flag(nrf_cs_distance_method_of(
+    const nrf_cs_distance_method_t distance_method = nrf_cs_distance_method_of(
         nrf_cs_distance_mm_from_m(s_de_report.distance_estimates[0].ifft),
         nrf_cs_distance_mm_from_m(s_de_report.distance_estimates[0].phase_slope),
         nrf_cs_distance_mm_from_m(s_de_report.distance_estimates[0].rtt),
-        nrf_cs_distance_mm_from_m(s_de_report.distance_estimates[0].best)));
+        nrf_cs_distance_mm_from_m(s_de_report.distance_estimates[0].best));
+    measurement.provider_quality_flags |= nrf_cs_distance_method_flag(distance_method);
     if (s_realtime_ras) {
         measurement.provider_quality_flags |= NRF_CS_PROVIDER_QUALITY_REALTIME_RAS;
     }
@@ -587,8 +588,13 @@ static nrf_cs_measurement_t estimate_measurement(void)
         return measurement;
     }
 
+    /* Only the reported distance is calibrated; the confidence below and the trace above use the raw estimates. */
+    int32_t calibrated_mm;
+    if (!nrf_cs_distance_calibrate_mm((int32_t)(mm + 0.5), distance_method, &calibrated_mm)) {
+        return measurement;
+    }
     measurement.outcome = NRF_CS_OUTCOME_SUCCESS;
-    measurement.distance_mm = (int32_t)(mm + 0.5);
+    measurement.distance_mm = calibrated_mm;
     /* MAX-206: evidence-based confidence (tone coverage, PBR/RTT agreement)
      * instead of a constant 1000 for every success. */
     measurement.confidence = nrf_cs_measurement_confidence_with_methods(

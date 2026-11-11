@@ -198,6 +198,15 @@ def test_estimate_measurement_uses_coverage_aware_confidence_with_tone_stats_fir
     assert grid_pos < source.index("nrf_cs_measurement_confidence_with_methods(")
 
 
+def test_estimate_measurement_calibrates_only_the_reported_distance_after_the_raw_trace():
+    """The raw estimates are traced and decide the confidence; the one calibration call only changes the reported value."""
+    source = text(RUNTIME_PARTS[1])
+
+    assert source.count("nrf_cs_distance_calibrate_mm(") == 1
+    assert source.count("nrf_cs_distance_method_of(") == 1
+    assert source.index("nrf_cs_trace_zephyr_estimates(") < source.index("nrf_cs_distance_calibrate_mm(")
+
+
 def test_common_build_and_host_manifest_include_pair_adapter():
     cmake = text(CMAKE)
     manifest = json.loads(text(MANIFEST))

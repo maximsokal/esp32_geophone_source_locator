@@ -68,6 +68,40 @@ static void test_the_method_survives_the_attempt_record(void)
     assert(strcmp(nrf_cs_distance_method_name((nrf_cs_distance_method_t)99), "none") == 0);
 }
 
+/* Bench 2026-11-05: two pairs at 2.0 m read 3.65 m and 3.94 m; the phase-based distance loses a fixed offset, RTT does not. */
+static void test_phase_based_distance_loses_the_fixed_offset_and_rtt_does_not(void)
+{
+    const int32_t sentinel = -777;
+    int32_t out = sentinel;
+
+    assert(NRF_CS_PBR_DISTANCE_OFFSET_MM == 1800);
+
+    assert(nrf_cs_distance_calibrate_mm(3650, NRF_CS_DISTANCE_METHOD_IFFT, &out) && out == 1850);
+    assert(nrf_cs_distance_calibrate_mm(3940, NRF_CS_DISTANCE_METHOD_IFFT, &out) && out == 2140);
+    assert(nrf_cs_distance_calibrate_mm(1801, NRF_CS_DISTANCE_METHOD_IFFT, &out) && out == 1);
+    assert(nrf_cs_distance_calibrate_mm(3552, NRF_CS_DISTANCE_METHOD_PHASE, &out) && out == 1752);
+
+    /* A raw phase-based distance that is not longer than the offset is not a measurement. */
+    out = sentinel;
+    assert(!nrf_cs_distance_calibrate_mm(1800, NRF_CS_DISTANCE_METHOD_IFFT, &out) && out == sentinel);
+    assert(!nrf_cs_distance_calibrate_mm(1464, NRF_CS_DISTANCE_METHOD_IFFT, &out) && out == sentinel);
+    assert(!nrf_cs_distance_calibrate_mm(0, NRF_CS_DISTANCE_METHOD_IFFT, &out) && out == sentinel);
+    assert(!nrf_cs_distance_calibrate_mm(-5, NRF_CS_DISTANCE_METHOD_IFFT, &out) && out == sentinel);
+    assert(!nrf_cs_distance_calibrate_mm(1800, NRF_CS_DISTANCE_METHOD_PHASE, &out) && out == sentinel);
+
+    /* RTT has its own, unmeasured offset: passed through unchanged. */
+    assert(nrf_cs_distance_calibrate_mm(2996, NRF_CS_DISTANCE_METHOD_RTT, &out) && out == 2996);
+    assert(nrf_cs_distance_calibrate_mm(0, NRF_CS_DISTANCE_METHOD_RTT, &out) && out == 0);
+    out = sentinel;
+    assert(!nrf_cs_distance_calibrate_mm(-1, NRF_CS_DISTANCE_METHOD_RTT, &out) && out == sentinel);
+
+    /* No method, or a value that is none of them: no distance. */
+    assert(!nrf_cs_distance_calibrate_mm(3000, NRF_CS_DISTANCE_METHOD_NONE, &out) && out == sentinel);
+    assert(!nrf_cs_distance_calibrate_mm(3000, (nrf_cs_distance_method_t)99, &out) && out == sentinel);
+
+    assert(!nrf_cs_distance_calibrate_mm(3650, NRF_CS_DISTANCE_METHOD_IFFT, NULL));
+}
+
 /* The ESP32 prints every attempt record with the method (RANGING_SAMPLE in the ESP log). */
 static void test_the_esp_line_of_an_attempt_record_names_the_method(void)
 {
@@ -354,6 +388,7 @@ int main(void)
     test_peak_to_floor_of_a_magnitude_profile();
     test_metres_become_millimetres_or_unavailable();
     test_the_method_follows_the_rule_of_the_library();
+    test_phase_based_distance_loses_the_fixed_offset_and_rtt_does_not();
     test_the_method_survives_the_attempt_record();
     test_the_esp_line_of_an_attempt_record_names_the_method();
     test_the_method_bits_cross_the_result_frame();
