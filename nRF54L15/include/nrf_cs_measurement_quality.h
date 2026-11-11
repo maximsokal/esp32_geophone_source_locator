@@ -85,6 +85,9 @@ typedef enum {
     NRF_CS_CONFIDENCE_REASON_RTT_MISSING,
     NRF_CS_CONFIDENCE_REASON_RTT_DISAGREES,
     NRF_CS_CONFIDENCE_REASON_RTT_ONLY,
+    NRF_CS_CONFIDENCE_REASON_WIDE_GAP,
+    NRF_CS_CONFIDENCE_REASON_PEAK_COMPENSATED,
+    NRF_CS_CONFIDENCE_REASON_METHODS_DISAGREE,
 } nrf_cs_confidence_reason_t;
 
 nrf_cs_confidence_reason_t nrf_cs_measurement_confidence_reason(
@@ -97,6 +100,77 @@ nrf_cs_confidence_reason_t nrf_cs_measurement_confidence_reason(
     float peak_to_floor
 );
 const char *nrf_cs_confidence_reason_name(nrf_cs_confidence_reason_t reason);
+
+/*
+ * The same two functions, aware of the IFFT input coverage. The IFFT runs over 75 slots and slots without a usable tone are zeros;
+ * nrf_cs_iq_gap_fill.h fills only holes shorter than NRF_CS_IQ_GAP_FILL_LIMIT (30 slots, a gap-fill limit, not a measured value).
+ * A run of `longest_gap` >= that limit stays zeros and can make a side lobe that looks like a sharp peak at a wrong distance, so
+ * the sharp-peak lift is not applied: the result keeps the plain confidence. The reason is WIDE_GAP exactly when the gap removed
+ * a lift (the reason would otherwise have been SHARP_PEAK); in every other case it is the reason of the function without coverage.
+ */
+uint16_t nrf_cs_measurement_confidence_with_coverage(
+    uint16_t good_tone_channels,
+    uint16_t tone_ok_threshold,
+    bool pbr_valid,
+    bool rtt_valid,
+    float best_m,
+    float rtt_m,
+    float peak_to_floor,
+    uint8_t longest_gap
+);
+
+nrf_cs_confidence_reason_t nrf_cs_measurement_confidence_reason_with_coverage(
+    uint16_t good_tone_channels,
+    uint16_t tone_ok_threshold,
+    bool pbr_valid,
+    bool rtt_valid,
+    float best_m,
+    float rtt_m,
+    float peak_to_floor,
+    uint8_t longest_gap
+);
+
+/*
+ * The same, with two signs that the IFFT answer is not reliable (bench logs of 2026-11-05 and 2026-11-10, 48 measurements at known positions):
+ * every IFFT distance that sat exactly on the IFFT bin grid (the library skipped its peak interpolation) belonged to a pair whose
+ * readings jumped by 0.9-2.9 m between attempts, and unstable pairs had IFFT and phase-slope distances up to 3.7 m apart while stable
+ * pairs agreed within 0.10-0.77 m. When `best_m` is the IFFT answer and either sign is present, the confidence is capped at
+ * NRF_CS_UNCORROBORATED_PEAK_CONFIDENCE, below the 500 production gate; the sample is still logged. Both numbers come from these
+ * 48 bench measurements, not from a calibrated study. `ifft_on_bin_grid` is computed by the caller (nrf_cs_ifft_on_bin_grid()), so
+ * this module does not need the NFFT size; a NAN `phase_slope_m` is "unknown" and never counts as disagreement.
+ * The reason is PEAK_COMPENSATED (on grid, wins when both signs are present) or METHODS_DISAGREE exactly when the cap lowered the
+ * confidence; in every other case it is the reason of the function with coverage.
+ */
+#define NRF_CS_METHOD_AGREEMENT_M 1.0f
+#define NRF_CS_UNCORROBORATED_PEAK_CONFIDENCE 400U
+
+uint16_t nrf_cs_measurement_confidence_with_methods(
+    uint16_t good_tone_channels,
+    uint16_t tone_ok_threshold,
+    bool pbr_valid,
+    bool rtt_valid,
+    float best_m,
+    float rtt_m,
+    float peak_to_floor,
+    uint8_t longest_gap,
+    float ifft_m,
+    float phase_slope_m,
+    bool ifft_on_bin_grid
+);
+
+nrf_cs_confidence_reason_t nrf_cs_measurement_confidence_reason_with_methods(
+    uint16_t good_tone_channels,
+    uint16_t tone_ok_threshold,
+    bool pbr_valid,
+    bool rtt_valid,
+    float best_m,
+    float rtt_m,
+    float peak_to_floor,
+    uint8_t longest_gap,
+    float ifft_m,
+    float phase_slope_m,
+    bool ifft_on_bin_grid
+);
 
 #ifdef __cplusplus
 }

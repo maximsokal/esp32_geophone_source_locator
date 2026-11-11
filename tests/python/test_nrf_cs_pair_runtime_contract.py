@@ -169,7 +169,7 @@ def test_distance_confidence_comes_from_measurement_evidence():
     assert "distance_estimates[0].best" in runtime
     assert "isfinite(best)" in runtime
     assert "measurement.confidence = 1000U" not in runtime
-    assert "measurement.confidence = nrf_cs_measurement_confidence_with_peak(" in runtime
+    assert "measurement.confidence = nrf_cs_measurement_confidence_with_methods(" in runtime
     assert "peak_floor_ratio" in runtime      # the sharpness of the IFFT peak is an input of the confidence (bench 2026-11-03)
     assert "good_tones" in runtime
     assert "distance_estimates[0].rtt" in runtime
@@ -177,6 +177,25 @@ def test_distance_confidence_comes_from_measurement_evidence():
     assert "NRF_CS_PROVIDER_QUALITY_TONE_OK" in header
     assert "NRF_CS_PROVIDER_QUALITY_PBR_VALID" in header
     assert "NRF_CS_PROVIDER_QUALITY_RTT_VALID" in header
+
+
+def test_estimate_measurement_uses_coverage_aware_confidence_with_tone_stats_first():
+    """A wide hole in the IFFT input must not get the sharp-peak lift: the runtime passes longest_gap to both functions.
+    An IFFT answer on the bin grid or far from the phase slope is capped: the on-grid flag is computed once, before both calls."""
+    source = text(RUNTIME_PARTS[1])
+
+    assert "nrf_cs_measurement_confidence_with_methods(" in source
+    assert "nrf_cs_measurement_confidence_reason_with_methods(" in source
+    assert "nrf_cs_measurement_confidence_with_coverage(" not in source
+    assert "nrf_cs_measurement_confidence_reason_with_coverage(" not in source
+    assert "nrf_cs_measurement_confidence_with_peak(" not in source
+    stats_pos = source.index("= current_tone_stats();")
+    assert stats_pos < source.index("nrf_cs_measurement_confidence_reason_with_methods(")
+    assert stats_pos < source.index("nrf_cs_measurement_confidence_with_methods(")
+    assert source.count("nrf_cs_ifft_on_bin_grid(") == 1
+    grid_pos = source.index("nrf_cs_ifft_on_bin_grid(")
+    assert grid_pos < source.index("nrf_cs_measurement_confidence_reason_with_methods(")
+    assert grid_pos < source.index("nrf_cs_measurement_confidence_with_methods(")
 
 
 def test_common_build_and_host_manifest_include_pair_adapter():

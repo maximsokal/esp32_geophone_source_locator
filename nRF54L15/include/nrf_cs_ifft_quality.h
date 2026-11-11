@@ -2,6 +2,7 @@
 #define NRF_CS_IFFT_QUALITY_H
 
 #include <math.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -57,6 +58,26 @@ static inline float nrf_cs_ifft_peak_to_floor(float *mag, size_t n)
         median = 0.5f * (lower + upper);
     }
     return median > 0.0f ? peak / median : NAN;
+}
+
+/*
+ * One IFFT bin is c / (2 * NFFT * 1 MHz) of distance (0.2928 m for NFFT 512; the tone spacing is 1 MHz and the path is there and back).
+ * cs_de_ifft() normally interpolates the peak between bins. When it judges the peak abnormally wide it shifts the peak by its left null
+ * and skips the interpolation, so an answer that sits exactly on the bin grid was not interpolated. The tolerance is in bins: it
+ * is larger than the 1 mm rounding of the logged distances (0.004 of a bin) and far below the spread of interpolated values.
+ */
+#define NRF_CS_IFFT_SPEED_OF_LIGHT_MPS 299792458.0f
+#define NRF_CS_IFFT_TONE_SPACING_HZ 1.0e6f
+#define NRF_CS_IFFT_ON_GRID_TOLERANCE_BINS 0.01f
+
+/* True when `ifft_m` is a positive whole number of IFFT bins (within the tolerance) for an `nfft`-point IFFT. */
+static inline bool nrf_cs_ifft_on_bin_grid(float ifft_m, uint16_t nfft)
+{
+    if (!isfinite(ifft_m) || ifft_m <= 0.0f || nfft == 0U) return false;
+    const float bin_m = NRF_CS_IFFT_SPEED_OF_LIGHT_MPS / (2.0f * (float)nfft * NRF_CS_IFFT_TONE_SPACING_HZ);
+    const float bins = ifft_m / bin_m;
+    const float nearest = roundf(bins);
+    return nearest >= 1.0f && fabsf(bins - nearest) < NRF_CS_IFFT_ON_GRID_TOLERANCE_BINS;
 }
 
 #endif

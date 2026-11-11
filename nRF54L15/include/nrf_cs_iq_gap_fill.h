@@ -6,6 +6,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Holes of this many slots or more are not filled (an engineering limit, not a measured value). */
+#define NRF_CS_IQ_GAP_FILL_LIMIT 30U
+
 /* Nordic DevZone case 129386: interpolate interior combined IQ in log magnitude
  * and phase; unwrap with the measured adjacent-tone slope, never extrapolate edges.
  * shortcut: gaps of 30 MHz or wider remain unfilled until wide-gap multipath behavior is validated. */
@@ -33,7 +36,7 @@ static inline size_t nrf_cs_iq_gap_fill(float *iq, const uint16_t *counts, size_
         while (right < channels && counts[right] == 0U) ++right;
         if (right == channels) break;
         const size_t gap = right - left - 1U;
-        if (gap > 0U && gap < 30U) {
+        if (gap > 0U && gap < NRF_CS_IQ_GAP_FILL_LIMIT) {
             const float a = hypotf(iq[2U * left], iq[2U * left + 1U]);
             const float b = hypotf(iq[2U * right], iq[2U * right + 1U]);
             if (isfinite(a) && isfinite(b) && a > 0.0f && b > 0.0f) {

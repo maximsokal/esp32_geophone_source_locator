@@ -528,6 +528,9 @@ static nrf_cs_measurement_t estimate_measurement(void)
             peak_floor_x10 = scaled >= 65535.0f ? UINT16_MAX : (uint16_t)scaled;
         }
     }
+    /* An IFFT answer exactly on the bin grid was not interpolated by the library: not corroborated (bench 2026-11-10). */
+    const bool ifft_on_bin_grid =
+        nrf_cs_ifft_on_bin_grid(s_de_report.distance_estimates[0].ifft, CONFIG_BT_CS_DE_NFFT_SIZE);
     /* NCS 3.4 skips best selection when PBR tones are bad, even if RTT is available. */
     if (quality == CS_DE_QUALITY_OK && s_de_report.tone_quality[0] == CS_DE_TONE_QUALITY_BAD &&
         !isfinite(s_de_report.distance_estimates[0].best) && isfinite(s_de_report.distance_estimates[0].rtt) &&
@@ -541,12 +544,14 @@ static nrf_cs_measurement_t estimate_measurement(void)
         s_de_report.distance_estimates[0].best = NAN;
     }
     /* The factor that decides the confidence, in the log next to the estimates it is made of. */
-    const char *const why = nrf_cs_confidence_reason_name(nrf_cs_measurement_confidence_reason(
+    const nrf_cs_tone_stats_t tone_stats = current_tone_stats();
+    const char *const why = nrf_cs_confidence_reason_name(nrf_cs_measurement_confidence_reason_with_methods(
         good_tones, NRF_CS_TONE_OK_THRESHOLD,
         isfinite(s_de_report.distance_estimates[0].ifft) || isfinite(s_de_report.distance_estimates[0].phase_slope),
         isfinite(s_de_report.distance_estimates[0].rtt) && s_de_report.distance_estimates[0].rtt > 0.0f,
-        s_de_report.distance_estimates[0].best, s_de_report.distance_estimates[0].rtt, peak_floor_ratio));
-    const nrf_cs_tone_stats_t tone_stats = current_tone_stats();
+        s_de_report.distance_estimates[0].best, s_de_report.distance_estimates[0].rtt, peak_floor_ratio,
+        tone_stats.longest_gap, s_de_report.distance_estimates[0].ifft,
+        s_de_report.distance_estimates[0].phase_slope, ifft_on_bin_grid));
     nrf_cs_trace_zephyr_estimates(s_timeout_step.attempt_id, s_de_report.distance_estimates[0].ifft,
         s_de_report.distance_estimates[0].phase_slope, s_de_report.distance_estimates[0].rtt,
         s_de_report.distance_estimates[0].best, tone_stats.planned, tone_stats.usable, tone_stats.longest_gap,
@@ -586,14 +591,18 @@ static nrf_cs_measurement_t estimate_measurement(void)
     measurement.distance_mm = (int32_t)(mm + 0.5);
     /* MAX-206: evidence-based confidence (tone coverage, PBR/RTT agreement)
      * instead of a constant 1000 for every success. */
-    measurement.confidence = nrf_cs_measurement_confidence_with_peak(
+    measurement.confidence = nrf_cs_measurement_confidence_with_methods(
         good_tones,
         NRF_CS_TONE_OK_THRESHOLD,
         (measurement.provider_quality_flags & NRF_CS_PROVIDER_QUALITY_PBR_VALID) != 0U,
         (measurement.provider_quality_flags & NRF_CS_PROVIDER_QUALITY_RTT_VALID) != 0U,
         best,
         s_de_report.distance_estimates[0].rtt,
-        peak_floor_ratio
+        peak_floor_ratio,
+        tone_stats.longest_gap,
+        s_de_report.distance_estimates[0].ifft,
+        s_de_report.distance_estimates[0].phase_slope,
+        ifft_on_bin_grid
     );
     return measurement;
 }
