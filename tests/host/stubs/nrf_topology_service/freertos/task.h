@@ -10,7 +10,11 @@ BaseType_t xTaskCreatePinnedToCore(
     UBaseType_t priority,
     TaskHandle_t *created_task,
     BaseType_t core_id);
+BaseType_t xTaskCreatePinnedToCoreWithCaps(
+    TaskFunction_t entry, const char *name, uint32_t stack_depth, void *parameters,
+    UBaseType_t priority, TaskHandle_t *created_task, BaseType_t core_id, UBaseType_t caps);
 void vTaskDelete(TaskHandle_t task);
+void vTaskDeleteWithCaps(TaskHandle_t task);
 void vTaskDelay(TickType_t ticks);
 TickType_t xTaskGetTickCount(void);
 TaskHandle_t xTaskGetCurrentTaskHandle(void);

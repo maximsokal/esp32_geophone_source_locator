@@ -19,6 +19,7 @@ idf_component_register(
         log
         nrf_topology_service
         object_store
+        runtime_observability
 
     PRIV_REQUIRES
         heap

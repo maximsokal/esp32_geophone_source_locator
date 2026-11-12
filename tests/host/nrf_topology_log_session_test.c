@@ -55,10 +55,13 @@ static unsigned s_injected_status_faults;
 static uint32_t s_rx_transport_ok;
 static uint32_t s_rx_crc_ok;
 static uint32_t s_rx_crc_fail;
+static bool s_fail_collector_alloc;
+static unsigned s_collector_free_count;
 
 void *heap_caps_calloc(size_t count, size_t size, unsigned caps)
 {
     (void)caps;
+    if (s_fail_collector_alloc) return NULL;
     return calloc(count, size);
 }
 
@@ -68,7 +71,7 @@ void *heap_caps_malloc(size_t size, unsigned caps)
     return malloc(size);
 }
 
-void heap_caps_free(void *memory) { free(memory); }
+void heap_caps_free(void *memory) { if (memory != NULL) ++s_collector_free_count; free(memory); }
 void vSemaphoreDelete(SemaphoreHandle_t semaphore) { (void)semaphore; }
 
 static nrf_log_lock_key_t sim_ring_lock(void *context) { (void)context; return 0U; }
@@ -454,6 +457,21 @@ static void run_main_status_fault_scenario(unsigned window_write_faults, unsigne
 
 int main(void)
 {
+    reset_world();
+    s_fail_collector_alloc = true;
+    assert(nrf_topology_service_start() == ESP_ERR_NO_MEM);
+    assert(s_memory_before_collector && s_memory_before_alloc && s_memory_alloc_failed);
+    assert(!s_memory_before_mutex && !s_memory_task_failed);
+    s_fail_collector_alloc = false;
+    s_fail_mutex_create = true;
+    const unsigned frees_before = s_collector_free_count;
+    assert(nrf_topology_service_start() == ESP_ERR_NO_MEM);
+    assert(s_memory_before_mutex && s_memory_mutex_failed && s_collector_free_count == frees_before + 1U);
+    s_fail_mutex_create = false;
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_memory_before_task && !s_memory_task_failed);
+
     run_main_status_fault_scenario(0U, 0U); /* control: same script without a fault */
     run_main_status_fault_scenario(1U, 0U);
     run_main_status_fault_scenario(0U, 1U);

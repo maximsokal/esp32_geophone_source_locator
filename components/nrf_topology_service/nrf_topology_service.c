@@ -14,6 +14,7 @@
 #include "nrf_geometry_range_offset.h"
 #include "nrf_geometry_triangles.h"
 #include "nrf_baro_altitude.h"
+#include "runtime_observability.h"
 #include "sensor_bus_timeout.h"
 
 #if defined(ESP_PLATFORM) || defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
@@ -46,11 +47,10 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 
-#if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
 #include "esp_heap_caps.h"
-#endif
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 
 #if !defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS) || defined(NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR)
@@ -4001,7 +4001,7 @@ static void service_worker(void *context)
     platform_close(&worker->platform);
     memset(worker, 0, sizeof(*worker));
     service_clear_current_task();
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 esp_err_t nrf_topology_service_start(void)
@@ -4058,6 +4058,7 @@ esp_err_t nrf_topology_service_start(void)
 
 #if NRF_TOPOLOGY_HAS_LOG_COLLECTOR
     if (s_nrf_log_collector == NULL) {
+        runtime_observability_log_memory("topology_before_collector");
         nrf_log_collector_t *collector = nrf_log_collector_create();
         if (collector == NULL) {
             portENTER_CRITICAL(&s_state_lock);
@@ -4079,15 +4080,18 @@ esp_err_t nrf_topology_service_start(void)
 #endif
 
     TaskHandle_t task = NULL;
-    const BaseType_t result = xTaskCreatePinnedToCore(
+    runtime_observability_log_memory("topology_before_task_create");
+    const BaseType_t result = xTaskCreatePinnedToCoreWithCaps(
         service_worker,
         "nrf_topology",
         APP_TASK_STACK_NRF_TOPOLOGY,
         NULL,
         APP_TASK_PRIORITY_NRF_TOPOLOGY,
         &task,
-        APP_TASK_CORE_SERVICES);
+        APP_TASK_CORE_SERVICES,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (result != pdPASS) {
+        runtime_observability_log_memory("topology_task_create_failed");
         portENTER_CRITICAL(&s_state_lock);
         s_starting = false;
         portEXIT_CRITICAL(&s_state_lock);

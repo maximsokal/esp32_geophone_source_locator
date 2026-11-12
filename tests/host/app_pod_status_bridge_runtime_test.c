@@ -11,6 +11,8 @@
 #include "hw_inventory.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_heap_caps.h"
+#include <setjmp.h>
 #include "nrf_topology_service.h"
 #include "object_store.h"
 
@@ -128,6 +130,18 @@ static esp_err_t s_topology_error;
 static nrf_remote_sensor_cache_t s_sensor_cache[DEVICE_STATUS_POD_COUNT];
 static esp_err_t s_sensor_errors[DEVICE_STATUS_POD_COUNT];
 static unsigned s_warning_log_calls;
+static size_t s_internal_largest = SIZE_MAX;
+static bool s_run_lifecycle, s_stop_waiting, s_task_with_caps, s_fail_caps;
+static unsigned s_before_task_stages, s_task_failed_stages;
+static unsigned s_caps_creates, s_caps_deletes;
+static int s_task_token;
+static jmp_buf s_stop_return;
+
+void runtime_observability_log_memory(const char *stage)
+{
+    if (strcmp(stage, "pod_bridge_before_task_create") == 0) ++s_before_task_stages;
+    if (strcmp(stage, "pod_bridge_task_create_failed") == 0) ++s_task_failed_stages;
+}
 
 void app_pod_status_bridge_test_log(
     char level,
@@ -145,6 +159,8 @@ void app_pod_status_bridge_test_log(
 
 static void reset_fakes(void)
 {
+    s_internal_largest = SIZE_MAX;
+    s_fail_caps = false;
     hw_inventory_init();
     memset(s_barometers, 0, sizeof(s_barometers));
     memset(s_environments, 0, sizeof(s_environments));
@@ -308,16 +324,30 @@ esp_err_t device_status_set_pod_local_position(
 
 /* The lifecycle functions are linked because the production bridge contains
  * the task wrapper even though this test calls the real publication cycle. */
-TaskHandle_t xTaskGetCurrentTaskHandle(void) { return NULL; }
+TaskHandle_t xTaskGetCurrentTaskHandle(void) { return s_run_lifecycle ? &s_task_token : NULL; }
 UBaseType_t ulTaskNotifyTake(BaseType_t clear_count_on_exit, TickType_t ticks_to_wait)
 {
     (void)clear_count_on_exit;
     (void)ticks_to_wait;
-    return 0U;
+    if (s_run_lifecycle && setjmp(s_stop_return) == 0) {
+        s_stop_waiting = true;
+        app_pod_status_bridge_stop();
+        assert(false);
+    }
+    return s_run_lifecycle ? 1U : 0U;
 }
 BaseType_t xTaskNotifyGive(TaskHandle_t task) { (void)task; return pdPASS; }
-void vTaskDelete(TaskHandle_t task) { (void)task; }
-void vTaskDelay(TickType_t ticks) { (void)ticks; }
+void vTaskDelete(TaskHandle_t task) { (void)task; assert(!s_run_lifecycle || !s_task_with_caps); }
+void vTaskDeleteWithCaps(TaskHandle_t task)
+{
+    assert(task == NULL && s_run_lifecycle && s_task_with_caps);
+    ++s_caps_deletes;
+}
+void vTaskDelay(TickType_t ticks)
+{
+    (void)ticks;
+    if (s_stop_waiting) { s_stop_waiting = false; longjmp(s_stop_return, 1); }
+}
 BaseType_t xTaskCreatePinnedToCore(
     TaskFunction_t task,
     const char *name,
@@ -330,11 +360,27 @@ BaseType_t xTaskCreatePinnedToCore(
 {
     (void)task;
     (void)name;
-    (void)stack_size;
+    if (stack_size > s_internal_largest) return 0;
     (void)argument;
     (void)priority;
     (void)task_handle;
     (void)core_id;
+    return pdPASS;
+}
+
+BaseType_t xTaskCreatePinnedToCoreWithCaps(
+    TaskFunction_t task, const char *name, unsigned stack_size, void *argument,
+    unsigned priority, TaskHandle_t *task_handle, int core_id, UBaseType_t caps)
+{
+    (void)name; (void)priority;
+    assert(stack_size == 4096U && core_id == 0 && caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    ++s_caps_creates;
+    if (s_fail_caps) return 0;
+    if (s_run_lifecycle) {
+        s_task_with_caps = true;
+        *task_handle = &s_task_token;
+        task(argument);
+    }
     return pdPASS;
 }
 
@@ -465,6 +511,28 @@ static void test_stop_releases_scratch_for_reallocation(void)
     assert(app_pod_status_bridge_test_scratch_allocation_attempts() == attempts_before_stop + 1U);
 
     app_pod_status_bridge_stop();
+}
+
+static void test_low_internal_heap_starts_and_restarts_with_psram_stack(void)
+{
+    reset_fakes();
+    s_internal_largest = 3584U;
+    s_run_lifecycle = true;
+    const unsigned created = s_caps_creates, deleted = s_caps_deletes;
+    const unsigned before_stages = s_before_task_stages, failed_stages = s_task_failed_stages;
+    s_fail_caps = true;
+    assert(app_pod_status_bridge_start() == ESP_ERR_NO_MEM);
+    assert(s_caps_creates == created + 1U && s_caps_deletes == deleted);
+    assert(s_before_task_stages == before_stages + 1U && s_task_failed_stages == failed_stages + 1U);
+    s_fail_caps = false;
+    for (unsigned i = 0; i < 2; ++i) {
+        assert(app_pod_status_bridge_start() == ESP_OK);
+        app_pod_status_bridge_stop();
+        assert(s_caps_creates == created + i + 2 && s_caps_deletes == deleted + i + 1);
+        assert(s_before_task_stages == before_stages + i + 2U && s_task_failed_stages == failed_stages + 1U);
+    }
+    s_run_lifecycle = false;
+    s_internal_largest = SIZE_MAX;
 }
 
 static void test_cycle_publishes_fresh_sensor_and_frozen_geometry(void)
@@ -750,6 +818,7 @@ static void (*const s_bridge_fallback_tests[])(void) = {
     test_bus_fault_does_not_publish_four_connected_pods,
     test_cycle_updates_topology_inventory_from_existing_snapshot,
     test_stop_releases_scratch_for_reallocation,
+    test_low_internal_heap_starts_and_restarts_with_psram_stack,
 };
 #endif
 
@@ -768,6 +837,7 @@ int main(void)
     test_bus_fault_does_not_publish_four_connected_pods();
     test_cycle_updates_topology_inventory_from_existing_snapshot();
     test_stop_releases_scratch_for_reallocation();
+    test_low_internal_heap_starts_and_restarts_with_psram_stack();
 #endif
     return 0;
 }

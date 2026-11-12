@@ -3,6 +3,8 @@
 #include "esp_heap_caps.h"
 #include "freertos/semphr.h"
 
+void runtime_observability_log_memory(const char *stage) { (void)stage; }
+
 struct test_log_mutex {
     int held;
 };

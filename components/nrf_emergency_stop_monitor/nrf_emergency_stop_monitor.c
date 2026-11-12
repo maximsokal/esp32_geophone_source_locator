@@ -5,10 +5,13 @@
 
 #include "app_task_config.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "nrf_emergency_stop_policy.h"
 #include "nrf_topology_service.h"
+#include "runtime_observability.h"
 #include "seismic_recorder.h"
 
 #define NRF_EMERGENCY_STOP_MONITOR_ACTIVE_PERIOD_MS 2000U
@@ -109,14 +112,22 @@ static void monitor_task(void *argument)
 esp_err_t nrf_emergency_stop_monitor_start(void)
 {
     TaskHandle_t task = NULL;
-    const BaseType_t created = xTaskCreatePinnedToCore(
+    runtime_observability_log_memory("estop_before_task_create");
+    const BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
         monitor_task,
         "nrf_estop_monitor",
         APP_TASK_STACK_NRF_ESTOP_MONITOR,
         NULL,
         APP_TASK_PRIORITY_NRF_ESTOP_MONITOR,
         &task,
-        APP_TASK_CORE_SERVICES
+        APP_TASK_CORE_SERVICES,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     );
-    return created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    if (created != pdPASS) {
+        runtime_observability_log_memory("estop_task_create_failed");
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "Emergency stop monitor started on core=%d stack_bytes=%u stack_caps=spiram|8bit",
+             APP_TASK_CORE_SERVICES, (unsigned)APP_TASK_STACK_NRF_ESTOP_MONITOR);
+    return ESP_OK;
 }

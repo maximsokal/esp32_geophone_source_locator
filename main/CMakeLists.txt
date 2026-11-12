@@ -6,6 +6,11 @@ if(CONFIG_APP_TEST_WDT_TRIGGER)
     )
 endif()
 
+set(APP_TEST_STARTUP_HEAP_SOURCES)
+if(CONFIG_APP_TEST_STARTUP_HEAP_PRESSURE)
+    list(APPEND APP_TEST_STARTUP_HEAP_SOURCES app_test_startup_heap.c)
+endif()
+
 idf_component_register(
     SRCS
         main.c
@@ -20,6 +25,7 @@ idf_component_register(
         app_shutdown_drain.c
         app_poweroff.c
         ${APP_TEST_WDT_SOURCES}
+        ${APP_TEST_STARTUP_HEAP_SOURCES}
 
     INCLUDE_DIRS
         "."
@@ -29,6 +35,7 @@ idf_component_register(
         cjson_alloc_guard
         hw_inventory
         board_config
+        heap
         runtime_observability
         app_events
         status_indicator

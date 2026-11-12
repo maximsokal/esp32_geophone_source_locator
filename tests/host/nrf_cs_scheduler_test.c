@@ -14,6 +14,7 @@ static nrf_cs_policy_t test_policy(uint8_t max_attempts)
     policy.samples_per_pair = 1U;
     policy.full_rotation = false;
     policy.relay_order = false;
+    policy.require_both_directions = false;
     return policy;
 }
 

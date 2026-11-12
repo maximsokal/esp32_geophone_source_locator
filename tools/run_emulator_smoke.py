@@ -87,6 +87,12 @@ def _common_reasons(log_text: str, extra: dict[str, Any] | None) -> list[str]:
     panic_lines = _panic_lines(log_text)
     if panic_lines:
         reasons.append(f"panic/fatal marker: {panic_lines[0].strip()}")
+    for line in log_text.splitlines():
+        for marker in ("nRF topology service unavailable:",
+                       "nRF emergency-stop monitor unavailable:",
+                       "Pod status bridge unavailable:"):
+            if marker in line:
+                reasons.append(f"service startup failure: {line[line.index(marker):].strip()}")
     if extra:
         if extra.get("run_error"):
             reasons.append(f"runner error: {extra['run_error']}")
@@ -107,6 +113,32 @@ def evaluate_s1(log_text: str, extra: dict[str, Any] | None = None) -> tuple[boo
     ):
         if marker not in log_text:
             reasons.append(f"missing required log marker: {marker}")
+    stages = (
+        "TEST_STARTUP_HEAP: pressure_ready",
+        "TEST_STARTUP_HEAP: control_rejected",
+        "TEST_STARTUP_HEAP service=topology result=ESP_OK",
+        "TEST_STARTUP_HEAP service=estop result=ESP_OK",
+        "TEST_STARTUP_HEAP service=pod_bridge result=ESP_OK",
+        "TEST_STARTUP_HEAP: release",
+    )
+    positions = []
+    for stage in stages:
+        matches = list(re.finditer(re.escape(stage) + r"(?=\s|$)", log_text))
+        if len(matches) != 1:
+            reasons.append(f"expected exactly one marker: {stage}")
+        positions.append(matches[0].start() if matches else -1)
+    if all(position >= 0 for position in positions) and positions != sorted(positions):
+        reasons.append("startup heap markers are out of order")
+    for stage in stages[:2]:
+        for line in log_text.splitlines():
+            if stage not in line:
+                continue
+            free = re.search(r"\bfree_internal=(\d+)(?=\s|$)", line)
+            largest = re.search(r"\blargest_internal=(\d+)(?=\s|$)", line)
+            if not free or not largest or not 4096 <= int(free.group(1)) <= 6144 or int(largest.group(1)) > 3584:
+                reasons.append(f"invalid startup heap metrics: {line.strip()}")
+    if "TEST_STARTUP_HEAP: FAIL" in log_text:
+        reasons.append("startup heap pressure hook reported FAIL")
     if extra is not None and "duration_seconds" in extra:
         try:
             duration = float(extra["duration_seconds"])

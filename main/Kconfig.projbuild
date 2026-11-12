@@ -407,6 +407,14 @@ endmenu
 
 menu "Test-only emulator watchdog"
 
+    config APP_TEST_STARTUP_HEAP_PRESSURE
+        bool "Exercise nRF startup under internal heap pressure (TEST ONLY)"
+        default n
+        depends on !APP_DISPLAY_ENABLED && !APP_KEYPAD_ENABLED && SEISMIC_SOURCE_TEST
+        help
+            TEST ONLY. Holds internal heap allocations during nRF service
+            startup. Use only with the emulator profile; never on hardware.
+
     config APP_TEST_WDT_TRIGGER
         bool "Trigger interrupt watchdog once (TEST ONLY)"
         default n

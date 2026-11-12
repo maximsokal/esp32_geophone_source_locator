@@ -2,4 +2,10 @@ I (684) APP: BOOT_NO_STORAGE SD absent, continuing without storage
 W (735) APP: Display: SKIPPED
 W (735) APP: Keypad: SKIPPED
 I (735) APP: Hardware bring-up completed
+I (736) TEST_STARTUP_HEAP: pressure_ready free_internal=5455 largest_internal=3584 free_psram=100000
+I (737) TEST_STARTUP_HEAP: control_rejected free_internal=5455 largest_internal=3584 free_psram=100000
+I (738) APP: TEST_STARTUP_HEAP service=topology result=ESP_OK
+I (739) APP: TEST_STARTUP_HEAP service=estop result=ESP_OK
+I (740) APP: TEST_STARTUP_HEAP service=pod_bridge result=ESP_OK
+I (741) TEST_STARTUP_HEAP: release free_internal=20000 largest_internal=8192 free_psram=100000
 [INFO  machine] Panic intercept: 'abort' at 0x40387F1C

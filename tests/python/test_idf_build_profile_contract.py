@@ -89,6 +89,7 @@ def test_emulator_profile_uses_only_emulator_settings_and_isolated_paths(monkeyp
         "CONFIG_APP_DISPLAY_ENABLED": False,
         "CONFIG_APP_KEYPAD_ENABLED": False,
         "CONFIG_SEISMIC_SOURCE_TEST": True,
+        "CONFIG_APP_TEST_STARTUP_HEAP_PRESSURE": True,
     }
     cli_result = subprocess.run(
         [

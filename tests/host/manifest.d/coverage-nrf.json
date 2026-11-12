@@ -405,6 +405,25 @@
       ]
     },
     {
+      "name": "nrf_emergency_stop_monitor_runtime",
+      "sources": [
+        "components/nrf_emergency_stop_monitor/nrf_emergency_stop_monitor.c",
+        "components/nrf_emergency_stop_monitor/nrf_emergency_stop_policy.c",
+        "tests/host/nrf_emergency_stop_monitor_runtime_test.c"
+      ],
+      "include_dirs": [
+        "components/runtime_observability/include",
+        "tests/host/stubs/nrf_emergency_stop_monitor",
+        "tests/host/stubs/app_pod_status_bridge",
+        "tests/host/stubs/nrf_topology_service",
+        "components/app_config/include",
+        "components/nrf_emergency_stop_monitor/include",
+        "components/nrf_topology_service/include",
+        "components/nrf_topology_service",
+        "nRF54L15/include"
+      ]
+    },
+    {
       "name": "app_pod_status_bridge_runtime",
       "defines": ["HW_INVENTORY_HOST_TEST=1", "APP_POD_STATUS_BRIDGE_TEST_LOG_CAPTURE=1"],
       "sources": [
@@ -420,6 +439,7 @@
         "tests/host/app_pod_status_bridge_runtime_test.c"
       ],
       "include_dirs": [
+        "components/runtime_observability/include",
         "components/device_status/include",
         "tests/host/stubs/app_pod_status_bridge",
         "tests/host/stubs/ina3221_driver",

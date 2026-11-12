@@ -4,9 +4,8 @@
 #include <stdbool.h>
 #include <string.h>
 
-#if defined(ESP_PLATFORM)
 #include "esp_heap_caps.h"
-#else
+#if !defined(ESP_PLATFORM)
 #include <stdlib.h>
 #endif
 
@@ -20,11 +19,13 @@
 #include "device_status.h"
 #include "nrf_topology_service.h"
 #include "object_store.h"
+#include "runtime_observability.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 
 
@@ -369,7 +370,7 @@ static void bridge_task(void *argument)
 
     bridge_scratch_release();
     bridge_clear_current_task();
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 
@@ -388,17 +389,20 @@ esp_err_t app_pod_status_bridge_start(void)
     portEXIT_CRITICAL(&s_state_lock);
 
     TaskHandle_t task = NULL;
+    runtime_observability_log_memory("pod_bridge_before_task_create");
     const BaseType_t result =
-        xTaskCreatePinnedToCore(
+        xTaskCreatePinnedToCoreWithCaps(
             bridge_task,
             "pod_status_bridge",
             APP_TASK_STACK_POD_STATUS_BRIDGE,
             NULL,
             APP_TASK_PRIORITY_POD_STATUS_BRIDGE,
             &task,
-            APP_TASK_CORE_SERVICES);
+            APP_TASK_CORE_SERVICES,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
     if (result != pdPASS) {
+        runtime_observability_log_memory("pod_bridge_task_create_failed");
         portENTER_CRITICAL(&s_state_lock);
         s_starting = false;
         portEXIT_CRITICAL(&s_state_lock);
@@ -407,8 +411,8 @@ esp_err_t app_pod_status_bridge_start(void)
 
     ESP_LOGI(
         TAG,
-        "Pod barometer/local-position status bridge started on core=%d",
-        APP_TASK_CORE_SERVICES);
+        "Pod barometer/local-position status bridge started on core=%d stack_bytes=%u stack_caps=spiram|8bit",
+        APP_TASK_CORE_SERVICES, (unsigned)APP_TASK_STACK_POD_STATUS_BRIDGE);
     return ESP_OK;
 }
 

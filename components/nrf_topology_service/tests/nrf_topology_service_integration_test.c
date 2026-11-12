@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "esp_random.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "driver/i2c_master.h"
 #include "board_config.h"
@@ -147,6 +148,8 @@ static unsigned s_controller_reset_calls;
 static bool s_fail_i2c_bus_create;
 static bool s_fail_mutex_create;
 static bool s_fail_task_create;
+static bool s_memory_before_collector, s_memory_before_alloc, s_memory_before_mutex;
+static bool s_memory_alloc_failed, s_memory_mutex_failed, s_memory_before_task, s_memory_task_failed;
 static bool s_fail_next_status_read;
 static bool s_fail_next_main_status_read;
 static unsigned s_timeout_failures_until_stuck;
@@ -179,6 +182,10 @@ static unsigned s_failed_cs_writes;
 static uint32_t s_cs_recovery_attempts_before;
 static unsigned s_task_create_count;
 static unsigned s_task_delete_count;
+static unsigned s_task_caps_create_count;
+static unsigned s_task_caps_delete_count;
+static bool s_task_uses_caps;
+static size_t s_internal_largest = SIZE_MAX;
 static unsigned s_active_tasks;
 static UBaseType_t s_stack_hwm_default = 2048U;
 static UBaseType_t s_stack_hwm_sequence[256];
@@ -246,6 +253,17 @@ esp_err_t device_status_get_snapshot(device_status_snapshot_t *snapshot)
 static void reset_world(void);
 static void wire_log(uint8_t address, bool is_write, uint8_t type, uint8_t value);
 static void run_service(void);
+
+void runtime_observability_log_memory(const char *stage)
+{
+    if (strcmp(stage, "topology_before_collector") == 0) s_memory_before_collector = true;
+    if (strcmp(stage, "log_collector_before_alloc") == 0) s_memory_before_alloc = true;
+    if (strcmp(stage, "log_collector_before_mutex") == 0) s_memory_before_mutex = true;
+    if (strcmp(stage, "log_collector_alloc_failed") == 0) s_memory_alloc_failed = true;
+    if (strcmp(stage, "log_collector_mutex_failed") == 0) s_memory_mutex_failed = true;
+    if (strcmp(stage, "topology_before_task_create") == 0) s_memory_before_task = true;
+    if (strcmp(stage, "topology_task_create_failed") == 0) s_memory_task_failed = true;
+}
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_LOG_COLLECTOR)
 static void log_test_record(const char *line);
 static void log_test_mux_write(void);
@@ -1228,13 +1246,21 @@ UBaseType_t uxTaskGetStackHighWaterMark(TaskHandle_t task)
 }
 BaseType_t xTaskNotifyGive(TaskHandle_t task) { assert(task == &s_task_token); return pdPASS; }
 
-void vTaskDelete(TaskHandle_t task)
+static void delete_task(TaskHandle_t task, bool with_caps)
 {
     assert(task == NULL);
     assert(s_in_worker);
     assert(s_active_tasks == 1U);
+    assert(s_task_uses_caps == with_caps);
     --s_active_tasks;
     ++s_task_delete_count;
+}
+
+void vTaskDelete(TaskHandle_t task) { delete_task(task, false); }
+void vTaskDeleteWithCaps(TaskHandle_t task)
+{
+    ++s_task_caps_delete_count;
+    delete_task(task, true);
 }
 
 void vTaskDelay(TickType_t ticks)
@@ -1253,9 +1279,9 @@ void vTaskDelay(TickType_t ticks)
     if (s_vtask_delay_hook != NULL) s_vtask_delay_hook(elapsed_ticks);
 }
 
-BaseType_t xTaskCreatePinnedToCore(
+static BaseType_t create_task(
     TaskFunction_t entry, const char *name, uint32_t stack_depth, void *parameters,
-    UBaseType_t priority, TaskHandle_t *created_task, BaseType_t core_id)
+    UBaseType_t priority, TaskHandle_t *created_task, BaseType_t core_id, bool with_caps)
 {
     (void)name;
     (void)stack_depth;
@@ -1265,11 +1291,12 @@ BaseType_t xTaskCreatePinnedToCore(
 #endif
     assert(core_id == 0); /* service core */
     ++s_task_create_count;
-    if (s_fail_task_create) {
+    if (s_fail_task_create || (!with_caps && stack_depth > s_internal_largest)) {
         *created_task = NULL;
         return pdFAIL;
     }
     assert(s_active_tasks == 0U);
+    s_task_uses_caps = with_caps;
     ++s_active_tasks;
     *created_task = &s_task_token;
     s_in_worker = true;
@@ -1277,6 +1304,22 @@ BaseType_t xTaskCreatePinnedToCore(
     s_in_worker = false;
     assert(s_active_tasks == 0U);
     return pdPASS;
+}
+
+BaseType_t xTaskCreatePinnedToCore(
+    TaskFunction_t entry, const char *name, uint32_t stack_depth, void *parameters,
+    UBaseType_t priority, TaskHandle_t *created_task, BaseType_t core_id)
+{
+    return create_task(entry, name, stack_depth, parameters, priority, created_task, core_id, false);
+}
+
+BaseType_t xTaskCreatePinnedToCoreWithCaps(
+    TaskFunction_t entry, const char *name, uint32_t stack_depth, void *parameters,
+    UBaseType_t priority, TaskHandle_t *created_task, BaseType_t core_id, UBaseType_t caps)
+{
+    assert(stack_depth == 8192U && caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    ++s_task_caps_create_count;
+    return create_task(entry, name, stack_depth, parameters, priority, created_task, core_id, true);
 }
 
 uint32_t ulTaskNotifyTake(BaseType_t clear_on_exit, TickType_t ticks_to_wait)
@@ -4640,6 +4683,7 @@ static void test_lifecycle_failures_mid_reconcile_and_repeated_restart(void)
 
     s_fail_task_create = true;
     assert(nrf_topology_service_start() == ESP_ERR_NO_MEM);
+    assert(s_memory_before_task && s_memory_task_failed);
     assert(nrf_topology_service_request_refresh() == ESP_ERR_INVALID_STATE);
     nrf_topology_service_stop();
     s_fail_task_create = false;
@@ -4701,6 +4745,9 @@ static void test_lifecycle_failures_mid_reconcile_and_repeated_restart(void)
 
 static void reset_world(void)
 {
+    s_internal_largest = SIZE_MAX;
+    s_memory_before_collector = s_memory_before_alloc = s_memory_before_mutex = false;
+    s_memory_alloc_failed = s_memory_mutex_failed = s_memory_before_task = s_memory_task_failed = false;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
     main_barometer_fake_reset();
 #endif
@@ -4975,6 +5022,39 @@ static void test_status_reselects_before_reading_after_log(void)
     assert(s_probe_calls - probes_before == 1U);
     assert(!s_log_reply_selected);
     assert(sensor_bus_deinit() == ESP_OK);
+}
+
+static void test_low_internal_heap_uses_psram_task_and_restarts_cleanly(void)
+{
+    const unsigned creates_before = s_task_caps_create_count;
+    const unsigned deletes_before = s_task_caps_delete_count;
+    reset_world();
+    s_internal_largest = 3584U;
+    s_tca_present = true;
+    node_boot(&s_nodes[0], UPSTREAM_CHANNEL, 0x11U);
+    node_boot(&s_nodes[1], 2U, 0x22U);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_seen.main.state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_seen.remotes[2].state == NRF_TOPOLOGY_NODE_ASSIGNED);
+    assert(s_nodes[0].address == NRF_UPSTREAM_ADDRESS_MAIN);
+    assert(s_nodes[1].address == NRF_UPSTREAM_ADDRESS_REMOTE);
+    assert(s_seen.main.node_id != s_seen.remotes[2].node_id && s_collisions == 0U);
+    assert(s_task_caps_create_count == creates_before + 1U);
+    assert(s_task_caps_delete_count == deletes_before + 1U && s_active_tasks == 0U);
+
+    reset_world();
+    s_internal_largest = 3584U;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, capture);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+    assert(s_seen.main.state == NRF_TOPOLOGY_NODE_ABSENT);
+    for (size_t i = 0U; i < NRF_TOPOLOGY_REMOTE_COUNT; ++i) assert(!s_seen_cache[i].identity_valid);
+    assert(s_task_caps_create_count == creates_before + 2U);
+    assert(s_task_caps_delete_count == deletes_before + 2U && s_active_tasks == 0U);
 }
 
 static void test_full_topology_is_assigned_one_hot(void)
@@ -5904,6 +5984,7 @@ int main(int argc, char **argv)
     test_malformed_snapshot_marks_cached_sample_stale();
     test_unplug_and_replug_between_reconciles();
     test_full_topology_is_assigned_one_hot();
+    test_low_internal_heap_uses_psram_task_and_restarts_cleanly();
     test_mux_main_address_conflict_blocks_direct_nrf_io();
     test_cs_write_fault_preserves_two_remote_topology();
     test_remote_snapshot_v1_and_v2_cache_read_path();

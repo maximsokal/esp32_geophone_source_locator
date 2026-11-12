@@ -33,7 +33,8 @@ def test_sensor_transport_uses_canonical_max36_codec_at_platform_boundary():
 def test_one_esp32_tca_owner_and_no_second_sensor_task():
     service = read("components/nrf_topology_service/nrf_topology_service.c")
     public = read("components/nrf_topology_service/include/nrf_topology_service.h")
-    assert service.count("xTaskCreatePinnedToCore(") == 1
+    assert service.count("xTaskCreatePinnedToCoreWithCaps(") == 1
+    assert service.count("xTaskCreatePinnedToCore(") == 0
     assert '"nrf_topology"' in service
     assert "nrf_topology_service_request_sensor_refresh" in public
     assert "nrf_topology_service_request_all_sensor_refresh" in public

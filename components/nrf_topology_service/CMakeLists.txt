@@ -28,6 +28,7 @@ idf_component_register(
         nrf_cs_shared
         nrf_geometry_solver
         nrf_upstream_protocol
+        runtime_observability
         sensor_bus
         tca9548a_mux
 )

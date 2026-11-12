@@ -33,6 +33,69 @@ def test_evaluate_s1_accepts_boot_markers_and_sixty_second_run():
     assert ok, reasons
 
 
+_S1_PRESSURE_MARKERS = (
+    "TEST_STARTUP_HEAP: pressure_ready free_internal=5455 largest_internal=3584 free_psram=100000",
+    "TEST_STARTUP_HEAP: control_rejected free_internal=5455 largest_internal=3584 free_psram=100000",
+    "TEST_STARTUP_HEAP service=topology result=ESP_OK",
+    "TEST_STARTUP_HEAP service=estop result=ESP_OK",
+    "TEST_STARTUP_HEAP service=pod_bridge result=ESP_OK",
+    "TEST_STARTUP_HEAP: release free_internal=20000 largest_internal=8192 free_psram=100000",
+)
+
+
+def _s1_base_log() -> str:
+    return "\n".join(line for line in read_log("s1_boot_ok.log").splitlines()
+                     if "TEST_STARTUP_HEAP" not in line)
+
+
+@pytest.mark.parametrize("warning", [
+    "nRF topology service unavailable: ESP_ERR_NO_MEM",
+    "nRF emergency-stop monitor unavailable: ESP_ERR_NO_MEM",
+    "Pod status bridge unavailable: ESP_ERR_NO_MEM",
+])
+def test_evaluate_s1_rejects_service_no_mem(warning: str):
+    log = _s1_base_log() + "\n" + "\n".join(_S1_PRESSURE_MARKERS) + "\n" + warning
+    ok, reasons = smoke.evaluate_s1(log, {"duration_seconds": 60.1})
+    assert not ok
+    assert any(warning in reason for reason in reasons)
+
+
+@pytest.mark.parametrize("missing", _S1_PRESSURE_MARKERS)
+def test_evaluate_s1_rejects_missing_pressure_or_service_marker(missing: str):
+    markers = (marker for marker in _S1_PRESSURE_MARKERS if marker != missing)
+    log = _s1_base_log() + "\n" + "\n".join(markers)
+    ok, reasons = smoke.evaluate_s1(log, {"duration_seconds": 60.1})
+    assert not ok
+    assert reasons
+
+
+@pytest.mark.parametrize("index,old,new", [
+    (0, "free_internal=5455", "free_internal=4095"),
+    (0, "free_internal=5455", "free_internal=6145"),
+    (0, "largest_internal=3584", "largest_internal=3585"),
+    (0, "free_internal=5455", "free_internal=nan"),
+    (1, "free_internal=5455", "free_internal=4095"),
+    (1, "largest_internal=3584", "largest_internal=3585"),
+])
+def test_evaluate_s1_rejects_invalid_pressure_metrics(index: int, old: str, new: str):
+    markers = list(_S1_PRESSURE_MARKERS)
+    markers[index] = markers[index].replace(old, new)
+    ok, reasons = smoke.evaluate_s1(_s1_base_log() + "\n" + "\n".join(markers), {"duration_seconds": 60.1})
+    assert not ok
+    assert any("metrics" in reason for reason in reasons)
+
+
+@pytest.mark.parametrize("markers", [
+    (_S1_PRESSURE_MARKERS[0], _S1_PRESSURE_MARKERS[-1], *_S1_PRESSURE_MARKERS[1:-1]),
+    (_S1_PRESSURE_MARKERS[1], _S1_PRESSURE_MARKERS[0], *_S1_PRESSURE_MARKERS[2:]),
+    (*_S1_PRESSURE_MARKERS, "TEST_STARTUP_HEAP: FAIL pressure changed after control task"),
+])
+def test_evaluate_s1_rejects_early_release_wrong_order_and_hook_failure(markers: tuple[str, ...]):
+    ok, reasons = smoke.evaluate_s1(_s1_base_log() + "\n" + "\n".join(markers), {"duration_seconds": 60.1})
+    assert not ok
+    assert reasons
+
+
 def test_evaluate_s1_rejects_panic_and_short_runtime():
     ok, reasons = smoke.evaluate_s1(
         read_log("s1_boot_ok.log") + read_log("panic_excerpt.log"),

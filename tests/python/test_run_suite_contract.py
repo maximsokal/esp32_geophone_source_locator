@@ -61,6 +61,24 @@ def test_all_suite_keeps_hardware_hil_out_of_automatic_run():
     assert '"-Action", "flash"' not in source
 
 
+def test_all_suite_requires_emulator_build_then_low_memory_s1():
+    source = (REPO_ROOT / "tools" / "run_suite.ps1").read_text(encoding="utf-8")
+    branch = source[source.index('if ($Suite -eq "All") {\n    Invoke-SuiteStep -Name "ESP Unity build"'):]
+    branch = branch[:branch.index('\n}\n')]
+    build = 'Invoke-SuiteStep -Name "ESP emulator build"'
+    smoke = 'Invoke-SuiteStep -Name "ESP32-S3 low-memory startup emulator"'
+    assert source.count(build) == source.count(smoke) == 1
+    assert branch.index('Invoke-SuiteStep -Name "ESP production build"') < branch.index(build) < branch.index(smoke)
+    build_step = branch[branch.index(build):branch.index(smoke)]
+    assert '-FilePath $powershell' in build_step
+    assert '"-File", $runIdf' in build_step
+    assert '"-Action", "build", "-Profile", "emulator"' in build_step
+    smoke_step = branch[branch.index(smoke):branch.index('$results.Add')]
+    assert '-FilePath "python"' in smoke_step
+    assert '"tools/run_emulator_smoke.py", "--scenario", "S1", "--build-image", "--out-dir", ".test-build/emu-smoke/all-suite"' in smoke_step
+    assert 'SKIPPED' not in build_step + smoke_step
+
+
 def test_all_suite_uses_canonical_ncs_nrf_build_and_explicit_test_boundary():
     source = (REPO_ROOT / "tools" / "run_suite.ps1").read_text(encoding="utf-8")
 

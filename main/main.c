@@ -11,6 +11,11 @@
 #include "ina3221_monitor.h"
 #include "nrf_emergency_stop_monitor.h"
 #include "nrf_topology_service.h"
+#include "sdkconfig.h"
+
+#if CONFIG_APP_TEST_STARTUP_HEAP_PRESSURE
+#include "app_test_startup_heap.h"
+#endif
 
 #include "esp_log.h"
 
@@ -113,6 +118,10 @@ void app_main(void)
 
     app_startup_run();
 
+#if CONFIG_APP_TEST_STARTUP_HEAP_PRESSURE
+    (void)app_test_startup_heap_prepare();
+#endif
+
     /*
      * Topology discovery is deliberately outside app_startup_run(): the local
      * TFT/keypad interactive boundary and startup timing are already complete.
@@ -120,6 +129,9 @@ void app_main(void)
      */
     const esp_err_t topology_err =
         nrf_topology_service_start();
+#if CONFIG_APP_TEST_STARTUP_HEAP_PRESSURE
+    ESP_LOGI(TAG, "TEST_STARTUP_HEAP service=topology result=%s", esp_err_to_name(topology_err));
+#endif
     if (topology_err != ESP_OK) {
         ESP_LOGW(
             TAG,
@@ -135,6 +147,9 @@ void app_main(void)
      */
     const esp_err_t estop_err =
         nrf_emergency_stop_monitor_start();
+#if CONFIG_APP_TEST_STARTUP_HEAP_PRESSURE
+    ESP_LOGI(TAG, "TEST_STARTUP_HEAP service=estop result=%s", esp_err_to_name(estop_err));
+#endif
     if (estop_err != ESP_OK) {
         ESP_LOGW(
             TAG,
@@ -151,6 +166,10 @@ void app_main(void)
      */
     const esp_err_t pod_status_bridge_err =
         app_pod_status_bridge_start();
+#if CONFIG_APP_TEST_STARTUP_HEAP_PRESSURE
+    ESP_LOGI(TAG, "TEST_STARTUP_HEAP service=pod_bridge result=%s", esp_err_to_name(pod_status_bridge_err));
+    app_test_startup_heap_release();
+#endif
     if (pod_status_bridge_err != ESP_OK) {
         ESP_LOGW(
             TAG,

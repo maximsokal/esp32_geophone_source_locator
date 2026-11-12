@@ -248,6 +248,13 @@ if ($Suite -eq "All") {
         "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $runIdf,
         "-Action", "build", "-ProjectPath", ".", "-BuildDir", $ProductionBuildDir, "-Jobs", "2"
     )
+    Invoke-SuiteStep -Name "ESP emulator build" -WorkingDirectory $repo -FilePath $powershell -ArgumentList @(
+        "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $runIdf,
+        "-Action", "build", "-Profile", "emulator"
+    )
+    Invoke-SuiteStep -Name "ESP32-S3 low-memory startup emulator" -WorkingDirectory $repo -FilePath "python" -ArgumentList @(
+        "tools/run_emulator_smoke.py", "--scenario", "S1", "--build-image", "--out-dir", ".test-build/emu-smoke/all-suite"
+    )
 
     $results.Add([pscustomobject]@{
         Name = "ESP Unity HIL (COM4+COM6)"

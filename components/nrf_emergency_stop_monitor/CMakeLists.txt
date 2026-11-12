@@ -12,4 +12,5 @@ idf_component_register(
         log
         nrf_topology_service
         seismic_recorder
+        runtime_observability
 )

@@ -1,4 +1,5 @@
 #include "nrf_log_collector.h"
+#include "runtime_observability.h"
 #include "sensor_bus_errors.h"
 
 #include <inttypes.h>
@@ -791,13 +792,19 @@ static esp_err_t poll_node(
 
 nrf_log_collector_t *nrf_log_collector_create(void)
 {
+    runtime_observability_log_memory("log_collector_before_alloc");
     nrf_log_collector_t *collector = heap_caps_calloc(
         1U,
         sizeof(*collector),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (collector == NULL) return NULL;
+    if (collector == NULL) {
+        runtime_observability_log_memory("log_collector_alloc_failed");
+        return NULL;
+    }
+    runtime_observability_log_memory("log_collector_before_mutex");
     collector->mutex = xSemaphoreCreateMutex();
     if (collector->mutex == NULL) {
+        runtime_observability_log_memory("log_collector_mutex_failed");
         heap_caps_free(collector);
         return NULL;
     }
