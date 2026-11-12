@@ -1850,6 +1850,18 @@
       ]
     },
     {
+      "name": "nrf_geometry_range_offset",
+      "sources": [
+        "components/nrf_geometry_solver/nrf_geometry_range_offset.c",
+        "tests/host/nrf_geometry_range_offset_test.c"
+      ],
+      "include_dirs": [
+        "components/nrf_geometry_solver/include",
+        "nRF54L15/include"
+      ],
+      "defines": ["NRF_GEOMETRY_SOLVER_HOST_TEST=1"]
+    },
+    {
       "name": "seismic_recorder_start_integration",
       "sources": [
         "components/cjson_alloc_guard/cjson_alloc_guard.c",
@@ -1861,6 +1873,7 @@
         "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/nrf_geometry_solver/nrf_geometry_range_offset.c",
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
         "tests/host/seismic_recorder_start_integration_test.c",
@@ -1913,6 +1926,7 @@
         "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/nrf_geometry_solver/nrf_geometry_range_offset.c",
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
         "tests/host/seismic_recorder_start_integration_test.c"
@@ -1961,6 +1975,7 @@
         "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/nrf_geometry_solver/nrf_geometry_range_offset.c",
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
         "tests/host/seismic_recorder_start_integration_test.c"
@@ -2009,6 +2024,7 @@
         "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/nrf_geometry_solver/nrf_geometry_range_offset.c",
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
         "tests/host/seismic_recorder_start_integration_test.c"
@@ -2552,6 +2568,7 @@
         "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/nrf_geometry_solver/nrf_geometry_range_offset.c",
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
         "components/seismic_buffer/seismic_buffer.c",
@@ -2614,6 +2631,7 @@
         "components/object_store/object_store_geometry_json.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
+        "components/nrf_geometry_solver/nrf_geometry_range_offset.c",
         "components/recording_gate/recording_gate_policy.c",
         "components/localization/localization_dimensionality_policy.c",
         "components/seismic_buffer/seismic_buffer.c",

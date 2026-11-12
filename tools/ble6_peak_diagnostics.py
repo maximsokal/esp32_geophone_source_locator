@@ -10,7 +10,7 @@ from ble6_series_benchmark import metrics
 
 
 def confidence_study():
-    """Compare the same confidence function with strongest/selected-path evidence, no fitted offset."""
+    """Compare legacy with_peak using strongest/selected-path evidence on raw distances."""
     cases = list(replay.ocm_cases()) + list(replay.wieme_cases())
     for name in ('owl-indoor.parquet','owl-outdoor.parquet'):
         cases.extend(replay.owl_cases(replay.OWL/name,200))
@@ -25,12 +25,12 @@ def confidence_study():
         if not math.isfinite(best) or best<0 or case['truth_m'] is None:
             continue
         error = best-case['truth_m']
-        policies = {'plain':tail[1],'production':tail[2],'selected_peak':path[4]}
+        policies = {'plain':tail[1],'legacy_peak':tail[2],'selected_peak':path[4]}
         keys = [case['dataset']]
         if case['dataset']=='Wieme':
             keys.append('Wieme/NLOS' if 'NLOS' in case['file'].split('/') else 'Wieme/LOS')
         for key in keys:
-            bucket = groups.setdefault(key,{'all':[],'plain':[],'production':[],'selected_peak':[],
+            bucket = groups.setdefault(key,{'all':[],'plain':[],'legacy_peak':[],'selected_peak':[],
                 'removed_good_1m':0,'removed_bad_2m':0})
             bucket['all'].append(error)
             for policy,confidence in policies.items():
@@ -41,18 +41,20 @@ def confidence_study():
         if tail[2]>=500 and path[4]<500 and len(examples)<30:
             examples.append({k:case[k] for k in ('dataset','file','row','truth_m')} |
                 {'estimate_m':best,'error_m':error,'global_ratio':tail[0],
-                 'selected_ratio':path[3],'production':tail[2],'selected_confidence':path[4]})
+                 'selected_ratio':path[3],'legacy_peak':tail[2],'selected_confidence':path[4]})
     for bucket in groups.values():
-        for policy in ('all','plain','production','selected_peak'):
+        for policy in ('all','plain','legacy_peak','selected_peak'):
             errors = bucket[policy]
             bucket[policy] = metrics(errors) | {'good_1m':sum(abs(e)<=1 for e in errors)}
         n = bucket['all']['n']
-        for policy in ('plain','production','selected_peak'):
+        for policy in ('plain','legacy_peak','selected_peak'):
             bucket[policy]['coverage'] = bucket[policy]['n']/n
     report = {'cases':len(cases),'groups':groups,'examples':examples,
         'sdk_sha256':replay.sha256(source),'offset_m':0,
+        'confidence_policy':'legacy with_peak (extra.bin)','distance_basis':'raw, no calibration',
         'limitations':['same previously inspected datasets, not new holdout','host FFT, not target RF',
-            'no complete synchronous geometry in single-link datasets','distance estimates unchanged']}
+            'no complete synchronous geometry in single-link datasets',
+            'legacy with_peak confidence and raw uncalibrated distances, not current firmware policy']}
     (work/'report.json').write_text(json.dumps(report,indent=2,allow_nan=False),encoding='utf-8')
     print(json.dumps(groups,indent=2),flush=True)
     print('REPORT',work/'report.json')

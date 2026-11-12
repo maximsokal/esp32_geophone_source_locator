@@ -31,6 +31,8 @@ static bool seismic_recorder_json_cs_pair_state_known(const char *state)
         strcmp(state, "pending") == 0 ||
         strcmp(state, "valid") == 0 ||
         strcmp(state, "missing") == 0 ||
+        strcmp(state, "cable_exceeded") == 0 ||
+        strcmp(state, "directions_disagree") == 0 ||
         strcmp(state, "retry_exhausted") == 0
     );
 }
@@ -364,6 +366,7 @@ static bool seismic_recorder_json_add_geometry(
             (strcmp(ranging_source, "workflow_ranging") != 0 &&
              strcmp(ranging_source, "start_cycle") != 0) ||
             strcmp(solver->solver, "nrf_geometry_solver") != 0 ||
+            (!solver->range_offset_manual && solver->range_offset_mm != 0) ||
             solver->solver_version[0] == '\0' ||
             solver->setup_id[0] == '\0'
         ) {
@@ -374,6 +377,8 @@ static bool seismic_recorder_json_add_geometry(
             provenance == NULL ||
             cJSON_AddStringToObject(provenance, "solver", solver->solver) == NULL ||
             cJSON_AddStringToObject(provenance, "solver_version", solver->solver_version) == NULL ||
+            cJSON_AddNumberToObject(provenance, "range_offset_mm", solver->range_offset_mm) == NULL ||
+            cJSON_AddStringToObject(provenance, "range_offset_source", solver->range_offset_manual ? "manual" : "none") == NULL ||
             cJSON_AddBoolToObject(provenance, "refined", solver->refined) == NULL ||
             cJSON_AddNumberToObject(provenance, "refine_iterations", solver->refine_iterations) == NULL ||
             cJSON_AddNumberToObject(provenance, "topology_generation", solver->topology_generation) == NULL ||
@@ -1251,6 +1256,25 @@ static bool seismic_recorder_json_participation_pod_v2(
 }
 
 
+static bool seismic_recorder_json_range_offset(const cJSON *root, int32_t *offset, bool *manual)
+{
+    const cJSON *geometry = cJSON_GetObjectItemCaseSensitive(root, "geometry");
+    const cJSON *object = cJSON_IsObject(geometry) ? cJSON_GetObjectItemCaseSensitive(geometry, "provenance") : NULL;
+    const cJSON *value = cJSON_IsObject(object) ? cJSON_GetObjectItemCaseSensitive(object, "range_offset_mm") : NULL;
+    const cJSON *source = cJSON_IsObject(object) ? cJSON_GetObjectItemCaseSensitive(object, "range_offset_source") : NULL;
+    *offset = 0;
+    *manual = false;
+    if (value == NULL && source == NULL) return true;
+    if (!cJSON_IsNumber(value) || !isfinite(value->valuedouble) ||
+        value->valuedouble < INT32_MIN || value->valuedouble > INT32_MAX ||
+        floor(value->valuedouble) != value->valuedouble ||
+        !cJSON_IsString(source) || source->valuestring == NULL) return false;
+    if (strcmp(source->valuestring, "manual") == 0) *manual = true;
+    else if (strcmp(source->valuestring, "none") != 0 || value->valuedouble != 0) return false;
+    *offset = (int32_t)value->valuedouble;
+    return true;
+}
+
 static bool seismic_recorder_json_parse_geometry_provenance(
     const cJSON *root,
     const object_store_geometry_t *geometry_data,
@@ -1365,6 +1389,7 @@ static bool seismic_recorder_json_parse_geometry_provenance(
     }
 
     memset(provenance, 0, sizeof(*provenance));
+    if (!seismic_recorder_json_range_offset(root, &provenance->range_offset_mm, &provenance->range_offset_manual)) return false;
     provenance->available = true;
     snprintf(provenance->solver, sizeof(provenance->solver), "%s", solver->valuestring);
     snprintf(
@@ -1568,7 +1593,10 @@ esp_err_t seismic_recorder_json_parse_participation_text(
             : ESP_ERR_INVALID_RESPONSE;
     }
     uint32_t version = 0U;
-    if (!seismic_recorder_json_schema_version(root, &version)) {
+    int32_t offset;
+    bool manual;
+    if (!seismic_recorder_json_schema_version(root, &version) ||
+        !seismic_recorder_json_range_offset(root, &offset, &manual)) {
         cJSON_Delete(root);
         return ESP_ERR_INVALID_RESPONSE;
     }
@@ -1931,6 +1959,12 @@ esp_err_t seismic_recorder_read_session_participation(
     );
     if (err != ESP_OK) {
         return err;
+    }
+    int32_t offset;
+    bool manual;
+    if (!seismic_recorder_json_range_offset(root, &offset, &manual)) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
     }
     seismic_recorder_json_parse_participation(root, version, participation);
     cJSON_Delete(root);

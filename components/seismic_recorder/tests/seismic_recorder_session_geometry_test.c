@@ -296,6 +296,15 @@ static void test_v2_writer_and_participation_reader_round_trip(void)
     assert(strcmp(readback.geometry_provenance.setup_id, "1234-901-77-23") == 0);
     assert(readback.geometry_provenance.start_uptime_ms == 1200U);
     assert(strcmp(readback.geometry_provenance.ranging_source, "workflow_ranging") == 0);
+    const int32_t offsets[] = {300, -150, 0};
+    for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); ++i) {
+        participation.geometry_provenance.range_offset_manual = true;
+        participation.geometry_provenance.range_offset_mm = offsets[i];
+        assert(seismic_recorder_json_write_metadata(&profile, &snapshot, "recording", &participation) == ESP_OK);
+        assert(seismic_recorder_read_session_participation("OBJ_0001", "S000001", &readback) == ESP_OK);
+        assert(readback.geometry_provenance.available && readback.geometry_provenance.range_offset_manual);
+        assert(readback.geometry_provenance.range_offset_mm == offsets[i]);
+    }
     assert(readback.pods[0].source_sample_uptime_ms == 1190U);
     assert(readback.pods[0].esp_receipt_uptime_ms == 1195U);
     assert(readback.pods[0].source_age_at_start_known);
@@ -480,6 +489,7 @@ static void test_v2_geometry_provenance_defaults_old_source(void)
     assert(seismic_recorder_read_session_participation("OBJ_0001", "S000001", &participation) == ESP_OK);
     assert(participation.geometry_provenance.available);
     assert(strcmp(participation.geometry_provenance.ranging_source, "start_cycle") == 0);
+    assert(!participation.geometry_provenance.range_offset_manual && participation.geometry_provenance.range_offset_mm == 0);
 
     set_session_json(
         "{\"schema_version\":2,\"geometry\":{\"provenance\":{"
@@ -493,6 +503,29 @@ static void test_v2_geometry_provenance_defaults_old_source(void)
     );
     assert(seismic_recorder_read_session_participation("OBJ_0001", "S000001", &participation) == ESP_OK);
     assert(!participation.geometry_provenance.available);
+}
+
+static void test_invalid_range_offset_metadata_is_rejected(void)
+{
+    const char *bad[] = {
+        "\"range_offset_mm\":1",
+        "\"range_offset_source\":\"manual\"",
+        "\"range_offset_mm\":1,\"range_offset_source\":\"none\"",
+        "\"range_offset_mm\":0,\"range_offset_source\":\"other\"",
+        "\"range_offset_mm\":0.5,\"range_offset_source\":\"manual\"",
+        "\"range_offset_mm\":2147483648,\"range_offset_source\":\"manual\"",
+        "\"range_offset_mm\":-2147483649,\"range_offset_source\":\"manual\"",
+        "\"range_offset_mm\":1e999,\"range_offset_source\":\"manual\"",
+        "\"range_offset_mm\":\"1\",\"range_offset_source\":\"manual\"",
+    };
+    seismic_recorder_session_participation_t participation;
+    char json[512];
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        snprintf(json, sizeof(json), "{\"schema_version\":2,\"geometry\":{\"provenance\":{%s}}}", bad[i]);
+        set_session_json(json);
+        assert(seismic_recorder_read_session_participation("OBJ_0001", "S000001", &participation) == ESP_ERR_INVALID_RESPONSE);
+        assert(seismic_recorder_json_parse_participation_text(json, &participation) == ESP_ERR_INVALID_RESPONSE);
+    }
 }
 
 
@@ -918,6 +951,7 @@ int main(void)
     test_v2_malformed_pod_values_are_isolated();
     test_v2_malformed_geometry_provenance_is_skipped();
     test_v2_geometry_provenance_defaults_old_source();
+    test_invalid_range_offset_metadata_is_rejected();
     test_unsupported_schema_versions_are_rejected();
     test_summary_reader_accepts_v1_v2_and_rejects_unsupported_versions();
     test_recording_gate_metadata_round_trips();

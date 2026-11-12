@@ -42,6 +42,7 @@ def test_nrf_scope_runs_host_policy_and_canonical_ncs_build(tmp_path: Path):
 
     assert [step.name for step in steps] == [
         "nrf/host-policy",
+        "nrf/python-cs-contracts",
         "nrf/build",
         "nrf/tests",
         "nrf/cs-tests",
@@ -51,17 +52,23 @@ def test_nrf_scope_runs_host_policy_and_canonical_ncs_build(tmp_path: Path):
     assert "coverage-nrf.json" in steps[0].command[steps[0].command.index("--manifest") + 1]
     assert str(root / ".test-build" / "host-tests-coverage-nrf") in steps[0].command
 
-    build = steps[1]
+    assert steps[1].command == (
+        "python-test", "-m", "pytest", "-q",
+        str(root / "tests/python/test_nrf_cs_pair_runtime_contract.py"),
+        str(root / "tests/python/test_nrf_cs_production_handlers.py"),
+        str(root / "tests/python/test_nrf_rf_switch_contract.py"),
+    )
+    build = steps[2]
     assert build.skip_reason is None
     assert "ncs.ps1" in build.command[build.command.index("-File") + 1]
     assert build.command[-2:] == ("-Action", "build")
     assert "pio.ps1" not in " ".join(build.command)
 
-    assert steps[2].skip_reason is None
-    assert steps[2].command[-2:] == ("-Action", "ncs-test-build")
-    assert steps[3].name == "nrf/cs-tests"
     assert steps[3].skip_reason is None
-    assert steps[3].command[-2:] == ("-Action", "ncs-cs-test-build")
+    assert steps[3].command[-2:] == ("-Action", "ncs-test-build")
+    assert steps[4].name == "nrf/cs-tests"
+    assert steps[4].skip_reason is None
+    assert steps[4].command[-2:] == ("-Action", "ncs-cs-test-build")
 
 
 def test_nrf_embedded_test_builds_are_independent_of_platformio_compatibility_suite(tmp_path: Path):
@@ -74,9 +81,9 @@ def test_nrf_embedded_test_builds_are_independent_of_platformio_compatibility_su
         powershell_executable="powershell-test",
     )
 
-    assert steps[2].skip_reason is None
     assert steps[3].skip_reason is None
-    assert all("pio.ps1" not in " ".join(step.command) for step in steps[2:])
+    assert steps[4].skip_reason is None
+    assert all("pio.ps1" not in " ".join(step.command) for step in steps[3:])
 
 
 def test_nrf_steps_can_omit_host_policy_when_all_scope_already_runs_host_manifests(tmp_path: Path):

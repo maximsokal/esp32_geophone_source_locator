@@ -90,6 +90,8 @@ static bool add_geometry(
     cJSON *nodes = section == NULL ? NULL : cJSON_AddArrayToObject(section, "nodes");
     if (section == NULL || nodes == NULL ||
         cJSON_AddNumberToObject(section, "residual_mm", residual_mm) == NULL ||
+        cJSON_AddNumberToObject(section, "range_offset_mm", geometry->range_offset_mm) == NULL ||
+        cJSON_AddStringToObject(section, "range_offset_source", geometry->range_offset_manual ? "manual" : "none") == NULL ||
         cJSON_AddNumberToObject(section, "max_residual_mm", geometry->max_residual_mm) == NULL) {
         return false;
     }

@@ -1,4 +1,4 @@
-"""Diagnostic feature/error comparison; no fitted cutoff or production policy change."""
+"""Legacy with_peak/raw-distance feature comparison; no fitted cutoff or policy change."""
 from __future__ import annotations
 import csv
 import hashlib
@@ -61,7 +61,7 @@ def accept(feature,limit=None):
 
 def compare(rows):
     result={}
-    for name,limit in [('all_estimated',None),('plain',None),('production',None)]+[(f'gap_{n:g}m',n) for n in CUTS]:
+    for name,limit in [('all_estimated',None),('plain',None),('legacy_peak',None)]+[(f'gap_{n:g}m',n) for n in CUTS]:
         errors=[]
         for row in rows:
             f=row['feature'];truth=row['truth_m']
@@ -92,10 +92,10 @@ def associations(rows):
             if value is None:missing+=1;continue
             buckets[bisect.bisect_right(edges,value)].append(row)
         result[name]={'descriptive_quartiles':edges,'missing':missing,
-            'bins':[{'inputs':len(b),'production':compare(b)['production']} for b in buckets]}
+            'bins':[{'inputs':len(b),'legacy_peak':compare(b)['legacy_peak']} for b in buckets]}
     labels=sorted({r['feature']['author_de_quality'] for r in rows if r['feature']['author_de_quality'] is not None})
     result['author_de_quality']={'missing':sum(r['feature']['author_de_quality'] is None for r in rows),
-        'groups':{label:compare([r for r in rows if r['feature']['author_de_quality']==label])['production'] for label in labels}}
+        'groups':{label:compare([r for r in rows if r['feature']['author_de_quality']==label])['legacy_peak'] for label in labels}}
     return result
 
 
@@ -125,12 +125,13 @@ def main():
     result={'inputs':len(rows),'groups':{k:compare(v) for k,v in groups.items()},'examples':examples,
         'feature_error_associations':{k:associations(groups[k]) for k in ('OCMTEC','Wieme','OWL')},
         'sdk_sha256':replay.sha256(source),'offset_m':0,'diagnostic_cuts_m':CUTS,
+        'confidence_policy':'legacy with_peak (extra.bin)','distance_basis':'raw, no calibration',
         'native_artifacts_sha256':{n:replay.sha256(BUILD/'iq-replay'/n) for n in ('input.bin','output.bin','extra.bin','collector-provenance.json')},
         'limitations':['exploratory bins; no rule selected or fitted',
             'method gap compares chosen best with phase_slope; equal outputs may be phase fallback, not independent confirmation',
             'datasets previously inspected; reserved source/session slice is not a new external holdout',
             'single-link procedures, not synchronous geometry matrices',
-            'host FFT and production collector/confidence; no physical radio validation',
+            'host FFT and production collector; confidence is legacy with_peak, not current firmware; no physical radio validation',
             'planned channel map and per-packet AA quality unavailable; OWL author counters are not AA validity',
             'absence on75-slot grid is not known planned-channel loss',
             'OCMTEC includes systematic bias; no offset subtracted',

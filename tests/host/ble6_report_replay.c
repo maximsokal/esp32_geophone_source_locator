@@ -7,7 +7,10 @@ int main(void)
 {
     FILE *in = fopen(getenv("BLE6_REPORT_INPUT"), "rb");
     FILE *out = fopen(getenv("BLE6_REPORT_OUTPUT"), "wb");
-    if (in == NULL || out == NULL) return 2;
+    const char *firmware_path = getenv("BLE6_REPORT_FIRMWARE");
+    FILE *firmware = firmware_path != NULL ? fopen(firmware_path, "wb") : NULL;
+    if (in == NULL || out == NULL || (firmware_path != NULL && firmware == NULL)) return 2;
+    if (firmware != NULL && fwrite("CSF1", 4, 1, firmware) != 1U) return 4;
     size_t n = 0;
     float values[300], scratch[1024], result[10];
     uint16_t counts[75];
@@ -51,9 +54,16 @@ int main(void)
         result[8] = (float)nrf_cs_measurement_confidence_with_peak(good, 15, pbr, rtt_valid, selected, result[2], sharp);
         result[9] = (float)quality;
         if (fwrite(result, sizeof(result), 1, out) != 1U) return 4;
+        if (firmware != NULL) {
+            int32_t fields[5];
+            ble6_replay_firmware_policy(filled, result[1], result[2], selected, sharp, counts,
+                                        tone_ok != 0U, quality == CS_DE_QUALITY_OK, 512U, fields);
+            if (!write_firmware_record(firmware, fields)) return 4;
+        }
         ++n;
     }
     fclose(in); fclose(out);
+    if (firmware != NULL && fclose(firmware) != 0) return 4;
     printf("cs_de_calc_reports=%zu\n", n);
     return 0;
 }

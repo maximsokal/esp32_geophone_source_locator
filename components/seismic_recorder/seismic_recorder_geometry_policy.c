@@ -266,6 +266,8 @@ void seismic_recorder_geometry_apply_cs_pairs(
             case NRF_CS_PAIR_VALID: state = "valid"; break;
             case NRF_CS_PAIR_MISSING: state = "missing"; break;
             case NRF_CS_PAIR_RETRY_EXHAUSTED: state = "retry_exhausted"; break;
+            case NRF_CS_PAIR_CABLE_EXCEEDED: state = "cable_exceeded"; break;
+            case NRF_CS_PAIR_DIRECTIONS_DISAGREE: state = "directions_disagree"; break;
             case NRF_CS_PAIR_UNKNOWN:
             default: break;
         }

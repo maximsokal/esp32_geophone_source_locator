@@ -79,6 +79,11 @@ def test_actual_sdk_report_call_handles_positive_negative_and_absent_rtt(tmp_pat
         counts[k] = 1
     case = {"tones":tones, "counts":counts, "acc":40, "count":1}
     positive, negative, absent = extra.report_replay([case, dict(case, acc=-40), dict(case, count=0)])
+    firmware = extra.replay.firmware_results(extra.BUILD / 'may-native')
+    assert len(firmware) == 3 and all(len(row) == 10 for row in (positive, negative, absent))
+    for raw, (distance, confidence, reason, method, valid) in zip((positive, negative, absent), firmware, strict=True):
+        assert valid == 1 and method == 1 and 0 <= confidence <= 1000 and 0 <= reason <= 11
+        assert distance == int(raw[4] * 1000 + 0.5) - 1800
     assert abs(positive[0]-3) < .05 and abs(positive[4]-3) < .05
     assert abs(positive[2]-40*.25e-9*299792458.0) < 1e-6
     assert negative[2] == 0 and negative[7] < 500

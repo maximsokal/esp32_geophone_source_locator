@@ -19,6 +19,7 @@
 #include "nrf_cs_cycle_coordinator.h"
 #include "nrf_cs_cycle_replay.h"
 #include "nrf_geometry_solver.h"
+#include "nrf_cs_distance_method.h"
 #include "nrf_topology_service.h"
 #include "object_store.h"
 #include "storage_manager.h"
@@ -1042,6 +1043,54 @@ int main(void)
         assert(false && "partial-mesh recorder worker should finish STOP metadata");
     }
     assert(final_metadata_written && strcmp(last_metadata_status, "complete") == 0);
+    /* Keep the accepted geometry, but expose the uncorrected IFFT evidence to START. */
+    for (size_t i = 0U; i < fake_frozen_ranging.pair_count; ++i) {
+        if (fake_frozen_ranging.pairs[i].state == NRF_CS_PAIR_VALID && i != 0U) {
+            fake_frozen_ranging.pairs[i].distance_mm += 1000;
+            fake_frozen_ranging.pairs[i].provider_quality_flags = NRF_CS_PROVIDER_METHOD_IFFT;
+        }
+    }
+    fake_frozen_ranging.pairs[0].provider_quality_flags = NRF_CS_PROVIDER_METHOD_IFFT;
+    fake_frozen_ranging.pairs[0].automatic_distance_mm = 4000;
+    fake_frozen_ranging.pairs[9].state = NRF_CS_PAIR_DIRECTIONS_DISAGREE;
+    fake_frozen_ranging.pairs[9].distance_mm = 3600;
+    fake_frozen_ranging.pairs[9].direction_disagreement_mm = 400;
+    fake_frozen_ranging.pairs[9].provider_quality_flags = NRF_CS_PROVIDER_METHOD_IFFT;
+    assert(fake_frozen_ranging.pairs[2].distance_mm == 5243);
+    fake_profile_cable_length_m = 4.9f;
+    assert(seismic_recorder_start("OBJ_0008") == ESP_ERR_INVALID_STATE);
+    fake_frozen_ranging.geometry.range_offset_mm = 1000;
+    fake_frozen_ranging.geometry.range_offset_manual = true;
+    for (unsigned i = 0U; i < 2U; ++i) {
+        fake_frozen_ranging.pairs[2].state = i == 0U ? NRF_CS_PAIR_VALID : NRF_CS_PAIR_CABLE_EXCEEDED;
+        assert(seismic_recorder_start("OBJ_0008") == ESP_OK);
+        assert(seismic_recorder_read_session_cs_pairs("OBJ_0008", "S000001", &written_cs_pairs) == ESP_OK);
+        assert(written_cs_pairs.pairs[2].distance_mm == 5243 && written_cs_pairs.pairs[2].valid == (i == 0U));
+        assert(strcmp(written_cs_pairs.pairs[2].state, i == 0U ? "valid" : "cable_exceeded") == 0);
+        assert(written_cs_pairs.pairs[9].distance_mm == 3600 && !written_cs_pairs.pairs[9].valid);
+        assert(strcmp(written_cs_pairs.pairs[9].state, "directions_disagree") == 0);
+        assert(fake_frozen_ranging.pairs[9].state == NRF_CS_PAIR_DIRECTIONS_DISAGREE &&
+               fake_frozen_ranging.pairs[9].distance_mm == 3600);
+        seismic_recorder_session_participation_t offset_saved;
+        assert(seismic_recorder_read_session_participation("OBJ_0008", "S000001", &offset_saved) == ESP_OK);
+        assert(offset_saved.geometry_provenance.range_offset_manual && offset_saved.geometry_provenance.range_offset_mm == 1000);
+        bool excluded_disagreement = false;
+        for (size_t j = 0U; j < offset_saved.diagnostic.excluded_pair_count; ++j) {
+            excluded_disagreement |= offset_saved.diagnostic.excluded_pairs[j][0] == 3U &&
+                                     offset_saved.diagnostic.excluded_pairs[j][1] == 4U;
+        }
+        assert(excluded_disagreement);
+        assert(seismic_recorder_stop() == ESP_OK);
+        final_metadata_written = false;
+        if (setjmp(worker_finished) == 0) {
+            fake_recorder_task(NULL);
+            assert(false && "offset recorder worker should finish STOP metadata");
+        }
+        assert(final_metadata_written && strcmp(last_metadata_status, "complete") == 0);
+    }
+    fake_profile_cable_length_m = 5.0f;
+    fake_frozen_ranging.geometry.range_offset_manual = false;
+    fake_frozen_ranging.geometry.range_offset_mm = 0;
     /* A co-located first REMOTE must not prevent the other three from defining the frame. */
     const int32_t coincident_distances[] = {0,3000,4000,5000,3000,4000,5000,5000,4000,3000};
     edge = 0U;

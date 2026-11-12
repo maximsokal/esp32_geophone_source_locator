@@ -65,6 +65,8 @@ static void test_progress_and_frozen_result_json(void)
     s_progress.membership_generation = 22U;
     s_progress.solution_residual_mm = 44;
     s_progress.geometry.node_count = 2U;
+    s_progress.geometry.range_offset_mm = -150;
+    s_progress.geometry.range_offset_manual = true;
     s_progress.geometry.nodes[0] = (nrf_topology_ranging_node_t) {
         .node_id = 0U, .solved = true, .uncertainty_mm = 0,
     };
@@ -111,6 +113,8 @@ static void test_progress_and_frozen_result_json(void)
     assert(cJSON_IsTrue(item(pair, "manual")));
     assert(number(pair, "automatic_distance_mm") == 6001);
     const cJSON *geometry = item(progress, "geometry");
+    assert(number(geometry, "range_offset_mm") == -150);
+    assert(strcmp(item(geometry, "range_offset_source")->valuestring, "manual") == 0);
     const cJSON *nodes = item(geometry, "nodes");
     assert(cJSON_GetArraySize(nodes) == 2);
     assert(number(cJSON_GetArrayItem(nodes, 1), "uncertainty_mm") == 333);
@@ -119,6 +123,22 @@ static void test_progress_and_frozen_result_json(void)
     assert(cJSON_IsTrue(item(last_result, "invalidated")));
     assert(number(last_result, "membership_generation") == 22);
     assert(number(last_result, "timestamp_ms") == 9000);
+    assert(number(item(last_result, "geometry"), "range_offset_mm") == -150);
+    assert(strcmp(item(item(last_result, "geometry"), "range_offset_source")->valuestring, "manual") == 0);
+    cJSON_Delete(root);
+
+    s_progress.geometry.range_offset_mm = 0;
+    s_progress.geometry.range_offset_manual = false;
+    s_result.geometry = s_progress.geometry;
+    root = cJSON_CreateObject();
+    assert(root != NULL && web_status_json_add_ranging(root));
+    ranging = item(root, "ranging");
+    geometry = item(item(ranging, "progress"), "geometry");
+    assert(number(geometry, "range_offset_mm") == 0);
+    assert(strcmp(item(geometry, "range_offset_source")->valuestring, "none") == 0);
+    geometry = item(item(ranging, "last_result"), "geometry");
+    assert(number(geometry, "range_offset_mm") == 0);
+    assert(strcmp(item(geometry, "range_offset_source")->valuestring, "none") == 0);
     cJSON_Delete(root);
 }
 

@@ -220,6 +220,8 @@ typedef struct
     char setup_id[SEISMIC_RECORDER_GEOMETRY_SETUP_ID_SIZE];
     uint64_t start_uptime_ms;
     char ranging_source[SEISMIC_RECORDER_RANGING_SOURCE_SIZE];
+    int32_t range_offset_mm;
+    bool range_offset_manual;
     /*
      * The topology the geometry was made on: "main_present" or "remote_only"; empty for a session recorded before this
      * field existed (read by the old scheme: a MAIN-origin geometry). With REMOTE_ONLY, `anchor_node_id` is the node at the

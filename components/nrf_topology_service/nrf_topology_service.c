@@ -11,6 +11,7 @@
 #include "nrf_topology_periods.h"
 #include "nrf_topology_mode.h"
 #include "nrf_geometry_solver.h"
+#include "nrf_geometry_range_offset.h"
 #include "nrf_geometry_triangles.h"
 #include "nrf_baro_altitude.h"
 #include "sensor_bus_timeout.h"
@@ -4926,6 +4927,8 @@ esp_err_t nrf_topology_service_ranging_set_manual(
     typedef struct {
         nrf_topology_ranging_result_t result;
         nrf_topology_ranging_progress_t progress;
+        nrf_cs_pair_result_t range_input[NRF_CS_MAX_PAIRS];
+        nrf_cs_pair_result_t corrected_pairs[NRF_CS_MAX_PAIRS];
     } manual_scratch_t;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_HARNESS)
     manual_scratch_t *scratch = calloc(1U, sizeof(*scratch));
@@ -4972,11 +4975,31 @@ esp_err_t nrf_topology_service_ranging_set_manual(
     edited->state = NRF_CS_PAIR_VALID;
     edited->scheduler_quality_flags |= NRF_CS_QUALITY_MANUAL;
 
+    nrf_geometry_range_offset_t offset;
+    if (!nrf_geometry_range_offset_estimate(result->pairs, result->pair_count, &offset)) {
+        free(scratch); return ESP_ERR_INVALID_STATE;
+    }
+    const size_t pair_bytes = result->pair_count * sizeof(result->pairs[0]);
+    if (offset.count > 0U) {
+        memcpy(scratch->range_input, result->pairs, pair_bytes);
+        for (size_t i = 0U; i < result->pair_count; ++i) {
+            if (scratch->range_input[i].state == NRF_CS_PAIR_CABLE_EXCEEDED)
+                scratch->range_input[i].state = NRF_CS_PAIR_VALID;
+        }
+        if (!nrf_geometry_range_offset_apply(scratch->range_input, result->pair_count, inputs,
+                                              result->membership_count, offset.offset_mm,
+                                              scratch->corrected_pairs)) {
+            free(scratch); return ESP_ERR_INVALID_STATE;
+        }
+    } else {
+        memcpy(scratch->corrected_pairs, result->pairs, pair_bytes);
+    }
+
     progress->success = true;
     progress->failure_reason[0] = '\0';
     bool excluded = false;
     for (size_t i = 0U; i < result->pair_count; ++i) {
-        nrf_cs_pair_result_t *pair = &result->pairs[i];
+        nrf_cs_pair_result_t *pair = &scratch->corrected_pairs[i];
         uint64_t maximum = 0U;
         uint32_t first_limit = 0U, second_limit = 0U;
         size_t matched = 0U;
@@ -4992,7 +5015,7 @@ esp_err_t nrf_topology_service_ranging_set_manual(
              (remote_only
                  ? nrf_topology_pair_exceeds_cable_sum(pair->distance_mm, first_limit, second_limit, pair->scheduler_quality_flags)
                  : nrf_topology_pair_exceeds_cable(pair->distance_mm, maximum, pair->scheduler_quality_flags))))) {
-            if (pair == edited) { free(scratch); return ESP_ERR_INVALID_ARG; }
+            if (&result->pairs[i] == edited) { free(scratch); return ESP_ERR_INVALID_ARG; }
             pair->state = NRF_CS_PAIR_CABLE_EXCEEDED;
         }
         if (pair->state != NRF_CS_PAIR_VALID) {
@@ -5007,8 +5030,10 @@ esp_err_t nrf_topology_service_ranging_set_manual(
 
     nrf_geometry_solution_t solution = {0};
     const nrf_geometry_result_t solved = nrf_geometry_solver_solve_partial_with_anchor(
-        inputs, result->membership_count, result->pairs, result->pair_count, anchor_node_id, &solution);
+        inputs, result->membership_count, scratch->corrected_pairs, result->pair_count, anchor_node_id, &solution);
     memset(&result->geometry, 0, sizeof(result->geometry));
+    result->geometry.range_offset_mm = offset.offset_mm;
+    result->geometry.range_offset_manual = offset.count > 0U;
     result->geometry.node_count = solution.node_count;
     result->geometry.max_residual_mm = solution.max_residual_mm;
     result->geometry.inconsistent_pair_count = solution.inconsistent_pair_count;
@@ -5033,7 +5058,7 @@ esp_err_t nrf_topology_service_ranging_set_manual(
                 const double radius2 = (double)node->x_mm * node->x_mm +
                     (double)node->y_mm * node->y_mm + (double)node->z_mm * node->z_mm;
                 const double bound = (double)node_limits[n] + (double)nrf_topology_cable_radius_allowance_mm(
-                    result->pairs, result->pair_count, NRF_TOPOLOGY_MAIN_NODE_ID, node->node_id, node_limits[n]);
+                    scratch->corrected_pairs, result->pair_count, NRF_TOPOLOGY_MAIN_NODE_ID, node->node_id, node_limits[n]);
                 if (radius2 > bound * bound) {
                     dest->solved = false;
                     dest->uncertainty_mm = INT32_MAX;
@@ -5051,8 +5076,8 @@ esp_err_t nrf_topology_service_ranging_set_manual(
         }
     }
     if (solution.node_count != result->membership_count) progress->success = false;
-    if (excluded && (!service_ranging_partial_supported(&result->geometry, result->pairs, result->pair_count) ||
-        !service_ranging_valid_triangles_consistent(result->pairs, result->pair_count))) progress->success = false;
+    if (excluded && (!service_ranging_partial_supported(&result->geometry, scratch->corrected_pairs, result->pair_count) ||
+        !service_ranging_valid_triangles_consistent(scratch->corrected_pairs, result->pair_count))) progress->success = false;
     if (progress->success) progress->failure_reason[0] = '\0';
     if (!progress->success && progress->failure_reason[0] == '\0')
         (void)snprintf(progress->failure_reason, sizeof(progress->failure_reason), "geometry_unsolved");
@@ -5072,6 +5097,10 @@ esp_err_t nrf_topology_service_ranging_set_manual(
         s_accepted_ranging_object[0] = '\0';
     }
     portEXIT_CRITICAL(&s_state_lock);
+    if (unchanged && offset.count > 0U) {
+        ESP_LOGI(TAG, "RANGE_OFFSET source=manual pairs=%u offset_mm=%" PRId32 " span_mm=%" PRId64,
+                 (unsigned)offset.count, offset.offset_mm, offset.span_mm);
+    }
     free(scratch);
     return unchanged ? ESP_OK : ESP_ERR_INVALID_STATE;
 #else

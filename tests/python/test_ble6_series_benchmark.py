@@ -52,7 +52,7 @@ def test_two_complete_passes_pay_for_both_cycles():
     assert rows['3+9']['budget_sum_ms'] > 600000
 
 
-def test_real_iq_first_three_can_reject_the_short_path_as_an_outlier():
+def test_legacy_control_real_iq_first_three_can_reject_the_short_path_as_an_outlier():
     replay = series.replay
     name = 'orientation/45angle/NLOS/0-135_M-M.csv'
     path = replay.WIEME / 'data' / name
@@ -76,3 +76,18 @@ def test_real_iq_first_three_can_reject_the_short_path_as_an_outlier():
     assert fast['spread_mm'] == 33 and fast['rejected'] == 1
     assert abs(fast['distance_mm']/1000-truth) > 2
     assert abs(slow['distance_mm']/1000-truth) < .5
+
+
+def test_firmware_rows_use_calibrated_distance_and_current_confidence():
+    cases = [{'dataset': 'test', 'file': 'a', 'row': 0, 'truth_m': 2},
+             {'dataset': 'test', 'file': 'a', 'row': 1, 'truth_m': 2}]
+    raw = [(9.0, 9.0, 8.0, 900), (4.0, 4.0, 3.0, 900)]
+    firmware = [(7200, 400, 11, 1, 1), (-2147483648, 0, 9, 1, 0)]
+    rows = series.firmware_rows(cases, raw, firmware)
+    assert (rows[0]['mm'], rows[0]['confidence']) == (7200, 400)
+    assert (rows[1]['mm'], rows[1]['confidence']) == (-1, 0)
+    assert rows[0]['truth_m'] == 2 and rows[1]['row'] == 1
+    with pytest.raises(ValueError, match='counts'):
+        series.firmware_rows(cases, raw[:1], firmware)
+    with pytest.raises(ValueError, match='counts'):
+        series.firmware_rows(cases, raw, firmware[:1])

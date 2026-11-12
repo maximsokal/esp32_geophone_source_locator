@@ -73,6 +73,9 @@ uint16_t nrf_cs_measurement_confidence_with_peak(
  *  RTT_MISSING      the PBR answer stands alone (RTT absent or zero) and is capped at 0.4: below the 500 gate unless the peak is sharp;
  *  RTT_DISAGREES    the PBR answer is farther from the RTT than NRF_CS_RTT_AGREEMENT_M and the confidence decays;
  *  RTT_ONLY         only the coarse RTT answer exists (0.4);
+ *  WIDE_GAP         an IFFT coverage gap suppressed the sharp-peak confidence lift;
+ *  PEAK_COMPENSATED an IFFT peak on the bin grid caused the confidence cap;
+ *  METHODS_DISAGREE IFFT and phase slope differed enough to cause the confidence cap;
  *  OK               tone coverage (and the RTT where it exists) decided, nothing else.
  */
 typedef enum {

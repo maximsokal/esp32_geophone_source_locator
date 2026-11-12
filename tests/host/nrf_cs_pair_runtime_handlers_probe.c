@@ -420,14 +420,14 @@ static cs_de_quality_t cs_de_calc(cs_de_report_t *report)
     }
     /* Raw library estimates. The phase-based ones (ifft, phase slope, and best taken from them) carry the 1.8 m excess that
      * the production code subtracts (NRF_CS_PBR_DISTANCE_OFFSET_MM): raw 2.8 m reports as 1000 mm. The RTT is not corrected. */
-    report->distance_estimates[0].ifft=2.8f;report->distance_estimates[0].phase_slope=3.8f;
+    report->distance_estimates[0].ifft=2.8f;report->distance_estimates[0].phase_slope=3.5f;
     report->distance_estimates[0].rtt=1.0f;report->distance_estimates[0].best=2.8f;
     if(s_de_scenario==1)report->distance_estimates[0].best=NAN;
     if(s_de_scenario==2)report->distance_estimates[0].best=INFINITY;
     if(s_de_scenario==3)report->distance_estimates[0].best=-1;
     /* Only RTT is left, and "best" is the RTT: reported without the phase-based offset (1.0 m is below it). */
     if(s_de_scenario==4){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=NAN;report->distance_estimates[0].best=1.0f;}
-    if(s_de_scenario==5){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].best=3.8f;}
+    if(s_de_scenario==5){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].best=3.5f;}
     if(s_de_scenario==6 || s_de_scenario==7){report->distance_estimates[0].ifft=NAN;report->distance_estimates[0].phase_slope=NAN;report->distance_estimates[0].best=NAN;}
     if(s_de_scenario==7)report->distance_estimates[0].rtt=NAN;
     if(s_de_scenario==9)report->distance_estimates[0].rtt=NAN;
@@ -1910,7 +1910,7 @@ int main(void)
     cleanup_work_handler(NULL);
     assert(s_trace_timeout_count==0 && s_trace_result_count==1 && s_trace_result_outcome==NRF_CS_OUTCOME_SUCCESS);
     /* All three estimates of the library reach the trace, not only "best": the method is picked from them. */
-    assert(s_trace_estimates_count==1 && s_trace_est[0]==2.8f && s_trace_est[1]==3.8f && s_trace_est[2]==1.0f && s_trace_est[3]==2.8f);
+    assert(s_trace_estimates_count==1 && s_trace_est[0]==2.8f && s_trace_est[1]==3.5f && s_trace_est[2]==1.0f && s_trace_est[3]==2.8f);
     assert(s_trace_result_confidence==s_confidence && s_trace_rf_count==1);
     assert(s_trace_result_has_timing && s_trace_result_timing.valid);
     assert(s_trace_result_timing.measured_ms==100 && s_trace_result_timing.cleanup_ms==0);

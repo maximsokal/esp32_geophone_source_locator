@@ -21,6 +21,7 @@
 #include "nrf_cs_authority.h"
 #include "nrf_cs_cycle_coordinator.h"
 #include "nrf_geometry_solver.h"
+#include "nrf_geometry_range_offset.h"
 #include "nrf_topology_service.h"
 #include "object_store.h"
 #include "recording_gate.h"
@@ -1309,7 +1310,28 @@ static esp_err_t seismic_recorder_prepare_geometry(
     cycle.result = NRF_CS_AUTHORITY_COMPLETE;
     cycle.membership_generation = frozen_ranging.membership_generation;
     cycle.pair_count = frozen_ranging.pair_count;
-    memcpy(cycle.pairs, frozen_ranging.pairs, cycle.pair_count * sizeof(cycle.pairs[0]));
+    seismic_recorder_geometry_apply_cs_pairs(frozen_ranging.pairs, cycle.pair_count, session_cs_pairs);
+    if (frozen_ranging.geometry.range_offset_manual) {
+        if (frozen_ranging.geometry.node_count == 0U || frozen_ranging.geometry.node_count > NRF_CS_MAX_NODES)
+            return ESP_ERR_INVALID_STATE;
+        nrf_geometry_node_input_t offset_nodes[NRF_CS_MAX_NODES];
+        for (size_t i = 0U; i < frozen_ranging.geometry.node_count; ++i) {
+            offset_nodes[i] = (nrf_geometry_node_input_t){
+                .node_id = frozen_ranging.geometry.nodes[i].node_id,
+                .z_mm = frozen_ranging.geometry.nodes[i].z_mm,
+            };
+        }
+        for (size_t i = 0U; i < cycle.pair_count; ++i) {
+            if (frozen_ranging.pairs[i].state == NRF_CS_PAIR_CABLE_EXCEEDED)
+                frozen_ranging.pairs[i].state = NRF_CS_PAIR_VALID;
+        }
+        if (!nrf_geometry_range_offset_apply(frozen_ranging.pairs, cycle.pair_count, offset_nodes,
+                                              frozen_ranging.geometry.node_count,
+                                              frozen_ranging.geometry.range_offset_mm, cycle.pairs))
+            return ESP_ERR_INVALID_STATE;
+    } else {
+        memcpy(cycle.pairs, frozen_ranging.pairs, cycle.pair_count * sizeof(cycle.pairs[0]));
+    }
 
     /* With MAIN: every MAIN edge within its cable. Without MAIN (REMOTE_ONLY): every pair within the sum of its two cables. */
     err = seismic_recorder_geometry_check_cable_pairs(&topology, cycle.pairs, cycle.pair_count, limits);
@@ -1471,6 +1493,8 @@ static esp_err_t seismic_recorder_prepare_geometry(
     seismic_recorder_geometry_provenance_t *solver_provenance =
         &participation->geometry_provenance;
     solver_provenance->available = true;
+    solver_provenance->range_offset_mm = frozen_ranging.geometry.range_offset_mm;
+    solver_provenance->range_offset_manual = frozen_ranging.geometry.range_offset_manual;
     snprintf(solver_provenance->solver, sizeof(solver_provenance->solver), "nrf_geometry_solver");
     snprintf(
         solver_provenance->solver_version,
@@ -1530,9 +1554,6 @@ static esp_err_t seismic_recorder_prepare_geometry(
      * continues rather than rejecting START (unlike the geometry write
      * above, which the recording gate's own admission promise depends on).
      */
-    seismic_recorder_geometry_apply_cs_pairs(
-        cycle.pairs, cycle.pair_count, session_cs_pairs
-    );
     const esp_err_t cs_pairs_err = object_store_set_cs_pairs(object_id, session_cs_pairs);
     if (cs_pairs_err != ESP_OK) {
         ESP_LOGW(TAG, "Could not persist CS pair evidence err=%s", esp_err_to_name(cs_pairs_err));

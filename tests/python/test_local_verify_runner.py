@@ -157,20 +157,27 @@ def test_nrf_plan_uses_host_policy_then_canonical_ncs_wrapper(tmp_path: Path):
 
     assert [step.name for step in steps] == [
         "nrf/host-policy",
+        "nrf/python-cs-contracts",
         "nrf/build",
         "nrf/tests",
         "nrf/cs-tests",
     ]
     assert steps[0].command[0] == "python-test"
     assert "coverage-nrf.json" in steps[0].command[steps[0].command.index("--manifest") + 1]
-    assert steps[1].command[0] == "powershell-test"
-    assert any("ncs.ps1" in argument for argument in steps[1].command)
-    assert not any("pio.ps1" in argument for argument in steps[1].command)
-    assert steps[1].command[-2:] == ("-Action", "build")
-    assert steps[2].skip_reason is None
-    assert steps[2].command[-2:] == ("-Action", "ncs-test-build")
+    assert steps[1].command == (
+        "python-test", "-m", "pytest", "-q",
+        str(root / "tests/python/test_nrf_cs_pair_runtime_contract.py"),
+        str(root / "tests/python/test_nrf_cs_production_handlers.py"),
+        str(root / "tests/python/test_nrf_rf_switch_contract.py"),
+    )
+    assert steps[2].command[0] == "powershell-test"
+    assert any("ncs.ps1" in argument for argument in steps[2].command)
+    assert not any("pio.ps1" in argument for argument in steps[2].command)
+    assert steps[2].command[-2:] == ("-Action", "build")
     assert steps[3].skip_reason is None
-    assert steps[3].command[-2:] == ("-Action", "ncs-cs-test-build")
+    assert steps[3].command[-2:] == ("-Action", "ncs-test-build")
+    assert steps[4].skip_reason is None
+    assert steps[4].command[-2:] == ("-Action", "ncs-cs-test-build")
 
 
 def test_all_scope_does_not_duplicate_nrf_host_policy(tmp_path: Path, monkeypatch):
@@ -191,6 +198,7 @@ def test_all_scope_does_not_duplicate_nrf_host_policy(tmp_path: Path, monkeypatc
     names = [step.name for step in steps]
     assert names.count("host/coverage-nrf") == 1
     assert "nrf/host-policy" not in names
+    assert "nrf/python-cs-contracts" not in names
     nrf_build = next(step for step in steps if step.name == "nrf/build")
     assert any("ncs.ps1" in arg for arg in nrf_build.command)
 

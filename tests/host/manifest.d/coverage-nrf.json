@@ -287,6 +287,7 @@
         "nRF54L15/src/nrf_node_state.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",
         "components/nrf_geometry_solver/nrf_geometry_triangles.c",
+        "components/nrf_geometry_solver/nrf_geometry_range_offset.c",
         "components/nrf_topology_service/tests/nrf_topology_service_integration_test.c"
       ],
       "include_dirs": [

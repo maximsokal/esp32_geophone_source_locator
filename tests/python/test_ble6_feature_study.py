@@ -30,7 +30,7 @@ def test_bad_reference_cannot_change_candidate_acceptance_or_hide_good_losses():
     rows=[{'feature':{'distance_m':3.,'phase_m':3.1,'method_gap_m':.1,'confidence':600,'plain_confidence':400},'truth_m':1.},
           {'feature':{'distance_m':1.,'phase_m':7.,'method_gap_m':6.,'confidence':600,'plain_confidence':400},'truth_m':1.}]
     report=study.compare(rows)
-    assert report['production']['good_1m']==1
+    assert report['legacy_peak']['good_1m']==1
     assert report['gap_0.3m']['good_1m']==0 and report['gap_0.3m']['coverage']==.5
     assert report['gap_0.3m']['gt_1m']==1
     assert report['plain']['n']==0 and report['all_estimated']['n']==2

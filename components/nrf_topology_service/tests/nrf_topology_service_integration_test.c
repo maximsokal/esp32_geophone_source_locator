@@ -24,6 +24,7 @@
 #include "nrf_cs_cycle_runtime.h"
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
 #include "nrf_geometry_solver.h"
+#include "nrf_cs_distance_method.h"
 #endif
 #include "nrf_log_protocol.h"
 #include "nrf_node_state.h"
@@ -219,6 +220,7 @@ static unsigned s_cycle_id_base; /* lowest node id of the simulated cycle: 0 wit
 static unsigned s_status_reads_before_backoff;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
 static bool s_cs_use_pair_distances;
+static uint16_t s_cs_provider_flags;
 static uint16_t s_cs_fail_pair_mask;
 static bool s_cs_fail_reverse_only;
 static int32_t s_cs_pair_distances[NRF_CS_MAX_PAIRS];
@@ -680,6 +682,7 @@ static nrf_cs_measurement_t sim_cycle_measure(const nrf_cs_step_t *step)
         return m;
     }
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+    m.provider_quality_flags = s_cs_provider_flags;
     if ((s_cs_fail_pair_index == (int32_t)pair || (s_cs_fail_pair_mask & (1U << pair)) != 0U) &&
         (!s_cs_fail_reverse_only || step->initiator > step->reflector)) {
         m.outcome = NRF_CS_OUTCOME_TRANSPORT_ERROR;
@@ -840,6 +843,7 @@ esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t device, uint8_t mem_address
         result.measurement.confidence = 900U;
         result.measurement.provider_quality_flags = 0U;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
+        result.measurement.provider_quality_flags = s_cs_provider_flags;
         if ((s_cs_fail_pair_index == (int32_t)result.step.pair_index ||
             (s_cs_fail_pair_mask & (1U << result.step.pair_index)) != 0U) &&
             (!s_cs_fail_reverse_only || result.step.initiator > result.step.reflector)) {
@@ -2131,6 +2135,7 @@ static void assert_one_direction_result_cannot_be_reused(void)
         raw.pairs[0].node_a, raw.pairs[0].node_b, raw.pairs[0].distance_mm, limits) == ESP_OK);
     assert(nrf_topology_service_get_frozen_ranging_result(&raw) == ESP_OK);
     assert(raw.success && raw.pairs[0].single_direction);
+    assert(!raw.geometry.range_offset_manual && raw.geometry.range_offset_mm == 0);
     assert((raw.pairs[0].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U);
     assert(raw.pairs[0].automatic_distance_mm == 1000);
     assert(nrf_topology_service_get_reusable_frozen_ranging_result(
@@ -2143,6 +2148,7 @@ static void test_one_direction_result_needs_confirmation_before_reuse(void)
     s_tca_present = true;
     prepare_ranging_nodes(3U);
     s_cs_use_pair_distances = true;
+    s_cs_provider_flags = NRF_CS_PROVIDER_METHOD_IFFT;
     const int32_t distances[6] = {1000, 1000, 1414, 1414, 1000, 1000};
     memcpy(s_cs_pair_distances, distances, sizeof(distances));
     s_cs_fail_pair_index = 0;
@@ -3111,6 +3117,105 @@ static void request_inconsistent_mesh(void)
 {
     assert(nrf_topology_service_ranging_start_autonomous(&k_autonomous_policy) == ESP_OK);
     s_vtask_delay_hook = sim_cycle_tick_nodes;
+}
+
+static const int32_t s_offset_truth[10] = {5000, 6313, 3912, 3000, 4105, 6580, 3162, 5104, 3324, 3421};
+static nrf_topology_ranging_progress_t s_offset_original;
+
+static double fitted_pair_distance(const nrf_topology_ranging_geometry_t *geometry, unsigned a, unsigned b)
+{
+    const nrf_topology_ranging_node_t *pa = NULL, *pb = NULL;
+    for (size_t i = 0; i < geometry->node_count; ++i) {
+        if (geometry->nodes[i].node_id == a) pa = &geometry->nodes[i];
+        if (geometry->nodes[i].node_id == b) pb = &geometry->nodes[i];
+    }
+    assert(pa != NULL && pb != NULL && pa->solved && pb->solved);
+    return hypot(hypot((double)pa->x_mm - pb->x_mm, (double)pa->y_mm - pb->y_mm),
+                 (double)pa->z_mm - pb->z_mm);
+}
+
+static void request_offset_mesh(void)
+{
+    const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {20000U, 20000U, 20000U, 20000U};
+    assert(nrf_topology_service_ranging_start_autonomous_limited(&k_autonomous_policy, limits) == ESP_OK);
+    s_vtask_delay_hook = sim_cycle_tick_nodes;
+}
+
+static void check_offset_edit(void)
+{
+    const uint32_t limits[NRF_TOPOLOGY_REMOTE_COUNT] = {20000U, 20000U, 20000U, 20000U};
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&s_offset_original) == ESP_OK);
+    assert(s_offset_original.complete && s_offset_original.success && s_offset_original.geometry.node_count == 5U);
+    assert(nrf_topology_service_ranging_set_manual(s_offset_original.started_at_ms, s_offset_original.updated_at_ms,
+                                                   0U, 1U, s_offset_truth[0], limits) == ESP_OK);
+    for (unsigned edit = 0; edit < 2; ++edit) {
+        assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+        assert(progress.complete && progress.success && progress.pairs[0].automatic_distance_mm == s_offset_truth[0] + 300);
+        assert(progress.geometry.range_offset_manual && progress.geometry.range_offset_mm == 300);
+        size_t p = 0;
+        for (unsigned a = 0; a < 5; ++a) for (unsigned b = a + 1; b < 5; ++b, ++p) {
+            assert(fabs(fitted_pair_distance(&progress.geometry, a, b) - s_offset_truth[p]) < 10.0);
+            if (p != 0) assert(progress.pairs[p].distance_mm == s_offset_truth[p] + 300);
+        }
+        if (edit == 0) {
+            assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+                                                           0U, 1U, s_offset_truth[0], limits) == ESP_OK);
+        }
+    }
+    assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+                                                   0U, 1U, s_offset_truth[0] + 300, limits) == ESP_OK);
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.pairs[0].automatic_distance_mm == s_offset_truth[0] + 300);
+    assert(progress.geometry.range_offset_manual && progress.geometry.range_offset_mm == 0);
+    for (unsigned a = 0; a < 5; ++a) for (unsigned b = a + 1; b < 5; ++b) {
+        assert(fabs(fitted_pair_distance(&progress.geometry, a, b) -
+                    fitted_pair_distance(&s_offset_original.geometry, a, b)) < 2.0);
+    }
+    const uint32_t tight_limits[NRF_TOPOLOGY_REMOTE_COUNT] = {20000U, 6313U, 20000U, 20000U};
+    assert(nrf_topology_service_ranging_set_manual(progress.started_at_ms, progress.updated_at_ms,
+                                                   0U, 1U, s_offset_truth[0], tight_limits) == ESP_OK);
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.success && progress.geometry.range_offset_manual && progress.geometry.range_offset_mm == 300);
+    size_t p = 0;
+    for (unsigned a = 0; a < 5; ++a) for (unsigned b = a + 1; b < 5; ++b, ++p) {
+        assert(progress.pairs[p].distance_mm == s_offset_truth[p] + (p == 0 ? 0 : 300));
+        assert(fabs(fitted_pair_distance(&progress.geometry, a, b) - s_offset_truth[p]) < 10.0);
+    }
+}
+
+static void check_offset_next_cycle(void)
+{
+    nrf_topology_ranging_progress_t progress;
+    assert(nrf_topology_service_ranging_get_progress(&progress) == ESP_OK);
+    assert(progress.complete && progress.success);
+    assert(!progress.geometry.range_offset_manual && progress.geometry.range_offset_mm == 0);
+    size_t p = 0;
+    for (unsigned a = 0; a < 5; ++a) for (unsigned b = a + 1; b < 5; ++b, ++p) {
+        assert(progress.pairs[p].distance_mm == s_offset_truth[p] + 300);
+        assert(!(progress.pairs[p].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL));
+        assert(fabs(fitted_pair_distance(&progress.geometry, a, b) -
+                    fitted_pair_distance(&s_offset_original.geometry, a, b)) < 2.0);
+    }
+}
+
+static void test_manual_range_offset_recomputes_without_changing_raw_pairs(void)
+{
+    reset_world(); s_tca_present = true; prepare_ranging_nodes(4U);
+    s_cs_use_pair_distances = true;
+    s_cs_provider_flags = NRF_CS_PROVIDER_METHOD_IFFT;
+    for (size_t i = 0; i < 10; ++i) s_cs_pair_distances[i] = s_offset_truth[i] + 300;
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_offset_mesh);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, check_offset_edit);
+    script(EV_ACTION, 0U, request_offset_mesh);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, check_offset_next_cycle);
+    script(EV_STOP, 0U, NULL);
+    run_service();
 }
 
 static void assert_inconsistent_mesh_and_correct(void)
@@ -4664,6 +4769,7 @@ static void reset_world(void)
     s_status_reads_before_backoff = 0U;
 #if defined(NRF_TOPOLOGY_SERVICE_TEST_RANGING)
     s_cs_use_pair_distances = false;
+    s_cs_provider_flags = 0U;
     s_cs_fail_pair_mask = 0U;
     s_cs_fail_reverse_only = false;
     s_cs_reverse_extra_mm = 0;
@@ -5867,6 +5973,7 @@ int main(int argc, char **argv)
     test_noisy_geometry_cannot_exceed_individual_cables();
     test_unplug_during_cs_rejoins_after_quiet_lease();
     test_inconsistent_solved_mesh_is_not_success();
+    test_manual_range_offset_recomputes_without_changing_raw_pairs();
     test_one_missing_edge_can_preserve_a_solved_geometry();
     test_partial_geometry_requires_redundant_non_degenerate_constraints();
     test_three_collinear_references_do_not_admit_a_mirrored_partial();

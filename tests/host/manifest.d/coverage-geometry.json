@@ -2,6 +2,18 @@
   "version": 1,
   "tests": [
     {
+      "name": "nrf_geometry_range_offset",
+      "sources": [
+        "components/nrf_geometry_solver/nrf_geometry_range_offset.c",
+        "tests/host/nrf_geometry_range_offset_test.c"
+      ],
+      "include_dirs": [
+        "components/nrf_geometry_solver/include",
+        "nRF54L15/include"
+      ],
+      "defines": ["NRF_GEOMETRY_SOLVER_HOST_TEST=1"]
+    },
+    {
       "name": "nrf_geometry_solver",
       "sources": [
         "components/nrf_geometry_solver/nrf_geometry_solver.c",

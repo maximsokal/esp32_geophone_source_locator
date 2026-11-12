@@ -1,11 +1,14 @@
 #include <assert.h>
 #include <math.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "nrf_cs_iq_gap_fill.h"
 #include "nrf_cs_ifft_quality.h"
 #include "nrf_cs_measurement_quality.h"
+#include "nrf_cs_distance_method.h"
+#include "nrf_cs_tone_stats.h"
 #include "bluetooth/cs_de.h"
 typedef int arm_cfft_instance_f32;
 #if CONFIG_BT_CS_DE_NFFT_SIZE == 512
@@ -56,6 +59,50 @@ static uint32_t sys_get_le24(const uint8_t *p)
 #endif
 #include "accumulate_mean.inc"
 #include "collect_pbr_step.inc"
+
+/* Post-fill firmware policy; counts supply usable slots with all 75 assumed planned. */
+void ble6_replay_firmware_policy(float ifft, float phase, float rtt, float best, float peak,
+                                 const uint16_t counts[75], bool tone_ok, bool quality_ok,
+                                 unsigned nfft, int32_t out[5])
+{
+    bool planned[75], usable[75];
+    for (size_t i = 0; i < 75; ++i) {
+        planned[i] = true;
+        usable[i] = counts[i] > 0U;
+    }
+    const nrf_cs_tone_stats_t stats = nrf_cs_tone_stats(planned, usable, 75U);
+    if (quality_ok && !tone_ok && !isfinite(best) && isfinite(rtt) && rtt > 0.0f) best = rtt;
+    if (!isfinite(ifft) && !isfinite(phase) && (!isfinite(rtt) || rtt <= 0.0f)) best = NAN;
+    const bool pbr = isfinite(ifft) || isfinite(phase);
+    const bool rtt_valid = isfinite(rtt) && rtt > 0.0f;
+    const bool on_grid = nfft <= UINT16_MAX && nrf_cs_ifft_on_bin_grid(ifft, (uint16_t)nfft);
+    const nrf_cs_distance_method_t method = nrf_cs_distance_method_of(
+        nrf_cs_distance_mm_from_m(ifft), nrf_cs_distance_mm_from_m(phase),
+        nrf_cs_distance_mm_from_m(rtt), nrf_cs_distance_mm_from_m(best));
+    out[0] = NRF_CS_DISTANCE_UNAVAILABLE;
+    out[1] = 0;
+    out[2] = nrf_cs_measurement_confidence_reason_with_methods(
+        stats.usable, 15U, pbr, rtt_valid, best, rtt, peak, stats.longest_gap, ifft, phase, on_grid);
+    out[3] = method;
+    out[4] = 0;
+    const double mm = (double)best * 1000.0;
+    if (!quality_ok || !isfinite(best) || mm < 0.0 || mm + 0.5 > INT32_MAX ||
+        !nrf_cs_distance_calibrate_mm((int32_t)(mm + 0.5), method, &out[0])) return;
+    out[1] = nrf_cs_measurement_confidence_with_methods(
+        stats.usable, 15U, pbr, rtt_valid, best, rtt, peak, stats.longest_gap, ifft, phase, on_grid);
+    out[4] = 1;
+}
+
+static bool write_firmware_record(FILE *stream, const int32_t fields[5])
+{
+    uint8_t bytes[20];
+    for (size_t i = 0; i < 5; ++i) {
+        const uint32_t value = (uint32_t)fields[i];
+        for (size_t j = 0; j < 4; ++j) bytes[4*i+j] = (uint8_t)(value >> (8*j));
+    }
+    return fwrite(bytes, sizeof(bytes), 1, stream) == 1U;
+}
+
 int main(void)
 {
     /* Nordic 3.4 clamps nonpositive accumulated timing to zero. */
@@ -64,14 +111,16 @@ int main(void)
     const char *input = getenv("BLE6_REPLAY_INPUT"), *output = getenv("BLE6_REPLAY_OUTPUT");
     if (input == NULL || output == NULL) return 2;
     FILE *in = fopen(input, "rb"), *out = fopen(output, "wb");
-    /* Optional second output: what the production confidence says about the same procedure (4 floats each):
-     * IFFT peak over median bin, plain confidence, confidence with the peak, reason code (nrf_cs_confidence_reason_t). */
+    /* Legacy confidence controls: peak ratio, plain confidence, with_peak confidence, legacy reason. */
     const char *extra_path = getenv("BLE6_REPLAY_EXTRA");
     FILE *extra = extra_path != NULL ? fopen(extra_path, "wb") : NULL;
     const char *peak_path = getenv("BLE6_REPLAY_PEAK");
     FILE *peak = peak_path != NULL ? fopen(peak_path, "wb") : NULL;
+    const char *firmware_path = getenv("BLE6_REPLAY_FIRMWARE");
+    FILE *firmware = firmware_path != NULL ? fopen(firmware_path, "wb") : NULL;
     if (in == NULL || out == NULL || (extra_path != NULL && extra == NULL) ||
-        (peak_path != NULL && peak == NULL)) return 3;
+        (peak_path != NULL && peak == NULL) || (firmware_path != NULL && firmware == NULL)) return 3;
+    if (firmware != NULL && fwrite("CSF1", 4, 1, firmware) != 1U) return 5;
     float src[150], stock[150], buf[2 * CONFIG_BT_CS_DE_NFFT_SIZE], rtt, result[4];
     uint16_t counts[75];
     uint16_t steps;
@@ -124,6 +173,7 @@ int main(void)
         for (size_t i = 0; i < 2 * CONFIG_BT_CS_DE_NFFT_SIZE; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
         result[2] = good >= 15U ? cs_de_phase_slope(buf) : NAN;
         const float raw_ifft = good >= 15U ? cs_de_ifft(buf) : NAN;
+        float post_ifft = raw_ifft;
         for (size_t i = 0; i < 2 * CONFIG_BT_CS_DE_NFFT_SIZE; ++i) buf[i] = i < 150 ? stock[i] : 0.0f;
         result[0] = good >= 15U ? cs_de_ifft(buf) : NAN;
         const float valid_rtt = isfinite(rtt) && rtt > 0.0f ? rtt : NAN;
@@ -133,13 +183,13 @@ int main(void)
             for (size_t i = 0; i < 2 * CONFIG_BT_CS_DE_NFFT_SIZE; ++i) buf[i] = i < 150 ? src[i] : 0.0f;
             if (nrf_cs_iq_gap_fill(buf, counts, 75U) > 0U) {
                 float filled = cs_de_ifft(buf);
-                if (isfinite(filled) && filled >= 0.0f) result[1] = filled;
+                if (isfinite(filled) && filled >= 0.0f) result[1] = post_ifft = filled;
             }
         }
         result[3] = (float)nrf_cs_measurement_confidence(good, 15U, isfinite(raw_ifft) || isfinite(result[2]),
             isfinite(rtt) && rtt > 0.0f, result[1], rtt);
         if (fwrite(result, sizeof(result), 1, out) != 1U) return 5;
-        if (extra != NULL) {
+        if (extra != NULL || firmware != NULL) {
             /* The production order: the (filled) combined IQ goes through cs_de_ifft once more, which leaves the magnitude profile. */
             float sharp = NAN, tail[4];
             float path_quality[5] = {NAN, NAN, NAN, NAN, NAN};
@@ -165,14 +215,22 @@ int main(void)
             tail[3] = (float)nrf_cs_measurement_confidence_reason(good, 15U, pbr, rtt_ok, result[1], rtt, sharp);
             path_quality[4] = (float)nrf_cs_measurement_confidence_with_peak(
                 good, 15U, pbr, rtt_ok, result[1], rtt, path_quality[3]);
-            if (fwrite(tail, sizeof(tail), 1, extra) != 1U) return 5;
-            if (peak != NULL && fwrite(path_quality, sizeof(path_quality), 1, peak) != 1U) return 5;
+            if (extra != NULL && fwrite(tail, sizeof(tail), 1, extra) != 1U) return 5;
+            if (extra != NULL && peak != NULL && fwrite(path_quality, sizeof(path_quality), 1, peak) != 1U) return 5;
+            if (firmware != NULL) {
+                int32_t fields[5];
+                const bool quality_ok = isfinite(rtt) || (good >= 15U && (isfinite(raw_ifft) || isfinite(result[2])));
+                ble6_replay_firmware_policy(post_ifft, result[2], rtt, result[1], sharp, counts,
+                                            good >= 15U, quality_ok, CONFIG_BT_CS_DE_NFFT_SIZE, fields);
+                if (!write_firmware_record(firmware, fields)) return 5;
+            }
         }
         ++procedures;
     }
     fclose(in); fclose(out);
     if (extra != NULL) fclose(extra);
     if (peak != NULL) fclose(peak);
+    if (firmware != NULL && fclose(firmware) != 0) return 5;
     printf("replayed=%zu\n", procedures);
     return 0;
 }

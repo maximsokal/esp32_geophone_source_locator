@@ -417,6 +417,12 @@ def nrf_steps(
     steps: list[Step] = []
     if include_host_policy:
         steps.append(nrf_host_policy_step(root, python_executable))
+        steps.append(Step("nrf/python-cs-contracts", root, (
+            python_executable, "-m", "pytest", "-q",
+            str(root / "tests" / "python" / "test_nrf_cs_pair_runtime_contract.py"),
+            str(root / "tests" / "python" / "test_nrf_cs_production_handlers.py"),
+            str(root / "tests" / "python" / "test_nrf_rf_switch_contract.py"),
+        )))
     steps.extend(
         [
             Step(

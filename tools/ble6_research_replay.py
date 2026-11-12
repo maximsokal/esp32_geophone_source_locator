@@ -162,7 +162,7 @@ def build_and_replay(cases, workdir=BUILD, nfft=512):
     """Return stock IFFT, production distance/phase, and plain confidence control.
 
     Raw PCT records validate both the stock product of means and production mean
-    of paired products independently. Actual production confidence is in extra.bin.
+    of paired products independently. Current policy is in firmware.bin; extra.bin is legacy.
     """
     if nfft not in (512, 1024, 2048):
         raise ValueError("Unsupported FFT size")
@@ -224,6 +224,7 @@ float cs_de_rtt(int32_t,uint8_t);float cs_de_phase_slope(float *);float cs_de_if
     env = os.environ.copy(); env["BLE6_REPLAY_INPUT"] = str(input_path); env["BLE6_REPLAY_OUTPUT"] = str(output_path)
     env["BLE6_REPLAY_EXTRA"] = str(workdir / "extra.bin")
     env["BLE6_REPLAY_PEAK"] = str(workdir / "peak.bin")
+    env["BLE6_REPLAY_FIRMWARE"] = str(workdir / "firmware.bin")
     run = subprocess.run([sys.executable, "tools/run_host_tests.py", "--manifest", str(manifest_path),
                     "--build-dir", str(workdir / "native")], cwd=ROOT, env=env, check=False,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
@@ -233,12 +234,29 @@ float cs_de_rtt(int32_t,uint8_t);float cs_de_phase_slope(float *);float cs_de_if
     results = list(struct.iter_unpack("<4f", output_path.read_bytes()))
     if len(results) != len(cases):
         raise ValueError(f"Replay length mismatch: {len(results)} / {len(cases)}")
+    firmware = firmware_results(workdir)
+    if len(firmware) != len(cases):
+        raise ValueError(f"Firmware sidecar length mismatch: {len(firmware)} / {len(cases)}")
     return results, source
 
 
 def confidence_extra(workdir=BUILD):
-    """Per procedure of the last build_and_replay(workdir): (IFFT peak over median bin, plain confidence, confidence with the peak, reason code)."""
+    """Legacy per-procedure controls: peak ratio, plain confidence, with_peak confidence, reason."""
     return list(struct.iter_unpack("<4f", (workdir / "extra.bin").read_bytes()))
+
+
+def firmware_results(workdir=BUILD):
+    """Decode CSF1 records: calibrated mm, confidence, reason, method, valid."""
+    data = (workdir / "firmware.bin").read_bytes()
+    if data[:4] != b"CSF1" or (len(data)-4) % 20:
+        raise ValueError("invalid firmware sidecar header or length")
+    results = list(struct.iter_unpack("<5i", data[4:]))
+    for distance, confidence, reason, method, valid in results:
+        if (not 0 <= confidence <= 1000 or not 0 <= reason <= 11 or not 0 <= method <= 3 or valid not in (0, 1)
+                or (valid == 0 and (distance != -2147483648 or confidence != 0))
+                or (valid == 1 and (distance < 0 or method == 0))):
+            raise ValueError("invalid firmware sidecar record")
+    return results
 
 
 def ocm_cases():
@@ -400,6 +418,57 @@ def waves_cases():
                "truth_m": None, "iq": iq, "counts": counts, "rtt": math.nan}
 
 
+def summarize_replay(cases, results, firmware, max_error_m):
+    """Aggregate raw reference checks and calibrated firmware measurements."""
+    if len(cases) != len(results) or len(results) != len(firmware):
+        raise ValueError("Replay and firmware record counts do not match")
+    grouped = {}
+    orientation = {}
+    findings = {}
+    waves_results = []
+    reference_errors = []
+    for case, (raw, filled, phase, _plain_control), fw in zip(cases, results, firmware, strict=True):
+        distance_mm, confidence, _reason, _method, valid = fw
+        if case["dataset"] == "OCMTEC" and math.isfinite(raw) and math.isfinite(case["author_ifft"]):
+            reference_errors.append(abs(raw - case["author_ifft"]))
+        if case["truth_m"] is None:
+            waves_results.append({"procedure": case["row"], "raw_m": raw if math.isfinite(raw) else None,
+                                  "filled_m": filled if math.isfinite(filled) else None,
+                                  "phase_m": phase if math.isfinite(phase) else None,
+                                  "calibrated_m": distance_mm / 1000 if valid else None, "valid": bool(valid),
+                                  "confidence": confidence})
+            continue
+        group = case["dataset"] + ":" + case["file"]
+        bucket = grouped.setdefault(group, {"total": 0, "n": 0, "unavailable_or_outlier": 0,
+                                            "errors": [], "large_error": 0, "high_confidence_large_error": 0})
+        bucket["total"] += 1
+        if not valid:
+            bucket["unavailable_or_outlier"] += 1
+            continue
+        calibrated = distance_mm / 1000
+        error = abs(calibrated - case["truth_m"])
+        bucket["n"] += 1; bucket["errors"].append(error)
+        if error > max_error_m:
+            bucket["large_error"] += 1
+        if case["dataset"] == "OWL" and case["angle"] is not None and math.isfinite(case["angle"]):
+            quadrant = int((case["angle"] % (2 * math.pi)) / (math.pi / 2))
+            key = f"{case['env']}:{case['setup']}:run{case['run_idx']}:quadrant{quadrant}"
+            orientation.setdefault(key, []).append(error)
+        if confidence >= 500 and error > max_error_m:
+            bucket["high_confidence_large_error"] += 1
+            examples = findings.setdefault(case["dataset"], [])
+            if len(examples) < 10:
+                examples.append({k: case[k] for k in ("dataset", "file", "row", "truth_m") if k in case} |
+                                {"distance_m": calibrated, "confidence": int(confidence),
+                                 "rtt_available": math.isfinite(case["rtt"]), "error_m": round(error, 5)})
+    for group in grouped.values():
+        errors = group.pop("errors"); group["mae_m"] = sum(errors) / len(errors) if errors else None
+        group["median_error_m"] = percentile(errors, 0.5); group["p95_error_m"] = percentile(errors, 0.95)
+    orientation_summary = {key: {"n": len(errors), "mae_m": sum(errors) / len(errors),
+                                  "p95_error_m": percentile(errors, 0.95)} for key, errors in orientation.items()}
+    return grouped, orientation_summary, findings, waves_results, reference_errors
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
@@ -417,49 +486,16 @@ def main():
     for path in (OWL / "owl-indoor.parquet", OWL / "owl-outdoor.parquet"):
         cases.extend(owl_cases(path, args.owl_stride))
     results, source = build_and_replay(cases)
-    confidence_details = confidence_extra()
-    if len(confidence_details) != len(results):
-        raise ValueError("Confidence sidecar length does not match replay")
-    grouped = {}
-    orientation = {}
-    findings = {}
-    waves_results = []
-    reference_errors = []
-    for case, (raw, filled, phase, _plain_control), details in zip(cases, results, confidence_details):
-        confidence = details[2]
-        if case["dataset"] == "OCMTEC" and math.isfinite(raw) and math.isfinite(case["author_ifft"]):
-            reference_errors.append(abs(raw - case["author_ifft"]))
-        if sum(n > 0 for n in case["counts"]) < 15 or not math.isfinite(filled) or filled < 0:
-            continue
-        if case["truth_m"] is None:
-            waves_results.append({"procedure": case["row"], "raw_m": raw if math.isfinite(raw) else None,
-                                  "filled_m": filled, "phase_m": phase if math.isfinite(phase) else None})
-            continue
-        group = case["dataset"] + ":" + case["file"]
-        bucket = grouped.setdefault(group, {"n": 0, "errors": [], "large_error": 0, "high_confidence_large_error": 0})
-        error = abs(filled - case["truth_m"])
-        bucket["n"] += 1; bucket["errors"].append(error)
-        if error > args.max_error_m:
-            bucket["large_error"] += 1
-        if case["dataset"] == "OWL" and case["angle"] is not None and math.isfinite(case["angle"]):
-            quadrant = int((case["angle"] % (2 * math.pi)) / (math.pi / 2))
-            key = f"{case['env']}:{case['setup']}:run{case['run_idx']}:quadrant{quadrant}"
-            orientation.setdefault(key, []).append(error)
-        if confidence >= 500 and error > args.max_error_m:
-            bucket["high_confidence_large_error"] += 1
-            examples = findings.setdefault(case["dataset"], [])
-            if len(examples) < 10:
-                examples.append({k: case[k] for k in ("dataset", "file", "row", "truth_m") if k in case} |
-                                {"distance_m": round(filled, 5), "confidence": int(confidence),
-                                 "rtt_available": math.isfinite(case["rtt"]), "error_m": round(error, 5)})
-    for group in grouped.values():
-        errors = group.pop("errors"); group["mae_m"] = sum(errors) / len(errors)
-        group["median_error_m"] = percentile(errors, 0.5); group["p95_error_m"] = percentile(errors, 0.95)
-    orientation_summary = {key: {"n": len(errors), "mae_m": sum(errors) / len(errors),
-                                  "p95_error_m": percentile(errors, 0.95)} for key, errors in orientation.items()}
+    firmware = firmware_results()
+    if len(firmware) != len(results):
+        raise ValueError("Firmware sidecar length does not match replay")
+    grouped, orientation_summary, findings, waves_results, reference_errors = summarize_replay(
+        cases, results, firmware, args.max_error_m)
     if not reference_errors or max(reference_errors) > 0.00001:
         raise ValueError(f"SDK replay does not match OCMTEC firmware baseline: max={max(reference_errors, default=None)}")
     sources = [ROOT / "nRF54L15/include/nrf_cs_iq_gap_fill.h", ROOT / "nRF54L15/src/nrf_cs_measurement_quality.c",
+               ROOT / "nRF54L15/include/nrf_cs_distance_method.h", ROOT / "nRF54L15/include/nrf_cs_measurement_quality.h",
+               ROOT / "nRF54L15/include/nrf_cs_tone_stats.h", ROOT / "nRF54L15/include/nrf_cs_ifft_quality.h",
                ROOT / "tests/host/ble6_research_replay.c", Path(__file__),
                DATA / "cs_de_gaps_data_v1/cs_de_gaps_data_v1/tones.csv",
                DATA / "cs_de_gaps_data_v1/cs_de_gaps_data_v1/procedures.csv", WIEME / "mapping.csv", WIEME / "outdoor_mapping.csv",
@@ -468,7 +504,7 @@ def main():
     sources.extend(sorted((XU / "GT").glob("*.csv"))); sources.extend(sorted((XU / "RangingFilter").glob("*.csv")))
     sources.extend(sorted((DATA / "BLE Channel Sounding phase-based ranging analysis tool/waves-main/waves-main/tests").glob("*.txt")))
     report = {"diagnostic_threshold_m": args.max_error_m, "owl_stride": args.owl_stride, "replayed": len(cases),
-              "confidence_policy": "production nrf_cs_measurement_confidence_with_peak (extra.bin)",
+              "confidence_policy": "nrf_cs_measurement_confidence_with_methods and 1800 mm PBR calibration (firmware.bin)",
               "raw_pct_procedures": sum(bool(case.get("raw_steps")) for case in cases),
               "raw_pct_steps": sum(len(case.get("raw_steps", b"")) // 11 for case in cases),
               "collector_provenance": json.loads((BUILD / "collector-provenance.json").read_text(encoding="utf-8")),
@@ -476,7 +512,8 @@ def main():
               "xu_android_vs_uwb": xu_statistics(), "owl_orientation": orientation_summary,
               "waves_without_reference": waves_results,
               "sha256": {str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path): sha256(path) for path in sources},
-              "limitations": ["Host FFT shim, not target CMSIS or RF", "OWL is sampled by deterministic row index",
+              "limitations": ["Host FFT shim and post-estimator policy only, not target CMSIS or RF",
+                              "All 75 channels assumed planned", "OWL is sampled by deterministic row index",
                               "Xu Android confidence is not project confidence", "Wieme has no RTT in these records",
                               "Waves recordings lack verified reference distance"]}
     report_path = BUILD / "report.json"; report_path.write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")

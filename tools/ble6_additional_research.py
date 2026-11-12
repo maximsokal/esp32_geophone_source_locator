@@ -112,6 +112,7 @@ def report_replay(cases):
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     env = os.environ.copy()
     env["BLE6_REPORT_INPUT"], env["BLE6_REPORT_OUTPUT"] = str(input_path), str(output_path)
+    env["BLE6_REPORT_FIRMWARE"] = str(work / "firmware.bin")
     run = subprocess.run([sys.executable, "tools/run_host_tests.py", "--manifest", str(manifest_path),
         "--build-dir", str(work / "reports-native")], cwd=ROOT, env=env, capture_output=True,
         text=True, encoding="utf-8", errors="replace")
@@ -121,6 +122,9 @@ def report_replay(cases):
     results = list(struct.iter_unpack("<10f", output_path.read_bytes()))
     if len(results) != len(cases):
         raise ValueError("Report replay length mismatch")
+    firmware = replay.firmware_results(work)
+    if len(firmware) != len(cases):
+        raise ValueError("Report firmware sidecar length mismatch")
     return results
 
 
@@ -132,6 +136,7 @@ def may_analysis():
     issues = []
     cases = [c for p in files for c in may_file(p, issues)]
     results = report_replay(cases)
+    firmware = replay.firmware_results(BUILD / "may-native")
     # Only reviewed constants and pure numerical functions; never execute the
     # author's capture/main routines, pandas imports, calibration or serial I/O.
     import numpy as np
@@ -151,34 +156,40 @@ def may_analysis():
             if math.isfinite(values[i]) and math.isfinite(result[i]):
                 author_differences[name].append(abs(values[i]-result[i]))
     grouped = defaultdict(list)
-    for case, result in zip(cases, results):
-        grouped[case["file"]].append((case, result))
+    for case, result, fw in zip(cases, results, firmware, strict=True):
+        grouped[case["file"]].append((case, result, fw))
     output = {}
     for name, group in grouped.items():
         methods = {}
         for label, column in (("stock_ifft", 0), ("phase", 1), ("rtt_raw", 2), ("project_best", 4)):
-            usable = [(c, r[column]) for c, r in group if math.isfinite(r[column]) and r[column] >= 0]
+            usable = [(c, r[column]) for c, r, _ in group if math.isfinite(r[column]) and r[column] >= 0]
             methods[label] = metrics(value-c["truth_m"] for c, value in usable)
             methods[label]["unavailable"] = len(group)-len(usable)
             methods[label]["zero"] = sum(value == 0 for _, value in usable)
         delta = {}
         for i, label in enumerate(("ifft", "phase", "rtt", "best")):
-            differences = [abs(c["recorded"][i]-r[i]) for c, r in group
+            differences = [abs(c["recorded"][i]-r[i]) for c, r, _ in group
                 if math.isfinite(c["recorded"][i]) and math.isfinite(r[i])]
             delta[label] = {"n": len(differences), "max_difference_m": max(differences, default=None),
                             "above_1mm": sum(d > .001 for d in differences),
-                            "finite_status_mismatch": sum(math.isfinite(c["recorded"][i]) != math.isfinite(r[i]) for c, r in group)}
+                            "finite_status_mismatch": sum(math.isfinite(c["recorded"][i]) != math.isfinite(r[i]) for c, r, _ in group)}
+        accepted = [(c, fw) for c, _, fw in group if fw[4] and fw[1] >= 500]
         output[name] = {"procedures": len(group), "nominal_m": group[0][0]["truth_m"],
             "metrics": methods, "published_equivalence": delta,
-            "nonpositive_rtt_acc": sum(c["count"] > 0 and c["acc"] <= 0 for c, _ in group),
-            "plain_accepted": sum(r[7] >= 500 for _, r in group),
-            "production_accepted": sum(r[8] >= 500 for _, r in group),
-            "production_accepted_error_over_1m": sum(r[8] >= 500 and math.isfinite(r[4]) and abs(r[4]-c["truth_m"])>1 for c, r in group)}
+            "nonpositive_rtt_acc": sum(c["count"] > 0 and c["acc"] <= 0 for c, _, _ in group),
+            "plain_accepted": sum(r[7] >= 500 for _, r, _ in group),
+            "legacy_peak_accepted": sum(r[8] >= 500 for _, r, _ in group),
+            "production_unavailable_or_outlier": sum(not fw[4] for _, _, fw in group),
+            "production_accepted": len(accepted),
+            "production_accepted_error_over_1m": sum(abs(fw[0]/1000-c["truth_m"]) > 1 for c, fw in accepted)}
     return {"files": len(files), "procedures": len(cases), "tones": sum(sum(1 for _ in rows(p)) for p in files),
             "results": output, "quarantined": issues,
             "author_python_vs_sdk": {k: metrics(v) for k, v in author_differences.items()},
             "limitations": ["nominal file-name distances", "already aggregated IQ, no original repeated PCT pairs",
-                "tone availability from exported row presence; individual TQI not exported", "host FFT shim, no RAS/controller execution"]}, files+[author_path]
+                "tone availability from exported row presence; individual TQI not exported", "all 75 channels assumed planned",
+                "host FFT shim and post-estimator policy, no RAS/controller execution"],
+            "confidence_policy": "production counts use firmware sidecar: with_methods and 1800 mm PBR calibration",
+            "raw_control_policy": "original 10-float replay metrics, including project_best, are raw pre-calibration controls"}, files+[author_path]
 
 
 def circle_position(a, b, r1, r2):

@@ -20,6 +20,16 @@ ROOT = replay.ROOT
 BUILD = ROOT / '.test-build/ble6-series'
 
 
+def firmware_rows(cases, results, firmware):
+    """Map current calibrated replay outcomes to scheduler input rows."""
+    if len(cases) != len(results) or len(cases) != len(firmware):
+        raise ValueError('Replay and firmware record counts do not match')
+    return [{k: v for k, v in case.items() if k in
+             ('dataset', 'file', 'row', 'env', 'setup', 'run_idx', 'truth_m', 'reference')} |
+            {'mm': distance if valid else -1, 'confidence': confidence if valid else 0}
+            for case, (distance, confidence, _reason, _method, valid) in zip(cases, firmware, strict=True)]
+
+
 def windows(rows):
     result, pending, last, previous = [], [], {}, None
     dropped = 0
@@ -113,14 +123,8 @@ def main():
         for name in ('owl-indoor.parquet', 'owl-outdoor.parquet'):
             cases.extend(itertools.islice(replay.owl_cases(replay.OWL / name, stride=1), args.owl_limit))
     results, source = replay.build_and_replay(cases, workdir=BUILD / 'iq-replay')
-    extra = replay.confidence_extra(BUILD / 'iq-replay')
-    assert len(cases) == len(results) == len(extra)
-    enriched = []
-    for case, values, quality in zip(cases, results, extra):
-        valid = math.isfinite(values[1]) and 0 <= values[1] <= 2147483 and sum(c > 0 for c in case['counts']) >= 15
-        enriched.append({k: v for k, v in case.items() if k in
-            ('dataset', 'file', 'row', 'env', 'setup', 'run_idx', 'truth_m', 'reference')} |
-            {'mm': int(values[1] * 1000 + .5) if valid else -1, 'confidence': int(quality[2]) if valid else 0})
+    firmware = replay.firmware_results(BUILD / 'iq-replay')
+    enriched = firmware_rows(cases, results, firmware)
     matched, dropped = windows(enriched)
     summaries = native_windows([[(c['mm'], c['confidence']) for c in w] for w in matched], BUILD / 'series')
     grouped = defaultdict(list)
@@ -138,7 +142,8 @@ def main():
         grouped[group].append(row)
         details.append(row)
     report = {'inputs': len(cases), 'windows': len(matched), 'rows_not_in_complete_windows': dropped,
-        'owl_limit': args.owl_limit, 'sdk_source': str(source), 'groups': {}}
+        'owl_limit': args.owl_limit, 'sdk_source': str(source),
+        'input_policy': 'firmware with_methods confidence and 1800 mm PBR calibration', 'groups': {}}
     for name, rows in grouped.items():
         modes = {}
         for index, target in enumerate((3, 9)):

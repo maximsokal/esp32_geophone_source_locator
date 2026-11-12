@@ -1,11 +1,12 @@
 """The confidence of a distance estimate, checked against the public BLE Channel Sounding datasets (nRF54L15/tests/ble6).
 
 Every procedure of a sample of OCMTEC, Wieme and OWL goes through the unchanged NCS 3.4.0 `cs_de.c`, the production PCT collector and the
-production confidence code (`nrf_cs_measurement_confidence_with_peak` / `_reason`); the truth is the dataset's own reference distance.
+legacy confidence control (`nrf_cs_measurement_confidence_with_peak` / `_reason`) with raw distances and no fixed offset. This is not the
+current firmware confidence or calibration policy; the truth is the dataset's own reference distance.
 The datasets are not tracked: the tests skip when they, or NCS 3.4.0, are missing.
 
 What is checked (bench 2026-11-03, P0 "classification of RTT=0, insufficient confirmation and over-confidence"):
-  - the reason code the firmware logs (`why=`) is what the rules say, for every procedure;
+  - the legacy reason code is what the historical rules say, for every procedure;
   - a sharp IFFT peak lifts the confidence of an answer without a usable RTT, and only that; nothing else moves;
   - without RTT and without a sharp peak the answer stays below the 500 production gate;
   - the answers accepted that way meet the accuracy criterion (line of sight, 1-5 m, constant offset removed: median <= 0.3 m, P95 <= 1.0 m),

@@ -70,6 +70,8 @@ typedef struct {
     size_t inconsistent_pair_count;
     bool refined;
     uint8_t refine_iterations;
+    int32_t range_offset_mm;
+    bool range_offset_manual;
 } nrf_topology_ranging_geometry_t;
 
 typedef struct {
