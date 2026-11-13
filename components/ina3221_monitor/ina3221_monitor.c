@@ -23,6 +23,35 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#if defined(ESP_PLATFORM)
+#include "esp_heap_caps.h"
+#include "freertos/idf_additions.h"
+#endif
+
+/*
+ * The stack of this task lives in PSRAM: internal RAM is nearly used up once Wi-Fi, the web server and the UI are up
+ * (board log 2026-11-13: 5 KB free at boot), and the task touches neither flash nor DMA buffers on its stack.
+ */
+static BaseType_t ina3221_monitor_task_create(
+    TaskFunction_t function, const char *name, unsigned stack_bytes, void *argument,
+    unsigned priority, TaskHandle_t *handle, int core)
+{
+#if defined(ESP_PLATFORM)
+    return xTaskCreatePinnedToCoreWithCaps(
+        function, name, stack_bytes, argument, priority, handle, core, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    return xTaskCreatePinnedToCore(function, name, stack_bytes, argument, priority, handle, core);
+#endif
+}
+
+static void ina3221_monitor_task_delete_self(void)
+{
+#if defined(ESP_PLATFORM)
+    vTaskDeleteWithCaps(NULL);
+#else
+    vTaskDelete(NULL);
+#endif
+}
 
 /* The Kconfig limits must reach this file on the target (FreeRTOS.h pulls
  * in sdkconfig.h); silently falling back to defaults would hide a typo. */
@@ -989,9 +1018,7 @@ quiet_pause:
 
     ina3221_monitor_clear_current_task();
 
-    vTaskDelete(
-        NULL
-    );
+    ina3221_monitor_task_delete_self();
 }
 
 
@@ -1013,7 +1040,7 @@ esp_err_t ina3221_monitor_start(void)
         NULL;
 
     const BaseType_t result =
-        xTaskCreatePinnedToCore(
+        ina3221_monitor_task_create(
             ina3221_monitor_worker,
             "ina3221",
             APP_TASK_STACK_INA3221,

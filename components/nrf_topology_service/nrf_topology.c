@@ -551,6 +551,10 @@ static void channel_select_failed(
     if (failures < threshold) {
         return;
     }
+    if (!controller->channel_had_device[channel] && failures >= NRF_TOPOLOGY_CHANNEL_HANG_LIMIT) {
+        controller->channel_quarantined_until_ms[channel] = NRF_TOPOLOGY_CHANNEL_QUARANTINE_FOREVER_MS;
+        return;
+    }
     const unsigned doublings = (unsigned)(failures - threshold);
     uint64_t quarantine_ms = NRF_TOPOLOGY_CHANNEL_QUARANTINE_MAX_MS;
     if (doublings < 16U &&
@@ -566,8 +570,10 @@ static void channel_select_failed(
     controller->channel_quarantined_until_ms[channel] = now_ms + quarantine_ms;
 }
 
-static void channel_select_succeeded(nrf_topology_controller_t *controller, uint8_t channel)
+/* A device answered through the channel: the only proof that the channel works. */
+static void channel_device_answered(nrf_topology_controller_t *controller, uint8_t channel)
 {
+    controller->channel_had_device[channel] = true;
     controller->channel_select_failures[channel] = 0U;
     controller->channel_quarantined_until_ms[channel] = 0U;
     controller->channel_quarantined_with_node[channel] = false;
@@ -588,6 +594,20 @@ static bool close_mux_or_fault(const nrf_topology_io_t *io, nrf_topology_snapsho
         return false;
     }
     return true;
+}
+
+/* Closes the mux after a channel was used. A close that fails now means this channel has latched the bus. */
+static bool close_channel_or_fault(
+    nrf_topology_controller_t *controller,
+    const nrf_topology_io_t *io,
+    nrf_topology_snapshot_t *snapshot,
+    uint8_t channel)
+{
+    const bool closed = close_mux_or_fault(io, snapshot);
+    if (!closed && !snapshot->bus_busy) {
+        channel_select_failed(controller, channel, io->now_ms(io->context));
+    }
+    return closed;
 }
 
 static void scan_remote_channel(
@@ -622,7 +642,6 @@ static void scan_remote_channel(
         }
         return;
     }
-    channel_select_succeeded(controller, channel);
 
     const main_verify_t main_verdict = main_assigned
         ? verify_known_main(io, &snapshot->main, &snapshot->bus_busy)
@@ -651,7 +670,7 @@ static void scan_remote_channel(
     if (probe_status(io, NRF_UPSTREAM_ADDRESS_DISCOVERY, &discovery_present,
                      &discovery_status, &read_error, &snapshot->bus_busy) != ESP_OK) {
         node->state = read_error;
-        if (!close_mux_or_fault(io, snapshot) || snapshot->bus_busy ||
+        if (!close_channel_or_fault(controller, io, snapshot, channel) || snapshot->bus_busy ||
             read_error == NRF_TOPOLOGY_NODE_UNKNOWN) {
             *continue_scan = false;
         }
@@ -660,13 +679,16 @@ static void scan_remote_channel(
     if (probe_status(io, NRF_UPSTREAM_ADDRESS_REMOTE, &remote_present,
                      &remote_status, &read_error, &snapshot->bus_busy) != ESP_OK) {
         node->state = read_error;
-        if (!close_mux_or_fault(io, snapshot) || snapshot->bus_busy ||
+        if (!close_channel_or_fault(controller, io, snapshot, channel) || snapshot->bus_busy ||
             read_error == NRF_TOPOLOGY_NODE_UNKNOWN) {
             *continue_scan = false;
         }
         return;
     }
 
+    if (discovery_present || remote_present) {
+        channel_device_answered(controller, channel);
+    }
     if (discovery_present && remote_present) {
         conflict_from_status(
             node, NRF_TOPOLOGY_CONFLICT_REMOTE_DISCOVERY_AND_RUNTIME, &remote_status);
@@ -708,7 +730,7 @@ static void scan_remote_channel(
         node->state = NRF_TOPOLOGY_NODE_ABSENT;
     }
 
-    if (!close_mux_or_fault(io, snapshot) || snapshot->bus_busy) {
+    if (!close_channel_or_fault(controller, io, snapshot, channel) || snapshot->bus_busy) {
         *continue_scan = false;
     }
 }

@@ -1159,6 +1159,29 @@ int main(void)
     assert(seismic_recorder_read_session_geometry("OBJ_0010", "S000001", &final_geometry) == ESP_OK);
     for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) assert(final_geometry.pods[pod].z_mm == -600);
 
+    /*
+     * The heights settled at placement are frozen with the accepted ranging. Whatever the live placement heights do
+     * afterwards (drift, or no longer settled) must not block START and must not change the recorded Z.
+     */
+    for (size_t channel = 0U; channel < 4U; ++channel) fake_placement_height_mm[channel + 1U] = -600;
+    fake_confirm_current_geometry();
+    for (size_t channel = 0U; channel < 4U; ++channel) fake_placement_height_mm[channel + 1U] = -450;
+    fake_placement_valid[2] = false;
+    assert(seismic_recorder_start("OBJ_0010") == ESP_OK);
+    assert(last_geometry_set);
+    for (size_t pod = 0U; pod < OBJECT_STORE_POD_COUNT; ++pod) {
+        assert(last_geometry.pods[pod].computed);
+        assert(last_geometry.pods[pod].z_mm == -600);
+    }
+    assert(seismic_recorder_stop() == ESP_OK);
+    final_metadata_written = false;
+    if (setjmp(worker_finished) == 0) {
+        fake_recorder_task(NULL);
+        assert(false && "frozen-height recorder worker should finish STOP metadata");
+    }
+    assert(final_metadata_written && strcmp(last_metadata_status, "complete") == 0);
+    fake_placement_valid[2] = true;
+
     /* A reused partial graph may predate the current cable limits: MAIN--node1 is missing. */
     for (size_t channel = 0U; channel < 4U; ++channel) fake_placement_height_mm[channel + 1U] = 0;
     const int32_t beyond_cable_distances[10] = {0,3000,4243,3000,6708,4243,3000,3000,4243,3000};

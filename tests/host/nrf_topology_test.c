@@ -1214,18 +1214,116 @@ static void test_channel_that_hangs_the_select_is_not_selected_again(void)
     assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
     assert(bus.selects_per_channel[1] == 3U);
 
-    /* The wait never grows beyond one hour, however long the socket stays bad. */
-    for (unsigned probe = 0U; probe < 40U; ++probe) {
-        const uint64_t remaining =
-            nrf_topology_channel_quarantine_remaining_ms(&controller, 1U, bus.now_ms);
-        assert(remaining > 0U && remaining <= NRF_TOPOLOGY_CHANNEL_QUARANTINE_MAX_MS);
-        bus.now_ms += remaining;
+    /*
+     * The third hang of a socket that never answered switches it off until reboot: a further hang risks a bus that
+     * stays dead until the mux is power-cycled, and no node was ever there to lose.
+     */
+    assert(NRF_TOPOLOGY_CHANNEL_HANG_LIMIT == 3U);
+    assert(nrf_topology_channel_quarantine_remaining_ms(&controller, 1U, bus.now_ms) >
+        NRF_TOPOLOGY_CHANNEL_QUARANTINE_MAX_MS);
+    for (unsigned pass = 0U; pass < 200U; ++pass) {
+        bus.now_ms += 3600000U;                           /* 200 hours */
         assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
-        assert(bus.selects_per_channel[1] == probe + 4U);
+        assert(bus.selects_per_channel[1] == 3U);
+        assert(snapshot.quarantined_channels == 0x02U);
+        assert(snapshot.remotes[1].state == NRF_TOPOLOGY_NODE_ABSENT);
         assert_bench_nodes_assigned(&snapshot);
     }
+}
+
+/* Board log 2026-11-13: channel 1 hung the bus, then a select worked, then it hung again. The ladder must not reset. */
+static void test_intermittent_socket_is_not_forgiven_by_a_select_that_works(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bench_with_bad_channel_1(&bus);
+    nrf_topology_io_t io = make_io(&bus);
+    bus.now_ms = 5000U;
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);          /* hang 1 */
+    assert(controller.channel_select_failures[1] == 1U);
     assert(nrf_topology_channel_quarantine_remaining_ms(&controller, 1U, bus.now_ms) ==
+        NRF_TOPOLOGY_CHANNEL_QUARANTINE_BASE_MS);
+
+    bus.select_error[1] = ESP_OK;                                  /* the select happens to work, nothing answers */
+    bus.now_ms += NRF_TOPOLOGY_CHANNEL_QUARANTINE_BASE_MS;
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(bus.selects_per_channel[1] == 2U);
+    assert(snapshot.remotes[1].state == NRF_TOPOLOGY_NODE_ABSENT);
+    assert(controller.channel_select_failures[1] == 1U);           /* an empty answer is not proof of a working socket */
+
+    bus.select_error[1] = ESP_ERR_TIMEOUT;                         /* hang 2: the wait doubles */
+    bus.now_ms += 8000U;
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(controller.channel_select_failures[1] == 2U);
+    assert(nrf_topology_channel_quarantine_remaining_ms(&controller, 1U, bus.now_ms) ==
+        2U * NRF_TOPOLOGY_CHANNEL_QUARANTINE_BASE_MS);
+
+    bus.select_error[1] = ESP_OK;
+    bus.now_ms += 2U * NRF_TOPOLOGY_CHANNEL_QUARANTINE_BASE_MS;
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(controller.channel_select_failures[1] == 2U);
+
+    bus.select_error[1] = ESP_ERR_TIMEOUT;                         /* hang 3: off until reboot */
+    bus.now_ms += 8000U;
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(controller.channel_select_failures[1] == 3U);
+    assert(nrf_topology_channel_quarantine_remaining_ms(&controller, 1U, bus.now_ms) >
         NRF_TOPOLOGY_CHANNEL_QUARANTINE_MAX_MS);
+    bus.select_error[1] = ESP_OK;
+    bus.now_ms += 86400000U;
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(bus.selects_per_channel[1] == 5U);                      /* not selected again after hang 3 */
+    assert(snapshot.quarantined_channels == 0x02U);
+    assert_bench_nodes_assigned(&snapshot);
+}
+
+/* A node that answered on a channel earns it the right to keep being retried (never switched off for good). */
+static void test_channel_that_once_carried_a_device_is_never_switched_off(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bench_with_bad_channel_1(&bus);
+    bus.select_error[1] = ESP_OK;
+    nrf_topology_io_t io = make_io(&bus);
+    bus.now_ms = 1000U;
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert_bench_nodes_assigned(&snapshot);
+    assert(controller.channel_had_device[0] && controller.channel_had_device[2] && controller.channel_had_device[3]);
+    assert(!controller.channel_had_device[1]);
+
+    bus.select_error[2] = ESP_ERR_TIMEOUT;
+    for (unsigned hang = 0U; hang < 12U; ++hang) {
+        bus.now_ms += 8000U;
+        assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+        const uint64_t remaining = nrf_topology_channel_quarantine_remaining_ms(&controller, 2U, bus.now_ms);
+        assert(remaining <= NRF_TOPOLOGY_CHANNEL_QUARANTINE_MAX_MS);
+        bus.now_ms += remaining;
+    }
+    assert(controller.channel_select_failures[2] >= 3U);
+    assert(nrf_topology_channel_quarantine_remaining_ms(&controller, 2U, bus.now_ms) <=
+        NRF_TOPOLOGY_CHANNEL_QUARANTINE_MAX_MS);
+}
+
+/* A close that fails while a channel is selected is that channel's hang, not an unattributed fault. */
+static void test_mux_close_failure_is_counted_against_the_selected_channel(void)
+{
+    fake_bus_t bus;
+    nrf_topology_snapshot_t snapshot;
+    nrf_topology_controller_t controller = make_controller();
+    init_bus(&bus, true);
+    bus.fail_close_after_select = true;
+    nrf_topology_io_t io = make_io(&bus);
+    bus.now_ms = 1000U;
+
+    assert(nrf_topology_reconcile(&controller, &io, &snapshot) == ESP_OK);
+    assert(snapshot.tca_fault);
+    assert(bus.selects_per_channel[0] == 1U);
+    assert(controller.channel_select_failures[0] == 1U);
+    assert(nrf_topology_channel_quarantine_remaining_ms(&controller, 0U, bus.now_ms) ==
+        NRF_TOPOLOGY_CHANNEL_QUARANTINE_BASE_MS);
 }
 
 static void test_quarantined_channel_is_used_again_once_a_select_succeeds(void)
@@ -1331,6 +1429,9 @@ static void test_busy_bus_on_select_is_not_a_bad_channel(void)
 int main(void)
 {
     test_channel_that_hangs_the_select_is_not_selected_again();
+    test_intermittent_socket_is_not_forgiven_by_a_select_that_works();
+    test_channel_that_once_carried_a_device_is_never_switched_off();
+    test_mux_close_failure_is_counted_against_the_selected_channel();
     test_quarantined_channel_is_used_again_once_a_select_succeeds();
     test_confirmed_node_channel_gets_one_retry_before_quarantine();
     test_busy_bus_on_select_is_not_a_bad_channel();

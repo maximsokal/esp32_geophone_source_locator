@@ -103,6 +103,8 @@ typedef enum {
     NRF_CS_QUALITY_TRANSPORT_ERROR = 1U << 4,
     NRF_CS_QUALITY_PARTIAL = 1U << 5,
     NRF_CS_QUALITY_MANUAL = 1U << 6,
+    /* ESP only: no sample met min_confidence, the pair was accepted from its low-confidence samples. */
+    NRF_CS_QUALITY_DEGRADED = 1U << 7,
 } nrf_cs_scheduler_quality_t;
 
 typedef struct {

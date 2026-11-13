@@ -2224,10 +2224,20 @@ static void service_log_channel_quarantine(
     const nrf_topology_snapshot_t *snapshot)
 {
     static uint8_t s_logged_mask;
-    if (snapshot->quarantined_channels == s_logged_mask) {
+    static uint8_t s_logged_forever;
+    uint8_t forever_mask = 0U;
+    const uint64_t scan_now_ms = platform_now_ms(NULL);
+    for (uint8_t channel = 0U; channel < NRF_TOPOLOGY_REMOTE_COUNT; ++channel) {
+        if (nrf_topology_channel_quarantine_remaining_ms(controller, channel, scan_now_ms) >
+            NRF_TOPOLOGY_CHANNEL_QUARANTINE_MAX_MS) {
+            forever_mask |= (uint8_t)(1U << channel);
+        }
+    }
+    if (snapshot->quarantined_channels == s_logged_mask && forever_mask == s_logged_forever) {
         return;
     }
     s_logged_mask = snapshot->quarantined_channels;
+    s_logged_forever = forever_mask;
     if (snapshot->quarantined_channels == 0U) {
         ESP_LOGI(TAG, "TCA_CHANNEL_QUARANTINE mask=0x00 (all channels are scanned again)");
         return;
@@ -2237,6 +2247,17 @@ static void service_log_channel_quarantine(
         if ((snapshot->quarantined_channels & (uint8_t)(1U << channel)) == 0U) {
             continue;
         }
+        const uint64_t remaining_ms = nrf_topology_channel_quarantine_remaining_ms(controller, channel, now_ms);
+        if (remaining_ms > NRF_TOPOLOGY_CHANNEL_QUARANTINE_MAX_MS) {
+            ESP_LOGW(TAG,
+                     "TCA_CHANNEL_QUARANTINE mask=0x%02X ch=%u select_failures=%u had_node=0 disabled_until_reboot=1 "
+                     "(this socket hung the I2C bus %u times and no device ever answered there; it is not selected again)",
+                     (unsigned)snapshot->quarantined_channels,
+                     (unsigned)channel,
+                     (unsigned)controller->channel_select_failures[channel],
+                     (unsigned)NRF_TOPOLOGY_CHANNEL_HANG_LIMIT);
+            continue;
+        }
         ESP_LOGW(TAG,
                  "TCA_CHANNEL_QUARANTINE mask=0x%02X ch=%u select_failures=%u had_node=%u retry_in_s=%lu "
                  "(selecting this channel hung the I2C bus; it is not selected until the retry)",
@@ -2244,8 +2265,7 @@ static void service_log_channel_quarantine(
                  (unsigned)channel,
                  (unsigned)controller->channel_select_failures[channel],
                  controller->channel_quarantined_with_node[channel] ? 1U : 0U,
-                 (unsigned long)(nrf_topology_channel_quarantine_remaining_ms(
-                     controller, channel, now_ms) / 1000U));
+                 (unsigned long)(remaining_ms / 1000U));
     }
 }
 
@@ -2642,6 +2662,16 @@ static void cs_publish(nrf_topology_worker_state_t *worker, bool active, int res
     for (size_t i = 0U; i < snapshot->pair_count && i < NRF_CS_MAX_PAIRS; ++i) {
         const nrf_cs_pair_result_t *pair = nrf_cs_authority_pair_at(authority, i);
         if (pair != NULL) snapshot->pairs[i] = *pair;
+    }
+    /* A finished ranging cycle: pairs that only have low-confidence samples are the best evidence there is. */
+    if (snapshot->complete && worker->ranging_active && snapshot->pair_count <= NRF_CS_MAX_PAIRS) {
+        const size_t degraded = nrf_geometry_degraded_pairs_promote(snapshot->pairs, snapshot->pair_count);
+        if (degraded > 0U) {
+            ESP_LOGW(TAG, "RANGING_DEGRADED_PAIRS accepted=%u (low-confidence samples, directions agree, triangle holds)",
+                     (unsigned)degraded);
+        }
+    }
+    for (size_t i = 0U; i < snapshot->pair_count && i < NRF_CS_MAX_PAIRS; ++i) {
         nrf_cs_pair_result_t *out = &snapshot->pairs[i];
         if (!worker->ranging_active || out->state != NRF_CS_PAIR_VALID) continue;
         if (worker->snapshot.main.state != NRF_TOPOLOGY_NODE_ASSIGNED) {

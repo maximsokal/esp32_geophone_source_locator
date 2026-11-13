@@ -1419,9 +1419,17 @@ static esp_err_t seismic_recorder_prepare_geometry(
                 accepted = &frozen_ranging.geometry.nodes[j];
             }
         }
-        if (accepted == NULL || accepted->z_mm != inputs[i].z_mm) {
-            ESP_LOGE(TAG, "START rejected: confirmed geometry heights changed");
+        if (accepted == NULL) {
+            ESP_LOGE(TAG, "START rejected: confirmed geometry has no node %u", (unsigned)inputs[i].node_id);
             return ESP_ERR_INVALID_STATE;
+        }
+        /*
+         * The heights were settled at placement and frozen with the accepted ranging; they are not recomputed here.
+         * A live difference is only reported (it never blocks a recording).
+         */
+        if (accepted->z_mm != inputs[i].z_mm) {
+            ESP_LOGW(TAG, "START: node %u height differs from the confirmed one (confirmed=%" PRId32 " now=%" PRId32 " mm); using the confirmed height",
+                     (unsigned)accepted->node_id, accepted->z_mm, inputs[i].z_mm);
         }
         solution.nodes[i] = (nrf_geometry_node_position_t){
             .node_id = accepted->node_id, .solved = accepted->solved,

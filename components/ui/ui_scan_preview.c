@@ -18,6 +18,25 @@
 #include "esp_lvgl_port.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#if defined(ESP_PLATFORM)
+#include "freertos/idf_additions.h"
+#endif
+
+/*
+ * The stack of this task lives in PSRAM: internal RAM is nearly used up once Wi-Fi, the web server and the UI are up
+ * (board log 2026-11-13: 5 KB free at boot), and the task touches neither flash nor DMA buffers on its stack.
+ */
+static BaseType_t ui_scan_preview_task_create(
+    void (*function)(void *), const char *name, unsigned stack_bytes, void *argument,
+    unsigned priority, TaskHandle_t *handle, int core)
+{
+#if defined(ESP_PLATFORM)
+    return xTaskCreatePinnedToCoreWithCaps(
+        function, name, stack_bytes, argument, priority, handle, core, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    return xTaskCreatePinnedToCore(function, name, stack_bytes, argument, priority, handle, core);
+#endif
+}
 #include "localization_calculate_policy.h"
 #include "localization_run_store.h"
 #include "scan_preview_state.h"
@@ -810,7 +829,7 @@ void ui_scan_preview_screen_open_locked(void)
         return;
     }
     if (s_worker_task == NULL) {
-        const BaseType_t created = xTaskCreatePinnedToCore(
+        const BaseType_t created = ui_scan_preview_task_create(
             preview_loader_task,
             "scan-preview",
             APP_TASK_STACK_OBJECT_RECOVERY,

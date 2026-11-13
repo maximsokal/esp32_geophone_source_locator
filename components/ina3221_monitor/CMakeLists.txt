@@ -19,6 +19,7 @@ idf_component_register(
         app_events
         device_status
         freertos
+        heap
         log
         sensor_bus
 )

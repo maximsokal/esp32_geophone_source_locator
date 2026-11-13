@@ -28,11 +28,23 @@
  *
  * A channel whose select failed is therefore left alone for a while: 60 s after the failure that triggers the
  * quarantine, doubling with each further failure up to one hour. A channel that carried a confirmed node is given
- * one retry first (the shared bus does time out now and then); an unconfirmed channel is quarantined at once. One
- * successful select ends it. The quarantine is not stored: a reboot probes every channel once again.
+ * one retry first (the shared bus does time out now and then); an unconfirmed channel is quarantined at once.
+ *
+ * Only a device that ANSWERED through the channel ends the quarantine and clears the failure count. A select that
+ * merely succeeded does not: a socket that holds the bus does so intermittently (board log 2026-11-13: channel 1
+ * hung the bus at 5.8 s, 72 s, 133 s and 254 s because every select that happened to work reset the count, so the
+ * wait never grew beyond a minute). A close that fails while a channel is selected is counted against that channel.
+ *
+ * A channel that never carried a node and has hung the bus NRF_TOPOLOGY_CHANNEL_HANG_LIMIT times is not selected
+ * again until the next reboot: every further hang risks a bus that stays dead until the mux is power-cycled, and
+ * nothing is lost, as no node ever answered there. The quarantine is not stored: a reboot probes every channel once
+ * again.
  */
 #define NRF_TOPOLOGY_CHANNEL_QUARANTINE_BASE_MS 60000U
 #define NRF_TOPOLOGY_CHANNEL_QUARANTINE_MAX_MS 3600000U
+#define NRF_TOPOLOGY_CHANNEL_HANG_LIMIT 3U
+/* The value of the "quarantined until" time of a channel that is disabled until reboot. */
+#define NRF_TOPOLOGY_CHANNEL_QUARANTINE_FOREVER_MS UINT64_MAX
 
 typedef enum {
     NRF_TOPOLOGY_NODE_UNKNOWN = 0,
@@ -143,6 +155,8 @@ typedef struct {
     uint64_t channel_quarantined_until_ms[NRF_TOPOLOGY_REMOTE_COUNT];
     /* The channel carried a confirmed node when it was quarantined: it is reported as an error, not as empty. */
     bool channel_quarantined_with_node[NRF_TOPOLOGY_REMOTE_COUNT];
+    /* A device has answered through this channel since boot (never cleared, unlike the retained identity). */
+    bool channel_had_device[NRF_TOPOLOGY_REMOTE_COUNT];
 } nrf_topology_controller_t;
 
 /* Milliseconds until the channel may be selected again; 0 when it is not quarantined. */

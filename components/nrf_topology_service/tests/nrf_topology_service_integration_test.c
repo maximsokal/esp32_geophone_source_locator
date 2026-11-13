@@ -30,6 +30,7 @@
 #include "nrf_log_protocol.h"
 #include "nrf_node_state.h"
 #include "nrf_read_window.h"
+#include "nrf_geometry_range_offset.h"
 #include "nrf_topology_service.h"
 #include "nrf_topology_periods.h"
 #include "nrf_upstream_protocol.h"
@@ -229,6 +230,7 @@ static unsigned s_status_reads_before_backoff;
 static bool s_cs_use_pair_distances;
 static uint16_t s_cs_provider_flags;
 static uint16_t s_cs_fail_pair_mask;
+static uint16_t s_cs_low_confidence_pair_mask;   /* these pairs measure fine but with confidence 100 */
 static bool s_cs_fail_reverse_only;
 static int32_t s_cs_pair_distances[NRF_CS_MAX_PAIRS];
 static int32_t s_cs_fail_pair_index = -1;
@@ -708,6 +710,7 @@ static nrf_cs_measurement_t sim_cycle_measure(const nrf_cs_step_t *step)
         return m;
     }
     m.distance_mm = s_cs_use_pair_distances ? s_cs_pair_distances[pair] : (int32_t)(1000U + pair);
+    if ((s_cs_low_confidence_pair_mask & (1U << pair)) != 0U) m.confidence = 100U;
     if (step->initiator > step->reflector &&
         (s_cs_reverse_extra_pair_index < 0 || s_cs_reverse_extra_pair_index == (int32_t)pair))
         m.distance_mm += s_cs_reverse_extra_mm;
@@ -3116,6 +3119,85 @@ static void test_contradicting_directions_fail_the_ranging(void)
     run_service();
 }
 
+static const nrf_cs_policy_t k_degraded_policy = {
+    .pair_timeout_ms = 500U, .max_attempts = 2U, .min_confidence = 500U, .samples_per_pair = 1U, .full_rotation = true,
+};
+
+static void request_degraded_autonomous_ranging_for_test(void)
+{
+    assert(nrf_topology_service_ranging_start_autonomous(&k_degraded_policy) == ESP_OK);
+    s_vtask_delay_hook = sim_cycle_tick_nodes;
+}
+
+/* Board log 2026-11-13: MAIN-1 and MAIN-2 only ever measured with low confidence, 1-2 was clean. */
+static void assert_low_confidence_pairs_are_accepted_as_degraded(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete && s_seen_ranging_progress.success && !s_seen_ranging_progress.partial);
+    assert(s_seen_ranging_progress.pair_count == 3U);
+    for (size_t i = 0U; i < 3U; ++i) {
+        const nrf_cs_pair_result_t *pair = &s_seen_ranging_progress.pairs[i];
+        assert(pair->state == NRF_CS_PAIR_VALID);
+        assert(pair->distance_mm == s_cs_pair_distances[i]);
+        const bool degraded = (pair->scheduler_quality_flags & NRF_CS_QUALITY_DEGRADED) != 0U;
+        assert(degraded == (i < 2U));
+        assert(pair->confidence == (i < 2U ? NRF_GEOMETRY_DEGRADED_CONFIDENCE : 900U));
+    }
+    for (size_t i = 0U; i < s_seen_ranging_progress.geometry.node_count; ++i) {
+        assert(s_seen_ranging_progress.geometry.nodes[i].solved);
+    }
+    assert(nrf_topology_service_get_frozen_ranging_result(&s_seen_frozen_ranging_result) == ESP_OK);
+    assert(s_seen_frozen_ranging_result.available && s_seen_frozen_ranging_result.success);
+    assert((s_seen_frozen_ranging_result.pairs[0].scheduler_quality_flags & NRF_CS_QUALITY_DEGRADED) != 0U);
+}
+
+static void assert_impossible_low_confidence_pairs_stay_failed(void)
+{
+    assert(nrf_topology_service_ranging_get_progress(&s_seen_ranging_progress) == ESP_OK);
+    assert(s_seen_ranging_progress.complete && !s_seen_ranging_progress.success);
+    assert(s_seen_ranging_progress.pairs[0].state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+    assert(s_seen_ranging_progress.pairs[1].state == NRF_CS_PAIR_RETRY_EXHAUSTED);
+    assert(s_seen_ranging_progress.pairs[2].state == NRF_CS_PAIR_VALID);
+}
+
+static void test_low_confidence_pairs_are_accepted_as_degraded_when_they_fit(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cs_use_pair_distances = true;
+    s_cs_pair_distances[0] = 3000;
+    s_cs_pair_distances[1] = 4000;
+    s_cs_pair_distances[2] = 2235;
+    s_cs_low_confidence_pair_mask = (1U << 0) | (1U << 1);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_degraded_autonomous_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_low_confidence_pairs_are_accepted_as_degraded);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
+static void test_low_confidence_pairs_that_break_the_triangle_stay_failed(void)
+{
+    reset_world();
+    s_tca_present = true;
+    prepare_ranging_nodes(2U);
+    s_cs_use_pair_distances = true;
+    s_cs_pair_distances[0] = 3000;
+    s_cs_pair_distances[1] = 9000;                  /* 9000 > 3000 + 2235 + slack: cannot be true */
+    s_cs_pair_distances[2] = 2235;
+    s_cs_low_confidence_pair_mask = (1U << 0) | (1U << 1);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, request_degraded_autonomous_ranging_for_test);
+    script(EV_WAIT_MS, 10U, NULL);
+    script(EV_ACTION, 0U, clear_cycle_hook);
+    script(EV_ACTION, 0U, assert_impossible_low_confidence_pairs_stay_failed);
+    script(EV_STOP, 0U, NULL);
+    run_service();
+}
+
 static void unplug_during_cycle(TickType_t ticks)
 {
     s_nodes[1].present = false;
@@ -4818,6 +4900,7 @@ static void reset_world(void)
     s_cs_use_pair_distances = false;
     s_cs_provider_flags = 0U;
     s_cs_fail_pair_mask = 0U;
+    s_cs_low_confidence_pair_mask = 0U;
     s_cs_fail_reverse_only = false;
     s_cs_reverse_extra_mm = 0;
     s_cs_reverse_extra_pair_index = -1;
@@ -6051,6 +6134,8 @@ int main(int argc, char **argv)
     test_cable_cap_of_an_edge();
     test_triangle_consistency_of_the_distance_matrix();
     test_contradicting_directions_fail_the_ranging();
+    test_low_confidence_pairs_are_accepted_as_degraded_when_they_fit();
+    test_low_confidence_pairs_that_break_the_triangle_stay_failed();
     test_noisy_geometry_cannot_exceed_individual_cables();
     test_unplug_during_cs_rejoins_after_quiet_lease();
     test_inconsistent_solved_mesh_is_not_success();

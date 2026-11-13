@@ -111,6 +111,7 @@ static void test_progress_and_frozen_result_json(void)
     assert(cJSON_IsTrue(item(pair, "single_direction")));
     assert(number(pair, "direction_disagreement_mm") == 100);
     assert(cJSON_IsTrue(item(pair, "manual")));
+    assert(!cJSON_IsTrue(item(pair, "degraded")));
     assert(number(pair, "automatic_distance_mm") == 6001);
     const cJSON *geometry = item(progress, "geometry");
     assert(number(geometry, "range_offset_mm") == -150);
@@ -139,6 +140,15 @@ static void test_progress_and_frozen_result_json(void)
     geometry = item(item(ranging, "last_result"), "geometry");
     assert(number(geometry, "range_offset_mm") == 0);
     assert(strcmp(item(geometry, "range_offset_source")->valuestring, "none") == 0);
+    cJSON_Delete(root);
+
+    /* A pair accepted from low-confidence samples is reported as degraded, and is not a manual one. */
+    s_progress.pairs[0].scheduler_quality_flags = NRF_CS_QUALITY_DEGRADED | NRF_CS_QUALITY_LOW_CONFIDENCE;
+    root = cJSON_CreateObject();
+    assert(root != NULL && web_status_json_add_ranging(root));
+    pair = cJSON_GetArrayItem(item(item(item(root, "ranging"), "progress"), "pairs"), 0);
+    assert(cJSON_IsTrue(item(pair, "degraded")));
+    assert(!cJSON_IsTrue(item(pair, "manual")));
     cJSON_Delete(root);
 }
 

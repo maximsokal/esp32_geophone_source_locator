@@ -75,7 +75,8 @@ bool nrf_geometry_range_offset_apply(const nrf_cs_pair_result_t *pairs, size_t p
     memcpy(out, pairs, bytes);
     for (size_t i = 0; i < pair_count; ++i) {
         nrf_cs_pair_result_t *pair = &out[i];
-        if (pair->state != NRF_CS_PAIR_VALID || (pair->scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) ||
+        if (pair->state != NRF_CS_PAIR_VALID ||
+            (pair->scheduler_quality_flags & (NRF_CS_QUALITY_MANUAL | NRF_CS_QUALITY_DEGRADED)) ||
             !single_ifft(pair)) {
             continue;
         }
@@ -96,4 +97,105 @@ bool nrf_geometry_range_offset_apply(const nrf_cs_pair_result_t *pairs, size_t p
         }
     }
     return true;
+}
+
+static int32_t degraded_candidate_distance(const nrf_cs_pair_result_t *pair)
+{
+    if (pair->state != NRF_CS_PAIR_RETRY_EXHAUSTED || (pair->scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) ||
+        pair->diag_samples[0] < NRF_GEOMETRY_DEGRADED_MIN_SAMPLES ||
+        pair->diag_samples[1] < NRF_GEOMETRY_DEGRADED_MIN_SAMPLES ||
+        pair->diag_distance_mm[0] <= 0 || pair->diag_distance_mm[1] <= 0) {
+        return 0;
+    }
+    const int64_t first = pair->diag_distance_mm[0];
+    const int64_t second = pair->diag_distance_mm[1];
+    const int64_t mean = (first + second) / 2;
+    const int64_t difference = first > second ? first - second : second - first;
+    int64_t allowed = mean * NRF_GEOMETRY_DEGRADED_AGREE_PERCENT / 100;
+    if (allowed < NRF_GEOMETRY_DEGRADED_AGREE_MM) {
+        allowed = NRF_GEOMETRY_DEGRADED_AGREE_MM;
+    }
+    if (difference > allowed || mean > INT32_MAX) {
+        return 0;
+    }
+    return (int32_t)mean;
+}
+
+/* Three distinct pairs that touch exactly three nodes are the three sides of a triangle. */
+static bool degraded_is_triangle(const nrf_cs_pair_result_t *a, const nrf_cs_pair_result_t *b,
+                                 const nrf_cs_pair_result_t *c)
+{
+    nrf_cs_node_id_t nodes[3];
+    size_t count = 0;
+    const nrf_cs_node_id_t ends[6] = {a->node_a, a->node_b, b->node_a, b->node_b, c->node_a, c->node_b};
+    for (size_t i = 0; i < 6; ++i) {
+        bool known = false;
+        for (size_t n = 0; n < count; ++n) {
+            known = known || nodes[n] == ends[i];
+        }
+        if (!known) {
+            if (count == 3) {
+                return false;
+            }
+            nodes[count++] = ends[i];
+        }
+    }
+    return count == 3;
+}
+
+size_t nrf_geometry_degraded_pairs_promote(nrf_cs_pair_result_t *pairs, size_t pair_count)
+{
+    if (pairs == NULL || pair_count == 0 || pair_count > NRF_CS_MAX_PAIRS) {
+        return 0;
+    }
+    int32_t candidate[NRF_CS_MAX_PAIRS];
+    int32_t distance[NRF_CS_MAX_PAIRS];
+    bool rejected[NRF_CS_MAX_PAIRS];
+    for (size_t i = 0; i < pair_count; ++i) {
+        candidate[i] = degraded_candidate_distance(&pairs[i]);
+        distance[i] = pairs[i].state == NRF_CS_PAIR_VALID && pairs[i].distance_mm > 0 ? pairs[i].distance_mm
+                                                                                      : candidate[i];
+        rejected[i] = false;
+    }
+    const int64_t slack = NRF_GEOMETRY_DEGRADED_TRIANGLE_SLACK_MM;
+    for (size_t i = 0; i < pair_count; ++i) {
+        for (size_t j = i + 1; j < pair_count; ++j) {
+            for (size_t k = j + 1; k < pair_count; ++k) {
+                if (distance[i] <= 0 || distance[j] <= 0 || distance[k] <= 0 ||
+                    !degraded_is_triangle(&pairs[i], &pairs[j], &pairs[k])) {
+                    continue;
+                }
+                const int64_t a = distance[i];
+                const int64_t b = distance[j];
+                const int64_t c = distance[k];
+                if (a > b + c + slack || b > a + c + slack || c > a + b + slack) {
+                    rejected[i] = rejected[i] || candidate[i] > 0;
+                    rejected[j] = rejected[j] || candidate[j] > 0;
+                    rejected[k] = rejected[k] || candidate[k] > 0;
+                }
+            }
+        }
+    }
+    size_t promoted = 0;
+    for (size_t i = 0; i < pair_count; ++i) {
+        if (candidate[i] <= 0 || rejected[i]) {
+            continue;
+        }
+        nrf_cs_pair_result_t *pair = &pairs[i];
+        const int32_t difference = pair->diag_distance_mm[0] > pair->diag_distance_mm[1]
+            ? pair->diag_distance_mm[0] - pair->diag_distance_mm[1]
+            : pair->diag_distance_mm[1] - pair->diag_distance_mm[0];
+        pair->state = NRF_CS_PAIR_VALID;
+        pair->last_failure = NRF_CS_FAILURE_NONE;
+        pair->distance_mm = candidate[i];
+        pair->automatic_distance_mm = 0;
+        pair->confidence = NRF_GEOMETRY_DEGRADED_CONFIDENCE;
+        pair->single_direction = false;
+        pair->direction_disagreement_mm = difference;
+        pair->spread_mm = difference;
+        pair->valid_samples = (uint8_t)(pair->diag_samples[0] + pair->diag_samples[1]);
+        pair->scheduler_quality_flags |= (uint16_t)(NRF_CS_QUALITY_DEGRADED | NRF_CS_QUALITY_LOW_CONFIDENCE);
+        ++promoted;
+    }
+    return promoted;
 }

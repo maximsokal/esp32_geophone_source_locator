@@ -14,6 +14,25 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#if defined(ESP_PLATFORM)
+#include "freertos/idf_additions.h"
+#endif
+
+/*
+ * The stack of this task lives in PSRAM: internal RAM is nearly used up once Wi-Fi, the web server and the UI are up
+ * (board log 2026-11-13: 5 KB free at boot), and the task touches neither flash nor DMA buffers on its stack.
+ */
+static BaseType_t ui_workflow_task_create(
+    void (*function)(void *), const char *name, unsigned stack_bytes, void *argument,
+    unsigned priority, TaskHandle_t *handle, int core)
+{
+#if defined(ESP_PLATFORM)
+    return xTaskCreatePinnedToCoreWithCaps(
+        function, name, stack_bytes, argument, priority, handle, core, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    return xTaskCreatePinnedToCore(function, name, stack_bytes, argument, priority, handle, core);
+#endif
+}
 #include "localization_pick_record.h"
 #include "localization_material_presets.h"
 #include "localization_run_record.h"
@@ -444,7 +463,7 @@ static bool ui_workflow_queue_result_load(ui_workflow_screen_state_t *state)
 {
     if (state->snapshot.object_id[0] == '\0' || state->snapshot.session_id[0] == '\0') return false;
     if (s_result_loader_task == NULL) {
-        const BaseType_t created = xTaskCreatePinnedToCore(
+        const BaseType_t created = ui_workflow_task_create(
             ui_workflow_result_loader_task,
             "workflow-result",
             APP_TASK_STACK_OBJECT_RECOVERY,

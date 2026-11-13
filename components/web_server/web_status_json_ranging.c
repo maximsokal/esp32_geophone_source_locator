@@ -54,6 +54,8 @@ static bool add_pairs(cJSON *object, const nrf_cs_pair_result_t *pairs, size_t c
             /* distance_mm of a pair that was not measured is 0, not a reading: only a valid pair has a distance. */
             cJSON_AddBoolToObject(item, "distance_valid", pair->state == NRF_CS_PAIR_VALID) == NULL ||
             cJSON_AddBoolToObject(item, "manual", (pair->scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U) == NULL ||
+            /* Accepted from low-confidence samples only (NLOS / obstructed link): shown as such, never as a clean pair. */
+            cJSON_AddBoolToObject(item, "degraded", (pair->scheduler_quality_flags & NRF_CS_QUALITY_DEGRADED) != 0U) == NULL ||
             cJSON_AddNumberToObject(item, "automatic_distance_mm", pair->automatic_distance_mm) == NULL ||
             cJSON_AddNumberToObject(item, "spread_mm", pair->spread_mm) == NULL ||
             cJSON_AddNumberToObject(item, "confidence", pair->confidence) == NULL ||
