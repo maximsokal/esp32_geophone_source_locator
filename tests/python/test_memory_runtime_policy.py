@@ -110,18 +110,21 @@ def test_service_stacks_use_psram_caps_without_changing_affinity():
     config = read("components/app_config/include/app_task_config.h")
     assert "APP_TASK_STACK_STORAGE_SERVICE 8192" in config
     assert "APP_TASK_STACK_OBJECT_SERVICE  8192" in config
-    assert "APP_TASK_STACK_MEASUREMENT_SERVICE  8192" in config
+    # 16 KB: seismic_recorder_start() has a 5008-byte frame of its own and runs on this task (board log 2026-11-13).
+    assert "APP_TASK_STACK_MEASUREMENT_SERVICE  16384" in config
 
 
 def test_realtime_and_recorder_stacks_remain_on_original_path():
     config = read("components/app_config/include/app_task_config.h")
     assert "APP_TASK_STACK_AD7606          4096" in config
-    assert "APP_TASK_STACK_SEISMIC_RECORDER  4096" in config
+    # 12 KB in PSRAM: at 4 KB internal the emulator recording scenario (S10) measured 372 bytes free and a stack
+    # overflow in STOP_STAGE metadata. The AD7606 worker stays on the original internal path.
+    assert "APP_TASK_STACK_SEISMIC_RECORDER  12288" in config
     assert "APP_TASK_CORE_REALTIME      1" in config
 
     recorder = read("components/seismic_recorder/seismic_recorder.c")
     acquisition = read("components/ad7606_acquisition/ad7606_acquisition.c")
-    assert "xTaskCreatePinnedToCoreWithCaps(" not in recorder
+    assert "seismic_recorder_task_create(" in recorder and "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in recorder
     # The AD7606 worker asks for an internal stack first. PSRAM is only the fallback for the case
     # that used to end in ESP_ERR_NO_MEM and no acquisition at all (board log 2026-11-10 17:27:
     # largest free internal block 3584 B against a 4096 B stack), and the start says so in the log.

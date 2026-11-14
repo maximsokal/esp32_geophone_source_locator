@@ -6,6 +6,11 @@ if(CONFIG_APP_TEST_WDT_TRIGGER)
     )
 endif()
 
+set(APP_TEST_RECORDING_SOURCES)
+if(CONFIG_APP_TEST_RECORDING_SCENARIO)
+    list(APPEND APP_TEST_RECORDING_SOURCES app_test_recording.c)
+endif()
+
 set(APP_TEST_STARTUP_HEAP_SOURCES)
 if(CONFIG_APP_TEST_STARTUP_HEAP_PRESSURE)
     list(APPEND APP_TEST_STARTUP_HEAP_SOURCES app_test_startup_heap.c)
@@ -26,6 +31,7 @@ idf_component_register(
         app_poweroff.c
         ${APP_TEST_WDT_SOURCES}
         ${APP_TEST_STARTUP_HEAP_SOURCES}
+        ${APP_TEST_RECORDING_SOURCES}
 
     INCLUDE_DIRS
         "."

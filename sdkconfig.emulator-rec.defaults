@@ -1,0 +1,5 @@
+# Emulator-only recording scenario profile (S10). Never flash this configuration to hardware.
+# A flash FAT volume stands in for the SD card and the real START -> record -> STOP path runs on it.
+CONFIG_APP_TEST_RECORDING_SCENARIO=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.emulator.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.emulator.csv"

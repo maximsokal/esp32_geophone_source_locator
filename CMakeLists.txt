@@ -58,6 +58,28 @@ if(GEOLOCATOR_EMULATOR_WDT_PROFILE OR "$ENV{GEOLOCATOR_EMULATOR_WDT_PROFILE}" ST
     list(APPEND SDKCONFIG_DEFAULTS "sdkconfig.emulator-wdt.defaults")
 endif()
 
+# The recording-scenario profile (S10) is emulator-only as well: the emulator defaults, then its own.
+if(GEOLOCATOR_EMULATOR_REC_PROFILE OR "$ENV{GEOLOCATOR_EMULATOR_REC_PROFILE}" STREQUAL "1")
+    get_filename_component(_geolocator_emulator_rec_build_dir "${CMAKE_BINARY_DIR}" ABSOLUTE)
+    get_filename_component(_geolocator_emulator_rec_test_root "${CMAKE_SOURCE_DIR}/.test-build" ABSOLUTE)
+    file(TO_CMAKE_PATH "${_geolocator_emulator_rec_build_dir}" _geolocator_emulator_rec_build_dir)
+    file(TO_CMAKE_PATH "${_geolocator_emulator_rec_test_root}" _geolocator_emulator_rec_test_root)
+    string(FIND
+        "${_geolocator_emulator_rec_build_dir}/"
+        "${_geolocator_emulator_rec_test_root}/"
+        _geolocator_emulator_rec_build_prefix_index
+    )
+    if(NOT _geolocator_emulator_rec_build_prefix_index EQUAL 0 OR
+        "${_geolocator_emulator_rec_build_dir}" STREQUAL "${_geolocator_emulator_rec_test_root}")
+        message(FATAL_ERROR "The emulator-rec profile requires a separate build directory under .test-build/.")
+    endif()
+    list(FIND SDKCONFIG_DEFAULTS "sdkconfig.emulator.defaults" _geolocator_emulator_rec_defaults_index)
+    if(_geolocator_emulator_rec_defaults_index EQUAL -1)
+        list(APPEND SDKCONFIG_DEFAULTS "sdkconfig.emulator.defaults")
+    endif()
+    list(APPEND SDKCONFIG_DEFAULTS "sdkconfig.emulator-rec.defaults")
+endif()
+
 # The production project is pinned to ESP32-S3. ESP-TEE is an optional IDF
 # component, but IDF 5.5 only supports it on C6/H2/C5 and otherwise prints a
 # misleading configure-time notice while scanning every component.

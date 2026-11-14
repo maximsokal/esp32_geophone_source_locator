@@ -1,5 +1,9 @@
 #pragma once
 
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -282,6 +286,11 @@ esp_err_t nrf_topology_service_get_accepted_ranging_result(
     const char *object_id, const nrf_topology_snapshot_t *current_topology, uint64_t now_ms,
     nrf_topology_ranging_result_t *result);
 esp_err_t nrf_topology_service_invalidate_ranging(void);
+
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+/* TEST ONLY (ESP-EMU): seed a confirmed 4-node setup and accept its ranging for this object. */
+esp_err_t nrf_topology_service_test_seed_confirmed_setup(const char *object_id);
+#endif
 /* Abort the running or queued ranging cycle. Best effort and idempotent: ESP_OK when nothing runs. */
 esp_err_t nrf_topology_service_ranging_cancel(void);
 /*

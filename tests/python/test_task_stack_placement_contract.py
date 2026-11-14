@@ -11,9 +11,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 # file -> (a task creation call that must carry PSRAM caps).
-# NOT here on purpose: seismic_recorder and the AD7606 worker. test_memory_runtime_policy keeps them on the internal
-# stack (realtime-sensitive SD write loop, docs/psram-dma-audit.md); the AD7606 worker only falls back to PSRAM.
+# NOT here on purpose: the AD7606 worker, which asks for an internal stack first and only falls back to PSRAM.
+# The recorder IS here: its 4 KB internal stack overflowed in the ESP-EMU recording scenario (S10).
 PSRAM_STACK_TASKS = {
+    "components/seismic_recorder/seismic_recorder.c": "seismic_recorder_task_create(",
     "components/ina3221_monitor/ina3221_monitor.c": "ina3221_monitor_task_create(",
     "components/ui/ui_workflow.c": "ui_workflow_task_create(",
     "components/ui/ui_scan_preview.c": "ui_scan_preview_task_create(",

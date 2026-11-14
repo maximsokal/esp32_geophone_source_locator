@@ -79,6 +79,21 @@ def test_all_suite_requires_emulator_build_then_low_memory_s1():
     assert 'SKIPPED' not in build_step + smoke_step
 
 
+def test_all_suite_builds_and_runs_the_recording_emulator_scenario_after_s1():
+    source = (REPO_ROOT / "tools" / "run_suite.ps1").read_text(encoding="utf-8")
+    s1 = 'Invoke-SuiteStep -Name "ESP32-S3 low-memory startup emulator"'
+    build = 'Invoke-SuiteStep -Name "ESP emulator recording build"'
+    run = 'Invoke-SuiteStep -Name "ESP32-S3 recording emulator (START-record-STOP, stack/heap)"'
+    assert source.count(build) == source.count(run) == 1
+    after_run = source.index("$results.Add", source.index(run))
+    assert source.index(s1) < source.index(build) < source.index(run) < after_run
+    build_step = source[source.index(build):source.index(run)]
+    assert '"-Action", "build", "-Profile", "emulator-rec"' in build_step
+    run_step = source[source.index(run):after_run]
+    assert '"tools/run_emulator_smoke.py", "--scenario", "S10", "--build-rec-image"' in run_step
+    assert "SKIPPED" not in build_step + run_step
+
+
 def test_all_suite_uses_canonical_ncs_nrf_build_and_explicit_test_boundary():
     source = (REPO_ROOT / "tools" / "run_suite.ps1").read_text(encoding="utf-8")
 

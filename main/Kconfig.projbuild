@@ -415,6 +415,18 @@ menu "Test-only emulator watchdog"
             TEST ONLY. Holds internal heap allocations during nRF service
             startup. Use only with the emulator profile; never on hardware.
 
+    config APP_TEST_RECORDING_SCENARIO
+        bool "Emulator: record a synthetic geophone signal end to end (TEST ONLY)"
+        default n
+        depends on !APP_DISPLAY_ENABLED && !APP_KEYPAD_ENABLED && SEISMIC_SOURCE_TEST
+        help
+            TEST ONLY. Mounts a FAT volume on the "storage_test" flash
+            partition in place of the SD card, seeds a confirmed 3-remote
+            setup in the nRF topology service and drives the real
+            measurement_service START -> record -> STOP path with the
+            synthetic seismic source, so stack and heap use of the recording
+            path can be measured in ESP-EMU. Never enable for hardware.
+
     config APP_TEST_WDT_TRIGGER
         bool "Trigger interrupt watchdog once (TEST ONLY)"
         default n

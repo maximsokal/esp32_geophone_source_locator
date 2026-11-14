@@ -78,3 +78,17 @@ def test_reader_windows_remain_bounded_with_fatfs_lock_as_defense_in_depth():
         "components/seismic_recorder/seismic_recorder_internal.h"
     )
     assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in reader
+
+
+def test_wifi_static_buffers_leave_dma_memory_for_the_sd_driver_and_existing_configs_are_migrated():
+    sdkconfig = read("sdkconfig.defaults")
+    runner = read("tools/run_idf.ps1")
+    # RX_BA_WIN must stay <= 2 x the static RX buffers, or IDF refuses the configuration.
+    assert "CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4" in sdkconfig
+    assert "CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8" in sdkconfig
+    assert "CONFIG_ESP_WIFI_RX_BA_WIN=6" in sdkconfig
+    assert "CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=16" not in sdkconfig
+    assert "function Sync-WifiBufferBudget" in runner
+    assert "Sync-WifiBufferBudget $effectiveSdkconfig" in runner
+    assert "CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM" in runner
+

@@ -1,3 +1,4 @@
+#include <math.h>
 #include "nrf_topology_service.h"
 #include "nrf_sensor_transport.h"
 #include "nrf_cs_authority.h"
@@ -213,6 +214,10 @@ static uint32_t s_sensor_scan_request_id;
 static uint32_t s_sensor_scan_next_id;
 static esp_err_t s_sensor_scan_dispatch_result;
 static nrf_topology_snapshot_t s_snapshot;
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+/* Emulator only: a seeded setup is not overwritten by the (empty) bus the emulator reads. */
+static bool s_test_setup_seeded;
+#endif
 static nrf_remote_sensor_cache_t s_sensor_cache[NRF_TOPOLOGY_REMOTE_COUNT];
 static nrf_upstream_status_cache_t s_main_status_cache;
 static bool s_cs_request_pending = false;
@@ -331,6 +336,9 @@ static void service_publish_state(
     const nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT],
     const nrf_upstream_status_cache_t *main_status_cache)
 {
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+    if (s_test_setup_seeded) return;
+#endif
     portENTER_CRITICAL(&s_state_lock);
     s_snapshot = *snapshot;
     memcpy(s_sensor_cache, cache, sizeof(s_sensor_cache));
@@ -352,6 +360,9 @@ static void service_publish_sensor_channel(
     const nrf_remote_sensor_cache_t *cache,
     const nrf_upstream_status_cache_t *main_status_cache)
 {
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+    if (s_test_setup_seeded) return;
+#endif
     portENTER_CRITICAL(&s_state_lock);
     s_sensor_cache[channel] = *cache;
     if (main_status_cache != NULL) {
@@ -5513,3 +5524,122 @@ esp_err_t nrf_topology_service_get_nrf_log_page(
               page);
 #endif
 }
+
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+/*
+ * TEST ONLY. ESP-EMU has no nRF nodes, so the recording path has nothing to start from. This puts the shared state in
+ * the shape a confirmed 4-node setup (MAIN + REMOTEs on channels 0, 2, 3 with node ids 1, 3, 4) leaves it: assigned
+ * topology, valid sensor caches, an accepted ranging result with six valid pairs and a solved planar geometry.
+ */
+esp_err_t nrf_topology_service_test_seed_confirmed_setup(const char *object_id)
+{
+    if (object_id == NULL || object_id[0] == ' ' || strlen(object_id) >= sizeof(s_accepted_ranging_object)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    static const struct { uint8_t channel; uint8_t node_id; } remotes[3] = {{0U, 1U}, {2U, 3U}, {3U, 4U}};
+    /* MAIN (0), node 1, 3, 4 on a 3 m x 4 m rectangle. */
+    static const int32_t x_mm[4] = {0, 3000, 0, 3000};
+    static const int32_t y_mm[4] = {0, 0, 4000, 4000};
+    static const uint8_t ids[4] = {0U, 1U, 3U, 4U};
+    const int64_t now_us = esp_timer_get_time();
+    const uint64_t now_ms = now_us > 0 ? (uint64_t)now_us / 1000U : 1U;
+
+    nrf_topology_snapshot_t snapshot;
+    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    memset(&snapshot, 0, sizeof(snapshot));
+    memset(cache, 0, sizeof(cache));
+    snapshot.generation = 1U;
+    snapshot.tca_available = true;
+    snapshot.main.state = NRF_TOPOLOGY_NODE_ASSIGNED;
+    snapshot.main.node_id = 0U;
+    snapshot.main.mux_channel = NRF_UPSTREAM_MUX_CHANNEL_NONE;
+    snapshot.main.hardware_id_length = 4U;
+    for (uint8_t i = 0U; i < 4U; ++i) snapshot.main.hardware_id[i] = (uint8_t)(0x10U + i);
+    for (size_t r = 0U; r < 3U; ++r) {
+        nrf_topology_node_snapshot_t *node = &snapshot.remotes[remotes[r].channel];
+        node->state = NRF_TOPOLOGY_NODE_ASSIGNED;
+        node->node_id = remotes[r].node_id;
+        node->mux_channel = remotes[r].channel;
+        node->hardware_id_length = 4U;
+        for (uint8_t i = 0U; i < 4U; ++i) node->hardware_id[i] = (uint8_t)(0x20U + 0x10U * r + i);
+        nrf_remote_sensor_cache_t *c = &cache[remotes[r].channel];
+        c->identity_valid = true;
+        c->topology_current = true;
+        c->response_valid = true;
+        c->identity = *node;
+        c->topology_generation = snapshot.generation;
+        c->state = NRF_SENSOR_CACHE_OK;
+        c->last_attempt_state = NRF_SENSOR_CACHE_OK;
+        c->sensor.reference_state = NRF_UPSTREAM_REFERENCE_VALID;
+        c->sensor.reference_generation = 1U;
+        c->sensor.orientation_state = NRF_UPSTREAM_ORIENTATION_STATE_ACCEPTED;
+        c->esp_receipt_uptime_ms = now_ms;
+    }
+
+    nrf_topology_ranging_result_t result;
+    memset(&result, 0, sizeof(result));
+    result.available = true;
+    result.success = true;
+    result.topology_generation = snapshot.generation;
+    result.membership_generation = 1U;
+    result.topology_mode = NRF_TOPOLOGY_MODE_MAIN_PRESENT;
+    result.anchor_node_id = 0U;
+    result.timestamp_ms = now_ms;
+    result.membership_identity_valid =
+        service_ranging_capture_membership(&snapshot, result.membership, &result.membership_count);
+    if (!result.membership_identity_valid) return ESP_ERR_INVALID_STATE;
+    result.geometry.node_count = 4U;
+    for (size_t n = 0U; n < 4U; ++n) {
+        result.geometry.nodes[n] = (nrf_topology_ranging_node_t){
+            .node_id = ids[n], .solved = true, .x_mm = x_mm[n], .y_mm = y_mm[n], .z_mm = 0,
+            .residual_mm = 0, .uncertainty_mm = 20,
+        };
+    }
+    for (size_t a = 0U; a < 4U; ++a) {
+        for (size_t b = a + 1U; b < 4U; ++b) {
+            const double dx = (double)(x_mm[a] - x_mm[b]);
+            const double dy = (double)(y_mm[a] - y_mm[b]);
+            nrf_cs_pair_result_t *pair = &result.pairs[result.pair_count++];
+            pair->node_a = ids[a];
+            pair->node_b = ids[b];
+            pair->state = NRF_CS_PAIR_VALID;
+            pair->distance_mm = (int32_t)(sqrt(dx * dx + dy * dy) + 0.5);
+            pair->confidence = 950U;
+            pair->valid_samples = 5U;
+            pair->attempts = 5U;
+            pair->spread_mm = 20;
+            pair->diag_distance_mm[0] = pair->diag_distance_mm[1] = pair->distance_mm;
+            pair->diag_samples[0] = pair->diag_samples[1] = 5U;
+            pair->diag_accepted[0] = pair->diag_accepted[1] = 5U;
+        }
+    }
+
+    portENTER_CRITICAL(&s_state_lock);
+    s_snapshot = snapshot;
+    memcpy(s_sensor_cache, cache, sizeof(s_sensor_cache));
+    s_snapshot_valid = true;
+    s_sensor_cache_valid = true;
+    s_frozen_ranging_result = result;
+    s_frozen_ranging_result_valid = true;
+    memset(&s_ranging_progress, 0, sizeof(s_ranging_progress));
+    s_ranging_progress.complete = true;
+    s_ranging_progress.success = true;
+    s_ranging_progress.pair_count = result.pair_count;
+    memcpy(s_ranging_progress.pairs, result.pairs, sizeof(result.pairs));
+    s_ranging_progress.geometry = result.geometry;
+    s_ranging_progress.topology_generation = result.topology_generation;
+    s_ranging_progress.membership_generation = result.membership_generation;
+    s_ranging_progress.topology_mode = result.topology_mode;
+    s_ranging_progress.anchor_node_id = result.anchor_node_id;
+    s_ranging_progress.started_at_ms = now_ms;
+    s_ranging_progress.updated_at_ms = now_ms;
+    s_ranging_progress_valid = true;
+    s_ranging_active = false;
+    s_cs_request_pending = false;
+    memcpy(s_accepted_ranging_object, object_id, strlen(object_id) + 1U);
+    s_accepted_ranging_revision = now_ms;
+    s_test_setup_seeded = true;
+    portEXIT_CRITICAL(&s_state_lock);
+    return ESP_OK;
+}
+#endif

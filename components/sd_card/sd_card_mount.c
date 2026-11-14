@@ -83,6 +83,10 @@ esp_err_t sd_card_mount(void)
         return ESP_OK;
     }
 
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+    return sd_card_test_flash_mount();
+#endif
+
     esp_err_t err =
         sd_card_internal_prepare_shared_spi();
 

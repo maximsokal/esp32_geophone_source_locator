@@ -311,6 +311,22 @@ esp_err_t sd_card_mount_recovery(sd_card_mount_report_t *report)
         report = &local_report;
     }
 
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+    /* ESP-EMU does not model SDSPI: a flash FAT volume stands in for the card (sd_card_test_flash.c). */
+    {
+        const esp_err_t test_err =
+            sd_card_internal_card() != NULL ? ESP_OK : sd_card_test_flash_mount();
+        sd_card_recovery_set_report(
+            report,
+            test_err == ESP_OK ? SD_CARD_MOUNT_STAGE_NONE : SD_CARD_MOUNT_STAGE_FS_MOUNT,
+            test_err,
+            test_err == ESP_OK ? 0 : -1,
+            test_err == ESP_OK ? SD_CARD_HEALTH_READY : SD_CARD_HEALTH_FILESYSTEM_UNAVAILABLE
+        );
+        return test_err;
+    }
+#endif
+
     if (s_context.card == NULL) {
         if (sd_card_internal_card() != NULL) {
             sd_card_recovery_set_report(

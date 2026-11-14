@@ -1,0 +1,8 @@
+# ESP32-S3 N16R8 partition table for the ESP-EMU profile: partitions.csv plus a flash FAT volume
+# that stands in for the SD card (CONFIG_APP_TEST_RECORDING_SCENARIO). Never flash to hardware.
+# Name,         Type, SubType, Offset,   Size, Flags
+
+nvs,            data, nvs,     0x9000,   0x6000,
+phy_init,       data, phy,     0xF000,   0x1000,
+factory,        app,  factory, 0x10000,  8M,
+storage_test,   data, fat,     0x810000, 6M,

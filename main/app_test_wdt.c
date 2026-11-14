@@ -14,7 +14,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define APP_TEST_WDT_TASK_STACK_SIZE 2048U
+/* Was 2048: the test task had 72 bytes free and overflowed on the second boot (PANIC reset) in ESP-EMU. */
+#define APP_TEST_WDT_TASK_STACK_SIZE 4096U
 
 static const char *TAG = "TEST_WDT";
 

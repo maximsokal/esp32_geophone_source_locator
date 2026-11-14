@@ -9,7 +9,7 @@ param(
     [string]$Sdkconfig,
     [string]$Port,
     [string]$Target,
-    [ValidateSet("default", "debug", "performance", "emulator", "emulator-wdt")]
+    [ValidateSet("default", "debug", "performance", "emulator", "emulator-wdt", "emulator-rec")]
     [string]$Profile = "default",
 
     [ValidateRange(1, 32)]
@@ -68,6 +68,32 @@ function Sync-RequiredSdkconfig([string]$ConfigPath) {
     }
 }
 
+# The static Wi-Fi buffers use internal DMA-capable RAM that the SD driver needs (board log 2026-11-14). A local
+# sdkconfig keeps the values it was generated with, so the budget is migrated like CONFIG_FATFS_FS_LOCK.
+function Sync-WifiBufferBudget([string]$ConfigPath) {
+    if ([string]::IsNullOrWhiteSpace($ConfigPath) -or
+        -not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        return
+    }
+    $content = [IO.File]::ReadAllText($ConfigPath)
+    $updated = $content
+    foreach ($entry in @(
+        @{ Key = "CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM"; Value = 4 },
+        @{ Key = "CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM"; Value = 8 },
+        @{ Key = "CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM"; Value = 4 },
+        @{ Key = "CONFIG_ESP32_WIFI_STATIC_TX_BUFFER_NUM"; Value = 8 }
+    )) {
+        $updated = [regex]::Replace(
+            $updated,
+            ('(?m)^' + $entry.Key + '=\d+'),
+            ($entry.Key + '=' + $entry.Value))
+    }
+    if ($updated -ne $content) {
+        [IO.File]::WriteAllText($ConfigPath, $updated)
+        Write-Host "Migrated local sdkconfig Wi-Fi static buffer budget (RX 4, TX 8)."
+    }
+}
+
 function Sync-LvglSdkconfigMigration([string]$ConfigPath) {
     if ([string]::IsNullOrWhiteSpace($ConfigPath) -or
         -not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
@@ -120,6 +146,8 @@ if ([string]::IsNullOrWhiteSpace($BuildDir)) {
         ".test-build/idf-emulator"
     } elseif ($Profile -eq "emulator-wdt") {
         ".test-build/idf-emulator-wdt"
+    } elseif ($Profile -eq "emulator-rec") {
+        ".test-build/idf-emulator-rec"
     } else {
         "build-profile-$Profile"
     }
@@ -250,6 +278,7 @@ try {
                     Join-Path $project "sdkconfig"
                 }
                 Sync-RequiredSdkconfig $effectiveSdkconfig
+                Sync-WifiBufferBudget $effectiveSdkconfig
                 Sync-LvglSdkconfigMigration $effectiveSdkconfig
 
                 $reconfigureArgs = @($idfPyPath, "-B", $build)

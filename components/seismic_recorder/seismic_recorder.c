@@ -18,6 +18,26 @@
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#if defined(ESP_PLATFORM)
+#include "freertos/idf_additions.h"
+#endif
+
+/*
+ * The recorder task runs on a PSRAM stack. ESP-EMU recording scenario (S10): at 4 KB in internal RAM it had 372 bytes
+ * free while recording and overflowed in STOP_STAGE metadata (session.json). Internal RAM has ~5 KB left at boot, so the
+ * stack cannot grow there. The loop moves a few KB per second (50-500 Hz x 4 channels), so PSRAM latency does not matter.
+ */
+static BaseType_t seismic_recorder_task_create(
+    TaskFunction_t function, const char *name, unsigned stack_bytes, void *argument,
+    unsigned priority, TaskHandle_t *handle, int core)
+{
+#if defined(ESP_PLATFORM)
+    return xTaskCreatePinnedToCoreWithCaps(
+        function, name, stack_bytes, argument, priority, handle, core, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    return xTaskCreatePinnedToCore(function, name, stack_bytes, argument, priority, handle, core);
+#endif
+}
 #include "nrf_cs_authority.h"
 #include "nrf_cs_cycle_coordinator.h"
 #include "nrf_geometry_solver.h"
@@ -1184,7 +1204,7 @@ esp_err_t seismic_recorder_init(void)
 
     xEventGroupSetBits(s_events, SEISMIC_RECORDER_EVENT_STOPPED);
 
-    BaseType_t created = xTaskCreatePinnedToCore(
+    BaseType_t created = seismic_recorder_task_create(
         seismic_recorder_task,
         "seismic_recorder",
         APP_TASK_STACK_SEISMIC_RECORDER,

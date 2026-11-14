@@ -16,6 +16,9 @@
 #if CONFIG_APP_TEST_STARTUP_HEAP_PRESSURE
 #include "app_test_startup_heap.h"
 #endif
+#if CONFIG_APP_TEST_RECORDING_SCENARIO
+#include "app_test_recording.h"
+#endif
 
 #include "esp_log.h"
 
@@ -177,6 +180,10 @@ void app_main(void)
             esp_err_to_name(pod_status_bridge_err)
         );
     }
+
+#if CONFIG_APP_TEST_RECORDING_SCENARIO
+    app_test_recording_scenario_start();
+#endif
 
     app_main_report_topology_inventory(topology_err);
 

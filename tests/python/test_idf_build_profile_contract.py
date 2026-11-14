@@ -747,3 +747,29 @@ def test_invoke_checked_logs_stderr_and_checks_exit_code(tmp_path):
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_emulator_rec_profile_layers_emulator_then_recording_and_isolates_build(monkeypatch):
+    for variable in (
+        "GEOLOCATOR_INSIGHTS_PROFILE",
+        "GEOLOCATOR_KEYPAD_TIMING_PROFILE",
+        "GEOLOCATOR_EMULATOR_PROFILE",
+        "GEOLOCATOR_EMULATOR_WDT_PROFILE",
+        "GEOLOCATOR_EMULATOR_REC_PROFILE",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+
+    resolved = resolve_profile("emulator-rec", REPO_ROOT)
+    emulator_overlay = REPO_ROOT / "sdkconfig.emulator.defaults"
+    rec_overlay = REPO_ROOT / "sdkconfig.emulator-rec.defaults"
+
+    assert resolved["profile"] == "emulator-rec"
+    assert resolved["settings"]["CONFIG_APP_TEST_RECORDING_SCENARIO"] is True
+    assert resolved["cmake_profile_defaults"] == [str(emulator_overlay), str(rec_overlay)]
+    assert resolved["build_dir"] == str(REPO_ROOT / ".test-build" / "idf-emulator-rec")
+    # The shared emulator overlay (S1-S9) must stay free of the recording scenario and its partition table.
+    shared = parse_config_fragments([emulator_overlay])
+    assert "CONFIG_APP_TEST_RECORDING_SCENARIO" not in shared
+    assert "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME" not in shared
+    assert parse_config_fragments([rec_overlay])["CONFIG_PARTITION_TABLE_CUSTOM_FILENAME"] == '"partitions.emulator.csv"'
+

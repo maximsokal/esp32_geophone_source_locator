@@ -1,6 +1,9 @@
 #pragma once
 
 #include "esp_err.h"
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"
+#endif
 
 #include "sdmmc_cmd.h"
 
@@ -36,3 +39,8 @@ sd_card_internal_unmount_fn_t sd_card_internal_recovery_unmount(void);
 
 
 esp_err_t sd_card_internal_prepare_shared_spi(void);
+
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+/* Emulator only: a FAT volume on the "storage_test" flash partition stands in for the SD card. */
+esp_err_t sd_card_test_flash_mount(void);
+#endif

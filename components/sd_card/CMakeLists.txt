@@ -1,3 +1,8 @@
+set(SD_CARD_TEST_SOURCES)
+if(CONFIG_APP_TEST_RECORDING_SCENARIO)
+    list(APPEND SD_CARD_TEST_SOURCES "sd_card_test_flash.c")
+endif()
+
 idf_component_register(
     SRCS
         "sd_card.c"
@@ -9,6 +14,7 @@ idf_component_register(
         "sd_card_info.c"
         "sd_card_diagnostics.c"
         "sd_card_diagnostics_io.c"
+        ${SD_CARD_TEST_SOURCES}
 
     INCLUDE_DIRS
         "include"
@@ -24,6 +30,7 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_sdspi
         esp_system
+        wear_levelling
         freertos
         heap
         log

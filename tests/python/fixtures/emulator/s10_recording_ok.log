@@ -1,0 +1,22 @@
+W (510) SD_CARD_TEST: TEST_FLASH_STORAGE mounted at /sdcard (6080 KiB), not an SD card
+I (610) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=8 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=0 cpu=0.0 stack_free=14316
+I (610) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=9 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=0 cpu=0.0 stack_free=10260
+I (690) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=98 cpu=0.1 stack_free=10212
+I (690) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=10 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=0 cpu=0.0 stack_free=14316
+I (700) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=19 cpu=0.1 stack_free=10212
+I (12710) TEST_RECORDING: begin
+I (12860) TEST_RECORDING: object=OBJ_0001
+I (12860) TEST_RECORDING: setup seeded
+I (12860) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=after-object free=14284 margin=1024
+I (12860) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=before-start free=13804 margin=1024
+I (13230) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=after-recorder-start free=7628 margin=1024
+I (13240) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=227161 cpu=1.8 stack_free=7628
+I (13240) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=7 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=23857 cpu=0.1 stack_free=10132
+I (13260) TEST_RECORDING: recording started session=S000001
+I (23260) TEST_RECORDING: recording samples=500 dropped=0 ms=10027
+I (23260) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=64229 cpu=0.6 stack_free=8564
+I (23460) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=after-stop free=7628 margin=1024
+I (23460) TEST_RECORDING: stopped state=REVIEW samples=502 dropped=0
+I (23460) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=2 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=91827 cpu=45.9 stack_free=8084
+I (23460) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=6 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=523 cpu=0.2 stack_free=7628
+I (24960) TEST_RECORDING: DONE

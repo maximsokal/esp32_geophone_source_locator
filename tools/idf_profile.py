@@ -26,6 +26,10 @@ PROFILE_DEFAULTS = {
         "sdkconfig.emulator.defaults",
         "sdkconfig.emulator-wdt.defaults",
     ),
+    "emulator-rec": (
+        "sdkconfig.emulator.defaults",
+        "sdkconfig.emulator-rec.defaults",
+    ),
 }
 PROFILE_NAMES = tuple(PROFILE_KEYS) + tuple(PROFILE_DEFAULTS)
 EMULATOR_SETTINGS = {
@@ -38,6 +42,10 @@ EMULATOR_WDT_SETTINGS = {
     "CONFIG_APP_TEST_WDT_TRIGGER": True,
     "CONFIG_APP_TEST_WDT_DELAY_S": "25",
 }
+EMULATOR_REC_SETTINGS = {
+    **EMULATOR_SETTINGS,
+    "CONFIG_APP_TEST_RECORDING_SCENARIO": True,
+}
 _ASSIGNMENT = re.compile(r"^CONFIG_([A-Z0-9_]+)=(.*)$")
 _UNSET = re.compile(r"^#\s+CONFIG_([A-Z0-9_]+)\s+is not set$")
 _CMAKE_DEFAULTS = re.compile(
@@ -49,6 +57,8 @@ _CONDITIONAL_DEFAULTS = (
     ("GEOLOCATOR_EMULATOR_PROFILE", "sdkconfig.emulator.defaults"),
     ("GEOLOCATOR_EMULATOR_WDT_PROFILE", "sdkconfig.emulator.defaults"),
     ("GEOLOCATOR_EMULATOR_WDT_PROFILE", "sdkconfig.emulator-wdt.defaults"),
+    ("GEOLOCATOR_EMULATOR_REC_PROFILE", "sdkconfig.emulator.defaults"),
+    ("GEOLOCATOR_EMULATOR_REC_PROFILE", "sdkconfig.emulator-rec.defaults"),
 )
 
 
@@ -157,9 +167,10 @@ def resolve_profile(
         settings = {key: values.get(key) for key in OPTIMIZATION_KEYS}
         build_dir = (root / f"build-profile-{profile}").resolve()
     else:
-        expected_settings = (
-            EMULATOR_WDT_SETTINGS if profile == "emulator-wdt" else EMULATOR_SETTINGS
-        )
+        expected_settings = {
+            "emulator-wdt": EMULATOR_WDT_SETTINGS,
+            "emulator-rec": EMULATOR_REC_SETTINGS,
+        }.get(profile, EMULATOR_SETTINGS)
         mismatches = {
             key: values.get(key)
             for key, expected in expected_settings.items()

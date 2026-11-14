@@ -691,3 +691,50 @@ def test_build_wdt_image_uses_emulator_wdt_profile(tmp_path, monkeypatch):
 
     assert return_code == 0
     assert build_calls == [(tmp_path / smoke.DEFAULT_WDT_BUILD_DIR, wdt_image.resolve())]
+
+
+# ---- S10: real START -> record -> STOP on the flash FAT stand-in (docs/firmware-test-plan.md) ----
+
+def test_evaluate_s10_accepts_a_clean_recording():
+    ok, reasons = smoke.evaluate_s10(read_log("s10_recording_ok.log"))
+    assert ok, reasons
+
+
+@pytest.mark.parametrize("mutation, expected", [
+    # A task overflowing its stack is a panic in the emulator; the evaluator must name it.
+    (lambda log: log + "\n[WARN  machine] Firmware abort on hart0: '***ERROR*** A stack overflow in task seismic_recorde has been detected.'",
+     "stack overflow"),
+    (lambda log: log.replace("recording samples=500 dropped=0", "recording samples=500 dropped=7"), "dropped 7 frames"),
+    (lambda log: log.replace("recording samples=500 dropped=0", "recording samples=40 dropped=0"), "recorded only 40 samples"),
+    (lambda log: log.replace("stopped state=REVIEW samples=502 dropped=0", "stopped state=REVIEW samples=502 dropped=3"), "dropped 3 frames by STOP"),
+    (lambda log: log.replace("stage=after-recorder-start free=7628 margin=1024", "stage=after-recorder-start free=532 margin=1024"),
+     "below its safety margin"),
+    (lambda log: log + "\nW (24000) RUNTIME_OBSERVABILITY: RUNTIME_TASK_LOW_STACK name=seismic_recorde stack_free=372",
+     "ran low on stack while recording"),
+    (lambda log: log.replace("TEST_RECORDING: DONE", "TEST_RECORDING: FAIL stage=stop err=ESP_ERR_TIMEOUT"), "recording scenario failed"),
+    (lambda log: log.replace("TEST_RECORDING: setup seeded\n", ""), "missing recording marker: TEST_RECORDING: setup seeded"),
+    (lambda log: log.replace("TEST_FLASH_STORAGE mounted", "storage absent"), "missing recording marker: TEST_FLASH_STORAGE mounted"),
+])
+def test_evaluate_s10_rejects_broken_recordings(mutation, expected):
+    ok, reasons = smoke.evaluate_s10(mutation(read_log("s10_recording_ok.log")))
+    assert not ok
+    assert any(expected in reason for reason in reasons), reasons
+
+
+def test_evaluate_s10_ignores_low_stack_of_idf_system_tasks_and_of_the_boot():
+    log = read_log("s10_recording_ok.log")
+    log = log.replace("TEST_RECORDING: begin", "TEST_RECORDING: begin\nW (12711) RUNTIME_OBSERVABILITY: RUNTIME_TASK_LOW_STACK name=ipc1 stack_free=468")
+    ok, reasons = smoke.evaluate_s10(log)
+    assert ok, reasons
+    early = "W (610) RUNTIME_OBSERVABILITY: RUNTIME_TASK_LOW_STACK name=ina3221 stack_free=640\n" + read_log("s10_recording_ok.log")
+    ok, reasons = smoke.evaluate_s10(early)
+    assert ok, reasons
+
+
+def test_s10_is_an_explicit_scenario_on_its_own_recording_image():
+    # It runs on the emulator-rec profile (flash FAT in place of the SD card), so "all" must not pick it up.
+    assert "S10" not in smoke.SCENARIOS and smoke.EVALUATORS["S10"] is smoke.evaluate_s10
+    assert smoke.parse_scenarios("S10") == ["S10"]
+    assert "idf-emulator-rec" in smoke.DEFAULT_REC_ELF and smoke.DEFAULT_REC_IMAGE != smoke.DEFAULT_IMAGE
+    argv, timeout, outer = smoke.build_emulator_argv("S10", "emu", "image.bin", "app.elf")
+    assert timeout == 70 and outer > timeout

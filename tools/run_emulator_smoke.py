@@ -21,6 +21,9 @@ DEFAULT_ELF = ".test-build/idf-emulator/esp32_geophone_source_locator.elf"
 DEFAULT_WDT_IMAGE = ".test-build/emu/merged_emu_wdt.bin"
 DEFAULT_WDT_ELF = ".test-build/idf-emulator-wdt/esp32_geophone_source_locator.elf"
 DEFAULT_WDT_BUILD_DIR = ".test-build/idf-emulator-wdt"
+DEFAULT_REC_IMAGE = ".test-build/emu/merged_emu_rec.bin"
+DEFAULT_REC_ELF = ".test-build/idf-emulator-rec/esp32_geophone_source_locator.elf"
+DEFAULT_REC_BUILD_DIR = ".test-build/idf-emulator-rec"
 DEFAULT_OUT_DIR = ".test-build/emu-smoke"
 FLASH_SIZE = 16 * 1024 * 1024
 FLASH_OFFSETS = {"bootloader": 0x0, "partition_table": 0x8000, "app": 0x10000}
@@ -628,6 +631,66 @@ def expected_trace_task_cores(
     return expected
 
 
+# Stack of the tasks the recording path runs on must never reach the safety margin the firmware itself logs.
+_S10_FREE_STACK = re.compile(r"STACK_HWM task=(\S+) stage=(\S+) free=(\d+) margin=(\d+)")
+_S10_SYSTEM_LOW_STACK = ("ipc", "IDLE", "Tmr", "esp_timer", "tiT", "wifi", "main", "sys_evt")
+
+
+def evaluate_s10(log_text: str, extra: dict[str, Any] | None = None) -> tuple[bool, list[str]]:
+    """Real START -> record -> STOP with the synthetic source on a flash FAT stand-in for the SD card."""
+    reasons = _common_reasons(log_text, extra)
+    stages = (
+        "TEST_FLASH_STORAGE mounted",
+        "TEST_RECORDING: begin",
+        "TEST_RECORDING: object=OBJ_",
+        "TEST_RECORDING: setup seeded",
+        "TEST_RECORDING: recording started session=S",
+        "TEST_RECORDING: recording samples=",
+        "TEST_RECORDING: stopped state=REVIEW",
+        "TEST_RECORDING: DONE",
+    )
+    positions = []
+    for stage in stages:
+        index = log_text.find(stage)
+        if index < 0:
+            reasons.append(f"missing recording marker: {stage}")
+        positions.append(index)
+    if all(position >= 0 for position in positions) and positions != sorted(positions):
+        reasons.append("recording markers are out of order")
+    if "TEST_RECORDING: FAIL" in log_text:
+        for line in log_text.splitlines():
+            if "TEST_RECORDING: FAIL" in line:
+                reasons.append(f"recording scenario failed: {line.strip()}")
+    for line in log_text.splitlines():
+        if "stack overflow" in line.lower():
+            reasons.append(f"stack overflow: {line.strip()}")
+            break
+    recording = re.search(r"TEST_RECORDING: recording samples=(\d+) dropped=(\d+) ms=(\d+)", log_text)
+    if recording:
+        samples, dropped, millis = (int(value) for value in recording.groups())
+        if samples < 250:
+            reasons.append(f"recorded only {samples} samples in {millis} ms")
+        if dropped != 0:
+            reasons.append(f"recorder dropped {dropped} frames")
+    stopped = re.search(r"TEST_RECORDING: stopped state=REVIEW samples=(\d+) dropped=(\d+)", log_text)
+    if stopped and int(stopped.group(2)) != 0:
+        reasons.append(f"recorder dropped {stopped.group(2)} frames by STOP")
+    hwm_lines = 0
+    for task, stage, free, margin in _S10_FREE_STACK.findall(log_text):
+        hwm_lines += 1
+        if int(free) < int(margin):
+            reasons.append(f"{task} stack below its safety margin at {stage}: free={free} margin={margin}")
+    if hwm_lines == 0:
+        reasons.append("no STACK_HWM line: the measurement path did not report its stack")
+    begin = log_text.find("TEST_RECORDING: begin")
+    if begin >= 0:
+        for line in log_text[begin:].splitlines():
+            low = re.search(r"RUNTIME_TASK_LOW_STACK name=(\S+) stack_free=(\d+)", line)
+            if low and not low.group(1).startswith(_S10_SYSTEM_LOW_STACK):
+                reasons.append(f"task {low.group(1)} ran low on stack while recording: {low.group(2)} bytes free")
+    return not reasons, reasons
+
+
 EVALUATORS = {
     "S1": evaluate_s1,
     "S2": evaluate_s2,
@@ -638,6 +701,7 @@ EVALUATORS = {
     "S7": evaluate_s7,
     "S8": evaluate_s8,
     "S9": evaluate_s9,
+    "S10": evaluate_s10,
 }
 
 
@@ -730,7 +794,7 @@ def build_emulator_argv(
     elf: str,
 ) -> tuple[list[str], int, int]:
     """Return emulator argv, scenario timeout, and outer timeout in seconds."""
-    timeout = {"S1": 70, "S2": 70, "S3": 40, "S4": 100, "S9": 100}[scenario]
+    timeout = {"S1": 70, "S2": 70, "S3": 40, "S4": 100, "S9": 100, "S10": 70}[scenario]
     outer_timeout = timeout + (10 if scenario != "S4" else 15)
     argv = [
         emu,
@@ -1372,11 +1436,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--elf", default=DEFAULT_ELF, help="emulator-profile ELF")
     parser.add_argument("--wdt-image", default=DEFAULT_WDT_IMAGE, help="merged emulator-wdt firmware image")
     parser.add_argument("--wdt-elf", default=DEFAULT_WDT_ELF, help="emulator-wdt firmware ELF")
+    parser.add_argument("--rec-image", default=DEFAULT_REC_IMAGE, help="merged emulator-rec firmware image (S10)")
+    parser.add_argument("--rec-elf", default=DEFAULT_REC_ELF, help="emulator-rec firmware ELF (S10)")
     parser.add_argument("--out-dir", default=DEFAULT_OUT_DIR, help="logs and JSON report directory")
     parser.add_argument(
         "--build-image",
         action="store_true",
         help="merge the 16 MB flash image from .test-build/idf-emulator",
+    )
+    parser.add_argument(
+        "--build-rec-image",
+        action="store_true",
+        help="merge the 16 MB flash image from .test-build/idf-emulator-rec (S10)",
     )
     parser.add_argument(
         "--build-wdt-image",
@@ -1399,19 +1470,33 @@ def main(argv: list[str] | None = None) -> int:
     elf = _resolve_path(args.elf).resolve()
     wdt_image = _resolve_path(args.wdt_image).resolve()
     wdt_elf = _resolve_path(args.wdt_elf).resolve()
+    rec_image = _resolve_path(args.rec_image).resolve()
+    rec_elf = _resolve_path(args.rec_elf).resolve()
     out_dir = _resolve_path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     normal_setup_error = None
-    if any(scenario != "S9" for scenario in scenarios) and args.build_image:
+    if any(scenario not in ("S9", "S10") for scenario in scenarios) and args.build_image:
         try:
             build_merged_image(REPO_ROOT / ".test-build" / "idf-emulator", image)
         except (OSError, ValueError, json.JSONDecodeError) as error:
             normal_setup_error = f"could not build merged image: {error}"
-    if any(scenario != "S9" for scenario in scenarios):
+    if any(scenario not in ("S9", "S10") for scenario in scenarios):
         if not args.build_image and not image.is_file():
             normal_setup_error = f"firmware image does not exist: {image}"
         if not elf.is_file():
             normal_setup_error = normal_setup_error or f"firmware ELF does not exist: {elf}"
+
+    rec_setup_error = None
+    if "S10" in scenarios:
+        if args.build_rec_image:
+            try:
+                build_merged_image(REPO_ROOT / DEFAULT_REC_BUILD_DIR, rec_image)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                rec_setup_error = f"could not build recording image: {error}"
+        if not rec_image.is_file():
+            rec_setup_error = rec_setup_error or f"recording image missing: {rec_image}"
+        if not rec_elf.is_file():
+            rec_setup_error = rec_setup_error or f"recording firmware ELF does not exist: {rec_elf}"
 
     wdt_build_error = None
     if args.build_wdt_image:
@@ -1441,6 +1526,8 @@ def main(argv: list[str] | None = None) -> int:
         "elf": str(elf),
         "wdt_image": str(wdt_image),
         "wdt_elf": str(wdt_elf),
+        "rec_image": str(rec_image),
+        "rec_elf": str(rec_elf),
         "limitations": LIMITATIONS,
     }
     all_passed = True
@@ -1462,6 +1549,13 @@ def main(argv: list[str] | None = None) -> int:
                         emu=args.emu, image=image, elf=elf, out_dir=out_dir
                     )
             log_text, extra = onb_run
+        elif scenario == "S10":
+            if rec_setup_error:
+                log_text, extra = "", {"run_error": rec_setup_error}
+            else:
+                log_text, extra = _run_scenario(
+                    scenario, emu=args.emu, image=rec_image, elf=rec_elf, out_dir=out_dir
+                )
         elif scenario == "S9":
             if wdt_setup_error:
                 log_text, extra = "", {"run_error": wdt_setup_error}

@@ -99,7 +99,13 @@ _Static_assert(
  * service-core scheduling priority.
  */
 #define APP_TASK_PRIORITY_MEASUREMENT_SERVICE 3
-#define APP_TASK_STACK_MEASUREMENT_SERVICE  8192
+/*
+ * seismic_recorder_start() runs on this task. Its own frame is 5008 bytes (arm-none gcc -fstack-usage, the geometry
+ * builders are inlined into it) on top of ~2.7 KB the task already used, plus SD/FATFS, cJSON and logging below it:
+ * 8 KB overflowed on the first START that got past the geometry checks (board log 2026-11-13 23:30). The stack is
+ * allocated in PSRAM, so the size costs no internal RAM.
+ */
+#define APP_TASK_STACK_MEASUREMENT_SERVICE  16384
 #define APP_TASK_STACK_MEASUREMENT_SERVICE_HWM_SAFETY_MARGIN_BYTES  1024
 
 /*
@@ -110,14 +116,18 @@ _Static_assert(
  * overflow. Shared SPI2 access is still serialized by storage_manager.
  */
 #define APP_TASK_PRIORITY_SEISMIC_RECORDER 3
-#define APP_TASK_STACK_SEISMIC_RECORDER  4096
+#define APP_TASK_STACK_SEISMIC_RECORDER  12288
 
+/*
+ * Stacks that live in PSRAM cost no internal RAM, so they are sized from measured high-water marks with >= 2 KB
+ * to spare (board logs 2026-11-13: ina3221 640 B, pod_status_bridge 1028 B, runtime_observability 1220 B free of 4096).
+ */
 /*
  * Slow 1 Hz power telemetry. Keep it below recorder/UI/storage work so I2C
  * housekeeping cannot interfere with real-time acquisition or SD draining.
  */
 #define APP_TASK_PRIORITY_INA3221          1
-#define APP_TASK_STACK_INA3221          4096
+#define APP_TASK_STACK_INA3221          6144
 
 /*
  * Low-priority runtime diagnostics. Its stack is allocated explicitly from
@@ -125,7 +135,7 @@ _Static_assert(
  * code and does not participate in the acquisition path.
  */
 #define APP_TASK_PRIORITY_RUNTIME_OBSERVABILITY 1
-#define APP_TASK_STACK_RUNTIME_OBSERVABILITY 4096
+#define APP_TASK_STACK_RUNTIME_OBSERVABILITY 6144
 
 /*
  * Object/session index refreshes run off the HTTP task. The worker is allowed
@@ -158,7 +168,7 @@ _Static_assert(
  * consumers so it cannot outrank acquisition/UI work.
  */
 #define APP_TASK_PRIORITY_POD_STATUS_BRIDGE 1
-#define APP_TASK_STACK_POD_STATUS_BRIDGE 4096
+#define APP_TASK_STACK_POD_STATUS_BRIDGE 6144
 
 /*
  * "Calculate source" background job (localization_job): seconds of solver
