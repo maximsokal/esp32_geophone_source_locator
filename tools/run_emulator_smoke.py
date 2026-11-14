@@ -633,6 +633,10 @@ def expected_trace_task_cores(
 
 # Stack of the tasks the recording path runs on must never reach the safety margin the firmware itself logs.
 _S10_FREE_STACK = re.compile(r"STACK_HWM task=(\S+) stage=(\S+) free=(\d+) margin=(\d+)")
+# Where the synthetic source puts the impact (app_test_recording_scenario.h: 500 mm, 3000 mm) and how well it must be found.
+S10_SOURCE_M = (0.5, 3.0)
+S10_SOURCE_TOLERANCE_M = 0.5
+S10_MIN_CLOSE_METHODS = 3
 _S10_SYSTEM_LOW_STACK = ("ipc", "IDLE", "Tmr", "esp_timer", "tiT", "wifi", "main", "sys_evt")
 
 
@@ -642,11 +646,14 @@ def evaluate_s10(log_text: str, extra: dict[str, Any] | None = None) -> tuple[bo
     stages = (
         "TEST_FLASH_STORAGE mounted",
         "TEST_RECORDING: begin",
+        "TEST_RECORDING: dma ballast",
+        "TEST_RECORDING: psram ballast",
         "TEST_RECORDING: object=OBJ_",
         "TEST_RECORDING: setup seeded",
         "TEST_RECORDING: recording started session=S",
         "TEST_RECORDING: recording samples=",
         "TEST_RECORDING: stopped state=REVIEW",
+        "TEST_RECORDING: calculation job=",
         "TEST_RECORDING: DONE",
     )
     positions = []
@@ -675,6 +682,50 @@ def evaluate_s10(log_text: str, extra: dict[str, Any] | None = None) -> tuple[bo
     stopped = re.search(r"TEST_RECORDING: stopped state=REVIEW samples=(\d+) dropped=(\d+)", log_text)
     if stopped and int(stopped.group(2)) != 0:
         reasons.append(f"recorder dropped {stopped.group(2)} frames by STOP")
+    ballast = re.search(r"TEST_RECORDING: dma ballast .*applied=(\d)", log_text)
+    if ballast and ballast.group(1) != "1":
+        reasons.append("the board-equivalent DMA budget could not be applied")
+    for line in log_text.splitlines():
+        if "Failed to allocate priv RX buffer" in line:
+            reasons.append(f"SD driver found no DMA bounce buffer: {line.strip()}")
+            break
+    psram = re.search(r"TEST_RECORDING: psram ballast .*applied=(\d)", log_text)
+    if psram and psram.group(1) != "1":
+        reasons.append("the board-equivalent PSRAM layout could not be applied")
+    for line in log_text.splitlines():
+        if "insufficient_memory" in line:
+            reasons.append(f"the calculation found no memory for its window: {line.strip()}")
+            break
+    bounce = re.search(r"TEST_RECORDING: sd dma bounce failures=(\d+)", log_text)
+    if bounce is None:
+        reasons.append("missing recording marker: TEST_RECORDING: sd dma bounce failures=")
+    elif int(bounce.group(1)) != 0:
+        reasons.append(f"{bounce.group(1)} SD transfers found no DMA bounce buffer")
+    # The source calculation on the recorded session (physical setup: components/app_config/include/app_test_recording_scenario.h).
+    picks = re.search(r"LOC_PICKS accepted=(\d+) of (\d+) placed", log_text)
+    if picks is None:
+        reasons.append("the calculation never reached the picks: no LOC_PICKS line (see LOC_SEARCH / LOC_REJECT)")
+    elif int(picks.group(1)) < 3:
+        reasons.append(f"only {picks.group(1)} of {picks.group(2)} channel picks were accepted")
+    for line in log_text.splitlines():
+        if "LOC_REJECT" in line:
+            reasons.append(f"the calculation rejected the trace: {line.strip()}")
+            break
+    calculation = re.search(r"TEST_RECORDING: calculation job=\d+ state=(\S+) solved=(\d+)", log_text)
+    if calculation and calculation.group(1) != "succeeded":
+        reasons.append(f"calculation ended in state {calculation.group(1)}")
+    close_methods = []
+    for method, x, y, z in re.findall(
+        r"LOC_SOLUTION (\S+)\s+pos_m=\(([-\d.]+),([-\d.]+),([-\d.]+)\)", log_text
+    ):
+        error_m = ((float(x) - S10_SOURCE_M[0]) ** 2 + (float(y) - S10_SOURCE_M[1]) ** 2) ** 0.5
+        if error_m <= S10_SOURCE_TOLERANCE_M:
+            close_methods.append(method)
+    if len(close_methods) < S10_MIN_CLOSE_METHODS:
+        reasons.append(
+            f"only {len(close_methods)} method(s) located the source within {S10_SOURCE_TOLERANCE_M} m of "
+            f"{S10_SOURCE_M}: {close_methods}"
+        )
     hwm_lines = 0
     for task, stage, free, margin in _S10_FREE_STACK.findall(log_text):
         hwm_lines += 1
@@ -794,7 +845,7 @@ def build_emulator_argv(
     elf: str,
 ) -> tuple[list[str], int, int]:
     """Return emulator argv, scenario timeout, and outer timeout in seconds."""
-    timeout = {"S1": 70, "S2": 70, "S3": 40, "S4": 100, "S9": 100, "S10": 70}[scenario]
+    timeout = {"S1": 70, "S2": 70, "S3": 40, "S4": 100, "S9": 100, "S10": 300}[scenario]
     outer_timeout = timeout + (10 if scenario != "S4" else 15)
     argv = [
         emu,

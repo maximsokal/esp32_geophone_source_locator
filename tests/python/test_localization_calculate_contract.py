@@ -130,12 +130,16 @@ def test_max_frames_bound_is_documented_not_guessed():
     assert "config LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB" in kconfig
     assert "largest_free_block_bytes" in policy
     assert "heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)" in source
-    assert "LOCALIZATION_ANALYSIS_PSRAM_SAFETY_RESERVE_BYTES" in source
+    # The reserve depends on whether a scan artifact is parsed (board log 2026-11-14: a fixed 3 MiB reserve left a
+    # session without a scan with a 0-frame window although 3 MiB of PSRAM was free).
+    header = read("components/localization_calculate/include/localization_calculate_policy.h")
+    assert "localization_calculate_psram_safety_reserve_bytes(" in source
+    assert "LOCALIZATION_CALCULATE_BASE_PSRAM_RESERVE_BYTES (512U * 1024U)" in header
+    assert "LOCALIZATION_CALCULATE_OCCUPANCY_PSRAM_RESERVE_BYTES (3072U * 1024U)" in header
     assert '"insufficient_memory"' in source
     assert '"memory"' in source
     assert "session_summary.samples_written > (uint64_t)frame_count" in source
     assert "records[i].analysis_window_start_index = analysis_start_frame" in source
-    assert "LOCALIZATION_ANALYSIS_PSRAM_SAFETY_RESERVE_BYTES (3072U * 1024U)" in source
     assert "max_window_frames < minimum_useful_frames" in source
 
 

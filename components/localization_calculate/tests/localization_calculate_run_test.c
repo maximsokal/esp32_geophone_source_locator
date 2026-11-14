@@ -764,12 +764,13 @@ static void test_truncated_session_persists_analysis_window(void)
 static void test_limited_free_psram_truncates_with_memory_provenance(void)
 {
     reset_fakes();
-    localization_test_psram_model_set_reserved(8U * 1024U * 1024U - 4U * 1024U * 1024U);
+    localization_test_psram_model_set_reserved(8U * 1024U * 1024U - 1536U * 1024U);
     build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
     extend_fixture_frames(39322U);
     g_fixture_summary.sample_rate_hz = 20000U;
     const size_t bytes_per_frame = sizeof(seismic_frame_t) +
         SEISMIC_CHANNEL_COUNT * sizeof(float) + sizeof(uint64_t) + sizeof(bool);
+    /* 1.5 MiB free, minus the 0.5 MiB reserve of a session without a scan, leaves a 1 MiB window. */
     const size_t expected_window_frames = (1024U * 1024U) / bytes_per_frame;
 
     localization_calculate_config_t config = default_test_config();
@@ -1320,7 +1321,7 @@ static void run_late_event_case(uint32_t duration_s, double event_time_s, bool c
     reset_fakes();
     prepare_recording_with_event(duration_s, event_time_s);
     if (constrain_psram) {
-        localization_test_psram_model_set_reserved(8U * 1024U * 1024U - 4U * 1024U * 1024U);
+        localization_test_psram_model_set_reserved(8U * 1024U * 1024U - 1536U * 1024U);
     }
     localization_calculate_config_t config = default_test_config();
     config.sample_rate_hz = sample_rate_hz;

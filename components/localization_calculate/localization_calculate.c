@@ -44,10 +44,6 @@
 #define LOCALIZATION_CALCULATE_REFINE_DIVISOR 4U
 
 #define LOCALIZATION_CALCULATE_METHOD_VERSION 1U
-/* Covers the 1 MiB occupancy file, up to 1.33 MiB expanded keys, workspace,
- * and allocator margin while the analysis arrays are resident. */
-#define LOCALIZATION_ANALYSIS_PSRAM_SAFETY_RESERVE_BYTES (3072U * 1024U)
-
 static const char *TAG = "LOCALIZATION_CALCULATE";
 
 #define LOCALIZATION_CALCULATE_ALL_CHANNELS_MASK \
@@ -887,12 +883,16 @@ esp_err_t localization_calculate_run(
     const size_t largest_free_psram_block =
         heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
     bool analysis_limited_by_free_memory = false;
+    /* Only a session with a scan occupancy artifact needs the large PSRAM reserve for parsing it. */
+    const esp_err_t occupancy_probe_err = session_occupancy_probe(object_id, session_id);
+    const size_t safety_reserve_bytes = localization_calculate_psram_safety_reserve_bytes(
+        occupancy_probe_err != ESP_ERR_NOT_FOUND);
     const size_t max_window_frames = localization_calculate_analysis_window_frames(
         session_summary.sample_rate_hz,
         CONFIG_LOCALIZATION_MAX_ANALYSIS_S,
         (uint64_t)CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB * 1024ULL,
         largest_free_psram_block,
-        LOCALIZATION_ANALYSIS_PSRAM_SAFETY_RESERVE_BYTES,
+        safety_reserve_bytes,
         bytes_per_frame,
         &analysis_limited_by_free_memory
     );
@@ -956,6 +956,9 @@ esp_err_t localization_calculate_run(
         free_channel_buffers(search.channel);
         heap_caps_free(search.window);
         heap_caps_free(chunk);
+        ESP_LOGI(TAG, "LOC_SEARCH session is longer than the %u-frame window: scanned %llu frames, hop=%u, event_found=%d, problem=%s, err=%s",
+                 (unsigned)frame_capacity, (unsigned long long)search.total_frames, (unsigned)search.hop_frames,
+                 search.best_valid ? 1 : 0, search.problem != NULL ? search.problem : "none", esp_err_to_name(err));
         if (search.problem != NULL) {
             return localization_calculate_persist_trace_rejection(
                 object_id, session_id, config, &geometry, all_channel_mask,
@@ -1017,6 +1020,10 @@ esp_err_t localization_calculate_run(
         return ESP_ERR_INVALID_STATE;
     }
     const int64_t session_epoch_timestamp_us = search_epoch_known ? search_epoch_us : frames[0].timestamp_us;
+    ESP_LOGI(TAG, "LOC_WINDOW %s/%s rate=%uHz frames=%u of %llu start=%llu limited_by_memory=%d", object_id, session_id,
+             (unsigned)session_summary.sample_rate_hz, (unsigned)frame_count,
+             (unsigned long long)session_summary.samples_written, (unsigned long long)analysis_start_frame,
+             analysis_limited_by_free_memory ? 1 : 0);
     const bool analysis_window_truncated =
         session_summary.samples_written > (uint64_t)frame_count;
     const bool analysis_window_memory_limited =
@@ -1074,6 +1081,12 @@ esp_err_t localization_calculate_run(
                     trace_rejection_reason = LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP;
                 }
                 if (trace_rejection_reason != NULL) {
+                    ESP_LOGW(TAG,
+                             "LOC_REJECT %s at frame %u of %u: timestamp_us prev=%lld cur=%lld, source_index prev=%llu cur=%llu, gap_before=%d",
+                             trace_rejection_reason, (unsigned)i, (unsigned)frame_count,
+                             (long long)(i > 0U ? frames[i - 1U].timestamp_us : 0), (long long)frames[i].timestamp_us,
+                             (unsigned long long)(i > 0U ? source_sample_indices[i - 1U] : 0U),
+                             (unsigned long long)source_sample_indices[i], gap_before[i] ? 1 : 0);
                     const int64_t epoch_timestamp_us = session_epoch_timestamp_us;
                     free_channel_buffers(channel_samples);
                     heap_caps_free(frames);
@@ -1237,6 +1250,28 @@ esp_err_t localization_calculate_run(
         }
     }
 
+    /* One line per channel: why a channel took part or not is the first thing to read when no method solves. */
+    {
+        static const char *const status_names[] = {
+            "accepted", "no_trigger", "no_refinement", "low_snr", "inconsistent", "saturated", "ambiguous",
+        };
+        size_t participating = 0U;
+        size_t accepted = 0U;
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) {
+            const geophone_channel_pick_t *pick = &event_channels[ch].pick;
+            const unsigned status = (unsigned)pick->status;
+            (void)status;  /* only used by the log, which a host build compiles away */
+            participating += geometry.pods[ch].computed ? 1U : 0U;
+            accepted += (accepted_pick_mask & (1U << ch)) != 0U ? 1U : 0U;
+            ESP_LOGI(TAG, "LOC_PICK ch=%u placed=%d status=%s reason=%s arrival_sample=%u snr=%.1f",
+                     (unsigned)ch, geometry.pods[ch].computed ? 1 : 0,
+                     status < sizeof(status_names) / sizeof(status_names[0]) ? status_names[status] : "?",
+                     geophone_pick_reason_name(pick->reason), (unsigned)pick->arrival_sample_index, (double)pick->snr);
+        }
+        ESP_LOGI(TAG, "LOC_PICKS accepted=%u of %u placed, mask=0x%02X dimensionality=%d need>=%u",
+                 (unsigned)accepted, (unsigned)participating, (unsigned)accepted_pick_mask, (int)dimensionality, 4U);
+    }
+
     localization_calculate_workspace_t *workspace = heap_caps_calloc(
         1U, sizeof(*workspace), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
     );
@@ -1319,7 +1354,6 @@ esp_err_t localization_calculate_run(
 
     /* Probe only for the scan branch before methods start; the full artifact
      * is still loaded at its existing point in the analysis sequence. */
-    const esp_err_t occupancy_probe_err = session_occupancy_probe(object_id, session_id);
     const bool scan_variants_planned = occupancy_probe_err != ESP_ERR_NOT_FOUND;
     summary_out->methods_total = LOCALIZATION_CALCULATE_BASE_METHODS +
         (scan_variants_planned ? LOCALIZATION_CALCULATE_SCAN_METHODS : 0U) +
@@ -2555,6 +2589,20 @@ esp_err_t localization_calculate_run(
                     sizeof(records[i].analysis_window_reason), "memory"
                 );
             }
+        }
+    }
+
+    /* What every method concluded, one line each, before anything is persisted. */
+    for (size_t i = 0U; i < record_count; ++i) {
+        ESP_LOGI(TAG, "LOC_METHOD %-24s solved=%d terminal=%d class=%d confidence=%.2f%s%s", records[i].method_name,
+                 records[i].solved ? 1 : 0, (int)records[i].terminal_status, (int)records[i].failure_class,
+                 records[i].confidence_score, records[i].solved ? "" : " reason=",
+                 records[i].solved ? "" : records[i].rejection_reason);
+        if (records[i].solved) {
+            ESP_LOGI(TAG, "LOC_SOLUTION %-22s pos_m=(%.3f,%.3f,%.3f) rms_us=%.0f iterations=%u converged=%d",
+                     records[i].method_name, records[i].source_position.x_m, records[i].source_position.y_m,
+                     records[i].source_position.z_m, records[i].rms_residual_us, (unsigned)records[i].iterations,
+                     records[i].converged ? 1 : 0);
         }
     }
 

@@ -1821,3 +1821,16 @@ void localization_calculate_budget_end(
     }
     budget->method = NULL;
 }
+
+
+size_t localization_calculate_psram_safety_reserve_bytes(bool occupancy_present)
+{
+    /*
+     * With a scan occupancy artifact the analysis shares PSRAM with its parsing (a file of up to 1 MiB plus 1.33 MiB of
+     * expanded keys). Without one only the calculation workspace and the allocator margin are left to cover. The board
+     * log of 2026-11-14 16:02 had a 3 MiB largest free block, exactly the old fixed 3 MiB reserve: a session with no scan
+     * got a window of 0 frames and "insufficient_memory" although 3 MiB of PSRAM was free.
+     */
+    return occupancy_present ? LOCALIZATION_CALCULATE_OCCUPANCY_PSRAM_RESERVE_BYTES
+                             : LOCALIZATION_CALCULATE_BASE_PSRAM_RESERVE_BYTES;
+}

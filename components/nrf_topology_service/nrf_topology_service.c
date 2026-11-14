@@ -1,4 +1,7 @@
 #include <math.h>
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+#include "app_test_recording_scenario.h"
+#endif
 #include "nrf_topology_service.h"
 #include "nrf_sensor_transport.h"
 #include "nrf_cs_authority.h"
@@ -5537,15 +5540,16 @@ esp_err_t nrf_topology_service_test_seed_confirmed_setup(const char *object_id)
         return ESP_ERR_INVALID_ARG;
     }
     static const struct { uint8_t channel; uint8_t node_id; } remotes[3] = {{0U, 1U}, {2U, 3U}, {3U, 4U}};
-    /* MAIN (0), node 1, 3, 4 on a 3 m x 4 m rectangle. */
-    static const int32_t x_mm[4] = {0, 3000, 0, 3000};
-    static const int32_t y_mm[4] = {0, 0, 4000, 4000};
-    static const uint8_t ids[4] = {0U, 1U, 3U, 4U};
+    /* MAIN (0), node 1, 3, 4: the physical setup shared with the synthetic source (app_test_recording_scenario.h). */
+    static const int32_t x_mm[4] = TEST_REC_NODE_X_MM;
+    static const int32_t y_mm[4] = TEST_REC_NODE_Y_MM;
+    static const uint8_t ids[4] = TEST_REC_NODE_ID;
     const int64_t now_us = esp_timer_get_time();
     const uint64_t now_ms = now_us > 0 ? (uint64_t)now_us / 1000U : 1U;
 
-    nrf_topology_snapshot_t snapshot;
-    nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
+    /* Static: this is large and the worker sources keep large state out of their stack frames. */
+    static nrf_topology_snapshot_t snapshot;
+    static nrf_remote_sensor_cache_t cache[NRF_TOPOLOGY_REMOTE_COUNT];
     memset(&snapshot, 0, sizeof(snapshot));
     memset(cache, 0, sizeof(cache));
     snapshot.generation = 1U;
@@ -5576,7 +5580,7 @@ esp_err_t nrf_topology_service_test_seed_confirmed_setup(const char *object_id)
         c->esp_receipt_uptime_ms = now_ms;
     }
 
-    nrf_topology_ranging_result_t result;
+    static nrf_topology_ranging_result_t result;
     memset(&result, 0, sizeof(result));
     result.available = true;
     result.success = true;

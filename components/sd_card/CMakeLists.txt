@@ -31,6 +31,7 @@ idf_component_register(
         esp_driver_sdspi
         esp_system
         wear_levelling
+        esp_partition
         freertos
         heap
         log

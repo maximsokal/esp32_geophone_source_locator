@@ -76,12 +76,20 @@ static void localization_job_task(void *argument)
         xSemaphoreGive(s_mutex);
 
         ESP_LOGI(
-            TAG, "job %u: %s in %u ms, %u/%u methods solved, %u skipped for time, STACK_HWM free=%u of %u",
+            TAG, "job %u: %s in %u ms, %u/%u methods solved (%u planned), %u skipped for time, participating=%u, err=%s, "
+                 "STACK_HWM free=%u of %u",
             (unsigned)job_id, localization_job_state_name(status.state), (unsigned)status.elapsed_ms,
             (unsigned)status.summary.methods_solved, (unsigned)status.summary.methods_attempted,
-            (unsigned)status.summary.methods_skipped_for_time, (unsigned)status.stack_free_min_bytes,
-            (unsigned)status.stack_size_bytes
+            (unsigned)status.summary.methods_total, (unsigned)status.summary.methods_skipped_for_time,
+            (unsigned)status.summary.participating_channel_count, esp_err_to_name(status.error),
+            (unsigned)status.stack_free_min_bytes, (unsigned)status.stack_size_bytes
         );
+        if (status.summary.methods_solved == 0U) {
+            /* "0/1 solved" says nothing by itself: attempted counts only methods that ran. The reason is in the
+             * LOC_SEARCH / LOC_REJECT / LOC_PICK / LOC_METHOD lines the calculation printed just before. */
+            ESP_LOGW(TAG, "job %u: nothing solved; attempted=%u of %u planned: the calculation stopped early or every method was rejected, see LOC_* lines above",
+                     (unsigned)job_id, (unsigned)status.summary.methods_attempted, (unsigned)status.summary.methods_total);
+        }
         for (size_t i = 0U; i < status.summary.timing_count; ++i) {
             ESP_LOGI(TAG, "  %-28s %6u ms%s", status.summary.timings[i].method_name,
                      (unsigned)status.summary.timings[i].duration_ms,

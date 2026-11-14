@@ -20,6 +20,9 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "localization_config.h"
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+#include "app_test_recording_scenario.h"
+#endif
 #include "localization_job.h"
 #include "localization_material_presets.h"
 #include "main_barometer.h"
@@ -2691,5 +2694,60 @@ void workflow_service_test_unlock_mutex(void)
 uint32_t workflow_service_test_poll_missed_deadline_count(void)
 {
     return (uint32_t)atomic_load_explicit(&s_poll_missed_deadlines, memory_order_relaxed);
+}
+#endif
+
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+/*
+ * TEST ONLY (ESP-EMU recording scenario): submit the source calculation the way CALCULATE_SOURCES does -- the object's
+ * calculation settings parsed by the same function -- without driving the whole workflow state machine.
+ */
+esp_err_t workflow_service_test_submit_calculation(const char *object_id, const char *session_id, uint32_t *job_id_out)
+{
+    if (object_id == NULL || session_id == NULL || job_id_out == NULL) return ESP_ERR_INVALID_ARG;
+    localization_calculate_config_t *config =
+        heap_caps_calloc(1U, sizeof(*config), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (config == NULL) return ESP_ERR_NO_MEM;
+    char *json = NULL;
+    uint32_t budget_ms = 0U;
+    esp_err_t err = object_store_get_calc_settings_json_cached(object_id, &json);
+    if (err != ESP_OK || json == NULL) {
+        /* A fresh object has no saved settings: the calculation defaults apply, as for an unedited object. */
+        ESP_LOGW("TEST_RECORDING", "calculation settings of %s unavailable (%s): using the defaults", object_id,
+                 esp_err_to_name(err));
+        free(json);
+        json = NULL;
+        err = localization_config_standard_processing_to_json(&json);
+        if (err == ESP_OK) {
+            /* The material part the user would have entered: a slow medium, so 500 Hz resolves the delays. */
+            cJSON *settings = cJSON_Parse(json);
+            free(json);
+            json = NULL;
+            err = settings != NULL ? ESP_OK : ESP_ERR_NO_MEM;
+            if (err == ESP_OK &&
+                (cJSON_AddStringToObject(settings, "material", "custom") == NULL ||
+                 cJSON_AddNumberToObject(settings, "propagation_speed_mps", TEST_REC_SPEED_MPS) == NULL ||
+                 cJSON_AddNumberToObject(settings, "propagation_speed_uncertainty_mps", TEST_REC_SPEED_UNCERTAINTY_MPS) == NULL ||
+                 cJSON_AddNumberToObject(settings, "timing_uncertainty_us", TEST_REC_TIMING_UNCERTAINTY_US) == NULL)) {
+                err = ESP_ERR_NO_MEM;
+            }
+            if (err == ESP_OK) {
+                json = cJSON_PrintUnformatted(settings);
+                if (json == NULL) err = ESP_ERR_NO_MEM;
+            }
+            cJSON_Delete(settings);
+        }
+    }
+    if (err == ESP_OK) {
+        err = workflow_service_parse_calc_settings_locked(json, &budget_ms, config, NULL, NULL);
+        if (err != ESP_OK) ESP_LOGE("TEST_RECORDING", "calculation settings rejected: %s", esp_err_to_name(err));
+    }
+    free(json);
+    if (err == ESP_OK) {
+        err = localization_job_submit(object_id, session_id, config, budget_ms, job_id_out);
+        if (err != ESP_OK) ESP_LOGE("TEST_RECORDING", "calculation submit rejected: %s", esp_err_to_name(err));
+    }
+    heap_caps_free(config);
+    return err;
 }
 #endif

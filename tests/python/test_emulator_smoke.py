@@ -704,14 +704,30 @@ def test_evaluate_s10_accepts_a_clean_recording():
     # A task overflowing its stack is a panic in the emulator; the evaluator must name it.
     (lambda log: log + "\n[WARN  machine] Firmware abort on hart0: '***ERROR*** A stack overflow in task seismic_recorde has been detected.'",
      "stack overflow"),
-    (lambda log: log.replace("recording samples=500 dropped=0", "recording samples=500 dropped=7"), "dropped 7 frames"),
-    (lambda log: log.replace("recording samples=500 dropped=0", "recording samples=40 dropped=0"), "recorded only 40 samples"),
-    (lambda log: log.replace("stopped state=REVIEW samples=502 dropped=0", "stopped state=REVIEW samples=502 dropped=3"), "dropped 3 frames by STOP"),
-    (lambda log: log.replace("stage=after-recorder-start free=7628 margin=1024", "stage=after-recorder-start free=532 margin=1024"),
+    (lambda log: log.replace("recording samples=5000 dropped=0", "recording samples=5000 dropped=7"), "dropped 7 frames"),
+    (lambda log: log.replace("recording samples=5000 dropped=0", "recording samples=40 dropped=0"), "recorded only 40 samples"),
+    (lambda log: log.replace("stopped state=REVIEW samples=5030 dropped=0", "stopped state=REVIEW samples=5030 dropped=3"), "dropped 3 frames by STOP"),
+    (lambda log: log.replace("stage=after-recorder-start free=7548 margin=1024", "stage=after-recorder-start free=532 margin=1024"),
      "below its safety margin"),
     (lambda log: log + "\nW (24000) RUNTIME_OBSERVABILITY: RUNTIME_TASK_LOW_STACK name=seismic_recorde stack_free=372",
      "ran low on stack while recording"),
     (lambda log: log.replace("TEST_RECORDING: DONE", "TEST_RECORDING: FAIL stage=stop err=ESP_ERR_TIMEOUT"), "recording scenario failed"),
+    (lambda log: log + "\nE (13000) spi_master: setup_dma_priv_buffer: Failed to allocate priv RX buffer (need 1536, largest DMA block 960, DMA free 2323)",
+     "no DMA bounce buffer"),
+    (lambda log: log.replace("sd dma bounce failures=0", "sd dma bounce failures=4"), "4 SD transfers found no DMA bounce buffer"),
+    (lambda log: log.replace("applied=1", "applied=0"), "DMA budget could not be applied"),
+    (lambda log: log.replace("TEST_RECORDING: psram ballast", "TEST_RECORDING: psram nothing"), "missing recording marker: TEST_RECORDING: psram ballast"),
+    (lambda log: log + "\nE (23510) LOCALIZATION_CALCULATE: insufficient_memory: largest PSRAM block=3080192 bytes; need a 500-frame window",
+     "found no memory for its window"),
+    # The calculation of the recorded session (the user's "0/1 methods solved" fails before any method runs).
+    (lambda log: "\n".join(l for l in log.splitlines() if "LOC_PICKS" not in l), "no LOC_PICKS line"),
+    (lambda log: log.replace("LOC_PICKS accepted=3 of 3", "LOC_PICKS accepted=2 of 3"), "only 2 of 3 channel picks were accepted"),
+    (lambda log: log + "\nW (24000) LOCALIZATION_CALCULATE: LOC_REJECT session_gap at frame 1200 of 5000: timestamp_us prev=1 cur=2",
+     "rejected the trace"),
+    (lambda log: log.replace("pos_m=(0.500,3.000,0.000)", "pos_m=(2.500,1.000,0.000)").replace("pos_m=(0.502,2.997,0.000)", "pos_m=(2.5,1.0,0.0)").replace("pos_m=(0.496,2.993,0.000)", "pos_m=(2.5,1.0,0.0)").replace("pos_m=(0.400,2.900,0.000)", "pos_m=(2.5,1.0,0.0)"),
+     "method(s) located the source within"),
+    (lambda log: log.replace("calculation job=1 state=succeeded", "calculation job=1 state=failed"), "calculation ended in state failed"),
+    (lambda log: log.replace("TEST_RECORDING: dma ballast", "TEST_RECORDING: dma nothing"), "missing recording marker: TEST_RECORDING: dma ballast"),
     (lambda log: log.replace("TEST_RECORDING: setup seeded\n", ""), "missing recording marker: TEST_RECORDING: setup seeded"),
     (lambda log: log.replace("TEST_FLASH_STORAGE mounted", "storage absent"), "missing recording marker: TEST_FLASH_STORAGE mounted"),
 ])
@@ -737,4 +753,4 @@ def test_s10_is_an_explicit_scenario_on_its_own_recording_image():
     assert smoke.parse_scenarios("S10") == ["S10"]
     assert "idf-emulator-rec" in smoke.DEFAULT_REC_ELF and smoke.DEFAULT_REC_IMAGE != smoke.DEFAULT_IMAGE
     argv, timeout, outer = smoke.build_emulator_argv("S10", "emu", "image.bin", "app.elf")
-    assert timeout == 70 and outer > timeout
+    assert timeout == 300 and outer > timeout

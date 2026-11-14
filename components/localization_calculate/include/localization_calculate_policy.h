@@ -57,6 +57,11 @@ size_t localization_calculate_participating_channels(
     uint32_t *channel_mask_out
 );
 
+/* PSRAM that must stay free around the analysis arrays. */
+#define LOCALIZATION_CALCULATE_BASE_PSRAM_RESERVE_BYTES (512U * 1024U)
+#define LOCALIZATION_CALCULATE_OCCUPANCY_PSRAM_RESERVE_BYTES (3072U * 1024U)
+size_t localization_calculate_psram_safety_reserve_bytes(bool occupancy_present);
+
 /* Bound raw analysis frames by both duration and concurrent PSRAM use. */
 size_t localization_calculate_analysis_window_frames(
     uint32_t sample_rate_hz,

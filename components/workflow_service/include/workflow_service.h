@@ -52,3 +52,8 @@ esp_err_t workflow_service_capture_height_references(
     uint8_t *requested_channel_mask,
     uint16_t *requested_generation
 );
+
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+/* TEST ONLY (ESP-EMU): queue the source calculation for a recorded session with the object's calculation settings. */
+esp_err_t workflow_service_test_submit_calculation(const char *object_id, const char *session_id, uint32_t *job_id_out);
+#endif

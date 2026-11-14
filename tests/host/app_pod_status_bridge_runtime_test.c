@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "app_pod_status_bridge.h"
+#include "app_task_config.h"
 #include "app_pod_status_bridge_internal.h"
 #include "device_status.h"
 #include "esp_timer.h"
@@ -373,7 +374,7 @@ BaseType_t xTaskCreatePinnedToCoreWithCaps(
     unsigned priority, TaskHandle_t *task_handle, int core_id, UBaseType_t caps)
 {
     (void)name; (void)priority;
-    assert(stack_size == 4096U && core_id == 0 && caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    assert(stack_size == APP_TASK_STACK_POD_STATUS_BRIDGE && core_id == 0 && caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     ++s_caps_creates;
     if (s_fail_caps) return 0;
     if (s_run_lifecycle) {

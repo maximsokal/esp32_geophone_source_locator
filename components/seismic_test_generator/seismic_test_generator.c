@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <math.h>
 #include <stdint.h>
 
 #include "app_task_config.h"
@@ -14,9 +15,18 @@
 #include "freertos/task.h"
 
 
-#define TEST_PERIOD_MS       (1000 / SEISMIC_TEST_GENERATOR_SAMPLE_RATE_HZ)
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+/* 500 Hz on a 10 ms tick: five frames per wake-up, stamped 2 ms apart, like the ADC delivers them. */
+#define TEST_PERIOD_MS       10
+#define TEST_FRAMES_PER_TICK (SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ * TEST_PERIOD_MS / 1000)
+#define TEST_PHYSICAL_EVENT  1
+#else
+#define TEST_PERIOD_MS       (1000 / SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ)
+#define TEST_FRAMES_PER_TICK 1
+#define TEST_PHYSICAL_EVENT  0
 #define TEST_EVENT_PERIOD    200
 #define TEST_EVENT_START     40
+#endif
 
 
 static const char *TAG =
@@ -99,6 +109,47 @@ static float test_noise_uv(void)
 }
 
 
+#if TEST_PHYSICAL_EVENT
+/*
+ * One impact at a known place: each sensor sees the pulse after distance / speed, weaker the farther it is. The
+ * arrival is fractional in frames, so the delays between channels are exact rather than rounded to a sample.
+ */
+static float s_arrival_frame[SEISMIC_CHANNEL_COUNT];
+static float s_amplitude_uv[SEISMIC_CHANNEL_COUNT];
+
+static void test_physical_event_prepare(void)
+{
+    static const int node_x_mm[] = TEST_REC_NODE_X_MM;
+    static const int node_y_mm[] = TEST_REC_NODE_Y_MM;
+    static const int channel_node[SEISMIC_CHANNEL_COUNT] = TEST_REC_CHANNEL_NODE;
+    for (size_t channel = 0; channel < SEISMIC_CHANNEL_COUNT; ++channel) {
+        s_arrival_frame[channel] = -1.0f;
+        s_amplitude_uv[channel] = 0.0f;
+        if (channel_node[channel] < 0) continue;
+        const double dx = (double)(node_x_mm[channel_node[channel]] - TEST_REC_SOURCE_X_MM);
+        const double dy = (double)(node_y_mm[channel_node[channel]] - TEST_REC_SOURCE_Y_MM);
+        const double dz = (double)TEST_REC_SOURCE_Z_MM;
+        const double distance_mm = sqrt(dx * dx + dy * dy + dz * dz);
+        const double delay_s = distance_mm / 1000.0 / TEST_REC_SPEED_MPS;
+        s_arrival_frame[channel] = (float)(TEST_REC_EVENT_FRAME + delay_s * SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ);
+        s_amplitude_uv[channel] = (float)(300.0 * 1000.0 / distance_mm);
+    }
+}
+
+static float test_event_uv(
+    uint64_t frame_number,
+    size_t channel
+)
+{
+    if (s_arrival_frame[channel] < 0.0f) return 0.0f;
+    const size_t pulse_count = sizeof(s_pulse) / sizeof(s_pulse[0]);
+    const float x = (float)frame_number - s_arrival_frame[channel];
+    if (x < 0.0f || x >= (float)(pulse_count - 1U)) return 0.0f;
+    const size_t index = (size_t)x;
+    const float fraction = x - (float)index;
+    return (s_pulse[index] * (1.0f - fraction) + s_pulse[index + 1U] * fraction) * s_amplitude_uv[channel];
+}
+#else
 static float test_event_uv(
     uint64_t frame_number,
     size_t channel
@@ -144,6 +195,7 @@ static float test_event_uv(
         s_pulse[pulse_index] *
         amplitude_uv[channel];
 }
+#endif
 
 
 static void seismic_test_task(
@@ -157,31 +209,41 @@ static void seismic_test_task(
 
     uint64_t frame_number =
         0;
+    int64_t last_stamp_us = 0;
 
     while (s_running) {
-        float channels[
-            SEISMIC_CHANNEL_COUNT
-        ];
+        const int64_t tick_us = esp_timer_get_time();
+        for (int k = 0; k < TEST_FRAMES_PER_TICK; ++k) {
+            float channels[
+                SEISMIC_CHANNEL_COUNT
+            ];
 
-        for (
-            size_t channel = 0;
-            channel < SEISMIC_CHANNEL_COUNT;
-            ++channel
-        ) {
-            channels[channel] =
-                test_noise_uv() +
-                test_event_uv(
-                    frame_number,
-                    channel
-                );
+            for (
+                size_t channel = 0;
+                channel < SEISMIC_CHANNEL_COUNT;
+                ++channel
+            ) {
+                channels[channel] =
+                    test_noise_uv() +
+                    test_event_uv(
+                        frame_number,
+                        channel
+                    );
+            }
+
+            /* Follow the wall clock, but never step back or stand still: a wake-up that comes late must not make
+             * the next frames older than the last one (the calculation rejects a non-monotonic trace). */
+            const int64_t frame_period_us = 1000000 / SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ;
+            int64_t stamp_us = tick_us - (int64_t)(TEST_FRAMES_PER_TICK - 1 - k) * frame_period_us;
+            if (last_stamp_us != 0 && stamp_us <= last_stamp_us) stamp_us = last_stamp_us + frame_period_us;
+            last_stamp_us = stamp_us;
+            seismic_buffer_push(
+                stamp_us,
+                channels
+            );
+
+            frame_number++;
         }
-
-        seismic_buffer_push(
-            esp_timer_get_time(),
-            channels
-        );
-
-        frame_number++;
 
         vTaskDelayUntil(
             &last_wake,
@@ -209,9 +271,12 @@ esp_err_t seismic_test_generator_start(void)
     ESP_ERROR_CHECK(
         seismic_buffer_configure(
             SEISMIC_SOURCE_TEST,
-            SEISMIC_TEST_GENERATOR_SAMPLE_RATE_HZ
+            SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ
         )
     );
+#if TEST_PHYSICAL_EVENT
+    test_physical_event_prepare();
+#endif
 
     s_running =
         true;
@@ -240,7 +305,7 @@ esp_err_t seismic_test_generator_start(void)
     ESP_LOGW(
         TAG,
         "TEST waveform generator enabled at %d Hz core=%d",
-        SEISMIC_TEST_GENERATOR_SAMPLE_RATE_HZ,
+        SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ,
         APP_TASK_CORE_REALTIME
     );
 

@@ -558,6 +558,34 @@ static void test_analysis_window_respects_time_and_psram_at_supported_rates(void
 }
 
 
+/* Board log 2026-11-14 16:02: 3 MiB of PSRAM was free (largest block 3145728) and a session without a scan got no window. */
+static void test_session_without_scan_is_not_starved_by_the_scan_reserve(void)
+{
+    const uint64_t budget_bytes = 3ULL * 1024ULL * 1024ULL;
+    const size_t bytes_per_frame = 40U;
+    const size_t board_largest_block = 3145728U;
+    bool limited = false;
+
+    const size_t no_scan = localization_calculate_psram_safety_reserve_bytes(false);
+    const size_t with_scan = localization_calculate_psram_safety_reserve_bytes(true);
+    assert(no_scan < with_scan);
+    assert(with_scan >= 3U * 1024U * 1024U);        /* 1 MiB file + 1.33 MiB expanded keys + workspace */
+
+    /* Without a scan the 10 s window at 500 Hz fits with room to spare ... */
+    assert(localization_calculate_analysis_window_frames(
+        500U, 10U, budget_bytes, board_largest_block, no_scan, bytes_per_frame, &limited) == 5000U);
+    assert(!limited);
+    /* ... and even a 100 KiB shortfall of the largest block does not take the one-second minimum away. */
+    assert(localization_calculate_analysis_window_frames(
+        500U, 10U, budget_bytes, board_largest_block - 128U * 1024U, no_scan, bytes_per_frame, &limited) >= 500U);
+
+    /* With a scan the same block leaves nothing, which is exactly what the old fixed reserve did to every session. */
+    assert(localization_calculate_analysis_window_frames(
+        500U, 10U, budget_bytes, board_largest_block, with_scan, bytes_per_frame, &limited) == 0U);
+    assert(limited);
+}
+
+
 static void test_fusion_mapping_groups_picks_and_excludes_energy(void)
 {
     localization_run_record_t record;
@@ -1474,6 +1502,7 @@ int main(void)
     test_redundancy_caps_unverified_confidence();
     test_event_window_covers_signal_and_moveout();
     test_analysis_window_respects_time_and_psram_at_supported_rates();
+    test_session_without_scan_is_not_starved_by_the_scan_reserve();
     test_fusion_mapping_groups_picks_and_excludes_energy();
     test_consistency_gate_rejects_physically_impossible_pick();
     test_gate_min_speed_follows_the_range_source();
