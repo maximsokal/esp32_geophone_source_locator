@@ -126,7 +126,16 @@ export type WorkflowBodySection =
   | { kind: 'stopping' }
   | { kind: 'record_error'; reason: string | null }
   | { kind: 'calculating'; progress: number | null }
-  | { kind: 'result'; success: boolean; calculationClass: WorkflowCalculationClass; reason: string | null }
+  | {
+    kind: 'result';
+    success: boolean;
+    calculationClass: WorkflowCalculationClass;
+    reason: string | null;
+    /** "G2=G3": channels that carried one signal. Empty when none. */
+    identicalChannels: string;
+    /** "G1 G4": channels that stayed silent while another moved. Empty when none. */
+    silentChannels: string;
+  }
   | { kind: 'idle' }
   | { kind: 'unknown' };
 
@@ -247,6 +256,20 @@ const STEP_TITLES: Record<string, I18nKey> = {
   RESULT: 'workflow.title.result',
 };
 
+/** The channel lists of the result screen, spelled like the TFT: G2=G3 for a pair, G1 G4 for silent channels. */
+export function channelHealthLabels(health: DeviceWorkflowStatus['channel_health']): {
+  identicalChannels: string;
+  silentChannels: string;
+} {
+  const valid = (channel: number) => Number.isInteger(channel) && channel >= 1 && channel <= 4;
+  const identicalChannels = (health?.identical_pairs ?? [])
+    .filter((pair) => valid(pair.a) && valid(pair.b))
+    .map((pair) => `G${pair.a}=G${pair.b}`)
+    .join(' ');
+  const silentChannels = (health?.flat_channels ?? []).filter(valid).map((channel) => `G${channel}`).join(' ');
+  return { identicalChannels, silentChannels };
+}
+
 export function normalizeWorkflowCalculationClass(value: string | null | undefined): WorkflowCalculationClass {
   switch (value?.trim().toLowerCase()) {
     case 'none': return 'none';
@@ -349,6 +372,7 @@ export function workflowViewModel(status: DeviceStatus | null, objectName: strin
         success: calculationClass === 'none',
         calculationClass,
         reason: workflow.reason ?? null,
+        ...channelHealthLabels(workflow.channel_health),
       });
       break;
     }

@@ -39,6 +39,7 @@
       ],
       "sources": [
         "components/localization_calculate/localization_calculate.c",
+        "components/localization_calculate/localization_channel_health.c",
         "components/localization_calculate/localization_calculate_policy.c",
         "components/localization/localization.c",
         "components/localization/localization_dimensionality_policy.c",

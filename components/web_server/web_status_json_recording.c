@@ -467,6 +467,37 @@ static bool web_status_json_add_workflow_placement(
     return true;
 }
 
+/*
+ * The channels of the last calculation, as the operator reads them on the TFT: G1..G4. "flat_channels" are the ones that
+ * stayed silent while another moved, "identical_pairs" are pairs {a, b} that carried one signal. Both empty when all is well.
+ */
+static bool web_status_json_add_channel_health(cJSON *workflow, const workflow_channel_health_t *health)
+{
+    cJSON *object = cJSON_AddObjectToObject(workflow, "channel_health");
+    cJSON *flat = object != NULL ? cJSON_AddArrayToObject(object, "flat_channels") : NULL;
+    cJSON *pairs = object != NULL ? cJSON_AddArrayToObject(object, "identical_pairs") : NULL;
+    if (object == NULL || flat == NULL || pairs == NULL) return false;
+    for (unsigned channel = 0U; channel < 4U; ++channel) {
+        if ((health->flat_channel_mask & (1U << channel)) == 0U) continue;
+        cJSON *item = cJSON_CreateNumber((double)(channel + 1U));
+        if (item == NULL || !cJSON_AddItemToArray(flat, item)) {
+            cJSON_Delete(item);
+            return false;
+        }
+    }
+    for (unsigned pair = 0U; pair < 6U; ++pair) {
+        unsigned a = 0U, b = 0U;
+        if ((health->identical_pair_mask & (1U << pair)) == 0U || !workflow_channel_health_pair(pair, &a, &b)) continue;
+        cJSON *item = cJSON_CreateObject();
+        if (item == NULL || cJSON_AddNumberToObject(item, "a", (double)(a + 1U)) == NULL ||
+            cJSON_AddNumberToObject(item, "b", (double)(b + 1U)) == NULL || !cJSON_AddItemToArray(pairs, item)) {
+            cJSON_Delete(item);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool web_status_json_add_workflow(cJSON *root)
 {
     if (root == NULL) return false;
@@ -524,6 +555,9 @@ bool web_status_json_add_workflow(cJSON *root)
         return false;
     }
 
+    if (!web_status_json_add_channel_health(workflow, &snapshot.channel_health)) {
+        return false;
+    }
     if (!web_status_json_add_workflow_calibration(workflow, &snapshot.calibration)) {
         return false;
     }

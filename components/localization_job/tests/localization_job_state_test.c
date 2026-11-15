@@ -113,6 +113,46 @@ static void test_one_job_at_a_time_with_its_deadline(void)
 }
 
 
+/*
+ * The event search over a long recording runs before the first method. It fills the start of the bar and the methods the
+ * rest, so the bar moves from the first second instead of sitting at 0 % for a minute (board log 2026-11-15 20:26).
+ */
+static void test_event_search_fills_the_start_of_the_bar_and_the_bar_never_goes_back(void)
+{
+    localization_job_state_t state;
+    localization_job_state_init(&state, LOCALIZATION_JOB_STACK_BYTES);
+    const localization_calculate_config_t c = config();
+    assert(localization_job_state_submit(&state, "OBJ_0001", "S000001", &c, 0U, 1U) == ESP_OK);
+    localization_calculate_config_t run;
+    assert(localization_job_state_start(&state, 1000000, &run));
+
+    localization_job_state_stage_progress(&state, 50U, 2000000);
+    assert(state.status.progress_percent == 20U);
+    localization_job_state_stage_progress(&state, 30U, 2100000);
+    assert(state.status.progress_percent == 20U);
+    localization_job_state_stage_progress(&state, 100U, 3000000);
+    assert(state.status.progress_percent == 40U);
+    assert(state.status.elapsed_ms == 2000U);
+
+    localization_job_state_progress(&state, "tdcas", false, 0U, 4U, 3100000);
+    assert(state.status.progress_percent == 40U);
+    localization_job_state_progress(&state, "bayesian", true, 1U, 4U, 3200000);
+    assert(state.status.progress_percent == 55U); /* 40 + a quarter of the remaining 60 */
+    localization_job_state_progress(&state, "joint_fusion", true, 4U, 4U, 3300000);
+    assert(state.status.progress_percent == 99U); /* 100 is reserved for finish() */
+
+    /* A report after the job is over changes nothing. */
+    localization_calculate_summary_t summary;
+    memset(&summary, 0, sizeof(summary));
+    summary.methods_total = 4U;
+    summary.methods_completed = 4U;
+    localization_job_state_finish(&state, ESP_OK, &summary, 1000U, 3400000);
+    const uint32_t finished = state.status.progress_percent;
+    localization_job_state_stage_progress(&state, 10U, 3500000);
+    assert(state.status.progress_percent == finished);
+}
+
+
 static void test_submit_validation(void)
 {
     localization_job_state_t state;
@@ -207,6 +247,7 @@ static void test_status_json(void)
 int main(void)
 {
     test_one_job_at_a_time_with_its_deadline();
+    test_event_search_fills_the_start_of_the_bar_and_the_bar_never_goes_back();
     test_submit_validation();
     test_job_id_wrap_skips_zero();
     test_duplicate_finish_is_immutable();

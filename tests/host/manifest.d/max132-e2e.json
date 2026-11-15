@@ -9,6 +9,7 @@
       ],
       "sources": [
         "components/localization_calculate/localization_calculate.c",
+        "components/localization_calculate/localization_channel_health.c",
         "components/localization_calculate/localization_calculate_policy.c",
         "components/seismic_recorder/seismic_recorder_geometry_policy.c",
         "components/nrf_geometry_solver/nrf_geometry_solver.c",

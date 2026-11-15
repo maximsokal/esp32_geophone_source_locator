@@ -107,6 +107,8 @@ typedef struct
     localization_job_status_t status;
     localization_calculate_config_t config;
     int64_t started_us;
+    /* Share of the bar taken by the preparation (event search); the methods fill the rest. 0 until it reports. */
+    uint32_t stage_base_percent;
 
 } localization_job_state_t;
 
@@ -134,6 +136,13 @@ void localization_job_state_progress(
     bool completed,
     size_t methods_completed,
     size_t methods_total,
+    int64_t now_us
+);
+
+/* The preparation is `percent` (0..100) done: it fills the first part of the bar, the methods the rest. */
+void localization_job_state_stage_progress(
+    localization_job_state_t *state,
+    uint32_t percent,
     int64_t now_us
 );
 

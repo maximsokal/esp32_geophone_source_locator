@@ -1384,6 +1384,53 @@ static size_t action_index(const ui_workflow_model_t *model, workflow_command_t 
     return SIZE_MAX;
 }
 
+/* A calculation that found two channels with one signal, or silent channels, says so on the result screen: that is the
+ * reason there is no source, not a vague failure (board log 2026-11-15 20:26: G2 and G3 identical, G1 and G4 flat). */
+static void test_result_screen_names_identical_and_silent_channels(void)
+{
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    ui_workflow_model_state_t state = {0};
+
+    workflow_snapshot_t failed = make_snapshot(WORKFLOW_STEP_RESULT);
+    failed.calculation_class = WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN;
+    failed.channel_health.identical_pair_mask = (uint8_t)(1U << 3);                 /* channels 1 and 2 from 0: G2=G3 */
+    failed.channel_health.flat_channel_mask = (uint8_t)((1U << 0) | (1U << 3));     /* G1 and G4 */
+    build(&failed, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RESULT_RECORD_AGAIN);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_RESULT_CHANNELS_IDENTICAL);
+    assert(strcmp(model.lines[1].args[0], "G2=G3") == 0);
+    assert(model.lines[2].key == UI_I18N_KEY_TFT_WORKFLOW_RESULT_CHANNELS_FLAT);
+    assert(strcmp(model.lines[2].args[0], "G1 G4") == 0);
+
+    /* Two identical pairs are both named. */
+    failed.channel_health.identical_pair_mask = (uint8_t)((1U << 0) | (1U << 5));
+    failed.channel_health.flat_channel_mask = 0U;
+    build(&failed, &state, &ranging, &model);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_RESULT_CHANNELS_IDENTICAL);
+    assert(strcmp(model.lines[1].args[0], "G1=G2 G3=G4") == 0);
+    assert(model.lines[2].key != UI_I18N_KEY_TFT_WORKFLOW_RESULT_CHANNELS_FLAT);
+
+    /* Healthy channels add nothing. */
+    workflow_snapshot_t healthy = make_snapshot(WORKFLOW_STEP_RESULT);
+    healthy.calculation_class = WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN;
+    build(&healthy, &state, &ranging, &model);
+    assert(model.lines[1].key != UI_I18N_KEY_TFT_WORKFLOW_RESULT_CHANNELS_IDENTICAL);
+    assert(model.lines[1].key != UI_I18N_KEY_TFT_WORKFLOW_RESULT_CHANNELS_FLAT);
+
+    /* A successful calculation with a known source still warns, right after the source line. */
+    workflow_snapshot_t found = make_snapshot(WORKFLOW_STEP_RESULT);
+    found.calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
+    found.channel_health.flat_channel_mask = (uint8_t)(1U << 2);
+    state.result_data_ready = true;
+    state.result_source_valid = true;
+    build(&found, &state, &ranging, &model);
+    assert(model.lines[0].key == UI_I18N_KEY_TFT_WORKFLOW_RESULT_SOURCE_2D);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_RESULT_CHANNELS_FLAT);
+    assert(strcmp(model.lines[1].args[0], "G3") == 0);
+}
+
+
 /* The recording sample rate is chosen on the record-ready step: the line says rate and limit, OK on "Change rate" asks
  * the screen to move to the next preset, and "Start recording" stays the default action. */
 static void test_record_ready_offers_the_sample_rate_choice(void)
@@ -1450,6 +1497,7 @@ int main(void)
 #error "unknown MAX449_CASE for ui_workflow_model_test"
 #endif
 #else
+    test_result_screen_names_identical_and_silent_channels();
     test_record_ready_offers_the_sample_rate_choice();
     test_ranging_page_says_what_the_wifi_radio_is_doing();
     test_ranging_manual_entry();

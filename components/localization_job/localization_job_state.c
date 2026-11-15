@@ -114,6 +114,7 @@ bool localization_job_state_start(
     }
     state->status.state = LOCALIZATION_JOB_RUNNING;
     state->started_us = now_us;
+    state->stage_base_percent = 0U;
     *config_out = state->config;
     config_out->deadline_us = now_us + (int64_t)state->status.budget_ms * 1000;
     return true;
@@ -175,9 +176,35 @@ void localization_job_state_progress(
     state->status.summary.methods_total = methods_total;
     state->status.summary.methods_completed = methods_completed;
     const uint32_t calculated_percent = progress_percent(methods_completed, methods_total);
-    const uint32_t running_percent = calculated_percent >= 100U ? 99U : calculated_percent;
+    const uint32_t base = state->stage_base_percent;
+    const uint32_t scaled_percent = base + calculated_percent * (100U - base) / 100U;
+    const uint32_t running_percent = scaled_percent >= 100U ? 99U : scaled_percent;
     if (running_percent > state->status.progress_percent) {
         state->status.progress_percent = running_percent;
+    }
+    state->status.elapsed_ms = elapsed_ms(state->started_us, now_us);
+}
+
+
+/* The preparation owns the first STAGE_SHARE_PERCENT of the bar. */
+#define LOCALIZATION_JOB_STAGE_SHARE_PERCENT 40U
+
+void localization_job_state_stage_progress(
+    localization_job_state_t *state,
+    uint32_t percent,
+    int64_t now_us
+)
+{
+    if (state->status.state != LOCALIZATION_JOB_RUNNING) {
+        return;
+    }
+    if (percent > 100U) {
+        percent = 100U;
+    }
+    const uint32_t shown = percent * LOCALIZATION_JOB_STAGE_SHARE_PERCENT / 100U;
+    state->stage_base_percent = LOCALIZATION_JOB_STAGE_SHARE_PERCENT;
+    if (shown > state->status.progress_percent) {
+        state->status.progress_percent = shown;
     }
     state->status.elapsed_ms = elapsed_ms(state->started_us, now_us);
 }

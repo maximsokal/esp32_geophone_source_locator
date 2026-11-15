@@ -971,6 +971,33 @@ static void test_four_pods_clean_event_solves_near_truth(void)
 }
 
 
+/* Two channels carrying one signal are named in the summary, and the run still completes (board log 2026-11-15 20:26). */
+static void test_identical_channels_are_reported_in_the_summary(void)
+{
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    /* The fixture is in unit steps; scale to volts so the signals are well above the converter noise. */
+    for (size_t i = 0U; i < g_fixture_frame_count; ++i) {
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) g_fixture_frames[i].channel_uv[ch] *= 1.0e6f;
+    }
+    localization_calculate_config_t config = default_test_config();
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run("OBJ01", "S000003", &config, 44000ULL, &summary) == ESP_OK);
+    assert(summary.channel_health.identical_pair_mask == 0U && summary.channel_health.flat_channel_mask == 0U);
+
+    reset_fakes();
+    build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+    for (size_t i = 0U; i < g_fixture_frame_count; ++i) {
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT; ++ch) g_fixture_frames[i].channel_uv[ch] *= 1.0e6f;
+        g_fixture_frames[i].channel_uv[2] = g_fixture_frames[i].channel_uv[1];
+    }
+    assert(localization_calculate_run("OBJ01", "S000003", &config, 44000ULL, &summary) == ESP_OK);
+    assert(summary.channel_health.identical_pair_mask == (1U << 3)); /* channels 1 and 2, counted from 0 */
+    assert(summary.channel_health.flat_channel_mask == 0U);
+    puts("  identical channels 1 and 2 are named in the summary -- OK");
+}
+
+
 static void test_gap_and_nonmonotonic_timestamps_reject_before_picking(void)
 {
     static const struct {
@@ -1319,6 +1346,21 @@ static void prepare_recording_with_event(uint32_t duration_s, double event_time_
     }
 }
 
+/* The event search reports how far it is, so a long recording does not show 0 % for a minute. */
+static unsigned g_stage_calls;
+static uint32_t g_stage_last_percent;
+static bool g_stage_monotonic = true;
+
+static void record_stage_progress(uint32_t percent, void *context)
+{
+    (void)context;
+    if (percent < g_stage_last_percent || percent > 100U) {
+        g_stage_monotonic = false;
+    }
+    g_stage_last_percent = percent;
+    ++g_stage_calls;
+}
+
 static void run_late_event_case(uint32_t duration_s, double event_time_s, bool constrain_psram)
 {
     const uint32_t sample_rate_hz = 500U;
@@ -1340,12 +1382,18 @@ static void run_late_event_case(uint32_t duration_s, double event_time_s, bool c
     config.pick_config.refine_lookback_samples = 5U;
     config.pick_config.refine_lookahead_samples = 5U;
     config.pick_config.snr_signal_window_samples = 20U;
+    config.stage_progress = record_stage_progress;
+    g_stage_calls = 0U;
+    g_stage_last_percent = 0U;
+    g_stage_monotonic = true;
 
     localization_calculate_summary_t summary;
     assert(localization_calculate_run(
         "OBJ01", "S000022", &config, 52000ULL, &summary
     ) == ESP_OK);
     assert(g_fixture_summary.samples_written == recording_frames);
+    /* A recording longer than one window is searched in chunks: the search reports on the way and ends at 100. */
+    assert(g_stage_calls > 1U && g_stage_monotonic && g_stage_last_percent == 100U);
     if (constrain_psram) {
         assert(g_range_read_max_frames < recording_frames);
         assert(localization_test_psram_model_allocated_bytes() == 0U);
@@ -2142,6 +2190,7 @@ int main(void)
     test_insufficient_free_psram_records_internal_failure();
     test_three_pods_planar_no_fabricated_z();
     test_four_pods_clean_event_solves_near_truth();
+    test_identical_channels_are_reported_in_the_summary();
     test_gap_and_nonmonotonic_timestamps_reject_before_picking();
     test_duplicate_sensor_position_persists_validation_reason();
     test_saturated_and_ambiguous_picks_are_excluded();

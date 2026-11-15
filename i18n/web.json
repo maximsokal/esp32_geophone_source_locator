@@ -173,6 +173,8 @@
     "workflow.result.failure.record_again": { "en": "The waveform could not be localized. Record the event again.", "uk": "Не вдалося локалізувати подію за хвильовою формою. Запишіть подію ще раз." },
     "workflow.result.failure.move_sensors": { "en": "Sensor geometry needs adjustment. Move the sensors and retry.", "uk": "Геометрію датчиків потрібно змінити. Перемістіть датчики та повторіть спробу." },
     "workflow.result.failure.internal": { "en": "The source calculation failed. Check the result details and retry.", "uk": "Не вдалося визначити джерело. Перевірте подробиці результату та повторіть спробу." },
+    "workflow.result.channels_identical": { "en": "{channels}: the same signal on both channels. Two inputs are joined, or one geophone feeds two inputs. Check the wiring before recording again.", "uk": "{channels}: однаковий сигнал на обох каналах. Два входи з'єднані, або один геофон підключений до двох входів. Перевірте проводку перед новим записом." },
+    "workflow.result.channels_silent": { "en": "{channels}: no signal while the other channels move. Check the geophone cable and the amplifier.", "uk": "{channels}: немає сигналу, коли інші канали реагують. Перевірте кабель геофона та підсилювач." },
     "workflow.result.reason": { "en": "Details", "uk": "Подробиці" },
     "workflow.result.loading": { "en": "Loading the result waveform…", "uk": "Завантаження хвильової форми результату…" },
     "workflow.result.load_failed": { "en": "The result details could not be loaded.", "uk": "Не вдалося завантажити подробиці результату." },

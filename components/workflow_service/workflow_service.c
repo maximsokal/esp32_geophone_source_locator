@@ -223,6 +223,8 @@ static bool s_calc_velocity_range_set;
 static float s_calc_velocity_range_min_mps;
 static float s_calc_velocity_range_max_mps;
 static uint32_t s_calculation_job_id;
+/* What the last finished calculation found about the channels; cleared when the next one starts. */
+static workflow_channel_health_t s_channel_health;
 static uint32_t s_orphaned_job_id;
 static workflow_core_t s_core;
 static workflow_service_placement_ready_fn s_placement_ready_predicate;
@@ -1816,6 +1818,7 @@ static void workflow_service_calculation_start_locked(void)
         return;
     }
     s_calculation_job_id = job_id;
+    memset(&s_channel_health, 0, sizeof(s_channel_health));
     if (!s_poll_first_calculation_seen) {
         s_poll_first_calculation_seen = true;
         atomic_store_explicit(&s_poll_hwm_after_first_calculation, true, memory_order_release);
@@ -1848,6 +1851,8 @@ static void workflow_service_calculation_poll_locked(void)
     }
     if (status->state != LOCALIZATION_JOB_SUCCEEDED && status->state != LOCALIZATION_JOB_FAILED) return;
 
+    s_channel_health.flat_channel_mask = status->summary.channel_health.flat_channel_mask;
+    s_channel_health.identical_pair_mask = status->summary.channel_health.identical_pair_mask;
     const localization_recommendation_t *recommendation = &status->summary.recommendation;
     const bool ok = status->state == LOCALIZATION_JOB_SUCCEEDED && recommendation->successful;
     workflow_calculation_class_t calculation_class = WORKFLOW_CALCULATION_CLASS_NONE;
@@ -2120,6 +2125,7 @@ static void workflow_service_snapshot_locked(workflow_snapshot_t *snapshot)
     snapshot->last_material_save = s_last_material_save;
     snapshot->calibration = s_calibration.status;
     snapshot->placement = s_placement.status;
+    snapshot->channel_health = s_channel_health;
 }
 
 /*

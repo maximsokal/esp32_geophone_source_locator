@@ -476,6 +476,16 @@ function WorkflowSection({ section, status, onRangingSaved, onRefresh }: {
     case 'result': return (
       <div>
         <p>{t(section.success ? 'workflow.result.success' : resultFailureKey(section.calculationClass))}</p>
+        {section.identicalChannels && (
+          <p role="alert" data-testid="channels-identical">
+            {t('workflow.result.channels_identical', { channels: section.identicalChannels })}
+          </p>
+        )}
+        {section.silentChannels && (
+          <p role="alert" data-testid="channels-silent">
+            {t('workflow.result.channels_silent', { channels: section.silentChannels })}
+          </p>
+        )}
         {section.reason?.trim() && <p>{t('workflow.result.reason')}: {section.reason}</p>}
         {section.success && (
           <WorkflowResultViewer

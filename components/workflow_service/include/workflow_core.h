@@ -259,6 +259,26 @@ typedef struct {
     esp_err_t result;
 } workflow_last_material_save_t;
 
+/*
+ * Were the channels independent sensors in the last calculation's analysis window? Channels are counted from 0. A
+ * flat channel stayed silent while another moved; an identical pair carried one signal (same numbering as
+ * localization_channel_health: 0:(0,1) 1:(0,2) 2:(0,3) 3:(1,2) 4:(1,3) 5:(2,3)).
+ */
+typedef struct {
+    uint8_t flat_channel_mask;
+    uint8_t identical_pair_mask;
+} workflow_channel_health_t;
+
+static inline bool workflow_channel_health_pair(unsigned pair, unsigned *channel_a, unsigned *channel_b)
+{
+    static const unsigned a[6] = {0U, 0U, 0U, 1U, 1U, 2U};
+    static const unsigned b[6] = {1U, 2U, 3U, 2U, 3U, 3U};
+    if (pair >= 6U) return false;
+    if (channel_a != NULL) *channel_a = a[pair];
+    if (channel_b != NULL) *channel_b = b[pair];
+    return true;
+}
+
 typedef struct {
     workflow_step_t step;
     uint32_t generation;
@@ -288,6 +308,7 @@ typedef struct {
     workflow_command_t recommended_action;
     workflow_calibration_snapshot_t calibration;
     workflow_placement_snapshot_t placement;
+    workflow_channel_health_t channel_health;
 } workflow_snapshot_t;
 
 typedef struct {

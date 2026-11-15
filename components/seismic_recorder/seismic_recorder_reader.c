@@ -227,6 +227,91 @@ static esp_err_t seismic_recorder_reader_read_at(
 }
 
 
+/*
+ * Read-ahead for sequential reads of samples.bin. A V2 block is at most 256 frames, and reading it takes two reads (its
+ * header, then its payload); every read is a storage operation that stops the TFT and takes 30-170 ms on the board. A
+ * 125000-frame recording at 5 kHz therefore needed about 1000 operations for the event search alone and the calculation
+ * looked frozen at 0 % (board log 2026-11-15 20:26). One fetch of this size serves the next ~16 blocks.
+ */
+#define SEISMIC_RECORDER_READAHEAD_BYTES  (32U * 1024U)
+
+
+typedef struct
+{
+    seismic_recorder_waveform_read_at_fn raw_read;
+    void *raw_context;
+    uint64_t file_size;
+    uint8_t *buffer;
+    size_t capacity;
+    uint64_t base;
+    size_t length;
+    unsigned fetches;
+
+} seismic_recorder_readahead_t;
+
+
+static void seismic_recorder_readahead_init(
+    seismic_recorder_readahead_t *readahead,
+    seismic_recorder_waveform_read_at_fn raw_read,
+    void *raw_context,
+    uint64_t file_size
+)
+{
+    memset(readahead, 0, sizeof(*readahead));
+    readahead->raw_read = raw_read;
+    readahead->raw_context = raw_context;
+    readahead->file_size = file_size;
+    /* Without the buffer every read goes straight to the file, as before. */
+    readahead->buffer = heap_caps_malloc(SEISMIC_RECORDER_READAHEAD_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (readahead->buffer != NULL) {
+        readahead->capacity = SEISMIC_RECORDER_READAHEAD_BYTES;
+    }
+}
+
+
+static void seismic_recorder_readahead_deinit(seismic_recorder_readahead_t *readahead)
+{
+    heap_caps_free(readahead->buffer);
+    readahead->buffer = NULL;
+    readahead->capacity = 0U;
+    readahead->length = 0U;
+}
+
+
+static esp_err_t seismic_recorder_readahead_read_at(
+    void *context,
+    uint64_t offset_bytes,
+    void *buffer,
+    size_t size_bytes
+)
+{
+    seismic_recorder_readahead_t *readahead = context;
+    if (
+        readahead->buffer == NULL || size_bytes > readahead->capacity ||
+        offset_bytes > readahead->file_size || (uint64_t)size_bytes > readahead->file_size - offset_bytes
+    ) {
+        return readahead->raw_read(readahead->raw_context, offset_bytes, buffer, size_bytes);
+    }
+    if (
+        readahead->length == 0U || offset_bytes < readahead->base ||
+        offset_bytes + (uint64_t)size_bytes > readahead->base + (uint64_t)readahead->length
+    ) {
+        const uint64_t available = readahead->file_size - offset_bytes;
+        const size_t fetch = available < (uint64_t)readahead->capacity ? (size_t)available : readahead->capacity;
+        readahead->length = 0U;
+        const esp_err_t err = readahead->raw_read(readahead->raw_context, offset_bytes, readahead->buffer, fetch);
+        if (err != ESP_OK) {
+            return err;
+        }
+        readahead->base = offset_bytes;
+        readahead->length = fetch;
+        ++readahead->fetches;
+    }
+    memcpy(buffer, readahead->buffer + (size_t)(offset_bytes - readahead->base), size_bytes);
+    return ESP_OK;
+}
+
+
 static esp_err_t seismic_recorder_cache_reader_read_at(
     void *context,
     uint64_t offset_bytes,
@@ -1131,10 +1216,12 @@ esp_err_t seismic_recorder_read_session_range_ex(
         .path = samples_path,
     };
     seismic_recorder_samples_reader_t samples_reader;
+    seismic_recorder_readahead_t readahead;
+    seismic_recorder_readahead_init(&readahead, seismic_recorder_reader_read_at, &raw_reader, file_size);
     if (err == ESP_OK) {
         err = seismic_recorder_samples_reader_open(
-            seismic_recorder_reader_read_at,
-            &raw_reader,
+            seismic_recorder_readahead_read_at,
+            &readahead,
             file_size,
             &summary,
             &samples_reader
@@ -1142,8 +1229,8 @@ esp_err_t seismic_recorder_read_session_range_ex(
     }
     if (err == ESP_OK) {
         err = seismic_recorder_samples_reader_skip(
-            seismic_recorder_reader_read_at,
-            &raw_reader,
+            seismic_recorder_readahead_read_at,
+            &readahead,
             &samples_reader,
             start_index
         );
@@ -1163,8 +1250,8 @@ esp_err_t seismic_recorder_read_session_range_ex(
         uint64_t first_sample_index = 0U;
         bool block_gap_before = false;
         err = seismic_recorder_samples_reader_next_ex(
-            seismic_recorder_reader_read_at,
-            &raw_reader,
+            seismic_recorder_readahead_read_at,
+            &readahead,
             &samples_reader,
             frames + frames_read,
             frames_to_read - frames_read,
@@ -1203,6 +1290,7 @@ esp_err_t seismic_recorder_read_session_range_ex(
     }
 #endif
 
+    seismic_recorder_readahead_deinit(&readahead);
     free(samples_path);
     if (err == ESP_OK) {
         *frame_count_out = frames_read;
@@ -1305,9 +1393,11 @@ esp_err_t seismic_recorder_scan_session(
     esp_err_t err = seismic_recorder_scan_admit(seismic_recorder_scan_prepare, &prepare);
     seismic_recorder_bounded_reader_t raw_reader = { .path = path };
     seismic_recorder_samples_reader_t reader = {0};
+    seismic_recorder_readahead_t readahead;
+    seismic_recorder_readahead_init(&readahead, seismic_recorder_scan_read_at, &raw_reader, file_size);
     if (err == ESP_OK) {
         err = seismic_recorder_samples_reader_open(
-            seismic_recorder_scan_read_at, &raw_reader, file_size, &summary, &reader
+            seismic_recorder_readahead_read_at, &readahead, file_size, &summary, &reader
         );
     }
 
@@ -1321,22 +1411,26 @@ esp_err_t seismic_recorder_scan_session(
         bool gap_before = false;
         const size_t chunk_capacity = capacity < SEISMIC_RECORDER_READ_STAGING_FRAMES
             ? capacity : SEISMIC_RECORDER_READ_STAGING_FRAMES;
+        const unsigned fetches_before = readahead.fetches;
+        (void)fetches_before; /* only the board build yields on a real SD access */
         err = seismic_recorder_samples_reader_next(
-            seismic_recorder_scan_read_at, &raw_reader, &reader, buffer, chunk_capacity,
+            seismic_recorder_readahead_read_at, &readahead, &reader, buffer, chunk_capacity,
             &count, &first_source_index, &gap_before
         );
         if (err == ESP_OK && count == 0U) err = ESP_ERR_INVALID_RESPONSE;
         if (err == ESP_OK) err = callback(buffer, count, first_source_index, gap_before, context);
 #ifdef ESP_PLATFORM
-        if (err == ESP_OK) vTaskDelay(1);
+        /* Let other tasks at the card only after a real SD access; a chunk served from the read-ahead touched nothing. */
+        if (err == ESP_OK && readahead.fetches != fetches_before) vTaskDelay(1);
 #endif
     }
     if (err == ESP_OK) {
-        err = seismic_recorder_samples_reader_finish(seismic_recorder_scan_read_at, &raw_reader, &reader);
+        err = seismic_recorder_samples_reader_finish(seismic_recorder_readahead_read_at, &readahead, &reader);
     }
 #ifdef ESP_PLATFORM
     if (priority_guard.changed) seismic_recorder_reader_priority_leave(priority_guard);
 #endif
+    seismic_recorder_readahead_deinit(&readahead);
     free(path);
     return err;
 }

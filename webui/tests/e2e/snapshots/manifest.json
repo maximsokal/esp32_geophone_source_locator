@@ -18,7 +18,7 @@
     "deviceMemory": 8
   },
   "selection": {
-    "critical": 76,
+    "critical": 78,
     "extended": 20
   },
   "approval": {
@@ -406,6 +406,14 @@
       "uk-workflow-ranging-result-pair-failed-393x852.png": {
         "sha256": "fc34f3e8bd2f79e7ef8c9ac4365cebe6c775760797c2234ecb39138cdf1076fd",
         "candidateId": "222cd7edafafb2837409a226140a71fb10e08a92c8d0b4e986232f353ede27fe"
+      },
+      "en-workflow-result-channel-health-393x852.png": {
+        "sha256": "020fb1fd0e9e3f0fc7e058a8787d2bbfd5492ea7226a476e3ba5d8e72c316089",
+        "candidateId": "7920692adac88d6876bafa3e0c89c056bb36c2d3c61643cd1d82161e5431b6b2"
+      },
+      "uk-workflow-result-channel-health-393x852.png": {
+        "sha256": "935ff9d9dd0fd827d963ddff357cce325bf024ff0bfbaefb113ea26e75a11e95",
+        "candidateId": "7920692adac88d6876bafa3e0c89c056bb36c2d3c61643cd1d82161e5431b6b2"
       }
     }
   }

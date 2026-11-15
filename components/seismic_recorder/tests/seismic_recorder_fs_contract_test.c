@@ -888,7 +888,7 @@ static esp_err_t enable_protection_after_scan_callback(
 {
     scan_admission_callback_context_t *context = opaque;
     assert(context != NULL && frames != NULL && count > 0U);
-    assert(first_source_index == 0U && !gap_before);
+    assert(context->calls > 0U || (first_source_index == 0U && !gap_before));
     ++context->calls;
     if (context->calls == 1U) {
         storage_bulk_protected = true; /* Simulates recording admission between reads. */
@@ -980,12 +980,14 @@ static void test_scan_session_v2_streams_bounded_chunks_and_propagates_errors(vo
     storage_bulk_run_chunk_calls = 0U;
     storage_bulk_rejected_chunk_calls = 0U;
     scan_admission_callback_context_t admission_context = {0};
+    /* This small session sits entirely in the read-ahead after the first fetch: nothing touches the card again, so the
+     * recording admission that arrives between the chunks has nothing to refuse (the next test uses a larger file). */
     assert(seismic_recorder_scan_session(
         "OBJ_0001", session, buffer, 17U,
         enable_protection_after_scan_callback, &admission_context
-    ) == ESP_ERR_INVALID_STATE);
-    assert(admission_context.calls == 1U);
-    assert(storage_bulk_rejected_chunk_calls > 0U);
+    ) == ESP_OK);
+    assert(admission_context.calls > 1U);
+    assert(storage_bulk_rejected_chunk_calls == 0U);
     storage_bulk_admission_exit_protected();
 
     storage_begin_calls = 0U;
@@ -1027,6 +1029,67 @@ static void test_scan_session_v2_streams_bounded_chunks_and_propagates_errors(vo
     fake_summary_override_active = false;
     fake_summary_error = ESP_FAIL;
     remove_layout();
+}
+
+
+/*
+ * Every read of samples.bin is a storage operation (the TFT stops, 30-170 ms on the board). A V2 block is at most 256
+ * frames and takes two reads, so a 125000-frame recording at 5 kHz needed ~1000 operations and the calculation looked
+ * frozen (board log 2026-11-15 20:26). Sequential reads are served from a read-ahead: the operation count follows the
+ * file size, not the block count.
+ */
+static seismic_frame_t readahead_written[6000];
+static uint64_t readahead_indices[6000];
+
+static void test_scan_session_reads_ahead_so_storage_operations_follow_the_file_size(void)
+{
+    remove_layout();
+    make_layout();
+
+    char session[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *samples = NULL;
+    uint16_t version = 0U;
+    assert(test_fs_create_ad7606_session(session, &samples, &version) == ESP_OK);
+    const size_t total = 6000U;
+    for (size_t i = 0U; i < total; ++i) {
+        readahead_indices[i] = (uint64_t)i;
+        readahead_written[i].timestamp_us = (int64_t)i * 2000LL;
+        readahead_written[i].channel_uv[0] = (float)(int)(i % 100U);
+    }
+    size_t frames_written = 0U;
+    assert(test_fs_write_frames_with_source_indices(
+        samples, readahead_written, readahead_indices, total, &frames_written
+    ) == ESP_OK);
+    assert(frames_written == total);
+    assert(seismic_recorder_fs_close(samples) == ESP_OK);
+    set_fake_range_summary(session, version, total);
+
+    static seismic_frame_t buffer[1024];
+    scan_session_test_context_t context = {
+        .expected_frames = readahead_written,
+        .expected_indices = readahead_indices,
+        .expected_total = total,
+        .capacity = 1024U,
+    };
+    const size_t begins_before = storage_begin_calls;
+    assert(seismic_recorder_scan_session(
+        "OBJ_0001", session, buffer, context.capacity, check_scan_session_chunk, &context
+    ) == ESP_OK);
+    assert(context.seen == total);
+    /* 6000 frames are 24 blocks: 48 reads without a read-ahead. The file is ~50 KB, so a few 32 KB fetches serve it. */
+    const size_t operations = storage_begin_calls - begins_before;
+    assert(operations <= 8U);
+
+    /* A recording admitted between the chunks stops the scan at the first read that needs the card again. */
+    storage_bulk_run_chunk_calls = 0U;
+    storage_bulk_rejected_chunk_calls = 0U;
+    scan_admission_callback_context_t admission_context = {0};
+    assert(seismic_recorder_scan_session(
+        "OBJ_0001", session, buffer, context.capacity,
+        enable_protection_after_scan_callback, &admission_context
+    ) == ESP_ERR_INVALID_STATE);
+    assert(storage_bulk_rejected_chunk_calls > 0U);
+    storage_bulk_admission_exit_protected();
 }
 
 
@@ -3553,6 +3616,7 @@ int main(void)
     test_session_range_v1_preserves_timestamps_and_bounds();
     test_session_range_v2_seeks_blocks_and_preserves_gaps();
     test_scan_session_v2_streams_bounded_chunks_and_propagates_errors();
+    test_scan_session_reads_ahead_so_storage_operations_follow_the_file_size();
     test_scan_session_v1_preserves_timestamps_and_unknown_continuity();
     test_scan_session_v2_reports_corruption_after_partial_callbacks();
     return 0;

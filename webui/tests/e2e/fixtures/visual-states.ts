@@ -24,7 +24,7 @@ export interface VisualState {
   width: number;
   height: number;
   step?: WorkflowStep;
-  variant?: 'loading' | 'empty' | 'warning' | 'error' | 'disconnected' | 'confirmation' | 'long' | 'wifi-pending' | 'wifi-off' | 'wifi-back' | 'scan-refinement' | 'pair-failed' | 'partial-usable';
+  variant?: 'loading' | 'empty' | 'warning' | 'error' | 'disconnected' | 'confirmation' | 'long' | 'wifi-pending' | 'wifi-off' | 'wifi-back' | 'scan-refinement' | 'pair-failed' | 'partial-usable' | 'channel-health';
 }
 
 export const visualStates: VisualState[] = [];
@@ -49,6 +49,8 @@ for (const locale of ['en', 'uk'] as const) {
   add('workflow-ranging-result-wifi-back', 'workflow', 'wifi-back', 393, 852, 'critical', 'RANGING_RESULT');
   /* A cycle where five pairs are valid and one failed: the numbers of both directions and the cause are shown (bench 2026-11-03). */
   add('workflow-ranging-result-pair-failed', 'workflow', 'pair-failed', 393, 852, 'critical', 'RANGING_RESULT');
+  /* A failed calculation names the channels that were not independent sensors (board log 2026-11-15 20:26). */
+  add('workflow-result-channel-health', 'workflow', 'channel-health', 393, 852, 'critical', 'RESULT');
   /* The scan information screen after the devices were scanned (the WebGL canvas is hidden: canvas pixels are separate coverage). */
   add('scan-distance-refinement', 'objects', 'scan-refinement', 393, 852, 'critical');
   add('objects-long', 'objects', 'long');
@@ -117,6 +119,12 @@ export async function prepareVisualState(page: Page, api: DeviceApi, state: Visu
     return;
   }
   if (state.variant === 'loading') api.holdStatus();
+  if (state.variant === 'channel-health') {
+    Object.assign(api.status.workflow!, {
+      calculation_class: 'record_again',
+      channel_health: { flat_channels: [1, 4], identical_pairs: [{ a: 2, b: 3 }] },
+    });
+  }
   if (state.variant === 'error') api.statusFailure = 'http';
   if (state.variant === 'empty') {
     Object.assign(api.status.object_store!, { objects: [], active_id: null });

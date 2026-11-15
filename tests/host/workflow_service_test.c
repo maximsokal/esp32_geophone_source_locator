@@ -1740,6 +1740,32 @@ static void assert_workflow_json_matches_snapshot(const workflow_snapshot_t *exp
         serialized_actions |= WORKFLOW_ACTION(command_value);
     }
     assert(serialized_actions == expected->allowed_actions);
+    /* The channels of the last calculation, numbered G1..G4 like the TFT lines. */
+    const cJSON *health = cJSON_GetObjectItemCaseSensitive(workflow, "channel_health");
+    assert(cJSON_IsObject(health));
+    const cJSON *flat_channels = cJSON_GetObjectItemCaseSensitive(health, "flat_channels");
+    const cJSON *identical_pairs = cJSON_GetObjectItemCaseSensitive(health, "identical_pairs");
+    assert(cJSON_IsArray(flat_channels) && cJSON_IsArray(identical_pairs));
+    int expected_flat = 0;
+    for (unsigned channel = 0U; channel < 4U; ++channel) {
+        if ((expected->channel_health.flat_channel_mask & (1U << channel)) == 0U) continue;
+        const cJSON *item = cJSON_GetArrayItem(flat_channels, expected_flat++);
+        assert(cJSON_IsNumber(item) && item->valuedouble == (double)(channel + 1U));
+    }
+    assert(cJSON_GetArraySize(flat_channels) == expected_flat);
+    int expected_pairs = 0;
+    for (unsigned pair = 0U; pair < 6U; ++pair) {
+        unsigned a = 0U, b = 0U;
+        if ((expected->channel_health.identical_pair_mask & (1U << pair)) == 0U) continue;
+        assert(workflow_channel_health_pair(pair, &a, &b));
+        const cJSON *item = cJSON_GetArrayItem(identical_pairs, expected_pairs++);
+        assert(cJSON_IsObject(item));
+        const cJSON *first = cJSON_GetObjectItemCaseSensitive(item, "a");
+        const cJSON *second = cJSON_GetObjectItemCaseSensitive(item, "b");
+        assert(cJSON_IsNumber(first) && first->valuedouble == (double)(a + 1U));
+        assert(cJSON_IsNumber(second) && second->valuedouble == (double)(b + 1U));
+    }
+    assert(cJSON_GetArraySize(identical_pairs) == expected_pairs);
     cJSON_Delete(root);
 }
 
@@ -3057,6 +3083,38 @@ static void test_calculation_success_progress_failure_classes_and_submit_errors(
     workflow_service_shutdown();
 }
 
+/* What the calculation found about the channels reaches the snapshot the screens read, and a new calculation clears it. */
+static void test_channel_health_of_the_calculation_reaches_the_snapshot(void)
+{
+    enter_stopped();
+    (void)begin_calculation();
+    workflow_test_job_status.state = LOCALIZATION_JOB_RUNNING;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(try_snapshot().channel_health.flat_channel_mask == 0U);
+
+    set_job_result(LOCALIZATION_RECOMMENDATION_RECORD_AGAIN, false);
+    workflow_test_job_status.summary.channel_health.flat_channel_mask = (1U << 0) | (1U << 3);
+    workflow_test_job_status.summary.channel_health.identical_pair_mask = (1U << 3);
+    assert(workflow_service_poll() == ESP_OK);
+    workflow_snapshot_t snapshot = try_snapshot();
+    assert(snapshot.step == WORKFLOW_STEP_RESULT);
+    assert(snapshot.channel_health.flat_channel_mask == ((1U << 0) | (1U << 3)));
+    assert(snapshot.channel_health.identical_pair_mask == (1U << 3));
+    assert_workflow_json_matches_snapshot(&snapshot);   /* the web page reads the same fields: G1 G4 flat, G2=G3 */
+    unsigned a = 9U, b = 9U;
+    assert(workflow_channel_health_pair(3U, &a, &b) && a == 1U && b == 2U);
+    workflow_service_shutdown();
+
+    /* The next calculation starts clean until its own job finishes. */
+    enter_stopped();
+    (void)begin_calculation();
+    workflow_test_job_status.state = LOCALIZATION_JOB_RUNNING;
+    assert(workflow_service_poll() == ESP_OK);
+    snapshot = try_snapshot();
+    assert(snapshot.channel_health.flat_channel_mask == 0U && snapshot.channel_health.identical_pair_mask == 0U);
+    workflow_service_shutdown();
+}
+
 /* The count of assigned remotes that have not reported "level" (verticality ACCEPTED) reaches the snapshot. */
 static void test_snapshot_counts_remotes_that_are_not_leveled(void)
 {
@@ -3445,6 +3503,7 @@ int main(void)
     test_the_sd_card_is_left_alone_from_calibration_to_the_ranging_result();
     test_calc_settings_readiness_gates_calculate_and_save_invalidates_cache();
     test_calculation_success_progress_failure_classes_and_submit_errors();
+    test_channel_health_of_the_calculation_reaches_the_snapshot();
     test_calculation_without_enough_geophones_reports_a_clear_reason();
     test_snapshot_counts_remotes_that_are_not_leveled();
     test_invalid_settings_at_submit_and_orphaned_job_completion();

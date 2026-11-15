@@ -206,11 +206,19 @@ export interface DeviceWorkflowStatus {
   has_scan?: boolean;
   calc_settings_ready?: boolean;
   calculation_class?: string | null;
+  /** The channels of the last calculation, numbered 1..4 like G1..G4 on the TFT. Absent on older firmware. */
+  channel_health?: WorkflowChannelHealth;
   gps_status?: string;
   layout_result?: boolean | null;
   layout_reason?: string | null;
   scan_choice?: string;
   scan_upload_status?: string;
+}
+
+/** Channels that stayed silent while another moved, and pairs that carried one signal. Both empty when all is well. */
+export interface WorkflowChannelHealth {
+  flat_channels: number[];
+  identical_pairs: { a: number; b: number }[];
 }
 
 export interface RangingPairStatus {

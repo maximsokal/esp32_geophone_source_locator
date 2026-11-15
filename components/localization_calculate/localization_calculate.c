@@ -623,6 +623,8 @@ typedef struct
     uint64_t window_first_index;
     uint64_t next_index;
     uint64_t total_frames;
+    uint64_t expected_frames;     /* the recording's length, for the progress report */
+    uint32_t reported_percent;
     int64_t epoch_us;
     int64_t last_timestamp_us;
     seismic_frame_t last_frame;   /* the last frame of the previous chunk: the left edge of a hole to repair */
@@ -829,6 +831,14 @@ static esp_err_t localization_event_search_chunk(
     search->next_index = first_source_index + count;
     search->last_timestamp_us = frames[count - 1U].timestamp_us;
     search->last_frame = frames[count - 1U];
+    if (search->config != NULL && search->config->stage_progress != NULL && search->expected_frames > 0U) {
+        const uint64_t scanned = search->total_frames < search->expected_frames ? search->total_frames : search->expected_frames;
+        const uint32_t percent = (uint32_t)(scanned * 100ULL / search->expected_frames);
+        if (percent > search->reported_percent) {
+            search->reported_percent = percent;
+            search->config->stage_progress(percent, search->config->stage_progress_context);
+        }
+    }
     return ESP_OK;
 }
 
@@ -979,6 +989,7 @@ esp_err_t localization_calculate_run(
         search.geometry = &geometry;
         search.sample_rate_hz = session_summary.sample_rate_hz;
         search.window_frames = frame_capacity;
+        search.expected_frames = session_summary.samples_written;
         search.hop_frames = frame_capacity / 2U > 0U ? frame_capacity / 2U : 1U;
         search.window = heap_caps_malloc(sizeof(*search.window) * frame_capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         const size_t chunk_capacity = frame_capacity < 1024U ? frame_capacity : 1024U;
@@ -1205,6 +1216,16 @@ esp_err_t localization_calculate_run(
     source_sample_indices = NULL;
     heap_caps_free(gap_before);
     gap_before = NULL;
+
+    /* Two channels carrying one signal, or a sensor that does not answer, make a source impossible to find and look like
+     * "no source": say so (board log 2026-11-15 20:26). */
+    localization_channel_health_analyze(
+        (const float *const *)channel_samples, frame_count, &summary_out->channel_health);
+    if (summary_out->channel_health.flat_channel_mask != 0U || summary_out->channel_health.identical_pair_mask != 0U) {
+        ESP_LOGW(TAG, "LOC_CHANNEL_HEALTH flat_mask=0x%02x identical_pair_mask=0x%02x (channels are numbered from 0)",
+                 (unsigned)summary_out->channel_health.flat_channel_mask,
+                 (unsigned)summary_out->channel_health.identical_pair_mask);
+    }
 
     /* --- MAX-209: cross-channel physical consistency + xcorr refinement --- */
 

@@ -167,6 +167,25 @@ function requiredStringArray(object: StatusObject, key: string, parentPath: stri
   for (let index = 0; index < values.length; index++) stringValue(values[index], `${path}.${index}`);
 }
 
+function channelNumber(value: unknown, path: string): void {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 4) fail(path, 'not_channel_number');
+}
+
+function validateChannelHealth(workflow: StatusObject): void {
+  const value = workflow.channel_health;
+  if (value === undefined) return;
+  const health = objectValue(value, 'workflow.channel_health');
+  const flat = requiredArray(health, 'flat_channels', 'workflow.channel_health');
+  flat.forEach((channel, index) => channelNumber(channel, `workflow.channel_health.flat_channels.${index}`));
+  const pairs = requiredArray(health, 'identical_pairs', 'workflow.channel_health');
+  pairs.forEach((entry, index) => {
+    const pairPath = `workflow.channel_health.identical_pairs.${index}`;
+    const pair = objectValue(entry, pairPath);
+    channelNumber(pair.a, `${pairPath}.a`);
+    channelNumber(pair.b, `${pairPath}.b`);
+  });
+}
+
 function nullableNumberArray(object: StatusObject, key: string, parentPath: string): void {
   const path = fieldPath(parentPath, key);
   const values = requiredArray(object, key, parentPath);
@@ -555,6 +574,7 @@ function checkWorkflow(workflow: StatusObject): void {
   optionalBoolean(workflow, 'has_scan', 'workflow');
   optionalBoolean(workflow, 'calc_settings_ready', 'workflow');
   optionalString(workflow, 'calculation_class', 'workflow');
+  validateChannelHealth(workflow);
   optionalString(workflow, 'gps_status', 'workflow');
   optionalBooleanOrNull(workflow, 'layout_result', 'workflow');
   optionalStringOrNull(workflow, 'layout_reason', 'workflow');

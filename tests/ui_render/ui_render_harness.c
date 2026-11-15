@@ -780,6 +780,14 @@ int main(int argc, char **argv)
         ui_workflow_update(s_workflow, render_now_ms);
         (void)snprintf(name, sizeof(name), "%s_calculating_progress", language);
         capture(name, true);
+        /* No source because the channels are not independent sensors (board log 2026-11-15 20:26): the screen says which. */
+        prepare(WORKFLOW_STEP_RESULT, 4U);
+        s_workflow->snapshot.calculation_class = WORKFLOW_CALCULATION_CLASS_RECORD_AGAIN;
+        s_workflow->snapshot.channel_health.identical_pair_mask = (uint8_t)(1U << 3);
+        s_workflow->snapshot.channel_health.flat_channel_mask = (uint8_t)((1U << 0) | (1U << 3));
+        ui_workflow_update(s_workflow, render_now_ms);
+        (void)snprintf(name, sizeof(name), "%s_result_channels_not_independent", language);
+        capture(name, true);
         test_ranging_progress_scene(language, "", 5U, 10U);          /* 10 of 20: 50% */
         test_ranging_progress_scene(language, "_3_nodes", 3U, 3U);   /* 3 of 6: 50% */
         test_ranging_progress_scene(language, "_4_nodes", 4U, 3U);   /* 3 of 12: 25% */

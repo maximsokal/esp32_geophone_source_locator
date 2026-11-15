@@ -106,6 +106,11 @@ bool localization_job_state_start(
     return false;
 }
 
+void localization_job_state_stage_progress(localization_job_state_t *state, uint32_t percent, int64_t now_us)
+{
+    (void)state; (void)percent; (void)now_us;
+}
+
 void localization_job_state_progress(
     localization_job_state_t *state,
     const char *method_name,

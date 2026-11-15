@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "localization_channel_health",
+      "sources": [
+        "components/localization_calculate/localization_channel_health.c",
+        "components/localization_calculate/tests/localization_channel_health_test.c"
+      ],
+      "include_dirs": [
+        "components/localization_calculate/include"
+      ]
+    }
+  ]
+}

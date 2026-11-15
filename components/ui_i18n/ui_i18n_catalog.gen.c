@@ -385,6 +385,8 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "sensor error", /* tft.workflow.reason.sensor_invalid */
     "Sensors are ready to record", /* tft.workflow.record_ready.instruction */
     "Elapsed %s", /* tft.workflow.recording.elapsed */
+    "No signal: %s", /* tft.workflow.result.channels_flat */
+    "Same signal: %s", /* tft.workflow.result.channels_identical */
     "G%s: %s m", /* tft.workflow.result.distance */
     "G%s: —", /* tft.workflow.result.distance_unknown */
     "Internal error", /* tft.workflow.result.internal */
@@ -875,6 +877,8 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "помилка датчика", /* tft.workflow.reason.sensor_invalid */
     "Датчики готові до запису", /* tft.workflow.record_ready.instruction */
     "Тривалість %s", /* tft.workflow.recording.elapsed */
+    "Немає сигналу: %s", /* tft.workflow.result.channels_flat */
+    "Однаковий сигнал: %s", /* tft.workflow.result.channels_identical */
     "G%s: %s м", /* tft.workflow.result.distance */
     "G%s: —", /* tft.workflow.result.distance_unknown */
     "Внутрішня помилка", /* tft.workflow.result.internal */

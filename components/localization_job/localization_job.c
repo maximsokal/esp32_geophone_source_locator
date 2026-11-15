@@ -41,6 +41,15 @@ static void progress_hook(
 }
 
 
+static void stage_progress_hook(uint32_t percent, void *context)
+{
+    (void)context;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    localization_job_state_stage_progress(&s_state, percent, esp_timer_get_time());
+    xSemaphoreGive(s_mutex);
+}
+
+
 static void localization_job_task(void *argument)
 {
     (void)argument;
@@ -62,6 +71,8 @@ static void localization_job_task(void *argument)
 
         s_config.progress = progress_hook;
         s_config.progress_context = NULL;
+        s_config.stage_progress = stage_progress_hook;
+        s_config.stage_progress_context = NULL;
         memset(&s_summary, 0, sizeof(s_summary));
         ESP_LOGI(TAG, "job %u: %s/%s started", (unsigned)job_id, object_id, session_id);
         const esp_err_t result = localization_calculate_run(

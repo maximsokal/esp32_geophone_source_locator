@@ -1472,6 +1472,8 @@
     "tft.workflow.result.loading": { "en": "Loading...", "uk": "Завантаження...", "max_len": 16 },
     "tft.workflow.result.load_failed": { "en": "Result details unavailable", "uk": "Деталі результату недоступні", "max_len": 32 },
     "tft.workflow.result.distance": {"en": "G%s: %s m", "uk": "G%s: %s м", "max_len": 12},
+    "tft.workflow.result.channels_identical": { "en": "Same signal: %s", "uk": "Однаковий сигнал: %s", "max_len": 32 },
+    "tft.workflow.result.channels_flat": { "en": "No signal: %s", "uk": "Немає сигналу: %s", "max_len": 28 },
     "tft.workflow.value.unknown": { "en": "—", "uk": "—", "max_len": 1 },
     "tft.workflow.value.ok": { "en": "OK", "uk": "OK", "max_len": 2 },
     "tft.workflow.value.no": { "en": "X", "uk": "Ні", "max_len": 2 },

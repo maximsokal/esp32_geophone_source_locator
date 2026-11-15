@@ -459,6 +459,39 @@ static void add_reason(ui_workflow_model_t *model, const char *reason)
     }
 }
 
+/*
+ * Two channels with one signal, or a channel that stays silent while the others move, make a source impossible to find
+ * and look like "no source": name them (G1..G4, as the distance lines do). Board log 2026-11-15 20:26.
+ */
+static void add_channel_health_lines(const workflow_channel_health_t *health, ui_workflow_model_t *model)
+{
+    char text[UI_WORKFLOW_MODEL_ARG_SIZE] = {0};
+    size_t used = 0U;
+    for (unsigned pair = 0U; pair < 6U; ++pair) {
+        unsigned a = 0U, b = 0U;
+        if ((health->identical_pair_mask & (1U << pair)) == 0U || !workflow_channel_health_pair(pair, &a, &b)) continue;
+        const int written = snprintf(text + used, sizeof(text) - used, "%sG%u=G%u", used > 0U ? " " : "", a + 1U, b + 1U);
+        if (written < 0 || (size_t)written >= sizeof(text) - used) break;
+        used += (size_t)written;
+    }
+    if (used > 0U) {
+        ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_CHANNELS_IDENTICAL);
+        if (line != NULL) set_arg(line, 0U, text);
+    }
+    used = 0U;
+    text[0] = '\0';
+    for (unsigned channel = 0U; channel < 4U; ++channel) {
+        if ((health->flat_channel_mask & (1U << channel)) == 0U) continue;
+        const int written = snprintf(text + used, sizeof(text) - used, "%sG%u", used > 0U ? " " : "", channel + 1U);
+        if (written < 0 || (size_t)written >= sizeof(text) - used) break;
+        used += (size_t)written;
+    }
+    if (used > 0U) {
+        ui_workflow_model_line_t *line = add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_CHANNELS_FLAT);
+        if (line != NULL) set_arg(line, 0U, text);
+    }
+}
+
 static void build_result_lines(
     const workflow_snapshot_t *snapshot,
     const ui_workflow_model_state_t *state,
@@ -472,6 +505,7 @@ static void build_result_lines(
             key = UI_I18N_KEY_TFT_WORKFLOW_RESULT_MOVE_SENSORS;
         }
         (void)add_line(model, key);
+        add_channel_health_lines(&snapshot->channel_health, model);
         if (strcmp(snapshot->reason, "insufficient_geophones") == 0) {
             (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_INSUFFICIENT_GEOPHONES);
         } else if (snapshot->reason[0] != '\0') {
@@ -503,6 +537,7 @@ static void build_result_lines(
         } else {
             (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_SUCCESS);
         }
+        add_channel_health_lines(&snapshot->channel_health, model);
     }
     if (!state->result_data_ready) {
         (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RESULT_LOADING);

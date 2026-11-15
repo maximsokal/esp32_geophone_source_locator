@@ -253,6 +253,51 @@ describe('workflow view model (MAX-296)', () => {
     expect(resultFailureKey(calculationClass)).toBe(messageKey);
   });
 
+  // Board log 2026-11-15 20:26: G2 and G3 carried one signal, G1 and G4 stayed flat. The result says so instead of a
+  // vague "record again".
+  it('names the channels that were not independent sensors on a failed result', () => {
+    const status = statusFor('RESULT', [], 4, {
+      calculation_class: 'record_again',
+      channel_health: { flat_channels: [1, 4], identical_pairs: [{ a: 2, b: 3 }] },
+    });
+    const section = workflowViewModel(status).sections[0];
+    expect(section).toMatchObject({ kind: 'result', identicalChannels: 'G2=G3', silentChannels: 'G1 G4' });
+    const html = panelHtml(status);
+    expect(html).toContain('data-testid="channels-identical"');
+    expect(html).toContain('G2=G3');
+    expect(html).toContain('data-testid="channels-silent"');
+    expect(html).toContain('G1 G4');
+    expect(html).toContain(translate('en', 'workflow.result.failure.record_again'));
+  });
+
+  it('shows no channel warning when the channels are healthy, absent or malformed', () => {
+    const healthy = statusFor('RESULT', [], 4, {
+      calculation_class: 'record_again',
+      channel_health: { flat_channels: [], identical_pairs: [] },
+    });
+    const older = statusFor('RESULT', [], 4, { calculation_class: 'record_again' });
+    const malformed = statusFor('RESULT', [], 4, {
+      calculation_class: 'record_again',
+      channel_health: { flat_channels: [0, 7], identical_pairs: [{ a: 9, b: 2 }] },
+    });
+    for (const status of [healthy, older, malformed]) {
+      const html = panelHtml(status);
+      expect(html).not.toContain('channels-identical');
+      expect(html).not.toContain('channels-silent');
+      expect(workflowViewModel(status).sections[0]).toMatchObject({ identicalChannels: '', silentChannels: '' });
+    }
+  });
+
+  it('warns about the channels on a successful result too', () => {
+    const html = panelHtml(statusFor('RESULT', [], 4, {
+      calculation_class: 'none',
+      channel_health: { flat_channels: [3], identical_pairs: [] },
+    }));
+    expect(html).toContain(translate('en', 'workflow.result.success'));
+    expect(html).toContain('G3');
+    expect(html).toContain('channels-silent');
+  });
+
   it('does not render a command button that is absent from allowed_actions', () => {
     const html = panelHtml(statusFor('RECORD_READY', ['BACK']));
     expect(html.match(/<button\b/g)).toHaveLength(1);

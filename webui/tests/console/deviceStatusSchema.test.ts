@@ -529,6 +529,31 @@ describe('normalizeDeviceStatus', () => {
     expectInvalid(raw, section);
   });
 
+  it('accepts the channel health of the last calculation and rejects a malformed one', () => {
+    const raw = freshRaw();
+    setAt(raw, 'workflow.channel_health', { flat_channels: [1, 4], identical_pairs: [{ a: 2, b: 3 }] });
+    expect(() => normalizeDeviceStatus(raw)).not.toThrow();
+
+    for (const bad of [
+      'yes',
+      { flat_channels: [], identical_pairs: 'none' },
+      { flat_channels: [0], identical_pairs: [] },
+      { flat_channels: [5], identical_pairs: [] },
+      { flat_channels: [1.5], identical_pairs: [] },
+      { flat_channels: [], identical_pairs: [{ a: 2 }] },
+      { flat_channels: [], identical_pairs: [{ a: 2, b: 9 }] },
+      { flat_channels: [] },
+    ]) {
+      const broken = freshRaw();
+      setAt(broken, 'workflow.channel_health', bad);
+      expect(() => normalizeDeviceStatus(broken)).toThrow(DeviceStatusValidationError);
+    }
+    // Older firmware sends none at all.
+    const older = freshRaw();
+    deleteAt(older, 'workflow.channel_health');
+    expect(() => normalizeDeviceStatus(older)).not.toThrow();
+  });
+
   it('shape-checks an optional hardware reason code when present', () => {
     const raw = freshRaw();
     setAt(raw, 'hardware.modules.0.reason_code', 5);

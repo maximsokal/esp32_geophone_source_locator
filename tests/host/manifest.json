@@ -241,7 +241,9 @@
         "components/ad7606_driver/include",
         "components/ad7606_driver"
       ],
-      "defines": ["AD7606_DRIVER_HOST_TEST=1"]
+      "defines": [
+        "AD7606_DRIVER_HOST_TEST=1"
+      ]
     },
     {
       "name": "ad7606_power_policy",
@@ -252,7 +254,9 @@
       "include_dirs": [
         "components/ad7606_acquisition/include"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "i2c_line_recovery",
@@ -347,8 +351,13 @@
         "components/app_config/include",
         "components/ina3221_monitor/include"
       ],
-      "libraries": ["m", "pthread"],
-      "defines": ["AD7606_ACQUISITION_HOST_TEST=1"]
+      "libraries": [
+        "m",
+        "pthread"
+      ],
+      "defines": [
+        "AD7606_ACQUISITION_HOST_TEST=1"
+      ]
     },
     {
       "name": "ad7606_acquisition_unsafe_measured_timing",
@@ -371,7 +380,10 @@
         "components/app_config/include",
         "components/ina3221_monitor/include"
       ],
-      "libraries": ["m", "pthread"],
+      "libraries": [
+        "m",
+        "pthread"
+      ],
       "defines": [
         "AD7606_ACQUISITION_HOST_TEST=1",
         "AD7606_ACQUISITION_RUNTIME_TEST_SUPPORT_ONLY=1"
@@ -437,7 +449,10 @@
         "CONFIG_GEOLOCATOR_GEOMETRY_Z_POLICY_BAROMETRIC_RELATIVE=1",
         "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"
       ],
-      "libraries": ["m", "pthread"]
+      "libraries": [
+        "m",
+        "pthread"
+      ]
     },
     {
       "name": "nrf_topology_service_integration",
@@ -445,7 +460,8 @@
         "components/nrf_topology_service/nrf_topology_service.c",
         "components/nrf_geometry_solver/nrf_geometry_range_offset.c",
         "components/nrf_topology_service/nrf_link_readiness_policy.c",
-        "components/nrf_topology_service/nrf_topology.c", "components/nrf_topology_service/nrf_topology_mode.c",
+        "components/nrf_topology_service/nrf_topology.c",
+        "components/nrf_topology_service/nrf_topology_mode.c",
         "components/nrf_topology_service/nrf_sensor_transport.c",
         "components/nrf_topology_service/nrf_topology_leveling_policy.c",
         "components/nrf_topology_service/nrf_topology_bus_recovery.c",
@@ -481,8 +497,12 @@
         "components/app_config/include",
         "nRF54L15/include"
       ],
-      "defines": ["NRF_TOPOLOGY_SERVICE_TEST_HARNESS"],
-      "libraries": ["m"]
+      "defines": [
+        "NRF_TOPOLOGY_SERVICE_TEST_HARNESS"
+      ],
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "nrf_sensor_transport",
@@ -558,7 +578,9 @@
       "include_dirs": [
         "components/ina3221_monitor"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "ui_preview3d",
@@ -579,7 +601,9 @@
         "components/ui",
         "components/ui/tests"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "ina3221_soc",
@@ -590,7 +614,9 @@
       "include_dirs": [
         "components/ina3221_monitor"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "ina3221_monitor_lifecycle",
@@ -608,7 +634,9 @@
         "components/ina3221_monitor/include",
         "components/sensor_bus/include"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "ina3221_status_log_policy",
@@ -629,7 +657,9 @@
       "include_dirs": [
         "components/ina3221_monitor"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "sensor_bus_diag",
@@ -637,7 +667,9 @@
         "components/sensor_bus/sensor_bus_diag.c",
         "tests/host/sensor_bus_diag_test.c"
       ],
-      "include_dirs": ["components/sensor_bus/include"]
+      "include_dirs": [
+        "components/sensor_bus/include"
+      ]
     },
     {
       "name": "ina3221_limits",
@@ -648,7 +680,9 @@
       "include_dirs": [
         "components/ina3221_monitor"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "ina3221_driver",
@@ -663,7 +697,9 @@
         "components/sensor_bus/include",
         "components/ina3221_monitor"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "r4a_power_ina_ad7606_integration",
@@ -687,7 +723,9 @@
         "components/ina3221_monitor/include",
         "components/ad7606_acquisition/include"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "main_barometer",
@@ -706,11 +744,16 @@
         "components/sensor_bus/include",
         "nRF54L15/include"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "app_storage_boot_keypad_pipeline",
-      "defines": ["KEYPAD_TEST_LOG_CAPTURE=1", "HW_INVENTORY_HOST_TEST=1"],
+      "defines": [
+        "KEYPAD_TEST_LOG_CAPTURE=1",
+        "HW_INVENTORY_HOST_TEST=1"
+      ],
       "sources": [
         "tests/host/button_vendor_runtime.c",
         "components/adc_service/adc_service.c",
@@ -756,7 +799,9 @@
     },
     {
       "name": "keypad_adc_ownership",
-      "defines": ["KEYPAD_TEST_LOG_CAPTURE=1"],
+      "defines": [
+        "KEYPAD_TEST_LOG_CAPTURE=1"
+      ],
       "sources": [
         "components/keypad/keypad_button_adapter.c",
         "components/keypad/keypad_decode.c",
@@ -984,7 +1029,9 @@
         "components/localization/include",
         "components/recording_gate/include"
       ],
-      "defines": ["CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"]
+      "defines": [
+        "CONFIG_RECORDING_GATE_REQUIRE_REMOTES_AND_LEVELING=1"
+      ]
     },
     {
       "name": "localization_run_record",
@@ -1135,7 +1182,9 @@
         "tests/host/stubs/object_store_profile",
         "components/scan_occupancy/include"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "localization_vf_math",
@@ -1149,7 +1198,9 @@
         "components/localization_velocity_free/include",
         "components/localization_velocity_free"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "localization_tdcas",
@@ -1165,7 +1216,9 @@
         "components/localization_velocity_free/include",
         "components/localization_velocity_free"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "localization_psafuvs",
@@ -1181,7 +1234,9 @@
         "components/localization_velocity_free/include",
         "components/localization_velocity_free"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "localization_suea",
@@ -1197,7 +1252,9 @@
         "components/localization_velocity_free/include",
         "components/localization_velocity_free"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "localization_robust",
@@ -1214,7 +1271,9 @@
         "components/localization_extended",
         "components/localization_extended/tests"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "localization_psp",
@@ -1231,7 +1290,9 @@
         "components/localization_extended",
         "components/localization_extended/tests"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "localization_xcorr_tdoa",
@@ -1249,7 +1310,9 @@
         "components/localization_extended",
         "components/localization_extended/tests"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "localization_eikonal",
@@ -1267,7 +1330,9 @@
         "components/localization_extended",
         "components/localization_extended/tests"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "localization_bayes",
@@ -1286,7 +1351,9 @@
         "components/localization_extended",
         "components/localization_extended/tests"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "localization_calculate_policy",
@@ -1366,9 +1433,12 @@
     },
     {
       "name": "localization_calculate_run",
-      "defines": ["CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072"],
+      "defines": [
+        "CONFIG_LOCALIZATION_ANALYSIS_PSRAM_BUDGET_KB=3072"
+      ],
       "sources": [
         "components/localization_calculate/localization_calculate.c",
+        "components/localization_calculate/localization_channel_health.c",
         "components/localization_calculate/localization_calculate_policy.c",
         "components/localization/localization.c",
         "components/localization/localization_dimensionality_policy.c",
@@ -1441,7 +1511,9 @@
         "components/seismic_dsp/tests/stubs",
         "components/seismic_dsp/include"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "geophone_events",
@@ -1575,7 +1647,9 @@
         "components/nrf_geometry_solver/include",
         "nRF54L15/include"
       ],
-      "defines": ["NRF_GEOMETRY_SOLVER_HOST_TEST=1"],
+      "defines": [
+        "NRF_GEOMETRY_SOLVER_HOST_TEST=1"
+      ],
       "libraries": [
         "m"
       ]
@@ -1703,7 +1777,9 @@
         "components/seismic_buffer/tests/stubs",
         "components/seismic_buffer/include"
       ],
-      "libraries": ["pthread"]
+      "libraries": [
+        "pthread"
+      ]
     },
     {
       "name": "seismic_recorder_cache",
@@ -1864,7 +1940,9 @@
         "components/nrf_geometry_solver/include",
         "nRF54L15/include"
       ],
-      "defines": ["NRF_GEOMETRY_SOLVER_HOST_TEST=1"]
+      "defines": [
+        "NRF_GEOMETRY_SOLVER_HOST_TEST=1"
+      ]
     },
     {
       "name": "seismic_recorder_start_integration",
@@ -1966,7 +2044,9 @@
         "SEISMIC_RECORDER_GATE_BYPASS_TEST=1",
         "SEISMIC_RECORDER_GATE_BYPASS_REMOTE_COUNT=0"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "seismic_recorder_gate_bypass_start_1",
@@ -2015,7 +2095,9 @@
         "SEISMIC_RECORDER_GATE_BYPASS_TEST=1",
         "SEISMIC_RECORDER_GATE_BYPASS_REMOTE_COUNT=1"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "seismic_recorder_gate_bypass_start_2",
@@ -2064,7 +2146,9 @@
         "SEISMIC_RECORDER_GATE_BYPASS_TEST=1",
         "SEISMIC_RECORDER_GATE_BYPASS_REMOTE_COUNT=2"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "seismic_recorder_waveform",
@@ -2102,8 +2186,12 @@
         "components/seismic_buffer/include",
         "tests/host/stubs/object_store_profile"
       ],
-      "defines": ["_POSIX_C_SOURCE=200809L"],
-      "libraries": ["m"]
+      "defines": [
+        "_POSIX_C_SOURCE=200809L"
+      ],
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "seismic_recorder_geometry_participation",
@@ -2144,8 +2232,12 @@
         "components/seismic_buffer/include",
         "tests/host/stubs/object_store_profile"
       ],
-      "defines": ["_POSIX_C_SOURCE=200809L"],
-      "libraries": ["m"]
+      "defines": [
+        "_POSIX_C_SOURCE=200809L"
+      ],
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "seismic_recorder_waveform_raw",
@@ -2310,7 +2402,9 @@
       "include_dirs": [
         "components/scan_preview/include"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "scan_preview_state",
@@ -2328,7 +2422,9 @@
         "components/scan_occupancy/include",
         "components/scan_preview/include"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "web_status_cache_arbitration",
@@ -2563,7 +2659,9 @@
         "SEISMIC_BUFFER_TEST_ALLOCATOR=1",
         "SEISMIC_BUFFER_TEST_HOOKS=1"
       ],
-      "libraries": ["pthread"]
+      "libraries": [
+        "pthread"
+      ]
     },
     {
       "name": "seismic_recorder_allocation_contract",
@@ -2626,7 +2724,9 @@
         "seismic_recorder_start=seismic_recorder_start_unwrapped",
         "seismic_recorder_stop=seismic_recorder_stop_unwrapped"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "seismic_recorder_allocation_negative",
@@ -2690,7 +2790,9 @@
         "seismic_recorder_stop=seismic_recorder_stop_unwrapped",
         "SEISMIC_RECORDER_ALLOCATION_NEGATIVE_CONTROL=1"
       ],
-      "libraries": ["m"]
+      "libraries": [
+        "m"
+      ]
     },
     {
       "name": "max480_localization_job_init",

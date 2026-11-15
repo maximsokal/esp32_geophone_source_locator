@@ -6,6 +6,7 @@
 
 #include "esp_err.h"
 #include "geophone_events.h"
+#include "localization_channel_health.h"
 #include "localization_propagation_model.h"
 #include "localization_velocity_bounds.h"
 
@@ -83,6 +84,9 @@ typedef struct
     bool skipped_for_time;
 
 } localization_calculate_method_timing_t;
+
+/* The preparation before the methods (the event search over a long recording) reports how far it is, 0..100; must be quick. */
+typedef void (*localization_calculate_stage_progress_fn)(uint32_t percent, void *context);
 
 /* Called when each method starts and completes; must be quick. */
 typedef void (*localization_calculate_progress_fn)(
@@ -178,6 +182,11 @@ typedef struct
     localization_calculate_progress_fn progress;
     void *progress_context;
 
+    /* Optional hook for the event search that runs before the first method; without it a long recording shows 0 % for
+     * a minute (board log 2026-11-15 20:26). */
+    localization_calculate_stage_progress_fn stage_progress;
+    void *stage_progress_context;
+
 } localization_calculate_config_t;
 
 
@@ -204,6 +213,10 @@ typedef struct
     localization_velocity_status_t tdcas_scan_velocity_status;
     localization_velocity_status_t psafuvs_scan_velocity_status;
     localization_velocity_status_t suea_scan_velocity_status;
+
+    /* Which channels were not independent sensors in the analysed window (two the same, or one flat). All clear when
+     * the run stopped before the window was read. */
+    localization_channel_health_t channel_health;
 
 } localization_calculate_summary_t;
 
