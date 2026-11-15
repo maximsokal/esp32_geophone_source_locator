@@ -433,123 +433,123 @@ mV=[...,1602]
 
 The same V8 value should appear on the LVGL Measurements screen. Exact values depend on the measured supply/reference/input voltage and must not be treated as a calibration result.
 
-## Відкритий код та власна розробка
+## Open-source components and original work
 
-### Використано з open source
+### Open-source components
 
-#### ESP32-S3 та компоненти ESP-IDF
+#### ESP32-S3 and ESP-IDF components
 
-| Компонент | Версія | Ліцензія SPDX | Посилання на джерело | Де використано |
+| Component | Version | SPDX license | Source | Usage |
 | --- | --- | --- | --- | --- |
-| ESP-IDF | 5.5.4 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [espressif/esp-idf](https://github.com/espressif/esp-idf) | Зовнішній фреймворк та інструменти збирання прошивки ESP32-S3. |
-| `espressif/button` | 4.2.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-iot-solution/button](https://github.com/espressif/esp-iot-solution/tree/master/components/button) | Клавіатура та кнопка живлення: `components/keypad`, `components/power_control`. |
-| `espressif/cbor` | 0.6.1~4 | [MIT](https://spdx.org/licenses/MIT.html) | [idf-extra-components/cbor](https://github.com/espressif/idf-extra-components/tree/master/cbor) | Транзитивна залежність ESP Insights. |
-| `espressif/cmake_utilities` | 0.5.3 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-iot-solution/cmake_utilities](https://github.com/espressif/esp-iot-solution/tree/master/tools/cmake_utilities) | Транзитивний помічник збирання. |
-| `espressif/esp-dsp` | 1.8.2 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [espressif/esp-dsp](https://github.com/espressif/esp-dsp) | Задекларований, але не використовується; залишено навмисно: закріплено тестом архітектурного контракту (`tests/python/test_architecture_refactor_contract.py`). |
-| `espressif/esp_diag_data_store` | 1.1.1 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-insights/esp_diag_data_store](https://github.com/espressif/esp-insights/tree/main/components/esp_diag_data_store) | Транзитивна залежність ESP Insights. |
-| `espressif/esp_diagnostics` | 1.3.4 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-insights/esp_diagnostics](https://github.com/espressif/esp-insights/tree/main/components/esp_diagnostics) | Транзитивна залежність ESP Insights. |
-| `espressif/esp_insights` | 1.3.4 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-insights/esp_insights](https://github.com/espressif/esp-insights/tree/main/components/esp_insights) | Опційний компонент `components/insights_bridge`; вимкнений у поточному `sdkconfig`. |
-| `espressif/esp_lcd_ili9341` | 2.0.2 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-bsp/esp_lcd_ili9341](https://github.com/espressif/esp-bsp/tree/master/components/lcd/esp_lcd_ili9341) | Драйвер TFT у `components/display`. |
-| `espressif/esp_lvgl_port` | 2.9.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-bsp/esp_lvgl_port](https://github.com/espressif/esp-bsp/tree/master/components/esp_lvgl_port) | Інтеграція LVGL з TFT. |
-| `espressif/i2c_bus` | 1.5.2 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-iot-solution/i2c_bus](https://github.com/espressif/esp-iot-solution/tree/master/components/i2c_bus) | Спільна шина датчиків та сервіси барометра й топології nRF. |
-| `espressif/led_indicator` | 2.1.2 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-iot-solution/led_indicator](https://github.com/espressif/esp-iot-solution/tree/master/components/led/led_indicator) | Адаптер індикатора; поточний драйвер плати вимкнений. |
-| `espressif/led_strip` | 3.0.3 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [idf-extra-components/led_strip](https://github.com/espressif/idf-extra-components/tree/master/led_strip) | Транзитивна LED-залежність. |
-| `espressif/mdns` | 1.11.3 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-protocols/mdns](https://github.com/espressif/esp-protocols/tree/master/components/mdns) | mDNS у `components/wifi_manager`. |
-| `espressif/rmaker_cmd_resp` | 1.0.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common/rmaker_cmd_resp](https://github.com/espressif/esp-rainmaker-common/tree/master/components/rmaker_cmd_resp) | Транзитивна залежність ESP Insights. |
-| `espressif/rmaker_common` | 1.8.6 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common](https://github.com/espressif/esp-rainmaker-common) | Транзитивна залежність ESP Insights. |
-| `espressif/rmaker_common_events` | 1.0.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common/rmaker_common_events](https://github.com/espressif/esp-rainmaker-common/tree/master/components/rmaker_common_events) | Транзитивна залежність ESP Insights. |
-| `espressif/rmaker_console` | 1.0.1 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common/rmaker_console](https://github.com/espressif/esp-rainmaker-common/tree/master/components/rmaker_console) | Транзитивна залежність ESP Insights. |
-| `espressif/rmaker_system_ctrl` | 1.0.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common/rmaker_system_ctrl](https://github.com/espressif/esp-rainmaker-common/tree/master/components/rmaker_system_ctrl) | Транзитивна залежність ESP Insights. |
-| `espressif/rmaker_time_sync` | 1.0.2 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common/rmaker_time_sync](https://github.com/espressif/esp-rainmaker-common/tree/master/components/rmaker_time_sync) | Транзитивна залежність ESP Insights. |
-| `espressif/rmaker_work_queue` | 1.0.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common/rmaker_work_queue](https://github.com/espressif/esp-rainmaker-common/tree/master/components/rmaker_work_queue) | Транзитивна залежність ESP Insights. |
-| `lvgl/lvgl` | 9.6.0~1 | [MIT](https://spdx.org/licenses/MIT.html) | [lvgl/lvgl](https://github.com/lvgl/lvgl) | Інтерфейс у `components/ui`, віджет QR та шрифти TFT. |
-| Montserrat Regular для LVGL | commit `cc8daf2e7085006b9c112542fc82b58afc13521d` | [OFL-1.1](https://spdx.org/licenses/OFL-1.1.html) | [JulietaUla/Montserrat](https://github.com/JulietaUla/Montserrat) | TTF SHA-256: `3e8abe50c44c82e2242e97d1ec8c0d385c4890cdc50447bcdb8605c81a38cfb2`; вбудований LVGL-шрифт версії 9.000; ліцензія збережена в `components/ui/fonts/OFL.txt`. |
-| QR-Code-generator by Project Nayuki у LVGL | Окрему версію не зафіксовано; входить до LVGL 9.6.0~1 | [MIT](https://spdx.org/licenses/MIT.html) | [Nayuki QR Code generator](https://www.nayuki.io/page/qr-code-generator-library) | Рушій віджета `lv_qrcode` для Wi-Fi QR на TFT; джерело й ліцензія містяться в LVGL. |
-| Вбудовані гліфи LVGL Montserrat / Font Awesome | LVGL 9.6.0~1; версію Font Awesome не зафіксовано | [OFL-1.1](https://spdx.org/licenses/OFL-1.1.html) для шрифтових гліфів; [CC-BY-4.0](https://spdx.org/licenses/CC-BY-4.0.html) для іконок Font Awesome | [LVGL](https://github.com/lvgl/lvgl), [Font Awesome](https://fontawesome.com) | Вбудовані символи `LV_SYMBOL_*` у TFT-інтерфейсі. |
+| ESP-IDF | 5.5.4 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [espressif/esp-idf](https://github.com/espressif/esp-idf) | External framework and build tools for ESP32-S3 firmware. |
+| `espressif/button` | 4.2.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-iot-solution/button](https://github.com/espressif/esp-iot-solution/tree/master/components/button) | Keypad and power button: `components/keypad`, `components/power_control`. |
+| `espressif/cbor` | 0.6.1~4 | [MIT](https://spdx.org/licenses/MIT.html) | [idf-extra-components/cbor](https://github.com/espressif/idf-extra-components/tree/master/cbor) | Transitive ESP Insights dependency. |
+| `espressif/cmake_utilities` | 0.5.3 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-iot-solution/cmake_utilities](https://github.com/espressif/esp-iot-solution/tree/master/tools/cmake_utilities) | Transitive build helper. |
+| `espressif/esp-dsp` | 1.8.2 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [espressif/esp-dsp](https://github.com/espressif/esp-dsp) | Declared but unused; intentionally retained and pinned by the architecture contract test (`tests/python/test_architecture_refactor_contract.py`). |
+| `espressif/esp_diag_data_store` | 1.1.1 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-insights/esp_diag_data_store](https://github.com/espressif/esp-insights/tree/main/components/esp_diag_data_store) | Transitive ESP Insights dependency. |
+| `espressif/esp_diagnostics` | 1.3.4 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-insights/esp_diagnostics](https://github.com/espressif/esp-insights/tree/main/components/esp_diagnostics) | Transitive ESP Insights dependency. |
+| `espressif/esp_insights` | 1.3.4 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-insights/esp_insights](https://github.com/espressif/esp-insights/tree/main/components/esp_insights) | Optional `components/insights_bridge` component; disabled in the current `sdkconfig`. |
+| `espressif/esp_lcd_ili9341` | 2.0.2 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-bsp/esp_lcd_ili9341](https://github.com/espressif/esp-bsp/tree/master/components/lcd/esp_lcd_ili9341) | TFT driver in `components/display`. |
+| `espressif/esp_lvgl_port` | 2.9.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-bsp/esp_lvgl_port](https://github.com/espressif/esp-bsp/tree/master/components/esp_lvgl_port) | LVGL integration for the TFT. |
+| `espressif/i2c_bus` | 1.5.2 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-iot-solution/i2c_bus](https://github.com/espressif/esp-iot-solution/tree/master/components/i2c_bus) | Shared sensor bus and barometer/nRF topology services. |
+| `espressif/led_indicator` | 2.1.2 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-iot-solution/led_indicator](https://github.com/espressif/esp-iot-solution/tree/master/components/led/led_indicator) | Indicator adapter; the current board driver is disabled. |
+| `espressif/led_strip` | 3.0.3 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [idf-extra-components/led_strip](https://github.com/espressif/idf-extra-components/tree/master/led_strip) | Transitive LED dependency. |
+| `espressif/mdns` | 1.11.3 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-protocols/mdns](https://github.com/espressif/esp-protocols/tree/master/components/mdns) | mDNS in `components/wifi_manager`. |
+| `espressif/rmaker_cmd_resp` | 1.0.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common/rmaker_cmd_resp](https://github.com/espressif/esp-rainmaker-common/tree/master/components/rmaker_cmd_resp) | Transitive ESP Insights dependency. |
+| `espressif/rmaker_common` | 1.8.6 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common](https://github.com/espressif/esp-rainmaker-common) | Transitive ESP Insights dependency. |
+| `espressif/rmaker_common_events` | 1.0.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common/rmaker_common_events](https://github.com/espressif/esp-rainmaker-common/tree/master/components/rmaker_common_events) | Transitive ESP Insights dependency. |
+| `espressif/rmaker_console` | 1.0.1 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common/rmaker_console](https://github.com/espressif/esp-rainmaker-common/tree/master/components/rmaker_console) | Transitive ESP Insights dependency. |
+| `espressif/rmaker_system_ctrl` | 1.0.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common/rmaker_system_ctrl](https://github.com/espressif/esp-rainmaker-common/tree/master/components/rmaker_system_ctrl) | Transitive ESP Insights dependency. |
+| `espressif/rmaker_time_sync` | 1.0.2 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common/rmaker_time_sync](https://github.com/espressif/esp-rainmaker-common/tree/master/components/rmaker_time_sync) | Transitive ESP Insights dependency. |
+| `espressif/rmaker_work_queue` | 1.0.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [esp-rainmaker-common/rmaker_work_queue](https://github.com/espressif/esp-rainmaker-common/tree/master/components/rmaker_work_queue) | Transitive ESP Insights dependency. |
+| `lvgl/lvgl` | 9.6.0~1 | [MIT](https://spdx.org/licenses/MIT.html) | [lvgl/lvgl](https://github.com/lvgl/lvgl) | UI in `components/ui`, QR widget, and TFT fonts. |
+| Montserrat Regular for LVGL | commit `cc8daf2e7085006b9c112542fc82b58afc13521d` | [OFL-1.1](https://spdx.org/licenses/OFL-1.1.html) | [JulietaUla/Montserrat](https://github.com/JulietaUla/Montserrat) | TTF SHA-256: `3e8abe50c44c82e2242e97d1ec8c0d385c4890cdc50447bcdb8605c81a38cfb2`; embedded LVGL font version 9.000; license is retained in `components/ui/fonts/OFL.txt`. |
+| QR-Code-generator by Project Nayuki in LVGL | Version not pinned separately; included in LVGL 9.6.0~1 | [MIT](https://spdx.org/licenses/MIT.html) | [Nayuki QR Code generator](https://www.nayuki.io/page/qr-code-generator-library) | `lv_qrcode` widget engine for Wi-Fi QR codes on the TFT; source and license are included in LVGL. |
+| Built-in LVGL Montserrat / Font Awesome glyphs | LVGL 9.6.0~1; Font Awesome version not pinned | [OFL-1.1](https://spdx.org/licenses/OFL-1.1.html) for font glyphs; [CC-BY-4.0](https://spdx.org/licenses/CC-BY-4.0.html) for Font Awesome icons | [LVGL](https://github.com/lvgl/lvgl), [Font Awesome](https://fontawesome.com) | Built-in `LV_SYMBOL_*` symbols in the TFT UI. |
 
-#### Бібліотеки, що постачаються з ESP-IDF
+#### Libraries bundled with ESP-IDF
 
-| Компонент | Версія | Ліцензія SPDX | Посилання на джерело | Де використано |
+| Component | Version | SPDX license | Source | Usage |
 | --- | --- | --- | --- | --- |
-| cJSON | 1.7.19 | [MIT](https://spdx.org/licenses/MIT.html) | [DaveGamble/cJSON](https://github.com/DaveGamble/cJSON) | JSON у `object_store`, `localization_results`, `web_server` та `workflow_service`. |
-| FreeRTOS-Kernel | 10.5.1 | [MIT](https://spdx.org/licenses/MIT.html) | [FreeRTOS/FreeRTOS-Kernel](https://github.com/FreeRTOS/FreeRTOS-Kernel) | Ядро задач і черг прошивки. |
-| Mbed TLS | 3.6.5 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) OR [GPL-2.0-or-later](https://spdx.org/licenses/GPL-2.0-or-later.html) | [Mbed-TLS/mbedtls](https://github.com/Mbed-TLS/mbedtls) | ESP-TLS та HTTPS. |
-| lwIP | 2.2.0, знімок розробки | [BSD-3-Clause](https://spdx.org/licenses/BSD-3-Clause.html) | [lwip-tcpip/lwip](https://github.com/lwip-tcpip/lwip) | Мережевий стек ESP-NETIF/Wi-Fi. |
-| FatFs | R0.15 patch 2 | [BSD-3-Clause](https://spdx.org/licenses/BSD-3-Clause.html) | [FatFs](http://elm-chan.org/fsw/ff/) | Файлова система microSD у `components/sd_card`. |
-| http-parser | 2.7.0 | [MIT](https://spdx.org/licenses/MIT.html) | [nodejs/http-parser](https://github.com/nodejs/http-parser) | HTTP-сервер ESP-IDF у `components/web_server`. |
-| wpa_supplicant | 2.10 | [BSD-3-Clause](https://spdx.org/licenses/BSD-3-Clause.html) | [w1.fi/wpa_supplicant](https://w1.fi/wpa_supplicant/) | Автентифікація Wi-Fi. |
-| protobuf-c | 1.4.1 | [MIT](https://spdx.org/licenses/MIT.html) | [protobuf-c/protobuf-c](https://github.com/protobuf-c/protobuf-c) | Транзитивна залежність опційної діагностики ESP Insights. |
-| SPIFFS | `0.2-255-g0dbb3f71c5f6`, зазначено у `.gitmodules` ESP-IDF v5.5.4; локально не перевірено | [MIT](https://spdx.org/licenses/MIT.html) | [pellepl/spiffs](https://github.com/pellepl/spiffs) | Файлова система увімкнена в `sdkconfig`; викликів API застосунком не знайдено. |
-| Бінарні бібліотеки Wi-Fi та PHY ESP-IDF | 5.5.4 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [ESP-IDF v5.5.4 components](https://github.com/espressif/esp-idf/tree/v5.5.4/components) | Закриті бінарні бібліотеки SDK для Wi-Fi та PHY. |
+| cJSON | 1.7.19 | [MIT](https://spdx.org/licenses/MIT.html) | [DaveGamble/cJSON](https://github.com/DaveGamble/cJSON) | JSON support in `object_store`, `localization_results`, `web_server`, and `workflow_service`. |
+| FreeRTOS-Kernel | 10.5.1 | [MIT](https://spdx.org/licenses/MIT.html) | [FreeRTOS/FreeRTOS-Kernel](https://github.com/FreeRTOS/FreeRTOS-Kernel) | Firmware task and queue kernel. |
+| Mbed TLS | 3.6.5 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) OR [GPL-2.0-or-later](https://spdx.org/licenses/GPL-2.0-or-later.html) | [Mbed-TLS/mbedtls](https://github.com/Mbed-TLS/mbedtls) | ESP-TLS and HTTPS. |
+| lwIP | 2.2.0, development snapshot | [BSD-3-Clause](https://spdx.org/licenses/BSD-3-Clause.html) | [lwip-tcpip/lwip](https://github.com/lwip-tcpip/lwip) | ESP-NETIF/Wi-Fi network stack. |
+| FatFs | R0.15 patch 2 | [BSD-3-Clause](https://spdx.org/licenses/BSD-3-Clause.html) | [FatFs](http://elm-chan.org/fsw/ff/) | microSD file system in `components/sd_card`. |
+| http-parser | 2.7.0 | [MIT](https://spdx.org/licenses/MIT.html) | [nodejs/http-parser](https://github.com/nodejs/http-parser) | ESP-IDF HTTP server in `components/web_server`. |
+| wpa_supplicant | 2.10 | [BSD-3-Clause](https://spdx.org/licenses/BSD-3-Clause.html) | [w1.fi/wpa_supplicant](https://w1.fi/wpa_supplicant/) | Wi-Fi authentication. |
+| protobuf-c | 1.4.1 | [MIT](https://spdx.org/licenses/MIT.html) | [protobuf-c/protobuf-c](https://github.com/protobuf-c/protobuf-c) | Transitive dependency of optional ESP Insights diagnostics. |
+| SPIFFS | `0.2-255-g0dbb3f71c5f6`, listed in ESP-IDF v5.5.4 `.gitmodules`; not checked locally | [MIT](https://spdx.org/licenses/MIT.html) | [pellepl/spiffs](https://github.com/pellepl/spiffs) | Enabled in `sdkconfig`; no application API calls were found. |
+| ESP-IDF Wi-Fi and PHY binary libraries | 5.5.4 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [ESP-IDF v5.5.4 components](https://github.com/espressif/esp-idf/tree/v5.5.4/components) | Closed-source SDK binaries for Wi-Fi and PHY. |
 
 #### nRF54L15 / NCS
 
-| Компонент | Версія | Ліцензія SPDX | Посилання на джерело | Де використано |
+| Component | Version | SPDX license | Source | Usage |
 | --- | --- | --- | --- | --- |
-| nRF Connect SDK / `sdk-nrf` | v3.4.0 | [LicenseRef-Nordic-5-Clause](https://github.com/nrfconnect/sdk-nrf/blob/v3.4.0/nrf/LICENSE) | [nrfconnect/sdk-nrf](https://github.com/nrfconnect/sdk-nrf) | Зовнішній SDK, зафіксований у `nRF54L15/ncs.ps1`. |
-| Форк Zephyr у NCS | `ncs-v3.4.0` / Zephyr 4.4.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [nrfconnect/sdk-zephyr](https://github.com/nrfconnect/sdk-zephyr) | Ядро та стек Bluetooth nRF54L15. |
-| nrfxlib / SoftDevice Controller | 3.4.0 | [LicenseRef-Nordic-5-Clause](https://github.com/nrfconnect/sdk-nrfxlib) | [nrfconnect/sdk-nrfxlib](https://github.com/nrfconnect/sdk-nrfxlib) | Бінарний контролер Bluetooth, увімкнений у `prj.conf`. |
-| hal_nordic | commit `18da0cc9726f8759c627dba3180b3ba9294e433c` | [BSD-3-Clause](https://spdx.org/licenses/BSD-3-Clause.html) для nrfx; [LicenseRef-Nordic-5-Clause](https://github.com/nrfconnect/sdk-nrf/blob/v3.4.0/nrf/LICENSE) для модуля | [zephyrproject-rtos/hal_nordic](https://github.com/zephyrproject-rtos/hal_nordic) | Драйвери периферії. |
-| CMSIS | commit `512cc7e895e8491696b61f7ba8066b4a182569b8` | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [zephyrproject-rtos/cmsis](https://github.com/zephyrproject-rtos/cmsis) | Підтримка ядра Cortex-M. |
+| nRF Connect SDK / `sdk-nrf` | v3.4.0 | [LicenseRef-Nordic-5-Clause](https://github.com/nrfconnect/sdk-nrf/blob/v3.4.0/nrf/LICENSE) | [nrfconnect/sdk-nrf](https://github.com/nrfconnect/sdk-nrf) | External SDK pinned in `nRF54L15/ncs.ps1`. |
+| Zephyr fork in NCS | `ncs-v3.4.0` / Zephyr 4.4.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [nrfconnect/sdk-zephyr](https://github.com/nrfconnect/sdk-zephyr) | nRF54L15 kernel and Bluetooth stack. |
+| nrfxlib / SoftDevice Controller | 3.4.0 | [LicenseRef-Nordic-5-Clause](https://github.com/nrfconnect/sdk-nrfxlib) | [nrfconnect/sdk-nrfxlib](https://github.com/nrfconnect/sdk-nrfxlib) | Bluetooth controller binary enabled in `prj.conf`. |
+| hal_nordic | commit `18da0cc9726f8759c627dba3180b3ba9294e433c` | [BSD-3-Clause](https://spdx.org/licenses/BSD-3-Clause.html) for nrfx; [LicenseRef-Nordic-5-Clause](https://github.com/nrfconnect/sdk-nrf/blob/v3.4.0/nrf/LICENSE) for the module | [zephyrproject-rtos/hal_nordic](https://github.com/zephyrproject-rtos/hal_nordic) | Peripheral drivers. |
+| CMSIS | commit `512cc7e895e8491696b61f7ba8066b4a182569b8` | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [zephyrproject-rtos/cmsis](https://github.com/zephyrproject-rtos/cmsis) | Cortex-M core support. |
 
-#### Вебінтерфейс та пакет активів
+#### Web interface and asset packages
 
-| Компонент | Версія | Ліцензія SPDX | Посилання на джерело | Де використано |
+| Component | Version | SPDX license | Source | Usage |
 | --- | --- | --- | --- | --- |
-| `react` | 19.2.8 | [MIT](https://spdx.org/licenses/MIT.html) | [react/react](https://github.com/react/react) | Середовище виконання інтерфейсу у `webui/src/main.tsx`; входить до пакета WebUI. |
-| `react-dom` | 19.2.8 | [MIT](https://spdx.org/licenses/MIT.html) | [react/react](https://github.com/react/react) | Монтування інтерфейсу та звітів; входить до пакета WebUI. |
-| `three` | 0.185.1 | [MIT](https://spdx.org/licenses/MIT.html) | [mrdoob/three.js](https://github.com/mrdoob/three.js) | 3D-рендеринг і керування сценою. |
-| `@react-three/fiber` | 9.7.0 | [MIT](https://spdx.org/licenses/MIT.html) | [pmndrs/react-three-fiber](https://github.com/pmndrs/react-three-fiber) | 3D-види хмари точок, сцени та локалізації. |
-| `js-aruco2` | 2.0.0 | [MIT](https://spdx.org/licenses/MIT.html) | [damianofalcioni/js-aruco2](https://github.com/damianofalcioni/js-aruco2) | Детектор AprilTag та JS-словник; входить до WebUI. |
-| `@fontsource/montserrat` WOFF2 | 5.3.0 | [OFL-1.1](https://spdx.org/licenses/OFL-1.1.html) | [fontsource Montserrat](https://github.com/fontsource/font-files/tree/main/fonts/google/montserrat) | Латиничні та кириличні файли WOFF2 вбудовано до частини пакета WebUI для друку звіту. |
-| Словник AprilTag `tag36h11` | Версію сімейства не зафіксовано; дані зі словника `js-aruco2` 2.0.0 | [BSD-2-Clause](https://spdx.org/licenses/BSD-2-Clause.html) | [AprilRobotics/apriltag](https://github.com/AprilRobotics/apriltag) | Дані словника в `webui/src/xr/fiducial/jsAruco2.ts`; детектор AprilTag мовою C у WebUI не виявлено. |
+| `react` | 19.2.8 | [MIT](https://spdx.org/licenses/MIT.html) | [react/react](https://github.com/react/react) | UI runtime in `webui/src/main.tsx`; included in the WebUI package. |
+| `react-dom` | 19.2.8 | [MIT](https://spdx.org/licenses/MIT.html) | [react/react](https://github.com/react/react) | Mounts the UI and reports; included in the WebUI package. |
+| `three` | 0.185.1 | [MIT](https://spdx.org/licenses/MIT.html) | [mrdoob/three.js](https://github.com/mrdoob/three.js) | 3D rendering and scene controls. |
+| `@react-three/fiber` | 9.7.0 | [MIT](https://spdx.org/licenses/MIT.html) | [pmndrs/react-three-fiber](https://github.com/pmndrs/react-three-fiber) | 3D point-cloud, scene, and localization views. |
+| `js-aruco2` | 2.0.0 | [MIT](https://spdx.org/licenses/MIT.html) | [damianofalcioni/js-aruco2](https://github.com/damianofalcioni/js-aruco2) | AprilTag detector and JavaScript dictionary; included in the WebUI. |
+| `@fontsource/montserrat` WOFF2 | 5.3.0 | [OFL-1.1](https://spdx.org/licenses/OFL-1.1.html) | [fontsource Montserrat](https://github.com/fontsource/font-files/tree/main/fonts/google/montserrat) | Latin and Cyrillic WOFF2 files are embedded in part of the WebUI package for report printing. |
+| AprilTag `tag36h11` dictionary | Family version not pinned; dictionary data comes from `js-aruco2` 2.0.0 | [BSD-2-Clause](https://spdx.org/licenses/BSD-2-Clause.html) | [AprilRobotics/apriltag](https://github.com/AprilRobotics/apriltag) | Dictionary data in `webui/src/xr/fiducial/jsAruco2.ts`; no C AprilTag detector was found in the WebUI. |
 
-#### Інструменти розробки та збирання
+#### Development and build tools
 
-| Компонент | Версія | Ліцензія SPDX | Посилання на джерело | Де використано |
+| Component | Version | SPDX license | Source | Usage |
 | --- | --- | --- | --- | --- |
-| `@types/react` | 19.2.18; у маніфесті `^19.2.0` | [MIT](https://spdx.org/licenses/MIT.html) | [DefinitelyTyped/types/react](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react) | Типи для компіляції WebUI. |
-| `@types/react-dom` | 19.2.5; у маніфесті `^19.2.0` | [MIT](https://spdx.org/licenses/MIT.html) | [DefinitelyTyped/types/react-dom](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react-dom) | Типи для компіляції WebUI. |
-| `@types/three` | 0.185.4 | [MIT](https://spdx.org/licenses/MIT.html) | [DefinitelyTyped/types/three](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/three) | Типи для компіляції WebUI. |
-| `@vitejs/plugin-react` | 6.1.1 | [MIT](https://spdx.org/licenses/MIT.html) | [vitejs/vite-plugin-react](https://github.com/vitejs/vite-plugin-react) | Плагін Vite для розробки та збирання WebUI. |
-| `@vitest/coverage-v8` | 4.1.11 | [MIT](https://spdx.org/licenses/MIT.html) | [vitest-dev/vitest](https://github.com/vitest-dev/vitest) | Збір покриття для тестів WebUI. |
-| `fontkit` | 2.0.4 | [MIT](https://spdx.org/licenses/MIT.html) | [foliojs/fontkit](https://github.com/foliojs/fontkit) | Перевірка шрифтів у тестах звітів. |
-| `react-test-renderer` | 19.2.8 | [MIT](https://spdx.org/licenses/MIT.html) | [react/react](https://github.com/react/react) | Рендерер компонентів для тестів WebUI. |
-| TypeScript | 7.0.2 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [microsoft/TypeScript](https://github.com/microsoft/TypeScript) | Перевірка типів і підготовка WebUI. |
-| Vite | 8.2.2 | [MIT](https://spdx.org/licenses/MIT.html) | [vitejs/vite](https://github.com/vitejs/vite) | Сервер розробки та збирач production-пакета WebUI. |
-| Vitest | 4.1.11 | [MIT](https://spdx.org/licenses/MIT.html) | [vitest-dev/vitest](https://github.com/vitest-dev/vitest) | Засіб запуску тестів WebUI. |
-| `lv_font_conv` | 1.5.3 | [MIT](https://spdx.org/licenses/MIT.html), за метаданими upstream; локальну ліцензію не підтверджено | [lvgl/lv_font_conv](https://github.com/lvgl/lv_font_conv) | Конвертує TTF у LVGL C-шрифт. |
-| Segno | 1.6.6 в інструкціях генератора; пакет не був встановлений під час аудиту | [BSD-3-Clause](https://spdx.org/licenses/BSD-3-Clause.html) | [heuer/segno](https://github.com/heuer/segno) | Генерація еталонних QR-векторів для тестових контрольних даних; залежністю часу виконання не є. |
-| pytest | 9.0.1 у середовищі аудиту; версію проєктом не зафіксовано | [MIT](https://spdx.org/licenses/MIT.html) | [pytest-dev/pytest](https://github.com/pytest-dev/pytest) | Запуск Python-тестів у host-середовищі. |
-| ESP-IDF Component Manager | 2.4.11 у firmware-аудиті; у середовищах WebUI-аудиту й поточному середовищі не встановлений; проєктом не зафіксовано | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [espressif/idf-component-manager](https://github.com/espressif/idf-component-manager) | Помічник для host-середовища: `tools/prepare_host_button.py`. |
-| Платформа Seeed для PlatformIO | commit `1ec1287f8e4bc4067a6fd593991e36875aef989f` | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [platform-seeedboards](https://github.com/Seeed-Studio/platform-seeedboards) | Лише опційне успадковане перевірочне збирання для nRF54L15. |
-| Espressif esp-emu (esp-emulator) | v0.49.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [espressif/esp-emulator](https://github.com/espressif/esp-emulator); [LICENSE](https://raw.githubusercontent.com/espressif/esp-emulator/main/LICENSE) | Лише для розробки та тестів: `tools/run_emulator_smoke.py` у WSL. Готовий Linux x86_64 бінарник завантажується з GitHub-релізу проєкту з перевіркою SHA-256; не входить до прошивки, не зберігається в репозиторії та не модифікувався. Ліцензію бінарника окремо не перевірено; припускається, що вона відповідає ліцензії репозиторію. |
-| WSL2 Ubuntu 26.04 та west | Ubuntu 26.04; версію west не вказано | Не вказано окремо | [Ubuntu](https://ubuntu.com/), [west](https://github.com/zephyrproject-rtos/west) | Інструменти host-середовища лише для розробки: WSL2 Ubuntu 26.04 з apt-пакетами `gcc`, `cmake`, `ninja`, `dtc`, `python3-venv` та west для `native_sim`. |
+| `@types/react` | 19.2.18; manifest specifies `^19.2.0` | [MIT](https://spdx.org/licenses/MIT.html) | [DefinitelyTyped/types/react](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react) | Types for WebUI compilation. |
+| `@types/react-dom` | 19.2.5; manifest specifies `^19.2.0` | [MIT](https://spdx.org/licenses/MIT.html) | [DefinitelyTyped/types/react](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react) | Types for WebUI compilation. |
+| `@types/three` | 0.185.4 | [MIT](https://spdx.org/licenses/MIT.html) | [DefinitelyTyped/types/three](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/three) | Types for WebUI compilation. |
+| `@vitejs/plugin-react` | 6.1.1 | [MIT](https://spdx.org/licenses/MIT.html) | [vitejs/vite-plugin-react](https://github.com/vitejs/vite-plugin-react) | Vite plugin for WebUI development and builds. |
+| `@vitest/coverage-v8` | 4.1.11 | [MIT](https://spdx.org/licenses/MIT.html) | [vitest-dev/vitest](https://github.com/vitest-dev/vitest) | Coverage collection for WebUI tests. |
+| `fontkit` | 2.0.4 | [MIT](https://spdx.org/licenses/MIT.html) | [foliojs/fontkit](https://github.com/foliojs/fontkit) | Font checks in report tests. |
+| `react-test-renderer` | 19.2.8 | [MIT](https://spdx.org/licenses/MIT.html) | [react/react](https://github.com/react/react) | Component renderer for WebUI tests. |
+| TypeScript | 7.0.2 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [microsoft/TypeScript](https://github.com/microsoft/TypeScript) | WebUI type checking and preparation. |
+| Vite | 8.2.2 | [MIT](https://spdx.org/licenses/MIT.html) | [vitejs/vite](https://github.com/vitejs/vite) | WebUI development server and production package bundler. |
+| Vitest | 4.1.11 | [MIT](https://spdx.org/licenses/MIT.html) | [vitest-dev/vitest](https://github.com/vitest-dev/vitest) | WebUI test runner. |
+| `lv_font_conv` | 1.5.3 | [MIT](https://spdx.org/licenses/MIT.html) per upstream metadata; local license not confirmed | [lvgl/lv_font_conv](https://github.com/lvgl/lv_font_conv) | Converts TTF fonts to LVGL C fonts. |
+| Segno | 1.6.6 in generator instructions; package was not installed during the audit | [BSD-3-Clause](https://spdx.org/licenses/BSD-3-Clause.html) | [heuer/segno](https://github.com/heuer/segno) | Generates reference QR vectors for test fixtures; not a runtime dependency. |
+| pytest | 9.0.1 in the audit environment; project does not pin a version | [MIT](https://spdx.org/licenses/MIT.html) | [pytest-dev/pytest](https://github.com/pytest-dev/pytest) | Runs host-side Python tests. |
+| ESP-IDF Component Manager | 2.4.11 in the firmware audit; not installed in the WebUI audit or current environments; not pinned by the project | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [espressif/idf-component-manager](https://github.com/espressif/idf-component-manager) | Host environment helper: `tools/prepare_host_button.py`. |
+| Seeed PlatformIO platform | commit `1ec1287f8e4bc4067a6fd593991e36875aef989f` | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [platform-seeedboards](https://github.com/Seeed-Studio/platform-seeedboards) | Optional legacy validation build for nRF54L15 only. |
+| Espressif esp-emu (esp-emulator) | v0.49.0 | [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) | [espressif/esp-emulator](https://github.com/espressif/esp-emulator); [LICENSE](https://raw.githubusercontent.com/espressif/esp-emulator/main/LICENSE) | Development and test use only: `tools/run_emulator_smoke.py` in WSL. The ready-made Linux x86_64 binary is downloaded from the project's GitHub release and checked with SHA-256; it is not part of the firmware, stored in the repository, or modified. The binary's license was not checked separately; it is assumed to match the repository license. |
+| WSL2 Ubuntu 26.04 and west | Ubuntu 26.04; west version not specified | Not specified separately | [Ubuntu](https://ubuntu.com/), [west](https://github.com/zephyrproject-rtos/west) | Development host tools only: WSL2 Ubuntu 26.04 with the `gcc`, `cmake`, `ninja`, `dtc`, and `python3-venv` apt packages, plus west for `native_sim`. |
 
-Транзитивні npm-залежності повністю не аудіювалися; точні версії, яких немає у маніфестах, файлах блокування або звітах, позначено як непідтверджені.
+Transitive npm dependencies have not been fully audited. Exact versions absent from manifests, lockfiles, or reports are marked as unconfirmed.
 
-#### Файли KiCad
+#### KiCad files
 
-- `kicad/XIAO_Series_SCH_Symbols/` — бібліотека символів Seeed Studio XIAO; сторонній матеріал.
-- `kicad/202004288;XIAO nRF54L15 v1.0_SCH&PCB/` — еталонна схема та PCB Seeed Studio; сторонній матеріал.
-- `kicad/old/` — архівна копія проєкту, що посилається на бібліотеку Seeed.
-- `kicad/esp32_geophone_source_locator/` — власна схема та PCB, що використовують символи Seeed.
+- `kicad/XIAO_Series_SCH_Symbols/` — Seeed Studio XIAO symbol library; third-party material.
+- `kicad/202004288;XIAO nRF54L15 v1.0_SCH&PCB/` — Seeed Studio reference schematic and PCB; third-party material.
+- `kicad/old/` — Archived project copy that references the Seeed library.
+- `kicad/esp32_geophone_source_locator/` — Original schematic and PCB that use Seeed symbols.
 
-У файлах Seeed ліцензійних приміток не знайдено. Ліцензія НЕ ПІДТВЕРДЖЕНА і має бути уточнена у Seeed Studio перед поширенням. Зовнішні 3D-моделі підключені за шляхами, але в репозиторії відсутні.
+No license notices were found in the Seeed files. The license is **unconfirmed** and must be clarified with Seeed Studio before redistribution. External 3D models are referenced by paths but are not included in the repository.
 
-### Розроблено самостійно
+### Original work
 
-| Код | Власна розробка |
+| Code | Original work |
 | --- | --- |
-| `components/*`, `main/` | Компоненти прошивки та код застосунку ESP32. |
-| `nRF54L15/src/`, `nRF54L15/include/` | Власний код застосунку nRF54L15 та заголовки. |
-| `nRF54L15/src/nrf_bmi160.c`, `nRF54L15/src/nrf_bme280.c` | Власні драйвери BMI160 і BME280 на рівні регістрів; сторонні драйвери Bosch не копіювалися. |
-| `kicad/esp32_geophone_source_locator/` | Схема та PCB — власна розробка, окрім використаних символів Seeed Studio. |
-| `webui/src/` | Власний код інтерфейсу WebUI. |
-| `webui/src/domain/qrCode.ts` | Власна реалізація QR-коду для звітів; окрему npm QR-бібліотеку не підключено. |
-| `tools/apriltag_sheet/apriltag_sheet.py`, `tools/apriltag_sheet/model.py` | Власний генератор PDF-листа AprilTag на стандартній бібліотеці Python; словникові дані `tag36h11` походять зі стороннього джерела, наведеного вище. |
+| `components/*`, `main/` | ESP32 firmware components and application code. |
+| `nRF54L15/src/`, `nRF54L15/include/` | Original nRF54L15 application code and headers. |
+| `nRF54L15/src/nrf_bmi160.c`, `nRF54L15/src/nrf_bme280.c` | Original register-level BMI160 and BME280 drivers; Bosch third-party drivers were not copied. |
+| `kicad/esp32_geophone_source_locator/` | Original schematic and PCB, except for the Seeed Studio symbols used. |
+| `webui/src/` | Original WebUI code. |
+| `webui/src/domain/qrCode.ts` | Original QR-code implementation for reports; no separate npm QR library is used. |
+| `tools/apriltag_sheet/apriltag_sheet.py`, `tools/apriltag_sheet/model.py` | Original AprilTag PDF sheet generator using the Python standard library; `tag36h11` dictionary data comes from the third-party source listed above. |
 
-Ліцензія проєкту: [CC0-1.0 / Public Domain](LICENSE); сторонні повідомлення: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Project license: [CC0-1.0 / Public Domain](LICENSE). Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Project status
 
