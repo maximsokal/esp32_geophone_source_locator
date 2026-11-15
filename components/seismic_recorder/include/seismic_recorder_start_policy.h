@@ -13,6 +13,16 @@
  */
 #define SEISMIC_RECORDER_START_FRESH_SAMPLE_PERIODS  64U
 
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"
+#endif
+/* ESP-EMU recording scenario only: its synthetic source delivers a burst of frames every 10 ms FreeRTOS tick, the real
+ * ADC one frame per period, so at 10 kHz and above the last frame is routinely older than 64 periods (6.4 ms). */
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+#undef SEISMIC_RECORDER_START_FRESH_SAMPLE_PERIODS
+#define SEISMIC_RECORDER_START_FRESH_SAMPLE_PERIODS  1000U
+#endif
+
 
 /*
  * Recorder admission depends on the acquisition task, sample cadence, and a

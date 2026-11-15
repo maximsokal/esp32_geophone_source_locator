@@ -23,6 +23,7 @@
 #include "localization_xcorr_tdoa.h"
 #include "object_store.h"
 #include "scan_occupancy.h"
+#include "seismic_buffer.h"
 
 /*
  * Pure policy/adapter layer for MAX-168: everything here is plain math over
@@ -61,6 +62,47 @@ size_t localization_calculate_participating_channels(
 #define LOCALIZATION_CALCULATE_BASE_PSRAM_RESERVE_BYTES (512U * 1024U)
 #define LOCALIZATION_CALCULATE_OCCUPANCY_PSRAM_RESERVE_BYTES (3072U * 1024U)
 size_t localization_calculate_psram_safety_reserve_bytes(bool occupancy_present);
+
+/*
+ * The AD7606 occasionally misses a conversion when the CPU is busy (board log 2026-11-14: 3 of 5672). The recorder
+ * stores the true source index, so such a hole is a short jump in it. All four channels are sampled together, so a
+ * hole of a few samples is repaired by linear interpolation instead of rejecting the whole recording. A hole of
+ * unknown length (a gap flag without an index jump), a longer one, or too many of them is still rejected.
+ */
+#define LOCALIZATION_CALCULATE_MAX_REPAIRED_GAP_SAMPLES 8U
+#define LOCALIZATION_CALCULATE_MAX_REPAIRED_TOTAL_SAMPLES 64U
+
+/* True when the jump from prev_index to next_index is a repairable hole; missing_out receives its length. */
+bool localization_calculate_gap_is_repairable(
+    uint64_t prev_index,
+    uint64_t next_index,
+    uint32_t repaired_so_far,
+    uint32_t *missing_out
+);
+
+/* The k-th (1-based) of `missing` samples between two neighbouring frames. */
+void localization_calculate_interpolate_gap_frame(
+    const seismic_frame_t *before,
+    const seismic_frame_t *after,
+    uint32_t k,
+    uint32_t missing,
+    seismic_frame_t *out
+);
+
+/*
+ * Repairs every repairable hole in place and returns the new frame count (the tail is dropped when the repaired
+ * trace would not fit in `capacity`). source_sample_indices and gap_before are kept in step; a repaired hole clears
+ * its gap flag. Holes that are not repairable are left untouched for the caller's validation to reject.
+ * *repaired_out receives the number of inserted frames.
+ */
+size_t localization_calculate_repair_gaps(
+    seismic_frame_t *frames,
+    uint64_t *source_sample_indices,
+    bool *gap_before,
+    size_t count,
+    size_t capacity,
+    uint32_t *repaired_out
+);
 
 /* Bound raw analysis frames by both duration and concurrent PSRAM use. */
 size_t localization_calculate_analysis_window_frames(

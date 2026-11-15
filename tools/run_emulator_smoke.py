@@ -711,6 +711,16 @@ def evaluate_s10(log_text: str, extra: dict[str, Any] | None = None) -> tuple[bo
         if "LOC_REJECT" in line:
             reasons.append(f"the calculation rejected the trace: {line.strip()}")
             break
+    # The board loses a few AD7606 conversions under load; the synthetic source loses some too and the calculation has
+    # to repair exactly those (log 2026-11-14: one lost sample rejected the whole recording as session_gap).
+    missed = [int(value) for value in re.findall(r"TEST_SOURCE_HOLE at_frame=\d+ missed=(\d+)", log_text)]
+    window = re.search(r"LOC_WINDOW \S+ .*repaired_samples=(\d+)", log_text)
+    if not missed:
+        reasons.append("the synthetic source lost no conversions: the hole repair was not exercised (no TEST_SOURCE_HOLE)")
+    elif window is None:
+        reasons.append("no LOC_WINDOW line with repaired_samples")
+    elif int(window.group(1)) != sum(missed):
+        reasons.append(f"the source lost {sum(missed)} conversions but the calculation repaired {window.group(1)}")
     calculation = re.search(r"TEST_RECORDING: calculation job=\d+ state=(\S+) solved=(\d+)", log_text)
     if calculation and calculation.group(1) != "succeeded":
         reasons.append(f"calculation ended in state {calculation.group(1)}")

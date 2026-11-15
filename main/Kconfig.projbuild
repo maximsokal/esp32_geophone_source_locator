@@ -427,6 +427,26 @@ menu "Test-only emulator watchdog"
             synthetic seismic source, so stack and heap use of the recording
             path can be measured in ESP-EMU. Never enable for hardware.
 
+    config APP_TEST_RECORDING_RATE_HZ
+        int "Emulator: sample rate of the synthetic source in the recording scenario (TEST ONLY)"
+        default 500
+        range 100 40000
+        depends on APP_TEST_RECORDING_SCENARIO
+        help
+            TEST ONLY. 500 Hz is the board's rate and what S10 checks. Other
+            values are for the recording-rate sweep: the source, the ring, the
+            recorder and the calculation then run at this rate.
+
+    config APP_TEST_RECORDING_SD_WRITE_LATENCY
+        bool "Emulator: model the SD card's write latency in the flash stand-in (TEST ONLY)"
+        default y
+        depends on APP_TEST_RECORDING_SCENARIO
+        help
+            TEST ONLY. Every write to the flash FAT volume waits as long as a
+            write to the board's SD card took (26..154 ms, board log
+            2026-11-14 21:34), so a recording rate the SD path cannot keep up
+            with shows up as a growing cache backlog and as dropped frames.
+
     config APP_TEST_WDT_TRIGGER
         bool "Trigger interrupt watchdog once (TEST ONLY)"
         default n

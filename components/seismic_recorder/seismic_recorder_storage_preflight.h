@@ -13,6 +13,16 @@
  */
 #define SEISMIC_RECORDER_START_RUNWAY_SECONDS  60U
 
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"
+#endif
+/* ESP-EMU recording scenario only: the flash FAT volume that stands in for the SD card holds ~6 MB, a minute of the
+ * recording-rate sweep (up to 20 kHz x 24 bytes) would not fit. The board's SD card has gigabytes. */
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+#undef SEISMIC_RECORDER_START_RUNWAY_SECONDS
+#define SEISMIC_RECORDER_START_RUNWAY_SECONDS  10U
+#endif
+
 
 uint64_t seismic_recorder_storage_required_bytes(
     uint32_t sample_rate_hz,

@@ -1834,3 +1834,127 @@ size_t localization_calculate_psram_safety_reserve_bytes(bool occupancy_present)
     return occupancy_present ? LOCALIZATION_CALCULATE_OCCUPANCY_PSRAM_RESERVE_BYTES
                              : LOCALIZATION_CALCULATE_BASE_PSRAM_RESERVE_BYTES;
 }
+
+
+bool localization_calculate_gap_is_repairable(
+    uint64_t prev_index,
+    uint64_t next_index,
+    uint32_t repaired_so_far,
+    uint32_t *missing_out
+)
+{
+    if (prev_index == UINT64_MAX || next_index <= prev_index + 1U) {
+        return false;
+    }
+    const uint64_t missing = next_index - prev_index - 1U;
+    if (missing > LOCALIZATION_CALCULATE_MAX_REPAIRED_GAP_SAMPLES ||
+        (uint64_t)repaired_so_far + missing > LOCALIZATION_CALCULATE_MAX_REPAIRED_TOTAL_SAMPLES) {
+        return false;
+    }
+    if (missing_out != NULL) {
+        *missing_out = (uint32_t)missing;
+    }
+    return true;
+}
+
+
+void localization_calculate_interpolate_gap_frame(
+    const seismic_frame_t *before,
+    const seismic_frame_t *after,
+    uint32_t k,
+    uint32_t missing,
+    seismic_frame_t *out
+)
+{
+    const double fraction = (double)k / (double)(missing + 1U);
+    out->timestamp_us = before->timestamp_us +
+        (int64_t)((double)(after->timestamp_us - before->timestamp_us) * fraction);
+    for (size_t ch = 0U; ch < SEISMIC_CHANNEL_COUNT; ++ch) {
+        out->channel_uv[ch] = (float)((double)before->channel_uv[ch] +
+            ((double)after->channel_uv[ch] - (double)before->channel_uv[ch]) * fraction);
+    }
+}
+
+
+size_t localization_calculate_repair_gaps(
+    seismic_frame_t *frames,
+    uint64_t *source_sample_indices,
+    bool *gap_before,
+    size_t count,
+    size_t capacity,
+    uint32_t *repaired_out
+)
+{
+    uint32_t total = 0U;
+    if (repaired_out != NULL) {
+        *repaired_out = 0U;
+    }
+    if (frames == NULL || source_sample_indices == NULL || gap_before == NULL || count < 2U) {
+        return count;
+    }
+    /* Holes are sized in order, so the budget is spent on the earliest ones; dropping the tail to fit only ever
+     * releases budget, hence one recount after the cut is enough. */
+    for (int pass = 0; pass < 2; ++pass) {
+        total = 0U;
+        for (size_t i = 1U; i < count; ++i) {
+            uint32_t missing = 0U;
+            if (localization_calculate_gap_is_repairable(
+                    source_sample_indices[i - 1U], source_sample_indices[i], total, &missing)) {
+                total += missing;
+            }
+        }
+        if (count + total <= capacity) {
+            break;
+        }
+        count = capacity > total ? capacity - total : 0U;
+        if (count < 2U) {
+            return count;
+        }
+    }
+    if (total == 0U) {
+        return count;
+    }
+    size_t write = count + total;
+    const size_t new_count = write;
+    uint32_t budget = 0U;
+    /* Decide each hole with the same running budget as the sizing pass, then fill from the back. */
+    uint32_t hole_missing[LOCALIZATION_CALCULATE_MAX_REPAIRED_TOTAL_SAMPLES + 1U];
+    size_t hole_at[LOCALIZATION_CALCULATE_MAX_REPAIRED_TOTAL_SAMPLES + 1U];
+    size_t holes = 0U;
+    for (size_t i = 1U; i < count; ++i) {
+        uint32_t missing = 0U;
+        if (localization_calculate_gap_is_repairable(
+                source_sample_indices[i - 1U], source_sample_indices[i], budget, &missing)) {
+            hole_at[holes] = i;
+            hole_missing[holes] = missing;
+            ++holes;
+            budget += missing;
+        }
+    }
+    size_t read = count;
+    for (size_t h = holes; h > 0U; --h) {
+        const size_t i = hole_at[h - 1U];
+        const uint32_t missing = hole_missing[h - 1U];
+        while (read > i) {
+            --read;
+            --write;
+            frames[write] = frames[read];
+            source_sample_indices[write] = source_sample_indices[read];
+            gap_before[write] = gap_before[read];
+        }
+        gap_before[write] = false;
+        const seismic_frame_t before = frames[i - 1U];
+        const seismic_frame_t after = frames[write];
+        const uint64_t before_index = source_sample_indices[i - 1U];
+        for (uint32_t k = missing; k > 0U; --k) {
+            --write;
+            localization_calculate_interpolate_gap_frame(&before, &after, k, missing, &frames[write]);
+            source_sample_indices[write] = before_index + k;
+            gap_before[write] = false;
+        }
+    }
+    if (repaired_out != NULL) {
+        *repaired_out = budget;
+    }
+    return new_count;
+}

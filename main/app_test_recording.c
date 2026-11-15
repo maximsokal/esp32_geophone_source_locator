@@ -1,4 +1,5 @@
 #include "app_test_recording.h"
+#include "app_test_recording_scenario.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -20,6 +21,9 @@
 #define TEST_RECORDING_SETTLE_MS 12000U
 #define TEST_RECORDING_RECORD_MS 10000U
 #define TEST_RECORDING_POLL_MS 200U
+/* The calculation is only waited for in full at the board's rate (S10 checks its result); in the rate sweep its window and
+ * first lines are enough, and at 10 times the rate it takes 10 times as long in the emulator. */
+#define TEST_RECORDING_CALC_WAIT_MS (TEST_REC_SAMPLE_RATE_HZ == 500 ? 120000U : 45000U)
 
 /*
  * Board-equivalent internal DMA budget. On the board the internal DMA-capable heap is nearly used up once Wi-Fi, the web
@@ -44,6 +48,21 @@ static const char *TAG = "TEST_RECORDING";
 static void fail(const char *stage, esp_err_t err)
 {
     ESP_LOGE(TAG, "FAIL stage=%s err=%s", stage, esp_err_to_name(err));
+}
+
+static void log_psram(const char *what)
+{
+    const uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    ESP_LOGI(TAG, "psram %s free=%u largest=%u min_free_ever=%u", what, (unsigned)heap_caps_get_free_size(caps),
+             (unsigned)heap_caps_get_largest_free_block(caps), (unsigned)heap_caps_get_minimum_free_size(caps));
+}
+
+static void log_sd_model(const char *what)
+{
+    unsigned calls = 0U;
+    unsigned long long delay_ms = 0ULL;
+    sd_card_test_flash_write_model(&calls, &delay_ms);
+    ESP_LOGI(TAG, "sd write model %s calls=%u charged_ms=%llu", what, calls, delay_ms);
 }
 
 static void log_dma(const char *what)
@@ -171,11 +190,15 @@ static void scenario_task(void *argument)
                  esp_err_to_name(snapshot.last_error));
         goto done;
     }
-    ESP_LOGI(TAG, "recording started session=%s", snapshot.session_id);
+    ESP_LOGI(TAG, "recording started session=%s rate=%u", snapshot.session_id, (unsigned)TEST_REC_SAMPLE_RATE_HZ);
+    log_psram("recording-start");
+    log_sd_model("at-start");
 
     vTaskDelay(pdMS_TO_TICKS(TEST_RECORDING_RECORD_MS));
     runtime_observability_request_snapshot("recording-scenario-peak");
     log_dma("recording");
+    log_psram("recording");
+    log_sd_model("end-of-recording");
     (void)measurement_service_get_snapshot(&snapshot);
     ESP_LOGI(TAG, "recording samples=%llu dropped=%llu ms=%llu", (unsigned long long)snapshot.samples_written,
              (unsigned long long)snapshot.dropped_frames, (unsigned long long)snapshot.recording_ms);
@@ -190,13 +213,15 @@ static void scenario_task(void *argument)
     ESP_LOGI(TAG, "stopped state=REVIEW samples=%llu dropped=%llu", (unsigned long long)snapshot.samples_written,
              (unsigned long long)snapshot.dropped_frames);
     runtime_observability_request_snapshot("recording-scenario-end");
+    log_psram("stopped");
+    log_sd_model("stopped");
 
     /* The same calculation the user starts with CALCULATE_SOURCES, on the session just recorded. */
     uint32_t job_id = 0U;
     err = workflow_service_test_submit_calculation(snapshot.object_id, snapshot.session_id, &job_id);
     if (err != ESP_OK) { fail("calculation_submit", err); goto done; }
     localization_job_status_t job = {0};
-    for (uint32_t waited = 0U; waited < 120000U; waited += TEST_RECORDING_POLL_MS) {
+    for (uint32_t waited = 0U; waited < TEST_RECORDING_CALC_WAIT_MS; waited += TEST_RECORDING_POLL_MS) {
         localization_job_get_status(&job);
         if (job.job_id == job_id && (job.state == LOCALIZATION_JOB_SUCCEEDED || job.state == LOCALIZATION_JOB_FAILED)) break;
         vTaskDelay(pdMS_TO_TICKS(TEST_RECORDING_POLL_MS));

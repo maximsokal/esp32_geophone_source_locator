@@ -1485,6 +1485,142 @@ static void test_joint_conflict_turns_a_success_into_record_again(void)
 }
 
 
+/* A hole of known length is filled by interpolation; everything else is left for the caller to reject. */
+static void fill_ramp(seismic_frame_t *frames, uint64_t *indices, bool *gaps, size_t count, uint64_t first_index)
+{
+    for (size_t i = 0U; i < count; ++i) {
+        frames[i].timestamp_us = 1000000LL + (int64_t)i * 2000LL;
+        for (size_t ch = 0U; ch < SEISMIC_CHANNEL_COUNT; ++ch) {
+            frames[i].channel_uv[ch] = (float)(10U * i + ch);
+        }
+        indices[i] = first_index + i;
+        gaps[i] = false;
+    }
+}
+
+static void test_short_hole_is_filled_by_linear_interpolation(void)
+{
+    seismic_frame_t frames[16];
+    uint64_t indices[16];
+    bool gaps[16];
+    fill_ramp(frames, indices, gaps, 6U, 100U);
+    /* Frames 3..5 follow a hole of two samples: indices 100,101,102 then 105,106,107. */
+    for (size_t i = 3U; i < 6U; ++i) {
+        indices[i] += 2U;
+    }
+    gaps[3] = true;
+    /* The recorded frames carry the time of the hole too: three periods between frame 2 and frame 3. */
+    for (size_t i = 3U; i < 6U; ++i) {
+        frames[i].timestamp_us += 2U * 2000LL;
+        frames[i].channel_uv[0] = (float)(10U * i + 0U) + 100.0f;
+    }
+    uint32_t repaired = 0U;
+    const size_t count = localization_calculate_repair_gaps(frames, indices, gaps, 6U, 16U, &repaired);
+    assert(count == 8U && repaired == 2U);
+    for (size_t i = 0U; i < count; ++i) {
+        assert(indices[i] == 100U + i);
+        assert(!gaps[i]);
+        if (i > 0U) {
+            assert(frames[i].timestamp_us > frames[i - 1U].timestamp_us);
+        }
+    }
+    /* Channel 0 goes 20 -> 130 over three steps: 56.67, 93.33. */
+    assert(fabsf(frames[3].channel_uv[0] - 56.6667f) < 0.01f);
+    assert(fabsf(frames[4].channel_uv[0] - 93.3333f) < 0.01f);
+    assert(frames[5].channel_uv[0] == 130.0f);
+    assert(frames[3].timestamp_us == 1000000LL + 2LL * 2000LL + 2000LL);
+    assert(frames[7].channel_uv[1] == 51.0f);
+}
+
+static void test_unrepairable_holes_are_left_untouched(void)
+{
+    seismic_frame_t frames[40];
+    uint64_t indices[40];
+    bool gaps[40];
+    uint32_t repaired = 99U;
+
+    /* A flag with no index jump is a hole of unknown length. */
+    fill_ramp(frames, indices, gaps, 10U, 0U);
+    gaps[5] = true;
+    assert(localization_calculate_repair_gaps(frames, indices, gaps, 10U, 40U, &repaired) == 10U);
+    assert(repaired == 0U && gaps[5]);
+
+    /* A hole one longer than the limit. */
+    fill_ramp(frames, indices, gaps, 10U, 0U);
+    for (size_t i = 5U; i < 10U; ++i) {
+        indices[i] += LOCALIZATION_CALCULATE_MAX_REPAIRED_GAP_SAMPLES + 1U;
+    }
+    gaps[5] = true;
+    assert(localization_calculate_repair_gaps(frames, indices, gaps, 10U, 40U, &repaired) == 10U);
+    assert(repaired == 0U && gaps[5]);
+    assert(indices[5] == 5U + LOCALIZATION_CALCULATE_MAX_REPAIRED_GAP_SAMPLES + 1U);
+
+    /* Indices that go backwards are never "repaired". */
+    fill_ramp(frames, indices, gaps, 10U, 100U);
+    indices[6] = 50U;
+    assert(localization_calculate_repair_gaps(frames, indices, gaps, 10U, 40U, &repaired) == 10U);
+    assert(repaired == 0U && indices[6] == 50U);
+}
+
+static void test_repair_budget_stops_after_the_total_limit(void)
+{
+    /* 5 holes of 8 samples = 40 repaired; a 6th..9th reach 64; the 9th would make 72 and stays a hole. */
+    seismic_frame_t frames[256];
+    uint64_t indices[256];
+    bool gaps[256];
+    fill_ramp(frames, indices, gaps, 20U, 0U);
+    uint64_t shift = 0U;
+    for (size_t i = 2U; i < 20U; i += 2U) {
+        shift += 8U;
+        for (size_t j = i; j < 20U; ++j) {
+            indices[j] = (uint64_t)j + shift;
+        }
+        gaps[i] = true;
+    }
+    uint32_t repaired = 0U;
+    const size_t count = localization_calculate_repair_gaps(frames, indices, gaps, 20U, 256U, &repaired);
+    assert(repaired == 64U && count == 20U + 64U);
+    size_t flagged = 0U;
+    for (size_t i = 0U; i < count; ++i) {
+        flagged += gaps[i] ? 1U : 0U;
+    }
+    assert(flagged == 1U);   /* only the ninth hole kept its flag */
+}
+
+static void test_repair_drops_the_tail_when_the_trace_would_not_fit(void)
+{
+    seismic_frame_t frames[12];
+    uint64_t indices[12];
+    bool gaps[12];
+    fill_ramp(frames, indices, gaps, 10U, 0U);
+    for (size_t i = 4U; i < 10U; ++i) {
+        indices[i] += 3U;
+    }
+    gaps[4] = true;
+    uint32_t repaired = 0U;
+    const size_t count = localization_calculate_repair_gaps(frames, indices, gaps, 10U, 12U, &repaired);
+    assert(repaired == 3U && count == 12U);
+    for (size_t i = 0U; i < count; ++i) {
+        assert(indices[i] == (uint64_t)i);
+    }
+}
+
+static void test_gap_repair_ignores_null_and_short_input(void)
+{
+    uint32_t repaired = 7U;
+    assert(localization_calculate_repair_gaps(NULL, NULL, NULL, 5U, 10U, &repaired) == 5U);
+    assert(repaired == 0U);
+    seismic_frame_t one = {0};
+    uint64_t index = 0U;
+    bool gap = true;
+    assert(localization_calculate_repair_gaps(&one, &index, &gap, 1U, 4U, &repaired) == 1U && gap);
+    uint32_t missing = 0U;
+    assert(!localization_calculate_gap_is_repairable(UINT64_MAX, 5U, 0U, &missing));
+    assert(!localization_calculate_gap_is_repairable(10U, 11U, 0U, &missing));
+    assert(localization_calculate_gap_is_repairable(10U, 13U, 0U, &missing) && missing == 2U);
+}
+
+
 int main(void)
 {
     test_conflicted_joint_is_stored_rejected_and_never_primary();
@@ -1503,6 +1639,11 @@ int main(void)
     test_event_window_covers_signal_and_moveout();
     test_analysis_window_respects_time_and_psram_at_supported_rates();
     test_session_without_scan_is_not_starved_by_the_scan_reserve();
+    test_short_hole_is_filled_by_linear_interpolation();
+    test_unrepairable_holes_are_left_untouched();
+    test_repair_budget_stops_after_the_total_limit();
+    test_repair_drops_the_tail_when_the_trace_would_not_fit();
+    test_gap_repair_ignores_null_and_short_input();
     test_fusion_mapping_groups_picks_and_excludes_energy();
     test_consistency_gate_rejects_physically_impossible_pick();
     test_gate_min_speed_follows_the_range_source();

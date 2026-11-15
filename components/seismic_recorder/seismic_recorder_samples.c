@@ -77,6 +77,23 @@ static bool seismic_recorder_samples_format_valid(
 }
 
 
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"
+#endif
+/*
+ * The ESP-EMU recording scenario feeds the recorder from the synthetic source but must write the file the board writes:
+ * the V2 int16 format with source indices and gap flags (the board's AD7606 source). With the V1 float format a hole
+ * in the source indices could not even be stored, so the calculation of a hole-ridden recording was never exercised.
+ */
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+#define SEISMIC_RECORDER_TEST_SOURCE_WRITES_V2 1
+#define SEISMIC_RECORDER_TEST_SOURCE_INPUT_RANGE_V 5.0f
+#else
+#define SEISMIC_RECORDER_TEST_SOURCE_WRITES_V2 0
+#define SEISMIC_RECORDER_TEST_SOURCE_INPUT_RANGE_V 0.0f
+#endif
+
+
 esp_err_t seismic_recorder_samples_format_from_acquisition(
     const seismic_acquisition_snapshot_t *acquisition,
     seismic_recorder_sample_format_t *format
@@ -88,22 +105,25 @@ esp_err_t seismic_recorder_samples_format_from_acquisition(
 
     memset(format, 0, sizeof(*format));
     format->sample_rate_hz = acquisition->sample_rate_hz;
+    const bool test_source = SEISMIC_RECORDER_TEST_SOURCE_WRITES_V2 != 0 &&
+        acquisition->source_name != NULL && strcmp(acquisition->source_name, "TEST") == 0;
     format->version =
         acquisition->source_name != NULL &&
-        strcmp(acquisition->source_name, "AD7606") == 0
+        (strcmp(acquisition->source_name, "AD7606") == 0 || test_source)
             ? SEISMIC_RECORDER_BINARY_VERSION_V2
             : SEISMIC_RECORDER_BINARY_VERSION_V1;
+    const float input_range_v = test_source ? SEISMIC_RECORDER_TEST_SOURCE_INPUT_RANGE_V : acquisition->input_range_v;
 
     if (format->version == SEISMIC_RECORDER_BINARY_VERSION_V1) {
         return ESP_OK;
     }
-    if (!isfinite(acquisition->input_range_v) || acquisition->input_range_v <= 0.0f) {
+    if (!isfinite(input_range_v) || input_range_v <= 0.0f) {
         return ESP_ERR_INVALID_ARG;
     }
 
     /* AD7606 reports signed 16-bit codes over the configured +/- range. */
     const float scale_uv_per_lsb =
-        acquisition->input_range_v * 1000000.0f / 32768.0f;
+        input_range_v * 1000000.0f / 32768.0f;
     if (!isfinite(scale_uv_per_lsb) || scale_uv_per_lsb <= 0.0f) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -112,7 +132,7 @@ esp_err_t seismic_recorder_samples_format_from_acquisition(
         format->scale_uv_per_lsb[channel] = scale_uv_per_lsb;
         format->offset_uv[channel] = 0.0f;
     }
-    format->input_range_v = acquisition->input_range_v;
+    format->input_range_v = input_range_v;
     format->oversampling_ratio = acquisition->oversampling_ratio;
     format->spi_clock_hz = acquisition->bus_clock_hz;
     return ESP_OK;

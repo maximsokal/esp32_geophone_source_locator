@@ -198,6 +198,15 @@ static float test_event_uv(
 #endif
 
 
+/* The recording scenario writes the board's int16 file (152 uV per code at +/-5 V): scale the synthetic signal, whose
+ * noise is a few uV, up to the codes a board sees (noise of a few tens of codes) so that quantisation does not eat it. */
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+#define TEST_SIGNAL_GAIN TEST_REC_SIGNAL_GAIN
+#else
+#define TEST_SIGNAL_GAIN 1.0f
+#endif
+
+
 static void seismic_test_task(
     void *argument
 )
@@ -210,10 +219,22 @@ static void seismic_test_task(
     uint64_t frame_number =
         0;
     int64_t last_stamp_us = 0;
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+    static const struct { uint64_t at; uint64_t missed; } holes[] = TEST_REC_HOLES;
+    size_t next_hole = 0U;
+#endif
 
     while (s_running) {
         const int64_t tick_us = esp_timer_get_time();
         for (int k = 0; k < TEST_FRAMES_PER_TICK; ++k) {
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+            if (next_hole < sizeof(holes) / sizeof(holes[0]) && frame_number >= holes[next_hole].at) {
+                ESP_LOGW("TEST_SOURCE", "TEST_SOURCE_HOLE at_frame=%llu missed=%llu", (unsigned long long)frame_number,
+                         (unsigned long long)holes[next_hole].missed);
+                frame_number += holes[next_hole].missed;   /* the signal went on while the conversions were lost */
+                ++next_hole;
+            }
+#endif
             float channels[
                 SEISMIC_CHANNEL_COUNT
             ];
@@ -224,11 +245,11 @@ static void seismic_test_task(
                 ++channel
             ) {
                 channels[channel] =
-                    test_noise_uv() +
+                    (test_noise_uv() +
                     test_event_uv(
                         frame_number,
                         channel
-                    );
+                    )) * TEST_SIGNAL_GAIN;
             }
 
             /* Follow the wall clock, but never step back or stand still: a wake-up that comes late must not make
@@ -237,10 +258,14 @@ static void seismic_test_task(
             int64_t stamp_us = tick_us - (int64_t)(TEST_FRAMES_PER_TICK - 1 - k) * frame_period_us;
             if (last_stamp_us != 0 && stamp_us <= last_stamp_us) stamp_us = last_stamp_us + frame_period_us;
             last_stamp_us = stamp_us;
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+            seismic_buffer_push_indexed(stamp_us, frame_number + 1U, channels);
+#else
             seismic_buffer_push(
                 stamp_us,
                 channels
             );
+#endif
 
             frame_number++;
         }

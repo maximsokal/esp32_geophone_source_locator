@@ -625,6 +625,13 @@ typedef struct
     uint64_t total_frames;
     int64_t epoch_us;
     int64_t last_timestamp_us;
+    seismic_frame_t last_frame;   /* the last frame of the previous chunk: the left edge of a hole to repair */
+    uint32_t repaired_samples;    /* frames interpolated into the window for short holes (they are not in the file) */
+    uint64_t first_gap_frame;     /* frames scanned before the discontinuity that rejected the recording */
+    bool first_gap_flag;          /* the block carried the recorder's gap flag */
+    size_t first_gap_chunk_frames;
+    uint64_t first_gap_prev_index;
+    uint64_t first_gap_next_index;
     const char *problem;
     bool best_valid;
     uint64_t best_start;
@@ -727,33 +734,12 @@ static esp_err_t localization_event_search_score(localization_event_search_t *se
 }
 
 
-static esp_err_t localization_event_search_chunk(
+static esp_err_t localization_event_search_append(
+    localization_event_search_t *search,
     const seismic_frame_t *frames,
-    size_t count,
-    uint64_t first_source_index,
-    bool gap_before,
-    void *context
+    size_t count
 )
 {
-    localization_event_search_t *search = context;
-    if (search->problem != NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (search->total_frames == 0U) {
-        search->epoch_us = frames[0].timestamp_us;
-    }
-    if (gap_before || (search->total_frames > 0U && first_source_index != search->next_index)) {
-        search->problem = LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP;
-        return ESP_ERR_INVALID_STATE;
-    }
-    for (size_t i = 0U; i < count; ++i) {
-        const int64_t previous = i > 0U ? frames[i - 1U].timestamp_us : search->last_timestamp_us;
-        if ((i > 0U || search->total_frames > 0U) && frames[i].timestamp_us <= previous) {
-            search->problem = LOCALIZATION_RUN_REJECTION_REASON_TIMESTAMP_NON_MONOTONIC;
-            return ESP_ERR_INVALID_STATE;
-        }
-    }
-
     size_t offset = 0U;
     while (offset < count) {
         const size_t space = search->window_frames - search->filled;
@@ -776,9 +762,73 @@ static esp_err_t localization_event_search_chunk(
             search->window_first_index += search->hop_frames;
         }
     }
+    return ESP_OK;
+}
+
+
+static esp_err_t localization_event_search_chunk(
+    const seismic_frame_t *frames,
+    size_t count,
+    uint64_t first_source_index,
+    bool gap_before,
+    void *context
+)
+{
+    localization_event_search_t *search = context;
+    if (search->problem != NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (search->total_frames == 0U) {
+        search->epoch_us = frames[0].timestamp_us;
+    }
+    uint32_t hole_missing = 0U;
+    const bool first_chunk = search->total_frames == 0U;
+    const bool repairable = !first_chunk && gap_before &&
+        localization_calculate_gap_is_repairable(
+            search->next_index - 1U, first_source_index, search->repaired_samples, &hole_missing
+        );
+    /* A flag on the first block, a flag without a short index jump, or an index jump without the flag all stay
+     * rejected: only a hole of known, small length is repaired. */
+    const bool rejected = first_chunk ? gap_before : (gap_before ? !repairable : first_source_index != search->next_index);
+    if (rejected) {
+        search->problem = LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP;
+        search->first_gap_frame = search->total_frames;
+        search->first_gap_prev_index = search->next_index;
+        search->first_gap_next_index = first_source_index;
+        search->first_gap_flag = gap_before;
+        search->first_gap_chunk_frames = count;
+        return ESP_ERR_INVALID_STATE;
+    }
+    for (size_t i = 0U; i < count; ++i) {
+        const int64_t previous = i > 0U ? frames[i - 1U].timestamp_us : search->last_timestamp_us;
+        if ((i > 0U || search->total_frames > 0U) && frames[i].timestamp_us <= previous) {
+            search->problem = LOCALIZATION_RUN_REJECTION_REASON_TIMESTAMP_NON_MONOTONIC;
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+
+    if (repairable) {
+        for (uint32_t k = 1U; k <= hole_missing; ++k) {
+            seismic_frame_t synthetic;
+            localization_calculate_interpolate_gap_frame(&search->last_frame, &frames[0], k, hole_missing, &synthetic);
+            const esp_err_t append_err = localization_event_search_append(search, &synthetic, 1U);
+            if (append_err != ESP_OK) {
+                search->err = append_err;
+                return append_err;
+            }
+        }
+        search->repaired_samples += hole_missing;
+    }
+    {
+        const esp_err_t append_err = localization_event_search_append(search, frames, count);
+        if (append_err != ESP_OK) {
+            return append_err;
+        }
+    }
     search->total_frames += count;
     search->next_index = first_source_index + count;
     search->last_timestamp_us = frames[count - 1U].timestamp_us;
+    search->last_frame = frames[count - 1U];
     return ESP_OK;
 }
 
@@ -956,9 +1006,15 @@ esp_err_t localization_calculate_run(
         free_channel_buffers(search.channel);
         heap_caps_free(search.window);
         heap_caps_free(chunk);
-        ESP_LOGI(TAG, "LOC_SEARCH session is longer than the %u-frame window: scanned %llu frames, hop=%u, event_found=%d, problem=%s, err=%s",
-                 (unsigned)frame_capacity, (unsigned long long)search.total_frames, (unsigned)search.hop_frames,
-                 search.best_valid ? 1 : 0, search.problem != NULL ? search.problem : "none", esp_err_to_name(err));
+        ESP_LOGI(TAG, "LOC_SEARCH session is longer than the %u-frame window: scanned %llu frames, repaired_samples=%u, hop=%u, event_found=%d, problem=%s, err=%s",
+                 (unsigned)frame_capacity, (unsigned long long)search.total_frames, (unsigned)search.repaired_samples,
+                 (unsigned)search.hop_frames, search.best_valid ? 1 : 0, search.problem != NULL ? search.problem : "none", esp_err_to_name(err));
+        if (search.problem != NULL && strcmp(search.problem, LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP) == 0) {
+            ESP_LOGW(TAG, "LOC_REJECT session_gap after %llu scanned frames: source_index expected=%llu got=%llu gap_flag=%d next_chunk_frames=%u",
+                     (unsigned long long)search.first_gap_frame, (unsigned long long)search.first_gap_prev_index,
+                     (unsigned long long)search.first_gap_next_index, search.first_gap_flag ? 1 : 0,
+                     (unsigned)search.first_gap_chunk_frames);
+        }
         if (search.problem != NULL) {
             return localization_calculate_persist_trace_rejection(
                 object_id, session_id, config, &geometry, all_channel_mask,
@@ -979,6 +1035,10 @@ esp_err_t localization_calculate_run(
             /* An event inside the first window keeps the long-standing analysis of the recording's start. */
             analysis_start_frame = search.best_start == 0U ? 0U
                 : search.best_first_pick > lead_in ? search.best_first_pick - lead_in : 0U;
+            /* The search window counts the frames it interpolated for short holes; the file does not. Starting a few
+             * frames early is harmless, starting late is not. */
+            analysis_start_frame = analysis_start_frame > (uint64_t)search.repaired_samples
+                ? analysis_start_frame - (uint64_t)search.repaired_samples : 0U;
         }
     }
 
@@ -1019,11 +1079,15 @@ esp_err_t localization_calculate_run(
         heap_caps_free(gap_before);
         return ESP_ERR_INVALID_STATE;
     }
+    uint32_t repaired_samples = 0U;
+    frame_count = localization_calculate_repair_gaps(
+        frames, source_sample_indices, gap_before, frame_count, frame_capacity, &repaired_samples
+    );
     const int64_t session_epoch_timestamp_us = search_epoch_known ? search_epoch_us : frames[0].timestamp_us;
-    ESP_LOGI(TAG, "LOC_WINDOW %s/%s rate=%uHz frames=%u of %llu start=%llu limited_by_memory=%d", object_id, session_id,
+    ESP_LOGI(TAG, "LOC_WINDOW %s/%s rate=%uHz frames=%u of %llu start=%llu limited_by_memory=%d repaired_samples=%u", object_id, session_id,
              (unsigned)session_summary.sample_rate_hz, (unsigned)frame_count,
              (unsigned long long)session_summary.samples_written, (unsigned long long)analysis_start_frame,
-             analysis_limited_by_free_memory ? 1 : 0);
+             analysis_limited_by_free_memory ? 1 : 0, (unsigned)repaired_samples);
     const bool analysis_window_truncated =
         session_summary.samples_written > (uint64_t)frame_count;
     const bool analysis_window_memory_limited =

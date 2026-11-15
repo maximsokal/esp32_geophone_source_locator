@@ -70,6 +70,8 @@ static seismic_frame_t *g_fixture_frames;
 static size_t g_fixture_frame_count;
 static seismic_recorder_session_summary_t g_fixture_summary;
 static size_t g_fixture_gap_index;
+static uint64_t g_fixture_gap_missing; /* source indices lost at g_fixture_gap_index (0: the flag carries no length) */
+static uint64_t g_late_case_hole_missing; /* when set, run_late_event_case puts a hole of this length at 4 s */
 static size_t g_fixture_nonmonotonic_index;
 static size_t g_fixture_rail_counts[OBJECT_STORE_POD_COUNT];
 static esp_err_t g_fixture_geometry_err;
@@ -165,7 +167,8 @@ esp_err_t seismic_recorder_read_session_range_ex(
     for (size_t i = 0U; i < count; ++i) {
         const size_t sample_index = (size_t)start_index + i;
         if (source_sample_indices != NULL) {
-            source_sample_indices[i] = (uint64_t)sample_index;
+            source_sample_indices[i] = (uint64_t)sample_index +
+                (sample_index >= g_fixture_gap_index ? g_fixture_gap_missing : 0U);
         }
         if (gap_before != NULL) {
             gap_before[i] = sample_index == g_fixture_gap_index;
@@ -210,7 +213,8 @@ esp_err_t seismic_recorder_scan_session(
             const size_t i = g_fixture_nonmonotonic_index - start;
             buffer[i].timestamp_us = g_fixture_frames[g_fixture_nonmonotonic_index - 1U].timestamp_us - 1;
         }
-        const esp_err_t err = callback(buffer, count, (uint64_t)start, start == g_fixture_gap_index, context);
+        const uint64_t first_source_index = (uint64_t)start + (start >= g_fixture_gap_index ? g_fixture_gap_missing : 0U);
+        const esp_err_t err = callback(buffer, count, first_source_index, start == g_fixture_gap_index, context);
         if (err != ESP_OK) return err;
         start += count;
     }
@@ -276,6 +280,7 @@ static void reset_fakes(void)
     g_range_read_calls = 0U;
     g_range_read_max_frames = 0U;
     g_fixture_gap_index = SIZE_MAX;
+    g_fixture_gap_missing = 0U;
     g_fixture_nonmonotonic_index = SIZE_MAX;
     memset(g_fixture_rail_counts, 0, sizeof(g_fixture_rail_counts));
 
@@ -1320,6 +1325,10 @@ static void run_late_event_case(uint32_t duration_s, double event_time_s, bool c
     const size_t recording_frames = (size_t)duration_s * sample_rate_hz;
     reset_fakes();
     prepare_recording_with_event(duration_s, event_time_s);
+    if (g_late_case_hole_missing != 0U) {
+        g_fixture_gap_index = 4U * 500U;
+        g_fixture_gap_missing = g_late_case_hole_missing;
+    }
     if (constrain_psram) {
         localization_test_psram_model_set_reserved(8U * 1024U * 1024U - 1536U * 1024U);
     }
@@ -1422,6 +1431,32 @@ static void test_gap_after_prefix_rejects_whole_recording(void)
     puts("  known gap at 12 s rejects whole recording despite early event -- OK");
 }
 
+
+/* The board lost 3 AD7606 conversions in 5672 (log 2026-11-14): a short hole with a known length is repaired, the event
+ * after it is still found, and the pick lands where the event is in the FILE (the interpolated frames are not in it). */
+static void test_short_known_hole_is_repaired_and_the_event_is_localized(void)
+{
+    g_late_case_hole_missing = 2U;
+    run_late_event_case(30U, 22.0, false);
+    g_late_case_hole_missing = 0U;
+    puts("  2-sample hole at 4 s is repaired, event at 22 s localized at the right file position -- OK");
+}
+
+static void test_too_long_known_hole_still_rejects_whole_recording(void)
+{
+    reset_fakes();
+    prepare_recording_with_event(30U, 25.0);
+    g_fixture_gap_index = 4U * 500U;
+    g_fixture_gap_missing = LOCALIZATION_CALCULATE_MAX_REPAIRED_GAP_SAMPLES + 1U;
+    localization_calculate_config_t config = default_test_config();
+    config.sample_rate_hz = 500U;
+    localization_calculate_summary_t summary;
+    assert(localization_calculate_run("OBJ01", "S000054", &config, 52054ULL, &summary) == ESP_OK);
+    assert(g_recorded_count == 1U && g_pick_write_calls == 0U);
+    assert(strcmp(g_recorded[0].rejection_reason, LOCALIZATION_RUN_REJECTION_REASON_SESSION_GAP) == 0);
+    free_fixture_frames();
+    puts("  a hole longer than the repair limit still rejects the recording -- OK");
+}
 
 /* Portable best-effort recursive mkdir for the handful of fixed segments
  * this test needs under the fake STORAGE_MANAGER_OBJECTS_PATH root. */
@@ -2121,6 +2156,8 @@ int main(void)
     test_quiet_prefix_does_not_false_fail_late_event();
     test_gap_at_four_seconds_rejects_whole_recording();
     test_gap_after_prefix_rejects_whole_recording();
+    test_short_known_hole_is_repaired_and_the_event_is_localized();
+    test_too_long_known_hole_still_rejects_whole_recording();
     test_five_minute_late_event_stays_within_psram_window();
     test_scan_identity_mismatch_and_unavailable_fail_closed();
     test_unusable_scan_reports_constraint_not_applied();

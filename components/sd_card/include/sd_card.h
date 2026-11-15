@@ -52,4 +52,6 @@ sdmmc_card_t *sd_card_get_card_handle(void);
 #if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
 /* TEST ONLY (ESP-EMU): transfers that found no DMA bounce buffer, as the real SDSPI driver would have failed on. */
 unsigned sd_card_test_flash_bounce_failures(void);
+/* TEST ONLY (ESP-EMU): write calls charged the board's SD write latency and the milliseconds charged in total. */
+void sd_card_test_flash_write_model(unsigned *calls, unsigned long long *delay_ms);
 #endif

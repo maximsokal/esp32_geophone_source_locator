@@ -23,6 +23,7 @@ idf_component_register(
         power_control
         scan_occupancy
         storage_manager
+        seismic_buffer
         seismic_dsp
         seismic_recorder
 )

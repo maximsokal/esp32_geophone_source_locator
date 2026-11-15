@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import re
 import shlex
 from pathlib import Path
 
@@ -716,6 +717,10 @@ def test_evaluate_s10_accepts_a_clean_recording():
      "no DMA bounce buffer"),
     (lambda log: log.replace("sd dma bounce failures=0", "sd dma bounce failures=4"), "4 SD transfers found no DMA bounce buffer"),
     (lambda log: log.replace("applied=1", "applied=0"), "DMA budget could not be applied"),
+    (lambda log: "\n".join(l for l in log.splitlines() if "TEST_SOURCE_HOLE" not in l), "hole repair was not exercised"),
+    (lambda log: log.replace("repaired_samples=3", "repaired_samples=0"), "lost 3 conversions but the calculation repaired 0"),
+    (lambda log: log + "\nW (24000) LOCALIZATION_CALCULATE: LOC_REJECT session_gap after 88 scanned frames: source_index expected=100 got=103 gap_flag=1 next_chunk_frames=64",
+     "rejected the trace"),
     (lambda log: log.replace("TEST_RECORDING: psram ballast", "TEST_RECORDING: psram nothing"), "missing recording marker: TEST_RECORDING: psram ballast"),
     (lambda log: log + "\nE (23510) LOCALIZATION_CALCULATE: insufficient_memory: largest PSRAM block=3080192 bytes; need a 500-frame window",
      "found no memory for its window"),
@@ -724,7 +729,7 @@ def test_evaluate_s10_accepts_a_clean_recording():
     (lambda log: log.replace("LOC_PICKS accepted=3 of 3", "LOC_PICKS accepted=2 of 3"), "only 2 of 3 channel picks were accepted"),
     (lambda log: log + "\nW (24000) LOCALIZATION_CALCULATE: LOC_REJECT session_gap at frame 1200 of 5000: timestamp_us prev=1 cur=2",
      "rejected the trace"),
-    (lambda log: log.replace("pos_m=(0.500,3.000,0.000)", "pos_m=(2.500,1.000,0.000)").replace("pos_m=(0.502,2.997,0.000)", "pos_m=(2.5,1.0,0.0)").replace("pos_m=(0.496,2.993,0.000)", "pos_m=(2.5,1.0,0.0)").replace("pos_m=(0.400,2.900,0.000)", "pos_m=(2.5,1.0,0.0)"),
+    (lambda log: re.sub(r"pos_m=\([-\d.]+,[-\d.]+,[-\d.]+\)", "pos_m=(2.5,1.0,0.0)", log),
      "method(s) located the source within"),
     (lambda log: log.replace("calculation job=1 state=succeeded", "calculation job=1 state=failed"), "calculation ended in state failed"),
     (lambda log: log.replace("TEST_RECORDING: dma ballast", "TEST_RECORDING: dma nothing"), "missing recording marker: TEST_RECORDING: dma ballast"),

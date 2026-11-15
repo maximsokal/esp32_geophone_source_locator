@@ -11,6 +11,9 @@
 #include <string.h>
 
 #include "diskio_impl.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "sdkconfig.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_partition.h"
@@ -61,6 +64,44 @@ static bool bounce_acquire(void)
     return true;
 }
 
+/*
+ * Write latency of the board's SD card. 39 fwrite calls of ~250 frames (2 KB) from the board logs of 2026-11-14 18:45
+ * and 21:34, in ms: median 48, mean 59, p90 130, max 154. The time is not the transfer (2 KB take ~1 ms at 20 MHz): it is
+ * the card's busy time and the wait for the TFT to give up the shared SPI bus. It is therefore charged per write call,
+ * whatever its size, and drawn from the measured values, so a recording rate that needs more write calls per second than
+ * the card delivers shows up as a growing cache backlog in ESP-EMU. Off the board's SD card the model is an assumption.
+ */
+#if defined(CONFIG_APP_TEST_RECORDING_SD_WRITE_LATENCY) && CONFIG_APP_TEST_RECORDING_SD_WRITE_LATENCY
+static const uint16_t s_board_write_ms[] = {
+    21, 25, 26, 26, 27, 28, 29, 29, 29, 31, 33, 34, 35, 36, 38, 43, 44, 45, 47, 48, 49, 49, 50, 53, 59, 60, 60, 67, 68, 70,
+    76, 79, 87, 90, 129, 130, 134, 153, 154,
+};
+static atomic_uint s_model_write_calls;
+static atomic_uint s_model_write_delay_ms;
+static uint32_t s_model_rng = 0x2545F491U;
+
+static void model_write_latency(void)
+{
+    s_model_rng ^= s_model_rng << 13;
+    s_model_rng ^= s_model_rng >> 17;
+    s_model_rng ^= s_model_rng << 5;
+    const uint32_t ms = s_board_write_ms[s_model_rng % (sizeof(s_board_write_ms) / sizeof(s_board_write_ms[0]))];
+    atomic_fetch_add(&s_model_write_calls, 1U);
+    atomic_fetch_add(&s_model_write_delay_ms, ms);
+    vTaskDelay(pdMS_TO_TICKS(ms));
+}
+#else
+static atomic_uint s_model_write_calls;
+static atomic_uint s_model_write_delay_ms;
+static void model_write_latency(void) {}
+#endif
+
+void sd_card_test_flash_write_model(unsigned *calls, unsigned long long *delay_ms)
+{
+    if (calls != NULL) *calls = atomic_load(&s_model_write_calls);
+    if (delay_ms != NULL) *delay_ms = (unsigned long long)atomic_load(&s_model_write_delay_ms);
+}
+
 static DSTATUS test_init(BYTE pdrv) { (void)pdrv; return 0; }
 static DSTATUS test_status(BYTE pdrv) { (void)pdrv; return 0; }
 
@@ -77,6 +118,7 @@ static DRESULT test_read(BYTE pdrv, BYTE *buff, DWORD sector, UINT count)
 static DRESULT test_write(BYTE pdrv, const BYTE *buff, DWORD sector, UINT count)
 {
     (void)pdrv;
+    model_write_latency();
     for (UINT i = 0U; i < count; ++i) {
         if (!bounce_acquire()) return RES_ERROR;
         const size_t address = (size_t)(sector + i) * s_sector;
