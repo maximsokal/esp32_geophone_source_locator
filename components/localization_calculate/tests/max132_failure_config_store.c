@@ -39,6 +39,16 @@ static void ensure_parent(const char *path)
     if (MAX132_CONFIG_MKDIR(parent) != 0) assert(errno == EEXIST);
 }
 
+/* The run store lists a session under the storage operation guard; the host has no card to guard. */
+esp_err_t storage_manager_operation_begin(void)
+{
+    return ESP_OK;
+}
+
+void storage_manager_operation_end(void)
+{
+}
+
 esp_err_t storage_manager_read_text(const char *path, char *buffer, size_t buffer_size)
 {
     if (path == NULL || buffer == NULL || buffer_size == 0U) return ESP_ERR_INVALID_ARG;

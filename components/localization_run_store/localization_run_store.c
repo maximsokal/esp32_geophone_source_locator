@@ -188,7 +188,7 @@ static void set_partial_error(
  * entries when a matching file cannot be read or parsed. The status reports
  * how many failures occurred and which stable error-code categories applied.
  */
-static esp_err_t localization_run_store_list_internal(
+static esp_err_t localization_run_store_list_locked(
     const char *object_id,
     const char *session_id,
     localization_run_record_t *records,
@@ -326,6 +326,42 @@ static esp_err_t localization_run_store_list_internal(
 }
 
 
+/*
+ * Listing a session's records stats and reads files on the SD card, which shares SPI2 with the TFT: it takes the storage
+ * operation guard. The web page and the result screen ask for it from their own tasks (board log 2026-11-15 22:06: an
+ * unguarded stat from the web handler while the TFT was sending a frame, spi_hal_setup_trans assert, reboot).
+ */
+static esp_err_t localization_run_store_list_internal(
+    const char *object_id,
+    const char *session_id,
+    localization_run_record_t *records,
+    size_t max_records,
+    size_t *record_count_out,
+    localization_run_store_list_status_t *status_out,
+    bool *directory_opened_out
+)
+{
+    const esp_err_t guard_err = storage_manager_operation_begin();
+    if (guard_err != ESP_OK) {
+        if (directory_opened_out != NULL) {
+            *directory_opened_out = false;
+        }
+        if (record_count_out != NULL) {
+            *record_count_out = 0U;
+        }
+        if (status_out != NULL) {
+            memset(status_out, 0, sizeof(*status_out));
+        }
+        return guard_err;
+    }
+    const esp_err_t result = localization_run_store_list_locked(
+        object_id, session_id, records, max_records, record_count_out, status_out, directory_opened_out
+    );
+    storage_manager_operation_end();
+    return result;
+}
+
+
 esp_err_t localization_run_store_list_ex(
     const char *object_id,
     const char *session_id,
@@ -441,7 +477,7 @@ static bool is_pick_record_filename(
 }
 
 
-static esp_err_t localization_run_store_list_picks_internal(
+static esp_err_t localization_run_store_list_picks_locked(
     const char *object_id,
     const char *session_id,
     localization_pick_record_t *records,
@@ -575,6 +611,42 @@ static esp_err_t localization_run_store_list_picks_internal(
     }
 
     *record_count_out = count;
+    return result;
+}
+
+
+/*
+ * Listing a session's records stats and reads files on the SD card, which shares SPI2 with the TFT: it takes the storage
+ * operation guard. The web page and the result screen ask for it from their own tasks (board log 2026-11-15 22:06: an
+ * unguarded stat from the web handler while the TFT was sending a frame, spi_hal_setup_trans assert, reboot).
+ */
+static esp_err_t localization_run_store_list_picks_internal(
+    const char *object_id,
+    const char *session_id,
+    localization_pick_record_t *records,
+    size_t max_records,
+    size_t *record_count_out,
+    localization_run_store_list_status_t *status_out,
+    bool *directory_opened_out
+)
+{
+    const esp_err_t guard_err = storage_manager_operation_begin();
+    if (guard_err != ESP_OK) {
+        if (directory_opened_out != NULL) {
+            *directory_opened_out = false;
+        }
+        if (record_count_out != NULL) {
+            *record_count_out = 0U;
+        }
+        if (status_out != NULL) {
+            memset(status_out, 0, sizeof(*status_out));
+        }
+        return guard_err;
+    }
+    const esp_err_t result = localization_run_store_list_picks_locked(
+        object_id, session_id, records, max_records, record_count_out, status_out, directory_opened_out
+    );
+    storage_manager_operation_end();
     return result;
 }
 
