@@ -96,6 +96,14 @@ export function fullDeviceStatus(): DeviceStatus {
       last_error: 0,
       last_error_name: 'ESP_OK',
       sample_rate_hz: 500,
+      selected_sample_rate_hz: 500,
+      selected_record_limit_ms: 0,
+      sample_rate_options: [
+        { sample_rate_hz: 500, max_record_s: 0 },
+        { sample_rate_hz: 2000, max_record_s: 120 },
+        { sample_rate_hz: 4000, max_record_s: 30 },
+        { sample_rate_hz: 5000, max_record_s: 25 },
+      ],
       samples_recorded: 100,
       recording_ms: 200,
       cadence: {

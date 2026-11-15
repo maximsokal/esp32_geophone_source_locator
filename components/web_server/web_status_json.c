@@ -9,6 +9,7 @@
 #include "nrf_topology_service.h"
 #include "runtime_observability.h"
 #include "seismic_acquisition.h"
+#include "seismic_rate_profile.h"
 #include "seismic_buffer.h"
 #include "storage_manager.h"
 #include "web_status_policy.h"
@@ -333,6 +334,33 @@ static bool web_status_json_add_mux(cJSON *root, const device_mux_status_t *mux)
         cJSON_AddNumberToObject(object, "active_pod", mux->active_pod) != NULL;
 }
 
+/* The rate the next run will use and the presets the user can choose from, each with its longest recording. */
+static bool web_status_json_add_sample_rate_options(cJSON *object)
+{
+    if (cJSON_AddNumberToObject(object, "selected_sample_rate_hz", seismic_acquisition_get_sample_rate()) == NULL ||
+        cJSON_AddNumberToObject(
+            object, "selected_record_limit_ms",
+            seismic_rate_profile_record_limit_ms(seismic_acquisition_get_sample_rate())) == NULL) {
+        return false;
+    }
+    cJSON *options = cJSON_AddArrayToObject(object, "sample_rate_options");
+    if (options == NULL) return false;
+    for (size_t i = 0U; i < seismic_rate_profile_count(); ++i) {
+        const seismic_rate_profile_t *profile = seismic_rate_profile_at(i);
+        if (!seismic_acquisition_sample_rate_supported(profile->sample_rate_hz)) continue;
+        cJSON *option = cJSON_CreateObject();
+        if (option == NULL ||
+            cJSON_AddNumberToObject(option, "sample_rate_hz", profile->sample_rate_hz) == NULL ||
+            cJSON_AddNumberToObject(option, "max_record_s", profile->max_record_seconds) == NULL ||
+            !cJSON_AddItemToArray(options, option)) {
+            cJSON_Delete(option);
+            return false;
+        }
+    }
+    return true;
+}
+
+
 static bool web_status_json_add_acquisition(
     cJSON *root,
     const device_acquisition_status_t *acquisition,
@@ -384,6 +412,7 @@ static bool web_status_json_add_acquisition(
         ) != NULL;
 
     if (!base_ok) return false;
+    if (!web_status_json_add_sample_rate_options(object)) return false;
 
     cJSON *cadence = cJSON_AddObjectToObject(object, "cadence");
     if (cadence == NULL) return false;

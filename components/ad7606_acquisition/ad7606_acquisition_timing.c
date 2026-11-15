@@ -149,7 +149,8 @@ bool ad7606_acquisition_timing_resolve(
 )
 {
     if (
-        (sample_rate_hz != 500U && sample_rate_hz != 5000U &&
+        (sample_rate_hz != 500U && sample_rate_hz != 1000U && sample_rate_hz != 2000U &&
+         sample_rate_hz != 4000U && sample_rate_hz != 5000U && sample_rate_hz != 8000U &&
          sample_rate_hz != 10000U && sample_rate_hz != 20000U &&
          sample_rate_hz != 40000U) ||
         spi_clock_hz < 1000000U ||

@@ -127,6 +127,9 @@ typedef struct {
 
     bool result_data_ready;
     bool result_load_failed;
+    /* The recording sample rate of the next run and its longest recording in seconds (0: none); refreshed by the screen. */
+    uint32_t sample_rate_hz;
+    uint32_t record_limit_s;
     bool result_waveform_available;
     bool result_source_valid;
     double result_source_m[3];
@@ -179,6 +182,7 @@ typedef enum {
     UI_WORKFLOW_EVENT_EDIT_DISTANCE,
     UI_WORKFLOW_EVENT_SAVE_DISTANCE,
     UI_WORKFLOW_EVENT_OPEN_LIVE_SIGNALS,
+    UI_WORKFLOW_EVENT_CYCLE_SAMPLE_RATE,
 } ui_workflow_event_type_t;
 
 /*
@@ -189,6 +193,8 @@ typedef enum {
  */
 #define UI_WORKFLOW_ACTION_PLACEMENT_BLOCKED ((workflow_command_t)(WORKFLOW_COMMAND_COUNT + 1))
 #define UI_WORKFLOW_ACTION_LIVE_SIGNALS ((workflow_command_t)(WORKFLOW_COMMAND_COUNT + 2))
+/*  SAMPLE_RATE       at RECORD_READY: OK moves to the next recording sample-rate preset (the line above it shows rate and limit). */
+#define UI_WORKFLOW_ACTION_SAMPLE_RATE ((workflow_command_t)(WORKFLOW_COMMAND_COUNT + 3))
 
 typedef struct {
     ui_workflow_event_type_t type;

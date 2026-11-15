@@ -1836,10 +1836,25 @@ size_t localization_calculate_psram_safety_reserve_bytes(bool occupancy_present)
 }
 
 
+uint32_t localization_calculate_max_repaired_gap_samples(uint32_t sample_rate_hz)
+{
+    const uint64_t samples = ((uint64_t)sample_rate_hz * LOCALIZATION_CALCULATE_MAX_REPAIRED_GAP_MS + 999U) / 1000U;
+    return samples < 1U ? 1U : (uint32_t)samples;
+}
+
+
+uint32_t localization_calculate_max_repaired_total_samples(uint32_t sample_rate_hz)
+{
+    const uint64_t samples = ((uint64_t)sample_rate_hz * LOCALIZATION_CALCULATE_MAX_REPAIRED_TOTAL_MS + 999U) / 1000U;
+    return samples < 1U ? 1U : (uint32_t)samples;
+}
+
+
 bool localization_calculate_gap_is_repairable(
     uint64_t prev_index,
     uint64_t next_index,
     uint32_t repaired_so_far,
+    uint32_t sample_rate_hz,
     uint32_t *missing_out
 )
 {
@@ -1847,8 +1862,8 @@ bool localization_calculate_gap_is_repairable(
         return false;
     }
     const uint64_t missing = next_index - prev_index - 1U;
-    if (missing > LOCALIZATION_CALCULATE_MAX_REPAIRED_GAP_SAMPLES ||
-        (uint64_t)repaired_so_far + missing > LOCALIZATION_CALCULATE_MAX_REPAIRED_TOTAL_SAMPLES) {
+    if (missing > localization_calculate_max_repaired_gap_samples(sample_rate_hz) ||
+        (uint64_t)repaired_so_far + missing > localization_calculate_max_repaired_total_samples(sample_rate_hz)) {
         return false;
     }
     if (missing_out != NULL) {
@@ -1882,6 +1897,7 @@ size_t localization_calculate_repair_gaps(
     bool *gap_before,
     size_t count,
     size_t capacity,
+    uint32_t sample_rate_hz,
     uint32_t *repaired_out
 )
 {
@@ -1896,11 +1912,14 @@ size_t localization_calculate_repair_gaps(
      * releases budget, hence one recount after the cut is enough. */
     for (int pass = 0; pass < 2; ++pass) {
         total = 0U;
+        size_t holes_seen = 0U;
         for (size_t i = 1U; i < count; ++i) {
             uint32_t missing = 0U;
-            if (localization_calculate_gap_is_repairable(
-                    source_sample_indices[i - 1U], source_sample_indices[i], total, &missing)) {
+            if (holes_seen < LOCALIZATION_CALCULATE_MAX_REPAIRED_HOLES &&
+                localization_calculate_gap_is_repairable(
+                    source_sample_indices[i - 1U], source_sample_indices[i], total, sample_rate_hz, &missing)) {
                 total += missing;
+                ++holes_seen;
             }
         }
         if (count + total <= capacity) {
@@ -1918,13 +1937,14 @@ size_t localization_calculate_repair_gaps(
     const size_t new_count = write;
     uint32_t budget = 0U;
     /* Decide each hole with the same running budget as the sizing pass, then fill from the back. */
-    uint32_t hole_missing[LOCALIZATION_CALCULATE_MAX_REPAIRED_TOTAL_SAMPLES + 1U];
-    size_t hole_at[LOCALIZATION_CALCULATE_MAX_REPAIRED_TOTAL_SAMPLES + 1U];
+    uint32_t hole_missing[LOCALIZATION_CALCULATE_MAX_REPAIRED_HOLES];
+    size_t hole_at[LOCALIZATION_CALCULATE_MAX_REPAIRED_HOLES];
     size_t holes = 0U;
     for (size_t i = 1U; i < count; ++i) {
         uint32_t missing = 0U;
-        if (localization_calculate_gap_is_repairable(
-                source_sample_indices[i - 1U], source_sample_indices[i], budget, &missing)) {
+        if (holes < LOCALIZATION_CALCULATE_MAX_REPAIRED_HOLES &&
+            localization_calculate_gap_is_repairable(
+                source_sample_indices[i - 1U], source_sample_indices[i], budget, sample_rate_hz, &missing)) {
             hole_at[holes] = i;
             hole_missing[holes] = missing;
             ++holes;

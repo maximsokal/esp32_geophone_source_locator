@@ -16,6 +16,8 @@ static size_t fake_free_dma;
 static unsigned fake_spi_begin_calls;
 static unsigned fake_spi_end_calls;
 static esp_err_t fake_spi_begin_result;
+static unsigned fake_spi_begin_timeouts;
+static unsigned fake_delay_calls;
 static unsigned fake_mutex_take_calls;
 static unsigned fake_mutex_give_calls;
 static unsigned fake_frees;
@@ -62,7 +64,17 @@ unsigned esp_log_timestamp(void)
 esp_err_t app_spi_bus_sd_operation_begin(void)
 {
     ++fake_spi_begin_calls;
+    if (fake_spi_begin_timeouts > 0U) {
+        --fake_spi_begin_timeouts;
+        return ESP_ERR_TIMEOUT;
+    }
     return fake_spi_begin_result;
+}
+
+void vTaskDelay(unsigned long ticks)
+{
+    (void)ticks;
+    ++fake_delay_calls;
 }
 
 void app_spi_bus_sd_operation_end(void)
@@ -151,6 +163,8 @@ static void reset_fake_state(void)
     fake_spi_begin_calls = 0U;
     fake_spi_end_calls = 0U;
     fake_spi_begin_result = ESP_OK;
+    fake_spi_begin_timeouts = 0U;
+    fake_delay_calls = 0U;
     fake_mutex_take_calls = 0U;
     fake_mutex_give_calls = 0U;
     fake_frees = 0U;
@@ -295,6 +309,47 @@ static void test_priority_snapshot_reads_current_owner_before_release(void)
     assert(fake_task_status.uxBasePriority == 1U);
 }
 
+/*
+ * The display quiesce can time out while the LVGL side waits for a task that waits for this mutex. The mutex must be
+ * given back between attempts or that wait never ends (board log 2026-11-15 19:28, calculation frozen at 0 %).
+ */
+static void test_quiesce_timeout_releases_the_mutex_and_retries(void)
+{
+    reset_fake_state();
+    fake_spi_begin_timeouts = 3U;
+    assert(storage_manager_operation_begin() == ESP_OK);
+    assert(s_operation_depth == 1U);
+    assert(fake_spi_begin_calls == 4U);
+    assert(fake_mutex_take_calls == 4U);
+    assert(fake_mutex_give_calls == 3U);
+    assert(fake_delay_calls == 3U);
+    assert(fake_spi_end_calls == 0U);
+
+    storage_manager_operation_end();
+    assert(fake_mutex_give_calls == 4U);
+    assert(fake_spi_end_calls == 1U);
+}
+
+static void test_quiesce_that_never_succeeds_fails_the_operation(void)
+{
+    reset_fake_state();
+    fake_spi_begin_timeouts = 1000U;
+    assert(storage_manager_operation_begin() == ESP_ERR_TIMEOUT);
+    assert(fake_spi_begin_calls == STORAGE_MANAGER_QUIESCE_ATTEMPTS);
+    assert(fake_mutex_take_calls == fake_mutex_give_calls);
+    assert(s_operation_depth == 0U);
+    assert(fake_spi_end_calls == 0U);
+}
+
+static void test_other_quiesce_errors_are_not_retried(void)
+{
+    reset_fake_state();
+    fake_spi_begin_result = ESP_ERR_INVALID_STATE;
+    assert(storage_manager_operation_begin() == ESP_ERR_INVALID_STATE);
+    assert(fake_spi_begin_calls == 1U);
+    assert(fake_delay_calls == 0U);
+}
+
 int main(void)
 {
     test_unready_and_spi_failure();
@@ -304,6 +359,9 @@ int main(void)
     test_reserve_allocation_failure_is_recoverable();
     test_unmatched_end_is_noop();
     test_priority_snapshot_reads_current_owner_before_release();
+    test_quiesce_timeout_releases_the_mutex_and_retries();
+    test_quiesce_that_never_succeeds_fails_the_operation();
+    test_other_quiesce_errors_are_not_retried();
     reset_fake_state();
     return 0;
 }

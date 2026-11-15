@@ -5245,7 +5245,22 @@ esp_err_t nrf_topology_service_get_accepted_ranging_result(
         *result = s_frozen_ranging_result;
         result->accepted_revision_ms = s_accepted_ranging_revision;
     }
+    const bool object_ok = s_accepted_ranging_object[0] != '\0' && strcmp(s_accepted_ranging_object, object_id) == 0;
+    const bool frozen_ok = s_frozen_ranging_result_valid && s_frozen_ranging_result.success &&
+        !s_frozen_ranging_result.invalidated;
+    const bool progress_ok = s_ranging_progress_valid && s_ranging_progress.complete && s_ranging_progress.success &&
+        s_ranging_progress.updated_at_ms == s_accepted_ranging_revision;
+    const bool idle_ok = !s_ranging_active && !s_cs_request_pending;
+    const bool time_ok = now_ms >= s_frozen_ranging_result.timestamp_ms;
+    const bool snapshot_ok = s_snapshot_valid;
     portEXIT_CRITICAL(&s_state_lock);
+    if (!valid || stale) {
+        /* Say which condition failed: "geometry unavailable or changed" alone sent the 2026-11-15 board log astray. */
+        ESP_LOGW(TAG, "RANGING_ACCEPTED_UNAVAILABLE valid=%d stale=%d object=%d frozen=%d progress=%d idle=%d time=%d snapshot=%d "
+                 "membership_current=%d", valid ? 1 : 0, stale ? 1 : 0, object_ok ? 1 : 0, frozen_ok ? 1 : 0,
+                 progress_ok ? 1 : 0, idle_ok ? 1 : 0, time_ok ? 1 : 0, snapshot_ok ? 1 : 0,
+                 (current_topology->stale ? 0 : 1));
+    }
     if (!valid) return ESP_ERR_NOT_FOUND;
     return stale ? ESP_ERR_TIMEOUT : ESP_OK;
 }
@@ -5536,7 +5551,7 @@ esp_err_t nrf_topology_service_get_nrf_log_page(
  */
 esp_err_t nrf_topology_service_test_seed_confirmed_setup(const char *object_id)
 {
-    if (object_id == NULL || object_id[0] == ' ' || strlen(object_id) >= sizeof(s_accepted_ranging_object)) {
+    if (object_id == NULL || object_id[0] == '\0' || strlen(object_id) >= sizeof(s_accepted_ranging_object)) {
         return ESP_ERR_INVALID_ARG;
     }
     static const struct { uint8_t channel; uint8_t node_id; } remotes[3] = {{0U, 1U}, {2U, 3U}, {3U, 4U}};

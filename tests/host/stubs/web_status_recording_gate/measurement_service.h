@@ -29,6 +29,8 @@ typedef struct {
     uint64_t samples_written;
     uint64_t dropped_frames;
     uint64_t recording_ms;
+    uint32_t record_limit_ms;
+    bool stopped_by_limit;
     esp_err_t last_error;
     esp_err_t stop_stage_error;
 } measurement_service_snapshot_t;

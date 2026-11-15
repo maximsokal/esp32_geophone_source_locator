@@ -10,6 +10,7 @@
 #include "storage_bulk_admission.h"
 #include "measurement_service.h"
 #include "seismic_acquisition.h"
+#include "seismic_rate_profile.h"
 #include "localization_calculate.h"
 #include "localization_config.h"
 #include "localization_job.h"
@@ -741,6 +742,25 @@ static esp_err_t web_control_measurement_start(
     return measurement_service_start_object_async(object_id);
 }
 
+/*
+ * Chooses the sample rate of the next run from the offered presets. Refused while the source runs (live preview or a
+ * recording): the rate is fixed from start to stop, so the live view has to be stopped first.
+ */
+static esp_err_t web_control_set_sample_rate(cJSON *root)
+{
+    double value = 0.0;
+    if (!web_control_number(root, "sample_rate_hz", &value) || value < 1.0 || value > 1000000.0 ||
+        floor(value) != value) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const uint32_t sample_rate_hz = (uint32_t)value;
+    if (seismic_rate_profile_find(sample_rate_hz) == NULL) {
+        return ESP_ERR_INVALID_ARG;   /* not one of the offered presets: 400 */
+    }
+    /* ESP_ERR_INVALID_STATE (409): the source runs, stop the live view first. */
+    return seismic_acquisition_set_sample_rate(sample_rate_hz);
+}
+
 static esp_err_t web_control_acquisition_stop(void)
 {
     measurement_service_snapshot_t measurement;
@@ -897,6 +917,9 @@ static esp_err_t web_control_process(
     }
     if (strcmp(action, "acquisition_stop") == 0) {
         return web_control_acquisition_stop();
+    }
+    if (strcmp(action, "set_sample_rate") == 0) {
+        return web_control_set_sample_rate(root);
     }
     if (strcmp(action, "calculate_source") == 0) {
         return web_control_calculate_source(root, object_id);

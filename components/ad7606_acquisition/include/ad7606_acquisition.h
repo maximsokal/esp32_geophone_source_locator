@@ -102,6 +102,12 @@ esp_err_t ad7606_acquisition_probe(void);
 
 esp_err_t ad7606_acquisition_start(void);
 
+/* Sample rate of the next run (default: CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ). Changing it is refused while the source
+ * runs (ESP_ERR_INVALID_STATE) or when the timing does not allow it (ESP_ERR_INVALID_ARG). */
+esp_err_t ad7606_acquisition_set_sample_rate(uint32_t sample_rate_hz);
+uint32_t ad7606_acquisition_get_sample_rate(void);
+bool ad7606_acquisition_sample_rate_supported(uint32_t sample_rate_hz);
+
 void ad7606_acquisition_stop(void);
 
 esp_err_t ad7606_acquisition_get_status(

@@ -81,6 +81,7 @@ static ui_i18n_key_t action_key(workflow_command_t command)
     /* Not members of workflow_command_t, so they cannot be switch cases. */
     if (command == UI_WORKFLOW_ACTION_PLACEMENT_BLOCKED) return UI_I18N_KEY_TFT_WORKFLOW_ACTION_PLACEMENT_CONFIRMED;
     if (command == UI_WORKFLOW_ACTION_LIVE_SIGNALS) return UI_I18N_KEY_TFT_WORKFLOW_ACTION_LIVE_SIGNALS;
+    if (command == UI_WORKFLOW_ACTION_SAMPLE_RATE) return UI_I18N_KEY_TFT_WORKFLOW_ACTION_SAMPLE_RATE;
     switch (command) {
         case WORKFLOW_COMMAND_START_MEASUREMENT: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_START_MEASUREMENT;
         case WORKFLOW_COMMAND_GO_CALIBRATION: return UI_I18N_KEY_TFT_WORKFLOW_ACTION_GO_CALIBRATION;
@@ -160,6 +161,10 @@ static size_t expand_action(
         out[count++] = UI_WORKFLOW_ACTION_PLACEMENT_BLOCKED;
     } else if ((snapshot->allowed_actions & WORKFLOW_ACTION(command)) != 0U) {
         out[count++] = command;
+    }
+    /* After "Start recording", which stays the first (default) action: OK on this one moves to the next rate preset. */
+    if (command == WORKFLOW_COMMAND_START_RECORDING && snapshot->step == WORKFLOW_STEP_RECORD_READY) {
+        out[count++] = UI_WORKFLOW_ACTION_SAMPLE_RATE;
     }
     return count;
 }
@@ -1050,6 +1055,20 @@ void ui_workflow_model_build(
             break;
         case WORKFLOW_STEP_RECORD_READY:
             (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_RECORD_READY_INSTRUCTION);
+            if (state->sample_rate_hz != 0U) {
+                char rate[12];
+                char limit[12];
+                (void)snprintf(rate, sizeof(rate), "%lu", (unsigned long)state->sample_rate_hz);
+                ui_workflow_model_line_t *row = add_line(
+                    model,
+                    state->record_limit_s == 0U ? UI_I18N_KEY_TFT_WORKFLOW_SAMPLE_RATE_UNLIMITED
+                                                : UI_I18N_KEY_TFT_WORKFLOW_SAMPLE_RATE_LIMITED);
+                set_arg(row, 0U, rate);
+                if (state->record_limit_s != 0U) {
+                    (void)snprintf(limit, sizeof(limit), "%lu", (unsigned long)state->record_limit_s);
+                    set_arg(row, 1U, limit);
+                }
+            }
             /* Recording with fewer than 3 geophones is allowed (diagnostic), but no source can be located from it. */
             if (snapshot->sensor_sufficiency == WORKFLOW_SENSOR_INSUFFICIENT) {
                 (void)add_line(model, UI_I18N_KEY_TFT_WORKFLOW_INSUFFICIENT_GEOPHONES);
@@ -1423,6 +1442,8 @@ ui_workflow_event_t ui_workflow_model_handle_key(
                 state->notice_until_ms = now_ms + 2000U;
             } else if (event.command == UI_WORKFLOW_ACTION_LIVE_SIGNALS) {
                 event.type = UI_WORKFLOW_EVENT_OPEN_LIVE_SIGNALS;
+            } else if (event.command == UI_WORKFLOW_ACTION_SAMPLE_RATE) {
+                event.type = UI_WORKFLOW_EVENT_CYCLE_SAMPLE_RATE;
             } else if (event.command == WORKFLOW_COMMAND_DELETE_RECORDING && !state->delete_confirm) {
                 state->delete_confirm = true;
                 event.type = UI_WORKFLOW_EVENT_DELETE_CONFIRM_CHANGED;

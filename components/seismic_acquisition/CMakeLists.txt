@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "seismic_acquisition.c"
+        "seismic_rate_profile.c"
         "seismic_source_registry.c"
         "seismic_source_common.c"
         "seismic_source_test.c"

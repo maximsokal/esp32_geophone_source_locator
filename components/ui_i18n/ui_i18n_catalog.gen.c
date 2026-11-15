@@ -256,6 +256,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Sensors placed", /* tft.workflow.action.placement_confirmed */
     "Record again", /* tft.workflow.action.record_again */
     "Retry", /* tft.workflow.action.retry */
+    "Change rate", /* tft.workflow.action.sample_rate */
     "Sensors placed", /* tft.workflow.action.sensors_placed */
     "Skip", /* tft.workflow.action.skip */
     "Start measurement", /* tft.workflow.action.start_measurement */
@@ -326,6 +327,7 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Not enough memory. Try again.", /* tft.workflow.memory_unavailable */
     "Busy", /* tft.workflow.notice.busy */
     "Not stable yet", /* tft.workflow.notice.placement_blocked */
+    "Stop live signals first", /* tft.workflow.notice.sample_rate_busy */
     "State changed", /* tft.workflow.notice.state_changed */
     "%s", /* tft.workflow.object.name */
     "Select object for measurement", /* tft.workflow.object.select */
@@ -395,6 +397,8 @@ static const char *const s_ui_i18n_en[UI_I18N_KEY_COUNT] = {
     "Source X%s Y%s Z%s m", /* tft.workflow.result.source_xyz */
     "Source calculated successfully", /* tft.workflow.result.success */
     "Waveform segment unavailable", /* tft.workflow.result.waveform_unavailable */
+    "Rate %s Hz, max %s s", /* tft.workflow.sample_rate.limited */
+    "Rate %s Hz, no time limit", /* tft.workflow.sample_rate.unlimited */
     "Scan on phone", /* tft.workflow.scan.phone */
     "Under 3: limited position; calibration can continue", /* tft.workflow.sensor.insufficient */
     "ADC:%s MAIN N%s B%s INA:%s %sV", /* tft.workflow.sensor.main */
@@ -742,6 +746,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Датчики встановлено", /* tft.workflow.action.placement_confirmed */
     "Записати ще раз", /* tft.workflow.action.record_again */
     "Повторити", /* tft.workflow.action.retry */
+    "Змінити частоту", /* tft.workflow.action.sample_rate */
     "Датчики розміщено", /* tft.workflow.action.sensors_placed */
     "Пропустити", /* tft.workflow.action.skip */
     "Почати вимірювання", /* tft.workflow.action.start_measurement */
@@ -812,6 +817,7 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Недостатньо пам’яті. Спробуйте ще раз.", /* tft.workflow.memory_unavailable */
     "Зайнято", /* tft.workflow.notice.busy */
     "Ще не стабільно", /* tft.workflow.notice.placement_blocked */
+    "Спершу зупиніть сигнали", /* tft.workflow.notice.sample_rate_busy */
     "Стан змінився", /* tft.workflow.notice.state_changed */
     "%s", /* tft.workflow.object.name */
     "Виберіть об’єкт для вимірювання", /* tft.workflow.object.select */
@@ -881,6 +887,8 @@ static const char *const s_ui_i18n_uk[UI_I18N_KEY_COUNT] = {
     "Джерело X%s Y%s Z%s м", /* tft.workflow.result.source_xyz */
     "Джерело успішно визначено", /* tft.workflow.result.success */
     "Фрагмент хвильової форми недоступний", /* tft.workflow.result.waveform_unavailable */
+    "Частота %s Гц, до %s с", /* tft.workflow.sample_rate.limited */
+    "Частота %s Гц, без ліміту часу", /* tft.workflow.sample_rate.unlimited */
     "Скануйте на телефоні", /* tft.workflow.scan.phone */
     "Менше 3: позиція обмежена; калібрування триває", /* tft.workflow.sensor.insufficient */
     "ADC:%s MAIN N%s B%s INA:%s %sV", /* tft.workflow.sensor.main */

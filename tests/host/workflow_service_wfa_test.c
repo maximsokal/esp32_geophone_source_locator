@@ -151,6 +151,7 @@ esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snaps
 
 esp_err_t measurement_service_start_async(void) { return ESP_OK; }
 esp_err_t measurement_service_stop_async(void) { return ESP_OK; }
+esp_err_t measurement_service_keep_async(void) { return ESP_OK; }
 esp_err_t measurement_service_delete_async(void) { return ESP_OK; }
 
 esp_err_t object_service_get_active(object_service_summary_t *object)

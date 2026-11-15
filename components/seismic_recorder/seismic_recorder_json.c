@@ -208,8 +208,18 @@ static bool seismic_recorder_json_samples_consistent(
     );
     if (written < 0 || written >= (int)sizeof(samples_path)) return false;
 
+    /*
+     * The SD card and the TFT share SPI2: every file access has to hold the storage operation guard, which also
+     * quiesces the display. This one read did not, and when the TFT sent a frame at that moment the SD driver started a
+     * polling transaction on a busy SPI and asserted (spi_hal_setup_trans: spi_ll_get_running_cmd(hw) == 0). Board log
+     * 2026-11-15 18:04, the calculation of a 4 kHz recording.
+     */
+    if (storage_manager_operation_begin() != ESP_OK) return false;
     FILE *file = fopen(samples_path, "rb");
-    if (file == NULL) return false;
+    if (file == NULL) {
+        storage_manager_operation_end();
+        return false;
+    }
 
     struct stat info;
     seismic_recorder_binary_header_t header;
@@ -218,6 +228,7 @@ static bool seismic_recorder_json_samples_consistent(
         info.st_size >= 0 &&
         fread(&header, 1U, sizeof(header), file) == sizeof(header);
     const int close_result = fclose(file);
+    storage_manager_operation_end();
     if (!readable || close_result != 0) return false;
 
     const uint32_t expected_frame_size =

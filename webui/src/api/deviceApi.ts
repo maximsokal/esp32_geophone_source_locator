@@ -256,6 +256,7 @@ const CRITICAL_CONTROL_ACTIONS = new Set([
   'measurement_stop',
   'acquisition_start',
   'acquisition_stop',
+  'set_sample_rate',
   'calibrate_heights',
   'workflow_command',
 ]);

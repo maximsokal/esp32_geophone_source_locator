@@ -1515,7 +1515,7 @@ static void test_short_hole_is_filled_by_linear_interpolation(void)
         frames[i].channel_uv[0] = (float)(10U * i + 0U) + 100.0f;
     }
     uint32_t repaired = 0U;
-    const size_t count = localization_calculate_repair_gaps(frames, indices, gaps, 6U, 16U, &repaired);
+    const size_t count = localization_calculate_repair_gaps(frames, indices, gaps, 6U, 16U, 500U, &repaired);
     assert(count == 8U && repaired == 2U);
     for (size_t i = 0U; i < count; ++i) {
         assert(indices[i] == 100U + i);
@@ -1542,23 +1542,23 @@ static void test_unrepairable_holes_are_left_untouched(void)
     /* A flag with no index jump is a hole of unknown length. */
     fill_ramp(frames, indices, gaps, 10U, 0U);
     gaps[5] = true;
-    assert(localization_calculate_repair_gaps(frames, indices, gaps, 10U, 40U, &repaired) == 10U);
+    assert(localization_calculate_repair_gaps(frames, indices, gaps, 10U, 40U, 500U, &repaired) == 10U);
     assert(repaired == 0U && gaps[5]);
 
     /* A hole one longer than the limit. */
     fill_ramp(frames, indices, gaps, 10U, 0U);
     for (size_t i = 5U; i < 10U; ++i) {
-        indices[i] += LOCALIZATION_CALCULATE_MAX_REPAIRED_GAP_SAMPLES + 1U;
+        indices[i] += localization_calculate_max_repaired_gap_samples(500U) + 1U;
     }
     gaps[5] = true;
-    assert(localization_calculate_repair_gaps(frames, indices, gaps, 10U, 40U, &repaired) == 10U);
+    assert(localization_calculate_repair_gaps(frames, indices, gaps, 10U, 40U, 500U, &repaired) == 10U);
     assert(repaired == 0U && gaps[5]);
-    assert(indices[5] == 5U + LOCALIZATION_CALCULATE_MAX_REPAIRED_GAP_SAMPLES + 1U);
+    assert(indices[5] == 5U + localization_calculate_max_repaired_gap_samples(500U) + 1U);
 
     /* Indices that go backwards are never "repaired". */
     fill_ramp(frames, indices, gaps, 10U, 100U);
     indices[6] = 50U;
-    assert(localization_calculate_repair_gaps(frames, indices, gaps, 10U, 40U, &repaired) == 10U);
+    assert(localization_calculate_repair_gaps(frames, indices, gaps, 10U, 40U, 500U, &repaired) == 10U);
     assert(repaired == 0U && indices[6] == 50U);
 }
 
@@ -1578,7 +1578,7 @@ static void test_repair_budget_stops_after_the_total_limit(void)
         gaps[i] = true;
     }
     uint32_t repaired = 0U;
-    const size_t count = localization_calculate_repair_gaps(frames, indices, gaps, 20U, 256U, &repaired);
+    const size_t count = localization_calculate_repair_gaps(frames, indices, gaps, 20U, 256U, 500U, &repaired);
     assert(repaired == 64U && count == 20U + 64U);
     size_t flagged = 0U;
     for (size_t i = 0U; i < count; ++i) {
@@ -1598,26 +1598,81 @@ static void test_repair_drops_the_tail_when_the_trace_would_not_fit(void)
     }
     gaps[4] = true;
     uint32_t repaired = 0U;
-    const size_t count = localization_calculate_repair_gaps(frames, indices, gaps, 10U, 12U, &repaired);
+    const size_t count = localization_calculate_repair_gaps(frames, indices, gaps, 10U, 12U, 500U, &repaired);
     assert(repaired == 3U && count == 12U);
     for (size_t i = 0U; i < count; ++i) {
         assert(indices[i] == (uint64_t)i);
     }
 }
 
+/* The limits are in time (16 ms a hole, 128 ms a recording), so the same stall of the ADC task is still repaired when
+ * the rate is higher. Board log 2026-11-15 18:04: a 9-sample hole at 2 kHz was rejected by a fixed limit of 8. */
+static void test_repair_limits_scale_with_the_sample_rate(void)
+{
+    assert(localization_calculate_max_repaired_gap_samples(500U) == 8U);
+    assert(localization_calculate_max_repaired_total_samples(500U) == 64U);
+    assert(localization_calculate_max_repaired_gap_samples(2000U) == 32U);
+    assert(localization_calculate_max_repaired_total_samples(2000U) == 256U);
+    assert(localization_calculate_max_repaired_gap_samples(4000U) == 64U);
+    assert(localization_calculate_max_repaired_total_samples(4000U) == 512U);
+    assert(localization_calculate_max_repaired_gap_samples(5000U) == 80U);
+    assert(localization_calculate_max_repaired_total_samples(5000U) == 640U);
+    assert(localization_calculate_max_repaired_gap_samples(10U) == 1U);   /* never zero */
+
+    uint32_t missing = 0U;
+    /* The hole of the board log: indices 4512 -> 4522 is 9 lost samples. */
+    assert(!localization_calculate_gap_is_repairable(4512U, 4522U, 0U, 500U, &missing));
+    assert(localization_calculate_gap_is_repairable(4512U, 4522U, 0U, 2000U, &missing) && missing == 9U);
+    /* The edge of each rate: 16 ms of samples is repaired, one more is not. */
+    const uint32_t rates[] = { 500U, 2000U, 4000U, 5000U };
+    for (size_t i = 0U; i < sizeof(rates) / sizeof(rates[0]); ++i) {
+        const uint32_t limit = localization_calculate_max_repaired_gap_samples(rates[i]);
+        assert(localization_calculate_gap_is_repairable(100U, 100U + limit + 1U, 0U, rates[i], &missing));
+        assert(missing == limit);
+        assert(!localization_calculate_gap_is_repairable(100U, 100U + limit + 2U, 0U, rates[i], &missing));
+        /* The total budget is 128 ms at every rate. */
+        const uint32_t total = localization_calculate_max_repaired_total_samples(rates[i]);
+        assert(!localization_calculate_gap_is_repairable(100U, 102U, total, rates[i], &missing));
+        assert(localization_calculate_gap_is_repairable(100U, 102U, total - 1U, rates[i], &missing));
+    }
+}
+
+static void test_too_many_separate_holes_are_left_for_the_caller_to_reject(void)
+{
+    enum { COUNT = 400 };
+    static seismic_frame_t frames[COUNT + 200];
+    static uint64_t indices[COUNT + 200];
+    static bool gaps[COUNT + 200];
+    fill_ramp(frames, indices, gaps, COUNT, 0U);
+    /* A one-sample hole every 4 frames: ~100 holes, far below the time budget but over the hole limit. */
+    uint64_t shift = 0U;
+    for (size_t i = 4U; i < COUNT; i += 4U) {
+        ++shift;
+        for (size_t j = i; j < COUNT; ++j) indices[j] = (uint64_t)j + shift;
+        gaps[i] = true;
+    }
+    uint32_t repaired = 0U;
+    const size_t count = localization_calculate_repair_gaps(frames, indices, gaps, COUNT, COUNT + 200U, 5000U, &repaired);
+    assert(repaired == LOCALIZATION_CALCULATE_MAX_REPAIRED_HOLES);
+    assert(count == COUNT + LOCALIZATION_CALCULATE_MAX_REPAIRED_HOLES);
+    size_t flagged = 0U;
+    for (size_t i = 0U; i < count; ++i) flagged += gaps[i] ? 1U : 0U;
+    assert(flagged > 0U);   /* the holes past the limit keep their flag: the caller rejects the trace */
+}
+
 static void test_gap_repair_ignores_null_and_short_input(void)
 {
     uint32_t repaired = 7U;
-    assert(localization_calculate_repair_gaps(NULL, NULL, NULL, 5U, 10U, &repaired) == 5U);
+    assert(localization_calculate_repair_gaps(NULL, NULL, NULL, 5U, 10U, 500U, &repaired) == 5U);
     assert(repaired == 0U);
     seismic_frame_t one = {0};
     uint64_t index = 0U;
     bool gap = true;
-    assert(localization_calculate_repair_gaps(&one, &index, &gap, 1U, 4U, &repaired) == 1U && gap);
+    assert(localization_calculate_repair_gaps(&one, &index, &gap, 1U, 4U, 500U, &repaired) == 1U && gap);
     uint32_t missing = 0U;
-    assert(!localization_calculate_gap_is_repairable(UINT64_MAX, 5U, 0U, &missing));
-    assert(!localization_calculate_gap_is_repairable(10U, 11U, 0U, &missing));
-    assert(localization_calculate_gap_is_repairable(10U, 13U, 0U, &missing) && missing == 2U);
+    assert(!localization_calculate_gap_is_repairable(UINT64_MAX, 5U, 0U, 500U, &missing));
+    assert(!localization_calculate_gap_is_repairable(10U, 11U, 0U, 500U, &missing));
+    assert(localization_calculate_gap_is_repairable(10U, 13U, 0U, 500U, &missing) && missing == 2U);
 }
 
 
@@ -1644,6 +1699,8 @@ int main(void)
     test_repair_budget_stops_after_the_total_limit();
     test_repair_drops_the_tail_when_the_trace_would_not_fit();
     test_gap_repair_ignores_null_and_short_input();
+    test_repair_limits_scale_with_the_sample_rate();
+    test_too_many_separate_holes_are_left_for_the_caller_to_reject();
     test_fusion_mapping_groups_picks_and_excludes_energy();
     test_consistency_gate_rejects_physically_impossible_pick();
     test_gate_min_speed_follows_the_range_source();

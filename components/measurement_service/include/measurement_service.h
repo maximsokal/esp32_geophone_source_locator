@@ -40,6 +40,10 @@ typedef struct
     uint64_t dropped_frames;
     uint64_t recording_ms;
 
+    /* Longest recording at the current sample rate (0: none) and whether the last one ended because it was reached. */
+    uint32_t record_limit_ms;
+    bool stopped_by_limit;
+
     esp_err_t last_error;
     esp_err_t stop_stage_error;
 

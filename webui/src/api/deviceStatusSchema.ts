@@ -341,6 +341,16 @@ function checkAcquisition(acquisition: StatusObject): void {
   optionalNumber(acquisition, 'last_error', 'acquisition');
   optionalString(acquisition, 'last_error_name', 'acquisition');
   requiredNumber(acquisition, 'sample_rate_hz', 'acquisition');
+  optionalNumber(acquisition, 'selected_sample_rate_hz', 'acquisition');
+  optionalNumber(acquisition, 'selected_record_limit_ms', 'acquisition');
+  const rateOptions = optionalArray(acquisition, 'sample_rate_options', 'acquisition');
+  if (rateOptions !== undefined) {
+    rateOptions.forEach((item, index) => {
+      const option = objectValue(item, `acquisition.sample_rate_options[${index}]`);
+      requiredNumber(option, 'sample_rate_hz', `acquisition.sample_rate_options[${index}]`);
+      requiredNumber(option, 'max_record_s', `acquisition.sample_rate_options[${index}]`);
+    });
+  }
   requiredNumber(acquisition, 'samples_recorded', 'acquisition');
   requiredNumber(acquisition, 'recording_ms', 'acquisition');
 
@@ -467,9 +477,10 @@ function checkMeasurement(measurement: StatusObject): void {
   for (const key of ['state', 'object_id', 'object_name', 'session_id', 'stop_stage', 'stop_error_stage', 'last_error_name', 'error']) {
     optionalString(measurement, key, 'measurement');
   }
-  for (const key of ['stop_stage_error', 'samples_written', 'dropped_frames', 'recording_ms', 'last_error']) {
+  for (const key of ['stop_stage_error', 'samples_written', 'dropped_frames', 'recording_ms', 'record_limit_ms', 'last_error']) {
     optionalNumber(measurement, key, 'measurement');
   }
+  optionalBoolean(measurement, 'stopped_by_limit', 'measurement');
 }
 
 function checkObjectStore(store: StatusObject): void {

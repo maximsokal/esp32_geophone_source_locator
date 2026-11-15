@@ -785,7 +785,7 @@ static esp_err_t localization_event_search_chunk(
     const bool first_chunk = search->total_frames == 0U;
     const bool repairable = !first_chunk && gap_before &&
         localization_calculate_gap_is_repairable(
-            search->next_index - 1U, first_source_index, search->repaired_samples, &hole_missing
+            search->next_index - 1U, first_source_index, search->repaired_samples, search->sample_rate_hz, &hole_missing
         );
     /* A flag on the first block, a flag without a short index jump, or an index jump without the flag all stay
      * rejected: only a hole of known, small length is repaired. */
@@ -1081,7 +1081,8 @@ esp_err_t localization_calculate_run(
     }
     uint32_t repaired_samples = 0U;
     frame_count = localization_calculate_repair_gaps(
-        frames, source_sample_indices, gap_before, frame_count, frame_capacity, &repaired_samples
+        frames, source_sample_indices, gap_before, frame_count, frame_capacity, session_summary.sample_rate_hz,
+        &repaired_samples
     );
     const int64_t session_epoch_timestamp_us = search_epoch_known ? search_epoch_us : frames[0].timestamp_us;
     ESP_LOGI(TAG, "LOC_WINDOW %s/%s rate=%uHz frames=%u of %llu start=%llu limited_by_memory=%d repaired_samples=%u", object_id, session_id,

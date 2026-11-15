@@ -119,6 +119,9 @@ export interface MeasurementServiceStatus {
   samples_written?: number;
   dropped_frames?: number;
   recording_ms?: number;
+  /** Longest recording at the current sample rate in ms (0: none) and whether the last one ended at that limit. */
+  record_limit_ms?: number;
+  stopped_by_limit?: boolean;
   last_error?: number;
   last_error_name?: string;
   error?: string;
@@ -543,6 +546,12 @@ export interface SeismicCadenceEvidence {
   collapsed_periods: number;
 }
 
+/** One sample-rate preset the firmware offers, with the longest recording it can keep up with (0: no limit). */
+export interface SampleRateOption {
+  sample_rate_hz: number;
+  max_record_s: number;
+}
+
 export interface DeviceAcquisitionStatus {
   running: boolean;
   requested_running: boolean;
@@ -551,6 +560,10 @@ export interface DeviceAcquisitionStatus {
   last_error?: number;
   last_error_name?: string;
   sample_rate_hz: number;
+  /** The rate the next run will use, and the presets to choose it from (sample_rate_hz is 0 while stopped). */
+  selected_sample_rate_hz?: number;
+  selected_record_limit_ms?: number;
+  sample_rate_options?: SampleRateOption[];
   samples_recorded: number;
   recording_ms: number;
   cadence?: SeismicCadenceEvidence & {

@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "seismic_rate_profile",
+      "sources": [
+        "components/seismic_acquisition/seismic_rate_profile.c",
+        "components/seismic_acquisition/tests/seismic_rate_profile_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_acquisition/include"
+      ]
+    }
+  ]
+}

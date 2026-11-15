@@ -69,14 +69,23 @@ size_t localization_calculate_psram_safety_reserve_bytes(bool occupancy_present)
  * hole of a few samples is repaired by linear interpolation instead of rejecting the whole recording. A hole of
  * unknown length (a gap flag without an index jump), a longer one, or too many of them is still rejected.
  */
-#define LOCALIZATION_CALCULATE_MAX_REPAIRED_GAP_SAMPLES 8U
-#define LOCALIZATION_CALCULATE_MAX_REPAIRED_TOTAL_SAMPLES 64U
+/* The limits are in time, not in samples: a stall of the ADC task costs more samples the faster it samples (board log
+ * 2026-11-15 18:04: a 9-sample hole at 2 kHz was rejected by the old fixed limit of 8). At 500 Hz they are the old
+ * 8 and 64 samples. */
+#define LOCALIZATION_CALCULATE_MAX_REPAIRED_GAP_MS 16U
+#define LOCALIZATION_CALCULATE_MAX_REPAIRED_TOTAL_MS 128U
+/* More separate holes than this in one analysis window is a sick recording, not a busy CPU. */
+#define LOCALIZATION_CALCULATE_MAX_REPAIRED_HOLES 64U
+
+uint32_t localization_calculate_max_repaired_gap_samples(uint32_t sample_rate_hz);
+uint32_t localization_calculate_max_repaired_total_samples(uint32_t sample_rate_hz);
 
 /* True when the jump from prev_index to next_index is a repairable hole; missing_out receives its length. */
 bool localization_calculate_gap_is_repairable(
     uint64_t prev_index,
     uint64_t next_index,
     uint32_t repaired_so_far,
+    uint32_t sample_rate_hz,
     uint32_t *missing_out
 );
 
@@ -101,6 +110,7 @@ size_t localization_calculate_repair_gaps(
     bool *gap_before,
     size_t count,
     size_t capacity,
+    uint32_t sample_rate_hz,
     uint32_t *repaired_out
 );
 

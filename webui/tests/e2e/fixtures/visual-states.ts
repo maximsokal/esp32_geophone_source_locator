@@ -64,6 +64,8 @@ for (const locale of ['en', 'uk'] as const) {
 export async function prepareVisualState(page: Page, api: DeviceApi, state: VisualState) {
   const t = catalog[state.locale];
   if (state.step) Object.assign(api.status.workflow!, { step: state.step, allowed_actions: workflowActions[state.step] });
+  // Record-ready: the source is stopped (the live signals are closed), so the sample rate can be chosen.
+  if (state.step === 'RECORD_READY') Object.assign(api.status.acquisition, { running: false, requested_running: false, sample_rate_hz: 0 });
   // Native indeterminate progress animates outside CSS animations; visual normal states use known API progress.
   if (state.step === 'CALCULATING') api.status.workflow!.progress = 37;
   if ((state.step === 'RANGING' || state.step === 'RANGING_RESULT') && state.variant !== 'partial-usable') {

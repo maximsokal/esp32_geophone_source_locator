@@ -19,7 +19,9 @@
 #define WEB_STATUS_BUDGET_ALLOCS_CEILING 1310U
 #define WEB_STATUS_BUDGET_PEAK_BYTES_CEILING 68000U
 #define WEB_STATUS_BUDGET_JSON_BYTES_CEILING 12288U
-#define WEB_STATUS_BUDGET_EXPECTED_NODE_COUNT 616U
+/* 616 before the sample-rate presets; they add 15 nodes (selected rate and limit, 4 options of 2 numbers, the measurement
+ * record limit and its flag). The allocation, peak-byte and JSON-size ceilings above still hold with them. */
+#define WEB_STATUS_BUDGET_EXPECTED_NODE_COUNT 631U
 
 typedef struct {
     const char *label;

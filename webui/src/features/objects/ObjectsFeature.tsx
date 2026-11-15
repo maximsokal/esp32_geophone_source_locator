@@ -1,4 +1,5 @@
 import RecordingEvidenceCard from './RecordingEvidenceCard';
+import SampleRateSelect from './SampleRateSelect';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import type {
   DeviceStatus,
@@ -46,6 +47,8 @@ interface Props {
   onCable: (id: string, podId: number, length: number) => Promise<void>;
   onDefaultCable: (podId: number, length: number) => Promise<void>;
   onAcquisition: (running: boolean) => Promise<void>;
+  /** Chooses the recording sample rate of the next run; absent when the console cannot send it. */
+  onSampleRate?: (sampleRateHz: number) => Promise<void>;
   onRecording: (id: string, running: boolean) => Promise<void>;
   onStartWorkflow: (id: string) => void;
   /* MAX-167: a 3D scan belongs to one recording/session, never the object
@@ -354,6 +357,18 @@ export default function ObjectsFeature(props: Props) {
                     accepted: formatNumber(locale, recordingGate.accepted_count ?? 0),
                   })}
                 </div>
+              )}
+
+              {recordingWorkflowAllowed && props.onSampleRate !== undefined && (
+                <SampleRateSelect
+                  acquisition={status?.acquisition}
+                  busy={busy}
+                  locked={status?.acquisition.running === true}
+                  onSelect={(hz) => void props.onSampleRate?.(hz)}
+                />
+              )}
+              {status?.measurement?.stopped_by_limit === true && measurement?.state === 'REVIEW' && (
+                <div className="console-alert warning" role="status">{t('objects.rate_stopped_by_limit')}</div>
               )}
 
               <div className="console-actions">

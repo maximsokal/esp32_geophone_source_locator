@@ -1447,7 +1447,7 @@ static void test_too_long_known_hole_still_rejects_whole_recording(void)
     reset_fakes();
     prepare_recording_with_event(30U, 25.0);
     g_fixture_gap_index = 4U * 500U;
-    g_fixture_gap_missing = LOCALIZATION_CALCULATE_MAX_REPAIRED_GAP_SAMPLES + 1U;
+    g_fixture_gap_missing = localization_calculate_max_repaired_gap_samples(500U) + 1U;
     localization_calculate_config_t config = default_test_config();
     config.sample_rate_hz = 500U;
     localization_calculate_summary_t summary;

@@ -1,66 +1,90 @@
-W (491) SD_CARD_TEST: TEST_FLASH_STORAGE mounted at /sdcard (6080 KiB), not an SD card; every block needs a 1536 byte DMA bounce buffer
-I (591) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=2 name=localization_jo core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=0 cpu=0.0 stack_free=15864
-I (591) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=8 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=0 cpu=0.0 stack_free=14316
-I (591) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=9 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=0 cpu=0.0 stack_free=10260
-I (661) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=100 cpu=0.1 stack_free=10212
-I (661) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=6 name=localization_jo core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=10 cpu=0.0 stack_free=14216
-I (661) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=10 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=0 cpu=0.0 stack_free=14316
-I (671) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=19 cpu=0.1 stack_free=10212
-I (12681) TEST_RECORDING: begin
-I (12681) TEST_RECORDING: dma before-ballast free=124079 largest=63488 internal_free=131867
-I (12681) TEST_RECORDING: dma ballast tx=8 rx=4 freed=17000 target_free=20647 max_largest=18856 applied=1
-I (12681) TEST_RECORDING: dma board-equivalent free=18895 largest=18432 internal_free=26683
-I (12681) TEST_RECORDING: psram ballast target_free=3300000 largest=3145728 applied=1 free=3145764 largest_now=3080192
-I (12811) TEST_RECORDING: object=OBJ_0001
-I (12811) TEST_RECORDING: setup seeded
-I (12811) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=after-object free=14284 margin=1024
-I (12811) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=before-start free=13804 margin=1024
-I (13131) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=after-recorder-start free=7548 margin=1024
-I (13141) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=196822 cpu=1.5 stack_free=7548
-I (13141) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=7 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=23645 cpu=0.1 stack_free=10132
-I (13191) TEST_RECORDING: recording started session=S000001
-W (15421) TEST_SOURCE: TEST_SOURCE_HOLE at_frame=1300 missed=2
-W (19611) TEST_SOURCE: TEST_SOURCE_HOLE at_frame=3400 missed=1
-I (23191) TEST_RECORDING: dma recording free=15755 largest=13824 internal_free=23543
-I (23191) TEST_RECORDING: recording samples=5000 dropped=0 ms=10057
-I (23191) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=305153 cpu=3.0 stack_free=8564
-I (23391) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=after-stop free=7548 margin=1024
-I (23391) TEST_RECORDING: stopped state=REVIEW samples=5030 dropped=0
-W (23391) TEST_RECORDING: calculation settings of OBJ_0001 unavailable (ESP_ERR_NOT_FOUND): using the defaults
-I (23391) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=2 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=93016 cpu=45.7 stack_free=8084
-I (23391) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=9 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=522 cpu=0.2 stack_free=7548
-I (23411) localization_job: job 1: OBJ_0001/S000001 started
-I (24671) LOCALIZATION_CALCULATE: LOC_SEARCH session is longer than the 5000-frame window: scanned 5030 frames, repaired_samples=3, hop=2500, event_found=1, problem=none, err=ESP_OK
-I (24971) LOCALIZATION_CALCULATE: LOC_WINDOW OBJ_0001/S000001 rate=500Hz frames=5000 of 5030 start=0 limited_by_memory=0 repaired_samples=3
-I (25451) LOCALIZATION_CALCULATE: LOC_PICK ch=0 placed=1 status=accepted reason=none arrival_sample=1854 snr=86.7
-I (25451) LOCALIZATION_CALCULATE: LOC_PICK ch=1 placed=0 status=no_trigger reason=none arrival_sample=0 snr=0.0
-I (25451) LOCALIZATION_CALCULATE: LOC_PICK ch=2 placed=1 status=accepted reason=none arrival_sample=1845 snr=254.9
-I (25451) LOCALIZATION_CALCULATE: LOC_PICK ch=3 placed=1 status=accepted reason=none arrival_sample=1850 snr=130.2
-I (25451) LOCALIZATION_CALCULATE: LOC_PICKS accepted=3 of 3 placed, mask=0x0D dimensionality=1 need>=4
-I (83401) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=3 name=localization_jo core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=29842998 cpu=49.7 stack_free=7272
-I (83401) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=6 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=115040 cpu=0.1 stack_free=8084
-I (89231) LOCALIZATION_CALCULATE: LOC_METHOD tdoa_gauss_newton        solved=0 terminal=0 class=2 confidence=0.00 reason=exactly 3 participating REMOTE geophones (planar/2D only): this method requires 4+ for a 3D-capable solve
-I (89231) LOCALIZATION_CALCULATE: LOC_METHOD traveltime_inversion     solved=1 terminal=0 class=0 confidence=0.50
-I (89231) LOCALIZATION_CALCULATE: LOC_SOLUTION traveltime_inversion   pos_m=(0.500,3.000,0.000) rms_us=38 iterations=0 converged=0
-I (89231) LOCALIZATION_CALCULATE: LOC_METHOD semblance                solved=1 terminal=0 class=0 confidence=0.78
-I (89231) LOCALIZATION_CALCULATE: LOC_SOLUTION semblance              pos_m=(0.400,2.900,0.000) rms_us=0 iterations=0 converged=0
-I (89231) LOCALIZATION_CALCULATE: LOC_METHOD energy_baseline          solved=1 terminal=0 class=0 confidence=0.78
-I (89231) LOCALIZATION_CALCULATE: LOC_SOLUTION energy_baseline        pos_m=(0.651,3.716,0.000) rms_us=0 iterations=0 converged=0
-I (89231) LOCALIZATION_CALCULATE: LOC_METHOD tdcas                    solved=0 terminal=0 class=1 confidence=0.00 reason=TDCAS needs 5 accepted P picks for this layout (planar surface array), have 3
-I (89231) LOCALIZATION_CALCULATE: LOC_METHOD psafuvs                  solved=0 terminal=0 class=1 confidence=0.00 reason=S-wave picking not configured: PSAFUVS needs P and S arrivals
-I (89231) LOCALIZATION_CALCULATE: LOC_METHOD suea                     solved=1 terminal=0 class=0 confidence=0.50
-I (89231) LOCALIZATION_CALCULATE: LOC_SOLUTION suea                   pos_m=(0.250,3.650,0.000) rms_us=5 iterations=0 converged=0
-I (89231) LOCALIZATION_CALCULATE: LOC_METHOD xcorr_tdoa               solved=1 terminal=0 class=0 confidence=0.50
-I (89231) LOCALIZATION_CALCULATE: LOC_SOLUTION xcorr_tdoa             pos_m=(0.495,2.992,0.000) rms_us=1 iterations=0 converged=0
-I (89231) LOCALIZATION_CALCULATE: LOC_METHOD robust_tdoa              solved=1 terminal=0 class=0 confidence=0.50
-I (89231) LOCALIZATION_CALCULATE: LOC_SOLUTION robust_tdoa            pos_m=(0.501,2.996,0.000) rms_us=0 iterations=1 converged=1
-I (89231) LOCALIZATION_CALCULATE: LOC_METHOD psp_joint                solved=0 terminal=0 class=1 confidence=0.00 reason=S-wave picking not configured: PSAFUVS needs P and S arrivals
-I (89231) LOCALIZATION_CALCULATE: LOC_METHOD bayesian                 solved=1 terminal=0 class=2 confidence=0.50
-I (89231) LOCALIZATION_CALCULATE: LOC_SOLUTION bayesian               pos_m=(0.600,2.825,0.000) rms_us=1361 iterations=0 converged=0
-I (89231) LOCALIZATION_CALCULATE: LOC_METHOD eikonal_fmm              solved=0 terminal=2 class=3 confidence=0.00 reason=not run: the calculation time budget was used up before this method
-I (90521) localization_job: job 1: succeeded in 67110 ms, 8/9 methods solved (13 planned), 1 skipped for time, participating=3, err=ESP_OK, STACK_HWM free=7272 of 16384
-I (90591) TEST_RECORDING: calculation job=1 state=succeeded solved=8 attempted=9 total=13 skipped=1 elapsed_ms=67110 error=ESP_OK
-I (92091) TEST_RECORDING: sd dma bounce failures=0
-I (92091) TEST_RECORDING: DONE
-I (143401) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=localization_jo core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=3324817 cpu=5.5 stack_free=7272
-I (143401) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=6 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=113662 cpu=0.1 stack_free=8084
+W (801) SD_CARD_TEST: TEST_FLASH_STORAGE mounted at /sdcard (6080 KiB), not an SD card; every block needs a 1536 byte DMA bounce buffer
+I (1541) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=2 name=localization_jo core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=0 cpu=0.0 stack_free=15864
+I (1541) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=8 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=0 cpu=0.0 stack_free=14316
+I (1541) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=9 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=0 cpu=0.0 stack_free=10260
+I (1611) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=85 cpu=0.1 stack_free=10212
+I (1611) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=6 name=localization_jo core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=9 cpu=0.0 stack_free=14216
+I (1611) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=10 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=0 cpu=0.0 stack_free=14316
+I (1621) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=19 cpu=0.1 stack_free=10212
+I (13631) TEST_RECORDING: begin
+I (13631) TEST_RECORDING: dma before-ballast free=124075 largest=63488 internal_free=131863
+I (13631) TEST_RECORDING: dma ballast tx=8 rx=4 freed=17000 target_free=20647 max_largest=18856 applied=1
+I (13631) TEST_RECORDING: dma board-equivalent free=18895 largest=18432 internal_free=26683
+I (13631) TEST_RECORDING: psram ballast target_free=3300000 largest=3145728 applied=1 free=3145736 largest_now=3080192
+I (14721) TEST_RECORDING: object=OBJ_0001
+I (14721) TEST_RECORDING: setup seeded
+I (14721) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=after-object free=14284 margin=1024
+I (14721) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=before-start free=13804 margin=1024
+I (16551) SEISMIC_RECORDER: Recording OBJ_0001/S000001 at 500 Hz from source cursor 920; PSRAM cache=26214 frames, SD threshold=250 frames
+I (16551) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=after-recorder-start free=7612 margin=1024
+I (16551) TEST_RECORDING: recording started session=S000001 rate=500
+I (16551) TEST_RECORDING: psram recording-start free=3142600 largest=3080192 min_free_ever=8
+I (16551) TEST_RECORDING: sd write model at-start calls=70 charged_ms=4165
+I (16561) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=197056 cpu=1.3 stack_free=7612
+I (16561) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=7 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=28293 cpu=0.1 stack_free=10132
+W (17321) TEST_SOURCE: TEST_SOURCE_HOLE at_frame=1300 missed=2
+W (21511) TEST_SOURCE: TEST_SOURCE_HOLE at_frame=3400 missed=1
+I (26561) TEST_RECORDING: dma recording free=15743 largest=13824 internal_free=23531
+I (26561) TEST_RECORDING: psram recording free=3142536 largest=3080192 min_free_ever=8
+I (26561) TEST_RECORDING: sd write model end-of-recording calls=86 charged_ms=5171
+I (26561) TEST_RECORDING: recording samples=5000 dropped=0 ms=10017
+I (26571) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=304457 cpu=3.0 stack_free=8564
+I (27471) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=after-stop free=7612 margin=1024
+I (27471) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=94031 cpu=10.4 stack_free=7892
+I (27471) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=8 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=860 cpu=0.0 stack_free=7612
+I (27571) TEST_RECORDING: stopped state=REVIEW samples=5005 dropped=0
+I (27571) TEST_RECORDING: psram stopped free=3236752 largest=3080192 min_free_ever=8
+I (27571) TEST_RECORDING: sd write model stopped calls=104 charged_ms=6108
+W (27571) TEST_RECORDING: calculation settings of OBJ_0001 unavailable (ESP_ERR_NOT_FOUND): using the defaults
+I (27571) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=8 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=190 cpu=0.1 stack_free=7892
+I (27571) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=10 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=103 cpu=0.0 stack_free=7612
+I (27591) localization_job: job 1: OBJ_0001/S000001 started
+I (28751) LOCALIZATION_CALCULATE: LOC_SEARCH session is longer than the 5000-frame window: scanned 5005 frames, repaired_samples=3, hop=2500, event_found=1, problem=none, err=ESP_OK
+I (29031) LOCALIZATION_CALCULATE: LOC_WINDOW OBJ_0001/S000001 rate=500Hz frames=5000 of 5005 start=0 limited_by_memory=0 repaired_samples=3
+I (29471) LOCALIZATION_CALCULATE: LOC_PICK ch=0 placed=1 status=accepted reason=none arrival_sample=1094 snr=88.0
+I (29471) LOCALIZATION_CALCULATE: LOC_PICK ch=1 placed=0 status=no_trigger reason=none arrival_sample=0 snr=0.0
+I (29471) LOCALIZATION_CALCULATE: LOC_PICK ch=2 placed=1 status=accepted reason=none arrival_sample=1085 snr=309.7
+I (29471) LOCALIZATION_CALCULATE: LOC_PICK ch=3 placed=1 status=accepted reason=none arrival_sample=1090 snr=139.2
+I (29471) LOCALIZATION_CALCULATE: LOC_PICKS accepted=3 of 3 placed, mask=0x0D dimensionality=1 need>=4
+I (93471) LOCALIZATION_CALCULATE: LOC_METHOD tdoa_gauss_newton        solved=0 terminal=0 class=2 confidence=0.00 reason=exactly 3 participating REMOTE geophones (planar/2D only): this method requires 4+ for a 3D-capable solve
+I (93471) LOCALIZATION_CALCULATE: LOC_METHOD traveltime_inversion     solved=1 terminal=0 class=0 confidence=0.50
+I (93471) LOCALIZATION_CALCULATE: LOC_SOLUTION traveltime_inversion   pos_m=(0.500,3.000,0.000) rms_us=37 iterations=0 converged=0
+I (93471) LOCALIZATION_CALCULATE: LOC_METHOD semblance                solved=1 terminal=0 class=0 confidence=0.78
+I (93471) LOCALIZATION_CALCULATE: LOC_SOLUTION semblance              pos_m=(0.400,2.900,0.000) rms_us=0 iterations=0 converged=0
+I (93471) LOCALIZATION_CALCULATE: LOC_METHOD energy_baseline          solved=1 terminal=0 class=0 confidence=0.78
+I (93471) LOCALIZATION_CALCULATE: LOC_SOLUTION energy_baseline        pos_m=(0.651,3.716,0.000) rms_us=0 iterations=0 converged=0
+I (93471) LOCALIZATION_CALCULATE: LOC_METHOD tdcas                    solved=0 terminal=0 class=1 confidence=0.00 reason=TDCAS needs 5 accepted P picks for this layout (planar surface array), have 3
+I (93471) LOCALIZATION_CALCULATE: LOC_METHOD psafuvs                  solved=0 terminal=0 class=1 confidence=0.00 reason=S-wave picking not configured: PSAFUVS needs P and S arrivals
+I (93471) LOCALIZATION_CALCULATE: LOC_METHOD suea                     solved=1 terminal=0 class=0 confidence=0.50
+I (93471) LOCALIZATION_CALCULATE: LOC_SOLUTION suea                   pos_m=(0.250,3.650,0.000) rms_us=5 iterations=0 converged=0
+I (93471) LOCALIZATION_CALCULATE: LOC_METHOD xcorr_tdoa               solved=1 terminal=0 class=0 confidence=0.50
+I (93471) LOCALIZATION_CALCULATE: LOC_SOLUTION xcorr_tdoa             pos_m=(0.495,2.992,0.000) rms_us=1 iterations=0 converged=0
+I (93471) LOCALIZATION_CALCULATE: LOC_METHOD robust_tdoa              solved=1 terminal=0 class=0 confidence=0.50
+I (93471) LOCALIZATION_CALCULATE: LOC_SOLUTION robust_tdoa            pos_m=(0.501,2.996,0.000) rms_us=0 iterations=1 converged=1
+I (93471) LOCALIZATION_CALCULATE: LOC_METHOD psp_joint                solved=0 terminal=0 class=1 confidence=0.00 reason=S-wave picking not configured: PSAFUVS needs P and S arrivals
+I (93471) LOCALIZATION_CALCULATE: LOC_METHOD bayesian                 solved=1 terminal=0 class=2 confidence=0.50
+I (93471) LOCALIZATION_CALCULATE: LOC_SOLUTION bayesian               pos_m=(0.600,2.825,0.000) rms_us=1362 iterations=0 converged=0
+I (93471) LOCALIZATION_CALCULATE: LOC_METHOD eikonal_fmm              solved=0 terminal=2 class=3 confidence=0.00 reason=not run: the calculation time budget was used up before this method
+I (97571) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=3 name=localization_jo core=1 priority_current=1 priority_base=0 inherited=1 runtime_delta_us=32999628 cpu=47.1 stack_free=7272
+I (97571) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=6 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=134128 cpu=0.1 stack_free=7892
+I (98811) localization_job: job 1: succeeded in 71223 ms, 8/9 methods solved (13 planned), 1 skipped for time, participating=3, err=ESP_OK, STACK_HWM free=7272 of 16384
+I (98971) TEST_RECORDING: calculation job=1 state=succeeded solved=8 attempted=9 total=13 skipped=1 elapsed_ms=71223 error=ESP_OK
+I (100471) TEST_RECORDING: second start in REVIEW result=ESP_ERR_INVALID_STATE
+I (100471) TEST_RECORDING: second set_rate=2000 result=ESP_OK now=2000
+I (100471) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=after-object free=7612 margin=1024
+I (100471) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=before-start free=7612 margin=1024
+I (102521) SEISMIC_RECORDER: Recording OBJ_0001/S000002 at 2000 Hz from source cursor 4100; PSRAM cache=26214 frames, SD threshold=512 frames
+I (102521) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=after-recorder-start free=7612 margin=1024
+I (102521) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=198244 cpu=4.0 stack_free=7612
+I (102521) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=5 name=localization_jo core=1 priority_current=0 priority_base=0 inherited=0 runtime_delta_us=113368 cpu=2.2 stack_free=7272
+I (102521) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=6 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=9313 cpu=0.1 stack_free=7892
+W (103081) TEST_SOURCE: TEST_SOURCE_HOLE at_frame=5200 missed=2
+W (107271) TEST_SOURCE: TEST_SOURCE_HOLE at_frame=13600 missed=1
+I (107711) TEST_RECORDING: second recording rate=2000 samples=9984 dropped=0 ms=5186
+I (109111) MEASUREMENT_SERVICE: STACK_HWM task=measurement_service stage=after-stop free=7612 margin=1024
+I (109111) TEST_RECORDING: second stopped rate=2000 samples=10380 dropped=0
+I (109111) TEST_RECORDING: sd dma bounce failures=0
+I (109111) TEST_RECORDING: DONE
+I (109131) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=4 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=652590 cpu=9.8 stack_free=7892
+I (109131) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=9 name=measurement_ser core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=2660 cpu=0.0 stack_free=7612
+I (169131) RUNTIME_OBSERVABILITY: RUNTIME_TASK rank=5 name=seismic_recorde core=0 priority_current=3 priority_base=3 inherited=0 runtime_delta_us=114061 cpu=0.1 stack_free=7892

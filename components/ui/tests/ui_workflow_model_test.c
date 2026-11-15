@@ -1376,6 +1376,66 @@ static void test_record_ready_warns_below_three_geophones_and_names_the_failed_c
     assert(model.lines[1].key != UI_I18N_KEY_TFT_WORKFLOW_RESULT_REASON);
 }
 
+static size_t action_index(const ui_workflow_model_t *model, workflow_command_t action)
+{
+    for (size_t i = 0U; i < model->action_count; ++i) {
+        if (model->actions[i] == action) return i;
+    }
+    return SIZE_MAX;
+}
+
+/* The recording sample rate is chosen on the record-ready step: the line says rate and limit, OK on "Change rate" asks
+ * the screen to move to the next preset, and "Start recording" stays the default action. */
+static void test_record_ready_offers_the_sample_rate_choice(void)
+{
+    ui_workflow_ranging_t ranging = {0};
+    ui_workflow_model_t model;
+    workflow_snapshot_t snapshot = make_snapshot(WORKFLOW_STEP_RECORD_READY);
+    snapshot.allowed_actions = WORKFLOW_ACTION(WORKFLOW_COMMAND_START_RECORDING) | WORKFLOW_ACTION(WORKFLOW_COMMAND_BACK);
+
+    ui_workflow_model_state_t state = {0};
+    state.sample_rate_hz = 500U;
+    state.record_limit_s = 0U;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_SAMPLE_RATE_UNLIMITED);
+    assert(strcmp(model.lines[1].args[0], "500") == 0);
+
+    state.sample_rate_hz = 2000U;
+    state.record_limit_s = 120U;
+    build(&snapshot, &state, &ranging, &model);
+    assert(model.lines[1].key == UI_I18N_KEY_TFT_WORKFLOW_SAMPLE_RATE_LIMITED);
+    assert(strcmp(model.lines[1].args[0], "2000") == 0);
+    assert(strcmp(model.lines[1].args[1], "120") == 0);
+
+    const size_t start = action_index(&model, WORKFLOW_COMMAND_START_RECORDING);
+    const size_t rate = action_index(&model, UI_WORKFLOW_ACTION_SAMPLE_RATE);
+    assert(start == 0U && rate == 1U);   /* the default selection still starts the recording */
+
+    /* OK on the default action starts the recording; moving down and pressing OK asks for the next rate. */
+    ui_workflow_event_t event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_OK, 10U);
+    assert(event.type == UI_WORKFLOW_EVENT_SEND_COMMAND && event.command == WORKFLOW_COMMAND_START_RECORDING);
+    state.has_pending = false;
+    event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_DOWN, 20U);
+    event = ui_workflow_model_handle_key(&snapshot, &state, UI_WORKFLOW_KEY_OK, 30U);
+    assert(event.type == UI_WORKFLOW_EVENT_CYCLE_SAMPLE_RATE);
+    assert(!state.has_pending);   /* local: no workflow command is sent */
+
+    /* Nowhere else. */
+    const workflow_step_t others[] = { WORKFLOW_STEP_RANGING_RESULT, WORKFLOW_STEP_RECORDING, WORKFLOW_STEP_RESULT };
+    for (size_t i = 0U; i < sizeof(others) / sizeof(others[0]); ++i) {
+        workflow_snapshot_t other = make_snapshot(others[i]);
+        ui_workflow_model_state_t other_state = {0};
+        other_state.sample_rate_hz = 2000U;
+        other_state.record_limit_s = 120U;
+        build(&other, &other_state, &ranging, &model);
+        assert(action_index(&model, UI_WORKFLOW_ACTION_SAMPLE_RATE) == SIZE_MAX);
+        for (size_t line = 0U; line < model.line_count; ++line) {
+            assert(model.lines[line].key != UI_I18N_KEY_TFT_WORKFLOW_SAMPLE_RATE_LIMITED);
+            assert(model.lines[line].key != UI_I18N_KEY_TFT_WORKFLOW_SAMPLE_RATE_UNLIMITED);
+        }
+    }
+}
+
 int main(void)
 {
 #ifdef MAX449_CASE
@@ -1390,6 +1450,7 @@ int main(void)
 #error "unknown MAX449_CASE for ui_workflow_model_test"
 #endif
 #else
+    test_record_ready_offers_the_sample_rate_choice();
     test_ranging_page_says_what_the_wifi_radio_is_doing();
     test_ranging_manual_entry();
     test_ranging_result_three_outcomes();

@@ -8,6 +8,7 @@
 #include "object_format.h"
 #include "storage_bulk_admission.h"
 #include "seismic_acquisition.h"
+#include "seismic_rate_profile.h"
 #include "seismic_recorder_start_policy.h"
 
 #include "esp_heap_caps.h"
@@ -274,6 +275,10 @@ static void measurement_service_release_start_reservation(void)
 }
 
 
+/* The recording ended because its time limit was reached, not because the user stopped it. */
+static bool s_stopped_by_limit;
+
+
 static void measurement_service_clear_session_identity_locked(void)
 {
     s_snapshot.object_id[0] = '\0';
@@ -386,6 +391,7 @@ static void measurement_service_process_start(
     s_snapshot.samples_written = 0U;
     s_snapshot.dropped_frames = 0U;
     s_snapshot.recording_ms = 0U;
+    s_stopped_by_limit = false;
     measurement_service_unlock();
 
     if (has_requested_object) {
@@ -553,6 +559,39 @@ static void measurement_service_notify_terminal_error(
         recorder != NULL
             ? seismic_recorder_stop_stage_name(recorder->stop_stage)
             : "unknown"
+    );
+}
+
+
+/*
+ * A recording at a high rate must end before the write path falls behind and frames are lost (see
+ * seismic_rate_profile.h). Runs from the worker's RECORDING wakeup; the stop is the ordinary STOP command.
+ */
+static void measurement_service_enforce_record_limit(void)
+{
+    measurement_service_lock();
+    const bool recording = s_snapshot.state == MEASUREMENT_SERVICE_RECORDING;
+    const uint64_t recorded_ms = s_snapshot.recording_ms;
+    measurement_service_unlock();
+    if (!recording) return;
+
+    const uint32_t rate_hz = seismic_acquisition_get_sample_rate();
+    const uint32_t limit_ms = seismic_rate_profile_record_limit_ms(rate_hz);
+    if (limit_ms == 0U || recorded_ms < limit_ms) return;
+
+    const esp_err_t err = measurement_service_stop_async();
+    if (err == ESP_OK) {
+        measurement_service_lock();
+        s_stopped_by_limit = true;
+        measurement_service_unlock();
+    }
+    ESP_LOGW(
+        TAG,
+        "RECORD_LIMIT reached rate=%lu Hz recorded_ms=%llu limit_ms=%lu: stop requested err=%s",
+        (unsigned long)rate_hz,
+        (unsigned long long)recorded_ms,
+        (unsigned long)limit_ms,
+        esp_err_to_name(err)
     );
 }
 
@@ -865,6 +904,7 @@ static void measurement_service_task(void *argument)
                 /* RAM-only recorder snapshot reconciliation. No FATFS/storage
                  * scan is added to the periodic RECORDING wakeup. */
                 measurement_service_process_stop_poll();
+                measurement_service_enforce_record_limit();
             }
             continue;
         }
@@ -1483,7 +1523,9 @@ esp_err_t measurement_service_get_snapshot(
     measurement_service_lock();
     *snapshot = s_snapshot;
     snapshot->busy = measurement_service_gate_is_busy();
+    snapshot->stopped_by_limit = s_stopped_by_limit;
     measurement_service_unlock();
+    snapshot->record_limit_ms = seismic_rate_profile_record_limit_ms(seismic_acquisition_get_sample_rate());
 
     const bool session_owner_present = snapshot->object_id[0] != '\0';
     const bool project_current_active =

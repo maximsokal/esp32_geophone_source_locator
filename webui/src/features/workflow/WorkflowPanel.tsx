@@ -8,6 +8,7 @@ import { formatDistance, formatNumber, formatPercent } from '../../i18n/format';
 import MaterialSettingsForm from '../objects/MaterialSettingsForm';
 import WorkflowResultViewer from './WorkflowResultViewer';
 import ManualDistanceForm from './ManualDistanceForm';
+import SampleRateSelect from '../objects/SampleRateSelect';
 import {
   placementBlocker,
   placementReasonKey,
@@ -43,6 +44,8 @@ interface Props {
   onOpenScanner: (objectId: string, sessionId: string | null) => void;
   /** Starts/stops the geophone signal preview; without it the live-signal toggle is not offered. */
   onAcquisition?: (running: boolean) => Promise<void>;
+  /** Chooses the recording sample rate of the next run; without it the selector is not offered. */
+  onSampleRate?: (sampleRateHz: number) => Promise<void>;
   /** Opens the recordings of the object with the session this workflow just made selected. */
   onOpenRecordings?: (objectId: string, sessionId: string | null) => void;
 }
@@ -518,6 +521,7 @@ export default function WorkflowPanel({
   onWorkflowUpdate,
   onOpenScanner,
   onAcquisition,
+  onSampleRate,
   onOpenRecordings,
 }: Props) {
   const t = useT();
@@ -702,6 +706,17 @@ export default function WorkflowPanel({
             : <p role="status">{t('workflow.live.starting')}</p>
         )}
         {liveStep && onAcquisition !== undefined && <p>{t('workflow.live.hint')}</p>}
+        {workflow?.step === 'RECORD_READY' && onSampleRate !== undefined && (
+          <SampleRateSelect
+            acquisition={status?.acquisition}
+            busy={pendingCommand !== null}
+            locked={status?.acquisition.running === true}
+            onSelect={(hz) => { void onSampleRate(hz); }}
+          />
+        )}
+        {workflow?.step === 'STOPPED' && status?.measurement?.stopped_by_limit === true && (
+          <p className="console-alert warning" role="status">{t('objects.rate_stopped_by_limit')}</p>
+        )}
         <div className="console-actions" aria-busy={pendingCommand !== null}>
           {model.actions.map((action) => (
             <ActionButton

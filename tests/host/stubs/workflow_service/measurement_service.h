@@ -27,4 +27,5 @@ typedef struct {
 esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snapshot);
 esp_err_t measurement_service_start_async(void);
 esp_err_t measurement_service_stop_async(void);
+esp_err_t measurement_service_keep_async(void);
 esp_err_t measurement_service_delete_async(void);

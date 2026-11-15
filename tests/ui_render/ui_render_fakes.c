@@ -184,6 +184,18 @@ void ui_screen_handle_key_locked(ui_screen_t screen, keypad_key_t key)
 #endif
 esp_err_t seismic_acquisition_start(void) { ++render_acquisition_starts; return render_acquisition_result; }
 esp_err_t seismic_acquisition_probe(void) { return render_acquisition_result; }
+/* The recording sample rate: 500 Hz is what a fresh boot shows. */
+uint32_t render_sample_rate_hz = 500U;
+uint32_t seismic_acquisition_get_sample_rate(void) { return render_sample_rate_hz; }
+bool seismic_acquisition_sample_rate_supported(uint32_t sample_rate_hz)
+{
+    return sample_rate_hz == 500U || sample_rate_hz == 2000U || sample_rate_hz == 4000U || sample_rate_hz == 5000U;
+}
+esp_err_t seismic_acquisition_set_sample_rate(uint32_t sample_rate_hz)
+{
+    render_sample_rate_hz = sample_rate_hz;
+    return ESP_OK;
+}
 esp_err_t seismic_acquisition_set_preview(seismic_preview_t preview, bool active)
 {
     assert(preview == SEISMIC_PREVIEW_TFT);

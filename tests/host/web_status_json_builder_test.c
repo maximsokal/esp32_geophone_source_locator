@@ -637,6 +637,18 @@ static void test_full_builder_and_pods(void)
     assert_number_near(number_item(acquisition, "os_ratio_measured"), 4.0);
     assert(bool_item(acquisition, "os_mismatch"));
     assert_number_near(number_item(acquisition, "read_errors"), 2.0);
+    /* The rate presets the user can choose, with the longest recording at each. */
+    assert_number_near(number_item(acquisition, "selected_sample_rate_hz"), 500.0);
+    assert_number_near(number_item(acquisition, "selected_record_limit_ms"), 0.0);
+    cJSON *rate_options = object_item(acquisition, "sample_rate_options");
+    assert(cJSON_GetArraySize(rate_options) == 4);
+    const double expected_rates[4] = { 500.0, 2000.0, 4000.0, 5000.0 };
+    const double expected_limits_s[4] = { 0.0, 120.0, 30.0, 25.0 };
+    for (int i = 0; i < 4; ++i) {
+        cJSON *option = cJSON_GetArrayItem(rate_options, i);
+        assert_number_near(number_item(option, "sample_rate_hz"), expected_rates[i]);
+        assert_number_near(number_item(option, "max_record_s"), expected_limits_s[i]);
+    }
     cJSON *cadence = object_item(acquisition, "cadence");
     assert(bool_item(cadence, "available"));
     assert_number_near(number_item(cadence, "collapsed_periods"), 2.0);

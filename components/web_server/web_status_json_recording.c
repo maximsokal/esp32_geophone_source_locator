@@ -300,6 +300,8 @@ bool web_status_json_add_measurement(cJSON *root, bool *recording_out)
         cJSON_AddNumberToObject(object, "samples_written", (double)snapshot.samples_written) == NULL ||
         cJSON_AddNumberToObject(object, "dropped_frames", (double)snapshot.dropped_frames) == NULL ||
         cJSON_AddNumberToObject(object, "recording_ms", (double)snapshot.recording_ms) == NULL ||
+        cJSON_AddNumberToObject(object, "record_limit_ms", (double)snapshot.record_limit_ms) == NULL ||
+        cJSON_AddBoolToObject(object, "stopped_by_limit", snapshot.stopped_by_limit) == NULL ||
         cJSON_AddNumberToObject(object, "last_error", snapshot.last_error) == NULL
     ) {
         return false;

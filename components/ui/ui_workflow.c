@@ -38,6 +38,7 @@ static BaseType_t ui_workflow_task_create(
 #include "localization_run_record.h"
 #include "localization_run_store.h"
 #include "nrf_topology_service.h"
+#include "seismic_rate_profile.h"
 #include "ranging_radio_pause.h"
 #include "result_view.h"
 #include "seismic_recorder.h"
@@ -1057,6 +1058,8 @@ static void ui_workflow_refresh_snapshot(ui_workflow_screen_state_t *state, uint
     if (snapshot->step == WORKFLOW_STEP_RECORDING && state->model_state.recording_elapsed_valid) {
         state->model_state.recording_elapsed_ms = now_ms - state->recording_started_ms;
     }
+    state->model_state.sample_rate_hz = seismic_acquisition_get_sample_rate();
+    state->model_state.record_limit_s = seismic_rate_profile_record_limit_ms(state->model_state.sample_rate_hz) / 1000U;
 
     if (first || snapshot->step != old_step) {
         if (snapshot->step == WORKFLOW_STEP_RESULT &&
@@ -1086,6 +1089,29 @@ static void ui_workflow_send_command(ui_workflow_screen_state_t *state, workflow
         (unsigned long)state->snapshot.generation, esp_err_to_name(err));
     ui_workflow_model_command_sent(&state->model_state, command, err, sequence, now_ms);
 }
+
+/* OK on "Change rate": the next preset the source supports, after the current one, wrapping around. */
+static void ui_workflow_cycle_sample_rate(ui_workflow_screen_state_t *state, uint64_t now_ms)
+{
+    const size_t count = seismic_rate_profile_count();
+    const uint32_t current = seismic_acquisition_get_sample_rate();
+    size_t position = 0U;
+    for (size_t i = 0U; i < count; ++i) {
+        if (seismic_rate_profile_at(i)->sample_rate_hz == current) position = i;
+    }
+    for (size_t step = 1U; step <= count; ++step) {
+        const seismic_rate_profile_t *next = seismic_rate_profile_at((position + step) % count);
+        if (!seismic_acquisition_sample_rate_supported(next->sample_rate_hz)) continue;
+        const esp_err_t err = seismic_acquisition_set_sample_rate(next->sample_rate_hz);
+        if (err == ESP_ERR_INVALID_STATE) {
+            /* The live signals or a recording run: the rate is fixed from start to stop. */
+            state->model_state.notice_key = UI_I18N_KEY_TFT_WORKFLOW_NOTICE_SAMPLE_RATE_BUSY;
+            state->model_state.notice_until_ms = now_ms + 2000U;
+        }
+        return;
+    }
+}
+
 
 static void ui_workflow_save_material(
     ui_workflow_screen_state_t *state,
@@ -1276,6 +1302,9 @@ void ui_workflow_screen_handle_key_locked(keypad_key_t key)
         case UI_WORKFLOW_EVENT_OPEN_LIVE_SIGNALS:
             ui_screen_open_locked(UI_SCREEN_MEASUREMENTS);
             return;
+        case UI_WORKFLOW_EVENT_CYCLE_SAMPLE_RATE:
+            ui_workflow_cycle_sample_rate(s_workflow, now_ms);
+            break;
         case UI_WORKFLOW_EVENT_SAVE_MATERIAL:
             ui_workflow_save_material(s_workflow, &event, now_ms);
             break;

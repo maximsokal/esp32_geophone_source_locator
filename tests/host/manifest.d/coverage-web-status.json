@@ -25,6 +25,8 @@
     {
       "name": "web_status_json_builder",
       "sources": [
+        "tests/host/stubs/web_status_json/acquisition_rate_fake.c",
+        "components/seismic_acquisition/seismic_rate_profile.c",
         "components/web_server/web_status_json.c",
         "components/web_server/web_status_json_hardware.c",
         "components/hw_inventory/hw_inventory_reason.c",
@@ -53,6 +55,8 @@
     {
       "name": "web_status_json_alloc_budget",
       "sources": [
+        "tests/host/stubs/web_status_json/acquisition_rate_fake.c",
+        "components/seismic_acquisition/seismic_rate_profile.c",
         "components/web_server/web_status_json.c",
         "components/web_server/web_status_json_hardware.c",
         "components/hw_inventory/hw_inventory_reason.c",

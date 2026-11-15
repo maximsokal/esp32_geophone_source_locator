@@ -766,6 +766,9 @@ export default function DeviceConsoleApp() {
               setWebPreview(running);
             }
           }}
+          onSampleRate={async (sampleRateHz) => {
+            await runControl('set_sample_rate', { sample_rate_hz: sampleRateHz });
+          }}
           onRecording={async (id, running) => {
             await runControl(running ? 'measurement_start' : 'measurement_stop', running ? { object_id: id } : {});
           }}
@@ -799,6 +802,9 @@ export default function DeviceConsoleApp() {
             if (await runControl(running ? 'acquisition_start' : 'acquisition_stop')) {
               setWebPreview(running);
             }
+          }}
+          onSampleRate={async (sampleRateHz) => {
+            await runControl('set_sample_rate', { sample_rate_hz: sampleRateHz });
           }}
           onOpenRecordings={(id, sessionId) => {
             setSelectedId(id);

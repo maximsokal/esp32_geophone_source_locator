@@ -129,6 +129,13 @@ void seismic_acquisition_prepare_shutdown(void);
 
 esp_err_t seismic_acquisition_start(void);
 
+/* Sample rate of the next run; changing it while the source runs is refused (ESP_ERR_INVALID_STATE), asking for the
+ * rate it already has is fine. ESP_ERR_INVALID_ARG: not a rate this source can run (a source with one fixed rate
+ * only accepts that one). */
+uint32_t seismic_acquisition_get_sample_rate(void);
+bool seismic_acquisition_sample_rate_supported(uint32_t sample_rate_hz);
+esp_err_t seismic_acquisition_set_sample_rate(uint32_t sample_rate_hz);
+
 void seismic_acquisition_stop(void);
 
 /* True while the selected acquisition task/backend is started. */

@@ -53,6 +53,7 @@ set(UI_RENDER_SOURCES
     "${REPO_ROOT}/components/workflow_service/workflow_core.c"
     "${REPO_ROOT}/components/result_view/result_view.c"
     "${REPO_ROOT}/components/seismic_buffer/seismic_envelope.c"
+    "${REPO_ROOT}/components/seismic_acquisition/seismic_rate_profile.c"
     "${REPO_ROOT}/components/localization_job/localization_material_presets.c")
 add_executable(ui_render ${UI_RENDER_SOURCES})
 add_executable(ui_navigation_render ${UI_RENDER_SOURCES} ui_navigation_harness.c

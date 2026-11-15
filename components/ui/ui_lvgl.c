@@ -252,16 +252,24 @@ static esp_err_t ui_lvgl_drain_panel_io_locked(void)
 }
 
 
+/* Longest wait for the LVGL lock before an SD operation; see ui_lvgl_quiesce_shared_spi(). */
+#define UI_LVGL_QUIESCE_LOCK_WAIT_MS 250U
+
+
 static esp_err_t ui_lvgl_quiesce_shared_spi(void *context)
 {
     (void)context;
 
     /*
      * Stop the LVGL task from submitting another asynchronous color flush.
-     * A zero timeout in esp_lvgl_port means wait indefinitely. Once locked,
-     * drain the LCD IO queue before SDSPI starts using the shared SPI2 bus.
+     * The wait is bounded: a zero timeout in esp_lvgl_port means wait for
+     * ever, and this runs while the storage operation mutex is held, so an
+     * LVGL task waiting for a task that waits for storage would deadlock the
+     * calculation and the screen (board log 2026-11-15 19:28). storage_manager
+     * releases its mutex and retries on ESP_ERR_TIMEOUT. Once locked, drain
+     * the LCD IO queue before SDSPI starts using the shared SPI2 bus.
      */
-    if (!lvgl_port_lock(0)) {
+    if (!lvgl_port_lock(UI_LVGL_QUIESCE_LOCK_WAIT_MS)) {
         return ESP_ERR_TIMEOUT;
     }
 

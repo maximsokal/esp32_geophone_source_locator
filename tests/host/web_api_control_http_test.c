@@ -43,6 +43,9 @@ static char s_saved_calc_settings[2048];
 static unsigned s_calc_settings_notify_calls;
 static esp_err_t s_acquisition_start_result;
 static unsigned s_acquisition_start_calls;
+static esp_err_t s_set_sample_rate_result;
+static unsigned s_set_sample_rate_calls;
+static uint32_t s_set_sample_rate_last;
 static esp_err_t s_measurement_start_result;
 static unsigned s_measurement_start_calls;
 static unsigned s_lease_acquire_calls;
@@ -91,6 +94,9 @@ static void reset_fakes(void)
     s_calc_settings_notify_calls = 0U;
     s_acquisition_start_result = ESP_OK;
     s_acquisition_start_calls = 0U;
+    s_set_sample_rate_result = ESP_OK;
+    s_set_sample_rate_calls = 0U;
+    s_set_sample_rate_last = 0U;
     s_measurement_start_result = ESP_OK;
     s_measurement_start_calls = 0U;
     s_lease_acquire_calls = 0U;
@@ -241,6 +247,13 @@ esp_err_t measurement_service_start_object_async(const char *object_id)
 esp_err_t measurement_service_stop_async(void)
 {
     return ESP_OK;
+}
+
+esp_err_t seismic_acquisition_set_sample_rate(uint32_t sample_rate_hz)
+{
+    s_set_sample_rate_calls++;
+    s_set_sample_rate_last = sample_rate_hz;
+    return s_set_sample_rate_result;
 }
 
 esp_err_t seismic_acquisition_start(void)
@@ -663,6 +676,43 @@ static void test_measurement_start_requires_workflow_step(void)
             assert(strstr(response, "\"message\":\"measurement_start is only allowed in RECORD_READY or RECORDING\"") != NULL);
             assert(s_acquisition_start_calls == 0U);
             assert(s_measurement_start_calls == 0U);
+        }
+    }
+}
+
+/* set_sample_rate takes one of the offered presets only; a source that runs refuses the change with 409. */
+static void test_set_sample_rate_accepts_only_offered_presets(void)
+{
+    const struct { const char *body; unsigned calls; uint32_t rate; const char *status; esp_err_t result; } cases[] = {
+        { "{\"action\":\"set_sample_rate\",\"sample_rate_hz\":2000}", 1U, 2000U, NULL, ESP_OK },
+        { "{\"action\":\"set_sample_rate\",\"sample_rate_hz\":500}", 1U, 500U, NULL, ESP_OK },
+        { "{\"action\":\"set_sample_rate\",\"sample_rate_hz\":5000}", 1U, 5000U, NULL, ESP_OK },
+        /* Not a preset: refused before the source is asked. */
+        { "{\"action\":\"set_sample_rate\",\"sample_rate_hz\":3000}", 0U, 0U, "400 Bad Request", ESP_OK },
+        { "{\"action\":\"set_sample_rate\",\"sample_rate_hz\":20000}", 0U, 0U, "400 Bad Request", ESP_OK },
+        { "{\"action\":\"set_sample_rate\",\"sample_rate_hz\":2000.5}", 0U, 0U, "400 Bad Request", ESP_OK },
+        { "{\"action\":\"set_sample_rate\",\"sample_rate_hz\":-4000}", 0U, 0U, "400 Bad Request", ESP_OK },
+        { "{\"action\":\"set_sample_rate\",\"sample_rate_hz\":\"4000\"}", 0U, 0U, "400 Bad Request", ESP_OK },
+        { "{\"action\":\"set_sample_rate\"}", 0U, 0U, "400 Bad Request", ESP_OK },
+        /* The source runs (live signals or a recording): 409, the rate is fixed from start to stop. */
+        { "{\"action\":\"set_sample_rate\",\"sample_rate_hz\":4000}", 1U, 4000U, "409 Conflict", ESP_ERR_INVALID_STATE },
+    };
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        reset_fakes();
+        s_set_sample_rate_result = cases[i].result;
+        char response[512] = {0};
+        httpd_req_t request = make_request(cases[i].body, response, sizeof(response));
+        assert(web_api_control_handler(&request) == ESP_OK);
+        assert(s_set_sample_rate_calls == cases[i].calls);
+        if (cases[i].calls != 0U) assert(s_set_sample_rate_last == cases[i].rate);
+        assert(strstr(response, "\"action\":\"set_sample_rate\"") != NULL);
+        if (cases[i].status == NULL) {
+            assert(request.response_status == NULL);
+            assert(strstr(response, "\"ok\":true") != NULL);
+        } else {
+            assert(request.response_status != NULL);
+            assert(strcmp(request.response_status, cases[i].status) == 0);
+            assert(strstr(response, "\"ok\":false") != NULL);
         }
     }
 }
@@ -1559,6 +1609,7 @@ int main(void)
     test_calculate_source_rejects_active_or_failed_recording();
     test_scan_recording_gate_precedes_object_lease();
     test_measurement_start_requires_workflow_step();
+    test_set_sample_rate_accepts_only_offered_presets();
     test_measurement_start_rejects_acquisition_failures();
     test_measurement_start_success_stays_async();
     test_measurement_start_async_failure_keeps_existing_mapping();

@@ -8,6 +8,7 @@
         "components/object_format/object_format.c",
         "components/storage_manager/storage_bulk_admission.c",
         "tests/host/stubs/runtime_observability/noop.c",
+        "components/seismic_acquisition/seismic_rate_profile.c",
         "components/measurement_service/tests/stubs/acquisition_fake.c",
         "components/seismic_recorder/seismic_recorder_start_policy.c"
       ],

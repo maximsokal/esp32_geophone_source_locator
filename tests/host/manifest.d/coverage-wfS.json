@@ -147,12 +147,14 @@
     {
       "name": "web_api_control_http",
       "sources": [
+        "components/seismic_acquisition/seismic_rate_profile.c",
         "components/storage_manager/storage_bulk_admission.c",
         "components/localization_job/localization_config.c",
         "tests/host/stubs/object_store_profile/cJSON.c",
         "tests/host/web_api_control_http_test.c"
       ],
       "include_dirs": [
+        "components/seismic_acquisition/include",
         "components/json_number/include",
         "tests/host/stubs/web_api_control",
         "components/measurement_service/tests/stubs",

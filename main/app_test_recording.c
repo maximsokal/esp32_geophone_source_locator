@@ -15,12 +15,16 @@
 #include "object_service.h"
 #include "runtime_observability.h"
 #include "sd_card.h"
+#include "seismic_acquisition.h"
 #include "sdkconfig.h"
 #include "workflow_service.h"
 
 #define TEST_RECORDING_SETTLE_MS 12000U
 #define TEST_RECORDING_RECORD_MS 10000U
 #define TEST_RECORDING_POLL_MS 200U
+/* After the board's recording the scenario records again at another rate, the way the user does after "Record again". */
+#define TEST_RECORDING_SECOND_RATE_HZ 2000U
+#define TEST_RECORDING_SECOND_RECORD_MS 5000U
 /* The calculation is only waited for in full at the board's rate (S10 checks its result); in the rate sweep its window and
  * first lines are enough, and at 10 times the rate it takes 10 times as long in the emulator. */
 #define TEST_RECORDING_CALC_WAIT_MS (TEST_REC_SAMPLE_RATE_HZ == 500 ? 120000U : 45000U)
@@ -136,6 +140,64 @@ static bool wait_state(measurement_service_state_t wanted, uint32_t timeout_ms, 
     return false;
 }
 
+/*
+ * Board log 2026-11-15 15:46: the second recording after "Record again" was refused ("State changed") and the sample rate
+ * of the second recording was never run on the real services. This does what the user does, on the real measurement
+ * service, acquisition, recorder and synthetic source: the finished recording is in REVIEW and refuses START, keeping it
+ * releases that, the source is stopped, the rate is changed at run time, and the next recording runs at the new rate.
+ */
+static bool second_recording_at_another_rate(const char *object_id, uint32_t rate_hz)
+{
+    measurement_service_snapshot_t snapshot = {0};
+    const esp_err_t refused = measurement_service_start_async();
+    ESP_LOGI(TAG, "second start in REVIEW result=%s", esp_err_to_name(refused));
+
+    esp_err_t err = measurement_service_keep_async();
+    if (err != ESP_OK || !wait_state(MEASUREMENT_SERVICE_LIVE, 15000U, &snapshot)) {
+        fail("second_keep", err != ESP_OK ? err : ESP_ERR_TIMEOUT);
+        return false;
+    }
+    for (uint32_t waited = 0U; seismic_acquisition_is_running() && waited < 15000U; waited += TEST_RECORDING_POLL_MS) {
+        vTaskDelay(pdMS_TO_TICKS(TEST_RECORDING_POLL_MS));
+    }
+    /*
+     * The seeded setup stands in for the confirmed ranging of the guided workflow. The workflow service (not driven in
+     * this scenario) polled late, noticed the new active object and dropped the ranging while the first recording
+     * kept it busy (workflow_service.c: reconcile on an active-object change). On the board the workflow leads the user
+     * step by step and keeps the confirmed ranging, so the setup is laid down again here.
+     */
+    err = nrf_topology_service_test_seed_confirmed_setup(object_id);
+    if (err != ESP_OK) { fail("second_seed_setup", err); return false; }
+    const esp_err_t rate_err = seismic_acquisition_set_sample_rate(rate_hz);
+    ESP_LOGI(TAG, "second set_rate=%u result=%s now=%u", (unsigned)rate_hz, esp_err_to_name(rate_err),
+             (unsigned)seismic_acquisition_get_sample_rate());
+    if (rate_err != ESP_OK) { fail("second_set_rate", rate_err); return false; }
+
+    err = measurement_service_start_async();
+    if (err != ESP_OK) { fail("second_start_async", err); return false; }
+    if (!wait_state(MEASUREMENT_SERVICE_RECORDING, 30000U, &snapshot)) {
+        ESP_LOGE(TAG, "FAIL stage=second_recording state=%d last_error=%s", (int)snapshot.state,
+                 esp_err_to_name(snapshot.last_error));
+        return false;
+    }
+    const uint32_t running_rate = seismic_acquisition_get_sample_rate();
+    vTaskDelay(pdMS_TO_TICKS(TEST_RECORDING_SECOND_RECORD_MS));
+    (void)measurement_service_get_snapshot(&snapshot);
+    ESP_LOGI(TAG, "second recording rate=%u samples=%llu dropped=%llu ms=%llu", (unsigned)running_rate,
+             (unsigned long long)snapshot.samples_written, (unsigned long long)snapshot.dropped_frames,
+             (unsigned long long)snapshot.recording_ms);
+    err = measurement_service_stop_async();
+    if (err != ESP_OK) { fail("second_stop_async", err); return false; }
+    if (!wait_state(MEASUREMENT_SERVICE_REVIEW, 60000U, &snapshot)) {
+        ESP_LOGE(TAG, "FAIL stage=second_stop state=%d last_error=%s", (int)snapshot.state,
+                 esp_err_to_name(snapshot.last_error));
+        return false;
+    }
+    ESP_LOGI(TAG, "second stopped rate=%u samples=%llu dropped=%llu", (unsigned)running_rate,
+             (unsigned long long)snapshot.samples_written, (unsigned long long)snapshot.dropped_frames);
+    return true;
+}
+
 static void scenario_task(void *argument)
 {
     (void)argument;
@@ -231,6 +293,9 @@ static void scenario_task(void *argument)
              (unsigned)job.summary.methods_attempted, (unsigned)job.summary.methods_total,
              (unsigned)job.summary.methods_skipped_for_time, (unsigned)job.elapsed_ms, esp_err_to_name(job.error));
     vTaskDelay(pdMS_TO_TICKS(1500U));
+#if TEST_REC_SAMPLE_RATE_HZ == 500
+    if (!second_recording_at_another_rate(object.id, TEST_RECORDING_SECOND_RATE_HZ)) goto done;
+#endif
     ESP_LOGI(TAG, "sd dma bounce failures=%u", sd_card_test_flash_bounce_failures());
     ESP_LOGI(TAG, "DONE");
 

@@ -136,6 +136,8 @@ static esp_err_t s_measurement_delete_result;
 static unsigned s_start_calls;
 static unsigned s_stop_calls;
 static unsigned s_delete_calls;
+static unsigned s_keep_calls;
+static esp_err_t s_measurement_keep_result;
 static object_service_summary_t s_object;
 static esp_err_t s_object_result;
 static nrf_topology_snapshot_t s_topology;
@@ -316,6 +318,12 @@ esp_err_t measurement_service_get_snapshot(measurement_service_snapshot_t *snaps
 esp_err_t measurement_service_start_async(void)
 {
     ++s_start_calls;
+    /* The real service accepts START only from LIVE or ERROR: a finished recording in REVIEW has to be kept or deleted
+     * first (measurement_service_command_allowed_locked). A fake that said yes here hid the second-recording bug. */
+    if (s_measurement_start_result == ESP_OK &&
+        s_measurement.state != MEASUREMENT_SERVICE_LIVE && s_measurement.state != MEASUREMENT_SERVICE_ERROR) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (s_measurement_start_result == ESP_OK) {
         s_measurement.state = MEASUREMENT_SERVICE_STARTING;
         (void)snprintf(s_measurement.object_id, sizeof(s_measurement.object_id), "%s", s_object.id);
@@ -329,6 +337,15 @@ esp_err_t measurement_service_stop_async(void)
     ++s_stop_calls;
     if (s_measurement_stop_result == ESP_OK) s_measurement.state = MEASUREMENT_SERVICE_STOPPING;
     return s_measurement_stop_result;
+}
+
+esp_err_t measurement_service_keep_async(void)
+{
+    ++s_keep_calls;
+    if (s_measurement_keep_result != ESP_OK) return s_measurement_keep_result;
+    if (s_measurement.state != MEASUREMENT_SERVICE_REVIEW) return ESP_ERR_INVALID_STATE;
+    s_measurement.state = MEASUREMENT_SERVICE_LIVE;
+    return ESP_OK;
 }
 
 esp_err_t measurement_service_delete_async(void)
@@ -609,6 +626,8 @@ static void reset_fakes(bool active_object, measurement_service_state_t state, s
     s_start_calls = 0U;
     s_stop_calls = 0U;
     s_delete_calls = 0U;
+    s_keep_calls = 0U;
+    s_measurement_keep_result = ESP_OK;
     memset(&s_object, 0, sizeof(s_object));
     s_object.active = active_object;
     (void)snprintf(s_object.id, sizeof(s_object.id), "%s", active_object ? s_fake_object_id : "");
@@ -1438,6 +1457,83 @@ static void test_reconciliation_review_error_and_async_recording_commands(void)
     assert(command(WORKFLOW_COMMAND_RECORD_AGAIN, false, false) == WORKFLOW_COMMAND_RESULT_OK);
     assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
     assert(snapshot.step == WORKFLOW_STEP_RECORD_READY);
+    workflow_service_shutdown();
+}
+
+/*
+ * A finished recording stays in REVIEW in the measurement service until it is kept or deleted, and START is refused from
+ * REVIEW. Board log 2026-11-15 15:46: "Record again" and then START_RECORDING was rejected with result=1 ("State changed")
+ * at every press. Leaving the review steps for anything but a delete keeps the recording, so the next START is accepted.
+ */
+static void record_one_session_and_reach_review(void)
+{
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    s_measurement.state = MEASUREMENT_SERVICE_REVIEW;
+    workflow_snapshot_t snapshot;
+    assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
+    assert(snapshot.step == WORKFLOW_STEP_STOPPED);
+}
+
+static void test_second_recording_after_record_again_is_accepted(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    enter_record_ready();
+    record_one_session_and_reach_review();
+    assert(s_keep_calls == 0U);
+
+    /* Without the keep the service would still be in REVIEW and refuse the START (the fake models that). */
+    assert(command(WORKFLOW_COMMAND_RECORD_AGAIN, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_keep_calls == 1U);
+    assert(s_measurement.state == MEASUREMENT_SERVICE_LIVE);
+    const unsigned starts_before = s_start_calls;
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_start_calls == starts_before + 1U);
+    workflow_snapshot_t snapshot;
+    assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
+    assert(snapshot.step == WORKFLOW_STEP_RECORDING);
+    workflow_service_shutdown();
+}
+
+static void test_only_leaving_the_review_steps_keeps_the_recording(void)
+{
+    /* A delete releases REVIEW itself: no extra keep that the busy service would refuse. */
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    enter_record_ready();
+    record_one_session_and_reach_review();
+    assert(command(WORKFLOW_COMMAND_DELETE_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_delete_calls == 1U && s_keep_calls == 0U);
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    workflow_service_shutdown();
+
+    /* Moving the sensors from the review also ends it. */
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    enter_record_ready();
+    record_one_session_and_reach_review();
+    assert(command(WORKFLOW_COMMAND_MOVE_SENSORS, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_keep_calls == 1U);
+    workflow_service_shutdown();
+
+    /* Staying in the review steps (starting the calculation) keeps nothing yet. */
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    enter_record_ready();
+    record_one_session_and_reach_review();
+    const workflow_command_result_t calc = command(WORKFLOW_COMMAND_CALCULATE_SOURCES, false, false);
+    assert(calc == WORKFLOW_COMMAND_RESULT_OK || calc == WORKFLOW_COMMAND_RESULT_NOT_ALLOWED);
+    assert(s_keep_calls == 0U);
+    workflow_service_shutdown();
+
+    /* A keep the service refuses is only logged: the command itself still succeeds. */
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    enter_record_ready();
+    record_one_session_and_reach_review();
+    s_measurement_keep_result = ESP_ERR_INVALID_STATE;
+    assert(command(WORKFLOW_COMMAND_RECORD_AGAIN, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(s_keep_calls == 1U);
     workflow_service_shutdown();
 }
 
@@ -3308,6 +3404,8 @@ int main(void)
     test_phone_and_tft_workflow_views_share_step_and_generation();
     test_tft_custom_range_is_persisted_and_auto_omits_it();
     test_reconciliation_review_error_and_async_recording_commands();
+    test_second_recording_after_record_again_is_accepted();
+    test_only_leaving_the_review_steps_keeps_the_recording();
     test_reboot_resumes_only_at_object_or_idle();
     test_object_poll_preserves_workflow_on_read_error_and_resets_on_change();
     test_concurrent_commands_use_generation_as_a_single_winner_gate();

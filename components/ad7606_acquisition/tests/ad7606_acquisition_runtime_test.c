@@ -1432,6 +1432,45 @@ static void test_repeated_start_stop_and_error_cycles_release_everything(void)
     }
 }
 
+/* The rate is a run-time choice (a preset of seismic_rate_profile): CONVST, the buffer, the status and the sample times
+ * all follow it, and a rate the timing cannot do is refused. */
+static void test_a_run_time_rate_drives_convst_buffer_and_sample_times(void)
+{
+    const uint32_t default_rate = ad7606_acquisition_get_sample_rate();
+    assert(default_rate == CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ);
+    assert(!ad7606_acquisition_sample_rate_supported(0U));
+    assert(!ad7606_acquisition_sample_rate_supported(3000U));
+    assert(ad7606_acquisition_set_sample_rate(3000U) == ESP_ERR_INVALID_ARG);
+    assert(ad7606_acquisition_get_sample_rate() == default_rate);
+    const uint32_t presets[] = { 500U, 2000U, 4000U, 5000U };
+    for (size_t i = 0U; i < sizeof(presets) / sizeof(presets[0]); ++i) {
+        assert(ad7606_acquisition_sample_rate_supported(presets[i]));
+    }
+
+    assert(ad7606_acquisition_set_sample_rate(2000U) == ESP_OK);
+    assert(ad7606_acquisition_get_sample_rate() == 2000U);
+    reset_world();
+    const int64_t sample_t0 = s_now_us;
+    script(EV_TICK, 1U);
+    script(EV_TICK, 1U);
+    script(EV_TICK, 1U);
+    script(EV_STOP, 0U);
+    assert(ad7606_acquisition_start() == ESP_OK);
+    assert(s_last_ledc_frequency == 2000U);
+    assert(s_ad7606_rate == 2000U);
+    assert(s_buffer_rate == 2000U);
+    assert(s_reads == 3U && s_pushes == 3U);
+    assert(s_push_timestamps[0] == sample_t0);
+    assert(s_push_timestamps[1] == sample_t0 + 500);     /* 2000 Hz: one frame every 500 us */
+    assert(s_last_push_ts == sample_t0 + 2 * 500);
+    assert_fully_released();
+
+    /* Stopped again: the rate can be changed back. */
+    assert(ad7606_acquisition_set_sample_rate(default_rate) == ESP_OK);
+    assert(ad7606_acquisition_get_sample_rate() == default_rate);
+}
+
+
 static void test_run_samples_then_stop_releases_everything(void)
 {
     reset_world();
@@ -3003,6 +3042,7 @@ int main(void)
     test_combined_diagnostic_boundary_and_slow_sink_completion();
     test_unavailable_log_sink_does_not_block_stop();
     test_run_samples_then_stop_releases_everything();
+    test_a_run_time_rate_drives_convst_buffer_and_sample_times();
     test_stop_isr_worker_lifecycle_interleaving();
     test_safe_os_mismatch_runs_and_is_reported();
     test_unknown_os_measurement_refuses_start();

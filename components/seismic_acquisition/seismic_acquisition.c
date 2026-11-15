@@ -32,6 +32,12 @@ static const seismic_source_driver_t *seismic_driver(void)
 }
 
 
+static uint32_t seismic_driver_rate(const seismic_source_driver_t *driver)
+{
+    return driver->get_sample_rate != NULL ? driver->get_sample_rate() : driver->sample_rate_hz;
+}
+
+
 static bool seismic_driver_healthy(void)
 {
     const seismic_source_driver_t *driver = seismic_driver();
@@ -52,7 +58,7 @@ static esp_err_t seismic_acquisition_publish_status(
 
     return device_status_set_acquisition(
         running,
-        running ? driver->sample_rate_hz : 0,
+        running ? seismic_driver_rate(driver) : 0,
         0,
         0
     );
@@ -280,6 +286,38 @@ void seismic_acquisition_stop(void)
 }
 
 
+uint32_t seismic_acquisition_get_sample_rate(void)
+{
+    return seismic_driver_rate(seismic_driver());
+}
+
+
+bool seismic_acquisition_sample_rate_supported(uint32_t sample_rate_hz)
+{
+    const seismic_source_driver_t *driver = seismic_driver();
+    if (driver->sample_rate_supported != NULL) return driver->sample_rate_supported(sample_rate_hz);
+    return sample_rate_hz == driver->sample_rate_hz;
+}
+
+
+esp_err_t seismic_acquisition_set_sample_rate(uint32_t sample_rate_hz)
+{
+    const seismic_source_driver_t *driver = seismic_driver();
+    if (driver->set_sample_rate == NULL) {
+        return sample_rate_hz == driver->sample_rate_hz ? ESP_OK : ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t err = seismic_acquisition_lifecycle_lock();
+    if (err != ESP_OK) return err;
+    if (atomic_load_explicit(&s_running, memory_order_acquire)) {
+        err = sample_rate_hz == seismic_driver_rate(driver) ? ESP_OK : ESP_ERR_INVALID_STATE;
+    } else {
+        err = driver->set_sample_rate(sample_rate_hz);
+    }
+    seismic_acquisition_lifecycle_unlock();
+    return err;
+}
+
+
 esp_err_t seismic_acquisition_set_preview(seismic_preview_t preview, bool active)
 {
     if (preview != SEISMIC_PREVIEW_TFT && preview != SEISMIC_PREVIEW_WEB) {
@@ -385,7 +423,7 @@ esp_err_t seismic_acquisition_get_snapshot(
 
     snapshot->source_name = driver->name;
     snapshot->transport_name = driver->transport_name;
-    snapshot->sample_rate_hz = driver->sample_rate_hz;
+    snapshot->sample_rate_hz = seismic_driver_rate(driver);
     snapshot->channel_count = driver->channel_count;
     snapshot->core_id = driver->core_id;
 

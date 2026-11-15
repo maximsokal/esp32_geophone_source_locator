@@ -389,6 +389,21 @@ static void tol_7_convst_pulse_and_pwm_period_are_pinned(void)
 }
 
 
+static void test_run_time_presets_have_exact_convst_and_valid_timing(void)
+{
+    const uint32_t rates[] = { 500U, 1000U, 2000U, 4000U, 5000U, 8000U, 10000U, 20000U };
+    for (size_t i = 0U; i < sizeof(rates) / sizeof(rates[0]); ++i) {
+        ad7606_timing_result_t result = {0};
+        assert(ad7606_acquisition_timing_resolve(rates[i], 1U, 10000000U, AD7606_READ_MODE_AUTO, 2100U, &result));
+        /* The XTAL LEDC must hit the rate exactly, or the sample times drift. */
+        assert(ad7606_acquisition_ledc_exact_resolution(rates[i], 40000000U, 14U) != 0U);
+    }
+    ad7606_timing_result_t result = {0};
+    assert(!ad7606_acquisition_timing_resolve(3000U, 1U, 10000000U, AD7606_READ_MODE_AUTO, 2100U, &result));
+    assert(!ad7606_acquisition_timing_resolve(250000U, 1U, 10000000U, AD7606_READ_MODE_AUTO, 2100U, &result));
+}
+
+
 static void test_invalid_timing_boundaries(void)
 {
     ad7606_timing_result_t result = {0};
@@ -595,6 +610,7 @@ int main(void)
     test_default_20khz_os1_auto_reads_after_conversion();
     test_measured_busy_width_classification_and_timing_gate();
     measured_busy_above_datasheet_max_keeps_read_budget();
+    test_run_time_presets_have_exact_convst_and_valid_timing();
     test_invalid_timing_boundaries();
     test_sample_index_timestamps_for_long_runs_and_overflow();
     test_pcnt_extension_wrap_restart_and_monotonicity();

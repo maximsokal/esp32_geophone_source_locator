@@ -23,6 +23,8 @@
 #endif
 /* Frame counts below were set at 500 Hz; they keep their meaning in seconds at any rate. */
 #define TEST_REC_AT_RATE(frames_at_500hz) (((frames_at_500hz) * (TEST_REC_SAMPLE_RATE_HZ)) / 500U)
+/* The same for a rate chosen at run time. */
+#define TEST_REC_FRAMES_AT(frames_at_500hz, rate_hz) (((frames_at_500hz) * (rate_hz)) / 500U)
 
 /* Positions in mm: MAIN, node 1, node 3, node 4. */
 #define TEST_REC_NODE_X_MM {0, 3000, 0, 3000}
@@ -46,4 +48,5 @@
 /* Conversions the AD7606 misses under load (board log 2026-11-14: 3 of 5672). The synthetic source skips these source
  * indices while the physical time goes on, exactly like the board: {at generator frame, how many are missed}. The
  * first sits inside the recording before the event, the second after it. */
-#define TEST_REC_HOLES { {TEST_REC_AT_RATE(1300U), 2U}, {TEST_REC_AT_RATE(3400U), 1U} }
+/* Frames are given at 500 Hz and scaled to the rate in use. */
+#define TEST_REC_HOLES { {1300U, 2U}, {3400U, 1U} }

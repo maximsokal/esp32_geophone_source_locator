@@ -20,6 +20,10 @@ static unsigned s_acquisition_stop_calls;
 static unsigned s_presence_start_calls;
 
 
+uint32_t ad7606_acquisition_get_sample_rate(void) { return 500U; }
+esp_err_t ad7606_acquisition_set_sample_rate(uint32_t sample_rate_hz) { return sample_rate_hz == 500U ? ESP_OK : ESP_ERR_INVALID_ARG; }
+bool ad7606_acquisition_sample_rate_supported(uint32_t sample_rate_hz) { return sample_rate_hz == 500U; }
+
 esp_err_t ad7606_acquisition_start(void)
 {
     ++s_acquisition_start_calls;

@@ -713,7 +713,9 @@ def evaluate_s10(log_text: str, extra: dict[str, Any] | None = None) -> tuple[bo
             break
     # The board loses a few AD7606 conversions under load; the synthetic source loses some too and the calculation has
     # to repair exactly those (log 2026-11-14: one lost sample rejected the whole recording as session_gap).
-    missed = [int(value) for value in re.findall(r"TEST_SOURCE_HOLE at_frame=\d+ missed=(\d+)", log_text)]
+    # Only the first recording's source run: the second recording at another rate starts a source run of its own.
+    first_run_log = log_text.split("TEST_RECORDING: second start in REVIEW", 1)[0]
+    missed = [int(value) for value in re.findall(r"TEST_SOURCE_HOLE at_frame=\d+ missed=(\d+)", first_run_log)]
     window = re.search(r"LOC_WINDOW \S+ .*repaired_samples=(\d+)", log_text)
     if not missed:
         reasons.append("the synthetic source lost no conversions: the hole repair was not exercised (no TEST_SOURCE_HOLE)")
@@ -724,6 +726,33 @@ def evaluate_s10(log_text: str, extra: dict[str, Any] | None = None) -> tuple[bo
     calculation = re.search(r"TEST_RECORDING: calculation job=\d+ state=(\S+) solved=(\d+)", log_text)
     if calculation and calculation.group(1) != "succeeded":
         reasons.append(f"calculation ended in state {calculation.group(1)}")
+    # The second recording, at another rate chosen at run time (board log 2026-11-15 15:46: it was refused after
+    # "Record again", and the other rates were never run on the real services).
+    review_start = re.search(r"TEST_RECORDING: second start in REVIEW result=(\S+)", log_text)
+    if review_start is None:
+        reasons.append("missing recording marker: TEST_RECORDING: second start in REVIEW")
+    elif review_start.group(1) != "ESP_ERR_INVALID_STATE":
+        reasons.append(f"a finished recording in REVIEW accepted START ({review_start.group(1)}): it has to be kept first")
+    set_rate = re.search(r"TEST_RECORDING: second set_rate=(\d+) result=(\S+) now=(\d+)", log_text)
+    if set_rate is None:
+        reasons.append("missing recording marker: TEST_RECORDING: second set_rate")
+    elif set_rate.group(2) != "ESP_OK" or set_rate.group(1) != set_rate.group(3):
+        reasons.append(f"the sample rate could not be changed at run time: {set_rate.group(0)}")
+    second = re.search(r"TEST_RECORDING: second recording rate=(\d+) samples=(\d+) dropped=(\d+)", log_text)
+    if second is None:
+        reasons.append("missing recording marker: TEST_RECORDING: second recording")
+    else:
+        second_rate, second_samples, second_dropped = (int(value) for value in second.groups())
+        if set_rate is not None and second_rate != int(set_rate.group(1)):
+            reasons.append(f"the second recording ran at {second_rate} Hz, not at the chosen {set_rate.group(1)} Hz")
+        if second_samples < second_rate * 4:
+            reasons.append(f"the second recording kept only {second_samples} samples in 5 s at {second_rate} Hz")
+        if second_dropped != 0:
+            reasons.append(f"the second recording dropped {second_dropped} frames at {second_rate} Hz")
+        if f"at {second_rate} Hz from source cursor" not in log_text:
+            reasons.append(f"the recorder never started a session at {second_rate} Hz")
+    if "TEST_RECORDING: second stopped" not in log_text:
+        reasons.append("missing recording marker: TEST_RECORDING: second stopped")
     close_methods = []
     for method, x, y, z in re.findall(
         r"LOC_SOLUTION (\S+)\s+pos_m=\(([-\d.]+),([-\d.]+),([-\d.]+)\)", log_text

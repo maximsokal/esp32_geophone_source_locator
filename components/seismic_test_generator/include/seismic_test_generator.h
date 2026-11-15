@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "esp_err.h"
 
 
@@ -18,6 +21,11 @@
 
 
 esp_err_t seismic_test_generator_start(void);
+
+/* The rate of the next run: a run-time choice like the AD7606's (only while the generator is stopped). */
+uint32_t seismic_test_generator_get_rate(void);
+bool seismic_test_generator_rate_supported(uint32_t sample_rate_hz);
+esp_err_t seismic_test_generator_set_rate(uint32_t sample_rate_hz);
 
 
 void seismic_test_generator_stop(void);

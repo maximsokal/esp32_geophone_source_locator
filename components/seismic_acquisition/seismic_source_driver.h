@@ -13,7 +13,12 @@ typedef struct
     const char *name;
     const char *transport_name;
 
+    /* The rate of the next/current run. sample_rate_hz is the fixed default; a source whose rate is a run-time choice
+     * also provides get_sample_rate/set_sample_rate (set is refused while it runs). */
     uint32_t sample_rate_hz;
+    uint32_t (*get_sample_rate)(void);
+    esp_err_t (*set_sample_rate)(uint32_t sample_rate_hz);
+    bool (*sample_rate_supported)(uint32_t sample_rate_hz);
     uint8_t channel_count;
     int core_id;
 

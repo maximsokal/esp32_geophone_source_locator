@@ -18,11 +18,11 @@
 #if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
 /* 500 Hz on a 10 ms tick: five frames per wake-up, stamped 2 ms apart, like the ADC delivers them. */
 #define TEST_PERIOD_MS       10
-#define TEST_FRAMES_PER_TICK (SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ * TEST_PERIOD_MS / 1000)
+#define TEST_FRAMES_PER_TICK_NOW ((int)(s_rate_hz * TEST_PERIOD_MS / 1000U))
 #define TEST_PHYSICAL_EVENT  1
 #else
 #define TEST_PERIOD_MS       (1000 / SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ)
-#define TEST_FRAMES_PER_TICK 1
+#define TEST_FRAMES_PER_TICK_NOW 1
 #define TEST_PHYSICAL_EVENT  0
 #define TEST_EVENT_PERIOD    200
 #define TEST_EVENT_START     40
@@ -39,6 +39,35 @@ static TaskHandle_t s_task =
 
 static volatile bool s_running =
     false;
+
+
+/* The rate of the next run. Set while the generator is stopped, like the AD7606's rate. */
+static uint32_t s_rate_hz = SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ;
+
+
+uint32_t seismic_test_generator_get_rate(void)
+{
+    return s_rate_hz;
+}
+
+
+bool seismic_test_generator_rate_supported(uint32_t sample_rate_hz)
+{
+#if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
+    return sample_rate_hz == 500U || sample_rate_hz == 2000U || sample_rate_hz == 4000U || sample_rate_hz == 5000U;
+#else
+    return sample_rate_hz == SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ;
+#endif
+}
+
+
+esp_err_t seismic_test_generator_set_rate(uint32_t sample_rate_hz)
+{
+    if (!seismic_test_generator_rate_supported(sample_rate_hz)) return ESP_ERR_INVALID_ARG;
+    if (s_task != NULL) return ESP_ERR_INVALID_STATE;
+    s_rate_hz = sample_rate_hz;
+    return ESP_OK;
+}
 
 
 static uint32_t s_random_state =
@@ -131,7 +160,7 @@ static void test_physical_event_prepare(void)
         const double dz = (double)TEST_REC_SOURCE_Z_MM;
         const double distance_mm = sqrt(dx * dx + dy * dy + dz * dz);
         const double delay_s = distance_mm / 1000.0 / TEST_REC_SPEED_MPS;
-        s_arrival_frame[channel] = (float)(TEST_REC_EVENT_FRAME + delay_s * SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ);
+        s_arrival_frame[channel] = (float)(TEST_REC_FRAMES_AT(2000U, s_rate_hz) + delay_s * s_rate_hz);
         s_amplitude_uv[channel] = (float)(300.0 * 1000.0 / distance_mm);
     }
 }
@@ -226,9 +255,10 @@ static void seismic_test_task(
 
     while (s_running) {
         const int64_t tick_us = esp_timer_get_time();
-        for (int k = 0; k < TEST_FRAMES_PER_TICK; ++k) {
+        const int frames_per_tick = TEST_FRAMES_PER_TICK_NOW;
+        for (int k = 0; k < frames_per_tick; ++k) {
 #if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
-            if (next_hole < sizeof(holes) / sizeof(holes[0]) && frame_number >= holes[next_hole].at) {
+            if (next_hole < sizeof(holes) / sizeof(holes[0]) && frame_number >= TEST_REC_FRAMES_AT(holes[next_hole].at, s_rate_hz)) {
                 ESP_LOGW("TEST_SOURCE", "TEST_SOURCE_HOLE at_frame=%llu missed=%llu", (unsigned long long)frame_number,
                          (unsigned long long)holes[next_hole].missed);
                 frame_number += holes[next_hole].missed;   /* the signal went on while the conversions were lost */
@@ -254,8 +284,8 @@ static void seismic_test_task(
 
             /* Follow the wall clock, but never step back or stand still: a wake-up that comes late must not make
              * the next frames older than the last one (the calculation rejects a non-monotonic trace). */
-            const int64_t frame_period_us = 1000000 / SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ;
-            int64_t stamp_us = tick_us - (int64_t)(TEST_FRAMES_PER_TICK - 1 - k) * frame_period_us;
+            const int64_t frame_period_us = 1000000 / (int64_t)s_rate_hz;
+            int64_t stamp_us = tick_us - (int64_t)(frames_per_tick - 1 - k) * frame_period_us;
             if (last_stamp_us != 0 && stamp_us <= last_stamp_us) stamp_us = last_stamp_us + frame_period_us;
             last_stamp_us = stamp_us;
 #if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
@@ -296,7 +326,7 @@ esp_err_t seismic_test_generator_start(void)
     ESP_ERROR_CHECK(
         seismic_buffer_configure(
             SEISMIC_SOURCE_TEST,
-            SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ
+            s_rate_hz
         )
     );
 #if TEST_PHYSICAL_EVENT
@@ -329,8 +359,8 @@ esp_err_t seismic_test_generator_start(void)
 
     ESP_LOGW(
         TAG,
-        "TEST waveform generator enabled at %d Hz core=%d",
-        SEISMIC_TEST_SOURCE_SAMPLE_RATE_HZ,
+        "TEST waveform generator enabled at %u Hz core=%d",
+        (unsigned)s_rate_hz,
         APP_TASK_CORE_REALTIME
     );
 

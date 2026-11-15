@@ -53,6 +53,14 @@ _Static_assert(
         CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 40000U,
     "AD7606 diagnostic cadence must use a Kconfig-supported sample rate"
 );
+
+/*
+ * The sample rate is a run-time choice (a preset of seismic_rate_profile), fixed while the source runs. The Kconfig
+ * value is the default at boot. Only the hot loop reads it, and only between start and stop, so a plain variable is
+ * enough: it is written only while the source is stopped.
+ */
+static uint32_t s_sample_rate_hz = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ;
+
 /* At 40 kHz, even 40000 samples of INT16_MIN^2 use only 42,949,672,960,000
  * of UINT64_MAX, leaving more than 429,000x headroom before overflow. */
 _Static_assert(
@@ -703,7 +711,7 @@ static void ad7606_diag_log_pending(void)
 
 static void ad7606_diag_finish_sample(uint64_t sample_index)
 {
-    if ((sample_index + 1U) % CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 0U) {
+    if ((sample_index + 1U) % s_sample_rate_hz == 0U) {
         ad7606_diag_publish_and_reset(sample_index);
     }
 }
@@ -1330,7 +1338,7 @@ static esp_err_t ad7606_publish_sample(
         !ad7606_acquisition_timestamp_from_index(
             s_sample_t0_us,
             sample_index,
-            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+            s_sample_rate_hz,
             &sample->timestamp_us
         )
     ) {
@@ -1383,7 +1391,7 @@ static esp_err_t ad7606_publish_sample(
         /* A failing ring would otherwise print on every sample and stall this task. */
         s_publish_failures = ad7606_acquisition_saturating_add_u32(s_publish_failures, 1U);
         if (s_publish_failures == 1U ||
-            s_publish_failures % CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 0U) {
+            s_publish_failures % s_sample_rate_hz == 0U) {
             ESP_LOGE(TAG, "Seismic buffer push failed: %s (failures=%" PRIu32 ")",
                 esp_err_to_name(err), s_publish_failures);
         }
@@ -1408,7 +1416,7 @@ static void ad7606_serial_diag_log_frame(
         (
             s_serial_diag_last_log_sample == 0U ||
             samples - s_serial_diag_last_log_sample >=
-                CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
+                s_sample_rate_hz
         );
 
     if (
@@ -1441,7 +1449,7 @@ static void ad7606_serial_diag_log_frame(
     if (
         s_serial_diag_last_log_sample != 0U &&
         samples - s_serial_diag_last_log_sample <
-            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
+            s_sample_rate_hz
     ) {
 #if defined(AD7606_ACQUISITION_HOST_TEST)
         ad7606_test_log_event(
@@ -1607,21 +1615,21 @@ static esp_err_t ad7606_prepare_timing(void)
 {
     const uint32_t max_resolution = ledc_find_suitable_duty_resolution(
         AD7606_LEDC_XTAL_CLOCK_HZ,
-        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
+        s_sample_rate_hz
     );
     s_ledc_duty_resolution = ad7606_acquisition_ledc_exact_resolution(
-        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+        s_sample_rate_hz,
         AD7606_LEDC_XTAL_CLOCK_HZ,
         max_resolution
     );
     if (s_ledc_duty_resolution == 0U) {
         ESP_LOGE(TAG, "XTAL LEDC cannot generate %u Hz",
-            (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ);
+            (unsigned)s_sample_rate_hz);
         return ESP_ERR_INVALID_ARG;
     }
 
     s_ledc_duty_count = ad7606_acquisition_ledc_duty_count(
-        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+        s_sample_rate_hz,
         s_ledc_duty_resolution,
         AD7606_CONVST_TARGET_HIGH_NS,
         &s_convst_high_ns
@@ -1702,14 +1710,14 @@ static esp_err_t ad7606_resolve_measured_timing(
     ad7606_timing_result_t timing;
     const bool timing_valid = unknown_degraded
         ? ad7606_acquisition_timing_resolve(
-            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+            s_sample_rate_hz,
             CONFIG_AD7606_OVERSAMPLING_RATIO,
             CONFIG_AD7606_SPI_CLOCK_HZ,
             ad7606_requested_read_mode(),
             s_convst_high_ns,
             &timing)
         : ad7606_acquisition_timing_resolve_measured(
-            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+            s_sample_rate_hz,
             CONFIG_AD7606_OVERSAMPLING_RATIO,
             measured_os,
             CONFIG_AD7606_SPI_CLOCK_HZ,
@@ -1720,7 +1728,7 @@ static esp_err_t ad7606_resolve_measured_timing(
         ESP_LOGE(TAG,
             "Measured timing unsafe or read mode differs: rate=%u configured=OS%u "
             "measured=OS%u SCLK=%u requested=%s tCONV=%u ns",
-            (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+            (unsigned)s_sample_rate_hz,
             (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
             (unsigned)measured_os,
             (unsigned)CONFIG_AD7606_SPI_CLOCK_HZ,
@@ -1733,7 +1741,7 @@ static esp_err_t ad7606_resolve_measured_timing(
     ESP_LOGI(TAG,
         "Timing valid: rate=%u Hz configured=OS%u measured=OS%u tCONV_measured=%u ns "
         "SCLK=%u read=%" PRIu64 " ns tCONV_datasheet_max=%u ns mode=%s CONVST_high=%u ns",
-        (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+        (unsigned)s_sample_rate_hz,
         (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
         (unsigned)measured_os,
         (unsigned)measured_tconv_ns,
@@ -1865,7 +1873,7 @@ static esp_err_t ad7606_ledc_start(void)
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = (ledc_timer_bit_t)s_ledc_duty_resolution,
         .timer_num = LEDC_TIMER_0,
-        .freq_hz = CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+        .freq_hz = s_sample_rate_hz,
         .clk_cfg = LEDC_USE_XTAL_CLK,
     };
     esp_err_t err = ledc_timer_config(&timer_config);
@@ -1894,10 +1902,10 @@ static esp_err_t ad7606_ledc_start(void)
     }
     s_ledc_channel_configured = true;
     if (ledc_get_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0) !=
-        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) {
+        s_sample_rate_hz) {
         ad7606_lifecycle_set_running(false);
         ESP_LOGE(TAG, "LEDC XTAL output is not exactly %u Hz",
-            (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ);
+            (unsigned)s_sample_rate_hz);
         return ESP_ERR_INVALID_RESPONSE;
     }
     return ESP_OK;
@@ -1951,7 +1959,7 @@ static void ad7606_hardware_stop(void)
     ad7606_lifecycle_set_running(false);
     if (s_ledc_channel_configured) {
         const uint32_t pulse_wait_limit_us =
-            (1000000U / CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) + 5U;
+            (1000000U / s_sample_rate_hz) + 5U;
         for (uint32_t waited = 0U;
              gpio_get_level(BOARD_AD7606_CONVST_GPIO) != 0 &&
                  waited < pulse_wait_limit_us;
@@ -2057,7 +2065,7 @@ static esp_err_t ad7606_worker_initialize(void)
     }
 
     const uint32_t quality_window_frames = ad7606_serial_quality_window_frames(
-        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
+        s_sample_rate_hz
     );
 #if defined(AD7606_ACQUISITION_HOST_TEST)
     ++s_test_heap_caps_allocations;
@@ -2120,7 +2128,7 @@ static esp_err_t ad7606_worker_initialize(void)
 
     err = seismic_buffer_configure(
         SEISMIC_SOURCE_AD7606,
-        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
+        s_sample_rate_hz
     );
     if (err != ESP_OK) {
         return err;
@@ -2135,7 +2143,7 @@ static esp_err_t ad7606_worker_initialize(void)
     }
 
     s_jitter_period_us = ad7606_acquisition_period_us(
-        CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ
+        s_sample_rate_hz
     );
 #if defined(AD7606_ACQUISITION_HOST_TEST)
     ++s_test_counters.status_critical_entries;
@@ -2148,7 +2156,7 @@ static esp_err_t ad7606_worker_initialize(void)
         TAG,
         "Started: %u Hz, 4 channels, SPI3=%u Hz, OS configured=%u measured=%u mismatch=%s mode=%s, "
         "LEDC XTAL, BUSY GPIO=%d PCNT, core=%d",
-        (unsigned)CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ,
+        (unsigned)s_sample_rate_hz,
         (unsigned)CONFIG_AD7606_SPI_CLOCK_HZ,
         (unsigned)CONFIG_AD7606_OVERSAMPLING_RATIO,
         (unsigned)measured_os,
@@ -2225,7 +2233,7 @@ static void ad7606_worker(
 
 #if defined(CONFIG_SEISMIC_AD7606_RAIL_INTERLOCK)
         if (conversion_count - s_rail_last_check_conversion >=
-            CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ) {
+            s_sample_rate_hz) {
             s_rail_last_check_conversion = conversion_count;
             const int64_t now_us = esp_timer_get_time();
             ina3221_monitor_rail_t rail;
@@ -2325,7 +2333,7 @@ static void ad7606_worker(
                 s_unpublished_samples =
                     ad7606_acquisition_saturating_add_u32(s_unpublished_samples, 1U);
                 if (s_unpublished_samples == 1U || s_unpublished_samples %
-                    CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 0U) {
+                    s_sample_rate_hz == 0U) {
                     ESP_LOGW(TAG, "Sample %" PRIu64 " not published: %s (count=%" PRIu32 ")",
                         sample_index, esp_err_to_name(err), s_unpublished_samples);
                 }
@@ -2336,7 +2344,7 @@ static void ad7606_worker(
             if (err != ESP_OK) {
                 const uint32_t failures = ad7606_status_record_failure();
                 if (failures == 1U || failures %
-                    CONFIG_SEISMIC_AD7606_SAMPLE_RATE_HZ == 0U) {
+                    s_sample_rate_hz == 0U) {
                     ESP_LOGW(TAG, "AD7606 result read failed: %s",
                         esp_err_to_name(err));
                 }
@@ -2435,6 +2443,51 @@ esp_err_t ad7606_acquisition_probe(void)
     }
     ad7606_lifecycle_finish_start();
     return err;
+}
+
+
+bool ad7606_acquisition_sample_rate_supported(uint32_t sample_rate_hz)
+{
+    if (sample_rate_hz == 0U) {
+        return false;
+    }
+    /* The same chain ad7606_prepare_timing runs at start: an exact LEDC CONVST, then the read-mode timing. */
+    const uint32_t max_resolution = ledc_find_suitable_duty_resolution(AD7606_LEDC_XTAL_CLOCK_HZ, sample_rate_hz);
+    const uint32_t resolution = ad7606_acquisition_ledc_exact_resolution(
+        sample_rate_hz, AD7606_LEDC_XTAL_CLOCK_HZ, max_resolution);
+    if (resolution == 0U) {
+        return false;
+    }
+    uint32_t convst_high_ns = 0U;
+    if (ad7606_acquisition_ledc_duty_count(
+            sample_rate_hz, resolution, AD7606_CONVST_TARGET_HIGH_NS, &convst_high_ns) == 0U) {
+        return false;
+    }
+    ad7606_timing_result_t timing;
+    return ad7606_acquisition_timing_resolve(
+        sample_rate_hz, CONFIG_AD7606_OVERSAMPLING_RATIO, CONFIG_AD7606_SPI_CLOCK_HZ, AD7606_READ_MODE_AUTO,
+        convst_high_ns, &timing);
+}
+
+
+uint32_t ad7606_acquisition_get_sample_rate(void)
+{
+    return s_sample_rate_hz;
+}
+
+
+esp_err_t ad7606_acquisition_set_sample_rate(uint32_t sample_rate_hz)
+{
+    if (!ad7606_acquisition_sample_rate_supported(sample_rate_hz)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_lifecycle_lock);
+    const bool busy = s_task != NULL || s_starting || s_running;
+    if (!busy) {
+        s_sample_rate_hz = sample_rate_hz;
+    }
+    portEXIT_CRITICAL(&s_lifecycle_lock);
+    return busy ? ESP_ERR_INVALID_STATE : ESP_OK;
 }
 
 

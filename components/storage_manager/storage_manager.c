@@ -50,6 +50,14 @@ static const char *TAG =
  */
 #define STORAGE_MANAGER_OPERATION_WAIT_MS  30000U
 
+/*
+ * Attempts to quiesce the display for an outermost operation, with the mutex released between attempts. Each attempt
+ * waits up to the display guard's own bound (250 ms), so a display that never lets go fails the operation after about
+ * two seconds instead of freezing every task that needs storage.
+ */
+#define STORAGE_MANAGER_QUIESCE_ATTEMPTS  8U
+#define STORAGE_MANAGER_QUIESCE_BACKOFF_MS  25U
+
 
 static SemaphoreHandle_t s_operation_mutex =
     NULL;
@@ -432,6 +440,17 @@ esp_err_t storage_manager_operation_begin(void)
     const int64_t operation_started_us =
         esp_timer_get_time();
 
+    bool outermost = false;
+    esp_err_t err = ESP_OK;
+    int64_t mutex_wait_us = 0;
+
+    /*
+     * The display quiesce waits for the LVGL lock, and the LVGL side can in turn wait for a task that is itself waiting
+     * for this mutex. Holding the mutex through an unbounded wait for the LVGL lock turns that into a deadlock (board
+     * log 2026-11-15 19:28: calculation frozen at 0 %). The wait is bounded; on a timeout the mutex is released so the
+     * other side can finish, and the operation tries again.
+     */
+    for (unsigned attempt = 1U;; ++attempt) {
     /* A holder that never finishes must fail this operation, not hang its task for good. */
     if (xSemaphoreTakeRecursive(
             s_operation_mutex,
@@ -447,9 +466,9 @@ esp_err_t storage_manager_operation_begin(void)
         return ESP_ERR_TIMEOUT;
     }
 
-    const int64_t mutex_wait_us =
+    mutex_wait_us =
         esp_timer_get_time() - operation_started_us;
-    const bool outermost = s_operation_depth == 0U;
+    outermost = s_operation_depth == 0U;
 
     if (outermost) {
         s_outer_operation_started_us = operation_started_us;
@@ -467,13 +486,20 @@ esp_err_t storage_manager_operation_begin(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t err = ESP_OK;
+    err = ESP_OK;
     if (outermost) {
         const int64_t quiesce_started_us =
             esp_timer_get_time();
         err = app_spi_bus_sd_operation_begin();
         s_outer_tft_quiesce_us =
             esp_timer_get_time() - quiesce_started_us;
+
+        if (err == ESP_ERR_TIMEOUT && attempt < STORAGE_MANAGER_QUIESCE_ATTEMPTS) {
+            s_outer_operation_started_us = 0;
+            xSemaphoreGiveRecursive(s_operation_mutex);
+            vTaskDelay(pdMS_TO_TICKS(STORAGE_MANAGER_QUIESCE_BACKOFF_MS));
+            continue;
+        }
 
         if (err != ESP_OK) {
             const int64_t elapsed_us =
@@ -508,6 +534,8 @@ esp_err_t storage_manager_operation_begin(void)
             );
             return err;
         }
+    }
+    break;
     }
 
     if (outermost) {

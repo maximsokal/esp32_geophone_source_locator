@@ -7,6 +7,9 @@ unsigned measurement_source_ready_after;
 unsigned measurement_source_snapshot_calls;
 unsigned measurement_source_start_calls;
 static bool s_running;
+uint32_t measurement_source_rate_hz = 500U;
+
+uint32_t seismic_acquisition_get_sample_rate(void) { return measurement_source_rate_hz; }
 
 int64_t esp_timer_get_time(void) { return 1000000; }
 

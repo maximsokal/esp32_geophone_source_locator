@@ -2185,6 +2185,37 @@ esp_err_t workflow_service_get_queue_stats(workflow_service_queue_stats_t *stats
     return ESP_OK;
 }
 
+/*
+ * A finished recording stays in the measurement service's REVIEW state until it is kept or deleted, and a new START is
+ * refused from REVIEW. The guided workflow never said "keep", so the second recording after "Record again" was rejected
+ * ("State changed" on the TFT, board log 2026-11-15 15:46: START_RECORDING result=1 after RECORD_AGAIN). Leaving the
+ * review steps for anything but a delete is the user's decision to keep the recording.
+ */
+static bool workflow_service_step_is_review(workflow_step_t step)
+{
+    return step == WORKFLOW_STEP_STOPPED || step == WORKFLOW_STEP_CALCULATING || step == WORKFLOW_STEP_RESULT;
+}
+
+
+static void workflow_service_release_review_locked(
+    workflow_command_t command,
+    workflow_step_t from,
+    workflow_step_t to
+)
+{
+    if (command == WORKFLOW_COMMAND_DELETE_RECORDING) return;   /* the delete itself releases REVIEW */
+    if (!workflow_service_step_is_review(from) || workflow_service_step_is_review(to)) return;
+    measurement_service_snapshot_t measurement;
+    if (measurement_service_get_snapshot(&measurement) != ESP_OK || measurement.state != MEASUREMENT_SERVICE_REVIEW) {
+        return;
+    }
+    const esp_err_t err = measurement_service_keep_async();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "WORKFLOW_KEEP_RECORDING command=%d err=%s", (int)command, esp_err_to_name(err));
+    }
+}
+
+
 static workflow_command_result_t workflow_service_command_locked(
     workflow_command_t command,
     const workflow_command_params_t *params
@@ -2340,6 +2371,8 @@ static workflow_command_result_t workflow_service_command_locked(
         memcpy(s_session_id, previous_session, sizeof(s_session_id));
         return WORKFLOW_COMMAND_RESULT_NOT_ALLOWED;
     }
+
+    workflow_service_release_review_locked(command, previous.step, s_core.step);
 
     if (command == WORKFLOW_COMMAND_CALCULATE_SOURCES && s_core.step == WORKFLOW_STEP_CALCULATING) {
         workflow_service_calculation_start_locked();
