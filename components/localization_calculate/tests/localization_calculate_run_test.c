@@ -1770,6 +1770,54 @@ static void test_scan_identity_mismatch_and_unavailable_fail_closed(void)
     }
     remove_test_scan_artifacts(reflected_object, reflected_session);
 
+    /*
+     * One scan, several recordings: the scan and its occupancy (with the registered tags) live once under scans/SC000001 and
+     * a session carries only a one-line reference. The calculation must use the same voxels as when the files sat in the
+     * session itself, for the recording that made the scan and for a later one.
+     */
+    for (unsigned later = 0U; later < 2U; ++later) {
+        reset_fakes();
+        build_fixture(4U, &s_source, TEST_SPEED_MPS, TEST_EMISSION_S, 1.0f, 0.02f, true);
+        const char *shared_object = "OBJSCANSHARED";
+        const char *owner_session = "S098005";
+        const char *later_session = "S098006";
+        prepare_session_directory(shared_object, owner_session);
+        prepare_session_directory(shared_object, later_session);
+        write_test_occupancy_file(shared_object, owner_session, occupancy_frame_id, false);
+        write_test_scan_file(shared_object, owner_session, scan_a, scan_length);
+        char scans_dir[256], owner_path[256], shared_path[256], ref_path[256];
+        snprintf(scans_dir, sizeof(scans_dir), "%s/%s/scans", STORAGE_MANAGER_OBJECTS_PATH, shared_object);
+        ensure_dir(scans_dir);
+        snprintf(scans_dir, sizeof(scans_dir), "%s/%s/scans/SC000001", STORAGE_MANAGER_OBJECTS_PATH, shared_object);
+        ensure_dir(scans_dir);
+        static const char *const moved[] = {"occupancy-v1.bin", "scan-v1.bin"};
+        for (size_t i = 0U; i < 2U; ++i) {
+            snprintf(owner_path, sizeof(owner_path), "%s/%s/sessions/%s/%s", STORAGE_MANAGER_OBJECTS_PATH, shared_object, owner_session, moved[i]);
+            snprintf(shared_path, sizeof(shared_path), "%s/%s/scans/SC000001/%s", STORAGE_MANAGER_OBJECTS_PATH, shared_object, moved[i]);
+            (void)remove(shared_path);
+            assert(rename(owner_path, shared_path) == 0);
+        }
+        const char *calculated = later == 0U ? owner_session : later_session;
+        snprintf(ref_path, sizeof(ref_path), "%s/%s/sessions/%s/scan-ref", STORAGE_MANAGER_OBJECTS_PATH, shared_object, calculated);
+        FILE *ref = fopen(ref_path, "wb");
+        assert(ref != NULL && fputs("SC000001", ref) >= 0 && fclose(ref) == 0);
+
+        localization_calculate_config_t shared_config = default_test_config();
+        localization_calculate_summary_t shared_summary;
+        assert(localization_calculate_run(shared_object, calculated, &shared_config, 52002ULL, &shared_summary) == ESP_OK);
+        const localization_run_record_t *shared_traveltime = find_record("traveltime_scan_constrained");
+        assert(shared_traveltime != NULL && shared_traveltime->scan_provenance_present);
+        assert(shared_traveltime->scan_constraint_applied);
+        assert(strcmp(shared_traveltime->scan_frame_id, occupancy_frame_id) == 0);
+        assert(shared_traveltime->occupancy_created_at_ms == 234567U);
+
+        for (size_t i = 0U; i < 2U; ++i) {
+            snprintf(shared_path, sizeof(shared_path), "%s/%s/scans/SC000001/%s", STORAGE_MANAGER_OBJECTS_PATH, shared_object, moved[i]);
+            (void)remove(shared_path);
+        }
+        (void)remove(ref_path);
+    }
+
     free(scan_a);
     free(scan_b);
     puts("  scan generation mismatch, unavailable identity, and reflected registration persist their reasons");

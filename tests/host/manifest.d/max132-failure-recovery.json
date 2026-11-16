@@ -79,7 +79,8 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include",
-        "components/localization_extended/tests"
+        "components/localization_extended/tests",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"
@@ -234,7 +235,8 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include",
-        "components/localization_extended/tests"
+        "components/localization_extended/tests",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"
@@ -319,7 +321,8 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include",
-        "components/localization_extended/tests"
+        "components/localization_extended/tests",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"
@@ -404,7 +407,8 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include",
-        "components/localization_extended/tests"
+        "components/localization_extended/tests",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"
@@ -489,7 +493,8 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include",
-        "components/localization_extended/tests"
+        "components/localization_extended/tests",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"
@@ -574,7 +579,8 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include",
-        "components/localization_extended/tests"
+        "components/localization_extended/tests",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"
@@ -659,7 +665,8 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include",
-        "components/localization_extended/tests"
+        "components/localization_extended/tests",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"
@@ -744,7 +751,8 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include",
-        "components/localization_extended/tests"
+        "components/localization_extended/tests",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"
@@ -829,7 +837,8 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include",
-        "components/localization_extended/tests"
+        "components/localization_extended/tests",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"
@@ -914,7 +923,8 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include",
-        "components/localization_extended/tests"
+        "components/localization_extended/tests",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"
@@ -999,7 +1009,8 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include",
-        "components/localization_extended/tests"
+        "components/localization_extended/tests",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"
@@ -1084,7 +1095,8 @@
         "components/object_store/include",
         "components/object_format/include",
         "components/localization_run_store/include",
-        "components/localization_extended/tests"
+        "components/localization_extended/tests",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"

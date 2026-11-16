@@ -21,6 +21,7 @@
 #include "object_format.h"
 #include "object_store.h"
 #include "seismic_recorder.h"
+#include "scan_artifact_path.h"
 #include "storage_bulk_admission.h"
 #include "storage_manager.h"
 
@@ -435,6 +436,41 @@ static esp_err_t web_scan_paths(
         temp_written <= 0 || backup_written <= 0 ||
         temp_written >= (int)WEB_SCAN_PATH_SIZE || backup_written >= (int)WEB_SCAN_PATH_SIZE
     ) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return ESP_OK;
+}
+
+
+/*
+ * The paths to READ a session's artifact from. Writing, replacing and removing always address the session's own file; a
+ * read also sees the shared scan of the session's sensor placement (several recordings refer to one scan, see
+ * scan_artifact_path.h), unless the session has its own copy. The lookup opens files, so it runs in a storage operation.
+ */
+static esp_err_t web_scan_paths_for_read(
+    const char *object_id,
+    const char *session_id,
+    const web_scan_kind_t *kind,
+    char final_path[WEB_SCAN_PATH_SIZE],
+    char temp_path[WEB_SCAN_PATH_SIZE],
+    char backup_path[WEB_SCAN_PATH_SIZE]
+)
+{
+    esp_err_t err = web_scan_paths(object_id, session_id, kind, final_path, temp_path, backup_path);
+    if (err != ESP_OK || web_scan_session_is_staging(session_id)) return err;
+    err = storage_manager_operation_begin();
+    if (err != ESP_OK) return ESP_OK; /* without the card there is nothing more to find: keep the session's own path */
+    char resolved[WEB_SCAN_PATH_SIZE];
+    const int result = scan_artifact_resolve(
+        STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id, kind->file_name, resolved, sizeof(resolved));
+    storage_manager_operation_end();
+    if (result != 0) return ESP_ERR_INVALID_SIZE;
+    const int final_written = snprintf(final_path, WEB_SCAN_PATH_SIZE, "%s", resolved);
+    const int temp_written = snprintf(temp_path, WEB_SCAN_PATH_SIZE, "%s.tmp", final_path);
+    const int backup_written = snprintf(backup_path, WEB_SCAN_PATH_SIZE, "%s.bak", final_path);
+    if (final_written <= 0 || temp_written <= 0 || backup_written <= 0 ||
+        final_written >= (int)WEB_SCAN_PATH_SIZE || temp_written >= (int)WEB_SCAN_PATH_SIZE ||
+        backup_written >= (int)WEB_SCAN_PATH_SIZE) {
         return ESP_ERR_INVALID_SIZE;
     }
     return ESP_OK;
@@ -979,7 +1015,7 @@ static esp_err_t web_scan_commit_derivative_temp(
     char scan_path[WEB_SCAN_PATH_SIZE];
     char scan_temp_path[WEB_SCAN_PATH_SIZE];
     char scan_backup_path[WEB_SCAN_PATH_SIZE];
-    err = web_scan_paths(
+    err = web_scan_paths_for_read(
         object_id,
         session_id,
         &WEB_SCAN_KIND_SCAN,
@@ -1488,7 +1524,7 @@ static esp_err_t web_scan_get_scan_identity(
     char final_path[WEB_SCAN_PATH_SIZE];
     char temp_path[WEB_SCAN_PATH_SIZE];
     char backup_path[WEB_SCAN_PATH_SIZE];
-    esp_err_t err = web_scan_paths(
+    esp_err_t err = web_scan_paths_for_read(
         object_id,
         session_id,
         &WEB_SCAN_KIND_SCAN,
@@ -2127,7 +2163,7 @@ static esp_err_t web_scan_load(httpd_req_t *request, const char *object_id, cons
     if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, session_id, err, 0U);
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
-    err = web_scan_paths(object_id, session_id, kind, final_path, temp_path, backup_path);
+    err = web_scan_paths_for_read(object_id, session_id, kind, final_path, temp_path, backup_path);
     if (err != ESP_OK) return web_scan_send_json(request, "scan_load", object_id, session_id, err, 0U);
 
     const int64_t started_us = esp_timer_get_time();
@@ -2345,7 +2381,7 @@ static esp_err_t web_scan_info(httpd_req_t *request, const char *object_id, cons
     }
 
     char final_path[WEB_SCAN_PATH_SIZE], temp_path[WEB_SCAN_PATH_SIZE], backup_path[WEB_SCAN_PATH_SIZE];
-    err = web_scan_paths(object_id, session_id, kind, final_path, temp_path, backup_path);
+    err = web_scan_paths_for_read(object_id, session_id, kind, final_path, temp_path, backup_path);
     if (err != ESP_OK) {
         if (kind == &WEB_SCAN_KIND_OCCUPANCY || kind == &WEB_SCAN_KIND_PREVIEW) {
             return web_scan_send_json_extra(request, "scan_info", object_id, session_id, err, 0U, "source_id", NULL, true);

@@ -37,6 +37,7 @@
 #include "seismic_recorder.h"
 #include "seismic_buffer.h"
 #include "object_store.h"
+#include "scan_artifact_path.h"
 #include "storage_manager.h"
 #include "storage_bulk_admission.h"
 #include "seismic_recorder_cache.h"
@@ -272,6 +273,12 @@ static bool path_exists(const char *path)
     return stat(path, &info) == 0;
 }
 
+/* A session's artifact: its own file, or the shared scan its scan-ref points at (one scan serves every recording). */
+static void resolved_artifact_path(const char *session_id, const char *name, char out[256])
+{
+    assert(scan_artifact_resolve(STORAGE_MANAGER_OBJECTS_PATH, "OBJ_0001", session_id, name, out, 256U) == 0);
+}
+
 static void write_staged_artifacts(void)
 {
     assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging") == 0);
@@ -338,6 +345,9 @@ static void remove_layout(void)
             (void)remove(marker_path);
             (void)remove(metadata_path);
             (void)remove(backup_path);
+            char ref_path[256];
+            (void)snprintf(ref_path, sizeof(ref_path), "%s/scan-ref", session_path);
+            (void)remove(ref_path);
             for (size_t artifact_index = 0U; artifact_index < sizeof(artifact_names) / sizeof(artifact_names[0]); ++artifact_index) {
                 char artifact_path[256];
                 (void)snprintf(artifact_path, sizeof(artifact_path), "%s/%s", session_path, artifact_names[artifact_index]);
@@ -348,6 +358,21 @@ static void remove_layout(void)
         (void)closedir(sessions);
     }
     (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions");
+    /* The shared scans (one folder per scan) and their files. */
+    for (unsigned scan_number = 1U; scan_number <= 4U; ++scan_number) {
+        static const char *const shared_names[] = {
+            "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json",
+        };
+        for (size_t i = 0U; i < sizeof(shared_names) / sizeof(shared_names[0]); ++i) {
+            char shared_path[256];
+            (void)snprintf(shared_path, sizeof(shared_path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans/SC%06u/%s", scan_number, shared_names[i]);
+            (void)remove(shared_path);
+        }
+        char shared_dir[256];
+        (void)snprintf(shared_dir, sizeof(shared_dir), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans/SC%06u", scan_number);
+        (void)rmdir(shared_dir);
+    }
+    (void)rmdir(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans");
     static const char *const staged_names[] = {
         "scan-v1.bin", "occupancy-v1.bin", "preview-v1.bin", "registration-v1.json",
     };
@@ -3103,12 +3128,7 @@ static void test_staged_artifacts_attach_once_to_the_created_session(void)
             STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s",
             staged_artifact_names[i]
         );
-        (void)snprintf(
-            session_path,
-            sizeof(session_path),
-            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s",
-            staged_artifact_names[i]
-        );
+        resolved_artifact_path("S000001", staged_artifact_names[i], session_path);
         assert(!path_exists(staged_path));
         assert_file_contents(session_path, staged_artifact_contents[i]);
     }
@@ -3120,29 +3140,20 @@ static void test_staged_artifacts_attach_once_to_the_created_session(void)
     assert(strcmp(session, "S000002") == 0);
     for (size_t i = 0U; i < sizeof(staged_artifact_names) / sizeof(staged_artifact_names[0]); ++i) {
         char session_path[256], staged_path[256];
-        (void)snprintf(
-            session_path,
-            sizeof(session_path),
-            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/%s",
-            staged_artifact_names[i]
-        );
+        resolved_artifact_path("S000002", staged_artifact_names[i], session_path);
         (void)snprintf(
             staged_path,
             sizeof(staged_path),
             STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s",
             staged_artifact_names[i]
         );
-        /* The placement's scan follows the object to its next recording (handed back to staging, then attached). */
+        /* The placement's scan serves the next recording too: the same shared file, not a copy. */
         assert_file_contents(session_path, staged_artifact_contents[i]);
         assert(!path_exists(staged_path));
         char first_path[256];
-        (void)snprintf(
-            first_path,
-            sizeof(first_path),
-            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s",
-            staged_artifact_names[i]
-        );
-        assert(!path_exists(first_path));
+        resolved_artifact_path("S000001", staged_artifact_names[i], first_path);
+        assert_file_contents(first_path, staged_artifact_contents[i]);
+        assert(strcmp(first_path, session_path) == 0);
     }
     assert(seismic_recorder_fs_close(file) == ESP_OK);
     remove_layout();
@@ -3223,7 +3234,11 @@ static void test_workflow_scan_promotes_into_recording_session_or_stays_staged(v
 
         if (promotion_succeeds != 0U) {
             assert(!path_exists(staged_scan_path));
+            /* The scan now lives in the shared folder; the session refers to it. */
+            assert(!path_exists(session_scan_path));
+            resolved_artifact_path("S000001", "scan-v1.bin", session_scan_path);
             assert_file_contents(session_scan_path, "scan");
+            assert(strstr(session_scan_path, "/scans/SC000001/") != NULL);
         } else {
             assert(path_exists(staged_scan_path));
             assert(!path_exists(session_scan_path));
@@ -3237,11 +3252,12 @@ static void test_workflow_scan_promotes_into_recording_session_or_stays_staged(v
 
 
 /*
- * One sensor placement, several recordings (other sample rates, "record again"): each new session must see the scan, tags and
- * occupancy of the placement. The artifacts live in one session at a time and are handed back to staging at the next START
- * (a rename; copying an 8 MB scan to the SD card would take minutes). A newer upload wins over the handed-back one.
+ * One sensor placement, several recordings (other sample rates, "record again"): every session of the object sees the scan,
+ * tags and occupancy of its placement. They are stored once, under scans/SC000001, and a session refers to them (a copy of an
+ * 8 MB scan to the SD card would take minutes). A fresh upload becomes a new shared scan for the sessions after it; the
+ * earlier sessions keep theirs.
  */
-static void test_every_new_session_of_the_object_receives_the_scan_of_the_placement(void)
+static void test_every_session_of_a_placement_shares_one_scan(void)
 {
     remove_layout();
     make_layout();
@@ -3251,38 +3267,71 @@ static void test_every_new_session_of_the_object_receives_the_scan_of_the_placem
     char second[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
     char third[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
     FILE *file = NULL;
-    char path[256];
+    char path[256], other[256];
     assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, first, &file) == ESP_OK);
     assert(seismic_recorder_fs_close(file) == ESP_OK);
     assert(strcmp(first, "S000001") == 0);
-    for (size_t i = 0U; i < sizeof(staged_artifact_names) / sizeof(staged_artifact_names[0]); ++i) {
-        (void)snprintf(path, sizeof(path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s", staged_artifact_names[i]);
-        assert(path_exists(path));
-    }
-
-    /* Another recording of the same placement: the scan, occupancy, preview and registration follow it. */
     assert(seismic_recorder_fs_create_session("OBJ_0001", 2000, 4, second, &file) == ESP_OK);
     assert(seismic_recorder_fs_close(file) == ESP_OK);
     assert(strcmp(second, "S000002") == 0);
-    for (size_t i = 0U; i < sizeof(staged_artifact_names) / sizeof(staged_artifact_names[0]); ++i) {
-        (void)snprintf(path, sizeof(path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/%s", staged_artifact_names[i]);
-        assert(path_exists(path));
-        assert_file_contents(path, staged_artifact_contents[i]);
-        (void)snprintf(path, sizeof(path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s", staged_artifact_names[i]);
-        assert(!path_exists(path));   /* one owner at a time: no copy of a large file */
-        (void)snprintf(path, sizeof(path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s", staged_artifact_names[i]);
-        assert(!path_exists(path));
-    }
 
-    /* A fresh upload for a new placement wins; the older session keeps the scan it has. */
+    for (size_t i = 0U; i < sizeof(staged_artifact_names) / sizeof(staged_artifact_names[0]); ++i) {
+        /* One copy in the shared folder, none in the sessions, nothing left in staging. */
+        (void)snprintf(path, sizeof(path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans/SC000001/%s", staged_artifact_names[i]);
+        assert_file_contents(path, staged_artifact_contents[i]);
+        (void)snprintf(other, sizeof(other), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s", staged_artifact_names[i]);
+        assert(!path_exists(other));
+        (void)snprintf(other, sizeof(other), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/%s", staged_artifact_names[i]);
+        assert(!path_exists(other));
+        (void)snprintf(other, sizeof(other), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s", staged_artifact_names[i]);
+        assert(!path_exists(other));
+        /* Both recordings read the very same file. */
+        char first_resolved[256], second_resolved[256];
+        resolved_artifact_path("S000001", staged_artifact_names[i], first_resolved);
+        resolved_artifact_path("S000002", staged_artifact_names[i], second_resolved);
+        assert(strcmp(first_resolved, path) == 0 && strcmp(second_resolved, path) == 0);
+    }
+    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-ref", "SC000001");
+    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/scan-ref", "SC000001");
+
+    /* A fresh upload for a new placement is a new shared scan; the older sessions keep the one they used. */
     assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging") == 0);
     FILE *fresh = fopen(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/scan-v1.bin", "wb");
     assert(fresh != NULL && fwrite("new", 1U, 3U, fresh) == 3U && fclose(fresh) == 0);
     assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, third, &file) == ESP_OK);
     assert(seismic_recorder_fs_close(file) == ESP_OK);
     assert(strcmp(third, "S000003") == 0);
-    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000003/scan-v1.bin", "new");
-    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/scan-v1.bin", "scan");
+    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans/SC000002/scan-v1.bin", "new");
+    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000003/scan-ref", "SC000002");
+    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans/SC000001/scan-v1.bin", "scan");
+    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/scan-ref", "SC000001");
+    remove_layout();
+}
+
+/* A session recorded before shared scans holds its own copy: the next recording takes it over, both then share it. */
+static void test_a_session_with_its_own_copy_is_taken_over_by_the_next_recording(void)
+{
+    remove_layout();
+    make_layout();
+    assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions") == 0 ||
+           path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions"));
+    assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001") == 0 ||
+           path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001"));
+    FILE *old = fopen(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin", "wb");
+    assert(old != NULL && fwrite("old scan", 1U, 8U, old) == 8U && fclose(old) == 0);
+
+    char second[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *file = NULL;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, second, &file) == ESP_OK);
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+    assert(strcmp(second, "S000002") == 0);
+    assert(!path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-v1.bin"));
+    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans/SC000001/scan-v1.bin", "old scan");
+    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/scan-ref", "SC000001");
+    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/scan-ref", "SC000001");
+    char resolved[256];
+    resolved_artifact_path("S000001", "scan-v1.bin", resolved);
+    assert_file_contents(resolved, "old scan");
     remove_layout();
 }
 
@@ -3299,6 +3348,8 @@ static void test_a_session_without_any_earlier_scan_stays_without_one(void)
     assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, second, &file) == ESP_OK);
     assert(seismic_recorder_fs_close(file) == ESP_OK);
     assert(!path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/scan-v1.bin"));
+    assert(!path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/scan-ref"));
+    assert(!path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/scans"));
     assert(!path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging"));
     remove_layout();
 }
@@ -3343,12 +3394,7 @@ static void test_one_staged_move_failure_does_not_fail_recording(void)
             STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s",
             staged_artifact_names[i]
         );
-        (void)snprintf(
-            session_path,
-            sizeof(session_path),
-            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s",
-            staged_artifact_names[i]
-        );
+        resolved_artifact_path("S000001", staged_artifact_names[i], session_path);
         if (strcmp(staged_artifact_names[i], "preview-v1.bin") == 0) {
             assert(path_exists(staged_path));
             assert(!path_exists(session_path));
@@ -3386,12 +3432,7 @@ static void test_failed_start_restores_staged_artifacts(void)
             STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s",
             staged_artifact_names[i]
         );
-        (void)snprintf(
-            session_path,
-            sizeof(session_path),
-            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s",
-            staged_artifact_names[i]
-        );
+        resolved_artifact_path("S000001", staged_artifact_names[i], session_path);
         assert_file_contents(staged_path, staged_artifact_contents[i]);
         assert(!path_exists(session_path));
     }
@@ -3680,7 +3721,8 @@ int main(void)
     test_session_id_increments();
     test_staged_artifacts_attach_once_to_the_created_session();
     test_workflow_scan_promotes_into_recording_session_or_stays_staged();
-    test_every_new_session_of_the_object_receives_the_scan_of_the_placement();
+    test_every_session_of_a_placement_shares_one_scan();
+    test_a_session_with_its_own_copy_is_taken_over_by_the_next_recording();
     test_a_session_without_any_earlier_scan_stays_without_one();
     test_missing_staging_is_a_noop();
     test_one_staged_move_failure_does_not_fail_recording();

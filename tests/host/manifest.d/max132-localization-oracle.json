@@ -98,7 +98,8 @@
         "components/seismic_buffer/tests/stubs",
         "components/object_store/include",
         "components/object_format/include",
-        "components/localization_run_store/include"
+        "components/localization_run_store/include",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"

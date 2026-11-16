@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "tests": [
+    {
+      "name": "scan_artifact_path",
+      "sources": [
+        "tests/host/scan_artifact_path_test.c"
+      ],
+      "include_dirs": [
+        "components/storage_manager/include"
+      ]
+    }
+  ]
+}

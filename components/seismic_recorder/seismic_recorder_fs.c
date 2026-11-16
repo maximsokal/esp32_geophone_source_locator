@@ -22,6 +22,7 @@
 #include "esp_timer.h"
 #include "seismic_recorder_lod_store.h"
 #include "seismic_recorder_storage_preflight.h"
+#include "scan_artifact_path.h"
 #include "storage_manager.h"
 
 #if !defined(S_ISREG) && defined(S_IFMT) && defined(S_IFREG)
@@ -353,119 +354,152 @@ static esp_err_t seismic_recorder_fs_next_session_id(
 
 
 /*
- * One scan serves every recording made with the same sensor placement: a second recording of the object (another sample
- * rate, "record again") must see the same 3D scan, tags and occupancy as the first. The artifacts are moved into a session
- * at START, so before staging is attached to the new session the newest earlier session that holds an artifact hands it
- * back to staging. A rename is instant (a copy of an 8 MB scan to the SD card would take minutes). A scan made for another
- * placement is not applied silently: consumers compare its geometry_computed_at_ms with the session's frozen geometry.
- * Only the newest session keeps the scan; a fresh upload to staging always wins over the one handed back.
+ * One 3D scan serves every recording made with the same sensor placement. FAT has no links and copying an 8 MB scan to the
+ * SD card takes minutes, so the scan, its occupancy (with the registered tags), preview and registration are stored once,
+ * under <object>/scans/<SCnnnnnn>/, and a session carries a one-line reference (scan-ref) to it; see scan_artifact_path.h.
+ *
+ * At START the artifacts waiting in staging (a fresh upload) become a new shared scan and the new session refers to it. With
+ * nothing in staging the new session refers to the scan of the newest earlier session that has one; a session recorded
+ * before this scheme, which holds its own copy, hands that copy to the shared folder first (a rename, instant), so every
+ * recording of a placement keeps its voxels. A scan made for another placement is not applied silently: consumers compare
+ * its geometry_computed_at_ms with the session's frozen geometry.
  */
-#define SEISMIC_RECORDER_FS_SCAN_HANDBACK_LOOKBACK 64U
+#define SEISMIC_RECORDER_FS_SCAN_LOOKBACK 64U
 
-static void seismic_recorder_fs_pull_scan_from_previous_session(const char *object_id, const char *new_session_id)
+static bool seismic_recorder_fs_artifact_present(const char *dir, const char *name)
 {
-    unsigned new_number = 0U;
-    if (sscanf(new_session_id, "S%u", &new_number) != 1 || new_number <= 1U) return;
-
-    char staging_dir[SEISMIC_RECORDER_PATH_SIZE];
-    const int dir_written = snprintf(staging_dir, sizeof(staging_dir), "%s/%s/staging", STORAGE_MANAGER_OBJECTS_PATH, object_id);
-    if (dir_written <= 0 || (size_t)dir_written >= sizeof(staging_dir)) return;
-
-    for (size_t i = 0U; i < sizeof(s_staged_artifacts) / sizeof(s_staged_artifacts[0]); ++i) {
-        const char *name = s_staged_artifacts[i].file_name;
-        char staged_path[SEISMIC_RECORDER_PATH_SIZE];
-        struct stat info;
-        if (snprintf(staged_path, sizeof(staged_path), "%s/%s", staging_dir, name) >= (int)sizeof(staged_path)) continue;
-        if (stat(staged_path, &info) == 0) continue;   /* a newer upload is waiting: it wins */
-
-        for (unsigned back = 1U; back <= SEISMIC_RECORDER_FS_SCAN_HANDBACK_LOOKBACK && back < new_number; ++back) {
-            char previous_path[SEISMIC_RECORDER_PATH_SIZE];
-            const int written = snprintf(
-                previous_path, sizeof(previous_path), "%s/%s/sessions/S%06u/%s",
-                STORAGE_MANAGER_OBJECTS_PATH, object_id, new_number - back, name);
-            if (written <= 0 || (size_t)written >= sizeof(previous_path)) break;
-            if (stat(previous_path, &info) != 0 || !S_ISREG(info.st_mode)) continue;
-            if (storage_manager_create_directory(staging_dir) != ESP_OK) break;
-            if (rename(previous_path, staged_path) != 0) {
-                ESP_LOGW(TAG, "Could not hand %s of S%06u back to staging: errno=%d", name, new_number - back, errno);
-            }
-            break;   /* the newest session that has it is the one that gives it up */
-        }
-    }
+    char path[SEISMIC_RECORDER_PATH_SIZE];
+    struct stat info;
+    return snprintf(path, sizeof(path), "%s/%s", dir, name) < (int)sizeof(path) && stat(path, &info) == 0 &&
+        (info.st_mode & S_IFMT) == S_IFREG;
 }
 
+static unsigned seismic_recorder_fs_artifacts_present_mask(const char *dir)
+{
+    unsigned mask = 0U;
+    for (size_t i = 0U; i < sizeof(s_staged_artifacts) / sizeof(s_staged_artifacts[0]); ++i) {
+        if (seismic_recorder_fs_artifact_present(dir, s_staged_artifacts[i].file_name)) mask |= s_staged_artifacts[i].mask;
+    }
+    return mask;
+}
 
+/* The next free SCnnnnnn of the object: one above the highest in scans/. */
+static bool seismic_recorder_fs_next_scan_id(const char *object_id, char id[SCAN_ARTIFACT_ID_SIZE])
+{
+    char dir_path[SEISMIC_RECORDER_PATH_SIZE];
+    if (snprintf(dir_path, sizeof(dir_path), "%s/%s/scans", STORAGE_MANAGER_OBJECTS_PATH, object_id) >= (int)sizeof(dir_path)) {
+        return false;
+    }
+    unsigned highest = 0U;
+    DIR *dir = opendir(dir_path);
+    if (dir != NULL) {
+        struct dirent *entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (!scan_artifact_id_valid(entry->d_name)) continue;
+            const unsigned number = (unsigned)strtoul(entry->d_name + 2, NULL, 10);
+            if (number > highest) highest = number;
+        }
+        closedir(dir);
+    }
+    return highest < 999999U && snprintf(id, SCAN_ARTIFACT_ID_SIZE, "SC%06u", highest + 1U) == (int)SCAN_ARTIFACT_ID_SIZE - 1;
+}
+
+static bool seismic_recorder_fs_write_scan_ref(const char *session_dir, const char *scan_id)
+{
+    char path[SEISMIC_RECORDER_PATH_SIZE];
+    if (snprintf(path, sizeof(path), "%s/%s", session_dir, SCAN_ARTIFACT_REF_FILE) >= (int)sizeof(path)) return false;
+    FILE *file = fopen(path, "wb");
+    if (file == NULL) return false;
+    const bool ok = fwrite(scan_id, 1U, SCAN_ARTIFACT_ID_SIZE - 1U, file) == SCAN_ARTIFACT_ID_SIZE - 1U;
+    return fclose(file) == 0 && ok;
+}
+
+/* Moves every artifact in `from_dir` into a new shared scan; returns the artifacts moved (0 and nothing created if none). */
+static unsigned seismic_recorder_fs_promote_scan(
+    const char *object_id, const char *from_dir, char scan_id[SCAN_ARTIFACT_ID_SIZE])
+{
+    if (seismic_recorder_fs_artifacts_present_mask(from_dir) == 0U) return 0U;
+    char scans_dir[SEISMIC_RECORDER_PATH_SIZE], target[SEISMIC_RECORDER_PATH_SIZE];
+    if (!seismic_recorder_fs_next_scan_id(object_id, scan_id) ||
+        snprintf(scans_dir, sizeof(scans_dir), "%s/%s/scans", STORAGE_MANAGER_OBJECTS_PATH, object_id) >= (int)sizeof(scans_dir) ||
+        scan_artifact_shared_path(STORAGE_MANAGER_OBJECTS_PATH, object_id, scan_id, NULL, target, sizeof(target)) != 0 ||
+        storage_manager_create_directory(scans_dir) != ESP_OK || storage_manager_create_directory(target) != ESP_OK) {
+        ESP_LOGW(TAG, "Could not create a shared scan folder; the scan stays where it is");
+        return 0U;
+    }
+    unsigned moved = 0U;
+    for (size_t i = 0U; i < sizeof(s_staged_artifacts) / sizeof(s_staged_artifacts[0]); ++i) {
+        const seismic_recorder_staged_artifact_t *artifact = &s_staged_artifacts[i];
+        char from[SEISMIC_RECORDER_PATH_SIZE], to[SEISMIC_RECORDER_PATH_SIZE];
+        if (!seismic_recorder_fs_artifact_present(from_dir, artifact->file_name)) continue;
+        if (snprintf(from, sizeof(from), "%s/%s", from_dir, artifact->file_name) >= (int)sizeof(from) ||
+            snprintf(to, sizeof(to), "%s/%s", target, artifact->file_name) >= (int)sizeof(to)) {
+            continue;
+        }
+        if (rename(from, to) == 0) {
+            moved |= artifact->mask;
+        } else {
+            ESP_LOGW(TAG, "Could not move %s into the shared scan %s: errno=%d", artifact->file_name, scan_id, errno);
+        }
+    }
+    return moved;
+}
+
+/* Gives the new session its scan. Returns the artifacts taken out of staging (needed to put them back if START fails). */
 static unsigned seismic_recorder_fs_attach_staged_artifacts(
     const char *object_id,
     char *session_path,
     size_t session_path_size
 )
 {
-    char staged_path[SEISMIC_RECORDER_PATH_SIZE];
-    const size_t session_path_length = strlen(session_path);
-    unsigned moved_mask = 0U;
-
-    /* Registration and preview keep their geometry_computed_at_ms bindings unchanged:
-     * they were staged before the geometry freeze and consumers compare them to this session. */
-    for (size_t i = 0U; i < sizeof(s_staged_artifacts) / sizeof(s_staged_artifacts[0]); ++i) {
-        const seismic_recorder_staged_artifact_t *artifact = &s_staged_artifacts[i];
-        const int staged_written = snprintf(
-            staged_path,
-            sizeof(staged_path),
-            "%s/%s/staging/%s",
-            STORAGE_MANAGER_OBJECTS_PATH,
-            object_id,
-            artifact->file_name
-        );
-        if (staged_written <= 0 || (size_t)staged_written >= sizeof(staged_path)) {
-            ESP_LOGW(TAG, "Could not attach staged %s: path too long", artifact->file_name);
-            continue;
-        }
-
-        struct stat info;
-        if (stat(staged_path, &info) != 0) {
-            if (errno != ENOENT) {
-                ESP_LOGW(TAG, "Could not inspect staged %s: errno=%d", artifact->file_name, errno);
-            }
-            continue;
-        }
-        if (!S_ISREG(info.st_mode)) {
-            ESP_LOGW(TAG, "Could not attach staged %s: not a regular file", artifact->file_name);
-            continue;
-        }
-
-        const size_t file_name_length = strlen(artifact->file_name);
-        if (session_path_length + 1U + file_name_length >= session_path_size) {
-            ESP_LOGW(TAG, "Could not attach staged %s: path too long", artifact->file_name);
-            continue;
-        }
-        const int destination_written = snprintf(
-            session_path + session_path_length,
-            session_path_size - session_path_length,
-            "/%s",
-            artifact->file_name
-        );
-        if (
-            destination_written <= 0 ||
-            (size_t)destination_written >= session_path_size - session_path_length
-        ) {
-            session_path[session_path_length] = '\0';
-            ESP_LOGW(TAG, "Could not attach staged %s: path too long", artifact->file_name);
-            continue;
-        }
-
-        if (rename(staged_path, session_path) == 0) {
-            moved_mask |= artifact->mask;
-        }
-        else {
-            ESP_LOGW(TAG, "Could not attach staged %s: errno=%d; recording continues", artifact->file_name, errno);
-        }
-        session_path[session_path_length] = '\0';
+    (void)session_path_size;
+    const char *session_id = strrchr(session_path, '/');
+    session_id = session_id != NULL ? session_id + 1 : session_path;
+    char staging_dir[SEISMIC_RECORDER_PATH_SIZE];
+    if (snprintf(staging_dir, sizeof(staging_dir), "%s/%s/staging", STORAGE_MANAGER_OBJECTS_PATH, object_id) >=
+        (int)sizeof(staging_dir)) {
+        return 0U;
     }
-    return moved_mask;
+
+    char scan_id[SCAN_ARTIFACT_ID_SIZE];
+    /* A fresh upload becomes the scan of this placement. */
+    const unsigned staged = seismic_recorder_fs_promote_scan(object_id, staging_dir, scan_id);
+    if (staged != 0U) {
+        if (!seismic_recorder_fs_write_scan_ref(session_path, scan_id)) {
+            ESP_LOGW(TAG, "Could not record which scan %s uses; recording continues", session_id);
+        }
+        return staged;
+    }
+
+    /* Otherwise the same placement as the newest earlier recording that has a scan. */
+    unsigned number = 0U;
+    if (sscanf(session_id, "S%u", &number) != 1 || number <= 1U) return 0U;
+    for (unsigned back = 1U; back <= SEISMIC_RECORDER_FS_SCAN_LOOKBACK && back < number; ++back) {
+        char previous_dir[SEISMIC_RECORDER_PATH_SIZE];
+        char previous_id[16];
+        if (snprintf(previous_id, sizeof(previous_id), "S%06u", number - back) >= (int)sizeof(previous_id) ||
+            scan_artifact_session_path(STORAGE_MANAGER_OBJECTS_PATH, object_id, previous_id, NULL, previous_dir,
+                                       sizeof(previous_dir)) != 0) {
+            break;
+        }
+        char shared_id[SCAN_ARTIFACT_ID_SIZE];
+        if (scan_artifact_read_ref(STORAGE_MANAGER_OBJECTS_PATH, object_id, previous_id, shared_id)) {
+            (void)seismic_recorder_fs_write_scan_ref(session_path, shared_id);
+            return 0U;
+        }
+        if (seismic_recorder_fs_artifacts_present_mask(previous_dir) != 0U) {
+            /* Recorded before the shared scans: hand its own copy over and let both sessions refer to it. */
+            if (seismic_recorder_fs_promote_scan(object_id, previous_dir, shared_id) != 0U) {
+                (void)seismic_recorder_fs_write_scan_ref(previous_dir, shared_id);
+                (void)seismic_recorder_fs_write_scan_ref(session_path, shared_id);
+            }
+            return 0U;
+        }
+    }
+    return 0U;
 }
 
-
+/* START failed after the scan was taken out of staging: put it back, as it was. */
 static bool seismic_recorder_fs_restore_staged_artifacts(
     const char *object_id,
     const char *session_id,
@@ -474,56 +508,37 @@ static bool seismic_recorder_fs_restore_staged_artifacts(
     unsigned moved_mask
 )
 {
-    if (seismic_recorder_fs_build_session_path(
-            object_id,
-            session_id,
-            session_path,
-            session_path_size
-        ) != ESP_OK) {
+    if (seismic_recorder_fs_build_session_path(object_id, session_id, session_path, session_path_size) != ESP_OK) {
         return false;
     }
     if (moved_mask == 0U) return true;
 
-    char staged_path[SEISMIC_RECORDER_PATH_SIZE];
-    const size_t session_path_length = strlen(session_path);
+    char scan_id[SCAN_ARTIFACT_ID_SIZE];
+    if (!scan_artifact_read_ref(STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id, scan_id)) return false;
+    char staging_dir[SEISMIC_RECORDER_PATH_SIZE], shared_dir[SEISMIC_RECORDER_PATH_SIZE];
+    if (snprintf(staging_dir, sizeof(staging_dir), "%s/%s/staging", STORAGE_MANAGER_OBJECTS_PATH, object_id) >=
+            (int)sizeof(staging_dir) ||
+        scan_artifact_shared_path(STORAGE_MANAGER_OBJECTS_PATH, object_id, scan_id, NULL, shared_dir, sizeof(shared_dir)) != 0) {
+        return false;
+    }
     bool restored = true;
     for (size_t i = 0U; i < sizeof(s_staged_artifacts) / sizeof(s_staged_artifacts[0]); ++i) {
         const seismic_recorder_staged_artifact_t *artifact = &s_staged_artifacts[i];
         if ((moved_mask & artifact->mask) == 0U) continue;
-
-        const int staged_written = snprintf(
-            staged_path,
-            sizeof(staged_path),
-            "%s/%s/staging/%s",
-            STORAGE_MANAGER_OBJECTS_PATH,
-            object_id,
-            artifact->file_name
-        );
-        const size_t file_name_length = strlen(artifact->file_name);
-        if (
-            staged_written <= 0 || (size_t)staged_written >= sizeof(staged_path) ||
-            session_path_length + 1U + file_name_length >= session_path_size
-        ) {
-            restored = false;
-            ESP_LOGW(TAG, "Could not restore staged %s after start failure", artifact->file_name);
-            continue;
-        }
-
-        const int destination_written = snprintf(
-            session_path + session_path_length,
-            session_path_size - session_path_length,
-            "/%s",
-            artifact->file_name
-        );
-        if (
-            destination_written <= 0 ||
-            (size_t)destination_written >= session_path_size - session_path_length ||
-            rename(session_path, staged_path) != 0
-        ) {
+        char from[SEISMIC_RECORDER_PATH_SIZE], to[SEISMIC_RECORDER_PATH_SIZE];
+        if (snprintf(from, sizeof(from), "%s/%s", shared_dir, artifact->file_name) >= (int)sizeof(from) ||
+            snprintf(to, sizeof(to), "%s/%s", staging_dir, artifact->file_name) >= (int)sizeof(to) ||
+            rename(from, to) != 0) {
             restored = false;
             ESP_LOGW(TAG, "Could not restore staged %s after start failure: errno=%d", artifact->file_name, errno);
         }
-        session_path[session_path_length] = '\0';
+    }
+    if (restored) {
+        char ref_path[SEISMIC_RECORDER_PATH_SIZE];
+        if (snprintf(ref_path, sizeof(ref_path), "%s/%s", session_path, SCAN_ARTIFACT_REF_FILE) < (int)sizeof(ref_path)) {
+            (void)remove(ref_path);
+        }
+        (void)rmdir(shared_dir); /* only succeeds when the folder is empty again */
     }
     return restored;
 }
@@ -613,7 +628,6 @@ esp_err_t seismic_recorder_fs_create_session(
 
     if (err == ESP_OK) {
         /* START already holds storage_manager's operation guard; keep each rename atomic. */
-        seismic_recorder_fs_pull_scan_from_previous_session(object_id, session_id);
         staged_artifact_mask = seismic_recorder_fs_attach_staged_artifacts(
             object_id,
             path,

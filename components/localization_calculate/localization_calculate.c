@@ -22,6 +22,7 @@
 #include "seismic_dsp.h"
 #include "scan_occupancy.h"
 #include "seismic_recorder.h"
+#include "scan_artifact_path.h"
 #include "storage_manager.h"
 #ifdef ESP_PLATFORM
 #include "power_control.h"
@@ -176,6 +177,11 @@ static esp_err_t load_session_occupancy(
     if (err != ESP_OK) {
         return err;
     }
+    /* The session's own file, else the shared scan its placement uses (one scan serves every recording). */
+    if (scan_artifact_resolve(STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id, "occupancy-v1.bin", path, sizeof(path)) != 0) {
+        storage_manager_operation_end();
+        return ESP_ERR_INVALID_SIZE;
+    }
     uint8_t *data = NULL;
     size_t length = 0U;
     FILE *file = fopen(path, "rb");
@@ -295,6 +301,11 @@ static esp_err_t load_session_scan_frame_id(
     if (err != ESP_OK) {
         return err;
     }
+    /* The session's own file, else the shared scan its placement uses (one scan serves every recording). */
+    if (scan_artifact_resolve(STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id, "scan-v1.bin", path, sizeof(path)) != 0) {
+        storage_manager_operation_end();
+        return ESP_ERR_INVALID_SIZE;
+    }
 
     FILE *file = fopen(path, "rb");
     uint8_t *buffer = NULL;
@@ -373,6 +384,11 @@ static esp_err_t session_occupancy_probe(const char *object_id, const char *sess
     const esp_err_t err = storage_manager_operation_begin();
     if (err != ESP_OK) {
         return err;
+    }
+    /* The session's own file, else the shared scan its placement uses (one scan serves every recording). */
+    if (scan_artifact_resolve(STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id, "occupancy-v1.bin", path, sizeof(path)) != 0) {
+        storage_manager_operation_end();
+        return ESP_ERR_INVALID_SIZE;
     }
     FILE *file = fopen(path, "rb");
     const bool found = file != NULL;

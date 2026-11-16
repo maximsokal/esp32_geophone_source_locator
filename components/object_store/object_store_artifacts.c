@@ -8,6 +8,7 @@
 
 #include "object_format.h"
 #include "storage_manager.h"
+#include "scan_artifact_path.h"
 
 #ifndef OBJECT_STORE_STAT_FN
 #define OBJECT_STORE_STAT_FN stat
@@ -227,11 +228,12 @@ esp_err_t object_store_scan_present(
         err = ESP_ERR_NOT_FOUND;
     } else {
         char path[OBJECT_STORE_SCAN_PATH_SIZE];
+        /* A session either holds its own scan (older recordings) or refers to the shared one of its sensor placement. */
         int written = staged
             ? snprintf(path, sizeof(path), "%s/%s/staging/%s", STORAGE_MANAGER_OBJECTS_PATH,
                 object_id, OBJECT_STORE_SCAN_NAME)
-            : snprintf(path, sizeof(path), "%s/%s/sessions/%s/%s", STORAGE_MANAGER_OBJECTS_PATH,
-                object_id, session_id, OBJECT_STORE_SCAN_NAME);
+            : scan_artifact_resolve(STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id, OBJECT_STORE_SCAN_NAME,
+                path, sizeof(path));
         if (written < 0 || written >= (int)sizeof(path)) {
             err = ESP_ERR_INVALID_SIZE;
         } else {

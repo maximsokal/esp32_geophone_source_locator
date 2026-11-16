@@ -39,6 +39,7 @@ static BaseType_t ui_scan_preview_task_create(
 }
 #include "localization_calculate_policy.h"
 #include "localization_run_store.h"
+#include "scan_artifact_path.h"
 #include "scan_preview_state.h"
 #include "seismic_recorder.h"
 #include "storage_bulk_admission.h"
@@ -171,11 +172,24 @@ static bool safe_id(const char *value, size_t capacity)
     return strnlen(value, capacity) < capacity;
 }
 
+/*
+ * Where a session's scan artifact is read from: its own file, else the shared scan of its sensor placement (several
+ * recordings use one scan; a session refers to it). The check opens files, so it runs inside a storage operation.
+ */
 static bool make_path(char path[PREVIEW_PATH_SIZE], const preview_request_t *request, const char *file_name)
 {
-    const int length = snprintf(path, PREVIEW_PATH_SIZE, "%s/%s/sessions/%s/%s",
-                                STORAGE_MANAGER_OBJECTS_PATH, request->object_id, request->session_id, file_name);
-    return length > 0 && (size_t)length < PREVIEW_PATH_SIZE;
+    const esp_err_t guard = storage_manager_operation_begin();
+    int result;
+    if (guard == ESP_OK) {
+        result = scan_artifact_resolve(STORAGE_MANAGER_OBJECTS_PATH, request->object_id, request->session_id, file_name,
+                                       path, PREVIEW_PATH_SIZE);
+        storage_manager_operation_end();
+    } else {
+        /* Without the card there is nothing to read: the plain session path reports "not found" as before. */
+        result = scan_artifact_session_path(STORAGE_MANAGER_OBJECTS_PATH, request->object_id, request->session_id,
+                                            file_name, path, PREVIEW_PATH_SIZE);
+    }
+    return result == 0;
 }
 
 static esp_err_t file_size_callback(void *context)

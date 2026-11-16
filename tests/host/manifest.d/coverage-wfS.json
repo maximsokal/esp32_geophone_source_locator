@@ -34,7 +34,8 @@
         "tests/host/stubs/object_store_calc_settings",
         "components/object_format/include",
         "components/object_store/include",
-        "components/object_store"
+        "components/object_store",
+        "components/storage_manager/include"
       ],
       "defines": [
         "OBJECT_STORE_STAT_FN=object_store_fake_stat"
