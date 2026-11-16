@@ -213,9 +213,12 @@ static void ui_event_handler(
 }
 
 
-void ui_event_dispatcher_dispatch_pending_locked(void)
+bool ui_event_dispatcher_dispatch_pending_locked(void)
 {
+    bool changed_ui = false;
+
     if (atomic_exchange_explicit(&s_locale_write_failed, false, memory_order_acq_rel)) {
+        changed_ui = true;
         ui_i18n_set_locale(UI_LOCALE_EN);
         ui_context_t *context = ui_context();
         context->system_language_selection = UI_LOCALE_EN;
@@ -321,10 +324,14 @@ void ui_event_dispatcher_dispatch_pending_locked(void)
 
         /* Consuming a stale or shutdown-gated input still proves that the UI
          * dispatcher made progress; it simply must not mutate navigation. */
-        (void)dispatched;
+        if (dispatched) {
+            changed_ui = true;
+        }
         s_handled_events++;
         ui_event_observe();
     }
+
+    return changed_ui;
 }
 
 

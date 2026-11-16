@@ -329,7 +329,7 @@ esp_err_t ui_lvgl_init(void)
     /*
      * The port ticks LVGL from an esp_timer callback (default every 5 ms, 200 wakeups a second at priority 22, each one
      * running cold code), and the esp_timer task held 15 % of core 0 on the bench (log 2026-11-02 13:00). LVGL here
-     * redraws at 4..24 frames a second and animates nothing, so a 10 ms tick is plenty.
+     * redraws at 4 frames a second at most (1 with a web client) and animates nothing, so a 10 ms tick is plenty.
      */
     port_config.timer_period_ms =
         10;

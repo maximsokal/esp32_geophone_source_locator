@@ -22,29 +22,69 @@ bool ui_perf_policy_live_charts_screen(bool measurements_screen, bool workflow_s
     return measurements_screen;
 }
 
-uint32_t ui_perf_policy_target_fps(bool load_limited)
+uint32_t ui_perf_policy_target_fps(bool remote_client)
 {
-    (void)load_limited;
-    return UI_PERF_DEFAULT_TARGET_FPS;
+    (void)remote_client;
+    return 24U;
 }
 
-uint32_t ui_perf_policy_update_interval_ms(bool load_limited)
+uint32_t ui_perf_policy_update_interval_ms(bool remote_client)
 {
-    const uint32_t fps = ui_perf_policy_target_fps(load_limited);
+    const uint32_t fps = ui_perf_policy_target_fps(remote_client);
     return fps > 0U ? (1000U + fps - 1U) / fps : 0U;
 }
 
-uint64_t ui_perf_policy_update_interval_us(bool load_limited)
+uint64_t ui_perf_policy_update_interval_us(bool remote_client)
 {
-    const uint32_t fps = ui_perf_policy_target_fps(load_limited);
+    const uint32_t fps = ui_perf_policy_target_fps(remote_client);
     return fps > 0U ? 1000000U / fps : 0U;
 }
 
-uint64_t ui_perf_policy_update_gap_us(bool load_limited, uint64_t last_render_us)
+uint64_t ui_perf_policy_update_gap_us(bool remote_client, bool load_limited, uint64_t last_render_us)
 {
+    (void)load_limited;
     (void)last_render_us;
-    return ui_perf_policy_update_interval_us(load_limited);
+    return ui_perf_policy_update_interval_us(remote_client);
 }
+
+bool ui_perf_policy_remote_client_active(bool seen, uint32_t last_request_ms, uint32_t now_ms)
+{
+    (void)seen;
+    (void)last_request_ms;
+    (void)now_ms;
+    return false;
+}
+
+void ui_perf_pacer_init(ui_perf_pacer_t *pacer, uint64_t now_us) { (void)pacer; (void)now_us; }
+
+ui_perf_pacer_step_t ui_perf_pacer_begin(ui_perf_pacer_t *pacer, uint64_t now_us, bool storage_pending)
+{
+    (void)pacer;
+    (void)now_us;
+    (void)storage_pending;
+    return UI_PERF_PACER_RUN;
+}
+
+bool ui_perf_pacer_periodic_due(const ui_perf_pacer_t *pacer, uint64_t now_us)
+{
+    (void)pacer;
+    (void)now_us;
+    return true;
+}
+
+void ui_perf_pacer_frame_done(
+    ui_perf_pacer_t *pacer, uint64_t now_us, bool periodic_ran, bool remote_client, bool load_limited,
+    uint64_t last_render_us)
+{
+    (void)pacer;
+    (void)now_us;
+    (void)periodic_ran;
+    (void)remote_client;
+    (void)load_limited;
+    (void)last_render_us;
+}
+
+void ui_perf_pacer_periodic_now(ui_perf_pacer_t *pacer, uint64_t now_us) { (void)pacer; (void)now_us; }
 
 uint64_t ui_perf_policy_last_render_us(void)
 {
@@ -207,7 +247,8 @@ static void test_U1b_workflow_recording_gets_the_same_load_profile_as_measuremen
     const bool recording_in_workflow = ui_perf_policy_measurements_load_active(
         ui_perf_policy_live_charts_screen(false, true, true), true);
     assert(recording_in_workflow);
-    assert(ui_perf_policy_target_fps(recording_in_workflow) == UI_PERF_MEASUREMENTS_TARGET_FPS);
+    /* The workflow's RECORDING step is throttled by the same 4 FPS ceiling as every other screen. */
+    assert(ui_perf_policy_target_fps(false) == UI_PERF_TARGET_FPS);
     assert(!ui_perf_policy_measurements_load_active(ui_perf_policy_live_charts_screen(false, true, true), false));
 }
 
@@ -224,16 +265,15 @@ static void test_U1_measurement_load_policy_throttles_live_and_recording(void)
     assert(recording_load);
     assert(!other_screen_load);
     assert(!stopped_acquisition_load);
-    assert(UI_PERF_DEFAULT_TARGET_FPS == 24U);
-    assert(UI_PERF_MEASUREMENTS_TARGET_FPS == 4U);
-    assert(ui_perf_policy_target_fps(live_preview_load) == UI_PERF_MEASUREMENTS_TARGET_FPS);
-    assert(ui_perf_policy_target_fps(recording_load) == UI_PERF_MEASUREMENTS_TARGET_FPS);
-    assert(ui_perf_policy_target_fps(other_screen_load) == UI_PERF_DEFAULT_TARGET_FPS);
-    assert(ui_perf_policy_target_fps(stopped_acquisition_load) == UI_PERF_DEFAULT_TARGET_FPS);
-    assert(ui_perf_policy_update_interval_ms(true) == 250U);
-    assert(ui_perf_policy_update_interval_ms(false) == 42U);
-    assert(ui_perf_policy_update_interval_us(true) == 250000U);
-    assert(ui_perf_policy_update_interval_us(false) == 41666U);
+    /* The screen never redraws more than 4 times a second, whatever it shows; with a web client it is 1. */
+    assert(UI_PERF_TARGET_FPS == 4U);
+    assert(UI_PERF_REMOTE_CLIENT_TARGET_FPS == 1U);
+    assert(ui_perf_policy_target_fps(false) == 4U);
+    assert(ui_perf_policy_target_fps(true) == 1U);
+    assert(ui_perf_policy_update_interval_ms(false) == 250U);
+    assert(ui_perf_policy_update_interval_ms(true) == 1000U);
+    assert(ui_perf_policy_update_interval_us(false) == 250000U);
+    assert(ui_perf_policy_update_interval_us(true) == 1000000U);
     assert(UI_PERF_PREVIEW_MAX_FRAMES == 4096U);
     assert(ui_perf_policy_preview_frame_limit(40960U, true) == UI_PERF_PREVIEW_MAX_FRAMES);
     assert(ui_perf_policy_preview_frame_limit(40960U, false) == 40960U);
@@ -262,24 +302,28 @@ static void test_U1_measurement_load_policy_throttles_live_and_recording(void)
 static void test_U7_a_costly_live_frame_is_followed_by_a_rest_that_leaves_core_time_to_others(void)
 {
     /* Cheap frames keep the 4 FPS interval. */
-    assert(ui_perf_policy_update_gap_us(true, 0U) == 250000U);
-    assert(ui_perf_policy_update_gap_us(true, 11000U) == 250000U);
-    assert(ui_perf_policy_update_gap_us(true, 125000U) == 250000U);      /* 2 x 125 ms = the interval itself */
+    assert(ui_perf_policy_update_gap_us(false, true, 0U) == 250000U);
+    assert(ui_perf_policy_update_gap_us(false, true, 11000U) == 250000U);
+    assert(ui_perf_policy_update_gap_us(false, true, 125000U) == 250000U);      /* 2 x 125 ms = the interval itself */
     /* Costly frames rest twice their cost: LVGL then holds a third of the core, not two thirds. */
-    assert(ui_perf_policy_update_gap_us(true, 126000U) == 252000U);
-    assert(ui_perf_policy_update_gap_us(true, 340000U) == 680000U);
-    assert(ui_perf_policy_update_gap_us(true, 345012U) == 690024U);
+    assert(ui_perf_policy_update_gap_us(false, true, 126000U) == 252000U);
+    assert(ui_perf_policy_update_gap_us(false, true, 340000U) == 680000U);
+    assert(ui_perf_policy_update_gap_us(false, true, 345012U) == 690024U);
     /* The rest is bounded so that the picture still moves. */
-    assert(ui_perf_policy_update_gap_us(true, 400000U) == UI_PERF_LOAD_REST_MAX_US);
-    assert(ui_perf_policy_update_gap_us(true, 5000000U) == UI_PERF_LOAD_REST_MAX_US);
+    assert(ui_perf_policy_update_gap_us(false, true, 400000U) == UI_PERF_LOAD_REST_MAX_US);
+    assert(ui_perf_policy_update_gap_us(false, true, 5000000U) == UI_PERF_LOAD_REST_MAX_US);
     /* The share of the core LVGL keeps stays at or under a third while the rest is not capped. */
     for (uint64_t render_us = 130000U; render_us <= 400000U; render_us += 10000U) {
-        const uint64_t period_us = render_us + ui_perf_policy_update_gap_us(true, render_us);
+        const uint64_t period_us = render_us + ui_perf_policy_update_gap_us(false, true, render_us);
         assert(render_us * 3U <= period_us + 3U);
     }
-    /* Other screens are not throttled by their frame cost. */
-    assert(ui_perf_policy_update_gap_us(false, 340000U) == ui_perf_policy_update_interval_us(false));
-    assert(ui_perf_policy_update_gap_us(false, 0U) == 41666U);
+    /* Other screens are not throttled by their frame cost: just the 4 FPS interval. */
+    assert(ui_perf_policy_update_gap_us(false, false, 340000U) == 250000U);
+    assert(ui_perf_policy_update_gap_us(false, false, 0U) == 250000U);
+    /* With a web client the interval is a second; a frame rest that is shorter does not shorten it. */
+    assert(ui_perf_policy_update_gap_us(true, false, 340000U) == 1000000U);
+    assert(ui_perf_policy_update_gap_us(true, true, 340000U) == 1000000U);
+    assert(ui_perf_policy_update_gap_us(true, true, 5000000U) == 1000000U);
 }
 
 static void test_U7b_the_last_render_cost_is_the_one_recorded(void)
@@ -435,6 +479,123 @@ static void test_U6_preview_caps_and_chunk_size_boundaries(void)
 }
 
 
+/* The ceiling: a frame never starts less than the 4 FPS interval after the previous one, a key press included. */
+static void test_P1_no_frame_comes_sooner_than_the_four_fps_interval(void)
+{
+    ui_perf_pacer_t pacer;
+    ui_perf_pacer_init(&pacer, 1000000U);
+    assert(ui_perf_pacer_begin(&pacer, 1000000U, false) == UI_PERF_PACER_RUN);        /* the first one is at once */
+    assert(ui_perf_pacer_periodic_due(&pacer, 1000000U));                              /* and so is the first refresh */
+    ui_perf_pacer_frame_done(&pacer, 1000000U, true, false, false, 10000U);
+    assert(ui_perf_pacer_begin(&pacer, 1100000U, false) == UI_PERF_PACER_WAIT);
+    assert(ui_perf_pacer_begin(&pacer, 1239999U, false) == UI_PERF_PACER_WAIT);       /* 250 ms less one 10 ms LVGL tick */
+    assert(ui_perf_pacer_begin(&pacer, 1240000U, false) == UI_PERF_PACER_RUN);
+    assert(ui_perf_pacer_begin(&pacer, 1250000U, false) == UI_PERF_PACER_RUN);
+    /* Something asks for a frame at every 5 ms tick for 10 s: they still come no closer than 240 ms. */
+    ui_perf_pacer_frame_done(&pacer, 1250000U, false, false, false, 0U);
+    uint32_t frames = 0U;
+    uint64_t previous_us = 1250000U;
+    uint64_t closest_us = UINT64_MAX;
+    for (uint64_t now = 1255000U; now < 11250000U; now += 5000U) {
+        if (ui_perf_pacer_begin(&pacer, now, false) == UI_PERF_PACER_RUN) {
+            if (now - previous_us < closest_us) closest_us = now - previous_us;
+            previous_us = now;
+            ui_perf_pacer_frame_done(&pacer, now, false, false, false, 0U);
+            ++frames;
+        }
+    }
+    assert(closest_us >= 240000U);                                                   /* the ceiling */
+    assert(frames <= 42U);                                                           /* 4.2 FPS at the very most */
+    assert(frames >= 40U);                                                           /* and it does keep drawing */
+    assert(ui_perf_pacer_begin(NULL, 0U, false) == UI_PERF_PACER_WAIT);
+}
+
+
+/* A periodic refresh waits for its own interval (a second with a web client); input only needs the ceiling. */
+static void test_P2_periodic_refresh_follows_the_client_dependent_interval(void)
+{
+    ui_perf_pacer_t pacer;
+    ui_perf_pacer_init(&pacer, 0U);
+    ui_perf_pacer_frame_done(&pacer, 0U, true, false, false, 0U);
+    assert(!ui_perf_pacer_periodic_due(&pacer, 100000U));
+    assert(!ui_perf_pacer_periodic_due(&pacer, 239999U));
+    assert(ui_perf_pacer_periodic_due(&pacer, 240000U));
+
+    ui_perf_pacer_frame_done(&pacer, 1000000U, true, true, false, 0U);                /* a client is connected */
+    assert(!ui_perf_pacer_periodic_due(&pacer, 1250000U));
+    assert(!ui_perf_pacer_periodic_due(&pacer, 1989999U));
+    assert(ui_perf_pacer_periodic_due(&pacer, 1990000U));
+
+    /* A key press inside that second draws a frame at the next tick, and leaves the periodic due time alone. */
+    assert(ui_perf_pacer_begin(&pacer, 1250000U, false) == UI_PERF_PACER_RUN);
+    ui_perf_pacer_frame_done(&pacer, 1250000U, false, true, false, 0U);
+    assert(!ui_perf_pacer_periodic_due(&pacer, 1500000U));
+    assert(ui_perf_pacer_periodic_due(&pacer, 1990000U));
+    assert(ui_perf_pacer_begin(&pacer, 1300000U, false) == UI_PERF_PACER_WAIT);      /* key presses are capped too */
+
+    /* A costly live-chart frame rests twice its cost, which a connected client's second does not shorten. */
+    ui_perf_pacer_frame_done(&pacer, 2000000U, true, false, true, 340000U);
+    assert(!ui_perf_pacer_periodic_due(&pacer, 2669999U));
+    assert(ui_perf_pacer_periodic_due(&pacer, 2670000U));
+
+    /* A live-chart screen that has just opened draws its first picture without waiting out the old interval. */
+    ui_perf_pacer_frame_done(&pacer, 3000000U, true, true, false, 0U);
+    ui_perf_pacer_periodic_now(&pacer, 3100000U);
+    assert(ui_perf_pacer_periodic_due(&pacer, 3100000U));
+    assert(ui_perf_pacer_begin(&pacer, 3100000U, false) == UI_PERF_PACER_WAIT);      /* the ceiling still applies */
+    assert(!ui_perf_pacer_periodic_due(NULL, 0U));
+}
+
+
+/* No frame starts while an SD operation is queued, for two ticks at most: a recording keeps the card busy. */
+static void test_P3_a_frame_waits_for_queued_sd_operations_but_not_for_ever(void)
+{
+    ui_perf_pacer_t pacer;
+    ui_perf_pacer_init(&pacer, 0U);
+    assert(UI_PERF_STORAGE_DEFER_MAX_US == 500000U);
+    assert(ui_perf_pacer_begin(&pacer, 0U, true) == UI_PERF_PACER_DEFER);
+    assert(ui_perf_pacer_begin(&pacer, 250000U, true) == UI_PERF_PACER_DEFER);
+    assert(ui_perf_pacer_begin(&pacer, 499999U, true) == UI_PERF_PACER_DEFER);
+    assert(ui_perf_pacer_begin(&pacer, 500000U, true) == UI_PERF_PACER_RUN);         /* forced after two ticks */
+    ui_perf_pacer_frame_done(&pacer, 500000U, true, false, false, 0U);
+
+    /* The wait starts again with the next busy tick; it is not carried over from an earlier one. */
+    assert(ui_perf_pacer_begin(&pacer, 750000U, true) == UI_PERF_PACER_DEFER);
+    assert(ui_perf_pacer_begin(&pacer, 1000000U, true) == UI_PERF_PACER_DEFER);
+    assert(ui_perf_pacer_begin(&pacer, 1250000U, true) == UI_PERF_PACER_RUN);
+
+    /* A card that falls quiet releases the frame at once, and the next busy spell counts from its own start. */
+    ui_perf_pacer_t quiet;
+    ui_perf_pacer_init(&quiet, 0U);
+    assert(ui_perf_pacer_begin(&quiet, 0U, true) == UI_PERF_PACER_DEFER);
+    assert(ui_perf_pacer_begin(&quiet, 250000U, false) == UI_PERF_PACER_RUN);
+    assert(ui_perf_pacer_begin(&quiet, 300000U, true) == UI_PERF_PACER_DEFER);
+    assert(ui_perf_pacer_begin(&quiet, 700000U, true) == UI_PERF_PACER_DEFER);       /* 400 ms into this spell */
+    assert(ui_perf_pacer_begin(&quiet, 800000U, true) == UI_PERF_PACER_RUN);
+
+    /* The ceiling comes first: a tick inside it is a wait and does not start the busy timer. */
+    ui_perf_pacer_t early;
+    ui_perf_pacer_init(&early, 0U);
+    ui_perf_pacer_frame_done(&early, 0U, true, false, false, 0U);
+    assert(ui_perf_pacer_begin(&early, 100000U, true) == UI_PERF_PACER_WAIT);
+    assert(!early.deferring);
+}
+
+
+static void test_P4_a_web_client_counts_as_active_for_ten_seconds_after_its_last_request(void)
+{
+    assert(UI_PERF_REMOTE_ACTIVITY_WINDOW_MS == 10000U);
+    assert(!ui_perf_policy_remote_client_active(false, 0U, 5000U));                   /* nobody ever asked */
+    assert(ui_perf_policy_remote_client_active(true, 1000U, 1000U));
+    assert(ui_perf_policy_remote_client_active(true, 1000U, 10999U));
+    assert(!ui_perf_policy_remote_client_active(true, 1000U, 11000U));
+    assert(!ui_perf_policy_remote_client_active(true, 1000U, 500000U));
+    /* The 32-bit millisecond clock wraps after 49 days: an age is still an age. */
+    assert(ui_perf_policy_remote_client_active(true, 0xFFFFFF00U, 0x00000100U));
+    assert(!ui_perf_policy_remote_client_active(true, 0xFFFFFF00U, 0x00003000U));
+}
+
+
 static bool run_requested_test(const char *name)
 {
     if (strcmp(name, "U1") == 0) test_U1_measurement_load_policy_throttles_live_and_recording();
@@ -447,6 +608,10 @@ static bool run_requested_test(const char *name)
     else if (strcmp(name, "U7") == 0) test_U7_a_costly_live_frame_is_followed_by_a_rest_that_leaves_core_time_to_others();
     else if (strcmp(name, "U7b") == 0) test_U7b_the_last_render_cost_is_the_one_recorded();
     else if (strcmp(name, "U8") == 0) test_U8_chunk_profile_splits_a_window_into_chunks_pixels_and_draw_time();
+    else if (strcmp(name, "P1") == 0) test_P1_no_frame_comes_sooner_than_the_four_fps_interval();
+    else if (strcmp(name, "P2") == 0) test_P2_periodic_refresh_follows_the_client_dependent_interval();
+    else if (strcmp(name, "P3") == 0) test_P3_a_frame_waits_for_queued_sd_operations_but_not_for_ever();
+    else if (strcmp(name, "P4") == 0) test_P4_a_web_client_counts_as_active_for_ten_seconds_after_its_last_request();
     else return false;
     return true;
 }
@@ -468,6 +633,10 @@ int main(int argc, char **argv)
     test_U5_chart_refresh_interval_boundary();
     test_U6_preview_caps_and_chunk_size_boundaries();
     test_U7_a_costly_live_frame_is_followed_by_a_rest_that_leaves_core_time_to_others();
+    test_P1_no_frame_comes_sooner_than_the_four_fps_interval();
+    test_P2_periodic_refresh_follows_the_client_dependent_interval();
+    test_P3_a_frame_waits_for_queued_sd_operations_but_not_for_ever();
+    test_P4_a_web_client_counts_as_active_for_ten_seconds_after_its_last_request();
     test_U7b_the_last_render_cost_is_the_one_recorded();
     test_U8_chunk_profile_splits_a_window_into_chunks_pixels_and_draw_time();
     return 0;

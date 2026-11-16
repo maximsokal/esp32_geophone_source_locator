@@ -200,9 +200,11 @@ def test_synchronous_ui_storage_call_sites_match_the_checked_graph() -> None:
         "components/ui/ui_storage_input.c": {
             "storage_manager_is_ready": 1,
         },
+        # file_size/file_chunk callbacks, and make_path, which looks for the session's scan in the shared scans folder. All run
+        # in the preview worker, before it takes the LVGL lock (test above).
         "components/ui/ui_scan_preview.c": {
-            "storage_manager_operation_begin": 2,
-            "storage_manager_operation_end": 2,
+            "storage_manager_operation_begin": 3,
+            "storage_manager_operation_end": 3,
         },
     }
     actual: dict[str, dict[str, int]] = {}

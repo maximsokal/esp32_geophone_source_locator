@@ -1,5 +1,6 @@
 #include "spi_bus.h"
 
+#include <stdatomic.h>
 #include <stddef.h>
 
 #include "board_config.h"
@@ -33,6 +34,9 @@ static void *s_display_guard_context =
 /* Guarded by s_runtime_mutex: touched only between a successful take and its give. */
 static app_spi_bus_timing_log_t s_timing_log;
 static int64_t s_operation_started_us;
+
+/* Operations that called begin and have not yet ended or failed: running ones and those waiting for the bus. */
+static atomic_uint s_sd_operations_pending;
 
 
 static esp_err_t app_spi_bus_create_runtime_mutex(void)
@@ -342,11 +346,32 @@ void app_spi_bus_unregister_display_guard(void)
 }
 
 
+bool app_spi_bus_sd_operation_pending(void)
+{
+    return atomic_load_explicit(&s_sd_operations_pending, memory_order_acquire) != 0U;
+}
+
+
+/* An unmatched end must not wrap the counter around and leave the UI waiting for ever. */
+static void app_spi_bus_sd_pending_release(void)
+{
+    unsigned pending = atomic_load_explicit(&s_sd_operations_pending, memory_order_relaxed);
+    while (pending != 0U &&
+           !atomic_compare_exchange_weak_explicit(
+               &s_sd_operations_pending, &pending, pending - 1U,
+               memory_order_acq_rel, memory_order_relaxed)) {
+    }
+}
+
+
 esp_err_t app_spi_bus_sd_operation_begin(void)
 {
     if (s_runtime_mutex == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
+
+    /* Counted before the wait for the bus: an operation in the queue already makes a new UI frame a bad idea. */
+    atomic_fetch_add_explicit(&s_sd_operations_pending, 1U, memory_order_acq_rel);
 
     const int64_t started_us =
         esp_timer_get_time();
@@ -356,6 +381,7 @@ esp_err_t app_spi_bus_sd_operation_begin(void)
             s_runtime_mutex,
             pdMS_TO_TICKS(APP_SPI_BUS_SD_MUTEX_WAIT_MS)
         ) != pdTRUE) {
+        app_spi_bus_sd_pending_release();
         ESP_LOGE(
             TAG,
             "STORAGE_SPI_TIMING stage=begin mutex_wait_us=%lld tft_quiesce_us=0 result=%d",
@@ -406,6 +432,7 @@ esp_err_t app_spi_bus_sd_operation_begin(void)
         xSemaphoreGiveRecursive(
             s_runtime_mutex
         );
+        app_spi_bus_sd_pending_release();
     }
 
     if (log_begin) {
@@ -452,6 +479,7 @@ void app_spi_bus_sd_operation_end(void)
     xSemaphoreGiveRecursive(
         s_runtime_mutex
     );
+    app_spi_bus_sd_pending_release();
 
     if (log_end) {
         ESP_LOGI(

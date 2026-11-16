@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #include "esp_err.h"
 #include "driver/spi_master.h"
 
@@ -42,3 +44,10 @@ void app_spi_bus_unregister_display_guard(void);
  * every ESP_OK with app_spi_bus_sd_operation_end(). */
 esp_err_t app_spi_bus_sd_operation_begin(void);
 void app_spi_bus_sd_operation_end(void);
+
+/*
+ * True while an SD operation is running or is waiting for the bus. Lock-free, safe from any task. The UI uses it to
+ * postpone a frame: a frame that starts while an SD operation is queued makes that operation wait for the TFT to
+ * drain (up to the display guard's bound), and the sensor and recorder data behind it waits too.
+ */
+bool app_spi_bus_sd_operation_pending(void);

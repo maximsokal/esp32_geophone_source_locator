@@ -5,11 +5,13 @@
 
 /*
  * Navigation is an immediate interaction, not a command queue. If LVGL was
- * prevented from running for more than a quarter second, replaying old button
+ * prevented from running for longer than four frames, replaying old button
  * presses makes the menu jump several items after the stall ends. Expire only
  * keypad navigation; status/power/network events keep their normal ordering.
+ * The screen runs at 4 FPS (ui_perf_policy.h) and handles input once per frame,
+ * so a press waits up to 250 ms by design, plus up to two postponed ticks while the SD card is busy.
  */
-#define UI_KEYPAD_EVENT_MAX_AGE_US 250000LL
+#define UI_KEYPAD_EVENT_MAX_AGE_US 1000000LL
 
 static inline bool ui_event_keypad_is_stale(
     int64_t queued_us,

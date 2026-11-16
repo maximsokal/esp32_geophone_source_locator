@@ -370,7 +370,8 @@ void ui_dispatch_app_event_locked(
 esp_err_t ui_event_dispatcher_start(void);
 void ui_event_dispatcher_stop(void);
 /* Caller is the LVGL timer task and already holds the LVGL port lock. */
-void ui_event_dispatcher_dispatch_pending_locked(void);
+/* True when at least one event changed the UI (a dropped keypad press or a gated input does not count). */
+bool ui_event_dispatcher_dispatch_pending_locked(void);
 esp_err_t ui_event_dispatcher_queue_locale_save(ui_locale_t locale);
 
 

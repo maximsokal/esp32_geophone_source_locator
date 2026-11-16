@@ -98,6 +98,26 @@ function Sync-WifiBufferBudget([string]$ConfigPath) {
     }
 }
 
+# The CPU runs at its maximum, 240 MHz. A local sdkconfig keeps the 160 MHz it was generated with.
+function Sync-CpuFrequency([string]$ConfigPath) {
+    if ([string]::IsNullOrWhiteSpace($ConfigPath) -or
+        -not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        return
+    }
+    $content = [IO.File]::ReadAllText($ConfigPath)
+    $updated = $content
+    foreach ($prefix in @("CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ", "CONFIG_ESP32S3_DEFAULT_CPU_FREQ")) {
+        $updated = [regex]::Replace($updated, ('(?m)^' + $prefix + '_160=y\s*$'), ('# ' + $prefix + '_160 is not set'))
+        $updated = [regex]::Replace($updated, ('(?m)^# ' + $prefix + '_240 is not set\s*$'), ($prefix + '_240=y'))
+    }
+    $updated = [regex]::Replace($updated, '(?m)^CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=160\s*$', 'CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240')
+    $updated = [regex]::Replace($updated, '(?m)^CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=160\s*$', 'CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240')
+    if ($updated -ne $content) {
+        [IO.File]::WriteAllText($ConfigPath, $updated)
+        Write-Host "Migrated local sdkconfig CPU frequency to 240 MHz."
+    }
+}
+
 function Sync-LvglSdkconfigMigration([string]$ConfigPath) {
     if ([string]::IsNullOrWhiteSpace($ConfigPath) -or
         -not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
@@ -283,6 +303,7 @@ try {
                 }
                 Sync-RequiredSdkconfig $effectiveSdkconfig
                 Sync-WifiBufferBudget $effectiveSdkconfig
+                Sync-CpuFrequency $effectiveSdkconfig
                 Sync-LvglSdkconfigMigration $effectiveSdkconfig
 
                 $reconfigureArgs = @($idfPyPath, "-B", $build)

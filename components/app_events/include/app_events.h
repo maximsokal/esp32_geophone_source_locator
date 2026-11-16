@@ -79,6 +79,14 @@ void app_events_set_keypad_delivery_enabled(bool enabled);
  */
 bool app_events_keypad_delivery_enabled(void);
 
+/*
+ * Remote-client activity: the web server notes every HTTP request that reaches it, the UI reads the age to slow the
+ * screen down while somebody uses the API. The clock is the caller's (a wrapping millisecond count), so this stays
+ * free of any time source and costs two atomic accesses.
+ */
+void app_events_remote_activity_note(uint32_t now_ms);
+bool app_events_remote_activity_last(uint32_t *last_ms);
+
 esp_err_t app_events_post(
     app_event_type_t type,
     int32_t value

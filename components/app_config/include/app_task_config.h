@@ -56,7 +56,7 @@ _Static_assert(
 /*
  * nRF topology discovery is low-rate control-plane work. Keep TCA selection,
  * assignment polling and hot-plug reconciliation on the service core and at
- * priority 2, below UI and measurement work, with room for protocol/log parsing.
+ * priority 2, below measurement work and level with the UI, with room for protocol/log parsing.
  */
 #define APP_TASK_PRIORITY_NRF_TOPOLOGY    2
 #define APP_TASK_STACK_NRF_TOPOLOGY    8192
@@ -66,8 +66,13 @@ _Static_assert(
  * rendering and the shared TFT/SD SPI2 side never migrate onto the
  * real-time acquisition core. Keep 10 KiB for synchronous screen builds and
  * their nested LVGL object construction and formatting calls.
+ *
+ * The screen is the least important consumer of the service core: it runs below the recorder, the storage
+ * service, the object service and the measurement service (all 3), and redraws at 4 FPS at most (ui_perf_policy.h).
+ * Its display lock is a recursive mutex, so a storage task that waits for it lends it its own priority and the frame
+ * in progress finishes instead of being held back by tasks in between.
  */
-#define APP_TASK_PRIORITY_LVGL            4
+#define APP_TASK_PRIORITY_LVGL            2
 #define APP_TASK_STACK_LVGL           10240
 
 #define APP_TASK_PRIORITY_STORAGE_SERVICE 3
@@ -110,7 +115,7 @@ _Static_assert(
 
 /*
  * Recorder drains the lock-free seismic ring in bounded batches and performs
- * SD writes on the service core. Keep it below LVGL, but at the same priority
+ * SD writes on the service core. Keep it above LVGL, at the same priority
  * as other storage services: a continuously-ready bulk HTTP/SD producer must
  * not outrank the only consumer that protects the finite seismic ring from
  * overflow. Shared SPI2 access is still serialized by storage_manager.

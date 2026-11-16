@@ -30,6 +30,7 @@ static int callback_context;
 static SemaphoreHandle_t fake_mutex = (SemaphoreHandle_t)&callback_context;
 static BaseType_t mutex_take_result = pdTRUE;
 static TickType_t last_mutex_timeout;
+static bool pending_seen_while_taking;
 
 esp_err_t gpio_config(const gpio_config_t *config)
 {
@@ -75,6 +76,8 @@ BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t semaphore, TickType_t timeo
     assert(semaphore == fake_mutex);
     last_mutex_timeout = timeout;
     ++mutex_take_calls;
+    /* The UI asks from another task while this one waits for the bus: the operation must already count. */
+    pending_seen_while_taking = app_spi_bus_sd_operation_pending();
     return mutex_take_result;
 }
 
@@ -215,6 +218,56 @@ static void test_busy_bus_fails_the_operation_instead_of_hanging(void)
     app_spi_bus_unregister_display_guard();
 }
 
+/*
+ * The UI postpones a frame while an SD operation runs or waits for the bus: a frame that starts then makes the
+ * operation wait for the TFT to drain. The flag must cover the wait, clear on every failure path and never wrap.
+ */
+static void test_pending_flag_covers_the_wait_and_clears_on_every_path(void)
+{
+    reset_counters();
+    assert(app_spi_bus_register_display_guard(quiesce, resume, &callback_context) == ESP_OK);
+    assert(!app_spi_bus_sd_operation_pending());
+
+    /* Counted before the wait for the mutex, still counted while running, gone after end. */
+    pending_seen_while_taking = false;
+    assert(app_spi_bus_sd_operation_begin() == ESP_OK);
+    assert(pending_seen_while_taking);
+    assert(app_spi_bus_sd_operation_pending());
+    app_spi_bus_sd_operation_end();
+    assert(!app_spi_bus_sd_operation_pending());
+
+    /* Nested operations: pending until the outermost one ends. */
+    assert(app_spi_bus_sd_operation_begin() == ESP_OK);
+    assert(app_spi_bus_sd_operation_begin() == ESP_OK);
+    app_spi_bus_sd_operation_end();
+    assert(app_spi_bus_sd_operation_pending());
+    app_spi_bus_sd_operation_end();
+    assert(!app_spi_bus_sd_operation_pending());
+
+    /* The bus never frees up: the failed operation does not leave the UI waiting for ever. */
+    mutex_take_result = pdFALSE;
+    pending_seen_while_taking = false;
+    assert(app_spi_bus_sd_operation_begin() == ESP_ERR_TIMEOUT);
+    assert(pending_seen_while_taking);
+    assert(!app_spi_bus_sd_operation_pending());
+    mutex_take_result = pdTRUE;
+
+    /* The display does not drain: same. */
+    quiesce_result = ESP_FAIL;
+    assert(app_spi_bus_sd_operation_begin() == ESP_FAIL);
+    assert(!app_spi_bus_sd_operation_pending());
+    quiesce_result = ESP_OK;
+
+    /* An end without a begin cannot wrap the counter: the next real operation still reads true, then false. */
+    app_spi_bus_sd_operation_end();
+    assert(!app_spi_bus_sd_operation_pending());
+    assert(app_spi_bus_sd_operation_begin() == ESP_OK);
+    assert(app_spi_bus_sd_operation_pending());
+    app_spi_bus_sd_operation_end();
+    assert(!app_spi_bus_sd_operation_pending());
+    app_spi_bus_unregister_display_guard();
+}
+
 static void test_timing_lines_are_printed_only_when_they_say_something(void)
 {
     const int64_t second = 1000000LL;
@@ -289,6 +342,7 @@ int main(void)
     test_guard_pairs_quiesce_and_resume();
     test_quiesce_failure_releases_mutex_without_resume();
     test_busy_bus_fails_the_operation_instead_of_hanging();
+    test_pending_flag_covers_the_wait_and_clears_on_every_path();
     test_timing_lines_are_printed_only_when_they_say_something();
     return 0;
 }

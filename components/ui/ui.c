@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "app_events.h"
+#include "spi_bus.h"
 #include "object_service.h"
 #include "storage_service.h"
 #include "seismic_acquisition.h"
@@ -23,7 +24,7 @@ static ui_frame_scheduler_t s_frame_scheduler;
 static uint64_t s_refresh_generation;
 static int64_t s_perf_started_us;
 static uint64_t s_render_max_us;
-static uint64_t s_measurement_load_next_update_us;
+static ui_perf_pacer_t s_pacer;
 static bool s_measurement_load_active;
 static ui_perf_policy_state_t s_perf_log_state;
 
@@ -58,10 +59,17 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
         return;
     }
 
-    /* APP_LOOP only queues events; UI mutation stays on LVGL's own task. */
-    ui_event_dispatcher_dispatch_pending_locked();
-
+    /*
+     * The screen is paced (ui_perf_policy.h): at most 4 frames a second, 1 while a client uses the web API, and no
+     * frame starts while an SD operation is queued. Skipping a tick here costs nothing: nothing is invalidated, so
+     * LVGL flushes nothing, the display lock is released at once and the waiting SD operation proceeds.
+     */
     const uint64_t now_us = (uint64_t)esp_timer_get_time();
+    if (ui_perf_pacer_begin(&s_pacer, now_us, app_spi_bus_sd_operation_pending()) != UI_PERF_PACER_RUN) return;
+
+    /* APP_LOOP only queues events; UI mutation stays on LVGL's own task. */
+    const bool input_handled = ui_event_dispatcher_dispatch_pending_locked();
+
     seismic_acquisition_snapshot_t acquisition;
     const esp_err_t acquisition_error = seismic_acquisition_get_snapshot(&acquisition);
     const bool acquisition_running =
@@ -79,21 +87,23 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
     const bool measurement_load_started =
         measurement_load_active && !s_measurement_load_active;
     s_measurement_load_active = measurement_load_active;
+    if (measurement_load_started) ui_perf_pacer_periodic_now(&s_pacer, now_us);
+
+    uint32_t last_request_ms = 0U;
+    const bool remote_client = ui_perf_policy_remote_client_active(
+        app_events_remote_activity_last(&last_request_ms),
+        last_request_ms,
+        (uint32_t)(now_us / 1000U)
+    );
 
     const uint64_t generation = acquisition_error == ESP_OK
         ? acquisition.samples
         : ++s_refresh_generation;
     ui_frame_scheduler_submit(&s_frame_scheduler, generation);
-    const uint32_t target_fps = ui_perf_policy_target_fps(measurement_load_active);
-    if (measurement_load_active) {
-        if (measurement_load_started) s_measurement_load_next_update_us = now_us;
-        if (now_us < s_measurement_load_next_update_us) return;
-        s_measurement_load_next_update_us = now_us +
-            ui_perf_policy_update_gap_us(measurement_load_active, ui_perf_policy_last_render_us());
-    }
-    else {
-        s_measurement_load_next_update_us = 0U;
-    }
+    const uint32_t target_fps = ui_perf_policy_target_fps(remote_client);
+    /* New data waits for its own, slower interval; a handled key press is drawn at once (this tick). */
+    const bool periodic_due = ui_perf_pacer_periodic_due(&s_pacer, now_us);
+    if (!input_handled && !periodic_due) return;
     if (!ui_frame_scheduler_take(&s_frame_scheduler, now_us, NULL)) return;
 
     const int64_t started_us = esp_timer_get_time();
@@ -101,6 +111,7 @@ static void ui_refresh_timer_callback(lv_timer_t *timer)
     const uint64_t render_us = (uint64_t)(esp_timer_get_time() - started_us);
     ui_perf_policy_record_update(render_us);
     if (render_us > s_render_max_us) s_render_max_us = render_us;
+    ui_perf_pacer_frame_done(&s_pacer, now_us, periodic_due, remote_client, measurement_load_active, ui_perf_policy_last_render_us());
 
     if ((int64_t)now_us - s_perf_started_us >= 10000000LL) {
         const uint64_t frames = s_frame_scheduler.frames_rendered;
@@ -424,7 +435,7 @@ esp_err_t ui_init(void)
     s_refresh_generation = 0U;
     s_perf_started_us = (int64_t)now_us;
     s_render_max_us = 0U;
-    s_measurement_load_next_update_us = 0U;
+    ui_perf_pacer_init(&s_pacer, now_us);
     s_measurement_load_active = false;
     memset(&s_perf_log_state, 0, sizeof(s_perf_log_state));
     (void)ui_perf_policy_stage_take();

@@ -31,7 +31,8 @@ def test_session_is_validated_against_real_recorded_sessions():
         body_end = source.index("\n}\n", start)
         body = source[start:body_end]
         verify_at = body.index("web_scan_verify_session(")
-        paths_at = body.index("web_scan_paths(")
+        # Load reads through the session's shared scan (web_scan_paths_for_read); save and delete address the session itself.
+        paths_at = min(i for i in (body.find("web_scan_paths("), body.find("web_scan_paths_for_read(")) if i >= 0)
         assert verify_at < paths_at, f"{action} must verify the session before building its path"
 
 

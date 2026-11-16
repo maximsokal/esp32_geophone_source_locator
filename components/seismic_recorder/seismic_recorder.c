@@ -1658,10 +1658,11 @@ esp_err_t seismic_recorder_start(
         else {
             ESP_LOGE(
                 TAG,
-                "START rejected: acquisition sample is not fresh source=%s samples=%llu last_sample_us=%lld",
+                "START rejected: acquisition sample is not fresh source=%s samples=%llu last_sample_us=%lld now_us=%lld",
                 acquisition.source_name != NULL ? acquisition.source_name : "UNKNOWN",
                 (unsigned long long)acquisition.samples,
-                (long long)acquisition.last_sample_timestamp_us
+                (long long)acquisition.last_sample_timestamp_us,
+                (long long)esp_timer_get_time()
             );
         }
         return err;

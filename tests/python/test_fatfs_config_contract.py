@@ -99,3 +99,14 @@ def test_wifi_static_buffers_leave_dma_memory_for_the_sd_driver_and_existing_con
     assert "Sync-WifiBufferBudget $effectiveSdkconfig" in runner
     assert "CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM" in runner
 
+
+def test_the_cpu_runs_at_its_maximum_and_existing_configs_are_migrated():
+    sdkconfig = read("sdkconfig.defaults")
+    runner = read("tools/run_idf.ps1")
+    # 160 MHz was an unmeasured leftover of the first commit; the board's workloads are CPU-bound.
+    assert "CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y" in sdkconfig
+    assert "CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240" in sdkconfig
+    assert "CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y" not in sdkconfig
+    assert "CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ=240" in sdkconfig
+    assert "function Sync-CpuFrequency" in runner
+    assert "Sync-CpuFrequency $effectiveSdkconfig" in runner

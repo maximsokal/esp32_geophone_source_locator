@@ -48,7 +48,7 @@ def test_ui_event_handler_is_nonblocking_and_lvgl_drains_events():
 
     dispatcher = _function_body(
         source,
-        "void ui_event_dispatcher_dispatch_pending_locked"
+        "bool ui_event_dispatcher_dispatch_pending_locked"
     )
     dispatch = dispatcher.index("ui_dispatch_")
     observe = dispatcher.index("ui_event_observe();")

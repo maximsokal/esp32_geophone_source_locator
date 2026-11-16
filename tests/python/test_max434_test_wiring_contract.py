@@ -201,13 +201,21 @@ def test_measurement_load_policy_uses_screen_and_acquisition_state():
     assert "measurement.state == MEASUREMENT_SERVICE_RECORDING" not in body
 
 
-def test_key_events_are_dispatched_before_measurement_load_throttle_return():
+def test_key_events_are_paced_by_the_ceiling_but_not_by_the_periodic_interval():
     source = (ROOT / UI_SOURCE).read_text(encoding="utf-8")
     callbacks = _function_bodies(source, "ui_refresh_timer_callback")
     body = callbacks["ui_refresh_timer_callback"][0]
+    # The 4 FPS ceiling and the wait for queued SD operations come first (they bound input too) ...
+    begin = body.index("ui_perf_pacer_begin(&s_pacer")
+    assert "app_spi_bus_sd_operation_pending()" in body[begin:begin + 160]
     dispatch = body.index("ui_event_dispatcher_dispatch_pending_locked();")
-    throttle_return = body.index("if (now_us < s_measurement_load_next_update_us) return;")
-    assert dispatch < throttle_return
+    assert begin < dispatch
+    # ... then input is handled before the slower periodic interval can drop the tick, and a handled key press draws
+    # a frame even when no periodic refresh is due (1 FPS while a web client is connected).
+    gate = body.index("if (!input_handled && !periodic_due) return;")
+    assert dispatch < gate
+    assert "const bool input_handled = ui_event_dispatcher_dispatch_pending_locked();" in body
+    assert "ui_perf_pacer_frame_done(&s_pacer" in body
 
 
 def test_measurement_chart_limits_follow_running_acquisition_snapshot():

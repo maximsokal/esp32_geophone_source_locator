@@ -9,6 +9,7 @@
 #include "seismic_buffer.h"
 
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
@@ -287,6 +288,14 @@ static void seismic_test_task(
             const int64_t frame_period_us = 1000000 / (int64_t)s_rate_hz;
             int64_t stamp_us = tick_us - (int64_t)(frames_per_tick - 1 - k) * frame_period_us;
             if (last_stamp_us != 0 && stamp_us <= last_stamp_us) stamp_us = last_stamp_us + frame_period_us;
+            /* The recorder refuses a sample stamped after the clock (start validation). Under emulation the ticks can
+             * come closer together than the clock moves, and the step above then runs ahead of it: wait the few
+             * milliseconds instead of stamping the future. Never needed on the board (the tick is exact). */
+            const int64_t clock_us = esp_timer_get_time();
+            if (stamp_us > clock_us) {
+                const int64_t ahead_us = stamp_us - clock_us;
+                esp_rom_delay_us((uint32_t)(ahead_us < 20000 ? ahead_us : 20000));
+            }
             last_stamp_us = stamp_us;
 #if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
             seismic_buffer_push_indexed(stamp_us, frame_number + 1U, channels);

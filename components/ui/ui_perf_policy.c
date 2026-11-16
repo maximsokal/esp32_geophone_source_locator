@@ -81,35 +81,101 @@ bool ui_perf_policy_live_charts_screen(
 }
 
 
-uint32_t ui_perf_policy_target_fps(bool load_limited)
+uint32_t ui_perf_policy_target_fps(bool remote_client)
 {
-    return load_limited
-        ? UI_PERF_MEASUREMENTS_TARGET_FPS
-        : UI_PERF_DEFAULT_TARGET_FPS;
+    return remote_client
+        ? UI_PERF_REMOTE_CLIENT_TARGET_FPS
+        : UI_PERF_TARGET_FPS;
 }
 
 
-uint32_t ui_perf_policy_update_interval_ms(bool load_limited)
+uint32_t ui_perf_policy_update_interval_ms(bool remote_client)
 {
-    const uint32_t fps = ui_perf_policy_target_fps(load_limited);
+    const uint32_t fps = ui_perf_policy_target_fps(remote_client);
     return fps > 0U ? (1000U + fps - 1U) / fps : 0U;
 }
 
 
-uint64_t ui_perf_policy_update_interval_us(bool load_limited)
+uint64_t ui_perf_policy_update_interval_us(bool remote_client)
 {
-    const uint32_t fps = ui_perf_policy_target_fps(load_limited);
+    const uint32_t fps = ui_perf_policy_target_fps(remote_client);
     return fps > 0U ? 1000000U / fps : 0U;
 }
 
 
-uint64_t ui_perf_policy_update_gap_us(bool load_limited, uint64_t last_render_us)
+uint64_t ui_perf_policy_update_gap_us(bool remote_client, bool load_limited, uint64_t last_render_us)
 {
-    const uint64_t interval_us = ui_perf_policy_update_interval_us(load_limited);
+    const uint64_t interval_us = ui_perf_policy_update_interval_us(remote_client);
     if (!load_limited) return interval_us;
     uint64_t rest_us = last_render_us * UI_PERF_LOAD_REST_FACTOR;
     if (rest_us > UI_PERF_LOAD_REST_MAX_US) rest_us = UI_PERF_LOAD_REST_MAX_US;
     return rest_us > interval_us ? rest_us : interval_us;
+}
+
+
+bool ui_perf_policy_remote_client_active(bool seen, uint32_t last_request_ms, uint32_t now_ms)
+{
+    if (!seen) return false;
+    return (uint32_t)(now_ms - last_request_ms) < UI_PERF_REMOTE_ACTIVITY_WINDOW_MS;
+}
+
+
+void ui_perf_pacer_init(ui_perf_pacer_t *pacer, uint64_t now_us)
+{
+    if (pacer == NULL) return;
+    memset(pacer, 0, sizeof(*pacer));
+    pacer->floor_due_us = now_us;
+    pacer->periodic_due_us = now_us;
+}
+
+
+ui_perf_pacer_step_t ui_perf_pacer_begin(ui_perf_pacer_t *pacer, uint64_t now_us, bool storage_pending)
+{
+    if (pacer == NULL) return UI_PERF_PACER_WAIT;
+    if (now_us + UI_PERF_FRAME_JITTER_US < pacer->floor_due_us) return UI_PERF_PACER_WAIT;
+
+    if (!storage_pending) {
+        pacer->deferring = false;
+        return UI_PERF_PACER_RUN;
+    }
+    if (!pacer->deferring) {
+        pacer->deferring = true;
+        pacer->defer_started_us = now_us;
+    }
+    return now_us - pacer->defer_started_us < UI_PERF_STORAGE_DEFER_MAX_US
+        ? UI_PERF_PACER_DEFER
+        : UI_PERF_PACER_RUN;
+}
+
+
+bool ui_perf_pacer_periodic_due(const ui_perf_pacer_t *pacer, uint64_t now_us)
+{
+    return pacer != NULL && now_us + UI_PERF_FRAME_JITTER_US >= pacer->periodic_due_us;
+}
+
+
+void ui_perf_pacer_frame_done(
+    ui_perf_pacer_t *pacer,
+    uint64_t now_us,
+    bool periodic_ran,
+    bool remote_client,
+    bool load_limited,
+    uint64_t last_render_us
+)
+{
+    if (pacer == NULL) return;
+    pacer->deferring = false;
+    pacer->floor_due_us = now_us + ui_perf_policy_update_interval_us(false);
+    if (periodic_ran) {
+        pacer->periodic_due_us = now_us + ui_perf_policy_update_gap_us(remote_client, load_limited, last_render_us);
+    }
+}
+
+
+void ui_perf_pacer_periodic_now(ui_perf_pacer_t *pacer, uint64_t now_us)
+{
+    if (pacer == NULL) return;
+    pacer->periodic_due_us = now_us;
 }
 
 

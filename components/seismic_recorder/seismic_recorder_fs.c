@@ -538,7 +538,7 @@ static bool seismic_recorder_fs_restore_staged_artifacts(
         if (snprintf(ref_path, sizeof(ref_path), "%s/%s", session_path, SCAN_ARTIFACT_REF_FILE) < (int)sizeof(ref_path)) {
             (void)remove(ref_path);
         }
-        (void)rmdir(shared_dir); /* only succeeds when the folder is empty again */
+        (void)storage_manager_remove_tree(shared_dir); /* empty again: every artifact went back to staging */
     }
     return restored;
 }

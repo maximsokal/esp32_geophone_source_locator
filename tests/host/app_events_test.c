@@ -96,6 +96,18 @@ int main(void)
     assert(app_events_post_best_effort(APP_EVENT_POWER_SHUTDOWN_REQUESTED, 0) == ESP_OK);
     assert(s_post_calls == 4);
 
+    /* Remote-client activity: nothing before the first request, then the caller's last millisecond stamp. */
+    uint32_t last_request_ms = 123U;
+    assert(!app_events_remote_activity_last(&last_request_ms));
+    assert(last_request_ms == 123U);                       /* untouched when there is nothing to report */
+    app_events_remote_activity_note(0U);
+    assert(app_events_remote_activity_last(&last_request_ms));
+    assert(last_request_ms == 0U);                         /* a request at ms 0 is still a request */
+    app_events_remote_activity_note(41000U);
+    assert(app_events_remote_activity_last(&last_request_ms));
+    assert(last_request_ms == 41000U);
+    assert(app_events_remote_activity_last(NULL));
+
     puts("app events host contract passed");
     return 0;
 }

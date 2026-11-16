@@ -108,6 +108,25 @@ bool app_events_keypad_delivery_enabled(void)
 }
 
 
+static atomic_uint s_remote_activity_ms;
+static atomic_bool s_remote_activity_seen;
+
+
+void app_events_remote_activity_note(uint32_t now_ms)
+{
+    atomic_store_explicit(&s_remote_activity_ms, now_ms, memory_order_relaxed);
+    atomic_store_explicit(&s_remote_activity_seen, true, memory_order_release);
+}
+
+
+bool app_events_remote_activity_last(uint32_t *last_ms)
+{
+    if (!atomic_load_explicit(&s_remote_activity_seen, memory_order_acquire)) return false;
+    if (last_ms != NULL) *last_ms = atomic_load_explicit(&s_remote_activity_ms, memory_order_relaxed);
+    return true;
+}
+
+
 static esp_err_t app_events_post_internal(
     app_event_type_t type,
     int32_t value,

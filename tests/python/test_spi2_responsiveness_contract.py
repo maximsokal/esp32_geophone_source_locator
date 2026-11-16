@@ -74,7 +74,7 @@ def test_scan_socket_waits_are_outside_storage_windows() -> None:
     assert "vTaskPrioritySet" in priority
 
 
-def test_bulk_scan_never_outranks_recorder_or_lvgl() -> None:
+def test_bulk_scan_never_outranks_recorder_and_lvgl_yields_to_both() -> None:
     task_config = _read("components/app_config/include/app_task_config.h")
 
     scan_priority = _priority(task_config, "APP_TASK_PRIORITY_STORAGE_SERVICE")
@@ -82,10 +82,13 @@ def test_bulk_scan_never_outranks_recorder_or_lvgl() -> None:
     lvgl_priority = _priority(task_config, "APP_TASK_PRIORITY_LVGL")
 
     # The scan handler lowers itself to STORAGE_SERVICE while moving the large
-    # payload. Recorder must be able to time-slice at that level, while LVGL
-    # must still preempt both when a display flush is ready.
+    # payload. Recorder must be able to time-slice at that level. The screen is
+    # the least important consumer: it runs below both, and redraws at 4 FPS at
+    # most (ui_perf_policy.h); its recursive display lock lends priority to a
+    # storage task that waits for it.
     assert recorder_priority >= scan_priority
-    assert lvgl_priority > scan_priority
+    assert lvgl_priority < scan_priority
+    assert lvgl_priority < recorder_priority
 
 
 def test_web_status_uses_cooperative_storage_snapshots() -> None:
@@ -150,7 +153,7 @@ def test_saved_waveform_reduction_never_holds_spi2_for_the_whole_range() -> None
     recorder_priority = _priority(task_config, "APP_TASK_PRIORITY_SEISMIC_RECORDER")
     lvgl_priority = _priority(task_config, "APP_TASK_PRIORITY_LVGL")
     assert recorder_priority >= storage_priority
-    assert lvgl_priority > storage_priority
+    assert lvgl_priority < storage_priority
 
 
 def test_lvgl_port_keeps_lcd_completion_callback_ownership() -> None:

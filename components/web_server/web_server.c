@@ -3,10 +3,12 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "sdkconfig.h"
 #include "app_config.h"
 #include "app_task_config.h"
+#include "app_events.h"
 #include "wifi_manager.h"
 
 #include "esp_event.h"
@@ -669,6 +671,28 @@ static void web_server_status_cache_stop(void)
     web_status_json_objects_shutdown();
 }
 
+/*
+ * Every request passes through the URI matcher before a handler runs, so it is the one place that sees all of them.
+ * It tells the UI that a client is using the API (the screen then redraws once a second instead of four times).
+ * HTTP keeps the matching it had (exact); HTTPS keeps the wildcard matching it had.
+ */
+static void web_server_note_request(void)
+{
+    app_events_remote_activity_note((uint32_t)((uint64_t)esp_timer_get_time() / 1000ULL));
+}
+
+static bool web_server_match_exact_noting_request(const char *reference_uri, const char *uri_to_match, size_t match_upto)
+{
+    web_server_note_request();
+    return strlen(reference_uri) == match_upto && strncmp(reference_uri, uri_to_match, match_upto) == 0;
+}
+
+static bool web_server_match_wildcard_noting_request(const char *reference_uri, const char *uri_to_match, size_t match_upto)
+{
+    web_server_note_request();
+    return httpd_uri_match_wildcard(reference_uri, uri_to_match, match_upto);
+}
+
 static esp_err_t web_server_https_start_internal(void)
 {
     if (s_https_server != NULL) return ESP_OK;
@@ -677,7 +701,7 @@ static esp_err_t web_server_https_start_internal(void)
     config.httpd.core_id = APP_TASK_CORE_WEB_SERVER;
     config.httpd.task_priority = APP_TASK_PRIORITY_WEB_SERVER;
     config.httpd.max_uri_handlers = WEB_HTTPS_URI_HANDLERS_CAPACITY;
-    config.httpd.uri_match_fn = httpd_uri_match_wildcard;
+    config.httpd.uri_match_fn = web_server_match_wildcard_noting_request;
 
     /*
      * The device has plenty of PSRAM but very little contiguous internal DRAM
@@ -807,6 +831,7 @@ static esp_err_t web_server_http_start_internal(void)
     config.task_priority = APP_TASK_PRIORITY_WEB_SERVER;
     config.server_port = APP_WEB_HTTP_PORT;
     config.max_uri_handlers = WEB_HTTP_URI_HANDLERS_CAPACITY;
+    config.uri_match_fn = web_server_match_exact_noting_request;
     config.lru_purge_enable = true;
 
     ESP_LOGI(TAG, "URI handlers required=%u capacity=%u",

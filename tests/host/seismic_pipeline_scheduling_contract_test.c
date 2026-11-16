@@ -247,7 +247,8 @@ static void test_task_policy_keeps_services_independent(void)
 {
     assert(APP_TASK_CORE_SERVICES != APP_TASK_CORE_REALTIME);
     assert(APP_TASK_PRIORITY_AD7606 > APP_TASK_PRIORITY_SEISMIC_RECORDER);
-    assert(APP_TASK_PRIORITY_LVGL > APP_TASK_PRIORITY_SEISMIC_RECORDER);
+    /* The screen yields to the recorder: a frame must never delay draining the seismic ring. */
+    assert(APP_TASK_PRIORITY_LVGL < APP_TASK_PRIORITY_SEISMIC_RECORDER);
     assert(APP_TASK_CORE_SERVICES == 0);
     assert(APP_TASK_CORE_REALTIME == 1);
 }
