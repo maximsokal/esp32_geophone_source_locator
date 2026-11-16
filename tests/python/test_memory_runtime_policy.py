@@ -143,7 +143,11 @@ def test_https_and_tft_policies_preserve_payload_and_dma_safety():
     tft = read("components/ui/ui_lvgl.c")
     ui_perf_policy = read("components/ui/ui_perf_policy.h")
 
-    assert "WEB_HTTPS_MAX_CLIENTS           2U" in web_server
+    # One TLS client at a time (about 7.5 KiB of internal RAM each); LRU purge is what makes a new client evict the
+    # old one instead of being refused, so the two settings only work together.
+    assert "WEB_HTTPS_MAX_CLIENTS           1U" in web_server
+    assert "config.httpd.max_open_sockets = WEB_HTTPS_MAX_CLIENTS;" in web_server
+    assert "config.httpd.lru_purge_enable = true;" in web_server
     assert '"Connection",\n            "close"' not in web_asset
     assert '"Connection: close"' not in web_asset
     assert "#define WEB_FLASH_SEND_CHUNK_BYTES  2048U" in read("components/web_server/web_webui_flash.c")

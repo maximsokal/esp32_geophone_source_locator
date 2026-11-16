@@ -7,9 +7,9 @@
 
 #include "app_task_config.h"
 #include "seismic_buffer.h"
+#include "seismic_test_stamp.h"
 
 #include "esp_log.h"
-#include "esp_rom_sys.h"
 #include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
@@ -255,8 +255,8 @@ static void seismic_test_task(
 #endif
 
     while (s_running) {
-        const int64_t tick_us = esp_timer_get_time();
         const int frames_per_tick = TEST_FRAMES_PER_TICK_NOW;
+        const int64_t tick_us = esp_timer_get_time();
         for (int k = 0; k < frames_per_tick; ++k) {
 #if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
             if (next_hole < sizeof(holes) / sizeof(holes[0]) && frame_number >= TEST_REC_FRAMES_AT(holes[next_hole].at, s_rate_hz)) {
@@ -283,19 +283,10 @@ static void seismic_test_task(
                     )) * TEST_SIGNAL_GAIN;
             }
 
-            /* Follow the wall clock, but never step back or stand still: a wake-up that comes late must not make
-             * the next frames older than the last one (the calculation rejects a non-monotonic trace). */
+            /* Follow the wall clock, but never step back, stand still or run ahead of it (seismic_test_stamp.h). */
             const int64_t frame_period_us = 1000000 / (int64_t)s_rate_hz;
-            int64_t stamp_us = tick_us - (int64_t)(frames_per_tick - 1 - k) * frame_period_us;
-            if (last_stamp_us != 0 && stamp_us <= last_stamp_us) stamp_us = last_stamp_us + frame_period_us;
-            /* The recorder refuses a sample stamped after the clock (start validation). Under emulation the ticks can
-             * come closer together than the clock moves, and the step above then runs ahead of it: wait the few
-             * milliseconds instead of stamping the future. Never needed on the board (the tick is exact). */
-            const int64_t clock_us = esp_timer_get_time();
-            if (stamp_us > clock_us) {
-                const int64_t ahead_us = stamp_us - clock_us;
-                esp_rom_delay_us((uint32_t)(ahead_us < 20000 ? ahead_us : 20000));
-            }
+            const int64_t stamp_us = seismic_test_stamp_next(
+                tick_us, frames_per_tick, k, frame_period_us, last_stamp_us, esp_timer_get_time());
             last_stamp_us = stamp_us;
 #if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
             seismic_buffer_push_indexed(stamp_us, frame_number + 1U, channels);

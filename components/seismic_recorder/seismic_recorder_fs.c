@@ -808,12 +808,24 @@ esp_err_t seismic_recorder_fs_write_frames(
                 frames + written,
                 chunk * sizeof(seismic_frame_t)
             );
+            errno = 0;
             chunk_written = fwrite(
                 s_dma_staging.v1_frames,
                 sizeof(seismic_frame_t),
                 chunk,
                 samples_file
             );
+            if (chunk_written != chunk) {
+                /* The one place a short write is visible as such: say why (a full volume, a closed file, no DMA bounce buffer). */
+                ESP_LOGE(
+                    TAG,
+                    "RECORDER_WRITE_FAILED frames=%u written=%u errno=%d ferror=%d",
+                    (unsigned)chunk,
+                    (unsigned)chunk_written,
+                    errno,
+                    ferror(samples_file)
+                );
+            }
             written += chunk_written;
         }
         else if (s_active_sample_format.version == SEISMIC_RECORDER_BINARY_VERSION_V2) {
@@ -868,7 +880,16 @@ esp_err_t seismic_recorder_fs_write_frames(
                 encoded_frames += run_count;
             }
             if (err == ESP_OK) {
+                errno = 0;
                 if (fwrite(s_dma_staging.v2_window, 1U, encoded_bytes, samples_file) != encoded_bytes) {
+                    /* The one place a short write is visible as such: say why (a full volume, a closed file, no DMA bounce buffer). */
+                    ESP_LOGE(
+                        TAG,
+                        "RECORDER_WRITE_FAILED bytes=%u errno=%d ferror=%d",
+                        (unsigned)encoded_bytes,
+                        errno,
+                        ferror(samples_file)
+                    );
                     err = ESP_FAIL;
                 }
                 else {
@@ -965,6 +986,16 @@ esp_err_t seismic_recorder_fs_write_frames(
             chunk_written != chunk ||
             ferror(samples_file) != 0
         ) {
+            /* Every cause ends as ESP_FAIL for the caller; the log keeps the first one (encoder, short write, sticky error). */
+            ESP_LOGE(
+                TAG,
+                "RECORDER_WRITE_ABORT cause=%s chunk_written=%u chunk=%u ferror=%d errno=%d",
+                esp_err_to_name(err),
+                (unsigned)chunk_written,
+                (unsigned)chunk,
+                ferror(samples_file),
+                errno
+            );
             err = ESP_FAIL;
             break;
         }

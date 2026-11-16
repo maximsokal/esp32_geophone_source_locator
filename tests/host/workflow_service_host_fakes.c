@@ -8,6 +8,7 @@
 
 unsigned workflow_test_scan_calls;
 bool workflow_test_scan_present;
+unsigned workflow_test_settings_read_calls;
 bool workflow_test_staged_scan_present;
 bool workflow_test_session_scan_present;
 esp_err_t workflow_test_location_save_result;
@@ -94,6 +95,7 @@ esp_err_t object_store_set_location(const char *object_id, const object_store_lo
 esp_err_t object_store_get_calc_settings_json(const char *object_id, char **json_out)
 {
     assert(object_id != NULL && json_out != NULL);
+    ++workflow_test_settings_read_calls;
     *json_out = NULL;
     if (workflow_test_settings_error != ESP_OK) return workflow_test_settings_error;
     const char *settings = workflow_test_saved_settings_valid

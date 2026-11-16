@@ -2994,6 +2994,44 @@ static void test_the_sd_card_is_left_alone_from_calibration_to_the_ranging_resul
     workflow_service_shutdown();
 }
 
+/*
+ * Board log 2026-11-16 20:35: a browser page left open polled the status while the device recorded at 5000 Hz. Every
+ * poll went to the SD card for the scan and the calculation settings, waited 1.4 s behind the recorder's writes, and the
+ * HTTP task overflowed its stack on that deep path. A recording cannot change either answer, so it leaves the card alone.
+ */
+static void test_the_sd_card_is_left_alone_while_recording(void)
+{
+    reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(workflow_service_set_placement_ready_predicate(placement_ready, NULL) == ESP_OK);
+    enter_record_ready();
+    assert(command(WORKFLOW_COMMAND_START_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    assert(workflow_service_poll() == ESP_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_RECORDING);
+
+    const unsigned scan_reads = workflow_test_scan_calls;
+    const unsigned settings_reads = workflow_test_settings_read_calls;
+    for (unsigned poll = 0U; poll < 30U; ++poll) {
+        s_now_ms += 2000U;                       /* a minute of status polls, each past the 2 s cache age */
+        workflow_snapshot_t snapshot;
+        assert(workflow_service_get_snapshot(&snapshot) == ESP_OK);
+        assert(snapshot.step == WORKFLOW_STEP_RECORDING);
+    }
+    assert(workflow_test_scan_calls == scan_reads);
+    assert(workflow_test_settings_read_calls == settings_reads);
+
+    /* The card is read again once the recording is over: the first poll on a step that uses it does it. */
+    assert(command(WORKFLOW_COMMAND_STOP_RECORDING, false, false) == WORKFLOW_COMMAND_RESULT_OK);
+    s_measurement.state = MEASUREMENT_SERVICE_REVIEW;
+    s_now_ms += 2000U;
+    assert(workflow_service_poll() == ESP_OK);
+    s_now_ms += 2000U;
+    assert(workflow_service_poll() == ESP_OK);
+    assert(try_snapshot().step == WORKFLOW_STEP_STOPPED);
+    assert(workflow_test_scan_calls > scan_reads);
+    workflow_service_shutdown();
+}
+
 static void test_calc_settings_readiness_gates_calculate_and_save_invalidates_cache(void)
 {
     reset_fakes(true, MEASUREMENT_SERVICE_LIVE, 4U);
@@ -3501,6 +3539,7 @@ int main(void)
     test_staged_scan_remains_visible_across_session_creation();
     test_scan_presence_and_settings_refresh_are_cached_for_two_seconds();
     test_the_sd_card_is_left_alone_from_calibration_to_the_ranging_result();
+    test_the_sd_card_is_left_alone_while_recording();
     test_calc_settings_readiness_gates_calculate_and_save_invalidates_cache();
     test_calculation_success_progress_failure_classes_and_submit_errors();
     test_channel_health_of_the_calculation_reaches_the_snapshot();

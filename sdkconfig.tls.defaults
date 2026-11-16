@@ -23,7 +23,7 @@ CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
 # Dynamic TX/RX buffers save memory on smaller targets, but this board has 8 MB
 # PSRAM and the observed failure followed repeated TLS allocation/free churn.
 # Keep one RX/TX pair for the lifetime of each TLS session instead of repeatedly
-# allocating and freeing those buffers. With at most two HTTPS clients this is
+# allocating and freeing those buffers. With one HTTPS client at a time this is
 # a small, bounded PSRAM cost compared with the available external heap.
 # CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set
 

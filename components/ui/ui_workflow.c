@@ -564,6 +564,22 @@ static void ui_workflow_build_ranging_view(ui_workflow_screen_state_t *state)
     state->ranging.radio_state = (uint8_t)ranging_radio_pause_state();
     if (nrf_topology_service_ranging_get_progress(&state->ranging_snapshot) != ESP_OK) return;
     const nrf_topology_ranging_progress_t *progress = &state->ranging_snapshot;
+    /*
+     * One line each time the screen sees a new ranging revision. A distance edited from the web page is applied by the
+     * device (WORKFLOW_COMMAND_DONE name=SET_DISTANCE) and must show here a moment later; if a log has the command but no
+     * line with the new updated_at_ms, the screen never saw it, and if it has the line, the screen drew what it saw.
+     */
+    static uint64_t s_logged_ranging_updated_ms;
+    if (progress->updated_at_ms != s_logged_ranging_updated_ms) {
+        unsigned manual_pairs = 0U;
+        for (size_t i = 0U; i < progress->pair_count && i < NRF_CS_MAX_PAIRS; ++i) {
+            if ((progress->pairs[i].scheduler_quality_flags & NRF_CS_QUALITY_MANUAL) != 0U) ++manual_pairs;
+        }
+        ESP_LOGI("UI_WORKFLOW", "UI_RANGING_VIEW updated_at_ms=%llu pairs=%u manual=%u partial=%d success=%d",
+            (unsigned long long)progress->updated_at_ms, (unsigned)progress->pair_count, manual_pairs,
+            (int)progress->partial, (int)progress->success);
+        s_logged_ranging_updated_ms = progress->updated_at_ms;
+    }
     state->ranging.available = true;
     state->ranging.partial = progress->partial;
     state->ranging.started_at_ms = progress->started_at_ms;

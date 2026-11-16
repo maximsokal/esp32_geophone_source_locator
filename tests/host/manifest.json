@@ -2810,6 +2810,15 @@
         "components/localization/include",
         "components/localization_velocity_free/include"
       ]
+    },
+    {
+      "name": "seismic_test_stamp",
+      "sources": [
+        "tests/host/seismic_test_stamp_test.c"
+      ],
+      "include_dirs": [
+        "components/seismic_test_generator/include"
+      ]
     }
   ]
 }

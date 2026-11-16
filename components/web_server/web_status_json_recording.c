@@ -8,6 +8,7 @@
 #include "storage_manager.h"
 #else
 #include <stdbool.h>
+#include <stdlib.h>
 bool storage_manager_is_ready(void);
 #endif
 #include "workflow_service.h"
@@ -498,76 +499,72 @@ static bool web_status_json_add_channel_health(cJSON *workflow, const workflow_c
     return true;
 }
 
-bool web_status_json_add_workflow(cJSON *root)
+static bool web_status_json_add_workflow_fill(cJSON *root, const workflow_snapshot_t *snapshot)
 {
-    if (root == NULL) return false;
-    workflow_snapshot_t snapshot;
-    if (workflow_service_get_snapshot(&snapshot) != ESP_OK) return false;
-
     cJSON *workflow = cJSON_AddObjectToObject(root, "workflow");
     cJSON *actions = workflow != NULL
         ? cJSON_AddArrayToObject(workflow, "allowed_actions")
         : NULL;
     if (workflow == NULL || actions == NULL ||
-        cJSON_AddStringToObject(workflow, "step", workflow_core_step_name(snapshot.step)) == NULL ||
-        cJSON_AddNumberToObject(workflow, "generation", (double)snapshot.generation) == NULL ||
+        cJSON_AddStringToObject(workflow, "step", workflow_core_step_name(snapshot->step)) == NULL ||
+        cJSON_AddNumberToObject(workflow, "generation", (double)snapshot->generation) == NULL ||
         cJSON_AddStringToObject(
             workflow,
             "sensor_sufficiency",
-            workflow_core_sufficiency_name(snapshot.sensor_sufficiency)
+            workflow_core_sufficiency_name(snapshot->sensor_sufficiency)
         ) == NULL ||
-        cJSON_AddNumberToObject(workflow, "assigned_remotes", snapshot.assigned_remotes) == NULL ||
-        cJSON_AddStringToObject(workflow, "reason", snapshot.reason) == NULL ||
-        cJSON_AddBoolToObject(workflow, "has_scan", snapshot.has_scan) == NULL ||
+        cJSON_AddNumberToObject(workflow, "assigned_remotes", snapshot->assigned_remotes) == NULL ||
+        cJSON_AddStringToObject(workflow, "reason", snapshot->reason) == NULL ||
+        cJSON_AddBoolToObject(workflow, "has_scan", snapshot->has_scan) == NULL ||
         cJSON_AddStringToObject(
-            workflow, "gps_status", workflow_core_gps_status_name(snapshot.gps_status)) == NULL ||
+            workflow, "gps_status", workflow_core_gps_status_name(snapshot->gps_status)) == NULL ||
         cJSON_AddStringToObject(
-            workflow, "scan_choice", workflow_core_scan_choice_name(snapshot.scan_choice)) == NULL ||
+            workflow, "scan_choice", workflow_core_scan_choice_name(snapshot->scan_choice)) == NULL ||
         cJSON_AddStringToObject(
             workflow, "scan_upload_status",
-            workflow_core_scan_upload_status_name(snapshot.scan_upload_status)) == NULL ||
-        cJSON_AddBoolToObject(workflow, "calc_settings_ready", snapshot.calc_settings_ready) == NULL ||
+            workflow_core_scan_upload_status_name(snapshot->scan_upload_status)) == NULL ||
+        cJSON_AddBoolToObject(workflow, "calc_settings_ready", snapshot->calc_settings_ready) == NULL ||
         cJSON_AddStringToObject(
             workflow, "calculation_class",
-            workflow_core_calculation_class_name(snapshot.calculation_class)) == NULL) {
+            workflow_core_calculation_class_name(snapshot->calculation_class)) == NULL) {
         return false;
     }
 
-    if (snapshot.layout_result_valid) {
-        if (cJSON_AddBoolToObject(workflow, "layout_result", snapshot.layout_ok) == NULL) return false;
+    if (snapshot->layout_result_valid) {
+        if (cJSON_AddBoolToObject(workflow, "layout_result", snapshot->layout_ok) == NULL) return false;
     } else if (cJSON_AddNullToObject(workflow, "layout_result") == NULL) {
         return false;
     }
-    if (cJSON_AddStringToObject(workflow, "layout_reason", snapshot.reason) == NULL) return false;
+    if (cJSON_AddStringToObject(workflow, "layout_reason", snapshot->reason) == NULL) return false;
 
-    const bool object_id_added = snapshot.object_id[0] != '\0'
-        ? cJSON_AddStringToObject(workflow, "object_id", snapshot.object_id) != NULL
+    const bool object_id_added = snapshot->object_id[0] != '\0'
+        ? cJSON_AddStringToObject(workflow, "object_id", snapshot->object_id) != NULL
         : cJSON_AddNullToObject(workflow, "object_id") != NULL;
-    const bool session_id_added = snapshot.session_id[0] != '\0'
-        ? cJSON_AddStringToObject(workflow, "session_id", snapshot.session_id) != NULL
+    const bool session_id_added = snapshot->session_id[0] != '\0'
+        ? cJSON_AddStringToObject(workflow, "session_id", snapshot->session_id) != NULL
         : cJSON_AddNullToObject(workflow, "session_id") != NULL;
     if (!object_id_added || !session_id_added) return false;
 
-    if (snapshot.progress == WORKFLOW_PROGRESS_UNKNOWN) {
+    if (snapshot->progress == WORKFLOW_PROGRESS_UNKNOWN) {
         if (cJSON_AddNullToObject(workflow, "progress") == NULL) return false;
     }
-    else if (cJSON_AddNumberToObject(workflow, "progress", snapshot.progress) == NULL) {
+    else if (cJSON_AddNumberToObject(workflow, "progress", snapshot->progress) == NULL) {
         return false;
     }
 
-    if (!web_status_json_add_channel_health(workflow, &snapshot.channel_health)) {
+    if (!web_status_json_add_channel_health(workflow, &snapshot->channel_health)) {
         return false;
     }
-    if (!web_status_json_add_workflow_calibration(workflow, &snapshot.calibration)) {
+    if (!web_status_json_add_workflow_calibration(workflow, &snapshot->calibration)) {
         return false;
     }
-    if (!web_status_json_add_workflow_placement(workflow, &snapshot.placement)) {
+    if (!web_status_json_add_workflow_placement(workflow, &snapshot->placement)) {
         return false;
     }
 
-    if (snapshot.recommended_action < WORKFLOW_COMMAND_COUNT &&
-        (snapshot.allowed_actions & WORKFLOW_ACTION(snapshot.recommended_action)) != 0U) {
-        cJSON *item = cJSON_CreateString(workflow_core_command_name(snapshot.recommended_action));
+    if (snapshot->recommended_action < WORKFLOW_COMMAND_COUNT &&
+        (snapshot->allowed_actions & WORKFLOW_ACTION(snapshot->recommended_action)) != 0U) {
+        cJSON *item = cJSON_CreateString(workflow_core_command_name(snapshot->recommended_action));
         if (item == NULL || !cJSON_AddItemToArray(actions, item)) {
             cJSON_Delete(item);
             return false;
@@ -575,8 +572,8 @@ bool web_status_json_add_workflow(cJSON *root)
     }
     for (int i = 0; i < WORKFLOW_COMMAND_COUNT; ++i) {
         const workflow_command_t command = (workflow_command_t)i;
-        if ((snapshot.allowed_actions & WORKFLOW_ACTION(command)) == 0U ||
-            command == snapshot.recommended_action) {
+        if ((snapshot->allowed_actions & WORKFLOW_ACTION(command)) == 0U ||
+            command == snapshot->recommended_action) {
             continue;
         }
         cJSON *item = cJSON_CreateString(workflow_core_command_name(command));
@@ -586,4 +583,21 @@ bool web_status_json_add_workflow(cJSON *root)
         }
     }
     return true;
+}
+
+/*
+ * The snapshot is about 2.5 KB. On the HTTP task's stack it sat on top of everything workflow_service_get_snapshot() reaches
+ * (presence refresh -> FAT -> SDSPI -> SPI driver, with logging) and, with the shared-scan lookup added to that path, the
+ * stack of the 8 KB task overflowed on "start measurement" (board log 2026-11-16 20:32: a heap assert, then a crash in
+ * printf). malloc() puts a block this size in PSRAM (SPIRAM_MALLOC_ALWAYSINTERNAL=2048).
+ */
+bool web_status_json_add_workflow(cJSON *root)
+{
+    if (root == NULL) return false;
+    workflow_snapshot_t *snapshot = (workflow_snapshot_t *)malloc(sizeof(*snapshot));
+    if (snapshot == NULL) return false;
+    const bool ok = workflow_service_get_snapshot(snapshot) == ESP_OK &&
+        web_status_json_add_workflow_fill(root, snapshot);
+    free(snapshot);
+    return ok;
 }

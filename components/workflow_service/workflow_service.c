@@ -489,9 +489,26 @@ static bool workflow_service_step_leaves_the_sd_card_alone(workflow_step_t step)
         step == WORKFLOW_STEP_STOPPING;
 }
 
+/*
+ * The recording leaves the card alone once both answers are cached for its object and session: neither can change while
+ * it runs, and a status page left open in a browser polled the card every 2 s while the recorder was writing at 5000 Hz.
+ * Board log 2026-11-16 20:35: each such poll waited up to 1.4 s behind the recorder for the card, held the HTTP task
+ * (priority inherited) deep in FAT and the SPI driver, and that task ran out of stack. The first poll of a recording
+ * still reads whatever is not cached yet, so the steps after it find both answers.
+ */
+static bool workflow_service_recording_caches_settled(void)
+{
+    return s_core.step == WORKFLOW_STEP_RECORDING &&
+        s_scan_cache_valid && s_calc_settings_cache_valid &&
+        strcmp(s_scan_cache_object_id, s_active_object_id) == 0 &&
+        strcmp(s_scan_cache_session_id, s_session_id) == 0 &&
+        strcmp(s_calc_settings_cache_object_id, s_active_object_id) == 0;
+}
+
 static void workflow_service_refresh_presence_locked(void)
 {
     if (workflow_service_step_leaves_the_sd_card_alone(s_core.step)) return;
+    if (workflow_service_recording_caches_settled()) return;
     const uint64_t now_ms = workflow_service_now_ms();
     const bool identity_changed =
         s_scan_cache_step != s_core.step ||

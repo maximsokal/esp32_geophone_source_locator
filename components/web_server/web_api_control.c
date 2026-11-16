@@ -721,13 +721,20 @@ static esp_err_t web_control_measurement_start(
         return ESP_ERR_INVALID_ARG;
     }
 
-    workflow_snapshot_t workflow;
-    const esp_err_t workflow_err = workflow_service_get_snapshot(&workflow);
+    /* Off the stack: the snapshot is about 2.5 KB and workflow_service_get_snapshot() goes deep (SD, FAT, SPI). */
+    workflow_snapshot_t *workflow = (workflow_snapshot_t *)malloc(sizeof(*workflow));
+    if (workflow == NULL) {
+        if (error_class_out != NULL) *error_class_out = "workflow_unavailable";
+        return ESP_ERR_NO_MEM;
+    }
+    const esp_err_t workflow_err = workflow_service_get_snapshot(workflow);
+    const workflow_step_t workflow_step = workflow->step;
+    free(workflow);
     if (workflow_err != ESP_OK) {
         if (error_class_out != NULL) *error_class_out = "workflow_unavailable";
         return workflow_err;
     }
-    if (workflow.step != WORKFLOW_STEP_RECORD_READY && workflow.step != WORKFLOW_STEP_RECORDING) {
+    if (workflow_step != WORKFLOW_STEP_RECORD_READY && workflow_step != WORKFLOW_STEP_RECORDING) {
         if (error_class_out != NULL) *error_class_out = "workflow_step_not_allowed";
         return ESP_ERR_INVALID_STATE;
     }

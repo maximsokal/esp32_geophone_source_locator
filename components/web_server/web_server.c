@@ -39,7 +39,7 @@
 #define WEB_TLS_FATAL_ALERT_CODE 0x7780
 #define WEB_TLS_HANDSHAKE_TIMEOUT_MS 5000U
 #define WEB_HTTPS_TASK_STACK_BYTES   8192U
-#define WEB_HTTPS_MAX_CLIENTS           2U
+#define WEB_HTTPS_MAX_CLIENTS           1U
 #define WEB_LIFECYCLE_QUIESCE_TIMEOUT_MS 10000U
 
 static const char *TAG = "WEB_SERVER";
@@ -710,11 +710,18 @@ static esp_err_t web_server_https_start_internal(void)
      * ~4.4 KiB; Chrome's second speculative TLS socket then failed during
      * session creation and mDNS also started failing allocations.
      *
-     * Serve the local dashboard over one persistent HTTP/1.1 TLS connection.
-     * Browsers can serialize asset requests on it. LRU purge and a short read
-     * timeout prevent an abandoned speculative socket from monopolizing the
-     * device indefinitely. Reducing the HTTPD task stack from the ESP-IDF
-     * HTTPS default (10 KiB) to 8 KiB also returns 2 KiB of internal DRAM.
+     * Serve the local dashboard over one persistent HTTP/1.1 TLS connection:
+     * ONE client at a time. Each TLS client costs about 7.5 KiB of internal RAM
+     * (board log 2026-11-16: 38.3 -> 30.9 KiB free with the first client, 30.9 ->
+     * 22.7 KiB with the second, largest block down to 7.7 KiB), and that RAM is
+     * what the SD card's DMA buffer, the recorder and the SPI driver need.
+     * Browsers can serialize asset requests on one connection. A second
+     * connection (another tab, Chrome's speculative socket, a second phone)
+     * makes LRU purge close the least recently used one before it is accepted:
+     * the newest client wins, an abandoned one never locks the device out, and
+     * the peak stays one session. A short read timeout drops idle sockets.
+     * Reducing the HTTPD task stack from the ESP-IDF HTTPS default (10 KiB) to
+     * 8 KiB also returns 2 KiB of internal DRAM.
      */
     config.httpd.max_open_sockets = WEB_HTTPS_MAX_CLIENTS;
     config.httpd.stack_size = WEB_HTTPS_TASK_STACK_BYTES;

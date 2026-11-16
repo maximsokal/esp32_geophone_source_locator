@@ -4,6 +4,7 @@
 #include "localization_job.h"
 
 extern unsigned workflow_test_scan_calls;
+extern unsigned workflow_test_settings_read_calls;
 extern bool workflow_test_scan_present;
 extern bool workflow_test_staged_scan_present;
 extern bool workflow_test_session_scan_present;
