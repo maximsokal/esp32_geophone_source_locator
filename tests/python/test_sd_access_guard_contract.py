@@ -43,6 +43,7 @@ GUARD_HELD_BY_CALLER = {
     "components/sd_card/sd_card_diagnostics_io.c::sd_card_diagnostics_read_file",
     "components/seismic_recorder/seismic_recorder_fs.c::seismic_recorder_fs_session_metadata_state",
     "components/seismic_recorder/seismic_recorder_fs.c::seismic_recorder_fs_next_session_id",
+    "components/seismic_recorder/seismic_recorder_fs.c::seismic_recorder_fs_pull_scan_from_previous_session",
     "components/seismic_recorder/seismic_recorder_fs.c::seismic_recorder_fs_attach_staged_artifacts",
     "components/seismic_recorder/seismic_recorder_fs.c::seismic_recorder_fs_restore_staged_artifacts",
     "components/seismic_recorder/seismic_recorder_fs_list.c::seismic_recorder_list_metadata_state",

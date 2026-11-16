@@ -79,18 +79,22 @@ function Sync-WifiBufferBudget([string]$ConfigPath) {
     $updated = $content
     foreach ($entry in @(
         @{ Key = "CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM"; Value = 4 },
-        @{ Key = "CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM"; Value = 8 },
+        @{ Key = "CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM"; Value = 4 },
         @{ Key = "CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM"; Value = 4 },
-        @{ Key = "CONFIG_ESP32_WIFI_STATIC_TX_BUFFER_NUM"; Value = 8 }
+        @{ Key = "CONFIG_ESP32_WIFI_STATIC_TX_BUFFER_NUM"; Value = 4 }
     )) {
         $updated = [regex]::Replace(
             $updated,
             ('(?m)^' + $entry.Key + '=\d+'),
             ($entry.Key + '=' + $entry.Value))
     }
+    # Wi-Fi code in IRAM takes ~18 KB of the internal RAM that TLS, SDSPI and task creation need (ESP-EMU 2026-11-16).
+    foreach ($key in @("CONFIG_ESP_WIFI_IRAM_OPT", "CONFIG_ESP_WIFI_RX_IRAM_OPT", "CONFIG_ESP32_WIFI_IRAM_OPT", "CONFIG_ESP32_WIFI_RX_IRAM_OPT")) {
+        $updated = [regex]::Replace($updated, ('(?m)^' + $key + '=y\s*$'), ('# ' + $key + ' is not set'))
+    }
     if ($updated -ne $content) {
         [IO.File]::WriteAllText($ConfigPath, $updated)
-        Write-Host "Migrated local sdkconfig Wi-Fi static buffer budget (RX 4, TX 8)."
+        Write-Host "Migrated local sdkconfig Wi-Fi static buffer budget (RX 4, TX 4, IRAM optimisation off)."
     }
 }
 

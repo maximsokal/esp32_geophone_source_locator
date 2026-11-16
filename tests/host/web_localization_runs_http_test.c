@@ -5,8 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 #include "esp_http_server.h"
+#include "localization_job.h"
 #include "cJSON.h"
 #include "localization_run_record.h"
 #include "localization_run_store.h"
@@ -378,10 +383,12 @@ esp_err_t httpd_query_key_value(const char *query, const char *key, char *value,
 
 int httpd_req_recv(httpd_req_t *request, void *buffer, size_t length)
 {
-    (void)request;
-    (void)buffer;
-    (void)length;
-    return ESP_FAIL;
+    if (request == NULL || request->body == NULL) return ESP_FAIL;
+    const size_t remaining = (size_t)request->content_len - request->body_offset;
+    const size_t count = length < remaining ? length : remaining;
+    memcpy(buffer, request->body + request->body_offset, count);
+    request->body_offset += count;
+    return (int)count;
 }
 
 esp_err_t httpd_resp_set_type(httpd_req_t *request, const char *type)
@@ -408,6 +415,9 @@ esp_err_t httpd_resp_send_err(httpd_req_t *request, int status, const char *mess
     if (status == 400) request->response_status = "400 Bad Request";
     else if (status == 404) request->response_status = "404 Not Found";
     else if (status == 422) request->response_status = "422 Unprocessable Entity";
+    else if (status == 409) request->response_status = "409 Conflict";
+    else if (status == 413) request->response_status = "413 Payload Too Large";
+    else if (status == 503) request->response_status = "503 Service Unavailable";
     else request->response_status = "500 Internal Server Error";
     return ESP_OK;
 }
@@ -464,6 +474,75 @@ esp_err_t localization_job_status_json(char **json_out)
         return ESP_ERR_NO_MEM;
     }
     memcpy(*json_out, s_job_status_json, length);
+    return ESP_OK;
+}
+
+/* ---- calculation on the phone: the fakes the export and import handlers reach outside themselves ---------------------- */
+
+static seismic_recorder_session_summary_t s_export_summary;
+static esp_err_t s_export_summary_result;
+static bool s_bulk_protected;
+static localization_job_status_t s_export_job;
+static unsigned s_store_run_writes;
+static unsigned s_store_pick_writes;
+static char s_store_written_methods[8][48];
+static char s_store_object_id[OBJECT_STORE_ID_SIZE];
+static char s_store_session_id[LOCALIZATION_RUN_SESSION_ID_SIZE];
+
+static void reset_export_fakes(void)
+{
+    memset(&s_export_summary, 0, sizeof(s_export_summary));
+    s_export_summary.complete = true;
+    s_export_summary.readable = true;
+    s_export_summary.sample_rate_hz = 4000U;
+    s_export_summary.samples_written = 26000U;
+    s_export_summary.format_version = 2U;
+    s_export_summary_result = ESP_OK;
+    s_bulk_protected = false;
+    memset(&s_export_job, 0, sizeof(s_export_job));
+    s_export_job.state = LOCALIZATION_JOB_IDLE;
+    s_store_run_writes = 0U;
+    s_store_pick_writes = 0U;
+    memset(s_store_written_methods, 0, sizeof(s_store_written_methods));
+    memset(s_store_object_id, 0, sizeof(s_store_object_id));
+    memset(s_store_session_id, 0, sizeof(s_store_session_id));
+}
+
+esp_err_t seismic_recorder_get_session_summary(
+    const char *object_id, const char *session_id, seismic_recorder_session_summary_t *summary_out)
+{
+    (void)object_id;
+    (void)session_id;
+    if (s_export_summary_result != ESP_OK) return s_export_summary_result;
+    *summary_out = s_export_summary;
+    return ESP_OK;
+}
+
+esp_err_t storage_manager_operation_begin(void) { return ESP_OK; }
+void storage_manager_operation_end(void) {}
+bool storage_bulk_admission_is_protected(void) { return s_bulk_protected; }
+esp_err_t storage_bulk_admission_run_chunk(esp_err_t (*fn)(void *), void *ctx) { return fn(ctx); }
+void localization_job_get_status(localization_job_status_t *status_out) { *status_out = s_export_job; }
+
+esp_err_t localization_run_store_write(
+    const char *object_id, const char *session_id, const localization_run_record_t *record)
+{
+    if (s_store_run_writes < 8U) {
+        snprintf(s_store_written_methods[s_store_run_writes], sizeof(s_store_written_methods[0]), "%s", record->method_name);
+    }
+    ++s_store_run_writes;
+    snprintf(s_store_object_id, sizeof(s_store_object_id), "%s", object_id);
+    snprintf(s_store_session_id, sizeof(s_store_session_id), "%s", session_id);
+    return ESP_OK;
+}
+
+esp_err_t localization_run_store_write_picks(
+    const char *object_id, const char *session_id, const localization_pick_record_t *record)
+{
+    (void)object_id;
+    (void)session_id;
+    (void)record;
+    ++s_store_pick_writes;
     return ESP_OK;
 }
 
@@ -958,6 +1037,234 @@ static void test_settings_read_returns_valid_json_or_null(void)
     assert(request.response_status != NULL && strcmp(request.response_status, "400 Bad Request") == 0);
 }
 
+/* ---- calculation on the phone: download of a finished session and upload of the result ------------------------------ */
+
+static int status_code(const httpd_req_t *request)
+{
+    if (request->response_status == NULL) return 200;
+    return atoi(request->response_status);
+}
+
+static void test_export_meta_gives_the_numbers_and_the_geometry_the_calculation_needs(void)
+{
+    reset_fakes();
+    reset_export_fakes();
+    char response[4096] = {0};
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001&export=meta", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(status_code(&request) == 200);
+    assert(strstr(response, "\"ok\":true") != NULL);
+    assert(strstr(response, "\"sample_rate_hz\":4000") != NULL);
+    assert(strstr(response, "\"frames\":26000") != NULL);
+    assert(strstr(response, "\"format_version\":2") != NULL);
+    assert(strstr(response, "\"geometry_source\":\"channel_sounding\"") != NULL);
+    /* The geometry is the object the WebAssembly calculation reads: {"geometry": {"pods": [...]}}. */
+    cJSON *root = cJSON_Parse(response);
+    assert(root != NULL);
+    const cJSON *geometry = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(root, "geometry"), "geometry");
+    const cJSON *pods = cJSON_GetObjectItemCaseSensitive(geometry, "pods");
+    assert(cJSON_IsArray(pods) && cJSON_GetArraySize(pods) == (int)OBJECT_STORE_POD_COUNT);
+    const cJSON *first = cJSON_GetArrayItem(pods, 0);
+    assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(first, "computed")));
+    assert(cJSON_GetObjectItemCaseSensitive(first, "x_mm")->valueint == 300);
+    cJSON_Delete(root);
+}
+
+static void test_export_refuses_an_unfinished_or_unknown_session(void)
+{
+    reset_fakes();
+    reset_export_fakes();
+    char response[4096] = {0};
+    s_export_summary.complete = false;
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001&export=meta", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(status_code(&request) == 409);
+
+    s_export_summary.complete = true;
+    s_export_summary_result = ESP_ERR_NOT_FOUND;
+    request = make_request("object_id=OBJ_0001&session_id=S000009&export=samples", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(status_code(&request) == 404);
+
+    s_export_summary_result = ESP_OK;
+    request = make_request("object_id=OBJ_0001&session_id=S000001&export=unknown", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(status_code(&request) == 400);
+}
+
+static void make_directories(const char *path)
+{
+    char partial[200];
+    for (size_t i = 0U; path[i] != '\0'; ++i) {
+        if (path[i] == '/' && i > 0U) {
+            memcpy(partial, path, i);
+            partial[i] = '\0';
+#ifdef _WIN32
+            (void)_mkdir(partial);
+#else
+            (void)mkdir(partial, 0777);
+#endif
+        }
+    }
+}
+
+static void test_export_streams_samples_bin_byte_for_byte(void)
+{
+    reset_fakes();
+    reset_export_fakes();
+    const char *path = STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/samples.bin";
+    make_directories(path);
+    enum { BYTES = 40000 };
+    static unsigned char expected[BYTES];
+    for (size_t i = 0U; i < BYTES; ++i) expected[i] = (unsigned char)(i * 31U + (i >> 8));
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL && fwrite(expected, 1U, BYTES, file) == BYTES && fclose(file) == 0);
+
+    static char response[BYTES + 64];
+    httpd_req_t request = make_request("object_id=OBJ_0001&session_id=S000001&export=samples", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(status_code(&request) == 200);
+    assert(strcmp(request.content_type, "application/octet-stream") == 0);
+    assert(request.response_length == BYTES);
+    assert(memcmp(response, expected, BYTES) == 0);
+
+    /* The recorder owns the card while a recording runs: no download then. */
+    s_bulk_protected = true;
+    memset(response, 0, sizeof(response));
+    request = make_request("object_id=OBJ_0001&session_id=S000001&export=samples", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(status_code(&request) == 500 || status_code(&request) == 503);
+    assert(request.response_length == 0U);
+    s_bulk_protected = false;
+
+    /* A session without samples.bin is "not found". */
+    request = make_request("object_id=OBJ_0001&session_id=S000002&export=samples", response, sizeof(response));
+    assert(web_localization_runs_handler(&request) == ESP_OK);
+    assert(status_code(&request) == 404);
+    (void)remove(path);
+}
+
+static char *make_run_json_for(const char *object_id, const char *session_id, const char *method, bool solved)
+{
+    localization_run_record_t record;
+    memset(&record, 0, sizeof(record));
+    record.schema_version = LOCALIZATION_RUN_SCHEMA_VERSION;
+    snprintf(record.object_id, sizeof(record.object_id), "%s", object_id);
+    snprintf(record.session_id, sizeof(record.session_id), "%s", session_id);
+    record.computed_at_ms = 123456ULL;
+    record.kind = LOCALIZATION_RUN_KIND_INDIVIDUAL_METHOD;
+    record.dimensionality = LOCALIZATION_DIMENSIONALITY_CAPABLE_3D;
+    snprintf(record.method_name, sizeof(record.method_name), "%s", method);
+    record.solved = solved;
+    if (solved) record.source_position = (localization_point3d_t) { 1.0, 2.0, 3.0 };
+    if (!solved) record.failure_class = LOCALIZATION_FAILURE_CLASS_RECORD_AGAIN;
+    if (!solved) snprintf(record.rejection_reason, sizeof(record.rejection_reason), "%s", "no accepted arrival pick");
+    char *json = NULL;
+    assert(localization_run_record_to_json(&record, &json) == ESP_OK && json != NULL);
+    return json;
+}
+
+static char *make_run_json(const char *method, bool solved)
+{
+    return make_run_json_for("OBJ_0001", "S000001", method, solved);
+}
+
+static void post_result(const char *body, httpd_req_t *request, char *response, size_t capacity)
+{
+    *request = make_request(NULL, response, capacity);
+    request->body = body;
+    request->content_len = (int)strlen(body);
+    request->body_offset = 0U;
+}
+
+static void test_import_stores_the_phones_records_through_the_run_store(void)
+{
+    reset_fakes();
+    reset_export_fakes();
+    char *first = make_run_json("tdoa_gauss_newton", true);
+    char *second = make_run_json("semblance", false);
+    static char body[8192];
+    snprintf(body, sizeof(body), "{\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\",\"runs\":[%s,%s],\"picks\":null}", first, second);
+    free(first);
+    free(second);
+    char response[512] = {0};
+    httpd_req_t request;
+    post_result(body, &request, response, sizeof(response));
+    assert(web_localization_import_handler(&request) == ESP_OK);
+    assert(status_code(&request) == 200);
+    assert(strstr(response, "\"ok\":true") != NULL && strstr(response, "\"runs\":2") != NULL);
+    assert(s_store_run_writes == 2U);
+    assert(strcmp(s_store_written_methods[0], "tdoa_gauss_newton") == 0);
+    assert(strcmp(s_store_written_methods[1], "semblance") == 0);
+    assert(strcmp(s_store_object_id, "OBJ_0001") == 0 && strcmp(s_store_session_id, "S000001") == 0);
+    assert(s_store_pick_writes == 0U);
+}
+
+static void test_import_writes_nothing_when_any_record_is_malformed_or_the_session_is_wrong(void)
+{
+    reset_fakes();
+    reset_export_fakes();
+    char *good = make_run_json("tdoa_gauss_newton", true);
+    static char body[8192];
+    char response[512] = {0};
+    httpd_req_t request;
+
+    /* One broken record: nothing at all is written. */
+    snprintf(body, sizeof(body), "{\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\",\"runs\":[%s,{\"method_name\":5}]}", good);
+    post_result(body, &request, response, sizeof(response));
+    assert(web_localization_import_handler(&request) == ESP_OK);
+    assert(status_code(&request) == 422);
+    assert(s_store_run_writes == 0U);
+
+    /* A record that names another session is not filed under this one. */
+    char *foreign = make_run_json_for("OBJ_0001", "S000002", "semblance", false);
+    snprintf(body, sizeof(body), "{\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\",\"runs\":[%s,%s]}", good, foreign);
+    free(foreign);
+    post_result(body, &request, response, sizeof(response));
+    assert(web_localization_import_handler(&request) == ESP_OK);
+    assert(status_code(&request) == 422);
+    assert(s_store_run_writes == 0U);
+
+    /* A session that is still being recorded, or unknown, takes no result. */
+    snprintf(body, sizeof(body), "{\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\",\"runs\":[%s]}", good);
+    s_export_summary.complete = false;
+    post_result(body, &request, response, sizeof(response));
+    assert(web_localization_import_handler(&request) == ESP_OK);
+    assert(status_code(&request) == 409 || status_code(&request) == 500);
+    s_export_summary.complete = true;
+    s_export_summary_result = ESP_ERR_NOT_FOUND;
+    post_result(body, &request, response, sizeof(response));
+    assert(web_localization_import_handler(&request) == ESP_OK);
+    assert(status_code(&request) == 404);
+    s_export_summary_result = ESP_OK;
+
+    /* The device is calculating this very session: the phone's result must not race it. */
+    s_export_job.state = LOCALIZATION_JOB_RUNNING;
+    snprintf(s_export_job.object_id, sizeof(s_export_job.object_id), "%s", "OBJ_0001");
+    snprintf(s_export_job.session_id, sizeof(s_export_job.session_id), "%s", "S000001");
+    post_result(body, &request, response, sizeof(response));
+    assert(web_localization_import_handler(&request) == ESP_OK);
+    assert(s_store_run_writes == 0U);
+    s_export_job.state = LOCALIZATION_JOB_IDLE;
+
+    /* Missing fields, no records, not JSON, empty body. */
+    const char *rejected[] = {
+        "{\"session_id\":\"S000001\",\"runs\":[]}",
+        "{\"object_id\":\"OBJ_0001\",\"session_id\":\"S000001\",\"runs\":[]}",
+        "not json",
+    };
+    for (size_t i = 0U; i < sizeof(rejected) / sizeof(rejected[0]); ++i) {
+        post_result(rejected[i], &request, response, sizeof(response));
+        assert(web_localization_import_handler(&request) == ESP_OK);
+        assert(status_code(&request) != 200);
+    }
+    post_result("", &request, response, sizeof(response));
+    assert(web_localization_import_handler(&request) == ESP_OK);
+    assert(status_code(&request) != 200);
+    assert(s_store_run_writes == 0U);
+    free(good);
+}
+
 int main(void)
 {
     test_runs_listing_round_trips_persisted_records();
@@ -979,5 +1286,10 @@ int main(void)
     test_runs_listing_rejects_query_string_too_long();
     test_job_status_shares_the_runs_route();
     test_settings_read_returns_valid_json_or_null();
+    test_export_meta_gives_the_numbers_and_the_geometry_the_calculation_needs();
+    test_export_refuses_an_unfinished_or_unknown_session();
+    test_export_streams_samples_bin_byte_for_byte();
+    test_import_stores_the_phones_records_through_the_run_store();
+    test_import_writes_nothing_when_any_record_is_malformed_or_the_session_is_wrong();
     return 0;
 }

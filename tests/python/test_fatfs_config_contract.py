@@ -85,7 +85,14 @@ def test_wifi_static_buffers_leave_dma_memory_for_the_sd_driver_and_existing_con
     runner = read("tools/run_idf.ps1")
     # RX_BA_WIN must stay <= 2 x the static RX buffers, or IDF refuses the configuration.
     assert "CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4" in sdkconfig
-    assert "CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8" in sdkconfig
+    # TX 4 and the IRAM optimisations off give back ~25 KB of internal/DMA RAM (ESP-EMU 2026-11-16; board log 2026-11-15
+    # 22:06 had 1.7 KB left with two TLS clients).
+    assert "CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=4" in sdkconfig
+    assert "CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8" not in sdkconfig
+    for key in ("CONFIG_ESP_WIFI_IRAM_OPT", "CONFIG_ESP_WIFI_RX_IRAM_OPT"):
+        assert f"# {key} is not set" in sdkconfig
+        assert f"{key}=y" not in sdkconfig
+        assert key in read("tools/run_idf.ps1")   # a local sdkconfig that still has it on is migrated
     assert "CONFIG_ESP_WIFI_RX_BA_WIN=6" in sdkconfig
     assert "CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=16" not in sdkconfig
     assert "function Sync-WifiBufferBudget" in runner

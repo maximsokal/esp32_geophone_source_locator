@@ -10,7 +10,7 @@ int main(void)
     const web_route_identity_t *routes = web_https_route_catalog(&count);
     assert(count == WEB_HTTPS_URI_HANDLERS_REQUIRED);
     assert(count <= WEB_HTTPS_URI_HANDLERS_CAPACITY);
-    assert(WEB_HTTPS_URI_HANDLERS_CAPACITY == 14U);
+    assert(WEB_HTTPS_URI_HANDLERS_CAPACITY == 15U);
     assert(WEB_HTTPS_URI_HANDLER_RESERVE == 1U);
     assert(!web_route_catalog_has_duplicates(routes, count));
     bool has_nrf_logs = false;
@@ -20,6 +20,15 @@ int main(void)
         }
     }
     assert(has_nrf_logs);
+
+    /* The phone sends the result it calculated with POST to the runs URI; the download modes share its GET. */
+    bool has_runs_get = false, has_runs_post = false;
+    for (size_t i = 0U; i < count; ++i) {
+        if (strcmp(routes[i].uri, "/api/localization/runs") != 0) continue;
+        has_runs_get = has_runs_get || routes[i].method == WEB_ROUTE_GET;
+        has_runs_post = has_runs_post || routes[i].method == WEB_ROUTE_POST;
+    }
+    assert(has_runs_get && has_runs_post);
 
     routes = web_http_route_catalog(&count);
     assert(count == WEB_HTTP_URI_HANDLERS_REQUIRED);

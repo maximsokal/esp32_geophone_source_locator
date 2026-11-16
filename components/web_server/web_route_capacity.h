@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define WEB_HTTPS_URI_HANDLERS_REQUIRED  13U
+#define WEB_HTTPS_URI_HANDLERS_REQUIRED  14U
 #define WEB_HTTP_URI_HANDLERS_REQUIRED    6U
 #define WEB_URI_HANDLER_RESERVE           2U
 #define WEB_HTTPS_URI_HANDLER_RESERVE     1U

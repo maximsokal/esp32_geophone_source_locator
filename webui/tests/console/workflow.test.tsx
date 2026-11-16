@@ -298,6 +298,14 @@ describe('workflow view model (MAX-296)', () => {
     expect(html).toContain('channels-silent');
   });
 
+  it('offers the calculation on the phone only once a recording is stopped', () => {
+    const stopped = panelHtml(statusFor('STOPPED', ['RECORD_AGAIN'], 4, { object_id: 'OBJ_0001', session_id: 'S000001', calc_settings_ready: true }));
+    expect(stopped).toContain(translate('en', 'workflow.phone.action'));
+    for (const step of ['RECORD_READY', 'RECORDING', 'CALCULATING', 'RESULT']) {
+      expect(panelHtml(statusFor(step, [], 4))).not.toContain(translate('en', 'workflow.phone.action'));
+    }
+  });
+
   it('does not render a command button that is absent from allowed_actions', () => {
     const html = panelHtml(statusFor('RECORD_READY', ['BACK']));
     expect(html.match(/<button\b/g)).toHaveLength(1);

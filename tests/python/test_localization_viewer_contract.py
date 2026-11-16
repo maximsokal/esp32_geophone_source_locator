@@ -17,7 +17,13 @@ def read(relative_path: str) -> str:
 
 
 def handler_source() -> str:
-    return read("components/web_server/web_localization_api.c")
+    """The runs listing as the viewer uses it. The phone's session download and result upload live in the same file, right
+    before the listing handler; their own JSON fields (geometry, runs, ...) are not the listing's response order."""
+    source = read("components/web_server/web_localization_api.c")
+    start = source.index("Calculation on the phone.")
+    start = source.rindex("/*", 0, start)
+    end = source.index("static esp_err_t web_localization_runs_handler(")
+    return source[:start] + source[end:]
 
 
 def object_store_header() -> str:
@@ -52,14 +58,15 @@ def test_geometry_read_failure_does_not_fail_the_request():
 
     # The real call site (not the header doc comment mentioning the same
     # function name earlier in the file).
+    # The runs listing, not the phone's session export above it (that one answers 404 when its geometry cannot be read).
+    handler_start = source.index("static esp_err_t web_localization_runs_handler(")
     read_index = source.index(
-        "seismic_recorder_read_session_localization_geometry("
+        "seismic_recorder_read_session_localization_geometry(", handler_start
     )
 
     # The handler must not return early / send an error response based on
     # the geometry read's own result -- only on the (already-checked)
     # run-listing result above it.
-    handler_start = source.index("static esp_err_t web_localization_runs_handler(")
     assert handler_start < read_index
 
     after_geometry_read = source[read_index:read_index + 400]

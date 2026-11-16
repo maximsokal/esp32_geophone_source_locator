@@ -38,6 +38,7 @@
 #endif
 
 #include "ad7606_driver.h"
+#include "localization_job.h"
 #include "cJSON.h"
 #include "esp_http_server.h"
 #include "localization_calculate.h"
@@ -155,6 +156,11 @@ int64_t esp_timer_get_time(void)
 {
     return s_e2e_now_us;
 }
+
+/* The web handlers this test includes also serve the phone's download and result upload: nothing here calls them. */
+bool storage_bulk_admission_is_protected(void) { return false; }
+esp_err_t storage_bulk_admission_run_chunk(esp_err_t (*fn)(void *), void *ctx) { return fn(ctx); }
+void localization_job_get_status(localization_job_status_t *status_out) { memset(status_out, 0, sizeof(*status_out)); }
 
 esp_err_t storage_manager_operation_begin(void)
 {

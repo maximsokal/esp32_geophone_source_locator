@@ -352,6 +352,49 @@ static esp_err_t seismic_recorder_fs_next_session_id(
 }
 
 
+/*
+ * One scan serves every recording made with the same sensor placement: a second recording of the object (another sample
+ * rate, "record again") must see the same 3D scan, tags and occupancy as the first. The artifacts are moved into a session
+ * at START, so before staging is attached to the new session the newest earlier session that holds an artifact hands it
+ * back to staging. A rename is instant (a copy of an 8 MB scan to the SD card would take minutes). A scan made for another
+ * placement is not applied silently: consumers compare its geometry_computed_at_ms with the session's frozen geometry.
+ * Only the newest session keeps the scan; a fresh upload to staging always wins over the one handed back.
+ */
+#define SEISMIC_RECORDER_FS_SCAN_HANDBACK_LOOKBACK 64U
+
+static void seismic_recorder_fs_pull_scan_from_previous_session(const char *object_id, const char *new_session_id)
+{
+    unsigned new_number = 0U;
+    if (sscanf(new_session_id, "S%u", &new_number) != 1 || new_number <= 1U) return;
+
+    char staging_dir[SEISMIC_RECORDER_PATH_SIZE];
+    const int dir_written = snprintf(staging_dir, sizeof(staging_dir), "%s/%s/staging", STORAGE_MANAGER_OBJECTS_PATH, object_id);
+    if (dir_written <= 0 || (size_t)dir_written >= sizeof(staging_dir)) return;
+
+    for (size_t i = 0U; i < sizeof(s_staged_artifacts) / sizeof(s_staged_artifacts[0]); ++i) {
+        const char *name = s_staged_artifacts[i].file_name;
+        char staged_path[SEISMIC_RECORDER_PATH_SIZE];
+        struct stat info;
+        if (snprintf(staged_path, sizeof(staged_path), "%s/%s", staging_dir, name) >= (int)sizeof(staged_path)) continue;
+        if (stat(staged_path, &info) == 0) continue;   /* a newer upload is waiting: it wins */
+
+        for (unsigned back = 1U; back <= SEISMIC_RECORDER_FS_SCAN_HANDBACK_LOOKBACK && back < new_number; ++back) {
+            char previous_path[SEISMIC_RECORDER_PATH_SIZE];
+            const int written = snprintf(
+                previous_path, sizeof(previous_path), "%s/%s/sessions/S%06u/%s",
+                STORAGE_MANAGER_OBJECTS_PATH, object_id, new_number - back, name);
+            if (written <= 0 || (size_t)written >= sizeof(previous_path)) break;
+            if (stat(previous_path, &info) != 0 || !S_ISREG(info.st_mode)) continue;
+            if (storage_manager_create_directory(staging_dir) != ESP_OK) break;
+            if (rename(previous_path, staged_path) != 0) {
+                ESP_LOGW(TAG, "Could not hand %s of S%06u back to staging: errno=%d", name, new_number - back, errno);
+            }
+            break;   /* the newest session that has it is the one that gives it up */
+        }
+    }
+}
+
+
 static unsigned seismic_recorder_fs_attach_staged_artifacts(
     const char *object_id,
     char *session_path,
@@ -570,6 +613,7 @@ esp_err_t seismic_recorder_fs_create_session(
 
     if (err == ESP_OK) {
         /* START already holds storage_manager's operation guard; keep each rename atomic. */
+        seismic_recorder_fs_pull_scan_from_previous_session(object_id, session_id);
         staged_artifact_mask = seismic_recorder_fs_attach_staged_artifacts(
             object_id,
             path,

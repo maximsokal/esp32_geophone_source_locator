@@ -14,6 +14,7 @@ static const web_route_identity_t s_https_routes[] = {
     { "/api/seismic/session", WEB_ROUTE_GET },
     { "/api/seismic", WEB_ROUTE_GET },
     { "/api/localization/runs", WEB_ROUTE_GET },
+    { "/api/localization/runs", WEB_ROUTE_POST },
     { "/setup/verify", WEB_ROUTE_GET },
     { "/api/setup/verify", WEB_ROUTE_POST },
     { "/setup/verify-ui", WEB_ROUTE_GET },

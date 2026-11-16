@@ -85,7 +85,8 @@
         "components/object_format/include",
         "components/localization_run_store/include",
         "components/web_server",
-        "tests/host/stubs/web_api_control"
+        "tests/host/stubs/web_api_control",
+        "components/storage_manager/include"
       ],
       "libraries": [
         "m"

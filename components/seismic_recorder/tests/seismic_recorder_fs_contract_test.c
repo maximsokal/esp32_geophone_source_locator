@@ -3132,8 +3132,17 @@ static void test_staged_artifacts_attach_once_to_the_created_session(void)
             STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s",
             staged_artifact_names[i]
         );
-        assert(!path_exists(session_path));
+        /* The placement's scan follows the object to its next recording (handed back to staging, then attached). */
+        assert_file_contents(session_path, staged_artifact_contents[i]);
         assert(!path_exists(staged_path));
+        char first_path[256];
+        (void)snprintf(
+            first_path,
+            sizeof(first_path),
+            STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s",
+            staged_artifact_names[i]
+        );
+        assert(!path_exists(first_path));
     }
     assert(seismic_recorder_fs_close(file) == ESP_OK);
     remove_layout();
@@ -3224,6 +3233,74 @@ static void test_workflow_scan_promotes_into_recording_session_or_stays_staged(v
         assert(seismic_recorder_fs_close(file) == ESP_OK);
         remove_layout();
     }
+}
+
+
+/*
+ * One sensor placement, several recordings (other sample rates, "record again"): each new session must see the scan, tags and
+ * occupancy of the placement. The artifacts live in one session at a time and are handed back to staging at the next START
+ * (a rename; copying an 8 MB scan to the SD card would take minutes). A newer upload wins over the handed-back one.
+ */
+static void test_every_new_session_of_the_object_receives_the_scan_of_the_placement(void)
+{
+    remove_layout();
+    make_layout();
+    write_staged_artifacts();
+
+    char first[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    char second[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    char third[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *file = NULL;
+    char path[256];
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, first, &file) == ESP_OK);
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+    assert(strcmp(first, "S000001") == 0);
+    for (size_t i = 0U; i < sizeof(staged_artifact_names) / sizeof(staged_artifact_names[0]); ++i) {
+        (void)snprintf(path, sizeof(path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s", staged_artifact_names[i]);
+        assert(path_exists(path));
+    }
+
+    /* Another recording of the same placement: the scan, occupancy, preview and registration follow it. */
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 2000, 4, second, &file) == ESP_OK);
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+    assert(strcmp(second, "S000002") == 0);
+    for (size_t i = 0U; i < sizeof(staged_artifact_names) / sizeof(staged_artifact_names[0]); ++i) {
+        (void)snprintf(path, sizeof(path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/%s", staged_artifact_names[i]);
+        assert(path_exists(path));
+        assert_file_contents(path, staged_artifact_contents[i]);
+        (void)snprintf(path, sizeof(path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000001/%s", staged_artifact_names[i]);
+        assert(!path_exists(path));   /* one owner at a time: no copy of a large file */
+        (void)snprintf(path, sizeof(path), STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/%s", staged_artifact_names[i]);
+        assert(!path_exists(path));
+    }
+
+    /* A fresh upload for a new placement wins; the older session keeps the scan it has. */
+    assert(make_directory(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging") == 0);
+    FILE *fresh = fopen(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging/scan-v1.bin", "wb");
+    assert(fresh != NULL && fwrite("new", 1U, 3U, fresh) == 3U && fclose(fresh) == 0);
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, third, &file) == ESP_OK);
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+    assert(strcmp(third, "S000003") == 0);
+    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000003/scan-v1.bin", "new");
+    assert_file_contents(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/scan-v1.bin", "scan");
+    remove_layout();
+}
+
+
+static void test_a_session_without_any_earlier_scan_stays_without_one(void)
+{
+    remove_layout();
+    make_layout();
+    char first[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    char second[SEISMIC_RECORDER_SESSION_ID_SIZE] = {0};
+    FILE *file = NULL;
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, first, &file) == ESP_OK);
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+    assert(seismic_recorder_fs_create_session("OBJ_0001", 500, 4, second, &file) == ESP_OK);
+    assert(seismic_recorder_fs_close(file) == ESP_OK);
+    assert(!path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/sessions/S000002/scan-v1.bin"));
+    assert(!path_exists(STORAGE_MANAGER_OBJECTS_PATH "/OBJ_0001/staging"));
+    remove_layout();
 }
 
 
@@ -3603,6 +3680,8 @@ int main(void)
     test_session_id_increments();
     test_staged_artifacts_attach_once_to_the_created_session();
     test_workflow_scan_promotes_into_recording_session_or_stays_staged();
+    test_every_new_session_of_the_object_receives_the_scan_of_the_placement();
+    test_a_session_without_any_earlier_scan_stays_without_one();
     test_missing_staging_is_a_noop();
     test_one_staged_move_failure_does_not_fail_recording();
     test_failed_start_restores_staged_artifacts();

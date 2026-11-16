@@ -1474,6 +1474,106 @@ export function fetchLocalizationRuns(
   ).then(decodeLocalizationRunListing);
 }
 
+/** What the phone needs to calculate a finished session itself: the numbers and the frozen geometry. */
+export interface SessionExportMeta {
+  objectId: string;
+  sessionId: string;
+  sampleRateHz: number;
+  frames: number;
+  formatVersion: number;
+  geometrySource: 'channel_sounding' | 'apriltag';
+  /** The object the calculation reads: {"geometry": {"pods": [...]}}. */
+  geometry: unknown;
+}
+
+export function fetchSessionExportMeta(objectId: string, sessionId: string, options: ApiRequestOptions = {}): Promise<SessionExportMeta> {
+  const query = new URLSearchParams({ object_id: objectId, session_id: sessionId, export: 'meta' });
+  return jsonRequest<Record<string, unknown>>(
+    `/api/localization/runs?${query.toString()}`, {}, DEVICE_API_EXTENDED_TIMEOUT_MS, 'normal', options,
+  ).then((body) => {
+    const source = body.geometry_source;
+    if (body.ok !== true || typeof body.sample_rate_hz !== 'number' || typeof body.frames !== 'number' ||
+        typeof body.format_version !== 'number' || (source !== 'channel_sounding' && source !== 'apriltag') ||
+        typeof body.geometry !== 'object' || body.geometry === null) {
+      throw new Error('ESP session export: the answer is not what was asked for');
+    }
+    return {
+      objectId, sessionId, sampleRateHz: body.sample_rate_hz, frames: body.frames, formatVersion: body.format_version,
+      geometrySource: source, geometry: body.geometry,
+    };
+  });
+}
+
+export const DEVICE_API_SAMPLES_TIMEOUT_MS = 120000;
+
+/** samples.bin of a finished session, exactly as it lies on the card. A short body is an error, never a shorter recording. */
+export function downloadSessionSamples(
+  objectId: string,
+  sessionId: string,
+  onProgress?: (receivedBytes: number, totalBytes: number) => void,
+): Promise<ArrayBuffer> {
+  const query = new URLSearchParams({ object_id: objectId, session_id: sessionId, export: 'samples' });
+  return queuedApiRequest(async (context) => {
+    const timeout = globalThis.setTimeout(() => {
+      context.timedOut = true;
+      context.controller.abort();
+    }, DEVICE_API_SAMPLES_TIMEOUT_MS);
+    try {
+      let response: Response;
+      try {
+        response = await fetch(`/api/localization/runs?${query.toString()}`, {
+          cache: 'no-store', credentials: 'same-origin', signal: context.controller.signal,
+          headers: { Accept: 'application/octet-stream' },
+        });
+      } catch (reason) {
+        if (context.timedOut) throw new Error(`ESP samples download timeout (${DEVICE_API_SAMPLES_TIMEOUT_MS} ms)`);
+        throw new Error(`ESP samples download network error: ${errorText(reason)}`);
+      }
+      if (!response.ok) throw new Error(`ESP samples download ${response.status}`);
+      const announced = Number(response.headers.get('X-Samples-Bytes'));
+      if (!Number.isInteger(announced) || announced <= 0) throw new Error('ESP samples download: no announced length');
+      const chunks: Uint8Array[] = [];
+      let received = 0;
+      const reader = response.body?.getReader();
+      if (reader === undefined) {
+        const whole = new Uint8Array(await response.arrayBuffer());
+        chunks.push(whole);
+        received = whole.length;
+      } else {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
+          onProgress?.(received, announced);
+        }
+      }
+      if (received !== announced) throw new Error(`ESP samples download is incomplete (${received} of ${announced} bytes)`);
+      const bytes = new Uint8Array(received);
+      let at = 0;
+      for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.length; }
+      return bytes.buffer;
+    } finally {
+      globalThis.clearTimeout(timeout);
+    }
+  }, 'bulk');
+}
+
+export interface PhoneCalculationUpload {
+  objectId: string;
+  sessionId: string;
+  picks: unknown | null;
+  runs: unknown[];
+}
+
+/** The records the phone calculated, in the schema the device stores; the device checks them before it writes anything. */
+export function uploadPhoneCalculation(result: PhoneCalculationUpload): Promise<{ ok: boolean; runs: number; picks: boolean }> {
+  return jsonRequest<{ ok: boolean; runs: number; picks: boolean }>('/api/localization/runs', {
+    method: 'POST',
+    body: JSON.stringify({ object_id: result.objectId, session_id: result.sessionId, picks: result.picks, runs: result.runs }),
+  }, DEVICE_API_EXTENDED_TIMEOUT_MS, 'bulk');
+}
+
 /** The background "Calculate source" job: progress, measured timings and stack. */
 export function fetchLocalizationJob(options: ApiRequestOptions = {}): Promise<LocalizationJobStatus> {
   return jsonRequest<LocalizationJobStatus>('/api/localization/runs?job=status', {}, DEVICE_API_CONTROL_TIMEOUT_MS, 'normal', options);

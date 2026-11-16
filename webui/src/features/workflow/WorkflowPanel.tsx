@@ -7,6 +7,7 @@ import { useLocale, useT, type I18nKey } from '../../i18n';
 import { formatDistance, formatNumber, formatPercent } from '../../i18n/format';
 import MaterialSettingsForm from '../objects/MaterialSettingsForm';
 import WorkflowResultViewer from './WorkflowResultViewer';
+import PhoneCalculation from './PhoneCalculation';
 import ManualDistanceForm from './ManualDistanceForm';
 import SampleRateSelect from '../objects/SampleRateSelect';
 import {
@@ -464,7 +465,16 @@ function WorkflowSection({ section, status, onRangingSaved, onRefresh }: {
     );
     case 'record_ready': return <p>{t('workflow.record_ready.instruction')}</p>;
     case 'recording': return <RecordingSection value={section.value} />;
-    case 'stopped': return <p>{t('workflow.stopped.instruction')}</p>;
+    case 'stopped': return (
+      <div>
+        <p>{t('workflow.stopped.instruction')}</p>
+        <PhoneCalculation
+          objectId={status?.workflow?.object_id ?? null}
+          sessionId={status?.workflow?.session_id ?? null}
+          settingsReady={status?.workflow?.calc_settings_ready !== false}
+        />
+      </div>
+    );
     case 'stopping': return <p>{t('workflow.stopping.instruction')}</p>;
     case 'record_error': return <p role="alert">{t('workflow.record_error.instruction')} {section.reason}</p>;
     case 'calculating': return (

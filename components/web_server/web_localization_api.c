@@ -1,8 +1,10 @@
 #include "web_server_internal.h"
 
 #include <inttypes.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "localization_config.h"
 #include "localization_job.h"
@@ -14,6 +16,8 @@
 #include "localization_run_store.h"
 #include "object_store.h"
 #include "seismic_recorder.h"
+#include "storage_bulk_admission.h"
+#include "storage_manager.h"
 #include "web_localization_storage.h"
 
 void localization_calculate_recommendation(
@@ -311,6 +315,321 @@ static esp_err_t web_localization_job_status_handler(httpd_req_t *request)
     return err;
 }
 
+/*
+ * Calculation on the phone. The page downloads a finished session (`?export=meta` for the geometry and the numbers,
+ * `?export=samples` for samples.bin as it lies on the card), runs the firmware's own calculation compiled to WebAssembly
+ * and sends the records back with POST. Both directions share this URI so the HTTPS server spends only one more handler
+ * slot (the POST) on it.
+ */
+#define WEB_LOCALIZATION_EXPORT_CHUNK_BYTES 16384U
+#define WEB_LOCALIZATION_IMPORT_MAX_BYTES (192U * 1024U)
+
+typedef struct
+{
+    FILE *file;
+    uint8_t *buffer;
+    size_t capacity;
+    size_t read_count;
+    const char *open_path;
+    size_t file_size;
+
+} web_localization_export_chunk_t;
+
+
+static esp_err_t web_localization_export_open_chunk(void *context)
+{
+    web_localization_export_chunk_t *chunk = context;
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+    struct stat info;
+    if (stat(chunk->open_path, &info) != 0 || (info.st_mode & S_IFMT) != S_IFREG) {
+        err = ESP_ERR_NOT_FOUND;
+    } else {
+        chunk->file = fopen(chunk->open_path, "rb");
+        chunk->file_size = (size_t)info.st_size;
+        if (chunk->file == NULL) err = ESP_ERR_NOT_FOUND;
+    }
+    storage_manager_operation_end();
+    return err;
+}
+
+
+static esp_err_t web_localization_export_read_chunk(void *context)
+{
+    web_localization_export_chunk_t *chunk = context;
+    chunk->read_count = 0U;
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+    chunk->read_count = fread(chunk->buffer, 1U, chunk->capacity, chunk->file);
+    if (ferror(chunk->file) != 0) err = ESP_FAIL;
+    storage_manager_operation_end();
+    return err;
+}
+
+
+static esp_err_t web_localization_export_close_chunk(void *context)
+{
+    web_localization_export_chunk_t *chunk = context;
+    esp_err_t err = storage_manager_operation_begin();
+    if (err != ESP_OK) return err;
+    if (chunk->file != NULL) (void)fclose(chunk->file);
+    chunk->file = NULL;
+    storage_manager_operation_end();
+    return ESP_OK;
+}
+
+
+static bool web_localization_export_mode(httpd_req_t *request, char mode[12])
+{
+    char query[160];
+    return web_localization_query_copy(request, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "export", mode, 12U) == ESP_OK;
+}
+
+
+/* Only a finished, readable session is handed out: one still being written has no stable end. */
+static esp_err_t web_localization_export_summary(
+    const char *object_id,
+    const char *session_id,
+    seismic_recorder_session_summary_t *summary
+)
+{
+    const esp_err_t err = seismic_recorder_get_session_summary(object_id, session_id, summary);
+    if (err != ESP_OK) return err;
+    return summary->complete && summary->readable && summary->samples_written > 0U ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+
+/* Adds {"geometry": {"pods": [...], "anchored": ...}} under `parent`: the shape object_store_geometry_from_json reads. */
+static bool web_localization_export_add_geometry(cJSON *parent, const object_store_geometry_t *geometry)
+{
+    cJSON *wrapper = cJSON_AddObjectToObject(parent, "geometry");
+    cJSON *node = wrapper != NULL ? cJSON_AddObjectToObject(wrapper, "geometry") : NULL;
+    cJSON *pods = node != NULL ? cJSON_AddArrayToObject(node, "pods") : NULL;
+    if (node == NULL || pods == NULL || cJSON_AddBoolToObject(node, "anchored", geometry->anchored) == NULL) return false;
+    for (size_t i = 0U; i < OBJECT_STORE_POD_COUNT; ++i) {
+        const object_store_pod_geometry_t *pod = &geometry->pods[i];
+        cJSON *item = cJSON_CreateObject();
+        if (item == NULL || !cJSON_AddItemToArray(pods, item) ||
+            cJSON_AddBoolToObject(item, "computed", pod->computed) == NULL) {
+            return false;
+        }
+        if (!pod->computed) continue;
+        if (cJSON_AddBoolToObject(item, "leveled", pod->leveled) == NULL ||
+            cJSON_AddNumberToObject(item, "x_mm", (double)pod->x_mm) == NULL ||
+            cJSON_AddNumberToObject(item, "y_mm", (double)pod->y_mm) == NULL ||
+            cJSON_AddNumberToObject(item, "z_mm", (double)pod->z_mm) == NULL ||
+            cJSON_AddNumberToObject(item, "residual_mm", (double)pod->residual_mm) == NULL ||
+            cJSON_AddNumberToObject(item, "uncertainty_mm", (double)pod->uncertainty_mm) == NULL ||
+            cJSON_AddNumberToObject(item, "computed_at_ms", (double)pod->computed_at_ms) == NULL) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
+static esp_err_t web_localization_export_meta_handler(
+    httpd_req_t *request,
+    const char *object_id,
+    const char *session_id
+)
+{
+    seismic_recorder_session_summary_t summary;
+    const esp_err_t summary_err = web_localization_export_summary(object_id, session_id, &summary);
+    if (summary_err == ESP_ERR_INVALID_STATE) return httpd_resp_send_err(request, 409, "Session is not finished");
+    if (summary_err != ESP_OK) return httpd_resp_send_err(request, web_localization_http_status(summary_err), "Session unavailable");
+
+    object_store_geometry_t geometry;
+    memset(&geometry, 0, sizeof(geometry));
+    seismic_recorder_localization_geometry_source_t source = SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_CHANNEL_SOUNDING;
+    if (seismic_recorder_read_session_localization_geometry(object_id, session_id, &geometry, &source, NULL) != ESP_OK) {
+        return httpd_resp_send_err(request, 404, "Session geometry unavailable");
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL ||
+        cJSON_AddBoolToObject(root, "ok", true) == NULL ||
+        cJSON_AddStringToObject(root, "object_id", object_id) == NULL ||
+        cJSON_AddStringToObject(root, "session_id", session_id) == NULL ||
+        cJSON_AddNumberToObject(root, "sample_rate_hz", (double)summary.sample_rate_hz) == NULL ||
+        cJSON_AddNumberToObject(root, "frames", (double)summary.samples_written) == NULL ||
+        cJSON_AddNumberToObject(root, "format_version", (double)summary.format_version) == NULL ||
+        cJSON_AddStringToObject(root, "geometry_source",
+            source == SEISMIC_RECORDER_LOCALIZATION_GEOMETRY_APRILTAG_REGISTERED ? "apriltag" : "channel_sounding") == NULL ||
+        !web_localization_export_add_geometry(root, &geometry)) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(request, 500, "Out of memory");
+    }
+    char *body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (body == NULL) return httpd_resp_send_err(request, 500, "Out of memory");
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    const esp_err_t err = httpd_resp_send(request, body, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(body);
+    return err;
+}
+
+
+static esp_err_t web_localization_export_samples_handler(
+    httpd_req_t *request,
+    const char *object_id,
+    const char *session_id
+)
+{
+    seismic_recorder_session_summary_t summary;
+    const esp_err_t summary_err = web_localization_export_summary(object_id, session_id, &summary);
+    if (summary_err == ESP_ERR_INVALID_STATE) return httpd_resp_send_err(request, 409, "Session is not finished");
+    if (summary_err != ESP_OK) return httpd_resp_send_err(request, web_localization_http_status(summary_err), "Session unavailable");
+    if (storage_bulk_admission_is_protected()) return httpd_resp_send_err(request, 503, "Recording in progress");
+
+    char path[160];
+    const int written = snprintf(path, sizeof(path), "%s/%s/sessions/%s/samples.bin",
+                                 STORAGE_MANAGER_OBJECTS_PATH, object_id, session_id);
+    if (written <= 0 || (size_t)written >= sizeof(path)) return httpd_resp_send_err(request, 400, "Path too long");
+
+    web_localization_export_chunk_t chunk = {
+        .buffer = malloc(WEB_LOCALIZATION_EXPORT_CHUNK_BYTES), .capacity = WEB_LOCALIZATION_EXPORT_CHUNK_BYTES,
+        .open_path = path,
+    };
+    if (chunk.buffer == NULL) return httpd_resp_send_err(request, 500, "Out of memory");
+    esp_err_t err = storage_bulk_admission_run_chunk(web_localization_export_open_chunk, &chunk);
+    if (err != ESP_OK) {
+        free(chunk.buffer);
+        return httpd_resp_send_err(request, err == ESP_ERR_NOT_FOUND ? 404 : 503, "samples.bin unavailable");
+    }
+
+    char length[24];
+    (void)snprintf(length, sizeof(length), "%u", (unsigned)chunk.file_size);
+    httpd_resp_set_type(request, "application/octet-stream");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(request, "X-Samples-Bytes", length);
+    size_t sent = 0U;
+    while (err == ESP_OK && sent < chunk.file_size) {
+        err = storage_bulk_admission_run_chunk(web_localization_export_read_chunk, &chunk);
+        if (err != ESP_OK || chunk.read_count == 0U) {
+            if (err == ESP_OK) err = ESP_FAIL;
+            break;
+        }
+        if (httpd_resp_send_chunk(request, (const char *)chunk.buffer, (ssize_t)chunk.read_count) != ESP_OK) {
+            err = ESP_FAIL;
+            break;
+        }
+        sent += chunk.read_count;
+    }
+    (void)storage_bulk_admission_run_chunk(web_localization_export_close_chunk, &chunk);
+    free(chunk.buffer);
+    /* A short body tells the page the download failed (it compares with X-Samples-Bytes); end the stream either way. */
+    return httpd_resp_send_chunk(request, NULL, 0);
+}
+
+
+/*
+ * The result the phone calculated. The device stores it exactly as its own run would: every record is parsed by the
+ * schema reader first (nothing is written if any is malformed), then written through the run store.
+ */
+static esp_err_t web_localization_import_handler(httpd_req_t *request)
+{
+    esp_err_t storage_response = ESP_OK;
+    if (web_localization_runs_reject_if_storage_unavailable(request, &storage_response)) return storage_response;
+    if (request->content_len == 0U || request->content_len > WEB_LOCALIZATION_IMPORT_MAX_BYTES) {
+        return httpd_resp_send_err(request, 413, "Result size is not accepted");
+    }
+    char *body = malloc(request->content_len + 1U);
+    if (body == NULL) return httpd_resp_send_err(request, 500, "Out of memory");
+    size_t received = 0U;
+    while (received < request->content_len) {
+        const int count = httpd_req_recv(request, body + received, request->content_len - received);
+        if (count <= 0) {
+            free(body);
+            return httpd_resp_send_err(request, 400, "Result upload interrupted");
+        }
+        received += (size_t)count;
+    }
+    body[received] = '\0';
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (root == NULL) return httpd_resp_send_err(request, 400, "Result is not JSON");
+
+    const cJSON *object_item = cJSON_GetObjectItemCaseSensitive(root, "object_id");
+    const cJSON *session_item = cJSON_GetObjectItemCaseSensitive(root, "session_id");
+    const cJSON *runs_item = cJSON_GetObjectItemCaseSensitive(root, "runs");
+    const cJSON *picks_item = cJSON_GetObjectItemCaseSensitive(root, "picks");
+    char object_id[OBJECT_STORE_ID_SIZE] = {0};
+    char session_id[LOCALIZATION_RUN_SESSION_ID_SIZE] = {0};
+    if (!cJSON_IsString(object_item) || !cJSON_IsString(session_item) || !cJSON_IsArray(runs_item) ||
+        strlen(object_item->valuestring) >= sizeof(object_id) || strlen(session_item->valuestring) >= sizeof(session_id)) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(request, 422, "object_id, session_id and runs are required");
+    }
+    snprintf(object_id, sizeof(object_id), "%s", object_item->valuestring);
+    snprintf(session_id, sizeof(session_id), "%s", session_item->valuestring);
+
+    const int run_count = cJSON_GetArraySize(runs_item);
+    if (run_count <= 0 || (size_t)run_count > LOCALIZATION_RUN_STORE_MAX_RUNS_PER_SESSION) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(request, 422, "Run count is not accepted");
+    }
+    seismic_recorder_session_summary_t summary;
+    const esp_err_t summary_err = web_localization_export_summary(object_id, session_id, &summary);
+    if (summary_err != ESP_OK) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(request, summary_err == ESP_ERR_INVALID_STATE ? 409 : 404, "Session is not finished or unknown");
+    }
+    localization_job_status_t job;
+    localization_job_get_status(&job);
+    if ((job.state == LOCALIZATION_JOB_QUEUED || job.state == LOCALIZATION_JOB_RUNNING) &&
+        strcmp(job.object_id, object_id) == 0 && strcmp(job.session_id, session_id) == 0) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(request, 409, "The device is calculating this session");
+    }
+
+    localization_run_record_t *records = calloc((size_t)run_count, sizeof(*records));
+    localization_pick_record_t *picks = calloc(1U, sizeof(*picks));
+    if (records == NULL || picks == NULL) {
+        free(records);
+        free(picks);
+        cJSON_Delete(root);
+        return httpd_resp_send_err(request, 500, "Out of memory");
+    }
+    esp_err_t err = ESP_OK;
+    for (int i = 0; err == ESP_OK && i < run_count; ++i) {
+        char *text = cJSON_PrintUnformatted(cJSON_GetArrayItem(runs_item, i));
+        err = text != NULL ? localization_run_record_from_json(text, &records[i]) : ESP_ERR_NO_MEM;
+        cJSON_free(text);
+        /* A record that names another object or session must never be filed under this one. */
+        if (err == ESP_OK &&
+            (strcmp(records[i].object_id, object_id) != 0 || strcmp(records[i].session_id, session_id) != 0)) {
+            err = ESP_ERR_INVALID_ARG;
+        }
+    }
+    const bool has_picks = cJSON_IsObject(picks_item);
+    if (err == ESP_OK && has_picks) {
+        char *text = cJSON_PrintUnformatted(picks_item);
+        err = text != NULL ? localization_pick_record_from_json(text, picks) : ESP_ERR_NO_MEM;
+        cJSON_free(text);
+        if (err == ESP_OK && (strcmp(picks->object_id, object_id) != 0 || strcmp(picks->session_id, session_id) != 0)) {
+            err = ESP_ERR_INVALID_ARG;
+        }
+    }
+    cJSON_Delete(root);
+    for (int i = 0; err == ESP_OK && i < run_count; ++i) {
+        err = localization_run_store_write(object_id, session_id, &records[i]);
+    }
+    if (err == ESP_OK && has_picks) err = localization_run_store_write_picks(object_id, session_id, picks);
+    free(records);
+    free(picks);
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(request, err == ESP_ERR_NO_MEM ? 500 : 422, "Result was not accepted");
+    }
+    char reply[96];
+    (void)snprintf(reply, sizeof(reply), "{\"ok\":true,\"runs\":%d,\"picks\":%s}", run_count, has_picks ? "true" : "false");
+    httpd_resp_set_type(request, "application/json; charset=utf-8");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    return httpd_resp_send(request, reply, HTTPD_RESP_USE_STRLEN);
+}
+
 static esp_err_t web_localization_runs_handler(httpd_req_t *request)
 {
     if (web_localization_job_status_requested(request)) {
@@ -332,6 +651,13 @@ static esp_err_t web_localization_runs_handler(httpd_req_t *request)
 
     if (web_localization_runs_request_options(request, object_id, session_id) != ESP_OK) {
         return httpd_resp_send_err(request, 400, "object_id and session_id are required");
+    }
+
+    char export_mode[12];
+    if (web_localization_export_mode(request, export_mode)) {
+        if (strcmp(export_mode, "meta") == 0) return web_localization_export_meta_handler(request, object_id, session_id);
+        if (strcmp(export_mode, "samples") == 0) return web_localization_export_samples_handler(request, object_id, session_id);
+        return httpd_resp_send_err(request, 400, "Unknown export mode");
     }
 
     localization_run_record_t *records = calloc(
@@ -744,5 +1070,13 @@ esp_err_t web_localization_api_register(httpd_handle_t server)
         .handler = web_localization_runs_handler,
         .user_ctx = NULL,
     };
-    return web_server_register_uri_handler(server, &uri);
+    esp_err_t err = web_server_register_uri_handler(server, &uri);
+    if (err != ESP_OK) return err;
+    const httpd_uri_t import_uri = {
+        .uri = "/api/localization/runs",
+        .method = HTTP_POST,
+        .handler = web_localization_import_handler,
+        .user_ctx = NULL,
+    };
+    return web_server_register_uri_handler(server, &import_uri);
 }
