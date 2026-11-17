@@ -10,6 +10,7 @@
 #include "seismic_test_stamp.h"
 
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
@@ -248,7 +249,7 @@ static void seismic_test_task(
 
     uint64_t frame_number =
         0;
-    int64_t last_stamp_us = 0;
+    int64_t next_stamp_us = 0;   /* the stamp grid: one frame period apart, see seismic_test_stamp.h */
 #if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
     static const struct { uint64_t at; uint64_t missed; } holes[] = TEST_REC_HOLES;
     size_t next_hole = 0U;
@@ -256,7 +257,17 @@ static void seismic_test_task(
 
     while (s_running) {
         const int frames_per_tick = TEST_FRAMES_PER_TICK_NOW;
-        const int64_t tick_us = esp_timer_get_time();
+        const int64_t frame_period_us = 1000000 / (int64_t)s_rate_hz;
+        /* A tick more than four ticks late moves the grid forward to the clock instead of staying stale for ever. */
+        const int64_t first_stamp_us = seismic_test_stamp_first(
+            next_stamp_us, frames_per_tick, frame_period_us, esp_timer_get_time(),
+            4 * (int64_t)frames_per_tick * frame_period_us);
+        /* Frames are pushed only once the clock has reached the tick's last stamp: never a sample from the future. */
+        const int64_t ready_us = seismic_test_stamp_ready_at(first_stamp_us, frames_per_tick, frame_period_us);
+        for (int64_t clock_us = esp_timer_get_time(); s_running && clock_us < ready_us; clock_us = esp_timer_get_time()) {
+            const int64_t wait_us = ready_us - clock_us;
+            if (wait_us <= 500) esp_rom_delay_us((uint32_t)wait_us); else vTaskDelay(1);   /* yield: IDLE feeds its watchdog */
+        }
         for (int k = 0; k < frames_per_tick; ++k) {
 #if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
             if (next_hole < sizeof(holes) / sizeof(holes[0]) && frame_number >= TEST_REC_FRAMES_AT(holes[next_hole].at, s_rate_hz)) {
@@ -283,11 +294,7 @@ static void seismic_test_task(
                     )) * TEST_SIGNAL_GAIN;
             }
 
-            /* Follow the wall clock, but never step back, stand still or run ahead of it (seismic_test_stamp.h). */
-            const int64_t frame_period_us = 1000000 / (int64_t)s_rate_hz;
-            const int64_t stamp_us = seismic_test_stamp_next(
-                tick_us, frames_per_tick, k, frame_period_us, last_stamp_us, esp_timer_get_time());
-            last_stamp_us = stamp_us;
+            const int64_t stamp_us = first_stamp_us + (int64_t)k * frame_period_us;
 #if defined(CONFIG_APP_TEST_RECORDING_SCENARIO) && CONFIG_APP_TEST_RECORDING_SCENARIO
             seismic_buffer_push_indexed(stamp_us, frame_number + 1U, channels);
 #else
@@ -299,6 +306,7 @@ static void seismic_test_task(
 
             frame_number++;
         }
+        next_stamp_us = first_stamp_us + (int64_t)frames_per_tick * frame_period_us;
 
         vTaskDelayUntil(
             &last_wake,

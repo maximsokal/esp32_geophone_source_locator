@@ -1,149 +1,146 @@
 #include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 
 #include "seismic_test_stamp.h"
 
 /*
- * Emulator scenario S10 failed on and off with two different faces of the same defect in the synthetic source's
- * timestamps:
- *   - "START rejected: acquisition sample is not fresh" (the last stamp was 8.8 ms AHEAD of the clock), and
- *   - the first write failing at once, written=0 in 186 us (a stamp stepped BACK, the V2 encoder refuses that block).
- * The first came from adding a whole frame period to the previous stamp when ticks arrived early; the second from my own
- * edit deleting "last_stamp_us = stamp_us", which switched the monotonic guard off. These tests drive the same loop the
- * generator runs, with the clock behaving like a board (exact ticks) and like the emulator (early/late ticks).
+ * Emulator scenario S10 failed on and off, with three faces of one defect in the synthetic source's timestamps:
+ *   - "START rejected: acquisition sample is not fresh": the last stamp was 8.8 ms AHEAD of the clock;
+ *   - the first write refused at once (written=0 in 186 us): a stamp stepped BACK, the V2 encoder rejects such a block
+ *     (a lost "last_stamp_us = stamp_us" had switched the monotonic guard off);
+ *   - "LOC_SEARCH ... ESP_ERR_INVALID_RESPONSE": stamps that were not one frame period apart (a fix with steps of 1 us), which
+ *     the V2 file cannot store, so the reader rebuilt other times than the ones that were recorded.
+ * The model below runs the generator's loop (generator.c): every iteration starts at some clock time, the tick waits until
+ * the clock reaches its last stamp, then pushes. `clock_us` models esp_timer_get_time().
  */
 
 typedef struct {
+    int64_t next_stamp_us;
     int64_t last_stamp_us;
-    int64_t previous_clock_us;
+    int64_t clock_us;
     unsigned frames;
-    unsigned future_frames;       /* a stamp later than the clock at the moment it was made */
-    int64_t worst_lead_us;
-} generator_t;
+    unsigned future_frames;        /* a stamp later than the clock at the moment it was pushed */
+    unsigned off_grid_frames;      /* not exactly one period after the previous stamp, without a re-anchor */
+    unsigned reanchors;
+    unsigned waits;
+} model_t;
 
-/* One tick of the generator's loop: frames_per_tick frames stamped from tick_us, the clock read per frame. */
-static void run_tick(generator_t *g, int64_t tick_us, int frames_per_tick, int64_t frame_period_us, int64_t clock_us)
+static void model_tick(model_t *m, int frames_per_tick, int64_t period_us, int64_t clock_at_wake_us)
 {
+    if (clock_at_wake_us > m->clock_us) m->clock_us = clock_at_wake_us;
+    const int64_t first_us = seismic_test_stamp_first(
+        m->next_stamp_us, frames_per_tick, period_us, m->clock_us, 4 * (int64_t)frames_per_tick * period_us);
+    const int64_t ready_us = seismic_test_stamp_ready_at(first_us, frames_per_tick, period_us);
+    if (m->clock_us < ready_us) {                          /* the generator waits: the clock moves on */
+        m->clock_us = ready_us;
+        ++m->waits;
+    }
+    const bool continues_grid = m->next_stamp_us != 0 && first_us == m->next_stamp_us;
+    if (m->next_stamp_us != 0 && !continues_grid) ++m->reanchors;
     for (int k = 0; k < frames_per_tick; ++k) {
-        const int64_t stamp_us =
-            seismic_test_stamp_next(tick_us, frames_per_tick, k, frame_period_us, g->last_stamp_us, clock_us);
-        if (g->last_stamp_us != 0) assert(stamp_us > g->last_stamp_us);        /* strictly increasing, always */
-        if (stamp_us > clock_us) {
-            ++g->future_frames;
-            if (stamp_us - clock_us > g->worst_lead_us) g->worst_lead_us = stamp_us - clock_us;
+        const int64_t stamp_us = first_us + (int64_t)k * period_us;
+        if (m->last_stamp_us != 0) {
+            assert(stamp_us > m->last_stamp_us);           /* strictly increasing, always */
+            if (stamp_us - m->last_stamp_us != period_us && !(k == 0 && !continues_grid)) ++m->off_grid_frames;
         }
-        g->last_stamp_us = stamp_us;
-        ++g->frames;
+        if (stamp_us > m->clock_us) ++m->future_frames;
+        m->last_stamp_us = stamp_us;
+        ++m->frames;
     }
+    m->next_stamp_us = first_us + (int64_t)frames_per_tick * period_us;
 }
 
-static void test_exact_ticks_stamp_backwards_from_the_tick_and_never_run_ahead(void)
+static void test_exact_ticks_never_wait_and_stay_on_the_grid(void)
 {
-    generator_t g = {0};
-    /* 500 Hz, 10 ms ticks, 5 frames per tick: the board. */
-    for (int tick = 0; tick < 1000; ++tick) {
-        const int64_t t = 1000000 + (int64_t)tick * 10000;
-        run_tick(&g, t, 5, 2000, t);
-    }
-    assert(g.frames == 5000U && g.future_frames == 0U);
-    assert(g.last_stamp_us == 1000000 + 999 * 10000);                              /* the last frame is the last tick */
+    model_t m = {0};
+    for (int tick = 0; tick < 1000; ++tick) model_tick(&m, 5, 2000, 1000000 + (int64_t)tick * 10000);   /* 500 Hz, the board */
+    assert(m.frames == 5000U);
+    assert(m.future_frames == 0U && m.off_grid_frames == 0U);
+    assert(m.waits == 0U && m.reanchors == 0U);
+    assert(m.last_stamp_us == 1000000 + 999 * 10000);                  /* the last frame is the last tick's time */
 }
 
-static void test_the_first_frame_is_stamped_from_its_tick(void)
+static void test_the_first_tick_ends_at_the_clock(void)
 {
-    assert(seismic_test_stamp_next(50000, 5, 0, 2000, 0, 50000) == 50000 - 4 * 2000);
-    assert(seismic_test_stamp_next(50000, 5, 4, 2000, 0, 50000) == 50000);
-    assert(seismic_test_stamp_next(10000, 1, 0, 2000, 0, 10000) == 10000);         /* one frame per tick (non-scenario build) */
+    assert(seismic_test_stamp_first(0, 5, 2000, 50000, 40000) == 50000 - 4 * 2000);
+    assert(seismic_test_stamp_ready_at(50000 - 4 * 2000, 5, 2000) == 50000);
+    assert(seismic_test_stamp_first(0, 1, 2000, 10000, 8000) == 10000);           /* one frame per tick (non-scenario build) */
 }
 
-/* Emulator face 1: ticks closer together than the clock moves. The old code put the stamps a whole period ahead. */
-static void test_ticks_that_come_early_do_not_run_ahead_of_the_clock(void)
+/* Emulator: ticks arrive after 4 ms of clock instead of 10 ms. The old rules ran ahead of the clock or off the grid. */
+static void test_early_ticks_wait_for_the_clock_instead_of_running_ahead(void)
 {
-    generator_t g = {0};
-    const int64_t period = 2000;
-    int64_t clock = 14670000;
-    run_tick(&g, clock, 5, period, clock);                                         /* first tick, exact */
-    for (int tick = 0; tick < 200; ++tick) {
-        clock += 4000;                                                             /* the tick fires after 4 ms of clock, not 10 */
-        run_tick(&g, clock, 5, period, clock);
+    model_t m = {0};
+    int64_t wake = 14670000;
+    for (int tick = 0; tick < 500; ++tick) {
+        model_tick(&m, 5, 2000, wake);
+        wake += 4000;
     }
-    /* 10 ms of frames per 4 ms of clock cannot be both strictly increasing and never ahead; the lead is microseconds
-     * (1 us per frame that has no room) instead of the milliseconds the recorder rejected. */
-    assert(g.worst_lead_us < 1000);
-    /* The old rule on the very same sequence: the lead the recorder rejected. */
-    int64_t last = 0, worst = 0, c = 14670000;
-    for (int tick = 0; tick < 201; ++tick) {
-        for (int k = 0; k < 5; ++k) {
-            int64_t stamp = c - (int64_t)(4 - k) * period;
-            if (last != 0 && stamp <= last) stamp = last + period;
-            if (stamp - c > worst) worst = stamp - c;
-            last = stamp;
+    assert(m.frames == 2500U);
+    assert(m.future_frames == 0U);                                                 /* never a sample from the future */
+    assert(m.off_grid_frames == 0U);                                               /* and always one period apart */
+    assert(m.waits > 400U);                                                        /* the throttle is what did it */
+    assert(m.reanchors == 0U);
+}
+
+/* A stall longer than four ticks moves the grid to the clock; later ticks continue it. */
+static void test_a_long_stall_moves_the_grid_forward_once(void)
+{
+    model_t m = {0};
+    for (int tick = 0; tick < 100; ++tick) model_tick(&m, 5, 2000, 1000000 + (int64_t)tick * 10000);
+    const int64_t before = m.last_stamp_us;
+    model_tick(&m, 5, 2000, 1000000 + 100 * 10000 + 500000);                      /* 500 ms stall */
+    assert(m.reanchors == 1U);
+    assert(m.last_stamp_us > before + 400000);                                     /* the grid caught up with the clock */
+    assert(m.last_stamp_us <= m.clock_us);
+    const unsigned off_grid = m.off_grid_frames;
+    for (int tick = 101; tick < 200; ++tick) model_tick(&m, 5, 2000, 1000000 + 500000 + (int64_t)tick * 10000);
+    assert(m.off_grid_frames == off_grid && m.reanchors == 1U);
+    assert(m.future_frames == 0U);
+}
+
+/* A late tick inside four ticks keeps the grid (the samples are older than the clock, never newer). */
+static void test_a_slightly_late_tick_keeps_the_grid(void)
+{
+    model_t m = {0};
+    model_tick(&m, 10, 1000, 5000000);
+    model_tick(&m, 10, 1000, 5000000 + 25000);                                     /* 15 ms late at 1 kHz */
+    model_tick(&m, 10, 1000, 5000000 + 30000);
+    assert(m.reanchors == 0U && m.off_grid_frames == 0U && m.future_frames == 0U);
+    assert(m.frames == 30U);
+}
+
+/* Random wake-ups, every rate the recorder offers: the three rules hold in all of them. */
+static void test_random_jitter_keeps_every_rule_at_every_rate(void)
+{
+    static const int rates[] = {500, 1000, 2000, 4000, 5000};
+    for (size_t r = 0U; r < sizeof(rates) / sizeof(rates[0]); ++r) {
+        const int frames_per_tick = rates[r] * 10 / 1000;
+        const int64_t period_us = 1000000 / rates[r];
+        model_t m = {0};
+        int64_t wake = 20000000;
+        uint32_t seed = 777U + (uint32_t)r;
+        for (int tick = 0; tick < 3000; ++tick) {
+            seed = seed * 1664525U + 1013904223U;
+            wake += 500 + (int64_t)(seed >> 16) % 25000;                           /* 0.5 .. 25.5 ms between wake-ups */
+            model_tick(&m, frames_per_tick, period_us, wake);
         }
-        c += 4000;
+        assert(m.future_frames == 0U);
+        assert(m.off_grid_frames == 0U);
+        assert(m.frames == (unsigned)(3000 * frames_per_tick));
     }
-    assert(worst > 8000);                                                          /* 8.8 ms in the bench log, here more */
-    assert(g.worst_lead_us * 8 < worst);                                           /* the new rule: an order of magnitude less */
-}
-
-/* Emulator face 2 / the dead guard: a tick that is LATE or jittery must not make stamps step back. */
-static void test_jittery_ticks_never_step_back(void)
-{
-    generator_t g = {0};
-    const int64_t period = 1000;                                                   /* 1 kHz, 10 frames per tick */
-    int64_t clock = 5000000;
-    uint32_t seed = 12345U;
-    for (int tick = 0; tick < 5000; ++tick) {
-        seed = seed * 1664525U + 1013904223U;
-        const int64_t delta = 500 + (int64_t)(seed >> 16) % 20000;                 /* 0.5 .. 20.5 ms between ticks */
-        clock += delta;
-        run_tick(&g, clock, 10, period, clock);                                    /* asserts strict increase every frame */
-    }
-    assert(g.frames == 50000U);
-}
-
-/* The clock itself stalls (or reads equal): strictly increasing still wins, by 1 us, and the lead stays tiny. */
-static void test_a_stalled_clock_still_gives_strictly_increasing_stamps(void)
-{
-    generator_t g = {0};
-    run_tick(&g, 1000000, 5, 2000, 1000000);
-    for (int tick = 0; tick < 50; ++tick) run_tick(&g, 1000000, 5, 2000, 1000000);
-    assert(g.frames == 255U);
-    assert(g.last_stamp_us == 1000000 + 250);                                      /* 250 frames after the first tick, 1 us each */
-    assert(g.worst_lead_us <= 250);
-}
-
-/* The guard really is stateful: dropping the update of the previous stamp (the deleted line) must be caught. */
-static void test_the_previous_stamp_is_what_keeps_the_trace_monotonic(void)
-{
-    /* A tick whose backwards run starts before the previous stamp: 5 frames from t=1,000,000 (stamps 992000..1000000),
-     * then a tick 3 ms later at the same 2 ms period (stamps 995000..1003000 would overlap). */
-    int64_t last = 1000000;
-    const int64_t first = seismic_test_stamp_next(1003000, 5, 0, 2000, last, 1003000);
-    assert(first > last);                                                          /* not 995000 */
-    assert(first <= 1003000);                                                      /* and not ahead of the clock */
-    /* With no previous stamp known (last == 0) the same call is the plain backwards stamp: the failure mode. */
-    assert(seismic_test_stamp_next(1003000, 5, 0, 2000, 0, 1003000) == 995000);
-}
-
-/* The clock may be far past the tick (a late read): the step is still one frame period, the rate does not jump. */
-static void test_the_step_never_exceeds_one_frame_period(void)
-{
-    const int64_t first = seismic_test_stamp_next(1000000, 5, 0, 2000, 999500, 1050000);   /* raw 992000 is behind 999500 */
-    assert(first == 999500 + 2000);
-    /* Not enough room: the step shrinks to the room, not to a full period. */
-    assert(seismic_test_stamp_next(1000000, 5, 0, 2000, 999500, 1000200) == 999500 + 700);
 }
 
 int main(void)
 {
-    test_the_step_never_exceeds_one_frame_period();
-    test_exact_ticks_stamp_backwards_from_the_tick_and_never_run_ahead();
-    test_the_first_frame_is_stamped_from_its_tick();
-    test_ticks_that_come_early_do_not_run_ahead_of_the_clock();
-    test_jittery_ticks_never_step_back();
-    test_a_stalled_clock_still_gives_strictly_increasing_stamps();
-    test_the_previous_stamp_is_what_keeps_the_trace_monotonic();
+    test_exact_ticks_never_wait_and_stay_on_the_grid();
+    test_the_first_tick_ends_at_the_clock();
+    test_early_ticks_wait_for_the_clock_instead_of_running_ahead();
+    test_a_long_stall_moves_the_grid_forward_once();
+    test_a_slightly_late_tick_keeps_the_grid();
+    test_random_jitter_keeps_every_rule_at_every_rate();
     puts("seismic test stamp host contract passed");
     return 0;
 }

@@ -48,6 +48,58 @@ EXPORTS = [
 ]
 
 
+def foreign_imports(module: bytes) -> list[str]:
+    """Imports of the module that are not WASI calls. Every one of them is a function the build did not find: the linker
+    turns it into a call that fails when the page runs it, which is how the missing material table went unnoticed."""
+
+    def leb(data: bytes, at: int) -> tuple[int, int]:
+        value = shift = 0
+        while True:
+            byte = data[at]
+            at += 1
+            value |= (byte & 0x7F) << shift
+            if byte < 0x80:
+                return value, at
+            shift += 7
+
+    at = 8
+    names: list[str] = []
+    while at < len(module):
+        section, at = module[at], at + 1
+        size, at = leb(module, at)
+        end = at + size
+        if section == 2:
+            count, at = leb(module, at)
+            for _ in range(count):
+                length, at = leb(module, at)
+                owner = module[at:at + length].decode()
+                at += length
+                length, at = leb(module, at)
+                name = module[at:at + length].decode()
+                at += length
+                kind = module[at]
+                at += 1
+                if kind == 0:
+                    _, at = leb(module, at)
+                elif kind == 1:
+                    at += 1
+                    flags, at = leb(module, at)
+                    _, at = leb(module, at)
+                    if flags & 1:
+                        _, at = leb(module, at)
+                elif kind == 2:
+                    flags, at = leb(module, at)
+                    _, at = leb(module, at)
+                    if flags & 1:
+                        _, at = leb(module, at)
+                else:
+                    at += 2
+                if owner != "wasi_snapshot_preview1":
+                    names.append(f"{owner}.{name}")
+        at = end
+    return names
+
+
 def sources_and_includes() -> tuple[list[str], list[str]]:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     test = next(t for t in manifest["tests"] if t["name"] == TEST_NAME)
@@ -67,7 +119,11 @@ def main() -> int:
 
     sources, includes = sources_and_includes()
     cjson = IDF / "components/json/cJSON"
-    include_flags = [f"-I{ROOT / i}" for i in includes] + [f"-I{cjson}"]
+    # The real cJSON header goes FIRST. The host test directories carry a trimmed cJSON.h whose struct is laid out
+    # differently from the cJSON.c this module is built with: numbers and booleans still read, but every string and object
+    # is misread, so any settings file naming a material or a velocity range was refused with ESP_ERR_INVALID_ARG
+    # (board 2026-11-16: "the calculation stopped with error 258").
+    include_flags = [f"-I{cjson}"] + [f"-I{ROOT / i}" for i in includes]
     zig = shlex.split(args.zig) if args.zig else [sys.executable, "-m", "ziglang"]
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -83,6 +139,10 @@ def main() -> int:
         sys.stderr.write(result.stderr[-6000:])
         return result.returncode
     print(f"wrote {output} ({output.stat().st_size} bytes)")
+    missing = foreign_imports(output.read_bytes())
+    if missing:
+        sys.stderr.write("the module imports functions the build did not find: " + ", ".join(missing) + "\n")
+        return 1
     if args.embed:
         import base64
         embed = Path(args.embed)

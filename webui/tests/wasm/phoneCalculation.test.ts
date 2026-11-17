@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { LocalizationKernel } from '../../src/wasm/localizationKernel';
-import { calculateOnPhone, PhoneCalculationError, type KernelRunner } from '../../src/wasm/phoneCalculation';
+import { calculateOnPhone, describeCalculationFailure, PhoneCalculationError, type KernelRunner } from '../../src/wasm/phoneCalculation';
 import { v2File } from './samplesFixture';
 
 /**
@@ -124,10 +124,18 @@ describe.skipIf(!built)('calculating a finished session on the phone', () => {
     await expect(calculateOnPhone('OBJ_0001', 'S000001', runner, { deps: wrongRate.deps as never }))
       .rejects.toMatchObject({ stage: 'download' });
 
-    const rejectedRun: KernelRunner = async () => ({ status: 258, picks: null, runs: [], channelHealth: { flatChannelMask: 0, identicalPairMask: 0 } });
+    const health = { flatChannelMask: 0, identicalPairMask: 0 };
+    const rejectedRun: KernelRunner = async () => ({ status: 258, phase: 'run', picks: null, runs: [], channelHealth: health });
     const failing = fakeDevice();
     await expect(calculateOnPhone('OBJ_0001', 'S000001', rejectedRun, { deps: failing.deps as never }))
       .rejects.toThrow(PhoneCalculationError);
+    // The message says where it stopped and names the code: "error 258" alone cost a whole debugging round on the board.
+    await expect(calculateOnPhone('OBJ_0001', 'S000001', rejectedRun, { deps: fakeDevice().deps as never }))
+      .rejects.toMatchObject({ stage: 'calculate', message: 'the calculation stopped with error 258 (ESP_ERR_INVALID_ARG)' });
+    const refusedSettings: KernelRunner = async () => ({ status: 258, phase: 'settings', picks: null, runs: [], channelHealth: health });
+    await expect(calculateOnPhone('OBJ_0001', 'S000001', refusedSettings, { deps: fakeDevice().deps as never }))
+      .rejects.toMatchObject({ stage: 'calculate', message: 'the calculation settings were refused with error 258 (ESP_ERR_INVALID_ARG)' });
+    expect(describeCalculationFailure('run', 999)).toBe('the calculation stopped with error 999');
 
     for (const device of [missing, shortFile, wrongRate, failing]) expect(device.upload).not.toHaveBeenCalled();
   });

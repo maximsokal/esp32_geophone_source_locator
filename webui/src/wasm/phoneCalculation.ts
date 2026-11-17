@@ -48,6 +48,18 @@ export interface PhoneCalculationOutcome {
   sampleRateHz: number;
 }
 
+/** The ESP-IDF names of the codes the calculation can end with, so the page says more than a number. */
+const ESP_ERROR_NAMES: Record<number, string> = {
+  257: 'ESP_ERR_NO_MEM', 258: 'ESP_ERR_INVALID_ARG', 259: 'ESP_ERR_INVALID_STATE', 260: 'ESP_ERR_INVALID_SIZE',
+  261: 'ESP_ERR_NOT_FOUND', 262: 'ESP_ERR_NOT_SUPPORTED', 263: 'ESP_ERR_TIMEOUT', 264: 'ESP_ERR_INVALID_RESPONSE',
+};
+
+export function describeCalculationFailure(phase: 'settings' | 'run', status: number): string {
+  const name = ESP_ERROR_NAMES[status];
+  const where = phase === 'settings' ? 'the calculation settings were refused' : 'the calculation stopped';
+  return `${where} with error ${status}${name ? ` (${name})` : ''}`;
+}
+
 export class PhoneCalculationError extends Error {
   constructor(readonly stage: PhoneCalculationStage, message: string) {
     super(message);
@@ -101,7 +113,7 @@ export async function calculateOnPhone(
     const outcome = await runKernel({
       objectId, sessionId, recording, geometryJson: JSON.stringify(meta.geometry), configJson, computedAtMs: deps.now(),
     });
-    if (outcome.status !== 0) throw new Error(`the calculation stopped with error ${outcome.status}`);
+    if (outcome.status !== 0) throw new Error(describeCalculationFailure(outcome.phase, outcome.status));
     if (outcome.runs.length === 0) throw new Error('the calculation produced no records');
     return outcome;
   });

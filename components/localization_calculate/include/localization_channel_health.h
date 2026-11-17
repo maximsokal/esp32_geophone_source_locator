@@ -52,6 +52,24 @@ void localization_channel_health_analyze(
     localization_channel_health_t *health_out
 );
 
+/*
+ * The same judgement on the recording as it is stored: frames of four interleaved channels, `stride` floats from one
+ * frame's sample of a channel to the next frame's (first_sample points at channel 0 of frame 0). Every channel has data.
+ *
+ * `sensor_mask` (bit c: channel c carries a sensor) limits which channels can be called flat, but identical pairs are
+ * judged among ALL four channels. Board card 2026-11-16: from session S000005 on, AD7606 channels 1 and 2 carried one
+ * signal (correlation 0.99999) while the node of channel 1 was not assigned; the check that skipped channels without a
+ * sensor never saw the pair, and the device reported only "channels 0 and 3 flat". A copy of a sensor's signal on a channel
+ * with no sensor is the same wiring fault, and a more telling one.
+ */
+void localization_channel_health_analyze_interleaved(
+    const float *first_sample,
+    size_t stride,
+    size_t count,
+    uint8_t sensor_mask,
+    localization_channel_health_t *health_out
+);
+
 #ifdef __cplusplus
 }
 #endif

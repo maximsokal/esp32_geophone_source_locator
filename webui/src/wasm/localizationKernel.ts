@@ -38,6 +38,8 @@ export interface KernelRecording {
 export interface KernelResult {
   /** The run's error code: 0 is ESP_OK. */
   status: number;
+  /** Where a non-zero status came from: the settings were refused before the run, or the run itself stopped. */
+  phase: 'settings' | 'run';
   picks: unknown | null;
   runs: unknown[];
   channelHealth: { flatChannelMask: number; identicalPairMask: number };
@@ -139,6 +141,11 @@ export class LocalizationKernel {
         recording.sourceIndices.length !== count) {
       throw new Error('the recording arrays disagree on the number of frames');
     }
+    // The settings first, on their own: "error 258" from a refused setting and from the run are different problems.
+    const settingsStatus = this.checkConfig(input.configJson);
+    if (settingsStatus !== 0) {
+      return { status: settingsStatus, phase: 'settings', picks: null, runs: [], channelHealth: { flatChannelMask: 0, identicalPairMask: 0 } };
+    }
     const x = this.exports;
     x.lw_reset();
     const frameSize = x.lw_frame_size();
@@ -169,6 +176,7 @@ export class LocalizationKernel {
       const parsed = JSON.parse(this.readString(x.lw_result_json())) as { picks: unknown | null; runs: unknown[] };
       return {
         status,
+        phase: 'run',
         picks: parsed.picks,
         runs: parsed.runs,
         channelHealth: { flatChannelMask: x.lw_channel_health_flat(), identicalPairMask: x.lw_channel_health_identical() },

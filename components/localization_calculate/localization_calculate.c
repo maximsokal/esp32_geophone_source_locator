@@ -1224,6 +1224,27 @@ esp_err_t localization_calculate_run(
         );
     }
 
+    /*
+     * Two channels carrying one signal, or a sensor that does not answer, make a source impossible to find and look like
+     * "no source": say so (board log 2026-11-15 20:26). Judged on the raw frames, which hold all four channels: the copy of
+     * a sensor's signal may sit on a channel with no sensor (board card 2026-11-16), and only the channels with a sensor
+     * can be called flat.
+     */
+    {
+        uint8_t sensor_mask = 0U;
+        for (size_t ch = 0U; ch < OBJECT_STORE_POD_COUNT && ch < LOCALIZATION_CHANNEL_HEALTH_CHANNELS; ++ch) {
+            if (channel_samples[ch] != NULL) sensor_mask = (uint8_t)(sensor_mask | (1U << ch));
+        }
+        localization_channel_health_analyze_interleaved(
+            &frames[0].channel_uv[0], sizeof(frames[0]) / sizeof(float), frame_count, sensor_mask,
+            &summary_out->channel_health);
+        if (summary_out->channel_health.flat_channel_mask != 0U || summary_out->channel_health.identical_pair_mask != 0U) {
+            ESP_LOGW(TAG, "LOC_CHANNEL_HEALTH flat_mask=0x%02x identical_pair_mask=0x%02x (channels are numbered from 0)",
+                     (unsigned)summary_out->channel_health.flat_channel_mask,
+                     (unsigned)summary_out->channel_health.identical_pair_mask);
+        }
+    }
+
     /* The raw frame buffer has now been de-interleaved into per-channel
      * DC-removed windows; nothing below needs the interleaved copy. */
     heap_caps_free(frames);
@@ -1232,16 +1253,6 @@ esp_err_t localization_calculate_run(
     source_sample_indices = NULL;
     heap_caps_free(gap_before);
     gap_before = NULL;
-
-    /* Two channels carrying one signal, or a sensor that does not answer, make a source impossible to find and look like
-     * "no source": say so (board log 2026-11-15 20:26). */
-    localization_channel_health_analyze(
-        (const float *const *)channel_samples, frame_count, &summary_out->channel_health);
-    if (summary_out->channel_health.flat_channel_mask != 0U || summary_out->channel_health.identical_pair_mask != 0U) {
-        ESP_LOGW(TAG, "LOC_CHANNEL_HEALTH flat_mask=0x%02x identical_pair_mask=0x%02x (channels are numbered from 0)",
-                 (unsigned)summary_out->channel_health.flat_channel_mask,
-                 (unsigned)summary_out->channel_health.identical_pair_mask);
-    }
 
     /* --- MAX-209: cross-channel physical consistency + xcorr refinement --- */
 
