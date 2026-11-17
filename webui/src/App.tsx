@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import './scan.css';
 
@@ -101,11 +101,14 @@ import {
 import type { ScanPointCloudSnapshot, WebXrCapabilities } from './xr/webxrRuntime';
 import { formatErrorText, TranslatedError, translate, useLocale, useT, type I18nLocale } from './i18n';
 import { formatDistance, formatNumber } from './i18n/format';
+/*
+ * Imported statically, not lazily. Board 2026-11-17: the viewer chunk was fetched with import() while the scan was still being
+ * saved to the board, whose HTTPS server takes one client at a time; the fetch failed ("Failed to fetch dynamically imported
+ * module"), and a failed import() is remembered by the browser for the page's life, so Retry could not help and the 3D result
+ * was never shown. In the scanner's own chunk the viewer arrives with the scanner, before any scan exists.
+ */
+import { ScanPointCloudViewport } from './components/ScanPointCloudViewport';
 
-const ScanPointCloudViewport = lazy(async () => {
-  const module = await import('./components/ScanPointCloudViewport');
-  return { default: module.ScanPointCloudViewport };
-});
 
 type ScanStoragePhase =
   | 'unbound'
@@ -555,20 +558,6 @@ export default function App({ objectId, sessionId, status, onScanSaved }: AppPro
       void clientDiagnostics.flush();
     });
     return () => { cancelled = true; };
-  }, []);
-
-  /*
-   * Load the heavy renderer while the operator is still on the scanner page,
-   * not at the exact moment Finish closes immersive AR. Its JS then sits in the
-   * browser module cache; all scanner CSS is already resident in stable app.css.
-   */
-  useEffect(() => {
-    void import('./components/ScanPointCloudViewport').catch((reason) => {
-      clientDiagnostics.warn('SCAN_RESULT_RENDERER_PRELOAD_FAILED', {
-        error: reason instanceof Error ? reason.message : String(reason),
-      });
-      void clientDiagnostics.flush();
-    });
   }, []);
 
   const requestView = useCallback((preset: ViewPreset): void => {
