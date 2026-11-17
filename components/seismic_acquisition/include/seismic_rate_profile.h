@@ -11,7 +11,8 @@
  * 2026-11-15 with the board's SD write latency (docs/emulator-rate-sweep-2026-11-15.md): the SD path sustains about
  * 4000 frames/s; above that the ring (2 s) and the 26214-frame write-behind cache absorb the excess for
  *     (26214 + ring frames) / (rate - 4000) seconds,
- * after which frames are lost. The table keeps about a quarter of that margin. Up to 4 kHz the SD path keeps up, but at
+ * after which frames are lost. The table keeps about a quarter of that margin (5000 Hz: 25 s of 36; 10000 Hz: 5 s of 7.7;
+ * 15000 Hz: 3 s of 5.1). The 15000 Hz CONVST cannot be exact (see ad7606_acquisition_ledc_resolution_within_ppm). Up to 4 kHz the SD path keeps up, but at
  * 4 kHz it is busy 77..95 % of the time, so that preset is also limited.
  */
 #define SEISMIC_RATE_PROFILE_PREVIEW_HZ 500U

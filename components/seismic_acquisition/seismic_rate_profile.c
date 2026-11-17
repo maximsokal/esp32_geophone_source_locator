@@ -6,6 +6,9 @@ static const seismic_rate_profile_t s_profiles[] = {
     { 2000U, 120U },
     { 4000U, 30U },
     { 5000U, 25U },
+    /* Above 4 kHz the SD path falls behind and only the buffers hold the excess: 10 kHz fills them in ~7.7 s, 15 kHz in ~5.1 s. */
+    { 10000U, 5U },
+    { 15000U, 3U },
 };
 
 /* Frames the write-behind cache holds (CONFIG_SEISMIC_RECORDER_PSRAM_CACHE_KB = 1024 / 40-byte slots). */

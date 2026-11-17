@@ -5,12 +5,14 @@
 
 static void test_presets_are_the_approved_ones(void)
 {
-    assert(seismic_rate_profile_count() == 4U);
+    assert(seismic_rate_profile_count() == 6U);
     assert(seismic_rate_profile_default_hz() == 500U);
     assert(seismic_rate_profile_find(500U)->max_record_seconds == 0U);
     assert(seismic_rate_profile_find(2000U)->max_record_seconds == 120U);
     assert(seismic_rate_profile_find(4000U)->max_record_seconds == 30U);
     assert(seismic_rate_profile_find(5000U)->max_record_seconds == 25U);
+    assert(seismic_rate_profile_find(10000U)->max_record_seconds == 5U);
+    assert(seismic_rate_profile_find(15000U)->max_record_seconds == 3U);
     assert(seismic_rate_profile_find(3000U) == NULL);
     assert(seismic_rate_profile_find(0U) == NULL);
     assert(seismic_rate_profile_at(seismic_rate_profile_count()) == NULL);
@@ -25,6 +27,8 @@ static void test_record_limit_in_milliseconds(void)
     assert(seismic_rate_profile_record_limit_ms(2000U) == 120000U);
     assert(seismic_rate_profile_record_limit_ms(4000U) == 30000U);
     assert(seismic_rate_profile_record_limit_ms(5000U) == 25000U);
+    assert(seismic_rate_profile_record_limit_ms(10000U) == 5000U);
+    assert(seismic_rate_profile_record_limit_ms(15000U) == 3000U);
 }
 
 /* The presets stay inside what the emulator sweep measured: no recording longer than the buffers can absorb. */
@@ -46,14 +50,16 @@ static void test_rates_that_are_not_presets_are_still_bounded(void)
     assert(seismic_rate_profile_record_limit_ms(1000U) == 30000U);
     assert(seismic_rate_profile_record_limit_ms(3000U) == 30000U);
     assert(seismic_rate_profile_record_limit_ms(100U) == 0U);
-    /* Above it: 3/4 of the time the buffers take to fill, e.g. 10 kHz fills in ~7.7 s -> 5.8 s. */
-    const uint32_t at_10k = seismic_rate_profile_record_limit_ms(10000U);
-    assert(at_10k >= 5700U && at_10k <= 5800U);
+    /* Above it: 3/4 of the time the buffers take to fill, e.g. 12 kHz fills in ~6.4 s -> 4.8 s. */
+    const uint32_t at_12k = seismic_rate_profile_record_limit_ms(12000U);
+    assert(at_12k >= 4700U && at_12k <= 4900U);
     const uint32_t at_20k = seismic_rate_profile_record_limit_ms(20000U);
     assert(at_20k >= 3000U && at_20k <= 3200U);
-    /* Faster is never allowed longer. */
-    assert(at_20k < at_10k);
-    assert(at_10k < seismic_rate_profile_record_limit_ms(5000U));
+    /* Faster is never allowed longer, presets included. */
+    assert(at_20k < at_12k);
+    assert(at_12k < seismic_rate_profile_record_limit_ms(10000U) + 1U);
+    assert(seismic_rate_profile_record_limit_ms(15000U) < seismic_rate_profile_record_limit_ms(10000U));
+    assert(seismic_rate_profile_record_limit_ms(10000U) < seismic_rate_profile_record_limit_ms(5000U));
     /* Right above the SD rate the formula must not explode or wrap. */
     assert(seismic_rate_profile_record_limit_ms(4001U) >= 1000U);
     assert(seismic_rate_profile_record_limit_ms(40000U) >= 1000U);
@@ -66,6 +72,8 @@ static void test_preview_decimation(void)
     assert(seismic_rate_profile_preview_decimation(2000U) == 4U);
     assert(seismic_rate_profile_preview_decimation(4000U) == 8U);
     assert(seismic_rate_profile_preview_decimation(5000U) == 10U);
+    assert(seismic_rate_profile_preview_decimation(10000U) == 20U);
+    assert(seismic_rate_profile_preview_decimation(15000U) == 30U);
     assert(seismic_rate_profile_preview_decimation(20000U) == 40U);
     assert(seismic_rate_profile_preview_decimation(600U) == 2U);   /* never faster than the preview rate */
 }

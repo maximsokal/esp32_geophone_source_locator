@@ -391,7 +391,7 @@ static void tol_7_convst_pulse_and_pwm_period_are_pinned(void)
 
 static void test_run_time_presets_have_exact_convst_and_valid_timing(void)
 {
-    const uint32_t rates[] = { 500U, 1000U, 2000U, 4000U, 5000U, 8000U, 10000U, 20000U };
+    const uint32_t rates[] = { 500U, 1000U, 2000U, 4000U, 5000U, 8000U, 10000U, 20000U };   /* 15000 is not exact: see below */
     for (size_t i = 0U; i < sizeof(rates) / sizeof(rates[0]); ++i) {
         ad7606_timing_result_t result = {0};
         assert(ad7606_acquisition_timing_resolve(rates[i], 1U, 10000000U, AD7606_READ_MODE_AUTO, 2100U, &result));
@@ -401,6 +401,42 @@ static void test_run_time_presets_have_exact_convst_and_valid_timing(void)
     ad7606_timing_result_t result = {0};
     assert(!ad7606_acquisition_timing_resolve(3000U, 1U, 10000000U, AD7606_READ_MODE_AUTO, 2100U, &result));
     assert(!ad7606_acquisition_timing_resolve(250000U, 1U, 10000000U, AD7606_READ_MODE_AUTO, 2100U, &result));
+}
+
+
+/*
+ * 15 kHz (a preset of seismic_rate_profile): its period, 66.67 us, has a factor 3 that the 40 MHz XTAL lacks, so no divider is
+ * exact. The read timing is valid like any other rate, the exact search says no, and the tolerant search finds a resolution
+ * whose truncated divider is within 100 ppm (62 ppm: ~1 Hz at 15 kHz) -- and gives up when the tolerance is tighter than that.
+ */
+static void test_15khz_has_valid_timing_but_no_exact_divider(void)
+{
+    ad7606_timing_result_t result = {0};
+    assert(ad7606_acquisition_timing_resolve(15000U, 1U, 10000000U, AD7606_READ_MODE_AUTO, 2100U, &result));
+    assert(ad7606_acquisition_ledc_exact_resolution(15000U, 40000000U, 11U) == 0U);
+
+    uint32_t ppm = 0xFFFFFFFFU;
+    const uint32_t bits = ad7606_acquisition_ledc_resolution_within_ppm(15000U, 40000000U, 11U, 100U, &ppm);
+    assert(bits >= 6U && bits <= 11U);          /* a CONVST pulse of ~2 us needs a fine duty step */
+    assert(ppm > 0U && ppm <= 100U);
+    /* The divider the IDF would program (truncated) really gives that rate. */
+    const uint64_t scaled = UINT64_C(40000000) * 256U;
+    const uint64_t denominator = UINT64_C(15000) * (UINT64_C(1) << bits);
+    const uint64_t divider = scaled / denominator;
+    assert(divider >= 256U && divider <= 0x3FFFFU);
+    assert((scaled - divider * denominator) * UINT64_C(1000000) / scaled == ppm);
+    /* The pulse can be quantised at that resolution. */
+    uint32_t actual_ns = 0U;
+    assert(ad7606_acquisition_ledc_duty_count(15000U, bits, 2100U, &actual_ns) != 0U);
+    assert(actual_ns >= 1000U);
+
+    assert(ad7606_acquisition_ledc_resolution_within_ppm(15000U, 40000000U, 11U, 2U, NULL) == 0U);    /* tighter than any divider in range gives (best: 3.9 ppm) */
+    assert(ad7606_acquisition_ledc_resolution_within_ppm(0U, 40000000U, 11U, 100U, NULL) == 0U);
+    assert(ad7606_acquisition_ledc_resolution_within_ppm(15000U, 0U, 11U, 100U, NULL) == 0U);
+    /* An exact rate is within any tolerance, error 0. */
+    ppm = 99U;
+    assert(ad7606_acquisition_ledc_resolution_within_ppm(10000U, 40000000U, 11U, 0U, &ppm) != 0U && ppm == 0U);
+    puts("15 kHz tolerant divider PASS");
 }
 
 
@@ -611,6 +647,7 @@ int main(void)
     test_measured_busy_width_classification_and_timing_gate();
     measured_busy_above_datasheet_max_keeps_read_budget();
     test_run_time_presets_have_exact_convst_and_valid_timing();
+    test_15khz_has_valid_timing_but_no_exact_divider();
     test_invalid_timing_boundaries();
     test_sample_index_timestamps_for_long_runs_and_overflow();
     test_pcnt_extension_wrap_restart_and_monotonicity();

@@ -139,6 +139,39 @@ uint32_t ad7606_acquisition_ledc_exact_resolution(
 }
 
 
+uint32_t ad7606_acquisition_ledc_resolution_within_ppm(
+    uint32_t sample_rate_hz,
+    uint32_t source_clock_hz,
+    uint32_t maximum_resolution_bits,
+    uint32_t max_error_ppm,
+    uint32_t *error_ppm
+)
+{
+    if (sample_rate_hz == 0U || source_clock_hz == 0U || maximum_resolution_bits >= 32U) {
+        return 0U;
+    }
+
+    /* ESP-IDF programs divider = (clock << 8) / fs / 2^bits, truncated, in 8.10 fixed point (256 .. 0x3FFFF). */
+    const uint64_t scaled_clock = (uint64_t)source_clock_hz * 256U;
+    for (uint32_t bits = maximum_resolution_bits; bits > 0U; --bits) {
+        const uint64_t denominator = (uint64_t)sample_rate_hz * (UINT64_C(1) << bits);
+        const uint64_t divider = scaled_clock / denominator;
+        if (divider < 256U || divider > 0x3FFFFU) {
+            continue;
+        }
+        const uint64_t shortfall = scaled_clock - divider * denominator;
+        const uint64_t ppm = shortfall * UINT64_C(1000000) / scaled_clock;
+        if (ppm <= max_error_ppm) {
+            if (error_ppm != NULL) {
+                *error_ppm = (uint32_t)ppm;
+            }
+            return bits;
+        }
+    }
+    return 0U;
+}
+
+
 bool ad7606_acquisition_timing_resolve(
     uint32_t sample_rate_hz,
     uint32_t oversampling_ratio,
@@ -151,7 +184,7 @@ bool ad7606_acquisition_timing_resolve(
     if (
         (sample_rate_hz != 500U && sample_rate_hz != 1000U && sample_rate_hz != 2000U &&
          sample_rate_hz != 4000U && sample_rate_hz != 5000U && sample_rate_hz != 8000U &&
-         sample_rate_hz != 10000U && sample_rate_hz != 20000U &&
+         sample_rate_hz != 10000U && sample_rate_hz != 15000U && sample_rate_hz != 20000U &&
          sample_rate_hz != 40000U) ||
         spi_clock_hz < 1000000U ||
         spi_clock_hz > 15000000U ||

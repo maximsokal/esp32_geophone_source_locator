@@ -91,6 +91,19 @@ uint32_t ad7606_acquisition_ledc_duty_count(
     uint32_t *actual_high_ns
 );
 
+/*
+ * For a rate no XTAL divider hits exactly (15 kHz: its period, 66.67 us, has a factor 3 the 40 MHz clock lacks): the
+ * highest resolution whose divider, truncated the way ESP-IDF's LEDC truncates it, is within max_error_ppm of fs and
+ * inside the divider's range. Returns 0 when none is; error_ppm (optional) receives how far the real rate is below fs.
+ */
+uint32_t ad7606_acquisition_ledc_resolution_within_ppm(
+    uint32_t sample_rate_hz,
+    uint32_t source_clock_hz,
+    uint32_t maximum_resolution_bits,
+    uint32_t max_error_ppm,
+    uint32_t *error_ppm
+);
+
 /* Chooses a supported LEDC resolution whose XTAL divider produces exact fs. */
 uint32_t ad7606_acquisition_ledc_exact_resolution(
     uint32_t sample_rate_hz,

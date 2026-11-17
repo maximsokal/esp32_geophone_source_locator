@@ -1611,21 +1611,39 @@ static const char *ad7606_read_mode_name(ad7606_read_mode_t mode)
 }
 
 
+/* The rate may be off by at most this much when no XTAL divider is exact (15 kHz: 62 ppm, 1 Hz). */
+#define AD7606_LEDC_RATE_TOLERANCE_PPM 100U
+
+/*
+ * The LEDC resolution that makes CONVST: an exact one when the clock has it, otherwise the best one within the tolerance.
+ * *error_ppm is 0 for an exact rate, else how far below the nominal rate the real one is.
+ */
+static uint32_t ad7606_ledc_resolution_for(uint32_t sample_rate_hz, uint32_t *error_ppm)
+{
+    const uint32_t max_resolution = ledc_find_suitable_duty_resolution(AD7606_LEDC_XTAL_CLOCK_HZ, sample_rate_hz);
+    *error_ppm = 0U;
+    const uint32_t exact = ad7606_acquisition_ledc_exact_resolution(
+        sample_rate_hz, AD7606_LEDC_XTAL_CLOCK_HZ, max_resolution);
+    if (exact != 0U) {
+        return exact;
+    }
+    return ad7606_acquisition_ledc_resolution_within_ppm(
+        sample_rate_hz, AD7606_LEDC_XTAL_CLOCK_HZ, max_resolution, AD7606_LEDC_RATE_TOLERANCE_PPM, error_ppm);
+}
+
+
 static esp_err_t ad7606_prepare_timing(void)
 {
-    const uint32_t max_resolution = ledc_find_suitable_duty_resolution(
-        AD7606_LEDC_XTAL_CLOCK_HZ,
-        s_sample_rate_hz
-    );
-    s_ledc_duty_resolution = ad7606_acquisition_ledc_exact_resolution(
-        s_sample_rate_hz,
-        AD7606_LEDC_XTAL_CLOCK_HZ,
-        max_resolution
-    );
+    uint32_t rate_error_ppm = 0U;
+    s_ledc_duty_resolution = ad7606_ledc_resolution_for(s_sample_rate_hz, &rate_error_ppm);
     if (s_ledc_duty_resolution == 0U) {
         ESP_LOGE(TAG, "XTAL LEDC cannot generate %u Hz",
             (unsigned)s_sample_rate_hz);
         return ESP_ERR_INVALID_ARG;
+    }
+    if (rate_error_ppm != 0U) {
+        ESP_LOGW(TAG, "LEDC_RATE_APPROX nominal=%u Hz real=nominal-%u ppm (no exact XTAL divider)",
+            (unsigned)s_sample_rate_hz, (unsigned)rate_error_ppm);
     }
 
     s_ledc_duty_count = ad7606_acquisition_ledc_duty_count(
@@ -2452,9 +2470,8 @@ bool ad7606_acquisition_sample_rate_supported(uint32_t sample_rate_hz)
         return false;
     }
     /* The same chain ad7606_prepare_timing runs at start: an exact LEDC CONVST, then the read-mode timing. */
-    const uint32_t max_resolution = ledc_find_suitable_duty_resolution(AD7606_LEDC_XTAL_CLOCK_HZ, sample_rate_hz);
-    const uint32_t resolution = ad7606_acquisition_ledc_exact_resolution(
-        sample_rate_hz, AD7606_LEDC_XTAL_CLOCK_HZ, max_resolution);
+    uint32_t rate_error_ppm = 0U;
+    const uint32_t resolution = ad7606_ledc_resolution_for(sample_rate_hz, &rate_error_ppm);
     if (resolution == 0U) {
         return false;
     }

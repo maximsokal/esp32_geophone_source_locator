@@ -1442,7 +1442,7 @@ static void test_a_run_time_rate_drives_convst_buffer_and_sample_times(void)
     assert(!ad7606_acquisition_sample_rate_supported(3000U));
     assert(ad7606_acquisition_set_sample_rate(3000U) == ESP_ERR_INVALID_ARG);
     assert(ad7606_acquisition_get_sample_rate() == default_rate);
-    const uint32_t presets[] = { 500U, 2000U, 4000U, 5000U };
+    const uint32_t presets[] = { 500U, 2000U, 4000U, 5000U, 10000U, 15000U };
     for (size_t i = 0U; i < sizeof(presets) / sizeof(presets[0]); ++i) {
         assert(ad7606_acquisition_sample_rate_supported(presets[i]));
     }
