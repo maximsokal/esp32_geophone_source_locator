@@ -710,8 +710,19 @@ static esp_err_t web_scan_recover_file(
     if (final_path == NULL || temp_path == NULL || backup_path == NULL || kind == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (!web_scan_file_exists(temp_path) && !web_scan_file_exists(backup_path)) {
-        return web_scan_file_exists(final_path) ? ESP_OK : ESP_ERR_NOT_FOUND;
+    /*
+     * Board 2026-11-17: these three stat() calls ran with no storage operation held, from the httpd task, while the recorder or
+     * the storage task was on the SD's SPI bus. Two tasks in one SPI device is an assert in the driver
+     * (spi_hal_setup_trans: spi_ll_get_running_cmd == 0) and the board rebooted on every scan-info request. The guard is
+     * recursive, so a caller that already holds it is unaffected.
+     */
+    esp_err_t guard = storage_manager_operation_begin();
+    if (guard != ESP_OK) return guard;
+    const bool recovery_pending = web_scan_file_exists(temp_path) || web_scan_file_exists(backup_path);
+    const bool final_present = recovery_pending ? false : web_scan_file_exists(final_path);
+    storage_manager_operation_end();
+    if (!recovery_pending) {
+        return final_present ? ESP_OK : ESP_ERR_NOT_FOUND;
     }
     const web_scan_recovery_context_t context = {
         .final_path = final_path,
